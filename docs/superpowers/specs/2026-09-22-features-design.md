@@ -238,44 +238,224 @@ pending → preparing → running → (agent 完成) → judging → judged
 
 ### 5.6 智能体适配器
 
-`agents` 包对外只暴露一个接口，三家实现差异全部吸收在适配器内：
+本节是 `agents` 包的唯一设计口径：对外契约、注册表、三家适配器的注入与计量口径、生命周期与释放顺序、加载降级、错误码映射。
+
+适配器要解决的问题只有一个：**让编排层面对「一个智能体」，而不是面对三家互不相同的 SDK**。三家厂商 SDK 都自带 agent 循环与工具执行，真正需要我们做的不是「再实现一遍 agent」，而是三件事——把评测需要的输入送进去、把它产生的计量与日志取出来、在超时与终止时干净地收尾。三件之外的一切差异都应该被适配器吸收掉。
+
+`packages/server/agents` 内部分三层，依赖方向单向：
+
+```
+getProvider(kind).run()（编排层的唯一入口，按 kind 解析）
+  ↓  src/registry.ts          kind → AgentProvider，元数据的唯一来源
+  ↓  src/providers/<kind>/    每家一个目录：run() + 事件投影 + 注入参数
+  ↓  厂商 SDK
+```
+
+差异全部落在 `providers/<kind>/` 里：编排层与注册表都不出现任何厂商字段名。
+
+#### 5.6.1 关键决策与理由
+
+| # | 决策 | 理由 | 被否决的替代 |
+|---|---|---|---|
+| A1 | 适配器 = **provider 注册表 + 薄投影**，不做语义转换层 | 三家 SDK 在解析层已各说各话，抹平语义要写一个中间表示（IR）与 3×2 个转换器；而评测只消费「产物 + 计量 + 日志」，适配器只需把差异投影到统一事件流 | 为三家写统一 IR（成本高、失真，且第 6 步的 diff 本就直接读工作目录） |
+| A2 | 结果契约必须补上 SDK 不保证提供的计量：`cached` token / `turns` / `durationMs` / `exitReason` / 归一化事件 | 这四样是横向对比的判据（§7.2 的 `EvalRow.tokens` / `turns` / `durationMs`），但厂商 SDK 的结果帧不保证都有：费用字段常常恒为 0，用量可能只出现在某个不便读取的位置，甚至完全取不到。「跑完了」不等于「能对比」 | 直接把厂商结果帧透给编排层（编排层要按厂商分支解析，正是本层要消除的耦合；且缺字段时会静默退化成「没有数据」） |
+| A3 | `AgentProvider` 注册表：**显式静态注册**，不做目录扫描 | 打包后 `readdirSync` 不可靠；注册表同时承载「协议兼容性 / 终止能力 / 隔离级别」元数据，是前端候选池过滤与编排层判断的**唯一**查询点 | `switch (agentKind)` 散在编排层与表单里（加一家要改多处，兼容性规则会漂移） |
+| A4 | **一行一次运行一次释放**，不做可多轮的 live 会话编排 | 评测的每次执行就是「一个工作区 + 一条提示词 + 跑完即弃」；多轮会话是交互式产品的需求，本项目没有消费方，而 live 会话会额外引入「会话忙」「跨轮恢复」「中断后会话能否续用」三类状态，把超时与释放的复杂度抬一个量级 | 维持长驻会话对象（多轮状态与并发保护都要自己实现，收益为零） |
+| A5 | 路由注入一律走**显式选项 + 「替换型」子进程环境**，`route` 是只读输入 | 并行时多行同时驱动不同供应商；一旦靠「读 `process.env` 再兜底写回」来注入，第二行起就再也拿不到自己的凭据——写入是粘性的（`X = X \|\| 新值` 这类写法尤其），而「替换型」环境（厂商 SDK 用它整体替换子进程环境）如果不展开宿主环境补 `PATH`，子进程连 `node` 都找不到 | 写 `process.env` 让厂商 SDK 自己读（凭据串台） |
+| A6 | 厂商包**函数作用域懒加载**，只缓存成功的加载 | 顶层静态导入一旦失败，整个 `agents` 包的导入都会失败——一个智能体 SDK 的故障会变成「全部智能体不可用」；不缓存失败是为了让一次镜像抖动不要毒化长驻服务的后续所有行 | 顶层静态 `import`（故障面从「一家」放大到「全包」） |
+| A7 | `dispose()` 是**必需项**，且与 `interrupt()` 共用**按对象绑定**的关闭守卫 | 进程内执行的释放没有「子进程被杀掉」这个兜底；守卫若做成运行时级一次性闭锁，`中断 → 下一轮新建客户端 → 释放` 会漏关新客户端，留下孤儿进程 | 只实现 `interrupt()`（dsh 会留下孤儿子进程） |
+| A8 | 事件流是**评测自己的形状**（`AgentEvent` 判别联合，§7.4 已定义），不复用厂商 SDK 的消息形状 | 事件要落 `events.jsonl` 并扇出 SSE，形状必须由本项目定义且以 §7.4 为单一来源；照搬厂商形状会让日志格式随厂商版本漂移，还会把「本项目根本不会消费的内容类型」当作兼容包袱一起带进来 | 直接落厂商原始消息（日志格式随 SDK 版本漂移） |
+
+#### 5.6.2 契约（`agents` 包对外全部出口）
+
+依赖方向不变：`agents → core / contracts`，**不依赖 `evaluator`**。`agents` 不知道工作区、分支、评测行的存在——它只接一个已经准备好的工作目录。
 
 ```ts
-interface AgentRunInput {
-  agentKind: 'claude-code' | 'codex' | 'dsh'
-  cwd: string                        // 工作目录（该行工作区）
-  configHome: string                 // 独立配置目录
+/** 三家智能体的 id；唯一来源，contracts 的 EvalRow.agentKind 与前端下拉都从这里派生 */
+export const AGENT_KINDS = ['claude-code', 'codex', 'dsh'] as const
+export type AgentKind = (typeof AGENT_KINDS)[number]
+
+/** 与 §7.2 的 ProtocolType 同义；此处重复声明是为了避免 agents 为两个字符串引入依赖 */
+export type ProtocolType = 'openai' | 'anthropic'
+
+/** 一次运行的全部输入。内部无厂商分支，无 process.env 读取 */
+export interface AgentRunInput {
+  cwd: string                        // 该行工作区（第 1、2 步已备好）
+  configHome: string                 // 该行独立配置目录（第 3 步已备好）
   prompt: string                     // 考题提示词
-  route: { protocolType: ProtocolType; baseUrl: string; apiKey: string; modelId: string }
+  route: {
+    protocolType: ProtocolType
+    baseUrl: string
+    apiKey: string
+    modelId: string
+  }
   timeoutMs: number
-  signal: AbortSignal                // 终止用
-  onEvent: (e: AgentEvent) => void   // 日志增量 / 用量 / 轮次 / 状态
+  signal: AbortSignal                // 终止用；适配器必须尊重
+  onEvent: (e: AgentEvent) => void   // 同步回调，不 await：事件流不能被消费者拖慢
 }
 
-interface AgentRunResult {
+/** 与 §5.4 的行状态同名，便于 1:1 映射；'timed-out' 而非 'timeout' */
+export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error'
+
+export interface AgentRunResult {
   ok: boolean
-  exitReason: 'completed' | 'timeout' | 'canceled' | 'error'
+  exitReason: AgentExitReason
+  /** null = 该次运行未采到计量；绝不填 0 */
   tokens: { input: number; cached: number; output: number } | null
   turns: number | null
   durationMs: number
-  error?: { message: string; stack?: string }
+  error?: { code: AgentErrorCode; message: string; stack?: string }
 }
+
+/** AgentEvent 的类型定义见 §7.4，此处不重复 */
 ```
 
-三家适配器的落地要点：
+**一次运行的接口是函数而非类实例**：编排层只按 `agentKind` 解析并调用，不持有运行时对象。
 
-| 智能体 | 入口 | 模型注入 | 计量来源 | 终止 |
+```ts
+export interface AgentProvider {
+  readonly kind: AgentKind
+  readonly displayName: string
+  readonly metadata: AgentProviderMetadata
+  run(input: AgentRunInput): Promise<AgentRunResult>
+}
+
+export interface AgentProviderMetadata {
+  /** 该智能体唯一能接受的协议类型；表单的候选池过滤读它 */
+  protocolType: ProtocolType
+  capability: {
+    /** false ⇒ 「终止」按钮在该行上退化为「关闭运行时」，界面文案必须不同 */
+    cancelMidTurn: boolean
+    /** false ⇒ 该适配器采不到 token，界面显示「不支持计量」而不是 0 */
+    usage: boolean
+  }
+  /** 工具循环跑在哪里；见 §5.6.5 的释放要求 */
+  isolation: 'inprocess' | 'subprocess'
+}
+
+export function getProvider(kind: AgentKind): AgentProvider
+export function listAgentProviders(): AgentProvider[]
+```
+
+| kind | protocolType | cancelMidTurn | usage | isolation |
 |---|---|---|---|---|
-| Claude Code | `@anthropic-ai/claude-agent-sdk` 的 `query()` | `options.model` + `env` 注入 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | `result` 消息的 usage | `AbortController` + `q.close()` |
-| Codex | `@openai/codex-sdk` 的 `Codex` / `startThread` | `baseUrl` + `apiKey` + `thread.model` | `turn.usage`（输入/缓存/输出） | `AbortSignal` |
-| DeepSeek Harness | `@deepseek-ai/dsh-sdk-client` 的 `DeepSeekHarness` | `provider` + `model` + `reasoningEffort` | 订阅事件流 | **关运行时**（wire 无 mid-turn cancel） |
+| `claude-code` | `anthropic` | `true` | `true` | `subprocess` |
+| `codex` | `openai` | `true` | `true` | `subprocess` |
+| `dsh` | `openai` | **`false`** | **待探测**（见 §5.6.3） | `subprocess` |
 
-**两个必须遵守的坑**：
+**这条表就是 §5.1「模型候选池按协议类型过滤」的数据来源**：表单从 `listAgentProviders()` 取 `protocolType`，不硬编码三家与协议的对应关系。F2 的过滤规则因此变成「注册表元数据的投影」，而不是表单里的一份独立规则。
 
-1. Claude SDK 的 `env` 选项**整体替换**子进程环境（不与 `process.env` 合并），必须展开 `process.env` 补 `PATH`，否则子进程找不到 `node` 而 `spawn ENOENT`。
-2. DSH 侧没有中途取消，终止只能关掉运行时进程——这是「终止」按钮在该行上的实现方式，不是缺陷。
+**厂商 SDK 的类型不从厂商包 `import type`**：适配器自己在文件内声明它消费的**窄结构**（只声明用到的方法与字段），厂商包只作为运行时依赖。理由是让 `agents` 的编译不依赖厂商的类型面——厂商发一个破坏性类型变更不应该让本仓库 `typecheck` 失败，只应该在运行时被 §5.6.6 的加载降级与错误码映射兜住。
 
-**适配器必须可注入**：编排层依赖接口而非具体实现；测试与示例用 `fake` 适配器（脚手架阶段已建）。
+**依赖归属**：三家的包（`@anthropic-ai/claude-agent-sdk` / `@openai/codex-sdk` / `@deepseek-ai/dsh-sdk-client`）装进 `packages/server/agents` 的 `dependencies`（脚手架阶段该包 `dependencies` 只有两个 `@aieval/*`；S1 的「外部 SDK 单列 `agents`」正是为此）。`pnpm-workspace.yaml` 的 `onlyBuiltDependencies` 可能需要补条目（装包时以 pnpm 的构建脚本提示为准，不要预先猜）。
+
+#### 5.6.3 事件归一化与计量
+
+**唯一允许丢弃的事件是重复事件**（例如同一 `item.id` 没有新增文本的累积更新）。**任何未识别的事件必须投影为一条保留原始负载的日志事件**（如 `{ type:'log', stream:'stdout', text: <原始 JSON> }`），不得静默丢弃。理由是排障与「为什么得这个分」的可追溯性：codex 的命令执行、文件改动、MCP 调用都是候选行为的一部分，丢掉它们等于丢掉证据。
+
+**用量的原生来源必须逐家钉死**：
+
+| kind | 用量来源 | 轮次来源 |
+|---|---|---|
+| `claude-code` | `result` 消息的 `usage`（输入 / 缓存读 / 输出） | `result` 的 `num_turns` |
+| `codex` | `turn.completed` 事件携带的 usage 负载 | 收到的 `turn.completed` 次数 |
+| `dsh` | **待真实探测**：通知流里是否有 usage 字段，字段名是什么 | 事件里的 turn 结束次数 |
+
+> **实施前必须先做一次真实探测运行**（每个适配器一条最小任务，把原始事件流 dump 到文件）核对上表，尤其是 dsh 的 usage：该 SDK 的文档里没有 usage 通知的字段说明，**不能假设它存在**。**字段名以探测结果为准，不以本文档为准**；探不到就在元数据里标 `usage: false`，让界面显示「不支持计量」。
+
+**采集不到计量时填 `null`，绝不填 0**：0 token 与「没采到」在横向对比里含义完全不同，前者会让人得出「这家很省」的错误结论。UI 必须能区分（`null` → 「不支持计量」/「未采集」）。
+
+**工具调用与推理内容要落盘但不必解析**：它们对评分无用（评分输入是 diff），但对排障有用。适配器把它们归一化成日志或工具事件即可，不需要建模工具语义。
+
+#### 5.6.4 路由注入（第 3 步的口径）
+
+| kind | 注入点 | base URL 规范化 | 必须同时设置的项 |
+|---|---|---|---|
+| `claude-code` | 子进程环境 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` + 模型选项 | **拆掉尾部 `/v1`**（该 SDK 自己追加 `/v1/messages`，留着会变成 `/v1/v1/messages`） | 展开宿主环境补 `PATH` / `HOME`；`settingSources: []`（否则 `~/.claude/settings.json` 的 `env` 块盖掉本次路由） |
+| `codex` | 客户端选项 `apiKey` + 一份**完整的** `model_providers` 条目 | **补上 `/v1`**（CLI 只走 Responses wire，即 `POST {base}/v1/responses`） | `wire_api: 'responses'`；`requires_openai_auth: true`（缺它不发 Bearer，全部 401）；`disable_response_storage: true`；关掉 `multi_agent` / `web_search`（网关对这些命名空间工具回 400）；临时 `HOME` 指向该行 `configHome` |
+| `dsh` | 子进程环境 `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` | **保留尾部 `/v1`**（其 adapter 自己追加 `/chat/completions`） | 用 `configHome` 作为该行的 `HOME`（隔离会话与配置） |
+
+**三条硬性不变量**：
+
+1. 注入后返回**新对象**，输入的 `route` 只读，`process.env` 永不写入。
+2. 代码仓库内**不得出现任何 `process.env.X = …` 形式的赋值**（测试静态断言，见 §5.6.7）。
+3. 每行的 `configHome` 必须是**独立目录**：行与行之间通过环境变量共享配置目录，会互相注入 MCP / 插件定义（codex 侧尤其明显），直接破坏「同一起点」这个前提。
+
+**Codex 的 401 与「环境 `~/.codex` 反杀」**：显式 `model_providers` 条目不是可选优化，而是必需——环境里已有的 `~/.codex` 配置（`model_provider` / 插件 / MCP）会赢过我们注入的 base URL，表现是「明明配了网关却打到了别处」。上面「指向该行 `configHome`」一行就是它的解药。
+
+#### 5.6.5 生命周期与释放（对应第 4 步）
+
+**每行的 `run()` 必须在所有出口释放**：正常完成、抛错、超时、终止、「开始」被拒——一个都不能漏。释放顺序固定，**不可颠倒**：
+
+```
+interrupt()  →  终结在途 turn  →  dispose()
+（发停止信号）  （跑适配器自己的 finally 清理）  （回收子进程 / 删临时目录）
+```
+
+反面做法是「直接 `dispose()`」：两者争抢同一批资源（dsh 的子进程、codex 的临时目录），会产生竞态。
+
+**超时分两段**（这是「终止」按钮与 F12 独立超时的落地点）：
+
+| 段 | 等待上限 | 超限后的动作 |
+|---|---|---|
+| 第一段 | 发出 `interrupt()` 后等 **5 秒** | 仍在跑则强制进入第二段；同时落一条 WARN 到该行事件日志（**非合作的适配器必须可见，不能静默**） |
+| 第二段 | 强制 `dispose()` | 行进入 `timed-out`（超时触发时）或 `canceled`（用户终止时） |
+
+**超时判定的归属只有一处**：适配器拿到的 `timeoutMs` 是**它自己的内层上限**（到点即停、返回 `exitReason: 'timed-out'`）；编排层同时按 `rowTimeoutMs` 持有**外层兜底**（到点即执行上表的两段）。`signal` 只表示「外部要求停止」，适配器**不得**用它来推断 `exitReason`——否则用户终止与超时会同时触发，两边都声称是自己导致的，最终状态就变成了竞态。判定优先级固定：`signal` 已中止 → `canceled`；自身超时 → `timed-out`；其余按实际结果。
+
+**关闭守卫必须绑定「被关闭的对象」，不能是运行时级一次性闭锁**：`中断 → 下一轮新建客户端 → 释放` 这条路径下，闭锁会让 `dispose()` 拿不到新客户端 → 留下旧客户端的孤儿进程。守卫的语义是「每个客户端恰好关一次」。
+
+**`dispose()` 必须幂等**：超时与用户终止可能先后触发。
+
+**模型与权限档变更一律「重建运行时」**，不做热改：dsh 的权限档是启动 profile 里烘进去的（改了必须重启），codex 的 sandbox 在建线程时固定——一律重建 + 正确释放旧实例，避免留下一半旧一半新的状态。
+
+**适配器不感知工作区准备**：`cwd` / `configHome` 由编排层（§5.5 第 1–3 步）备好并传入；适配器不做 git 操作、不建分支、不校验 commit。这条边界的作用是让适配器可以在一个临时目录上被单测，而不需要造仓库。
+
+#### 5.6.6 加载、降级与错误码
+
+厂商 SDK 懒加载，**只缓存成功的加载**；测试注入点统一为运行时上下文的 `sdkModule` 字段（三家共用一个伪造结构，不另起名字）。**失败面必须收窄到单家**：一家 SDK 缺失只让该家不可用，不影响其他两家、不影响整包导入。
+
+```ts
+export type AgentErrorCode =
+  | 'AGENT_LOAD_FAILED'      // 厂商包缺失 / 加载失败
+  | 'AGENT_FAILED'           // CLI 未安装、进程非零退出、模型名不存在
+  | 'AGENT_TIMED_OUT'        // 超出 timeoutMs（刻意与行状态 timed-out 同名）
+  | 'AGENT_CANCELED'         // 用户终止
+  | 'AUTH_FAILED'            // 密钥无效
+  | 'RATE_LIMITED'           // 限流
+```
+
+**与 `AgentExitReason` 刻意不同名**：`exitReason` 是对**编排层**的分类信号（`'timed-out'`），`error.code` 是写给**用户看**的归因（`'AGENT_TIMED_OUT'`）。两组值不是一一对应——`exitReason: 'error'` 会按上表细分成 `AGENT_LOAD_FAILED` / `AGENT_FAILED` / `AUTH_FAILED` / `RATE_LIMITED` 四种归因，而 `'canceled'` / `'timed-out'` 只有唯一归因。拆成两个类型可以让「结果分类」与「错误文案」各自演进，也避免实现者把 `exitReason` 直接当错误码透出。
+
+**`AgentErrorCode` 不是 `contracts` 的 `ErrorCode`**：`ErrorCode` 是「能被 `httpStatusFor` 映射成 HTTP 状态码」的接口层错误码（脚手架 `errors.ts` 一次定稿、只增不改），而这一组是**落到该行事件日志里的领域归因**——`AGENT_LOAD_FAILED` 没有对应的 HTTP 状态，它描述的是一次评测执行为什么失败，不是一次请求为什么失败。两者只在 `AUTH_FAILED` / `RATE_LIMITED` 上重名：接口层那两个用于「设置页代调供应商」的即时失败，这里两个用于「该候选行 failed」的记录。实施时不要把 `AgentErrorCode` 塞进 `ERROR_CODES`（那会让 `STATUS_BY_CODE` 需要为它编造状态码）。
+
+| 场景 | 错误码 | 用户可见文案的要求 |
+|---|---|---|
+| 厂商包加载失败 | `AGENT_LOAD_FAILED` | 必须点名包名与安装方式（「未装」与「装了但加载失败」的处置完全不同） |
+| CLI 未安装 / `spawn ENOENT` | `AGENT_FAILED` | 指向缺失的可执行文件 |
+| 密钥无效 | `AUTH_FAILED` | 带 host，指向设置页（§10） |
+| 限流 | `RATE_LIMITED` | 提示改用串行（§10） |
+| 模型名不存在（各家返回 404 / 400） | `AGENT_FAILED` | 保留上游响应正文——网关的 404 与模型名拼错在正文之外无法区分 |
+
+#### 5.6.7 测试口径
+
+**单测（不碰真实 API、不碰真实 CLI）**：
+
+| 对象 | 断言 |
+|---|---|
+| 注册表 | 三家齐备；`getProvider` 对未注册 id 抛错且错误信息含可用清单；协议兼容性元数据投影与 §5.6.2 的表逐格一致（**这条是 F2 的回归网**） |
+| 注入参数 | 三家 `baseUrl` / `apiKey` / 模型分别落到**正确字段**；base URL 的 `/v1` 处理用表驱动：尾斜杠与 `/v1` 后缀的组合各一例 |
+| 凭据隔离 | 跑完一轮后宿主 `process.env` 里**没有**注入的变量（正反两面：子进程拿到了、宿主没被改） |
+| 事件归一化 | 未识别事件被投影为保留原始负载的日志事件，**不丢失** |
+| 计量 | 厂商事件里有 usage 时提取为数值；没有时得到 `null`（**断言不是 0**） |
+| 超时与终止 | 超时路径断言顺序为 `interrupt → turn 终结 → dispose`；`dispose` 幂等；适配器忽略 `interrupt` 时释放仍在有限时间内完成且落 WARN |
+| 加载降级 | 厂商包缺失时整包仍可导入；只有该家失败；错误文案含包名；后续一轮可重试成功 |
+
+**冒烟（真实网关 + 最小仓库，各智能体一条最小任务，与 §9 的成本护栏一致，不复跑）**：
+
+1. 宿主环境变量在跑完后未变；
+2. 工作目录里确实产生了文件改动（证明 CLI 真的在 `cwd` 里干活，而不是在别处跑）；
+3. 三种「终止」各验证一次语义：Claude Code / Codex 走 `interrupt()`，DSH 走「关闭运行时」——三者的行状态都必须是 `canceled`，且子进程确实消失（用 CLI 核对，不只看页面）。
 
 ### 5.7 评分器
 
@@ -337,7 +517,7 @@ interface JudgeInput {
 
 | 字段 | 说明 |
 |---|---|
-| 工作区根目录 | `Input` + 「校验」按钮；默认 `~/.runs`；服务端校验「可写 + 可创建子目录」后保存 |
+| 工作区根目录 | `Input` + 「校验」按钮；默认 `~/.runs`；服务端校验「可写 + 能落盘」后保存 |
 
 目录结构：
 
@@ -350,12 +530,12 @@ interface JudgeInput {
     └── events.jsonl                 # 该行的执行事件日志
 ```
 
-**校验必须真建目录再删**（只检查父目录是否存在不够——磁盘满、无权限、路径过长都会在真正写入时才失败）：
+**校验必须真写一次再删**（只检查父目录是否存在不够——磁盘满、无权限、路径过长都会在真正写入时才失败）：
 
 1. `~` 展开为 `os.homedir()`；
 2. 尝试 `mkdirSync(root, { recursive: true })`；
-3. 在 root 下建一个随机名子目录再删除，确认「可创建子目录」；
-4. 任一步失败 → `NOT_WRITABLE` + 具体原因（含失败路径）。
+3. 在 root 下写一个随机名**探针文件**再删除，确认「这个目录能落盘」——写文件而非建子目录：判据是能否落盘，而 mkdir+rmdir 多一个可独立失败的步骤、多一种要解释的失败；
+4. 任一步失败 → `NOT_WRITABLE` + 具体原因（含失败路径），且两条失败路径的文案必须能区分是「建目录失败」还是「写入失败」（错误码与路径相同，措辞是唯一区分信号）。
 
 **改动根目录时不动已有数据**：已完成的评测产物留在旧根目录下，不自动迁移；界面对历史评测显示其 `workspaceBase` 实际路径，避免「改了设置后找不到旧产物」。
 
@@ -559,7 +739,7 @@ api/
 |---|---|
 | `core` 的 git 原语 | **真实 git CLI**，禁 mock（mock 掉的正是最容易错的地方）：校验仓库、`cat-file -e` 判定 commit、克隆缓存、文件系统级复制、建分支、三样 diff 合并 |
 | 三样 diff 合并 | 用例覆盖：只有已提交改动 / 只有未提交改动 / 只有未跟踪新文件 / 三者都有 / 全空。**「只取 `commit..HEAD` 会漏掉未提交改动」必须有回归用例** |
-| 适配器 | 用假实现（脚手架已建）：产生确定的日志流、用量、退出码；三家的模型注入参数（`env` 是否补了 `PATH`、`baseUrl`/`model` 是否落到正确字段）用断言锁定 |
+| 适配器 | 用假实现（脚手架已建）：产生确定的日志流、用量、退出码。**完整口径见 §5.6.7**——注册表与协议元数据、三家注入参数、凭据隔离的正反两面、未识别事件不丢弃、计量缺失得 `null` 而非 0、超时释放顺序与幂等、加载降级 |
 | 评分解析 | 三类翻车点各一个用例：非法 JSON、markdown 围栏包裹、分数越界或维度缺失。**维度缺失必须 `failed` 而非按缺项算平均** |
 | diff 裁剪 | 超 `diffBudgetBytes` 时按文件裁剪，且输出里含「已截断」标记与被截断文件清单 |
 | 编排时序 | 串行下断言「同一时刻只有一个 adapter 在跑」；并行下断言「全部同时启动」；终止时断言 `canceled` 与 `skipped` 的划分正确 |
@@ -614,7 +794,7 @@ api/
 2. **`core` 扩展**：git 原语（校验仓库、`cat-file -e`、克隆缓存、文件系统级复制、建分支、三样 diff 合并）、工作区目录管理。
 3. **设置域**：供应商 CRUD + `/models` 拉取（合并而非覆盖）、评分配置、工作区校验。**这一域先做**——用例的「AI 生成评分提示词」与评测的评分都依赖它。
 4. **用例域**：CRUD、仓库与 commit 校验、commit 候选下拉、AI 生成评分提示词。删除 `/demo` 示例页，用例页接上真实数据。
-5. **`agents`**：三家适配器实现 + 模型注入参数断言（假实现已在脚手架建好）。
+5. **`agents`**：先按 §5.6.3 做**原始事件探测**（三家各一条最小任务，dump 原始事件流，钉死计量字段名——这一步会回写 §5.6.2 的元数据表），再实现注册表与三家适配器，并按 §5.6.7 补齐单测（假实现已在脚手架建好）。
 6. **`evaluator`**：编排状态机（并行/串行）、事件日志扇出、评分器与解析、超时与终止、服务重启恢复。
 7. **评测域**：创建、列表 + 右栏详情、SSE 实时刷新、吸底操作栏、三个产物抽屉。
 8. **冒烟与文档**：按 §9 的 9 项冒烟清单走完并留证，写使用手册。
@@ -623,7 +803,7 @@ api/
 
 ## 12. 澄清结论（本次设计已确定的全部开放问题）
 
-无遗留待定项。
+无遗留**设计**待定项。唯一需要在实施期以实测钉死的是 dsh 的计量字段名（§5.6.3 的探测步骤）——它不影响任何契约形状：探到就填数值，探不到就是 `usage: false` 与 `null`，两种结果都已被本设计覆盖。
 
 | 问题 | 结论 |
 |---|---|
@@ -642,3 +822,12 @@ api/
 | 用例创建/编辑形态 | 可拖拽宽度的右边栏（不是抽屉、不是整页） |
 | 工作区根目录 | 默认 `~/.runs`，设置页可配 |
 | 应用数 | 单个 Next.js 应用，无第二个下游应用 |
+| 适配器总体形态 | provider 注册表 + 薄投影；不做统一 IR、不做多轮 live 会话（§5.6.1 A1 / A4） |
+| 适配器结果契约 | 在 SDK 原语之上补评测语义：`cached` token / `turns` / `durationMs` / `exitReason` / 归一化事件（A2） |
+| 家数与协议对应关系的唯一来源 | 注册表元数据 `protocolType`，表单与编排层都读它，不硬编码（A3） |
+| 计量采集不到时 | 填 `null` 并显示「不支持计量」，**不填 0**（§5.6.3） |
+| dsh 的 usage 字段名 | **未确定**：实施前先做一次真实探测运行核对，字段名以探测为准；探不到就标 `usage: false`（§5.6.3） |
+| 超时与终止的释放顺序 | `interrupt()` → 终结在途 turn → `dispose()`，顺序不可颠倒；守卫按对象绑定且 `dispose` 幂等（A7 / §5.6.5） |
+| 终止能力差异 | 注册表元数据 `cancelMidTurn` 表达；DSH 为 `false`（关运行时），界面文案需不同（§5.6.2） |
+| 凭据注入方式 | 一律显式选项 + 替换型子进程环境，`process.env` 永不写入（A5） |
+| 加第四家智能体 | 只加 `providers/<id>/` 一个目录 + 注册表一行，编排层与表单不改（A3；统一 IR 留作将来可选项，不是本期契约） |

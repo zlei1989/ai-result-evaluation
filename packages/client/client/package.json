@@ -1,0 +1,32 @@
+{
+  "name": "@aieval/client",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "format": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@aieval/contracts": "workspace:*",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "swr": "^2.5.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^20.19.43",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

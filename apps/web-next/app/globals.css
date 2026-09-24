@@ -1,0 +1,54 @@
+/*
+ * 全局样式：主题底色变量 + 盒模型复位。
+ * 只放这一层壳所需的复位与变量——字号与间距一律由 antd 主题 token 与紧凑密度供给，不在此手调。
+ * 主题变量口径（供 ui 包内联样式的 var() 消费）：
+ *   --app-bg 页面底色 / --app-fg 正文色 / --app-border 分隔线 / --app-muted 次要文本 / --app-selected 选中行底色
+ */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+/* 暗色（默认，等价 antd darkAlgorithm 的容器底色观感） */
+:root,
+html[data-theme='dark'] {
+  --app-bg: #141414;
+  --app-fg: rgba(255, 255, 255, 0.85);
+  --app-border: #303030;
+  --app-muted: #888;
+  --app-selected: #111a2c;
+  color-scheme: dark;
+}
+
+/* 明亮主题：与 antd defaultAlgorithm 的容器底色一致 */
+html[data-theme='light'] {
+  --app-bg: #ffffff;
+  --app-fg: rgba(0, 0, 0, 0.88);
+  --app-border: #f0f0f0;
+  --app-muted: #888;
+  --app-selected: #e6f4ff;
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--app-bg);
+  color: var(--app-fg);
+}
+
+/*
+ * antd App 包装层承接 body 高度：页面根（height:100%）与内容区（flex:1 + minHeight:0）的高度链不能断。
+ * 这个节点默认既不是 flex 容器也没有高度，链一断页面根就退化成内容高度、所有内部滚动随之失效
+ *（表现为整页被内容撑长、该出现的滚动条不出现）。
+ */
+.ant-app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}

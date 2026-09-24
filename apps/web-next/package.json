@@ -1,0 +1,36 @@
+{
+  "name": "@aieval/web-next",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3083",
+    "build": "next build",
+    "start": "next start -p 3083",
+    "lint": "eslint .",
+    "format": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@aieval/api": "workspace:*",
+    "@aieval/client": "workspace:*",
+    "@aieval/contracts": "workspace:*",
+    "@aieval/core": "workspace:*",
+    "@aieval/ui": "workspace:*",
+    "@ant-design/icons": "^6.3.2",
+    "antd": "^6.6.3",
+    "next": "16.2.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "swr": "^2.5.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

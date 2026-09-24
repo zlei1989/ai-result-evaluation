@@ -1,0 +1,24 @@
+{
+  "name": "ai-result-evaluation",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.18.0",
+  "scripts": {
+    "preinstall": "node -e \"if(!/pnpm/i.test(process.env.npm_config_user_agent||'')){console.error('[禁止] 本项目仅允许使用 pnpm 安装依赖，请运行: corepack enable && pnpm install');process.exit(1)}\"",
+    "dev": "pnpm --filter @aieval/web-next dev",
+    "build": "pnpm --filter @aieval/web-next build",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format",
+    "test": "pnpm -r --workspace-concurrency=4 test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^4.4.1",
+    "@types/node": "^20.19.43",
+    "@typescript-eslint/parser": "^8.61.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-import-x": "^4.17.1",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "jiti": "^2.7.0"
+  }
+}

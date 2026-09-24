@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/server/*
+  - packages/client/*
+
+# pnpm 11 要求对依赖的安装脚本逐个表态。sharp（Next 图像优化）与 unrs-resolver
+# （eslint-plugin-import-x 的原生解析器）都放行，否则 install 以 ERR_PNPM_IGNORED_BUILDS 退出 1。
+# 注意：pnpm 11 下把它们写进 onlyBuiltDependencies **不再生效**（实测仍报同一错误），必须用 allowBuilds。
+allowBuilds:
+  sharp: true
+  unrs-resolver: true
+
+onlyBuiltDependencies:
+  - esbuild
