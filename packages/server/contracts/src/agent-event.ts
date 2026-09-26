@@ -1,0 +1,194 @@
+/**
+ * 每候选行事件日志的一条（spec §7.4）。
+ * 三个必须成立的口径：
+ *   1. 形状由**本项目**定义（§5.6.1 A8）：不复用任何厂商 SDK 的消息形状，
+ *      否则日志格式会随厂商版本漂移，还会把「本项目根本不消费的内容类型」当兼容包袱带上；
+ *   2. `seq` 单调递增且从 1 开始，由 core 的事件日志写入器分配（`appendEvent`）——
+ *      前端按它去重与续订（`Last-Event-ID` 语义）；
+ *   3. 判别联合用 `discriminatedUnion` 而不是 `z.union`：前者在解析失败时给出的
+ *      报错会带上「哪个 type 的哪个字段不对」，排查坏日志时这是唯一有用的信息。
+ */
+import { z } from 'zod';
+import { EvalRowStatusSchema } from './run';
+import { ScoreResultSchema } from './score';
+
+/** 事件公共字段：序号（从 1 开始）与 ISO 8601 时间戳 */
+const baseFields = { seq: z.number().int().positive(), at: z.string() };
+
+/**
+ * `usage` 事件的计量三元组（2026-10-XX 扩展：后两格可选，见各自的注释）。
+ *
+ * ## 1. `input` 是**非缓存输入**——这条是三家归一后的结果，不是任何一家的原文
+ *
+ * 三家的厂商字段对 cache 的处置**根本不同**（逐条都是真机实测，不是推测）：
+ *
+ * | 家 | 厂商字段 | `input` 原文是否含 cache |
+ * |---|---|---|
+ * | claude | `input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`（三格分列） | **不含**（Anthropic 语义） |
+ * | codex | `input_tokens` / `cached_input_tokens`（cached 是 input 的**明细**） | **含**（真机：`{input_tokens:8152, cached_input_tokens:6656}`，6656 < 8152） |
+ * | dsh | `inputTokens` / `cacheReadTokens` / `cacheWriteTokens` / `totalTokens` | **不含**（本机恒等式判定：`1219 + 7040 + 0 + 1 = 8260`） |
+ *
+ * ⇒ 适配器**把 `input` 归一到「非缓存输入」**：claude / dsh 原样，codex 必须做减法
+ * `input = input_tokens − cached_input_tokens`（落点在 `providers/codex/events.ts` 与
+ * `providers/codex/transcript.ts`，两处都写了「为什么」）。
+ *
+ * 这条归一是**跨家可比的唯一前提**，也是本仓「消灭按厂商分支」（§7.6.4）的落点：
+ * 消费方拿到的事件永远是同一个口径，不必、也**不许**再去问「这一条是哪个家发的」。
+ * 归一前 codex 的 `input` 里含 cache，于是同一个公式在 codex 上算出的分母偏大
+ * ⇒ 命中率被系统性低估，而三个家看起来「都算对了」。
+ *
+ * ## 2. 派生公式（**在消费方算，适配器绝不预先算比率**）
+ *
+ * 为什么不算好再发：比率是**展示口径**，而同一个数在不同地方要的分母不一样（命中率要
+ * `input + cached`，成本要 `input + output`，速度要 `output / 时长`）。适配器算好一个比率，
+ * 换个口径就得改协议、就得兼容历史日志里那个已经算错的数。所以这里只保证**原料齐全**。
+ *
+ *   · **缓存命中率** = `cached / (input + cached)`
+ *     分母是「这次的 prompt 总量」：归一之后 `input`（未命中）与 `cached`（命中）**互斥**。
+ *     只除 `input` 会算出 4051% 这种读不懂的数（真机 dsh：`input 218 / cached 8832`）。
+ *   · **生成速率（tok/s）** ≈ `output / ((apiMs − ttftMs) / 1000)` —— **只有 claude 能这么算**
+ *     （它同时有 `apiMs` 与 `ttftMs`，减掉首字等待才是真正的「生成」速度）；
+ *     另两家没有 `apiMs` ⇒ 只能退化成 `output / (totalMs / 1000)`，而那个数**含工具执行时间**、
+ *     与 claude 的那个**不可直接比**⇒ 显示时必须带上 `timing.source === 'events'` 的警示
+ *     （口径差异见上面 `timing` 的注释）。
+ *   · **首字延迟** = `ttftMs`（只有 claude 有）。
+ *
+ * ## 3. 缺失一律 `null`，绝不填 `0`
+ *
+ * `reasoningOutput` / `total` 采不到时是 `null`（不是 0）：`reasoningOutput: 0` 会让人得出
+ * 「这家模型不做推理」的错误结论，而事实是「这家不上报这个数」。同理，`input` / `cached` / `output`
+ * 三个必填格一旦缺任何一个，适配器就**整格交 `null`**（`tokens: null`）并落一条 WARN，
+ * 而不是把缺的那个补成 0。
+ */
+export const UsageTokensSchema = z.object({
+  /** **非缓存输入**（归一后；codex 已减去 cached，见上面第 1 节）。必填 */
+  input: z.number(),
+  /** **缓存读**（命中部分）。与 `input` 互斥 ⇒ 命中率的分母是两者之和。必填 */
+  cached: z.number(),
+  /** 模型输出。必填 */
+  output: z.number(),
+  /**
+   * **思考 / 推理 token**（可选，`null` = 这家没报）。
+   * 三家原文：claude 的 `output_tokens_details.thinking_tokens`、codex 的 `reasoning_output_tokens`
+   * （只在会话文件里有，事件流没有）、dsh 的 `reasoningTokens`。
+   * ⚠️ 它是**输出的一部分**还是**额外**的一格，三家口径不同 ⇒ **不要**把它加进 `output` 去算成本
+   * （那会双计），只按它自己展示。
+   */
+  reasoningOutput: z.number().nullable().optional(),
+  /**
+   * **厂商自报的总量原文**（可选，`null` = 这家没报）。
+   *
+   * ⚠️ **它不参与归一后的恒等式**，别拿它去验算 `input + cached + output`：
+   *   · dsh 的 `totalTokens` 实测是 `input + cacheRead + cacheWrite + output`（含**缓存写**，
+   *     而本契约三元组里根本没有缓存写那一格）⇒ 两边天然对不上；
+   *   · codex 的 `total_tokens` 含 `reasoning_output_tokens`，而 `output_tokens` 是否含推理
+   *     也没有单独探测过。
+   * 保留它的唯一理由是**排障**：能拿它和本仓归一后的数并排看，一眼看出「是厂商口径不同」
+   * 还是「我们读错了字段」。它是**证据**，不是计算输入。
+   */
+  total: z.number().nullable().optional(),
+});
+
+export const AgentEventSchema = z.discriminatedUnion('type', [
+  /** 行状态变更：与 EvalRow.status 同一套词，1:1 映射 */
+  z.object({ ...baseFields, type: z.literal('status'), status: EvalRowStatusSchema }),
+  /**
+   * 一行日志：stdout / stderr 分流；适配器未识别的事件也要投影成一条 log 而不是丢弃（§5.6.3）。
+   *
+   * `summary` 是**给人看的一句话**（2026-09-29 新增，卡片底部的活动行显示的就是它）：
+   *   · `text` 永远是**原始负载**（排障证据，抽屉逐字显示），`summary` 只是同一件事的人话版本
+   *     （例如 dsh 的 `tool/call` 信封 → 「调用 pwsh：npm run build-only」）；
+   *   · **可选**：适配器不认识那个形状时就没有它。消费方**不许**拿 `text` 去凑——JSON 不是消息
+   *     （用户口径 2026-09-29：那一行动效里绝不能出现 `{"method":"session.event",…}`）；
+   *   · 刻意**不新增事件类型**：原始行已经落盘了，再加一条「只为人看」的行等于让抽屉噪声翻倍
+   *     （dsh 投影文件头里对 `session.status` 的处置是同一条口径）。
+   */
+  z.object({
+    ...baseFields,
+    type: z.literal('log'),
+    stream: z.enum(['stdout', 'stderr']),
+    text: z.string(),
+    summary: z.string().optional(),
+  }),
+  /**
+   * 计量快照。两个字段**各自独立**（用户口径，2026-09-28）：
+   *   · `turns` **必填**——「到目前为止观察到的主循环模型请求次数」（一次模型 API 往返算一次）。
+   *     它是本轮唯一能实时、跨三家同口径拿到的量（claude-code 数 `assistant.message.id`、
+   *     dsh 数 `step`、codex 数模型产出条目），故每见到一次新请求就该发一条事件；
+   *   · `tokens` **可空**——采不到就是 `null`（绝不发三个 0，§5.6.3）。
+   *
+   * 为什么 tokens 从「必填」放宽成「可空」：原来的 schema 要求 tokens 与 turns 同时在，
+   * 于是 claude-code 的轮次被**它采不到的 token** 拖住——实测一轮 60 次模型往返，
+   * 整轮只发得出一条 `usage`（`turns: 1, tokens: {0,0,0}`），界面于是永远停在「轮次 1」。
+   * 轮次是独立的一把尺子，不该等另一把尺子。
+   */
+  z.object({
+    ...baseFields,
+    type: z.literal('usage'),
+    tokens: UsageTokensSchema.nullable(),
+    /**
+     * 这一轮的时间数据（2026-10-XX 新增）。**整格可选且可空**：采不到就是「没有这一格」或
+     * 显式的 `null`，一个 0 都不许编（`totalMs: 0` 会被读成「瞬间跑完」，与「没采到」含义相反，
+     * 正是 §5.6.3 那条硬口径要防的）。
+     * 为什么**可缺**而不是必填可空：磁盘上已有的历史 `usage` 行里没有这一格，写成必填会让
+     * 所有老日志在回放 / SSE 续订时**成片解析失败**（`log.summary` 当初放宽成可选是同一条理由）。
+     * 今天新写的事件一律带它（`null` 表示未采集）——见 agents 的 `emit.ts` 里那一格是必填的草稿。
+     *
+     * **必须带 `source`，因为三家拿到的根本不是同一种东西**（真机实测）：
+     *   · `'vendor'` = **厂商自报**的时长（claude 的 `result.duration_ms` / `duration_api_ms` / `ttft_ms`）。
+     *     它是**纯模型时间**：工具执行、文件读写、子进程等待都不在里面；
+     *   · `'events'` = **我们按事件/行时间戳算出来的**（codex 的会话文件行 `timestamp`、dsh 的会话事件 `time`）。
+     *     它是**墙钟**：把工具执行、等待子进程、重试全部算了进去。
+     * ⇒ 两者**不可直接比**（同一个模型在 codex 上的 tok/s 会因工具耗时天然偏低）。不标出来源，
+     *   消费方就会把「一个含工具耗时、一个不含」的两个数放进同一张对比表——那是本仓最忌讳的
+     *   「看起来可比，其实两个口径」。
+     *
+     * 各格的口径（全部可空、缺失一律 `null`）：
+     *   · `totalMs`：**整轮**时长（含工具执行）。`'vendor'` 时是厂商原文，`'events'` 时是
+     *     首末时间戳之差；
+     *   · `apiMs`：**只有 claude 有这一个原生字段**（`duration_api_ms` = 仅 API 往返的时间）。
+     *     另两家采不到 ⇒ `null`（**不许**拿 `totalMs` 冒充：那会把工具耗时算进模型速度）；
+     *   · `ttftMs`：首 token 时延（claude 的 `ttft_ms`）。另两家采不到 ⇒ `null`。
+     */
+    timing: z
+      .object({
+        totalMs: z.number().nullable(),
+        apiMs: z.number().nullable(),
+        ttftMs: z.number().nullable(),
+        source: z.enum(['vendor', 'events']),
+      })
+      .nullable()
+      .optional(),
+    turns: z.number(),
+  }),
+  /** diff 计数摘要：正文不落库，打开抽屉时按需现算（§7.2） */
+  z.object({
+    ...baseFields,
+    type: z.literal('diff-summary'),
+    filesChanged: z.number(),
+    insertions: z.number(),
+    deletions: z.number(),
+    truncated: z.boolean(),
+  }),
+  /** 评分结果：整份 ScoreResult 随事件落盘，抽屉直接读它 */
+  z.object({ ...baseFields, type: z.literal('score'), score: ScoreResultSchema }),
+  /** 失败归因：message 是给用户看的中文，stack 可省 */
+  z.object({ ...baseFields, type: z.literal('error'), message: z.string(), stack: z.string().optional() }),
+  /** 运行结束：exitReason 是 AgentExitReason 的字符串形式（不引入 agents 依赖） */
+  z.object({ ...baseFields, type: z.literal('end'), exitReason: z.string() }),
+]);
+export type AgentEvent = z.infer<typeof AgentEventSchema>;
+/** 计量三元组（+ 两个可选格）的推导类型：适配器与消费方都用它，别各写一份形状 */
+export type UsageTokens = z.infer<typeof UsageTokensSchema>;
+/**
+ * `usage` 事件里那格时间数据的推导类型。
+ * `Extract<AgentEvent, …>` 只为拿到这个成员；`NonNullable` 去掉外层的 `| null`——适配器内部
+ * 传递时形状恒定（缺数据是**整格不发**，不是发一个各格为 null 的对象），
+ * 而 `null` 那一档由「有没有这一格」表达（见 `emit.ts` 的 `AgentEventDraft`）。
+ */
+export type UsageTiming = NonNullable<Extract<AgentEvent, { type: 'usage' }>['timing']>;
+
+/** 七个事件类型：SSE 过滤与界面分组用；与上面联合的成员一一对应 */
+export const AGENT_EVENT_TYPES: readonly AgentEvent['type'][] = [
+  'status', 'log', 'usage', 'diff-summary', 'score', 'error', 'end',
+];

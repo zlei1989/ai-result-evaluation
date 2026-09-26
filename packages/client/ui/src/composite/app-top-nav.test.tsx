@@ -1,6 +1,7 @@
 /** 顶栏：导航高亮、跳转回调、显式高度。纯 props 驱动（ui 不调接口、不依赖路由库）。 */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { SettingOutlined } from '@ant-design/icons';
 import { AppTopNav, type AppTopNavProps } from './app-top-nav';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
@@ -48,6 +49,30 @@ describe('AppTopNav', () => {
     expect(screen.queryByText('跟随系统')).toBeNull();
     expect(screen.queryByText('明亮')).toBeNull();
     expect(screen.queryByText('暗色')).toBeNull();
+  });
+
+  /**
+   * 图标守卫：导航项带图标时要渲染出来，且**不能污染可访问名**。
+   * 为什么值得钉：`@ant-design/icons` 给每个图标挂了 `role="img" aria-label="setting"`，
+   * 图标一旦没被 `aria-hidden` 藏起来，导航项（menuitem）的可访问名会变成「setting 用例」——
+   * 屏读器多念一个英文单词，按名字定位导航项也会失配，而界面「看起来完全正常」。
+   */
+  it('带 icon 的导航项渲染图标且 aria-hidden（可访问名仍只有文案）', () => {
+    render(
+      <AppTopNav
+        items={[{ key: 'cases', label: '用例', href: '/cases', icon: SettingOutlined }]}
+        active="cases"
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    const icon = document.querySelector('.anticon-setting');
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute('aria-hidden', 'true');
+    // 图标藏起来之后，导航项的可访问名才是纯文案（这句在漏掉 aria-hidden 时会失配）
+    expect(screen.getByRole('menuitem', { name: '用例' })).toBeInTheDocument();
+    // 链接本身就是文案：图标是装饰，不参与任何名字
+    expect(screen.getByRole('link', { name: '用例' })).toBeInTheDocument();
   });
 
   it('顶栏有显式高度（根作用域里 --ant-layout-header-height 是空值，antd 的 height 解析不出值）', () => {

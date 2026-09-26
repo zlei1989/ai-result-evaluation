@@ -33,7 +33,7 @@ afterEach(() => {
   // 顺序要紧：先复位再删目录，否则万一删目录抛错，覆盖值会漏给下一个文件
   //（vitest 默认每文件一个进程，但同文件内的用例共享模块状态）。
   setConfigDirForTesting(null);
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 100 });
 });
 
 /** 用真实的 Request 全局构造请求，和 Next 交给路由的入参同形 */

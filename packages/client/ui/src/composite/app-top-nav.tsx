@@ -8,12 +8,18 @@
  * 切换后互相打架——顶栏只保留导航这一件事。
  */
 import { Layout, Menu } from 'antd';
-import type { ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 
 export interface AppTopNavItem {
   key: string;
   label: string;
   href: string;
+  /**
+   * 前导图标：收的是**组件引用**而不是元素 —— 导航项的唯一真源 `apps/web-next/src/nav.ts` 是纯 `.ts`
+   * （放不下 JSX），而应用侧改成 `.tsx` 会被 vitest 的 import-analysis 按 tsconfig 的 `jsx: preserve`
+   * 直接拒绝（AGENT.md「测试」表的既定口径）。故数据模块给组件、本组件负责渲染与可访问性处理。
+   */
+  icon?: ComponentType<{ 'aria-hidden'?: boolean }>;
 }
 
 export interface AppTopNavProps {
@@ -55,6 +61,10 @@ export function AppTopNav({ items, active, onNavigate }: AppTopNavProps): ReactN
         style={{ flex: 1, minWidth: 0, background: 'transparent', borderBottom: 'none' }}
         items={items.map((item) => ({
           key: item.key,
+          // 图标一律 `aria-hidden`：`@ant-design/icons` 给每个图标挂了 `role="img" aria-label="file-text"`，
+          // 不藏起来导航项的可访问名会变成「file-text 用例」（屏读器多念一个词、按名字定位也失配）。
+          // 图标是装饰，导航项的语义由链接文案承担——故这里不给它任何可访问名。
+          icon: item.icon === undefined ? undefined : <item.icon aria-hidden />,
           label: (
             // 用原生 a 承接可访问性（aria-current 由 antd 的 selectedKeys 渲染到 li 上，
             // 故这里显式标注在链接上，保证屏幕阅读器与断言都能拿到）

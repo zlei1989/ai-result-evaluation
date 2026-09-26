@@ -15,7 +15,10 @@
   },
   "dependencies": {
     "@aieval/contracts": "workspace:*",
-    "@aieval/core": "workspace:*"
+    "@aieval/core": "workspace:*",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.281",
+    "@deepseek-ai/dsh-sdk-client": "0.1.7-rc.1",
+    "@openai/codex-sdk": "^0.156.1"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

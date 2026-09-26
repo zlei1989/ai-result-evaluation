@@ -18,7 +18,10 @@
     "@ant-design/icons": "^6.3.2",
     "antd": "^6.6.3",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-diff-viewer-continued": "4.4.0",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -26,6 +29,7 @@
     "@types/node": "^20.19.43",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "diff": "9.0.0",
     "jsdom": "^25.0.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"

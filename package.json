@@ -7,10 +7,11 @@
     "preinstall": "node -e \"if(!/pnpm/i.test(process.env.npm_config_user_agent||'')){console.error('[禁止] 本项目仅允许使用 pnpm 安装依赖，请运行: corepack enable && pnpm install');process.exit(1)}\"",
     "dev": "pnpm --filter @aieval/web-next dev",
     "build": "pnpm --filter @aieval/web-next build",
-    "lint": "pnpm -r lint",
-    "format": "pnpm -r format",
-    "test": "pnpm -r --workspace-concurrency=4 test",
-    "typecheck": "pnpm -r typecheck"
+    "lint": "eslint . --cache --cache-location node_modules/.cache/eslint/",
+    "format": "eslint . --fix --cache --cache-location node_modules/.cache/eslint/",
+    "test": "vitest run --passWithNoTests",
+    "test:changed": "vitest run --changed --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "^4.4.1",
@@ -19,6 +20,7 @@
     "eslint": "^9.39.5",
     "eslint-plugin-import-x": "^4.17.1",
     "eslint-plugin-unused-imports": "^4.4.1",
-    "jiti": "^2.7.0"
+    "jiti": "^2.7.0",
+    "vitest": "^4.1.11"
   }
 }

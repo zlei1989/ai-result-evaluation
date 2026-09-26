@@ -4,8 +4,14 @@
  * 测试要覆盖的正是那条兜底路径。需要模拟系统偏好的用例自己注入桩。
  */
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
+
+/**
+ * `waitFor` / `findBy*` 的默认上限从 **1s** 提到 **10s**（理由与 ui 包的同名文件一致）：
+ * 默认那 1 秒在全量并发下会把「机器慢」判成「渲染错」，制造假红。提上限不放松任何断言。
+ */
+configure({ asyncUtilTimeout: 10_000 });
 
 afterEach(() => {
   cleanup();

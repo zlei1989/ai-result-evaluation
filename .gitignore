@@ -15,3 +15,15 @@ next-env.d.ts
 
 .DS_Store
 Thumbs.db
+
+# 真实事件探测的 dump：可能含网关返回的敏感原文，不入库（结论写进 docs/superpowers/notes/）
+packages/server/agents/probe/dumps/
+# 探针的工作区/隔离 home（脚本入仓，跑出来的临时件不入库）
+packages/server/agents/probe/v2/codex-skills-ws/
+
+# 可视化头脑风暴（brainstorming skill）的会话目录：含访问密钥与 .last-token，不入库
+.superpowers/
+
+# 真机验证临时文件
+.probe-*/
+mcp-bundles/

@@ -52,3 +52,51 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/*
+ * 候选卡片底部的**活动行**高光扫过（类名由 ui 包的 `AgentActivityLine` 带上，样式只在这里定义）。
+ * 做法与节奏照 DSH 的 `.turnStatus`（`ui-chat/src/client/chat/ChatView.module.css`：
+ * 1.8s linear infinite、background-size 250%、`background-clip: text` 的渐变位移）——
+ * 那是它「正在思考」那一行的观感，也是本仓「执行中」要的观感。
+ * 颜色只用 `--app-muted` / `--app-fg` 两个**既有**主题变量：antd 主色由 ConfigProvider 在运行时给，
+ * 在这里再抄一份就成了第二份真源，改主题时必漂移。
+ */
+.aieval-activity-sweep {
+  background-image: linear-gradient(
+    90deg,
+    var(--app-muted) 0%,
+    var(--app-muted) 40%,
+    var(--app-fg) 50%,
+    var(--app-muted) 60%,
+    var(--app-muted) 100%
+  );
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: aieval-activity-sweep 1.8s linear infinite;
+}
+
+/* 扫到 0 = 高光从右往左走完一遍；起点由上面那条 `background-position: 100% 0` 承担（同 DSH） */
+@keyframes aieval-activity-sweep {
+  to {
+    background-position: 0 0;
+  }
+}
+
+/*
+ * 系统「减少动态效果」下静止成一行动态文本：动效是装饰，不该对抗无障碍偏好
+ * （DSH 对 `.turnStatus` 有同一条兜底）。**颜色必须一起还原**：上面的 `color: transparent` 是
+ * 给渐变当画布用的，只关动画的话这一行会整行消失——比没有动效严重得多。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .aieval-activity-sweep {
+    animation: none;
+    background-image: none;
+    background-clip: border-box;
+    color: var(--app-muted);
+    -webkit-text-fill-color: var(--app-muted);
+  }
+}

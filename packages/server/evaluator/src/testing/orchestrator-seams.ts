@@ -1,0 +1,101 @@
+/**
+ * 编排层测试的**注入接缝**与三条 `vi.mock` 的**工厂体**。
+ *
+ * 为什么单独一个模块，而不是放进 `orchestrator-harness.ts`：
+ * 各测试文件的前导块要 `await import(...)` 拿工厂体，而 harness 又**静态 import** 了被 mock 的
+ * 模块（`../run-store`、`../judge`）——工厂去 import harness 就构成「harness 等工厂、工厂等 harness」
+ * 的循环，表现为**整个文件 0 个用例、且没有任何报错**（静默挂死，实测踩过）。
+ * 本模块只依赖 `./fixtures` 与 `@aieval/contracts`（两者都不 import 被 mock 的模块），
+ * 因此从工厂里 import 它是安全的；对 `../judge` / `../run-store` 的引用一律只出现在**类型位置**
+ * （`typeof import('...')` 编译期擦除，不产生运行时 import）。
+ *
+ * 接缝本身（`injected`）为什么需要：两件事在单测里没有别的办法造出来，而它们都不是
+ * 「夹具编出来的假场景」，是生产上真实存在的时序：
+ *   ① **轮级收尾落盘失败**：`finalizeRun → setRunStatus → saveRun` 会因磁盘满 / 快照被删 / 根目录形状
+ *      非法而抛，而它与该轮最后一次行级写入之间**没有任何 `await`** ⇒ 测试不可能「恰好在那一刻」动手脚；
+ *   ② **陈旧的 `listRuns()` 结果**：恢复路径拿到的列表与它改写时的当前快照之间可能夹着别人跑完的行
+ *      （评审 Low-4 描述的那个窗口），同样没有 `await` 可供插入。
+ * 默认全部原样透传（`...actual`）：注入点只在被点名的那一轮 / 那一次调用上生效，用完即失效。
+ */
+import { vi } from 'vitest';
+import { ServiceError, type EvalRun } from '@aieval/contracts';
+import { fakeAgentsModule, fakeJudgeModule } from './fixtures';
+
+/**
+ * 提升到 import 之前的接缝对象（`vi.hoisted`：夹具在所有 import 之前就要能读写它）。
+ * 注意**不要**写成 `export const injected = vi.hoisted(...)`：vite 会把赋值提到 import 之前，
+ * 而「导出一个被提升的变量」在 ESM 里是语法错误（`Cannot export hoisted variable`），
+ * 整个文件以 SyntaxError 收场——表现同样是「这个文件 0 个用例」。故拆成
+ * 「不导出的提升变量 + 导出的别名」，两边指向同一个对象。
+ */
+const injectedState = vi.hoisted(() => ({
+  /** 让**这一轮**的「轮级终态」写入失败一次（done / partial 才是收尾那一笔） */
+  failRunStatusSaveFor: null as string | null,
+  /** 「收尾那一笔已经被拒绝」的标记：用例等它发生（它一定晚于该轮最后一行的落库） */
+  runStatusSaveFailed: false,
+  /** 下一次 `listRuns()` 返回这份**陈旧**快照（模拟「读到之后、改写之前别人把这行跑完了」） */
+  staleList: null as EvalRun[] | null,
+  /**
+   * 让**这一轮**的「行级」写入失败一次（`rescoreRow` 入口区的等价物：磁盘满 / 快照被删）。
+   * 为什么需要它：入口区那三步（登记控制器 → 标记事件 → 写状态）之间**没有 `await`**，
+   * 测试不可能「恰好在那一刻」动手脚；而不回退的后果是「这一行永久不可重评」——
+   * 一条只在真实故障下出现、却再也修不回来的状态（见 rescoreRow 入口区的注释）。
+   */
+  failRowSaveFor: null as string | null,
+  /** 「行级那一笔已经被拒绝」的标记：用例等它发生 */
+  rowSaveFailed: false,
+}));
+
+/** 接缝对象（各测试文件读写它来制造落盘失败 / 陈旧列表） */
+export const injected = injectedState;
+
+/**
+ * agents：换掉 `getProvider(kind).run()` 这个唯一边界，既不加载任何厂商 SDK，也完全掌控时序
+ * （什么时候开始、什么时候结束、是否响应终止、返回什么计量）。
+ *
+ * **返回 Promise**（`fakeAgentsModule` 要从真模块取协议判据与文案，见那里的注释）——调用点
+ * 一律写在 `vi.mock(…, async () => …)` 里，async 箭头会把嵌套 promise 摊平，故调用点无需解包。
+ */
+export function agentsMock() {
+  return fakeAgentsModule();
+}
+
+/**
+ * judge：只替换 `judgeRow`，`parseJudgeResponse` / `finalizeScore` 必须是真的——
+ * `judge-agent.ts` 也 import 它们，整模块替换会让智能体通路拿到 undefined（崩成 TypeError，
+ * 指向完全错误的方向）。
+ */
+export function judgeMock(actual: typeof import('../judge')) {
+  return { ...actual, ...fakeJudgeModule() };
+}
+
+/** run-store：落盘失败 / 陈旧列表两个接缝（评审 Medium-3 / Low-4 的守卫靠它） */
+export function runStoreMock(actual: typeof import('../run-store')) {
+  return {
+    ...actual,
+    listRuns: () => {
+      const stale = injected.staleList;
+      if (stale !== null) {
+        injected.staleList = null; // 一次性
+        return stale;
+      }
+      return actual.listRuns();
+    },
+    saveRun: (run: EvalRun) => {
+      if (run.id === injected.failRunStatusSaveFor && (run.status === 'done' || run.status === 'partial')) {
+        injected.failRunStatusSaveFor = null; // 一次性：只让收尾这一笔失败，行级写入照常
+        injected.runStatusSaveFailed = true;
+        throw new ServiceError('INTERNAL', '夹具注入：轮级收尾落盘失败（磁盘满 / 快照被删的等价物）');
+      }
+      // 行级那一笔（轮状态是 idle / running 的那些写入）：按**调用顺序**一次性失败。
+      // 判据用「这一轮」而不是状态：行级写入落在各种轮状态下（idle / running / partial），
+      // 按状态判会漏掉一半，而这条注入要的正是「不管当时轮状态是什么，下一次行级写入失败」
+      if (run.id === injected.failRowSaveFor) {
+        injected.failRowSaveFor = null;
+        injected.rowSaveFailed = true;
+        throw new ServiceError('INTERNAL', '夹具注入：行级落盘失败（磁盘满 / 快照被删的等价物）');
+      }
+      actual.saveRun(run);
+    },
+  };
+}

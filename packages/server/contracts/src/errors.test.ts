@@ -4,10 +4,29 @@ import { describe, expect, it } from 'vitest';
 import { ERROR_CODES, ServiceError, httpStatusFor } from './errors';
 
 describe('ERROR_CODES', () => {
-  it('包含脚手架阶段全部错误码', () => {
-    expect([...ERROR_CODES].sort()).toEqual(
-      ['AUTH_FAILED', 'CONFLICT', 'INTERNAL', 'INVALID_QUERY', 'NOT_FOUND', 'NOT_WRITABLE', 'RATE_LIMITED'].sort(),
-    );
+  it('包含脚手架阶段与功能阶段的全部错误码（顺序：4xx 在前、5xx 在后）', () => {
+    expect([...ERROR_CODES]).toEqual([
+      'NOT_FOUND',
+      'INVALID_QUERY',
+      'NOT_WRITABLE',
+      'NOT_A_GIT_REPO',
+      'REPO_UNREACHABLE',
+      'INVALID_REF',
+      'CONFLICT',
+      'AUTH_FAILED',
+      'RATE_LIMITED',
+      'JUDGE_PARSE_FAILED',
+      'INTERNAL',
+    ]);
+  });
+
+  it('AgentErrorCode 不进 ERROR_CODES（§5.6.6：它没有对应的 HTTP 状态）', () => {
+    // 这两个名字是 agents 包的领域归因，与接口层的 AUTH_FAILED / RATE_LIMITED 只是重名。
+    // 一旦有人把它们并进 ERROR_CODES，STATUS_BY_CODE 就要为它们编造状态码。
+    expect(ERROR_CODES).not.toContain('AGENT_FAILED');
+    expect(ERROR_CODES).not.toContain('AGENT_LOAD_FAILED');
+    expect(ERROR_CODES).not.toContain('AGENT_TIMED_OUT');
+    expect(ERROR_CODES).not.toContain('AGENT_CANCELED');
   });
 });
 
@@ -34,9 +53,13 @@ describe('httpStatusFor', () => {
     expect(httpStatusFor('NOT_FOUND')).toBe(404);
     expect(httpStatusFor('INVALID_QUERY')).toBe(400);
     expect(httpStatusFor('NOT_WRITABLE')).toBe(400);
+    expect(httpStatusFor('NOT_A_GIT_REPO')).toBe(400);
+    expect(httpStatusFor('REPO_UNREACHABLE')).toBe(400);
+    expect(httpStatusFor('INVALID_REF')).toBe(400);
     expect(httpStatusFor('CONFLICT')).toBe(409);
     expect(httpStatusFor('AUTH_FAILED')).toBe(401);
     expect(httpStatusFor('RATE_LIMITED')).toBe(429);
+    expect(httpStatusFor('JUDGE_PARSE_FAILED')).toBe(500);
     expect(httpStatusFor('INTERNAL')).toBe(500);
   });
 

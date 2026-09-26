@@ -13,8 +13,40 @@
  */
 import { App as AntdApp, ConfigProvider, theme } from 'antd';
 import type { ThemeConfig } from 'antd';
-import { createElement, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createElement, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { SYSTEM_DARK_QUERY, readSystemDark, resolveThemeMode, type ThemePreference } from './theme-resolve';
+
+/**
+ * 读**已经解析好**的实际明暗（`html[data-theme]`）。
+ *
+ * 为什么需要：`useResolvedTheme()` 的 `preference` 缺省是 `'dark'`（见下面 `rawPreference ?? 'dark'`，
+ * 那是 SSR 期兜底、不闪白用的）。页面若再调一次 `useResolvedTheme()` 而不传偏好，就会拿到 `'dark'`——
+ * 既是**第二份**主题判据，又与真正解析过的结果相反；它的 `apply` 副作用还会把 `data-theme` 改回暗色，
+ * 于是 `ConfigProvider` 是明亮主题、组件却按暗色渲染（症状：「亮色主题下背景不对」）。
+ *
+ * 本文件的既有口径是「`data-theme` 恒为**解析后**的明暗」，故消费方直接读它，不再自行解析一次。
+ * 无浏览器 / 属性缺失 / 属性是脏值时按暗色——与服务端默认一致，SSR 首帧不闪白。
+ */
+export function readAppliedThemeMode(): 'light' | 'dark' {
+  if (typeof document === 'undefined') return 'dark';
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+/** `data-theme` 变化的订阅：`providers` 写完属性后通知所有消费方（设置页切主题即触发） */
+function subscribeAppliedThemeMode(onChange: () => void): () => void {
+  if (typeof MutationObserver === 'undefined') return () => {};
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => observer.disconnect();
+}
+
+/**
+ * 跟随已解析明暗的 hook。用 `useSyncExternalStore` 而不是 `useState + useEffect`：
+ * 后者首帧会先渲染兜底值再补一次，diff 正文会闪一下；前者在提交阶段就取到 DOM 上的真值。
+ */
+export function useAppliedThemeMode(): 'light' | 'dark' {
+  return useSyncExternalStore(subscribeAppliedThemeMode, readAppliedThemeMode, () => 'dark' as const);
+}
 
 export interface UseResolvedThemeOptions {
   /** 偏好原值；未就绪（设置还没拉到）按暗色兜底——默认观感，SSR 期不闪白 */

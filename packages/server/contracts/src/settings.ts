@@ -4,6 +4,7 @@
  * 但判定真源仍是这里，客户端那份只是缓存。
  */
 import { z } from 'zod';
+import { AgentKindSchema } from './agent';
 
 /** 主题偏好：auto=跟随操作系统、light=明亮、dark=暗色 */
 export const ThemeModeSchema = z.enum(['auto', 'light', 'dark']);
@@ -21,9 +22,15 @@ export const SettingsSchema = z.object({
   workspaceRoot: z.string().min(1),
   /** 全局默认评分模型；未配置时为 null（此时用例页的「AI 生成」与评测评分不可用） */
   defaultJudge: DefaultJudgeSchema.nullable(),
-  /** 每候选行的独立超时（毫秒），超过则强制终止该行 */
-  rowTimeoutMs: z.number().int().positive(),
-  /** 送评分模型的 diff 体积上限（字节），超出按文件裁剪并标注截断 */
+  /** 默认评分智能体：null = 未配置（此时「使用智能体评分」的评测会在创建时被拦下） */
+  defaultJudgeAgent: AgentKindSchema.nullable(),
+  /**
+   * 送评分模型的 diff 体积上限（字节），超出按文件裁剪并标注截断。
+   *
+   * 注意这里**没有**「单行超时」这一格了（用户口径，2026-09-28）：执行与评分都不限时间，
+   * 一行只会因为「跑完 / 失败 / 用户点终止」结束。旧 `config.json` 里多出来的 `rowTimeoutMs`
+   * 由 zod 的默认行为**丢弃**（对象 schema 会 strip 未知键），因此不需要迁移脚本。
+   */
   diffBudgetBytes: z.number().int().positive(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -37,6 +44,6 @@ export const SETTINGS_DEFAULTS: Settings = {
   theme: 'auto',
   workspaceRoot: '~/.runs',
   defaultJudge: null,
-  rowTimeoutMs: 1_800_000,
+  defaultJudgeAgent: null,
   diffBudgetBytes: 262_144,
 };

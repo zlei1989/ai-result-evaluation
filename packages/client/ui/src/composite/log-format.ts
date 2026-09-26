@@ -1,0 +1,119 @@
+/**
+ * 事件 → 日志行（纯函数，无 React 依赖，可单独测）。
+ * 7 种事件类型各有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
+ * （spec §5.6.3 要求未识别的事件也要保留原始负载，不得丢弃）。
+ *
+ * 本模块**只负责把已落盘的事件渲染成行**：它不推断行状态、不看快照、不合并轮次——
+ * 「这一行现在是什么状态」的唯一来源是 `EvalRow.status`（快照），拿日志反推状态等于
+ * 造第二份真相。同理，同一行重跑后新一轮的 seq 会回到 1，怎么切分由数据层
+ * （`useRowStream` 的文件头口径 5）决定，这里只管把拿到的这一批逐行渲染。
+ *
+ * 时间戳取**本机时区**的 `HH:mm:ss`（与 `base/format.ts` 的 `formatDateTime` 同一口径：
+ * 界面上所有时间都是使用者的本地时间）；非法输入原样返回——显示 `Invalid Date`
+ * 比显示原始串更糟。
+ *
+ * `score` 行有**两条通路**，文字上必须分得开（spec §10 展示表）：`judgeAgentKind === null`
+ * ⇔ 纯文本 API 评分（老记录经契约的 `.default(null)` 读盘后同样是 `null`），此时行文保持原样；
+ * 非 null 才在模型名前面加上智能体名与「（智能体）」——同一行重跑后两次评分的日志混在一条流里，
+ * 少了智能体名就分不出哪个分是哪条通路打的，而两条通路的分数不可比
+ * （README「分数怎么来的」的既有口径）。
+ *
+ * `usage` 行在 2026-10-XX 起多带**时间与两个派生比率**（用户口径：消息里要有算 tok/s 与
+ * 缓存命中率所需的全部数据）。三条取舍：
+ *   · **原料缺失就说「未采集」**：`timing` 为 `null` 时那一截写「耗时未采集」，
+ *     绝不当成 0 秒（0 秒会算出一个无穷大的 tok/s，而真正的事实是「这一家没报时间」）；
+ *   · **派生比率用 `usage-metrics.ts` 的那一份实现**（跨三家统一的公式），本模块不再写第二份；
+ *   · **来源必须标**：`'events'` 的时长含工具执行，与 `'vendor'` 的纯模型时间不可直接比
+ *     （见 `timingSourceLabel`）——tok/s 后面缀一个 `(墙钟)` 就是为了不让人把两者放进同一张表。
+ */
+import { AGENT_LABELS, ROW_STATUS_LABELS, type AgentEvent } from '@aieval/contracts';
+import { formatCacheHitRate, formatGenerationRate, timingSourceLabel } from '../base/usage-metrics';
+
+/** ISO 时间 → 本地 `HH:mm:ss`；非法输入原样返回 */
+function formatClock(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** 一条事件 → 一行日志文本（`[时间] 内容`） */
+export function formatEventLine(event: AgentEvent): string {
+  const time = formatClock(event.at);
+  switch (event.type) {
+    case 'log':
+      return `[${time}] ${event.stream} ${event.text}`;
+    case 'status':
+      return `[${time}] 状态 ${ROW_STATUS_LABELS[event.status]}`;
+    case 'usage':
+      // 轮次与计量各自独立（2026-09-28）：一条只带轮次的 usage 是常态（轮次一到就发），
+      // 这时只说轮次——写三个 0 会让人以为「这家很省」，写「未采集」又会与真正的终态混淆。
+      return `[${time}] ${usageLine(event)}`;
+    case 'diff-summary':
+      return `[${time}] 改动 ${event.filesChanged} 个文件 +${event.insertions} −${event.deletions}${
+        event.truncated ? '（已截断）' : ''
+      }`;
+    case 'score':
+      return `[${time}] 评分 总分 ${event.score.totalScore} · ${
+        event.score.judgeAgentKind === null
+          ? event.score.judgeModelId
+          : `${AGENT_LABELS[event.score.judgeAgentKind]}（智能体）· ${event.score.judgeModelId}`
+      }`;
+    case 'error':
+      return `[${time}] 错误 ${event.message}`;
+    case 'end':
+      return `[${time}] 结束 ${event.exitReason}`;
+  }
+}
+
+/** 全部事件 → 多行文本（日志抽屉的正文与下载内容共用同一个出口） */
+export function formatEventLog(events: AgentEvent[]): string {
+  return events.map(formatEventLine).join('\n');
+}
+
+/** 取 `usage` 事件（判别联合的窄化辅助：调用方拿到的就是那个成员） */
+type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
+
+/**
+ * `usage` 事件的正文（不含 `[时间] ` 前缀）。
+ *
+ * 形状（片段之间只用 ` · ` 连，缺的那截整段不出现）：
+ * ```
+ * 用量 输入 218 · 缓存 8832 · 命中 98% · 输出 2 · 轮次 1 · 耗时 166.7s · 首字 7.6s · 生成 0.3 tok/s ·（厂商自报…）
+ * ```
+ * 四段判据：
+ *   · `tokens === null` ⇒ **只说轮次**（这一条没带计量；写三个 0 会让人以为「这家很省」）；
+ *   · 有 tokens ⇒ 三项 + **命中率**（`usage-metrics.ts` 的统一公式）；
+ *   · `timing === null` ⇒ **只说「耗时未采集」**（不写 0s：0 秒会算出一个无穷大的 tok/s）；
+ *     有 `timing` ⇒ 耗时 + （有则）首字延迟 + （算得出则）tok/s，并按来源缀一句口径说明；
+ *   · 两个可选格（思考 / 厂商总量）有值才显示——`null` 是「这一家不报」，显示成 0 是撒谎。
+ */
+function usageLine(event: UsageEvent): string {
+  const parts: string[] = [];
+  if (event.tokens !== null) {
+    const { input, cached, output, reasoningOutput, total } = event.tokens;
+    parts.push(
+      `用量 输入 ${input} · 缓存 ${cached} · 命中 ${formatCacheHitRate(event.tokens)} · 输出 ${output}`,
+    );
+    // 思考 token 是**输出的一部分还是额外的一格**三家口径不同 ⇒ 只展示、不并入 output（见契约注释）
+    if (reasoningOutput != null) parts.push(`思考 ${reasoningOutput}`);
+    // 厂商自报总量：排障用（与归一后的三项**对不上是正常的**，见契约注释）
+    if (total != null) parts.push(`厂商总量 ${total}`);
+  }
+  parts.push(`轮次 ${event.turns}`);
+
+  const timing = event.timing ?? null;
+  if (timing === null) {
+    // 「未采集」而不是 0：这一格是 tok/s 的分母，编一个 0 会得出无穷大
+    parts.push('耗时未采集');
+    return parts.join(' · ');
+  }
+  if (timing.totalMs !== null) parts.push(`耗时 ${(timing.totalMs / 1000).toFixed(1)}s`);
+  if (timing.ttftMs !== null) parts.push(`首字 ${(timing.ttftMs / 1000).toFixed(1)}s`);
+  const rate = formatGenerationRate(event.tokens, timing);
+  // 算不出来（缺时长 / 分母为 0）就说「未采集」——绝不给 NaN 或 0.0
+  parts.push(rate === null ? '生成速率未采集' : `生成 ${rate} tok/s`);
+  // 来源标注：`'events'` = 墙钟（含工具执行），与纯模型时间不可直接比，见 `timingSourceLabel`
+  parts.push(`（${timingSourceLabel(timing.source)}）`);
+  return parts.join(' · ');
+}

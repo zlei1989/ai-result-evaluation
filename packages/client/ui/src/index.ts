@@ -2,7 +2,7 @@
 export { DensityProvider, useDensityMode } from './base/density-context';
 export { COMPACT_FONT_TOKENS, compactTheme, type DensityMode } from './base/density';
 export { SYSTEM_DARK_QUERY, readSystemDark, resolveThemeMode, type ThemePreference } from './base/theme-resolve';
-export { useResolvedTheme, type ResolvedTheme, type UseResolvedThemeOptions } from './base/app-theme';
+export { useAppliedThemeMode, useResolvedTheme, type ResolvedTheme, type UseResolvedThemeOptions } from './base/app-theme';
 export { PageShell, type PageShellProps } from './base/page-shell';
 export { readStoredPreference, useStoredWidth } from './base/stored-preference';
 export { SplitPane, type SplitPaneProps } from './base/split-pane';
@@ -17,7 +17,80 @@ export {
 export { EllipsisText, type EllipsisTextProps } from './base/ellipsis-text';
 export { EmptyState, type EmptyStateProps } from './base/empty-state';
 export { Toolbar, type ToolbarProps } from './base/toolbar';
+export {
+  TABLE_SCROLL_STYLE,
+  TableScrollArea,
+  type TableScrollAreaProps,
+} from './base/table-scroll-area';
 export { formatBytes, formatDateTime, shortHash } from './base/format';
+export { MonoText, type MonoTextProps } from './base/mono-text';
+export { MarkdownText, type MarkdownTextProps } from './base/markdown-text';
+export { RubricSummaryText, RubricTable, type RubricTableProps } from './composite/rubric-table';
+export {
+  RubricRecognizeModal,
+  type RubricRecognizeModalProps,
+} from './composite/rubric-recognize-modal';
+export { ROW_STATUS_COLORS, RowStatusTag, type RowStatusTagProps } from './base/row-status-tag';
+export { MetricLine, formatCacheHitRate, formatCount, formatDuration, type MetricLineProps } from './base/metric-line';
+/**
+ * 派生指标（2026-10-XX）：`tok/s` 与「这段时间是哪一种口径」。
+ * 为什么从 ui 转出去而不是留在内部：apps/web-next 若将来要把 tok/s 放到卡片上，
+ * 必须用**同一份**公式（跨三家统一口径的唯一保证），不能在页面里再写一遍除法。
+ */
+export {
+  formatGenerationRate,
+  generationWindowMs,
+  timingSourceLabel,
+} from './base/usage-metrics';
+export {
+  // 类名要跨包核对的缘故见 `agent-activity-line.tsx` 的文件头：样式在 apps/web-next 的 globals.css 里，
+  // 两处各写一份字符串必然漂移，而「类名对不上」在浏览器里是静默的（动画消失、无报错）。
+  ACTIVITY_SWEEP_CLASS,
+  AgentActivityLine,
+  type AgentActivityLineProps,
+} from './base/agent-activity-line';
 export { ListDetailLayout, type ListDetailLayoutProps } from './base/list-detail-layout';
 export { AppTopNav, type AppTopNavItem, type AppTopNavProps } from './composite/app-top-nav';
-export { DemoListPage, type DemoListPageProps, type DemoRecordView } from './composite/demo-list-page';
+export { CaseFormPanel, type CaseFormPanelProps } from './composite/case-form-panel';
+export { CaseDetailPanel, type CaseDetailPanelProps } from './composite/case-detail-panel';
+export { ProviderTable, type ProviderTableProps } from './composite/provider-table';
+export {
+  ProviderFormModal,
+  type ProviderFormModalProps,
+  type ProviderFormValues,
+} from './composite/provider-form-modal';
+export {
+  ProviderModelsModal,
+  type ProviderModelsModalProps,
+} from './composite/provider-models-modal';
+export { JudgeSettingsCard, type JudgeSettingsCardProps } from './composite/judge-settings-card';
+export {
+  WorkspaceSettingsCard,
+  type WorkspaceSettingsCardProps,
+} from './composite/workspace-settings-card';
+export {
+  RunCreatePanel,
+  // 编辑模式的保存前确认框要用的判据（「这次会作废哪几行」）：面板自己拿它填确认框的内容。
+  // **没有任何页面消费者**（别再照抄成「页面拿它决定弹不弹」：弹不弹是面板在 `handleFinish` 里自己判的，
+  // 页面只把 `onSubmit` 转发出去）。它随组件一起转出，是因为这条判据与组件同源、且要被**直接**测到
+  // （`run-create-panel.test.tsx` 里的 `invalidatedRows` 那一组）。
+  invalidatedRows,
+  type RunCreatePanelProps,
+  type RunFormValues,
+  type RunModelOption,
+} from './composite/run-create-panel';
+export { EvalRowCard, type AgentCapabilityView, type EvalRowCardProps } from './composite/eval-row-card';
+export {
+  RANK_BADGE_LIMIT,
+  RunDetailPanel,
+  // 契约 §8 把 `completionPercent(done, total)` 列为 `run-detail-panel.tsx` 的**具名出口**
+  // （并在 §8 正文里论证它「必须抽出来」：留在组件里时「零行不出现 NaN」那条守卫只能退化成
+  // 间接断言，实测该变异体存活）。它此前在包根漏转出——终审 §5.1 的逐名比对里，§2–§9 的
+  // 出口清单**只差这一个名字**（L1）。补上之后那份比对全绿。
+  completionPercent,
+  type RunDetailPanelProps,
+} from './composite/run-detail-panel';
+export { ScoreDetailView, type ScoreDetailViewProps } from './composite/score-detail-view';
+export { DiffFileContent, DiffView, type DiffViewProps } from './composite/diff-view';
+export { LogView, type LogViewProps } from './composite/log-view';
+export { formatEventLine, formatEventLog } from './composite/log-format';

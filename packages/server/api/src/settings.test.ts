@@ -36,7 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 100 });
 });
 
 describe('getSettings', () => {
@@ -69,7 +69,6 @@ describe('updateSettings', () => {
   it('只改传入的字段，其余保持原值', () => {
     const next = updateSettings({ theme: 'dark' });
     expect(next.theme).toBe('dark');
-    expect(next.rowTimeoutMs).toBe(SETTINGS_DEFAULTS.rowTimeoutMs);
     expect(next.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
   });
 

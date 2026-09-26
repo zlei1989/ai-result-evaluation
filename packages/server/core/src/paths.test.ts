@@ -20,7 +20,7 @@ function makeTmp(): string {
 }
 
 afterEach(() => {
-  for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 100 });
 });
 
 describe('expandHome', () => {
@@ -89,7 +89,7 @@ describe('validateWorkspaceRoot', () => {
     const result = validateWorkspaceRoot('~/.runs-test-should-not-exist');
     expect(result.resolved).toBe(join(homedir(), '.runs-test-should-not-exist'));
     // 清理，别在开发者家目录留垃圾
-    rmSync(result.resolved, { recursive: true, force: true });
+    rmSync(result.resolved, { recursive: true, force: true, maxRetries: 40, retryDelay: 100 });
   });
 
   it('校验时会真写一个探针文件并删掉，不留残留文件', () => {

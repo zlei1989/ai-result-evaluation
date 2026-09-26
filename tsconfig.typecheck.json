@@ -1,0 +1,40 @@
+{
+  // 仓库级类型检查配置：`pnpm typecheck` 靠它用**一个** tsc 进程检查全部 8 个包。
+  // 逐包跑（`pnpm -r typecheck`）时 8 个 tsc 各起一次进程、各自加载 lib/@types，
+  // 实测 12.7s 里绝大部分是启动与重复装载；各包的 `tsc --noEmit` 脚本仍然保留，
+  // `pnpm --filter @aieval/<包> typecheck` 走那条路径。
+  //
+  // include 是「逐包 include 的并集」，刻意与各包 tsconfig 保持一致：
+  // - 6 个库包：`src`（`packages/server/*` 与 `packages/client/*`）；
+  // - web-next：`next-env.d.ts` + `app` + `src` + `.next/types`（后两项见下方说明）。
+  // **不含**仓库根与各包的 `*.config.ts`：它们今天就不在 `tsc` 的检查范围内，
+  // 这次改动只做聚合、不顺带扩面（扩面会让门槛变化混进性能改动里，出问题难归因）。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // web-next 的 `@/*` 指该应用根目录（`apps/web-next/tsconfig.json`）。这里不带 baseUrl，
+    // TS 5 起 paths 相对**本文件所在目录**解析，故写成相对仓库根的路径。
+    // 库包源码里没有任何 `@/` 引用（已核对），故该别名不会误伤它们。
+    "paths": { "@/*": ["./apps/web-next/*"] },
+    // web-next 的 tsconfig 开了 allowJs（Next 需要）。本仓 web-next 下没有 .js/.jsx 源文件，
+    // 保留它只为与该应用单独 typecheck 时的行为逐字对齐。
+    "allowJs": true,
+    // 增量检查：全量首次跑仍要建一次图，但从第二次起 tsc 只重查改动的文件。
+    // 本机实测（12 核 Windows，杀软对进程创建收 3 倍税）冷跑 12.7s，绝大多数花在
+    // 装载 lib.*.d.ts 与重新解析全部 250 个源文件上，而这些输入在两次运行之间根本没变。
+    // `noEmit` + `incremental` 自 TS 5.0 起被支持，产物只是一份 .tsbuildinfo（已在 .gitignore）。
+    // 放在仓库根而不是交给各包：根配置是**一个** tsc 进程，tsbuildinfo 也必须只有一份，
+    // 8 个包各写一份会把「同一个文件被哪个项目检查过」拆散，增量失效。
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.typecheck.tsbuildinfo"
+  },
+  "include": [
+    "packages/server/*/src",
+    "packages/client/*/src",
+    "apps/web-next/next-env.d.ts",
+    "apps/web-next/app",
+    "apps/web-next/src",
+    // next dev / next build 生成的类型；不存在时 include 静默跳过，因此全新检出
+    // （.next 未生成）与已跑过 dev 的机器上行为一致，都不报「找不到文件」。
+    "apps/web-next/.next/types/**/*.ts"
+  ]
+}

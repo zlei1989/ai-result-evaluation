@@ -8,15 +8,23 @@ import { Flex, Typography } from 'antd';
 import type { ReactNode } from 'react';
 
 export interface ToolbarProps {
-  title: ReactNode;
+  /** 左标题；不给则只剩右侧动作区（列表页的页面名已由顶栏导航表达，标题重复） */
+  title?: ReactNode;
   /** 右侧动作区 */
   extra?: ReactNode;
 }
 
 export function Toolbar({ title, extra }: ToolbarProps): ReactNode {
   return (
-    <Flex align="center" justify="space-between" gap={8} style={{ paddingBlock: 8, flexShrink: 0 }}>
-      <Typography.Text strong>{title}</Typography.Text>
+    <Flex
+      align="center"
+      // 无标题时必须 flex-end：`space-between` 只有一个子元素时会把它推到**左**端，
+      // 动作区会从右侧跳到原标题的位置（布局静默变形，没有报错）
+      justify={title === undefined ? 'flex-end' : 'space-between'}
+      gap={8}
+      style={{ paddingBlock: 8, flexShrink: 0 }}
+    >
+      {title !== undefined && <Typography.Text strong>{title}</Typography.Text>}
       {extra !== undefined && <Flex align="center" gap={8}>{extra}</Flex>}
     </Flex>
   );
