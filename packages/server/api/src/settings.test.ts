@@ -1,6 +1,6 @@
 // @vitest-environment node
 /** 设置服务：读取时的归一化、补丁合并、改工作区根目录时的可用性校验。 */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,7 @@ import {
   validateWorkspaceRoot,
 } from '@aieval/core';
 import { getSettings, updateSettings } from './settings';
+import { removeTreeWithRetry } from './testing/cleanup';
 
 // F11 的守卫要把 saveConfig 打挂成裸 errno；「只改主题不做目录校验」要能直接数
 // validateWorkspaceRoot 的调用次数。settings.ts 用的是静态 import，改不了它拿到的绑定，
@@ -36,7 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
-  rmSync(dir, { recursive: true, force: true });
+  removeTreeWithRetry(dir);
 });
 
 describe('getSettings', () => {
@@ -69,7 +70,6 @@ describe('updateSettings', () => {
   it('只改传入的字段，其余保持原值', () => {
     const next = updateSettings({ theme: 'dark' });
     expect(next.theme).toBe('dark');
-    expect(next.rowTimeoutMs).toBe(SETTINGS_DEFAULTS.rowTimeoutMs);
     expect(next.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
   });
 

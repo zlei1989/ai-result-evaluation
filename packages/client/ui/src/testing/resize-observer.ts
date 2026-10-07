@@ -22,6 +22,7 @@
  * 不依赖回调）。需要用回调驱动行为的用例**不能**靠本替身，得自己伪造 entry 并手动调用 `callback`。
  */
 import { vi } from 'vitest';
+import { installMatchMediaStub } from './match-media';
 
 /** 可观测的 `ResizeObserver` 替身：记录被观察元素与 `disconnect` 次数，便于断言观察与清理 */
 export class FakeResizeObserver implements ResizeObserver {
@@ -60,9 +61,17 @@ export class FakeResizeObserver implements ResizeObserver {
 }
 
 /**
- * 把替身装成全局 `ResizeObserver`。
- * 反复调用只会重设全局构造器（`afterEach` 里用 `vi.unstubAllGlobals()` 解除）。
+ * 把替身装成全局 `ResizeObserver`，**顺带**补上 antd 在 jsdom 里需要的另一个缺口
+ * `matchMedia`（见 `./match-media.ts`）。
+ *
+ * 为什么两件事合在一个入口：antd 的同一个 `Table` 既 `new ResizeObserver` 又调
+ * `window.matchMedia`，只装前者的话用例仍会在挂载时抛错，而两个 api 的缺口成因、口径
+ * 完全一致（jsdom 没实现 + 不进共享 setup）。分两个入口只会让每个挂载 `Table` 的用例
+ * 都漏装一个 —— 那正是本入口被合并的原因。
+ *
+ * 反复调用只会重设全局（`afterEach` 里用 `vi.unstubAllGlobals()` 解除）。
  */
 export function installResizeObserverStub(): void {
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  installMatchMediaStub();
 }

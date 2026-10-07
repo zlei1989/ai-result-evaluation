@@ -7,6 +7,14 @@ packages:
 # （eslint-plugin-import-x 的原生解析器）都放行，否则 install 以 ERR_PNPM_IGNORED_BUILDS 退出 1。
 # 注意：pnpm 11 下把它们写进 onlyBuiltDependencies **不再生效**（实测仍报同一错误），必须用 allowBuilds。
 allowBuilds:
+  # 以下五项是 2026-09-25 装三家厂商 SDK（dsh 走 next 线 0.1.7-rc.1）时 pnpm 点名要求表态的
+  # 传递依赖：pnpm 自己写入了占位值 "set this to true or false" 并以 ERR_PNPM_IGNORED_BUILDS 退出 1，
+  # 这里按计划 Task 2 Step 3 的规则逐个置 true 以完成落位。它们都不是本仓的直接依赖。
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  koffi: true
+  node-pty: true
+  protobufjs: true
   sharp: true
   unrs-resolver: true
 

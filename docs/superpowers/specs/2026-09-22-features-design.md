@@ -44,8 +44,8 @@
 
 | # | 决策 | 理由 | 被否决的替代 |
 |---|---|---|---|
-| F1 | 供应商分 `openai` / `anthropic` 两种协议类型 | Anthropic **没有 `/models` 接口**，模型名硬编码；而 Claude Code 只认 Anthropic 协议。协议类型是「模型能否驱动某智能体」的唯一判据 | 全放开、运行时再报错（用户在等待十分钟后才发现配错） |
-| F2 | 模型下拉框**按协议类型过滤**：选中的智能体决定哪些供应商的模型可选 | 不可行的组合在创建阶段就消失，而不是等到运行时炸 | 不过滤（体验差，且错误信息难以理解） |
+| F1 | 供应商分 `openai` / `anthropic` 两种协议类型 | 协议类型是「模型能否驱动某智能体」的唯一判据（Claude Code 只认 Anthropic 协议）。**2026-09-26 修订**：原理由里的「Anthropic **没有 `/models` 接口**，模型名硬编码」只对 api.anthropic.com 成立，被推广成了「anthropic 协议一律不能拉清单」——实测自建网关普遍在版本段上提供 OpenAI 风格的清单接口，故拉取改为按地址形态兜底（§6.1），协议不再参与判定 | 全放开、运行时再报错（用户在等待十分钟后才发现配错） |
+| F2 | 模型下拉框**按协议类型过滤**：选中的智能体决定哪些供应商的模型可选 | 不可行的组合在创建阶段就消失，而不是等到运行时炸。**2026-09-30 修订**：判据从「智能体的单个 `protocolType`」改成「智能体接受的协议**集合** `protocolTypes`」——DSH 实测能同时驱动 `openai` 与 `anthropic` 两条 wire（见 §5.6.2 与 §11 的 **R37** 收口），单值会让它白丢一半候选池 | 不过滤（体验差，且错误信息难以理解） |
 | F3 | 评分走**纯文本 API**，不入仓库、不跑 agent | 成本低、快、完全可复现；评分阶段的随机性被消除 | 评分也用 agent 会话（更贵更慢且引入随机性）；混合升级路径（两条路都要实现） |
 | F4 | 得分 = 固定 5 维度（各 1–5 分，等权）+ 总分 + 每维理由 + 总评 | 多候选可比、可追溯差在哪 | 单一总分 + 自由评语（无法追溯）；用例内自定义维度（本期表单过重） |
 | F5 | 评分者 = 全局默认（设置页）+ 用例可选覆盖 | 多数时候固定一个强模型当尺子；特殊用例可单独换 | 每用例必填（重复配置，横向比较时因尺子不同而失真）；只允许全局（换尺子会断掉历史可比性） |
@@ -124,10 +124,11 @@
 | 执行模式 | `Radio.Group`：并行 / 串行 | 必填，默认**并行** |
 | 候选行 | `Form.List` 动态增减 | 每行两个 `Select`：智能体（Claude Code / Codex / DeepSeek Harness）+ 模型 |
 
-**模型的候选池按协议类型过滤**（F2）：
+**模型的候选池按协议类型过滤**（F2）：供应商的协议是**单值**（`Provider.protocolType`），智能体能接受的协议是**集合**（`AgentProviderMetadata.protocolTypes`），判定用 `acceptsProtocol(metadata, providerRecord.protocolType)`（**四个消费点唯一的判据**，见 §5.6.2）：
 
-- 选 `Claude Code` → 只列 `anthropic` 协议供应商的模型。
-- 选 `Codex` / `DSH` → 只列 `openai` 协议供应商的模型。
+- 选 `Claude Code` → 只列 `anthropic` 协议供应商的模型（它的集合是 `['anthropic']`）。
+- 选 `Codex` → 只列 `openai` 协议供应商的模型（它的集合是 `['openai']`）。
+- 选 `DSH` → **两类协议供应商的模型都列**（它的集合是 `['openai','anthropic']`）：2026-09-30 起适配器把路由声明成 pi-ai 路由，`anthropic → anthropic-messages`、`openai → openai-responses`，**两条 wire 都用产品自己的供应商记录真机跑通过**（含计量）。历史：R37 时期它是单值 `anthropic`（当时实测 `dsh-llm-deepseek` 只走 `POST {root}/v1/messages` + `x-api-key`，讲的是 Anthropic Messages wire），R37 逐字登记的残留不确定性（「若将来发现它同时支持多条 wire，`protocolType` 这个单值字段需要重新设计」）**已被实测证实并收口**——见契约 §11 的 **R37** 与探测报告 `docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`。
 - 自动拉取（`source: 'fetched'`）与手工维护（`source: 'manual'`）的模型用 `Tag` 区分来源。
 - 过滤后无可选项时，该行立即内联 `Alert` 说明原因与出路（如「Claude Code 需要 Anthropic 兼容协议的供应商，请先到设置里添加」），而不是让人选完到运行时才失败。
 
@@ -164,7 +165,7 @@
 │ 分支 test/ab12cd34                          │
 │ tok 128,450   轮次 17   耗时 6m23s   得分 87│
 │ ────────────────────────────────────────── │
-│ [查看日志] [查看改动] [评分详情]     [终止] │
+│ [执行日志] [查看改动] [评分详情]     [终止] │
 └────────────────────────────────────────────┘
 ```
 
@@ -214,7 +215,8 @@ pending → preparing → running → (agent 完成) → judging → judged
 2. 取基线        从 {workspaceRoot}/cases/{caseId}/cache 复制 → checkout {commit}
                 → git checkout -b test/{rowId}
 3. 注入隔离配置  CLAUDE_CONFIG_DIR / CODEX_HOME / DSH_HOME → {rowDir}/.agenthome/
-                Claude 侧另加 settingSources: []（否则 ~/.claude/settings.json 的 env 盖掉模型路由）
+                Claude 侧另加 settingSources: user/project/local（否则读不到被测仓库的 CLAUDE.md）
+                + settings.env 把本次路由钉在 flag 档（否则仓库自带的 .claude/settings.json 盖掉路由）
 4. 跑智能体      适配器统一接口；工作目录 = workspace；交考题提示词
 5. 收集计量      token（输入/缓存/输出）、轮次、耗时、退出状态
 6. 算 diff       git diff {commit}..HEAD + git diff HEAD + git status
@@ -321,8 +323,16 @@ export interface AgentProvider {
 }
 
 export interface AgentProviderMetadata {
-  /** 该智能体唯一能接受的协议类型；表单的候选池过滤读它 */
-  protocolType: ProtocolType
+  /**
+   * 该智能体**能接受**的协议集合（非空、去重）；表单的候选池过滤、创建/编辑校验、
+   * 评分智能体校验与编排层复检**四处都读它**，判据是 `acceptsProtocol(metadata, protocolType)`
+   * ——不许各写一份 `includes`。
+   *
+   * 为什么是集合而不是单值（2026-09-30，R37 的收口）：DSH 侧实测存在第二条 wire
+   * （pi-ai 路由同时讲 `anthropic-messages` 与 `openai-responses`，两条都真机跑通含计量）
+   * ⇒ 按 R37 当时逐字登记的预案改成集合。claude-code / codex 仍是单元素数组。
+   */
+  protocolTypes: readonly ProtocolType[]
   capability: {
     /** false ⇒ 「终止」按钮在该行上退化为「关闭运行时」，界面文案必须不同 */
     cancelMidTurn: boolean
@@ -337,13 +347,13 @@ export function getProvider(kind: AgentKind): AgentProvider
 export function listAgentProviders(): AgentProvider[]
 ```
 
-| kind | protocolType | cancelMidTurn | usage | isolation |
+| kind | protocolTypes | cancelMidTurn | usage | isolation |
 |---|---|---|---|---|
-| `claude-code` | `anthropic` | `true` | `true` | `subprocess` |
-| `codex` | `openai` | `true` | `true` | `subprocess` |
-| `dsh` | `openai` | **`false`** | **待探测**（见 §5.6.3） | `subprocess` |
+| `claude-code` | `['anthropic']` | `true` | `true` | `subprocess` |
+| `codex` | `['openai']` | `true` | `true` | `subprocess` |
+| `dsh` | `['openai','anthropic']`（2026-09-30 起；见 §5.1 与 R37） | **`false`** | `true`（已探测） | `subprocess` |
 
-**这条表就是 §5.1「模型候选池按协议类型过滤」的数据来源**：表单从 `listAgentProviders()` 取 `protocolType`，不硬编码三家与协议的对应关系。F2 的过滤规则因此变成「注册表元数据的投影」，而不是表单里的一份独立规则。
+**这条表就是 §5.1「模型候选池按协议类型过滤」的数据来源**：表单从 `listAgentProviders()` 取 `protocolTypes`，不硬编码三家与协议的对应关系。F2 的过滤规则因此变成「注册表元数据的投影」，而不是表单里的一份独立规则。
 
 **厂商 SDK 的类型不从厂商包 `import type`**：适配器自己在文件内声明它消费的**窄结构**（只声明用到的方法与字段），厂商包只作为运行时依赖。理由是让 `agents` 的编译不依赖厂商的类型面——厂商发一个破坏性类型变更不应该让本仓库 `typecheck` 失败，只应该在运行时被 §5.6.6 的加载降级与错误码映射兜住。
 
@@ -371,9 +381,15 @@ export function listAgentProviders(): AgentProvider[]
 
 | kind | 注入点 | base URL 规范化 | 必须同时设置的项 |
 |---|---|---|---|
-| `claude-code` | 子进程环境 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` + 模型选项 | **拆掉尾部 `/v1`**（该 SDK 自己追加 `/v1/messages`，留着会变成 `/v1/v1/messages`） | 展开宿主环境补 `PATH` / `HOME`；`settingSources: []`（否则 `~/.claude/settings.json` 的 `env` 块盖掉本次路由） |
+| `claude-code` | 子进程环境 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` + 模型选项 | **拆掉尾部 `/v1`**（该 SDK 自己追加 `/v1/messages`，留着会变成 `/v1/v1/messages`） | 展开宿主环境补 `PATH` / `HOME`；`settingSources: ['user','project','local']`（`[]` 会把被测仓库的 `CLAUDE.md` 一起挡在门外）+ `settings.env` 把上面三个键钉在 flag 档（2026-09-29 口径，见下）；`disallowedTools` 禁掉与评测无关的旁路工具 |
 | `codex` | 客户端选项 `apiKey` + 一份**完整的** `model_providers` 条目 | **补上 `/v1`**（CLI 只走 Responses wire，即 `POST {base}/v1/responses`） | `wire_api: 'responses'`；`requires_openai_auth: true`（缺它不发 Bearer，全部 401）；`disable_response_storage: true`；关掉 `multi_agent` / `web_search`（网关对这些命名空间工具回 400）；临时 `HOME` 指向该行 `configHome` |
-| `dsh` | 子进程环境 `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` | **保留尾部 `/v1`**（其 adapter 自己追加 `/chat/completions`） | 用 `configHome` 作为该行的 `HOME`（隔离会话与配置） |
+| `dsh` | **per-run overlay**（`--patch <绝对路径>` 的 `llm-pi-ai` 行：路由键 / `api` / `baseURL` / `apiKeyEnv` / 模型 / 档位）+ 子进程环境里的**自定义**凭据变量 `AIEVAL_ROUTE_API_KEY` + `DSH_PERMISSION_MODE` | **按 wire 分叉**：`anthropic` → **拆掉尾部 `/v1`**（pi-ai 原样追加 `/v1/messages?beta=true`）、`openai` → **补上 `/v1`**（pi-ai 原样追加 `/responses`，不插 `/v1`）。pi-ai **不做任何归一化**，这层保护必须由适配器给 | 用 `configHome` 作为该行的 `HOME` / `DSH_HOME`（隔离会话与配置）；`provider` 必须逐字等于 overlay 里的路由键；`patches` 必须是**绝对路径**；`initializeTimeoutMs` 显式放宽（SDK 默认 10s，冷启动不够） |
+
+**dsh 这一行在 2026-09-30 整体换过**（计划 `2026-09-30-dsh-dual-protocol.md`，真机探测报告 `docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`）：
+
+- 两条协议**统一走 `llm-pi-ai`**——`anthropic → anthropic-messages`、`openai → openai-responses`（**不**映射 chat-completions）；
+- 三个旧落点全部退役：`<configHome>/settings.yaml`（dsh-settings 的旧版本迁移 shim）、子进程环境里的 `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY`、以及适配器对 `profiles/sdk/cordis.patch.yml` 的整份重写。后两个环境变量现在是**显式删除**（`injected: { DEEPSEEK_*: undefined }`），不只是「不再注入」——`buildSubprocessEnv` 以宿主环境为底展开，不显式删就会把开发机上的密钥继承给子进程（静默跑到公网并计费）；
+- `ask_user_question` 的 `insert` 从 profile patch 搬进同一份 overlay：profile patch 是 dsh 自己的持久化层（Settings / config-editor 会写它），两边各写各的才不会互相覆盖。
 
 **三条硬性不变量**：
 
@@ -382,6 +398,23 @@ export function listAgentProviders(): AgentProvider[]
 3. 每行的 `configHome` 必须是**独立目录**：行与行之间通过环境变量共享配置目录，会互相注入 MCP / 插件定义（codex 侧尤其明显），直接破坏「同一起点」这个前提。
 
 **Codex 的 401 与「环境 `~/.codex` 反杀」**：显式 `model_providers` 条目不是可选优化，而是必需——环境里已有的 `~/.codex` 配置（`model_provider` / 插件 / MCP）会赢过我们注入的 base URL，表现是「明明配了网关却打到了别处」。上面「指向该行 `configHome`」一行就是它的解药。
+
+**Claude 的 settings 分档（2026-09-29 实测，判据是「哪台本机服务器收到请求」+ 请求体）**：
+
+| 层级（低→高） | 是什么 | 本次路由的注入点 | 谁赢 |
+|---|---|---|---|
+| `user` | `CLAUDE_CONFIG_DIR/settings.json`（隔离下 = 本行 `.agenthome`，**不是**宿主 `~/.claude`） | 子进程环境变量 | 环境变量 |
+| `project` / `local` | `${cwd}/.claude/settings.json` 与 `settings.local.json`（在 candidate 的可写工作区里） | 子进程环境变量 | **settings 赢** ⇒ 必须钉 |
+| `flag` | `--settings`（SDK 的 `options.settings`） | `settings.env` 里再给一份 | flag 赢 |
+
+⇒ 三个键（base URL 与两份凭据）**两处都要给**：子进程环境管「CLI 启动时的连通性预检」与其余一切，
+flag 档管「合并结果」。只给 settings 那一格会丢掉环境隔离，只给环境那一格则被 `project` 档盖掉。
+`model` 不必钉：实测 `options.model` 赢过 settings 里的 `model` 键与 `env.ANTHROPIC_MODEL`。
+
+**Claude 的禁用工具清单**：会话级定时任务（`CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup`）、
+`PushNotification`、`DesignSync` 在任何模型上都禁（本产品每行跑完即释放，没有「以后」，也没有收件人）；
+`WebSearch` **按模型名分档**——`modelId` 含 `claude`（大小写不敏感）时放行，其余模型禁用（它是厂商服务端
+执行的工具，第三方模型走同一网关时未必实现，与 codex 无条件关 `web_search` 的理由同源）。
 
 #### 5.6.5 生命周期与释放（对应第 4 步）
 
@@ -487,7 +520,9 @@ interface JudgeInput {
 
 ### 6.1 模型供应商
 
-`Table`（列：名称 / 协议类型 / API 地址 / 密钥掩码 / 模型数 / 操作）+ 「添加供应商」`Modal`：
+`Table`（列：名称 / 协议类型 / API 地址 / 模型数 / 操作）+ 「添加供应商」`Modal` + **模型清单 `Modal`**：
+
+**2026-09-30 修订（模型清单独立成对话框）**：原先模型清单长在「编辑供应商」弹窗里，现改为**列表每行操作列的「模型」按钮**（排在「编辑」之前）打开它自己的对话框（`provider-models-modal.tsx`）；「编辑」弹窗只剩四个接线字段（宽度随之从 720 收到 560），里面留一条 Alert 指路（把功能搬走却不留路标，读起来就是「功能没了」）。理由是两者的使用频率差一个量级：清单维护是高频动作，改接线很少发生。对话框**不做提交**（没有「确定」）：拉取、增删、保存窗口都是立即生效的独立请求，页脚只有一个「关闭」；目标供应商在开着时被删掉（`provider` 变 null）时给一条可见原因，而不是空白或一个注定 404 的按钮。原先那条「密钥掩码」列早已不渲染（2026-09-29），故这里是五列。
 
 | 字段 | 说明 |
 |---|---|
@@ -495,12 +530,13 @@ interface JudgeInput {
 | 协议类型 | `Radio`：OpenAI 兼容 / Anthropic 兼容 —— 决定它的模型能喂给哪些智能体 |
 | API 地址 | baseURL，如 `https://api.deepseek.com/v1`（openai）或 `https://api.deepseek.com/anthropic`（anthropic） |
 | API 密钥 | `Input.Password`；落盘后列表只显示掩码 |
-| 模型清单 | 「拉取模型」→ `GET {baseUrl}/models`；**Anthropic 协议下该按钮禁用并提示「该协议无 /models 接口，请手工维护」**。可手工增删 |
+| 模型清单（独立对话框，入口 = 列表的「模型」按钮） | 「拉取模型」→ `GET {baseUrl}/models`，**返回 404 时依次回退 `GET {baseUrl}/v1/models`、`GET {站点根}/models`、`GET {站点根}/v1/models`**（2026-09-26 修订：原先写的是「Anthropic 协议下该按钮禁用并提示『该协议无 /models 接口，请手工维护』」，见 F1 的修订理由；2026-09-30 再修订：补站点根的两条候选，见下一条；全都不通时错误文案点名试过的每一条路径）。可手工增删 |
 
-**拉模型的两个实现要点**：
+**拉模型的三个实现要点**：
 
 1. 请求照 `Authorization: Bearer <key>` 发；响应解析 `data[].id`。**不同供应商返回的字段名不完全一致**，解析时同时容忍 `data` 为字符串数组的形式。
 2. **拉取结果是合并而非覆盖**：手工添加的模型必须保留（`source: 'manual'` 的条目不被 `fetched` 结果冲掉），否则用户手工补的模型每次拉取都会丢。
+3. **地址形态兜底（2026-09-26 修订 + 2026-09-30 再修订）**：候选按顺序是 `{地址}/models` → `{地址}/v1/models`（地址已以 `/v1` 结尾时跳过这条）→ 站点根的 `/models` → 站点根的 `/v1/models`，重复的 URL 只留一次。只有 **404** 才换下一条候选——401/403/429/5xx 说明路径是通的，问题在密钥、限流或上游自己；「2xx 但一条 id 都认不出」同样不换（那是响应形状问题，不是地址形态问题）。两条构造规则：`/v1` 结尾的地址不再补 `/v1`（否则打出 `/v1/v1/models`）；地址本身就填到站点根时不重复出候选（常见填法的候选必须仍是两条）。**补根的理由**：`/anthropic` 一类 Messages 根与 `/api/v1` 一类带前缀的地址都是合理填法（README 就教前者），而清单接口往往挂在站点根上——只按配置地址拼会一路 404，用户的地址与密钥却都没错。**真机复验（2026-09-30，`https://api.deepseek.com/anthropic`）**：`/anthropic/models` 与 `/anthropic/v1/models` → 404，根 `/models` 与 `/v1/models` → 200（各 2 条）；`POST /api/providers/{id}/models/fetch` 返回 200 + 2 条模型——旧口径（只试前两条）在这个地址上必然失败。全都不通时错误文案要点名**试过的每一条**实际路径，否则用户看不出地址少了一段。
 
 **密钥的安全取舍**（必须写进代码注释）：服务端需要原 token 才能代调供应商 API，无法只存哈希；缓解措施是配置文件写盘后 `chmod 0600`（属主独占）+ 对外出口一律掩码。Windows 无 POSIX 权限位，`chmod` 仅能近似切换只读位，属主独占实际由 NTFS ACL 与用户目录隔离承担——尽力而为、失败不报错、不阻断保存。
 
@@ -701,8 +737,8 @@ api/
 ├── providers/[providerId]/models/fetch/route.ts
 ├── cases/route.ts
 ├── cases/[caseId]/route.ts
-├── cases/[caseId]/validate-repo/route.ts
-├── cases/[caseId]/commits/route.ts
+├── cases/validate-repo/route.ts
+├── cases/commits/route.ts
 ├── cases/generate-judge-prompt/route.ts
 ├── runs/route.ts
 ├── runs/[runId]/route.ts
@@ -824,7 +860,7 @@ api/
 | 应用数 | 单个 Next.js 应用，无第二个下游应用 |
 | 适配器总体形态 | provider 注册表 + 薄投影；不做统一 IR、不做多轮 live 会话（§5.6.1 A1 / A4） |
 | 适配器结果契约 | 在 SDK 原语之上补评测语义：`cached` token / `turns` / `durationMs` / `exitReason` / 归一化事件（A2） |
-| 家数与协议对应关系的唯一来源 | 注册表元数据 `protocolType`，表单与编排层都读它，不硬编码（A3） |
+| 家数与协议对应关系的唯一来源 | 注册表元数据 `protocolTypes`（**集合**，2026-09-30 起；此前是单值 `protocolType`），表单与编排层都读它、且都走 `acceptsProtocol()` 这一个判据，不硬编码（A3） |
 | 计量采集不到时 | 填 `null` 并显示「不支持计量」，**不填 0**（§5.6.3） |
 | dsh 的 usage 字段名 | **未确定**：实施前先做一次真实探测运行核对，字段名以探测为准；探不到就标 `usage: false`（§5.6.3） |
 | 超时与终止的释放顺序 | `interrupt()` → 终结在途 turn → `dispose()`，顺序不可颠倒；守卫按对象绑定且 `dispose` 幂等（A7 / §5.6.5） |

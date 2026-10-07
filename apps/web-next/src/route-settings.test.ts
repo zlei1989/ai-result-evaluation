@@ -15,12 +15,13 @@
  * 配置目录一律指向 `mkdtempSync` 出来的临时目录，并在 `afterEach` 复位——
  * 绝不碰真实的 `~/.aieval` / `~/.runs`。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig, setConfigDirForTesting } from '@aieval/core';
 import { PUT } from '@/app/api/settings/route';
+import { removeTreeWithRetry } from './testing/cleanup';
 
 let dir: string;
 
@@ -33,7 +34,7 @@ afterEach(() => {
   // 顺序要紧：先复位再删目录，否则万一删目录抛错，覆盖值会漏给下一个文件
   //（vitest 默认每文件一个进程，但同文件内的用例共享模块状态）。
   setConfigDirForTesting(null);
-  rmSync(dir, { recursive: true, force: true });
+  removeTreeWithRetry(dir);
 });
 
 /** 用真实的 Request 全局构造请求，和 Next 交给路由的入参同形 */

@@ -7,52 +7,24 @@
  *      「请求体不是合法 JSON」的 400 并让全站不可用；
  *   3. 损坏时抛含路径的中文原因——不能让 SyntaxError 冒充「请求体不合法」，否则排查方向被带偏。
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ServiceError, SETTINGS_DEFAULTS, type Settings } from '@aieval/contracts';
+import { ServiceError, SETTINGS_DEFAULTS, type Provider, type Settings, type TestCase } from '@aieval/contracts';
 import { createLogger } from './logger';
 
 const log = createLogger('config-store');
 
-export type ProtocolType = 'openai' | 'anthropic';
-
-/** 模型清单条目：source 区分自动拉取与手工维护（拉取是合并，不能冲掉手工项） */
-export interface ProviderModelRecord {
-  id: string;
-  source: 'fetched' | 'manual';
-}
-
-/** 供应商（含明文 API 密钥；对外出口一律掩码，见 api 层） */
-export interface ProviderRecord {
-  id: string;
-  name: string;
-  protocolType: ProtocolType;
-  baseUrl: string;
-  apiKey: string;
-  models: ProviderModelRecord[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** 用例（脚手架阶段只定义形状，功能阶段才读写） */
-export interface TestCaseRecord {
-  id: string;
-  title: string;
-  repoPath: string;
-  commitHash: string | null;
-  taskPrompt: string;
-  judgePrompt: string;
-  judgeProviderId: string | null;
-  judgeModelId: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
+/**
+ * 应用配置的落盘形态：settings + providers + cases 三段。
+ * providers / cases 直接复用 contracts 的领域类型——core 曾经自己声明过四个同形类型
+ * （ProviderRecord / ProviderModelRecord / TestCaseRecord / ProtocolType），那是两处会漂移的
+ * 重复定义：契约加一个字段而 core 忘了跟，落盘文件就少一列，而 `loadConfig` 的类型却不会报错。
+ */
 export interface AppConfig {
   settings: Settings;
-  providers: ProviderRecord[];
-  cases: TestCaseRecord[];
+  providers: Provider[];
+  cases: TestCase[];
 }
 
 /** 测试可覆盖的配置目录；为 null 时回落到环境变量与家目录 */
@@ -92,6 +64,24 @@ function defaults(): AppConfig {
 }
 
 /**
+ * 把落盘的 settings 归一化成契约形状：**只认 `SETTINGS_DEFAULTS` 里有的键**（缺的补默认值，
+ * 多的丢掉）。
+ *
+ * 为什么要丢「多的」（2026-09-28）：loadConfig **故意不做 schema 校验**（一条手改坏的值不该让
+ * 设置页打不开），于是旧版本写下、如今已从契约里删掉的字段（例如「单行超时」`rowTimeoutMs`）
+ * 会一路带进读侧——`GET /api/settings` 于是回一个契约里根本不存在的字段。键表直接取自
+ * `SETTINGS_DEFAULTS`（契约的真源），新增字段只要进了默认值就自动被认，不需要在这里维护第二份清单。
+ */
+function normalizeSettings(raw: unknown): Settings {
+  const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+  const normalized: Record<string, unknown> = { ...SETTINGS_DEFAULTS };
+  for (const key of Object.keys(SETTINGS_DEFAULTS)) {
+    if (source[key] !== undefined) normalized[key] = source[key];
+  }
+  return normalized as unknown as Settings;
+}
+
+/**
  * 读配置：文件不存在返回默认值；缺失字段归一化；BOM 容忍；损坏抛中文原因。
  * 归一化是必要的——旧版本写下的文件可能缺字段，但下行契约要求字段恒存在。
  */
@@ -103,7 +93,7 @@ export function loadConfig(): AppConfig {
   try {
     const parsed = JSON.parse(text) as Partial<AppConfig>;
     return {
-      settings: { ...SETTINGS_DEFAULTS, ...parsed.settings },
+      settings: normalizeSettings(parsed.settings),
       providers: parsed.providers ?? [],
       cases: parsed.cases ?? [],
     };
@@ -117,6 +107,17 @@ export function loadConfig(): AppConfig {
 }
 
 /**
+ * 目标文件是否只读。用于区分 rename 覆盖失败的两种成因（见 saveConfig 的 catch）。
+ * Windows 无 POSIX 权限位，libuv 用写位表达文件系统的只读属性（只读文件报 0444），
+ * 故判断 `(mode & 0o200) === 0` 在两个平台都成立。
+ * 文件不存在时返回 false：目标不存在就无需删除，rename 会直接创建它。
+ */
+function isReadOnly(file: string): boolean {
+  const stat = statSync(file, { throwIfNoEntry: false });
+  return stat !== undefined && (stat.mode & 0o200) === 0;
+}
+
+/**
  * 写配置：确保目录存在 → 写临时文件（创建即 0600）→ 尽力收紧权限 → rename 覆盖。
  * rename 是只读安全的原子替换：libuv 在 Windows 上以 MOVEFILE_REPLACE_EXISTING 语义调用，
  * 覆盖一个可写目标会成功——所以正常情况下**不需要**先删目标。
@@ -124,7 +125,7 @@ export function loadConfig(): AppConfig {
  * 而 loadConfig() 会静默回落默认值（设置、供应商与明文 apiKey 一起丢）；
  * ② 并发读取会看到 ENOENT。
  * 唯一需要删除的场景是目标**只读**：此时裸 rename 抛 EPERM，而 rmSync 能删掉只读文件。
- * 故仅在 rename 失败时才回退到「删掉再重试」，正常路径不经过它。
+ * 故仅在 rename 失败**且目标确实只读**时才回退到「删掉再重试」，正常路径不经过它。
  */
 export function saveConfig(config: AppConfig): void {
   const dir = getConfigDir();
@@ -146,11 +147,18 @@ export function saveConfig(config: AppConfig): void {
   try {
     renameSync(tmp, file);
   } catch (error) {
-    log.warn('rename 覆盖配置失败，回退到删除后重试', {
+    // rename 覆盖失败有两种成因，症状同为 EPERM、处置却相反，必须分开：
+    //   ① 目标只读——替换只读文件在 Windows 上必失败，只能先删目标再重命名；
+    //   ② 杀软/索引器瞬时占用——纯粹是瞬时的，重试 rename 就过去了。
+    // 把 ② 当成 ① 处理会**白白**制造「配置文件不存在」的窗口（上面 JSDoc 里的窗口①）：
+    // 实测 `pnpm test` 全量并发时会稳定触发（`EPERM: operation not permitted, rename`），
+    // 此时目标完全可写、删它没有任何必要。故只有目标确实只读时才删。
+    log.warn('rename 覆盖配置失败，按目标是否只读决定是否先删除', {
       file,
+      readOnly: isReadOnly(file),
       reason: error instanceof Error ? error.message : String(error),
     });
-    rmSync(file, { force: true });
+    if (isReadOnly(file)) rmSync(file, { force: true });
     renameSync(tmp, file);
   }
   log.info('配置已保存', { file });

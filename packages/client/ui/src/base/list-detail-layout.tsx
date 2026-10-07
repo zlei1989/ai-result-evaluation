@@ -47,6 +47,16 @@ export interface ListDetailLayoutProps {
 /** 列表栏的几何：弹性列（吃剩余），只给一个不塌的下限 */
 const LIST_MIN_WIDTH = 120;
 
+/**
+ * 两栏内容的内边距（四边同一份）。
+ *
+ * **它同时是详情里吸底操作栏的对齐依据**（2026-10-07 用户口径：「上下边距一样宽」）：
+ * 那一栏的下边空隙就是本槽的 `padding`（栏底与内容之间那 8px 是这里的），所以它自己只补**上边**
+ * 同一个值——两处必须逐字相同，否则上下就不一样宽了。故导出成一个常量，不各写一个 8
+ * （同 `HANDLE_HIT_WIDTH` 的理由：几何数字只留一份）。
+ */
+export const PANE_PADDING = 8;
+
 export function ListDetailLayout({
   list,
   detail,
@@ -110,7 +120,7 @@ export function ListDetailLayout({
     min: LIST_MIN_WIDTH,
     max: Number.MAX_SAFE_INTEGER,
     flexible: true,
-    style: { padding: 8 },
+    style: { padding: PANE_PADDING },
   };
 
   const detailPane: ResizablePane = {
@@ -121,7 +131,7 @@ export function ListDetailLayout({
     min: minDetailWidth,
     max: maxDetailWidth,
     // 右栏内容可长（用例正文、评测日志），必须自己滚：宿主默认 overflow:hidden 会把它裁掉
-    style: { overflow: 'auto', padding: 8 },
+    style: { overflow: 'auto', padding: PANE_PADDING },
   };
 
   return (
@@ -134,7 +144,7 @@ export function ListDetailLayout({
         />
       ) : (
         // 单栏：列表占满。不要用「宽度为 0 的 Panel」代替——Splitter 的 min 会把它夹回来
-        <div style={{ height: '100%', minHeight: 0, overflow: 'auto', padding: 8 }}>{list}</div>
+        <div style={{ height: '100%', minHeight: 0, overflow: 'auto', padding: PANE_PADDING }}>{list}</div>
       )}
     </PageShell>
   );

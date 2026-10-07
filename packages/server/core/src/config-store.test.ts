@@ -3,12 +3,13 @@
  * 配置落盘：默认值、缺失字段归一化、原子写、BOM 容忍、损坏配置的中文报错。
  * 注意：测试一律用 setConfigDirForTesting 指向临时目录，不碰真实 ~/.aieval。
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ServiceError, SETTINGS_DEFAULTS } from '@aieval/contracts';
+import { ProviderSchema, ServiceError, SETTINGS_DEFAULTS, TestCaseSchema } from '@aieval/contracts';
 import { getConfigDir, loadConfig, saveConfig, setConfigDirForTesting } from './config-store';
+import { removeTreeWithRetry } from './testing/cleanup';
 
 let dir: string;
 
@@ -19,7 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
-  rmSync(dir, { recursive: true, force: true });
+  removeTreeWithRetry(dir);
 });
 
 describe('getConfigDir', () => {
@@ -52,8 +53,8 @@ describe('loadConfig', () => {
 
   it('两次 loadConfig 返回的对象互不影响（注释承诺的「每次返回新对象」）', () => {
     const first = loadConfig();
-    first.settings.rowTimeoutMs = 999;
-    expect(loadConfig().settings.rowTimeoutMs).toBe(SETTINGS_DEFAULTS.rowTimeoutMs);
+    first.settings.diffBudgetBytes = 999;
+    expect(loadConfig().settings.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
   });
 
   it('settings 的嵌套字段不与共享默认值常量别名（structuredClone 的实际意义）', () => {
@@ -78,9 +79,24 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.settings.theme).toBe('dark');
     // 未写出的字段回落到默认值，保证下行字段恒存在
-    expect(config.settings.rowTimeoutMs).toBe(SETTINGS_DEFAULTS.rowTimeoutMs);
+    expect(config.settings.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
     expect(config.settings.workspaceRoot).toBe(SETTINGS_DEFAULTS.workspaceRoot);
     expect(config.providers).toEqual([]);
+  });
+
+  // 2026-09-28 删掉「单行超时」之后，磁盘上**已有**的 config.json 里还留着 rowTimeoutMs。
+  // 读侧**只认契约里还有的键**：它既不能让读盘失败，也不该继续出现在 `GET /api/settings` 的
+  // 响应里（那是契约里不存在的字段）——落盘数据照原样留在文件里，下一次保存自然把它带走。
+  it('旧配置里多出来的 rowTimeoutMs 被丢掉（不抛、其余字段照常、读侧看不到它）', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ settings: { theme: 'dark', rowTimeoutMs: 1_800_000 } }),
+      'utf8',
+    );
+    const config = loadConfig();
+    expect(config.settings.theme).toBe('dark');
+    expect(config.settings.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
+    expect('rowTimeoutMs' in config.settings).toBe(false);
   });
 
   it('容忍外部工具写入的 UTF-8 BOM', () => {
@@ -186,5 +202,156 @@ describe('saveConfig', () => {
     vi.resetModules();
     const restored = await import('./config-store');
     restored.setConfigDirForTesting(dir);
+  });
+
+  it('rename 瞬时失败（Windows 杀软/索引器占用）时不得删除目标，重试即可', async () => {
+    // 为什么单列一条：EPERM 有两种成因，症状一样、处置相反。
+    //   ① 目标只读——替换必失败，只能先删目标再重命名（下一条守卫钉住这一半）；
+    //   ② 杀软/索引器瞬时占用——纯粹是瞬时的，重试 rename 就过去了。
+    // 把 ② 也当成 ① 处理会白白制造「配置文件不存在」的窗口：崩溃或并发读取撞进去，
+    // loadConfig() 会静默回落默认值，设置、供应商与明文 apiKey 一起丢。
+    // 实测这条窗口真的会被触发：`pnpm test` 全量并发跑时稳定复现（8 次里红 1～2 次），
+    // 日志里是 `[WARN] rename 覆盖配置失败，回退到删除后重试 … EPERM`。
+    vi.resetModules();
+    const calls: string[] = [];
+    let renameAttempts = 0;
+    let failNextRename = false;
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        renameSync: (from: unknown, to: unknown) => {
+          renameAttempts += 1;
+          calls.push(`rename:${String(from)}->${String(to)}`);
+          if (failNextRename) {
+            failNextRename = false;
+            throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+          }
+          return (actual.renameSync as (...a: unknown[]) => void)(from, to);
+        },
+        rmSync: (path: unknown, ...rest: unknown[]) => {
+          calls.push(`rm:${String(path)}`);
+          return (actual.rmSync as (...a: unknown[]) => void)(path, ...rest);
+        },
+      };
+    });
+
+    const {
+      saveConfig: saveConfigMocked,
+      loadConfig: loadConfigMocked,
+      setConfigDirForTesting: setDir,
+    } = await import('./config-store');
+    setDir(dir);
+    // 先落一份「健康的既有配置」：目标可写（0600 写出来，Windows 上不带只读属性）
+    const seeded = loadConfigMocked();
+    seeded.settings.theme = 'dark';
+    saveConfigMocked(seeded);
+
+    renameAttempts = 0;
+    calls.length = 0;
+    failNextRename = true;
+    const next = loadConfigMocked();
+    next.settings.theme = 'light';
+    saveConfigMocked(next);
+
+    // 失败一次就该重试（而不是放弃保存）
+    expect(renameAttempts).toBe(2);
+    // 目标可写 ⇒ 重试足以成功，任何对目标的删除都是多余的丢配置窗口
+    expect(calls).not.toContain(`rm:${join(dir, 'config.json')}`);
+    expect(loadConfigMocked().settings.theme).toBe('light');
+
+    vi.doUnmock('node:fs');
+    vi.resetModules();
+    const restored = await import('./config-store');
+    restored.setConfigDirForTesting(dir);
+  });
+
+  it('目标被外部置为只读时仍能保存（只读这一半回退不许被顺手删掉）', async () => {
+    // 上一条守卫要求「目标可写时不许删」，很容易被过度修正成「永远不删」——那会让只读目标
+    // 再也保存不了（裸 rename 替换只读文件在 Windows 上必失败）。这条从**结果**侧钉住另一半：
+    // 只读目标仍必须保存成功。
+    // renameSync 用桩模拟 Windows 语义（目标只读则抛 EPERM），否则在「本机 rename 恰好能覆盖
+    // 只读文件」的环境里这条会变成没有区分力的空断言。
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        renameSync: (from: unknown, to: unknown) => {
+          const target = actual.statSync(String(to), { throwIfNoEntry: false });
+          if (target && (target.mode & 0o200) === 0) {
+            throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+          }
+          return (actual.renameSync as (...a: unknown[]) => void)(from, to);
+        },
+      };
+    });
+
+    const {
+      saveConfig: saveConfigMocked,
+      loadConfig: loadConfigMocked,
+      setConfigDirForTesting: setDir,
+    } = await import('./config-store');
+    setDir(dir);
+    const seeded = loadConfigMocked();
+    seeded.settings.theme = 'dark';
+    saveConfigMocked(seeded);
+
+    const file = join(dir, 'config.json');
+    chmodSync(file, 0o444);
+    // 前置条件：本平台的 stat 必须真的能反映只读（Windows 上 libuv 用写位表达只读属性）。
+    // 不成立的话下面的断言就是在测一个不存在的场景，必须在这里就炸掉。
+    expect(statSync(file).mode & 0o200).toBe(0);
+
+    const next = loadConfigMocked();
+    next.settings.theme = 'light';
+    saveConfigMocked(next);
+
+    expect(loadConfigMocked().settings.theme).toBe('light');
+
+    vi.doUnmock('node:fs');
+    vi.resetModules();
+    const restored = await import('./config-store');
+    restored.setConfigDirForTesting(dir);
+  });
+});
+
+describe('AppConfig 与契约同形（去重复类型后的回归守卫）', () => {
+  it('写出的 Provider / TestCase 记录能被 contracts 的 schema 直接解析', () => {
+    const config = loadConfig();
+    config.providers.push({
+      id: 'p-1',
+      name: 'DeepSeek 官方',
+      protocolType: 'openai',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-abcdefghijklmn',
+      models: [{ id: 'deepseek-chat', source: 'fetched' }],
+      createdAt: '2026-09-22T10:30:00.000Z',
+      updatedAt: '2026-09-22T10:30:00.000Z',
+    });
+    config.cases.push({
+      id: 'c-1',
+      title: 'LRU 缓存',
+      repoPath: 'D:/repos/demo',
+      commitHash: null,
+      repoBranch: null,
+      taskPrompt: '实现一个 LRU 缓存',
+      // 判据已换成**评分表**（Task 2：`TestCase.judgePrompt` → `rubric`）。形状与 evaluator 夹具同一约定：
+      // 一组、一项、带 id——本用例只关心「core 写出的记录能被契约 schema 解析」，表的内容是叙述性的
+      rubric: { groups: [{ name: '一、功能实现', items: [{ id: 'A1', goal: '实现 LRU 缓存', weight: 20 }] }] },
+      createdAt: '2026-09-22T10:30:00.000Z',
+      updatedAt: '2026-09-22T10:30:00.000Z',
+    });
+    saveConfig(config);
+
+    const roundTripped = loadConfig();
+    // 用契约 schema 解析落盘再读回的对象：core 的本地类型一旦与契约漂移（少字段、多字段、
+    // 枚举取值不同），这里会直接失败——这正是「去重复声明」要守的那条线。
+    const provider = ProviderSchema.safeParse(roundTripped.providers[0]);
+    const testCase = TestCaseSchema.safeParse(roundTripped.cases[0]);
+    expect(provider.success).toBe(true);
+    expect(testCase.success).toBe(true);
+    expect(roundTripped.providers[0]?.protocolType).toBe('openai');
+    expect(roundTripped.cases[0]?.commitHash).toBeNull();
   });
 });

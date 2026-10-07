@@ -4,12 +4,13 @@
  * 注意：校验必须「真写一次再删」——只检查父目录是否存在不够，
  * 磁盘满、无权限、路径过长都会在真正写入时才失败。
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, SETTINGS_DEFAULTS } from '@aieval/contracts';
 import { defaultWorkspaceRoot, expandHome, resolveRootForRead, validateWorkspaceRoot } from './paths';
+import { removeTreeWithRetry } from './testing/cleanup';
 
 const created: string[] = [];
 
@@ -20,7 +21,7 @@ function makeTmp(): string {
 }
 
 afterEach(() => {
-  for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of created.splice(0)) removeTreeWithRetry(dir);
 });
 
 describe('expandHome', () => {
@@ -89,7 +90,7 @@ describe('validateWorkspaceRoot', () => {
     const result = validateWorkspaceRoot('~/.runs-test-should-not-exist');
     expect(result.resolved).toBe(join(homedir(), '.runs-test-should-not-exist'));
     // 清理，别在开发者家目录留垃圾
-    rmSync(result.resolved, { recursive: true, force: true });
+    removeTreeWithRetry(result.resolved);
   });
 
   it('校验时会真写一个探针文件并删掉，不留残留文件', () => {
