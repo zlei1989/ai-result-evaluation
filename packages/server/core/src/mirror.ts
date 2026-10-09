@@ -34,7 +34,7 @@ function positiveOr(value: number | undefined, fallback: number): number {
  * 墙钟时长的说法：不足一分钟按秒说，满一分钟才按分钟说。
  * 探活的默认上限是 15s，只按分钟说会渲染成「超过 0 分钟」——一句没有信息量的话，
  * 而用户正要用它判断「等了多久 / 要不要重试」；抓取的默认上限是 600_000ms，
- * 按分钟说正好是 spec §5.6 的逐字文案「超过 10 分钟」。
+ * 按分钟说正好是 spec §4.5 的逐字文案「超过 10 分钟」。
  */
 function timeoutDurationText(ms: number): string {
   return ms < 60_000 ? `超过 ${Math.round(ms / 1000)} 秒` : `超过 ${Math.round(ms / 60_000)} 分钟`;
@@ -116,7 +116,7 @@ function writeMirrorRecord(mirrorDir: string, record: { url: string; fetchedAt: 
 }
 
 /**
- * git 失败与文件系统失败的统一出口：中文原因在前、原文在后（spec §8.3）。
+ * git 失败与文件系统失败的统一出口：中文原因在前、原文在后（spec §4.5）。
  * `errno` 那类失败（Windows 上尤其常见 EPERM / EBUSY / ENOTEMPTY）原文就是 Node 的 message，
  * 它必须跟在中文原因后面进 message 与 context——只有它能把「盘只读」与「目录被别的进程捏着」分开。
  */
@@ -130,7 +130,7 @@ function fsReason(error: unknown): string {
  * 为什么失败要折成 NOT_WRITABLE 而不是裸抛 errno：这里建不出目录只有一种成因——**工作区根不可写**
  * （只读盘 / 权限 / 路径被同名文件占住），处置是去设置页换一个根目录，而裸 errno 会被路由层折成
  * 一句「服务端内部错误」（见 apps/web-next/src/server-context.ts），用户拿不到任何可处置的信息。
- * spec §8.1 最后一行给的就是这条口径（工作区根那一类走 NOT_WRITABLE）。
+ * spec §10 最后一行给的就是这条口径（工作区根那一类走 NOT_WRITABLE）。
  */
 export function ensureRemotesDir(dir: string): void {
   try {
@@ -143,7 +143,7 @@ export function ensureRemotesDir(dir: string): void {
 /**
  * 确保镜像存在：就绪即复用（**不联网**），否则清残留 → 克隆到 tmp → 原子 rename。
  * git 调用的失败经 classifyRemoteFailure 折成带中文原因的 ServiceError；两处前置的文件系统调用
- * （建 remotes 目录、克隆前清残留）也各有各的中文原因（见各自的注释与 spec §8.1 最后一行）——
+ * （建 remotes 目录、克隆前清残留）也各有各的中文原因（见各自的注释与 spec §10 最后一行）——
  * **裸 errno 一个都不许漏给路由层**，它会被折成一句没有信息量的「服务端内部错误」。
  * 两处**收尾清理**是例外，只 WARN 不抛：克隆失败后那次（下面）、以及 promoteMirror 里那次
  * （改名已经成功时，一句清理 errno 不该把成功说成失败）。
@@ -167,7 +167,7 @@ export function ensureMirror(input: { workspaceRoot: string; url: string; timeou
     rmSync(dir, { recursive: true, force: true });
   } catch (error) {
     // 残骸清不掉 = 这份镜像**重建不了**（Windows 上常见：半成品目录被别的进程捏着 → EPERM / EBUSY）。
-    // spec §8.1 最后一行要的就是这句话：<中文原因>：<dir>（<errno 原文>）
+    // spec §10 最后一行要的就是这句话：<中文原因>：<dir>（<errno 原文>）
     throw new ServiceError('INTERNAL', `远端镜像状态损坏且无法重建：${dir}（${fsReason(error)}）`, {
       context: { mirrorDir: dir, url: input.url },
       cause: error,
@@ -366,7 +366,7 @@ function probeDefaultBranch(mirrorDir: string, url: string, timeoutMs: number): 
  * 名字拿不到（远端不发 symref）时**不猜**：HEAD 保持现状，与修复前同形。
  *
  * 修复动作是**本地**的 `symbolic-ref`：只改镜像自己的 HEAD 指向，一个字都不上网。
- * 它失败说明这份镜像真的坏到修不了（写不进去 = 状态损坏且无法重建），按 spec §8.1 最后一行
+ * 它失败说明这份镜像真的坏到修不了（写不进去 = 状态损坏且无法重建），按 spec §10 最后一行
  * 抛 INTERNAL，不带裸 errno 漏给路由层。
  */
 function alignDefaultBranch(mirrorDir: string, url: string, known: string | undefined, timeoutMs: number): void {
@@ -385,7 +385,7 @@ function alignDefaultBranch(mirrorDir: string, url: string, known: string | unde
 }
 
 /**
- * 远端失败的分类（spec §8.1 / §8.2）。三件事按序判：
+ * 远端失败的分类（spec §4.5，错误码归 §10）。三件事按序判：
  *   ① 超时（靠信号判定，不靠关键词——远端自己报的 timeout 原文长得很像）；
  *   ② 关键词表：认证 / DNS / 不可达 / 主机指纹 / 不存在；
  *   ③ 其余归成 NOT_A_GIT_REPO 并把原文带上（中文原因在前，git 原文在后，RG11）。
@@ -402,7 +402,7 @@ export function classifyRemoteFailure(
 
   if (isTimeoutKill(error)) {
     // 墙钟杀掉时 gitMessage 只有 Node 的英文（`spawnSync git ETIMEDOUT`、stderr 为空），
-    // 所以中文原因必须在这里自己写出来（spec §5.6），不能把那段英文当原因丢给用户。
+    // 所以中文原因必须在这里自己写出来（spec §4.5），不能把那段英文当原因丢给用户。
     // 动词与时长都按调用方的口径说：探活（默认 15s）既不是「拉取」，也不该说成「超过 0 分钟」。
     const kind = ctx.kind ?? 'transfer';
     const timeoutMs = positiveOr(ctx.timeoutMs, kind === 'probe' ? REMOTE_PROBE_TIMEOUT_MS : REMOTE_TRANSFER_TIMEOUT_MS);
@@ -438,7 +438,7 @@ export function classifyRemoteFailure(
       { context: { ...context, host }, cause: error },
     );
   }
-  // 「不是仓库」比「不存在 / 无权限」更具体，spec §8.1 给的是两句不同的话，先判这一条
+  // 「不是仓库」比「不存在 / 无权限」更具体，spec §4.5 给的是两句不同的话，先判这一条
   if (detail.includes('does not appear to be a git repository')) {
     return new ServiceError('NOT_A_GIT_REPO', `不是 git 仓库：${ctx.url}（${detail}）`, { context, cause: error });
   }
@@ -524,7 +524,7 @@ export function resolveRemoteRef(
       return execute(mirrorDir, ['rev-parse', `refs/heads/${branch}^{commit}`]).trim();
     } catch (error) {
       // `refs/heads/` 前缀是必需的：裸名会按 git 的 ref 解析顺序命中同名 tag 等别的命名空间，
-      // 把「远端没这个分支」判成「有」（spec §8.1 的 INVALID_REF 只认分支）
+      // 把「远端没这个分支」判成「有」（spec §4.5 的 INVALID_REF 只认分支）
       throw new ServiceError('INVALID_REF', `分支不存在：${branch}（远端：${url}）`, {
         context: { mirrorDir, url, branch, gitMessage: gitMessage(error) },
       });
@@ -552,7 +552,7 @@ const AUTH_PATTERNS = [
 /**
  * 网络类原文。后两条是 curl 8 的措辞：本机 git 2.47 实测「连接被拒」报的是
  * `Failed to connect to 127.0.0.1 port N after N ms: Could not connect to server`，
- * **整句里没有 `Connection refused`**——只按 spec §8.2 的旧措辞匹配会让它掉进「无法归因」。
+ * **整句里没有 `Connection refused`**——只按 spec §4.5 的旧措辞匹配会让它掉进「无法归因」。
  */
 const UNREACHABLE_PATTERNS = [
   'Connection timed out',

@@ -1,596 +1,781 @@
 /**
- * codex 的**消息归一**（spec v3 §3.1 / §3.2 / §3.3 / §4.2）：把会话文件折成统一的 `AgentMessage`
- * 与 `SubagentRecord`。事件投影仍在 `events.ts` / `transcript.ts`（行级审计与摘要），本文件只管内容级视图。
+ * codex 的**内容级归一**：app-server 通知 → 契约的消息草稿与子任务行（spec v3 §3 / §4）。
+ * 行级事件（计量、时长、失败）在 `events.ts`，两者共用 `run-state.ts` 的同一把尺子。
  *
- * **为什么这一家只从会话文件出消息**（与另两家的差别，写清楚以免被当成遗漏）：
- *   · 事件流的 `item` 缺三样东西——**工具真名**（只有 `command_execution` 这种派生条目名）、
- *     **结构化入参**（只有 `command` 文本）、以及工具结果与调用之间的 `call_id`；
- *   · 而同一个条目在会话文件里是**完整记录**（`CommandExecution` 带 `command[]` / `stdout` /
- *     `stderr` / `exit_code` / `status`，`function_call` 带真名与 `arguments`，`function_call_output`
- *     按 `call_id` 配对）；
- *   · 两边都出会让**每一条消息出现两次**（身份键不同：事件流用 `item_N`、会话文件用 `call_id`），
- *     而「同一件事两条记录」正是本契约要消灭的东西。
- *   ⇒ 一次投递，取自会话文件的权威记录。代价如实登记：**运行期看不到 codex 的消息**
- *     （会话文件要等流跑完才完整），运行期只有事件流给出的派发事件与状态。
- *
- * 取值路径逐条（真机逐字核过，见 `probe/dumps/v4/**\/rollout-*.jsonl`）：
- *   · `item.type === 'AgentMessage'` → `content[].text`（正文）→ `text` 块。
- *   · `item.type === 'Reasoning'` → `summary_text[]` 是**厂商摘要**（`textKind: 'summary'`），
- *     `raw_content[]` 是完整推理正文（`textKind: 'full'`）。真机的 wire 层 `summary` 常为空数组，
- *     故**优先取 `raw_content`**，摘要只在正文缺席时兜底——两者都不许用 `output` 之类的统计量顶替。
- *   · `item.type === 'CommandExecution'` → 一次 `run-shell`：工具调用块的真名取 `response_item/
- *     function_call.name`（同一 `call_id` 配对），入参是那份 `arguments`（JSON 字符串 ⇒ 解析成对象）；
- *     结果块给 `aggregated_output` 文本与结构化 `{exitCode, status}`。
- *     ⚠️ `aggregated_output` 是 **stdout 与 stderr 合流**（拆不开）⇒ 归一结果里不编 `stderr`。
- *   · `item.type === 'CollabAgentToolCall'` → `spawn-agent` 族的工具调用（`tool` 是协作动作名），
- *     并据 `agents_states`（**以子线程 id 为键的对象**）产出/刷新子任务行。
- *   · `item.type === 'UserMessage'` **不产出消息**：那是喂进去的输入，不是模型产出。
- *   · `roundTrip`：按**模型答复条目**（`AgentMessage`）的 `item.id` 去重计数（2026-10-05 收窄，
- *     spec §2.3：与事件流那条通道同一把尺子，见 `TURN_ITEM_TYPES`）。
- *     语义如实登记：codex 的「轮次」从此是「**模型答复条目数**」，比旧口径（`Reasoning` +
- *     `AgentMessage`，被推理条目系统性抬高）更低——一次运行一个 `AgentMessage` 都没有时轮次是
- *     `null`（界面显示「未采集」），那比一个被抬高的假数好。
- *   · `vendorTurn` / `step`：**这家没有**（恒 `null`）。
- *   · `parentSubagentId`：子线程会话文件的 `session_meta.parent_thread_id`（主线程那份为 `null`），
- *     **但顶层子任务记 `null`**——`spawn_agent` 派出的子线程这一格就是主线程 id，照抄会让会话树上
- *     多出一条指向不存在节点的父链（见 `nestedParentOf`）。
- *   · 子任务状态：`agents_states[<子线程 id>].status`（事件流与会话文件同形）；**取不到就记
- *     `unknown` + `statusMissing`**，不猜终态。答复取同格的 `message`，或子会话文件里最后一条
- *     `AgentMessage`。
- *   · 子任务级用量：子会话的 `token_count.info.total_token_usage`（含 `reasoning_output_tokens`）。
+ * 四条取值口径：
+ *   1. **一条通知只在一处归一**：本轮运行期由通知驱动（实时），收尾由 `reader` 补**子线程的历史**
+ *      ——子线程的 `item/*` 是否推给连接由上游决定，`reader` 是那条路上唯一的兜底。
+ *   2. **块序号不由本模块分配**：契约里文本/思考块的标识就是「该载体内的第几个块」，合并器按
+ *      **首次到达顺序**发号（`message.ts` 的 `applyBlock`）⇒ 这里一律给 `{ kind: 'index', index: 0 }`
+ *      ——同键的后续投递（增量 → 快照）落进同一个槽位，不同键各自占一个新号。
+ *   3. **不编造**：拿不到就是 `null`。推理 `content[]` 为空（上游只回密文）时正文是 `null` +
+ *      `'none'`，**绝不回落到 `summary`** 冒充全文；子任务状态推不出来就记 `unknown` + `statusMissing`。
+ *   4. **消息级用量恒 `null`**：app-server 只到线程级（`ThreadTokenUsage{total,last}`），对 `total`
+ *      差分在并发子线程与 turn/item 边界不一致时无法证明归属（§3.1）⇒ 不拿线程级读数冒充单条消息。
  */
-import type { AgentMessage, SubagentRecord, UsageTokens } from '@aieval/contracts';
-import { asRecord, readNumber, readString } from '../../json';
-import {
-  textBlockDraft,
-  thinkingBlockDraft,
-  toolCallBlockDraft,
-  truncate,
-  usageTokens,
-  type MessageDraft,
-} from '../../message';
-import { normalizedInput } from './transcript';
-import {
-  discoverChildThreads,
-  findTranscript,
-  readTranscript,
-  type ChildThreadDiscovery,
-  type CodexTranscript,
-  type CodexTranscriptCompletedItem,
-  type CodexTranscriptReader,
-  type DiscoveredChildThread,
-} from './transcript';
+import type { SubagentRecord, UsageTokens } from '@aieval/contracts';
+import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, type MessageDraft } from '../../message';
+import type {
+  AppServerItem,
+  AppServerItemEntry,
+  AppServerNotificationPayload,
+  AppServerThread,
+} from './appserver/protocol';
+import type { AppServerThreadRef } from './appserver/reader';
+import { breakdownToTokens } from './events';
+import { blockIndexFor, countRoundTrips, roundTripsOf, type CodexRunState } from './run-state';
 
-/** 归一产物：主线程与全部子线程的消息 + 子任务行 */
+/** 归一产物：消息草稿与子任务行（同一身份多次投递，后者是完整快照） */
 export interface CodexMessageProjection {
-  messages: MessageDraft[];
+  drafts: MessageDraft[];
   subagents: SubagentRecord[];
 }
 
-/**
- * 算作「一次模型往返」的条目类型（2026-10-05 收窄，spec §2.3）：**与会话文件之外那条通道同一把尺子**
- * （`events.ts` 的 `TURN_ITEM_TYPES`）。⚠️ 会话文件里看得见 `Reasoning` 而事件流看不见它
- * （DeepSeek 路由上 codex 不投影 reasoning item）⇒ 数它就会得到两套轮次号（真机：42 vs 18）。
- */
-const TURN_ITEM_TYPES = new Set(['AgentMessage']);
-
-export function projectCodexMessages(input: {
-  codexHome: string;
-  mainThreadId: string | null;
-  /** 子线程 id（来自 `collab_tool_call.receiver_thread_ids`），顺序即事件顺序 */
-  childThreadIds: readonly string[];
-  /** 读取函数；缺省 = 真的读盘。测试喂合成 transcript 时只换这一格（与事件侧同一个注入口） */
-  read?: CodexTranscriptReader['read'];
-  /**
-   * 已经算好的一份**递归发现**（`transcript.ts` 的 `discoverChildThreads`）。缺省 = 自己发现一次。
-   *
-   * ⚠️ **2026-10-06 起内容面也走递归发现**（此前只吃事件流点名的种子）：只吃种子时，
-   * **沿 spawn 链递归发现的嵌套子线程既没有子任务行、也没有消息**——而它们的用量**已经**进了
-   * `subagentTokens`（那一份从 R7 起就是递归的）⇒ 界面上「Σ 各行 ≠ 分量」，且嵌套子智能体的
-   * 用量在抽屉里根本没有那一行。`index.ts` 的每个读周期只发现一次，把同一份传给内容面与用量面。
-   */
-  discovery?: ChildThreadDiscovery;
-}): CodexMessageProjection {
-  const read = input.read ?? readTranscript;
-  const messages: MessageDraft[] = [];
-  const subagents: SubagentRecord[] = [];
-  /** 主线程 id 收进 const：非空判定要能**穿过下面的闭包**（`dispatchOf` 在闭包里读它） */
-  const mainThreadId = input.mainThreadId;
-  if (mainThreadId === null) return { messages, subagents };
-  const main = readByThreadId(input.codexHome, mainThreadId, read);
-  if (main === null) return { messages, subagents };
-  messages.push(...threadMessages(main, null));
-  /**
-   * 递归发现（含嵌套）。⚠️ 缺省那一支是给**测试与其它调用方**的方便门：生产路径（`index.ts`）
-   * 总是把同一个周期里算好的那一份传进来，免得一次刷新里发现两遍。
-   */
-  const threads =
-    input.discovery?.threads ??
-    discoverChildThreads({
-      codexHome: input.codexHome,
-      childThreadIds: input.childThreadIds,
-      mainThreadId,
-      read,
-    }).threads;
-  /**
-   * **派发信息按父线程取**（2026-10-06 修）：`dispatchIndex` 读的是「谁派发了它」那一份文件里的
-   * 协作条目，而嵌套子线程的派发者是**另一条子线程**（不是主线程）⇒ 只建 `dispatchIndex(main)`
-   * 时嵌套行的 `kind` / `parentCallId` 恒 `null`，界面按 `parentCallId` 找派发点就找不到它
-   * （`build-model.ts` 的 ③ 名字回填只看主会话消息，够不着子线程里的那次调用）。
-   * 按父线程 id 记忆化：一层只建一次索引，深度 8 的上限也就 8 份。
-   */
-  const dispatchByThread = new Map<string, ReturnType<typeof dispatchIndex>>();
-  const dispatchOf = (parentThreadId: string | null): ReturnType<typeof dispatchIndex> => {
-    // 父是主线程（或未知）：与改动前逐字同一条路
-    if (parentThreadId === null || parentThreadId === mainThreadId) {
-      const cached = dispatchByThread.get(mainThreadId);
-      if (cached !== undefined) return cached;
-      const built = dispatchIndex(main);
-      dispatchByThread.set(mainThreadId, built);
-      return built;
-    }
-    const cached = dispatchByThread.get(parentThreadId);
-    if (cached !== undefined) return cached;
-    const parent = threads.find((thread) => thread.threadId === parentThreadId)?.transcript ?? null;
-    // 父的转录读不到 ⇒ 没有派发信息可言（**不猜**）：这一行的 `kind` / `parentCallId` 记 `null`
-    const built = parent === null ? new Map<string, { tool: string | null; callId: string | null }>() : dispatchIndex(parent);
-    dispatchByThread.set(parentThreadId, built);
-    return built;
-  };
-  for (const thread of threads) {
-    const record = childRecord(thread, dispatchOf(thread.spawnedBy).get(thread.threadId), mainThreadId);
-    if (record !== null) subagents.push(record);
-    /**
-     * **子线程的轨迹也要投影**（2026-10-03 用户口径：「codex 子任务里面没有日志」）。
-     *
-     * 这里原来只建了一条子任务**行**（身份 / 名称 / 终态 / 结果摘要 / 用量），
-     * 而**它自己那 47 个条目一条消息都没产出**——界面上点进子任务就是空的，
-     * 尽管它的会话文件（真机 266 KB、`AgentMessage` 与 `Reasoning` 俱全）就在盘上。
-     * v3 §4.2 步骤 5 写的就是「用子线程 id 定位子会话文件，读出子智能体的**完整轨迹**」，
-     * 这一格是漏实现的，不是设计如此。
-     *
-     * 载体用**子线程 id**（`subagentId = threadId`，与子任务行的身份同值）：
-     * 合并键因此天然与主线程隔离，界面按 `subagentId` 就能把消息归到那条子任务上。
-     */
-    if (thread.transcript !== null) messages.push(...threadMessages(thread.transcript, thread.threadId));
-  }
-  return { messages, subagents };
+export interface CodexMessageContext {
+  /** 主线程 id：子线程的 id 与它相等时 `subagentId` 记 `null`（主会话消息） */
+  mainThreadId: string;
 }
 
 /**
- * 一条线程会话文件里的消息：按**行序**遍历已完成条目（顺序即发生顺序），
- * 往返序号与块序号都在这一遍里推进（两者都是「第几个」的相对量，不需要消息 id 参与）。
+ * 归一一条通知。
  *
- * `subagentId` 为 `null` = 主线程；给子线程 id = 那条子任务的轨迹（见调用点）。
+ * `roundTrip` 取该线程**当前**已数到的答复条目数（下限 1）：契约要求它从 1 递增，而一条通知
+ * 到达时它的条目可能还没被计入（`item/started` 的答复条目就是这样）⇒ 先计入再取号，
+ * 于是同一条逻辑消息的增量与快照落在**同一个载体**里。
  */
-function threadMessages(transcript: CodexTranscript, subagentId: string | null): MessageDraft[] {
+export function projectCodexMessages(
+  payload: AppServerNotificationPayload,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): CodexMessageProjection {
+  const empty: CodexMessageProjection = { drafts: [], subagents: [] };
+
+  if (payload.kind === 'agentMessageDelta') {
+    return {
+      drafts: [
+        draft({
+          vendorId: payload.itemId,
+          threadId: payload.threadId,
+          context,
+          runState,
+          role: 'assistant',
+          chunk: 'delta',
+          blockKind: 'text',
+          blocks: [textBlockDraft(payload.delta, 'delta')],
+          raw: payload,
+        }),
+      ],
+      subagents: [],
+    };
+  }
+
+  if (payload.kind === 'reasoningTextDelta' || payload.kind === 'reasoningSummaryDelta') {
+    /**
+     * 两条增量通道对应思考块的两档（**通道决定档位，不由家决定**）：
+     * `item/reasoning/textDelta` 是完整推理正文，`item/reasoning/summaryTextDelta` 是厂商摘要。
+     * 它们落进同一个载体的**不同槽位**（块序号按「载体 + 条目 + 块种」分配），因此一条推理条目
+     * 可以同时有「全文」与「摘要」两块。
+     *
+     * 同时把增量记进台账：完成通知要靠它判断「这一块的快照该不该补、补什么」——
+     * 只回密文的路由上全文永远不写在 `content[]` 里，那块就只剩增量这一条命。
+     */
+    const full = payload.kind === 'reasoningTextDelta';
+    const key = deltaKey(payload.threadId, payload.itemId);
+    const entry = runState.reasoningDeltas.get(key) ?? {};
+    if (full) entry.full = `${entry.full ?? ''}${payload.delta}`;
+    else entry.summary = `${entry.summary ?? ''}${payload.delta}`;
+    runState.reasoningDeltas.set(key, entry);
+    return {
+      drafts: [
+        draft({
+          vendorId: payload.itemId,
+          threadId: payload.threadId,
+          context,
+          runState,
+          role: 'assistant',
+          chunk: 'delta',
+          blockKind: full ? 'reasoning-full' : 'reasoning-summary',
+          blocks: [thinkingBlockDraft(payload.delta, full ? 'full' : 'summary', 'delta')],
+          raw: payload,
+        }),
+      ],
+      subagents: [],
+    };
+  }
+
+  if (payload.kind === 'itemStarted' || payload.kind === 'itemCompleted') {
+    /**
+     * 两条通知走同一个归一函数，**但推理条目必须分开**：`item/started` 的推理条目两格都是空数组
+     * （真机实测），那是「开始推理了」的占位，不是「这一轮没有文本」的结论（见 `projectItem`）。
+     */
+    return projectItem(payload.item, payload.threadId, payload, runState, context, payload.kind === 'itemStarted');
+  }
+
+  if (payload.kind === 'turnPlanUpdated') {
+    /**
+     * `turn/plan/updated` 是**整表覆盖**的清单快照（不是调用）：产物与 `plan` 条目同形，
+     * 于是界面上的计划卡片只有一张、由 `family: 'task'` + `payload.kind: 'plan'` 驱动。
+     * 协议层这一侧没有 `explanation`（那是 `TurnPlanUpdatedNotification` 的字段，本仓的窄声明未收）
+     * ⇒ `note` 记 `null`，不拿步骤文本凑。
+     */
+    return {
+      drafts: [
+        draft({
+          vendorId: null,
+          threadId: payload.threadId,
+          context,
+          runState,
+          role: 'assistant',
+          chunk: 'snapshot',
+          blockKind: 'plan',
+          blocks: [
+            toolCallBlockDraft(
+              planCallId(payload.threadId, payload.turnId),
+              PLAN_TOOL_NAME,
+              { plan: payload.steps.map((one) => ({ step: one.step, status: one.status })) },
+            ),
+          ],
+          raw: payload,
+        }),
+      ],
+      subagents: [],
+    };
+  }
+
+  return empty;
+}
+
+/** 归一一条已完成的条目（运行期通知与收尾读回的条目走**同一个函数**，两侧不可能漂移） */
+function projectItem(
+  item: AppServerItem,
+  threadId: string,
+  raw: unknown,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+  /** 这一条来自 `item/started`（内容还没到）而不是 `item/completed`（内容已定） */
+  started: boolean,
+): CodexMessageProjection {
+  const where = { vendorId: item.id === '' ? null : item.id, threadId, context, runState, raw, chunk: 'snapshot' as const, blockKind: 'item' };
+  if (item.kind === 'agentMessage') {
+    // 空正文不产消息（契约的 `text` 是 `string`，一条空块在界面上只是一行空白）
+    if (item.text === '') return { drafts: [], subagents: [] };
+    return {
+      drafts: [draft({ ...where, role: 'assistant', blockKind: 'text', blocks: [textBlockDraft(item.text, 'snapshot')] })],
+      subagents: [],
+    };
+  }
+  if (item.kind === 'reasoning') {
+    /**
+     * `item/started` 的推理条目**不产块**：那一刻 `summary` / `content` 都是空数组，而在这个位置上
+     * 「空数组」只说明**还没到**，不说明「没有文本」。落一块空快照的代价是**后面每一个字都被丢掉**——
+     * 合并器的槽位一旦被快照 seal，随后的 `item/reasoning/textDelta` 会被「已 seal + 增量 ⇒ 丢弃」
+     * 整段扔掉，而完成通知又不补封口，于是那一块永远停在 `text: null` + `none`。
+     * 真机症状（2026-10-07，`messageId: run-codex:N` 的产物）：5020/5020 个思考块全是这个形状，
+     * 界面上就是「思考信息没采到」。文本由增量累积、由 `item/completed` 封口（见 `reasoningDrafts`）。
+     */
+    if (started) return { drafts: [], subagents: [] };
+    return { drafts: reasoningDrafts(item, where, runState), subagents: [] };
+  }
+  if (item.kind === 'commandExecution') {
+    return { drafts: commandDrafts(item, where), subagents: [] };
+  }
+  if (item.kind === 'fileChange') {
+    return { drafts: fileChangeDrafts(item, where), subagents: [] };
+  }
+  if (item.kind === 'mcpToolCall') {
+    return { drafts: mcpDrafts(item, where), subagents: [] };
+  }
+  if (item.kind === 'plan') {
+    return {
+      drafts: [
+        draft({
+          ...where,
+          role: 'assistant',
+          blockKind: 'plan',
+          blocks: [
+            toolCallBlockDraft(item.id, PLAN_TOOL_NAME, {
+              plan: item.text === '' ? [] : [{ step: item.text, status: 'unknown' }],
+            }),
+          ],
+        }),
+      ],
+      subagents: [],
+    };
+  }
+  if (item.kind === 'webSearch') {
+    return { drafts: webSearchDrafts(item, where), subagents: [] };
+  }
+  if (item.kind === 'dynamicToolCall') {
+    return {
+      drafts: [draft({ ...where, role: 'assistant', blockKind: 'tool-call', blocks: [dynamicCallBlock(item)] })],
+      subagents: [],
+    };
+  }
+  if (item.kind === 'collabToolCall') {
+    return projectCollab(item, threadId, raw, runState, context);
+  }
+  if (item.kind === 'subAgentActivity') {
+    return { drafts: [], subagents: [subAgentActivityRecord(item, threadId, runState, context)] };
+  }
+  /**
+   * `userMessage`（喂进去的输入，不是模型产出）、`toolOutput`（`functionCallOutput`：它是工具输出的
+   * 旁路副本，而命令执行与 MCP 两条路已经各自带回了结果）、`other`（上游新增条目）**都不产出消息**；
+   * 它们也不是「丢弃」：条目原文仍在同一份通知的 `raw` 里。把输入当产出会让对话视图把
+   * 「我们说的话」混进「模型说的话」。
+   */
+  return { drafts: [], subagents: [] };
+}
+
+/**
+ * 推理条目 → 至多两条消息（全文一块、摘要一块）。
+ *
+ * 档位判据（**逐字对齐计划表**）：
+ *   · `content[]` 非空 ⇒ 思考**全文**（`textKind: 'full'`，`source: 'wire'`）；
+ *   · `content[]` **为空**（上游只回密文）⇒ 正文 `null` + `'none'`，**绝不回落到 `summary` 冒充全文**。
+ *     此时若摘要通道另有内容，它作为**摘要**那一块单独产出（`textKind: 'summary'`）——
+ *     两块各自说清自己是什么，而不是让摘要顶替全文。
+ *
+ * 增量通道（`item/reasoning/textDelta` 与 `.../summaryTextDelta`）先到时会各占一个槽位，
+ * 完成通知必须**补同一槽位的快照**，否则那一块永远停在 `assembly: 'open'`（界面按「未收尾」呈现）。
+ * 判据是「该通道有没有过增量」：有过 ⇒ 补快照封口（上游只回密文、但增量已经把全文推完时，
+ * 快照就是那段增量本身）；没有过 ⇒ 那一条通道这一轮根本没内容，**不补空格**。
+ *
+ * ⚠️ **封口不可省**（2026-10-07 真机改判）：`full` 与增量逐字相同时也**必须**发这一条快照。
+ * 曾经的判据是「逐字相同 ⇒ 不重发，免得同一份内容说两遍」，代价是那一块**永远收不了尾**；
+ * 而「内容相同」与「已收尾」是两件事，`assembly` 这一格只有快照能翻。重发是幂等的（覆盖语义）。
+ */
+function reasoningDrafts(
+  item: Extract<AppServerItem, { kind: 'reasoning' }>,
+  where: DraftEnvelope,
+  runState: CodexRunState,
+): MessageDraft[] {
+  const full = joinLines(item.content);
+  const summary = joinLines(item.summary);
+  const streamed = runState.reasoningDeltas.get(deltaKey(where.threadId, item.id)) ?? null;
   const drafts: MessageDraft[] = [];
   /**
-   * 块序号：`载体 → 下一个序号`。**每个载体一个计数器**（键是固定的 `'block'`，因为一次只处理
-   * 一条转录，载体随 `subagentId` 分文件处理）——按块类型各配一个计数器会让思考块与正文块撞号。
+   * 全文那一块：**有过增量就必须补快照**（`full` 与逐字推完的增量同值时也照发）。
+   * 封口是**必须动作**而不是可选重复——增量先到时槽位还是 `open`，不补这一条，那一块在界面上
+   * 会永远挂着「思考中…」（`assembly: 'open'` 就是「未收尾」）。内容不变的重发是幂等的：
+   * 合并器对同一个块标识是**覆盖**语义（`applyBlock` 的「已有键 + 快照 ⇒ 覆盖并 seal」）。
    */
-  const blockIndices = new Map<string, number>();
-  let roundTrip = 0;
-  /** 已经算过一轮的条目 id：文件里同一个条目重复落行时不重复推高轮次（与事件流的 `turnKeys` 同构） */
-  const countedItems = new Set<string>();
-  /**
-   * 每一条草稿的轮次号 = **到目前为止已数到的答复条目数**（下限 1）。
-   * ⚠️ 非答复条目（推理 / 工具）因此与**最近一次答复**同号（同一轮、同一载体）：这个号回答的是
-   * 「已经产出过几条答复」，而推理条目对这把尺子是**透明**的（事件流那条通道上它连号都不给，
-   * 见 `events.ts` 的 `countModelOutputItem` 返回 `null`）——与另两家的 `roundTripOf` 同一处置。
-   * 代价如实登记：一次模型往返里的推理与它**产出**的那条答复可能落在相邻两轮（推理取的是上一条
-   * 答复的号）；换来的是「重复落行不推高号」这条去重口径仍然**可观测**（见 `transcript.test.ts`
-   * 的「会话文件的轮次只数 AgentMessage」——把去重去掉，那条用例的最后一个号会红）。
-   */
-  for (const [index, item] of transcript.completedItems.entries()) {
-    if (item.itemType !== null && TURN_ITEM_TYPES.has(item.itemType)) {
-      const key = item.itemId ?? `#${index}`;
-      if (!countedItems.has(key)) {
-        countedItems.add(key);
-        roundTrip += 1;
-      }
-    }
-    drafts.push(...itemMessages(item, { roundTrip: Math.max(roundTrip, 1), subagentId, transcript, blockIndices }));
+  const fullText = full ?? streamed?.full ?? null;
+  if (fullText !== null) {
+    drafts.push(draft({ ...where, role: 'assistant', blockKind: 'reasoning-full', blocks: [thinkingBlockDraft(fullText, 'full', 'snapshot')] }));
+  } else if (summary === null) {
+    /**
+     * 两处都没内容：落一块 `text: null` + `'none'`（「有思考但拿不到文本」，不是「没有思考」）。
+     * 有摘要时由下面那块出摘要，这里的空块不出（避免同一件事两块）。
+     */
+    drafts.push(draft({ ...where, role: 'assistant', blockKind: 'reasoning-full', blocks: [thinkingBlockDraft(null, 'none', 'snapshot')] }));
+  }
+  // 摘要那一块同理：有摘要（或摘要只走了增量）就得补快照封口
+  const summaryText = summary ?? streamed?.summary ?? null;
+  if (summaryText !== null) {
+    drafts.push(draft({ ...where, role: 'assistant', blockKind: 'reasoning-summary', blocks: [thinkingBlockDraft(summaryText, 'summary', 'snapshot')] }));
   }
   return drafts;
 }
 
 /**
- * 一条已完成条目 → 0..n 条消息草稿。
- * `CommandExecution` 产出**两条**（调用 + 结果）：它们在同一份记录里，而契约把它们分成两种块、
- * 两条消息（`role` 一条 `tool`、`parentCallId` 一条 `null`），合并键因此天然不同、不会互相覆盖。
+ * `commandExecution` → 调用 + 结果两条消息。
+ *
+ * 调用块的工具真名用 `exec_command`（本仓工具表里 `run-shell` 那一族的真名），**不是**协议里的
+ * 条目类型名——条目类型是派生名，界面的族卡片按工具名判族。入参给 `{ command, cwd }`（真机
+ * `command` 是字符串，`cwd` 是执行目录；两者都是这次调用的事实）。
+ *
+ * 结果块：`structured = { exitCode, durationMs }`（**取不到就整格 `null`，不是 `{}`**），
+ * `isError` 只在**退出码非零**时为真——运行中拿不到退出码时不许断言「成功」。输出是
+ * `aggregatedOutput`（stdout 与 stderr **合流**，拆不开 ⇒ 归一结果里不编 `stderr`）。
  */
-function itemMessages(
-  item: CodexTranscriptCompletedItem,
-  context: {
-    roundTrip: number;
-    subagentId: string | null;
-    transcript: CodexTranscript;
-    blockIndices: Map<string, number>;
-  },
-): MessageDraft[] {
-  const payload = item.item;
-  const type = item.itemType;
-  if (payload === null || type === null) return [];
-  const envelope = {
-    vendorId: item.itemId,
-    source: 'session-file' as const,
-    roundTrip: context.roundTrip,
-    // 这家没有厂商轮号与步骤号：`turnId` 是厂商轮的**稳定标识**（字符串），不是序号 ⇒ 不冒充数字
-    vendorTurn: null,
-    step: null,
-    parentCallId: null,
-    subagentId: context.subagentId,
-    /**
-     * 消息级用量：**codex 交不出来**（wire 只有轮级的 `turn.completed`，会话文件只有 `token_count`，
-     * 两者都不是「这条消息那一次调用」）⇒ 一律 `null`（不是 0）。界面因此不给它画页脚。
-     */
-    usage: null,
-    raw: payload,
-  };
-  /**
-   * 块序号：**每个载体一个计数器**（不分块类型）。
-   *
-   * 为什么不能按块类型各配一个计数器：那样「思考块 0」与「正文块 0」会撞进同一个槽位
-   * （块标识就是块序号），后到的正文会把思考块覆盖掉——真机上一条消息里同时有推理与正文是常态。
-   */
-  const nextIndex = (): number => {
-    const index = context.blockIndices.get('block') ?? 0;
-    context.blockIndices.set('block', index + 1);
-    return index;
-  };
-  if (type === 'AgentMessage') {
-    const text = itemText(payload);
-    if (text === '') return [];
-    return [
-      {
-        ...envelope,
-        role: 'assistant',
-        chunk: 'snapshot',
-        blocks: [textBlockDraft(text, 'snapshot', { kind: 'index', index: nextIndex() })],
-      },
-    ];
-  }
-  if (type === 'Reasoning') {
-    const { text, kind } = reasoningOf(payload);
-    return [
-      {
-        ...envelope,
-        role: 'assistant',
-        chunk: 'snapshot',
-        blocks: [thinkingBlockDraft(text, kind, 'snapshot', null, { kind: 'index', index: nextIndex() })],
-      },
-    ];
-  }
-  if (type === 'CommandExecution') {
-    const callId = item.itemId;
-    if (callId === null || callId === '') return [];
-    return [
-      shellCallMessage(envelope, payload, callId, context.transcript),
-      shellResultMessage(envelope, payload, callId),
-    ];
-  }
-  if (type === 'CollabAgentToolCall') {
-    const callId = item.itemId;
-    if (callId === null || callId === '') return [];
-    return [
-      {
-        ...envelope,
-        // 工具调用投在 `assistant` 上（与 claude 的 `tool_use` 块同一条消息同形）；**结果**才投在
-        // `tool` 上——那是同一个载体的两块，合并后与另两家逐字段同形
-        role: 'assistant',
-        chunk: 'snapshot',
-        blocks: [toolCallBlockDraft(callId, readString(payload, 'tool') ?? 'collab_tool_call', collabInput(payload), undefined)],
-      },
-    ];
-  }
-  // 其余条目类型（`UserMessage`、将来新增的）：**不产出消息**。`UserMessage` 是喂进去的输入，
-  // 把输入当产出会让对话视图把「我们说的话」混进「模型说的话」。
-  return [];
-}
-
-/** 归一草稿的信封（除 `role` / `chunk` / `blocks` 外的那几格），三处消息共用一份形状 */
-type Envelope = Omit<MessageDraft, 'role' | 'chunk' | 'blocks'>;
-
-/**
- * 一次 shell 执行 → **调用消息**。
- * 工具真名取 `function_call.name`（会话文件里同一 `call_id` 配对），缺席时退回 `exec_command`
- * ——它是当前模型预设里这一族的真名（**不是**事件流那个派生条目名 `command_execution`）。
- */
-function shellCallMessage(
-  envelope: Envelope,
-  payload: Record<string, unknown>,
-  callId: string,
-  transcript: CodexTranscript,
-): MessageDraft {
-  const call = functionCallFor(transcript, callId);
-  return {
-    ...envelope,
-    role: 'assistant',
-    chunk: 'snapshot',
-    blocks: [
-      /**
-       * 走公共草稿函数（不再就地手搓块对象）：族载荷的归一住在那一处，
-       * 手搓的块会静默少掉 `payload`（它的类型是必填，而运行时没有守卫）。
-       * `run-shell` 不属于本期收编的两族 ⇒ 那一格会是 `null`，界面走通用工具行。
-       */
-      toolCallBlockDraft(callId, call?.name ?? 'exec_command', parseArguments(call?.arguments ?? null, commandShape(payload)), 'run-shell'),
-    ],
-  };
+function commandDrafts(item: Extract<AppServerItem, { kind: 'commandExecution' }>, where: DraftEnvelope): MessageDraft[] {
+  if (item.id === '') return [];
+  const output = item.output ?? '';
+  const { truncated } = truncate(output);
+  return [
+    draft({
+      ...where,
+      role: 'assistant',
+      blockKind: 'tool-call',
+      blocks: [toolCallBlockDraft(item.id, COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }, 'run-shell')],
+    }),
+    draft({
+      ...where,
+      role: 'tool',
+      blockKind: 'tool-result',
+      blocks: [
+        toolResultBlockDraft(item.id, output, {
+          structured: item.exitCode === null && item.durationMs === null ? null : { exitCode: item.exitCode, durationMs: item.durationMs },
+          isError: item.exitCode !== null && item.exitCode !== 0,
+          // 本家不给截断标记 ⇒ 只有自己截过才算「确认被截断」，其余记 `unknown`（输出可能不完整）
+          ...(truncated ? { truncation: { kind: 'truncated' as const, reason: '超过工具结果上限' } } : {}),
+        }),
+      ],
+    }),
+  ];
 }
 
 /**
- * 一次 shell 执行 → **结果消息**（与调用分成两条：与另两家同形，消费方按 `role` 分流渲染）。
+ * `fileChange` → 调用 + 结果两条消息（工具名 `apply_patch`，`edit-file` 族）。
  *
- * ⚠️ `aggregated_output` 是 stdout 与 stderr **合流**（拆不开）⇒ 归一结果里不编 `stderr`；
- * 运行中省略 `exit_code` 是常态 ⇒ 结构化格记 `null`（**不是** `{exitCode: null}`）。
- * 结构化里只放**退出码**、不放 `status`：成功与否由退出码表达（`0` / 非 `0`），
- * 而另两家的结果格也只有退出码——把 `status` 放进去会让同一次执行的归一结果逐家不同。
+ * 契约：调用块的入参给 `{ changes }`（`path` / `kind`，厂商原文），结果块的结构化格给
+ * `{ changes, status }`——`status` 是 `completed` / `failed` / `declined` / `inProgress`，
+ * `failed` 与 `declined` 都算错误（一次被拒的补丁与一次失败的补丁在界面上都该显眼）。
  */
-function shellResultMessage(envelope: Envelope, payload: Record<string, unknown>, callId: string): MessageDraft {
-  const output = readString(payload, 'aggregated_output') ?? readString(payload, 'formatted_output') ?? '';
-  const { text, truncated } = truncate(output);
-  const exitCode = readNumber(payload, 'exit_code');
-  return {
-    ...envelope,
-    role: 'tool',
-    chunk: 'snapshot',
-    blocks: [
-      {
-        phase: 'snapshot',
-        identity: { kind: 'call', callId },
-        block: {
-          type: 'tool-result',
-          callId,
-          structured: exitCode === null ? null : { exitCode },
-          isError: exitCode !== null && exitCode !== 0,
-          text,
-          // 本家不给截断标记 ⇒ `unknown`（「输出可能不完整」），**不写「确认完整」**
-          truncation: truncated ? { kind: 'truncated', reason: '超过工具结果上限' } : { kind: 'unknown' },
-        },
-      },
-    ],
-  };
+function fileChangeDrafts(item: Extract<AppServerItem, { kind: 'fileChange' }>, where: DraftEnvelope): MessageDraft[] {
+  if (item.id === '') return [];
+  const changes = item.changes.map((one) => ({ path: one.path, kind: one.kind }));
+  return [
+    draft({
+      ...where,
+      role: 'assistant',
+      blockKind: 'tool-call',
+      blocks: [toolCallBlockDraft(item.id, APPLY_PATCH_TOOL_NAME, { changes }, 'edit-file')],
+    }),
+    draft({
+      ...where,
+      role: 'tool',
+      blockKind: 'tool-result',
+      blocks: [
+        toolResultBlockDraft(item.id, '', {
+          structured: { changes, status: item.status },
+          isError: item.status === 'failed' || item.status === 'declined',
+        }),
+      ],
+    }),
+  ];
 }
 
 /**
- * 派发信息：`子线程 id → { 派发动作名, 那次工具调用的 call_id }`，**从父会话文件里取**。
+ * `mcpToolCall` → 调用 + 结果两条消息（**新增能力**）。
  *
- * 为什么需要它（2026-10-03 真机实测的坑）：子线程的会话文件里**没有**「谁派发了我」这一格，
- * 于是收尾那次交出的子任务行 `parentCallId` 恒为 `null`、`kind` 也恒为 `null`
- * ——它会**覆盖**事件流那条（读侧按 `subagentId` 覆盖累积）⇒ 界面上「进入子任务」的入口
- * 反而消失了（事件流那条本来是有 `parentCallId` 的）。
- *
- * 判据：父会话文件里 `CollabAgentToolCall` 条目的 `receiver_thread_ids` 含这个子线程 id，
- * 而它在会话文件里**紧跟**对应的 `function_call`（同一条 `call_id` 配对，与命令执行同一套）。
- * 真机核过：`function_call.name = 'spawn_agent'` + `arguments = {"message": …}`。
- * 配不上就返回 `null`——**不猜**。
+ * 三条判据：
+ *   · `name = '<server>.<tool>'`——MCP 工具**不进那十族**（它承载任意工具，猜一个族等于编一个事实）
+ *     ⇒ `family` 显式记 `null`，界面走通用渲染并保留原名；
+ *   · `isError = error != null`（协议给的是**错误对象**，不是布尔）：未完成时 `result` / `error`
+ *     都是 `null` ⇒ 不判错、也不断言成功；
+ *   · 结果正文取 `result.content[].text`；拿不到文本而错误对象有 `message` 时用后者（错误文案是
+ *     这一次调用的**结果**，不是另一次）。
  */
-function dispatchIndex(main: CodexTranscript): Map<string, { tool: string | null; callId: string | null }> {
-  const index = new Map<string, { tool: string | null; callId: string | null }>();
-  for (const item of main.completedItems) {
-    if (item.itemType !== 'CollabAgentToolCall' || item.item === null) continue;
-    const receivers = item.item.receiver_thread_ids;
-    if (!Array.isArray(receivers)) continue;
-    const tool = readString(item.item, 'tool');
-    /**
-     * 调用 id 的取法：会话文件里协作条目的 `item.id` 是 `item_8` 那种**条目号**，
-     * 而配对的 `function_call.call_id` 才是真调用 id。先按 `call_id` 精确配（真机同值），
-     * 配不上就留 `null`——**不拿条目号冒充**。
-     */
-    const callId = item.itemId === null ? null : functionCallIdFor(main, item.itemId);
-    for (const receiver of receivers) {
-      if (typeof receiver !== 'string' || receiver === '') continue;
-      if (index.has(receiver)) continue;
-      index.set(receiver, { tool, callId });
+function mcpDrafts(item: Extract<AppServerItem, { kind: 'mcpToolCall' }>, where: DraftEnvelope): MessageDraft[] {
+  if (item.id === '') return [];
+  const name = `${item.server}.${item.tool}`;
+  const error = item.error as Record<string, unknown> | null;
+  const errorMessage = typeof error?.message === 'string' ? error.message : null;
+  const text = contentText((item.result as { content?: unknown } | null)?.content) ?? errorMessage ?? '';
+  const { truncated } = truncate(text);
+  return [
+    draft({
+      ...where,
+      role: 'assistant',
+      blockKind: 'tool-call',
+      blocks: [toolCallBlockDraft(item.id, name, item.arguments ?? null, null)],
+    }),
+    draft({
+      ...where,
+      role: 'tool',
+      blockKind: 'tool-result',
+      blocks: [
+        toolResultBlockDraft(item.id, text, {
+          // `result` 缺席时结构化格记 `null`（**不是 `{}`**）
+          structured: item.result ?? null,
+          isError: item.error !== null && item.error !== undefined,
+          ...(truncated ? { truncation: { kind: 'truncated' as const, reason: '超过工具结果上限' } } : {}),
+        }),
+      ],
+    }),
+  ];
+}
+
+/** `webSearch` → 调用 + 结果两条：`query` 即入参；结果条目的结构化出口这一层拿不到 ⇒ `null` */
+function webSearchDrafts(item: Extract<AppServerItem, { kind: 'webSearch' }>, where: DraftEnvelope): MessageDraft[] {
+  if (item.id === '') return [];
+  return [
+    draft({
+      ...where,
+      role: 'assistant',
+      blockKind: 'tool-call',
+      blocks: [toolCallBlockDraft(item.id, 'web_search', { query: item.query })],
+    }),
+    draft({
+      ...where,
+      role: 'tool',
+      blockKind: 'tool-result',
+      blocks: [toolResultBlockDraft(item.id, '', { structured: null, isError: false })],
+    }),
+  ];
+}
+
+/**
+ * `dynamicToolCall` → 一条调用消息（工具名取 `namespace.tool`，与 MCP 同一条口径）。
+ * 结果不在这里编造：`contentItems` 是厂商给的内容块数组，而本层的工具结果块只承载文本 +
+ * 结构化载荷，硬塞进去会得到一个既不是文本也不是结构的四不像 ⇒ 只出调用，结果留空。
+ */
+function dynamicCallBlock(item: Extract<AppServerItem, { kind: 'dynamicToolCall' }>): ReturnType<typeof toolCallBlockDraft> {
+  const name = item.namespace === null ? item.tool : `${item.namespace}.${item.tool}`;
+  return toolCallBlockDraft(item.id, name, item.arguments ?? null, null);
+}
+
+/**
+ * `collabAgentToolCall` → 派发调用的那一块 + 每个收件线程一条子任务行。
+ *
+ * 配对键是**条目 id**：它同时写进子任务行的 `parentCallId`，两侧同值 ⇒ 界面能把「进入子任务」
+ * 这个入口挂到这次调用上（`buildAgentLogModel` 用 `spawnedBy.callId` 去时间轴上找那次调用）。
+ * 入参只留 `prompt`：载荷里另外那些（`model` / `reasoningEffort` / `agentsStates`）是**编排内部状态**，
+ * 不是这次工具调用的入参，混进去会让「参数原文」变得不可读。
+ */
+function projectCollab(
+  item: Extract<AppServerItem, { kind: 'collabToolCall' }>,
+  threadId: string,
+  raw: unknown,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): CodexMessageProjection {
+  const callId = item.id === '' ? null : item.id;
+  const subagents: SubagentRecord[] = [];
+  for (const receiver of item.receiverThreadIds) {
+    if (receiver === '') continue;
+    // 派发台账：收尾时给子线程补行要用同一份（身份 + 派发方式 + 父线程）
+    if (callId !== null) {
+      runState.dispatches.set(receiver, { tool: item.tool, callId, parentThreadId: threadId });
     }
+    subagents.push(dispatchRecord(receiver, threadId, item.agentsStates, runState, context));
   }
-  return index;
-}
-
-/** `item.id → function_call.call_id`：会话文件里用同一个 id 配对（真机核过） */
-function functionCallIdFor(transcript: CodexTranscript, itemId: string): string | null {
-  const direct = functionCallFor(transcript, itemId);
-  if (direct !== null) return itemId;
-  // 条目号与调用 id 不同值时，按「同一个协作条目的 id」找一次（真机同一份文件里两者同值）
-  for (const call of transcript.functionCalls) {
-    if (call.callId === itemId) return call.callId;
-  }
-  return null;
+  if (callId === null) return { drafts: [], subagents };
+  return {
+    drafts: [
+      draft({
+        vendorId: callId,
+        threadId,
+        context,
+        runState,
+        role: 'assistant',
+        chunk: 'snapshot',
+        blockKind: 'tool-call',
+        /**
+         * 族按**工具名**判（走 `toolCallBlockDraft` 的缺省参数，即 `classifyTool`）：`spawn_agent` 是
+         * 本仓工具表里的 `spawn-agent`，而 `wait` / `close_agent` 这类协作动作名判不出来 ⇒ `null`
+         * （走通用渲染）。这里**不能**显式传 `null`——那会绕开归类，把派发调用也降级成通用行。
+         */
+        blocks: [toolCallBlockDraft(callId, item.tool, { prompt: item.prompt })],
+        raw,
+      }),
+    ],
+    subagents,
+  };
 }
 
 /**
- * 子线程 → 子任务行。
+ * 派发条目里的子任务行（运行期就能落，不必等收尾）。
  *
- * 状态：本家**没有可靠的终态字段**（hook 载荷里没有 `status`；`agents_states` 只在事件流那一侧，
- * 而事件流在失败/中断时不完整）⇒ 判据只用**会话文件里的证据**：
- *   · 有 `AgentMessage` ⇒ 它确实产出了答复，记 `completed`；
- *   · 一条都没有 ⇒ `unknown` + `statusMissing: 'unverified'`（**没有验证过**这条路径的映射，
- *     不是「这家没有状态」）。
- * 名称取 `thread_spawn.agent_nickname`（hook 载荷里没有名称，这条是原生来源）。
- * 派发动作与调用 id 从**父会话文件**里取（见 `dispatchIndex`）——子线程文件里没有这两格。
- *
- * ⚠️ **转录由调用方给**（2026-10-06）：它已经是递归发现的产物（`DiscoveredChildThread.transcript`），
- * 本函数不再自己读一次盘——此前内容面按 id 各读一遍、用量面又发现一遍，同一个文件一周期读两次。
+ * 状态**三档**，由协议给的 `CollabAgentStatus` 直接推出（不再只有「完成 / 未知」两档）：
+ * `completed` → `completed`；`errored` / `notFound` → `failed`；`interrupted` / `shutdown` → `stopped`；
+ * `pendingInit` / `running` → `running`。取值不在这一档里 ⇒ `unknown` + `statusMissing: 'unverified'`
+ * （「这个取值我没见过」与「还没跑完」是两件事，界面要能分开说）。
  */
-function childRecord(
-  thread: DiscoveredChildThread,
-  dispatch: { tool: string | null; callId: string | null } | undefined,
-  mainThreadId: string,
-): SubagentRecord | null {
-  const transcript = thread.transcript;
-  if (transcript === null) return null;
-  const threadId = thread.threadId;
-  const answered = transcript.completedItems.some((item) => item.itemType === 'AgentMessage');
+function dispatchRecord(
+  threadId: string,
+  senderThreadId: string,
+  states: Array<{ threadId: string; status: string; message: string | null }>,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): SubagentRecord {
+  const state = states.find((one) => one.threadId === threadId) ?? null;
+  const { status, statusMissing } = collabStatusOf(state?.status ?? null);
+  const dispatch = runState.dispatches.get(threadId) ?? null;
   return {
     subagentId: threadId,
-    /**
-     * 名称取 `sessionMeta.threadSpawn.agentNickname`。
-     * ⚠️ **这一格依赖 `readTranscript` 的身份判据**（2026-10-XX）：fork 出来的子线程文件里有**两条**
-     * `session_meta`——自己那份（`thread_spawn` 齐全）与**派发者副本**（主线程那份，`thread_spawn`
-     * 为 `null`）⇒ 读取层若让副本胜出，这里会**整个丢掉**名称（`null`）。今天取第一条（文件自己的）
-     * ⇒ 拿到真昵称；守卫在 `transcript.test.ts` 的「fork 子线程在消息层的两个连带格」。
-     */
-    name: transcript.sessionMeta?.threadSpawn?.agentNickname ?? null,
-    // 派发方式（`spawn_agent` / `wait` …）只在父会话文件的协作条目里 ⇒ 从 `dispatch` 取
+    name: runState.nicknames.get(threadId) ?? null,
     kind: dispatch?.tool ?? null,
-    source: 'session-file',
-    status: answered ? 'completed' : 'unknown',
-    statusMissing: answered ? null : 'unverified',
-    // 结果摘要：子会话里最后一条 assistant 消息的正文
-    outcome: lastAssistantText(transcript),
-    /**
-     * 派生它的那次工具调用 id（契约 v3 §2.6 的 `parentCallId`）。
-     *
-     * 子线程会话文件里**没有**这一格，故从**父会话文件**的协作条目里配对取（见 `dispatchIndex`）。
-     * 取不到就是 `null`——**不猜**；`null` 时界面退化为按「入参里的任务名 == 子任务名」认派发点。
-     */
+    source: 'wire',
+    status,
+    statusMissing,
+    outcome: state?.message ?? null,
     parentCallId: dispatch?.callId ?? null,
-    parentSubagentId: nestedParentOf(transcript, mainThreadId),
-    usage: totalUsageOf(transcript),
+    parentSubagentId: nestedParentOf(senderThreadId, runState, context),
+    usage: null,
   };
+}
+
+/** `CollabAgentStatus` → 契约五态；推不出来的一律 `unknown` + `unverified` */
+export function collabStatusOf(vendorStatus: string | null): { status: SubagentRecord['status']; statusMissing: SubagentRecord['statusMissing'] } {
+  if (vendorStatus === 'completed') return { status: 'completed', statusMissing: null };
+  if (vendorStatus === 'errored' || vendorStatus === 'notFound') return { status: 'failed', statusMissing: null };
+  if (vendorStatus === 'interrupted' || vendorStatus === 'shutdown') return { status: 'stopped', statusMissing: null };
+  if (vendorStatus === 'pendingInit' || vendorStatus === 'running') return { status: 'running', statusMissing: null };
+  return { status: 'unknown', statusMissing: 'unverified' };
+}
+
+/**
+ * `subAgentActivity` → 子任务行的状态刷新（**不产消息**：它是活动条目，不是内容）。
+ * 四档 `kind` 逐档映射见 `subAgentActivityStatus`（活动行那边读的是**同一个函数**，两处不许各写一份）。
+ */
+function subAgentActivityRecord(
+  item: Extract<AppServerItem, { kind: 'subAgentActivity' }>,
+  senderThreadId: string,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): SubagentRecord {
+  const threadId = item.agentThreadId;
+  const status = subAgentActivityStatus(item.activity);
+  const dispatch = runState.dispatches.get(threadId) ?? null;
+  return {
+    subagentId: threadId,
+    name: runState.nicknames.get(threadId) ?? null,
+    kind: dispatch?.tool ?? null,
+    source: 'wire',
+    status,
+    statusMissing: status === 'unknown' ? 'unverified' : null,
+    outcome: null,
+    parentCallId: dispatch?.callId ?? null,
+    parentSubagentId: nestedParentOf(senderThreadId, runState, context),
+    usage: null,
+  };
+}
+
+/**
+ * `subAgentActivity.activity` → 契约五态：`completed` → `completed`，`interrupted` → `stopped`，
+ * `started` / `interacted` → `running`，其余 → `unknown`（**不猜**）。
+ * 导出是因为活动行（`events.ts`）也要按同一张表判「这是不是收场」——两份实现必然漂移。
+ */
+export function subAgentActivityStatus(activity: string): SubagentRecord['status'] {
+  if (activity === 'completed') return 'completed';
+  if (activity === 'interrupted') return 'stopped';
+  if (activity === 'started' || activity === 'interacted') return 'running';
+  return 'unknown';
 }
 
 /**
  * 嵌套父链（契约 §2.6：`parentSubagentId` 是「嵌套父链；**顶层子任务为 `null`**」）。
  *
- * 子线程会话文件的 `parent_thread_id` 是「**谁派发了我**」的原生事实：`spawn_agent` 从主线程派出去的
- * 那些子线程，这一格**就是主线程 id**（真机 2026-10-03 核过：`parent_thread_id` 与事件流
- * `thread.started.thread_id` 同值、`thread_spawn.depth` 为 1）。而它们在会话树上属于**顶层**：
- * 消费方按「`null` ⇒ 挂在主会话节点上，否则挂 `subagent:<那个 id>`」建树，照抄主线程 id
- * 会指向一个**不存在的节点**（主会话那一节的 id 是 `main`）。
- * 真机表现：进子任务后面包屑只剩子任务名一段，**「主会话」那一段整段消失**（回不去）。
- *
- * 故只有父**本身也是一条子线程**（嵌套，`depth ≥ 2`）时才交出 id；父是主线程、或主线程未知时记 `null`。
- * 与 dsh 侧同一条口径（「父会话 id 等于主会话 id ⇒ `null`」）。
- *
- * ⚠️ **这一格也依赖 `readTranscript` 的身份判据**（2026-10-XX）：fork 出来的子线程文件里那条
- * **派发者副本**的 `parent_thread_id` 是**派发者的**父链 ⇒ 若副本胜出，一个**嵌套**的 fork 子线程
- * 会被当成**顶层**（这里返回 `null`）⇒ 界面把它挂到主会话节点、而不是它真正的父那条子任务下面
- * （表现就是下面注释里说的「面包屑少一段」）。今天取文件里**第一条** `session_meta`（自己的）
- * ⇒ 拿到它真正的父；守卫在 `transcript.test.ts` 的「fork 子线程在消息层的两个连带格」。
+ * 判据是**派发者是不是主线程**：`spawn_agent` 从主线程派出去的那些子线程，协议给的
+ * `senderThreadId` 就是主线程 id，而它们在会话树上属于**顶层**——照抄主线程 id 会指向一个
+ * 不存在的节点（主会话那一节的 id 是 `main`），界面上的表现是「面包屑里『主会话』那一段消失」。
+ * 父本身就是一条子线程（嵌套）时才交出 id；父线程未知时同样记 `null`（**不猜**）。
  */
-function nestedParentOf(transcript: CodexTranscript, mainThreadId: string): string | null {
-  const parent = transcript.sessionMeta?.parentThreadId ?? null;
-  if (parent === null || parent === mainThreadId) return null;
-  return parent;
+function nestedParentOf(senderThreadId: string, runState: CodexRunState, context: CodexMessageContext): string | null {
+  if (senderThreadId === '' || senderThreadId === context.mainThreadId) return null;
+  return senderThreadId;
 }
 
-/** 子线程最后一条 `AgentMessage` 的正文（`outcome` 只放文本，拿不到就是 `null`） */
-function lastAssistantText(transcript: CodexTranscript): string | null {
-  for (let index = transcript.completedItems.length - 1; index >= 0; index -= 1) {
-    const item = transcript.completedItems[index];
-    if (item === undefined || item.itemType !== 'AgentMessage' || item.item === null) continue;
-    const text = itemText(item.item);
-    if (text !== '') return text;
-  }
-  return null;
+/** 消息信封：除 `role` / `blocks` 外的那几格，四条出口共用一份形状 */
+interface DraftEnvelope {
+  vendorId: string | null;
+  threadId: string;
+  context: CodexMessageContext;
+  runState: CodexRunState;
+  raw: unknown;
+  /** 块形态：增量片段 `'delta'`、完整内容 `'snapshot'` */
+  chunk: MessageDraft['chunk'];
+  /** 块种（同一条目里区分全文 / 摘要 / 工具块；参与块序号的分配键） */
+  blockKind: string;
 }
 
 /**
- * 子任务级用量：**最后一个读得出三项的** `token_count.info.total_token_usage`
- * （**必须减 cached**，与主线程同一口径）。
+ * 一条消息草稿。
  *
- * ⚠️ **判据与 `transcript.ts` 的 `normalizedTotalUsage` 对齐过**（2026-10-06）：那一份是
- * 「**从后往前找第一个三项齐的**」，而这里此前只看 `at(-1)` 那一条——最后一条缺项时两处会给出
- * 不同的结论（行级分量有值、而这一行的 `usage: null`）⇒ 界面上的「Σ 各子智能体」与分量对不上，
- * 而两处各自看起来都正常。真机形状：CLI 最后写了一条只有 `output_tokens` 的 `token_count`。
+ * `roundTrip` 在**这里**统一取号（而不是各自算）：它的语义是「这条消息属于该会话的第几次模型往返」，
+ * 而号源就是 `run-state.ts` 的答复条目计数。取号前**先把本条计入**——`item/started` 与它的增量
+ * 必须落在同一个号上，否则合并键会把同一块拆成两条逻辑消息。
+ *
+ * 块序号同样在这里分配（`run-state.ts` 的 `blockIndexFor`）：同一个「载体 + 条目 + 块种」重复投递
+ * 拿到同一个号（增量与快照因此合到一块），不同块各占一个新号（推理块与正文块不会互相覆盖）。
  */
-function totalUsageOf(transcript: CodexTranscript): UsageTokens | null {
-  for (let index = transcript.tokenCounters.length - 1; index >= 0; index -= 1) {
-    const usage = transcript.tokenCounters[index]?.totalUsage ?? null;
-    if (usage === null) continue;
-    if (usage.input === null || usage.cachedInput === null || usage.output === null) continue;
-    return usageTokens({
-      input: normalizedInput(usage.input, usage.cachedInput),
-      cached: usage.cachedInput,
-      output: usage.output,
-      reasoningOutput: usage.reasoningOutput,
-      total: usage.total,
-    });
-  }
-  return null;
+function draft(envelope: DraftEnvelope & { role: MessageDraft['role']; blocks: MessageDraft['blocks'] }): MessageDraft {
+  const { threadId, context, runState } = envelope;
+  const subagentId = threadId === context.mainThreadId ? null : threadId;
+  /**
+   * 载体键 = `subagentId` + 轮次 + `role`——与 `message.ts`（公共层）的 `carrierKeyOf` 同口径，
+   * 只是不含 `parentCallId`（codex 的消息这一格恒 `null`）。**必须带 `role`**：同一个轮次里
+   * 「调用」与「结果」是两条消息、各自的块序号从 0 起算，不带 `role` 会让结果块覆盖调用块。
+   */
+  const carrier = [subagentId ?? 'main', String(Math.max(roundTripsOf(runState, threadId), 1)), envelope.role].join('|');
+  const index = blockIndexFor(runState, carrier, envelope.vendorId ?? '', envelope.blockKind);
+  return {
+    vendorId: envelope.vendorId,
+    role: envelope.role,
+    source: 'wire',
+    roundTrip: Math.max(roundTripsOf(runState, threadId), 1),
+    // 厂商轮号是 `Turn.id`（标识，不是序号）⇒ 不冒充数字；这一家没有「一轮内第几次调用」
+    vendorTurn: null,
+    step: null,
+    // 派生关系挂在子任务行的 `parentCallId` 上（消息这一格留给工具结果与调用的配对）
+    parentCallId: null,
+    subagentId,
+    chunk: envelope.chunk,
+    // 块标识统一用块序号（新块只能追加到末尾，见 `run-state.ts` 的 `blockIndexFor`）
+    blocks: envelope.blocks.map((one) => ({ ...one, identity: { kind: 'index' as const, index } })),
+    /**
+     * 消息级用量：**结构性给不出**（app-server 只到线程级，差分无法证明归属）⇒ 恒 `null`（不是 0）。
+     * 界面因此不给它画页脚——与另两家「有就给」的差别是真实的能力差，登记在 §3.1。
+     */
+    usage: null,
+    raw: envelope.raw,
+  };
 }
 
-/** `AgentMessage.content[]` 的正文（`{type:'Text', text}`；非文本块不进正文） */
-function itemText(item: Record<string, unknown>): string {
-  const content = item.content;
-  if (typeof item.text === 'string') return item.text;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((block) => readString(asRecord(block), 'text') ?? '')
-    .filter((text) => text !== '')
-    .join('\n');
+/** 计划类调用的工具名（`update_plan` 在本仓工具表里落 `task` 族，与 claude / dsh 的清单工具同族） */
+const PLAN_TOOL_NAME = 'update_plan';
+/**
+ * 命令执行的工具真名（`exec_command` 是模型实际拿到的名字；条目类型 `commandExecution` 是派生名）。
+ * 导出：活动行（`events.ts`）要与工具块用**同一个名字**，各写一份必然漂移。
+ */
+export const COMMAND_TOOL_NAME = 'exec_command';
+/** 文件改动的工具真名（协议只给「有改动」，真名按这一家补丁工具的语义取）；导出理由同上 */
+export const APPLY_PATCH_TOOL_NAME = 'apply_patch';
+
+/** 计划条目的调用 id：`turn/plan/updated` 没有条目 id，用「线程 + 轮」合成一个稳定键 */
+function planCallId(threadId: string, turnId: string): string {
+  return `plan:${threadId}:${turnId}`;
+}
+
+/** 思考正文：`content[]`（已归一成字符串数组）拼行；空数组 ⇒ `null`（**不是空串**） */
+function joinLines(parts: readonly string[]): string | null {
+  const text = parts.filter((one) => one !== '').join('\n');
+  return text === '' ? null : text;
+}
+
+/** MCP 结果的文本半边：`content[].text`（拿不到就给 `null`，让调用方决定回落） */
+function contentText(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const one of content) {
+    const text = (one as { text?: unknown } | null)?.text;
+    if (typeof text === 'string' && text !== '') parts.push(text);
+  }
+  return parts.length === 0 ? null : parts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// 收尾：`reader` 交回的线程树 → 子任务行与子线程消息
+// ---------------------------------------------------------------------------
+
+/**
+ * 子线程的轮次数（与主线程**同一把尺子**：`run-state.ts` 的答复条目计数在两个通道上是同一个函数）。
+ * 收尾那一刻读数来自 `reader`，故先按条目补记，再取号。
+ */
+export function threadRoundTrips(content: { items: readonly AppServerItemEntry[] } | null, threadId: string, runState: CodexRunState): number {
+  for (const entry of content?.items ?? []) countRoundTrips(entry.item, threadId, runState);
+  return roundTripsOf(runState, threadId);
 }
 
 /**
- * `Reasoning` 的正文与档位：**优先 `raw_content`**（完整推理正文，`textKind: 'full'`），
- * 摘要 `summary_text` 只在正文缺席时兜底（那时档位是 `'summary'`）。两者都没有 ⇒
- * `text: null` + `'none'`（「有思考但拿不到文本」，**不是**「没有思考」）。
+ * `reader` 读回的一条线程 → 消息草稿（**只用于收尾补齐**）。
+ *
+ * 与运行期那条路**共用** `projectItem`：同一条条目在两个通道上归一出的块逐字段相同
+ * （否则「实时看到的」与「收尾补上的」会在同一槽位上打架）。
  */
-function reasoningOf(item: Record<string, unknown>): { text: string | null; kind: 'full' | 'summary' | 'none' } {
-  const raw = joinStrings(item.raw_content);
-  if (raw !== '') return { text: raw, kind: 'full' };
-  const summary = joinStrings(item.summary_text);
-  if (summary !== '') return { text: summary, kind: 'summary' };
-  return { text: null, kind: 'none' };
-}
-
-function joinStrings(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return '';
-  return value
-    .map((entry) => (typeof entry === 'string' ? entry : ''))
-    .filter((entry) => entry !== '')
-    .join('\n');
-}
-
-/** `function_call` 按 `call_id` 找真名与 `arguments`（会话文件里两者同键） */
-function functionCallFor(transcript: CodexTranscript, callId: string): { name: string | null; arguments: string | null } | null {
-  for (const call of transcript.functionCalls) {
-    if (call.callId === callId) return { name: call.name, arguments: call.arguments };
-  }
-  return null;
-}
-
-/**
- * `CommandExecution.command` 是**数组**（真机 `["powershell.exe","-Command","…"]`）⇒
- * `arguments` 缺席时用它拼出可读的入参对象。单字符串形态也认（另一个 CLI 版本的形状）。
- */
-function commandShape(payload: Record<string, unknown>): unknown {
-  const command = payload.command;
-  if (Array.isArray(command)) return { command: command.filter((part): part is string => typeof part === 'string') };
-  return command ?? null;
-}
-
-/** `arguments` 是 JSON 字符串 ⇒ 解析成对象；解析不了就退回命令形状（不丢事实、不编空对象） */
-function parseArguments(raw: string | null, fallback: unknown): unknown {
-  if (raw === null) return fallback;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
-}
-
-/** `CollabAgentToolCall` 的入参：`tool` + 收件线程 + 派发原文（`prompt` 可能缺席） */
-function collabInput(payload: Record<string, unknown>): unknown {
-  const input: Record<string, unknown> = {};
-  for (const key of ['tool', 'prompt', 'sender_thread_id', 'receiver_thread_ids']) {
-    if (payload[key] !== undefined) input[key] = payload[key];
-  }
-  return input;
-}
-
-/** 线程 id → 会话文件 → 解析结果；任一步失败都返回 `null`（不抛，调用方据 `null` 少一条消息） */
-function readByThreadId(
-  codexHome: string,
+export function projectThreadMessages(
   threadId: string,
-  read: CodexTranscriptReader['read'],
-): CodexTranscript | null {
-  const file = findTranscript(codexHome, threadId);
-  return file === null ? null : read(file);
+  items: readonly AppServerItemEntry[],
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): MessageDraft[] {
+  const drafts: MessageDraft[] = [];
+  for (const entry of items) {
+    const projected = projectItem(entry.item, threadId, entry, runState, context, false);
+    drafts.push(...projected.drafts);
+  }
+  return drafts;
 }
 
-/** 归一消息的类型别名（供 providers 的实现签名使用） */
-export type CodexMessage = AgentMessage;
+/**
+ * `reader` 读回的一条线程 → 子任务行（**终态三档由 `turn.status` / `turn.error` / `thread.status` 推出**）。
+ *
+ * 判据优先级（从最接近事实的证据往下）：
+ *   ① 最后一条 `turn` 的 `status`：`completed` / `failed`（配 `error` 文案作 `outcome`）/ `interrupted`；
+ *   ② 没有任何 `turn` 可读时看线程状态：`systemError` ⇒ `failed`，`active` ⇒ `running`；
+ *   ③ 其余（`idle` / `notLoaded`）⇒ `unknown` + `statusMissing: 'not-observed'`。
+ *      ⚠️ **不把 `idle` 当完成**：线程空闲说明不了这一轮跑成了什么（它也可能是刚被派发、还没开跑）。
+ */
+export function projectSubagentRecord(
+  ref: AppServerThreadRef,
+  thread: AppServerThread | null,
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): SubagentRecord {
+  const dispatch = runState.dispatches.get(ref.threadId) ?? null;
+  const outcome = lastAgentText(thread);
+  const derived = terminalStatusOf(ref, thread);
+  return {
+    subagentId: ref.threadId,
+    // 昵称以 `reader` 给的那份为准（`Thread.agentNickname` / `thread_spawn.agent_nickname`），
+    // 运行期从 `thread/started` 拿到的那份只作兜底
+    name: ref.nickname ?? runState.nicknames.get(ref.threadId) ?? null,
+    kind: dispatch?.tool ?? null,
+    source: 'wire',
+    status: derived.status,
+    statusMissing: derived.statusMissing,
+    outcome,
+    parentCallId: dispatch?.callId ?? null,
+    parentSubagentId: nestedParentOf(ref.parentThreadId ?? '', runState, context),
+    /**
+     * 子任务级用量：**只从运行期的 `thread/tokenUsage/updated` 取**（协议没有按线程读用量的请求）。
+     * 这里不给近似值——`null` = 没采到；「全量或 null」的合成在 `index.ts` 收尾那一处做。
+     */
+    usage: usageForState(runState, ref.threadId),
+  };
+}
+
+/** 该线程运行期采到的累计用量（读不到就是 `null`） */
+function usageForState(runState: CodexRunState, threadId: string): UsageTokens | null {
+  const threadUsage = runState.usageByThread.get(threadId);
+  return threadUsage === undefined ? null : breakdownToTokens(threadUsage.total);
+}
+
+/**
+ * 子任务终态：三档 + 「推不出来」。
+ * 记 `unknown` 时**必须**给出缺失原因（契约的 `statusMissing`），否则界面无法区分
+ * 「这一家没有状态这一格」与「这一次没采到」。
+ */
+export function terminalStatusOf(
+  ref: AppServerThreadRef,
+  thread: AppServerThread | null,
+): { status: SubagentRecord['status']; statusMissing: SubagentRecord['statusMissing'] } {
+  const lastTurn = thread?.turns.at(-1) ?? null;
+  if (lastTurn !== null) {
+    if (lastTurn.status === 'completed') return { status: 'completed', statusMissing: null };
+    if (lastTurn.status === 'failed') return { status: 'failed', statusMissing: null };
+    if (lastTurn.status === 'interrupted') return { status: 'stopped', statusMissing: null };
+    // `inProgress`：线程还在跑它那一轮
+    return { status: 'running', statusMissing: null };
+  }
+  if (ref.status.type === 'systemError') return { status: 'failed', statusMissing: null };
+  if (ref.status.type === 'active') return { status: 'running', statusMissing: null };
+  /**
+   * `idle` / `notLoaded`：这一档**推不出**终态（`idle` 也可能是「刚被派发、还没开跑」，
+   * 拿它当 `completed` 会让一次失败的子任务显示成做完了）。记 `unknown` + 点名原因。
+   */
+  return { status: 'unknown', statusMissing: 'not-observed' };
+}
+
+/** 子线程最后一条答复正文（`outcome` 只放文本，拿不到就是 `null`） */
+function lastAgentText(thread: AppServerThread | null): string | null {
+  for (let index = (thread?.turns.length ?? 0) - 1; index >= 0; index -= 1) {
+    const turn = thread?.turns[index];
+    for (let itemIndex = (turn?.items.length ?? 0) - 1; itemIndex >= 0; itemIndex -= 1) {
+      const item = turn?.items[itemIndex];
+      if (item?.kind === 'agentMessage' && item.text !== '') return item.text;
+    }
+  }
+  return null;
+}
+
+/** 推理增量的台账键：条目 id 只在**线程内**唯一，故带上线程 id（跨线程撞 id 会把两块串在一起） */
+function deltaKey(threadId: string, itemId: string): string {
+  return `${threadId}|${itemId}`;
+}
+
+/**
+ * 由 `thread/started` 通知登记子线程昵称（`Thread.agentNickname` 的原生来源）。
+ * 为什么收在这一处：昵称只在子任务行上展示，而子线程可能在**它自己第一条条目到达之前**
+ * 就派发了若干消息 ⇒ 登记得越早，行上的名字越早对得上（收尾时 `reader` 会给更权威的一份）。
+ */
+export function noteThreadStarted(
+  threadId: string,
+  nickname: string | null,
+  runState: CodexRunState,
+): void {
+  if (nickname === null || nickname === '') return;
+  runState.nicknames.set(threadId, nickname);
+}

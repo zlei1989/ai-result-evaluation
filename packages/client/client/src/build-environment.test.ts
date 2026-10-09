@@ -126,10 +126,30 @@ function missingOf(group: EnvGroup, id: string): string {
 }
 
 describe('buildAgentEnvironment：摘要与四组', () => {
+  /**
+   * 摘要第一格给的是**显示名**（用户 2026-10-08 口径：页面展示不用缩写）。
+   *
+   * 为什么映射必须在数据层：L0 渲染件里查 `AGENT_LABELS` 就是「UI 判厂商」，
+   * `agent-log-layering.test.ts` 的 (e) 条会当场红（实测）——所以这一格必须在这里就换好，
+   * 抽屉只负责画。取不到就**原样回落**（kind 是字符串：老快照与将来第四家都不许编名字）。
+   */
+  it('摘要的「智能体」是显示名，认不出的 kind 原样回落', () => {
+    expect(build([], []).summary.agentLabel).toBe('Claude Code');
+    // 认不出的那一档：`row.agentKind` 在契约里是联合类型，但老快照 / 坏数据会是别的串
+    expect(
+      buildAgentEnvironment({
+        row: { ...ROW, agentKind: 'cursor' } as unknown as EvalRow,
+        workspaceBase: 'D:/tmp/runs/run-1',
+        events: [],
+        records: [],
+      }).summary.agentLabel,
+    ).toBe('cursor');
+  });
+
   it('摘要七格全部来自行与轮的快照字段（不读事件流）', () => {
     const environment = build([], []);
     expect(environment.summary).toEqual({
-      agentKind: 'claude-code',
+      agentLabel: 'Claude Code',
       modelId: 'deepseek-flash',
       // 记的是**我们要求的**档位，不是实际生效的（厂商可能静默降档）
       effort: 'high',
@@ -178,14 +198,42 @@ describe('buildAgentEnvironment：摘要与四组', () => {
   });
 
   /**
-   * 环境抽屉里「模型与思考强度」那一格的**未指定文案**（2026-10-06）。
+   * 环境抽屉里「模型与思考强度」那一格的**未指定文案**（2026-10-06；2026-10-08 改成按元数据拼）。
    *
-   * 为什么这句话值一条用例：契约明说未选档位**不是**「沿用厂商默认档」（dsh 会落到自家缺省
-   * `high`，claude / codex 不传、由厂商推断），而这一格此前写的正是「未指定（沿用厂商默认档）」
+   * 为什么这句话值一条用例：契约明说未选档位**不是**「沿用厂商默认档」（DSH 会落到自家缺省
+   * `high`，Claude Code / Codex 不传、由厂商推断），而这一格此前写的正是「未指定（沿用厂商默认档）」
    * ——**与契约相反的读法**。文字错了不会有任何功能报错，只会让人按错误的口径去解释一次跑分
    *（「没指定就是厂商默认嘛」），所以靶子必须是这串文案本身。
+   *
+   * **2026-10-08**：厂商名与档位不再写死（原先逐字写「dsh 走 high」——即使看的是别家的环境也印这句，
+   * 且写的是 kind 缩写）⇒ 现在由 `defaultEffort` 入参 + `AGENT_LABELS` 拼，**不给就只说「未指定」**。
    */
-  it('`effort` 没给 ⇒ 运行配置那一格写「未指定（由该家适配器决定：dsh 走 high）」，不是「沿用厂商默认」', () => {
+  it('`effort` 没给且这一家声明了缺省档 ⇒ 写全名与该档，不是「沿用厂商默认」', () => {
+    const project = groupOf(
+      buildAgentEnvironment({
+        // 真值形状：ROW 是 claude-code，而**只有 dsh** 声明了缺省档 ⇒ 夹具按 dsh 那一家给
+        row: { ...ROW, agentKind: 'dsh', effort: undefined } as unknown as EvalRow,
+        workspaceBase: 'D:/tmp/runs/run-1',
+        events: [],
+        records: [],
+        defaultEffort: 'high',
+      }).groups,
+      'project',
+    );
+    const model = project.items.find((item) => item.id === 'project-model');
+    if (model?.present !== true) throw new Error('「模型与思考强度」应当在场');
+
+    expect(model.text).toContain('未指定（由该家适配器决定：DeepSeek Harness 走 high）');
+    // 阴性面：kind 缩写与旧口径的读法一个都不许留（否则同一格里有两种说法）
+    expect(model.text).not.toContain('dsh');
+    expect(model.text).not.toContain('沿用厂商默认');
+  });
+
+  /**
+   * 这一家**没声明**缺省档（Claude Code / Codex 由厂商推断，或元数据还没到）⇒ 只说「未指定」。
+   * 判据是**不许出现括号**：编一个档出来就是替那一家承诺（与创建表单占位符同一条口径）。
+   */
+  it('`effort` 没给且这一家没声明缺省档 ⇒ 只说「未指定」，不编一个档', () => {
     const project = groupOf(
       buildAgentEnvironment({
         row: { ...ROW, effort: undefined } as unknown as EvalRow,
@@ -198,9 +246,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
     const model = project.items.find((item) => item.id === 'project-model');
     if (model?.present !== true) throw new Error('「模型与思考强度」应当在场');
 
-    expect(model.text).toContain('未指定（由该家适配器决定：dsh 走 high）');
-    // 阴性面：旧口径的读法一个都不许留（否则同一格里有两种说法）
-    expect(model.text).not.toContain('沿用厂商默认');
+    expect(model.text.split('\n')[1]).toBe('思考强度：未指定');
   });
 
   it('`effort` 给了 ⇒ 那一格写的是这一行实际要求的档位', () => {

@@ -16,7 +16,7 @@
  *    cancel: a timed-out request stays running server-side until the runtime is closed」）⇒
  *    `cancelMidTurn: false` 是实测结论，`close()` 是**必需**的释放出口（A7）。
  *
- * 注入落点（实测，与 spec §5.6.4 的口径有差异，见探测报告 §4/§5）：
+ * 注入落点（实测，与 spec §5.6.5 的口径有差异，见探测报告 §4/§5）：
  *  - 配置根是 `dshHome`（SDK 把它写成子进程的 `DSH_HOME`，`lib/index.js:161-190`），**不是 `HOME`**；
  *  - `env` 是**整体替换父进程环境**语义（`lib/types/types.d.ts` 的 `HarnessClientOptions.env`）⇒
  *    调用方必须自己展开宿主环境（本仓走 `buildSubprocessEnv`）；
@@ -106,7 +106,7 @@ export interface DshHarnessOptions {
   /**
    * 初始 profile 握手的墙钟上限（`HarnessClientOptions.initializeTimeoutMs`，**SDK 默认 10000**）。
    *
-   * 为什么必须由我们显式给：这一行**每次都跑在一个全新的 `configHome` 上**（§5.6.4 不变量 3：
+   * 为什么必须由我们显式给：这一行**每次都跑在一个全新的 `configHome` 上**（§5.6.5 不变量 3：
    * 每行独立配置目录），也就是说**每一次运行都是冷启动**——dsh 要把整棵插件树解析完才回 initialize。
    * 真机实测（Task 9，`probe/v3/dsh-adapter-dual-protocol.mts`）：在 SDK 默认的 10s 下，
    * **两条协议双双**以 `initialize timed out after 10000ms waiting for dsh profile "sdk"` 收场，

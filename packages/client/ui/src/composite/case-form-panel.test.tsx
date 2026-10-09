@@ -287,7 +287,7 @@ describe('CaseFormPanel 的评分标准项', () => {
     fireEvent.change(await screen.findByTestId('rubric-recognize-text'), { target: { value: '## 一、生产代码 48 分' } });
     fireEvent.click(screen.getByTestId('rubric-recognize-submit'));
 
-    await waitFor(() => expect(onGenerate).toHaveBeenCalledWith({ rubric: { groups: [] }, taskPrompt: '', prompt: '## 一、生产代码 48 分', repoPath: '' }));
+    await waitFor(() => expect(onGenerate).toHaveBeenCalledWith({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt: '## 一、生产代码 48 分', repoPath: '' }));
     await waitFor(() => expect(screen.queryByTestId('rubric-recognize-text')).toBeNull());
     expect(screen.getByTestId('rubric-item-goal-0-0')).toHaveValue('补透传用例');
   });

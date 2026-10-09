@@ -2,7 +2,8 @@
  * ThinkingBlockView：折叠面板 + 「思考中…」扫光。
  *
  * 四条守卫：
- *   · `text === null` 显示缺失原因（**不是空面板**）；连原因都没有时也不能留空（变异体 (d) 的落点）；
+ *   · **没有正文就什么都不渲染**（`text === null` ⇒ 整块隐藏）：不给占位文案、也不给空面板——
+ *     空面板会被读成「思考了但什么也没想」，占位文案则会把「这一轮没采到」当成内容显示出来；
  *   · `textKind === 'summary'` 出「摘要」标——不标注就是假称全文；
  *   · `assembly === 'open'` 且**收起**时标题挂扫光类名；展开态不挂（正文在流，标题不必也表态）；
  *   · 展开后正文是等宽 + 斜体 + 左侧竖线。
@@ -33,8 +34,8 @@ function thinkingBlock(overrides: Partial<ThinkingBlock> = {}): ThinkingBlock {
 }
 
 describe('ThinkingBlockView', () => {
-  it('拿不到文本时显示缺失原因，而不是一个空面板', () => {
-    render(
+  it('拿不到文本时**整块隐藏**（没有占位文案，也没有「思考」块头）', () => {
+    const { container } = render(
       <ThinkingBlockView
         block={thinkingBlock({ text: null, textKind: 'none', textMissing: 'not-observed' })}
         open
@@ -42,11 +43,14 @@ describe('ThinkingBlockView', () => {
       />,
     );
 
-    expect(screen.getByText('厂商有、我们还没接')).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText('厂商有、我们还没接')).toBeNull();
+    expect(screen.queryByText('思考文本未采集')).toBeNull();
+    expect(screen.queryByText('思考')).toBeNull();
   });
 
-  it('连缺失原因都没有（textMissing === null）时也不留空', () => {
-    render(
+  it('`textMissing === null` 的那一档同样隐藏（占位文案不再是任何一档的出口）', () => {
+    const { container } = render(
       <ThinkingBlockView
         block={thinkingBlock({ text: null, textKind: 'none', textMissing: null })}
         open
@@ -54,7 +58,7 @@ describe('ThinkingBlockView', () => {
       />,
     );
 
-    expect(screen.getByText('思考文本未采集')).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('textKind 为 summary 时出「摘要」标', () => {

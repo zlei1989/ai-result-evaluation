@@ -45,7 +45,7 @@ export const ProviderModelSchema = z.object({
   /**
    * 上游声明的思考强度档位（原样保留上游的顺序与拼写：`low` / `medium` / `high` / `xhigh` / `max` …）。
    * 空 / 缺省 = 上游没说（实测 47 条里 21 条如此）⇒ 界面给该家**完整档位域**（2026-10-06 起，
-   * 见 `api/runs.ts` 的 `intersectEfforts`）。**改前是「界面上只有『默认』可选」**——那条口径让
+   * 见 `contracts/src/effort.ts` 的 `intersectEfforts`）。**改前是「界面上只有『默认』可选」**——那条口径让
    * 「关闭思考」这个档位在本机两个 provider 上永远点不到（它们都没声明过这一格）。
    * **不做归一化、不做「翻译成各家方言」**：档位名是上游的词汇，交集与方言都在别处（spec D1 / D10）。
    */

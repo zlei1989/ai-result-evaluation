@@ -1,9 +1,9 @@
 /**
  * 三家共用的运行骨架：注入 → 消费事件流 → 释放 → 组装结果。
- * 为什么集中一处：释放顺序（§5.6.5）、**轮次的发射门槛**、判定优先级（signal 已中止 → canceled；
+ * 为什么集中一处：释放顺序（§5.6.6）、**轮次的发射门槛**、判定优先级（signal 已中止 → canceled；
  * 其余按实际结果）三家必须逐字一致——抄三遍必然漂移，而这几件事出错时都表现为
  * 「偶发卡住 / 状态对不上 / 数字不动」，是最难查的一类问题。厂商差异全部通过 hooks 注入。
- * 注意：本函数**不抛**——所有失败都折进 AgentRunResult.error（§5.6.6 的错误码需要承载处），
+ * 注意：本函数**不抛**——所有失败都折进 AgentRunResult.error（§5.6.7 的错误码需要承载处），
  * 编排层因此不需要给每一行套 try/catch。
  */
 import { createLogger } from '@aieval/core';
@@ -65,6 +65,17 @@ export interface TurnStart {
    * **它自己拥有的**那些回收（子进程 / 临时目录 / 关闭信号）——骨架的
    * `for await (const raw of started.stream)` 只有自己退出才会走到 `finally` 释放，第二段的 5 秒兜底
    * 只保证 `dispose()` **被调用**。
+   *
+   * ⚠️ **2026-10-07 起多一条硬要求：进程回收是「整棵树 + 等确认」，不是「发个信号」**。
+   * `child.kill()` 在 Windows 上只杀直接子进程，而厂商 CLI 会在自己内部 spawn 一串下级进程
+   * （真机：codex 的插件同步 `git` 链），它们**继承父进程的句柄**、继续捏着本行的配置目录
+   * （`.agenthome` / `.judgehome`），下一轮的行产物清理就此 `EPERM`。落地口径：
+   *   · **谁 spawn 谁负责整棵回收**（本仓自己 spawn 的：`providers/codex/appserver/client.ts`
+   *     走 `process-tree.ts` 的 `terminateProcessTree`，Windows `taskkill /T /F`、POSIX 进程组）；
+   *   · **SDK 代 spawn 的家**（claude / dsh）拿不到 pid，只能走 SDK 的硬停止通道 ⇒ 那是**尽力**，
+   *     必须在《厂商进程生命周期规范》的归属表里如实登记，不许声称做到了。
+   * 骨架这一层的义务是**顺序**（`interrupt` → 终结在途 turn → `dispose`）与**兜底调用**；
+   * 「整棵」这件事在适配器里。
    * **能力边界（评审 F3 的原始表述在此修正，复评 I1 的证据链）**：`dispose` 只能**尽力**让 `stream`
    * 的迭代结束——本层无法强制中止一个卡在 `await` 上的迭代器：`dispose` 里的「关闭迭代」类动作
    * （例如关闭厂商 SDK 的事件迭代）在迭代挂起时只是**排队**，要等它自己落到下一个挂起点（yield / 结束）
@@ -269,9 +280,11 @@ export interface TurnProjection {
    * `tokens` 是**估算值**（用户口径，2026-09-26 的 claude-code）：它只进 `usage` 事件给界面看，
    * **绝不进 `AgentRunResult.tokens`**——否则「崩溃 / 超时 / 被杀」的行会带着一份估算被写成
    * 「采到了计量」，而快照是唯一落盘真相。缺省（undefined）= 权威值。
-   * 为什么这个标记在投影上、而不复用注册表的 `capability.liveUsage`：那一格回答的是
-   * 「跑动期事件要不要回写快照」（编排层的决策），这一格回答的是「本条消息给的这个数算不算结果」
-   * （骨架的决策）。按 kind 反查注册表会把骨架耦合到注册表，而投影本来就知道自己报的是什么。
+   * 为什么这个标记在投影上、而不复用别处的静态能力声明：静态声明回答的是「这一家整体上算不算
+   * 估算家」（消费方据此决定要不要回写快照），这一格回答的是「本条消息给的这个数算不算结果」
+   * （骨架的决策）。A2 起前者改由**事件自带的 `tokensBasis`** 表达（见下面 `liveTokensBasis`），
+   * 静态声明那一路已经没有消费方；而按 kind 反查注册表会把骨架耦合到注册表，
+   * 投影本来就知道自己报的是什么。
    */
   tokensEstimated?: boolean;
   /**
@@ -319,6 +332,11 @@ export interface TurnProjection {
 
 export interface TurnHooks {
   kind: AgentKind;
+  /**
+   * 该家能不能把 `outputSchema` 落到实处（由适配器从自己的 metadata **转发**，骨架不反查注册表
+   * —— 与 `TurnProjection.tokensEstimated` 同一条口径：谁知道自己是什么，就由谁说）。
+   */
+  capability: { structuredOutput: boolean };
   /** 建运行时并返回消费句柄；抛错由骨架折进结果（加载失败 → AGENT_LOAD_FAILED） */
   start: (context: TurnContext) => Promise<TurnStart>;
 }
@@ -392,6 +410,8 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       durationMs: 0,
       // 这一格没建过运行时、也没消费过事件流 ⇒ 没有答复可言，只能是「未采到」（不是空串）
       finalText: null,
+      // 一行都没跑 ⇒ schema 一次都没下发（与「要求了但被降级」在结果上同值，见 applied 的 JSDoc）
+      applied: { structuredOutput: false },
       error: { code: 'AGENT_CANCELED', message: '该行在启动前已被终止' },
     };
   }
@@ -433,6 +453,12 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    */
   let emittedUsage: {
     tokens: AgentRunResult['tokens'];
+    /**
+     * 上一次发出去的来源（A2）。**必须进去重判据**：估算与权威值恰好相同时，
+     * 「这一格从估算变成权威」仍是一次真实变化——消费方（编排层）据此才决定回写快照，
+     * 少了它那一条权威事件会被当成重复快照吃掉，快照要等到终态那一次写入才拿得到这个数。
+     */
+    tokensBasis: 'reported' | 'estimated';
     subagentTokens: AgentRunResult['subagentTokens'];
     subagentTurns: AgentRunResult['subagentTurns'];
     turns: number;
@@ -492,8 +518,26 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    */
   let started: Awaited<ReturnType<TurnHooks['start']>> | undefined;
 
+  /**
+   * 结构化输出的**降级点**（A1，唯一一处）：`outputSchema` 表达的是「我想要」，
+   * 能不能给由 `hooks.capability` 说了算。降级时**不把这一格交给 `start`**——
+   * 三家的 start 因此都不需要自己判能力（它们只管把拿到的 schema 翻成厂商方言）。
+   */
+  const wantsSchema = input.outputSchema !== undefined && input.outputSchema !== null;
+  const schemaApplied = wantsSchema && hooks.capability.structuredOutput;
+  if (wantsSchema && !schemaApplied) {
+    logger.warn('该适配器不支持结构化输出，本次降级为提示词契约', { kind: hooks.kind });
+  }
+
+  /** 摘掉 schema 的输入（降级那一支用；`delete` 对可选属性合法，不改原对象） */
+  function withoutOutputSchema(source: AgentRunInput): AgentRunInput {
+    const next: AgentRunInput = { ...source };
+    delete next.outputSchema;
+    return next;
+  }
+
   try {
-    started = await hooks.start({ input, controller, emitter });
+    started = await hooks.start({ input: schemaApplied ? input : withoutOutputSchema(input), controller, emitter });
     handle = started;
     if (stopRequested) requestStop();
     logger.debug('适配器已启动，开始消费事件流', {
@@ -561,6 +605,15 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
        * 否则界面上的时长永远停在第一个 step 的读数上。反过来「计量与时长逐字段都没变」才不发。
        */
       const liveTokens = estimatedTokens ?? tokens;
+      /**
+       * 这一条事件的来源（A2）：估算还是厂商上报的权威值。消费方（编排层的跑动期回写段）据此决定
+       * 要不要写快照，于是它不再需要在跑之前反查注册表的 `capability.liveUsage`。
+       * 判据与 `liveTokens` **同源且同源是硬要求**——那一条就是 `estimatedTokens ?? tokens`，
+       * 故估算还在时它必是估算值（权威值一到，上面的 `estimatedTokens = null` 已经把估算作废）。
+       * 与 `liveTokens` 一样先算一次再用：`emittedUsage` 必须记下**发出去的那一个值**，
+       * 两处各写一遍表达式，将来改一处就会让去重判据与事件内容悄悄不一致。
+       */
+      const liveTokensBasis = estimatedTokens !== null ? 'estimated' : 'reported';
       const liveTiming = resolveTiming(state.timing);
       /**
        * 归属（2026-10-05）：**本条投影自带**，缺省即 `null`——不结转、也不拿 `projection.turns` 顶替
@@ -569,13 +622,23 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       const liveTurn = projection.turn ?? null;
       if (
         projection.turns !== null
-        && !sameUsage(emittedUsage, liveTokens, subagentTokens, subagentTurns, liveTiming, projection.turns, liveTurn)
+        && !sameUsage(
+          emittedUsage,
+          liveTokens,
+          liveTokensBasis,
+          subagentTokens,
+          subagentTurns,
+          liveTiming,
+          projection.turns,
+          liveTurn,
+        )
       ) {
         // `timing` 恒带这一格（没有时间时是 `null`）：契约里它是 `.nullable()`，而「带一个 null」
         // 与「整个键不存在」在读侧是同一件事——都走 `.nullable()` 那一支，故不必分两种形状。
         emit({
           type: 'usage',
           tokens: liveTokens,
+          tokensBasis: liveTokensBasis,
           subagentTokens,
           subagentTurns,
           timing: liveTiming,
@@ -584,6 +647,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         });
         emittedUsage = {
           tokens: liveTokens,
+          tokensBasis: liveTokensBasis,
           subagentTokens,
           subagentTurns,
           turns: projection.turns,
@@ -595,31 +659,23 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     }
   } catch (cause) {
     if (stopRequested) {
-      // 停止请求引发的流中断不是失败：结论由 canceled 通路给出（§5.6.5 的判定优先级）
+      // 停止请求引发的流中断不是失败：结论由 canceled 通路给出（§5.6.6 的判定优先级）
       logger.debug('事件流因停止请求结束', { kind: hooks.kind, error: cause });
     } else {
       const classified = classifyAgentFailure(cause, { kind: hooks.kind, baseUrl: input.route.baseUrl });
       /**
-       * 退出错误与「流内错误」的取舍（2026-09-27，目标页 codex 实测）。
+       * 退出错误与「流内错误」的取舍。
        *
-       * 背景：SDK 抛出的退出错误把 **stderr 全文**拼进 message（`@openai/codex-sdk` 的
-       * `Codex Exec exited with code ${code}: ${stderr}`），而 codex CLI **每次运行都会**把
-       * `Reading prompt from stdin...` 写到 stderr——于是 codex 的**每一行**失败都会被写成
-       * 「`Codex Exec exited with code 1: Reading prompt from stdin...`」：
-       * 这句话里没有一个字是失败原因（实测：同一份 argv 打到一个完整的假 Responses API 上，
-       * 退出码 0、事件流正常、stderr 里照样是这一行）。
+       * 两个来源：流内错误由 `project` 从事件流里收（`{"type":"error",…}` / `turn.failed`）；
+       * 退出错误是适配器**自己 spawn 的进程**终止时抛出的 cause——codex 这一侧的形态由 app-server
+       * 客户端给出（`codex app-server 进程已退出（code=N） stderr: …`，见 `appserver/client.ts`），
+       * **没有 SDK 的前缀包装**，附在后面的 stderr 是**尾巴**（只留尾部若干字符），不是全文。
        *
-       * 而失败原因**通常已经在同一次运行的事件流里**：`project` 会把 `{"type":"error",…}` 与
-       * `turn.failed` 收成 `failure`（真实那一轮是
-       * 「Reconnecting... 5/5 (We're currently experiencing high demand…)」→ 上游 5xx 抖动）。
-       * 原来的写法让退出错误**无条件覆盖**它，于是用户拿到的是一条误导性说明、真正的原因只剩日志抽屉里有。
-       *
-       * 处置（两条判据，取其一才覆盖）：
-       *   ① 退出错误**自己带**可识别的 HTTP 状态（`AUTH_FAILED` / `RATE_LIMITED` 这类高分归因）⇒ 它更具体，覆盖；
-       *   ② 退出错误的 stderr **有实质内容**（剥掉 CLI 那条 banner 之后还有字）⇒ 它比流内的一句抱怨更有料，覆盖；
-       * 否则保留流内错误——它才是「为什么断了」的直接陈述，并把退出码作为**补充**写进文案。
-       * 文案里保留「CLI 以退出码 N 收场」这一事实：那确实是本次运行的真实结束方式，不该抹掉；
-       * 但绝不让它**顶替**原因。stderr 原文一个字符都不删，只是不再冒充原因（它在退出错误的 cause 里）。
+       * 处置：只有退出错误**更具体**时才让它覆盖流内原因（三条判据见 `exitErrorAddsDetail`，
+       * 取其一；③ 是机械判据，不看流内错误缺不缺）。否则保留流内错误——它才是「为什么断了」的
+       * 直接陈述——并把「CLI 以退出码 N 收场」写成**补充**：那确实是本次运行的真实结束方式，
+       * 不该抹掉，但绝不让它**顶替**原因。退出错误的原文一个字符都不删（它在 cause 里，
+       * 另有出口把它落进该行事件流）。
        */
       if (failure !== null && !exitErrorAddsDetail(classified, cause)) {
         failure = {
@@ -637,15 +693,13 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         logger.error('适配器运行失败', { kind: hooks.kind, code: failure.code, error: cause });
       }
       /**
-       * **CLI 的 stderr 也必须落进该行事件流**（2026-09-27 目标页实测补的）。
+       * **CLI 的 stderr 也必须落进该行事件流**。
        *
        * 为什么不能只留在 `cause` 里：`cause` 只进服务端日志，而使用者看的是「执行日志」抽屉
-       * （`[codex]` 那几行在它的「原始输出」里）。
-       * 实测那一行失败时抽屉里的最后几行只有上游的 `Reconnecting…`，**看不到 CLI 自己怎么说的**
-       * ——而「是网关 500 还是 Responses 契约不被满足」这个关键区分，恰恰只有 CLI 的 stderr 能回答
-       * （上游 500 已经由 `POST /v1/responses` 直接探测证实；但若将来是**契约不兼容**，
-       * 唯一能看见它的地方就是这里）。stderr 是**证据**，不是结论，所以按 log 事件落盘、
-       * 不冒充 `error` 事件的文案；样板行已经由 `exitErrorAddsDetail` 判定过，这里原样保留全文。
+       * （`[codex]` 那几行在它的「原始输出」里）。「是网关 5xx 抖动，还是 Responses 契约不被满足」
+       * 这个区分只有 stderr 能回答；抽屉里缺了它，那一行失败就只剩上游的 `Reconnecting…`。
+       * stderr 是**证据**，不是结论：按 log 事件落盘、不冒充 `error` 事件的文案，内容原样保留
+       * （只经 `stripCliBoilerplate` 剔除已知样板，而当前样板集合为空）。
        */
       const cliDetail = stripCliBoilerplate(cause instanceof Error ? cause.message : String(cause));
       if (cliDetail !== '') {
@@ -706,6 +760,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     subagentTurns,
     turns,
     finalText: state.finalText,
+    applied: { structuredOutput: schemaApplied },
     emit,
   });
   logger.info('适配器运行结束', {
@@ -775,16 +830,20 @@ export function resolveTiming(timing: TimingSpan | null): UsageTiming | null {
 }
 
 /**
- * 这一次观察到的「轮次 + 计量 + 时长 + 归属」是否与上次发出去的**逐字段相同**（相同就不再发事件）。
+ * 这一次观察到的「轮次 + 计量 + 时长 + 归属 + **两格子智能体分量** + 来源」是否与上次发出去的**逐字段相同**
+ * （相同就不再发事件）。
  * `null` 只与 `null` 相同：从「没采到」变成「采到了 0」是一次真实变化，必须发出去
  * （界面要能从「采集中」变成 0）。
  * `timing` 进判据而**不是被忽略**：dsh 的 `turn/end` 会把同一笔计量再交一次，而那时右端点
  * 已经往后推了（同一个 step 里工具也跑过）⇒ 不比较它就会把「这一轮到底花了多久」永远冻结在
  * 第一个 step 上。三格逐字段比（含 `source`：来源换了就是另一个口径的数，不能当成没变）。
+ * `tokensBasis`（A2）同理进判据：数值恰好相同的两条里，「估算 → 权威」那次变化正是消费方
+ * （编排层的回写段）**唯一**能拿到权威值的时机（见 `emittedUsage.tokensBasis` 的注释）。
  */
 function sameUsage(
   previous: {
     tokens: AgentRunResult['tokens'];
+    tokensBasis: 'reported' | 'estimated';
     subagentTokens: AgentRunResult['subagentTokens'];
     subagentTurns: AgentRunResult['subagentTurns'];
     turns: number;
@@ -792,6 +851,7 @@ function sameUsage(
     turn: UsageTurn | null;
   } | null,
   tokens: AgentRunResult['tokens'],
+  tokensBasis: 'reported' | 'estimated',
   subagentTokens: AgentRunResult['subagentTokens'],
   subagentTurns: AgentRunResult['subagentTurns'],
   timing: UsageTiming | null,
@@ -807,6 +867,8 @@ function sameUsage(
   if (!sameTrio(previous.subagentTokens, subagentTokens)) return false;
   // 轮次那一格同理：`null` 只与 `null` 相同（「没采到」→「采到 0」是一次真实变化，必须发出去）
   if (previous.subagentTurns !== subagentTurns) return false;
+  // 来源（A2）：数值相同也要发——见上面 `tokensBasis` 那一段
+  if (previous.tokensBasis !== tokensBasis) return false;
   return sameTrio(previous.tokens, tokens);
 }
 
@@ -816,7 +878,13 @@ function sameTurn(left: UsageTurn | null, right: UsageTurn | null): boolean {
   return left.subagentId === right.subagentId && left.round === right.round;
 }
 
-/** 三元组逐字段相同；`null` 只与 `null` 相同（「没采到」→「采到 0」是一次真实变化） */
+/**
+ * 三元组逐字段相同；`null` 只与 `null` 相同（「没采到」→「采到 0」是一次真实变化）。
+ *
+ * ⚠️ **它比不了 `reasoningOutput`**：入参类型是 `AgentRunResult['tokens']`（只有 `input` / `cached`
+ * / `output` 三格）⇒ 结构上取不到那一格。spec §2.4 要求「去重比较必须纳入这一格」，**当前未落地**：
+ * 要落地得把判据改成比较事件里的 `UsageTokens`（五格），而不是在这里加字段。
+ */
 function sameTrio(
   left: AgentRunResult['tokens'],
   right: AgentRunResult['tokens'],
@@ -837,35 +905,29 @@ function sameTiming(left: UsageTiming | null, right: UsageTiming | null): boolea
 }
 
 /**
- * 退出错误的 stderr 里**需要被忽略的样板**（见 `exitErrorAddsDetail` 的注释）。
+ * 退出错误正文里**需要被忽略的已知样板**：剥掉它们之后还剩什么，决定 `exitErrorAddsDetail` 的判据③。
  *
- * `Reading prompt from stdin...` 是 **codex CLI 每次运行都打**的提示，与成功失败无关
- * （实测：同一份 argv 打到一个完整的假 Responses API 上，退出码 0、事件流正常，stderr 里照样是这一行）。
- * 它出现在错误文案里时**零信息量**，却会让「真正的失败原因」看不见。
- *
- * 两处形态都要覆盖，**这是实测的坑**：SDK 把 `Codex Exec exited with code N:` 与 stderr **拼在同一行**
- * （`Codex Exec exited with code 1: Reading prompt from stdin...`），所以「按行匹配 CLI 的那句提示」
- * 永远匹配不上——`stderr` 与那句提示之间隔着 SDK 的前缀。故这里按**前缀**与**整行**两种形态各给一条：
- *   · `^Codex Exec exited with (code \d+|signal \S+):\s*` —— SDK 的包装（行内前缀，可重复剥）；
- *   · `^Reading prompt from stdin\.{0,3}$` —— CLI 的提示（它自己成行时）。
+ * **集合当前为空**——exec 通道那两条（SDK 拼在退出错误 message 里的行内前缀、CLI 每次运行都打的
+ * 那句 stdin 提示）随通道一起删除：`codex app-server` 不打那条提示，退出错误也不再被 SDK 包装。
+ * 保留这张空的样板表与剥样板的函数，而不是把两者一并删掉：剥样板只有这一个落点，将来某个通道
+ * 的固定噪声回到这里加一行即可，判据不必重新设计。
  */
-const SDK_EXIT_PREFIX = /^Codex Exec exited with (?:code \d+|signal \S+):\s*/;
-const CLI_STDERR_BOILERPLATE: readonly RegExp[] = [/^Reading prompt from stdin\.{0,3}$/];
+const CLI_STDERR_BOILERPLATE: readonly RegExp[] = [];
 
 /**
  * 退出错误是否**比流内错误更值得展示**。
  *
- * 三条判据（按「信息量」从高到低）：
+ * 三条判据（按「信息量」从高到低），取其一即覆盖：
  *   ① 退出错误**自己归到了确定性错误码**（`AUTH_FAILED` / `RATE_LIMITED`）⇒ 它更具体，覆盖。
- *      典型：`Codex Exec exited with code 1: 401 Unauthorized`——那比流内一句「high demand」有用得多。
  *   ② 退出错误带 **4xx** 状态 ⇒ 同上，覆盖（4xx 指向凭据/请求，是确定性归因）；
- *   **5xx 刻意不在此列**（2026-09-27 目标页实测修正）：网关 5xx 抖动时，流内那句
- *      「We're currently experiencing high demand…」是**关于这次失败的信息**，而
- *      「unexpected status 500」只说了一个瞬时面——两者归因码都是 `AGENT_FAILED`（可重试），
+ *   **5xx 刻意不在此列**：网关 5xx 抖动时，流内那句「上游正在过载」是**关于这次失败的信息**，
+ *      而「unexpected status 500」只说了一个瞬时面——两者归因码都是 `AGENT_FAILED`（可重试），
  *      那就该留下信息更多的那条，而不是让退出错误把原因换掉。
- *   ③ 退出错误的 stderr 剥掉样板后**还有实质内容**（不是只有一句状态行）⇒ 那是 CLI/上游给的正文，覆盖。
- * 都不成立（常态：只剩 `Reading prompt from stdin...` 或一句 `unexpected status 5xx`）⇒ 保留流内原因，
- * 并把退出码写成补充。
+ *   ③ 退出错误的正文剥掉已知样板后**还有实质内容**（不是只有一句状态行）⇒ 那是 CLI/上游给的正文，覆盖。
+ * 三条都不成立（正文为空、或只剩一句状态行）⇒ 保留流内原因，并把退出码写成补充。
+ *
+ * 判据③是**机械判据**：它只问「剥完样板还剩不剩正文」，不看流内错误缺不缺、也不分厂商
+ * （改成「只在流内错误缺失时才生效」会让 claude-code / dsh 的失败归因静默改变）。
  */
 function exitErrorAddsDetail(classified: AgentFailure, cause: unknown): boolean {
   if (classified.code === 'AUTH_FAILED' || classified.code === 'RATE_LIMITED') return true;
@@ -876,10 +938,10 @@ function exitErrorAddsDetail(classified: AgentFailure, cause: unknown): boolean 
 }
 
 /**
- * 这段 stderr 是不是**只说了「状态码是多少」**（`unexpected status 500 Service Unavailable`）。
- * 为什么要单独判：它是 CLI 对 5xx 的固定措辞，**没有任何关于失败原因的信息**——
- * 不排除它的话，判据 ③ 会把它当成「有实质内容」而把流内那句真正的原因换掉（实测踩过：
- * 写成弱断言时这条守不住，4xx/5xx 的区分也就跟着失效）。
+ * 这段正文是不是**只说了「状态码是多少」**（`unexpected status 500 Service Unavailable`）。
+ * 为什么要单独判：它是 CLI 对 5xx 的固定措辞，**没有任何关于失败原因的信息**——把它算进
+ * 「有实质内容」，判据③就会让退出错误顶掉流内那句真正的原因，4xx/5xx 的档位区分也跟着失效。
+ * 也就是说「排除状态行」是判据③成立的前提，不是可选的美化。
  * 判据按**行**做：一行里除了状态短语没有别的字才算「只有状态」；夹带正文的仍然算有料。
  */
 function isStatusOnlyDetail(detail: string): boolean {
@@ -889,39 +951,36 @@ function isStatusOnlyDetail(detail: string): boolean {
 }
 
 /**
- * 剥掉 SDK 前缀与 CLI 样板，只留实质内容；全是样板时返回空串。
+ * 剥掉 `CLI_STDERR_BOILERPLATE` 里的已知样板，只留实质内容；全是样板时返回空串。
  *
- * 为什么是**固定点循环**而不是扫两遍：前缀与样板可能任意嵌套（`…exited with code 1: Reading prompt…`
- * 是行内前缀 + 行内样板；将来 CLI 若把提示单独成行，就变成前缀 + 独立行）。每轮剥掉一层、
- * 直到没有变化为止，两种形态都不需要另写分支；`SDK_EXIT_PREFIX` 用 while 剥是因为它可能重复
- *（网关/包两层的包装）。轮数天然有界（每轮至少消耗一个前缀或一行），不会死循环。
+ * 单一职责：**只**认这张表，不掺任何别的判断——「退出错误够不够具体」的裁决只在 `exitErrorAddsDetail`。
+ * 表为空时它就是「按行原样保留 + 去掉首尾空白」。原来那个固定点循环随表里的前缀一起删掉了：
+ * 循环存在的理由是「前缀与样板可能嵌套」，而嵌套的唯一来源就是那条行内前缀。
  */
 function stripCliBoilerplate(message: string): string {
-  let current = message;
-  for (;;) {
-    const withoutPrefix = current.replace(SDK_EXIT_PREFIX, '');
-    const withoutBanner = withoutPrefix
-      .split('\n')
-      .filter((line) => !CLI_STDERR_BOILERPLATE.some((pattern) => pattern.test(line.trim())))
-      .join('\n')
-      .trim();
-    if (withoutBanner === current.trim()) return withoutBanner;
-    current = withoutBanner;
-  }
+  return message
+    .split('\n')
+    .filter((line) => !CLI_STDERR_BOILERPLATE.some((pattern) => pattern.test(line.trim())))
+    .join('\n')
+    .trim();
 }
 
 /**
  * 从文案里读 HTTP 状态码（**4xx 与 5xx 都要认**）。
  * 与 `errors.ts` 那张「给用户归因用」的小表（400/401/403/404/429）刻意不同：这里问的是
  * 「这段话里有没有状态码、是哪一档」（用来判断信息量与是否确定性失败），不是「该归到哪个错误码」。
- * 只认 4xx 的写法会让「unexpected status 500」被当成「没带状态」（2026-09-27 实测修正）。
+ * 只认 4xx 会把「unexpected status 500」当成「没带状态」，判据②的档位区分随之失效。
  */
 function httpStatusIn(message: string): number | null {
   const match = /\b([45]\d{2})\b/.exec(message);
   return match?.[1] === undefined ? null : Number(match[1]);
 }
 
-/** 从退出错误里读 CLI 的退出码（读不到即 null——**不猜** 1） */
+/**
+ * 从退出错误正文里读退出码：只认 `… exited with code N` 这一种形态（读不到即 null——**不猜** 1）。
+ * 该形态是 exec 通道的产物：codex 的退出错误改由 app-server 客户端给出后写的是 `code=N` ⇒ 这里读不到，
+ * 退出码补充那一支落到「未知」。本函数只负责形态读取，改不改读法取决于上一层的取舍判据。
+ */
 function exitCodeOf(cause: unknown): number | null {
   const message = cause instanceof Error ? cause.message : String(cause);
   const match = /exited with code (\d+)/.exec(message);
@@ -929,12 +988,12 @@ function exitCodeOf(cause: unknown): number | null {
 }
 
 /**
- * 组装结果。判定优先级固定（§5.6.5 起、2026-09-28 收窄）：signal 已中止 → canceled；其余按实际结果。
+ * 组装结果。判定优先级固定（§5.6.6 起、2026-09-28 收窄）：signal 已中止 → canceled；其余按实际结果。
  * 为什么 canceled 排在最前：终止是唯一能表达「外部要求停止」的输入，故以它为准。
  * **`timed-out` 这一支已经不存在**：执行与评分都不限时间（用户口径），适配器没有内层上限，
  * 编排层也不再起兜底定时器 ⇒ 这一格没有生产者。`AgentExitReason` 与行状态里的 `timed-out`
  * 保留（历史 `run.json` 里还有它，读侧与重试判据都要认）。
- * `exitReason` 与 `error.code` 刻意不同名（§5.6.6）：前者是给编排层的分类信号，后者是写给用户看的归因。
+ * `exitReason` 与 `error.code` 刻意不同名（§5.6.7）：前者是给编排层的分类信号，后者是写给用户看的归因。
  * 收的是 `emit`（受保护的发射器）而不是 `EventEmitter` 本身：结论摘要与 error 事件也必须走同一个
  * try/catch，否则消费方抛错会让本函数抛，而它正是「永不抛」承诺的最后一道出口（评审 F1）。
  */
@@ -947,6 +1006,8 @@ function assembleResult(input: {
   subagentTurns: AgentRunResult['subagentTurns'];
   turns: number | null;
   finalText: AgentRunResult['finalText'];
+  /** 本次 schema 有没有真的下发（A1）：三种结论都要带出去，它不属于任何一种收场方式 */
+  applied: AgentRunResult['applied'];
   emit: (draft: AgentEventDraft) => void;
 }): AgentRunResult {
   const durationMs = Date.now() - input.startedAt;
@@ -959,6 +1020,7 @@ function assembleResult(input: {
     subagentTurns: input.subagentTurns,
     durationMs,
     finalText: input.finalText,
+    applied: input.applied,
   };
   if (input.canceled) {
     input.emit(logDraft('stderr', '[WARN] 该行已被终止：适配器已停止并释放运行时'));

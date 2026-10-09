@@ -1,7 +1,7 @@
 /**
  * TaskPanelCard：状态化清单面板。
  *
- * 六条守卫（前两条是「不自己算」的落实）：
+ * 七条守卫（前两条是「不自己算」的落实）：
  *   · **计数照数据层给的渲染**：夹具里 `counts` 与 `steps.length` 故意不一致
  *     （7 vs 3），UI 自己数一遍就会显示成 `1/3 完成`；
  *   · 变化摘要只给非 0 的分量（`+1 完成 · +2 新增 · −1 移除`）；
@@ -9,12 +9,27 @@
  *   · `steps` 空数组 → 「清单为空（这家报了空表）」，不是空白面板；分母为 0 → 标题写「清单为空」；
  *   · `owner === null` **整格不显示**（这家没有「指派」这个概念）、`owner === ''` 显示「未指派」；
  *     `id === null` 时不画依赖（**不自己发号**）；
+ *   · **表格形态**（用户 2026-10-07 口径，用例名见「清单是表格且表头整条隐藏」「左列任务…右对齐」
+ *     与「清单不分页」三条）：两列 small `Table`、表头整条隐藏、状态列在最右且 `textAlign: 'right'`、
+ *     owner 与依赖跟任务同格（不进状态列）、不分页（12 步也全在）；
  *   · `earlierCount > 0` 出「本轮另有 N 次更新」，`note` 可见。
+ *
+ * jsdom 环境注意：antd 的 `Table` 会 `new ResizeObserver` 并读 `matchMedia`，jsdom 两个都没有
+ * ——环境缺口，不是被测代码的问题（替身与安装助手的说明见 `testing/resize-observer.ts`）。
  */
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installResizeObserverStub } from '../../testing/resize-observer';
 import { TaskPanelCard } from './task-panel-card';
 import type { TaskPanel, TaskStep } from './types';
+
+beforeEach(() => {
+  installResizeObserverStub();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const AT = '2026-10-02T08:00:00.000Z';
 
@@ -112,7 +127,9 @@ describe('TaskPanelCard', () => {
   });
 
   it('owner 为 null 时整格不显示；owner 为空串时显示「未指派」', () => {
-    const rowOf = (subject: string): HTMLElement | null => screen.getByText(subject).parentElement;
+    // 行的判据落在 `<tr>` 上：表格化之后 `parentElement` 只是单元格里那层 Flex，
+    // 状态 Tag 在**另一格**，拿它当行会把两列的关系漏掉
+    const rowOf = (subject: string): HTMLElement | null => screen.getByText(subject).closest('tr');
 
     render(
       <TaskPanelCard
@@ -123,7 +140,7 @@ describe('TaskPanelCard', () => {
       />,
     );
 
-    // `null` = 这一家没有「指派」这个概念 ⇒ 这一格整个不画（只剩状态 Tag）
+    // `null` = 这一家没有「指派」这个概念 ⇒ 这一格整个不画（整行只剩状态 Tag 那一个）
     expect(rowOf('没人认领的概念都没有')?.querySelectorAll('.ant-tag')).toHaveLength(1);
     expect(rowOf('没人认领的概念都没有')).not.toHaveTextContent('未指派');
     // `''` = 有概念但当前无人认领 ⇒ 明说
@@ -147,6 +164,71 @@ describe('TaskPanelCard', () => {
     );
 
     expect(screen.getByText('依赖 t1、t2')).toBeInTheDocument();
+  });
+
+  /**
+   * 形态守卫（用户 2026-10-07 口径）：清单是**两列的 small Table**，**表头整条隐藏**。
+   * jsdom 不做布局、量不了像素：真实几何在浏览器里量（本轮冒烟记录），这里只钉结构。
+   */
+  it('清单是表格且表头整条隐藏（没有列头那行）', () => {
+    render(<TaskPanelCard {...props} panel={panel()} />);
+
+    expect(screen.queryAllByRole('columnheader')).toHaveLength(0);
+    // rc-table 的判据是 `showHeader !== false && <Header/>`：隐藏时 `<thead>` 整个不存在，不是「空表头」
+    expect(document.querySelector('.ant-table-thead')).toBeNull();
+  });
+
+  /**
+   * 形态守卫（用户 2026-10-07 口径）：左列任务、右列状态，右列**列级右对齐**。
+   * 三条各对应一个会静默退化的写法（都能被单独变异掉）：
+   *   · 漏掉状态列的 `align: 'right'` ⇒ Tag 贴左，右列看着还是左列（textAlign 那一条会红）；
+   *   · 两列顺序被调换 ⇒ 状态跑到最左边（「第二格是状态」那一条会红）；
+   *   · owner / 依赖被挪进状态列 ⇒ 右列宽度随 Tag 长短跳动（它们留在左格那两条会红）。
+   */
+  it('左列任务（含 owner 与依赖）、右列状态且右对齐', () => {
+    render(
+      <TaskPanelCard
+        {...props}
+        panel={panel({
+          steps: [step({ id: 't9', subject: '依赖项', status: 'inProgress', owner: 'alice', blockedBy: ['t1', 't2'] })],
+        })}
+      />,
+    );
+
+    const cells = Array.from(screen.getByText('依赖项').closest('tr')?.querySelectorAll('td') ?? []);
+    // ⚠️ 这一条是**承重**的：把清单退回 `Listy`（或任何非表格形态）时，「没有表头」那条守卫**单独是绿的**
+    // （没有 `<thead>` 它照样满足），真正拦得住退回的就是「一行两格」这件事。别把它当冗余简化掉。
+    expect(cells).toHaveLength(2);
+    // 任务在左：文本、owner、依赖三样同在第一格
+    expect(cells[0]).toHaveTextContent('依赖项');
+    expect(cells[0]).toHaveTextContent('alice');
+    expect(cells[0]).toHaveTextContent('依赖 t1、t2');
+
+    // 状态在右：右对齐是**列**的属性（antd 把它落到单元格的内联 `textAlign` 上，本仓不手写 CSS）
+    const statusCell = screen.getByText('进行中').closest('td');
+    expect(statusCell).toBe(cells[1]);
+    expect(statusCell?.style.textAlign).toBe('right');
+  });
+
+  /**
+   * 形态守卫（用户 2026-10-07 口径）：清单**不分页**。
+   *
+   * 为什么单独钉这一格：antd 的默认是 `pageSize = 10`（`table/hooks/usePagination.js` 的
+   * `DEFAULT_PAGE_SIZE`，只有 `pagination === false` 才提前退出）——掉掉这一格，**11 步以上的清单
+   * 只画前 10 行**外加一个分页器，而上面那两条形态守卫（无表头 / 右对齐）**照样全绿**。
+   * 夹具刻意给 **12** 步：正好越过那个默认值一档（给 10 步就不再有任何区分力）。
+   */
+  it('清单不分页：12 步全在表里（第 12 步也没被藏起来），且没有分页器', () => {
+    const steps = Array.from({ length: 12 }, (_, index) => step({ id: `s${index + 1}`, subject: `第 ${index + 1} 步` }));
+    render(<TaskPanelCard {...props} panel={panel({ steps })} />);
+
+    // 数自己标的行：`ant-table-measure-row` 是 rc-table 量列宽用的空行，不是清单项
+    const rows = Array.from(document.querySelectorAll('tbody tr')).filter(
+      (tr) => !tr.classList.contains('ant-table-measure-row'),
+    );
+    expect(rows).toHaveLength(steps.length);
+    expect(screen.getByText('第 12 步')).toBeInTheDocument();
+    expect(document.querySelector('.ant-pagination')).toBeNull();
   });
 
   it('本轮另有 N 次更新与 note 都可见', () => {

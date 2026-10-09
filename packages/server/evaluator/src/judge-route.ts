@@ -13,7 +13,16 @@
  * **无参**是刻意的：用例上不再有评分模型覆盖（用列表单里那一格已删除），
  * 于是入参里也就没有「覆盖」可传——留一个参数就等于留一条能绕开设置页的旁路。
  */
-import { AGENT_KINDS, AGENT_LABELS, ServiceError, type AgentKind, type ProtocolType } from '@aieval/contracts';
+import {
+  AGENT_KINDS,
+  AGENT_LABELS,
+  CANONICAL_EFFORT_LEVELS,
+  ServiceError,
+  intersectEfforts,
+  type AgentKind,
+  type ProtocolType,
+  type ProviderModel,
+} from '@aieval/contracts';
 import { acceptsProtocol, getProvider, protocolMismatchMessage } from '@aieval/agents';
 import { createLogger, loadConfig } from '@aieval/core';
 import type { TextRoute } from './text-api';
@@ -76,14 +85,66 @@ export function resolveJudgeRoute(): TextRoute {
 }
 
 /**
+ * 这一次评分要求的思考强度（`settings.defaultJudge.effort`）。**唯一读点**：
+ * `judgeRow` / `judgeRowByAgent` 今天是纯入参的（不读配置、不碰落盘），由调用方把值传进去。
+ * 为什么不做成 `TextRoute` 的一格：那是**连接事实**，而强度是**请求参数**
+ * （与 `AgentRunInput.effort` 的既有口径同源）。
+ * 未配置（老配置读盘后是 `undefined`）= 未指定：文本侧一个强度键都不发（听网关缺省），
+ * 智能体侧走该家适配器自己的缺省——**两边可以不落到同一个档**，故它不能靠一个共享常量表达。
+ */
+export function resolveJudgeEffort(): string | undefined {
+  return loadConfig().settings.defaultJudge?.effort;
+}
+
+/**
+ * 评分前的档位校验（spec §5.4 / D8）：档位必须落在「模型声明 ∩ 评分智能体域（未配则规范五档）」里。
+ *
+ * 拦的是**手改 `config.json`** 与「换掉评分模型 / 评分智能体之后留下的悬空档位」——
+ * `effort` 的 schema 守卫只作用于走 schema 的**写下侧**（设置页那条 patch 路由），而 `loadConfig()`
+ * 刻意不做校验（一条手改坏的值不该让设置页打不开），于是磁盘上那一份只能在这里拦。不拦就要跑到
+ * dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远。
+ * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunRows`）**同源**：都用 `intersectEfforts`。
+ *
+ * 三处刻意的口径：
+ *   · `undefined` = **未指定**（一个强度键都不发）⇒ 直接放行，它不是越域，也不是某一档；
+ *   · `agentKind === null` ⇒ 拿 `CANONICAL_EFFORT_LEVELS`（两条驱动方式都能表达的那一组）当智能体域，
+ *     兜底那一份**同样要过这道筛**（Ruling 27）：dsh 没有 `medium`，求交后就该少一格；
+ *   · **枚举之外的 `agentKind` 按「未配」处理**（`loadConfig()` 不校验，手改的文件里可以写着 `"gemini"`）——
+ *     照直交给 `getProvider()` 会抛**裸 Error** ⇒ 路由层折成 500「服务端内部错误」，
+ *     而该改的是评分配置。这个字段的归因留给 `requireJudgeAgent`（它有专门的枚举判据与中文文案），
+ *     两处都报只会让同一件事有两句说法；文本通路（生成 / 识别）还压根不读它，误伤更没道理。
+ */
+export function requireJudgeEffort(input: {
+  effort: string | undefined;
+  model: ProviderModel;
+  agentKind: AgentKind | null;
+}): void {
+  if (input.effort === undefined) return;
+  const agentEfforts =
+    input.agentKind === null || !(AGENT_KINDS as readonly string[]).includes(input.agentKind)
+      ? CANONICAL_EFFORT_LEVELS
+      : getProvider(input.agentKind).metadata.reasoningEfforts;
+  const allowed = intersectEfforts(input.model, agentEfforts, CANONICAL_EFFORT_LEVELS) ?? [];
+  if (allowed.includes(input.effort)) return;
+  // 空串会渲染成一片空白（「思考强度  不可用」）：用户认不出是哪一格坏了，而它恰恰是手改配置最常见的形状
+  const shown = input.effort === '' ? '（空串）' : input.effort;
+  throw new ServiceError(
+    'CONFLICT',
+    `评分配置里的思考强度 ${shown} 不可用：该模型与当前评分智能体可选的是 ${
+      allowed.join(' / ') || '（只有未指定）'}；请到${SETTINGS_LOCATION}重新选择`,
+    { context: { effort: input.effort, allowed } },
+  );
+}
+
+/**
  * 解析「这一轮该用哪家智能体评分」，并把三种配置问题折成可直接展示的中文 CONFLICT。
  *
  * 为什么放在本文件：它与 `resolveJudgeRoute` 是同一件事的两半——尺子落在哪个模型上、谁来驱动它。
  * 为什么 api 层也要用它：创建评测时要**提前**拦一次（不要让人选完到评分阶段才失败）。
  *
- * 协议兼容不是可选项：智能体的元数据里只有一个 `protocolType`（agents 注册表 A3），而评分模型那一对
- * 可能来自另一种协议的供应商——两者不匹配时那家 CLI 根本驱动不了它（Codex 走 chat-completions，
- * Claude Code / DSH 走 Messages）。
+ * 协议兼容不是可选项：智能体的元数据里是一个**协议集合** `protocolTypes`（agents 注册表 A3），而评分模型那一对
+ * 可能来自另一种协议的供应商——两者不匹配时那家 CLI 根本驱动不了它（Codex 只吃 OpenAI 兼容，
+ * Claude Code 只吃 Anthropic 兼容，DSH 两条都吃）。
  *
  * 第三道判据是**枚举之外的值**（终审 Minor）：类型上是 `AgentKind`，但 `loadConfig()` **不做 zod
  * 校验**（它只把磁盘上的 json 与默认值合并），手改过的 config.json 里可以写着 `"gemini"`。

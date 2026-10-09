@@ -2,11 +2,12 @@
 /**
  * 跑动期的实时数据（用户口径，2026-09-26）：**行还在跑的时候，快照就要跟上**。
  *
- * 四条判据：
- *   ① `liveUsage: 'reported'` 的适配器一上报用量就**逐步回写**运行快照（tok / 轮次）；
- *   ② `liveUsage: 'estimated'` 的适配器，其跑动期用量**只走事件流、绝不回写**——终态之前快照里
- *      必须一直是 null（快照是唯一落盘真相：把估算写进去会把「没采到」说成「采到了」）；
- *   ③ **未声明** `liveUsage` 时按估算处置（缺省落在安全侧，见 agents 的 types.ts）；
+ * 四条判据（A2 起回写口径**按每一条事件自己的性质**，不再按适配器在注册表里的静态声明）：
+ *   ① 事件带 `tokensBasis: 'reported'` 一上报用量就**逐步回写**运行快照（tok / 轮次 / 分量）；
+ *   ② 带 `'estimated'` 时**只有 `tokens` 不回写**——轮次与子智能体两格照写（它们只有权威形态）。
+ *      估算的 tokens 进快照会把「没采到」说成「采到了」（快照是唯一落盘真相）；
+ *   ③ **整格缺** `tokensBasis`（老适配器 / 第三方 provider 直接发事件）时按 `'estimated'` 处置：
+ *      缺省落在安全侧（见 contracts 的 `tokensBasis` 注释）；
  *   ④ 跑动期每 `ROW_HEARTBEAT_MS` 把**已耗时**回写快照，且行结束之后心跳必须停
  *      （不能回头覆盖终态的结算值）。
  *
@@ -61,6 +62,12 @@ const live = vi.hoisted(() => ({
     turns: number,
     subagentTokens?: { input: number; cached: number; output: number } | null,
     subagentTurns?: number | null,
+    /**
+     * 这一条事件的 `tokensBasis`（A2）：**缺省**走 `live.emitEstimated` 开关（默认 `'reported'`），
+     * 显式给值就按给的，`null` = **整格缺席**——那是「老适配器 / 第三方 provider 直接发事件」的形状
+     * （本仓三家的骨架出口一律带这一格），读侧缺省的判据见下面那一条用例。
+     */
+    basis?: 'reported' | 'estimated' | null,
   ) => void),
   /** 放行挂起的假适配器 = 「这一行跑完了」 */
   release: null as null | (() => void),
@@ -86,8 +93,12 @@ const live = vi.hoisted(() => ({
    */
   finalSubagentTurns: 2 as number | null,
   finalDurationMs: 5,
-  /** 跑动期用量口径；`undefined` = 适配器没有声明（走缺省） */
-  liveUsage: 'reported' as 'reported' | 'estimated' | undefined,
+  /**
+   * 这台假适配器发出去的 usage 事件**默认**带哪一种 `tokensBasis`（A2）：`false` = 厂商上报的
+   * 权威值（初值，也是绝大多数用例的形状）。口径挂在**事件**上而不是 provider 的 metadata 上
+   * ——回写段今天只读事件，不再反查 `capability.liveUsage`。
+   */
+  emitEstimated: false,
 }));
 
 /**
@@ -111,17 +122,24 @@ vi.mock('@aieval/agents', async (importOriginal) => {
         // mock 工厂返回值不与模块类型比对——而编排层读到的是 `undefined`（falsy）⇒ **静默**走降级分支，
         // 于是「支持的适配器不该发降级日志」这类断言就建立在一个不合法的元数据字面量上
         //（判据本身还是对的，但它之所以是绿，靠的是这一格恰好缺失，而不是被测行为）。
-        capability: { cancelMidTurn: true, usage: true, liveUsage: live.liveUsage, structuredOutput: true },
-        isolation: 'subprocess',
+        capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
       },
       // 挂住不返回：让用例在「行还在跑」的时刻自己决定发什么用量、什么时候结束
       run: async (input: { onEvent: (event: unknown) => void }) => {
-        live.emitUsage = (tokens, turns, subagentTokens, subagentTurns) => {
+        live.emitUsage = (
+          tokens,
+          turns,
+          subagentTokens,
+          subagentTurns,
+          basis = live.emitEstimated ? 'estimated' : 'reported',
+        ) => {
           input.onEvent({
             seq: 1,
             at: new Date().toISOString(),
             type: 'usage',
             tokens,
+            // 第 5 参显式传 `null` ⇒ 整格缺席（老适配器 / 第三方 provider 的形状，见它的类型注释）
+            ...(basis === null ? {} : { tokensBasis: basis }),
             turns,
             // 这一格**按需带**：`undefined`（老事件 / 这一条不谈它）时整格缺席，而不是写成
             // `subagentTokens: undefined`——两者在 JS 里等价，但夹具的形状该与契约的三档逐格对上，
@@ -173,10 +191,10 @@ let home: TempHome;
 /**
  * 夹具仓库模板：`beforeAll` 建一次，每条用例 `cpSync` 一份。
  *
- * 为什么不是每条用例各建：`initFixtureRepo` 要付 7 个 git 进程（init / config×2 / add / commit / rev-parse），
+ * 为什么不是每条用例各建：`initFixtureRepo` 要付 6 个 git 进程（init / config×2 / add / commit / rev-parse），
  * 本机实测 ≈1.6s、满载更贵。本文件 5 条用例各建一次 ⇒ 光夹具就 8s 上下，而本文件墙钟在 40–90s 之间，
  * 这笔开销全落在关键路径上（口径与 `orchestrator-harness.ts` 的 `repoTemplate` 一致）。
- * 复制出来的是**独立、可用**的真仓库（带 `.git`），这一点由 `git.repo.test.ts` 的 `copyWorkspace` 用例守着。
+ * 复制出来的是**独立、可用**的真仓库（带 `.git`），这一点由 `git-repo-cache.test.ts` 的 `copyWorkspace` 用例守着。
  */
 let repoTemplate: { repoPath: string; commit: string } | null = null;
 
@@ -192,7 +210,7 @@ beforeEach(() => {
   home = createTempHome();
   live.emitUsage = null;
   live.release = null;
-  live.liveUsage = 'reported';
+  live.emitEstimated = false;
   // 有一条用例把它改成 `null`（钉「终态清空跑动期那个分量」）⇒ 逐用例复位成上面的初值，否则会串到后面
   // （初值逐格 ≤ `finalTokens`：`{6,1,1} ≤ {7,1,9}`，见它自己的注释——2026-10-04 收尾评审 I3）
   live.finalSubagentTokens = { input: 6, cached: 1, output: 1 };
@@ -256,7 +274,6 @@ function seedRun(): { runId: string; rowId: string } {
 
 describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   it('权威用量（reported）一到就写进快照：行还在跑时就能看到 tok / 轮次', async () => {
-    live.liveUsage = 'reported';
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -288,8 +305,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    *     留着旧的偏大分量会让快照满足不了 `subagentTokens ≤ tokens`）；
    *   · 事件**整格缺席**（`undefined`，老事件）⇒ **保持**已采到的那一份。
    */
-  it('跑动期的 usage 事件把 subagentTokens 一并回写快照（reported 家）', async () => {
-    live.liveUsage = 'reported';
+  it('跑动期的 usage 事件把 subagentTokens 一并回写快照（事件带 reported）', async () => {
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -312,7 +328,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('显式 null 的 usage 事件把分量清成 null（读失败时合计已退回主会话口径，留着旧分量会破坏「分量 ≤ 合计」）', async () => {
-    live.liveUsage = 'reported';
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -328,7 +343,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('**缺这一格**（老事件 / undefined）时保持已采到的分量——与显式 null 是两件事', async () => {
-    live.liveUsage = 'reported';
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -352,7 +366,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    * 所以「只在事件里给数」的实现拿不到这个 `null`。
    */
   it('终态以适配器结果的这一格为准：结果是 null ⇒ 清掉跑动期已回写的分量', async () => {
-    live.liveUsage = 'reported';
     live.finalSubagentTokens = null;
     const { runId, rowId } = seedRun();
 
@@ -375,8 +388,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    * 只钉用量那一格的话，「顺手复制了用量那一行、忘了轮次这一行」的实现照样全绿，
    * 而界面上「轮次」那一格的拆分行永远画不出来。
    */
-  it('跑动期的 usage 事件把 subagentTurns 一并回写快照（reported 家）', async () => {
-    live.liveUsage = 'reported';
+  it('跑动期的 usage 事件把 subagentTurns 一并回写快照（事件带 reported）', async () => {
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -399,7 +411,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('显式 null 的 usage 事件把轮次分量清成 null——与用量那一格同一条规则', async () => {
-    live.liveUsage = 'reported';
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -415,7 +426,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('**缺这一格**（老事件 / undefined）时保持已采到的轮次分量——与显式 null 是两件事', async () => {
-    live.liveUsage = 'reported';
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -431,7 +441,6 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('终态以适配器结果的这一格为准：结果是 null ⇒ 清掉跑动期已回写的轮次分量', async () => {
-    live.liveUsage = 'reported';
     live.finalSubagentTurns = null;
     const { runId, rowId } = seedRun();
 
@@ -447,24 +456,34 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(getRun(runId).rows[0]?.subagentTurns).toBeNull();
   });
 
-  it('实时估算（estimated）只走事件流、绝不回写快照：终态之前一直是 null', async () => {
-    live.liveUsage = 'estimated';
+  /**
+   * A2 的**有意行为变更**（spec §4 的 D5）：回写口径按每一条事件自己的 `tokensBasis`，不再按整家的
+   * 静态声明。于是「估算的家」（claude-code 的跑动期读数按 assistant 消息累加）也**实时回写轮次**了
+   * ——旧口径把轮次与 tokens 一起挡掉，界面因此在整个跑动期都看不到「轮到第几轮」。
+   * 唯一不许进快照的仍然只有**估算的 `tokens`**：快照是唯一落盘真相，写进去会让崩溃 / 被杀的行
+   * 看起来像「采到了计量」。
+   */
+  it('跑动期：轮次实时回写，估算的 tokens 绝不回写（A2 的新口径）', async () => {
+    live.emitEstimated = true;
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
-    // 事件流里有它（界面靠 SSE 实时显示）
+    // 事件流里有它（界面靠 SSE 实时显示估算值），且**落盘那一格也在**（契约真的收了这一格——
+    // zod 默认会把 schema 里没有的键悄悄剥掉，只在内存里拼事件的话这条断言才通不过）
     const events = readEvents(rowEventsFile(home.workspaceRoot, runId, rowId));
-    expect(events.some((event) => event.type === 'usage' && event.turns === 2)).toBe(true);
+    const usage = events.find((event) => event.type === 'usage');
+    expect(usage?.type === 'usage' ? usage.turns : null).toBe(2);
+    expect(usage?.type === 'usage' ? usage.tokensBasis : null).toBe('estimated');
 
-    // 快照里没有它——这里是「写侧」的判据：给异步实现留一拍，仍然必须是 null
+    // 快照里**只有轮次**——这里是「写侧」的判据：给异步实现留一拍（旧实现下两格都是 null）
     await new Promise((resolve) => setTimeout(resolve, 50));
     const mid = getRun(runId).rows[0];
     expect(mid?.status).toBe('running');
+    expect(mid?.turns).toBe(2);
     expect(mid?.tokens).toBeNull();
-    expect(mid?.turns).toBeNull();
 
     live.release?.();
     await pending;
@@ -472,17 +491,24 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(getRun(runId).rows[0]?.tokens).toEqual(live.finalTokens);
   });
 
-  it('适配器没有声明 liveUsage 时按估算处置（缺省落在安全侧：不回写）', async () => {
-    live.liveUsage = undefined;
+  /**
+   * 读侧缺省（A2）：`tokensBasis` 在契约里是 `.optional()`，而**整格缺席**只可能来自没过骨架的
+   * 老适配器 / 第三方 provider（本仓三家的出口一律带这一格）。缺省按 `'estimated'` 处置——
+   * 安全侧：宁可不落盘，也不把一份「可能是估算」的数写进唯一落盘真相。
+   * 轮次照旧回写：它只有权威形态（骨架里只有 `tokensEstimated` 一个标记）。
+   */
+  it('事件整格缺 tokensBasis（老适配器 / 第三方 provider）时按估算处置：轮次回写、tokens 不回写', async () => {
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
-    live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
+    live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, undefined, undefined, null);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(getRun(runId).rows[0]?.tokens).toBeNull();
+    const mid = getRun(runId).rows[0];
+    expect(mid?.turns).toBe(2);
+    expect(mid?.tokens).toBeNull();
 
     live.release?.();
     await pending;
@@ -492,7 +518,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     // 只假 setInterval：仓库准备与 promise 调度走的仍是真实定时器（否则这个用例会卡在 git 上）
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     // 顺带钉一条：心跳**只**写耗时，不把估算顺手带进快照（估算那条路径见上一条用例）
-    live.liveUsage = 'estimated';
+    live.emitEstimated = true;
     const { runId, rowId } = seedRun();
 
     const pending = runRow(runId, rowId);
@@ -502,12 +528,13 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
     vi.advanceTimersByTime(ROW_HEARTBEAT_MS);
 
-    // 行还在跑：耗时已经被心跳写进去了（「跑了多久」是客观事实，不是估算），而计量仍是 null
+    // 行还在跑：耗时已经被心跳写进去了（「跑了多久」是客观事实，不是估算）。
+    // 轮次是**事件**回写的（A2 起恒回写，与心跳无关），估算的 tokens 两条路径都不写
     const mid = getRun(runId).rows[0];
     expect(mid?.status).toBe('running');
     expect(mid?.durationMs).not.toBeNull();
+    expect(mid?.turns).toBe(2);
     expect(mid?.tokens).toBeNull();
-    expect(mid?.turns).toBeNull();
 
     live.release?.();
     await pending;

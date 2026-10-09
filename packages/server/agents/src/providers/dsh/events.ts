@@ -58,12 +58,21 @@
  * 不能只显示一句「正在思考…」，也不能是 JSON）：
  *  - `tool/call`：`params.event.data = { turn, step, callId, name, arguments }`，其中 `arguments` 是
  *    **JSON 字符串**（实测 `{"job_id": "pwsh-16", "timeout_ms": 420000, "wait": true}`）；
- *    摘要文案是「调用工具 <工具名>：<参数摘要>」（用户指定的措辞）；
  *  - `tool/result`：`params.event.data.message = { role:'tool', toolCallId, content:[{type:'text',text}], isError }`；
- *  - `assistant/message` 的{文本}落成一条日志（过去只进 `finalText`，整轮不出现在任何地方），
- *    `turn/start` 也补一句「第 N 轮开始」——评分阶段跑的是同一个适配器，它的消息因此同样会滚上去。
- *    这些**原始负载照旧逐字落盘**（抽屉里的证据一个字没少），只是多带一句人话摘要
- *    （`log.summary`）——摘要才是给人看的那一句，JSON 不是消息。
+ *  - `assistant/message` 的{文本}落成一条日志（过去只进 `finalText`，整轮不出现在任何地方）——
+ *    评分阶段跑的是同一个适配器，它的消息因此同样会滚上去。
+ *
+ * **2026-10-07 收敛：活动行只播「正在做什么」**（用户裁定；词表与实现只有一份，在 `src/activity.ts`）。
+ * 在此之前，本文件给「答复 / 推理 / 轮次 / 工具返回」**每一条都配了摘要**，于是卡片底部那一行会被
+ * 最新一句占据——真机形态（run `08b56e95` 的 dsh 行与 claude 行）是**永久停在英文推理**上：
+ * `思考：Only one file changed: index.html. Now evaluate each item…`，因为同一轮里推理行排在答复行**之后**。
+ * 现在的分工：
+ *  - **给摘要**：工具调用（`调用工具 <名>：<参数摘要>`）、工具**报错**、子任务派发/收场——都是「在做什么」；
+ *  - **不给摘要**：工具**成功返回**、推理、轮次。三者的落点另有其处（结果块、思考块、原始输出面板），
+ *    而**事件照旧逐字落盘**：拿掉摘要只是让活动行**保留上一句人话**，不是把证据丢掉
+ *    （`activityOf` 对没有摘要、文本又是 JSON 的行本来就只推进游标）。
+ *  - **答复文本仍然落一条日志**，且**不带摘要**：它本身就是人话，由 `activityOf` 直取 `text`——
+ *    多配一份截断过的摘要等于同一句话有两个版本。
  *
  * 2026-10-04 追加**子智能体那一份**（spec §2.3）：`tokens` / `turns` **已经含**子会话（上面那条
  * 「投影不按会话分叉」的口径，本次不改）——新增的一格交出的是**其中的分量**，按 run 作用域的
@@ -72,6 +81,12 @@
  * 既有直调用例不必改）。
  */
 import type { UsageTokens } from '@aieval/contracts';
+import {
+  subagentDispatchSummary,
+  subagentSettledSummary,
+  toolCallSummary,
+  toolErrorSummary,
+} from '../../activity';
 import { logDraft, safeStringify, unknownEventDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
@@ -126,8 +141,6 @@ export { resetSubagentCatalogForTesting } from './message';
 
 /** 用量载荷在事件信封里的路径：`params.event.data.usage`。 */
 export const DSH_USAGE_PATH = ['params', 'event', 'data', 'usage'] as const;
-/** 摘要的长度上限：这一行的用途是「一眼看出在干什么」，完整参数与输出都在抽屉的原始负载里 */
-export const DSH_SUMMARY_MAX_LENGTH = 120;
 /**
  * 字段名表已搬到 `protocol.ts`（2026-10-06：`message.ts` 也要按同一份字段名读，
  * 留在本文件会与 `message.ts` 形成循环依赖）。这里 re-export 保持既有 import 路径不动
@@ -238,32 +251,36 @@ export function projectDshNotification(
     if (reply !== '') {
       state.finalText = reply;
       /**
-       * 模型说的话**也要落一条日志**（用户口径 2026-09-29：活动行要滚动智能体实时的 event message
+       * 模型说的话**落一条日志**（用户口径 2026-09-29：活动行要滚动智能体实时的 event message
        * ——「评分的消息也在这里滚动展示」）。这一格过去只进 `finalText`，整轮都不出现在任何地方，
        * 于是卡片上只能看到工具 JSON。
-       * 与 claude-code 的文本块同待遇：`text` 是原文（抽屉里的证据），`summary` 是压成一行的那句。
-       * **这里不筛 JSON**：评分阶段模型吐的就是 JSON 评分结果，筛不筛由消费方（`activityOf`）判——
-       * 判据只能有一份，写两处必然漂移。
+       *
+       * **不给摘要**（2026-10-07 统一）：它本身就是人话，`activityOf` 在没有摘要时会直接取 `text`；
+       * 再配一份截断过的摘要等于同一句话在事件里存两份、两处口径可能漂移。筛不筛 JSON 同样只由
+       * 消费方判（评分阶段模型吐的就是 JSON 评分结果）——判据只能有一份。
        */
-      drafts.push(logDraft('stdout', reply, clip(oneLine(reply))));
+      drafts.push(logDraft('stdout', reply));
     }
     /**
-     * **推理原文单独落一条**（2026-09-30 真机更正）。
+     * **推理原文单独落一条**（2026-09-30 真机更正；2026-10-07 改为只作证据）。
      *
      * 过滤掉 reasoning **是对的**（否则推理混进答复），但**只过滤不落盘就是把证据丢了**：
      * 真机实测 dsh 每次模型往返都带完整推理文本（三次往返 259 / 68 / 143 字符），
      * 而修复前这里一个字都不留。
      *
-     * 与 claude-code **同待遇**：那边非文本块走 `others` 分支落一条原始负载日志
-     * （`providers/claude-code/events.ts` 的 `assistantDrafts`）——所以两边在抽屉里都看得到推理。
-     * dsh 的 `text` 是**纯字符串**（不是块对象），所以直接落原文，比 claude 那边再序列化一层更诚实。
+     * 落法改了：`text` 取**厂商原始信封**（与 `turn/start` 那一支同源），**不给摘要**。
+     * 两个理由，缺一条都不成立：
+     *   · 推理的**人话落点**是思考块（`message.ts` 的 `thinkingBlockDraft`，档位 `full`）——日志这一条是
+     *     排障证据，不是第二个展示面；
+     *   · 给它配摘要（旧文案 `思考：<推理>`）会让活动行**永久停在英文推理上**：同一轮里推理行排在
+     *     答复行之后 ⇒ 最新一句恒是它（真机形态见文件头 2026-10-07 那段）。
      *
-     * ⚠️ 被推翻的旧口径：本文件上游曾断言「dsh 的 reasoning `text` 实测恒为空串」——
+     * ⚠️ 被推翻的旧口径（留档）：本文件上游曾断言「dsh 的 reasoning `text` 实测恒为空串」——
      * 那是**探测中继把整条流转成单块、破坏 SSE 分块**造成的假象（2026-09-30 复现并定位）。
      */
     const reasoning = readAssistantReasoning(data);
     if (reasoning !== '') {
-      drafts.push(logDraft('stdout', reasoning, clip(oneLine(`思考：${reasoning}`))));
+      drafts.push(logDraft('stdout', safeStringify(raw)));
     }
     // 本步的计量一到就交出去（轮次用**已经数到的**值）：界面上的 tok 因此在一个 step 内也会动，
     // 而不是等 `turn/end`。轮次还没有数到（形状异常：没有 step/start）时给 null——不发明一个 0。
@@ -329,14 +346,14 @@ export function projectDshNotification(
   }
 
   if (type === DSH_TURN_START_TYPE) {
-    // 轮次开始：原来走 `unknown`（原始 JSON 落盘），这里只**补一句人话摘要**，不多落一行。
-    // 轮号取不到就写「?」——不发明一个数字（发明出来的轮号会让排障的人对着不存在的轮次找）
-    const turn = readNumber(data, 'turn');
-    // 时间也在这里记一笔：`turn/start` 是**整轮**的起点，比第一个 `step/start` 更早，
-    // 而 tok/s 的分母要的正是「这一轮花了多久」⇒ 不记它会把第一轮的准备时间漏掉。
+    /**
+     * 轮次边界：只**补一条原始负载**，不给摘要（2026-10-07 统一）。
+     * 从前这里写「第 N 轮开始」——它是纯播报，会把活动行从「在做什么」挤成「跑到第几轮」；
+     * 轮次的落点是卡片上的「轮次」那一格，不是这一行。时间照旧在这里记一笔（见下）。
+     */
     noteEventTime(state, eventRecord);
     return {
-      drafts: [logDraft('stdout', safeStringify(raw), `第 ${turn ?? '?'} 轮开始`)],
+      drafts: [logDraft('stdout', safeStringify(raw))],
       tokens: null,
       timing: state.timing ?? undefined,
       turns: null,
@@ -393,12 +410,12 @@ export function projectDshNotification(
     };
   }
 
-  // 工具调用 / 结果：**不是**「未识别」，但也不产生计量与轮次——事件那条为它补一句人话摘要
+  // 工具调用：**不是**「未识别」，但也不产生计量与轮次——事件那条为它补一句人话摘要
   // （见文件头），消息那条是内容级记录（工具族统计与对话视图读的就是它）。
   // `text` 还是那条原始 JSON：抽屉照旧逐字显示证据，卡片上的活动行显示的是 summary。
   if (type === DSH_TOOL_CALL_TYPE) {
     return {
-      drafts: [logDraft('stdout', safeStringify(raw), summarizeToolCall(data))],
+      drafts: [logDraft('stdout', safeStringify(raw), toolCallSummary(readString(data, 'name'), readString(data, 'arguments')))],
       tokens: null,
       turns: null,
       failure: null,
@@ -406,8 +423,15 @@ export function projectDshNotification(
     };
   }
   if (type === DSH_TOOL_RESULT_TYPE) {
+    /**
+     * 工具结果：**只有报错才给摘要**（2026-10-07 统一）。
+     * 成功返回那句「工具返回：<内容>」会把活动行变成流水账——实测最新一句常常停在
+     * `工具返回：<path>D:\.tmp\aieval\runs\…`；结果的落点是结果块与抽屉的原始输出面板。
+     * 报错必须播：那是「这一行出事了」，而它没有别的行级出口。
+     */
+    const error = asRecord(data?.message)?.isError === true;
     return {
-      drafts: [logDraft('stdout', safeStringify(raw), summarizeToolResult(data))],
+      drafts: [logDraft('stdout', safeStringify(raw), error ? toolErrorSummary(readContentText(asRecord(data?.message)?.content)) : undefined)],
       tokens: null,
       turns: null,
       failure: null,
@@ -430,69 +454,6 @@ function roundOf(sessionId: string | null, data: Record<string, unknown> | null)
 /** 归一草稿可能为 `null`（形状不满足那条消息的最小要求时宁可不发，也不发一条空壳） */
 function optionalMessage(draft: MessageDraft | null): MessageDraft[] {
   return draft === null ? [] : [draft];
-}
-
-/**
- * `tool/call` 的人话摘要：`调用工具 <工具名>：<参数摘要>`（文案是用户口径 2026-09-29 定的）。
- * 工具名取 `data.name`（实测 `pwsh` / `job_output` / `read`…）；取不到就只说「调用工具」——
- * 不编一个名字（编出来的名字会让排障的人去找一个不存在的工具）。
- */
-function summarizeToolCall(data: Record<string, unknown> | null): string {
-  const name = readString(data, 'name');
-  const hint = summarizeArguments(readString(data, 'arguments'));
-  const title = name === null || name === '' ? '调用工具' : `调用工具 ${name}`;
-  return hint === '' ? title : `${title}：${hint}`;
-}
-
-/**
- * `tool/result` 的人话摘要：`工具返回：<内容>`（`message.isError === true` 时是「工具报错：…」）。
- * 结果里**没有工具名**（只有 `toolCallId`），故不编一个；内容取 `message.content[]` 的 text 块
- * （与 `assistant/message` 的读法同源，实测形状一致）。
- */
-function summarizeToolResult(data: Record<string, unknown> | null): string {
-  const message = asRecord(data?.message);
-  const label = message?.isError === true ? '工具报错' : '工具返回';
-  const text = readContentText(message?.content);
-  return text === '' ? label : `${label}：${clip(oneLine(text))}`;
-}
-
-/** 参数里最值得当摘要的字段，**按优先级**排（都是实测见过的：pwsh 的 command、Read 的 file_path…） */
-const PREFERRED_ARGUMENT_KEYS = ['command', 'file_path', 'path', 'job_id', 'pattern', 'query', 'description'] as const;
-
-/**
- * 参数摘要：**一句话**，不是参数的完整转储。
- * 优先取上面那几个「说明了在干什么」的字段；一个都取不到时退化成紧凑 JSON；
- * `arguments` 根本不是 JSON（截断 / 纯文本）时原样用。产物会进事件日志，故一律单行化 + 截断。
- */
-function summarizeArguments(raw: string | null): string {
-  if (raw === null) return '';
-  const parsed = parseJsonRecord(raw);
-  if (parsed === null) return clip(oneLine(raw));
-  for (const key of PREFERRED_ARGUMENT_KEYS) {
-    const value = readString(parsed, key);
-    if (value !== null && value !== '') return clip(oneLine(value));
-  }
-  return clip(oneLine(safeStringify(parsed)));
-}
-
-/** 解析成对象；不是 JSON、或不是对象（数组 / 标量）时返回 null——「解析不了」与「是空的」要分得开 */
-function parseJsonRecord(raw: string): Record<string, unknown> | null {
-  try {
-    return asRecord(JSON.parse(raw));
-  } catch {
-    // 厂商偶尔给的不是合法 JSON（被截断 / 本来就是纯文本）：当「解析不了」，由调用方原样用
-    return null;
-  }
-}
-
-/** 单行化：换行与连续空白压成一个空格（摘要要能塞进卡片底部那一行） */
-function oneLine(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-/** 截断到上限（带省略号）：超长的参数与输出不进摘要字段（完整内容在原始负载里） */
-function clip(text: string): string {
-  return text.length <= DSH_SUMMARY_MAX_LENGTH ? text : `${text.slice(0, DSH_SUMMARY_MAX_LENGTH)}…`;
 }
 
 /**
@@ -662,11 +623,28 @@ function subagentDraft(notification: Record<string, unknown> | null): AgentEvent
     payload.outcome = readLastAssistantText(params);
   }
 
-  return logDraft('stdout', JSON.stringify(payload), subagentSummary(isStart, name, payload.status as string | null));
+  return logDraft(
+    'stdout',
+    JSON.stringify(payload),
+    isStart
+      ? subagentDispatchSummary(name)
+      // `payload.status` 是 `Record<string, unknown>` 里的一格：只在它确实是字符串时才算映射后的档位
+      : subagentSettledSummary(name, mappedStatusOf(typeof payload.status === 'string' ? payload.status : null)),
+  );
 }
 
 /**
- * dsh 的 `status`+`stopReason` → spec v3 §2.6 的 `status` 值域（**两格合读**，见 `message.ts` 的映射表）。
+ * 收场档位取**映射后的契约五态**（`completed` / `failed` / `stopped`），其余一律 `null`：
+ * 词表只认这三档，认不出就说「已结束」——厂商那串原始状态（`ok` / `max-tokens` / …）照旧在日志的
+ * `text` 里逐字可查，不往那句中文里塞英文（旧实现是 `?? status` 原样透出）。
+ */
+function mappedStatusOf(status: string | null): string | null {
+  return status === 'completed' || status === 'failed' || status === 'stopped' ? status : null;
+}
+
+/**
+ * dsh 的 `status` + `stopReason` → spec v3 的 `status` 值域：**以 `stopReason` 分档**，
+ * `status` **只在 `stopReason === 'completed'` 那一支**参与（不是一张笛卡尔表）。
  * 未观测的组合返回 `null`（调用方写 `statusMissing: 'unverified'`）——**不猜**。
  * ⚠️ 这里与 `message.ts` 的 `mapDshSubagentStatus` 是**同一张表的两处投影**（日志载荷 / 契约形状）：
  * 改了取值口径必须同时改两处，否则「日志说失败、子任务行说未采集」。
@@ -692,20 +670,6 @@ function readLastAssistantText(params: Record<string, unknown> | null): string |
     .join('\n');
   return text === '' ? null : text;
 }
-
-/** 活动行的一句话：`已派发子任务：<任务名>` / `子任务已完成：<任务名>` */
-function subagentSummary(isStart: boolean, name: string | null, status: string | null): string {
-  const who = name === null || name === '' ? '子任务' : name;
-  if (isStart) return `已派发子任务：${who}`;
-  return `子任务${SUBAGENT_STATUS_LABELS[status ?? ''] ?? '结束'}：${who}`;
-}
-
-/** 终态的中文说法；表里没有的状态不猜（`mapSubagentStatus` 已经把未知值挡成 null） */
-const SUBAGENT_STATUS_LABELS: Record<string, string> = {
-  completed: '已完成',
-  failed: '失败',
-  canceled: '已取消',
-};
 
 /** 第一个非空字符串；都没有返回 null（**不编**） */
 function firstNonEmpty(...values: (string | null)[]): string | null {

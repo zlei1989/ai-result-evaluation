@@ -8,7 +8,7 @@
  *      不去重日志里就会出现两遍同一行。**服务端的 SSE 本身就会回放** `afterSeq` 之后的历史
  *      （`streamRowEvents` 的第一件事就是回放，见 api/src/run-stream.ts），所以「/log 拿到的」
  *      与「SSE 回放的」天然重叠——两条来源重叠是**有意**的，去重是客户端的职责；
- *   4. 行进入终态就关连接并 **mutate 一次快照**（spec §8.3）：卡片上的分数/耗时/diff 摘要
+ *   4. 行进入终态就关连接并 **mutate 一次快照**（spec §8 的 SSE 行为要求）：卡片上的分数/耗时/diff 摘要
  *      都来自快照，不刷新就只能等下一次轮询，界面会「明明跑完了还显示执行中」；
  *   5. **同一行重跑 = 新一代**（R27 的客户端缺口）：「重跑」前编排层会 `resetEvents` 删掉
  *      `events.jsonl`（core/event-log.ts 的口径：删文件而不是写空串，下一次 `appendEvent`
@@ -26,7 +26,7 @@
  *   · **事件帧一律按事件名订阅**：api 的 `toFrame` 发的是 SSE **具名**事件
  *     （`packages/server/api/src/run-stream.ts` 的 `event: <type>`），而规范规定
  *     `EventSource.onmessage` **只收默认（无名）事件** ⇒ 只绑 `onmessage` 等于**零交付**
- *     （7 种事件在真实浏览器里一个接收者都没有；历史靠 `/log`、终态靠轮询兜底，
+ *     （八种事件在真实浏览器里一个接收者都没有；历史靠 `/log`、终态靠轮询兜底，
  *     症状只表现为「实时通道没有」，因此曾长期不被发现）。
  *     类型清单取 contracts 的 `AGENT_EVENT_TYPES`（**不抄第二份**），逐个 `addEventListener`；
  *     `onmessage` 保留为无名帧的兜底（服务端若不发 `event:` 行也照样能用）；

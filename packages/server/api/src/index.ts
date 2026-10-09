@@ -22,7 +22,7 @@ export {
 } from './cases';
 export { generateRubric, resolveJudgeRoute, type GenerateRubricResult } from './judge';
 // 重启恢复的调用点在 web-next 的启动钩子里，而依赖方向表里 web-next 只到 api / core / ui / client / contracts
-// （AGENT.md），evaluator 不在其中，也没出现在 apps/web-next/package.json 的依赖里——pnpm 的严格
+// （AGENTS.md），evaluator 不在其中，也没出现在 apps/web-next/package.json 的依赖里——pnpm 的严格
 // node_modules 下直连会解析失败。api → evaluator 是允许的方向，故在这里转出一次。
 export { recoverInterruptedRuns } from '@aieval/evaluator';
 
@@ -51,3 +51,5 @@ export { getRowDiffFile, getRowDiffIndex, getRowLog, getRowRecords, resetRowDiff
 export { streamRowEvents } from './run-stream';
 // 消息流（spec v3 §2）：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同
 export { streamRowRecords } from './messages-stream';
+// run 级信号流：跨轮次的状态翻转通道（快照变了 ⇒ 客户端重读 REST），与三条行级流并行
+export { streamRunSignals } from './run-events';

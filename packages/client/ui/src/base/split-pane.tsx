@@ -21,8 +21,10 @@
  * 两个宿主 div 的 `minWidth/minHeight` 写字面量 `'0px'` 而不是数字 0：React 对数值 0 **不加单位**
  * （源码里 `value !== 0` 才补 px），内联 style 会落成 `min-width: 0`。两者计算值相同，
  * 但 `'0px'` 让「不收缩」这条不变量在内联口径下可断言（与 page-shell.tsx 同一口径）。
- * 两套写法**并存是有意的**：写 `'0px'` 的只有「测试会断言其内联值」的这两处宿主，其余（本文件
- * Splitter 根节点的 `minWidth/minHeight`、`resizable-columns.tsx` 里的全部 0）保持数值 0，不做全仓统一。
+ * 两套写法**并存是有意的**：写 `'0px'` 的只限「测试会断言其内联值」的那几处宿主
+ * ——本文件这两个宿主、`page-shell.tsx` 的根节点、`table-scroll-area.tsx` 的 `TABLE_SCROLL_STYLE`；
+ * 其余（本文件 Splitter 根节点的 `minWidth/minHeight`、`resizable-columns.tsx` 里的全部 0）
+ * 保持数值 0，不做全仓统一。
  *
  * 本原语不支持「用户拖过的宽度在刷新后还原」（Splitter 的 defaultSize 只在挂载时读一次）；
  * 需要还原宽度时用 ResizableColumns。

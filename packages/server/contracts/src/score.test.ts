@@ -69,6 +69,55 @@ describe('ScoreResultSchema', () => {
     expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeAgentKind: 'dsh' }).success).toBe(true);
     expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeAgentKind: 'gemini' }).success).toBe(false);
   });
+
+  it('judgeEffort 缺省为 null（磁盘上已有的评分记录要能读回）', () => {
+    // 老快照的形状：那一份 score 里**没有** judgeEffort（也没有 judgeAgentKind / structuredOutput）
+    const legacy = {
+      judgments: [{ id: 'A1', achieved: true, reason: '有' }],
+      totalScore: 18,
+      maxScore: 32,
+      verdict: '还行',
+      raw: '{}',
+      judgeProviderId: 'p1',
+      judgeModelId: 'deepseek-chat',
+      judgedAt: '2026-10-07T00:00:00.000Z',
+    };
+    const parsed = ScoreResultSchema.parse(legacy);
+    expect(parsed.judgeEffort).toBeNull();
+    // `null` 只表达「未指定」，不是「关闭」：关闭档记的是上游词汇原样（off），两者必须可分，
+    // 否则「跨轮次可比」这件事（不同强度打的分数在数据上区分得开）就没了
+    expect(ScoreResultSchema.parse({ ...legacy, judgeEffort: 'off' }).judgeEffort).toBe('off');
+  });
+
+  /**
+   * 评分**自己**的用量与耗时（2026-10-08 加）：界面顶部那一段说的是「这一分是谁花的、花了多少」，
+   * 于是这两格必须与 `judgeAgentKind` / `judgeModelId` 同源（都在 `score` 上），
+   * 而不是拿候选行的 `tokens` / `durationMs` 顶上——那是**执行**那一份，两者差了整整一个阶段。
+   *
+   * `.default(null)` 同 `judgeAgentKind`：磁盘上已有的评分记录里没有这两格，必填会让
+   * `listRuns()` 静默跳过那一轮（老记录的分数还在，却整轮从列表里消失）。
+   */
+  it('judgeTokens / judgeDurationMs 缺省为 null，真实取值原样读回（老记录要能读盘）', () => {
+    const legacy = ScoreResultSchema.parse(goodScore());
+    expect(legacy.judgeTokens).toBeNull();
+    expect(legacy.judgeDurationMs).toBeNull();
+
+    const scored = ScoreResultSchema.parse({
+      ...goodScore(),
+      judgeTokens: { input: 24_968, cached: 2_283_520, output: 67_101 },
+      judgeDurationMs: 29_000,
+    });
+    expect(scored.judgeTokens).toEqual({ input: 24_968, cached: 2_283_520, output: 67_101 });
+    expect(scored.judgeDurationMs).toBe(29_000);
+
+    // 真实的 0 是**读数**（这一家一个 token 都没花 / 掐表不到 1 秒），与「没采到」相反，
+    // 不许被真值判断兜成 null
+    expect(ScoreResultSchema.parse({ ...goodScore(), judgeDurationMs: 0 }).judgeDurationMs).toBe(0);
+
+    // 三元组缺一格非法：与 `EvalRow.tokens` 同一个形状口径（半份用量比没有用量更难解释）
+    expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeTokens: { input: 1, cached: 2 } }).success).toBe(false);
+    expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeTokens: { input: '1', cached: 2, output: 3 } }).success).toBe(false);
+  });
 });
 
 describe('JUDGE_OUTPUT_CONTRACT（新文本）', () => {

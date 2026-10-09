@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript / zod（契约）、vitest + @testing-library/react（测试）、Next 16 App Router（路由）、antd 6（Drawer / Skeleton / Input）、SWR（按需取数）、React 19、`react-diff-viewer-continued@4.4.0`（diff 渲染）。
 
-**Spec:** `docs/superpowers/specs/2026-09-22-scaffold-design.md` §13.8（本线的过程 spec 已并入该文档并从库中删除）
+**Spec:** `docs/superpowers/specs/2026-09-22-features-design.md` §5.3.4（「变更详情」抽屉）
 
 ## Global Constraints
 

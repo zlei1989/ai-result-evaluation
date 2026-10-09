@@ -246,7 +246,7 @@ export function readClaudeSubagentUsage(input: {
  * 真的一条都没出现过」这条判据下成立——`subagentIds` **全部**来自那条判据（`index.ts` 的 `project`，
  * 判据在 `message.ts` 的 `ClaudeTaskShape`）。CLI 换形状 / 不再投送 `task_started` 时，这里的意思是
  * 「**本次没观察到**」，而不是「这一行确实没有子智能体」；要下后一个结论，得先确认事件流真的没给。
- * 与 codex 为同一格写下的告诫逐字同源（`providers/codex/transcript.ts` 的 `childUsageOf`）。
+ * 与 codex 为同一格写下的告诫同源（`providers/codex/index.ts` 的子智能体用量「全量或 null」）。
  *
  * 反过来，名单里**形状像派发**的子智能体而盘上一份转录都没有 ⇒ 事实缺失：`null` + 点名那些 id
  * （绝不写成 `{0,0,0}`——那是「它一分钱没花」，而这里我们**没有依据**这么说）。

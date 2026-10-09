@@ -32,6 +32,7 @@ export {
   type ProviderPatch,
   type ProviderView,
 } from './provider';
+export { CANONICAL_EFFORT_LEVELS, intersectEfforts } from './effort';
 export {
   RepoSourceStringSchema,
   displayRepoName,
@@ -54,6 +55,7 @@ export {
   type CasePatch,
   type CommitCandidate,
   type GenerateRubricInput,
+  type GenerateRubricResult,
   type RepoCommitsInput,
   type RepoInfo,
   type RepoValidateInput,
@@ -100,11 +102,13 @@ export {
   RubricItemSchema,
   RubricSchema,
   composeTotalScore,
+  diffRubric,
   renderRubricForJudge,
   rubricItemKeys,
   rubricMaxScore,
   validateRubric,
   type Rubric,
+  type RubricChange,
   type RubricGroup,
   type RubricItem,
 } from './rubric';

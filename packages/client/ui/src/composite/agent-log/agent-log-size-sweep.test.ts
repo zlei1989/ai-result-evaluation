@@ -58,8 +58,12 @@ const RENDER_FILES = readdirSync(dir)
  * （`descriptions` / `input-number` / `switch` …），或 `button/Button.d.ts`、`card/Card.d.ts`、
  * `badge/Badge.d.ts` 的 Props 接口里有的。没有实测过的名字不进这张表：
  * 宁可少扫，也不要写一个在本仓根本查不到东西的靶子。
+ *
+ * `Table` 是 2026-10-07 加进来的（计划清单改成两列 small Table）：依据同样是实测
+ * ——`antd/es/table/InternalTable.d.ts:52` 写 `size?: SizeType`。本目录里只有计划清单那一处
+ * `<Table>`，故这一格是真的有靶子，不是凑数。
  */
-const SIZED_COMPONENTS = ['Badge', 'Button', 'Card', 'Descriptions', 'InputNumber', 'Switch'] as const;
+const SIZED_COMPONENTS = ['Badge', 'Button', 'Card', 'Descriptions', 'InputNumber', 'Switch', 'Table'] as const;
 
 /** 合法标识符起头 ⇒ `<Badge` 其实更长的名字（闭包组件的前缀） */
 const IDENTIFIER_START = /^[A-Za-z0-9_$]/;
@@ -85,6 +89,11 @@ interface Hit {
  * 为什么要自己走一遍括号而不是怼一个正则：`items={[` 这种属性里有嵌套的 `[`/`{`，
  * `/<Card[^>]*>/` 会在第一个 `>` 上停住（或干脆误吞到下一个标签），于是「查整个开标签」
  * 就退化成「查它前面那半截」——漏报正是这么来的。
+ *
+ * 同理要**先跳过显式类型参数**（2026-10-07 补）：`<Table<TaskStep> …>` 里那个 `>` 也是尖括号，
+ * 不是标签结束。不跳的话，扫描面上一出现泛型写法，这一格就报成「缺 `size="small"`」——
+ * 明明是写了的（实测：`<Table<TaskStep>` 加了那四行 `size="small"` 仍然判红），
+ * 而误伤会让人去改产品代码迁就守卫，那正是本仓不肯要的方向。
  */
 function openingTags(source: string, name: string): Hit[] {
   const hits: Hit[] = [];
@@ -98,10 +107,38 @@ function openingTags(source: string, name: string): Hit[] {
       from = index + name.length + 1;
       continue;
     }
+    // 紧跟组件名的那一对尖括号 = 类型参数（属性位置上不会出现 `<`，故只看这一个字符）：
+    // 跳到它闭合之后，里面的 `>` 一个都不当标签结束。**`=>` 的 `>` 不算闭合**
+    // （2026-10-07 复核实测：`<Table<Record<string, (row: string) => void>>` 不排除箭头就早停，
+    // 于是「写了 size 仍判红」——那正是本条要消灭的误伤）。
+    //
+    // 已知局限（如实登记，与 `agent-log-layering.test.ts` 的 stripComments 同处置）：类型实参里的
+    // **字符串字面量**含 `>`（`<Table<Foo<'>'>>`）仍会提前收尾。收尾之后落到哪一段**取决于后面的字符**：
+    // 多半是误报（判红），但若接下来的 `}` 把深度压到负数，扫描会一路吞到下一个深度 0 的 `>`——
+    // 那时整个开标签（连 `size="small"`）都进了 hit，于是**静默放过**。两种方向都实测到过
+    // （`probe?: () => void` 那种形状就是后者），故这半句不能写成「只会误报」。
+    // 本仓没有这种形态；真要写的时候得把这一段改成按引号走一遍。
+    let start = index + name.length + 1;
+    if (source[start] === '<') {
+      let angle = 0;
+      for (; start < source.length; start += 1) {
+        const ch = source[start];
+        if (ch === undefined) break;
+        if (ch === '<') angle += 1;
+        else if (ch === '>' && source[start - 1] !== '=') {
+          angle -= 1;
+          // 闭合成对之后多走一格：`<` 与 `>` 本身都不进下面那段扫描
+          if (angle === 0) {
+            start += 1;
+            break;
+          }
+        }
+      }
+    }
     let depth = 0;
     let quote: string | null = null;
     let end = -1;
-    for (let i = index + name.length + 1; i < source.length; i += 1) {
+    for (let i = start; i < source.length; i += 1) {
       // 索引可能越界（`noUncheckedIndexedAccess`）⇒ 缺字符按「不是引号也不是括号」处理，
       // 循环本身由 `i < source.length` 收口
       const ch = source[i];
@@ -178,7 +215,9 @@ describe('执行日志的 size 口径：带 size 的组件一律 small', () => {
   it('`Listy` 也不支持 size，spec 表格里那句「Listy size="small"」是 antd 6 的过期写法', () => {
     const listyTypes = installedFile('@rc-component/listy/es/List.d.ts');
     expect(listyTypes).not.toMatch(/\bsize\s*\??:/);
-    for (const file of ['ask-user-card.tsx', 'task-panel-card.tsx', 'virtual-turn-list.tsx']) {
+    // 2026-10-07：任务清单改成 `Table`（那一处的 size 已由上面 `SIZED_COMPONENTS` 那一格守着），
+    // 还在 `Listy` 面上的只剩这两处
+    for (const file of ['ask-user-card.tsx', 'virtual-turn-list.tsx']) {
       expect(RENDER_FILES).toContain(file);
       expect(readFileSync(join(dir, file), 'utf8'), `${file} 给 Listy 写了一个不存在的属性`).not.toMatch(
         /<Listy[^>]*\ssize=/,

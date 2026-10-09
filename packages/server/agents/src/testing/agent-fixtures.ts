@@ -19,19 +19,10 @@ export interface FakeVendorRecorder {
   env: Record<string, string> | null;
   /** 厂商拿到的客户端 / 查询选项原文 */
   options: Record<string, unknown> | null;
-  /** codex 的线程选项 */
-  threadOptions: Record<string, unknown> | null;
   /** 送进去的提示词 */
   prompt: string | null;
-  /** codex 夹具：`runStreamed(prompt, turnOptions)` 的第二参（结构化输出与中止信号的断言对象） */
-  turnOptions: { signal: AbortSignal; outputSchema?: Record<string, unknown> } | null;
   /** 运行时关闭次数（dispose 幂等的断言对象） */
   closeCount: number;
-  /**
-   * 适配器请求关闭事件迭代的次数（codex 夹具：`events.return()` 被调用的次数）。
-   * 「第二段兜底恰好做一次」的可观测量——转发给底层 async generator 本尊，只记数、不改语义。
-   */
-  streamCloseCount: number;
   /** dsh 夹具：挂住的 `run()` 的释放函数（由 `close()` 触发，模拟「关掉 runtime ⇒ run 结束」） */
   hangRelease: (() => void) | null;
   /**
@@ -48,11 +39,8 @@ export function createRecorder(): FakeVendorRecorder {
     order: [],
     env: null,
     options: null,
-    threadOptions: null,
     prompt: null,
-    turnOptions: null,
     closeCount: 0,
-    streamCloseCount: 0,
     hangRelease: null,
     interruptThenCalls: null,
   };
@@ -264,148 +252,6 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
       };
     },
   };
-}
-
-export interface FakeCodexSdkOptions {
-  recorder: FakeVendorRecorder;
-  events: readonly unknown[];
-  /**
-   * 'stop'（默认，合作）| 'ignore'（忽略中止信号：**第一次中止没有终结迭代**——CLI 不响应 /
-   * SDK 仍挂在等待上）。为什么需要这一格：codex 只有「中止响应流」这一个停止通道（真实 SDK 把它交给
-   * `spawn(signal)`），而 §5.6.5 的第二段兜底正是为「第一次停止无效」准备的 —— `ignore` 就是那个形状。
-   * 措辞按平台语义收敛（评审 N1）：不写「CLI 忽略 SIGTERM」——win32 上 `child.kill()` 走
-   * `TerminateProcess`，子进程无法忽略；POSIX 上要成立得 CLI 自己装 SIGTERM handler。
-   */
-  interrupt?: 'stop' | 'ignore';
-  /** 吐完事件后挂住，直到被停止 */
-  hang?: boolean;
-  /** 吐完事件后抛出（模拟进程非零退出） */
-  throwAfterEvents?: unknown;
-  /**
-   * 「中止无效、但 CLI 还活着」的形状：吐完 `events` 后先卡住 `afterMs` 毫秒，**再吐一条** `value`，
-   * 之后按 `hang` 继续卡住。
-   * 为什么需要它：真 async generator 的 `return()` 带**排队**语义，只在下一个挂起点（yield / 结束）
-   * 才生效——于是「被放弃的迭代之后又落定一次时，迭代在那一刻结束」是「关闭事件迭代」这条通道
-   * 唯一可达且可钉的可观测量（见 `codex/index.test.ts` 的第二段兜底用例）。
-   */
-  lateEvent?: { afterMs: number; value: unknown };
-  /** `runStreamed` 之前抛出（模拟 CLI 未安装 / 线程建不起来） */
-  threadError?: unknown;
-  /** 运行中回调：用来断言「临时目录在运行期间确实存在」 */
-  onRunStreamed?: () => void;
-}
-
-/**
- * codex 的假事件流：**真 async generator**，且与真实 SDK 同形（两层）。
- * 为什么必须是真生成器（复评 I1）：真实 `Thread.runStreamedInternal` 返回 `AsyncGenerator<ThreadEvent>`
- * （`dist/index.d.ts:186`），它的 `return()` 带**排队**语义——生成器在执行中（挂在一个未落定的 await
- * 上）时 `return()` 只是入队，直到下一个挂起点才生效。夹具若用「普通 async 方法 + 带外 stop()」，就等于
- * 给了适配器一个真实 SDK 没有的能力，守卫会变成假绿。这里两层都只**转发**，不替 `return()` 做事：
- *   runStreamedInternal（外层；真实实现在 `finally` 里 `await cleanup()`，今天恒为 no-op）
- *     → CodexExec.run（内层；真实实现在 `finally` 里 `rl.close()` + `child.kill()`）
- * `'turn-end'` 记在**内层** finally：它对应真实 SDK 收掉读循环与子进程的那一句（= 在途 turn 终结）。
- * `stop()` 只模拟「子进程死了 / 读循环被关掉」这个 SDK 侧事实，绝不替 `return()` 干活。
- */
-function createFakeCodexEvents(options: FakeCodexSdkOptions): {
-  events: AsyncIterable<unknown> & { return: (value?: unknown) => Promise<unknown> };
-  stop: () => void;
-} {
-  const { recorder } = options;
-  let stopped = false;
-  let release: (() => void) | null = null;
-  const stop = (): void => {
-    stopped = true;
-    release?.();
-  };
-  // 内层 = CodexExec.run：读循环吐行；被 return() 关闭或正常跑完都在 finally 里收尾
-  async function* readLoop(): AsyncGenerator<unknown> {
-    try {
-      for (const event of options.events) {
-        if (stopped) return;
-        yield event;
-      }
-      if (options.throwAfterEvents !== undefined) throw options.throwAfterEvents;
-      const late = options.lateEvent;
-      if (late !== undefined) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, late.afterMs);
-        });
-        if (stopped) return;
-        yield late.value;
-      }
-      if (options.hang === true) {
-        // 挂住之前再查一次（评审 F6）：`stop()` 可能早于迭代开始就被调用（例如适配器在 start() 里
-        // 就停），那时 `release` 还是 null，`stop()` 只置了 stopped ⇒ 不查这一下就永远醒不过来。
-        if (stopped) return;
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-    } finally {
-      recorder.order.push('turn-end');
-    }
-  }
-  // 外层 = runStreamedInternal：`for await` 委托内层，逐条 yield 出去（真实实现还要 JSON.parse）
-  const generator = (async function* (): AsyncGenerator<unknown> {
-    for await (const item of readLoop()) yield item;
-  })();
-  return {
-    events: {
-      // 真实 `events` 是生成器本尊，`[Symbol.asyncIterator]()` 返回它自己；这里同样只返回同一个实例
-      [Symbol.asyncIterator]: (): AsyncGenerator<unknown> => generator,
-      /**
-       * 与真实 `AsyncGenerator.prototype.return` 完全同形：**委派**给底层生成器（排队语义原样保留），
-       * 只多记一个数。这里绝不能做任何带外动作（旧夹具那句 `stream.stop()` 正是复评 I1 的假绿来源）。
-       */
-      return: (value?: unknown): Promise<unknown> => {
-        recorder.streamCloseCount += 1;
-        return generator.return(value);
-      },
-    },
-    stop,
-  };
-}
-
-/** 假的 `@openai/codex-sdk`：`new Codex(options)` → `startThread(options)` → `runStreamed(prompt, { signal })` */
-export function createFakeCodexSdk(options: FakeCodexSdkOptions): unknown {
-  const { recorder } = options;
-  class FakeCodex {
-    constructor(clientOptions: Record<string, unknown>) {
-      recorder.options = clientOptions;
-      recorder.env = clientOptions.env as Record<string, string>;
-    }
-
-    startThread(threadOptions: Record<string, unknown>): unknown {
-      recorder.threadOptions = threadOptions;
-      return {
-        runStreamed: async (
-          prompt: string,
-          runOptions: { signal: AbortSignal; outputSchema?: Record<string, unknown> },
-        ): Promise<unknown> => {
-          if (options.threadError !== undefined) throw options.threadError;
-          recorder.prompt = prompt;
-          // 只新增观测：把第二参原文留下（结构化输出与中止信号的断言对象），不参与夹具的任何行为
-          recorder.turnOptions = runOptions;
-          options.onRunStreamed?.();
-          const stream = createFakeCodexEvents(options);
-          // 中止信号 = 真实 SDK 交给 `spawn(signal)` 的那一个。它**不保证**收掉 CLI（win32 上是
-          // TerminateProcess 无法被忽略；POSIX 上要 CLI 自己装 SIGTERM handler），可观测的是
-          // 「这次中止有没有终结迭代」：'ignore' 表示没有——于是第二段兜底必须另找一条路。
-          runOptions.signal.addEventListener(
-            'abort',
-            () => {
-              recorder.order.push('interrupt');
-              if (options.interrupt === 'ignore') return;
-              stream.stop();
-            },
-            { once: true },
-          );
-          return { events: stream.events };
-        },
-      };
-    }
-  }
-  return { Codex: FakeCodex };
 }
 
 export interface FakeDshSdkOptions {

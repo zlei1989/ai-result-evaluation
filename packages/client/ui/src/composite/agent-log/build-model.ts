@@ -62,7 +62,6 @@ export interface AgentLogFactsInput {
   thinking: AgentLogFacts['thinking'];
   domain: AgentLogFacts['domain'];
   error: AgentLogFacts['error'];
-  exitReason: string | null;
   /** 还有内容要到（决定 `LogTurn.running`） */
   live: boolean;
 }
@@ -115,9 +114,16 @@ const UNVERIFIED: MessageCapabilityMap = {
  * 一条消息 → 若干内容块（摊平信封）。
  * `role` / `source` / `assembly` 三格**跟着块走**：它们是块自己的事实，
  * 界面不该再看信封（同一个块不可能同时来自 assistant 正文与工具结果）。
+ *
+ * **无正文的思考块在这一层整块过滤掉**（2026-10-07 用户口径）：数据层如实记着「有思考、无文本」
+ * 这条事实（`text: null` + `textKind: 'none'`），而它在界面上只能变成一句占位文案——
+ * 那不是用户要看的思考，**没有就不显示**。放在这一层而不是某个组件里：时间轴、面包屑、
+ * 以及将来任何一个消费方拿到的模型里都不该再有它（在组件里隐藏只会让别的出口漏出来）。
  */
 function blocksOf(message: AgentMessage, live: boolean, at: string): ContentBlock[] {
-  return message.blocks.map((block, blockIndex) => toContentBlock(block, message, `${message.messageId}#${blockIndex}`, live, at));
+  return message.blocks
+    .map((block, blockIndex) => toContentBlock(block, message, `${message.messageId}#${blockIndex}`, live, at))
+    .filter((block) => !(block.kind === 'thinking' && block.text === null));
 }
 
 /** 契约块 → 界面块；不认识的那一类落到 `unrecognized`（**原文保留，不丢**） */
@@ -143,7 +149,12 @@ function toContentBlock(block: ContractBlock, message: AgentMessage, id: string,
     case 'text':
       return { ...base, kind: 'text', text: block.text };
     case 'thinking':
-      return { ...base, kind: 'thinking', text: block.text, textMissing: block.text === null ? 'not-observed' : null, textKind: block.textKind };
+      /**
+       * 走到这里的思考块**必有正文**：`text === null` 的那些已被 `blocksOf` 过滤掉（整块不显示）。
+       * `textMissing` 因此恒 `null`——它保留在形状上是为了老日志与「数据层如实记录」这条口径，
+       * 界面不再有它的渲染出口。
+       */
+      return { ...base, kind: 'thinking', text: block.text, textMissing: null, textKind: block.textKind };
     case 'tool-call': {
       return {
         ...base,
@@ -154,7 +165,7 @@ function toContentBlock(block: ContractBlock, message: AgentMessage, id: string,
         nameMissing: block.name === '' ? 'not-observed' : null,
         family: block.family,
         input: serializeInput(block.input),
-        tool: familyPayloadOf(block, live),
+        tool: familyPayloadOf(block, live, base.at),
       };
     }
     case 'tool-result':
@@ -216,7 +227,7 @@ function byteLength(text: string): number {
  * `null` = 本期没有为它收编专门卡片（含「适配器不认识」与「不在两族里」两种，
  * 两者靠 `family` 分开）⇒ UI 走通用工具行，**调用不会消失**。
  */
-function familyPayloadOf(block: Extract<ContractBlock, { type: 'tool-call' }>, live: boolean): ToolFamilyPayload | null {
+function familyPayloadOf(block: Extract<ContractBlock, { type: 'tool-call' }>, live: boolean, at: string): ToolFamilyPayload | null {
   // 「键不存在」与「显式 null」同一处置：老记录（`payload` 这一格之前落盘的）两者都有
   const payload = block.payload ?? null;
   if (payload === null) return null;
@@ -231,14 +242,27 @@ function familyPayloadOf(block: Extract<ContractBlock, { type: 'tool-call' }>, l
         // 跨轮差分要数据层的累积态（UI 按项渲染、看不到上一张表）⇒ 这里恒 `null`（首次出现口径）
         change: null,
         note: payload.note,
-        at: '',
+        // 与 ask-user 同一口径：载荷不带时刻 ⇒ 用块的时刻（否则界面上的「等了多久」无从算起）
+        at,
         result: null,
         running: live,
       },
     };
   }
-  // 调用这一半只能给「还没收场」：答案与收场方式在**结果**那一半（`render-blocks` 配对后填）
-  return { family: 'ask-user', interaction: { state: 'pending', questions: payload.questions, at: '', running: live } };
+  /**
+   * 调用这一半只能给「还没收场」：答案与收场方式在**结果**那一半。
+   *
+   * ⚠️ **结果那一半目前没有人填**：`render-blocks.ts` 把这一格原样成卡，契约的 `ask-user` 载荷
+   * 也只有 `{ kind, questions }` ⇒ 七种收场与答案回填在真机上都走不到。
+   * **连夹具都喂不出来**（夹具走真实链路、绕不过这里），`settled` 那一支只有单测手搓对象才构造得出。
+   * 这里保持 `pending` 是**如实**的，不是漏了配对。
+   */
+  /**
+   * 收场那一支现在没有产出方（见上），但 `at` 必须给**真实时刻**：卡片上的
+   * 「等待答复中… 12m」与固定区那枚「等待答复」徽标**都读这一格**，空串会让
+   * `Date.parse('')` 得 NaN、`formatDuration` 回落 `'0s'` ⇒ 恒显「刚问完」。
+   */
+  return { family: 'ask-user', interaction: { state: 'pending', questions: payload.questions, at, running: live } };
 }
 
 /** `input` 的 `structured` 半边（如果有）；契约的 `input` 是 `unknown`，故必须逐层判形状 */
@@ -376,6 +400,9 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     /**
      * **只给汇总、没有逐条身份**的那一档（`source === 'aggregate'`）走行级节点：
      * 它不可点、不进面包屑（点进去只会得到一个空会话），只在时间轴上占一条带计数的说明行。
+     *
+     * ⚠️ **本仓目前没有任何适配器发出 `source: 'aggregate'`**（契约 schema 有这个取值），
+     * 所以这条路径在真机上走不到，只有夹具能喂出来。留着是因为「厂商只给汇总」是真实存在的形态。
      */
     if (subagent.source === 'aggregate') {
       rowNodes.push({
@@ -403,7 +430,6 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
           thinking: null,
           domain: [],
           error: null,
-          exitReason: null,
         },
       });
       continue;
@@ -516,6 +542,14 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
    * 「进入子任务」入口挂到了「收场」那一步上（点得到，但位置错）。
    * 判据按**派发动作名**认（`spawn` / `task` / `agent` 归一类，与下面的 `isDispatchCall` 同一口径）；
    * 认不出来时**不认领**，交给②③去认真正的那次调用——它们看的是调用入参，比动作名更硬。
+   *
+   * ⚠️ **两处已知的弱**（2026-10-08 复核发现，行为今天正确、判据本身不硬）：
+   *   1. **紧跟其后的那段循环（按 `parentCallId` 一律 `dispatchOf`）会把这里的结果原样重算一遍**
+   *      ——入参相同、结果相同，所以 `claimsDispatch` 这道过滤**实际上不起作用**；
+   *   2. 那个动作名正则 `/spawn|task|agent/i` **区分不出动作**（`close_agent` 里就有 `agent`）⇒
+   *      若真的按「最后一条记录赢」跑，认领的会是**收场**那次调用。
+   *   今天不出问题是「两段循环等价」+ `build-model.test.ts` 的夹具靠投递顺序；
+   *   待整理：要么只留一段循环，要么把动作名判据写成枚举。
    */
   const claimsDispatch = (record: SubagentRecord): boolean =>
     record.parentCallId !== null &&
@@ -561,12 +595,17 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     for (const block of message.blocks) {
       if (block.type !== 'tool-call' || block.callId === '') continue;
       /**
-       * ➀ 的**时间回填**：`parentCallId` 已经把这个子任务挂到某次调用上了，而 `at` 只有走到
-       * 那次调用所在的消息上才拿得到（记录本身不带时间）。这一步在 ②③ 之前跑，
-       * 且只补 `at`——派发点是谁由适配器给的那一格说了算，不在这里改判。
+       * **这一段是死代码（2026-10-08 复核确认，行为无影响，留着只为不打断四条判据的阅读顺序）。**
+       *
+       * 它原本自称「➀ 的时间回填」：走到调用所在的消息时把 `messageId` / `at` 补上。
+       * 但 `dispatchOf` 扫的与这里扫的是**同一张 `folded` 主会话表**、判据也一样（`callId` 逐字相同）
+       * ⇒ 它找得到时返回的就是这一条的 `messageId` 与同源轮次；找不到时这里也找不到。
+       * 实测：把判据换成 `at === ''`（原写法）或直接换成 `true`，**用例与模型输出都不变**
+       * （紧随其后的那段无条件 `dispatchOf` 已经赋了同一个值）。
+       * 真要整理时就删掉它，并顺带把 `claimsDispatch` 那条判据收成枚举——那是另一次改动。
        */
       const claimed = sessions.get(block.callId);
-      if (claimed !== undefined && claimed.node.spawnedBy?.callId === block.callId && claimed.node.spawnedBy.at === null) {
+      if (claimed !== undefined && claimed.node.spawnedBy?.callId === block.callId && claimed.node.spawnedBy.at === '') {
         claimed.node.spawnedBy = {
           messageId: message.messageId,
           callId: block.callId,

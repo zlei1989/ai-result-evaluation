@@ -5,13 +5,20 @@ export { callTextApi, type TextRoute } from './text-api';
 // 深路径 import 拿不到（`index.test.ts` 按**完整集合**守卫本文件的出口面）。
 // 其余新名字（`judgeRowByAgent` / `JudgeAgentError` / `AgentJudgeInput` / `finalizeScore`）刻意不出口：
 // 消费者都在本包内、走相对 import，多出口一个就多一份永久摩擦（每次加出口都要显式改那条守卫）。
-export { requireJudgeAgent, resolveJudgeRoute } from './judge-route';
+// 档位那两个（Task 9）**必须出口**：`resolveJudgeEffort` 是唯一读点，而 api 层的生成 / 识别要跨包调它，
+// 并当场用 `requireJudgeEffort` 校验（两道一起给，调用方不必自己拼第二份判据）。
+export { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
 
 // 运行快照：一轮评测的可展示状态都在这里（Task 1）
 export { getRun, listRuns, listRunsForCase, saveRun } from './run-store';
 
 // 事件总线：落盘 + 进程内扇出（Task 2）。`PendingRowEvent` 不导出：只有本包的编排层在发事件
 export { publishRowEvent, subscribeRowEvents } from './events';
+
+// run 级信号总线：`saveRun` 落盘后的「快照变了」提示。`subscribeRunChanges` 出口给 api 层的
+// SSE 端点（/api/runs/events）用；`publishRunChanged` 刻意不出口——唯一发射点在 `saveRun` 体内，
+// 包外没有第二个合法发射方（出口它会诱人在编排层「顺手补一条」，那正是发射点分裂的开端）
+export { subscribeRunChanges } from './run-signals';
 
 // 记录总线（spec v3 §2）：消息与子任务行共用 `messages.jsonl`，落盘 + 进程内扇出。
 // `publishRowRecord` 与两个窄包装都出口：api 层的回放路由要读文件，而想按类型分流的订阅方

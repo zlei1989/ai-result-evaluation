@@ -1,7 +1,7 @@
 /**
  * provider 注册表：kind → AgentProvider（A3 的落地点）。
  * 为什么显式静态注册而不是目录扫描：打包后 `readdirSync` 不可靠；注册表同时承载「协议兼容性 /
- * 终止能力 / 隔离级别」元数据，是前端候选池过滤与编排层判断的**唯一**查询点（包内有静态断言
+ * 行级能力 / 消息能力 / 档位域」元数据，是前端候选池过滤与编排层判断的**唯一**查询点（包内有静态断言
  * 禁止出现目录扫描）。
  * 注意：清单顺序 = `listAgentProviders()` 的顺序 = 前端下拉顺序，必须与 contracts 的 AGENT_KINDS 同序。
  */
@@ -10,7 +10,7 @@ import { codexProvider } from './providers/codex';
 import { dshProvider } from './providers/dsh';
 import type { AgentKind, AgentProvider } from './types';
 
-/** 显式静态注册表：加第四家 = 加一个 `providers/<id>/` 目录 + 这里一行，编排层与表单不改（A3） */
+/** 显式静态注册表：加第四家 = 加一个 `providers/<id>/` 目录 + 这里一行 + contracts 的 `AGENT_KINDS` / `AGENT_LABELS` 各一格（id 真源在 contracts）+ `permission.ts` 里共享的三家权限表补一份 + 测试侧的 `Record<AgentKind, …>` 构造点，编排层与表单不改（A3） */
 const PROVIDERS: readonly AgentProvider[] = [claudeCodeProvider, codexProvider, dshProvider];
 
 const BY_KIND: ReadonlyMap<AgentKind, AgentProvider> = new Map(

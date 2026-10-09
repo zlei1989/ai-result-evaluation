@@ -4,7 +4,7 @@
  * 契约描述「采到了什么」，这里描述「界面画什么」（`RenderBlock` 已配对、已分组，
  * 折叠与虚拟化所需的稳定键已经就位，原始载荷的截断与字节数由数据层算好）。
  *
- * 本文件只有类型与文案表，**没有任何行为**——组件从它取名字，不从这里取状态。
+ * 本文件以类型与文案表为主，另有三个**纯函数**（`capabilityReasonOf` / `truncationNote` / `toCapabilityMap`）——它们只是派生文案与映射，不持状态、不取数。组件从它取名字，不从这里取状态。
  *
  * 三条贯穿全文件的纪律（违反任一条，界面就会把「没有」说成「没采到」）：
  *   1. **`null` 只表示未采集**，永远不等于 0 / 空串 / 空数组；
@@ -50,11 +50,10 @@ export interface AgentTokens {
 
 /**
  * 领域事实里的一**段**内容（2026-10-07 用户口径：改动那一格按 git 惯例给 `+N` / `−N` 上色，
- * 评分模型名做成一枚 `Tag`）。
+ * 模型名 / 智能体 / 档位做成一枚 `Tag`）。
  *
- * 为什么必须由数据层给成段、而不是界面自己拆：`agent-log-facts-bar.tsx` 文件头第 3 条是硬规则
- * ——**UI 不解析领域事实**（它不知道「改动」「评分」是什么）。所以「哪一段是新增、哪一段是删除、
- * 哪一段是模型名」只能由数据层声明，渲染层只负责按声明上色。
+ * 为什么必须由数据层给成段、而不是界面自己拆：**UI 不解析领域事实**（它不知道「改动」「智能体」
+ * 是什么）。所以「哪一段是新增、哪一段是删除、哪一段是标识符」只能由数据层声明，渲染层只按声明画。
  */
 export interface DomainFactSegment {
   text: string;
@@ -62,6 +61,13 @@ export interface DomainFactSegment {
   tone?: 'insertion' | 'deletion';
   /** 这一段的身份标识（模型名这类）：画成一枚 `Tag`，从同格的叙述文字里跳出来 */
   tag?: boolean;
+  /**
+   * `tag` 段的**色档**（不给 = `blue`）。与 `AgentRunStatus.tone` / `DomainFact.tone` 同一条口径：
+   * 数据层给的是**档位**（界面词汇），渲染层把它翻成 antd 的具体预设色。
+   * 2026-10-07 的三格：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`——同一个档位在本仓的
+   * 两处（事实条那一行与评分详情顶部）长得一样。
+   */
+  tagTone?: 'blue' | 'geekblue' | 'purple';
 }
 
 /**
@@ -82,7 +88,7 @@ export interface DomainFact {
    */
   segments?: readonly DomainFactSegment[];
   tone?: 'default' | 'success' | 'warning' | 'error';
-  /** 补充说明（评分那一格放「尺子」）。**完整结构由各自的详情抽屉读自己的 props**，不走这里 */
+  /** 补充说明（改动那一格放「按预算裁剪过」）。**完整结构由各自的详情抽屉读自己的 props**，不走这里 */
   hint?: string;
   /** 提示的逐段渲染，约定同 `segments`（各段拼起来等于 `hint`） */
   hintSegments?: readonly DomainFactSegment[];
@@ -106,7 +112,6 @@ export interface AgentLogFacts {
   domain: readonly DomainFact[];
   /** 失败归因。`code` 可为 `null`：不是每种失败都有错误码 */
   error: { code: string | null; message: string } | null;
-  exitReason: string | null;
 }
 
 /**
@@ -118,7 +123,14 @@ export type Loadable<T> =
   | { status: 'error'; error: unknown }
   | { status: 'ready'; data: T };
 
-/** 节点的运行状态。**七档**——`stopped` / `canceled` / `unsettled` 三档各有各的语义，不可并 */
+/**
+ * 节点的运行状态。**七档**——`stopped` / `canceled` / `unsettled` 三档各有各的语义，不可并。
+ *
+ * ⚠️ **`unsettled` 目前赋不出来**：两条装配路径各只走五档，并集六档、恰好缺这一档
+ * （`build-model.ts` 的 `nodeStatusOf` 直映契约 `SubagentStatus` 五态；
+ * `statusForFacts` 从 `facts.status.tone` 反推）。它要的判据是「收场事件没到 + 整行已终态」，
+ * 那一格还没写——面板与文案都已就位，只差装配层这一步。
+ */
 export type LogNodeStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'canceled' | 'unsettled' | 'unknown';
 
 /** 截断**三态**：`none` = 确认完整、`truncated` = 确认被截断、`unknown` = 没采到标记（界面写「可能不完整」） */
@@ -166,7 +178,11 @@ export interface TextBlock extends ContentBlockBase {
   text: string;
 }
 
-/** 思考：文本可空，为 `null` 时**必填** `textMissing`（不给空面板） */
+/**
+ * 思考：文本可空（契约允许「有思考、无文本」那一档），但**界面不渲染无正文的思考块**——
+ * `build-model` 会在模型层把 `text === null` 的整块过滤掉（没有就不显示，不给占位文案）。
+ * `textMissing` 因此只是形状上的兼容格（恒 `null`）：老日志带着它，界面不再有渲染出口。
+ */
 export interface ThinkingBlock extends ContentBlockBase {
   kind: 'thinking';
   text: string | null;
@@ -345,7 +361,13 @@ export interface TurnRef {
   round: number;
 }
 
-/** 时间轴上必须可见的行级事件（谁进这张表由数据层的去向表决定） */
+/**
+ * 时间轴上必须可见的行级事件（谁进这张表由数据层的去向表决定）。
+ *
+ * ⚠️ **`level: 'warning'` 这一档目前没有产出方**：`build-model.ts` 的 `rowEventsOf` 只写
+ * `'error'` 与 `'milestone'` 两种；适配器把 codex 的 item 级 `error` 折成 `warning` 那一步还没落地。
+ * 类型与渲染出口先留着（那种告警确实存在，只是现在落在「原始输出」的 `log` 原文里）。
+ */
 export interface RowEvent {
   at: string;
   /** 三档：`milestone` / `error` / **`warning`**（消息层的非致命告警**不得**当成运行失败） */
@@ -389,7 +411,7 @@ export interface LogNodeBase {
   content: Loadable<readonly LogTurn[]>;
   /** 内容被上限截断时给一句人话；`null` = 完整 */
   contentTruncatedReason: string | null;
-  /** 能力声明：UI 用它把「这家不支持」「我们没接」「厂商没投送」显示成三句不同的话 */
+  /** 能力声明：UI 用它把「这家不支持」「厂商没投送」「我们没接」「没验证过」显示成**四句**不同的话 */
   capability: MessageCapabilityMap;
   /** 能力成立的前提（路由 / 模型 / 开关）；空数组 = 无条件成立 */
   capabilityNotes: readonly string[];

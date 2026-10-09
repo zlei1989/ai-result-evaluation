@@ -9,10 +9,10 @@
  * 但 `takeTurnTokens` 的**取走即归零**必须保留——两条都在下面有用例钉住。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
+import { ACTIVITY_SUMMARY_MAX_LENGTH } from '../../activity';
 import type { TurnState } from '../../turn';
 import {
   DSH_ASSISTANT_MESSAGE_TYPE,
-  DSH_SUMMARY_MAX_LENGTH,
   DSH_TURN_END_TYPE,
   DSH_USAGE_FIELDS,
   projectDshNotification,
@@ -117,6 +117,11 @@ describe('projectDshNotification：子智能体生命周期', () => {
     // catalog 还没到 ⇒ 名字为 null，**不编**
     expect(payload.name).toBeNull();
     expect(payload.parentSessionId).toBe('session-16c91eba4bf54932a23c6dd4f39eb05b');
+    /**
+     * 摘要里**不留占位名**：旧实现写成 `已派发子任务：子任务`——一句同义反复，
+     * 读的人只会以为界面坏了（词表实现见 `src/activity.ts`）。
+     */
+    expect(draft?.type === 'log' ? draft.summary : undefined).toBe('已派发子任务');
   });
 
   it('catalog 到达后，finish 能带上厂商给的任务名与 mode（跨消息关联）', () => {
@@ -252,7 +257,7 @@ describe('projectDshNotification：最终答复（finalText）', () => {
    * 那是**探测中继把整条流转成单块、破坏 SSE 分块**造成的假象（2026-09-30 复现并定位）。
    * 真机走 SDK 时推理文本完整。
    */
-  it('reasoning 块要落一条日志（推理原文是证据，只过滤不落盘等于丢掉它）', () => {
+  it('reasoning 块要落一条日志（原始信封是证据，只过滤不落盘等于丢掉它），但**不给摘要**', () => {
     const state = newState();
     const reasoning = '让我先想想这道题该怎么打分：这行改动没有测试，按 rubric 该扣分';
     const projection = projectDshNotification(
@@ -274,12 +279,14 @@ describe('projectDshNotification：最终答复（finalText）', () => {
 
     // 答复仍只取 text 块（推理不能混进去）
     expect(state.finalText).toBe('{"verdict":"还行"}');
-    // 推理另落一条：原文在 text 里逐字可查，摘要是压成一行的人话
+    // 推理另落一条：原文在**原始信封**里逐字可查
     const reasoningLog = projection.drafts.find((d) => d.type === 'log' && d.text.includes(reasoning));
     expect(reasoningLog).toBeDefined();
-    expect(reasoningLog?.type === 'log' ? reasoningLog.summary : undefined).toBe(
-      '思考：让我先想想这道题该怎么打分：这行改动没有测试，按 rubric 该扣分',
-    );
+    /**
+     * 判据是「**没有摘要**」：给了摘要（旧文案 `思考：<推理>`）活动行就会永久停在英文推理上——
+     * 同一轮里推理行排在答复行之后 ⇒ 最新一句恒是它。人话落点是思考块，日志这条只作证据。
+     */
+    expect(reasoningLog?.type === 'log' ? reasoningLog.summary : 'x').toBeUndefined();
     // 两条都在（答复一条 + 推理一条），不是互相替代
     expect(projection.drafts.filter((d) => d.type === 'log')).toHaveLength(2);
   });
@@ -725,12 +732,15 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
     expect(summary).not.toContain('\n');
     expect(summary.endsWith('…')).toBe(true);
     // 前缀 + 上限 + 省略号：多一个字符都说明上限没生效
-    expect(summary.length).toBeLessThanOrEqual('调用工具 pwsh：'.length + DSH_SUMMARY_MAX_LENGTH + 1);
+    expect(summary.length).toBeLessThanOrEqual('调用工具 pwsh：'.length + ACTIVITY_SUMMARY_MAX_LENGTH + 1);
   });
 
   /**
-   * 模型说的话与轮次边界也要能在卡片上滚（用户口径 2026-09-29：「实时滚动智能体的 event message」，
-   * 而且「评分的消息也在这里滚动展示」——评分阶段跑的是同一个适配器，走的就是这两条出口）。
+   * 模型说的话要能在卡片上滚（用户口径 2026-09-29：「实时滚动智能体的 event message」，
+   * 而且「评分的消息也在这里滚动展示」——评分阶段跑的是同一个适配器，走的就是这条出口）。
+   *
+   * **不带摘要**（2026-10-07 统一）：它本身就是人话，`activityOf` 在没有摘要时直接取 `text`；
+   * 再配一份截断过的摘要等于同一句话存两份（两处口径还会漂移）。
    */
   it('assistant/message 的文本落成一条日志（过去只进 finalText，整轮不出现在任何地方）', () => {
     const state = newState();
@@ -748,8 +758,7 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
 
     expect(projection.drafts).toHaveLength(1);
     const [draft] = projection.drafts;
-    // 摘要压成一行（换行会毁掉卡片底部那一行），原文仍逐字在 text 里（抽屉的证据）
-    expect(draft?.type === 'log' ? draft.summary : undefined).toBe('我先把 构建跑起来');
+    expect(draft?.type === 'log' ? draft.summary : 'x').toBeUndefined();
     expect(draft?.type === 'log' ? draft.text : '').toBe('我先把\n构建跑起来');
     expect(state.finalText).toBe('我先把\n构建跑起来');
   });
@@ -770,15 +779,15 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
     expect(projection.drafts).toHaveLength(0);
   });
 
-  it('turn/start 补一句「第 N 轮开始」，原始负载照旧', () => {
+  it('turn/start 只落原始负载、**不给摘要**（轮次的落点是卡片上那一格，不是活动行）', () => {
     const projection = projectDshNotification(sessionEvent('turn/start', { turn: 2 }), newState(), CONTEXT);
 
     const [draft] = projection.drafts;
-    expect(draft?.type === 'log' ? draft.summary : undefined).toBe('第 2 轮开始');
+    expect(draft?.type === 'log' ? draft.summary : 'x').toBeUndefined();
     expect(draft?.type === 'log' ? draft.text : '').toContain('"turn/start"');
   });
 
-  it('tool/result：`isError` 决定措辞，内容取 content[] 的 text 块', () => {
+  it('tool/result：**只有报错才给摘要**；成功返回不播（结果在结果块与原始输出面板里）', () => {
     const ok = projectDshNotification(
       sessionEvent('tool/result', {
         message: {
@@ -791,7 +800,9 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
       newState(),
       CONTEXT,
     );
-    expect(ok.drafts[0]).toMatchObject({ summary: '工具返回：started background job pwsh-16' });
+    expect(ok.drafts[0]?.type === 'log' ? ok.drafts[0].summary : 'x').toBeUndefined();
+    // 证据照旧：原文仍在 text 里
+    expect(ok.drafts[0]?.type === 'log' ? ok.drafts[0].text : '').toContain('started background job pwsh-16');
 
     const bad = projectDshNotification(
       sessionEvent('tool/result', {

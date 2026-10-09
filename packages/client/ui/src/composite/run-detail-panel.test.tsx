@@ -43,8 +43,13 @@ const score = (totalScore: number): NonNullable<EvalRun['rows'][number]['score']
   judgedAt: '2026-09-22T08:10:00.000Z',
   // 这一分是哪把尺子打的（Task 1 的必填格）：null = 纯文本通路，与夹具的默认评分方式一致
   judgeAgentKind: null,
+  // 同上：强度未指定（一个强度键都没发）
+  judgeEffort: null,
   // 同上：false = 只靠提示词契约拿到这一分
   structuredOutput: false,
+  // 同上：评分自己的花销（2026-10-08）——面板不展示这两格
+  judgeTokens: null,
+  judgeDurationMs: null,
 });
 
 function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): EvalRun['rows'][number] {
@@ -605,7 +610,8 @@ describe('RunDetailPanel：行级重新评分的透传', () => {
  *   · 两个汉字的按钮必须关掉 antd 的自动空格，否则可访问名是「编 辑」/「删 除」；
  *   · `Popconfirm` 的 `onConfirm` 必须**回交 promise**（返回 undefined 时确认框立刻关闭，
  *     用户看到「点一下没反应」，再点一次就是第二次 DELETE）；
- *   · 有行在跑时两个按钮都要禁用并给出原因——服务端同一判据会抛 409，界面的置灰是提前告知。
+ *   · 有行在跑时两个按钮都要禁用（服务端同一判据会抛 409，界面的置灰是提前告知）；**禁用原因**只有
+ *     「编辑」那一格挂了 `Tooltip`（用例正面钉它），「删除」没有——这一条**今天没有反向守卫**，如实登记。
  */
 describe('RunDetailPanel 的编辑 / 删除入口', () => {
   it('默认（空闲）时两个入口都在且可点', () => {

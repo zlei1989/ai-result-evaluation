@@ -18,8 +18,8 @@ import type {
   CasePatch,
   CommitCandidate,
   GenerateRubricInput,
+  GenerateRubricResult,
   RepoInfo,
-  Rubric,
   TestCase,
 } from '@aieval/contracts';
 import { delJson, getJson, postJson, putJson } from './http';
@@ -27,8 +27,8 @@ import { delJson, getJson, postJson, putJson } from './http';
 const LIST_KEY = '/api/cases';
 const VALIDATE_REPO_KEY = '/api/cases/validate-repo';
 /**
- * 生成 / 识别评分标准项的 cache key：**路由路径沿用** `/api/cases/generate-judge-prompt`
- * （spec 的接口口径：两个按钮打同一个接口、由 `prompt` 是否为空分派，不为一次改名新增一条路由），
+ * 生成 / 识别 / 调整评分标准项的 cache key：**路由路径沿用** `/api/cases/generate-judge-prompt`
+ * （spec 的接口口径：三个按钮打同一个接口、由入参的 `mode` 显式分派，不为一次改名新增一条路由），
  * 常量名同样不改——它与路由 URL 是一对，改名只会让「常量名与 URL 各说各话」。
  */
 const GENERATE_JUDGE_PROMPT_KEY = '/api/cases/generate-judge-prompt';
@@ -172,20 +172,19 @@ export function useCommitCandidates(repoPath: string | null, repoBranch: string 
 }
 
 /**
- * 生成 / 识别评分标准项（非流式）。不挂缓存：它是一次会花钱的模型调用，不是可复用的数据。
- * 两个动作打**同一个接口**，由 `input.prompt` 是否为空分派（见服务端 `generateRubric`）。
+ * 生成 / 识别 / 调整评分标准项（非流式）。不挂缓存：它是一次会花钱的模型调用，不是可复用的数据。
+ * 三个动作打**同一个接口**，由 `input.mode` 显式分派（见服务端 `generateRubric`）。
  *
- * `addedItems` **只在生成分支有意义**（识别分支恒为 0，它不代表「什么都没识别出来」）：
- * 调用方判成败要看请求的结果，不要看这一格。
+ * `addedItems` **只在生成分支有意义**（识别 / 调整分支恒为 0，它不代表「什么都没识别出来」）；
+ * `changes` **只在调整分支有意义**（另两支没有它）。调用方判成败要看请求的结果，不要看这两格。
  */
 export function useGenerateRubric(): {
-  generate: (input: GenerateRubricInput) => Promise<{ rubric: Rubric; addedItems: number; note?: string }>;
+  generate: (input: GenerateRubricInput) => Promise<GenerateRubricResult>;
   isGenerating: boolean;
 } {
   const { trigger, isMutating } = useSWRMutation(
     GENERATE_JUDGE_PROMPT_KEY,
-    (key: string, { arg }: { arg: GenerateRubricInput }) =>
-      postJson<{ rubric: Rubric; addedItems: number; note?: string }>(key, arg),
+    (key: string, { arg }: { arg: GenerateRubricInput }) => postJson<GenerateRubricResult>(key, arg),
     { populateCache: false, revalidate: false },
   );
   return { generate: trigger, isGenerating: isMutating };

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 释放序列（§5.6.5）：interrupt → 终结在途 turn → dispose，顺序不可颠倒；
+ * 释放序列（§5.6.6）：interrupt → 终结在途 turn → dispose，顺序不可颠倒；
  * 第一段 5 秒超限落可见信号后强制 dispose；守卫按对象绑定且幂等。
  * 顺序断言用 graceMs 直接压到毫秒级——否则这条用例只能靠真等 5 秒来验证。
  */
@@ -77,7 +77,7 @@ describe('releaseTurn', () => {
      * 为什么这条是承重的：T6 的 `turn.ts` 传进来的回调会走 `emitter.emit` → `onEvent` → p4 的
      * `appendEvent`，而契约 R26 规定写侧 schema 不过就抛 `ServiceError('INTERNAL')`；`logger.warn` 也可能抛。
      * 裸调用一旦抛错，`dispose()` 永不执行、`releaseTurn` reject —— 子进程/临时目录再也没人回收，
-     * 正是 §5.6.5 要防的孤儿。保护级别必须与 `interrupt()` 的 try/catch 对称。
+     * 正是 §5.6.6 要防的孤儿。保护级别必须与 `interrupt()` 的 try/catch 对称。
      */
     const harness = createLifecycle({ cooperative: false });
     const throwing = (): void => {

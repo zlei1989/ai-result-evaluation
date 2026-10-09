@@ -608,7 +608,7 @@ Run: `pnpm --filter @aieval/api test -- runs` 与 `pnpm --filter @aieval/agents 
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-09-22-features-design.md`（§3 F2 表、§5.1 第 127-131 行、§5.6.2 的元数据表与实现、§11 **R37** 收口）
-- Modify: `docs/superpowers/specs/2026-09-22-scaffold-design.md` §13.1（评分智能体的协议集合判据）与 §13.5（`route.protocolType` 是单值、能力是集合）——这两处原先分别住在 `2026-09-26-agent-judge-design.md` 与 `2026-09-28-agent-context-window-design.md`，那两份已并入 §13 并从库中删除
+- Modify: `docs/superpowers/specs/2026-09-22-features-design.md` §5.5.1（评分智能体的协议集合判据）与 §5.1.1（`route.protocolType` 是单值、能力是集合）
 - Modify: `AGENT.md`（依赖方向表里「候选池按智能体读注册表元数据（协议类型）」→「协议集合」；§目录与边界里 dsh 那一行的描述）
 - Modify: `docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`（最终事实表）
 

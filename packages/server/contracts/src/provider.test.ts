@@ -101,7 +101,7 @@ describe('Provider schema', () => {
 });
 
 /**
- * 窗口三格（spec §4.1）：它们必须**可选**（磁盘上已有的 config.json 一个都没有），
+ * 窗口三格（spec §5.1.1）：它们必须**可选**（磁盘上已有的 config.json 一个都没有），
  * 同时必须真的**进得来**（zod 3 的 z.object 默认 strip 未知键：不声明就会静默丢掉）。
  */
 describe('ProviderModelSchema 的窗口三格', () => {

@@ -204,7 +204,8 @@ export function RunDetailPanel({
 
   /**
    * 「能不能改 / 能不能删」：只有一条判据（`hasLiveRows`），由服务端同一份函数抛 409。
-   * 有行在跑时两个入口一律禁用并给出原因——正在跑的行有自己的生命周期，处置是「先终止」。
+   * 有行在跑时两个入口一律禁用；**原因只在「编辑」那一格有 `Tooltip`**（「删除」被 `Popconfirm`
+   * 的 `disabled` 一并挡住，禁用态没有任何解释）——正在跑的行有自己的生命周期，处置是「先终止」。
    */
   const live = hasLiveRows(run);
   const mutateDisabledReason = live ? '有候选行正在运行：先终止，再编辑 / 删除' : undefined;

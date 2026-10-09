@@ -33,7 +33,7 @@ pnpm --filter @aieval/agents lint        # 本包 eslint
 运行侧的前置条件（缺了会在 `run()` 里折成 `AGENT_FAILED` / `AGENT_LOAD_FAILED`，而不是在装包时报错）：
 
 - 对应厂商包必须在 `node_modules` 里且导出面与适配器期望一致（三家都在本包 `dependencies` 里）；
-- 对应 CLI 必须在 `PATH` 上可用（`claude` / `codex`）；本包不代装、不代为登录；
+- 对应 CLI 必须可用：`claude` / `dsh` 走 `PATH`；**codex 不用 `PATH`**——适配器解析厂商包自带的可执行文件（`providers/codex/appserver/binary.ts`）并 spawn `codex app-server`。本包不代装、不代为登录；
 - 一行一份 `cwd` + `configHome`：适配器只负责把凭据注入**子进程环境**，不碰宿主的 `~/.claude` / `~/.codex`。
 
 ### 最小用法
@@ -44,7 +44,7 @@ import type { AgentEvent } from '@aieval/contracts';
 
 /** ① 路由：一条「协议 + 网关 + 密钥 + 模型」四元组（只读输入） */
 const route: AgentRunInput['route'] = {
-  protocolType: 'anthropic',           // 必须与该家 metadata.protocolType 一致
+  protocolType: 'anthropic',           // 必须与该家 metadata.protocolTypes 里的一条一致
   baseUrl: 'https://gw.example.com/anthropic',
   apiKey: 'sk-…',
   modelId: 'claude-sonnet-4-5',
@@ -81,9 +81,12 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `getProvider(kind)` | 函数 | 按 `kind` 解析适配器；未注册的 kind **抛错**（信息含可用清单） |
 | `listAgentProviders()` | 函数 | 全部适配器（**返回副本**）；顺序 = 前端下拉顺序，与 `AGENT_KINDS` 同序 |
 | `AGENT_KINDS` | 值 | 三家 kind 的清单，**再导出**自 `@aieval/contracts`（真源在那里） |
+| `acceptsProtocol(metadata, protocol)` | 函数 | 该家能不能收这条协议（读 `metadata.protocolTypes` 的**集合**）；表单过滤、创建校验、评分智能体校验与编排层复检四处都读它，**不许各写一份** |
+| `protocolMismatchMessage(metadata, protocol)` | 函数 | 协议不匹配时的**中文文案**（列出该家接受的**集合**而不是单值） |
+| `ProtocolMismatchInput` | 类型 | 上面那个文案函数的入参（适配器元数据 + 目标协议） |
 | `AgentKind` | 类型 | `'claude-code' \| 'codex' \| 'dsh'` |
 | `AgentProvider` | 类型 | 适配器形状：`kind` / `displayName` / `metadata` / `run()` |
-| `AgentProviderMetadata` | 类型 | 协议兼容性 / 终止能力 / 计量能力 / 结构化输出能力 / 隔离级别 |
+| `AgentProviderMetadata` | 类型 | 协议兼容性 / 行级能力 / 消息能力 / 档位域 |
 | `AgentRunInput` | 类型 | 一次运行的全部输入 |
 | `AgentRunResult` | 类型 | 一次运行的全部结果 |
 | `AgentPermission` | 类型 | 权限档：`'full' \| 'read-only'` |
@@ -136,9 +139,9 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `configHome` | `string` | ✅ | 该行**独立**配置目录：作为子进程的 `HOME` / `USERPROFILE` 与厂商配置目录。行与行共用它会互相注入 MCP / 插件定义，破坏「同一起点」 |
 | `permission` | `AgentPermission` | ✅ | 权限档。**必填是刻意的**：执行阶段与评分阶段各表一次态，少给一个就编译不过，而不是运行时静默用一个谁也没选过的默认档 |
 | `prompt` | `string` | ✅ | 考题 |
-| `route` | `{ protocolType, baseUrl, apiKey, modelId }` | ✅ | 只读输入。协议必须与本家 `metadata.protocolType` 一致，否则那家 CLI 根本驱动不了它 |
+| `route` | `{ protocolType, baseUrl, apiKey, modelId }` | ✅ | 只读输入。协议必须在本家 `metadata.protocolTypes` 里，否则那家 CLI 根本驱动不了它 |
 | `signal` | `AbortSignal` | ✅ | 外部要求停止（用户点「终止」）。**只**用来判 `canceled`，不用它推断其它原因；已 abort 时连进程都不起 |
-| `outputSchema` | `Record<string, unknown>` | — | 要求模型**按这份 JSON Schema 生成**最终答复。缺省 = 不约束，行为与今天逐字相同。它是**中性事实**：翻成 claude 的 `outputFormat` 还是 codex 的 `outputSchema` 是适配器的事。不支持的适配器（`capability.structuredOutput: false`）**必须报错**，不许悄悄忽略 |
+| `outputSchema` | `Record<string, unknown>` | — | 要求模型**按这份 JSON Schema 生成**最终答复。缺省 = 不约束，行为与今天逐字相同。它是**中性事实**：翻成 claude 的 `outputFormat` 还是 codex 的 `outputSchema` 是适配器的事。该家不支持（`capability.structuredOutput: false`）时**降级**：`runTurn` 不把 schema 交给 `start`、包内记一条 WARN，结果里 `applied.structuredOutput = false`——调用方据它记账，不要自己再去查能力表 |
 | `onEvent` | `(e: AgentEvent) => void` | ✅ | 事件回调：同步、不 await。每行独立一份，`seq` 从 1 在 run 内自增，`at` 是 ISO 8601 |
 
 ### 4.2 `AgentRunResult`（返回值）
@@ -151,6 +154,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `turns` | `number \| null` | 轮次 = **一次模型 API 往返**（见 §5.4）；`null` = 一次都没观察到 |
 | `durationMs` | `number` | 本次运行的墙钟耗时（适配器自报） |
 | `finalText` | `string \| null` | 智能体的最终答复文本。**「未采到」（`null`）与「空答复」（`''`）是两件事**，不要互相兜底。需要结构化答复的调用方（评分智能体）从这里取文本，不要从事件流里重建 |
+| `applied` | `{ structuredOutput: boolean }` | 这一次**实际按能力处置成了什么**（A1）。**必填**：调用方据此记账（`ScoreResult.structuredOutput` 就是它）。`false` = 该家不支持那个能力，或本次压根没要求 schema——要分开这两种情形就看入参 |
 | `error` | `{ code, message, stack? }` | 失败与终止时都在；`code` 是 `AgentErrorCode` |
 
 ### 4.3 `AgentPermission`（权限档）——**按阶段给，不按厂商给**
@@ -158,11 +162,16 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | 档 | 用在哪 | claude-code | codex | dsh |
 |---|---|---|---|---|
 | `'full'` | 候选**执行**阶段 | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
-| `'read-only'` | **评分**阶段 | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=read-only` |
+| `'read-only'` | **评分**阶段 | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` |
 
 这张表（`src/permission.ts`）是**唯一真源**，三份放一起才能逐格对照、也才能把「每一档在每一家都有落点」
-写成一条可执行断言。两条不能不记的坑：
+写成一条可执行断言。三条不能不记的坑：
 
+- **codex 的 `read-only` 在 Windows 上没有可用实现**（2026-10-07 真机）：该平台下 `read-only` 与
+  `workspace-write` 连 `echo` / `git status` 都起不来（`CreateProcess … rejected: blocked by policy`），
+  而 codex 读文件只能靠 shell ⇒ 评分会变成**盲评**（真机：候选三项全达成，却判 `0 / 25`）。故
+  `codexPermissionOptions()` 在 Windows 上把只读档落成 `danger-full-access`，别的平台一字不改；
+  代价（评审者能写工作区）由编排层「评分前后 diff 摘要对照」兜底——**不一致即该行失败**。
 - claude 的 `bypassPermissions` **必须**配 `allowDangerouslySkipPermissions: true`（SDK 把它们拼成两个独立
   argv，少后者就静默失效——实测表现为候选 **0 改动**，评分在空 diff 上照样出分）；
 - codex 的 `workspace-write` 默认**关掉网络**，所以「执行」不能用它：装依赖 / 跑测试会失败。
@@ -174,33 +183,28 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 
 ```ts
 metadata: {
-  protocolType: 'anthropic' | 'openai',
+  protocolTypes: readonly ProtocolType[],      // 该家能**接受**的协议集合（非空、去重；dsh 有两条 wire）
   capability: {
     cancelMidTurn: boolean,                    // false ⇒ 界面文案必须是「关闭运行时」而不是「终止」
     usage: boolean,                            // false ⇒ 界面显示「不支持计量」，不是 0
-    liveUsage?: 'reported' | 'estimated',      // 跑动期的 usage 事件是哪一种值
     structuredOutput: boolean,                 // 能不能把入参 outputSchema 落到实处（必填）
   },
-  isolation: 'subprocess' | 'inprocess',       // 工具循环跑在哪里（三家都是 subprocess）
+  messageCapability: MessageCapability,        // 消息级能力（见下面第二张表）
+  reasoningEfforts: readonly string[],         // 该家能表达的思考强度档位（完整值域，必填）
+  defaultEffort?: string,                      // 「未选档位」时实际会用的档（只有 dsh 声明）
 }
 ```
 
-- **`protocolType` 是模型候选池过滤的数据源**，不要另写一份「智能体 ↔ 协议」的对应关系表：
+- **`protocolTypes` 是模型候选池过滤的数据源**，不要另写一份「智能体 ↔ 协议」的对应关系表：
   填错会让表单列出**不兼容的**网关（选完到运行时才失败）。
-- **`liveUsage`** 决定跑动期用量能不能**回写运行快照**：
-  - `'reported'`（codex / dsh）：适配器上报值，与终值同口径，可以在跑动中逐步回写；
-  - `'estimated'`（claude-code）：跑动期是**估算**（SDK 只在 `result` 上给结算值），只供界面显示，
-    **绝不回写**——否则崩溃 / 被杀的行会看起来像「采到了计量」。
-  - 类型上可选，**缺省按 `'estimated'`（安全侧）**；但注册表用例要求每一家**显式声明**：缺省的代价
-    （静默丢失逐步落库）不该由默认值默默承担。
 
 三家的实际取值（与 `registry.test.ts` 的期望表逐格一致，改动会红）：
 
-| kind | displayName | protocolType | cancelMidTurn | usage | liveUsage | structuredOutput | 隔离 |
-|---|---|---|---|---|---|---|---|
-| `claude-code` | Claude Code | `anthropic` | `true` | `true` | `estimated` | `true` | subprocess |
-| `codex` | Codex | `openai` | `true` | `true` | `reported` | `true` | subprocess |
-| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `reported` | `false` | subprocess |
+| kind | displayName | protocolTypes | cancelMidTurn | usage | structuredOutput |
+|---|---|---|---|---|---|
+| `claude-code` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
+| `codex` | Codex | `['openai']` | `true` | `true` | `true` |
+| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
 
 **消息能力声明**（`metadata.messageCapability`，spec v3 §2.5）在同一份元数据里，逐格声明
 「思考正文 / 工具入参 / 工具结果 / 子任务 / 流式增量」能不能拿到、从哪条通道拿、拿不到时为什么，
@@ -209,19 +213,20 @@ metadata: {
 | kind | thinkingText | toolInput | toolResult | subagent | streamingDelta |
 |---|---|---|---|---|---|
 | `claude-code` | `yes`（SDK 消息流，`full`） | `yes` | `yes` | `yes` | `yes`（仅主会话） |
-| `codex` | `yes`（**会话文件**，`full`） | `yes`（**会话文件**） | `yes` | `yes`（**会话文件**） | `no`（事件流无 delta） |
+| `codex` | `yes`（**app-server 通知流**，`full`） | `yes` | `yes` | `yes` | `yes` |
 | `dsh` | `yes`（会话通知流，`full`） | `yes` | `yes` | `yes` | `yes` |
 
-> codex 的**消息只在运行结束时从会话文件投递一次**：事件流缺工具真名、结构化入参与结果配对用的
-> `call_id`，两条通道都出会让每条消息出现两次（身份键不同）⇒ 一次投递、取自会话文件的权威记录。
-> 代价如实登记：运行期只有派发事件与状态，没有 codex 的实时消息。
+> codex 的消息由 **app-server 通知驱动**（增量与快照同源），收尾再用 `thread/read` 补齐**子线程历史**
+> ——子线程的 `item/*` 是否推给本条连接由上游决定，`reader` 是那条路上唯一的兜底。
+> 两条入口共用同一个归一函数，同一条消息不会落两次。
 
 > `dsh` 的 `cancelMidTurn: false` 是**实测**结论（SDK 没有 wire-level cancel，只有 `close()`），
 > 代价是：点「终止」后该行会**晚 5 秒**才变 `canceled`（走释放的第二段兜底）。
 >
 > `structuredOutput` 是**必填**（不是「可选 + 守卫」）：可选会被默认成 false 而无人验证。
-> `false` 的处置在编排层——不发 schema，但**发一条行日志**说明降级，绝不让调用方以为
-> 「已经强约束」而实际什么都没发生。
+> 降级由**包内**处置（A1）：`runTurn` 不把 schema 交给 `start`，同时记一条 WARN 与
+> `applied.structuredOutput = false`——**用户可见的行事件由调用方按 `applied` 发**，
+> 绝不让调用方以为「已经强约束」而实际什么都没发生。
 
 ---
 
@@ -231,10 +236,10 @@ metadata: {
 
 | | claude-code | codex | dsh |
 |---|---|---|---|
-| 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex-sdk` | `@deepseek-ai/dsh-sdk-client` |
+| 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex` | `@deepseek-ai/dsh-sdk-client` |
 | base URL 处理 | **去掉**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补上** `/v1`（CLI 只走 `POST {base}/v1/responses`） | **保留**尾部 `/v1`（其 adapter 自己补 `/messages`） |
 | 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） |
-| 凭据 | `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN`（部分网关只认后者） | `apiKey` 交给 SDK + `requires_openai_auth`（缺它 CLI 不发 Bearer ⇒ 全 401） | `DEEPSEEK_API_KEY`（空 `configHome` 下**只有这个变量能救**） |
+| 凭据 | `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN`（部分网关只认后者） | `apiKey` 进子进程环境（`OPENAI_API_KEY`）+ 该 provider 的 `env_key: OPENAI_API_KEY`（**Bearer 由 `env_key` 指定**；换成 `requires_openai_auth: true` 会走 ChatGPT 登录态、一个头都不附 ⇒ 全 401） | `DEEPSEEK_API_KEY`（空 `configHome` 下**只有这个变量能救**） |
 | 其它 | `settingSources: ['user','project','local']`（读得到被测仓库的 `CLAUDE.md`；`user` 档落在本行 `CLAUDE_CONFIG_DIR`，不是宿主 `~/.claude`）+ `settings.env` 把本次路由钉在 flag 档（否则仓库自带的 `.claude/settings.json` 会盖掉路由——2026-09-29 实测三档对照）；cwd 走 `realpathSync.native` 归一（Windows 8.3 短名会被 CLI 的安全门拦下、导致 0 改动）；`disallowedTools` 禁掉定时任务/推送等旁路工具（`WebSearch` 只在非 `claude` 模型上禁） | 注入完整 `model_providers` 条目 + `tools.web_search=false` + `features.multi_agent=true`（**显式打开**：子智能体是评测面之一，与 claude / dsh 两家口径一致；关掉只会让 `spawn_agent` 变成一次失败的工具调用、子任务面板恒空）；每次运行独占临时目录 | 通知流**先订阅再交提示词**（顺序错了会丢掉开头那批事件）；`start()` 先握手，失败归 `AGENT_FAILED` |
 
 URL 归一只对**路径段**做，query / fragment 一个字符都不动（用户粘进来的地址可能带 `?x=1`）。
@@ -247,7 +252,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | | `interrupt()` 是什么 | `dispose()` 做什么 |
 |---|---|---|
 | claude-code | SDK 的优雅停止（结束在途 turn，不是 kill 进程） | `controller.abort()` ⇒ SDK 杀掉仍在跑的子进程 |
-| codex | `streamAbort.abort()`（交给 `spawn(signal)`；中止**不保证**收掉 CLI） | 中止 + 关闭事件迭代 + 删本次运行的临时目录 |
+| codex | `session.interrupt()`（发 `turn/interrupt`；协议能力，不 kill 进程） | `session.close()` 关掉 app-server 子进程 + 删本次运行的临时目录 |
 | dsh | **刻意空实现**（不支持中途取消） | `runtime.close()`——唯一真实存在的终止通道 |
 
 5 秒内没收场时：服务日志与**该行事件日志**各落一条 `[WARN] …（该适配器不响应停止信号，属已知能力差异）`，
@@ -276,7 +281,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | | 计数键 | 保真度 |
 |---|---|---|
 | claude-code | 主循环 `assistant.message.id`（同一响应的多个内容块共享 id，去重后计数）；`parent_tool_use_id` 非空的子智能体消息不计 | 与 SDK 自己的 `maxTurns`（API round-trips）同口径；`num_turns` 只在我们一次都没数到时兜底 |
-| codex | **模型答复条目**（`item.type === 'agent_message'`）的 `item.id`；`item.started/updated/completed` 共享同一个 id（2026-10-05 收窄：原来还数 `reasoning`） | **近似值**：CLI 没有逐次请求事件。误差方向如实登记：只发工具调用、**没有答复**的那几段**偏低**（它们不推高这个数），一个答复条目都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）；旧口径被推理条目系统性抬高，故收窄后比它更低。权威计数只在 CLI 自己的 `rollout-*.jsonl` 里，本适配器**只**读它补推理正文 / 子智能体消息 / 用量明细，轮次仍按这条近似口径数 |
+| codex | **模型答复条目**（app-server 的 `agentMessage`）的 `item.id`，**按线程分别去重**：主线程与子线程各数各的，收尾相加 | **近似值**：协议里没有逐次请求事件。误差方向如实登记：只发工具调用、**没有答复**的那几段**偏低**；一个答复条目都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）。主线程与子线程共用同一把尺子，故 `subagentTurns ≤ turns` 成立 |
 | dsh | `step/start`（实测序列 `turn/start → step/start → … → assistant/message → step/end → turn/end`） | 与 `assistant/message` 条数实测一致（59 = 59），而 `turn/end` 只有 1 条 |
 
 计量的三条硬口径，三家和调用方都要守：
@@ -369,6 +374,43 @@ it('注入落点与结果贯通', async () => {
   只会变成**假绿**，而不会变红——所以夹具自己也有回归网（`agent-fixtures.test.ts`）；
 - 事件断言用 `collectEvents(sink)` 收 `AgentEvent`；假定时器下推进 promise 用 `settleWithFakeTimers`。
 
+### 8.1 新增一家 SDK：接入清单与验证点
+
+加一家时按序做这七步，每步都有可执行的判据。**顺序不能颠倒**——前三步的缺陷只有真机能拦，后面几步拦不住它们（2026-10-07 的 codex 改造即实例：agents 包 585 条全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据/provider 没传到厂商进程」）。完整方案（失败分类学、四层结构、为什么不写假 SDK 替代真机）见 `docs/superpowers/plans/2026-10-07-agents-provider-conformance.md`。
+
+| # | 步骤 | 判据 |
+|---|---|---|
+| 1 | 写**能力声明**（§2.7 五态 × 五格 + `notes` 写清路由/模型前提） | 契约层「能力声明自身合规」 |
+| 2 | 定**厂商入口的定位方式**（静态 import？子进程？）；走子进程就必须打包器免疫 | 静态层「打包器免疫」（`static-assertions.test.ts`） |
+| 3 | 定**凭据与 provider 的传递**：密钥进子进程环境；provider 条目名与 `model_provider` 类字段**成对**给出；base_url 归一（该补 `/v1` 就补） | 真机冒烟第 ② 格 |
+| 4 | 写 fixture 场景，**至少覆盖能力声明里所有 `yes` 的那几格** | 契约层「能力声明与产物互钉」 |
+| 5 | 接**生命周期**：取消能终止在途轮次、`dispose` 真正回收子进程、清理遇 `EPERM` 重试 | 集成层 + 真机冒烟第 ①/③ 格 |
+| 6 | 登记**缺失**：§7 缺失影响矩阵里每一格要么有产物、要么有 `MissingReason` | 契约层「缺失必须带原因」 |
+| 7 | 跑**真机冒烟**，把四格证据写进当次关账记录 | 见下 |
+
+**契约层**（与厂商无关，任何一家都得过；一次接入的全部成本就是一个 fixture）：
+
+```ts
+// providers/<kind>/conformance.test.ts
+describeProviderConformance({
+  kind: '<kind>',
+  capability: codexProvider.metadata.messageCapability,   // 本家的能力声明
+  scenarios: { 'plain-reply': () => …, 'thinking-full': () => …, subagent: () => … },
+});
+```
+
+判据逐条挂在规范条目上：信封 §2.1 / 内容块 §2.2 / 行级事件 §2.3 / 计量 §2.4–2.6 / 能力声明 §2.7（含与产物**互钉**）/ 子任务桥 §2.8 / 环境 §2.9 / 行结果 §2.10 / 工具族 §5 / 合并键 §6.2。**形状不在这里重复写**——它由 `@aieval/contracts` 的 zod schema 管，套件只补 schema 表达不了的语义不变量（两份形状必然漂移）。
+
+**真机冒烟**（装载与传输两类缺陷的**唯一**拦法；默认跳过，不进内循环）：
+
+```bash
+AIEVAL_LIVE_SMOKE=1 AIEVAL_LIVE_KIND=codex \
+AIEVAL_LIVE_PROVIDER_ID=<provider uuid> AIEVAL_LIVE_MODEL_ID=<model id> \
+pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
+```
+
+四格：① **装载**（没有落到入口解析/加载类失败）② **传输**（服务端记录的路由与本次选择一致、且不是凭据类失败）③ **产物**（跑到 `judged` 且有分数）④ **形状**（`messages` 接口的**线上形态**逐个过 schema）。`AIEVAL_LIVE_KIND` **必填**——不给默认家，避免「默认跑的那家绿了就当四家都绿」。
+
 ## 9. 常见坑
 
 | 现象 | 原因 / 处置 |
@@ -390,7 +432,7 @@ it('注入落点与结果贯通', async () => {
 | 说法 | 含义 |
 |---|---|
 | **采不到就是 `null`，绝不填 0** | 全包最硬的一条口径。0 是「采到了，值就是 0」，与「没采到」含义相反；混淆会让人得出「这家很省 / 这位候选没干活」的错误结论。`tokens` / `turns` / `finalText` 都按它办 |
-| **估算 vs 上报** | 跑动期的用量有两种：`estimated`（推理出来的、只给界面看）与 `reported`（适配器上报值与终值同口径、可以落盘）。见 §4.4 |
+| **估算 vs 上报** | 跑动期的用量有两种：`estimated`（推理出来的、只给界面看）与 `reported`（适配器上报值与终值同口径、可以落盘）。判据挂在**每一条 `usage` 事件**自带的 `tokensBasis` 上（A2，见 `@aieval/contracts` 的 `agent-event.ts`）——它是事件的性质，不是某一家的静态能力声明 |
 | **轮次** | **一次模型 API 往返**，不是「CLI 自己的 turn」（那是整段任务一条）。见 §5.4 |
 | **替换型子进程环境** | 以宿主环境为底、覆盖 `HOME` / `USERPROFILE` 与厂商变量后**整体交给**子进程，而不是往 `process.env` 里塞。并行多行时后者会互相串凭据 |
 | **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「兜底超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |

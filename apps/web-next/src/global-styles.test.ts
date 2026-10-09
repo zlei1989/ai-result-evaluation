@@ -14,7 +14,7 @@
  *
  * **为什么读源码抠字面量、而不是 `import { ACTIVITY_SWEEP_CLASS } from '@aieval/ui'`**：
  * 后者会把整条 antd 依赖图拖进这个 node 环境文件（实测 `import` 阶段 27.6s），而本仓的墙钟
- * 「由最长的那个文件决定」（AGENT.md），一个字符串不值得当那个长杆。抠不到就**抛**——
+ * 「由最长的那个文件决定」（AGENTS.md），一个字符串不值得当那个长杆。抠不到就**抛**——
  * 守卫不许静默失效（与 `runs-page-wiring.test.ts` 抠调用实参块同一套做法）。
  * 链条的另一半在 ui 那侧：`agent-activity-line.test.tsx` 断言渲染出来的类名就是那个常量。
  */

@@ -10,7 +10,6 @@ export { getProvider, listAgentProviders } from './registry';
 export { acceptsProtocol, protocolMismatchMessage, type ProtocolMismatchInput } from './protocol';
 export {
   AGENT_KINDS,
-  permissiveMessageCapability,
   type AgentErrorCode,
   type AgentExitReason,
   type AgentKind,

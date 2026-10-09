@@ -24,7 +24,7 @@
  * 这不是给行级开口子：① 判据仍是「`saveRun(` 只出现在两个具名函数体内」，其余任何位置照旧违规；
  * ② `setRunStatus` 里没有状态事件、也不会写行字段（要写行字段必须经过 `Object.assign(row, …)`，
  * 那条判据的允许集合没变）；③ 样本表里新增了「把轮级写入点搬到别处」的反例，证明这个窄口不是放行。
- * 轮级为什么不需要「同时追加事件」：契约 §2.6 / spec §7.4 的 `AgentEvent` 七个成员全是行级的，
+ * 轮级为什么不需要「同时追加事件」：契约 §2.6 / spec §7.4 的 `AgentEvent` 八个成员全是行级的，
  * 事件日志也按行落盘，轮级状态在协议里没有对应的事件类型可写。
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -607,7 +607,7 @@ function isRuntimeModuleStatement(statement: ts.Statement): boolean {
      * ⚠️ **空子句 `export {} from 'x'` 必须单独判红**（2026-10-07 终审收口）：它与 import 侧的
      * 空子句同理——转译后是 **1 条真请求**（实测 `__vite_ssr_import__` 1 条），而
      * `elements.some(…)` 对**空数组**恒返回 `false` ⇒ 少了这一行就会把它**静默放行**。
-     * 补之前的状态是「**权威文档判违规、实现判放行**」：spec §4.2 的修正段与 §4.5 的负样本⑪
+     * 补之前的状态是「**权威文档判违规、实现判放行**」：spec §5.6.1 A3 与 §5.6.2 的负样本⑪
      * 都写明它违规（那个矛盾此前只记在 gitignore 的 ledger 里，不在任何入库文档里）。
      * 对应的负样本是样本表里的 `export {} from '@aieval/agents';`。
      */
@@ -826,8 +826,8 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
      * 序号会随样本增删漂移，本仓已经吃过一次这种亏）。
      */
     const negative = [
-      'import { permissiveMessageCapability } from \'@aieval/agents\';',
-      ['import {', '  type A,', '  permissiveMessageCapability,', '} from \'@aieval/agents\';'].join('\n'),
+      'import { protocolMismatchMessage } from \'@aieval/agents\';',
+      ['import {', '  type A,', '  protocolMismatchMessage,', '} from \'@aieval/agents\';'].join('\n'),
       /**
        * 下面四条是**混合形态 / 空子句**（2026-10-07 评审 Important 补齐）：`verbatimModuleSyntax`
        * 下它们转译后**都是真请求**（实测各 1 条 `__vite_ssr_import__`），故必须判红。
@@ -868,5 +868,32 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
     for (const form of positive) {
       expect(mockedRuntimeEdges('testing/fixtures.ts', form), `不该命中：${form}`).toEqual([]);
     }
+  });
+});
+
+/**
+ * A1 + A2 的**可度量收益**（2026-10-07）：编排层不再预读 agents 的能力表——既不决定「给不给结构化输出」
+ * （A1），也不决定「跑动期的用量要不要回写快照」（A2 换成了事件自带的 `tokensBasis`）。
+ *
+ * 为什么必须有这条守卫：删掉那两处读取之后，**运行期没有任何可观测差异**——`turn.ts` 的骨架照样
+ * 按能力降级、`applied` 照样如实报、估算的 tokens 照样不进快照、行照样跑完。于是「能力判定真的收进
+ * `run`」与「只是多了一层转发、编排层仍按注册表扣下 schema / 挡掉回写」在整套行为用例面前几乎同形：
+ * 唯一的区别是那些判定的**来源**少了两处，而那正是这一系列任务要拿到的东西（包外谁也不再需要知道
+ * 「哪家支持 schema」「哪家是估算家」）。
+ *
+ * 判据扫**去掉注释后的源码**：`runJudgeStage` 里正当地讨论着这件事（「包外不再预读 `capability`」），
+ * 不去注释就会把说明判成违规。
+ *
+ * 判据的范围（A2 起）：**整条路径出现 0 次**。A1 落地时 `liveUsage` 那一处还得留着（它是 A2 的收口
+ * 对象），当时只能窄成 `metadata.capability.structuredOutput`；A2 删掉它之后没有理由再窄——
+ * 窄判据会漏掉「将来有人从能力表里顺手再读一格」，而 spec §1.2 要的正是那 2 → 0。
+ */
+describe('orchestrator 不再预读 agents 能力表（A1 + A2 的可度量收益）', () => {
+  it('能力格在编排层出现 0 次；acceptsProtocol 仍在', () => {
+    const source = stripComments(readSource(ORCHESTRATOR));
+    expect(source).not.toContain('metadata.capability');
+    // 反向钉：协议复检**不能**被顺手删掉——它也是注册表查询，但它是「这一家能不能驱动这个模型」的
+    // 判定，与 A1 无关（删掉它，评分智能体与评分模型不匹配就会变成一次难解释的运行期失败）。
+    expect(source).toContain('acceptsProtocol');
   });
 });

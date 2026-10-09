@@ -22,7 +22,7 @@ export default defineConfig({
     /**
      * 并发档位：**不设上限**（vitest 默认 `availableParallelism() - 1`），理由是一条会随代码演化的实测。
      *
-     * 2026-09-28 上午：本机（i7-1360P，4 性能核 + 8 能效核）的计价单位是**进程创建**
+     * 2026-09-28 上午：本机（i7-1260P，4 性能核 + 8 能效核）的计价单位是**进程创建**
      * （`git --version` 566ms、`node --version` 530ms，企业 DLP/EDR 在每个新进程上挂钩），
      * 而当时全量里有两个 250–370s 的巨型文件（`cases.test.ts` / `mirror.test.ts`）在跑，
      * 15 路 worker 一起 spawn 会把单条用例放大 5–13 倍 ⇒ 假红一片。当时取 `maxWorkers: 8`：

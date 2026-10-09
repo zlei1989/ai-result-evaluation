@@ -214,7 +214,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
   });
 
   it('EvalRow.error 必须带 code（R9），且 code 是自由字符串而不是枚举', () => {
-    // 这一格要同时容纳 AgentErrorCode（§5.6.6）与接口层 ErrorCode（如 JUDGE_PARSE_FAILED），
+    // 这一格要同时容纳 AgentErrorCode（§5.6.7）与接口层 ErrorCode（如 JUDGE_PARSE_FAILED），
     // 写死任一组都会漏——所以是 z.string() 但**必填**
     expect(EvalRowSchema.safeParse({ ...row, error: { message: 'CLI 未安装' } }).success).toBe(false);
     expect(EvalRowSchema.safeParse({ ...row, error: { code: 'AGENT_FAILED', message: 'CLI 未安装' } }).success).toBe(true);

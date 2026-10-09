@@ -144,7 +144,7 @@ export const EvalRowSchema = z.object({
   /**
    * 失败归因（R9）：`code` 必填——界面靠它区分「超时 / 限流 / 密钥无效 / 评分解析失败」，
    * 只留 message 的话界面只能按文案猜。它是 `z.string()` 而不是枚举：这一格要同时容纳
-   * agents 包的 `AgentErrorCode`（§5.6.6）与接口层的 `ErrorCode`（如 `JUDGE_PARSE_FAILED`）。
+   * agents 包的 `AgentErrorCode`（§5.6.7）与接口层的 `ErrorCode`（如 `JUDGE_PARSE_FAILED`）。
    */
   error: z
     .object({
@@ -154,9 +154,10 @@ export const EvalRowSchema = z.object({
       /**
        * 失败发生在哪一段（2026-09-28 追加，见 `RowFailureStageSchema`）。
        * **可选**是载重的：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮
-       * （与 `attempts` / `useAgentJudge` 同一条理由）。读侧的处置见 `canRescoreRow`：
-       * 读不到阶段 = 不确认是评分失败 ⇒ **不给**「重新评分」（宁可少给一个按钮，
-       * 也不给一个会跑错段的按钮）。
+       * （与 `attempts` / `useAgentJudge` 同一条理由）。它**只是叙述性的事实记录**：没有任何判据读它
+       * （`canRescoreRow` 只看「不在跑 + 有基线 + 有 diff」，`canRetryRow` 与它**逐字相同**，
+       * 而 `canRunRow` 只有「不在跑」一条——相对它才多出「跑过没有」），留着是因为
+       * 「这一笔失败发生在哪一段」是排障时最常问的那个问题。
        */
       stage: RowFailureStageSchema.optional(),
     })

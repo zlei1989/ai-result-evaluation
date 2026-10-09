@@ -136,7 +136,7 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
     const row = getRun(run.id).rows[0]!;
     expect(row.status).toBe('failed');
     // A7 的裁定：被改名/移走的是**远端不存在**（git 原文 does not appear to be a git repository），
-    // 按 spec §8.1 归到 NOT_A_GIT_REPO，而不是 REPO_UNREACHABLE —— 后者会把用户指向「查网络」，
+    // 按 spec §4.5 归到 NOT_A_GIT_REPO，而不是 REPO_UNREACHABLE —— 后者会把用户指向「查网络」，
     // 而这里该做的是改地址。本机 git 2.47 实测该原文确实落进这条分支（探针见任务报告）。
     expect(row.error?.code).toBe('NOT_A_GIT_REPO');
     // 「绝不静默沿用旧镜像」的正面证据：镜像在盘上、内容完好，但这一行的工作区从没被准备出来

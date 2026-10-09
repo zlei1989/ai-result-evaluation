@@ -5,10 +5,9 @@
  * 七条口径：
  *   1. `useSearchParams` 会把用到它的子树退化为客户端渲染，故给它一个 `Suspense` 边界
  *      （Next 16 文档 useSearchParams 的 Prerendering 一节）；
- *   2. **逐行 SSE 只在该行的日志抽屉打开时订阅**（spec §8 末段）：否则 10 个候选 × 多个评测
- *      会开出几十条长连接；
+ *   2. **日志那一条 SSE 只在该行的日志抽屉打开时订阅**（实时指标那一路只为在跑的行各开一条，见 spec §8）；
  *   3. 三个抽屉的数据各自按需取：日志 = `useRowStream`（实时）+ `useRowLog`（下载要全量）
- *      + `useRowMessages`（时间轴的内容级记录）、改动 = `useRowDiff`（服务端每次现算）、
+ *      + `useRowMessages`（时间轴的内容级记录）、改动 = `useRowDiffIndex` + `useRowDiffFile`（服务端每次现算）、
  *      评分详情 = 快照里的 `score` 与 `rubric`（不额外请求）；
  *   4. 页面的可测逻辑（URL 解析、错误文案、日志抽屉的三态）都在 `@/src/runs-view` 与
  *      `@/src/log-drawer-state`，本文件只做拼装；
@@ -92,6 +91,32 @@ const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string 
   done: { label: '已完成', color: 'success' },
 };
 
+/** 「标题」列的兜底最小宽度：左栏被拖窄时，这一列至少还得读得下一整个用例名（与用例页同口径的 240） */
+const RUN_TITLE_MIN_WIDTH = 240;
+
+/** 另外四列申报的宽度：状态 / 候选数 / 执行模式 / 创建时间 */
+const RUN_COLUMN_WIDTH = { status: 96, rows: 80, executionMode: 96, createdAt: 150 } as const;
+
+/**
+ * 列表表格的最小宽度（px）：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
+ * （用户口径 2026-10-08：「标题列左悬浮」；与用例页、供应商表同一套口径，见
+ * `ProviderTable` 的 `PROVIDER_TABLE_MIN_WIDTH`）。
+ *
+ * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把五列**按比例压扁**——
+ * 「标题」是唯一吃剩余宽度的列，它是第一个被压到只剩省略号的；给了数字后 rc-table 把 `width`
+ * + `minWidth: 100%` 落到表格上，溢出变成**表格内部**的横向滚动，标题列钉在左侧、其余四列滑走。
+ *
+ * 662 = 四列宽（96 / 80 / 96 / 150）+ 标题列下限 240。≥662 时五列全都看得见、不滚（表格按
+ * `minWidth: 100%` 铺满左栏，多出来的宽度全给标题列），<662 时横向滚动、标题留在左边。
+ * ⚠️ jsdom 没有布局引擎、宽度量不了：这个数只由真机冒烟记录看着。
+ */
+const RUNS_TABLE_MIN_WIDTH =
+  RUN_TITLE_MIN_WIDTH +
+  RUN_COLUMN_WIDTH.status +
+  RUN_COLUMN_WIDTH.rows +
+  RUN_COLUMN_WIDTH.executionMode +
+  RUN_COLUMN_WIDTH.createdAt;
+
 /** 当前打开的是哪个抽屉（`null` = 都关着） */
 type OpenDrawer = { kind: DrawerKind; rowId: string };
 
@@ -116,7 +141,7 @@ function DiffFileBody({
 }
 
 /**
- * 「变更详情」「评分详情」两个抽屉共用的几何口径（spec §7.2.1）——**与「执行日志」是同一份**。
+ * 「变更详情」「评分详情」两个抽屉共用的几何口径（spec §5.3.4「抽屉几何」）——**与「执行日志」是同一份**。
  *
  * 常量住在 `@aieval/ui` 的 `base/drawer-geometry`：那三个抽屉分居两个包（执行日志的几何在
  * `AgentLogDrawer` 里），各写一份必然漂移，而漂移是静默的（2026-10-03 实测：antd 6 废弃
@@ -169,7 +194,6 @@ const NEVER_RAN_MODEL: AgentLogModel = {
     thinking: null,
     domain: [],
     error: null,
-    exitReason: null,
   },
   nodes: [
     {
@@ -264,7 +288,7 @@ function RunsPage(): ReactNode {
    * 不能把「还没读到设置」显示成「你没配」。
    */
   const { settings } = useSettings();
-  const { optionsFor, capabilityOf, messageCapabilityOf } = useRunModelOptions();
+  const { optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf } = useRunModelOptions();
   const { create, isCreating } = useCreateRun();
   const { update, isUpdating } = useUpdateRun();
   const { remove, isDeleting } = useDeleteRun();
@@ -293,7 +317,7 @@ function RunsPage(): ReactNode {
    */
   const messages = useRowMessages({ runId, rowId: logRowId ?? '', enabled: logRowId !== null });
   /**
-   * 索引是**分页**的（spec §4 ①：首帧只拉一页，DOM 里始终只有几十行），
+   * 索引是**分页**的（spec §5.3.4：首帧只拉一页 30 条，其余按滚动逐页追加，**已加载的页不回收**），
    * 故这里自己累积已加载的文件：每次把新到的那一页接在后面，滚到底再由 `onLoadMore` 取下一页。
    * 不累积的话，头部写着「共 N 个文件」而列表只有 30 条，第 31 个之后的文件永远看不到。
    */
@@ -313,7 +337,9 @@ function RunsPage(): ReactNode {
    * 评分详情抽屉要的**两样东西来自同一份 run 快照**：这一行的 `score` 与这一轮的评分表 `rubric`
    * ——评分表是这一分生成时那张表的快照（与 `score.maxScore` 同源），改用例不会换掉它，
    * 而详情正是按**引用键**把判定与评分表逐项对齐的（少了这张表，逐项判定一项也画不出来）。
-   * 合成一个对象再判空：拆成两个变量时 JSX 里得各自判空，而「有分却没表」那一格一旦漏判，
+   * 「这一分是谁打的、花了多少」那**五格**也全在 `score` 上（2026-10-08 用户口径）⇒ 这里**不再递候选行**：
+   * 那是执行那一份数据，而抽屉叫「评分详情」。
+   * 合成一个对象再判空：拆成多个变量时 JSX 里得各自判空，而「有分却没表」那一格一旦漏判，
    * 渲染出的是一张对不上任何判定的空表。
    */
   const scoreDetail = ((): { score: ScoreResult; rubric: Rubric } | null => {
@@ -418,6 +444,10 @@ function RunsPage(): ReactNode {
    * 而这里的「取数」是本进程内一次纯函数调用（无网络、无 IO）⇒ 按值给才是它该有的形态，
    * 点开即有内容，不必先闪一下「读取中」。`logSource` 里仍然保留那个口子，见那里的注释。
    */
+  // 「未选档位」时这一行会落到哪一档（注册表元数据）：运行配置那一格照着它写，
+  // 界面里不写死厂商名与档位（见 `build-environment.ts` 的 `effortLine`）。
+  // 先取进常量：下面那个对象字面量里连着判两次同一个值，读的人得自己证「两次结果相同」。
+  const defaultEffort = logRow === undefined ? undefined : defaultEffortOf(logRow.agentKind);
   const logEnvironment: Loadable<AgentEnvironment> | undefined = useMemo(
     () =>
       logRow === undefined
@@ -429,9 +459,10 @@ function RunsPage(): ReactNode {
             workspaceBase: run?.workspaceBase ?? '',
             events: stream.events,
             records: messages.records,
+            ...(defaultEffort === undefined ? {} : { defaultEffort }),
           }),
         },
-    [logRow, run?.workspaceBase, stream.events, messages.records],
+    [logRow, run?.workspaceBase, stream.events, messages.records, defaultEffort],
   );
 
   const logSourceRef = useMemo(
@@ -536,6 +567,10 @@ function RunsPage(): ReactNode {
       // 列名只叫「标题」（用户 2026-09-29）：与用例页的列表头逐字同形，左栏就一列标题，不必再冠以「用例」
       title: '标题',
       dataIndex: 'caseTitle',
+      // 钉在左边（用户口径 2026-10-08）：横向滚动时其余四列从它下面滑过，「这一行是哪个用例的评测」
+      // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
+      // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
+      fixed: 'left',
       // 不传 width：与用例页同口径——省略号落在单元格右边缘，栏位拖宽后长标题多显示
       // （写死 px 时文字块比单元格宽，超出的一段连同省略号一起被单元格裁掉）
       render: (title: string) => <EllipsisText text={title} />,
@@ -543,26 +578,26 @@ function RunsPage(): ReactNode {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 96,
+      width: RUN_COLUMN_WIDTH.status,
       render: (status: EvalRun['status']) => <Tag color={RUN_STATUS_META[status].color}>{RUN_STATUS_META[status].label}</Tag>,
     },
     {
       title: '候选数',
       dataIndex: 'rows',
-      width: 80,
+      width: RUN_COLUMN_WIDTH.rows,
       align: 'left',
       render: (_rows, record) => record.rows.length,
     },
     {
       title: '执行模式',
       dataIndex: 'executionMode',
-      width: 96,
+      width: RUN_COLUMN_WIDTH.executionMode,
       render: (mode: EvalRun['executionMode']) => (mode === 'serial' ? '串行' : '并行'),
     },
     {
       title: '创建时间',
       dataIndex: 'createdAt',
-      width: 150,
+      width: RUN_COLUMN_WIDTH.createdAt,
       render: (createdAt: string) => formatDateTime(createdAt),
     },
   ];
@@ -601,9 +636,9 @@ function RunsPage(): ReactNode {
           }}
         />
       ) : (
-        // 表格自己不再滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y` 写死成
-        // `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
-        // 滚动交给外层容器，表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
+        // 纵向还是外层容器滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y`
+        // 写死成 `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
+        // 表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
         <TableScrollArea>
           {/* 显式给行类型（`<Table<EvalRun>>`）：`columns` 的 `TableColumnsType<EvalRun>` 与
               `onRow` 的 `record` 都靠它对齐；`list-table-scroll-wiring.test.ts` 也按 `<Table<` 钉住
@@ -616,6 +651,14 @@ function RunsPage(): ReactNode {
             dataSource={runs ?? []}
             pagination={false}
             sticky
+            // 只给 `x`（**只开横向**，纵向那一位仍留给外层容器）：它是「左栏够不够宽」的判据本身——
+            // 表格拿到 `width: 662px` + `min-width: 100%`，窄于 662 时内部横向滚动（标题钉在左侧），
+            // 宽于 662 时按 100% 铺满、一条滚动条都不出现。给 `true` 等于没有下限，给 `'max-content'`
+            // 则按最宽内容撑开 —— 两者都让固定列失效（理由详见 `RUNS_TABLE_MIN_WIDTH`）。
+            // ⚠️ 与 `sticky` 同时在场是安全组合：rc-table 在 `fixHeader || isSticky` 分支里把
+            // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
+            // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
+            scroll={{ x: RUNS_TABLE_MIN_WIDTH }}
             // 同用例页：列宽由表头算，`EllipsisText` 的省略号才有确定的分母（用户 2026-09-29 的口径）。
             // `sticky` 本就会让 rc-table 落到 `fixed`，显式写出来是为了不把这条前提交给巧合
             tableLayout="fixed"
@@ -637,6 +680,7 @@ function RunsPage(): ReactNode {
         // 两个面板同此口径（与本页 `judgeAgentConfigured` 的「未知 ≠ 没配」同源）。
         cases={cases}
         modelOptionsFor={optionsFor}
+        defaultEffortOf={defaultEffortOf}
         judgeAgentConfigured={settings === undefined ? undefined : settings.defaultJudgeAgent !== null}
         saving={isCreating}
         onSubmit={(values) => void handleCreate(values)}
@@ -652,6 +696,7 @@ function RunsPage(): ReactNode {
         // 同上面那一处：`cases` 未知时原样传 undefined（直开 / 刷新编辑链接时它常比快照后到）
         cases={cases}
         modelOptionsFor={optionsFor}
+        defaultEffortOf={defaultEffortOf}
         judgeAgentConfigured={settings === undefined ? undefined : settings.defaultJudgeAgent !== null}
         saving={isUpdating}
         // **直接交函数，不写成 `(values) => void handleUpdate(values)`**：`void` 让箭头函数返回
@@ -802,6 +847,8 @@ function RunsPage(): ReactNode {
           </div>
         ) : (
           <ScoreDetailView
+            // 抽屉里的**五格**全在 `score` 上（2026-10-08 用户口径：顶部那一段说的是**这一分**是谁打的、
+            // 花了多少）⇒ 这里只递 `score` 与它的评分表快照，**不再传候选行**——少一个能配错的来源
             score={scoreDetail.score}
             rubric={scoreDetail.rubric}
             rawOpen={rawOpen}

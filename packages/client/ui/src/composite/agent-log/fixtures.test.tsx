@@ -19,8 +19,9 @@ import { installResizeObserverStub } from '../../testing/resize-observer';
 import { createElement } from 'react';
 
 /**
- * 这些夹具会画出 `Listy`（清单面板与问答卡片的列表），而它在 jsdom 里要 `ResizeObserver`
- * ——环境缺口，不是被测代码的问题（替身与安装助手的说明见 `testing/resize-observer.ts`）。
+ * 这些夹具会画出 `Listy`（问答卡片的选项）与 `Table`（计划清单，2026-10-07 起），
+ * 两者在 jsdom 里都要 `ResizeObserver`（`Table` 还要 `matchMedia`）——环境缺口，不是被测代码的问题
+ * （替身与安装助手的说明见 `testing/resize-observer.ts`）。
  */
 installResizeObserverStub();
 

@@ -28,8 +28,12 @@
  *  7. **瞬时失败（网络 / 5xx / 限流）自动重试一次以上**：本机实测真实网关会回 `500 服务维护中`，
  *      一次抖动就让一整行落 `failed`（还要人工重跑）是不划算的。重试**只覆盖瞬时面**
  *      （见 `RETRYABLE_CODES`），`AUTH_FAILED` / `CONFLICT` 与「已中止」一次都不重试。
+ *  8. **思考强度只有一张协议表**（2026-10-07，spec §5.2）：`reasoningFields` 是文本侧**唯一**的落点，
+ *      且 `buildBody` 的两个分支都要展开它；未指定 = 不下发任何强度键（听网关的缺省，**不是**关闭，
+ *      也**不等强**于智能体侧 `EvalRow.effort` 的「走适配器缺省」），关闭档 `EFFORT_OFF` =
+ *      两协议同一个 `thinking: { type: 'disabled' }`。
  */
-import { ServiceError, type ProtocolType } from '@aieval/contracts';
+import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
 import { createLogger } from '@aieval/core';
 
 /**
@@ -58,10 +62,16 @@ export interface ChatMessage {
   content: string;
 }
 
-/** 单轮调用的入参（既有形状，逐字不变） */
+/** 单轮调用的入参：一条 prompt，外加可选的 system / 思考强度 / 中止信号 */
 export interface TextCallInput {
   system?: string;
   prompt: string;
+  /**
+   * 要求的思考强度（可选）；**缺省 = 不下发任何强度键**（听网关的缺省，不是关闭）。
+   * 要关闭必须显式给 `EFFORT_OFF`；取值来自 `settings.defaultJudge.effort`——今天只保证它是
+   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验（spec §5.4），不在这一层。
+   */
+  effort?: string;
   signal?: AbortSignal;
 }
 
@@ -69,15 +79,51 @@ export interface TextCallInput {
 export interface TextConversationInput {
   system?: string;
   messages: readonly ChatMessage[];
+  /**
+   * 要求的思考强度（可选）；**缺省 = 不下发任何强度键**（听网关的缺省，不是关闭）。
+   * 要关闭必须显式给 `EFFORT_OFF`；取值来自 `settings.defaultJudge.effort`——今天只保证它是
+   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验（spec §5.4），不在这一层。
+   */
+  effort?: string;
   signal?: AbortSignal;
+}
+
+/**
+ * 本仓的用量三元组：`input` 是**非缓存输入**、`cached` 是命中部分（两者互斥，和 = prompt 总量）。
+ * 与 `@aieval/contracts` 的 `UsageTokensSchema` 同一口径，但只保留两条通路都拿得到的三格
+ * （`reasoningOutput` / `total` 文本侧根本没有）。
+ */
+export interface TextUsage {
+  input: number;
+  cached: number;
+  output: number;
+}
+
+/**
+ * 一次文本调用的结果：正文 + **这一次调用自己的用量**（2026-10-08）。
+ * 用量只可能从这里拿到（响应体读完就扔了），故评分那条通路必须在这一层把它接住——
+ * `null` = 上游没报（**绝不填 0**：`0 tok` 是「一个都没花」，与「没报」相反）。
+ */
+export interface TextCallResult {
+  text: string;
+  usage: TextUsage | null;
 }
 
 const log = createLogger('evaluator/text-api');
 
 /** Anthropic 必须带版本头，缺它上游直接 400 */
 const ANTHROPIC_VERSION = '2023-06-01';
-/** 非流式调用的输出上限：评分结果是几十行的 JSON，4096 足够且能防住跑飞的模型 */
-const MAX_TOKENS = 4096;
+/**
+ * 非流式调用的输出上限。
+ *
+ * 4096 → 16384（2026-10-08，真机实测改的）：「智能调整」要求模型**回显整张评分表**，一张
+ * 14 项、目标各几十字的表在 GLM-5.3（anthropic 协议、`max` 档思考）上实测被 4096 截断——
+ * 回显的 JSON 中途断掉，`parseGenerated` 报「不是合法 JSON」，界面只能让人重试或换模型
+ * （症状见本轮冒烟记录；那次调用里模型其实已照办，是额度把它掐断的）。评分结果仍是几十行
+ * JSON，上限调高对它只是「天花板更高」，不改变实际开销；「防跑飞」的护栏仍在——只是
+ * 跑飞一次的封顶从 4K 变 16K token。
+ */
+const MAX_TOKENS = 16_384;
 
 /**
  * 瞬时失败的重试预算（**不含首次**）与退避间隔。
@@ -133,10 +179,37 @@ function hostOf(url: string): string {
 }
 
 /**
+ * 思考强度的**唯一落点**（文本通路）：按协议翻成厂商字段。
+ *
+ * 依据是 DeepSeek 官方文档（2026-10-07 核对，见 spec §5.2）：OpenAI 格式的开关是
+ * `thinking.type`、强度是 `reasoning_effort`（[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)）；
+ * Anthropic 格式的强度是 `output_config.effort`
+ * （[使用 Anthropic API](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)，`thinking.budget_tokens` 被上游忽略）。
+ * **未指定 = 不下发任何强度键**（把决定权交给网关的缺省，不是关闭）；关闭档要我们自己说，
+ * 走的是 `thinking: { type: 'disabled' }`（两协议同一个形状）。
+ * ⚠️ 这与 `EvalRow.effort`（智能体侧）的口径**不等强，不要互相引用**：那边「未选」= 走该家适配器
+ * 自己的缺省（dsh 会落到 `high`，见 `contracts/src/run.ts` 的 `EvalRow.effort`），是**我们这一侧**
+ * 做的决定；这边是**不下发**、由网关定。同一个「未指定」在两条通路上可以不落到同一个强度。
+ * ⚠️ 另一条边界（**原样下发，不做本地归一**）：普通档照发——`minimal` / `xhigh` / `ultra` 这些非规范档名照发，
+ * 由网关按它自己的映射表折（文档给的是 `minimal→low`、`medium→high`、`xhigh→high`、`ultra→max`）。
+ * 本地归一要么把档位信息丢掉、要么把网关的映射表抄第二份（抄第二份必然漂移）。
+ *
+ * ⚠️ 换到非 DeepSeek 网关时这两个字段名未经实测（spec §5.5.2 的边界只覆盖本机探针）——
+ * 其它网关可能忽略它们、也可能直接 400；这一条在 spec §5.5.2 里如实登记为未验证。
+ */
+function reasoningFields(protocolType: ProtocolType, effort: string | undefined): Record<string, unknown> {
+  if (effort === undefined) return {};
+  if (effort === EFFORT_OFF) return { thinking: { type: 'disabled' } };
+  return protocolType === 'anthropic' ? { output_config: { effort } } : { reasoning_effort: effort };
+}
+
+/**
  * 请求体构造（**唯一一处**，单轮与多轮共用）。
  * 两个协议的形状差异只有三处：system 是顶层字段还是消息数组的第一条、`content` 是字符串还是块数组、
  * 以及 OpenAI 侧要显式 `stream: false`。这三处写两份必然在某一处漂移，而漂移的表现是
  * 「单轮能跑、多轮 400」（或者反过来的 401）——只在多轮那条路径上出现，最难查。
+ * 思考强度（`reasoningFields`）两个分支都要展开：它在两种协议里都是**顶层**字段，
+ * 漏掉任一分支就是「某个协议的评分悄悄按厂商默认强度跑」；未指定时它展开成 `{}`（一个键都不加）。
  */
 function buildBody(route: TextRoute, input: TextConversationInput): unknown {
   return route.protocolType === 'anthropic'
@@ -144,6 +217,7 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
       model: route.modelId,
       max_tokens: MAX_TOKENS,
       stream: false,
+      ...reasoningFields('anthropic', input.effort),
       // Anthropic 的 system 是**顶层字段**，放进 messages 会被当成普通用户消息
       ...(input.system === undefined ? {} : { system: input.system }),
       messages: input.messages.map((message) => ({ role: message.role, content: message.content })),
@@ -151,6 +225,7 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
     : {
       model: route.modelId,
       stream: false,
+      ...reasoningFields('openai', input.effort),
       messages: [
         ...(input.system === undefined ? [] : [{ role: 'system', content: input.system }]),
         ...input.messages.map((message) => ({ role: message.role, content: message.content })),
@@ -159,7 +234,7 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
 }
 
 /**
- * 发一次请求并把响应解析成纯文本。**单轮与多轮的共同内核**（重试循环包在它外面）。
+ * 发一次请求并把响应解析成正文 + 用量。**单轮与多轮的共同内核**（重试循环包在它外面）。
  * 两个 `await`（发请求 / 读正文）与状态码、解析失败各自折成带中文原因的 `ServiceError`——
  * 与重构前逐字同一口径，只是把它们从 `callTextApi` 里搬了出来。
  */
@@ -167,7 +242,7 @@ async function callOnce(
   route: TextRoute,
   body: unknown,
   signal: AbortSignal | undefined,
-): Promise<string> {
+): Promise<TextCallResult> {
   const url = endpoint(route);
   const host = hostOf(url);
   const headers: Record<string, string> =
@@ -233,13 +308,13 @@ function isRetryable(error: unknown, signal: AbortSignal | undefined): boolean {
 /**
  * 带瞬时重试的多轮调用：**所有文本调用（单轮与多轮）都从这里出去**。
  * 重试期间原样复用同一个 `body`（同一段对话），失败原因进 WARN 日志——
- * AGENT.md 的日志表把「重试」列在 WARN 那一档，且重试必须在日志里留痕，
+ * AGENTS.md 的日志表把「重试」列在 WARN 那一档，且重试必须在日志里留痕，
  * 否则「这一次为什么慢了三秒」在事后没有任何线索。
  */
 async function callWithRetry(
   route: TextRoute,
   input: TextConversationInput,
-): Promise<string> {
+): Promise<TextCallResult> {
   const body = buildBody(route, input);
   const host = hostOf(endpoint(route));
   let lastError: unknown;
@@ -272,26 +347,36 @@ async function callWithRetry(
  * 非流式（`stream: false`）是刻意的：评分与提示词生成都要完整结果，流式只会让解析更复杂。
  * `input.signal` 可选：评分通路传编排层那一把（用户终止 + 外层兜底超时都走它），
  * 提示词生成不传——不传时行为与本功能之前逐字相同（见文件头第 5 条）。
+ * `input.effort` 也**必须**透下去：单轮是「一段对话只有一条用户消息」，请求体仍由 `buildBody` 造，
+ * 不透就等于「`generateRubric`（走单轮）没有强度、`judgeRow`（走多轮）有」——同一条通路的两种行为。
  */
 export async function callTextApi(route: TextRoute, input: TextCallInput): Promise<string> {
-  return callWithRetry(route, {
+  const { text } = await callWithRetry(route, {
     // 单轮就是「一段对话只有一条用户消息」：与多轮共用同一个请求体构造点
     messages: [{ role: 'user', content: input.prompt }],
     ...(input.system === undefined ? {} : { system: input.system }),
+    // `undefined` 时整格不出现 = 未指定（不是关闭），与多轮入口对 `effort` 的读法一致
+    ...(input.effort === undefined ? {} : { effort: input.effort }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
+  // 单轮入口只把正文交出去：生成 / 识别那条通路（`api/judge.ts`）不记账，多一层解包
+  // 会让它有 5 个调用点要跟着改，而它拿到的用量**没有消费方**（记账的是评分那一段）。
+  return text;
 }
 
 /**
- * 多轮调用：把**完整对话**交给模型（含它上一轮不合格的答复与我们的纠错要求）。
+ * 多轮调用：把**完整对话**交给模型（含它上一轮不合格的答复与我们的纠错要求），
+ * 并把**这一次调用自己的用量**一起交出来（评分详情要显示「这一分花了多少」）。
  * 为什么需要它（2026-09-27，目标页实测）：评分模型偶尔回一段散文或半截 JSON，一次解析失败就
  * 让整行落 `failed`——而它手里已经有全部上下文，只要告诉它「哪里不合格」就能答对。
- * 与 `callTextApi` 共用请求体构造、折错、中止与瞬时重试（见文件头第 6/7 条）。
+ * 与 `callTextApi` 共用请求体构造、折错、中止、思考强度与瞬时重试（见文件头第 6/7/8 条）。
+ * **求和不在这一层**：本函数一次只交一次调用的读数，结构修复的每一轮各算一次，
+ * 「多轮要不要累计」是评分器（`judge.ts`）的口径，不是外壳的。
  */
 export async function callTextApiConversation(
   route: TextRoute,
   input: TextConversationInput,
-): Promise<string> {
+): Promise<TextCallResult> {
   if (input.messages.length === 0) {
     // 空对话会让两种协议都返回 400（上游不认空 messages），在本地拦下并给出可读原因
     throw new ServiceError('INTERNAL', `调用文本 API 失败（${hostOf(endpoint(route))}，模型 ${route.modelId}）：对话里一条消息都没有`);
@@ -356,8 +441,54 @@ function httpError(status: number, host: string, url: string, raw: string, model
   });
 }
 
-/** 解析 OpenAI 兼容响应：`choices[0].message.content` */
-function parseOpenAI(raw: string, host: string, modelId: string): string {
+/** 把 JSON.parse 之后的一格当对象读（不是对象就给 null，绝不 `as` 硬转） */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/** 读一个数字格：缺失 / 非数字 / 非有限数一律 null（调用方据此决定「整格交 null」） */
+function readNumber(source: Record<string, unknown> | null, key: string): number | null {
+  const value = source?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * OpenAI 兼容响应里的用量 → 本仓三元组。**必须做减法**：OpenAI 的 `prompt_tokens` 是
+ * prompt 总量（命中 + 未命中），而本仓的 `input` 是**未命中那一部分**（见 `UsageTokensSchema`）。
+ * 缓存字段名两套都要认（只认一个，另一家就永远报 0 缓存）：
+ *   · `prompt_tokens_details.cached_tokens`（OpenAI 官方格式）；
+ *   · `prompt_cache_hit_tokens`（DeepSeek 自家原文，本机实测走的就是它）。
+ * 命中数大于 prompt 总量 ⇒ 上游自相矛盾，减出来是负数 ⇒ **整格交 null**（与「没采到」同一处置）：
+ * 界面上出现 `输入 -30 tok` 比不显示更坏，而三种取值的正确性都无从保证。
+ */
+function usageFromOpenAI(usage: Record<string, unknown> | null, host: string, modelId: string): TextUsage | null {
+  if (usage === null) return null;
+  const total = readNumber(usage, 'prompt_tokens');
+  const output = readNumber(usage, 'completion_tokens');
+  if (total === null || output === null) return null;
+  const cached = readNumber(asRecord(usage['prompt_tokens_details']), 'cached_tokens') ?? readNumber(usage, 'prompt_cache_hit_tokens') ?? 0;
+  if (cached > total) {
+    log.warn('上游用量自相矛盾，按未采集处置', { host, modelId, promptTokens: total, cachedTokens: cached });
+    return null;
+  }
+  return { input: total - cached, cached, output };
+}
+
+/**
+ * Anthropic 兼容响应里的用量 → 本仓三元组。**这里不做减法**：Anthropic 的 `input_tokens`
+ * 本来就不含缓存读（命中部分单列在 `cache_read_input_tokens` 里），再减一次就是把数算小。
+ * 缺 `input_tokens` / `output_tokens` 任一格 ⇒ 整格 null（半份用量比没有用量更难解释）。
+ */
+function usageFromAnthropic(usage: Record<string, unknown> | null): TextUsage | null {
+  if (usage === null) return null;
+  const input = readNumber(usage, 'input_tokens');
+  const output = readNumber(usage, 'output_tokens');
+  if (input === null || output === null) return null;
+  return { input, cached: readNumber(usage, 'cache_read_input_tokens') ?? 0, output };
+}
+
+/** 解析 OpenAI 兼容响应：`choices[0].message.content` + `usage` */
+function parseOpenAI(raw: string, host: string, modelId: string): TextCallResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -373,11 +504,11 @@ function parseOpenAI(raw: string, host: string, modelId: string): string {
       context: { host, modelId, body: raw.slice(0, 300) },
     });
   }
-  return content;
+  return { text: content, usage: usageFromOpenAI(asRecord((parsed as { usage?: unknown }).usage), host, modelId) };
 }
 
-/** 解析 Anthropic 响应：拼接 `content[]` 里所有 `type: 'text'` 块 */
-function parseAnthropic(raw: string, host: string, modelId: string): string {
+/** 解析 Anthropic 响应：拼接 `content[]` 里所有 `type: 'text'` 块 + `usage` */
+function parseAnthropic(raw: string, host: string, modelId: string): TextCallResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -396,5 +527,5 @@ function parseAnthropic(raw: string, host: string, modelId: string): string {
       context: { host, modelId, body: raw.slice(0, 300) },
     });
   }
-  return text;
+  return { text, usage: usageFromAnthropic(asRecord((parsed as { usage?: unknown }).usage)) };
 }

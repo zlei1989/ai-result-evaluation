@@ -73,7 +73,15 @@ function errorText(error: unknown): string {
 /** 摘要：智能体 / 模型 / 思考强度 / 供应商 / 接口地址 / 工作区 / 基线提交 */
 function summaryItems(summary: AgentEnvironment['summary']): { key: string; label: string; children: ReactNode }[] {
   return [
-    { key: 'agentKind', label: '智能体', children: summary.agentKind },
+    /**
+     * 「智能体」那一格画的是数据层给的**显示名**（`summary.agentLabel`），不是 kind。
+     *
+     * 为什么不由本件查 `AGENT_LABELS`（2026-10-08 定）：那一查就是 L0 持有「厂商 → 文案」的表
+     * ——`agent-log-layering.test.ts` 的 (e) 条**当场红**（实测），而那条纪律的理由是实的：
+     * 文案与厂商名的对应关系属于数据层（同 `facts.domain` / `effortPlaceholder`），
+     * 组件只摆版 ⇒ 换一家、改一个显示名都不必动渲染件。
+     */
+    { key: 'agentLabel', label: '智能体', children: summary.agentLabel },
     { key: 'modelId', label: '模型', children: summary.modelId },
     // `effort === null` ⇒「未指定」：不显示空白（空白会被读成「这一格没有这个概念」）；
     // 档位照上游词汇原样写（改口径 2026-10-07：关闭档也不再加工，与行卡片上那个 `off` 同一份）

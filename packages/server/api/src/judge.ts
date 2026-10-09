@@ -6,25 +6,29 @@
  *      ——失败只抛可展示的中文错误，绝不顺手改配置或清空状态；
  *   2. **只用设置页的全局默认评分模型**（`resolveJudgeRoute()`，**无参**）：这里**没有**智能体通路，
  *      也不接受任何模型 id 入参——入参里带一对 id 就等于让调用方能绕开设置页那一格；
+ *      强度（`resolveJudgeEffort()`）与它**同源**：同一份配置快照里读出来，经 `requireJudgeEffort()`
+ *      校验后交给两条分支。它同样是**请求参数**而不是连接事实，故不在 `route` 上（spec §5.3）；
  *   3. **两个分支的差别只有输入**：
  *      · `prompt` 为空 ⇒ 「智能生成」：校验仓库（取仓库名）→ 调模型 → **合并**；
  *      · `prompt` 非空 ⇒ 「智能识别」：**不碰仓库**（那段文本里已有全部信息）→ 调模型 → 整表替换。
  *      两分支都是**非流式**文本调用，都不落盘。
- *   顺序：两分支都先解析路由（未配置评分模型时当场抛 CONFLICT，一次上游调用都不花）；
- *   生成分支随后才校验仓库，识别分支则连 `repoPath` 都不看。
+ *   顺序：两分支都先解析路由 → 再读强度并校验（未配置评分模型、档位越域都由这两步当场抛 CONFLICT，
+ *   一次上游调用都不花）；生成分支随后才校验仓库，识别分支则连 `repoPath` 都不看。
  */
 import {
   RubricSchema,
   ServiceError,
+  diffRubric,
   parseRepoSource,
   renderRubricForJudge,
   rubricItemKeys,
   validateRubric,
   type GenerateRubricInput,
+  type GenerateRubricResult,
   type Rubric,
 } from '@aieval/contracts';
-import { resolveRepoInfo } from '@aieval/core';
-import { callTextApi, resolveJudgeRoute } from '@aieval/evaluator';
+import { loadConfig, resolveRepoInfo } from '@aieval/core';
+import { callTextApi, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from '@aieval/evaluator';
 
 /** 转出评分模型路由解析：HTTP 层要用它做「未配置评分模型」的即时报错（契约 §6） */
 export { resolveJudgeRoute } from '@aieval/evaluator';
@@ -32,36 +36,35 @@ export { resolveJudgeRoute } from '@aieval/evaluator';
 /** 原文片段保留长度：够定位问题，又不会把几百 KB 的回复塞进错误响应 */
 const RAW_EXCERPT_LENGTH = 500;
 
-/** 生成结果：`rubric` 回填表格；`addedItems` 给界面文案用；`note` 只在需要解释时出现 */
-export interface GenerateRubricResult {
-  /** 回填的完整表格：生成分支是**合并后**的那张，识别分支是**整表替换**的那张（spec D9：两支都给完整表格） */
-  rubric: Rubric;
-  /**
-   * **只有生成分支**有意义：这一次往当前表格里**新增**了多少项（0 ⇒ 模型说「已经完备」，界面显示「未新增条目」）。
-   * **识别分支恒为 0**（spec §4：那一支是整表替换，「新增了几项」在那条路上没有定义）——
-   * 它**绝不代表**「什么都没识别出来」：识别不出条目会直接抛 `JUDGE_PARSE_FAILED`（见 `parseGenerated`），
-   * 不会以「0 项的成功」返回。调用方判识别失败要看 `rubric`，不要看这一格。
-   */
-  addedItems: number;
-  /** 只在需要解释时出现（生成分支的「未新增条目」）。**识别分支不带它** */
-  note?: string;
-}
+/**
+ * 响应形状的真源在契约里（`@aieval/contracts` 的 `GenerateRubricResult`）：api / client / ui / 页面
+ * 四层都要它，放在这里就等于让另外三层为了一个类型去引 api 包（凭空造出跨包依赖边）。
+ * 这里**再导出一次**是为了不自断 api 的对外导出面（`@aieval/api` 的 index 仍在转出它）。
+ */
+export type { GenerateRubricResult };
 
 /**
- * 生成 / 识别评分标准项（非流式）。
- * 顺序有意如此：**两条分支都先解析路由**（未配置评分模型时立刻 CONFLICT，不下传任何模型 id：
- * 这一次走哪把尺子只有一个来源），生成分支**再校验仓库**——前面两步失败时一次模型调用都不该花掉
- * （限额是真的钱）；识别分支不碰仓库，故 `repoPath` 为空也必须能成功。
+ * 生成 / 识别 / 调整评分标准项（非流式）。
+ * 顺序有意如此：**三支都先解析路由、再读强度并校验**（未配置评分模型、档位越域都在这里立刻
+ * CONFLICT，不下传任何模型 id：这一次走哪把尺子只有一个来源），生成分支**再校验仓库**、
+ * 调整分支**再校验输入**（空表 / 空指令）——前面几步失败时一次模型调用都不该花掉（限额是真的钱）；
+ * 识别分支不碰仓库，故 `repoPath` 为空也必须能成功。
  */
 export async function generateRubric(input: GenerateRubricInput): Promise<GenerateRubricResult> {
-  const recognizing = input.prompt.trim() !== '';
   // 未配置评分模型时这里抛 CONFLICT，message 指向设置页（不下传任何模型 id：这一次走哪把尺子只有一个来源）
   const route = resolveJudgeRoute();
+  // 强度与尺子同源（同一份 `defaultJudge` 快照，两次读之间没有 await）。校验紧挨着读点：
+  // 手改 config.json 写进的越域档位 / 空串在这道门上拦下，且位置在**调模型之前**——
+  // 漏过去就要跑到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远（spec §5.4 / D8）
+  const effort = resolveJudgeEffort();
+  requireConfiguredJudgeEffort(effort);
 
-  if (recognizing) {
+  if (input.mode === 'recognize') {
     const raw = await callTextApi(route, {
       system: buildSystemPrompt('识别'),
       prompt: buildRecognizePrompt({ userPrompt: input.prompt, taskPrompt: input.taskPrompt }),
+      // 强度按需带（没配就一个键都不出现）：未指定 ≠ 关闭，也 ≠ 某一档，听网关缺省
+      ...(effort === undefined ? {} : { effort }),
     });
     const parsed = parseGenerated(raw, '识别');
     // 识别分支是**整表替换**（生成分支才做合并）：调用方直接拿 `rubric` 覆盖表格，不做「按组名归位」。
@@ -70,12 +73,49 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
     return { rubric: parsed, addedItems: 0 };
   }
 
+  if (input.mode === 'adjust') {
+    // 空表没得改：这一步**必须**在调模型之前（没有可参照的表格，模型只能凭空造一份，
+    // 而用户点的按钮是「调整」不是「生成」）。与生成分支先校验仓库同一个道理：不花冤枉钱。
+    if (input.rubric.groups.length === 0) {
+      throw new ServiceError(
+        'INVALID_QUERY',
+        '当前评分标准项是空的，没有可以调整的内容：请先用「智能生成」起草一份，或改用「智能识别」粘贴一份标准',
+        { context: { mode: input.mode } },
+      );
+    }
+    // 指令为空：界面上按钮是禁用的，这一格是服务端的门（同类的二次设防，判据与生成分支的仓库校验一致）
+    if (input.prompt.trim() === '') {
+      throw new ServiceError('INVALID_QUERY', '请写下你要怎么调整这份评分标准，例如「把 A1 的权重提到 30，并加一条错误处理的条目」', {
+        context: { mode: input.mode },
+      });
+    }
+    const raw = await callTextApi(route, {
+      system: buildSystemPrompt('调整'),
+      prompt: buildAdjustPrompt({ current: input.rubric, instruction: input.prompt, taskPrompt: input.taskPrompt }),
+      ...(effort === undefined ? {} : { effort }),
+    });
+    const parsed = parseGenerated(raw, '调整');
+    // 清单**从两张表算出来**（不是模型自述的改动说明）：单一真源是那张表本身，
+    // 于是清单可以被单测、被变异验证，也不会出现「模型说改了 A、实际改的是 B」这种自相矛盾
+    const changes = diffRubric(input.rubric, parsed);
+    return {
+      rubric: parsed,
+      // 调整 ≠ 新增：这一支可以只删、只改（见 `GenerateRubricResult.addedItems` 的说明）
+      addedItems: 0,
+      changes,
+      // 清单为空 = 模型认为不用改。**不写回**是调用方的责任（表格此刻与原来逐字节相同），
+      // 这里只给一句说明，免得用户对着一个「成功」却什么都没发生的界面发愣
+      ...(changes.length === 0 ? { note: '模型认为这份评分标准不需要修改' } : {}),
+    };
+  }
+
   // ── 智能生成：先校验仓库（顺带把「路径早就不可用」挡在模型调用之前），再调模型，最后合并 ──
   const source = parseRepoSource(input.repoPath);
   const repoName = source.kind === 'local' ? resolveRepoInfo(source.path).repoName : source.repoName;
   const raw = await callTextApi(route, {
     system: buildSystemPrompt('生成'),
     prompt: buildGeneratePrompt({ current: input.rubric, taskPrompt: input.taskPrompt, repoName }),
+    ...(effort === undefined ? {} : { effort }),
   });
   const added = parseGenerated(raw, '生成');
   const merged = mergeRubric(input.rubric, added);
@@ -86,16 +126,73 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
   };
 }
 
+/**
+ * 校验「评分配置里那一格强度」是否落在「模型声明 ∩ 评分智能体域」里（spec §5.4 / D8 的第二道门）。
+ *
+ * 为什么要自己找一次模型记录：`resolveJudgeRoute()` 只回**连接事实**（`TextRoute` 上刻意没有
+ * `supportedEfforts`），而档位判据需要它。找的是与路由解析**同一份快照**里的同一对 id（两次读之间
+ * 没有 await）。找不到就**跳过**——「供应商被删」「模型不在清单里」这两种配置问题由
+ * `resolveJudgeRoute()` 报，这里再写一份说法只会让同一件事有两句文案。
+ * 顺带一提：这两处的查找判据逐字相同 ⇒ 凡是路由会抛的情形这里都查不到模型，故两道门谁先谁后
+ * 结果一样（顺序在这条路上不可观测），路由那句更准的中文原因也**不可能**被这道门顶掉。
+ */
+function requireConfiguredJudgeEffort(effort: string | undefined): void {
+  const config = loadConfig();
+  const pair = config.settings.defaultJudge;
+  const model = config.providers
+    .find((item) => item.id === pair?.providerId)
+    ?.models.find((item) => item.id === pair?.modelId);
+  if (model === undefined) return;
+  // `?? null` 而不是 `?? 规范五档`：这一格没配时由 `requireJudgeEffort` 自己取规范五档
+  //（枚举之外的坏值也走同一支），判据只留一份
+  requireJudgeEffort({ effort, model, agentKind: config.settings.defaultJudgeAgent ?? null });
+}
+
 /** 系统提示词：只约束「怎么回」，业务约束全在用户提示词与输出契约里 */
-function buildSystemPrompt(mode: '生成' | '识别'): string {
+function buildSystemPrompt(mode: '生成' | '识别' | '调整'): string {
   return [
     '你是一名资深代码评审专家，负责为「AI 生成代码评测」撰写**评分标准项**。',
     mode === '生成'
       ? '你会拿到一份**已有的**评分标准项表格：你的任务是**只补充缺的条目**，不要重复已有的条目。'
-      : '用户会给你一段他自己的评分要求：你的任务是把它**原样抽取**成结构化表格。',
+      : mode === '识别'
+        ? '用户会给你一段他自己的评分要求：你的任务是把它**原样抽取**成结构化表格。'
+        : '用户会给你一份**已有的**评分标准项表格与一句调整要求：按那句话改这张表，**其余部分一个字都不要动**。',
     '评分模型只会看到候选的代码改动（diff），看不到任何对话过程，也看不到原始仓库。',
     '你的回复必须是一个 JSON 对象，不要输出解释、不要使用 markdown 代码围栏。',
   ].join('\n');
+}
+
+/**
+ * 调整分支的用户提示词：现有表格（含已占用的 ID）+ 题面（可选上下文）+ 用户原话 + 输出契约 + 四条硬约束。
+ *
+ * 两条与另外两支刻意相反的地方：
+ *   1. **必须回显当前表格**（同生成分支、反识别分支）：这一次的产出是「改完的那张表」，
+ *      不回显就等于让它凭空重写一份，而用户要的是**微调**；
+ *   2. **要求「逐字保留」而不是「只新增」**：模型有顺手润色的倾向，而这里没被提到的条目一旦被改写，
+ *      用户会在改动清单里看到一堆自己没要求的改动——清单是唯一的把关依据，噪音会直接毁掉它。
+ *      即使如此仍可能有润色漏过来，故界面上把「权重变了」与「只是文字变了」**分类显示**，
+ *      而不是替用户判断这个改动算不算实质（判据见 `diffRubric`）。
+ */
+function buildAdjustPrompt(context: { current: Rubric; instruction: string; taskPrompt: string }): string {
+  const keys = rubricItemKeys(context.current);
+  return [
+    context.taskPrompt.trim() === '' ? '' : `【考题提示词（供你理解上下文）】\n${context.taskPrompt}`,
+    `【已有的评分标准项】\n${renderRubricForJudge(context.current)}`,
+    `【已被占用的 ID】${keys.length === 0 ? '（无）' : keys.join('、')}`,
+    `【调整要求（用户原话）】\n${context.instruction}`,
+    `【输出契约】\n${GENERATE_OUTPUT_CONTRACT}`,
+    [
+      '【你的任务】',
+      '按上面的调整要求改这张表，把**改完的完整表格**放进 JSON 的 groups 字段；',
+      '硬性要求：',
+      '1. **只动要求里提到的部分**：没让你改的条目，goal 与 weight 都要**逐字保留**（措辞、ID、顺序都不许变），不要顺手润色或重排；',
+      '2. 要求删掉的条目，在输出里**不要再出现**；要改权重的，改那一个数字；',
+      '3. 要新增条目时：**禁止复用【已被占用的 ID】里的任何 ID**；同一个主题放进已有的同名组，新主题才用新组名；',
+      '4. 输出的是**改完之后的完整表格**，不是「改了什么」的说明，也不要输出差异或补丁——差异我们自己算。',
+    ].join('\n'),
+  ]
+    .filter((section) => section !== '')
+    .join('\n\n');
 }
 
 /**
@@ -231,7 +328,7 @@ export function mergeRubric(current: Rubric, added: Rubric): { rubric: Rubric; a
  *
  * `mode` 只影响**空表**这一条判据（两支的语义不同，见下面那段注释），其余判据两支逐字相同。
  */
-function parseGenerated(raw: string, mode: '生成' | '识别'): Rubric {
+function parseGenerated(raw: string, mode: '生成' | '识别' | '调整'): Rubric {
   const jsonText = stripCodeFence(raw);
   let parsed: unknown;
   try {
@@ -252,15 +349,22 @@ function parseGenerated(raw: string, mode: '生成' | '识别'): Rubric {
       context: { raw: excerpt(raw) },
     });
   }
-  // **空表在两支里的含义正好相反**：
+  // **空表在三支里的含义各不相同**：
+  //   · 生成分支**允许**：空数组是模型按契约给出的「当前表格已经覆盖本题，我没什么可补的」，
+  //     那是设计内的成功答复（调用方据此显示「未新增条目」），见 mergeRubric 与调用点的 note；
   //   · 识别分支**不允许**：用户明明粘了一段评分要求，却识别出空表——那一定是我们或模型错了。
   //     放它过去等于「把用户的输入静默丢掉」再回一个 200（这一支是整表替换，空表就是最终结果）；
-  //   · 生成分支**允许**：空数组是模型按契约给出的「当前表格已经覆盖本题，我没什么可补的」，
-  //     那是设计内的成功答复（调用方据此显示「未新增条目」），见 mergeRubric 与调用点的 note。
-  if (mode === '识别' && checked.data.groups.length === 0) {
-    throw new ServiceError('JUDGE_PARSE_FAILED', '评分模型没有从这段评分要求里识别出任何条目：请重试或换一个模型（也请确认粘进来的文本里有评分要求）', {
-      context: { raw: excerpt(raw) },
-    });
+  //   · 调整分支**不允许**：用户要的是**微调**，「改完的表是空的」等于把整份标准删光——
+  //     那不是调整的合理结果，而是一张再也跑不了评分的表（`validateRubric` 也会拒它）。
+  //     真要把某项删掉，用户自己点表格里的删除更清楚。
+  if (mode !== '生成' && checked.data.groups.length === 0) {
+    throw new ServiceError(
+      'JUDGE_PARSE_FAILED',
+      mode === '识别'
+        ? '评分模型没有从这段评分要求里识别出任何条目：请重试或换一个模型（也请确认粘进来的文本里有评分要求）'
+        : '评分模型把这份评分标准删空了：调整的结果不能是一张空表，请把要求写得更具体一些，或换一个模型',
+      { context: { raw: excerpt(raw), mode } },
+    );
   }
   const business = validateRubric(checked.data);
   if (!business.ok && checked.data.groups.length > 0) {

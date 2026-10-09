@@ -41,6 +41,9 @@ const evaluator = vi.hoisted(() => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
+  // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
+  subscribeRunChanges: vi.fn(() => () => {}),
   resolveJudgeRoute: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
 }));

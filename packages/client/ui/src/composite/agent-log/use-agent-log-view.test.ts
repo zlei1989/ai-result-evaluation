@@ -167,7 +167,6 @@ function model(nodes: LogNode[], activeNodeId: string): AgentLogModel {
       thinking: null,
       domain: [],
       error: null,
-      exitReason: null,
     },
     nodes,
     activeNodeId,

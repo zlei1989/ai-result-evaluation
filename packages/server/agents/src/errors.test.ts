@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 错误归因：加载失败要点名包名与安装方式；401/429/404 的文案要求见 §5.6.6 的表。
+ * 错误归因：加载失败要点名包名与安装方式；401/429/404 的文案要求见 §5.6.7 的表。
  * 为什么归因必须由适配器做：事件流里拿到的往往只有一句上游文案，编排层无法知道网关是「限流」还是
  * 「模型名拼错」——这两件事给用户的下一步动作完全不同。
  */
@@ -11,12 +11,12 @@ const CONTEXT = { kind: 'codex', baseUrl: 'https://gw.example.com/openai/v1' } a
 
 describe('AgentLoadError', () => {
   it('点名包名 + 安装方式，并保留原始原因', () => {
-    const error = new AgentLoadError('@openai/codex-sdk', new Error('Cannot find module'));
+    const error = new AgentLoadError('@openai/codex', new Error('Cannot find module'));
     expect(error.code).toBe('AGENT_LOAD_FAILED');
-    expect(error.packageName).toBe('@openai/codex-sdk');
+    expect(error.packageName).toBe('@openai/codex');
     expect(error.variant).toBe('missing'); // 省略第三参就是「包没装」这一队
-    expect(error.message).toContain('@openai/codex-sdk');
-    expect(error.message).toContain('pnpm add @openai/codex-sdk');
+    expect(error.message).toContain('@openai/codex');
+    expect(error.message).toContain('pnpm add @openai/codex');
     expect(error.message).toContain('Cannot find module');
     expect(error).toBeInstanceOf(Error);
   });
@@ -94,7 +94,7 @@ describe('classifyAgentFailure', () => {
   });
 
   it('AgentLoadError 原样透出（加载失败要有自己的码）', () => {
-    const failure = classifyAgentFailure(new AgentLoadError('@openai/codex-sdk', new Error('boom')), CONTEXT);
+    const failure = classifyAgentFailure(new AgentLoadError('@openai/codex', new Error('boom')), CONTEXT);
     expect(failure.code).toBe('AGENT_LOAD_FAILED');
   });
 });

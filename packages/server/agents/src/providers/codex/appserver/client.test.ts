@@ -13,13 +13,15 @@ import {
   type AppServerSpawn,
 } from './client';
 
-/** 假子进程：只实现 `AppServerChild` 那五个成员，够测协议行为 */
+/** 假子进程：只实现 `AppServerChild` 那几个成员，够测协议行为与回收行为 */
 class FakeChild implements AppServerChild {
   readonly written: string[] = [];
   killed = false;
+  /** 假 pid：回收时按它走「整棵树」那条路（真实进程树由 `process-tree.test.ts` 与真机探针覆盖） */
+  readonly pid = 4242;
   private dataListeners: Array<(chunk: Buffer | string) => void> = [];
   private stderrListeners: Array<(chunk: Buffer | string) => void> = [];
-  private exitListeners: Array<(code: number | null) => void> = [];
+  private exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
   private errorListeners: Array<(error: Error) => void> = [];
   readonly stdin = {
     write: (chunk: string): boolean => {
@@ -37,8 +39,11 @@ class FakeChild implements AppServerChild {
       this.stderrListeners.push(listener);
     },
   };
-  on(event: 'exit' | 'error', listener: ((code: number | null) => void) | ((error: Error) => void)): void {
-    if (event === 'exit') this.exitListeners.push(listener as (code: number | null) => void);
+  on(
+    event: 'exit' | 'error',
+    listener: ((code: number | null, signal: string | null) => void) | ((error: Error) => void),
+  ): void {
+    if (event === 'exit') this.exitListeners.push(listener as (code: number | null, signal: string | null) => void);
     else this.errorListeners.push(listener as (error: Error) => void);
   }
   kill(): boolean {
@@ -57,7 +62,7 @@ class FakeChild implements AppServerChild {
     for (const listener of this.stderrListeners) listener(text);
   }
   exit(code: number | null): void {
-    for (const listener of this.exitListeners) listener(code);
+    for (const listener of this.exitListeners) listener(code, null);
   }
   fail(error: Error): void {
     for (const listener of this.errorListeners) listener(error);
@@ -67,9 +72,15 @@ class FakeChild implements AppServerChild {
 function harness(timeoutMs = 5_000) {
   const child = new FakeChild();
   const spawnFn: AppServerSpawn = vi.fn(() => child);
-  const client = createAppServerClient({ binary: 'C:/fake/codex.exe', env: {}, spawnFn, timeoutMs });
+  /** 杀树动作的替身：记下被回收的 pid，不真的去 taskkill */
+  const killedTrees: number[] = [];
+  const killTree = (pid: number): Promise<void> => {
+    killedTrees.push(pid);
+    return Promise.resolve();
+  };
+  const client = createAppServerClient({ binary: 'C:/fake/codex.exe', env: {}, spawnFn, timeoutMs, killTree, terminateGraceMs: 100 });
   const frames = (): Array<Record<string, unknown>> => child.written.map((one) => JSON.parse(one) as Record<string, unknown>);
-  return { child, spawnFn, client, frames };
+  return { child, spawnFn, client, frames, killedTrees };
 }
 
 describe('createAppServerClient —— 帧与配对', () => {
@@ -173,10 +184,39 @@ describe('createAppServerClient —— 帧与配对', () => {
     await expect(client.request('thread/items/list', {})).rejects.toThrow(/thread\/items\/list/);
   });
 
-  it('close 之后请求立即拒绝，且杀掉了子进程', async () => {
-    const { client, child } = harness();
-    client.close();
-    expect(child.killed).toBe(true);
+  it('close 之后请求立即拒绝，且**整棵进程树**被回收', async () => {
+    const { client, child, killedTrees } = harness();
+    await client.close();
+    // 判据是「按 pid 走了杀树那条路」，不是「调过 child.kill()」——后者正是 2026-10-07 那个 EPERM 的成因
+    expect(killedTrees).toEqual([child.pid]);
     await expect(client.request('thread/list', {})).rejects.toThrow(/已关闭/);
+  });
+
+  it('close 会等子进程真的退出，而不是发完信号就返回', async () => {
+    const { client, child } = harness();
+    let closed = false;
+    const closing = client.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    // 还没 emit exit：close 必须仍挂在那里（否则下一轮的行产物清理会与句柄释放赛跑）
+    expect(closed).toBe(false);
+    child.exit(0);
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  it('close 幂等：重复调用只回收一次（dispose 与「起手失败」两条路会各调一次）', async () => {
+    const { client, killedTrees } = harness();
+    await Promise.all([client.close(), client.close()]);
+    await client.close();
+    expect(killedTrees).toHaveLength(1);
+  });
+
+  it('子进程在宽限期内不退出 ⇒ close 仍然返回（不悬挂），只是如实记 WARN', async () => {
+    const { client, killedTrees } = harness();
+    // 不 emit exit：`terminateGraceMs: 100` 到点就放行
+    await expect(client.close()).resolves.toBeUndefined();
+    expect(killedTrees).toHaveLength(1);
   });
 });

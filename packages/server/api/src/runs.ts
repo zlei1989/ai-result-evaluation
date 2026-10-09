@@ -16,6 +16,7 @@ import {
   EFFORT_OFF,
   ServiceError,
   hasLiveRows,
+  intersectEfforts,
   isRunnableRow,
   isSameRowTarget,
   type AgentKind,
@@ -61,10 +62,11 @@ export interface AgentModelOption {
   /** 上下文窗口（token）；缺省 = 未知（界面显示「未知」，绝不兜底一个数字） */
   contextWindow?: number;
   /**
-   * 该组合**可选**的思考强度档位（spec D10；2026-10-06 放宽，规则在 `intersectEfforts` 里）：
+   * 该组合**可选**的思考强度档位（spec D10；2026-10-06 放宽，规则在 contracts 的 `intersectEfforts` 里）：
    * 上游声明过 ⇒ 交集，再**并上关闭档** `EFFORT_OFF`（关闭不受交集裁剪）；上游**没声明** ⇒
-   * 该家**完整档位域**。缺省 = 一个档位都没有（界面只给「默认」）——只有该家档位域为空时才会。
-   * 为什么在 api 层求交而不是把上游档位原样给界面：dsh 侧对不支持的档位是**硬报错**，
+   * 该家**完整档位域**。缺省 = 一个档位都没有（界面只给「未指定」，见 `run-create-panel.tsx` 的
+   * `effortPlaceholder`）——只有该家档位域为空时才会。
+   * 为什么在投影时求交（而不是把上游档位原样给界面）：dsh 侧对不支持的档位是**硬报错**，
    * 原样列等于让人选完到运行时才炸；而「就近取整」是静默改语义。
    */
   efforts?: string[];
@@ -88,6 +90,14 @@ export interface AgentOptionGroup {
   cancelMidTurn: boolean;
   /** 该智能体能收的思考强度档位（注册表元数据，spec D11）；界面用它解释「为什么只有这几档」 */
   efforts: readonly string[];
+  /**
+   * 「未选档位」时该家**实际会用的档**（注册表元数据 `metadata.defaultEffort`，spec D12 的延伸）。
+   *
+   * 缺省 = 这家不声明（claude / codex 不传档位、由厂商推断）。界面用它拼创建表单「思考强度」的
+   * 占位符（「未指定（DeepSeek Harness 用 high）」）——那一格说的正是「你没选，但它会落到哪」，
+   * 而只有注册表知道这件事：UI 里写死一句就是第二份真源（厂商名与档位任一改了都会静默说错）。
+   */
+  defaultEffort?: string;
   /**
    * **消息能力声明**（spec v3 §2.5，2026-10-04 收口接上）。
    *
@@ -139,8 +149,8 @@ export interface ResolvedRunRow {
  * 顺序逐字沿用创建时的口径（供应商存在 → 模型在该供应商清单里 → 协议兼容 → 强度在候选里）：
  * 顺序反了会把「供应商不存在」报成「模型不存在」，让用户往错误的方向排查。
  * 四个判定**都不在这里重写**：协议判据来自 agents 注册表元数据（spec §5.6.2 A3），强度候选来自
- * `intersectEfforts`（交集并上关闭档；上游未声明时给该家完整域）——本文件里没有
- * 「哪家智能体配哪种协议」的映射表。
+ * contracts 的 `intersectEfforts`（交集并上关闭档；上游未声明时给该家完整域）——本文件里既没有
+ * 「哪家智能体配哪种协议」的映射表，也没有第二份档位算法（候选池与评分共用它，2026-10-07 提到 contracts）。
  */
 export function resolveRunRows(
   rows: RunUpdate['rows'],
@@ -177,7 +187,7 @@ export function resolveRunRows(
     // 2026-10-06：**未选也要校验**——dsh 的「未选」会真的落到缺省档（`metadata.defaultEffort`），
     // 那个档不在候选里时必须**建行就拒**，否则要跑到 dsh 的硬校验处才失败
     // （`UNSUPPORTED_REASONING_EFFORT`，症状离真因很远）。
-    const allowed = intersectEfforts(model, metadata.reasoningEfforts) ?? [];
+    const allowed = intersectEfforts(model, metadata.reasoningEfforts, metadata.reasoningEfforts) ?? [];
     const declared = row.effort ?? metadata.defaultEffort;
     if (declared !== undefined && !allowed.includes(declared)) {
       const implicit = row.effort === undefined ? `（未选档位时 ${displayName} 会用 ${declared}）` : '';
@@ -418,7 +428,9 @@ export function listModelOptions(agentKind: AgentKind): AgentModelOption[] {
     .filter((provider) => acceptsProtocol(metadata, provider.protocolType))
     .flatMap((provider) =>
       provider.models.map((model) => {
-        const efforts = intersectEfforts(model, metadata.reasoningEfforts);
+        // 兜底那一位传的是 metadata.reasoningEfforts **本身**：候选池列什么，这里就放什么过去
+        // （传规范五档会让 codex 的 xhigh / ultra 变成「界面能选、建行被拒」）
+        const efforts = intersectEfforts(model, metadata.reasoningEfforts, metadata.reasoningEfforts);
         return {
           providerId: provider.id,
           providerName: provider.name,
@@ -436,30 +448,6 @@ export function listModelOptions(agentKind: AgentKind): AgentModelOption[] {
     );
 }
 
-/**
- * 候选档位（spec D10；2026-10-06 放宽）。
- *
- * 两个变化，各自都有靶子：
- *   · **上游没声明 ⇒ 给该家完整档位域**：本机两个 provider 都是 `source: fetched` 且不带
- *     `supportedEfforts` ⇒ 旧写法让候选为空、界面只给「默认」，用户**连档位都点不到**
- *     （更别说点「关闭」）；
- *   · **关闭档不受交集裁剪**：它表达的是「我们这一侧关掉思考」，不是模型声明的能力
- *     ⇒ 上游即使声明过、且不含它，也照样出现在候选里。
- *
- * 返回 `undefined` 仍表示「一个档位都没有」（该家档位域为空——正常不会发生）。
- */
-function intersectEfforts(
-  model: { supportedEfforts?: string[] },
-  agentEfforts: readonly string[],
-): string[] | undefined {
-  const supported = model.supportedEfforts ?? [];
-  const base =
-    supported.length === 0 ? [...agentEfforts] : supported.filter((effort) => agentEfforts.includes(effort));
-  const off = agentEfforts.includes(EFFORT_OFF) && !base.includes(EFFORT_OFF) ? [EFFORT_OFF] : [];
-  const allowed = [...off, ...base];
-  return allowed.length === 0 ? undefined : allowed;
-}
-
 /** 三种智能体的元数据 + 候选池，一次取全：创建表单与候选卡片共用同一份真源 */
 export function listAgentModelOptions(): AgentOptionGroup[] {
   return AGENT_KINDS.map((agentKind) => {
@@ -470,6 +458,8 @@ export function listAgentModelOptions(): AgentOptionGroup[] {
       usage: metadata.capability.usage,
       cancelMidTurn: metadata.capability.cancelMidTurn,
       efforts: metadata.reasoningEfforts,
+      // 「未选」时真正落到的那一档：按「有意义才出现」投影（不声明这一格的家由厂商推断默认档）
+      ...(metadata.defaultEffort === undefined ? {} : { defaultEffort: metadata.defaultEffort }),
       // 能力声明**逐格原样透出**（含每格自己的 source / reason 与 notes）：api 不做任何裁剪，
       // 裁一格就等于替厂商重写一句「为什么没有」（见 `AgentOptionGroup.messageCapability`）
       messageCapability: metadata.messageCapability,
@@ -666,7 +656,7 @@ export function planRunUpdate(
  *
  * 「使用智能体评分」的判定与创建**共用同一份**（`resolveJudgeRoute` 无参读全局默认 + `requireJudgeAgent`）：
  * 判据只有那一处，这里抄第二份必然漂移（评分阶段还会再校验一次，配置可能被改过）。
- * 指向的用例只取 `input.caseId` 那一份，`planRunUpdate` 的四格快照与换用例判定都由它来，
+ * 指向的用例只取 `input.caseId` 那一份，`planRunUpdate` 的六格用例快照与换用例判定都由它来，
  * 故「行引用了一个这一轮并不拥有的用例」不需要另一条一致性检查。
  */
 export function updateRun(runId: string, input: RunUpdate): EvalRun {

@@ -8,7 +8,7 @@
  * 为什么不选 `setAgentRuntimeForTesting({ sdkModule })`：那条路注入的是**厂商 SDK 的假模块**，
  * 真正的执行仍要穿过 p3 三家适配器的实现与事件归一化——测出来的是「p3 的适配器 + 本层编排」
  * 的耦合体，超时与终止的时序还要绕过适配器自己的释放窗口，用例会又慢又脆。
- * 适配器本身由 p3 按 §5.6.7 用假实现单独测；本层把适配器当作已被验证过的边界。
+ * 适配器本身由 p3 按 §5.6.8 用假实现单独测；本层把适配器当作已被验证过的边界。
  *
  * 评分用假 judgeRow（`vi.mock('./judge')`）：本文件测的是编排时序与落盘，
  * 评分器的行为有它自己的测试（Task 3 / Task 4）。
@@ -137,7 +137,7 @@ export let home: TempHome;
  * 而 `initFixtureRepo`（init + config×2 + add + commit + rev-parse）= **1612ms**、
  * 一次真 `git clone`（用例缓存的首次建立）= **1053ms**。86 条用例照原样各付一次 ⇒ 光夹具就 ~230s，
  * 正是「每跑一个文件都要等好几分钟」的主要来源。`cpSync` 一份仓库实测 ~10ms，且复制出来的
- * 仍是**独立、可用**的真实仓库（`git.repo.test.ts` 的 `copyWorkspace` 用例守的正是这件事）。
+ * 仍是**独立、可用**的真实仓库（`git-repo-cache.test.ts` 的 `copyWorkspace` 用例守的正是这件事）。
  */
 let repoTemplate: { repoPath: string; commit: string } | null = null;
 /** 预热用的用例缓存：真克隆一次，各用例 `cpSync` 到自己的 `caseCacheDir` */
@@ -153,7 +153,7 @@ function copyRepoTemplate(dest: string): string {
 /**
  * 要一个「**工作仓库**」（而不是裸远端）的用例用它：模板的一份副本 + 它的 commit。
  * 与 `makeBareRemote` 的区别只在最终形态（这个是可提交的工作树）。
- * 存在的意义同样是省掉 `initFixtureRepo` 的 7 个 git 进程（≈1.6s，满载更贵）。
+ * 存在的意义同样是省掉 `initFixtureRepo` 的 6 个 git 进程（≈1.6s，满载更贵）。
  */
 export function makeWorkRepo(name: string): { repoPath: string; commit: string } {
   const repoPath = copyRepoTemplate(join(home.root, name));
@@ -196,7 +196,7 @@ export function registerOrchestratorHooks(): void {
    */
   beforeAll(() => {
     // 两个模板刻意**不**走 makeTmp（那是 fixtures 里的私有助手）：它们必须活过每一个 afterEach，
-    // 清理归下面的 afterAll —— 与 git.repo.test.ts / git.diff.test.ts 同一口径。
+    // 清理归下面的 afterAll —— 与 `git-repo-*.test.ts` / `git-diff-*.test.ts` 同一口径。
     const repo = initFixtureRepo(mkdtempSync(join(tmpdir(), 'aieval-orch-repo-template-')));
     repoTemplate = repo;
     const cache = mkdtempSync(join(tmpdir(), 'aieval-orch-cache-template-'));
@@ -442,10 +442,10 @@ let bareTemplate: { dir: string; commit: string } | null = null;
 
 export function makeBareRemote(name: string): { url: string; commit: string; bare: string } {
   /**
-   * 为什么要有模板：原来每次调用都走 `initFixtureRepo`（7 个 git 进程）+ `clone --bare`（1 个），
+   * 为什么要有模板：原来每次调用都走 `initFixtureRepo`（6 个 git 进程）+ `clone --bare`（1 个），
    * 本机 ≈2.5s/次，而远端那几条用例每条都要一个远端 ⇒ 夹具比被测逻辑还贵。
    * 模板与副本**逐字节同内容**（连同 commit hash）：裸仓库的配置里没有绝对路径，复制到新路径照样能用
-   * （`core/src/git.repo.test.ts` 的 `copyWorkspace` 用例守着「复制出来的仍是可用真仓库」这件事）。
+   * （`core/src/git-repo-cache.test.ts` 的 `copyWorkspace` 用例守着「复制出来的仍是可用真仓库」这件事）。
    */
   if (bareTemplate === null) {
     const work = copyRepoTemplate(mkdtempSync(join(tmpdir(), 'aieval-bare-template-work-')));

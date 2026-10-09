@@ -22,13 +22,21 @@ import {
   type FakeVendorRecorder,
 } from './testing/agent-fixtures';
 import type { MessageDraft } from './message';
-import { runTurn, type TurnFinalize, type TurnHooks, type TurnProjection } from './turn';
+import { runTurn, type TurnFinalize, type TurnHooks, type TurnProjection, type TurnStart } from './turn';
 
 interface Harness {
   hooks: TurnHooks;
   recorder: FakeVendorRecorder;
   stats: { startCount: number; disposeCount: number; finalizeCount: number };
 }
+
+/**
+ * 假 hooks 的能力声明（A1 起 `TurnHooks.capability` 必填）：本文件只测骨架的处置，而绝大多数的
+ * 假 start 连 `outputSchema` 都不传（`createRunInput` 不填这一格）⇒ 这一格在那些用例里**是惰性的**。
+ * 统一给「支持」（= claude-code / codex 的真值），免得十几处内联 hooks 各抄一份字面量；
+ * 「不支持 ⇒ 降级」那一族用例各自显式覆盖它。
+ */
+const CAPABILITY_SUPPORTED: TurnHooks['capability'] = { structuredOutput: true };
 
 /** 造一套合成 hooks：事件流可挂住、interrupt 可合作也可忽略、start 可直接抛 */
 function createHarness(
@@ -51,6 +59,7 @@ function createHarness(
   const stats = { startCount: 0, disposeCount: 0, finalizeCount: 0 };
   const hooks: TurnHooks = {
     kind: 'claude-code',
+    capability: CAPABILITY_SUPPORTED,
     start: async (context) => {
       stats.startCount += 1;
       if (options.startError !== undefined) throw options.startError;
@@ -128,7 +137,7 @@ describe('runTurn', () => {
       turns: 3,
     });
     expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
-    // 正常出口也要释放（§5.6.5：所有出口一个都不能漏）
+    // 正常出口也要释放（§5.6.6：所有出口一个都不能漏）
     expect(harness.stats.disposeCount).toBe(1);
   });
 
@@ -213,6 +222,67 @@ describe('runTurn', () => {
     expect(usage?.type === 'usage' ? usage.turns : null).toBe(5);
     expect(result.tokens).toBeNull();
     expect(result.turns).toBe(5);
+  });
+
+  /**
+   * A2：`tokens` 那一格是**厂商上报的权威值**还是**我们的跑动期估算**，必须能从事件本身分辨
+   * （`tokensBasis`）——消费方（编排层的跑动期回写段）据此决定要不要写快照，于是它不再需要在跑之前
+   * 反查注册表的 `capability.liveUsage`（那是 A1/A2 要消掉的能力消费点）。
+   *
+   * 为什么判据挂在**事件**上而不是结果上：`tokensEstimated` 只影响「这一条要不要给结果」，
+   * 而事件是**覆盖语义**的累计快照，一条估算事件与一条权威事件在界面上长得一模一样——
+   * 不标出来源，消费方只能靠猜。
+   */
+  it('估算计量的事件带 tokensBasis=estimated，权威值带 reported', async () => {
+    const events: AgentEvent[] = [];
+    const harness = createHarness({
+      events: [{ kind: 'estimate' }, { kind: 'authoritative' }],
+      projection: (raw) => {
+        const kind = (raw as { kind: string }).kind;
+        if (kind === 'estimate') {
+          return {
+            drafts: [],
+            tokens: { input: 1, cached: 0, output: 2 },
+            tokensEstimated: true,
+            turns: 1,
+            failure: null,
+          };
+        }
+        return { drafts: [], tokens: { input: 3, cached: 0, output: 4 }, turns: 2, failure: null };
+      },
+    });
+    await runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
+
+    const usages = events.filter((event) => event.type === 'usage');
+    expect(usages.map((event) => (event.type === 'usage' ? event.tokensBasis : null))).toEqual([
+      'estimated',
+      'reported',
+    ]);
+  });
+
+  /**
+   * 去重判据必须**含 `tokensBasis`**（A2）：两个数值恰好相同时，估算→权威仍是一次真实变化
+   * ——少了它，那一条权威事件会被当成「重复快照」吃掉，编排层的快照于是永远等不到这个权威值
+   * （只有终态那一次写入才补上）。与 `timing` / `turn` 进判据是同一条理由：**影响消费方行为的格子
+   * 不能只比数值**。
+   */
+  it('估算与权威值数值恰好相同时，tokensBasis 变了仍要再发一条', async () => {
+    const events: AgentEvent[] = [];
+    const tokens = { input: 7, cached: 0, output: 7 };
+    const harness = createHarness({
+      events: [{ kind: 'estimate' }, { kind: 'authoritative' }],
+      projection: (raw) =>
+        (raw as { kind: string }).kind === 'estimate'
+          ? { drafts: [], tokens, tokensEstimated: true, turns: 1, failure: null }
+          : { drafts: [], tokens, turns: 1, failure: null },
+    });
+    await runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
+
+    const usages = events.filter((event) => event.type === 'usage');
+    expect(usages.map((event) => (event.type === 'usage' ? event.tokensBasis : null))).toEqual([
+      'estimated',
+      'reported',
+    ]);
   });
 
   /**
@@ -351,12 +421,12 @@ describe('runTurn', () => {
 
   it('加载失败折进结果（AGENT_LOAD_FAILED）且 run 不抛', async () => {
     const harness = createHarness({
-      startError: new AgentLoadError('@openai/codex-sdk', new Error('Cannot find module')),
+      startError: new AgentLoadError('@openai/codex', new Error('Cannot find module')),
     });
     const result = await runTurn(createRunInput(), harness.hooks);
     expect(result).toMatchObject({ ok: false, exitReason: 'error' });
     expect(result.error?.code).toBe('AGENT_LOAD_FAILED');
-    expect(result.error?.message).toContain('@openai/codex-sdk');
+    expect(result.error?.message).toContain('@openai/codex');
     expect(result.error?.message).toContain('pnpm add');
     // start 阶段就失败：没有任何在途 turn 与客户端，因此没有释放顺序可言（也不会产生孤儿）
     expect(harness.stats.startCount).toBe(1);
@@ -375,19 +445,21 @@ describe('runTurn', () => {
   });
 
   /**
-   * 退出错误 vs 流内失败的取舍（2026-09-27，目标页 codex 实测）。
+   * 退出错误 vs 流内失败的取舍（骨架级规则，与厂商无关）。
    *
-   * 背景：`@openai/codex-sdk` 把**stderr 全文**拼进退出错误，而 codex CLI **每次运行**都会打
-   * `Reading prompt from stdin...` ⇒ codex 的每一行失败都会被写成
-   * 「`Codex Exec exited with code 1: Reading prompt from stdin...`」，那句话里没有一个字是原因。
-   * 真正的原因通常在事件流里（`{"type":"error",…}`），由 `project` 收成 `failure`。
-   * 两条判据各钉一遍：**只剩样板 ⇒ 不覆盖**；**带实质内容 ⇒ 覆盖**。
+   * 两个来源：流内错误由 `project` 从事件流里收（`{"type":"error",…}` / `turn.failed`）成 `failure`；
+   * 退出错误是适配器**自己 spawn 的进程**终止时抛出的 cause。判据在 `exitErrorAddsDetail`——
+   * ①确定性错误码 ②4xx ③剥掉已知样板后还有实质内容，取其一才覆盖；否则保留流内原因，
+   * 并把「CLI 以退出码 N 收场」写成**补充**。
+   *
+   * 判据③的反面（剥完样板什么都没有）现在只有一种可达输入：**正文就是一句状态行**。
    */
-  it('退出错误只剩 CLI 样板（Reading prompt from stdin）⇒ 保留流内原因，并把退出码写成补充', async () => {
+  it('退出错误只剩一句状态行（5xx）⇒ 保留流内原因，退出码只作补充', async () => {
     const events: AgentEvent[] = [];
     const harness = createHarness({
       events: [{ kind: 'upstream-5xx' }],
-      streamError: new Error('Codex Exec exited with code 1: Reading prompt from stdin...'),
+      // 剥掉已知样板后什么都不剩 = 没有实质内容（判据③不成立）
+      streamError: new Error('unexpected status 500 Service Unavailable'),
       projection: (raw) => {
         if ((raw as { kind?: string }).kind !== 'upstream-5xx') {
           return { drafts: [], tokens: null, turns: null, failure: null };
@@ -404,17 +476,22 @@ describe('runTurn', () => {
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
 
     expect(result.exitReason).toBe('error');
-    // 原因必须还是流内那条——原来它会被退出错误整个顶掉，用户只看到「Reading prompt from stdin...」
+    // 原因必须还是流内那条：那句状态行只说了一个瞬时面，两者归因码又都是 AGENT_FAILED（可重试）
     expect(result.error?.message).toContain('high demand');
-    expect(result.error?.message).not.toContain('Reading prompt from stdin');
-    // 但「CLI 以退出码 1 收场」是本次运行的真实结局，不能抹掉
-    expect(result.error?.message).toContain('退出码 1');
+    expect(result.error?.message).not.toContain('Service Unavailable');
+    /**
+     * 但「CLI 以退出码 N 收场」是本次运行的真实结局，作为**补充**接在原因之后，不能抹掉。
+     * 这里不钉退出的**数字**：码写在退出错误的正文里，而走到这一支的前提正是「正文没有实质内容」
+     * ⇒ 这段里没有码可读（`exitCodeOf` 只认宿主给出的 `exited with code N` 形态）。本用例的判据是
+     * 「流内原因是正文、退出是补充」，不是那个数字。
+     */
+    expect(result.error?.message).toMatch(/（随后 codex CLI 以退出码 .+ 收场）$/);
   });
 
-  it('退出错误自带可识别的 HTTP 状态（Codex Exec exited with code 1: 401 Unauthorized）⇒ 覆盖流内抱怨', async () => {
+  it('退出错误自带确定性归因（正文里的 401）⇒ 覆盖流内抱怨', async () => {
     const harness = createHarness({
       events: [{ kind: 'transient' }],
-      streamError: new Error('Codex Exec exited with code 1: 401 Unauthorized'),
+      streamError: new Error('codex app-server 进程已退出（code=1） stderr: 401 Unauthorized'),
       projection: () => ({
         drafts: [],
         tokens: null,
@@ -434,7 +511,7 @@ describe('runTurn', () => {
   it('流内没有失败时，退出错误照旧是唯一归因（不能因为新判据把这条路径弄丢）', async () => {
     const harness = createHarness({
       events: [],
-      streamError: new Error('Codex Exec exited with code 1: 上游返回 500 服务维护中'),
+      streamError: new Error('codex app-server 进程已退出（code=1） stderr: 上游返回 500 服务维护中'),
     });
 
     const result = await runTurn(createRunInput({ onEvent: () => {} }), harness.hooks);
@@ -443,10 +520,11 @@ describe('runTurn', () => {
     expect(result.error?.message).toContain('服务维护中');
   });
 
-  it('退出错误里的 5xx 不夺走流内原因（5xx 是瞬时面、归因码相同 ⇒ 留信息更多的那条）', async () => {
+  it('退出错误带实质内容（app-server 的终止错误 + stderr 尾巴）⇒ 判据③成立，覆盖流内抱怨', async () => {
     const harness = createHarness({
       events: [{ kind: 'transient' }],
-      streamError: new Error('Codex Exec exited with code 1: unexpected status 500 Service Unavailable'),
+      // 现在真实可能出现的形态：进程终止那句 + stderr 尾巴（见 `appserver/client.ts`）
+      streamError: new Error('codex app-server 进程已退出（code=1） stderr: 上游网关返回 502 Bad Gateway'),
       projection: () => ({
         drafts: [],
         tokens: null,
@@ -457,17 +535,15 @@ describe('runTurn', () => {
 
     const result = await runTurn(createRunInput({ onEvent: () => {} }), harness.hooks);
 
-    // 流内那句才是「关于这次失败的信息」；「unexpected status 500」只说了一个瞬时面，两者码相同
-    expect(result.error?.message).toContain('high demand');
-    expect(result.error?.message).not.toContain('Service Unavailable');
-    // 但「CLI 以退出码 1 收场」这个事实照旧保留
-    expect(result.error?.message).toContain('退出码 1');
+    // 剥掉已知样板后正文还在 ⇒ 它比流内那句没有状态的抱怨更具体（两者归因码都是 AGENT_FAILED）
+    expect(result.error?.message).toContain('502 Bad Gateway');
+    expect(result.error?.message).not.toContain('high demand');
   });
 
   it('退出错误里的 4xx 是确定性归因 ⇒ 覆盖流内的瞬时抱怨', async () => {
     const harness = createHarness({
       events: [{ kind: 'transient' }],
-      streamError: new Error('Codex Exec exited with code 1: unexpected status 429 Too Many Requests'),
+      streamError: new Error('codex app-server 进程已退出（code=1） stderr: unexpected status 429 Too Many Requests'),
       projection: () => ({
         drafts: [],
         tokens: null,
@@ -486,7 +562,7 @@ describe('runTurn', () => {
     const events: AgentEvent[] = [];
     const harness = createHarness({
       events: [],
-      streamError: new Error('Codex Exec exited with code 1: 上游网关返回 502 Bad Gateway'),
+      streamError: new Error('codex app-server 进程已退出（code=1） stderr: 上游网关返回 502 Bad Gateway'),
     });
 
     await runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
@@ -497,8 +573,6 @@ describe('runTurn', () => {
       .join('\n');
     expect(logged).toContain('CLI 退出详情');
     expect(logged).toContain('502 Bad Gateway');
-    // 样板行不进抽屉（它零信息量）
-    expect(logged).not.toContain('Reading prompt from stdin');
   });
 
   it('事件回调抛错不外抛：结论照常返回、释放照走完，失败落 logger.error（评审 F1）', async () => {
@@ -525,7 +599,7 @@ describe('runTurn', () => {
       tokens: { input: 10, cached: 2, output: 5 },
       turns: 3,
     });
-    // 释放照走完：结论不能因为消费方抛错而丢掉回收（§5.6.5：所有出口一个都不能漏）
+    // 释放照走完：结论不能因为消费方抛错而丢掉回收（§5.6.6：所有出口一个都不能漏）
     expect(harness.stats.disposeCount).toBe(1);
     // 必须仍然可见：release.ts 的对应修复刻意吞掉 onGraceExceeded 的异常，这层不记就彻底静默了
     expect(loggerErrors.some((line) => line.includes('事件回调失败'))).toBe(true);
@@ -617,6 +691,7 @@ describe('runTurn', () => {
     // 造一个在流里写 state.finalText 的假适配器：骨架只负责把它带进结果，不负责解释它
     const hooks: TurnHooks = {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { type: 'x' };
@@ -637,6 +712,7 @@ describe('runTurn', () => {
     // 漏掉失败那一条，症状就是「超时/报错的行查不到它到底说了什么」——正好是最需要它的时候。
     const failing: TurnHooks = {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { type: 'x' };
@@ -657,6 +733,7 @@ describe('runTurn', () => {
   it('没采到答复时 finalText 是 null（不猜、不填空串）', async () => {
     const hooks: TurnHooks = {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {})(),
         interrupt: () => {},
@@ -818,6 +895,7 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -843,6 +921,7 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
   it('收尾（finalize）交回的计量折进结果——这是 codex 子线程用量唯一的落地路径', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -866,6 +945,7 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
   it('收尾交回 null：tokens/turns 保持不变，但 subagentTokens 被清成 null（两者的 null 语义刻意不同）', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -891,6 +971,7 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
   it('收尾**不带**这一格（缺省）时保持原值——与显式 null 是两件事', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -915,6 +996,7 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
     const tokens = { input: 100, cached: 0, output: 10 };
     await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -952,6 +1034,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -979,6 +1062,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1004,6 +1088,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
   it('投影**不带**这一格（缺省）⇒ 保持原值——与显式 null 是两件事', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'dsh',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1026,6 +1111,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
   it('收尾（finalize）交回的轮次折进结果；显式 null 清空、缺省保持', async () => {
     const carried = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1041,6 +1127,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
 
     const cleared = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1058,6 +1145,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
 
     const untouched = await runTurn(createRunInput(), {
       kind: 'codex',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1075,6 +1163,7 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
     const events: AgentEvent[] = [];
     await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1101,11 +1190,118 @@ describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () =>
     controller.abort();
     const result = await runTurn(createRunInput({ signal: controller.signal }), {
       kind: 'dsh',
+      capability: CAPABILITY_SUPPORTED,
       start: async () => {
         throw new Error('不该被调用');
       },
     });
     expect(result.subagentTurns).toBeNull();
     expect(result.turns).toBeNull();
+  });
+});
+
+/** 一个什么都不产出的 start：本组用例只测 runTurn 的处置，不测任何厂商投影 */
+function emptyStart(): TurnStart {
+  return {
+    stream: (async function* () {})(),
+    interrupt: () => {},
+    dispose: async () => undefined,
+    // `project` 是必填格（骨架在消费循环里调它），但本函数的流**一条都不产出** ⇒ 它一次都不会被调用
+    project: () => ({ drafts: [], tokens: null, turns: null, failure: null }),
+  };
+}
+
+describe('outputSchema：不支持的适配器降级（A1）', () => {
+  it('能力为 false ⇒ schema 不交给 start，结果记 applied.structuredOutput=false', async () => {
+    const seen: (Record<string, unknown> | undefined)[] = [];
+    const result = await runTurn(createRunInput({ outputSchema: { type: 'object' } }), {
+      kind: 'dsh',
+      capability: { structuredOutput: false },
+      start: async (context) => {
+        seen.push(context.input.outputSchema);
+        return emptyStart();
+      },
+    });
+    expect(seen).toEqual([undefined]);
+    expect(result.applied).toEqual({ structuredOutput: false });
+  });
+
+  it('能力为 true ⇒ schema 原样交给 start，applied 记 true', async () => {
+    const schema = { type: 'object' };
+    let seen: Record<string, unknown> | undefined;
+    const result = await runTurn(createRunInput({ outputSchema: schema }), {
+      kind: 'codex',
+      capability: { structuredOutput: true },
+      start: async (context) => {
+        seen = context.input.outputSchema;
+        return emptyStart();
+      },
+    });
+    expect(seen).toBe(schema);
+    expect(result.applied).toEqual({ structuredOutput: true });
+  });
+
+  it('没要求 schema ⇒ applied 也是 false（但不算降级）', async () => {
+    const result = await runTurn(createRunInput({}), {
+      kind: 'codex',
+      capability: { structuredOutput: true },
+      start: async () => emptyStart(),
+    });
+    expect(result.applied).toEqual({ structuredOutput: false });
+  });
+
+  it('降级的留痕：只有「要了 schema 但这家不支持」那一次记 WARN，其余两次一条都不记', async () => {
+    // spec D3 要求降级在**包内**留一条 WARN（服务端日志是技术事实的落点）。它与「没要求 schema」
+    // 那一支在 `applied` 上同值（都是 false）⇒ **日志是唯一能把两者分开的可观测量**；
+    // 没有这条守卫，删掉 `runTurn` 里那句 `logger.warn` 不会有任何用例变红。
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map((arg) => String(arg)).join(' '));
+    });
+    const hooksWith = (structuredOutput: boolean): TurnHooks => ({
+      kind: 'dsh',
+      capability: { structuredOutput },
+      start: async () => emptyStart(),
+    });
+    const schema = { type: 'object' };
+
+    const degraded = await runTurn(createRunInput({ outputSchema: schema }), hooksWith(false));
+    const supported = await runTurn(createRunInput({ outputSchema: schema }), hooksWith(true));
+    const notRequested = await runTurn(createRunInput(), hooksWith(true));
+
+    expect(degraded.applied).toEqual({ structuredOutput: false });
+    expect(supported.applied).toEqual({ structuredOutput: true });
+    expect(notRequested.applied).toEqual({ structuredOutput: false });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('不支持结构化输出');
+  });
+
+  /**
+   * 上面那组漏掉的**第四格**：能力 `false` **且没要 schema**（`hooksWith(false)` + 不传 `outputSchema`）。
+   * 上面三次运行里「没要 schema」那一次用的是 `hooksWith(true)`（支持能力）⇒ 这一格无人覆盖，
+   * 而它正是「只按 `!schemaApplied` 判降级」时唯一会多记一条 WARN 的输入。
+   *
+   * 判据是「一条日志都不记」：`applied` 在这一格与真降级同值（都是 false，见 `applied` 的 JSDoc），
+   * 故**日志是唯一能把「没要求」与「降级」分开的可观测量**——把两者混成一条 WARN，
+   * 排障时读到的就是「这一分被降级了」，而真相是「这一分压根没要求 schema」。
+   */
+  it('能力为 false 且**没要** schema ⇒ 既不记降级 WARN，也不把 schema 交给 start', async () => {
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map((arg) => String(arg)).join(' '));
+    });
+    const seen: (Record<string, unknown> | undefined)[] = [];
+    const result = await runTurn(createRunInput({}), {
+      kind: 'dsh',
+      capability: { structuredOutput: false },
+      start: async (context) => {
+        seen.push(context.input.outputSchema);
+        return emptyStart();
+      },
+    });
+
+    expect(seen).toEqual([undefined]);
+    expect(result.applied).toEqual({ structuredOutput: false });
+    expect(warnings).toEqual([]);
   });
 });

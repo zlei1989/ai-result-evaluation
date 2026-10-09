@@ -29,6 +29,8 @@ describe('createEventEmitter', () => {
     // 于是「未采集」只有一种写法，读侧不必再区分「键不存在」与「键是 null」。
     // `subagentTokens: null` 同一条处置（2026-10-04 新增的那一格）：这一行没有子智能体、或没采到。
     // `subagentTurns: null` 同理（轮次那一格的分量）：**恒带**，`null` = 没采到、`0` = 确实没有。
+    // `tokensBasis`（A2）也**恒带**：它没有「不知道」这一态（发事件的人总知道自己手里那个数的来源），
+    // 于是事件流里每一条 usage 都能自证「这个 tokens 是厂商上报的还是我们估的」。
     emitter.emit({
       type: 'usage',
       tokens: { input: 10, cached: 2, output: 5 },
@@ -36,6 +38,7 @@ describe('createEventEmitter', () => {
       subagentTurns: null,
       turn: null,
       timing: null,
+      tokensBasis: 'reported',
       turns: 1,
     });
     expect(seen[0]).toMatchObject({
@@ -45,6 +48,7 @@ describe('createEventEmitter', () => {
       subagentTokens: null,
       subagentTurns: null,
       timing: null,
+      tokensBasis: 'reported',
       turns: 1,
     });
   });
@@ -65,6 +69,7 @@ describe('createEventEmitter', () => {
       subagentTurns: 0,
       turn: null,
       timing: { totalMs: 166_712, apiMs: 158_753, ttftMs: 7_558, source: 'vendor' },
+      tokensBasis: 'estimated',
       turns: 3,
     });
     expect(seen[0]).toMatchObject({
@@ -88,7 +93,16 @@ describe('createEventEmitter', () => {
     const emitter = createEventEmitter((event) => {
       seen.push(event);
     });
-    emitter.emit({ type: 'usage', tokens: null, subagentTokens: null, subagentTurns: null, timing: null, turn: null, turns: 1 });
+    emitter.emit({
+      type: 'usage',
+      tokens: null,
+      subagentTokens: null,
+      subagentTurns: null,
+      timing: null,
+      turn: null,
+      tokensBasis: 'reported',
+      turns: 1,
+    });
     emitter.emit({
       type: 'usage',
       tokens: null,
@@ -96,6 +110,7 @@ describe('createEventEmitter', () => {
       subagentTurns: null,
       timing: null,
       turn: { subagentId: 'child-1', round: 2 },
+      tokensBasis: 'reported',
       turns: 4,
     });
     expect(seen[0]).toMatchObject({ turn: null });

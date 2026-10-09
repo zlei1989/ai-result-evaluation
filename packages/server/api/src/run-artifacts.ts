@@ -49,7 +49,7 @@ function findRow(run: EvalRun, rowId: string): EvalRow {
   return row;
 }
 
-/** 索引每页默认条数（spec §4 ①：DOM 里始终只有几十行） */
+/** 索引每页默认条数（spec §5.3.4：首帧只渲染一页，其余按滚动追加、已加载的页不回收） */
 const DIFF_PAGE_DEFAULT = 30;
 /** 索引每页上限：手改 URL 也不能把全量拉回来 */
 const DIFF_PAGE_MAX = 200;

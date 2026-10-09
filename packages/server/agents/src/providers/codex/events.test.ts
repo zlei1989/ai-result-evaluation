@@ -1,368 +1,631 @@
 // @vitest-environment node
 /**
- * codex 的事件投影：模型答复条目 → 轮次（近似）、turn.completed 计量、item 累积文本只发增量、未识别保留。
- * 轮次口径见 `events.ts` 的文件头（codex 的 JSON 事件流里没有逐次模型请求事件，故按 `agent_message`
- * 条目近似——**只数答复条目**，2026-10-05 收窄；与会话文件那条通道同一把尺子）。
- * codex 的 `item.updated` 是**累积**文本，全量重发会让日志抽屉里同一段话出现 N 次——这正是 spec
- * 给「唯一允许丢弃的事件是重复事件」举的例子。
+ * `events.ts` 的行为契约：app-server 通知 → 行级事件与 `TurnProjection`。
+ *
+ * 逐条钉住计划表的行级那几格：增量给不给轮次、`turn/completed` 的计量与时长、
+ * 失败/中止的分档、按线程的用量累计、未识别通知不丢。
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { TurnState } from '../../turn';
-import { projectCodexEvent } from './events';
+import { createTurnState } from '../../testing/agent-fixtures';
+import { readNotification, type AppServerItem, type AppServerNotificationPayload } from './appserver/protocol';
+import { breakdownToTokens, projectCodexEvent, turnTimingOf, type CodexEventContext } from './events';
+import { createCodexRunState, type CodexRunState } from './run-state';
 
-const CONTEXT = { kind: 'codex', baseUrl: 'https://gw.example.com/openai/v1' } as const;
+const MAIN = 'thread-main';
+const CONTEXT: CodexEventContext = { kind: 'codex', baseUrl: 'https://gw.example.com/v1', mainThreadId: MAIN };
 
-function newState(): TurnState {
+/** 一件 `agentMessage` 条目（事件层只关心它的 id 与类型） */
+function agentMessage(id: string, text = '好'): AppServerItem {
+  return { kind: 'agentMessage', id, text, phase: null };
+}
+
+function project(
+  payload: AppServerNotificationPayload,
+  options: { state?: TurnState; runState?: CodexRunState } = {},
+): ReturnType<typeof projectCodexEvent> {
+  return projectCodexEvent(payload, options.state ?? createTurnState(), options.runState ?? createCodexRunState(), CONTEXT);
+}
+
+/** 一轮的载荷（`Turn` 的必填格都填上，测试只覆盖关心的那几格） */
+function turn(overrides: Record<string, unknown> = {}): AppServerNotificationPayload {
   return {
-    seen: new Set(),
-    turns: 0,
-    usageInput: null,
-    usageCached: null,
-    usageOutput: null,
-    usageReasoningOutput: null,
-    usageTotal: null,
-    // codex 的事件流一个时间字段都没有 ⇒ 本家不写这一格（时长在 finalize 里读会话文件时补）
-    timing: null,
-    usageByMessageId: new Map(),
-    turnKeys: new Set(),
-    finalText: null,
+    kind: 'turnCompleted',
+    threadId: MAIN,
+    turn: {
+      id: 'turn-1',
+      items: [],
+      itemsView: 'full',
+      status: 'completed',
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+      ...overrides,
+    } as never,
   };
 }
 
-describe('projectCodexEvent：计量与轮次', () => {
-  /**
-   * 轮次口径（2026-10-05 修正，spec §2.3）：只数**模型答复条目**（`agent_message`）。
-   * 为什么把 `reasoning` 拿掉：它会话文件里看得见、事件流在 DeepSeek 路由上**一条都看不见**
-   * （实测 37 条 item 里 0 条）⇒ 两侧各数一遍就是两套号（真机：文件 42 / 事件流 18），
-   * 而用量里程碑带的是事件流那一套 ⇒ 抽屉按 42 分组、里程碑说 18，根本对不上。
-   */
-  it('轮次只数 agent_message（按 item.id 去重）；reasoning 条目不再推高轮次', () => {
-    const state = newState();
-    const seen = new Map<string, string>();
-    const reasoning = projectCodexEvent(
-      { type: 'item.completed', item: { id: 'rs-1', type: 'reasoning', text: '想一下' } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    expect(reasoning.turns).toBeNull();
-    const message = projectCodexEvent(
-      { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: '答复' } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    expect(message.turns).toBe(1);
-    // 归属：事件流只有主线程 ⇒ 会话恒为 null，号就是刚数出来的那个
-    expect(message.turn).toEqual({ subagentId: null, round: 1 });
-
-    // 同一条目的后续快照（item.updated / item.completed 共享 id）**不**再算一次
-    const again = projectCodexEvent(
-      { type: 'item.updated', item: { id: 'msg-1', type: 'agent_message', text: '答复，补一句' } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    expect(again.turns).toBeNull();
-    expect(state.turns).toBe(1);
+describe('增量与条目：只推进轮次，不产日志垃圾', () => {
+  it('答复增量不发事件、也不给轮次（轮次按条目 id 去重后才算一票）', () => {
+    const outcome = project({ kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'm1', delta: '你' });
+    expect(outcome.projection).toMatchObject({ drafts: [], tokens: null, turns: null, failure: null });
   });
 
-  it('工具类条目（command_execution 等）不算轮次：一次调用可以带多个，数它们会明显偏高', () => {
-    const state = newState();
-    // 用 `item.completed`（**唯一**会走计数路径的两种事件之一；`item.started` 落在「未识别 → 原样保留」
-    // 那一支，拿它当夹具会让这条守卫变成空转——实测踩过）
-    const projection = projectCodexEvent(
-      { type: 'item.completed', item: { id: 'cmd-1', type: 'command_execution', command: 'npm test', status: 'completed' } },
-      state,
-      new Map(),
-      CONTEXT,
-    );
-    expect(projection.turns).toBeNull();
-    expect(state.turns).toBe(0);
+  it('推理增量不发事件（它的落点是思考块，见 message.ts）', () => {
+    const outcome = project({ kind: 'reasoningTextDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'r1', delta: '想' });
+    expect(outcome.projection.drafts).toEqual([]);
   });
 
-  it('turn.completed：只交计量，轮次带上**已经数到**的值（一条整段任务一条，不能拿它数轮次）', () => {
-    const state = newState();
-    const seen = new Map<string, string>();
-    // 2026-10-05 口径变更：轮次只数**答复条目** ⇒ 这里原来是一条 `reasoning`（新口径下它不推高轮次，
-    // 这一格的期望值就无从成立）。换成答复条目，钉的性质不变：`turn.completed` 不自己数轮次、只带已数到的值。
-    projectCodexEvent({ type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: '先答复一句' } }, state, seen, CONTEXT);
-    const projection = projectCodexEvent(
-      { type: 'turn.completed', usage: { input_tokens: 11, cached_input_tokens: 3, output_tokens: 7 } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    /**
-     * ⚠️ **`input` 是归一到「非缓存输入」之后的值**（2026-10-XX）：`11 − 3 = 8`。
-     * codex 的 `input_tokens` **含**缓存读（`cached_input_tokens` 是它的明细，真机
-     * `{input_tokens:8152, cached_input_tokens:6656}`），而契约的 `input` 是不含 cache 的
-     * ⇒ 这一格必须减。不减的话命中率公式 `cached/(input+cached)` 在 codex 上分母偏大、
-     * 命中率被系统性低估——这条断言就是那处归一化的守卫（写在最显眼的位置，免得被「顺手改回去」）。
-     */
-    expect(projection.tokens).toEqual({ input: 8, cached: 3, output: 7, reasoningOutput: null, total: null });
-    expect(projection.turns).toBe(1);
-    /**
-     * 归属（2026-10-05）：**`turn.completed` 这一条出口也要有自己的守卫**——`TurnProjection.turn` 是
-     * 可选格，漏填**不报类型错**，而这一条与 item 那条是**两个**独立的返回点（Task 4 的同一条教训）。
-     * 号就是刚数到的那个（事件流只有主线程 ⇒ 会话恒为 `null`）。
-     */
-    expect(projection.turn).toEqual({ subagentId: null, round: 1 });
-    // 再收一条 turn.completed 也不会把轮次 +1（原来是这么数的，正是要修的那个「永远是 1」）
-    const again = projectCodexEvent(
-      { type: 'turn.completed', usage: { input_tokens: 20, cached_input_tokens: 4, output_tokens: 9 } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    expect(again.turns).toBe(1);
-    expect(state.turns).toBe(1);
+  it('主线程的答复条目：一次新 id 一票，并给出归属（`subagentId: null` + 该轮号）', () => {
+    const state = createTurnState();
+    const runState = createCodexRunState();
+    const first = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m1'), completedAtMs: null }, { state, runState });
+    expect(first.projection.turns).toBe(1);
+    expect(first.projection.turn).toEqual({ subagentId: null, round: 1 });
+
+    // 同一条目的后续快照（`item/started` + `item/completed`）不重复计数
+    const repeat = project({ kind: 'itemStarted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m1') }, { state, runState });
+    expect(repeat.projection.turns).toBeNull();
+
+    const second = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m2'), completedAtMs: null }, { state, runState });
+    expect(second.projection.turns).toBe(2);
   });
 
-  it('input 里含缓存读 ⇒ 减掉；cached > input 这种脏形状按 0 收（不把负数放进事件）', () => {
-    const projection = projectCodexEvent(
-      // 真机恒有 cached <= input；这一条是**防御**用例：一旦形状变了，负的 input 会渲染成读不懂的比率
-      { type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 9, output_tokens: 1 } },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-    expect(projection.tokens).toEqual({ input: 0, cached: 9, output: 1, reasoningOutput: null, total: null });
+  it('推理与工具条目对轮次这把尺子透明（不推高轮次）', () => {
+    const runState = createCodexRunState();
+    const state = createTurnState();
+    const reasoning: AppServerItem = { kind: 'reasoning', id: 'r1', summary: [], content: [] };
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: reasoning, completedAtMs: null }, { state, runState }).projection.turns).toBeNull();
+    const command: AppServerItem = { kind: 'commandExecution', id: 'c1', command: 'ls', cwd: null, status: 'completed', output: null, exitCode: 0, durationMs: 1 };
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: command, completedAtMs: null }, { state, runState }).projection.turns).toBeNull();
   });
 
-  it('一个条目都没观察到时轮次是 null（不发明一个 0）', () => {
-    const projection = projectCodexEvent({ type: 'turn.completed' }, newState(), new Map(), CONTEXT);
-    expect(projection.turns).toBeNull();
-    expect(projection.tokens).toBeNull();
-  });
-
-  it('usage 缺项 → tokens null 且落 WARN（不是 0）', () => {
-    const projection = projectCodexEvent(
-      { type: 'turn.completed', usage: { input_tokens: 11, output_tokens: 7 } },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-    expect(projection.tokens).toBeNull();
-    const warn = projection.drafts.find((draft) => draft.type === 'log' && draft.stream === 'stderr');
-    expect(warn?.type === 'log' ? warn.text : '').toContain('不填 0');
-  });
-});
-
-describe('projectCodexEvent：累积文本与未识别事件', () => {
-  it('item 的累积文本只发新增部分', () => {
-    const seenTexts = new Map<string, string>();
-    const state = newState();
-    const first = projectCodexEvent(
-      { type: 'item.completed', item: { id: 'i1', text: '第一步' } },
-      state,
-      seenTexts,
-      CONTEXT,
-    );
-    const second = projectCodexEvent(
-      { type: 'item.updated', item: { id: 'i1', text: '第一步，第二步' } },
-      state,
-      seenTexts,
-      CONTEXT,
-    );
-    expect(first.drafts[0]?.type === 'log' ? first.drafts[0].text : '').toBe('第一步');
-    expect(second.drafts[0]?.type === 'log' ? second.drafts[0].text : '').toBe('，第二步');
-  });
-
-  it('完全重复的累积更新被丢弃（唯一允许丢弃的一类）', () => {
-    const seenTexts = new Map<string, string>();
-    const state = newState();
-    const event = { type: 'item.updated', item: { id: 'i1', text: '同一段' } };
-    projectCodexEvent(event, state, seenTexts, CONTEXT);
-    const repeated = projectCodexEvent(event, state, seenTexts, CONTEXT);
-    expect(repeated.drafts).toEqual([]);
-  });
-
-  it('没有可读文本的 item（命令执行等）保留原始负载', () => {
-    const payload = { type: 'item.completed', item: { id: 'c1', type: 'command_execution', command: 'npm test' } };
-    const projection = projectCodexEvent(payload, newState(), new Map(), CONTEXT);
-    expect(projection.drafts).toHaveLength(1);
-    expect(JSON.parse(projection.drafts[0]?.type === 'log' ? projection.drafts[0].text : '')).toEqual(payload);
-  });
-
-  it('未识别的 type（thread.started 与未来新增类型）保留原始负载', () => {
-    const payload = { type: 'thread.started', thread_id: 't1' };
-    const projection = projectCodexEvent(payload, newState(), new Map(), CONTEXT);
-    expect(projection.drafts).toHaveLength(1);
-    expect(JSON.parse(projection.drafts[0]?.type === 'log' ? projection.drafts[0].text : '')).toEqual(payload);
-  });
-
-  it('turn.failed 按文案归因（401 → AUTH_FAILED）', () => {
-    const projection = projectCodexEvent(
-      { type: 'turn.failed', error: { message: 'HTTP 401 unauthorized' } },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-    expect(projection.failure?.code).toBe('AUTH_FAILED');
-    expect(projection.drafts.some((draft) => draft.type === 'error')).toBe(true);
-  });
-});
-
-/**
- * 最终答复出口（spec §8 / D2）。codex 的答复只在 `item.type === 'agent_message'` 上，
- * 且是**累积**文本（每见一次覆盖一次 ⇒ 最后一次即最终）。
- *
- * ⚠️ 这个形状**未经探测确认**：探针那次网络不通，只跑出 `item.type === 'error'` + `item.message`
- * （**没有 `item.text`**，见 `docs/superpowers/notes/2026-09-22-features-p3-agent-probe.md`）。
- * 故下面这一组是**防御性**守卫：它钉的是「过滤条件只认 `agent_message`」，不是在宣称
- * 别的 item 通道实测也带 `text`——把过滤去掉，本组用例照样必须变红（见计划里的变异清单）。
- */
-describe('projectCodexEvent：最终答复（finalText）', () => {
-  it('agent 消息被记为最终答复，且取累积文本的最后一次', () => {
-    const state = newState();
-    const seen = new Map<string, string>();
-    projectCodexEvent({ type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: '{"dim' } }, state, seen, CONTEXT);
-    projectCodexEvent({ type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: '{"dimensions":[]}' } }, state, seen, CONTEXT);
-    expect(state.finalText).toBe('{"dimensions":[]}');
-  });
-
-  it('带 text 但不是 agent_message 的 item 不算最终答复（过滤条件必须点名 agent_message）', () => {
-    const state = newState();
-    const seen = new Map<string, string>();
-    // 夹具形状说明（终审 FIX-4）：**不能**写成 `{type:'error', text:…}`——那个组合是**被实测否掉**的
-    // （错误项带的是 `item.message`、`text` 缺席），拿它当夹具等于把一个假形状写成已验证事实。
-    // 这里用一个工具类 item（`command_execution`，与本文件上一条用例同一形状假设）承载 `text`，
-    // 要钉的性质与形状无关：**只要不是 agent_message，带 text 也不能成为最终答复**。
-    projectCodexEvent(
-      { type: 'item.completed', item: { id: 'i2', type: 'command_execution', text: 'npm test 的输出' } },
-      state,
-      seen,
-      CONTEXT,
-    );
-    expect(state.finalText).toBeNull();
-  });
-});
-
-/**
- * **多智能体条目 → 子任务行**（2026-10-03 用户口径：「codex 没有看到 subagent 消息」）。
- *
- * 缺陷形状：`collab_tool_call` 这条 item **没有 `text` 字段**，原来一路落到 `unknownEventDraft`
- * ⇒ 事件流里只剩一坨原始 JSON，而 `projectCodexEvent` 从来没有 `subagents` 出口
- * ⇒ 抽屉里子任务面板恒空，**即使 codex 真的派了子智能体**。
- *
- * 夹具逐字取自真机载荷（`item.started` / `item.completed` 两态、`agents_states` 的形状）。
- */
-describe('projectCodexEvent：多智能体条目 → 子任务行', () => {
-  const THREAD = '01a101a1-00da-7693-8762-8a330ea6455b';
-
-  it('`item.completed` 且带 `receiver_thread_ids` ⇒ 落一条可导航的子任务行', () => {
-    const projection = projectCodexEvent(
-      {
-        type: 'item.completed',
-        item: {
-          id: 'item_8',
-          type: 'collab_tool_call',
-          tool: 'spawn_agent',
-          sender_thread_id: '01a101a0-b95e-7532-aa71-62eec4623478',
-          receiver_thread_ids: [THREAD],
-          prompt: '任务：审查 index.html。\n\n审查要求：…',
-        },
-      },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-
-    expect(projection.subagents).toHaveLength(1);
-    expect(projection.subagents?.[0]).toMatchObject({
-      // 身份 = 子线程 id（与会话文件名末段同值 ⇒ 收尾那次能按同一个 key 覆盖成更完整的记录）
-      subagentId: THREAD,
-      // 名称取 `prompt` 首行（这一家没有单独的 name 字段）
-      name: '任务：审查 index.html。',
-      kind: 'spawn_agent',
-      source: 'wire',
-      status: 'running',
+  it('子线程的答复条目**不**推高本行的轮次（本行的事件流只有主线程的进度语义）', () => {
+    const outcome = project({
+      kind: 'itemCompleted',
+      threadId: 'thread-child',
+      turnId: 'child-turn',
+      item: agentMessage('m1'),
+      completedAtMs: null,
     });
-    // 有子任务行时**不再**退回「未知事件」那条日志（否则同一件事在抽屉里说两遍）
-    expect(projection.drafts).toEqual([]);
-  });
-
-  it('`item.started` 的 `receiver_thread_ids` 是空数组 ⇒ **不编 id**，照旧留原始负载', () => {
-    const projection = projectCodexEvent(
-      {
-        type: 'item.started',
-        item: {
-          id: 'item_8',
-          type: 'collab_tool_call',
-          tool: 'spawn_agent',
-          receiver_thread_ids: [],
-          prompt: '任务：审查 index.html。',
-        },
-      },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-
-    // 「还没建子线程」与「建了但没给 id」在数据上分不开 ⇒ 一条都不产出，也不编一个 id
-    expect(projection.subagents ?? []).toEqual([]);
-    expect(projection.drafts).toHaveLength(1);
-  });
-
-  it('`agents_states` 给出的终态照实入账；没见过的取值标 `unverified` 而不是当「还在跑」', () => {
-    const withState = (status: string) =>
-      projectCodexEvent(
-        {
-          type: 'item.updated',
-          item: {
-            id: 'item_11',
-            type: 'collab_tool_call',
-            tool: 'wait',
-            receiver_thread_ids: [THREAD],
-            prompt: null,
-            agents_states: { [THREAD]: { status, message: '审查完成：PASS' } },
-          },
-        },
-        newState(),
-        new Map(),
-        CONTEXT,
-      ).subagents?.[0];
-
-    expect(withState('completed')).toMatchObject({ status: 'completed', outcome: '审查完成：PASS' });
-    expect(withState('failed')).toMatchObject({ status: 'failed' });
-    // 真机的「进行中」取值：认得出，且**不算**未验证
-    expect(withState('in_progress')).toMatchObject({ status: 'running', statusMissing: null });
-    // 没见过的取值：按「还在跑」显示，但如实标「没验证过」——两件事不能混成一件
-    expect(withState('quantum')).toMatchObject({ status: 'running', statusMissing: 'unverified' });
-  });
-
-  it('派发调用与子任务行**两侧同值**（界面据此把「进入子任务」挂到那次调用上）', () => {
-    const projection = projectCodexEvent(
-      {
-        type: 'item.completed',
-        item: { id: 'item_8', type: 'collab_tool_call', tool: 'spawn_agent', receiver_thread_ids: [THREAD], prompt: 'x' },
-      },
-      newState(),
-      new Map(),
-      CONTEXT,
-    );
-
-    // 只交子任务行、不交调用 ⇒ 占位条画不出来（它挂在派发调用上），子任务的记录有入口也点不到
-    const call = projection.messages?.[0]?.blocks[0];
-    expect(call?.block.type).toBe('tool-call');
-    const callId = call?.block.type === 'tool-call' ? call.block.callId : null;
-    expect(callId).toBe('item_8');
-    expect(call?.block.type === 'tool-call' ? call.block.name : null).toBe('spawn_agent');
-    // 两侧必须**同值**才是配对成立；不同值等于没有入口
-    expect(projection.subagents?.[0]?.parentCallId).toBe(callId);
+    expect(outcome.projection.turns).toBeNull();
+    expect(outcome.projection.turn).toBeNull();
   });
 });
 
-describe('projectCodexEvent：形状异常（评审 N2）', () => {
-  it('usage 根本不是对象（形状异常）→ tokens null 且仍落一条带原始负载的 WARN（不得静默）', () => {
-    const projection = projectCodexEvent({ type: 'turn.completed', usage: 5 }, newState(), new Map(), CONTEXT);
-    // 轮次这一格没有生产者（本条不是答复条目）⇒ null，不发明一个 0
-    expect(projection.turns).toBeNull();
-    expect(projection.tokens).toBeNull();
-    const warn = projection.drafts.find((draft) => draft.type === 'log' && draft.stream === 'stderr');
-    const text = warn?.type === 'log' ? warn.text : '';
-    expect(text).toContain('不填 0');
-    expect(text).toContain('5');
+describe('turn/completed：计量、时长、归属', () => {
+  it('用量取该线程最近一次累计快照；时长按秒换算', () => {
+    const runState = createCodexRunState();
+    const state = createTurnState();
+    project(
+      {
+        kind: 'tokenUsage',
+        threadId: MAIN,
+        usage: {
+          total: { totalTokens: 1000, inputTokens: 1000, cachedInputTokens: 900, cacheWriteInputTokens: 0, outputTokens: 50, reasoningOutputTokens: 7 },
+          last: { totalTokens: 10, inputTokens: 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 },
+          modelContextWindow: null,
+        },
+      },
+      { state, runState },
+    );
+    const outcome = project(
+      turn({
+        items: [agentMessage('m1')],
+        startedAt: 1_700_000_000,
+        completedAt: 1_700_000_011,
+        durationMs: 11_000,
+      }),
+      { state, runState },
+    );
+    // `input` 已减 cached（1000 − 900）⇒ 契约的三元组是非缓存输入
+    expect(outcome.tokens).toEqual({ input: 100, cached: 900, output: 50, reasoningOutput: 7, total: 1000 });
+    expect(outcome.projection.turns).toBe(1);
+    expect(outcome.projection.turn).toEqual({ subagentId: null, round: 1 });
+    // 秒 → 毫秒：两点相乘后由骨架现减（11 秒 = 11000 毫秒）
+    expect(outcome.projection.timing).toEqual({ firstMs: 1_700_000_000_000, lastMs: 1_700_000_011_000, source: 'events' });
+  });
+
+  it('`input − cached` 的真机形状（8152 / 6656 ⇒ 1496）', () => {
+    expect(breakdownToTokens({ inputTokens: 8152, cachedInputTokens: 6656, outputTokens: 30 })).toEqual({
+      input: 1496,
+      cached: 6656,
+      output: 30,
+      reasoningOutput: null,
+      total: null,
+    });
+  });
+
+  it('`cached > input`（上游数据自相矛盾）时夹到 0：负 token 会让命中率与成本两条公式同时失去意义', () => {
+    expect(breakdownToTokens({ inputTokens: 10, cachedInputTokens: 900, outputTokens: 1 })?.input).toBe(0);
+  });
+
+  it('三项缺一 ⇒ 整格 null（不填 0）', () => {
+    expect(breakdownToTokens({ inputTokens: 10, cachedInputTokens: 1 })).toBeNull();
+    expect(breakdownToTokens(null)).toBeNull();
+    expect(breakdownToTokens({ inputTokens: 10, cachedInputTokens: 1, outputTokens: 2 })).not.toBeNull();
+  });
+
+  it('时刻缺一端 ⇒ **不带** timing（差值算不出来就是算不出来，不拿 0 冒充）', () => {
+    expect(turnTimingOf({ startedAt: 1, completedAt: null, durationMs: 500 } as never)).toBeNull();
+    const outcome = project(turn({ startedAt: 1_700_000_000, completedAt: null, durationMs: 5 }));
+    expect(outcome.projection.timing).toBeUndefined();
+  });
+
+  it('`turn/completed` 自带 usage 时以它为准（协议后加字段的那条路）', () => {
+    const outcome = project(
+      turn({
+        items: [agentMessage('m1')],
+        usage: { inputTokens: 20, cachedInputTokens: 5, outputTokens: 3, reasoningOutputTokens: 0, totalTokens: 23 },
+      }),
+    );
+    expect(outcome.tokens).toEqual({ input: 15, cached: 5, output: 3, reasoningOutput: 0, total: 23 });
+  });
+
+  it('`status: failed` ⇒ 一条 error 事件 + 失败归因（文案里的 401 归 AUTH_FAILED）', () => {
+    // 归因取**厂商原文的话术**：`TurnError` 在这一侧的窄声明里只有 `message`，而状态码写在文案里
+    const outcome = project(turn({ status: 'failed', error: 'unexpected status 401: 密钥无效' }));
+    expect(outcome.projection.failure?.code).toBe('AUTH_FAILED');
+    expect(outcome.projection.drafts.some((draft) => draft.type === 'error')).toBe(true);
+  });
+
+  it('`status: failed` 且没有原因文案时不编造：给一句「未给出原因」，仍按失败归因', () => {
+    const outcome = project(turn({ status: 'failed', error: null }));
+    expect(outcome.projection.failure?.code).toBe('AGENT_FAILED');
+    expect(outcome.tokens).toBeNull();
+  });
+
+  it('`status: interrupted` **不是**失败：只落一条 WARN，`failure` 保持 null', () => {
+    const outcome = project(turn({ status: 'interrupted' }));
+    expect(outcome.projection.failure).toBeNull();
+    expect(outcome.projection.drafts).toEqual([
+      { type: 'log', stream: 'stderr', text: '[WARN] codex 本轮被中止（用户终止或上游打断）' },
+    ]);
+  });
+
+  it('子线程的 `turn/completed` 不结算本行（不发计量、不给轮次），但仍推进它自己的轮次', () => {
+    const runState = createCodexRunState();
+    const outcome = project(
+      {
+        kind: 'turnCompleted',
+        threadId: 'thread-child',
+        turn: { id: 'ct', items: [agentMessage('m1')], itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null },
+      },
+      { runState },
+    );
+    expect(outcome.projection.tokens).toBeNull();
+    expect(outcome.projection.turns).toBeNull();
+    // 子线程自己那一份数到了（收尾求和读的就是它）
+    expect(runState.roundTripKeys.get('thread-child')?.size).toBe(1);
+  });
+});
+
+describe('按线程用量与未识别通知', () => {
+  it('用量通知只记账、不发事件（它的出口是下一条 turn/completed）', () => {
+    const outcome = project({
+      kind: 'tokenUsage',
+      threadId: MAIN,
+      usage: {
+        total: { totalTokens: 1, inputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        last: { totalTokens: 1, inputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        modelContextWindow: null,
+      },
+    });
+    expect(outcome.projection.drafts).toEqual([]);
+    expect(outcome.projection.turns).toBeNull();
+  });
+
+  it('`error` 通知只落 WARN、不进失败通道（过路报错不代表这一轮的结论）', () => {
+    const outcome = project({ kind: 'error', threadId: MAIN, message: 'Reconnecting… 5/5' });
+    expect(outcome.projection.failure).toBeNull();
+    expect(outcome.projection.drafts[0]).toMatchObject({ type: 'log', stream: 'stderr' });
+  });
+
+  it('计划更新落一条摘要（面板由 message.ts 出块）', () => {
+    const outcome = project({ kind: 'turnPlanUpdated', threadId: MAIN, turnId: 'turn-1', steps: [{ step: 'a', status: 'pending' }] });
+    expect(outcome.projection.drafts[0]).toMatchObject({ type: 'log', stream: 'stdout', summary: '更新计划：1 步' });
+  });
+
+  it('未识别的通知**保留原始负载**（上游加了方法名不该表现为「什么都没发生」）', () => {
+    const outcome = project({ kind: 'other', method: 'thread/goal/updated' });
+    expect(outcome.projection.drafts).toEqual([
+      { type: 'log', stream: 'stdout', text: '{"method":"thread/goal/updated"}' },
+    ]);
+  });
+});
+
+/**
+ * 活动行（候选卡片底部那一行）只吃 `log` 事件的 `summary` / 人话 `text`，而 app-server 的工具面
+ * 全走 `message.ts` 的块 ⇒ 不在这里补一句，那一行整轮只剩「更新计划：N 步」
+ * （真机 run `7d8d5f3b`：74 条事件里 10 条带摘要、全是计划那一句，活动行因此永久冻住）。
+ *
+ * 逐条钉住**在哪一条通知上发**与**发什么**：开始发「在做什么」、完成只发报错或结果类事实。
+ */
+describe('活动行：`调用工具 <名>：<参数摘要>`（词表在 src/activity.ts）', () => {
+  /** 取那条活动行日志的 `text`（证据负载） */
+  function codexDraft(outcome: ReturnType<typeof project>): string {
+    const log = outcome.projection.drafts.find((draft) => draft.type === 'log');
+    return log?.type === 'log' ? log.text : '';
+  }
+
+  const COMMAND: AppServerItem = {
+    kind: 'commandExecution',
+    id: 'c1',
+    command: 'npm run build',
+    cwd: 'D:\\w',
+    status: 'inProgress',
+    output: null,
+    exitCode: null,
+    durationMs: null,
+  };
+
+  it('命令：`item/started` 就发（那一刻命令行已完整），证据**不带输出正文**', () => {
+    const outcome = project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: COMMAND });
+    expect(outcome.projection.drafts).toHaveLength(1);
+    const draft = outcome.projection.drafts[0];
+    expect(draft).toMatchObject({ type: 'log', stream: 'stdout', summary: '调用工具 exec_command：npm run build' });
+    // 证据是条目本身（识别字段），但 `aggregatedOutput` 不进事件流：它的落点是结果块
+    const evidence = JSON.parse(draft?.type === 'log' ? draft.text : '{}');
+    expect(evidence.command).toBe('npm run build');
+    expect(evidence.status).toBe('inProgress');
+    expect('output' in evidence).toBe(false);
+  });
+
+  it('命令完成**不播**结果（输出与退出码的落点是结果块；活动行回答的是「在做什么」）', () => {
+    const outcome = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { ...COMMAND, status: 'completed', output: 'built in 1.2s', exitCode: 0, durationMs: 1200 },
+      completedAtMs: null,
+    });
+    expect(outcome.projection.drafts).toEqual([]);
+  });
+
+  it('命令**没跑起来**（`failed` / `declined`）要播，非零退出码不播——两件事，判据分开', () => {
+    const declined = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { ...COMMAND, status: 'declined', output: null, exitCode: null, durationMs: null },
+      completedAtMs: null,
+    });
+    expect(declined.projection.drafts[0]).toMatchObject({ summary: '工具报错：命令被拒' });
+
+    const failed = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { ...COMMAND, status: 'failed', output: null, exitCode: null, durationMs: null },
+      completedAtMs: null,
+    });
+    expect(failed.projection.drafts[0]).toMatchObject({ summary: '工具报错：命令失败' });
+
+    // 正常跑完但退出码非零（`grep` 没命中这类）**不播**：真机 33 条里 6 条如此
+    const nonzero = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { ...COMMAND, status: 'completed', output: 'no match', exitCode: 1, durationMs: 30 },
+      completedAtMs: null,
+    });
+    expect(nonzero.projection.drafts).toEqual([]);
+  });
+
+  it('补丁：只在完成发（开始那一刻 `changes` 可能还是空的），失败/被拒走「工具报错」', () => {
+    const started = project({
+      kind: 'itemStarted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { kind: 'fileChange', id: 'f1', status: 'inProgress', changes: [] },
+    });
+    expect(started.projection.drafts).toEqual([]);
+
+    const done = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { kind: 'fileChange', id: 'f1', status: 'completed', changes: [{ path: 'index.html', kind: 'add' }] },
+      completedAtMs: null,
+    });
+    expect(done.projection.drafts[0]).toMatchObject({ summary: '调用工具 apply_patch：index.html' });
+
+    const declined = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { kind: 'fileChange', id: 'f2', status: 'declined', changes: [{ path: 'a.ts', kind: 'update' }] },
+      completedAtMs: null,
+    });
+    expect(declined.projection.drafts[0]).toMatchObject({ summary: '工具报错：改文件被拒（a.ts）' });
+
+    // 路径一条都没有时不留一对空括号
+    const anonymous = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { kind: 'fileChange', id: 'f3', status: 'failed', changes: [] },
+      completedAtMs: null,
+    });
+    expect(anonymous.projection.drafts[0]).toMatchObject({ summary: '工具报错：改文件失败' });
+  });
+
+  it('MCP：开始发调用，完成只在**报错**时发（错误没有别的行级出口）', () => {
+    const call: AppServerItem = {
+      kind: 'mcpToolCall',
+      id: 'm1',
+      server: 'docs',
+      tool: 'search',
+      status: 'inProgress',
+      durationMs: null,
+      arguments: { query: 'vue 3 cdn' },
+      result: null,
+      error: null,
+    };
+    expect(project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: call }).projection.drafts[0]).toMatchObject({
+      summary: '调用工具 docs.search：vue 3 cdn',
+    });
+    expect(
+      project({ kind: 'itemCompleted', threadId: MAIN, turnId: 't1', item: { ...call, status: 'completed', result: { content: [] } }, completedAtMs: null })
+        .projection.drafts,
+    ).toEqual([]);
+    expect(
+      project({
+        kind: 'itemCompleted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: { ...call, status: 'failed', error: { message: 'unauthorized' } },
+        completedAtMs: null,
+      }).projection.drafts[0],
+    ).toMatchObject({ summary: '工具报错：unauthorized' });
+    // 错误对象没有 message：照样说「工具报错」，不拿 result / status 凑一句细节
+    expect(
+      project({ kind: 'itemCompleted', threadId: MAIN, turnId: 't1', item: { ...call, status: 'failed', error: {} }, completedAtMs: null })
+        .projection.drafts[0],
+    ).toMatchObject({ summary: '工具报错' });
+    // `status: 'failed'` 而错误对象缺席（协议那一格是 `unknown`）同样要播
+    expect(
+      project({ kind: 'itemCompleted', threadId: MAIN, turnId: 't1', item: { ...call, status: 'failed', error: null }, completedAtMs: null })
+        .projection.drafts[0],
+    ).toMatchObject({ summary: '工具报错' });
+  });
+
+  it('证据负载**不带结果正文**（命令输出 / MCP 结果 / 动态工具内容块的落点是结果块，不进事件流）', () => {
+    const command = codexDraft(
+      project({
+        kind: 'itemStarted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: { kind: 'commandExecution', id: 'c1', command: 'ls', cwd: null, status: 'inProgress', output: 'x'.repeat(500), exitCode: null, durationMs: null },
+      }),
+    );
+    expect(command).not.toContain('xxx');
+
+    const mcp = codexDraft(
+      project({
+        kind: 'itemCompleted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: {
+          kind: 'mcpToolCall',
+          id: 'm1',
+          server: 'fs',
+          tool: 'read',
+          status: 'failed',
+          durationMs: 3,
+          arguments: { path: 'a.txt' },
+          result: { content: [{ type: 'text', text: 'y'.repeat(500) }] },
+          error: { message: 'boom' },
+        },
+        completedAtMs: null,
+      }),
+    );
+    expect(mcp).not.toContain('yyy');
+    // 入参留着（它说明这次调用要干什么）
+    expect(mcp).toContain('a.txt');
+
+    const dynamic = codexDraft(
+      project({
+        kind: 'itemStarted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: { kind: 'dynamicToolCall', id: 'd1', namespace: null, tool: 'lookup', status: 'inProgress', success: null, durationMs: null, arguments: null, contentItems: [{ text: 'z'.repeat(500) }] },
+      }),
+    );
+    expect(dynamic).not.toContain('zzz');
+  });
+
+  it('联网搜索与动态工具：开始发调用', () => {
+    expect(
+      project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: { kind: 'webSearch', id: 'w1', query: 'vue 3 cdn' } })
+        .projection.drafts[0],
+    ).toMatchObject({ summary: '调用工具 web_search：vue 3 cdn' });
+    expect(
+      project({
+        kind: 'itemStarted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: { kind: 'dynamicToolCall', id: 'd1', namespace: null, tool: 'lookup', status: 'inProgress', success: null, durationMs: null, arguments: { id: 7 }, contentItems: null },
+      }).projection.drafts[0],
+    ).toMatchObject({ summary: '调用工具 lookup：{"id":7}' });
+  });
+
+  it('答复正文落一条日志但**不带摘要**（它本身就是人话，由 `activityOf` 直取 `text`）', () => {
+    const outcome = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: agentMessage('m9', '页面已经建好了'),
+      completedAtMs: null,
+    });
+    expect(outcome.projection.drafts).toEqual([{ type: 'log', stream: 'stdout', text: '页面已经建好了' }]);
+    // 轮次归属照旧（这条通知同时是「一次模型往返」）
+    expect(outcome.projection.turn).toEqual({ subagentId: null, round: 1 });
+  });
+
+  it('推理条目**不发**日志（正文的落点是思考块；增量逐条进日志只会把抽屉灌满）', () => {
+    const outcome = project({
+      kind: 'itemCompleted',
+      threadId: MAIN,
+      turnId: 't1',
+      item: { kind: 'reasoning', id: 'r1', summary: [], content: ['想'] },
+      completedAtMs: null,
+    });
+    expect(outcome.projection.drafts).toEqual([]);
+  });
+});
+
+describe('真机抓包重放：活动行在真实通知序列上的产出', () => {
+  /**
+   * 跑**仓内自带的真机抓包**（`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`，
+   * 97 条原始 app-server 通知）过一遍投影，把活动行产出的摘要按顺序钉住。
+   *
+   * 为什么必须有一条这样的守卫：合成夹具曾经把「派发的 receiver id 在 `item/started` 就有了」写成前提，
+   * 而真机那一刻是空数组、id 要等 `item/completed`（这一条抓包的 L48/L51）⇒ 夹具绿、生产里那句话永不播
+   * （审查 B1）。判据取**真实形状**才算数，这一条就是那个形状。
+   */
+  it('`spawnAgent` → `wait` 的真实序列产出「已派发子任务」与「子任务已完成」各一次', () => {
+    const path = join(import.meta.dirname, '../../../probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl');
+    const notifications = readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as { method?: unknown; params?: unknown })
+      .filter((record): record is { method: string; params: unknown } => typeof record.method === 'string');
+    /**
+     * 主线程 id **从抓包里取**（第一条 `thread/started`）：写死一个假值会把主线程的 `turn/completed`
+     * 当成子线程的一轮，凭空多播一句收场——这个用例的第一版就是这么错的（真机重放当场抓到）。
+     */
+    const mainThreadId = (() => {
+      for (const record of notifications) {
+        const payload = readNotification(record.method, record.params);
+        if (payload.kind === 'threadStarted') return payload.thread.id;
+      }
+      throw new Error('抓包里没有 thread/started，主线程 id 取不到');
+    })();
+
+    const state = createTurnState();
+    const runState = createCodexRunState();
+    const summaries: string[] = [];
+    for (const record of notifications) {
+      const payload = readNotification(record.method, record.params);
+      const draft = projectCodexEvent(payload, state, runState, { ...CONTEXT, mainThreadId }).projection.drafts.find((one) => one.type === 'log');
+      if (draft?.type === 'log' && draft.summary !== undefined) summaries.push(draft.summary);
+    }
+
+    // 派发那一句**只出现一次**（真机形状下它只能在 `item/completed` 出现），且排在收场之前
+    expect(summaries.filter((one) => one.startsWith('已派发子任务'))).toHaveLength(1);
+    expect(summaries.filter((one) => one.startsWith('子任务已完成'))).toHaveLength(1);
+    expect(summaries.indexOf('已派发子任务')).toBeLessThan(summaries.indexOf('子任务已完成'));
+    // 真机没有给子线程发 `thread/started`（昵称只在收尾的 `thread/list` 响应里）⇒ 这两句都是**无名**那一档
+    expect(summaries).toContain('已派发子任务');
+    expect(summaries).toContain('子任务已完成');
+    // `wait` 是「开始就带 receiver」的那一类协作调用，照旧走通用工具句
+    expect(summaries).toContain('调用工具 wait');
+    // 子线程自己那条命令也要上活动行（「此刻在做什么」包括子智能体干的活）
+    expect(summaries.some((one) => one.includes('CHILD-TOOL-RAN'))).toBe(true);
+  });
+});
+
+describe('活动行：子任务的派发与收场', () => {
+  /**
+   * 协作调用条目。**默认形状取真机**（`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`）：
+   * `item/started` 的 `receiverThreadIds` 是**空数组**、`agentsStates` 是空表；id 与状态只在
+   * `item/completed` 上出现。夹具写别的形状会让「派发」这一支假绿（真发生过一次）。
+   */
+  function collab(overrides: Partial<Extract<AppServerItem, { kind: 'collabToolCall' }>> = {}): AppServerItem {
+    return {
+      kind: 'collabToolCall',
+      id: 'x1',
+      tool: 'spawnAgent',
+      status: 'inProgress',
+      senderThreadId: MAIN,
+      receiverThreadIds: [],
+      prompt: null,
+      agentsStates: [],
+      ...overrides,
+    };
+  }
+
+  it('派发：**只在 `item/completed`** 播（那一刻 id 才到）；开始那一支一个字都不发', () => {
+    const runState = createCodexRunState();
+    // 真机的开始形状：没有 receiver ⇒ 不许在开始播（播了就是拿不到身份的空句子）
+    expect(project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: collab() }, { runState }).projection.drafts).toEqual([]);
+
+    const done = project(
+      {
+        kind: 'itemCompleted',
+        threadId: MAIN,
+        turnId: 't1',
+        item: collab({ status: 'completed', receiverThreadIds: ['child-1'], agentsStates: [{ threadId: 'child-1', status: 'pendingInit', message: null }] }),
+        completedAtMs: null,
+      },
+      { runState },
+    );
+    // 没有昵称就**不留占位**（旧实现写「已派发子任务：子任务」）；子任务名运行期多半拿不到（见 features-design §5.6.9）
+    expect(done.projection.drafts[0]).toMatchObject({ summary: '已派发子任务' });
+  });
+
+  it('派发：`thread/started` 给过昵称时用昵称', () => {
+    const runState = createCodexRunState();
+    runState.nicknames.set('child-1', 'Review Vue 3 page');
+    const done = project(
+      { kind: 'itemCompleted', threadId: MAIN, turnId: 't1', item: collab({ status: 'completed', receiverThreadIds: ['child-1'] }), completedAtMs: null },
+      { runState },
+    );
+    expect(done.projection.drafts[0]).toMatchObject({ summary: '已派发子任务：Review Vue 3 page' });
+  });
+
+  it('非派发的协作动作（等待 / 关闭）在**开始**走通用工具句', () => {
+    const outcome = project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: collab({ tool: 'wait', receiverThreadIds: ['child-1'] }) });
+    expect(outcome.projection.drafts[0]).toMatchObject({ summary: '调用工具 wait' });
+  });
+
+  it('收场：终态**变化**才播一次——同一次收场会在派发 / wait / 活动条目上重复出现', () => {
+    const runState = createCodexRunState();
+    const settled = collab({ status: 'completed', receiverThreadIds: ['child-1'], agentsStates: [{ threadId: 'child-1', status: 'completed', message: null }] });
+
+    const first = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 't1', item: settled, completedAtMs: null }, { runState });
+    expect(first.projection.drafts.map((draft) => (draft.type === 'log' ? draft.summary : ''))).toEqual(['已派发子任务', '子任务已完成']);
+
+    // 同一条收场再来一次（`wait` 完成时也会带同一份 states）⇒ 收场那句一个字都不许再播
+    const again = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 't2', item: { ...settled, id: 'x9' }, completedAtMs: null }, { runState });
+    expect(again.projection.drafts.map((draft) => (draft.type === 'log' ? draft.summary : ''))).toEqual(['已派发子任务']);
+  });
+
+  it('收场：模型不再调 `wait` / `closeAgent` 时，子线程自己那一轮的 `turn/completed` 就是那个终态', () => {
+    const runState = createCodexRunState();
+    const childTurn = (status: string): AppServerNotificationPayload => ({
+      kind: 'turnCompleted',
+      threadId: 'child-1',
+      turn: { id: 'ct', items: [], itemsView: 'full', status, error: null, startedAt: null, completedAt: null, durationMs: null },
+    });
+    const first = project(childTurn('completed'), { runState });
+    expect(first.projection.drafts[0]).toMatchObject({ summary: '子任务已完成' });
+    // 同一条终态重复到达不重播；`inProgress` 不播
+    expect(project(childTurn('completed'), { runState }).projection.drafts).toEqual([]);
+    expect(project(childTurn('inProgress'), { runState }).projection.drafts).toEqual([]);
+    // 失败那一档与 `message.ts` 的 `terminalStatusOf` 同一张表
+    expect(project(childTurn('failed'), { runState }).projection.drafts[0]).toMatchObject({ summary: '子任务失败' });
+    expect(project(childTurn('interrupted'), { runState }).projection.drafts[0]).toMatchObject({ summary: '子任务已停止' });
+  });
+
+  it('`subAgentActivity`：终态播一次收场，「在跑」不播', () => {
+    const runState = createCodexRunState();
+    const activity = (value: string): AppServerItem => ({
+      kind: 'subAgentActivity',
+      id: 'a1',
+      activity: value,
+      agentThreadId: 'child-1',
+      agentPath: '/root/child',
+    });
+    expect(project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: activity('started') }, { runState }).projection.drafts).toEqual([]);
+    expect(project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: activity('completed') }, { runState }).projection.drafts[0]).toMatchObject({
+      summary: '子任务已完成',
+    });
+    // 同一个终态重复到达不重播
+    expect(project({ kind: 'itemStarted', threadId: MAIN, turnId: 't1', item: activity('completed') }, { runState }).projection.drafts).toEqual([]);
   });
 });

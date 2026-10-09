@@ -46,6 +46,31 @@ describe('SettingsSchema', () => {
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudge: { providerId: 'p1' } }).success).toBe(false);
   });
 
+  it('defaultJudge 允许带一个可缺省的 effort（老配置读盘后是 undefined = 未指定）', () => {
+    const withoutEffort = SettingsSchema.safeParse({
+      ...SETTINGS_DEFAULTS,
+      defaultJudge: { providerId: 'p1', modelId: 'm1' },
+    });
+    expect(withoutEffort.success).toBe(true);
+    // 读回值本身也要钉住：老配置（磁盘上没这一格）必须落成 `undefined`，不能是 `''` 之类的哨兵值、
+    // 也不能被补成某一档——「未指定（一个强度键都不加）」与「显式关闭（off）」是两件事，数据上必须可分
+    expect(withoutEffort.success && withoutEffort.data.defaultJudge?.effort).toBeUndefined();
+    expect(
+      SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudge: { providerId: 'p1', modelId: 'm1', effort: 'max' } })
+        .success,
+    ).toBe(true);
+    // 关闭档存的是上游词汇原样（off），它是一份**指定**，不能被 min(1) 顺手拒掉
+    expect(
+      SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudge: { providerId: 'p1', modelId: 'm1', effort: 'off' } })
+        .success,
+    ).toBe(true);
+    // 空串不是「未指定」：它是填坏了的档位，放行就会一路传到请求体里
+    expect(
+      SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudge: { providerId: 'p1', modelId: 'm1', effort: '' } })
+        .success,
+    ).toBe(false);
+  });
+
   it('defaultJudgeAgent 默认未配置，且只认三家智能体', () => {
     expect(SETTINGS_DEFAULTS.defaultJudgeAgent).toBeNull();
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudgeAgent: null }).success).toBe(true);

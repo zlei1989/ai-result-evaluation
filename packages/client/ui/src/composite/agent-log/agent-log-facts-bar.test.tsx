@@ -4,13 +4,14 @@
  *   2. 耗时：未结束本地走秒表（数字在涨）、终态用 `endedAt − startedAt` 的结算值；
  *   3. 思考 token **只在与用量并列的那一格**显示，且**不与用量相加**（`basis !== 'additive'`
  *      时那一格也不附任何说明，2026-10-07 口径）；
- *   4. `facts.domain` 按数据层给的顺序照画，空数组时这一行不出现；**每段怎么画全看数据层的声明**
- *      （2026-10-07）：`segments` 走 git stat 上色、`hintSegments` 的 `tag` 段画成蓝 Tag；
+ *   4. **领域事实不在这里**（用户 2026-10-07 口径）：`facts.domain`（智能体 · 模型 · 思考强度 ·
+ *      改动 · 评分）自占一行，由 `agent-log-domain-facts.test.tsx` 守；本件只画「这一行跑了什么」；
  *   5. `status.label` 照数据给的渲染，**只有 `running` 才带动效**；
- *   6. 「等待答复」徽标只在真的在等时出现（另加「结束原因按语义染色」一条）。
+ *   6. 「等待答复」徽标只在真的在等时出现；
+ *   7. **没有「结束原因」这一格**（用户 2026-10-07 口径）：它连着 `agent-log-facts-exit` 一起从
+ *      事实条与 `AgentLogFacts` 里删掉了，重建那一格时守卫红。
  */
 import { act, render, screen } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentLogFacts } from './types';
 import { AgentLogFactsBar, durationMsOf } from './agent-log-facts-bar';
@@ -28,7 +29,6 @@ function facts(overrides: Partial<AgentLogFacts> = {}): AgentLogFacts {
     thinking: null,
     domain: [],
     error: null,
-    exitReason: null,
     ...overrides,
   };
 }
@@ -78,6 +78,32 @@ describe('AgentLogFactsBar', () => {
     render(<AgentLogFactsBar facts={facts()} waitingSince={null} />);
 
     expect(screen.getByTestId('agent-log-facts-tokens')).toHaveTextContent('输入 218 tok · 缓存 8,832 tok · 输出 1,420 tok');
+  });
+
+  /**
+   * **第一行的格序**（用户 2026-10-07 口径）：状态 → 用量（输入 · 缓存 · 输出）→ 耗时 → **轮次**。
+   * 轮次原先排在用量前面，把「这一次用了多少」那一串读断；它是「跑了几轮」这个过程读数，故排末尾。
+   *
+   * 判据取**行文本里的位置**（`indexOf`），不数 DOM 下标：格子的元素类型会变（`Flex` / `Text`），
+   * 而读者看到的是那一行字的先后。
+   */
+  it('格序：用量 → 耗时 → 轮次（轮次排在末尾）', () => {
+    render(<AgentLogFactsBar facts={facts()} waitingSince={null} />);
+
+    const text = screen.getByTestId('agent-log-facts-bar').textContent ?? '';
+    const input = text.indexOf('输入');
+    const duration = text.indexOf('耗时');
+    const turns = text.indexOf('轮次');
+
+    expect(input, '用量那一格不在行里').toBeGreaterThanOrEqual(0);
+    expect(duration, '耗时不在用量之后').toBeGreaterThan(input);
+    expect(turns, '轮次没有排在末尾（它不再是用量前面那一格）').toBeGreaterThan(duration);
+  });
+
+  it('facts.domain 不再由本件渲染（它自占一行，见 agent-log-domain-facts.test.tsx）', () => {
+    const { container } = render(<AgentLogFactsBar facts={facts()} waitingSince={null} />);
+
+    expect(container.querySelector('[data-testid="agent-log-domain-facts"]')).toBeNull();
   });
 
   it('错误格：有错误时可见，没有时整格不出现', () => {
@@ -155,123 +181,6 @@ describe('AgentLogFactsBar', () => {
     expect(screen.getByTestId('agent-log-facts-tokens').textContent).not.toContain('思考');
   });
 
-  it('facts.domain 按数据层给的顺序照画；空数组时这一行不出现', () => {
-    const domain = [
-      {
-        id: 'diff',
-        label: '改动',
-        value: '3 个文件 +12 −3',
-        segments: [
-          { text: '3 个文件 ' },
-          { text: '+12', tone: 'insertion' as const },
-          { text: ' −3', tone: 'deletion' as const },
-        ],
-      },
-      {
-        id: 'score',
-        label: '评分',
-        value: '8/10',
-        tone: 'success' as const,
-        hint: '评分模型：deepseek-chat',
-        hintSegments: [{ text: '评分模型：' }, { text: 'deepseek-chat', tag: true as const }],
-      },
-    ];
-    const { rerender } = render(<AgentLogFactsBar facts={facts({ domain })} waitingSince={null} />);
-
-    const row = screen.getByTestId('agent-log-facts-domain');
-    expect(screen.getByText('改动')).toBeInTheDocument();
-    expect(screen.getByText('+12')).toBeInTheDocument();
-    expect(screen.getByText('−3')).toBeInTheDocument();
-    expect(screen.getByText('评分')).toBeInTheDocument();
-    expect(screen.getByText('8/10')).toBeInTheDocument();
-    const text = row.textContent ?? '';
-    expect(text.indexOf('改动')).toBeLessThan(text.indexOf('评分'));
-
-    rerender(<AgentLogFactsBar facts={facts({ domain: [] })} waitingSince={null} />);
-    expect(screen.queryByTestId('agent-log-facts-domain')).toBeNull();
-  });
-
-  /**
-   * 改动那一格的画法（2026-10-07 用户口径）：**按 git stat 重排**——文件数次要色 + `+N` 绿 + `−N` 红，
-   * 且**外面不再套 Tag**（套一枚徽标等于把这行数字框成一整块，正是要去掉的那个观感）。
-   *
-   * 颜色判据用**自定义 token**（同 `json-text.test.tsx`）：写死字面量——哪怕是当前默认值——都会红；
-   * 归一化那一步不能省，jsdom 会把 `#234567` 序列化成 `rgb(35, 69, 103)`。
-   */
-  it('改动那一格按 git stat 上色（+N 绿 / −N 红，都取自 antd token），且整格没有 Tag', () => {
-    const custom = { colorSuccess: '#234567', colorError: '#345678' };
-    const domain = [
-      {
-        id: 'diff',
-        label: '改动',
-        value: '3 个文件 +12 −3',
-        segments: [
-          { text: '3 个文件 ' },
-          { text: '+12', tone: 'insertion' as const },
-          { text: ' −3', tone: 'deletion' as const },
-        ],
-      },
-    ];
-    render(
-      <ConfigProvider theme={{ token: custom }}>
-        <AgentLogFactsBar facts={facts({ domain })} waitingSince={null} />
-      </ConfigProvider>,
-    );
-    const probe = (color: string): string => {
-      const element = document.createElement('span');
-      element.style.color = color;
-      return element.style.color;
-    };
-
-    expect(screen.getByText('+12').style.color).toBe(probe(custom.colorSuccess));
-    expect(screen.getByText('−3').style.color).toBe(probe(custom.colorError));
-    // 「3 个文件」是次要色：整段外面是 antd 的 secondary `Text`（不是自己调一个灰）
-    expect(screen.getByText('+12').parentElement?.className).toContain('ant-typography-secondary');
-    expect(screen.getByTestId('agent-log-facts-domain').querySelectorAll('.ant-tag')).toHaveLength(0);
-  });
-
-  /**
-   * 提示里的模型名（2026-10-07 用户口径：**用 blue 的 Tag 染色**）：`hintSegments` 里 `tag: true`
-   * 的那一段画成 Tag，其余文字仍是次要色；而值那一格该是色档 Tag 就还是色档 Tag（两枚 Tag 各归各位）。
-   */
-  it('提示里的模型名画成蓝 Tag，值那一格的色档 Tag 不受影响', () => {
-    const domain = [
-      {
-        id: 'score',
-        label: '评分',
-        value: '8/10',
-        tone: 'success' as const,
-        hint: '评分模型：deepseek-chat',
-        hintSegments: [{ text: '评分模型：' }, { text: 'deepseek-chat', tag: true as const }],
-      },
-    ];
-    const { container } = render(<AgentLogFactsBar facts={facts({ domain })} waitingSince={null} />);
-
-    expect(screen.getByText('deepseek-chat').closest('.ant-tag')).toHaveClass('ant-tag-blue');
-    expect(screen.getByText('8/10').closest('.ant-tag')).toHaveClass('ant-tag-success');
-    expect(container.querySelectorAll('[data-testid="agent-log-facts-domain"] .ant-tag')).toHaveLength(2);
-  });
-
-  /**
-   * 结束原因的 Tag 色档（2026-10-07 用户口径）。这些词是**我们编排层**结算时写下的账，
-   * 其中六个与行状态同一个处境 ⇒ 颜色直接取 `ROW_STATUS_COLORS`（`completed` = 「已评分」那一档）；
-   * 没见过的词退回 `default`——不替未知编一个颜色。
-   */
-  it('结束原因按语义染色；没见过的词退回默认色', () => {
-    const exitTag = (): HTMLElement => screen.getByTestId('agent-log-facts-exit').querySelector('.ant-tag') as HTMLElement;
-    const { rerender } = render(<AgentLogFactsBar facts={facts({ exitReason: 'completed' })} waitingSince={null} />);
-    expect(exitTag()).toHaveClass('ant-tag-success');
-
-    rerender(<AgentLogFactsBar facts={facts({ exitReason: 'error' })} waitingSince={null} />);
-    expect(exitTag()).toHaveClass('ant-tag-error');
-
-    rerender(<AgentLogFactsBar facts={facts({ exitReason: 'canceled' })} waitingSince={null} />);
-    expect(exitTag()).toHaveClass('ant-tag-orange');
-
-    rerender(<AgentLogFactsBar facts={facts({ exitReason: '这不是一个我们写过的词' })} waitingSince={null} />);
-    expect(exitTag()).toHaveClass('ant-tag-default');
-  });
-
   it('status.label 照数据给的渲染；只有 tone === running 才带动效', () => {
     const { container, rerender } = render(
       <AgentLogFactsBar facts={facts({ status: { tone: 'running', label: '执行中' } })} waitingSince={null} />,
@@ -293,15 +202,17 @@ describe('AgentLogFactsBar', () => {
     expect(screen.queryByTestId('agent-log-facts-waiting')).toBeNull();
   });
 
-  it('轮次与结束原因：total 为 null 时只说当前值，结束原因为 null 时整格不出现', () => {
-    const { rerender } = render(
-      <AgentLogFactsBar facts={facts({ turns: { current: 3, total: null }, exitReason: 'completed' })} waitingSince={null} />,
-    );
-    expect(screen.getByTestId('agent-log-facts-turns')).toHaveTextContent('轮次 3 轮');
-    expect(screen.getByTestId('agent-log-facts-exit')).toHaveTextContent('结束原因 completed');
+  /**
+   * 两条口径合一条（用户 2026-10-07）：
+   *   · 轮次 `total` 为 `null` 时只说当前值——不编一个自己会走动的分母；
+   *   · **「结束原因」这一格不再存在**：删掉字段与那一格之后，页面上不该再有它的痕迹。
+   */
+  it('轮次：total 为 null 时只说当前值；「结束原因」这一格不再出现', () => {
+    render(<AgentLogFactsBar facts={facts({ turns: { current: 3, total: null } })} waitingSince={null} />);
 
-    rerender(<AgentLogFactsBar facts={facts({ exitReason: null })} waitingSince={null} />);
+    expect(screen.getByTestId('agent-log-facts-turns')).toHaveTextContent('轮次 3 轮');
     expect(screen.queryByTestId('agent-log-facts-exit')).toBeNull();
+    expect(screen.queryByText(/结束原因/)).toBeNull();
   });
 
   it('内容被截断时如实显示那句话；null 时什么都不显示', () => {

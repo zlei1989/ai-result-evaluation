@@ -555,8 +555,8 @@ describe('readClaudeSubagentUsage：同步流式 + 同版本不重复解析（sp
 
 /**
  * ⚠️ **「逐行读取」那一层的守卫已搬到共用模块的用例里**（2026-10-06）：
- * 分块读与跨块多字节还原现在住在 `packages/server/agents/src/read-lines.ts`，codex 的转录读盘
- * 也用它（并多了一条 `offset` 续读的判据）⇒ 守卫跟着实现走，见 `src/read-lines.test.ts`。
+ * 分块读与跨块多字节还原现在住在 `packages/server/agents/src/read-lines.ts`（今天只有 claude
+ * 这条读盘路径用它；codex 自 app-server 改造后只走协议取数）⇒ 守卫跟着实现走，见 `src/read-lines.test.ts`。
  */
 
 /**

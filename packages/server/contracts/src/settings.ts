@@ -14,6 +14,12 @@ export type ThemeMode = z.infer<typeof ThemeModeSchema>;
 export const DefaultJudgeSchema = z.object({
   providerId: z.string().min(1),
   modelId: z.string().min(1),
+  /**
+   * 评分时**要求**的思考强度档位（可选）。缺省 = 未指定 ⇒ 一个强度键都不加（网关默认）。
+   * 它的可选域由「模型声明 ∩ 评分智能体域」决定（`contracts/src/effort.ts`），
+   * 存的是**上游词汇原样**（关闭档就是 `off`）。
+   */
+  effort: z.string().min(1).optional(),
 });
 
 export const SettingsSchema = z.object({
@@ -29,7 +35,10 @@ export const SettingsSchema = z.object({
    *
    * 注意这里**没有**「单行超时」这一格了（用户口径，2026-09-28）：执行与评分都不限时间，
    * 一行只会因为「跑完 / 失败 / 用户点终止」结束。旧 `config.json` 里多出来的 `rowTimeoutMs`
-   * 由 zod 的默认行为**丢弃**（对象 schema 会 strip 未知键），因此不需要迁移脚本。
+   * 在读盘时就被丢掉——**丢键的不是本 schema**：`loadConfig` 故意不做 schema 校验（一条手改坏的
+   * 值不该让设置页打不开），它按 `SETTINGS_DEFAULTS` 的键表过滤（多出来的键丢掉，见 core 的
+   * `normalizeSettings`）。本 schema 的 strip 语义只在**本文件被 `parse` 时**生效（契约测试走的
+   * 正是那条路）。两条路径都不会把旧键带进运行时，故**不需要迁移脚本**。
    */
   diffBudgetBytes: z.number().int().positive(),
 });

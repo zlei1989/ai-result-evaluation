@@ -3,7 +3,7 @@
  * dsh 适配器：环境变量注入（保留尾部 /v1 + 显式 API key）、终止必然走第二段（5 秒 → WARN → 关闭运行时）、
  * 实测回写后的用量提取、加载降级。
  * dsh 是「非合作适配器」的真实样本：cancelMidTurn 为 false、interrupt() 是刻意空实现，所以它的终止
- * 路径 100% 会经过 §5.6.5 的第二段——这条用例同时是那段兜底逻辑的真实性证明。
+ * 路径 100% 会经过 §5.6.6 的第二段——这条用例同时是那段兜底逻辑的真实性证明。
  * 「在途通知消费被终结」这一格在 dsh 上是**可达且可钉**的：真实 `NotificationSubscription.close()`
  * 会 reject 挂起的等待者（见夹具 `createFakeDshSdk` 的 JSDoc），所以这里连 `recorder.order` 一起钉住，
  * 而不是像 codex 那样只登记能力边界。
@@ -177,7 +177,7 @@ describe('dshProvider', () => {
    *
    * 为什么这条必须存在：SDK 的 `initializeTimeoutMs` 默认 **10s**（`launch.d.ts` 的
    * `DEFAULT_INITIALIZE_TIMEOUT_MS = 10000`），而本适配器每次都跑在**全新的 `configHome`** 上
-   *（§5.6.4 不变量 3）⇒ 每次都是冷启动。实测：默认值下两条协议**双双**
+   *（§5.6.5 不变量 3）⇒ 每次都是冷启动。实测：默认值下两条协议**双双**
    * `initialize timed out after 10000ms waiting for dsh profile "sdk"`，被折成 `AGENT_FAILED`，
    * 界面上只看到「这一行失败了」。变异体验证：删掉 `startDsh` 里这一行 ⇒ 本用例变红（`undefined`）。
    */
@@ -212,26 +212,22 @@ describe('dshProvider', () => {
     expect(recorder.env?.DSH_PERMISSION_MODE).toBe('read-only');
   });
 
-  it('收到 outputSchema ⇒ 报中文错且**不构造运行时**（纵深防御：悄悄忽略才是缺陷）', async () => {
-    // 第二道防线（第一道在编排层：它按注册表能力决定不传这个字段）。协议来自公开类型 `AgentRunInput`：
-    // 谁都能构造一条带 `outputSchema` 的输入喂给 dsh，而 dsh 的 SDK 客户端没有 schema 入参 ⇒
-    // 悄悄忽略会让调用方以为「已经强约束」，实际什么都没发生——那正是本仓最忌讳的「看起来做到了」。
+  it('收到 outputSchema ⇒ **降级**跑完：不发 schema，结果记 applied.structuredOutput=false', async () => {
+    // A1 起口径反转（spec D12）：`outputSchema` 表达的是「我想要」，支不支持由骨架按
+    // `capability.structuredOutput` 统一处置——`run` 把 dsh 那一格 `false` 转发给 `runTurn`，
+    // 骨架在 `start` 之前就把这一格摘掉了，所以走到适配器时它必定不存在。
+    // 这里**曾经**断言「报中文错且不构造运行时」（第二道防线）：那条口径会让一次本来就能跑的评分
+    // 直接失败，而「降级为提示词契约」才是没有 schema 通道的这一家该有的收场。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
 
-    // 注意**不能**用 `.catch()` 取错误：守卫在 `startDsh` 里，而骨架承诺「永不抛」，
-    // 它把 start 抛出的异常折进结果（`turn.ts` 的 `catch (cause)`）——所以错误在 `result.error` 上。
     const result = await dshProvider.run(createRunInput({ outputSchema: { type: 'object' } }));
 
-    expect(result.ok).toBe(false);
-    expect(result.exitReason).toBe('error');
-    expect(result.error?.code).toBe('AGENT_FAILED');
-    expect(result.error?.message).toContain('不支持结构化输出');
-    // `recorder.options` 是 `new DeepSeekHarness(options)` 的记录点（夹具 `agent-fixtures.ts:526`）：null = 构造函数
-    // 一次都没被调用。这比「没 spawn」更直接：连厂商 SDK 都不该被加载（守卫在 `loadDshSdk()` 之前）。
-    expect(recorder.options).toBeNull();
-    expect(recorder.prompt).toBeNull(); // 没进到交提示词那一步
-    expect(recorder.closeCount).toBe(0); // 没有「被关闭的对象」就不该有任何关闭动作
+    expect(result).toMatchObject({ ok: true, exitReason: 'completed' });
+    expect(result.applied).toEqual({ structuredOutput: false });
+    // 降级不是失败：运行时照常构造、照常释放（与下面「显式 null」那一格同一收场）
+    expect(recorder.options).not.toBeNull();
+    expect(recorder.closeCount).toBe(1);
   });
 
   it('outputSchema 显式为 null ⇒ 与「没给」同义：不报错，按「不支持结构化输出」正常跑完', async () => {
@@ -407,7 +403,7 @@ describe('dshProvider', () => {
     const result = await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 10 });
     expect(result.exitReason).toBe('canceled');
     expect(result.error?.code).toBe('AGENT_CANCELED');
-    // 先钉「可见信号」（§5.6.5：非合作的适配器必须可见，不能静默），再钉计数——
+    // 先钉「可见信号」（§5.6.6：非合作的适配器必须可见，不能静默），再钉计数——
     // 与 codex 的同类用例同一顺序，也让「第二段没跑」这类变异体红在最有信息量的那条断言上
     const warn = events.find((event) => event.type === 'log' && event.text.includes('[WARN]'));
     expect(warn?.type === 'log' ? warn.text : '').toContain(`${RELEASE_GRACE_MS / 1000} 秒`);

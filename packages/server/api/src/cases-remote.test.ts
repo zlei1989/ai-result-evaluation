@@ -105,7 +105,7 @@ describe('validateRepo（远端来源）', () => {
    *
    * 修复前的形状：镜像 HEAD 停在 main（`fetch --prune` 只剪 ref、不刷新 HEAD，本机 git 2.47 实测），
    * 而 main 已经被剪掉 ⇒ 校验以「无法解析远端默认分支：main」失败——一份完好的仓库被判成不可用，
-   * 而且产品里没有任何出路（见 core 的 mirror.test.ts 里那条自愈用例）。
+   * 而且产品里没有任何出路（见 core 的 `mirror-ref.test.ts` 里那条自愈用例）。
    */
   it('远端默认分支改名（旧分支被删）后校验照样通过：报出新默认分支与它的 tip', () => {
     const origin = makeRemoteOrigin('remote-default-renamed');

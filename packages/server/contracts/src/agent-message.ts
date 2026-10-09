@@ -363,9 +363,10 @@ export const SubagentRecordSchema = z.object({
    * 少了这一格，界面就只能靠「工具名像不像派发工具 + 任务名逐字相同」这类启发式去猜派发点，
    * 而猜不中时的表现是**整棵子任务在界面上不可达**（真机实测 2026-10-03：claude 的
    * 子任务记录与消息都在文件里，主会话时间轴上却没有「进入子任务」的入口）。
-   * 三家都给得出：claude 用 `task_progress.tool_use_id`（与子消息上的 `parent_tool_use_id`、
-   * 派发工具调用的 `id` 三者同值）；dsh 用 `subagent` 工具调用的 `callId`；
-   * codex 用 `collab_tool_call` 的 `call_id`。**给不出时记 `null`，不猜。**
+   * claude 与 codex 都给得出：claude 用 `task_progress.tool_use_id`（与子消息上的
+   * `parent_tool_use_id`、派发工具调用的 `id` 三者同值）；codex 用 `collab_tool_call` 的条目 id。
+   * ⚠️ **dsh 给不出**（载荷里没有可对齐的调用 id）⇒ 这一格**恒 `null`**，界面因此退化为
+   * 「派发工具入参里的任务名 == 子任务名」逐字相同才认派发点。**给不出时记 `null`，不猜。**
    */
   parentCallId: z.string().nullable(),
   /** 嵌套父链；顶层子任务为 `null` */

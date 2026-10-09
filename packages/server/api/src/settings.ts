@@ -1,9 +1,11 @@
 /**
  * 应用设置服务：读时归一化、写时按需校验。
- * 两个口径：
+ * 三个口径：
  *   1. 下行的 workspaceRoot **恒为绝对路径**——`~` 只在配置文件里作为可读的写法，
  *      到了客户端一律展开，避免每个消费方各自处理 `~`；
- *   2. 只有**改动 workspaceRoot 时**才做磁盘校验——改主题不该去动磁盘。
+ *   2. 只有**改动 workspaceRoot 时**才做磁盘校验——改主题不该去动磁盘；
+ *   3. `saveConfig` 抛的裸 errno 折成可直接展示的中文 `INTERNAL`（见 `updateSettings` 的 catch，
+ *      否则路由层会把 errno 原文返回给用户）。
  */
 import { ServiceError, SETTINGS_DEFAULTS, type Settings, type SettingsPatch } from '@aieval/contracts';
 import { getConfigDir, loadConfig, resolveRootForRead, saveConfig, validateWorkspaceRoot } from '@aieval/core';

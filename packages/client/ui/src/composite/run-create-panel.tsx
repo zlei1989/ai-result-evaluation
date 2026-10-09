@@ -76,6 +76,15 @@ interface RunCreatePanelBaseProps {
   /** 按智能体取候选池；返回空数组即「该智能体没有可用的模型」 */
   modelOptionsFor: (agentKind: AgentKind) => RunModelOption[];
   /**
+   * 「未选档位」时该家实际会用的档（`AgentOptionGroup.defaultEffort` 的投影）。
+   *
+   * **可选**：不给（老调用方 / 元数据还没到）或返回 `undefined`（这家不声明，如 Claude Code /
+   * Codex 由厂商推断）时，占位符只说「未指定」——**不编一个档出来**（那是替厂商承诺）。
+   * 给这一格的用处：把「未指定」的后果说清（用户 2026-10-06 口径），且厂商名与档位都由
+   * `AGENT_LABELS` + 这一格拼装，UI 里不写死「（dsh 用 high）」这种缩写与第二份真源。
+   */
+  defaultEffortOf?: (agentKind: AgentKind) => string | undefined;
+  /**
    * 设置页是否配了默认评分智能体。`false` 且开关打开时给内联 Alert ——
    * 否则要等候选 agent 跑完几分钟之后才在评分步骤炸（与「模型池为空」同一条口径：
    * 不要让人选完到运行时才失败）。不传（`undefined`）时不提示：未知不等于没配。
@@ -239,11 +248,12 @@ const CANDIDATE_COLUMN_WIDTH = { agent: 130, effort: 120, actions: 80 } as const
  * `width` + `minWidth: 100%` 落到表格上、并把 `table-layout` 切成 `fixed`，溢出变成**表格内部**
  * 的横向滚动，`position: sticky` 的固定列也才有意义。
  *
- * 636 = 三列宽（130 / 120 / 80，见上）+ 模型列 272。**模型列是唯一不给宽度的列**（它吃剩余宽度），
- * 272 是它在真机上「模型名 + 供应商名 + 来源 Tag + 窗口 Tag」还能看的下限（实测这三个片段在默认
- * 密度下约 302px，差的那一点由供应商名 / 模型名自己的省略号吸收）。也就是说 636 是**坏掉与没坏掉
- * 的分界**：≥636 时四列全都看得见、不滚（表格按 `minWidth: 100%` 铺满容器，多出来的宽度按比例分给
- * 各列），<636 时横向滚动、首列与操作列留在两侧。这个数只由真机冒烟记录看着（同下条 ⚠️）。
+ * 636 = 三列宽（130 / 120 / 80，见上）+ 模型列 306（**差值即模型列在最小表宽下的可用宽度**）。
+ * **模型列是唯一不给宽度的列**（它吃剩余宽度），而 306 已经盖住它在真机上「模型名 + 供应商名 +
+ * 来源 Tag + 窗口 Tag」所需的宽度（实测这三个片段在默认密度下约 302px，差的那一点由供应商名 /
+ * 模型名自己的省略号吸收）。也就是说 636 是**坏掉与没坏掉的分界**：≥636 时四列全都看得见、不滚
+ * （表格按 `minWidth: 100%` 铺满容器，多出来的宽度按比例分给各列），<636 时横向滚动、首列与操作列
+ * 留在两侧。这个数只由真机冒烟记录看着（同下条 ⚠️）。
  */
 const CANDIDATE_TABLE_MIN_WIDTH = 636;
 
@@ -254,6 +264,29 @@ const CANDIDATE_TABLE_MIN_WIDTH = 636;
  * 本表靠单元格自己的内边距分隔，不靠这个外边距。
  */
 const CELL_ITEM_STYLE = { marginBottom: 0 } as const;
+
+/**
+ * 「思考强度」的占位符（清空态的唯一一句话，spec D14 禁了预选 ⇒ 它必须把语义说清，2026-10-06 口径）。
+ *
+ * 三档，判据只有两条：
+ *   · 这一家**声明了**未选时会落的档（`defaultEffort`，今天只有 DeepSeek Harness 的 `high`）
+ *     ⇒ 说出厂商名与那个档——厂商名取 `AGENT_LABELS`（**全名**，不是 `dsh` 这种 id）、档位取元数据，
+ *     两处都不写死在文案里（写死就是第二份真源：厂商名或缺省档改了，这句会静默说错）；
+ *   · 没声明（Claude Code / Codex 不传档位，由厂商推断；或元数据还没到）⇒ **只说「未指定」**。
+ *     **不填一个「厂商默认档」**：那句承诺不是我们作出的（契约明说未选不是「沿用厂商默认档」）。
+ *
+ * 单独导出成纯函数（同 `matchCaseTitle`）：三档文案都要能**直接**测到，而组件层只能从
+ * Select 的 `textContent` 里反推。
+ */
+export function effortPlaceholder(
+  agentKind: AgentKind | undefined,
+  defaultEffortOf: ((agentKind: AgentKind) => string | undefined) | undefined,
+): string {
+  if (agentKind === undefined || defaultEffortOf === undefined) return '未指定';
+  const defaultEffort = defaultEffortOf(agentKind);
+  if (defaultEffort === undefined) return '未指定';
+  return `未指定（${AGENT_LABELS[agentKind]} 用 ${defaultEffort}）`;
+}
 
 /**
  * 这次保存会作废哪些行（保存前确认框的内容，也是它「不该弹时不弹」的判据）。
@@ -284,6 +317,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
   const {
     cases,
     modelOptionsFor,
+    defaultEffortOf,
     judgeAgentConfigured,
     saving,
     onSubmit,
@@ -659,9 +693,10 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                               allowClear
                               // 不预选推荐档（spec D14）：预选会让「我没选过」与「我选了推荐档」在快照里长得一样。
                               // 「未指定」是**清空态**，所以它只能由 placeholder 承担；2026-10-06：这句话要说清
-                              // 未选**不是**「沿用厂商默认档」——dsh 走自家缺省 `high`，claude / codex 不传、
-                              // 由厂商推断；要关闭必须显式选下面那个 `off`。
-                              placeholder="未指定（dsh 用 high）"
+                              // 未选**不是**「沿用厂商默认档」——哪一家会落到自家的哪个缺省档由元数据给
+                              // （`effortPlaceholder`），其余家不传档位、由厂商推断；要关闭必须显式选
+                              // 下面那个 `off`。
+                              placeholder={effortPlaceholder(row.agentKind, defaultEffortOf)}
                               // 强度选项**只列服务端算好的候选**（spec D10）：上游档位原样列出来会让
                               // 不支持的组合到运行时才炸（dsh 侧是硬报错），而就近取整是静默改语义。
                               // 2026-10-06：该候选恒含关闭档 `off` 且保证它排第一；档位文案一律照上游

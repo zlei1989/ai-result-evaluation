@@ -7,7 +7,7 @@
  * 而不是 HTTP 客户端的行为——p4 的评分器与 p2 的「AI 生成」都依赖这份接线完全一致。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ServiceError, type ProtocolType } from '@aieval/contracts';
+import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
 import { TEXT_API_RETRY, callTextApi, callTextApiConversation, type TextRoute } from './text-api';
 
 /** 造一个 fetch 响应（只需要 ok / status / json / text 四个成员） */
@@ -415,7 +415,8 @@ describe('callTextApi —— 上游正文只进 context 与服务端日志，绝
 describe('callTextApiConversation —— 多轮对话', () => {
   it('OpenAI：对话按顺序进 messages，system 仍在最前', async () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '修好了' } }] }));
-    const text = await callTextApiConversation(route('openai'), {
+    // 多轮入口交出的是 `{ text, usage }`（2026-10-08 起）：这一条只看正文，用量另有专门一组用例
+    const { text } = await callTextApiConversation(route('openai'), {
       system: '只输出 JSON',
       messages: [
         { role: 'user', content: '给个分' },
@@ -459,6 +460,180 @@ describe('callTextApiConversation —— 多轮对话', () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [] }));
     await expect(callTextApiConversation(route('openai'), { messages: [] })).rejects.toThrow(/一条消息都没有/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 多轮入口把**这一次调用自己的用量**一起交出来（2026-10-08）：评分详情要回答「这一分是谁花的、
+ * 花了多少」，而那份数据只能从响应体里读——读侧没法事后补采（响应体早就扔了）。
+ *
+ * 四类判据缺一不可：
+ *   ① **归一**：本仓的三元组里 `input` 是「非缓存输入」（与 `UsageTokensSchema` 同一条口径），
+ *      而 OpenAI 的 `prompt_tokens` 是**总量**（含命中）⇒ 必须减掉 `cached`；Anthropic 的
+ *      `input_tokens` 本来就不含缓存读 ⇒ **不许**减（两边各减一次就是把 Anthropic 的数算小）；
+ *   ② **两种缓存字段名都要认**：OpenAI 格式在 DeepSeek 上是 `prompt_cache_hit_tokens`，
+ *      在官方 OpenAI 上是 `prompt_tokens_details.cached_tokens`——只认一个，另一家就永远报 0 缓存；
+ *   ③ **没采到 = `null`，绝不填 0**（`tokens: {0,0,0}` 会被读成「这一分一个 token 都没花」）；
+ *   ④ 单轮入口的形状不变（仍是正文一个字符串）：p2 的「生成 / 识别」那条通路不记账。
+ */
+describe('callTextApiConversation —— 用量随结果一起交出来', () => {
+  it('OpenAI：prompt_tokens 减掉命中，cached 取 prompt_tokens_details.cached_tokens', async () => {
+    stubFetch(
+      jsonResponse({
+        choices: [{ message: { content: '答案' } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40 } },
+      }),
+    );
+
+    const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+
+    expect(result.text).toBe('答案');
+    expect(result.usage).toEqual({ input: 60, cached: 40, output: 20 });
+  });
+
+  it('OpenAI：认 DeepSeek 原文的 prompt_cache_hit_tokens（另一种缓存字段名）', async () => {
+    stubFetch(
+      jsonResponse({
+        choices: [{ message: { content: '答案' } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_cache_hit_tokens: 70 },
+      }),
+    );
+
+    const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+
+    expect(result.usage).toEqual({ input: 30, cached: 70, output: 20 });
+  });
+
+  it('Anthropic：input_tokens 不减（它本来就不含缓存读）', async () => {
+    stubFetch(
+      jsonResponse({
+        content: [{ type: 'text', text: '答案' }],
+        usage: { input_tokens: 12, cache_read_input_tokens: 340, output_tokens: 7 },
+      }),
+    );
+
+    const result = await callTextApiConversation(route('anthropic'), { messages: [{ role: 'user', content: '打分' }] });
+
+    expect(result.usage).toEqual({ input: 12, cached: 340, output: 7 });
+  });
+
+  it('没报缓存读时记 0（那是「这次没命中」，不是「这家不报用量」）', async () => {
+    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }], usage: { prompt_tokens: 9, completion_tokens: 3 } }));
+
+    const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+
+    expect(result.usage).toEqual({ input: 9, cached: 0, output: 3 });
+  });
+
+  it('响应里没有 usage / 缺必填格 ⇒ usage 为 null（绝不填 0）', async () => {
+    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }] }));
+    const missing = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+    expect(missing.usage).toBeNull();
+
+    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }], usage: { prompt_tokens: 9 } }));
+    const partial = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+    expect(partial.usage).toBeNull();
+  });
+
+  it('上游自相矛盾（命中数大于 prompt 总量）⇒ 整格 null，不减出一个负数输入', async () => {
+    stubFetch(
+      jsonResponse({
+        choices: [{ message: { content: '答案' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, prompt_cache_hit_tokens: 40 },
+      }),
+    );
+
+    const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
+
+    // 这条不是「上游很罕见地报错」：`input` 一旦是负数，界面上会出现 `输入 -30 tok`，
+    // 而读数越界时正确的处置与「没采到」一样——交 null，别把脏值画出去
+    expect(result.usage).toBeNull();
+  });
+
+  it('单轮入口的形状不变（p2 的生成 / 识别仍只拿正文）', async () => {    stubFetch(jsonResponse({ choices: [{ message: { content: '生成结果' } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
+
+    await expect(callTextApi(route('openai'), { prompt: '写个 LRU' })).resolves.toBe('生成结果');
+  });
+});
+
+/**
+ * 思考强度的**唯一落点**（spec §5.2，2026-10-07）：文本通路只有这一张协议表，
+ * 而单轮与多轮共用 `buildBody` ⇒ 强度也必须加在那一处，否则「单轮能跑、多轮没强度」这类漂移
+ * 只在一条路径上出现。三档 × 两协议：
+ *   · **未指定 = 一个强度键都不加**（不是关闭）：把决定权交给网关的缺省。⚠️ 这与智能体侧
+ *     `EvalRow.effort` 的「未选」**不等强、不要互相引用**：那边是走该家适配器自己的缺省
+ *     （dsh 会落到 `high`），是**我们这一侧**做的决定，而这里是不下发、由网关定
+ *     （口径见 `contracts/src/run.ts` 的 `EvalRow.effort` 与 `text-api.ts` 的 `reasoningFields`）；
+ *   · `off` = 显式关闭（两协议都是 `thinking: { type: 'disabled' }`）；
+ *   · 其它档 = 按协议翻成 `reasoning_effort`（openai）/ `output_config.effort`（anthropic）。
+ *
+ * 断言一律读**真实请求体**（`callArgs` + `JSON.parse(init.body)`），而不是「我们调了哪个助手」——
+ * 强度是 wire 上的字段，请求体就是唯一的事实来源。前六条走单轮入口（`callTextApi` 会把
+ * `effort` 透进它构造的那个 `TextConversationInput`），第七条走多轮入口（它把入参原样交给同一个内核）。
+ * 下面两个工厂只是 `jsonResponse` 的夹具（沿用文件既有手法），不含任何断言逻辑。
+ */
+describe('思考强度落进请求体（唯一一份协议表）', () => {
+  const okOpenAI = (): Response => jsonResponse({ choices: [{ message: { content: 'ok' } }] });
+  const okAnthropic = (): Response => jsonResponse({ content: [{ type: 'text', text: 'ok' }] });
+
+  it('openai：未指定（整格不传）⇒ 既没有 reasoning_effort 也没有 thinking', async () => {
+    const fetchMock = stubFetch(okOpenAI());
+    await callTextApi(route('openai'), { prompt: 'x' });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it('anthropic：未指定（整格不传）⇒ 既没有 output_config 也没有 thinking', async () => {
+    const fetchMock = stubFetch(okAnthropic());
+    await callTextApi(route('anthropic'), { prompt: 'x' });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('output_config');
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it('openai：普通档走 reasoning_effort（不带 thinking）', async () => {
+    const fetchMock = stubFetch(okOpenAI());
+    await callTextApi(route('openai'), { prompt: 'x', effort: 'max' });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ reasoning_effort: 'max' });
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it('openai：off 走 thinking.disabled（**不是** reasoning_effort: off）', async () => {
+    const fetchMock = stubFetch(okOpenAI());
+    await callTextApi(route('openai'), { prompt: 'x', effort: EFFORT_OFF });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ thinking: { type: 'disabled' } });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('anthropic：普通档走 output_config.effort（不带 thinking）', async () => {
+    const fetchMock = stubFetch(okAnthropic());
+    await callTextApi(route('anthropic'), { prompt: 'x', effort: 'max' });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ output_config: { effort: 'max' } });
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it('anthropic：off 走 thinking.disabled（**不是** output_config: off）', async () => {
+    const fetchMock = stubFetch(okAnthropic());
+    await callTextApi(route('anthropic'), { prompt: 'x', effort: EFFORT_OFF });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ thinking: { type: 'disabled' } });
+    expect(body).not.toHaveProperty('output_config');
+  });
+
+  it('多轮入口同样带强度（它与单轮共用 buildBody，是同一个落点）', async () => {
+    const fetchMock = stubFetch(okAnthropic());
+    await callTextApiConversation(route('anthropic'), {
+      messages: [{ role: 'user', content: '给个分' }],
+      effort: 'high',
+    });
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ output_config: { effort: 'high' } });
+    // 强度是**顶层**参数，不许混进对话消息里
+    expect(body.messages).toEqual([{ role: 'user', content: '给个分' }]);
   });
 });
 

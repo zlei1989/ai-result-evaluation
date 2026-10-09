@@ -59,7 +59,7 @@ describe('resolveRemoteRef', () => {
     expect(resolveRemoteRef(dir, origin.url, { branch: null, commitHash: hashOf(origin, 'main') })).toBe(hashOf(origin, 'main'));
     // 但「跟随分支 / 默认分支」要求新鲜度，来源不可达时必须抛（RG10：绝不静默沿用旧镜像）。
     // 码是 NOT_A_GIT_REPO 而不是 REPO_UNREACHABLE：移走的 file:// 路径在 git 原文里是
-    // `does not appear to be a git repository`，spec §8.1 把它归成「远端不存在」，
+    // `does not appear to be a git repository`，spec §4.5 把它归成「远端不存在」，
     // 处置是改地址而不是查网络（REPO_UNREACHABLE 的覆盖在 fetchMirror / classifyRemoteFailure 那两处）
     expect(codeOf(() => resolveRemoteRef(dir, origin.url, { branch: null, commitHash: null }))).toBe('NOT_A_GIT_REPO');
     expect(codeOf(() => resolveRemoteRef(dir, origin.url, { branch: 'feat/x', commitHash: null }))).toBe('NOT_A_GIT_REPO');

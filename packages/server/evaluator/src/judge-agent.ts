@@ -16,14 +16,16 @@
  *      **绝不把 AGENT_* 折成 ServiceError**：它们不是 contracts 的 `ErrorCode`（errors.ts 只有 11 个，
  *      `STATUS_BY_CODE` 是 `Record<ErrorCode, number>`），硬折会逼着为它编造 HTTP 状态，
  *      而且会让「超时」与「答错了」在界面上长得一样；
- *   4. **`finalText === null` 不等于空答复**：前者是这一家没回传最终消息（比如适配器违约），
- *      后者是它明确回了空串——两种都要失败，但文案要能区分。三家在这一点上口径不一：
- *      codex 的 `readString` 会把空串存成 `''`，claude-code / dsh 把同一件事存成 `null`，
- *      故判据必须同时覆盖两者（见 `judgeRowByAgent` 里那条守卫）；
- *   5. **`ok` 判定先于读答复**：claude-code 的采集点在 `is_error` 分支**之前**，出错时 `finalText`
- *      里是厂商的错误文本而不是模型答复；先读它就会把「没问到」变成「答错了」。
- *      另外 `finalText` 只保证「采到过一段可读文本」，不保证是最后一条消息（dsh 的后续
- *      纯推理消息不会覆盖它）——所以这里只做「能不能解析成评分」的判断，不假设它的新鲜度。
+ *   4. **`finalText === null` 不等于空答复**：前者是这一家没回传最终消息（适配器违约），
+ *      后者是它明确回了空串——两种都要失败，但文案要能区分，故判据同时覆盖两者。
+ *      **「哪条消息算答复」由适配器归一**（`AgentRunResult.finalText` 的契约：主会话、已收尾、
+ *      非空；没采到记 `null`），一致性套件的「最终答复口径（§2.10）」逐家钉住 ⇒ 本层不需要知道
+ *      任何一家的采集点在哪，也不要在这里记各家的实现差异；
+ *   5. **`ok` 判定先于读答复**：适配器的契约是「`ok:false` 时 `finalText` 不保证是模型答复」
+ *      （某一家可能在自己的错误分支之前就采过一段文本，那里躺着的是厂商的错误文本）⇒
+ *      先读就会把「没问到」当成「答错了」。这是本层的**顺序契约**，与具体哪一家无关。
+ *      同理，`finalText` 只保证「采到过一段可读文本」，不保证是最后一条消息——这里只做
+ *      「能不能解析成评分」的判断，不假设它的新鲜度。
  */
 import {
   JUDGE_OUTPUT_CONTRACT,
@@ -78,11 +80,18 @@ export interface AgentJudgeInput {
   rubric: Rubric;
   taskPrompt: string;
   /**
-   * 结构化输出：由**编排层**按注册表能力决定给不给（`capability.structuredOutput`，spec D4）。
-   * 本模块只转发与记账，不做能力判断——「谁知道能力、谁决定」只有一个答案，写在编排层。
-   * 不给（`undefined`）时适配器一个字段都不加，行为与今天逐字相同。
+   * 结构化输出：**表达「我想要」**（A1）。能不能给由适配器按自己的能力决定，
+   * 骨架降级后在 `result.applied.structuredOutput` 里如实报——本模块**不做能力判断**，
+   * 也不读注册表（判据只有一个来源：结果里的 `applied`）。
    */
   outputSchema?: Record<string, unknown>;
+  /**
+   * 这一次评分要求的思考强度（来自 `settings.defaultJudge.effort`，由调用方读配置后传进来）。
+   * 与候选侧的 `AgentRunInput.effort` 同一条口径：**请求参数**，不是连接事实（`TextRoute` 上没有它）；
+   * 未指定 = 这一格不存在，由该家适配器自己兜底（dsh 会落到它的缺省档，见 `DSH_DEFAULT_EFFORT`）。
+   * 为什么是入参：本模块今天是纯入参的（不读配置、不碰落盘），读点只有 `resolveJudgeEffort()` 一个。
+   */
+  judgeEffort?: string;
   /**
    * **不再有 `timeoutMs`**（用户口径，2026-09-28「评分不限轮次和时间」）：适配器与外层兜底
    * 两处上限都删了，评审者跑到它自己收场为止，唯一的停止入口是 `signal`（用户点「终止」）。
@@ -171,6 +180,9 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
       // undefined」的格：条件展开之下「没给」在选项对象上就是**没有这个键**。这是写法上的事实，
       // 不是迁就某个消费者——仓内三家适配器都按值分支、夹具也无条件记录值，没有谁在读键的存在性。
       ...(input.outputSchema != null ? { outputSchema: input.outputSchema } : {}),
+      // 强度按需带（未给 = 这一格不存在，与候选执行同一条口径）：三家的 wire 翻译各自负责。
+      // 写法与理由都与上面那一格相同，不再重复一遍
+      ...(input.judgeEffort === undefined ? {} : { effort: input.judgeEffort }),
       prompt,
       route: input.route,
       signal: input.signal,
@@ -203,8 +215,9 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
 
   const raw = result.finalText;
   // 「没采到」与「空答复」都要失败，但成因不同、处置不同（换一家 / 补评分项），故文案必须分开。
-  // 判据同时覆盖 null 与空串：codex 把空串存成 ''，另两家存 null——`raw === null` 一个判据不够，
-  // 而 `!raw` 又会把两者混成一句话。trim 是因为只有空白字符的答复同样不可解析。
+  // 判据同时覆盖 null 与空串：三条通路都不该写空串（见各家 `project` 的守卫），但 `raw === null`
+  // 一条判据挡不住「适配器交了个空答复」这种违约形状，而 `!raw` 又会把两种成因混成一句话。
+  // trim 是因为只有空白字符的答复同样不可解析。
   if (raw === null || raw.trim() === '') {
     throw new ServiceError(
       'JUDGE_PARSE_FAILED',
@@ -236,10 +249,19 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     judgeProviderId: input.judgeProviderId,
     judgeModelId: input.route.modelId,
     judgeAgentKind: input.kind,
-    // 记账口径：记「我们传了 schema」，不假装知道上游有没有照做（spec §9 第 1 条）：
-    // 网关把那一格丢掉时模型照样回散文，而这一分**确实**是在「我们要求了 schema」的条件下拿到的。
-    // 判据与上面转发那一格同口径（`!= null`）：显式 `null` 等于「没给」，记成 `true` 会让这一分
-    // **声称**被 schema 约束，而实际一个字段都没传出去。
-    structuredOutput: input.outputSchema != null,
+    // 记账口径与上面那一格同源（两条通路各自表一次态）：记**调用方要求的**强度，
+    // 不记「适配器实际跑在哪个档」——三家对「未指定」的处置不同（dsh 落到自己的 `high`、
+    // claude / codex 由厂商推断），这类差异无法在结果里如实表达，`null` 只说明我们没要求。
+    judgeEffort: input.judgeEffort ?? null,
+    // 记账口径（A1）：记**骨架算的** `applied`，不记「我们传没传 schema」。调用方现在总是传
+    // （表达「我想要」），能不能给由 `runTurn` 按 `hooks.capability.structuredOutput` 决定
+    // （`result.applied.structuredOutput` 就是那个结论，同一个式子在骨架里只算一次），这里原样透传，
+    // 于是「声称被 schema 约束」与「实际被约束」不再可能分叉；本模块也因此不读注册表、不做能力判断。
+    structuredOutput: result.applied.structuredOutput,
+    // 评分**自己**的花销（2026-10-08，用户口径）：与候选行的 `EvalRow.tokens` / `durationMs`
+    // 同一份原料（适配器自报值），故两者可以直接对着看。`result.tokens` 为 `null` 时原样记 null
+    // ——「这家不报用量」与「一个 token 都没花」是两句相反的话，不许互相兜底。
+    judgeTokens: result.tokens,
+    judgeDurationMs: result.durationMs,
   });
 }

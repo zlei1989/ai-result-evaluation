@@ -338,7 +338,7 @@ describe('/api/cases/generate-judge-prompt', () => {
       jsonRequest(
         '/api/cases/generate-judge-prompt',
         'POST',
-        JSON.stringify({ rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
+        JSON.stringify({ mode: 'generate', rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
       ),
     );
 
@@ -360,7 +360,7 @@ describe('/api/cases/generate-judge-prompt', () => {
       jsonRequest(
         '/api/cases/generate-judge-prompt',
         'POST',
-        JSON.stringify({ rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
+        JSON.stringify({ mode: 'generate', rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
       ),
     );
 
@@ -387,7 +387,7 @@ describe('/api/cases/generate-judge-prompt', () => {
       jsonRequest(
         '/api/cases/generate-judge-prompt',
         'POST',
-        JSON.stringify({ rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
+        JSON.stringify({ mode: 'generate', rubric: { groups: [] }, repoPath: repo, taskPrompt: '补一条回归' }),
       ),
     );
 

@@ -1,8 +1,9 @@
 // @vitest-environment node
 /**
  * **三端一致性**（spec v3 §2 / §3）：同一件事在 claude-code / codex / dsh 上归一之后，
- * 消息结果必须逐字段一致——只有「这一家结构上没有」的格才允许不同（`vendorId` / `vendorTurn` /
- * `step` / `parentCallId` / 工具的 `name` / `source` / `raw`），且那些差异必须由**能力声明**说明。
+ * 消息结果必须逐字段一致——只有「这一家结构上没有」的格才允许不同（`messageId` / `vendorId` /
+ * `vendorTurn` / `step` / 工具的 `name` / 思考块的 `signature` / `raw`，以及 codex 工具块上
+ * app-server 独有的事实 `cwd` / `durationMs`），且那些差异必须由**能力声明**说明。
  *
  * 三条用例的靶子：
  *   ① `merge.test.ts` 已钉住合并算法本身，这里钉的是**三家各自喂进去之后落出来的形状相同**；
@@ -16,7 +17,9 @@ import { createMessageAssembler, type MessageDraft } from '../message';
 import { listAgentProviders } from '../registry';
 import { createTurnState } from '../testing/agent-fixtures';
 import { createClaudeMessageNormalizer } from './claude-code/message';
-import { codexEventToMessage } from './codex/message-events';
+import { projectCodexMessages } from './codex/message';
+import type { AppServerItem, AppServerNotificationPayload } from './codex/appserver/protocol';
+import { createCodexRunState, type CodexRunState } from './codex/run-state';
 import { dshAssistantMessageDraft, dshToolCallDraft, dshToolResultDraft, resetDshMessageStateForTesting } from './dsh/message';
 import { projectDshNotification } from './dsh/events';
 
@@ -39,20 +42,48 @@ function assemble(drafts: readonly MessageDraft[]): AgentMessage[] {
   return out;
 }
 
+/** codex 的主线程 id：子线程的条目才带 `subagentId`，主线程那一份记 `null` */
+const MAIN = 'thread-main';
+
+/** codex 的投影上下文（`mainThreadId` 是「这条通知算不算主会话」的唯一判据） */
+const CODEX_CONTEXT = { mainThreadId: MAIN } as const;
+
+/**
+ * 一条 `item/completed` 通知（codex 的完成条目就是快照）。
+ * 增量那条通道另有 `item/agentMessage/delta` 与 `item/reasoning/*Delta`，由用例按需投递。
+ */
+function codexCompleted(item: AppServerItem): AppServerNotificationPayload {
+  return { kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item, completedAtMs: 1_700_000_000_000 };
+}
+
+/**
+ * 跑一串 codex app-server 通知，返回消费方真正看到的那些消息。
+ * `runState` 默认每次新建：**同一条逻辑消息的增量与快照必须共用一份**（块序号与轮次台账都在它上面），
+ * 所以一次投递多条通知时要走同一次调用。
+ */
+function assembleCodex(
+  payloads: readonly AppServerNotificationPayload[],
+  runState: CodexRunState = createCodexRunState(),
+): AgentMessage[] {
+  return assemble(payloads.flatMap((payload) => projectCodexMessages(payload, runState, CODEX_CONTEXT).drafts));
+}
+
 /**
  * 只保留**三家应当一致**的格。
  * 去掉的七格与理由（都是「这一家结构上没有」，不是实现差异）：
  *   · `messageId`：本项目生成的序号，逐家不同；
  *   · `vendorId`：厂商 id 空间不同（契约明写「不得当去重键」）；
  *   · `vendorTurn` / `step`：**只有 dsh 有**厂商轮号与步骤号，另两家结构上没有（恒 `null`）；
- *   · `source`：codex 的权威通道是会话文件（`'session-file'`），另两家是 `'wire'`；
  *   · `raw`：厂商原始载荷；
  *   · 工具块的 `name` 与思考块的 `signature`：厂商真名与签名本来就不同——跨家可比的是归一后的
  *     `family` 与 `textKind`（逐家的值另有用例单独钉）。
+ * `source` **不在这七格里**：三家各自走线上通道 ⇒ 一律 `'wire'`（旧实现里 codex 从会话文件事后读回，
+ * 那一格记 `'session-file'`；app-server 通道下这条差异已经消失，故它参与比对）。
  */
 function comparable(messages: readonly AgentMessage[]): unknown[] {
   return messages.map((message) => ({
     role: message.role,
+    source: message.source,
     roundTrip: message.roundTrip,
     parentCallId: message.parentCallId,
     subagentId: message.subagentId,
@@ -117,6 +148,31 @@ function byCallId(messages: readonly AgentMessage[]): unknown[] {
   });
 }
 
+/**
+ * 摘掉 codex 工具块上**多出来**的两格（调用块的 `cwd` 与结果块的 `durationMs`）再跨家比对。
+ *
+ * 为什么需要它：app-server 把「在哪执行」与「命令耗时」当作一等事实给出来，而 claude 与 dsh 的载荷里
+ * 结构上没有这两格 ⇒ 它们属于「这一家结构上没有」的那一类差异。这里摘掉的是**格**、不是判据：
+ * 两格的原值由同一条用例的单独断言钉住（`cwd` 与 `durationMs` 各一条），去掉它们之后剩下的格
+ * 仍然逐字比对。刻意不做成「三家都补上 `cwd: null`」——那是替另两家编一个它们没有的事实。
+ */
+function withoutCodexOnlyToolCells(view: unknown): unknown {
+  const groups = view as Array<{ blocks: Array<Record<string, unknown>> }>;
+  for (const group of groups) {
+    for (const block of group.blocks) {
+      if (block.type === 'tool-call') {
+        const input = block.input as Record<string, unknown> | null;
+        if (input !== null) delete input.cwd;
+      }
+      if (block.type === 'tool-result') {
+        const structured = block.structured as Record<string, unknown> | null;
+        if (structured !== null) delete structured.durationMs;
+      }
+    }
+  }
+  return groups;
+}
+
 describe('三端一致性：一次纯文本答复', () => {
   /** claude：流式增量（只覆盖主会话）之后到达完整 assistant 消息 */
   function claude(): AgentMessage[] {
@@ -144,15 +200,12 @@ describe('三端一致性：一次纯文本答复', () => {
     return assemble(drafts);
   }
 
-  /** codex：事件流一条 `agent_message` 条目（恒快照，没有 delta 形态） */
+  /** codex：增量先到（`item/agentMessage/delta`），完成条目（`agentMessage`）封口 */
   function codex(): AgentMessage[] {
-    const state = createTurnState();
-    return assemble(
-      codexEventToMessage(
-        { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: '没问题，工具已就绪。' } },
-        state,
-      ),
-    );
+    return assembleCodex([
+      { kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'item_1', delta: '没问题' },
+      codexCompleted({ kind: 'agentMessage', id: 'item_1', text: '没问题，工具已就绪。', phase: null }),
+    ]);
   }
 
   /** dsh：`step/start` 之后一条 `assistant/message`（正文整块在 `content[]` 里） */
@@ -191,11 +244,16 @@ describe('三端一致性：一次纯文本答复', () => {
     const codexMessages = codex();
     const dshMessages = dsh();
     expect(dshMessages).toMatchObject([{ subagentId: null, vendorTurn: 1, step: 1, roundTrip: 1 }]);
-    expect(codexMessages).toMatchObject([{ subagentId: null, vendorTurn: null, step: null, roundTrip: 1 }]);
-    expect(codexMessages.map((message) => message.chunk)).toEqual(['snapshot']);
+    expect(codexMessages).toMatchObject([
+      { subagentId: null, vendorTurn: null, step: null, roundTrip: 1 },
+      { subagentId: null, vendorTurn: null, step: null, roundTrip: 1 },
+    ]);
+    expect(codexMessages.map((message) => message.chunk)).toEqual(['delta', 'snapshot']);
+    // 增量与快照落在**同一条逻辑消息**上（合并键相同）⇒ 消费方最终只看到一个块，不出现两份正文
+    expect(new Set(codexMessages.map((message) => message.mergeKey)).size).toBe(1);
     expect(dshMessages.map((message) => message.chunk)).toEqual(['snapshot']);
     // 三家的**最后一条**（消费方落盘与呈现的真相）逐字段相同
-    expect(comparable([claudeMessages.at(-1)!])).toEqual(comparable(codexMessages));
+    expect(comparable([claudeMessages.at(-1)!])).toEqual(comparable([codexMessages.at(-1)!]));
     expect(comparable([claudeMessages.at(-1)!])).toEqual(comparable(dshMessages));
   });
 
@@ -215,6 +273,13 @@ describe('三端一致性：一次纯文本答复', () => {
 
 describe('三端一致性：一次 shell 执行（工具调用 + 工具结果）', () => {
   const COMMAND = 'npm run build';
+  /**
+   * codex 工具块上**多出来**的两格：app-server 的 `commandExecution` 自带执行目录与命令耗时，
+   * 而 claude 的 `tool_use` 与 dsh 的 `tool/call` 载荷里结构上没有 ⇒ 跨家比对时按「允许不同」摘掉，
+   * 原值由本 describe 的单独断言钉住（见用例末尾两条）。
+   */
+  const CWD = 'D:/repo';
+  const DURATION_MS = 1234;
 
   function claude(): AgentMessage[] {
     const normalizer = createClaudeMessageNormalizer();
@@ -245,23 +310,18 @@ describe('三端一致性：一次 shell 执行（工具调用 + 工具结果）
   }
 
   function codex(): AgentMessage[] {
-    const state = createTurnState();
-    return assemble(
-      codexEventToMessage(
-        {
-          type: 'item.completed',
-          item: {
-            id: 'call_B',
-            type: 'command_execution',
-            command: COMMAND,
-            aggregated_output: 'error TS2304',
-            exit_code: 1,
-            status: 'completed',
-          },
-        },
-        state,
-      ),
-    );
+    return assembleCodex([
+      codexCompleted({
+        kind: 'commandExecution',
+        id: 'call_B',
+        command: COMMAND,
+        cwd: CWD,
+        status: 'completed',
+        output: 'error TS2304',
+        exitCode: 1,
+        durationMs: DURATION_MS,
+      }),
+    ]);
   }
 
   function dsh(): AgentMessage[] {
@@ -336,21 +396,31 @@ describe('三端一致性：一次 shell 执行（工具调用 + 工具结果）
       JSON.parse(JSON.stringify(byCallId(messages)).replaceAll(callId, 'CALL')) as unknown;
     const wanted = JSON.parse(JSON.stringify(expected).replaceAll('call_A', 'CALL')) as unknown;
     expect(normalizeId(claude(), 'call_A')).toEqual(wanted);
-    expect(normalizeId(codex(), 'call_B')).toEqual(wanted);
     expect(normalizeId(dsh(), 'call_C')).toEqual(wanted);
+    // codex 的 `cwd` / `durationMs` 是 app-server 独有的事实 ⇒ 摘掉这两格再比（其余格逐字相等）
+    expect(withoutCodexOnlyToolCells(normalizeId(codex(), 'call_B'))).toEqual(wanted);
+    // 摘掉的两格各自的原值：跨家比不了的格，也必须由这一家如实交出来
+    const [codexGroup] = byCallId(codex()) as [{ blocks: Record<string, unknown>[] }];
+    expect(codexGroup.blocks[0]).toMatchObject({ type: 'tool-call', input: { command: COMMAND, cwd: CWD } });
+    expect(codexGroup.blocks[1]).toMatchObject({ type: 'tool-result', structured: { exitCode: 1, durationMs: DURATION_MS } });
   });
 });
 
 describe('三端一致性：缺失表达（`null` 只表示未采集）', () => {
   it('三家都不拿 0 / 空串 / 空对象冒充「没采到」', () => {
-    const state = createTurnState();
-    // codex：运行中的 `command_execution`（`exit_code` 省略、没有输出）
-    const codexMessages = assemble(
-      codexEventToMessage(
-        { type: 'item.completed', item: { id: 'call_B', type: 'command_execution', command: 'npm run build', status: 'in_progress' } },
-        state,
-      ),
-    );
+    // codex：运行中的 `commandExecution`（退出码与耗时都没拿到、没有输出）
+    const codexMessages = assembleCodex([
+      codexCompleted({
+        kind: 'commandExecution',
+        id: 'call_B',
+        command: 'npm run build',
+        cwd: null,
+        status: 'inProgress',
+        output: null,
+        exitCode: null,
+        durationMs: null,
+      }),
+    ]);
     const resultBlock = codexMessages
       .flatMap((message) => message.blocks)
       .find((block) => block.type === 'tool-result');
@@ -422,7 +492,7 @@ describe('三端一致性：缺失表达（`null` 只表示未采集）', () => 
 });
 
 describe('三端一致性：思考块的档位（`textKind` 由通道决定，不由家决定）', () => {
-  it('claude 与 dsh 给完整推理（full）；codex 的事件流只给摘要（summary）', () => {
+  it('三家的完整推理都落 `full`（codex 取 `reasoning.content[]`，与另两家同档）', () => {
     // claude：`thinking` 块 + `signature`
     const normalizer = createClaudeMessageNormalizer();
     const claudeState = createTurnState();
@@ -456,17 +526,17 @@ describe('三端一致性：思考块的档位（`textKind` 由通道决定，�
     )!]);
     expect(dsh[0]?.blocks[0]).toMatchObject({ type: 'thinking', text: '先读配置。', textKind: 'full', signature: null });
 
-    // codex：事件流的 `reasoning` item 按厂商定义只有摘要 ⇒ 档位是 summary（正文在会话文件里）
-    const codexState = createTurnState();
-    const codex = assemble(
-      codexEventToMessage({ type: 'item.completed', item: { id: 'item_2', type: 'reasoning', text: '先读配置。' } }, codexState),
-    );
-    expect(codex[0]?.blocks[0]).toMatchObject({ type: 'thinking', text: '先读配置。', textKind: 'summary', signature: null });
+    // codex：`reasoning.content[]` 是思考全文（与另两家同一档；摘要另走 `summary[]` 那块通道）
+    const codex = assembleCodex([codexCompleted({ kind: 'reasoning', id: 'item_2', summary: [], content: ['先读配置。'] })]);
+    expect(codex[0]?.blocks[0]).toMatchObject({ type: 'thinking', text: '先读配置。', textKind: 'full', signature: null });
   });
 
-  it('codex 事件流连摘要都没有时是「有思考但无文本」（`text: null` + `none`，不是空串）', () => {
-    const state = createTurnState();
-    const message = assemble(codexEventToMessage({ type: 'item.completed', item: { id: 'item_3', type: 'reasoning' } }, state));
+  it('codex 的 `summary[]` 是单独一块（`summary` 档）；两处都空时是「有思考但无文本」（`text: null` + `none`，不是空串）', () => {
+    // 密文 + 摘要：摘要那块自己记 `summary`，**不顶替**全文那一档（全文仍是「拿不到」，不是「就是摘要」）
+    const summaryOnly = assembleCodex([codexCompleted({ kind: 'reasoning', id: 'item_3', summary: ['厂商摘要'], content: [] })]);
+    expect(summaryOnly[0]?.blocks[0]).toMatchObject({ type: 'thinking', text: '厂商摘要', textKind: 'summary', signature: null });
+
+    const message = assembleCodex([codexCompleted({ kind: 'reasoning', id: 'item_4', summary: [], content: [] })]);
     expect(message[0]?.blocks[0]).toEqual({ type: 'thinking', text: null, textKind: 'none', signature: null });
   });
 });
@@ -499,30 +569,94 @@ describe('三端一致性：工具族按**名字**判，不按家判', () => {
     const families = [claude, dsh].map((messages) => (messages[0]?.blocks[0] as { family: string }).family);
     expect(new Set(families).size).toBe(1);
 
-    const codexState = createTurnState();
-    const codex = assemble(
-      codexEventToMessage({ type: 'item.completed', item: { id: 'call_E', type: 'command_execution', command: 'npm run build', status: 'completed' } }, codexState),
-    );
-    expect(codex[0]?.blocks[0]).toMatchObject({ family: 'run-shell' });
+    const codex = assembleCodex([
+      codexCompleted({
+        kind: 'commandExecution',
+        id: 'call_E',
+        command: 'npm run build',
+        cwd: null,
+        status: 'completed',
+        output: null,
+        exitCode: null,
+        durationMs: null,
+      }),
+    ]);
+    expect(codex[0]?.blocks[0]).toMatchObject({ family: 'run-shell', name: 'exec_command' });
   });
 
   it('归不进十族的工具落 `null`，`name` 保留原名（MCP 工具与协作动作名都是这一类）', () => {
-    const state = createTurnState();
-    const message = assemble([
-      ...codexEventToMessage(
-        { type: 'item.completed', item: { id: 'call_F', type: 'collab_tool_call', tool: 'wait', receiver_thread_ids: ['th-1'] } },
-        state,
-      ),
+    // codex 的协作动作名（`wait`）不在工具表里 ⇒ 落 `null`，界面走通用渲染并保留原名
+    const codex = assembleCodex([
+      codexCompleted({
+        kind: 'collabToolCall',
+        id: 'call_F',
+        tool: 'wait',
+        status: 'completed',
+        senderThreadId: MAIN,
+        receiverThreadIds: ['th-1'],
+        prompt: null,
+        agentsStates: [],
+      }),
     ]);
-    expect(message[0]?.blocks[0]).toMatchObject({ family: null, name: 'wait' });
+    expect(codex[0]?.blocks[0]).toMatchObject({ family: null, name: 'wait' });
+
+    // MCP 同一条口径：名字取 `<server>.<tool>`，承载任意工具 ⇒ 不猜族
+    const mcp = assembleCodex([
+      codexCompleted({
+        kind: 'mcpToolCall',
+        id: 'call_G',
+        server: 'github',
+        tool: 'list_issues',
+        status: 'completed',
+        durationMs: null,
+        arguments: null,
+        result: null,
+        error: null,
+      }),
+    ]);
+    expect(mcp[0]?.blocks[0]).toMatchObject({ family: null, name: 'github.list_issues' });
+  });
+
+  it('计划清单在三家都落 `task` 族（codex 的 `plan` 条目是调用，不是审计行）', () => {
+    // codex：`plan` 条目 ⇒ `update_plan` 调用（族按工具名判）
+    const codex = assembleCodex([codexCompleted({ kind: 'plan', id: 'call_H', text: '先读配置' })]);
+    expect(codex[0]?.blocks[0]).toMatchObject({ type: 'tool-call', name: 'update_plan', family: 'task' });
+
+    // claude 与 dsh 的清单工具走**同一张名字表**
+    const claude = assemble(
+      createClaudeMessageNormalizer().normalize(
+        {
+          type: 'assistant',
+          uuid: 'plan-cc',
+          parent_tool_use_id: null,
+          message: { id: 'msg_plan', role: 'assistant', content: [{ type: 'tool_use', id: 'call_I', name: 'TodoWrite', input: { todos: [] } }] },
+        },
+        createTurnState(),
+      ).messages,
+    );
+    expect(claude[0]?.blocks[0]).toMatchObject({ family: 'task' });
+    const dsh = assemble([
+      dshToolCallDraft(
+        {
+          method: 'session.event',
+          params: { sessionId: 'session-main', event: { type: 'tool/call', data: { turn: 1, step: 1, callId: 'call_J', name: 'todo_write', arguments: '{"todos":[]}' } } },
+        },
+        'session-main',
+        1,
+      )!,
+    ]);
+    expect(dsh[0]?.blocks[0]).toMatchObject({ family: 'task' });
   });
 });
 
 describe('三端一致性：无消息的条目一条都不产出（不拿审计行冒充消息）', () => {
-  it('codex 的 `error` / `todo_list` 条目、claude 的 `system` init、dsh 的 `turn/start` 都不进消息流', () => {
-    const codexState = createTurnState();
-    expect(codexEventToMessage({ type: 'item.completed', item: { id: 'i0', type: 'error', message: '有无法识别的配置项' } }, codexState)).toEqual([]);
-    expect(codexEventToMessage({ type: 'item.completed', item: { id: 'i1', type: 'todo_list', items: [] } }, codexState)).toEqual([]);
+  it('codex 的 `error` / `turn/started` 通知、claude 的 `system` init、dsh 的 `turn/start` 都不进消息流', () => {
+    // codex：报错通知与轮次开始都是**生命周期事实**，不是内容（计划条目不是这一类，见上面「工具族」）
+    const codexState = createCodexRunState();
+    const codexDrafts = (payload: AppServerNotificationPayload): MessageDraft[] =>
+      projectCodexMessages(payload, codexState, CODEX_CONTEXT).drafts;
+    expect(codexDrafts({ kind: 'error', threadId: MAIN, message: '有无法识别的配置项' })).toEqual([]);
+    expect(codexDrafts({ kind: 'turnStarted', threadId: MAIN, turnId: 'turn-1' })).toEqual([]);
 
     const normalizer = createClaudeMessageNormalizer();
     const claudeState = createTurnState();
@@ -574,14 +708,18 @@ describe('三端一致性：能力声明与实测行为对齐', () => {
     expect(claudeDelta[0]?.chunk).toBe('delta');
 
     const codexCapability = declared[1]!.capability;
-    // 流式增量：这一家结构上没有 ⇒ 声明必须是 no，且事件流的任何条目都不产出 delta
-    expect([codexCapability.streamingDelta, codexCapability.streamingDeltaReason]).toEqual(['no', 'not-supported']);
-    const codexChunks = codexEventToMessage({ type: 'item.completed', item: { id: 'cap-cx', type: 'agent_message', text: 'x' } }, createTurnState()).map(
-      (draft) => draft.chunk,
-    );
-    expect(codexChunks).toEqual(['snapshot']);
-    // 思考正文来自会话文件那条通道（事件流那一格只有摘要）
-    expect([codexCapability.thinkingText, codexCapability.thinkingTextSource]).toEqual(['yes', 'session-file']);
+    // 流式增量：声明 yes ⇒ 必须真有 delta 形态的消息（app-server 的 `item/agentMessage/delta`）
+    expect([codexCapability.streamingDelta, codexCapability.streamingDeltaSource]).toEqual(['yes', 'wire']);
+    const codexChunks = projectCodexMessages(
+      { kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'cap-cx', delta: 'x' },
+      createCodexRunState(),
+      CODEX_CONTEXT,
+    ).drafts.map((draft) => draft.chunk);
+    expect(codexChunks).toEqual(['delta']);
+    // 思考正文：声明 yes + 通道 wire ⇒ 必须真拿得到**完整推理**（摘要那条通道不算数）
+    expect([codexCapability.thinkingText, codexCapability.thinkingTextSource]).toEqual(['yes', 'wire']);
+    const codexThinking = assembleCodex([codexCompleted({ kind: 'reasoning', id: 'cap-r', summary: [], content: ['想'] })]);
+    expect(codexThinking[0]?.blocks[0]).toMatchObject({ type: 'thinking', text: '想', textKind: 'full' });
 
     const dshCapability = declared[2]!.capability;
     // 思考与工具入参都走会话通知流；两者在这一家都是 `yes`

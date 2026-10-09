@@ -91,7 +91,7 @@ export interface ClaudeQueryOptions {
   /**
    * 等价 CLI 的 `--settings`（flag 档）。合并优先级**高于** `user` / `project` / `local`
    * （本机实测：只开 `settingSources` 时被测仓库 settings 的 `env` 赢；补上这一格后本次路由赢）。
-   * 本仓只用它的 `env`：把 §5.6.4 的注入点（base URL + 两份凭据）钉在最外层，仓库改不动。
+   * 本仓只用它的 `env`：把 §5.6.5 的注入点（base URL + 两份凭据）钉在最外层，仓库改不动。
    *
    * 厂商声明的类型是 `string | Settings`（一个完整 settings 对象或文件路径）；这里只声明用到的那一格。
    */

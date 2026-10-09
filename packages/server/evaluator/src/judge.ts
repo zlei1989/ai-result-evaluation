@@ -193,8 +193,8 @@ export function parseJudgeResponse(raw: string, rubric: Rubric): { judgments: Ru
  * 为什么**必须**是一个函数：文本通路与智能体通路共用同一把尺子的全部口径——逐项取、缺一项失败在先、
  * 总分一律按权重加总、满分取评分表、raw 的截断上限、以及「形状漂移在这里就炸」的自检。
  *
- * `structuredOutput` 也走同一条口径（**必填**）：两条通路各自表一次态，而不是让收口函数吃一个
- * 「谁也没选过」的默认值。
+ * `structuredOutput` 与 `judgeEffort` 也走同一条口径（**都必填**）：两条通路各自表一次态，
+ * 而不是让收口函数吃一个「谁也没选过」的默认值。
  */
 export function finalizeScore(input: {
   parsed: { judgments: RubricJudgment[]; verdict: string };
@@ -205,8 +205,23 @@ export function finalizeScore(input: {
   judgeModelId: string;
   /** null ⇔ 走纯文本 API（见 contracts 的 ScoreResult.judgeAgentKind） */
   judgeAgentKind: AgentKind | null;
-  /** 这一分是不是在 schema 约束下拿到的（必填；文本通路传 false） */
+  /**
+   * 这一分用什么强度打的（**必填**；`null` ⇔ 我们没指定强度）。
+   * 与 `structuredOutput` 同一条处置：两条通路各自表一次态，而不是让收口函数吃一个「谁也没选过」的
+   * 默认值——`null` 与档名都是合法值，给缺省会让「忘了传下来」与「确实没指定」在数据上完全同形。
+   */
+  judgeEffort: string | null;
+  /** 这一分是不是在 schema 约束下拿到的（必填；文本通路传 false，智能体通路取适配器报回的 `applied`） */
   structuredOutput: boolean;
+  /**
+   * **评分这一次调用自己**的用量与耗时（必填，2026-10-08）。与 `judgeEffort` / `structuredOutput`
+   * 同一条处置：两条通路各自表一次态，给缺省会让「忘了传下来」与「确实没采到」在数据上同形。
+   * `null` = 没采到（**不是 0**）——界面据此显示「用量未采集 / 耗时未采集」。
+   * 语义：文本侧是**各轮成功调用之和**（结构修复是额外请求，钱要算进去）与整段的掐表；
+   * 智能体侧是适配器自报的 `result.tokens` / `result.durationMs`（与候选行同一份原料）。
+   */
+  judgeTokens: { input: number; cached: number; output: number } | null;
+  judgeDurationMs: number | null;
 }): ScoreResult {
   const result: ScoreResult = {
     judgments: [...input.parsed.judgments],
@@ -219,7 +234,14 @@ export function finalizeScore(input: {
     judgeProviderId: input.judgeProviderId,
     judgeModelId: input.judgeModelId,
     judgeAgentKind: input.judgeAgentKind,
+    // 强度按调用方给的记（两条通路各自表一次态，来源是同一格配置）。
+    // `null` 只表达「我们**没指定**」：不是「关闭」（关闭档是上游词汇 `off`），
+    // 也**不等于**两条通路当时跑在同一个强度上——未指定时文本侧一个强度键都不发（听网关缺省）、
+    // 智能体侧走该家适配器自己的缺省（dsh 会落到它的 `high`），两边可以不落到一处。
+    judgeEffort: input.judgeEffort,
     structuredOutput: input.structuredOutput,
+    judgeTokens: input.judgeTokens,
+    judgeDurationMs: input.judgeDurationMs,
     judgedAt: new Date().toISOString(),
   };
   // 契约自检：形状漂移在这里就炸，而不是把脏数据写进 run.json 等读的时候才发现。
@@ -293,6 +315,14 @@ export interface JudgeInput {
   taskPrompt: string;
   route: TextRoute;
   judgeProviderId: string;
+  /**
+   * 这一次评分要求的思考强度（来自 `settings.defaultJudge.effort`，由调用方读配置后传进来）。
+   * 为什么是**入参**：`judgeRow` 今天是纯入参的（不读配置、不碰落盘），读点只有一个
+   * （`judge-route.ts` 的 `resolveJudgeEffort`）。为什么不做成 `route` 的一格：那是**连接事实**，
+   * 而强度是**请求参数**（与候选侧 `AgentRunInput.effort` 同一口径）。
+   * 未指定 = 一个强度键都不发（听网关的缺省，**不是**关闭）；档名可不可用不在这一层判（本层只把值递下去）。
+   */
+  judgeEffort?: string;
   /** 这一行的停止信号（可选：不传即「不可中止」） */
   signal?: AbortSignal;
   /** 结构修复的进度回调（可选；编排层把它接到该行的事件日志上） */
@@ -343,17 +373,46 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
   // system 用 contracts 的输出契约文本：生成侧与解析侧共用同一份字段名
   const system = JUDGE_OUTPUT_CONTRACT;
   const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
+  /**
+   * 这一分的花销（2026-10-08）：文本通路没有适配器替我们记账，两格都只能在这里采。
+   * 耗时从**进函数就开始掐**：结构修复的每一轮与瞬时重试的退避都算这一次评分的成本，
+   * 而「这一行为什么多花了十几秒」正是靠它回答的（口径与 `EvalRow.durationMs` 的掐表那一支同源）。
+   * 用量**逐轮累加**：修复是额外的上游调用，只记最后一轮会把一次评分报成半价。
+   */
+  const startedAt = Date.now();
+  /**
+   * 用量的累加器用**三个数加一个「报过没有」的标记**，而不是一个可空的 `usage` 对象：
+   * 「上游一次都没报」必须与「报了三格 0」分得开（前者是 `null`，后者是真实的读数），
+   * 而一个 `null` 初值的对象变量在循环里累加时，赋值右侧读到的是被窄化过的它自己
+   * （实测 tsc 报 TS7022 / 「Property does not exist on type 'never'」——两个都是这个形状的症状）。
+   */
+  let usedInput = 0;
+  let usedCached = 0;
+  let usedOutput = 0;
+  let sawUsage = false;
 
   let raw: string;
   let parsed: { judgments: RubricJudgment[]; verdict: string };
   let repairs = 0;
   try {
     for (;;) {
-      raw = await callTextApiConversation(input.route, {
+      const called = await callTextApiConversation(input.route, {
         system,
         messages,
+        // 强度按需带（未给 = 这一格不存在）：两协议的线上字段由 text-api 的 `reasoningFields` 独家负责，
+        // 本层只把值递过去——在这里补一个缺省档就等于替用户做了「用什么强度」的决定
+        ...(input.judgeEffort === undefined ? {} : { effort: input.judgeEffort }),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
+      raw = called.text;
+      // 上游没报（`null`）时**什么都不加**：把「没报」当成 `{0,0,0}` 累进去会让合计看起来像
+      // 「真的一个 token 都没花」，而两者在界面上是两句相反的话
+      if (called.usage !== null) {
+        sawUsage = true;
+        usedInput += called.usage.input;
+        usedCached += called.usage.cached;
+        usedOutput += called.usage.output;
+      }
 
       const checked = validateJudgeResponse(raw, input.rubric);
       if (checked.ok) {
@@ -385,7 +444,11 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
     judgeProviderId: input.judgeProviderId,
     judgeModelId: input.route.modelId,
     judgeAgentKind: null,
+    // 两条通路各自表一次态：文本侧这一格就是调用方传进来的强度（没传 = 未指定）
+    judgeEffort: input.judgeEffort ?? null,
     // 文本通路本期不开 schema：它有自己的回问机制
     structuredOutput: false,
+    judgeTokens: sawUsage ? { input: usedInput, cached: usedCached, output: usedOutput } : null,
+    judgeDurationMs: Date.now() - startedAt,
   });
 }

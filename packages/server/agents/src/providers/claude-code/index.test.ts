@@ -117,7 +117,7 @@ describe('claudeCodeProvider', () => {
     // 为什么这一格要单独钉两端：它是名单里**唯一随模型变**的一项，而写坏的方式恰好是最静默的两种——
     //   · 判据写成 `modelId === 'claude'` / 只匹配小写前缀 ⇒ 网关侧的 `anthropic/claude-sonnet-4-6`
     //     被当成「非 Claude 模型」，WebSearch 白禁；
-    //   · 判据反过来（`!includes`）⇒ 第三方模型拿到网关不实现的工具（§5.6.4：网关对这类命名空间
+    //   · 判据反过来（`!includes`）⇒ 第三方模型拿到网关不实现的工具（§5.6.5：网关对这类命名空间
     //     工具回 400），行会以工具报错收场，而界面上只看到「模型报错」。
     const cases: Array<{ modelId: string; webSearchBanned: boolean }> = [
       { modelId: 'claude-sonnet-4-6', webSearchBanned: false },
@@ -301,7 +301,7 @@ describe('claudeCodeProvider', () => {
     expect(events[0]?.seq).toBe(1); // run 内 seq 从 1 开始
   });
 
-  it('用户终止：顺序为 interrupt → turn 终结 → dispose（§5.6.5）', async () => {
+  it('用户终止：顺序为 interrupt → turn 终结 → dispose（§5.6.6）', async () => {
     vi.useFakeTimers();
     const recorder = createRecorder();
     const controller = new AbortController();
@@ -604,7 +604,7 @@ describe('claude-code 的思考强度', () => {
    * 而它是 `buildSubprocessEnv` 合并后的对象（以宿主 `process.env` 为底，`route.ts:88-90`）
    * ⇒ 宿主设过 `CLAUDE_CODE_EXTRA_BODY` 时那一条会**假红**（它不是我们的缺陷 ——
    * 真机 A/B 的 B 臂恰恰就是靠宿主设这个变量做到的，所以这台机器上它真有可能在场）。
-   * 策略与 spec §5.4 第 4 条一致：「键不存在」的判据落在**纯函数**上；真实运行面那一条
+   * 策略与 spec §5.1.1 一致：「键不存在」的判据落在**纯函数**上；真实运行面那一条
    * 则先把宿主那一格清干净。
    * 用 `vi.stubEnv(name, undefined)` 而不是 `delete process.env.X`：后者在测试里也是写入写法。
    * 还原交给文件级 `afterEach` 的 `vi.unstubAllEnvs()`（上面刚加的那一行）。
@@ -698,7 +698,7 @@ describe('claude-code 的思考强度', () => {
     expect(Object.keys(claudeExtraEnvFor(EFFORT_OFF))).toStrictEqual(['CLAUDE_CODE_EXTRA_BODY']);
   });
 
-  /** 其余档位**不注入**：**纯函数**判据，与宿主是否设过同名变量无关（spec §5.4 第 4 条） */
+  /** 其余档位**不注入**：**纯函数**判据，与宿主是否设过同名变量无关（spec §5.1.1） */
   it('其它档位不注入：claudeExtraEnvFor(max) 里没有这个键', () => {
     expect(Object.hasOwn(claudeExtraEnvFor('max'), CLAUDE_CODE_EXTRA_BODY)).toBe(false);
   });
@@ -759,7 +759,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9a（纯判据四例）**（spec §4.1 守卫 9a / §5.4-3 的判据三件套）：
+   * **守卫 9a（纯判据四例）**（spec §5.1.1 守卫 9a 的判据三件套）：
    * ① env 无该键 ⇒ `null`；② 设 `'1'` ⇒ 返回命中（**键名原文**）；③ 设**小写拼写** ⇒ 同样命中、
    * 且回报的是**原拼写**（`route.ts:76-84`：逐项保留宿主的键名形态，Windows 常写 `Path`）；
    * ④ `'high'` 与未选 ⇒ 一律 `null`（**非 off 档不看**）。
@@ -783,8 +783,8 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9b 的第一、二半**（spec §4.1 守卫 9b）：`off` 档 + 宿主设过 ⇒ `console.warn` 收到 WARN，
-   * **且 message 逐字等于 §5.4-3 那段**（`<键名原文>` 处替换成实际拼写）。
+   * **守卫 9b 的第一、二半**（spec §5.1.1）：`off` 档 + 宿主设过 ⇒ `console.warn` 收到 WARN，
+   * **且 message 逐字等于 §5.1.1 那段**（`<键名原文>` 处替换成实际拼写）。
    *
    * ⚠️ 第二半是**「不许改写」的守卫**：文案既然是契约，就得有断言钉住，否则必然漂。
    * 正文在这里是**字面量**（门审 Important，2026-10-06：改为**不**经 `CLAUDE_OFF_DISABLED_WARNING_TEXT` 拼）：
@@ -792,12 +792,12 @@ describe('claude-code 的思考强度', () => {
    * **大小写不敏感**的字面量判据 ⇒ 六条断言会**全绿**，而产品侧拿去查宿主环境的名字跟着常量一起错
    * （POSIX 上大小写敏感 ⇒ WARN **永不触发**）——那正是本线反复出现的「经共享常量读键 ⇒ 一起错」。
    * 用字面量之后，常量的大小写漂移在这里**当场红**；常量模板与 spec 正文的逐字比对仍由本组最后那条
-   * `WARN 文案模板与 spec §5.4-3 逐字一致` 看管（两半各钉一件事，不是两份正文）。
+   * `WARN 文案模板与 spec §5.1.1 逐字一致` 看管（两半各钉一件事，不是两份正文）。
    *
    * ⚠️ 取值用 `'true'`（宿主的常见写法）而**不是** `'1'`：判据是「变量在不在」，
    * 窄成 `=== '1'` 会在这一形态下不告警（变异体⑩）。
    */
-  it('off 档 + 宿主设过 ⇒ 落一条 WARN，message 逐字等于 spec §5.4-3 那段', async () => {
+  it('off 档 + 宿主设过 ⇒ 落一条 WARN，message 逐字等于 spec §5.1.1 那段', async () => {
     vi.stubEnv(HOST_DISABLE_BETAS_ENV, 'true');
     /** `console.warn(message, context)` 的原文（两个参数都收下：下面分别比对 message 与 context） */
     const calls: unknown[][] = [];
@@ -828,7 +828,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **接线级的「回报原拼写」**（spec §5.4-3 ②；门审 Important，2026-10-06 补）：
+   * **接线级的「回报原拼写」**（spec §5.1.1 ②；门审 Important，2026-10-06 补）：
    * 宿主写成**小写拼写**时，WARN 里带的、以及 context 里回报的，都必须是**那个小写原文**。
    *
    * 为什么纯函数那一例不够：9a 第③例只证明「函数会回报原拼写」，而**接线**处若把它丢掉
@@ -859,7 +859,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9b 的第三半 + 变异体⑪的靶子**（spec §5.4-3「它是观测，不是拦截」）：
+   * **守卫 9b 的第三半 + 变异体⑪的靶子**（spec §5.1.1「它是观测，不是拦截」）：
    * WARN 出现时 `CLAUDE_CODE_EXTRA_BODY` **照旧逐字注入**，本行也**照常跑完**（不抛、不跳过）。
    */
   it('观测不拦截：WARN 出现时覆盖层仍逐字注入，本行照常跑完', async () => {
@@ -889,7 +889,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **其余档位连一条日志都不多**（spec §1.3 约束 2 / §5.4-3 判据③：这是**新增的输出**，
+   * **其余档位连一条日志都不多**（spec §5.1.1 判据③：这是**新增的输出**，
    * 不能漏到别的档位上）。与上一条分成两个用例：一个是「它不说话」、一个是「它乱说话」，
    * 失败原因完全不同。
    */
@@ -908,11 +908,11 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **导出给测试的那段文案必须与 spec §5.4-3 逐字一致**（含唯一可变 token 的位置）。
+   * **导出给测试的那段文案必须与 spec §5.1.1 逐字一致**（含唯一可变 token 的位置）。
    * 这条用例是**最后一道**防漂移：上面那条比的是「运行时 message = 实现导出的常量」，
    * 这一条比的是「那个常量 = spec 的原文」——两半合起来才等价于「message = spec 原文」。
    */
-  it('WARN 文案模板与 spec §5.4-3 逐字一致（<键名原文> 是唯一可变 token）', () => {
+  it('WARN 文案模板与 spec §5.1.1 逐字一致（<键名原文> 是唯一可变 token）', () => {
     expect(CLAUDE_OFF_DISABLED_WARNING_TEXT).toBe(
       'off 档的关闭被静默忽略：子进程环境里存在 <键名原文>，它使 CLAUDE_CODE_EXTRA_BODY 的 body 覆盖失效，本次运行的 off 档读数作废；处置：从运行环境里去掉该变量后重跑，或改用别的方式关闭思考。',
     );

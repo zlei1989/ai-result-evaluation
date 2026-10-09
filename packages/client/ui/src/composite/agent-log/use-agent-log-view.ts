@@ -17,7 +17,7 @@
  * 两处各写一份必然漂移，漂移的表现是「我展开的那条自己合上了」。
  *
  * 本文件曾经 import `toolEntryKey`（只为了「失败的行也入键」那一条）：用户口径改成「失败也收起」后
- * 不再需要行键，那一格 import 随之删掉——**本文件现在只算块级键**，行键完全归 `ToolGroupPanel` 消费。
+ * 不再需要行键，那一格 import 随之删掉——**本文件现在只算块级键**；行键由 L0 的 `ToolGroupPanel` 直接消费，并由 L1 的 `renderBlockKey` 从**首条行键**派生出组键。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentLogModel, LogNodeIndex, LogTurn } from './types';

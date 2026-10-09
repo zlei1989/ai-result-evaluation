@@ -80,7 +80,6 @@ function rowNode(id: string, parentId: string | null = null): RowNode {
       thinking: null,
       domain: [],
       error: null,
-      exitReason: null,
     },
   };
 }

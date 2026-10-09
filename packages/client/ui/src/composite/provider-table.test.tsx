@@ -1,10 +1,12 @@
 /**
  * ProviderTable：列内容、协议中文标签、四个回调、「模型」按钮的位置与顺序、删除的二次确认、
- * 空态引导，以及两条形态守卫（掩码列不渲染、新增按钮在表格左下方）。
+ * 空态引导，以及四条形态守卫（掩码列不渲染、新增按钮在表格左下方、两侧固定列、新增入口虚线）。
  * 注意：本文件所有断言都走「用户能看到什么」，不查 antd 的类名 —— 类名会随版本静默变化，
  * 而这里要钉的是「误点一次不会把供应商删掉」这类行为。
- * 唯二的例外是两条形态守卫里的 `ant-btn-variant-dashed`：antd 6 会把单给的 `variant` **静默**
- * 降级成实线，除了类名没有任何可观察信号（详见那两条用例的注释）。
+ * 例外的两处都是「除了类名没有任何可观察信号」：
+ *   · `ant-btn-variant-dashed`：antd 6 会把单给的 `variant` **静默**降级成实线；
+ *   · `ant-table-cell-fix-start` / `-fix-end`：jsdom 读不到样式表里的 `position: sticky`，
+ *     类名是「这一列到底钉没钉」唯一可断言的东西（吸边效果同样只有真机量得出来）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -139,6 +141,57 @@ describe('ProviderTable', () => {
     const table = container.querySelector('table');
     expect(table).not.toBeNull();
     expect(table?.compareDocumentPosition(button)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  /**
+   * 形态守卫（用户口径 2026-10-08，与 `RunCreatePanel` 候选行表同款）：卡片窄到装不下五列时，
+   * 表格**内部**横向滚动，`名称` 钉在左边、`操作` 钉在右边（中间三列从它们下面滑过）。
+   * 三处必须同时在场，少一处就静默退回老样子 —— `名称` 与三个按钮跟着滚出视野：
+   *   · 没有 `scroll={{ x: 数值 }}` ⇒ 内容容器拿不到 `overflow-x: auto`、表格也没有内联宽度；
+   *   · 首列没有 `fixed` ⇒ 表头第一格不再带粘性类；
+   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（那一行的编辑 / 删除跟着滚走）。
+   *
+   * ⚠️ jsdom **没有布局引擎**：`sticky` 的实际吸边效果、「有没有真的滚起来」都量不出来，钉子只到
+   * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
+   * 里的 `.ant-table-cell-fix { position: sticky }`，故这里断言的是类名而不是算出来的 `position`）。
+   * 真实几何由真机冒烟记录看着，同 `PROVIDER_TABLE_MIN_WIDTH` 那条注释。
+   */
+  it('卡片装不下时横向滚动，且名称列钉左、操作列钉右（P-COLUMN-FIXED）', () => {
+    const { container } = render(
+      <ProviderTable providers={[openai, anthropic]} onModels={noop} onEdit={noop} onDelete={noop} onCreate={noop} />,
+    );
+
+    const content = container.querySelector('.ant-table-content');
+    expect(content).not.toBeNull();
+    // 有横向滚动才谈得上固定列：给 `scroll.x` 之前这里一个内联样式都没有
+    expect(content).toHaveStyle({ overflowX: 'auto' });
+    const table = content?.querySelector('table');
+    // 最小宽度必须真的落到**表格自己**的宽度上（它才是滚动的那个更宽的盒子）：
+    // `min-width: 100%` 保证卡片够宽时铺满、不给滚动条，不是恒定的 900
+    expect(table).toHaveStyle({ width: '900px', minWidth: '100%', tableLayout: 'fixed' });
+
+    const headers = content?.querySelectorAll('thead th');
+    expect(headers).toHaveLength(5);
+    // 首列与操作列刚需的两条粘性类（`-fix-start` / `-fix-end` 就是 `position: sticky` 的来源）
+    expect(headers?.[0]?.className).toContain('ant-table-cell-fix-start');
+    expect(headers?.[4]?.className).toContain('ant-table-cell-fix-end');
+    // 中间三列**不许**粘：把地址列也钉住的话，可滚动区域就只剩协议与模型数两列
+    for (const index of [1, 2, 3]) {
+      expect(headers?.[index]?.className).not.toContain('ant-table-cell-fix');
+    }
+    // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去 —— 滚动时表头与数据行错位）
+    const bodyCells = content?.querySelector('tbody tr.ant-table-row')?.querySelectorAll('td');
+    expect(bodyCells?.[0]?.className).toContain('ant-table-cell-fix-start');
+    expect(bodyCells?.[4]?.className).toContain('ant-table-cell-fix-end');
+
+    // 四列把宽度交出去，剩下的才归「API 地址」（它**刻意不给宽度**，是唯一吃剩余宽度的列）。
+    // jsdom 量不出地址列的实测宽度：`colgroup` 里那些数字来自 rc-table 对单元格的 ResizeObserver
+    // 测量（`MeasureCell`），而 `installResizeObserverStub` 的替身**从不回调** —— 于是这里只钉得住
+    // 「四列各自申报的宽度」与「地址列一列都没申报」。
+    const widths = Array.from(content?.querySelectorAll('colgroup col') ?? []).map(
+      (cell) => (cell as HTMLElement).style.width,
+    );
+    expect(widths).toEqual(['180px', '150px', '', '90px', '200px']);
   });
 
   /**

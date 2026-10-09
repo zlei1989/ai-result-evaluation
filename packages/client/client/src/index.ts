@@ -65,7 +65,7 @@ export { ENV_GROUP_ORDER, buildAgentEnvironment, envItem, type BuildEnvironmentI
  * 定义只有一处：`@aieval/ui` 的 `src/composite/agent-log/types.ts`（那些名字是**界面词汇**——
  * 色档、折叠键、渲染块、文案表——放不进服务端的 `@aieval/contracts`）。
  * 这里 `export type … from` 的唯一目的是**消费方的 import 路径**：页面与测试都已经依赖
- * `@aieval/client`，不必再为几个类型多记一条 `@aieval/ui` 的路径；而 `AGENT.md` 的依赖表里
+ * `@aieval/client`，不必再为几个类型多记一条 `@aieval/ui` 的路径；而 `AGENTS.md` 的依赖表里
  * 也没有 `client → ui` 那条边。
  *
  * **它不是第二份真值、也不产生新的依赖边**：`export type` 在编译期被 `verbatimModuleSyntax`

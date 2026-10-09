@@ -19,7 +19,7 @@
  *      那里才是读日志的地方；
  *   4. **颜色取 `theme` 之外的两个既有主题变量**（`--app-muted` / `--app-fg`，见 globals.css）：
  *      把 antd token 再复制一份进 CSS 就是第二份真源，主题一改必漂移。字号与行内边距一律不写
- *      （交紧凑密度与 `Typography` 的默认值，AGENT.md 的硬口径）。
+ *      （交紧凑密度与 `Typography` 的默认值，AGENTS.md 的硬口径）。
  */
 import { Typography } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';

@@ -11,7 +11,9 @@
  *   · 单份变体 `raw === null` 说「结果未采集」，`truncation.kind === 'unknown'` 说「可能不完整」
  *     而**绝不说「完整」**（变异体 (x)）；
  *   · 开合态**受控优先**：给了 `open` 就归调用方，且点按钮与关抽屉都回调一次
- *     （固定区那一支靠这个回调向数据层上报「我需要了」，漏了它就等于把懒加载的触发点丢了）。
+ *     （固定区那一支靠这个回调向数据层上报「我需要了」，漏了它就等于把懒加载的触发点丢了）；
+ *   · **本件不自带布局容器**（2026-10-07 用户口径）：两个按钮就是渲染根上的直接子节点，
+ *     没有中间那一层——把 `Flex` 包回去时那条红。
  */
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -125,6 +127,31 @@ describe('RawOutputPanel（diagnostics 变体）', () => {
     );
     screen.getByText('重新读取').click();
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * **本件不自带布局容器**（用户 2026-10-07 口径：把包裹那一层去掉，按钮拿出来）。
+   *
+   * 判据是**父节点身份**而不是「按钮在不在」：包一层 `Flex` 时按钮照样在页面上，只有
+   * 「它的父节点是本件的渲染根」才能区分「拿出来」与「还嵌在里面」。
+   * 顺带钉住「两个按钮同层」——重试按钮若被挪进别处，第二条也红。
+   */
+  it('不自带容器：两个入口按钮都是渲染根的直接子节点（没有中间那一层）', () => {
+    const { container } = render(
+      <RawOutputPanel
+        source={{ kind: 'diagnostics', diagnostics }}
+        open={false}
+        onOpenChange={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const open = screen.getByTestId('raw-output-open');
+    const retry = screen.getByRole('button', { name: '重新读取' });
+
+    expect(container.childElementCount).toBe(2);
+    expect(open.parentElement, '入口按钮还嵌在中间那一层容器里').toBe(container);
+    expect(retry.parentElement, '「重新读取」与入口按钮不同层').toBe(container);
   });
 
   /**

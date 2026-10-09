@@ -45,7 +45,7 @@ export function gitMessage(error: unknown): string {
 /**
  * 是不是「被我们的墙钟上限杀掉」。
  * 判据是**信号**而不是文案：远端自己报 timeout 的原文里也常有 `timed out`，
- * 按关键词匹配会把「远端不可达」与「我们杀的那次」混成一类（spec §8.2 末段）。
+ * 按关键词匹配会把「远端不可达」与「我们杀的那次」混成一类（spec §4.5 的分类顺序：先按信号判超时）。
  * Node 在超时时给错误带上 signal（killSignal）与 code=ETIMEDOUT，两者都认。
  * 对任意抛出值都成立：JS 里什么都能 throw，判定函数自己抛错会把「分类失败」变成新的失败点。
  */

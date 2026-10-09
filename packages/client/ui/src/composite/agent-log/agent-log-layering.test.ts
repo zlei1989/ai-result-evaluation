@@ -6,23 +6,28 @@
  *
  * 六条各有一个靶子（都能被单独变异掉）：
  *   (a) L0 不 import L1/L2；(b) L1 不 import L2；
- *   (c) **虚拟化的三个入口**（`virtual` / `itemHeight` / `from 'antd/listy'`）只出现在 `virtual-turn-list.tsx`；
+ *   (c) **虚拟化的三个入口**（`virtual` / `itemHeight` / `Listy` 这一枚标识符）只出现在
+ *       `base/virtual-list.tsx`（2026-10-04 从 `virtual-turn-list.tsx` 搬过去）；
  *   (d) L0/L1 不出现 `useState`（开合态一律受控，§9.0 纪律 2）；
  *   (e) L0/L1 不出现 `EvalRow`，**也不按厂商分支**；
  *   (f) `BlockRenderContext` 里没有 `streaming` 这一格（`assembly` 是动效的唯一判据）。
  *
  * **为什么 (e) 的判据写得比「不许出现 `agentKind` 字样」窄**（这条是刻意收窄，不是放宽）：
  * 守卫的靶子是「**UI 判厂商**」——按厂商分支、或把厂商字面量写进组件。而
- * `AgentEnvironmentSummary.agentKind` 是数据层给的**展示字段**，设计 §6.8 的摘要七项里
- * 明确要求把它画出来；字面禁止 `agentKind` 会把一个必须显示的字段挡在门外，那正是
+ * `AgentEnvironmentSummary.agentLabel` 是数据层给的**展示字段**，设计 §6.8 的摘要七项里
+ * 明确要求把它画出来；字面禁止「画一个智能体字段」会把一个必须显示的字段挡在门外，那正是
  * 「守卫比它守的东西更宽」的误伤（本仓对误伤的态度是明确的：误伤会让守卫显得碍事从而被绕过，
  * 比不放行更危险）。故下面只拦**分支/查表/厂商字面量**三种形态，
  * 「把字段当字符串渲染」必须放行——最后一条用例专门钉这个区分力。
+ * ⚠️ 2026-10-08 起「厂商 → 文案」的映射必须在下沉层做：在 L0 里写 `AGENT_LABELS[kind]`
+ * 会被 `AGENT_LABELS[` 那条判据抓住（实测），摘要那一格因此改成数据层算好的 `agentLabel`。
  *
- * 不扫的方向：`types.ts`（类型层）、`build-model.ts`（模型装配）、`fixtures.ts`（夹具）与全部
- * `*.test.*` 不在三层清单里——它们不渲染，任何层都可以 import 它们。
+ * 不扫的方向：`types.ts`（类型层）、`fixtures.ts`（夹具）与全部 `*.test.*` 不在三层清单里——
+ * 它们不渲染，任何层都可以 import 它们。
+ * ⚠️ **`build-model.ts` 是个例外**：它不在层清单里，但**参与 (e) 的「不判厂商」扫描**
+ * （装配层同样不许按厂商分支，见 `VENDOR_SCANNED_FILES`）。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -38,7 +43,12 @@ const L2_FILES = [
 ] as const;
 
 /** L1 受控组合件：吃「一轮」或一份派生数据，吐界面；不虚拟化、不持态 */
-const L1_FILES = ['agent-message-timeline.tsx', 'log-node-breadcrumb.tsx', 'agent-log-facts-bar.tsx'] as const;
+const L1_FILES = [
+  'agent-message-timeline.tsx',
+  'log-node-breadcrumb.tsx',
+  'agent-log-facts-bar.tsx',
+  'agent-log-domain-facts.tsx',
+] as const;
 
 /** L0 纯渲染件：吃「一个块 / 一个节点 / 一份声明」，一律受控 */
 const L0_FILES = [
@@ -94,16 +104,51 @@ function sourceOf(file: string): string {
   return readFileSync(join(dir, file), 'utf8');
 }
 
-/** 源码里所有**相对** import 的目标文件名（`./x` / `./x.tsx` → `x.tsx`） */
+/**
+ * 源码里所有**相对或包内**引用的目标文件名。
+ *
+ * 四条口径（后三条是 2026-10-08 补的，每条此前都是能绕过去的缺口）：
+ *   1. 说明符通常不带扩展名（本仓直出 TS 源码），故两种写法都推；
+ *   2. **`../` 也要归一化**：早先只 `replace(/^\.\//, '')`，`../agent-log/agent-log-layout`
+ *      会原样留下（因为 `base.includes('.')` 被开头的 `..` 判真 ⇒ 连扩展名都不补），
+ *      于是 `LAYER_OF.get()` 恒 `undefined`（查表按**文件名**，不认路径）⇒ **零命中**。
+ *      lint 兜不住：`import-x/no-relative-packages` 只管**跨包**相对引用。
+ *   3. **动态 `import()` 与 `export … from` 也算**：早先只认 `from '…'`，
+ *      `lazy(() => import('./agent-log-layout'))` 在扫描输入里根本不存在。
+ *      magic comment 也要跳过（`import(/* webpackChunkName: 'x' *​/ './x')` 是常见写法）。
+ *   4. **包内桶是同一个口子**（2026-10-08 补）：`src/index.ts` 把 L1/L2 全转出去了，
+ *      而它自己**不在任何层**里 ⇒ 只要用**不指向具体文件**的写法就能拿到上层：
+ *      `import { AgentLogDrawer } from '@aieval/ui'`（`package.json` 有 `exports` ⇒
+ *      自引用可解析）或 `from '../../../index'`。两种写法早先都零命中。
+ *      故这里把「包自引用」与「路径末段是 `index`」一律归到 `index.ts`——它不在 `LAYER_OF`
+ *      里也不会变成静默漏扫，而是被下面那条**单独的断言**点名。
+ *
+ * 两条边界（lint 兜得住，故不在这里重复实现）：双引号说明符被 `@stylistic/quotes` 拦、
+ * `require()` 被 `esmOnlyRequire` 拦。
+ */
+const SELF_PACKAGE = '@aieval/ui';
 function relativeImportTargets(source: string): string[] {
   const targets: string[] = [];
-  const pattern = /from\s+'(\.[^']+)'/g;
-  for (const matched of source.matchAll(pattern)) {
-    const specifier = matched[1];
-    if (specifier === undefined) continue;
-    const base = specifier.replace(/^\.\//, '');
-    // 说明符通常不带扩展名（本仓直出 TS 源码），两种写法都要认
-    targets.push(base.includes('.') ? base : `${base}.ts`, base.includes('.') ? base : `${base}.tsx`);
+  const specifiers: string[] = [];
+  for (const matched of source.matchAll(/from\s+'([^']+)'/g)) specifiers.push(matched[1] ?? '');
+  // `import(...)`：允许中间夹 magic comment
+  for (const matched of source.matchAll(/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)?'([^']+)'/g)) {
+    specifiers.push(matched[1] ?? '');
+  }
+  // 副作用 import（`import './x';`）：没有 `from`
+  for (const matched of source.matchAll(/(?<![.\w])import\s+'([^']+)'/g)) specifiers.push(matched[1] ?? '');
+  for (const raw of specifiers) {
+    // 包自引用：一律记到包根桶上
+    if (raw === SELF_PACKAGE || raw.startsWith(`${SELF_PACKAGE}/`)) {
+      targets.push('index.ts');
+      continue;
+    }
+    if (!raw.startsWith('.')) continue;
+    // 只取路径最后一段：本仓的相对引用都在同目录或上层，查表按文件名
+    const base = raw.split('/').filter((part) => part !== '' && part !== '.' && part !== '..').pop();
+    if (base === undefined) continue;
+    const bare = base.replace(/\.tsx?$/, '').replace(/\.js$/, '');
+    targets.push(`${bare}.ts`, `${bare}.tsx`);
   }
   return targets;
 }
@@ -157,9 +202,32 @@ const VENDOR_BRANCH_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
 ];
 
 describe('agent-log 的分层纪律', () => {
-  it('清单里的文件都在（改名 / 搬家要让守卫自己先说话，而不是静默漏扫）', () => {
+  /**
+   * **双向的清单守卫**（2026-10-08 补齐反向那一半）。
+   *
+   * 正向（早先就有）：清单里的文件都得在——改名/搬家时守卫自己先说话。
+   * 反向（新加）：**目录里每个渲染件都得进清单**。少了这半边，新建一个
+   * `foo-card.tsx` 只要不写进 `L0_FILES`，它就**不在任何扫描面上**——
+   * (a)–(f) 六条一起对它失明，而用例全绿。这是「漏扫」而不是「误伤」，
+   * 正是本仓最防的那种假绿。
+   *
+   * 允许例外的只有两类，都点名列出：不在三层清单里但**明确参与 (e) 扫描**的装配件、
+   * 以及根本不渲染的类型/夹具文件。
+   */
+  it('清单双向对齐：清单里的文件都在，渲染件也都在清单里', () => {
     const missing = [...LAYER_OF.keys()].filter((file) => !existsSync(join(dir, file)));
     expect(missing).toEqual([]);
+
+    /** 不渲染、故不进三层清单的文件（每一个都要在这里点名，别用通配把新文件放进来） */
+    const NOT_LAYERED = new Set<string>([
+      'types.ts',
+      'fixtures.ts',
+      ...NON_RENDER_SCANNED_FILES,
+    ]);
+    const renderFiles = readdirSync(dir)
+      .filter((name) => (name.endsWith('.ts') || name.endsWith('.tsx')) && !name.endsWith('.test.ts') && !name.endsWith('.test.tsx'));
+    const unlisted = renderFiles.filter((file) => !LAYER_OF.has(file) && !NOT_LAYERED.has(file));
+    expect(unlisted, '这些文件不在任何扫描面上（(a)–(f) 对它们失明），要么分层、要么点名登记').toEqual([]);
   });
 
   it('(a)(b) 依赖只准向下：L0 不 import L1/L2，L1 不 import L2', () => {
@@ -178,6 +246,25 @@ describe('agent-log 的分层纪律', () => {
   });
 
   /**
+   * **包内桶是 (a)(b) 的另一个口子**（2026-10-08 补）。
+   *
+   * `src/index.ts` 把 L1/L2 全转出去了，而它自己不在任何层里 ⇒ `LAYER_OF.get('index.ts')`
+   * 是 `undefined`，上面那条查表式断言对它**天然失明**。于是两种写法都能白拿上层：
+   *   · `import { AgentLogDrawer } from '@aieval/ui'`（`package.json` 有 `exports`，自引用可解析，
+   *     而 eslint 的 ui 禁用名单里**没有**它——只禁了 client / api / web-next / next）；
+   *   · `from '../../../index'`（相对包根桶）。
+   * 判据单独一条、不混进上面那条：**三层里的文件一律不许引包根桶**。
+   * `types.ts` / `fixtures.ts` / `build-model.ts` 这些不在层里的文件不在此列（它们本就可以引）。
+   */
+  it('(a)(b) 补：三层里的文件不许走包内桶（`@aieval/ui` / `../../../index`）拿上层', () => {
+    const violations: string[] = [];
+    for (const file of LAYER_OF.keys()) {
+      if (relativeImportTargets(sourceOf(file)).includes('index.ts')) violations.push(file);
+    }
+    expect(violations, '这些文件引了包根桶——它能拿到 L1/L2，等于绕过依赖方向').toEqual([]);
+  });
+
+  /**
    * (c) 虚拟化的三个入口**全仓只有一处**。
    *
    * 2026-10-04 起这一处从 `virtual-turn-list.tsx` 搬到 `base/virtual-list.tsx`：原文行
@@ -185,12 +272,37 @@ describe('agent-log 的分层纪律', () => {
    * 两份退化兜底。搬家的**判据变了、靶子没变**：`agent-log` 里任何文件都不许再出现这三个入口
    * （它们是「绕过原语自己造一个」的信号），而新家自己必须在扫面上
    * ——否则这条守卫会退化成「谁都不许有」，实现躲在扫面外照样绿。
+   *
+   * ⚠️ 第三个入口的**靶子曾经是死的**（2026-10-08 修）：原来扫的是 `from 'antd/listy'`，
+   * 而 antd 6.6.5 **没有这个子路径**（`node_modules/antd/listy` 不存在），真正的写法是
+   * 从包根具名导入 `Listy` ⇒ 那条断言任何代码都命中不了。
+   * 改成「具名导入」之后**还是能被绕过**（同一天第二次修）：`import * as antd from 'antd'`
+   * 再 `<antd.Listy virtual={…} height={…}>`、或 `React.createElement(Listy, …)`、
+   * `require('antd')`、`antd/es/listy` 全都不长成「具名导入」的样子。
+   * 故现在扫的是**标识符本身**：去掉注释之后出现 `Listy` 这个词就算命中——
+   * 不管它以哪种方式被引进来。代价是必须显式放行**唯一一处合法的非虚拟化用法**。
+   *
+   * 放行 `ask-user-card.tsx`：它的选项列表用 `Listy` 但**不虚拟化**
+   * （问答的选项就几条，不需要窗口化），**它并不在造第二个虚拟列表原语**。
+   * 放行的是「这一处」，不是「这一类」——别的文件再出现 `Listy` 仍然会红。
    */
   it('(c) 虚拟化的三个入口只出现在 base/virtual-list.tsx', () => {
-    // `virtual` 这个 prop：注释里的 `virtual-turn-list` / `@rc-component/virtual-list` 不算（后面跟的是 `-`）
-    expect(codeHitsIn([...LAYER_OF.keys()], /(?<![\w-])virtual(?=[\s/>{])/)).toEqual([]);
+    /**
+     * `virtual` 这个 prop。三个边界都要认（2026-10-08 补）：
+     *   · 注释里的 `virtual-turn-list` / `@rc-component/virtual-list` 不算（后面跟的是 `-`）；
+     *   · **紧跟 `=` / `:` / `,`** 也要算（`<Listy virtual={true}>`、`{ virtual: true }`
+     *     是 JSX/对象字面量的常见写法；早先只认后跟空白/`/`/`>`/`{` 的形态 ⇒ 看不见）；
+     *   · **行尾**的 `virtual` 也要算（`<Listy virtual` 换行写属性；实测变异时绿的）。
+     */
+    const VIRTUAL_PROP = /(?<![\w-])virtual(?=[\s/>{=:,]|$)/;
+    expect(codeHitsIn([...LAYER_OF.keys()], VIRTUAL_PROP)).toEqual([]);
     expect(codeHitsIn([...LAYER_OF.keys()], /\bitemHeight\b/)).toEqual([]);
-    expect(codeHitsIn([...LAYER_OF.keys()], /from\s+'antd\/listy'/)).toEqual([]);
+    // `Listy` 这个标识符本身（去掉注释之后判）：任何引入形态都算
+    const LISTY_TOKEN = /\bListy\b/;
+    expect(codeHitsIn(
+      [...LAYER_OF.keys()].filter((file) => file !== 'ask-user-card.tsx'),
+      LISTY_TOKEN,
+    )).toEqual([]);
 
     // 新家：唯一的实现必须在（`<Listy` + `virtual` 两个入口都在它里面）
     const primitive = readFileSync(join(dir, '..', '..', 'base', 'virtual-list.tsx'), 'utf8');
@@ -217,13 +329,22 @@ describe('agent-log 的分层纪律', () => {
     }
   });
 
-  it('(e 放行) 把 agentKind 当字符串画出来不算判厂商（收窄之后守卫仍有区分力）', () => {
-    // 现状：环境抽屉的摘要第一格就是 `summary.agentKind`（设计 §6.8 要求显示「智能体」）
+  /**
+   * (e 放行) **把数据层给的字符串原样画出来**不算判厂商（收窄之后守卫仍有区分力）。
+   *
+   * 2026-10-08：抽屉摘要的「智能体」那一格从 `summary.agentKind` 改成 `summary.agentLabel`
+   * ——厂商名 → 文案的映射下沉到了数据层（`client/build-environment.ts` 的 `summaryOf`）。
+   * 原因正是这条守卫：在 L0 里写 `AGENT_LABELS[summary.agentKind]` 会被上面 `AGENT_LABELS[`
+   * 那条判据当场抓住（实测），而它抓得对——那等于把一张「谁是哪家」的文案表搬进渲染件。
+   * 判据仍是「样本里有没有分支 / 查表 / 厂商字面量」，与字段叫什么无关。
+   */
+  it('(e 放行) 把数据层给的 agentLabel 当字符串画出来不算判厂商（收窄之后守卫仍有区分力）', () => {
+    // 现状：环境抽屉的摘要第一格就是 `summary.agentLabel`（设计 §6.8 要求显示「智能体」）
     const drawer = sourceOf('agent-environment-drawer.tsx');
-    expect(drawer).toContain('summary.agentKind');
+    expect(drawer).toContain('summary.agentLabel');
 
-    // 三种**必须放行**的写法：当值渲染、当值传参、类型位置
-    const allowed = ['summary.agentKind', 'summary.agentKind,', 'agentKind: string', 'const agentKind = summary.agentKind;'];
+    // 四种**必须放行**的写法：当值渲染、当值传参、类型位置、取进常量
+    const allowed = ['summary.agentLabel', 'summary.agentLabel,', 'agentLabel: string', 'const agentLabel = summary.agentLabel;'];
     for (const sample of allowed) {
       for (const { pattern } of VENDOR_BRANCH_PATTERNS) {
         expect({ 样本: sample, 命中: pattern.test(sample) }).toEqual({ 样本: sample, 命中: false });

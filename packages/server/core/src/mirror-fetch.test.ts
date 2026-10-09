@@ -68,7 +68,7 @@ describe('fetchMirror', () => {
     renameSync(origin.bareDir, `${origin.bareDir}.moved`);
 
     // git 对移走的 file:// 路径报 `does not appear to be a git repository`：
-    // spec §8.1 把它归成 NOT_A_GIT_REPO，处置是「改地址」而不是「查网络」
+    // spec §4.5 把它归成 NOT_A_GIT_REPO，处置是「改地址」而不是「查网络」
     expect(codeOf(() => fetchMirror(dir, origin.url))).toBe('NOT_A_GIT_REPO');
     expect(messageOf(() => fetchMirror(dir, origin.url))).toContain('不是 git 仓库');
   });

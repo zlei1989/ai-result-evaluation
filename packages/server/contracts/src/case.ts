@@ -15,14 +15,15 @@
  */
 import { z } from 'zod';
 import { RepoSourceStringSchema } from './repo-source';
-import { RubricSchema } from './rubric';
+// 值（schema）与类型都要：`GenerateRubricResult` 的形状直接引用它们
+import { RubricSchema, type Rubric, type RubricChange } from './rubric';
 
 export const TestCaseSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   /** 代码来源：本地绝对路径 或 远端 git 地址（形态判定见 repo-source.ts） */
   repoPath: RepoSourceStringSchema,
-  /** null = 默认分支 HEAD；填了必须能通过 `git cat-file -e <hash>^{commit}` */
+  /** null = 默认分支 HEAD；填了必须能通过 `git rev-parse --verify <hash>^{commit}`（一条命令判定存在并把短哈希归一成 40 位） */
   commitHash: z.string().min(1).nullable(),
   /** 远端来源的分支；null = 远端默认分支。本地来源必须是 null（写侧拦） */
   repoBranch: z.string().min(1).nullable().default(null),
@@ -90,21 +91,53 @@ export type RepoValidateInput = z.infer<typeof RepoValidateInputSchema>;
 export type RepoCommitsInput = z.infer<typeof RepoCommitsInputSchema>;
 
 /**
- * 生成评分标准项入参：两个动作共用一个入口，由 `prompt` 是否为空分派。
- *   · `prompt` 为空  ⇒ 「智能生成」：按题面 + 当前表格让 AI **补充**条目（用 `repoPath` 取仓库名）；
- *   · `prompt` 非空  ⇒ 「智能识别」：把用户粘贴的评分要求解析成表格，**不碰仓库**
- *     （故 `repoPath` 可空——「填了提示词却因为仓库路径没填而识别不了」这个组合被这条规则消灭）。
- * **不带评分模型**：两个动作都只用设置页「评分配置」的全局默认（`resolveJudgeRoute()` 无参），
+ * 「生成 / 识别 / 调整」三个动作**共用一个入口**，由 `mode` 显式分派（2026-10-08 起）。
+ *
+ * 为什么原来是隐式的（`prompt` 空不空）而现在必须显式：两支时「有没有粘文本」刚好等于「走哪一支」，
+ * 加上第三支（`adjust`：拿一句话改**现有的**表）之后这个等式就不成立了——`recognize` 与 `adjust`
+ * 都需要 `prompt`，靠它再也分不出意图，于是只能由调用方猜。三支各自要什么：
+ *   · `generate` 「智能生成」：题面 + **当前表格**（AI 只补缺的，见 `mergeRubric`）+ `repoPath`（取仓库名）；
+ *   · `recognize`「智能识别」：`prompt`（用户粘进来的评分要求），**不碰仓库**，结果是**整表替换**；
+ *   · `adjust`   「智能调整」：`prompt`（一句话指令）+ **当前表格**，结果仍是完整表格，外加一份
+ *     改动清单（`diffRubric` 从「旧表 vs 新表」算出来，见 `GenerateRubricResult.changes`）。
+ * **不带评分模型**：三个动作都只用设置页「评分配置」的全局默认（`resolveJudgeRoute()` 无参），
  * 入参里再带一对 id 就等于让调用方能绕开设置页那一格。
  */
 export const GenerateRubricSchema = z.object({
-  /** 当前表格（「智能生成」的输入；识别分支忽略它）。空表就是 `{ groups: [] }` */
+  /** 走哪一支。**必填**：见上面那段「为什么从隐式改成显式」 */
+  mode: z.enum(['generate', 'recognize', 'adjust']),
+  /** 当前表格（生成分支的合并基线、调整分支的改造对象；识别分支忽略它）。空表就是 `{ groups: [] }` */
   rubric: RubricSchema,
-  /** 题面：生成分支必填，识别分支可空（填了会作为识别上下文） */
+  /** 题面：生成分支必填；识别 / 调整分支可空（填了会作为理解文本的上下文） */
   taskPrompt: z.string().default(''),
-  /** 用户粘贴的评分要求：非空 ⇒ 走识别分支 */
+  /** 用户写的文本：识别分支是「粘进来的评分要求」，调整分支是「一句话指令」；生成分支不用它 */
   prompt: z.string().default(''),
-  /** 仓库来源：生成分支用它取仓库名，识别分支可空 */
+  /** 仓库来源：生成分支用它取仓库名，识别 / 调整分支可空 */
   repoPath: z.string().default(''),
 });
 export type GenerateRubricInput = z.infer<typeof GenerateRubricSchema>;
+
+/**
+ * 三个动作的**共同响应形状**（放契约里而不是 api 包里：api / client / ui / 页面四层都要它，
+ * 谁都不该为了一个响应类型去引 `@aieval/api` —— 那会凭空造出跨包依赖边）。
+ *
+ * 三格里只有 `rubric` 是三支共有的；另外两格各有归属，看它们的注释，别拿 `addedItems === 0`
+ * 去判「什么都没发生」（识别与调整分支恒为 0）。
+ */
+export interface GenerateRubricResult {
+  /** 回填的完整表格：生成分支是**合并后**的、识别分支是**整表替换**的、调整分支是**模型改完**的那张 */
+  rubric: Rubric;
+  /**
+   * **只有生成分支**有意义：这一次往当前表格里**新增**了多少项（0 ⇒ 模型说「已经完备」，界面显示「未新增条目」）。
+   * **识别 / 调整分支恒为 0**——它绝不代表「什么都没识别 / 什么都没改」，那两支要判成败得看 `rubric` 与 `changes`。
+   */
+  addedItems: number;
+  /**
+   * **只有调整分支**有：模型改完的那张表与用户原来那张表的**逐条差异**，由 `diffRubric` 从两张表算出来
+   * （不是模型自述——单一真源是那张表本身）。界面拿它做「改动清单」，**用户确认之后才回写表格**。
+   * 空数组表示「模型认为不需要改」，此时调用方**不要**回写。
+   */
+  changes?: RubricChange[];
+  /** 只在需要解释时出现（「未新增条目」/「不需要修改」）。**识别分支不带它** */
+  note?: string;
+}

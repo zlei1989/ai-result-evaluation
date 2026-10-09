@@ -11,7 +11,9 @@
  *     百分比要有确定的分母，所以这条依赖列宽与内容无关：两张列表的 `Table` 都带 `sticky`，
  *     rc-table 据此把 `table-layout` 定成 `fixed`（`@rc-component/table` 的 `Table.js`：
  *     `isSticky || fixHeader || 有列 ellipsis` → `fixed`），列宽由表头算，不被内容顶开；
- *   · 传 px → 硬上限，给**列宽已知且比单元格窄**的地方用（`ProviderTable` 的 260 是这种）。
+ *     `ProviderTable` 走的是另一条路（`scroll={{ x: 数值 }}` + 显式 `tableLayout="fixed"`），
+ *     落到同一个 `fixed` 上，故这一格也是「不传才对」；
+ *   · 传 px → 硬上限，给**列宽已知且比单元格窄**的地方用（生产调用方今天都不传它了，只剩用例在传）。
  *     曾被误用于列表页（`width={300}` 而列只有两百多像素）：文字块比单元格宽，超出的一段被
  *     单元格裁掉，省略号跟着被裁掉——症状是「显示不全，也看不到省略号」。
  */

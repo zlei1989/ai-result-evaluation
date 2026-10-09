@@ -8,7 +8,14 @@
  * 所以有错且**两条来源都空**时必须整段替换抽屉内容，且这条判定必须能被直接测到。
  */
 import { describe, expect, it } from 'vitest';
-import { ServiceError, type AgentEvent, type EvalRow, type UsageTokens } from '@aieval/contracts';
+import {
+  AGENT_LABELS,
+  ServiceError,
+  type AgentEvent,
+  type EvalRow,
+  type ScoreResult,
+  type UsageTokens,
+} from '@aieval/contracts';
 import { buildRowFacts, resolveLogDrawer } from './log-drawer-state';
 
 /** 一条真实形状的 log 事件（只有 seq/at/type 之外还带 stream/text，够用即可） */
@@ -151,8 +158,8 @@ function row(overrides: Partial<EvalRow> = {}): EvalRow {
     branch: 'test/row-1',
     workspacePath: 'D:\\runs\\run-1\\rows\\row-1\\workspace',
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
-    // claude 的能力声明是 `liveUsage: 'estimated'`（估算不回写快照）⇒ 终态之前 `row.tokens` 恒为 null，
-    // 事实条这一格只能从事件流取。下面守的正是「从**哪一条**事件取」
+    // claude 的跑动期 usage 事件带 `tokensBasis: 'estimated'`（估算不回写快照）⇒ 终态之前
+    // `row.tokens` 恒为 null，事实条这一格只能从事件流取。下面守的正是「从**哪一条**事件取」
     tokens: null,
     turns: null,
     durationMs: null,
@@ -163,6 +170,27 @@ function row(overrides: Partial<EvalRow> = {}): EvalRow {
     ...overrides,
   };
 }
+
+/**
+ * 一份完整的评分结果（本文件多条用例共用）。`judgeAgentKind` 由各用例按通路补：
+ * `null` = 纯文本 API 通路，非空 = 智能体通路——两条通路的展示面不同，故不写进这份共用夹具。
+ */
+const SCORE = {
+  judgments: [],
+  totalScore: 57,
+  maxScore: 60,
+  verdict: '还行',
+  raw: '{}',
+  judgeProviderId: 'p-anthropic',
+  judgeModelId: 'deepseek-flash',
+  judgedAt: '2026-10-07T01:00:00.000Z',
+  // 强度未指定（一个强度键都没发）：下面两条用例都不涉及评分者的强度通路
+  judgeEffort: null,
+  structuredOutput: false,
+  // 评分自己的花销（2026-10-08）：这一格进的是**评分详情抽屉**，不在事实条上，故这里给 null 即可
+  judgeTokens: null,
+  judgeDurationMs: null,
+} satisfies Omit<ScoreResult, 'judgeAgentKind'>;
 
 /**
  * 一条 `usage` 事件：`turn` 缺省 = 主会话读数；`turn.subagentId` **非空** = **那个子会话自己的**读数
@@ -333,11 +361,12 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
 });
 
 /**
- * 领域事实的**分段**（2026-10-07 用户口径）：改动那一格按 git stat 上色（`+N` 绿 / `−N` 红），
- * 评分那一格把模型名做成 `Tag`。
+ * 领域事实的**分段**（2026-10-07 用户口径）：改动那一格按 git stat 上色（`+N` 绿 / `−N` 红）。
+ * 评分那一格**只给分**——同一天的另一条口径把「评分模型：…」那句提示删了（见下方用例），
+ * 因为尺子是谁由**评分详情**那一页说，事实条上再写一遍是与它争夺注意力。
  *
  * 为什么守在这里：分段是**数据层声明**的（界面不解析文本，见 `DomainFactSegment` 的注释），
- * 而 `value` / `hint` 是给读屏与排障用的纯文本——两者必须逐字一致。手写第二遍数字就会漂移，
+ * 而 `value` 是给读屏与排障用的纯文本——两者必须逐字一致。手写第二遍数字就会漂移，
  * 症状是「复制出来的那一串字」与眼睛看到的不是一件事，且**没有任何别的地方会红**。
  */
 describe('buildRowFacts：领域事实的分段（2026-10-07）', () => {
@@ -360,31 +389,59 @@ describe('buildRowFacts：领域事实的分段（2026-10-07）', () => {
     expect(diff?.tone).toBeUndefined();
   });
 
-  it('评分那一格：文本通路的模型名是一段 `tag`，智能体通路多一段智能体名', () => {
-    const score = {
-      judgments: [],
-      totalScore: 57,
-      maxScore: 60,
-      verdict: '还行',
-      raw: '{}',
-      judgeProviderId: 'p-anthropic',
-      judgeModelId: 'deepseek-flash',
-      judgedAt: '2026-10-07T01:00:00.000Z',
-      structuredOutput: false,
-    };
-    const textPath = buildRowFacts({ row: row({ score: { ...score, judgeAgentKind: null } }), events: [] });
-    const textHint = textPath.domain.find((fact) => fact.id === 'score');
-    expect(textHint?.hint).toBe('评分模型：deepseek-flash');
-    expect(textHint?.hintSegments).toEqual([
-      { text: '评分模型：' },
-      { text: 'deepseek-flash', tag: true },
-    ]);
+  it('评分那一格只给分：不再产出「评分模型：…」那句提示（两条通路都不给）', () => {
+    const textPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: null } }), events: [] });
+    const textCell = textPath.domain.find((fact) => fact.id === 'score');
+    expect(textCell?.value).toBe('57/60');
+    expect(textCell?.tone).toBe('success');
+    // 靶子是那句被删掉的提示：把 `hint` / `hintSegments` 加回来这条就红
+    expect(textCell?.hint).toBeUndefined();
+    expect(textCell?.hintSegments).toBeUndefined();
 
-    const agentPath = buildRowFacts({ row: row({ score: { ...score, judgeAgentKind: 'claude-code' } }), events: [] });
-    const agentHint = agentPath.domain.find((fact) => fact.id === 'score');
-    expect(agentHint?.hint).toBe('评分智能体：claude-code · 模型：deepseek-flash');
-    expect(agentHint?.hintSegments?.map((segment) => segment.text).join('')).toBe(agentHint?.hint);
-    // 两个名字各一段 Tag：只给模型名一段的话，智能体名会埋在次要色文字里
-    expect(agentHint?.hintSegments?.filter((segment) => segment.tag === true)).toHaveLength(2);
+    // 智能体通路**同一口径**：一条给一条不给，会让人以为只有文本通路才说得出尺子是谁
+    const agentPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: 'claude-code' } }), events: [] });
+    const agentCell = agentPath.domain.find((fact) => fact.id === 'score');
+    expect(agentCell?.hint).toBeUndefined();
+    expect(agentCell?.hintSegments).toBeUndefined();
+  });
+
+  /**
+   * 「谁在跑」三格（用户 2026-10-07 口径）：智能体 · 模型 · 思考强度**排在最前**。
+   *
+   * 为什么钉在这里：这三格与「改动 / 评分」同属固定区的**第二行**（`agent-log-domain-facts.tsx`），
+   * 顺序即渲染顺序（界面不重排）⇒ 顺序只能由数据层保证。值走 `segments` 的 `tag` 段、一色一格
+   * （`blue` / `geekblue` / `purple`），与评分详情顶部那一段同色。
+   */
+  it('「谁在跑」三格在最前：智能体 → 模型 → 思考强度（一色一格），改动与评分在后', () => {
+    const facts = buildRowFacts({
+      row: row({
+        effort: 'max',
+        diff: { filesChanged: 1, insertions: 2, deletions: 3, truncated: false },
+        score: { ...SCORE, judgeAgentKind: null },
+      }),
+      events: [],
+    });
+
+    expect(facts.domain.map((fact) => fact.id)).toEqual(['agent', 'model', 'effort', 'diff', 'score']);
+
+    const agent = facts.domain[0];
+    expect(agent?.label).toBe('智能体');
+    expect(agent?.value).toBe(AGENT_LABELS['claude-code']);
+    expect(agent?.segments).toEqual([{ text: AGENT_LABELS['claude-code'], tag: true, tagTone: 'blue' }]);
+    expect(facts.domain[1]?.segments).toEqual([{ text: 'claude-opus-4-6', tag: true, tagTone: 'geekblue' }]);
+    expect(facts.domain[2]?.value).toBe('max');
+    expect(facts.domain[2]?.segments).toEqual([{ text: 'max', tag: true, tagTone: 'purple' }]);
+  });
+
+  /**
+   * 思考强度键**缺席**（老快照没有这一格）⇒「未指定」。
+   * 反向那一半：**不是** `off`——显式关闭档是一个真实读数，与「没这一格」不是同一件事。
+   */
+  it('思考强度键缺席 ⇒「未指定」，不是 `off`、也不是空白', () => {
+    const effort = buildRowFacts({ row: row(), events: [] }).domain.find((fact) => fact.id === 'effort');
+
+    expect(effort?.value).toBe('未指定');
+    expect(effort?.value).not.toBe('off');
+    expect(effort?.value).not.toBe('');
   });
 });

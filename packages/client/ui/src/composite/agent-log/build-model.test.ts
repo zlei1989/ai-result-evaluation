@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
 import { buildAgentLogModel, diagnosticsOf, rowEventsOf, type AgentLogFactsInput } from './build-model';
-import type { RowEvent } from './types';
+import type { MessageCapabilityMap, RowEvent } from './types';
 
 function message(input: {
   id: string;
@@ -85,7 +85,6 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     thinking: null,
     domain: [],
     error: null,
-    exitReason: 'completed',
     live: false,
     ...overrides,
   };
@@ -142,6 +141,36 @@ describe('buildAgentLogModel：合并与分组', () => {
     });
     // 进度条与时间轴护栏不许互相打脸（冒烟实测过 `轮次 4 / 3 轮` 与 `已渲染 4 / 共 4 轮` 同时上屏）
     expect(model.facts.turns).toEqual({ current: 3, total: null });
+  });
+
+  /**
+   * 这一段**曾经被当成「➀ 的时间回填」**（走到调用消息时补 `messageId` / `at`）。
+   *
+   * 复核（2026-10-08）结论：它**不可达**，已成死代码——
+   * `dispatchOf` 扫的与这里扫的是**同一张 `folded` 主会话表**，判据也一样（`callId` 逐字相同）：
+   * `dispatchOf` 找得到 ⇒ 它返回的 `messageId` 就已经是这一条的 `messageId`，轮次也同源；
+   * `dispatchOf` 找不到 ⇒ 这里也找不到，两个判据（`messageId === ''` / `at === ''`）都无从成立。
+   * 故这里**没有**回归守卫可写——留着它只是因为删改要连带确认四条判据的先后，属另一次整理。
+   * ⚠️ 别把这条当成「回填生效」的证据：下面这条用例改成 `at === ''` 判据也一样绿。
+   */
+  it('（已知死代码）派发调用块与 `dispatchOf` 扫同一张表，回填分支不可达', () => {
+    const startedAt = '2026-10-02T10:00:00.000Z';
+    const records: RowRecord[] = [
+      message({ id: 'm-other', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '先说话' }] }),
+      message({
+        id: 'm-dispatch',
+        mergeKey: 'main|2|assistant|-',
+        roundTrip: 2,
+        blocks: [{ type: 'tool-call', callId: 'call_agent_1', family: 'spawn-agent', name: 'subagent', input: { description: '审查页面' } }],
+      }),
+      subagent('sub-1', { name: '审查页面', parentCallId: 'call_agent_1' }),
+    ];
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt });
+    const child = model.nodes.find((node) => node.kind === 'subagent');
+    // 两点都是 `dispatchOf` 自己给的，与本用例无关的「回填」一步没有贡献
+    expect(child?.spawnedBy?.callId).toBe('call_agent_1');
+    expect(child?.spawnedBy?.messageId).toBe('m-dispatch');
+    expect(child?.spawnedBy?.at).toBe(new Date(Date.parse(startedAt) + 2000).toISOString());
   });
 
   it('按 `subagentId` 把消息分给会话节点，子任务节点与主会话**同一份形状**', () => {
@@ -377,6 +406,12 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
     expect(task.tool.panel.running).toBe(true);
     if (ask?.kind !== 'tool-call' || ask.tool === null || ask.tool.family !== 'ask-user') throw new Error('应为 ask-user 载荷');
     expect(ask.tool.interaction).toMatchObject({ state: 'pending', running: true });
+    /**
+     * 这个用例**没有** `startedAt`，故 `atOfRound` 按设计给空串（见它的实现）。
+     * 「有 `startedAt` 时 `at` 必须是真实时刻」那条守卫落在下一个用例里——
+     * 那里才是它要防的场景（空串会让「等待了多久」塌成 `0s`）。
+     */
+    expect(ask.tool.interaction.at).toBe('');
     // 问题的正文与选项逐格来自 `payload`（`question` → `prompt` 的换算已经在上游做完）
     expect(ask.tool.interaction.questions).toEqual([
       {
@@ -388,6 +423,47 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
         secret: false,
       },
     ]);
+  });
+
+  /**
+   * 回归守卫（2026-10-08 修）：「等了多久」这一格必须是**真实时刻**。
+   *
+   * 两处读同一个 `interaction.at`：卡片标题上的「等待答复中… 12m」与固定区那枚「等待答复」徽标
+   * （`agent-log-layout.tsx` 的 `waitingSinceOf` 扫的正是 `LogTurn.blocks[].tool.interaction.at`）。
+   * 装配层一度把它写死成空串 ⇒ `Date.parse('')` 得 NaN、`formatDuration` 回落 `'0s'`，
+   * 固定区恒显「等待答复 0s」且永不涨：一次**长等待被读成「刚问完」**。
+   * 判据落在装配层（`familyPayloadOf` 收下块的时刻），所以卡片与徽标**同时**修好——
+   * 只在渲染层补会漏掉徽标那一半。
+   */
+  it('`ask-user` / `task` 的 `at` 取块的时刻（不是空串）——「等待了多久」两处共用这一格', () => {
+    const startedAt = '2026-10-02T10:00:00.000Z';
+    const ask = (callId: string): RowRecord =>
+      message({
+        id: `m-${callId}`,
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [
+          {
+            type: 'tool-call',
+            callId,
+            family: 'ask-user',
+            name: 'ask_user_question',
+            input: { questions: [{ question: '发哪？' }] },
+            payload: { kind: 'ask-user', questions: [{ header: '', prompt: '发哪？', options: [], multiSelect: false, allowOther: false, secret: false }] },
+          },
+        ],
+      });
+    const model = buildAgentLogModel({ records: [ask('c1')], events: [], facts: facts({ live: true, endedAt: null }), startedAt });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('内容应就绪');
+    const block = main.content.data[0]?.blocks[0];
+    if (block?.kind !== 'tool-call' || block.tool === null || block.tool.family !== 'ask-user') {
+      throw new Error('应为 ask-user 载荷');
+    }
+    expect(block.tool.interaction.at).not.toBe('');
+    expect(Number.isFinite(Date.parse(block.tool.interaction.at))).toBe(true);
+    // 与块的时刻同源（`roundTrip: 1` ⇒ base + 1s）
+    expect(block.tool.interaction.at).toBe(new Date(Date.parse(startedAt) + 1000).toISOString());
   });
 
   /**
@@ -896,5 +972,55 @@ describe('消息级用量与逻辑消息身份摊到块上（2026-10-06）', () 
     });
 
     expect(mainBlocks(model)[0]?.usage).toBeNull();
+  });
+});
+
+/**
+ * 没有正文的思考块**整块隐藏**（2026-10-07 用户口径）。
+ *
+ * 数据层仍然如实记着「有思考、无文本」这条事实（`text: null` + `textKind: 'none'`：codex 在只回密文
+ * 的路由上、或上游这一轮没给文本时就是这个形状），但那句话在界面上只能变成一句占位文案——
+ * **不是用户要看的思考** ⇒ 没有就不显示。过滤放在**模型层**而不是某个组件里：
+ * 时间轴、面包屑、以及任何一个消费方拿到的模型里都不该再有它。
+ *
+ * 这一条同时废掉了此前那个错误归因：这里曾把 `text === null` 一律说成 `'not-observed'`
+ * （「厂商有、我们还没接」），而 codex 的思考文本恰恰**来自我们接了的**通道
+ * （真机 `item/completed` 有全文）——把「这一轮没采到」说成「我们没做」是最忌讳的那类误读。
+ */
+describe('没有正文的思考块整块隐藏（2026-10-07）', () => {
+  function blocksOfFirstMessage(blocks: AgentMessage['blocks'], capability?: MessageCapabilityMap) {
+    const model = buildAgentLogModel({
+      records: [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks })],
+      events: [],
+      facts: facts(),
+      ...(capability === undefined ? {} : { capability }),
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    return main.content.data.flatMap((turn) => turn.blocks);
+  }
+
+  it('`text === null` 的思考块不进界面模型（与能力声明无关）', () => {
+    const blocks = blocksOfFirstMessage([{ type: 'thinking', text: null, textKind: 'none', signature: null }], {
+      thinkingText: { level: 'yes', source: 'wire', reason: null },
+    });
+    expect(blocks).toEqual([]);
+  });
+
+  it('无正文的思考块被隐藏，同一条消息里的正文块照常保留', () => {
+    const blocks = blocksOfFirstMessage([
+      { type: 'thinking', text: null, textKind: 'none', signature: null },
+      { type: 'text', text: '正文' },
+    ]);
+    expect(blocks.map((block) => block.kind)).toEqual(['text']);
+  });
+
+  it('有正文的思考块照常出现（`summary` 那一档也在），且 `textMissing` 恒 `null`', () => {
+    const blocks = blocksOfFirstMessage([
+      { type: 'thinking', text: '想了', textKind: 'full', signature: null },
+      { type: 'thinking', text: '厂商摘要', textKind: 'summary', signature: null },
+    ]);
+    expect(blocks.map((block) => block.kind)).toEqual(['thinking', 'thinking']);
+    for (const block of blocks) expect(block.kind === 'thinking' ? block.textMissing : 'n/a').toBeNull();
   });
 });

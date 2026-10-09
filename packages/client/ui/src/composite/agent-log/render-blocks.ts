@@ -14,9 +14,9 @@
  * 折叠态放这里会让「同一份输入」在不同的折叠历史下需要不同的输出，而返回值会被缓存——
  * 缓存与折叠态混在一起就是「用户展开的面板自己合上了」。
  *
- * `running` 不由本函数推断：它来自 `LogTurn.running`（数据层按「该轮是否已结束」给），
- * 本函数只做转发。入参里根本没有「这一轮结束了没有」这个信息，猜「最后一轮 = 流式中」
- * 会让一次被中断的回复永远转圈。
+ * `running` 不由本函数推断：入参第三格 `turn.running` 是数据层按「该轮是否已结束」给的，
+ * 本函数只做转发。而**块级**的「这一块说完了没有」也不许猜——它由 `block.assembly` 承担、
+ * 不是本函数算出来的；猜「最后一轮 = 流式中」会让一次被中断的回复永远转圈。
  */
 import type {
   AskUserInteraction,
@@ -336,7 +336,13 @@ export function buildRenderBlocks(
         }
         if (block.family === 'ask-user' && payload !== null && payload.family === 'ask-user') {
           flush();
-          out.push({ kind: 'ask-user-card', interaction: payload.interaction, cardId: block.id });
+          /**
+           * `at` 的**兜底**：正路是装配层填好（`build-model.ts` 的 `familyPayloadOf` 用块的时刻），
+           * 这里只兜「模型不是本函数造的」那种调用方——空串会让「等待了多久」塌成 `0s`。
+           */
+          const interaction =
+            payload.interaction.at === '' ? { ...payload.interaction, at: block.at } : payload.interaction;
+          out.push({ kind: 'ask-user-card', interaction, cardId: block.id });
           break;
         }
         // 通用工具行：族载荷缺失（适配器不认识、或不在本期两族里）也走这里，**调用不消失**

@@ -129,7 +129,7 @@ describe('useRowStream', () => {
     expect(result.current.events.at(-1)).toMatchObject({ seq: 3, type: 'log', text: '实时来的' });
   });
 
-  it('7 种事件类型全部按名字订阅，且 stop() 里逐个摘掉（R38 ①：类型清单取 contracts）', async () => {
+  it('八种事件类型全部按名字订阅，且 stop() 里逐个摘掉（R38 ①：类型清单取 contracts）', async () => {
     stubFetch([makeEvent({ seq: 1 })]);
 
     const { result } = mountStream();
@@ -251,15 +251,19 @@ describe('useRowStream', () => {
       }),
       { wrapper },
     );
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    // 行级流的连接按 **URL** 取，不按序号：本用例挂了 useRuns/useRun（给 mutate 找消费者），
+    // 它们现在会合法地开一条 run 级信号连接（/api/runs/events），实例池里多出的那一条与本用例无关
+    const rowSource = () =>
+      FakeEventSource.instances.find((source) => source.url.startsWith('/api/runs/run-1/rows/w-1/stream'));
+    await waitFor(() => expect(rowSource()).toBeDefined());
     const before = fetchMock.mock.calls.length;
 
     await act(async () => {
       const end = makeEvent({ seq: 2, type: 'end', exitReason: 'completed' });
-      FakeEventSource.instances[0]?.emitNamed('end', frame(end));
+      rowSource()?.emitNamed('end', frame(end));
     });
 
-    expect(FakeEventSource.instances[0]?.closeCount).toBe(1);
+    expect(rowSource()?.closeCount).toBe(1);
     await waitFor(() => {
       const urls = fetchMock.mock.calls.slice(before).map(([url]) => String(url));
       // 卡片上的分数/耗时/diff 摘要都在快照里，不刷就永远停在「执行中」

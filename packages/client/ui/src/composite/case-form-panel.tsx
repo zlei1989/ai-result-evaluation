@@ -48,13 +48,16 @@ import {
   type CaseCreate,
   type CommitCandidate,
   type GenerateRubricInput,
+  type GenerateRubricResult,
   type RepoInfo,
   type Rubric,
+  type RubricChange,
   type TestCase,
 } from '@aieval/contracts';
 import { Alert, AutoComplete, Button, Card, Flex, Form, Input, Radio, Tooltip, Typography, theme } from 'antd';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { formatDateTime } from '../base/format';
+import { RubricAdjustModal } from './rubric-adjust-modal';
 import { RubricRecognizeModal } from './rubric-recognize-modal';
 import { RubricTable } from './rubric-table';
 
@@ -123,10 +126,11 @@ export interface CaseFormPanelProps {
    */
   onRepoSelectionChange?: (selection: { repoPath: string; repoBranch: string | null }) => void;
   /**
-   * 生成 / 识别评分标准项。**成功才写回表格**（失败时面板什么都不做，错误由页面提示）——
+   * 生成 / 识别 / 调整评分标准项。**成功才写回表格**（失败时面板什么都不做，错误由页面提示）——
    * 反面写法是「先清空再请求」：一次抖动就清掉用户刚调好的表。
+   * 注意「成功」在调整分支上**不等于**「已写回」：那一支要等用户在弹窗里点「应用改动」（见 `handleAdjust`）。
    */
-  onGenerate: (input: GenerateRubricInput) => Promise<{ rubric: Rubric; addedItems: number; note?: string }>;
+  onGenerate: (input: GenerateRubricInput) => Promise<GenerateRubricResult>;
   onLoadCommits: () => void;
 }
 
@@ -212,6 +216,8 @@ export function CaseFormPanel({
 
   /** 识别弹窗是否打开。表格状态**不在这里**（见文件头要点 1）：这个 state 只管弹窗开合 */
   const [recognizeOpen, setRecognizeOpen] = useState(false);
+  /** 调整弹窗是否打开（同样只管开合：清单与新表都在那个组件自己的 state 里） */
+  const [adjustOpen, setAdjustOpen] = useState(false);
   /**
    * 识别请求的**代次**：只有最新一代的结果才回填（见文件头要点 9）。
    * 取消（或关掉再开一次）会把代次推进一格，于是那次在途请求回来时直接作废——
@@ -251,6 +257,7 @@ export function CaseFormPanel({
     if (values === null) return;
     try {
       const generated = await onGenerate({
+        mode: 'generate',
         rubric: form.getFieldValue('rubric') ?? { groups: [] },
         taskPrompt: values.taskPrompt ?? '',
         prompt: '',
@@ -263,13 +270,36 @@ export function CaseFormPanel({
   };
 
   /**
+   * 智能调整：把**当前表格**与用户那句话一起交出去，拿回「模型改完的新表 + 服务端算出的改动清单」。
+   * **这里不写回表格**——写回要等用户在弹窗里点「应用改动」（`handleAdjustApply`）。
+   * 关口只有这一处：模型有顺手润色的倾向，而微调的对象是用户可能已经调了很久、甚至跑过评测的标准。
+   */
+  const handleAdjust = async (instruction: string): Promise<{ rubric: Rubric; changes: RubricChange[] }> => {
+    const generated = await onGenerate({
+      mode: 'adjust',
+      rubric: form.getFieldValue('rubric') ?? { groups: [] },
+      // 题面只作理解上下文（服务端拿它帮模型读懂「A1」指的是哪一项）；空着也能用
+      taskPrompt: (form.getFieldValue('taskPrompt') as string | undefined) ?? '',
+      prompt: instruction,
+      repoPath: '',
+    });
+    return { rubric: generated.rubric, changes: generated.changes ?? [] };
+  };
+
+  /** 用户在预览段点了「应用改动」：**这一刻**才把新表写进表单（本功能唯一的写入口） */
+  const handleAdjustApply = (rubric: Rubric): void => {
+    form.setFieldValue('rubric', rubric);
+    setAdjustOpen(false);
+  };
+
+  /**
    * 智能识别：**只带用户粘的文本**（服务端不碰仓库，故不需要 repoPath），成功后整表替换。
    * 抛错时**不关弹窗、不清文本**——那是本弹窗存在的理由；
    * 在途期间用户按了取消（代次变了）则**这一次的结果作废**，一个字都不回填（见文件头要点 9）。
    */
   const handleRecognize = async (prompt: string): Promise<void> => {
     const epoch = recognizeEpochRef.current;
-    const generated = await onGenerate({ rubric: { groups: [] }, taskPrompt: '', prompt, repoPath: '' });
+    const generated = await onGenerate({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt, repoPath: '' });
     // 用户在请求在途时按了取消 / 关了弹窗（或又开了一次）：他刚表示「这次不要了」，
     // 结果回来时表格**必须原样**——在用户看不见的地方换掉表格是最难被发现的一种错
     if (epoch !== recognizeEpochRef.current) return;
@@ -370,10 +400,21 @@ export function CaseFormPanel({
                 >
                   智能识别
                 </Button>
+                {/* 「智能调整」按**现有**表格改（用户口径 2026-10-08）：与另两个的区别只在输入与落点，
+                    按钮文案说不清的部分由弹窗里的说明承担 */}
+                <Button
+                  size="small"
+                  autoInsertSpace={false}
+                  disabled={generating}
+                  data-testid="case-adjust-rubric"
+                  onClick={() => setAdjustOpen(true)}
+                >
+                  智能调整
+                </Button>
               </>
             ) : (
               // 禁用按钮不触发鼠标事件：Tooltip 必须挂在 span 上（见文件头要点 4）。
-              // **两个按钮都在、都禁用**：识别同样要用那把尺子，藏起来只会让用户以为这一版没有识别
+              // **三个按钮都在、都禁用**：识别与调整同样要用那把尺子，藏起来只会让用户以为这一版没有它们
               <Tooltip title={GLOBAL_JUDGE_TOOLTIP}>
                 <Flex component="span" gap={8} data-testid="case-generate-wrapper">
                   <Button size="small" disabled autoInsertSpace={false} data-testid="case-generate-rubric">
@@ -381,6 +422,9 @@ export function CaseFormPanel({
                   </Button>
                   <Button size="small" disabled autoInsertSpace={false} data-testid="case-recognize-rubric">
                     智能识别
+                  </Button>
+                  <Button size="small" disabled autoInsertSpace={false} data-testid="case-adjust-rubric">
+                    智能调整
                   </Button>
                 </Flex>
               </Tooltip>
@@ -413,6 +457,15 @@ export function CaseFormPanel({
         recognizing={generating}
         onCancel={handleRecognizeCancel}
         onRecognize={handleRecognize}
+      />
+
+      {/* 调整弹窗：新表只在它自己的 state 里，点「应用改动」才经 handleAdjustApply 写回表格 */}
+      <RubricAdjustModal
+        open={adjustOpen}
+        adjusting={generating}
+        onCancel={() => setAdjustOpen(false)}
+        onAdjust={handleAdjust}
+        onApply={handleAdjustApply}
       />
 
       {/* 来源类型：显式选择（界面态），与服务端的形态判定是两件事（见文件头要点 6）。

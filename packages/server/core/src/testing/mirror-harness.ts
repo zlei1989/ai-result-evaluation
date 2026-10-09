@@ -3,8 +3,8 @@
  * 远端镜像层：目录 key、克隆到 tmp + 原子 rename、幂等与半成品重建、增量更新与镜像记录、
  * 远端探活（ls-remote）与失败分类。
  * 夹具是**真 git 仓库**（file:// 指向一个裸克隆），不打网络——远端链路的每条路径都要能在离线跑。
- * 唯一的例外是「沉默远端」（一个只 accept、不回话的本地 TCP 服务）：它用来钉住「克隆被墙钟杀掉」这条路径。
- */
+ * 例外都是**本地 TCP**、仍不出机器：「沉默远端」（只 accept、不回话）用来钉「克隆被墙钟杀掉」，
+ * `unusedPort()` 造的 `http://127.0.0.1:<port>` 用来钉「未监听端口 / 探活超时」。 */
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';

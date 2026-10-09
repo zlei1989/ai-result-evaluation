@@ -26,7 +26,7 @@
  *      该由抽屉说「还没有日志」（那是真的没开始跑，两者必须能分开）；
  *   4. `streamError` 里 `undefined` 与 `null` 等价（`useRowStream().error` 的初值是 `null`）。
  */
-import { ROW_STATUS_LABELS, isRunningRow, type AgentEvent, type EvalRow } from '@aieval/contracts';
+import { AGENT_LABELS, ROW_STATUS_LABELS, isRunningRow, type AgentEvent, type EvalRow } from '@aieval/contracts';
 import type { AgentLogFactsInput, AgentRunStatus, DomainFact, DomainFactSegment } from '@aieval/client';
 import { describeError } from './runs-view';
 
@@ -193,6 +193,40 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
   const lastEnd = lastEvent(events, 'end');
 
   const domain: DomainFact[] = [];
+  /**
+   * 「谁在跑」三格（用户 2026-10-07 口径）：智能体 / 模型 / 思考强度。它们与下面
+   * 「改了多少 / 得了多少分」**同属固定区的第二行**（`agent-log-domain-facts.tsx`），
+   * 顺序即渲染顺序（界面不重排），故这三格先 push。
+   *
+   * **为什么不给 `AgentLogFacts` 加三个字段**：`agent-log` 不认「评测行」这个业务概念（D18），
+   * 加字段等于把评测行的形状写进通用件；而 `domain` 本来就是「数据层给格名与值、UI 只摆版」的口子。
+   *
+   * 值走 `segments` 的 `tag` 段、一色一格（智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`），
+   * 与评分详情顶部那一段同色——同一个档位在本仓的两处长得一样。档位照上游词汇原样写：
+   * 显式关闭档就是 `off`，它**不是**「未指定」的同义词；键缺席（老快照）才是「未指定」。
+   */
+  const agentText = AGENT_LABELS[row.agentKind];
+  const effortText = row.effort === undefined ? '未指定' : row.effort;
+  domain.push(
+    {
+      id: 'agent',
+      label: '智能体',
+      value: agentText,
+      segments: [{ text: agentText, tag: true, tagTone: 'blue' }],
+    },
+    {
+      id: 'model',
+      label: '模型',
+      value: row.modelId,
+      segments: [{ text: row.modelId, tag: true, tagTone: 'geekblue' }],
+    },
+    {
+      id: 'effort',
+      label: '思考强度',
+      value: effortText,
+      segments: [{ text: effortText, tag: true, tagTone: 'purple' }],
+    },
+  );
   if (row.diff !== null) {
     /**
      * 改动那一格按 git stat 排版（2026-10-07 用户口径）：文件数次要色 + `+N` 绿 + `−N` 红。
@@ -214,25 +248,15 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
   }
   if (row.score !== null) {
     /**
-     * 「尺子」那一句（光有模型名回答不了这个分是文本请求打的还是智能体会话打的）。
-     * 模型名（智能体通路还带上智能体名）做成 `Tag`：`hint` 是次要色的一句话，名字混在里面读不出来。
+     * 「评分」这一格**只给分**（用户 2026-10-07 口径：删掉「评分模型：…」那句提示）。
+     * 「谁当的尺子」（评分模型 / 评分智能体）归**评分详情**那一页说——事实条上再写一遍
+     * 是与那一页争夺注意力，而那一页里连着通路（文本 API / 智能体）与强度一起给，信息是完整的。
      */
-    const hintSegments: DomainFactSegment[] =
-      row.score.judgeAgentKind === null
-        ? [{ text: '评分模型：' }, { text: row.score.judgeModelId, tag: true }]
-        : [
-          { text: '评分智能体：' },
-          { text: row.score.judgeAgentKind, tag: true },
-          { text: ' · 模型：' },
-          { text: row.score.judgeModelId, tag: true },
-        ];
     domain.push({
       id: 'score',
       label: '评分',
       value: `${row.score.totalScore}/${row.score.maxScore}`,
       tone: 'success',
-      hint: segmentsText(hintSegments),
-      hintSegments,
     });
   }
 
@@ -258,7 +282,6 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
         : { tokens: lastUsage.tokens.reasoningOutput, basis: 'subset-of-output' },
     domain,
     error: row.error === null ? null : { code: row.error.code, message: row.error.message },
-    exitReason: lastEnd?.exitReason ?? null,
     live,
   };
 }

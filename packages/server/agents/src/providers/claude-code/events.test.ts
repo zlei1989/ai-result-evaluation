@@ -3,9 +3,19 @@
  * claude-code 的消息投影：计量三项齐全才有值、缺项 → null + WARN、重复丢弃、未识别保留。
  * 这里的两条断言（未识别不丢失 / 缺失得 null）是本计划的核心守卫，必须逐字按 spec §5.6.3 的措辞验。
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { TurnState } from '../../turn';
 import { projectClaudeMessage } from './events';
+import { resetClaudeTaskNamesForTesting } from './message';
+
+/**
+ * 子任务名字表是**模块级**的（收场帧没有 `description`，名字只能在派发帧记下，见 `message.ts` 顶部）：
+ * 生产上 `task_id` 每轮都是新 UUID、不会串，但**用例之间会串** ⇒ 每条用例前清一次，
+ * 判据才只取决于本用例喂进去的消息。
+ */
+beforeEach(() => {
+  resetClaudeTaskNamesForTesting();
+});
 
 const CONTEXT = { kind: 'claude-code', baseUrl: 'https://gw.example.com/anthropic' } as const;
 
@@ -556,8 +566,12 @@ describe('projectClaudeMessage：重复与未识别', () => {
   /**
    * 工具块那一条的**人话摘要**（用户口径，2026-09-29）：卡片底部的活动行显示 `summary`，
    * 而 `[{"type":"tool_use",…}]` 那种几百字符的 JSON 不是消息。原始负载仍逐字在 `text` 里。
+   *
+   * **2026-10-07 加参数**：从前只给工具名（`调用工具 Bash`），而同一行原始负载里 `input.command`
+   * 写着 `ls -la "D:/w"` —— 那句摘要比它替换掉的人话信息量更低（活动行反而更差）。
+   * 现在参数摘要与另两家共用 `src/activity.ts`：同一句句式、同一把截断尺子。
    */
-  it('工具块带人话摘要（同名工具只列一次），原始 JSON 一个字段都不少', () => {
+  it('工具块带人话摘要（工具名 + 参数，多个块串成一句），原始 JSON 一个字段都不少', () => {
     const projection = projectClaudeMessage(
       {
         type: 'assistant',
@@ -575,7 +589,9 @@ describe('projectClaudeMessage：重复与未识别', () => {
     );
     const [draft] = projection.drafts;
 
-    expect(draft?.type === 'log' ? draft.summary : undefined).toBe('调用工具 Edit、Bash');
+    expect(draft?.type === 'log' ? draft.summary : undefined).toBe(
+      '调用工具 Edit：README.md；调用工具 Edit：a.ts；调用工具 Bash：ls',
+    );
     expect(draft?.type === 'log' ? draft.text : '').toContain('"name":"Bash"');
   });
 
@@ -614,6 +630,53 @@ describe('projectClaudeMessage：重复与未识别', () => {
     expect(projection.drafts).toHaveLength(1);
     const draft = projection.drafts[0];
     expect(JSON.parse(draft?.type === 'log' ? draft.text : '')).toEqual(raw);
+  });
+
+  /**
+   * `user` 消息承载的是工具结果（真机形状：
+   * `{"type":"user","message":{"role":"user","content":[{"tool_use_id":…,"type":"tool_result","content":…}]}}`）。
+   *
+   * 口径（2026-10-07 统一）：**成功返回不播、报错必须播**——活动行回答「在做什么」，
+   * 而「这一行出事了」没有别的行级出口。原始负载两种情形都照旧逐字落盘。
+   */
+  it('工具结果：成功返回**不给摘要**、报错给「工具报错：…」，两者的原始负载都不动', () => {
+    const ok = projectClaudeMessage(
+      {
+        type: 'user',
+        uuid: 'u-ok',
+        message: {
+          role: 'user',
+          content: [{ tool_use_id: 't1', type: 'tool_result', content: 'File created successfully at: D:\\w\\index.html' }],
+        },
+      },
+      newState(),
+      CONTEXT,
+    );
+    expect(ok.drafts).toHaveLength(1);
+    expect(ok.drafts[0]?.type === 'log' ? ok.drafts[0].summary : 'x').toBeUndefined();
+    expect(ok.drafts[0]?.type === 'log' ? ok.drafts[0].text : '').toContain('File created successfully');
+
+    const bad = projectClaudeMessage(
+      {
+        type: 'user',
+        uuid: 'u-bad',
+        message: {
+          role: 'user',
+          content: [
+            {
+              tool_use_id: 't2',
+              type: 'tool_result',
+              is_error: true,
+              // 内容块数组那种外形（真机两种都出现过）
+              content: [{ type: 'text', text: 'Error: ENOENT: no such file or directory' }],
+            },
+          ],
+        },
+      },
+      newState(),
+      CONTEXT,
+    );
+    expect(bad.drafts[0]).toMatchObject({ summary: '工具报错：Error: ENOENT: no such file or directory' });
   });
 });
 
@@ -867,6 +930,34 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
     expect(payload.isBackgrounded).toBe(false);
     // 活动行摘要要能读懂，且带厂商给的任务名
     expect((draft as { summary?: string }).summary).toContain('Count lines in notes.txt');
+  });
+
+  it('没有 description 时摘要**不留占位名**（旧实现产出的是「已派发子任务：子任务」）', () => {
+    const projection = projectClaudeMessage({ ...TASK_STARTED, description: undefined }, newState(), CONTEXT);
+    // 词表实现只有一份（`src/activity.ts`）：名字缺失时整句就是「已派发子任务」
+    expect(projection.drafts[0]).toMatchObject({ summary: '已派发子任务' });
+  });
+
+  /**
+   * 收场帧**没有** `description`（真机键集：`task_notification` = task_id / tool_use_id / status /
+   * output_file / summary / usage / uuid / session_id，见 `message.ts` 顶部的名字表）⇒
+   * 名字必须从派发帧回填，否则活动行上会出现「已派发子任务：X」紧跟一句无名的「子任务已完成」。
+   */
+  it('收场帧按真机形状（无 `description`）：名字从派发帧回填，摘要带得上名', () => {
+    const state = newState();
+    projectClaudeMessage(TASK_STARTED, state, CONTEXT);
+    const done = projectClaudeMessage({ ...TASK_DONE, description: undefined }, state, CONTEXT);
+    expect(done.drafts[0]).toMatchObject({ summary: `子任务已完成：${TASK_STARTED.description}` });
+
+    // 证据里也带上回填到的那一份（日志只剩 subagentId 的话，按 id 反查名字要另一张表）
+    const payload = JSON.parse((done.drafts[0] as { text: string }).text);
+    expect(payload.name).toBe(TASK_STARTED.description);
+  });
+
+  it('派发帧没到过（只见到收场帧）⇒ 仍然无名，不编一个', () => {
+    resetClaudeTaskNamesForTesting();
+    const done = projectClaudeMessage({ ...TASK_DONE, description: undefined }, newState(), CONTEXT);
+    expect(done.drafts[0]).toMatchObject({ summary: '子任务已完成' });
   });
 
   it('task_notification ⇒ 结束事件带**真实终态**与结果摘要（不是猜的）', () => {

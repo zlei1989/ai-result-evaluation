@@ -3,7 +3,7 @@
 /**
  * `task` 族的状态化清单面板：agent 自述的进度**当前状态**（不是一次调用的回显）。
  *
- * 五条口径：
+ * 六条口径：
  *   · **计数与变化摘要都照数据层给的渲染，UI 一个都不自己算**：本组件看不到上一张清单，
  *     跨轮比较它做不到，而数据层本来就有累积态；
  *   · **分母是四格之和**（含 `unknown`）：少了 `unknown` 那一格，含未知项的「3/5 完成」分母必错；
@@ -13,11 +13,16 @@
  *   · 清单四态各有中文与色档，**`unknown` 用中性灰、绝不显示成成功**；
  *     `owner === null`（这家没有「指派」这个概念）**整格不画**，`owner === ''`（有概念但无人认领）
  *     显示「未指派」；`id === null` 时 id 与依赖都不画（`blockedBy` 的值就是 id，**不自己发号**）；
+ *   · **形态是两列的 small `Table`**（用户 2026-10-07 口径）：左列任务（文本 + owner + 依赖），
+ *     右列状态，且**右列走列级 `align: 'right'`**（antd 把它落到单元格的内联 `textAlign`，
+ *     不手写 CSS）；表头整条隐藏（`showHeader={false}`）⇒ 列**不写 `title`**：写了也不会上屏，
+ *     只会让读的人以为有个列名。一行一件任务，读法是「有什么任务、它到哪一步了」；
  *   · **「本轮另有 N 次更新」是一行静态说明，不是折叠项**：本件没有第二份开合态可用
  *     （L0 一律不得自己持态），画一个点不开的箭头比写清楚这件事更糟。
  */
-import { Collapse, Flex, Listy, Tag, Typography } from 'antd';
-import { useMemo, type ReactNode } from 'react';
+import { Collapse, Flex, Table, Tag, Typography } from 'antd';
+import type { TableColumnsType } from 'antd';
+import type { ReactNode } from 'react';
 import { AgentRunStateTag } from './agent-run-state-tag';
 import { RawOutputPanel } from './raw-output-panel';
 import type { TaskPanel, TaskStep } from './types';
@@ -84,11 +89,14 @@ function changeSummary(change: TaskPanel['change']): string | null {
   return parts.length === 0 ? null : parts.join(' · ');
 }
 
-/** 一项清单：状态 + 文本 +（这家有这个概念时）owner +（拿得到 id 时）依赖 */
-function StepRow({ step }: { step: TaskStep }): ReactNode {
+/**
+ * 任务单元格：文本 +（这家有这个概念时）owner +（拿得到 id 时）依赖。
+ * owner 与依赖**跟文本同格**：它们描述的是「这件事」，不是「它现在什么状态」——
+ * 而状态列要窄且稳定（右对齐才看得出来是右边那一列）。
+ */
+function TaskCell({ step }: { step: TaskStep }): ReactNode {
   return (
     <Flex align="center" gap={4} wrap>
-      <Tag color={stepColor(step.status)}>{TASK_STEP_STATUS_LABELS[step.status]}</Tag>
       <Typography.Text>{step.subject}</Typography.Text>
       {/* `null` = 这一家没有「指派」这个概念 ⇒ 整格不画；`''` = 有概念但当前无人认领 ⇒ 明说 */}
       {step.owner !== null && <Tag>{step.owner === '' ? '未指派' : step.owner}</Tag>}
@@ -99,6 +107,23 @@ function StepRow({ step }: { step: TaskStep }): ReactNode {
     </Flex>
   );
 }
+
+/** 状态单元格：四态 Tag（色档见 `stepColor`，`unknown` 是中性灰） */
+function StatusCell({ step }: { step: TaskStep }): ReactNode {
+  return <Tag color={stepColor(step.status)}>{TASK_STEP_STATUS_LABELS[step.status]}</Tag>;
+}
+
+/**
+ * 两列定义放在组件外：它既不读 props 也不读 token。
+ * **每列显式给 `key`**：不给 `key` 也不给 `dataIndex` 时，rc-table 退回内部占位键
+ * （`getColumnsKey`：`key || dataIndex || INTERNAL_KEY_PREFIX`，重名再补 `_next`）——
+ * 键就成了位置性的、读不出是哪一列，而它正是列宽测量缓存的键。
+ * 表头是隐藏的，故两列都不写 `title`。
+ */
+const COLUMNS: TableColumnsType<TaskStep> = [
+  { key: 'subject', render: (_, step) => <TaskCell step={step} /> },
+  { key: 'status', align: 'right', render: (_, step) => <StatusCell step={step} /> },
+];
 
 export function TaskPanelCard({
   panel,
@@ -115,9 +140,6 @@ export function TaskPanelCard({
   const total = counts.pending + counts.inProgress + counts.completed + counts.unknown;
   const countText = total === 0 ? '清单为空' : `${counts.completed}/${total} 完成`;
   const change = changeSummary(panel.change);
-
-  // `steps` 是只读数组，而 `Listy` 要 `T[]`；摊平一次并挂住引用，免得每次渲染都让列表重算
-  const steps = useMemo(() => [...panel.steps], [panel.steps]);
 
   const label = (
     <Flex vertical>
@@ -152,10 +174,18 @@ export function TaskPanelCard({
                 // 空表与「没采到」必须分得开：这家明确报了一张空清单
                 <Typography.Text type="secondary">清单为空（这家报了空表）</Typography.Text>
               ) : (
-                <Listy
-                  items={steps}
+                <Table<TaskStep>
+                  // 紧凑尺寸（本仓口径：执行日志里每个带 size 的组件都写死 small）
+                  size="small"
+                  // 表头整条隐藏：一共就两列，列名白占一行高度（用户 2026-10-07 口径）
+                  showHeader={false}
+                  // 一张清单最多十几行，分页在这一页没有意义（与 `score-detail-view` 同口径）
+                  pagination={false}
+                  // 一行的稳定键：`id` 拿不到时退回 `subject`（与改造前同一个键口径）。
+                  // `steps` 是只读数组，而 antd 的 `dataSource` 类型本来就收 `readonly T[]` ⇒ 不必再摊平一份
                   rowKey={(step) => step.id ?? step.subject}
-                  itemRender={(step) => <StepRow step={step} />}
+                  dataSource={panel.steps}
+                  columns={COLUMNS}
                 />
               )}
               {earlierCount > 0 && (
@@ -165,13 +195,16 @@ export function TaskPanelCard({
               )}
               {/* 归一化是视图，原文才是事实；结果没到手时连入口都不画（标题已写过「结果未采集」） */}
               {panel.result !== null && (
-                <RawOutputPanel
-                  source={{ kind: 'single', result: panel.result }}
-                  open={rawOpen}
-                  onOpenChange={onRawOpenChange}
-                  label="原始结果"
-                  onRetry={onRequestDiagnostics}
-                />
+                // 入口不自带容器（`raw-output-panel.tsx` 口径 7）：横排与间距由这一层给
+                <Flex align="center" gap={8} wrap>
+                  <RawOutputPanel
+                    source={{ kind: 'single', result: panel.result }}
+                    open={rawOpen}
+                    onOpenChange={onRawOpenChange}
+                    label="原始结果"
+                    onRetry={onRequestDiagnostics}
+                  />
+                </Flex>
               )}
             </Flex>
           ),

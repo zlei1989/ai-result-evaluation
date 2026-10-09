@@ -113,12 +113,14 @@ const DEFAULT_CAPABILITY: AgentCapabilityView = { usage: true, cancelMidTurn: tr
  */
 function runDisabledReason(row: EvalRow, running: boolean): string {
   if (running) return '正在运行中：请先终止它，再执行';
-  // 判据说不行、但上面那条对不上：只有判据**将来新增条件**时才会走到这里（今天不可达）
+  // 判据说不行、但上面那条对不上：只有判据**将来新增条件**时才会走到这里（今天不可达；
+  // 该函数自身的 docstring 记着「其余分支全部消失」，那两条**今天已不在代码里**——
+  // 「哪天删的」在本仓 git 里查不到 diff，只能按那份 docstring 采信）
   return '该行此刻不能执行：请稍候再试';
 }
 
 /**
- * 「重新评分」不可用的原因（顺序与编排层的 `rescoreRefusal` 同一序，措辞逐字相同）。
+ * 「重新评分」不可用的原因（与编排层的 `rescoreRefusal` **共享「在跑 / 没基线 / 没产出」那三条且同序**，文案**同义但不逐字**——服务端那句把状态放进 `ROW_STATUS_LABELS`，随「准备中 / 执行中 / 评分中」变；服务端另有界面看不见的 `settling` 一条）。
  * 判据**不看失败阶段**（2026-09-28 晚间口径）：已经出分的行、候选 agent 阶段失败的行都可重评，
  * 因此这里只剩「在跑 / 没基线 / 没产出」三条。
  */
@@ -126,7 +128,9 @@ function rescoreDisabledReason(row: EvalRow, running: boolean): string {
   if (running) return '正在运行中：请先终止它，再重新评分';
   if (row.baselineCommit === '') return '这一行的工作区未就绪，请先点「开始」跑一次';
   if (row.diff === null) return '这一行还没有跑过，没有可复评的改动';
-  // 同 `retryDisabledReason`：判据新增条件时才可达的兜底，今天不放行也不可达
+  // 同 `runDisabledReason`：判据新增条件时才可达的兜底，今天不放行也不可达（服务端还有一条
+  // `settling` 界面看不见——它的口径是「行已落终态、但 `rowAborts` 里还有条目 ⇒ 上一次运行
+  // 还没收尾」，与本文件的可用判据无关，那是一个真实可达的 409 窗口）
   return '该行当前不可重新评分：请先点「开始」让它完整跑过一次';
 }
 
@@ -150,8 +154,10 @@ export function EvalRowCard({
   // 所以按钮禁用，并在 Tooltip 里说清原因——禁用而不解释等于一个坏掉的按钮。
   const hasDiff = row.diff !== null;
   // 两个动作的可用判据与**服务端同一份**（contracts 的 canRescoreRow / canRetryRow）：
-  // 两处各写一份必然漂移，而漂移的表现是「按钮可点、点下去 409」。原因文案与编排层的
-  // `rescoreRefusal` / `retryRefusal` 逐条对应（顺序与措辞都一致）。
+  // 两处各写一份必然漂移，而漂移的表现是「按钮可点、点下去 409」。文案与服务端的关系分两种：
+  // **重新评分**那一侧与 `rescoreRefusal` 共享那三条且同序（同义但不逐字，见上一条注释）；
+  // **重跑**那一侧不是逐条对应——服务端 `retryRefusal` 只有竞态专用的一句（`retryRow` 的兜底），
+  // 而 `runDisabledReason` 今天只剩「正在运行中」一条真实分支（另两条已在 2026-09-29 删除）。
   const rescorable = canRescoreRow(row);
   const rescoreHint = rescorable ? undefined : rescoreDisabledReason(row, running);
   /**

@@ -30,8 +30,8 @@ import {
   displayRepoName,
   type CaseCreate,
   type GenerateRubricInput,
+  type GenerateRubricResult,
   type RepoInfo,
-  type Rubric,
   type TestCase,
 } from '@aieval/contracts';
 import {
@@ -63,6 +63,31 @@ import { isJudgeConfigured } from '@/src/judge-gate';
 import { NAV_ITEMS, type NavKey } from '@/src/nav';
 
 const ACTIVE_NAV: NavKey = 'cases';
+
+/** 「标题」列的兜底最小宽度：左栏被拖窄时，这一列至少还得读得下一整个用例名（如「简单测试」） */
+const CASE_TITLE_MIN_WIDTH = 240;
+
+/** 另外三列申报的宽度：仓库 / commit / 更新时间 */
+const CASE_COLUMN_WIDTH = { repoPath: 200, commitHash: 110, updatedAt: 150 } as const;
+
+/**
+ * 列表表格的最小宽度（px）：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
+ * （用户口径 2026-10-08：「标题列左悬浮」；做法与常量来历见 `ProviderTable` 的
+ * `PROVIDER_TABLE_MIN_WIDTH`，三张表是同一套口径）。
+ *
+ * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把四列**按比例压扁**——
+ * 「标题」是唯一吃剩余宽度的列，它是第一个被压到只剩省略号的；给了数字后 rc-table 把 `width`
+ * + `minWidth: 100%` 落到表格上，溢出变成**表格内部**的横向滚动，标题列钉在左侧、其余三列滑走。
+ *
+ * 700 = 三列宽（200 / 110 / 150）+ 标题列下限 240。≥700 时四列全都看得见、不滚（表格按
+ * `minWidth: 100%` 铺满左栏，多出来的宽度全给标题列），<700 时横向滚动、标题留在左边。
+ * ⚠️ jsdom 没有布局引擎、宽度量不了：这个数只由真机冒烟记录看着。
+ */
+const CASES_TABLE_MIN_WIDTH =
+  CASE_TITLE_MIN_WIDTH +
+  CASE_COLUMN_WIDTH.repoPath +
+  CASE_COLUMN_WIDTH.commitHash +
+  CASE_COLUMN_WIDTH.updatedAt;
 
 export default function Page(): React.ReactNode {
   return (
@@ -192,11 +217,15 @@ function CasesWorkspace(): React.ReactNode {
    * `note` 与 `addedItems` 只在**生成**分支有意义（识别分支 `addedItems` 恒为 0，见 `GenerateRubricResult`）：
    * 识别成功了却弹一句「已新增 0 项」是错的——那段文案属于生成侧，识别侧只该闭嘴。
    */
-  const handleGenerate = async (input: GenerateRubricInput): Promise<{ rubric: Rubric; addedItems: number; note?: string }> => {
+  const handleGenerate = async (input: GenerateRubricInput): Promise<GenerateRubricResult> => {
     try {
       const generated = await generate(input);
+      // 提示只在**该说的时候**说：调整分支的产出是弹窗里那份改动清单（页面再弹一句「已新增 0 项」是错的），
+      // 它只有 note（「模型认为不需要修改」）值得转达；生成分支照旧在真的补了条目时报数
       if (generated.note !== undefined) void message.info(generated.note);
-      else if (generated.addedItems > 0) void message.success(`已新增 ${generated.addedItems} 项`);
+      else if (input.mode === 'generate' && generated.addedItems > 0) {
+        void message.success(`已新增 ${generated.addedItems} 项`);
+      }
       return generated;
     } catch (error) {
       void message.error(errorMessage(error));
@@ -261,6 +290,10 @@ function CasesWorkspace(): React.ReactNode {
     {
       title: '标题',
       dataIndex: 'title',
+      // 钉在左边（用户口径 2026-10-08）：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
+      // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
+      // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
+      fixed: 'left',
       // 不传 width：省略号跟着单元格走，栏位拖宽后长标题多显示（写死 px 会在窄栏里被硬裁掉、且没有省略号）
       render: (title: string) => <EllipsisText text={title} />,
     },
@@ -268,7 +301,7 @@ function CasesWorkspace(): React.ReactNode {
       // 列名只叫「仓库」（用户 2026-09-29）：格子里的内容是仓库名（`displayRepoName` 取末段）
       title: '仓库',
       dataIndex: 'repoPath',
-      width: 200,
+      width: CASE_COLUMN_WIDTH.repoPath,
       render: (repoPath: string) => (
         // 列里只给末段，全路径在 Tooltip：深路径会把这列撑开、把标题挤没。
         // 取名一律走 contracts 的 `displayRepoName`（**渲染期专用、任何字符串都不抛**）：列表画的是
@@ -283,7 +316,7 @@ function CasesWorkspace(): React.ReactNode {
     {
       title: 'commit',
       dataIndex: 'commitHash',
-      width: 110,
+      width: CASE_COLUMN_WIDTH.commitHash,
       render: (commitHash: string | null) =>
         commitHash === null ? (
           <Typography.Text type="secondary">默认 HEAD</Typography.Text>
@@ -297,7 +330,7 @@ function CasesWorkspace(): React.ReactNode {
     {
       title: '更新时间',
       dataIndex: 'updatedAt',
-      width: 150,
+      width: CASE_COLUMN_WIDTH.updatedAt,
       render: (updatedAt: string) => formatDateTime(updatedAt),
     },
   ];
@@ -343,9 +376,9 @@ function CasesWorkspace(): React.ReactNode {
           }}
         />
       ) : (
-        // 表格自己不再滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y` 写死成
-        // `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
-        // 滚动交给外层容器，表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
+        // 纵向还是外层容器滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y`
+        // 写死成 `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
+        // 表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
         <TableScrollArea>
           <Table<TestCase>
             size="small"
@@ -354,6 +387,14 @@ function CasesWorkspace(): React.ReactNode {
             dataSource={cases}
             pagination={false}
             sticky
+            // 只给 `x`（**只开横向**，纵向那一位仍留给外层容器）：它是「左栏够不够宽」的判据本身——
+            // 表格拿到 `width: 700px` + `min-width: 100%`，窄于 700 时内部横向滚动（标题钉在左侧），
+            // 宽于 700 时按 100% 铺满、一条滚动条都不出现。给 `true` 等于没有下限，给 `'max-content'`
+            // 则按最宽内容撑开 —— 两者都让固定列失效（理由详见 `CASES_TABLE_MIN_WIDTH`）。
+            // ⚠️ 与 `sticky` 同时在场是安全组合：rc-table 在 `fixHeader || isSticky` 分支里把
+            // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
+            // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
+            scroll={{ x: CASES_TABLE_MIN_WIDTH }}
             // 列宽由表头算，不跟内容走（用户 2026-09-29 的省略口径）：`EllipsisText` 的
             // `max-width: 100%` 要有确定的分母，「放不下才省略」才成立。rc-table 见到 `sticky`
             // 本就会落到 `fixed`，这里显式写一遍是为了不把这条前提交给巧合——哪天 `sticky` 被

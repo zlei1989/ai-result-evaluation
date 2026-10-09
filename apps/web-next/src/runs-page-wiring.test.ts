@@ -2,7 +2,7 @@
 /**
  * 日志抽屉的**接线**守卫：页面必须把实时通道的原因喂给 `resolveLogDrawer`。
  *
- * 为什么需要一条读源码的用例：`apps/web-next` 不能写 `.tsx` 测试（AGENT.md 的硬约束：该应用
+ * 为什么需要一条读源码的用例：`apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 的硬约束：该应用
  * `jsx: preserve`），于是页面这一层没有渲染测试面，判定逻辑只能抽成纯函数（`log-drawer-state`）。
  * 但**纯函数的守卫看不见「调用方有没有把参数传进来」**——p5 阶段评审的 M2 正是这种缺陷：
  * `log-drawer-state` 的 6 条用例全绿，而页面只喂了 `logError: log.error`，`stream.error` 从不进
@@ -97,7 +97,7 @@ describe('runs 页面的执行日志接线', () => {
  *
  * 与上面同一类缺口：数据层（`@aieval/client`）与展示层（`@aieval/ui`）各自有自己的用例，
  * 而「页面有没有把它们接上」两边都看不见——漏接的症状就是**界面永远显示「未采集」**，
- * 三个包的用例还全绿。`apps/web-next` 不能写 `.tsx` 测试（AGENT.md 硬约束），
+ * 三个包的用例还全绿。`apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 硬约束），
  * 故这里按源码文本钉住三件事：订阅存在、只订阅在跑的行、按行注入详情面板。
  */
 describe('runs 页面的实时指标接线', () => {
@@ -281,7 +281,7 @@ describe('runs 页面的创建面板接线', () => {
  * 「编辑 / 删除」的**接线**守卫（与上面两组同一类缺口）：数据层（`@aieval/client`）与展示层
  * （`@aieval/ui`）各自有自己的用例，而「页面有没有把它们接上」两边都看不见——
  * 漏接的症状是「详情面板上那两个按钮点了没反应」或「编辑保存后列表不刷新」，而各包用例全绿。
- * `apps/web-next` 不能写 `.tsx` 测试（AGENT.md 硬约束），故这里按源码文本钉住。
+ * `apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 硬约束），故这里按源码文本钉住。
  */
 describe('runs 页面的编辑 / 删除接线', () => {
   const source = (): string => readFileSync(pagePath, 'utf8');
@@ -386,10 +386,13 @@ describe('runs 页面的编辑 / 删除接线', () => {
  * props 接上」谁都不看**。漏接的症状不是报错，是「点了按钮没反应」（`rawOpen` 恒假）
  * 或者「二级抽屉关不掉」（`onRawOpenChange` 没接），而两包的用例全绿。
  *
+ * 同一段源码里还挂着**顶部那两行的数据来源**那一条（2026-10-07 立、2026-10-08 反向）——它出于
+ * 同一条理由：视图在包里、页面这一层没有渲染测试面。两条守卫共用下面那个「抠块」助手。
+ *
  * 断言口径：抠出「评分详情」那一支抽屉的**整段**（从它的标题到它自己的 `</Drawer>`）再逐条断言，
  * 不整文件匹配 —— 页面里还有别的抽屉，整文件扫会让「footer 挂在别的抽屉上」也照样绿。
  */
-describe('runs 页面的「模型原始返回」入口接线（footer + 受控开合）', () => {
+describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控开合 + 评分数据来源）', () => {
   const source = (): string => readFileSync(pagePath, 'utf8');
 
   /**
@@ -435,5 +438,25 @@ describe('runs 页面的「模型原始返回」入口接线（footer + 受控�
     );
     expect(text, '没有把 rawOpen 受控传给 ScoreDetailView（点了按钮不会有反应）').toContain('rawOpen={rawOpen}');
     expect(text, '没有把 onRawOpenChange 传给 ScoreDetailView（二级抽屉关不掉）').toContain('onRawOpenChange=');
+  });
+
+  /**
+   * 顶部那两行的**数据来源**守卫（用户 2026-10-08 口径：那一段说的是**评分**的花销，不是被评那一行的）。
+   *
+   * 为什么必须在这一层反向钉：这**五格**（评分智能体 / 评分模型 / 思考强度 / 评分用量 / 评分耗时）
+   * 全在 `score` 上，页面只需要把 `score` 递下去；而 2026-10-07 那一版曾经把**候选行**（`EvalRow`）
+   * 也递进去当五格的来源。把那一格接回来不会有任何报错——组件已经不吃它了，TS 会在编译期拦下；
+   * 真正会静默出问题的是**反过来**：有人「顺手」把它加回来，然后组件里再长出第二份「候选运行信息」，
+   * 于是抽屉里又出现执行那一份数据（这次口径要拆掉的东西）。
+   *
+   * 断言口径与上面同一套：在「评分详情」抽屉的整段里找，不整文件匹配。
+   */
+  it('不把候选行传给 ScoreDetailView（抽屉里只讲这一分，候选数据不进评分详情）', () => {
+    const block = scoreDrawerBlock();
+    expect(block, '评分详情抽屉又把候选行传下去了：抽屉里会重新出现执行那一份数据').not.toContain('row={');
+    expect(block, '评分详情抽屉没有把 score 传下去').toContain('score={scoreDetail.score}');
+    expect(block, '评分详情抽屉没有把评分表快照传下去（逐项判定会对不上任何一张表）').toContain(
+      'rubric={scoreDetail.rubric}',
+    );
   });
 });

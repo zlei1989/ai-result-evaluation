@@ -37,6 +37,7 @@ export { formatBytes, formatDateTime, shortHash } from './base/format';
 export { MonoText, type MonoTextProps } from './base/mono-text';
 export { MarkdownText, type MarkdownTextProps } from './base/markdown-text';
 export { RubricSummaryText, RubricTable, type RubricTableProps } from './composite/rubric-table';
+export { RubricAdjustModal, type RubricAdjustModalProps } from './composite/rubric-adjust-modal';
 export {
   RubricRecognizeModal,
   type RubricRecognizeModalProps,

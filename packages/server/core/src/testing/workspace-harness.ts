@@ -35,7 +35,7 @@ export function makeTmp(prefix: string): string {
  * 在临时目录里跑一条 git 命令并返回 stdout。
  * `-c user.email / user.name` 是**必需**的：跑测试的机器不一定配了全局身份，缺它时 `git commit`
  * 直接以 `Author identity unknown` 失败。
- * 另两个 `-c` 是**隔离跑测试那台机器的配置**（与 `git.repo.test.ts` / `git.diff.test.ts` 同一先例）：
+ * 另两个 `-c` 是**隔离跑测试那台机器的配置**（与 `git-repo-*.test.ts` / `git-diff-*.test.ts` 同一先例）：
  *   · `core.autocrlf=false`——Git for Windows 的**系统级** gitconfig 就带 `core.autocrlf=true`，
  *     夹具写下的 `hello\n` 会在检出时变成 `hello\r\n`，断言逐字比内容就会红；
  *   · `commit.gpgsign=false`——全局开了签名而机器上没有密钥时，夹具的每一次 commit 都失败。

@@ -76,7 +76,6 @@ function model(): AgentLogModel {
       thinking: null,
       domain: [],
       error: null,
-      exitReason: null,
     },
     nodes: [node],
     activeNodeId: 'main',

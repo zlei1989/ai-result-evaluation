@@ -28,7 +28,8 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
 /**
  * 一次运行要哪种权限档（用户口径，2026-09-28）。**按阶段给，不按厂商给**：
  *   · `'full'`——智能体的执行阶段（候选改代码）。它要能装依赖、跑测试、写工作区之外的东西，
- *     所以「工作区可写」不够：codex 的 `workspace-write` 默认**关掉网络**（见 §5.6.4），
+ *     所以「工作区可写」不够：codex 的 `workspace-write` 默认**关掉网络**（见 `permission.ts` 的
+ *     `CODEX_PERMISSION_OPTIONS`），
  *     而「改完自己跑一遍测试」正是本产品要观察的行为之一 ⇒ 三家用各自的最宽档。
  *   · `'read-only'`——评分阶段。工作区是候选的产出，评审者改了它就污染「查看改动」抽屉
  *     （抽屉按需现算 diff）；编排层另有一次改动摘要对照（spec §7.4），本档是**执行层**的那一道。
@@ -42,7 +43,7 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
  * | permission  | claude-code                                              | codex                                            | dsh                    |
  * |-------------|----------------------------------------------------------|--------------------------------------------------|------------------------|
  * | `'full'`    | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
- * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=read-only` |
+ * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**，见 `codexPermissionOptions`） | `DSH_PERMISSION_MODE=read-only` |
  *
  * ⚠️ 两家有**必须成对**的选项，少一个就静默失效：
  *   · claude 的 `bypassPermissions` 需要 `allowDangerouslySkipPermissions: true`——SDK 只是把两者
@@ -56,7 +57,7 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
 export type AgentPermission = 'full' | 'read-only';
 
 /**
- * 领域归因码（§5.6.6）：**不是** contracts 的 `ErrorCode`。
+ * 领域归因码（§5.6.7）：**不是** contracts 的 `ErrorCode`。
  * 它没有对应的 HTTP 状态，落点是该行的事件日志；塞进 `ERROR_CODES` 会逼 `STATUS_BY_CODE`
  * 为它编造状态码。两组只在 `AUTH_FAILED` / `RATE_LIMITED` 上重名，含义各自独立。
  */
@@ -68,11 +69,11 @@ export type AgentErrorCode =
   | 'AUTH_FAILED' // 密钥无效
   | 'RATE_LIMITED'; // 限流
 
-/** 一次运行的全部输入。内部无厂商分支，无 process.env 读取（spec §5.6.2） */
+/** 一次运行的全部输入。内部无厂商分支，**不写** `process.env`（宿主环境只读展开，用于补 `PATH` / `HOME`；§5.6.5） */
 export interface AgentRunInput {
-  /** 该行工作区（编排层第 1、2 步已备好）；适配器不做任何 git 操作（§5.6.5 末段） */
+  /** 该行工作区（编排层第 1、2 步已备好）；适配器不做任何 git 操作（§5.6.6 末段） */
   cwd: string;
-  /** 该行独立配置目录（第 3 步已备好）：适配器里作为 HOME / USERPROFILE / 厂商配置目录（§5.6.4 不变量 3） */
+  /** 该行独立配置目录（第 3 步已备好）：适配器里作为 HOME / USERPROFILE / 厂商配置目录（§5.6.5 不变量 3） */
   configHome: string;
   /**
    * 权限档（见 `AgentPermission`）。**必填**：两个阶段（候选执行 / 评分）各表一次态，
@@ -81,7 +82,7 @@ export interface AgentRunInput {
   permission: AgentPermission;
   /** 考题提示词 */
   prompt: string;
-  /** 路由：只读输入；适配器只读、不写回、也不写 process.env（§5.6.4 不变量 1） */
+  /** 路由：只读输入；适配器只读、不写回、也不写 process.env（§5.6.5 不变量 1） */
   route: {
     protocolType: ProtocolType;
     baseUrl: string;
@@ -90,23 +91,25 @@ export interface AgentRunInput {
     /**
      * 该模型声明的上下文窗口（token）。**可选**：既有夹具与将来的第三方 provider 不该被它挡住，
      * 缺省 = 未知（各家保持自己的默认行为）。它是**事实**，不是方言：cc 读它决定要不要加 `[1m]` 后缀、
-     * codex 读它填 `model_context_window`、dsh 读它写 `settings.yaml`——三种写法都不出现在这一格里。
+     * codex 读它填 `model_context_window`、dsh 读它写 per-run overlay 的 `contextWindow`——三种写法都不出现在这一格里。
      */
     contextWindow?: number;
     /** 单次输出上限；今天只有 dsh 的目录用得上（可选，理由同上） */
     maxOutputTokens?: number;
   };
-  /** 外部要求停止（用户终止）；**不得**用它推断 exitReason（§5.6.5） */
+  /** 外部要求停止（用户终止）；**不得**用它推断 exitReason（§5.6.6） */
   signal: AbortSignal;
   /**
-   * 要求模型**按这份 JSON Schema 生成**最终答复（可选）。缺省 = 不约束，行为与今天逐字相同。
+   * 要求模型**按这份 JSON Schema 生成**最终答复（可选）。**语义是「我想要」**：
+   * 不支持的适配器**降级**（骨架在 `runTurn` 里判能力，把这一格从交给 `start` 的输入里摘掉），
+   * 并在结果里如实报 `applied.structuredOutput = false`。调用方**不再需要**先读注册表判能力。
+   *
    * 为什么是中性事实（spec D2）：翻译成 claude 的 `outputFormat` 还是 codex 的 `outputSchema`
    * 是适配器的事；契约里出现某一家 CLI 的语法，等于让跨端契约知道厂商方言。
-   * **不支持的适配器必须报错**（spec D11）：悄悄忽略会让调用方以为「已经强约束」，而实际什么都没发生。
    */
   outputSchema?: Record<string, unknown>;
   /**
-   * 要求的思考强度（可选，spec §4.4 / D12）。**为什么放这里而不是 route**：route 是**连接事实**
+   * 要求的思考强度（可选，spec §5.1.1）。**为什么放这里而不是 route**：route 是**连接事实**
    * （协议 / 地址 / 密钥 / 模型名 / 窗口），而强度是**请求参数**——它与 `permission` 同类，
    * 且它的值域由该行选的智能体决定，与连接无关。
    * **未选 ≠ 关闭**（2026-10-06 更正）：未选表示「不指定」——dsh 的适配器给缺省档 `high`，
@@ -193,11 +196,23 @@ export interface AgentRunResult {
    * 用途：需要**结构化答复**的调用方（评分智能体）从这里取文本，而不是从事件流里重建
    * （codex 发增量 delta、dsh 的 assistant 文本不进事件流，重建三家各不相同且不可靠）。
    * 失败与终止的结论也带它：排障时要能回答「它到底说了什么」。
+   *
+   * ⚠️ **这是跨家契约，不是各家的实现细节**：一致性套件的「最终答复口径（§2.10）」按产物逐家钉住
+   * 「有主会话答复就必须交得出」——漏写这一格的家会在套件上红（codex 在 app-server 重构里漏过一次，
+   * 各家自己的用例全绿而真机评分永远拿不到答复，见 `docs/codex-faq.md`）。
    */
   finalText: string | null;
+  /**
+   * 这一次**实际按能力处置成了什么**（A1）。必填：调用方据此记账（`ScoreResult.structuredOutput` 就是它），
+   * 缺格会让"降级了吗"变成"没采到"。
+   */
+  applied: {
+    /** schema 是否**真的下发给了适配器**（false = 该家不支持，或本次压根没要求 schema） */
+    structuredOutput: boolean;
+  };
 }
 
-/** 注册表元数据（§5.6.2 的表）：协议兼容性 / 终止能力 / 隔离级别的**唯一**查询点（A3） */
+/** 注册表元数据（§5.6.2 的表）：协议兼容性 / 行级能力 / 消息能力 / 档位域的**唯一**查询点（A3） */
 export interface AgentProviderMetadata {
   /**
    * 该智能体**能接受**的协议集合（非空、去重）：表单的候选池过滤、创建校验、评分智能体校验与
@@ -213,33 +228,28 @@ export interface AgentProviderMetadata {
    * claude-code / codex 仍是单元素（它们各自只讲一条 wire），集合形状对它们只是多一层数组。
    */
   protocolTypes: readonly ProtocolType[];
+  /** **行级**能力：这一家在「跑这一行」这件事上能做什么（内容级能力见下面的 `messageCapability`） */
   capability: {
     /** false ⇒ 「终止」按钮在该行上退化为「关闭运行时」，界面文案必须不同 */
     cancelMidTurn: boolean;
-    /** false ⇒ 该适配器采不到 token，界面显示「不支持计量」而不是 0 */
+    /**
+     * false ⇒ 该适配器采不到 token，界面显示「不支持计量」而不是 0。
+     * 跑动期那一条 `usage` 事件是**上报值还是估算**由事件自带的 `tokensBasis` 说明（A2）——
+     * 那是每一条事件的性质，不是这一家的静态属性，故这里没有对应的能力格。
+     */
     usage: boolean;
     /**
-     * 跑动期（行还没结束）发出的 `usage` 事件是**哪一种值**（用户口径，2026-09-26）：
-     *   · `'reported'`——适配器上报值（codex 的 `turn.completed`、dsh 的 `turn/end`）。
-     *     它与终值同口径，**可以**在跑动期就逐步回写运行快照；
-     *   · `'estimated'`——实时**估算**（claude-code：SDK 只在 `result` 上给结算值，跑动期只能
-     *     按 assistant 消息的用量累加）。它**只供界面显示**，绝不回写快照——快照是唯一落盘真相，
-     *     把估算写进去会让「崩溃 / 超时的行」看起来像采到了计量。
-     *
-     * 为什么可选、以及缺省处置：类型上可选是为了不把既有夹具与将来的第三方 provider 挡在门外；
-     * **缺省按 `'estimated'`（安全侧：不落盘）**。而 `registry.test.ts` 有一条守卫要求每一家
-     * 注册表成员显式声明它——缺省的代价（静默丢失逐步落库）不该由默认值默默承担。
-     */
-    liveUsage?: 'reported' | 'estimated';
-    /**
-     * 该适配器能不能把 `AgentRunInput.outputSchema` 落到实处（**必填**，spec D3）。
+     * 该适配器能不能把 `AgentRunInput.outputSchema` 落到实处（**必填**）。
      * 为什么必填而不是「可选 + 守卫」：可选会被默认成 false 而无人验证；`cancelMidTurn` / `usage`
      * 已经是必填，这里保持 `capability` 内部同一形状。
-     * **分层**：这一格说的是**能力**，处置分两层，故它与上面 `outputSchema` 的「不支持的适配器必须
-     * 报错」（spec D11）并不矛盾：
-     *   · **编排层先查这一格**——`false` ⇒ 它一个字段都不发，只**发一条行日志**说明降级（spec D4）；
-     *   · **适配器只在真的拿到 schema、且自己不支持时报错**（spec D11）——那是纵深防御，拦的是绕过
-     *     编排层、直接构造 `AgentRunInput` 喂给适配器的旁路（dsh 那处守卫就是这一层）。
+     *
+     * **A1 起这一格只有一个消费方**：适配器在 `run` 里把它**转发**进 `TurnHooks.capability`
+     * （`providers/<kind>/index.ts`），由骨架 `runTurn` 在 `start` 之前统一处置——`false` 且调用方
+     * 要了 schema ⇒ **摘掉这一格**再交给 `start`，并在结果里记 `applied.structuredOutput = false`。
+     * 调用方（编排层）因此**不再需要**先读这一格自己判能力。
+     *
+     * 「适配器拿到 schema 就报错」那道纵深防御**随 A1 删除**（spec D12）：降级口径只该有一处。
+     * 代价：绕过 `run` 直接构造 `AgentRunInput` 的旁路不再报错——知情接受并登记（spec §10 R4）。
      */
     structuredOutput: boolean;
   };
@@ -253,12 +263,11 @@ export interface AgentProviderMetadata {
    * 拿不到」挤进同一格。
    */
   messageCapability: MessageCapability;
-  /** 工具循环跑在哪里；见 §5.6.5 的释放要求 */
-  isolation: 'inprocess' | 'subprocess';
   /**
    * 该家能表达的思考强度档位（**完整值域**，spec D11 的表）。**必填**并由 `registry.test.ts` 守卫：
    * 候选池的「上游档位 ∩ 智能体档位」交集（D10）全靠它，缺一格就是静默少一批可选档。
-   * 值域依据：cc = Agent SDK 的 `EffortLevel`；codex = codex-sdk 的 `ModelReasoningEffort`；
+   * 值域依据：cc = Agent SDK 的 `EffortLevel`；codex = `codex app-server` 的 `ReasoningEffort`
+   * （另加本仓统一的关闭档 `off`，适配器翻成 CLI 的 `none`）；
    * dsh = `llm-deepseek` 的 `reasoningEffort` schema（只认四档）。
    */
   reasoningEfforts: readonly string[];
@@ -281,13 +290,10 @@ export interface AgentProvider {
 }
 
 /**
- * 一份**最宽松**的消息能力声明（六格全 `'yes'`、取数通道 `'wire'`）：给**测试夹具**与
- * 将来的第三方 provider 用的默认值。
- *
- * 为什么测试用「全 yes」而不是「全 unverified」：这两组用例（注册表守卫、编排层夹具）关心的是
- * 协议集合、档位域与运行骨架，一份 `unverified` 的能力声明只会让它们反复断言同一件事而看不出差别；
- * 而**生产适配器必须各自显式声明**（三家的声明就在各自的 `providers/<kind>/index.ts` 里）——
- * 这条「没人可以不声明」的约束由 `registry.test.ts` 的守卫钉住。
+ * 一份**最宽松**的消息能力声明（六格全 `'yes'`、取数通道 `'wire'`）：给**包内测试夹具**用的默认值。
+ * 为什么测试用「全 yes」而不是「全 unverified」：这些用例关心的是协议集合、档位域与运行骨架，
+ * 一份 `unverified` 会反复断言同一件事而看不出差别；而**生产适配器必须各自显式声明**。
+ * **不从包出口转出**（它今天只有包内消费方，出口面只该放跨包契约）。
  */
 export function permissiveMessageCapability(): MessageCapability {
   return {

@@ -4,128 +4,125 @@
 
 ## 约束
 
-- **写 Next.js 代码前先读 `apps/web-next/node_modules/next/dist/docs/` 中的相关指南** — 当前版本可能有训练数据未覆盖的破坏性变更
-- **写 UI 前先用 context7 查组件用法** — 常规界面与布局用 `antd`；适配 `light` 与 `dark` 主题，弹性布局自适应屏幕尺寸；样式一律走 `antd`（主题 token / 紧凑密度 / 语义 `styles`）——**不手写字号**（交紧凑密度）、**不手调行内边距**（交组件默认），避免裸写 `div` 等原始标签
-- **提交时逐个显式 `git add <路径>`，禁止 `git add -A`** — 本仓可能同时有别的会话在工作，`-A` 会把别人未提交的改动卷进你的提交；`git status` 里出现不属于你的文件时，**保持原样、不要动它**
-- **代码变更后、进入审查阶段前，必须先执行检查** — 顺序：`pnpm typecheck` → `pnpm lint` → 修复所有错误 → 再进入代码审查；格式修复产生的变更需随本次改动一并提交
-- **新增的每条回归守卫都必须做变异验证** — 把它要拦的缺陷人为制造回去，确认该守卫**失败**，再还原并核对文件哈希未变。**没有见过失败的守卫不算守卫**（本仓的守卫已多次被实测证明无区分力）
-- web 启动时若端口被占用，先 kill 占用进程再启动
+- 写 Next.js 代码前先读 `apps/web-next/node_modules/next/dist/docs/` 的相关指南（当前版本有训练数据未覆盖的破坏性变更）
+- 写 UI 前先用 context7 查组件用法；界面与布局用 `antd`，适配 `light` / `dark` 与弹性尺寸；样式只走 antd 的主题 token / 紧凑密度 / 语义 `styles`——不手写字号、不手调行内边距、不裸写 `div` 等原始标签
+- 提交逐个显式 `git add <路径>`，**禁止 `git add -A`**；`git status` 里不属于你的文件保持原样
+- 改完代码按序执行 `pnpm typecheck` → `pnpm lint`，修完所有错误再进代码审查；格式修复随本次改动一并提交
+- 新增回归守卫必须做**变异验证**：把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希。没见过失败的守卫不算守卫
+- **遇到厂商智能体的运行期问题就追加一条 FAQ**（报错、卡死、行为与预期不符、环境差异导致的假绿都算）：先把问题修掉，再按下面的格式写进对应文件。**发现即记录，逐步攒成知识库**
+- **调智能体只有 `agentProvider.run` 一个入口**（`getProvider(kind).run(input)`，即 `@aieval/agents` 的 `AgentProvider`）：包外不许自己 spawn 厂商 CLI、不许深路径 import `providers/*`、也不许再包一层「跑一次」的门面。**`run` 不够用就扩展 `run` 本身**，不是绕开它；**扩展前先澄清**：要加什么、现有形状为什么不够、动到哪几家与哪些消费方、旧数据怎么读——讲清楚并得到确认再动手
+- `pnpm dev` 端口被占用时先 kill 占用进程再启动
 
-## 目录与边界
+## 厂商适配 FAQ（发现即追加）
 
-monorepo：1 个下游应用 + 服务端/客户端两层，职责严格分离（架构见 `docs/superpowers/specs/2026-09-22-scaffold-design.md`）：
+三家各一份，问题按厂商归档：
+
+| 厂商 | 文件 |
+|------|------|
+| Codex（`@openai/codex` / `codex app-server`） | `docs/codex-faq.md` |
+| Claude Code（`@anthropic-ai/claude-agent-sdk`） | `docs/claude-code-faq.md` |
+| DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`） | `docs/deepseek-harness-faq.md` |
+
+每条四格，**缺一不可**：
+
+1. **现象** —— 做成二级小标题，**照抄日志/界面里的原文**（含报错码、英文原句）。下次拿报错原文一搜就能命中；改写成自己的话就搜不到了。
+2. **日期** —— `YYYY-MM-DD`。
+3. **根因** —— 说到机制层（哪一层、哪个键、哪次替换、谁先谁后）。**没定位到就写「未定位」**并留下下一步，不要写「可能」当结论。
+4. **解决方案** —— 改了哪个文件/哪个键、判据是什么（守卫名、命令、变异结果）。改不动的就写「未闭合」并说明代价。
+
+有外部资料（官方文档、issue、协议说明）就补第 5 格**相关资料**，附链接。
+
+两条维护规矩：
+- **同一现象只留一条**：修法与事实冲突时**改旧条目**，不要新开一条并列。
+- **测试环境 ≠ 运行环境**：凡是「单测绿、真机红」的（打包器改写、解析器差异、子进程环境差异），根因里必须点名差异在哪，避免下一个人再信一次单测。
+
+## 目录结构
+
+1 个下游应用 + 服务端/客户端两层，职责严格分离（架构见 `docs/superpowers/specs/2026-09-22-scaffold-design.md`）：
 
 ```text
-ai-result-evaluation/
-├── apps/
-│   └── web-next/       # 下游应用：Next.js 薄组装；路由只做「zod 校验 → 调 api → 错误映射」三件事
-├── packages/
-│   ├── server/
-│   │   ├── core/       # 工作区引擎：git CLI 原语、配置落盘、路径校验；无任何业务，只用 Node 内置 + contracts
-│   │   ├── agents/     # 智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）：唯一允许引厂商 SDK 的包，
-│   │   │               #   对外只暴露 provider 注册表，三家差异全部吸收在 providers/<kind>/
-│   │   │               #   DSH 走 pi-ai 路由（`llm-pi-ai`）：anthropic→anthropic-messages、openai→openai-responses，
-│   │   │               #   路由/模型/档位写进 per-run overlay（`--patch`），已退役 settings.yaml 与 DEEPSEEK_*
-│   │   ├── evaluator/  # 编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
-│   │   ├── api/        # 功能服务层：一个功能一个文件；只依赖 evaluator + agents + core + contracts，禁止 import 任何框架
-│   │   └── contracts/  # 跨端契约：zod schema + 领域类型 + 错误码
-│   └── client/
-│       ├── ui/         # 纯展示组件（base + composite）；纯数据驱动，不调接口
-│       └── client/     # 数据层：SWR hooks + HTTP 原语，类型全部来自 contracts
-├── docs/
-│   └── superpowers/    # specs（设计与实现计划）/ plans
-└── eslint.shared.ts    # 共享规则 + 分层边界规则（withBoundary）
+apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错误映射」
+packages/server/
+  core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
+  agents/          智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）；唯一允许引厂商 SDK 的包，
+                   对外只暴露 provider 注册表，差异吸收在 providers/<kind>/
+  evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
+  api/             功能服务层，一个功能一个文件；禁止 import 任何框架
+  contracts/       zod schema + 领域类型 + 错误码
+packages/client/
+  ui/              纯展示组件（base + composite），纯数据驱动、不调接口
+  client/          SWR hooks + HTTP 原语，类型全部来自 contracts
+docs/superpowers/  specs / plans / notes
+docs/powershell.md   PowerShell 的事实与硬规则（删除守卫、编码坑）
+docs/playwright-mcp.md   Playwright MCP 的 filename 路径规则与冒烟口径
+docs/{codex,claude-code,deepseek-harness}-faq.md  三家厂商适配的运行期问题台账（发现即追加，格式见上）
+eslint.shared.ts   共享规则 + 分层边界规则（withBoundary）
 ```
 
-依赖方向（`eslint.shared.ts` 的 `withBoundary()` 硬约束框架依赖与跨包相对引用，**含动态 `import()` 与 `require()`**；`@aieval/*` 之间的边除 ui / client 的禁名单外 lint 不拦，只由下表约束——新增跨包依赖必须同时改表）：
+## 依赖方向
 
 ```text
 web-next → api / core / ui / client / contracts
-api      → evaluator / agents / core / contracts   # agents：候选池按智能体读注册表元数据（协议**集合** protocolTypes，判据 acceptsProtocol）
+api      → evaluator / agents / core / contracts
 evaluator→ agents / core / contracts
 agents   → core / contracts
 ui       → contracts
 client   → contracts
-contracts→ 无（**只依赖 zod 这类第三方**；它是全仓的最底层，指回任何一个 `@aieval/*` 都是环）
-core     → contracts   # 错误与事件日志的类型、`ServiceError`、路径与配置的 schema 都在 contracts
+contracts→ 无（只依赖 zod 这类第三方；指回任何 @aieval/* 都是环）
+core     → contracts
 ```
 
-> 这张表由 `apps/web-next/src/package-dependency-boundaries.test.ts` 守着：它读表，再读每个包的 `package.json`，两边逐条比。表是真源，不留第二份清单。
->
-> - 新增或删除跨包依赖，要同时改表和 `package.json`；只改一处测试就红。
-> - `pnpm lint` 和 `pnpm typecheck` 查不出依赖清单与表的错位。
+表是**真源**，由 `apps/web-next/src/package-dependency-boundaries.test.ts` 逐条比对每个包的 `package.json`：新增或删除跨包依赖必须同时改表和清单，只改一处测试就红（`pnpm lint` / `pnpm typecheck` 查不出这种错位）。
 
-> 有一个例外：类型转出不算依赖边。
->
-> - 上面的表只说**运行时**依赖。`@aieval/client` 用 `export type … from '@aieval/ui'` 把界面类型（`AgentLogModel` 等）转给页面和测试：`verbatimModuleSyntax` 在编译时把 `export type` 整条删掉，运行时两个包之间没有 import，所以表里不加这行。
-> - 只允许这种 `export type`。写成值导出（`export { X } from '@aieval/ui'`）就真有运行时依赖了，得回来改表，并同步 `eslint.shared.ts` 的禁名单。
-> - 这类边只活在类型期，所以 `@aieval/ui` 放 `devDependencies`，不放 `dependencies`；`workspace:*` 放在 devDependencies 里类型照样解析。
-> - 要验证就编译 `packages/client/client/src/index.ts`，产物里不该出现 `@aieval/ui`。
-
-> `apps/web-next/vitest.config.ts` 的 `resolve.alias` 把 `@aieval/evaluator` 指向源码，只为了让路由测试里的 `vi.mock` 生效。
->
-> - 它只在测试期解析：不建依赖边，也不进 `next build` / `next dev`。
-> - 不要改成 devDependency：那会动 `pnpm-lock.yaml`，还会把一条运行时可解析的 `web-next → evaluator` 边装进应用，而这条边是表里刻意没有的。
-> - 去掉它不会静默：`vi.mock` 只注册在没解析的裸名字上，api 内部仍拿到真模块，mock 失效并真的会 spawn agent 子进程；`apps/web-next/src/route-runs.test.ts` 的 mock 存活断言会红。
+- **类型转出不算依赖边**：`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故表里不列这行、ui 放 `devDependencies`。只允许 `export type`；写成值导出就真有运行时依赖，得回来改表。
+- `apps/web-next/vitest.config.ts` 的 `resolve.alias` 把 evaluator 指向源码，只为让路由测试的 `vi.mock` 生效，只活在测试期。别改成 devDependency（会动 `pnpm-lock.yaml`，还会装进一条运行时可解析的依赖边）。
 
 ## 删除与 PowerShell 安全
 
-> 起因：`Remove-Item $home -Recurse -Force` 把用户目录删空——`$home` 是只读自动变量，赋值没生效，后续引用全指向用户目录。
+> PowerShell 的通用规则（自动变量禁令、`Assert-Deletable` 完整实现、编码与 `Get-Content` 坑）见 `docs/powershell.md`。
 
-| 规则 | 说明 |
-|------|------|
-| **禁止**把 `$home`/`$HOME`/`$profile`/`$env:USERPROFILE`/`$env:APPDATA`/`$env:LOCALAPPDATA` 当临时变量 | 临时值用专属名：`$repoRoot`/`$tmpDir`/`$outPath` 等。PS 5.1 下赋值报只读错，pwsh 7 下**静默成功** ⇒ 判据是"有没有给自动变量赋值"，不是"上次报没报错" |
-| **递归删除按序做三件事**：断言目标在允许根之下 → 打印目标 → 执行 | 断言用 `[System.IO.Path]::GetFullPath()` 规范化 + `$full.StartsWith($realRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)`，并硬拒盘根、`$env:SystemRoot`、`C:\Users`。末尾 `'\'` 不能少：少了它 `…\Tem` 会被 `…\Temp` 认成子目录。`GetFullPath` 会折叠 `..`，不必额外查。函数直接复用 `~/.dsh/AGENTS.md` 的 `Assert-Deletable`。删除语句**不得**带 `-ErrorAction SilentlyContinue` |
-| **不要用 `-like (Join-Path $root '*')` 当守卫** | 路径含 `[` `]` 时右侧被当通配符字符类，合法目标会被误杀；判据用 `StartsWith` |
-| **能用现成的临时目录 API，就别手写递归删除** | JS 用 `mkdtempSync`，PS 用 `New-TemporaryFile` |
-| **不要做静态扫描门禁** | PSScriptAnalyzer 未安装且装不上（PSGallery 不可达）；全仓 `-Include *.ps1,*.psm1` 命中 8 万+ 文件（多在 `node_modules`/`.git`），跑一次要数分钟。要守就用上面的运行时断言。本仓只有 2 个 PS 脚本：`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`，人工审即可（后者头部的用法路径是旧布局，真实路径在 `packages/server/agents/` 下） |
-| **已审计的永久删除点，不要"顺手加守卫"** | `scripts/split-test-file.mjs:202` 的 `rmSync(src)` 是"拆完测试文件删原文件"的有意行为（`src` 已被读过，传目录会先抛错）；`packages/server/core/src/workspace.ts:112-114` 的三个 `rmSync` 分开写是刻意的（别让行目录新增内容被顺手清掉），改前先读该处注释 |
-| **`scripts/bench-gates.ps1` 的调用方只能传字面量** | 它用 `Invoke-Expression "$Command 2>&1"`（`:28`）执行命令串；现有调用方传的都是写死的 `pnpm test/typecheck/lint`，**不得把外部输入拼进 `$Command`** |
-| **网关 key 只能从环境变量读** | `packages/server/agents/probe/v2/codex-cli-plan.ps1:26` 和同目录 `lib/gateway.mjs:27` 目前把 key 硬编码在源码里；改这两处时必须改成读环境变量（该 key 需轮换） |
+- **禁止**把 `$home` / `$profile` / `$env:USERPROFILE` / `$env:APPDATA` 等当临时变量：5.1 下报只读错，**pwsh 7 下却是静默成功**，于是 `Remove-Item $home -Recurse -Force` 会真的删掉用户目录。临时值一律用专属名 `$repoRoot` / `$tmpDir` / `$outPath`；判据是「有没有给自动变量赋值」，不是「上次跑报没报错」。
+- **递归删除按序做三件事**：断言目标在允许根之下（用 `docs/powershell.md`「递归删除」一节的 `Assert-Deletable`，允许根传 `$env:TEMP` 或本仓工作目录）→ 打印目标 → 执行；删除语句**不得**带 `-ErrorAction SilentlyContinue`。
+- 能用现成的临时目录 API 就别手写递归删除（JS 用 `mkdtempSync`，PS 用 `New-TemporaryFile`）；也别指望 PSScriptAnalyzer 做静态门禁（本机未安装且装不上）。
+- 本仓只有两个 PS 脚本：`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`，改动靠人工审。`scripts/bench-gates.ps1:28` 用 `Invoke-Expression` 执行命令串，**调用方只能传字面量**。
+- 已审计的永久删除点，别"顺手加守卫"：`scripts/split-test-file.mjs:202` 的 `rmSync(src)` 是拆完测试文件删原文件的有意行为；`packages/server/core/src/workspace.ts:124-126` 的三个 `rmSync` 分开写是刻意的（改前先读该处注释）。
+- **网关 key 只能从环境变量读**：`packages/server/agents/probe/v2/lib/gateway.mjs:27` 仍把 key 硬编码在源码里（`codex-cli-plan.ps1` 已改成读 `AIEVAL_PROBE_GATEWAY_API_KEY`），改这里时必须改成读环境变量（该 key 需轮换）。
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `pnpm dev` | 起 web-next 开发服务器（http://localhost:3083） |
+| `pnpm dev` | web-next 开发服务器（http://localhost:3083） |
 | `pnpm build` | 生产构建 |
-| `pnpm lint` | ESLint 全量检查——根 `eslint.config.ts`，**一个**进程覆盖 8 个包 |
-| `pnpm format` | ESLint `--fix` 自动修复（与 `lint` 同一条根配置，只多 `--fix`） |
-| `pnpm typecheck` | TypeScript 全链类型检查——`tsconfig.typecheck.json`，**一个** tsc 进程 |
-| `pnpm test` | vitest 全量测试——根 `vitest.config.ts` 的 `projects` 收齐 8 个包，**一个**进程 |
-| `pnpm test:changed` | 只跑与改动相关的文件（`vitest run --changed`）——**内循环用这个**，全量留给门禁 |
+| `pnpm lint` | ESLint 全量检查，一个进程覆盖 8 个包 |
+| `pnpm format` | ESLint `--fix`（与 `lint` 同一条根配置） |
+| `pnpm typecheck` | TypeScript 全链类型检查，一个 tsc 进程 |
+| `pnpm test` | vitest 全量测试，一个进程收齐 8 个包 |
+| `pnpm test:changed` | 只跑与改动相关的文件——**内循环用这个**，全量留给门禁 |
 
-- 三条聚合命令**刻意都不走 `pnpm -r`**（递归会按拓扑序为 8 个包各起一次进程，白付启动税）。聚合靠**复用同一份包级真源**：`eslint.shared.ts` 的 `boundaryConfigs()` 由根配置按包目录前缀化、根 `vitest.config.ts` 用 `projects` 按路径引用各包 `vitest.config.ts`、根 `tsconfig.typecheck.json` 是各包 `include` 的并集。**别退回 `pnpm -r`**，也别把包级规则抄进根配置（两份必然漂移）。
-- 单包：`pnpm --filter @aieval/<包名> <脚本>`，走各包自己的 `eslint.config.ts` / `vitest.config.ts` / `tsconfig.json`——与根命令是同一份真源的两个视图，结果必须一致，**改了根命令就要回头确认单包命令仍然可用**。
+- 三条聚合命令**刻意不走 `pnpm -r`**（递归会给 8 个包各起一次进程）；聚合靠复用包级真源：根 eslint 配置前缀化 `boundaryConfigs()`、根 `vitest.config.ts` 用 `projects` 引用各包配置、根 `tsconfig.typecheck.json` 是各包 `include` 的并集。别退回 `pnpm -r`，也别把包级规则抄进根配置。
+- 单包：`pnpm --filter @aieval/<包名> <脚本>`，与根命令结果必须一致。
 
 ## 测试
 
 | 规则 | 说明 |
 |------|------|
-| 环境 | `vitest.node.ts`（node，库包与 web-next）/ `vitest.jsdom.ts`（jsdom，`ui` 与 `client`）。纯函数测试标 `// @vitest-environment node` |
-| **`.tsx` 测试只在库包可写** | 根 `tsconfig.base.json` 的 `jsx` 是 `react-jsx`；`apps/web-next` 保留 `preserve`（Next 需要），**故该应用内不能写 `.tsx` 测试**——Vite 的 import-analysis 直接读 tsconfig 的 `jsx`，报 `make sure to not set jsx to preserve`，**改 vitest 的 `esbuild.jsx` 或 `esbuild.tsconfigRaw` 都无效**（报错来自 Vite 而非 esbuild） |
-| 别名 | `apps/web-next` 的 `@/*` 指该应用根目录。**vitest 不读 tsconfig 的 `paths`**，故 `apps/web-next/vitest.config.ts` 里显式给了 `resolve.alias`（用 `import.meta.dirname` 推导，不依赖 `process.cwd()`） |
-| 根聚合的收集范围 | `pnpm test` 由根 `vitest.config.ts` 的 `projects` glob 收集（`packages/{server,client}/*` 与 `apps/*`）；新增包落在这些目录下且自带 `vitest.config.ts` 就会被自动收进来。**改动收集方式后必须核对用例总数与逐包跑一致**——漏收集一整个包是静默漏测，退出码仍是 0 |
-| 组件测试的 `matchMedia` 与 `ResizeObserver` | jsdom **两者都没有**；前者由用例自己注入（主题模块的「无 matchMedia 按暗色」兜底正是要覆盖的路径），后者的桩在 `packages/client/ui/src/testing/resize-observer.ts`，**刻意不放进共享 setup**（否则组件的「无 ResizeObserver」兜底分支再也测不到） |
-| 真实拖拽 | jsdom 里不可达（尺寸按容器 0 换算后非有限，分隔条变成不可拖）；`Splitter` 的 `onResize` 回写只能在真实调用方处钉 |
-| 重试预算写成**可变对象**（`TEXT_API_RETRY` / `ROW_RETRY`） | 真等 `ROW_RETRY.delayMs`（3s）× 重试次数会把每条失败面用例拖慢十倍（重试会重跑真仓库准备）。用例在 `beforeEach` 里把**产品默认值**读进一个常量、再把它改小，重试那一组显式改回来；**默认值必须有独立用例钉住**（否则默认值成了无人验证的常量），`afterEach` 必须还原 |
-| **计价单位是「进程创建」** | 本机实测（2026-09-28，i7-1360P / Windows）：`cmd /c exit 0` **162ms**、`git --version` **566ms**、`node --version` **530ms**——企业 DLP/EDR 在每个新进程上挂钩（Defender 实时防护是**关**的）。由此推导：`initFixtureRepo`（7 次 git）≈ **1612ms**、本地 `git clone` ≈ **1053ms**、`git status` ≈ 250ms。**测试要提速就减进程数**：夹具用 `beforeAll` 模板 + `cpSync`（~10ms），用例缓存预热（`evaluator/src/testing/orchestrator-harness.ts` 的 `prewarmCaseCache`），产品侧合并 git 往返（`collectDiff` 曾 6 个进程、`assertCommit` 曾 2 个） |
-| **墙钟由最长的那个文件决定** | vitest 按**文件**并行、文件内**顺序**执行。实测（2026-09-28）：`orchestrator.test.ts` 一个文件占了全量 2437s 里的 2426s（85 条用例挤在一个 worker 里）。**长杆文件按 describe 拆开**是唯一能打破这个天花板的手段（已拆成 `orchestrator-*.test.ts` 十个文件 + `testing/orchestrator-harness.ts`）。拆出来的文件**每个都必须自己写三条 `vi.mock`**——vitest 的前置提升只作用于测试文件自身，漏一条会**静默**退回真实实现（真的 spawn 厂商 CLI）；守卫在 `evaluator/src/static-assertions.test.ts` |
-| **失败比成功贵一个数量级** | 守卫上限是按「宁可超时也不假红」定的（`until` 30s、`REMOTE_FIXTURE_TIMEOUT_MS` 300s、`testTimeout` 60s/20s/5s）。实测一次全量里 12 条红 = 5×300s + 7×60s = **32 分钟**，占那次墙钟 79%。`until` 的第 4 参 `impossible` 只给**终态期望**用（落成别的终态就是真失败）；同步点式的等待刻意不接，避免把「错过观察」判成假红 |
-| 跑法分层 | 改一个包：`pnpm vitest run packages/server/<包>`；改一个文件：`pnpm vitest run <文件路径>`；只跑改动相关：`pnpm test:changed`。**全量留给门禁**——它是分钟级的，不该进内循环 |
-| **机器带负载时的跑法** | 本仓的墙钟与红数都**同时取决于机器状态**：实测同一份代码，安静时 `tests` 累积 2604s（全量 ~225s），而机器上同时跑着开发服务器 + 浏览器自动化时涨到 **8154s（3.1×）**——此时 60s 的 `testTimeout`/`hookTimeout` 必然被撞穿，红的是"机器慢"而不是代码。带负载时用：`pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000`（少开 worker 减少互相踩，预算按倍数放宽）。**先看 `tests` 累积那一项**：它比上次大 2 倍以上，就别把红当成回归 |
+| 环境 | `vitest.node.ts`（库包与 web-next）/ `vitest.jsdom.ts`（`ui` 与 `client`）；纯函数测试标 `// @vitest-environment node` |
+| **`.tsx` 测试只能在库包写** | `apps/web-next` 必须留 `jsx: preserve`，Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`；改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效 |
+| 别名 | `apps/web-next` 的 `@/*` 指应用根目录；**vitest 不读 tsconfig 的 `paths`**，故在 `apps/web-next/vitest.config.ts` 显式给 `resolve.alias` |
+| 根聚合的收集范围 | 根 `vitest.config.ts` 的 `projects` glob 收 `packages/{server,client}/*` 与 `apps/*`；新包自带 `vitest.config.ts` 即被收进来。改动收集方式后必须核对用例总数（漏收一整个包是静默漏测） |
+| **`vi.mock` 逐文件重复** | 前置提升只作用于本文件：`orchestrator-*.test.ts` 每个文件都要自己写三条 `vi.mock`，漏一条会**静默** spawn 真厂商 CLI（守卫在 `packages/server/evaluator/src/static-assertions.test.ts`） |
+| jsdom 的缺口 | `matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**（否则兜底分支再也测不到）；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉 |
+| 测试预算 | `TEXT_API_RETRY` / `ROW_RETRY` 写成可变对象：`beforeEach` 读产品默认值再改小、`afterEach` 还原，默认值要有独立用例钉住；`until` 的第 4 参 `impossible` 只给**终态期望**用；所有等待上限按「宁可超时也不假红」定 |
+| 跑法与提速 | 单包 `pnpm vitest run packages/server/<包>`、单文件 `pnpm vitest run <文件路径>`、改动相关 `pnpm test:changed`，**全量留给门禁**。计价单位是**进程创建**：夹具用 `beforeAll` 模板 + `cpSync`、缓存预热（`prewarmCaseCache`）、产品侧合并 git 往返；墙钟由最长的文件决定（按文件并行），长杆文件按 describe 拆开 |
+| 机器带负载时 | 用 `pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000`；先看 `tests` 累积项，比上次大 2 倍以上就别把红当回归 |
 
 ## 注释
 
-| 规则 | 说明 |
-|------|------|
-| 风格 | TS/TSX 用 JSDoc；中文，简洁，先说"做什么"再说"怎么做" |
-| 文件头 | 简要说明文件职责 + 注意事项 |
-| 嵌套 > 2 层 | 必须注释业务含义 |
-| 功能点 | 方法、条件分支、事件处理、数据转换等独立功能单元都需说明其业务目的和关键逻辑 |
-| 重要方法 | 必须注释算法思路或业务逻辑 |
-| 特殊处理 | 环境判断、响应处理等需注释原因 |
-| 密度 | 同文件内保持一致 |
+- TS/TSX 用 JSDoc；中文，简洁，专业的口语，先说"做什么"再说"怎么做"
+- 文件头写明职责与注意事项；嵌套 > 2 层必须注释业务含义
+- 方法、条件分支、事件处理、数据转换等独立功能单元都要说明业务目的与关键逻辑；重要方法注释算法思路
+- 环境判断、响应处理等特殊处理要注释原因；密度在同文件内保持一致
 
 ## 日志
 
@@ -136,46 +133,45 @@ core     → contracts   # 错误与事件日志的类型、`ServiceError`、路
 | INFO | 请求入口、关键状态变更、外部调用耗时 >500ms |
 | DEBUG | 分支走向、中间变量、循环关键节点（生产默认关闭，`AIEVAL_DEBUG=1` 打开） |
 
-**必须打日志的点位**：请求入口（INFO + 标识）、外部调用（DEBUG 参数 + INFO 耗时）、异常捕获（ERROR + 堆栈 + 上下文）、关键分支（DEBUG + 依据）
+必须打日志的点位：请求入口（INFO + 标识）、外部调用（DEBUG 参数 + INFO 耗时）、异常捕获（ERROR + 堆栈 + 上下文）、关键分支（DEBUG + 依据）。
 
-日志器在 `@aieval/core` 的 `createLogger(scope)`；**上下文作为 `console` 的第二个参数透传，不要 `JSON.stringify`**（后者遇到循环引用或 BigInt 会抛，而日志器不该有能力打断业务流程）。
+日志器是 `@aieval/core` 的 `createLogger(scope)`；**上下文作为 `console` 的第二个参数透传，不要 `JSON.stringify`**（循环引用或 BigInt 会抛，日志器不该能打断业务流程）。
 
 ## 持久化
 
-- 配置目录：`AIEVAL_CONFIG_DIR` > `~/.aieval`；测试用 `setConfigDirForTesting(dir)` 指向临时目录，**测试不得触碰真实 `~/.aieval`**
-- **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖；**不要先删目标再 rename**（两步之间崩溃会让配置文件彻底消失，而 `loadConfig()` 会静默回落默认值）
-- **rename 失败的 `EPERM` 有两种成因，处置相反**：① 目标只读——替换只读文件在 Windows 上必失败，只能先删目标；② 杀软/索引器瞬时占用——重试 rename 就过去了。必须用 `statSync(file).mode & 0o200` 区分（Windows 上 libuv 用写位表达只读属性），**无条件先删会在 ② 上白白制造丢配置窗口**（全量并发测试下稳定复现）。守卫在 `packages/server/core/src/config-store.test.ts`
-- **读盘必须容忍 UTF-8 BOM**：外部工具（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json`）默认带 BOM，而 `JSON.parse` 遇到它直接抛
-- 配置文件损坏时抛**含路径的中文原因**，绝不能让 `SyntaxError` 冒充「请求体不是合法 JSON」
+- 配置目录：`AIEVAL_CONFIG_DIR` > `~/.aieval`；测试用 `setConfigDirForTesting(dir)` 指向临时目录，**不得触碰真实 `~/.aieval`**
+- **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖；不要先删目标再 rename（中间崩溃会让配置彻底消失，而 `loadConfig()` 会静默回落默认值）
+- rename 的 `EPERM` 有两种成因、处置相反：目标是只读文件（只能先删）与杀软瞬时占用（重试即可）。用 `statSync(file).mode & 0o200` 区分，别无脑先删
+- **读盘必须容忍 UTF-8 BOM**（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，`JSON.parse` 遇到就抛）；自己落盘不要产 BOM
+- 配置损坏时抛**含路径的中文原因**，别让 `SyntaxError` 冒充「请求体不是合法 JSON」
 
 ## 边界与工具链的已知坑
 
 | 坑 | 正确做法 |
 |----|----------|
-| `pnpm-workspace.yaml` 的 `allowBuilds` | pnpm 11 必需（`sharp` / `unrs-resolver`）。**写进 `onlyBuiltDependencies` 不再生效**（仍报 `ERR_PNPM_IGNORED_BUILDS`） |
-| flat config 的规则是**整体替换**不是选项合并 | `withBoundary` 生成的对象排在 `baseConfig` 之后且匹配同一批文件，会把 `baseConfig` 的 `no-restricted-syntax` 整条盖掉——两处各放一份（共用同一个常量对象） |
-| `no-restricted-imports` 覆盖不到动态 `import()` 与 `require()` | 边界另配 `no-restricted-syntax`，且选择器**必须按说明符过滤**（裸 `ImportExpression` 会把包自己的 `import('./x')` 一起禁掉，挡住合法的代码分割） |
-| `import-x/no-relative-packages` 单开不生效 | import-x 的 node 解析器默认不含 `.ts`，规则在 `resolve()` 失败时静默 return；必须在 `baseConfig` 补 `settings['import-x/resolver'].node.extensions` |
-| `escapeRegExp` 漏转义 `/` | 该正则会拼进 esquery 的 `/…/` 字面量，`@aieval/client` 的 `/` 会提前闭合它，**ESLint 直接以退出码 2 崩溃** |
-| 紧凑密度**绝不显式写 `fontSize`** | `compactAlgorithm` 会覆盖它并反向推导，实效字号掉到 10px（比 antd 默认的 14 还小）；只给 `fontSizeSM: 11`，产出 12 / 11 / 14 |
-| antd 6 `Button` 的 `variant` **单给不生效** | `Button.js` 只在 `color` 与 `variant` **同时**存在时才用它们（`if (color && variant)`），否则回落 `type` 的语法糖、再回落 `['default','outlined']`——`variant="dashed"` 会**静默**渲染成实线（实测：类名是 `ant-btn-variant-outlined`，`borderStyle: solid`）。要什么形态就成对给 `color="default" variant="dashed"`，或改用语法糖 `type="dashed"` |
-| 主题必须**三处同步** | `ConfigProvider theme` + `html[data-theme]` + `ConfigProvider.config({ holderRender })`；缺一处就是「组件亮了、底色还是暗的」半亮主题 |
-| antd `Splitter` 的尺寸入口用受控 `size` | 不用 `defaultSize`（后者只在挂载时读一次）；**受控模式下拖拽必须把 `onResize` 回写进 `size`**，否则松手弹回。弹性列**不给 `size`**（条件展开，不是 `size={0}`） |
-| antd `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style，否则 antd 换实现或改类名就静默失效 |
-| `next dev` 生成的 `next-env.d.ts` | 已 gitignore，并由 `eslint.shared.ts` 的 `boundaryConfigs('web-next')` 忽略（它用双引号与三斜线语法，会让 `@stylistic/quotes` 报错）。**这条只能放在包级配置里**：根配置会把包级条目按目录前缀化，散写在 `apps/web-next/eslint.config.ts` 里的裸条目会被根路径漏掉 |
-| 根 `eslint .` 的边界规则必须**按目录前缀化** | 包级 glob 相对包根（匹配任意深度 ts/tsx），根配置直接复用而不加目录前缀，core 的禁用名单会落到全部包上（web-next 会被误伤成「禁止 import react」）。前缀化在 `eslint.shared.ts` 的 `scopeToDir()`。**改完必须做双向变异验证**：`packages/server/core/src/` 里写 `import 'react'` 必须报错，`apps/web-next/src/` 里写同样的 import 必须**不**报错——只验前者漏掉「跨包误伤」，只验后者漏掉「规则根本没生效」 |
+| `pnpm-workspace.yaml` 的 `allowBuilds` | pnpm 11 必需（`sharp` / `unrs-resolver`）；写进 `onlyBuiltDependencies` 不再生效 |
+| flat config 的规则是**整体替换**不是选项合并 | `withBoundary` 会整条盖掉 `baseConfig` 的 `no-restricted-syntax`——两处各放一份（共用同一常量对象） |
+| 边界规则管不到的三种写法 | `no-restricted-imports` 管不到动态 `import()` / `require()`，要另配 `no-restricted-syntax` 且选择器按说明符过滤（裸 `ImportExpression` 会禁掉合法的代码分割）；`import-x/no-relative-packages` 要补 `settings['import-x/resolver'].node.extensions`，否则 `resolve()` 失败时静默 return；`escapeRegExp` 必须转义 `/`，漏了 ESLint 直接以退出码 2 崩溃 |
+| 紧凑密度**不显式写 `fontSize`** | `compactAlgorithm` 会覆盖并反向推导，实效字号掉到 10px；只给 `fontSizeSM: 11`（产出 12 / 11 / 14） |
+| antd 6 `Button` 的 `variant` **单给不生效** | 须与 `color` 成对给（`color="default" variant="dashed"`）或改用 `type` 语法糖；单给 `variant="dashed"` 会**静默**渲染成实线 |
+| 主题必须**三处同步** | `ConfigProvider theme` + `html[data-theme]` + `ConfigProvider.config({ holderRender })`，缺一处就是半亮主题 |
+| `Splitter` 的尺寸用受控 `size` | 不用 `defaultSize`；受控下拖拽必须把 `onResize` 回写进 `size`，否则松手弹回；弹性列不给 `size`。唯 `SplitPane` 原语用 `defaultSize`（它不支持刷新后还原拖过的宽度） |
+| `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style |
+| `next-env.d.ts` | 已 gitignore；忽略它只能写在 `boundaryConfigs('web-next')` 里，散写在 `apps/web-next/eslint.config.ts` 的裸条目会被根路径漏掉 |
+| PowerShell 5.1 的 `Get-Content` 读 UTF-8 文件 | 见 `docs/powershell.md`「读写文件与编码」：无 BOM 时按 ANSI 解码，中文乱码且**行号少算** |
+| 根 `eslint .` 的边界规则必须**按目录前缀化** | 否则 core 的禁用名单会落到全部包（web-next 被误伤成「禁止 import react」）；前缀化在 `scopeToDir()`。改完做**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错 |
 
 ## 冒烟测试
 
-- **流程**：启动真实服务（web-next :3083），用 mcp 在浏览器中按真实用户路径逐项操作（表单输入、按钮、弹窗、导航、拖拽），并用 CLI 复核落盘事实（配置文件内容、git 分支与 diff），页面展示与磁盘事实互证。
-- **几何断言别靠眼睛**：读 `getBoundingClientRect()`（`read_picked_element` 或 `browser_evaluate`），不要凭截图判断「宽度变了」。
-- **记录**：每次冒烟后在对应计划/关账记录的「冒烟」小节写入四要素：① 范围清单（逐项 ✅/❌/跳过+理由）；② 操作路径（点击/输入序列）；③ 证据（浏览器状态 + CLI 输出互证）；④ 未覆盖项与后续计划（如有）。
+- 启动真实服务（web-next :3083），用 mcp 按真实用户路径逐项操作（输入、按钮、弹窗、导航、拖拽），并用 CLI 复核落盘事实（配置文件、git 分支与 diff），页面与磁盘互证。
+- **几何断言别靠眼睛**：读 `getBoundingClientRect()`（`read_picked_element` 或 `browser_evaluate`），不要凭截图判断。
+- MCP 浏览器工具的 `filename` 路径规则与几何断言见 `docs/playwright-mcp.md`。
+- 每次冒烟后在对应计划/关账记录的「冒烟」小节写入四要素：范围清单（逐项 ✅/❌/跳过+理由）、操作路径、证据（浏览器 + CLI 互证）、未覆盖项与后续计划。
 
 ## 技术栈
 
 - **路由** — web-next：App Router（Server Components + API Routes）
 - **语言/构建** — TypeScript 5（`strict` + `noUncheckedIndexedAccess` + `verbatimModuleSyntax`）；库包直出 TS 源码（`main` 指 `./src/index.ts`），由 Next 的 `transpilePackages` 编译
 - **测试** — vitest 4（node / jsdom 双配置）
-- **UI** — antd 6 + React 19；`splitter` 与 `flex` 的语义见上文「已知坑」
-- **数据** — SWR 2；契约 zod 3
+- **UI** — antd 6 + React 19；**数据** — SWR 2 + zod 3 契约
 - **源码一律 ESM** — `require()` 被 `baseConfig` 与 `withBoundary` 两处规则禁止（`tsc` 与 eslint 的边界规则都拦不住它，Vitest 的 SSR runner 还会注入模块级 `require`，故必须显式禁）

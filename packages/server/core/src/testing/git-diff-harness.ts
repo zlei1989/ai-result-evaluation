@@ -61,7 +61,7 @@ export function git(dir: string, ...args: string[]): string {
  * 与跑什么程序无关——实测 `cmd /c exit 0` 250ms、`git --version` 350ms），而
  * 「init / add / commit / rev-parse」是 4 次进程创建 ≈ 1.2s。本文件 17 个用例各建一个 ⇒
  * 光夹具就 20s。`cpSync` 一份仓库是纯文件系统操作（实测 ~10ms），复制出来的仍是
- * **独立、可用**的真实仓库——这一点由 `git.repo.test.ts` 的 copyWorkspace 用例守着。
+ * **独立、可用**的真实仓库——这一点由 `git-repo-cache.test.ts` 的 copyWorkspace 用例守着。
  *
  * 复制后 git 会重新按内容判定工作树是否干净（复制改了 mtime，git 退回比内容），
  * 所以「全空」那条用例的 `filesChanged === 0` 断言不受影响。

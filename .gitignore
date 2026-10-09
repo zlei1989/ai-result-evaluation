@@ -4,6 +4,7 @@ out/
 dist/
 coverage/
 .oxlintcache
+.pnpm-store
 
 *.tsbuildinfo
 *.log

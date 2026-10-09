@@ -32,6 +32,7 @@ import { isAbsolute } from 'node:path';
 import { EvalRunSchema, ServiceError, type EvalRun } from '@aieval/contracts';
 import { createLogger, loadConfig, resolveRootForRead, runDir, runSnapshotFile } from '@aieval/core';
 import { isRunIdShapeValid, recalledRunRoot, rememberRunRoot } from './run-root-memory';
+import { publishRunChanged } from './run-signals';
 
 const log = createLogger('run-store');
 
@@ -311,4 +312,13 @@ export function saveRun(run: EvalRun): void {
       );
     }
   }
+
+  /**
+   * 落盘成功后发一条「这一轮变了」的信号（run-signals 总线）——**位置必须在最后一步成功之后**：
+   * 写失败时快照没变，推信号会让订阅者去读一份没更新的磁盘（「推了但没落盘」的镜像分叉）。
+   * 这里是**唯一发射点**：行级（mutateRow）、轮级（setRunStatus）与 api 的创建 / 更新
+   * 都收口到 `saveRun`，信号随之全覆盖，不会漏发也不会重发。删除不落盘、故无信号——
+   * 同页的删除自己会刷列表，跨标签页的删除通知不在此通道的职责内。
+   */
+  publishRunChanged(parsed.id);
 }

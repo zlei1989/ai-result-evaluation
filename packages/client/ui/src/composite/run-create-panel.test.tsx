@@ -27,6 +27,7 @@ import { EFFORT_OFF, type EvalRow, type EvalRun, type Rubric, type TestCase } fr
 import { installResizeObserverStub } from '../testing/resize-observer';
 import {
   RunCreatePanel,
+  effortPlaceholder,
   invalidatedRows,
   type RunCreatePanelProps,
   type RunFormValues,
@@ -91,6 +92,15 @@ function poolFor(agentKind: string): RunModelOption[] {
   if (agentKind === 'codex') return openaiOptions;
   if (agentKind === 'dsh') return [...openaiOptions, ...anthropicOptions];
   return anthropicOptions;
+}
+
+/**
+ * 默认的「未选档位会落到哪」：**与注册表元数据一致**——只有 DSH 声明 `defaultEffort: 'high'`
+ * （`registry.test.ts` 钉着「声明了就必须落在自家档位域里」），Claude Code / Codex 不声明
+ * ⇒ 由厂商推断、界面只说「未指定」。占位符用例靠它把三档文案都取到（见 `effortPlaceholder`）。
+ */
+function defaultEffortFor(agentKind: string): string | undefined {
+  return agentKind === 'dsh' ? 'high' : undefined;
 }
 
 /**
@@ -187,6 +197,7 @@ function renderPanel(overrides: Partial<Parameters<typeof RunCreatePanel>[0]> = 
   const props = {
     cases,
     modelOptionsFor: poolFor,
+    defaultEffortOf: defaultEffortFor,
     saving: false,
     onSubmit: vi.fn(),
     onCancel: vi.fn(),
@@ -542,7 +553,7 @@ describe('RunCreatePanel', () => {
    * 为什么**不**在这里钉 `size="small"`（`document.querySelector('.ant-table-small')` 那类断言）：
    * 实测过它没有区分力 —— 把 `<Table>` 上的 `size="small"` 整个删掉，这条守卫照样绿，
    * 因为紧凑密度是外层 `<Form size="small">` 经 antd 的 size context 传下来的。**没有见过失败的守卫
-   * 不算守卫**（AGENT.md），故这里只留钉得住的三条：列头、单元格里没有标签行、三个控件同一行。
+   * 不算守卫**（AGENTS.md），故这里只留钉得住的三条：列头、单元格里没有标签行、三个控件同一行。
    */
   it('候选行是表格：字段名在列头里（没有竖排标签），三个下拉各自带可访问名（C-TABLE）', () => {
     renderPanel();
@@ -880,7 +891,8 @@ describe('RunCreatePanel：思考强度', () => {
       modelId: 'three',
       source: 'manual',
       contextWindow: 1_048_576,
-      // 关闭档**必须**在候选里且排第一（api 的 `intersectEfforts` 保证，2026-10-06）：
+      // 关闭档**必须**在候选里且排第一（算法在 `contracts/src/effort.ts` 的 `intersectEfforts`，
+      // 由 api 的 `listModelOptions` 投影出来；2026-10-06）：
       // 「未选」与「显式关闭」是两件事，而这一条是用户唯一能点「关闭」的地方
       efforts: [EFFORT_OFF, 'low', 'high', 'max'],
       recommendedEffort: 'high',
@@ -960,18 +972,48 @@ describe('RunCreatePanel：思考强度', () => {
 
   /**
    * 「未指定」不是一个可选档（2026-10-06，spec D14 的延伸）：
-   * 未选档位的语义由**该家适配器**决定（dsh 走缺省 `high`，claude / codex 不传、由厂商推断），
+   * 未选档位的语义由**该家适配器**决定（DSH 走缺省 `high`，Claude Code / Codex 不传、由厂商推断），
    * 与候选里那个 `off`（**显式关闭思考**）是两件事。契约明说未选**不是**「沿用厂商默认档」，
    * 故 placeholder 必须把这件事说出来，否则用户在「我没选」与「我选了推荐档」之间无从分辨
    * （预选被 D14 禁掉了，placeholder 是唯一还能说话的地方）。
+   *
+   * **2026-10-08 口径：厂商名与档位都由元数据拼、且写全名。** 这条用例的靶子有两个：
+   *   · 这一家**没声明** `defaultEffort`（Claude Code 就是）⇒ 只说「未指定」，**不编**一个档
+   *     （旧文案里那句「claude / codex 不传」正是这一档）；
+   *   · 占位符里**不许出现 kind 缩写**（`dsh`）——那正是用户 2026-10-08 提的那处。
    */
-  it('未选档位时占位符说明「未指定」会怎样（不是厂商默认档、也不是关闭）', () => {
+  it('未选档位、且这一家没声明缺省档 ⇒ 占位符只说「未指定」，不编档位也不写 kind 缩写', () => {
     renderPanel({ modelOptionsFor: () => effortPool });
 
     pickOption('用例', /多协议入站转换/);
 
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定（dsh 用 high）');
+    const text = strength.closest('.ant-select')?.textContent ?? '';
+    expect(text).toContain('未指定');
+    // 不编档位：没声明 `defaultEffort` 的家（claude-code）不许出现「用 <档>」那半句
+    expect(text).not.toMatch(/用 /);
+    // 不写缩写：`dsh` 出现在页面上就是本条要拦的那处缺陷（全名走 `AGENT_LABELS`）
+    expect(text).not.toContain('dsh');
+  });
+
+  /**
+   * 声明了缺省档的家（今天只有 DSH）：占位符把「未选会落到哪」说清——**厂商名写全名**、
+   * 档位取元数据。
+   *
+   * 判据落在两处：`dsh`（kind 缩写）出现即红、`DeepSeek Harness 用 high` 消失即红
+   * ——前者是用户报的那处，后者是「说清后果」这条口径本身。
+   */
+  it('未选档位、且这一家声明了缺省档 ⇒ 占位符写出全名与该档（不是 kind 缩写）', () => {
+    renderPanel({ modelOptionsFor: () => effortPool });
+
+    pickOption('用例', /多协议入站转换/);
+    // 换成双协议那一家（`defaultEffortFor` 只给它声明了 `high`，与注册表真值同形）
+    pickOption('智能体', 'DeepSeek Harness');
+
+    const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
+    const text = strength.closest('.ant-select')?.textContent ?? '';
+    expect(text).toContain('未指定（DeepSeek Harness 用 high）');
+    expect(text).not.toContain('dsh');
   });
 
   /**
@@ -1009,7 +1051,7 @@ describe('RunCreatePanel：思考强度', () => {
    *
    * Task 2 / Task 3 的审查者两次点名这件事：先前那两条「下拉框第一项」用例其实只断言了
    * `metadata.reasoningEfforts[0]`（服务端元数据数组的第一格），而用户看得见的下拉来自
-   * **api 的交集投影**（`intersectEfforts`）。两者今天恰好同序，所以那两条断言
+   * **api 的交集投影**（算法是 `contracts/src/effort.ts` 的 `intersectEfforts`）。两者今天恰好同序，所以那两条断言
    * **无法区分**「投影把关闭档排到了后面 / 丢掉了」这类缺陷。
    * 下面两条用例把两种候选形态分开钉住：上游**声明过**档位（交集被裁过）、上游**没声明**（本机形态）。
    *
@@ -1031,7 +1073,7 @@ describe('RunCreatePanel：思考强度', () => {
           modelId: 'declared',
           source: 'manual',
           // 上游声明过、被裁过的交集：只留高于 medium 的档（高不下探到 low —— 「就近取整」是静默改语义，
-          // spec D10 禁掉），`off` 仍排第一（api 的 `intersectEfforts` 把它并到最前）
+          // spec D10 禁掉），`off` 仍排第一（`contracts/src/effort.ts` 的 `intersectEfforts` 把它并到最前）
           efforts: [EFFORT_OFF, 'xhigh', 'max'],
           recommendedEffort: 'max',
         },
@@ -1052,7 +1094,8 @@ describe('RunCreatePanel：思考强度', () => {
 
   /**
    * 本机真实形态：两个 provider 都是 `source: fetched`、模型**没声明 `supportedEfforts`**
-   * ⇒ api 给该家的**完整档位域**，首项即关闭档（`off` 排第一靠的是 `intersectEfforts` 的并集）。
+   * ⇒ api 给该家的**完整档位域**，首项即关闭档（`off` 排第一靠的是 `contracts/src/effort.ts` 的
+ * `intersectEfforts` 的并集）。
    *
    * 只断言「首项是 off」还不够：换一份**同样以 `off` 打头**的候选（比如上游声明过的那份交集）也能全绿，
    * 那样这条用例证明的只是「某个以 off 开头的列表」。故必须同时钉住候选**就是完整档位域**
@@ -1414,5 +1457,35 @@ describe('invalidatedRows', () => {
     expect(invalidatedRows(runWithHigh, keep('high'))).toEqual([]);
     // 表单没回传强度（旧客户端 / 预填漏了）＝ 「未指定档位」，按改了处理（安全方向，contracts 有注释）
     expect(invalidatedRows(runWithHigh, keep(undefined)).map((row) => row.id)).toEqual(['r-1']);
+  });
+});
+
+/**
+ * 「思考强度」占位符的**三档文案**（2026-10-08）。
+ *
+ * 为什么单独测这个纯函数而不是只从 Select 的 `textContent` 反推：那是**一句说出口的话**，
+ * 三档的判据（没选智能体 / 这家没声明缺省档 / 声明了）必须逐档可证；组件层那两条用例只能
+ * 覆盖到夹具给的那两家，而「没选智能体」这一档在组件上要先造一个空智能体的行才够得着。
+ */
+describe('effortPlaceholder', () => {
+  const declared: (agentKind: 'claude-code' | 'codex' | 'dsh') => string | undefined = (agentKind) =>
+    agentKind === 'dsh' ? 'high' : undefined;
+
+  it('这一家声明了缺省档 ⇒ 写全名与该档（**不是** kind 缩写）', () => {
+    const text = effortPlaceholder('dsh', declared);
+    expect(text).toBe('未指定（DeepSeek Harness 用 high）');
+    // 靶子：那句缩写 `dsh` 出现在页面上就是用户 2026-10-08 报的那处缺陷
+    expect(text).not.toContain('dsh');
+  });
+
+  it('这一家没声明缺省档（claude-code / codex）⇒ 只说「未指定」，不编一个档', () => {
+    // 编一个「沿用厂商默认档」是契约明禁的误读：我们没作出那个承诺
+    expect(effortPlaceholder('claude-code', declared)).toBe('未指定');
+    expect(effortPlaceholder('codex', declared)).toBe('未指定');
+  });
+
+  it('还没选智能体 / 调用方没给这一格（元数据没到）⇒ 只说「未指定」', () => {
+    expect(effortPlaceholder(undefined, declared)).toBe('未指定');
+    expect(effortPlaceholder('dsh', undefined)).toBe('未指定');
   });
 });

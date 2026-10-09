@@ -76,7 +76,7 @@ beforeEach(() => {
 /**
  * 文本采样节奏是**可变对象**（与 `TEXT_API_RETRY` / `ROW_RETRY` 同一约定）：用例把它调小，
  * 免得每条用例都真等一秒。**产品默认值必须有独立用例钉住**（否则它成了无人验证的常量），
- * `afterEach` 必须还原——三条都是 AGENT.md 里那条约定的原文。
+ * `afterEach` 必须还原——三条都是 AGENTS.md 里那条约定的原文。
  */
 const DEFAULT_SAMPLE_MS = LIVE_TEXT_SAMPLE.intervalMs;
 
@@ -701,8 +701,11 @@ describe('useRunLiveMetrics', () => {
       }),
       { wrapper },
     );
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
-    const byRow = new Map(FakeEventSource.instances.map((source) => [source.url, source]));
+    // 行级流的连接按 **URL** 过滤，不数实例池：本用例挂了 useRuns/useRun（给终态刷新找消费者），
+    // 它们现在会合法地开一条 run 级信号连接（/api/runs/events）——按总数断言会把那条也算进来
+    const rowSources = () => FakeEventSource.instances.filter((source) => source.url.includes('/rows/'));
+    await waitFor(() => expect(rowSources()).toHaveLength(2));
+    const byRow = new Map(rowSources().map((source) => [source.url, source]));
     const w1 = byRow.get('/api/runs/run-1/rows/w-1/stream?afterSeq=3');
     const w2 = byRow.get('/api/runs/run-1/rows/w-2/stream?afterSeq=1');
     const before = fetchMock.mock.calls.length;
@@ -800,7 +803,7 @@ describe('useRunLiveMetrics', () => {
     const { unmount } = mountLive(['w-1']);
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
-    // 产品默认节奏：`LIVE_TEXT_SAMPLE` 是可变对象，默认值必须有用例钉住（AGENT.md 的既有口径）
+    // 产品默认节奏：`LIVE_TEXT_SAMPLE` 是可变对象，默认值必须有用例钉住（AGENTS.md 的既有口径）
     expect(DEFAULT_SAMPLE_MS).toBe(1000);
     const index = setSpy.mock.calls.findIndex(([, delay]) => delay === DEFAULT_SAMPLE_MS);
     expect(index, '没有按 LIVE_TEXT_SAMPLE.intervalMs 建采样定时器').toBeGreaterThanOrEqual(0);

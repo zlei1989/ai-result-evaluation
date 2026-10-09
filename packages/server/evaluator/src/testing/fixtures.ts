@@ -55,6 +55,8 @@ import type {
   AgentRunResult,
 } from '@aieval/agents';
 import type { JudgeInput } from '../judge';
+// 同样是**类型专用**：`text-api` 是被 `vi.mock` 的模块，值 import 会在这里造出第二条环
+import type { TextUsage } from '../text-api';
 import { removeTreeWithRetry } from './cleanup';
 
 /** 一个用完即删的临时家目录 */
@@ -267,6 +269,12 @@ export interface FakeTextCall {
   /** 完整对话（单轮就是一条 user 消息；修复轮是 `user / assistant / user`） */
   messages: { role: string; content: string }[];
   system?: string;
+  /**
+   * 实际交给文本 API 的**思考强度**（未给则 `undefined`）。
+   * 为什么必须记录：它是「这一分用什么强度打的」在**评分器这一层**的唯一观测点——漏传是静默的
+   * （评分照出，只是模型按网关的缺省档跑），而记账那一格写 `null` 与写真实档名在契约上都合法。
+   */
+  effort?: string;
 }
 
 /** 假文本 API 的状态：返回值 / 失败方式 / 收到的入参 */
@@ -279,6 +287,15 @@ export const fakeTextApi = {
    * `calls` 仍记录 mode；这里**不**在 mode 里加第四个值，是为了让既有用例的断言一字不改。
    */
   replies: [] as string[],
+  /**
+   * 每一次调用**上游自报的用量**（2026-10-08）。与 `replies` 同一套序号：第 N 次调用用第 N 条，
+   * 越界取最后一条；`usages` 为空时一律用 `usage`。
+   * 为什么要按序号给：结构修复是**多轮**的，而「用量跨轮累计」这条口径只有在两轮拿到
+   * **不同的数**时才测得出来（两轮同值时，「累计」与「只记最后一轮」长得一模一样）。
+   */
+  usages: [] as (TextUsage | null)[],
+  /** 每一次调用的默认用量；`null` = 上游没报（与真实外壳同一条口径，**绝不填 0**） */
+  usage: { input: 10, cached: 0, output: 2 } as TextUsage | null,
   failure: null as Error | null,
   calls: [] as FakeTextCall[],
 };
@@ -287,6 +304,8 @@ export const fakeTextApi = {
 export function resetFakeTextApi(): void {
   fakeTextApi.reply = '';
   fakeTextApi.replies.length = 0;
+  fakeTextApi.usages.length = 0;
+  fakeTextApi.usage = { input: 10, cached: 0, output: 2 };
   fakeTextApi.failure = null;
   fakeTextApi.calls.length = 0;
 }
@@ -298,35 +317,46 @@ function replyForCall(): string {
   return fakeTextApi.replies[index] ?? fakeTextApi.reply;
 }
 
+/** 这一轮该报多少用量：与 `replyForCall` 同一套序号规则 */
+function usageForCall(): TextUsage | null {
+  if (fakeTextApi.usages.length === 0) return fakeTextApi.usage;
+  const index = Math.min(fakeTextApi.calls.length - 1, fakeTextApi.usages.length - 1);
+  return fakeTextApi.usages[index] ?? fakeTextApi.usage;
+}
+
 /**
  * 供 `vi.mock('./text-api', …)` 用作替代模块：`callTextApi` 与 `callTextApiConversation`
  * **都要给**——`judgeRow` 现在走多轮入口，只给单轮那一支会让整个评分域在测试里 import 到 undefined。
  * 两者记进同一个 `calls`（同一个边界、同一套断言），单轮被展开成一条 user 消息。
  */
 export function fakeTextApiModule(): {
-  callTextApi: (route: unknown, input: { system?: string; prompt: string }) => Promise<string>;
+  callTextApi: (route: unknown, input: { system?: string; prompt: string; effort?: string }) => Promise<string>;
   callTextApiConversation: (
   route: unknown,
-  input: { system?: string; messages: { role: string; content: string }[] },
-  ) => Promise<string>;
+  input: { system?: string; messages: { role: string; content: string }[]; effort?: string },
+  ) => Promise<{ text: string; usage: TextUsage | null }>;
 } {
   const run = async (
     route: unknown,
-    input: { system?: string; messages: { role: string; content: string }[] },
-  ): Promise<string> => {
+    input: { system?: string; messages: { role: string; content: string }[]; effort?: string },
+  ): Promise<{ text: string; usage: TextUsage | null }> => {
     fakeTextApi.calls.push({
       route,
       messages: input.messages,
       ...(input.system === undefined ? {} : { system: input.system }),
+      effort: input.effort,
     });
     if (fakeTextApi.failure !== null) throw fakeTextApi.failure;
-    return replyForCall();
+    return { text: replyForCall(), usage: usageForCall() };
   };
   return {
+    // 单轮也是一条真的转发：真实 `callTextApi` 把 `effort` 一起交给 `buildBody`，
+    // 夹具漏转的话「生成 / 识别那条路带没带强度」在测试里会永远看不见（假绿）
     callTextApi: (route, input) => run(route, {
       messages: [{ role: 'user', content: input.prompt }],
       ...(input.system === undefined ? {} : { system: input.system }),
-    }),
+      effort: input.effort,
+    }).then((result) => result.text),
     callTextApiConversation: (route, input) => run(route, input),
   };
 }
@@ -396,9 +426,14 @@ export function makeScoreFixture(
     judgeModelId,
     judgedAt: new Date().toISOString(),
     judgeAgentKind,
+    judgeEffort: null,
     // 夹具一律走提示词契约（老记录读盘后同样是 false）：要造「被 schema 约束的那一份」，
     // 先给本夹具加一个可选入参，别在用例里手抄整个 ScoreResult
     structuredOutput: false,
+    // 评分自己的花销（2026-10-08）：假评分器不记账，两格给 null（真实通路各有专门用例钉住）。
+    // 需要「有用量那一份」的用例同样走「给夹具加可选入参」这条路，不要手抄整个 ScoreResult
+    judgeTokens: null,
+    judgeDurationMs: null,
   };
 }
 
@@ -436,11 +471,14 @@ export interface FakeAgentCall {
   /**
    * 实际交给适配器的结构化输出 schema（原样记下；`undefined` = 这一格根本没传）。
    *
-   * 为什么必须记录：`capability.structuredOutput: false` 的那一家（dsh）**不许**收到这一格
-   * （spec D4：谁知道能力、谁决定，答案只有编排层），而「按能力决定给不给」与「无脑都传」两种改法
-   * 在别处没有任何可观测差异——行照样跑完、分数照样出得来。按 spec D11，多传的那一格要么让这一家
-   * 直接报错、要么被静默忽略成「已经强约束」，两种都不是能靠别的断言发现的。
-   * 取值刻意保留 `undefined`（而不是缺省成 `false` / `null`）：「没传这一格」正是要被钉住的事实。
+   * 为什么必须记录：A1 之后**编排层总是传**这一格（`outputSchema` 表达「我想要」），能不能给由
+   * **骨架**按 `hooks.capability.structuredOutput` 决定（spec D4：谁知道能力、谁决定，答案在
+   * `runTurn` 里算一次），降级结论再经 `applied.structuredOutput` 报回来。于是这一格是「骨架到底
+   * 有没有把它交给适配器」的唯一观测点：若改成「无脑交给适配器」，别处没有任何可观测差异——
+   * 行照样跑完、分数照样出得来；而按 spec D11，不支持这一格的那一家（dsh）要么直接报错、
+   * 要么把提示词契约静默当成「已经强约束」。判据在 `judge-agent.test.ts` 的降级那条：
+   * dsh 那一次收到的必须是 `undefined`。
+   * 取值刻意保留 `undefined`（而不是缺省成 `false` / `null`）：「这一格被摘掉了」正是要被钉住的事实。
    */
   outputSchema?: Record<string, unknown>;
   startedAt: number;
@@ -476,6 +514,14 @@ export interface FakeAgentScript {
    */
   errorCode?: AgentErrorCode;
   tokens?: { input: number; cached: number; output: number } | null;
+  /**
+   * 适配器自报的耗时（毫秒）。不写就按夹具自己的墙钟算（真实适配器也是自报值，见
+   * `AgentRunResult.durationMs`）。
+   * 为什么需要这一格（2026-10-08）：评分详情要显示**评分那一段**的耗时，而假适配器的墙钟是
+   * 「几毫秒」——不钉住一个具体数字的话，「取适配器自报值」与「写死 0」「取我们的掐表」
+   * 三种实现在用例面前一模一样（假绿）。
+   */
+  durationMs?: number;
   /**
    * **子智能体那一份**用量（2026-10-04，`AgentRunResult.subagentTokens` 必填之后新增）。
    * 与 `tokens` 同一格口径：脚本没写这一项就是「没采到」（`null`），写了就原样透传（含显式的 `null`）。
@@ -590,20 +636,20 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           : ['off', 'low', 'high', 'max'],
     // `defaultEffort` 同真值：只有 dsh 有（2026-10-06；API 侧要用它拦「未选 + 模型不支持缺省档」）
     ...(kind === 'dsh' ? { defaultEffort: 'high' } : {}),
-    isolation: 'subprocess',
     /**
      * 消息能力声明：编排层不读它（它服务内容级视图），故这里用最宽松的一份形状桩；
      * 三家的真值在各自的 `providers/<kind>/index.ts` 里，由 agents 包的一致性用例钉住。
      *
-     * **为什么是逐字字面量、而不是 `permissiveMessageCapability()`（2026-10-06）**：那个函数要从
+     * **为什么是逐字字面量、而不是 `permissiveMessageCapability()`（2026-10-06）**：那个函数要用就得从
      * `@aieval/agents` **运行时** import 进来，而它正是被 `vi.mock` 的模块之一 ⇒ 夹具会被卷进
      * 「工厂 → seams → fixtures → 在飞模块」那条环（见本文件 `:34` 那条 import 的注释）。
      * 字面量把这条运行时边**彻底去掉**，且不需要任何运行时读——**不要**改用
      * `vi.importActual('@aieval/agents')` 现取（那只是把边挪到执行期，风险面不明，spec §3.3），
      * 也**不要**在夹具里另写一个同名复制函数（那是第二份真源，spec §3.3）。
+     * （2026-10-07 起那个函数已从包出口收回、只服务 `agents` 包内测试，用不着再权衡。）
      *
-     * 等价性：与 `agents/src/types.ts:292-311` 的返回值**逐格等价**（17 格 = 6 个能力位
-     * + 5 对 `Source`/`Reason` + `notes`）；将来 `MessageCapability`（`contracts/src/agent-message.ts:401-463`）
+     * 等价性：与 `agents/src/types.ts` 的 `permissiveMessageCapability()` 返回值**逐格等价**（17 格
+     * = 6 个能力位 + 5 对 `Source`/`Reason` + `notes`）；将来 `MessageCapability`（`contracts/src/agent-message.ts:401-463`）
      * 新增必填格时 `tsc` 会**直接点名**，故这份字面量不会静默过期。
      */
     messageCapability: {
@@ -662,7 +708,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         call.finishedAt = Date.now();
         call.exitReason = exitReason;
         if (currentGeneration()) fakeAgents.concurrent -= 1;
-        const durationMs = (call.finishedAt ?? Date.now()) - call.startedAt;
+        const durationMs = script.durationMs ?? (call.finishedAt ?? Date.now()) - call.startedAt;
         // 计量**必须原样透传脚本里的 null**（「没采到」与「0」在横向对比里含义相反，§5.6.3）。
         // 这里刻意不写 `script.tokens ?? 默认值`：`??` 会把 `null` **一并**兜掉（它只在左侧为
         // `null` / `undefined` 时取右侧，`null ?? 9 === 9` 是规范语义、不是运行时缺陷），
@@ -677,6 +723,18 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         // 轮次那一格的分量同一格口径（2026-10-04）：脚本没写 = 「没采到」（`null`），写了就原样透传，
         // 显式 `null` 因此不会被 `??` 一并兜掉（那是「保持」与「清空」的区别）
         const subagentTurns = script.subagentTurns === undefined ? null : script.subagentTurns;
+        /**
+         * `applied`（A1，必填格）。真 `run` 由骨架现算（`runTurn` 里
+         * `wantsSchema && capability.structuredOutput`），而假 provider **不走骨架** ⇒ 这里照同一条式子
+         * 现算，两个操作数都取真值：能力读自己的 `metadata`（上面那一格与真注册表逐格一致），
+         * 「要没要 schema」读这一格有没有真被传进来。
+         *
+         * 为什么不写死 `false`：claude-code / codex 走 `run` 时**真的**会下发 schema，写死会让夹具的
+         * 绿色建立在「与真行为相反」的假值上——正是本文件顶部那条「元数据与真实注册表逐格一致」要防的
+         * 事。`dsh` 那一格因此如实报 `false`，调用方那两条分支（降级留痕 / 记账）也才都能被走到。
+         */
+        const schemaWanted = input.outputSchema !== undefined && input.outputSchema !== null;
+        const applied = { structuredOutput: schemaWanted && metadata.capability.structuredOutput };
         return {
           ok,
           exitReason,
@@ -690,6 +748,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           // 一并兜掉，而 `null` 是「没采到」这个有意义的取值——判据上它与 `''`（空答复）相反。
           // 与上面 tokens/turns 的写法同一格口径（评审 M3：那是算子的规范语义，不是环境退化）。
           finalText: script.finalText === undefined ? null : script.finalText,
+          applied,
           ...(error === undefined ? {} : { error }),
         };
       };
@@ -748,7 +807,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
 
       if (mode === 'hang') {
         // 非合作适配器：无视 signal、永不返回。孤儿 promise 无法回收（JS 没有取消异步的机制），
-        // 这正是 §5.6.5 要求适配器自带 interrupt → dispose 有界清理的原因。
+        // 这正是 §5.6.6 要求适配器自带 interrupt → dispose 有界清理的原因。
         // ⚠️ 2026-09-28 起**没有兜底超时**能收这一行了（用户口径「执行不限时间」）：用它造的用例
         // 必须自己把行终止掉（abortRow / abortRun），否则会一直挂在 running 上。
         await new Promise<never>(() => {});

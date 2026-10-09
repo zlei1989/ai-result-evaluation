@@ -35,6 +35,7 @@ import { nodeIndex } from './render-blocks';
 import type { BlockRenderer } from './block-renderer-registry';
 import { blockRendererOf, useBlockRenderers } from './block-renderer-registry';
 import { AgentLogFactsBar } from './agent-log-facts-bar';
+import { AgentLogDomainFacts } from './agent-log-domain-facts';
 import { LogNodeBreadcrumb, nodeDisplayName } from './log-node-breadcrumb';
 import { AgentEnvironmentDrawer } from './agent-environment-drawer';
 import { RawOutputPanel, hasRawEntry } from './raw-output-panel';
@@ -72,7 +73,7 @@ export interface TimelineSlotProps {
   /**
    * 当前节点的能力声明：进 `BlockRenderContext`，供 `AgentRunStateTag` 说出
    * 「结果未采集 · **为什么**」。**取当前节点的那一份**（不是主会话的）：同一行的不同子任务
-   * 采数通道可以不同（codex 的子任务正文只在子线程会话文件里），拿错节点就会说错原因。
+   * 采数通道可以不同（codex 迁移 app-server 前，子任务正文只在子线程会话文件里；今天唯一走 `session-file` 的是 claude 的子智能体用量），拿错节点就会说错原因。
    */
   capability?: MessageCapabilityMap;
 }
@@ -96,7 +97,10 @@ export interface AgentLogLayoutProps {
   notice?: ReactNode;
   /** 实时通道故障的一句话（断线 / 环境不支持 EventSource / 坏帧）。与 `notice` 分开：**前者说通道，后者说内容** */
   liveError?: ReactNode;
-  /** 实时通道是否连着；**不给就不渲染那一格**（不假装在实时，也不把「没有这个信息」说成「未连接」） */
+  /**
+   * 实时通道是否连着；**不给就不渲染那一格**（不假装在实时，也不把「没有这个信息」说成「未连接」）。
+   * 那一格落在**原文行**的最左侧（用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间）。
+   */
   connected?: boolean;
 }
 
@@ -479,11 +483,16 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   const rawRowActions = useMemo(() => allActions.filter((action) => action.placement === 'raw'), [allActions]);
 
   /**
-   * 原文行渲不渲染：这一行上有要渲的动作（`visible !== false`），或**有原文入口**。
+   * 原文行渲不渲染：**有连接状态**（它住这一行），或这一行上有要渲的动作（`visible !== false`），
+   * 或**有原文入口**。
+   *
    * 「有没有原文」这一条取自 `RawOutputPanel` 的 `hasRawEntry`——两处各写一遍必然漂移，
    * 而漂移的症状是「原文 0 条时下载按钮上面多一条空隙」。
+   * 「有连接状态」这一条是 2026-10-07 加的：连接徽标从事实条那一行挪到这一行，若还按旧判据，
+   * 「实时通道通不通」会随原文入口一起消失——那不是收起了版面，是丢了一个读数。
    */
   const rawRowVisible =
+    connected !== undefined ||
     rawRowActions.some((action) => action.visible !== false) ||
     (diagnostics !== undefined &&
       diagnostics.status === 'ready' &&
@@ -617,20 +626,17 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
           </Flex>
         )}
 
-        {/* 事实条那一行：连接状态紧邻状态徽标。**只在传了 `connected` 时**渲染那一格 */}
-        <Flex align="center" gap={token.marginSM} wrap>
-          <AgentLogFactsBar
-            facts={model.facts}
-            waitingSince={waitingSince}
-            contentTruncatedReason={node?.contentTruncatedReason ?? null}
-          />
-          {connected !== undefined && (
-            // `size="small"` 对 status 徽标**不改变外观**（`Badge.js` 只把它拼进计数徽标的 `ScrollNumber`）：
-            // 写出来是为了「抽屉里每个带 size 的组件都写死 small」这条口径能静态核对，见
-            // `agent-log-facts-bar.tsx` 的同名注释与 `agent-log-size-sweep.test.ts` 的守卫
-            <Badge size="small" status={connected ? 'processing' : 'default'} text={connected ? '实时连接中' : '未连接'} />
-          )}
-        </Flex>
+        {/* 事实条 + 领域事实**两行**（用户 2026-10-07 口径）：前者讲「这一行跑了什么」
+            （状态 / 轮次 / 用量 / 耗时 / 错误），后者讲「这一行是谁在跑、改了什么、得了多少分」
+            （智能体 · 模型 · 思考强度 · 改动 · 评分）。**分行是硬要求**：并回一行时靠 `wrap`
+            自然折行，「改动 / 评分」会被甩到第二行、与前三格拆散。
+            连接状态不在这两行里——它挪去了下面的原文行（见 `rawRowVisible` 的注释） */}
+        <AgentLogFactsBar
+          facts={model.facts}
+          waitingSince={waitingSince}
+          contentTruncatedReason={node?.contentTruncatedReason ?? null}
+        />
+        <AgentLogDomainFacts domain={model.facts.domain} />
         <Flex align="center" gap={token.marginSM} wrap>
           <LogNodeBreadcrumb nodes={model.nodes} activeNodeId={viewState.activeNodeId} onSelect={viewState.setActiveNodeId} />
           <ToolbarActions
@@ -666,12 +672,28 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
           />
         )}
         {/*
-          原文行：「原始输出 N 条」+ 挂在这一行上的动作（`placement: 'raw'`，预设里是「下载台账」，用户 2026-10-03 口径）。
-          整行渲不渲染由 `rawRowVisible` 判：**两个都没有时不画**，否则固定区会多出一段空 gap。
+          原文行：连接状态 + 「原始输出 N 条」+ 挂在这一行上的动作（`placement: 'raw'`，预设里是「下载台账」，
+          用户 2026-10-03 口径）。整行渲不渲染由 `rawRowVisible` 判：**三样都没有时不画**，
+          否则固定区会多出一段空 gap。
           `ToolbarActions` 与工具条那一行是同一个件——两行的渲法不该有两份实现。
         */}
         {rawRowVisible && (
           <Flex align="center" gap={token.marginSM} wrap>
+            {/*
+              连接状态在这一行的**最左侧**（用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间）。
+              `size="small"` 对 status 徽标**不改变外观**（`Badge.js` 只把它拼进计数徽标的 `ScrollNumber`）：
+              写出来是为了「抽屉里每个带 size 的组件都写死 small」这条口径能静态核对，见
+              `agent-log-facts-bar.tsx` 的同名注释与 `agent-log-size-sweep.test.ts` 的守卫。
+              **只在传了 `connected` 时**渲染这一格（不传就是「这一行没有实时通道」这个事实，不编一个「未连接」）
+            */}
+            {connected !== undefined && (
+              <Badge
+                size="small"
+                data-testid="agent-log-connection"
+                status={connected ? 'processing' : 'default'}
+                text={connected ? '实时连接中' : '未连接'}
+              />
+            )}
             {diagnostics !== undefined && diagnostics.status === 'ready' && (
               <RawOutputPanel
                 source={{ kind: 'diagnostics', diagnostics: diagnostics.data }}
@@ -714,7 +736,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
         environment={environment}
         onRetry={source?.requestEnvironment === undefined ? undefined : () => source.requestEnvironment?.()}
         // 能力声明取**当前节点**的那一份（不是主会话的、也不是全局一份）：同一行的不同子任务
-        // 采数通道可以不同（codex 的子任务正文只在子线程会话文件里），拿错节点就会说错原因
+        // 采数通道可以不同（codex 迁移 app-server 前，子任务正文只在子线程会话文件里；今天唯一走 `session-file` 的是 claude 的子智能体用量），拿错节点就会说错原因
         capability={node?.capability}
         capabilityNotes={node?.capabilityNotes}
       />

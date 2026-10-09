@@ -85,7 +85,7 @@ const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
  *
  * 为什么是这一维：`AgentRunStateTag` 说的是「这次工具调用的结果没有」，而它对应的能力格
  * 就是 `toolResult`（契约里五维之一）。拿 `thinkingText` 或 `subagent` 的原因去解释工具结果，
- * 会把「思考正文只在会话文件里」说成「工具结果没投送」——两个不同的坑，修法也不同。
+ * 会把「子任务整块没采到」说成「它没有子任务」——两个不同的坑，修法也不同。
  * 三个调用点（工具组状态行、组内每一行、计划清单）共用这一处推导，不各判一次。
  */
 function toolResultReasonOf(ctx: BlockRenderContext): string | null {

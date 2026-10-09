@@ -113,6 +113,53 @@ describe('judgeRowByAgent', () => {
     expect(fakeAgents.calls[0]?.prompt).toContain('只读评审');
   });
 
+  /**
+   * 思考强度（spec §1.3：评分强度**可配**，跨轮次可比改由记账保证）。它与窗口那两格**不同类**：
+   * 强度是**请求参数**（走 `judgeEffort` 入参），不是连接事实（route 上没有这一格）。
+   * 为什么正反两条都要：只钉「给了会透」看不出「没给会不会凭空塞一个缺省档」（那会让「未指定」
+   * 在适配器眼里变成一次显式要求）；只钉「没给是 undefined」则看不出这一格根本没接线。
+   * 记账那两格同理：`null` 与档名都是合法值，留一个 `null` 占位不会被任何别的断言发现。
+   */
+  it('给了 judgeEffort ⇒ 原样透给适配器的 effort，并记进 ScoreResult', async () => {
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
+    const score = await callJudge(undefined, { judgeEffort: 'max' });
+    expect(fakeAgents.calls[0]?.effort).toBe('max');
+    expect(score.judgeEffort).toBe('max');
+  });
+
+  it('没给 judgeEffort ⇒ 透给适配器的 effort 是 undefined（未指定，不是关闭），记账为 null', async () => {
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
+    const score = await callJudge();
+    // 判据是**值**而不是「键在不在」：夹具无条件记下这一格（`FakeAgentCall.effort`），
+    // 而仓内三家适配器都按值分支——「键不存在」这条形状今天没有消费者，也就没有可观测后果
+    expect(fakeAgents.calls[0]?.effort).toBeUndefined();
+    expect(score.judgeEffort).toBeNull();
+  });
+
+  /**
+   * 评分自己的用量与耗时（2026-10-08，用户口径：评分详情里那一段说的是**评分的花销**，
+   * 不是被评那一行的执行花销）。这条通路的两格**取适配器自报值**——与候选行 `EvalRow.tokens` /
+   * `durationMs` 同一份原料，故两者可以直接对着看。
+   * 耗时用夹具的 `durationMs` 钉一个具体数字：不钉的话「取自报值」「写死 0」「取我们的掐表」
+   * 在假适配器那几毫秒的墙钟面前没有区别。
+   */
+  it('适配器自报的用量与耗时进 ScoreResult', async () => {
+    fakeAgents.scripts.set('codex', {
+      mode: 'ok',
+      finalText: judgeReplyJson(),
+      tokens: { input: 111, cached: 222, output: 33 },
+      durationMs: 8_500,
+    });
+    const score = await callJudge();
+    expect(score.judgeTokens).toEqual({ input: 111, cached: 222, output: 33 });
+    expect(score.judgeDurationMs).toBe(8_500);
+  });
+
+  it('适配器没采到用量 ⇒ judgeTokens 为 null（绝不填 0）', async () => {
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson(), tokens: null });
+    expect((await callJudge()).judgeTokens).toBeNull();
+  });
+
   it('finalText 为 null → JUDGE_PARSE_FAILED（该家没回传最终消息）', async () => {
     fakeAgents.scripts.set('codex', { mode: 'ok', finalText: null });
     await expect(callJudge()).rejects.toThrowError(/没有给出可读的最终答复/);
@@ -177,35 +224,54 @@ describe('judgeRowByAgent', () => {
     expect(fakeAgents.calls[0]?.permission).toBe('read-only');
   });
 
-  it('带 outputSchema ⇒ 原样传给适配器，且 ScoreResult 记 structuredOutput=true', async () => {
+  it('带 outputSchema ⇒ 原样传给适配器；codex 报回 applied=true ⇒ 记 structuredOutput=true', async () => {
     const schema = { type: 'object', properties: { verdict: { type: 'string' } } };
     fakeAgents.scripts.set('codex', { finalText: judgeReplyJson() });
 
     const score = await callJudge(new AbortController().signal, { outputSchema: schema });
 
-    // ① 转发：本模块只转发、不做能力判断（能力判断在编排层，spec D4），故给什么就传什么
+    // ① 转发：本模块只转发、不做能力判断（能不能给由适配器按自己的能力决定，A1），故给什么就传什么
     expect(fakeAgents.calls[0]?.outputSchema).toEqual(schema);
-    // ② 记账：这一格是「这一分是不是在 schema 约束下拿到的」的唯一落点。
+    // ② 记账：这一格是「这一分是不是在 schema 约束下拿到的」的唯一落点，判据取自**结果里的 `applied`**。
     // 没有它，`finalizeScore` 里写死 `false` 也能让全套用例全绿（false 是合法 boolean，类型检查看不见）。
     expect(score.structuredOutput).toBe(true);
   });
 
-  it('不带 outputSchema ⇒ 不传该格，记 structuredOutput=false（dsh 与文本通路今天的口径）', async () => {
+  /**
+   * 「适配器说没落到实处」与「我们传没传 schema」是两件事（A1）。夹具的 `applied` 是**照它自己的
+   * `metadata.capability.structuredOutput` 现算的**（Task 1 的产物，见 `testing/fixtures.ts`），
+   * 所以降级只能用一家能力为 false 的 kind（dsh）来造。这一条正是新判据的鉴别器：**我们确实传了
+   * schema，而分数必须记 false**——旧的「入参里有没有这一格」在这条用例面前恒 true。
+   */
+  it('适配器降级 ⇒ ScoreResult.structuredOutput 记 false（判据是 applied，不是「我们传没传」）', async () => {
+    const schema = { type: 'object' };
+    fakeAgents.scripts.set('dsh', { finalText: judgeReplyJson() });
+
+    const score = await callJudge(new AbortController().signal, { kind: 'dsh', outputSchema: schema });
+
+    expect(score.structuredOutput).toBe(false);
+    // 前提：我们**确实**表达了「想要 schema」（否则这条用例测的是另一件事）
+    expect(fakeAgents.calls[0]?.outputSchema).toEqual(schema);
+  });
+
+  it('不带 outputSchema ⇒ 不传该格；applied=false ⇒ 记 structuredOutput=false', async () => {
     fakeAgents.scripts.set('codex', { finalText: judgeReplyJson() });
 
     const score = await callJudge();
 
     expect(fakeAgents.calls[0]?.outputSchema).toBeUndefined();
+    // 记账判据与上面同一条：结果里的 `applied`（没要 schema ⇒ 适配器如实报 false）。
+    // 本模块不再按「入参里有没有这一格」自己推断——那是第二个真相，必然与 `applied` 漂移。
     expect(score.structuredOutput).toBe(false);
   });
 
   /**
    * 显式 `null` 与「没给」同义（R39b）：这一格的类型不含 `null`，但运行期真能传进来（mock / JSON
    * 反序列化 / 断言过的调用方），而**三家适配器都把 `null` 当「没给」**——编排层若在这里把 `null`
-   * 转出去，就会出现「转发了一个被下游忽略的格、记账却写 true」的自相矛盾：分数声称被 schema 约束，
-   * 实际一个字段都没传。
+   * 转出去，就会出现「声称要了 schema、实际一个字段都没传出去」的自相矛盾：适配器照旧报
+   * `applied=false`，而我们的入参里躺着一个被下游忽略的格。
    */
-  it('outputSchema 显式为 null ⇒ 同样不传该格，且记 structuredOutput=false（空值口径与三家适配器一致）', async () => {
+  it('outputSchema 显式为 null ⇒ 同样不传该格；applied=false ⇒ 记 structuredOutput=false（空值口径与三家适配器一致）', async () => {
     fakeAgents.scripts.set('codex', { finalText: judgeReplyJson() });
 
     const score = await callJudge(new AbortController().signal, {
@@ -214,7 +280,7 @@ describe('judgeRowByAgent', () => {
 
     // ① 转发：`null` 与「没给」走同一条路（夹具无条件记录这一格的值，故 false 值会露出来）
     expect(fakeAgents.calls[0]?.outputSchema).toBeUndefined();
-    // ② 记账：不能因为一个显式 `null` 就让这一分声称被 schema 约束
+    // ② 记账：判据是 `applied`——这一格没传出去，适配器就报 false，分数不能声称自己被 schema 约束
     expect(score.structuredOutput).toBe(false);
   });
 
@@ -374,8 +440,14 @@ describe('judgeRowByAgent', () => {
    * 为什么值得单独钉：候选行那条路由由编排层组装，而评分这条由 `resolveJudgeRoute()` 组装后
    * **原样**交给适配器 —— 少传一格的后果是**静默**的（评分照样出分，只是 cc 不加 `[1m]`、
    * codex 不写 `model_context_window`），界面上一个字都看不出来。
+   * 强度**不在**这条路由上（spec §5.3）：它是**请求参数**，走 `judgeEffort` 入参——
+   * 与候选侧 `AgentRunInput.effort` 同一条口径（`TextRoute` 只承载连接事实）。
+   * 给了强度的那一路见上面「给了 judgeEffort ⇒ 原样透给适配器」。
+   * ⚠️ 真正拦住「route 长出一格强度」的是 `judge-route.test.ts` 里那两条 `toEqual`（route **逐格**相等）
+   * ——`FakeAgentCall` 只记 route 派生出来的值、手里没有 route 对象，故本用例名不能宣称它钉住了
+   * route 的形状（原名「强度…不在 route 上」就是名不副实：它唯一的强度断言在**入参**那一格上）。
    */
-  it('评分路由里的窗口与输出上限到达适配器输入；强度**不**走这条路（尺子要恒定）', async () => {
+  it('评分路由里的窗口与输出上限到达适配器输入；这一次没给强度 ⇒ 入参这一格没有值', async () => {
     fakeAgents.scripts.set('codex', { finalText: judgeReplyJson() });
 
     await callJudge(new AbortController().signal, {
@@ -384,7 +456,7 @@ describe('judgeRowByAgent', () => {
 
     expect(fakeAgents.calls[0]?.contextWindow).toBe(1_048_576);
     expect(fakeAgents.calls[0]?.maxOutputTokens).toBe(131_072);
-    // 强度刻意不在这条通路上（spec §2「不做」：评分那把尺子要跨轮次可比）
+    // 这一次没给 judgeEffort ⇒ 这一格没有值；route 上则**压根没有**强度这一格（上面那三条注释是判据）
     expect(fakeAgents.calls[0]?.effort).toBeUndefined();
   });
 });

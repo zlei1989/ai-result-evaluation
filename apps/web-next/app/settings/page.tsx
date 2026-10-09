@@ -10,7 +10,7 @@
  * 不为其中任一块单开路由。工作区的「校验并保存」= `PUT { workspaceRoot }`，服务端校验通过才落盘（§6.3）。
  *
  * 注意：本页**没有自动化测试** —— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
- * （见 AGENT.md）。因此页面逻辑必须薄到只剩「取值 → 传参 → 把 Promise 折成 message」：
+ * （见 AGENTS.md）。因此页面逻辑必须薄到只剩「取值 → 传参 → 把 Promise 折成 message」：
  * 业务判断都在 ui 组件与 hooks 里，本页只负责接线与**三态分支**（就绪 / 仍在读 / 读失败）——
  * 组件 props 里没有 error 位（契约冻结），这三个状态只能由页面分，而「读失败」必须说出来，
  * 不能让「还没读到」冒充「你还没配」。验收靠 `pnpm typecheck` + `pnpm lint` + p6 冒烟。
@@ -315,6 +315,10 @@ export default function Page(): React.ReactNode {
                     agentProtocols={(agentOptions ?? []).map((group) => ({
                       agentKind: group.agentKind,
                       protocolTypes: group.protocolTypes,
+                      // 档位域要用它（同一个注册表投影，不新增端点）：评分卡片靠它把「思考强度」的候选
+                      // 交到「模型声明 ∩ 这家智能体的域」上——漏这一格，候选会退化成规范五档，
+                      // 而 dsh 收不了 medium（界面上能存、生成 / 识别时被硬拒）
+                      efforts: group.efforts,
                     }))}
                     saving={isUpdating}
                     onChange={changeSettings}

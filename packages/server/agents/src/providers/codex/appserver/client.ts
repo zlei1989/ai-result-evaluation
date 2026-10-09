@@ -1,9 +1,9 @@
 /**
  * codex `app-server` 的 JSON-RPC 客户端（stdio、行分隔 JSON 帧）。
  *
- * 为什么要自己写一个：TS 侧**没有官方 app-server 客户端**（`@openai/codex-sdk` 走的是
- * `exec --experimental-json`，那是另一条通道）。本文件只做四件事——spawn、握手、请求/响应配对、
- * 收通知——**不做**业务映射（那是 `threads.ts` 的事）。
+ * 为什么要有它：TS 侧**没有官方 app-server 客户端**（厂商只提供 CLI 的 `app-server` 子命令）。
+ * 本文件只做四件事——spawn、握手、请求/响应配对、收通知——**不做**业务映射（取数在 `reader.ts`，
+ * 事件与内容归一在 `events.ts` / `message.ts`）。
  *
  * 三条硬口径：
  *  1. **绝不悬挂**：进程退出、spawn 失败、超时、`close()` 四种收场都要让待收请求**明确 reject**
@@ -12,8 +12,16 @@
  *     本仓评测是非交互的（`approvalPolicy: never`），应答等于替用户批准；不归类则会污染响应配对。
  *  3. **坏帧计数不静默**：解析不了的整行进 `unparsedFrames()`，与 `transcript.ts` 的 `stats.badLines`
  *     同一理由——静默跳过会让「上游换了帧格式」表现成「子智能体突然没了子线程」。
+ *
+ * 第四条在 2026-10-07 补上：**`close()` 回收整棵进程树并等确认**（`process-tree.ts`）。
+ * codex 会在 `thread/start` 期间 spawn `git` 链去同步插件目录，只杀直接子进程会把它们留成孤儿，
+ * 而它们持着本行的 `$CODEX_HOME`——下一轮的行产物清理就此 `EPERM`。
  */
 import { spawn } from 'node:child_process';
+import { createLogger } from '@aieval/core';
+import { terminateProcessTree, type ProcessTreeChild, type TerminateOutcome } from '../../../process-tree';
+
+const logger = createLogger('agents/codex/app-server');
 
 /** 帧里能收到的三类入站报文（形状自己声明，不引厂商类型） */
 export interface AppServerNotification {
@@ -30,12 +38,15 @@ export interface AppServerServerRequest {
 /**
  * 子进程的窄结构：只声明本模块用到的成员，测试可以拿一个纯对象顶替（不 spawn 真进程）。
  * 真实 `ChildProcess` 结构上满足它（`stdin` 在 `pipe` 下非空）。
+ *
+ * `pid` / `exitCode` / `signalCode` 三格来自 `ProcessTreeChild`（见 `process-tree.ts`）：回收时
+ * 要按 pid 杀**整棵树**、并按退出码判断「是不是已经死透了」，只声明 `kill()` 是不够的。
  */
-export interface AppServerChild {
+export interface AppServerChild extends ProcessTreeChild {
   readonly stdin: { write(chunk: string): unknown };
   readonly stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown };
   readonly stderr: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown };
-  on(event: 'exit', listener: (code: number | null) => void): unknown;
+  on(event: 'exit', listener: (code: number | null, signal: string | null) => void): unknown;
   on(event: 'error', listener: (error: Error) => void): unknown;
   kill(): unknown;
 }
@@ -50,8 +61,8 @@ export interface AppServerChild {
  * ```ts
  * interface ProcessEnv { readonly NODE_ENV: 'development' | 'production' | 'test' }
  * ```
- * 于是本包（一个谁都不认识的库）里每个 `{}` 形状的 env 都被要求写 `NODE_ENV`——实测
- * `client.test.ts` 三处 TS2741；而**干净检出**下同一个 `{}` 合法。同一份代码两处结论不同、
+ * 于是本包（一个谁都不认识的库）里每个 `{}` 形状的 env 都被要求写 `NODE_ENV`——`client.test.ts`
+ * 会因此报 TS2741；而**干净检出**下同一个 `{}` 合法。同一份代码两处结论不同、
  * 门禁取决于「这台机器跑没跑过 dev」，这不是判据。
  *
  * 值域按 `spawn` 的口径（`Dict<string>`）：`undefined` 表示「这一格没有值」。
@@ -67,11 +78,23 @@ export interface AppServerClient {
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   /** 已收到的通知（调用方自己按需过滤；本客户端不做队列消费语义） */
   notifications(): readonly AppServerNotification[];
+  /** 增量订阅通知（通知驱动，不轮询）。返回退订函数；晚到的消费者仍可从 `notifications()` 读到历史 */
+  subscribe(listener: (notification: AppServerNotification) => void): () => void;
+  /** 订阅终态（进程退出 / 启动失败 / 关闭）。只有一次；返回退订函数 */
+  onTerminal(listener: (reason: string) => void): () => void;
   /** 服务端主动请求（审批等）：**只归类、不应答**，见文件头第 2 条 */
   serverRequests(): readonly AppServerServerRequest[];
   /** 解析不了的整行数（见文件头第 3 条） */
   unparsedFrames(): number;
-  close(): void;
+  /**
+   * 关闭客户端并**回收整棵进程树**（见 `process-tree.ts` 的文件头）。
+   *
+   * 为什么是异步、且必须 `await`：只发信号不等于进程已退出，孙进程更不会随父进程一起消失——
+   * 它们持着本行的配置目录，回收不干净会让下一轮的行产物清理 `EPERM`。
+   * 幂等：重复调用返回同一个 Promise（`createDisposer` 之外再兜一层，因为 `start` 失败那条路
+   * 也会调它）。
+   */
+  close(): Promise<void>;
 }
 
 export interface AppServerClientOptions {
@@ -83,6 +106,10 @@ export interface AppServerClientOptions {
   spawnFn?: AppServerSpawn;
   /** 单条请求的超时（毫秒）。默认 30s：`thread/read` 在大会话上要扫盘，给足余量 */
   timeoutMs?: number;
+  /** 杀树动作的注入口（见 `process-tree.ts` 的 `TerminateOptions.killTree`）；缺省按平台选 */
+  killTree?: (pid: number) => Promise<void>;
+  /** 等子进程退出的上限（毫秒）；缺省 `TERMINATE_GRACE_MS`。测试里调小，避免用例白等 */
+  terminateGraceMs?: number;
 }
 
 /** 握手时上报的客户端名（会出现在 `initialize` 的 `userAgent` 里，便于上游排查） */
@@ -95,13 +122,20 @@ const defaultSpawn: AppServerSpawn = (binary, args, env) => {
   // `env` 是仓内自己的键值对视图，而 `spawn` 要的是**全局**的 `NodeJS.ProcessEnv`
   // （下游应用可以给它补必填成员，见 `AppServerEnv`）⇒ 只能在这里断言一次。
   // 逐键拷贝再断言：语义不变（两边都是「键 → 字符串或 undefined」），只是把全局那个类型放回它该在的边界上。
-  const child = spawn(binary, [...args], { env: { ...env } as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+  //
+  // `detached`（**只给 POSIX**）：让子进程自成进程组，回收时才能 `kill(-pid)` 一次带走它 spawn 的
+  // 整棵树（见 `process-tree.ts`）。Windows 走 `taskkill /T`，不需要它，给了反而多一层壳。
+  const child = spawn(binary, [...args], {
+    env: { ...env } as NodeJS.ProcessEnv,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
   // 真实 ChildProcess 与本窄结构同形（pipe 下 stdin 非空）；这层断言只为绕开 `stdin: Writable | null`
   return child as unknown as AppServerChild;
 };
 
 export function createAppServerClient(options: AppServerClientOptions): AppServerClient {
-  const { binary, env, spawnFn = defaultSpawn, timeoutMs = 30_000 } = options;
+  const { binary, env, spawnFn = defaultSpawn, timeoutMs = 30_000, killTree, terminateGraceMs } = options;
 
   /** 待收请求表：id ⇒ 结算入口与超时定时器 */
   const pending = new Map<
@@ -110,6 +144,8 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
   >();
   const notificationList: AppServerNotification[] = [];
   const serverRequestList: AppServerServerRequest[] = [];
+  const listeners = new Set<(notification: AppServerNotification) => void>();
+  const terminalListeners = new Set<(reason: string) => void>();
   let nextId = 1;
   let buffer = '';
   let stderrTail = '';
@@ -118,17 +154,21 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
   let terminal: string | null = null;
   let closed = false;
   let initPromise: Promise<void> | null = null;
+  /** `close()` 的幂等出口：重复调用（dispose + start 失败回收）只回收一次 */
+  let closePromise: Promise<void> | null = null;
 
   const child = spawnFn(binary, ['app-server'], env);
 
   /** 把所有待收请求按同一个原因 reject（进程退出、启动失败、关闭三条路共用） */
   const rejectAll = (reason: string): void => {
+    const wasTerminal = terminal !== null;
     terminal ??= reason;
     for (const [id, entry] of pending) {
       clearTimeout(entry.timer);
       entry.reject(new Error(`${terminal}；未完成的请求：${entry.method}`));
       pending.delete(id);
     }
+    if (!wasTerminal) for (const listener of terminalListeners) listener(terminal);
   };
 
   const settle = (id: number, message: Record<string, unknown>): void => {
@@ -163,7 +203,9 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
       return;
     }
     if (typeof message.method === 'string') {
-      notificationList.push({ method: message.method, params: message.params });
+      const notification: AppServerNotification = { method: message.method, params: message.params };
+      notificationList.push(notification);
+      for (const listener of listeners) listener(notification);
     }
   };
 
@@ -212,16 +254,50 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
     },
     request,
     notifications: () => notificationList,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    onTerminal: (listener) => {
+      terminalListeners.add(listener);
+      return () => {
+        terminalListeners.delete(listener);
+      };
+    },
     serverRequests: () => serverRequestList,
     unparsedFrames: () => unparsed,
+    /**
+     * 关闭 = 拒绝所有待收请求 + **回收整棵进程树** + 等它真的退出（见文件头与 `process-tree.ts`）。
+     *
+     * 为什么不能只 `child.kill()`：那只杀直接子进程，而 codex 自己在启动阶段 spawn 了一条
+     * `git` 链去同步插件目录（真机探针 `probe/v7/codex-plugins-sync.mjs`）。孙进程活着 =
+     * `$CODEX_HOME`（本行的 `.agenthome` / `.judgehome`）被句柄锁住 = 下一轮的行产物清理 EPERM。
+     */
     close: () => {
-      closed = true;
-      rejectAll('codex app-server 客户端已关闭');
-      try {
-        child.kill();
-      } catch {
-        // 已经死了：kill 抛错不影响「关闭」这个结论
-      }
+      closePromise ??= (async () => {
+        closed = true;
+        rejectAll('codex app-server 客户端已关闭');
+        const outcome: TerminateOutcome = await terminateProcessTree(child, {
+          ...(killTree === undefined ? {} : { killTree }),
+          ...(terminateGraceMs === undefined ? {} : { graceMs: terminateGraceMs }),
+        });
+        if (outcome.error !== null) {
+          logger.warn('codex 子进程整树回收报错（已退回直接 kill）', { error: outcome.error, pid: child.pid });
+        }
+        if (outcome.exited) {
+          logger.debug('codex 子进程已回收', { via: outcome.via, waitedMs: outcome.waitedMs, pid: child.pid });
+        } else {
+          // 可见性：这一条**必然**会在下一轮的行产物清理上以 EPERM 现身，先把因果写在日志里
+          logger.warn('codex 子进程在宽限期内没有退出（可能有残留下级进程锁住本行的配置目录）', {
+            pid: child.pid,
+            via: outcome.via,
+            waitedMs: outcome.waitedMs,
+          });
+        }
+      })();
+      return closePromise;
     },
   };
 }

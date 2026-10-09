@@ -91,18 +91,21 @@ function envWriteViolations(source: string): string[] {
 /** 三家厂商包：只允许出现在动态 import() 与错误文案里（与 package.json 的一致性由专条断言钉住，评审 F7） */
 const VENDOR_PACKAGES = [
   '@anthropic-ai/claude-agent-sdk',
-  '@openai/codex-sdk',
+  '@openai/codex',
   '@deepseek-ai/dsh-sdk-client',
 ] as const;
 
 /**
- * 依赖清单里属于「厂商包」的那一类：作用域前缀 + 包名以 `-sdk` 或 `-sdk-client` 结尾。
- * **两条已知边界（复评 O4）**：① 这是**名称形状启发式**——将来新增一家不叫 `-sdk` 的厂商包
+ * 依赖清单里属于「厂商包」的那一类：三条厂商 scope（`@anthropic-ai/` / `@openai/` / `@deepseek-ai/`）下的依赖。
+ * 为什么不用「包名以 `-sdk` 结尾」那种形状启发式：codex 走 CLI 包后名字是 `@openai/codex`、**不以 `-sdk`
+ * 结尾**，形状判据会把三家之一漏掉（`VENDOR_PACKAGES` 随即静默失去覆盖）；scope 判据不依赖后缀命名，
+ * 同一家旗下的新包照样落进集合。
+ * **两条已知边界（复评 O4）**：① 判据是 scope 白名单——新增一家不在这三条 scope 下的厂商包
  * （例如 `@google/genai`）时，下面的交叉断言照样通过，`VENDOR_PACKAGES` 却静默失去覆盖；
  * ② 只读 `dependencies`，不读 `devDependencies` ——把厂商包挪到 devDependencies 也同样失去覆盖。
  * 也就是说这条断言守的是「现有三家的名字与位置不漂移」，不是「任何形式的厂商依赖都被纳入」。
  */
-const VENDOR_DEPENDENCY_PATTERN = /-(?:sdk|sdk-client)$/;
+const VENDOR_DEPENDENCY_PATTERN = /^@(?:anthropic-ai|openai|deepseek-ai)\//;
 
 /**
  * 顶层静态导入的**两条结构式**（阶段评审 M3 的修正版，逐字采纳）：
@@ -168,7 +171,7 @@ function staticallyImports(text: string, packageName: string): boolean {
 const READDIR_ALLOWED: readonly string[] = ['providers/claude-code/subagent-usage.ts'];
 
 describe('源码级不变量', () => {
-  it('源码里不出现任何写入宿主环境的写法（§5.6.4 不变量 2）', () => {
+  it('源码里不出现任何写入宿主环境的写法（§5.6.5 不变量 2）', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       const text = readFileSync(join(import.meta.dirname, file), 'utf8');
@@ -406,5 +409,73 @@ describe('源码级不变量', () => {
     expect(declared).toMatch(/^0\.1\.\d+-rc\.\d+$/);
     expect(declared).not.toContain('latest');
     expect(declared).not.toMatch(/^[\^~]/);
+  });
+});
+
+/**
+ * 打包器免疫（2026-10-07 真机故障的守卫）。
+ *
+ * 故障形态：厂商可执行文件的定位链在**纯 Node 下正常、在 Next 的服务端构建里必挂**——打包器
+ * （Turbopack / webpack）把 `node:module` 的 `createRequire` 换成了自己的 `require`，其 `resolve()`
+ * 返回**模块 id**（`[externals]/@openai/codex/package.json [external] (…)`）而不是文件路径；
+ * `import.meta.url` 同时会被重写。
+ *
+ * 为什么只能写成静态断言：这类缺陷在单测里**原理上不可复现**——单测跑在纯 Node，解析器比打包产物宽松，
+ * 夹具用假目录「怎么搭怎么解析」。所以判据落在**源码形状**上，三条缺一不可：
+ *   ① 用 `process.getBuiltinModule('module')` 取真的 `node:module`（绕开打包器的替换）；
+ *   ② 解析基准**多于一个**（`import.meta.url` 会被重写，单一基准在打包后未必落在包目录里）；
+ *   ③ 校验解析结果是**文件路径**（模块 id 既非绝对路径、也可能带 `[external` 标记）。
+ *
+ * 反面形态（回归时最先出现的那一句）也逐条钉住：`createRequire(import.meta.url).resolve(` 直呼。
+ */
+function bundlerImmunityViolations(source: string): string[] {
+  // **必须去注释再判**：文件头的说明里就写着 `process.cwd()` / `import.meta.url` / `getBuiltinModule`，
+  // 按整份文本判会让「代码里删掉一个基准」这类回归静默通过（2026-10-07 实测：变异没见红）。
+  const text = stripComments(source);
+  const violations: string[] = [];
+  if (!text.includes('getBuiltinModule')) {
+    violations.push('缺少 `process.getBuiltinModule`：解析器会被打包器的 `createRequire` 替换掉');
+  }
+  if (text.includes('createRequire(import.meta.url)')) {
+    violations.push('出现 `createRequire(import.meta.url)` 直呼：打包后拿到的是模块 id，不是文件路径');
+  }
+  const anchors = ['import.meta.url', 'process.cwd()'].filter((anchor) => text.includes(anchor));
+  if (anchors.length < 2) {
+    violations.push(`解析基准少于两个（只有 ${anchors.join('、') || '无'}）：\`import.meta.url\` 在打包后会被重写`);
+  }
+  if (!text.includes('isAbsolute(')) {
+    violations.push('缺少结果形态校验（`isAbsolute`）：模块 id 会被当成路径继续往下走');
+  }
+  return violations;
+}
+
+describe('打包器免疫：厂商入口的解析器（2026-10-07 故障）', () => {
+  it('codex 的可执行文件解析器满足三条免疫要求', () => {
+    const text = readFileSync(join(import.meta.dirname, 'providers/codex/appserver/binary.ts'), 'utf8');
+    expect(bundlerImmunityViolations(text)).toEqual([]);
+  });
+
+  it('判据拦住四种回归形态，放行合规形态（没见过失败的判据不算判据）', () => {
+    const regressions = [
+      // ① 退回单路径直呼（本次故障的原形态）
+      'import { createRequire } from \'node:module\';\nconst p = createRequire(import.meta.url).resolve(\'@openai/codex/package.json\');',
+      // ② 只用 import.meta.resolve（同样被打包器接管）
+      'const p = import.meta.resolve(\'@openai/codex/package.json\');',
+      // ③ 有 getBuiltinModule 但只用一个基准
+      'const req = process.getBuiltinModule(\'module\').createRequire(import.meta.url);\nreq.resolve(\'x\');',
+      // ④ 有真 require 也有两个基准，但不校验结果形态
+      'const req = process.getBuiltinModule(\'module\').createRequire(import.meta.url);\nconst other = process.cwd();\nreq.resolve(\'x\');',
+      // ⑤ 三条要求只写在**注释**里（2026-10-07 实测的盲区：按整份文本判会放过它）
+      '// 说明：本解析器用 process.getBuiltinModule 取真 require，基准有 import.meta.url 与 process.cwd()，并用 isAbsolute 校验\nconst p = req.resolve("x");',
+    ];
+    for (const form of regressions) {
+      expect(bundlerImmunityViolations(form), `应当命中：${form}`).not.toEqual([]);
+    }
+    const conforming =
+      'import { isAbsolute } from \'node:path\';\n' +
+      'const factory = process.getBuiltinModule?.(\'module\')?.createRequire;\n' +
+      'const anchors = [import.meta.url, join(process.cwd(), \'noop.js\')];\n' +
+      'if (isAbsolute(resolved)) return resolved;';
+    expect(bundlerImmunityViolations(conforming), '合规形态不该命中').toEqual([]);
   });
 });

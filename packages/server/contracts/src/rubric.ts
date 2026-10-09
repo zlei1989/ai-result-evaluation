@@ -188,3 +188,172 @@ export function renderRubricForJudge(rubric: Rubric): string {
 function escapeCell(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ').trim();
 }
+
+/**
+ * 「智能调整」的改动清单里的一条。**判别联合**，`kind` 就是界面上的分类标签。
+ *
+ * 为什么 `update-item` 只有一条（而不是「改权重」「改文字」两条 kind）：一份清单里同一次改动
+ * 可能两格都变了，拆成两条 kind 就要处理「两个都变」的组合；界面按 `before`/`after` 自己分类显示
+ * （`weight` 不同 ⇒ 标「改权重」，`goal` 不同 ⇒ 标「改文字」）比在这里预先把组合摊平更简单。
+ */
+export type RubricChange =
+  /** 表尾新增了一组（只报组名：组内的项由它自己的 `add-item` 报） */
+  | { kind: 'add-group'; name: string }
+  /** 删掉了一组（名字取自**旧表**） */
+  | { kind: 'remove-group'; name: string }
+  /** 组改名（按位置配对得出，见 `pairGroups` 第三轮） */
+  | { kind: 'rename-group'; from: string; to: string }
+  /** 组内新增一项 */
+  | { kind: 'add-item'; groupName: string; item: RubricItem }
+  /** 组内删除一项（带的是旧表那一项） */
+  | { kind: 'remove-item'; groupName: string; item: RubricItem }
+  /** 同一项的 `goal` / `weight` 变了（两格都没变时不会产生这条） */
+  | { kind: 'update-item'; groupName: string; before: RubricItem; after: RubricItem };
+
+/**
+ * 改动清单：把「模型改完的那张表」与「用户原来那张表」比成一份**逐条可读**的差异。
+ *
+ * 它是「智能调整」唯一的把关依据——用户只看得见这份清单，看不见模型到底动了哪几行，
+ * 所以这里的判据全部是**确定性**的：同样的两张表永远得到同样的清单（顺序也固定），
+ * 没有任何「相似度」「猜意图」的成分。
+ *
+ * 三条口径：
+ *   1. **配对先于比对**：先把旧项与新项一一认成「同一项」，再看它哪儿变了。认不出的就是增 / 删；
+ *   2. **配对只在组内进行**：项从 A 组搬到 B 组如实报成「A 组删 + B 组增」，不假装它是同一项；
+ *   3. **顺序变化不算改动**：项与组的先后不带语义（引用键 `#k` 是渲染时按当前表算出来的，
+ *      两侧永远自洽），所以「只换了顺序」得到的是**空清单**，不会拿一串搬家记录去吓用户。
+ */
+export function diffRubric(before: Rubric, after: Rubric): RubricChange[] {
+  const changes: RubricChange[] = [];
+  const pairs = pairGroups(before.groups, after.groups);
+  const pairedOld = new Set(pairs.map((pair) => pair.oldIndex));
+  const pairedNew = new Set(pairs.map((pair) => pair.newIndex));
+
+  // 配对上的组：改名 + 组内逐项比（按旧组索引输出，清单顺序稳定）
+  for (const { oldIndex, newIndex } of pairs) {
+    const oldGroup = before.groups[oldIndex];
+    const newGroup = after.groups[newIndex];
+    if (oldGroup === undefined || newGroup === undefined) continue;
+    if (oldGroup.name !== newGroup.name) changes.push({ kind: 'rename-group', from: oldGroup.name, to: newGroup.name });
+    changes.push(...diffGroupItems(newGroup.name, oldGroup.items, newGroup.items));
+  }
+  for (const [index, group] of before.groups.entries()) {
+    if (!pairedOld.has(index)) changes.push({ kind: 'remove-group', name: group.name });
+  }
+  for (const [index, group] of after.groups.entries()) {
+    if (!pairedNew.has(index)) changes.push({ kind: 'add-group', name: group.name });
+  }
+  return changes;
+}
+
+/**
+ * 组的配对，三轮（越靠前越可信）：
+ *   ① **同位置同名** ⇒ 同一组（绝大多数情况在这里就定完了，改名也走这一轮：位置对得上，
+ *      名字不同 ⇒ 后面据此报 `rename-group`）；
+ *   ② **按名字一对一** ⇒ 同一组。这一轮消掉的是「模型把两组顺序调换」这类噪音：
+ *      名字是组唯一的身份（组没有 id），顺序变了内容没变 ⇒ 不该报成两条改名；
+ *   ③ 剩下的**按位置**配对 ⇒ 报改名。刻意不按名字相似度猜：那会把「删一组 + 加一组」
+ *      猜成「改名」，而清单是用户唯一的把关依据，宁可如实显示两处改动。
+ */
+function pairGroups(
+  before: readonly RubricGroup[],
+  after: readonly RubricGroup[],
+): { oldIndex: number; newIndex: number }[] {
+  const pairs: { oldIndex: number; newIndex: number }[] = [];
+  const usedOld = new Set<number>();
+  const usedNew = new Set<number>();
+
+  for (let index = 0; index < Math.min(before.length, after.length); index += 1) {
+    if (before[index]?.name === after[index]?.name) {
+      pairs.push({ oldIndex: index, newIndex: index });
+      usedOld.add(index);
+      usedNew.add(index);
+    }
+  }
+  for (const [oldIndex, group] of before.entries()) {
+    if (usedOld.has(oldIndex)) continue;
+    const newIndex = after.findIndex((candidate, index) => !usedNew.has(index) && candidate.name === group.name);
+    if (newIndex >= 0) {
+      pairs.push({ oldIndex, newIndex });
+      usedOld.add(oldIndex);
+      usedNew.add(newIndex);
+    }
+  }
+  const restOld = before.map((_, index) => index).filter((index) => !usedOld.has(index));
+  const restNew = after.map((_, index) => index).filter((index) => !usedNew.has(index));
+  for (let offset = 0; offset < Math.min(restOld.length, restNew.length); offset += 1) {
+    const oldIndex = restOld[offset];
+    const newIndex = restNew[offset];
+    if (oldIndex === undefined || newIndex === undefined) continue;
+    pairs.push({ oldIndex, newIndex });
+  }
+  return pairs.sort((left, right) => left.oldIndex - right.oldIndex);
+}
+
+/**
+ * 一组之内的逐项比对。项的配对是**三段式优先级**，顺序就是可靠性顺序：
+ *   ① **有 id 且 id 相同** ⇒ 同一项（`validateRubric` 保证有值的 id 全局唯一）；
+ *   ② **goal 逐字相同** ⇒ 同一项。这一轮专治「中间插一项」的位移假象：没写 id 的项在评分通路里
+ *      按**全表位置**分配 `#k`，硬按引用键配的话，组首插一项会让后面每一项的键都错位，
+ *      一次插入被报成「删 N 项 + 增 N 项」——用户会以为整个标准被换掉了；
+ *   ③ 剩下的**按组内位置**配对 ⇒ 同一个位置上的项被改写（报 `update-item`）。
+ * 三轮之后还剩下的：旧表有的是被删、新表有的是新增。
+ */
+function diffGroupItems(
+  groupName: string,
+  beforeItems: readonly RubricItem[],
+  afterItems: readonly RubricItem[],
+): RubricChange[] {
+  const pairs: { oldIndex: number; newIndex: number }[] = [];
+  const oldLeft = new Set(beforeItems.map((_, index) => index));
+  const newLeft = new Set(afterItems.map((_, index) => index));
+
+  const pairBy = (matches: (oldItem: RubricItem, newItem: RubricItem) => boolean): void => {
+    for (const oldIndex of [...oldLeft].sort((left, right) => left - right)) {
+      const oldItem = beforeItems[oldIndex];
+      if (oldItem === undefined) continue;
+      const newIndex = [...newLeft]
+        .sort((left, right) => left - right)
+        .find((candidate) => {
+          const newItem = afterItems[candidate];
+          return newItem !== undefined && matches(oldItem, newItem);
+        });
+      if (newIndex === undefined) continue;
+      pairs.push({ oldIndex, newIndex });
+      oldLeft.delete(oldIndex);
+      newLeft.delete(newIndex);
+    }
+  };
+
+  pairBy((oldItem, newItem) => oldItem.id.trim() !== '' && newItem.id.trim() === oldItem.id.trim());
+  pairBy((oldItem, newItem) => newItem.goal === oldItem.goal);
+  const restOld = [...oldLeft].sort((left, right) => left - right);
+  const restNew = [...newLeft].sort((left, right) => left - right);
+  for (let offset = 0; offset < Math.min(restOld.length, restNew.length); offset += 1) {
+    const oldIndex = restOld[offset];
+    const newIndex = restNew[offset];
+    if (oldIndex === undefined || newIndex === undefined) continue;
+    pairs.push({ oldIndex, newIndex });
+    oldLeft.delete(oldIndex);
+    newLeft.delete(newIndex);
+  }
+
+  const changes: RubricChange[] = [];
+  for (const { oldIndex, newIndex } of pairs.sort((left, right) => left.oldIndex - right.oldIndex)) {
+    const before = beforeItems[oldIndex];
+    const after = afterItems[newIndex];
+    if (before === undefined || after === undefined) continue;
+    if (before.goal !== after.goal || before.weight !== after.weight) {
+      changes.push({ kind: 'update-item', groupName, before, after });
+    }
+  }
+  for (const oldIndex of [...oldLeft].sort((left, right) => left - right)) {
+    const item = beforeItems[oldIndex];
+    if (item !== undefined) changes.push({ kind: 'remove-item', groupName, item });
+  }
+  for (const newIndex of [...newLeft].sort((left, right) => left - right)) {
+    const item = afterItems[newIndex];
+    if (item !== undefined) changes.push({ kind: 'add-item', groupName, item });
+  }
+  return changes;
+}

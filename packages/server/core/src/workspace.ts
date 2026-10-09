@@ -18,10 +18,11 @@
  *      下一次追加又从 seq 1 开始；p5 的 `useRowStream` 按 seq 去重，于是清空后的第一条状态事件
  *      被静默吞掉——正是 R24 存在的理由，而且每一轮都会发生。
  */
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ServiceError } from '@aieval/contracts';
 import { createLogger } from './logger';
+import { removeTreeWithRetry } from './remove-tree';
 import { checkoutRow, copyWorkspace, ensureCaseCache } from './git';
 
 const log = createLogger('workspace');
@@ -83,7 +84,7 @@ export function rowEventsFile(workspaceRoot: string, runId: string, rowId: strin
  * 为什么与 `events.jsonl` 分开：两者是**两个维度**——事件是行级的（状态、日志、计量、失败、结束，
  * 按 `seq` 去重与续订），消息是内容级的（说话者、内容块、工具族、子智能体归属，按 `mergeKey`
  * 覆盖累积）。合成一个文件会让「按 seq 续订」与「按 mergeKey 覆盖」两套游标挤在同一条流里。
- * 与事件日志同一处置：每次开跑前 `resetMessages` 清空（它记的是**当前这次尝试**的消息）。
+ * 与事件日志同一处置：每次开跑前 `resetRecords` 清空（它记的是**当前这次尝试**的消息）。
  */
 export function rowMessagesFile(workspaceRoot: string, runId: string, rowId: string): string {
   return join(rowDir(workspaceRoot, runId, rowId), 'messages.jsonl');
@@ -117,13 +118,25 @@ export function runSnapshotFile(workspaceRoot: string, runId: string): string {
  * 配置可能指向另一家 CLI（评分智能体换了），而 CLI 对读不懂的配置是**静默忽略**的。
  * 为什么不整目录删（§11 R27）：行目录里还住着 `events.jsonl`——唯一真相源，且它的清空归
  * `resetEvents` 独占。整目录删会把「重跑」这个动作变成对事件日志的隐式清空（见文件头口径 3）。
- * 三个 `rmSync` 分开写而不是删一个白名单之外的全清：将来行目录里再落新东西时，
+ * 三个名字逐个列出而不是删一个白名单之外的全清：将来行目录里再落新东西时，
  * 这条口径是「不被顺手删掉」，而不是「默认删掉」。
+ *
+ * 2026-10-07 补的第四条：**每一次删除都走有界重试**（`removeTreeWithRetry`）。成因是实测出来的
+ * ——厂商 CLI 会 spawn 一串继承句柄的孙进程（codex 的插件同步 `git` 链），它们持着 `.agenthome` /
+ * `.judgehome`，而 Windows 上的句柄释放比「进程退出」晚；一次 `rmSync` 不成就把整行折成 INTERNAL，
+ * 会让一行在锁消失之前**每次重跑都失败**（真机：同一条报错在 7 次尝试里逐字重复）。
  */
 function clearRowArtifacts(dir: string): void {
-  rmSync(join(dir, 'workspace'), { recursive: true, force: true });
-  rmSync(join(dir, '.agenthome'), { recursive: true, force: true });
-  rmSync(join(dir, '.judgehome'), { recursive: true, force: true });
+  removeOrThrow(join(dir, 'workspace'));
+  removeOrThrow(join(dir, '.agenthome'));
+  removeOrThrow(join(dir, '.judgehome'));
+}
+
+/** 删一棵子树（带重试）；仍删不掉就把**原始错误**抛出去，由调用方折成中文原因 */
+function removeOrThrow(target: string): void {
+  const outcome = removeTreeWithRetry(target);
+  if (outcome.removed) return;
+  throw outcome.lastError instanceof Error ? outcome.lastError : new Error(String(outcome.lastError));
 }
 
 /**
@@ -160,7 +173,16 @@ export function prepareRowWorkspace(input: {
       clearRowArtifacts(dir);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new ServiceError('INTERNAL', `清理上一轮的行产物失败：${dir}（${detail}）`, { cause: error });
+      // 文案里点出**常见成因**：这一条报错过去只说「清理失败 + errno 原文」，于是「上一轮的厂商进程
+      // 还没退干净」这个真因得靠人肉猜（真机排障链：EPERM → 谁占着？→ 进程表里找 git/codex）。
+      // 判据是目录里还有活进程的句柄，而最常见的就是厂商 CLI 的下级进程 ⇒ 提示先看进程。
+      throw new ServiceError(
+        'INTERNAL',
+        `清理上一轮的行产物失败：${dir}（${detail}）。该目录仍被另一个进程占用：`
+          + '常见成因是上一轮的厂商子进程（codex/claude/dsh 及其下级进程）尚未退出，稍后重试即可；'
+          + '若持续失败，先结束残留的厂商进程再重跑这一行。',
+        { cause: error },
+      );
     }
   }
 

@@ -36,7 +36,7 @@ export let repo: string;
  * `makeRepo` 那条路要走 **4 次**进程创建（init / add / commit / rev-parse）≈ 1.2s。
  * 本文件 37 个用例 ⇒ 光 beforeEach 的夹具就要 40s+，是整条 `pnpm test` 关键路径上最大的一块。
  * `cpSync` 一份仓库是纯文件系统操作（实测 ~10ms），且与生产代码 `copyWorkspace` 的做法同源——
- * 复制出来的仍是**独立、可用**的真实仓库（`git.repo.test.ts` 有守卫钉住这一点）。
+ * 复制出来的仍是**独立、可用**的真实仓库（`git-repo-cache.test.ts` 有守卫钉住这一点）。
  *
  * 模板的提交信息必须逐字是 `第 1 次提交`：`listCommitCandidates` 那条用例断言的就是它。
  */
@@ -148,7 +148,7 @@ export const REMOTE_FIXTURE_TIMEOUT_MS = 300_000;
 /**
  * 在「远端」上做一次 GitHub 式的默认分支改名：新分支上多一个提交 → 远端 HEAD 指过去 → 旧分支删掉。
  * 一切都在**远端侧**（`makeRemoteOrigin` 建好的工作仓库 + 裸仓库）完成，镜像那边一个字都不动——
- * 被测的正是镜像能不能自己跟上（`fetch --prune` 只剪 ref，不刷新镜像 HEAD，core 的 mirror.test.ts 有实测）。
+ * 被测的正是镜像能不能自己跟上（`fetch --prune` 只剪 ref，不刷新镜像 HEAD，core 的 `mirror-ref.test.ts` 有实测）。
  * 返回新默认分支的 tip hash。工作仓库是 `clone --bare` 的**来源**、自己没有 origin 远端，故按路径推。
  */
 export function renameRemoteDefaultBranch(name: string, to: string): string {

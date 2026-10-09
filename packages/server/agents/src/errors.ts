@@ -1,8 +1,8 @@
 /**
- * 适配器的错误归因（spec §5.6.6）。
+ * 适配器的错误归因（spec §5.6.7）。
  * 注意：这里的 `AgentErrorCode` **不是** contracts 的 `ErrorCode`——它没有对应的 HTTP 状态，落点是
  * 该行的事件日志；不要塞进 `ERROR_CODES`（那会逼 `STATUS_BY_CODE` 为它编造状态码）。
- * 用户可见文案的要求（§5.6.6 表）：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
+ * 用户可见文案的要求（§5.6.7 表）：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
  * 限流提示改用串行；模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
  */
 import { asRecord, readNumber, readString } from './json';
@@ -40,7 +40,7 @@ export interface AgentLoadErrorOptions {
 }
 
 /**
- * 厂商 SDK 加载失败（§5.6.6：厂商包缺失 / 加载失败）。
+ * 厂商 SDK 加载失败（§5.6.7：厂商包缺失 / 加载失败）。
  * 文案必须回答使用者下一句会问的问题：`missing` → 「装什么、怎么装」；`shape-mismatch` → 「装了为什么不匹配、
  * 该找谁」——后者绝不能出现 `pnpm add`（见 `AgentLoadFailureVariant` 的说明）。
  */

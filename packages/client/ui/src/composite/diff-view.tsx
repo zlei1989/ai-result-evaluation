@@ -10,7 +10,7 @@
  *      由它为每个文件挂一份自己的订阅——hook 不能按参数循环调用，故「每文件一个组件实例」
  *      是唯一站得住的形状；
  *   3. **吸顶相对 `.ant-drawer-body`**：抽屉内容区 padding 已置 0 且它自己 `overflow: auto`，
- *      故本组件**不再套第二层滚动容器**——滚动容器只有一个，标题才能正确吸顶（spec §7.2.1 ③）；
+ *      故本组件**不再套第二层滚动容器**——滚动容器只有一个，标题才能正确吸顶（spec §5.3.4「抽屉几何」③）；
  *   4. **截断提示是硬要求**（spec §5.5 第 7 步）：文案必须说「评分模型看不到」，
  *      只说「已截断」会让使用者以为只是界面没显示全；
  *   5. 正文用 `react-diff-viewer-continued` 渲染，它要的是**两侧完整正文**而不是 diff 文本，
@@ -86,7 +86,8 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
       newValue={sides.newValue}
       splitView={false}
       useDarkTheme={dark}
-      // 不折叠未修改行：两侧已按行号对齐补空行，折叠会把对齐关系藏起来
+      // 不折叠未修改行：两侧已按 hunk 头各自恢复到真实位置（缺失行是空洞、没补空串），
+      // 折叠会把「相隔多远」这层信息藏起来
       showDiffOnly={false}
       // 每个文件一个 worker 在几十个文件同时进视口时是纯开销；jsdom 里也没有 worker
       disableWorker

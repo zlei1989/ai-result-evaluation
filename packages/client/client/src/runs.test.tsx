@@ -1,8 +1,9 @@
 /**
- * 评测数据层：键、轮询开关、四个动作的请求与回写、产物按需读取的条件键、候选池。
+ * 评测数据层：键、慢兜底开关、信号驱动的重验、四个动作的请求与回写、产物按需读取、候选池。
  * 重点在两条容易被写错、写错了界面表现又很隐蔽的约定：
- *   1. **轮询只在有 running 时开**（spec §8 末段）——用假定时器推 3 秒看请求次数，
- *      既验证「该轮询时轮询」，也验证「跑完必须停」；
+ *   1. **实时性由 run 信号驱动、轮询只剩 60 秒慢兜底**（用户口径 2026-10-08「不要来回刷新」）——
+ *      「3 秒快轮询已经删除」本身有守卫（推 3 秒必须零请求），信号帧到达必须立刻重验；
+ *      慢兜底只在有 running 时开、跑完必须停；
  *   2. mutation 成功后要写进缓存且**不得**被随后的 GET 覆盖（沿用 useSettings 的回写约定）。
  *
  * 假定时器显式列出 `toFake`：只替换 setTimeout/setInterval/Date，不碰 queueMicrotask 与
@@ -14,6 +15,11 @@
  *     `mutate(key)` 便找不到另一个缓存上的消费者（真实页面里它们同在一个 provider 下）；
  *   - 数请求一律**按方法**数（`countGets`）：`/api/runs` 同时是列表 GET 与创建 POST 的目标，
  *     只按 URL 数会让「列表被刷新了一次」被创建请求蒙混过关——那是一条空转的守卫。
+ *
+ * 信号用例的替身：`FakeEventSource`（`testing/event-source.ts`）只装在**用到它的用例里**，
+ * 不进共享 setup——`useRunEvents` 有「环境没有 EventSource 就静默降级」的分支，
+ * 全局注入会让那条分支永远不可达（与 `resize-observer.ts` 不共享是同一个理由）。
+ * 模块级共享连接（run-events.ts 的单例）在用例之间必须复位：`resetRunEventsForTesting()`。
  */
 import { createElement, type ReactNode } from 'react';
 import { SWRConfig } from 'swr';
@@ -38,8 +44,11 @@ import {
   useStartRun,
   useUpdateRun,
   type AgentModelOption,
+  type AgentOptionGroup,
 } from './runs';
 import { useCases } from './cases';
+import { resetRunEventsForTesting } from './run-events';
+import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 import { makeRow, makeRun } from './testing/run-fixtures';
 
 /** fetch 替身的签名：显式写出来，`vi.fn(async () => …)` 会被推成零参函数，`mock.calls[0][0]` 直接报 TS2493 */
@@ -116,6 +125,9 @@ function stubRunRoutes(overrides: { list?: unknown; detail?: unknown } = {}): Fe
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  // run-events 的共享连接是模块级单例：不复位会把上一个用例的 EventSource 实例与
+  // 重验回调带进来（FakeEventSource.reset 只清替身自己的记录，清不到这个单例）
+  resetRunEventsForTesting();
 });
 
 afterEach(() => {
@@ -145,7 +157,27 @@ describe('useRuns', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/runs');
   });
 
-  it('有 running 的行时 3 秒轮询一次，跑完立即停', async () => {
+  it('有 running 的行时**不再有 3 秒快轮询**：3 秒内零请求（实时性已由信号通道承担）', async () => {
+    // 「不要来回刷新」的用户口径（2026-10-08）落到这条守卫上：把 3 秒轮询放回去时，
+    // 这里必须红——它是本次改造的回归门。
+    const fetchMock = stubFetch(async () =>
+      json([makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })]),
+    );
+
+    renderHook(() => useRuns(), { wrapper });
+    await flushMount();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('有活在跑时只开 60 秒慢兜底：60 秒整点补一次，跑完立刻停', async () => {
     const fetchMock = stubFetch(async () =>
       json([makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })]),
     );
@@ -154,43 +186,73 @@ describe('useRuns', () => {
     await flushMount();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
+    // 59.999 秒：还不到兜底整点
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // 下一次拉回来的是「已完成」：轮询必须关掉，否则开着的页面会永远打接口
+    // 下一次拉回来的是「已完成」：兜底必须关掉，否则开着的页面会永远打接口
     fetchMock.mockImplementation(async () => json([makeRun()]));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(60_000);
     });
     const afterFinish = fetchMock.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000);
+      await vi.advanceTimersByTimeAsync(120_000);
     });
     expect(fetchMock.mock.calls.length).toBe(afterFinish);
     expect(result.current.runs?.[0]?.status).toBe('done');
   });
 
-  it('一轮都没在跑时完全不轮询', async () => {
+  it('一轮都没在跑时完全不轮询（连慢兜底都不开）', async () => {
     const fetchMock = stubRunRoutes();
 
     renderHook(() => useRuns(), { wrapper });
     await flushMount();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000);
+      await vi.advanceTimersByTimeAsync(180_000);
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('行还在跑（轮状态还没翻）时也要轮询：编排层翻转轮状态有一拍延迟', async () => {
+  it('信号帧到达即重验列表（「变了才读」，不等任何轮询）', async () => {
+    FakeEventSource.reset();
+    installEventSourceStub();
+    const fetchMock = stubRunRoutes();
+
+    renderHook(() => useRuns(), { wrapper });
+    await flushMount();
+    expect(countGets(fetchMock, RUNS_KEY)).toBe(1);
+
+    // 服务端落了一次盘：SSE 推一条 run-updated ⇒ 客户端立刻重读列表。
+    // 推进一个节流窗口（300ms 是产品默认值），mutate 的 promise 链随之冲出来
+    const source = FakeEventSource.instances[0];
+    expect(source?.url).toBe('/api/runs/events');
+    await act(async () => {
+      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(countGets(fetchMock, RUNS_KEY)).toBe(2);
+  });
+
+  it('行还在跑（轮状态还没翻）时也要开慢兜底：编排层翻转轮状态有一拍延迟', async () => {
     const fetchMock = stubFetch(async () => json([makeRun({ status: 'idle', rows: [makeRow({ status: 'judging' })] })]));
 
     renderHook(() => useRuns(), { wrapper });
     await flushMount();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(60_000);
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -217,7 +279,7 @@ describe('useRun', () => {
     expect(result.current.run?.id).toBe('run-9');
   });
 
-  it('还有活在跑时详情也按 3 秒轮询（SSE 断掉时靠它兜底，spec §8 末段）', async () => {
+  it('还有活在跑时详情只开 60 秒慢兜底（信号通道断掉时靠它兜底）', async () => {
     const fetchMock = stubFetch(async () => json(makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })));
 
     renderHook(() => useRun('run-1'), { wrapper });
@@ -226,6 +288,11 @@ describe('useRun', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(57_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -432,7 +499,7 @@ describe('useRunModelOptions', () => {
         options: [{ providerId: 'p-1', providerName: 'A', modelId: 'claude-opus-4-6', source: 'manual' }],
       },
       // dsh 两条 wire 都收（2026-09-30 起，契约 §11 的 R37 收口）⇒ 它的集合是两个元素、且能计量
-      { agentKind: 'dsh', protocolTypes: ['openai', 'anthropic'], usage: true, cancelMidTurn: false, options: [] },
+      { agentKind: 'dsh', protocolTypes: ['openai', 'anthropic'], usage: true, cancelMidTurn: false, defaultEffort: 'high', options: [] },
     ];
     const fetchMock = stubFetch(async () => json(groups));
 
@@ -445,6 +512,14 @@ describe('useRunModelOptions', () => {
     // 数据还没到 / kind 未知时按「都支持」处理：多给一个终止按钮，比无端禁用安全
     expect(result.current.capabilityOf('codex')).toEqual({ usage: true, cancelMidTurn: true });
     expect(result.current.optionsFor('codex')).toEqual([]);
+    /**
+     * 「未选档位会落到哪」按 kind 透出，**缺省是 `undefined` 而不是一个猜出来的档**：
+     * 界面用它拼占位符（「未指定（DeepSeek Harness 用 high）」），猜错就是替那一家承诺。
+     */
+    expect(result.current.defaultEffortOf('dsh')).toBe('high');
+    expect(result.current.defaultEffortOf('claude-code')).toBeUndefined();
+    // 响应里没有这一组的 kind：同样给 undefined（不是空串、也不是别家的档）
+    expect(result.current.defaultEffortOf('codex')).toBeUndefined();
     // 契约 §7 钉的原始形状也在（页面照 §7 解构时不必自己再 find 一遍）
     expect(result.current.options).toEqual(groups);
   });
@@ -473,6 +548,42 @@ describe('useRunModelOptions', () => {
 
     expect(option.efforts?.[0]).toBe(EFFORT_OFF);
     expect(option.recommendedEffort).toBe('high');
+  });
+
+  /**
+   * **上一层那一半**（2026-10-07 Task 12 补）：`AgentOptionGroup` 的 `efforts` 也漏了整整一轮——
+   * 与上面那条同一个成因（client / api 两处手写的同一份形状 + 可选属性天然可赋值），只是没有对应用例，
+   * 于是「api 一直在发、client 没声明」谁都不响。症状比缺一个选项更硬：
+   * 设置页「评分配置」的思考强度候选会退化成规范五档，dsh 收不了的 `medium` 摆上界面、还能被存进设置，
+   * 直到生成 / 识别时被 `requireJudgeEffort` 硬拒。
+   *
+   * 判据写成**类型查询**而不是值字面量（与上面那条刻意不同）：这里要钉的是**接口的字段集合**，
+   * 而那份对象的内容是 api 的事——为了凑一个完整的 `AgentOptionGroup` 字面量，
+   * 得凭空编一份 17 格的 `messageCapability`（线上永远长不成那样）。类型查询同样拦得住
+   * 「删掉 / 改名这一格」：`AgentOptionGroup['efforts']` 当场 TS2339 ⇒ `pnpm typecheck` 失败。
+   * 运行时的两行只为证明这条用例真跑到了，不是被摇掉的空壳。
+   */
+  it('接缝形状：AgentOptionGroup 必须装得下 api 的 efforts（少了它设置页的档位域会静默退化）', () => {
+    const dshEfforts: AgentOptionGroup['efforts'] = [EFFORT_OFF, 'low', 'high', 'max'];
+
+    expect(dshEfforts[0]).toBe(EFFORT_OFF);
+    // 该家没有 medium（dsh 的硬报错档）——这一格正是设置页那格候选的上游
+    expect(dshEfforts).not.toContain('medium');
+  });
+
+  /**
+   * **2026-10-08 补的同一条接缝**：`defaultEffort`（「未选档位」时该家实际会用的档）。
+   *
+   * 成因与上面两条逐字相同（api / client 两处手写的同一份形状，可选属性天然可赋值），
+   * 只是这一格是被**占位符文案**消费的：client 漏声明时 tsc 与路由测试都不响，而
+   * `defaultEffortOf` 恒给 `undefined` ⇒ 界面上那句「（DeepSeek Harness 用 high）」静默消失，
+   * 只剩一句泛化的「未指定」。判据同样是类型查询（拼一个完整的 `AgentOptionGroup` 字面量
+   * 要凭空编 17 格 `messageCapability`，线上永远长不成那样）。
+   */
+  it('接缝形状：AgentOptionGroup 必须装得下 api 的 defaultEffort（少了它占位符会静默退回「未指定」）', () => {
+    const declared: AgentOptionGroup['defaultEffort'] = 'high';
+
+    expect(declared).toBe('high');
   });
 
   /**

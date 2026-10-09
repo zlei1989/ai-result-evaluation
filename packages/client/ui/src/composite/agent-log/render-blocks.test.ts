@@ -137,7 +137,6 @@ function rowNode(id: string): RowNode {
       thinking: null,
       domain: [],
       error: null,
-      exitReason: null,
     },
   };
 }
@@ -226,6 +225,30 @@ describe('buildRenderBlocks：两族卡片', () => {
   it('`ask-user` 卡片同样提出工具组，且**不去重**（每次提问各一张）', () => {
     const blocks = buildRenderBlocks([askCall('c1', 'call_1'), askCall('c2', 'call_2')], nodeIndex([]), TURN);
     expect(blocks.map((block) => block.kind)).toEqual(['ask-user-card', 'ask-user-card']);
+  });
+
+  /**
+   * 回归守卫（2026-10-08 修）：
+   *
+   * 装配层一度把 `AskUserInteraction.at` 写成**空串**（现已改成块的时刻，`build-model.ts` 的 `familyPayloadOf`），
+   * 而「等待答复中… 12m」与固定区那枚「等待答复」徽标**都读这一格**。
+   * 少了这道回填，卡片只写「等待答复中…」不带时长；更糟的是 `waitingSinceOf` 回的是 `''`（不是 `null`），
+   * `Date.parse('')` 得 NaN ⇒ 徽标恒显「等待答复 0s」且**永远不涨**——看起来像「刚问完」，把长等待读成没等。
+   * 与 `task` 那一支同一口径：载荷没带时刻就用调用块的时刻。
+   */
+  it('`ask-user` 的空时刻用调用块的时刻回填（否则「等待了多久」恒为 0）', () => {
+    const blocks = buildRenderBlocks([askCall('c1', 'call_1'), askCall('c2', 'call_2')], nodeIndex([]), TURN);
+    const cards = blocks.filter((block) => block.kind === 'ask-user-card');
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      if (card.kind !== 'ask-user-card') throw new Error('应为问答卡片');
+      expect(card.interaction.at).toBe(TURN.at);
+    }
+    // 载荷**自己带了**时刻时不许被覆盖（回填只补空缺）
+    const asked = askCall('c3', 'call_3');
+    const withAt = { ...asked, tool: { family: 'ask-user', interaction: { state: 'pending', questions: [], at: '2026-10-02T09:00:00.000Z', running: true } } } as ContentBlock;
+    const kept = buildRenderBlocks([withAt], nodeIndex([]), TURN).filter((block) => block.kind === 'ask-user-card');
+    expect(kept[0]?.kind === 'ask-user-card' ? kept[0].interaction.at : null).toBe('2026-10-02T09:00:00.000Z');
   });
 
   it('族载荷缺失（`tool === null`）时该次调用**回退成普通工具行**（不消失、不空面板）', () => {

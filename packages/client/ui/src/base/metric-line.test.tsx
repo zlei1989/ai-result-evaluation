@@ -21,8 +21,13 @@ const score = {
   judgeModelId: 'claude-opus-4-6',
   judgedAt: '2026-09-22T08:10:00.000Z',
   judgeAgentKind: null,
+  // 强度未指定（一个强度键都没发）：本夹具不涉及强度通路
+  judgeEffort: null,
   // 契约里这是必填输出字段：false ⇔ 这一分只靠提示词契约拿到（本夹具不涉及 schema 通路）
   structuredOutput: false,
+  // 评分自己的花销（2026-10-08）：本夹具只关心事实条上那几格，两格给 null
+  judgeTokens: null,
+  judgeDurationMs: null,
 };
 
 describe('MetricLine', () => {

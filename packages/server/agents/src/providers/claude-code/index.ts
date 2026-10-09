@@ -1,8 +1,8 @@
 /**
- * claude-code 适配器：注入路由 → 消费消息流 → 按 §5.6.5 释放。
+ * claude-code 适配器：注入路由 → 消费消息流 → 按 §5.6.6 释放。
  * 注意：
  *  - `run()` 的骨架由 `runTurn` 提供，本文件只负责厂商特有的三件事：注入、拿停止句柄、投影消息；
- *  - 输入的 `route` 只读，绝不写 `process.env`（§5.6.4 不变量 1/2）；
+ *  - 输入的 `route` 只读，绝不写 `process.env`（§5.6.5 不变量 1/2）；
  *  - 禁用名单**随模型名分档**（2026-09-29）：`modelId` 含 `claude` 时放行 `WebSearch`，其余模型禁用
  *    （判据与理由见 `disallowedToolsFor`）；名单里另六项与模型无关，任何模型都禁；
  *  - `settingSources` 与 `settings` **必须成对给**（2026-09-29 口径变更，原为 `settingSources: []`）：
@@ -37,7 +37,7 @@ const logger = createLogger('agents/claude-code');
  *
  * 禁的不是「能力」而是旁路，逐条理由：
  *  - `CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup`：会话级定时唤醒——本产品的每一行
- *    跑完就 `dispose()`（§5.6.5），没有「以后」；留着只会让 CLI 在无人接续的会话里排定时任务；
+ *    跑完就 `dispose()`（§5.6.6），没有「以后」；留着只会让 CLI 在无人接续的会话里排定时任务；
  *  - `PushNotification`：向人推通知——评测是无人值守的，没有收件人；
  *  - `DesignSync`：设计与本仓无关的外部同步口（该名字在本机 SDK 2.1.281 的工具表里不存在，
  *    写了不报错也不生效；留着是为了与用户给的名单逐字一致，等厂商版本对上时自动生效）。
@@ -63,7 +63,7 @@ const ALWAYS_DISALLOWED_TOOLS: readonly string[] = [
  * `modelId` 里含 `claude`（大小写不敏感）时放行 `WebSearch`，其余模型禁用它。
  *
  * 为什么按模型名分档：`WebSearch` 是厂商**服务端**执行的工具，第三方模型走同一网关时未必实现它
- * ——§5.6.4 就记着「网关对这些命名空间工具回 400」（codex 侧因此无条件关掉 `web_search`，
+ * ——§5.6.5 就记着「网关对这些命名空间工具回 400」（codex 侧因此无条件关掉 `web_search`，
  * 见 `buildCodexConfig`）。真正的 Claude 模型没这个顾虑，于是把这一格交给模型名决定：
  * 名单里其余六项与模型无关，任何模型都不放行。
  *
@@ -105,14 +105,14 @@ const CLAUDE_OFF_EXTRA_BODY = JSON.stringify({ thinking: { type: 'disabled' } })
  * 那是「改变其它档位的行为」，与本次改动的硬约束冲突。
  *
  * 抽成导出的**纯函数**是为了可测：`recorder.env` 是「宿主 + 注入」合并后的对象，
- * 拿它断言「键不存在」在宿主设过同名变量时会假红（spec §5.4 第 4 条）。
+ * 拿它断言「键不存在」在宿主设过同名变量时会假红（spec §5.1.1）。
  */
 export function claudeExtraEnvFor(effort: string | undefined): Record<string, string> {
   return effort === CLAUDE_OFF_EFFORT ? { [CLAUDE_CODE_EXTRA_BODY]: CLAUDE_OFF_EXTRA_BODY } : {};
 }
 
 /**
- * 会让 `off` 的修复**静默失效**的宿主环境变量（spec §5.3 / §5.4-3）。
+ * 会让 `off` 的修复**静默失效**的宿主环境变量（spec §5.1.1）。
  *
  * 它是 CLI 侧那道闸门的**条件位**：一旦被设，body 覆盖层不再生效 —— 而它由宿主环境继承
  * （`route.ts:88-90` 以 `process.env` 为底）。我们不能替宿主清掉它（那要动 `route.ts` 的合并语义，
@@ -121,7 +121,7 @@ export function claudeExtraEnvFor(effort: string | undefined): Record<string, st
 export const HOST_DISABLE_BETAS_ENV = 'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS';
 
 /**
- * `off` 档那条 WARN 的**文案模板**（spec §5.4-3，**逐字照抄、不许改写**）。
+ * `off` 档那条 WARN 的**文案模板**（spec §5.1.1，**逐字照抄、不许改写**）。
  * 全句唯一可变 token 是 `<键名原文>`（= `hostDisablesBetas` 回报的那个拼写），其余字符逐字；
  * 句式是**确定性陈述**：不许改写成疑问句、不许出现「可能」。
  *
@@ -134,14 +134,14 @@ export const CLAUDE_OFF_DISABLED_WARNING_TEXT =
 /**
  * 拼出本次要落的那条 WARN（模板 + **实际命中的那个拼写**；`logger.warn` 的第一个参数，不 `JSON.stringify`）。
  * 做成函数而不是常量：`<键名原文>` 要换的是 `hostDisablesBetas` 回报的**原拼写**，
- * 而在模块加载期把它写死成 `HOST_DISABLE_BETAS_ENV` 会在宿主写成小写时**报错名字**（正是 §5.4-3 ② 要防的）。
+ * 而在模块加载期把它写死成 `HOST_DISABLE_BETAS_ENV` 会在宿主写成小写时**报错名字**（正是 §5.1.1 ② 要防的）。
  */
 function claudeOffDisabledWarning(variable: string): string {
   return CLAUDE_OFF_DISABLED_WARNING_TEXT.replace('<键名原文>', variable);
 }
 
 /**
- * `off` 档的前置条件判据（**纯函数**，spec §5.4-3 的判据三件套）：`off` 档且合并后的宿主 / 子进程
+ * `off` 档的前置条件判据（**纯函数**，spec §5.1.1 的判据三件套）：`off` 档且合并后的宿主 / 子进程
  * 环境里**存在** `HOST_DISABLE_BETAS_ENV` ⇒ 返回**宿主用的那个键名原文**；否则 `null`。
  *
  * 三个细节都是判据的一部分（每条都有一个具体的失败形状）：
@@ -203,7 +203,7 @@ function modelForClaudeCode(modelId: string, contextWindow: number | undefined):
  * 告诉 agent 该怎么干活」这件事在 cc 侧从来没生效过（codex 侧同样读不到 repo 的 AGENTS.md）。
  *
  * 为什么 `'user'` 这一档**不**会捡到宿主的 `~/.claude/settings.json`（原 `[]` 的理由）：
- * 适配器把 `HOME` / `USERPROFILE` / `CLAUDE_CONFIG_DIR` 全指向本行的 `.agenthome`（§5.6.4 不变量 3），
+ * 适配器把 `HOME` / `USERPROFILE` / `CLAUDE_CONFIG_DIR` 全指向本行的 `.agenthome`（§5.6.5 不变量 3），
  * 而 `'user'` 档读的正是 `CLAUDE_CONFIG_DIR/settings.json`——本机实测（SDK 自己的 `resolveSettings`，
  * 隔离环境逐字对齐）：`'user'` 解析到 `<configHome>/settings.json`，宿主真实 `~/.claude` 一个文件都不读。
  *
@@ -258,7 +258,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   const sdk = await loadClaudeSdk();
   /** 消息归一器（spec v3 §2）：一份 run 一个——流式块序号要跨消息存活（见 `message.ts`） */
   const messages = createClaudeMessageNormalizer();
-  // 该 SDK 自己追加 /v1/messages：留着尾部 /v1 会变成 /v1/v1/messages（§5.6.4）
+  // 该 SDK 自己追加 /v1/messages：留着尾部 /v1 会变成 /v1/v1/messages（§5.6.5）
   const baseUrl = stripV1Suffix(input.route.baseUrl);
   const env = buildSubprocessEnv({
     homeDir: input.configHome,
@@ -287,7 +287,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     },
   });
   /**
-   * `off` 档的前置条件核对（spec §5.4-3，控制者裁定加）：宿主若设过 `HOST_DISABLE_BETAS_ENV`，
+   * `off` 档的前置条件核对（spec §5.1.1，控制者裁定加）：宿主若设过 `HOST_DISABLE_BETAS_ENV`，
    * 上面那条 body 覆盖层**不会生效**（CLI 侧闸门的条件位），而这件事在结果里看不出来
    * （思考照旧、不报错）⇒ 至少要在日志里点一句名：**本次运行的 `off` 档读数作废**。
    *
@@ -300,7 +300,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    */
   const betasVariable = hostDisablesBetas(env, input.effort);
   if (betasVariable !== null) {
-    // 文案逐字来自 CLAUDE_OFF_DISABLED_WARNING_TEXT（spec §5.4-3：唯一可变 token 是键名原文）；
+    // 文案逐字来自 CLAUDE_OFF_DISABLED_WARNING_TEXT（spec §5.1.1：唯一可变 token 是键名原文）；
     // context 固定为 `{ variable, effort }`，作为 console 的**第二个参数**透传（不 JSON.stringify）
     logger.warn(claudeOffDisabledWarning(betasVariable), { variable: betasVariable, effort: input.effort });
   }
@@ -358,7 +358,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        * 层级（低→高）实测为 user < project < local < flag ⇒ 这一格管得住仓库那两个档，且不影响
        * `CLAUDE.md` 与仓库其余配置照常加载。
        *
-       * 为什么只钉这三个键：它们才是「本次路由」（§5.6.4）。`model` 不必钉——实测仓库 settings 里的
+       * 为什么只钉这三个键：它们才是「本次路由」（§5.6.5）。`model` 不必钉——实测仓库 settings 里的
        * `model` 键抢不过 `options.model`（请求体里的 model 始终是本次选的）。
        */
       settings: {
@@ -416,12 +416,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   const lastSubagentRecordById = new Map<string, SubagentRecord>();
   /**
    * 本行「**同一版本的文件只解析一遍**」的缓存
-   * （spec `2026-10-01-agent-message-spec-design-v3.md` §4.1 步骤 5.1 的「读法三条」）。
+   * （spec `2026-10-01-agent-message-spec-design-v3.md` §4.1 步骤 5.1 的「读法四条」）。
    *
    * 一次运行里每份转录会读两次：① `finalize` 的**合计读**（`readClaudeSubagentUsage`，枚举会话目录）
-   * 与 ② 同一处的**逐个子智能体重读**（`finalSubagents`）。②那一次**必须**真读（CLI 边跑边追加，
-   * 收尾要的是全量），而两份读的是同一批文件 ⇒ 用同一个缓存，同一版本只解析一遍。
-   * **文件长长了**（size / mtimeMs 变）时条目不命中，照常重读。
+   * 与 ② 同一处的**逐个子智能体读**（`finalSubagents`）。②要的是**收尾那一刻的全量**（CLI 边跑边追加），
+   * 而两份读的是同一批文件 ⇒ 用同一个缓存：**版本没变就直接复用（这就够了，内容与真读完全一致）；
+   * size / mtimeMs 一变就重读**，所以「要全量」这条不会被缓存破坏。
    * ⚠️ 刻意**不是模块级**：那会把上一次运行解析出来的读数留在进程里（见 `ClaudeSubagentUsageCache`）。
    */
   const subagentUsageCache = createClaudeSubagentUsageCache();
@@ -482,7 +482,15 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // 后面的 `dispose()`（controller.abort）才是硬回收，它照常执行。
       void Promise.resolve(query.interrupt?.()).catch(() => {});
     },
-    // dispose 是硬回收：abort 让 SDK 杀掉仍在跑的子进程；interrupt 已被尊重时这一步是空操作
+    /**
+     * dispose 是硬回收：abort 让 SDK 杀掉仍在跑的子进程；interrupt 已被尊重时这一步是空操作。
+     *
+     * ⚠️ **这一类是「SDK 代 spawn」**：CLI 子进程由厂商 SDK 自己拉起，公开面**不暴露它的 pid**
+     * （`sdk.d.ts` 里那个 `pid` 属于 MCP stdio transport，不是 CLI），本仓因此拿不到整棵树，
+     * 只能走 SDK 自己的硬停止通道 ⇒ 进程树回收是**尽力**，不是保证。归属与残留风险登记在
+     * 《厂商进程生命周期规范》的归属表里；行产物清理不假设它一定干净（core 的 `removeTreeWithRetry`）。
+     * 对照：codex 由本仓自己 spawn（`appserver/client.ts`），那一家的 `close()` 必须**整棵回收 + 等退出**。
+     */
     dispose: createDisposer(() => {
       controller.abort();
     }),
@@ -643,11 +651,9 @@ export const claudeCodeProvider: AgentProvider = {
   metadata: {
     // 只讲一条 wire（Agent SDK 打 Anthropic Messages）⇒ 集合只有一个元素
     protocolTypes: ['anthropic'],
-    // liveUsage: 'estimated' —— 跑动期的 usage 事件是按 assistant 消息累加出来的**估算**
-    // （SDK 只在 result 消息上给结算值，见 events.ts 的 liveUsageDraft）：界面看得到，但不回写快照
     // structuredOutput: true —— SDK 的 `outputFormat` 能带 JSON Schema（原生 schema 开关），
-    // 返回形状由 CLI 侧约束，而不是靠提示词里写「请只输出 JSON」；落点在 Task 3
-    capability: { cancelMidTurn: true, usage: true, liveUsage: 'estimated', structuredOutput: true },
+    // 返回形状由 CLI 侧约束，而不是靠提示词里写「请只输出 JSON」
+    capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
     /**
      * 消息能力声明（spec v3 §3.5）：这一家六格全 `'yes'`，唯一的代价是**子智能体轨迹的完整度**
      * 取决于 `forwardSubagentText`——默认只投送子智能体的 `tool_use` / `tool_result` 块，
@@ -680,8 +686,12 @@ export const claudeCodeProvider: AgentProvider = {
     // `off`（它走 `thinking: { type: 'disabled' }`，不是 `effort` 的取值）；`max` 是
     // 「select models only」，但那由模型侧决定，智能体这一层能收的就是这些
     reasoningEfforts: [EFFORT_OFF, 'low', 'medium', 'high', 'xhigh', 'max'],
-    isolation: 'subprocess',
   },
   run: (input: AgentRunInput): Promise<AgentRunResult> =>
-    runTurn(input, { kind: 'claude-code', start: startClaudeCode }),
+    runTurn(input, {
+      kind: 'claude-code',
+      // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
+      capability: { structuredOutput: claudeCodeProvider.metadata.capability.structuredOutput },
+      start: startClaudeCode,
+    }),
 };

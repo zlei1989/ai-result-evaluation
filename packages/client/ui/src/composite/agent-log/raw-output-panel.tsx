@@ -4,7 +4,7 @@
  * 「原始输出」入口 + 二级抽屉：**两种变体共用一个件**——固定区的逐行原文（`AgentLogDiagnostics`）
  * 与卡片底部的单份原文（`ToolCardResult`）。
  *
- * 六条口径：
+ * 七条口径：
  *   1. **本件只画 ready 态**。`Loadable` 的三态画面（`Skeleton` / `Alert` + 重试）由**调用方**决定：
  *      「取到没有」这件事只有数据层知道（UI 不做取数），本件吃的是已经到手的数据；
  *   2. **逐行原文逐字给出、不解析**。`summary` 是给人看的一句话，有就**优先**渲染，
@@ -16,12 +16,15 @@
  *   4. **不做脱敏**：`secret` 类遮罩是显示口径、由调用方决定（本件不装安全边界）；
  *   5. **入口是一个按钮、正文在二级抽屉里**（2026-10-03 用户口径）：原文不再挤占主抽屉固定区
  *      的高度（50 条 `[时间] 来源 原文` 会把时间轴压掉一大截），点开才在 `NestedDrawer` 里整段看；
- *   6. **开合态一律受控**（`agent-log-layering.test.ts` (d)：L0/L1 不许持态——那一条是**静态扫描**，
- *      连注释里的那个 hook 名字都会命中，故这里绕着写）：固定区那一支由 `AgentLogLayout` 持态
+ *   6. **开合态一律受控**（`agent-log-layering.test.ts` (d)：L0/L1 不许持态。那一条**先剥注释再扫**，
+ *      所以这里写出那个 hook 名也不会命中；绕着写只是习惯，不是判据要求）：固定区那一支由 `AgentLogLayout` 持态
  *      （它还要借这个回调向数据层上报「我需要了」——见 `agent-log-layout.tsx` 的
  *      `handleRawOpenChange`），卡片底部那两支由**同一份折叠态**按键控开合
  *      （键 = 块键 + `|raw`，见 `agent-message-timeline.tsx` 的 `contextOf`）。
- *      抽屉不像 `Collapse` 那样自带非受控态，故这一格从「可选」变成了**必填**。
+ *      抽屉不像 `Collapse` 那样自带非受控态，故这一格从「可选」变成了**必填**；
+ *   7. **本件不自带布局容器**（用户 2026-10-07 口径）：返回的是**按钮本身**（Fragment），
+ *      横排 / 换行 / 间距由调用方的容器给——固定区里它与「下载台账」同层，卡片底部各自包一层。
+ *      原先自带一层 `Flex gap={8}`，症状是同一行里两套间距、且「这一行有哪几个按钮」要去两层里数。
  */
 import { Button, Flex, Typography } from 'antd';
 import type { ReactNode } from 'react';
@@ -73,7 +76,8 @@ function hasText(value: string | null): value is string {
  * **走虚拟滚动**（2026-10-03 用户口径：「避免数据量大浏览器卡顿」）：`lines` 没有上限
  * （`diagnosticsOf` 把全部 `log` 事件映射成行，服务端 `readEvents` 也读整份文件），
  * 长跑的 stdout 上千行 ⇒ 普通 `.map` 就是几千个节点、且每次新事件到都整段重渲。
- * 虚拟化本身住在 `base/virtual-list.tsx`（全仓唯一一处 `Listy`），本件只提供行内容与 `rowKey`。
+ * 虚拟化本身住在 `base/virtual-list.tsx`（**虚拟化的唯一持有者**；全仓另一处 `<Listy>` 在问答卡片的选项列表里，不虚拟化），
+ * 本件只提供行内容与 `rowKey`。
  *
  * **截断提示留在列表外的固定位置**（不放进虚拟列表）：它是「这份原文本身不全」的结论，
  * 跟着滚出屏幕就等于没说。
@@ -146,7 +150,15 @@ export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: R
     source.kind === 'diagnostics' ? `原始输出 ${source.diagnostics.lines.length} 条` : label ?? '原始结果';
 
   return (
-    <Flex align="center" gap={8} wrap>
+    /*
+     * **本件不自带容器**（用户 2026-10-07 口径：把包裹那一层去掉，按钮拿出来）。
+     * 入口按钮与「重新读取」直接进调用方的排布容器，与旁边的兄弟（固定区里是「下载台账」）
+     * 同层——原先那层 `Flex gap={8}` 会在行里再嵌一层，同一个行里出现两套间距，
+     * 且让「这一行有哪几个按钮」变得要去两层里数。
+     * 摆位（横排 / 换行 / 间距）归调用方：固定区是原文行那个 `Flex`，卡片底部各自包一层。
+     * `NestedDrawer` 走 portal，不占父容器的排布（开合与标题都不受影响）。
+     */
+    <>
       <Button
         size="small"
         autoInsertSpace={false}
@@ -181,6 +193,6 @@ export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: R
           </Flex>
         )}
       </NestedDrawer>
-    </Flex>
+    </>
   );
 }

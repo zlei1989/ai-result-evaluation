@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   transpilePackages: ['@aieval/contracts', '@aieval/core', '@aieval/agents', '@aieval/evaluator', '@aieval/api', '@aieval/ui', '@aieval/client'],
   serverExternalPackages: [
     '@anthropic-ai/claude-agent-sdk',
-    '@openai/codex-sdk',
+    '@openai/codex',
     '@deepseek-ai/dsh-sdk-client',
   ],
   reactStrictMode: true,

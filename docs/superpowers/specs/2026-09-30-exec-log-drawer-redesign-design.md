@@ -12,8 +12,10 @@ v3 的推理不在这里重复，本文只引用它的结论。
 
 > ⚠️ **两版规范的小节号不能互译（读引用时必看）**：v2 与 v3 有若干「同号不同义」的条目，
 > 比「不存在」更危险。本文引用规范一律带来源前缀（`v2 spec §x` / `v3 §x`），**对照表只此一处：§8.2**。
-> v3 **没有收编**的概念（`ask-user` 的答案回填与七态、`TaskStep`、`commitModel` / `TaskListArgs`）
-> 由**本文自行定义**并就地写明，**不指向 v2 的节号**。
+> v3 **仍未收编**的只有两处（`ask-user` 的**答案回填三条口径**、`commitModel` / `TaskListArgs`）——
+> 它们由**本文自行定义**并就地写明，**不指向 v2 的节号**。
+> 其余几项（`TaskStep`、`AskUserQuestion` / `AskUserOption` 的 `multiSelect` / `allowOther` / `secret` / `recommended`、
+> `auto-resolved` 这一档）v3 **已经收编**，照 v3 引用即可——§8.2 那张表是实测结果，引用前请重跑一遍。
 
 **章节导航**（按「读它要解决什么」组织，不按写作顺序）：
 
@@ -34,9 +36,11 @@ v3 的推理不在这里重复，本文只引用它的结论。
 
 ## 1. 要解决的问题
 
-重设计前，「执行日志」抽屉是**一坨纯文本**：`formatEventLog(events)` 把事件按 7 个类型各拼一行，
+重设计前，「执行日志」抽屉是**一坨纯文本**：`formatEventLog(events)` 把事件按 **8 个类型**各拼一行，
 塞进一个限高 520px 的等宽文本框自滚。（该台账格式仍在
-`packages/client/ui/src/composite/log-format.ts`，供「下载台账」与抽屉的「原始输出」用。）
+`packages/client/ui/src/composite/log-format.ts`，**供「下载台账」用**；
+抽屉的「原始输出」只是**沿用了同一套 `[HH:mm:ss] 来源 原文` 措辞**，
+格式化由 `raw-output-panel.tsx` 自己做——`formatClock` 没有导出。）
 
 三条具体的不好用：
 
@@ -45,7 +49,8 @@ v3 的推理不在这里重复，本文只引用它的结论。
    哪句是过程。
 2. **没有结构，只有长度。** 一次评测几百轮、几千条事件时，唯一的定位手段是浏览器的
    `Ctrl+F`；「第 40 轮发生了什么」没有入口。
-3. **子任务完全不可见。** v2 spec 已把 subagent 建模成一等事件（§6），但今天没有任何出口；
+3. **子任务完全不可见。** v2 spec 已把 subagent 建模成一等事件（`v2 spec §3` 的机制定案 +
+   `v2 spec §7` 的面板②），但今天没有任何出口；
    而「主智能体派了一个子任务去干活」恰恰是评测里最需要看的一段过程。
 
 目标形态：**顶部固定的事实进度条 + 按轮次分组的消息时间轴**，思考与工具调用默认折叠，
@@ -94,69 +99,81 @@ v3 的推理不在这里重复，本文只引用它的结论。
 |---|---|---|---|
 | S1 | **内嵌只读视图（非抽屉）** | 用 `AgentLogLayout`（抽屉正文），**不套 `Drawer`**；或用更低的 `AgentMessageTimeline` | 不许为了内嵌而重写一遍正文 |
 | S2 | **喂别的业务数据（换模型来源）** | 换一个 `AgentLogModel` + 换一个 `AgentLogSource`（§4.4） | 不许改组件、不许改契约 |
-| S3 | **单独复用某个子块** | 子块**可独立挂载**：给定 props 就能渲染，不依赖 `AgentLogView` 的 state | 不许任何子块的可用性依赖于它恰好被 `AgentLogView` 渲染 |
+| S3 | **单独复用某个子块** | 子块**可独立挂载**：给定 props 就能渲染，不依赖 `AgentLogLayout`（或 `useAgentLogView`）的 state | 不许任何子块的可用性依赖于它恰好被 `AgentLogLayout` 渲染 |
 | S4 | **新增块类型 / 新增工具条动作** | 注册表（§9.3）/ `ToolbarAction[]`（§9.4） | 不许改 `agent-message-timeline` 或 `agent-log-layout` |
 | S5 | **完全不同的交互形态（对话 / 监控台）** | 换组合件（§9.2 的 L2），复用 L0/L1 | 本期**不做成品**，只保证做得出来（见 §2 非目标） |
 
-**这五个场景是分层的唯一判据**：任何一处「拆出来的东西仍然只能被 `AgentLogView` 用」，
+**这五个场景是分层的唯一判据**：任何一处「拆出来的东西仍然只能被 `AgentLogLayout` 用」，
 就是拆错了——文件数变多不算拆对了。
 
 ## 3. 口径与取舍（逐条）
 
 | # | 项 | 取值 | 理由 |
 |---|---|---|---|
-| D1 | 「一轮」的定义 | **模型一次 API 往返 = 一轮**（＝ `usage.turns` 口径；**不是** `message.turn`——后者三家语义不同、明文禁止用于分组，见 §4.1 的 `LogTurn.round`） | **同一份口径**下的轮次；「思考→工具→结果→回复」天然落进同一轮。⚠️ **不是「跨三家可比」**——规范逐字「`roundTrip` 三家都要合成，且计数方法不同 ⇒ **跨家比较前必须确认口径**，不要把某家偏高的近似值当成另一家的等价物」，并点名 codex 的近似计数**系统性偏高** ⇒ 口径是「**同口径可比**」，`round` / `turns` 必须带来源标注（D27） |
+| D1 | 「一轮」的定义 | **模型一次 API 往返 = 一轮**（＝ `usage.turns` 口径；**不是** `message.turn`——后者三家语义不同、明文禁止用于分组，见 §4.1 的 `LogTurn.round`） | **同一份口径**下的轮次；「思考→工具→结果→回复」天然落进同一轮。⚠️ **不是「跨三家可比」**——规范逐字「`roundTrip` 三家都要合成，且计数方法不同 ⇒ **跨家比较前必须确认口径**，不要把某家偏高的近似值当成另一家的等价物」，并点名 codex 的轮次是**合成值**（模型答复条目数、按线程去重 ⇒ 非答复条目对它透明）⇒ 口径是「**同口径可比**」（⚠️ 早先写的「系统性偏高」是**旧口径**：推理条目也计数的那一版），`round` / `turns` 必须带来源标注（D27） |
 | D2 | 块内正文渲染 | **按块类型分派**：只有 `text` 块走 markdown，其余（thinking / tool 参数 / tool 结果 / attachment / unrecognized）一律等宽原文 | 推理摘要与命令输出不是 markdown，解析它们只会得到字面标记 |
 | D3 | 行级事实的安置 | **顶部固定不可折叠的进度条** + 下方纯轮次时间轴 | 那些事实是「关于这一行」的，不是智能体说的话（v2 spec §2 的分界） |
 | D4 | 面包屑作用域 | **只看该节点自己的消息**；后代以「子任务」占位条出现；**用户提示词作为首条消息**（主会话是与用户的往来、子任务是父派给它的指令） | 「这句话是谁说的」不能有歧义 |
 | D5 | 合并粒度 | 先按 `callId` **配对「调用+结果」**成一个工具条目，再把这些条目里**连续的**合进一个面板；`callId` 缺失/配不上时降级成独立条目，不编造关联 | dsh 的调用与结果是两条独立事件，不配对则一次调用被拆成两行 |
-| D6 | 面包屑「级联菜单」 | 每段下拉 = **该层级的兄弟列表**，当前项打勾 | 祖先链由面包屑表达，菜单只负责「跳到同层另一个」 |
+| D6 | 面包屑「级联菜单」 | 每段下拉 = **该层级的兄弟列表**，当前项 `disabled` | 祖先链由面包屑表达，菜单只负责「跳到同层另一个」 |
 | D7 | 长跑处理 | **全渲染 + 轮次跳转器 + 过滤**（不做「默认折叠轮次」） | 「每轮的事实内容」必须开箱即见 |
 | D8 | 下载口径 | **拆成两件事**：下载 = 原始事件台账（`formatEventLog`），**不再要求与抽屉逐字一致** | 时间轴与台账本来就不是一种东西；「逐字一致」是上一版的假设 |
-| D9 | 虚拟滚动 | **antd 6 的 `Listy`（`antd/listy`）**，不自己写窗口化。它内部就是 antd 的 `@rc-component/virtual-list` | 嵌套折叠面板的动态高度补偿是自建方案最容易做错的一处；而 `Listy` 让这条**不必新增直接依赖**（§7.2） |
+| D9 | 虚拟滚动 | **antd 6 的 `Listy`（从 `'antd'` 根导入）**，不自己写窗口化。它内部是 `@rc-component/listy`，再由那一层包 `@rc-component/virtual-list` | 嵌套折叠面板的动态高度补偿是自建方案最容易做错的一处；而 `Listy` 让这条**不必新增直接依赖**（§7.2） |
 | D10 | 工具面板形态 | **整宽折叠面板**（组头 + 组内工具行） | 视觉对比页确认 |
 | D11 | 轮次容器 | **扁平 + 左槽标记**（`轮次 N` 与时间挂左侧竖槽） | 同上；密度高于卡片 |
 | D12 | 工具行默认态 | **全部收起**（第一级展开后只是一行行摘要，点某行才出完整命令/参数/结果） | 一级折叠给扫读，二级折叠给细读 |
 | D13 | 流式滚动 | **「跟随最新」**：默认开，新事件带视口到底；用户一上翻即自动关，角落浮出「回到最新」 | 替代原「自动滚底」手工开关 |
 | D14 | `log` 事件去处 | 时间轴**不混入**；固定区给一个「原始输出 N 条」入口，展开看原文 | 原始负载必须可查，但不能与消息争夺注意力 |
-| D15 | 工具名显示 | **原样透传**（`Bash` / `apply_patch` / `pwsh` / `spawn_agent`），不做统一改名 | v2 spec §7.3 明文禁改名（改名会让厂商认不出自己的调用） |
+| D15 | 工具名显示 | **原样透传**（`Bash` / `apply_patch` / `pwsh` / `spawn_agent`），不做统一改名 | `v3 §5.1` 明文要求原样透传（改名会让厂商认不出自己的调用） |
 | D16 | **接口优化的原则** | **按最优形状定模型，不迁就现状、不粘传输层**：`seq` / SSE / `chunk` / 两源合并 / 取数时机 / 大小上限判断**全部不进 UI 契约**；会自己随时间变的量（耗时）不进契约；存储用扁平数组 + `parentId`，不建嵌套树。逐属性的取舍见 §4.1 的评估表 | 需求方口径：接口与数据层正在重构，优先 UI 设计，并评估每项属性的合理性与扩展性 |
 | D17 | 环境信息的口径 | **按提示词栈的层分组、各自标来源**（用户层 / 厂商系统层 / 运行配置 / 实测统计），缺失项给 `MissingReason`。**不做假等价的合并** | 各层的来源与可信度不同；合起来回答不了「这条要求是谁下发的」 |
-| D18 | 「通用」的落点 | **`agent-log` 本身就是那个通用组件**（`AgentLogView` 吃 `AgentLogModel` + `AgentEnvironment`，不认「评测行」这个业务概念）；环境抽屉是它**内部**的一块（`agent-log/agent-environment-drawer.tsx`），**不提为并列组件** | 需求方口径：环境属于 agent-log 的组成部分，agent-log 才是通用件 |
+| D18 | 「通用」的落点 | **`agent-log` 本身就是那个通用组件**（`AgentLogDrawer` / `AgentLogLayout` 吃 `AgentLogModel` + `AgentEnvironment`，不认「评测行」这个业务概念）；环境抽屉是它**内部**的一块（`agent-log/agent-environment-drawer.tsx`），**不提为并列组件** | 需求方口径：环境属于 agent-log 的组成部分，agent-log 才是通用件 |
 | D19 | 用户提示词的命名与位置 | 概念上叫**用户提示词**（角色视角），不叫「考题提示词」（业务视角）；**只在消息时间轴的首条出现，环境抽屉里不重复列** | 需求方口径：对它说话的是使用者，不是「考题」；而「对模型说的话」属于对话、不属于环境配置 |
-| D20 | `task` 卡片（计划清单）的形态与位置 | **状态化清单面板**（v2 spec §7.6.4 已定的形态）落到轮次时间轴上：**从工具组里提出、原地成卡并切断合并链**；**同一轮只画最后一次**调用（更早的收进面板底部）；**跨轮不去重**，首次展开、其后收起且标题带变化摘要 | 去重需要跨轮状态，与 §7.2 的「按项渲染 + 虚拟列表乱序挂载」相冲；而收起态标题已带 `3/5 完成 · +1 完成`，所以「不去重」不等于「重复占地方」 |
-| D21 | `ask-user` 卡片的形态 | **问答卡片**：逐问题渲染选项（`recommended` 打标、`multiSelect` 标注、`allowOther` 追加自由输入行）+ 答案回填 + **七种收场**；**「还没收场」是独立于七态的一支**（`AskUserPending`，见 D35），默认展开并显示已等待时长 | 本仓是无人值守评测，最需要一眼看出的是「它卡在等人回答」；把「还在等」并进任何一态都会把未收场说成已收场（与 §4.2「`running` 不可由 `output` 推断」同一条纪律） |
+| D20 | `task` 卡片（计划清单）的形态与位置 | **状态化清单面板**（v2 spec §7.6.4 已定的形态）落到轮次时间轴上：**从工具组里提出、原地成卡并切断合并链**；**同一轮只画最后一次带载荷的调用**（更早的收进面板底部）；**跨轮不去重**，首次展开、其后收起且标题带变化摘要 | 去重需要跨轮状态，与 §7.2 的「按项渲染」相冲（UI 看不到别的轮次）；而收起态标题带 `3/5 完成`，所以「不去重」不等于「重复占地方」。⚠️ **「变化摘要」那一格目前恒无**：`TaskPanel.change` 由装配层写死 `null`（跨轮差分要数据层的累积态，见 §5.4），于是「+1 完成」永不出现、**每张清单都落在「首次」那一档（默认展开）** |
+| D21 | `ask-user` 卡片的形态 | **问答卡片**：逐问题渲染选项（`recommended` 打标、`multiSelect` 标注、`allowOther` 追加自由输入行）+ 答案回填 + **七种收场**；**「还没收场」是独立于七态的一支**（`AskUserPending`，见 D35）；其中**还在跑**那一支（`pending && running`）**默认展开**并显示已等待时长，`pending && !running` 是「结果未采集」、收起 | 本仓是无人值守评测，最需要一眼看出的是「它卡在等人回答」；把「还在等」并进任何一态都会把未收场说成已收场（与 §4.2「`running` 不可由 `output` 推断」同一条纪律） |
 | D22 | 族数据的落点与形状 | **只挂 `tool-call` 块**，且**只给「本次调用后的归一结果」**（清单 / 问答）；**不把 `args` / `result` 两半暴露给 UI**；`commitModel` 与 v2 的 `TaskListArgs` 空壳**不进 UI 契约** | `tool-call` 是唯一必然存在的那一块；而「清单在 dsh 的 `arguments` 里、在 claude 的结果累积里」是适配器的知识（v2 spec §7.6.0），让 UI 自己挑半边读就是把适配器职责泄进 UI |
-| D23 | 「等待输入」的可见性 | 卡片标题上的等待时长 **+** 固定区一个**只在真的在等时出现**的 `等待答复 12m`（**派生**：不新增 `facts` 字段，也不进 `rowEvents`） | 「这一行为什么不动了」是长跑评测里最该一眼看出的；而它是**消息层**的内容，不是 §5.2 那张行级事件表里的编排层事实 |
+| D23 | 「等待输入」的可见性 | 卡片标题上的等待时长 **+** 固定区一个**只在真的在等时出现**的 `等待答复 12m00s`（**派生**：不新增 `facts` 字段，也不进 `rowEvents`） | 「这一行为什么不动了」是长跑评测里最该一眼看出的；而它是**消息层**的内容，不是 §5.2 那张行级事件表里的编排层事实 |
 | D24 | **组件的分层与状态归属** | **三层**：**L0 纯渲染件**（无 state、无取数、无业务概念）/ **L1 受控组合件**（吃 `turns` + `renderBlock` 分派，**自己不持有折叠态**）/ **L2 场景预设**（`useAgentLogView` + `AgentLogLayout` + `AgentLogDrawer`）。**四份视图态抽成一个 headless hook**；**虚拟列表降为 L2 的一个预设**，不是 L1 的默认行为 | 组件要能按**更多业务场景重新组装**、且要有扩展性，件之间用事件交互（＝回调 props，§9.1）。按**组件名**平铺会得到一个「外壳 + 上帝 state」的主件，五个重组场景逐条卡死 ⇒ **§2.1 的五个场景是唯一判据** |
-| D25 | **块渲染是注册表，不是 switch** | `RenderBlock` 的九个臂改成 **`kind → 渲染器` 的注册表**：默认项随组件走，调用方可用 `BlockRendererProvider` **追加或覆盖**，用 `assertNever` 守住默认集的穷尽性 | 要满足「新增块类型不改已有文件」（§2.1 S4）。**这是把 §4.2 已立的先例从类型层贯彻到组件层**——§4.2 扩展性第 5 条已经定了「收编新工具族 = 加一个 arm」，但 `assertNever` 写在 timeline 里时，加一个 arm 仍然要改 timeline。**判别联合管类型、注册表管分派**，两者不互斥 |
-| D26 | **工具条是动作数组，不是七个硬编码控件** | 默认动作集（下载台账 / 跟随最新 / 跳到轮次 / 只看工具调用 / 只看错误 / 原始输出 / 环境信息）内聚成 `AgentLogToolbarPreset`；`AgentLogLayout` 只吃 `actions: readonly ToolbarAction[]`，调用方可换集、可追加 | **「七个动作是一套预设」，不是「工具条只会这七个」**：通用消费方要能换集、能追加 |
+| D25 | **块渲染是注册表，不是 switch** | `RenderBlock` 的九个臂改成 **`kind → 渲染器` 的注册表**：默认项随组件走，调用方可用 `BlockRendererProvider` **追加或覆盖**，穷尽性由**映射类型**在编译期守住（漏一臂就编译不过——代码里**没有**运行时的 `assertNever`） | 要满足「新增块类型不改已有文件」（§2.1 S4）。**这是把 §4.1 扩展性第 5 条已立的先例从类型层贯彻到组件层**——那一条已经定了「收编新工具族 = 加一个 arm」，但穷尽性检查（写 `switch` 时那句 `assertNever`）写在 timeline 里时，加一个 arm 仍然要改 timeline。**判别联合管类型、注册表管分派**，两者不互斥 |
+| D26 | **工具条是动作数组，不是七个硬编码控件** | 默认动作集（下载台账 / 跟随最新 / 跳到轮次 / 只看工具调用 / 只看错误 / 原始输出 / 环境信息）内聚成 `useAgentLogToolbarPreset()`（纯函数版 `agentLogToolbarPreset()`，入参类型 `AgentLogToolbarPresetInput`）；`AgentLogLayout` 只吃 `actions: readonly ToolbarAction[]`，调用方可换集、可追加 | **「七个动作是一套预设」，不是「工具条只会这七个」**：通用消费方要能换集、能追加 |
 
 > **D27–D38 只补展示所需的数据结构与文案落点，不改 §5 / §6 的界面形态**。
 > 判据是 `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` 的**正文**，不参考实现代码。
 
+| # | 项 | 取值 | 理由 |
+|---|---|---|---|
 | D27 | **消息信封的三格必须摊到块上** | `ContentBlockBase` 补 `role` / `source` / `assembly`；`LogTurn` 补 `running` | 只摊 `messageId` / `subagentId` 会**丢掉**另外三个——于是「谁说的」「实时还是补录」「这块说完了没有」无处表达；而 §6.7 的流式动效全靠最后那一格，缺了它实现只能猜「最后一轮 = 流式中」，一次中断会永远闪光标、半截正文被读成结论 |
-| D28 | **能力声明是「维度注册表」，不是两个定字段** | `MessageCapability` 用可变键 + `CapabilityDecl`（`{ level, source, reason }` 三元组）+ `capabilityNotes` | ① 只有 `thinkingText` / `subagent` 两格会缺 `toolInput` / `toolResult` / `streamingDelta`；② **`toolResult` 那一格缺得最要紧**——§9.7 的 `AgentRunStateTagProps.missingReason` 注释写着「`capability` 给」，而契约里没有这一格 ⇒ **该参数恒为 `null`，组件被自己的契约判成空转**；③ 三元组绑死后排除了「有等级没原因」这类自相矛盾；④ 加维度不必改契约（与 `facts.domain` / `EnvGroup.title` 同一条口径） |
+| D28 | **能力声明是「维度注册表」，不是两个定字段** | `MessageCapabilityMap` 用可变键 + `CapabilityDecl`（`{ level, source, reason }` 三元组）+ `LogNode.capabilityNotes` | ① 只看 `thinkingText` / `subagent` 两格会以为 `toolInput` / `toolResult` / `streamingDelta` 不重要；② **`toolResult` 那一格缺得最要紧**——§9.7 的 `AgentRunStateTagProps.missingReason` 注释写着「`capability` 给」，而界面侧一度没有这一格 ⇒ 那三个调用点**全都硬写 `null`**、组件被自己的契约判成空转（2026-10-04 已接线：`block-renderer-registry.tsx` 的 `toolResultReasonOf()` 从 `BlockRenderContext.capability['toolResult']` 取值，见 §11 验收 32）；③ 三元组绑死后排除了「有等级没原因」这类自相矛盾；④ 收益是**渲染件不必改**——加一个维度仍要改契约 schema、`toCapabilityMap()` 与维度中文名表三处（见 §4.1 扩展性第 6 条） |
 | D29 | **族名与「有没有专门卡片」是两件事** | `ToolCallBlock` / `ToolItem` 补 `family: ToolFamily \| null`；`tool` 只表示「本期收没收编专门卡片」 | 只给一个 `tool` 会把「适配器不认识这个工具」与「它有族、只是不在本期两族里」压成同一个 `null`；而「**UI 不判厂商**」逐字要求「**只按 `family` 分支**」——契约里没有这个字段时实现只能按工具名猜，正是该纪律禁止的 |
-| D30 | **截断是「已知 / 未知」两态，不是布尔** | `ToolResultBlock.truncated` → `truncation: TruncationState`；`ToolItem.output` 同步 | 规范明写「拿不到截断标记只能记 `false`，但**消费方不得据此断定输出完整**」。裸布尔让「确认完整」与「没采到标记」在界面上完全一样——与本设计反过的「`running` 不可由 `output` 推断」是同一类「用负信号断言正事实」 |
+| D30 | **截断是「已知 / 未知」两态，不是布尔** | `ToolResultBlock.truncated` → `truncation: TruncationState`；`ToolItem.output` 同步 | 「拿不到截断标记就记 **`unknown`**、消费方不得据此断定输出完整」（`v3 §5.1` / `§10.1.1` 的**现行**口径；早先那版写的是「只能记 `false`」）。裸布尔让「确认完整」与「没采到标记」在界面上完全一样——与本设计反过的「`running` 不可由 `output` 推断」是同一类「用负信号断言正事实」 |
 | D31 | **附件本体与「不认识的原样载荷」拆成两个类型** | 新增 `UnrecognizedPayloadBlock`（兜底原文）；`AttachmentBlock` 归还给**真实附件**（`attachmentKind` / `path` / `mimeType`）；`RenderBlock` 相应加一臂 | 借用规范的名字去装「不认识的厂商载荷」会与它**语义正交**（对照表标「一致」则是错登记）；后果是**图片与文件附件没有任何展示路径**（会被画成一大段 base64 或空面板） |
 | D32 | **`LogNode` 按形态判别联合** | `SessionNode`（`main` / `subagent` 共用）\| `RowNode`；新增 `SessionFacts`；`RowNode.counts` 补计数格；`RenderBlock` 加 `row-summary` 臂 | 扁平接口会让「只有行级有意义」与「只有会话有意义」的格挤在一张表上互相为 `null`——正是本设计在 `ContentBlock` 上批评过的形状在节点层重演。判别联合顺带给出三处出口（`facts` 只属行级、`kind: 'row'` 的 `counts`、`subagentId` 归会话节点），并让「子任务与主会话逐字同形」从**约定**变成**类型保证** |
 | D33 | **子任务行补齐规范要求的列** | `SessionNode` 补 `source` / `dispatchKind` / `usage` / `outcome` / `statusMissing`；`LogNodeStatus` 补 `stopped` 与 `unsettled`（未收场） | 规范的面板②是「每个子任务一行」；把子任务只当导航入口就一眼看不全「有几个子任务、各自状态/结果/用量」。**强杀时收场事件永不到达**，没有「未收场」这一档，一个已经死掉的子任务会永远显示「运行中」；而 `statusMissing` 与 `status` 必须分开记（规范：「不得用 `status: null` 表示未采集」） |
-| D34 | **`RowEvent` 补 `warning` 档** | `level: 'milestone' \| 'error' \| 'warning'`；§5.2 去向表加「消息层非致命告警」一行 | codex 的 item 级 `error` 是**非致命告警**（规范逐字「不得当成运行失败」）；它既不是块、又不在去向表里 ⇒ 要么丢弃、要么以**错误条目**的样子出现，把「配置项没认出来」读成「这一行跑失败了」 |
+| D34 | **`RowEvent` 补 `warning` 档** | `level: 'milestone' \| 'error' \| 'warning'`；§5.2 去向表加「消息层非致命告警」一行 | codex 的 **`error` 通知**是**非致命告警**（`v3 §4.2` 的处置是「只落一条 WARN」；2026-09-22 的探测笔记只写到「不能把 `item.type === 'error'` 一律当运行失败」，「不得当成运行失败」是本文的措辞）；它既不是块、又不在去向表里 ⇒ 要么丢弃、要么以**错误条目**的样子出现，把「配置项没认出来」读成「这一行跑失败了」 |
 | D35 | **`AskUserInteraction` 按收场形态判别联合** | `AskUserPending`（`state: 'pending'` + `running`）\| `AskUserSettled`（`state: 'settled'` + `outcome` + `answers`） | 三个并列可空字段会允许 `answers 非空 + outcome === null + running === false` 这个组合存在，按 §5.5 判据会渲染成「结果未采集」**而答案就在手上**。这正是本设计在 `Loadable` 上反对过的形状（逐字：「允许 `isLoading && error && data` 这种自相矛盾的组合存在」）——**它违反的是本设计自己的标准，不需要规范背书** |
-| D36 | **`TaskPanel.counts` 补 `unknown` 第四格** | `{ pending, inProgress, completed, unknown }` | 规范说 `unknown`「是第四种**显示值**，面板必须能显示」，而 codex 的载荷只有 `{ text, completed }` 二态 ⇒ 该态很常见。只有三格时标题的 `3/5 完成` 在含 `unknown` 项时**分母必错**（三数之和 ≠ 项数），而 §5.4 又规定「UI 不自己算」⇒ 连纠正的余地都没有 |
+| D36 | **`TaskPanel.counts` 补 `unknown` 第四格** | `{ pending, inProgress, completed, unknown }` | 规范（`v3 §5.3`）说 `unknown`「是**独立的一档**（既不是『待办』也不是『完成』），面板必须能显示它」（`v3 §5.3` 的现行措辞），而 codex 的单条 `plan` 条目**没有状态格**（`{ step, status }` 里 `status` 缺席时按别名归一也落不进三态）⇒ 该态很常见。只有三格时标题的 `3/5 完成` 在含 `unknown` 项时**分母必错**（三数之和 ≠ 项数），而 §5.4 又规定「UI 不自己算」⇒ 连纠正的余地都没有 |
 | D37 | **`AgentLogDiagnostics.lines[]` 补 `summary`** | `summary: string \| null`；有值时优先渲染，`text` 原文仍逐字给出 | 规范逐字：`log.summary` 无则省略，**消费方不得拿 `text` 顶替**。缺这一格时面板只剩逐字原文——一条「未识别事件」的 JSON 原文与一句「收到一条未识别的厂商事件」在排障时不是一回事 |
-| D38 | **「有内容但这一类没被转发」是第三种空** | §6.1 补两档如实说明（「运行期只有派发事件与状态」/「该子任务的对话未转发」） | 规范 §7.1 逐字要求 claude 未开 `forwardSubagentText` 时**如实说明「该子任务的对话未转发」**。只有 `empty`（还没跑过）与 loading / error 三档时，进子任务只看到工具流水会被读成「子智能体什么都没说」——把「没转发」说成「没做」 |
+| D38 | **「有内容但这一类没被转发」是第三种空** | §6.1 补两档如实说明（「运行期只有派发事件与状态」/「该子任务的对话未转发」） | `v3 §4.1`（另见 `v3 §3.5` / `v3 §8.1`）记的是这条**事实**：claude 未开 `forwardSubagentText` 时子任务视图只剩工具流水（厂商默认 `false`，只投工具调用与工具结果块）⇒ 本设计据此补一条**如实说明**（「该子任务的对话未转发」）。只有 `empty`（还没跑过）与 loading / error 三档时，进子任务只看到工具流水会被读成「子智能体什么都没说」——把「没转发」说成「没做」。**本仓适配器已置 `true`**，故这一档在真实数据下通常不亮，兜底留着 |
 
-| D39 | **三处用量与里程碑归位** | ① `ContentBlockBase` 补 `usage` / `mergeKey`（消息级用量摊到块上）；② 三处用量数字**形制两两可分**（顶部事实条正体 / 里程碑 `Tag` / 消息页脚斜体，§6.11）；③ 消息页脚按 `mergeKey` 分段、`usage` 为 `null` 时整行不出（§6.13）；④ `RowEvent` 补 `turn` 归属键、里程碑按 `(会话身份, 该会话自己的轮次号)` 归位、水位**按会话拆开**（§6.14）；⑤ 行卡片两处浮层的拆行判据（§6.12） | ① 没有 `mergeKey` 就没有可靠的消息身份（`messageId` 每次投递都新分配）⇒ 页脚条数会随流式漂移；② 三处数字同形会被读成同一把尺子（实际是整行累计 / 按轮归属的累计 / 单条消息，三个量）；③ 里程碑原本按**事件时刻**挂到「时刻落在哪两轮之间」，而轮次的时刻是**派生的假时刻** ⇒ 里程碑必然挤在最后几轮。判据是按**号**归位，时刻不参与落点 |
+| # | 项 | 取值 | 理由 |
+|---|---|---|---|
+| D39 | **三处用量与里程碑归位** | ① `ContentBlockBase` 补 `usage` / `mergeKey`（消息级用量摊到块上）；② 三处用量数字**形制两两可分**（顶部事实条正体 / 里程碑 `Tag` / 消息页脚斜体，§6.11）；③ 消息页脚按 `mergeKey` 分段、`usage` 为 `null` 时整行不出（§6.13）；④ `RowEvent` 补 `turn` 归属键、里程碑按 `(会话身份, 该会话自己的轮次号)` 归位（§6.14；**该口径在 2026-10-07 进一步收成「整行只出一条」**，见 §5.2 / §6.14）；⑤ 行卡片两处浮层的拆行判据（§6.12） | ① 没有 `mergeKey` 就没有可靠的消息身份（`messageId` 每次投递都新分配）⇒ 页脚条数会随流式漂移；② 三处数字同形会被读成同一把尺子（实际是整行累计 / 单条消息自己那一次调用 / 单条消息，三个量）；③ 里程碑原本按**事件时刻**挂到「时刻落在哪两轮之间」，而轮次的时刻是**派生的假时刻** ⇒ 里程碑必然挤在最后几轮。判据是按**号**归位，时刻不参与落点 |
 
 > **D39 是形制与归位规则，不是新界面形态**：同一屏里出现三处同形数字之后必须把三者拆开；
 > 逐条见 §6.11 / §6.13 / §6.14。
 
+| # | 项 | 取值 | 理由 |
+|---|---|---|---|
+| D40 | **原文行与事实条收口：连接状态并入原文行、按钮不再自带包裹、领域事实自占一行、事实条删掉「结束原因」与「评分模型：…」** | ① `connected` 徽标从事实条那一行挪到原文行**最左**，并成为那一行的第三个渲染理由；② `AgentLogFacts` 删 `exitReason`、事实条删那一格；③ 「评分」格不再给 `hint` / `hintSegments`（`DomainFact` 的逐段渲染能力保留）；④ `raw-output-panel` 不再自带布局容器：入口按钮与「重新读取」直接进原文行（与「下载台账」同层）；⑤ `facts.domain` 补「智能体 · 模型 · 思考强度」三格，并整组**从事实条那一行挪到自占一行**（`agent-log-domain-facts.tsx`），顺序即渲染顺序：智能体 → 模型 → 思考强度 → 改动 → 评分 | ① 固定区两行各挂一个「状态」是重复：连接状态与原文入口本来就同属固定区的读数区，合成一行后事实条那一行只服务「这一行跑了什么」；② 状态徽标已经在说同一个处境，而 `end` 原文仍在**下载台账**里（`log-format.ts` 的 `结束 <reason>`；⚠️ **不在「原始输出」**里，那个面板只收 `log` 事件）；③ 尺子是谁在「评分详情」里连着通路与思考强度一起给，事实条上再写一遍是与它争夺注意力；④ 内层那层 `Flex gap={8}` 让同一行出现两套间距，且「这一行有哪几个按钮」要去两层里数；⑤ 「谁在跑」与「改了多少 / 得了多少分」是连起来读的一句话，并排在事实条末尾时靠 `wrap` 自然折行会把后两格甩到第二行、与前三个拆散 |
+
+> **D40 是版面收口，不减证据**：删掉的是**重复呈现**（结束原因那一格、评分格的尺子提示），
+> `end` 事件与评分详情都原样保留；连接状态只是换了一行；新增的三格执行信息来自**行快照已有**的
+> `agentKind` / `modelId` / `effort`（没有新的取数）。逐条见 §5.2 / §5.3。
+
 > **D24 与 D18 的关系（一句话，免得读成推翻）**：D18 说「`agent-log` 整体才是那个通用件」，
 > D24 **不推翻它**——通用性仍然由**整个目录**承担，只是目录内部从「九个平铺件」变成
 > 「三层 + 一个注册表」。D18 当初反对的是把环境抽屉提为**并列组件**（那会让关闭联动靠记忆），
-> 这条依旧成立（§6.8 约束 1 不变）。
+> 这条依旧成立（§6.8 的**理由 1**「关闭联动是结构保证的」不变）。
 
 ## 4. 组件边界与数据契约
 
@@ -166,12 +183,18 @@ v3 的推理不在这里重复，本文只引用它的结论。
 >
 > | 类型 | 住在哪 | 为什么 |
 > |---|---|---|
-> | `ContentBlockBase` / `TextBlock` / `ThinkingBlock` / `ToolCallBlock` / `ToolResultBlock` / `AttachmentBlock` / `UnrecognizedPayloadBlock` / `TruncationState` / `Loadable<T>` | **`@aieval/contracts`**（`src/agent-message.ts` 与 `src/index.ts`） | 它们是**数据层与界面之间的接缝**：适配器产出、`messages.jsonl` 落盘、UI 消费，三方都要能 import |
-> | `AgentLogModel` / `AgentLogFacts` / `LogNode` / `LogTurn` / `RowEvent` / `RenderBlock` / `ToolItem` / `TaskPanel` / `AskUserInteraction` / `AgentEnvironment` / `AgentLogDiagnostics` / `AgentLogSource` / 全部中文文案表 | **`@aieval/ui`**（`src/composite/agent-log/types.ts`，**定义只有这一处**） | 它们是**界面词汇**（色档、折叠键、渲染块、文案），放不进服务端的契约包——那会让服务端为了一个 `tone: 'pending'` 而依赖界面口径。`@aieval/client` 用 `export type … from '@aieval/ui'` **原样转出**这几个名字，页面与测试照旧从 `@aieval/client` 取；`export type` 在编译期被抹掉，**运行时不产生任何跨包依赖**，`AGENTS.md` 的依赖表因此不变 |
+> | `ContentBlockBase` / `TextBlock` / `ThinkingBlock` / `ToolCallBlock` / `ToolResultBlock` / `AttachmentBlock` / `UnrecognizedPayloadBlock` / `Loadable<T>` / `TruncationState` / `AgentRunStatus` / `AgentTokens` | **`@aieval/ui`**（`src/composite/agent-log/types.ts`） | 它们是**界面模型的块形状**，与契约里的同名块**不是一份类型**（见下条） |
+> | `AgentLogModel` / `AgentLogFacts` / `LogNode`（含 `SessionNode` / `RowNode` / `SessionFacts`）/ `LogNodeStatus` / `LogTurn` / `TurnRef` / `RowEvent` / `RenderBlock` / `ToolItem` / `ToolOutput` / `TaskPanel` / `AskUserInteraction`（含 `AskUserPending` / `AskUserSettled`）/ `AgentLogDiagnostics` / `AgentLogSource` / `MessageCapabilityMap` / `CapabilityDecl` / `DomainFact(Segment)` / `AgentRunStatus` / 全部中文文案表 | **`@aieval/ui`**（`src/composite/agent-log/types.ts`，**定义只有这一处**；`RenderBlock` / `ToolItem` / `ToolOutput` 在 `render-blocks.ts`） | 它们是**界面词汇**（色档、折叠键、渲染块、文案），放不进服务端的契约包——那会让服务端为了一个 `tone: 'pending'` 而依赖界面口径。`@aieval/client` 的包根用一句 `export type { … } from '@aieval/ui'` **列名转出**其中大部分名字（`src/index.ts`；**不含 `SessionFacts` / `TurnRef` / `ToolOutput`，也没有中文文案表**——那几个页面直接从 `@aieval/ui` 取）；`export type` 在编译期被 `verbatimModuleSyntax` 整体抹掉，**运行时不产生任何跨包依赖** ⇒ `ui` 在 client 的 **`devDependencies`** 里，`AGENTS.md` 的依赖表因此不变 |
+> | `AgentEnvironment` / `AgentEnvironmentSummary` / `EnvGroup` / `EnvItem` / `EnvSource` | **`@aieval/contracts`**（`src/agent-environment.ts`） | 它们**全是事实、没有一个界面词汇**（见 §4.3）。`types.ts` 用 `export type` 把这一组转出，本目录与消费方的 import 路径不变 |
+> | `Capability`（**不是 `CapabilityLevel`**，那个名字全仓不存在）/ `MessageSource` / `MissingReason` / `ThinkingTextKind` / `ToolFamily` | **`@aieval/contracts`**（`src/agent-message.ts`，都是 `z.infer` 出来的联合） | 这几个是**两侧共用的取值集合**，界面直接用契约那一个，不另抄一份——**定义在契约、`types.ts` 只是 import** |
 >
-> 两条由此产生的实现口径：
-> 1. **契约里的 `MessageCapability` 是扁平的**（`toolResult` / `toolResultSource` / `toolResultReason` 三格同名后缀），界面要的是绑在一起的 `CapabilityDecl` 三元组 ⇒ `types.ts` 的 `toCapabilityMap()` 是这两份形状**唯一**的搬运点，别在页面里再抄一遍；
-> 2. **契约里的消息与块都没有时刻**（时刻只存在于行级 `AgentEvent` 上）⇒ 时间轴的时刻是**派生**的：`build-agent-log-model` 用「这一行的开始时刻 + 轮次序号」算出一个基准（`BuildAgentLogModelInput.startedAt`），并如实标注为派生。真正的逐块时刻要等契约补上那一格。
+> ⚠️ 于是**两个包里有同名的 `ContentBlock` 一族**（契约的用 `type` 判别、界面的用 `kind` 判别），
+> 本文凡说「`ContentBlock` / `TextBlock` / …」**一律指界面这一份**（§4.2 定义的那一份）；
+> 引用契约那一份时会写成「契约的 `ContentBlockSchema`」。
+> 三条由此产生的实现口径：
+> 1. **契约的块与界面的块是两份形状**（同名的有 `ContentBlock` 加上六个成员，共七对）：契约那一边是 zod 产物、判别键是 **`type`**、信封上带 `chunk` / `mergeKey` / `roundTrip`、块里**没有时刻**，且 `ToolResultBlock` 用的是 `isError: boolean`；界面这一边判别键是 **`kind`**、归属三格摊到块上、`status: 'ok' | 'error' | 'unknown'`、`structured` 也一并搬过来。**契约的 `ContentBlock` 不是本节的 `ContentBlock`**——`build-model.ts` 负责在两者之间搬运，别把两边混着引；
+> 2. **契约里的 `MessageCapability` 是扁平的**（`toolResult` / `toolResultSource` / `toolResultReason` 三格同名后缀），界面要的是绑在一起的 `CapabilityDecl` 三元组 ⇒ `types.ts` 的 `toCapabilityMap()` 是这两份形状**唯一**的搬运点，别在页面里再抄一遍；
+> 3. **契约里的消息与块都没有时刻**（时刻只存在于行级 `AgentEvent` 上）⇒ 时间轴的时刻是**派生**的：`buildAgentLogModel` 用「这一行的开始时刻 + 轮次序号」算出一个基准（`BuildAgentLogModelInput.startedAt`），并如实标注为派生。真正的逐块时刻要等契约补上那一格。
 
 **这个接口是 UI 与数据层的唯一接缝**，按「优化接口、不迁就现状」的原则定稿：
 数据层正在重构，故本节**不引用任何当前的传输机制**（`seq` / SSE / `events.jsonl` / `chunk`
@@ -186,7 +209,11 @@ export interface AgentLogModel {
   facts: AgentLogFacts;
   /** 会话树**扁平**存储：主会话 + 所有后代子任务 */
   nodes: readonly LogNode[];
-  /** 当前视图（面包屑选中的节点）；UI 内部 state，默认取 kind === 'main' 的那个 */
+  /**
+   * 当前视图（面包屑选中的节点）。**它既是输入、也是视图态**（§14 第一条已登记这个口子）：
+   * 数据层可以指定「一打开就想看哪个节点」，之后的切换由 UI 自己持有；
+   * 默认取 `kind === 'main'` 的那个（`model.activeNodeId` 不在 `nodes` 里时才回落）。
+   */
   activeNodeId: string;
   /** 行级事件在时间轴上的条目（见 §5.2） */
   rowEvents: readonly RowEvent[];
@@ -209,7 +236,7 @@ export interface AgentLogFacts {
    * `tone` 是**界面词汇**（决定徽标色，`running` 还决定要不要 `Badge status="processing"` 的动效，§6.7）；
    * `label` 是**数据层给的文案**（评测侧传 `ROW_STATUS_LABELS[status]`，本仓十态文案一字不丢）。
    */
-  status: { tone: 'pending' | 'running' | 'ok' | 'failed' | 'canceled'; label: string };
+  status: AgentRunStatus;
   /** 开始时刻。耗时由 UI 用现成的 `useNow(active)` 本地走秒表算（`base/use-now.ts` 的既有用途） */
   startedAt: string | null;
   /** 结束时刻；null = 还在跑。终态耗时 = endedAt − startedAt */
@@ -240,7 +267,7 @@ export interface AgentLogFacts {
   /**
    * **领域事实**（数据驱动）：与「智能体运行」无关的业务事实由调用方给，UI 只负责摆版。
    *
-   * 评测侧放「改动摘要」与「评分」两格；通用消费方给空数组，进度条一样是完整的。
+   * 评测侧放「智能体 / 模型 / 思考强度 / 改动 / 评分」**五格**；通用消费方给空数组，进度条一样是完整的。
    * **为什么不像上面几格那样定字段**：这些格**因场景而异**（本仓要评分与改动，
    * 别的场景可能要成本、缓存命中率、门禁结果），定字段等于「每加一格事实都要改契约」
    * ——与 `EnvGroup` 同一条口径（§4.3 明写「组名由数据层给，不硬编码在组件里」）。
@@ -250,7 +277,31 @@ export interface AgentLogFacts {
   domain: readonly DomainFact[];
   /** 失败归因。`code` 允许为 null：不是每种失败都有错误码（非空 string 会让「没有码」只能填空串） */
   error: { code: string | null; message: string } | null;
-  exitReason: string | null;
+  /*
+   * **没有 `exitReason`**（用户 2026-10-07 口径）：事实条不再有「结束原因」那一格，这一格随之删除。
+   * `end` 事件里的 `exitReason` 照旧逐字落在**下载台账**里（⚠️ **不在「原始输出」**里——那个面板只收 `log` 事件，见 §5.2 的 `end` 行与 §5.3）（`log-format.ts` 的 `结束 <reason>`），
+   * 只是不在事实条上重复一遍——同一格要说的处境，状态徽标已经在说了。
+   * （`SessionFacts.exitReason` 是另一个面：子任务节点自己的收场原因，本次不动。）
+   */
+}
+
+/**
+ * 领域事实的**一段**（`segments` / `hintSegments` 的元素，2026-10-07 加）。
+ * 界面**只按每一段的声明画**，不解析文本（绝不自己去拆 `+111` 这种字符串）：
+ *   · `tag: true` ⇒ 一枚 Tag（模型名这类标识）；
+ *   · `tone` 给 `insertion` / `deletion` ⇒ git 惯例的绿 / 红；
+ *   · 其余 ⇒ 跟随所在文字的颜色。
+ */
+export interface DomainFactSegment {
+  text: string;
+  tone?: 'insertion' | 'deletion';
+  tag?: boolean;
+  /**
+   * `tag` 段的**色档**（不给 = `blue`）。与 `AgentRunStatus.tone` 同一条口径：数据层给档位，
+   * 界面把它翻成 antd 的预设色。2026-10-07 的三格：智能体 `blue` / 模型 `geekblue` /
+   * 思考强度 `purple`——同一个档位在事实条那一行与评分详情顶部长得一样。
+   */
+  tagTone?: 'blue' | 'geekblue' | 'purple';
 }
 
 /**
@@ -266,11 +317,20 @@ export interface DomainFact {
   value: string;
   tone?: 'default' | 'success' | 'warning' | 'error';
   /**
-   * 补充说明。评分那一格放「尺子」：`ScoreResult` 的注释写明「光有模型名回答不了这个分
-   * 是文本请求打的还是智能体会话打的」（`judgeAgentKind` + `judgeModelId`），再加一句话总评。
-   * **完整结构仍由「评分详情」抽屉读它自己的 props**，不经过 `AgentLogModel`。
+   * 值的**逐段渲染**（2026-10-07 加）：给了就按段画，各段 `text` 拼起来必须逐字等于 `value`
+   * （数据层用同一份分段拼出来，不手写第二遍）。给了它**就不再套色档 `Tag`**——改动那一格按
+   * git stat 排版（文件数次要色 + 新增绿 + 删除红），外面再套一枚徽标会把这行数字框成一个整体。
+   */
+  segments?: readonly DomainFactSegment[];
+  /**
+   * 补充说明（改动那一格放「按预算裁剪过，被丢弃的文件不计入这里」）。
+   * **评分那一格不给提示**（用户 2026-10-07 口径）：原先那句「评分模型：…」已从事实条删掉，
+   * 尺子是谁由「评分详情」抽屉读它自己的 props 说（那里连着通路与思考强度一起给）；
+   * 通用件这一格的能力照旧留着（见本节 `DomainFact.hintSegments` 的口径）。
    */
   hint?: string;
+  /** 提示的逐段渲染，约定同 `segments`（各段拼起来等于 `hint`） */
+  hintSegments?: readonly DomainFactSegment[];
 }
 
 /**
@@ -313,11 +373,12 @@ export interface LogNodeBase {
   /** 内容被上限截断时给一句人话（「只保留了最近 N 轮」），null = 完整 */
   contentTruncatedReason: string | null;
   /**
-   * **能力声明：维度名由数据层给**（见 `MessageCapability` / `CapabilityDecl`，D28）。
-   * UI 用它把「这家不支持」与「我们没采到」「厂商没投送」显示成**三句不同的话**——
+   * **能力声明：维度名由数据层给**（界面侧的形状是 `MessageCapabilityMap`，
+   * 与契约那张扁平的 `MessageCapability` 不是一份，搬运点见 §4.1 的落点说明，D28）。
+   * UI 用它把「这家不支持」「厂商没投送」「我们没接」「没验证过」显示成**四句不同的话**——
    * 这是本仓最忌讳的「看起来采到了」的反面。
    */
-  capability: MessageCapability;
+  capability: MessageCapabilityMap;
   /**
    * 能力成立的**前提**（路由 / 模型 / 开关）；空数组 = 无条件成立（D28）。
    * 规范逐字要求：「**不得把某一条路由上的取值写成这家的固有属性**」——
@@ -351,7 +412,7 @@ export interface SessionNode extends LogNodeBase {
   /** 该节点的首条消息（用户提示词）。主会话是对它说话的那个人给的；子任务是父派给它的指令 */
   userPrompt: { text: string; at: string } | null;
   /**
-   * **子任务自己的往返用量**（规范 §7.3：按子会话分组求和）；主会话为 `null`
+   * **子任务自己的往返用量**（`v3 §2.4`：按子会话分组求和）；主会话为 `null`
    * ——主会话的整行用量在 `AgentLogModel.facts.tokens`，**不存第二份真值**。
    */
   usage: AgentLogFacts['tokens'];
@@ -427,15 +488,17 @@ export interface LogTurn {
    *   · 被删的是 **`AgentLogFacts.durationMs`**（**行级、会每秒变**的那一个）——
    *     行还在跑时它就是个走动的数，故改由 `facts.startedAt` / `endedAt` 现算；
    *   · **这一格是一轮的结算值**：一轮结束就不再变，不存在「让数据层承担渲染压力」的问题。
-   * 界面落点：轮次头显示「本轮 3.2s」（§6.3）。
+   * 界面落点：轮次**右栏首行**显示「本轮 3.2s」（`agent-message-timeline.tsx`）。⚠️ **本仓没有产出方**：`build-model.ts` 恒给 `durationMs: null` ⇒ 这一行目前从不渲染（§14 已登记）。
    */
   durationMs: number | null;
   /**
    * **该轮是否尚未结束**（数据层给）。
    *
    * 为什么必须由数据层给、而不能在 `buildRenderBlocks` 里推：那个纯函数的入参
-   * （`blocks` / `nodes`）里**没有这个信息**，猜「最后一轮 = 流式中」会让一次中断
-   * 显示成「还在流」。它是 `ToolItem.running` 与 `block.assembly` 在**轮次级**的兜底判据。
+   * （`blocks` / `nodes` / 轮上下文）里**没有这个信息**，猜「最后一轮 = 流式中」会让一次中断
+   * 显示成「还在流」。`buildRenderBlocks` 只把它**转发**成 `ToolItem.running`；
+   * 块自己的 `assembly` 另有来源，`LogTurn` 不是它的判据。
+   * 实现上它由装配层按「最后一轮且该行 `live`」给（`build-model.ts`）。
    */
   running: boolean;
 }
@@ -448,12 +511,14 @@ export interface LogTurn {
  *   · `unsettled`（未收场）≠ `running`：前者是「**等不到了**」（强杀时 `subagent.finished` 永不到达，
  *     不给这一档，一个已死的子任务会永远显示运行中），后者是「还在等」；
  *   · `unknown`（拿到一个认不出的状态值）≠ `unsettled`（状态这一步就没发生过）。
- *   · 与 `statusMissing` 分开记：`status` 永远给可渲染的值，**为什么采不到**由那一格说（§3.3）。
+ *   · 与 `statusMissing` 分开记：`status` 永远给可渲染的值，**为什么采不到**由那一格说（`LogNodeBase`）。
  *
- * ⚠️ **档数与 v3 的关系**：v3 §2.8 的 `SubagentRecord.status` 只列 5 值，而 v3 §5.5 的渲染要求
- * 写「固定为六种……含 `未收场`」⇒ v3 自己的类型与要求对不上。本类型取**七值**：
- * v3 §5.5 的六种语义 + 我们自己的 `canceled`（轮次级中断，不是子任务状态）。
- * **待 v3 补齐后本设计只需复核。**
+ * ⚠️ **档数与 v3 的关系**：v3 §2.8 的 `SubagentRecord.status` 是**契约 5 值**，
+ * `v3 §2.8` 与 `v3 §5.5` 都另写「界面类型另有 `canceled` / `unsettled` **两档**（`LogNodeStatus` 共七档）」
+ * ⇒ v3 本身是自洽的，本类型与它**同档**（七值）。
+ *
+ * ⚠️ **但这七档目前只有六档真出得来**：两条装配路径**各**只走五档，并集是六档——
+ * 缺的那一档正是 `unsettled`（两条路径都不赋它，见 §14）。
  */
 export type LogNodeStatus =
   | 'running'
@@ -470,12 +535,13 @@ export type LogNodeStatus =
  * | 取值 | 含义 | 到 UI 的方式 |
  * |---|---|---|
  * | `wire` | 厂商事件流 / 会话通知流 | 逐条进模型，**实时** |
- * | `hook` | 厂商回调（如 codex 的 `SubagentStart`） | 逐条进模型，**实时** |
+ * | `hook` | 厂商回调（**本仓当前无产出方**：codex 迁 app-server 后不发 hook，这一档保留形状） | 逐条进模型，**实时** |
  * | `session-file` | 厂商会话文件（rollout 等） | 数据层**运行结束后**读，事件流里没有这些条目 |
  * | `aggregate` | 厂商只给汇总、没有逐条身份 | 数据层算出来的形态，**没有逐条条目** |
  *
  * 后两者不是「另一种 `wire`」：一个是**迟到**，一个是**根本不存在逐条**。缺这一格，
- * codex 的思考正文（来自会话文件）会与实时数据**逐字同形**，用户把「事后补录」读成「实时采到」。
+ * **claude 子任务收尾补录的那一帧**（唯一发 `session-file` 的地方）会与实时数据**逐字同形**，
+ * 用户把「事后补录」读成「实时采到」。
  * **与 `role` 的分工**：`source` 回答「凭什么在这儿」，`role` 回答「谁说的」，两者不可互推。
  */
 export type MessageSource = 'wire' | 'hook' | 'session-file' | 'aggregate';
@@ -500,14 +566,21 @@ export type MissingReason =
 /**
  * 能力等级。**五态**（只写四态会漏掉 `not-projected-by-vendor`）。
  *
- * 第五态是整份规范里最要紧的一格：它说「**厂商有数据，但没投送到我们拿得到的通道**」。
- * 少了它，dsh 的思考计量、codex 事件流的思考正文与工具入参都只能显示成「这家没有」。
+ * 这个名字在代码里就是契约的 **`Capability`**（`@aieval/contracts` 的 `z.enum`，`z.infer` 出来的联合），
+ * 界面**不另起一个 `CapabilityLevel`**——两处各写一份必然漂。
  *
- * 与 `MissingReason` 的配对是**固定**的（`no`→`not-supported`、
- * `not-projected-by-vendor`→`not-exposed`、`off-by-adapter`→`not-observed` 或 `unverified`、
- * `unverified`→`unverified`），故 §4.1 的 `CapabilityDecl` 把两者绑成一个不可分的对象。
+ * 第五态是整份规范里最要紧的一格：它说「**厂商有数据，但没投送到我们拿得到的通道**」。
+ * 少了它，**dsh 的正文增量**（厂商侧有 `text-delta`、订阅到的通知流里没有 ⇒ `streamingDelta` 记
+ * `not-projected-by-vendor`）与 **dsh 的思考计量**（上游给了那个数、我们没取）都只能显示成
+ * 「这家没有」。⚠️ **codex 不适合当这条的例子**：它五格全 `'yes'`（`thinkingText` / `toolInput`
+ * 的出处都是 `'wire'`），今天真正声明 `not-projected-by-vendor` 的只有 dsh。
+ *
+ * 与 `MissingReason` 的配对在**界面侧**是固定一对一的（`CAPABILITY_TO_MISSING_REASON` 只负责出文案；**契约侧允许 `off-by-adapter` 落 `not-observed` 或 `unverified` 两条**，见 `v3 §2.7` 与 conformance 套件）——原句漏了后半句。配对表：`no`→`not-supported`、
+ * `not-projected-by-vendor`→`not-exposed`、`off-by-adapter`→`not-observed`、
+ * `unverified`→`unverified`，故 `CapabilityDecl` 把两者绑成一个不可分的对象；
+ * 界面侧的对照表是 `types.ts` 的 `CAPABILITY_TO_MISSING_REASON`（**唯一一处**，别就地写 switch）。
  */
-export type CapabilityLevel =
+export type Capability =
   | 'yes'
   | 'no'
   | 'unverified'
@@ -521,11 +594,12 @@ export type CapabilityLevel =
  * 且允许「有等级没原因」「有原因但等级是 yes」这类**自相矛盾组合**存在。
  * 绑成对象后这种组合**在类型上写不出来**（与 `Loadable` 排除 `isLoading && error && data` 同一条纪律）。
  *
- * **为什么用可变键字典而不是定字段**：加一个能力维度**不必改契约形状**——
+ * **为什么用可变键字典而不是定字段**：加一个能力维度时**界面侧不必改形状**（契约那一侧仍是定字段表，
+ * 要加维度得改 `MessageCapabilitySchema` 与 `toCapabilityMap()`，见 §4.1 扩展性第 6 条）——
  * 与 `facts.domain` / `EnvGroup.title` 同一条既有口径（「一律由数据层给，不硬编码在组件里」）。
  */
 export interface CapabilityDecl {
-  level: CapabilityLevel;
+  level: Capability;
   /** 这一格的值从哪条通道取到；**`level === 'yes'` 时必填**，其余四态为 `null` */
   source: MessageSource | null;
   /** 为什么取不到；**`level !== 'yes'` 时必填**，`'yes'` 时为 `null` */
@@ -533,13 +607,18 @@ export interface CapabilityDecl {
 }
 
 /**
- * 一次运行的能力声明。**维度名由数据层给**（见 `CapabilityDecl` 的说明）。
+ * 一次运行的**能力声明字典**（界面侧的名字是 `MessageCapabilityMap`）。**维度名由数据层给**
+ * （见 `CapabilityDecl` 的说明）。
+ *
+ * ⚠️ **它与契约的 `MessageCapability` 不是一份形状**：契约把「等级 / 出处 / 原因」摊成
+ * **同名前缀的三个格**（`toolResult` / `toolResultSource` / `toolResultReason`），是一张**定字段**的表；
+ * 界面这一份是**可变键字典**，两者之间的搬运点只有 `types.ts` 的 `toCapabilityMap()` 一处。
  *
  * 已收编的五个维度名（数据层按这个拼写给；UI **不硬编码任何维度名**，
  * 只按收到的顺序渲染——新增维度时组件一行都不用改）：
  * `thinkingText` / `toolInput` / `toolResult` / `subagent` / `streamingDelta`。
  */
-export interface MessageCapability {
+export interface MessageCapabilityMap {
   readonly [dimension: string]: CapabilityDecl;
 }
 
@@ -561,7 +640,7 @@ export type Loadable<T> =
    （v3 §6.1/§6.2 把「消费方处置」写在那里）；UI 只看到**已成形的块**，
    以及**两处「当前状态」标记**——`ContentBlockBase.assembly`（这块说完了没有）
    与 `LogTurn.running`（这轮结束了没有）。**两者都由数据层给，UI 不推断**
-   （§4.2 第 1 条说明了为什么「推断」在这里是错的）。
+   （§4.2 那句「**`running` 不能由有没有 `output` 推断**」说明了为什么「推断」在这里是错的）。
    **`log` 原文同理，但它不是「事件」**：它以**已定型的原始输出行**（`AgentLogDiagnostics`，§5.3）
    单独注入，模型里仍然没有事件类型、没有 `seq`、没有增量语义——面板要的是**原文**，
    而不是「一条 `log` 事件」（这与 `RowEvent` 是同一处置：模型里只有给人看的那几行）。
@@ -571,8 +650,9 @@ export type Loadable<T> =
    （写成 `load: () => NodeContentState` 就是把数据层的取数时机泄进 UI 契约。）
 3. **不合并事件源**：「`useRowLog` 与 `useRowStream` 按 `seq` 并集」不属于本设计
    （那等于多开一节讲数据层内务）。数据层对外只该给**一条已经合并好的流**；两源合并是它的内务。
-4. **UI 不判断大小**：`input.text` / `output.text` 的长度上限与 `truncated` 标记**由数据层算好**
+4. **UI 不判断大小**：`output.text` 的长度上限与 `truncation` **三态**由数据层算好
    （工具结果可能是整个文件，把上限判断放前端意味着把全量先传到浏览器再丢掉）。
+   `input` 那一格只给 `value` / `text` / `bytes`，**没有截断位**——工具入参不截断。
 5. **UI 不判厂商，也不判「族数据的来源」**：卡片只吃 `ToolFamilyPayload`（`task` / `ask-user`）。
    清单在 dsh 的 `arguments` 里、在 claude 的结果累积里，那是适配器的知识；
    让 UI 去挑读哪半边，就是把适配器职责泄进 UI。同理**不按 `agentKind` / 工具名分支**
@@ -599,8 +679,8 @@ export type Loadable<T> =
 | 族载荷的挂载点（两块各挂一份，还是只挂一块） | **只挂 `tool-call` 块** | `tool-call` 是**唯一必然存在**的那一块；两块各挂一份就有两份可能不一致的真值（与「不存第二份真值」同一条纪律） |
 | 消息信封的 `role` / `source` / `assembly` | **摊到块上**（`ContentBlockBase`，D27） | 只摊 `messageId` / `subagentId` 会**丢掉**另外三个——于是「同一段文字是谁说的」「这条是实时还是补录」「这块说完了没有」三件事在模型里无处表达。**一个块只有一个载体**（合并键的载体分量＝`role` + `parentCallId`），故不会有两份真值 |
 | 消息级用量与逻辑消息身份 | **摊到块上**（`ContentBlockBase.usage` / `.mergeKey`，D39） | 块是时间轴唯一拿得到的东西，而页脚要按**逻辑消息**分段：`messageId` 是**每次投递**新分配的（同一条逻辑消息的 delta 与 snapshot 是两个 id）⇒ 不摊 `mergeKey`，页脚条数会随流式追加漂移；不摊 `usage`，页脚只能回读 `LogTurn.tokens`（那是**轮级积出来的另一个量**） |
-| `capability` 的两个定字段 | **改可变键的维度声明**（`MessageCapability`，D28） | 定字段意味着「加一个能力维度 = 改契约」；且「等级 / 出处 / 原因」应绑在一起的东西会被散成三个概念。改注册表后与 `facts.domain` / `EnvGroup.title` 同一条既有口径 |
-| `ToolResultBlock.truncated: boolean` | **改 `truncation: TruncationState`**（D30） | 规范明写「拿不到截断标记只能记 `false`，**消费方不得据此断定完整**」；裸布尔让「确认完整」与「没采到标记」在界面上完全一样——与本设计反过的「`running` 不可由 `output` 推断」是同一类「用负信号断言正事实」 |
+| `capability` 的两个定字段 | **界面侧改可变键的维度声明**（`MessageCapabilityMap`，D28） | 定字段意味着「加一个能力维度 = 改契约」；且「等级 / 出处 / 原因」应绑在一起的东西会被散成三个概念。界面改注册表后与 `facts.domain` / `EnvGroup.title` 同一条既有口径；**契约那一侧仍是定字段**（加维度要改 schema 与 `toCapabilityMap()`，代价已写在 §4.1 扩展性第 6 条） |
+| `ToolResultBlock.truncated: boolean` | **改 `truncation: TruncationState`**（D30） | 「拿不到截断标记就记 **`unknown`**、消费方不得据此断定完整」（`v3 §5.1` / `§10.1.1` 的**现行**口径）；裸布尔让「确认完整」与「没采到标记」在界面上完全一样——与本设计反过的「`running` 不可由 `output` 推断」是同一类「用负信号断言正事实」 |
 | `AttachmentBlock`（不装「不认识的载荷」） | **拆成两个类型**（D31） | 规范里 `AttachmentBlock` 指的是**认识的真实附件**（image / file + path + mimeType），与「不认识的原样载荷」语义正交。借名会导致**图片与文件附件没有任何展示路径** |
 | `LogNode`（扁平接口） | **改按形态的判别联合**（D32） | 「只有行级才有意义」与「只有会话才有意义」的格挤在一张表上互相为 null——正是本设计在 `ContentBlock` 上批评过的形状在节点层重演。判别联合顺带给出三处出口（`facts` 关系、`kind: 'row'` 的 `counts`、`subagentId` 归会话节点） |
 | 子任务行缺的格（`outcome` / `usage` / `dispatchKind` / `statusMissing` / `source`） | **补进 `SessionNode`**（D32 / D33） | 规范的面板②是「每个子任务一行」；只当导航入口就一眼看不全「有几个子任务、各自状态/结果/用量」。`statusMissing` 与 `status` **必须分开记**（规范：「不得用 `status: null` 表示未采集」） |
@@ -608,12 +688,12 @@ export type Loadable<T> =
 **扩展性（**七条**，回答「以后加东西会不会推翻它」）**：
 
 1. **加块类型不用改模型**：`ContentBlock` 是判别联合，新增一类块 = 加一个 `kind`；
-   渲染层按 `kind` 分派（`assertNever` 兜底），**不改 `AgentLogModel` 的形状**。
+   渲染层按 `kind` 分派（**注册表 + 映射类型的编译期穷尽性**兜底，见 D25），**不改 `AgentLogModel` 的形状**。
    （**判别联合**是硬要求：「扁平接口 + 一堆按 kind 才有意义的可空字段」不算——
    那种形状下每加一类带专属数据的块就要再挂一个可空字段，`tool: ToolFamilyPayload | null`
    就是这么来的，且一个 `text` 要承载五种语义。现在的形状与 v2 的 `AgentBlock` 逐成员对应。）
-2. **`Loadable<T>` 可复用到别处**：「三态」在本仓出现了很多次（`useRowDiff` / `useRowLog` /
-   `RowDiffIndex` 各写一份）。它是一个与业务无关的形状，新面板直接复用。
+2. **`Loadable<T>` 可复用到别处**：「三态」在本仓出现了很多次（`useRowDiffIndex` / `useRowDiffFile` /
+   `useRowLog` 各写一份）。它是一个与业务无关的形状，新面板直接复用。
 3. **`specVersion: 1` 是给未来留的门**：数据层与 UI 会并行演进，版本位让
    「模型形状变了」变成一个**可判定**的事（UI 可以降级渲染并如实提示），
    而不是等到某处 `undefined is not a function` 才发现。本期只有 `1`，不加分流逻辑。
@@ -621,12 +701,16 @@ export type Loadable<T> =
    两者都能从 `parentId` 派生。将来真出现需要整棵树的功能（例如任务树视图），
    那时再加，而不是现在为假想需求建一棵树。
 5. **收编新工具族 = 加一个 arm**：`ToolFamilyPayload` 与 `RenderBlock` **都是判别联合**
-   （渲染层 `assertNever` 兜底），新增一族不改任何已有形状；本期只收编 `task` / `ask-user`
+   （渲染层由注册表的映射类型在编译期兜底），新增一族不改任何已有形状；本期只收编 `task` / `ask-user`
    两族，其余 8 族走通用工具行（§12）。这也是「族驱动」与「按厂商分支」的分水岭：
    收编第 11 族时，改动量不随厂商数增长。
-6. **加一个能力维度 = 加一项声明**（D28）：`MessageCapability` 用**可变键**
-   （`CapabilityDecl` 的三元组），新增维度**不改契约形状**、UI 也不必改
-   （它按数据层给的顺序渲染，不硬编码维度名）。两个定字段则意味着「加维度 = 改契约」。
+6. **加一个能力维度 = 加一项声明**（D28）：界面侧的 `MessageCapabilityMap` 用**可变键**
+   （`CapabilityDecl` 的三元组），**渲染层**不必改——`CapabilityNotes` 按收到的顺序渲染、
+   不按维度名分支，未知维度原样显示自己的键名。
+   代价如实写，**加一个维度实际要改三处**：① 契约的 `MessageCapabilitySchema`（五个定字段 +
+   各自的 `…Source` / `…Reason`）；② ui 的 `toCapabilityMap()`（把扁平平铺逐格摊成三元组字典）；
+   ③ ui 的 `CAPABILITY_DIMENSION_LABELS`（维度名的中文；不补就原样显示英文键名，不会崩、但不好看）。
+   **不做**的只是「改渲染件」——那是这一条真正的收益。
 7. **加一种节点形态 = 加一个 arm**（D32）：`LogNode` 是判别联合
    （`SessionNode` | `RowNode`），每支只带自己那几格。新增形态（例如「一条被跳过的分支」）
    不改已有格；而 `SessionNode` 被 `main` 与 `subagent` 共用 ⇒
@@ -634,11 +718,10 @@ export type Loadable<T> =
 
 ### 4.2 纯函数 `buildRenderBlocks`（落在 `ui` 包，可单测）
 
-**落点说明**：类型（`RenderBlock` / `ToolItem` / `ContentBlock` / `RowEvent` / `ToolFamilyPayload` /
-`TaskPanel` / `AskUserInteraction`）随 `AgentLogModel`
-一起进 `@aieval/contracts`；**实现**落在 `packages/client/ui/src/composite/agent-log/render-blocks.ts`
-（与 `log-format.ts` / `diff-patch.ts` 同层）。理由：契约包只有 node 环境的测试（无 jsdom），
-而它的折叠态判据要靠组件测试验。
+**落点说明**：类型（`RenderBlock` / `ToolItem` / `ToolOutput` / `OrphanToolResult` / `ToolGroupEntry`）
+与**实现**同住 `packages/client/ui/src/composite/agent-log/render-blocks.ts`；其余模型类型在
+同目录的 `types.ts`（见 §4.1 的类型落点表）。**它们都不进 `@aieval/contracts`**：
+契约那边只有一份**中间形状**（判别键是 `type`），而这里的折叠态判据要靠 jsdom 里的组件测试验。
 
 **职责边界**：它只做「**已成形的一轮消息 → 渲染块**」的规整，
 **不碰 `chunk` / 增量累积 / 快照覆盖**（那是数据层——「**UI 永远看不到传输层**」）。
@@ -652,10 +735,12 @@ export type Loadable<T> =
  *      是两件事，同一轮会同时出现（§11 验收 6）。判据：`nodes` 里有节点的 `spawnedBy` 命中本轮
  *      （`callId` 优先、其次 `messageId`）；**命不中时挂在轮末，不隐藏**（藏起来等于「这一轮没派子任务」）；
  *   4. `family === 'task' | 'ask-user'` 的块**从工具组里提出、原地成卡**并**切断**合并链；
- *      同一轮只有**最后一次** `task` 调用出面板；
- *   5. `kind: 'row'` 的节点出 `row-summary`（带计数与状态的说明行），**整条时间轴只画一次**
- *      （挂第一轮之后）——它是**整个节点**的一条事实，不是「每一轮都有的事」；每一轮都画的话，
- *      两轮的节点上会出现两句一模一样的说明行。判据由调用方给（`turn.firstTurn`），纯函数不自己推。
+ *      同一轮只有**最后一次带载荷的** `task` 调用出面板。
+ *
+ * 另有一件**轮末的收尾动作**（不在上面四条「规整」里，因为它的判据由调用方给、与本轮的块无关）：
+ * `kind: 'row'` 的节点出 `row-summary`（带计数与状态的说明行），**整条时间轴只画一次**
+ * （挂第一轮之后）——它是**整个节点**的一条事实，不是「每一轮都有的事」；每一轮都画的话，
+ * 两轮的节点上会出现两句一模一样的说明行。判据是 `turn.firstTurn`，纯函数不自己推。
  *
  * 输入假设（数据层保证，UI 不校验也不补救）：同 `messageId` 的多条消息**已合并完毕**；
  * 缺格一律 `null` + `MissingReason`（**例外是工具名**：拿不到时是**空串** + `nameMissing`）；
@@ -664,7 +749,8 @@ export type Loadable<T> =
 export function buildRenderBlocks(
   blocks: readonly ContentBlock[],
   nodes: LogNodeIndex,
-  /** `at` / `running` / `messageId` / `nodeId` 定位派发点与判定 `ToolItem.running`；`firstTurn` 见规则 5 */
+  /** `messageId` 定位派发点、`running` 转发成 `ToolItem.running`、`firstTurn` 给轮末收尾；
+  * **`at` 与 `nodeId` 当前没有被函数体读取**（为调用方保留） */
   turn: { at: string; running: boolean; messageId: string | null; nodeId: string; firstTurn: boolean },
 ): RenderBlock[];
 
@@ -674,20 +760,26 @@ export type LogNodeIndex = ReadonlyMap<string, LogNode>;
 export type RenderBlock =
   | { kind: 'text'; block: TextBlock }
   | { kind: 'thinking'; block: ThinkingBlock }
-  | { kind: 'tool-group'; items: ToolItem[] }
+  | { kind: 'tool-group'; entries: ToolGroupEntry[] }
   | { kind: 'attachment'; block: AttachmentBlock }
   | { kind: 'unrecognized'; block: UnrecognizedPayloadBlock }
   | { kind: 'subagent-bar'; node: SessionNode }
   | { kind: 'row-summary'; node: RowNode }
-  | { kind: 'task-panel'; panel: TaskPanel }
-  | { kind: 'ask-user-card'; interaction: AskUserInteraction };
+  /** `earlierCount` = 同轮更早的、**带族载荷**的 `task` 调用次数；`cardId` = 承载载荷那个 `tool-call` 块的 `id`（折叠键） */
+  | { kind: 'task-panel'; panel: TaskPanel; earlierCount: number; cardId: string }
+  | { kind: 'ask-user-card'; interaction: AskUserInteraction; cardId: string };
 ```
+
+> **`tool-group` 装的是「条目」不是「调用」**：`ToolGroupEntry = ToolItem | OrphanToolResult`——
+> 配不上调用的结果（`kind: 'orphan-result'`）与调用**同住一组**，但**不计入**组头的
+> 「工具调用 × N」，也不算进「失败 N」以外的任何调用计数（§6.1 细则 2 / §9.5 的 `tool-group-panel`）。
 
 **本类型的三个取舍（逐条给理由）**：
 
 1. **`streaming: boolean` 从 `text` / `thinking` 两个 arm 上删掉**，改由 `block.assembly` 承担。
    把 `streaming` 放在 `RenderBlock` 上时，它的**输入来源无处可寻**：
-   `buildRenderBlocks(blocks, nodes)` 的两个入参里既没有「轮次是否结束」也没有「当前节点」，
+   这个纯函数只拿得到轮次级的 `turn.running` 与 `turn.nodeId`（**块级**的「这一块写完了没有」
+   不在入参里），
    而模型里也**没有任何流式布尔**（`LogTurn.running` 是轮次级的、`LogNodeStatus` 是节点状态枚举，
    两者都不是「这一块写完了没有」）。实现只能猜「最后一轮 = 流式中」——
    于是一次**被中断**的回复会永远闪光标，而半截正文以正常 markdown 呈现（读成结论）。
@@ -711,31 +803,81 @@ export type RenderBlock =
  * **`at` 与 `running` 是给界面用的两个布尔/时刻**，不再是「有没有 result」的隐式推断——
  * 「还在跑」与「跑完了但结果拿不到」在折叠态下必须能分开（后者不能一直转圈）。
  *
- * **`running` 的来源**：`buildRenderBlocks` 的两个入参里**没有**
- * 「轮次是否结束」这一信息，故这一格**不能由这个纯函数算出来**。它的生产者是数据层：
- * **`LogTurn.running`**（该轮是否尚未结束，**必填**，见 §4.1 的 `LogTurn`），
- * 纯函数只做转发。**否则实现只能猜**，而猜错的后果正是 §4.2 末段要防的那句
+ * **`running` 的来源**：这个纯函数**不参与**「这一轮/这一块结束了没有」的判断
+ * ——它的入参里那个 `turn.running` 是**数据层给的**（`LogTurn.running`，该轮是否尚未结束，**必填**），
+ * 纯函数只把它**转发**成 `ToolItem.running`。**否则实现只能猜**，而猜错的后果正是 §4.2 那句「`running`
+ * 不能由有没有 `output` 推断」要防的：
  * 「这一家拿不到工具结果会永远显示成正在跑」。
  */
 export interface ToolItem {
+  kind: 'call';
   callId: string | null;
+  /**
+   * **源块自己的稳定 id**（数据层给 `messageId#块下标`）。为什么必须带上它：
+   * 行键（`toolEntryKey` = `callId ?? blockId`）在 `callId` 拿不到时得有一个**唯一**身份，
+   * 而 `at` 是**轮次派生**的时刻（同一轮每个块逐字相同）——拿它当身份，一轮里两条缺 `callId`
+   * 的条目会撞成同一个 React key（2026-10-07 真机的重复键报错）。
+   */
+  blockId: string;
   name: string;
   nameMissing: MissingReason | null;
   /** 归一后的族名；无法归类为 `null`（与 `tool` 是否为空**不是**一回事，见 D29） */
   family: ToolFamily | null;
   /** 参数：结构化与原文各留一份（dsh 的 `arguments` 是 JSON **字符串**） */
   input: { value: string | null; text: string | null; bytes: number | null };
-  output: {
-    text: string;
-    status: 'ok' | 'error' | 'unknown';
-    bytes: number;
-    /** 截断**三态**（`none` / `truncated` / `unknown`），不是布尔——见 D30 */
-    truncation: TruncationState;
-  } | null;
-  /** 发出调用的时刻（折叠态标题里显示「已运行 12s」要用） */
+  output: ToolOutput | null;
+  /**
+   * 该块所在**轮次的派生时刻**（行开始时刻 + 轮号，同轮各块**逐字相同**——契约的块没有自己的时刻）。
+   * 折叠态标题里的「已运行 12s」以它为起点，但**它不是「调用发生的时刻」**（那个精度契约给不出）。
+   */
   at: string;
   /** 有调用、结果还没到、且所在轮次尚未结束 —— 只有这一种情况才转圈（由数据层给，见上） */
   running: boolean;
+}
+
+/** 工具结果的界面形状（长度与截断都由数据层判定好了，UI 不判断大小） */
+export interface ToolOutput {
+  text: string;
+  /**
+   * 厂商**已解析**的结构化结果；`null` = 这一家没给（**不是**「空对象」）。
+   * dsh 的 `read` / `write` / `edit` 把行数、改动对象这类**已解析事实**只放在这里，
+   * 丢掉它等于让「有数据」变成「看不见」。呈现口径是**等宽原文 + 如实标注**（§12.6）。
+   */
+  structured: unknown;
+  /**
+   * 结果状态。**三态是界面留的位，实际只产出两档**：`build-model.ts` 写的是
+   * `block.isError ? 'error' : 'ok'`（契约那一格是布尔，没有第三态）⇒ `'unknown'` 现在出不来。
+   * 正确来源应该是「这一家没报结果状态」，那要契约先能表达它（§14 已登记）。
+   */
+  status: 'ok' | 'error' | 'unknown';
+  bytes: number;
+  /** 截断**三态**（`none` / `truncated` / `unknown`），不是布尔——见 D30 */
+  truncation: TruncationState;
+}
+
+/**
+ * **配不上调用的结果**：它也必须上时间轴——那是**已经发生的事实**，丢掉等于这一轮没跑过那个工具。
+ * 它不编造工具名（没有就是没有），也**不计入**组头的「工具调用 × N」。
+ */
+export interface OrphanToolResult {
+  kind: 'orphan-result';
+  callId: string | null;
+  /** 同 `ToolItem.blockId`：`callId` 也为 `null` 时，行键只剩它能保证唯一 */
+  blockId: string;
+  at: string;
+  output: ToolOutput;
+}
+
+/** 工具组里的一行 */
+export type ToolGroupEntry = ToolItem | OrphanToolResult;
+
+/**
+ * 行级事件的**归属键**：这一条属于哪个会话的哪一轮（`subagentId: null` = 主会话）。
+ * 形状与契约 `usage.turn` 一致，但界面用**自己的名字**（「UI 永远看不到传输层」的同一条处置）。
+ */
+export interface TurnRef {
+  subagentId: string | null;
+  round: number;
 }
 
 /** 时间轴上必须可见的行级事件（§5.2 的逐条去向表决定谁进来） */
@@ -744,20 +886,25 @@ export interface RowEvent {
   /**
    * 三档（D34）：`milestone` / `error` / **`warning`**。
    *
-   * 为什么要第三档：消息层有一类**非致命告警**（codex 的 item 级 `error`，例如
-   * 「有无法识别的配置项」）——规范明文说它**不得当成运行失败**。
+   * 为什么要第三档：消息层有一类**非致命告警**（codex 的 `error` 通知，例如
+   * 「有无法识别的配置项」）——`v3 §4.2` 的处置是**只落一条 WARN、不当运行失败**
+   * （2026-09-22 的探测笔记只写到「不能把 `item.type === 'error'` 一律当运行失败」，
+   * 「不得当成运行失败」是本文的说法）。
    * 只有 `error` 一档时，这类告警要么被丢弃、要么以**错误条目**的样子出现在时间轴上，
    * 把「配置项没认出来」读成「这一行跑失败了」。
+   *
+   * ⚠️ **这一档现在只有形状与渲染出口，还没有产出方**（§5.2 的表里已如实登记）：
+   * `rowEventsOf` 目前只产出 `error` 与 `milestone` 两档。
    */
   level: 'milestone' | 'error' | 'warning';
   /**
-   * **归属键**：这一条事件属于**哪个会话的第几轮**。
-   * 数据层从 `usage` 事件的 `turn` 格搬过来；`null` = 没有归属信息 ⇒ 界面按**时刻**归位
-   * （与今天逐字相同，见 §6.14）。
+   * **归属键**：这一条事件属于**哪个会话的第几轮**（形状见 `TurnRef`）。
+   * 数据层从 `usage` 事件的 `turn` 格搬过来；`null` = 没有归属信息（`error` / `warning`，
+   * 以及整行没有那一轮的「孤儿」里程碑）⇒ 界面按**时刻**归位（见 §6.14）。
    * ⚠️ **它与 `usage.turns`（本行累计轮次）不是一回事**：这一格是**该会话自己的**轮号，
-   * 那个是**行**的尺度。两者混用就会出现「用量里程碑全挤在最后几轮」那种错位。
+   * 那个是**行**的尺度。
    */
-  turn: { subagentId: string | null; round: number } | null;
+  turn: TurnRef | null;
   /** 给人看的一句话（复用 `log-format.ts` 的既有措辞，不另写一套） */
   text: string;
 }
@@ -784,7 +931,7 @@ export interface RowEvent {
  *   · `role`：同一段文字**是谁说的**。缺了它，厂商 system 文本若以 `text` 块落地，
  *     会按 markdown 正文渲染且不折叠（§6.1）——与智能体的结论**逐字同形**。
  *   · `source`：这条是实时采到的还是事后补录的（见 `MessageSource`）。
- *   · `assembly`：这块**说完了没有**。它是 §6.7 五处流式动效的**唯一合法判据**——
+ *   · `assembly`：这块**说完了没有**。它是 §6.7 四处流式动效的**唯一合法判据**——
  *     没有它，`streaming` 只能靠「这是不是最后一轮」猜，一次被中断的回复会永远闪光标。
  *
  * **为什么能放在块上（一个块只有一个载体）**：合并键的「载体」分量就是 `role` + `parentCallId`，
@@ -809,7 +956,7 @@ export interface ContentBlockBase {
    */
   assembly: 'snapshot' | 'open';
   /**
-   * **这条消息自己那一次模型调用**的用量（规范 §2.2 的 `AgentMessage.usage`）。
+   * **这条消息自己那一次模型调用**的用量（`v3 §2.1` 消息信封的 `AgentMessage.usage`）。
    * 只有三项（`input` / `cached` / `output`）——`reasoningOutput` 与 `total` **不进界面模型**。
    * `null` = 没有这一格（**不渲染页脚**，不是渲染 0）；只有 `role === 'assistant'` 才可能有值。
    * 与 `LogTurn.tokens`（该轮的计量）**不是一回事**：那一个是轮级、积出来的，这一个是消息级、厂商原文。
@@ -830,16 +977,21 @@ export interface TextBlock extends ContentBlockBase {
   text: string;
 }
 
-/** 思考：文本可空，为 `null` 时**必填** `textMissing`（不给空面板，§6.1 例外 3） */
+/**
+ * 思考：正文可空，但**正文为 `null` 的整块在装配层（`build-model.ts`）就被丢掉**——
+ * 界面上没有它的渲染出口（一句占位文案只会被读成「思考了但什么也没想」，§6.1 例外 3）。
+ * `textMissing` 因此是**形状上的兼容格（恒 `null`）**：老日志带着它，
+ * `ThinkingBlockView` 里也再判一次 `text === null ⇒ 不渲染`（组件被别处直接构造时同样不出）。
+ */
 export interface ThinkingBlock extends ContentBlockBase {
   kind: 'thinking';
   text: string | null;
   textMissing: MissingReason | null;
   /**
    * 文本的**完备性**（v2 spec §5.2 的 `ThinkingBlock.textKind`）：claude 是完整推理、
-   * codex 只有「推理摘要」、dsh 是完整原文。**UI 据它标注「摘要」而不是假称全文**——
+   * codex 的思考全文取 `reasoning.content[]`（`textKind: 'full'`），**厂商摘要另出一块**、dsh 是完整原文。**UI 据它标注「摘要」而不是假称全文**——
    * v2 §7.6.4 明文允许渲染这一格，理由正是「不给它，UI 要标注就只能去读 `normalizedFrom`，
-   * 那是变相按厂商分支」（v2 spec §7.6.4 第二条规则）。
+   * 那是变相按厂商分支」（v2 spec §7.6.4 第二条规则）。`'none'` 不另标：那一档整块不渲染。
    */
   textKind: 'full' | 'summary' | 'none';
 }
@@ -853,7 +1005,7 @@ export interface ToolCallBlock extends ContentBlockBase {
   name: string;
   nameMissing: MissingReason | null;
   /**
-   * **归一后的族名**（十个族，见 v2 spec §5.1）；**无法归类时 `null`**。
+   * **归一后的族名**（十个族，见 `v3 §5.1`）；**无法归类时 `null`**。
    *
    * **为什么必须有这一格，而不能只看 `tool`**：`tool === null` 的语义是
    * 「**本期没有为它收编专门卡片**」，它把两件不同的事压成了一个 `null`：
@@ -861,7 +1013,7 @@ export interface ToolCallBlock extends ContentBlockBase {
    * （`family` 非空）。而「**UI 不判厂商**」逐字要求「**只按 `family` 分支**」——
    * 契约里没有这个字段时，实现只能按工具名猜，正是该纪律禁止的。
    *
-   * 它还承载§5.4「四种没有清单的情形」里的两句不同的话：
+   * 它还承载 §5.4「四种没有清单的情形」里的降级画面（⚠️ 早先写的「两句不同的话」**没有落点**——§5.4 的表只有一行一个画面，今天只能靠族 Tag 有无区分）：
    * `family === null` → 「适配器不认识」；`family === 'task'` 但 `tool === null` → 「族认得、卡片没收编」。
    */
   family: ToolFamily | null;
@@ -875,17 +1027,23 @@ export interface ToolCallBlock extends ContentBlockBase {
   tool: ToolFamilyPayload | null;
 }
 
-/** 工具结果：`status` / `truncated` 由数据层判定（＝「**UI 不判断大小**」） */
+/** 工具结果：`status` / `bytes` / `truncation` 由数据层判定（＝「**UI 不判断大小**」） */
 export interface ToolResultBlock extends ContentBlockBase {
   kind: 'tool-result';
   callId: string | null;
   text: string;
+  /**
+   * 厂商**已解析**的结构化结果。规范明写「**有 `meta` 就不要退回去解析文本**」，
+   * 而 dsh 的 `read` / `write` / `edit` 把行数、改动对象这类已解析事实**只放在这一格**——
+   * 丢掉它，界面上就只剩一段给人读的摘要。呈现口径：**等宽原文 + 如实标注**（§12.6）。
+   */
+  structured: unknown;
   status: 'ok' | 'error' | 'unknown';
   bytes: number;
   /**
    * **截断标记是「已知 / 未知」两态，不是布尔**。
    *
-   * 规范里明写：拿不到截断标记时只能记 `false`，但**消费方不得据此断定输出完整**。
+   * 规范（`v3 §5.1` / `§10.1.1`）明写：拿不到截断标记时记 **`unknown`**，**消费方不得据此断定输出完整**。
    * 裸布尔会让界面上「完整」与「不知道完不完整」**完全一样**——
    * 这正是本设计在 §4.2 反过的「用负信号断言正事实」（`running` 不可由 `output` 推断）
    * 在另一个字段上重演。
@@ -906,12 +1064,11 @@ export type TruncationState =
   | { kind: 'unknown' };
 
 /**
- * **附件本体**：厂商给的真实图片 / 文件。
- *
- * **它与 `AttachmentBlock` 是两件事**：后者只装规范指的**认识的附件**，
- * 本类型装的是**我们不认识的厂商载荷**。两者语义正交，共用一个名字会让下一个人把两条路当成一条。
+ * **附件本体**：厂商给的真实图片 / 文件（**不是**「不认识的载荷」——那是 `unrecognized`）。
  *
  * 界面落点见 §6.10：图片给类型 + 路径 + MIME（**本期不加载缩略图**），文件给路径 + MIME。
+ * 「附件」与「兜底原文」共用一个名字会让下一个人把两条路当成一条，
+ * 故它们是两个类型（D31 的拆法）。
  */
 export interface AttachmentBlock extends ContentBlockBase {
   kind: 'attachment';
@@ -923,11 +1080,15 @@ export interface AttachmentBlock extends ContentBlockBase {
 }
 
 /**
- * 兜底：**我们不认识的厂商载荷**（不是 `AttachmentBlock`）。
+ * 兜底：**我们不认识的厂商载荷**。
+ *
+ * **它与 `AttachmentBlock` 是两件事**（D31）：后者只装**认识的真实附件**（图片 / 文件 + 路径 + MIME），
+ * 本类型装的是**无法归一的原样载荷**。两者语义正交，共用一个名字会让下一个人把两条路当成一条。
+ *
  * **它是「无法归一的原样保留」，不是「一行文字」**：正文是该载荷的**原文** `raw`，
  * `reason` 说明为什么落到这里；UI 默认折叠（§6.1）。
  * 一处必须守住的取舍：**不**把 `text` 当正文、也**不**把 `vendorType` 当正文——
- * D8 的口径是「归一化是视图，原文才是事实」，故这里给 `raw`，与规范同形。
+ * 「归一化是视图，原文才是事实」（旧稿 v2 spec §7.6.0 的意思，见 §4.2 的 `ToolCardResult`），故这里给 `raw`，与规范同形。
  */
 export interface UnrecognizedPayloadBlock extends ContentBlockBase {
   kind: 'unrecognized';
@@ -948,15 +1109,20 @@ export type ContentBlock =
 
 **`ContentBlock` 与规范 `AgentBlock` 的逐成员对应（差异逐条写明）**：
 
+> ⚠️ **先说清一件容易混的事**：本节的 `ContentBlock` 是**界面模型**的那一份（判别键 `kind`，
+> 定义在 `ui` 包的 `types.ts`）；**契约里另有一个同名类型**（判别键 `type`，`superRefine` 之外
+> 还带 `chunk` / `mergeKey` / 附件 `kind` 这些信封字段）。下表比的是「界面块 ↔ 规范 `AgentBlock`」，
+> 契约那一份是两者之间的中间形状，由 `build-model.ts` 搬运（§4.1 的落点说明）。
+
 | 本设计的块 | 规范的对应 | 差异（不藏的） |
 |---|---|---|
 | `ContentBlockBase` | `BlockBase` + 消息信封字段 | 规范的 **`index` / `normalizedFrom` 不进 UI**（审计线索）；**`raw` 是例外，它有出口** —— 消息级未归类载荷走 `UnrecognizedPayloadBlock.raw`（**默认折叠的原文**，§6.1）。⚠️ **不要把 `raw` 推给「下载台账」**：本设计的台账是 `formatEventLog` 的**文本行**，承载不了「未归类字段原样保留」，这个理由已被否决。本设计反向补 `id` / `at` / `messageId` / `subagentId` / **`role` / `source` / `assembly`**——规范把这七个放在**消息信封**上，定型时摊到块上，UI 不再看信封 |
 | `TextBlock` | `TextBlock` | 一致 |
 | `ThinkingBlock` | `ThinkingBlock` | **少 `signature`**：它是有意隐藏的 replay 校验串，不进任何呈现，UI 连拿都不该拿到。**`textKind` 的界面落点见 §6.9**（「UI 据它标注『摘要』」这句话有落点与文案） |
-| `ToolCallBlock` | `ToolCallBlock` | ① 规范的 `input: unknown`（结构化对象）**收窄成「结构化文本 + 原文文本 + 字节数」**：本期不渲染任何族的参数结构，UI 只给等宽原文（D2）；② **补 `family`**（D29）：没有它「适配器不认识」与「族认得但卡片没收编」压成同一个 `tool === null`，而「**UI 不判厂商**」要求「只按 `family` 分支」；③ `input.bytes` 放宽成**可空**（拿不到时不许写 0，见纪律 1） |
-| `ToolResultBlock` | `ToolResultBlock` | ① **多一个 `bytes`**（数据层算好的长度，纪律 4）；② **`truncated: boolean` 改成 `truncation: TruncationState`**（D30）：规范明写「拿不到截断标记只能记 `false`，**消费方不得据此断定完整**」，裸布尔让「完整」与「不知道」在界面上完全一样 |
+| `ToolCallBlock` | `ToolCallBlock` | ① 规范的 `input: unknown`（结构化对象）**收窄成「结构化文本 + 原文文本 + 字节数」**：本期不渲染任何族的参数结构，UI 只给等宽原文（D2）；② **补 `family`**（D29）：没有它「适配器不认识」与「族认得但卡片没收编」压成同一个 `tool === null`，而「**UI 不判厂商**」要求「只按 `family` 分支」；③ `input.bytes` 放宽成**可空**（拿不到时不许写 0——同 `AgentLogFacts.tokens` 与 `error.code` 的「缺就是缺」） |
+| `ToolResultBlock` | `ToolResultBlock` | ① **多一个 `bytes`**（数据层算好的长度，纪律 4）；② **`truncated: boolean` 改成 `truncation: TruncationState`**（D30）：「拿不到截断标记就记 **`unknown`**、消费方不得据此断定完整」（`v3 §5.1` / `§10.1.1` 的**现行**口径），裸布尔让「完整」与「不知道」在界面上完全一样；③ `structured` **照搬**（厂商已解析的事实只在这一格里，呈现口径见 §12.6 的第 1 条） |
 | `AttachmentBlock` | `AttachmentBlock` | **一致**（D31）：这个名字只装规范指的真实附件。拿它装「不认识的厂商载荷」会与规范的同名类型**语义正交**——那是错登记 |
-| `UnrecognizedPayloadBlock`（新增） | 规范里**没有**这一支 | 它是本设计对「不认识的厂商载荷」的兜底。规范把它放在 `AttachmentBlock` 之外是合理的：一个装**认识的附件**，一个装**不认识的原文** |
+| `UnrecognizedPayloadBlock` | 规范里**有**这一支（`v3 §2.2`，契约侧是 `UnrecognizedPayloadBlockSchema`） | 界面按同一语义收下：一个类型装**认识的附件**，一个装**不认识的原文**——两者语义正交，合成一条路的代价是「一张图片被画成 base64」或「一段原始载荷被画成附件」 |
 | **（已删除）`kind: 'subagent'` 的块** | 规范里**没有**这一支 | subagent 是**与消息平级的独立事件、不是消息的子结构** ⇒ 子任务导航改由 `LogNode.spawnedBy` 派生（§4.1 / §4.2 规则 3） |
 
 ```ts
@@ -978,7 +1144,7 @@ export type ToolFamily =
   | 'ask-user';
 ```
 
-**两族「卡片」的载荷**（`ToolCallBlock.tool` 那一格，与 `ContentBlock` 一起进 `@aieval/contracts`）：
+**两族「卡片」的载荷**（`ToolCallBlock.tool` 那一格，与 `ContentBlock` 一起**留在 `@aieval/ui`** 的 `types.ts`，**不进 `@aieval/contracts`**）：
 
 ```ts
 /**
@@ -991,8 +1157,8 @@ export type ToolFamilyPayload =
   | { family: 'ask-user'; interaction: AskUserInteraction };
 
 /**
- * 卡片底部的「原始结果」。**归一化是视图，原文才是事实**（v2 spec §7.6.0 逐字）：
- * 卡片可以只画归一后的形状，但原文必须可查（与 §5.3 的三条所有者划分同口径）。
+ * 卡片底部的「原始结果」。**归一化是视图，原文才是事实**（旧稿 v2 spec §7.6.0 的原话是「族结构是**派生视图**，`raw` 才是事实」——这里取它的意思，不是逐字引）：
+ * 卡片可以只画归一后的形状，但原文必须可查（与 §5.3 的四条所有者划分同口径）。
  */
 export interface ToolCardResult {
   ok: boolean;
@@ -1018,9 +1184,10 @@ export interface TaskPanel {
   /** 整张清单（**整表**是归一结果，不是本次变更） */
   steps: readonly TaskStep[];
   /**
-   * 计数是**派生值**，由数据层给（「放这里是为了 UI 不必自己算」）。
-   * **`unknown` 必须是第四格**（D36）：规范说它「是第四种**显示值**，面板必须能显示」，
-   * 且 codex 的载荷只有 `{ text, completed }` 二态 ⇒ 该态很常见。
+   * 计数是**派生值**，由**装配层**（`build-model.ts`）从 `steps` 现数出来（「放这里是为了 UI 不必自己算」；契约的 `plan` 载荷里没有 `counts` 这一格）。
+   * **`unknown` 必须是第四格**（D36）：规范说它「是**独立的一档**，不得并入任何三态组」（逐字在 `v3 §5.4`；`v3 §5.3` 说的是「既不是待办也不是完成，面板必须能显示它」），
+   * 且 codex 的单条 `plan` 条目**没有状态格** ⇒ 该步记 `unknown`（`turn/plan/updated` 那条带 `status`，
+   * 按别名归一后落三态）——「二态」是旧 `codex exec` SDK 的 `TodoItem` 形状，已随 app-server 通道作废。
    * 少了这一格，标题的 `3/5 完成` 在含 `unknown` 项时**分母必错**，而 UI 又不许自己算。
    */
   counts: { pending: number; inProgress: number; completed: number; unknown: number };
@@ -1052,6 +1219,12 @@ export type AskUserInteraction =
   /** **已收场**：`outcome` 与 `answers` 成对出现，不再各自可空 */
   | AskUserSettled;
 
+/**
+ * 「还没收场」那一支。
+ *
+ * `at` 是**块的时刻**（载荷不带 ⇒ 装配层补）：「等待答复中… 12m00s」与固定区那枚
+ * 「等待答复」徽标**都读这一格**，空串会让**卡片丢掉时长**（只剩「等待答复中…」）、并让**固定区徽标恒显「等待答复 0s」**（2026-10-08 修）。
+ */
 export interface AskUserPending {
   state: 'pending';
   questions: readonly AskUserQuestion[];
@@ -1121,8 +1294,8 @@ export type AskUserOutcome =
 **它是 `AgentLogModel` 的兄弟、不是它的一部分，但它的展示位置在 `agent-log` 内部**：
 
 - **模型独立**（本节最重要的一条）：
-  1. **体积**：厂商系统提示词与工具模式串可能是几十 KB——实测里单个 `probe/dumps/dsh.json`
-     就有 237 KB。并进主模型意味着**每次流式提交都在搬它**，而 §7.1 整节都在说「提交要快」。
+  1. **体积**：厂商系统提示词与工具模式串可能是几十 KB——实测里单个 dsh 事件 dump
+     就有 237 KB（`probe/dumps/` 是本地探测产物、已 gitignore）。并进主模型意味着**每次流式提交都在搬它**，而 §7.1 整节都在说「提交要快」。
   2. **时机**：它只在环境抽屉打开时才需要。
   故它是**独立的 `Loadable`**，由调用方按需取、按 `Loadable` 注入（与「**UI 不做取数**」同一条边界：
   UI 不取数，只渲染数据层给的形状）。
@@ -1130,20 +1303,21 @@ export type AskUserOutcome =
   **不提为并列组件、不需要调用方接线**。「通用」由 `agent-log` 整体承担。
 
 ```ts
-/** 一个智能体运行在什么环境里 —— 与「日志」解耦的模型（但由 agent-log 负责展示） */
 /**
- * 智能体种类。**值域由数据层给、UI 只原样显示**（与 `EnvGroup.title` 同一条口径：
- * 组件的文案表里没有厂商名）。新增一家时这里**不需要**改——
- * UI 只是把它当字符串渲染，不按它分支（「**UI 不判厂商**」明禁按厂商分支）。
- *
- * 本仓当前三家：`'claude-code'` / `'codex'` / `'dsh'`（见 `@aieval/contracts` 的 agent 契约）。
+ * 一个智能体运行在什么环境里 —— 与「日志」解耦的模型（但由 agent-log 负责展示）。
+ * 智能体那一格的**显示名映射在数据层**（`AGENT_LABELS`，用户 2026-10-08 口径：页面展示不用缩写）；
+ * `agent-log` 的渲染件只把它当字符串画出来（L0 里查那张表会被 `agent-log-layering.test.ts` 的 (e) 条判成「UI 判厂商」（§10 那张表））。
  */
-export type AgentKind = string;
-
 export interface AgentEnvironment {
   /** 一行摘要（谁 · 哪个模型 · 哪一档权限），抽屉打开即见 */
   summary: {
-    agentKind: AgentKind;
+    /**
+     * 智能体的**显示名**（`AGENT_LABELS` 的全名如「DeepSeek Harness」）。用户 2026-10-08 口径：
+     * 页面展示不用缩写 ⇒ 摘要给文案而不是 kind id；映射在数据层做
+     * （L0 里查 `AGENT_LABELS` 会被 `agent-log-layering.test.ts` 的 (e) 条判成「UI 判厂商」，见 §10 那张表）。
+     * 认不出的 kind **原样回落**（本格是 `string`：老快照与将来第四家都不许编名字）。
+     */
+    agentLabel: string;
     modelId: string;
     effort: string | null;
     providerName: string;
@@ -1196,8 +1370,8 @@ export type EnvItem =
 |---|---|---|---|
 | 用户层 | `'user'` | **附件或上下文引用 / 会话续接**（⚠️ **不含**用户提示词——见下方 ⚠️ 段） | 发起这一轮的人给的。**与「考题」这个业务概念无关**——它就是对模型说话的那个人给的输入 |
 | 系统层（厂商） | `'vendor'` | 系统提示词 / 已调度的工具 / 斜杠命令或子智能体定义 / 工具模式串 | 厂商事件流自报。**claude-code 的 `system` init 行实测带 `tools`（21 项）与 `slash_commands`（47 项）、`agents`（5 项）、`permissionMode`**；codex / dsh 真机**没有这一类行** ⇒ 整组走 `present: false` + **`not-exposed`** |
-| 运行配置 | `'project'` | 权限档 / 被禁用的工具 / 模型与思考强度 / 工作区与基线 | 摘要与工作区取 `EvalRow` / `EvalRun` 的快照字段；**权限档取厂商回显的那一档**（`init.permissionMode`，不抄本仓常量当第二个真源），拿不到走 `not-exposed` |
-| 实测统计 | `'observed'` | 用过的工具及次数 | 从这一行**内容记录**（`messages.jsonl`）里的 `tool-call` 按 `name` 计数。**不从事件流数**：事件流的工具名在 codex 上是 `exec_command` 这类入口名，与会话文件里的真名不是一回事 |
+| 运行配置 | `'project'` | **五条**：权限档 / 被禁用的工具 / 模型与思考强度 / 工作区与基线 / **路由（供应商 + `baseUrl`）** | 摘要与工作区取 `EvalRow` / `EvalRun` 的快照字段；**权限档取厂商回显的那一档**（`init.permissionMode`，不抄本仓常量当第二个真源），拿不到走 `not-exposed`；「被禁用的工具」恒 `not-observed`（适配器按模型算的，不投送到浏览器） |
+| 实测统计 | `'observed'` | 用过的工具及次数 | 从这一行**内容记录**（`messages.jsonl`）里的 `tool-call` 按 `name` 计数。**不从事件流数**：事件流的工具名在 codex 上是 `exec_command` 这类入口名，与内容记录（`messages.jsonl`）里的真名不是一回事 |
 
 **四种 `missing` 的分工（判错会把使用者引到错的方向）**：
 
@@ -1216,15 +1390,18 @@ ui / client 各自 `export type` 转出，消费方的 import 路径不变。
 
 **⚠️ 用户提示词是「对模型说的话」，不是「环境配置」**（需求方口径）：
 
-它在**消息时间轴的首条**出现（§6.3 / D4），**环境抽屉里不重复列**——
+它在**消息时间轴的首条**出现（§6.1 的折叠表那一行 / D4 / §4.3 的 D19），**环境抽屉里不重复列**——
 环境抽屉回答的是「系统与运行配置给了它什么」，而对模型说的话属于**对话**，不属于环境。
 故上表「用户层」组的常规构成是**附件与上下文引用**这类东西；
 `userPrompt` 本身由时间轴承载，两处不重复（避免同一段长文本在两处维护）。
 
-**时间轴的措辞统一为「用户提示词」**（原「任务提示词 / 考题提示词」都是考题视角，D19）：
+**时间轴的措辞统一为「用户提示词」**（原「任务提示词 / 考题提示词」都是考题视角，D19）。
+⚠️ **本仓目前只有主会话节点有值**：`buildAgentLogModel` 的 `userPrompt` 是可选入参，而唯一的生产调用点
+（`apps/web-next/app/runs/page.tsx`）**没有传它**，子任务节点更是恒 `null` ⇒ 真机上这条首消息**目前不出现**，
+只有夹具预览页有值（§14 已登记）：
 
 ```
-├─ 用户提示词（首条消息，主会话与子任务节点都有）
+├─ 用户提示词（首条消息）
 ```
 
 **「已调度的工具」与「用过的工具」必须分开**（这是本节最容易做错的一处）：
@@ -1242,8 +1419,9 @@ ui / client 各自 `export type` 转出，消费方的 import 路径不变。
 ### 4.4 数据来源接口 `AgentLogSource`（D24 / 场景 S2）
 
 **它兑现的是「UI 不做取数」的另一半。** 那条纪律写的是「UI 不做取数：`content` 是按值给的」——
-「UI 不做取数」这条不变，但**取数时机**不能漏在组件上：`onRetryEnvironment` / `onRetryDiagnostics`
-两个回调摆在 `AgentLogView` 的 props 里，等于组件知道「环境信息是进抽屉才取的」。
+「UI 不做取数」这条不变，但**取数时机**不能漏在组件上：
+**若把时机摊成两个回调**（`onRetryEnvironment` / `onRetryDiagnostics` 这类）摆在主件的 props 里，
+就等于组件知道「环境信息是进抽屉才取的」。
 换一个消费场景（数据层有缓存 / 一次性全给 / 根本没有环境信息）时，这条**时机知识**就要重接一遍。
 
 ```ts
@@ -1254,11 +1432,12 @@ ui / client 各自 `export type` 转出，消费方的 import 路径不变。
  *
  * **为什么是一个对象而不是三个回调**：三个回调进 props 时，重组场景里会漂移成
  * 「接了 retry 忘了 diagnostics」；收成一个对象后，换来源 = 换一个对象，
- * 漏接是**类型错误**而不是运行时空白。
+ * 要接哪几个一眼看得全（三个方法都是可选的，**漏给一个不会报类型错**——
+ * 现在的兜底是调用处就地判 `undefined`，表现为那次请求静默不发）。
  */
 export interface AgentLogSource {
   /**
-   * 调用方声明「环境信息现在需要了」（入口：用户点了「？环境信息」）。
+   * 调用方声明「环境信息现在需要了」（入口：用户点了「环境信息」）。
    * 实现方据此去取，取好后用新的 `environment` props 回灌。
    * **组件不 await 它**，也不从返回值推断状态——状态一律由 `environment` 这个 `Loadable` 表达。
    */
@@ -1276,23 +1455,37 @@ export interface AgentLogSource {
 
 **三条口径**：
 
-1. **三个方法全可选**，且**一个都不给时组件照常工作**——`environment` / `diagnostics` 为
-   `undefined` 时显示「未提供」、`content.status === 'error'` 时**不渲染重试按钮**
-   （而不是渲染一个点了没反应的按钮）。「没有这个能力」与「这次没采到」必须分得开，
-   这是 §6.8 已经立过的同一条口径。
+1. **三个方法全可选**，且**一个都不给时组件照常工作**，三处各自如实降级（**判据不同、别统一**）：
+   · `environment` 为 `undefined` ⇒ 环境抽屉**照常打开**、里面显示「未提供」；
+   · `diagnostics` 为 `undefined` ⇒ **「原始输出」入口根本不渲染**（没有原文就没有入口，与上一条**有意相反**）；
+   · `content.status === 'error'` ⇒ 渲染带原因的 `Alert`，**「重试」按钮只在给了 `source.retryNode` 时才渲染**（判据是那个 props，不是要求必须没有——见 §6.2 / §11 验收 25）。
+   「没有这个能力」与「这次没采到」必须分得开，这是 §6.8 已经立过的同一条口径。
 2. **不得把 `seq` / 事件流 / 增量累积塞进这个接口**（「**UI 永远看不到传输层**」不变）。
    它是**「我需要了」的上报**，不是传输层。
 3. **`requestEnvironment` 在抽屉**每次**打开时各调一次**（不是只在首次）：
    环境是静态配置、重开时拿缓存即可，但**要不要真去取是数据层的判断**——
    组件不实现「只调一次」这类缓存（那会让 UI 持有数据，违反纪律 2）。
-   §6.8 约束 2 的「不订阅流、不触发重取」说的是**不因流式事件而重取**，与此不冲突。
+   §6.8 第 3 条理由的「不订阅任何流、不触发重取」说的是**不因流式事件而重取**，与此不冲突。
 
 ## 5. 抽屉内容的三区结构
+
 ### 5.0 视觉与尺寸基线
 
 > 下表的数值都是在真实渲染里量出来的（明暗两态各一遍），原始数据见
 > `docs/superpowers/notes/2026-10-02-exec-log-visual-measurements.md`。
 > **它们是核对基准，不是要照抄的字面量**（§5.0.1）。
+>
+> ⚠️ **两组数值必须分清（2026-10 复核发现的口径落差）**：
+> - **§5.0.2 / §5.0.3 的「实测值」量自 `PageShell` 的紧凑密度**（`density="compact"`，
+>   即 `base/density.ts` 那套），是**设计基线**——「紧凑密度下应该长这样」；
+> - **真机（`/runs` 页）的执行日志抽屉当前不在紧凑密度之下**：`runs/page.tsx` 把
+>   `AgentLogDrawer` 渲染在 `ListDetailLayout`（内含 `PageShell` → `ConfigProvider theme={COMPACT_THEMES[mode]}`）
+>   **之外**，它只吃到根 `Providers` 的明暗主题 ⇒ antd 默认密度。
+>   真机量与基线的差：`fontSize` **14**（基线 12）、`Tag` 高 **22** / 字号 12（基线 21.4 / 11）、
+>   `Button size="small"` 高 **24**（基线 21）、`paddingSM` / `paddingMD` **12 / 20**（基线 8 / 16）。
+> - ⇒ **两件事二选一**（见 §14）：要么把抽屉纳入紧凑 `ConfigProvider`（产品侧），
+>   要么接受「基线只在预览页成立、真机整体大一档」（文档侧）。**在此之前，别拿 §5.0.3 的数
+>   去对真机截图**——那会得出「实现全错了」的假结论。
 
 #### 5.0.1 一条硬纪律：**只引 token，不写像素**
 
@@ -1317,7 +1510,8 @@ export interface AgentLogSource {
 | `size="small"` 控件高 | `controlHeightSM` | **21** |
 | 最紧的间隙 | `marginXXS` / `paddingXS` | 4 |
 | 块内间隙、块与块之间 | `marginSM` / `paddingSM` | 8 |
-| 抽屉内边距、区与区之间、轮次之间 | `paddingMD` / `paddingLG` | 16 |
+| 抽屉内边距、区与区之间 | `paddingMD` / `paddingLG` | 16 |
+| **轮次与轮次之间** | `marginMD` / `marginLG` | 16（`agent-message-timeline.tsx` 那条最外层 `Flex`） |
 | Tag、Button 圆角 | `borderRadiusSM` | 4 |
 | Card、Collapse 圆角 | `borderRadiusLG` | 8 |
 
@@ -1328,26 +1522,26 @@ export interface AgentLogSource {
 | 元素 | 实测 | 口径 |
 |---|---|---|
 | `Tag` | 高 **21.4** · padding `0/7` · 圆角 4 · 字号 11 · 行高 19.8 | `borderRadiusSM` + `fontSizeSM` |
-| `Button type="text"`（图标按钮） | **21 × 21** · padding 0 | 触达面积**只有 21px**，见 §5.0.5 |
+| `Button type="text"`（图标按钮） | **21 × 21** · padding 0 | 触达面积**只有 21px**（见 §5.0.6 与 §6.8） |
 | `Button size="small"` | 高 **21** · padding `0/7` | `controlHeightSM` |
 | `Badge status` 圆点 / 文本 | 点 **5.5 × 5.5** · 文本左距 **4** | antd 默认 |
 | `Switch size="small"` | **24 × 14**，手柄 10 × 10 | —— |
 | `InputNumber size="small"` | 高 **21.6** · padding `0/7` | —— |
 | `Collapse` 头 | 高 **28** · padding `4/8/4/4` · 展开图标 **11 × 20** | 头高 = `controlHeight` |
 | `Card` body | padding **12** · 圆角 8 · 边框 `0.8px colorBorderSecondary` | —— |
-| `Listy` item | padding `4/12` | 见 §9.6（`List` 已废弃） |
-| `MonoText` 内 `code` | 字号 **10.2** · 圆角 3 · 底色 `rgba(150,150,150,.1)` | ⚠️ **全页最小的字** |
-| 浮动「回到最新」按钮 | 高 **28** | `controlHeight` |
+| `List` item（**`List` 已废弃**，见 §9.6） | padding `4/12` | ⚠️ 这条实测的对象是旧实现的 `List`；现在的 `Listy` 是另一个组件，**等价数值待实测** |
+| `Typography.Text code`（工具名 / `••••` 遮罩） | 字号 **10.2** · 圆角 3 · 底色 `rgba(150,150,150,.1)` | ⚠️ **全页最小的字**。注意它**不是** `MonoText`：`MonoText` 是 `Flex(fontFamilyCode)` + 普通 `Typography.Text`，字号跟所在容器 |
+| 浮动「回到最新」按钮 | 高 **21** | 它是 `Button size="small"`（§9.6.1 的全件口径）⇒ `controlHeightSM`。⚠️ note 那一格记的是旧实现的 **28**（`shape="round"` 时代），以代码为准 |
 | 浏览器滚动条 | 15（未自定义） | —— |
 
 #### 5.0.4 结构几何（实测，可直接作为实现的自检值）
 
 | 项 | 实测值 |
 |---|---|
-| 固定区总高 | **52**（进度条一行 + 「原始输出」折叠入口） |
-| 轮次左槽 | 宽 **64** + 右 padding **8** ⇒ 与右内容净距 **24** |
-| 轮次内块间距 | **8**（`marginSM`） |
-| `rowEvents` 行距 | **4**（`marginXXS`） |
+| 固定区自然高度 | **四行**：事实条 + 领域事实 + 面包屑/工具条 + 原文行。紧凑密度下 ≈**110**；**antd 默认密度下实测 ≈130**（四行 22 / 22.5 / 24 / 24，`padding` `12px 20px`、行间距 **4**＝`marginXXS`）。⚠️ 旧稿里那个 **52** 是「单行事实条 + 一个折叠入口」时代的数，**已不适用** |
+| 轮次左槽 | 宽 **64**（`agent-message-timeline.tsx` 的 `TURN_GUTTER_WIDTH`）+ 与右内容的 `gap = marginSM`（紧凑 8 / 默认 12）⇒ 净距就是那个 gap，**左槽自身没有右 padding**（⚠️ note 那句「64 + 右 padding 8 ⇒ 24」是旧量法） |
+| 轮次内块间距 | `marginSM`（紧凑 **8**） |
+| `rowEvents` 行距 | `marginXXS`（**4**） |
 | 滚动容器 | 取满剩余高度（`flex: 1` + `minHeight: 0`） |
 
 #### 5.0.5 对比度（WCAG 相对亮度，含 alpha 合成）
@@ -1360,7 +1554,7 @@ export interface AgentLogSource {
 |---|---|---|
 | **语义状态色**（Tag success/error/warning/processing/gold、`Typography type="success"`） | **1.83 – 3.66**，全部 < AA 4.5 | ① **信息绝不靠颜色单通道**——所有 `Tag` 内始终带中文，色只是辅助；② 接受现状，因为改色板会与全站其它页面不一致，且根因是全站统一的紧凑密度；③ **§6.7 的动效因此不得作为唯一信号**（`Tag processing` 只有 3.66） |
 | `Typography.Text type="secondary"` | 暗色 **4.52**（**几乎无余量**）/ 亮色 **3.35** | 仅用于**辅助信息**（时间戳、用量、hint）。**不得用它承载唯一的关键信息** |
-| `MonoText` 内 `code` | 对比度 13.55 ✅ 但**字号 10.2** | 最小的字。**长文本一律走 `MonoText` 组件本身**（不是内联 `code`），后者字号跟 `fontSizeSM` |
+| `Typography.Text code`（工具名 / 遮罩） | 对比度 13.55 ✅ 但**字号 10.2** | 最小的字。**长文本一律走 `MonoText`**（那个件的正文字号跟所在容器，不是 10.2）——`code` 只给短标识符用 |
 
 **根因**：`fontSizeSM: 11` 的紧凑密度让字形变小、笔画变细，而 WCAG 阈值不变
 ⇒ **同一套色板在紧凑密度下更容易不达标**（antd 预设色板按 14px 调）。
@@ -1369,7 +1563,7 @@ export interface AgentLogSource {
 
 - 图标一律来自 `@ant-design/icons`（本仓已在依赖内），**不引其它图标包**。
 - 尺寸跟字号走：`Collapse` 展开图标实测 **11 × 20**，`Tag` 内图标与文字同高。
-- **纯图标按钮必须同时给 `aria-label` 与 `Tooltip`**（§6.8 的「？环境信息」是唯一一处）。
+- **纯图标按钮必须同时给 `aria-label` 与 `Tooltip`**（§6.8 的「环境信息」是唯一一处）。
 - **不新造图标形状**：需求方要的「问号」用 `QuestionCircleOutlined`，不自己画。
 
 #### 5.0.7 ⚠️ 内嵌场景的一个陷阱（S1 必读；**jsdom 测不出来**）
@@ -1399,15 +1593,16 @@ export interface AgentLogSource {
 先看图建立整体，再看 §5.1 的几何与 §5.2–§5.5 的逐块规则。
 
 ```
-┌─ Drawer（title 恒为「执行日志」，宽度 `size="max(50vw, 800px)"`）────┐
+┌─ Drawer（title 恒为「执行日志」，宽度用共享常量 `size={WIDE_DRAWER_SIZE}`）─┐
 │ ① 固定区（不滚、不可折叠）                                          │
-│    事实进度条：状态 · 轮次 · 用量 · 耗时 · 改动 · 评分 · 错误 · 结束原因 │
+│    事实进度条：状态 · 用量（含思考） · 耗时 · 轮次 · 错误               │
+│    领域事实：智能体 · 模型 · 思考强度 · 改动 · 评分                    │
 │    （只在真的在等时出现）等待答复 12m  ← §5.5                        │
-│    面包屑：主会话 / 子任务名 ▾  （每段下拉 = 该层兄弟列表，当前项打勾）  │
-│    工具条：[下载台账] [跟随最新 ✓] [跳到轮次 __] [只看工具调用][只看错误] [？环境信息]│
-│    [原始输出 N 条 ▾]  ← §5.3，默认收起                               │
+│    面包屑：主会话 / 子任务名 ▾（每段下拉 = 该层兄弟列表，当前项 disabled）│
+│    工具条：[跟随最新 ✓] [跳到轮次 __] [只看工具调用] [只看错误] [环境信息]│
+│    原文行：[实时连接中] [原始输出 N 条] [重新读取] [下载台账]  ← §5.3  │
 │ ② 滚动区 = 时间轴（虚拟列表自己就是唯一滚动容器）                     │
-│    用户提示词（首条消息，主会话与子任务节点都有）                     │
+│    用户提示词（首条消息；本仓目前只有主会话节点有值）                 │
 │    轮次 N · 10:44:31  ← 扁平 + 左槽                                  │
 │      思考 ▸ / 工具调用 × 3 ▸ / 正文（markdown）/ 子任务占位条 ▸        │
 │      计划清单面板 ▸（状态化整表，§5.4）/ 问答卡片 ▸（含等待态，§5.5） │
@@ -1417,9 +1612,13 @@ export interface AgentLogSource {
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+> 图上这一行的**顺序**就是 `agent-log-layout.tsx` 的渲染顺序：事实条 → 领域事实 → 面包屑 + 工具条 →
+> 原文行（连接徽标在**最左**，然后是「原始输出 N 条」「重新读取」，最后是挂在 `placement: 'raw'` 上的动作（本仓就是「下载台账」）——它们同层同间距）。
+> 连接徽标只在传了 `connected` 时出现，但它**本身**就是原文行的渲染理由之一（§5.3）。
+
 **台账与时间轴是两条内容**：`log-format.ts` 的 `formatEventLine` / `formatEventLog` 只格式化
 **行级事件**（`status` / `log` / `vendor-system` / `usage` / `diff-summary` / `score` / `error` / `end`
-八类，逐条一行 `[HH:mm:ss] 正文`），供「下载台账」与抽屉的「原始输出」用；
+八类，逐条一行 `[HH:mm:ss] 正文`），**供「下载台账」用**；
 `message` / `subagent` 是**记录流**（`RowRecord`）的类型，不进台账。
 
 ### 5.1 几何
@@ -1432,13 +1631,13 @@ export interface AgentLogSource {
 执行日志）与两个二级抽屉都从它取，**不许各写一份字面量**（漂移是静默的）。
 
 - 宽度：`size={WIDE_DRAWER_SIZE}` = `max(50vw, 800px)`，`maxWidth: '100vw'`（`styles.wrapper`）。
-- `styles.body.padding` 仍是 `0`（2026-09-29 spec §7.2.1 ②）——内边距由内容自己给（`paddingMD`）。
+- `styles.body.padding` 仍是 `0`——内边距由内容自己给（`paddingMD`）。⚠️ 早先引的「2026-09-29 spec §7.2.1 ②」**那份 spec 已不在库中**；同一口径现落在 `2026-09-22-features-design.md` §5.3.4（§8.1 也是这么指的）。
 - `destroyOnHidden` 仍为 `true`（与另两个抽屉同口径）。
 - `mask`：用 `{ enabled: true, closable: true }`——**`maskClosable` 已废弃**
   （实测警告：`Please use mask.closable instead`）。
 - **滚动容器不是 `.ant-drawer-body`**：`AgentLogLayout` 最外层取满**父容器**的全部高度
   （`height: '100%'`，**不是 `minHeight`**——虚拟列表需要确定高度的视口才能算出「渲染哪几项」），
-  固定区占自然高度（实测 **52**，见 §5.0.4），虚拟列表用 flex 取剩余高度并自持滚动。
+  固定区占自然高度（四行，见 §5.0.4），虚拟列表用 flex 取剩余高度并自持滚动。
   **「取满父容器」而不是「取满 `body`」**：套 `Drawer` 的是 `AgentLogDrawer`，
   内嵌场景（S1）没有 `body` 可满——几何口径不变，只是参照物从 `body` 改成宿主容器。
 
@@ -1449,28 +1648,58 @@ export interface AgentLogSource {
 
 | 事件 | `facts` | `rowEvents`（时间轴） | 原始输出（§5.3） | 说明 |
 |---|---|---|---|---|
-| `status` | 最新值 | 否 | 否 | 「正在跑」是当前态，历史态没有信息量 |
-| `usage` | 最新值 | **仅当令牌数创新高** | 否 | 见下 |
+| `status` | 最新值 | 否（只在终点关闸） | 否 | 「正在跑」是当前态，历史态没有信息量；它另有一个用途——第一条 `judging` / 终态帧之后的 `usage` 不再算这一行（见下） |
+| `usage` | 最新值 | **整行只出一条**（候选阶段最后一条主会话读数） | 否 | 见下 |
 | `diff-summary` | 最新值 | 否 | 否 | 只在终点有意义 |
 | `score` | 最新值 | 否 | 否 | 同上；详情在「评分详情」抽屉 |
 | `error` | 最新值 | **是（恒）** | 否 | 失败归因不能只留最后一条 |
-| `end` | exitReason | 否 | 否 | 终态 |
+| `end` | **否**（2026-10-07 删掉那一格） | 否 | 否 | 终态。原先在事实条上占一格「结束原因 <Tag>」，用户 2026-10-07 口径把它删了：同一格要说的处境状态徽标已经在说，而 `end` 原文仍在**台账**里（`log-format.ts` 的 `结束 <reason>`）。⚠️ **它不在「原始输出」里**——那个面板只收 `log` 事件（`diagnosticsOf` 只 filter `type === 'log'`） |
 | `log` | 否 | 否 | **是（全部）** | D14 |
-| **消息层非致命告警**（codex 的 item 级 `error`） | 否 | **是（`level: 'warning'`）** | 否 | （D34）规范明文「item 级 `error` 是**非致命告警**（例如『有无法识别的配置项』），**不得当成运行失败**」。它既不是块（`ContentBlock` 六臂里没有它）、也不是编排层事件，没有出口——于是要么被丢弃、要么以错误条目的样子出现，把「配置项没认出来」读成「这一行跑失败了」 |
+| **消息层非致命告警**（codex 的 `error` 通知） | 否 | **是（`level: 'warning'`）** | 否 | （D34）规范（`v3 §4.2`）把 codex 的 item 级 `error` **通知**当**非致命告警**处理（只落一条 WARN，不当运行失败）——2026-09-22 的探测笔记只写到「不能把 `item.type === 'error'` 一律当运行失败」（`notes/2026-09-22-features-p3-agent-probe.md`），「不得当成运行失败」是本文的说法；现行 v3 只留了「只落一条 WARN」那个处置。它既不是块（`ContentBlock` 六臂里没有它）、也不是编排层事件，没有出口——于是要么被丢弃、要么以错误条目的样子出现，把「配置项没认出来」读成「这一行跑失败了」。⚠️ **这一档目前只有形状与渲染出口，还没有产出方**：折进 `rowEvents` 的那一步在适配器/装配层尚未落地（§12 的 B2 覆盖面），`rowEventsOf` 只产出 `error` 与 `milestone` 两档 |
+
+> **`facts` 那一列不由 `build-model.ts` 决定**：行级事实（状态 / 用量 / 改动 / 评分 / 错误）
+> 是调用方按 `AgentLogFactsInput` 组装好整份传进来的，`build-model.ts` 只做透传——
+> 「最新值」这条口径的落点在页面侧（`apps/web-next/src/log-drawer-state.ts` 的 `buildRowFacts`）。
+
+**固定区里的事实是两行**（用户 2026-10-07 口径）：第一行 `AgentLogFactsBar`（状态 · 用量 · 耗时 · 轮次 ·
+错误——「这一行跑了什么」；**轮次排在末尾**：它是「跑了几轮」这个过程读数，放在用量前面会把
+「输入 · 缓存 · 输出」那一串读断），第二行 `AgentLogDomainFacts`（智能体 · 模型 · 思考强度 · 改动 · 评分
+——「谁在跑、改了多少、得了多少分」）。**两行必须分行**：并回一行时靠 `wrap` 自然折行，
+「改动 / 评分」会被甩到第二行、与前三格拆散。第二行里「智能体 / 模型 / 思考强度」三格也走 `facts.domain`
+（**不给 `AgentLogFacts` 加字段**：`agent-log` 不认「评测行」这个业务概念，D18），
+格名、值、色档全由数据层给，顺序即渲染顺序。
+
+**这两行之外，固定区还有两行**（同一份实现在 `agent-log-layout.tsx` 里从上到下依次渲染）：
+**面包屑 + 轮次级工具条**那一行，以及**原文行**（连接徽标 · 「原始输出 N 条」· 「重新读取」· 挂在
+`placement: 'raw'` 上的动作）。原文行**三样都没有时不画**——否则固定区会多出一段空 gap。
+另有两条**条件行**：`notice` 与 `liveError` 各占一个 `Alert`（不传就一个空位都不留），
+以及 `diagnostics` 还在 `loading` / `error` 时的 `Skeleton` / `Alert`。
 
 **两族卡片不进 `rowEvents`**：`task` / `ask-user` 是**消息层的内容**（`message` 事件里的块），
 按轮次落在时间轴上（§5.4 / §5.5），与这张表里的编排层事实不是一类东西。
 D23 的「等待输入」徽标同理——它是**当前态**，而 `rowEvents` 装的是发生过的事件。
 
-**`usage` 的「创新高」规则**：`usage.tokens` 是**累积快照**（规范 §2.4 的覆盖语义），
-每轮发一条会把同一条信息重复几十遍。故只在「本次三项之和超过此前最大值」时追加一条
-`milestone`——它的语义是「上下文又长了一截」，是评测者真正会看的那个拐点。
-`turns` 不追加（进度条已经有当前值）。
+**`usage` 的选取规则（2026-10-07 用户裁定，取代早先的「创新高」）**：`usage.tokens` 是**累积快照**
+（`v3 §6.1` / `§6.2` 的覆盖语义），早先的写法是「每轮发一条、只在三项之和创新高时追加」，真机上仍会串出
+一连串几乎一样的行（run `8df6ff65` 的 claude-code 行：同一轮先出跑动期估算 `输出 0`、
+一秒后再出厂商结算值，屏幕上就是两条「用量 … 轮次 4」）。**现在整行只出一条 `milestone`**：
 
-**水位按会话拆开，且里程碑按号归位**（D39，逐条见 §6.14）：
+1. **只取候选阶段**：第一条 `judging` 或终态状态帧之后的 `usage` 一律不算——那是评分智能体在同一条
+   流里接着报的读数（与 `@aieval/client` 的 `row-live.ts` 口径 5 是同一条判据）；
+2. **只取主会话**：`turn.subagentId` 非空的读数是**那个子会话自己**的累计，只在派发点那张子任务卡片里
+   展示（`SessionNode.usage`），**一条都不折成里程碑**；
+3. **取候选阶段里最后一条**带计量的读数（`tokens === null` 的直接跳过），位置排在**它自己那条事件的位置**上
+   （不许被挤到末尾——与 `error` 行的相对次序要保住）。
 
-- 「创新高」这个比较**不是整行一个水位**，而是 `Map<会话身份, 水位>`（`sessionKey = usage.turn?.subagentId ?? 'main'`）——否则子会话的读数会被主会话已抬高的整行水位当场丢掉（表现：子会话节点一条用量行都没有）。老日志（没有 `turn`）全落 `main` 桶 ⇒ 与今天逐字相同。
-- 每条里程碑带**归属键**（`RowEvent.turn`），落点是「`(会话身份, 该会话自己的轮次号)` 逐字相同的那一轮」；对不上就不在本节点显示（**不回落按时刻**）。文案里的 `轮次 N` 用**归属号**。
+`turns` 不追加（进度条已经有当前值）。**归属**：那一条带 `RowEvent.turn`，
+落点是「`(会话身份, 该会话自己的轮次号)` 逐字相同的那一轮」；整行没有那一轮时**在数据层就抹成
+`turn: null`**（孤儿，落到时间轴上按时刻归位，**不丢**）。文案里的 `轮次 N`
+**有归属号时用归属号**；孤儿那一档回落成本行累计轮次（`turn?.round ?? event.turns`）——
+两种情形都在同一条文案里，别把它读成「永远用归属号」。
+
+> ⚠️ **本节早先写的「水位按会话拆开」（`Map<会话身份, 水位>`）已随这条裁定退役**：
+> 既然整行只出一条、且子会话读数根本不进来，「按会话分桶」就没有比较对象了。
+> 代码里已无任何**用量里程碑**的水位变量（`agent-log-layout` 的 `readCountRef` 是「未读轮次」的水位，不是这一档），`turnHomesOf` 也只收**主会话**的轮次（`main#N`）。
 
 ### 5.3 `log` 与原始载荷的去处（D14）
 
@@ -1478,7 +1707,7 @@ D23 的「等待输入」徽标同理——它是**当前态**，而 `rowEvents`
 
 | 内容 | 归谁 | 界面出口 |
 |---|---|---|
-| `log` 事件（适配层的 stdout/stderr、未识别信封） | **可读的原始文本** | 「原始输出 N 条 ▾」：固定区一个 `Collapse ghost`，正文 `MonoText` **逐字原文**，`data-testid="agent-log-diagnostics"`；数据由 **`AgentLogDiagnostics`** 承载（见下） |
+| `log` 事件（适配层的 stdout/stderr、未识别信封） | **可读的原始文本** | 「原始输出 N 条」按钮（固定区**原文行**里，与「下载台账」同层）→ 点开一个二级抽屉，正文 `VirtualList` + `MonoText` **逐字原文**，`data-testid="agent-log-diagnostics"`；数据由 **`AgentLogDiagnostics`** 承载（见下） |
 | 无法归一的厂商载荷 | **块** | `unrecognized` 块（与文本块同处时间轴，**默认折叠**，§6.1）。**不再另开出口** |
 | 真实附件（图片 / 文件） | **块** | `attachment` 块（界面落点见 §6.10）。**它不是「无法归一的载荷」**——两者不共用一个类型名（D31） |
 | 完整事件台账 | **归档** | 只有「下载台账」一个出口（§6.6）。它是台账，不是视图 |
@@ -1523,14 +1752,28 @@ export interface AgentLogDiagnostics {
 三态各有画面：`loading` 给 `Skeleton`、`error` 给 `Alert` + 重试、
 `ready` 且 `lines` 为空时**不渲染这个入口**（与 §10 的用例一致）。
 
-面板正文按**既有的 `[HH:mm:ss] source + 原文` 形状**渲染——复用 `log-format.ts` 的 `formatEventLine`
-那一套措辞，**不改它的语义**（它原来只服务「下载台账」，现在多一个出口，§5 的注照旧成立）。
-`at` / `source` / `text` 三格分开给，是为了让「哪一段是格式、哪一段是原文」可分辨。
+**这一行还承载连接状态**（用户 2026-10-07 口径）：`connected` 徽标（「实时连接中」/「未连接」）
+落在这一行的**最左**——在「原始输出 N 条」之前，两者合并成一行（固定区仍是四行，省的是事实条
+那一行右侧那一格的位置）。故这一行的渲染判据有**三条**：有连接状态、有原文入口、或有挂在那一行的动作
+（`placement: 'raw'`，预设里是「下载台账」）。**只传了 `connected` 而没有任何原文入口与 raw 动作时，
+那一行照样渲染**——否则「实时通道通不通」会随原文入口一起消失，那不是收起版面，是丢了一个读数。
+
+**这一行里的按钮同属一层**（用户 2026-10-07 口径：「把包裹那一层去掉，按钮拿出来」）：
+`raw-output-panel` 返回的是**按钮本身**，不再自带 `Flex` 容器 ⇒「原始输出 N 条」「重新读取」
+是这一行的**直接子节点**，与「下载台账」同一层、同一套间距。原先嵌在内层 `Flex gap={8}` 里，
+症状是同一行两套间距、且「这一行有哪几个按钮」要去两层里数。卡片底部那两处由**调用方各包一层**
+（那里是竖向排布，不包会变成两个按钮上下叠）。
+
+面板正文按**与 `formatEventLine` 逐字同形**的 `[HH:mm:ss] source + 原文` 渲染——
+但**格式化由面板自己做**（`raw-output-panel.tsx` 里那份 `formatClock`；`log-format.ts` 的
+同名函数没有导出，本件不为一个两行的格式化去改它）。两边形状一致是**约定**，
+不是「共用同一个出口」；`at` / `source` / `text` 三格分开给，是为了让「哪一段是格式、哪一段是原文」可分辨。
 
 **⚠️ 依赖数据层的三件事**（写在这里，因为 UI 侧看不出来）：
 
-1. `log` 原文仍然**必须完整可查**——它是排障证据（README 里「对照 `[codex]` 那几行」
-   的处置路径就靠它）。数据层不得因为「反正 UI 不怎么显示」而丢弃它；
+1. `log` 原文仍然**必须完整可查**——它是排障证据（README **待新增**的那条排障路径——
+   「对照原始输出里 `[codex]` 那几行」——就靠它；那张表目前还没恢复，§8.1 已登记）。
+   数据层不得因为「反正 UI 不怎么显示」而丢弃它；
    **面板默认收起不等于可以不取**：`Loadable` 还没到时如实显示「读取中 / 读失败 + 重试」，
    不假装「一条都没有」。
 2. **两个事件源的合并是数据层的内务**（原 §5.4 整节删除，理由＝**不合并事件源**）：
@@ -1563,10 +1806,15 @@ export interface AgentLogDiagnostics {
 
 1. **标题行**（折叠面板的 `label`）：`计划清单` + 计数（`3/5 完成`）+ **变化摘要**（`+1 完成`）+ 状态
    （进行中转圈 / 结果未采集的灰字）；`note` 有值时补一行灰字（codex 的 `explanation`：为什么改计划）。
-2. **清单体**：每项一行——状态 + 文本 +（claude 才有的）`owner` 与依赖。
-3. **底部**：`本轮另有 N 次更新 ▾`（本轮更早的调用）与 `原始结果 ▾`（`MonoText` 原文，默认收起）。
+2. **清单体**：**两列的 `Table`（`size="small"`）**，每项一行——左「任务」（文本 +（claude 才有的）
+   `owner` 与依赖）、右「状态」；右列走**列级 `align: 'right'`**，**表头整条隐藏**
+   （2026-10-07 用户口径；改造前是 `Listy` 的单行「状态 + 文本」）。
+3. **底部**：一行**静态说明**「本轮另有 N 次更新（这几次调用不出面板：整表语义下只有最后一次是有效状态）」
+   （**没有箭头**——它不是折叠项，L0 不许自己持态），以及「原始结果」入口（默认收起，
+   点开在二级抽屉里看原文；正文走 `JsonText`：是 JSON 就缩进格式化 + 高亮，不是就逐字原样）。
+   **结果没到手时连这个入口都不画**（标题已经写过「结果未采集」）。
 
-**「计数」与「变化摘要」都由数据层给，UI 不自己算**：UI 按项渲染（§7.2），**看不到上一轮的面板**，
+**「计数」与「变化摘要」都由装配层（`build-model.ts`）给，UI 不自己算**：UI 按项渲染（§7.2），**看不到上一轮的面板**，
 跨轮比较它做不到；而数据层本来就有累积态（claude 的补丁累积就发生在那里）。
 `TaskPanel.change` 与 `counts` 一样是**派生值**——v2 spec 已为 `counts` 立过这条先例（逐字：
 「计数是派生值，放这里是为了 UI 不必自己算」）。
@@ -1577,11 +1825,12 @@ export interface AgentLogDiagnostics {
 |---|---|---|
 | 1 | 从**工具组里提出**，按块序**原地**出现（与 `subagent-bar` 同规则） | 「多了一张清单」与「调用了什么」是两件事；留在组里会被读成「又一次工具调用」 |
 | 2 | 提出时**切断工具组的合并链**（前面的合成一组、后面的另起一组） | 组标题的 `工具调用 × N` 必须数得清——把一条调用画成卡片却仍算进 N，就是不实的计数 |
-| 3 | **同一轮内只画最后一次** `task` 调用，更早的收进面板底部的 `本轮另有 N 次更新 ▾` | v2 spec §7.6.4 逐字：「只画最后一条结果，历史折叠」。整表语义下，同轮多次调用只有最后一次是有效状态 |
-| 4 | **跨轮不去重**：有 `task` 调用的轮就画一张；`change === null`（该节点首次）**默认展开**，其余**默认收起** | 去重要跨轮状态，与 §7.2「按项渲染 + 虚拟列表乱序挂载」相冲；收起态标题已带 `3/5 完成 · +1 完成`，所以收起不丢信息 |
+| 3 | **同一轮内只画最后一次**带载荷的 `task` 调用，更早的次数收进面板底部的 `本轮另有 N 次更新`（**静态说明行，不是折叠项**——L0 不许自己持态，画一个点不开的箭头比写清楚这件事更糟） | v2 spec §7.6.4 逐字：「只画最后一条结果，历史折叠」。整表语义下，同轮多次调用只有最后一次是有效状态 |
+| 4 | **跨轮不去重**：有 `task` 调用的轮就画一张；`change === null`（该节点首次）**默认展开**，其余**默认收起** | 去重要跨轮状态，与 §7.2「按项渲染」相冲（UI 只看得到被渲染的那一项）；收起态标题带 `3/5 完成`，所以收起不丢信息。⚠️ **`change` 目前由装配层恒写 `null`**（`build-model.ts`）⇒ 每张清单都落在「首次」那一档，「其后收起」与「+1 完成」这一档现在都看不到；要修得先在数据层做出跨轮累积态（§14 已登记） |
 
-**默认展开的两条例外**（与 §6.1 的例外条款同源）：`running === true`（这次更新还没回来）
-或结果未采集时**默认展开**且标题写明状态——「正在更新计划」被折叠吞掉，就把唯一的时间信号藏了。
+**默认展开的三种情形**（`defaultOpenKeysOf`，与 §6.1 的例外条款同源）：`change === null`（该节点首次出现清单）、
+`running === true`（这次更新还没回来）、或**结果未采集**（`result === null`）时**默认展开**且标题写明状态——
+「正在更新计划」被折叠吞掉，就把唯一的时间信号藏了。其余（有结果、非首次、不在跑）默认收起。
 
 **四种「没有清单」的情形，逐一有明确画面**（不留洞）：
 
@@ -1593,7 +1842,7 @@ export interface AgentLogDiagnostics {
 | `owner === null` 与 `owner === ''` | 两者**不是一回事**：`null` = 这一家没有「指派」这个概念（**整格不显示**）；`''` = 有概念但当前无人认领（显示「未指派」）。v2 spec §7.6.2 ⑨ 明文要求分开 |
 
 **`TaskStep.status === 'unknown'` 不显示成成功**：四态各有中文与样式（待办 / 进行中 / 已完成 / 状态未知），
-`unknown` 用中性灰——与 §4.2 的「`ok: true` 但关键字段为 null 不显示成成功」是同一条口径。
+`unknown` 用中性灰——与 `v3 §5.1` 的「归一结果非空、但关键字段是 null ⇒ 不显示为成功」是同一条口径。
 
 ### 5.5 `ask-user` 卡片：问答卡片
 
@@ -1607,7 +1856,8 @@ export interface AgentLogDiagnostics {
    （`recommended` 项带「推荐」；`multiSelect` 标「可多选」；`allowOther` 追加一行「其它（自由输入）」）。
 3. **答案区**：按 `answers[]` 逐问回填（三条口径见下）。
 4. **收场行**：`outcome` 的中文 + 一句话说明 +（等待时）已等待时长。
-5. **底部**：`原始结果 ▾`（`MonoText` 原文，默认收起）——归一化是视图，原文才是事实。
+5. **底部**：「原始结果」入口（默认收起，二级抽屉里给原文；正文走 `JsonText`）——
+   归一化是视图，原文才是事实。**`pending` 那一支没有 `result` 这一格**，所以那时连入口都没有。
 
 **七种收场 + 一种「还没收场」**（v2 spec §7.6.2 ⑩ 的七态逐条落地）：
 
@@ -1615,7 +1865,7 @@ export interface AgentLogDiagnostics {
 |---|---|---|---|
 | `null`（结果还没到） | **等待答复中…** | `Badge status="processing"` + 走秒表 | 「无人值守的运行里，这一步会一直等到轮次被取消」（dsh 无超时预算） |
 | `answered` | 已答复 | 成功 | —— |
-| `auto-resolved` | 自动决议 | 警告 | 厂商按 `autoResolutionMs` 自行决定了答案 |
+| `auto-resolved` | 自动决议 | 警告 | 厂商按自己的超时预算决定了答案（`autoResolutionMs` 这个键名在契约里**不存在**，卡片不写它） |
 | `skipped` | 被跳过 | 中性 | 用户跳过了这个问题 |
 | `timeout` | 超时未答 | 警告 | 厂商的提问超时预算到了 |
 | `unavailable` | 无人可应答 | **中性，不是红色错误** | 「本仓没有开应答面（`approvalPolicy: 'never'`）——**已知边界，不是缺陷**」（v2 spec §7.6.2 ⑩ 硬约束 2：失败而不是降级） |
@@ -1649,21 +1899,21 @@ export interface AgentLogDiagnostics {
 
 **三处如实登记**：
 
-1. **`secret: true` 的遮罩是显示口径，不是安全边界**：默认 `••••` + 「显示」按钮，
+1. **`secret: true` 的遮罩是显示口径，不是安全边界**：默认 `••••` + 一段「显示」文案（展开用的 `Collapse`，不是按钮），
    但原文仍在结果与事件台账里（「下载台账」拿得到）。**不要把遮罩当脱敏**。
 2. **不做美化截断、也不重排选项**：`header` 超过 v2 建议的 8 字符就让它长着——截断会改事实
    （与 D15「工具名原样透传」同一口径）；`recommended` 的置顶是**厂商给的顺序**，UI 只加一个「推荐」Tag。
-3. **不在组件里按「主会话 / 子任务」分支**（§9 纪律 1）：「子智能体不能提问」这件事**只体现为
+3. **不在组件里按「主会话 / 子任务」分支**（§9.0 纪律 3；§9.5 的组件边界纪律 1 是同一件事）：「子智能体不能提问」这件事**只体现为
    `outcome: 'rejected'` 与结果原文**。组件若去看节点类型，就把「同一份渲染」这条保证破了。
 
 **这张卡片是只读的复盘视图，不是应答面**：本仓没有应答 handler（`approvalPolicy: 'never'`），
 所以卡片上**不提供「回答」按钮**——给一个只在某些场景可用的输入框，会让「评测里的提问为什么没人答」
 更难解释。收场行如实说明是谁（没）回答的（§12 已登记为明确不做）。
 
-**「等待输入」在固定区有一个位置（只在真的在等时出现）**：`等待答复 12m`
+**「等待输入」在固定区有一个位置（只在真的在等时出现）**：`等待答复 12m00s`
 （`Badge status="processing"` + `Typography.Text`）。范围是**当前节点**（与面包屑的视图作用域一致，D4），
 判据是那一格里存在 `state === 'pending' && running === true` 的卡片。它**不新增契约字段**：
-UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」一样是**纯派生**（存一份就是第二份真值）。
+UI 从当前节点的块里线性扫一遍即可，与 §5.2 的里程碑选取一样是**纯派生**（存一份就是第二份真值）。
 子任务节点里的提问按 v2 spec 是**被拒**（`rejected`）而非等待，故正常情况下它不会为子任务亮起；
 真亮起时切进那个节点就看到它自己那一格。
 
@@ -1681,7 +1931,7 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 | 用户提示词 | 不折叠 | 它是「这个节点被要求做什么」的唯一说明（D4） |
 | `unrecognized` 块 | **收起** | 内容是我们不认识的厂商原始载荷，默认不该占地方 |
 | `attachment` 块（真实附件） | 不折叠 | 它是「这一轮带了这个文件」的事实，与正文同级；详情见 §6.10 |
-| 计划清单面板（§5.4） | **首次展开、其后收起** | 第一次要让读的人知道「它打算做什么」，之后只需要知道「走到哪了」；收起态标题已带 `3/5 完成 · +1 完成` |
+| 计划清单面板（§5.4） | **首次展开、其后收起** | 第一次要让读的人知道「它打算做什么」，之后只需要知道「走到哪了」；收起态标题带 `3/5 完成`。（`change` 恒 `null` ⇒ 现在全落「首次」，见 §5.4 与 §14） |
 | 问答卡片（§5.5） | **等待答复时展开**；已收场收起 | 等待态是「卡住了」的唯一信号，折叠它就等于把抽屉里最该露出来的东西藏起来 |
 
 **五条默认态细则（四条例外 + 一条覆盖口径，都必须写进代码，否则会踩）**：
@@ -1698,20 +1948,28 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
    （`agent-run-state-tag.tsx` 的边界 1，失败的结果恰恰是「到手了」）；② 折叠键的生产者
    （`use-agent-log-view.ts` 的 `defaultOpenKeysOf`）**再也算不出失败**，它只认「进行中」——
    失败标记是 `ToolGroupPanel` 自己的事，两个口径各住各的文件。
-3. **思考块 `text === null` 时**：显示 `textMissing` 对应的中文（如「这家拿不到思考文本」），
-   **不显示空面板**——空面板会被读成「思考了但什么也没想」（v2 spec §4 的 `MissingReason` 口径）。
-4. **运行中的计划清单不折叠**：`TaskPanel.running === true` 或结果未采集时该面板**默认展开**
-   且标题写明状态（与例外 1 同源：进行中的事不折叠）。
+3. **思考块 `text === null` 时**：**整块不渲染**——装配层（`build-model.ts`）先把这一档过滤掉，
+   `ThinkingBlockView` 里再判一次 `block.text === null ⇒ return null`（组件被别处直接构造时同样不出）。
+   契约里的 `textMissing` 因此只是形状上的兼容格（恒 `null`）；
+   给一句占位文案也不行：**一句「这家拿不到思考文本」占着版面，读者会把它当成思考**。
+4. **运行中的计划清单不折叠**：`TaskPanel.running === true`、结果未采集（`result === null`）、
+   或该节点首次出现清单（`change === null`）时该面板**默认展开**且标题写明状态
+   （与例外 1 同源：进行中的事不折叠）。
 5. **异常收场的问答展开**：`timeout` / `unavailable` / `rejected` 的问答卡片**默认展开**
    （理由与例外 1 相同——「它没能问成人」不该要用户点两次才看得到）；
    `skipped` / `canceled` / `auto-resolved` 属正常收场，默认收起。
 
-**折叠状态的作用域与键控**：**用 `ContentBlockBase.id` / `ToolItem.callId` 键控，不用数组下标**
-（`LogNode.content` 的轮次数会随流式追加而变长，下标会漂——「我展开的那条自己合上了」正是这么来的）。
-两族卡片同理：键 = **承载族载荷的那个 `tool-call` 块的 `id`**（同一轮多次 `task` 调用因而各自独立，
-只是其中只有最后一张会成卡，见 §5.4 规则 3）。
-默认态由组件内的 `activeKey` 计算（**不在纯函数里**，理由见 §4.2 末段）：
-内置规则 ∪ 用户手动开过的那些键。**不持久化**（刷新与切换节点即回到默认），
+**折叠状态的作用域与键控**：**用 `ContentBlockBase.id` / `ToolItem.callId ?? blockId` 键控，不用数组下标**
+（`LogNode.content` 的轮次数会随流式追加而变长，下标会漂——「我展开的那条自己合上了」正是这么来的。
+行键的唯一真源是 `tool-item-detail.tsx` 的 `toolEntryKey`；工具组那一格的键还要带 `tool-group:` 前缀，
+否则它会与该组第一条的行键撞成同一个字符串）。
+两族卡片同理：键 = **承载族载荷的那个 `tool-call` 块的 `id`**（`RenderBlock` 的 `cardId`；同一轮多次 `task` 调用因而各自独立，
+只是其中只有最后一张会成卡，见 §5.4 规则 3）。卡片底部「原始结果」的二级开合**复用同一份折叠态、加 `|raw` 后缀**，
+不新立第二份 state。
+默认态由纯函数 `defaultOpenKeysOf(turns, nodes)` 算（**与折叠历史无关，同一份输入永远给同一份键**；
+它住在 `use-agent-log-view.ts`，**默认由 `useAgentLogView` 自己调**，调用方想换一套就给 `defaultOpenKeys` 整套覆盖），
+实际生效的是三份的合成：**内置默认态 ∪ 用户手动开过的 ∖ 用户手动关掉的**
+（「手动关掉」那一份不能省——没有它，一个默认展开的块用户就关不掉了）。**不持久化**（刷新与切换节点即回到默认），
 且**流式推进不重置已折叠态**——手动展开过的块在后续事件到达时保持展开。
 
 **折叠态的持有者**：这份 `activeKey` **住在 `useAgentLogView` 里，不住在组件树里**。
@@ -1723,29 +1981,37 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
    挂两个实例就是两份互不相干的真值，而 §6.4 要求「工具条开关与角落浮出按钮是同一份 state」
    已经立过同一条纪律。**受控件是「同一份 state 只能有一处」在组件层的落实方式。**
 2. **只有 `renderBlock` 分派处注入这份受控态**：`AgentMessageTimeline` 不认识 `activeKey`，
-   它只调 `renderBlock(block, { open, onOpenChange })`（§9.2）。这样「折叠态从哪来」
+   它只调 `renderBlock(block, { open, onOpenChange })`（§9.1）。这样「折叠态从哪来」
    与「块怎么画」是两个可分别替换的东西——监控台场景可以换一条完全不同的折叠策略
    （例如「永远全开」）而不碰任何一个渲染件。
 
 **空态**：`AgentLogModel.empty === true`（这一行还没跑过、内容为空）时，
-时间轴区渲染 `EmptyState`，文案沿用现有 `LogView` 的措辞
-（标题「还没有日志」、说明「这一行还没开始执行，或执行尚未产生输出」）——
+时间轴区渲染 `EmptyState`，文案是**标题「还没有日志」+ 说明「这一行还没开始执行，或执行尚未产生输出」**
+（`agent-log-layout.tsx` 里就地给的字面量，**不在模型里**）——
 **不是**渲染一个空的时间轴（那会被读成「界面没渲染出来」）。
 注意「读盘失败」不走这里：那是页面层的 `resolveLogDrawer` 的 `failed` 分支，
-仍整段替换抽屉内容（既有口径不变），因为把一次带文件路径的真实故障说成
-「还没开始执行」是错的。
+把整个 `AgentLogDrawer` 换成一句带原因的 `Alert`（**连固定区一起换**，因为那时 `model` 根本还没算出来），
+因为把一次带文件路径的真实故障说成「还没开始执行」是错的。
+另外空态**只作用在时间轴区**：固定区（事实条 / 领域事实 / 面包屑 / 工具条）在任何一态下都在。
 
 **「有内容、但这一类内容没被转发」是第三种空**：
 `content.status === 'ready'` 且 `turns` 非空，但**一个 `role === 'assistant'` 的块都没有**时，
-**不能**渲染成「这个子任务什么都没做」。规范逐字要求 claude 未开 `forwardSubagentText` 时
-**如实说明「该子任务的对话未转发」**（默认只投工具调用与工具结果块）。
+**不能**渲染成「这个子任务什么都没做」。
+`v3 §4.1`（另见 `v3 §3.5` / `v3 §8.1`）记的是这条**事实**：claude **未开** `forwardSubagentText` 时子任务视图只剩工具流水 ⇒ 本设计据此补一条**如实说明**（「该子任务的对话未转发」）
+——厂商默认是 `false`（只投 `tool_use` / `tool_result`），此时子节点只有工具流水。
+⚠️ **本仓适配器已经把这格置 `true`**（`providers/claude-code/index.ts` 的 `query()` options）⇒
+真实数据下这一档**通常不会亮**；它仍然是必需的兜底，因为别的消费方/别的路由可以不开。
 判据与文案：
 
 | 情形 | 画面 |
 |---|---|
-| `capability['subagent'].level` 非 `'yes'` | 「子任务轨迹不可用 · <原因中文>」（原因取 `CapabilityDecl.reason`） |
-| 有工具块、无 assistant 文本/思考块 · `source === 'session-file'` 且该节点尚未结束 | 「**运行期只有派发事件与状态，完整轨迹要等运行结束**」 |
-| 有工具块、无 assistant 文本/思考块 · 已结束 | 「**该子任务的对话未转发**（只投送了工具调用）」——**不写「它什么都没说」** |
+| `capability['subagent']` 那一维的**原因**非空（`capabilityReasonOf`：`level !== 'yes'` 且 `reason` 有值） | 「子任务轨迹不可用 · <原因中文>」（`MISSING_REASON_LABELS` 的四句之一） |
+| 有工具块、无 assistant 文本/思考块 · `source === 'session-file'` 且 `endedAt === null` | 「**运行期只有派发事件与状态，完整轨迹要等运行结束**」 |
+| 有工具块、无 assistant 文本/思考块 · 其余 | 「**该子任务的对话未转发（只投送了工具调用）**」——**不写「它什么都没说」** |
+
+三段的判据顺序就是这样（先看能力声明、再看采数通道与结束与否、最后才是默认那句），互不替代。
+另外**子任务节点自己的空态是另一档**（`turns.length === 0` 且内容 `ready`）：按有没有 `outcome` 分两句，
+说的是「这个子任务自己的轨迹为什么空」，**不是**「这一行还没开始执行」（§6.2 的 `Skeleton` 那一支同理）。
 
 这一档与 `empty` 的区别是**「没有内容」与「这一类内容没有」**，与 §5.3 的
 `Skeleton` / `Alert` / 空入口三分是同一条口径。
@@ -1759,7 +2025,9 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 - 面包屑切换节点：**是组件内部 state**（不写 URL）。理由：抽屉本身已经是页面 state
   （`drawer.kind`），再加一层 URL 会让「刷新回到主会话」与「刷新回到第三级子任务」
   出现两个都说得通的期望，而两者都无法从服务端快照恢复（子任务没有独立 id 路由）。
-- 切换节点时**滚动位置重置到该节点时间轴顶部**（不是保留上一个节点的位置）。
+- 切换节点**不保留上一个节点的滚动位置**——代码里没有任何「回顶」动作：
+  `follow` 默认就是 `true`，切节点会让过滤后的轮次变化、触发「跟随最新」那条 effect
+  ⇒ 视口落到**最新一轮**（与打开抽屉时同一行为）。要「切节点回顶」得另加实现，本期不做。
 - 节点内容未到（`content.status === 'loading'`）：时间轴区显示 `Skeleton`
   （**不是空态**——空态会被读成「这个子任务什么都没做」）。
 - 节点内容读失败（`content.status === 'error'`）：`Alert` 显示中文原因 + 「重试」按钮。
@@ -1768,12 +2036,15 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 ### 6.3 子任务占位条与面包屑的兜底
 
 - 占位条内容：`[子任务]` 标签 + 任务名 + 状态标签 + 「进入 ▸」。
-- **任务名为 null 时**用 `子任务 <subagentId 前 8 位>`（v2 spec §6.2 明确 `name` 可为 null，
-  claude 的聚合形态就是 `name: null` 且 `source: 'aggregate'`）。**不显示空白**。
+- **任务名为 null 时**用 `子任务 <subagentId 前 8 位>`（`v3 §2.8` 明确 `name: string | null`）。
+  **不显示空白**。
 - **`kind === 'row'` 的节点不是子任务**：它是「这家只有汇总计数、没有逐个身份」的形态
   （`MessageSource === 'aggregate'` 那一类——**没有逐条条目**，只有汇总）。
   它**不进面包屑、不可点**，
   只在时间轴上占一条带计数与状态的说明行——否则用户会点进一个空会话。
+  ⚠️ **这一档目前只在夹具里存在**：全仓**没有任何适配器发出 `source: 'aggregate'`**
+  （契约 schema 有这个取值、`build-model.ts` 与夹具（`fixtures.ts`）里也有，但 `agents` 包的产出方是零）——
+  与 §12.1 的 B2 覆盖面是同一件事。
 - **占位条对已结束的子任务同样出现**（`completed` / `failed` / `canceled`）——
   评测者回看时需要能进去，「只有正在跑的才可进」会让跑完的行永久读不到子任务。
 - 面包屑段：`主会话 / A / B`；不可点的当前段用 `Typography.Text strong` + `aria-current="page"`。
@@ -1791,39 +2062,45 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 ### 6.5 跳转与过滤
 
-- **轮次跳转器**：`InputNumber` + 回车/失焦即跳，落点 `ListController.scrollToTurn(n)`。
+- **轮次跳转器**：`InputNumber` + 回车/失焦即跳，落点 `ListController.scrollToTurn(n)`（**入参是 0 基下标**：调用方传 `n - 1`）。
   越界输入 clamp 到 `[1, turns.length]` 并**如实回显 clamp 后的值**（不让输入框显示一个没跳到的数）。
 - **过滤**（`只看工具调用` / `只看错误`）：过滤在**轮次级**生效——
   过滤后不含目标块的轮次**整轮隐藏**（否则会得到一屏「轮次 12（空）」的噪声）。
   两个过滤可叠加（AND）。过滤生效时固定区显示命中数：`命中 12 / 83 轮`
-  （**与「已渲染 N / 共 M 轮」是两个不同的数**：前者是过滤后的命中轮数，后者是虚拟列表
-  实际挂载的轮数，见 §7.2。两个都常驻，不互相替代）。
-- 过滤不影响面包屑与子任务占位条的可见性（它们是导航，不是内容）。
+  （**与「已渲染 N / 共 M 轮」是两个不同的数**：前者是过滤后的命中轮数、在**工具条那一行**；
+  后者是虚拟列表实际挂载的轮数、在**列表尾部**，见 §7.2。两个都**常驻**——命中数只在过滤生效时出现，
+  而「已渲染 N」由 L2 常驻渲染，不互相替代）。全部被过滤掉时时间轴区给一句「没有命中过滤的轮次」。
+- 过滤**不影响面包屑**（它吃 `model.nodes`，与轮次无关）；但**子任务占位条会跟着它那一轮一起被过滤掉**
+  ——占位条是轮内的渲染块，而过滤是整轮隐藏的。正文/导航这个区分只对面包屑成立。
 - **两族卡片算「工具调用」**：`只看工具调用` 命中含 `task` / `ask-user` 的轮次——它们本质就是工具调用，
-  漏掉它们会让「过滤后我的计划清单不见了」被读成缺陷。`只看错误` 只认**数据给的 `ok === false`**
-  （含 `unavailable` / `rejected` 的问答）与 `rowEvents` 的 `error`，**不按 `outcome` 猜**：
-  `timeout` / `skipped` / `canceled` 算不算失败由厂商的结果定，UI 不替它判断。
+  漏掉它们会让「过滤后我的计划清单不见了」被读成缺陷。
+- **`只看错误` 只认三类数据给的事实**（`turnHasError`，**不按 `outcome` 猜**）：
+  ① 工具结果块的 `status === 'error'`；② 问答卡片收场成 `unavailable` / `rejected`；
+  ③ 挂在它后面的行级事件的 `level === 'error'`。`timeout` / `skipped` / `canceled` 算不算失败
+  由厂商的结果定，UI 不替它判断。
+- **过滤不建渲染块**：判据直接扫 `turn.blocks`（`turnHasToolCall` / `turnHasError`），
+  不在渲染层外面为每一轮先建一遍 `RenderBlock`——那正是 §7.2 明令禁止的那件事。
 
 ### 6.6 工具栏
 
 | 控件 | 行为 |
 |---|---|
-| `下载台账` | 即现有的下载按钮，内容 = `formatEventLog(全量事件)`（来源仍是 `useRowLog`，不是连接里收到的那份）。**不再声称与抽屉逐字一致**（D8） |
+| `下载台账` | 即现有的下载按钮，内容 = `formatEventLog(全量事件)`——**读盘那份事件到手时用它，还没到（或读失败）时回落到连接里已收到的那批**（`log.events ?? stream.events`）。**不再声称与抽屉逐字一致**（D8）。落在**原文行**（`placement: 'raw'`），与「原始输出 N 条」同层 |
 | `跟随最新` | 见 §6.4 |
 | `跳到轮次` | 见 §6.5 |
 | `只看工具调用` / `只看错误` | 见 §6.5 |
-| `原始输出 N 条` | 见 §5.3 |
-| `？环境信息`（图标按钮） | 见 §6.8——打开环境抽屉（`agent-log` 内部件） |
+| `原始输出 N 条` | 见 §5.3。**它只承载标签与显隐，没有 `onSelect`**——正文是固定区原文行里的 `RawOutputPanel`，工具条上不重复一个按钮 |
+| `环境信息`（图标按钮） | 见 §6.8——打开环境抽屉（`agent-log` 内部件） |
 
 **这七项是一套「预设」，不是工具条的全部**：上表逐项的**行为**不变，
-但它落到代码里是 `AgentLogToolbarPreset` 里的 `ToolbarAction[]`，
+但它落到代码里是 `useAgentLogToolbarPreset()` 产出的 `ToolbarAction[]`，
 `AgentLogLayout` 只吃 `actions` 数组（§9.4）。两处后果：
 
 - 通用消费方**增删动作不必改组件**；
 - **每个动作自己决定渲不渲染**，那条判断跟 `visible` 谓词走，不写死在工具条组件里。两个例子：
   - 「原始输出 N 条」：`diagnostics` 为 `undefined`、或其 `lines` 为空 ⇒ **不渲染**
     （§5.3：没有原文就没有入口）；
-  - 「？环境信息」：`environment` 为 `undefined` 时**照常渲染**，抽屉里显示「未提供」
+  - 「环境信息」：`environment` 为 `undefined` 时**照常渲染**，抽屉里显示「未提供」
     （§6.8：「没有这个功能」与「这次没采到」要分得开）。
   **两者规则相反是有意的**，不要统一成「没数据就不渲染」。
 
@@ -1832,15 +2109,19 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 **目的**：让「它正在干活」在**不操作**的情况下就能看出来。今天的抽屉是一坨静态文本，
 跑动期与跑完长得一模一样；而一次评测要跑几分钟，使用者需要知道它在动。
 
-**五处动效，全部只在流式期间出现、块结束后立刻消失**（静止即「这件事已经确定了」）：
+**四处动效，全部只在流式期间出现、块结束后立刻消失**（静止即「这件事已经确定了」）：
 
 | # | 位置 | 表现 | 实现 |
 |---|---|---|---|
 | 1 | 思考块**折叠态的标题** | 「思考中…」**扫光** | 复用现有具名出口 `ACTIVITY_SWEEP_CLASS`（`agent-activity-line.tsx`）——`.aieval-activity-sweep` 已在 `apps/web-next/app/globals.css`，1.8s 线性，**已处理 `prefers-reduced-motion`** |
-| 2 | 思考行最前的标记 | 6px 圆点**呼吸**（`opacity` 1→0.25，1.2s） | 只用既有主题变量（`--app-muted`）；**不引图标包**，固定尺寸不撑动布局 |
-| 3 | 正文流末尾 | 闪烁光标 `▍` | **CSS 伪元素加在容器上**，`MarkdownText` 一行都不改（`ui` 包不碰渲染细节，见 `MarkdownText` 的文件头） |
-| 4 | 进行中的工具行 / 工具组 | 状态用 `Badge status="processing"`（antd 自带动效） | antd |
-| 5 | 固定区状态徽标 | 同一套 `Badge status="processing"` | antd |
+| 2 | 正文流末尾 | 闪烁光标 `▍` | **CSS 伪元素加在容器上**（`.aieval-stream-cursor`，1s、`steps(1,end)`），`MarkdownText` 一行都不改（`ui` 包不碰渲染细节）；类名出口是 `STREAM_CURSOR_CLASS` |
+| 3 | 进行中的工具行 / 工具组 | 状态用 `Badge status="processing"`（antd 自带动效） | antd（`AgentRunStateTag` 是唯一分派处） |
+| 4 | 固定区状态徽标 | 同一套 `Badge status="processing"` | antd（`AgentLogFactsBar` 的 `BADGE_STATUS`） |
+
+> ⚠️ **设计里曾写过的第 5 处「思考行最前的 6px 圆点呼吸（opacity 1→0.25，1.2s）」并没有实现**：
+> `globals.css` 里只有 `.aieval-activity-sweep` 与 `.aieval-stream-cursor` 两个动画类，
+> ui 包里 `1.2s` / `呼吸` / `opacity: 0.25` 零命中，思考块的标题里也没有圆点。
+> 已按实现把这一处从表里删掉（§14 有对应登记）。
 
 **为什么扫光只给折叠态的标题**：块结束后的静态文本上加动画，等于把「还在流」这个信号
 稀释成噪声；而折叠态下**看不到正文**，标题不表态就没有任何地方能表态了。
@@ -1886,11 +2167,11 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 | 项 | 取值 | 理由 |
 |---|---|---|
-| 落点 | `packages/client/ui/src/base/nested-drawer.tsx` 的 `NestedDrawer`（二级抽屉原语） | 几何与语义槽**只有一处**；`raw-output-panel.tsx` 的原文抽屉用的是同一个件 |
-| 几何常量 | `packages/client/ui/src/base/drawer-geometry.ts`：`NESTED_DRAWER_SIZE` / `DRAWER_SEMANTIC_STYLES` | 宽度写成字面量就会静默漂移（主抽屉与二级抽屉共用一份语义槽） |
+| 落点 | **`agent-environment-drawer.tsx` 里直接用 antd `Drawer`**（不是 `NestedDrawer` 原语） | 它只取 `NESTED_DRAWER_SIZE` 与 `mask.closable`；**语义槽样式是就地内联的一份副本**（`{ wrapper: { maxWidth: '100vw' }, body: { padding: 0 } }`，与 `DRAWER_SEMANTIC_STYLES` 逐字相同）。两处字面量会静默漂移，§14 已登记这个口子；`raw-output-panel.tsx` 的原文抽屉走的才是 `NestedDrawer` |
+| 几何常量 | `packages/client/ui/src/base/drawer-geometry.ts`：**`NESTED_DRAWER_SIZE`**（本件只引这一格） | 宽度写成字面量就会静默漂移（主抽屉与二级抽屉共用同一档宽度） |
 | `placement` | `'right'`（与主抽屉同侧） | 同侧才是「从主抽屉里再划出一层」的观感 |
 | 宽度 | `NESTED_DRAWER_SIZE` = `min(60vw, 900px)`，`maxWidth: '100vw'` | 比主抽屉 `WIDE_DRAWER_SIZE`（`max(50vw, 800px)`）窄一档：从主抽屉里推出来时仍看得见主抽屉 |
-| `push` | `MAIN_DRAWER_PUSH = { distance: 360 }`，**声明在主抽屉上** | rc-drawer 的位移量取**父级**那一份：写在二级抽屉上是空转（只挪 antd 默认的 180） |
+| `push` | **本件不写**；`MAIN_DRAWER_PUSH = { distance: 360 }` 声明在**主抽屉**上 | rc-drawer 的位移量取**父级**那一份：写在二级抽屉上是空转（实测只挪 antd 默认的 180） |
 | `destroyOnHidden` | `true` | 与主抽屉同口径（关掉即卸载，不留浮层状态） |
 | `styles.body.padding` | `0`，内边距由内容给 | 与三个既有抽屉同口径 |
 | `mask` | `{ enabled: true, closable: true }`（`maskClosable` 已废弃） | 点遮罩关闭是浮层的通用预期 |
@@ -1898,12 +2179,21 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 **内容布局**（自上而下）：
 
+0. **能力声明（可选，在最上面）**：`capability` 非空时先渲染标题「能力声明」+ `CapabilityNotes`
+   （维度名 + 中文名 + 四句原因之一 + 非空时的「能力随路由/模型变化：…」）。
+   ⚠️ **它在三态之外**：来源是**节点**（`LogNode.capability`，按值给），与「环境信息取没取到」无关
+   ——放进 `ready` 那一支的话，「环境信息没提供」会把一份明明拿到了的声明一起藏掉。
 1. **摘要条**：`Descriptions` `size="small"` `column={1}`——智能体 / 模型 / 思考强度 /
-   供应商 / 接口地址 / 工作区 / 基线提交。这些是「它跑在什么之上」。
-2. **分组**：每组一个 `Collapse`（`items` 的每个 `EnvGroup` 一项），组头 = 组名 + `Tag` 标来源
+   供应商 / 接口地址 / 工作区 / 基线提交。这些是「它跑在什么之上」。**「智能体」那一格画的是
+   数据层给的显示名**（`summary.agentLabel`，用户 2026-10-08 口径：页面展示不用缩写）：
+   kind → 全名的映射在**拼装侧**（`AGENT_LABELS`），组件**只把那个字符串画出来**
+   （L0 里查 `AGENT_LABELS` 会被 `agent-log-layering.test.ts` 的 (e) 条判成「UI 判厂商」，见 §10 那张表）；
+   认不出的 kind 由数据层**原样回落**（契约那一格是 `z.string()`，老快照与将来第四家都不许编名字）。
+   **`effort === null` 显示「未指定」**（不显示空白：空白会被读成「这一格没有这个概念」）。
+2. **分组**：每组一个 `Collapse`（`items` 的每个 `EnvGroup` 一项，**默认全开**），组头 = 组名 + `Tag` 标来源
    （用户层 / 厂商系统层 / 运行配置 / 实测统计）。**组名与分组顺序都由数据层给**
    （`EnvGroup.title` / 数组顺序），组件不硬编码任何一组的名字——
-   这样新增一层（例如「项目规范 / AGENTS.md」）不需要改组件。
+   这样新增一组不需要改组件（⚠️ **新增一个 `source` 档**才要改：`SOURCE_LABELS` 是四值穷尽映射表）。
 3. **条目**：`Collapse` 内每条一个「标签 + 正文」块：正文用 `MonoText`（逐字原文、可滚），
    `truncated` 非空时在尾部加一行「已截断（原文 N KB）」+ 「复制全部」按钮，
    有 `copyPath` 时再加「复制」按钮（调试时最常用的是把完整提示词粘到别处）。
@@ -1913,10 +2203,12 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 **内容写法的两条约束**（结构性的那三条理由见本节开头，此处不重复）：
 
 1. **条目缺失给原因，不隐藏**：`MissingReason` 四态各映射成**一句互不相同的中文**——
-   `not-supported` → 「这家结构上就没有」、`not-exposed` → 「厂商没有暴露给我们」、
-   `not-observed` → 「我们当前实现没接」、`unverified` → 「没验证过」。
-   四态各自的定义见 §4.1；**四句的逐字文案以 §10 的 `capability-notes.test.tsx` 为准**
-   （那里是唯一契约）。**不隐藏**：隐藏会把「这家结构上就没有」与「我们没接」说成同一件事——
+   `not-supported` → 「这家结构上不支持」、`not-exposed` → 「厂商有数据、但没投送到我们能读的通道」、
+   `not-observed` → 「厂商有、我们还没接」、`unverified` → 「没验证过」。
+   四态各自的定义见 §4.1；**四句的逐字文案只有一处真源**：`types.ts` 的 `MISSING_REASON_LABELS`
+   （能力格那四句由 `CAPABILITY_TO_MISSING_REASON` 取同一张表，不另抄一遍）；
+   §10 的 `capability-notes.test.tsx` 只是**钉住「四句互不相同」**的那条守卫，不是文案的定义处。
+   **不隐藏**：隐藏会把「这家结构上就没有」与「我们没接」说成同一件事——
    那正是「假装采到了」的反面。
 2. **不内套第二层滚动区**：长文本交给抽屉自己的 `body` 滚，否则环境抽屉里会出现两条滚动条。
    （与 §5.1「抽屉内只有一个滚动容器」不矛盾——那条是**针对单个抽屉**说的，
@@ -1931,12 +2223,12 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 |---|---|---|
 | `role === 'assistant'` | **不标注**（它是默认的主角，标了反而吵） | —— |
 | `role === 'user'` | 左侧竖线 + `Tag`「用户」 | 首条之后的用户消息（一次会话可以有多个用户轮）今天会被渲染成智能体的输出——「用户在读一份不知道谁在说话的记录」 |
-| `role === 'system'` | `Tag`「系统」+ **不折叠但降一档**（`Typography.Text type="secondary"`） | 厂商 system / 信封类文本若走 `text` 块，会按 markdown 正文渲染且不折叠，与智能体的结论**逐字同形** |
+| `role === 'system'` | `Tag`「系统」+ **不折叠但降一档**（`Typography.Paragraph type="secondary"`） | 厂商 system / 信封类文本若走 `text` 块，会按 markdown 正文渲染且不折叠，与智能体的结论**逐字同形** |
 | `role === 'tool'` | 由工具类块自身表达（不另标） | —— |
-| `source !== 'wire'` | 块角标 `Tag`：`session-file` → 「补录」、`aggregate` → 「汇总」、`hook` → 不标 | codex 的思考正文来自**会话文件**（运行结束后才有），界面上与实时数据逐字同形 ⇒ 用户把「事后补齐」读成「实时采到」 |
-| `assembly === 'open'` | §6.7 的扫光 / 光标（**唯一判据**） | 见 §4.2 第 1 条：模型里**没有任何流式布尔**，若不靠这一格，实现只能猜「是不是最后一轮」——一次中断会永远闪光标 |
-| `ThinkingBlock.textKind === 'summary'` | 标题后缀 `Tag`「摘要」 | codex 事件流那一格按厂商定义**只有推理摘要**；不标注就是「假称全文」 |
-| `ThinkingBlock.textKind === 'none'` | 已由 §6.1 例外 3 承担（显示 `textMissing`） | —— |
+| `source !== 'wire'` | 块角标 `Tag`：`session-file` → 「补录」、`aggregate` → 「汇总」、`hook` → 不标 | **全仓唯一发 `session-file` 的是 claude 的子任务收尾重交帧**（`claude-code/index.ts`：收尾读 CLI 转录拿到 `usage` 后连同该 source 重交）——那是「事后补齐」，界面上与实时数据逐字同形 ⇒ 用户会把「补录」读成「实时采到」。⚠️ codex 已不再产出 `session-file`（全走 app-server，`source` 恒 `'wire'`） |
+| `assembly === 'open'` | §6.7 的扫光 / 光标（**唯一判据**） | 见 §4.2 的「`running` 不能由有没有 `output` 推断」那一段——模型里**没有任何流式布尔**，若不靠这一格，实现只能猜「是不是最后一轮」——一次中断会永远闪光标 |
+| `ThinkingBlock.textKind === 'summary'` | 标题后缀 `Tag`「摘要」 | codex 的**厂商摘要**是**单独一块**（`reasoning.summary[]`），而它的思考全文（`reasoning.content[]`）记 `'full'`；不标注摘要那块就是「假称全文」 |
+| `ThinkingBlock.textKind === 'none'` | **不另标**：那一档的正文本来就是 `null`，整块在装配层被丢掉（§6.1 例外 3），没有可标注的对象 | —— |
 
 **`contentTruncatedReason` 非空时**同样如实显示那句话（内容被上限截断，与「最后一条就是终点」不是一回事）。
 
@@ -1949,9 +2241,10 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 | `attachmentKind === 'image'` | `Tag`「图片」+ `path`（`MonoText`）+ `mimeType`。**本期不加载缩略图**——加载远程资源会牵出鉴权、体积、CSP 三件事，不属于数据结构这一轮；结构上留位，渲染上先占位 |
 | `attachmentKind === 'file'` | `Tag`「文件」+ `path` + `mimeType` |
 | `path === null`（内联附件） | 「内联内容，无路径」（**不显示空白**，也不编造路径） |
-| `unrecognized` 块 | 折叠的 `raw` 等宽原文（**默认收起**，§6.1） |
+| `mimeType === null` | **整格不渲染**（不留一个空的「MIME：」） |
+| `unrecognized` 块 | 折叠的 `raw` 原文（**默认收起**，§6.1）：是 JSON 就走 `JsonText` 的格式化高亮，不是就 `MonoText` 逐字给出；厂商类型一并标出 |
 
-**附件出现在两处，都要接**：① 用户消息里（`LogNode.userPrompt` 本期仍是
+**附件出现在两处，都要接**：① 用户消息里（`SessionNode.userPrompt` 本期仍是
 `{ text, at }` 纯文本，**附件不进它**——它只承载提示词正文；附件以 `attachment` 块
 出现在该节点的首轮）；② 工具结果里（`ToolResultBlock` 本期不加附件出口，
 **登记为不做**：规范说 claude 的图片可以出现在工具结果里，但本仓工具结果以文本为主，
@@ -1959,30 +2252,37 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 ### 6.11 三处「用量」数字的形制与落点
 
-同一个抽屉里会出现三处用量数字，**它们不是一把尺子**（一个是整行累计、一个是按轮归属的累计、一个是单条消息），
+同一个抽屉里会出现三处用量数字，**它们不是一把尺子**（一个是整行累计、一个是单条消息自己那一次调用、一个是同一条消息的页脚），
 故**形制必须两两可分**——否则读的人会把「这一条消息花了多少」当成「这一行花了多少」：
 
 | 落点 | 量 | 形制 | 文案 |
 |---|---|---|---|
 | 顶部固定事实条 | **整行**累计（主会话 + 全部子智能体） | `Typography.Text type="secondary"`，**正体** | `输入 … · 缓存 … · 输出 …` |
-| 轮末的用量里程碑（§5.2） | **该会话到这一轮为止**的累计 | **`Tag`（色块）** + 时刻 | `用量 输入 … · 轮次 N`（N = **归属轮次号**） |
+| 轮末的用量里程碑（§5.2 / §6.14） | **整行只出一条**：候选阶段最后一条**主会话**读数（累积快照） | **`Tag`（色块）** + 时刻 | `用量 输入 … · 轮次 N`（N = **归属轮次号**；孤儿那一档回落本行累计轮次） |
 | 消息页脚（§6.13） | **这一条消息自己那一次模型调用** | `Typography.Text type="secondary"` + **`italic`**，**不得**用 `Tag` / `Badge` 包裹 | `本条 输入 … · 缓存 … · 输出 …` |
 
 - 为什么页脚必须加 `italic`：`Typography.Text` 只有 `type="secondary"` 这一档弱化，正体与顶部事实条**逐字同形**（会看混）；斜体是原生可用的第二档，且**不引入任何手写样式**。
-- 数字格式化**复用同一处**（`base/metric-line.tsx` 的 `formatCount`，事实条与行卡片同一出口），不新写第二份千分位实现。
+- 数字格式化**复用同一处**（`base/usage-metrics.ts` 的 `formatCount`（`metric-line` 只是再导出），事实条与行卡片同一出口），不新写第二份千分位实现。
 - 里程碑那一格**一个字都不改**（仍是既有 `Tag`）；卡片正文那一处同理。
 
 ### 6.12 子任务那一份用量的两行浮层（行卡片）
 
-「tok / 缓存命中 / 轮次」三格上的 `MetricLine` 只有**两个**数字位（合计在正文里），浮层按下面的判据**决定要不要拆两行**——两处各自独立判、都不新算任何数：
+`MetricLine` 那一行的**用量三格**（tok / 缓存命中 / 轮次）里，**浮层只有两个**（整行实际是五格：还有耗时与得分）：**tok** 与**轮次**——
+「缓存命中」那一格是裸 `Typography.Text`，**没有浮层**（缓存那一段讲的是 tok 浮层里的「缓存 …」）。
+两个浮层各自独立判、都不新算任何数：
 
-| 格 | 拆分口径 | 画第二行的判据（缺一条就退回改动前那一行且**连浮层都不出现**） |
+| 格 | 拆分口径 | 画第二行的判据（缺一条就退回改动前那一行） |
 |---|---|---|
-| **tok / 缓存命中** | 主会话 = 合计 − 分量（**相减派生，不是第二份真值**）；子智能体 = 分量本身 | 分量**在**（不是缺格）、三项之和**不全为 0**、且**逐格 ≤ 合计** |
+| **tok** | 主会话 = 合计 − 分量（**相减派生，不是第二份真值**）；子智能体 = 分量本身 | 分量**在**（不是缺格）、三项之和**不全为 0**、且**逐格 ≤ 合计** |
 | **轮次** | 同上，主会话 = `turns − subagentTurns` | 分量**在**、`> 0`、且 `≤ turns` |
 
-- 文案形如 `主会话 输入 16,103 · 缓存 45,312 · 输出 1,897` / `子智能体 输入 14,648 · 缓存 13,696 · 输出 2,539`；轮次那一格是 `主会话 6 轮` / `子智能体 3 轮`。
+> ⚠️ **「连浮层都不出现」只对「轮次」那一格成立**：用量那格在拆分失败时**仍有单行浮层**
+> （只是不拆成两行），只有 `shownTokens === null` 才没有；轮次那格才是「不拆就不出浮层」。
+> 两格的判据都由 `metric-line.tsx` 给，别把一句读成两格都有。
+
+- 文案形如 `主会话 输入 16,103 tok · 缓存 45,312 tok · 输出 1,897 tok` / `子智能体 输入 14,648 tok · 缓存 13,696 tok · 输出 2,539 tok`（走 `base/usage-metrics.ts` 的 `formatUsageTriple`，**带 `tok` 单位**）；轮次那一格是 `主会话 6 轮` / `子智能体 3 轮`。
 - **两格刻意不同**：token 那一格即便不拆也有一行「输入 … · 缓存 … · 输出 …」可讲（合计本身）；**轮次那一格只讲「怎么拆」，没有分量可拆时连浮层都不出现**——不要顺手把它补成一个只有合计的浮层。
+- ⚠️ **浮层只有 tok 与轮次两个**：「缓存命中」那一格（`metric-line.tsx` 里裸的 `Typography.Text`）**没有 Tooltip**——别把「三格」读成「三个浮层」。
 - ⚠️ **`{0,0,0}` 与 `null` 在这里渲染逐字相同（都只有一行），这是规则、不是漏做**：两者的区别在**契约与日志**里承重（一个说「确实没有」、一个说「没采到」），而这一格回答的是「子那一份怎么拆」——没有可拆的东西时，两种情形要画的本就是同一行。为它再造第三种文案，等于把「没采到」塞进一个只讲拆分的浮层里。
 - `≤ 合计` 那一条**不是装饰**：它是数据层不变量保证的，界面再查一遍是**纵深防御**——一份老 `run.json`（这一格由别的版本写入过）或一次将来引入的缺陷，都会以「两行自己都不自洽」的形式出现在用户面前，而那种画面看起来完全正常。
 - **浮层类否定面的断言必须等满延迟窗口**（antd 的 `mouseEnterDelay` 默认 0.1s，悬浮完**同步**查 `.ant-tooltip` 在任何实现下都为真）⇒ 用 `expectNoTooltip()`，不要同步断言。
@@ -2001,28 +2301,35 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 - **与里程碑是两个不同锚点**（`[data-usage-footer]` vs `[data-row-event]`），两者**互不嵌套**（既有用例已钉）。
 - 子会话节点**同样渲染**（该节点的消息上也带 `usage`）。
 
-### 6.14 用量里程碑的归位
+### 6.14 用量里程碑的选取与归位
 
-**规则**：用量里程碑按它**自带的归属键**归位，归属键 =（**会话身份**，**该会话自己的轮次号**）。
+**选取规则（2026-10-07 用户裁定，取代「创新高」）**：整行**只出一条**用量里程碑，取
+**候选阶段里最后一条主会话带计量的 `usage`**（`tokens === null` 的跳过）。三条边界：
 
-- **归属键由适配器在发 `usage` 事件时填**（谁能知道这次读数发生在哪个会话的哪一轮，谁填）：事件上那一格是 `usage.turn: { subagentId, round } | null`（契约见规范 §2.6 的口径）。
-- **界面两条规则，不留洞**（`rowEventsOfTurn(turns, events, index, homes?)`）：
+- **候选阶段的边界** = 第一条 `judging` 或任一终态状态帧：那之后的 `usage` 是评分智能体在同一条流里
+  接着报的读数，不属于这一行（与 `@aieval/client` 的 `row-live.ts` 口径 5 是同一条判据）；
+- **子会话的读数一条都不出**（`turn.subagentId` 非空 ⇒ 直接跳过）：那是**那个子会话自己**的累计，
+  只在派发点那张子任务卡片里展示（`SessionNode.usage`）；
+- **位置**：那一条排在**它自己那条事件的位置**上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
+
+**归位规则**：里程碑按它**自带的归属键**归位，归属键 =（**会话身份**，**该会话自己的轮次号**）。
+
+- **归属键由适配器在发 `usage` 事件时填**（谁能知道这次读数发生在哪个会话的哪一轮，谁填）：事件上那一格是 `usage.turn: { subagentId, round } | null`。
+- **界面两条规则，不留洞**（`rowEventsOfTurn(turns, events, index)`，**只有三个形参**）：
   1. **有归属键**：本轮的 `(turn.subagentId, turn.round)` 与它**逐字相同** ⇒ 归本轮；本节点**没有这一轮** ⇒ **本节点不显示它**（它属于别的会话节点）。**不回落按时刻**——回落会把不属于这一轮的读数塞进最后一轮，正是要消灭的那个毛病。
   2. **无归属键**（`error` / `warning` 这类行级事件，以及下面的「孤儿」）：**沿用按时刻**的规则（`index === 0 || turn.at <= event.at` 且下一轮不存在或 `next.at > event.at`）。
-- **「孤儿」= 归属键整行任何节点都没有那一轮**（异常形状：里程碑引用了一个没有内容的轮次）：它在 `buildAgentLogModel` 里就被抹成 `turn: null` ⇒ 走规则 2，**不丢**。判据是「全部会话节点的 `(subagentId, round)` 集合」，`rowEventsOf` 因此多收一个可选的 `homes` 参数；**不给时按「全是孤儿」处理**（老调用方与老用例的形状逐字不变）。
-- **里程碑的选取规则与数值口径一个字不改**：`tokens` 仍是累积快照、仍只在三项之和创新高时出一条；`轮次 N` 的 N **改用归属轮次号**（与它所在的分组同值，不再用本行累计轮次）。
-- 过滤器（`只看错误` 等）走的是**同一个** `rowEventsOfTurn` ⇒ 归属规则一处生效、处处一致，不另写一份。
+- **「孤儿」= 归属键指向的那一轮整行都不存在**（异常形状）：它在 `rowEventsOf`（`build-model.ts`）里就被抹成 `turn: null` ⇒ 走规则 2，**不丢**。判据是**主会话**节点的 `(subagentId, round)` 集合（`turnHomesOf`，只收 `kind === 'main'` 的节点——归属键只可能落在主会话上），
+  `rowEventsOf` 因此多收一个可选的 `homes` 参数；**不给时按「全是孤儿」处理**（老调用方与老用例的形状逐字不变）。
+- `轮次 N` 的 N **有归属键时用归属轮次号**（与所在分组同值）；**孤儿那一档回落本行累计轮次**（`turn?.round ?? event.turns`，见 §5.2）。
+- 过滤器（`只看错误` 等）走的也是**同一个** `rowEventsOfTurn` ⇒ 归属规则一处生效、处处一致，不另写一份。
 - ⚠️ **用量里程碑的落点不依赖时刻**：时间轴上的轮次**时刻**是派生的假时刻（§4.1 的落点说明），里程碑按**归属键**归位。⇒ 「按时刻挂事件」只是**没有归属键时**的回落，不要写成 `usage` 的规则。
 
-**水位（`highWater`）必须按会话拆开**（`Map<sessionKey, highWater>`，`sessionKey = turn?.subagentId ?? 'main'`）：
+> ⚠️ **本节早先写的「水位（`highWater`）按会话拆开」已退役**：整行只出一条、且子会话读数不进来之后，
+> 「按会话分桶」没有比较对象了。代码里已无任何**用量里程碑**的水位变量（`agent-log-layout` 的 `readCountRef` 是「未读轮次」的水位，不是这一档）；`turnHomesOf` 只收主会话轮次。
 
-- 没有它，子会话的读数会被主会话已经抬高的**整行**水位当场丢掉（子会话的累计从 0 涨到几万，而整行水位已到几十万）——即「子会话节点一条用量行都没有」。
-- **老日志不受影响**：历史 `usage` 行没有 `turn` ⇒ 全落 `main` 桶 ⇒ 与今天逐字相同（这一条要有用例钉住）。
-- 其余规则不动：孤儿回落、文案用归属号、`homes` 只收可达节点。
+**两个尺度不要混**（`v3 §2.5` 的口径）：`facts.turns.current` 是**当前节点的轮次数**（由时间轴派生），行卡片那一个 `轮次` 是**整行**（主 + 全部子智能体）——两者都是既有定义、都不改；本节只定「那一条里程碑怎么选、怎么归位」。
 
-**两个尺度不要混**（规范 §2.5 的口径）：`facts.turns.current` 是**当前节点的轮次数**（由时间轴派生），行卡片那一个 `轮次` 是**整行**（主 + 全部子智能体）——两者都是既有定义、都不改；本节的改动**只让归属不再依赖时刻**（时间轴的时刻仍是派生的假时刻，见 §4.1 的落点说明）。
-
-**已知残留**：子线程轮次是「第三把尺子」——行合计的子分量 `subagentTurns` 按会话文件的 `turn_id` 数，而子节点时间轴的轮次按模型答复条目数 ⇒ 行卡片的「轮次 = 主 + 子」与两个节点各自显示的轮次**互不自洽**。本次**不改计算**；真修要动 `EvalRow.turns` 的口径（另一次变更）。
+**已知残留**：子线程轮次是「第三把尺子」——行合计的子分量 `subagentTurns` **按各家的子会话转录去重计数**（claude 按子转录消息 `message.id` 去重、codex 按子线程的模型答复条目 id 去重、dsh 按子会话的 `step/start` 计数，见 `v3 §3.4`），而子节点时间轴的轮次按**投递到记录流的消息**分组 ⇒ 行卡片的「轮次 = 主 + 子」与两个节点各自显示的轮次**互不自洽**。本次**不改计算**；真修要动 `EvalRow.turns` 的口径（另一次变更）。
 
 ## 7. 性能
 
@@ -2060,7 +2367,7 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 ### 7.2 虚拟滚动（D9）
 
-**用 antd 自己的虚拟列表 `Listy`（`antd/listy`），不自己写窗口化。** 依据：
+**用 antd 自己的虚拟列表 `Listy`（从 `'antd'` 包根**具名**导入——antd 6.6.5 没有 `antd/listy` 这个子路径），不自己写窗口化。** 依据：
 
 1. **它逐项测量动态高度**（而**不必**由调用方做任何事——见下方 ⚠️）。本设计里每个轮次的高度
    随「嵌套折叠面板开合」变化——自建方案在这一处的失败模式是
@@ -2090,11 +2397,11 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 
 | 层 | 谁负责虚拟化 | 理由 |
 |---|---|---|
-| `MessageTimeline`（L1） | **完全不负责**：逐轮 `map` 渲染，`turns` 多大就渲染多少 | §2.1 S3：内嵌只读视图的轮次数常常只有几轮，为它引虚拟列表是净亏；而 S5（监控台）要的可能是别的几何 |
-| `VirtualTurnList`（L2） | **它负责**：用 `packages/client/ui/src/base/virtual-list.tsx` 的 `VirtualList`（**全仓唯一的 `<Listy>`**）把「按项渲染」回调接到 `MessageTimeline` 的单轮渲染上 | 抽屉里有两处内容都会长到上千行（轮次时间轴、原文行的逐行台账）——原语只留一处，避免两份高度测量与两份「量不到就不虚拟化」的退化兜底 |
+| `AgentMessageTimeline`（L1） | **完全不负责**：逐轮 `map` 渲染，`turns` 多大就渲染多少 | §2.1 S3：内嵌只读视图的轮次数常常只有几轮，为它引虚拟列表是净亏；而 S5（监控台）要的可能是别的几何 |
+| `VirtualTurnList`（L2） | **它负责**：用 `packages/client/ui/src/base/virtual-list.tsx` 的 `VirtualList`（**虚拟化的唯一持有者**）把「按项渲染」回调接到 `AgentMessageTimeline` 的单轮渲染上 | 抽屉里有两处内容都会长到上千行（轮次时间轴、原文行的逐行台账）——原语只留一处，避免两份高度测量与两份「量不到就不虚拟化」的退化兜底 |
 
 **收拢后仍必须守的一条**（原样保留）：`buildRenderBlocks` 必须在**按项渲染回调**里被调用
-——现在这个回调归 `VirtualTurnList` 持有，它调的是 `MessageTimeline` 的单轮渲染入口：
+——现在这个回调归 `VirtualTurnList` 持有，它调的是 `AgentMessageTimeline` 的单轮渲染入口：
 
 ```
 ✗ 错：buildAgentLogModel() → turns[].blocks = buildRenderBlocks(...)   // 几百轮全建
@@ -2102,11 +2409,11 @@ UI 从当前节点的块里线性扫一遍即可，与 §5.2 的「创新高」�
 ```
 
 否则纯 JS 那一段仍要跑几百轮，虚拟滚动只省了 DOM、没省计算。
-**L1 的 `MessageTimeline` 不接受「已建好的 `RenderBlock[]`」作为输入**——那会诱导调用方
-在外面先全建一遍。它吃的是 `turns` + `renderBlock` 分派函数（§9.2）。
+**L1 的 `AgentMessageTimeline` 不接受「已建好的 `RenderBlock[]`」作为输入**——那会诱导调用方
+在外面先全建一遍。它吃的是 `turns` + `renderBlock` 分派函数（§9.1）。
 
 **「已渲染 N / 共 M 轮」这个护栏随虚拟化一起归 L2**：不虚拟化时 N === M、
-这一行没有信息量，故 `MessageTimeline` 不渲染它，只有 `VirtualTurnList` 在列表尾部给，
+这一行没有信息量，故 `AgentMessageTimeline` 不渲染它，只有 `VirtualTurnList` 在列表尾部给，
 N 取自 `VirtualList` 的 `onMeasured`（数 `data-turn-row` 行节点，量不到就退回 `turns.length`）。
 它既是调试指标也是性能护栏（N 失控增长时立刻看得见）。
 
@@ -2136,24 +2443,39 @@ N 取自 `VirtualList` 的 `onMeasured`（数 `data-turn-row` 行节点，量不
 
 ### 8.1 对外文档的口径（逐文件）
 
-| 文件 | 改成 |
-|---|---|
-| `README.md` 的抽屉表 | 按钮名「执行日志」；下载说明改为「下载原始事件台账（与抽屉视图不同：台账是逐条事件原文，抽屉是按轮次组织的视图）」 |
-| `README.md` 的按钮顺序口径 | 逐字改「执行日志」（顺序不变） |
-| `README.md` 排障表：`[codex]` 那几行 | 「对照『执行日志』抽屉的『原始输出』里的 `[codex]` 那几行」 |
-| `README.md` 排障表：补一行 | 「打开『执行日志』看到『还没有日志』而这一行明明跑过」→ 时间轴吃的是 `messages.jsonl`，而**厂商事件的投影只覆盖了一部分**；夹具画得出来的形态（清单 / 问答 / 子任务轨迹）要等适配器写进那条记录流才看得见。**此时原始事件仍在**（固定区的「原始输出」逐字可查） |
-| `eval-row-card.tsx` 的按钮 | 「执行日志」 |
-| `eval-row-card.test.tsx` 的可访问名与顺序断言 | 逐字改（**顺序断言的口径不变**） |
-| `agent-activity-line.tsx:18` 注释 | 改「执行日志」，并补「子任务内容在面包屑里」 |
-| `packages/server/agents/src/turn.ts` 的 stderr 注释 | 改「执行日志」，并点明 `[codex]` 那几行在它的「原始输出」里（**只改注释，不动落盘逻辑**） |
-| `docs/superpowers/specs/2026-09-22-features-design.md:168` 的版式图 | 「执行日志」（历史 spec 的版式图，改文案不改结构） |
-| `2026-09-22-scaffold-design.md` §13.8 的抽屉几何 | 补一条：**执行日志抽屉**改用虚拟列表自持滚动容器；变更详情 / 评分详情两抽屉口径不变，`body` 仍 `padding: 0` |
-| `2026-09-30-agent-message-spec-design.md` §7.6.2 ⑨ / §7.6.4 | 补三条落地说明：① 族结构落到**块**上时**只挂 `tool-call` 块**、由数据层回填，且给 UI 的是「本次调用后的归一结果」（清单在 dsh 的 `arguments` 里、在 claude 的结果累积里，由适配器读）；② `commitModel` 与 `TaskListArgs` 空壳**不进 UI 契约**；③ 两族在**轮次时间轴**里的位置、折叠默认态、同轮多次调用的画法，以本文 §5.4 / §5.5 为准 |
-| `2026-09-30-agent-message-spec-design.md` §11.1 第 27 项 | 本文按「**不编 id**」处置（§5.4）：`id === null` 时不画 id 与依赖，`owner` / `blockedBy` 两格如实少画。该缺口闭合后 UI 无需改动（它吃的是整表结构） |
-| `2026-09-30-agent-message-spec-design.md` §7.0.5 / §7.6.4 / §11.1 第 22 项 | 本文的 UI 契约**不出现 `message.turn`**：分组用数据层给的**统一轮次号** `LogTurn.round`（= `usage.turns` 口径，§4.1）。换算落在数据层（`turn` 正名为模型往返序号、厂商轮号另存 `vendorTurn`） |
-| `2026-09-30-agent-message-spec-design.md` §7.7（`UsageEvent.thinkingTokens` / `usageCapability.thinkingTokensBasis`） | 思考 token 与 `tokens` **并列**（`thinking: { tokens; basis } \| null`，§4.1），可加性由 `basis` 决定 |
+**这一节是「改哪个文件、改成什么」的执行清单**，逐条都已核对到真实文件。
+⚠️ **`README.md` 目前只有 60 行、没有抽屉表 / 按钮顺序口径 / 排障表这三个结构**（2026-10 实测）：
+下表前四行是**「要新增的结构」**，不是「在既有表里改字」——照旧读会白找一遍。
 
-> 注：上表四条引用的 `2026-09-30-agent-message-spec-design.md` **已并入 v3 并从库中删除**——那些小节号是当时那份稿子的锚点，内容现全部落在 [`2026-10-01-agent-message-spec-design-v3.md`](./2026-10-01-agent-message-spec-design-v3.md)。
+| 文件 | 改成 | 现状 |
+|---|---|---|
+| `README.md`：**新增**一张抽屉表 | 按钮名「执行日志」；下载说明写「下载原始事件台账（与抽屉视图不同：台账是逐条事件原文，抽屉是按轮次组织的视图）」 | 表不存在，要新加 |
+| `README.md`：**新增**按钮顺序口径 | 逐字「执行日志」（顺序不变，仍是五个按钮的第一个） | 同上 |
+| `README.md`：**新增**排障表，含 `[codex]` 那一行 | 「对照『执行日志』抽屉的『原始输出』里的 `[codex]` 那几行」 | 同上 |
+| `README.md`：排障表再补一行 | 「打开『执行日志』看到『还没有日志』而这一行明明跑过」→ 时间轴吃的是 `messages.jsonl`，而**厂商事件的投影只覆盖了一部分**；夹具画得出来的形态（清单 / 问答 / 子任务轨迹）要等适配器写进那条记录流才看得见。**此时原始事件仍在**（固定区的「原始输出」逐字可查） | 同上 |
+| `packages/client/ui/src/composite/eval-row-card.tsx` 的按钮 | 「执行日志」 | ✅ 已改（按钮文案在第 236 行） |
+| `packages/client/ui/src/composite/eval-row-card.test.tsx` 的可访问名与顺序断言 | 逐字改（**顺序断言的口径不变**：仍是五个按钮的第一个） | ✅ 已改（注释与顺序数组都写「执行日志」） |
+| `packages/client/ui/src/base/agent-activity-line.tsx` 的注释 | 改「执行日志」，并补「子任务内容在面包屑里」 | ✅ 已改（原第 18 行那句，现落在文件头第 3 条口径里） |
+| `packages/server/agents/src/turn.ts` 的 stderr 注释 | 改「执行日志」，并点明 `[codex]` 那几行在它的「原始输出」里（**只改注释，不动落盘逻辑**） | ✅ 已改（`CLI 的 stderr 也必须落进该行事件流` 那段） |
+| `docs/superpowers/specs/2026-09-22-features-design.md` 的版式图 | 「执行日志」 | ✅ 已改（版式图那一行；**行号已漂**，别再按行号找） |
+| `docs/superpowers/specs/2026-09-22-features-design.md` §5.3.4 的抽屉几何 | 补一条：**执行日志抽屉**改用虚拟列表自持滚动容器；变更详情 / 评分详情两抽屉口径不变，`body` 仍 `padding: 0` | ✅ 已补（§5.3.4 末尾那句「**执行日志抽屉是例外**」） |
+| `2026-09-30-agent-message-spec-design.md` §7.6.2 ⑨ / §7.6.4 | 补三条落地说明：① 族结构落到**块**上时**只挂 `tool-call` 块**、由数据层回填，且给 UI 的是「本次调用后的归一结果」（清单在 dsh 的 `arguments` 里、在 claude 的结果累积里，由适配器读）；② `commitModel` 与 `TaskListArgs` 空壳**不进 UI 契约**；③ 两族在**轮次时间轴**里的位置、折叠默认态、同轮多次调用的画法，以本文 §5.4 / §5.5 为准 | ⚠️ **该文件已不存在**（并入 v3 后删除），这四条改到 v3 的对应小节 |
+| `2026-09-30-agent-message-spec-design.md` §11.1 第 27 项 | 本文按「**不编 id**」处置（§5.4）：`id === null` 时不画 id 与依赖，`owner` / `blockedBy` 两格如实少画。该缺口闭合后 UI 无需改动（它吃的是整表结构） | 同上 |
+| `2026-09-30-agent-message-spec-design.md` §7.0.5 / §7.6.4 / §11.1 第 22 项 | 本文的 UI 契约**不出现 `message.turn`**：分组用数据层给的**统一轮次号** `LogTurn.round`（= `usage.turns` 口径，§4.1）。换算落在数据层（`turn` 正名为模型往返序号、厂商轮号另存 `vendorTurn`） | 同上 |
+| `2026-09-30-agent-message-spec-design.md` §7.7（`UsageEvent.thinkingTokens` / `usageCapability.thinkingTokensBasis`） | 思考 token 与 `tokens` **并列**（`thinking: { tokens; basis } \| null`，§4.1），可加性由 `basis` 决定 | 同上 |
+
+> 注：上表四条引用的 `2026-09-30-agent-message-spec-design.md` **已并入 v3 并从库中删除**
+> （实测 `Test-Path` 为假）——那些小节号是当时那份稿子的锚点，内容现全部落在
+> [`2026-10-01-agent-message-spec-design-v3.md`](./2026-10-01-agent-message-spec-design-v3.md)。
+> 要补的说明请直接写进 v3 的对应小节，**不要再往那个文件名上写**。
+
+> **README 那四行的来历（免得下一个人白找一遍）**：这些结构**曾经存在过**——
+> `git show 8130b80:README.md`（420 行）的第 175 / 223 / 249 / 250 行就是抽屉表、按钮顺序口径、
+> 排障表的 `[codex]` 行与要补的那一行，且文案**已经是「执行日志」**。那份 README 在
+> `e68d27a`（2026-10-07 的 codex 重构提交）里被砍到 60 行，四个结构一起消失。
+> ⇒ 要恢复时**从那个提交里取回**，逐字口径另见
+> `docs/superpowers/notes/2026-10-02-exec-log-spec-content-baseline.md` 的逐文件修订表。
+> 另有一处**死引用**要顺手改掉：`packages/server/agents/README.md` 仍把「排障表」记在根 README 名下。
 
 ### 8.2 与规范小节号的对照（**查表用**）
 
@@ -2167,50 +2489,56 @@ N 取自 `VirtualList` 的 `onMeasured`（数 `data-turn-row` 行节点，量不
 - **v3 没收录的概念由本文自行定义**，就地写明，不指向 v2 的节号
   （清单见卷首的 ⚠️ 段：`ask-user` 答案回填与七态、`TaskStep`、`commitModel` / `TaskListArgs`）。
 
-**对照表**（本文引用规范时用到的全部目标）：
+**对照表**（本文引用规范时用到的全部目标）。
+⚠️ **左列那些 `v2 spec §7.6.x` / `§11.1` 的锚点来自一份已删除的稿子**
+（`2026-09-30-agent-message-spec-design.md`，已并入 v3 并从库中删除；§8.1 表下也记了这件事）。
+库里现存那份 `2026-10-01-agent-message-spec-design-v2.md` 的 §7 / §11 **没有这些子节**（实测 `7.6` / `11.1` 零命中）——
+所以这些引用**读法是「那份旧稿的锚点」**，落点一律看右列的 v3：
 
 | 引用（v2 体系） | v3 的实际位置 | 备注 |
 |---|---|---|
 | `v2 spec §7.6.0`「规范化是可选增收 / 降级不算失败」 | **v3 §5.1**（`family` 记 `null` 走通用渲染）+ **§7.2** | v3 用「通用渲染」而非「通用回退」 |
 | `v2 spec §7.6.4`「只按 `family` 分支」 | **v3 §5.1**（族由工具名决定） | —— |
-| `v2 spec §7.6.4`「只画最后一条结果，历史折叠」 | **v3 无对应句** | 本设计**自行定义**（§5.4 规则 3），理由就地写在 §5.4 |
+| `v2 spec §7.6.4`「只画最后一条结果，历史折叠」 | **v3 §5.4 已有前半**（「每轮取该轮最后一条，并在卡片上标出『本轮另有 N 次更新』」） | 「**历史折叠**」这个措辞是本文自定（§5.4 规则 3），理由就地写在那里 |
 | `v2 spec §7.6.2 ⑨`「整表语义 / 计数是派生值」 | **v3 §5.3**（`task` 族的合并语义）+ **§5.4** | —— |
-| `v2 spec §7.6.2 ⑩`「七态 / 答案回填 / 选项语义」 | **v3 无对应物**（见下「v2 独有概念」） | 本设计自行定义于 §4.1 + §5.5 |
+| `v2 spec §7.6.2 ⑩`「七态 / 答案回填 / 选项语义」 | **v3 §5.1**（「问答族的消费方义务」：`selected[]` 装选项标签、`custom` 的多选/单选语义、`recommended` 不改顺序、`allowOther`、收场七态含 `auto-resolved`） | 本文独有的是 **`outcome` / `answers` 的契约落点**与「选项里没有的标签原样显示」这一条 |
 | `v2 spec §7.6.2.2`「两张面板」 | **v3 §5.4 / §5.5** | —— |
 | `v2 spec §7.7` / `§7.7.0`「思考 token 与 `tokens` 并列」 | **v3 §2.4**（`reasoningOutput` 是 `output` 的子集） | ⚠️ **v3 没有 `basis` 概念**；本设计的 `basis` 是**自行收窄**（§4.1 已注明） |
 | `v2 spec §7.0.5`「`message.turn` 三家语义不同」 | **v3 §1.2**（四个易混量）+ **§3.1**（`roundTrip` / `vendorTurn` / `step` 逐家路径） | —— |
-| `v2 spec §11.1` 第 27 项「`TaskCreate.taskId` 来源未定」 | **v3 §5.3**（codex 的 `steps[].id` 是按序号生成、**不得当稳定键**） | 两版说的是同一类问题 |
-| `v2 spec §12`「不读厂商会话文件作为消息来源」 | **v3 无 §12** | 该口径已由 v3 §4.2/§4.3 的实施路径取代（会话文件**是**思考正文与子任务轨迹的来源）⇒ **本设计 §12 的这句已失效，需按 v3 改写** |
+| `v2 spec §11.1` 第 27 项「`TaskCreate.taskId` 来源未定」 | **v3 §5.3**（「条目**没有 id** ⇒ `steps[].id` 只能是 `null`，**不自己发号**」）+ **§5.4**（「不要按序号编一个」） | 两版说的是同一类问题；⚠️ v3 **没有**「按序号生成」这个说法 |
+| `v2 spec §12`「不读厂商会话文件作为消息来源」 | **v3 无 §12** | 该口径已由 v3 §4.2/§4.3 的实施路径取代（**今天只剩 claude 的子智能体转录**——收尾读 CLI 转录补 `usage` 与轮次；codex 已全部走 app-server，不再读会话文件）⇒ §12.7 已按 v3 改写（只留 claude 的子智能体转录） |
 | `v2 spec §5.2`（内容块） | ⚠️ v3 **§5.2 = 三家工具名 → 族** | 同号不同义。内容块在 v3 **§2.2** |
 | `v2 spec §6.2`（`subagentId ↔ callId`） | ⚠️ v3 **§6.2 = 覆盖合并算法** | 同号不同义。子任务行在 v3 **§2.8** |
 | `v2 spec §3`（四态能力声明） | v3 **§2.7**（**五态**） | 同号不同义。v3 的能力声明形状见 §2.7 |
 | `v2 spec §4`（`not-observed` 与 `not-supported` 之分） | v3 **§2.7** + **§7** 前言 | —— |
 | `v2 spec §5`（覆盖语义） | v3 **§6.1 / §6.2** | —— |
 
-**v2 独有概念（v3 未收编，必须由本文就地定义）**——实测 v3 全文**零命中**：
+**本文自行定义（不指向任何 v2/v3 节号）的概念**——这几个词在 v3 里的含义**不等于**本文要的：
 
-| 概念 | v3 命中 | 本设计的处置 |
+| 概念 | v3 现状（实测） | 本设计的处置 |
 |---|---|---|
-| `AskUserAnswer`（答案回填） | 0 | **本文定义**于 §4.1；三条回填口径就地写在 §5.5 |
-| `recommended` / `allowOther` / `multiSelect` / `secret` | 0 | 同上（§4.1 的 `AskUserQuestion`） |
-| `AskUserOutcome` 七态（含 `auto-resolved`） | 0（v3 只提 `outcome: 'unavailable'`） | **本文定义**于 §4.1，逐态文案在 §5.5 |
-| `TaskStep` | 0（v3 只在 §5.1 内联写 `{id, subject, status, owner?, blockedBy?}`） | **本文按 v3 §5.1 的内联形状定义**于 §4.1 |
-| `commitModel` / `TaskListArgs` | 0 | 本设计的「**不进 UI 契约**」处置**仍然成立**；理由是「UI 只吃归一后的整表」（§4.1） |
+| `AskUserAnswer`（答案回填） | **0 命中** | **本文定义**于 §4.1；三条回填口径就地写在 §5.5 |
+| `AskUserOutcome` 七态（含 `auto-resolved`） | `auto-resolved` 在 v3 **§5.1** 里有（1 处），同段也写了 label 配对与 `custom` 语义 | **本文定义**于 §4.1，逐态文案在 §5.5；回填口径就地写 |
+| `AskUserQuestion` / `AskUserOption` 的选项语义（`multiSelect` / `allowOther` / `secret` / `recommended`） | **v3 §2.2** 定义这四个字段（`secret` 全文 1 处），消费口径在 **§5.1** | 本文按 v3 的两处定义于 §4.1，**不再声称「v3 未收编」** |
+| `TaskStep` | v3 **§2.2** 已有 `interface TaskStep` | 本文按 v3 §2.2 的形状定义于 §4.1（同名同义）；`task` 族的**合并语义**在 §5.3 |
+| `commitModel` / `TaskListArgs` | **0 命中** | 本设计的「**不进 UI 契约**」处置**仍然成立**；理由是「UI 只吃归一后的整表」（§4.1） |
 
-> **纪律**：上表这些概念**不得**改成「见 v3 §x」——那会指向不存在的东西。
-> 它们的定义只能就地给出，并注明「来源为 v2 系设计稿；v3 未收编，本设计自行定义」。
+> **纪律**：上表这几项里，凡是 v3 已有对应物的（`auto-resolved` / 选项四字段 / `TaskStep`），
+> **照 v3 引用**；凡是 v3 没有的（`AskUserAnswer` 的回填口径、`commitModel` / `TaskListArgs`），
+> **就地定义**并注明「来源为 v2 系设计稿；v3 未收编，本设计自行定义」。
+> 引用前**重新实测一遍 v3**——它在这几周里被并行修订过，本表随时会再过期。
 
-**v3 自身的一处不一致（本设计的取舍已按它对齐）**：
+**v3 已经把这一档讲清楚了（本文的取舍与它一致）**：
 
-| v3 位置 | 内容 |
+| v3 位置 | 内容（实测） |
 |---|---|
-| **§2.8** 的 `SubagentRecord` 类型 | `status: 'running' \| 'completed' \| 'failed' \| 'stopped' \| 'unknown'`（**5 值**） |
-| **§5.5** 的渲染要求（逐字） | 「状态取值固定为**六种**：`running` / `completed` / `failed` / `stopped` / `unknown` / **`未收场`**」 |
+| **§2.8** 的 `SubagentRecord` 类型 | `status: 'running' \| 'completed' \| 'failed' \| 'stopped' \| 'unknown'`（**契约 5 值**） |
+| **§2.8** 的硬规则 | 「界面状态类型共**七档**（契约五态 + `canceled` / `unsettled`）」 |
+| **§5.5** 的渲染要求 | 「契约五态 …… 界面类型另有 `canceled` / `unsettled` 两档（`LogNodeStatus` 共七档）」 |
 
-⇒ v3 的**类型与自己的渲染要求对不上**（类型 5 值、要求 6 值）。
-本设计的 `LogNodeStatus`（§4.1）**取六值语义、加 `unsettled`**，即按 **v3 §5.5 的要求**走；
-它**超出了 v3 §2.8 的类型定义**，这是有意的——否则「被强杀的子任务」只能显示成 `running`
-（读者会一直等一个不会来的收场）。**待 v3 补齐该格后，本设计无需改动。**
+⇒ **v3 已经把这一档写全了**（契约五态 + 界面 `/canceled` `/unsettled` 两档），
+本设计的 `LogNodeStatus`（§4.1）与它**同档**（七值）。
+⚠️ 实测口径会随 v3 的并行修订漂移，引用前重跑一遍 `Select-String`。
 
 ## 9. 组件与文件
 
@@ -2228,12 +2556,15 @@ N 取自 `VirtualList` 的 `onMeasured`（数 `data-turn-row` 行节点，量不
 L2 场景预设   agent-log-drawer · agent-log-layout · virtual-turn-list
                 · agent-log-toolbar-preset · use-agent-log-view
                     ↓ 只能向下依赖
-L1 受控组合件 agent-message-timeline · log-node-breadcrumb · agent-log-facts-bar
+L1 受控组合件 agent-message-timeline · log-node-breadcrumb · agent-log-facts-bar ·
+                agent-log-domain-facts
                     ↓ 只能向下依赖
-L0 纯渲染件   text-block-view · thinking-block-view · tool-group-panel ·
-                tool-item-detail · subagent-bar · task-panel-card · ask-user-card ·
-                agent-run-state-tag · raw-output-panel · agent-environment-drawer ·
+L0 纯渲染件   text-block-view · thinking-block-view · tool-group-panel · tool-item-detail ·
+                attachment-block-view · unrecognized-block-view · subagent-bar ·
+                row-summary-line · task-panel-card · ask-user-card · agent-run-state-tag ·
+                raw-output-panel · capability-notes · agent-environment-drawer ·
                 block-renderer-registry · render-blocks(纯函数)
+                （16 个 = agent-log-layering.test.ts 的 L0_FILES 清单）
 ```
 
 **三条硬纪律**（它们就是「高内聚低耦合」在本仓的可判定形式）：
@@ -2246,7 +2577,7 @@ L0 纯渲染件   text-block-view · thinking-block-view · tool-group-panel ·
 
 **L0 与 L1 的分界不是「有没有 props」，而是「认不认 `LogTurn`」**：
 L0 吃的是**单个块**（`TextBlock` / `ToolItem` / `TaskPanel` / …），
-L1 吃的是**一轮**（`LogTurn` + 分派函数）。故 `MessageTimeline` 是 L1 而不是 L0——
+L1 吃的是**一轮**（`LogTurn` + 分派函数）。故 `AgentMessageTimeline` 是 L1 而不是 L0——
 它知道「一轮里有多个块、要按顺序摆」，但**不知道虚拟化、不知道轮次跳转、不知道过滤**。
 
 ### 9.1 L0 / L1 的 props 契约（重组场景真正吃的就是这些）
@@ -2266,26 +2597,37 @@ export interface MessageTimelineProps {
   /** 折叠态：`activeKey` 由 L2 给（§6.1）。不传 = 全部用默认态、不可交互 */
   openKeys?: ReadonlySet<string>;
   onOpenChange?: (key: string, open: boolean) => void;
-  /** 行级事件（§5.2）：按 `at` 落在轮次之间 */
+  /** 行级事件（§5.2）：有归属键的按「会话 + 号」落到那一轮，无键的按 `at` 落在轮次之间（§6.14） */
   rowEvents?: readonly RowEvent[];
-  /** 用户提示词（§6.3 首条消息）。**L1 不知道它从哪来**，只负责摆在最前 */
-  userPrompt?: LogNode['userPrompt'];
-  /** 当前节点 id：折叠默认态与「这一类内容没被转发」的判定按节点分（同一行不同子任务的采数通道可以不同） */
+  /** 用户提示词（首条消息，见 §6.1 的折叠表与 D19）。**L1 不知道它从哪来**，只负责摆在最前、不折叠 */
+  userPrompt?: SessionNode['userPrompt'];
+  /** 当前节点 id：只用于给 `buildRenderBlocks` 的轮上下文（规则 3 的兜底定位），不参与任何分支 */
   activeNodeId?: string;
-  /** 贴在时间轴顶部的如实提示（如「该子任务的对话未转发」）；空数组 = 一条都不渲染 */
-  notices?: readonly string[];
+  /** 贴在用户提示词之后的如实提示（如「该子任务的对话未转发」）。**是节点、不是字符串**（要能带 `Alert` 的样式） */
+  notices?: readonly ReactNode[];
   /** 子任务占位条的「进入 ▸」；不给则该动作不渲染 */
   onEnterNode?(nodeId: string): void;
   /** 节点内容读取失败时的重试（§4.4 的 `AgentLogSource.retryNode` 落点） */
   onRetryNode?(nodeId: string): void;
   /** 展开「原始输出」时向数据层上报（§4.4 的 `requestDiagnostics` 落点） */
   onRequestDiagnostics?(): void;
-  /** 能力声明：结果未采集时写出「为什么」的那份（§9.7 的 `missingReason`） */
+  /** 能力声明：结果未采集时写出「为什么」的那份（§9.7 的 `missingReason`）。**L1 不读它，只转发** */
   capability?: MessageCapabilityMap;
+}
+
+/**
+ * 单轮渲染入口收到的上下文：`MessageTimelineProps` 去掉 `turns`，**外加整份轮次**。
+ * 为什么要把 `turns` 带回来：**无归属键的**行级事件按 `at` 落在轮次之间，判定「这一轮是不是最后一个
+ * `at` 不晚于事件的轮次」要看邻轮。该字段可选 ⇒ 只给 `Omit<MessageTimelineProps, 'turns'>` 的调用方照样可用。
+ */
+export interface TurnRenderContext extends Omit<MessageTimelineProps, 'turns'> {
+  turns?: readonly LogTurn[];
 }
 
 /** 单轮渲染入口：**虚拟列表按项渲染时调的就是它**（§7.2 的护栏挂在它上面） */
 export type RenderTurn = (turn: LogTurn, index: number) => ReactNode;
+
+/** 具名导出：`renderTurn(turn, index, props)` / `UserPromptBlock` / `turnKey` / `renderBlockKey` 都在 L1 */
 
 /** 块分派：注册表与自定义策略的公共形状（§9.3） */
 export type BlockRenderer = (block: RenderBlock, ctx: BlockRenderContext) => ReactNode;
@@ -2294,10 +2636,10 @@ export interface BlockRenderContext {
   /** 折叠态是否打开（受控，§6.1） */
   open: boolean;
   onOpenChange(next: boolean): void;
-  /** 「原始结果 ▾」那份二级开合态（与主折叠态同一个受控来源，不另立 state） */
+  /** 「原始结果」那份二级开合态（与主折叠态同一个受控来源、不同键后缀，不另立 state） */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
-  /** 折叠键全集：卡片要判断「同一轮里别的块」时读它，不自己拼键 */
+  /** 折叠键全集：工具组要用它判「组内哪一行开着」，不自己拼键 */
   openKeys?: ReadonlySet<string>;
   /** 组内某一行的开合（工具组专用；键由 `toolEntryKey` 给） */
   onEntryOpenChange?(key: string, open: boolean): void;
@@ -2322,7 +2664,8 @@ export interface BlockRenderContext {
 }
 ```
 
-**`MessageTimeline` 的 props（L1，§9.1 已给）与两个具名类型**：
+**L2 吃到的三个具名类型**（`AgentMessageTimeline` 的 L1 props 见上一段，不在这里重复）：
+`TimelineSlotProps`（`timeline` 槽的入参）、`AgentLogViewState` + `AgentLogFilters`（视图态外置）：
 
 ```ts
 /**
@@ -2342,12 +2685,12 @@ export interface TimelineSlotProps {
   /** 折叠态（受控，§6.1） */
   openKeys: ReadonlySet<string>;
   onOpenChange(key: string, open: boolean): void;
-  /** 行级事件（§5.2） */
+  /** 行级事件：**整行全量**（未过滤）——过滤只作用在轮次上，事件跟着它那一轮走（§6.5） */
   rowEvents: readonly RowEvent[];
-  /** 当前节点的用户提示词（§6.3 首条消息） */
-  userPrompt: LogNode['userPrompt'];
-  /** 贴在时间轴顶部的如实提示（「这一类内容没被转发」等） */
-  notices?: readonly string[];
+  /** 当前节点的用户提示词（首条消息，见 §6.1 的折叠表与 D19）。**行级汇总节点没有这一格**，那里是 `null` */
+  userPrompt: SessionNode['userPrompt'];
+  /** 贴在用户提示词之后的如实提示（「这一类内容没被转发」等）；一条都没有时给 `undefined` */
+  notices?: readonly ReactNode[];
   onEnterNode?(nodeId: string): void;
   onRetryNode?(nodeId: string): void;
   onRequestDiagnostics?(): void;
@@ -2371,14 +2714,20 @@ export interface AgentLogViewState {
   follow: boolean;
   setFollow(next: boolean): void;
   /** 过滤（§6.5）；两个过滤可叠加（AND），在**轮次级**生效 */
-  filters: { onlyTools: boolean; onlyErrors: boolean };
-  setFilters(next: { onlyTools: boolean; onlyErrors: boolean }): void;
+  filters: AgentLogFilters;
+  setFilters(next: AgentLogFilters): void;
   /** 环境抽屉开合（§6.8；受控，抽屉本体自己不持态） */
   environmentOpen: boolean;
   setEnvironmentOpen(open: boolean): void;
-  /** 折叠态键集合（§6.1 的 `activeKey`：内置默认态 ∪ 用户手动开过的） */
+  /** 折叠态键集合（§6.1）：**内置默认态 ∪ 用户手动开过的 ∖ 用户手动关掉的** */
   openKeys: ReadonlySet<string>;
   onOpenChange(key: string, open: boolean): void;
+}
+
+/** 过滤两格。它与 `AgentLogLayout` 的轮次级过滤吃的是同一个形状 */
+export interface AgentLogFilters {
+  onlyTools: boolean;
+  onlyErrors: boolean;
 }
 ```
 
@@ -2393,28 +2742,30 @@ export interface AgentLogLayoutProps {
   /** 数据来源（§4.4）：三个方法全可选，一个不给也照常工作 */
   source?: AgentLogSource;
   onDownload?(): void;
-  /** 页面级的补充提示（如「日志可能不完整：…」）：固定区一个 Alert；不传就一个空位都不留 */
-  notice?: string;
-  /** 流式连接断开时的一句话（§7.1）：与 `notice` 各占一个 Alert，互不顶替 */
-  liveError?: string;
-  /** 流式连接状态：**只在传了时**渲染那一格；断线那一档不能用 processing 的动效 */
+  /** 页面级的补充提示（如「日志可能不完整：…」）：固定区一个 `Alert`；不传就一个空位都不留 */
+  notice?: ReactNode;
+  /** 流式通道故障的一句话（断线 / 环境不支持 EventSource / 坏帧）：与 `notice` 各占一个 `Alert`，互不顶替 */
+  liveError?: ReactNode;
+  /** 流式连接状态：**只在传了时**渲染那一格；断线那一档不能用 processing 的动效。
+   *  那一格落在**原文行的最左**（用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间），
+   *  故它也是那一行的渲染理由之一（见 §5.3） */
   connected?: boolean;
-  /** 工具条动作（§9.4）。不传 = 用 `AgentLogToolbarPreset` */
+  /** 工具条动作（§9.4）。不传 = 用 `useAgentLogToolbarPreset()` 的预设 */
   actions?: readonly ToolbarAction[];
   /**
    * 时间轴槽位。不传 = `VirtualTurnList`（虚拟滚动）。
-   * 传它是为了 S1 / S5：内嵌只读视图可以直接给 `MessageTimeline`（不虚拟化）。
+   * 传它是为了 S1 / S5：内嵌只读视图可以直接给 `AgentMessageTimeline`（不虚拟化）。
    */
   timeline?: ReactNode | ((props: TimelineSlotProps) => ReactNode);
   /** 视图态外置（S5）：不传则由 `AgentLogLayout` 内部用 `useAgentLogView` */
   viewState?: AgentLogViewState;
 }
 
-/** L2：预置的抽屉。**唯一一处 `<Drawer>`**，评测页直接用它 */
+/** L2：预置的抽屉。**唯一一处主 `<Drawer>`**（环境抽屉那个是内部件、另算一处），评测页直接用它 */
 export interface AgentLogDrawerProps extends AgentLogLayoutProps {
   open: boolean;
   onClose(): void;
-  /** 抽屉标题。默认「执行日志」（§8.2 的改名口径落在这里） */
+  /** 抽屉标题。默认「执行日志」（§8.1 的改名口径落在这里） */
   title?: ReactNode;
 }
 ```
@@ -2429,7 +2780,8 @@ export interface AgentLogDrawerProps extends AgentLogLayoutProps {
  * 渲染器注册表。**判别联合管类型，注册表管分派**——两者不互斥：
  *   · `RenderBlock` 的判别联合（§4.2）保证「每类块只有在自己那一支里字段可读」；
  *   · 注册表保证「新增一类块**不必改 timeline**」。
- * 只有前者时 `assertNever` 得写在 `agent-message-timeline` 里 ⇒ 加一个 arm 就要改它（§2.1 S4 失败）。
+ * 只有前者时穷尽性检查得写在 `agent-message-timeline` 里（写 `switch` 就得配一句 `assertNever`）
+ * ⇒ 加一个 arm 就要改它（§2.1 S4 失败）。
  */
 export type BlockRendererRegistry = {
   readonly [K in RenderBlock['kind']]: (
@@ -2456,17 +2808,24 @@ export function BlockRendererProvider(props: BlockRendererProviderProps): ReactN
 export function useBlockRenderers(): BlockRendererRegistry;
 ```
 
-**「零改动」的确切含义（免得读成夸张）**：新增一类块要动的是**契约**（`ContentBlock` / `RenderBlock`
-各加一个 arm —— 这是 §4.2 扩展性第 1 / 5 条已经定好的）与**新渲染件本身**，
-以及**在 `DEFAULT_BLOCK_RENDERERS` 里加一项**。**不改的是** `agent-message-timeline`、
+**「零改动」的确切含义（免得读成夸张）**：新增一类块要动的是**契约**（契约的 `ContentBlock`
+与界面的 `ContentBlock` / `RenderBlock` 各加一个 arm —— 这是 §4.1 扩展性第 1 / 5 条已经定好的）
+与**新渲染件本身**，以及**在 `DEFAULT_BLOCK_RENDERERS` 里加一项**。**不改的是** `agent-message-timeline`、
 `agent-log-layout`、`agent-log-drawer` 与其余所有渲染件。
-`DEFAULT_BLOCK_RENDERERS` 是**一张平表**，加一项不触碰别人的那一行——这是与「switch + assertNever」
-的实质差别（后者每加一臂都要改同一个函数体）。**外部消费方更是连默认表都不用改**：
-`BlockRendererProvider` 直接叠。
+`DEFAULT_BLOCK_RENDERERS` 是**一张平表**，加一项不触碰别人的那一行——这是与
+「`switch` + 一句 `assertNever`」的实质差别（后者每加一臂都要改同一个函数体）。
+**外部消费方更是连默认表都不用改**：`BlockRendererProvider` 直接叠。
 
-`assertNever` 仍然保留在**默认注册表的穷尽性检查**上：当契约加了 arm 而默认表漏了时，
-`BlockRendererRegistry` 的映射类型**编译期就报错**（比运行时的 `assertNever` 更早，
-且这正是本仓「守卫必须能红」的口径）。
+⚠️ **但「不改这三个文件」目前没有守卫**（§11 验收 27 已如实登记）：全仓没有文件哈希断言，
+`agent-log-layering.test.ts` 也不检查它们的内容。同理，「叠加语义」也**还没有用例**——
+`BlockRendererProvider` 在全仓**没有被任何测试挂载过**（夹具用例是直接读 `DEFAULT_BLOCK_RENDERERS` 的）。
+要真守住这两条，得补一条「挂 Provider 之后、未覆盖的默认臂仍画得出来」的用例。
+
+穷尽性检查**落在类型上、不在运行时**：当契约加了 arm 而默认表漏了时，
+`BlockRendererRegistry` 的映射类型（`{ readonly [K in RenderBlock['kind']]: … }`）**编译期就报错**。
+代码里**没有** `assertNever` 函数——它只是「写 `switch` 时那句话」的代称；
+本设计选的是「比运行时报错更早」的那条路（正是本仓「守卫必须能红」的口径：
+漏一臂时 `pnpm typecheck` 直接红）。
 
 ### 9.4 L2：工具条动作（D26）
 
@@ -2491,8 +2850,8 @@ export interface ToolbarAction {
   /** 数值输入类动作（跳到轮次）：给了就越界 clamp 并如实回显（§6.5） */
   number?: { value: number; min: number; max: number; onSubmit(next: number): void };
   disabled?: boolean;
-  /** 落在哪一排：不给 = 工具条那一行；`'raw'` = 与固定区的「原始输出 N 条」同排（§6.6） */
-  placement?: 'raw';
+  /** 落在哪一排：不给 = 工具条那一行；`'raw'` = 固定区的**原文行**（§6.6）。**两排的渲法完全一样**，差别只在归到哪一行 */
+  placement?: 'toolbar' | 'raw';
 }
 
 /**
@@ -2502,19 +2861,23 @@ export interface ToolbarAction {
 export interface AgentLogToolbarPresetInput {
   /** 原始输出（决定「原始输出 N 条」这个动作渲不渲染，§5.3） */
   diagnostics?: Loadable<AgentLogDiagnostics>;
-  /** 环境信息（决定「？环境信息」按钮的 `visible`；`undefined` 时**照常渲染**但抽屉里显示「未提供」，§6.8） */
+  /**
+   * 环境信息。**预设其实不读它**：问号按钮的 `visible` 恒为真，数据有没有由抽屉自己说
+   * （「未提供」而不是不渲染）。留着这一格是因为调用方手上就是这份数据，
+   * 换个消费方要按它调文案时不必改接口。
+   */
   environment?: Loadable<AgentEnvironment>;
   /** 轮次总数（「跳到轮次」的 `min` / `max`，§6.5） */
   turnCount: number;
   /** 当前轮次（「跳到轮次」的初始值） */
   currentTurn: number;
-  /** 视图态（跟随最新 / 过滤两个开关的受控值，§9.2 的 `AgentLogViewState`） */
+  /** 视图态（跟随最新 / 过滤两个开关的受控值，§9.1 的 `AgentLogViewState`） */
   viewState: AgentLogViewState;
   /** 下载台账（`onDownload`，§6.6） */
   onDownload?(): void;
-  /** 「跳到轮次」提交：越界已在预设里 clamp，交回来的就是最终值（§6.5） */
+  /** 「跳到轮次」提交。**越界 clamp 在工具条那一层**（`AgentLogLayout` 的 `commitNumber`），预设交回来的已经是最终值（§6.5） */
   onJumpToTurn(next: number): void;
-  /** 「？环境信息」被点：打开环境抽屉 + 向数据层上报（§6.8 / §4.4） */
+  /** 「环境信息」被点：打开环境抽屉 + 向数据层上报（§6.8 / §4.4） */
   onOpenEnvironment(): void;
 }
 
@@ -2532,9 +2895,9 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 类型 | `types.ts` | **界面模型的唯一真源**（`AgentLogModel` / `LogNode` / `LogTurn` / `RenderBlock` 的输入形状 / `AgentEnvironment` / `AgentLogDiagnostics` / `AgentLogSource`）+ **全部中文文案表**（缺失原因四句、能力五态四句、节点状态七档、工具族十族、清单四态、七种收场、截断三态、来源角标）。落点与理由见 §4.1 的「类型落点」 |
-| L0 | `render-blocks.ts` | `buildRenderBlocks` 纯函数（§4.2 的四条规整）+ `nodeIndex` / `taskPanelOf` / `hasToolCall`。**不放进 `@aieval/contracts`**：契约包只有 node 环境的测试（无 jsdom），而它的折叠态判据要靠组件测试验 |
-| L0 | `build-model.ts` | **契约形状 → 界面模型**：按 `mergeKey` 覆盖累积、按 `subagentId` 分会话节点、按 `roundTrip` 分轮、能力声明摊成三元组字典、行级事件按去向表折成 `facts` / `rowEvents` / `diagnostics`。`buildRowFacts` 的**输入形状**（`AgentLogFactsInput`）也在这里——它把「评测行」挡在界面之外 |
+| 类型 | `types.ts` | **界面模型的唯一真源**（`AgentLogModel` / `LogNode` / `LogTurn` / `ContentBlock` 一族 / `AgentLogDiagnostics` / `AgentLogSource` / `TurnRef`）+ **全部中文文案表**（缺失原因四句、能力五态四句、节点状态七档、工具族十族、清单四态、七种收场、截断三态、来源角标）。`AgentEnvironment` 一族从 `@aieval/contracts` **转出**（定义不在这里）。落点与理由见 §4.1 的「类型落点」 |
+| L0 | `render-blocks.ts` | `buildRenderBlocks` 纯函数（§4.2 的四条规整）+ `RenderBlock` 类型本身 + `ToolItem` / `ToolOutput` / `OrphanToolResult` / `nodeIndex` / `taskPanelOf` / `hasToolCall`。**不放进 `@aieval/contracts`**：契约包只有 node 环境的测试（无 jsdom），而它的折叠态判据要靠组件测试验 |
+| **装配** | `build-model.ts` | **契约形状 → 界面模型**：按 `mergeKey` 覆盖累积、按 `subagentId` 分会话节点（经别名解析）、按 `roundTrip` 分轮、把整份 `AgentLogFactsInput` 透传成 `facts`、按去向表折出 `rowEvents`。`AgentLogFactsInput`（`buildRowFacts` 的**输入形状**）也在这里——它把「评测行」挡在界面之外。**两条旁路导出**：`rowEventsOf`（行级事件 → 时间轴条目）与 `diagnosticsOf`（`log` → 原始输出，**不进 `AgentLogModel`**，由页面单独调用）。⚠️ **能力声明不在这里搬运**——`input.capability ?? UNVERIFIED` 只是兜底，扁平平铺形状 → `CapabilityDecl` 三元组字典的搬运点是 `types.ts` 的 `toCapabilityMap()` |
 | **接线** | `fixtures.ts` | 三家各一份**真实形状的夹具**（`messages.jsonl` 的记录 + 行级事件 → `buildAgentLogModel`），覆盖九条 arm。夹具预览页用它，单测也用它——「每一类消息都画得出来」这条验收因此可回归 |
 | L2 | `use-agent-log-view.ts` | **四份视图态的 headless 持有者**：当前节点 / 跟随最新 / 过滤 / 环境抽屉开合 + `activeKey` 折叠态。**不持有 data**（数据仍由 props 注入）。导出 `AgentLogViewState`（受控值 + setter）供 S5 外置，以及 `defaultOpenKeysOf`（折叠默认态的唯一真源） |
 | L2 | `agent-log-drawer.tsx` | **唯一一处主 `<Drawer>`**。title 默认「执行日志」；几何见 §5.1。评测页一行接线 |
@@ -2543,31 +2906,32 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
 | L2 | `agent-log-toolbar-preset.ts` | 默认**七个**动作（§6.6 的表逐项给行为）：下载台账 / 跟随最新 / 跳到轮次 / 只看工具调用 / 只看错误 / 原始输出 / 环境信息。纯函数 + 薄 hook 两层 |
 | L1 | `agent-message-timeline.tsx` | **吃 `turns` + 分派函数，吐轮次列表**。虚拟化、subagent、过滤都不在它这里。键生成函数（`turnKey` / `renderBlockKey`）的**唯一真源**也在这里——L2 与折叠态都从它取 |
 | L1 | `log-node-breadcrumb.tsx` | 面包屑 + 每段兄弟菜单。**只吃 `nodes` / `activeNodeId` / `onSelect`**：祖先链由 `parentId` 回溯派生，同层兄弟由 `filter(parentId === 本段)` 现算 |
-| L1 | `agent-log-facts-bar.tsx` | 事实进度条（受控、不可折叠）+ 「等待答复」徽标（§5.5）。**只吃 `facts` / 等待判据**；原始输出入口与「？环境信息」按钮**移出**（分别归 `raw-output-panel` 与工具条预设） |
+| L1 | `agent-log-facts-bar.tsx` | 事实进度条（受控、不可折叠）+ 「等待答复」徽标（§5.5）。**只吃 `facts` / `waitingSince` / `contentTruncatedReason`**；原始输出入口与「环境信息」按钮**移出**（分别归 `raw-output-panel` 与工具条预设），**领域事实也移出**（归下一行的 `agent-log-domain-facts.tsx`，2026-10-07 口径） |
+| L1 | `agent-log-domain-facts.tsx` | **领域事实那一行**（2026-10-07）：智能体 · 模型 · 思考强度 · 改动 · 评分。只吃 `domain`，顺序即渲染顺序；空数组时整行不出现。**与事实条是两行**（并回一行会让「改动 / 评分」被折行甩开） |
 | L0 | `block-renderer-registry.tsx` | 注册表 + `DEFAULT_BLOCK_RENDERERS`（九臂平表）+ `BlockRendererProvider` + `useBlockRenderers` + `blockRendererOf`（§9.3） |
-| L0 | `text-block-view.tsx` | `text` 块：`MarkdownText` + 角色/来源标注（§6.9）+ 流式光标容器类（§6.7 第 3 条，导出 `STREAM_CURSOR_CLASS`） |
-| L0 | `thinking-block-view.tsx` | `thinking` 块：折叠面板、`text === null` 显示缺失原因而非空面板（§6.1 例外 3）、`summary` 标「摘要」、扫光标题（§6.7 第 1 / 2 条） |
-| L0 | `tool-group-panel.tsx` | 工具组折叠面板 + 组内工具行（两级折叠）。组头的 `工具调用 × N` **只数调用**（孤立结果不算） |
+| L0 | `text-block-view.tsx` | `text` 块：`MarkdownText` + 角色/来源标注（§6.9）+ 流式光标容器类（§6.7 第 2 条，导出 `STREAM_CURSOR_CLASS`） |
+| L0 | `thinking-block-view.tsx` | `thinking` 块：折叠面板、**`text === null` 时整块不渲染**（没有正文的思考块只会变成一句占位文案，§6.1 例外 3）、`summary` 标「摘要」、扫光标题（§6.7 第 1 条） |
+| L0 | `tool-group-panel.tsx` | 工具组折叠面板 + 组内工具行（两级折叠）。组头的 `工具调用 × N` **只数调用**（孤立结果不算）；`extra` 里给「失败 N」（数结果为 error 的**条目**，含孤立结果）与 `AgentRunStateTag` |
 | L0 | `tool-item-detail.tsx` | 单条工具行的摘要与展开详情（命令/参数/结果、截断提示）。导出 `toolEntryKey`（行键的唯一真源，组内两处共用） |
 | L0 | `subagent-bar.tsx` | 子任务占位条（§6.3）：`Card` + `Tag` + 「进入 ▸」+ 派发方式 / 结果摘要 / 自己的用量。**任务名为 null 时的 id 前缀兜底在这里** |
 | L0 | `row-summary-line.tsx` | `kind: 'row'` 节点的说明行（§6.3）：带计数与状态、**不可点**、`counts === null` 时如实说明 |
 | L0 | `attachment-block-view.tsx` | 真实附件（图片 / 文件）：类别 + 路径 + MIME；`path === null` 写「内联内容，无路径」。**本期不加载缩略图** |
 | L0 | `unrecognized-block-view.tsx` | 不认识的厂商载荷：默认收起的等宽原文 + 厂商类型。**与附件走两条路**（D31） |
-| L0 | `agent-run-state-tag.tsx` | **§9.7 的原语**：`running` / 「结果未采集」的唯一分派处，工具行与三张卡片共用 |
-| L0 | `raw-output-panel.tsx` | **§9.7 的原语**：逐行原文（`AgentLogDiagnostics`）与单份原文（`ToolCardResult`）两种变体（§5.3） |
+| L0 | `agent-run-state-tag.tsx` | **§9.7 的原语**：`running` / 「结果未采集」的分派处，**工具行 / 工具组 / 计划清单三处**共用（问答卡片自持一支，见 §9.6 那一行） |
+| L0 | `raw-output-panel.tsx` | **§9.7 的原语**：逐行原文（`AgentLogDiagnostics`）与单份原文（`ToolCardResult`）两种变体（§5.3）。**不自带布局容器**（2026-10-07 口径）：返回按钮本身，摆位归调用方 |
 | L0 | `capability-notes.tsx` | 能力声明的界面落点（D28）：按数据层给的顺序渲染、维度名不硬编码、四句原因互不相同、`capabilityNotes` 非空时显示前提 |
 | L0 | `agent-environment-drawer.tsx` | 环境抽屉本体。**受控**：`open` / `onOpenChange`（§6.8）。摘要 `Descriptions` + 分组 `Collapse` + 逐条 `MonoText` |
 | L0 | `task-panel-card.tsx` | `task` 族的状态化清单面板（§5.4）：计数/变化摘要标题 + 清单行 + `本轮另有 N 次更新` + 原始结果。吃 `TaskPanel`，**不认厂商、也不认 `args`/`result`** |
 | L0 | `ask-user-card.tsx` | `ask-user` 族的问答卡片（§5.5）：逐问题选项 + 答案回填 + 七态收场 + 等待计时 + 原始结果。吃 `AskUserInteraction`，**不认厂商** |
-| 守卫 | `agent-log-layering.test.ts` | 三层边界纪律的**静态扫描**（§9.0 三条 + 虚拟化的三个入口只许在 `base/virtual-list.tsx` + 清单里的文件都在） |
+| 守卫 | `agent-log-layering.test.ts` | 三层边界纪律的**静态扫描**（§9.0 三条 + 虚拟化的三个入口只许在 `base/virtual-list.tsx`【唯一放行：`ask-user-card.tsx` 用 `Listy` 但不虚拟化】 + **清单双向对齐**：清单里的文件都在、目录里的渲染件也都在清单里） |
 
 **本目录消费的 `base/` 原语**（不在 `agent-log/` 里，`ui` 包内共用）：
 
 | 文件 | 职责 | 谁在用 |
 |---|---|---|
-| `base/virtual-list.tsx` | **全仓唯一的 `<Listy>`**（`VirtualList` / `VirtualListHandle`）：`ResizeObserver` 量可用高度、量不到就全量渲染、按 `rowKey` 跳转 | `agent-log/virtual-turn-list.tsx`、`agent-log/raw-output-panel.tsx` |
-| `base/nested-drawer.tsx` | 二级抽屉（`NestedDrawer`）：几何取自 `drawer-geometry`，`destroyOnHidden`、`mask.closable`；**不写 `push`**（位移量由主抽屉声明） | `agent-log/agent-environment-drawer.tsx`、`agent-log/raw-output-panel.tsx`、`composite/score-detail-view.tsx` |
-| `base/drawer-geometry.ts` | 抽屉几何常量：`WIDE_DRAWER_SIZE` / `NESTED_DRAWER_SIZE` / `MAIN_DRAWER_PUSH` / `DRAWER_SEMANTIC_STYLES` | 主抽屉（`agent-log-drawer.tsx` 与评测页）+ 两个二级抽屉 |
+| `base/virtual-list.tsx` | **虚拟化的唯一持有者**（`VirtualList` / `VirtualListHandle`；全仓另一处 `<Listy>` 在问答卡片里、不虚拟化）：`ResizeObserver` 量可用高度、量不到就全量渲染、按 `rowKey` 跳转 | `agent-log/virtual-turn-list.tsx`、`agent-log/raw-output-panel.tsx` |
+| `base/nested-drawer.tsx` | 二级抽屉（`NestedDrawer`）：几何取自 `drawer-geometry`，`destroyOnHidden`、`mask.closable`；**不写 `push`**（位移量由主抽屉声明） | `agent-log/raw-output-panel.tsx`、`composite/score-detail-view.tsx`（⚠️ **环境抽屉不是它的消费者**：那个件直接用 antd `Drawer`，见 §9.6 那一行） |
+| `base/drawer-geometry.ts` | 抽屉几何常量：`WIDE_DRAWER_SIZE` / `NESTED_DRAWER_SIZE` / `MAIN_DRAWER_PUSH` / `DRAWER_SEMANTIC_STYLES` | 主抽屉（`agent-log-drawer.tsx` 与评测页）+ `NestedDrawer` + 环境抽屉（**只取宽度那一格**，语义槽是就地副本） |
 | `base/json-text.tsx` | 等宽 JSON 正文（格式化 + 高亮）；不是 JSON 就逐字给出 | `agent-log/raw-output-panel.tsx`、`tool-item-detail.tsx`、`unrecognized-block-view.tsx`、`composite/score-detail-view.tsx` |
 
 **接线与预览**（`ui` 目录之外）：
@@ -2582,7 +2946,7 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
 | `apps/web-next/src/log-drawer-state.ts` | 抽屉三态判定（`resolveLogDrawer`，含**两条来源各自的故障提示位**）与行级事实的界面口径（`buildRowFacts`）——页面本身不能写 `.tsx` 测试，故这两件事都抽成纯函数 |
 | `apps/web-next/app/dev/agent-log/page.tsx` | **夹具预览页**（`/dev/agent-log`）：三家夹具喂进真实的 `AgentLogDrawer`。不进导航、不读接口 |
 
-`packages/client/ui/src/composite/`：`log-format.ts` 保留（下载台账与「原始输出」的逐行措辞都读它）；
+`packages/client/ui/src/composite/`：`log-format.ts` 保留，**只有「下载台账」读它**（「原始输出」的逐行措辞与它同口径，但由 `raw-output-panel` 自己实现 `formatClock`——那个函数没有导出）；
 抽屉本身全部住在 `agent-log/`。
 
 **三条组件边界纪律**（理由各在对应小节，此处只列规则本身）：
@@ -2603,57 +2967,62 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
 |---|---|---|
 | 抽屉 | `Drawer` | 几何见 §5.1。⚠️ **`width` 已废弃**（antd 6 实测）⇒ 用 `size` |
 | 事实进度条 | `Flex` + `Badge` + `Tag` + `Typography.Text` | 状态点用 `Badge status="processing"` |
-| 面包屑 | `Breadcrumb` 的 **`items`** | `menu` 已废弃（antd 6 实测）⇒ 用 `items[].title` + `items[].menu` 仅在需要下拉时；**不是**裸 `nav` |
+| 领域事实那一行 | `Flex` + `Tag`（预设色由数据层的 `tagTone` / `tone` 声明）+ `Typography.Text` | 逐格照画，界面不解析值（§5.2） |
+| 面包屑 | `Breadcrumb` 的 **`items`** | `items[].title` + 需要下拉时给 `items[].menu`（**`menu` 是现行 API**，被标废弃的是 `children` / `breadcrumbName` / 顶层 `routes`）；**不是**裸 `nav` |
 | 思考块 | `Collapse` `ghost`（单面板） | 标题 = `items[].label` |
 | 工具组 | `Collapse`（最外层，带边框） | 状态汇总放 `items[].extra`（`extra` 本身是**现行** API，废弃的是 `children` 写法） |
 | 工具行（组内） | **嵌套 `Collapse`**（内层 `ghost`） | 两级折叠都用 antd，**不写原生 `<details>`** |
-| 计划清单面板 | `Collapse`（带边框）+ **`Listy`** + `Tag` | ⚠️ **`List` 已废弃**（antd 6.6+ 实测警告明示改用 `Listy`）。⚠️ **`Listy` 没有 `size` 属性**（`ListyProps` 实测，见下条「size 口径」）——它每一项的高度由 token 派生，写 `size="small"` 只是 TS 报错级的多余属性。组头 = 清单标题 + 计数/变化 Tag（`items[].extra`）；每项一行：状态 Tag + 文本 + `owner`/依赖 Tag。**不用 `Steps`**：它把清单读成线性流程，且表达不了 `unknown` 这一档（硬塞成 `wait` 就是「看起来采到了」） |
+| 计划清单面板 | `Collapse`（带边框）+ **`Table` `size="small"`** + `Tag` | **2026-10-07 用户口径改成两列表格**：左「任务」（文本 + `owner`/依赖 Tag）、右「状态」，右列走**列级 `align: 'right'`**（antd 把它落到单元格的内联 `textAlign`，不手写 CSS），**表头整条隐藏**（`showHeader={false}`；rc-table 的判据是 `showHeader !== false && <Header/>` ⇒ `<thead>` 整个不渲染，故两列也**不写 `title`**）。组头 = 清单标题 + 计数/变化 Tag + `AgentRunStateTag`，**全在 `items[].label`**（这个 `Collapse` 没有 `extra`；`extra` 只有工具组在用）。**不用 `Steps`**：它把清单读成线性流程，且表达不了 `unknown` 这一档（硬塞成 `wait` 就是「看起来采到了」）。⚠️ 改造前这里是 `Listy`（**`List` 已废弃**，antd 6.6+ 实测警告明示改用 `Listy`）；`Listy` 现在只剩问答卡片与虚拟列表两处（前者不虚拟化） |
 | 问答卡片 | `Collapse` + **`Listy`** + `Tag` + `Typography` | 选项走 `Listy`（`label` + `description`，同上：**不给 `size`**）；`recommended` / 多选 / 收场都是 `Tag`；等待计时复用 `useNow`（已有） |
-| 固定区「等待答复」徽标 | `Badge status="processing"` + `Typography.Text` | 与进行中的状态点同一套动效（§6.7 第 5 条） |
-| **「进行中 / 结果未采集」** | `Badge status="processing"` / `Typography.Text type="secondary"` | **§9.7 的独立原语 `agent-run-state-tag`**：唯一一处分派处，工具行与三张卡片共用 |
+| 固定区「等待答复」徽标 | `Badge status="processing"` + `Typography.Text` | 与进行中的状态点同一套动效（§6.7 第 4 条） |
+| **「进行中 / 结果未采集」** | `Badge status="processing"` / `Typography.Text type="secondary"` | **§9.7 的独立原语 `agent-run-state-tag`**：**工具行 / 工具组 / 计划清单三处**共用；⚠️ **问答卡片不走它**（那一支自己写在 `ask-user-card.tsx` 里——`pending` 走转圈 + 秒表、其余走静态灰字） |
 | 折叠箭头 | `Collapse` 自带 `expandIcon` | **不自己写 ▸ ▾**（§6.1 表格里的符号只是文字示意） |
 | 正文 | `MarkdownText`（已有）+ 容器 `Typography` | 流式光标用**容器上的伪元素**，`MarkdownText` 不改 |
 | 子任务占位条 | `Card` `size="small"` + `Tag` + `Button` | 观感与行卡片同族 |
-| 过滤 | **两个 `Tag.CheckableTag`** | ⚠️ antd 6 的 `Segmented` **不支持多选**（`SegmentedValue = string \| number`，实测）⇒ 不用它 |
+| 过滤 | **两个受控 `Switch` `size="small"`** | 与「跟随最新」同一个控件形态（工具条对 `ToolbarAction.toggle` 一律渲染 `Switch` + 文案）。⚠️ antd 6 的 `Segmented` **不支持多选**（`SegmentedValue = string \| number`，实测）⇒ 不用它；`Tag.CheckableTag` 也没有 `size`，故本仓也不用它 |
 | 轮次跳转 | `InputNumber` `size="small"` | 越界 clamp（§6.5） |
 | 跟随最新 | `Switch` `size="small"` | 沿用「自动滚底」原来的控件形态 |
-| 原始输出 | `Collapse` `ghost` + 二级抽屉（`base/nested-drawer.tsx`）+ `MonoText` / `base/json-text.tsx` | 正文逐字原文（§5.3）：是 JSON 就格式化高亮，不是就逐字给出。**独立成 `raw-output-panel`**，卡片底部的「原始结果 ▾」是同一个件（§9.7） |
+| 原始输出 | 入口 `Button` + 二级抽屉（`base/nested-drawer.tsx` 的 `NestedDrawer`）+ `MonoText` / `base/json-text.tsx` | **入口是按钮、正文在二级抽屉里**（§5.3）：`ready` 且 `lines` 非空才出入口，`loading` / `error` 的画面由 `AgentLogLayout` 决定。逐行原文（`diagnostics` 变体）走 `VirtualList` + `MonoText` **逐字给出**（**不做 JSON 格式化**）；卡片底部那份单份原文（`single` 变体）才走 `JsonText`（是 JSON 就格式化高亮）。**独立成 `raw-output-panel`**，卡片底部的「原始结果」是同一个件（§9.7）。⚠️ 本件**不用 `Collapse`**——「折叠入口」早先的写法已被 2026-10-03 的二级抽屉口径取代 |
 | 环境信息入口 | `Button type="text"` + `QuestionCircleOutlined`（已有图标包） | `aria-label` 与 `Tooltip` 都写「环境信息」（§6.8）。**它是 `ToolbarAction` 的一项**（§9.4），不写死在工具条里 |
-| 环境抽屉 | `base/nested-drawer.tsx` 的 `NestedDrawer`（`agent-log` 内部件） | 几何取自 `base/drawer-geometry.ts`：`NESTED_DRAWER_SIZE`（`min(60vw, 900px)`，⚠️ 不是 `width`）、`DRAWER_SEMANTIC_STYLES`、`mask.closable`；`push` 由主抽屉给（`MAIN_DRAWER_PUSH`） |
+| 环境抽屉 | **直接用 antd `Drawer`**（`agent-log` 内部件） | 只取 `base/drawer-geometry.ts` 的 `NESTED_DRAWER_SIZE`（`min(60vw, 900px)`，⚠️ 不是 `width`）；`mask.closable`；`push` 由主抽屉给（`MAIN_DRAWER_PUSH`）。⚠️ **它没有走 `NestedDrawer` 原语，语义槽样式是就地内联的一份副本**（`{ wrapper: { maxWidth: '100vw' }, body: { padding: 0 } }`，与 `DRAWER_SEMANTIC_STYLES` 逐字相同）——§14 已登记这个口子 |
 | 环境摘要 | `Descriptions` `size="small"` `column={1}` | 「这一行跑在什么之上」逐项列出 |
 | 环境分组 | `Collapse`（每组一项）+ `Tag` 标来源 | 项目侧 / 厂商侧 / 统计 |
 | 长文本 | `MonoText`（已有）+ 截断提示 + 复制按钮 | 不内套第二层滚动区（§6.8 末段） |
 | 节点内容未到 | `Skeleton`（已用） | §6.2 |
 | 空态 | `EmptyState`（已有） | §6.1 |
-| **虚拟列表** | `packages/client/ui/src/base/virtual-list.tsx` 的 `VirtualList`（内部是 **`Listy`**，`virtual`，**不传 `itemHeight`**） | 见 §7.2：全仓唯一的 `<Listy>`；消费方只有 `virtual-turn-list.tsx` 与 `raw-output-panel.tsx` 两处，L0/L1 不许 import 它 |
+| **虚拟列表** | `packages/client/ui/src/base/virtual-list.tsx` 的 `VirtualList`（内部是 **`Listy`**，`virtual`，**不传 `itemHeight`**） | 见 §7.2：**它是全仓唯一做虚拟滚动的 `<Listy>`**（另一处 `<Listy>` 是问答卡片的选项列表，不虚拟化）；消费方只有 `virtual-turn-list.tsx` 与 `raw-output-panel.tsx` 两处，L0/L1 不许 import 它 |
 | 扫光动效 | `ACTIVITY_SWEEP_CLASS`（已有具名出口） | `.aieval-activity-sweep` 已在 `globals.css`，**不新造 keyframes** |
 
-**按 antd 6 实测对齐的五处**（原始数据见 `notes/2026-10-02-exec-log-visual-measurements.md` §5）：
+**按 antd 6 实测对齐的五处**（原始数据见 `notes/2026-10-02-exec-log-visual-measurements.md` §5；`Breadcrumb children → items` 与「`List` 四处」那两条在 `notes/2026-10-02-exec-log-spec-structure-findings.md`）：
 `List` → `Listy`（4 处）、`Drawer width` → `size`（主抽屉 + 二级抽屉）、
-`Segmented` 多选 → `Tag.CheckableTag`、`maskClosable` → `mask.closable`、
-`Breadcrumb menu` → `items`。
+`Segmented` 多选 → 两个受控 `Switch`、`maskClosable` → `mask.closable`、
+`Breadcrumb children` → `items`。
 **无需改的**：`Collapse` 的 `items[].extra` / `destroyOnHidden` / `ghost` / `activeKey`、
-`Breadcrumb items`、`Badge status`、`Switch size="small"` —— 带 `@deprecated` 的是它们的**旧**写法
-（`children` / `destroyInactivePanel` / `menu`）。
+`Breadcrumb items[].menu`、`Badge status`、`Switch size="small"` —— 带 `@deprecated` 的是它们的**旧**写法
+（`children` / `breadcrumbName` / 顶层 `routes` / `destroyInactivePanel`）。
 
 #### 9.6.1 size 口径：**执行日志里带 `size` 的组件一律 `small`**
 
-按 antd 6.6.5 的 `*.d.ts` 逐个核对，这条口径落在**六个**组件上，全部写死 `size="small"`：
-`Button`（5 处）、`Switch`、`InputNumber`、`Card`、`Descriptions`、`Badge`（5 处）。
-守卫在 `agent-log-size-sweep.test.ts`：按组件名逐个查开标签，缺一格或写成别的值都红。
+按 antd 6.6.5 的 `*.d.ts` 逐个核对，这条口径落在**七个**组件上，全部写死 `size="small"`：
+`Button`（12 处：`agent-log-layout` 5 / `agent-environment-drawer` 3 / `raw-output-panel` 2 /
+`subagent-bar` 2）、`Switch`（1）、`InputNumber`（1）、`Card`（2）、`Descriptions`（1）、`Badge`（5）、
+**`Table`（1 处：计划清单）**——`Table` 是 2026-10-07 随「计划清单改表格」进来的，依据同样是实测：
+`antd/es/table/InternalTable.d.ts` 有 `size?: SizeType`。
+守卫在 `agent-log-size-sweep.test.ts`（`SIZED_COMPONENTS` 就是这七个名字，扫描面 22 个渲染件）：
+按组件名逐个查开标签，缺一格或写成别的值都红。
 
 三条边界，都是实测出来的（**别按直觉改**）：
 
 | 事实 | 依据 | 后果 |
 |---|---|---|
 | **`Badge` 的 `size` 只作用于计数徽标** | `Badge.js` 把它拼进计数组件的 `ScrollNumber` 类名（`${prefixCls}-count-sm`），status 圆点徽标那条分支不带它 | 抽屉里 5 处全是 status 徽标 ⇒ 写上**不改变外观**。写它是为了「全件同形、可静态核对」，不是「它偏大才压」 |
-| **`Tag` / `CheckableTag` 没有 `size`** | `TagProps`、`CheckableTagProps` 里都没有这一格 | 过滤器那两个 `Tag.CheckableTag` **不写** `size`（写了是个 read 的人以为生效的属性） |
-| **`Listy` 没有 `size`** | `ListyProps`（`@rc-component/listy`）只有 `items` / `height` / `virtual` / `rowKey` / `itemRender` 等，**这一格在 antd 6 被去掉了** | 计划清单 / 问答选项 / 虚拟列表三处**不给** `size`；给 `Listy` 写 `size` 是个**不生效**的属性 |
+| **`Tag` / `CheckableTag` 没有 `size`** | `TagProps`、`CheckableTagProps` 里都没有这一格 | 抽屉里的 `Tag` 一律**不写** `size`（写了是个读的人以为生效的属性）。`CheckableTag` 本仓没有用（过滤走 `Switch`） |
+| **`Listy` 没有 `size`** | `ListyProps`（`@rc-component/listy`）只有 `items` / `height` / `virtual` / `rowKey` / `itemRender` 等，**这一格在 antd 6 被去掉了** | 问答选项 / 虚拟列表两处**不给** `size`；给 `Listy` 写 `size` 是个**不生效**的属性。（计划清单 2026-10-07 改成 `Table` 后**必须**给 `size="small"`，归上面「七个组件」那一格守） |
 
 ⚠️ **`Drawer` 的 `size` 不是这一组**：它的类型是 `'default' | 'large' | number | string`（`Drawer.d.ts`），
 收不到 `'small'`，给的是**宽度**——主抽屉与二级抽屉两个宽度都来自
 `packages/client/ui/src/base/drawer-geometry.ts`（`WIDE_DRAWER_SIZE` / `NESTED_DRAWER_SIZE`）。
-这两个值由 `apps/web-next/src/drawer-geometry.test.ts` 钉住（那条用例只取 `<Drawer>` 开标签，
+两个值的守卫**不在同一个文件**：`WIDE_DRAWER_SIZE` 钉在 `apps/web-next/src/drawer-geometry.test.ts`，`NESTED_DRAWER_SIZE` 钉在 `packages/client/ui/src/base/nested-drawer.test.tsx`（web-next 那条用例只取 `<Drawer>` 开标签，
 不扫全文：同文件里还有若干 `<Button size="small">`）。
 
 **为什么工具面板必须用 `Collapse` 而不是原生 `<details>`**：
@@ -2666,16 +3035,16 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
    都可能被重新应用，而那正是「用户展开的面板自己合上了」的成因。
 
 **一条允许的例外**：`ui` 包一个 CSS 文件都没有（`agent-activity-line.tsx` 的文件头已确立
-「全局样式只在 `apps/web-next/app/globals.css` 一处，ui 只带类名」）。故 §6.7 的扫光、
-呼吸点、流式光标三处**只能**以类名形式实现，并由 `apps/web-next` 的既有守卫
-（`global-styles.test.ts` 那类）核对类名与 keyframes 两边一致。
-这三处**不写字号、不写行内边距**，只写动效与结构性属性。
+「全局样式只在 `apps/web-next/app/globals.css` 一处，ui 只带类名」）。故 §6.7 的**扫光与流式光标两处**
+**只能**以类名形式实现（`ACTIVITY_SWEEP_CLASS` / `STREAM_CURSOR_CLASS`），
+并由 `apps/web-next` 的既有守卫核对类名与 keyframes 两边一致。
+这两处**不写字号、不写行内边距**，只写动效与结构性属性。
 
 ### 9.7 两个具名原语的归属
 
 **「进行中 / 结果未采集」这一对判断必须只有一处分派**：
-它要落在**四个地方**（工具行 / 工具组 / 计划清单 / 问答卡片——其中前两者同属工具族），
-**四处各写一遍 = 三处会漂**，而漂了之后「结果未采集」会在某一处悄悄变回「正在跑」。
+它要落在**三个地方**（工具行 / 工具组 / 计划清单——前两者同属工具族），
+**三处各写一遍 = 两处会漂**，而漂了之后「结果未采集」会在某一处悄悄变回「正在跑」。
 而 §10 变异体 (f) 要拦的恰恰是「把两者混成一个」。故提升成一个 L0 原语：
 
 ```ts
@@ -2685,12 +3054,12 @@ export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): rea
  * 为什么必须是具名原语（而不是各卡片自己写一遍）：
  *   · §4.2 立过一条硬规则——`running` **不可由「有没有 output」推断**，
  *     「还在跑」与「跑完了但结果拿不到」在折叠态下必须显示成两句话（转圈 vs 静态灰字 + 原因）；
- *   · 这条规则要落在四个地方。**四处各写一遍 = 三处会漂**，而漂了之后
+ *   · 这条规则要落在三个地方（工具行 / 工具组 / 计划清单）。**三处各写一遍 = 两处会漂**，而漂了之后
  *     「结果未采集」会在某一处悄悄变回「正在跑」——那正是变异体 (f) 要拦的缺陷。
  *
  * 它**只吃四个字段**（`running` / `hasResult` / `missingReason` / `since`），
  * 不认 `ToolItem` / `TaskPanel` / `AskUserInteraction` 中任何一个
- * （故四张卡片与工具行都能用它）。
+ * （故工具行 / 工具组 / 计划清单三处都能用它；问答卡片自持一支，不走它）。
  */
 export interface AgentRunStateTagProps {
   /** 有调用、结果未到、**且所在轮次尚未结束** */
@@ -2705,11 +3074,13 @@ export interface AgentRunStateTagProps {
 ```
 
 **同理提升的第二个具名原语**：§5.3 的「原始输出」面板（`raw-output-panel`）。
-把它塞在 `agent-log-facts-bar` 里不够用：§5.4 / §5.5 两张卡片的底部**各要一个「原始结果 ▾」**，
+把它塞在 `agent-log-facts-bar` 里不够用：§5.4 / §5.5 两张卡片的底部**各要一个「原始结果」入口**，
 而 §5.3 又要求三态画面（`loading` / `error` + 重试 / `ready`）。故它独立成 L0：
-吃 `Loadable<AgentLogDiagnostics> | Loadable<ToolCardResult>` 的**公共形状**
-（`{ status, lines|raw, truncatedReason }`）与 `onRetry`。
+吃 `{ kind: 'diagnostics'; diagnostics } | { kind: 'single'; result }` 的**判别联合**（都是 **ready 数据**——三态画面由调用方画）
+（`diagnostics` 变体 = `{ lines, truncatedReason }`；`single` 变体 = `{ ok, raw, truncation }`——**都不是 `Loadable`**）与 `onRetry`。
 **卡片底部用的是它的 `ToolCardResult` 变体**（单份原文），固定区用的是 `AgentLogDiagnostics` 变体（逐行）。
+**它不自带布局容器**（用户 2026-10-07 口径）：横排 / 换行 / 间距归调用方——固定区靠原文行那个 `Flex`
+（按钮因此与「下载台账」同层），卡片底部那两处各自包一层。
 
 ### 9.8 三家智能体的实施路径
 
@@ -2726,9 +3097,10 @@ export interface AgentRunStateTagProps {
 | 事件订阅 | `packages/client/client/src/row-stream.ts` 的 `useRowStream` 与 `row-live.ts` 的 `useRunLiveMetrics` | 行级事件流（`/stream?afterSeq=`）与实时指标流是两条独立连接 |
 | 行级事实 | `apps/web-next/src/log-drawer-state.ts` 的 `buildRowFacts` | 事件流 → `AgentLogFactsInput`；`usage` 只认**主会话**那条 |
 | 建模 | `packages/client/ui/src/composite/agent-log/build-model.ts` 的 `buildAgentLogModel` | `RowRecord[]` + 事件 + facts → `AgentLogModel`；另有两条出口 `rowEventsOf`（事件 → 时间轴条目）与 `diagnosticsOf`（`log` → 原始输出） |
-| 会话分桶 | `build-model.ts` 的 `sessionKeyOf` / `aliasOf` | 按 `subagentId` 分会话节点；`parentCallId` 命中的别名并进同一个节点 |
+| 会话分桶 | `build-model.ts` 的 `sessionKeyOf`（内部闭包，别名是它读的那个 `Map`） | 按 `subagentId` 分会话节点；`parentCallId` 命中的别名并进同一个节点 |
+| 派发点 | `build-model.ts` 的 `dispatchOf` / `claimsDispatch` / `isDispatchCall` / `dispatchNameOf` | **四条判据按序**：① `parentCallId` + 派发动作名 → ② `parentCallId` 直接当身份（+ 后来的时间回填）→ ③ 只对「还没找到派发点」的子任务做**任务名逐字相同**的派发工具认领 → ④ 都不中时该子任务没有 `spawnedBy`（时间轴不出占位条）。**dsh 只走得到 ③**（它的 `parentCallId` 恒 `null`） |
 | 分轮 | `build-model.ts` 的分轮装配 | `roundTrip` → `LogTurn.round`；`running` 只在**最后一轮**且 `facts.live` |
-| 规整 | `agent-log/render-blocks.ts` 的 `buildRenderBlocks` | 一轮的块 → 九个 `RenderBlock` 臂（§4.2 四条规整） |
+| 规整 | `agent-log/render-blocks.ts` 的 `buildRenderBlocks` | 一轮的块 → 九个 `RenderBlock` 臂（§4.2 的四条规整 + 轮末收尾） |
 | 渲染 | `agent-log/agent-log-layout.tsx` / `agent-message-timeline.tsx` / `virtual-turn-list.tsx` | 固定区 + 时间轴 + 浮动件；块分派走注册表（§9.3） |
 | 环境 | `packages/client/client/src/build-environment.ts` 的 `buildAgentEnvironment` | `EvalRow` 快照 + 事件 + 记录 → 四组 `AgentEnvironment` |
 | 接线 | `apps/web-next/app/runs/page.tsx` | 订阅两条流、现算三份模型、把 props 交给 `AgentLogDrawer` |
@@ -2742,24 +3114,24 @@ export interface AgentRunStateTagProps {
 | 子任务身份 | 记录身份 = 厂商 `task_id`；消息归属 = `parent_tool_use_id`。两者在 `build-model.ts` 的 `aliasOf` / `sessionKeyOf` 并成同一个会话键 |
 | 派发点 | `task_started` / `task_notification` 的 `tool_use_id` → `SubagentRecord.parentCallId`；`build-model.ts` 的 `isDispatchCall` 按派发动作名（`Task` / `Agent`）认领，命中即在该轮出 `subagent-bar` |
 | 任务名 | `description`（`build-model.ts` 的 `dispatchNameOf`）；`name === null` 的聚合形态由 `subagent-bar.tsx` 的 `displayName` 用 id 前 8 位兜底 |
-| 子任务正文 | `forwardSubagentText` 未开 ⇒ 子节点只有工具流水：`agent-log-layout.tsx` 的 `notForwardedNotice` 出「该子任务的对话未转发」 |
+| 子任务正文 | `forwardSubagentText` **厂商默认 `false`**（只投 `tool_use` / `tool_result`）⇒ 未开时子节点只有工具流水，`agent-log-layout.tsx` 的 `notForwardedNotice` 出「该子任务的对话未转发」。⚠️ **本仓适配器已置 `true`**（`providers/claude-code/index.ts`）⇒ 真实数据下这一档通常不亮，它是给别的消费方/别的路由留的兜底 |
 | 思考 | `textKind: 'full'`（完整推理） |
-| 厂商系统层 | 唯一发 `vendor-system` 事件的一家 ⇒ `build-environment.ts` 的 `vendorGroup` 里「已调度的工具」「斜杠命令 / 子智能体定义」有值、权限档取 `permissionMode`；「系统提示词」「工具模式串」恒 `not-observed` |
-| 行级用量 | 收尾按子会话逐条报 `usage` ⇒ 行级读数只认 `turn.subagentId === null` 的那条（`row-live.ts` 与 `log-drawer-state.ts` 各判一次，同一口径） |
+| 厂商系统层 | 唯一发 `vendor-system` 事件的一家 ⇒ `build-environment.ts` 的 `vendorGroup` 里「已调度的工具」「斜杠命令 / 子智能体定义」有值；「系统提示词」「工具模式串」恒 `not-observed`。⚠️ **权限档不在这一组**：它在 `projectGroup` 的 `project-permission`（同样取 `init.permissionMode`） |
+| 行级用量 | **收尾按子会话逐条报 `usage`，但那些读数不带会话身份**：claude 自 2026-10-06 起**不再发**任何带 `turn.subagentId` 的逐轮 `usage`（源码逐字：「只交最终用量」）⇒ 全部读数的 `subagentId` 恒 `null`，「只认主会话那条」这道过滤在这里是**空操作**（`row-live.ts` 与 `log-drawer-state.ts` 各判一次）。真正需要它的家是 dsh（见 §9.8.4） |
 
 #### 9.8.3 codex
 
 | 项 | 路径与口径 |
 |---|---|
-| 内容产出 | **会话文件** `rollout-*.jsonl`：`providers/codex/message.ts` 的 `projectCodexMessages`；运行期节流读盘 + 收尾整读一次 |
-| 补录与摘要 | 块的 `source: 'session-file'` ⇒ 界面出「补录」角标；事件流那一格按厂商定义只有推理摘要 ⇒ `textKind: 'summary'` 出「摘要」标（`thinking-block-view.tsx`） |
-| 子任务身份 | 事件流 `collab_tool_call` 的 `receiver_thread_ids[0]`；只有汇总计数的档位记 `source: 'aggregate'` ⇒ `build-model.ts` 走 `RowNode` |
+| 内容产出 | **app-server 通知流**：`providers/codex/message.ts` 的 `projectCodexMessages` 逐条归一；**收尾按协议回读**子线程内容（定义在 `providers/codex/appserver/reader.ts` 的 `listDescendantThreads` / `readThreadContent`，由 `codex/index.ts` 调用）。**不再扫会话文件**——`thread/list{ancestorThreadId}` 一次拿到任意深度的后代（源码逐字：「不再扫盘」） |
+| 补录与摘要 | ⚠️ **codex 不再产出 `session-file` 的块**：每条草稿都写 `source: 'wire'`（app-server 通道下那条差异已消失）。全仓唯一发 `session-file` 的是 claude 的收尾重交帧（见 §9.8.2）。⚠️ **思考那一格不是「只有摘要」**：codex 声明 `thinkingTextKind: 'full'`，全文取 `reasoning.content[]`；厂商的**摘要另出一块**（`reasoning.summary[]` ⇒ `textKind: 'summary'`，出「摘要」标） |
+| 子任务身份 | 协议里的 `collabAgentToolCall`（归一成 `kind: 'collabToolCall'`）的 `receiverThreadIds`——**逐个收件线程各出一条子任务行**，不是只取第一个。⚠️ **`source: 'aggregate'` 那一档目前没有产出方**：全仓没有任何适配器发出它，`RowNode` 路径只在夹具里走得到（§6.3 已就地登记） |
 | 派发点 | 一次派发会投递**多条**协作调用（`spawn_agent` → `wait` → `close_agent`，同一个 `subagentId`）⇒ 只能由**派发动作**认领（`build-model.ts` 的 `isDispatchCall`）；先到先得会把入口挂到 `close_agent` 上 |
-| 汇总档 | `RowNode` 出 `row-summary`（`render-blocks.ts` 规则 5 + `row-summary-line.tsx`），**不进面包屑、不可点** |
+| 汇总档 | `RowNode` 出 `row-summary`（`render-blocks.ts` 的**轮末收尾**那一支：`turn.firstTurn` + `row-summary-line.tsx`），**不进面包屑、不可点** |
 | 工具名 | 事件流只有入口名（`exec_command` 这类）⇒「用过的工具及次数」从 `messages.jsonl` 的 `tool-call.name` 数（`build-environment.ts` 的 `observedGroup`），不从事件流数 |
 | 厂商系统层 | 不发 `vendor-system` ⇒ 整组 `not-exposed`（「没投送到我们能读的通道」，不是「这家没有」） |
-| 非致命告警 | item 级 `error` ⇒ `RowEvent.level: 'warning'`，不当成运行失败 |
-| 轮次 | 条目计数是近似值、系统性偏高 ⇒ `round` / `turns` 只用同一份口径的同源值，跨家不比 |
+| 非致命告警 | `error` 通知目前**只落 `log` 原文**（codex 的 `logDraft`）进「原始输出」，**不成行级事件**；`RowEvent.level: 'warning'` 那一档只有类型与渲染出口、没有产出方（§5.2 已登记） |
+| 轮次 | 条目计数是**合成值**（模型答复条目数、按线程去重）⇒ 口径与另两家不同，`round` / `turns` 只用同一份口径的同源值，跨家不比。⚠️ 早先写的「**系统性偏高**」是**旧口径**（推理条目也计数的那一版），现行实现已不偏高 |
 
 #### 9.8.4 dsh
 
@@ -2769,16 +3141,17 @@ export interface AgentRunStateTagProps {
 | 块形态 | `assistant/message` 一条就是完整快照 ⇒ 动效只由 `assembly === 'open'` 触发，不靠增量 |
 | 工具入参 | `arguments` 是 JSON 字符串 ⇒ `build-model.ts` 的 `serializeInput` 结构化与原文各留一份 |
 | 工具结果 | 正文只是人读摘要（`read` / `write` / `edit` / `grep` / `glob`）⇒ 已解析事实在 `structured`，落点 `tool-item-detail.tsx` 的 `StructuredResult` |
-| 子任务身份 | `subagent.started` 给的独立 UUID，与派发工具调用的 `callId` **不同值** ⇒ `parentCallId` 恒 `null`；派发点退到「按 `messageId` 命中，命不中挂轮末」（`render-blocks.ts` 规则 3） |
-| 厂商系统层 | 不发 `vendor-system` ⇒ 整组 `not-exposed`；未指定思考档位时的文案是「未指定（由该家适配器决定：dsh 走 high）」（`build-environment.ts`） |
-| `ask-user` | 本仓没有应答面 ⇒ 收场记 `unavailable`，卡片写明「已知边界，不是缺陷」 |
+| 子任务身份 | `subagent.started` 给的独立 UUID（`subagentId`）与 `subagent` 工具调用的 `callId`（`call_…\|<uuid>` 那种复合形状）**不是同一个值**，而真机通知里没有 `childSessionId` / `agentId` ⇒ `parentCallId` **恒 `null`**（适配器逐字注释：给不出就是 `null`，不猜）。⇒ 派发点只能走 **③**：拿 `subagent` 工具调用入参里的任务名去和子任务名**逐字比**，命中就认那次调用；认不出时该子任务没有 `spawnedBy`，时间轴上也就不出占位条 |
+| 行级用量 | **唯一会带会话身份的 `usage`**（`v3 §2.5`）：`turn.subagentId` 可能是子会话 ⇒ 界面按「只认 `subagentId === null` 那条」过滤（`apps/web-next/src/log-drawer-state.ts` 的 `buildRowFacts` + `row-live.ts`） |
+| 厂商系统层 | 不发 `vendor-system` ⇒ 整组 `not-exposed`；未指定思考档位时的文案是「未指定（由该家适配器决定：DeepSeek Harness 走 high）」（`build-environment.ts` 的 `effortLine`，厂商名走 `AGENT_LABELS`、档位走传入的 `defaultEffort`；**没声明缺省档的家只说「未指定」**。2026-10-08 口径：页面展示不用缩写） |
+| `ask-user` | 本仓没有应答面 ⇒ **应该**收场成 `unavailable`，卡片写明「已知边界，不是缺陷」。⚠️ **这一档目前没有产出方**：装配层只产 `state: 'pending'`，`settled` 那一支（七态 + 答案回填）全仓只有在用例里手搓得到（§5.5 / §14 已登记） |
 
 #### 9.8.5 三家的可回归面（夹具）
 
 | 夹具 | 代表哪一档 | 落点 |
 |---|---|---|
-| `dshFixture()` | 覆盖最全：九条 `RenderBlock` 臂 + 两族卡片 + 附件 + 未识别 + 孤立结果 + 未收场子任务 | `agent-log/fixtures.ts` |
-| `codexFixture()` | 「补录」+「摘要」+ 只有汇总计数的那一档（`kind: 'row'`） | 同上 |
+| `dshFixture()` | 覆盖最全：**八条** `RenderBlock` 臂（**缺 `row-summary`**——那一档要 `source: 'aggregate'` 的子任务记录，dsh 夹具给的是 `wire`）+ 两族卡片 + 附件 + 未识别 + 孤立结果 + 未收场子任务 | `agent-log/fixtures.ts` |
+| `codexFixture()` | **`row-summary` 那一臂**（子任务记录记 `source: 'aggregate'`）+ 只有汇总计数的那一档 | 同上 |
 | `claudeFixture()` | 「有内容但这一类没被转发」（有工具块、无 assistant 正文） | 同上 |
 
 三份都**走真实链路**（`buildAgentLogModel` → `buildRenderBlocks` → 九臂渲染），
@@ -2788,33 +3161,34 @@ export interface AgentRunStateTagProps {
 
 | 文件 | 覆盖 |
 |---|---|
-| `ui/.../render-blocks.test.ts` | `buildRenderBlocks`：callId 配对成功 / `callId` 为 null 降级 / 配不上的 result 独立成条 / 连续工具合并 / 中间夹 text 则**不**合并 / **「先全建再渲染」由结构挡住**（L1 只吃 `turns` + 分派函数，§9.1）/ codex 的「一个 item 拆成 call+result」/ **两族卡片从工具组提出并切断合并链**（前后各成一组，且组头的 `工具调用 × N` **不含**提出去的调用）/ **同轮多次 `task` 调用只出最后一张面板 + 面板底部「本轮另有 N 次更新」** / **族载荷缺失（`tool === null`）时该次调用回退成普通工具行（不消失、不空面板）** / **`family` 非空但 `tool` 为 null 时也是通用工具行**（D29：两者不是一回事）/ **块按 `kind` 判别分派（`assertNever` 兜底）**：六类块各自的字段只在自己那一支可读 / **`spawnedBy` 命中的节点在同一轮的对应位置出 `subagent-bar`**；`callId` 为 null 或命不中时挂在轮末而**不是**被丢掉 / **`round === null` 的轮次进「未归属」段而不是被过滤掉** / **`kind: 'row'` 的节点出 `row-summary` 臂而不是 `subagent-bar`**（D32） |
-| `ui/.../render-blocks.test.ts` + `ui/.../agent-message-timeline.test.tsx` | **「收尾标记从哪来」的护栏**：`buildRenderBlocks` **不碰** `delta` / `snapshot` / 合并键（§4.2 职责边界）——断言它对同一批块**只做转发**、且**不读** `chunk` 类字段 / `assembly` 被如实带出 / **`ToolItem.running` 只由 `LogTurn.running` 转发**，不由「`output` 是否存在」推断（变异体 (f) 的**结构性**版本：把一个被中断的轮次造出来，「结果未采集」必须仍显示为静态灰字）/ 动效类名只在 `assembly === 'open'` 时挂、`snapshot` 时摘掉（`text-block-view.test.tsx` / `thinking-block-view.test.tsx`） |
-| `ui/.../agent-log-layering.test.ts` | **三层边界纪律的可执行形式**（§9.0）。**它是静态扫描而不是渲染断言**——用 `fs` 读 `agent-log/` 下的源文件、按层查 import 说明符：(a) L0 **不得** import L1/L2；(b) L1 **不得** import L2；(c) **虚拟化的三个入口（`virtual` / `itemHeight` / `from 'antd/listy'`）只许出现在 `base/virtual-list.tsx`**，且两个消费方都必须是 `<VirtualList`；(d) L0/L1 **不得**出现 `useState`（§9.0 纪律 2）；(e) L0/L1 **不得**出现 `EvalRow`，也不得按厂商分支（纪律 3；判据只扫**去注释后的可执行源码**）；(f) **`BlockRenderContext` 不得出现 `streaming`**（§9.1：`assembly` 是唯一判据，变异体 (y)）。**逐条各有一个变异体**——详见 §10 的 (n)–(r) 与 (y) |
-| `packages/client/client/src/row-stream.test.tsx` | **投递合并**（§7.1）：同一批多帧只触发一次 `setEvents` / 合并后的结果与逐帧投递**逐条等价**（去重、升序、「seq 回到 1 = 新一代」三条语义不变）/ rAF 不可用时 200ms 兜底仍会刷 |
+| `ui/.../render-blocks.test.ts` | `buildRenderBlocks`：callId 配对成功 / `callId` 为 null 降级 / 配不上的 result 独立成条 / 连续工具合并 / 中间夹 text 则**不**合并 / **两族卡片从工具组提出并切断合并链**（前后各成一组，且组头的 `工具调用 × N` **不含**提出去的调用）/ **同轮多次 `task` 调用只出最后一张面板 + `earlierCount`** / **族载荷缺失（`tool === null`）时该次调用回退成普通工具行（不消失、不空面板）** / **`family` 非空但 `tool` 为 null 时也是通用工具行**（D29：两者不是一回事）/ **`spawnedBy` 命中的节点在同一轮的对应位置出 `subagent-bar`**；`callId` 为 null 或命不中时挂在轮末而**不是**被丢掉 / **`kind: 'row'` 的节点出 `row-summary` 臂而不是 `subagent-bar`**（D32）。⚠️ **两处文档早先声称在此、实际不在此**：「`round === null` 的轮次进「未归属」段」（全仓无用例，只在 `agent-message-timeline.tsx` 渲染 `未归属`）与「六类块各自的字段只在自己那一支可读」（那是**类型**判据，本仓只有一处 `@ts-expect-error`（`composite/run-create-panel.test.tsx`，不在 agent-log 这套里）、`expectTypeOf` 零命中）；「codex 的一个 item 拆成 call+result」的用例在**数据层** `providers/codex/message.test.ts`；「先全建再渲染由结构挡住」是**结构**保证（`agent-message-timeline.tsx` 的入参只有 `turns` + 分派函数、渲染路径上 `buildRenderBlocks` 只在 `renderTurn` 里调（L2 的 `defaultOpenKeysOf` 为算默认展开键**也会逐轮调一次**——键集合的口径要求两处同源，故那不算「先全建再渲染」）），**没有计次断言** |
+| `ui/.../render-blocks.test.ts` + `ui/.../agent-message-timeline.test.tsx` | **「收尾标记从哪来」的护栏**：`buildRenderBlocks` **不碰** `delta` / `snapshot` / 合并键（§4.2 职责边界）/ `assembly` 被如实带出 / **`ToolItem.running` 只由 `LogTurn.running` 转发**，不由「`output` 是否存在」推断（结构性版本：把 `running: false` + `output: null` 造出来）——**「结果未采集」那句静态灰字的最终断言在 `tool-group-panel.test.tsx` 与 `agent-run-state-tag.test.tsx`**（前两个文件不渲染那句话）。动效类名只在 `assembly === 'open'` 时挂、`snapshot` 时摘掉（在 `text-block-view.test.tsx` / `thinking-block-view.test.tsx`）。⚠️ 「不读 `chunk` 类字段」**没用例**（靠入参形状保证） |
+| `ui/.../agent-log-layering.test.ts` | **三层边界纪律的可执行形式**（§9.0）。**它是静态扫描而不是渲染断言**——用 `fs` 读 `agent-log/` 下的源文件、按层查 import 说明符：(a) L0 **不得** import L1/L2；(b) L1 **不得** import L2；(c) **虚拟化的三个入口（`virtual` / `itemHeight` / **`Listy` 这一枚标识符**）只许出现在 `base/virtual-list.tsx`**，且两个消费方都必须是 `<VirtualList`。⚠️ **这条靶子修过两次**：早先扫 `from 'antd/listy'`——那个子路径**不存在**（antd 6.6.5 没有 `antd/listy` 目录），断言任何代码都命中不了；改成「具名导入」后**仍可绕过**（`import * as antd from 'antd'` + `<antd.Listy virtual={…}>`、`React.createElement(Listy, …)`、`require('antd')` 都不长成具名导入的样子）；现在按**去注释后的 `Listy` 标识符**扫，并显式放行唯一一处合法的非虚拟化用法（`ask-user-card.tsx` 的选项列表）。**四条都做过变异验证**（见 §10 变异体 **(n)**——分层 (c) 的变异体是那一条，(c) 号本身是里程碑的）。另外**清单是双向的**：目录里每个渲染件都必须进三层清单，否则它会落在所有扫描面之外；(d) L0/L1 **不得**出现 `useState`（§9.0 纪律 2）；(e) L0/L1 **不得**出现 `EvalRow`，也不得按厂商分支（纪律 3；判据只扫**去注释后的可执行源码**）；(f) **`BlockRenderContext` 不得出现 `streaming`**（§9.1：`assembly` 是唯一判据）。**变异体只覆盖 (c)(d)(e)(f) 四条**（(n)(q)(r)(y)）；(a)(b) 没有变异体，而 (o)(p) 拦的不是分层 |
+| `packages/client/client/src/row-messages.ts` 的帧合并（**目前无测试文件——P0**） | **投递合并**（§7.1）：同一批多帧只触发一次 `setEvents` / 合并后的结果与逐帧投递**逐条等价**（去重、升序、「seq 回到 1 = 新一代」三条语义不变）/ rAF 不可用时 `setTimeout(flush, 16)` 兜底仍会刷。⚠️ **这条口径现在没有落点**：现有 `row-stream.test.tsx` 覆盖的是**行级事件流**（`/log` + `/stream`、`seq` 续订、终态关流），帧合并住在 `row-messages.ts`，那个文件一行用例都没有 |
 | `packages/server/contracts/src/agent-event.test.ts` + `typecheck` | **形状靠类型与 schema 钉**：`AgentMessage` / `ContentBlock` / `RowRecord` / `MessageCapability` 的 schema 在 `packages/server/contracts/src/agent-message.ts`，`Loadable` 三态与 `RenderBlock` 判别联合由 `tsc` 保证「自相矛盾的组合写不出来」（**模型组装属 B 段**，此处只钉形状不钉行为）；事件 schema 的运行时守卫在 `agent-event.test.ts` |
-| `ui/.../agent-message-timeline.test.tsx` | **L1 的用例（不掺虚拟化、不掺 subagent）**：思考默认收起 / 工具组默认收起 / `running` 的组默认展开 / **`error` 的组与行也默认收起**（用户口径：错误原文不在 DOM 里，组头仍给出「失败 N」）/ `thinking.text === null` 显示缺失原因而非空面板 / `text` 块走 markdown（`MarkdownText` 挂载）/ 子任务占位条渲染且不折叠 / **`streaming` 时挂扫光类名与光标容器类，转 false 后类名被摘掉**（§6.7）/ **`renderBlock` 不传时走默认注册表、传了就用传入的分派**（§9.2）/ **逐轮 `map` 渲染：`turns` 有 50 轮时 DOM 里就有 50 轮**（这条钉的正是「L1 不虚拟化」——变异体 (n)） |
+| `ui/.../agent-message-timeline.test.tsx` | **L1 的用例（不掺虚拟化、不掺 subagent）**：思考默认收起 / 工具组默认收起 / `running` 的组默认展开 / **`error` 的组与行也默认收起**（用户口径：错误原文不在 DOM 里，组头仍给出「失败 N」）/ 子任务占位条渲染且不折叠 / **`renderBlock` 不传时走默认注册表、传了就用传入的分派**（§9.1）/ **逐轮 `map` 渲染：`turns` 有 50 轮时 DOM 里就有 50 轮**（这条钉的正是「L1 不虚拟化」——变异体 (n)）/ 行级事件按 `at` 落轮次之间、三档各有自己的标签色 / 里程碑按号归位。⚠️ **三条不在本文件**：「`thinking.text === null` 整块不渲染」在 `thinking-block-view.test.tsx`；「`text` 块走 markdown」在 `text-block-view.test.tsx`；「`assembly === 'open'` 挂扫光/光标类名、`snapshot` 摘掉」在 `text-block-view.test.tsx` 与 `thinking-block-view.test.tsx` |
 | `ui/.../log-node-breadcrumb.test.tsx` | 链由 `parentId` 回溯派生（换 `activeNodeId` 即换链）/ 段数与顺序 / 当前段 `aria-current` / 下拉列的是**同层兄弟**（不是全树）且当前项 `disabled` / 任务名为 null 时显示 id 前缀兜底 / `kind === 'row'` 的节点不进面包屑 |
-| `ui/.../agent-log-facts-bar.test.tsx` | 各事实格的空值不显示成 `0` / 错误格存在时可见 / **耗时用 `useNow` 本地走秒表**（`startedAt` 在、`endedAt` 为 null 时数字在涨；终态用 `endedAt − startedAt` 的结算值）/ **思考 token 只在与 `tokens` 并列的那一格显示**，`basis !== 'additive'` 时**不提供任何相加口径**、`null` 时不显示「0」/ **`facts.domain` 按数据层给的顺序渲染**，空数组时不出这一行，`label` / `value` / `hint` 一字不改地照画（UI 不解析值）/ `status.label` 照数据层给的文案渲染、`tone === 'running'` 时才带动效 / 「等待答复」徽标只在真的在等时出现（§5.5）。**原始输出入口的用例已移出**（归下两行） |
-| `ui/.../raw-output-panel.test.tsx` | **§9.7 提升出来的原语，两种变体各测**：`AgentLogDiagnostics` 变体逐行渲染 `[HH:mm:ss] source + 原文`（复用 `log-format` 措辞）/ `lines` 空数组时**不渲染入口** / `loading` 给 `Skeleton`、`error` 给 `Alert` + 重试且 `onRetry` 未给时**不渲染重试按钮** / `truncatedReason` 非空时如实显示那句话 / **`ToolCardResult` 变体（卡片底部）与逐行变体共用同一个件**：`raw === null` 时显示「结果未采集」而不是空白 / `secret` 类遮罩由调用方决定（本件不做脱敏，§5.5） |
+| `ui/.../agent-log-facts-bar.test.tsx` | 各事实格的空值不显示成 `0` / 错误格存在时可见 / **耗时用 `useNow` 本地走秒表**（`startedAt` 在、`endedAt` 为 null 时数字在涨；终态用 `endedAt − startedAt` 的结算值）/ **思考 token 只在与 `tokens` 并列的那一格显示**，`basis !== 'additive'` 时**不提供任何相加口径**、`null` 时不显示「0」/ **格序：用量 → 耗时 → 轮次**（轮次排在末尾，2026-10-07 口径；判据取行文本里的位置）/ `status.label` 照数据层给的文案渲染、`tone === 'running'` 时才带动效 / 「等待答复」徽标只在真的在等时出现（§5.5）/ **「结束原因」那一格不再出现**（D40：字段与 `agent-log-facts-exit` 一起删掉了）/ 领域事实**不再由本件渲染**。⚠️ **「`loading` 给 `Skeleton`、`error` 给 `Alert` + 重试」不在本文件**：「本件只画 `ready` 态，三态画面由调用方决定」是它的口径（`raw-output-panel.tsx` 文件头），那两幅画面在 `agent-log-layout.tsx` 里；**布局侧那两态目前也没有专门用例**（现有 `diagnostics` 用例都是 `status: 'ready'`）。**领域事实与原始输出入口的用例已移出**（分别归本表的 facts-bar 行与 §9.7 那条） |
+| `ui/.../agent-log-domain-facts.test.tsx` | **领域事实那一行**（D40 第 ⑤ 项）：五格**按数据层给的顺序**照画（智能体 → 模型 → 思考强度 → 改动 → 评分）/ 空数组时**整行不出现** / 值整段一枚色档 `Tag`（`tone` → antd 预设色）/ **`tag` 段按 `tagTone` 上色**（`blue` / `geekblue` / `purple`，不给时回落 `blue`）/ 改动那一格按 git stat 上色（+N 绿 / −N 红，取自 token）且整格没有 Tag / `hintSegments` 的 tag 段照画。**「自占一行」的守卫在 `agent-log-layout.test.tsx`**（父容器必须是纵向 Flex） |
+| `ui/.../raw-output-panel.test.tsx` | **§9.7 提升出来的原语，两种变体各测**：`AgentLogDiagnostics` 变体逐行渲染 `[HH:mm:ss] source + 原文`（复用 `log-format` 措辞）/ `lines` 空数组时**不渲染入口** / 只有「`onRetry` 未给时**不渲染重试按钮**」这一条在本文件；⚠️ **`raw-output-panel` 不收 `Loadable`**（它只画 `ready` 态），`Skeleton` / `Alert` 两幅画面由 `agent-log-layout.tsx` 决定，**布局侧那两态目前没有专门用例**（见本表 `agent-log-facts-bar.test.tsx` 那一行） / `truncatedReason` 非空时如实显示那句话 / **不自带容器**：两个入口按钮都是渲染根的**直接子节点**（把 `Flex` 包回去这条红，2026-10-07 口径）/ **`ToolCardResult` 变体（卡片底部）与逐行变体共用同一个件**：`raw === null` 时显示「结果未采集」而不是空白 / `secret` 类遮罩由调用方决定（本件不做脱敏，§5.5） |
 | `ui/.../agent-run-state-tag.test.tsx` | **§4.2「`running` 不可由 `output` 推断」的唯一分派处**：`running === true` → 转圈 + 走秒表（fake timers 涨数）；`running === false && !hasResult` → **静态灰字「结果未采集」且不带 `Badge status="processing"`**（变异体 (f) 的核心断言就在这一行）/ `hasResult === true` → 不显示状态（已确定的事不占地方）/ `missingReason` 非空时把那句话带上 / **`since` 为 null 时不挂定时器**（终态不涨） |
-| `ui/.../fixtures.test.tsx` + `ui/.../block-renderer-registry.test.ts` | **D25 的守卫**：三家夹具合起来覆盖 `RenderBlock` 的**九条 arm**，且每条都能被 `DEFAULT_BLOCK_RENDERERS` 渲染出来（不抛、不返回空）/ 带原文抽屉的两张卡片从 `BlockRenderContext` 取开合（不写死）/**变异体 (o)**：把 `BlockRendererProvider` 改成「整体替换」后「默认臂仍可用」必须红 |
-| `ui/.../agent-log-drawer.test.tsx` + `ui/.../agent-log-layout.test.tsx` | **抽屉外壳**：`open === false` 不渲染正文、打开时标题是「执行日志」且正文取满抽屉（`height: 100%`）/ 标题可覆盖 / 页面侧三个接线位（`notice` / `liveError` / `connected`）透传到底 / **主抽屉关闭时环境抽屉不在 DOM 里**（结构性保证）。**布局**：`empty === true` 出 `EmptyState` 而不是空时间轴 / 切节点内容未到出 `Skeleton`、读失败出 `Alert` 且只有给了 `retryNode` 才渲染重试 / 过滤在**轮次级**生效并显示命中数 / 「跟随最新」只有一份 state（开关与浮出按钮同步）/ `source` 全不给时各入口照常工作（「未提供」而不是崩溃，§4.4 口径 1）/ `timeline` 槽传函数时**不渲染「已渲染 N 共 M 轮」**（§7.2） |
-| `ui/.../agent-environment-drawer.test.tsx` | **`agent-log` 内部件的用例**：摘要各项与分组按数据层给的 `title` / 顺序渲染 / 四种 `source` 各有标签 / `present: false` 渲染成「标签 · 原因」而**不是空白** / `truncated` 非空时出截断提示与「复制全部」 / **「已调度的工具」（vendor）与「用过的工具」（observed）在两组** / **用户提示词不出现在环境抽屉里**（D19）/ 加载中 `Skeleton`、失败 `Alert` 重试 / `environment === undefined` 时显示「未提供」而不是空白 / **主抽屉关闭后环境抽屉不在 DOM 里**（结构性保证，钉一条防回归） |
-| `ui/.../tool-group-panel.test.tsx` | 组头文案（`工具调用 × N` + 名字汇总 + 状态汇总）/ **组头的「失败 N」**（折叠口径的补偿）：N 数的是**结果为 `error` 的条目**——**含失败的孤立结果**，与「工具调用 × N」是两个口径；**一条失败都没有时整格不渲染**（不画恒为 0 的读数）；**收起态就能看出这一组有失败，而组内的行一条都不挂载**（证据要点开）/ 工具行摘要 / 展开后出 `ToolItemDetail` / 超长结果截断并给「展开全部」 |
-| `ui/.../task-panel-card.test.tsx` | 计数与变化摘要**照数据层给的渲染**（UI 不自己算）/ 四态 Tag（`unknown` **不显示成成功**）/ `steps` 空数组显示「清单为空」而不是空白面板 / `owner === null` **不显示这一格**、`owner === ''` 显示「未指派」/ `id === null` 时不画 id 与依赖 / 首次（`change === null`）展开、其后收起且标题带摘要 / `running` 与结果未采集时默认展开 / 同轮更早的调用收进「本轮另有 N 次更新」/ `note` 有值时出现在标题行 |
-| `ui/.../ask-user-card.test.tsx` | **`state: 'pending'`** 显示「等待答复中…」+ 计时在涨（fake timers）+ **不显示任何收场文案** / **`state: 'pending'` 且 `running === false`** 显示「结果未采集」而**不是**一直转圈（D35）/ 七态各自的 Tag 与中文 / `unavailable` **不是红色错误样式**且写明「无人可应答、已知边界」/ **答案按 `label` 回填（不是 id、不是下标）** / 多选时 `custom` 补充、单选时覆盖 / `selected` 里的未知标签**照样显示** / `recommended` 打 Tag 但**顺序不变** / `allowOther` 追加「其它（自由输入）」/ `secret` 默认遮罩 + 「显示」按钮可展开 / 等待状态默认展开、已收场默认收起、`timeout`/`unavailable`/`rejected` 默认展开 |
+| `ui/.../fixtures.test.tsx` + `ui/.../block-renderer-registry.test.ts` | **D25 的守卫**：三家夹具合起来覆盖 `RenderBlock` 的**九条 arm**，且每条都能被 `DEFAULT_BLOCK_RENDERERS` 渲染出来（不抛、不返回空）/ 带原文抽屉的两张卡片从 `BlockRenderContext` 取开合（不写死）。⚠️ **变异体 (o)（把 Provider 改成「整体替换」）目前抓不住**：夹具用例是直接读 `DEFAULT_BLOCK_RENDERERS` 的，`BlockRendererProvider` 全仓**没有被任何用例挂载过**；要让它可验，得补一条「挂 Provider 之后、未覆盖的默认臂仍画得出来」的用例——那也正是 §11 验收 27「叠加语义」唯一可执行的判据 |
+| `ui/.../agent-log-drawer.test.tsx` + `ui/.../agent-log-layout.test.tsx` | **抽屉外壳**：`open === false` 不渲染正文、打开时标题是「执行日志」且正文取满抽屉（`height: 100%`）/ 标题可覆盖 / 页面侧三个接线位（`notice` / `liveError` / `connected`）透传到底 / **主抽屉关闭时环境抽屉不在 DOM 里**（结构性保证）。**布局**：`empty === true` 出 `EmptyState` 而不是空时间轴 / 子任务节点内容未到出 `Skeleton`、读失败出 `Alert` 且只有给了 `retryNode` 才渲染重试 / 过滤在**轮次级**生效并显示命中数 / 「跟随最新」只有一份 state（开关与浮出按钮同步）/ `source` 全不给时各入口照常工作（「未提供」而不是崩溃，§4.4 口径 1）/ `timeline` 槽传函数时**不渲染「已渲染 N 共 M 轮」**（§7.2）。D40 的两条结构断言在 `agent-log-layout.test.tsx`：**连接徽标与「原始输出 N 条」同行、且排在它前面**（`连接徽标与「原始输出 N 条」同行，且排在它前面（最左）` 那条）/ **领域事实自占一行**（`领域事实自占一行：与事实条同层、排在它后面，且不在事实条里面`）。⚠️ **「同一份模型分别经 `AgentLogDrawer` 与 `AgentLogLayout` 渲染，时间轴区 DOM 逐字一致」这条 S1 判据目前不在任何文件里**——§11 验收 24 把落点指到了本行，需补 |
+| `ui/.../agent-environment-drawer.test.tsx` + `packages/client/client/src/build-environment.test.ts` | **`agent-log` 内部件的用例**：摘要七项与分组按数据层给的 `title` / 顺序渲染 / `present: false` 渲染成「标签 · 原因」而**不是空白** / `truncated` 非空时出截断提示与「复制全部」 / 加载中 `Skeleton`、失败 `Alert` 重试（且只有给了 `onRetry` 才渲染按钮）/ `environment === undefined` 时显示「未提供」而不是空白 / 主抽屉关闭后环境抽屉不在 DOM（`agent-log-drawer.test.tsx`）。**「已调度的工具」（vendor）与「用过的工具」（observed）分属两组**这条判据落在**数据层**：`build-environment.test.ts` 的「用过的工具按名字计数、按次数降序，且**与「已调度的工具」分属两组**」，以及「四组永远都在，且顺序是 用户层 / 厂商 / 运行配置 / 实测统计」。⚠️ 两处缺口如实登记：**「四种 `source` 各有标签」没有真判据**（组件用例的夹具只有 user/vendor/observed 三组，且那几条断言的文本与组标题逐字相同 ⇒ 把来源 Tag 删掉照样绿）；**「用户提示词不出现在环境抽屉里」（D19）全仓没有断言**，只有 `build-environment.ts` 的注释写着这条口径 |
+| `ui/.../tool-group-panel.test.tsx` | 组头文案（`工具调用 × N` + 名字汇总 + 状态汇总）/ **组头的「失败 N」**（折叠口径的补偿）：N 数的是**结果为 `error` 的条目**——**含失败的孤立结果**，与「工具调用 × N」是两个口径；**一条失败都没有时整格不渲染**（不画恒为 0 的读数）；**收起态就能看出这一组有失败，而组内的行一条都不挂载**（证据要点开）/ 工具行摘要 / 展开后出 `ToolItemDetail` / 轮次结束而结果没到时的**静态灰字**「结果未采集」。⚠️ **「超长结果截断并给『展开全部』」这条早已反向**：`tool-item-detail.tsx` 的口径是**结果不截断**（整段交给 `MonoText` 的 `maxHeight` 滚动），`tool-item-detail.test.tsx` 专测「不截断、也没有『展开全部』按钮」 |
+| `ui/.../task-panel-card.test.tsx` + `ui/.../use-agent-log-view.test.ts` | 计数与变化摘要**照数据层给的渲染**（UI 不自己算）/ 四态 Tag（`unknown` **不显示成成功**）/ `steps` 空数组显示「清单为空」而不是空白面板 / `owner === null` **不显示这一格**、`owner === ''` 显示「未指派」/ `id === null` 时不画 id 与依赖 / 同轮更早的调用收进「本轮另有 N 次更新」/ `note` 有值时出现在标题行 / **两列 `small` `Table`**（2026-10-07）：表头整条隐藏（没有列头那行）、左列任务（含 `owner` 与依赖）而右列状态且 `align: 'right'`（断的是单元格的行内 `textAlign`）、**12 步清单不分页**（`pagination={false}`；掉了它 antd 默认 `pageSize = 10`，第 11 步起会被藏起来）。**「首次展开 / 其后收起 / running 与结果未采集时展开」这三条默认态不在本文件**（`TaskPanelCard` 是受控件，`open` 由调用方给）——真落点是 `use-agent-log-view.test.ts` 的「计划清单：首次（change 为 null）展开；其余收起；进行中或结果未采集时展开」 |
+| `ui/.../ask-user-card.test.tsx` + `ui/.../use-agent-log-view.test.ts` | **`state: 'pending'`** 显示「等待答复中…」+ 计时在涨（fake timers）+ **不显示任何收场文案** / **`state: 'pending'` 且 `running === false`** 显示「结果未采集」而**不是**一直转圈（D35）/ 七态各自的 Tag 与中文 / `unavailable` **不是红色错误样式**且写明「无人可应答」（文案里那句「已知边界」出自 `types.ts` 的 `ASK_USER_OUTCOME_LABELS`，用例只断前两段）/ **答案按 `label` 回填（不是 id、不是下标）** / 多选时 `custom` 补充、单选时覆盖 / `selected` 里的未知标签**照样显示** / `recommended` 打 Tag 但**顺序不变** / `allowOther` 追加「其它（自由输入）」/ `secret` 默认遮罩（`••••` + 「显示」两段文本包在一个 `Collapse` 里，**不是按钮**；用例点的是 `••••`）/**默认展开态不在本文件**——「等待态展开、已收场收起、`timeout`/`unavailable`/`rejected` 展开」的落点是 `use-agent-log-view.test.ts` |
 | `ui/.../virtual-turn-list.test.tsx` + `ui/.../base/virtual-list.test.tsx` | **§7.2 的护栏**：拿不到高度就**不虚拟化**（每一项都渲染，「已渲染 N / 共 M 轮」如实给出）/ 用户提示词与补充提示是列表里的头几行（跟着列表滚，不钉在顶上）/ `ListController` 暴露跳轮次与回到最新、越界不抛 / 空轮次不抛、尾部如实说 `0 / 0`。**「先全建再渲染」由结构挡住**：L1 只吃 `turns` + 分派函数（§9.1），虚拟化的三个入口只许出现在 `base/virtual-list.tsx`（`agent-log-layering.test.ts` 的 (c)） |
-| `ui/.../agent-log-toolbar-preset.test.ts` | **D26 的守卫**：「原始输出」在 `diagnostics.lines` 为空时 `visible === false` / `diagnostics` 为 `undefined` 时该动作的显隐（与 §5.3 一致）/ 「跳到轮次」的 `min` / `max` 来自 `turns.length` 且越界 clamp 后**如实回显**（§6.5）/ 「跟随最新」的 `toggle.checked` 与浮出按钮**是同一个值**（不出现两份 state）/ 「只看工具调用」命中含 `task` / `ask-user` 的轮次（§6.5）/ **`AgentLogLayout` 传了 `actions` 时用传入的、不传时用预设**——变异体 (p) |
-| `apps/web-next/src/log-drawer-state.test.ts` | 既有三态判定保留；新增「`log` 事件不再进时间轴」的接线断言 |
-| `apps/web-next/src/runs-page-wiring.test.ts` | 页面接线的**静态守卫**：`resolveLogDrawer({` 与 `buildRowFacts({` 必须出现在页面里；`AgentLogDrawer` 吃到的是 `buildAgentLogModel` 的产物 |
-| `eval-row-card.test.tsx` | 按钮可访问名逐字改「执行日志」，**顺序断言不变** |
+| `ui/.../agent-log-toolbar-preset.test.ts` + `ui/.../agent-log-layout.test.tsx` | **D26 的守卫**：「原始输出」在 `diagnostics.lines` 为空时 `visible === false` / `diagnostics` 为 `undefined` 时该动作的显隐（与 §5.3 一致）/ 「跳到轮次」的 `min` / `max` 来自 `turns.length` 且越界 clamp 后**如实回显**（§6.5）/ 「跟随最新」的 `toggle.checked` 与浮出按钮**是同一个值**（不出现两份 state）/ 「只看工具调用」的 `toggle.checked` 跟 `viewState.filters.onlyTools`、改一格不动另一格（AND 叠加）。**「`AgentLogLayout` 传了 `actions` 时用传入的、不传时用预设」——变异体 (p) 的用例在 `agent-log-layout.test.tsx`，不在预设那个文件里**。⚠️ **「『只看工具调用』命中含 `task` / `ask-user` 的轮次」没有专门用例**：现有过滤用例只沿「有工具 / 无工具 × 有错 / 无错」四格，族卡片从未进过判据 |
+| `apps/web-next/src/log-drawer-state.test.ts` | 既有三态判定完整保留（`loading` / `failed` / `log` + 两个提示位）。⚠️ 「`log` 事件不再进时间轴」的接线断言**不在本文件**，它在 `apps/web-next/src/runs-page-wiring.test.ts`（断言页面调 `diagnosticsOf(stream.events)` 与 `formatEventLog`、且不出现 `LogView`） |
+| `apps/web-next/src/runs-page-wiring.test.ts` | 页面接线的**静态守卫**：`resolveLogDrawer({` 与 `buildRowFacts({` 必须出现在页面里；`buildAgentLogModel({` 与 `records: messages.records,` 也必须在。⚠️ **「`AgentLogDrawer` 吃到的是 `buildAgentLogModel` 的产物」这一条目前没有断言**（只断了两段源码文本，没有断 props 绑定） |
+| `packages/client/ui/src/composite/eval-row-card.test.tsx` | 按钮可访问名逐字「执行日志」，**顺序断言不变**（仍是五个按钮的第一个） |
 
 **契约与结构的守卫文件**（钉 D27–D38；**每条都配变异体**，见本节末）：
 
 | 文件 | 覆盖 |
 |---|---|
-| `packages/server/contracts/src/agent-message.ts` 的 schema + `ui/.../build-model.test.ts` + `ui/.../capability-notes.test.tsx` + `ui/.../fixtures.test.tsx` | **D27–D37 的形状不变量**：取值集合（`MessageSource` / `MissingReason` / `CapabilityLevel` / `LogNodeStatus` 七档 / `TruncationState` 三态）由 schema 与 `tsc` 钉住；`CapabilityDecl` 的**配对不变量**（`yes` ⇒ `source` 非空且 `reason` 为 null，否则反之）在 schema 的 `superRefine` 里；界面侧的落点是：不给能力声明 ⇒ **全套记「没验证过」**、主会话节点的 `sessionFacts === null`、`thinking === null` **不显示成 0**、三家夹具合起来覆盖九条 arm |
+| `packages/server/contracts/src/agent-message.ts` 的 schema + `ui/.../build-model.test.ts` + `ui/.../capability-notes.test.tsx` + `ui/.../fixtures.test.tsx` | **D27–D37 的形状不变量**：取值集合（`MessageSource` / `MissingReason` / `Capability`（契约里的五态）/ `LogNodeStatus` 七档 / `TruncationState` 三态）由 schema 与 `tsc` 钉住；`CapabilityDecl` 的**配对不变量**在契约 `MessageCapabilitySchema` 的 `superRefine` 里——**配对不变量只拦两条**（`yes` 却没给 `source`、非 `yes` 却没给 `reason`），另有一条一致性检查（`thinkingText` 非 `'yes'` ⇒ `thinkingTextKind` 必须 `'none'`），**共三条**；**配对不变量的反方向两条没有守卫**（`yes` 却给了 `reason`、非 `yes` 却给了 `source`，v3 已登记为待补）；界面侧的落点是：不给能力声明 ⇒ **全套记「没验证过」**、主会话节点的 `sessionFacts === null`、`thinking === null` **不显示成 0**、三家夹具合起来覆盖九条 arm |
 | `ui/.../text-block-view.test.tsx` + `ui/.../thinking-block-view.test.tsx` | **§6.9 的角色标签与来源标注**：`role === 'assistant'` **不标注** / `user` 出「用户」标并带左侧竖线 / `system` 出「系统」标且整块降一档 / `source === 'session-file'` 出「补录」、`'aggregate'` 出「汇总」、`'wire'` **不出** / **`textKind === 'summary'` 出「摘要」标** / `contentTruncatedReason` 非空时那句话可见（`agent-log-facts-bar.test.tsx`）/ **变异体 (s)**：把 `role` 固定成 `'assistant'` 后，`user` / `system` 的断言必须红 |
 | `ui/.../capability-notes.test.tsx` | **D28 的界面落点**：`capability` 按数据层给的**顺序**渲染、**UI 不硬编码维度名**（塞一个 `{ myNewDim: … }` 也要画出来）/ 四句「为什么没有」**互不相同**：`no → 「这家结构上不支持」`、`not-projected-by-vendor → 「厂商有数据、但没投送到我们能读的通道」`、`off-by-adapter → 「厂商有、我们还没接」`、`unverified → 「没验证过」` / `capabilityNotes` 非空时如实显示（能力随路由 / 模型变化的前提）、空数组时那一行不出现 / `level === 'yes'` 的那一格**不显示原因**、`only` 只筛维度不改顺序 / **变异体 (t)**：把几种原因写成同一句，断言必须红 |
 | `ui/.../attachment-block-view.test.tsx` + `ui/.../unrecognized-block-view.test.tsx` | **D31 的界面落点**：`image` / `file` 各自的 Tag 与路径、MIME（拿不到就不出那一格）/ `path === null` 显示「内联内容，无路径」而**不是空白** / **缩略图不加载**（断言不出现 `<img>`，本期口径）/ `unrecognized` 渲染成折叠的等宽原文（JSON 走 `JsonText` 格式化）+ 厂商类型，**默认收起**、`raw === null` 时说「原样载荷未采集」 / **变异体 (u)**：把 `unrecognized` 也走附件那一条路（或反之），两条断言必须红 |
@@ -2826,9 +3200,9 @@ export interface AgentRunStateTagProps {
 
 | 文件 | 覆盖 |
 |---|---|
-| `ui/.../build-model.test.ts` | `usage` 与 `mergeKey` **摊到每个块**（同一条消息的每个块共享同一个 `usage`）；契约缺这一格时 UI 侧是 `null`（**不是 `undefined`**） |
-| `ui/.../agent-message-timeline.test.tsx` | **每条消息恰好一行**页脚（同一条消息的多个块只出一行，数 `[data-usage-footer]`）/ `usage === null` 时**一行都不出**（既不渲染 0 也不写「未采集」）/ 文案以「**本条 输入**」开头（**不是**「用量 …」，与轮末里程碑不同形）/ 页脚**不是 `Tag`**（`[data-usage-footer].ant-tag` 查不到——全仓唯一一处按 antd 类名断言的地方，因为这条判据本身就是「**不许**用哪个组件」，而组件只能由类名识别）/ 与里程碑是**两个互不嵌套**的锚点（`[data-usage-footer]` vs `[data-row-event]`）/ **子会话节点同样渲染** |
-| `ui/.../build-model.test.ts` | **水位按会话拆**：子会话读数的前几条**不再被主会话水位丢掉**；**老日志（无 `turn`）行为逐字不变**（全落 `main` 桶） |
+| `ui/.../build-model.test.ts` | `usage` 与 `mergeKey` **摊到每个块**（同一条消息的每个块共享同一个 `usage`）；契约缺这一格时 UI 侧是 `null`（**不是 `undefined`**）。**这是两条独立用例**（一条钉摊平、一条钉缺格） |
+| `ui/.../agent-message-timeline.test.tsx` | **每条消息恰好一行**页脚（同一条消息的多个块只出一行，数 `[data-usage-footer]`）/ `usage === null` 时**一行都不出**（既不渲染 0 也不写「未采集」）/ 文案以「**本条 输入**」开头（**不是**「用量 …」，与轮末里程碑不同形）/ 页脚**不是 `Tag`**（`[data-usage-footer].ant-tag` 查不到——这是**唯一一处「为『不许用哪个组件』而按 antd 类名断言」**的地方，因为那条判据本身就是「不许用哪个组件」，而组件只能由类名识别；**别把它读成「全仓唯一按类名断言」**，本目录还有 30+ 处 `.ant-collapse-extra` / `.ant-drawer-close` 这类结构定位）/ 与里程碑是**两个互不嵌套**的锚点（`[data-usage-footer]` vs `[data-row-event]`）/ **子会话节点同样渲染** |
+| `ui/.../build-model.test.ts` | **里程碑的选取与归属**（2026-10-07 口径）：整行**只出一条**（候选阶段最后一条主会话读数）；**子会话的读数一条都不出**；第一条 `judging` / 终态帧之后的 `usage` 不算这一行；**老日志（无 `turn`）行为逐字不变**（那一条的 `turn` 是 `null` ⇒ 按时刻归位） |
 | `ui/.../agent-message-timeline.test.tsx` | 里程碑**按号归位**：有键按 `(会话身份, 轮次号)` 归本轮，**跨会话不串**（子会话同号的轮次不认领主会话的里程碑）；有键但本节点对不上 ⇒ **本节点不显示**；无键的 `error` 仍按时刻（逐条与改动前相同）；端到端：里程碑渲染在**它自己那一轮**的分组里 |
 
 **jsdom 验不出、必须靠真实浏览器冒烟的七项**（写进冒烟清单，不是「可选」）：
@@ -2847,13 +3221,17 @@ export interface AgentRunStateTagProps {
    若上升：先量再改，落点是**数据层的按节点保留上限**，**不是**在 `ui` 包里加淘汰。
 
 **变异验证**（本仓硬口径：没见过失败的守卫不算守卫）：至少对以下**二十六条**把缺陷造回去并确认守卫变红。
-(a)–(m) 拦行为，(n)–(r) 拦分层，(s)–(y) 拦「用乐观值填补缺失」，(z) 拦「折叠之后失败彻底消失」：
+(a)–(m) 拦行为，(n)(q)(r) 拦分层（(o)(p) 拦的是注册表与工具条），(s)–(y) 拦「用乐观值填补缺失 / 同一事实立第二个真值」，
+(z) 拦「折叠之后失败彻底消失」：
 
 (a) 把 `callId` 配对改成「按出现顺序两两配对」；(b) 把 `running` 的组默认展开改回收起；
-(c) 把 `usage` 创新高判断去掉（每轮都进时间轴）；(d) 把 `thinking.text === null` 的空面板改回空串渲染；
+(c) 把「整行只出一条里程碑」改回「每轮都进时间轴」（子会话读数也照样折成里程碑）；
+(d) 把 `thinking.text === null` 的**整块隐藏**改回渲染占位文案；
 (e) **把折叠键从 `ContentBlockBase.id` 改回数组下标**（追加一轮后「我展开的那条自己合上了」必须红）；
 (f) **把 `running` 改成由「有没有 `output`」推断**（「结果未采集」被显示成「正在跑」必须红）；
-(g) **把「已调度的工具」与「用过的工具」并成一组**（§6.8 的分组断言必须红）；
+(g) **把「已调度的工具」与「用过的工具」并成一组**：判据在**数据层**——
+`packages/client/client/src/build-environment.test.ts` 的「用过的工具按名字计数、按次数降序，
+且**与「已调度的工具」分属两组**」必须红（组件用例的夹具只有三组，改那一处不会红）；
 (h) **把组名硬编码进组件、忽略数据层给的 `EnvGroup.title`**（新增一层时组名不变，断言必须红）；
 (i) **把 `AskUserAnswer.selected` 的匹配从「选项标签」改成「数组下标」或「option id」**
 （答案看起来有、其实错位，必须红）；
@@ -2862,7 +3240,7 @@ export interface AgentRunStateTagProps {
 (l) **把 `owner === null` 显示成「未指派」**（编造了这一家没有的概念，必须红）；
 (m) **把同轮多次 `task` 调用画成多张面板**（v2 spec 的「只画最后一条结果，历史折叠」被破坏，必须红）。
 
-**(n)–(r) 五条——它们钉的是分层本身**：
+**(n)(q)(r) 三条——它们钉的是分层本身**：
 
 (n) **把虚拟列表塞回 `agent-message-timeline`**（或让 L1 去 import `Listy`）：
 `agent-log-layering.test.ts` 的 (c) 必须红，且 `agent-message-timeline.test.tsx` 的
@@ -2870,23 +3248,23 @@ export interface AgentRunStateTagProps {
 (o) **把 `BlockRendererProvider` 改成「整体替换默认表」**：注册表用例的「默认**九臂**仍可用」必须红
 （这条防的是「扩展一下就把默认渲染器弄丢了」，而那种缺陷在页面上表现为**大面积空白**、
 控制台只有一句 `undefined is not a function`，很容易被误判成数据没到）；
-(p) **把 `AgentLogLayout` 改成忽略传入的 `actions`、恒用预设**：工具条预设用例的
-「传了 `actions` 时用传入的」必须红（否则 S4 的「新增动作」只是纸面承诺）；
+(p) **把 `AgentLogLayout` 改成忽略传入的 `actions`、恒用预设**：`agent-log-layout.test.tsx` 的
+「传了 `actions` 时用传入的」必须红（**不在预设那个文件里**——预设那份只测 `agentLogToolbarPreset` 本身）（否则 S4 的「新增动作」只是纸面承诺）；
 (q) **把某个 L0 件从受控改回 `useState`**（例如 `thinking-block-view` 自己记住开合态）：
 `agent-log-layering.test.ts` 的 (d) 必须红，且该件的独立挂载用例必须红（S3 的守卫）；
 (r) **在 L0 里加一句按厂商分支**（例如 `task-panel-card` 判 `agentKind === 'claude'` 才画 `owner`）：
 `agent-log-layering.test.ts` 的 (e) 必须红（「**UI 不判厂商**」的目录级落实）。
 
-> **为什么 (n)–(r) 必须单列**：(a)–(m) 全部是**行为**守卫——它们拦的是「画错了」。
-> 而 (n)–(r) 拦的是「**层塌了**」：塌掉之后(a)–(m) 可能**全绿**（界面看起来还是对的），
+> **为什么分层那三条（(n)(q)(r)）必须单列**：(a)–(m) 全部是**行为**守卫——它们拦的是「画错了」。
+> 而 (n)(q)(r) 拦的是「**层塌了**」（(o)(p) 是另外两件事：注册表的叠加语义与工具条的 `actions`）：塌掉之后(a)–(m) 可能**全绿**（界面看起来还是对的），
 > 但下一个消费场景接不进来。**这正是「可重组」这件事唯一能被自动验的形式**——
 > 否则「支持重组」只能靠人读代码相信。
 
-**结构性六条（(s)–(x)，钉 D27–D38 的契约改动）**：
+**结构性七条（(s)–(y)，钉 D27–D38 的契约改动）**：
 
 (s) **把 `role` 固定成 `'assistant'`**（或干脆不渲染角色标签）：`text-block-view.test.tsx` 的
     `user` / `system` 断言必须红。**这一条拦的是「用户在读一份不知道谁在说话的记录」。**
-(t) **把三种缺失原因写成同一句话**：`capability-notes.test.tsx` 的「四句互不相同」必须红。
+(t) **把四种缺失原因写成同一句话**：`capability-notes.test.tsx` 的「四句互不相同」必须红。
     这拦的是「把『这家没有』说成『我们没接』」——本仓最忌讳的那类误读。
 (u) **把 `unrecognized` 与 `attachment` 合成一条渲染路径**：两条断言必须红
     （一张图片被画成 base64、或一段原始载荷被画成附件）。
@@ -2897,7 +3275,7 @@ export interface AgentRunStateTagProps {
 (x) **把 `TruncationState.unknown` 与 `none` 走同一分支**：`raw-output-panel.test.tsx` 必须红。
     **这一条是 D30 的全部意义**：裸布尔时代「没采到标记」与「确认完整」在界面上完全一样。
 (y) **把 `streaming` 这个第二真值加回 `BlockRenderContext`**（或让某个渲染件自己算
-    「是不是最后一块」）：`agent-log-layering.test.ts` 的「L0/L1 不得出现自造流式判据」断言必须红，
+    「是不是最后一块」）：`agent-log-layering.test.ts` 的 **(f)**（`BlockRenderContext` 里没有 `streaming` 这一格）必须红。⚠️ **只有这一半**：「让某个渲染件自己算『是不是最后一块』」今天**没有守卫**——(f) 只扫 `block-renderer-registry.tsx` 的接口体，渲染件里自造一个判据它看不见，
     且 `text-block-view.test.tsx` 的「`assembly === 'snapshot'` 时**不挂**动效类名」必须红。
     **它拦的是「同一个事实有两处真值」**——`assembly` 由数据层给、`streaming` 没人给，
     两者必然漂移，而漂移的表现是「块结束了动效还在转」（(b) 的同源缺陷，但发生在组件层）。
@@ -2921,7 +3299,7 @@ export interface AgentRunStateTagProps {
 > 这与 (f)（`running` 不可由 `output` 推断）是**同一条纪律的七个面**，
 > 也是本设计与「看起来采到了」长期对抗的那条主线。
 
-> **计数口径**：变异体共 **26 条**：(a)–(m) 13 条、(n)–(r) 5 条、(s)–(y) 7 条、
+> **计数口径**：变异体共 **26 条**：(a)–(m) 13 条、(n)–(r) 5 条（其中 3 条落在分层）、(s)–(y) 7 条、
 > (z) 1 条（它自己含四个可分别变异的靶子）。
 > **新增守卫时必须同时给变异体**（本仓硬口径：没见过失败的守卫不算守卫）。
 
@@ -2942,33 +3320,37 @@ export interface AgentRunStateTagProps {
 8. 几百轮下 DOM 中轮次节点数恒定在十几条（`已渲染 N / 共 M 轮` 可见）；跳轮器能直达任意轮；
    **进度条的轮次与时间轴的轮次数同源同值**（都用数据层给的统一 `round`，厂商 `message.turn` 不参与分组）。
    **⚠️ 不是「跨三家可比」**——规范逐字要求
-   「不要把某家偏高的近似值当成另一家的等价物」（codex 的近似计数**系统性偏高**），
+   「不要把某家偏高的近似值当成另一家的等价物」（codex 的轮次是**合成值**、口径与另两家不同，早先写的「系统性偏高」是旧口径），
    故本条的验收口径是「**同一份口径下的同源同值**」，跨家对比时按 `source` 标注（D1 / D27）。
 9. 用户向上滚动后，新事件不再把视口拽走，右下角出现「回到最新」。
-10. 「原始输出」能查到全部 `log` 原文（含 `[codex]` 那几行），且默认收起；**无法归一的厂商载荷走 `unrecognized` 块**（不是 `attachment` —— 后者是认识的图片/文件附件，见 D31 / §6.10）。
+10. 「原始输出」能查到全部 `log` 原文（含 `[codex]` 那几行），入口**默认收起（点开才在二级抽屉里看）**；**无法归一的厂商载荷走 `unrecognized` 块**（不是 `attachment` —— 后者是认识的图片/文件附件，见 D31 / §6.10）。
 11. 正在跑的行：打开抽屉后再产生的新消息**能实时出现在时间轴上**（数据层的单一合并流生效）。
-12. **流式连续追加不卡**：一行持续输出时键入过滤条件、拖动滚动条都跟手；
-    且**一次上游提交只走一次重建**（§7.1 的 (a)(b)(c) 三条同时成立）。
+12. **流式连续追加不卡**：一行持续输出时键入过滤条件、拖动滚动条都跟手。
+    ⚠️ **§7.1 的三条义务目前只成立两条**：(a)「一次提交只算一次」（`useMemo` 挂在 `nodes` / `activeNodeId` 上）与
+    (c)「数据层提交频率有上界」（**以要求的形式提出**）成立；
+    **(b)「重建走非紧急更新」在代码里零命中**（全仓没有 `useDeferredValue` / `startTransition`）——
+    这一条要么实现，要么从验收里划掉（§14 已登记）。
 13. **动态感可见**（§6.7）：跑动期思考标题扫光、正文末尾有光标、进行中的工具行状态在动；
-    **块一结束五处动效全部停下**（静止 = 已确定）。
-14. 「下载台账」导出的是 `formatEventLog` 的全文（口径见 §8.1），**与抽屉视图不是一回事**。
-15. 还没跑过的行打开抽屉显示 `EmptyState`（措辞与今天一致）；读盘失败仍整段替换为错误提示。
+    **块一结束四处动效全部停下**（静止 = 已确定）。
+14. 「下载台账」导出的是 `formatEventLog` 的全文（口径见 **D8** 与 §6.6 那一行；栏面上要写进 README 的事见 §8.1），**与抽屉视图不是一回事**。
+15. 还没跑过的行打开抽屉显示 `EmptyState`（标题「还没有日志」+ 说明「这一行还没开始执行，或执行尚未产生输出」）；读盘失败时页面把整个抽屉换成带原因的 `Alert`。
 16. 折叠面板、面包屑、过滤、跳轮次、开关、状态徽标**全部用 antd 组件**（§9.6 的选型表逐条对齐），
     没有自己手写的折叠箭头与手调字号。
-17. **环境抽屉**（§6.8，通用组件）：`？` 按钮打开后能看到摘要（智能体 / 模型 / 强度 / 供应商 /
-    工作区 / 基线）与按提示词栈分层的分组；「厂商系统层」与「运行配置」各自标了来源；
+17. **环境抽屉**（§6.8，通用组件）：`？` 按钮打开后能看到摘要（**七项**：智能体 / 模型 / 强度 /
+    供应商 / 接口地址 / 工作区 / 基线）与按提示词栈分层的分组；「厂商系统层」与「运行配置」各自标了来源；
     「已调度的工具」与「用过的工具」**不在同一组**；缺失项显示原因而不是空白；
     **组名与顺序来自数据层**（组件里没有硬编码的组名）。
 18. 环境抽屉随主抽屉一起消失（**结构保证**：它是 `AgentLogLayout` 的子组件）。
 19. **计划清单卡片**（§5.4）：`todo_write` / `update_plan` 的那一轮出现一张面板，标题带 `3/5 完成`
-    与本次变化（`+1 完成`），清单逐项带状态（含 `unknown` 不显示成成功）；**同一轮多次更新只画最后一张**，
-    更早的收在「本轮另有 N 次更新」里；首次出现默认展开、其后默认收起，展开任一张都能看到整表。
+    与本次变化（`+1 完成`；⚠️ `change` 现恒 `null` ⇒ 这一格还看不到，见 §14），清单逐项带状态（含 `unknown` 不显示成成功）；**同一轮多次更新只画最后一张**，
+    更早的次数收在「本轮另有 N 次更新」那行静态说明里；首次出现默认展开、其后默认收起，展开任一张都能看到整表。
 20. **问答卡片**（§5.5）：提问那一轮出现一张卡片，逐问题给出选项（`recommended` 打了「推荐」、
     `multiSelect` 标了「可多选」、`allowOther` 有「其它（自由输入）」行），答案按**选项标签**回填；
     `secret` 的问题默认遮罩。
 21. **等待与七态**（§5.5）：没有答案的提问显示「**等待答复中…**」并**在走秒表**，固定区同时出现
-    `等待答复 12m`；七种收场各自的文案与样式正确，其中 `unavailable` **不是红色错误**且写明
-    「本仓无人应答，是已知边界」；轮次结束而结果没到时显示「结果未采集」而不是一直转圈。
+    `等待答复 12m00s`；七种收场各自的文案与样式正确，其中 `unavailable` **不是红色错误**，
+    卡片上的原话是「无人可应答」+「本仓没有开应答面（`approvalPolicy: never`）——已知边界，不是缺陷」；
+    轮次结束而结果没到时显示「结果未采集」而不是一直转圈。
 22. **两族卡片都从工具组里提出**（§4.2）：组标题的 `工具调用 × N` 与实际列出的行数**一致**；
     族载荷缺失时该次调用**回退成普通工具行**（不消失、不留空卡片）。
 23. `pnpm typecheck` / `pnpm lint` / `pnpm test` 三条全绿；**§10 表里逐行的用例全部到位**
@@ -2980,64 +3362,82 @@ export interface AgentRunStateTagProps {
 
 24. **S1 · 内嵌只读视图**：在**不套 `<Drawer>`** 的前提下，用 `AgentLogLayout`（或更低的
     `AgentMessageTimeline`）渲染同一份 `AgentLogModel`，**时间轴与固定区逐字同形**；
-    且此时**不存在** `.ant-drawer` 节点。**判据**：`agent-log-drawer.test.tsx` 里有一条
-    「同一份模型分别经 `AgentLogDrawer` 与 `AgentLogLayout` 渲染，时间轴区 DOM 逐字一致」。
+    且此时**不存在** `.ant-drawer` 节点。
+    ✅ **接缝本身已在用**：`agent-log-layout.test.tsx` 全程直接 `render(<AgentLogLayout … />)`，
+    从不套 `Drawer`（`agent-log-layout.tsx` 的文件头**开篇那段**也把这条写成口径——它不在「六条口径」的编号里）。
+    ⚠️ **还缺一条判据**：「同一份模型分别经 `AgentLogDrawer` 与 `AgentLogLayout` 渲染、
+    时间轴区 DOM 逐字一致」**目前不在任何文件里**（`agent-log-drawer.test.tsx` 只有 5 条用例，
+    都不涉及 `.ant-drawer`）——这条要补。
 25. **S2 · 换模型来源**（两半都要验，缺一不可）：
     **(a) 不给数据来源也能跑**：`AgentLogSource` **一个方法都不给**时，抽屉照常打开、时间轴照常渲染，
     只有「环境信息 / 原始输出 / 重试」三处如实降级（「未提供」/ 无入口 / 无重试按钮），
     **不出现崩溃、不出现永远转圈的 `Skeleton`**。
+    ✅ 落点：`agent-log-layout.test.tsx` 的「`environment` 未提供时，环境抽屉里显示「未提供」而不是空白」
+    与「内容读失败 ⇒ `Alert`；给了 `retryNode` 才渲染重试按钮」两条。
     **(b) 换一份模型照样渲染**：把 `AgentLogModel` 换成**另一份夹具**（不同节点树、不同块类型组合、
     不同 `facts` 数值）后，**组件代码一行不改**即正确渲染——这才是 S2 的核心（可替换性）。
-    **判据**：`agent-log-drawer.test.tsx` 里用两份形状不同的夹具各渲染一次，
-    断言两份的关键区域（进度条数值 / 轮次数 / 节点树段数）**跟着模型变**，
-    且两次渲染之间**没有任何组件源码改动**（`git diff` 为空即通过）。
-26. **S3 · 子块独立挂载**：`agent-log/` 下**每一个 L0 件都能在测试里被单独 `render()`**
+    ✅ **实质已被覆盖**：`agent-log-layout.test.tsx` 与 `fixtures.test.tsx` 用的是**形状各不相同**的模型
+    （子任务节点 / 行级汇总节点 / 空态 / 三种夹具），同一批组件全程不改。
+    ⚠️ **还缺一条「两两对照」的判据**：现无用例在同一文件里用两份形状不同的模型各渲一次、
+    断言关键区域（进度条数值 / 轮次数 / 节点树段数）**跟着模型变**——这条要补。
+26. **S3 · 子块独立挂载**：`agent-log/` 下**每一个 L0 渲染件都能在测试里被单独 `render()`**
     ——给定 props 即出画面，不经过 `AgentLogDrawer` / `AgentLogLayout`；
     且**没有一个 L0 件内部存在 `useState`**（§9.0 纪律 2，由 `agent-log-layering.test.ts` 静态钉住）。
+    两个例外照实说：`render-blocks.ts` 是纯函数（独立面是单测）、`block-renderer-registry.tsx` 的用例是**读源码的静态扫描**而不是渲染（要真验它，得补「挂 Provider 后未覆盖的默认臂仍画得出」那条，见 §10 变异体 (o)）。
 27. **S4 · 扩展零改动**：新增一类块 = **不改** `agent-message-timeline.tsx` / `agent-log-layout.tsx` /
-    `agent-log-drawer.tsx`（`agent-log-layering.test.ts` 用文件哈希或 import 断言钉住这一点）；
-    新增一个工具条动作 = **只传 `actions`**，同样不改上述三个文件。
+    `agent-log-drawer.tsx`；新增一个工具条动作 = **只传 `actions`**，同样不改上述三个文件。
     外部消费方还能通过 `BlockRendererProvider` 叠加渲染器而**不动默认表**。
-28. **S5 · 换交互形态做得出来**：`MessageTimeline` + `BlockRendererProvider` + `ToolbarAction[]` +
-    `AgentLogSource` 四个接缝齐全，且**虚拟化的三个入口只在 `base/virtual-list.tsx` 里出现**
+    ⚠️ **这两条目前都还没有可执行的守卫**：`agent-log-layering.test.ts` 只做
+    「清单文件是否存在 + 依赖方向 (a)(b) + 虚拟化入口 (c) + `useState` (d) + 判厂商 (e) + `streaming` (f)」
+    ——**没有**任何「这三个文件不被改动」的哈希 / import 断言（全仓 `*.test.*` 里
+    `createHash` / 文件哈希零命中）。「叠加语义」的可执行判据也缺（见 §10 变异体 (o) 那一条）。
+28. **S5 · 换交互形态做得出来**：`AgentMessageTimeline` + `BlockRendererProvider` + `ToolbarAction[]` +
+    `AgentLogSource` 四个接缝齐全，且**虚拟化的三个入口只在 `base/virtual-list.tsx` 里出现**（唯一放行例外：`ask-user-card.tsx` 的选项列表用 `Listy` 但**不虚拟化**）
     （`agent-log-layering.test.ts` 的 (c) 条）。**本期不验收任何具体的新形态**（§2 非目标）——
     验收的是「接缝在、且层没塌」。
 
-**以下 29–35 是「展示完整性」验收**（对应 D27–D38；
+**以下 29–38 是「展示完整性」验收**（对应 D27–D40；
 每条都是**界面能说出那句话**的可判定形式）：
 
 29. **谁说的能看出来**（D27 / §6.9）：同一轮里，智能体的正文**不带**角色标签；
     用户消息带「用户」、厂商 system 内容带「系统」且降一档；三者**不再逐字同形**。
 30. **实时与补录能分开**（D27 / §6.9）：`source !== 'wire'` 的块带角标
-    （`session-file` → 「补录」、`aggregate` → 「汇总」）；**codex 的思考正文（来自会话文件）
+    （`session-file` → 「补录」、`aggregate` → 「汇总」）；**子任务收尾补录的那一帧（claude 的 `session-file`）
     在界面上不再与实时正文长得一样**。
 31. **收尾状态不是猜的**（D27 / §6.7）：一次**被中断**的回复——
-    光标与扫光**立刻停**，且**不**显示成「还在流」；`buildRenderBlocks` 的入参里没有
-    「轮次是否结束」这一信息，故它**不可能**做这个推断（由 `render-blocks.test.ts` 与
-    `agent-message-timeline.test.tsx` 钉住）。
-32. **「为什么缺」能说出来，且三句话不同**（D28）：工具结果那一格
+    光标与扫光**立刻停**，且**不**显示成「还在流」。
+    **判据是块自己的 `assembly === 'open'`**，不是任何「轮次级」的信号：
+    `buildRenderBlocks` 的轮上下文里虽然带一个 `running`（那是 `LogTurn.running`，**只转发给
+    `ToolItem.running`**），但它**从不参与「这块说完了没有」的判断**——块级动效只有 `assembly` 一个来源。
+    落点：`render-blocks.test.ts`（转发那一半，把 `running: false` + `output: null` 造出来）
+    + `text-block-view.test.tsx` / `thinking-block-view.test.tsx`（类名那一半）。
+32. **「为什么缺」能说出来，且四句话不同**（D28）：工具结果那一格
     ——`toolResult` 能力位存在，§9.7 的 `missingReason` **不再恒为 `null`**；
     界面把「这家结构上不支持」/「厂商有数据但没投送」/「我们还没接」/「没验证过」
-    显示成**四句不同的话**；`capabilityNotes` 非空时显示路由/模型前提。
+    显示成**四句不同的话**（逐字文案见 §10 那一行：「这家结构上不支持」/「厂商有数据、但没投送到我们能读的通道」/「厂商有、我们还没接」/「没验证过」）；`capabilityNotes` 非空时显示路由/模型前提。
 33. **「族认得但没收编」与「不认识」能分开**（D29 / §5.4）：两种情形都回退通用工具行，
-    但**文案不同**；`family` 为空才是「不认识」。
+    `family` 为空才是「不认识」。
+    ⚠️ **界面上目前只有一处差别**：`tool-item-detail` 那一行的**族 Tag 有没有**
+    （`family !== null` 才画「计划清单 / 向用户提问」这类中文族名）。
+    文档早先承诺的「两种情形文案不同」**没有落点**（§5.4 的表也只有一行一个画面）——
+    要么把它降级成「靠族 Tag 有无区分」，要么在 §5.4 补出那两句并在组件里实现。
 34. **子任务一行能看全**（D32 / D33 / §6.3）：占位条与节点详情给得出
     **状态（七档，含「未收场」）· 派发方式 · 结果摘要 · 自己的用量**；
     `statusMissing` 非空时**同时**显示状态与「状态未采集」；
-    **一个被强杀的子任务不显示成「运行中」**；`kind: 'row'` 的节点出计数行、
+    **一个被强杀的子任务不显示成「运行中」**（⚠️ **这一条今天没达成**：`unsettled` 在两条装配路径上都赋不出来 ⇒ 收场事件没到的子任务仍保持 `running`，面板照画「运行中」。要补的是装配层那条判据，见 §14）；`kind: 'row'` 的节点出计数行、
     **不进面包屑也不可点**。
 35. **三种「空」分得开**（D38 / §6.1）：① 还没跑过 → `EmptyState`；
     ② 这一类内容没被转发 → 「该子任务的对话未转发」/「运行期只有派发事件与状态」；
     ③ 内容被上限截断 → `contentTruncatedReason` 那句话。**三者互不冒充**。
 36. **三处用量数字两两可分**（D39 / §6.11）：顶部事实条（整行累计，正体 `secondary`）、
-    轮末里程碑（按轮归属的累计，`Tag`）、消息页脚（单条消息，**斜体** `secondary`）——
+    轮末里程碑（候选阶段最后一条主会话读数，`Tag`）、消息页脚（单条消息，**斜体** `secondary`）——
     形态、锚点、文案三处都不同；页脚在 `usage === null` 时**一行都不出**。
-37. **用量里程碑落在它自己那一轮**（D39 / §6.14）：同一节点里，
-    `(会话身份, 该会话自己的轮次号)` 与轮次号对得上才归位；对不上的**不在本节点显示**
-    （不回落到最后一轮）；无归属键的 `error` / `warning` 行为与改动前**逐字相同**；
-    **子会话节点能看到它自己的用量行**（水位按会话拆开）。
+37. **用量里程碑落在它自己那一轮**（D39 / §6.14）：整行只出一条（候选阶段最后一条主会话读数）；
+    它带 `(会话身份, 该会话自己的轮次号)`，与本轮逐字相同才归位，对不上的**不在本节点显示**
+    （不回落到最后一轮）；无归属键的 `error` / `warning` 按时刻归位。
+    **子会话自己的用量只在派发点那张子任务卡片里看**（不折成时间轴上的里程碑）。
 38. **行卡片的两处浮层按判据拆行**（§6.12）：tok 与轮次各有一组三条判据；
-    四个否定面（`0` / `null` / 整格缺席 / 分量大于合计）**连浮层都不出现**；
+    四个否定面（`0` / `null` / 整格缺席 / 分量大于合计）**都退回改动前那一行**（⚠️ 其中「连浮层都不出现」只对**轮次**那一格成立；tok 那格仍有单行浮层，见 §6.12）；
     否定面的断言**等满延迟窗口**再判。
 
 ## 12. 本期不做（范围诚实登记）
@@ -3057,17 +3457,17 @@ export interface AgentRunStateTagProps {
 
 - **原始事件仍在**：固定区的「原始输出」逐字可查（它是行级事件流，与记录流是两条来源），
   排障路径不受影响；
-- **不是缺陷**：它是 B2 的覆盖面问题，README 的排障表有对应一行；
+- **不是缺陷**：它是 B2 的覆盖面问题，**README 里应当有对应的一行**（现在还没有——§8.1 已登记要新加）；
 - **夹具预览页（`/dev/agent-log`）画得出来**：夹具走的是与真实数据**同一条链路**
   （记录 → `buildAgentLogModel` → `buildRenderBlocks` → 上屏），故「画不出来」只可能是
   那家适配器还没投影，不可能是界面缺了一类块。
 
-### 12.2 分段对两处可得性的影响
+#### 12.2 分段对两处可得性的影响
 
 **厂商侧那两组（系统提示词、已调度的工具）**
 **依赖适配器从厂商 `system` init 行里提取**。拿到之前，环境抽屉能显示的是
 「项目侧配置」那两组（本仓自己下发的），厂商侧会**如实显示成缺失 + 原因**
-（`not-exposed` / `unverified`）——**这是正确行为，不是没做完**：四态口径要的正是
+（已调度的工具 / 斜杠命令恒走 `not-exposed`；**系统提示词与工具模式串要分两支**——有 init 行时（claude）走 `not-observed`「我们还没接」，**整行没有 init 行时（codex / dsh）四格一起走 `not-exposed`**）——**这是正确行为，不是没做完**：四态口径要的正是
 「拿不到就说拿不到」，而不是先渲染一个空面板。
 
 ### 12.3 逐族可得性
@@ -3076,20 +3476,20 @@ export interface AgentRunStateTagProps {
 
 | 族 | A 段（夹具喂 UI） | B 段落地前，真实数据下的样子 |
 |---|---|---|
-| `task` | ✅ 卡片结构、计数/变化摘要、折叠、同轮多次、`owner`/依赖四态全可验 | **dsh 有数据**（`todo_write` 是它 24 个工具之一）；codex 要开 `tools.update_plan.enabled`；claude 要开 `CLAUDE_CODE_ENABLE_TODO_TOOLS`——**没开就没有这一族**（是「没采到」，不是卡片坏了；v2 spec §7.6.2.1b） |
-| `ask-user` | ✅ 七态 + 等待态 + 答案回填全可验 | 本仓 `approvalPolicy: 'never'` 且未开应答面 ⇒ dsh 的 `ask_user_question` **会以 `unavailable` 报错**（v2 spec §7.6.2 ⑩ 硬约束 2：报错而不是降级）。**这是已知边界**，卡片上如实写明（§5.5） |
+| `task` | ✅ 卡片结构、计数/变化摘要、折叠、同轮多次、`owner`/依赖四态全可验 | **dsh 有数据**（`todo_write` 在适配器的工具名归一表 `TOOL_FAMILY_BY_NAME` 里，`packages/server/agents/src/message.ts`；契约里只有族枚举）；codex 与 claude **两家已由适配器常开**：codex 注入 `tools: { update_plan: { enabled: true } }`、claude 注入 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`（两处都在 `providers/*/index.ts` 里）⇒ 这不是「本行要手动开的开关」。缺这一族只可能是那一家的工具表被改窄了（是「没采到」，不是卡片坏了；v2 spec §7.6.2.1b） |
+| `ask-user` | ✅ 七态 + 等待态 + 答案回填全可验（**视图层**） | 本仓 `approvalPolicy: 'never'` 且未开应答面 ⇒ dsh 的 `ask_user_question` 应该以 `unavailable` 收场（v2 spec §7.6.2 ⑩ 硬约束 2：报错而不是降级）。**这是已知边界**，卡片上如实写明（§5.5）。⚠️ **但收场这一支现在没有产出方**：装配层只产 `state: 'pending'`（契约的 `ask-user` 载荷也只有 `{ kind, questions }`，没有 outcome / answers 这两格）⇒ 真机上七态与答案回填都渲染不到；**连夹具都喂不出来**（夹具走真实链路、绕不过装配层），`settled` 那一支只有单测手搓对象才构造得出 |
 
 ### 12.4 其余 8 族不做专门渲染
 
-**其余 8 族本期不做专门渲染**（走通用工具行）。这不影响规范 §7.6.4 的
+**其余 8 族本期不做专门渲染**（走通用工具行）。这不影响 **v3 §5.1** 的
 「UI 只按 `family` 分支」——两族是**族驱动**的（不认厂商、不认 `args`/`result` 半边），
 收编下一族时只加一个 `ToolFamilyPayload` arm 与一个 `RenderBlock` 分支（§4.1 扩展性第 5 条）。
 
 ### 12.5 对 B 段提出的六处接口要求
 
 **数据层重构时按这些约束对齐**：
-§4.1 的**五条**边界纪律与评估表、§4.3 的环境信息模型与两组固定构成、
-§5.2 的行级事件去向表、§5.3 的三条所有者划分、§5.4 / §5.5 的两族卡片载荷与降级口径、
+§4.1 的**五条**边界纪律与评估表、§4.3 的环境信息模型与**四组**固定构成、
+§5.2 的行级事件去向表、§5.3 的四条所有者划分、§5.4 / §5.5 的两族卡片载荷与降级口径、
 §7.1(c) 的更新频率上界。
 
 ### 12.6 三条明确不做的根因（带理由与代价）
@@ -3098,8 +3498,8 @@ export interface AgentRunStateTagProps {
 
 | # | 不做什么 | 理由 | **代价（如实写）** |
 |---|---|---|---|
-| 1 | **`structured`（工具结果的结构化结果）不进 UI** | 规范要求「有 `meta` 就不要退回去解析文本」，而本设计只有等宽原文；本期不渲染任何族的结构化结果 ⇒ 收编一族专门卡片时再按需加逃生格（与 §4.1 扩展性第 5 条同一条路） | `read` 的行数、`grep` 的命中数这类**已解析过的事实**，界面上只能读原文自己认 |
-| 2 | **`usage.total` / `apiMs` / `ttftMs` / 派生指标不进 UI** | 规范明文「适配器**不预先算比率**」；本设计不做这几格 ⇒ 界面也没有它们的落点 | ① 厂商自报总量与归一值不一致时**无可对照**；② **时间观感只有墙钟一种** |
+| 1 | **族的 `structured` 不做专门渲染**（不是「不进 UI」——它**在**：`ToolResultBlock.structured` / `ToolOutput.structured` 都已就位，展开工具行时以 `JsonText` 的格式化原文给出，见 `tool-item-detail.tsx` 的 `StructuredResult`） | 规范要求「有 `meta` 就不要退回去解析文本」；本设计只把它**当原文展示**，不为任何族画专门形状 ⇒ 收编一族专门卡片时再按需加逃生格（与 §4.1 扩展性第 5 条同一条路） | `read` 的行数、`grep` 的命中数这类**已解析过的事实**，界面上只能读 JSON 原文自己认（比纯文本摘要强，但仍不是「一行一条」的族专属渲染） |
+| 2 | **`usage.total` / `apiMs` / `ttftMs` / 派生指标不进 UI** | 规范明文「适配器**不预先算比率**」；**抽屉界面**不做这几格 ⇒ 那里没有它们的落点 | ① 厂商自报总量与归一值不一致时**无可对照**；② 抽屉里的**时间观感只有墙钟一种**。⚠️ 收窄过的口径：`apiMs` / `ttftMs` **在 ui 包里仍有消费**——`usage-metrics.ts` 的 `formatGenerationRate` / `generationWindowMs` 用它算「生成速率」，由 `log-format.ts` 的**台账那一行**用上（那是下载台账，不是抽屉界面） |
 | 3 | **图片缩略图不加载** | 加载远程资源牵出鉴权 / 体积 / CSP 三件事，不属于数据结构这一轮（§6.10 已给呈现口径：类型 + 路径 + MIME） | 图片附件只显示路径与 MIME，**看不到内容** |
 
 **另有两条同类的不做**（散在对应小节，此处汇总以免漏读）：
@@ -3109,7 +3509,7 @@ export interface AgentRunStateTagProps {
 ### 12.7 另有五项明确不做
 
 - **UI 侧不读厂商会话文件**（rollout / `rollout-*.jsonl`）——它是**数据层**的取数通道之一
-  （v3 §3.2 / §3.3：codex 的思考正文与子任务轨迹来自会话文件），到 UI 手上的形式是
+  （v3 §3.1：codex 的 `source` 恒 `'wire'`，**没有会话文件通道**；今天只剩 claude 的子智能体转录），到 UI 手上的形式是
   `source: 'session-file'` 的**块**（§6.9 给它标「补录」角标）。
   ⇒ 这里「不做」的是**UI 直接去读文件**，不是「不用会话文件的数据」（会话文件**是**消息来源之一）。
 - 不做抽屉内的全文搜索（轮次跳转器 + 过滤已覆盖「能不能找到」）；
@@ -3128,22 +3528,31 @@ D24 的分层让对话式 UI / 实时监控台**做得出来**（§2.1 S5 / §11
 但只落一个真实场景需要的预设（`AgentLogDrawer`）。
 **把「可重组」读成「已经做了五个界面」是最可能的误读**——
 它交付的是**接缝**，不是界面。真要第二个形态时，那是独立的一次需求，
-按同一套分层组装即可（`MessageTimeline` + `ToolbarAction[]` + `AgentLogSource` 都现成）。
+按同一套分层组装即可（`AgentMessageTimeline` + `ToolbarAction[]` + `AgentLogSource` 都现成）。
 
 ### 12.9 影响展示的配置开关（逐条登记）
 
 （补齐只登记两族的缺口。）
-以下开关**关掉时界面会缺东西**，登记在此 —— 否则第一个排查的人会以为功能坏了：
+下表**按「本仓现在是常开还是常关」分两段**——否则第一个排查的人会去找一个根本改不动的开关。
+判据都以 `packages/server/agents/src/providers/*/index.ts` 为准（2026-10 实测）。
 
-| 配置 | 关掉/不满足时的界面表现 | 界面必须说的话 |
+**(甲) 本仓写死、行内改不动的三处**（要变只能改适配器源码）：
+
+| 配置 | 本仓现状 | 界面必须说的话 |
 |---|---|---|
-| claude `includePartialMessages` | 无流式增量 ⇒ §6.7 五处动效全不出现 | 由 `streamingDelta` 能力位承担（D28）：显示「这家不产出流式增量」而不是干等着 |
-| claude `canUseTool` 未注册 | `AskUserQuestion` 不在工具表 ⇒ **连卡片都没有** | 「本行未注册交互回调，提问工具不可用」——**不是**「这次没提问」 |
-| claude 自动放行模式 | 提问**被静默跳过** ⇒ 既非 `unavailable` 也非 `rejected` | 同上；这是规范 §8.2 明列的「必须规避」 |
-| codex `features.multi_agent` | 子任务面恒空 ⇒ 面包屑与占位条都不出现 | 由 `subagent` 能力位 + `capabilityNotes` 承担：「本行多智能体未启用 / 该路由拒绝命名空间工具」——**不是**「没派子任务」 |
-| codex 受限路由上开多智能体 | `unsupported call` / 整轮被拒 | 同上一行（**能力随路由翻转**，故必须带前提） |
-| dsh 联网三键 + 凭据 | web 族「看似可用」或必失败 | 「未启用联网」/「联网不可用」——规范 §7.4 明禁显示成「三家都没搜」 |
-| codex 近似条目计数 | `round` / `turns` **系统性偏高** | **已处置**：`round` / `turns` 的口径是「**同一份口径下的同源同值**」，跨家对比时按 `source` 标注（D1 / §11 验收 8 / D27）。**不要再写成「跨三家可比」**——规范逐字要求「不要把某家偏高的近似值当成另一家的等价物」 |
+| claude 自动放行模式 | **常开**：`permission.ts` 的 full 档写死 `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true`（只读档是 `dontAsk` + `permissionPrompts: 'none'`）⇒ 提问**被静默跳过**，既非 `unavailable` 也非 `rejected` | 「本行未注册交互回调，提问工具不可用」；这是 `v3 §8.2` 明列的「必须规避」 |
+| codex `features.multi_agent` | **常开**：`codex/index.ts` 的 `buildCodexConfig` 写死 `features: { multi_agent: true }`（无配置面）⇒ 子任务面不该恒空；**真为空时是路由或工具表的问题** | 由 `subagent` 能力位 + `capabilityNotes` 承担：「本行多智能体未启用 / 该路由拒绝命名空间工具」——**不是**「没派子任务」 |
+| claude `CLAUDE_CODE_ENABLE_TODO_TOOLS` / codex `tools.update_plan.enabled` | **两家都常开**（前者在 `claude-code/index.ts` 无条件注入 `'1'`，后者在 `codex/index.ts` 写死 `true`）⇒ `task` 族不是「本行开关」，缺了要查工具表 | 由 `family === 'task'` + 载荷缺失的降级口径承担。⚠️ 文档早先承诺的「两种情形文案不同」**没有落点**（§5.4 的表只有一行一个画面）⇒ 今天只能靠**族 Tag 有无**区分（§11 验收 33 已登记） |
+
+**(乙) 真的会因为配置/路由而变的四处**（末一行是口径登记，不是开关）：
+
+| 配置 | 不满足时的界面表现 | 界面必须说的话 |
+|---|---|---|
+| claude `includePartialMessages` | **常关**（`sdk.query` 的 options 里没有这个键，只有 `message.ts` 的注释提到它；delta 路径已实现但走不到）⇒ 无块级增量 ⇒ §6.7 的**第 1 / 2 处**（思考标题扫光、正文光标）不出现；**第 3 / 4 处由 `running` 驱动，照旧动** | ⚠️ **界面现在说不出原因**：claude 自己的能力声明就是 `streamingDelta: 'yes'`（notes 只写「只覆盖主会话」），而 `'yes'` 档按契约不给 `reason` ⇒ `capabilityReasonOf` 返回 `null`。**声明与实现不一致**这一条 v3 §7.1 已登记；本行要的是「改声明或补一个能说出来的出口」，不是「由能力位承担」 |
+| claude `canUseTool` 未注册 | **确实未注册**（`claude-code` 目录零命中）⇒ `AskUserQuestion` 不在工具表 ⇒ **连卡片都没有** | 「本行未注册交互回调，提问工具不可用」——**不是**「这次没提问」 |
+| codex 受限路由上开多智能体 | `unsupported call` / 整轮被拒（**能力随路由翻转**，与 `features.multi_agent` 无关——那一格恒 `true`） | 同上一行的 `capabilityNotes` 口径，且必须带上「路由 / 模型」这个前提 |
+| dsh 联网三键 + 凭据 | **本仓产品代码里没有这三键**（`dsh/index.ts` 的 `buildDshRoutePatch` 只产出路由段与 `insert: tool-ask-user`；`tool-web` / `searchTimeoutMs` 只出现在一次性探测脚本里）。凭据那一半做了：显式 delete `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | 「未启用联网」/「联网不可用」——`v3 §7.4` 明禁显示成「三家都没搜」 |
+| codex 近似条目计数 | 不是开关，是**口径登记**：`round` / `turns` 是**合成值**（早先写的「系统性偏高」是旧口径） | **已处置**：口径是「**同一份口径下的同源同值**」，跨家对比时按 `source` 标注（D1 / §11 验收 8 / D27）。**不要再写成「跨三家可比」** |
 
 ## 13. 风险
 
@@ -3151,45 +3560,65 @@ D24 的分层让对话式 UI / 实时监控台**做得出来**（§2.1 S5 / §11
 |---|---|
 | 嵌套折叠面板变高变矮后滚动位置跳 | 用 **`Listy`（不传 `itemHeight`）** 的逐项测量（D9 / §7.2）；真实浏览器冒烟第 2 项专门验它 |
 | `buildRenderBlocks` 被写回「先全建再渲染」 | §7.2 的对照块明文禁止；`已渲染 N / 共 M 轮` 是它的可见护栏 |
-| `callId` 配不上时静默丢弃 tool-result | 契约里 `ToolItem.callId` 可空、配不上降级成独立条目；§10 有专门用例与变异体 (a) |
+| `callId` 配不上时静默丢弃 tool-result | **界面类型**（`render-blocks.ts` 的 `ToolItem.callId`）可空、配不上降级成独立条目；§10 有专门用例与变异体 (a)。⚠️ 契约那两处 `callId` 是 `z.string()`（不可空），别引错 |
 | 重写时把 `Listy` 换回自建窗口化 | §7.2 明文：**不自己写窗口化**（jsdom 验不出「展开面板后下方轮次滚动位置跳」）；真实浏览器冒烟第 2 项专门验它 |
 | 子任务内容按需取，但缓存无淘汰 | §7.4 记了护栏与「不修在 ui 包」的边界 |
 | **数据层仍按「一帧一次提交」对外，流式一开就卡** | §7.1(c) 以**要求**的形式提出（不指定实现，故重构后不过期）；真实浏览器冒烟第 6 项验它 |
 | **UI 契约被传输层污染**（有人把 `seq` / `chunk` / 取数回调加回模型） | §4.1 的五条边界纪律逐条写明「不许有什么」，并在 §4.1 评估表里记了每条被删属性的理由——下一个人加回来之前会先看到理由 |
-| 折叠态用数组下标键控，追加一轮后「自己合上了」 | §6.1 要求用 `ContentBlockBase.id` / `callId` 键控；§10 变异体 (e) 专验这一条 |
+| 折叠态用数组下标键控，追加一轮后「自己合上了」 | §6.1 要求用块自己的 `id` / 行键 `toolEntryKey`（`callId ?? blockId`）键控；§10 变异体 (e) 专验这一条 |
 | `running` 被写成「有没有 `output`」的推断，「结果未采集」被显示成「正在跑」 | §4.2 明文要求 `running` 由数据层按「所在轮次是否结束」给出；变异体 (f) |
 | 面包屑状态不写 URL，刷新回主会话 | §6.2 定为有意取舍（子任务无独立路由，服务端无法恢复该状态） |
 | **环境信息被塞进主模型，每次流式提交都搬几十 KB** | §4.3 明文：它是独立的 `Loadable`，由页面按需取；理由是体积与时机两条 |
 | **「已调度的工具」与「用过的工具」被混成一组**，读成「它用了 30 个工具」 | §4.3 要求分列并标 `source: 'observed'`；§10 变异体 (g) |
-| 主抽屉关掉而环境抽屉残留在屏幕上 | **结构上不可能**（环境抽屉是 `AgentLogLayout` 的子组件，随主抽屉一起卸载，§6.8 约束 1）；`agent-environment-drawer.test.tsx` 仍钉一条防回归——**不需要**页面接线守卫 |
-| A/B 分段让「真实数据下不可见」被误判成缺陷 | §12 明文登记，并在 README 的排障表补一句 |
+| 主抽屉关掉而环境抽屉残留在屏幕上 | **结构上不可能**（环境抽屉是 `AgentLogLayout` 的子组件，随主抽屉一起卸载，§6.8 约束 1）；`agent-log-drawer.test.tsx` 的「主抽屉关闭时环境抽屉不在 DOM 里」仍钉一条防回归——**不需要**页面接线守卫（注意：那条守卫**不在** `agent-environment-drawer.test.tsx` 里，那个文件没有这一条） |
+| A/B 分段让「真实数据下不可见」被误判成缺陷 | §12 明文登记；README 里那三张表（抽屉表 / 按钮顺序 / 排障表）**目前都还没恢复**，§8.1 逐行登记了要新增什么 |
 | **反复进出子任务节点后内存持续增长**（已访问节点的内容留在数据层缓存里，而本设计**不做淘汰**） | §7.4 写了处置门槛，且**已进 §10 冒烟清单第 7 项**（否则门槛等于没写）：先量再改，落点是**数据层的按节点保留上限**；`LogNode.contentTruncatedReason` 是为它预留的出口，UI 只需如实显示那句话。**不是**在 `ui` 包里加淘汰 |
-| 改「查看日志」文案时漏掉既有断言 | §8.1 逐文件列出，含两处测试与三处注释 |
+| 行卡片按钮改名时漏掉既有断言 | §8.1 逐文件列出（改名的四处**都已落地**：按钮文案、可访问名与顺序断言、两处注释），剩下的是 README 那三个结构 |
 | **无人值守下 `ask-user` 会无界挂起**（dsh 逐字：无 `timeout-policy` 预算，只能靠轮次的 signal） | 卡片把「等待答复」画成**独立于七态的一格** + 走秒表 + 固定区徽标（§5.5，D21/D23）。本仓**不能自己收场**，故如实显示等待时长，而不是假装成 `timeout` |
 | 「还在等」被显示成某个已收场的态（或反过来，一次没采到的结果被永远读成「还在等」） | `AskUserPending` / `AskUserSettled` 是判别联合：`answers 非空 + outcome === null + running === false` 这个矛盾组合**写不出来**（D35）；§10 变异体 (j) 专验 |
+| **被强杀的子任务永远显示「运行中」**（`unsettled` 这一档只做了类型与文案，装配层还没赋它） | `LogNodeStatus` 有第七档 + `LOG_NODE_STATUS_LABELS` 有一句「未收场（等不到结果了）」，`subagent-bar` 也照它渲染；**缺的是装配层那条判据**（§14 已登记）。在那之前，这一档只在用例里手搓得到 |
 | **`AskUserAnswer.selected` 按 id / 下标匹配**：答案看起来有、其实错位 | §5.5 第 1 条口径（按 `label` 匹配）+ §10 变异体 (i)；这是最难发现的一类错 |
 | claude 的 `TaskStep.id` 来源未定（v2 spec §11.1 第 27 项）⇒ 依赖与 `owner` 落空 | `id === null` 时**不画 id 与依赖**、`owner === null` 时整格不显示（§5.4）。**不自己发号**；缺口闭合后 UI 无需改动 |
-| 计划清单在多轮里重复出现（跨轮不去重） | 首次展开、其后**默认收起且标题带 `3/5 完成 · +1 完成`**（§5.4 规则 4）；去重要跨轮状态，与 §7.2 的按项渲染相冲 |
+| 计划清单在多轮里重复出现（跨轮不去重） | 首次展开、其后**默认收起且标题带 `3/5 完成`**（`+1 完成` 那一格要等数据层给出 `change`，见 §14）（§5.4 规则 4）；去重要跨轮状态，与 §7.2 的按项渲染相冲 |
 | `secret` 的遮罩被当脱敏 | §5.5 如实登记：遮罩只是**显示口径**，原文仍在结果与事件台账里（「下载台账」拿得到） |
 | 族载荷缺失（B 段未落地 / 适配器不认识）被当成缺陷 | 回退通用工具行是**设计内的降级**（v2 spec §7.6.0：规范化是可选增收）；§10 有一条专测，§12 有逐族登记 |
 | 同一份「任务清单」被画两次（一次 `task` 卡片、一次 `unrecognized` 块） | §5.4 的边界：判据是**族载荷在不在**，不是在不在 `vendorType` 里；一族认出来就只走一条路 |
-| **分层被绕过：新代码直接 import 上层** | §9.0 的三条纪律 + `agent-log-layering.test.ts` 的静态扫描（a–c）；**逐条配变异体 (n)–(r)**。这一条的风险不是"画错了"而是"层塌了"——塌掉后既有的行为守卫**可能全绿**，所以必须有一条专测分层的守卫 |
-| **注册表被当成第二份真值**：有人把默认表复制一份到调用方再改 | §9.3 的 `BlockRendererProvider` 明确是**叠加**语义（`默认表 ⊕ Provider`），且 `DEFAULT_BLOCK_RENDERERS` 是**唯一**的默认真值；变异体 (o) 专验「覆盖成整体替换后默认臂必须还在」 |
+| **分层被绕过：新代码直接 import 上层** | §9.0 的三条纪律 + `agent-log-layering.test.ts` 的静态扫描 **(a)–(f)**；其中落在分层上的变异体是 **(n)(q)(r)(y)**（(o)(p) 拦的是注册表与工具条，不是分层），**(a)(b) 两条依赖方向判据还没有变异体**。这一条的风险不是「画错了」而是「层塌了」——塌掉后既有的行为守卫**可能全绿**，所以必须有一条专测分层的守卫 |
+| **注册表被当成第二份真值**：有人把默认表复制一份到调用方再改 | §9.3 的 `BlockRendererProvider` 明确是**叠加**语义（`默认表 ⊕ Provider`），且 `DEFAULT_BLOCK_RENDERERS` 是**唯一**的默认真值。⚠️ **变异体 (o) 目前抓不住**（全仓没有任何用例挂载过 `BlockRendererProvider`），要补一条「挂 Provider 后未覆盖的默认臂仍画得出」的用例才算有守卫 |
 | **L0 偷偷持态** | §9.0 纪律 2 要求全部受控，`agent-log-layering.test.ts` 的 (d) 条**静态**禁止 L0/L1 出现 `useState`。这条之所以要静态钉：自己持态的折叠件在**当前**用法下表现完全正常，只有在被挂第二个实例时才暴露（而那时已经晚了） |
 
 ---
 
 ## 14. 未闭合项（现行现状）
 
-以下是**当前实现里仍然成立**的口子：
+以下是**当前实现里仍然成立**的口子（逐条都已核对到真实文件；已闭合的条目直接删掉，不留在表里）：
 
-- `AgentLogModel.activeNodeId` 既是输入字段、又被注释成「UI 内部 state」（§4.1 vs §6.2）。
-- `EnvGroup.source` 是闭集四值（`user` / `vendor` / `project` / `observed`）——加一层要改组件。
-- 组件文案里写死了本仓的 `approvalPolicy` 与 dsh（`ask-user` 的 `unavailable` 原因位已由 §5.5 的 `outcome` 与结果原文承担）。
+- `AgentLogModel.activeNodeId` **既是输入字段、也是视图态**（§4.1 已就地写明这层双重身份：数据层可以指定「一打开看哪个节点」，之后的切换由 UI 持有）。
+- `EnvGroup.source` 是闭集四值（`user` / `vendor` / `project` / `observed`）：`agent-environment-drawer.tsx` 的 `SOURCE_LABELS` 是四值映射表 ⇒ **新增一个来源档必须同时改组件**（组名与分组顺序倒是全由数据层给，加一组不用改组件）。
+- 组件文案里写死了本仓的 `approvalPolicy`（`types.ts` 的 `ASK_USER_OUTCOME_LABELS.unavailable.note`）与 dsh 的缺省档位（`build-environment.ts` 的 `effortLine`，厂商名走 `AGENT_LABELS`）。这是**有意的如实口径**，但换一家消费方要能覆盖它，目前没有覆盖口。
+- 环境抽屉**没有走 `NestedDrawer` 原语**，语义槽样式是就地内联的一份副本（与 `DRAWER_SEMANTIC_STYLES` 逐字相同）——两份字面量，漂移是静默的；现有守卫只钉了它的 `size`。
 - `TaskPanel` 与规范同名不同形状（规范里没有 `WorkItem`；`SubagentRecord.source` 是另一件事，已由 `SessionNode.source` 承担）。
-- `ask-user` 的 `recommended` 置顶被本设计推翻，但 §8.2 的对照表未登记（规范 §7.6.4 的 `ask-user` 行 vs 本文 §5.5）。
-- claude 的 `Task*` 已是默认工具、开关已注入，而 §12.3 仍写「没开就没有这一族」。
+- ~~`ask-user` 的 `recommended` 置顶被本设计推翻~~ **已闭合**：本设计**不重排选项**（`recommended` 的置顶是厂商给的顺序，UI 只加一枚「推荐」Tag），与 `ask-user-card.test.tsx` 的「顺序一个字不动」一致。
 - `specVersion` 与规范「不做版本分流」是两个版本轴，需要一句区分。
+- **§6.7 的第 5 处动效（思考行最前的 6px 圆点呼吸）没有实现**：`globals.css` 里只有 `.aieval-activity-sweep` 与 `.aieval-stream-cursor` 两个动画类，思考块的标题里也没有那一枚圆点。设计表已按实现改成四处（§6.7 已就地登记）。
+- **§7.1(b) 的「重建走非紧急更新」没有实现**：全仓没有 `useDeferredValue` / `startTransition`；§11 验收 12 与 §10 冒烟第 6 项都依赖它，现只在 (a)(c) 两条上成立。
+- **真机密度与 §5.0 的基线不一致**：`/runs` 页把 `AgentLogDrawer` 渲染在 `PageShell` 的紧凑 `ConfigProvider` **之外**，抽屉吃到的是 antd 默认密度（`fontSize` 14 / `Tag` 高 22 / small `Button` 24 / `paddingSM`·`paddingMD` 12·20），而 §5.0.2–§5.0.4 的「实测值」量自紧凑密度。**要么把抽屉纳入紧凑主题，要么把这一档落差留在文档里**——两者选一之前，别拿基线数值去对真机。
 - `AgentLogModel.facts`（行级）与 `LogNode.sessionFacts`（会话级）是两层不同的东西。本期的取值是：**主会话节点的 `sessionFacts` 为 `null`**，行级事实一律读 `AgentLogModel.facts`（不存第二份）。
+- **`RowEvent.level: 'warning'` 目前没有产出方**（§5.2 已就地登记）：适配器把 codex 的 `error` 通知折成 `warning` 那一步还没落地，类型与渲染出口已就位。
+- **用户提示词（时间轴首条消息）目前在真机上不出现**：`BuildAgentLogModelInput.userPrompt` 是可选入参，而唯一的生产调用点 `apps/web-next/app/runs/page.tsx` **没有传它**；子任务节点在装配层恒 `userPrompt: null`。只有夹具预览页（`/dev/agent-log`）有值。⇒ §4.3 的 D19 口径（「只在时间轴首条出现、环境抽屉里不重复列」）**界面侧已就位、接线缺一步**。
+- **`TaskPanel.change` 恒 `null`**（`build-model.ts` 写死）：跨轮差分要数据层的累积态，现在没有 ⇒ 计划清单的「变化摘要」（`+1 完成`）永不渲染，且每张清单都落在「首次展开」那一档。
+- **`LogTurn.durationMs` 恒 `null`**（`build-model.ts` 写死）：轮次右栏首行的「本轮 3.2s」从不渲染。
+- **`AskUserInteraction` 的 `settled` 那一支没有产出方**：装配层只产 `{ state: 'pending', questions, at, running }`（`build-model.ts`），`render-blocks.ts` 只把它成卡（空 `at` 用调用块的时刻兜底，2026-10-08），契约的 `ask-user` 载荷也只有 `{ kind, questions }` ⇒ **七种收场、答案回填、`secret` 遮罩后的答案、`custom` 覆盖/追加**这些界面能力在真机上一条都走不到，**连夹具也喂不出来**（夹具走真实链路）——只有单测手搓 `AskUserSettled` 才构造得出。这是本设计**最大的一处「界面先行」**：视图与类型都齐了，缺的是契约那一格与装配层的配对。
+- **`MessageSource === 'aggregate'` 没有产出方**：契约 schema 里有这个取值、UI 的 `RowNode` 路径也通了，但 `agents` 包**没有任何适配器发出它** ⇒ 「厂商只给汇总、没有逐条身份」那一档只在夹具里可见（§6.3 / §9.8.3 已就地登记）。
+- **`LogNodeStatus` 的七档里，两条装配路径各只走五档，且 `unsettled`（未收场）在任何地方都不会被赋出来**：
+  **子会话节点与行级节点**走 `nodeStatusOf`（契约 `SubagentStatus` 五态直映 ⇒ `running` / `completed` / `failed` / `stopped` / `unknown`）；
+  **主会话节点**走 `statusForFacts`（`facts.live` 短路成 `running`，否则从 `facts.status.tone` 反推 ⇒ `running` / `completed` / `failed` / `canceled` / `unknown`）；
+  **两处都没有 `unsettled`**——全仓只有类型定义、文案表与用例里手搓的节点用到它。
+  ⇒ 「被强杀的子任务会永远显示运行中」这条病**还没治**：要补的是装配层那条判据（收场事件没到 + 整行已终态 ⇒ `unsettled`），契约的 `SubagentStatus` 里本来就没有这一档。面板与文案都已就位，只差这一步。
+- **`unsettled` 这一档不是「没产出」而是「产出不了」**（见上一条）：`subagent-bar` 的状态色档把它与 `stopped` / `canceled` / `unknown` 一起归中性——几档各有自己的中文，涂色就是在替数据表态。
+- **`ToolResultBlock.status` 实际只产出两档**：`toContentBlock` 写的是 `block.isError ? 'error' : 'ok'`（契约那一格是布尔，没有第三态）⇒ **`'unknown'` 永远出不来**。三态是界面留的位（`'unknown'` 的正确来源应该是「这一家没报结果状态」），目前靠契约的布尔表达不了；`status === 'error'` 的两处消费（工具行的「失败」Tag、组头的「失败 N」）因此恒等于 `isError === true`。
+- **`ThinkingBlock.textMissing` 恒为 `null`**：`build-model.ts` 在装配时就把 `text === null` 的思考块整块过滤掉，留下来的必带正文；那一格只是形状上的兼容位（老日志 + 「数据层如实记录」这条口径），界面没有它的渲染出口。
+- **`AgentLogDiagnostics.truncatedReason` 生产调用恒传默认 `null`**（`diagnosticsOf` 的第二个参数据此），即「只保留了最近 N 行」这句人话目前永远不会出现——上限由数据层决定，UI 侧的形状已就位。
+- **`buildAgentLogModel` 的 `usage`/`mergeKey` 摊平链路**目前只有 UI 包内的用例（`build-model.test.ts`），`packages/client/client/src/row-messages.ts` 的帧合并**整个文件没有测试**（§7.1 的「至多一帧一次提交」现无人守）。
 
 清单与建议改法在 `docs/superpowers/notes/2026-10-01-exec-log-drawer-design-generality-review.md`。

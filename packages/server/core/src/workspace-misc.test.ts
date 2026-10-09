@@ -34,7 +34,7 @@ registerWorkspaceHooks();
  * 而 `.agenthome` 是 `CLAUDE_CONFIG_DIR` / `DSH_HOME` / `CODEX_HOME` 的落点——两家的配置格式不同，
  * 共用一个目录会互相破坏（静默的那一种：CLI 会安静地忽略读不懂的配置，表现成「模型路由没生效」）。
  *
- * 为什么「重跑要清掉」值得一条独立的守卫：`clearRowArtifacts` 里三条 `rmSync` 是**分开写的**
+ * 为什么「重跑要清掉」值得一条独立的守卫：`clearRowArtifacts` 里三个产物是**逐个列出**删除的
  * （该函数的口径是「新落的东西默认不被顺手删掉」），漏掉 `.judgehome` 这条不会有任何别的用例变红——
  * 而症状是下一轮评分智能体**带着上一轮的会话与配置**跑，分数看起来照常出得来。
  */
@@ -63,7 +63,7 @@ describe('评分智能体的独立配置目录（.judgehome）', () => {
     writeFileSync(join(judgeHome, 'session.json'), '{"model":"评分智能体"}', 'utf8');
     expect(existsSync(join(judgeHome, 'session.json'))).toBe(true);
 
-    // 第二轮：重跑同一行。clearRowArtifacts 里那条 .judgehome 的 rmSync 是**分开写的**，
+    // 第二轮：重跑同一行。clearRowArtifacts 里 `.judgehome` 那一条是**逐个列出**的，
     // 漏了它这条用例才会红（变异验证见 Step 9）
     prepareRowWorkspace(input);
     expect(existsSync(join(judgeHome, 'session.json'))).toBe(false);

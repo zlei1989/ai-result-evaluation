@@ -110,7 +110,7 @@ function planPayloadOf(structured: Record<string, unknown>): ToolCallPayload | n
   return {
     kind: 'plan',
     steps: rawSteps.map(taskStepOf),
-    // codex 的 `explanation`（为什么改计划）；另两家没有这一格 ⇒ `null`
+    // codex 的 `explanation`（为什么改计划；**app-server 通道下本仓窄声明未收这一格 ⇒ `note` 恒 `null`**，仅历史 `codex exec` 记录里有）；另两家没有这一格 ⇒ `null`
     note: asString(structured.explanation),
   };
 }

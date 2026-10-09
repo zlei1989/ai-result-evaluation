@@ -19,7 +19,7 @@
  * 「一行不会永远停在 running」那条不变量随 `rowTimeoutMs` 一起作废——上游滴流响应、忽略停止信号的
  * 适配器都可能把一行挂住，出路只剩界面上的「终止」。这是用户 2026-09-28 的明确取舍。
  *
- * 注意：本模块不写 `process.env`（§5.6.4 硬性不变量）、不拼 git 命令（走 core）、不发 HTTP（走 judge）。
+ * 注意：本模块不写 `process.env`（§5.6.5 硬性不变量）、不拼 git 命令（走 core）、不发 HTTP（走 judge）。
  * 另：`caseCacheDir` / `ensureCaseCache` **刻意不在这里调用**——`prepareRowWorkspace` 内部已经按
  * 三参数形态（R28）调过一次，编排层再调一遍会落在 `commitHash = null` 分支上（R29：逐行 fetch +
  * `reset --hard`，且源仓库不可达时直接抛 `NOT_A_GIT_REPO`）。
@@ -74,7 +74,7 @@ import { publishRowEvent } from './events';
 import { publishRowMessage, publishSubagentRecord } from './row-messages';
 import { judgeRow } from './judge';
 import { judgeRowByAgent, JudgeAgentError } from './judge-agent';
-import { requireJudgeAgent, resolveJudgeRoute } from './judge-route';
+import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
 import { forgetRunRoot } from './run-root-memory';
 import { getRunForWrite, listRuns, saveRun } from './run-store';
 
@@ -173,6 +173,11 @@ function isRowSettled(runId: string, rowId: string): boolean {
  * 所以这里只做一件事：**行一落终态就唤醒行任务**（不是时间上限，是用户动作的送达）。被放弃的
  * `run()` 仍在后台收尾（`abort` 已经递给适配器，`turn.ts` 的释放路径照常跑），它随后吐出来的事件
  * 由 `settledRows` 那道闸门挡在盘外——两件事合起来才是「终止真的生效」的完整形状。
+ *
+ * 生命周期：登记在每个行任务的入口（`runRowAttempt` / `rescoreAttempt`），清理点唯一——
+ * `clearRowRuntime`（`runRow` 与 `rescoreRow` 各自的收尾都会调它）。**别**把清理挪进行任务的中途
+ * （候选阶段那个 finally 曾经这么干过）：评分阶段用的是同一个 `terminalReached`，中途摘掉就等于
+ * 让它变回一条没人唤醒的 promise（2026-10-07 的缺陷形状）。
  */
 const terminalWaiters = new Map<string, () => void>();
 
@@ -337,6 +342,15 @@ interface JudgeStageContext {
   /** 第 6 步已算好的改动摘要（污染对照的「评分前」那一份）；重新评分传 null（自己现算） */
   diffSummary: NonNullable<EvalRow['diff']> | null;
   controller: AbortController;
+  /**
+   * 「这一行落终态」的唤醒器（同 `terminalWaiters` 的语义：不是时间上限，是用户动作的送达）。
+   *
+   * 为什么它在 ctx 上而不是在 `judgeStageAttempt` 里现造：唤醒器是**逐行一次性**的，注册点在行任务的
+   * 入口（`runRowAttempt`）——评分阶段只是它的一个消费者；在这里再造一个就没人注册它，
+   * 等于没有。两条评分通路各有一个生产者：完整跑一行用候选阶段那一个（同一个行任务），
+   * 重新评分那条旁路自己造一个并注册（见 `rescoreAttempt`）。
+   */
+  terminalReached: Promise<'terminal'>;
 }
 
 /**
@@ -363,14 +377,17 @@ function clippedDiffText(workspacePath: string, baselineCommit: string, budgetBy
  * 评分阶段的执行骨架（**不再有界**，2026-09-28 用户口径「评分不限轮次和时间」）。
  * 两条通路（智能体 / 文本 API）共用它——分开写必然在某一处漏掉记账或污染对照。
  *
- * 它现在只做三件事：
+ * 它现在做四件事：
  *   ① **迟到事件闸门**：本函数一落定就 `settled = true`，此后适配器收尾期间吐出来的事件不再落盘
  *      （它们会把「已结束」的日志拖长）。`events.ts` 的写入是无条件的，闸门只能设在这里。
  *   ② **用户终止的归因**：适配器 / HTTP 客户端只会报「被中止」（`signal` 不带原因），
  *      只有本层的 `userAborted` 记账能把它翻成 `AGENT_CANCELED`。原来还有一支「外层兜底超时」，
  *      随单行超时一起删了 ⇒ 现在能到这里的中止**只可能**是用户点的终止。
  *   ③ **污染对照**（spec §7.4，智能体通路专有）：评分前后的改动摘要必须一致，不一致就落一条
- *      WARN 事件——「查看改动」抽屉是按需现算的，评审者动过工作区就不再是候选的产出。
+ *      带 `[ERROR]` 前缀的行日志——**拿到分就判失败**（`AGENT_FAILED` + `stage: 'judge'`），
+ *      没拿到分则只留痕（真因优先）。「查看改动」抽屉是按需现算的，评审者动过工作区就不再是候选的产出。
+ *   ④ **终止 race**（`ctx.terminalReached`）：`Promise.race([attempt, terminalReached])`，终止那一支赢就
+ *      **不改状态**（这一分不落快照），在途结果回来后只落一条 `[已终止的尝试]` log + 一条 `score` 事件。
  *
  * `label` 是点名那一段（评分智能体 / 评分模型（文本 API））；`beforeSummary` 由调用方在
  * **进入本函数之前**算好（完整跑一行用第 6 步那一份、重新评分现算）：那一步自己会抛
@@ -392,8 +409,9 @@ async function judgeStageAttempt(input: {
   const key = rowKey(ctx.runId, ctx.rowId);
 
   // 污染对照（spec §7.4）：评分前后的改动摘要必须一致。不一致说明评审者动了工作区，而
-  // 「查看改动」抽屉是按需现算的 ⇒ 它显示的不再是候选的产出。不自动回滚（没有干净基线可退），
-  // 但绝不静默——那正是最容易让人误判分数的一个坑。见 `beforeSummary` 的注释：那一份由调用方给。
+  // 「查看改动」抽屉是按需现算的 ⇒ 它显示的不再是候选的产出。
+  // 2026-10-07（用户裁决）：**拿到分时升级为该行失败**——那一份分建立在一个被改过的现场上，
+  // 不自动回滚（没有干净基线可退），但也不许当作正常分数收下；拿不到分时只留痕（见 finally）。
   const before = input.beforeSummary ?? null;
 
   /** 迟到事件闸门（两道）：本函数自身落定之后，以及**行已被判定终态**之后（用户终止会让后者先发生，
@@ -404,8 +422,54 @@ async function judgeStageAttempt(input: {
     publishRowEvent(ctx.runId, ctx.rowId, event);
   };
 
+  /** 这一次拿到分了吗：污染判定据此决定「升级为失败」还是「只留痕」（见 finally） */
+  let scored: ScoreResult | null = null;
   try {
-    return await input.attempt(forward);
+    /**
+     * 等这一次评分，**同时等「行落终态」**（spec §6 / D13）：评分阶段原先只有裸 `await`，适配器不响应
+     * abort 时用户点了「终止」也收不了场（行已同步落 `canceled`，任务却一直挂着 ⇒ `runRow` 的 finally
+     * 不执行、`rowAborts` 记账不清、`drainRunningTasks` 空转）。宽限为 **0**：这一分反正落不了快照
+     * （行已是终态，用户意图优先），没必要为交卷多等（与候选阶段的 `TERMINATION_GRACE_MS` 5 秒不同）。
+     */
+    const attempt = input.attempt(forward);
+    // 先挂一个 catch：race 输了之后它仍在飞（适配器可能永远不交卷），而裸的孤儿 promise 一旦 reject
+    // 就是 unhandledRejection（Node 默认 `--unhandled-rejections=throw`，能打崩进程）——
+    // 与候选阶段那句 `runPromise.catch(() => {})` 同一条理由
+    attempt.catch(() => {});
+    const first = await Promise.race([attempt.then(() => 'done' as const), ctx.terminalReached]);
+    /**
+     * 终态优先：这一行已经落了终态（用户终止），这一分**不落快照**——但**证据不能凭空消失**：
+     * p4 的口径是「在途任务稍后回来看到终态就只记日志、不改状态」，这里保留的就是那条日志。
+     * 宽限为 0 之后调用方那条终态复检（`runRowAttempt` / `rescoreAttempt` 的 `afterJudging`）已经等不到
+     * 交卷了（它此前是这份证据的唯一产出点），于是把这一笔挪到这里（spec §6 的落点已按这条口径改写：
+     * 不改状态 + 只记日志，两者缺一不可）。
+     * 末尾那个 `.catch` 管两件事：这个 `.then` 自己抛（事件写不进去——这一轮可能已被删、目录已回收），
+     * 以及 `attempt` 最终 reject（经 `.then` 转发过来）——两件都不该影响本函数即将抛出的终止归因。
+     */
+    if (first === 'terminal') {
+      attempt
+        .then((late) => {
+          /**
+           * **先留来源标识，再发那条分**（评审 Minor-1）：这一笔续作跑的时候，行任务早已收尾——
+           * `clearRowRuntime` 释放了 `rowAborts`，用户甚至可能已经点了「重新执行 / 重新评分」。
+           * 于是这条孤儿的 `score` 会**夹在新一轮的事件之间**（改动前不可能：行任务必须等评分返回才结束），
+           * 在 F14「事件日志是唯一真相源」下会被误读成**新一轮的分数**。紧邻在它前面的一条带标记 log
+           * 就是它的来源：读日志的人一眼能看出「这条分属于上一次已被终止的尝试，没写进行里」。
+           */
+          publishRowEvent(ctx.runId, ctx.rowId, {
+            type: 'log',
+            stream: 'stderr',
+            text: `[已终止的尝试] 这一次${input.label}在终止之后才交回结果：分数未写入该行，以下这一条仅为证据`,
+          });
+          publishRowEvent(ctx.runId, ctx.rowId, { type: 'score', score: late });
+          log.warn('行已被终止，评分结果只记入事件日志', { runId: ctx.runId, rowId: ctx.rowId, label: input.label });
+        })
+        .catch(() => {});
+      throw new JudgeAgentError('AGENT_CANCELED', `${input.label}已被终止`);
+    }
+    // 'done' 那一支重取一次：此刻它已解决，不会二次等待（也让 `scored` 的赋值留在原来的位置上）
+    scored = await attempt;
+    return scored;
   } catch (error) {
     // 停止归因**只按本层记账**（`signal` 不带原因）：判据是 `signal.aborted`（不是错误类型）——
     // 停止只可能来自我们交出去的那把 signal，而它在中止路径上抛出的形状因运行时/阶段而异
@@ -420,23 +484,13 @@ async function judgeStageAttempt(input: {
     // 先闸住迟到事件：这段 finally 之后调用方立刻要写终态
     settled = true;
     if (before !== null) {
+      /**
+       * 对照本身失败（工作区被删、git 不可用）不该顶替评分结论 ⇒ 只记 WARN。
+       * **它必须与「发现污染」分开**：下面的升级是 `throw`，被这里的 catch 兜住就永远不会生效。
+       */
+      let after: NonNullable<EvalRow['diff']> | null = null;
       try {
-        const after = diffSummaryOf(ctx.workspacePath, ctx.baselineCommit);
-        if (
-          after.filesChanged !== before.filesChanged ||
-          after.insertions !== before.insertions ||
-          after.deletions !== before.deletions
-        ) {
-          publishRowEvent(ctx.runId, ctx.rowId, {
-            type: 'log',
-            stream: 'stderr',
-            text:
-              '[WARN] 评分智能体执行期间工作区被改动' +
-              `（改动前 ${before.filesChanged} 个文件 +${before.insertions} −${before.deletions}，` +
-              `改动后 ${after.filesChanged} 个文件 +${after.insertions} −${after.deletions}）：` +
-              '「变更详情」抽屉显示的是当前状态，可能已不是候选 agent 的产出',
-          });
-        }
+        after = diffSummaryOf(ctx.workspacePath, ctx.baselineCommit);
       } catch (error) {
         // 对照失败（工作区被删、git 不可用）不该顶替评分本身的结论，只记 WARN
         log.warn('评分后的改动对照失败（不影响本次结论）', {
@@ -445,8 +499,61 @@ async function judgeStageAttempt(input: {
           reason: toServiceError(error).message,
         });
       }
+      if (after !== null && diffChanged(before, after)) {
+        const detail =
+          `（评分前 ${before.filesChanged} 个文件 +${before.insertions} −${before.deletions}，`
+          + `评分后 ${after.filesChanged} 个文件 +${after.insertions} −${after.deletions}）`;
+        const message =
+          `${input.label}执行期间改动了工作区${detail}：评审者只能读，改动会让「变更详情」抽屉显示的不再是候选的产出`;
+        publishRowEvent(ctx.runId, ctx.rowId, { type: 'log', stream: 'stderr', text: `[ERROR] ${message}` });
+        /**
+         * **有分才算污染**：拿到分说明评审者跑完了，那一份分建立在一个它自己改过的现场上——不可信，
+         * 直接判这一次失败（上层的 `catch` 把它折成行的 `failed` + `stage: 'judge'`）。
+         * 拿不到分时不抛：那种情况下的第一归因是**它为什么没跑完**（认证失败 / 网络 / 被终止），
+         * 拿污染顶掉它等于把真因换成一句副作用描述。
+         */
+        if (scored !== null) throw new JudgeAgentError('AGENT_FAILED', message);
+      }
     }
   }
+}
+
+/** 两次改动摘要是否不同（只看三格：文件数、增、删）——评分前后对照的唯一判据 */
+function diffChanged(before: NonNullable<EvalRow['diff']>, after: NonNullable<EvalRow['diff']>): boolean {
+  return (
+    after.filesChanged !== before.filesChanged ||
+    after.insertions !== before.insertions ||
+    after.deletions !== before.deletions
+  );
+}
+
+/**
+ * 评分前的档位校验（spec §5.4 / D8 的**第二道门**）：把 `settings.defaultJudge.effort` 交给
+ * `requireJudgeEffort` 判一次，越域 / 空串当场抛 CONFLICT + 指向评分配置。
+ *
+ * 为什么在编排层也要有（生成 / 识别那条通路另有自己的一道）：`effort` 的 schema 守卫只作用于走 schema
+ * 的**写下侧**，而 `loadConfig()` 刻意不做校验 ⇒ 手改 `config.json` 写进的档位、或换掉评分智能体之后
+ * 留下的悬空档位会一路到消费方。不拦就要跑到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败。
+ *
+ * 三处刻意的口径：
+ *   · `config` 由调用方传进来（`runJudgeStage` 手里那份快照）：找模型记录用的就是**同一份**快照里的
+ *     同一对 id，不必再读一次盘；
+ *   · 模型记录查不到就**跳过**——那一支由 `resolveJudgeRoute()` 负责报错（两者的查找判据逐字相同，
+ *     故这道门永远不会顶掉路由那句更准的中文原因）；
+ *   · 两个分支**各调一次**，因为「评分智能体域」依分支而异：文本通路压根不用智能体，故按设置里
+ *     那一格判（与设置页给出候选档位时用的是同一条口径），智能体通路则用它自己那个已校验过的 kind。
+ */
+function requireConfiguredJudgeEffort(
+  config: ReturnType<typeof loadConfig>,
+  effort: string | undefined,
+  agentKind: AgentKind | null,
+): void {
+  const pair = config.settings.defaultJudge;
+  const model = config.providers
+    .find((item) => item.id === pair?.providerId)
+    ?.models.find((item) => item.id === pair?.modelId);
+  if (model === undefined) return;
+  requireJudgeEffort({ effort, model, agentKind });
 }
 
 /**
@@ -488,11 +595,20 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
 
   const config = loadConfig();
   const route = resolveJudgeRoute();
+  // 强度与尺子同源（同一份 `defaultJudge`；这两次读之间没有 await，等于同一瞬间的快照）。
+  // 走 `resolveJudgeEffort()` 而不是从上面的 `config` 里现取：那是**唯一读点**（spec §5.3），
+  // 多一处直读就多一处会漂移的地方。校验（spec §5.4 的第二道门）紧挨着读点，但落在**各分支**里——
+  // 「评分智能体域」那一格依分支而异（见 `requireConfiguredJudgeEffort`），且必须在**花掉任何一次
+  // 上游调用之前**判掉：越域档位是配置问题，不该等到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才现形。
+  const judgeEffort = resolveJudgeEffort();
   // 冗余快照的同一理由（§7.2）：这一分是哪把尺子打的必须留在行上。取值与上面 `resolveJudgeRoute`
   // 内部的 `providerId` 是同一个来源（同一份 `config` 快照里的 `defaultJudge`），不再有两处表达式要对齐。
   const judgeProviderId = config.settings.defaultJudge?.providerId ?? '';
 
   if (!ctx.run.useAgentJudge) {
+    // 文本通路没有智能体驱动它，故「评分智能体域」按设置里那一格判：与设置页给出候选档位时同一条口径
+    // （这一格没配、或是个枚举之外的坏值时，`requireJudgeEffort` 自己取规范五档）
+    requireConfiguredJudgeEffort(config, judgeEffort, config.settings.defaultJudgeAgent ?? null);
     return judgeStageAttempt({
       ctx,
       label: '评分模型（文本 API）',
@@ -505,6 +621,9 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
           taskPrompt: ctx.testCase.taskPrompt,
           route,
           judgeProviderId,
+          // 强度按需带（没配就一个键都不出现）：与候选执行同一条口径——**请求参数**由两条通路
+          // 各自递下去，不在 `route` 上（那是连接事实）。记账在评分器里做（`finalizeScore`）
+          ...(judgeEffort === undefined ? {} : { judgeEffort }),
           // 文本通路的停止信号（终审 FIX-1）：它与智能体通路共用编排层那一把控制器，
           // 于是「终止」真的能切断这次调用（不再有外层兜底给它上界——上限已随单行超时删除）。
           signal: ctx.controller.signal,
@@ -525,28 +644,13 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
   }
 
   const kind = requireJudgeAgent({ defaultJudgeAgent: config.settings.defaultJudgeAgent, route });
-  /**
-   * 能力决定带不带 schema（spec D4）。**不支持必须留痕**：降级是允许的，静默降级不是——
-   * 「这一分是在 schema 约束下拿到的」与「只靠提示词契约拿到的」在分数与界面上长得一模一样，
-   * 横向比较时（同一批用例、改过评分配置前后、重评过的行）必须能从这一行的日志里读出这个差别。
-   * 「谁知道能力、谁决定」只有一个答案：判据取自**注册表元数据**（真源在 agents），
-   * 判断只发生在**这一层**（`judgeRowByAgent` 只转发与记账，它不做能力判断）。
-   */
-  const provider = getProvider(kind);
-  const structuredOutput = provider.metadata.capability.structuredOutput;
-  if (!structuredOutput) {
-    publishRowEvent(ctx.runId, ctx.rowId, {
-      type: 'log',
-      stream: 'stderr',
-      text:
-        `[评分] ${provider.displayName} 不支持结构化输出（SDK 没有 schema 入参），`
-        + '本行回落到提示词契约：返回形状由结构检查兜底，不合格会落 JUDGE_PARSE_FAILED',
-    });
-  }
+  // 档位校验放在 `requireJudgeAgent` **之后**：那一格是坏值时，先由它给出「默认评分智能体不是可用的
+  // 智能体」这句准确的中文原因，而不是被这里按「未配智能体」的域去报一个档位问题（归因会指错方向）
+  requireConfiguredJudgeEffort(config, judgeEffort, kind);
   // 在进入执行骨架**之前**把评分智能体的配置目录建出来（原来它是作为实参先算的）：
   // 建目录失败（磁盘满 / 目录形状非法）该是一次普通的 `failed`，不该混进「评审者本身失败」那条路。
   const judgeHome = ensureRowJudgeHome(ctx.run.workspaceBase, ctx.runId, ctx.rowId);
-  return judgeStageAttempt({
+  const score = await judgeStageAttempt({
     ctx,
     label: '评分智能体',
     agentKind: kind,
@@ -564,11 +668,33 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
         taskPrompt: ctx.testCase.taskPrompt,
         signal: ctx.controller.signal,
         judgeProviderId,
-        // 只有能力支持时才带（不支持的家拿到它会抛错，见 dsh 适配器的纵深防御）
-        ...(structuredOutput ? { outputSchema: JUDGE_OUTPUT_JSON_SCHEMA } : {}),
+        // 与文本通路同一格、同一份快照（两条通路的要求强度必须是同一个值，否则分数不可比）
+        ...(judgeEffort === undefined ? {} : { judgeEffort }),
+        // 总是表达「我想要 schema」：能不能给由适配器按能力决定（A1），降级会经 applied 报回来
+        outputSchema: JUDGE_OUTPUT_JSON_SCHEMA,
         onEvent: emit,
       }),
   });
+  /**
+   * 降级留痕。判据来自**结果**（`applied`）而不来自注册表：包外不再预读 `capability`，于是
+   * 「这一次有没有真的把结构化输出落到实处」由**骨架**算（`runTurn` 按适配器转发的能力声明摘掉
+   * schema 并记下 `applied.structuredOutput`），编排层只负责把那个结论留在这一行的日志上。
+   *
+   * 为什么必须在**拿到分之后**才留痕：判据本身来自这一次运行的结果，跑之前无从得知。
+   * 为什么留痕不能省：降级是允许的，静默降级不是——「这一分是在 schema 约束下拿到的」与「只靠
+   * 提示词契约拿到的」在分数与界面上长得一模一样，横向比较时（同一批用例、改过评分配置前后、
+   * 重评过的行）必须能从这一行的日志里读出这个差别。
+   */
+  if (score.structuredOutput === false) {
+    publishRowEvent(ctx.runId, ctx.rowId, {
+      type: 'log',
+      stream: 'stderr',
+      text:
+        `[评分] ${AGENT_LABELS[kind]} 没有把结构化输出落到实处（适配器 SDK 无 schema 入参），`
+        + '本行回落到提示词契约：返回形状由结构检查兜底，不合格会落 JUDGE_PARSE_FAILED',
+    });
+  }
+  return score;
 }
 
 /**
@@ -588,7 +714,7 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
  * 注意**停止这一侧只有第一臂**：评分阶段的「停下来」只可能是用户点的「终止」——外层兜底超时
  * 随单行超时一起删除，`judgeStageAttempt` 的 catch 里只剩 `userAborted` 一条记账。
  *
- * 失败留一条 WARN（AGENT.md 的日志表）。为什么不只靠上面那条行事件：事件日志是**行级**的，
+ * 失败留一条 WARN（AGENTS.md 的日志表）。为什么不只靠上面那条行事件：事件日志是**行级**的，
  * 而运维看的是服务端日志——评分阶段反复失败如果只在抽屉里，排障时没有任何线索。
  *
  * 落终态时**一律带 `stage: 'judge'`**（2026-09-28）：这一路的失败全部发生在评分那一段，而两段失败落的
@@ -707,11 +833,30 @@ function classifyStop(input: {
   return null;
 }
 
-/** 清掉这一行的在途状态：控制器与「终止原因」的记账，避免长驻进程里累积 */
+/**
+ * 清掉这一行的在途状态：控制器、「终止原因」的记账与「落终态的唤醒器」，避免长驻进程里累积。
+ *
+ * 三个条目是**同一条生命周期**（一次行任务：从控制器登记到任务收尾），所以同处清理。
+ * 调用点**四处**（评审 Minor-2，此前这里只写了两处）：
+ *   · 清理：`runRow` 的 finally（完整跑一行：候选 + 评分）与 `rescoreRow` 任务自己的 finally（重评）；
+ *   · **入口区回退**另有两处（`retryRow` / `rescoreRow` 的 entry `catch`）：那三步（落状态 → 起任务）
+ *     中途抛时任务压根没起来，抹掉痕迹＝「什么都没发生」——对唤醒器同样成立（那两处还没有人登记过它，
+ *     删的是空条目，幂等无副作用）。
+ *
+ * `terminalWaiters` 为什么也在这里（2026-10-07 修正）：它此前挂在候选阶段那个 `Promise.race` 的
+ * finally 上，而候选跑完**评分才刚开始**（`runRowAttempt` 第 7 步）——于是评分阶段拿到的那个
+ * `terminalReached` 成了一条没人唤醒的 promise（匹配到这次的缺口：适配器在评分阶段不理 abort 时，
+ * 用户终止后这一行照样收不了场）。唤醒器必须活到**整次行任务**结束，而这里正是那个边界。
+ *
+ * ⚠️ **清理点必须在这里，别挪回行任务中途**（候选阶段那个 finally 曾经这么干过，2026-10-07 那条缺陷
+ * 就是它）：唤醒器一被提前摘掉，评分阶段手上那条 `terminalReached` 就是**死 promise**——race 永远不会被
+ * 「终止」赢下，用户按了终止这一行仍挂在评分调用上。`runRowAttempt` 与 `rescoreAttempt` 两处同理。
+ */
 function clearRowRuntime(runId: string, rowId: string): void {
   const key = rowKey(runId, rowId);
   rowAborts.delete(key);
   userAborted.delete(key);
+  terminalWaiters.delete(key);
 }
 
 /**
@@ -1001,7 +1146,7 @@ function shouldRetryFailedRow(runId: string, rowId: string, failure: RowFailure)
  * 跑一行的完整过程：spec §5.5 的八步。
  * 前三步（建工作区 / 取基线 / 注入隔离配置）由 `core.prepareRowWorkspace` 一次完成；
  * 「注入隔离配置」在本层只体现为把 `configHome` 交给适配器——真正写环境变量的是适配器
- * （§5.6.4 的三条不变量：本仓任何地方都不写 `process.env`）。
+ * （§5.6.5 的三条不变量：本仓任何地方都不写 `process.env`）。
  *
  * 为什么先落 `preparing` 再让出事件循环、最后才复制工作区：复制是同步重活，放在调用方
  * （`startRun`）的调用栈里会让「开始」这个请求卡住整段复制时长（并行 6 行就是 6 倍），
@@ -1164,8 +1309,11 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   rowAborts.set(key, controller);
   /**
    * 「这一行落终态」的唤醒器（见 `terminalWaiters`）。它**不是时间上限**：只有用户终止（或别的
-   * 路径真的把这一行写成终态）才会 resolve。所以后面那个 `Promise.race` 不会凭空截断一次正常运行，
+   * 路径真的把这一行写成终态）才会 resolve。所以两个 `Promise.race` 都不会凭空截断一次正常运行，
    * 它解决的是「用户已经看到『已终止』，而轮级状态还挂在 running」这件事。
+   * **两个消费者**（同一次行任务里前后两段都可能无限等待）：候选阶段的 `runPromise` 与评分阶段的
+   * `input.attempt`（后者经 `JudgeStageContext.terminalReached` 传进去）——评分那一段是 2026-10-07
+   * 补的，此前只有候选那一个 race（适配器在评分阶段不理 abort 时，这一行照样收不了场）。
    * 注册点紧跟控制器：从这一刻起，任何一次 `setRowStatus(终态)` 都能唤醒这一次任务。
    */
   let wakeOnTerminal: (() => void) | undefined;
@@ -1219,41 +1367,44 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   // 行判定终态之后，适配器收尾期间吐出来的迟到事件不再落盘（它们会把「已结束」的日志拖长）
   let settled = false;
   /**
-   * 跑动期用量的回写口径（用户口径，2026-09-26）：只有**适配器上报值**才写快照。
-   * `liveUsage` 缺省按 `'estimated'` 处置（缺省落在安全侧，见 agents 的 types.ts）：
-   * 估算（claude-code 按 assistant 消息累加的那种）**只走事件流**给界面看，
-   * 绝不写进唯一落盘真相——否则崩溃 / 被杀的行会看起来像「采到了计量」。
+   * 跑动期用量的回写口径（A2 起**按每一条事件自己的性质**，不再按整家的静态声明——那是
+   * `capability.liveUsage` 的最后一处消费点，删掉它之后包外不再读 agents 的任何能力格）：
+   *   · `tokens`：**只有显式声明「厂商上报」的那一条**（`tokensBasis === 'reported'`）才写快照。
+   *     `'estimated'`（claude-code 的跑动期估算）与**整格缺席**（老适配器 / 第三方 provider 直接
+   *     发事件）一律不写——缺省的判据落在安全侧，见 contracts 的 `tokensBasis` 注释。估算进快照会
+   *     让崩溃 / 被杀的行看起来像「采到了计量」，而快照是唯一落盘真相；
+   *   · `turns` 与子智能体两格：**恒回写**（它们只有权威形态，契约里没有对应的估算标记）。
+   *     旧口径把这三格一起挡掉，于是「估算的家」连轮次都看不到——这是一次**有意的行为变更**。
    *
-   * **`tokens` 为 null 时只回写 `turns`**（2026-09-28 契约放宽后新增的一格）：轮次不再依赖 token，
-   * 一条只带轮次的 usage 事件不该把快照里已经采到的 tokens 抹成 null（那会让界面上的 tok
-   * 从有数掉回「采集中」）。`turns` 则恒为数字（契约必填）。
+   * **不写 ≠ 清空**：这一段的每一格都是「不满足条件就整格不进 `patchRow`」⇒ 保持原值。
+   * 一条只带轮次的 usage 事件不该把快照里已经采到的 tokens 抹成 null
+   * （那会让界面上的 tok 从有数掉回「采集中」）。
    */
-  const liveUsageAuthoritative = agentProvider.metadata.capability.liveUsage === 'reported';
   const onEvent = (event: AgentEvent): void => {
     // 两道闸门：本行任务已落定、或**行已被判定终态**（用户终止 / 另一条路径已经收尾，见 `settledRows`）
     if (settled || isRowSettled(runId, rowId)) return;
     publishRowEvent(runId, rowId, event);
-    // 「计量在跑的过程中逐步落库」（patchRow 的注释里承诺的就是这里）：上报值一到就写快照，
+    // 「计量在跑的过程中逐步落库」（patchRow 的注释里承诺的就是这里）：权威值一到就写快照，
     // 于是列表、刷新后的页面、以及任何不接 SSE 的消费方都能在中途看到当前用量
-    if (event.type === 'usage' && liveUsageAuthoritative) {
-      patchRow(runId, rowId, {
-        turns: event.turns,
-        ...(event.tokens === null ? {} : { tokens: event.tokens }),
-        /**
-         * 子智能体那一份：**显式 `null` 要清**（`undefined` = 老事件缺这一格 ⇒ 保持原值）。
-         * 为什么与 `tokens` 的处置不同：读失败时同一条事件的 `tokens` 已退回主会话口径，
-         * 留着旧的偏大分量会让快照满足不了 `subagentTokens ≤ tokens`（spec §2.4 的不变量）。
-         */
-        ...(event.subagentTokens === undefined ? {} : { subagentTokens: event.subagentTokens }),
-        /**
-         * 轮次那一格的分量：与上面那一格**同一条规则**（显式 `null` 清、缺格保持）。
-         * 两格分开写而不是合成一处：契约里它们是**两个**可选键，「这一条带了哪一个」由各家决定
-         * （dsh 两格同刻，codex 只在收尾那一条上给），合成一处会让「只带了其中一格」变成
-         * 「另一格被顺手清掉」。
-         */
-        ...(event.subagentTurns === undefined ? {} : { subagentTurns: event.subagentTurns }),
-      });
-    }
+    if (event.type !== 'usage') return;
+    patchRow(runId, rowId, {
+      turns: event.turns,
+      /**
+       * 子智能体那一份：**显式 `null` 要清**（`undefined` = 老事件缺这一格 ⇒ 保持原值）。
+       * 为什么与 `tokens` 的处置不同：读失败时同一条事件的 `tokens` 已退回主会话口径，
+       * 留着旧的偏大分量会让快照满足不了 `subagentTokens ≤ tokens`（spec §2.4 的不变量）。
+       */
+      ...(event.subagentTokens === undefined ? {} : { subagentTokens: event.subagentTokens }),
+      /**
+       * 轮次那一格的分量：与上面那一格**同一条规则**（显式 `null` 清、缺格保持）。
+       * 两格分开写而不是合成一处：契约里它们是**两个**可选键，「这一条带了哪一个」由各家决定
+       * （dsh 两格同刻，codex 只在收尾那一条上给），合成一处会让「只带了其中一格」变成
+       * 「另一格被顺手清掉」。
+       */
+      ...(event.subagentTurns === undefined ? {} : { subagentTurns: event.subagentTurns }),
+      // `tokens` 按这一条自己的来源：只有厂商上报值才落盘（估算与缺格都不写，见上面那段口径）
+      ...(event.tokens !== null && event.tokensBasis === 'reported' ? { tokens: event.tokens } : {}),
+    });
   };
 
   let result: AgentRunResult | null = null;
@@ -1333,8 +1484,10 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     // 它不能等适配器交卷），这里只是兜底——正常走到这里时表里已经没有这一行了（`stopRowHeartbeat` 幂等）。
     // 原先只有这一个拆除点，实测终止之后心跳又多活了两分钟（见 `rowHeartbeats` 的注释）。
     stopRowHeartbeat(key);
-    // 唤醒器是逐行一次性的：这次任务结束了就摘掉，别让后续（重跑 / 重评）误唤醒旧任务
-    terminalWaiters.delete(key);
+    // 唤醒器**刻意不在这里摘**（2026-10-07 修正）：这个 finally 收的是候选阶段，而紧接着第 7 步还要
+    // 评分，那一段用的是**同一个** `terminalReached`（经 `JudgeStageContext` 传下去）——在这里摘掉，
+    // 评分阶段就拿到一条没人唤醒的 promise，用户终止后这一行照样挂住。清理归 `runRow` 的 finally
+    // （见 `clearRowRuntime`）：那才是「这一次行任务结束」的边界。
   }
   settled = true;
   const elapsedMs = Date.now() - startedAt;
@@ -1454,6 +1607,8 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
         truncated: clipped.truncated,
       },
       controller,
+      // 候选阶段那个唤醒器的**同一个** promise：评分阶段也要能被「用户终止」唤醒（spec §6 / D13）
+      terminalReached,
     });
   } catch (error) {
     if (error instanceof JudgeAgentError) {
@@ -1740,7 +1895,7 @@ function rescoreRefusal(row: EvalRow, options: { settling: boolean }): string | 
     return '该行上一次的运行还没收尾，请稍候再试';
   }
   // 判据（与界面同一份）。它说可以就放行，说不行才往下找原因；
-  // 下面每条 if 都**必须**只覆盖判据的三个条件之一（顺序也一致），界面上有同样两条、措辞逐字相同
+  // 下面每条 if 都**必须**只覆盖判据的三个条件之一（顺序也一致），界面上有同样两条、**同义但不逐字**
   if (canRescoreRow(row)) return null;
   if (row.baselineCommit === '') {
     return '该行的工作区未就绪（准备阶段没有成功过）：请先点「开始」重跑该行';
@@ -1866,6 +2021,19 @@ async function rescoreAttempt(input: {
   row: EvalRow;
   controller: AbortController;
 }): Promise<void> {
+  const key = rowKey(input.runId, input.rowId);
+  /**
+   * 重评这条旁路**没有**现成的唤醒器可用（它不在 `runRowAttempt` 里，那个是完整跑一行的闭包），
+   * 故在这里自己造一个并注册——与 `runRowAttempt` 的那两行逐字同形，评分阶段才能同样被终止唤醒
+   * （spec §6：两条路同形）。注册必须在**本函数第一个 `await` 之前**（async 函数体同步执行到第一个
+   * await 为止）：`rescoreRow` 刚把行落成 `judging`，那一拍与这里是同一个同步片段，中间插不进
+   * 「用户终止」——注册晚一步就会漏掉那次唤醒。
+   */
+  let wakeOnTerminal: (() => void) | undefined;
+  const terminalReached = new Promise<'terminal'>((resolve) => {
+    wakeOnTerminal = () => resolve('terminal');
+  });
+  terminalWaiters.set(key, () => wakeOnTerminal?.());
   try {
     const score = await runJudgeStage({
       runId: input.runId,
@@ -1881,6 +2049,7 @@ async function rescoreAttempt(input: {
       // 重评一个字都不动它。
       diffSummary: null,
       controller: input.controller,
+      terminalReached,
     });
 
     const { row: afterJudging } = requireRow(input.runId, input.rowId);
@@ -1904,6 +2073,8 @@ async function rescoreAttempt(input: {
     // 重评只跑评分那一段：这里出去的每一笔失败都发生在评分阶段（`error.stage` 的叙述口径要靠它）
     settleFailed(input.runId, input.rowId, toServiceError(error), null, 'judge');
   }
+  // 唤醒器不在这里摘（同 `runRowAttempt` 候选阶段那一段的理由）：清理点统一在 `clearRowRuntime`
+  // ——`rescoreRow` 的任务 finally 会调它，两条路因此共用同一个边界
 }
 
 /* ===================================================================================================
@@ -1936,7 +2107,7 @@ type RunStatusPatch = Pick<EvalRun, 'status'> & Partial<Pick<EvalRun, 'startedAt
  *
  * 为什么轮级另有一个出口、而不复用 `mutateRow`：`mutateRow` 的定位参数是 `(runId, rowId)`，
  * 而轮级收尾发生在「所有行都已结束」之后，没有「当事行」——借一行来写轮状态是假语义。
- * 为什么轮级不需要「同时追加事件」：契约 §2.6 / spec §7.4 的 `AgentEvent` 七个成员**全是行级的**，
+ * 为什么轮级不需要「同时追加事件」：契约 §2.6 / spec §7.4 的 `AgentEvent` 八个成员**全是行级的**，
  * 事件日志也按行落盘（`{rowDir}/events.jsonl`），轮级状态在协议里没有对应的事件可写；
  * 「事件与快照同源」这条不变式因此只对行级成立（由 `setRowStatus` 成对落地）。
  */
@@ -2062,7 +2233,7 @@ function finalizeRun(runId: string): void {
  * 「用户杀了它」与「它压根没跑」在事后复盘时是两件事）。
  * 为什么状态同步落库、不等待进程真正退出：终止是用户的即时动作，若等到子进程死掉再改状态，
  * 界面会在十几秒里一直显示「运行中」——使用者只会认为按钮坏了，然后再点几次。
- * 在途任务稍后回来时会看到终态并跳过（终态优先），进程收尾由适配器按 §5.6.5 的顺序完成。
+ * 在途任务稍后回来时会看到终态并跳过（终态优先），进程收尾由适配器按 §5.6.6 的顺序完成。
  */
 export function abortRun(runId: string): EvalRun {
   const run = getRunForWrite(runId);
@@ -2159,7 +2330,7 @@ export async function drainRunningTasks(): Promise<void> {
  *
  * 顺带把该轮收成 `partial` 并补 `finishedAt`（spec §7.4 只说了改行状态）：否则界面会一直显示
  * 「运行中」，而实际上没有任何行在跑，使用者只能干等。轮级状态在协议里没有对应的事件类型
- * （`AgentEvent` 七个成员全是行级的），故这一笔只有快照、没有事件——与 `finalizeRun` 同一口径。
+ * （`AgentEvent` 八个成员全是行级的），故这一笔只有快照、没有事件——与 `finalizeRun` 同一口径。
  *
  * 逐行 / 逐轮都吞掉异常并记 WARN：恢复的输入是**上一个进程留下的磁盘状态**，其中任何一条坏掉
  * （目录被手工删、磁盘满、文件被占）都不该挡住其它行与其它轮次，更不该让启动钩子抛错——

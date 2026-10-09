@@ -1,8 +1,8 @@
 /**
- * dsh 适配器：**按真实探测的入口形态回写** + 路由注入 + 关闭式释放（§5.6.4 / §5.6.5）。
+ * dsh 适配器：**按真实探测的入口形态回写** + 路由注入 + 关闭式释放（§5.6.5 / §5.6.6）。
  * 两条关键差异都来自实测的元数据：
  *  - `cancelMidTurn: false`：SDK 没有 wire-level cancel（`HarnessClient.close()` 的 JSDoc 逐字），
- *    所以 `interrupt()` 是**刻意**的空实现，停止只能靠关闭运行时 ⇒ 终止与超时一定走 §5.6.5 的第二段
+ *    所以 `interrupt()` 是**刻意**的空实现，停止只能靠关闭运行时 ⇒ 终止与超时一定走 §5.6.6 的第二段
  *    （等 5 秒、落一条 WARN、再强制关闭，界面上会看到这行晚 5 秒变 canceled）；
  *  - 通知流必须**先订阅再交提示词**：唯一的事件通道是客户端订阅，而
  *    `harness.run(prompt, { sessionId })` 在**下一次 idle** 才落定（`lib/index.js:740-772`）。
@@ -75,7 +75,7 @@ export const DSH_ROUTE_API_KEY_ENV = 'AIEVAL_ROUTE_API_KEY';
  * 初始 profile 握手的墙钟上限（毫秒）。
  *
  * 为什么**不能**吃 SDK 的默认值（10000，`launch.d.ts` 的 `DEFAULT_INITIALIZE_TIMEOUT_MS`）：
- * 每一行都跑在一个**全新的 `configHome`** 上（§5.6.4 不变量 3），于是每次运行都是冷启动，
+ * 每一行都跑在一个**全新的 `configHome`** 上（§5.6.5 不变量 3），于是每次运行都是冷启动，
  * dsh 要解析整棵插件树才回 initialize。真机实测（Task 9，`probe/v3/dsh-adapter-dual-protocol.mts`）：
  * 默认 10s 下 anthropic 与 openai **两条协议双双**以
  * `initialize timed out after 10000ms waiting for dsh profile "sdk"` 失败，被折成 `AGENT_FAILED`——
@@ -434,37 +434,15 @@ export const DSH_LEGACY_PROFILE_PATCH_RELATIVE_PATH = 'profiles/sdk/cordis.patch
 
 async function startDsh(context: TurnContext): Promise<TurnStart> {
   const { input } = context;
-  /**
-   * **第二道防线**（第一道在编排层：它按注册表能力 `capability.structuredOutput` 决定不传这个字段，
-   * 所以这道守卫在生产路径上不可达）。它拦的是**旁路**：`AgentRunInput` 是公开类型，谁都能构造一条带
-   * `outputSchema` 的输入直接喂给 `dshProvider.run()`，绕过编排层的那一道。
-   *
-   * 为什么「悄悄忽略」才是缺陷：dsh 的 SDK 客户端**没有**结构化输出通道（`DeepSeekHarnessOptions`
-   * 没有 schema 格，argv 只有 `--profile`/`--patch`，见本文件 `structuredOutput: false` 那一格），
-   * 而调用方给出 `outputSchema` 表达的是「请按这份 schema 生成最终答复」。静默丢掉它，这一行**照样
-   * 以 `ok: true` 收场**（修之前实测如此），调用方于是以为「返回形状已经被强约束」——实际什么都没发生，
-   * 下游解析到一段自由文本时才失败，且失败点离真正的原因很远。**必须报错**（契约 spec D11 / types.ts
-   * 的 `AgentRunInput.outputSchema` JSDoc），让「不支持」这件事在**提交请求的那一刻**就可见。
-   *
-   * 判据：**既非 `undefined` 也非 `null` 才拦**——空值口径与 codex 侧（Task 4）逐字统一，`null` 与
-   * 「没给」在这条路径上同义（`null` 说的是「这一格没有值」，不是「要一份 schema」），不能因为一个
-   * 显式 `null` 就把一次本来能跑的运行拦下来。局部变量刻意标成 `unknown`：类型面上这一格不可为空，
-   * 而这道守卫防的恰恰是类型面之外的调用方。
-   *
-   * 位置：`loadDshSdk()` **之前**——都要报「这个入参不支持」了，没必要顺手把厂商 SDK 加载起来。
-   */
-  const outputSchema: unknown = input.outputSchema;
-  if (outputSchema !== undefined && outputSchema !== null) {
-    throw new Error(
-      'deepseek harness 的 SDK 客户端不支持结构化输出（没有 schema 入参）：这一行只能用提示词契约约束返回形状，'
-      + '需要 schema 约束请把评分智能体换成 claude-code 或 codex',
-    );
-  }
+  // 这里**曾经**有一道「收到 `outputSchema` 就报错」的守卫，A1 时按 spec D12 删除，**不要加回来**：
+  // 支持与否现在由 `run` 转发的 `capability.structuredOutput` 交给骨架，`runTurn` 在 `start` 之前
+  // 就把这一格摘掉了 ⇒ 走到这里它必定不存在，再判一次是死代码。代价已登记（spec §10 R4）：绕过
+  // `run` 构造 `AgentRunInput` 的旁路不再报错、改为静默降级——这是「降级口径只该有一处」换来的。
   const sdk = await loadDshSdk();
-  // 权限档（见 `permission.ts`）：dsh 的档位**烘在启动 profile 里**（§5.6.5 明写「改了必须重建运行时」），
+  // 权限档（见 `permission.ts`）：dsh 的档位**烘在启动 profile 里**（§5.6.6 明写「改了必须重建运行时」），
   // 所以它不是 SDK 的一个选项，而是子进程环境里的 `DSH_PERMISSION_MODE`——`dsh-base` 的
   // `sandbox-policy` 与 `approval` 两行都读它，不设时 dsh 自己回落到 `workspace-write`。
-  // 注入通道仍是 `buildSubprocessEnv`（替换型子进程环境，§5.6.4），**不碰** `process.env`。
+  // 注入通道仍是 `buildSubprocessEnv`（替换型子进程环境，§5.6.1 决策 A5），**不碰** `process.env`。
   const { env: permissionEnv } = DSH_PERMISSION_OPTIONS[input.permission];
   const env = buildSubprocessEnv({
     homeDir: input.configHome,
@@ -569,6 +547,14 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     interrupt: () => {
       logger.debug('dsh 不支持中途取消，停止请求交由第二段强制关闭处理');
     },
+    /**
+     * 释放走 SDK 的 `close()`（唯一的硬停止通道，`cancelMidTurn: false`）。
+     *
+     * ⚠️ **这一类同样是「SDK 代 spawn」**：dsh 运行时进程由 SDK 拉起，`HarnessClient` 的公开面
+     * 没有任何 pid（`lib/types/*.d.ts` 里一个都没有）⇒ 本仓拿不到整棵树，回收只能**尽力**。
+     * 归属与残留风险登记在《厂商进程生命周期规范》的归属表里；行产物清理不假设它一定干净
+     * （core 的 `removeTreeWithRetry`）。对照：codex 由本仓自己 spawn，`close()` 必须整棵回收 + 等退出。
+     */
     dispose: createDisposer(() => runtime.close()),
     /**
      * **收尾也交一次分量**（2026-10-04 评审 Important 1）。
@@ -627,17 +613,17 @@ export const dshProvider: AgentProvider = {
       // 实测确认（探测报告 §3）：用量在 `session.event → assistant/message → data.usage`
       // （`inputTokens` / `cacheReadTokens` / `outputTokens`）⇒ 打开提取并把这一格改成 true
       usage: true,
-      // liveUsage: 'reported' —— 用量与轮次都是适配器自己报的（`turn/end` 时连同轮次交出，
-      // 见 providers/dsh/events.ts 的 usageInput/usageCached/usageOutput）⇒ 可逐步回写快照
-      liveUsage: 'reported',
       // SDK 客户端没有 schema 入参（`DeepSeekHarnessOptions` 只有 cwd/provider/model/reasoningEffort/
-      // maxTokens，argv 只有 --profile/--patch）⇒ 顶层会话拿不到结构化输出。降级由编排层留痕（spec D4）。
+      // maxTokens，argv 只有 --profile/--patch）⇒ 顶层会话拿不到结构化输出。
+      // A1 起 `run` 把这一格转发给骨架，由 `runTurn` 摘掉 schema 并记 `applied.structuredOutput=false`。
       structuredOutput: false,
     },
     /**
-     * 消息能力声明（spec v3 §3.5）：五格 `'yes'`，唯一的结构性缺口是**思考 token**
-     * （`reasoningTokens` 在本仓这条 pi-ai 路由上永不投影——`mapUsage()` 有意把推理并入
-     * `outputTokens`，而上游确实给了这个数）⇒ 那一格记 `not-projected-by-vendor`。
+     * 消息能力声明（spec v3 §3.5）：**四格** `'yes'`；两处缺口各按五态如实登记——
+     * **思考 token**（**没有对应能力维度** ⇒ 只在 `notes` 里记「那一格恒 `null`」）（`reasoningTokens` 在本仓这条 pi-ai 路由上永不投影——`mapUsage()` 有意把推理并入
+     * `outputTokens`，而上游确实给了这个数）记 `not-projected-by-vendor`；
+     * **正文增量**同记 `not-projected-by-vendor`（厂商侧有 `text-delta`，但订阅到的通知流里没有，
+     * 真机实测见 `notes` 第一条）。
      */
     messageCapability: {
       thinkingText: 'yes',
@@ -645,7 +631,7 @@ export const dshProvider: AgentProvider = {
       toolInput: 'yes',
       toolResult: 'yes',
       subagent: 'yes',
-      streamingDelta: 'yes',
+      streamingDelta: 'not-projected-by-vendor',
       thinkingTextSource: 'wire',
       thinkingTextReason: null,
       toolInputSource: 'wire',
@@ -654,9 +640,15 @@ export const dshProvider: AgentProvider = {
       toolResultReason: null,
       subagentSource: 'wire',
       subagentReason: null,
-      streamingDeltaSource: 'wire',
-      streamingDeltaReason: null,
+      streamingDeltaSource: null,
+      streamingDeltaReason: 'not-exposed',
       notes: [
+        '正文增量：厂商侧**有**这个数据（LLM 层的 `text-delta`、会话日志默认把它们压成 `text-chunks` 行），'
+          + '但**订阅到的通知流里没有**——2026-10-07 真机探针实测一次完整往返共 20 条通知，'
+          + '正文只有一条整块的 `assistant/message`，增量类事件 0 条（转储 `probe/dumps/v2/dsh-chunk-shape.jsonl`）'
+          + '⇒ 这一格记 `not-projected-by-vendor`（厂商有数据，不投送到我们拿得到的通道）。'
+          + '**界面不得按「有增量」渲染**（否则是一个永远不动的打字机光标）；'
+          + '若换路由/SDK 选项后能拿到增量，改回 `yes` 并补含 delta 的场景。',
         '思考没有逐字增量（本路由不产出 `reasoning-delta`，推理整块在 `block-end` 到达）⇒ 思考按整块渲染',
         '思考 token（`reasoningTokens`）结构性不可达：`llm-pi-ai` 的 `mapUsage()` 把推理并入 `outputTokens`，那一格恒 `null`',
         '子任务级用量不在 `subagent.*` 通知里 ⇒ 按 `params.sessionId` 把子会话的 `assistant/message.usage` 分组求和',
@@ -664,7 +656,6 @@ export const dshProvider: AgentProvider = {
         '`stopReason` 的 `error` / `refusal` 两档真机未观测 ⇒ 未覆盖档记 `unknown` + `statusMissing`，不猜',
       ],
     },
-    isolation: 'subprocess',
     // 档位域 = 本文件的 `DSH_REASONING_WIRE`（**与 overlay 声明同源派生**）：pi-ai 路由的档位是
     // 「档位名 → wire 拼写」的字典，两边各写一份必然漂移，而漂移的代价是「界面能选、运行时才失败」。
     // 为什么是这四档：`llm-deepseek` 的 `reasoningEffort` schema 只有 `off/low/high/max`
@@ -675,5 +666,11 @@ export const dshProvider: AgentProvider = {
     // 免得跑到本家的硬校验处才以 `UNSUPPORTED_REASONING_EFFORT` 收场。另两家不声明这一格。
     defaultEffort: DSH_DEFAULT_EFFORT,
   },
-  run: (input: AgentRunInput): Promise<AgentRunResult> => runTurn(input, { kind: 'dsh', start: startDsh }),
+  run: (input: AgentRunInput): Promise<AgentRunResult> =>
+    runTurn(input, {
+      kind: 'dsh',
+      // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
+      capability: { structuredOutput: dshProvider.metadata.capability.structuredOutput },
+      start: startDsh,
+    }),
 };

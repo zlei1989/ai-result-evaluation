@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 5（strict + `noUncheckedIndexedAccess` + `verbatimModuleSyntax`）、zod 3、vitest 4（node / jsdom 双配置）、pnpm workspace monorepo（8 包）、antd 6 + React 19、Next.js App Router。
 
-**Spec:** `docs/superpowers/specs/2026-09-22-scaffold-design.md` §13.3（**执行前必读**；两份契约投影必须同批替换的口径见 §13.2）。本线的过程 spec 已并入该文档并从库中删除。
+**Spec:** `docs/superpowers/specs/2026-09-22-features-design.md` §4.3（评分标准项，**执行前必读**；两份契约投影必须同批替换的口径见 §5.6.4）。
 
 **基准 commit：`1d185c1`**（2026-09-29）。开工前先 `git rev-parse HEAD` 核对；不一致时先 `git diff 1d185c1 -- <本计划涉及的文件>` 看有没有冲突再动手。
 

@@ -18,6 +18,10 @@ describe('@aieval/evaluator 导出面', () => {
         'resolveJudgeRoute',
         // 智能体评分（Task 3）：api 层在创建评测时要提前用它拦配置问题（未配置 / 协议不匹配）
         'requireJudgeAgent',
+        // 评分配置的档位（Task 9）：生成 / 识别那条文本通路（api 层的 `judge.ts`）跨包取这两个名字
+        // ——「读一次强度」与「评分前校验它」必须成对出口，只给一个会让调用方自己补第二份判据
+        'requireJudgeEffort',
+        'resolveJudgeEffort',
         // 运行快照（Task 1）
         'getRun',
         'listRuns',
@@ -26,6 +30,8 @@ describe('@aieval/evaluator 导出面', () => {
         // 事件总线（Task 2）
         'publishRowEvent',
         'subscribeRowEvents',
+        // run 级信号总线（/api/runs/events 的订阅端）：只出口读侧，发射点在 saveRun 体内不出包
+        'subscribeRunChanges',
         // 记录总线（spec v3 §2）：消息与子任务行共用 messages.jsonl
         'publishRowMessage',
         'publishRowRecord',

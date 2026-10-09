@@ -18,6 +18,7 @@ import {
   CLAUDE_PERMISSION_OPTIONS,
   CODEX_PERMISSION_OPTIONS,
   DSH_PERMISSION_OPTIONS,
+  codexPermissionOptions,
 } from './permission';
 import { listAgentProviders } from './registry';
 import type { AgentPermission } from './types';
@@ -100,6 +101,27 @@ describe('权限表', () => {
     expect(CLAUDE_PERMISSION_OPTIONS.full).not.toEqual(CLAUDE_PERMISSION_OPTIONS['read-only']);
     expect(CODEX_PERMISSION_OPTIONS.full).not.toEqual(CODEX_PERMISSION_OPTIONS['read-only']);
     expect(DSH_PERMISSION_OPTIONS.full).not.toEqual(DSH_PERMISSION_OPTIONS['read-only']);
+  });
+
+  /**
+   * Windows 豁免（2026-10-07 真机裁决）：codex 的受限沙箱在 Windows 上**起不了任何子进程**
+   * （`read-only` 与 `workspace-write` 下连 `echo` / `git status` 都被 policy 拒），而它读文件
+   * 只能靠 shell ⇒ 评分阶段会变成盲评（真机：候选三项全达成，评分 0/25）。故只读档在 Windows 上
+   * 落最宽档，别的平台一个字不改。
+   *
+   * 变异：把 `platform === 'win32'` 去掉 ⇒ Linux/darwin 那两条红（只读档名存实亡）；
+   * 把 `permission === 'read-only'` 去掉 ⇒ darwin 那条红（豁免外溢到别的档）。
+   */
+  it('codex 只读档在 Windows 上落 danger-full-access，别的平台保持 read-only', () => {
+    expect(codexPermissionOptions('read-only', 'win32').sandboxMode).toBe('danger-full-access');
+    // 批准策略是**另一格**，不受这条豁免影响：评测是非交互的
+    expect(codexPermissionOptions('read-only', 'win32').approvalPolicy).toBe('never');
+    expect(codexPermissionOptions('read-only', 'linux').sandboxMode).toBe('read-only');
+    expect(codexPermissionOptions('read-only', 'darwin').sandboxMode).toBe('read-only');
+    // 执行档在任何平台都不受豁免影响（本来就最宽）
+    expect(codexPermissionOptions('full', 'win32')).toEqual({ sandboxMode: 'danger-full-access', approvalPolicy: 'never' });
+    // 豁免是**函数**里的处置，表本身仍是那份真源（别把它就地改掉：那会让别的平台一起变宽）
+    expect(CODEX_PERMISSION_OPTIONS['read-only'].sandboxMode).toBe('read-only');
   });
 
   it('注册表里的每一家都有权限档（第四家进来时这条会红，直到它也有表）', () => {

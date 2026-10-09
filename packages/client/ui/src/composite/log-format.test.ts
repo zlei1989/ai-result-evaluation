@@ -1,6 +1,6 @@
 /**
  * 事件 → 日志行（纯函数）。
- * 7 种事件类型都要有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
+ * 八种事件类型都要有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
  * （spec §5.6.3：未识别的事件必须投影成保留原始负载的日志事件，不得静默丢弃）。
  *
  * 时间断言**不写死时钟**：`formatClock` 把 ISO 串转成**本机时区**的 `HH:mm:ss`
@@ -41,8 +41,13 @@ function scoreFixture(overrides: Partial<ScoreResult> = {}): ScoreResult {
     judgeModelId: 'claude-opus-4-6',
     judgedAt: at,
     judgeAgentKind: null,
+    // 强度未指定（一个强度键都没发）；要造「带档位的那一份」就在用例里覆盖它
+    judgeEffort: null,
     // false ⇔ 这一分只靠提示词契约拿到；要造「被 schema 约束的那一份」就在用例里覆盖它
     structuredOutput: false,
+    // 评分自己的花销（2026-10-08）：日志行不展示这两格，夹具给 null 即可
+    judgeTokens: null,
+    judgeDurationMs: null,
     ...overrides,
   };
 }
@@ -268,7 +273,7 @@ describe('formatEventLine', () => {
     expect(formatEventLine({ seq: 9, at: '不是时间', type: 'end', exitReason: 'error' })).toBe('[不是时间] 结束 error');
   });
 
-  it('7 种类型全部有非空文本（没有任何一种被静默丢掉）', () => {
+  it('本表列出的类型全部有非空文本（没有任何一种被静默丢掉）', () => {
     // 每条的 `seq` 不同，但这里只关心「有没有一行文本」，故用最小载荷
     const lines = [
       formatEventLine({ seq: 1, at, type: 'status', status: 'running' }),

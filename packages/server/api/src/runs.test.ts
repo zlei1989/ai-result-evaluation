@@ -258,7 +258,10 @@ describe('createRun', () => {
    * 为什么它是承重的：评分阶段读的是**快照**而不是 `testCase.rubric`——不写下这一格，
    * 「改了用例的评分表之后，历史分数仍与当初那把尺子自洽」这条不变式就没有载体
    * （评分阶段拿到 `undefined`，`rubricMaxScore` 会当场炸；或者更坏：悄悄按用例现取的表评分）。
-   * 断言取一张与夹具缺省**不同**的表：与用例同表的话，「真的从用例快照过来了吗」分辨不出来。
+   * 这条断言的**边界**（如实登记）：这里传的表恰好与夹具缺省**相同**（`testing/run-fixtures.ts` 的
+   * `FIXTURE_RUBRIC`）⇒ 它只能证明「快照里有这一格、且等于用例那张表」，分辨不出「从用例取来」
+   * 还是「落了缺省值」；要分辨得换一张不同的表（同文件 `planRunUpdate` 组的 `targetRubric` / `editedRubric`，
+   * 见 `:953` / `:954`）。
    */
   it('创建评测时把用例的评分表快照进这一轮（评分阶段读的是它，不是用例现取的那一份）', () => {
     const rubric: Rubric = { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] };
@@ -716,6 +719,29 @@ describe('listAgentModelOptions', () => {
       expect(group.efforts).toEqual(getProvider(group.agentKind).metadata.reasoningEfforts);
     }
   });
+
+  /**
+   * `defaultEffort`（「未选档位」时该家实际会用的档）也来自注册表，且按「有意义才出现」投影。
+   *
+   * 为什么值得钉：界面拿它拼创建表单的占位符（「未指定（DeepSeek Harness 用 high）」），
+   * 而 api 里值写死或改成填一个兜底档，**路由测试与组件测试都不会响**——症状是界面替某一家
+   * 承诺一个它根本没声明的缺省档（或反过来，DSH 那半句消失）。故这里逐家与注册表比对 +
+   * 把「没声明的家这一格**不存在**」也钉住（写成 `defaultEffort: undefined` 与不写是两件事：
+   * 前者在 JSON 里会被丢掉，但形状上仍是一次「我们声明了这一格」）。
+   */
+  it('defaultEffort 逐家等于注册表真值；没声明的家这一格**不存在**', () => {
+    for (const group of listAgentModelOptions()) {
+      const declared = getProvider(group.agentKind).metadata.defaultEffort;
+      if (declared === undefined) {
+        expect('defaultEffort' in group).toBe(false);
+      } else {
+        expect(group.defaultEffort).toBe(declared);
+      }
+    }
+    // 阳性面对照：今天必须有且只有 DSH 声明它（三家全不声明时上面那个循环会静默全过）
+    const withDefault = listAgentModelOptions().filter((group) => group.defaultEffort !== undefined);
+    expect(withDefault.map((group) => group.agentKind)).toEqual(['dsh']);
+  });
 });
 
 /**
@@ -908,7 +934,12 @@ describe('planRunUpdate', () => {
         judgeModelId: 'claude-opus-4-6',
         judgedAt: '2026-09-22T09:00:00.000Z',
         judgeAgentKind: null,
+        // 强度未指定（一个强度键都没发）：本组用例不涉及强度通路
+        judgeEffort: null,
         structuredOutput: false,
+        // 评分自己的花销（2026-10-08）：本组用例不涉及这两格
+        judgeTokens: null,
+        judgeDurationMs: null,
       },
       attempts: 2,
       ...overrides,
@@ -1400,7 +1431,12 @@ describe('updateRun', () => {
             judgeModelId: 'claude-opus-4-6',
             judgedAt: '2026-09-22T09:00:00.000Z',
             judgeAgentKind: null,
+            // 强度未指定（一个强度键都没发）：本组用例不涉及强度通路
+            judgeEffort: null,
             structuredOutput: false,
+            // 评分自己的花销（2026-10-08）：本组用例不涉及这两格
+            judgeTokens: null,
+            judgeDurationMs: null,
           },
           attempts: 1,
         }),
@@ -1517,7 +1553,7 @@ describe('updateRun', () => {
     expect(store.get(before.id)).toEqual(before);
   });
 
-  it('换用例 ⇒ 四格快照重取，行全部重置', () => {
+  it('换用例 ⇒ 用例快照重取，行全部重置', () => {
     const before = seedJudgedRun();
     // 再加一个用例：标题 / 仓库都不同，且带一个 commit（`seedConfig` 会整体覆盖 providers 与 cases，
     // 故必须把 `beforeEach` 里那两家供应商与 c-1 一起带上）

@@ -52,6 +52,15 @@ export type AgentEventDraft =
     turn: UsageTurn | null;
     timing: UsageTiming | null;
     turns: number;
+    /**
+     * `tokens` 那一格是**厂商上报的权威值**还是**我们的跑动期估算**（A2，2026-10-07）。
+     * 与 `timing` / `subagentTokens` 一样**这一层必填**：这一格没有「不知道」这一态——
+     * 发事件的人总是知道手里这个数是自己算的还是厂商给的（骨架按 `tokensEstimated` 判、
+     * codex 的收尾条是结算值）。必填换来的是「事件流里每一条 usage 都能自证来源」，
+     * 消费方（编排层的跑动期回写段）因此不必在跑之前反查注册表的能力格。
+     * 契约那边是 `.optional()`（磁盘上有老事件），那一种形态只可能来自**没过这一层**的调用方。
+     */
+    tokensBasis: 'reported' | 'estimated';
   }
   | { type: 'error'; message: string; stack?: string }
   /**
@@ -145,6 +154,8 @@ function withMeta(draft: AgentEventDraft, seq: number): AgentEvent {
         // 归属格恒带（没有归属时是 null）：读侧只有「有值」与「没有」两态
         turn: draft.turn,
         timing: draft.timing,
+        // 来源格恒带（A2）：它没有「不知道」这一态，见 `AgentEventDraft` 那一格
+        tokensBasis: draft.tokensBasis,
         turns: draft.turns,
       };
     case 'vendor-system':

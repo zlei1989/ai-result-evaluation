@@ -33,7 +33,7 @@ describe('Toolbar', () => {
     // 结构：只剩动作区一个子元素，没有残留的空标题节点
     expect(root.childElementCount).toBe(1);
     expect(screen.getByRole('button', { name: '创建用例' })).toBeInTheDocument();
-    // 对齐靠 antd Flex 的类断言：justify 走 CSS 类，内联 style 读不到它（AGENT.md「已知坑」）
+    // 对齐靠 antd Flex 的类断言：justify 走 CSS 类，内联 style 读不到它（AGENTS.md「已知坑」）
     expect(root.className).toContain('ant-flex-justify-flex-end');
   });
 });

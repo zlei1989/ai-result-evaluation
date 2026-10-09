@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ServiceError, SETTINGS_DEFAULTS, type AgentKind, type Provider } from '@aieval/contracts';
 import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
-import { resolveJudgeRoute, requireJudgeAgent } from './judge-route';
+import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
 // 包根出口的守卫（见文件末尾「evaluator 包根出口」的第二个用例）：p2 / p5 只从
 // `@aieval/evaluator` 取 `TextRoute` 这个类型，而类型在运行时被擦除——只有 tsc 看得见。
 import type { TextRoute } from './index';
@@ -37,8 +37,12 @@ function provider(id: string, models: string[]): Provider {
   };
 }
 
-/** 写入一份含默认评分模型的配置 */
-function seed(defaultJudge: { providerId: string; modelId: string } | null, providers: Provider[]): void {
+/**
+ * 写入一份含默认评分模型的配置。
+ * `effort` 可选（Task 9 加的）：`resolveJudgeEffort` 读的就是这一格，缺它就没法造出
+ * 「配置里带了档位」这个初态。省略时**不写这个键**（与老配置读盘后的形状一致：`undefined` = 未指定）。
+ */
+function seed(defaultJudge: { providerId: string; modelId: string; effort?: string } | null, providers: Provider[]): void {
   const config = loadConfig();
   config.settings = { ...SETTINGS_DEFAULTS, defaultJudge };
   config.providers = providers;
@@ -71,7 +75,9 @@ describe('resolveJudgeRoute', () => {
    * 为什么必须有：智能体评分通路把这条 route **原样**交给适配器（`judge-agent.ts` 的 `route: input.route`），
    * 少了这一格，cc 驱动的评分模型不会加 `[1m]`、codex 不会写 `model_context_window`、dsh 不会写 settings.yaml
    * —— 与候选行的行为不一致，而界面上看不出任何差别（评分照样出分）。
-   * 强度（`effort`）**刻意不在**这条路由上：评分那把尺子要跨轮次可比（spec §2「不做」）。
+   * 强度（`effort`）**也不在**这条路由上，但理由与上面两条不同：它是**请求参数**，不是连接事实
+   * （spec §5.3）——由 `resolveJudgeEffort()` 读出来后走 `judgeEffort` 入参进两条评分通路；
+   * 「跨轮次可比」改由**记账**保证（`ScoreResult.judgeEffort`：不同强度打的分数在数据上可分）。
    */
   it('带上该模型声明的窗口与输出上限；没声明时这两个键都不出现', () => {
     const p1 = provider('p1', []);
@@ -232,6 +238,117 @@ describe('requireJudgeAgent', () => {
     expect((caught as Error).message).toMatch(/评分配置/);
     // 阴性面：绝不能是 agents 那个裸 Error 的原文（那一条会以 500 上屏，且指向错误的方向）
     expect((caught as Error).message).not.toContain('未注册的智能体');
+  });
+});
+
+/**
+ * 评分档位的**读点**（`resolveJudgeEffort`）与**第二道门**（`requireJudgeEffort`，spec §5.4 / D8）。
+ *
+ * 为什么这道门必须有：`effort: ''` / 越域档位的守卫只作用于走 schema 的**写下侧**（设置页那条
+ * patch 路由），而 `loadConfig()` **故意不做 schema 校验**（一条手改坏的值不该让设置页打不开）
+ * ⇒ 手改 `config.json` 写进去的值会一路到消费方。不拦的话要跑到 dsh 的
+ * `UNSUPPORTED_REASONING_EFFORT` 才失败——症状离真因很远（这正是本计划要消灭的那类报错）。
+ * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunRows`）**同源**：都用 `intersectEfforts`，
+ * 故这里不 mock `@aieval/agents`：`allowed` 的取值全在「真实注册表元数据」上（dsh 的域没有 `medium`）。
+ */
+describe('resolveJudgeEffort / requireJudgeEffort', () => {
+  it('resolveJudgeEffort 与 defaultJudge 同源；未配置时 undefined（未指定，不是某一档）', () => {
+    seed({ providerId: 'p1', modelId: 'm1', effort: 'max' }, [provider('p1', ['m1'])]);
+    expect(resolveJudgeEffort()).toBe('max');
+
+    // 未配置 = 一个强度键都不发（听网关缺省）；它不是 `off`（显式关闭），也不是某一档
+    seed(null, [provider('p1', ['m1'])]);
+    expect(resolveJudgeEffort()).toBeUndefined();
+  });
+
+  it('dsh 收不了 medium ⇒ CONFLICT，且 allowed 恰好是 off/low/high/max（第二道门存在的理由）', () => {
+    let caught: unknown;
+    try {
+      requireJudgeEffort({
+        effort: 'medium',
+        model: { id: 'm1', source: 'manual' },
+        // dsh 的域是 off/low/high/max —— 没有 medium。上游没声明 supportedEfforts 时兜规范五档，
+        // 但**兜底那份也要过智能体这道筛**（Ruling 27）：少了这一筛，medium 会摆到一个 dsh 硬报错的档上
+        agentKind: 'dsh',
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServiceError);
+    expect((caught as ServiceError).code).toBe('CONFLICT');
+    expect((caught as Error).message).toMatch(/评分配置/);
+    expect((caught as Error).message).toContain('medium');
+    // `allowed` 那一格是这条门的判据本身，故逐字钉住（`toContain` 的写法对「多了 medium」无感）
+    expect((caught as ServiceError).context).toEqual({ effort: 'medium', allowed: ['off', 'low', 'high', 'max'] });
+  });
+
+  it('同一个 medium 换成 codex 就合法（域是「模型 ∩ 智能体」，不是智能体自己那一份）', () => {
+    expect(() =>
+      requireJudgeEffort({ effort: 'medium', model: { id: 'm1', source: 'manual' }, agentKind: 'codex' }),
+    ).not.toThrow();
+  });
+
+  it('上游声明过档位 ⇒ 越出模型声明的档同样拦（声明那一份优先于规范五档）', () => {
+    const model = { id: 'm1', source: 'manual' as const, supportedEfforts: ['low', 'high'] };
+    // 声明过就按声明算（并上关闭档）：`max` 既不在模型声明里，也不该被规范五档捞回来
+    expect(() => requireJudgeEffort({ effort: 'max', model, agentKind: 'codex' })).toThrow(ServiceError);
+    expect(() => requireJudgeEffort({ effort: 'low', model, agentKind: 'codex' })).not.toThrow();
+  });
+
+  it('未配置档位（undefined）⇒ 放行：「未指定」不是越域', () => {
+    expect(() =>
+      requireJudgeEffort({ effort: undefined, model: { id: 'm1', source: 'manual' }, agentKind: 'dsh' }),
+    ).not.toThrow();
+  });
+
+  /**
+   * 空串是**填坏了的档位**，不是「未指定」（`DefaultJudgeSchema.effort` 是 `z.string().min(1).optional()`）。
+   * 写下侧那条 schema 拦得住它，而手改 `config.json` 的那一份只能靠这道门——放行的话它会一路传进请求体。
+   */
+  it('空串不是「未指定」⇒ 拦下，且文案不出现「强度  不可用」这种读不出是什么值的句子', () => {
+    let caught: unknown;
+    try {
+      requireJudgeEffort({ effort: '', model: { id: 'm1', source: 'manual' }, agentKind: null });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServiceError);
+    expect((caught as ServiceError).code).toBe('CONFLICT');
+    // 空串在模板里会渲染成一片空白：用户读到的是「思考强度  不可用」，认不出是哪一格坏了
+    expect((caught as Error).message).toContain('（空串）');
+    expect((caught as Error).message).toMatch(/评分配置/);
+  });
+
+  it('没配评分智能体 ⇒ 规范五档当智能体域（codex 的 xhigh 在这一支非法）', () => {
+    // 兜底域是「两条驱动方式都能表达」的那一组：xhigh 只有 codex 收，故未配智能体时它不该放行
+    expect(() =>
+      requireJudgeEffort({ effort: 'xhigh', model: { id: 'm1', source: 'manual' }, agentKind: null }),
+    ).toThrow(ServiceError);
+    expect(() =>
+      requireJudgeEffort({ effort: 'medium', model: { id: 'm1', source: 'manual' }, agentKind: null }),
+    ).not.toThrow();
+  });
+
+  /**
+   * 越枚举的评分智能体（手改 `config.json` 写 `"gemini"`）**按「未配」判**，不抛裸 Error。
+   * 为什么不能照直交给 `getProvider()`：它抛的是裸 `Error`（`agents/src/registry.ts`），路由层折成
+   * 500「服务端内部错误」——而这条路上真正该改的是评分配置。该字段的归因留给 `requireJudgeAgent`
+   * （它有专门的第三道判据与中文文案）；生成 / 识别那条文本通路**压根不读**这一格，
+   * 因一个它不读的字段把功能拒掉属于越权误伤。
+   */
+  it('越枚举的评分智能体按「未配」判：medium 放行、xhigh 仍拦（说明用的是规范五档）', () => {
+    expect(() =>
+      requireJudgeEffort({ effort: 'medium', model: { id: 'm1', source: 'manual' }, agentKind: 'gemini' as AgentKind }),
+    ).not.toThrow();
+    // 阴性面：若这里退化成「枚举外的值一律跳过校验」，下面这条就不会红
+    let caught: unknown;
+    try {
+      requireJudgeEffort({ effort: 'xhigh', model: { id: 'm1', source: 'manual' }, agentKind: 'gemini' as AgentKind });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServiceError);
+    expect((caught as ServiceError).code).toBe('CONFLICT');
   });
 });
 

@@ -464,6 +464,44 @@ function resultText(content: unknown): string {
 }
 
 /**
+ * **子任务名字表**（`task_id → description`）：收场帧里**没有**名字，只能从派发帧记下来。
+ *
+ * 真机证据（`probe/dumps/v4/claude-subagent-usage.jsonl`，两条帧的键集逐字）：
+ * ```
+ * task_started      keys = ["type","subtype","task_id","tool_use_id","description","subagent_type","is_backgrounded","spawn_depth","task_type","prompt","uuid","session_id"]
+ * task_notification keys = ["type","subtype","task_id","tool_use_id","status","output_file","summary","usage","uuid","session_id"]
+ * ```
+ * ⇒ 收场帧既没有 `description` 也没有 `subagent_type`。不记名字的话，活动行上会出现
+ * 「已派发子任务：Review hello world page」紧跟着一句无名的「子任务已完成」（2026-10-07 真机
+ * run `e68351a5` 的 claude 行就是这么显示的），而 dsh 因为有 catalog 反而带得上名字——同一件事两个说法。
+ *
+ * 为什么放模块级而不是 `TurnState`：那是**三家共用的骨架形状**，往里塞一家专有的名字表会让另两家
+ * 读到一个永远为空的格子（与 dsh 的 catalog 同一处置，见 `providers/dsh/message.ts` 的注记）。
+ * 串行风险同源：`task_id` 是每个 run 新生成的 UUID ⇒ 同一进程里并行的两轮不会互相命中。
+ */
+const taskNames = new Map<string, string>();
+
+/**
+ * 记一条派发帧的任务名（空名字不记：那会把「没名字」写成一条空记录）。
+ * **两条投影路径都可以写**（事件侧与消息侧都会看到同一条派发帧），值相同 ⇒ 幂等；
+ * 只让消息侧写是不够的：只跑事件投影的消费方（以及只跑事件投影的用例）就回填不到名字。
+ */
+export function rememberClaudeTaskName(taskId: string | null, description: string | null): void {
+  if (taskId === null || taskId === '' || description === null || description === '') return;
+  taskNames.set(taskId, description);
+}
+
+/** 取某个 `task_id` 的名字（收场帧用；没记过就是 `null`，不编） */
+export function lookupClaudeTaskName(taskId: string | null): string | null {
+  return taskId === null ? null : (taskNames.get(taskId) ?? null);
+}
+
+/** 清空名字表：模块级状态会跨用例串（同 dsh 的 catalog 与它的 `beforeEach`） */
+export function resetClaudeTaskNamesForTesting(): void {
+  taskNames.clear();
+}
+
+/**
  * `system` 子类型 `task_started` / `task_notification` → 子任务行（spec v3 §3.3）。
  *
  * 三格的口径：
@@ -490,10 +528,12 @@ function subagentRecord(message: Record<string, unknown> | null): SubagentRecord
   if (subtype !== 'task_started' && subtype !== 'task_notification') return null;
   const identity = firstNonEmpty(readString(message, 'task_id'));
   if (identity === null) return null;
+  // 名字只在**派发帧**上（收场帧的键集里没有 `description`）⇒ 这一支是名字表的写入点之一
+  if (subtype === 'task_started') rememberClaudeTaskName(identity, readString(message, 'description'));
   return {
     subagentId: identity,
-    // 名称与类型两条载荷同形；`task_notification` 上也可能缺（真机两格都在）
-    name: readString(message, 'description'),
+    // 收场帧用名字表回填：不回填的话，子任务行与活动行在收场那一拍会同时掉名字
+    name: readString(message, 'description') ?? lookupClaudeTaskName(identity),
     kind: readString(message, 'subagent_type'),
     source: 'wire',
     status: subtype === 'task_started' ? 'running' : normalizeStatus(readString(message, 'status')),

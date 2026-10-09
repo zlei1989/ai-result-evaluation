@@ -14,7 +14,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync as readFileRaw, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ServiceError, type Provider, type Rubric } from '@aieval/contracts';
+import { ServiceError, type Provider, type Rubric, type Settings } from '@aieval/contracts';
 import { getConfigDir, loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
 import { callTextApi } from '@aieval/evaluator';
 import { generateRubric, mergeRubric, resolveJudgeRoute as resolveJudgeRouteFromApi } from './judge';
@@ -75,11 +75,24 @@ const PROVIDER: Provider = {
   updatedAt: '2026-09-22T10:00:00.000Z',
 };
 
-function configureGlobalJudge(): void {
+/**
+ * 配好全局默认评分模型（`configureGlobalJudge` 的扩展项都是 Task 9 加的）：
+ * `effort` 缺省时**不写这个键**（老配置读盘后的形状：`undefined` = 未指定）；
+ * `defaultJudgeAgent` 缺省为 `null`（未配智能体 ⇒ 档位域取规范五档）。
+ */
+function configureGlobalJudge(options: { effort?: string; defaultJudgeAgent?: Settings['defaultJudgeAgent'] } = {}): void {
   saveConfig({
     ...loadConfig(),
     providers: [PROVIDER],
-    settings: { ...loadConfig().settings, defaultJudge: { providerId: PROVIDER.id, modelId: 'deepseek-chat' } },
+    settings: {
+      ...loadConfig().settings,
+      defaultJudge: {
+        providerId: PROVIDER.id,
+        modelId: 'deepseek-chat',
+        ...(options.effort === undefined ? {} : { effort: options.effort }),
+      },
+      defaultJudgeAgent: options.defaultJudgeAgent ?? null,
+    },
   });
 }
 
@@ -178,8 +191,10 @@ describe('mergeRubric：按组名归位', () => {
 
   /**
    * 这一条要钉的是**合并侧那条判据本身**，不只是「最后抛了 JUDGE_PARSE_FAILED」：
-   * 下游的 `validateRubric` 也会报出同一把撞车键（「评分项引用键「A1」重复了」），于是只断言
-   * `/A1/` 的话，把 `mergeRubric` 里的 ID 冲突分支删掉这条用例照样绿（变异验证实测：整份 15 条全绿）。
+   * 下游的 `validateRubric` 也会拦下同一个 ID（它先按 `trim()` 查 ID 重复：「评分项 ID「A1」重复了」；
+   * 引用键那道查排在它之后，这种输入到不了），于是只断言
+   * `/A1/` 的话，把 `mergeRubric` 里的 ID 冲突分支删掉这条用例照样绿（变异验证实测：把断言退回只查
+   * `/A1/` 时整份文件全绿——今天这条 :206 还断言「复用了已有的 ID」，故删掉该分支它会红）。
    * 故显式断言文案点名的是**模型违约**（复用了已有 ID），而不是通用的「表格不合法」。
    * **这条用例唯一钉住的就是「文案归属」**：错误码与涉事 ID 两条判据都一样（都抛 JUDGE_PARSE_FAILED、
    * 都点 A1），差别只在「这句话是合并侧说的、还是下游表格校验说的」——别再往它身上读别的强度。
@@ -202,7 +217,7 @@ describe('generateRubric：智能生成分支（prompt 为空）', () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [{ name: '二、测试', items: [{ id: 'D1', goal: '补透传用例', weight: 14 }] }] }));
 
-    const result = await generateRubric({ rubric: currentRubric(), taskPrompt: '为网关补一条回归', prompt: '', repoPath: repo });
+    const result = await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: '为网关补一条回归', prompt: '', repoPath: repo });
 
     const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
     expect(request.prompt).toContain('为网关补一条回归');
@@ -217,7 +232,7 @@ describe('generateRubric：智能生成分支（prompt 为空）', () => {
   it('模型返回空 groups ⇒ 原表不变，并给出「未新增条目」的说明', async () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [] }));
-    const result = await generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
+    const result = await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
     expect(result.addedItems).toBe(0);
     expect(result.note).toContain('未新增');
     expect(result.rubric).toEqual(currentRubric());
@@ -227,7 +242,7 @@ describe('generateRubric：智能生成分支（prompt 为空）', () => {
     configureGlobalJudge();
     const notRepo = join(dir, 'plain-dir');
     mkdirSync(notRepo, { recursive: true });
-    await expect(generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: notRepo })).rejects.toThrow(
+    await expect(generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: notRepo })).rejects.toThrow(
       /不是 git 仓库|NOT_A_GIT_REPO/,
     );
     expect(callTextApi).not.toHaveBeenCalled();
@@ -250,7 +265,7 @@ describe('generateRubric：智能识别分支（prompt 非空）', () => {
       }),
     );
 
-    const result = await generateRubric({ rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: '' });
+    const result = await generateRubric({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: '' });
 
     expect(result.rubric.groups).toHaveLength(2);
     expect(result.rubric.groups[0]?.items.map((item) => item.weight)).toEqual([18, 20]);
@@ -264,7 +279,7 @@ describe('generateRubric：智能识别分支（prompt 非空）', () => {
   it('识别分支不带仓库名进提示词（不解析 repoPath）', async () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [{ name: 'g', items: [{ id: 'A', goal: 'a', weight: 1 }] }] }));
-    await generateRubric({ rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: 'git@host:group/never-touched.git' });
+    await generateRubric({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: 'git@host:group/never-touched.git' });
     const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
     expect(request.prompt).not.toContain('never-touched');
   });
@@ -279,7 +294,7 @@ describe('generateRubric：智能识别分支（prompt 非空）', () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [] }));
 
-    const error = await generateRubric({ rubric: currentRubric(), taskPrompt: '', prompt: USER_PROMPT, repoPath: '' }).catch(
+    const error = await generateRubric({ mode: 'recognize', rubric: currentRubric(), taskPrompt: '', prompt: USER_PROMPT, repoPath: '' }).catch(
       (caught: unknown) => caught,
     );
 
@@ -291,9 +306,118 @@ describe('generateRubric：智能识别分支（prompt 非空）', () => {
   });
 });
 
+/**
+ * 评分强度（spec §5.3）在生成 / 识别这条**文本通路**上的读点与第二道门（spec §5.4 / D8）。
+ *
+ * 为什么这条通路也要钉：它今天**绕过编排层**（`generateRubric` 直接调 `callTextApi`），于是
+ * 「用户在设置页选了 `max`、而请求按网关缺省打」在界面上看不出任何差别——强度有没有递下去，
+ * 唯一的观测点就是 `callTextApi` 的入参（`FakeTextCall` 记的正是它）。
+ * 校验那一侧同理：`effort` 的 schema 守卫只作用于走 schema 的**写下侧**，手改 `config.json` 写进的
+ * 越域档位（或空串）只能在这里拦，且必须在**花掉任何一次上游调用之前**拦下。
+ */
+describe('generateRubric：评分强度（唯一读点 + 档位校验）', () => {
+  it('生成分支：配置里的强度带进 callTextApi', async () => {
+    configureGlobalJudge({ effort: 'max' });
+    modelReplies(JSON.stringify({ groups: [{ name: '二、测试', items: [{ id: 'D1', goal: '补透传用例', weight: 14 }] }] }));
+
+    await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: '为网关补一条回归', prompt: '', repoPath: repo });
+
+    const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
+    expect(request.effort).toBe('max');
+  });
+
+  it('识别分支：同一个强度也带进 callTextApi（两个传值点都要接）', async () => {
+    configureGlobalJudge({ effort: 'max' });
+    modelReplies(JSON.stringify({ groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '让 agent 进契约', weight: 18 }] }] }));
+
+    await generateRubric({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: '' });
+
+    const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
+    expect(request.effort).toBe('max');
+  });
+
+  it('未配置强度 ⇒ 不带这一格（未指定不是某一档，也不是「关闭」）', async () => {
+    configureGlobalJudge();
+    modelReplies(JSON.stringify({ groups: [{ name: '二、测试', items: [{ id: 'D1', goal: 'g', weight: 1 }] }] }));
+
+    await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
+
+    const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
+    // 判据是**值**（真实 `callTextApi` 与两家适配器都按值分支，「键在但值为 undefined」没有可观测后果）
+    expect(request.effort).toBeUndefined();
+  });
+
+  /**
+   * **识别分支的反面对照**（上面那条只覆盖生成分支，两个传值点是两处独立的 `...(effort === undefined
+   * ? {} : { effort })`）。只在识别那一处写 `effort: effort ?? 'high'` 的改法在别的用例上完全无感：
+   * 两条「配了 `max` ⇒ 带 `max`」的正例照样绿（`max` 不是 undefined），而未配置那条反例走的是生成分支。
+   *
+   * 为什么不能替用户兜一个缺省档：未指定 = **不下发**（听网关缺省），凭空塞一个档等于我们替用户
+   * 要求了一个他没选的强度——而记账那一格（`ScoreResult.judgeEffort`）根本不在文本通路上，
+   * 网关上「实际要求了什么」与「设置里记着什么」就此分叉。
+   */
+  it('识别分支：未配置强度 ⇒ 同样不带这一格（两个传值点都要接，也都不能替用户兜档）', async () => {
+    configureGlobalJudge();
+    modelReplies(JSON.stringify({ groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: 'g', weight: 1 }] }] }));
+
+    await generateRubric({ mode: 'recognize', rubric: { groups: [] }, taskPrompt: '', prompt: USER_PROMPT, repoPath: '' });
+
+    const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
+    expect(request.effort).toBeUndefined();
+  });
+
+  /**
+   * 手改 `config.json` 写 `defaultJudgeAgent: "dsh"` + `effort: "medium"`（dsh 的域没有 medium）。
+   * 拦不下的症状是跑到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败——离真因很远；
+   * 而且这条文本通路**一次上游调用都不该花出去**。
+   */
+  it('越域档位 ⇒ CONFLICT 并点名评分配置，且一次上游调用都不花', async () => {
+    configureGlobalJudge({ effort: 'medium', defaultJudgeAgent: 'dsh' });
+
+    const error = await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(ServiceError);
+    expect((error as ServiceError).code).toBe('CONFLICT');
+    expect((error as Error).message).toContain('medium');
+    expect((error as Error).message).toMatch(/评分配置/);
+    // 校验的**位置**：它在 `callTextApi` 之前（钱是真的）
+    expect(callTextApi).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 两道门**不许互相顶掉**：评分模型是悬空引用（供应商被删）时，用户看到的必须是路由那句
+   * 「供应商不存在」，而不是任何与档位有关的句子——照着档位去改，改完还是同一个错。
+   *
+   * ⚠️ 这条**不是顺序守卫**：档位校验自己找模型记录用的判据与 `resolveJudgeRoute()` 逐字相同
+   * （同一对 id、同一份快照），凡是路由会抛的情形它都查不到模型、直接跳过 ⇒ 谁先谁后结果一样，
+   * 顺序在这条路上**不可观测**。它钉的是**归因**：两句话只能出路由那一句。
+   */
+  it('评分模型是悬空引用 ⇒ 报模型问题，不提档位（两道门不许互相顶掉）', async () => {
+    saveConfig({
+      ...loadConfig(),
+      providers: [PROVIDER],
+      settings: {
+        ...loadConfig().settings,
+        defaultJudge: { providerId: 'gone', modelId: 'deepseek-chat', effort: 'medium' },
+        defaultJudgeAgent: 'dsh',
+      },
+    });
+
+    const error = await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect((error as Error).message).toContain('供应商不存在');
+    expect((error as Error).message).not.toContain('思考强度');
+    expect(callTextApi).not.toHaveBeenCalled();
+  });
+});
+
 describe('generateRubric：失败面与只读', () => {
   it('未配置评分模型时抛 CONFLICT（指向设置页），且不产生任何上游调用', async () => {
-    const error = await generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo }).catch((caught: unknown) => caught);
+    const error = await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo }).catch((caught: unknown) => caught);
     expect((error as ServiceError).code).toBe('CONFLICT');
     expect(callTextApi).not.toHaveBeenCalled();
   });
@@ -301,12 +425,12 @@ describe('generateRubric：失败面与只读', () => {
   it('模型返回非法 JSON / 形状不合契约的表格 → JUDGE_PARSE_FAILED 且 message 可直接展示', async () => {
     configureGlobalJudge();
     modelReplies('这段代码改得不错。');
-    await expect(generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(
+    await expect(generateRubric({ mode: 'recognize', rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(
       /不是合法 JSON/,
     );
 
     modelReplies(JSON.stringify({ groups: [{ name: 'g', items: [{ id: 'A', goal: 'a', weight: 0 }] }] }));
-    await expect(generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(
+    await expect(generateRubric({ mode: 'recognize', rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(
       /权重/,
     );
   });
@@ -321,7 +445,7 @@ describe('generateRubric：失败面与只读', () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [{ name: 'g', items: [{ id: 'A', goal: 'a', weight: '18' }] }] }));
 
-    const error = await generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' }).catch(
+    const error = await generateRubric({ mode: 'recognize', rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' }).catch(
       (caught: unknown) => caught,
     );
 
@@ -335,7 +459,7 @@ describe('generateRubric：失败面与只读', () => {
     expect(message).not.toContain('不能是 0、负数或小数');
     // `missing` 那一半（模型**忘了**给权重）也要认得出：中文说缺了什么（zod 原文不在这一条里断言）
     modelReplies(JSON.stringify({ groups: [{ name: 'g', items: [{ id: 'A', goal: 'a' }] }] }));
-    await expect(generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(/缺少权重/);
+    await expect(generateRubric({ mode: 'recognize', rubric: currentRubric(), taskPrompt: 't', prompt: USER_PROMPT, repoPath: '' })).rejects.toThrow(/缺少权重/);
   });
 
   it('生成成功不改配置文件（前后逐字节一致，且全程没有写盘调用）', async () => {
@@ -345,7 +469,7 @@ describe('generateRubric：失败面与只读', () => {
     modelReplies(JSON.stringify({ groups: [{ name: '二、测试', items: [{ id: 'D1', goal: 'g', weight: 1 }] }] }));
     vi.mocked(writeFileSync).mockClear();
 
-    await generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
+    await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
 
     expect(readFileRaw(configFile, 'utf8')).toBe(before);
     expect(writeFileSync).not.toHaveBeenCalled();
@@ -357,7 +481,7 @@ describe('generateRubric：失败面与只读', () => {
     const before = readFileRaw(configFile, 'utf8');
     modelReplies('不是 JSON');
     vi.mocked(writeFileSync).mockClear();
-    await expect(generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo })).rejects.toBeInstanceOf(ServiceError);
+    await expect(generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo })).rejects.toBeInstanceOf(ServiceError);
     expect(readFileRaw(configFile, 'utf8')).toBe(before);
     expect(writeFileSync).not.toHaveBeenCalled();
   });
@@ -371,7 +495,7 @@ describe('只用全局默认评分模型（D14）', () => {
   it('两个分支的路由都等于全局默认那一把尺子（入参里没有模型，故换不掉）', async () => {
     configureGlobalJudge();
     modelReplies(JSON.stringify({ groups: [] }));
-    await generateRubric({ rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
+    await generateRubric({ mode: 'generate', rubric: currentRubric(), taskPrompt: 't', prompt: '', repoPath: repo });
     const [route] = vi.mocked(callTextApi).mock.calls[0]!;
     expect(route.modelId).toBe('deepseek-chat');
     expect(route.baseUrl).toBe(PROVIDER.baseUrl);

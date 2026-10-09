@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 契约 schema 的守卫：**事件**（七个成员的判别联合、类型清单、以及两条最容易漏的字段约束）
+ * 契约 schema 的守卫：**事件**（八个成员的判别联合、类型清单、以及两条最容易漏的字段约束）
  * 与**消息信封**（`AgentMessageSchema` 的可选格，2026-10-06 起；仓里没有 `agent-message.test.ts`，
  * 信封的守卫就住在本文件末尾那一组）。
  * 注意：`seq` 从 1 开始单调递增（由 core 的事件日志写入器分配），`at` 是 ISO 8601 字符串——
@@ -16,7 +16,7 @@ import { AgentMessageSchema } from './agent-message';
 const base = { seq: 1, at: '2026-09-22T10:30:00.000Z' };
 
 describe('AgentEventSchema', () => {
-  it('接受 spec §7.4 的七个成员', () => {
+  it('接受 spec §7.4 的行级事件成员（本条样本覆盖其中七个：`vendor-system` 缺一条契约级用例，如实登记）', () => {
     const events = [
       { ...base, type: 'status', status: 'running' },
       { ...base, type: 'log', stream: 'stdout', text: '开始执行' },

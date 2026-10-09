@@ -36,6 +36,7 @@
  *     与会话文件里的真名不是一回事。
  */
 import {
+  AGENT_LABELS,
   type AgentEnvironment,
   type AgentEnvironmentSummary,
   type AgentEvent,
@@ -69,13 +70,39 @@ export interface BuildEnvironmentInput {
   events: readonly AgentEvent[];
   /** 内容记录：实测统计的来源 */
   records: readonly RowRecord[];
+  /**
+   * 「未选档位」时**这一家**实际会用的档（`AgentOptionGroup.defaultEffort` 的投影，可选）。
+   *
+   * 只服务运行配置那一格「未选」时的文案：它要说清「未指定」的后果，而后果随家而变
+   * （今天只有 DeepSeek Harness 声明 `high`，另两家由厂商推断）。**不给或给 `undefined` 就只说
+   * 「未指定」**——编一个档出来是替厂商承诺（与创建表单占位符同一条口径，见 `effortPlaceholder`）。
+   */
+  defaultEffort?: string;
+}
+
+/**
+ * 「模型与思考强度」那一格里的思考强度行。**选过档位就照上游词汇原样写**（`off` 就是 `off`，
+ * 它**不是**「未指定」的同义词）；只有「未选」时才需要解释后果。
+ *
+ * 解释里的厂商名写全名（`AGENT_LABELS`，用户 2026-10-08 口径：页面展示不用缩写）、档位取元数据
+ * ——两处都不写死（写死就是第二份真源：厂商名或缺省档改了，这一格会静默说错）。
+ * 没声明缺省档（Claude Code / Codex 不传档位、由厂商推断，或元数据还没到）⇒ **只说「未指定」**：
+ * 契约明说未选**不是**「沿用厂商默认档」，那句承诺我们没作出。
+ */
+function effortLine(row: EvalRow, defaultEffort: string | undefined): string {
+  if (row.effort !== undefined) return `思考强度：${row.effort}`;
+  if (defaultEffort === undefined) return '思考强度：未指定';
+  return `思考强度：未指定（由该家适配器决定：${AGENT_LABELS[row.agentKind]} 走 ${defaultEffort}）`;
 }
 
 /** 一格的短名（`id` 用它拼，界面按它做 React key；**不是展示文案**） */
 function summaryOf(input: BuildEnvironmentInput): AgentEnvironmentSummary {
   const { row } = input;
   return {
-    agentKind: row.agentKind,
+    // 摘要给的是**显示名**（用户 2026-10-08 口径：页面展示不用缩写）。映射必须在数据层做：
+    // L0 渲染件里查 `AGENT_LABELS` 就是「UI 判厂商」，`agent-log-layering.test.ts` 的 (e) 条当场红。
+    // 认不出的 kind 原样回落——编一个名字比显示那个陌生的 id 更误导人。
+    agentLabel: AGENT_LABELS[row.agentKind as keyof typeof AGENT_LABELS] ?? row.agentKind,
     modelId: row.modelId,
     // 记的是**我们要求的**档位，不是实际生效的（厂商可能静默降档，spec §9 第 7 条）
     effort: row.effort ?? null,
@@ -244,10 +271,7 @@ function projectGroup(input: BuildEnvironmentInput, events: readonly AgentEvent[
     envItem(
       'project-model',
       '模型与思考强度',
-      [
-        `模型：${row.modelId}`,
-        `思考强度：${row.effort === undefined ? '未指定（由该家适配器决定：dsh 走 high）' : row.effort}`,
-      ].join('\n'),
+      [`模型：${row.modelId}`, effortLine(row, input.defaultEffort)].join('\n'),
       null,
     ),
     envItem(

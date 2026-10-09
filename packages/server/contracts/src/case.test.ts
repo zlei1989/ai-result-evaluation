@@ -154,12 +154,26 @@ describe('校验入参', () => {
   });
 
   it('生成评分标准项：题面与提示词都可缺省，且评分模型不在入参里', () => {
-    const parsed = GenerateRubricSchema.parse({ rubric: { groups: [] }, taskPrompt: '写个 LRU' });
+    const parsed = GenerateRubricSchema.parse({ mode: 'generate', rubric: { groups: [] }, taskPrompt: '写个 LRU' });
     expect(parsed.taskPrompt).toBe('写个 LRU');
     expect(parsed.prompt).toBe('');
     expect(parsed.repoPath).toBe('');
     expect(parsed).not.toHaveProperty('judgeProviderId');
     expect(parsed).not.toHaveProperty('judgeModelId');
+  });
+
+  /**
+   * 三支的**显式分派**（2026-10-08）：`mode` 必填且只认三个值。
+   * 为什么值得一条守卫：三支里有两支的 `prompt` 都是必填，靠它分不出意图——
+   * 少了这条，把 `mode` 改回可选、再按 `prompt` 空不空猜分支的写法会一路绿到运行期，
+   * 症状是「智能调整」被当成「智能识别」跑（整表替换掉用户的标准，而界面上一切正常）。
+   */
+  it('mode 必填、只认三支（缺省或乱填一律拒）', () => {
+    expect(GenerateRubricSchema.safeParse({ rubric: { groups: [] }, taskPrompt: 't' }).success).toBe(false);
+    expect(GenerateRubricSchema.safeParse({ mode: 'guess', rubric: { groups: [] } }).success).toBe(false);
+    for (const mode of ['generate', 'recognize', 'adjust'] as const) {
+      expect(GenerateRubricSchema.parse({ mode, rubric: { groups: [] } }).mode).toBe(mode);
+    }
   });
 
   it('校验 / 候选入参带可选分支，缺省为 null', () => {

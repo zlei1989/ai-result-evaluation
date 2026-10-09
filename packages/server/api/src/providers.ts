@@ -208,8 +208,10 @@ export function removeProviderModel(providerId: string, modelId: string): Provid
 
 /**
  * 设置某条模型的窗口 / 输出上限（设置页的行内编辑器）。三条口径：
- *   ① 只动 `contextWindow` / `maxOutputTokens` / `contextWindowSource` 三格，别的一律原样
- *      （按 schema 的字段集重建对象，天然不会漏出别的键）；
+ *   ① 按 `{ id, source }` **重建**该条目，只写回 `contextWindow` / `maxOutputTokens` /
+ *      `contextWindowSource` 三格——**该条目已声明的 `supportedEfforts` / `recommendedEffort` 会被一并清掉**
+ *      （重建的代价：保存一次窗口就退回该家完整档位域；想要保留就得在这里显式带过来，
+ *      而那是「窗口编辑该不该动档位声明」的口径变更，别顺手加）；
  *   ② 一律把 `contextWindowSource` 置成 `'manual'` —— **清空也算**（spec D3）；
  *   ③ 清单里没有这条 ⇒ NOT_FOUND（与 removeProviderModel 同口径，不静默新建条目）。
  */
@@ -355,7 +357,7 @@ function firstPositive(entry: unknown, keys: readonly string[]): number | undefi
 }
 
 /**
- * 档位表 / 推荐档的字段优先级（spec §5.4）：与窗口同一条「按顺序取第一个像档位表的」。
+ * 档位表 / 推荐档的字段优先级（spec §5.1.1）：与窗口同一条「按顺序取第一个像档位表的」。
  * 第三种形态是 `capabilities.effort` 的**逐档对象**（实测 likecode 就是这种）：
  * `{ supported: true, low: { supported: true }, high: { supported: true, recommend: true }, … }`。
  */

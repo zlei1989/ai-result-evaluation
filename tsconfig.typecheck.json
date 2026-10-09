@@ -5,7 +5,7 @@
   // `pnpm --filter @aieval/<包> typecheck` 走那条路径。
   //
   // include 是「逐包 include 的并集」，刻意与各包 tsconfig 保持一致：
-  // - 6 个库包：`src`（`packages/server/*` 与 `packages/client/*`）；
+  // - 7 个库包：`src`（`packages/server/*` 5 个 + `packages/client/*` 2 个）；
   // - web-next：`next-env.d.ts` + `app` + `src` + `.next/types`（后两项见下方说明）。
   // **不含**仓库根与各包的 `*.config.ts`：它们今天就不在 `tsc` 的检查范围内，
   // 这次改动只做聚合、不顺带扩面（扩面会让门槛变化混进性能改动里，出问题难归因）。

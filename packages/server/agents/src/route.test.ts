@@ -70,7 +70,7 @@ describe('带 query / fragment / 重复斜杠的粘贴（F3：只动路径，不
 });
 
 describe('buildSubprocessEnv', () => {
-  it('注入后返回新对象，宿主 process.env 一个字段都不变（§5.6.4 不变量 1，Review Focus #2）', () => {
+  it('注入后返回新对象，宿主 process.env 一个字段都不变（§5.6.5 不变量 1，Review Focus #2）', () => {
     const before = { ...process.env };
     const env = buildSubprocessEnv({ homeDir: 'D:/tmp/row/.agenthome', injected: { ANTHROPIC_API_KEY: 'sk-test' } });
     expect(env.ANTHROPIC_API_KEY).toBe('sk-test');

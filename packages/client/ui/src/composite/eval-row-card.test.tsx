@@ -301,8 +301,13 @@ describe('EvalRowCard', () => {
             judgeModelId: 'm',
             judgedAt: '2026-09-22T08:10:00.000Z',
             judgeAgentKind: null,
+            // 强度未指定（一个强度键都没发）：本用例不涉及强度通路
+            judgeEffort: null,
             // false ⇔ 这一分只靠提示词契约拿到（本用例不涉及 schema 通路）
             structuredOutput: false,
+            // 评分自己的花销（2026-10-08）：行卡片不展示这两格
+            judgeTokens: null,
+            judgeDurationMs: null,
           },
         }}
         onAbort={vi.fn()}

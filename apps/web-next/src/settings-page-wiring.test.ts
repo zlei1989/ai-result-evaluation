@@ -7,7 +7,7 @@
  * 同目录 `runs-page-wiring.test.ts` 的文件头记着同一类缺陷（纯函数全绿而调用方漏喂输入），本文件是它在设置页的对应物。
  *
  * 为什么读源码而不是渲染页面：`apps/web-next` 保留 `jsx: preserve`（Next 需要），
- * 该应用内**不能写 `.tsx` 测试**（AGENT.md 的硬约束：报错来自 Vite 的 import-analysis，改 esbuild 配置也无效），
+ * 该应用内**不能写 `.tsx` 测试**（AGENTS.md 的硬约束：报错来自 Vite 的 import-analysis，改 esbuild 配置也无效），
  * 页面这一层没有渲染测试面——这也正是本仓库的「页面接线」守卫都是读源码的 `.ts` 的原因。
  *
  * 断言口径沿用同目录先例：把 `<JudgeSettingsCard … />` 的**开标签**抠出来只扫这一段，
@@ -44,6 +44,16 @@ describe('settings 页面的评分配置卡接线', () => {
     // 形状是**集合**（2026-09-30 起）：写成单数 `protocolType:` 会让卡片读不到值，
     // 而卡片读不到时会「一个都不过滤」（见它的 agentProtocols 注释），红不出来就是静默退化
     expect(tag, '投影里少了 protocolTypes').toContain('protocolTypes:');
+  });
+
+  /**
+   * 档位域与协议表**同一条理由**，但后果更硬：卡片的「思考强度」候选就是写下侧的**唯一**把关
+   * （`settings.defaultJudge.effort` 的 schema 只看「非空字符串」）。漏了这一格 ⇒ 卡片只能兜规范五档
+   * ⇒ dsh 的 `medium` 摆到界面上并被存下 ⇒ 生成 / 识别时被 `requireJudgeEffort` 硬拒。
+   * 而它是可选 prop，漏传时 `pnpm typecheck` 一个字都不报。
+   */
+  it('把「思考强度」的档位域也喂进去——漏了它，候选退化成规范五档，dsh 的 medium 就摆上了界面', () => {
+    expect(openingTag('JudgeSettingsCard'), '投影里少了 efforts，档位域只能兜规范五档').toContain('efforts:');
   });
 
   it('这张表来自服务端的注册表投影（useRunModelOptions），不是页面自己抄的一份', () => {

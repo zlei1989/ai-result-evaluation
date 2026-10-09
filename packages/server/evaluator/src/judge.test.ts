@@ -217,7 +217,10 @@ describe('finalizeScore：两条通路共用的收口', () => {
       judgeProviderId: 'p1',
       judgeModelId: 'm1',
       judgeAgentKind: null,
+      judgeEffort: null,
       structuredOutput: false,
+      judgeTokens: null,
+      judgeDurationMs: null,
     });
     expect(result.totalScore).toBe(composeTotalScore(rubric(), parsed.judgments));
     expect(result.totalScore).toBe(41); // 18 + 23
@@ -225,15 +228,43 @@ describe('finalizeScore：两条通路共用的收口', () => {
     expect(result.judgeAgentKind).toBeNull();
   });
 
-  it('structuredOutput 原样进结果（只记「我们传了 schema」，不是「上游认了」）', () => {
+  it('structuredOutput 原样进结果（判据由两条通路各自给：文本侧恒 false，智能体侧取适配器报回的 applied）', () => {
     const parsed = { judgments: parseJudgeResponse(JSON.stringify(VALID), rubric()).judgments, verdict: '总评' };
-    const base = { parsed, rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null } as const;
+    const base = { parsed, rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null, judgeEffort: null, judgeTokens: null, judgeDurationMs: null } as const;
     expect(finalizeScore({ ...base, structuredOutput: true }).structuredOutput).toBe(true);
     expect(finalizeScore({ ...base, structuredOutput: false }).structuredOutput).toBe(false);
   });
 
+  /**
+   * `judgeEffort` 与 `structuredOutput` 同一条处置：**必填**，两条通路各自表一次态。
+   * 为什么不能给默认值：`null` 与档名都是合法值，一个「谁也没选过」的缺省会让
+   * 「忘了把入参传下来」与「确实没指定强度」在数据上完全同形——而后者正是本任务要区分的。
+   */
+  it('judgeEffort 原样进结果（null = 未指定，不是「关闭」，也不是「两边等强」）', () => {
+    const parsed = { judgments: parseJudgeResponse(JSON.stringify(VALID), rubric()).judgments, verdict: '总评' };
+    const base = { parsed, rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null, structuredOutput: false, judgeTokens: null, judgeDurationMs: null } as const;
+    expect(finalizeScore({ ...base, judgeEffort: 'max' }).judgeEffort).toBe('max');
+    expect(finalizeScore({ ...base, judgeEffort: null }).judgeEffort).toBeNull();
+  });
+
+  /**
+   * 评分**自己**的用量与耗时（2026-10-08）：与 `judgeEffort` / `structuredOutput` 同一条处置
+   * ——**必填**，两条通路各自表一次态。给缺省会让「忘了把入参传下来」与「确实没采到」在数据上同形，
+   * 而界面那两格正是拿它判「用量未采集」的（`null` 与 `{0,0,0}` 是两件事）。
+   */
+  it('judgeTokens / judgeDurationMs 原样进结果（null = 没采到，不是 0）', () => {
+    const parsed = { judgments: parseJudgeResponse(JSON.stringify(VALID), rubric()).judgments, verdict: '总评' };
+    const base = { parsed, rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null, judgeEffort: null, structuredOutput: false, judgeTokens: null, judgeDurationMs: null } as const;
+    const measured = finalizeScore({ ...base, judgeTokens: { input: 3, cached: 4, output: 5 }, judgeDurationMs: 1_200 });
+    expect(measured.judgeTokens).toEqual({ input: 3, cached: 4, output: 5 });
+    expect(measured.judgeDurationMs).toBe(1_200);
+    const missing = finalizeScore({ ...base, judgeTokens: null, judgeDurationMs: null });
+    expect(missing.judgeTokens).toBeNull();
+    expect(missing.judgeDurationMs).toBeNull();
+  });
+
   it('两个端点：一项都没达成 ⇒ 0 分；全部达成 ⇒ 满分（总分恒按权重加总，没有部分分）', () => {
-    const base = { rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null, structuredOutput: false } as const;
+    const base = { rubric: rubric(), raw: '{}', judgeProviderId: 'p1', judgeModelId: 'm1', judgeAgentKind: null, judgeEffort: null, structuredOutput: false, judgeTokens: null, judgeDurationMs: null } as const;
     /** 把每一项的判定都换成 `achieved`，其余字段照抄合法样例 */
     const parsedWith = (achieved: boolean) =>
       parseJudgeResponse(
@@ -259,7 +290,10 @@ describe('finalizeScore：两条通路共用的收口', () => {
           judgeProviderId: undefined as unknown as string,
           judgeModelId: 'm1',
           judgeAgentKind: null,
+          judgeEffort: null,
           structuredOutput: false,
+          judgeTokens: null,
+          judgeDurationMs: null,
         });
       } catch (caught) {
         return caught;
@@ -303,6 +337,63 @@ describe('judgeRow：成功路径', () => {
   it('文本通路本期不开 schema：structuredOutput 记 false', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
     expect((await judgeRow(judgeInput())).structuredOutput).toBe(false);
+  });
+
+  /**
+   * 思考强度（spec §5.2）：**请求参数**，由调用方从配置读出来传进 `judgeEffort`——
+   * 本模块不读配置、不碰落盘（它今天是纯入参的）。
+   * 为什么正反两条都要：只钉「给了会透」看不出「没给会不会凭空塞一个缺省档」（那会让「未指定」
+   * 在网关上变成一次显式要求，而记账那一格照样写它）；只钉「没给是 undefined」则看不出这一格
+   * 根本没接线（`judgeEffort` 收下了却忘了往下递）。记账那两格同理：`null` 与档名都是合法值，
+   * 留一个 `null` 占位不会被任何别的断言发现。
+   */
+  it('给了 judgeEffort ⇒ 原样交给文本 API（多轮入口）并记进 ScoreResult', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    const score = await judgeRow(judgeInput({ judgeEffort: 'max' }));
+    expect(fakeTextApi.calls[0]?.effort).toBe('max');
+    expect(score.judgeEffort).toBe('max');
+  });
+
+  it('没给 judgeEffort ⇒ 透给文本 API 的 effort 是 undefined（未指定，不是关闭），记账为 null', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    const score = await judgeRow(judgeInput());
+    // 判据是**值**：`reasoningFields(protocol, undefined)` 展开成 `{}`（一个强度键都不发），
+    // 而「键在不在」这一层形状没有消费者——多轮入口按值分支，两个协议各自负责自己的线上字段
+    expect(fakeTextApi.calls[0]?.effort).toBeUndefined();
+    expect(score.judgeEffort).toBeNull();
+  });
+
+  /**
+   * 评分自己的用量与耗时（2026-10-08，用户口径：评分详情里那一段说的必须是**评分的花销**）。
+   *
+   * 三条判据一条都不能省：
+   *   · **跨轮累计**——结构修复是额外请求，两轮的数**不同**才测得出「累计」与「只记最后一轮」的差别；
+   *   · **上游没报就是 `null`**——写成 `?? {0,0,0}` 会让界面把「这家不报」显示成「一分钱没花」；
+   *   · **耗时是掐表**（文本通路没有适配器自报值），判据用假时钟钉住，否则「恒返回 0」也全绿。
+   */
+  it('用量跨结构修复的每一轮累计', async () => {
+    fakeTextApi.replies = ['不是 JSON，我随便说说', JSON.stringify(VALID)];
+    fakeTextApi.usages = [
+      { input: 10, cached: 0, output: 2 },
+      { input: 30, cached: 4, output: 8 },
+    ];
+    // 两轮的数**不同**才测得出「累计」与「只记最后一轮」的差别
+    expect((await judgeRow(judgeInput())).judgeTokens).toEqual({ input: 40, cached: 4, output: 10 });
+  });
+
+  it('上游没报用量 ⇒ judgeTokens 为 null（绝不填 0）', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    fakeTextApi.usage = null;
+    expect((await judgeRow(judgeInput())).judgeTokens).toBeNull();
+  });
+
+  it('judgeDurationMs 是这一次评分（含修复轮）的掐表值', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    // 首尾各取一次当前时间：文本通路没有适配器自报的耗时，这一格只能是掐表值
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_750);
+    const score = await judgeRow(judgeInput());
+    now.mockRestore();
+    expect(score.judgeDurationMs).toBe(750);
   });
 
   /**

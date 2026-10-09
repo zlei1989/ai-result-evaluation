@@ -48,7 +48,7 @@ describe('FakeEventSource（测试替身本身的浏览器语义）', () => {
     expect(onmessage).not.toHaveBeenCalled();
   });
 
-  it('7 种事件类型各自独立：按名字派发不会串到别的类型上', () => {
+  it('八种事件类型各自独立：按名字派发不会串到别的类型上', () => {
     const source = make();
     const seen = new Map<string, ReturnType<typeof vi.fn>>();
     for (const type of AGENT_EVENT_TYPES) {

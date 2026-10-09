@@ -10,8 +10,9 @@
  * ⚠️ 这张表里的选项**值域来自厂商包的类型面**（不是猜的），改之前先核这三处：
  *   · claude：`@anthropic-ai/claude-agent-sdk/sdk.d.ts` 的 `PermissionMode` 与
  *     `allowDangerouslySkipPermissions` / `permissionPrompts` 的 JSDoc；
- *   · codex：`@openai/codex-sdk/dist/index.d.ts` 的 `SandboxMode`（SDK 把它拼成 `--sandbox <mode>`，
- *     `approvalPolicy` 拼成 `--config approval_policy="<mode>"`）；
+ *   · codex：`codex app-server` 协议的 `SandboxMode`（`thread/start` 的 `sandbox` 一等字段）与
+ *     `AskForApproval`（同请求的 `approvalPolicy`）——取值域以 `providers/codex/appserver/protocol.ts`
+ *     的声明与测试为准，不再经 SDK 的类型面；
  *   · dsh：`@deepseek-ai/dsh-base/cordis.patch.yml` 的 `sandbox-policy` / `approval` / `permission`
  *     三行——`DSH_PERMISSION_MODE` 同时决定沙箱档与批准策略，**无需**再传别的开关。
  *
@@ -36,7 +37,7 @@ export interface ClaudePermissionOptions {
   permissionPrompts?: 'host' | 'none';
 }
 
-/** codex 的权限选项：建线程时固定（改了必须重建线程，§5.6.5） */
+/** codex 的权限选项：建线程时固定（改了必须重建线程，§5.6.6） */
 export interface CodexPermissionOptions {
   sandboxMode: string;
   approvalPolicy: string;
@@ -84,6 +85,34 @@ export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPer
 };
 
 /**
+ * codex 的**运行时**权限选项：表是上面的常量，这里是唯一入口（新增平台豁免时的唯一落点）。
+ *
+ * 为什么需要这一层（2026-10-07 真机）：`read-only` 沙箱在 **Windows 上没有可用实现**——
+ * 实测 `read-only` 与 `workspace-write` 下 codex 连 `echo hello` / `git status --porcelain`
+ * 都起不来（`codex_core::tools::router: error=exec_command failed: CreateProcess { … rejected: blocked by policy }`），
+ * 而 codex **没有独立的文件读取工具**，读文件只能靠 shell ⇒ 评分阶段（只读档）在 Windows 上等于
+ * **盲评**：链路全通（`ok`、`judgments` 齐、`structuredOutput: true`），结论全错
+ * （真机：候选确实做到了三项，评分 `0 / 25`）。三档矩阵见 `docs/codex-faq.md`。
+ *
+ * 处置：**只在 Windows 上**把只读档落成 `danger-full-access`（读得到），代价是评审者**能写**工作区
+ * ——那一条由编排层的「评分前后 diff 摘要对照」兜底（不一致即该行失败，见 `judgeStageAttempt`）。
+ * 别的平台保持真只读：macOS 的 seatbelt / Linux 的 landlock 有可用的只读实现，不受这条豁免影响。
+ *
+ * 为什么平台是**入参**而不是直接读 `process.platform`：这一格要能在两个平台上都被测到
+ * （`permission.test.ts` 用它把「豁免只发生在 Windows」钉成字面量）。
+ */
+export function codexPermissionOptions(
+  permission: AgentPermission,
+  platform: string = process.platform,
+): CodexPermissionOptions {
+  const base = CODEX_PERMISSION_OPTIONS[permission];
+  if (permission === 'read-only' && platform === 'win32') {
+    return { sandboxMode: 'danger-full-access', approvalPolicy: base.approvalPolicy };
+  }
+  return base;
+}
+
+/**
  * dsh：一个环境变量定档（`dsh-base/cordis.patch.yml` 逐字）：
  * ```
  * - id: sandbox-policy
@@ -93,7 +122,7 @@ export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPer
  * ```
  * ⇒ 不设它时 dsh 自己回落到 `workspace-write`（本仓此前的实际档位），设了才由我们说了算。
  *
- * 注入通道是适配器已有的 `buildSubprocessEnv`（SDK 的 `env` 是**替换型**语义，见 §5.6.4），
+ * 注入通道是适配器已有的 `buildSubprocessEnv`（SDK 的 `env` 是**替换型**语义，见 §5.6.1 决策 A5），
  * 落在**子进程环境**而不是 `process.env`——静态断言（`static-assertions.test.ts`）仍然成立。
  */
 export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermissionOptions>> = {

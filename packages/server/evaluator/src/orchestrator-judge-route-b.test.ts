@@ -110,7 +110,9 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     expect(texts).not.toContain('迟到的日志'); // 闸门之后的那一条**不许**落盘
   }, TEST_TIMEOUT_MS);
   // Review Focus 第 4 条：抽屉按需现算 diff，评审者改过工作区就会显示成候选的产出
-  it('评分智能体改了工作区 → 落一条点名的 WARN，且不静默', async () => {
+  // 2026-10-07（用户裁决）：从「落一条 WARN」升级为**该行失败**——那一份分建立在一个被评审者
+  // 改过的现场上，收下它就等于把一个不可信的分数当成正常分数
+  it('评分智能体改了工作区 → 该行 failed（污染不再只是 WARN）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
     const rowId = run.rows[0]?.id ?? '';
     // 只有评分智能体（claude-code）写文件；候选（codex）不写 —— 这样「评分前/后摘要不一致」
@@ -122,8 +124,15 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
 
     await runRow(run.id, rowId);
 
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('failed');
+    // 归因码取适配器那一家（`AGENT_FAILED`），文案里点名「改动了工作区」与两个摘要
+    expect(row?.error?.code).toBe('AGENT_FAILED');
+    expect(row?.error?.message).toContain('改动了工作区');
+    expect(row?.error?.stage).toBe('judge');
+    // 行事件里也留着现场（分数没被收下，但过程要能复盘）
     const events = readEvents(rowEventsFile(run.workspaceBase, run.id, rowId));
-    expect(events.some((event) => event.type === 'log' && event.text.includes('工作区被改动'))).toBe(true);
+    expect(events.some((event) => event.type === 'log' && event.text.includes('改动了工作区'))).toBe(true);
   });
   /**
    * **FIX-1 的另一半：用户终止必须真的能切断文本评分**，且只留一条 `end`。

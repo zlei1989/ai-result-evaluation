@@ -3,7 +3,7 @@
  * 位置由 Next 规定：`instrumentation.ts` 放在应用根（或 src/），**不能**放进 app/。
  *
  * 为什么经 `@aieval/api` 转出而不是直连 `@aieval/evaluator`：依赖方向表里 web-next 只到
- * api / core / ui / client / contracts（AGENT.md），evaluator 既不在其中、也不在
+ * api / core / ui / client / contracts（AGENTS.md），evaluator 既不在其中、也不在
  * apps/web-next/package.json 的依赖里（pnpm 的严格 node_modules 下直连解析失败）。
  *
  * 为什么用「排除 edge」而不是「只认 nodejs」：恢复必须**真的发生**。写成 `=== 'nodejs'` 时，

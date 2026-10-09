@@ -25,12 +25,12 @@ const baseFields = { seq: z.number().int().positive(), at: z.string() };
  * | 家 | 厂商字段 | `input` 原文是否含 cache |
  * |---|---|---|
  * | claude | `input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`（三格分列） | **不含**（Anthropic 语义） |
- * | codex | `input_tokens` / `cached_input_tokens`（cached 是 input 的**明细**） | **含**（真机：`{input_tokens:8152, cached_input_tokens:6656}`，6656 < 8152） |
+ * | codex | `inputTokens` / `cachedInputTokens`（cached 是 input 的**明细**；SDK 时代旧称 `input_tokens` / `cached_input_tokens`，右列那组读数就是那时的） | **含**（真机：`{input_tokens:8152, cached_input_tokens:6656}`，6656 < 8152） |
  * | dsh | `inputTokens` / `cacheReadTokens` / `cacheWriteTokens` / `totalTokens` | **不含**（本机恒等式判定：`1219 + 7040 + 0 + 1 = 8260`） |
  *
  * ⇒ 适配器**把 `input` 归一到「非缓存输入」**：claude / dsh 原样，codex 必须做减法
- * `input = input_tokens − cached_input_tokens`（落点在 `providers/codex/events.ts` 与
- * `providers/codex/transcript.ts`，两处都写了「为什么」）。
+ * `input = inputTokens − cachedInputTokens`（落点在 `providers/codex/run-state.ts` 的 `normalizedInput`，
+ * 消费方是 `providers/codex/events.ts`，那里写了「为什么」）。
  *
  * 这条归一是**跨家可比的唯一前提**，也是本仓「消灭按厂商分支」（§7.6.4）的落点：
  * 消费方拿到的事件永远是同一个口径，不必、也**不许**再去问「这一条是哪个家发的」。
@@ -69,8 +69,10 @@ export const UsageTokensSchema = z.object({
   output: z.number(),
   /**
    * **思考 / 推理 token**（可选，`null` = 这家没报）。
-   * 三家原文：claude 的 `output_tokens_details.thinking_tokens`、codex 的 `reasoning_output_tokens`
-   * （只在会话文件里有，事件流没有）、dsh 的 `reasoningTokens`。
+   * 三家原文：claude 的 `output_tokens_details.thinking_tokens`、codex 的 `reasoningOutputTokens`
+   * （app-server 的按线程累计里**运行期就在报**，主线程与每个子线程各一份；SDK 时代旧称
+   * `reasoning_output_tokens`，那会儿才「只在会话文件里有」）、dsh 的 `reasoningTokens`
+   * （当前通道不投送 ⇒ 恒 `null`）。
    * ⚠️ 它是**输出的一部分**还是**额外**的一格，三家口径不同 ⇒ **不要**把它加进 `output` 去算成本
    * （那会双计），只按它自己展示。
    */
@@ -171,6 +173,22 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      * 之前先看 `turn`（设计文档 §2.1 与 §4 已登记）。
      */
     tokens: UsageTokensSchema.nullable(),
+    /**
+     * `tokens` 那一格是**厂商上报的权威值**还是**我们的跑动期估算**（A2，2026-10-07）。
+     *
+     * 只描述 `tokens`：`turns` / `subagentTokens` / `subagentTurns` **恒为权威值**
+     * （骨架里只有 `tokensEstimated` 一个标记，它只挂在 tokens 那一支上）。
+     *
+     * 为什么要有一格而不是让消费方按厂商/能力去推：估算与权威在事件里长得一模一样
+     * （都是「到目前为止的累计」），而消费方的处置**相反**——今天的读侧就是编排层的跑动期回写段
+     * （`orchestrator.ts` 的 `onEvent`）：只有显式 `'reported'` 才写快照，估算值只走事件流给界面看。
+     * 让每条事件自报来源之后，那一层不必在跑之前反查注册表的 `capability.liveUsage`
+     * （能力判定全部收进 `agentProvider.run`，见 spec §1.2 的可度量收益）。
+     *
+     * `.optional()`：老事件没有这一格 ⇒ 读侧按 `'estimated'`（安全侧：宁可不落盘，
+     * 也不把估算写进唯一落盘真相）。
+     */
+    tokensBasis: z.enum(['reported', 'estimated']).optional(),
     /**
      * **子智能体那一份**用量（2026-10-04 新增）：`tokens` 已是「主会话 + 全部子智能体」的合计，
      * 这一格是其中的分量。界面用它把 Tooltip 拆成两行（主会话 / 子智能体）。

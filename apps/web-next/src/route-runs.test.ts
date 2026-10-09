@@ -11,7 +11,7 @@
  *
  * 与 brief 原稿的四处**实测修正**（前三处是原稿在本机必然红的原因，第四处是它不安全的原因）：
  *   1. mock 句柄走 `vi.hoisted`，测试里**不再** `import '@aieval/evaluator'`：该说明符不在本应用的
- *      依赖里（`AGENT.md` 的方向表），TS 直接 `Cannot find module`（`pnpm typecheck` 会红）；
+ *      依赖里（`AGENTS.md` 的方向表），TS 直接 `Cannot find module`（`pnpm typecheck` 会红）；
  *      同时 `vi.mock` 的说明符由 `vitest.config.ts` 的 alias 指到真实源文件——没有那个 alias 时
  *      mock 只注册在裸说明符上，**api 包内部那次 import 解析到真实模块，mock 一条都不生效**，
  *      测试侧拿到 `vi.fn()`、api 侧却真的在跑编排层（实测日志里出现 `[evaluator] 评测开始`）；
@@ -39,6 +39,11 @@ import { EFFORT_OFF, ServiceError, type EvalRun } from '@aieval/contracts';
 import { loadConfig, saveConfig, setConfigDirForTesting, type AppConfig } from '@aieval/core';
 import { GET as getRuns, POST as postRun } from '@/app/api/runs/route';
 import { GET as getModelOptions } from '@/app/api/runs/model-options/route';
+import {
+  GET as getRunEvents,
+  dynamic as runEventsDynamic,
+  runtime as runEventsRuntime,
+} from '@/app/api/runs/events/route';
 import { GET as getRun, DELETE as deleteRunRoute, PUT as putRun } from '@/app/api/runs/[runId]/route';
 import { POST as postStart } from '@/app/api/runs/[runId]/start/route';
 import { POST as postAbortRun } from '@/app/api/runs/[runId]/abort/route';
@@ -72,6 +77,14 @@ const evaluator = vi.hoisted(() => ({
   // 缺键在**访问到它**（走那条路由的用例）时才抛「No "retryRow" export is defined on the mock」
   retryRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，而 run-events.ts
+  // 在模块求值期就读这个键——缺了它，**任何**经 `@aieval/api` index 的 import 都当场抛
+  // 「No "subscribeRunChanges" export is defined on the mock」（比 rescoreRow 那类访问时才抛更早）。
+  // 签名显式写 listener 参数：下面那条接驳用例要 mockImplementation，零参推断会与之不兼容
+  subscribeRunChanges: vi.fn((listener: (runId: string) => void) => {
+    void listener;
+    return () => {};
+  }),
   resolveJudgeRoute: vi.fn(),
   requireJudgeAgent: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
@@ -400,6 +413,13 @@ describe('GET /api/runs/model-options', () => {
     // `efforts`（思考强度的档位域，spec D11）是 2026-09-29 有意加的第六格。
     // `messageCapability`（消息能力声明，spec v3 §2.5）是 **2026-10-04** api 加的第七格——
     // 当时这处期望值没跟着补，于是它一直红到 2026-10-06 收尾 fix 轮才补齐（本次顺手修，不是本线引入的格）。
+    // `defaultEffort`（未选档位时该家实际会用的档）是 **2026-10-08** 加的第八格：界面拿它拼
+    // 创建表单的占位符，「未指定（DeepSeek Harness 用 high）」里的厂商名与档位都由它 + `AGENT_LABELS`
+    // 拼出来（此前那句写死在 UI 里，且写的是 kind 缩写 `dsh`）。
+    // ⚠️ 这一格按「有意义才出现」投影（与 `options` 里那三格同一条规则）⇒ 必须**两侧都钉**：
+    // 只钉 DSH 一侧的话，把投影改成「恒写这一格（不声明时写 undefined）」照样绿——而那一改会让
+    // claude / codex 的响应里多出一个恒为 `undefined` 的键，且 `JSON.stringify` 又会把它丢掉，
+    // 于是「有没有声明」这件事在两条通道上长得不一样。
     expect(Object.keys(groups[0] ?? {}).sort()).toEqual([
       'agentKind',
       'cancelMidTurn',
@@ -409,6 +429,20 @@ describe('GET /api/runs/model-options', () => {
       'protocolTypes',
       'usage',
     ]);
+    const dsh = groups.find((group) => group.agentKind === 'dsh') as Record<string, unknown>;
+    expect(Object.keys(dsh).sort()).toEqual([
+      'agentKind',
+      'cancelMidTurn',
+      'defaultEffort',
+      'efforts',
+      'messageCapability',
+      'options',
+      'protocolTypes',
+      'usage',
+    ]);
+    // 值是注册表真值（今天只有 DSH 声明它），且 claude-code 那一组**没有这一格**（不是空串 / undefined）
+    expect(dsh.defaultEffort).toBe('high');
+    expect('defaultEffort' in (groups[0] ?? {})).toBe(false);
 
     const claude = groups.find((group) => group.agentKind === 'claude-code') as { options: Array<{ modelId: string }> };
     const codex = groups.find((group) => group.agentKind === 'codex') as { options: Array<{ modelId: string }> };
@@ -573,5 +607,48 @@ describe('DELETE /api/runs/[runId]', () => {
 
     expect(res.status).toBe(404);
     expect((await res.json()).error.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('GET /api/runs/events（run 级信号 SSE）', () => {
+  // 本文件不读完整响应体之外的东西：帧内容与心跳由 api 包的 run-events.test.ts 钉死，
+  // 这里只钉**路由层**的三件事——段配置、响应头、以及「mock 的总线推一条 ⇒ 流里出一帧」的接驳。
+
+  it('段配置：runtime = nodejs（进程内信号总线）+ force-dynamic（长连接不当静态资源）', () => {
+    expect(runEventsRuntime).toBe('nodejs');
+    expect(runEventsDynamic).toBe('force-dynamic');
+  });
+
+  it('响应头是 SSE 的全套（含给反代的 X-Accel-Buffering: no）', async () => {
+    const res = await getRunEvents();
+    // 读完就关：这条流没有「自然结束」（不因终态关流），挂着不取消会把心跳定时器漏给后面的用例
+    await res.body?.cancel();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-cache');
+    expect(res.headers.get('x-accel-buffering')).toBe('no');
+  });
+
+  it('ready 注释帧先行；mock 总线推一条信号 ⇒ 流里出一帧 run-updated（接驳完整）', async () => {
+    // 用数组承接监听器而不是闭包变量：TS 的控制流分析不追踪闭包里的赋值，
+    // `let publish = null` 在赋值之后仍被收窄成 null，调用处就成了 never
+    const handlers: Array<(runId: string) => void> = [];
+    evaluator.subscribeRunChanges.mockImplementation((listener: (runId: string) => void) => {
+      handlers.push(listener);
+      return () => {};
+    });
+
+    const res = await getRunEvents();
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    // 打开即有首字节（ready 注释帧）：响应头要等第一次 enqueue 才 flush
+    expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
+
+    handlers[0]?.('run-1');
+    expect(decoder.decode((await reader.read()).value)).toBe('event: run-updated\ndata: {"runId":"run-1"}\n\n');
+
+    await reader.cancel();
   });
 });

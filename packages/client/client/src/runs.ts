@@ -1,18 +1,20 @@
 /**
  * 评测数据层：列表 / 详情 / 创建 / 启动 / 终止 / 产物读取 / 候选池。
  * 三条约定：
- *   1. **加键在这里，不在页面里**：`/api/runs` 与 `/api/runs/{id}` 被四个 hook 与
+ *   1. **加键在这里，不在页面里**：`/api/runs` 与 `/api/runs/{id}` 被本文件的取数 hook 与
  *      `row-stream.ts` 共用（终态后要 mutate 的就是这两个键），字面量散落必然漂移；
- *   2. 轮询只在「还有活在跑」时开（spec §8 末段）。`refreshInterval` 传的是**数字**而不是
- *      函数：函数形式每帧都是新引用，SWR 的轮询 effect（deps 里就有 `refreshInterval`）因此
- *      每帧重挂、计时器被反复重置——而正在跑的评测恰恰是页面重渲染最频繁的时候（SSE 每来一条
- *      事件就渲染一次），3 秒的轮询会一直等不到触发。数字形式的代价是「必须先有数据才能算」，
- *      而 `data` 正是 `useSWR` 的返回值（在自己的 options 里引用它是 TDZ 报错，brief 的原稿
- *      就是这么写的），所以间隔走一份 state 镜像，见 `usePollingRun`；
+ *   2. **实时性由 run 信号驱动，轮询只剩慢兜底**（用户口径 2026-10-08「不要来回刷新」）：
+ *      `useRunEvents`（`run-events.ts`）订阅 `/api/runs/events`，服务端每落盘一次快照
+ *      就推一条 `run-updated`，客户端收到即重验列表与详情——状态翻转是毫秒级的
+ *      「变了才读」，而不再是每 3 秒问一次。慢兜底（60 秒）只在「还有活在跑」时
+ *      开着，给「信号通道万一断了」兜底；`refreshInterval` 传**数字**而不是函数的
+ *      理由不变（函数形式每帧都是新引用，SWR 的轮询 effect 会反复重挂、计时器被
+ *      反复重置——而跑着的评测正是页面重渲染最频繁的时候），间隔走 state 镜像，
+ *      见 `useFallbackRun`；
  *   3. mutation 成功后写缓存 + `revalidate:false`，再显式刷新列表（契约 §7 的回写约定）。
  *      这里没用 `useSWRMutation`：启动/终止的响应要同时写进**详情**与**列表**两个键，
  *      而它只绑定一个键，用了还得再手写一次 mutate——不如从一开始就用 `useSWRConfig().mutate`。
- *      顺带一个结构性好处：runId 是**调用时**才拿到的，四个写操作因此根本没被挂进 SWR 的
+ *      顺带一个结构性好处：runId 是**调用时**才拿到的，这些写操作因此根本没被挂进 SWR 的
  *      fetcher，「窗口重新获得焦点 ⇒ 重发一次写请求」这条 p2 踩过的坑在形状上就不存在
  *      （`runs.test.tsx` 的「焦点重验」一节把它钉住，防的是将来有人改写成 SWR 挂载式）。
  */
@@ -31,15 +33,13 @@ import {
   type RunUpdate,
   type AgentEvent,
 } from '@aieval/contracts';
+import { useRunEvents } from './run-events';
+import { RUNS_KEY, runKey } from './run-keys';
 import { delJson, getJson, postJson, putJson } from './http';
 
-/** 列表键：与 useRuns / useCreateRun / useStartRun 的显式刷新共用 */
-export const RUNS_KEY = '/api/runs';
-
-/** 单轮详情键 */
-export function runKey(runId: string): string {
-  return `${RUNS_KEY}/${runId}`;
-}
+// 键的真源在 `run-keys.ts`（叶子模块）；这里 re-export 是为了让三条行级流与页面的
+// 既有 import 路径一律不动（它们都从 './runs' 拿键）。
+export { RUNS_KEY, runKey };
 
 /**
  * 一行的产物端点（diff / log / stream / messages 同前缀）——SSE 与两处按需读取共用，免得字面量三份。
@@ -52,7 +52,7 @@ export function runRowUrl(runId: string, rowId: string, artifact: 'diff' | 'log'
 /**
  * 一行的**消息流**端点（`/messages/stream`）：内容级 SSE，与行级事件流并行。
  * 单独一个函数而不复用 `runRowUrl` 的查询串：这条流**没有 `afterSeq` 续订**——
- * 它每次连接都回放全量，客户端按 `messageId` 去重、按 `mergeKey` 覆盖累积。
+ * 它每次连接都回放全量，客户端按 `mergeKey` 覆盖累积（**不按 `messageId` 去重**）。
  * 拼错一个 query 不会报错，只会静默拿到一份对不上的视图。
  */
 export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
@@ -62,8 +62,12 @@ export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
 /** 候选池与能力元数据的端点（见计划「修正 2/3」） */
 export const AGENT_OPTIONS_KEY = '/api/runs/model-options';
 
-/** 有在跑的行时的轮询间隔（spec §8 末段） */
-const RUN_POLL_MS = 3000;
+/**
+ * 慢兜底间隔（毫秒）：**不是**实时通道，只是「信号万一断了」的保险网——
+ * EventSource 自带断线重连、SWR 保留焦点重验，正常情况这条永远不触发。
+ * 60 秒的量级：短到「信号断了一分钟内状态仍然会收敛」，长到「即便真断了也不构成打扰」。
+ */
+const RUN_FALLBACK_POLL_MS = 60_000;
 
 /** 一轮「还有活在跑」：轮级 status 与行级状态都要看——编排层翻转轮状态有一拍延迟 */
 function isLiveRun(run: EvalRun): boolean {
@@ -71,14 +75,17 @@ function isLiveRun(run: EvalRun): boolean {
 }
 
 /**
- * 「还有活在跑 ⇒ 每 3 秒轮询一次，跑完立刻停」的取数（列表与详情共用一份口径）。
+ * 「还有活在跑 ⇒ 每 60 秒慢兜底一次，跑完立刻停」的取数（列表与详情共用一份口径）。
+ *
+ * 实时性不靠这条：状态翻转由 `useRunEvents` 的信号驱动（文件头约定 2），这里的
+ * `refreshInterval` 只是信号通道全断时的保险网。
  *
  * 间隔走 state 镜像而不是直接读 `data`：`data` 是 `useSWR` 的返回值，在它自己的 options 里
  * 引用它是 TDZ 报错；而函数形式（`refreshInterval: (latest) => …`）每帧都是新引用，会让 SWR 的
- * 轮询 effect 每帧重挂并重置计时器——SSE 每来一条事件就重渲染一次，跑着的评测反而永远轮询不到。
+ * 轮询 effect 每帧重挂并重置计时器——SSE 每来一条事件就重渲染一次，兜底反而永远触发不了。
  * 用 state 镜像后间隔只在「有/没有活在跑」翻转时变一次，SWR 见间隔变了就重新调度（0 ⇒ 停）。
  */
-function usePollingRun<T>(
+function useFallbackRun<T>(
   key: string | null,
   isLive: (data: T) => boolean,
 ): ReturnType<typeof useSWR<T>> {
@@ -86,13 +93,16 @@ function usePollingRun<T>(
   const response = useSWR<T>(key, getJson, { refreshInterval: pollMs });
   const live = response.data !== undefined && isLive(response.data);
   useEffect(() => {
-    setPollMs(live ? RUN_POLL_MS : 0);
+    setPollMs(live ? RUN_FALLBACK_POLL_MS : 0);
   }, [live]);
   return response;
 }
 
 export function useRuns(): { runs: EvalRun[] | undefined; error: unknown; isLoading: boolean; refresh: () => void } {
-  const { data, error, isLoading, mutate } = usePollingRun<EvalRun[]>(RUNS_KEY, (runs) => runs.some(isLiveRun));
+  // 列表的重验也由信号驱动（`currentRunId` 缺省 = 只重验列表键）：连接是模块级单例，
+  // 与下面 useRun 的订阅共用同一条——页面上无论挂几个 hook，`/api/runs/events` 只有一条
+  const { data, error, isLoading, mutate } = useFallbackRun<EvalRun[]>(RUNS_KEY, (runs) => runs.some(isLiveRun));
+  useRunEvents({});
   return { runs: data, error, isLoading, refresh: () => void mutate() };
 }
 
@@ -102,12 +112,14 @@ export function useRun(id: string | null): {
   isLoading: boolean;
   refresh: () => void;
 } {
-  // SSE 覆盖逐行的计量跳动；轮级状态与排名的收敛仍靠一次快照刷新，
-  // 3 秒兜底让「万一 SSE 断掉」也不会永久停在「执行中」
-  const { data, error, isLoading, mutate } = usePollingRun<EvalRun>(
+  // 行级 SSE 覆盖逐行的计量跳动；轮级状态与排名的收敛由信号（saveRun 落盘即推）驱动重验，
+  // 60 秒慢兜底让「信号通道万一断掉」也不会永久停在「执行中」
+  const { data, error, isLoading, mutate } = useFallbackRun<EvalRun>(
     id === null ? null : runKey(id),
     isLiveRun,
   );
+  // 详情打开时才把详情键并进重验范围（currentRunId 为 null 时列表页只重验列表）
+  useRunEvents({ currentRunId: id });
   return { run: data, error, isLoading, refresh: () => void mutate() };
 }
 
@@ -136,7 +148,8 @@ export interface AgentModelOption {
   contextWindow?: number;
   /**
    * 该组合**可选**的思考强度档位（api 已把上游声明的档位与本行智能体的档位域求过交；
-   * 上游未声明 ⇒ 该家完整档位域）。首项是**关闭档** `EFFORT_OFF`；缺省 = 一个档位都没有。
+   * 上游未声明 ⇒ 该家完整档位域）。**该家能收关闭档、且交集里还没有它时**，关闭档会被并入并排在
+   * 首位（上游自己已声明 `off` 时保留上游顺序）；缺省 = 一个档位都没有。
    */
   efforts?: string[];
   /** 上游推荐档；**只在它落在 `efforts` 里时**才有值（界面据此在标签上标「推荐」、不预选，spec D14） */
@@ -146,7 +159,8 @@ export interface AgentModelOption {
 /**
  * 一种智能体的能力元数据 + 候选池：与 api 的 `AgentOptionGroup` 逐字段一致。
  * client 不能 import api，所以这份形状在两侧各声明一次；**字段集合由路由测试钉死**
- * （见 Task 10：断言响应对象的键集合），哪一侧偷偷加字段都会当场失败。
+ * （见 Task 10：断言响应对象的键集合），**本接口自己那一半**由 `runs.test.tsx` 的接缝形状用例钉住
+ * ——路由测试读的是 JSON，把某一格从这里删掉它照样绿（两边都钉才叫接缝）。
  */
 export interface AgentOptionGroup {
   agentKind: AgentKind;
@@ -154,6 +168,25 @@ export interface AgentOptionGroup {
   protocolTypes: readonly ProtocolType[];
   usage: boolean;
   cancelMidTurn: boolean;
+  /**
+   * 该智能体能收的思考强度**档位域**（服务端来自 agents 注册表的 `metadata.reasoningEfforts`）。
+   *
+   * 谁在用它：设置页「评分配置」里「思考强度」的候选 = 模型声明 ∩ **这一格**——判据与后端
+   * `requireJudgeEffort` 是同一个 `intersectEfforts`。少这一格，卡片只能兜规范五档，
+   * dsh 收不了的 `medium` 就会摆上界面并被存进设置，直到生成 / 识别时被硬拒
+   * （2026-10-07 Task 12 补上；此前 api 一直在发，只有这份重复声明的形状漏了它）。
+   */
+  efforts: readonly string[];
+  /**
+   * 「未选档位」时该家**实际会用的档**（服务端来自 agents 注册表的 `metadata.defaultEffort`）；
+   * 缺省 = 这家不声明（由厂商推断默认档）。
+   *
+   * 谁在用它：创建表单「思考强度」的占位符——那句「未指定（DeepSeek Harness 用 high）」里的
+   * 厂商名与档位**都由这一格拼出来**，UI 不再写死（写死就是第二份真源：厂商名或缺省档改了，
+   * 占位符仍会静默说错）。同 `efforts` 那条：这一格漏声明时 tsc 与测试都不会响，界面只是
+   * 静默退回一句泛化的「未指定」——故路由测试按「有意义才出现」把它钉在键集合里。
+   */
+  defaultEffort?: string;
   /**
    * 消息能力声明（spec v3 §2.5）：五格各带 `source` / `reason`，外加 `notes`。
    *
@@ -191,7 +224,7 @@ export function useCreateRun(): { create: (input: RunCreate) => Promise<EvalRun>
 
 /**
  * 编辑一轮评测（「修改」）：PUT 全量可变字段 → 回写详情与列表两个键。
- * 形状与另外四个写操作逐字相同（见文件头约定 3）：手工 `mutate`、`revalidate: false`、
+ * 形状与本文件其它写操作逐字相同（见文件头约定 3）：手工 `mutate`、`revalidate: false`、
  * 再显式刷新列表——缺任何一处都会出现「详情新、列表旧」。
  * 入参**原样**送上线（不挑字段、不补默认值）：`rows[].id`（原地更新这一行、保留它的结果）
  * 与 `rows[].effort`（思考强度）都是服务端要读的字段，钩子在中间重抄一遍就会静默丢字段。
@@ -324,7 +357,7 @@ export function useAbortRow(): {
 }
 
 /**
- * 重新评分：只重跑评分步骤（spec §9）。回写两个键与另外四个写操作同形——
+ * 重新评分：只重跑评分步骤（spec §9）。回写两个键与本文件其它写操作同形——
  * 「状态立刻变成 judging」这件事必须同时被详情与列表看到。
  * `isRescoring` 在界面上只用于**转圈与禁用**（避免连点两次）；它不参与可用性判据，
  * 那个判据是 contracts 的 `canRescoreRow`，与服务端同一份。
@@ -398,7 +431,7 @@ export function useRetryRow(): {
  * 服务端每次都要现场跑 git 算 diff（spec §7.2）。
  *
  * `offset` / `limit` 显式给：索引是**分页**的，调用方要靠翻页把「共 N 个文件」逐个加载出来
- * （spec §4 ①）。只写死第一页会让第 31 个之后的文件永远拿不到——而头部还写着「共 N 个」。
+ * （spec §5.3.4）。只写死第一页会让第 31 个之后的文件永远拿不到——而头部还写着「共 N 个」。
  *
  * `revalidateOnFocus: false`：这个 GET 在服务端是**一次真实的 git 计算**（合并三样 diff + 裁剪，
  * 可达数 MB 的输出与秒级耗时），而 SWR 默认会在窗口重新获得焦点时重跑它——每切回一次页面就重算一次。
@@ -446,7 +479,7 @@ export function useRowDiffFile(
 /**
  * 执行日志全量：抽屉首帧与「下载台账」共用（下载要的是完整落盘内容，不依赖长连接是否活着）。
  *
- * 这里**不关**焦点重验（与 `useRowDiff` 相反，是有意的）：读一个 jsonl 文件比现场算 diff 便宜
+ * 这里**不关**焦点重验（与 `useRowDiffIndex` 相反，是有意的）：读一个 jsonl 文件比现场算 diff 便宜
  * 几个数量级，而「下载」直接消费这份数据——切回窗口时重读一次，换来一份更完整的落盘日志。
  *
  * `refresh` 是给`AgentLogSource.retryNode` 用的：节点内容**按值给**（UI 不做取数），
@@ -483,6 +516,7 @@ export function useRunModelOptions(): {
   options: AgentOptionGroup[] | undefined;
   optionsFor: (agentKind: AgentKind) => AgentModelOption[];
   capabilityOf: (agentKind: AgentKind) => { usage: boolean; cancelMidTurn: boolean };
+  defaultEffortOf: (agentKind: AgentKind) => string | undefined;
   messageCapabilityOf: (agentKind: AgentKind) => MessageCapability | null;
   isLoading: boolean;
   error: unknown;
@@ -519,5 +553,17 @@ export function useRunModelOptions(): {
     [byKind],
   );
 
-  return { options: data, optionsFor, capabilityOf, messageCapabilityOf, isLoading, error };
+  /**
+   * 「未选档位」时该家实际会用的档；`undefined` = 这家不声明（由厂商推断）或元数据还没到。
+   *
+   * 与 `capabilityOf` 的乐观默认值**刻意相反**：那两格猜错只是多给一个按钮，而这一格是
+   * 界面**说出口的一句话**（「未指定（DeepSeek Harness 用 high）」）——猜一个档出来就是
+   * 替厂商承诺，拿不到时界面宁可只说「未指定」（缺一句事实好过编一句）。
+   */
+  const defaultEffortOf = useCallback(
+    (agentKind: AgentKind): string | undefined => byKind.get(agentKind)?.defaultEffort,
+    [byKind],
+  );
+
+  return { options: data, optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, isLoading, error };
 }

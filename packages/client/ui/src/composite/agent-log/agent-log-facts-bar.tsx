@@ -1,28 +1,30 @@
 'use client';
 
 /**
- * 行级事实进度条（L1）：状态 · 轮次 · 用量（含思考 token）· 耗时 · 领域事实 · 错误 · 结束原因。
+ * 行级事实进度条（L1）：状态 · 用量（含思考 token）· 耗时 · 轮次 · 错误。
  *
- * 四条口径：
- *   1. **`null` 不显示成 0**：用量、思考 token、耗时、错误、结束原因各自「没采到」时给一句话
+ * 五条口径：
+ *   1. **`null` 不显示成 0**：用量、思考 token、耗时、错误各自「没采到」时给一句话
  *      （「用量未采集」）或整格不出现，绝不写 0——0 是一个**读数**，「没采到」不是；
  *   2. **耗时只有这一个口径**：已结束用 `endedAt − startedAt` 的结算值，未结束才本地走秒表
  *      （`useNow` 只在真的在跑时挂定时器，抽成 `durationMsOf` 便于单测）；
- *   3. **不解析领域事实**：`facts.domain` 的 `label` / `value` / `hint` 一字不改地照画，
- *      顺序就是数据层给的顺序——UI 不知道「改动」「评分」是什么。要上色 / 做 Tag 的地方由数据层
- *      给成 `segments` / `hintSegments`（每段声明自己是什么），**界面绝不自己去拆 `+111` 这种文本**
- *      （见 `types.ts` 的 `DomainFactSegment`）；
+ *   3. **领域事实不在这里**（用户 2026-10-07 口径）：`facts.domain`（智能体 · 模型 · 思考强度 ·
+ *      改动 · 评分）由 `agent-log-domain-facts.tsx` **单独占一行**画。并回本条末尾时，「改动 /
+ *      评分」会被自然折行甩到第二行、与前三格拆散；而这两组是连起来读的一句话。本条只画
+ *      「这一行跑了什么」那几个读数；
  *   4. **不可折叠、也不放入口**：「原始输出」归 `raw-output-panel`，「？环境信息」归工具条预设，
- *      放进来会让固定区变成第二个工具条。
+ *      放进来会让固定区变成第二个工具条；
+ *   5. **不展示「结束原因」**（用户 2026-10-07 口径）：`end` 事件里的 `exitReason` 只逐字落在
+ *      **下载台账**里——⚠️ **它不在「原始输出」里**（那个面板只收 `log` 事件）。事实条不再重复这一格：
+ *      同一格要说的处境，状态徽标已经说了一遍。
  *
  * 「等待答复」是**派生**的（`waitingSince` 由调用方从当前节点的块里扫出来）：
  * 它不进 `facts`、也不进 `rowEvents`，因为它是**当前态**而不是发生过的事件。
  */
 import { Badge, Flex, Tag, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
-import type { AgentLogFacts, AgentRunStatus, DomainFactSegment } from './types';
+import type { AgentLogFacts, AgentRunStatus } from './types';
 import { formatDuration } from '../../base/metric-line';
-import { ROW_STATUS_COLORS } from '../../base/row-status-tag';
 import { formatTokens, formatUsageTriple } from '../../base/usage-metrics';
 import { useNow } from '../../base/use-now';
 
@@ -55,46 +57,6 @@ const BADGE_STATUS: Record<AgentRunStatus['tone'], 'processing' | 'default' | 's
 const THINKING_BASIS_HINTS: Partial<Record<NonNullable<AgentLogFacts['thinking']>['basis'], string>> = {
   unknown: '（可加性未知）',
 };
-
-/** 领域事实的色档 → `Tag` 的预设色 */
-const DOMAIN_TONE_COLOR: Record<NonNullable<AgentLogFacts['domain'][number]['tone']>, string> = {
-  default: 'default',
-  success: 'success',
-  warning: 'warning',
-  error: 'error',
-};
-
-/**
- * 结束原因 → `Tag` 配色。
- *
- * 这些词是**我们编排层**结算时写下的账（`evaluator` 的 settle 分支：completed / rescored /
- * canceled / interrupted / skipped / timed-out / error），不是厂商词汇，所以这张表留在界面这一层。
- * 其中六个与行状态是**同一个处境**，故直接取 `ROW_STATUS_COLORS`——同一个处境在两个地方不该是
- * 两种颜色，而写死一份就会漂移（`rescored` 没有对应的行状态，取 `judging` 那一档：都在评分这条路上）。
- * 没见过的词退回 `default`：不替未知编一个颜色。
- */
-const EXIT_REASON_COLORS: Record<string, string> = {
-  completed: ROW_STATUS_COLORS.judged,
-  rescored: ROW_STATUS_COLORS.judging,
-  canceled: ROW_STATUS_COLORS.canceled,
-  interrupted: ROW_STATUS_COLORS.interrupted,
-  skipped: ROW_STATUS_COLORS.skipped,
-  'timed-out': ROW_STATUS_COLORS['timed-out'],
-  error: ROW_STATUS_COLORS.failed,
-};
-
-/**
- * 一段领域事实。三种画法**全按数据层的声明**（界面不认「哪个词是加号」）：
- *   · `tag` ⇒ 一枚蓝 `Tag`（模型名这类标识；蓝色是 2026-10-07 用户口径定的）；
- *   · `insertion` / `deletion` ⇒ git 惯例的绿 / 红（`+N` / `−N`）；
- *   · 其余 ⇒ 跟随所在文字的颜色（放进 `type="secondary"` 的 `Text` 里就是次要色）。
- */
-function FactSegment({ segment, token }: { segment: DomainFactSegment; token: Token }): ReactNode {
-  if (segment.tag === true) return <Tag color="blue">{segment.text}</Tag>;
-  if (segment.tone === 'insertion') return <span style={{ color: token.colorSuccess }}>{segment.text}</span>;
-  if (segment.tone === 'deletion') return <span style={{ color: token.colorError }}>{segment.text}</span>;
-  return segment.text;
-}
 
 /**
  * 这一行的耗时（毫秒）。三种情形各有明确结果，**不猜**：
@@ -135,11 +97,6 @@ export function AgentLogFactsBar({ facts, waitingSince, contentTruncatedReason }
           写出来是为了同口径可静态核对，不是「这个徽标偏大」 */}
       <Badge size="small" status={BADGE_STATUS[facts.status.tone]} text={facts.status.label} />
 
-      <Typography.Text type="secondary" data-testid="agent-log-facts-turns">
-        轮次 {facts.turns.current}
-        {facts.turns.total === null ? '' : ` / ${facts.turns.total}`} 轮
-      </Typography.Text>
-
       {/* 用量格：`tokens === null` 说「未采集」而不是三个 0；思考 token 只在这一格里出现。
           文案走 `formatUsageTriple`（千分位 + `tok` 单位）——与里程碑 / 逐条页脚 / 子任务卡片同一出口 */}
       <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-tokens">
@@ -163,53 +120,19 @@ export function AgentLogFactsBar({ facts, waitingSince, contentTruncatedReason }
         </Typography.Text>
       )}
 
-      {/* 领域事实：按数据层给的顺序逐格画，空数组时这一组整个不出现 */}
-      {facts.domain.length > 0 && (
-        <Flex align="center" gap={token.marginSM} wrap data-testid="agent-log-facts-domain">
-          {facts.domain.map((fact) => (
-            <Flex key={fact.id} align="center" gap={token.marginXXS}>
-              <Typography.Text type="secondary">{fact.label}</Typography.Text>
-              {/* 值两种画法：数据层给了 `segments` 就按段画（外层统一次要色，段内再覆盖成绿/红），
-                  否则整段一枚色档 Tag（评分那一格就是 `87/100` 那枚绿 Tag） */}
-              {fact.segments === undefined ? (
-                fact.tone === undefined ? (
-                  <Typography.Text>{fact.value}</Typography.Text>
-                ) : (
-                  <Tag color={DOMAIN_TONE_COLOR[fact.tone]}>{fact.value}</Tag>
-                )
-              ) : (
-                <Typography.Text type="secondary">
-                  {fact.segments.map((segment, index) => (
-                    <FactSegment key={index} segment={segment} token={token} />
-                  ))}
-                </Typography.Text>
-              )}
-              {/* 提示同样可以分段（评分那一格把模型名画成 Tag），没分段就是一句次要色文本 */}
-              {fact.hintSegments === undefined
-                ? fact.hint !== undefined && <Typography.Text type="secondary">{fact.hint}</Typography.Text>
-                : (
-                  <Typography.Text type="secondary">
-                    {fact.hintSegments.map((segment, index) => (
-                      <FactSegment key={index} segment={segment} token={token} />
-                    ))}
-                  </Typography.Text>
-                )}
-            </Flex>
-          ))}
-        </Flex>
-      )}
+      {/* 轮次格**排在末尾**（用户 2026-10-07 口径：输入 · 缓存 · 输出 · 耗时 · 轮次）：
+          前三格是这一次的**量**、耗时是它花了多久，轮次是「跑了几轮」这个过程读数——
+          放在用量前面会把「量」那一串读断。`total` 为 `null` 时只说当前值（不编一个会走动的分母） */}
+      <Typography.Text type="secondary" data-testid="agent-log-facts-turns">
+        轮次 {facts.turns.current}
+        {facts.turns.total === null ? '' : ` / ${facts.turns.total}`} 轮
+      </Typography.Text>
 
       {/* 失败归因：`code` 可以为 null（不是每种失败都有错误码），有就一起给，没有就不留空格 */}
       {facts.error !== null && (
         <Tag color="error" data-testid="agent-log-facts-error">
           {facts.error.code === null ? facts.error.message : `${facts.error.code} ${facts.error.message}`}
         </Tag>
-      )}
-
-      {facts.exitReason !== null && (
-        <Typography.Text type="secondary" data-testid="agent-log-facts-exit">
-          结束原因 <Tag color={EXIT_REASON_COLORS[facts.exitReason] ?? 'default'}>{facts.exitReason}</Tag>
-        </Typography.Text>
       )}
 
       {/* 「等待答复」只在真的在等时出现（判据由调用方从当前节点的块里扫出来） */}

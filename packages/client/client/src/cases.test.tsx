@@ -283,6 +283,7 @@ describe('仓库相关的三个动作（R7：按仓库路径，不带 caseId）'
     const { result } = renderHook(() => useGenerateRubric(), { wrapper });
 
     const generated = await result.current.generate({
+      mode: 'generate',
       rubric: { groups: [] },
       taskPrompt: '补回归',
       prompt: '',
@@ -292,9 +293,15 @@ describe('仓库相关的三个动作（R7：按仓库路径，不带 caseId）'
     expect(generated.rubric.groups[0]?.items[0]?.id).toBe('A1');
     expect(generated.addedItems).toBe(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/cases/generate-judge-prompt');
-    // 请求体就是 `GenerateRubricInput` 的四个字段（服务端按 `prompt` 是否为空分派两个动作）
+    // 请求体就是 `GenerateRubricInput` 的五个字段（服务端按 `mode` 显式分派三个动作）
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).body).toBe(
-      JSON.stringify({ rubric: { groups: [] }, taskPrompt: '补回归', prompt: '', repoPath: 'D:\\projects\\gateway' }),
+      JSON.stringify({
+        mode: 'generate',
+        rubric: { groups: [] },
+        taskPrompt: '补回归',
+        prompt: '',
+        repoPath: 'D:\\projects\\gateway',
+      }),
     );
   });
 

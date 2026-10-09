@@ -120,7 +120,7 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     startedAt: at(0),
     endedAt: at(180),
     /**
-     * 夹具的轮次与真实数据层同口径：`current` = 已经观察到几轮、**`total` 恒为 `null`**
+     * 夹具的轮次与真实数据层同口径：`current` = 已经观察到几轮、`total` 在真实链路里恒为 `null`（codex / claude 两份夹具写了具体值，但**上不了屏**——组装层会把 `turns` 整格重写成 `total: null`）
      * （不是「一共几轮」）。模型组装会用时间轴自己的轮次数覆盖 `current`，故这里写什么都不会
      * 影响上屏的读数——但夹具要是写成一个会走动的 `total`，读的人会以为界面能显示「一共几轮」。
      */
@@ -128,7 +128,27 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     tokens: { input: 218, cached: 8832, output: 1420 },
     thinking: { tokens: 640, basis: 'subset-of-output' },
     domain: [
-      // 与数据层同形（2026-10-07）：改动那一格给分段（git stat 上色），评分那一格的模型名给 Tag 段
+      // 与数据层同形（2026-10-07）：**智能体 · 模型 · 思考强度 · 改动 · 评分**五格、顺序即渲染顺序
+      // （前三格是「谁在跑」，后两格是「改了多少 / 得了多少分」）；评分那一格**只给分**
+      // （同一天的另一条口径：「评分模型：…」那句提示从事实条删掉了，见 `log-drawer-state.ts`）
+      {
+        id: 'agent',
+        label: '智能体',
+        value: 'Claude Code',
+        segments: [{ text: 'Claude Code', tag: true, tagTone: 'blue' }],
+      },
+      {
+        id: 'model',
+        label: '模型',
+        value: 'claude-opus-4-6',
+        segments: [{ text: 'claude-opus-4-6', tag: true, tagTone: 'geekblue' }],
+      },
+      {
+        id: 'effort',
+        label: '思考强度',
+        value: 'max',
+        segments: [{ text: 'max', tag: true, tagTone: 'purple' }],
+      },
       {
         id: 'diff',
         label: '改动',
@@ -144,17 +164,9 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
         label: '评分',
         value: '8/10',
         tone: 'success',
-        hint: '评分智能体：claude-code · 模型：deepseek-chat',
-        hintSegments: [
-          { text: '评分智能体：' },
-          { text: 'claude-code', tag: true },
-          { text: ' · 模型：' },
-          { text: 'deepseek-chat', tag: true },
-        ],
       },
     ],
     error: null,
-    exitReason: 'completed',
     live: false,
     ...overrides,
   };
@@ -202,11 +214,15 @@ function errorEvent(seconds: number, message: string): AgentEvent {
  *   · 「已调度的工具」（`vendor`）与「用过的工具」（`observed`）**分列两组**：混成一组就会出现
  *     「列了 30 个工具，其实只用了 2 个」；
  *   · **没有「用户提示词」这一条**——它是对话、不是环境配置（它在时间轴的首条消息里）。
+ *
+ * 第一参是**显示名**（`agentLabel`，如「DeepSeek Harness」）而不是 kind：真机上这一格由
+ * `client/build-environment.ts` 的 `summaryOf` 映射好（用户 2026-10-08 口径：页面展示不用缩写），
+ * 夹具照真形状给 ⇒ 把 kind 传进来就不再是「真机上会出现的形态」。
  */
-export function environmentFixture(agentKind: string, modelId: string): AgentEnvironment {
+export function environmentFixture(agentLabel: string, modelId: string): AgentEnvironment {
   return {
     summary: {
-      agentKind,
+      agentLabel,
       modelId,
       effort: null,
       providerName: '本地网关',
@@ -508,7 +524,7 @@ export function dshFixture(): AgentLogFixture {
     events,
     capability: capability(),
     capabilityNotes: ['deepseek-v4 路由下多智能体不可用'],
-    environment: environmentFixture('dsh', 'deepseek-v4'),
+    environment: environmentFixture('DeepSeek Harness', 'deepseek-v4'),
     model: buildAgentLogModel({
       records,
       events,
@@ -565,7 +581,7 @@ export function codexFixture(): AgentLogFixture {
       streamingDelta: { level: 'no', source: null, reason: 'not-supported' },
     }),
     capabilityNotes: [],
-    environment: environmentFixture('codex', 'gpt-5-codex'),
+    environment: environmentFixture('Codex', 'gpt-5-codex'),
     model: buildAgentLogModel({
       records,
       events,
@@ -622,7 +638,7 @@ export function claudeFixture(): AgentLogFixture {
     events,
     capability: capability({ subagent: { level: 'yes', source: 'aggregate', reason: null } }),
     capabilityNotes: ['forwardSubagentText 未开启'],
-    environment: environmentFixture('claude-code', 'claude-sonnet-4-5'),
+    environment: environmentFixture('Claude Code', 'claude-sonnet-4-5'),
     model: buildAgentLogModel({
       records,
       events,

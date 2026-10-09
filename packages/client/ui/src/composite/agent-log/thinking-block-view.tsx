@@ -4,10 +4,11 @@
  * `thinking` 块：折叠面板 + 标题上的「还在思考」信号。
  *
  * 三条口径：
- *   1. **`text === null` 时显示缺失原因，不显示空面板**——空面板会被读成「思考了但什么也没想」，
- *      与「这家拿不到思考文本」是两件事。连原因都没有（`textMissing === null`）时也必须说话；
- *   2. **`textKind === 'summary'` 要标「摘要」**：codex 事件流那一格按厂商定义只有推理摘要，
- *      不标注就是假称全文；`'none'` 不需要另标，第 1 条已经把话说完了；
+ *   1. **没有正文就什么都不渲染**（`text === null` ⇒ 返回 `null`）：数据层如实记着「有思考、无文本」
+ *      这条事实，但界面上它只能变成一句占位文案，**而不是用户要看的思考** ⇒ 整块隐藏
+ *      （`build-model` 已在模型层过滤掉这一档，这里是第二道：组件被别处直接构造时同样不出占位）；
+ *   2. **`textKind === 'summary'` 要标「摘要」**：codex 那一格可能是厂商摘要，
+ *      不标注就是假称全文；`'none'` 不需要另标——它已经不显示了；
  *   3. **扫光只给折叠态标题**（`assembly === 'open'` 且收起）：展开时正文在流，
  *      静态文本上再挂动画只会把「还在流」这个信号稀释成噪声。
  *      判据只有 `block.assembly` 一格（模型里没有第二个流式布尔）。
@@ -20,7 +21,7 @@ import type { ReactNode } from 'react';
 import { ACTIVITY_SWEEP_CLASS } from '../../base/agent-activity-line';
 import { MonoText } from '../../base/mono-text';
 import type { ThinkingBlock } from './types';
-import { MESSAGE_SOURCE_LABELS, MISSING_REASON_LABELS } from './types';
+import { MESSAGE_SOURCE_LABELS } from './types';
 
 export interface ThinkingBlockViewProps {
   block: ThinkingBlock;
@@ -30,20 +31,14 @@ export interface ThinkingBlockViewProps {
 
 const PANEL_KEY = 'thinking';
 
-/**
- * 拿不到思考文本时说清是哪一种「没有」。
- * `textMissing === null` 是契约允许的组合（`text` 为 null 时它「必填」，但类型上仍可空），
- * 这时给一句最保守的话，**不留空**。
- */
-function missingText(block: ThinkingBlock): string {
-  return block.textMissing === null ? '思考文本未采集' : MISSING_REASON_LABELS[block.textMissing];
-}
-
 export function ThinkingBlockView({ block, open, onOpenChange }: ThinkingBlockViewProps): ReactNode {
   const { token } = theme.useToken();
   const sourceLabel = MESSAGE_SOURCE_LABELS[block.source];
   // 变量名刻意不叫「流式」什么：本目录不许出现自造的流式判据，`assembly` 是唯一判据
   const openAssembly = block.assembly === 'open';
+
+  // 无正文：整块不出现（不给占位、也不给空面板——空面板会被读成「思考了但什么也没想」）
+  if (block.text === null) return null;
 
   const label = (
     // 扫光挂在**标题容器**上：折叠态下看不到正文，标题不表态就没有任何地方能表态了
@@ -80,7 +75,7 @@ export function ThinkingBlockView({ block, open, onOpenChange }: ThinkingBlockVi
 }
 
 /**
- * 展开后的正文：缺失原因（灰字）或原文（等宽、斜体、左侧竖线）。
+ * 展开后的正文：原文（等宽、斜体、左侧竖线）。
  * 单独一个函数是为了让 `block.text === null` 的窄化留在同一处——
  * 直接在组件里写三元会让「已经判过 null」这件事在下游变成一次断言。
  */
@@ -95,9 +90,8 @@ function ThinkingBody({
   indent: number;
   lineWidth: number;
 }): ReactNode {
-  if (block.text === null) {
-    return <Typography.Text type="secondary">{missingText(block)}</Typography.Text>;
-  }
+  // 第二道兜底：无正文不出正文面板（组件顶部已经整块挡掉，这里只负责类型窄化后的安全出口）
+  if (block.text === null) return null;
   return (
     <Typography.Paragraph italic style={{ borderInlineStart: `${lineWidth}px solid ${border}`, paddingInlineStart: indent }}>
       <MonoText text={block.text} />

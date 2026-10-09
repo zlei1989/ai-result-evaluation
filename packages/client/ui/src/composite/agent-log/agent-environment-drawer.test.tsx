@@ -29,7 +29,9 @@ afterEach(() => {
 
 const ENVIRONMENT: AgentEnvironment = {
   summary: {
-    agentKind: 'dsh',
+    // 数据层给的就是**显示名**（映射在 `client/build-environment.ts`，见 `summaryOf`）：
+    // L0 渲染件里不许出现「厂商 → 文案」的表（`agent-log-layering.test.ts` 的 (e) 条）
+    agentLabel: 'DeepSeek Harness',
     modelId: 'deepseek-v4',
     effort: null,
     providerName: '网关',
@@ -110,11 +112,19 @@ describe('AgentEnvironmentDrawer', () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
-  it('摘要逐项照数据渲染：effort 为 null 写「未指定」', () => {
+  /**
+   * 摘要逐项照数据渲染：**「智能体」那一格画的是数据层给的显示名**（用户 2026-10-08 口径：
+   * 页面展示不用缩写）。摘要里早已没有 kind 那一格（它是数据层映射好的文案），
+   * 故这里钉的是「画的是那个字段、而不是自己拿 kind 去查表」——
+   * 后者会让 `agent-log-layering.test.ts` 的 (e) 条当场红（L0 不许持有「厂商 → 文案」的表）。
+   */
+  it('摘要逐项照数据渲染：智能体画显示名、effort 为 null 写「未指定」', () => {
     renderDrawer();
 
     expect(screen.getByText('智能体')).toBeInTheDocument();
-    expect(screen.getByText('dsh')).toBeInTheDocument();
+    // 全名在、kind 缩写不在（阴性面同样要断言：只钉全名时，「两处都画」的实现照样绿）
+    expect(screen.getByText('DeepSeek Harness')).toBeInTheDocument();
+    expect(screen.queryByText('dsh')).toBeNull();
     expect(screen.getByText('思考强度')).toBeInTheDocument();
     expect(screen.getByText('未指定')).toBeInTheDocument();
     expect(screen.getByText('abc1234')).toBeInTheDocument();

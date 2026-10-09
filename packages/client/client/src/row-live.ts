@@ -7,8 +7,9 @@
  *   · 抽屉关着的时候（绝大多数时间）不必为了几个数字把全量日志拉进浏览器。
  *
  * 五条口径：
- *   1. **值来自事件流、终态交回快照**：跑动期的 tok/轮次是适配器上报值或实时估算（见 agents 的
- *      `liveUsage`），行一进终态就关掉这一行的连接并 mutate 一次快照——界面随后显示的是快照里的
+ *   1. **值来自事件流、终态交回快照**：跑动期的 tok/轮次是适配器上报值或实时估算（每一条事件自带
+ *      `tokensBasis`，见 contracts 的 `agent-event.ts`——A2 起口径挂在事件上，不再挂在适配器的
+ *      能力声明上），行一进终态就关掉这一行的连接并 mutate 一次快照——界面随后显示的是快照里的
  *      权威值，这里不再自作主张；
  *   2. **只订阅在跑的行的**（调用方传 `rowIds`）：详情页一屏最多几行，而列表页有几十轮——
  *      spec §8 末段那条「几十条长连接」的约束就是靠调用方把集合收窄来满足的；
@@ -116,7 +117,7 @@ export const LIVE_STATE_INIT: RowLiveState = {
 /**
  * 活动文本的**采样节奏**（毫秒）。
  * 写成可变对象是本仓的既有约定（同 `TEXT_API_RETRY` / `ROW_RETRY`）：用例把它调小以免每条用例
- * 真等一秒，而**产品默认值必须有独立用例钉住**、`afterEach` 必须还原（AGENT.md）。
+ * 真等一秒，而**产品默认值必须有独立用例钉住**、`afterEach` 必须还原（AGENTS.md）。
  * 为什么是 1s：卡片上那一行的动效是 1.8s 一轮的，文字跟着采样走完全够用，而重渲染因此被压到
  * 每秒最多一次（帧率再高也不变）——这是「日志帧不逐帧 setState」那条守卫的另一半。
  */
@@ -172,8 +173,9 @@ export function stepLiveState(state: RowLiveState, event: AgentEvent): RowLiveSt
     if (base.candidateEnded) return { ...base, lastSeq: event.seq };
     /**
      * **带会话身份的 `usage` 不是行级读数**（2026-10-05，口径与 spec §2.1 的「行级三格不动」同一条）：
-     * `turn.subagentId` **非空**的那一条报的是**那个子会话自己的**累计（claude 收尾为每个子会话逐轮发的
-     * 就是它，见 `providers/claude-code/index.ts` 的 finalize），而行级读数（卡片 / 抽屉事实条 / 快照）
+     * `turn.subagentId` **非空**的那一条报的是**那个子会话自己的**累计（历史上 claude 收尾为每个子会话
+     * 逐轮发过这一批，2026-10-06 起已停发、`turn.subagentId` 恒为 `null`；今天**只有 dsh** 会发它，
+     * 见 `providers/dsh/events.ts`），而行级读数（卡片 / 抽屉事实条 / 快照）
      * 只认 `turn` 缺省 / 显式 `null` / `subagentId === null` 的那一条。
      *
      * 为什么必须在这一层挡：那一批会话尺度读数**排在主会话读数之后**（收尾才发）⇒ 不挡就会被当成

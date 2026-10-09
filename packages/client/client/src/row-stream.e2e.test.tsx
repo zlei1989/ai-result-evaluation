@@ -5,7 +5,7 @@
  *
  * 为什么必须有这一条（p5 阶段评审 C1 的教训）：单侧的帧格式断言（api 侧 4 条）与单侧的替身用例
  * （client 侧 12 条 + 24 个变异体）可以**同时全绿而真实链路全死**——api 发的是具名事件
- * （`event: <type>`），client 只绑 `onmessage`，而 `onmessage` 只收无名事件 ⇒ 浏览器里 7 种事件
+ * （`event: <type>`），client 只绑 `onmessage`，而 `onmessage` 只收无名事件 ⇒ 浏览器里八种事件
  * 全部没有接收者。两侧各自的 brief 都没写错，错在**接缝**。本文件把两侧接起来：
  *   · 服务器按 api 的 `toFrame` **逐字**发帧（`id:` + `event:` + `data:` + 空行，含 `: ready` 注释帧）；
  *   · 客户端用**真实的 `EventSource` 实现**（SSE 规范实现，具名事件派发、`Last-Event-ID` 重连都有），

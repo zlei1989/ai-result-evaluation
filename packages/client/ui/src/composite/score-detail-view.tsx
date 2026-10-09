@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * 评分详情：总分 + 满分 + 逐项达成 / 未达成 + 每项理由 + 总评 + 评分者 + 模型原始返回。
- * 六条口径：
+ * 评分详情：评分运行信息 + 总分 + 满分 + 逐项达成 / 未达成 + 每项理由 + 总评 + 记账 + 模型原始返回。
+ * 七条口径：
  *   1. **总分原样显示 `score.totalScore`，前端不重算**——它是服务端按权重加总出来的权威值
  *      （缺一项即整行判失败），在这里「按评分表现场加一遍」会把数据不一致静默改写成另一个数；
  *   2. **满分来自 `score.maxScore`**（不是常量 100，也不现算）——它是这一分生成时那张表的权重之和；
@@ -18,7 +18,15 @@
  *   6. 逐项明细走 antd **`Table`（`size="small"`）**，与 `rubric-table` 的只读形态同一口径。
  *      **一组一张表**：组名是评分表自己的结构，摊成一张大表反而要多一列「组名」，而那一列在
  *      每一行都重复一遍。列是固定的 ⇒「缺判定」不再是「少一行」，而是那一行的判定列如实写出
- *      「缺少判定」（口径 4 因此变得**看得见**，不再依赖某个兄弟元素刚好没被渲染出来）。
+ *      「缺少判定」（口径 4 因此变得**看得见**，不再依赖某个兄弟元素刚好没被渲染出来）；
+ *   7. **顶部那两行说的是「这一分是谁打的、花了多少」**——全部取自 `score` 自己的五格
+ *      （`judgeAgentKind` / `judgeModelId` / `judgeEffort` / `judgeTokens` / `judgeDurationMs`），
+ *      形态沿用「无标题、两行」（第一行身份、第二行用量 / 耗时，理由见正文那段注释）。
+ *      ⚠️ **2026-10-08 用户口径**：这一整段此前是**被评那一行**的执行信息（`EvalRow` 的五格），
+ *      而抽屉叫「评分详情」——读者拿执行的花销去理解评分，两件事差了整整一个阶段（`EvalRow.durationMs`
+ *      契约里就写明不含评分阶段）。故候选那五格**不再进这个抽屉**（行卡片与执行日志里都有），
+ *      评分的两格由两条评分通路**在评分时落盘**（见 `contracts/src/score.ts` 的 `judgeTokens`）。
+ *      于是本视图**只吃 `score` 与 `rubric`**：没有「行数据配错分」这条缝了。
  */
 import { Flex, Table, Tag, Typography, theme } from 'antd';
 import type { TableColumnsType } from 'antd';
@@ -26,8 +34,10 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { AGENT_LABELS, rubricItemKeys, type Rubric, type ScoreResult } from '@aieval/contracts';
 import { EllipsisText } from '../base/ellipsis-text';
 import { JsonText } from '../base/json-text';
+import { formatDuration } from '../base/metric-line';
 import { NestedDrawer } from '../base/nested-drawer';
 import { formatDateTime } from '../base/format';
+import { formatUsageTriple } from '../base/usage-metrics';
 
 export interface ScoreDetailViewProps {
   score: ScoreResult;
@@ -147,6 +157,54 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
 
   return (
     <Flex vertical gap={16} style={{ padding: 16 }}>
+      {/* 评分运行信息（口径 7）：这一段说的是**这一分**——谁打的（评分智能体 / 评分模型 / 强度）
+          与花了多少（用量 / 耗时），五格全部取自 `score`。**不写标题、并成两行**（形态沿用用户
+          2026-10-07 晚口径；内容按 2026-10-08 口径整段换成评分的花销）：
+          原来那五行 `Descriptions` 连标题一起占掉一百多像素，而这一段一个取数也没有——它只是把
+          **已经落盘**的字段摊开给人核对。标题删掉之后「这一格是谁的」靠标签自带的「评分」二字承担
+          （「评分智能体」「评分模型」），抽屉本身又叫「评分详情」，故不需再写一行小标题。
+          **分组是显式的、不靠自然折行**（用户口径）：第一行只放「这一分是谁打的」（身份三格），
+          第二行放「花了多少」（用量 / 耗时）——自然折行会把用得最多的那一格（用量）挤到第一行、
+          把「耗时」甩到第二行单独挂着，量化信息就散了。每一行自己 `wrap`：抽屉更窄时行内折，
+          不横向溢出。
+          **第一行那三个值走 antd `Tag`、一色一格**（用户 2026-10-07 晚口径）：评分智能体 `blue`、
+          评分模型 `geekblue`、思考强度 `purple`。标签留在 Tag **外面**、仍是次要色文字
+          ——一个 Tag 里塞两种语义（谁是标签、谁是值）会让人一眼读不出来。`purple` 与评测行卡片上
+          那个档位 Tag（`eval-row-card.tsx`）同色：同一个档位在本仓的四处展示点长得一样。
+          颜色**不随取值变**（`off` 与 `未指定` 同为紫，文本通路与三家智能体同为蓝）：档位之间没有
+          排名口径（spec D12），驱动者之间也没有强弱口径——上色成「好 / 坏」就是把一个没证实的结论
+          画进界面。
+          **文本通路那一格写「文本 API」**（`judgeAgentKind === null`）：这一格回答的是「谁在驱动
+          这次评分」，而纯文本通路**没有智能体驱动它**（`judge-route.ts` 的原话）。写厂商名或留空都
+          更坏——前者是假话，后者让「两条通路」在界面上再也分不出来（它们的分数不可比）。 */}
+      <Flex vertical gap={4} data-testid="score-run-info">
+        <Flex gap={16} wrap data-testid="score-judge-meta">
+          <Flex align="center" gap={8}>
+            <Typography.Text type="secondary">评分智能体</Typography.Text>
+            <Tag color="blue">{score.judgeAgentKind === null ? '文本 API' : AGENT_LABELS[score.judgeAgentKind]}</Tag>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Typography.Text type="secondary">评分模型</Typography.Text>
+            <Tag color="geekblue">{score.judgeModelId}</Tag>
+          </Flex>
+          {/* 拿不到写「未指定」/「未采集」，**绝不写 0**（0 是一个读数，「没采到」不是：
+              前者说的是「真的一个 token 都没花」，后者说的是「这一家适配器/网关压根不报」）。
+              档位照上游词汇原样写：显式关闭档就是 `off`，它**不是**「未指定」的同义词 */}
+          <Flex align="center" gap={8}>
+            <Typography.Text type="secondary">思考强度</Typography.Text>
+            <Tag color="purple">{score.judgeEffort ?? '未指定'}</Tag>
+          </Flex>
+        </Flex>
+        <Flex gap={12} wrap data-testid="score-judge-usage">
+          <Typography.Text type="secondary">
+            {score.judgeTokens === null ? '用量未采集' : formatUsageTriple(score.judgeTokens)}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {`耗时 ${score.judgeDurationMs === null ? '未采集' : formatDuration(score.judgeDurationMs)}`}
+          </Typography.Text>
+        </Flex>
+      </Flex>
+
       <Flex align="baseline" gap={8} wrap>
         {/* 总分原样显示（见文件头口径 1） */}
         <Typography.Title level={4}>{score.totalScore}</Typography.Title>
@@ -187,18 +245,17 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
         <Typography.Paragraph style={{ marginBottom: 0 }}>{score.verdict}</Typography.Paragraph>
       </Flex>
 
-      {/* 评分者一行分**两条通路**（spec §10 展示表）：`judgeAgentKind === null` ⇔ 纯文本 API 评分
-          （老记录读盘后同样是 `null`，契约里 `.default(null)`），此时「评分模型：…」那一段逐字节保持
-          原样；非 null 才多出「评分智能体：X · 模型：Y」——光有模型名回答不了「这一分是文本请求打的
-          还是智能体会话打的」，而两条通路的分数不可比（README「分数怎么来的」的既有口径）。
-          「输出约束」只陈述**我们提交了什么**（spec D10）：true = 提交给模型的是 schema 约束，false =
-          只有提示词契约（文本通路与 dsh 通路）。它不表示上游一定照做了（网关可能把那一格丢掉，
-          spec §9 第 1 条），故不写「模型已按 schema 返回」这类承诺，也不给告警样式——false 只是事实。 */}
+      {/* 记账那一行（口径 7 之后剩下的两格）：**身份与强度已经在顶部那一段里了**，这里不再重复
+          （2026-10-08 用户口径：那一段整段换成评分的五格 ⇒ 旧版这里那句「评分智能体：X · 模型：Y ·
+          思考强度：Z」与顶部说的是同一件事，两处各排一套只会互相争夺注意力）。
+          留下的两格是我们这一侧的**执行事实**：
+          「输出约束」= `score.structuredOutput`（spec D10）：**它是骨架按该家能力算出的结论**——
+          true = 这一分走了 schema 约束的结构化输出，false = 只有提示词契约（文本通路与 dsh 通路），
+          不是「我们提交了什么」的自述（`contracts/src/score.ts` 的 `applied` 口径）。
+          它不表示上游一定照做了（网关可能把那一格丢掉，
+          spec §9 第 1 条），故不写「模型已按 schema 返回」这类承诺，也不给告警样式——false 只是事实。
+          「评分时间」= `judgedAt`（这一分是什么时候落下来的，横向比对时按它排）。 */}
       <Typography.Text type="secondary">
-        {score.judgeAgentKind === null
-          ? `评分模型：${score.judgeModelId}`
-          : `评分智能体：${AGENT_LABELS[score.judgeAgentKind]} · 模型：${score.judgeModelId}`}
-        {' · '}
         输出约束：{score.structuredOutput ? 'schema 约束' : '提示词约束'}
         {' · '}
         评分时间：{formatDateTime(score.judgedAt)}

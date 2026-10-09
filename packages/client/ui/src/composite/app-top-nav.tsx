@@ -17,7 +17,7 @@ export interface AppTopNavItem {
   /**
    * 前导图标：收的是**组件引用**而不是元素 —— 导航项的唯一真源 `apps/web-next/src/nav.ts` 是纯 `.ts`
    * （放不下 JSX），而应用侧改成 `.tsx` 会被 vitest 的 import-analysis 按 tsconfig 的 `jsx: preserve`
-   * 直接拒绝（AGENT.md「测试」表的既定口径）。故数据模块给组件、本组件负责渲染与可访问性处理。
+   * 直接拒绝（AGENTS.md「测试」表的既定口径）。故数据模块给组件、本组件负责渲染与可访问性处理。
    */
   icon?: ComponentType<{ 'aria-hidden'?: boolean }>;
 }

@@ -1,5 +1,6 @@
 /**
- * AgentRunStateTag：**§4.2「`running` 不可由 `output` 推断」的唯一分派处**。
+ * AgentRunStateTag：**§4.2「`running` 不可由 `output` 推断」的分派处**（工具行 / 工具组 / 计划清单三处共用；
+ * 问答卡片自持一支，不走本件）。
  *
  * 核心断言（变异体 (f) 的落点）：`running === false && !hasResult` 必须是
  * **静态灰字 + 没有 `processing` 徽标**——一个转圈的「结果未采集」会被读成「还在跑」，

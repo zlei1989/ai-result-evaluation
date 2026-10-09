@@ -292,13 +292,16 @@ export function AskUserCard({
               {/* 归一化是视图，原文才是事实。`pending` 一支**没有** `result` 这一格（契约如此）：
                   「还没收场」时连原文都还没有，也就没有可查的东西 */}
               {interaction.state === 'settled' && interaction.result !== null && (
-                <RawOutputPanel
-                  source={{ kind: 'single', result: interaction.result }}
-                  open={rawOpen}
-                  onOpenChange={onRawOpenChange}
-                  label="原始结果"
-                  onRetry={onRequestDiagnostics}
-                />
+                // 入口不自带容器（`raw-output-panel.tsx` 口径 7）：横排与间距由这一层给
+                <Flex align="center" gap={8} wrap>
+                  <RawOutputPanel
+                    source={{ kind: 'single', result: interaction.result }}
+                    open={rawOpen}
+                    onOpenChange={onRawOpenChange}
+                    label="原始结果"
+                    onRetry={onRequestDiagnostics}
+                  />
+                </Flex>
               )}
             </Flex>
           ),

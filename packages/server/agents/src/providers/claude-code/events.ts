@@ -28,10 +28,18 @@
  * （与 `result.usage` 排除侧链的口径一致）。
  */
 import type { UsageTokens } from '@aieval/contracts';
+import {
+  clipSummary,
+  subagentDispatchSummary,
+  subagentSettledSummary,
+  toolCallSummary,
+  toolErrorSummary,
+} from '../../activity';
 import { logDraft, safeStringify, unknownEventDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
 import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
+import { lookupClaudeTaskName, rememberClaudeTaskName } from './message';
 
 /** 子智能体消息的标记字段：非空即「主循环之外」，不参与轮次计数 */
 const SIDE_CHAIN_FIELD = 'parent_tool_use_id';
@@ -119,14 +127,61 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
       return { drafts: [vendorSystemDraftOf(message), unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
     }
   }
+  /**
+   * `user` 消息里承载的是**工具结果**（`tool_result` 块）：只有报错才给一句人话摘要
+   * （2026-10-07 统一）——那是「这一行出事了」，而它没有别的行级出口；成功返回不播，
+   * 它的落点是结果块与抽屉的原始输出面板（口径与判据见 `src/activity.ts`）。
+   */
+  if (type === 'user') {
+    const failure = toolFailureOf(message);
+    if (failure !== null) {
+      return { drafts: [logDraft('stdout', safeStringify(raw), failure)], tokens: null, turns: null, failure: null };
+    }
+  }
   // system / user / 未来新增的类型：一律保留原始负载（§5.6.3）
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
 }
 
 /**
+ * `user` 消息里的**工具报错**摘要；没有任何 `is_error` 的 `tool_result` 时返回 `null`
+ * （此时调用方照旧只落原始负载）。
+ *
+ * 形状（真机）：`{ type:'user', message:{ role:'user', content:[{ type:'tool_result', tool_use_id, content, is_error }] } }`；
+ * `content` 两种外形都出现过——**字符串**与**内容块数组**（`[{type:'text',text}]`）⇒ 两种都要读。
+ * 多条报错拼成一句（`toolErrorSummary` 负责截断），不在这里挑一条。
+ */
+function toolFailureOf(message: Record<string, unknown> | null): string | null {
+  const texts: string[] = [];
+  for (const block of readContentBlocks(message)) {
+    const record = asRecord(block);
+    if (record?.type !== 'tool_result' || record.is_error !== true) continue;
+    texts.push(toolResultText(record.content));
+  }
+  if (texts.length === 0) return null;
+  return toolErrorSummary(
+    texts
+      .filter((text) => text !== '')
+      .join(' '),
+  );
+}
+
+/** `tool_result.content` 的正文：字符串原样，内容块数组取 text 块（别的块型不猜） */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((one) => {
+      const text = asRecord(one)?.text;
+      return typeof text === 'string' ? text : '';
+    })
+    .filter((text) => text !== '')
+    .join('\n');
+}
+
+/**
  * 子智能体生命周期 → 一条**可解析**的日志（spec §6 / §6.4）。
  *
- * 为什么以日志承载而不是新事件类型：v1 的 `AgentEvent` 是 7 型封闭联合，**没有** subagent 事件；
+ * 为什么以日志承载而不是新事件类型：`AgentEvent` 今天仍是**八型封闭联合**，其中**没有** subagent 事件；
  * §6 的 `subagent-start`/`subagent-end` 是 v2 契约（尚未实现）。
  * 在 v1 上把它们落成一条 `log`，载荷是 JSON——消费方按 `kind: 'subagent'` 过滤即可。
  * 这与 `unknownEventDraft` 的区别是**关键的**：那时这些消息只是一坨没人认识的原始 JSON
@@ -152,14 +207,24 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
   const identity = subagentId === null || subagentId === '' ? null : subagentId;
 
   const isStart = subtype === TASK_STARTED;
-  const name = readString(message, 'description');
+  /**
+   * 名字：派发帧自带 `description`；**收场帧没有这一格**（真机键集见 `message.ts` 顶部的名字表），
+   * 于是回落到同一 `task_id` 在派发时记下的那个名字——不回填就会产出「已派发子任务：X」紧跟
+   * 一句无名的「子任务已完成」这种自相矛盾的一对（2026-10-07 真机 run `e68351a5` 就是它）。
+   */
+  const name = readString(message, 'description') ?? (isStart || identity === null ? null : lookupClaudeTaskName(identity));
+  // 派发帧是名字的唯一来源 ⇒ 顺手记进同一张表（消息侧也写同一格，值相同、幂等）
+  if (isStart) rememberClaudeTaskName(identity, name);
   const payload: Record<string, unknown> = {
     kind: 'subagent',
     phase: isStart ? 'start' : 'end',
     /**
      * `'wire'` = SDK 原生消息（spec §6.1）。claude 侧**有更好的通道**：
      * 原生 `task_*` 带 `tool_use_id`（归属键）与 `spawn_depth`，而 hook 两者都没有。
-     * ⇒ claude 走 wire，hook 只作后备——这与 codex 相反（那边**只能**走 hook，§7.5.4）。
+     * ⇒ claude 走 wire，hook 只作后备。
+     *
+     * ⚠️ 从前这里写着「这与 codex 相反（那边只能走 hook）」——**已作废**：codex 早已迁到
+     * `codex app-server`，取数走协议通知流（同样算 `wire`），三家今天都**没有** hook 通道。
      */
     source: 'wire',
     subagentId: identity,
@@ -183,6 +248,9 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
      * （只有 schema 级证据，见 §6.3），dsh 待验。
      */
     payload.status = readString(message, 'status');
+    // 名字在收场帧上缺席 ⇒ 把回填到的那一份写进证据（否则日志里就只剩 `subagentId`，而按 id 反查名字
+    // 要另一张表；这与 dsh 的收场载荷带 `name` 是同一条口径）
+    payload.name = name;
     // 字段名用 `outcome` 而不是厂商的 `summary`：spec §6 的 `SubagentEnd.outcome` 就是"结果摘要"，
     // 两处叫法不一致会让消费方多写一层映射（而本族的全部意义就是**不用**按厂商分支）
     payload.outcome = readString(message, 'summary');
@@ -197,23 +265,14 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
   }
 
   const text = JSON.stringify(payload);
-  return logDraft('stdout', text, subagentSummary(isStart, name, readString(message, 'status')));
+  return logDraft(
+    'stdout',
+    text,
+    isStart
+      ? subagentDispatchSummary(name)
+      : subagentSettledSummary(name, readString(message, 'status')),
+  );
 }
-
-/** 活动行的一句话：`已派发子任务：<任务名>` / `子任务已完成：<任务名>` */
-function subagentSummary(isStart: boolean, name: string | null, status: string | null): string {
-  const who = name === null || name === '' ? '子任务' : name;
-  if (isStart) return `已派发子任务：${who}`;
-  const state = status === null || status === '' ? '结束' : SUBAGENT_STATUS_LABELS[status] ?? status;
-  return `子任务${state}：${who}`;
-}
-
-/** 终态的中文说法；表里没有的状态原样透出（不假装认识） */
-const SUBAGENT_STATUS_LABELS: Record<string, string> = {
-  completed: '已完成',
-  failed: '失败',
-  stopped: '已停止',
-};
 
 /**
  * 记一次模型往返并返回**到目前为止**的次数；这条消息不带可归并的 id 时返回 null（不猜）。
@@ -396,19 +455,27 @@ function textOfBlock(block: unknown): string | null {
 }
 
 /**
- * 工具块的人话摘要：`调用工具 Read、Grep`（同名工具只列一次）。
+ * 工具块的人话摘要：`调用工具 <名>：<参数摘要>`（多个块用 `；` 串成一句，整句仍截断）。
+ *
+ * **带参数**（2026-10-07 统一）：从前这里只取 `name`，产出的是 `调用工具 Bash`——而同一行原始负载里
+ * `input.command` 明明写着 `ls -la "D:/w"`。结果是这句摘要比它替换掉的那句人话（模型的答复文本）
+ * 信息量更低，活动行反而变差。参数摘要的取法与另两家共用 `src/activity.ts`，只有一份实现。
+ *
  * 没有 `tool_use` 块时返回 `undefined`——「这一条没有工具名可说」与「名字是空串」是两件事：
  * 前者不给摘要（活动行于是保留上一句），后者不可能（空名字的块会被过滤掉）。
  */
 function summarizeToolUse(blocks: unknown[]): string | undefined {
-  const names = blocks
-    .map((block) => {
-      const record = asRecord(block);
-      return record?.type === 'tool_use' ? readString(record, 'name') : null;
-    })
-    .filter((name): name is string => name !== null && name !== '');
-  if (names.length === 0) return undefined;
-  return `调用工具 ${[...new Set(names)].join('、')}`;
+  const parts: string[] = [];
+  for (const block of blocks) {
+    const record = asRecord(block);
+    if (record?.type !== 'tool_use') continue;
+    const name = readString(record, 'name');
+    if (name === null || name === '') continue;
+    const summary = toolCallSummary(name, record.input);
+    if (!parts.includes(summary)) parts.push(summary);
+  }
+  if (parts.length === 0) return undefined;
+  return clipSummary(parts.join('；'));
 }
 
 /** 空的用量三元组之外，本文件内部统一用这个别名 */

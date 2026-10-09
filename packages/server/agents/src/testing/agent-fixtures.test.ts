@@ -2,8 +2,8 @@
 /**
  * 夹具自己的回归网（评审 M2）。
  * 为什么单开一个文件测夹具：夹具是「单测不碰真实 API / 真实 CLI」的全部物质基础，而夹具**悄悄变弱**
- * 时依赖它的用例不会红，只会变成假绿（复评 I1 的教训：旧 codex 夹具给了一个真实 SDK 没有的带外
- * `stop()` 特权）。`createFakeDshNotifications` 里「挂起前再查一次」的守卫
+ * 时依赖它的用例不会红，只会变成假绿——所以下面每一条断言都是「把夹具的语义钉成常驻证据」。
+ * `createFakeDshNotifications` 里「挂起前再查一次」的守卫
  * （`agent-fixtures.ts` 的 `if (terminated !== null) throw terminated;`）此前**从未失败过**：删掉它整包
  * 143 例仍全绿。但它守的是**保真**而不是收敛——真实 `NotificationSubscriptionImpl.next()`
  * （`node_modules/@deepseek-ai/dsh-sdk-client/lib/index.js:256-259`）在 `close()` 之后**立即 reject**
@@ -12,7 +12,7 @@
  * 本文件只驱动夹具本身，不经过任何适配器；所有断言都在毫秒级真实定时器上完成（不碰网络与真实 CLI）。
  */
 import { describe, expect, it } from 'vitest';
-import { createFakeCodexSdk, createFakeDshSdk, createFakeStream, createRecorder } from './agent-fixtures';
+import { createFakeDshSdk, createFakeStream, createRecorder } from './agent-fixtures';
 
 /** 夹具里「挂住」的形状只存在于 promise 上；把「挂死」变成一次可读的失败，而不是让用例超时 */
 async function withTimeout<T>(promise: Promise<T>, ms = 200): Promise<T> {
@@ -36,20 +36,6 @@ async function delay(ms: number): Promise<void> {
   });
 }
 
-/** 记录一个 promise 有没有落定（不消费它的结果，避免制造未处理的 rejection） */
-function trackSettlement(promise: Promise<unknown>): () => boolean {
-  let settled = false;
-  void promise.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
-  return () => settled;
-}
-
 interface FakeDshHarness {
   readonly client: {
     subscribe: (filter?: (notification: { method: string; params: Record<string, unknown> }) => boolean) => FakeDshSubscription;
@@ -69,17 +55,6 @@ interface FakeDshSubscription extends AsyncIterable<unknown> {
 
 interface FakeDshSdkModule {
   DeepSeekHarness: new (options: Record<string, unknown>) => FakeDshHarness;
-}
-
-interface FakeCodexSdkModule {
-  Codex: new (options: Record<string, unknown>) => {
-    startThread: (options: Record<string, unknown>) => {
-      runStreamed: (
-        prompt: string,
-        runOptions: { signal: AbortSignal },
-      ) => Promise<{ events: AsyncIterable<unknown> & { return: (value?: unknown) => Promise<unknown> } }>;
-    };
-  };
 }
 
 /**
@@ -169,36 +144,6 @@ describe('夹具 createFakeDshSdk：关闭语义照真实订阅建模', () => {
       params: { sessionId: 'session-mine', status: 'idle' },
     });
     expect(subscription.tryNext()).toBeUndefined();
-  });
-});
-
-describe('夹具 createFakeCodexEvents：return() 只转发，不做带外动作', () => {
-  it('生成器挂在 await 上时 return() 只是排队；迭代落到下一个挂起点才生效（复评 I1 的特权已不存在）', async () => {
-    /**
-     * 为什么必须钉在这里：真实 `Thread.runStreamedInternal` 返回的是**真 async generator**
-     * （`dist/index.d.ts:186`），它的 `return()` 带排队语义。旧夹具的 `return()` 走的是带外
-     * `stream.stop()`，等于给了适配器一个真实 SDK 没有的能力（复评 I1 的假绿来源）。
-     * 这条用例的两个断言分别守住两件事：
-     *  ① `return()` 不立即落定 ⇒ 排队语义（若 `return()` 改成不转发、直接 resolve，这里立刻红）；
-     *  ② 落定要等到迭代真的走到挂起点 ⇒ 没有带外 `stop()`（若 `return()` 顺手 stop()，①也立刻红）。
-     */
-    const recorder = createRecorder();
-    const controller = new AbortController();
-    const sdk = createFakeCodexSdk({ recorder, events: [], hang: true }) as FakeCodexSdkModule;
-    const thread = new sdk.Codex({}).startThread({});
-    const { events } = await thread.runStreamed('把标题改掉', { signal: controller.signal });
-    const iterator = events[Symbol.asyncIterator]();
-    void iterator.next(); // 启动迭代并挂到 hang 的那次 await 上
-    const returning = events.return();
-    const settled = trackSettlement(returning);
-    await delay(20);
-    expect(settled()).toBe(false); // 排队中：return() 还没有生效
-    expect(recorder.order).toEqual([]); // 迭代还挂在 await 上 ⇒ finally 也没跑
-    controller.abort(); // = 真实 SDK 交给 spawn(signal) 的那一次中止：让迭代落到下一个挂起点
-    await expect(withTimeout(returning)).resolves.toEqual({ done: true, value: undefined });
-    // 中止先被记为 'interrupt'（夹具照真实 SDK 把信号接到 spawn 上），迭代随后在此刻结束
-    expect(recorder.order).toEqual(['interrupt', 'turn-end']); // 'turn-end' = 在途 turn 终结
-    expect(recorder.streamCloseCount).toBe(1); // return() 恰好转发一次，且只记数
   });
 });
 

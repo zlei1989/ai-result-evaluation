@@ -65,7 +65,16 @@ export type EnvGroup = z.infer<typeof EnvGroupSchema>;
  * 故这一组不需要读事件流（真机逐字段核过）。
  */
 export const AgentEnvironmentSummarySchema = z.object({
-  agentKind: z.string(),
+  /**
+   * 智能体的**显示名**（`AGENT_LABELS` 的全名，如「DeepSeek Harness」）——用户 2026-10-08 口径：
+   * 页面展示不用缩写 ⇒ 摘要里给的是**文案**，不是 kind id。
+   *
+   * 为什么是数据层映射而不是把 kind 交给界面去查（2026-10-08）：L0 渲染件持有「厂商 → 文案」的表
+   * 就是「UI 判厂商」，`agent-log-layering.test.ts` 的 (e) 条会当场红（实测）；
+   * 而这一格本来就只服务展示（摘要七项全是给人核对的读数），故在拼装处一次映射完。
+   * 认不出的 kind **原样回落**（本格是 `z.string()`：老快照与将来第四家都不许编名字）。
+   */
+  agentLabel: z.string(),
   modelId: z.string(),
   /** 我们**要求**的档位，不是实际生效的档位（厂商可能静默降档，spec §9 第 7 条） */
   effort: z.string().nullable(),

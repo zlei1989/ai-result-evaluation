@@ -1,340 +1,512 @@
 /**
- * codex 的事件投影（§5.6.3）。
- * 规则：
- *  1. `turn.completed` → 取 `usage.input_tokens` / `usage.cached_input_tokens` /
- *     `usage.output_tokens`（三项齐了才认，缺项 → null + WARN，绝不填 0）；
- *     **`input` 要减去 cached**（2026-10-XX）：codex 的 `input_tokens` **含**缓存读
- *     （`cached_input_tokens` 是它的明细，真机 `{input_tokens:8152, cached_input_tokens:6656}`），
- *     而本仓契约的 `input` 是**非缓存输入**（claude / dsh 的原文天生就不含 cache）
- *     ⇒ 不减会让命中率公式 `cached/(input+cached)` 的分母偏大、命中率被系统性低估。
- *     详细理由写在 `readTokens` 的 JSDoc 里（含 `max(0, …)` 那一步防御）。
- *     ⚠️ 这一条路上**没有时间**：`exec --json` 的事件流一个时间字段都没有（实测）
- *     ⇒ 这条投影**不带 `timing`**，本行的时长只能由 `finalize` 读会话文件时补上
- *     （见 `transcript.ts` 的 `transcriptTiming`，`source: 'events'`）；
- *  2. `item.updated` / `item.completed` 携带**同一 item 的累积文本**：只投影新增部分，完全重复
- *     （没有新增）则丢弃——这是「唯一允许丢弃的事件是重复事件」在 codex 上的具体形状；
- *  3. `turn.failed` / `error` → 失败，并按文案归因（401 → AUTH_FAILED 等）；
- *  4. 其余（thread.started / turn.started / item.started / 未来新增类型）一律落保留原始负载的日志事件。
+ * codex 的**行级事件投影**：app-server 通知 → `AgentEventDraft` 与 `TurnProjection`。
+ * 内容级视图（消息与子任务行）在 `message.ts`，两份共用 `run-state.ts` 的同一把尺子。
  *
- * **轮次 = 一次模型 API 往返**（用户口径，2026-09-28），而 codex 这里是**近似值**，理由与误差照实登记：
- *   · codex 的 `exec --json` 顶层只有 `thread.started` / `turn.started` / `turn.completed` / `item.*`
- *     （见 `codex-rs/exec/src/exec_events.rs` 的 `ThreadEvent`），**没有逐次模型请求事件**；
- *   · 它自己的 `turn.completed` 是**整段任务**一条（实测：真实 10 次模型调用只落 1 条
- *     `turn.completed`），照它数永远是 1 —— 那正是要修的那个「三家轮次不一致」；
- *   · 逐次请求的权威计数只存在于 codex 自己的会话记录里：`$CODEX_HOME` 下 `sessions` 目录里的
- *     `rollout-*.jsonl`，其中每次模型调用落一条 `event_msg.token_count`（实测 10 条 = 10 次调用）。
- *     ⚠️ **2026-10-XX 起这个文件被读了**（`transcript.ts`，在运行**结束之后**读一次）——但它**只**用来
- *     补推理正文、子智能体的消息与用量明细（`reasoning_output_tokens` / `total_tokens`），
- *     **轮次仍然按上面的近似口径数**（用户 2026-09-28 的取舍：不依赖另一个进程内部文件的格式）。
- *     会话文件里的 `turn_id` 是更准的候选，但它属于另一个口径，混进来会让「轮次」这个数一会儿按
- *     事件流算、一会儿按文件算——那正是本文件花整段注释避免的事。
- * 故这里按**模型答复条目**近似：`item.type === 'agent_message'`，按 `item.id` 去重
- * （`item.started`/`updated`/`completed` 共享同一个 id），每见一个新 id 算一次往返。
- * ⚠️ **2026-10-05 收窄**（spec §2.3）：原来这一格还数 `reasoning`。两把尺子必须都从**两侧都能
- * 看见的东西**上数出来——DeepSeek 路由上 codex 不投影 reasoning item（实测 37 条里 0 条），
- * 而会话文件里它一条不少 ⇒ 旧口径下事件流只数到 18、文件侧数到 42，用量里程碑（带事件流那套号）
- * 与抽屉的分组根本对不上。收窄成答复条目之后两侧同源，且比旧口径**更低**
- * （旧误差方向实测偏高：真实 10 次调用产出 15 条「推理摘要 + 答复」条目，见 `ae798e52`）。
- * ⚠️ 误差方向如实登记（2026-10-05）：只发工具调用、**没有答复**的那几段仍然**偏低**（它们不推高这个数）；
- * 而一次运行若一个 `AgentMessage` 都没有（只有工具调用与推理）⇒ 轮次是 `null`（界面显示「未采集」，
- * **不编 0**）——比出一个被抬高的假数好，但这是真实的口径收窄。
- * 界面与快照都用这个数，README 与这里都写明它是近似。
+ * 三条职责边界：
+ *   1. **只投影行级事实**：计量、轮次、时长、失败、未识别通知的原始负载，以及**活动行的那一句话**
+ *      （`activityDrafts`，产物是 `log` 事件）。内容与子任务行一律走 `message.ts`——一条通知只在
+ *      一处归一，两处都出会让同一条目落两次。
+ *      两处例外，都各有理由：骨架状态 `finalText`（它不落事件、也不出内容块，而本层恰好是
+ *      **拿得到 state 且已经按主线程判过**的地方），以及活动行（卡片底部那一行只吃 `log` 事件，
+ *      同一条通知若不在这里补一句人话，那一行就只剩「更新计划：N 步」——真机形态见 `activityDrafts`）。
+ *   2. **轮次按线程分别数**（`run-state.ts` 的 `countRoundTrips`），这里交出的是**主线程**那一份
+ *      ——进度条与 `EvalRow.turns` 读的是本行跑到第几轮。子线程那一份由 `message.ts` 用同一个函数
+ *      数出来，收尾时两半相加。
+ *   3. **「过路报错」与「这一轮的结论」分开**：`error` 通知是**每次尝试**都会发的过路消息（上游自己
+ *      还会重试），折成失败会把一次最终成功的运行判死 ⇒ 它只落一条 WARN；`turn/completed` 才是
+ *      结论（`failed` 折失败、`interrupted` 是「被中止」不是失败）。
  */
-import type { SubagentRecord, UsageTokens } from '@aieval/contracts';
+import type { UsageTokens } from '@aieval/contracts';
+import {
+  planSummary,
+  subagentDispatchSummary,
+  subagentSettledSummary,
+  toolCallSummary,
+  toolErrorSummary,
+} from '../../activity';
 import { logDraft, safeStringify, unknownEventDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type FailureContext } from '../../errors';
-import { asRecord, readNumber, readString } from '../../json';
-import { toolCallBlockDraft, type MessageDraft } from '../../message';
-import type { TurnProjection, TurnState } from '../../turn';
-import { normalizedInput } from './transcript';
+import { usageTokens } from '../../message';
+import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
+import type { AppServerItem, AppServerNotificationPayload, AppServerTurn } from './appserver/protocol';
+import { APPLY_PATCH_TOOL_NAME, COMMAND_TOOL_NAME, collabStatusOf, subAgentActivityStatus } from './message';
+import { countRoundTrips, normalizedInput, observedTurns, type CodexRunState } from './run-state';
 
-/**
- * 算作「一次模型往返」的条目类型（2026-10-05 收窄，spec §2.3）：**只有模型答复条目**。
- * ⚠️ 原来这里还有 `reasoning`，两侧（事件流 / 会话文件）都数它。实测证明那会让两条通道各得一套号：
- * DeepSeek 路由上 codex **不投影** reasoning item（37 条 item 里 0 条），事件流只数到 18，而会话文件
- * 里有 24 条 Reasoning ⇒ 文件侧数到 42。用量里程碑带的是事件流那一套 ⇒ 抽屉按 42 分组、里程碑说
- * 「轮次 18」，两者对不上（2026-10-05 真机）。收窄成「答复条目」之后两侧同源，且比旧口径更低
- * （旧口径被推理条目系统性抬高，见文件头）。
- */
-const TURN_ITEM_TYPES: readonly string[] = ['agent_message'];
+/** 一轮已交出的权威读数（收尾要与它比「是否真的更新」） */
+export interface CodexEventContext {
+  kind: 'codex';
+  baseUrl: string;
+  /** 主线程 id：只有它的 `turn/completed` 结算本次运行 */
+  mainThreadId: string;
+}
 
-/** 多智能体条目（不在 SDK 声明的 item 联合里，见 `message-events.ts` 的同名常量） */
-const ITEM_COLLAB = 'collab_tool_call';
+export interface CodexEventProjection {
+  projection: TurnProjection;
+  /**
+   * 本条通知交出的权威读数；`null` = 本条不带计量。
+   * 与 `projection.tokens` 的区别：后者是「本条要发出去的值」，这一格是「本行已知的最新值」
+   * （`turn/completed` 不带用量时它仍是 `null`，调用方**保持**上一份，不回填 0）。
+   */
+  tokens: UsageTokens | null;
+}
 
 export function projectCodexEvent(
-  raw: unknown,
+  payload: AppServerNotificationPayload,
   state: TurnState,
-  seenTexts: Map<string, string>,
-  context: FailureContext,
-): TurnProjection {
-  const event = asRecord(raw);
-  const type = readString(event, 'type') ?? 'unknown';
+  runState: CodexRunState,
+  context: CodexEventContext,
+): CodexEventProjection {
+  const idle = (drafts: AgentEventDraft[] = []): CodexEventProjection => ({
+    projection: { drafts, tokens: null, turns: null, turn: null, failure: null },
+    tokens: null,
+  });
 
-  if (type === 'turn.completed') {
-    // 轮次**不在这里数**：这一条是整段任务一条（见文件头）。这里只交计量，轮次带上已经数到的值。
-    const drafts: AgentEventDraft[] = [];
-    const tokens = readTokens(event?.usage, drafts);
-    const turns = observedTurns(state);
+  if (payload.kind === 'itemStarted' || payload.kind === 'itemCompleted') {
+    // 条目自身的归一在 `message.ts`（那时才知道块与族）；这里出**活动行那一句**，并推进轮次计数
+    const drafts = activityDrafts(payload.item, payload.kind === 'itemCompleted', runState);
+    const turns = countRoundTrips(payload.item, payload.threadId, runState);
+    /**
+     * **最终答复**（骨架的 `state.finalText`，评分通路读的就是它）：codex 没有另两家那种显式的收尾
+     * 消息（claude 的 `result` / dsh 的 `assistant/message`），答复就是主线程 `item/completed` 上的
+     * `agentMessage` 条目——而 `turn/start` 的 `outputSchema` 约束的**正是这条条目的正文**
+     * ⇒ 这一格不写，`capability.structuredOutput: true` 与「评分智能体能拿到 JSON」之间就断了。
+     *
+     * 条件三条，每条各挡一种错法：
+     *   · `itemCompleted`：`item/started` 的正文可能只是半截（增量还在流），拿它当答复就是交残句；
+     *   · 主线程：子线程的结论不许顶掉主会话的产出（`finalText` 一行只有一个格子）；
+     *   · 正文非空：空块在界面上只是一行空白，写进去会把「没采到」伪装成「答复了空串」——
+     *     `judge-agent.ts` 对这两种形态给的是**两句不同的中文归因**。
+     * 覆盖语义与另两家一致（后到的主线程答复覆盖先到的），见 `turn.ts` 的 `TurnState.finalText`。
+     */
+    if (
+      payload.kind === 'itemCompleted' &&
+      payload.item.kind === 'agentMessage' &&
+      payload.threadId === context.mainThreadId &&
+      payload.item.text !== ''
+    ) {
+      state.finalText = payload.item.text;
+    }
+    if (turns === null || payload.threadId !== context.mainThreadId) return idle(drafts);
+    /**
+     * 归属：与 `turns` 同一个号（本条通知来自主线程）⇒ 界面能把这条读数放回它自己那一轮。
+     * 子线程的条目**刻意不给归属**：本行的事件流只有主线程的进度语义，把子线程的号贴上来
+     * 会让界面按 `turns` 反推出的会话关系全错。
+     */
     return {
+      projection: {
+        drafts,
+        tokens: null,
+        turns,
+        turn: { subagentId: null, round: turns },
+        failure: null,
+      },
+      tokens: null,
+    };
+  }
+
+  if (payload.kind === 'turnCompleted') {
+    return projectTurnCompleted(payload.threadId, payload.turn, runState, context);
+  }
+
+  if (payload.kind === 'tokenUsage') {
+    /**
+     * 线程级用量的**唯一来源**（协议没有「按线程读用量」的请求）。这里只记账、不发事件：
+     * `usage` 事件的发射门槛是轮次，而用量通知本身不带轮次——带一条轮次相同的 usage 是纯噪声，
+     * 且会把归属贴到错误的轮上。下一次 `turn/completed` 会把它带出去。
+     */
+    runState.usageByThread.set(payload.threadId, payload.usage);
+    return idle();
+  }
+
+  if (payload.kind === 'error') {
+    /**
+     * `error` 通知是**每次尝试**都会发的过路消息（它的同名声明还带 `willRetry`，协议层这一侧只留了
+     * 文案）⇒ 折成失败会把一次最终成功的运行判死（真机形状：「Reconnecting… 5/5」，
+     * 随后那一轮照样跑完）。故只落一条 WARN；失败由 `turn/completed` 的 `failed` 折进结论。
+     */
+    return idle([
+      logDraft('stderr', `[WARN] codex 报错（本轮尚未结算）：${payload.message}`),
+    ]);
+  }
+
+  if (payload.kind === 'turnPlanUpdated') {
+    // 计划面板由 `message.ts` 出块；这里只留一行摘要（原始负载在块的 `raw` 里）。文案与另两家的清单工具同形。
+    return idle([logDraft('stdout', safeStringify(payload), planSummary(payload.steps.length))]);
+  }
+
+  /**
+   * 其余通知**一条事件都不发**：增量的落点是内容块（`message.ts`），落到行级日志里只会把抽屉灌满
+   * （一次答复几十条片段）。未识别的通知（`other`）照旧保留原始负载——静默丢弃会让
+   * 「上游换了方法名」表现为「什么都没发生」。
+   */
+  if (payload.kind === 'other') return idle([unknownEventDraft({ method: payload.method })]);
+  return idle();
+}
+
+/**
+ * 「此刻在做什么」那一句（活动行的 `log.summary`）。
+ *
+ * **为什么这一层要发日志**：卡片底部那一行只吃 `log` 事件的 `summary` / 人话 `text`
+ * （判定在 `@aieval/client` 的 `activityOf`），而 app-server 重写后**工具面的内容全走
+ * `message.ts` 的块** ⇒ 只出块不出日志，那一行整轮只剩「更新计划：N 步」。真机症状
+ * （run `7d8d5f3b`）：74 条事件 / 44 条 log / **10 条带摘要且全是计划那一句**，最后一条摘要还是
+ * `{"method":"account/rateLimits/updated"}`（机器负载 ⇒ 被 `activityOf` 挡下）
+ * ⇒ 活动行自第 6 条事件起**永久冻住**；而真机抓包证明 `item/started` 起来时就带着完整 `command`
+ * （`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`）——信息一直都在。
+ * 另两家（dsh / claude）都是「同一条工具通知既出块、也出一行带摘要的日志」，这里补的就是那半边。
+ *
+ * **发什么由 `src/activity.ts` 的词表定**（三家同形），本函数只决定**在哪一条通知上发**：
+ *   · `commandExecution` —— 只在**开始**发：那一刻命令行已完整（上面的真机证据）；
+ *     完成时的输出与退出码是**结果**，落点是结果块与原始输出面板，不进活动行；
+ *   · `fileChange` —— 只在**完成**发：`item/started` 的 `changes` 可能还是空的，
+ *     拿它出一行会得到没有信息的「调用工具 apply_patch」；
+ *   · `mcpToolCall` —— 开始发调用、完成只在**报错**时发（错误没有别的行级出口）；
+ *   · `webSearch` / `dynamicToolCall` —— 开始发调用；
+ *   · `collabToolCall` / `subAgentActivity` —— 派发与收场（见 `collabDrafts`）；
+ *   · `agentMessage` —— 完成时落一条日志，**不带摘要**：正文本身就是人话，
+ *     由 `activityOf` 直取 `text`（与 claude 的文本块、dsh 的答复行同待遇）；
+ *   · `reasoning` / 增量 / 计划条目 —— **不发**：正文的落点是思考块与内容块，
+ *     增量逐条进日志只会把抽屉灌满（一次答复几十条片段）。
+ */
+function activityDrafts(item: AppServerItem, completed: boolean, runState: CodexRunState): AgentEventDraft[] {
+  if (item.kind === 'commandExecution') {
+    if (!completed) return [activityLine(toolCallSummary(COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }), item)];
+    /**
+     * 完成这一支**只看「有没有跑起来」**，不看退出码：
+     *   · `failed` / `declined`（起不来或被拒）是「这条命令没执行」——与文件补丁同一档，必须播；
+     *   · 正常的 `completed` **一律不播**，哪怕 `exitCode` 非零：真机 33 条命令里 6 条非零（18%），
+     *     而那是 `grep` / `Test-Path` 一类探测的正常返回，播成「工具报错」是**误导**不是保守。
+     */
+    if (item.status === 'failed' || item.status === 'declined') {
+      return [activityLine(toolErrorSummary(`命令${item.status === 'declined' ? '被拒' : '失败'}`), item)];
+    }
+    return [];
+  }
+  if (item.kind === 'fileChange') {
+    if (!completed) return [];
+    const paths = item.changes.map((one) => one.path);
+    if (item.status === 'failed' || item.status === 'declined') {
+      // 路径可能一条都没有（`changes` 为空）⇒ 不留一对空括号
+      const where = paths.length === 0 ? '' : `（${paths.join('、')}）`;
+      return [activityLine(toolErrorSummary(`改文件${item.status === 'declined' ? '被拒' : '失败'}${where}`), item)];
+    }
+    return [activityLine(toolCallSummary(APPLY_PATCH_TOOL_NAME, { changes: item.changes }), item)];
+  }
+  if (item.kind === 'mcpToolCall') {
+    const name = `${item.server}.${item.tool}`;
+    if (!completed) return [activityLine(toolCallSummary(name, item.arguments), item)];
+    /**
+     * 错误对象只声明了「有错」：`message` 拿不到时给一句不说细节的「工具报错」，
+     * 不拿 `result` 或 `status` 凑（那样会把一次成功读成失败，或反过来）。
+     */
+    const error = item.error as Record<string, unknown> | null;
+    const message = typeof error?.message === 'string' ? error.message : null;
+    /**
+     * 判据是「**错误对象在**，或 `status` 明确是 `failed`」——两者取或，各挡一种错法：
+     *   · 只看 `status`：厂商把失败写成别的取值时会静默不播；
+     *   · 只看 `error`：`status: 'failed'` 而 `error` 缺席（协议这一格是 `unknown`）时同样静默。
+     * 细节拿不到就说一句「工具报错」，**不拿 `result` 凑**（那会把一次失败说成有结果）。
+     */
+    const failed = (item.error !== null && item.error !== undefined) || item.status === 'failed';
+    return failed ? [activityLine(toolErrorSummary(message), item)] : [];
+  }
+  if (item.kind === 'dynamicToolCall') {
+    if (completed) return [];
+    const name = item.namespace === null ? item.tool : `${item.namespace}.${item.tool}`;
+    return [activityLine(toolCallSummary(name, item.arguments), item)];
+  }
+  if (item.kind === 'webSearch') {
+    return completed ? [] : [activityLine(toolCallSummary('web_search', { query: item.query }), item)];
+  }
+  if (item.kind === 'collabToolCall') return collabDrafts(item, completed, runState);
+  if (item.kind === 'subAgentActivity') return subagentActivityDrafts(item, runState);
+  if (item.kind === 'agentMessage') {
+    // 答复正文：只在完成时落（`item/started` 的正文可能只是半截，增量还在流）
+    return completed && item.text !== '' ? [logDraft('stdout', item.text)] : [];
+  }
+  return [];
+}
+
+/**
+ * 协作调用：**派发**在完成时播（receiver id 那一刻才到）、其余协作动作在开始时播、**收场**在完成时播。
+ *
+ * ⚠️ **派发为什么不能放在 `item/started`**（真机抓包 `probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`）：
+ * `L48 item/started` 的 `receiverThreadIds` 是**空数组**（`agentsStates` 也是 `{}`），id 要到
+ * `L51 item/completed` 才出现（`["01a115e7-…"]`）⇒ 在开始那一刻遍历 receiver 只会得到零条，
+ * 「已派发子任务」在生产里永不播（这一支曾经是死代码，守卫也因为夹具写了厂商不产出的形状而假绿）。
+ * 而 `wait` 那一支在 `item/started` 就带 id（`L59`）⇒ 它照旧在开始播「调用工具 wait」。
+ *
+ * 收场判据是「终态 ∧ 与上次不同」（`runState.subagentStatus`）：同一次收场会在多次协作调用、
+ * 子线程自己的活动条目与它自己那一轮的 `turn/completed` 上**重复出现**，不去重就会播三四遍。
+ *
+ * **名字**：`thread/started` 登记昵称这条路只在主线程实测到（同一份抓包里 `thread/started` 仅一条、
+ * 且 `agentNickname: null`；子线程的昵称只出现在收尾 `thread/list` 的响应里）⇒ 运行期的派发/收场行
+ * **多数是无名的那一档**，这是词表允许的形状，不是缺陷。子任务行在收尾取数后会有名字，
+ * 两个面因此可能不一致——登记在「2026-09-22-features-design.md」§5.6.9，不在这一层编名字。
+ */
+function collabDrafts(
+  item: Extract<AppServerItem, { kind: 'collabToolCall' }>,
+  completed: boolean,
+  runState: CodexRunState,
+): AgentEventDraft[] {
+  const receivers = item.receiverThreadIds.filter((threadId) => threadId !== '');
+  /** 工具名以 `spawn` 开头才算派发：真机见到的是 `spawnAgent`（`run-state.ts` 的注释里另记过 `spawn_agent`） */
+  const isDispatch = item.tool.toLowerCase().startsWith('spawn');
+  if (!completed) {
+    // 派发那一刻还没有 receiver id（见上）⇒ 开始这一支不给 spawn 出句子；`wait` / `closeAgent` 走通用工具句
+    if (isDispatch) return [];
+    return [activityLine(toolCallSummary(item.tool, null), item)];
+  }
+  const drafts: AgentEventDraft[] = [];
+  // 派发在前、收场在后：同一个通知里两者都成立时（子任务派出去就已经是终态），顺序要读得通
+  if (isDispatch) {
+    for (const threadId of receivers) {
+      drafts.push(activityLine(subagentDispatchSummary(runState.nicknames.get(threadId) ?? null), item));
+    }
+  }
+  for (const state of item.agentsStates) {
+    if (state.threadId === '') continue;
+    const status = collabStatusOf(state.status).status;
+    const changed = runState.subagentStatus.get(state.threadId) !== status;
+    // 「最近见到的状态」照记：先 `running` 后 `completed` 是两次不同的事实，下一次终态才算「变化」
+    rememberSubagentStatus(runState, state.threadId, status);
+    if (!changed || !isSettledStatus(status)) continue;
+    drafts.push(activityLine(subagentSettledSummary(runState.nicknames.get(state.threadId) ?? null, status), item));
+  }
+  return drafts;
+}
+
+/** `subAgentActivity`：只有终态且**与上次不同**才播一句收场（`started` / `interacted` 是「在跑」，派发时已经播过） */
+function subagentActivityDrafts(
+  item: Extract<AppServerItem, { kind: 'subAgentActivity' }>,
+  runState: CodexRunState,
+): AgentEventDraft[] {
+  const status = subAgentActivityStatus(item.activity);
+  if (item.agentThreadId === '') return [];
+  const changed = runState.subagentStatus.get(item.agentThreadId) !== status;
+  rememberSubagentStatus(runState, item.agentThreadId, status);
+  if (!changed || !isSettledStatus(status)) return [];
+  return [activityLine(subagentSettledSummary(runState.nicknames.get(item.agentThreadId) ?? null, status), item)];
+}
+
+/**
+ * 子线程自己那一轮的 `turn/completed` → 一句收场。
+ *
+ * 为什么必须有这一支：收场的另两个来源（协作调用的 `agentsStates`、`subAgentActivity`）都依赖
+ * 模型**再调一次** `wait` / `closeAgent` 或厂商推活动条目；模型若派发完直接收尾，活动行就会一直停在
+ * 「调用工具 spawnAgent」，而子任务行按 `turn.status` 已经写着「已完成」（`message.ts` 的
+ * `terminalStatusOf` 读的是同一份事实）⇒ 同一个事实两个面说法不同。
+ *
+ * 状态映射与 `terminalStatusOf` **同一张表**：`completed` → 已完成、`failed` → 失败、
+ * `interrupted` → 已停止；`inProgress` 不播。去重仍走 `subagentStatus`（多轮子线程会来回切）。
+ */
+function subagentTurnDrafts(
+  threadId: string,
+  turn: AppServerTurn,
+  runState: CodexRunState,
+): AgentEventDraft[] {
+  const status = turn.status === 'completed' ? 'completed' : turn.status === 'failed' ? 'failed' : turn.status === 'interrupted' ? 'stopped' : null;
+  if (status === null || threadId === '') return [];
+  const changed = runState.subagentStatus.get(threadId) !== status;
+  rememberSubagentStatus(runState, threadId, status);
+  if (!changed) return [];
+  return [logDraft('stdout', safeStringify({ kind: 'subagentTurn', threadId, status: turn.status }), subagentSettledSummary(runState.nicknames.get(threadId) ?? null, status))];
+}
+
+/** 终态三档（`completed` / `failed` / `stopped`）；`running` 与 `unknown` 都不是收场 */
+function isSettledStatus(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'stopped';
+}
+
+function rememberSubagentStatus(runState: CodexRunState, threadId: string, status: string): void {
+  if (threadId === '') return;
+  runState.subagentStatus.set(threadId, status);
+}
+
+/**
+ * 一条活动行日志：`text` 是**证据**（原始条目），`summary` 是给人看的那句话。
+ *
+ * 证据刻意**去掉正文型重字段**（见 `evidenceOf`）：那些字段的落点是结果块，而事件流的每一条都要过
+ * SSE 推给浏览器 ⇒ 在这里再抄一份会让一次构建的几万行输出或一个 MCP 结果把事件流撑大一个量级
+ * （它们在各目的结果块里已经是权威的一份）。
+ */
+function activityLine(summary: string, item: AppServerItem): AgentEventDraft {
+  return logDraft('stdout', safeStringify(evidenceOf(item)), summary);
+}
+
+/**
+ * 证据负载：三类**带正文**的条目只留识别字段，其余条目原样（它们本来就只有识别字段）。
+ * 三类分别是 `commandExecution.output`（命令输出）、`mcpToolCall.result`（工具结果）、
+ * `dynamicToolCall.contentItems`（内容块数组）。
+ */
+function evidenceOf(item: AppServerItem): unknown {
+  if (item.kind === 'commandExecution') {
+    return {
+      kind: item.kind,
+      id: item.id,
+      command: item.command,
+      cwd: item.cwd,
+      status: item.status,
+      exitCode: item.exitCode,
+      durationMs: item.durationMs,
+    };
+  }
+  if (item.kind === 'mcpToolCall') {
+    return {
+      kind: item.kind,
+      id: item.id,
+      server: item.server,
+      tool: item.tool,
+      status: item.status,
+      durationMs: item.durationMs,
+      // 入参留着：它说明「这次调用要干什么」，而结果正文不留（落点是结果块）
+      arguments: item.arguments,
+    };
+  }
+  if (item.kind === 'dynamicToolCall') {
+    return {
+      kind: item.kind,
+      id: item.id,
+      namespace: item.namespace,
+      tool: item.tool,
+      status: item.status,
+      success: item.success,
+      durationMs: item.durationMs,
+      arguments: item.arguments,
+    };
+  }
+  return item;
+}
+
+/**
+ * `turn/completed`：计量 + 时长 + 失败 + 轮次归属。
+ *
+ * 四条判据：
+ *   · **只认主线程**：子线程的 `turn/completed` 是子任务自己的一轮（它的用量按线程记在
+ *     `thread/tokenUsage/updated` 里），拿它当本轮的收尾会把整行提前结算；
+ *   · **时长用厂商时刻**：`startedAt` / `completedAt` 是**秒**（app-server 的 `Turn`），换算成毫秒后
+ *     交出去现减；`apiMs` / `ttftMs` 恒 `null`——那两格只有 claude 有，**不许**拿 `totalMs` 冒充；
+ *   · **`interrupted` 不是失败**：用户点「终止」时上游报的正是这一档，折成失败会把一次人为终止
+ *     变成「适配器出错」；
+ *   · **`input` 减 cached**（见 `run-state.ts` 的 `normalizedInput`）。
+ */
+function projectTurnCompleted(
+  threadId: string,
+  turn: AppServerTurn,
+  runState: CodexRunState,
+  context: CodexEventContext,
+): CodexEventProjection {
+  if (threadId !== context.mainThreadId) {
+    // 子线程的一轮：条目里没有逐条通知的那些答复也要计入它自己的轮次（子任务行由 `message.ts` 刷新）
+    for (const item of turn.items) countRoundTrips(item, threadId, runState);
+    // 收场的第三个来源：模型不再调 `wait` / `closeAgent` 时，这一条是活动行唯一能拿到的终态
+    return { projection: { drafts: subagentTurnDrafts(threadId, turn, runState), tokens: null, turns: null, turn: null, failure: null }, tokens: null };
+  }
+  for (const item of turn.items) countRoundTrips(item, threadId, runState);
+  const turns = observedTurns(runState, threadId);
+  const turnRef = turns === null ? null : { subagentId: null, round: turns };
+  const drafts: AgentEventDraft[] = [];
+
+  if (turn.status === 'failed') {
+    const message = turn.error ?? 'codex 报告本轮失败（未给出原因）';
+    drafts.push({ type: 'error', message });
+    return {
+      projection: {
+        drafts,
+        tokens: null,
+        turns,
+        turn: turnRef,
+        /**
+         * 归因取**厂商原文**：`TurnError` 这一侧只声明了 `message`（`codexErrorInfo` 那个结构化枚举
+         * 不在窄声明里），而 401 / 429 这类状态就写在文案里 ⇒ 交给共用的 `classifyAgentMessage`。
+         */
+        failure: classifyAgentMessage(message, failureContext(context)),
+      },
+      tokens: null,
+    };
+  }
+  if (turn.status === 'interrupted') {
+    // 中止不是失败：结论由「用户点了终止」那条通路给出（`runTurn` 的 canceled）
+    drafts.push(logDraft('stderr', '[WARN] codex 本轮被中止（用户终止或上游打断）'));
+  }
+
+  const tokens = usageOfTurn(turn, runState, context.mainThreadId);
+  /**
+   * 时间只在**两点都给得出**时才有意义：`resolveTiming` 对缺一端的情形返回 `null`（整格不发）
+   * ⇒ 这里照原样交出两个可空时刻，不在这里拼一个 `totalMs` 出来；两点缺一时**整格不带**
+   * （`TurnProjection.timing` 的缺省语义是「这一条没带时间」，不是「把已采到的时间清掉」）。
+   */
+  const timing = turnTimingOf(turn);
+  return {
+    projection: {
       drafts,
       tokens,
       turns,
-      // 归属：事件流只有主线程（子线程的条目不在这一条流里）⇒ 会话恒为 null
-      turn: turns === null ? null : { subagentId: null, round: turns },
+      turn: turnRef,
+      ...(timing === null ? {} : { timing }),
       failure: null,
-    };
-  }
-
-  if (type === 'item.updated' || type === 'item.completed') {
-    const item = asRecord(event?.item);
-    const id = readString(item, 'id');
-    const turns = countModelOutputItem(item, id, state);
-    /** 归属：与 `turns` 同一个号（事件流只有主线程 ⇒ 会话恒为 `null`）；没数到新轮次时没有归属 */
-    const turn = turns === null ? null : { subagentId: null, round: turns };
-    /**
-     * **多智能体条目**（`collab_tool_call`）：先落子任务行，再退回日志。
-     *
-     * 为什么必须有这一格（2026-10-03 真机实测的形状）：这条 item **没有 `text` 字段**
-     * ⇒ 原来它一路落到下面的 `unknownEventDraft`，事件流里只剩一坨原始 JSON，
-     * 而**子任务行一条都不产出**（`projectCodexEvent` 从来没有 `subagents` 出口）。
-     * 后果是抽屉里子任务面板恒空——即使 codex 真的派了子智能体
-     * （用户口径：「codex 没有看到 subagent 消息」）。
-     *
-     * 真机载荷（逐字核过）：
-     * `{ type:'collab_tool_call', tool:'spawn_agent', sender_thread_id, receiver_thread_ids:[子线程 id],
-     *    prompt:'…', agents_states:{<子线程 id>:{status, message}}, status? }`
-     * `item.started` 时 `receiver_thread_ids` 是**空数组**（子线程还没建），
-     * `item.completed` 才带上——所以子任务行只在有 id 时落。
-     */
-    if (readString(item, 'type') === ITEM_COLLAB && item !== null) {
-      const identity = collabIdentity(item);
-      if (identity === null) {
-        // 子线程还没建（`item.started` 时 `receiver_thread_ids` 是空数组）⇒ 不编 id，只留原始负载
-        return { drafts: [unknownEventDraft(raw)], tokens: null, turns, turn, failure: null };
-      }
-      // 派发调用的配对键 = 条目 id（两侧同值才配对得上，见 `collabSubagent` 的注释）。
-      // 没有 `item.id` 就退回子线程身份：它同样能配对（调用块的 `callId` 与记录的 `parentCallId`
-      // 都是它），只是不再等于厂商的条目号——**配对成立**比「像不像厂商 id」重要。
-      const callId = readString(item, 'id') ?? identity;
-      /**
-       * **派发调用也要落一条消息**（`role: assistant` + 一个 `tool-call` 块）。
-       *
-       * 为什么必须有它（2026-10-03 真机实测的缺口）：界面上「进入子任务」这个入口挂在
-       * **派发工具调用**上（`buildAgentLogModel` 用 `spawnedBy.callId` 去时间轴上找那次调用，
-       * 找到才画得出子任务占位条）。只交子任务行、不交调用 ⇒ 占位条**画不出来**，
-       * 子任务的记录明明在文件里却没有任何入口。
-       *
-       * `callId` 用**条目 id**（真机 `item_8`）：事件流这一侧没有会话文件的
-       * `function_call.call_id`，而「调用与子任务行配对」只要求**两侧同值**——
-       * 这里给的就是同一个 id，子任务行的 `parentCallId` 也用它，于是配对成立。
-       */
-      return {
-        drafts: [],
-        tokens: null,
-        turns,
-        turn,
-        failure: null,
-        messages: [collabCallMessage(item, callId, { roundTrip: turns ?? observedTurns(state) ?? 1, raw })],
-        subagents: [collabSubagent(item, identity, callId)],
-      };
-    }
-    const text = readString(item, 'text');
-    if (id === null || text === null) {
-      // 没有可读文本的 item（命令执行、文件改动、MCP 调用）：保留原始负载，不解析语义
-      return { drafts: [unknownEventDraft(raw)], tokens: null, turns, turn, failure: null };
-    }
-    const previous = seenTexts.get(id) ?? '';
-    seenTexts.set(id, text);
-    // 最终答复：只认 agent 消息这一种 item——这是**防御性**过滤，不是实测结论。
-    // 实测（`docs/superpowers/notes/2026-09-22-features-p3-agent-probe.md` 的 codex 一节）只看到
-    // `item.completed` + `item.type === 'error'` + `item.message`（**`item.text` 缺席**）与顶层的
-    // `{"type":"error","message":…}`；那条会话一次模型调用都没成功，`item.type === 'agent_message'`
-    // 的形状**至今没有被探测确认**（spec §14 第 2 条：探测前不许把它当成已验证事实）。
-    // 所以这里按「只有明确标了 agent_message 的 item 才算答复」的保守口径过滤：模型真回话时
-    // 若不叫这个名字，结果是 `finalText === null` → 该行明确失败，而不是静默出个空分。
-    // 注意这是**累积**文本，每见一次覆盖一次 ⇒ 最后一次即最终。
-    if (readString(item, 'type') === 'agent_message') state.finalText = text;
-    // 累积文本：startsWith 说明是「上次 + 新增」；否则视为整体替换（中间被改写），整段重发
-    const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
-    if (delta === '') return { drafts: [], tokens: null, turns, turn, failure: null }; // 纯重复更新：唯一允许丢弃的一类
-    return { drafts: [logDraft('stdout', delta)], tokens: null, turns, turn, failure: null };
-  }
-
-  if (type === 'turn.failed' || type === 'error') {
-    const message =
-      readString(asRecord(event?.error), 'message') ?? readString(event, 'message') ?? safeStringify(raw);
-    return {
-      drafts: [{ type: 'error', message }],
-      tokens: null,
-      turns: null,
-      failure: classifyAgentMessage(message, context),
-    };
-  }
-
-  return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
-}
-
-/**
- * `collab_tool_call` 的子线程身份（`receiver_thread_ids[0]`）。
- * `item.started` 时是**空数组** ⇒ 返回 `null`：「还没建子线程」与「建了但没给 id」
- * 在数据上分不开，编一个会让下游静默错位。
- */
-function collabIdentity(item: Record<string, unknown> | null): string | null {
-  if (item === null) return null;
-  const receivers = item.receiver_thread_ids;
-  if (!Array.isArray(receivers)) return null;
-  for (const entry of receivers) {
-    if (typeof entry === 'string' && entry !== '') return entry;
-  }
-  return null;
-}
-
-/**
- * `collab_tool_call` → 派发调用的那一块（`assistant` 载体上的 `tool-call`）。
- *
- * `callId` 用**条目 id**：它同时写进子任务行的 `parentCallId`，两侧同值 ⇒ 界面能把
- * 「进入子任务」这个入口挂到这次调用上（见调用点的注释）。
- * 入参只留 `prompt`——真机载荷里还有 `sender_thread_id` / `agents_states` 这类**编排内部状态**，
- * 它们不是这次工具调用的入参，混进去会让「参数原文」变得不可读。
- */
-function collabCallMessage(
-  item: Record<string, unknown>,
-  callId: string,
-  envelope: { roundTrip: number; raw: unknown },
-): MessageDraft {
-  return {
-    vendorId: callId,
-    role: 'assistant',
-    source: 'wire',
-    roundTrip: envelope.roundTrip,
-    vendorTurn: null,
-    step: null,
-    parentCallId: null,
-    subagentId: null,
-    // 消息级用量：事件流这条通道没有「这条消息花了多少」（codex 只有轮级计量）⇒ 一律 null
-    usage: null,
-    chunk: 'snapshot',
-    blocks: [
-      /**
-       * 走公共草稿函数（而不是就地手搓块对象）：族载荷的归一住在那一处，
-       * 手搓的块会**静默**少掉 `payload` 这一格（类型上必填，但运行时没有守卫）。
-       * 这里显式传 `family: null`——`spawn_agent` / `wait` 这类协作动作名判不出族（按名字判，不按家判）。
-       */
-      toolCallBlockDraft(callId, readString(item, 'tool') ?? ITEM_COLLAB, { prompt: item.prompt ?? null }, null),
-    ],
-    raw: envelope.raw,
+    },
+    tokens,
   };
 }
 
 /**
- * `collab_tool_call` → 子任务行（**运行期就能落**，不必等收尾）。
+ * 本轮应交出的权威读数。
  *
- * 三格取值逐条实测（2026-10-03 真机载荷）：
- *   · **身份**：`receiver_thread_ids[0]`（见 `collabIdentity`）；
- *   · **名称**：`prompt` 的**第一行**（这一家没有单独的 name 字段；`prompt` 是调用方写进任务里的
- *     原文，故首行就是给这个子任务起的那句话）；空则 `null`；
- *   · **状态**：`agents_states[<子线程 id>].status`（真机 `{status:'in_progress'}`）。
- *     取值域随版本而变 ⇒ **只认得出 `completed` / `failed`**，其余按「还在跑」处理，
- *     并把没验证过的取值标成 `statusMissing: 'unverified'`——「还没跑完」与「这个取值我没见过」
- *     是两件事，界面要能分开说。
- *
- * ⚠️ 收尾那次读会话文件会交出**更完整**的同 `subagentId` 记录（`outcome`、真实用量、终态、父链），
- * 读侧按 `subagentId` 覆盖累积 ⇒ 这一条是**先给一个可导航的壳，细节由收尾补齐**。
- * 两条通道的 `subagentId` 必须同值才谈得上覆盖——真机核过：`receiver_thread_ids` 的元素
- * 就是子线程会话文件名末段那个 id。
+ * 优先级：`turn/completed` 自带的 `turn.usage`（若上游给了）> 该线程最近一次
+ * `thread/tokenUsage/updated` 的**累计**快照。两条都拿不到就是 `null`（**不填 0**）。
+ * 交出去的是厂商自报的累计值（与终值同口径 ⇒ 骨架据此发 `tokensBasis: 'reported'` 的事件），
+ * **不做差分**。
  */
-function collabSubagent(item: Record<string, unknown>, identity: string, parentCallId: string): SubagentRecord {
-  const prompt = readString(item, 'prompt');
-  const firstLine = prompt === null ? null : (prompt.split('\n')[0]?.trim() ?? '');
-  const states = asRecord(item.agents_states);
-  const childState = asRecord(states?.[identity]);
-  const vendorStatus = readString(childState, 'status');
-  const status: SubagentRecord['status'] =
-    vendorStatus === 'completed' || vendorStatus === 'failed' ? vendorStatus : 'running';
-  return {
-    subagentId: identity,
-    name: firstLine === null || firstLine === '' ? null : firstLine,
-    // 派发动作名就是这一家的「派发方式」（真机 `spawn_agent` / `wait`）
-    kind: readString(item, 'tool'),
-    source: 'wire',
-    status,
-    statusMissing: status === 'running' && vendorStatus !== 'in_progress' ? 'unverified' : null,
-    // 答复在 `agents_states[].message` 或子线程会话文件里；收尾那次会补上
-    outcome: readString(childState, 'message'),
-    /**
-     * 与派发调用那一块**同值**（都用条目 id）⇒ 界面据此把「进入子任务」挂到那次调用上。
-     * 它是**事件流内部的配对键**，不是厂商的 `function_call.call_id`——会话文件那条通道
-     * 给的是真 `call_id`，两者不同值，故两条记录各自成组、互不覆盖。
-     */
-    parentCallId,
-    parentSubagentId: null,
-    usage: null,
-  };
+function usageOfTurn(turn: AppServerTurn, runState: CodexRunState, mainThreadId: string): UsageTokens | null {
+  /**
+   * 本机导出的 `Turn` **没有** `usage` 这一格（用量只在 `thread/tokenUsage/updated` 上），
+   * 但协议是实验面、字段可能后加：读到了就用。刻意写成一次收窄读取而不是改 `appserver/protocol.ts`
+   * 的窄声明——那一层只声明我们**确实消费**的字段，而这里要的是「有就用、没有就走通知」。
+   */
+  const fromTurn = breakdownToTokens((turn as { usage?: unknown }).usage);
+  if (fromTurn !== null) return fromTurn;
+  const threadUsage = runState.usageByThread.get(mainThreadId);
+  return threadUsage === undefined ? null : breakdownToTokens(threadUsage.total);
 }
 
 /**
- * 记一次「模型答复条目」并返回到目前为止的近似轮次；不带 id 或不是答复条目（含 `reasoning`）时返回 null。
- * 返回 null 而不是 `state.turns`：本条消息**没有给出新的轮次信息**，发一条内容相同的 usage
- * 只是噪声（老口径下这也正是「纯重复事件」的处置）。
+ * 用量载荷 → `UsageTokens`（三项齐了才认，缺项即 `null`）。
+ * `reasoningOutput` / `total` 是可选格：读得到就带上，读不到就是 `null`（**不填 0**）。
  */
-function countModelOutputItem(
-  item: Record<string, unknown> | null,
-  id: string | null,
-  state: TurnState,
-): number | null {
-  const itemType = readString(item, 'type');
-  if (id === null || itemType === null || !TURN_ITEM_TYPES.includes(itemType)) return null;
-  const before = state.turnKeys.size;
-  state.turnKeys.add(id);
-  if (state.turnKeys.size === before) return null; // 同一条目的后续快照：不是新的往返
-  state.turns = state.turnKeys.size;
-  return state.turns;
-}
-
-/** 到目前为止的轮次；一次都没观察到时给 null（绝不发明一个 0） */
-function observedTurns(state: TurnState): number | null {
-  return state.turns > 0 ? state.turns : null;
-}
-
-/**
- * 三项齐了才认；缺项时落一条 WARN 并保留原始负载——「没采到」与「0」必须能区分（§5.6.3）。
- * 形状异常（`usage` 根本不是对象、整段缺失、缺字段）**合流到同一条 WARN**（评审 N2）：
- * `readNumber(null, …)` 天然返回 null，故不需要那条提前 return —— 有它的话，
- * `usage: 5` 这类形状会**静默**变成「没计量」。
- *
- * ## `input` 归一：`input_tokens − cached_input_tokens`
- *
- * codex 的 `input_tokens` **含**缓存读（`cached_input_tokens` 是它的明细），真机三处都验过：
- * Responses wire 抓包 `{input_tokens:35, input_tokens_details:{cached_tokens:0}, …}`、
- * **exec 事件流** `turn.completed.usage` 的 `{input_tokens:8152, cached_input_tokens:6656}`（6656 < 8152 ⇒ 子集）、
- * 以及 **rollout 会话文件** `token_count` 的 `{input_tokens:9340, cached_input_tokens:8320}`。
- * ⚠️ 2026-10-01 审计更正：8152/6656 那组早前被标成"来自 rollout"，实际只在 exec 事件流里；此处已按产物改正。
- * 而契约的 `input` 是**非缓存输入**（claude 的 `input_tokens` 与 dsh 的 `inputTokens` 原文就是
- * 不含 cache 的）⇒ **不减就是三家口径里的那一处真实分歧**：命中率公式 `cached/(input+cached)`
- * 在 codex 上分母偏大、命中率被系统性低估，而三家看起来「都算对了」。
- * 减法用 `normalizedInput`（与 `transcript.ts` 共用同一份实现：两处各写一遍必然漂移，
- * 而漂移的症状是「跑动期的数与会话文件的数对不上」——最难解释的一类）。
- *
- * `reasoning_output_tokens` / `total_tokens` **在这一条路上一般不存在**（会话文件的
- * `token_count` 才有），所以这里按可选格读：读得到就带上，读不到就是 `null`（**不填 0**）。
- */
-function readTokens(usage: unknown, drafts: AgentEventDraft[]): UsageTokens | null {
-  const record = asRecord(usage);
-  const input = readNumber(record, 'input_tokens');
-  // cached 的语义是**缓存读**：codex 的字段名是 cached_input_tokens（以探测 dump 为准）
-  const cached = readNumber(record, 'cached_input_tokens');
-  const output = readNumber(record, 'output_tokens');
-  if (input === null || cached === null || output === null) {
-    drafts.push(
-      logDraft('stderr', `[WARN] 用量负载不完整，本次运行按「未采集计量」处理（不填 0）：${safeStringify(usage)}`),
-    );
-    return null;
-  }
-  return {
+export function breakdownToTokens(value: unknown): UsageTokens | null {
+  const record = value as Record<string, unknown> | null | undefined;
+  if (record === null || record === undefined || typeof record !== 'object') return null;
+  const input = readCount(record, 'inputTokens');
+  const cached = readCount(record, 'cachedInputTokens');
+  const output = readCount(record, 'outputTokens');
+  if (input === null || cached === null || output === null) return null;
+  return usageTokens({
     input: normalizedInput(input, cached),
     cached,
     output,
-    reasoningOutput: readNumber(record, 'reasoning_output_tokens'),
-    total: readNumber(record, 'total_tokens'),
-  };
+    reasoningOutput: readCount(record, 'reasoningOutputTokens'),
+    total: readCount(record, 'totalTokens'),
+  });
+}
+
+/** 只认有限数：形状不对就是「没采到」（不是 0） */
+function readCount(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * 厂商时刻 → 骨架的时间跨度（`source: 'events'`，含工具执行的墙钟）。
+ *
+ * `startedAt` / `completedAt` 的单位是**秒**（app-server 的 `Turn` 逐字如此），而骨架的 `TimingSpan`
+ * 是**毫秒**（与 `Date.now()` 同尺）⇒ 乘法只在这一处做，别在调用方再乘一次。
+ */
+export function turnTimingOf(turn: AppServerTurn): TimingSpan | null {
+  if (turn.startedAt === null || turn.completedAt === null) return null;
+  return { firstMs: turn.startedAt * 1000, lastMs: turn.completedAt * 1000, source: 'events' };
+}
+
+function failureContext(context: CodexEventContext): FailureContext {
+  return { kind: context.kind, baseUrl: context.baseUrl };
 }

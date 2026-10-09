@@ -115,7 +115,6 @@ const FACTS: AgentLogFacts = {
   thinking: null,
   domain: [],
   error: null,
-  exitReason: null,
 };
 
 function modelOf(node: LogNode, overrides: Partial<AgentLogModel> = {}): AgentLogModel {
@@ -570,6 +569,13 @@ describe('AgentLogLayout', () => {
     expect(notice.compareDocumentPosition(screen.getByTestId('agent-log-facts-bar')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  /**
+   * `connected`：只在传了时渲染那一格；断线时不能用 `processing` 的动效（§6.7）。
+   *
+   * 这一条同时钉「**传了连接状态就必须有一行承载它**」：本用例的 `actions={[]}` 且没有 `diagnostics`
+   * ⇒ 原文行按「有没有原文 / 有没有挂在那一行的动作」判本来是不渲的，而连接状态住那一行
+   * （用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间），故它现在是那一行的第三个理由。
+   */
   it('connected：只在传了时渲染那一格；断线时不能用 processing 的动效', () => {
     const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
     // 事实条本身也在用 `Badge status`：这里把它按终态给，免得它的 processing 干扰断言
@@ -587,5 +593,102 @@ describe('AgentLogLayout', () => {
     expect(screen.getByText('未连接')).toBeInTheDocument();
     // §6.7：`processing` 的动效是「真的在流」的信号，断线时必须是中性档
     expect(document.querySelector('.ant-badge-status-processing')).toBeNull();
+  });
+
+  /**
+   * 连接状态的位置（用户 2026-10-07 口径）：与「原始输出 N 条」**同一行**，且是那一行的**最左**。
+   *
+   * 只断言文案在页面上是不够的——挪回事实条那一行它照样在。故两条判据一起给：
+   * 同属一个容器 + 排在原文入口之前，再加一条反向判据「不在事实条里」。
+   */
+  it('连接徽标与「原始输出 N 条」同行，且排在它前面（最左）', () => {
+    const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
+
+    render(
+      <AgentLogLayout
+        model={modelOf(node)}
+        diagnostics={{
+          status: 'ready',
+          data: {
+            lines: [{ at: AT, source: 'stdout', text: '第一行原文', summary: null }],
+            truncatedReason: null,
+          },
+        }}
+        connected
+        // 「下载台账」是预设里挂在原文行的动作（`visible: onDownload !== undefined`）：
+        // 不给它，那一行上就没有第二个兄弟，也就验证不了「同一行」
+        onDownload={vi.fn()}
+        source={{ requestDiagnostics: vi.fn() }}
+      />,
+    );
+
+    const badge = screen.getByTestId('agent-log-connection');
+    const rawEntry = screen.getByTestId('raw-output-open');
+
+    // 同一行**且同一层**：入口按钮就是那一行的直接子节点——用户 2026-10-07 口径要求把原先那层
+    // 包裹去掉、按钮拿出来（`raw-output-panel.tsx` 口径 7），故这里判的是**同一父节点**；
+    // 把包裹加回去时 `rawEntry.parentElement` 变成内层那个 flex，这条立刻红
+    expect(badge.parentElement, '连接徽标与「原始输出 N 条」不在同一层').toBe(rawEntry.parentElement);
+    expect(rawEntry.parentElement?.contains(screen.getByRole('button', { name: '下载台账' }))).toBe(true);
+    // 最左：徽标排在原文入口之前
+    expect(badge.compareDocumentPosition(rawEntry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 反向判据：它**不在**事实条那一行里（挪回去时这条红）
+    expect(badge.closest('[data-testid="agent-log-facts-bar"]')).toBeNull();
+  });
+
+  /**
+   * **领域事实自占一行**（用户 2026-10-07 口径）：它是固定区里与事实条**并列的第二个 flex 行**，
+   * 排在事实条那一行**下面**——不是并进事实条、靠 `wrap` 自然折行的尾巴。
+   *
+   * 为什么值得钉：并回事实条时页面上照样看得见「智能体 … 评分」，只有**父子关系**能区分「两行」
+   * 与「一行里被折行的尾巴」；而这两组信息（谁在跑 / 改了多少、得了多少分）要连起来读。
+   */
+  it('领域事实自占一行：与事实条同层、排在它后面，且不在事实条里面', () => {
+    const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
+    const domain: AgentLogFacts['domain'] = [
+      {
+        id: 'agent',
+        label: '智能体',
+        value: 'Claude Code',
+        segments: [{ text: 'Claude Code', tag: true, tagTone: 'blue' }],
+      },
+      {
+        id: 'diff',
+        label: '改动',
+        value: '1 个文件 +2 −1',
+        segments: [{ text: '1 个文件 ' }, { text: '+2', tone: 'insertion' }, { text: ' −1', tone: 'deletion' }],
+      },
+      { id: 'score', label: '评分', value: '8/10', tone: 'success' },
+    ];
+
+    render(<AgentLogLayout model={modelOf(node, { facts: { ...FACTS, domain } })} actions={[]} />);
+
+    const bar = screen.getByTestId('agent-log-facts-bar');
+    const domainRow = screen.getByTestId('agent-log-domain-facts');
+    const fixedArea = domainRow.parentElement;
+
+    /**
+     * 判据是**父容器是纵向 Flex**，不只是「同一个父节点」：把这两行再包进一个横向 `Flex` 时
+     * 它们的父节点仍然相同、顺序也仍然在，页面上却已经并回一行（靠 `wrap` 折行）——那正是用户
+     * 2026-10-07 要去掉的形态。`Flex vertical` 在本仓走 CSS 类（不在内联 style 里），故取类名。
+     */
+    expect(bar.parentElement, '领域事实行与事实条不在同一层').toBe(fixedArea);
+    expect(fixedArea?.className, '两行被并回了同一行（父容器不是纵向 Flex）').toContain('ant-flex-vertical');
+    // 顺序：领域事实排在事实条之后（它是第二行）
+    expect(bar.compareDocumentPosition(domainRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 反向判据：它**不在**事实条里面（塞进事实条组件内部时这条红）
+    expect(bar.contains(domainRow)).toBe(false);
+    // 格名与值照画：顺序是数据层的，界面不重排
+    expect(domainRow).toHaveTextContent('智能体');
+    expect(domainRow).toHaveTextContent('评分');
+  });
+
+  it('领域事实为空时那一行不出现（不留一段空 gap）', () => {
+    const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
+
+    render(<AgentLogLayout model={modelOf(node)} actions={[]} />);
+
+    expect(screen.getByTestId('agent-log-facts-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-log-domain-facts')).toBeNull();
   });
 });

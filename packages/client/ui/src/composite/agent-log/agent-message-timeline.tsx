@@ -13,7 +13,7 @@
  *   4. **`buildRenderBlocks` 只在单轮渲染入口（`renderTurn`）里被调用**：调用方若在渲染层外面
  *      先全建一遍，虚拟滚动就只省了 DOM、没省计算。
  *
- * 本文件同时是**折叠态键生成函数**的唯一真源（`renderBlockKey` / `toolEntryKey` / `turnKey`）：
+ * 本文件同时是**折叠态键生成函数**的真源之一（`renderBlockKey` 与 `turnKey` 在这里；`toolEntryKey` 的真源在 L0 的 `tool-item-detail`）：
  * L2 的 `use-agent-log-view` 与 `virtual-turn-list` 都要用同一份——各写一遍必然漂移，
  * 而漂移的表现是「我展开的那条自己合上了」。键放在 L1 而不是 L2，是因为**依赖只准向下**：
  * L1 不许 import L2，而 L2 可以 import L1。
