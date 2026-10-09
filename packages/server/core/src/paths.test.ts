@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe('expandHome', () => {
   it('把开头的 ~ 展开为家目录', () => {
-    expect(expandHome('~/.runs')).toBe(join(homedir(), '.runs'));
+    expect(expandHome('~/.aieval-runs')).toBe(join(homedir(), '.aieval-runs'));
   });
 
   it('只替换开头的 ~，不动路径中间的 ~', () => {
@@ -43,11 +43,11 @@ describe('expandHome', () => {
 });
 
 describe('defaultWorkspaceRoot', () => {
-  it('解析到家目录下的 .runs（与设置默认值一致）', () => {
-    expect(defaultWorkspaceRoot()).toBe(join(homedir(), '.runs'));
+  it('解析到家目录下的 .aieval-runs（与设置默认值一致）', () => {
+    expect(defaultWorkspaceRoot()).toBe(join(homedir(), '.aieval-runs'));
   });
 
-  // 跨包默认值不能各写一份：contracts 的 SETTINGS_DEFAULTS.workspaceRoot 是 `~/.runs`，
+  // 跨包默认值不能各写一份：contracts 的 SETTINGS_DEFAULTS.workspaceRoot 是 `~/.aieval-runs`，
   // core 的 defaultWorkspaceRoot() 是它的展开结果。两处若漂移，设置页显示的默认路径
   // 与实际落盘位置会不一致——用这条断言把二者钉在一起（core 可以 import contracts，反向不行）。
   it('展开结果等于 SETTINGS_DEFAULTS.workspaceRoot 的展开值（防两处默认值漂移）', () => {
@@ -57,7 +57,7 @@ describe('defaultWorkspaceRoot', () => {
 
 describe('resolveRootForRead', () => {
   it('把开头的 ~ 展开为绝对路径', () => {
-    expect(resolveRootForRead('~/.runs')).toBe(join(homedir(), '.runs'));
+    expect(resolveRootForRead('~/.aieval-runs')).toBe(join(homedir(), '.aieval-runs'));
   });
 
   it('空串回落到默认工作区根目录', () => {
@@ -87,8 +87,8 @@ describe('validateWorkspaceRoot', () => {
   });
 
   it('支持 ~ 开头的路径', () => {
-    const result = validateWorkspaceRoot('~/.runs-test-should-not-exist');
-    expect(result.resolved).toBe(join(homedir(), '.runs-test-should-not-exist'));
+    const result = validateWorkspaceRoot('~/.aieval-runs-test-should-not-exist');
+    expect(result.resolved).toBe(join(homedir(), '.aieval-runs-test-should-not-exist'));
     // 清理，别在开发者家目录留垃圾
     removeTreeWithRetry(result.resolved);
   });

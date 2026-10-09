@@ -39,7 +39,7 @@ const log = createLogger('run-store');
 /**
  * 当前工作区根目录：**每次现取**而不是模块加载时缓存一次——
  * 设置页刚改完根目录，列表就该指向新根；缓存会让「改了设置但列表还是空的」变成幽灵问题。
- * `resolveRootForRead` 负责把配置里保留的可读写法 `~/.runs` 展开成绝对路径。
+ * `resolveRootForRead` 负责把配置里保留的可读写法 `~/.aieval-runs` 展开成绝对路径。
  */
 function workspaceRoot(): string {
   return resolveRootForRead(loadConfig().settings.workspaceRoot);
@@ -150,7 +150,7 @@ const WINDOWS_DRIVE = /^[A-Za-z]:[\\/]/;
  * 只是 `z.string()`——没有 `.min(1)`、没有绝对路径约束。形状不对的值会让产物写到**读侧永远看不到的地方**：
  *   · `''` ⇒ `runDir('', id) = join('', id)`，即**进程 CWD** 下的 `<runId>/`；`events.jsonl` 也跟着过去
  *     （`getRunForWrite` 的兜底返回的也是 `''`），一轮评测的产物散落在启动目录里；
- *   · `'~/.runs'`（设置里合法的可读写法）⇒ 写进**字面 `~` 目录**，而读侧 `resolveRootForRead` 会把它
+ *   · `'~/.aieval-runs'`（设置里合法的可读写法）⇒ 写进**字面 `~` 目录**，而读侧 `resolveRootForRead` 会把它
  *     展开成家目录下的真实路径 ⇒ 写进去的东西永远读不出来。
  * 「今天创建点都写绝对路径」（p5 的 `createRun` 走 `resolveRootForRead`）不是安全论证——写侧已经在
  * 依赖它了，R36 的教训正是「只有 randomUUID() 会进来」当日就被探针推翻。

@@ -14,7 +14,7 @@
 
 `text-api.ts` 的 JSDoc 里有一句「非 DeepSeek 网关未实测」；本探针让**本机这条 DeepSeek 路由**从此有实测
 （**非 DeepSeek 网关仍未验证**，见 spec §10 R1）。判据**不是「200 被接受」**（本仓 codex 侧踩过「参数到了、
-网关照样按自己的默认强度推理」，见 `docs/codex-faq.md` 与 `probe/v4` 的 reasoning 系列），而是：
+网关照样按自己的默认强度推理」，见 `docs/faq/codex.md` 与 `probe/v4` 的 reasoning 系列），而是：
 
 1. 六行主表里的**状态码**：字段是被收下，还是被 400 / 422 顶回来（⇒ 哪些字段被接受）；
 2. 同一协议内 `low` 与 `max` 的 reasoning **字符数是否可区分**（要写明 n/组与统计量）；

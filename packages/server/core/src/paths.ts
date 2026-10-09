@@ -29,13 +29,13 @@ export function expandHome(input: string): string {
 
 /** 默认工作区根目录（与设置默认值同源） */
 export function defaultWorkspaceRoot(): string {
-  return expandHome('~/.runs');
+  return expandHome('~/.aieval-runs');
 }
 
 /**
  * 只做展开、**不碰磁盘**的版本，供「读取路径」使用。
  * 读取时绝不能做可写性校验——目录可能正被临时卸载，此时抛错会让用户连设置页都打不开。
- * 空串回落到 `defaultWorkspaceRoot()` 而不是再写一遍 `'~/.runs'`：默认根目录的字面量
+ * 空串回落到 `defaultWorkspaceRoot()` 而不是再写一遍 `'~/.aieval-runs'`：默认根目录的字面量
  * 只留 `defaultWorkspaceRoot` 一处真源，这里抄第二份就是一处会漂移的重复。
  */
 export function resolveRootForRead(root: string): string {

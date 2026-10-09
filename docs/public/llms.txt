@@ -1,0 +1,37 @@
+# ai-result-evaluation 知识库
+
+> AI 生成代码评测平台的知识库：协议规范、功能说明、架构设计、FAQ 与规约守卫
+
+- [契约体系](/architecture/contracts): `@aieval/contracts` 是全仓唯一跨端契约真源：zod 3 schema + 领域类型 + 错误码，服务端与客户端共享同一份；类型一律 `z.i…。
+- [仓库分层与依赖方向](/architecture/layering): 单仓 pnpm workspace：1 个下游应用 + 服务端 / 客户端两层共 8 个包，依赖方向自下游指向上游、无环。
+- [工具链与命令聚合](/architecture/toolchain): `pnpm lint` / `pnpm typecheck` / `pnpm test` 三条门禁命令各起**一个**进程覆盖 8 个包，靠「复用包级真源」聚合…。
+- [界面原语与主题](/architecture/ui-primitives-and-theme): `@aieval/ui` 按 base + composite 两层提供**纯展示**原语：不调接口、不依赖路由库，纯数据驱动（props 进、JSX 出），`…。
+- [Claude Code 适配 FAQ](/faq/claude-code): Claude Code（`@anthropic-ai/claude-agent-sdk`）在**真实运行环境**里踩过的坑。
+- [Codex 适配 FAQ](/faq/codex): Codex（`@openai/codex` CLI / `codex app-server`）在**真实运行环境**里踩过的坑。
+- [DeepSeek Harness 适配 FAQ](/faq/deepseek-harness): DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里踩过的坑。
+- [故障索引](/faq/): 三家厂商适配 FAQ 的现象条目索引：标题照抄报错原文（含报错码与英文原句），排障时拿报错原文在本页一搜即命中，锚点直达对应 FAQ 的方案层条目。
+- [用例管理](/features/case-management): 用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。
+- [功能总览](/features/): 功能说明域的目录层：三大功能模块与数据模型的清单，每项一句话定位；已落地文章给站内链接，未落地者以《书名号》提名。
+- [评分](/features/judging): 评分是一轮评测的第 7 步：把候选的**完整产出**（文本通路 = 裁剪后的 diff；智能体通路 = 候选自己的工作区）对照用例的**评分标准项表格**做逐项…。
+- [行执行与日志](/features/row-execution): 一行候选从发起到落终态的全部执行事实，以及人在哪里看到这些事实。
+- [创建评测](/features/run-creation): 创建评测 = 给一道固定的题（用例）配一组候选（智能体 × 模型 × 思考强度）与执行模式。
+- [评测详情与候选行](/features/run-detail): 评测详情是评测管理域的「读」侧与操作中枢：`/runs` 左栏列表 + 右栏详情，右栏在 `?panel=detail|new|edit&id=…` 三种内容间…。
+- [修改、重跑与删除评测](/features/run-edit-rerun-delete): 创建之后的三个动作族：**改**（编辑整轮，被改的行原地重置）、**重跑**（两个出口——单行执行连候选 agent 带评分整段重跑、重新评分只重跑评分那一步）…。
+- [设置](/features/settings): 设置页承载平台级的全部配置：模型供应商、评分配置、工作区、界面主题。
+- [数据与存储](/features/storage): 平台全部落盘事实的地图：配置、评测产物、事件日志各落在哪、怎么写、坏了怎么读。
+- [变异验证](/guard/mutation-verification): 新增回归守卫必须把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希——没见过失败的守卫不算守卫。
+- [Playwright MCP](/guard/playwright-mcp): 用 MCP 浏览器工具前先读本文件。
+- [PowerShell](/guard/powershell): 跑 PowerShell 前先读本文件。
+- [密钥与环境变量](/guard/secrets-and-env): 密钥管理横跨三层，每层各有不可逾越的硬边界。
+- [冒烟测试方法论](/guard/smoke-testing): 冒烟测试是本仓的真机验证缝：启动真实服务、按真实用户路径逐项操作，并用 CLI 复核落盘事实，页面与磁盘互证。
+- [测试策略与提速](/guard/test-strategy): 本仓 vitest 套件的跑法与提速口径：内循环分层下钻、以进程创建为计价单位、测试预算写成可变对象，以及负载下假红的识别与处置。
+- [ai-result-evaluation 知识库](/): AI 生成代码评测平台的知识库：面向人与 AI 的唯一知识真源。
+- [Claude Code 接入](/protocols/claude-code): Claude Code 的适配器由 `@anthropic-ai/claude-agent-sdk`（进程内 SDK，spawn 原生 CLI 二进制）驱动：`…。
+- [Codex 接入](/protocols/codex): Codex 的适配器完全由 `codex app-server` 驱动与取数（JSON-RPC over stdio），厂商包是 `@openai/codex`…。
+- [三家横向对比](/protocols/comparison): claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的…。
+- [DeepSeek Harness 接入](/protocols/dsh): DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.1.7-rc.1`——R33 裁决不走 latest）是三家厂商里唯一「…。
+- [事件流](/protocols/event-stream): 每候选行的 `events.jsonl` 是**执行的唯一真相源**：追加写、按 `seq` 去重续订、可回放；`messages.jsonl` 是与之**并行…。
+- [消息规范](/protocols/message-spec): 把 claude-code / codex / dsh 三家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `Sub…。
+- [进程生命周期](/protocols/process-lifecycle): 厂商智能体进程从 spawn 到整棵回收的完整口径：一次运行的进程树怎么起、怎么停、怎么保证不留孤儿。
+- [Provider 抽象与 run 入口](/protocols/provider-run): `@aieval/agents` 的对外面只有一张 provider 注册表：`getProvider(kind).run(input)` 是调智能体的**唯一…。
+- [新增 SDK 接入流程](/protocols/sdk-onboarding): 给评测平台接一家新的厂商智能体 SDK 的七步接入清单与验证点。

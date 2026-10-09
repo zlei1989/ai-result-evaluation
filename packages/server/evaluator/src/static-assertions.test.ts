@@ -474,7 +474,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
  * 这类工厂在**收集阶段**就要把目标模块求值出来，于是「工厂 → seams → fixtures → **正在求值中**的
  * `@aieval/agents`」构成一条 vite ModuleRunner **解不开的 await 环**：整个文件 **0 个用例、无报错、
  * 无超时、零 CPU**（本包实测 19/27 个文件如此 ⇒ `pnpm test` 这个动作整个不成立；根因见 spec
- * `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` §9.1）。
+ * `docs/protocols/message-spec.md`「既成口径」与合并键）。
  *
  * 为什么不能靠上面那条守卫（三条 `vi.mock` 文本的存在性）：
  *   · 它与缺陷**同向**——mock 注册得越齐它越绿，而**注册齐全正是触发条件之一**（19 个挂死文件
@@ -509,7 +509,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
  * `async () => (await import('<字面量>'))…` 形态 ⇒ ROOTS 非空、判据确实在跑。
  * （`static-assertions.test.ts` 里另有 3 处 `vi.mock(` 只出现在**样本字符串**里，不是真 mock，不计入 58。）
  * 但这是判据的**结构性缺口**：本盲区**同时登记在两处入库载体** —— 这段 JSDoc 与
- * `docs/superpowers/notes/2026-10-06-evaluator-collect-deadlock-fix-probe.md`
+ * `docs/features/row-execution.md`「收集死锁教训」一节
  * （`.superpowers/` 下的 ledger 是 gitignore 的，不算入库载体）。
  * 要真正堵住它，得追静态 import 的绑定来源（属独立一条线，本线不扩环）。
  */

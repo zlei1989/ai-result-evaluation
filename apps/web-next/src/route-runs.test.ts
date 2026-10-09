@@ -7,7 +7,7 @@
  * 既不起进程，也能精确控制「磁盘上有什么快照」）。`@aieval/agents` / `@aieval/core` / `@aieval/api`
  * 都是真实的——候选池的协议过滤正需要真实的注册表元数据。
  *
- * 配置目录与工作区根目录都在 mkdtemp 出来的临时目录里：**绝不触碰真实 ~/.aieval / ~/.runs**。
+ * 配置目录与工作区根目录都在 mkdtemp 出来的临时目录里：**绝不触碰真实 ~/.aieval / ~/.aieval-runs**。
  *
  * 与 brief 原稿的四处**实测修正**（前三处是原稿在本机必然红的原因，第四处是它不安全的原因）：
  *   1. mock 句柄走 `vi.hoisted`，测试里**不再** `import '@aieval/evaluator'`：该说明符不在本应用的

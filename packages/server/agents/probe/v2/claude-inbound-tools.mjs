@@ -8,7 +8,7 @@
  *  - §11.1 第 11 项：`AskUserQuestion` 到底在不在（feature-gated 还是 preset 未启用）；
  *  - §7.1：`Bash` 的 `timeout` 参数等族结构落点。
  *
- * 做法与 `docs/superpowers/notes/2026-09-30-agent-builtin-tools-inventory.md` 抓 codex 工具表**同一手法**：
+ * 做法与抓 codex 工具表**同一手法**（三家用法见 `docs/protocols/comparison.md`）:
  * 起一个只读入站请求、立刻回 400 的最小服务，把 `tools[]` 落盘。
  * 同一次运行做 A/B（默认 vs `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`），**只切那一个变量**。
  */

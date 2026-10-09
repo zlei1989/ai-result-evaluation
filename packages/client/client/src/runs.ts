@@ -399,7 +399,7 @@ export function useRescoreRow(): {
  * ⚠️ **这一次请求可能很久才回来**（2026-09-29 冒烟实测：远端仓库 + 冷镜像时 >5 分钟）：
  * 服务端的准备阶段（镜像 fetch + 复制 + checkout）跑在 `retryRow` 返回**之前**，而它是同步重活。
  * 不是本 hook 的问题（它也做不了什么），写在这里是为了下一个人排查「点了没反应」时不必从零开始
- * ——详见 `docs/superpowers/notes/2026-09-29-single-row-execution-smoke.md` 的「未覆盖项」第 1 条。
+ * ——详见 `docs/features/row-execution.md` 已知边界里「retry 准备阶段同步重活」条。
  */
 export function useRetryRow(): {
   retryRow: (runId: string, rowId: string) => Promise<EvalRun>;

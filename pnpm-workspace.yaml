@@ -12,6 +12,10 @@ allowBuilds:
   # 这里按计划 Task 2 Step 3 的规则逐个置 true 以完成落位。它们都不是本仓的直接依赖。
   '@deepseek-ai/dsh-subprocess-local': true
   '@google/genai': true
+  # esbuild 是 vitest 的原生引擎（直接依赖）。2026-10-09 装 vitepress 时 pnpm 又把占位值
+  # 写回这里并退出 1——onlyBuiltDependencies 在 pnpm 11 下不生效（上方第 8 行注释的同一件事），
+  # 必须在这里显式置 true。
+  esbuild: true
   koffi: true
   node-pty: true
   protobufjs: true

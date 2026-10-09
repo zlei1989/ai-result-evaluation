@@ -24,7 +24,7 @@ afterEach(() => {
 
 /**
  * spec §5.6.2 的表：`protocolTypes` 是**集合**（DSH 两条 wire 都能收，见契约 R37 的收口与
- * `docs/superpowers/plans/2026-09-30-dsh-dual-protocol.md`）。本步只搬形状，三家都还是单元素。
+ * "docs/protocols/dsh.md"）。本步只搬形状，三家都还是单元素。
  */
 const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
   'claude-code': {
@@ -51,7 +51,7 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
   },
   dsh: {
     // 两条 wire 都能收（R37 的收口）：anthropic-messages 与 openai-responses 各真机跑通过一次，
-    // 见 docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md
+    // 见 docs/protocols/dsh.md「pi-ai 路由与两条 wire」
     protocolTypes: ['openai', 'anthropic'],
     // 实测确认：用量在 session.event → assistant/message → data.usage（探测报告 §3）
     // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（F2 的回归网会拦漂移）

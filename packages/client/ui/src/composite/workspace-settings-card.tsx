@@ -45,14 +45,14 @@ export function WorkspaceSettingsCard({
       <Form layout="vertical" size="small" component={false}>
         <Form.Item
           label="工作区根目录"
-          extra="评测的行工作副本、事件日志与用例缓存都落在这个目录下；默认 ~/.runs"
+          extra="评测的行工作副本、事件日志与用例缓存都落在这个目录下；默认 ~/.aieval-runs"
           style={{ marginBottom: 8 }}
         >
           <Flex gap={8}>
             <Input
               aria-label="工作区根目录"
               value={root}
-              placeholder="~/.runs"
+              placeholder="~/.aieval-runs"
               disabled={saving}
               onChange={(event) => setRoot(event.target.value)}
             />

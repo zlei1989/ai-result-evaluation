@@ -7,8 +7,10 @@
  * 根配置只负责「一次启动、把 8 个包都收集进来」，故这里按**路径**引用而不是内联配置对象：
  * 同一个包的测试范围写两遍必然漂移。`pnpm --filter @aieval/<包> test` 走的仍是包内那份配置。
  *
- * 用 glob 而不是写死 8 条路径：新增包时只要目录落在 `packages/{server,client}/*` 或 `apps/*`
- * 下、且自带 vitest.config.ts，就会自动被收集，不会出现「新包没进根测试」的静默漏测。
+ * 收集形态是**双形态**：包目录用 glob（`packages/{server,client}/*` 与 `apps/*`——新增包
+ * 只要自带 vitest.config.ts 就自动被收集，不会出现「新包没进根测试」的静默漏测）；
+ * docs 不是 workspace 包、glob 罩不到，故显式列一条路径（知识库守卫工程）。
+ * 两边改动收集方式后，都必须核对全仓用例总数（漏收一整个工程是静默漏测）。
  */
 import { defineConfig } from 'vitest/config';
 
@@ -18,6 +20,9 @@ export default defineConfig({
       'packages/server/*/vitest.config.ts',
       'packages/client/*/vitest.config.ts',
       'apps/*/vitest.config.ts',
+      // docs 是知识库的内容守卫工程（读磁盘断言，node 环境）——2026-10-09 票 02 并入。
+      // 显式列出而非 glob：docs/ 不是 workspace 包，glob `*/vitest.config.ts` 会把无关目录也扫进来
+      'docs/vitest.config.ts',
     ],
     /**
      * 并发档位：**不设上限**（vitest 默认 `availableParallelism() - 1`），理由是一条会随代码演化的实测。

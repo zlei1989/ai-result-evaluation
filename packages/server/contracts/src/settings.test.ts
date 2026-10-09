@@ -6,7 +6,7 @@ import { SETTINGS_DEFAULTS, SettingsPatchSchema, SettingsSchema } from './settin
 describe('SETTINGS_DEFAULTS', () => {
   it('给出可直接落地运行的默认值', () => {
     expect(SETTINGS_DEFAULTS.theme).toBe('auto');
-    expect(SETTINGS_DEFAULTS.workspaceRoot).toBe('~/.runs');
+    expect(SETTINGS_DEFAULTS.workspaceRoot).toBe('~/.aieval-runs');
     expect(SETTINGS_DEFAULTS.defaultJudge).toBeNull();
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
   });

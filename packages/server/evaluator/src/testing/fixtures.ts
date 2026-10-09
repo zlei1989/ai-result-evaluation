@@ -2,7 +2,7 @@
  * evaluator 测试夹具：临时家目录、评测/行/供应商/用例工厂。
  * 为什么所有夹具都落在 mkdtempSync 出来的临时根目录里：本计划跑的每一步都写盘
  * （run.json / events.jsonl / 工作区复制），把 config-store 指到临时目录 + 把 workspaceRoot
- * 指到临时目录，是唯一能保证「绝不触碰真实 ~/.aieval 与 ~/.runs」的写法。
+ * 指到临时目录，是唯一能保证「绝不触碰真实 ~/.aieval 与 ~/.aieval-runs」的写法。
  * 注意：本文件只造数据与临时目录，不造行为；假适配器 / 假评分器 / 假文本 API 在 Task 4、Task 5
  * 追加（它们要配合 vi.mock，放在同一模块里才能被 mock 工厂动态 import 到同一个实例）。
  */
@@ -65,15 +65,15 @@ export interface TempHome {
   root: string;
   /** 临时配置目录（相当于测试期的 ~/.aieval） */
   configDir: string;
-  /** 临时工作区根目录（相当于测试期的 ~/.runs） */
+  /** 临时工作区根目录（相当于测试期的 ~/.aieval-runs） */
   workspaceRoot: string;
   cleanup: () => void;
 }
 
 /**
  * 建临时家目录并把 config-store 指过去。
- * **立刻写一份指向临时目录的配置**：不写的话 `settings.workspaceRoot` 会回落到默认的 `~/.runs`，
- * `listRuns()` / `getRun()` 就会去读真实目录——「测试不碰真实 ~/.runs」必须由夹具本身保证，
+ * **立刻写一份指向临时目录的配置**：不写的话 `settings.workspaceRoot` 会回落到默认的 `~/.aieval-runs`，
+ * `listRuns()` / `getRun()` 就会去读真实目录——「测试不碰真实 ~/.aieval-runs」必须由夹具本身保证，
  * 不能指望每个用例都记得先 seedConfig。
  * `cleanup` 会把 override 复位成 null：不复位的话，同文件后续用例（或忘记 cleanup 的用例）
  * 会继续往已删除的目录里写，症状是莫名其妙的 ENOENT。

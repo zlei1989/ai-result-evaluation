@@ -1,7 +1,7 @@
 /**
  * codex 入站 `tools[]` 抓包服务（只读观测，落盘后立刻回 400）。
  *
- * 手法与 `docs/superpowers/notes/2026-09-30-agent-builtin-tools-inventory.md` 完全一致：
+ * 手法与抓 codex 工具表完全一致（工具清单已熔炼进 `docs/protocols/comparison.md`）：
  * 起一个最小 HTTP 服务，把 `POST /v1/responses` 的请求体里 `tools[]` 落盘。
  * 用途（本轮）：判定 `update_plan` **到底是不是一个工具**——
  * 真机已看到 `item.type === 'todo_list'` 的 started/updated/completed 三连，

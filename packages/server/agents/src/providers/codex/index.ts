@@ -15,7 +15,7 @@
  *      ⇒ 收尾取数在运行期就以「会话结算」为闸门启动，`finalize` 只读它已经落定的结果。
  *
  * 能力面与 `providers/dsh` 逐格对齐；结构性给不了的格子登记在 `messageCapability.notes` 与
- * `docs/superpowers/specs/2026-10-07-codex-dsh-parity.md` §3。
+ * `docs/protocols/codex.md`（Codex 接入，含能力对齐判据）。
  */
 import { createLogger } from '@aieval/core';
 import { EFFORT_OFF, type SubagentRecord, type UsageTokens } from '@aieval/contracts';

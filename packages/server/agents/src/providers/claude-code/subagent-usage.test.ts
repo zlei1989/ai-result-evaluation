@@ -339,7 +339,7 @@ describe('readClaudeSubagentUsage', () => {
 });
 
 /**
- * spec `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` §4.1 步骤 5.1 的「读法三条」里前两条（用户点名的两件事）：
+ * 「读法三条」里前两条（用户点名的两件事，判据源 `docs/protocols/message-spec.md`）：
  * ① **流式**（不许整份进内存）② **同版本不重复解析**。
  *
  * ⚠️ ①的判据是**同步流式**（`openSync` + 循环 `readSync` + `closeSync`），不是异步流：

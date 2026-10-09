@@ -376,7 +376,7 @@ it('注入落点与结果贯通', async () => {
 
 ### 8.1 新增一家 SDK：接入清单与验证点
 
-加一家时按序做这七步，每步都有可执行的判据。**顺序不能颠倒**——前三步的缺陷只有真机能拦，后面几步拦不住它们（2026-10-07 的 codex 改造即实例：agents 包 585 条全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据/provider 没传到厂商进程」）。完整方案（失败分类学、四层结构、为什么不写假 SDK 替代真机）见 `docs/superpowers/plans/2026-10-07-agents-provider-conformance.md`。
+加一家时按序做这七步，每步都有可执行的判据。**顺序不能颠倒**——前三步的缺陷只有真机能拦，后面几步拦不住它们（2026-10-07 的 codex 改造即实例：agents 包 585 条全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据/provider 没传到厂商进程」）。完整方案（失败分类学、四层结构、为什么不写假 SDK 替代真机）已熔炼进知识库 `docs/protocols/sdk-onboarding.md`（新增 SDK 接入流程）。
 
 | # | 步骤 | 判据 |
 |---|---|---|
@@ -438,12 +438,12 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 | **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「兜底超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |
 | **受保护发射** | 调 `onEvent` 一律包在 try/catch 里：那是**消费方**的代码（写盘 / 推流都会抛），而 `run()` 承诺「永不抛」 |
 | **`AGENT_*` 错误码** | 领域归因码（`AGENT_LOAD_FAILED` / `AGENT_FAILED` / `AGENT_TIMED_OUT` / `AGENT_CANCELED` / `AUTH_FAILED` / `RATE_LIMITED`）。**不是** contracts 的 `ErrorCode`：它没有 HTTP 状态，落点是该行的事件日志，不要塞进 `ERROR_CODES` |
-| **`§5.6.x` / `R33` 这类编号** | `§` 指向 spec / 计划的章节；`R` 是**裁定项编号**（对上游事实的裁决，例如 R33 = dsh 依赖走 `next` 线而不是 `latest`）。两者都在 `docs/superpowers/` 下，注释里的「实测」「探测报告」指同目录的冒烟 / 探测记录 |
-| **p3 / p4 / p5 / p6** | 实施计划的阶段代号（见 `docs/superpowers/plans/`）：p3 适配器（本包）、p4 编排与评分、p5 评测域接口与界面、p6 真实冒烟与关账 |
+| **`§5.6.x` / `R33` 这类编号** | `§` 指向 spec / 计划的章节；`R` 是**裁定项编号**（对上游事实的裁决，例如 R33 = dsh 依赖走 `next` 线而不是 `latest`）。这些编号指向的设计 spec 与冒烟记录已熔炼进知识库（`docs/protocols/` 下各篇），注释里的「实测」指那里 |
+| **p3 / p4 / p5 / p6** | 历史实施计划的阶段代号（p3 适配器（本包）、p4 编排与评分、p5 评测域接口与界面、p6 真实冒烟与关账）；这些计划已按 ADR 0001 熔炼进知识库 |
 
 ## 11. 相关文档
 
 - 根 [`README.md`](../../../README.md)：产品口径、使用手册、数据落在哪、排障表。
 - [`AGENTS.md`](../../../AGENTS.md)：分层边界与工具链坑（改代码前先读）。
-- [`docs/superpowers/`](../../../docs/superpowers/)：设计 spec、实施计划、真实冒烟与探测记录
+- [`docs/`](../../../docs/)：知识库（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫五域，AGENTS.md「知识库」节）；历史设计 spec 与冒烟记录已按 ADR 0001 熔炼进知识文章
   （三家 SDK 的入口形状、事件 dump、权限档实测都记在那里，本包注释里的「实测」指的就是它们）。

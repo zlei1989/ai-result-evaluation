@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * dsh 的通知投影（**按真实探测回写后的口径**，Task 12）。
- * 探测结论（`docs/superpowers/notes/2026-09-22-features-p3-agent-probe.md` §2/§3）：
+ * 探测结论（`docs/protocols/dsh.md`）：
  * 通知是 `{ method, params }`，事件全在 `method === 'session.event'` 里；用量在
  * `params.event.type === 'assistant/message'` 的 `params.event.data.usage`；轮次结束与失败在
  * `params.event.type === 'turn/end'`。下面每条用例的构造数据都照 `probe/dumps/dsh.json` 的真实字段名写。
@@ -598,7 +598,7 @@ describe('消息级与行级两条口径并存（2026-10-06）', () => {
 
 /**
  * 归属与**每会话自己的**轮次号（2026-10-05，spec
- * `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` §2.6）。
+ * "docs/protocols/message-spec.md"「轮次归属」）。
  *
  * 口径：消息的 `roundTrip` 与 `usage.turn.round` 是**同一个数**，都由 `message.ts` 的
  * `dshTurnAttribution` 算出来——取厂商给的**每会话** `step`（真机：主会话 1,2,3、子会话 1,2,3），

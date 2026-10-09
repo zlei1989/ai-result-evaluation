@@ -74,7 +74,11 @@ export const baseConfig: Linter.Config[] = [
   // 口径：**凡是 `.gitignore` 里以「生成物」为由忽略的目录，只要可能落 `.ts`/`.tsx`，都要在这里再写一遍。**
   { ignores: ['**/node_modules/**', '**/dist/**', '**/.next/**', '**/out/**', '**/coverage/**', '**/probe/dumps/**'] },
   {
-    files: ['**/*.{ts,tsx}'],
+    // files 含 `.mts`：VitePress 的站点配置是 ESM-only，配置文件必须用 `.mts` 后缀
+    // （`.ts` 会走 require 通路，报 "ESM file cannot be loaded by require"）。
+    // 根 glob 原来不含该后缀，docs 工具链文件会成为 lint 盲区，故显式补上；
+    // 对 8 个包的现有文件是纯增量，不触碰 boundaryConfigs 的任何一条。
+    files: ['**/*.{ts,tsx,mts}'],
     languageOptions: { parser: tsParser },
     plugins: { '@stylistic': stylistic, 'import-x': importX, 'unused-imports': unusedImports },
     // import-x 内置的 node 解析器默认只认 ['.mjs', '.cjs', '.js', '.json', '.node']，不含 TS；
@@ -118,7 +122,7 @@ export const baseConfig: Linter.Config[] = [
 
 /** 边界违规时的报错文案：必须指明是哪个包、禁了什么、去哪看规则 */
 function boundaryMessage(pkg: PackageName, name: string): string {
-  return `[分层边界] ${pkg} 禁止 import ${name}（见 docs/superpowers/specs/2026-09-22-scaffold-design.md §4.1）`;
+  return `[分层边界] ${pkg} 禁止 import ${name}（见 docs/architecture/layering.md「依赖方向」）`;
 }
 
 /**

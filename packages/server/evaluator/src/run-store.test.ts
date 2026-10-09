@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * 运行快照读写：落盘、按用例筛选、坏文件跳过、缺文件抛 NOT_FOUND。
- * 配置目录与工作区根目录一律指向 mkdtempSync 出来的临时目录——绝不碰真实的 ~/.aieval 与 ~/.runs。
+ * 配置目录与工作区根目录一律指向 mkdtempSync 出来的临时目录——绝不碰真实的 ~/.aieval 与 ~/.aieval-runs。
  */
 import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -406,7 +406,7 @@ describe('saveRun 的写侧自检', () => {
  *
  * 写侧落盘位置完全取自这一项（`runDir(root, id)`），而契约里它只是 `z.string()`——没有 `.min(1)`、
  * 没有绝对路径约束。形状不对的值会让产物写到**读侧永远看不到的地方**：`''` ⇒ 进程 CWD 下的 `<runId>/`，
- * `'~/.runs'`（设置里的合法可读写法）⇒ 字面 `~` 目录（读侧 `resolveRootForRead` 会展开成家目录）。
+ * `'~/.aieval-runs'`（设置里的合法可读写法）⇒ 字面 `~` 目录（读侧 `resolveRootForRead` 会展开成家目录）。
  * 「今天创建点都写绝对路径」不是安全论证——写侧已经在依赖它了。
  *
  * 注意这条守卫的**落点断言要盯住进程 CWD**：变异体（去掉校验）真的会把快照写进 CWD，
@@ -414,14 +414,14 @@ describe('saveRun 的写侧自检', () => {
  */
 describe('saveRun 的 workspaceBase 形状校验', () => {
   it('空串 / `~` 写法 / 相对路径一律拒绝：产物不许写到进程 CWD 或字面 `~` 目录', () => {
-    for (const bad of ['', '~/.runs', 'runs', './runs']) {
+    for (const bad of ['', '~/.aieval-runs', 'runs', './runs']) {
       const caught = thrownBy(() => saveRun(makeRun({ id: 'run-base-bad', caseId: 'case-1', workspaceBase: bad }))) as ServiceError;
       expect(caught, `应当拒绝：${JSON.stringify(bad)}`).toBeInstanceOf(ServiceError);
       expect(caught.code).toBe('INVALID_QUERY');
       expect(caught.message).toContain('工作区根目录不合法');
       expect(caught.context).toMatchObject({ runId: 'run-base-bad', workspaceBase: bad });
     }
-    // 空串的落点是 `join('', 'run-base-bad')` = 进程 CWD 下的同名目录；`~/.runs` 的落点是 CWD 下的字面 `~`
+    // 空串的落点是 `join('', 'run-base-bad')` = 进程 CWD 下的同名目录；`~/.aieval-runs` 的落点是 CWD 下的字面 `~`
     expect(existsSync(join(process.cwd(), 'run-base-bad'))).toBe(false);
     expect(existsSync(join(process.cwd(), '~'))).toBe(false);
     // 坏根不许进进程内记忆（校验必须排在 rememberRunRoot 之前），否则事件侧会照着它写

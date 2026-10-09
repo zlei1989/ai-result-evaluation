@@ -43,7 +43,7 @@ pnpm build        # 生产构建
 → 在 `/cases` 建用例 → 在 `/runs` 建评测。**创建后不会自动开跑，需另点「开始」**。
 
 配置存放于 `~/.aieval/config.json`（可用 `AIEVAL_CONFIG_DIR` 更改位置）；
-评测产物位于工作区根目录（默认 `~/.runs`，可在 `/settings` 修改）的 `{runId}/` 下。
+评测产物位于工作区根目录（默认 `~/.aieval-runs`，可在 `/settings` 修改）的 `{runId}/` 下。
 
 ## 代码结构
 
@@ -53,7 +53,7 @@ ai-result-evaluation/
 ├── packages/server/   # core（工作区引擎，零外部依赖）/ agents（智能体适配）
 │                      # / evaluator（编排评分）/ api（一个功能一个文件）/ contracts（zod 契约）
 ├── packages/client/   # ui（纯展示组件）/ client（SWR hooks + HTTP 原语）
-└── docs/superpowers/  # specs（设计）+ plans（实施计划）+ notes（冒烟与调研记录）
+└── docs/ 知识库  # 五域知识文章 + 厂商 FAQ 活文档（历史 spec/plans/notes 已按 ADR 0001 熔炼）
 ```
 
 服务端各包不依赖框架，厂商 SDK 只在 `agents` 包内引用；依赖方向单向，由 ESLint 规则强制约束，而非口头约定。

@@ -11,7 +11,9 @@
     "format": "eslint . --fix --cache --cache-location node_modules/.cache/eslint/",
     "test": "vitest run --passWithNoTests",
     "test:changed": "vitest run --changed --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.typecheck.json"
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs && node docs/.vitepress/build-llms.mjs"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "^4.4.1",
@@ -22,6 +24,7 @@
     "eslint-plugin-unused-imports": "^4.4.1",
     "jiti": "^2.7.0",
     "typescript": "^5.9.3",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.11"
   }
 }

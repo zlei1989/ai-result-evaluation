@@ -9,7 +9,7 @@
  *    顺序错了会丢掉开头那批事件（含 `turn/start`），所以订阅由**流自己**建立，`start()` 里不碰它。
  *
  * **注入模型在 2026-09-30 整体换过**（计划 `2026-09-30-dsh-dual-protocol.md`，探测报告
- * `docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`）：本行统一走 **pi-ai 路由**，
+ * `docs/protocols/dsh.md`「pi-ai 路由与两条 wire」）：本行统一走 **pi-ai 路由**，
  * 协议决定 wire（`anthropic → anthropic-messages`、`openai → openai-responses`）。
  * 四个落点：
  *  1. **per-run overlay**（`<configHome>/aieval-route.patch.yml`，见 `DSH_ROUTE_PATCH_RELATIVE_PATH`）——
@@ -603,7 +603,7 @@ export const dshProvider: AgentProvider = {
      * 协议决定 `api`——`anthropic` → `anthropic-messages`、`openai` → `openai-responses`
      * （计划 D2：openai 只走 responses，不映射 chat-completions）。
      * 真机证据：两条 wire 用**产品自己的供应商记录**各跑通一次（含计量），
-     * 见 `docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`。
+     * 见 `docs/protocols/dsh.md`。
      *
      * 顺序与 contracts 的枚举一致；它只影响候选池里两类模型的排列，判定一律走 `acceptsProtocol`。
      */

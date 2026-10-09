@@ -86,7 +86,7 @@ export interface ConformanceProduct {
  * 为什么单列一个判据组（2026-10-07）：评分通路只读 `finalText`——它是「智能体评分」这条产品
  * 通路的**唯一入口**。而在这条判据之前，「哪条消息算最终答复」只有各家自己的用例在管：
  * codex 在 app-server 重构里整体漏写了这一格，`providers/codex/*` 全绿、真机上评分智能体却
- * 永远拿不到答复（见 `docs/codex-faq.md` 的 `JUDGE_PARSE_FAILED` 条目）。
+ * 永远拿不到答复（见 `docs/faq/codex.md` 的 `JUDGE_PARSE_FAILED` 条目）。
  * 一句话：**这是跨家契约，不是各家的实现细节**——所以它必须由套件统一钉，而不是各写一份。
  */
 export interface ConformanceRunResult {

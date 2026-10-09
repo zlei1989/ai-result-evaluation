@@ -51,7 +51,7 @@ export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 /** 默认值：workspaceRoot 的 `~` 由服务端在读取时展开为真实家目录 */
 export const SETTINGS_DEFAULTS: Settings = {
   theme: 'auto',
-  workspaceRoot: '~/.runs',
+  workspaceRoot: '~/.aieval-runs',
   defaultJudge: null,
   defaultJudgeAgent: null,
   diffBudgetBytes: 262_144,

@@ -19,9 +19,9 @@
 
 | 厂商 | 文件 |
 |------|------|
-| Codex（`@openai/codex` / `codex app-server`） | `docs/codex-faq.md` |
-| Claude Code（`@anthropic-ai/claude-agent-sdk`） | `docs/claude-code-faq.md` |
-| DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`） | `docs/deepseek-harness-faq.md` |
+| Codex（`@openai/codex` / `codex app-server`） | `docs/faq/codex.md` |
+| Claude Code（`@anthropic-ai/claude-agent-sdk`） | `docs/faq/claude-code.md` |
+| DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`） | `docs/faq/deepseek-harness.md` |
 
 每条四格，**缺一不可**：
 
@@ -36,9 +36,24 @@
 - **同一现象只留一条**：修法与事实冲突时**改旧条目**，不要新开一条并列。
 - **测试环境 ≠ 运行环境**：凡是「单测绿、真机红」的（打包器改写、解析器差异、子进程环境差异），根因里必须点名差异在哪，避免下一个人再信一次单测。
 
+## 知识库
+
+`docs/` 原位构建 VitePress 知识库：`pnpm docs:dev` 起本地站浏览，`pnpm docs:build` 构建并重新生成 `docs/public/llms.txt`。知识按五域组织，**接任务先按域找文章，别全仓扫描**：
+
+| 域 | 位置 | 收什么 |
+|----|------|--------|
+| 协议规范 | `docs/protocols/` | providers 抽象与 run 入口、消息与事件、进程生命周期、新增 SDK 接入流程、三家厂商接入与横向对比 |
+| 功能说明 | `docs/features/` | 按功能模块组织的现时行为说明；目录层《功能总览》 |
+| 架构设计 | `docs/architecture/` | 分层与依赖方向、契约体系、界面原语与主题、工具链与命令聚合 |
+| FAQ | 三份厂商 FAQ 原文 + 目录层 `docs/faq/index.md`《故障索引》 | 运行期问题按报错原文索引，可 grep |
+| 规约守卫 | `docs/guard/`；另有 PowerShell / Playwright MCP 两份活文档原文编入（`docs/guard/powershell.md`、`docs/guard/playwright-mcp.md`） | 密钥与环境变量、冒烟方法论、变异验证、测试策略 |
+
+- **AI 读口径**：路径稳定、文件可 grep、本节指针可导航；`docs/public/llms.txt`（构建期由 `docs/.vitepress/build-llms.mjs` 按 `pages.mjs` 生成，全站页面清单 + 一句话摘要）是**副产品**判据，不是主判据。
+- **关账回写（ADR 0001）**：关账时把设计决策与冒烟证据直接回写进对应知识文章的小节，**不再新增过程档案**，过程可追溯性交给 git 历史；FAQ 追加条目时同步《故障索引》目录层，少一条即未关账。
+
 ## 目录结构
 
-1 个下游应用 + 服务端/客户端两层，职责严格分离（架构见 `docs/superpowers/specs/2026-09-22-scaffold-design.md`）：
+1 个下游应用 + 服务端/客户端两层，职责严格分离（架构见 `docs/architecture/layering.md`，知识库入口见「知识库」节）：
 
 ```text
 apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错误映射」
@@ -52,10 +67,10 @@ packages/server/
 packages/client/
   ui/              纯展示组件（base + composite），纯数据驱动、不调接口
   client/          SWR hooks + HTTP 原语，类型全部来自 contracts
-docs/superpowers/  specs / plans / notes
-docs/powershell.md   PowerShell 的事实与硬规则（删除守卫、编码坑）
-docs/playwright-mcp.md   Playwright MCP 的 filename 路径规则与冒烟口径
-docs/{codex,claude-code,deepseek-harness}-faq.md  三家厂商适配的运行期问题台账（发现即追加，格式见上）
+docs/ 知识库（五域 + FAQ 与规约守卫活文档，见「知识库」节）
+docs/guard/powershell.md   PowerShell 的事实与硬规则（删除守卫、编码坑）
+docs/guard/playwright-mcp.md   Playwright MCP 的 filename 路径规则与冒烟口径
+docs/faq/  三家厂商 FAQ（发现即追加，格式见上）+ 目录层《故障索引》
 eslint.shared.ts   共享规则 + 分层边界规则（withBoundary）
 ```
 
@@ -79,10 +94,10 @@ core     → contracts
 
 ## 删除与 PowerShell 安全
 
-> PowerShell 的通用规则（自动变量禁令、`Assert-Deletable` 完整实现、编码与 `Get-Content` 坑）见 `docs/powershell.md`。
+> PowerShell 的通用规则（自动变量禁令、`Assert-Deletable` 完整实现、编码与 `Get-Content` 坑）见 `docs/guard/powershell.md`。
 
 - **禁止**把 `$home` / `$profile` / `$env:USERPROFILE` / `$env:APPDATA` 等当临时变量：5.1 下报只读错，**pwsh 7 下却是静默成功**，于是 `Remove-Item $home -Recurse -Force` 会真的删掉用户目录。临时值一律用专属名 `$repoRoot` / `$tmpDir` / `$outPath`；判据是「有没有给自动变量赋值」，不是「上次跑报没报错」。
-- **递归删除按序做三件事**：断言目标在允许根之下（用 `docs/powershell.md`「递归删除」一节的 `Assert-Deletable`，允许根传 `$env:TEMP` 或本仓工作目录）→ 打印目标 → 执行；删除语句**不得**带 `-ErrorAction SilentlyContinue`。
+- **递归删除按序做三件事**：断言目标在允许根之下（用 `docs/guard/powershell.md`「递归删除」一节的 `Assert-Deletable`，允许根传 `$env:TEMP` 或本仓工作目录）→ 打印目标 → 执行；删除语句**不得**带 `-ErrorAction SilentlyContinue`。
 - 能用现成的临时目录 API 就别手写递归删除（JS 用 `mkdtempSync`，PS 用 `New-TemporaryFile`）；也别指望 PSScriptAnalyzer 做静态门禁（本机未安装且装不上）。
 - 本仓只有两个 PS 脚本：`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`，改动靠人工审。`scripts/bench-gates.ps1:28` 用 `Invoke-Expression` 执行命令串，**调用方只能传字面量**。
 - 已审计的永久删除点，别"顺手加守卫"：`scripts/split-test-file.mjs:202` 的 `rmSync(src)` 是拆完测试文件删原文件的有意行为；`packages/server/core/src/workspace.ts:124-126` 的三个 `rmSync` 分开写是刻意的（改前先读该处注释）。
@@ -110,7 +125,7 @@ core     → contracts
 | 环境 | `vitest.node.ts`（库包与 web-next）/ `vitest.jsdom.ts`（`ui` 与 `client`）；纯函数测试标 `// @vitest-environment node` |
 | **`.tsx` 测试只能在库包写** | `apps/web-next` 必须留 `jsx: preserve`，Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`；改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效 |
 | 别名 | `apps/web-next` 的 `@/*` 指应用根目录；**vitest 不读 tsconfig 的 `paths`**，故在 `apps/web-next/vitest.config.ts` 显式给 `resolve.alias` |
-| 根聚合的收集范围 | 根 `vitest.config.ts` 的 `projects` glob 收 `packages/{server,client}/*` 与 `apps/*`；新包自带 `vitest.config.ts` 即被收进来。改动收集方式后必须核对用例总数（漏收一整个包是静默漏测） |
+| 根聚合的收集范围 | 根 `vitest.config.ts` 的 `projects` glob 收 `packages/{server,client}/*` 与 `apps/*`；新包自带 `vitest.config.ts` 即被收进来。**另有 docs 一条**：知识库守卫工程（`docs/vitest.config.ts`，读磁盘断言的 node 环境）以显式路径并列——docs 不是 workspace 包，glob 罩不到；改收集方式后核对全仓用例总数对它同样适用 |
 | **`vi.mock` 逐文件重复** | 前置提升只作用于本文件：`orchestrator-*.test.ts` 每个文件都要自己写三条 `vi.mock`，漏一条会**静默** spawn 真厂商 CLI（守卫在 `packages/server/evaluator/src/static-assertions.test.ts`） |
 | jsdom 的缺口 | `matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**（否则兜底分支再也测不到）；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉 |
 | 测试预算 | `TEXT_API_RETRY` / `ROW_RETRY` 写成可变对象：`beforeEach` 读产品默认值再改小、`afterEach` 还原，默认值要有独立用例钉住；`until` 的第 4 参 `impossible` 只给**终态期望**用；所有等待上限按「宁可超时也不假红」定 |
@@ -158,15 +173,16 @@ core     → contracts
 | `Splitter` 的尺寸用受控 `size` | 不用 `defaultSize`；受控下拖拽必须把 `onResize` 回写进 `size`，否则松手弹回；弹性列不给 `size`。唯 `SplitPane` 原语用 `defaultSize`（它不支持刷新后还原拖过的宽度） |
 | `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style |
 | `next-env.d.ts` | 已 gitignore；忽略它只能写在 `boundaryConfigs('web-next')` 里，散写在 `apps/web-next/eslint.config.ts` 的裸条目会被根路径漏掉 |
-| PowerShell 5.1 的 `Get-Content` 读 UTF-8 文件 | 见 `docs/powershell.md`「读写文件与编码」：无 BOM 时按 ANSI 解码，中文乱码且**行号少算** |
+| PowerShell 5.1 的 `Get-Content` 读 UTF-8 文件 | 见 `docs/guard/powershell.md`「读写文件与编码」：无 BOM 时按 ANSI 解码，中文乱码且**行号少算** |
 | 根 `eslint .` 的边界规则必须**按目录前缀化** | 否则 core 的禁用名单会落到全部包（web-next 被误伤成「禁止 import react」）；前缀化在 `scopeToDir()`。改完做**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错 |
 
 ## 冒烟测试
 
 - 启动真实服务（web-next :3083），用 mcp 按真实用户路径逐项操作（输入、按钮、弹窗、导航、拖拽），并用 CLI 复核落盘事实（配置文件、git 分支与 diff），页面与磁盘互证。
 - **几何断言别靠眼睛**：读 `getBoundingClientRect()`（`read_picked_element` 或 `browser_evaluate`），不要凭截图判断。
-- MCP 浏览器工具的 `filename` 路径规则与几何断言见 `docs/playwright-mcp.md`。
+- MCP 浏览器工具的 `filename` 路径规则与几何断言见 `docs/guard/playwright-mcp.md`。
 - 每次冒烟后在对应计划/关账记录的「冒烟」小节写入四要素：范围清单（逐项 ✅/❌/跳过+理由）、操作路径、证据（浏览器 + CLI 互证）、未覆盖项与后续计划。
+- 冒烟记录按关账回写纪律熔炼进知识文章（ADR 0001）。
 
 ## 技术栈
 

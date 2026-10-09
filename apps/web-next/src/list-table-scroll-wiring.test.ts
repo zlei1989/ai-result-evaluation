@@ -24,7 +24,7 @@
  *     第一版守卫就是在这里踩了空切片，靠「抠不到就抛」当场发现）。
  * 两块之外的换行重构不会误红，而上面几种缺陷必红。「这些不变量真的落在渲染结果上」由
  * `packages/client/ui/src/base/table-scroll-area.test.tsx` 与 `provider-table.test.tsx` 各守一半，
- * 真机几何（吸边 + 吸顶同时成立）由 `docs/superpowers/notes/2026-10-08-*.md` 的冒烟记录看着。
+ * 真机几何（吸边 + 吸顶同时成立）由 `docs/guard/smoke-testing.md` 的真机红/绿判据与四要素口径看着。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

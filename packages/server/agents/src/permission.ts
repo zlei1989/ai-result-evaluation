@@ -4,7 +4,7 @@
  * 为什么单独一个文件、而不是各自写在 provider 里：这三份表只有**放在一起**才能逐格对照，
  * 而它们必须同时正确——「两家给全权限、第三家忘给」正是 p6 冒烟实测过的缺陷形状
  *（claude-code 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
- * 见 `docs/superpowers/notes/2026-09-22-features-smoke.md` 的 A1）。放一起之后，
+ * 见 `docs/protocols/provider-run.md`「权限档按阶段给」表）。放一起之后，
  * `permission.test.ts` 能把「每一档在每一家都有落点」写成一条可执行断言。
  *
  * ⚠️ 这张表里的选项**值域来自厂商包的类型面**（不是猜的），改之前先核这三处：
@@ -92,7 +92,7 @@ export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPer
  * 都起不来（`codex_core::tools::router: error=exec_command failed: CreateProcess { … rejected: blocked by policy }`），
  * 而 codex **没有独立的文件读取工具**，读文件只能靠 shell ⇒ 评分阶段（只读档）在 Windows 上等于
  * **盲评**：链路全通（`ok`、`judgments` 齐、`structuredOutput: true`），结论全错
- * （真机：候选确实做到了三项，评分 `0 / 25`）。三档矩阵见 `docs/codex-faq.md`。
+ * （真机：候选确实做到了三项，评分 `0 / 25`）。三档矩阵见 `docs/faq/codex.md`。
  *
  * 处置：**只在 Windows 上**把只读档落成 `danger-full-access`（读得到），代价是评审者**能写**工作区
  * ——那一条由编排层的「评分前后 diff 摘要对照」兜底（不一致即该行失败，见 `judgeStageAttempt`）。

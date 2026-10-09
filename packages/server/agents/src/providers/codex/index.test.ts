@@ -8,7 +8,7 @@
 import { EFFORT_OFF, type AgentEvent, type AgentMessage, type SubagentRecord } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
 import { listAgentProviders } from '../../registry';
-import { collectEvents, createRunInput } from '../../testing/agent-fixtures';
+import { collectEvents, createRunInput, FIXTURE_CWD } from '../../testing/agent-fixtures';
 import type { AgentRunResult } from '../../types';
 import {
   agentMessageDelta,
@@ -142,7 +142,7 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
     const threadParams = server.stats.requests[1]?.params as Record<string, unknown>;
     expect(threadParams).toMatchObject({
       model: 'gpt-x',
-      cwd: 'D:/tmp/rows/row-1/workspace',
+      cwd: FIXTURE_CWD,
       sandbox: 'danger-full-access',
       approvalPolicy: 'never',
     });
@@ -776,7 +776,7 @@ describe('能力声明与 dsh 的逐格对齐', () => {
      *   · `streamingDelta` 这一格**已知不同**，且差异有据：codex 的 app-server 有 `agentMessageDelta`
      *     ⇒ 记 `yes` + `wire`；dsh 的通知流不投送增量（2026-10-07 真机实测：一次往返 20 条通知、
      *     增量类 0 条、正文只有整块 `assistant/message`）⇒ 记 `not-projected-by-vendor` + `not-exposed`。
-     *     依据：`docs/deepseek-harness-faq.md` 首条、`dsh/index.ts` 的 `notes` 第一条。
+     *     依据：`docs/faq/deepseek-harness.md` 首条、`dsh/index.ts` 的 `notes` 第一条。
      *   任一侧被改都会让这条红——要改就连同依据一起改。
      */
     for (const cell of ['thinkingText', 'thinkingTextKind', 'toolInput', 'toolResult', 'subagent'] as const) {

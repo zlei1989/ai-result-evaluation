@@ -32,7 +32,7 @@
  * 落成日志只会让抽屉噪声翻倍——但它仍然是「已识别且有意不投影」的一格，不是未识别。
  *
  * **既成口径：用量与轮次都不按会话分叉**（spec
- * `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` §2.5 的「行尺度」一档 / §3.4）。
+ * "docs/protocols/message-spec.md"「轮次归属」与行尺度一档）。
  * 子会话的 `assistant/message` 与 `step/start` 与主会话同形，而这一层**只认 `event.type`、
  * 不按 `sessionId` 分流**：`assistant/message` 那一支把三元组**无条件**累进本行的 `state.usage*`
  * （`sessionId` 只喂 `noteDshSessionUsage` 那张按会话分组的表），`step/start` 那一支把
@@ -43,7 +43,7 @@
  * 本次唯一的新增是把**其中的分量**另外交出来（`subagentTokens`，按本行的子会话白名单求和），
  * 合计口径一个字未动——另两家（codex / claude）过去把子那一份留在子任务行上，本次才并进合计。
  *
- * 2026-10-05 补一句新口径（spec `docs/superpowers/specs/2026-10-01-agent-message-spec-design-v3.md` §2.6）：
+ * 2026-10-05 补一句新口径（`docs/protocols/message-spec.md`）：
  * **合计**（`tokens` / `turns`，服务卡片与快照）仍**不分会话**——上面那一段一个字未动；而
  * **消息的轮次号与 `usage.turn`** 改按**各会话自己的 `step`** 走（两者是同一个数，
  * `message.ts` 的 `dshTurnAttribution` 是唯一实现）。两者不是一回事：合计答的是「这一行一共花了

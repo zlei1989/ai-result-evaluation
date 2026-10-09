@@ -143,7 +143,7 @@ beforeEach(() => {
     if (run === undefined) throw new ServiceError('NOT_FOUND', `评测不存在：${runId}`);
     return { ...run, status: 'partial' };
   });
-  // 工作区根目录指到临时目录：创建出来的行路径不会落到真实 ~/.runs
+  // 工作区根目录指到临时目录：创建出来的行路径不会落到真实 ~/.aieval-runs
   updateSettings({ workspaceRoot: join(dir, 'ws') });
   seedConfig({ providers: [makeProvider(), makeAnthropicProvider()], cases: [makeCase()] });
 });

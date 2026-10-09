@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe('getSettings', () => {
   it('无配置文件时返回默认值', () => {
-    // 与 SETTINGS_DEFAULTS 的唯一差别是 workspaceRoot：默认值里的 `~/.runs` 只是配置文件中的可读写法，
+    // 与 SETTINGS_DEFAULTS 的唯一差别是 workspaceRoot：默认值里的 `~/.aieval-runs` 只是配置文件中的可读写法，
     // 下行一律展开为绝对路径（下一条钉的就是这件事），故这里按展开后的默认根目录比对。
     expect(getSettings()).toEqual({ ...SETTINGS_DEFAULTS, workspaceRoot: defaultWorkspaceRoot() });
   });
@@ -153,7 +153,7 @@ describe('updateSettings', () => {
   });
 
   it('保存的配置里 workspaceRoot 是绝对路径而非 ~ 形式', () => {
-    saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: '~/.runs' } });
+    saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: '~/.aieval-runs' } });
     const next = updateSettings({ theme: 'dark' });
     expect(next.workspaceRoot).not.toContain('~');
   });

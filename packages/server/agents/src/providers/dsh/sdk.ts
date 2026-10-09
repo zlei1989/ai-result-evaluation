@@ -2,7 +2,7 @@
  * dsh 的厂商 SDK 懒加载外壳：**按真实探测回写后的入口形态**（Task 12 第 0 步）。
  * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.1.7-rc.1` 的
  * `lib/types/{index,api,client,types,launch}.d.ts` 与 `lib/index.js`，实测记录见
- * `docs/superpowers/notes/2026-09-22-features-p3-agent-probe.md` §2/§5 与 Step 0 的 `dumps/dsh-entry.json`：
+ * "docs/protocols/dsh.md"（DSH 接入）与探测 dump：
  *
  *  - **值出口是 7 个**（`Object.keys` 排序后逐字）：
  *    `DeepSeekHarness` / `HarnessClient` / `HarnessSession` / `JsonRpcResponseError` /

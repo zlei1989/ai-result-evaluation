@@ -13,7 +13,7 @@
  *      400 + issues（复制出来的第二份 zod 会以 `instanceof ZodError` 为假落到 500）。
  *
  * 配置目录一律指向 `mkdtempSync` 出来的临时目录，并在 `afterEach` 复位——
- * 绝不碰真实的 `~/.aieval` / `~/.runs`。
+ * 绝不碰真实的 `~/.aieval` / `~/.aieval-runs`。
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

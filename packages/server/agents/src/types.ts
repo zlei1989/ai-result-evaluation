@@ -199,7 +199,7 @@ export interface AgentRunResult {
    *
    * ⚠️ **这是跨家契约，不是各家的实现细节**：一致性套件的「最终答复口径（§2.10）」按产物逐家钉住
    * 「有主会话答复就必须交得出」——漏写这一格的家会在套件上红（codex 在 app-server 重构里漏过一次，
-   * 各家自己的用例全绿而真机评分永远拿不到答复，见 `docs/codex-faq.md`）。
+   * 各家自己的用例全绿而真机评分永远拿不到答复，见 `docs/faq/codex.md`）。
    */
   finalText: string | null;
   /**
@@ -223,7 +223,7 @@ export interface AgentProviderMetadata {
    * 它同时支持多条 wire，`protocolType` 这个单值字段需要重新设计（改成数组或加 `protocolTypes`）」。
    * 2026-09-30 的真机探测确认 dsh 侧存在第二条 wire（pi-ai 路由同时讲 `anthropic-messages` 与
    * `openai-responses`，两条都跑通含计量）⇒ 按当时的预案改成集合。
-   * 探针与结论：`docs/superpowers/notes/2026-09-30-dsh-pi-ai-route-probe.md`。
+   * 探针与结论：`docs/protocols/dsh.md`。
    *
    * claude-code / codex 仍是单元素（它们各自只讲一条 wire），集合形状对它们只是多一层数组。
    */

@@ -2,7 +2,7 @@
 /**
  * 行产物清理：**瞬时占用就地重试** + 失败文案点名成因（2026-10-07）。
  *
- * 这一条链路的真机成因（`docs/codex-faq.md`）：codex 在 `thread/start` 期间 spawn 了一串 `git`
+ * 这一条链路的真机成因（`docs/faq/codex.md`）：codex 在 `thread/start` 期间 spawn 了一串 `git`
  * 孙进程去同步插件目录，它们**继承父进程的句柄**；父进程一死，句柄继续捏着该行的 `.judgehome`
  * ⇒ 下一轮的行产物清理 `EPERM`。而 `fs.rmSync` 在本机没有可用的重试（见 `remove-tree.ts` 文件头），
  * 于是「一次失败」直接等于「这一行失败」，且锁消失之前**每次重跑都失败**。

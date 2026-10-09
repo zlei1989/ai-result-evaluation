@@ -351,7 +351,7 @@ export function judgeReplyJson(achieved = true): string {
  * 「这一分是哪把尺子打的」的接缝守卫：`resolveJudgeRoute()` 解析出的路由与编排层记在行上的
  * `judgeProviderId` 必须指向**同一家供应商**（`TextRoute` 按契约 §11 R14 不带 providerId，
  * 两者只能靠守卫钉住不漂移）。
- * 契约依据：`docs/superpowers/notes/2026-09-22-features-plan-interfaces.md` §5（448–449 行）与 §11 R14。
+ * 契约依据：`docs/architecture/contracts.md`（契约体系）。
  *
  * 尺子的来源已经收成**一个**（用例级覆盖于 2026-09 删除）：两处都读 `settings.defaultJudge`。
  * 守卫照旧不能只跟「测试自己的期望值」比——那样两边可能一起错。这里从 `route` **反查**供应商

@@ -5,7 +5,7 @@
  * 与消息归一无关（它只看运行结果里那几格），独立成模块后，接线只需在套件里加一行，且本模块
  * 能被自测直接调用（每条判据都要见过失败）。
  *
- * 判据源：`docs/superpowers/plans/2026-10-07-agents-provider-conformance.md` §14。
+ * 判据源：`docs/protocols/sdk-onboarding.md`（新增 SDK 接入流程）。
  * 评分通路只读 `AgentRunResult.finalText`，并要求它是**可解析的 JSON**；结构化输出把这一步从
  * 「靠模型自觉吐 JSON」变成「厂商保证形状」，而**不支持结构化的那一家必须仍有降级路径**
  * （从文本里提取 JSON）——否则它永远评不了分。
