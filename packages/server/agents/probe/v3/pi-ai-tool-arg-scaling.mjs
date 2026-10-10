@@ -1,11 +1,11 @@
 /**
  * D9 的**库级微基准**：pi-ai 0.85.1 的「流式工具参数」解析到底有多贵？
  *
- * 为什么需要这一步：计划 D9 登记的事实是「SDK spawn 的那份 dsh 实跑 `@earendil-works/pi-ai@0.85.1`，
+ * 为什么需要这一步：已知事实是「SDK spawn 的那份 dsh 实跑 `@earendil-works/pi-ai@0.85.1`，
  * 而修 O(n²) 的 `patches/@earendil-works__pi-ai@0.87.1.patch` 打不到它」——
  * 0.85.1 的 `dist/api/anthropic-messages.js:503` **每个 `input_json_delta` 都把已累积的 JSON
  * 重解析一遍**（`block.arguments = parseStreamingJson(block.partialJson)`）。
- * 报告 §7 当时只给了量级估算（「几十 KB 在毫秒量级、MB 级才有可感停顿」）并登记为**未实测**。
+ * 当时的报告只给了量级估算（「几十 KB 在毫秒量级、MB 级才有可感停顿」）并登记为**未实测**。
  *
  * 本脚本把那句估算变成数字：直接调用**安装态那一份** `parseStreamingJson`，按真实的累积—重解析
  * 循环跑一遍，并与「只在最后解析一次」（= 0.87.1 的补丁行为）对照。

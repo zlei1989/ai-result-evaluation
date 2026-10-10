@@ -2,7 +2,7 @@
 /**
  * **同一批原始消息喂给「事件投影 + 消息归一」两条通道时，消息侧必须照常产出。**
  *
- * 这个文件守的是一个真实缺陷（2026-10-03 真机）：`createClaudeMessageNormalizer` 一度与事件投影
+ * 这个文件守的是一个真实缺陷：`createClaudeMessageNormalizer` 一度与事件投影
  * **共用 `state.seen`**，而 `project()` 总是先跑事件投影（它把 `uuid` 记进去）、再跑消息归一 ——
  * 于是每一条 `assistant` / `user` 消息都在消息侧被当成「重复投递」丢掉：
  * `messages.jsonl` 一行都不写、抽屉里永远显示「还没有日志 · 这一行还没开始执行」，

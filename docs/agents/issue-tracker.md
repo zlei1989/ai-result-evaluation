@@ -6,6 +6,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 - One feature per directory: `.scratch/<feature-slug>/`
 - The spec is `.scratch/<feature-slug>/spec.md`
+- Smoke-test records are `.scratch/<feature-slug>/smoke.md` (four parts: scope checklist, operation path, evidence, uncovered items) — same directory as the spec, never in `docs/`
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file; the label vocabulary is the five canonical roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
@@ -31,4 +32,4 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
 ## Notes
 
-- 本仓首选曾是 GitHub Issues（remote 为 GitHub），但本机无 `gh` CLI，遂按 `/setup-matt-pocock-skills` 的本地约定落位（2026-10-09）。若日后装了 `gh` 并想迁移，把 `.scratch/` 下的 spec/issues 用 `gh issue create` 重建即可，本文件照抄到 GitHub 模板。
+- 本仓首选是 GitHub Issues（remote 为 GitHub），但本机无 `gh` CLI，故按 `/setup-matt-pocock-skills` 的本地约定落位。若日后装了 `gh` 并想迁移，把 `.scratch/` 下的 spec/issues 用 `gh issue create` 重建即可，本文件照抄到 GitHub 模板。

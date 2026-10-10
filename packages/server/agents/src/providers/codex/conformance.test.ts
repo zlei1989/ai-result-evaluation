@@ -62,8 +62,8 @@ function product(payloads: readonly AppServerNotificationPayload[], options: { o
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
   /**
-   * 行级事件**如实收**（2026-10-09）：事件投影本来就在跑（`finalText` 由它写），原先只是把返回值丢掉、
-   * 产物里恒填 `events: []` ⇒ 套件的 §2.12（增量通道隔离）在这家**永远不可能红**。
+   * 行级事件**如实收**：事件投影本来就在跑（`finalText` 由它写），把返回值丢掉、
+   * 产物里恒填 `events: []` ⇒ 套件的增量隔离判据在这家**永远不可能红**。
    * 收进来之后「增量的落点是内容块、不是事件」这条口径才有条数判据。
    */
   const events: Array<Record<string, unknown>> = [];
@@ -118,7 +118,7 @@ describeProviderConformance({
   capability: codexProvider.metadata.messageCapability,
   observedStatusIds: [CHILD],
   /**
-   * §2.10 的期望值：钉住「哪条消息算最终答复」——`plain-reply` 取主线程答复；`subagent` 场景
+   * 期望值：钉住「哪条消息算最终答复」——`plain-reply` 取主线程答复；`subagent` 场景
    * **只有子线程说过话**，故主线程答复必须是 `null`（子线程的结论不许顶上来）；失败场景照样带答复。
    */
   expectedFinalText: {

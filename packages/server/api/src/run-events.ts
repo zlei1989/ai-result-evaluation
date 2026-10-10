@@ -57,7 +57,7 @@ export function streamRunSignals(): ReadableStream<Uint8Array> {
     start(controller) {
       // **第一件事就是吐一个字节**（注释帧，客户端按 SSE 规范忽略它）：响应头要等第一次
       // `controller.enqueue` 才 flush，空信号期原本要等 15 秒心跳才 flush ⇒ 浏览器不触发
-      // `onopen`、代理可能把空连接当空闲回收。与行级流同一条理由（F3-①）。
+      // `onopen`、代理可能把空连接当空闲回收。与行级流同一条理由。
       controller.enqueue(encoder.encode(': ready\n\n'));
 
       unsubscribe = subscribeRunChanges((runId) => {

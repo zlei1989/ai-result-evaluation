@@ -90,7 +90,7 @@ describe('listProviders / createProvider', () => {
 
   it('新建时带的模型清单一律归一成 manual，并去掉空白项与重复项', () => {
     // `fetched` 的唯一合法来源是一次真实的拉取调用：允许客户端在新建时声明 fetched，
-    // 用户手工填的模型就会在下次拉取时被按「已下架」静默清掉（§6.1 合并而非覆盖要防的正是这个）。
+    // 用户手工填的模型就会在下次拉取时被按「已下架」静默清掉（合并而非覆盖要防的正是这个）。
     const created = createProvider({
       ...CREATE,
       models: [
@@ -268,7 +268,7 @@ describe('deleteProvider', () => {
   });
 
   // 删供应商**不**级联改写 settings.defaultJudge：那会把「删一个供应商」变成一次跨域事务
-  //（要在同一次保存里改动另一块配置）。悬空引用由设置页显式提示（Task 6），
+  //（要在同一次保存里改动另一块配置）。悬空引用由设置页显式提示，
   // 并在评分时由 resolveJudgeRoute 兜底报错。这条用例把这个决定钉住。
   it('删除供应商不改写 settings.defaultJudge（悬空引用留给设置页提示）', () => {
     const created = createProvider(CREATE);
@@ -364,7 +364,7 @@ describe('addProviderModel / removeProviderModel', () => {
 });
 
 describe('listAllModelOptions', () => {
-  // 评分走纯文本 API、不经过智能体（F3 / §6.2），所以 anthropic 协议的模型和 openai 协议的一样可选：
+  // 评分走纯文本 API、不经过智能体，所以 anthropic 协议的模型和 openai 协议的一样可选：
   // 这里刻意不做协议过滤。过滤掉一半候选，等于把「默认评分模型」的选择面砍掉一半。
   it('两种协议的模型都出现', () => {
     const openai = createProvider({ ...CREATE, name: 'A 网关', protocolType: 'openai' });
@@ -401,7 +401,7 @@ describe('listAllModelOptions', () => {
 
 /**
  * 假上游：只认 /models，返回给定响应。
- * 测试绝不打真实网络 —— 拉模型是本计划唯一会对外发 HTTP 的地方，一次真实调用会让用例
+ * 测试绝不打真实网络 —— 拉模型是唯一会对外发 HTTP 的地方，一次真实调用会让用例
  * 依赖外部服务、还会把用户的密钥送到真实网关。
  *
  * 为什么它不会污染其它用例：`vi.stubGlobal` 改的是本 worker 的 globalThis，文件末尾的
@@ -471,12 +471,12 @@ describe('fetchProviderModels：请求形状', () => {
 });
 
 describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）', () => {
-  // 2026-09-26 修订（原 F1「Anthropic 协议没有 /models 接口」）：那条判断只对 api.anthropic.com 成立，
-  // 却把「协议类型」当成了「能不能拉清单」的判据 —— 而多数自建网关在版本段上同时提供 OpenAI 风格
-  // 的清单接口（实测 likecode 网关：`/models` 404、`/v1/models` 200，Anthropic Messages 在 `/v1/messages`）。
-  // 现在协议完全不参与判定，改由**地址形态**兜底：先打 `{地址}/models`，只有 404（路径不存在）
+  // 「Anthropic 协议没有 /models 接口」只对 api.anthropic.com 成立，把它当成「能不能拉清单」的判据
+  // 会误伤多数自建网关 —— 它们在版本段上同时提供 OpenAI 风格的清单接口
+  //（likecode 网关：`/models` 404、`/v1/models` 200，Anthropic Messages 在 `/v1/messages`）。
+  // 协议完全不参与判定，改由**地址形态**兜底：先打 `{地址}/models`，只有 404（路径不存在）
   // 才回退 `{地址}/v1/models`。填 `http://host` 与 `http://host/v1` 都能拉到。
-  // （2026-09-30 又在候选末尾补了站点根的两条，那一段的守卫在下一个 describe。）
+  // 站点根的两条候选见下一个 describe。
   it('anthropic 协议照常拉取（地址直接命中时只发一次）', async () => {
     const created = createProvider({
       ...CREATE,
@@ -574,7 +574,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
 });
 
 /**
- * 根回退（2026-09-30 修订）：地址填的是 **Messages 根**（`/anthropic`，README 就教这么填）
+ * 根回退：地址填的是 **Messages 根**（`/anthropic`，README 就教这么填）
  * 或网关自己的前缀（`/api/v1`）时，清单接口往往仍挂在站点根上 —— 只按配置地址拼会一路 404，
  * 而用户的地址、密钥都没错。故候选补上根的 `/models` 与 `/v1/models`，顺序在配置地址之后。
  */
@@ -692,7 +692,7 @@ async function fetchProviderModelsWith(providerId: string, data: unknown[]): Pro
 }
 
 describe('fetchProviderModels：合并而非覆盖', () => {
-  // §6.1 的两个实现要点之一，也是本计划最重要的回归守卫：手工补的模型每次拉取都丢，
+  // 两个实现要点之一，也是最重要的回归守卫：手工补的模型每次拉取都丢，
   // 用户会以为是「界面没保存」，而实际上是被 fetched 结果整体冲掉了。
   it('手工条目原样保留（顺序在前、source 不变），新 id 追加为 fetched', async () => {
     const created = createProvider(CREATE);
@@ -837,6 +837,18 @@ describe('fetchProviderModels：上游错误码映射', () => {
     stubUpstream({ error: 'slow down' }, 429);
 
     await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  });
+
+  /**
+   * 403 与 401 同档：这一格与 MCP 探活（`mcp.test.ts` 的 403 那条）走的是**同一个**判据
+   * （`upstreamStatusErrorCode`，探活复用这一套）。判据里少写一个 403 时
+   * 两个文件会同时红——这正是「判据只有一份」的可验证形态。
+   */
+  it('403 映射 AUTH_FAILED（与 401 同档，判据与 MCP 探活共用）', async () => {
+    const created = createProvider(CREATE);
+    stubUpstream({ error: 'forbidden' }, 403);
+
+    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
   });
 
   it('其余状态码映射 INTERNAL 并带上状态码与 host', async () => {
@@ -991,7 +1003,7 @@ describe('fetchProviderModels：拉取窗口期的并发落盘', () => {
 });
 
 /**
- * 窗口的取数与落盘（spec §5.1.1）。
+ * 窗口的取数与落盘。
  * 上游字段名并不统一：实测 likecode 一个响应里同时给了六种同义字段，而别的网关可能一个都不给 ——
  * 所以这里既盯「优先级取对了」，也盯「取不到就是未知，不许编一个数」。
  */
@@ -1053,7 +1065,7 @@ describe('拉取时解析上下文窗口', () => {
 });
 
 /**
- * 窗口的合并规则（spec §5.1.1）。
+ * 窗口的合并规则。
  * 三条里最要紧的是第一条：用户把网关填错的窗口改成真值之后，下一次拉取**不许**把它打回 ——
  * 打回是静默的（界面上看不出发生过什么），而用户以为自己的修改生效了。
  */
@@ -1100,7 +1112,7 @@ describe('窗口的合并规则', () => {
 });
 
 /**
- * 手工设置窗口（spec §5.1.1）：设置页的行内编辑器走它。
+ * 手工设置窗口：设置页的行内编辑器走它。
  * 两条口径：写值要标 `manual`（下一次拉取才不会打回），**清空也要标** ——
  * 「清空」是一次明确的表态（别用上游那个数），而不只是「别覆盖这个数」。
  */
@@ -1134,7 +1146,7 @@ describe('设置模型窗口（手工覆盖）', () => {
 });
 
 /**
- * 思考强度的取数（spec §5.1.1）。
+ * 思考强度的取数。
  * 上游给了**三种**形态，实测都在同一个响应里出现过；而「推荐档不在档位表里」这种自相矛盾的响应
  * 必须按「上游没说」处置 —— 拿它去配一个不存在的档位，运行时会硬报错。
  */
@@ -1183,7 +1195,7 @@ describe('拉取时解析思考强度', () => {
   });
 
   /**
-   * **实测抓取的真实响应形状**（2026-09-28，likecode 网关 `GET /v1/models`，HTTP 200、47 条）。
+   * **真实响应形状**（likecode 网关 `GET /v1/models`，HTTP 200、47 条）。
    *
    * 为什么必须有这一条：上面那些用例用的是我构造的**简化**形状，而真实响应把六种同义字段、
    * 嵌套的 `limit` / `capabilities` / `top_provider`、以及逐档对象的 `capabilities.effort` 全塞在

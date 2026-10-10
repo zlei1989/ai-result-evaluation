@@ -3,21 +3,18 @@
  * 评测契约：智能体真源、行状态机、EvalRow / EvalRun 形状、创建 / 编辑入参、diff 响应、
  * 三个行级动作判据，以及编辑与删除共用的两条判据（`hasLiveRows` / `isSameRowTarget`）。
  * 注意：本文件最有价值的六条守卫分别是
- *   ① AGENT_KINDS 与 §5.6.2 的表同序同值（R1）；
+ *   ① AGENT_KINDS 与注册表同序同值；
  *   ② TERMINAL_ROW_STATUSES / ROW_STATUS_LABELS 覆盖全部状态（新增状态时忘同步会当场红）；
  *   ③ isRunnableRow 的集合划分（judged 不可重跑，preparing/running/judging 不是「可执行」而是「在跑」）；
- *   ④ EvalRow.baselineCommit 必填但允许空串（R2：没有它 diff 没有可比基线；空串 = 尚未准备）；
- *   ⑤ EvalRow.providerId 必填（R8：展示快照会被改名，凭据只能按 id 定位）；
- *   ⑥ EvalRow.error.code 必填（R9：界面要靠它区分超时 / 限流 / 密钥无效 / 评分解析失败）。
- * 另有三条守卫是实施时补上的（见各 it 内注释）：本文件消费的 `ScoreResultSchema`（Task 5）
- * 与 `diff` / `tokens` 形状、`RunCreate.providerId` 必填——它们在契约测试里原先没有断言，
- * 对应的变异体会存活（把 `ScoreResultSchema` 换成 `z.any()` 也能全绿）。
- * 另一条是 2026-09-28 用户口径落地时补的：`canRescoreRow` / `canRetryRow` 的真值表各钉一遍
- * （当时两者分叉：前者要求 `error.stage === 'judge'`、后者要求状态是「跑过但没跑成」）。
- * **2026-09-28 晚间口径再变**（用户：「已出分、无报错时取消禁用」）：两个判据都放开了 `judged` 行，
- * 只保留「不在跑 / 有可比基线 / 有已产出改动」这三条硬前提，于是**两者又一次同源**——
- * 但它们的**语义仍然不是一件事**（整段重跑 vs 只重跑评分），故各留一组独立的真值表。
- * 2026-09-28 又补了三组（编辑 / 删除那一版）：`RunUpdateSchema`（创建入参的超集，差别只有候选行可带
+ *   ④ EvalRow.baselineCommit 必填但允许空串（没有它 diff 没有可比基线；空串 = 尚未准备）；
+ *   ⑤ EvalRow.providerId 必填（展示快照会被改名，凭据只能按 id 定位）；
+ *   ⑥ EvalRow.error.code 必填（界面要靠它区分超时 / 限流 / 密钥无效 / 评分解析失败）。
+ * 另有几组守卫各有其靶子（见各 it 内注释）：本文件消费的 `ScoreResultSchema`
+ * 与 `diff` / `tokens` 形状、`RunCreate.providerId` 必填（把 `ScoreResultSchema` 换成 `z.any()` 会全绿）；
+ * `canRescoreRow` / `canRetryRow` 的真值表**各自独立**钉一遍——两者今天同源（都只保留「不在跑 /
+ * 有可比基线 / 有已产出改动」这三条硬前提，`judged` 行已按用户口径「已出分、无报错时取消禁用」放开），
+ * 但它们的**语义不是一件事**（整段重跑 vs 只重跑评分），同源是当前事实而不是不变量。
+ * `RunUpdateSchema`（创建入参的超集，差别只有候选行可带
  * `id`）与 `hasLiveRows` / `isSameRowTarget`——后两条都只有一个理由：界面用它决定按钮的 `disabled`、
  * 服务端拿同一份抛 `CONFLICT`，各写一份必然漂移；`isSameRowTarget` 还多一个消费方（保存前的确认框
  * 要事先算出会作废哪几行），漂移的症状是「说作废 2 行、实际作废 1 行」。
@@ -32,8 +29,13 @@ import {
   EvalRunSchema,
   ExecutionModeSchema,
   ROW_STATUS_LABELS,
+  ROW_MCP_BASIS_LABELS,
+  ROW_MCP_CHANNELS,
+  ROW_MCP_VERDICT_LABELS,
   RowDiffFileSchema,
   RowDiffIndexSchema,
+  RowMcpBasisSchema,
+  RowMcpChannelSchema,
   RunCreateSchema,
   RunUpdateSchema,
   TERMINAL_ROW_STATUSES,
@@ -47,6 +49,7 @@ import {
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
+  type RowMcpServer,
 } from './run';
 
 /** 一个字段齐全的候选行；只覆盖要测的那一格 */
@@ -68,14 +71,14 @@ function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     diff: { filesChanged: 1, insertions: 2, deletions: 3, truncated: false },
     score: null,
     error: null,
-    // 这一行走过几次尝试（2026-09-27）：这一份是「已评分的行」，故是 1 次
+    // 这一行走过几次尝试：这一份是「已评分的行」，故是 1 次
     attempts: 1,
     ...overrides,
   };
 }
 
 describe('AGENT_KINDS', () => {
-  it('三家智能体与 spec §5.6.2 的表同序同值（R1：真源在 contracts）', () => {
+  it('三家智能体与表同序同值（真源在 contracts）', () => {
     expect([...AGENT_KINDS]).toEqual(['claude-code', 'codex', 'dsh']);
     expect(AgentKindSchema.options).toEqual([...AGENT_KINDS]);
   });
@@ -95,7 +98,7 @@ describe('ExecutionModeSchema', () => {
 });
 
 describe('EvalRowStatus', () => {
-  it('十个状态与 spec §5.4 的状态机逐字一致（拼错 timed-out 会让终态判定失效）', () => {
+  it('十个状态与状态机逐字一致（拼错 timed-out 会让终态判定失效）', () => {
     expect(EvalRowStatusSchema.options).toEqual([
       'pending', 'preparing', 'running', 'judging', 'judged',
       'failed', 'timed-out', 'canceled', 'skipped', 'interrupted',
@@ -196,25 +199,25 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     error: null,
   };
 
-  it('EvalRow 的 baselineCommit 是必填字段，但允许空串表示「尚未准备」（R2）', () => {
+  it('EvalRow 的 baselineCommit 是必填字段，但允许空串表示「尚未准备」', () => {
     expect(EvalRowSchema.safeParse(row).success).toBe(true);
     const { baselineCommit: _omitted, ...withoutBaseline } = row;
     expect(EvalRowSchema.safeParse(withoutBaseline).success).toBe(false);
     // 空串必须合法：创建评测时基线还没解析（要等 prepare 阶段 rev-parse HEAD），
-    // 而 p5 的 createRun 落库时只能填 ''；只有 prepare 之后它才必然是非空 40 位 hash。
-    // 若这里恢复成 .min(1)，真实链路上「创建评测」会直接抛 ZodError（p5 的测试 mock 了 evaluator，
-    // 所以只有 p6 的冒烟第 3 项才会暴露）。
+    // 而 createRun 落库时只能填 ''；只有 prepare 之后它才必然是非空 40 位 hash。
+    // 若这里恢复成 .min(1)，真实链路上「创建评测」会直接抛 ZodError（api 层的测试 mock 了 evaluator，
+    // 所以只有冒烟第 3 项才会暴露）。
     expect(EvalRowSchema.safeParse({ ...row, baselineCommit: '' }).success).toBe(true);
   });
 
-  it('EvalRow 要求 providerId（R8）：展示快照 providerName 可以被改名，凭据只能靠 id 定位', () => {
+  it('EvalRow 要求 providerId：展示快照 providerName 可以被改名，凭据只能靠 id 定位', () => {
     const { providerId: _dropped, ...withoutProviderId } = row;
     expect(EvalRowSchema.safeParse(withoutProviderId).success).toBe(false);
     expect(EvalRowSchema.safeParse({ ...row, providerId: '' }).success).toBe(false);
   });
 
-  it('EvalRow.error 必须带 code（R9），且 code 是自由字符串而不是枚举', () => {
-    // 这一格要同时容纳 AgentErrorCode（§5.6.7）与接口层 ErrorCode（如 JUDGE_PARSE_FAILED），
+  it('EvalRow.error 必须带 code，且 code 是自由字符串而不是枚举', () => {
+    // 这一格要同时容纳 AgentErrorCode 与接口层 ErrorCode（如 JUDGE_PARSE_FAILED），
     // 写死任一组都会漏——所以是 z.string() 但**必填**
     expect(EvalRowSchema.safeParse({ ...row, error: { message: 'CLI 未安装' } }).success).toBe(false);
     expect(EvalRowSchema.safeParse({ ...row, error: { code: 'AGENT_FAILED', message: 'CLI 未安装' } }).success).toBe(true);
@@ -229,7 +232,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
   });
 
   /**
-   * 思考强度：行上**可选**（spec D12），创建入参里也必须**显式声明**。
+   * 思考强度：行上**可选**，创建入参里也必须**显式声明**。
    * 前者是载重的：老 `run.json` 没有这一格，必填会让 `listRuns()` 静默跳过那一轮（与 attempts
    * / useAgentJudge 同一条理由）；后者防的是 zod 3 的默认 strip —— 不声明的话，表单提交的强度
    * 会在解析时被**静默丢掉**（不是 400），服务端永远收不到它。
@@ -251,7 +254,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     ).toBe('max');
   });
 
-  // 补的守卫（缺口）：行上的 status 就是 p4 写、p5 显示、SSE 判终态的那台状态机；
+  // 补的守卫（缺口）：行上的 status 就是编排层写、界面显示、SSE 判终态的那台状态机；
   // 若它退化成任意字符串，一个拼错的状态会一路落库到界面（那一格空白），而两个判定函数只会说「不是在跑」。
   it('EvalRow.status 只接受 EvalRowStatus 的取值（拼错的状态不能落库）', () => {
     expect(EvalRowSchema.safeParse({ ...row, status: 'timed-out' }).success).toBe(true);
@@ -262,7 +265,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(EvalRowSchema.safeParse(withoutStatus).success).toBe(false);
   });
 
-  // 补的守卫（缺口）：Task 5 的 ScoreResultSchema 是本文件唯一的跨契约消费点，
+  // 补的守卫（缺口）：ScoreResultSchema 是本文件唯一的跨契约消费点，
   // 若这里退回 z.any()（或另写一份形状），「逐项二元判定 + 满分必须为正」的口径在行上就没人保了。
   it('EvalRow.score 直接消费 ScoreResultSchema（满分必须为正，0 当场红）', () => {
     const score = {
@@ -286,7 +289,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(EvalRowSchema.safeParse({ ...row, score: withoutJudgments }).success).toBe(false);
   });
 
-  // 补的守卫（缺口）：diff / tokens 非空时的形状原先没有断言——p4 写、p5 读都按这四个字段，
+  // 补的守卫（缺口）：diff / tokens 非空时的形状必须有断言——编排层写、界面读都按这四个字段，
   // 少一个字段（如 truncated）会让界面把「已截断」显示成「完整 diff」。
   it('EvalRow.diff / tokens 的形状在非空时逐字段校验（可空但不可残缺）', () => {
     const diff = { filesChanged: 2, insertions: 12, deletions: 3, truncated: false };
@@ -350,15 +353,15 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(RunCreateSchema.safeParse(input).success).toBe(true);
     expect(RunCreateSchema.safeParse({ ...input, rows: [] }).success).toBe(false);
     expect(RunCreateSchema.safeParse({ ...input, rows: [{ agentKind: 'codex', providerId: 'p-1' }] }).success).toBe(false);
-    // providerId 是服务端快照 providerName / baseUrl 的唯一线索（R8）：缺了它这一行落库后无法定位凭据
+    // providerId 是服务端快照 providerName / baseUrl 的唯一线索：缺了它这一行落库后无法定位凭据
     expect(RunCreateSchema.safeParse({ ...input, rows: [{ agentKind: 'codex', modelId: 'gpt-5' }] }).success).toBe(false);
-    // agentKind 决定 p5 起哪个适配器：未登记的智能体必须在入口被拦下，而不是落到行上再报「不知道怎么写命令」
+    // agentKind 决定 api 层起哪个适配器：未登记的智能体必须在入口被拦下，而不是落到行上再报「不知道怎么写命令」
     expect(
       RunCreateSchema.safeParse({ ...input, rows: [{ agentKind: 'cursor', providerId: 'p-1', modelId: 'gpt-5' }] }).success,
     ).toBe(false);
   });
 
-  // 补的守卫（缺口）：EvalRun.rows 的元素要逐个过 EvalRowSchema——p5 把整轮读回来时若只校验外层，
+  // 补的守卫（缺口）：EvalRun.rows 的元素要逐个过 EvalRowSchema——把整轮读回来时若只校验外层，
   // 等于允许「行缺字段」落库/出接口，界面会在渲染那一格时才炸（而不是在解析处指出哪一行坏）。
   it('EvalRun.rows 的元素逐个按 EvalRowSchema 校验（缺字段的行不能混进一轮里）', () => {
     const run = {
@@ -389,7 +392,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(created.useAgentJudge).toBe(false);
   });
 
-  // D5 / Review Focus 第 1 条：run-store 的 readSnapshot 用 safeParse 读盘，必填新字段会让磁盘上
+  // run-store 的 readSnapshot 用 safeParse 读盘，必填新字段会让磁盘上
   // 已有的评测**从列表里静默消失**（只记一条 WARN），而两端都不报错。这条守卫钉住「老快照照读」。
   it('老 run.json（没有 useAgentJudge 与 judgeAgentKind）仍然读得出来，并取到默认值', () => {
     const legacy = {
@@ -447,10 +450,10 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
 });
 
 /**
- * `canRescoreRow`（**2026-09-28 晚间放开**：已出分、无报错的行也给「重新评分」）。
+ * `canRescoreRow`（已出分、无报错的行也给「重新评分」）。
  *
  * 三个条件缺一不可：不在跑 / 有可比基线 / 有已产出的改动。它们收的是**能力前提**
- * （没有工作区就没有可复评的产出），而不是「这一行失败过没有」——用户口径 2026-09-28：
+ * （没有工作区就没有可复评的产出），而不是「这一行失败过没有」——用户口径：
  * 「已出分、无报错时取消禁用」。误点的代价由界面的 `Popconfirm` 承担（「现有分数会被替换」），
  * 不再由判据承担。
  *
@@ -501,13 +504,13 @@ describe('canRescoreRow', () => {
 });
 
 /**
- * `canRetryRow`（内部名 retry，界面文案 2026-09-28 起是「**重新执行**」）。
+ * `canRetryRow`（内部名 retry，界面文案是「**重新执行**」）。
  *
  * 判据与 `canRescoreRow` 现在**又一次同源**（同样是那三条硬前提），但语义不是一件事：
  * 重新执行 = 候选 agent 与评分都重跑（工作区重新准备、分支重建）；重新评分 = 只重跑评分那一步。
  * 这一组把真值表**独立**钉一遍：只靠其中一组的用例覆盖另一个，等于把「两者今天恰好同形」
- * 当成契约——它们随时可能再分叉（今天之前就分叉过一次），而「已出分的行能不能整段重跑」
- * 正是用户 2026-09-28 晚间点名放开的那一格。
+ * 当成契约——它们随时可能再分叉，而「已出分的行能不能整段重跑」
+ * 正是用户点名放开的那一格。
  */
 describe('canRetryRow', () => {
   it('**已经出分（测试完成且没有错误）**的行可重新执行（晚间口径：不再排除 judged）', () => {
@@ -555,7 +558,7 @@ describe('canRetryRow', () => {
 });
 
 /**
- * `canRunRow`（2026-09-29 追加，用户口径：「重新执行，只执行当前候选项，不要完成后重新执行下方
+ * `canRunRow`（用户口径：「重新执行，只执行当前候选项，不要完成后重新执行下方
  * 已经执行过的候选项」）。
  *
  * 与 `canRetryRow` 的**唯一**差别就是「跑过没有」：
@@ -604,7 +607,7 @@ describe('canRunRow', () => {
 });
 
 /**
- * `EvalRow.error.stage`（2026-09-28 追加）。
+ * `EvalRow.error.stage`。
  * `.optional()` 是**载重**的：老 run.json 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮。
  */
 describe('EvalRow.error.stage（失败阶段）', () => {
@@ -638,7 +641,86 @@ describe('EvalRow.attempts（重试记账）', () => {
 });
 
 /**
- * 编辑入参（2026-09-28）：创建入参的**超集**，差别只有候选行可带 `id`。
+ * `EvalRow.mcpServers` 这一格是「**本行 MCP**」观测格。
+ *
+ * 为什么它必须落在**行快照**上而不是只活在事件流里：事件流回答「厂商当时说了什么」，
+ * 而「这一行实际装上/没装上哪几台、依据是什么」是运行之后要能复盘的事实——刷新页面、
+ * 换台机器、老 `run.json` 都只读快照。故三态与 `streamingDelta` 逐条同构：
+ *   · **缺席 / `null`** = 未观测（老记录、或这一行根本没跑到候选执行）；
+ *   · **`[]`** = 观测了，本行一台 MCP 都没有（与「没观测」是两句不同的话）；
+ *   · 非空 = 逐台：名字 / 来源（厂商原值优先）/ 判据来源 / 结论。
+ *
+ * 另两条必须钉住：`verdict` 与 `judgedBy` 是**闭集**（写错的结论会让界面把「没验证」读成
+ * 「已连上」），以及两张中文标签表覆盖整个值域（漏一格 = 界面上一格空白，而 tsc 拦住它）。
+ */
+describe('EvalRow.mcpServers（本行 MCP 观测格）', () => {
+  const entry = {
+    name: 'playwright',
+    source: 'dynamic',
+    judgedBy: 'vendor-tool-table' as const,
+    verdict: 'connected' as const,
+  };
+
+  it('可选可空：老 run.json 照样解析（缺格 = 未观测），显式 null 与空数组各自可辨', () => {
+    const legacy = makeRow();
+    expect('mcpServers' in legacy).toBe(false);
+    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
+    expect(EvalRowSchema.parse(makeRow({ mcpServers: null })).mcpServers).toBeNull();
+    // `[]` = 观测了、确实是空的——不许与「没观测」合并
+    expect(EvalRowSchema.parse(makeRow({ mcpServers: [] })).mcpServers).toEqual([]);
+  });
+
+  it('逐台四格原样保留（来源采信厂商原值，判据与结论各是闭集）', () => {
+    const parsed = EvalRowSchema.parse(makeRow({ mcpServers: [entry] }));
+    expect(parsed.mcpServers).toEqual([entry]);
+    // 四档结论都收得住：`skipped` 承载「环境变量未设置 ⇒ 整条不注入」
+    for (const verdict of ['connected', 'unavailable', 'unverified', 'skipped'] as const) {
+      expect(EvalRowSchema.safeParse(makeRow({ mcpServers: [{ ...entry, verdict }] })).success).toBe(true);
+    }
+    // 判据来源四档：claude 是前两档、codex 是第三档、什么都没拿到是 none
+    for (const judgedBy of ['vendor-status', 'vendor-tool-table', 'vendor-startup-status', 'none'] as const) {
+      expect(EvalRowSchema.safeParse(makeRow({ mcpServers: [{ ...entry, judgedBy }] })).success).toBe(true);
+    }
+  });
+
+  it('编造的结论 / 判据被拒（读错一格就是把「没验证」显示成「已连上」）', () => {
+    // 反向断言必须**绕过类型**（`as unknown as RowMcpServer`）：正常写法在编译期就被联合类型挡住了，
+    // 而这里要测的正是「有人从磁盘上手写了一份坏数据」——那一条路没有类型，只有 schema。
+    const badVerdict = { ...entry, verdict: 'ok' } as unknown as RowMcpServer;
+    const badBasis = { ...entry, judgedBy: 'model-said-so' } as unknown as RowMcpServer;
+    expect(EvalRowSchema.safeParse(makeRow({ mcpServers: [badVerdict] })).success).toBe(false);
+    expect(EvalRowSchema.safeParse(makeRow({ mcpServers: [badBasis] })).success).toBe(false);
+    // 名字是这一格的主键，空串不是「一台没名字的服务」
+    expect(EvalRowSchema.safeParse(makeRow({ mcpServers: [{ ...entry, name: '' }] })).success).toBe(false);
+  });
+
+  it('两张中文标签表覆盖整个值域（新增一档忘同步会当场红，而不是界面上一格空白）', () => {
+    expect(Object.keys(ROW_MCP_VERDICT_LABELS).sort()).toEqual(['connected', 'skipped', 'unavailable', 'unverified']);
+    expect(Object.keys(ROW_MCP_BASIS_LABELS).sort()).toEqual([
+      'none', 'vendor-startup-status', 'vendor-status', 'vendor-tool-table',
+    ]);
+  });
+
+  /**
+   * 「通道」与「判据来源」是**同一个值域**：判据来源 = 通道 + `none`（我们没有证据那一档）。
+   * 两者各写一份枚举必然漂移——漂移的表现是「事件自报 `vendor-startup-status`、观测格却记
+   * `vendor-status`」，而那正是这一格唯一要回答的问题（凭什么这么说）。
+   */
+  it('判据来源的值域 = 通道值域 + `none`（两处各写一份枚举会当场红）', () => {
+    expect([...ROW_MCP_CHANNELS]).toEqual(['vendor-status', 'vendor-startup-status', 'vendor-tool-table']);
+    expect([...ROW_MCP_CHANNELS, 'none'].sort()).toEqual(Object.keys(ROW_MCP_BASIS_LABELS).sort());
+    for (const channel of ROW_MCP_CHANNELS) {
+      expect(RowMcpBasisSchema.safeParse(channel).success).toBe(true);
+      expect(RowMcpChannelSchema.safeParse(channel).success).toBe(true);
+    }
+    // `none` 只是**结论侧**的「没有厂商证据」，它不是一条通道：通道那一格不许收它
+    expect(RowMcpBasisSchema.safeParse('none').success).toBe(true);
+    expect(RowMcpChannelSchema.safeParse('none').success).toBe(false);
+  });
+});
+
+/**
+ * 编辑入参：创建入参的**超集**，差别只有候选行可带 `id`。
  * 为什么 id 必须存在：编辑表单要能说清「这一行还是原来那一行」——按位置对齐时「删掉第 2 行」
  * 会让第 3 行顶上来、它的成绩被错认成第 2 行的；按 (agent, model) 对齐时两行选同一个模型就无解。
  */
@@ -726,7 +808,7 @@ describe('hasLiveRows', () => {
 });
 
 /**
- * `isSameRowTarget`：服务端据此决定「这一行要不要重置」，编辑表单据此算「这次会作废哪几行」。
+ * `isSameRowTarget`：服务端据此决定「这一行要不要重置」，编辑表单据此算「本次会作废哪几行」。
  * 两处必须同源：漂移的症状是「确认框说会作废 2 行、实际作废了 1 行」，而那是用户唯一能核对的地方。
  */
 describe('isSameRowTarget', () => {
@@ -751,8 +833,8 @@ describe('isSameRowTarget', () => {
   // 强度（思考档位）也是**被评对象**的一部分：`EvalRow.effort` 与创建入参的 `rows[].effort` 都是可选的
   // 「这一行要什么档位」。只把 high 改成 low，跑出来的是另一次评测——旧档位跑出来的分不能留在快照里。
   // ⚠️ 「一侧没给」一律判成**改了**（`?? null` 把「缺这一格」与「没传」并成同一格）：编辑载荷是候选行集合的
-  // **全量替换**（spec §5.1），缺省只能读成「未指定档位」。这是安全方向——宁可多重置一行（重跑一次），
-  // 也不能静默保留一个用户已经改过的档位跑出来的分。Task 8 的编辑表单会回传它。
+  // **全量替换**，缺省只能读成「未指定档位」。这是安全方向——宁可多重置一行（重跑一次），
+  // 也不能静默保留一个用户已经改过的档位跑出来的分。编辑表单会回传它。
   it('只改强度 ⇒ false（同一行、同一个模型，换了档位就是另一次评测）', () => {
     const high = makeRow({ agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5', effort: 'high' });
     expect(isSameRowTarget(high, { agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5', effort: 'low' })).toBe(false);

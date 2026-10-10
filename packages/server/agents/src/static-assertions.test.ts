@@ -2,8 +2,8 @@
 /**
  * 源码级不变量：没有运行期可观测量，只能扫源码。
  * 「写对了」与「写错了」在注入正确的用例里表现完全一样——一份写 `process.env` 的实现照样能让
- * 单测全绿，差别只在并行跑两行时第二行拿到别人的密钥（Review Focus #2）。
- * 扫描范围是 agents 包自己的 src/**，**排除 *.test.ts**：本文件里的正则字面量与变异体样本会把规则自己判违规。
+ * 单测全绿，差别只在并行跑两行时第二行拿到别人的密钥。
+ * 扫描范围是 agents 包自己的 src/**，**排除 *.test.ts**：本文件里的正则字面量与样本会把规则自己判违规。
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,8 +12,8 @@ import { describe, expect, it } from 'vitest';
 /**
  * 包内全部非测试源码（相对 src），Windows 分隔符统一成正斜杠。
  * 扩展名走**正向白名单**：`.ts` 之外还有 `.mts` / `.cts` / `.js` / `.mjs` / `.cjs`
- * （评审 F2 的文件面：只认 `.ts` 时，往 `src/` 放一个 `.mjs` 就能整份绕开扫描）。
- * 必须保留 `*.test.ts` 排除：本文件自己的正则字面量与变异体样本会把规则判成违规。
+ * （只认 `.ts` 时，往 `src/` 放一个 `.mjs` 就能整份绕开扫描）。
+ * 必须保留 `*.test.ts` 排除：本文件自己的正则字面量与样本会把规则判成违规。
  */
 function sourceFiles(): string[] {
   return readdirSync(import.meta.dirname, { recursive: true })
@@ -27,7 +27,7 @@ const ENV_WRITE_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bprocess\.env\s*\[/g, '下标读写（本仓只允许点号读取）'],
   [/\bObject\.assign\s*\(\s*process\.env/g, 'Object.assign 批量写入'],
   [/\bprocess\.env\.[A-Za-z_][A-Za-z0-9_]*\s*(\+\+|--|\+=|-=|\*=|\?\?=|\|\|=|&&=)/g, '自更新'],
-  // 评审 F2 补的三类：与上面四条是「同一件事的另外几种写法」
+  // 另外三类：与上面四条是「同一件事的另外几种写法」
   [/\bdelete\s+process\.env\b/g, 'delete 也是写入'],
   [/\bReflect\.set\s*\(\s*process\.env/g, 'Reflect.set 写入'],
   [/\bObject\.defineProperty\s*\(\s*process\.env/g, 'defineProperty 写入'],
@@ -52,7 +52,7 @@ const READ_ONLY_BEHIND = /\bObject\.(entries|keys|values)\s*\(\s*$/;
 /**
  * 去掉注释，只留可执行源码。
  * 为什么必须去：本仓的注释里到处在说 `process.env`（`route.ts` 的不变量说明、`types.ts` 的字段注释），
- * 裸令牌规则会把它们全部判成违规——评审 F2 要求的「裸令牌纳入检查」只有在去注释后才可落地。
+ * 裸令牌规则会把它们全部判成违规——「裸令牌纳入检查」只有在去注释后才可落地。
  * 已知局限（如实登记）：正则不区分字符串字面量里的 `//`，含 `://` 的字符串常量会被从该行截断，
  * 于是**同一行**注释后面的代码看不见——方向是漏报而不是误报，且本仓没有那种形态。
  */
@@ -83,12 +83,12 @@ function envWriteViolations(source: string): string[] {
     if (hits !== null) violations.push(`${why}（${hits.join(' / ')}）`);
   }
   if (bareEnvTokens(text).length > 0) {
-    violations.push('裸 process.env 令牌（别名写入，评审 F2）');
+    violations.push('裸 process.env 令牌（别名写入）');
   }
   return violations;
 }
 
-/** 三家厂商包：只允许出现在动态 import() 与错误文案里（与 package.json 的一致性由专条断言钉住，评审 F7） */
+/** 三家厂商包：只允许出现在动态 import() 与错误文案里（与 package.json 的一致性由专条断言钉住） */
 const VENDOR_PACKAGES = [
   '@anthropic-ai/claude-agent-sdk',
   '@openai/codex',
@@ -100,7 +100,7 @@ const VENDOR_PACKAGES = [
  * 为什么不用「包名以 `-sdk` 结尾」那种形状启发式：codex 走 CLI 包后名字是 `@openai/codex`、**不以 `-sdk`
  * 结尾**，形状判据会把三家之一漏掉（`VENDOR_PACKAGES` 随即静默失去覆盖）；scope 判据不依赖后缀命名，
  * 同一家旗下的新包照样落进集合。
- * **两条已知边界（复评 O4）**：① 判据是 scope 白名单——新增一家不在这三条 scope 下的厂商包
+ * **两条已知边界**：① 判据是 scope 白名单——新增一家不在这三条 scope 下的厂商包
  * （例如 `@google/genai`）时，下面的交叉断言照样通过，`VENDOR_PACKAGES` 却静默失去覆盖；
  * ② 只读 `dependencies`，不读 `devDependencies` ——把厂商包挪到 devDependencies 也同样失去覆盖。
  * 也就是说这条断言守的是「现有三家的名字与位置不漂移」，不是「任何形式的厂商依赖都被纳入」。
@@ -108,7 +108,7 @@ const VENDOR_PACKAGES = [
 const VENDOR_DEPENDENCY_PATTERN = /^@(?:anthropic-ai|openai|deepseek-ai)\//;
 
 /**
- * 顶层静态导入的**两条结构式**（阶段评审 M3 的修正版，逐字采纳）：
+ * 顶层静态导入的**两条结构式**：
  * ```
  * ^\s*import(?![(])\s*(?:[^;]*?\bfrom\s*)?['"]<pkg>(?:/[^'"]*)?['"]
  * ^\s*export\s*(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s*from\s*['"]<pkg>(?:/[^'"]*)?['"]
@@ -119,7 +119,7 @@ const VENDOR_DEPENDENCY_PATTERN = /^@(?:anthropic-ai|openai|deepseek-ai)\//;
  * 与 `export function f() { return '@pkg'; }` 都不建立静态依赖，却双双命中（懒加载最自然的两种写法！
  * 假红会诱使人削弱这条断言，而它现在是 A6 唯一的网）。两条结构式把「`export` 后面必须直接是
  * `*` / `{…}` / `type …`」写进语法层，误报面归零。
- * 为什么还必须补三处（初稿的两条在评审探针里实测**新增三类漏报**）：
+ * 为什么还必须补三处（两条结构式会漏三类写法）：
  *  - `export type { … } from` / `export type * from` ⇒ `(?:type\s+)?`；
  *  - `export*from'@pkg'`（零空格）⇒ `\s*` 而不是 `\s+`；
  *  - `export * as ns from` ⇒ `\*(?:\s+as\s+[\w$]+)?`。
@@ -128,8 +128,7 @@ const VENDOR_DEPENDENCY_PATTERN = /^@(?:anthropic-ai|openai|deepseek-ai)\//;
  * 让 `[^;]*` 去兜底，那样会把行首 `import(` 的动态导入也吞进来（`(?![(])` 是同一件事的显式守卫）。
  * **样本表就是这条判据的规格**：任何收紧/放宽都必须先扩样本表（见下面两条用例），别再靠「跑一遍全绿」判断。
  *
- * **下一次该动哪里（评审 §4(c)）：换成 TS AST，别再动正则。** 这条断言已经三次「收窄一次、开一个新洞」
- * （T5 空转 / `\b`→`[ \t]` 丢零空格 / `=` 前瞻没覆盖函数体），而洞与误报都来自**排版**（分号、空白、
+ * **下一次该动哪里：换成 TS AST，别再动正则。** 正则的洞与误报都来自**排版**（分号、空白、
  * 关键字、语句边界）而不是语义——继续改正则就是跟格式化规则赛跑。仓库已具备条件：`typescript` 已在
  * `devDependencies` 里，用 `ts.createSourceFile(file, text, ScriptTarget.Latest, true)` 遍历节点，
  * 判 `ts.isImportDeclaration` / `ts.isExportDeclaration` / `ts.isImportEqualsDeclaration` 的
@@ -154,7 +153,7 @@ function staticallyImports(text: string, packageName: string): boolean {
 }
 
 /**
- * 允许出现 `readdirSync` 的**唯一一处例外**（2026-10-04，Task 6：读 claude 的子智能体会话文件）。
+ * 允许出现 `readdirSync` 的**唯一一处例外**（读 claude 的子智能体会话文件）。
  *
  * 为什么这一条要写成一张**有界的表**、而不是让下面那条断言悄悄放过它：那条断言的判据是**标识符**
  * （`/\breaddir(Sync)?\s*\(/`），它守的是 A3 —— 「打包后扫不到模块」⇒ 本包的**注册表**必须是显式静态注册。
@@ -171,7 +170,7 @@ function staticallyImports(text: string, packageName: string): boolean {
 const READDIR_ALLOWED: readonly string[] = ['providers/claude-code/subagent-usage.ts'];
 
 describe('源码级不变量', () => {
-  it('源码里不出现任何写入宿主环境的写法（§5.6.5 不变量 2）', () => {
+  it('源码里不出现任何写入宿主环境的写法（不变量 2）', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       const text = readFileSync(join(import.meta.dirname, file), 'utf8');
@@ -180,15 +179,15 @@ describe('源码级不变量', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('注释里提到 process.env 不算违规（去注释后才判裸令牌，评审 F2）', () => {
+  it('注释里提到 process.env 不算违规（去注释后才判裸令牌）', () => {
     const source = ['/** 本函数读 process.env 但绝不写入它 */', 'export const x = 1;'].join('\n');
     expect(envWriteViolations(source)).toEqual([]);
   });
 
-  it('违规判定能拦住五种写入写法，并放行四种只读写法（评审 F2 的覆盖面）', () => {
+  it('违规判定能拦住五种写入写法，并放行四种只读写法', () => {
     /**
      * 为什么单开一条：上面那条只能证明「当前源码干净」，不能证明规则**有覆盖**——别名写入与 `delete`
-     * 在旧的四条正则下双双逃逸（评审的变异体 M6 存活）。这里把写法直接喂给判定本身，规则被改窄时这条会红。
+     * 在四条正则下双双逃逸。这里把写法直接喂给判定本身，规则被改窄时这条会红。
      * 注意判定是「显式模式 + 裸令牌」两半合起来生效的：别名写入只有裸令牌能拦，而 `delete` / `Reflect.set`
      * 后面跟的是 `.` 或 `,`（属于只读形态），只能靠各自的显式模式——两半缺一都会留下洞。
      */
@@ -225,10 +224,10 @@ describe('源码级不变量', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('静态导入判定拦住 15 种写法（含折行、子路径、零空格、export type / export * as），并放行 14 种动态/无关写法（评审 M3）', () => {
+  it('静态导入判定拦住 15 种写法（含折行、子路径、零空格、export type / export * as），并放行 14 种动态/无关写法', () => {
     /**
      * 为什么单开一条：上一条只能证明「当前源码干净」，证明不了判据**有覆盖**——历史已经三次「没见过失败」
-     * （T5 空转 / `\b`→`[ \t]` 丢零空格 / `=` 前瞻没覆盖函数体），说明红与绿都不足以判断它对不对。
+     * （`\b`→`[ \t]` 丢零空格 / `=` 前瞻没覆盖函数体这类），说明红与绿都不足以判断它对不对。
      * 这里把写法直接喂给判据本身：判据被改窄成任一种旧形态，这条立刻红。
      * 样本都是字符串字面量，本文件是 `*.test.ts`（被 sourceFiles 排除），不会与上一条互相判违规。
      */
@@ -241,14 +240,14 @@ describe('源码级不变量', () => {
       'import x from "@vendor/sdk/dist/index.js";',
       'import "@vendor/sdk";',
       'export type { VendorModule } from "@vendor/sdk";',
-      // 复评 NEW-1：零空格写法全部合法，且本仓没有 keyword-spacing ⇒ lint / typecheck / 断言三闸都拦不住
+      // 零空格写法全部合法，且本仓没有 keyword-spacing ⇒ lint / typecheck / 断言三闸都拦不住
       'import"@vendor/sdk";',
       'import{VendorModule}from"@vendor/sdk";',
       'import*as vendor from"@vendor/sdk";',
       'export*from"@vendor/sdk";',
       // 换行后接引号：旧模式（[^\n]*）与 [ \t] 版都漏，现在一并覆盖
       'import\n"@vendor/sdk";',
-      // 阶段评审 M3 补的五种（初稿的两条结构式在这五种上实测 MISS：缺 (?:type\s+)?、缺 export\s*、缺 * as）
+      // 另五种（两条结构式会 MISS：缺 (?:type\s+)?、缺 export\s*、缺 * as）
       'export { A, B } from "@vendor/sdk";',
       'export { default as X } from "@vendor/sdk";',
       'export type * from "@vendor/sdk";',
@@ -262,25 +261,25 @@ describe('源码级不变量', () => {
     const allowedForms = [
       'const module = await import("@vendor/sdk");',
       'const module = await import(\n  "@vendor/sdk"\n);',
-      // **行首**的动态导入：`(?![(])` 放行它。注意（M3 的复核结论）：在两条结构式下，本样本其实由
+      // **行首**的动态导入：`(?![(])` 放行它。注意：在两条结构式下，本样本其实由
       // 「`\s*` 后必须紧跟引号」天然挡住——`(?![(])` 真正守的是下面那条「同一句里出现 from "包名"」。
       'import(\n  "@vendor/sdk"\n);',
       '/** 本适配器只允许动态 import("@vendor/sdk")，绝不静态导入 */',
       'expect(message).toContain("@vendor/sdk");',
       // 跨语句不误伤：`[^;]*` 在分号处停住，别家包名不会把这一句连坐
       'import other from "other-package";\nconst text = "@vendor/sdk";',
-      // 误报组（T7 实测上报，M3 修正版修好）：只是把包名写成字符串常量，**不建立静态依赖**，不该命中
+      // 误报组：只是把包名写成字符串常量，**不建立静态依赖**，不该命中
       'export const X = "@vendor/sdk";',
       'const L = "@vendor/sdk"; export const X = L;',
       'export const X = /* c */ "@vendor/sdk";',
       // 转义样本：包名里的 `@` / `/` / `.` 必须当字面量，`@vendorXsdk` 不是 `@vendor/sdk`
       'import x from "@vendorXsdk";',
-      // 误报组其二（评审 §4(a) 点名的「最自然的懒加载写法」）：函数体里出现 `import('@pkg')` 或引号包名
+      // 误报组其二（「最自然的懒加载写法」）：函数体里出现 `import('@pkg')` 或引号包名
       'export async function f() { return import("@vendor/sdk"); }',
       'export function f() { return "@vendor/sdk"; }',
       'const loadRaw = createSdkLoader<unknown>(async () => import("@vendor/sdk"), NAME);',
       // `(?![(])` 的唯一承重形状：行首 `import(` 且**同一句里**出现 `from "包名"`（例如动态导入的参数区
-      // 带一行注释）。去掉那条前瞻时本样本变 HIT ⇒ 判据会误报一条真实的动态导入（M3 变异 ①）。
+      // 带一行注释）。少了那条前瞻，判据会误报一条真实的动态导入。
       'import(\n  // from "@vendor/sdk" 只允许动态导入\n  "@vendor/sdk"\n);',
     ];
     for (const form of allowedForms) {
@@ -288,8 +287,8 @@ describe('源码级不变量', () => {
     }
   });
 
-  it('VENDOR_PACKAGES 与 package.json 的厂商依赖集合相同（同一份三元组不能有两个真源，评审 F7）', () => {
-    // 为什么必须钉：将来新增/改名一家（或 T10 调整依赖）时，断言会**静默**失去覆盖——扫描照跑，
+  it('VENDOR_PACKAGES 与 package.json 的厂商依赖集合相同（同一份三元组不能有两个真源）', () => {
+    // 为什么必须钉：将来新增/改名一家（或调整依赖）时，断言会**静默**失去覆盖——扫描照跑，
     // 只是再也没有一个源文件可能命中它。这里读 package.json 现比，不把版本或包名抄成测试字面量。
     const manifest = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
@@ -301,7 +300,7 @@ describe('源码级不变量', () => {
   });
 
   /**
-   * **工具调用块只准由公共草稿函数构造**（2026-10-04）。
+   * **工具调用块只准由公共草稿函数构造**。
    *
    * 契约的 `ToolCallBlock.payload` 是**可缺**的（老 `messages.jsonl` 里没有这一格，写成必填
    * 会让回放成片失败——与 `usage.timing` 同一条理由）。代价是**手搓一个 `tool-call` 块
@@ -322,7 +321,7 @@ describe('源码级不变量', () => {
   });
 
   /**
-   * 库包不得把**全局**的 `NodeJS.ProcessEnv` 当自己的类型（2026-10-07）。
+   * 库包不得把**全局**的 `NodeJS.ProcessEnv` 当自己的类型。
    *
    * 为什么值一条断言：`NodeJS.ProcessEnv` 是**全局接口**，下游应用可以给它补**必填**成员。
    * web-next 的 `next-env.d.ts`（跑过一次 `next dev` 就有，且已被 gitignore）会拉进 Next 16 的
@@ -331,13 +330,13 @@ describe('源码级不变量', () => {
    * interface ProcessEnv { readonly NODE_ENV: 'development' | 'production' | 'test' }
    * ```
    * 而本仓的类型检查是「8 个包共用一个 tsc 程序」（`tsconfig.typecheck.json`）⇒ 本包（一个库）
-   * 里每个 `{}` 形状的 env 字面量都被要求写 `NODE_ENV`：实测 `appserver/client.ts` 的
+   * 里每个 `{}` 形状的 env 字面量都被要求写 `NODE_ENV`：`appserver/client.ts` 的
    * `AppServerClientOptions.env` 与 `client.test.ts` 三处 TS2741；而**干净检出**下同一个 `{}` 合法
-   * ⇒ 门禁随「这台机器跑没跑过 dev」变色。产品侧的修法是换成仓内自己的类型
+   * ⇒ 门禁随「这台机器跑没跑过 dev」变色。产品侧换成仓内自己的类型
    * （`AppServerEnv`，见那里的注释）。
    *
    * 为什么这条断言不可省：上面那个症状**只在跑过 `next dev` 的机器上出现**，
-   * 干净检出（含 CI）上 `pnpm typecheck` 照样是绿的 ⇒ 「把类型改回 `NodeJS.ProcessEnv`」
+   * 干净检出（含 CI）上 `pnpm typecheck` 照样是绿的 ⇒ 「用 `NodeJS.ProcessEnv` 当自己的类型」
    * 在 CI 上永远不会被发现。本断言扫源码，两种机器上都在。
    *
    * 唯一的放行形态是 **`as NodeJS.ProcessEnv`**（断言）：全局那个类型只允许活在与 `spawn`
@@ -355,13 +354,13 @@ describe('源码级不变量', () => {
   });
 
   it('注册表是显式静态注册：src/**（排除 *.test.ts）里不出现 readdir / readdirSync，唯一例外是运行期数据目录读取（下方白名单，且不可静默变长）（A3：打包后扫描目录不可靠）', () => {
-    // 标题对齐判据（评审 N2）：本断言只拦 `readdir` / `readdirSync`（下面那条正则），扫描面是 `src/**`、
+    // 标题对齐判据：本断言只拦 `readdir` / `readdirSync`（下面那条正则），扫描面是 `src/**`、
     // 排除 `*.test.ts`、**不含** `probe/`（`sourceFiles()` 的定义）——旧标题「包内不出现目录扫描」比
     // 判据宽，容易让人以为 `probe/` 也被覆盖。
     // 扫描面**复用**上面的 `sourceFiles()`（含它的 `*.test.ts` 排除）：`sourceFiles()` 自己就用
     // `readdirSync(..., { recursive: true })`，与本断言要禁的模式同形，全靠那个过滤器才不自我违规
-    // ——`static-assertions.test.ts` 是本包唯一允许出现 `readdirSync` 的文件（T3/T4 的实测口径）。
-    // `READDIR_ALLOWED`（2026-10-04 新增）是**第二类**例外，今天只有一项，理由与「表不许变长」见它的注释；
+    // ——`static-assertions.test.ts` 是本包唯一允许出现 `readdirSync` 的文件（本包的口径）。
+    // `READDIR_ALLOWED` 是**第二类**例外，今天只有一项，理由与「表不许变长」见它的注释；
     // 它由下面那条「有界且无死条目」的用例看管。豁免按逐项路径匹配，别的文件一个字都不放过。
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
@@ -372,7 +371,7 @@ describe('源码级不变量', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('扫盘例外表有界且无死条目：逐字等于那一个元素，且它真的在扫盘（2026-10-04，Task 6）', () => {
+  it('扫盘例外表有界且无死条目：逐字等于那一个元素，且它真的在扫盘', () => {
     // 为什么要单独一条：上面那条断言对 `READDIR_ALLOWED` 本身**不设防**（往表里加一项就多豁免一个文件），
     // 而豁免面正是「注册表必须静态注册」这条不变量的缺口。三半合起来才说得清缺口有多大：
     //   · 表**逐字**等于那一个元素 —— 加第二项、换路径都必须回来改这条断言，评审一定看得见；
@@ -385,25 +384,24 @@ describe('源码级不变量', () => {
   });
 
   /**
-   * R33 的守卫（终审 §2-M7 点名它「有落点但无守卫」）。
+   * dsh 依赖走 **`next` 线**，不是 `latest`。
    *
-   * R33 的裁决内容是「p3 的 dsh 依赖走 **`next` 线**，不是 `latest`」，
    * 理由是 `latest`（0.0.1-rc.1）把那几个包声明成 peerDependencies，pnpm 自动装 peer 时
    * `dsh-session` 又 peer 到 `@deepseek-ai/dsh-type-meta`，而该包在三家公开源**全 404**
    * ⇒ 按 `latest` 装在本机**不可能完成**。
    *
    * 原有的依赖守卫（`:271` 的 VENDOR_PACKAGES 断言）只比**名字集合**、不碰版本区间，
-   * 于是「有人把版本改回 `latest`」不会有任何测试变红 —— 而那会让 `pnpm install` 直接失败。
-   * 这里补的判据刻意与 R35 的应用侧守卫**同口径**：版本区间不抄成测试字面量，
+   * 于是「把版本写成 `latest`」不会有任何测试变红 —— 而那会让 `pnpm install` 直接失败。
+   * 这里补的判据刻意与应用侧的依赖守卫**同口径**：版本区间不抄成测试字面量，
    * 读 `package.json` 现比「它是 next 线上的预发布版本」这一件事。
    *
-   * 2026-10-09 跳到 **0.2.0-rc.2**（用户口径「选择刚发的稳定版」：该包**从未发过非预发布版本**，
-   * 最新非 alpha 即 next 线的 0.2.0-rc.2）。形状断言随之从 `0.1.x-rc` 放宽为
+   * 版本取 **0.2.0-rc.2**（用户口径「选择刚发的稳定版」：该包**从未发过非预发布版本**，
+   * 最新非 alpha 即 next 线的 0.2.0-rc.2）。形状断言刻意是
    * 「任意 minor 的精确 rc 版本 + 不是 latest 线的 0.0.1-rc.1」——next 线会继续往前走，
    * 把 minor 钉死在 0.1 会让每次正常升级都要回来改守卫，而守卫真正要拦的只有
    * 「退回 latest 线（装不上）」与「写成带前缀的区间（预发布区间会静默漂移）」两件事。
    */
-  it('dsh SDK 走 next 线：package.json 里是精确的 x.y.z-rc.N 版本，不是 latest 线（R33）', () => {
+  it('dsh SDK 走 next 线：package.json 里是精确的 x.y.z-rc.N 版本，不是 latest 线', () => {
     const manifest = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
     ) as { dependencies?: Record<string, string> };
@@ -411,7 +409,7 @@ describe('源码级不变量', () => {
 
     expect(declared, 'dsh SDK 必须声明在 agents 包的 dependencies 里').toBeTypeOf('string');
     // `latest` 线的形态是 `0.0.1-rc.1`，而 next 线是精确的 `x.y.z-rc.N` 预发布值
-    // （pnpm 对预发布不写前缀，这也是 R33 原文「实测写入 0.1.7-rc.1」的由来）
+    // （pnpm 对预发布不写前缀，这也是「实测写入 0.1.7-rc.1」的由来）
     expect(declared).toMatch(/^\d+\.\d+\.\d+-rc\.\d+$/);
     expect(declared).not.toBe('0.0.1-rc.1');
     expect(declared).not.toContain('latest');
@@ -420,7 +418,7 @@ describe('源码级不变量', () => {
 });
 
 /**
- * 打包器免疫（2026-10-07 真机故障的守卫）。
+ * 打包器免疫（真机故障的守卫）。
  *
  * 故障形态：厂商可执行文件的定位链在**纯 Node 下正常、在 Next 的服务端构建里必挂**——打包器
  * （Turbopack / webpack）把 `node:module` 的 `createRequire` 换成了自己的 `require`，其 `resolve()`
@@ -437,7 +435,7 @@ describe('源码级不变量', () => {
  */
 function bundlerImmunityViolations(source: string): string[] {
   // **必须去注释再判**：文件头的说明里就写着 `process.cwd()` / `import.meta.url` / `getBuiltinModule`，
-  // 按整份文本判会让「代码里删掉一个基准」这类回归静默通过（2026-10-07 实测：变异没见红）。
+  // 按整份文本判会让「代码里删掉一个基准」这类回归静默通过。
   const text = stripComments(source);
   const violations: string[] = [];
   if (!text.includes('getBuiltinModule')) {
@@ -456,7 +454,7 @@ function bundlerImmunityViolations(source: string): string[] {
   return violations;
 }
 
-describe('打包器免疫：厂商入口的解析器（2026-10-07 故障）', () => {
+describe('打包器免疫：厂商入口的解析器', () => {
   it('codex 的可执行文件解析器满足三条免疫要求', () => {
     const text = readFileSync(join(import.meta.dirname, 'providers/codex/appserver/binary.ts'), 'utf8');
     expect(bundlerImmunityViolations(text)).toEqual([]);
@@ -472,7 +470,7 @@ describe('打包器免疫：厂商入口的解析器（2026-10-07 故障）', ()
       'const req = process.getBuiltinModule(\'module\').createRequire(import.meta.url);\nreq.resolve(\'x\');',
       // ④ 有真 require 也有两个基准，但不校验结果形态
       'const req = process.getBuiltinModule(\'module\').createRequire(import.meta.url);\nconst other = process.cwd();\nreq.resolve(\'x\');',
-      // ⑤ 三条要求只写在**注释**里（2026-10-07 实测的盲区：按整份文本判会放过它）
+      // ⑤ 三条要求只写在**注释**里（按整份文本判的盲区：会放过它）
       '// 说明：本解析器用 process.getBuiltinModule 取真 require，基准有 import.meta.url 与 process.cwd()，并用 isAbsolute 校验\nconst p = req.resolve("x");',
     ];
     for (const form of regressions) {
@@ -484,5 +482,35 @@ describe('打包器免疫：厂商入口的解析器（2026-10-07 故障）', ()
       'const anchors = [import.meta.url, join(process.cwd(), \'noop.js\')];\n' +
       'if (isAbsolute(resolved)) return resolved;';
     expect(bundlerImmunityViolations(conforming), '合规形态不该命中').toEqual([]);
+  });
+});
+
+/**
+ * MCP 翻译器的**共用写法**（同一个包里逐字两份的重复代码）。
+ *
+ * 为什么这类缺陷只能扫源码：重复实现与共享实现的**运行期行为逐字相同**，既有那批形状守卫
+ * （`mcp.test.ts` / dsh 的 overlay 守卫）全绿——差别只在「改了一处、漏了另一处」的那天，
+ * 而那天要等某一家厂商恰好踩到那一格才现形（YAML 解析失败 ⇒ 整行起不来）。
+ * 扫描面是包内非测试源码（与上面几条同款），去注释后判。
+ */
+describe('MCP 翻译器的共用写法（每段逻辑只有一份）', () => {
+  it('YAML 标量转义只有一份实现：`quoteYaml` 的定义只在 mcp.ts（dsh overlay 两处拼装共用它）', () => {
+    const definitions: string[] = [];
+    for (const file of sourceFiles()) {
+      const text = stripComments(readFileSync(join(import.meta.dirname, file), 'utf8'));
+      if (/function\s+quoteYaml\s*\(/.test(text)) definitions.push(file);
+    }
+
+    // 逐字相等（不是「包含」）：第二份抄在 dsh/index.ts 里时这条当场红
+    expect(definitions, 'dsh overlay 的模型路由与 MCP 插件行必须共用同一份 YAML 转义').toEqual(['mcp.ts']);
+  });
+
+  it('可选键「缺席就不写」只有一种写法：MCP 翻译器里不再手写 `=== undefined ? {} : {` 三元', () => {
+    const text = stripComments(readFileSync(join(import.meta.dirname, 'mcp.ts'), 'utf8'));
+
+    // 六个可选格（claude / codex 各三格）统一走 `optional(key, value)`：
+    // 手写三元时每一遍都要自己收窄一次，漏一次就是「显式声明为空」混进厂商配置
+    expect(text, '又有手写的可选键三元——它该走 optional()').not.toMatch(/===\s*undefined\s*\?\s*\{\}\s*:\s*\{/);
+    expect(text, 'optional() 本身不见了？').toMatch(/function\s+optional\s*</);
   });
 });

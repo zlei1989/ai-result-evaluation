@@ -1,13 +1,13 @@
 /**
  * claude 真机项①：**工具表的 A/B**（`CLAUDE_CODE_ENABLE_TODO_TOOLS` 开关的精确增量），
- * 一次拿到设计稿里好几个未决格：
- *  - §11 开放问题 16 / 第 11 项：`AskUserQuestion` 是否受**同一个开关**影响（"仍未确认"）；
- *  - §11 开放问题 11：`AskUserQuestion` 为何不在 27 项工具表里（feature-gated 还是 preset 未启用）；
- *  - §11 开放问题 7：`Workflow` 是否会被本仓配置触发（是否默认可用）；
- *  - §11 开放问题 6：`ReportFindings` 的语义（拿它的**工具描述原文**）。
+ * 一次拿到好几个未决格：
+ *  - 开放问题：`AskUserQuestion` 是否受**同一个开关**影响（"仍未确认"）；
+ *  - 开放问题：`AskUserQuestion` 为何不在 27 项工具表里（feature-gated 还是 preset 未启用）；
+ *  - 开放问题：`Workflow` 是否会被本仓配置触发（是否默认可用）；
+ *  - 开放问题：`ReportFindings` 的语义（拿它的**工具描述原文**）。
  *
  * 判据：**同一次运行、同一个模型**，只切那一个环境变量，比较 `system/init` 的 `tools[]` 差集。
- * 设计稿 §7.6.2.1b 明确要求过这条判据（"两次采集的 preset 不同；判据以『同一次 A/B 的增量』为准"）。
+ * 这条判据是明确要求过的（"两次采集的 preset 不同；判据以『同一次 A/B 的增量』为准"）。
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

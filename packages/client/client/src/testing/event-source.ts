@@ -9,17 +9,17 @@
  * 退化为只读历史」的兜底分支，全局注入替身会让那条分支在测试里**永远不可达**
  * （与 `resize-observer.ts` 刻意不共享是同一个理由）。需要的用例自己调用本助手。
  *
- * ## 替身必须**具备浏览器的具名/无名事件语义**（R38 ①，p5 阶段评审 C1 的教训）
+ * ## 替身必须**具备浏览器的具名/无名事件语义**
  *
  * SSE 规范：带 `event: <type>` 字段的帧是**具名事件**，只派发给 `addEventListener('<type>')`
- * 注册的监听器；`onmessage` **只收默认（无名）事件**。api 的 `toFrame` 发的正是具名事件
+ * 注册的监听器；`onmessage` **只收默认事件**。api 的 `toFrame` 发的正是具名事件
  * （`packages/server/api/src/run-stream.ts`），所以：
  *
- *   - **旧版替身刻意不实现 `addEventListener`、`emit()` 一律喂 `onmessage`** ⇒ 它比真实浏览器
- *     **弱**：真实链路一帧都到不了，而 12 条 hook 用例与 24 个变异体全部绿。这不是「写错一行」，
- *     是**替身不忠实**让守卫整体失去区分力。升级后 `emitNamed(type, data)` 只派发给按名字注册的
- *     监听器，`emit(data)` 只派发给 `onmessage` —— 用错哪一个都会当场红。
- *   - 因此**不具备 `addEventListener` 的替身不得用于验证订阅行为**（契约 §11 R38 ①）。
+ * - **旧版替身刻意不实现 `addEventListener`、`emit()` 一律喂 `onmessage`**⇒ 它比真实浏览器
+ * **弱**：真实链路一帧都到不了，而 12 条 hook 用例与 24 个变异体全部绿。这不是「写错一行」，
+ * 是**替身不忠实**让守卫整体失去区分力。升级后 `emitNamed(type, data)` 只派发给按名字注册的
+ * 监听器，`emit(data)` 只派发给 `onmessage` ——用错哪一个都会当场红。
+ * - 因此**不具备 `addEventListener` 的替身不得用于验证订阅行为**（①）。
  *
  * 替身只忠实于本仓用到的部分：构造 / `onopen` / `onmessage` / `onerror` / `close` /
  * `addEventListener` / `removeEventListener`（含 `on*` 属性与监听器**去重**、`this` 指向实例、
@@ -113,10 +113,10 @@ export class FakeEventSource {
    * 只派发给 `addEventListener(type)` 注册的监听器——这是替换身最该守住的那条浏览器语义。
    *
    * ⚠️ 与真实浏览器一致的另一条语义：`emitNamed('error', data)` 派发的 `MessageEvent` 会**先喂
-   * `onerror` 属性**（`dispatch` 先调 `on<type>`）。`onerror` **就是** `error` 的 event handler，
+   * `onerror` 属性**（`dispatch` 先调 `on<type>`）。`onerror` **就是**`error` 的 event handler，
    * 所以服务端发的具名 `error` 帧在真实浏览器里也走 `onerror`——client 正是按这一点用
    * `typeof data === 'string'` 把「服务端帧」与「连接故障（没有 data 的普通 Event）」分开的
-   * （终审 H4）。
+   *。
    */
   emitNamed(type: string, data: string): void {
     this.dispatch(type, { type, data, origin: this.origin });

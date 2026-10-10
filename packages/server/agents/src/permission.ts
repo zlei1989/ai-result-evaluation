@@ -1,8 +1,8 @@
 /**
- * 权限档到**三家厂商选项**的映射表（唯一真源，2026-09-28）。
+ * 权限档到**三家厂商选项**的映射表（唯一真源）。
  *
  * 为什么单独一个文件、而不是各自写在 provider 里：这三份表只有**放在一起**才能逐格对照，
- * 而它们必须同时正确——「两家给全权限、第三家忘给」正是 p6 冒烟实测过的缺陷形状
+ * 而它们必须同时正确——「两家给全权限、第三家忘给」正是冒烟实测过的缺陷形状
  *（claude-code 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
  * 见 `docs/protocols/provider-run.md`「权限档按阶段给」表）。放一起之后，
  * `permission.test.ts` 能把「每一档在每一家都有落点」写成一条可执行断言。
@@ -37,7 +37,7 @@ export interface ClaudePermissionOptions {
   permissionPrompts?: 'host' | 'none';
 }
 
-/** codex 的权限选项：建线程时固定（改了必须重建线程，§5.6.6） */
+/** codex 的权限选项：建线程时固定（改了必须重建线程） */
 export interface CodexPermissionOptions {
   sandboxMode: string;
   approvalPolicy: string;
@@ -87,7 +87,7 @@ export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPer
 /**
  * codex 的**运行时**权限选项：表是上面的常量，这里是唯一入口（新增平台豁免时的唯一落点）。
  *
- * 为什么需要这一层（2026-10-07 真机）：`read-only` 沙箱在 **Windows 上没有可用实现**——
+ * 为什么需要这一层：`read-only` 沙箱在 **Windows 上没有可用实现**——
  * 实测 `read-only` 与 `workspace-write` 下 codex 连 `echo hello` / `git status --porcelain`
  * 都起不来（`codex_core::tools::router: error=exec_command failed: CreateProcess { … rejected: blocked by policy }`），
  * 而 codex **没有独立的文件读取工具**，读文件只能靠 shell ⇒ 评分阶段（只读档）在 Windows 上等于
@@ -122,7 +122,7 @@ export function codexPermissionOptions(
  * ```
  * ⇒ 不设它时 dsh 自己回落到 `workspace-write`（本仓此前的实际档位），设了才由我们说了算。
  *
- * 注入通道是适配器已有的 `buildSubprocessEnv`（SDK 的 `env` 是**替换型**语义，见 §5.6.1 决策 A5），
+ * 注入通道是适配器已有的 `buildSubprocessEnv`（SDK 的 `env` 是**替换型**语义），
  * 落在**子进程环境**而不是 `process.env`——静态断言（`static-assertions.test.ts`）仍然成立。
  */
 export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermissionOptions>> = {

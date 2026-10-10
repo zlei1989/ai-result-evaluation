@@ -7,7 +7,7 @@
  * 这是**本机进程树 + 沙箱**的产物，不是厂商行为 ⇒ 取厂商返回形状必须走 CLI。
  *
  * 判据：`TaskCreate` / `TaskList` / `TaskUpdate` / `TaskGet` 各自的 `tool_result` 原文 +
- * 结构化 `tool_use_result`（设计稿 §11.1 第 27 项要的正是这个：`TaskStep.id` 从哪来）。
+ * 结构化 `tool_use_result`（要的正是这个：`TaskStep.id` 从哪来）。
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';

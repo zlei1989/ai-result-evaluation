@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 消息与子任务行的落盘（spec v3 §2）：**适配器交出内容，编排层负责让它落进唯一真相源**。
+ * 消息与子任务行的落盘：**适配器交出内容，编排层负责让它落进唯一真相源**。
  *
  * 这一层要钉住三件事（都是「接线」而不是「算法」）：
  *   ① 适配器的 `onMessage` / `onSubagent` 真的被接上了：跑完一行之后 `messages.jsonl` 里有那条内容；
@@ -121,7 +121,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
     expect(rowRecordsOf(run.id, rowId)).toEqual({ messages: [], subagents: [] });
   });
 
-  it('delta 只广播不落盘：文件里只有快照，实时订阅者两条都收到（2026-10-09 三家统一口径）', async () => {
+  it('delta 只广播不落盘：文件里只有快照，实时订阅者两条都收到（三家统一口径）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial' });
     const rowId = getRun(run.id).rows[0]!.id;
     fakeAgents.scripts.set('codex', {
@@ -152,7 +152,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
       broadcast.filter((record) => record.type === 'message').map((record) => record.message.chunk),
     ).toEqual(['delta', 'snapshot', 'delta']);
     /**
-     * 观测格（2026-10-09）：增量帧不落盘 ⇒ 「这次到底有没有收到逐字流」事后只剩这一格。
+     * 观测格：增量帧不落盘 ⇒ 「这次到底有没有收到逐字流」事后只剩这一格。
      * 两帧、末帧是那条**中断的** delta（`然后动手。` = 5 字）——它正是「刷新后看不到半截正文、
      * 但至少知道写到哪」的那个数（`lastFrameChars` 的口径就是最后一帧的累积正文长度）。
      */
@@ -161,7 +161,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
 });
 
 /**
- * 评分阶段的两份产物（2026-10-10，用户口径「评分与执行日志分开」）：
+ * 评分阶段的两份产物（用户口径「评分与执行日志分开」）：
  * 评审者是**另一个会话**，它的消息落在 `judge-messages.jsonl`，候选那条流一个字都不许混进来。
  *
  * 三条判据各有靶子：
@@ -169,7 +169,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
  *   ② 候选那条**不被污染**（混进来的症状是「执行日志里冒出评审者的对话」）；
  *   ③ 两条流的**订阅表分开**（实时侧同一条不变量：订阅执行日志的人不该收到评审者的增量）。
  */
-describe('评分产物走独立文件（2026-10-10）', { timeout: TEST_TIMEOUT_MS }, () => {
+describe('评分产物走独立文件', { timeout: TEST_TIMEOUT_MS }, () => {
   /** 评分那条消息文件的绝对路径（与候选同目录，文件名不同） */
   const judgeRecordsFileOf = (runId: string, rowId: string): string =>
     join(dirname(recordsFileOf(runId, rowId)), 'judge-messages.jsonl');

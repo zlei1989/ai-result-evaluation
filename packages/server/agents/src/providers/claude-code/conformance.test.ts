@@ -63,7 +63,7 @@ const SCENARIOS: Readonly<Record<string, readonly unknown[]>> = {
     textDelta('u1', '没问题'),
     /**
      * 思考进度帧（`system/thinking_tokens`，真机每个思考 token 一条）：它必须**零事件产出**，
-     * 摆进这个场景就是为了让套件 §2.12 的条数判据连这条通道一起钉住——只挡 `stream_event`
+     * 摆进这个场景就是为了让一致性套件的条数判据连这条通道一起钉住——只挡 `stream_event`
      * 挡不住真机上真正刷屏的那一种（run `7f05c765` 的 claude 行里 11,629 条都是它）。
      * 声明的事件条数（2）不变：这一条要么被丢掉、要么让条数当场变 3。
      */
@@ -89,7 +89,7 @@ const SCENARIOS: Readonly<Record<string, readonly unknown[]>> = {
     assistant([{ type: 'text', text: '列完了。' }], 'u3'),
     result('列完了。'),
   ],
-  // 派发工具调用与 `task_started.tool_use_id` 必须同值——子任务桥（§2.8）靠它把两套 id 连起来
+  // 派发工具调用与 `task_started.tool_use_id` 必须同值——子任务桥靠它把两套 id 连起来
   subagent: [
     assistant([{ type: 'tool_use', id: TASK_CALL, name: 'Task', input: { description: 'Count lines in notes.txt' } }], 'u1'),
     {
@@ -140,10 +140,9 @@ async function runScenario(events: readonly unknown[]): Promise<ConformanceProdu
       // claude 没有 `vendor-system` 通道（系统提示词不投送），故这一组整组 not-exposed
       environment: null,
       /**
-       * 行级事件**如实收**（2026-10-09）：原先这里写死 `[]`，理由是「避免与消息组的判据混淆」——
-       * 代价是套件的 §2.12（增量通道隔离）在 claude 身上**永远不可能红**：喂了增量帧、事件却恒为空数组，
-       * 把 `events.ts` 的排除分支删回去这条守卫照样绿。而 claude 恰恰是**唯一曾经真的漏过**的一家
-       * （`stream_event` 原本掉进未识别兜底）。收真事件之后，条数变化才有判据。
+       * 行级事件**如实收**：写死 `[]` 会让套件的增量隔离判据在 claude 身上**永远不可能红**
+       * ——喂了增量帧、事件却恒为空数组，把 `events.ts` 的排除分支删回去这条守卫照样绿。
+       * claude 的 `stream_event` 正是最容易掉进「未识别兜底」的一家。收真事件之后，条数变化才有判据。
        */
       events: agentEvents,
       usage: {

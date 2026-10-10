@@ -60,7 +60,7 @@ describe('loadConfig', () => {
 
   /**
    * 旧版本把用例写在 `config.json` 的 `cases` 数组里。搬到独立文件之后这一格被**静默忽略**
-   * （用户口径 2026-10-09：不做迁移、不做兼容，用例由用户手工搬），但「忽略」不等于「读进运行时」——
+   * （用户口径：不做迁移、不做兼容，用例由用户手工搬），但「忽略」不等于「读进运行时」——
    * 一条手改残留的 `cases` 若又进了 `AppConfig`，设置页保存时就会把整份覆盖写回，等于凭空复活一份旧数据。
    * 判据刻意是「键在不在」而不是「值等不等于空数组」：后者在实现重新读它时照样绿。
    */
@@ -112,7 +112,7 @@ describe('loadConfig', () => {
     expect(config.providers).toEqual([]);
   });
 
-  // 2026-09-28 删掉「单行超时」之后，磁盘上**已有**的 config.json 里还留着 rowTimeoutMs。
+  // 磁盘上**已有**的 config.json 里可能还留着 rowTimeoutMs（单行超时已取消）。
   // 读侧**只认契约里还有的键**：它既不能让读盘失败，也不该继续出现在 `GET /api/settings` 的
   // 响应里（那是契约里不存在的字段）——落盘数据照原样留在文件里，下一次保存自然把它带走。
   it('旧配置里多出来的 rowTimeoutMs 被丢掉（不抛、其余字段照常、读侧看不到它）', () => {
@@ -366,7 +366,7 @@ describe('落盘的 Provider / TestCase 与契约同形（去重复类型后的�
       commitHash: null,
       repoBranch: null,
       taskPrompt: '实现一个 LRU 缓存',
-      // 判据已换成**评分表**（Task 2：`TestCase.judgePrompt` → `rubric`）。形状与 evaluator 夹具同一约定：
+      // 判据已换成**评分表**（`TestCase.judgePrompt` → `rubric`）。形状与 evaluator 夹具同一约定：
       // 一组、一项、带 id——本用例只关心「core 写出的记录能被契约 schema 解析」，表的内容是叙述性的
       rubric: { groups: [{ name: '一、功能实现', items: [{ id: 'A1', goal: '实现 LRU 缓存', weight: 20 }] }] },
       createdAt: '2026-09-22T10:30:00.000Z',

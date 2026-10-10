@@ -1,12 +1,12 @@
 /**
  * `AgentLogLayout`（L2）的守卫。七条：
- *   1. 节点内容四态：`empty` ⇒ 空态、「未到」⇒ `Skeleton`（**不是**空态）、读失败 ⇒ `Alert`（+ 有重试回调才给按钮）；
- *   2. 过滤在**轮次级**生效：不含目标块的轮次整轮隐藏，并给出 `命中 N / M 轮`；
- *   3. `timeline` 槽传函数时用传入的实现（S1/S5 的接缝）；
- *   4. **`actions` 传了用传入的、不传用预设**（变异体 (p) 的守卫）；
- *   5. `environment` 未提供时环境抽屉里显示「未提供」，而不是空白；
- *   6. 跟随最新**只有一份 state**：工具条开关与角落浮出按钮同步；
- *   7. 「这一类内容没被转发」如实说明（三条判据各一句）。
+ * 1. 节点内容四态：`empty` ⇒ 空态、「未到」⇒ `Skeleton`（**不是**空态）、读失败 ⇒ `Alert`（+ 有重试回调才给按钮）；
+ * 2. 过滤在**轮次级**生效：不含目标块的轮次整轮隐藏，并给出 `命中 N / M 轮`；
+ * 3. `timeline` 槽传函数时用传入的实现（S1/S5 的接缝）；
+ * 4. **`actions` 传了用传入的、不传用预设**（变异体 (p) 的守卫）；
+ * 5. `environment` 未提供时环境抽屉里显示「未提供」，而不是空白；
+ * 6. 跟随最新**只有一份 state**：工具条开关与角落浮出按钮同步；
+ * 7. 「这一类内容没被转发」如实说明（三条判据各一句）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
@@ -175,9 +175,9 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * **站在子任务节点上的空态**（2026-10-03 真机修正）。
+   * **站在子任务节点上的空态**。
    *
-   * 这一档原先落到模型级空态，显示「还没有日志 · **这一行还没开始执行**，或执行尚未产生输出」
+   * 这一档若落到模型级空态，会显示「还没有日志 · **这一行还没开始执行**，或执行尚未产生输出」
    * ——而那一行明明跑完了（真机：主会话 7 轮、子任务记录齐备、`outcome` 非空）。
    * 站在子任务上的读者会把那句话读成「界面坏了」。
    */
@@ -200,11 +200,11 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * **「结果未采集」要说出为什么**（2026-10-04 收口）。
+   * **「结果未采集」要说出为什么**。
    *
-   * `AgentRunStateTag` 的 `missingReason` 这一格在设计里就写着「（`capability` 给…）」，
-   * 但 `BlockRenderContext` 里没有 `capability` ⇒ 三个调用点**全部**硬写 `null`
-   * （`tool-group-panel` ×2、`task-panel-card` ×1）。于是它恒等于那句光秃秃的
+   * `AgentRunStateTag` 的 `missingReason` 由 `BlockRenderContext.capability` 供。
+   * 这一格拿不到时，那三个调用点（`tool-group-panel` ×2、`task-panel-card` ×1）只能硬写 `null`，
+   * 它恒等于那句光秃秃的
    * 「结果未采集」：使用者知道**没采到**，却看不到「是这家没投送、还是我们没接」——
    * 而这两件事要去做的事完全不同（一个去找厂商，一个改我们自己）。
    *
@@ -387,7 +387,7 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * 「下载台账」在**原文行**、排在「原始输出 N 条」之后（用户 2026-10-03 口径）。
+   * 「下载台账」在**原文行**、排在「原始输出 N 条」之后。
    *
    * 判据是**DOM 顺序 + 不在工具条那一行**，不是「按钮在不在」：落错行的症状恰恰是
    * 「按钮还在、只是跑到面包屑那一行」，按存在性断言会全绿。顺序用 `compareDocumentPosition`
@@ -425,8 +425,8 @@ describe('AgentLogLayout', () => {
     expect(download.closest('[data-testid="log-node-breadcrumb"]')).toBeNull();
 
     /**
-     * **原文行的三个按钮同形**（用户 2026-10-03 口径：「重新读取」原先写成 `type="text"`，
-     * 与旁边两个并排时像另一类东西）。判据取 `className` 逐字相同——它同时覆盖
+     * **原文行的三个按钮同形**（「重新读取」写成 `type="text"` 时与旁边两个并排像另一类东西）。
+     * 判据取 `className` 逐字相同——它同时覆盖
      * 类别（default vs text）、色档与尺寸三件事；只断言「有这个按钮」的话，
      * 把它改回无边框文本按钮会全绿。
      */
@@ -436,11 +436,10 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * **节点能力声明要流到环境抽屉**（2026-10-04 收口）。
+   * **节点能力声明要流到环境抽屉**。
    *
-   * `LogNode.capability` 此前没有任何界面消费者：装配层把五格算好了、`AgentLogLayout` 只拿它
-   * 判「这一类没被转发」，而那个专门渲染能力声明的组件**谁也够不到**——整条声明链在界面上是死的，
-   * 三家一律显示「没验证过」。这一条钉的是「抽屉拿到的是**当前节点**的声明」：
+   * `LogNode.capability` 必须有界面消费者：装配层把五格算好之后，若没有组件把它渲染出来，
+   * 整条声明链在界面上就是死的，三家一律显示「没验证过」。这一条钉的是「抽屉拿到的是**当前节点**的声明」：
    * 换成一份写死的、或永远传主会话的那一份，这里的四句原因就会对不上。
    */
   it('环境抽屉拿到当前节点的能力声明与前提（不是写死的一份）', () => {
@@ -570,11 +569,11 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * `connected`：只在传了时渲染那一格；断线时不能用 `processing` 的动效（§6.7）。
+   * `connected`：只在传了时渲染那一格；断线时不能用 `processing` 的动效。
    *
    * 这一条同时钉「**传了连接状态就必须有一行承载它**」：本用例的 `actions={[]}` 且没有 `diagnostics`
    * ⇒ 原文行按「有没有原文 / 有没有挂在那一行的动作」判本来是不渲的，而连接状态住那一行
-   * （用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间），故它现在是那一行的第三个理由。
+   * （与「原始输出 N 条」合并成一行省空间），故它现在是那一行的第三个理由。
    */
   it('connected：只在传了时渲染那一格；断线时不能用 processing 的动效', () => {
     const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
@@ -591,12 +590,12 @@ describe('AgentLogLayout', () => {
 
     rerender(<AgentLogLayout model={settled} actions={[]} connected={false} />);
     expect(screen.getByText('未连接')).toBeInTheDocument();
-    // §6.7：`processing` 的动效是「真的在流」的信号，断线时必须是中性档
+    //：`processing` 的动效是「真的在流」的信号，断线时必须是中性档
     expect(document.querySelector('.ant-badge-status-processing')).toBeNull();
   });
 
   /**
-   * 连接状态的位置（用户 2026-10-07 口径）：与「原始输出 N 条」**同一行**，且是那一行的**最左**。
+   * 连接状态的位置：与「原始输出 N 条」**同一行**，且是那一行的**最左**。
    *
    * 只断言文案在页面上是不够的——挪回事实条那一行它照样在。故两条判据一起给：
    * 同属一个容器 + 排在原文入口之前，再加一条反向判据「不在事实条里」。
@@ -625,7 +624,7 @@ describe('AgentLogLayout', () => {
     const badge = screen.getByTestId('agent-log-connection');
     const rawEntry = screen.getByTestId('raw-output-open');
 
-    // 同一行**且同一层**：入口按钮就是那一行的直接子节点——用户 2026-10-07 口径要求把原先那层
+    // 同一行**且同一层**：入口按钮就是那一行的直接子节点——把包裹那一层
     // 包裹去掉、按钮拿出来（`raw-output-panel.tsx` 口径 7），故这里判的是**同一父节点**；
     // 把包裹加回去时 `rawEntry.parentElement` 变成内层那个 flex，这条立刻红
     expect(badge.parentElement, '连接徽标与「原始输出 N 条」不在同一层').toBe(rawEntry.parentElement);
@@ -637,7 +636,7 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * **领域事实自占一行**（用户 2026-10-07 口径）：它是固定区里与事实条**并列的第二个 flex 行**，
+   * **领域事实自占一行**：它是固定区里与事实条**并列的第二个 flex 行**，
    * 排在事实条那一行**下面**——不是并进事实条、靠 `wrap` 自然折行的尾巴。
    *
    * 为什么值得钉：并回事实条时页面上照样看得见「智能体 … 评分」，只有**父子关系**能区分「两行」
@@ -668,9 +667,7 @@ describe('AgentLogLayout', () => {
     const fixedArea = domainRow.parentElement;
 
     /**
-     * 判据是**父容器是纵向 Flex**，不只是「同一个父节点」：把这两行再包进一个横向 `Flex` 时
-     * 它们的父节点仍然相同、顺序也仍然在，页面上却已经并回一行（靠 `wrap` 折行）——那正是用户
-     * 2026-10-07 要去掉的形态。`Flex vertical` 在本仓走 CSS 类（不在内联 style 里），故取类名。
+     * 判据是**父容器是纵向 Flex**，不只是「同一个父节点」：把这两行再包进一个横向 `Flex` 时     * 它们的父节点仍然相同、顺序也仍然在，页面上却已经并回一行（靠 `wrap` 折行）——那正是要去掉的形态。`Flex vertical` 在本仓走 CSS 类（不在内联 style 里），故取类名。
      */
     expect(bar.parentElement, '领域事实行与事实条不在同一层').toBe(fixedArea);
     expect(fixedArea?.className, '两行被并回了同一行（父容器不是纵向 Flex）').toContain('ant-flex-vertical');

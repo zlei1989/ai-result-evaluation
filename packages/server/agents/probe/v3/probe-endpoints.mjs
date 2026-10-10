@@ -1,8 +1,8 @@
 /**
  * 端点矩阵（v3）：**这个网关到底讲哪几条 wire**。
  *
- * 为什么必须先跑它：本计划 D2 把 `openai` 协议钉在 **Responses** wire 上
- * （`api: openai-responses`）。若该网关不提供 `/v1/responses`，Task 0 的
+ * 为什么必须先跑它：`openai` 协议钉在 **Responses** wire 上
+ * （`api: openai-responses`）。若该网关不提供 `/v1/responses`，
  * 「真机跑通 responses」就没有靶子，只能如实登记为环境缺口——
  * 而**不是**改用 chat-completions（那是用户口径里明确不要的那条）。
  *

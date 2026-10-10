@@ -1,20 +1,20 @@
 /**
  * 评测数据层：键、慢兜底开关、信号驱动的重验、四个动作的请求与回写、产物按需读取、候选池。
  * 重点在两条容易被写错、写错了界面表现又很隐蔽的约定：
- *   1. **实时性由 run 信号驱动、轮询只剩 60 秒慢兜底**（用户口径 2026-10-08「不要来回刷新」）——
- *      「3 秒快轮询已经删除」本身有守卫（推 3 秒必须零请求），信号帧到达必须立刻重验；
- *      慢兜底只在有 running 时开、跑完必须停；
- *   2. mutation 成功后要写进缓存且**不得**被随后的 GET 覆盖（沿用 useSettings 的回写约定）。
+ * 1. **实时性由 run 信号驱动、轮询只剩 60 秒慢兜底**——
+ * 「3 秒快轮询已经删除」本身有守卫，信号帧到达必须立刻重验；
+ * 慢兜底只在有 running 时开、跑完必须停；
+ * 2. mutation 成功后要写进缓存且**不得**被随后的 GET 覆盖（沿用 useSettings 的回写约定）。
  *
  * 假定时器显式列出 `toFake`：只替换 setTimeout/setInterval/Date，不碰 queueMicrotask 与
  * nextTick——SWR 的请求链是 Promise 驱动的，把微任务也冻结掉会让用例假死。
  *
- * 两条读用例的通用结构（实测踩过才这么写）：
- *   - 需要跨 hook 观察「刷新了谁」的用例，必须把相关 hook 挂在**同一个 renderHook** 里：
- *     `SWRConfig` 的 `provider` 是按组件树建的缓存，分开 `renderHook` 会各拿一份缓存，
- *     `mutate(key)` 便找不到另一个缓存上的消费者（真实页面里它们同在一个 provider 下）；
- *   - 数请求一律**按方法**数（`countGets`）：`/api/runs` 同时是列表 GET 与创建 POST 的目标，
- *     只按 URL 数会让「列表被刷新了一次」被创建请求蒙混过关——那是一条空转的守卫。
+ * 两条读用例的通用结构：
+ * - 需要跨 hook 观察「刷新了谁」的用例，必须把相关 hook 挂在**同一个 renderHook**里：
+ * `SWRConfig` 的 `provider` 是按组件树建的缓存，分开 `renderHook` 会各拿一份缓存，
+ * `mutate(key)` 便找不到另一个缓存上的消费者（真实页面里它们同在一个 provider 下）；
+ * - 数请求一律**按方法**数（`countGets`）：`/api/runs` 同时是列表 GET 与创建 POST 的目标，
+ * 只按 URL 数会让「列表被刷新了一次」被创建请求蒙混过关——那是一条空转的守卫。
  *
  * 信号用例的替身：`FakeEventSource`（`testing/event-source.ts`）只装在**用到它的用例里**，
  * 不进共享 setup——`useRunEvents` 有「环境没有 EventSource 就静默降级」的分支，
@@ -61,7 +61,7 @@ const wrapper = ({ children }: { children: ReactNode }) =>
 /**
  * 焦点重验的专用 wrapper：默认的 `focusThrottleInterval`（5s）与 `dedupingInterval`（2s）
  * 会把焦点事件静默吞掉，于是「没发请求」既可能是真的关掉了、也可能是被节流了——
- * 两个窗口都置 0，断言才有区分力（与 p2 的 useCommitCandidates 用例同一手法）。
+ * 两个窗口都置 0，断言才有区分力（与 useCommitCandidates 用例同一手法）。
  */
 const focusWrapper = ({ children }: { children: ReactNode }) =>
   createElement(
@@ -158,7 +158,7 @@ describe('useRuns', () => {
   });
 
   it('有 running 的行时**不再有 3 秒快轮询**：3 秒内零请求（实时性已由信号通道承担）', async () => {
-    // 「不要来回刷新」的用户口径（2026-10-08）落到这条守卫上：把 3 秒轮询放回去时，
+    // 「不要来回刷新」的用户口径落到这条守卫上：把 3 秒轮询放回去时，
     // 这里必须红——它是本次改造的回归门。
     const fetchMock = stubFetch(async () =>
       json([makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })]),
@@ -333,7 +333,7 @@ describe('四个动作', () => {
     // revalidate:false ⇒ 详情端点不多发 GET，但缓存里已经是新建的那一份
     expect(countGets(fetchMock, '/api/runs/run-new')).toBe(1);
     expect(result.current.detail.run?.id).toBe('run-new');
-    // 列表被显式刷新一次（契约 §7 的回写约定）
+    // 列表被显式刷新一次（回写约定）
     await flushMount();
     expect(countGets(fetchMock, '/api/runs')).toBe(2);
     expect(result.current.list.runs).toHaveLength(1);
@@ -365,7 +365,7 @@ describe('四个动作', () => {
   });
 
   /**
-   * mutation 后**只**刷新受影响的 key（p2 的 `matchesCommitsKey` 是同一诉求的先例）：
+   * mutation 后**只**刷新受影响的 key（`matchesCommitsKey` 是同一诉求的先例）：
    * 顺手 `mutate(() => true)` 会把页面上所有在飞的 key 一起重取——评测页旁边就挂着用例列表，
    * 点一次「开始」顺带重取一次用例列表，是实打实的浪费，还会让无关区域闪一下 loading。
    */
@@ -450,9 +450,9 @@ describe('产物读取', () => {
 });
 
 /**
- * 焦点重验：p2 的候选提交（POST 当读用，服务端要跑 `git log`）在这里有个同形的兄弟——
+ * 焦点重验：候选提交（POST 当读用，服务端要跑 `git log`）在这里有个同形的兄弟——
  * 写请求一旦被挂进 SWR 的 fetcher，每切回一次窗口就重发一次；而「变更详情」的索引 GET
- * 在服务端是**一次真实的 git 计算**（spec §7.2 明确「按需现算，不预先落库」），
+ * 在服务端是**一次真实的 git 计算**（明确「按需现算，不预先落库」），
  * 被焦点重验反复触发同样是秒级卡顿。两条都在这一节钉住。
  */
 describe('焦点重验', () => {
@@ -472,7 +472,7 @@ describe('焦点重验', () => {
     expect(countCalls(fetchMock, '/api/runs/run-1/start', 'POST')).toBe(postsBefore);
   });
 
-  it('焦点回来不会重跑一次 git 现算的 diff 索引（服务端每次都要现场算，spec §7.2）', async () => {
+  it('焦点回来不会重跑一次 git 现算的 diff 索引（服务端每次都要现场算）', async () => {
     vi.useRealTimers();
     const fetchMock = stubFetch(async () =>
       json({ files: [], total: 0, offset: 0, insertions: 0, deletions: 0, noBodyCount: 0, truncated: false, droppedFiles: [] }),
@@ -498,7 +498,7 @@ describe('useRunModelOptions', () => {
         cancelMidTurn: true,
         options: [{ providerId: 'p-1', providerName: 'A', modelId: 'claude-opus-4-6', source: 'manual' }],
       },
-      // dsh 两条 wire 都收（2026-09-30 起，契约 §11 的 R37 收口）⇒ 它的集合是两个元素、且能计量
+      // dsh 两条 wire 都收 ⇒ 它的集合是两个元素、且能计量
       { agentKind: 'dsh', protocolTypes: ['openai', 'anthropic'], usage: true, cancelMidTurn: false, defaultEffort: 'high', options: [] },
     ];
     const fetchMock = stubFetch(async () => json(groups));
@@ -520,19 +520,19 @@ describe('useRunModelOptions', () => {
     expect(result.current.defaultEffortOf('claude-code')).toBeUndefined();
     // 响应里没有这一组的 kind：同样给 undefined（不是空串、也不是别家的档）
     expect(result.current.defaultEffortOf('codex')).toBeUndefined();
-    // 契约 §7 钉的原始形状也在（页面照 §7 解构时不必自己再 find 一遍）
+    //  钉的原始形状也在（页面照解构时不必自己再 find 一遍）
     expect(result.current.options).toEqual(groups);
   });
 
   /**
-   * **本接口的那三格**（2026-10-06 fix 轮的审查 Low）：这是接缝的 **client 那一半**。
+   * **本接口的那三格**：这是接缝的 **client 那一半**。
    *
    * 为什么非要在 client 侧再钉一条：`apps/web-next/src/route-runs.test.ts` 钉的是 **api 的响应形状**
-   * （它读的是 JSON）——从这里删掉 `efforts`，那条**照样绿**；而所有消费点传的都是函数值、三格又全是
+   * ——从这里删掉 `efforts`，那条**照样绿**；而所有消费点传的都是函数值、三格又全是
    * 可选的 ⇒ 结构类型下「少一格」天然可赋值，**tsc 与测试都不会响**，症状是界面静默丢掉那一格。
    *
    * 判据靠**对象字面量的多余属性检查**：这三格若从 `AgentModelOption` 里消失，下面这个字面量就成了
-   * 「多余的键」⇒ `pnpm typecheck` 当场报 TS2353。运行时那两行只是顺带（证明这条用例真的跑到，
+   * 「多余的键」 ⇒ `pnpm typecheck` 当场报 TS2353。运行时那两行只是顺带（证明这条用例真的跑到，
    * 而不是一个被摇掉的空壳）。
    */
   it('接缝形状：AgentModelOption 必须装得下 api 的三格（少一格 tsc 就报错）', () => {
@@ -551,15 +551,15 @@ describe('useRunModelOptions', () => {
   });
 
   /**
-   * **上一层那一半**（2026-10-07 Task 12 补）：`AgentOptionGroup` 的 `efforts` 也漏了整整一轮——
+   * **上一层那一半**：`AgentOptionGroup` 的 `efforts` 也漏了整整一轮——
    * 与上面那条同一个成因（client / api 两处手写的同一份形状 + 可选属性天然可赋值），只是没有对应用例，
    * 于是「api 一直在发、client 没声明」谁都不响。症状比缺一个选项更硬：
    * 设置页「评分配置」的思考强度候选会退化成规范五档，dsh 收不了的 `medium` 摆上界面、还能被存进设置，
    * 直到生成 / 识别时被 `requireJudgeEffort` 硬拒。
    *
-   * 判据写成**类型查询**而不是值字面量（与上面那条刻意不同）：这里要钉的是**接口的字段集合**，
+   * 判据写成**类型查询**而不是值字面量：这里要钉的是**接口的字段集合**，
    * 而那份对象的内容是 api 的事——为了凑一个完整的 `AgentOptionGroup` 字面量，
-   * 得凭空编一份 17 格的 `messageCapability`（线上永远长不成那样）。类型查询同样拦得住
+   * 得凭空编一份 17 格的 `messageCapability`。类型查询同样拦得住
    * 「删掉 / 改名这一格」：`AgentOptionGroup['efforts']` 当场 TS2339 ⇒ `pnpm typecheck` 失败。
    * 运行时的两行只为证明这条用例真跑到了，不是被摇掉的空壳。
    */
@@ -572,7 +572,7 @@ describe('useRunModelOptions', () => {
   });
 
   /**
-   * **2026-10-08 补的同一条接缝**：`defaultEffort`（「未选档位」时该家实际会用的档）。
+   * **补的同一条接缝**：`defaultEffort`（「未选档位」时该家实际会用的档）。
    *
    * 成因与上面两条逐字相同（api / client 两处手写的同一份形状，可选属性天然可赋值），
    * 只是这一格是被**占位符文案**消费的：client 漏声明时 tsc 与路由测试都不响，而
@@ -587,7 +587,7 @@ describe('useRunModelOptions', () => {
   });
 
   /**
-   * 候选池与能力元数据**完全来自服务端**（A3 / R11）：前端不许再抄一份「哪家配哪种协议」。
+   * 候选池与能力元数据**完全来自服务端**（A3 /）：前端不许再抄一份「哪家配哪种协议」。
    * 所以这里喂一份**反直觉**的响应（dsh 带模型、claude-code 缺席）：任何在前端硬编码
    * 「谁属于哪组 / 谁有哪些模型」的实现都会在这条用例上露馅。
    */
@@ -613,7 +613,7 @@ describe('useRunModelOptions', () => {
   });
 
   /**
-   * **能力声明按 kind 透出**（2026-10-04 收口）。
+   * **能力声明按 kind 透出**。
    *
    * 界面那四句「这家结构上不支持 / 厂商有数据但没投送 / 厂商有我们还没接 / 没验证过」全部来自
    * 这一格，它此前在 api 出口就不存在 ⇒ 界面一律按「没验证过」渲染。

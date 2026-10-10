@@ -73,7 +73,7 @@ export function git(args: string[], cwd: string): string {
  * 75 次进程创建在本机实测 18.3s，是 api 包单文件 50–65s 的主因。空提交省掉 `add`，
  * hash 用一次 `git log --reverse` 批量取回，降到 27 次。
  * 空提交不改变「25 次提交」这个语义：`listCommits` 的 20 条截断与「最早那条不在候选里」
- * 的断言都与提交内容无关（p2 计划 Task 3 的待办条目即此）。
+ * 的断言都与提交内容无关。
  */
 export function makeRepo(name: string, commitCount: number): { dir: string; hashes: string[] } {
   const repoDir = join(dir, name);
@@ -152,7 +152,7 @@ function buildRemoteOrigin(root: string, branches: string[]): Record<string, str
 
 /**
  * 用 `makeRemoteOrigin` 的用例自己的超时预算：覆盖本机文件内首次克隆的进程创建长停顿
- * （实测 113–117s，评审证据里还有一次 **230s**——同一个夹具、同样与断言无关，属环境税），
+ * （实测 113–117s，另有一次 **230s**——同一个夹具、同样与断言无关，属环境税），
  * 生产路径的墙钟由 core 的 `REMOTE_TRANSFER_TIMEOUT_MS`（600s）界定，与这个夹具预算无关。
  * 取 300s 是给那类停顿留出一倍余量：180s 仍可能因为环境而不是代码变红。
  * 只作用于显式声明它的用例；`vitest.config.ts` 的 `testTimeout` 一字不动。
@@ -304,9 +304,9 @@ export function seedRowWithoutItemId(): TestCase {
  * 页面 `update(id, values)` 又把它整份发给 `PUT /api/cases/{id}`。
  *
  * 为什么抽成一个夹具而不是每条用例手写：这个形状本身是好几条守卫的**承重条件**，
- * 而「用例手写了一个 UI 永远不会产生的补丁」已经栽过两次——阶段评审 **F1**（老用例只写 `{ title }`，
- * 于是「改标题不被仓库可用性拦住」在真实路径上不成立）与收口复审 **N1**（`{ title }` 的写法让
- * 「半配置用例仍可编辑标题」在真实路径上同样不成立）。集中一处，UI 的字段表一变就一次性影响所有守卫。
+ * 而「用例手写了一个 UI 永远不会产生的补丁」已经栽过两次——老用例只写 `{ title }`，
+ * 于是「改标题不被仓库可用性拦住」在真实路径上不成立，而 `{ title }` 的写法让
+ * 「半配置用例仍可编辑标题」在真实路径上同样不成立。集中一处，UI 的字段表一变就一次性影响所有守卫。
  */
 export function uiPatchOf(current: TestCase, overrides: Partial<CasePatch> = {}): CasePatch {
   return {

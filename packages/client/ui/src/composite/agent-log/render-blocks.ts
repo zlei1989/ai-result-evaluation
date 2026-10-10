@@ -80,7 +80,7 @@ export interface ToolItem {
    *
    * 为什么必须带上它：行键（`toolEntryKey`）在 `callId` 拿不到时得有一个**唯一**的身份，
    * 而 `at` 是**轮次派生**的时刻（同一轮的每个块逐字相同）——拿它当身份，一轮里两条
-   * 缺 `callId` 的条目会撞成同一个 React key（2026-10-07 真机的重复键报错）。
+   * 缺 `callId` 的条目会撞成同一个 React key。
    */
   blockId: string;
   name: string;
@@ -396,7 +396,7 @@ export function buildRenderBlocks(
 
 /**
  * 会话树索引：由数据层一次建好，列表按项渲染时复用。
- * 建一次而不是每轮 filter 一遍——`buildRenderBlocks` 会被调用 `turns.length` 次（§7.2 的护栏）。
+ * 建一次而不是每轮 filter 一遍——`buildRenderBlocks` 会被调用 `turns.length` 次（护栏）。
  */
 export function nodeIndex(nodes: readonly LogNode[]): LogNodeIndex {
   return new Map(nodes.map((node) => [node.id, node]));

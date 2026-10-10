@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 删除一轮评测（spec §5.3）：① 删快照 ② 回收整个 `{workspaceBase}/{runId}/` ③ 忘掉根记忆。
+ * 删除一轮评测：① 删快照 ② 回收整个 `{workspaceBase}/{runId}/` ③ 忘掉根记忆。
  *
  * 为什么单独一个文件而不是塞进 orchestrator.test.ts：本文件要 mock `node:fs` 的 `rmSync`
  * 造「回收失败」那一支（真实成因无法在 CI 上稳定造出：Windows 上需要文件被占用），

@@ -1,26 +1,26 @@
 // @vitest-environment jsdom
 /**
- * **端到端守卫（契约 §11 R38 ③）**：真实的 `EventSource` 语义 + 真实 HTTP 服务器，
+ * **端到端守卫（③）**：真实的 `EventSource` 语义 + 真实 HTTP 服务器，
  * 断言「订阅之后发布的事件会到达消费方」。
  *
- * 为什么必须有这一条（p5 阶段评审 C1 的教训）：单侧的帧格式断言（api 侧 4 条）与单侧的替身用例
+ * 为什么必须有这一条：单侧的帧格式断言与单侧的替身用例
  * （client 侧 12 条 + 24 个变异体）可以**同时全绿而真实链路全死**——api 发的是具名事件
  * （`event: <type>`），client 只绑 `onmessage`，而 `onmessage` 只收无名事件 ⇒ 浏览器里八种事件
- * 全部没有接收者。两侧各自的 brief 都没写错，错在**接缝**。本文件把两侧接起来：
- *   · 服务器按 api 的 `toFrame` **逐字**发帧（`id:` + `event:` + `data:` + 空行，含 `: ready` 注释帧）；
- *   · 客户端用**真实的 `EventSource` 实现**（SSE 规范实现，具名事件派发、`Last-Event-ID` 重连都有），
- *     不是本仓那个替身；
- *   · 断言 `useRowStream` 真的把具名事件交付进了 `events`。
+ * 全部没有接收者。两侧各自的用例都没写错，错在**接缝**。本文件把两侧接起来：
+ * · 服务器按 api 的 `toFrame` **逐字**发帧（`id:` + `event:` + `data:` + 空行，含 `: ready` 注释帧）；
+ * · 客户端用**真实的 `EventSource` 实现**（SSE 规范实现，具名事件派发、`Last-Event-ID` 重连都有），
+ * 不是本仓那个替身；
+ * · 断言 `useRowStream` 真的把具名事件交付进了 `events`。
  *
  * 实现说明（两点，都是实测踩出来的）：
- *   1. 真实的 `EventSource` 实现从**仓库已安装的** `eventsource` 包解析（它是某条依赖链的传递依赖，
- *      `pnpm-lock.yaml` 里有、不能直接裸 import）——用 `createRequire` 定位它的**实际路径**再动态
- *      import，并在路径里核对版本号：升级/消失时会以「找不到」红，而不是静默跳过（若将来 Node 自带
- *      `EventSource`，把这里换成全局实现即可，断言不用动）。传递依赖在 pnpm 下的真实落点是
- *      **隐藏提升目录**（谁都没把它声明成直接依赖 ⇒ 不会链进本包），解析要试两处，
- *      见 `realEventSourcePath` 的 JSDoc。
- *   2. 服务器**绝不结束响应**：真实 `EventSource` 在流结束时会按 `retry` 自动重连，
- *      测试若让它乱重连，「不重不漏」这条断言就失去意义。
+ * 1. 真实的 `EventSource` 实现从**仓库已安装的**`eventsource` 包解析（它是某条依赖链的传递依赖，
+ * `pnpm-lock.yaml` 里有、不能直接裸 import）——用 `createRequire` 定位它的**实际路径**再动态
+ * import，并在路径里核对版本号：升级/消失时会以「找不到」红，而不是静默跳过（若将来 Node 自带
+ * `EventSource`，把这里换成全局实现即可，断言不用动）。传递依赖在 pnpm 下的真实落点是
+ * **隐藏提升目录**（谁都没把它声明成直接依赖 ⇒ 不会链进本包），解析要试两处，
+ * 见 `realEventSourcePath` 的 JSDoc。
+ * 2. 服务器**绝不结束响应**：真实 `EventSource` 在流结束时会按 `retry` 自动重连，
+ * 测试若让它乱重连，「不重不漏」这条断言就失去意义。
  */
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -41,19 +41,19 @@ type RealEventSourceCtor = new (url: string, options?: { fetch?: unknown }) => R
 /**
  * `eventsource` 包在本仓的实际入口（传递依赖，路径里带版本号）。
  *
- * 三条实测口径（2026-09-30 在 node 与 jsdom 两个环境下各跑过一次）：
- *   1. **一句 `require.resolve('eventsource')` 解析不到**：它是 `@modelcontextprotocol/sdk` 的传递依赖，
- *      而那个 sdk 是 `@anthropic-ai/claude-agent-sdk` 的 **peer**（由 pnpm 的 `auto-install-peers` 装上），
- *      **没有任何包把它声明成直接依赖** ⇒ pnpm 的严格链接不会把它链进本包，本包自己解析必然
- *      `MODULE_NOT_FOUND`；它真实落在 pnpm 的**隐藏提升目录** `node_modules/.pnpm/node_modules/` 里
- *      （`.pnpm` 内部的包解析得到，工作区源码解析不到）。故从本文件所在目录**逐级向上**找，每一级试两处：
- *      `<该级>/node_modules`（将来把它声明成依赖时的落点，`packages/client/client/node_modules` 也在这条线上）
- *      与 `<该级>/node_modules/.pnpm`（隐藏提升）。将来真声明成 devDependency，命中的就是前者，本函数不用改。
- *   2. **路径基准必须用 `import.meta.dirname`，不能用 `new URL(相对路径, import.meta.url)`**：
- *      jsdom 环境下全局 `URL` 是 jsdom 的实现，它构造出的 URL 对象过不了 Node 的 `fileURLToPath`
- *      （实测抛 `The URL must be of scheme file`，而同一时刻 `import.meta.url` 明明是 `file:///` 开头）。
- *      `import.meta.dirname` 在两个环境下实测都是**真实绝对路径**（本仓 `apps/web-next/src/*.test.ts` 多处同法）。
- *   3. 找不到就**抛错**，绝不静默跳过——守卫消失比守卫变红更坏（见文件头第 1 条）。
+ * 三条实测口径：
+ * 1. **一句 `require.resolve('eventsource')` 解析不到**：它是 `@modelcontextprotocol/sdk` 的传递依赖，
+ * 而那个 sdk 是 `@anthropic-ai/claude-agent-sdk` 的 **peer**（由 pnpm 的 `auto-install-peers` 装上），
+ * **没有任何包把它声明成直接依赖** ⇒ pnpm 的严格链接不会把它链进本包，本包自己解析必然
+ * `MODULE_NOT_FOUND`；它真实落在 pnpm 的**隐藏提升目录**`node_modules/.pnpm/node_modules/` 里
+ * （`.pnpm` 内部的包解析得到，工作区源码解析不到）。故从本文件所在目录**逐级向上**找，每一级试两处：
+ * `<该级>/node_modules`（将来把它声明成依赖时的落点，`packages/client/client/node_modules` 也在这条线上）
+ * 与 `<该级>/node_modules/.pnpm`。将来真声明成 devDependency，命中的就是前者，本函数不用改。
+ * 2. **路径基准必须用 `import.meta.dirname`，不能用 `new URL(相对路径, import.meta.url)`**：
+ * jsdom 环境下全局 `URL` 是 jsdom 的实现，它构造出的 URL 对象过不了 Node 的 `fileURLToPath`
+ * （实测抛 `The URL must be of scheme file`，而同一时刻 `import.meta.url` 明明是 `file:///` 开头）。
+ * `import.meta.dirname` 在两个环境下实测都是**真实绝对路径**（本仓 `apps/web-next/src/*.test.ts` 多处同法）。
+ * 3. 找不到就**抛错**，绝不静默跳过——守卫消失比守卫变红更坏。
  */
 function realEventSourcePath(): string {
   const require = createRequire(join(import.meta.dirname, 'noop.js'));
@@ -144,7 +144,7 @@ async function startStreamServer(): Promise<Harness> {
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
     });
-    // 与 api 一致：打开就先吐一个字节（F3-①），再等发布
+    // 与 api 一致：打开就先吐一个字节，再等发布
     res.write(': ready\n\n');
     const client = { res, retry: 100 };
     clients.add(client);
@@ -207,7 +207,7 @@ afterEach(async () => {
   await harness.close();
 });
 
-describe('useRowStream × 真实 EventSource × 真实 HTTP（R38 ③）', () => {
+describe('useRowStream × 真实 EventSource × 真实 HTTP（③）', () => {
   it('订阅之后发布的事件真的到达消费方（api 那侧的具名帧被浏览器语义交付）', async () => {
     const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }), {
       wrapper,
@@ -230,7 +230,7 @@ describe('useRowStream × 真实 EventSource × 真实 HTTP（R38 ③）', () =>
     expect(result.current.events.at(-1)).toMatchObject({ type: 'log', text: '第二条实时日志' });
   });
 
-  it('断线后浏览器带 `Last-Event-ID` 自动重连，且不重不漏（C1 验收第 3 条）', async () => {
+  it('断线后浏览器带 `Last-Event-ID` 自动重连，且不重不漏', async () => {
     const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }), {
       wrapper,
     });
@@ -247,7 +247,7 @@ describe('useRowStream × 真实 EventSource × 真实 HTTP（R38 ③）', () =>
 
     const second = harness.hits[1];
     expect(second?.lastEventId).toBe('1');
-    // 重连是用头续订的（query 里还是首连那一刻的旧值 0）——服务端优先用头，见 T3 的 `Last-Event-ID` 口径
+    // 重连是用头续订的（query 里还是首连那一刻的旧值 0）——服务端优先用头，见 `Last-Event-ID` 的续订口径
     expect(second?.afterSeq).toBe('0');
 
     // 重连之后发布的新事件照常到达，且没有重复

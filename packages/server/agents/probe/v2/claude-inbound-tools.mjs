@@ -2,11 +2,11 @@
  * claude 真机项②：抓**入站 `/v1/messages` 请求体的 `tools[]` 全文**（含 description 与 input_schema）。
  *
  * 为什么要自己起一个最小服务：`system/init` 的 `tools[]` 只有**名字**，没有描述与 schema。
- * 而设计稿里若干格必须靠描述原文才能定：
- *  - §11 开放问题 6：`ReportFindings` 的语义（"待真机确认"，暂按 `deliver/agent` 占位）；
- *  - §7.6.2 ⑨ / §11.1 第 27 项：`TaskCreate` 的输入形状（`id` 从哪来）；
- *  - §11.1 第 11 项：`AskUserQuestion` 到底在不在（feature-gated 还是 preset 未启用）；
- *  - §7.1：`Bash` 的 `timeout` 参数等族结构落点。
+ * 而若干格必须靠描述原文才能定：
+ *  - 开放问题：`ReportFindings` 的语义（"待真机确认"，暂按 `deliver/agent` 占位）；
+ *  - `TaskCreate` 的输入形状（`id` 从哪来）；
+ *  - `AskUserQuestion` 到底在不在（feature-gated 还是 preset 未启用）；
+ *  - `Bash` 的 `timeout` 参数等族结构落点。
  *
  * 做法与抓 codex 工具表**同一手法**（三家用法见 `docs/protocols/comparison.md`）:
  * 起一个只读入站请求、立刻回 400 的最小服务，把 `tools[]` 落盘。
@@ -52,7 +52,7 @@ const prompt = '回答一个字：好。不要调用任何工具。';
 
 /**
  * 逐个模型跑 A/B。
- * 为什么不能只测一个模型：设计稿 §7.6.2.1b 明确写过「工具表还受**模型 preset** 影响；
+ * 为什么不能只测一个模型：已有结论是「工具表还受**模型 preset** 影响；
  * 判据以『同一次 A/B 的增量』为准」——本次先用 `Claude-Sonnet-4.6` 得到「无增量」，
  * 必须换模型再验一次，才能判断那条 26→30 的旧结论是**模型相关**还是**已失效**。
  */

@@ -1,11 +1,11 @@
 /**
  * dsh 真机项①：`read` / `glob` / `grep` / `write` / `edit` / `pwsh` 的**结果形状**。
  *
- * 设计稿 §7.6.6 的登记：dsh 的 `read` 与 `glob` 已拿到真实形状，**`edit` / `grep` / `pwsh` 仍无样本**
+ * 登记：dsh 的 `read` 与 `glob` 已拿到真实形状，**`edit` / `grep` / `pwsh` 仍无样本**
  * （"那一轮的提示词没触发它们"），`write` 的 result 形状同样没有落点。
  * ⇒ 本脚本用一条**逐个点名**的提示词把它们全部触发一次，抓原始 `tool/call` 与 `tool/result`。
  *
- * 判据（设计稿 §7.6.3 的族结构落点）：
+ * 判据（族结构落点）：
  *  - `grep`：结果里能不能拿到 `matches[{file,line,text}]`、命中数、是否给"完整清单存在别处"的路径；
  *  - `edit`：结果里有没有 diff / 替换次数；
  *  - `pwsh`：**能不能拿到退出码**（`RunShellResult.exitCode` 的可得性判据）；

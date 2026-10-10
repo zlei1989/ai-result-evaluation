@@ -111,7 +111,7 @@ describe('ProviderFormModal：编辑态', () => {
     expect(screen.getByPlaceholderText('留空表示不修改（当前：sk-***mnop）')).toBeInTheDocument();
   });
 
-  // 页面会把空串折成「不下发 apiKey」（Task 8）：这条钉住弹窗确实用空串表达「不修改」，
+  // 页面会把空串折成「不下发 apiKey」：这条钉住弹窗确实用空串表达「不修改」，
   // 而不是把掩码当密钥回填（那会把 user 的密钥覆盖成 `sk-***mnop`，此后所有调用 401）。
   it('留空密钥提交：回调收到的 apiKey 是空串', async () => {
     const onSubmit = vi.fn();
@@ -132,7 +132,7 @@ describe('ProviderFormModal：编辑态', () => {
 });
 
 /**
- * 边界守卫（用户口径 2026-09-30）：模型清单已从本弹窗**搬走**，单独成对话框。
+ * 边界守卫：模型清单已从本弹窗**搬走**，单独成对话框。
  * 三条都要钉，因为「搬走」这件事有两种回归形态：① 模型清单又长回来（两个入口、两套状态）；
  * ② 搬走之后不留路标（用户找不到入口，读起来就是「功能没了」）。
  */
@@ -140,7 +140,7 @@ describe('ProviderFormModal：模型清单不在这里（已搬到「模型」�
   it('编辑态不渲染模型清单的任何一部分，但给出去向', () => {
     renderModal({ initial: PROVIDER });
 
-    // ① 清单本体与它的控件都不在（编辑态原先全都在这里）
+    // ① 清单本体与它的控件都不在（它们不归本弹窗管）
     expect(screen.queryByText('deepseek-chat')).toBeNull();
     expect(screen.queryByText('deepseek-reasoner')).toBeNull();
     expect(screen.queryByText('自动拉取')).toBeNull();

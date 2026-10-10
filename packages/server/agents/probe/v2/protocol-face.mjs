@@ -3,7 +3,7 @@
  * 是否直接可用。
  *
  * 为什么必须先测这一条：本轮所有 claude / codex 的真机项都依赖一个"讲对应协议"的端点。
- * 设计稿 §9.4 记录过 `likecode-llm-proxy-test.jd.com`（测试环境）**不可达**——先确认生产环境
+ * `likecode-llm-proxy-test.jd.com`（测试环境）曾被记录为**不可达**——先确认生产环境
  * 到底支持哪几种 wire，再决定是直连还是经本地 proxygateway 转换。
  */
 import { GATEWAY_API_KEY, GATEWAY_BASE_URL, fetchWithTimeout, note, writeDump } from './lib/gateway.mjs';

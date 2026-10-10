@@ -9,7 +9,7 @@
  *      （内容级、由适配器分配）与 `mergeKey`（覆盖累积）、`subagentId`（派发视图归组）。两套游标
  *      服务两种视图，不共用一条流。
  *   2. **发布端不分配任何号**：`messageId` / `mergeKey` / `subagentId` 都由适配器算好
- *      （spec v3 §2），这里若重新发号，消费方就会拿两套号对不上。
+ *      ，这里若重新发号，消费方就会拿两套号对不上。
  *
  * 总线同样挂在 `globalThis` 上（理由与事件总线逐字相同：Next dev 的 HMR 会重建模块，
  * 放模块作用域会让「编排层 publish 到旧 Map、SSE 订阅新 Map」静默失效）。
@@ -42,7 +42,7 @@ function cacheKey(runId: string, rowId: string): string {
 }
 
 /**
- * 评分子通道的键后缀（2026-10-10）。同一个 `runId:rowId` 上有**两条**记录流（候选与评分），
+ * 评分子通道的键后缀。同一个 `runId:rowId` 上有**两条**记录流（候选与评分），
  * 路径缓存与订阅表都靠它分开：不加后缀就是把评审者的对话投给正在看执行日志的人
  * （而两者恰恰是用户要求分开的两件事）。
  */
@@ -82,7 +82,7 @@ function fanOut(input: { key: string; runId: string; rowId: string; record: RowR
 
 /**
  * 落盘 + 扇出的唯一实现：候选与评分两条流只差 `judge` 这一格。
- * **同步**函数（适配器的 `onMessage` / `onSubagent` 契约同步、不 await，见 spec v3 §2：
+ * **同步**函数（适配器的 `onMessage` / `onSubagent` 契约同步、不 await：
  * 内容流不能被消费者拖慢）。落盘失败**必须冒出去**：静默丢消息等于事后无法复盘这一行到底说了什么。
  */
 function publishRecord(runId: string, rowId: string, record: RowRecord, judge: boolean): void {
@@ -98,7 +98,7 @@ export function publishRowRecord(runId: string, rowId: string, record: RowRecord
 }
 
 /**
- * 发布一条**评分阶段**的记录（2026-10-10）：落 `judge-messages.jsonl`。
+ * 发布一条**评分阶段**的记录：落 `judge-messages.jsonl`。
  * 判据是**产出者**而不是类型——评审者那次 `run()` 交出来的消息与子任务行全部走这里，
  * 于是执行日志那条时间轴只讲候选做了什么。
  */
@@ -117,15 +117,14 @@ export function publishJudgeMessage(runId: string, rowId: string, message: Extra
 }
 
 /**
- * **只广播、不落盘**：`chunk === 'delta'` 的内容消息走这里（2026-10-09，用户口径「三家统一」）。
+ * **只广播、不落盘**：`chunk === 'delta'` 的内容消息走这里（用户口径「三家统一」）。
  *
  * 为什么 delta 不进 `messages.jsonl`：
  *   · 唯一真相源由**快照**承担——块结束时必有快照（spec 的覆盖合并保证），delta 只是它的实时预告；
  *   · 真机量级（codex 一次运行 867 条 delta 记录、`messages.jsonl` 5.69 MB）会让文件膨胀一个数量级，
  *     而折叠读侧本来就会把同键的 delta 全部盖掉——落下来的每一行中间态都是死重。
  *
- * 代价（如实登记）：被**中断**的块没有快照 ⇒ 刷新后那段半截正文**不可见**，且**没有第二处兜底**
- * ——原先这里写着「另由事件日志的 `log` 载荷兜底」，那句话在 2026-10-09 的统一口径下是**假的**：
+ * 代价（如实登记）：被**中断**的块没有快照 ⇒ 刷新后那段半截正文**不可见**，且**没有第二处兜底**：
  * 增量三家一致地不进 `log`（三家 `events.ts` 都有显式分流），原始输出面板里也不会有它。
  * 「它死在哪句话」因此答不出来；能答的只有「它当时写到哪」——那一格是 `EvalRow.streamingDelta`
  * 的 `lastFrameChars`（编排层在 `onMessage` 的 delta 支里记，见 `orchestrator.ts`）。
@@ -140,7 +139,7 @@ export function broadcastRowMessage(
 }
 
 /**
- * **只广播、不落盘**的评分增量（2026-10-10）：与 `broadcastRowMessage` 逐字同一条理由与口径，
+ * **只广播、不落盘**的评分增量：与 `broadcastRowMessage` 逐字同一条理由与口径，
  * 只是投给评分那条流（`judge-messages.jsonl` 同样只留快照）。
  */
 export function broadcastJudgeMessage(
@@ -204,7 +203,7 @@ export function subscribeRowRecords(runId: string, rowId: string, listener: RowR
   return subscribeRecords(runId, rowId, listener, false);
 }
 
-/** 订阅**评分**那条记录流（2026-10-10）：与执行日志分开的第二条流 */
+/** 订阅**评分**那条记录流：与执行日志分开的第二条流 */
 export function subscribeJudgeRecords(runId: string, rowId: string, listener: RowRecordListener): () => void {
   return subscribeRecords(runId, rowId, listener, true);
 }

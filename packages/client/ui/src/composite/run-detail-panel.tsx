@@ -3,33 +3,33 @@
 /**
  * 评测详情面板：顶部信息卡（串行进度在卡内底部）+ 候选卡片列表 + 吸底操作栏。
  *
- * 顶部信息**与用例详情同构**（用户口径 2026-09-28）：`Card` 标题 = 用例标题，正文是
+ * 顶部信息**与用例详情同构**：`Card` 标题 = 用例标题，正文是
  * `Descriptions` 的「标签 : 值」。值一律给**全量**——详情栏是核对「这一轮跑的到底是哪份代码」
  * 的地方，短哈希 / 省略号在这里就等于没地方能看全（与 `case-detail-panel.tsx` 的口径 1 同源）。
  *
  * 四条口径：
- *   1. 「开始」必须先 `Modal.confirm` 列出本次将执行的候选清单（spec §5.3）——
+ *   1. 「开始」必须先 `Modal.confirm` 列出本次将执行的候选清单——
  *      误点一次要烧掉几十分钟的额度与时间，确认框是这里唯一的安全带；
  *   2. 「终止」用 `Popconfirm`（它杀进程、不可撤销）；单行的终止在卡片上，同一套语义；
- *   3. 排序与排名**共用同一份判据**（`compareRows`，用户口径 2026-09-29）：总分降序 → 耗时升序 →
+ *   3. 排序与排名**共用同一份判据**（`compareRows`）：总分降序 → 耗时升序 →
  *      tok（输入+输出）升序；三项全同才算并列（同名次，不硬拆成 1、2 名）。未出分的行排在最后、
  *      不参与排名，只有 1..3 名带徽标；未采集的耗时/tok 按最差算（见 `compareRows` 的注释）；
  *   4. 吸底栏用 `Layout.Footer` 但把它的默认内边距清零——那是页面级的 24/50，
- *      放进右栏会把卡片顶出视口；间距交给 `Flex` 的 `gap`（见计划「修正 8」）。
- *      2026-10-07 用户口径（「视觉上下边距一样宽」）在这一条上追加半句：清零之后**上边补回
+ *      放进右栏会把卡片顶出视口；间距交给 `Flex` 的 `gap`。
+ *      「视觉上下边距一样宽」在这一条上追加半句：清零之后**上边补回
  *      `PANE_PADDING`**（下边那 8px 是 `ListDetailLayout` 详情槽自己的 padding，不归本组件），
  *      于是「分隔线→内容」与「内容→栏底」都是 8px；左右仍为 0。
  *
- * 第五条口径（2026-09-28）：「编辑 / 删除」两个入口放在**顶部信息卡的 `extra`** 上，
+ * 第五条口径：「编辑 / 删除」两个入口放在**顶部信息卡的 `extra`**上，
  * 与 `case-detail-panel.tsx` 逐字同形（同一个位置、同一套 Popconfirm 语义）；两者都只在
  * **没有行在运行**时可用——判据是 contracts 的 `hasLiveRows`，与服务端抛 409 的那一条同源。
  *
  * 两条读数口径（都不猜）：
  *   · **进度与状态全部来自快照**（`row.status` / `run.executionMode`）：不用「有没有分数」这类
  *     前端推断去判断终态——那正是「把旧数据渲染成新数据」的形状；
- *   · 串行进度的分子是 **`TERMINAL_ROW_STATUSES` 的行数**（计划「修正 7」），不是「已评分」的行数。
+ *   · 串行进度的分子是 **`TERMINAL_ROW_STATUSES` 的行数**，不是「已评分」的行数。
  *
- * 本仓约定：两个汉字的按钮一律 `autoInsertSpace={false}`（见 provider-table.tsx 的文件头），
+ * 本仓约定：两个汉字的按钮一律 `autoInsertSpace={false}`（provider-table.tsx 的文件头），
  * 否则可访问名会变成「开 始」/「确 定」，用例与屏幕阅读器都会撞上。
  */
 import { Badge, Button, Card, Descriptions, Flex, Layout, Modal, Popconfirm, Progress, Tooltip, Typography, theme } from 'antd';
@@ -63,7 +63,7 @@ export interface RunDetailPanelProps {
    */
   liveOf?: (rowId: string) => LiveMetricsView | undefined;
   /**
-   * 每行的**实时活动内容**（2026-10-10）：与 `liveOf` 并列的第二路（`useRunActivity` 折 AgentMessage）。
+   * 每行的**实时活动内容**：与 `liveOf` 并列的第二路（`useRunActivity` 折 AgentMessage）。
    * 由调用方提供是同一个理由：ui 层不许 import 数据层，而「哪些行要订阅」是页面的事。
    */
   activityOf?: (rowId: string) => AgentActivity | undefined;
@@ -86,7 +86,7 @@ export interface RunDetailPanelProps {
    * 删除这一轮。**必须返回在途请求的 promise**（`() => remove(id)`，而不是 `() => { void remove(id) }`）：
    * antd 的 `ActionButton` 只在 `onConfirm` 返回 thenable 时才等待它——返回 undefined 时确认框会
    * **立刻关闭**，用户看到的是「点一下就没反应」，再点一次就是第二次 DELETE
-   *（`case-detail-panel.tsx` 的 `onDelete` 注释同此口径）。
+   * （`case-detail-panel.tsx` 的 `onDelete` 注释同此口径）。
    */
   onDelete: () => void | Promise<unknown>;
   /** 删除请求在途：给确认按钮上 loading，避免重复点 */
@@ -94,7 +94,7 @@ export interface RunDetailPanelProps {
 }
 
 /**
- * 只有 1..3 名带徽标（spec §5.3）。并列时两行同名次，故这里没有「名次唯一」的假设。
+ * 只有 1..3 名带徽标。并列时两行同名次，故这里没有「名次唯一」的假设。
  * 导出它而不是在测试里抄一份 3：改阈值时用例必须跟着显式改。
  */
 export const RANK_BADGE_LIMIT = 3;
@@ -103,7 +103,7 @@ export const RANK_BADGE_LIMIT = 3;
  * 串行进度百分比：`total <= 0` 时返回 **0**，绝不让除零的 `NaN` 流进界面。
  * 单独抽成纯函数是因为它必须能被**直接**测到：`Progress` 的 `percent` 只决定条宽、
  * 不产生可断言的文案，留在组件里就只能靠间接断言——「零行时不出现 NaN」这条
- * （Review Focus 第 4 条）会退化成一条谁也测不到的注释。
+ * 会退化成一条谁也测不到的注释。
  */
 export function completionPercent(done: number, total: number): number {
   if (total <= 0) return 0;
@@ -111,7 +111,7 @@ export function completionPercent(done: number, total: number): number {
 }
 
 /**
- * 排序与名次的**唯一判据**（用户口径 2026-09-29）：总分降序 → 耗时升序 → tok 升序；
+ * 排序与名次的**唯一判据**：总分降序 → 耗时升序 → tok 升序；
  * 三项全同才返回 `0`（= 并列）。
  *
  * 为什么必须收敛成**一个**函数：展示顺序与名次徽标都从它派生，两处各写一份判据的漂移形状是
@@ -345,7 +345,7 @@ export function RunDetailPanel({
       >
         {/* antd 6 的 Descriptions 推荐 items（子节点写法已弃用）；列数固定 1 列：右栏窄，多的列只会挤到换行 */}
         <Descriptions size="small" column={1} items={headerFields} />
-        {/* 串行进度钉在信息卡**内部底部**（用户口径 2026-09-29）：它读的是「整轮跑完了几行」，
+        {/* 串行进度钉在信息卡**内部底部**：它读的是「整轮跑完了几行」，
             与上面这组「这一轮跑的到底是哪份代码」属于同一块元信息；浮在卡片外面时，
             它悬在卡片与候选列表之间，看着像下面那串候选卡片的表头。
             间距用 `marginTop` 而不是外层 `Flex` 的 `gap`：卡片与进度现在是同一个盒子里的上下两段。 */}
@@ -390,7 +390,7 @@ export function RunDetailPanel({
           position: 'sticky',
           bottom: 0,
           // 只补**上边**：分隔线与内容之间 8px，内容到栏底也是 8px（后者由 `ListDetailLayout`
-          // 详情槽的 `padding` 提供，见 `PANE_PADDING`）⇒ 视觉上下边距一样宽（2026-10-07 用户口径）。
+          // 详情槽的 `padding` 提供，见 `PANE_PADDING`）⇒ 视觉上下边距一样宽。
           // 左右仍为 0：横向对齐卡片那一列的左右边，多一圈内边距只会让内容缩进去。
           padding: `${PANE_PADDING}px 0 0`,
           background: token.colorBgContainer,

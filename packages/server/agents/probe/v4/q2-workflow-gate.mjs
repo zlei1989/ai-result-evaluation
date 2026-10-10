@@ -1,7 +1,7 @@
 /**
  * v4 / Q2：claude 的 **Workflow 并发闸门**到底有没有那行日志、规模告警进不进 SDK 事件流。
  *
- * 背景（设计稿 §7.8.4 / §9.3 的待实测项 D15）：上一轮唯一的证据是「打包 `claude.exe` 里有
+ * 背景（待实测项 D15）：上一轮唯一的证据是「打包 `claude.exe` 里有
  * 那行文案」，**从未真机跑过**。本轮在 DeepSeek 后端上真跑。
  *
  * 二进制里的代码路径（`claude-exe-strings.mjs` 采到，逐字）：
@@ -28,7 +28,7 @@ import { DUMP_DIR, note, redact, writeDump } from './lib/env.mjs';
 import { CLAUDE_EXE, deepseekClaudeEnv, makeWorkspace } from './lib/claude.mjs';
 
 const GATE_LINE = 'workflow: concurrent agent gate';
-/** 设计稿 §7.8.4 要求的 SDK settings 原文。 */
+/** 要求的 SDK settings 原文。 */
 const SETTINGS = { enableWorkflows: true, workflowSizeGuideline: 'medium' };
 const GATE_ENV = { CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '8', CLAUDE_CODE_WORKFLOW_SIZE_WARNING_AGENTS: '8' };
 

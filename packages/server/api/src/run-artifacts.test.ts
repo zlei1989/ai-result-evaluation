@@ -395,7 +395,7 @@ describe('getRowLog', () => {
     appendEvent(join(rowDir, 'events.jsonl'), { type: 'log', stream: 'stdout', text: '旧根目录里的事件' });
     updateSettings({ workspaceRoot: join(dir, 'new-ws') });
 
-    // `AgentEvent` 是判别联合，非 `log` 成员没有 `text` 字段（brief 原样写 `event.text` 过不了 typecheck）；
+    // `AgentEvent` 是判别联合，非 `log` 成员没有 `text` 字段（直接写 `event.text` 过不了 typecheck）；
     // 这里按判别式收窄，断言强度不变：非 log 事件会取到空串，同样让 toEqual 红。
     expect(getRowLog('run-1', 'r-1').map((event) => (event.type === 'log' ? event.text : ''))).toEqual(['旧根目录里的事件']);
   });

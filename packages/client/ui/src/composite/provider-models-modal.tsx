@@ -3,7 +3,7 @@
 /**
  * 模型清单对话框：拉取 / 手工增删 / 逐条设置窗口与输出上限。
  *
- * 它是从「编辑供应商」里**单独提出来**的（用户口径 2026-09-30）：模型清单与供应商的字段
+ * 它是从「编辑供应商」里**单独提出来**的：模型清单与供应商的字段
  * （名称 / 协议 / 地址 / 密钥）是两件事 —— 前者是**高频的清单维护**，后者是**低频的接线改动**，
  * 挤在同一个弹窗里的结果是「改个模型名要先把整张表单拉出来」。提出去之后：
  *   · 列表每行的操作列多一个「模型」按钮，落在「编辑」之前（模型清单比改接线常用得多）；
@@ -44,8 +44,8 @@ export interface ProviderModelsModalProps {
   onAddModel: (modelId: string) => void;
   onRemoveModel: (modelId: string) => void;
   /**
-   * 设置某条模型的能力两格（窗口 / 输出上限）。`null` = **明确清空** ——
-   * 服务端据此把窗口标成「用户手工改过」，下一次拉取不再覆盖它（spec D3）。
+   * 设置某条模型的能力两格（窗口 / 输出上限）。`null` = **明确清空**——
+   * 服务端据此把窗口标成「用户手工改过」，下一次拉取不再覆盖它。
    * 两格同一次提交：它们是同一行相邻的两个输入框，用户点一次保存表达的是「这一行就是这样」。
    */
   onSetModelContext: (modelId: string, capability: ProviderModelCapability) => void;
@@ -55,7 +55,7 @@ export interface ProviderModelsModalProps {
  * 模型清单这张表的列宽（px）。**它是 `table-layout: fixed`**（模型列的 `ellipsis` 会把它切成 fixed），
  * 所以每列宽必须自己算够：格子比内容窄时 td 是 `overflow: visible`，内容会**直接压到相邻列上**。
  *
- * 实测过这个坑（在浏览器里量的真实几何，不是推的）：原先输入列写 96px，减左右各 8px 内边距只剩 80px，
+ * 这个坑在浏览器里量过真实几何（不是推的）：输入列写 96px 时，减左右各 8px 内边距只剩 80px，
  * 而输入框是 7em —— 14px 字号下 **98px** ⇒ 向右溢出 10px，两个输入框互相压、右边界再盖住操作列的图标按钮。
  * 现在的推导：`7em` = 98px + 单元格内边距 16px = 114，取 **116** 留 2px 余量。
  * 字号与内边距都由 antd 的密度/主题给（本仓不手写），故这里把它们当**常量假设**写进推导，
@@ -115,7 +115,7 @@ export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode 
   };
 
   /**
-   * 「手工维护过」这一行的保存提示（用户口径，2026-09-29 二稿）：Tag 删掉之后，
+   * 「手工维护过」这一行的保存提示：Tag 删掉之后，
    * 这件事改由**保存图标变黄 + 提示语**承担。tooltip 与可访问名用同一份文案 ——
    * Tooltip 不产生可访问名，两者分开写就会让屏读用户拿到一个「保存窗口」而不知道这是手工行。
    */
@@ -166,11 +166,11 @@ export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode 
             <Typography.Text type="secondary">还没有模型：拉取一次，或手工添加。</Typography.Text>
           ) : (
             /**
-             * 模型清单 = small Table（用户口径 2026-09-29 二稿）：列序 **模型 ｜ 来源 ｜ 输入 ｜ 输出 ｜ 操作**，
+             * 模型清单 = small Table（二稿口径）：列序 **模型 ｜ 来源 ｜ 输入 ｜ 输出 ｜ 操作**，
              * **表头隐藏**（列的含义由输入框占位符与按钮承担），操作列**右对齐**。五条刻意的取舍：
              *   · **模型列开 `ellipsis` 且不套 `code`**：网关的模型名可以很长（`vendor/very-long-name`），
              *     撑破弹窗比截断更糟；`ellipsis` 会让 antd 把 tableLayout 切成 fixed，其余列必须给宽度；
-             *   · **两格能力各占一列、都是输入框、都 7em**：值只在输入框里（原先「窗口 Tag + 输入框」
+             *   · **两格能力各占一列、都是输入框、都 7em**：值只在输入框里（「窗口 Tag + 输入框」
              *     把同一个值显示两遍）；
              *   · **操作用图标按钮 + 右对齐**：两个汉字的文字按钮在这一列里占掉半张表，
              *     图标 + Tooltip 把宽度还给内容；可访问名仍靠 `aria-label`（Tooltip 不产生可访问名）；

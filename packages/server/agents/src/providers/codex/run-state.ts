@@ -59,15 +59,26 @@ export interface CodexRunState {
    */
   blockIndices: Map<string, number>;
   /**
-   * `通知 kind → 被**显式丢弃**的增量帧数`（2026-10-09）。
+   * `通知 kind → 被**显式丢弃**的增量帧数`。
    *
    * 为什么要有这一格：协议里五条增量通道只有三条有渲染落点（正文 + 推理全文 + 推理摘要），
    * 另外两条（`item/plan/delta`、`item/commandExecution/outputDelta`）**没有消费方**。
-   * 原先它们是「不写分支、落到兜底 return」——与「厂商压根没发这一条」在日志里长得一样。
+   * 不写分支、落到兜底 return 的话，与「厂商压根没发这一条」在日志里长得一样。
    * 这里留计数：收尾时一条 DEBUG 汇总，把「我们主动丢了什么」与「上游没给」分开。
    * 只记数、不记正文（落正文就是另一个 O(n²) 的日志文件）。
    */
   droppedDeltas: Map<string, number>;
+  /**
+   * `MCP server 名字 → 最近一次启动状态`（codex 判据）。
+   *
+   * 为什么必须**累积**：codex 每条通知只报**变化的那一台**（`{name, status, error}`），
+   * 而推导要按名字对全表（「我们注入的每一台各是什么状态」）⇒ 只有累积之后，最后一条事件才是
+   * 一份**自足**的厂商事实。行级观测格取的就是最后那一条。
+   *
+   * 为什么放在 run 状态而不是事件投影的局部变量：`events.ts` 与收尾的 `vendor-system` 都要读它，
+   * 而投影是**逐条无状态**调用的（`projectCodexEvent` 每次只看到一个 payload）。
+   */
+  mcpStartup: Map<string, { status: string; error: string | null }>;
 }
 
 export function createCodexRunState(): CodexRunState {
@@ -80,7 +91,24 @@ export function createCodexRunState(): CodexRunState {
     reasoningDeltas: new Map(),
     blockIndices: new Map(),
     droppedDeltas: new Map(),
+    mcpStartup: new Map(),
   };
+}
+
+/**
+ * 记一台 MCP server 的启动状态（**后到的覆盖先到的**：同一台会走 `starting → ready` 两拍）。
+ *
+ * 返回**累积之后的全量**（顺序 = 首次出现的顺序）：调用方把这一份原样交给 `vendor-system`，
+ * 于是「最后一条事件自带全部服务器」是构造上的性质，而不是消费方再去拼一次。
+ */
+export function noteMcpStartup(
+  state: CodexRunState,
+  name: string,
+  status: string,
+  error: string | null,
+): Array<{ name: string; status: string; error: string | null }> {
+  state.mcpStartup.set(name, { status, error });
+  return [...state.mcpStartup].map(([serverName, one]) => ({ name: serverName, status: one.status, error: one.error }));
 }
 
 /**

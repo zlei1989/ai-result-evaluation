@@ -8,7 +8,7 @@
  *      （mutateRow / setRunStatus / api 的创建与更新）会漏一两个写入点；
  *   2. **live-only**：信号是瞬时提示，不落盘、不回放——把历史也推一遍，
  *      刷新页面的客户端会为早已终态的轮次白发一轮 GET；
- *   3. **HMR 不裂脑**：订阅表挂 globalThis（与 events.ts 同一条 2026-09-28 实测教训）。
+ *   3. **HMR 不裂脑**：订阅表挂 globalThis（与 events.ts 同一条教训）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EvalRun } from '@aieval/contracts';

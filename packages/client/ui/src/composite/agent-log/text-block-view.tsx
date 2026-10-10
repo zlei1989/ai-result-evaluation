@@ -3,9 +3,9 @@
 /**
  * `text` 块：**只有正文走 markdown**（思考、命令、结果都不是 markdown，解析只会得到字面标记）。
  *
- * 角色与来源的可见落点（§6.9）——这三格若没有界面表现，契约里就是装饰：
+ * 角色与来源的可见落点——这三格若没有界面表现，契约里就是装饰：
  *   · `assistant` 是默认主角，**不标注**；`user` 给左侧竖线 + `Tag`「用户」
- *     （否则一次会话里的多个用户轮会被读成智能体的输出）；
+ * （否则一次会话里的多个用户轮会被读成智能体的输出）；
  *   · `system` 给 `Tag`「系统」+ **整块降一档**（厂商 system / 信封类文本与结论逐字同形）；
  *   · `role === 'tool'` 由工具类块自身表达，本件不另标；
  *   · `source !== 'wire'` 给块角标（`session-file` → 「补录」、`aggregate` → 「汇总」，
@@ -22,7 +22,7 @@ import type { TextBlock } from './types';
 import { MESSAGE_SOURCE_LABELS } from './types';
 
 /**
- * 流式光标类名（2026-10-10 起真源在 `base/stream-cursor.ts`：活动行也用它）。
+ * 流式光标类名（真源在 `base/stream-cursor.ts`：活动行也用它）。
  * 这里原样转出，是为了不动既有 import 路径与那条跨包守卫的靶子。
  */
 export { STREAM_CURSOR_CLASS };

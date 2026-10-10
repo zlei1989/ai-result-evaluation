@@ -37,6 +37,7 @@ Codex 的适配器完全由 `codex app-server` 驱动与取数（JSON-RPC over s
 | `collabAgentToolCall` / `subAgentActivity` | 子任务行（身份 / 派发配对 / 终态三档） |
 | `turn/completed` | 用量 + 时长（`timing{ source: 'events' }`，`apiMs` / `ttftMs` 恒 `null`） |
 | `thread/tokenUsage/updated` | 按线程用量累计（`input − cached`） |
+| `mcpServer/startupStatus/updated` | `vendor-system` 事件（`mcpChannel: 'vendor-startup-status'`，每台 `starting` / `ready` / `failed` + `error` 原文；每条交**累积之后的全量**） |
 
 - **`finalText` 出口四条件缺一不可**：`itemCompleted`（`item/started` 正文可能半截）、`agentMessage`、主线程（子线程结论不顶主会话）、正文非空。评分通路只读 `finalText`，不从事件流重建——app-server 重构曾漏写这一格，表象是 `JUDGE_PARSE_FAILED：评分智能体没有给出可读的最终答复（该适配器未回传最终消息）`（会话 `ok=true`、上游也回了 JSON，只有本仓交不出答复）。
 - **思考块规则**：`item/started` 的空占位不产块；`reasoningDrafts` 无条件补快照封口（同内容重发幂等覆盖）；界面层对无正文的思考块整块隐藏，不给占位文案。
@@ -70,13 +71,22 @@ turn/plan/updated
 - **推理正文（reasoning）现口径**：`codex exec --json` 里 `item.type === 'reasoning'` 恒 0 条（exec 的 JSONL 投影只取 `summary` 丢弃 `content`）——**取思考内容一律走 app-server**。快照取 `item/completed` 的 `reasoning.content[]`（一项即全文，实测 4 case 117 / 227 / 151 / 278 字；`item/started` 那帧两格都是空数组，别在 started 取值）；增量 `item/reasoning/textDelta` 逐字拼接后与 `content[0]` 完全相等（4/4，实测 39 / 54 / 49 / 72 条，条数恰等于 `reasoningOutputTokens`，1 delta ≈ 1 token）。摘要在 DeepSeek 网关上结构性拿不到（`summaryTextDelta` 恒 0 条，上游不给），`model_reasoning_summary` 不设或写 `auto`；`effort === 'off'` 时注入的 `CODEX_OFF_REASONING_SUMMARY = 'none'` 真机上既不报错也不影响推理照常产出（空转格，别指望它关掉任何东西）。
 - **线程树**：`thread/list{ ancestorThreadId }` 一次返回任意深度的全部后代（分页 `limit` 100、`nextCursor` 续读；不含主线程自身）；深度与昵称取厂商声明 `source.subagent.thread_spawn`（`{ depth, agent_path, agent_nickname }`），不按链长推算——旧 SDK 时代的深度 8 / 广度 32 上限不复存在。子智能体工具是 `collabAgentToolCall`（`spawnAgent` / `wait` / `closeAgent`），`wait` 的 `agentsStates[<childId>].message` 直接是子智能体结论原文。
 
+## MCP 接法
+
+- **落点 = 线程级 `config.mcp_servers`**（`buildCodexConfig` 的第 4 格，随 `thread/start` 经 app-server 协议传入，与本次运行的路由同格）。形状：snake_case、**无 `type`**（传输靠字段推断）、`command` / `args` / `env` 或 `url` / `http_headers`，另加 `startup_timeout_sec`（本仓给 30 s ≥ 20 s 的等待预算——行内首次注入 playwright MCP 要现下 61 MB）。
+- **两条路都通**（同一 server / 同一模型两臂）：只给线程级 `config`、`$CODEX_HOME` 里**不写** `config.toml` ⇒ `starting → ready`；写 `$CODEX_HOME/config.toml` 的 `[mcp_servers.<name>]` 同样到 `ready`。**本仓取前者**（少写一份文件、少一处与 CLI 自身持久化层混在一起的落点，且与路由同一时刻同一进程读）。退路是后者，形状与本仓翻译器逐字相同（只是序列化成 TOML）——**退之前先复跑探针**。
+- **判据**：`mcpServer/startupStatus/updated` 的 `failed` ⇒ 行失败（文案 `MCP「<name>」未能启动：<error 原文首行>`，归因码 `AGENT_MCP_UNAVAILABLE`）；`ready` ⇒ 行级观测格 `connected`（判据来源 `vendor-startup-status`，`mcpChannel: 'vendor-startup-status'`）。判据来源之所以是这家**唯一**的：codex 会为每台 server 投一条带 `error` 原文的结构化通知，比另两家的间接信号硬。
+- ⚠️ **订阅必须建在 `thread/start` 之前**：这条通知落在 `thread/start` 与 `turn/start` 之间的窗口（真机 **+119 ms / +135 ms**），订阅若挂在 `turn/start` 之后 ⇒ 失败通知被**静默丢掉**、行照旧出分。判据是「首条 `mcpServer/startupStatus/updated` 的时间戳早于 `turn/start`」，夹具的投递语义也按真实客户端收紧。
+- ⚠️ **能力缺口**：本机自定义 Responses 网关下 MCP 工具「看得见、调不动」（`unsupported call`，上游命名空间被拍平）——判定只到 `ready` 这一档，界面与文档都写明，**不当作本仓缺陷去修**。现象原文与三条出路见 [Codex FAQ](/faq/codex) 的 `unsupported call: probe_echo` 条；本仓面向用户的文案是契约的 `CODEX_MCP_DISPATCH_GAP_NOTE`。⇒ **行级结论的语义边界**：`connected` 对这家只等于「装上了」，不等于「调得动」。
+- 行内首次注入 playwright MCP 的代价与缓解（17.2 s / 61 MB；registry 注入拉回 ~4 s 级）见[《MCP 配置》](/features/mcp-config)。
+
 ## 已知边界与取舍
 
 | 边界 | 状态 | 处置与判据 |
 |---|---|---|
 | 带 `outputSchema` 的一轮跑满 180s 无答复（`settle=timeout`；同题面对照组 94s；复跑 1.7s 正常） | 未定位 | 与结构化输出的因果关系未证实；下一步带 relay 复现（`probe/v4 only=schema timeoutMs=420000`），判据「有没有 `response.completed`」 |
 | 消息级用量 | 结构性缺 | app-server 只到线程级 ⇒ `AgentMessage.usage` 恒 `null`，点名记录，不用近似值顶替 |
-| 计划更新的 `explanation`（模型自己写的「为什么改计划」） | **未闭合**（协议面上有、我们没采） | `TurnPlanUpdatedNotification = { threadId, turnId, explanation: string \| null, plan[] }`（本机 `codex app-server generate-ts` 生成物逐字），而 `appserver/protocol.ts` 的窄声明只读 `plan[]` ⇒ `ToolCallPayload.note` 恒 `null`。补它要动 `protocol.ts` + `message.ts` + `message-conformance.test.ts` 的 `note` 断言，属**扩展采集面**，单独开口（2026-10-10 用户裁定另开一轮） |
+| 计划更新的 `explanation`（模型自己写的「为什么改计划」） | **未闭合**（协议面上有、我们没采） | `TurnPlanUpdatedNotification = { threadId, turnId, explanation: string \| null, plan[] }`（本机 `codex app-server generate-ts` 生成物逐字），而 `appserver/protocol.ts` 的窄声明只读 `plan[]` ⇒ `ToolCallPayload.note` 恒 `null`。补它要动 `protocol.ts` + `message.ts` + `message-conformance.test.ts` 的 `note` 断言，属**扩展采集面**，单独开口 |
 | 命令入参里的 `justification`（模型写的审批理由） | 结构性缺 | `codex-rs` 的 `ExecCommandArgs.justification` 只服务于沙箱升级审批，而 `ThreadItem.commandExecution` 的字段里**没有它**（协议面就丢了）⇒ 本仓读不到，也不该拿审批语义当「这一步在干什么」 |
 | 工具调用的「人话描述」 | 结构性缺 | codex 全家族**没有** `description` 这一格（`command_execution` 只有 `command`/`cwd` 一族；`apply_patch` 是 FREEFORM lark 语法，补丁正文不在协议条目里）。所以摘要只能走「族拼法」：`exec_command` 给命令原文、`apply_patch` 给改动清单，见《三家横向对比》 |
 | 只回密文路由的推理明文 | 结构性缺 | `content[]` 为空 ⇒ `text: null` + `'none'`，不回落 summary |
@@ -88,7 +98,7 @@ turn/plan/updated
 | `thread/list` 用量粒度是否到每个模型往返 | 无样本 | 文章不写死 |
 | 退出码 | 结构性缺 | `app-server` 在 `turn/completed` 后不自退，kill 后退出码恒 `null`（4/4）⇒ 退出码不得当本轮成败判据，只认 `turn/completed.status` + `error` |
 
-**终结闸门按 `threadId` 认本轮**：主线程与每个子线程各有自己的 turn，`turn/completed` 多条、`threadId` 各异——子线程先到不能当本轮终结（真机踩过：拿到的是子线程结束时刻的快照）。收尾取数（`thread/list` + 逐线程 `thread/read`，`itemsView` 从 `summary` 到 `full` 有降级判据）必须在 `finalize` 之前落定。收尾读回与通知同源：读回的 reasoning 条目与 `item/completed` 逐字相同（4/4）。
+**终结闸门按 `threadId` 认本轮**：主线程与每个子线程各有自己的 turn，`turn/completed` 多条、`threadId` 各异——子线程先到不能当本轮终结（踩过的坑：拿到的是子线程结束时刻的快照）。收尾取数（`thread/list` + 逐线程 `thread/read`，`itemsView` 从 `summary` 到 `full` 有降级判据）必须在 `finalize` 之前落定。收尾读回与通知同源：读回的 reasoning 条目与 `item/completed` 逐字相同（4/4）。
 
 ## 相关链接
 

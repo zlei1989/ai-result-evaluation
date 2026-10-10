@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * 事件发射：补 seq（run 内自增，从 1）与 at（ISO 8601）；未识别负载必须**逐字段保留**。
- * 第二条是本计划的关键守卫之一：静默丢弃厂商事件等于丢掉「为什么得这个分」的证据。
+ * 第二条是关键守卫之一：静默丢弃厂商事件等于丢掉「为什么得这个分」的证据。
  */
 import type { AgentEvent } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
@@ -20,16 +20,16 @@ describe('createEventEmitter', () => {
     expect(seen[1]?.type).toBe('log');
   });
 
-  it('usage 草稿带上 tokens 与 turns（形状与 §7.4 一致）', () => {
+  it('usage 草稿带上 tokens 与 turns（形状与契约一致）', () => {
     const seen: AgentEvent[] = [];
     const emitter = createEventEmitter((event) => {
       seen.push(event);
     });
     // `timing: null` = 这一次没采到时间（2026-10-XX 新增的那一格）：**这一格必填**，
     // 于是「未采集」只有一种写法，读侧不必再区分「键不存在」与「键是 null」。
-    // `subagentTokens: null` 同一条处置（2026-10-04 新增的那一格）：这一行没有子智能体、或没采到。
+    // `subagentTokens: null` 同一条处置：这一行没有子智能体、或没采到。
     // `subagentTurns: null` 同理（轮次那一格的分量）：**恒带**，`null` = 没采到、`0` = 确实没有。
-    // `tokensBasis`（A2）也**恒带**：它没有「不知道」这一态（发事件的人总知道自己手里那个数的来源），
+    // `tokensBasis` 也**恒带**：它没有「不知道」这一态（发事件的人总知道自己手里那个数的来源），
     // 于是事件流里每一条 usage 都能自证「这个 tokens 是厂商上报的还是我们估的」。
     emitter.emit({
       type: 'usage',
@@ -85,7 +85,7 @@ describe('createEventEmitter', () => {
   });
 
   /**
-   * 归属格（2026-10-05）：草稿层**恒带**这一格（没有归属时写 `null`），读侧因此只有「有值」与
+   * 归属格：草稿层**恒带**这一格（没有归属时写 `null`），读侧因此只有「有值」与
    * 「没有」两态——与 `timing` / `subagentTokens` 同一条处置，少一种形态就少一处漂移。
    */
   it('usage 草稿带上归属格 turn：没有归属是 null，有归属时逐字保留', () => {
@@ -119,7 +119,7 @@ describe('createEventEmitter', () => {
 });
 
 describe('unknownEventDraft', () => {
-  it('未识别负载被投影成保留原始负载的日志事件（逐字段保留，Review Focus #5）', () => {
+  it('未识别负载被投影成保留原始负载的日志事件（逐字段保留）', () => {
     const payload = { type: 'mystery', nested: { a: [1, 2, 3] }, count: 7 };
     const draft = unknownEventDraft(payload);
     expect(draft).toMatchObject({ type: 'log', stream: 'stdout' });

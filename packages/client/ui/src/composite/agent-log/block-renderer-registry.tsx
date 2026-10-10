@@ -40,7 +40,7 @@ export interface BlockRenderContext {
    * 卡片底部「原始结果」二级抽屉的开合。**与 `open` 是同一份折叠态、不同后缀的键**
    * （键 = 块键 + `|raw`，由 L1 的 `contextOf` 拼）：它俩是两个独立的东西——卡片收起了、
    * 里面的抽屉照样可以开着，反之亦然。L0 只负责把这两格透传给 `RawOutputPanel`，
-   * **自己不持态**（§9.0 纪律 2 / `agent-log-layering.test.ts` (d)）。
+   * **自己不持态**（纪律 2 / `agent-log-layering.test.ts` (d)）。
    */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
@@ -57,10 +57,10 @@ export interface BlockRenderContext {
   /** 「原始输出」面板展开时向数据层上报一次（`source.requestDiagnostics`） */
   onRequestDiagnostics?(): void;
   /**
-   * 当前节点的**能力声明**（2026-10-04 补上）。
+   * 当前节点的**能力声明**。
    *
    * 为什么它必须在上下文里：`AgentRunStateTag` 的 `missingReason` 设计上就是「`capability` 给」，
-   * 而此前这一格谁也够不到 ⇒ 三个调用点全部硬写 `null`，界面上恒是光秃秃的「结果未采集」——
+   * 而缺了它这一格谁也够不到 ⇒ 三个调用点只能硬写 `null`，界面上恒是光秃秃的「结果未采集」——
    * 使用者知道没采到，却分不清「这家没投送」与「我们没接」（该去找厂商还是改我们自己）。
    *
    * **可选**：不给就退回那句光秃秃的文案（不编原因）。L0 只读它、不推断——

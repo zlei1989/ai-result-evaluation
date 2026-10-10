@@ -29,7 +29,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
    * 用例造一个**文件名里就含 `diff --git `** 的文件——计数行是 `2\t0\tdiff --git fake.txt`，
    * 那个子串出现在行中而不是行首。切分点改成按子串找（`indexOf('diff --git ')`）时会在这里提前切断：
    * 计数段只剩 `2\t0\t`（路径解析成空串）、正文段以一个不存在的文件名开头。
-   * 变异验证：把切分改成 `indexOf` 后这条**确实红**（不是恒绿的空转）。
+   * 变异验证：把切分改成 `indexOf` 后这条**确实红**。
    */
   it('被 gitignore 的新文件：**不得**进入 diff（正文尤其不能进——那是密钥泄漏路径）', () => {
     const { dir, base } = makeRepo('aieval-diff-ignored-');
@@ -39,7 +39,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
 
     writeFileSync(join(dir, 'secret.log'), 'API_KEY=sk-live-should-never-reach-the-judge\n', 'utf8');
     const result = collectDiff(dir, base);
-    // spec §5.5 第 6 步的第三个来源是「未跟踪的新文件」= `git status --porcelain` 的 `??`，
+    // 第三个来源是「未跟踪的新文件」= `git status --porcelain` 的 `??`，
     // 而 `??` **不含**被 gitignore 的文件。忽略是有意的信号：构建产物、`node_modules`、
     // `.env` 都不该被当成候选的产出，更不该把 `.env` 的正文送进评分。
     expect(result.text).not.toContain('sk-live-should-never-reach-the-judge');
@@ -47,7 +47,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
 
     // 顺带守 baseline 参数的语义：传入的是调用方给的基线，而不是内部偷偷用 HEAD 覆盖
     // （基线选在 `.gitignore` 提交之前，那份改动就该出现在「已提交改动」段里）
-    // 复用第一次的结果：原先这里又跑了一次 collectDiff（一个用例 17 次 git 进程，
+    // 复用第一次的结果：这里若再跑一次 collectDiff，一个用例就是 17 次 git 进程，
     // 全包并行时会撞 vitest 的默认 5s 超时——review 的 flake 项）
     expect(section(result.text, COMMITTED)).toContain('.gitignore');
   });
@@ -87,7 +87,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     expect(result.text).toContain('中文文件.txt');
     expect(result.files.map((file) => file.path)).toContain('中文文件.txt');
   });
-  it('未跟踪段的正文只是路径清单，不重复贴未提交的 diff 正文（契约 §3.2 钉死的格式）', () => {
+  it('未跟踪段的正文只是路径清单，不重复贴未提交的 diff 正文（钉死的格式）', () => {
     const { dir, base } = makeRepo('aieval-diff-shape-');
     writeFileSync(join(dir, 'new.ts'), 'export const answer = 42;\n', 'utf8');
     // 再改一个**受跟踪**文件：它出现在未跟踪段里才是真正的串段
@@ -96,11 +96,11 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     const result = collectDiff(dir, base);
     const body = section(result.text, UNTRACKED);
     expect(body).toContain('new.ts');
-    // p5 直接渲染这段文本：串进来会让同一份 diff 在文本里出现两次，受跟踪文件的 hunk
+    // 界面直接渲染这段文本：串进来会让同一份 diff 在文本里出现两次，受跟踪文件的 hunk
     // 还会挂在「未跟踪文件」标题下面，并且让 truncateDiff 报「某文件被丢弃」而它的孪生正文仍在
     expect(body).not.toContain('diff --git');
     expect(body).not.toContain('+dirty');
-    // 正文没有因此丢失：它经由未提交段到达文本（R3 的核心断言仍然成立）
+    // 正文没有因此丢失：它经由未提交段到达文本（核心断言仍然成立）
     expect(section(result.text, UNCOMMITTED)).toContain('+export const answer = 42;');
     expect(section(result.text, UNCOMMITTED)).toContain('+dirty');
   });

@@ -1,8 +1,8 @@
 /**
- * 适配器的错误归因（spec §5.6.7）。
+ * 适配器的错误归因。
  * 注意：这里的 `AgentErrorCode` **不是** contracts 的 `ErrorCode`——它没有对应的 HTTP 状态，落点是
  * 该行的事件日志；不要塞进 `ERROR_CODES`（那会逼 `STATUS_BY_CODE` 为它编造状态码）。
- * 用户可见文案的要求（§5.6.7 表）：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
+ * 用户可见文案的要求：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
  * 限流提示改用串行；模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
  */
 import { asRecord, readNumber, readString } from './json';
@@ -21,7 +21,7 @@ export interface AgentFailure {
 }
 
 /**
- * 加载失败的两种语义（评审 M1）。必须分开，因为**补救动作完全相反**：
+ * 加载失败的两种语义。必须分开，因为**补救动作完全相反**：
  *  - `missing`：包没装 / 加载不起来 ⇒ 文案给安装命令（「装什么」+「怎么装」）；
  *  - `shape-mismatch`：包**已经装好**，只是导出面与适配器期望的不一致 ⇒ 安装命令是一条**恒无效**
  *    的指令（dsh 的包在 `dependencies` 里、`node_modules` 完整、镜像无关），它会把用户带向
@@ -40,7 +40,7 @@ export interface AgentLoadErrorOptions {
 }
 
 /**
- * 厂商 SDK 加载失败（§5.6.7：厂商包缺失 / 加载失败）。
+ * 厂商 SDK 加载失败（厂商包缺失 / 加载失败）。
  * 文案必须回答使用者下一句会问的问题：`missing` → 「装什么、怎么装」；`shape-mismatch` → 「装了为什么不匹配、
  * 该找谁」——后者绝不能出现 `pnpm add`（见 `AgentLoadFailureVariant` 的说明）。
  */
@@ -67,7 +67,7 @@ export class AgentLoadError extends Error {
 /**
  * 「已安装但不匹配」的文案：点名**期望的入口**与**实测的导出面**，并明确否定「安装」这条猜想。
  * 为什么不复用 `missing` 的模板：那条模板的第一句（`pnpm add`）在 dsh 的真实路径上恒无效——
- * 包在 `dependencies` 里、装好了、镜像无关，用户照着做一遍不会有任何变化（评审 M1）。
+ * 包在 `dependencies` 里、装好了、镜像无关，用户照着做一遍不会有任何变化。
  */
 function shapeMismatchMessage(packageName: string, reason: string, options: AgentLoadErrorOptions): string {
   const expected = options.expected ?? '（未登记）';
@@ -142,10 +142,10 @@ function statusOf(error: unknown): number | null {
 }
 
 /**
- * 读状态码：**既认 number 也认纯数字字符串**（评审 N1）。
+ * 读状态码：**既认 number 也认纯数字字符串**。
  * 为什么不能直接 `Number(value)`：那会把 `'abc'` 变成 `NaN`、把 `''` 变成 `0`——两者都会**凭空造出**
  * 一个上游从未给出的状态，让用户拿到假归因。所以先做「纯数字」形状校验，不纯粹就当「没有状态」。
- * 与 `readNumber` 的分工：那个是通用窄读取，语义是「只认 number」（T3 的 F5 刚给它加了 try/catch），
+ * 与 `readNumber` 的分工：那个是通用窄读取，语义是「只认 number」（已给它加了 try/catch），
  * 不改它；这里只是**额外接受一种形状**。
  */
 function readHttpStatus(record: Record<string, unknown> | null, key: string): number | null {

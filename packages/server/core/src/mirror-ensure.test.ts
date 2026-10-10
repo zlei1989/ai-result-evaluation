@@ -98,7 +98,7 @@ describe('promoteMirror', () => {
 
   /**
    * 瞬时占用必须重试到成功：Windows 上刚退出的 git 进程 / 杀软 / 索引器会短暂捏着 tmp 目录的
-   * 句柄，`renameSync` 抛 EPERM/EBUSY——2026-09-28 全量并发下 `resolveRemoteRef` 那条用例
+   * 句柄，`renameSync` 抛 EPERM/EBUSY——全量并发下 `resolveRemoteRef` 那条用例
    * 就红在这里（同样代码独占跑全绿）。
    * 「前两次 EPERM、第三次成功」这个窗口在真实机器上不可稳定复现，故用 `promoteMirror` 的
    * `rename` 注入点造出来（生产调用方不传它）。

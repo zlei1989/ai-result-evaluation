@@ -1,9 +1,9 @@
 /**
  * 三家共用的运行骨架：注入 → 消费事件流 → 释放 → 组装结果。
- * 为什么集中一处：释放顺序（§5.6.6）、**轮次的发射门槛**、判定优先级（signal 已中止 → canceled；
+ * 为什么集中一处：释放顺序、**轮次的发射门槛**、判定优先级（signal 已中止 → canceled；
  * 其余按实际结果）三家必须逐字一致——抄三遍必然漂移，而这几件事出错时都表现为
  * 「偶发卡住 / 状态对不上 / 数字不动」，是最难查的一类问题。厂商差异全部通过 hooks 注入。
- * 注意：本函数**不抛**——所有失败都折进 AgentRunResult.error（§5.6.7 的错误码需要承载处），
+ * 注意：本函数**不抛**——所有失败都折进 AgentRunResult.error（错误码需要承载处），
  * 编排层因此不需要给每一行套 try/catch。
  */
 import { createLogger } from '@aieval/core';
@@ -27,7 +27,7 @@ export interface TurnFinalize {
   messages?: MessageDraft[];
   subagents?: SubagentRecord[];
   /**
-   * 收尾交回的**计量**（2026-10-04 新增）。为什么必须能交回结果值：
+   * 收尾交回的**计量**。为什么必须能交回结果值：
    * codex 的子线程用量**只在收尾读盘时才知道**，而编排层第 6 步会用 `result.tokens` 覆盖快照
    * ⇒ 只发一条 `usage` 事件的话，那个数会在几毫秒后被不含子线程的 `result.tokens` 盖掉
    * （界面在终态那一下「掉下去」）。
@@ -36,7 +36,7 @@ export interface TurnFinalize {
    */
   tokens?: UsageTokens | null;
   /**
-   * **子智能体那一份**。⚠️ **这一格的 `null` 语义与 `tokens` 刻意不同**（预检裁定，见账本 R2）：
+   * **子智能体那一份**。⚠️ **这一格的 `null` 语义与 `tokens` 刻意不同**（预检裁定）：
    * `null` = **明确没采到** ⇒ 覆盖成 `null`（否则读失败时旧的偏大分量会留在那儿，
    * 而合计已退回主会话口径 ⇒ 破坏 `subagentTokens ≤ tokens` 这条不变量）；
    * 只有**缺省（undefined）**才是「本条不带这一格、保持原值」。
@@ -45,7 +45,7 @@ export interface TurnFinalize {
    */
   subagentTokens?: UsageTokens | null;
   /**
-   * **子智能体那一份**轮次（2026-10-04）。与 `subagentTokens` **逐条同语义**（含那一条不对称）：
+   * **子智能体那一份**轮次。与 `subagentTokens` **逐条同语义**（含那一条不对称）：
    * `null` = **明确没采到** ⇒ 覆盖成 `null`（子线程被上限截断、某个子智能体读不出轮次时必须能清掉，
    * 否则它与已退回主会话口径的 `turns` 一起破坏 `subagentTurns ≤ turns`）；
    * 只有**缺省（undefined）**才是「本条不带这一格、保持原值」。
@@ -66,7 +66,7 @@ export interface TurnStart {
    * `for await (const raw of started.stream)` 只有自己退出才会走到 `finally` 释放，第二段的 5 秒兜底
    * 只保证 `dispose()` **被调用**。
    *
-   * ⚠️ **2026-10-07 起多一条硬要求：进程回收是「整棵树 + 等确认」，不是「发个信号」**。
+   * ⚠️ **硬要求：进程回收是「整棵树 + 等确认」，不是「发个信号」**。
    * `child.kill()` 在 Windows 上只杀直接子进程，而厂商 CLI 会在自己内部 spawn 一串下级进程
    * （真机：codex 的插件同步 `git` 链），它们**继承父进程的句柄**、继续捏着本行的配置目录
    * （`.agenthome` / `.judgehome`），下一轮的行产物清理就此 `EPERM`。落地口径：
@@ -76,16 +76,15 @@ export interface TurnStart {
    *     必须在《厂商进程生命周期规范》的归属表里如实登记，不许声称做到了。
    * 骨架这一层的义务是**顺序**（`interrupt` → 终结在途 turn → `dispose`）与**兜底调用**；
    * 「整棵」这件事在适配器里。
-   * **能力边界（评审 F3 的原始表述在此修正，复评 I1 的证据链）**：`dispose` 只能**尽力**让 `stream`
+   * **能力边界**：`dispose` 只能**尽力**让 `stream`
    * 的迭代结束——本层无法强制中止一个卡在 `await` 上的迭代器：`dispose` 里的「关闭迭代」类动作
    * （例如关闭厂商 SDK 的事件迭代）在迭代挂起时只是**排队**，要等它自己落到下一个挂起点（yield / 结束）
    * 才生效 ⇒ **`runTurn` 可能无界返回**。所以这里不再是「必须在有限时间内让迭代结束」的硬约束，
    * 而是「尽力 + 登记边界」。
-   * 「一行不会永远停在 running」这条**用户可见**的不变量**因此不再由时间保证**（用户口径，2026-09-28
-   * 「执行不限时间、评分不限轮次和时间」：编排层原来的 `hardDeadline` / `timedOutRows` 已随之删除）。
+   * 「一行不会永远停在 running」这条**用户可见**的不变量**因此不再由时间保证**（用户口径「执行不限时间、评分不限轮次和时间」：编排层没有 `hardDeadline` / `timedOutRows`）。
    * 今天能停下它的只有用户点「终止」——编排层在行落终态时唤醒行任务、并给 5 秒交卷窗口
    * （`orchestrator.ts` 的 `terminalWaiters` / `TERMINATION_GRACE_MS`）；一个连停止信号都不理的适配器
-   * 会让那一行**一直挂着**，这是本次口径的已知代价（登记在包的 README 与冒烟记录里）。
+   * 会让那一行**一直挂着**，这是已知代价（登记在包的 README 里）。
    * codex 侧的具体边界与可达的那一格见 `providers/codex/index.ts` 的 `closeRunStream`。
    * T7–T9 各自要有一条用例钉住「dispose 之后流与回收的可观测量」——不一定是「流在有限时间内结束」。
    */
@@ -103,12 +102,11 @@ export interface TurnStart {
    *   1. **流跑完就调用**（正常结束；**迭代抛错 / 被中止时也调**，见下）：codex 的收尾读的是
    *      `$CODEX_HOME/sessions/rollout-*.jsonl`，而那份文件**是 CLI 边跑边追加的**——它记下的
    *      就是「跑到哪就写到哪」的真实内容，不是一份需要跑完才成立的产物。失败或终止的运行里，
-   *      那份文件同样有内容（真机实测：一条被中断的 codex 行留下 688 KB 的会话文件，里面是
+   *      那份文件同样有内容（一条被中断的 codex 行留下 688 KB 的会话文件，里面是
    *      完整的推理、正文与工具调用）。**丢掉它等于把已经落盘的事实藏起来**，
    *      表现就是抽屉上那句「还没有日志 · 这一行还没开始执行」——而这一行明明跑过。
-   *      （2026-10-03 修正：原来只在 `failure === null` 时收尾，理由是「没跑完的运行上补一份
-   *      不完整的内容会把两条互不相关的事实拼在一起」。那条理由站不住：收尾**只读盘、不编造**，
-   *      读不到就一条都不产出；而「失败行看不到它说过什么」是排障时最缺的那一条信息。）
+   *      （收尾**只读盘、不编造**，读不到就一条都不产出；而「失败行看不到它说过什么」是排障时最缺的
+   *      那一条信息——所以失败与终止的运行同样收尾。）
    *   2. **抛错只记日志**，不改变本次运行的结论——收尾失败是**补充信息**失败，
    *      不该把一次成功的运行翻成失败（与 `dispose` 的处置同一条理由：可见性次于结论）；
    *      反过来，收尾**成功**也不改变结论：失败仍然是失败，只是内容补上了。
@@ -124,25 +122,25 @@ export interface TurnStart {
 
 /** 骨架维护的跨消息状态 */
 export interface TurnState {
-  /** 已见过的厂商消息 id：唯一允许丢弃的事件是**重复事件**（§5.6.3） */
+  /** 已见过的厂商消息 id：唯一允许丢弃的事件是**重复事件** */
   seen: Set<string>;
   /**
-   * 已累计的轮次：**一次模型 API 往返算一次**（用户口径，2026-09-28）。三家各自在这个字段上
+   * 已累计的轮次：**一次模型 API 往返算一次**（用户口径）。三家各自在这个字段上
    * 累加/覆盖自己的口径（claude-code 用「见过的 `assistant.message.id` 数」覆盖；codex 数**模型答复
-   * 条目**（`item.type === 'agent_message'`，2026-10-05 收窄——推理与工具条目对这把尺子透明）；
+   * 条目**（`item.type === 'agent_message'`——推理与工具条目对这把尺子透明）；
    * dsh 数 `step`），骨架只负责把它交给结果与 `usage` 事件。
-   * **这个 `0` 只表示「已观察到的轮次累计」，不是「采到了 0 轮」**（评审 F5）：适配器不要把 state.turns
+   * **这个 `0` 只表示「已观察到的轮次累计」，不是「采到了 0 轮」**：适配器不要把 state.turns
    * 直接回填进 `TurnProjection.turns`——没采到轮次时它必须是 `null`（「计量绝不填 0」是硬口径），
    * 否则 tokens 已采到、轮次没采到时就会发出 `turns: 0` 的 usage 事件，让人得出「这家很省」的错误结论。
    */
   turns: number;
   /**
    * 已累计的计量（`null` = 还没采到任何一项，不是 0）。
-   * 为什么骨架要管这件事（Task 12 实测新增）：dsh 的真实形状是「用量在 `assistant/message` 上、
+   * 为什么骨架要管这件事：dsh 的真实形状是「用量在 `assistant/message` 上、
    * 轮次在 `step/start` / `turn/end` 上」——两者**不在同一条通知**里。适配器把用量记在这里，
    * 到给出轮次的那条出口上连同轮次一起交出去，于是「一条通知给 tokens、另一条给 turns」也能落成
    * 一条合法的 usage 事件（而不是静默丢掉计量）。
-   * 口径（2026-09-28）：**dsh 这里是整行累计**（交出时带全量，事件本身是覆盖语义），
+   * 口径：**dsh 这里是整行累计**（交出时带全量，事件本身是覆盖语义），
    * claude 两者同消息、codex 根本不用这三个字段（它只在 `turn.completed` 上现取 usage）。
    */
   usageInput: number | null;
@@ -183,7 +181,7 @@ export interface TurnState {
    * 那个键：claude-code 用主循环的 `assistant.message.id`（一条响应会按内容块多条到达、共享同一个
    * id）；codex 用**模型答复条目**（`item.type === 'agent_message'`）的 `item.id`
    * （`item.started`/`updated`/`completed` 共享同一个 id；推理与工具条目不算——它们对这把尺子透明，
-   * 2026-10-05 收窄，见 `providers/codex/events.ts` 的 `TURN_ITEM_TYPES`）。
+   * 见 `providers/codex/events.ts` 的 `TURN_ITEM_TYPES`）。
    * 为什么与 `usageByMessageId` 分开、且**不用** `state.turns` 自增：那张表只收「三项用量齐全」
    * 的消息，而轮次必须在采不到用量时照样涨——实测那一轮 claude-code 的用量几乎采不到，
    * 「轮次被 token 拖住」的根因正在这里。
@@ -203,7 +201,7 @@ export interface TurnState {
   /**
    * **块序号分配器**：`载体 → 分配器`，由各家的 `project` 维护（骨架只提供存放处）。
    * 载体 = `subagentId ?? 'main'` + `roundTrip` + `role` + `parentCallId`（与合并键同一口径）。
-   * 为什么要跨消息存活：新块只能追加到末尾、序号一经分配不再变化（spec §6.2 第 4 条），
+   * 为什么要跨消息存活：新块只能追加到末尾、序号一经分配不再变化，
    * 而块序号正是合并键里区分「同一轮的第几个块」的那一段。
    */
   blockIndices?: Map<string, BlockIndexAllocator>;
@@ -259,7 +257,7 @@ export interface TurnProjection {
   /** 本条消息采到的计量；未采到为 null（**不是 0**） */
   tokens: UsageTokens | null;
   /**
-   * **子智能体那一份**用量（2026-10-04）。三档：
+   * **子智能体那一份**用量。三档：
    *   · 缺省（undefined）= 本条不带这一格（保持骨架里已有的那一份）；
    *   · `{…}` = 「主会话之外、到目前为止」的读数（仍在跑的子智能体算「到目前为止」）；
    *   · `null` = **明确没采到**（有子智能体但读失败）⇒ 骨架把它记成 null，界面据此退回单行 Tooltip。
@@ -267,7 +265,7 @@ export interface TurnProjection {
    */
   subagentTokens?: UsageTokens | null;
   /**
-   * **子智能体那一份**轮次（2026-10-04）。三档与 `subagentTokens` **逐字相同**：
+   * **子智能体那一份**轮次。三档与 `subagentTokens` **逐字相同**：
    *   · 缺省（undefined）= 本条不带这一格（保持骨架里已有的那一份）；
    *   · `0`/`n` = 「主会话之外、到目前为止」的读数（仍在跑的子智能体算「到目前为止」）；
    *   · `null` = **明确没采到**（有子智能体但读不出轮次）⇒ 骨架把它记成 null，界面据此退回单行。
@@ -277,7 +275,7 @@ export interface TurnProjection {
    */
   subagentTurns?: number | null;
   /**
-   * `tokens` 是**估算值**（用户口径，2026-09-26 的 claude-code）：它只进 `usage` 事件给界面看，
+   * `tokens` 是**估算值**（用户口径）：它只进 `usage` 事件给界面看，
    * **绝不进 `AgentRunResult.tokens`**——否则「崩溃 / 超时 / 被杀」的行会带着一份估算被写成
    * 「采到了计量」，而快照是唯一落盘真相。缺省（undefined）= 权威值。
    * 为什么这个标记在投影上、而不复用别处的静态能力声明：静态声明回答的是「这一家整体上算不算
@@ -305,7 +303,7 @@ export interface TurnProjection {
    */
   timing?: TimingSpan;
   /**
-   * 这一条读数**属于哪一轮**（2026-10-05，spec §2.2）：`subagentId` = 会话身份（`null` = 主会话），
+   * 这一条读数**属于哪一轮**：`subagentId` = 会话身份（`null` = 主会话），
    * `round` = **该会话自己的**第几次模型往返。缺省/`null` = 本条没有归属 ⇒ 发出去的 `usage.turn` 是 `null`。
    *
    * ⚠️ **刻意不结转上一条**（与 `subagentTokens` 的「保持原值」相反）：归属说的是「**这一条**读数发生在
@@ -318,13 +316,13 @@ export interface TurnProjection {
   /** 本条消息是否表示失败 */
   failure: AgentFailure | null;
   /**
-   * 本条消息归一出来的**消息草稿**（spec v3 §2 的 `AgentMessage`，缺省 = 本条不产出消息）。
+   * 本条消息归一出来的**消息草稿**（`AgentMessage`，缺省 = 本条不产出消息）。
    * 合并、块序号分配与 `messageId` 由骨架的合并器统一做（`message.ts`），各家只填信封字段与块。
    * 与 `drafts`（行级事件）**并行**输出：事件是行级审计与 SSE 的载体，消息是内容级视图的载体。
    */
   messages?: MessageDraft[];
   /**
-   * 本条消息归一出来的**子任务行**（spec v3 §2.6）。同一身份会多次投递（派发 / 收场），
+   * 本条消息归一出来的**子任务行**。同一身份会多次投递（派发 / 收场），
    * 后者是完整快照；缺省 = 本条不改变任何子任务状态。
    */
   subagents?: SubagentRecord[];
@@ -347,9 +345,9 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   const logger = createLogger(`agents/${hooks.kind}`);
 
   /**
-   * 受保护的事件发射（评审 F1）：`onEvent` 是**消费方**的代码，它会抛——p4 的
-   * `publishRowEvent → appendEvent` 按契约 R26 在写侧 schema 不过时抛 `ServiceError`，磁盘写失败同样抛。
-   * 而本函数的承诺是「永不抛、所有失败折进 AgentRunResult.error」，且 p4 的编排层**不给每一行套
+   * 受保护的事件发射：`onEvent` 是**消费方**的代码，它会抛——
+   * `publishRowEvent → appendEvent` 在写侧 schema 不过时抛 `ServiceError`，磁盘写失败同样抛。
+   * 而本函数的承诺是「永不抛、所有失败折进 AgentRunResult.error」，且编排层**不给每一行套
    * try/catch**（正因 run() 承诺不抛）。裸调 `emitter.emit` 一旦被消费方抛错，后果按位置分两种：
    *  - 循环内：异常被下面的 catch 归因成 `AGENT_FAILED`，把「日志写盘失败」误报成「适配器运行失败」；
    * 循环外（释放路径的 `onGraceExceeded` 尤其）：`finally` 里的 `await triggerRelease()` 抛出 ⇒
@@ -357,7 +355,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    * 因此**本文件里全部 6 个发射点**都走这里（启动前中止 / 第二段兜底 / 循环内 drafts / 循环内 usage /
    * canceled 摘要 / error 事件），`emit.ts` 的裸调只允许出现在这个 `try` 里。
    * 注意这是**约定 + 用例**层面的保证，不是类型层面的：`(draft) => void` 拦不住调用方传入一个未包装的
-   * 闭包（复评的新洞 NEW-2 就是这么造出存活变异体的），所以每个调用点都得有回归钉。
+   * 闭包，所以每个调用点都得有回归钉。
    * 必须记 `logger.error`：`release.ts` 的对应修复刻意吞掉 `onGraceExceeded` 的异常（「可见性次于
    * 一定回收」），这层若不记，这类失败就彻底静默了。
    */
@@ -439,7 +437,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   let tokens: AgentRunResult['tokens'] = null;
   let subagentTokens: UsageTokens | null = null;
   /**
-   * **子智能体那一份**轮次（2026-10-04）：与 `subagentTokens` 同一条搬运规则（见两个接口的注释）。
+   * **子智能体那一份**轮次：与 `subagentTokens` 同一条搬运规则（见两个接口的注释）。
    * 初值 `null` = 还没有任何一家交过这一格；骨架**只搬运、不累加**（合计由各家自己算好）。
    */
   let subagentTurns: number | null = null;
@@ -505,7 +503,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   const onAbort = (): void => {
     // 「运行期间观察到过 abort」比结论时刻再读 `signal.aborted` 更贴近「用户要求停止」的语义：
     // 释放阶段最长可等 5 秒（等 dispose），其间用户点「终止」会把一次**已经正常跑完**的运行
-    // 翻转成 canceled（评审 F4）。signal 仍只用来判 canceled，不参与其它原因的推断，口径不变。
+    // 翻转成 canceled。signal 仍只用来判 canceled，不参与其它原因的推断，口径不变。
     signalCanceled = true;
     requestStop();
   };
@@ -552,7 +550,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       for (const record of projection.subagents ?? []) emitSubagent(record);
       if (projection.turns !== null) turns = projection.turns;
       /**
-       * 子智能体那一份：**照原样搬运，骨架不做加法**——合计由各家自己算好（spec §2.3），
+       * 子智能体那一份：**照原样搬运，骨架不做加法**——合计由各家自己算好，
        * 骨架加一次就成了双计。缺省（undefined）= 本条不带这一格（保持原值）；
        * **显式 `null` = 明确没采到 ⇒ 覆盖成 null**（见 `TurnFinalize.subagentTokens` 的注释）。
        */
@@ -574,7 +572,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         } else {
           tokens = projection.tokens;
           /**
-           * 权威值一到，估算**作废**（2026-09-28 复查新增）。两者都是「到目前为止的累计」
+           * 权威值一到，估算**作废**。两者都是「到目前为止的累计」
            * （claude-code 的估算按 `message.id` 归并求和，权威值只在收尾的 `result` 上），
            * 而估算的来源被 SDK 明写为 not final ⇒ 留着它，收尾那条 `usage` 事件就还会显示一个
            * 偏小的假数，正是本仓最忌讳的那种「看起来采到了」。
@@ -583,7 +581,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         }
       }
       /**
-       * 发射门槛是**轮次**，不是「tokens 与轮次同时在」（2026-09-28 用户口径修正）。
+       * 发射门槛是**轮次**，不是「tokens 与轮次同时在」（用户口径）。
        *
        * 改之前：只有本条投影**同时**给出 tokens 与 turns 才发 `usage`。后果实测过——claude-code
        * 的 assistant 消息常常不带完整用量，于是那一轮 60 次模型往返、整轮只发得出一条
@@ -616,7 +614,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       const liveTokensBasis = estimatedTokens !== null ? 'estimated' : 'reported';
       const liveTiming = resolveTiming(state.timing);
       /**
-       * 归属（2026-10-05）：**本条投影自带**，缺省即 `null`——不结转、也不拿 `projection.turns` 顶替
+       * 归属：**本条投影自带**，缺省即 `null`——不结转、也不拿 `projection.turns` 顶替
        * （那是本行累计轮次，与「这一条属于哪一轮」是两把尺子）。
        */
       const liveTurn = projection.turn ?? null;
@@ -659,7 +657,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     }
   } catch (cause) {
     if (stopRequested) {
-      // 停止请求引发的流中断不是失败：结论由 canceled 通路给出（§5.6.6 的判定优先级）
+      // 停止请求引发的流中断不是失败：结论由 canceled 通路给出（判定优先级）
       logger.debug('事件流因停止请求结束', { kind: hooks.kind, error: cause });
     } else {
       const classified = classifyAgentFailure(cause, { kind: hooks.kind, baseUrl: input.route.baseUrl });
@@ -712,10 +710,10 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
      * 收尾投影（可选，见 `TurnStart.finalize`）——**无论正常跑完、失败还是被终止都做**，
      * 并且**在释放之前**（它可能需要本次运行还活着的资源：临时目录、文件句柄）。
      *
-     * 为什么放在 `finally` 而不是正常路径的末尾（2026-10-03 修正）：codex 的消息**只**从收尾这条
+     * 为什么放在 `finally` 而不是正常路径的末尾：codex 的消息**只**从收尾这条
      * 通道出（事件流缺工具真名、结构化入参与 `call_id` 配对键），而它读的
      * `$CODEX_HOME/sessions/rollout-*.jsonl` **是 CLI 边跑边追加的**——跑失败 / 被终止的会话文件里
-     * 同样有内容（真机实测：一条被中断的 codex 行留下 688 KB 会话文件，推理、正文、工具调用俱全）。
+     * 同样有内容（一条被中断的 codex 行可能留下 688 KB 会话文件，推理、正文、工具调用俱全）。
      * 原来只在 `failure === null` 时收尾，代价是「失败的那一行抽屉里永远空着」——
      * 而那正是排障时最需要看的一行。
      *
@@ -882,7 +880,7 @@ function sameTurn(left: UsageTurn | null, right: UsageTurn | null): boolean {
  * 三元组逐字段相同；`null` 只与 `null` 相同（「没采到」→「采到 0」是一次真实变化）。
  *
  * ⚠️ **它比不了 `reasoningOutput`**：入参类型是 `AgentRunResult['tokens']`（只有 `input` / `cached`
- * / `output` 三格）⇒ 结构上取不到那一格。spec §2.4 要求「去重比较必须纳入这一格」，**当前未落地**：
+ * / `output` 三格）⇒ 结构上取不到那一格。去重比较本该纳入这一格，**当前未落地**：
  * 要落地得把判据改成比较事件里的 `UsageTokens`（五格），而不是在这里加字段。
  */
 function sameTrio(
@@ -988,14 +986,14 @@ function exitCodeOf(cause: unknown): number | null {
 }
 
 /**
- * 组装结果。判定优先级固定（§5.6.6 起、2026-09-28 收窄）：signal 已中止 → canceled；其余按实际结果。
+ * 组装结果。判定优先级固定：signal 已中止 → canceled；其余按实际结果。
  * 为什么 canceled 排在最前：终止是唯一能表达「外部要求停止」的输入，故以它为准。
  * **`timed-out` 这一支已经不存在**：执行与评分都不限时间（用户口径），适配器没有内层上限，
  * 编排层也不再起兜底定时器 ⇒ 这一格没有生产者。`AgentExitReason` 与行状态里的 `timed-out`
  * 保留（历史 `run.json` 里还有它，读侧与重试判据都要认）。
- * `exitReason` 与 `error.code` 刻意不同名（§5.6.7）：前者是给编排层的分类信号，后者是写给用户看的归因。
+ * `exitReason` 与 `error.code` 刻意不同名：前者是给编排层的分类信号，后者是写给用户看的归因。
  * 收的是 `emit`（受保护的发射器）而不是 `EventEmitter` 本身：结论摘要与 error 事件也必须走同一个
- * try/catch，否则消费方抛错会让本函数抛，而它正是「永不抛」承诺的最后一道出口（评审 F1）。
+ * try/catch，否则消费方抛错会让本函数抛，而它正是「永不抛」承诺的最后一道出口。
  */
 function assembleResult(input: {
   startedAt: number;

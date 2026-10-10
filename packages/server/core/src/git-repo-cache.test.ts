@@ -35,12 +35,12 @@ describe('ensureCaseCache', () => {
     expect(readFileSync(join(cache, 'a.txt'), 'utf8')).toBe('hello\n');
     // 来源记录（`.aieval-origin.json`）写在 `.git` 里，绝不能出现在工作树：工作树里的文件会被
     // copyWorkspace 复制进行工作区，再被 `git status` 当成「agent 新建的文件」计入三样 diff
-    //（污染评分输入与 p5 的文件树）。故这条 status 必须是干净的。
+    //（污染评分输入与界面的文件树）。故这条 status 必须是干净的。
     expect(git(cache, 'status', '--porcelain').trim()).toBe('');
   });
 
   it('第二次调用不重克隆：缓存目录里的未跟踪文件不被清掉（「不存在才克隆」的回归守卫）', () => {
-    // `commitHash` 缺省（= null）时会 `git fetch` + `reset --hard` 把缓存刷到来源当前的 tip（R28），
+    // `commitHash` 缺省（= null）时会 `git fetch` + `reset --hard` 把缓存刷到来源当前的 tip，
     // 但**不重建**：`reset --hard` 不动未跟踪文件，而重克隆（rmSync + clone）会把它清掉——
     // 这条断言正是「刷新 ≠ 重建」的判据。
     const { dir } = makeRepoWithCommit('aieval-git-src-');
@@ -58,7 +58,7 @@ describe('ensureCaseCache', () => {
     expect(existsSync(join(cache, '.git'))).toBe(true);
   });
 
-  it('来源仓库变了就重克隆：缓存是**某一个**仓库的克隆，换了来源必须重建（R28）', () => {
+  it('来源仓库变了就重克隆：缓存是**某一个**仓库的克隆，换了来源必须重建', () => {
     const a = makeRepoWithCommit('aieval-git-srcA-');
     const cache = join(makeTmp('aieval-ws-'), 'cases', 'c-1', 'cache');
     ensureCaseCache(a.dir, cache, null);
@@ -82,7 +82,7 @@ describe('ensureCaseCache', () => {
     expect(git(cache, 'remote', 'get-url', 'origin').trim()).toBe(realpathSync(b.dir));
   });
 
-  it('commitHash 为 null 时把缓存刷新到来源当前的 tip（不冻结在克隆那一刻），且不重克隆（R28）', () => {
+  it('commitHash 为 null 时把缓存刷新到来源当前的 tip（不冻结在克隆那一刻），且不重克隆', () => {
     const { dir } = makeRepoWithCommit('aieval-git-src-');
     const cache = join(makeTmp('aieval-ws-'), 'cases', 'c-1', 'cache');
     ensureCaseCache(dir, cache, null);
@@ -101,7 +101,7 @@ describe('ensureCaseCache', () => {
     expect(existsSync(join(cache, 'local-marker.txt'))).toBe(true);
   });
 
-  it('来源在缓存建立之后新增的 commit：fetch 一次补齐即可用（不重克隆，R28）', () => {
+  it('来源在缓存建立之后新增的 commit：fetch 一次补齐即可用（不重克隆）', () => {
     const { dir } = makeRepoWithCommit('aieval-git-src-');
     const cache = join(makeTmp('aieval-ws-'), 'cases', 'c-1', 'cache');
     ensureCaseCache(dir, cache, null);
@@ -118,7 +118,7 @@ describe('ensureCaseCache', () => {
     expect(existsSync(join(cache, 'local-marker.txt'))).toBe(true);
   });
 
-  it('请求的 commit 找不到时先 fetch 一次，仍找不到就抛 INVALID_REF 并点名**来源仓库**（R28）', () => {
+  it('请求的 commit 找不到时先 fetch 一次，仍找不到就抛 INVALID_REF 并点名**来源仓库**', () => {
     const { dir } = makeRepoWithCommit('aieval-git-src-');
     const cache = join(makeTmp('aieval-ws-'), 'cases', 'c-1', 'cache');
     ensureCaseCache(dir, cache, null);
@@ -139,7 +139,7 @@ describe('ensureCaseCache', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INVALID_REF');
-    // 消息点名**来源仓库路径**（p2 就是拿它校验 hash 的，行工作区路径会把人指错方向），并说清试过什么。
+    // 消息点名**来源仓库路径**（用例就是拿它校验 hash 的，行工作区路径会把人指错方向），并说清试过什么。
     // 注意比的是 realpath：来源记录与错误文案里的路径都归一成真实路径（同一个仓库的不同写法要判等）
     const source = realpathSync(dir);
     expect((caught as Error).message).toContain(source);
@@ -174,7 +174,7 @@ describe('copyWorkspace', () => {
     expect(existsSync(join(dest, 'a.txt'))).toBe(true);
   });
 
-  it('缓存状态损坏（目录在但没有 .git）时报 INTERNAL：NOT_A_GIT_REPO 留给用户填的仓库路径（spec §10）', () => {
+  it('缓存状态损坏（目录在但没有 .git）时报 INTERNAL：NOT_A_GIT_REPO 留给用户填的仓库路径', () => {
     // srcDir 是**我们自己**建的用例缓存（被手工删了 .git / 克隆中途失败），不是用户在用例里填的仓库路径。
     // 报 NOT_A_GIT_REPO 会让用户去改用例里的仓库路径——方向完全错（该删的是这个缓存目录）。
     const broken = join(makeTmp('aieval-git-broken-'), 'cache');

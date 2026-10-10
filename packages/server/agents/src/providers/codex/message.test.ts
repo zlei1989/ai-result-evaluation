@@ -154,11 +154,11 @@ describe('思考：全文与摘要分档，密文不回落', () => {
   });
 
   /**
-   * 真机序列（2026-10-07 实测，`probe/dumps/v5/codex-appserver-reasoning-*.jsonl`）：
+   * 真机序列（`probe/dumps/v5/codex-appserver-reasoning-*.jsonl`）：
    * `item/started` 的推理条目 `summary` 与 `content` **都是空数组**，随后是几十条
    * `item/reasoning/textDelta`，最后 `item/completed` 给出与增量**逐字相同**的全文。
    *
-   * 这条用例拦的是一个曾经真实发生、且**在产物里一眼可见**的缺陷：`item/started` 落的那一块空快照
+   * 这条用例拦的是一个**在产物里一眼可见**的缺陷：`item/started` 落的那一块空快照
    * 会把槽位 seal，紧随其后的增量全被 `applyBlock` 丢弃（「已 seal + 增量 ⇒ 丢弃」），
    * 而完成通知又因为「逐字相同 ⇒ 不重发」什么都不补 ⇒ 那一块永远停在 `text: null` + `none`，
    * 界面上就是「思考信息没采到」（`messageId: run-codex:N` 的真机产物里 5020/5020 块全是这个形状）。
@@ -213,7 +213,7 @@ describe('工具：命令、文件改动、MCP、计划', () => {
         name: 'exec_command',
         input: { command: 'npm run build', cwd: 'D:/repo' },
         payload: null,
-        // 摘要主体随块给出（2026-10-10）：词表真源是 `activity.ts`，浏览器直接读这一格。
+        // 摘要主体随块给出：词表真源是 `activity.ts`，浏览器直接读这一格。
         // codex 侧**没有** `description` 这一格（协议里真没有）⇒ 走 `run-shell` 族拼法：给命令原文
         summary: 'npm run build',
       },

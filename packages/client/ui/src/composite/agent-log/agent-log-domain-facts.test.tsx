@@ -6,13 +6,13 @@
  *      得了多少分」两格在后；
  *   2. **空数组时整行不出现**：通用消费方没有领域事实时不留一段空 gap；
  *   3. **值整段一枚色档 Tag**（评分那一格）：`tone` → antd 预设色；
- *   4. **`tag` 段按 `tagTone` 上色**（2026-10-07 口径：智能体 `blue` / 模型 `geekblue` /
+ *   4. **`tag` 段按 `tagTone` 上色**（智能体 `blue` / 模型 `geekblue` /
  *      思考强度 `purple`），不给时回落 `blue`；
  *   5. **`insertion` / `deletion` 走 git 惯例的绿 / 红**，且整格**不再套 Tag**（套一枚徽标等于把
  *      这行数字框成一整块，正是要去掉的那个观感）——颜色判据取 antd token，写死字面量就会红；
  *   6. **`hint` / `hintSegments` 照画**（组件能力，产品侧当前不给提示）：tag 段是 Tag、其余文字次要色。
  *
- * 这一行**自占一行**（与事实条那一行分开）是用户 2026-10-07 口径，守卫落在
+ * 这一行**自占一行**（与事实条那一行分开），守卫落在
  * `agent-log-layout.test.tsx`（两行的父子关系），不在这里。
  */
 import { render, screen } from '@testing-library/react';
@@ -78,7 +78,7 @@ describe('AgentLogDomainFacts', () => {
   });
 
   /**
-   * `tag` 段的色档（用户 2026-10-07 口径）：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`。
+   * `tag` 段的色档：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`。
    * 判据落在 **class** 上：`Tag` 的预设色本来就只体现为 class（只有自定义 hex 才走行内 style）。
    * 第三格同时钉**回落**：不给 `tagTone` 的 `tag` 段仍是蓝的（老数据 / 别的消费方不必改）。
    */
@@ -109,7 +109,7 @@ describe('AgentLogDomainFacts', () => {
   });
 
   /**
-   * 改动那一格（2026-10-07 用户口径）：**按 git stat 重排**——文件数次要色 + `+N` 绿 + `−N` 红，
+   * 改动那一格：**按 git stat 重排**——文件数次要色 + `+N` 绿 + `−N` 红，
    * 且**整格没有 Tag**。
    *
    * 颜色判据用**自定义 token**（同 `json-text.test.tsx`）：写死字面量——哪怕是当前默认值——都会红；
@@ -148,8 +148,8 @@ describe('AgentLogDomainFacts', () => {
   });
 
   /**
-   * `hint` / `hintSegments` 的渲染能力（**产品侧当前不给提示**：评分格的「评分模型：…」已按
-   * 2026-10-07 口径删除，见 `apps/web-next/src/log-drawer-state.ts`）。这条钉的是通用件的能力：
+   * `hint` / `hintSegments` 的渲染能力（**产品侧当前不给提示**：评分格的「评分模型：…」不显示，
+   * 见 `apps/web-next/src/log-drawer-state.ts`）。这条钉的是通用件的能力：
    * 数据层给了 `hintSegments` 就按段画，其中 `tag` 段是 Tag；值那一格的色档 Tag 不受影响。
    */
   it('hint / hintSegments 照画：tag 段是 Tag，值那一格的色档 Tag 不受影响', () => {

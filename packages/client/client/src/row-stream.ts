@@ -1,40 +1,40 @@
 /**
  * 一行的实时事件流：`/log` 补历史 + `/stream` 按 seq 续订。
- * 四条口径（spec §8 的 SSE 订阅行为要求）：
- *   1. **首帧先拉 `/log`**：抽屉一打开就要有完整历史，不必等 SSE 从 seq 0 重放一遍；
- *   2. 用 `afterSeq=lastSeq` 接 `/stream`：服务端只推新的；断线重连由浏览器自带，
- *      它会带上 `Last-Event-ID`，服务端优先用它（见路由 Task 10）；
- *   3. **按 seq 去重**：重连、代理重放、以及「/log 与 SSE 在边界上重叠」都会造成重复投递，
- *      不去重日志里就会出现两遍同一行。**服务端的 SSE 本身就会回放** `afterSeq` 之后的历史
- *      （`streamRowEvents` 的第一件事就是回放，见 api/src/run-stream.ts），所以「/log 拿到的」
- *      与「SSE 回放的」天然重叠——两条来源重叠是**有意**的，去重是客户端的职责；
- *   4. 行进入终态就关连接并 **mutate 一次快照**（spec §8 的 SSE 行为要求）：卡片上的分数/耗时/diff 摘要
- *      都来自快照，不刷新就只能等下一次轮询，界面会「明明跑完了还显示执行中」；
- *   5. **同一行重跑 = 新一代**（R27 的客户端缺口）：「重跑」前编排层会 `resetEvents` 删掉
- *      `events.jsonl`（core/event-log.ts 的口径：删文件而不是写空串，下一次 `appendEvent`
- *      的 seq 自然从 1 开始），而抽屉一直开着时本 hook 的 effect 依赖
- *      `[enabled, runId, rowId, mutate]` 一个都没变 ⇒ **连接不会重挂**，新一轮的事件仍从
- *      同一条 SSE 推来。此时上一轮的 `seenRef`（{1,2,3}）会把新一轮的头几条当成重复
- *      **静默丢弃**——用户看到「日志缺头」。所以 seq 回到 1（或整批都比已见的最小 seq 还小）
- *      时按**新一代**处理：清空去重记录与已交付事件，后续事件正常交付。
- *      为什么不选「由 UI 在开始/重跑后强制重挂抽屉」：那要把正确性押在「调用方记得重挂」上，
- *      而**任何别的截断路径**（后端清日志、重连后拿到更小的 seq）仍会静默丢事件——
- *      数据层自己该扛住这件事。
+ * 四条口径（SSE 订阅行为要求）：
+ * 1. **首帧先拉 `/log`**：抽屉一打开就要有完整历史，不必等 SSE 从 seq 0 重放一遍；
+ * 2. 用 `afterSeq=lastSeq` 接 `/stream`：服务端只推新的；断线重连由浏览器自带，
+ * 它会带上 `Last-Event-ID`，服务端优先用它（见路由）；
+ * 3. **按 seq 去重**：重连、代理重放、以及「/log 与 SSE 在边界上重叠」都会造成重复投递，
+ * 不去重日志里就会出现两遍同一行。**服务端的 SSE 本身就会回放**`afterSeq` 之后的历史
+ * （`streamRowEvents` 的第一件事就是回放，见 api/src/run-stream.ts），所以「/log 拿到的」
+ * 与「SSE 回放的」天然重叠——两条来源重叠是**有意**的，去重是客户端的职责；
+ * 4. 行进入终态就关连接并 **mutate 一次快照**（SSE 行为要求）：卡片上的分数/耗时/diff 摘要
+ * 都来自快照，不刷新就只能等下一次轮询，界面会「明明跑完了还显示执行中」；
+ * 5. **同一行重跑 = 新一代**：「重跑」前编排层会 `resetEvents` 删掉
+ * `events.jsonl`（core/event-log.ts 的口径：删文件而不是写空串，下一次 `appendEvent`
+ * 的 seq 自然从 1 开始），而抽屉一直开着时本 hook 的 effect 依赖
+ * `[enabled, runId, rowId, mutate]` 一个都没变 ⇒ **连接不会重挂**，新一轮的事件仍从
+ * 同一条 SSE 推来。此时上一轮的 `seenRef`会把新一轮的头几条当成重复
+ * **静默丢弃**——用户看到「日志缺头」。所以 seq 回到 1（或整批都比已见的最小 seq 还小）
+ * 时按**新一代**处理：清空去重记录与已交付事件，后续事件正常交付。
+ * 为什么不选「由 UI 在开始/重跑后强制重挂抽屉」：那要把正确性押在「调用方记得重挂」上，
+ * 而**任何别的截断路径**（后端清日志、重连后拿到更小的 seq）仍会静默丢事件——
+ * 数据层自己该扛住这件事。
  *
- * 实现约定（**R38 ① 的投递契约**，p5 阶段评审 C1 的根因）：
- *   · `onopen` 用属性赋值；
- *   · **事件帧一律按事件名订阅**：api 的 `toFrame` 发的是 SSE **具名**事件
- *     （`packages/server/api/src/run-stream.ts` 的 `event: <type>`），而规范规定
- *     `EventSource.onmessage` **只收默认（无名）事件** ⇒ 只绑 `onmessage` 等于**零交付**
- *     （八种事件在真实浏览器里一个接收者都没有；历史靠 `/log`、终态靠轮询兜底，
- *     症状只表现为「实时通道没有」，因此曾长期不被发现）。
- *     类型清单取 contracts 的 `AGENT_EVENT_TYPES`（**不抄第二份**），逐个 `addEventListener`；
- *     `onmessage` 保留为无名帧的兜底（服务端若不发 `event:` 行也照样能用）；
- *   · **`error` 是唯一的例外，但它不再是「不交付」**（终审 H4）：这个类型名在 `EventSource` 上
- *     既是内置的连接失败事件、又是 `AgentEvent` 的合法类型，两个来源都落在 `error` 监听位上。
- *     故它不进 `addEventListener` 表，而是由 `onerror` 按帧形状分流——**带 `data` 的是服务端帧、
- *     走正常解析与 merge；不带 `data` 的才是连接故障**。详见 `connect()` 里 `onerror` 的注释。
- *   · `stop()` 里**移除**监听器：终态关流与卸载都要摘干净，否则替身/浏览器上都留着悬挂引用。
+ * 实现约定（* ① 的投递契约**， 的根因）：
+ * · `onopen` 用属性赋值；
+ * · **事件帧一律按事件名订阅**：api 的 `toFrame` 发的是 SSE **具名**事件
+ * （`packages/server/api/src/run-stream.ts` 的 `event: <type>`），而规范规定
+ * `EventSource.onmessage` **只收默认事件**⇒ 只绑 `onmessage` 等于**零交付**
+ * （八种事件在真实浏览器里一个接收者都没有；历史靠 `/log`、终态靠轮询兜底，
+ * 症状只表现为「实时通道没有」，因此曾长期不被发现）。
+ * 类型清单取 contracts 的 `AGENT_EVENT_TYPES`，逐个 `addEventListener`；
+ * `onmessage` 保留为无名帧的兜底（服务端若不发 `event:` 行也照样能用）；
+ * · **`error` 是唯一的例外，但它不再是「不交付」**：这个类型名在 `EventSource` 上
+ * 既是内置的连接失败事件、又是 `AgentEvent` 的合法类型，两个来源都落在 `error` 监听位上。
+ * 故它不进 `addEventListener` 表，而是由 `onerror` 按帧形状分流——**带 `data` 的是服务端帧、
+ * 走正常解析与 merge；不带 `data` 的才是连接故障**。详见 `connect` 里 `onerror` 的注释。
+ * · `stop` 里**移除**监听器：终态关流与卸载都要摘干净，否则替身/浏览器上都留着悬挂引用。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSWRConfig } from 'swr';
@@ -201,18 +201,18 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
 
       /**
        * `error` 这个类型名在 `EventSource` 上有**两个来源**，必须按帧的形状分开处置
-       * （终审 H4：原先无条件当连接故障，服务端发的具名 `error` 事件被整个丢掉，
+       * （：原先无条件当连接故障，服务端发的具名 `error` 事件被整个丢掉，
        * 而真实浏览器里每个失败行还会多显示一句假的中断提示）：
        *
-       *   - **服务端发的具名 `error` 帧**（`event: error` + `data: {...}`）：api 的 `toFrame`
-       *     （`packages/server/api/src/run-stream.ts`）对事件类型**没有任何过滤**，而
-       *     `type: 'error'` 的 `AgentEvent` 确实会被发布（编排层的 `settleStopped`/`settleFailed`、
-       *     agents 侧 `turn.ts` via `emit.ts`）⇒ **必然成帧**。它按 SSE 规范派发到 `EventSource`
-       *     的 `error` 监听位，而 `onerror` **就是** `error` 的 event handler ⇒ 走到这里。
-       *     判据用 `typeof data === 'string'`：只有带 `data` 的 `MessageEvent` 才是帧
-       *     （`FakeMessageEvent.data` 与真实 `MessageEvent.data` 都是字符串）。
-       *   - **连接故障**：浏览器派发的是**没有 `data`** 的普通 `Event` ⇒ 才按「会自动重连」处置。
-       *     这一支保留原因为什么重要：把它换成「收到无法解析的事件帧」会让真正的原因消失。
+       * - **服务端发的具名 `error` 帧**（`event: error` + `data: {...}`）：api 的 `toFrame`
+       * （`packages/server/api/src/run-stream.ts`）对事件类型**没有任何过滤**，而
+       * `type: 'error'` 的 `AgentEvent` 确实会被发布（编排层的 `settleStopped`/`settleFailed`、
+       * agents 侧 `turn.ts` via `emit.ts`） ⇒ **必然成帧**。它按 SSE 规范派发到 `EventSource`
+       * 的 `error` 监听位，而 `onerror` **就是**`error` 的 event handler ⇒ 走到这里。
+       * 判据用 `typeof data === 'string'`：只有带 `data` 的 `MessageEvent` 才是帧
+       * （`FakeMessageEvent.data` 与真实 `MessageEvent.data` 都是字符串）。
+       * - **连接故障**：浏览器派发的是**没有 `data`**的普通 `Event` ⇒ 才按「会自动重连」处置。
+       * 这一支保留原因为什么重要：把它换成「收到无法解析的事件帧」会让真正的原因消失。
        */
       next.onerror = (event: Event) => {
         const data = (event as MessageEvent).data;
@@ -225,7 +225,7 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
         setError(new Error('实时日志连接中断：浏览器会自动重连，已收到的日志不受影响'));
       };
 
-      // R38 ①：api 发的是具名事件（`event: <type>`），必须按事件名订阅。
+      //  ①：api 发的是具名事件（`event: <type>`），必须按事件名订阅。
       // 类型清单取 contracts，不抄第二份——加一种事件类型时这里自动跟随。
       // **`error` 仍不进这张表**：它的 `onerror` 属性已经被上面那个「按帧形状分流」的处理器占用，
       // 再 `addEventListener('error')` 会因为替身/浏览器把两条路都触发而**双投一帧**；

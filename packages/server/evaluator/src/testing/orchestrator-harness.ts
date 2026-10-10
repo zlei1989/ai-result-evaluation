@@ -1,18 +1,18 @@
 // @vitest-environment node
 /**
- * 单行执行（spec §5.5 的八步）与失败面。
+ * 单行执行与失败面。
  *
  * 智能体用假注册表（`vi.mock('@aieval/agents')`）：编排层对智能体的**唯一**入口就是
  * `getProvider(kind).run()`，换掉这个模块边界就完全控制了「什么时候开始、什么时候结束、
  * 是否响应终止、返回什么计量」，且不会加载任何厂商 SDK（A6 的懒加载根本不会被触发）。
  * 为什么不选 `setAgentRuntimeForTesting({ sdkModule })`：那条路注入的是**厂商 SDK 的假模块**，
- * 真正的执行仍要穿过 p3 三家适配器的实现与事件归一化——测出来的是「p3 的适配器 + 本层编排」
+ * 真正的执行仍要穿过三家适配器的实现与事件归一化——测出来的是「适配器 + 本层编排」
  * 的耦合体，超时与终止的时序还要绕过适配器自己的释放窗口，用例会又慢又脆。
- * 适配器本身由 p3 按 §5.6.8 用假实现单独测；本层把适配器当作已被验证过的边界。
+ * 适配器本身由假实现单独测；本层把适配器当作已被验证过的边界。
  *
  * 评分用假 judgeRow（`vi.mock('./judge')`）：本文件测的是编排时序与落盘，
- * 评分器的行为有它自己的测试（Task 3 / Task 4）。
- * 工作区用**真实** git 小仓库：F6「每行独立工作区」必须建立在真实目录上。
+ * 评分器的行为有它自己的测试。
+ * 工作区用**真实** git 小仓库：「每行独立工作区」必须建立在真实目录上。
  *
  * 每个用例显式放宽到 `TEST_TIMEOUT_MS`：真仓库的 `git clone` + 目录复制 + `checkout` 在本机
  * 实测单个用例 2–7 秒（Windows 上 git 进程启动 + 杀软实时扫描），而 vitest 的默认上限是 5 秒——
@@ -25,7 +25,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from 'vitest';
-import type { AgentKind, AgentMessage, EvalRun, Provider, SubagentRecord } from '@aieval/contracts';
+import type { AgentKind, AgentMessage, EvalRun, McpServers, Provider, SubagentRecord } from '@aieval/contracts';
 import {
   caseCacheDir,
   foldMessages,
@@ -253,17 +253,22 @@ export function seedRunnableRun(options: {
   commitHash?: string | null;
   /** 用例 / 轮快照里的分支（`null` = 远端默认分支；本地来源不填） */
   repoBranch?: string | null;
-  /** 这一轮是否由评分智能体评分（`EvalRun.useAgentJudge`，Task 4 的第 7 步分支） */
+  /** 这一轮是否由评分智能体评分（`EvalRun.useAgentJudge`，第 7 步的分支） */
   useAgentJudge?: boolean;
   /**
    * 全局默认评分智能体（`settings.defaultJudgeAgent`）。
    * `undefined` = 本用例不关心（与 `null` 同路：不配）；显式 `null` 是「开关打开了但没配评分智能体」
    * 那个失败面要用到的取值。给了非 null 的 kind 时，`defaultJudge` 会自动指向一条 **anthropic**
-   * 供应商——`claude-code` 只吃 anthropic（`dsh` 2026-09-30 起两条都吃，见契约 §11 的 R37 收口），
+   * 供应商——`claude-code` 只吃 anthropic（`dsh` 两条都吃），
    * 配错协议会让那几条以「协议不匹配」变红，而那是 `judgeAgentKind: 'codex'` 才要测的东西。
    * 评分模型那一对刻意留在 anthropic 上：这样「评分智能体协议不匹配」这条才有靶子。
    */
   judgeAgentKind?: AgentKind | null;
+  /**
+   * 设置页那份 **MCP 条目**：写进临时配置的 `settings.mcpServers`。
+   * 不填 = 用契约的预置两项（与 `seedConfig` 同口径）——要测「一台都没配」的用例显式传 `{}`。
+   */
+  mcpServers?: McpServers;
 }): { run: EvalRun; provider: Provider } {
   // 夹具仓库走模板副本（见 repoTemplate 的说明）：真仓库、独立路径、内容与模板逐字节相同，
   // 因此 commit 也相同 —— 省下每次 7 个 git 进程。
@@ -307,6 +312,7 @@ export function seedRunnableRun(options: {
     defaultJudgeAgent: judgeAgent,
     // 评分模型只有这一个来源（用例级覆盖已删除）：`withJudge: false` 造的就是「没配全局默认」那个失败面
     defaultJudge: options.withJudge === false ? null : { providerId: judgeProvider.id, modelId: 'judge-model' },
+    ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
   });
   const rows = Array.from({ length: options.rowCount }, () =>
     makeRowFixture({
@@ -349,7 +355,7 @@ export function judgeReplyJson(achieved = true): string {
 
 /**
  * 「这一分是哪把尺子打的」的接缝守卫：`resolveJudgeRoute()` 解析出的路由与编排层记在行上的
- * `judgeProviderId` 必须指向**同一家供应商**（`TextRoute` 按契约 §11 R14 不带 providerId，
+ * `judgeProviderId` 必须指向**同一家供应商**（`TextRoute` 不带 providerId，
  * 两者只能靠守卫钉住不漂移）。
  * 契约依据：`docs/architecture/contracts.md`（契约体系）。
  *
@@ -416,9 +422,9 @@ export function rowRecordsOf(runId: string, rowId: string): { messages: AgentMes
 
 
 /* ===================================================================================================
- * 远端来源的行准备（Task 10）
+ * 远端来源的行准备
  *
- * 编排层在调用 core 之前先把「远端 URL」物化成**本地镜像路径 + 具体 40 位 hash**（RG7）：
+ * 编排层在调用 core 之前先把「远端 URL」物化成**本地镜像路径 + 具体 40 位 hash**：
  * `prepareRowWorkspace` / `ensureCaseCache` / `checkoutRow` / `collectDiff` 一行都不改，
  * 它们只认本地路径。这一组用例钉的就是这个物化结果，而不是某一段 git 命令的写法。
  * =================================================================================================== */
@@ -460,7 +466,7 @@ export function makeBareRemote(name: string): { url: string; commit: string; bar
 
 /**
  * 该轮用例缓存的**来源记录**里记着的来源路径（`ensureCaseCache` 落盘）。
- * 它是「core 到底把什么当成了来源」的唯一磁盘证据：镜像路径 = 走了 RG7 的物化，URL = 没走。
+ * 它是「core 到底把什么当成了来源」的唯一磁盘证据：镜像路径 = 走了物化，URL = 没走。
  */
 export function cacheOriginOf(caseId: string): string {
   const file = join(home.workspaceRoot, 'cases', caseId, 'cache', '.git', 'aieval-origin.json');

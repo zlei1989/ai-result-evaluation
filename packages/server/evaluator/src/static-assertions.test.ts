@@ -1,30 +1,30 @@
 // @vitest-environment node
 /**
- * 源码级不变量：T5 的「**每次状态变更由同一个函数同时写快照与追加事件**」（评审 C1）。
+ * 源码级不变量：**每次状态变更由同一个函数同时写快照与追加事件**。
  *
  * 为什么这条不变式只能扫源码：违反它的实现与正确的实现在**运行期可观测结果上完全一样**。
- * 评审自设计的时序变异体——把第 7 步的 `setRowStatus(…, 'judging')` 拆成
+ * 违反它的写法——把第 7 步的 `setRowStatus(…, 'judging')` 拆成
  * `patchRow({status:'judging'})` → `await yieldToEventLoop()` → `publishRowEvent({type:'status'})`——
- * 终态与事件序列一字不变，整套 14 个用例**全绿存活**；唯一的差别在那个 `setImmediate` 窗口里：
+ * 终态与事件序列一字不变，整套行为用例**全绿**；唯一的差别在那个 `setImmediate` 窗口里：
  * `run.json` 已说 `judging` 而 `events.jsonl` 里还没有这条状态事件，并发读会看到「快照比日志超前一步」。
  *
  * 所以判据做成**结构式断言**（确定性、不受调度影响）。行为式的并发观察者为什么不选：窗口的开合由
- * `setImmediate` 与微任务的相对顺序决定——变异体的 `await yieldToEventLoop()` 的续体就在它自己的
+ * `setImmediate` 与微任务的相对顺序决定——那个 `await yieldToEventLoop()` 的续体就在它自己的
  * `setImmediate` 回调之后立刻以微任务运行，而观察者的 `setImmediate` 回调排在后面，**很容易整个错过窗口**
  * （观察到「一致」却什么都没证明）。仓内已有同类手法：agents 包的 `static-assertions.test.ts`。
  *
 /**
- * 扫描面是 evaluator 包自己的 `src/**`（**排除 `*.test.ts`**）：本文件里的正则字面量与变异体样本
+ * 扫描面是 evaluator 包自己的 `src/**`（**排除 `*.test.ts`**）：本文件里的正则字面量与样本
  * 会把规则自己判违规（与 agents 包同一条理由）。注释先被剥掉——文档里正好在讨论
  * 「直接 `row.status = …` 再 `saveRun`」这种写法，不去注释就会把说明判成违规。
  *
- * **T6 的扩展（窄口，判据没放松）**：轮级状态机需要写 `EvalRun.status` / `startedAt` / `finishedAt`，
+ * **轮级的扩展（窄口，判据没放松）**：轮级状态机需要写 `EvalRun.status` / `startedAt` / `finishedAt`，
  * 而它不可能走 `mutateRow`（那个函数的定位参数是 `(runId, rowId)`，轮级收尾发生在所有行都结束之后，
  * 没有「当事行」）。于是允许**第二个具名写入点** `setRunStatus`，它只碰轮级的三个字段。
  * 这不是给行级开口子：① 判据仍是「`saveRun(` 只出现在两个具名函数体内」，其余任何位置照旧违规；
  * ② `setRunStatus` 里没有状态事件、也不会写行字段（要写行字段必须经过 `Object.assign(row, …)`，
  * 那条判据的允许集合没变）；③ 样本表里新增了「把轮级写入点搬到别处」的反例，证明这个窄口不是放行。
- * 轮级为什么不需要「同时追加事件」：契约 §2.6 / spec §7.4 的 `AgentEvent` 八个成员全是行级的，
+ * 轮级为什么不需要「同时追加事件」：`AgentEvent` 八个成员全是行级的，
  * 事件日志也按行落盘，轮级状态在协议里没有对应的事件类型可写。
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -109,7 +109,7 @@ function functionRange(source: string, name: string): [number, number] {
  *   ① 状态事件（`{ type: 'status'`）只出现在 `setRowStatus` 里，且至少有一处；
  *   ② 行字段写入（`Object.assign(row, …)`）只出现在 `setRowStatus` / `patchRow` 里，且至少有一处；
  *   ③ 快照落盘（`saveRun(…)` 调用）只出现在 `mutateRow`（**行级**唯一出口）或 `setRunStatus`
- *      （**轮级**唯一出口，T6 追加）里，且至少有一处；
+ *      （**轮级**唯一出口）里，且至少有一处；
  *   ④ 不出现 `.status = …` 的直接赋值；
  *   ⑤ `patchRow` / `mutateRow` 的实参里不出现 `status` 令牌（一次状态变更不许从 patch 侧夹带进来）。
  * ①②③ 的「至少有一处」不是凑数：把写入点整个删掉（例如状态事件不再发布）同样是这条不变式的破坏。
@@ -169,11 +169,11 @@ function readSource(file: string): string {
 /**
  * 判据的样本表：每一条都是「违反不变式的一种写法」，且都是**自包含**的小源码
  * （不依赖真实源码的排版，改真实源码不会让样本表过期）。
- * 第 1 条是评审自设计的存活变异体（把一次状态变更拆成两次写 + 中间让出事件循环）。
+ * 第 1 条把一次状态变更拆成两次写 + 中间让出事件循环。
  */
 const VIOLATION_SAMPLES: ReadonlyArray<readonly [string, string]> = [
   [
-    '把一次状态变更拆成「先写快照 → 让出事件循环 → 再追加事件」（评审 C1 的存活变异体）',
+    '把一次状态变更拆成「先写快照 → 让出事件循环 → 再追加事件」（朴素守卫会漏掉的那种写法）',
     `
 async function runRowAttempt(runId: string, rowId: string): Promise<void> {
   patchRow(runId, rowId, { status: 'judging' });
@@ -299,7 +299,7 @@ function finalizeRun(runId: string): void {
 `,
   ],
   [
-    '在第三个函数里另起一处 saveRun（阶段评审 E5 的形状：`abortRow` 内，既不是 mutateRow 也不是 setRunStatus）',
+    '在第三个函数里另起一处 saveRun（`abortRow` 内，既不是 mutateRow 也不是 setRunStatus）',
     `
 function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
   mutateRow(runId, rowId, (row) => {
@@ -365,7 +365,7 @@ function clearRowScore(runId: string, rowId: string): void {
   ],
 ];
 
-describe('源码级不变量：T5 的状态变更单一写入点（评审 C1）', () => {
+describe('源码级不变量：状态变更单一写入点', () => {
   it('orchestrator.ts 里「写快照 + 追加状态事件」只由 setRowStatus 成对完成，别处没有第二条状态写路径', () => {
     // 为什么这条守卫必须存在：把一次状态变更拆成两次写，最终状态与事件序列一字不差（14 个用例全绿），
     // 但 run.json 与 events.jsonl 之间会出现「快照比日志超前一步」的真实窗口——并发读看到状态对不上。
@@ -400,18 +400,18 @@ describe('源码级不变量：T5 的状态变更单一写入点（评审 C1）'
   });
 
   /**
-   * R29 的守卫（终审 §2-M7 点名它「有落点但无守卫」）。
+   * 这条守卫补的是「有落点但无守卫」那一格。
    *
-   * R29 的裁决是「**p4 的编排层不再单独调 `ensureCaseCache`**」——用例缓存的预热归 `core/workspace.ts`
-   * 的 `prepareRowWorkspace`（唯一的 `ensureCaseCache` 调用点）。终审复核的实测事实是：
+   * **编排层不再单独调 `ensureCaseCache`**——用例缓存的预热归 `core/workspace.ts`
+   * 的 `prepareRowWorkspace`（唯一的 `ensureCaseCache` 调用点）。事实是：
    * `evaluator/src` 里 `ensureCaseCache` **只出现在 `orchestrator.ts:20` 的注释里**，
    * 没有任何测试断言「它不被调用」⇒ 将来有人在编排层补一句预热（看似优化、实则多一份缓存真源）
    * 不会有任何测试变红。
    *
    * 判据刻意扫**去掉注释后的源码**：注释里正当地讨论着这件事（`orchestrator.ts` 的文件头），
-   * 不去注释就会把说明判成违规——这也顺带钉住「它只出现在注释里」这个当前事实。
+   * 不去注释就会把说明判成违规——这也同时钉住「它只出现在注释里」这个当前事实。
    */
-  it('编排层不自己预热用例缓存：ensureCaseCache 不出现在任何非测试源码里（R29，注释除外）', () => {
+  it('编排层不自己预热用例缓存：ensureCaseCache 不出现在任何非测试源码里（注释除外）', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       const text = stripComments(readSource(file));
@@ -449,13 +449,9 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
   it('拆分出的文件条数与登记一致（新增文件必须回到这里更新清单）', () => {
     // 这是一条**绊线**：它不校验什么业务规则，只保证「有人新增一个拆分文件」时这里先红一次，
     // 逼作者回来看一眼（新增的那个文件有没有照抄三条 `vi.mock`）。
-    // 15：第四轮 13 个，第五轮又把 `orchestrator-execution-mode` 与 `orchestrator-retry` 各按用例切一半。
-    // 16：第六轮加了 `orchestrator-single-row`（单行执行的范围守卫，2026-09-29 用户口径）。
-    // 18（2026-10-02）：把上面那两个「各切一半」的文件再拆一层，得到
-    // `orchestrator-execution-mode-b` 与 `orchestrator-retry-b`——两个新文件都照抄了三条 `vi.mock`
-    // （下一条用例覆盖这一点），这里只补计数。**注意本清单不含 `orchestrator-live.test.ts`**
-    // （它是拆分前就有的另一个文件，见上面的过滤器）。
-    expect(splitFiles).toHaveLength(17);
+    // 18 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
+    // 新增一个拆分文件就要把这个数加一——下一条用例会检查它有没有照抄三条 `vi.mock`。
+    expect(splitFiles).toHaveLength(18);
   });
 
   it('每个文件都自己注册了三条 mock', () => {
@@ -468,7 +464,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
 });
 
 /**
- * **工厂动态 import 的闭包里，不得存在对「被 mock 的项目模块」的运行时边**（2026-10-06）。
+ * **工厂动态 import 的闭包里，不得存在对「被 mock 的项目模块」的运行时边**。
  *
  * 为什么必须有这条守卫：`vi.mock('@aieval/agents', async () => (await import('./testing/orchestrator-seams')).agentsMock())`
  * 这类工厂在**收集阶段**就要把目标模块求值出来，于是「工厂 → seams → fixtures → **正在求值中**的
@@ -481,7 +477,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
  *     在那条守卫下全绿，却一个用例都跑不了）；
  *   · 环的形状是「A 的工厂 → B → C → A」，任何**单文件**的文本里都看不到它。
  *
- * 判据分三步（v3 spec §9.1）：
+ * 判据分三步：
  *   ① MOCKED  ← 一张**登记表**（`MOCKED_MODULES`）：所有被 mock 的**项目模块**。`node:` 内建
  *      **刻意不入表**——`run-delete.test.ts:32` / `run-store.test.ts:21` mock 了 `node:fs`，而
  *      `fixtures.ts:11` 必须能 import 它（建临时家目录），把内建纳入判据会让守卫**落地即红**，
@@ -496,11 +492,11 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
  * ⇒ 把整个目录纳入，守卫**落地那一刻就是红的**，而那不是本缺陷（假红会诱使人削弱断言 —— 这正是
  * 本仓反复登记的教训）。
  *
- * 已知边界（如实登记，不许当成守卫失效，v3 spec §9.1）：拼字符串的 `require`、
+ * 已知边界（如实登记，不许当成守卫失效）：拼字符串的 `require`、
  * `import(变量)` 这类推导不出来的形态（工厂目标的那一半已由 ② 判红兜住）、以及下面显式放行的
  * `vi.importActual`。
  *
- * ⚠️ **还有一条盲区：工厂体写成静态 import 时守卫完全看不见**（2026-10-07 终审要求登记在此）：
+ * ⚠️ **还有一条盲区：工厂体写成静态 import 时守卫完全看不见**：
  * 若把 mock 写成 `vi.mock('@aieval/agents', seams.agentsMock)` 这种**标识符**形式（工厂体来自
  * 文件顶部的静态 import，而不是内联的 `async () => (await import('…')).agentsMock()`），
  * ② 就取不到任何 `import('<字面量>')` ⇒ **ROOTS 为空 ⇒ 整条判据静默放行**（不报错、不红）。
@@ -516,7 +512,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
 
 /** 一条「运行时触碰了某个模块」的记录；`kind` 决定它是否被放行 */
 interface RuntimeTouch {
-  /** `import-actual` 是 `vi.importActual(…)`：mock 系统的旁路 API，**显式放行**（spec §4.4） */
+  /** `import-actual` 是 `vi.importActual(…)`：mock 系统的旁路 API，**显式放行** */
   kind: 'static-import' | 'dynamic-import' | 'require' | 'import-actual';
   /** 说明符原文（未归一化）；非字面量目标记成 `<非字面量>` */
   specifier: string;
@@ -567,9 +563,9 @@ function moduleKey(fromFile: string, specifier: string): string {
 }
 
 /**
- * 顶层语句是不是一条**运行时**模块引用（spec §4.2 的逐形态表）。
+ * 顶层语句是不是一条**运行时**模块引用（逐形态表）。
  *
- * ⚠️ **import 侧只有整条 `import type { … }` 才算非运行时边**（2026-10-07 收窄，评审 Important）：
+ * ⚠️ **import 侧只有整条 `import type { … }` 才算非运行时边**：
  * `verbatimModuleSyntax: true`（`tsconfig.base.json:5`）只擦除 `import type`，而**混合形态**
  * （`import { type A, type B }`、`import { type A }`、`import {}`）会被保留成 `import {} from 'x'`
  * —— **那仍是一次运行时模块请求**。实测（vite@8.3.0 的 SSR transform = vitest 走的同一条管线；
@@ -578,7 +574,7 @@ function moduleKey(fromFile: string, specifier: string): string {
  *   · `import { type A, type B } from '@aieval/agents'` → **1**
  *   · `import { type A } from '@aieval/agents'`         → **1**
  *   · `import {} from '@aieval/agents'`                 → **1**
- * 按「任一成员不带 `type`」判会被它们蒙过去：把混合 import 的最后一个值成员删掉（= T1 修复的
+ * 按「任一成员不带 `type`」判会被它们蒙过去：把混合 import 的最后一个值成员删掉（= 修掉那条环的
  * **逆操作**）会让收集期静默挂死回来，而守卫绿、样本表还反向背书。故 `isTypeOnly` 之外**一律**算。
  */
 function isRuntimeModuleStatement(statement: ts.Statement): boolean {
@@ -597,17 +593,17 @@ function isRuntimeModuleStatement(statement: ts.Statement): boolean {
     if (clause === undefined) return true; // `export * from`
     if (ts.isNamespaceExport(clause)) return true; // `export * as ns from`
     /**
-     * export 侧**与 import 侧不对称，别照着 import 改成「一律算」**（2026-10-07 实测）：
+     * export 侧**与 import 侧不对称，别照着 import 改成「一律算」**：
      * `export { type A, type B } from 'x'` 与 `export type { … } from 'x'` 都被**整条擦除**
      * （`__vite_ssr_import__` **0** 条），而 `export { type A, getProvider } from 'x'` 是 1 条
      * ⇒ 这里保留「任一成员不带 `type`」。改成一律算运行时边会**凭空误报**（将来闭包里出现一条
      * 合法的 `export { type X } from './judge'` 就会假红）。
      */
     /**
-     * ⚠️ **空子句 `export {} from 'x'` 必须单独判红**（2026-10-07 终审收口）：它与 import 侧的
-     * 空子句同理——转译后是 **1 条真请求**（实测 `__vite_ssr_import__` 1 条），而
+     * ⚠️ **空子句 `export {} from 'x'` 必须单独判红**：它与 import 侧的
+     * 空子句同理——转译后是 **1 条真请求**（`__vite_ssr_import__` 1 条），而
      * `elements.some(…)` 对**空数组**恒返回 `false` ⇒ 少了这一行就会把它**静默放行**。
-     * 补之前的状态是「**权威文档判违规、实现判放行**」：spec §5.6.1 A3 与 §5.6.2 的负样本⑪
+     * 补之前的状态是「**权威文档判违规、实现判放行**」
      * 都写明它违规（那个矛盾此前只记在 gitignore 的 ledger 里，不在任何入库文档里）。
      * 对应的负样本是样本表里的 `export {} from '@aieval/agents';`。
      */
@@ -640,8 +636,7 @@ function statementSpecifier(statement: ts.Statement): string | null {
  * （**类型位置**、不是 `CallExpression`）⇒ 天然落在判据之外（这正是正则方案会误报的那个形态）。
  *
  * ⚠️ `vi.importActual(…)` **故意记成一条触碰**（而不是在这里跳过）：放行发生在
- * `mockedRuntimeEdges()` 里 —— 删掉那条放行规则守卫就会红（spec §5.2 的变异 3a：
- * **见过失败才算守卫**）。
+ * `mockedRuntimeEdges()` 里 —— 删掉那条放行规则守卫就会红（那条放行是活代码）。
  */
 function runtimeTouches(file: string, text: string): RuntimeTouch[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -677,11 +672,11 @@ function runtimeTouches(file: string, text: string): RuntimeTouch[] {
 /**
  * 一个文件对**被 mock 的项目模块**的运行时边（`文件:行: 说明符（被 mock 的 登记名）`）。
  *
- * `vi.importActual(…)` 在此**显式放行**（spec §4.4）：它是 mock 系统的旁路 API（读的是**真模块**），
+ * `vi.importActual(…)` 在此**显式放行**：它是 mock 系统的旁路 API（读的是**真模块**），
  * `fixtures.ts:846` 用它让 `acceptsProtocol` / `protocolMismatchMessage` 与真模块同源 ——
  * 那是 `fixtures.ts:831-835` 记录过的那次事故（缺这两个导出 ⇒ evaluator 16 个文件、83 条用例
  * 一起红，报错点离真因很远）的修复。把它算成运行时边 ⇒ 守卫**落地即红**，还会诱使人去拆掉
- * 那次修复。**这条放行是活代码**：删掉它，守卫必须红（spec §5.2 的变异 3a）。
+ * 那次修复。**这条放行是活代码**：删掉它，守卫必须红。
  */
 function mockedRuntimeEdges(file: string, text: string): string[] {
   const edges: string[] = [];
@@ -751,7 +746,7 @@ function viMockCalls(file: string, text: string): MockCall[] {
 interface FactoryImports {
   /** 归一后的目标（相对 `src/`，不带扩展名） */
   targets: string[];
-  /** 非字面量的 `import(…)` 目标：推导不出来就不放行（spec §4.2 ②） */
+  /** 非字面量的 `import(…)` 目标：推导不出来就不放行 */
   unresolved: string[];
 }
 
@@ -801,7 +796,7 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
       for (const call of viMockCalls(file, text)) {
         // ⚠️ `node:` 内建**不入判据**：run-delete.test.ts:32 与 run-store.test.ts:21 mock 了 `node:fs`，
         // 而 fixtures.ts:11 必须能 import 它（建临时家目录）——把内建纳入判据会让守卫**落地即红**，
-        // 且环发生在**项目模块**之间（spec §4.2 ① 的 2026-10-06 控制者裁定）。
+        // 且环发生在**项目模块**之间（控制者裁定）。
         if (!call.specifier.startsWith('node:')) mockedKeys.add(moduleKey(file, call.specifier));
         if (call.factory !== undefined) {
           for (const target of factoryImports(file, text, call.factory).targets) factoryTargets.add(target);
@@ -829,9 +824,9 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
       'import { protocolMismatchMessage } from \'@aieval/agents\';',
       ['import {', '  type A,', '  protocolMismatchMessage,', '} from \'@aieval/agents\';'].join('\n'),
       /**
-       * 下面四条是**混合形态 / 空子句**（2026-10-07 评审 Important 补齐）：`verbatimModuleSyntax`
-       * 下它们转译后**都是真请求**（实测各 1 条 `__vite_ssr_import__`），故必须判红。
-       * 前两条是从正样本挪过来的——它们曾经被断言「不该命中」，等于样本表在**反向背书**那个洞。
+       * 下面四条是**混合形态 / 空子句**：`verbatimModuleSyntax` 下它们转译后**都是真请求**
+       * （各 1 条 `__vite_ssr_import__`），故必须判红。正样本里不能收这两条——那等于样本表在
+       * **反向背书**这个洞。
        */
       ['import {', '  type A,', '  type B,', '} from \'@aieval/agents\';'].join('\n'),
       'import { type A } from \'@aieval/agents\';',
@@ -842,10 +837,10 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
       'export * from \'@aieval/agents\';',
       'export { getProvider } from \'@aieval/agents\';',
       /**
-       * export 侧的**空子句**（2026-10-07 终审收口）：转译后是 **1 条真请求**，而
+       * export 侧的**空子句**：转译后是 **1 条真请求**，而
        * `elements.some(…)` 对空数组恒 false ⇒ 它是「文档判违规、实现判放行」的那个矛盾点。
        * 这条样本就是那条 `if (clause.elements.length === 0) return true;` 的**唯一**覆盖：
-       * 把那一行改回「不认空子句」时，**本样本必须红**（变异验证）。
+       * 实现若不认空子句，**本样本必须红**。
        */
       'export {} from \'@aieval/agents\';',
       'import a = require(\'@aieval/agents\');',
@@ -872,8 +867,8 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
 });
 
 /**
- * A1 + A2 的**可度量收益**（2026-10-07）：编排层不再预读 agents 的能力表——既不决定「给不给结构化输出」
- * （A1），也不决定「跑动期的用量要不要回写快照」（A2 换成了事件自带的 `tokensBasis`）。
+ * **可度量收益**：编排层不再预读 agents 的能力表——既不决定「给不给结构化输出」
+ * （结构化输出），也不决定「跑动期的用量要不要回写快照」（后者由事件自带的 `tokensBasis` 说明）。
  *
  * 为什么必须有这条守卫：删掉那两处读取之后，**运行期没有任何可观测差异**——`turn.ts` 的骨架照样
  * 按能力降级、`applied` 照样如实报、估算的 tokens 照样不进快照、行照样跑完。于是「能力判定真的收进
@@ -884,16 +879,90 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
  * 判据扫**去掉注释后的源码**：`runJudgeStage` 里正当地讨论着这件事（「包外不再预读 `capability`」），
  * 不去注释就会把说明判成违规。
  *
- * 判据的范围（A2 起）：**整条路径出现 0 次**。A1 落地时 `liveUsage` 那一处还得留着（它是 A2 的收口
- * 对象），当时只能窄成 `metadata.capability.structuredOutput`；A2 删掉它之后没有理由再窄——
- * 窄判据会漏掉「将来有人从能力表里顺手再读一格」，而 spec §1.2 要的正是那 2 → 0。
+ * 判据的范围：**整条路径出现 0 次**。`liveUsage` 那一处曾必须留着（它要靠
+ * `metadata.capability.structuredOutput` 收口），而那一格已由事件自带，没有理由再窄——
+ * 窄判据会漏掉「将来有人从能力表里顺手再读一格」，而那 2 → 0 正是要的结果。
  */
-describe('orchestrator 不再预读 agents 能力表（A1 + A2 的可度量收益）', () => {
+describe('orchestrator 不再预读 agents 能力表（可度量收益）', () => {
   it('能力格在编排层出现 0 次；acceptsProtocol 仍在', () => {
     const source = stripComments(readSource(ORCHESTRATOR));
     expect(source).not.toContain('metadata.capability');
     // 反向钉：协议复检**不能**被顺手删掉——它也是注册表查询，但它是「这一家能不能驱动这个模型」的
     // 判定，与 A1 无关（删掉它，评分智能体与评分模型不匹配就会变成一次难解释的运行期失败）。
     expect(source).toContain('acceptsProtocol');
+  });
+});
+
+/** 整包非测试源码里，模式命中的位置（`文件:行号`，行号是去掉注释后仍与人肉打开时的行号一致） */
+function sourceHits(pattern: RegExp): string[] {
+  const hits: string[] = [];
+  for (const file of sourceFiles()) {
+    const text = stripComments(readSource(file));
+    for (const index of occurrences(text, pattern)) hits.push(`${file}:${lineOf(text, index)}`);
+  }
+  return hits;
+}
+
+/** 命中位置里的文件名（断言「只有哪一个文件」时用，行号会随排版变，不该写死在断言里） */
+function filesOf(hits: readonly string[]): string[] {
+  return hits.map((hit) => hit.slice(0, hit.indexOf(':')));
+}
+
+/**
+ * MCP 注入的**单一消费点**。
+ *
+ * 三条都只能扫源码，因为违反它们时**运行期结果一模一样**：
+ *   ① 多一处 `settings.mcpServers` 读点 ⇒ 两次读盘各拿一份快照，行里注入的那台与设置页显示的可能不是
+ *      同一次读盘的结果（并发改配置时才会现形，而且现形在别人的机器上）；
+ *   ② `AgentRunInput.mcpServers` 多填一处（例如评分那一跳）⇒ 类型全过（那一格是可选的），
+ *      表现是「评分智能体也能看见这些工具」，而这正是控制者裁定要禁的；
+ *   ③ evaluator 里出现探活调用 ⇒ 跑一行会顺手连一遍 MCP（明确不做全真探活），
+ *      代价是每行多一次握手 + 一次子进程（stdio 那侧还会真的起 `npx`）。
+ */
+describe('MCP 注入的单一消费点', () => {
+  /** 读配置里那一份 MCP 条目的**唯一**写法（`settings` 是 `loadConfig()` 快照上的那一格） */
+  const SETTINGS_MCP_SERVERS = /\bsettings\.mcpServers\b/g;
+
+  /** 把 MCP 条目解析成「要注入的那一份 + 跳过名单」的那个纯函数（契约层）的**调用点** */
+  const RESOLVE_MCP_SERVERS = /(?<![\w.])resolveMcpServers\(/g;
+
+  /** 注入集的填点：只有 `AgentRunInput.mcpServers` 那一格吃它 */
+  const INJECTABLE_FILL = /mcpServers:\s*mcpPlan\.injectable/g;
+
+  /** 探活三件套：`api/src/mcp.ts` 的入口、core 的 stdio 机制、它的错误类型 */
+  const PROBE_CALLS = /probeMcpServer|probeMcpStdio|McpStdioProbeError|mcp-probe/g;
+
+  it('MCP 配置只从 settings 读：`settings.mcpServers` 整包只有一处（第二处读点就是第二个真源）', () => {
+    const hits = sourceHits(SETTINGS_MCP_SERVERS);
+
+    // 只钉文件名不钉行号：行号会随排版漂，而这条判据问的是「有几处读点、在哪个文件」
+    expect(hits, 'MCP 条目必须只从 loadConfig() 的那一份 settings 快照里取').toHaveLength(1);
+    expect(filesOf(hits), '读点跑到编排层之外了').toEqual([ORCHESTRATOR]);
+    // 反向钉：那一处读的是**同一个函数**要的那一份（读进来却不喂给解析器等于白读）
+    expect(readSource(ORCHESTRATOR)).toContain('resolveMcpServers(settings.mcpServers, process.env)');
+  });
+
+  it('只在候选执行那一处消费：解析与注入集填点各一处，评分路径一个字都不碰', () => {
+    expect(sourceHits(RESOLVE_MCP_SERVERS), '解析 MCP 条目的地方不止候选执行那一处').toHaveLength(1);
+    expect(sourceHits(INJECTABLE_FILL), '注入集被填进了第二个地方（评分 / 别的调用点也吃到了它）').toHaveLength(
+      1,
+    );
+    // 反向钉：观测格那一格照旧在（它不是注入的第二个填点，是「这一行到底装上没有」的记账）
+    expect(readSource(ORCHESTRATOR)).toContain('deriveRowMcpServers(mcpEvidence)');
+
+    // 评分路径（评分智能体这条路：`judge.ts` 选路、`judge-route.ts` 读配置、`text-api.ts` 发请求）
+    // 里一个 MCP 字样都不许有——评分是**文本 API** 调用，没有「给它几台 MCP 服务器」这一格
+    for (const file of ['judge.ts', 'judge-route.ts', 'text-api.ts']) {
+      const text = stripComments(readSource(file));
+      expect(text, `${file} 里出现了 MCP 字样——评分这条路不该认识 MCP`).not.toMatch(
+        /mcpServers|resolveMcpServers|mcpPlan|probeMcp/i,
+      );
+    }
+  });
+
+  it('探活不进入 run 的调用链：evaluator 整包不出现任何探活调用', () => {
+    // 探活是 api 层的独立入口（设置页那两个按钮），跑一行**永远**不该顺手连一遍 MCP：
+    // 违反时类型全过、行照跑，只是每行多一次握手（stdio 那侧还会真的起一个子进程）。
+    expect(sourceHits(PROBE_CALLS), 'evaluator 调了探活——它只能在设置页那两个入口被调').toEqual([]);
   });
 });

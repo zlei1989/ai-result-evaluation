@@ -5,14 +5,14 @@
  * 分隔条的指针捕获、键盘可达、最小/最大夹紧、拖动态光标与 role=separator 语义全由 Splitter 提供，
  * 不自绘。本项目右栏一律用 sidePosition="end"。
  *
- * **双击复位不在其列**（原注释与设计稿 §6.5 都把「双击复位」算作 Splitter 的能力，对 antd 6.6.5 不成立）：
+ * **双击复位不在其列**（「双击复位」常被当成 Splitter 的能力，对 antd 6.6.5 不成立）：
  * antd 6.6.5 的 Splitter 没有内置双击复位，`es/splitter/SplitBar.js:203` 只把双击转给可选的
  * `onDraggerDoubleClick` prop，本组件没有透出它 ⇒ 双击分隔条无任何反应。需要时由调用方自行实现。
  *
  * 已记录的边界：本适配**不支持纵向堆叠**——Splitter 没有等价开关，故改为
  * 「始终保持左右并排 + 夹紧最小宽」。collapseBelow 只作侧栏最小宽使用。
  *
- * 两个已踩过的坑：
+ * 两个坑：
  *   1. styles.dragger 会整个替换 antd 的 dragger 样式，传 width 会把命中带改成 0
  *      （实测三条分隔条宽度全为 0、看不见也拖不到）——两栏间距交给 antd 自带尺寸，不覆盖；
  *   2. 两栏宿主用原生 div 是有意偏离「避免裸写 div」——antd 没有「可滚动的通用盒子」原语，

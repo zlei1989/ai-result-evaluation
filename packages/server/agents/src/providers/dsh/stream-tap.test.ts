@@ -52,8 +52,8 @@ describe('DSH_STREAM_TAP_PLUGIN_SOURCE（插件源码形状）', () => {
     expect(DSH_STREAM_TAP_PLUGIN_SOURCE).toContain(DSH_STREAM_TAP_RELATIVE_PATH);
     // 插件本体落 profile 目录（overlay 的相对名按它解析）
     /**
-     * **落在 configHome 根下**（2026-10-10 实测修正）：overlay 的 `name: "./aieval-stream-tap.mjs"`
-     * 由运行时按 `dshHome` 解析。曾经写在 `profiles/sdk/` 里 ⇒ 插件从未加载、旁路文件恒 0 字节，
+     * **落在 configHome 根下**（实测修正）：overlay 的 `name: "./aieval-stream-tap.mjs"`
+     * 由运行时按 `dshHome` 解析。写在 `profiles/sdk/` 里 ⇒ 插件从未加载、旁路文件恒 0 字节，
      * 而 stderr 只留一句 `1 entry did not activate`（探针 `probe/v3/dsh-tap-truncation.mjs` 变体 B 实证）。
      */
     expect(DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH).toBe('aieval-stream-tap.mjs');

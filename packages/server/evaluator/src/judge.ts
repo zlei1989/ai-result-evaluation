@@ -2,7 +2,7 @@
  * 评分器（**文本评分通路**）：把用例的**评分标准项表格** + 裁剪后的 diff 交给评分模型（纯文本 API），
  * 解析出逐项判定（达成 / 未达成）。另一条通路是智能体评分（`judge-agent.ts`），它复用本文件的解析与收口。
  *
- * 判据（2026-09-29 重构后）：**按评分表逐项取，缺一项即整行失败**。
+ * 判据：**按评分表逐项取，缺一项即整行失败**。
  * 为什么缺项不能算「未达成」：那会让「模型漏答」与「确实没做」在分数上完全同形；
  * 当送分更糟——白送一整项权重，而分数看起来完全正常。
  *
@@ -86,7 +86,7 @@ function stripCodeFence(raw: string): string {
  * 判据停在「布尔 + 这两种语言的两个词」上。
  * 认不出就返回 null（调用方按「这一项的判定不合法」处理）。
  * 这一段清单就是**唯一的受理面**：`judge.test.ts` 的正向表逐词钉住它，改这里必须同时改那里
- * （整支复审 Finding 7 的教训正是「文档写着四个、代码收六个」——两处说法不许再分家）。
+ * （「文档写着四个、代码收六个」就是要防的那种分家）。
  */
 function coerceAchieved(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
@@ -146,7 +146,7 @@ function collectJudgeJudgments(
   }
 
   // 按评分表的引用键**逐个**取。刻意写成 for 循环而不是 map/filter：
-  // 「缺一项就不合格」必须是**一行**可被变异验证的分支（把它改成 continue 就是那个缺陷本身）
+  // 「缺一项就不合格」必须是**一行**可被守卫钉住的分支（把它改成 continue 就是那个缺陷本身）
   const keys = rubricItemKeys(rubric);
   const items = rubric.groups.flatMap((group) => group.items);
   const judgments: RubricJudgment[] = [];
@@ -214,7 +214,7 @@ export function finalizeScore(input: {
   /** 这一分是不是在 schema 约束下拿到的（必填；文本通路传 false，智能体通路取适配器报回的 `applied`） */
   structuredOutput: boolean;
   /**
-   * **评分这一次调用自己**的用量与耗时（必填，2026-10-08）。与 `judgeEffort` / `structuredOutput`
+   * **评分这一次调用自己**的用量与耗时（必填）。与 `judgeEffort` / `structuredOutput`
    * 同一条处置：两条通路各自表一次态，给缺省会让「忘了传下来」与「确实没采到」在数据上同形。
    * `null` = 没采到（**不是 0**）——界面据此显示「用量未采集 / 耗时未采集」。
    * 语义：文本侧是**各轮成功调用之和**（结构修复是额外请求，钱要算进去）与整段的掐表；
@@ -374,7 +374,7 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
   const system = JUDGE_OUTPUT_CONTRACT;
   const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
   /**
-   * 这一分的花销（2026-10-08）：文本通路没有适配器替我们记账，两格都只能在这里采。
+   * 这一分的花销：文本通路没有适配器替我们记账，两格都只能在这里采。
    * 耗时从**进函数就开始掐**：结构修复的每一轮与瞬时重试的退避都算这一次评分的成本，
    * 而「这一行为什么多花了十几秒」正是靠它回答的（口径与 `EvalRow.durationMs` 的掐表那一支同源）。
    * 用量**逐轮累加**：修复是额外的上游调用，只记最后一轮会把一次评分报成半价。

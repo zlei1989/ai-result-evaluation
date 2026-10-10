@@ -6,7 +6,7 @@
  * 厂商差异全部通过「归一草稿」（`MessageDraft`）注入：各家只负责把厂商载荷翻译成草稿，
  * 序号、合并、`chunk` 形态由本模块统一决定。
  *
- * 本模块实现 spec v3 §6 的全部规则：
+ * 本模块实现消息合并的全部规则：
  *   1. **合并键** = `(subagentId ?? 'main', roundTrip, 载体, 块标识)`。
  *      `载体` = 该块所属消息的 `role` 与 `parentCallId`（同一轮里 assistant 消息与工具结果消息
  *      各自从 0 起算块序号，只带块序号会把工具结果盖到正文块上）；
@@ -53,7 +53,7 @@ export type MessageBlockDraft =
   | { phase: 'delta'; identity: BlockIdentity; block: ContentBlock };
 
 /**
- * 一条消息的归一草稿。信封字段由各家按 spec §3.1 的取值路径填写；
+ * 一条消息的归一草稿。信封字段由各家按各自的取值路径填写；
  * `blocks` 的顺序 = 到达顺序（合并器按块标识归位，不按数组下标）。
  */
 export interface MessageDraft {
@@ -181,11 +181,11 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
 }
 
 /**
- * 合并键里除「块标识」外的部分（spec §6.2 的 `载体`）。
+ * 合并键里除「块标识」外的部分（`载体`）。
  * `parentCallId` 参与载体：同一个 roundTrip 里，派发子任务的工具调用消息与它的结果消息各自
  * 从 0 起算块序号，只用 `role` 会把主线程消息与子智能体消息串在一起。
  *
- * **导出**（2026-10-03）：叫 codex 的适配器要在**交出去之前**按合并键比内容（运行期刷新时
+ * **导出**：叫 codex 的适配器要在**交出去之前**按合并键比内容（运行期刷新时
  * 只交变化的那几条，见 `providers/codex/index.ts` 的 `changedMessages`）。
  * 它自己在那边拼一遍 `载体` 会造成**两套合并键**——一旦漂移，去重就会漏（表现为
  * `messages.jsonl` 里同一条逻辑消息出现两份快照），故这里只留一份实现。
@@ -245,7 +245,7 @@ function mergeDelta(current: ContentBlock, incoming: ContentBlock): ContentBlock
       // 增量只带正文时文本档位沿用当前值：`textKind` 是随能力一起声明的事实，不由片段改写
       textKind: incoming.textKind === 'none' ? current.textKind : incoming.textKind,
       /**
-       * 签名**只能保留、不能由增量改写**（2026-10-09）：三家的增量通道都不带签名（claude 的
+       * 签名**只能保留、不能由增量改写**：三家的增量通道都不带签名（claude 的
        * `signature_delta` 按「非渲染增量」表不进通道，codex / dsh 结构上没有），而这一格在契约里
        * 是**必填**（`signature: string | null`，快照路径会给真值）⇒ 合并时必须原样带过去。
        * 注意它**不是**「后到覆盖」那一类：增量到不了这里，写 `incoming.signature ?? current.signature`
@@ -331,13 +331,13 @@ export function thinkingBlockDraft(
  * `input` 传厂商原文（codex 与 dsh 的 `arguments` 是 JSON 字符串，**调用方先解析成对象**再传）；
  * `family` 由 `classifyTool` 按工具名判定，判不出来就是 `null`（消费方走通用渲染）。
  *
- * **族载荷在这一处归一**（2026-10-04）：`payload` 由 `toolPayloadOf(family, input)` 从厂商原文算出
+ * **族载荷在这一处归一**：`payload` 由 `toolPayloadOf(family, input)` 从厂商原文算出
  * （见 `tool-payload.ts`）。放在这个咽喉点而不是各家的 `message.ts` 里，是因为三家的工具调用
  * **全部**流经本函数——每家各写一遍必然漂移，而漂移的症状是「同一族的卡片在某一家上是空的」。
  *
- * **摘要也在这一处生成**（2026-10-10 口径变更）：`summary` 取 `toolCallHint(name, input)`——
+ * **摘要也在这一处生成**：`summary` 取 `toolCallHint(name, input)`——
  * **只有冒号后面那一段**（`Check surefire report summaries`），不带 `调用工具 <名>：` 前缀。
- * 为什么去掉前缀（2026-10-10 用户口径）：这一格有**两个消费方**，而它们对前缀的需求相反——
+ * 为什么去掉前缀（用户口径）：这一格有**两个消费方**，而它们对前缀的需求相反——
  *   · **工具行**（`ToolItemDetail` 的摘要行）把工具名渲染成一个独立元素 ⇒ 带前缀就是同一件事说两遍；
  *   · **活动行**（卡片底部那一行）只有一行、名字必须在句子里 ⇒ 它取 `toolCallSummary(...)`
  *     （同一个词表加前缀），不是把这一格拿去用。
@@ -407,7 +407,7 @@ export function truncate(text: string, max = TOOL_RESULT_MAX_CHARS): { text: str
 }
 
 /**
- * 工具名 → 族（spec §5.2 的映射表）：**表在 `tool-family.ts`**。
+ * 工具名 → 族：**表在 `tool-family.ts`**。
  *
  * 为什么表不在这里：`message.ts` 要用 `toolCallSummary`（`activity.ts`），而 `activity.ts` 要用
  * `classifyTool`（本文件）——表留在任何一边都会造成循环 import。两个消费方都只依赖

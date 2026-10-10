@@ -37,7 +37,7 @@ vi.mock('./run-store', async (importOriginal) => {
 registerOrchestratorHooks();
 
 describe('远端来源的行准备（core 只见本地路径）', { timeout: REMOTE_FIXTURE_TIMEOUT_MS }, () => {
-  it('钉死 commit 时分支不参与解析（§6.7：commit 优先于分支）', async () => {
+  it('钉死 commit 时分支不参与解析（commit 优先于分支）', async () => {
     // 远端要有**两个**提交：钉死第一个、分支指向第二个。两者相同时这条用例没有区分力
     //（「分支赢过 commit」的错误实现会拿到同一个 hash，照样绿）。
     const origin = makeWorkRepo('remote-pinned-work');

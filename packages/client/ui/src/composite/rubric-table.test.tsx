@@ -197,7 +197,7 @@ describe('RubricTable', () => {
   it('改第 2 组的组名与权重时只动第 2 组（组轴也按索引定位，不按对象引用反查）', () => {
     const onChange = vi.fn();
     render(<RubricTable value={sample()} onChange={onChange} />);
-    // 三个此前没有任何用例碰过的测试 id 一并覆盖：组卡片、组名输入框、第 2 组的权重输入框
+    // 三个测试 id 一并覆盖：组卡片、组名输入框、第 2 组的权重输入框
     expect(screen.getByTestId('rubric-group-1')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('rubric-group-name-1'), { target: { value: '二、测试（改过）' } });
     expect((onChange.mock.calls.at(-1)?.[0] as Rubric).groups.map((group) => group.name)).toEqual(['一、生产代码', '二、测试（改过）']);

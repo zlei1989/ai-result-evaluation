@@ -49,7 +49,7 @@ describe('validateRepo（远端来源）', () => {
       mirrorReady: true,
       tip: origin.hashes.main!.slice(0, 7),
     });
-    // 期望值由 core 的 mirrorDir 现算（派发说明允许简化 brief 里 `split('-').at(-1)` 的自指写法）：
+    // 期望值由 core 的 mirrorDir 现算（不必照抄 `split('-').at(-1)` 那种自指写法）：
     // 这样钉住的是「工作区根/remotes/<slug>-<hash>」这个完整身份，而不是只钉 slug 前缀
     expect(info.mirrorPath).toBe(mirrorDir(ws, origin.url));
     expect(info.mirrorFetchedAt).not.toBeNull();
@@ -90,7 +90,7 @@ describe('validateRepo（远端来源）', () => {
     expect(info.repoPath).toBe(origin.url);
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
-  // spec §5 / RG12：校验只读镜像。造一份工作树（甚至行工作区）在这里是错的：
+  // 校验只读镜像。造一份工作树（甚至行工作区）在这里是错的：
   // 镜像跨用例复用、评测准备才 checkout，校验多克隆一份既是浪费也是「两个来源」的入口
   it('远端校验只读镜像：镜像本身是裸仓库，工作区里不冒出 cases 这类行级目录', () => {
     const origin = makeRemoteOrigin('remote-readonly');
@@ -101,7 +101,7 @@ describe('validateRepo（远端来源）', () => {
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
   /**
-   * 最终整支复审 Important 1：远端把默认分支改名（main → trunk）并删掉旧分支之后，校验必须报**新**默认分支。
+   * 远端把默认分支改名（main → trunk）并删掉旧分支之后，校验必须报**新**默认分支。
    *
    * 修复前的形状：镜像 HEAD 停在 main（`fetch --prune` 只剪 ref、不刷新 HEAD，本机 git 2.47 实测），
    * 而 main 已经被剪掉 ⇒ 校验以「无法解析远端默认分支：main」失败——一份完好的仓库被判成不可用，
@@ -123,7 +123,7 @@ describe('validateRepo（远端来源）', () => {
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
   /**
-   * 最终整支复审 Minor 5：首次校验是「探活 → 克隆」，紧接着再 `fetch` 一次是白等一个往返
+   * 首次校验是「探活 → 克隆」，紧接着再 `fetch` 一次是白等一个往返
    * （克隆本身就是这一次从远端取回；大仓库的首次校验是**分钟级**的）。
    * 判据取**命令行**而不是耗时：clone 与 fetch 是两条不同的命令，数得清、也不受机器快慢影响。
    * 同一条用例里的反向对照是第二次校验：镜像已在，必须真的抓一次——否则「永远不 fetch」也能过。

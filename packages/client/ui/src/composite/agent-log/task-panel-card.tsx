@@ -12,8 +12,7 @@
  *     前者不表态，后者也不表态（一标题的「+0」没有信息量）；
  *   · 清单四态各有中文与色档，**`unknown` 用中性灰、绝不显示成成功**；
  *     `owner === null`（这家没有「指派」这个概念）**整格不画**，`owner === ''`（有概念但无人认领）
- *     显示「未指派」；`id === null` 时 id 与依赖都不画（`blockedBy` 的值就是 id，**不自己发号**）；
- *   · **形态是两列的 small `Table`**（用户 2026-10-07 口径）：左列任务（文本 + owner + 依赖），
+ *     显示「未指派」；`id === null` 时 id 与依赖都不画（`blockedBy` 的值就是 id，**不自己发号**）； * · **形态是两列的 small `Table`**：左列任务（文本 + owner + 依赖），
  *     右列状态，且**右列走列级 `align: 'right'`**（antd 把它落到单元格的内联 `textAlign`，
  *     不手写 CSS）；表头整条隐藏（`showHeader={false}`）⇒ 列**不写 `title`**：写了也不会上屏，
  *     只会让读的人以为有个列名。一行一件任务，读法是「有什么任务、它到哪一步了」；
@@ -177,7 +176,7 @@ export function TaskPanelCard({
                 <Table<TaskStep>
                   // 紧凑尺寸（本仓口径：执行日志里每个带 size 的组件都写死 small）
                   size="small"
-                  // 表头整条隐藏：一共就两列，列名白占一行高度（用户 2026-10-07 口径）
+                  // 表头整条隐藏：一共就两列，列名白占一行高度
                   showHeader={false}
                   // 一张清单最多十几行，分页在这一页没有意义（与 `score-detail-view` 同口径）
                   pagination={false}

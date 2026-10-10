@@ -58,7 +58,7 @@ describe('updateCase', () => {
     expect(next.updatedAt >= created.updatedAt).toBe(true);
   });
 
-  // Review Focus 2：仓库临时不可用（网络盘掉线、目录被移走）时，改标题不该被 NOT_A_GIT_REPO 拦住。
+  // 仓库临时不可用（网络盘掉线、目录被移走）时，改标题不该被 NOT_A_GIT_REPO 拦住。
   it('只改标题时不做仓库校验（仓库已被移走也照样保存）', () => {
     const created = createCase(caseInput());
     removeTreeWithRetry(repo);
@@ -70,19 +70,18 @@ describe('updateCase', () => {
   });
 
   /**
-   * Review F1（High）：UI 发出来的补丁**永远是全量的**——面板 `handleFinish` 无条件带上预填的
+   * UI 发补丁**永远是全量的**——面板 `handleFinish` 无条件带上预填的
    * `repoPath` / `commitHash`（`case-form-panel.tsx` 的注册字段），页面 `update(id, values)` 把它当整份补丁发出去。
    *
    * 所以判定必须是「**值**变了没有」，而不是「字段出现没有」：`patch.repoPath !== undefined` 在真实提交形状下
    * 等价于「每次保存都校验仓库」，仓库临时不可用（网络盘掉线 / 目录被移走）时用户改标题一律拿到 NOT_A_GIT_REPO，
-   * 改不动——正是计划 Review Focus 2 承诺不会被拦住的那件事。
+   * 改不动——正是本组承诺不会被拦住的那件事。
    */
   it('照 UI 的真实形状发全量补丁：仓库已被移走时改标题仍然成功', () => {
     const created = createCase(caseInput());
     removeTreeWithRetry(repo);
 
-    // 收口复审 N3：这里必须发**全部 7 个字段**（`uiPatchOf`），不是「title + 两个承重字段」——
-    // 只照一半的写法正是 N1 翻车的原因
+    // 这里必须发**全部 7 个字段**（`uiPatchOf`），不是「title + 两个承重字段」
     const next = updateCase(created.id, uiPatchOf(created, { title: '仓库掉线时改标题（全量补丁）' }));
 
     expect(next.title).toBe('仓库掉线时改标题（全量补丁）');
@@ -110,10 +109,10 @@ describe('updateCase', () => {
   });
 
   /**
-   * 收口复审 N2：F1 的**commit 半边**此前没有守卫（评审的 M-F 把 `commitTouched` 改回旧写法后整包 104/104 全绿）。
+   * **commit 半边**的守卫：把 `commitTouched` 改回旧写法会让这条红。
    * 夹具的差别就是承重的那一点：这里的用例**钉了具体 commit**，旧写法下 `patch.commitHash !== undefined`
    * 会走 `resolveCommitInput → assertCommit`（`git cat-file -e`），于是「钉了 commit 的用例 + 仓库掉线 + 改标题」
-   * 会被仓库可用性拦住——正是阶段评审 F1 证据链点名的另一半。
+   * 会被仓库可用性拦住——正是这条口径的另一半。
    */
   it('钉了 commit 的用例照 UI 形状发全量补丁：仓库被移走后改标题仍然成功', () => {
     const created = createCase(caseInput({ commitHash: git(['rev-parse', 'HEAD'], repo).trim() }));
@@ -249,7 +248,7 @@ describe('updateCase', () => {
    *
    * 夹具为什么**不是**权重 0：那一格由 `RubricSchema` 的 `.positive()` 拦下（抛的是裸 `ZodError`，
    * 路由层再折成 400），根本走不到这条业务守卫——拿它当探针，删掉 `validateRubric` 之后这条用例
-   * **照样红**（红的理由却换了一个），变异验证会在错误的地方「通过」。下面这三种坏形状都是
+   * **照样红**（红的理由却换了一个），守卫会在错误的地方「通过」。下面这三种坏形状都是
    * schema 放行、只有业务判据拦得住的。
    *
    * 为什么**新建与编辑**都要走一遍：两处各写一份判据必然漂移，而漂移的症状正是「创建时拦得住、
@@ -299,7 +298,7 @@ describe('updateCase', () => {
   });
 
   /**
-   * 编辑也是**用**这个用例（评审 Fix B）：当前行必须过与 `getCase` 同一份判据。
+   * 编辑也是**用**这个用例：当前行必须过与 `getCase` 同一份判据。
    * 少了它，`updateCase` 会把盘上那一行裸 spread 进 `next`，再落到 `assertStorable` 的
    * `TestCaseSchema.parse`——抛的是**裸 `ZodError`**（一串 JSON issues），路由层折成技术性的
    * `INVALID_QUERY`；而用户真正需要的是那句能照做的「旧版数据，请删除它或重新创建：<caseId>」。
@@ -330,7 +329,7 @@ describe('updateCase', () => {
   });
 
   /**
-   * 最终整支复审 Minor 4：来源的**解析**必须是懒的。
+   * 来源的**解析**必须是懒的。
    *
    * 一条手改坏的 legacy 行（`repoPath` 写成不支持的协议）在修复前连改标题都保存不了：`resolved` 无条件
    * 算一次、`normalizeSourceString` 又无条件解析补丁里那一份，两处都走 `parseRepoSource`——
@@ -341,7 +340,7 @@ describe('updateCase', () => {
    * 而修复后解析根本不发生，真正拦下这一行坏数据的是**写入口**的 `TestCaseSchema`
    * （`assertStorable`，见 case.ts 的 RepoSourceStringSchema）——那才是口径 3 要求拦下坏值的地方。
    * 注：这条坏行在这两种实现下都**写不进去**（schema 与解析用的是同一份判定），差别只在「谁拦的、
-   * 报的是哪件事」；把懒改回每次都解析，这里立刻变回 `ServiceError`（变异验证实测）。
+   * 报的是哪件事」；把懒改回每次都解析，这里立刻变回 `ServiceError`。
    */
   it('手改坏的 legacy 行只改标题：拦下它的是写入口的 schema，不是来源解析（解析是懒的）', () => {
     const created = createCase(caseInput());

@@ -4,10 +4,10 @@
  * 坏订阅者不能打断正在跑的 agent 事件流。
  *
  * 两条最容易被写错的语义各有一条**能失败**的守卫，且都用「空白文件上看不出差别」的场景来钉：
- *   1. `seq` / `at` 以**落盘写入器**为准（R17）：文件里先有别人的事件时，自己从 1 计数会发出重号；
+ *   1. `seq` / `at` 以**落盘写入器**为准：文件里先有别人的事件时，自己从 1 计数会发出重号；
  *      推进入参而不是写入器的返回值，订阅者手里就没有 `seq` 与 `at`；
- *   2. 订阅**只推订阅之后的事件**（R6）：把历史也回放一遍，订阅者会收到订阅前的旧事件。
- * 两条守卫都在变异验证里实测变红（见本任务报告）。
+ *   2. 订阅**只推订阅之后的事件**：把历史也回放一遍，订阅者会收到订阅前的旧事件。
+ * 两条守卫都在变异验证里见过红。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '@aieval/contracts';
@@ -68,7 +68,7 @@ describe('publishRowEvent', () => {
     const seen: AgentEvent[] = [];
     subscribeRowEvents(runId, rowId, (event) => seen.push(event));
     publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '本次' });
-    // 调用方硬塞一个 seq 也不算数（R17 放宽的是**入参形状**，不是发号权）：
+    // 调用方硬塞一个 seq 也不算数（放宽的是**入参形状**，不是发号权）：
     // 完整 AgentEvent 是合法入参，但它带的 seq 必须被写入器的返回值覆盖，否则磁盘上会出现重号。
     publishRowEvent(runId, rowId, {
       type: 'log',
@@ -163,7 +163,7 @@ describe('subscribeRowEvents', () => {
   });
 
   /**
-   * **模块被重新实例化（dev 的 HMR）之后，总线仍是同一张表**（2026-09-28 真机实测补的守卫）。
+   * **模块被重新实例化（dev 的 HMR）之后，总线仍是同一张表**。
    *
    * 为什么必须有：`vi.resetModules()` 之后的第二次 `import` 正是 HMR 的形状——编排层还在旧实例里
    * 跑（它 settle 的那一刻才 publish），而接线/SSE 走的是新实例。总线若放模块作用域，两边各拿一份

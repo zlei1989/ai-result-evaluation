@@ -8,13 +8,13 @@
  *      （「用量未采集」）或整格不出现，绝不写 0——0 是一个**读数**，「没采到」不是；
  *   2. **耗时只有这一个口径**：已结束用 `endedAt − startedAt` 的结算值，未结束才本地走秒表
  *      （`useNow` 只在真的在跑时挂定时器，抽成 `durationMsOf` 便于单测）；
- *   3. **领域事实不在这里**（用户 2026-10-07 口径）：`facts.domain`（智能体 · 模型 · 思考强度 ·
+ *   3. **领域事实不在这里**：`facts.domain`（智能体 · 模型 · 思考强度 ·
  *      改动 · 评分）由 `agent-log-domain-facts.tsx` **单独占一行**画。并回本条末尾时，「改动 /
  *      评分」会被自然折行甩到第二行、与前三格拆散；而这两组是连起来读的一句话。本条只画
  *      「这一行跑了什么」那几个读数；
  *   4. **不可折叠、也不放入口**：「原始输出」归 `raw-output-panel`，「？环境信息」归工具条预设，
  *      放进来会让固定区变成第二个工具条；
- *   5. **不展示「结束原因」**（用户 2026-10-07 口径）：`end` 事件里的 `exitReason` 只逐字落在
+ *   5. **不展示「结束原因」**：`end` 事件里的 `exitReason` 只逐字落在
  *      **下载台账**里——⚠️ **它不在「原始输出」里**（那个面板只收 `log` 事件）。事实条不再重复这一格：
  *      同一格要说的处境，状态徽标已经说了一遍。
  *
@@ -51,8 +51,8 @@ const BADGE_STATUS: Record<AgentRunStatus['tone'], 'processing' | 'default' | 's
 /**
  * 思考 token 的**可加性说明**。`basis !== 'additive'` 时界面**不提供任何相加口径**：
  * 相加即双计（`subset-of-output`），或连跨家比较都不允许（`unknown`）。
- * 表里只有「可加性未知」这一格（2026-10-07 用户口径：`subset-of-output` 不再附任何说明，
- * 文案从简）；`additive` 本来就能加，也没有说明可写。
+ * 表里只有「可加性未知」这一格（`subset-of-output` 不附任何说明，文案从简）；
+ * `additive` 本来就能加，也没有说明可写。
  */
 const THINKING_BASIS_HINTS: Partial<Record<NonNullable<AgentLogFacts['thinking']>['basis'], string>> = {
   unknown: '（可加性未知）',

@@ -32,7 +32,7 @@ import { removeTreeWithRetry } from './cleanup';
  * mkdir / 写盘（`run-artifacts.test.ts` 的 `seedRun(..., { createWorkspace: true })`、
  * `messages-stream.test.ts` 的 `resetRecords(...)`），而盘符路径在 POSIX 上**不是绝对路径**——
  * 它是相对路径，产物会落进进程 cwd（仓库根），长出一个名为 `D:\runs` 的目录
- * （2026-10-09 实测：`D:\runs\run-1\rows\r-1\workspace` 与 `D:\runs/run-1/rows/r-1` 两棵树）。
+ * （`D:\runs\run-1\rows\r-1\workspace` 与 `D:\runs/run-1/rows/r-1` 两棵树）。
  * 顺带钉住一条不变量：夹具交给产品代码的地址必须 `isAbsolute()`（守卫见 `run-fixtures.test.ts`）。
  */
 const FIXTURE_WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), 'aieval-run-fixtures-'));

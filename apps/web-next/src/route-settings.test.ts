@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 路由层端到端：`PUT /api/settings`。
+ * 路由层端到端：`GET` / `PUT /api/settings`。
  *
  * 这份用例的存在理由有两个，缺一不可：
  *   1. **它是 `@/*` 别名在 vitest 里的守卫。** 路由文件 import 的是 `@/src/server-context`，
@@ -19,8 +19,9 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig, setConfigDirForTesting } from '@aieval/core';
-import { PUT } from '@/app/api/settings/route';
+import { SETTINGS_DEFAULTS, maskApiKey, type SettingsView } from '@aieval/contracts';
+import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
+import { GET, PUT } from '@/app/api/settings/route';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 let dir: string;
@@ -65,7 +66,7 @@ describe('PUT /api/settings', () => {
     const body = await res.json();
     expect(body.error.code).toBe('INVALID_QUERY');
     expect(body.error.context[0].path).toEqual(['theme']);
-    // 被拒的补丁不得落盘。少了这条，「先调服务再 parse」的变异体会 3/3 全绿——
+    // 被拒的补丁不得落盘。少了这条，「先调服务再 parse」这种写法会 3/3 全绿——
     // updateSettings 不校验 theme（只校验 workspaceRoot），响应字段完全一致，
     // 只有磁盘能区分顺序。
     expect(loadConfig().settings.theme).toBe('auto');
@@ -79,5 +80,62 @@ describe('PUT /api/settings', () => {
     expect(body.error.code).toBe('INVALID_QUERY');
     expect(body.error.message).toBe('请求体不是合法 JSON');
     expect('context' in body.error).toBe(false);
+  });
+});
+
+/**
+ * 出口守卫（HTTP 层）：`GET /api/settings` 是密钥离开服务端的**唯一**一道门，判据取
+ * 「把响应体原文（text，不是解析后的对象）搜明文子串」——它同时覆盖 http 的 `headers`、
+ * stdio 的 `env` 两条路径，也覆盖将来有人多加一条下行通道。
+ *
+ * 与 `@aieval/api` 那组守卫的分工：那边钉的是服务函数的返回值，这边钉的是**真路由**——
+ * 少了它，「路由忘了用出口形态」（例如又 import 回服务端真源）这种改法可以全绿。
+ */
+describe('GET /api/settings 的出口形态', () => {
+  const HTTP_KEY = 'ctx7-route-plain-0001';
+
+  /** 明文密钥写进落盘配置：出口守卫必须从真实读盘路径上验 */
+  function seedPlaintextConfig(): void {
+    saveConfig({
+      ...loadConfig(),
+      settings: {
+        ...SETTINGS_DEFAULTS,
+        mcpServers: {
+          context7: {
+            transport: 'http',
+            enabled: true,
+            url: 'https://mcp.context7.com/mcp',
+            headers: { CONTEXT7_API_KEY: HTTP_KEY, Accept: 'application/json' },
+          },
+        },
+      },
+    });
+  }
+
+  it('响应体原文里搜不到明文，敏感值出的是掩码、非敏感值照常可见', async () => {
+    seedPlaintextConfig();
+
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain(HTTP_KEY);
+    expect(text).toContain(maskApiKey(HTTP_KEY));
+    expect(text).toContain('application/json');
+  });
+
+  it('把出口那份原样 PUT 回去：落盘的真密钥不被掩码串覆盖', async () => {
+    seedPlaintextConfig();
+    const view = (await (await GET()).json()) as SettingsView;
+
+    const res = await PUT(putRequest(JSON.stringify({ mcpServers: view.mcpServers })));
+
+    expect(res.status).toBe(200);
+    const entry = loadConfig().settings.mcpServers['context7'];
+    // 取不到就抛：守卫不许因为形状变了而静默通过
+    if (entry?.transport !== 'http' || entry.headers === undefined) {
+      throw new Error(`落盘里找不到 http 条目 context7 的 headers（实际：${JSON.stringify(entry)}）`);
+    }
+    expect(entry.headers['CONTEXT7_API_KEY']).toBe(HTTP_KEY);
   });
 });

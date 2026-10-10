@@ -1,5 +1,8 @@
 /** api 公共出口：业务服务层，框架层只从这里 import。 */
 export { getSettings, updateSettings } from './settings';
+// MCP 探活（「测试连接」）：策略层（http 三步 + 一次只读调用、失败分档、串行），
+// 机制在 core/src/mcp-probe.ts。⚠️ 探活不是跑智能体，不走 agentProvider.run。
+export { probeMcpServer } from './mcp';
 export {
   addProviderModel,
   createProvider,
@@ -29,11 +32,11 @@ export { generateRubric, resolveJudgeRoute, type GenerateRubricResult } from './
 // node_modules 下直连会解析失败。api → evaluator 是允许的方向，故在这里转出一次。
 export { recoverInterruptedRuns } from '@aieval/evaluator';
 
-// 评测域（p5）：创建 / 列表 / 详情 / 启动 / 终止 / 候选池投影。
-// 候选池与 `usage` / `cancelMidTurn` 同源（agents 注册表元数据），故一次取全（§11 R11/R12）。
-// `rescoreRow`（Task 7）：行级重新评分，web-next 的 rescore 路由从 api 包根取它。
-// `retryRow`（2026-09-27）：行级重试执行（连候选 agent 一起重跑），web-next 的 retry 路由从 api 包根取它。
-// `updateRun` / `deleteRun`（2026-09-28）：整轮的编辑与删除，web-next 的 PUT / DELETE 路由从 api 包根取它们。
+// 评测域：创建 / 列表 / 详情 / 启动 / 终止 / 候选池投影。
+// 候选池与 `usage` / `cancelMidTurn` 同源（agents 注册表元数据），故一次取全。
+// `rescoreRow`：行级重新评分，web-next 的 rescore 路由从 api 包根取它。
+// `retryRow`：行级重试执行（连候选 agent 一起重跑），web-next 的 retry 路由从 api 包根取它。
+// `updateRun` / `deleteRun`：整轮的编辑与删除，web-next 的 PUT / DELETE 路由从 api 包根取它们。
 export {
   abortRow,
   abortRun,
@@ -60,9 +63,9 @@ export {
   getRowRecords,
   resetRowDiffCache,
 } from './run-artifacts';
-// 两条事件流：行级（候选 + 编排层留痕）与评分（`judge-events.jsonl`，2026-10-10 起分开）
+// 两条事件流：行级（候选 + 编排层留痕）与评分（`judge-events.jsonl`，与行级分开）
 export { streamJudgeEvents, streamRowEvents } from './run-stream';
-// 消息流（spec v3 §2）：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同。
+// 消息流：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同。
 // 记录流同样有两条：候选（`messages.jsonl`）与评分（`judge-messages.jsonl`）
 export { streamJudgeRecords, streamRowRecords, type RecordStreamOptions } from './messages-stream';
 // run 级信号流：跨轮次的状态翻转通道（快照变了 ⇒ 客户端重读 REST），与三条行级流并行

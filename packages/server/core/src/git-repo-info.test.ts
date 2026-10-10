@@ -197,7 +197,7 @@ describe('listCommits', () => {
     expect(commits[2]?.subject).toBe('第 1 次提交');
   });
 
-  it('limit 生效（spec §4.2 的最近 20 条）', () => {
+  it('limit 生效（最近 20 条）', () => {
     const dir = makeRepo('aieval-git-log-');
     for (let index = 1; index <= 3; index += 1) {
       writeFileSync(join(dir, `f${index}.txt`), `${index}\n`, 'utf8');

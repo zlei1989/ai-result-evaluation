@@ -61,7 +61,7 @@ afterEach(() => {
  * 最小合法快照：rows 允许为空数组，其余字段必须给全——
  * 少任何一个 EvalRunSchema 都会拒绝，测试就变成在测自己的夹具而不是被测代码。
  * `rubric` 与 `caseTitle` / `repoPath` 同一档：它是**必填的评分表快照**，缺了 `saveRun` 的写侧自检
- * 会直接拒绝（Task 2 的契约），而那时红的会是这一整个文件里的每一条用例。
+ * 会直接拒绝（契约），而那时红的会是这一整个文件里的每一条用例。
  */
 function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): EvalRun {
   return {
@@ -132,7 +132,7 @@ describe('run-store', () => {
   });
 
   /**
-   * spec §10 要求的**可见性**（整支复审 Finding 2 的另一半）：`readSnapshot` 的 per-file WARN 回答的是
+   * **可见性**：`readSnapshot` 的 per-file WARN 回答的是
    * 「哪个文件坏了」，答不了「列表为什么短」——旧口径的 `run.json` 被跳过后，症状就是
    * 「评测记录凭空少了几轮」，而它与「产物真的没了 / 根目录改错了」在日志里长得一模一样。
    * `listRuns` 因此在同一趟扫描的最后记**一条**汇总 WARN，数的是「读得出 JSON、但过不了契约」的旧快照。
@@ -217,7 +217,7 @@ describe('run-store', () => {
     expect(getRun('run-bom').id).toBe('run-bom');
   });
 
-  // Review（Task 1 Important）：rename 瞬时失败不许先删目标。
+  // rename 瞬时失败不许先删目标。
   // 快照是这一轮评测的唯一落盘真相，而「删除 → 重命名」之间的 getRun / SSE 读到的是 NOT_FOUND——
   // 那一刻正是「这一轮写不进磁盘」的故障现场，排障的人会先怀疑数据丢了。
   it('rename 瞬时失败时先重试（目标可写就绝不先删快照）', () => {
@@ -273,10 +273,10 @@ describe('run-store', () => {
   });
 
   /**
-   * 老快照读盘（Task 6）：磁盘上已有的 run.json 里，score 那一格**没有** `structuredOutput`。
+   * 老快照读盘：磁盘上已有的 run.json 里，score 那一格**没有** `structuredOutput`。
    *
    * 为什么必须**真的写盘再读回**，而不是顺手做一次 `ScoreResultSchema.parse`：
-   * 契约层的 `.default(false)` Task 1 已经钉过，那是「schema 会兜」，不是「读入口会兜」。
+   * 契约层的 `.default(false)` 已经钉过，那是「schema 会兜」，不是「读入口会兜」。
    * 这条钉的是读路径本身（`getRun` → `readSnapshot` → `safeParse`）：读侧将来若被换成原样
    * `JSON.parse`，老记录的这一格就变成 `undefined`——界面与「这一分是不是在 schema 约束下拿到的」
    * 判断都会读到一个不存在的值，而今天没有任何用例会红。
@@ -306,14 +306,14 @@ describe('run-store', () => {
 });
 
 /**
- * 阶段评审 F5：`getRun` / `saveRun` 把 runId **直接拼进路径**（`{workspaceRoot}/{runId}/run.json`），
+ * `getRun` / `saveRun` 把 runId **直接拼进路径**（`{workspaceRoot}/{runId}/run.json`），
  * 带 `..` / 分隔符 / 绝对路径的 id 会逃出 workspaceRoot——`saveRun` 还会在根目录之外建目录并写文件。
- * 今天不可达（调用方都是 `randomUUID()`），但 p5 的 `GET /api/runs/{runId}` 会把**用户可控的 URL 段**
- * 喂给 `getRun`，而契约 §5 的签名本身不做任何形状约束，所以形状校验必须落在唯一的路径拼接点。
+ * 今天不可达（调用方都是 `randomUUID()`），但 api 层的 `GET /api/runs/{runId}` 会把**用户可控的 URL 段**
+ * 喂给 `getRun`，而该签名本身不做任何形状约束，所以形状校验必须落在唯一的路径拼接点。
  */
 describe('run-store 的 runId 形状校验', () => {
   it('getRun / saveRun 拒绝带路径含义的 runId（分隔符 / .. / 以 . 开头 / 空串）', () => {
-    // getRun（p5 的 URL 段入口）：连 `../../etc` 这种会落到 workspaceRoot 之外两级、且属于**共享临时根**的
+    // getRun（api 层的 URL 段入口）：连 `../../etc` 这种会落到 workspaceRoot 之外两级、且属于**共享临时根**的
     // id 也必须拒——判定发生在拼路径之前，所以它与磁盘上恰好有什么无关
     for (const bad of ['../../etc', '../escaped', 'a/b', 'a\\b', '..', '.hidden', 'C:\\Windows\\Temp', '']) {
       const fromGet = thrownBy(() => getRun(bad));
@@ -322,7 +322,7 @@ describe('run-store 的 runId 形状校验', () => {
     }
     // saveRun（写盘入口）：每个形状逐一拒。**探针统一用 per-run 的 `../escaped`**——它的落点 {dir}/escaped
     // 是本次 mkdtemp 独享的目录；换成 `../../etc` 的话，变异体一旦存活就会把 run.json 写进**共享的**系统临时根
-    // （实测发生过：评审 F5 的变异体真的在 %TEMP%\\etc 下建了目录并写了快照，那正是这条守卫要防的事）。
+    // （那正是这条守卫要防的事：变异体一旦存活，写的就是共享的系统临时根）。
     for (const bad of ['../escaped', 'a/b', 'a\\b', '..', '.hidden', 'C:\\Windows\\Temp', '']) {
       const fromSave = thrownBy(() => saveRun(makeRun({ id: bad, caseId: 'case-1' })));
       expect(fromSave).toBeInstanceOf(ServiceError);
@@ -336,7 +336,7 @@ describe('run-store 的 runId 形状校验', () => {
     expect(listRuns()).toEqual([]);
   });
 
-  // 反向对照：合法 UUID 照常读写——守卫不能宽到挡住正路（它是 p5 唯一会走的形状）
+  // 反向对照：合法 UUID 照常读写——守卫不能宽到挡住正路（它是 api 层唯一会走的形状）
   it('合法 UUID 形态的 runId 照常读写', () => {
     const id = randomUUID();
 
@@ -359,7 +359,7 @@ describe('run-store 的 runId 形状校验', () => {
 });
 
 /**
- * 写侧自检（p4 Task 1 补的差量，§11 R26 的同一条原则——与 core 的 `appendEvent` 写入点校验对齐）。
+ * 写侧自检（与 core 的 `appendEvent` 写入点校验同一条原则）。
  *
  * 为什么这条守卫必须有：读路径的 `readSnapshot` 用的是 `safeParse`，不合契约的快照只记一句 WARN
  * 就返回 null，于是脏数据会**先写进磁盘**、再被 `listRuns` 静默跳过 —— 这一轮评测从列表里凭空消失，
@@ -375,7 +375,7 @@ describe('saveRun 的写侧自检', () => {
     // 错误面必须与 I/O 失败一致：**中文 ServiceError**（code + 可直接展示的原因），不是裸英文 ZodError
     //（B2 裁决 2：口径同 core 的 appendEvent 写侧校验，否则路由层会把 zod 的英文文案返回给用户）。
     // 只断言「抛了」是不够的——旧实现抛的 ZodError 同样满足 `toThrow()`，那条守卫就只钉了「抛没抛」、
-    // 钉不住「抛的是什么」（评审 L5：旧措辞「恒绿空转」过强，旧守卫在旧实现下确实是绿的）。
+    // 钉不住「抛的是什么」。
     const caught = thrownBy(() => saveRun(run)) as ServiceError;
     expect(caught).toBeInstanceOf(ServiceError);
     expect(caught.code).toBe('INTERNAL');
@@ -402,7 +402,7 @@ describe('saveRun 的写侧自检', () => {
 });
 
 /**
- * `workspaceBase` 的**形状**校验（评审 M2）。
+ * `workspaceBase` 的**形状**校验。
  *
  * 写侧落盘位置完全取自这一项（`runDir(root, id)`），而契约里它只是 `z.string()`——没有 `.min(1)`、
  * 没有绝对路径约束。形状不对的值会让产物写到**读侧永远看不到的地方**：`''` ⇒ 进程 CWD 下的 `<runId>/`，
@@ -446,9 +446,9 @@ describe('saveRun 的 workspaceBase 形状校验', () => {
  * 写侧与 `events.ts` 的根目录口径必须同源（B2 裁决 1）。
  *
  * `events.ts` 按 `rowEventsFile(getRunForWrite(runId).workspaceBase, …)` 定位事件日志——**该轮自己记录的根**；
- * 而 `saveRun` 原先用的是「当前 `settings.workspaceRoot`」。一轮评测进行中用户改了根目录，快照写进新根、
+ * 而写侧若改取「当前 `settings.workspaceRoot`」：一轮评测进行中用户改了根目录，快照写进新根、
  * 事件留在旧根，这一轮的产物就**裂成两半**（界面上的行状态与日志抽屉对不上，而两边都不报错）。
- * R10 的裁决是「该轮整体留在旧根，把根目录改回去即可恢复可见」，所以写侧也必须取自 `run.workspaceBase`。
+ * 裁决口径是「该轮整体留在旧根，把根目录改回去即可恢复可见」，所以写侧也必须取自 `run.workspaceBase`。
  */
 describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源）', () => {
   it('一轮进行中改了工作区根目录：快照与事件都留在旧根，新根下不出现这一轮', () => {
@@ -474,13 +474,13 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
     expect(events.map((event) => event.type)).toEqual(['status', 'log']);
     expect(JSON.stringify(events)).toContain('改根目录之后的一行日志');
 
-    // 新根下不出现这一轮的任何产物：产物必须整体留在旧根（R10 的语义）
+    // 新根下不出现这一轮的任何产物：产物必须整体留在旧根
     expect(existsSync(join(otherRoot, runId))).toBe(false);
     expect(listRuns().map((candidate) => candidate.id)).not.toContain(runId);
   });
 
   /**
-   * R10 的另一半：「同进程内另靠『记住 runId → workspaceBase』兜住」。
+   * 另一半：「同进程内另靠『记住 runId → workspaceBase』兜住」。
    *
    * 上面那条守卫先发了一条事件，事件路径因此在 `events.ts` 里被缓存，于是它**没有覆盖**真正的
    * 生产故障面：同一轮的**后续行**（事件路径尚未缓存）在用户改完根目录后第一次发事件时，
@@ -515,7 +515,7 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
     expect(readEvents(rowEventsFile(ws, runId, firstRowId))).toHaveLength(1);
   });
 
-  // 反向对照：记忆里没有这个 runId 时，NOT_FOUND 照旧（R10 明确接受「跨重启 + 改过根」找不到）。
+  // 反向对照：记忆里没有这个 runId 时，NOT_FOUND 照旧（「跨重启 + 改过根」找不到是明确接受的）。
   // 少了这条，把兜底写成「任何 NOT_FOUND 都拿记忆里随便一个根顶上」也会绿。
   it('记忆里没有的 runId 仍然抛 NOT_FOUND（兜底不掩盖「这一轮真的不存在」）', () => {
     saveConfig({
@@ -536,10 +536,10 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
   });
 
   /**
-   * R10 的**快照侧**（评审 H1）：编排层要在同一份记忆上读快照，否则「改了根目录 = 在途轮次被打死」
+   * **快照侧**：编排层要在同一份记忆上读快照，否则「改了根目录 = 在途轮次被打死」
    * 只是换了一扇门——`requireRow → getRun` 抛 NOT_FOUND，`settleFailed` 也要先 `requireRow`
    * ⇒ 行停在非终态。`getRunForWrite` 就是那个入口：当前根优先、NOT_FOUND 时用记忆兜底。
-   * 同时钉住**对外读侧口径不变**：`getRun` 仍只扫当前根（R10 的语义，p5 的路由用的就是它）。
+   * 同时钉住**对外读侧口径不变**：`getRun` 仍只扫当前根（对外读侧口径，api 层的路由用的就是它）。
    */
   it('getRunForWrite 按该轮自己的根读快照，getRun 的对外口径不变（仍只扫当前根）', () => {
     const runId = 'run-write-root';
@@ -547,7 +547,7 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
     const otherRoot = join(dir, 'runs-b');
     saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: otherRoot } });
 
-    // 对外入口：改根之后这一轮就不在「当前根」里了 —— 这正是 R10 接受的可见性局限，语义不变
+    // 对外入口：改根之后这一轮就不在「当前根」里了 —— 这正是接受的可见性局限，语义不变
     const fromGetRun = thrownBy(() => getRun(runId)) as ServiceError;
     expect(fromGetRun).toBeInstanceOf(ServiceError);
     expect(fromGetRun.code).toBe('NOT_FOUND');

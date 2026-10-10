@@ -13,7 +13,7 @@
  *  3. **坏帧计数不静默**：解析不了的整行进 `unparsedFrames()`，与 `transcript.ts` 的 `stats.badLines`
  *     同一理由——静默跳过会让「上游换了帧格式」表现成「子智能体突然没了子线程」。
  *
- * 第四条在 2026-10-07 补上：**`close()` 回收整棵进程树并等确认**（`process-tree.ts`）。
+ * 第四条：**`close()` 回收整棵进程树并等确认**（`process-tree.ts`）。
  * codex 会在 `thread/start` 期间 spawn `git` 链去同步插件目录，只杀直接子进程会把它们留成孤儿，
  * 而它们持着本行的 `$CODEX_HOME`——下一轮的行产物清理就此 `EPERM`。
  */
@@ -54,7 +54,7 @@ export interface AppServerChild extends ProcessTreeChild {
 /**
  * 子进程环境（键 → 值）。
  *
- * **刻意不用全局的 `NodeJS.ProcessEnv`**（2026-10-07）：那是个**全局接口**，谁都能往它上面加
+ * **刻意不用全局的 `NodeJS.ProcessEnv`**：那是个**全局接口**，谁都能往它上面加
  * **必填**成员，而本仓的类型检查是「8 个包共用一个 tsc 程序」（`tsconfig.typecheck.json`）
  * ⇒ 只要 web-next 的 `next-env.d.ts` 存在（**跑过一次 `next dev` 就有**，且它已被 gitignore），
  * Next 16 的 `next/types/global.d.ts` 就会补上：

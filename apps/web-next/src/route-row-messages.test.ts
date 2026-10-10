@@ -1,14 +1,14 @@
 // @vitest-environment node
 /**
- * 消息路由（spec v3 §2）：`GET .../rows/[rowId]/messages`（折叠视图）与 `.../messages/stream`（SSE）。
+ * 消息路由：`GET .../rows/[rowId]/messages`（折叠视图）与 `.../messages/stream`（SSE）。
  *
  * 只钉两件**路由层**的事（内容与帧格式由 api 包的 `messages-stream.test.ts` 钉住）：
  *   ① 存在性校验发生在**开流之前**：轮/行不存在时返回带原因的 404 JSON，而不是一个开了就断的 SSE 流；
- *   ② 段配置 `runtime = 'nodejs'` + `force-dynamic`：记录总线是**进程内**的（§11 R6），
+ *   ② 段配置 `runtime = 'nodejs'` + `force-dynamic`：记录总线是**进程内**的，
  *      换 runtime 的症状是「连上了、永远没有新消息」——零报错，没有任何运行时守卫能发现。
  *
- * 本文件**不读** SSE 响应体：消息流不因终态关流（见 `messages-stream.ts` 文件头口径 ②），
- * `res.text()` 会一直等下去。轮与行由**真实** POST 路由创建（`route-run-artifacts.test.ts` 的同一手法），
+ * 本文件**不读**SSE 响应体：消息流不因终态关流（见 `messages-stream.ts` 文件头口径 ②），
+ * `res.text()` 会一直等下去。轮与行由**真实**POST 路由创建（`route-run-artifacts.test.ts` 的同一手法），
  * `@aieval/evaluator` 整块被 mock，且句柄走 `vi.hoisted`（本应用没声明那个包，直接 import 会让 tsc 红）。
  */
 import { mkdirSync, mkdtempSync } from 'node:fs';
@@ -44,7 +44,7 @@ const evaluator = vi.hoisted(() => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
-  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // 评分那两条流：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
   // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
@@ -206,7 +206,7 @@ describe('GET .../rows/[rowId]/messages', () => {
 });
 
 describe('GET .../rows/[rowId]/messages/stream', () => {
-  it('段配置：nodejs runtime + force-dynamic（进程内记录总线，§11 R6）', () => {
+  it('段配置：nodejs runtime + force-dynamic（进程内记录总线）', () => {
     expect(streamRuntime).toBe('nodejs');
     expect(streamDynamic).toBe('force-dynamic');
   });

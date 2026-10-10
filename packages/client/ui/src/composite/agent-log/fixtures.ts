@@ -78,7 +78,7 @@ function subagentRecord(input: {
   status: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
   statusMissing?: 'not-supported' | 'not-exposed' | 'not-observed' | 'unverified' | null;
   outcome: string | null;
-  /** 派生它的那次工具调用 id（契约 §2.6）；界面据此把「进入子任务」入口挂到那次调用上 */
+  /**派生它的那次工具调用 id；界面据此把「进入子任务」入口挂到那次调用上 */
   parentCallId?: string | null;
   parentSubagentId?: string | null;
   usage?: { input: number; cached: number; output: number } | null;
@@ -128,9 +128,9 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     tokens: { input: 218, cached: 8832, output: 1420 },
     thinking: { tokens: 640, basis: 'subset-of-output' },
     domain: [
-      // 与数据层同形（2026-10-07）：**智能体 · 模型 · 思考强度 · 改动 · 评分**五格、顺序即渲染顺序
+      // 与数据层同形：**智能体 · 模型 · 思考强度 · 改动 · 评分**五格、顺序即渲染顺序
       // （前三格是「谁在跑」，后两格是「改了多少 / 得了多少分」）；评分那一格**只给分**
-      // （同一天的另一条口径：「评分模型：…」那句提示从事实条删掉了，见 `log-drawer-state.ts`）
+      // （「评分模型：…」那句提示不在事实条上，见 `log-drawer-state.ts`）
       {
         id: 'agent',
         label: '智能体',
@@ -216,7 +216,7 @@ function errorEvent(seconds: number, message: string): AgentEvent {
  *   · **没有「用户提示词」这一条**——它是对话、不是环境配置（它在时间轴的首条消息里）。
  *
  * 第一参是**显示名**（`agentLabel`，如「DeepSeek Harness」）而不是 kind：真机上这一格由
- * `client/build-environment.ts` 的 `summaryOf` 映射好（用户 2026-10-08 口径：页面展示不用缩写），
+ * `client/build-environment.ts` 的 `summaryOf` 映射好（口径：页面展示不用缩写），
  * 夹具照真形状给 ⇒ 把 kind 传进来就不再是「真机上会出现的形态」。
  */
 export function environmentFixture(agentLabel: string, modelId: string): AgentEnvironment {
@@ -335,7 +335,7 @@ export function dshFixture(): AgentLogFixture {
       role: 'assistant',
       blocks: [
         /**
-         * 清单载荷：**归一后的 `payload` 由适配器给**（2026-10-04 收口），
+         * 清单载荷：**归一后的 `payload` 由适配器给**，
          * `input` 里留的是厂商原文（排障证据，界面不再读它）。
          * 两条都给，才既测到「卡片画得出来」又测到「界面没在偷看原文」。
          *

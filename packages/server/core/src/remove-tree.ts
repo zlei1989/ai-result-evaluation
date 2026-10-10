@@ -1,11 +1,11 @@
 /**
- * 带**真重试**的子树回收（2026-10-07）。
+ * 带**真重试**的子树回收。
  *
  * 为什么不能交给 `rmSync` 的 `maxRetries` / `retryDelay`：本机实测（Node v26.7.0 / Windows）
  * 那一对参数**形同虚设**——重试白名单（`EBUSY`/`EMFILE`/`ENFILE`/`ENOTEMPTY`/`EPERM`）只存在于
  * **异步** `fs.rm` 那条路（`internal/fs/rimraf` 的 `retryErrorCodes`），而 `rmSync` 直接下沉 C++
  * （`binding.rmSync(path, maxRetries, recursive, retryDelay)`）⇒ 一个**已经空了**的目录照样 3ms 就抛
- * `EPERM`，给多少 `maxRetries` 都没重试过一次（2026-10-01、2026-10-07 两次实测；
+ * `EPERM`，给多少 `maxRetries` 都没重试过一次（两次实测；
  * 同场景异步 `fs.rm` 631ms 内自愈）。同一事实在 `testing/cleanup.ts` 的文件头也登记过。
  *
  * 而锁常常是**瞬时**的：持锁者是刚退出的子进程（git、厂商 CLI）、杀软或索引器，

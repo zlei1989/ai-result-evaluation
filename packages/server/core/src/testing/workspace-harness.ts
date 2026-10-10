@@ -2,13 +2,13 @@
 /**
  * 工作区目录结构与行工作区准备：真实 git CLI + 真实目录复制。
  * 四条最关键的守卫：
- *   ① 目录布局逐字等于 spec §6.3（缓存 / workspace / .agenthome / events.jsonl 四者的位置）；
+ *   ① 目录布局逐字固定（缓存 / workspace / .agenthome / events.jsonl 四者的位置）；
  *   ② 重跑同一行必须**清掉旧工作区**——否则第二个候选是在第一个候选的改动之上继续写，
- *      分数无意义、整轮作废（spec §3 F6 否决的正是这件事）；
- *   ③ `commitHash: null` 时 `baselineCommit` 必须是 40 位具体 hash（R2），**且跟随来源仓库当前
- *      的默认分支 tip**（R28）：克隆一次就把 tip 冻结住的话，来源新增的提交永远不会被评测；
- *   ④ 重跑同一行**不得**动 `events.jsonl`（R27）：它的清空归 `resetEvents`，这里顺手删会让
- *      p4 刚写下的 `preparing`（seq 1）消失、下一次追加从 seq 1 重号，p5 按 seq 去重时吞掉事件。
+ *      分数无意义、整轮作废；
+ *   ③ `commitHash: null` 时 `baselineCommit` 必须是 40 位具体 hash，**且跟随来源仓库当前
+ *      的默认分支 tip**：克隆一次就把 tip 冻结住的话，来源新增的提交永远不会被评测；
+ *   ④ 重跑同一行**不得**动 `events.jsonl`：它的清空归 `resetEvents`，这里顺手删会让
+ *      编排层刚写下的 `preparing`（seq 1）消失、下一次追加从 seq 1 重号，界面按 seq 去重时吞掉事件。
  */
 import { cpSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

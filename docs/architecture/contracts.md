@@ -42,9 +42,9 @@
 
 - **两份契约投影同批替换**（最核心的口径，真源在 `score.ts` 文件头）：`JUDGE_OUTPUT_CONTRACT`（文本契约，进提示词）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出，给 claude-code 的 `outputFormat` 与 codex 的 `outputSchema`）是**同一条契约的两个投影**，必须**同批修改**——只动一侧会让「模型按 schema 回的」与「解析器按提示词认的」分叉，界面表现为「模型回得挺好、解析就是失败」。守卫在 `score.test.ts`：同形守卫（字段名逐项对齐）+「两份投影里都不出现 `totalScore`」+「`minItems` / `maxItems` 不存在」（项数由每张评分表决定，编译期字面量表达不了，只能由结构检查判）。schema 手写字面量，**不引 `zod-to-json-schema`、不写通用转换器**（那是第二份真源）；只用可移植子集（无 `oneOf` / `const` / `prefixItems` / `uniqueItems`）。`achieved` 请求侧取 boolean 严档、解析侧宽容读——有意登记的差异。
 - **schema 分层机制**：schema 同时承担运行时校验与类型推导的单一真源。读侧容忍——`listRuns()` 对坏快照跳过并记汇总 WARN（一条坏数据不该让整个列表白屏）；写侧 `appendEvent` 也做 `safeParse`（写侧容忍的后果是静默少一条事件）。
-- **契约先行的组织方式**：p0 一次性建好全部契约、后续计划只消费。跨计划可见的名字由一份「接缝契约」钉死——spec 说为什么、计划说怎么做、接缝契约说叫什么；三份文档各自回答一个问题，名字只在一处定义。
+- **契约先行的组织方式**：全部契约一次性建好、后续只消费。跨边界可见的名字由一份「接缝契约」钉死——**为什么、怎么做、叫什么**各由一份文档回答，名字只在一处定义。
 - **类型期与运行期依赖边的区分**：`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故依赖方向表不列这条边、ui 放 `devDependencies`。**只允许 `export type`**：写成值导出就真有运行时依赖，得回来改表。
-- **演化：`protocolType` 单值 → `protocolTypes` 集合**（dsh 两条 wire 都真机跑通后收口）：整体替换而非并存加格——不留两格真源；四处判定点改读同一判据 `acceptsProtocol`，文案收成 `protocolMismatchMessage`。
+- **`protocolTypes` 是集合不是单值**：整体替换而非并存加格——不留两格真源；四处判定点读同一判据 `acceptsProtocol`，文案收成 `protocolMismatchMessage`。
 
 ## 已知边界与取舍
 
@@ -52,8 +52,8 @@
 |---|---|---|
 | `AgentErrorCode` 不进 `ERROR_CODES` | 有意设计 | 它没有对应 HTTP 状态，进了 `STATUS_BY_CODE` 就得编造状态码；由 `errors.test.ts`「AgentErrorCode 不进 ERROR_CODES」钉住 |
 | 契约可选字段的兼容载荷 | 常态 | 旧记录缺格是常态，必填会让 `listRuns()` 静默跳过整轮；处置：新字段一律 `.default(...)`，跳过必须在同趟扫描记**汇总 WARN**（「列表短了」与「为什么短」在同一条日志流里挨着） |
-| dsh 是否还有第三条 wire | 未验证 | `protocolTypes` 单值改集合时只真机验证了两条；若发现第三条，单值 / 集合设计需重开（收口时的残余不确定性，如实登记） |
-| 结构化输出不承诺上游照做 | 有意登记 | `structuredOutput` 记的是「schema 真的下发给了适配器」，网关可能丢掉这格而分照样记 `true`；`achieved` 请求侧 boolean 严档、解析侧宽容读（有意登记的差异，与旧体系「schema 拒 6 分、解析器夹紧到 5」同一形状） |
+| dsh 是否还有第三条 wire | 未验证 | 目前真机只跑到两条；若发现第三条，单值 / 集合设计需重开（残余不确定性，如实登记） |
+| 结构化输出不承诺上游照做 | 有意登记 | `structuredOutput` 记的是「schema 真的下发给了适配器」，网关可能丢掉这格而分照样记 `true`；`achieved` 请求侧 boolean 严档、解析侧宽容读（有意登记的差异：请求侧拦身份、解析侧拦形状） |
 
 ## 相关链接
 

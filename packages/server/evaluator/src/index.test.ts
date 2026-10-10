@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 导出面守卫：`@aieval/evaluator` 的出口是**跨计划契约**（p5 的 api 层与 web-next 的启动钩子都从这里
+ * 导出面守卫：`@aieval/evaluator` 的出口是**跨端契约**（api 层与 web-next 的启动钩子都从这里
  * import），名字一旦漂移，接缝处会在运行时报「不是函数」，而各包自己的单测还是绿的。
  * 断言的是**完整集合**而不是「包含某些名字」：新增出口也要显式改这里。这份摩擦是刻意的——
  * 出口面本来就是需要被看见、被评审的东西。
@@ -10,32 +10,32 @@ import { describe, expect, it } from 'vitest';
 import * as evaluator from './index';
 
 describe('@aieval/evaluator 导出面', () => {
-  it('恰好导出契约 §5 钉死的这些名字', () => {
+  it('恰好导出这些名字', () => {
     expect(Object.keys(evaluator).sort()).toEqual(
       [
-        // p0：文本 API 与评分路由
+        // 文本 API 与评分路由
         'callTextApi',
         'resolveJudgeRoute',
-        // 智能体评分（Task 3）：api 层在创建评测时要提前用它拦配置问题（未配置 / 协议不匹配）
+        // 智能体评分：api 层在创建评测时要提前用它拦配置问题（未配置 / 协议不匹配）
         'requireJudgeAgent',
-        // 评分配置的档位（Task 9）：生成 / 识别那条文本通路（api 层的 `judge.ts`）跨包取这两个名字
+        // 评分配置的档位：生成 / 识别那条文本通路（api 层的 `judge.ts`）跨包取这两个名字
         // ——「读一次强度」与「评分前校验它」必须成对出口，只给一个会让调用方自己补第二份判据
         'requireJudgeEffort',
         'resolveJudgeEffort',
-        // 运行快照（Task 1）
+        // 运行快照
         'getRun',
         'listRuns',
         'listRunsForCase',
         'saveRun',
-        // 事件总线（Task 2）；2026-10-10 起两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）
+        // 事件总线；两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）
         'publishRowEvent',
         'publishJudgeEvent',
         'subscribeRowEvents',
         'subscribeJudgeEvents',
         // run 级信号总线（/api/runs/events 的订阅端）：只出口读侧，发射点在 saveRun 体内不出包
         'subscribeRunChanges',
-        // 记录总线（spec v3 §2）：消息与子任务行共用 messages.jsonl；
-        // 2026-10-10 起评分另有自己的一条（judge-messages.jsonl）
+        // 记录总线：消息与子任务行共用 messages.jsonl；
+        // 评分另有自己的一条（judge-messages.jsonl）
         'broadcastJudgeMessage',
         'broadcastRowMessage',
         'publishJudgeMessage',
@@ -46,19 +46,19 @@ describe('@aieval/evaluator 导出面', () => {
         'publishSubagentRecord',
         'subscribeJudgeRecords',
         'subscribeRowRecords',
-        // 评分器（Task 3 / Task 4）
+        // 评分器
         'judgeRow',
         'parseJudgeResponse',
-        // 编排（Task 5 / Task 6 / Task 7）
+        // 编排
         'abortRow',
         'abortRun',
-        // 评测的「修改 / 删除」（2026-09-28）：api 层的 updateRun / deleteRun 从本包取它们
+        // 评测的「修改 / 删除」：api 层的 updateRun / deleteRun 从本包取它们
         'assertRunMutable',
         'deleteRun',
         'drainRunningTasks',
         'recoverInterruptedRuns',
         'rescoreRow',
-        // 单行重新执行（2026-09-27 引入，内部名 retry，界面文案「重新执行」）：web-next 的 retry 路由从 api 包根取它，api 再从本包取
+        // 单行重新执行（内部名 retry，界面文案「重新执行」）：web-next 的 retry 路由从 api 包根取它，api 再从本包取
         'retryRow',
         'startRun',
       ].sort(),

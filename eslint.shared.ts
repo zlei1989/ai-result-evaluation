@@ -123,7 +123,7 @@ export const baseConfig: Linter.Config[] = [
     },
   },
   // 各包根部的 eslint.config.ts / vitest.config.ts / next.config.ts 必须相对引用仓库根的
-  // 共享配置（`../../../eslint.shared`、`../../../vitest.node`，见 brief Step 10），而仓库根
+  // 共享配置（`../../../eslint.shared`、`../../../vitest.node`），而仓库根
   // package.json 自带 name，会被上面那条规则判成「引用了另一个包」。这些文件既不发包、
   // 也不会被任何包的源码 import，不构成分层绕过路径，故豁免。
   // 豁免名单必须**按文件名**限定死，不能写成 `**/*.config.{ts,tsx}`：那样是任意深度匹配，

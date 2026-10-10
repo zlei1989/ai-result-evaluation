@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 真机守卫：**适配器自己**的回收能力（2026-10-07）。
+ * 真机守卫：**适配器自己**的回收能力。
  *
  * 为什么需要它，而不是只有单测：`process-tree.test.ts` / `client.test.ts` 验的是「按 pid 走了杀树
  * 那条路」这个**调用约定**，用的是假子进程；而真机上决定成败的是三件只有真跑才知道的事——
@@ -68,7 +68,7 @@ describe.skipIf(!ENABLED)('真机：codex 适配器的进程树回收', () => {
         sandbox: 'danger-full-access',
         approvalPolicy: 'never',
       });
-      // 插件同步是**异步**的：给足窗口把 `git` 链拉起来（真机实测 1~3s 内出现）
+      // 插件同步是**异步**的：给足窗口把 `git` 链拉起来（实测 1~3s 内出现）
       await sleep(4_000);
 
       const codexPid = findCodexPid();

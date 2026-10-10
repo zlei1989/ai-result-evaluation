@@ -68,7 +68,7 @@ describe('fetchMirror', () => {
     renameSync(origin.bareDir, `${origin.bareDir}.moved`);
 
     // git 对移走的 file:// 路径报 `does not appear to be a git repository`：
-    // spec §4.5 把它归成 NOT_A_GIT_REPO，处置是「改地址」而不是「查网络」
+    // 它归成 NOT_A_GIT_REPO，处置是「改地址」而不是「查网络」
     expect(codeOf(() => fetchMirror(dir, origin.url))).toBe('NOT_A_GIT_REPO');
     expect(messageOf(() => fetchMirror(dir, origin.url))).toContain('不是 git 仓库');
   });
@@ -109,7 +109,7 @@ describe('probeRemote', () => {
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('NOT_A_GIT_REPO');
     expect((caught as Error).message).toContain('还没有任何提交');
-    // 其余远端失败都带 context（RG11 的原文落点），这条不能例外——否则排查时只有一句中文
+    // 其余远端失败都带 context（原文落点），这条不能例外——否则排查时只有一句中文
     expect((caught as ServiceError).context).toMatchObject({ url, what: '读取远端仓库' });
   });
 

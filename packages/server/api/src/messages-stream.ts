@@ -1,6 +1,6 @@
 /**
  * 行级**消息流**的 SSE 产出：把记录文件的历史回放 + 进程内记录总线扇出成 SSE 帧
- * （spec v3 §2 的内容级通道，与 `run-stream.ts` 的行级事件通道**并行**）。
+ * （内容级通道，与 `run-stream.ts` 的行级事件通道**并行**）。
  *
  * 与事件通道的三处**刻意不同**（照抄那边的实现会错）：
  *   1. **没有 `Last-Event-ID` 语义**：事件按 `seq` 续订，而记录没有单调序号——`messageId` 由适配器
@@ -14,19 +14,19 @@
  *      由客户端在抽屉关闭时取消（`cancel()`）；靠终态关流会让「打开一个跑完的行的对话视图」
  *      立刻断连，而那份历史恰恰是用户要看的东西。
  *
- * **一条例外：增量帧在出口合并**（2026-10-09）——「都发出去」这条纪律对**快照**成立、对**增量**不成立。
+ * **一条例外：增量帧在出口合并**——「都发出去」这条纪律对**快照**成立、对**增量**不成立。
  * 因为帧是累积值，一段 n 个 token 的回复按 token 发帧 = 第 k 帧重发前 k 个 token ⇒ 总字节 O(n²)，
  * 而这些中间态在客户端**注定被后一条完全覆盖**（折叠只留最后一条）⇒ 逐帧发出去是纯浪费：
  * 序列化、socket 与浏览器事件循环三处都要为它付账，实测症状就是「浏览器卡死」。
  * 故增量帧按 `mergeKey` 在 16ms 窗口内**只留最后一条**（丢掉的都是被覆盖的中间态，语义零变化，
  * 判据见 `createDeltaCoalescer`）；非增量记录一到就先把待发的增量冲出去，**顺序不变**。
  *
- * **两条记录流共用这一份实现**（2026-10-10）：候选那条（`streamRowRecords`，`messages.jsonl`）
+ * **两条记录流共用这一份实现**：候选那条（`streamRowRecords`，`messages.jsonl`）
  * 与评分那条（`streamJudgeRecords`，`judge-messages.jsonl`）只差「读历史 / 校验存在 / 订阅」
  * 三处函数。分开写两份的话，合并器、`: ready` 首字节、心跳、拆除这四条里漏一条就是
  * 某条流的浏览器契约悄悄不一样。
  *
- * **`replayHistory: false`**（2026-10-10）：只做存在性校验、**不回放历史**。给的是**刷新后没有历史
+ * **`replayHistory: false`**：只做存在性校验、**不回放历史**。给的是**刷新后没有历史
  * 可言**的消费方（卡片活动行：它只要「此刻在打字的那一句」，而历史里没有 delta——增量不落盘。
  * 实测某行 `messages.jsonl` 4 MB，为一句文案把它读进来、序列化、推过 socket 是纯浪费）。
  * 注意这一档**仍然要校验行存在**：把校验一起省掉，客户端拿到就是一条「开了即静默」的连接，
@@ -151,7 +151,7 @@ const ROW_RECORD_CHANNEL: RecordChannel = {
   label: '候选',
 };
 
-/** 评分那条：`judge-messages.jsonl`（评审者自己的对话，2026-10-10 起与执行日志分开） */
+/** 评分那条：`judge-messages.jsonl`（评审者自己的对话，与执行日志分开） */
 const JUDGE_RECORD_CHANNEL: RecordChannel = {
   history: getRowJudgeRecords,
   assertExists: assertRowExists,
@@ -298,7 +298,7 @@ export function streamRowRecords(runId: string, rowId: string, options: RecordSt
 }
 
 /**
- * 评分那条记录流（2026-10-10）：`judge-messages.jsonl`。与候选那条逐字同口径，
+ * 评分那条记录流：`judge-messages.jsonl`。与候选那条逐字同口径，
  * 只是另一个会话、另一个文件、另一张订阅表。
  */
 export function streamJudgeRecords(runId: string, rowId: string, options: RecordStreamOptions = {}): ReadableStream<Uint8Array> {

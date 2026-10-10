@@ -2,7 +2,7 @@
 /**
  * 活动摘要词表的行为契约：一句话怎么说、什么时候不给摘要。
  *
- * 逐条钉住四件事（2026-10-10 口径变更后）：
+ * 逐条钉住四件事：
  *   ① **句式**：活动行是 `调用工具 <名>：<摘要主体>`、工具行只取**摘要主体**（`toolCallHint`）——
  *      工具行把工具名渲染成独立元素，带前缀就是同一件事说两遍；
  *   ② **描述优先**：`input.description` 在时用它（有目标就拼 `描述（目标）`）；
@@ -181,7 +181,7 @@ describe('不认识的工具（`family: null`）：既不假装认识形状，�
     expect(toolCallSummary('job_output', '{"job_id":"pwsh-16","timeout_ms":420000,"wait":true}')).toBe(
       '调用工具 job_output：pwsh-16',
     );
-    // `job_kill` 的 `reason` 是审批/原因语义，**不进摘要**（2026-10-10 口径）：只给 job_id
+    // `job_kill` 的 `reason` 是审批/原因语义，**不进摘要**：只给 job_id
     expect(toolCallSummary('job_kill', { job_id: 'bash-3', reason: 'Fix unnecessary Mockito stubbing' })).toBe(
       '调用工具 job_kill：bash-3',
     );

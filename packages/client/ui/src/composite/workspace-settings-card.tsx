@@ -6,7 +6,7 @@
  * 状态区与按钮的显隐全部由 props 决定（组件**不调接口、不认识 message**，失败提示是页面的事）。
  *
  * 四个刻意的取舍：
- *   1. 按钮叫「校验并保存」而不是「校验」：它确实会写盘（服务端校验通过就落盘，§6.3），
+ *   1. 按钮叫「校验并保存」而不是「校验」：它确实会写盘（服务端校验通过就落盘），
  *      名字必须说清这一点，否则用户以为只是「试试看」而不敢点，或者点了之后不知道已经生效；
  *   2. 校验失败时**保留用户输入**：把输入框弹回旧值会让人以为是自己填错了格式，
  *      而真正的原因（建目录失败 / 不可写）就写在结果区里 —— 两者必须同时可见；
@@ -19,11 +19,11 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Alert, Button, Card, Flex, Form, Input, Skeleton, Switch, Typography } from 'antd';
-import type { CaseSyncAction, CaseSyncStatus, Settings } from '@aieval/contracts';
+import type { CaseSyncAction, CaseSyncStatus, SettingsView } from '@aieval/contracts';
 import { formatDateTime, shortHash } from '../base/format';
 
 export interface WorkspaceSettingsCardProps {
-  settings: Settings;
+  settings: SettingsView;
   onValidate: (root: string) => void;
   saving: boolean;
   /** 最近一次工作区校验结果：null = 还没校验过；ok=false 时 message 是服务端的中文原因 */

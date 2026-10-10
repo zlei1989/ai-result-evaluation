@@ -1,5 +1,5 @@
 /**
- * 思考 token 与 `output_tokens` 的**大小关系**（设计稿 §7.7.2 说这一条决定 `basis` 能否从 `'unknown'` 升级）。
+ * 思考 token 与 `output_tokens` 的**大小关系**（这一条决定 `basis` 能否从 `'unknown'` 升级）。
  *
  * 判据：若 `thinking_tokens < output_tokens` 恒成立，则思考 token **计入** output（inclusive）；
  * 若两者互不包含（存在 thinking > output 的样本），则是 exclusive。

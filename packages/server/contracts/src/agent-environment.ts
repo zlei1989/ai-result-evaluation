@@ -1,14 +1,14 @@
 /**
- * **环境信息模型**（设计 §4.3）：一个智能体运行在什么环境里——与「执行日志」解耦，
+ * **环境信息模型**：一个智能体运行在什么环境里——与「执行日志」解耦，
  * 但由 `agent-log` 负责展示。
  *
- * 为什么它是独立模型、不是 `AgentLogModel` 的一部分（§4.3 的两条理由，都实测过）：
+ * 为什么它是独立模型、不是 `AgentLogModel` 的一部分（两条理由，都实测过）：
  *   · **体积**：厂商系统提示词与工具模式串可能是几十 KB（实测单个 `probe/dumps/dsh.json`
  *     就有 237 KB）——并进主模型意味着**每次流式提交都在搬它**；
  *   · **时机**：它只在环境抽屉打开时才需要。
  *   ⇒ 由调用方按需取、按 `Loadable` 注入（「UI 不做取数」同一条边界：UI 只渲染给到的形状）。
  *
- * **落点在 contracts 而不是 ui**（2026-10-03 修正，设计 §4.3 的原文就是这里）：
+ * **落点在 contracts 而不是 ui**：
  * 这些名字里没有一个界面词汇——不存在色档、折叠键、渲染块那一类东西，
  * 全是「这次运行被下发了什么」的事实。放在 ui 里会让**服务端永远造不出这个对象**，
  * 而它是排障要看的第一个东西。UI 侧继续从 `@aieval/ui` 转出同名类型，消费方不必改路径。
@@ -18,14 +18,14 @@ import { MissingReasonSchema } from './agent-message';
 
 /**
  * 一组环境信息。`source` 是**必须**的：它回答「这条要求是谁下发的」，
- * 而这正是把用户层 / 厂商系统层 / 运行配置 / 实测统计分开展示的全部理由（§4.3 D17）。
+ * 而这正是把用户层 / 厂商系统层 / 运行配置 / 实测统计分开展示的全部理由。
  */
 export const EnvSourceSchema = z.enum(['user', 'project', 'vendor', 'observed']);
 export type EnvSource = z.infer<typeof EnvSourceSchema>;
 
 /**
  * 一条环境信息。`present: false` 时 **`missing` 必填**——「这一格没有」必须带原因，
- * 否则与「有但是空的」在界面上长得一样（v2 §4 的整节口径）。
+ * 否则与「有但是空的」在界面上长得一样。
  */
 export const EnvItemSchema = z.discriminatedUnion('present', [
   z.object({
@@ -66,17 +66,17 @@ export type EnvGroup = z.infer<typeof EnvGroupSchema>;
  */
 export const AgentEnvironmentSummarySchema = z.object({
   /**
-   * 智能体的**显示名**（`AGENT_LABELS` 的全名，如「DeepSeek Harness」）——用户 2026-10-08 口径：
+   * 智能体的**显示名**（`AGENT_LABELS` 的全名，如「DeepSeek Harness」）——用户口径：
    * 页面展示不用缩写 ⇒ 摘要里给的是**文案**，不是 kind id。
    *
-   * 为什么是数据层映射而不是把 kind 交给界面去查（2026-10-08）：L0 渲染件持有「厂商 → 文案」的表
+   * 为什么是数据层映射而不是把 kind 交给界面去查：L0 渲染件持有「厂商 → 文案」的表
    * 就是「UI 判厂商」，`agent-log-layering.test.ts` 的 (e) 条会当场红（实测）；
    * 而这一格本来就只服务展示（摘要七项全是给人核对的读数），故在拼装处一次映射完。
    * 认不出的 kind **原样回落**（本格是 `z.string()`：老快照与将来第四家都不许编名字）。
    */
   agentLabel: z.string(),
   modelId: z.string(),
-  /** 我们**要求**的档位，不是实际生效的档位（厂商可能静默降档，spec §9 第 7 条） */
+  /** 我们**要求**的档位，不是实际生效的档位（厂商可能静默降档） */
   effort: z.string().nullable(),
   providerName: z.string(),
   baseUrl: z.string(),

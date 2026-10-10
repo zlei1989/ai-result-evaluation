@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * **三端一致性**（spec v3 §2 / §3）：同一件事在 claude-code / codex / dsh 上归一之后，
+ * **三端一致性**：同一件事在 claude-code / codex / dsh 上归一之后，
  * 消息结果必须逐字段一致——只有「这一家结构上没有」的格才允许不同（`messageId` / `vendorId` /
  * `turn` / `step` / 工具的 `name` / 思考块的 `signature` / `raw`，以及 codex 工具块上
  * app-server 独有的事实 `cwd` / `durationMs`），且那些差异必须由**能力声明**说明。

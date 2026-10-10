@@ -1,16 +1,14 @@
 /**
  * CaseFormPanel：表单字段、提交归一化、评分标准项的生成 / 识别回填、仓库校验回显，以及六条守卫。
  *
- * 六条守卫（都有变异验证，见 Step 5 / Step 10 与 fix wave 报告）：
- *   1. 手工输入的 commit hash 不在候选列表里也能提交（候选只是便利，§4.2）；
- *   2. 生成 / 识别**失败**都不动用户已有的东西（§4.3）：表格原样、识别文本原样——
+ * 六条守卫：
+ *   1. 手工输入的 commit hash 不在候选列表里也能提交（候选只是便利）；
+ *   2. 生成 / 识别**失败**都不动用户已有的东西：表格原样、识别文本原样——
  *      反面写法是「先清空再请求」，一次网络抖动就清掉用户刚调好的表或刚粘进来的长文；
- *   3. **空表能存在、不能提交**（§7.1）：表格常驻可见、新建时就是空表，提交由 rubric 那条规则拦下；
+ *   3. **空表能存在、不能提交**：表格常驻可见、新建时就是空表，提交由 rubric 那条规则拦下；
  *   4. **在途的识别可以取消**：按了取消，之后才回来的结果一个字都不回填（取消就是取消）；
  *   5. 仓库信息只在「当前输入框的值 == 校验通过的那次值」时回显（否则会让人以为新路径也校验过了）；
- *   6. 挂载面板不产生 antd 的弃用告警（`addonAfter` 那一类，见文件末尾的 describe）。
- *
- * 表单上**没有**「默认评分模型」这一格（2026-09 删除）：评分模型只来自设置页「评分配置」，
+ *   6. 挂载面板不产生 antd 的弃用告警（`addonAfter` 那一类，见文件末尾的 describe）。 * 表单上**没有**「默认评分模型」这一格：评分模型只来自设置页「评分配置」，
  * 所以这份文件里也不再需要任何 provider 清单夹具。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -154,7 +152,7 @@ describe('CaseFormPanel 提交', () => {
   });
 
   /**
-   * 阶段评审 F4：标题有 `whitespace` 规则，仓库路径却没有——纯空格能过前端校验，`handleFinish` 的 trim 把它
+   * 标题有 `whitespace` 规则，仓库路径却没有时——纯空格能过前端校验，`handleFinish` 的 trim 把它
    * 变成 `''`，服务端 `CaseCreateSchema` 的 `min(1)` 拒绝，用户拿到的是一条「查询参数不合法」的 toast，
    * 表单上**没有任何字段级红字**，也就无从知道该改哪个字段。
    */
@@ -199,7 +197,7 @@ describe('CaseFormPanel 提交', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  // Review Focus 1（守卫，变异验证见 Step 5）：候选只是便利，手工输入的合法 hash 必须能提交。
+  // 候选只是便利，手工输入的合法 hash 必须能提交。
   it('手工输入的 commit hash 不在候选列表里也能提交', async () => {
     const onSubmit = vi.fn<(values: CaseCreate) => void>();
     setup({ onSubmit });
@@ -212,7 +210,7 @@ describe('CaseFormPanel 提交', () => {
     expect(onSubmit.mock.calls[0]?.[0]?.commitHash).toBe(HASH_NOT_IN_LIST);
   });
 
-  // Review Focus 5：候选为空时必须仍能手工填 hash 提交（新仓库只有 1 个提交、git log 出错都会这样）。
+  // 候选为空时必须仍能手工填 hash 提交（新仓库只有 1 个提交、git log 出错都会这样）。
   it('候选为空时仍能提交（下拉只说明「暂无候选」，不阻塞）', async () => {
     const onSubmit = vi.fn<(values: CaseCreate) => void>();
     setup({ commits: [], onSubmit });
@@ -304,7 +302,7 @@ describe('CaseFormPanel 的评分标准项', () => {
 
     await waitFor(() => expect(onGenerate).toHaveBeenCalledTimes(1));
     // 弹窗没关（文本还在、且原样），表格也没被清——反面写法是「先清空再请求」：
-    // 一次抖动就同时毁掉用户刚粘进来的长文与之前调好的表（变异验证见 Step 10）
+    // 一次抖动就同时毁掉用户刚粘进来的长文与之前调好的表
     expect(screen.getByTestId('rubric-recognize-text')).toHaveValue('很长的一段要求');
     expect(screen.getByTestId('rubric-item-goal-0-0')).toHaveValue('追加 agent 字段');
   });
@@ -352,9 +350,8 @@ describe('CaseFormPanel 的评分标准项', () => {
    *
    * 两处都不能省：
    *   · 先把三个文本字段填满——`handleGenerate` 的第一步是 `validateFields(['taskPrompt','repoPath'])`，
-   *     空表单会让它在**到达 `onGenerate` 之前**就返回，那样这条用例在按钮被误改成可用时照样绿；
-   *   · 断言前**等一拍**——`handleGenerate` 是 async 的，同步断言跑在校验 resolve 之前，
-   *     同样会让上面那种回归溜过去（实测：少了这一拍，一个「把按钮改成可用」的变异体存活）。
+   *     空表单会让它在**到达 `onGenerate` 之前**就返回，那样这条用例在按钮被误改成可用时照样绿；   * · 断言前**等一拍**——`handleGenerate` 是 async 的，同步断言跑在校验 resolve 之前，
+   * 同样会让上面那种回归溜过去。
    */
   it('未配置评分模型时点两个按钮都不会触发生成', async () => {
     const onGenerate = vi.fn();
@@ -367,7 +364,7 @@ describe('CaseFormPanel 的评分标准项', () => {
   });
 
   /**
-   * 只看全局默认（用例级覆盖已删除）：编辑模式下的禁用提示与新建模式**逐字相同**。
+   * 只看全局默认：编辑模式下的禁用提示与新建模式**逐字相同**。
    * 这条钉的是「删除之后不许有残留的第二条去处文案」——用例上已经没有评分模型这一格，
    * 若还提示「本用例的评分模型配置不完整」，用户会去找一个界面上不存在的字段。
    * 改名换形之后它照样成立（两个按钮共用同一把全局尺子），故随卡片一起保留。
@@ -383,11 +380,11 @@ describe('CaseFormPanel 的评分标准项', () => {
   });
 
   /**
-   * 守卫：**空表能存在、不能提交**（§7.1）。判别力全部落在 `onSubmit` 上。
+   * 守卫：**空表能存在、不能提交**。判别力全部落在 `onSubmit` 上。
    *
    * 为什么这里**不**断言「页面上有『评分标准项不能为空』」：那句中文由 `RubricTable` 在**挂载时**就显示
    * （空表必然过不了 `validateRubric`），而 `Form.Item` 是 `noStyle`、根本不渲染自己的 error——
-   * 那样一行断言在**规则被删掉之后照样绿**（实测：变异体 M2 的红只可能来自下面这行）。
+   * 那样一行断言在**规则被删掉之后照样绿**（红只可能来自下面这行）。
    * 那句话本身的显示由 `rubric-table.test.tsx` 守（`rubric-validation-error`）。
    */
   it('空表提交被拦下（空表能存在、不能提交）', async () => {
@@ -461,7 +458,7 @@ describe('CaseFormPanel 的仓库校验', () => {
   it('提示词输入框用 antd 的等宽字体 token（不是写死的字体名）', () => {
     setup();
 
-    // 原来是「评分提示词」那个文本域，它随本次重构换成了评分标准项表格：
+    // 「评分提示词」那个文本域已换成评分标准项表格：
     // 这条守卫守的是 `monoStyle`（`theme.useToken().fontFamilyCode`）真的落在提示词文本域上，
     // 而考题提示词仍是同一个语义（交出去的是题面正文），故改指它、保留这条守卫。
     const textarea = screen.getByTestId('case-task-prompt');
@@ -472,7 +469,7 @@ describe('CaseFormPanel 的仓库校验', () => {
 });
 
 /**
- * fix wave Item 1（守卫）：antd 6 弃用了 `Input` 的 `addonAfter` / `addonBefore`（提示改用 `Space.Compact`），
+ * 守卫：antd 6 弃用了 `Input` 的 `addonAfter` / `addonBefore`（提示改用 `Space.Compact`），
  * 每次挂载都会打一条 **error 级**的 `[antd: Input] \`addonAfter\` is deprecated…`。
  *
  * 为什么值得一条守卫：这类告警**只在开发/测试环境**出现（`process.env.NODE_ENV !== 'production'`），
@@ -503,9 +500,9 @@ describe('CaseFormPanel 的控制台告警', () => {
 /**
  * 形态守卫：提交按钮的**两态**。
  *
- * 2026-09-26 用户口径之后两态**同形**：实心主按钮 + 无图标——它只提交这张已经写着「创建用例 /
- * 编辑用例」的右栏表单，按钮不必再复述动作。此前新建态是「加号 + 虚线 + 创建」（与全站新增入口同形），
- * 现已收回；下面两条同时钉住「别把图标再加回来」：图标没被 `aria-hidden` 时，可访问名会变成
+ * 两态**同形**：实心主按钮 + 无图标——它只提交这张已经写着「创建用例 /
+ * 编辑用例」的右栏表单，按钮不必再复述动作（新建态不用「加号 + 虚线 + 创建」那一套）；
+ * 下面两条同时钉住「别把图标加回来」：图标没被 `aria-hidden` 时，可访问名会变成
  * 「plus 确定」，按名字定位（含屏读器）全部失配。
  *
  * 文案仍分两态：新建「确定」（确认这张新表单）、编辑「保存」（保存对已有用例的改动）。
@@ -545,7 +542,7 @@ const REMOTE_INFO: RepoInfo = {
 const REMOTE_CASE: TestCase = { ...INITIAL, repoPath: 'git@host:group/repo.git', repoBranch: 'feat/x' };
 
 describe('CaseFormPanel 来源切换（远端）', () => {
-  /** 2026-09-27 用户口径：远端在前、本地在后，且新建态默认选中远端 */
+  /** 远端在前、本地在后，且新建态默认选中远端 */
   it('新建态：远端仓库排在前且默认选中', () => {
     setup({ mode: 'new' });
 
@@ -699,10 +696,10 @@ describe('CaseFormPanel 来源切换（远端）', () => {
   });
 
   /**
-   * 最终整支复审 Important 2（spec §7.1）：远端的「校验」与「重新加载候选」在**忙的时候**必须换文案。
+   * 远端的「校验」与「重新加载候选」在**忙的时候**必须换文案。
    *
    * 为什么值得一条守卫：远端首访这两个按钮都会真的克隆（用户可能跳过校验直接点候选），而克隆期间
-   * 整个 Node 进程阻塞（spec §6.8）——页面上的其它请求、SSE、终止都排在后面。用户看到的若还是
+   * 整个 Node 进程阻塞——页面上的其它请求、SSE、终止都排在后面。用户看到的若还是
    * 「校验 / 重新加载候选」，他唯一能得出的结论是「点了没反应」，于是再点一次。
    * 判据取 `textContent` **全等**而不是包含：`校验` 是 `正在校验并拉取远端仓库…` 的子串，
    * 包含式断言分不出「换了文案」与「加了一句话」。
@@ -733,7 +730,7 @@ describe('CaseFormPanel 来源切换（远端）', () => {
   });
 
   /**
-   * 最终整支复审 Item 6（spec §7.1 的字段级提示逐字）：远端「代码仓库」的提示里必须带**协议白名单**。
+   * 远端「代码仓库」的提示里必须带**协议白名单**（字段级提示逐字）。
    * 填了 `ftp://…` 的用户拿到的是「不支持的 git 地址协议：ftp（支持 ssh:// / http:// / https:// / git:// / file://
    * 与 user@host:path）」，而字段级提示若只说「请填写 git 地址」，他仍然不知道该换成哪种写法——
    * 这句话就是那句拒绝的补救办法。

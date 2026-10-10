@@ -1,12 +1,12 @@
 /**
- * 行级 SSE：唯一的实时通道（spec §8）。
+ * 行级 SSE：唯一的实时通道。
  * 三处必须写死的口径：
  *   1. 响应头 `text/event-stream` + `cache-control: no-cache` + `connection: keep-alive`
  *      + `X-Accel-Buffering: no`（最后一条是给反向代理的：它默认会把 SSE 缓冲起来，
  *      表现是「事件全对，但要等连接结束才一起到」）；
  *   2. `afterSeq` 的来源优先级：`Last-Event-ID` 头 > `?afterSeq=`。浏览器自动重连时**只发头、
  *      不发 query**，而 query 里带的是首连那一刻的 seq——优先用头才能不重不漏；头的值非法就忽略；
- *   3. `runtime = 'nodejs'`：事件总线是**进程内**的（§11 R6），换到别的 runtime 会连不上编排层。
+ *   3. `runtime = 'nodejs'`：事件总线是**进程内**的，换到别的 runtime 会连不上编排层。
  */
 import { streamRowEvents } from '@aieval/api';
 import { handleApiError } from '@/src/server-context';

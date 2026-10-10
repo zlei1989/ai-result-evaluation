@@ -1,6 +1,8 @@
 /** client 公共出口：数据获取 hooks 与 HTTP 原语。类型全部来自 contracts。 */
 export { delJson, getJson, postJson, putJson } from './http';
 export { useSettings } from './settings';
+// MCP 探活：无缓存的一次性 POST，行级 loading 与结果留在展示层
+export { MCP_TEST_URL, probeMcpServer } from './mcp';
 export {
   COMMITS_KEY,
   matchesCommitsKey,
@@ -57,8 +59,8 @@ export {
 } from './row-messages';
 export { useRunLiveMetrics, type RowLiveMetrics } from './row-live';
 /**
- * 活动行的**实时打字内容**（2026-10-10）：折 AgentMessage 的内容流（正文 / 工具摘要），
- * 与 `useRunLiveMetrics` 折事件流是同一层的两条路——活动行把两者叠起来用（实时优先、历史兜底）。
+ * 活动行的**实时打字内容**：折 AgentMessage 的内容流，
+ * 与 `useRunLiveMetrics` 折事件流是同一层的两条路——活动行把两者叠起来用。
  */
 export {
   EMPTY_ACTIVITY,
@@ -69,12 +71,12 @@ export {
   type RowActivity,
 } from './run-activity';
 /**
- * 环境信息的拼装（设计 §4.3）。**纯函数**，与 `buildRowFacts` / `buildAgentLogModel` 同一条边界：
+ * 环境信息的拼装。**纯函数**，与 `buildRowFacts` / `buildAgentLogModel` 同一条边界：
  * 页面只做拼装，判定与文案都在数据层定死（页面没有测试面）。
  */
 export { ENV_GROUP_ORDER, buildAgentEnvironment, envItem, type BuildEnvironmentInput } from './build-environment';
 /**
- * **界面模型的类型转发**（`2026-09-30-exec-log-drawer-redesign-design.md` §4.1 的「类型落点」）。
+ * **界面模型的类型转发**。
  *
  * 定义只有一处：`@aieval/ui` 的 `src/composite/agent-log/types.ts`（那些名字是**界面词汇**——
  * 色档、折叠键、渲染块、文案表——放不进服务端的 `@aieval/contracts`）。

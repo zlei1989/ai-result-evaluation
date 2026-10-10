@@ -4,10 +4,10 @@
  *   1. **只用 Web 标准类型**（`ReadableStream` / `Uint8Array` / `TextEncoder`）——api 禁框架，
  *      这里连 `Response` 都不组装，响应头由路由层负责；
  *   2. 帧格式写死为 `id: <seq>` + `event: <type>` + `data: <JSON>` + 空行：`id` 是浏览器
- *      `Last-Event-ID` 的唯一来源，缺了它断线重连只能从头再来（spec §7.4）；
- *   3. 回放里出现终态就**立即关流**（spec §8 的 SSE 行为要求）：已经跑完的行不该让浏览器挂着一条永不结束的连接。
+ *      `Last-Event-ID` 的唯一来源，缺了它断线重连只能从头再来；
+ *   3. 回放里出现终态就**立即关流**：已经跑完的行不该让浏览器挂着一条永不结束的连接。
  *
- * **两条流共用这一份实现**（2026-10-10）：候选那条（`streamRowEvents`）与评分那条
+ * **两条流共用这一份实现**：候选那条（`streamRowEvents`）与评分那条
  * （`streamJudgeEvents`）只差「读历史的函数」与「订阅的函数」两处，所以它们收在一个 `EventChannel`
  * 里。两份实现并排写的话，去重、`: ready` 首字节、终态关流、心跳这四条里漏改一条就是
  * 「某一条流的浏览器契约悄悄不一样」——而那种差异在界面上表现为「某条流就是不刷新」。
@@ -47,7 +47,7 @@ interface EventChannel {
 /** 候选那条：行级 `events.jsonl`（状态、计量、候选的 log 与编排层留痕） */
 const ROW_EVENT_CHANNEL: EventChannel = { history: getRowLog, subscribe: subscribeRowEvents, label: '行级' };
 
-/** 评分那条：`judge-events.jsonl`（评审者自己的流水，2026-10-10 起与行级分开） */
+/** 评分那条：`judge-events.jsonl`（评审者自己的流水，与行级分开） */
 const JUDGE_EVENT_CHANNEL: EventChannel = { history: getRowJudgeLog, subscribe: subscribeJudgeEvents, label: '评分' };
 
 /** 一条事件是不是「这一行已经结束」：`end` 事件与终态 `status` 事件都算 */
@@ -74,7 +74,7 @@ function toFrame(event: AgentEvent): string {
  * 变成流内的异步 error，路由层就只剩一条刚打开就断掉的 SSE。
  *
  * 这里**不再**写第二份行存在性校验：读历史那一侧已经查过同一件事，同一份校验写两遍正是
- * §11 R36 要避免的形状（两份判据会漂移，而漂移时先抛的那一份说了算）。
+ * 要避免的形状（两份判据会漂移，而漂移时先抛的那一份说了算）。
  */
 function streamEvents(channel: EventChannel, runId: string, rowId: string, afterSeq: number): ReadableStream<Uint8Array> {
   const history = channel.history(runId, rowId, afterSeq);
@@ -157,7 +157,7 @@ export function streamRowEvents(runId: string, rowId: string, afterSeq: number):
 }
 
 /**
- * 评分那条事件流（2026-10-10）。`afterSeq` 缺省 0 = 从头回放：这条流没有 `Last-Event-ID` 的
+ * 评分那条事件流。`afterSeq` 缺省 0 = 从头回放：这条流没有 `Last-Event-ID` 的
  * 接续语义（消费方是卡片活动行与离线排障，游标由它们自己按这条流的 seq 记）。
  */
 export function streamJudgeEvents(runId: string, rowId: string, afterSeq = 0): ReadableStream<Uint8Array> {

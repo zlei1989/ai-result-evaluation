@@ -4,8 +4,8 @@
  * （`callId` 配对、连续合并、两族卡片提出、派发点定位都在这儿），而它错起来的样子
  * 全都长得像「内容不对」而不是报错，故逐条钉住。
  *
- * 每条用例的靶子写在 `it` 的说明里；其中三条有专门的变异体（见设计文档 §10）：
- *   · 把 `callId` 配对改成「按出现顺序两两配对」⇒ 第一条必须红；
+ * 每条用例的靶子写在 `it` 的说明里；其中三条有专门的变异体：
+ *   · 把 `callId` 配对改成「按出现顺序两两配对」 ⇒ 第一条必须红；
  *   · 把两族卡片改回留在工具组内 ⇒ 「组头的 N 不含提出去的调用」必须红；
  *   · 把同轮多次 `task` 调用画成多张面板 ⇒ 「只出最后一张」必须红。
  */
@@ -162,7 +162,7 @@ describe('buildRenderBlocks：callId 配对', () => {
     const group = blocks[0];
     if (group?.kind !== 'tool-group') throw new Error('应为工具组');
     expect(group.entries.map((entry) => entry.kind)).toEqual(['call', 'orphan-result']);
-    // 配对成功的话这里会是 1 条且带 output —— 这正是变异体 (a) 要拦的形状
+    // 配对成功的话这里会是 1 条且带 output —— 这正是这条守卫要拦的形状
     expect(group.entries[0]?.kind === 'call' ? group.entries[0].output : 'unexpected').toBeNull();
   });
 
@@ -207,7 +207,7 @@ describe('buildRenderBlocks：两族卡片', () => {
   it('`task` 卡片从工具组里提出，并**切断**合并链（前后各成一组）', () => {
     const blocks = buildRenderBlocks([call('c1', 'call_1', 'a'), taskCall('c2', 'call_2'), call('c3', 'call_3', 'b')], nodeIndex([]), TURN);
     expect(blocks.map((block) => block.kind)).toEqual(['tool-group', 'task-panel', 'tool-group']);
-    // 组头的 `工具调用 × N` 必须**不含**提出去的调用 —— 变异体 (k) 的靶子
+    // 组头的 `工具调用 × N` 必须**不含**提出去的调用 —— 靶子
     const first = blocks[0];
     if (first?.kind !== 'tool-group') throw new Error('应为工具组');
     expect(first.entries).toHaveLength(1);
@@ -228,11 +228,11 @@ describe('buildRenderBlocks：两族卡片', () => {
   });
 
   /**
-   * 回归守卫（2026-10-08 修）：
+   * 回归守卫：
    *
    * 装配层一度把 `AskUserInteraction.at` 写成**空串**（现已改成块的时刻，`build-model.ts` 的 `familyPayloadOf`），
    * 而「等待答复中… 12m」与固定区那枚「等待答复」徽标**都读这一格**。
-   * 少了这道回填，卡片只写「等待答复中…」不带时长；更糟的是 `waitingSinceOf` 回的是 `''`（不是 `null`），
+   * 少了这道回填，卡片只写「等待答复中…」不带时长；更糟的是 `waitingSinceOf` 回的是 `''`，
    * `Date.parse('')` 得 NaN ⇒ 徽标恒显「等待答复 0s」且**永远不涨**——看起来像「刚问完」，把长等待读成没等。
    * 与 `task` 那一支同一口径：载荷没带时刻就用调用块的时刻。
    */
@@ -256,7 +256,7 @@ describe('buildRenderBlocks：两族卡片', () => {
     expect(blocks.map((block) => block.kind)).toEqual(['tool-group']);
     const group = blocks[0];
     if (group?.kind !== 'tool-group') throw new Error('应为工具组');
-    // `family` 非空但 `tool` 为 null ⇒ 通用工具行（D29：与「适配器不认识」不是一回事）
+    // `family` 非空但 `tool` 为 null ⇒ 通用工具行（与「适配器不认识」不是一回事）
     expect(group.entries[0]?.kind === 'call' ? group.entries[0].family : null).toBe('task');
   });
 });

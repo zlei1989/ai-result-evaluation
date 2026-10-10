@@ -37,7 +37,7 @@
 
 ## 设置
 
-`/settings` 页四个 Tab。供应商与评分配置只在设置页配置——用例不持有评分模型，评分与生成一律走全局默认。
+`/settings` 页五个 Tab。供应商与评分配置只在设置页配置——用例不持有评分模型，评分与生成一律走全局默认。
 
 | 能力 | 一句话定位 |
 |---|---|
@@ -45,9 +45,10 @@
 | 模型清单 | 独立对话框维护：拉取是合并不是覆盖（手工条目不被冲掉），可手工增删、逐条维护上下文窗口与输出上限；窗口未知就不注入，不用兜底数字冒充已知 |
 | 评分配置 | 默认评分模型（两种协议都可选）+ 思考强度 + 默认评分智能体 + diff 上限（默认 256 KB = 262 144 字节）；没有「行超时」——执行与评分都不限时间 |
 | 工作区 | 工作区根目录默认 `~/.aieval-runs`、**用例目录**默认 `~/.aieval-cases`，两格各自「校验并保存」（必须真写一次再删）；改根目录不迁移已有数据，历史评测显示自己的实际根目录。另带**用例变更时自动提交**开关（`casesRoot` 不是 git 仓库时置灰）与用例同步状态、「提交」/「拉取」两个人工动作 |
+| MCP 服务器 | 第 5 个 Tab：name-keyed map（stdio / http 判别联合）、贴入导入、启停、测试连接；候选执行时按行注入三家各自的形状，行级观测格回答「这一行装上没有」 |
 | 界面主题 | 跟随系统 / 明亮 / 暗色三档 |
 
-详情层文章：[设置](/features/settings)。
+详情层文章：[设置](/features/settings)、[MCP 配置](/features/mcp-config)。
 
 ## 数据模型
 
@@ -55,7 +56,7 @@
 
 | 模型 | 一句话定位 |
 |---|---|
-| `config.json` | `~/.aieval/config.json`（或 `AIEVAL_CONFIG_DIR` 指定目录）**两段一个文件**：应用设置 + 供应商（密钥明文落盘、写盘 `0600`、下行只给掩码）。**用例不在里面**（旧 `cases` 键静默忽略、不迁移） |
+| `config.json` | `~/.aieval/config.json`（或 `AIEVAL_CONFIG_DIR` 指定目录）**两段一个文件**：应用设置 + 供应商（密钥明文落盘、写盘 `0600`、下行只给掩码）。**用例不在里面**（旧 `cases` 键静默忽略、不迁移）。设置段里的 `mcpServers` 另有**播种**口径：键缺失才播预置两台，删光不复播 |
 | 用例文件 | `settings.casesRoot`（默认 `~/.aieval-cases`）下的 `<用例 id>.json`：**一用例一文件**、裸 `TestCase` JSON、文件名即身份、写盘 `0600` 原子替换 |
 | 用例同步状态 | `GET /api/cases/sync-status` 的只读快照（是否 git 仓库 / 有无远端 / 待提交数 / 远端领先数…），**只在内存**、不持久化 |
 | 工作区目录 | `cases/{caseId}/cache/` 用例级缓存仓库、`remotes/` 远端裸镜像、`{runId}/` 一轮评测的快照与行产物，三类各得其所 |
@@ -72,6 +73,6 @@
 
 - [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/claude-code)、[DeepSeek Harness 接入](/protocols/dsh) —— 协议规范域三家厂商文章
 - 本域已落地详情层文章：[用例管理](/features/case-management)、[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)
-- 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)、[设置](/features/settings)、[数据与存储](/features/storage)
+- 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)、[设置](/features/settings)、[MCP 配置](/features/mcp-config)、[数据与存储](/features/storage)
 - 协议层背景：[Provider 抽象与 run 入口](/protocols/provider-run)、[消息规范](/protocols/message-spec)、[事件流](/protocols/event-stream) ——本页消费的智能体协议、消息与事件口径
 - [知识库地图](/) —— 五域导航与 FAQ 台账入口

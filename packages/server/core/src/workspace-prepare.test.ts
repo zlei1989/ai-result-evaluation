@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 目录结构（spec §6.3 / 契约 §10）
+ * 目录结构
  *
  * 本文件是 `workspace.test.ts` 拆分后的一块：临时家目录 / 仓库模板与清理钩子都在 `./testing/workspace-harness`。
  */
@@ -31,7 +31,7 @@ import {
 
 registerWorkspaceHooks();
 
-describe('目录结构（spec §6.3 / 契约 §10）', () => {
+describe('目录结构', () => {
   it('八个路径函数逐字给出约定位置', () => {
     expect(caseCacheDir(root, 'c-1')).toBe(join(root, 'cases', 'c-1', 'cache'));
     expect(runDir(root, 'run-1')).toBe(join(root, 'run-1'));
@@ -71,7 +71,7 @@ describe('prepareRowWorkspace', () => {
     expect(existsSync(join(result.workspacePath, '.git'))).toBe(true);
     expect(existsSync(join(root, 'cases', 'c-1', 'cache', '.git'))).toBe(true);
     expect(existsSync(result.agentHome)).toBe(true);
-    // R2：null → 具体 40 位 hash
+    // null → 具体 40 位 hash
     expect(result.baselineCommit).toBe(commit);
     expect(result.baselineCommit).toHaveLength(40);
     expect(git(result.workspacePath, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('test/row-1');
@@ -123,11 +123,11 @@ describe('prepareRowWorkspace', () => {
     expect(git(second.workspacePath, 'rev-parse', 'HEAD').trim()).toBe(second.baselineCommit);
   });
 
-  it('重跑同一行**不动 events.jsonl**：文件与它的 seq 都活着，下一条事件接着发号（R27）', () => {
-    // p4 的顺序是 resetEvents → 发 preparing（seq 1，这一步就建出了行目录）→ prepareRowWorkspace。
+  it('重跑同一行**不动 events.jsonl**：文件与它的 seq 都活着，下一条事件接着发号', () => {
+    // 编排层的顺序是 resetEvents → 发 preparing（seq 1，这一步就建出了行目录）→ prepareRowWorkspace。
     // 准备阶段若把整个行目录一起删，刚写下的 preparing 就没了，下一次追加又从 seq 1 开始；
-    // p5 的 useRowStream 按 seq 去重，于是清空后的第一条状态事件被**静默吞掉**——
-    // 这正是 R24 存在的理由，而且每一轮评测都会发生。
+    // 界面的 useRowStream 按 seq 去重，于是清空后的第一条状态事件被**静默吞掉**——
+    // 这正是这条保证存在的理由，而且每一轮评测都会发生。
     const { dir } = makeRepo();
     const input = {
       workspaceRoot: root,

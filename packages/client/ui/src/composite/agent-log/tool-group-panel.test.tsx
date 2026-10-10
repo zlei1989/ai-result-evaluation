@@ -4,8 +4,7 @@
  * 五条守卫：
  *   · 组头的 `工具调用 × N` **只数 `entry.kind === 'call'`**——把孤立结果算进去就是虚报调用次数
  *     （一条调用被画成卡片却仍算进 N，读数就是不实的）；
- *   · 调用名汇总去重、最多 3 个、多了缀「等 N 个」；
- *   · 组头带**「失败 N」**（2026-10-03 用户口径）：失败的工具组与失败行都默认收起，
+ *   · 调用名汇总去重、最多 3 个、多了缀「等 N 个」； * · 组头带**「失败 N」**：失败的工具组与失败行都默认收起，
  *     于是「这一组里有失败」只能靠这一格在收起态露出来；N 数的是**结果为 `error` 的条目**
  *     （与「工具调用 × N」是两个口径，失败的孤立结果也算），一条失败都没有时整格不渲染；
  *   · 展开后组内出 `ToolItemDetail`，收起时组内的行**不在 DOM 里**；
@@ -165,7 +164,7 @@ describe('ToolGroupPanel', () => {
     );
 
     expect(container.querySelector('.ant-collapse-extra')).toHaveTextContent('失败 1');
-    // 组头在、组内一行都没有：证据要用户自己点开（2026-10-03 用户口径）
+    // 组头在、组内一行都没有：证据要用户自己点开
     expect(container.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
     expect(screen.queryByText('boom')).toBeNull();
   });

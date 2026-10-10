@@ -1,12 +1,12 @@
 /**
  * codex 真机项①（CLI 路径）：`update_plan` / `request_user_input` 落到哪个 `item.type`。
  *
- * 设计稿 §7.3.1 / §11.1 第 23 项：「三个候选，**不得推断**」——
+ * 硬要求：「三个候选，**不得推断**」——
  *   ① `item.type === 'todo_list'`；② 某个 plan 专用 item 类型；③ 只以 `agent_message` 文本留痕
- *   （若属实则 §7.6.2.2 的"工具面重建面板"方案**不成立**）。
+ *   （若属实则"工具面重建面板"方案**不成立**）。
  *
  * 做法：把 `tools.update_plan.enabled` 与 `tools.experimental_request_user_input.enabled`
- * 按 §7.6.2 的口径打开，跑一条**明确要求先提交计划**的任务，把 `--json` 的每一行原样落盘。
+ * 按既定口径打开，跑一条**明确要求先提交计划**的任务，把 `--json` 的每一行原样落盘。
  * 判据是 `item.type` 的**全集**——不做映射、不做解释。
  */
 import { note, writeDump } from './lib/gateway.mjs';

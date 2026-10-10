@@ -58,3 +58,4 @@ ai-result-evaluation/
 
 服务端各包不依赖框架，厂商 SDK 只在 `agents` 包内引用；依赖方向单向，由 ESLint 规则强制约束，而非口头约定。
 存储使用磁盘文件（JSON + JSONL 事件日志），不引入数据库。
+

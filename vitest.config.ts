@@ -20,7 +20,7 @@ export default defineConfig({
       'packages/server/*/vitest.config.ts',
       'packages/client/*/vitest.config.ts',
       'apps/*/vitest.config.ts',
-      // docs 是知识库的内容守卫工程（读磁盘断言，node 环境）——2026-10-09 票 02 并入。
+      // docs 是知识库的内容守卫工程（读磁盘断言，node 环境）——并入。
       // 显式列出而非 glob：docs/ 不是 workspace 包，glob `*/vitest.config.ts` 会把无关目录也扫进来
       'docs/vitest.config.ts',
     ],

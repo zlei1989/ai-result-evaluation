@@ -1,5 +1,5 @@
 /**
- * **工具名 → 族** 的映射表（spec §5.2），本仓唯一一份。
+ * **工具名 → 族** 的映射表，本仓唯一一份。
  *
  * 为什么单独一个文件：这张表有两个消费方（`message.ts` 的工具块归一、`activity.ts` 的摘要词表），
  * 而它们互相依赖（`message.ts` 要 `toolCallSummary`、`activity.ts` 要 `classifyTool`）。
@@ -66,7 +66,7 @@ const TOOL_FAMILY_BY_NAME: Record<string, ToolFamily> = {
 /**
  * 按工具名归族；判不出来返回 `null`。
  * `mcp__<server>__<tool>` 形态（三家一致的命名）**不进这十族**：它承载的是任意 MCP 工具，
- * 猜一个族等于编一个事实（spec §5.2 的口径：归不进任何一族就 `family: null`、`name` 保留原名）。
+ * 猜一个族等于编一个事实（归不进任何一族就 `family: null`、`name` 保留原名）。
  */
 export function classifyTool(name: string): ToolFamily | null {
   return TOOL_FAMILY_BY_NAME[name] ?? null;

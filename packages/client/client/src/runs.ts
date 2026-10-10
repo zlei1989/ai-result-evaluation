@@ -1,22 +1,22 @@
 /**
  * 评测数据层：列表 / 详情 / 创建 / 启动 / 终止 / 产物读取 / 候选池。
  * 三条约定：
- *   1. **加键在这里，不在页面里**：`/api/runs` 与 `/api/runs/{id}` 被本文件的取数 hook 与
- *      `row-stream.ts` 共用（终态后要 mutate 的就是这两个键），字面量散落必然漂移；
- *   2. **实时性由 run 信号驱动，轮询只剩慢兜底**（用户口径 2026-10-08「不要来回刷新」）：
- *      `useRunEvents`（`run-events.ts`）订阅 `/api/runs/events`，服务端每落盘一次快照
- *      就推一条 `run-updated`，客户端收到即重验列表与详情——状态翻转是毫秒级的
- *      「变了才读」，而不再是每 3 秒问一次。慢兜底（60 秒）只在「还有活在跑」时
- *      开着，给「信号通道万一断了」兜底；`refreshInterval` 传**数字**而不是函数的
- *      理由不变（函数形式每帧都是新引用，SWR 的轮询 effect 会反复重挂、计时器被
- *      反复重置——而跑着的评测正是页面重渲染最频繁的时候），间隔走 state 镜像，
- *      见 `useFallbackRun`；
- *   3. mutation 成功后写缓存 + `revalidate:false`，再显式刷新列表（契约 §7 的回写约定）。
- *      这里没用 `useSWRMutation`：启动/终止的响应要同时写进**详情**与**列表**两个键，
- *      而它只绑定一个键，用了还得再手写一次 mutate——不如从一开始就用 `useSWRConfig().mutate`。
- *      顺带一个结构性好处：runId 是**调用时**才拿到的，这些写操作因此根本没被挂进 SWR 的
- *      fetcher，「窗口重新获得焦点 ⇒ 重发一次写请求」这条 p2 踩过的坑在形状上就不存在
- *      （`runs.test.tsx` 的「焦点重验」一节把它钉住，防的是将来有人改写成 SWR 挂载式）。
+ * 1. **加键在这里，不在页面里**：`/api/runs` 与 `/api/runs/{id}` 被本文件的取数 hook 与
+ * `row-stream.ts` 共用（终态后要 mutate 的就是这两个键），字面量散落必然漂移；
+ * 2. **实时性由 run 信号驱动，轮询只剩慢兜底**：
+ * `useRunEvents`（`run-events.ts`）订阅 `/api/runs/events`，服务端每落盘一次快照
+ * 就推一条 `run-updated`，客户端收到即重验列表与详情——状态翻转是毫秒级的
+ * 「变了才读」，而不再是每 3 秒问一次。慢兜底只在「还有活在跑」时
+ * 开着，给「信号通道万一断了」兜底；`refreshInterval` 传**数字**而不是函数的
+ * 理由不变（函数形式每帧都是新引用，SWR 的轮询 effect 会反复重挂、计时器被
+ * 反复重置——而跑着的评测正是页面重渲染最频繁的时候），间隔走 state 镜像，
+ * 见 `useFallbackRun`；
+ * 3. mutation 成功后写缓存 + `revalidate:false`，再显式刷新列表（回写约定）。
+ * 这里没用 `useSWRMutation`：启动/终止的响应要同时写进**详情**与**列表**两个键，
+ * 而它只绑定一个键，用了还得再手写一次 mutate——不如从一开始就用 `useSWRConfig.mutate`。
+ * 顺带一个结构性好处：runId 是**调用时**才拿到的，这些写操作因此根本没被挂进 SWR 的
+ * fetcher，「窗口重新获得焦点 ⇒ 重发一次写请求」这条 p2 踩过的坑在形状上就不存在
+ * （`runs.test.tsx` 的「焦点重验」一节把它钉住，防的是将来有人改写成 SWR 挂载式）。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
@@ -60,17 +60,17 @@ export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
 }
 
 /**
- * 一行的**候选活动流**端点（2026-10-10）：`/messages/stream?replay=0` = **不回放历史**。
- * 给卡片底部那一行的实时打字用——它只要「此刻在打字的那一句」，而历史里没有增量（delta 不落盘），
- * 回放只会把整份 `messages.jsonl`（实测某行 4 MB）读出来、推过 socket 再丢掉。
- * 刷新之后的静态内容由 `log.summary` 那一路兜底（它有历史回放），两层合起来才是「实时优先、历史兜底」。
+ * 一行的**候选活动流**端点：`/messages/stream?replay=0` = **不回放历史**。
+ * 给卡片底部那一行的实时打字用——它只要「此刻在打字的那一句」，而历史里没有增量，
+ * 回放只会把整份 `messages.jsonl`读出来、推过 socket 再丢掉。
+ * 刷新之后的静态内容由 `log.summary` 那一路兜底，两层合起来才是「实时优先、历史兜底」。
  */
 export function runRowActivityStreamUrl(runId: string, rowId: string): string {
   return runRowUrl(runId, rowId, 'messages/stream', '?replay=0');
 }
 
 /**
- * 一行的**评分活动流**端点（2026-10-10）：`/judge/messages/stream?replay=0`。
+ * 一行的**评分活动流**端点：`/judge/messages/stream?replay=0`。
  * 评审者是**另一个会话**，它的消息落在自己的文件里（`judge-messages.jsonl`）——活动行在评分阶段
  * 看的是这一条，不是候选那条（两条同时订阅会让那一行被候选的残留内容占住）。
  */
@@ -78,7 +78,7 @@ export function runRowJudgeActivityStreamUrl(runId: string, rowId: string): stri
   return `${runKey(runId)}/rows/${rowId}/judge/messages/stream?replay=0`;
 }
 
-/** 候选池与能力元数据的端点（见计划「修正 2/3」） */
+/** 候选池与能力元数据的端点 */
 export const AGENT_OPTIONS_KEY = '/api/runs/model-options';
 
 /**
@@ -146,17 +146,17 @@ export function useRun(id: string | null): {
  * 候选池里的一个模型：与 api 的 `AgentModelOption`（`packages/server/api/src/runs.ts`）**逐字段**一致
  * （client 不能 import api，故此处重复声明）。
  *
- * 两半接缝各有各的守卫，**别把其中一条读成两条都管**（2026-10-06 fix 轮的审查更正）：
- *   · **api 侧的响应形状**由 `apps/web-next/src/route-runs.test.ts` 钉死（它直接断言响应里
- *     `options[0]` 的键集合）——api 偷偷加/改名一格，那里当场红；
- *   · **本接口这三格**由 `runs.test.tsx` 的那条形状用例钉住：对象字面量赋给 `AgentModelOption`
- *     会走**多余属性检查**，少一格就直接 tsc 报错。为什么非要在 client 侧再钉一条：从这里删掉
- *     `efforts` 时路由测试**照样绿**（它管的是 JSON，不是这个接口），而所有消费点传的都是函数值、
- *     三格又全是可选的 ⇒ 结构类型下「少一格」天然可赋值，**tsc 与测试都不会响**。
+ * 两半接缝各有各的守卫，**别把其中一条读成两条都管**：
+ * · **api 侧的响应形状**由 `apps/web-next/src/route-runs.test.ts` 钉死（它直接断言响应里
+ * `options[0]` 的键集合）——api 偷偷加/改名一格，那里当场红；
+ * · **本接口这三格**由 `runs.test.tsx` 的那条形状用例钉住：对象字面量赋给 `AgentModelOption`
+ * 会走**多余属性检查**，少一格就直接 tsc 报错。为什么非要在 client 侧再钉一条：从这里删掉
+ * `efforts` 时路由测试**照样绿**（它管的是 JSON，不是这个接口），而所有消费点传的都是函数值、
+ * 三格又全是可选的 ⇒ 结构类型下「少一格」天然可赋值，**tsc 与测试都不会响**。
  *
- * 后三格**必须在这里声明**（2026-10-06 fix 轮补上）：api 是按「有意义才出现」投影的
+ * 后三格**必须在这里声明**：api 是按「有意义才出现」投影的
  * （缺省 = 窗口未知 / 无可选档 / 上游没推荐），表现是界面**静默**丢掉那一格：少 `efforts` 时
- * 创建表单的「思考强度」下拉永远是空的（面板读的正是它），而没有任何一处会报错。
+ * 创建表单的「思考强度」下拉永远是空的，而没有任何一处会报错。
  */
 export interface AgentModelOption {
   providerId: string;
@@ -171,14 +171,14 @@ export interface AgentModelOption {
    * 首位（上游自己已声明 `off` 时保留上游顺序）；缺省 = 一个档位都没有。
    */
   efforts?: string[];
-  /** 上游推荐档；**只在它落在 `efforts` 里时**才有值（界面据此在标签上标「推荐」、不预选，spec D14） */
+  /**上游推荐档；**只在它落在 `efforts` 里时**才有值（界面据此在标签上标「推荐」、不预选） */
   recommendedEffort?: string;
 }
 
 /**
  * 一种智能体的能力元数据 + 候选池：与 api 的 `AgentOptionGroup` 逐字段一致。
  * client 不能 import api，所以这份形状在两侧各声明一次；**字段集合由路由测试钉死**
- * （见 Task 10：断言响应对象的键集合），**本接口自己那一半**由 `runs.test.tsx` 的接缝形状用例钉住
+ * （见：断言响应对象的键集合），**本接口自己那一半**由 `runs.test.tsx` 的接缝形状用例钉住
  * ——路由测试读的是 JSON，把某一格从这里删掉它照样绿（两边都钉才叫接缝）。
  */
 export interface AgentOptionGroup {
@@ -193,7 +193,7 @@ export interface AgentOptionGroup {
    * 谁在用它：设置页「评分配置」里「思考强度」的候选 = 模型声明 ∩ **这一格**——判据与后端
    * `requireJudgeEffort` 是同一个 `intersectEfforts`。少这一格，卡片只能兜规范五档，
    * dsh 收不了的 `medium` 就会摆上界面并被存进设置，直到生成 / 识别时被硬拒
-   * （2026-10-07 Task 12 补上；此前 api 一直在发，只有这份重复声明的形状漏了它）。
+   *。
    */
   efforts: readonly string[];
   /**
@@ -207,7 +207,7 @@ export interface AgentOptionGroup {
    */
   defaultEffort?: string;
   /**
-   * 消息能力声明（spec v3 §2.5）：五格各带 `source` / `reason`，外加 `notes`。
+   * 消息能力声明：五格各带 `source` / `reason`，外加 `notes`。
    *
    * **逐格原样来自服务端**（api 从 agents 注册表元数据透出）。数据层不许裁剪、也不许在这一层
    * 补默认值：界面那四句「这家结构上不支持 / 厂商没投送 / 我们没接 / 没验证过」全靠它，
@@ -376,7 +376,7 @@ export function useAbortRow(): {
 }
 
 /**
- * 重新评分：只重跑评分步骤（spec §9）。回写两个键与本文件其它写操作同形——
+ * 重新评分：只重跑评分步骤。回写两个键与本文件其它写操作同形——
  * 「状态立刻变成 judging」这件事必须同时被详情与列表看到。
  * `isRescoring` 在界面上只用于**转圈与禁用**（避免连点两次）；它不参与可用性判据，
  * 那个判据是 contracts 的 `canRescoreRow`，与服务端同一份。
@@ -408,16 +408,16 @@ export function useRescoreRow(): {
 
 /**
  * 单行**执行**（内部名仍是 retry；界面文案按行态分叉：没跑过 = 「开始执行」、跑过 = 「重新执行」）：
- * 只跑这一行（候选 agent + 评分），本轮其他行一律不动——2026-09-29 用户口径
+ * 只跑这一行（候选 agent + 评分），本轮其他行一律不动——
  * 「只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」。
- * 与 `useRescoreRow`（只重跑评分）是同一个形状、不同的端点。回写两个键的理由与其它写操作一样：
+ * 与 `useRescoreRow`是同一个形状、不同的端点。回写两个键的理由与其它写操作一样：
  * 状态立刻变成 `preparing` 这件事必须同时被详情与列表看到。
- * `isRetrying` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `canRunRow`（**不在跑就放行**，
- * 含一次都没跑过的行）；`canRetryRow` 只决定文案（这次是重跑还是首跑）。
+ * `isRetrying` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `canRunRow`（*不在跑就放行**，
+ * 含一次都没跑过的行）；`canRetryRow` 只决定文案。
  *
- * ⚠️ **这一次请求可能很久才回来**（2026-09-29 冒烟实测：远端仓库 + 冷镜像时 >5 分钟）：
+ * ⚠️ **这一次请求可能很久才回来**：
  * 服务端的准备阶段（镜像 fetch + 复制 + checkout）跑在 `retryRow` 返回**之前**，而它是同步重活。
- * 不是本 hook 的问题（它也做不了什么），写在这里是为了下一个人排查「点了没反应」时不必从零开始
+ * 不是本 hook 的问题，写在这里是为了下一个人排查「点了没反应」时不必从零开始
  * ——详见 `docs/features/row-execution.md` 已知边界里「retry 准备阶段同步重活」条。
  */
 export function useRetryRow(): {
@@ -447,10 +447,10 @@ export function useRetryRow(): {
 
 /**
  * 变更详情的**文件索引**（一页，默认 30 条，不含 diff 正文）：**按需**（只在抽屉打开时拉）——
- * 服务端每次都要现场跑 git 算 diff（spec §7.2）。
+ * 服务端每次都要现场跑 git 算 diff。
  *
  * `offset` / `limit` 显式给：索引是**分页**的，调用方要靠翻页把「共 N 个文件」逐个加载出来
- * （spec §5.3.4）。只写死第一页会让第 31 个之后的文件永远拿不到——而头部还写着「共 N 个」。
+ *。只写死第一页会让第 31 个之后的文件永远拿不到——而头部还写着「共 N 个」。
  *
  * `revalidateOnFocus: false`：这个 GET 在服务端是**一次真实的 git 计算**（合并三样 diff + 裁剪，
  * 可达数 MB 的输出与秒级耗时），而 SWR 默认会在窗口重新获得焦点时重跑它——每切回一次页面就重算一次。
@@ -523,12 +523,12 @@ const EMPTY_OPTIONS: AgentModelOption[] = [];
 const OPTIMISTIC_CAPABILITY = { usage: true, cancelMidTurn: true } as const;
 
 /**
- * 候选池 + 能力元数据（见计划「修正 2/3」）。一次取全三个 kind：
+ * 候选池 + 能力元数据。一次取全三个 kind：
  * 创建表单要按行的智能体过滤模型池，候选卡片要 `usage` / `cancelMidTurn`，
  * 两者同源，分两次请求只会让「同一个 kind 的两份元数据」有机会不一致。
  *
- * 三个出口都给：`options` 是契约 §7 钉的原始列表形状，`optionsFor` / `capabilityOf` 是页面
- * 真正要用的两个投影（契约 §8 的 `RunCreatePanel.modelOptionsFor` / `RunDetailPanel.capabilityOf`
+ * 三个出口都给：`options` 是钉的原始列表形状，`optionsFor` / `capabilityOf` 是页面
+ * 真正要用的两个投影（`RunCreatePanel.modelOptionsFor` / `RunDetailPanel.capabilityOf`
  * 就是照它们解构的）。投影在这里做，页面里就不必各自 `find` 一遍、也不会各自漏掉缺省值。
  */
 export function useRunModelOptions(): {

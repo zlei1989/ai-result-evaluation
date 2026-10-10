@@ -115,7 +115,7 @@ describe('isTimeoutKill', () => {
 
   it('文案里有 timed out / ETIMEDOUT 但没带 signal/code 的错误不算超时（判据是信号，不是文案）', () => {
     // 远端自己报超时（ssh / curl / 代理）的原文里这两种关键词都可能出现：按关键词判定会把
-    // 「远端不可达」与我们杀掉的那次混成一类，正是 spec §4.5（先按信号判超时）禁止的。
+    // 「远端不可达」与我们杀掉的那次混成一类，正是「先按信号判超时」这条口径禁止的。
     // 两个关键词都塞进 stderr，是为了让「把判据写在文案上」的任何写法（不管挑哪个词）都必然红。
     const fromRemote: unknown = Object.assign(new Error('git 进程以 128 退出'), {
       status: 128,

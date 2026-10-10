@@ -16,11 +16,11 @@ export {
 } from './base/resizable-columns';
 export {
   // 三个右侧抽屉（变更详情 / 评分详情 / 执行日志）**共用**的宽度口径：宽度与语义槽样式
-  // 全站只有这一份字面量，评测页与 `AgentLogDrawer` 都从这里取——各写一遍的漂移是静默的
-  // （2026-10-03 实测：页面那两处漏改 ⇒ 掉回默认 378px，而没有任何用例变红），见该文件头。
+  // 全站只有这一份字面量，评测页与 `AgentLogDrawer` 都从这里取——漂移是静默的
+  // （把其中一个值就地写死 ⇒ 那一处掉回默认 378px，而没有任何用例变红），见该文件头。
   // `MAIN_DRAWER_PUSH` 是「二级抽屉打开时把主抽屉推开多远」，**必须给主抽屉**（给二级是空转）。
   // 二级抽屉那一档宽度（`NESTED_DRAWER_SIZE`）**不转出**：它的两个消费者（`NestedDrawer` 与
-  // 「环境信息」抽屉，2026-10-07 起）都在包内。
+  // 「环境信息」抽屉）都在包内。
   DRAWER_SEMANTIC_STYLES,
   MAIN_DRAWER_PUSH,
   WIDE_DRAWER_SIZE,
@@ -45,7 +45,7 @@ export {
 export { ROW_STATUS_COLORS, RowStatusTag, type RowStatusTagProps } from './base/row-status-tag';
 export { MetricLine, formatCacheHitRate, formatCount, formatDuration, type MetricLineProps } from './base/metric-line';
 /**
- * 派生指标（2026-10-XX）：`tok/s` 与「这段时间是哪一种口径」。
+ * 派生指标：`tok/s` 与「这段时间是哪一种口径」。
  * 为什么从 ui 转出去而不是留在内部：apps/web-next 若将来要把 tok/s 放到卡片上，
  * 必须用**同一份**公式（跨三家统一口径的唯一保证），不能在页面里再写一遍除法。
  */
@@ -82,6 +82,37 @@ export {
   ProviderModelsModal,
   type ProviderModelsModalProps,
 } from './composite/provider-models-modal';
+export {
+  McpServerTable,
+  endpointText,
+  hasConfiguredSecret,
+  removeServer,
+  upsertServer,
+  type McpServerRow,
+  type McpServerTableProps,
+} from './composite/mcp-server-table';
+export {
+  MCP_FORM_MODAL_WIDTH,
+  McpServerFormModal,
+  // 表单值 → 契约条目的**唯一**变换（组件与用例共用）：漏转出的话调用方只能自己再摊一遍，
+  // 而「值为空的行丢掉」「args 一行一个」这两条语义在两个实现里必然漂移
+  buildMcpConfig,
+  type McpKeyValueRow,
+  type McpServerFormModalProps,
+  type McpServerFormValues,
+} from './composite/mcp-server-form-modal';
+export {
+  MCP_PASTE_MODAL_WIDTH,
+  McpPasteModal,
+  type McpPasteModalProps,
+} from './composite/mcp-paste-modal';
+// 测试连接的结果区：两个入口（行内 / 表单）共用同一份渲染，「说什么话」只有一处实现
+export {
+  McpProbeResultView,
+  McpProbeWaiting,
+  type McpProbeOutcome,
+  type McpProbeResultViewProps,
+} from './composite/mcp-probe-result';
 export { JudgeSettingsCard, type JudgeSettingsCardProps } from './composite/judge-settings-card';
 export {
   WorkspaceSettingsCard,
@@ -102,10 +133,9 @@ export { EvalRowCard, type AgentCapabilityView, type EvalRowCardProps } from './
 export {
   RANK_BADGE_LIMIT,
   RunDetailPanel,
-  // 契约 §8 把 `completionPercent(done, total)` 列为 `run-detail-panel.tsx` 的**具名出口**
-  // （并在 §8 正文里论证它「必须抽出来」：留在组件里时「零行不出现 NaN」那条守卫只能退化成
-  // 间接断言，实测该变异体存活）。它此前在包根漏转出——终审 §5.1 的逐名比对里，§2–§9 的
-  // 出口清单**只差这一个名字**（L1）。补上之后那份比对全绿。
+  //  把 `completionPercent(done, total)` 列为 `run-detail-panel.tsx` 的**具名出口**
+  //（并在正文里论证它「必须抽出来」：留在组件里时「零行不出现 NaN」那条守卫只能退化成
+  // 间接断言）。它必须出现在包根出口清单里，否则 – 的逐名比对不成立。
   completionPercent,
   type RunDetailPanelProps,
 } from './composite/run-detail-panel';
@@ -181,7 +211,7 @@ export {
    * 契约的**扁平**能力声明（`toolResult` / `toolResultSource` / `toolResultReason` 三格同名前缀）
    * → 界面要的**字典**形状（每维一个 `{ level, source, reason }` 三元组）。
    *
-   * 2026-10-04 出口：页面从 `/api/runs/model-options` 拿到的是契约形状，而 `AgentLogModel`
+   * 页面从 `/api/runs/model-options` 拿到的是契约形状，而 `AgentLogModel`
    * 要的是字典形状——两者之间的**唯一**搬运点就是它。不导出的话，页面只能自己摊一遍，
    * 而那正是「一份形状两个实现」的老路（摊错一维的症状是那一格显示成「没验证过」）。
    */

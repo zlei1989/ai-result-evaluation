@@ -14,6 +14,45 @@ describe('SETTINGS_DEFAULTS', () => {
   it('默认值本身能通过 schema 校验（防止默认值与契约漂移）', () => {
     expect(SettingsSchema.safeParse(SETTINGS_DEFAULTS).success).toBe(true);
   });
+
+  /**
+   * MCP 播种的**内容**守卫。
+   *
+   * 为什么不满足于「默认值能被 schema 解析」：解析只管形状对不对，管不了**内容**——
+   * 预置项被删成 `{}`、名字被改掉、`--isolated` 被顺手拿掉，schema 一条都不会红，
+   * 而用户第一次打开设置页看到的就不再是那两台能用的服务器。
+   * 期望值**逐字写死**（不是从 `SETTINGS_DEFAULTS` 现算的——那是拿实现证实现）。
+   */
+  it('mcpServers 的默认值是那两台（context7 + playwright）', () => {
+    expect(SETTINGS_DEFAULTS.mcpServers).toEqual({
+      context7: {
+        transport: 'http',
+        enabled: true,
+        url: 'https://mcp.context7.com/mcp',
+        headers: { CONTEXT7_API_KEY: '${CONTEXT7_API_KEY}' },
+      },
+      playwright: {
+        transport: 'stdio',
+        enabled: true,
+        command: 'npx',
+        args: ['-y', '@playwright/mcp@latest', '--browser=chrome', '--isolated'],
+      },
+    });
+  });
+
+  /**
+   * 名字住在 **map 的键**上，条目里没有 `name` 字段。供应商那套是「条目自带 id」，
+   * 照抄过来就会让名字有两个来源（键与字段），而 `McpServerConfigSchema` 是 strip 语义——
+   * 多写的 `name` 落盘后又被丢掉，界面读回来的名字与用户填的那份静默不一致。
+   * `enabled` 的另一半：它**必须显式写出**（不靠 schema 的 `.default(true)`），这份默认值会被原样落盘，
+   * 「没写」与「写了 false」在文件里长得一样是最坏的失败方式。
+   */
+  it('默认项里没有 name 字段（名字只住键上），且 enabled 是显式写出的 true', () => {
+    for (const entry of Object.values(SETTINGS_DEFAULTS.mcpServers)) {
+      expect('name' in entry).toBe(false);
+      expect(entry.enabled).toBe(true);
+    }
+  });
 });
 
 describe('SettingsSchema', () => {
@@ -27,7 +66,7 @@ describe('SettingsSchema', () => {
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, diffBudgetBytes: 1.5 }).success).toBe(false);
   });
 
-  // 2026-09-28 用户口径：执行与评分都不限时间 ⇒ 「单行超时」这一格从设置里删掉。
+  // 用户口径：执行与评分都不限时间 ⇒ 设置里没有「单行超时」这一格。
   // 这条守卫钉两件事：① 契约里确实没有这一格了（加回来会红）；② 旧 config.json 里多出来的
   // 那一键**不会**让解析失败——它由 zod 的对象语义 strip 掉，老配置照常能读。
   it('没有 rowTimeoutMs 这一格，且旧配置里多出来的 rowTimeoutMs 不会让解析失败', () => {

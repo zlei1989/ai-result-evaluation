@@ -1,7 +1,7 @@
 /**
  * 事件 → 日志行（纯函数）。
  * 八种事件类型都要有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
- * （spec §5.6.3：未识别的事件必须投影成保留原始负载的日志事件，不得静默丢弃）。
+ * （未识别的事件必须投影成保留原始负载的日志事件，不得静默丢弃）。
  *
  * 时间断言**不写死时钟**：`formatClock` 把 ISO 串转成**本机时区**的 `HH:mm:ss`
  * （与 `format.ts` 的 `formatDateTime` 同一口径），写死 `[08:03:04]` 会让这份用例
@@ -14,7 +14,7 @@
  * 没有智能体名就分不出哪个分是哪条通路打的。
  */
 import { describe, expect, it } from 'vitest';
-import type { ScoreResult } from '@aieval/contracts';
+import type { AgentEvent, ScoreResult } from '@aieval/contracts';
 import { formatEventLine, formatEventLog } from './log-format';
 
 const at = '2026-09-22T08:03:04.000Z';
@@ -45,7 +45,7 @@ function scoreFixture(overrides: Partial<ScoreResult> = {}): ScoreResult {
     judgeEffort: null,
     // false ⇔ 这一分只靠提示词契约拿到；要造「被 schema 约束的那一份」就在用例里覆盖它
     structuredOutput: false,
-    // 评分自己的花销（2026-10-08）：日志行不展示这两格，夹具给 null 即可
+    // 评分自己的花销：日志行不展示这两格，夹具给 null 即可
     judgeTokens: null,
     judgeDurationMs: null,
     ...overrides,
@@ -72,7 +72,7 @@ describe('formatEventLine', () => {
   });
 
   /**
-   * `vendor-system`（2026-10-04 新增）：厂商系统层事实也必须**有一行可读文本**。
+   * `vendor-system`：厂商系统层事实也必须**有一行可读文本**。
    *
    * 为什么它不是「多一条噪声」：台账与抽屉正文是排障的第一现场，而这一格回答的是
    * 「这一次被下发了哪些工具 / 什么权限档」——不落成一行，这份事实在日志里就只剩那条
@@ -128,6 +128,47 @@ describe('formatEventLine', () => {
       outputStyle: null,
     });
     expect(empty).toBe(`[${expectedClock(at)}] 系统层 未采集`);
+  });
+
+  /**
+   * `mcpServers` 那一格是**对象数组**（`{name, status, source}`），
+   * 而历史 `events.jsonl` 里是字符串数组——**两种形态都必须渲染出同一句话**。
+   *
+   * 判据是「**归一到几台服务**」，不是「数组有几个槽位」：这一格只按台数写「MCP N 项」，
+   * 只要归一那一支把字符串项丢掉，老事件就会渲染成「MCP 0 项」——那正是本仓反复强调的那句假话
+   * （`[]` 是「投送了，确实是空的」，而厂商当时真的下发了那几台）；
+   * 反过来，把认不出的项（数字）或「根本不是数组」的脏值也数成服务，同样是编出来的台数。
+   */
+  it('vendor-system：MCP 台数按「归一到几台服务」计——对象 / 历史字符串 / 脏数据三种形态各自如实', () => {
+    // 用 `as unknown as AgentEvent`：`normalizeMcpServers` 的入参是 `unknown`，而这一格
+    // 真实存在多种输入（`/log` 是 `getJson<AgentEvent[]>`，**没有运行时校验**，抓回来的
+    // 可能正是历史形状）——用类型系统把它们挡住，这条守卫就测不到了。
+    const line = (mcpServers: unknown): string =>
+      formatEventLine({
+        seq: 2,
+        at,
+        type: 'vendor-system',
+        tools: null,
+        slashCommands: null,
+        agents: null,
+        mcpServers,
+        permissionMode: null,
+        outputStyle: null,
+      } as unknown as AgentEvent);
+
+    const realShape = [
+      { name: 'context7', status: 'pending', source: 'project' },
+      { name: 'find', status: 'connected', source: 'project' },
+    ];
+    expect(line(realShape)).toBe(`[${expectedClock(at)}] 系统层 MCP 2 项`);
+    // 历史形态（早期落盘的就是它）：照样 2 项，绝不是「MCP 0 项」
+    expect(line(['context7', 'find'])).toBe(`[${expectedClock(at)}] 系统层 MCP 2 项`);
+    // 认不出的项不是一台服务；「整格不是数组」是「没投送」，不是「8 个字符 = 8 台」
+    expect(line([42, 'find'])).toBe(`[${expectedClock(at)}] 系统层 MCP 1 项`);
+    expect(line('context7')).toBe(`[${expectedClock(at)}] 系统层 未采集`);
+    // `null` 是「没投送」：整段不出现（不写「0 项」）；`[]` 才是「投送了确实是空的」
+    expect(line(null)).toBe(`[${expectedClock(at)}] 系统层 未采集`);
+    expect(line([])).toBe(`[${expectedClock(at)}] 系统层 MCP 0 项`);
   });
 
   /**
@@ -230,7 +271,7 @@ describe('formatEventLine', () => {
     expect(withoutExtras).not.toContain('厂商总量');
   });
 
-  // 只带轮次的 usage 是常态（2026-09-28）：说轮次就好，**不写三个 0**（那会让人以为「这家很省」）。
+  // 只带轮次的 usage 是常态：说轮次就好，**不写三个 0**（那会让人以为「这家很省」）。
   it('usage：只带轮次（tokens 为 null）时只渲染轮次与时间那一截', () => {
     expect(formatEventLine({ seq: 3, at, type: 'usage', tokens: null, turns: 7 })).toBe(
       `[${expectedClock(at)}] 轮次 7 · 耗时未采集`,

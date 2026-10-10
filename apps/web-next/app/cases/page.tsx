@@ -3,7 +3,7 @@
 /**
  * 用例页：左栏列表 + 右栏（详情 / 创建表单 / 编辑表单）。
  *
- * 右栏三种内容**共用一个栏位**，由 `?panel=detail|new|edit&id=…` 决定（spec §4.1：不叠加、不弹层）。
+ * 右栏三种内容**共用一个栏位**，由 `?panel=detail|new|edit&id=…` 决定（不叠加、不弹层）。
  * 把状态放进 URL 换来两件事：刷新后还在这一屏、链接可以直接发给别人；代价是右栏的
  * 「这一次编辑」的临时状态（`validatedRepo` / `currentRepo` / `repoInfo` 三格）必须在切换面板时复位——
  * 留在那里会把上一个用例的校验结果显示给下一个用例，让人以为新用例也校验过了。
@@ -11,7 +11,7 @@
  *
  * 为什么整块内容包在 `<Suspense>` 里：`useSearchParams` 会让最近的 Suspense 边界退化成客户端渲染，
  * Next 16 的生产构建在缺少边界时直接以「Missing Suspense boundary with useSearchParams」失败
- * （见 apps/web-next/node_modules/next/dist/docs/01-app/03-api-reference/04-functions/use-search-params.md）。
+ * （apps/web-next/node_modules/next/dist/docs/01-app/03-api-reference/04-functions/use-search-params.md）。
  */
 import {
   matchesCommitsKey,
@@ -71,8 +71,8 @@ const CASE_TITLE_MIN_WIDTH = 240;
 const CASE_COLUMN_WIDTH = { repoPath: 200, commitHash: 110, updatedAt: 150 } as const;
 
 /**
- * 列表表格的最小宽度（px）：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
- * （用户口径 2026-10-08：「标题列左悬浮」；做法与常量来历见 `ProviderTable` 的
+ * 列表表格的最小宽度：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
+ * （用户口径：「标题列左悬浮」；做法与常量来历见 `ProviderTable` 的
  * `PROVIDER_TABLE_MIN_WIDTH`，三张表是同一套口径）。
  *
  * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把四列**按比例压扁**——
@@ -90,16 +90,16 @@ const CASES_TABLE_MIN_WIDTH =
   CASE_COLUMN_WIDTH.updatedAt;
 
 /**
- * 列表排序的两个比较器（用户口径 2026-10-08：默认「标题」倒序，标题 / 仓库 / 更新时间三列可排）。
+ * 列表排序的两个比较器。
  * 三条口径，缺一条都会在真机上看见怪序：
  *
- *   ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
- *      `numeric` 让「测试2」排在「测试10」前面而不是后面（`repoPath` 里也常带数字）；
- *   ② **空值当最小值**，而且走显式分支：`updatedAt` 契约只声明 `z.string()`、读路径
- *      `parseCaseFile` 又不过 schema，手改过的用例文件能让这两个排序键为空——不管的话
- *      `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
- *   ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
- *      自己再按方向翻一次就是翻两次。
+ * ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
+ * `numeric` 让「测试2」排在「测试10」前面而不是后面（`repoPath` 里也常带数字）；
+ * ② **空值当最小值**，而且走显式分支：`updatedAt` 契约只声明 `z.string()`、读路径
+ * `parseCaseFile` 又不过 schema，手改过的用例文件能让这两个排序键为空——不管的话
+ * `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
+ * ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
+ * 自己再按方向翻一次就是翻两次。
  *
  * 同值的行不需要兜底键：服务端给的就是 `updatedAt` 降序（api/cases.ts 的 `listCases`），
  * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序，与排序方向无关。
@@ -173,13 +173,13 @@ function CasesWorkspace(): React.ReactNode {
   const { generate, isGenerating } = useGenerateRubric();
   const { providers } = useProviders();
   const { settings } = useSettings();
-  // 未配置评分模型时「智能生成 / 智能识别」两个按钮都必须禁用（§4.3）。判定本身（**拿全局默认那一对 id 对着 providers 解析**，
-  // 见契约 §11 R30）抽在 src/judge-gate.ts：本页没有自动化测试面，决策留在页面里就等于没有守卫。
+  // 未配置评分模型时「智能生成 / 智能识别」两个按钮都必须禁用。判定本身（**拿全局默认那一对 id 对着 providers 解析**，
+  //）抽在 src/judge-gate.ts：本页没有自动化测试面，决策留在页面里就等于没有守卫。
   // 只看全局默认：用例上不再有评分模型覆盖（表单里那一格已删除），服务端 `resolveJudgeRoute()` 同样无参。
   const judgeConfigured = isJudgeConfigured(settings, providers);
 
   /**
-   * 已校验通过的**那一对**（来源 + 分支）：commit 候选按它取（R7：按来源，不带 caseId；远端另带分支）。
+   * 已校验通过的**那一对**（来源 + 分支）：commit 候选按它取（按来源，不带 caseId；远端另带分支）。
    * 三个决策（记什么 / 什么时候还算数 / 递给候选什么）都在 `@/src/case-repo-validation` 里，
    * 本页只接线——页面没有测试面，决策留在页面里就等于没有守卫。
    */
@@ -189,7 +189,7 @@ function CasesWorkspace(): React.ReactNode {
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
   const candidatesQuery = candidatesQueryFor(validatedRepo, currentRepo);
   // `isLoading` 必须交到面板上：远端首访的候选会真的克隆（镜像还没建时），克隆期间整个进程阻塞
-  // （spec §6.8），按钮上那句「正在拉取远端仓库…」就是那段时间里唯一的反馈（spec §7.1）
+  //，按钮上那句「正在拉取远端仓库…」就是那段时间里唯一的反馈
   const { commits, isLoading: commitsLoading } = useCommitCandidates(candidatesQuery.repoPath, candidatesQuery.repoBranch);
   /**
    * 交给面板的回显：只在「当前输入 == 校验过的那一对」时给。
@@ -302,7 +302,7 @@ function CasesWorkspace(): React.ReactNode {
    * 删除用例。**必须把在途的 promise 交回确认框**：antd 的确认按钮只在 `onConfirm` 返回 thenable 时
    * 才等待它，返回 undefined（`() => { void remove(id) }`）会让确认框**立刻关闭**——用户看到的是
    * 「点一下就没反应」，再点一次就是第二次 DELETE（CaseDetailPanel 的 `onDelete` 注释同此口径）。
-   * 受影响评测数来自 DELETE 的响应（契约里没有「按用例查评测数」的路由，见本计划的实现层修正 R-p2-B）：
+   * 受影响评测数来自 DELETE 的响应（契约里没有「按用例查评测数」的路由）：
    * 数字在这里回显，删除本身不阻塞。
    */
   const handleDelete = (): Promise<void> | undefined => {
@@ -325,7 +325,7 @@ function CasesWorkspace(): React.ReactNode {
     {
       title: '标题',
       dataIndex: 'title',
-      // 默认排序（用户口径 2026-10-08）：进入页面就是「标题」倒序。
+      // 默认排序：进入页面就是「标题」倒序。
       // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
       // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
       defaultSortOrder: 'descend',
@@ -334,7 +334,7 @@ function CasesWorkspace(): React.ReactNode {
       // 而不是切到升序。首项是本列的默认方向，循环才是 降序 → 升序 → 取消。
       sortDirections: ['descend', 'ascend'],
       sorter: (a: TestCase, b: TestCase) => compareSortText(a.title, b.title),
-      // 钉在左边（用户口径 2026-10-08）：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
+      // 钉在左边：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
       // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
       // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
       fixed: 'left',
@@ -342,11 +342,11 @@ function CasesWorkspace(): React.ReactNode {
       render: (title: string) => <EllipsisText text={title} />,
     },
     {
-      // 列名只叫「仓库」（用户 2026-09-29）：格子里的内容是仓库名（`displayRepoName` 取末段）
+      // 列名只叫「仓库」：格子里的内容是仓库名（`displayRepoName` 取末段）
       title: '仓库',
       dataIndex: 'repoPath',
       width: CASE_COLUMN_WIDTH.repoPath,
-      // 按**显示的仓库名**排（所见即所排，用户口径 2026-10-08）；同名再按全路径兜底，两个键同向翻转
+      // 按**显示的仓库名**排；同名再按全路径兜底，两个键同向翻转
       sorter: (a: TestCase, b: TestCase) =>
         compareSortText(displayRepoName(a.repoPath), displayRepoName(b.repoPath)) ||
         compareSortText(a.repoPath, b.repoPath),
@@ -369,7 +369,7 @@ function CasesWorkspace(): React.ReactNode {
         commitHash === null ? (
           <Typography.Text type="secondary">默认 HEAD</Typography.Text>
         ) : (
-          // Tooltip 里必须是**全量** hash：短哈希再显示一遍等于没有 Tooltip（§4.1）
+          // Tooltip 里必须是**全量**hash：短哈希再显示一遍等于没有 Tooltip
           <Tooltip title={commitHash}>
             <Typography.Text code>{shortHash(commitHash)}</Typography.Text>
           </Tooltip>
@@ -457,7 +457,7 @@ function CasesWorkspace(): React.ReactNode {
             // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
             // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
             scroll={{ x: CASES_TABLE_MIN_WIDTH }}
-            // 列宽由表头算，不跟内容走（用户 2026-09-29 的省略口径）：`EllipsisText` 的
+            // 列宽由表头算，不跟内容走：`EllipsisText` 的
             // `max-width: 100%` 要有确定的分母，「放不下才省略」才成立。rc-table 见到 `sticky`
             // 本就会落到 `fixed`，这里显式写一遍是为了不把这条前提交给巧合——哪天 `sticky` 被
             // 拿掉（它是钉表头用的），省略号会跟着一起坏掉，而症状只是「文字被硬裁、没有省略号」。
@@ -509,7 +509,7 @@ function CasesWorkspace(): React.ReactNode {
       return (
         <CaseDetailPanel
           testCase={target}
-          // p2 阶段拿不到删前的引用数（契约里没有对应路由，见 R-p2-B）；数字在删除成功的提示里回显
+          // 拿不到删前的引用数（契约里没有对应路由）；数字在删除成功的提示里回显
           referencedRuns={null}
           onEdit={() => go({ panel: 'edit', id: target.id })}
           onDelete={handleDelete}
@@ -550,7 +550,7 @@ function CasesWorkspace(): React.ReactNode {
         // 真正保住表单实例（用户输入不丢）的是 `renderCase` 给 `CaseFormPanel` 的**稳定 key**
         // （`case-edit-${id}` / `case-new`）：多子节点协调走 key 匹配，所以这里多一个 Alert 也不会让它卸载。
         // **不许删那个 key**——删掉之后 edit → stale 的切换会卸载面板、正在输入的内容全丢。
-        // 注意「位置不变」是**错的**、也不是承重结构（阶段评审 F6）：stale 分支里面板在 index 1，
+        // 注意「位置不变」是**错的**、也不是承重结构：stale 分支里面板在 index 1，
         // edit / detail 分支里在 index 0，位置本来就不同；承重的只有 key。
         // 另一条边界仍然成立：别把 Alert 包在面板**外面**（父元素类型一变，整棵子树照样卸载），它必须是兄弟节点。
         return (

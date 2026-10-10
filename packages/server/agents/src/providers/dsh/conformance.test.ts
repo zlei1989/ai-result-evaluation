@@ -5,7 +5,7 @@
  * 与 claude 那份同形：走 **run 级测试台**（注入假 SDK 跑真实运行路径），模块加载期把各场景跑一次
  * 建好产物，再把同步取值器交给套件（理由见 `claude-code/conformance.test.ts` 的文件头）。
  *
- * 两条「看不见的匹配键」，错了会让判据红在完全误导性的位置（2026-10-07 各踩过一次）：
+ * 两条「看不见的匹配键」，错了会让判据红在完全误导性的位置：
  *   1. **`params.sessionId` 必须用 `DSH_SESSION_PLACEHOLDER`**（假件的会话号）。自造一个会让
  *      **整类会话事件被静默丢弃**：消息 0 条、`turns` 为 `null`、`finalText` 为 `null`，
  *      而工具那两组判据照样过（它们不看消息）⇒ 红在「思考块不存在」，看着像能力声明写错。
@@ -14,7 +14,7 @@
  *      `readString(notification,'method')`（`message.ts:313-316`），身份取 `params.subagentId`
  *      （三级兜底 `subagentId` → `agentId` → `childSessionId`）。
  *
- * 本夹具**造正文/思考增量**（2026-10-09 stream-tap 起）：`streamingDelta` 记 `'yes'`（source
+ * 本夹具**造正文/思考增量**（stream-tap 起）：`streamingDelta` 记 `'yes'`（source
  * `'hook'`）——增量经旁路文件进适配器（夹具的 `tapLines` 落到同一文件、同一时序），
  * 套件第 7 组「能力声明与产物互钉」据此要求 `plain-reply` 场景真出 delta 消息。
  */
@@ -123,7 +123,7 @@ const SCENARIOS: Readonly<Record<string, { events: readonly unknown[]; tapLines?
       assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '读完了。' }]),
     ],
   },
-  // 派发工具调用的 `callId` 必须与子任务记录的 `parentCallId` 同值——子任务桥（§2.8）靠它连起两套 id
+  // 派发工具调用的 `callId` 必须与子任务记录的 `parentCallId` 同值——子任务桥靠它连起两套 id
   subagent: {
     events: [
       stepStart(MAIN, 1, 1),
@@ -171,8 +171,8 @@ async function runScenario(scenario: { events: readonly unknown[]; tapLines?: re
       subagents,
       environment: null,
       /**
-       * 行级事件**如实收**（2026-10-09）：`onEvent` 本来就在收（`agentEvents`），原先只是不往外给、
-       * 产物里恒填 `events: []` ⇒ 套件的 §2.12（增量通道隔离）在这家**永远不可能红**。
+       * 行级事件**如实收**：`onEvent` 本来就在收（`agentEvents`），不往外给的话、
+       * 产物里恒填 `events: []` ⇒ 套件的增量隔离判据在这家**永远不可能红**。
        * dsh 的增量是**自造伪通知**走的消息支，最需要这条判据：分流一旦写错（伪通知落进 `log` 兜底），
        * 一次运行几百条就会把「原始输出」面板刷满。
        */
@@ -208,7 +208,7 @@ describeProviderConformance({
     subagent: () => products['subagent']!,
   },
   /**
-   * 喂了增量帧的场景必须钉住事件条数（套件 §2.12）：三条各自**实测**得来。
+   * 喂了增量帧的场景必须钉住事件条数（一致性套件）：三条各自**实测**得来。
    * `subagent` 比另两个场景大得多，因为它含子会话自己的往返与 `subagent.started` / `finished`
    * 两条投影——把 `events.ts` 的增量排除分支删回去，这三个数会当场变大（守卫因此有区分力）。
    */

@@ -2,9 +2,9 @@
  * 供应商数据层：列表 + 增删改 + 模型清单增删 + /models 拉取。
  *
  * 回写约定与 settings.ts 同源，但有一处**刻意不同**：
- *   - 这些 mutation 一律**不开 `populateCache`**。后端返回的是**单个** `ProviderView`，而 mutation 的
+ *   - 这些 mutation 一律**不开 `populateCache`**。后端返回的是**单个**`ProviderView`，而 mutation 的
  *     key 指向的是**列表**；把单个对象写进列表缓存，下一次渲染 `providers.map` 直接 TypeError。
- *   - 列表刷新改为 mutation 成功后显式 `mutate(LIST_KEY)`（契约 §7「列表类在 mutation 后显式 mutate 一次刷新」）。
+ *   - 列表刷新改为 mutation 成功后显式 `mutate(LIST_KEY)`（「列表类在 mutation 后显式 mutate 一次刷新」）。
  *   - 显式 `revalidate: false` 关掉 useSWRMutation 默认的「成功后自动重新验证」：否则一次删除会发两次 GET，
  *     而「刷新了几次」正是本包测试要钉的东西。
  */

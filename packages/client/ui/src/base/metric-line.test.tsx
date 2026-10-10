@@ -1,5 +1,5 @@
 /**
- * MetricLine：计量摘要。**本文件是「null 不是 0」这条口径的主守卫**（spec §5.6.3）。
+ * MetricLine：计量摘要。**本文件是「null 不是 0」这条口径的主守卫**。
  * 两个方向都要钉住：
  *   · `null`（没采到 / 采集不到）→ 显示「未采集」或「不支持计量」，**不得出现 0**；
  *   · 真实的 `0`（例如 0 轮）→ 照常显示 0，不得被当成「没采到」吃掉。
@@ -25,7 +25,7 @@ const score = {
   judgeEffort: null,
   // 契约里这是必填输出字段：false ⇔ 这一分只靠提示词契约拿到（本夹具不涉及 schema 通路）
   structuredOutput: false,
-  // 评分自己的花销（2026-10-08）：本夹具只关心事实条上那几格，两格给 null
+  // 评分自己的花销：本夹具只关心事实条上那几格，两格给 null
   judgeTokens: null,
   judgeDurationMs: null,
 };
@@ -38,7 +38,7 @@ describe('MetricLine', () => {
     expect(screen.getByText('轮次 未采集')).toBeInTheDocument();
     expect(screen.getByText('耗时 未采集')).toBeInTheDocument();
     expect(screen.getByText('得分 未评分')).toBeInTheDocument();
-    // 这一行是变异验证的靶子：把 null 当 0 渲染的实现会在这里失败
+    // 靶子：把 null 当 0 渲染的实现会在这里失败
     expect(screen.queryByText('tok 0')).toBeNull();
     expect(screen.queryByText('轮次 0')).toBeNull();
   });
@@ -67,7 +67,7 @@ describe('MetricLine', () => {
   });
 
   it('tok 之后显示「缓存命中」：缓存读 / 总输入，四舍五入成整数百分比', () => {
-    // dsh 的真实刻度（p3 探测）：输入 218（未命中）+ 缓存读 8,832 ⇒ 8,832 / 9,050 = 97.59% → 98%
+    // dsh 的真实刻度：输入 218（未命中）+ 缓存读 8,832 ⇒ 8,832 / 9,050 = 97.59% → 98%
     render(<MetricLine tokens={{ input: 218, cached: 8832, output: 2 }} turns={1} durationMs={1000} score={null} />);
 
     expect(screen.getByText('缓存命中 98%')).toBeInTheDocument();
@@ -79,7 +79,7 @@ describe('MetricLine', () => {
     render(<MetricLine tokens={null} turns={null} durationMs={null} score={null} />);
 
     expect(screen.getByText('缓存命中 未采集')).toBeInTheDocument();
-    // 这一行是变异验证的靶子：把「没采到」当 0% 渲染的实现会在这里失败
+    // 靶子：把「没采到」当 0% 渲染的实现会在这里失败
     expect(screen.queryByText('缓存命中 0%')).toBeNull();
   });
 
@@ -145,7 +145,7 @@ describe('formatDuration', () => {
  */
 
 /**
- * 跑动期的实时展示（用户口径，2026-09-26）。
+ * 跑动期的实时展示。
  *
  * 三条口径：
  *   ① 行还在跑、适配器又还没上报时，文案是**「采集中」**而不是「未采集」——「未采集」是终态的结论
@@ -247,11 +247,11 @@ describe('MetricLine：运行中的实时展示', () => {
 });
 
 /**
- * **评分阶段的计量冻结**（用户口径，2026-09-29：「只展示执行的 tok 和 轮次，评分不应该覆盖此信息」）。
+ * **评分阶段的计量冻结**（「只展示执行的 tok 和 轮次，评分不应该覆盖此信息」）。
  *
  * 评分智能体跑在候选同一个工作区里，事件也进同一行同一条流（`judgeRowByAgent` 转发适配器事件），
  * 所以 `status: judging` 之后推来的 `usage` 报的是**评审者**的用量（轮次从 1 重新数）。
- * 真机实测（run `bea0564d` 的 codex 行）：候选 `490,906 tok / 28 轮 / 58s`，评分期间卡片上却是
+ * 真机上这个混淆很好认：候选那一段跑出 `490,906 tok / 28 轮 / 58s`，评分期间卡片上却是
  * `tok 13,715 / 缓存命中 45% / 轮次 2 / 耗时 2m28s`——全是评审者的数与整行墙钟。
  *
  * 叠加层带 `candidateEnded` 时这几格冻结：tok / 缓存命中 / 轮次用候选最后一次上报，
@@ -381,20 +381,20 @@ describe('MetricLine：评分阶段的计量冻结', () => {
 });
 
 /**
- * **子智能体那一份：Tooltip 拆两行**（spec 2026-10-04 §2.5）。
+ * **子智能体那一份：Tooltip 拆两行**。
  *
  * 为什么这组用例靠 hover 断言：Tooltip 的文案（`title`）**不挂在元素上**，只有浮层打开时才渲染进
  * body 的 portal——本仓既有判据就是这么断言的（`eval-row-card.test.tsx` 里那组 Tooltip 用例同形）。
  * 而浮层要在 jsdom 里打得开，得先补上两个缺口（`ResizeObserver` + `matchMedia`，见下面那个
  * `beforeEach`）：不打桩时 antd 的浮层对齐在 effect 里抛 `ReferenceError: ResizeObserver is not
- * defined`，浮层**永远不出现**（实测：不装桩时 `fireEvent.mouseEnter` 之后 10s 也查不到文案）。
+ * defined`，浮层**永远不出现**（不装桩时 `fireEvent.mouseEnter` 之后 10s 也查不到文案）。
  *
  * 三条口径（每条都有靶子）：
  *   ① 有分量且**逐格不大于**合计 ⇒ 两行，主会话那一行是**相减**出来的（不是第二份真值）；
- *   ② 缺这一格 / `null` / `{0,0,0}` / 与合计对不上 ⇒ **只有一行**，且与改动前**逐字相同**；
+ *   ② 缺这一格 / `null` / `{0,0,0}` / 与合计对不上 ⇒ **只有一行**；
  *   ③ 跑动期取叠加层那一对（合计与分量必须同源同刻——拿快照那对去配叠加层的合计会拆出错的差）。
  */
-describe('MetricLine：子智能体那一份拆两行（spec 2026-10-04 §2.5）', () => {
+describe('MetricLine：子智能体那一份拆两行', () => {
   beforeEach(() => {
     installResizeObserverStub();
   });
@@ -523,20 +523,20 @@ describe('MetricLine：子智能体那一份拆两行（spec 2026-10-04 §2.5）
 });
 
 /**
- * **子智能体那一份轮次：Tooltip 拆两行**（spec 2026-10-04 §2.5 追加段，与 token 那一格逐条同构）。
+ * **子智能体那一份轮次：Tooltip 拆两行**（追加段，与 token 那一格逐条同构）。
  *
  * 判据三条（缺一条就会画出一句假话）：这一格**在**（不是缺格 / `null`）、`> 0`、且 `≤ turns`。
  * 主会话那一行由 `turns − subagentTurns` **相减**得出（不是第二份真值）；合计那一个数仍在卡片正文里
  * ——「轮次 9」照旧由正文渲染，这次拆分不改它的口径，也不改它的文案。
- * `≤ turns` 是**纵深防御**：它是 §2.4 的不变量，界面再查一遍，免得一份老 `run.json` 或一次将来的
+ * `≤ turns` 是**纵深防御**：它是的不变量，界面再查一遍，免得一份老 `run.json` 或一次将来的
  * 缺陷以「那两行自己都不自洽」（主会话算出负数）的形式出现在用户面前——那种画面看起来完全正常。
  *
  * 阴性断言（「只有一行」）为什么可信：`title` 为 `undefined` 时 antd **不渲染浮层**；但「悬浮完立刻
- * 查 `.ant-tooltip`」这种写法**没有分辨力**（浮层有 0.1s 的出场延迟，同步断言在任何实现下都为真，
- * 本文件的变异验证实测过），所以这几条一律走 `expectNoTooltip`——**等满一个延迟窗口**再判，
+ * 查 `.ant-tooltip`」这种写法**没有分辨力**（浮层有 0.1s 的出场延迟，同步断言在任何实现下都为真），
+ * 所以这几条一律走 `expectNoTooltip`——**等满一个延迟窗口**再判，
  * 而本段第一条用例已经证明同一个环境里悬浮是打得出浮层的（`ResizeObserver` 桩装好了）。
  */
-describe('MetricLine：子智能体的轮次那一份拆两行（spec 2026-10-04 §2.5）', () => {
+describe('MetricLine：子智能体的轮次那一份拆两行', () => {
   beforeEach(() => {
     installResizeObserverStub();
   });
@@ -550,8 +550,8 @@ describe('MetricLine：子智能体的轮次那一份拆两行（spec 2026-10-04
    * 悬浮之后**给浮层一个出场的机会**，再判「确实没有浮层」。
    *
    * 为什么不能悬浮完就立刻判 `null`：antd 的 `Tooltip` 有 `mouseEnterDelay`（默认 0.1s），**同步**那句
-   * `querySelector('.ant-tooltip')` 在任何实现下都为真。实测（本文件的变异验证）：把「`> 0`」那一条
-   * 判据删掉，浮层真的画出了「主会话 9 轮 / 子智能体 0 轮」，而同步断言仍然是绿的——**没有分辨力**
+   * `querySelector('.ant-tooltip')` 在任何实现下都为真。把「`> 0`」那一条判据去掉，浮层会画出
+   * 「主会话 9 轮 / 子智能体 0 轮」，而同步断言仍然是绿的——**没有分辨力**
    * 的断言等于没写（本仓 `ellipsis-text.test.tsx` 也登记过「`.ant-tooltip` 单独不构成守卫」）。
    * 等满一个延迟窗口再判，缺陷才抓得住。
    */
@@ -581,7 +581,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行（spec 2026-10-04
     await expectNoTooltip();
 
     expect(screen.getByText('轮次 9')).toBeInTheDocument();
-    // 0 与「没采到」在这一格上渲染相同（spec §2.5 的规矩，不是漏做）：都不是「有分量」的证明
+    // 0 与「没采到」在这一格上渲染相同（规矩，不是漏做）：都不是「有分量」的证明
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
 

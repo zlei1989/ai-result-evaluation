@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 合并算法（spec v3 §6）：适配器公共层里唯一一份「块怎么归位、快照怎么覆盖、序号怎么分配」的实现。
+ * 合并算法：适配器公共层里唯一一份「块怎么归位、快照怎么覆盖、序号怎么分配」的实现。
  *
  * 这一层错了，三家会**同时**错（所以必须有独立用例把这些规则逐条钉住）：
  *   ① `delta` 追加、`snapshot` 覆盖、`snapshot` 之后的 `delta` 丢弃；
@@ -94,13 +94,13 @@ describe('messageAssembler：增量与快照', () => {
 });
 
 /**
- * 工具块的**摘要主体**（2026-10-10）：随块给出，供抽屉的工具行直接渲染。
+ * 工具块的**摘要主体**：随块给出，供抽屉的工具行直接渲染。
  *
  * 为什么钉在这里：这句话的词表真源是 `activity.ts`，而消费方（浏览器）按分层表不许 import `agents`
  * ——摘要必须**随块落进消息**。它一旦漏填，工具行的摘要行会静默回落到参数原文首行
  * （`{command, description}` 那种形状就是一整串 JSON），看起来「只是不那么好看」，没有任何报错。
  *
- * **口径（2026-10-10 变更）**：这一格是 `toolCallHint` 的产物——**只有冒号后面那一段**，
+ * **口径**：这一格是 `toolCallHint` 的产物——**只有冒号后面那一段**，
  * 不带 `调用工具 <名>：` 前缀。工具行把工具名渲染成独立元素，带前缀就是同一件事说两遍；
  * 活动行另有 `toolCallSummary`（同词表加前缀，见 `activity.test.ts`）。
  */
@@ -244,14 +244,14 @@ describe('产出的每条消息都符合契约（含 `mergeKey`）', () => {
 });
 
 /**
- * 消息级用量的合并（2026-10-06，spec `2026-10-01-agent-message-spec-design-v3.md` §3.2）。
+ * 消息级用量的合并。
  * 三条判据各自的靶子：
  *   · 带值 ⇒ 落到信封上（否则界面上永远没有这一格）；
  *   · 后到不带值 ⇒ **保留**（同一条逻辑消息会多次投递：增量块 / block-end 快照，usage 只在完整
  *     assistant/message 那一次到达；错成「后到覆盖」会把已采到的用量抹掉）；
  *   · 后到带新值 ⇒ 覆盖（它是「这一次调用」的值，不是累加）。
  */
-describe('消息级 usage 的合并（2026-10-06）', () => {
+describe('消息级 usage 的合并', () => {
   const tokens = { input: 295, cached: 7424, output: 841, reasoningOutput: null, total: null };
   const next = { input: 210, cached: 8448, output: 562, reasoningOutput: null, total: null };
 

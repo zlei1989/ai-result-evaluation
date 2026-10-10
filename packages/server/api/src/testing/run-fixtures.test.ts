@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 评测夹具自己的回归网（2026-10-09）。
+ * 评测夹具自己的回归网。
  *
  * 为什么单开一条：夹具的 `workspaceBase` / `workspacePath` 会被用例**真的**拿去 mkdir / 写盘
  * （`run-artifacts.test.ts` 的 `seedRun(..., { createWorkspace: true })`、`messages-stream.test.ts`
@@ -10,7 +10,7 @@
  * `D:\runs/run-1/rows/r-1` 那棵混合分隔符的树）。
  *
  * 判据刻意问「是不是平台绝对路径 + 在不在临时目录」，而不是「等于某个常量」：后者在常量本身改错时
- * 照样绿（夹具的常量就是缺陷现场）。变异验证：把 `makeRun` 的 `workspaceBase` 改回 `'D:\\runs'`，
+ * 照样绿（夹具的常量就是缺陷现场）：把 `makeRun` 的 `workspaceBase` 改回 `'D:\\runs'`，
  * 本文件当场红。
  */
 import { tmpdir } from 'node:os';

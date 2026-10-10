@@ -1,5 +1,5 @@
 /**
- * codex 的**内容级归一**：app-server 通知 → 契约的消息草稿与子任务行（spec v3 §3 / §4）。
+ * codex 的**内容级归一**：app-server 通知 → 契约的消息草稿与子任务行。
  * 行级事件（计量、时长、失败）在 `events.ts`，两者共用 `run-state.ts` 的同一把尺子。
  *
  * 四条取值口径：
@@ -11,7 +11,7 @@
  *   3. **不编造**：拿不到就是 `null`。推理 `content[]` 为空（上游只回密文）时正文是 `null` +
  *      `'none'`，**绝不回落到 `summary`** 冒充全文；子任务状态推不出来就记 `unknown` + `statusMissing`。
  *   4. **消息级用量恒 `null`**：app-server 只到线程级（`ThreadTokenUsage{total,last}`），对 `total`
- *      差分在并发子线程与 turn/item 边界不一致时无法证明归属（§3.1）⇒ 不拿线程级读数冒充单条消息。
+ *      差分在并发子线程与 turn/item 边界不一致时无法证明归属 ⇒ 不拿线程级读数冒充单条消息。
  */
 import type { SubagentRecord, UsageTokens } from '@aieval/contracts';
 import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, type MessageDraft } from '../../message';
@@ -106,7 +106,7 @@ export function projectCodexMessages(
   if (payload.kind === 'itemStarted' || payload.kind === 'itemCompleted') {
     /**
      * 两条通知走同一个归一函数，**但推理条目必须分开**：`item/started` 的推理条目两格都是空数组
-     * （真机实测），那是「开始推理了」的占位，不是「这一轮没有文本」的结论（见 `projectItem`）。
+     * （实测），那是「开始推理了」的占位，不是「这一轮没有文本」的结论（见 `projectItem`）。
      */
     return projectItem(payload.item, payload.threadId, payload, runState, context, payload.kind === 'itemStarted');
   }
@@ -143,9 +143,9 @@ export function projectCodexMessages(
   }
 
   /**
-   * 两条**没有渲染消费点**的增量通道：显式丢弃并计数（2026-10-09，三家统一的「非渲染增量」表）。
+   * 两条**没有渲染消费点**的增量通道：显式丢弃并计数（三家统一的「非渲染增量」表）。
    *
-   * 为什么不能像原先那样落到函数末尾的 `return empty`：那样「我们主动丢了」与「上游压根没发」
+   * 为什么不能落到函数末尾的 `return empty`：那样「我们主动丢了」与「上游压根没发」
    * 在日志里**长得一模一样**，排障时只能靠猜。这里登记进 `runState.droppedDeltas`，
    * 收尾由 `finalizeCodex` 打一条 DEBUG 汇总；**只记数、不记正文**（记正文就是另一个 O(n²) 文件）。
    *
@@ -188,7 +188,7 @@ function projectItem(
      * 「空数组」只说明**还没到**，不说明「没有文本」。落一块空快照的代价是**后面每一个字都被丢掉**——
      * 合并器的槽位一旦被快照 seal，随后的 `item/reasoning/textDelta` 会被「已 seal + 增量 ⇒ 丢弃」
      * 整段扔掉，而完成通知又不补封口，于是那一块永远停在 `text: null` + `none`。
-     * 真机症状（2026-10-07，`messageId: run-codex:N` 的产物）：5020/5020 个思考块全是这个形状，
+     * 症状（`messageId: run-codex:N` 的产物）：5020/5020 个思考块全是这个形状，
      * 界面上就是「思考信息没采到」。文本由增量累积、由 `item/completed` 封口（见 `reasoningDrafts`）。
      */
     if (started) return { drafts: [], subagents: [] };
@@ -258,8 +258,8 @@ function projectItem(
  * 判据是「该通道有没有过增量」：有过 ⇒ 补快照封口（上游只回密文、但增量已经把全文推完时，
  * 快照就是那段增量本身）；没有过 ⇒ 那一条通道这一轮根本没内容，**不补空格**。
  *
- * ⚠️ **封口不可省**（2026-10-07 真机改判）：`full` 与增量逐字相同时也**必须**发这一条快照。
- * 曾经的判据是「逐字相同 ⇒ 不重发，免得同一份内容说两遍」，代价是那一块**永远收不了尾**；
+ * ⚠️ **封口不可省**：`full` 与增量逐字相同时也**必须**发这一条快照。
+ * 判据若写成「逐字相同 ⇒ 不重发，免得同一份内容说两遍」，代价是那一块**永远收不了尾**；
  * 而「内容相同」与「已收尾」是两件事，`assembly` 这一格只有快照能翻。重发是幂等的（覆盖语义）。
  */
 function reasoningDrafts(
@@ -564,7 +564,7 @@ export function subAgentActivityStatus(activity: string): SubagentRecord['status
 }
 
 /**
- * 嵌套父链（契约 §2.6：`parentSubagentId` 是「嵌套父链；**顶层子任务为 `null`**」）。
+ * 嵌套父链（`parentSubagentId` 是「嵌套父链；**顶层子任务为 `null`**」）。
  *
  * 判据是**派发者是不是主线程**：`spawn_agent` 从主线程派出去的那些子线程，协议给的
  * `senderThreadId` 就是主线程 id，而它们在会话树上属于**顶层**——照抄主线程 id 会指向一个
@@ -625,7 +625,7 @@ function draft(envelope: DraftEnvelope & { role: MessageDraft['role']; blocks: M
     blocks: envelope.blocks.map((one) => ({ ...one, identity: { kind: 'index' as const, index } })),
     /**
      * 消息级用量：**结构性给不出**（app-server 只到线程级，差分无法证明归属）⇒ 恒 `null`（不是 0）。
-     * 界面因此不给它画页脚——与另两家「有就给」的差别是真实的能力差，登记在 §3.1。
+     * 界面因此不给它画页脚——与另两家「有就给」的差别是真实的能力差，登记在能力声明里。
      */
     usage: null,
     raw: envelope.raw,

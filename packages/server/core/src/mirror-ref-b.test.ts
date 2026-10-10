@@ -57,9 +57,9 @@ describe('resolveRemoteRef', () => {
 
     // 与 ensureCaseCache「缓存里有就不 fetch」同口径：已经能确定起点的一轮不该因为远端临时不可达而失败
     expect(resolveRemoteRef(dir, origin.url, { branch: null, commitHash: hashOf(origin, 'main') })).toBe(hashOf(origin, 'main'));
-    // 但「跟随分支 / 默认分支」要求新鲜度，来源不可达时必须抛（RG10：绝不静默沿用旧镜像）。
+    // 但「跟随分支 / 默认分支」要求新鲜度，来源不可达时必须抛（绝不静默沿用旧镜像）。
     // 码是 NOT_A_GIT_REPO 而不是 REPO_UNREACHABLE：移走的 file:// 路径在 git 原文里是
-    // `does not appear to be a git repository`，spec §4.5 把它归成「远端不存在」，
+    // `does not appear to be a git repository`，它归成「远端不存在」，
     // 处置是改地址而不是查网络（REPO_UNREACHABLE 的覆盖在 fetchMirror / classifyRemoteFailure 那两处）
     expect(codeOf(() => resolveRemoteRef(dir, origin.url, { branch: null, commitHash: null }))).toBe('NOT_A_GIT_REPO');
     expect(codeOf(() => resolveRemoteRef(dir, origin.url, { branch: 'feat/x', commitHash: null }))).toBe('NOT_A_GIT_REPO');
@@ -81,7 +81,7 @@ describe('resolveRemoteRef', () => {
     const { mirrorDir: dir } = ensureMirror({ workspaceRoot, url: origin.url });
 
     // 镜像里没有这个 commit → 抓一次再判。抓取被墙钟杀掉时必须报「不可达」：
-    // 拿「没抓到」去说「commit 不存在」是把用户指向错误的处置方向（RG10）
+    // 拿「没抓到」去说「commit 不存在」是把用户指向错误的处置方向
     const caught = caughtOf(() =>
       resolveRemoteRef(dir, origin.url, { branch: null, commitHash: '0'.repeat(40), timeoutMs: 1 }),
     );

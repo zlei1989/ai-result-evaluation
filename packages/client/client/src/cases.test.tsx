@@ -1,6 +1,6 @@
 /**
  * 用例 hooks：路由 URL 就是 SWR 的 cache key、mutation 后列表被刷新、详情缓存被回写、
- * 以及「校验仓库 / commit 候选 / 生成评分标准项按**仓库路径**走，URL 里不出现 caseId」（接口契约 §11 R7）、
+ * 以及「校验仓库 / commit 候选 / 生成评分标准项按**仓库路径**走，URL 里不出现 caseId」、
  * 用例同步的状态读取与人工动作（动作成功后要把状态缓存回写）。
  *
  * 每个用例挂一份全新的 SWR 缓存：默认 cache 是模块级单例，用例之间沿用会让第二个用例
@@ -148,7 +148,7 @@ describe('useCreateCase / useUpdateCase / useDeleteCase', () => {
     expect(fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? 'GET'} ${url}`)).toContain('DELETE /api/cases/case-1');
   });
 
-  // 删除后必须清掉详情缓存（§4.4 的反面）：留着它，右栏会在删除之后继续渲染一条已经不存在的用例，
+  // 删除后必须清掉详情缓存（反面）：留着它，右栏会在删除之后继续渲染一条已经不存在用例，
   // 用户再点「编辑」就会拿着一个 404 的 id 去 PUT。
   // 断言落在**已挂载的详情 hook 的 data** 上而不是内部 cache 对象：页面看到的就是这个 data。
   it('remove 之后详情缓存被清掉（已挂载的详情 hook 不再给出这条用例）', async () => {
@@ -164,7 +164,7 @@ describe('useCreateCase / useUpdateCase / useDeleteCase', () => {
   });
 });
 
-describe('仓库相关的三个动作（R7：按仓库路径，不带 caseId）', () => {
+describe('仓库相关的三个动作（按仓库路径，不带 caseId）', () => {
   it('validate 发 POST /api/cases/validate-repo，且不发任何 GET（该路由只有 POST）', async () => {
     const info: RepoInfo = {
       repoPath: 'D:\\projects\\gateway',
@@ -349,7 +349,7 @@ describe('仓库相关的三个动作（R7：按仓库路径，不带 caseId）'
 });
 
 /**
- * fix wave Item 4：候选的 cache key 由 `cases.ts` **唯一持有**，用例页只消费它。
+ * 候选的 cache key 由 `cases.ts` **唯一持有**，用例页只消费它。
  *
  * 守的是「漂移 = 静默空操作」：用例页的「重新加载候选」用过滤函数按 key 前缀重取，
  * 过滤函数一旦匹配不到 `useCommitCandidates` 真正用的那个 key，点击就一个请求都不发、也不报错——

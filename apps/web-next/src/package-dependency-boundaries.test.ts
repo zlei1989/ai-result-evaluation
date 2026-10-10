@@ -3,18 +3,18 @@
  * **依赖清单与方向表的一致性**（AGENTS.md 的「依赖方向」那一节）。
  *
  * 为什么需要这一条：那张表此前**只写在文档里**，`pnpm lint` 与 `pnpm typecheck` 都看不见它，
- * 于是「清单在撒谎」可以一直活下去。真机实例（2026-10-03）：`@aieval/client` 的 `package.json`
- * 把 `@aieval/ui` 写在 **`dependencies`** 里，而表里 client 的字面依赖只有 contracts
+ * 于是「清单在撒谎」可以一直活下去。真机实例：`@aieval/client` 的 `package.json`
+ * 把 `@aieval/ui` 写在 **`dependencies`**里，而表里 client 的字面依赖只有 contracts
  * ⇒ 「client 不依赖 ui」这条原则从"没被违反"退化成"没被检查过"。
  * 这个错位**没有任何可观测后果**（client 包里对 ui 只有一条 `export type`，编译期即被抹掉），
  * 所以它不会被任何运行时用例逮住——只能靠读清单本身。
  *
  * 判据分三段，都只读 `package.json`、不加载任何模块：
- *   1. **内部依赖必须在表里**：每个包的 `dependencies` 里出现的 `@aieval/*`，
- *      必须是表里那一行为它列出的包（表是**真源**，本文件不另抄一份清单）；
- *   2. **反向也要**：表里列出、而清单里**没有**的边同样是错位（少声明会在运行期才炸）；
- *   3. **类型期的边只准放 devDependencies**：`devDependencies` 里的 `@aieval/*` 不算运行时边，
- *      与表无关（`client` 就是这样持有 `@aieval/ui` 的）。
+ * 1. **内部依赖必须在表里**：每个包的 `dependencies` 里出现的 `@aieval/*`，
+ * 必须是表里那一行为它列出的包（表是**真源**，本文件不另抄一份清单）；
+ * 2. **反向也要**：表里列出、而清单里**没有**的边同样是错位；
+ * 3. **类型期的边只准放 devDependencies**：`devDependencies` 里的 `@aieval/*` 不算运行时边，
+ * 与表无关（`client` 就是这样持有 `@aieval/ui` 的）。
  *
  * 解析方式刻意用**正则读 AGENTS.md 的代码块**而不是在这里硬编码一份依赖表：硬编码等于造出
  * 第二个真相源，两处一旦漂移，这条守卫就会替错的那一份背书。表改了、解析不到，本文件**报错**

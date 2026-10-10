@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * recoverInterruptedRuns（F10：重启不自动续跑）
+ * recoverInterruptedRuns（重启不自动续跑）
  *
- * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：recoverInterruptedRuns（F10：重启不自动续跑）、R31 夹具守卫：跨 resetFakeAgents 的迟到出口不许改共享状态。
+ * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：recoverInterruptedRuns（重启不自动续跑）、夹具守卫：跨 resetFakeAgents 的迟到出口不许改共享状态。
  * 共享夹具、假适配器接缝与 `until` 等待器都在 `./testing/orchestrator-harness`——
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
@@ -48,11 +48,11 @@ registerOrchestratorHooks();
 
 
 /* ===================================================================================================
- * 重启恢复（spec §7.4 / F10）
+ * 重启恢复
  *
  * 这是 `interrupted` 终态在**本仓唯一的生产路径**：上一进程被杀（或正常重启）之后，行会停在
  * `preparing` / `running` / `judging` 这些非终态上，而 agent 子进程已经不存在了——「续跑」需要
- * 独立进程托管，本期不做（F10），恢复只做「收尾」：把在途行标 `interrupted`、把轮收成 `partial`。
+ * 独立进程托管，本期不做，恢复只做「收尾」：把在途行标 `interrupted`、把轮收成 `partial`。
  *
  * 三条容易被写错、坏了会直接伤到使用者的地方，各有独立用例：
  *   ① **不误伤终态行**：`failed` 行上的失败原因、`timed-out` 行上的超时原因都是使用者排查的唯一线索，
@@ -62,7 +62,7 @@ registerOrchestratorHooks();
  *   ③ **幂等**：启动钩子可能在同一进程里被调用不止一次，第二次不许重复发事件、不许改写轮状态。
  * =================================================================================================== */
 
-describe('recoverInterruptedRuns（F10：重启不自动续跑）', () => {
+describe('recoverInterruptedRuns（重启不自动续跑）', () => {
   it('只把 preparing / running / judging 的行标 interrupted，一个终态行都不动', () => {
     const rows = [
       makeRowFixture({ status: 'judged', score: makeScoreFixture(true) }),
@@ -160,12 +160,11 @@ describe('recoverInterruptedRuns（F10：重启不自动续跑）', () => {
   });
 
   /**
-   * **陈旧的 `listRuns()` 结果不得改写终态行**（阶段评审 Low-4）。
+   * **陈旧的 `listRuns()` 结果不得改写终态行**。
    *
    * 恢复先用 `listRuns()` 挑出「看起来在途」的行，再逐行 `setRowStatus(…, 'interrupted')`；而
    * `setRowStatus` 只按 id 定位、**不比对当前状态**。若某一行在「读列表」与「改写」之间跑完（`judged`），
-   * 恢复就会把它的分数与状态一起抹掉——正是本函数开头承诺「终态行一字不动」要防的事，而那条承诺原先
-   * 只写在注释里（**没有**二次复检）。
+   * 恢复就会把它的分数与状态一起抹掉——正是本函数开头承诺「终态行一字不动」要防的事——光把承诺写在注释里不够，循环里必须有二次复检。
    *
    * 窗口在今天不可达（唯一调用点是启动钩子，那一瞬没有行在跑），所以判据造在**模块边界**上：
    * 让 `listRuns()` 返回一份**陈旧**快照（说该行还在 `running`），而磁盘上的当前快照里它已经 `judged`。
@@ -194,7 +193,7 @@ describe('recoverInterruptedRuns（F10：重启不自动续跑）', () => {
 
 
 /* ===================================================================================================
- * 夹具自身的守卫（与本计划的功能无关，但它会把功能的守卫染成假红）
+ * 夹具自身的守卫（与功能无关，但它会把功能的守卫染成假红）
  *
  * `fakeAgents.concurrent` 是**模块级**计数器，而 `resetFakeAgents()` 只能把它清零、
  * 没法让一个已经挂在 gate 里的 `run()` 落定。用例超时（本机的环境性超时，实测有 60s 以上
@@ -207,7 +206,7 @@ describe('recoverInterruptedRuns（F10：重启不自动续跑）', () => {
  * 造出「跨 reset 的迟到出口」需要精确控制放行时机，而编排层那条路要先建真实 git 工作区
  * （几秒起步，比被测的那几行代码慢三个数量级）。
  *
- * 守卫有**四处**落点，本用例够得着**两处**（终审 FIX-5 纠正：上一版记成 3/4，其中一条不成立）：
+ * 守卫有**四处**落点，本用例够得着**两处**：
  *   ① `finish()` 的 `concurrent -= 1`（用「concurrent 保持 0」钉住）——**可达**：
  *      那一次运行挂在 gate 里，放行发生在 reset 之后；
  *   ② 成功路径那次 `onEvent` 投递（用「收集到的事件保持空」钉住，脚本里给了 `events`）——**可达**，
@@ -223,7 +222,7 @@ describe('recoverInterruptedRuns（F10：重启不自动续跑）', () => {
  *   两处共用同一条 `currentGeneration()` 表达式，它的区分力由 ① 与 ② 覆盖（把表达式改成恒真，
  *   ① 立刻以 `concurrent === -1` 变红）。
  * =================================================================================================== */
-describe('R31 夹具守卫：跨 resetFakeAgents 的迟到出口不许改共享状态', { timeout: TEST_TIMEOUT_MS }, () => {
+describe('夹具守卫：跨 resetFakeAgents 的迟到出口不许改共享状态', { timeout: TEST_TIMEOUT_MS }, () => {
   it('上一代的 gate 在 reset 之后放行：concurrent 保持 0，且不改写已清空的 calls / gates / 事件流', async () => {
     // `fakeAgentsModule()` 现在是 async（它要从真 `@aieval/agents` 取协议判据与文案，见 `testing/fixtures.ts`）
     const provider = (await fakeAgentsModule()).getProvider('codex');

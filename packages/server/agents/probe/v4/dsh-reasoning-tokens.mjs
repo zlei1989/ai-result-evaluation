@@ -1,5 +1,5 @@
 /**
- * 设计稿 §7.7.2 / §7.7.7 / §9.3 的 dsh 行（真机项）：
+ * dsh 行（真机项）：
  * `assistant/message → data.usage.reasoningTokens` **从未被观测到** ⇒ `usageCapability.thinkingTokens`
  * 对 dsh 一直只能声明 `'unverified'`。
  *
@@ -7,7 +7,7 @@
  *   A) openai-responses + `deepseek-reasoner`（`wire-usage-shape.mjs` 已证上游这条 wire 会给
  *      `output_tokens_details.reasoning_tokens = 31`）⇒ 看 dsh 是否把它投影成 `reasoningTokens`；
  *   B) anthropic-messages + `deepseek-reasoner`（上游这条 wire **完全没有**思考 token 字段）⇒ 对照档，
- *      用于区分「dsh 不投影」与「上游不给」——这正是 §9.4.1 要求的"先证明链路"。
+ *      用于区分「dsh 不投影」与「上游不给」——这正是"先证明链路"这条要求。
  *
  * 用法：node probe/v4/dsh-reasoning-tokens.mjs
  */

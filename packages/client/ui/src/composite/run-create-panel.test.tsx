@@ -1,20 +1,20 @@
 /**
  * RunCreatePanel：用例 + 执行模式 + 使用智能体评分 + 候选行（`Form.List` + small Table）。
  * 四件事必须成立：
- *   1. 模型候选池跟着**本行的智能体**变（spec §5.1 F2）；
+ *   1. 模型候选池跟着**本行的智能体**变；
  *   2. 池子为空时当场内联 Alert 指出路，而不是让人选完到运行时才失败；
  *   3. 提交校验（至少一行、每行两个 Select 都选了）真的拦得住，且拦下来的请求**一个都不发**；
- *   4. 「使用智能体评分」默认关闭，且开关打开而设置页没配默认评分智能体时当场提示（spec §6）——
+ *   4. 「使用智能体评分」默认关闭，且开关打开而设置页没配默认评分智能体时当场提示——
  *      判据由 `judgeAgentConfigured` 注入，正反两面都钉住（配了/未知时不许提示）；
- *   5. 执行模式的顺序与默认值（串行在前、默认串行，用户口径 2026-09-28）；
- *   5b. 思考强度（2026-10-07）：候选的**第一项是关闭档 `off`**（档位一律照上游词汇原样写，
+ *   5. 执行模式的顺序与默认值（串行在前、默认串行）；
+ *   5b. 思考强度：候选的**第一项是关闭档 `off`**（档位一律照上游词汇原样写，
  *      不再加工措辞），而「未指定」是
  *      `allowClear` 的清空态、由 placeholder 承担，**不是候选里的一项**（未选 ≠ 关闭）；
- *   6. 编辑模式（spec §6.2）：`mode="edit"` 预填当前轮次——执行模式取自 `initial`（不被缺省的
+ *   6. 编辑模式：`mode="edit"` 预填当前轮次——执行模式取自 `initial`（不被缺省的
  *      「串行」盖掉）、每个候选行带着**原行 id**与**思考强度**（编辑载荷是行集合的全量替换，
  *      少回传一格就会被服务端判成「改了这一行」而白重置一行），且**只在真有行会被作废时**
  *      才弹保存前确认框（什么都不作废时弹窗就是噪音，噪音会让用户闭眼点确定）；
- *   7. 候选行的**形态**（用户口径 2026-09-29）：一行一个候选的小表格、字段名在列头里、
+ *   7. 候选行的**形态**：一行一个候选的小表格、字段名在列头里、
  *      删除是操作列里右对齐的图标 link 按钮 —— 三条形态守卫都在「RunCreatePanel」describe 里。
  *
  * jsdom 环境注意：本文件要打开 Select 的下拉（浮层定位走 @rc-component/resize-observer），
@@ -85,7 +85,7 @@ const openaiOptions: RunModelOption[] = [
 
 /**
  * 默认的池子：**与注册表元数据一致** —— `codex` 只走 openai；`claude-code` 只走 anthropic；
- * 而 **`dsh` 两条协议都收**（契约 R37 的收口，2026-09-30）⇒ 它的池子是**并集**。
+ * 而 **`dsh` 两条协议都收** ⇒ 它的池子是**并集**。
  * 夹具按最终真值写：把 dsh 写成单协议会让「并集」这件事在界面用例里没有靶子。
  */
 function poolFor(agentKind: string): RunModelOption[] {
@@ -104,7 +104,7 @@ function defaultEffortFor(agentKind: string): string | undefined {
 }
 
 /**
- * 编辑模式的「当前轮次」夹具（spec §6.2 的 `initial`）：一行**跑过**的候选
+ * 编辑模式的「当前轮次」夹具（`initial`）：一行**跑过**的候选
  * （`judged` + `attempts: 1` = 有东西可丢，才可能进作废名单）。
  * 两格是刻意选的：
  *   · `executionMode: 'parallel'` —— 与表单缺省的「串行」不同，取值来源不对时用例当场红；
@@ -209,7 +209,7 @@ function renderPanel(overrides: Partial<Parameters<typeof RunCreatePanel>[0]> = 
 /**
  * 打开某一个下拉并按显示文本选中一项。
  *
- * **为什么不写 `getByRole('option', { name })`**（brief 原稿是那么写的，实测点不动）：
+ * **为什么不写 `getByRole('option', { name })`**（最初那么写的，实测点不动）：
  * antd 6 的 Select 在 DOM 里有两份选项——
  *   · 一份是 `.ant-select-item-option`（真正接收点击的可见行，内容在 `.ant-select-item-option-content` 里）；
  *   · 另一份是 `role="listbox"` 下那个 `height:0; width:0; overflow:hidden` 的**可访问性镜像**
@@ -247,11 +247,10 @@ function pickOption(labelText: string, optionText: string | RegExp, trigger?: HT
 /**
  * **所有**浮层合起来的选项文本；断言「列了什么 / 没列什么」（集合语义）用它。
  *
- * ⚠️ **`:not(.ant-select-dropdown-hidden)` 这个过滤在本版本上基本是死的**（实测，见下一个函数的注释）：
+ * ⚠️ **`:not(.ant-select-dropdown-hidden)` 这个过滤在本版本上基本是死的**（见下一个函数的注释）：
  * antd 换开另一个下拉时**不卸载**上一个的浮层，而那个浮层**不带** `hidden` 类 ⇒ 同一个文档里会同时
  * 有多份「可见」的 `.ant-select-item-option`，这个谓词一个都排不掉。它留着只是**没有坏处**（真带上
- * `hidden` 的那些确实该排掉），**不要**把它读成「能排除上一个浮层」的机制——那正是这条注释原来写错的地方
- * （2026-10-06 fix 轮按实测改正：旧写法断言「不排除就会把两个下拉的选项混在一起」，而事实上排不掉）。
+ * `hidden` 的那些确实该排掉），**不要**把它读成「能排除上一个浮层」的机制。
  *
  * ⚠️ 因此本函数（以及下面 `pickOption` 里同一份全局查询）是**脆的**：它把「此刻文档里所有浮层的选项」
  * 当做一个集合，用例里先开过用例下拉、再开强度下拉时，两份选项会混在一起。集合断言（`toContain`）与
@@ -301,7 +300,7 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 仓库名对**远端 URL** 也要取末段（spec §3）：解析口径由 contracts 提供（展示走 `displayRepoName`，
+   * 仓库名对**远端 URL**也要取末段：解析口径由 contracts 提供（展示走 `displayRepoName`，
    * 它的合法输入分支就是 `repoNameFromSource`）。
    *
    * 断言刻意钉到**完整一行**而不是 `/rbac-server/`：按路径分隔符切分的旧写法会切出 `rbac-server.git`，
@@ -352,15 +351,14 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * ⚠️ 显式放宽到 90s（2026-09-29）：本用例要建两行 + 反复开下拉，而每行现在有**三个** antd Select
+   * ⚠️ 显式放宽到 90s：本用例要建两行 + 反复开下拉，而每行现在有**三个** antd Select
    * （智能体 / 模型 / 思考强度）。antd 的 Select 在 jsdom 里挂载很贵，本机又有企业杀软在进程创建上收税，
    * 实测这条用例在整套并发下有 40-60s 量级的抖动（同文件其余用例仍在默认预算内）。
    * 放宽的是**等待预算**，不是判据：它断言的东西一个字都没变。
    */
   it('「添加候选」真的加一行（默认 Claude Code + 未选模型），并且两行能一起提交', { timeout: 90_000 }, async () => {
-    // N2：`Form.List` 的 `add` 路径原先一条用例都没有——派发稿点名要补。
-    // 它守的是「多候选」这条主路径：只加行不生效（或新行带上了上一行的模型）时，
-    // 使用者会提交出一个与自己选择不符的组合。
+    // 它守的是「多候选」这条主路径（`Form.List` 的 `add`）：只加行不生效（或新行带上了
+    // 上一行的模型）时，使用者会提交出一个与自己选择不符的组合。
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
@@ -375,7 +373,7 @@ describe('RunCreatePanel', () => {
     // 第一行选 anthropic 的模型并提交
     pickOption('用例', '多协议入站转换 · gateway · 71e6280');
     pickOption('模型', /claude-opus-4-6/);
-    // 提交按钮是「确定」（用户口径，2026-09-26）：它只提交这张已经写着「创建评测」的右栏表单。
+    // 提交按钮是「确定」：它只提交这张已经写着「创建评测」的右栏表单。
     // 名字写成 /确\s*定/ 而不是 '确定'：两个汉字的标签会被 antd 插空格成「确 定」（同本文件的「删除」「取消」）
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
 
@@ -392,7 +390,7 @@ describe('RunCreatePanel', () => {
     expect(codexOption).toBeDefined();
     fireEvent.click(codexOption as HTMLElement);
 
-    // 第二行的模型池跟着本行的智能体换成 openai 的（spec §5.1 F2）。
+    // 第二行的模型池跟着本行的智能体换成 openai 的。
     // 必须显式指定**第二行**的触发器：`getAllByLabelText` 的第 0 个是第一行
     const secondModel = screen.getAllByLabelText('模型')[1] as HTMLElement;
     pickOption('模型', /gpt-5/, secondModel);
@@ -407,7 +405,7 @@ describe('RunCreatePanel', () => {
     });
   });
 
-  it('执行模式：串行在前、并行在后，默认选中串行（用户口径 2026-09-28）', () => {
+  it('执行模式：串行在前、并行在后，默认选中串行', () => {
     renderPanel();
 
     // 顺序是产品口径的一部分：默认值落在第一个选项上，顺序反了「默认串行」就名不副实
@@ -437,9 +435,8 @@ describe('RunCreatePanel', () => {
   });
 
   it('选了「并行」后提交出去的 payload 里 executionMode 是 parallel', async () => {
-    // 为什么必须有这一条：`executionMode` 原先只有默认值有覆盖，「改选另一个模式」这条路径
-    // **一条断言都没有**——把实现改成恒发默认值也能全绿，而串行与并行在编排层是两种完全
-    // 不同的跑法（一行跑完含评分才起下一行）。
+    // 为什么必须有这一条：「改选另一个模式」这条路径只由这里钉住——把实现改成恒发默认值
+    // 也能全绿，而串行与并行在编排层是两种完全不同的跑法（一行跑完含评分才起下一行）。
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
@@ -465,15 +462,15 @@ describe('RunCreatePanel', () => {
     const openaiTrigger = screen.getAllByLabelText('模型')[0] as HTMLElement;
     fireEvent.mouseDown(openaiTrigger);
     const options = visibleOptionTexts();
-    // 标签是「模型名 + 供应商名 + 来源 Tag + 窗口 Tag」（窗口那一格 2026-09-29 加的，夹具里没声明 ⇒ 显示「未知」；
-    // 供应商名 2026-09-30 加的——见下面那条「同名模型要分得开」的用例）
+    // 标签是「模型名 + 供应商名 + 来源 Tag + 窗口 Tag」（窗口那一格夹具里没声明 ⇒ 显示「未知」；
+    // 供应商名见下面那条「同名模型要分得开」的用例）
     expect(options).toContain('gpt-5OpenAI 网关自动拉取未知');
     // 上一行的 anthropic 模型必须**不在**这个池子里（协议不匹配的组合不该被选中后到运行时才失败）
     expect(options.some((text) => text.includes('claude-opus-4-6'))).toBe(false);
   });
 
   /**
-   * 可解释性（计划 Task 8）：双协议智能体（DSH）的池子是**两类协议的并集**，
+   * 可解释性：双协议智能体（DSH）的池子是**两类协议的并集**，
    * 而选项里必须能看出**每个模型来自哪个供应商**——否则「同一个模型名挂在两个网关」
    * （跨网关同名很常见）时，两个选项长得一模一样，选出来却是不同的行。
    */
@@ -520,12 +517,12 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 形态守卫（用户口径 2026-09-29）：候选行是一张 **small Table**，「删除」是**操作列里右对齐的图标
+   * 形态守卫：候选行是一张 **small Table**，「删除」是**操作列里右对齐的图标
    * link 按钮**。三条钉的都是「省空间」这件事，且各自对应一个会静默退化的写法：
    *   · 退回竖排标签（每个候选白多一行标签高度，右栏只有 ~545px 宽）⇒ 表头那一条会红；
    *   · 按钮里再塞回「删除」两个字（本列近一半宽度被文字吃掉）⇒ textContent 那一条会红；
    *   · 漏掉列级 `align: 'right'`（图标贴左，列宽压不下去）⇒ textAlign 那一条会红。
-   * jsdom 不做布局，量不了像素：真实几何在浏览器里量（见本轮冒烟记录），这里只钉结构。
+   * jsdom 不做布局，量不了像素：这里只钉结构，真实几何在浏览器里量。
    */
   it('删除是操作列里右对齐的图标按钮（没有文字，宽度还给内容）（C-DELETE-ICON）', () => {
     renderPanel();
@@ -551,14 +548,14 @@ describe('RunCreatePanel', () => {
    * 这是「一行 = 一行」的前提：三个下拉只要有一个退回带 `label` 的写法，那一行就会比邻行高一截。
    *
    * 为什么**不**在这里钉 `size="small"`（`document.querySelector('.ant-table-small')` 那类断言）：
-   * 实测过它没有区分力 —— 把 `<Table>` 上的 `size="small"` 整个删掉，这条守卫照样绿，
-   * 因为紧凑密度是外层 `<Form size="small">` 经 antd 的 size context 传下来的。**没有见过失败的守卫
+   * 它没有区分力 —— 紧凑密度是外层 `<Form size="small">` 经 antd 的 size context 传下来的，
+   * `<Table>` 上删掉 `size="small"` 也照样小。**没有见过失败的守卫
    * 不算守卫**（AGENTS.md），故这里只留钉得住的三条：列头、单元格里没有标签行、三个控件同一行。
    */
   it('候选行是表格：字段名在列头里（没有竖排标签），三个下拉各自带可访问名（C-TABLE）', () => {
     renderPanel();
 
-    // 最后一列（操作列）的列名**留空**（用户口径 2026-09-29）：三个图标按钮各带 Tooltip 与
+    // 最后一列（操作列）的列名**留空**：三个图标按钮各带 Tooltip 与
     // aria-label，表头再写一遍「操作」只是白占这一列的宽度
     expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
       '智能体',
@@ -582,7 +579,7 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 形态守卫（用户口径 2026-09-29 二稿）：操作列是 **上移 / 下移 / 删除** 三个图标按钮，列名留空。
+   * 形态守卫：操作列是 **上移 / 下移 / 删除** 三个图标按钮，列名留空。
    * 三条各对应一个会静默退化的写法：列名又写回去（白占宽度）、顺序被改成「删除」在前
    * （破坏性动作挪到最容易误点的位置）、按钮里塞回文字（三个动作会把这一列撑成半张表）。
    */
@@ -599,7 +596,7 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 形态守卫（用户口径 2026-10-02）：右栏**窄到装不下四列**时，表格内部横向滚动，`智能体` 列钉在
+   * 形态守卫：右栏**窄到装不下四列**时，表格内部横向滚动，`智能体` 列钉在
    * 左边、操作列钉在右边（中间两列从它们下面滑过）。三处必须同时在场，少一处就静默退回老样子 ——
    * 表格溢到容器外面、`思考强度` 与三个操作按钮落在右栏之外（右栏是 `overflow: auto`，横向没有
    * 滚动条，被挤出去的列**根本够不到**）。三条断言各自对应一处：
@@ -611,7 +608,7 @@ describe('RunCreatePanel', () => {
    * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
    * 里的 `.ant-table-cell-fix { position: sticky }`，故这里断言的是类名而不是算出来的 `position`）。
    * 真实几何（容器 404px 时表格 636px、列宽 130/306/120/80、滚到两端时首列左边缘与末列右边缘
-   * 纹丝不动）由真机冒烟记录看着，同 `CANDIDATE_COLUMN_WIDTH` 那条注释。
+   * 纹丝不动）jsdom 量不出来，只能真机冒烟看，同 `CANDIDATE_COLUMN_WIDTH` 那条注释。
    */
   it('右栏装不下时横向滚动，且首列钉左、操作列钉右（C-COLUMN-FIXED）', () => {
     renderPanel();
@@ -729,7 +726,7 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 用例下拉支持**输入文字模糊查询**（用户口径，2026-09-26）：按**标题**过滤，
+   * 用例下拉支持**输入文字模糊查询**：按**标题**过滤，
    * 大小写不敏感、空格分词后每个词都要命中（AND），无匹配时给中文空态。
    *
    * 为什么必须自己给 `filterOption`：antd 的默认过滤拿的是**整条 option.label**
@@ -791,7 +788,7 @@ describe('RunCreatePanel', () => {
     });
 
     /**
-     * 终审复核 minor：**未知态补的那一项也要进 id → 标题映射**。
+     * 「未知态补的那一项」也要进 id → 标题映射。
      *
      * 未知态（`cases === undefined`）下 `caseOptions` 会补一个**可用**的当前用例项，它的标题来自
      * 这一轮的快照、不在 `cases` 里；而 `titleById` 只由 `cases` 造 ⇒ 用户一在这个下拉里打字，
@@ -813,7 +810,7 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 「使用智能体评分」开关（spec §6）。两条口径：
+   * 「使用智能体评分」开关。两条口径：
    *   1. **默认关闭**（用户口径）——默认开着会让「没配评分智能体」的人一进来就撞墙；
    *   2. 打开它就必须把 `useAgentJudge` 送进 payload：`RunCreateSchema` 有这一格，
    *      界面不发它就等于这一轮悄悄退回「模型评分」。
@@ -879,7 +876,7 @@ describe('RunCreatePanel', () => {
 });
 
 /**
- * 思考强度：**逐行**选（spec §7 第 3 条 / D10 / D14）。
+ * 思考强度：**逐行**选（第 3 条 /  /）。
  * 三条口径都在这里钉住：下拉只列服务端算好的交集、推荐档只标不预选、换模型作废已选档
  * （交集随模型变，留着一个不在交集里的脏值就会在创建时被服务端 400 拦下）。
  */
@@ -892,7 +889,7 @@ describe('RunCreatePanel：思考强度', () => {
       source: 'manual',
       contextWindow: 1_048_576,
       // 关闭档**必须**在候选里且排第一（算法在 `contracts/src/effort.ts` 的 `intersectEfforts`，
-      // 由 api 的 `listModelOptions` 投影出来；2026-10-06）：
+      // 由 api 的 `listModelOptions` 投影出来）：
       // 「未选」与「显式关闭」是两件事，而这一条是用户唯一能点「关闭」的地方
       efforts: [EFFORT_OFF, 'low', 'high', 'max'],
       recommendedEffort: 'high',
@@ -916,7 +913,7 @@ describe('RunCreatePanel：思考强度', () => {
     // 所以「抛错」本身就是「这一档没被列出来」的判据（比读浮层 DOM 稳：antd 换开下拉时不卸载上一个）
     expect(() => pickOption('思考强度', 'xhigh')).toThrow(/实际选项/);
     expect(() => pickOption('思考强度', 'medium')).toThrow(/实际选项/);
-    // 推荐档的标签确实带「（推荐）」（且它只标不预选，spec D14）
+    // 推荐档的标签确实带「（推荐）」（且它只标不预选）
     pickOption('思考强度', 'high（推荐）');
 
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
@@ -945,7 +942,7 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('智能体', 'Codex');
 
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    // 判据随本次变更从占位符「默认」改成「未指定」（2026-10-06）：清空态说的是「未指定」，
+    // 清空态说的是「未指定」，
     // 而它具体落到哪个档由该家适配器决定（dsh 走缺省 high）——见「未指定」那一条用例
     expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定');
   });
@@ -960,7 +957,6 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('模型', /none/);
 
     // 换模型后强度回到「未指定」占位符 ⇒ 已选档被作废（交集随模型变，脏值会在创建时被服务端 400 拦下）。
-    // 判据随本次变更从「默认」改成「未指定」（2026-10-06，同上一条）
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
     expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定');
 
@@ -971,16 +967,16 @@ describe('RunCreatePanel：思考强度', () => {
   });
 
   /**
-   * 「未指定」不是一个可选档（2026-10-06，spec D14 的延伸）：
+   * 「未指定」不是一个可选档（延伸）：
    * 未选档位的语义由**该家适配器**决定（DSH 走缺省 `high`，Claude Code / Codex 不传、由厂商推断），
    * 与候选里那个 `off`（**显式关闭思考**）是两件事。契约明说未选**不是**「沿用厂商默认档」，
    * 故 placeholder 必须把这件事说出来，否则用户在「我没选」与「我选了推荐档」之间无从分辨
-   * （预选被 D14 禁掉了，placeholder 是唯一还能说话的地方）。
+   * （预选被禁掉了，placeholder 是唯一还能说话的地方）。
    *
-   * **2026-10-08 口径：厂商名与档位都由元数据拼、且写全名。** 这条用例的靶子有两个：
-   *   · 这一家**没声明** `defaultEffort`（Claude Code 就是）⇒ 只说「未指定」，**不编**一个档
-   *     （旧文案里那句「claude / codex 不传」正是这一档）；
-   *   · 占位符里**不许出现 kind 缩写**（`dsh`）——那正是用户 2026-10-08 提的那处。
+   * **口径：厂商名与档位都由元数据拼、且写全名。**这条用例的靶子有两个：
+   *   · 这一家**没声明**`defaultEffort`（Claude Code 就是） ⇒ 只说「未指定」，**不编**一个档
+   * （占位符里那句「claude / codex 不传」正是这一档）；
+   *   · 占位符里**不许出现 kind 缩写**（`dsh`）**。
    */
   it('未选档位、且这一家没声明缺省档 ⇒ 占位符只说「未指定」，不编档位也不写 kind 缩写', () => {
     renderPanel({ modelOptionsFor: () => effortPool });
@@ -1000,8 +996,8 @@ describe('RunCreatePanel：思考强度', () => {
    * 声明了缺省档的家（今天只有 DSH）：占位符把「未选会落到哪」说清——**厂商名写全名**、
    * 档位取元数据。
    *
-   * 判据落在两处：`dsh`（kind 缩写）出现即红、`DeepSeek Harness 用 high` 消失即红
-   * ——前者是用户报的那处，后者是「说清后果」这条口径本身。
+    * 判据落在两处：`dsh`（kind 缩写）出现即红、`DeepSeek Harness 用 high` 消失即红
+    * ——后者是「说清后果」这条口径本身。
    */
   it('未选档位、且这一家声明了缺省档 ⇒ 占位符写出全名与该档（不是 kind 缩写）', () => {
     renderPanel({ modelOptionsFor: () => effortPool });
@@ -1017,14 +1013,13 @@ describe('RunCreatePanel：思考强度', () => {
   });
 
   /**
-   * 关闭档与「未指定」是**两件事**（用户口径 2026-10-06）：
-   *   · `off` = **要求关闭思考**，是候选里的第一项（2026-10-07 口径：档位照上游词汇原样写，
+   * 关闭档与「未指定」是**两件事**：
+   *   · `off` = **要求关闭思考**，是候选里的第一项（档位照上游词汇原样写，
    *     关闭档的文案就是 `off` 本身）；
    *   · 「未指定」= Select 的**清空态**（`allowClear`），不是候选里的一项。
    *
-   * ⚠️ **「点了 off ⇒ 提交的就是 off」也要在这里钉住**（2026-10-06 fix 轮）：全仓此前**没有一处**
-   * 提交过 `effort: 'off'`（ui 与 api 的用例都只提交过 `high` / `low`）⇒ 把这一项的 `option.value`
-   * 改坏（例如改成 `'none'`、或改成带括号的文案）今天照样全绿，而症状是「界面选了关闭、
+   * ⚠️ **「点了 off ⇒ 提交的就是 off」也要在这里钉住**：把这一项的 `option.value` 改坏
+   * （例如改成 `'none'`、或改成带括号的文案）不会有别的用例拦下，而症状是「界面选了关闭、
    * 落盘却是服务端不认识的档」。这条断言就是那个靶子（范式见上面「提交时带上选中的档」那条）。
    */
   it('候选第一项是 off，且提交出去的值就是 off', async () => {
@@ -1047,18 +1042,16 @@ describe('RunCreatePanel：思考强度', () => {
   });
 
   /**
-   * 「真下拉的第一项就是关闭档」——**不能用 `efforts[0]` 代替**。
-   *
-   * Task 2 / Task 3 的审查者两次点名这件事：先前那两条「下拉框第一项」用例其实只断言了
-   * `metadata.reasoningEfforts[0]`（服务端元数据数组的第一格），而用户看得见的下拉来自
-   * **api 的交集投影**（算法是 `contracts/src/effort.ts` 的 `intersectEfforts`）。两者今天恰好同序，所以那两条断言
+   * 「真下拉的第一项就是关闭档」——**不能用 `efforts[0]` 代替**：`efforts[0]` 是服务端元数据
+   * 数组的第一格，而用户看得见的下拉来自 **api 的交集投影**（算法是 `contracts/src/effort.ts`
+   * 的 `intersectEfforts`）。两者今天恰好同序，所以只断言 `efforts[0]` 的那两条用例
    * **无法区分**「投影把关闭档排到了后面 / 丢掉了」这类缺陷。
    * 下面两条用例把两种候选形态分开钉住：上游**声明过**档位（交集被裁过）、上游**没声明**（本机形态）。
    *
    * ⚠️ 两条**各自挂载**，不要合并成「同一次挂载里换模型再读」：**在 jsdom 里**同一次挂载里换完模型
    * 重开，antd 的浮层仍渲染着上一个模型的旧候选（组件自己的 `options` 已是新的，但浮层 DOM 不刷新），
-   * 于是「候选换了一份」这件事在那条路径上读不到 —— 那正是本轮审查点出的「第二半在空转」。
-   * **环境限定（2026-10-06 Task 6 真机实测）**：真浏览器里浮层**会**跟着刷新 —— 把智能体从
+   * 于是「候选换了一份」这件事在那条路径上读不到。
+   * **环境限定（真机实测）**：真浏览器里浮层**会**跟着刷新 —— 把智能体从
    * claude-code（6 项）换成 codex（9 项）、重选模型后重开下拉，读到的是 codex 的那 9 项；换回来又是 6 项
    * （换智能体会重置模型，走的是「同一实例的 `options` 从一份换成另一份」这条路径）。
    * ⇒ 上面那句是 **jsdom 的产物、不是产品缺陷**。两条用例仍然各自挂载（跨环境都稳的写法才留得住），
@@ -1073,7 +1066,7 @@ describe('RunCreatePanel：思考强度', () => {
           modelId: 'declared',
           source: 'manual',
           // 上游声明过、被裁过的交集：只留高于 medium 的档（高不下探到 low —— 「就近取整」是静默改语义，
-          // spec D10 禁掉），`off` 仍排第一（`contracts/src/effort.ts` 的 `intersectEfforts` 把它并到最前）
+          //  禁掉），`off` 仍排第一（`contracts/src/effort.ts` 的 `intersectEfforts` 把它并到最前）
           efforts: [EFFORT_OFF, 'xhigh', 'max'],
           recommendedEffort: 'max',
         },
@@ -1134,7 +1127,7 @@ describe('RunCreatePanel：思考强度', () => {
 });
 
 /**
- * 编辑模式（spec §6.2）：同一张表单，`mode="edit"` 预填当前轮次。
+ * 编辑模式：同一张表单，`mode="edit"` 预填当前轮次。
  * 三条各自对应一个真实会咬人的失败：
  *   · 行必须带上原行 id —— 丢了它，保存时所有行都被当新行，已跑出的结果静默清零；
  *   · 执行模式取 `initial.executionMode` —— 被 `initialValues` 的「默认串行」盖掉会让用户
@@ -1206,11 +1199,11 @@ describe('RunCreatePanel（编辑模式）', () => {
   });
 
   /**
-   * A-EFFORT：编辑载荷是候选行集合的**全量替换**，而 `isSameRowTarget` 拿 `effort` 一起比
+   * 编辑载荷是候选行集合的**全量替换**，而 `isSameRowTarget` 拿 `effort` 一起比
    * （一侧没给就算改了档位）。于是「强度没有被预填 / 没有被回传」的后果不是少一个字段，
    * 而是**一次什么都不改的保存也会重置这一行**（分数与产物当场消失）。
    */
-  it('原样保存：预填的思考强度原样回传，且不弹确认框（A-EFFORT / A15）', async () => {
+  it('原样保存：预填的思考强度原样回传，且不弹确认框', async () => {
     const onSubmit = vi.fn();
     renderPanel({ mode: 'edit', initial: effortRun, onSubmit, modelOptionsFor: () => effortEditPool });
 
@@ -1255,7 +1248,7 @@ describe('RunCreatePanel（编辑模式）', () => {
    * **一个 `loading` 键都不能有**——`ActionButton.js` 把 `buttonProps` 展开在自己的 `loading` 之后，
    * 键只要在场（哪怕是 `undefined`）就会盖掉它内部的转圈状态：确认框照样等，但用户看不到「在保存」。
    */
-  it('保存未落定前确认框不关闭、保存按钮在转圈（A14）', async () => {
+  it('保存未落定前确认框不关闭、保存按钮在转圈', async () => {
     let finish: (() => void) | undefined;
     const onSubmit = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
     renderPanel({ mode: 'edit', initial: editRun, onSubmit, modelOptionsFor: poolFor });
@@ -1291,11 +1284,11 @@ describe('RunCreatePanel（编辑模式）', () => {
   });
 
   /**
-   * B（终审 Important）：**用例列表未知 ≠ 用例已被删除**。
+   * **用例列表未知 ≠ 用例已被删除**。
    *
    * 可达路径正是本页支持的那条：直开 / 刷新 `?panel=edit&id=…`（设计把 URL 当唯一真源，刷新是正常用法）
    * 时这一轮的快照常比 `/api/cases` 先到；它读失败时更是一直不到，而那个错误不在本页展示。
-   * 此前一律按「已删除」处置 ⇒ 下拉显示一句**假话**并且选项被禁用——用例根本换不了。
+   * 按「已删除」处置就会让下拉显示一句**假话**并且选项被禁用——用例根本换不了。
    * 口径与本页 `judgeAgentConfigured` 的「未知 ≠ 没配」同源：只有**已知**不含它才敢说「已删除」。
    */
   it('用例列表未知（undefined）：不说「原用例已删除」，当前用例仍在下拉里、也仍可提交', async () => {
@@ -1316,7 +1309,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     const onSubmit = vi.fn();
     renderPanel({ onSubmit, modelOptionsFor: poolFor });
 
-    // 用例是必填的（brief 原稿漏了这一步：不选用例连提交都到不了，断言只会停在「一次都没调用」）
+    // 用例是必填的（最初漏了这一步：不选用例连提交都到不了，断言只会停在「一次都没调用」）
     pickOption('用例', /多协议入站转换/);
     pickOption('模型', /claude-opus-4-6/);
     submitForm();
@@ -1349,15 +1342,15 @@ describe('RunCreatePanel（编辑模式）', () => {
   });
 
   /**
-   * C（控制器裁决）：判别联合的**编译期**守卫。
+   * 判别联合的**编译期**守卫。
    *
    * 上一条只验运行期兜底（`renderPanel` 走了一次断言，什么组合都喂得进来）；而「`mode: 'edit'` 必须
-   * 同时给 `initial`」这条**编译期**保证此前没有任何守卫——把 props 拆回两个各自可选的格子，
+   * 同时给 `initial`」这条**编译期**保证只由这一条钉住——把 props 拆回两个各自可选的格子，
    * 全套用例照样绿。
    *
    * 做法就是一行「指令必须被用上」的断言：`@ts-expect-error` 只在**紧接的那一行真的报错**时才算数，
    * 否则 `tsc` 报「Unused '@ts-expect-error' directive」。谁把联合拆掉，`pnpm typecheck` 立刻红。
-   * 这是本仓第一处 `@ts-expect-error`（刻意只放在测试里）：它钉的是 props **形状**这件编译期的事，
+   * `@ts-expect-error` 刻意只放在测试里：它钉的是 props **形状**这件编译期的事，
    * 运行期没有等价的观测点；而少给 `initial` 的后果是全量替换语义下静默销毁一轮已有的结果。
    */
   it('mode="edit" 少给 initial：编译期就过不去（@ts-expect-error 必须被用上）', () => {
@@ -1439,7 +1432,7 @@ describe('invalidatedRows', () => {
   });
 
   /**
-   * A-EFFORT 的另一面：**强度变了 = 这一行不再同一件事**（同一个模型、同一家供应商，
+   * **强度变了 = 这一行不再同一件事**（同一个模型、同一家供应商，
    * high 改成 low 跑出来的是另一次评测），所以它必须进作废名单；而强度**没变**时不许进
    * （只在两侧都写死成「有强度就重置」的实现会让后一条红）。
    */
@@ -1461,7 +1454,7 @@ describe('invalidatedRows', () => {
 });
 
 /**
- * 「思考强度」占位符的**三档文案**（2026-10-08）。
+ * 「思考强度」占位符的**三档文案**。
  *
  * 为什么单独测这个纯函数而不是只从 Select 的 `textContent` 反推：那是**一句说出口的话**，
  * 三档的判据（没选智能体 / 这家没声明缺省档 / 声明了）必须逐档可证；组件层那两条用例只能
@@ -1474,7 +1467,7 @@ describe('effortPlaceholder', () => {
   it('这一家声明了缺省档 ⇒ 写全名与该档（**不是** kind 缩写）', () => {
     const text = effortPlaceholder('dsh', declared);
     expect(text).toBe('未指定（DeepSeek Harness 用 high）');
-    // 靶子：那句缩写 `dsh` 出现在页面上就是用户 2026-10-08 报的那处缺陷
+    // 靶子：那句缩写 `dsh` 出现在页面上就是这条用例要拦下的缺陷
     expect(text).not.toContain('dsh');
   });
 

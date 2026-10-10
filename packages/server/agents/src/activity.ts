@@ -1,6 +1,6 @@
 /**
  * 三家共用的**活动摘要词表**：把一条通知/一次工具调用翻成「此刻在做什么」的一句话。
- * 本模块是这一层的唯一实现，口径见 features-design §5.6.9（各家「在哪一条通知上发」也列在那里）。
+ * 本模块是这一层的唯一实现（各家「在哪一条通知上发」由各适配器决定）。
  *
  * 为什么要有这一个文件：候选卡片底部那一行只吃 `log` 事件的 `summary`（判定在 `@aieval/client`
  * 的 `activityOf`），而这句话过去由三家各写一份——同一次工具调用于是有三种信息量（claude 只给工具名
@@ -8,7 +8,7 @@
  * 逐字复制粘贴（连「名字缺失就回落成字面量『子任务』」这个毛病一起复制）。现在**只有这一份实现**，
  * 跨家同形由 `src/activity-conformance.test.ts` 逐字钉住。
  *
- * ## 一句话怎么拼（2026-10-10 口径，用户裁定「description 优先，没有就按每个簇自己拼」）
+ * ## 一句话怎么拼（用户裁定「description 优先，没有就按每个簇自己拼」）
  *
  * 「参数里第一个非空字符串」那把尺子对三家**都不够**：真机里 `Read` 永远吐一串绝对路径（1495px、
  * 被 CSS 截掉一半），`apply_patch` 吐紧凑 JSON，`exec_command` 永远同一个形。所以现在分三步：
@@ -51,7 +51,7 @@ import { classifyTool } from './tool-family';
 
 /**
  * 摘要主体的长度上限（`调用工具 pwsh：` 这样的前缀不计入）。
- * 沿用 dsh 自 2026-09-29 起的口径：这一行的用途是「一眼看出在干什么」，
+ * 沿用 dsh 的口径：这一行的用途是「一眼看出在干什么」，
  * 完整参数与输出都在抽屉的原始负载里 ⇒ 超长一律截断带省略号。
  */
 export const ACTIVITY_SUMMARY_MAX_LENGTH = 120;
@@ -59,7 +59,7 @@ export const ACTIVITY_SUMMARY_MAX_LENGTH = 120;
 /**
  * **描述优先那一档的边界**：只有这一个键名算「模型自己写的一句话」，逐字。
  *
- * 为什么不把近义词一起收进来（2026-10-10 协议核查的三个名字都不收）：
+ * 为什么不把近义词一起收进来（协议核查过的三个名字都不收）：
  *   · `reason`（DSH `job_kill`）与 `justification`（Codex `exec_command`）是**审批语义**
  *     （"User-facing approval question for require_escalated"），拿它当「这一步在干什么」是语义挪用；
  *   · `explanation`（Codex `update_plan`）才是同一件事，但它**不进摘要**——它属于计划卡片那一格

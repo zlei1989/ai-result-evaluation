@@ -1,9 +1,9 @@
 /**
  * v4 / Q2 收口：两个上一脚本没答干净的问题。
  *
- *  ① 那行闸门日志**不带 `--debug-file`** 时去哪一格？（设计稿 §7.8.4 写的是「它在 CLI 的
+ *  ① 那行闸门日志**不带 `--debug-file`** 时去哪一格？（登记口径是「它在 CLI 的
  *     stdout/stderr 上」；上一脚本里我加了 `--debug-file`，日志被重定向进文件，
- *     于是 stdout/stderr 两条都是 false —— **这不足以反驳设计稿**，必须去掉 `--debug-file` 再测。）
+ *     于是 stdout/stderr 两条都是 false —— **这不足以反驳那条口径**，必须去掉 `--debug-file` 再测。）
  *
  *  ② 规模告警要「排期数 > 阈值」才会触发。上一脚本的 workflow 只排了 2~3 个 agent，
  *     低于 `CLAUDE_CODE_WORKFLOW_SIZE_WARNING_AGENTS=8`，**根本没机会告警**——

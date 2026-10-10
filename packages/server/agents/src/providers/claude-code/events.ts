@@ -1,16 +1,16 @@
 /**
- * claude-code 的消息投影（§5.6.3）。
+ * claude-code 的消息投影。
  * 规则：
  *  1. 唯一允许丢弃的是**重复消息**：同一 `uuid` 只投影一次（SDK 重放 / 续传会给重复）；
  *  2. 其余任何消息（含未识别的 type）都必须落成**保留原始负载**的日志事件，不得静默丢弃；
- *     工具 / 推理块那一条（`[{type:'tool_use',…}]`）在 2026-09-29 起**额外带一句人话摘要**
+ *     工具 / 推理块那一条（`[{type:'tool_use',…}]`）**额外带一句人话摘要**
  *     （`log.summary`，用户口径：卡片底部的活动行要显示具体的消息，不能是 JSON）——
  *     原始负载仍然逐字在 `text` 里，抽屉的证据一个字没少；
- *     **唯一一类例外是「流式 / 进度帧」**（2026-10-09）：`stream_event` 与
+ *     **唯一一类例外是「流式 / 进度帧」**：`stream_event` 与
  *     `system/thinking_tokens` 逐 token 各一条，落进这条兜底就是「抽屉刷成 JSON 流水 + 单行产物涨到
  *     MB 级」（真机 11,629 条，见那一支的注释）。它们**显式丢弃**（不是默默丢弃）：登记点是这条规则
  *     + 知识库《消息规范》的「非渲染增量」表——「不许静默丢弃」对它们依然成立，只是处置写的是「丢」；
- *  3. 计量只在 `result` 消息上取（§5.6.3 表）：`usage.input_tokens` /
+ *  3. 计量只在 `result` 消息上取：`usage.input_tokens` /
  *     `usage.cache_read_input_tokens` / `usage.output_tokens` **三项齐了才有值**；缺一项就是
  *     「没采到」→ null 并落一条 WARN，绝不填 0（0 会让人得出「这家很省」的错误结论）；
  *     时间（2026-10-XX）同样只在 `result` 上取：`duration_ms` / `duration_api_ms` / `ttft_ms`
@@ -20,7 +20,7 @@
  *     回落到 `result` 文本——理由（结构化那一轮可能没有尾随 assistant、`result` 因此为空）与两个
  *     来源不一致时的 WARN 处置见 `projectResult`。
  *
- * **轮次 = 一次模型 API 往返**（用户口径，2026-09-28）：一条 `assistant` 消息就是模型对一次请求的
+ * **轮次 = 一次模型 API 往返**（用户口径）：一条 `assistant` 消息就是模型对一次请求的
  * 答复，故按它的 `message.id` 去重计数（流式响应会按内容块重复到达、共享同一个 id，去重后
  * 「一条 API 往返只算一次」）。这正是 SDK 自己的口径——它的 `maxTurns` 文档逐字写着
  * 「Maximum number of agentic turns (**API round-trips**)」，收尾消息上的 `num_turns` 同义
@@ -31,7 +31,7 @@
  * 注意：`parent_tool_use_id` 非空的 assistant 消息来自 Task 子智能体，不在主循环的往返计数里
  * （与 `result.usage` 排除侧链的口径一致）。
  */
-import type { UsageTokens } from '@aieval/contracts';
+import { normalizeMcpServers, type UsageTokens } from '@aieval/contracts';
 import {
   clipSummary,
   subagentDispatchSummary,
@@ -48,13 +48,13 @@ import { lookupClaudeTaskName, rememberClaudeTaskName } from './message';
 /** 子智能体消息的标记字段：非空即「主循环之外」，不参与轮次计数 */
 const SIDE_CHAIN_FIELD = 'parent_tool_use_id';
 
-/** SDK 原生的子任务生命周期消息（spec §6.4）。真机实测：**默认就发**，不需要任何 SDK 选项 */
+/** SDK 原生的子任务生命周期消息。**默认就发**，不需要任何 SDK 选项 */
 const TASK_STARTED = 'task_started';
 const TASK_NOTIFICATION = 'task_notification';
 /** `system` 下承载「厂商系统层事实」的那一个 subtype（真机 2.1.281 实测） */
 const INIT_SUBTYPE = 'init';
 /**
- * `system` 下那个**逐 token 的思考进度** subtype（2026-10-09 真机实测）。
+ * `system` 下那个**逐 token 的思考进度** subtype。
  *
  * SDK 的类型注释逐字说明它的身份：*Live thinking-token estimate, digested from
  * `thinking_delta.estimated_tokens` during the redacted-thinking phase … **Approximate progress for
@@ -64,7 +64,7 @@ const INIT_SUBTYPE = 'init';
 const THINKING_TOKENS_SUBTYPE = 'thinking_tokens';
 
 /**
- * `system/init` → **厂商系统层事实**（2026-10-04 收口）。
+ * `system/init` → **厂商系统层事实**。
  *
  * 这一格过去只以原始 JSON 落成一条 `log`，于是「这一次被下发了哪些工具、什么权限档」
  * 只能由**消费端**去 `JSON.parse` 那条日志并逐字认 `slash_commands` / `permissionMode`——
@@ -76,6 +76,12 @@ const THINKING_TOKENS_SUBTYPE = 'thinking_tokens';
  *     字段是数组但为空 ⇒ `[]`（「投送了，确实是空的」）——两者在界面上是两句不同的话；
  *   · 数组里**只留字符串**：厂商可能塞进非字符串项，混进 `string[]` 会让下游渲染出 `undefined`；
  *   · `permissionMode` / `output_style` 只认非空字符串（空串按「没给」处置）。
+ *
+ * **`mcp_servers` 是唯一一格对象数组**：真机投的是 `[{name, status, source}]`（名 / 连接状态 / 来源），
+ * 拿 `strings` 去滤它会把四台全丢掉、折成 `[]`——而 `[]` 在本仓的定义是「投送了，确实是空的」，
+ * 等于在事件流里写下一句假话（四台 MCP 就只剩原始 JSON 那条 log 里有）。这一格走契约里**共用**的
+ * `normalizeMcpServers`：对象逐格取、老形态（字符串）也读得动、非数组记 `null`——
+ * 归一只有一处实现，消费方（环境抽屉 / 日志行）拿到的是同一个形状。
  *
  * `cwd` / `session_id` / `model` / `claude_code_version` **刻意不收**：前三个与运行快照里的
  * 权威值重复（收进来就有第二份真值），版本号今天没有消费者——要用时再加，别先囤着。
@@ -94,7 +100,10 @@ function vendorSystemDraftOf(message: Record<string, unknown> | null): AgentEven
     tools: strings('tools'),
     slashCommands: strings('slash_commands'),
     agents: strings('agents'),
-    mcpServers: strings('mcp_servers'),
+    mcpServers: normalizeMcpServers(message?.['mcp_servers']),
+    // 通道自报：claude 的判据来源是 `system/init` 里那一台的 `status`（外加工具表）。
+    // 推导靠它把「表里没有这一台」读成「不判失败」——与 dsh 的工具表通道**读法相反**。
+    mcpChannel: 'vendor-status',
     permissionMode: nonEmpty('permissionMode'),
     outputStyle: nonEmpty('output_style'),
   });
@@ -121,10 +130,10 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
       tokensEstimated: true,
       turns,
       /**
-       * 归属：读数只由主循环触发 ⇒ 会话恒为主会话，轮次就是刚数出来的那个（spec 2026-10-05 §2.3）。
+        * 归属：读数只由主循环触发 ⇒ 会话恒为主会话，轮次就是刚数出来的那个。
        * 没有轮次时（侧链被 `countModelRoundTrip` 在 `parent_tool_use_id` 上挡住、或消息缺
        * `message.id`）给**显式 `null`**：没有号就不假装有，与下面 `projectResult` 的三个出口**逐字同形**
-       *（2026-10-05 审查轮 1 裁定：投影层跟着草稿层的硬口径走——`AgentEventDraft` 那一格恒在，
+        *（投影层跟着草稿层的硬口径走——`AgentEventDraft` 那一格恒在，
        * 没有归属就是 `null`，读的人不必再问「缺省与 `null` 在这里有没有别」）。
        */
       turn: turns === null ? null : { subagentId: null, round: turns },
@@ -142,7 +151,7 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
   }
   /**
    * `user` 消息里承载的是**工具结果**（`tool_result` 块）：只有报错才给一句人话摘要
-   * （2026-10-07 统一）——那是「这一行出事了」，而它没有别的行级出口；成功返回不播，
+   * （统一口径）——那是「这一行出事了」，而它没有别的行级出口；成功返回不播，
    * 它的落点是结果块与抽屉的原始输出面板（口径与判据见 `src/activity.ts`）。
    */
   if (type === 'user') {
@@ -152,14 +161,14 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
     }
   }
   /**
-   * **流式 / 进度帧不进原始日志**（2026-10-09 用户口径；两类，都必须显式登记，不许静默丢弃）：
+   * **流式 / 进度帧不进原始日志**（用户口径；两类，都必须显式登记，不许静默丢弃）：
    *
    *   ① `stream_event`（内容增量）：每条只带一小段 delta，落进下面的未识别兜底会把「原始输出」
    *      面板刷成 JSON 流水，真要看的 stderr / init 反而被冲掉。它的落点只有对话视图：消息侧
    *      （`message.ts` 的 `streamEvent`）把 delta 折成 `chunk: 'delta'` 的消息、编排层**只广播不落盘**
    *      ⇒ SSE 实时驱动执行日志的打字机效果。事件侧零产出（`uuid` 去重照常在上面做——重复帧仍丢）。
    *   ② `system` + `subtype: 'thinking_tokens'`（**思考进度帧**，见 `THINKING_TOKENS_SUBTYPE` 的 SDK 原文）：
-   *      它是给 spinner 用的近似进度，每个思考 token 一条。**真机量级**（2026-10-09，run `7f05c765`
+   *      它是给 spinner 用的近似进度，每个思考 token 一条。**量级**（run `7f05c765`
    *      的 claude 行）：这一种帧 **11,629 条**，占该行 12,509 条 `log` 的 **93%**；评分智能体那条路
    *      （走同一个适配器，编排层加 `[评分智能体] ` 前缀）再叠 **670 条**。后果两条都很硬：
    *      「原始输出」面板被刷成 JSON 流水且卡死、`events.jsonl` 的单行产物涨到 MB 级。
@@ -172,7 +181,7 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
   if (type === 'system' && readString(message, 'subtype') === THINKING_TOKENS_SUBTYPE) {
     return emptyProjection();
   }
-  // system / user / 未来新增的类型：一律保留原始负载（§5.6.3）
+  // system / user / 未来新增的类型：一律保留原始负载
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
 }
 
@@ -213,23 +222,23 @@ function toolResultText(content: unknown): string {
 }
 
 /**
- * 子智能体生命周期 → 一条**可解析**的日志（spec §6 / §6.4）。
+ * 子智能体生命周期 → 一条**可解析**的日志。
  *
  * 为什么以日志承载而不是新事件类型：`AgentEvent` 今天仍是**八型封闭联合**，其中**没有** subagent 事件；
- * §6 的 `subagent-start`/`subagent-end` 是 v2 契约（尚未实现）。
+ * `subagent-start`/`subagent-end` 是 v2 契约（尚未实现）。
  * 在 v1 上把它们落成一条 `log`，载荷是 JSON——消费方按 `kind: 'subagent'` 过滤即可。
  * 这与 `unknownEventDraft` 的区别是**关键的**：那时这些消息只是一坨没人认识的原始 JSON
  * （`system` 过去一律走兜底分支），派生与收场在界面上完全不可见。
  *
- * 载荷字段逐字对应 spec §6.4.3 的落点表。**真机实测（2.1.281）**：这些消息**默认就发**，
- * 不需要 `forwardSubagentText`（那一项只影响子智能体的文本/思考，见 §6.4.2）。
+ * 载荷字段逐字对应落点表。**实测（CLI 2.1.281）**：这些消息**默认就发**，
+ * 不需要 `forwardSubagentText`（那一项只影响子智能体的文本/思考）。
  *
  * 缺 `task_id` 时**照发事件、身份写 `null`**（不编一个 id、也不把整条丢掉）：
  * 丢掉会把「派了一个子任务」这件事实一起丢掉，而编一个 id 会让下游配对**静默错位**。
- * 取第三条——发事件、身份为 null，让下游**显式**看到"这一条没有身份可用"（§4「缺就是缺」）。
+ * 取第三条——发事件、身份为 null，让下游**显式**看到"这一条没有身份可用"（「缺就是缺」）。
  * 真机两次运行 `task_id` 都非空 ⇒ 这条防御路径大概率不可达，它保的是平台/版本差异。
  *
- * ⚠️ **这里刻意不按形状过滤**（2026-10-05，spec §4 **R19**）：CLI 也给**非 Agent 的后台任务**发
+ * ⚠️ **这里刻意不按形状过滤**：CLI 也给**非 Agent 的后台任务**发
  * `task_*`（真机：子智能体自己那条带 `description` 的 Bash），本条日志因此对**每一条** `task_*` 帧都发
  * ——它是**原始证据**，不是派发面板的数据源（面板与 `messages.jsonl` 走 `message.ts` 的 `SubagentRecord`，
  * 那里按 `ClaudeTaskShape` 把幻影挡在外面）。要收窄这一侧，先裁定「审计日志该不该只留真派发」。
@@ -244,7 +253,7 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
   /**
    * 名字：派发帧自带 `description`；**收场帧没有这一格**（真机键集见 `message.ts` 顶部的名字表），
    * 于是回落到同一 `task_id` 在派发时记下的那个名字——不回填就会产出「已派发子任务：X」紧跟
-   * 一句无名的「子任务已完成」这种自相矛盾的一对（2026-10-07 真机 run `e68351a5` 就是它）。
+   * 一句无名的「子任务已完成」这种自相矛盾的一对（真机 run `e68351a5` 就是它）。
    */
   const name = readString(message, 'description') ?? (isStart || identity === null ? null : lookupClaudeTaskName(identity));
   // 派发帧是名字的唯一来源 ⇒ 顺手记进同一张表（消息侧也写同一格，值相同、幂等）
@@ -253,7 +262,7 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
     kind: 'subagent',
     phase: isStart ? 'start' : 'end',
     /**
-     * `'wire'` = SDK 原生消息（spec §6.1）。claude 侧**有更好的通道**：
+     * `'wire'` = SDK 原生消息。claude 侧**有更好的通道**：
      * 原生 `task_*` 带 `tool_use_id`（归属键）与 `spawn_depth`，而 hook 两者都没有。
      * ⇒ claude 走 wire，hook 只作后备。
      *
@@ -262,9 +271,9 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
      */
     source: 'wire',
     subagentId: identity,
-    // 厂商原生 id，不是我们合成的（§6.4.3 更正了先前"claude 只能合成 id"的说法）
+    // 厂商原生 id，不是我们合成的
     vendorId: identity,
-    /** **归属键**：与派生它的 `Agent` 工具调用 id、以及子智能体消息的 `parent_tool_use_id` 三者相同（真机实测） */
+    /** **归属键**：与派生它的 `Agent` 工具调用 id、以及子智能体消息的 `parent_tool_use_id` 三者相同 */
     parentToolUseId: readString(message, 'tool_use_id'),
   };
 
@@ -279,13 +288,13 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
     /**
      * **真实终态**（`completed` / `failed` / `stopped`）⇒ claude 侧**用不到** `statusMissing`。
      * 这是三家在子任务上第一处真实的能力差异：codex 的 `SubagentStop` schema 里**没有**状态字段
-     * （只有 schema 级证据，见 §6.3），dsh 待验。
+     * （只有 schema 级证据），dsh 待验。
      */
     payload.status = readString(message, 'status');
     // 名字在收场帧上缺席 ⇒ 把回填到的那一份写进证据（否则日志里就只剩 `subagentId`，而按 id 反查名字
     // 要另一张表；这与 dsh 的收场载荷带 `name` 是同一条口径）
     payload.name = name;
-    // 字段名用 `outcome` 而不是厂商的 `summary`：spec §6 的 `SubagentEnd.outcome` 就是"结果摘要"，
+    // 字段名用 `outcome` 而不是厂商的 `summary`：`SubagentEnd.outcome` 就是"结果摘要"，
     // 两处叫法不一致会让消费方多写一层映射（而本族的全部意义就是**不用**按厂商分支）
     payload.outcome = readString(message, 'summary');
     const usage = asRecord(message?.usage);
@@ -353,7 +362,7 @@ function projectResult(
   //   · **显式 `null`** ⇒ 同样是「没有结构化产出」。不能让它走序列化：`safeStringify(null)` 是字符串
   //     `'null'`，而它非空 ⇒ 会把**每一条非 schema 行**的答复静默换成 `'null'`，并因为 `'null' !== text`
   //     落一条假的「不一致」WARN（评分通路读的正是 `finalText`，这是方向最坏的静默错）；
-  //   · **空串 `''`** ⇒ 同样是「没有**可用的**结构化产出」（修复轮 2 / R24）。这一格必须与下面 `result`
+  //   · **空串 `''`** ⇒ 同样是「没有**可用的**结构化产出」。这一格必须与下面 `result`
   //     那一支**同源**：本函数明确拒绝把 `''` 当成「采到了答复」（文件头 N3），那么空的 schema 产出同样
   //     不该顶掉一个非空的 `result`——少这一格，同一个函数里就有两套互相矛盾的「空串算不算答复」；
   //   · **已序列化的 JSON 字符串** ⇒ 原样当 JSON 文本用。若照对象那样再 `JSON.stringify` 一次就是二次
@@ -388,7 +397,7 @@ function projectResult(
     );
   }
   /**
-   * 归属（2026-10-05，spec §2.3）：`result` 是**主循环**的收尾读数（侧链那一条在
+   * 归属：`result` 是**主循环**的收尾读数（侧链那一条在
    * `countModelRoundTrip` 就被挡住、根本数不出号）⇒ 会话恒为主会话，轮次就是数出来的这个数；
    * `turns` 为 `null`（一次号都没数到）时给 `null`——没有号就不假装有（与「计量绝不填 0」同一条口径）。
    *
@@ -435,7 +444,7 @@ function projectResult(
       failure: null,
     };
   }
-  // 空串也算「没有答复」：`''` 既落不成日志（见上），也不该做成一条空文案的失败（评审 N3）
+  // 空串也算「没有答复」：`''` 既落不成日志（见上），也不该做成一条空文案的失败
   const failureText =
     text !== null && text !== ''
       ? text
@@ -452,11 +461,11 @@ function projectResult(
   };
 }
 
-/** assistant 消息：文本块进日志、工具与推理块原样落盘（落盘但不必解析，§5.6.3） */
+/** assistant 消息：文本块进日志、工具与推理块原样落盘（落盘但不必解析） */
 function assistantDrafts(message: Record<string, unknown> | null, raw: unknown): AgentEventDraft[] {
   const drafts: AgentEventDraft[] = [];
   const blocks = readContentBlocks(message);
-  // 空串文本块不算「有文本」（评审 L4）：`textOfBlock` 对 `{ type: 'text', text: '' }` 返回 `''`（不是
+  // 空串文本块不算「有文本」：`textOfBlock` 对 `{ type: 'text', text: '' }` 返回 `''`（不是
   // null），于是 `texts.length > 0` 成立、`join('\n')` 是空串 ⇒ 抽屉里多一条**空日志**（契约的
   // `log.text` 是 `z.string()`，允许空串，落盘不会被拒）。与 `projectResult` 的 N3 修复同一条原则：
   // `''` 既落不成日志，就不该落。
@@ -464,9 +473,9 @@ function assistantDrafts(message: Record<string, unknown> | null, raw: unknown):
   if (texts.length > 0) drafts.push(logDraft('stdout', texts.join('\n')));
   const others = blocks.filter((block) => textOfBlock(block) === null);
   if (others.length > 0) {
-    // 工具 / 推理块：序列化后的原始负载照旧落盘（§5.6.3 的证据），另带一句人话摘要——
+    // 工具 / 推理块：序列化后的原始负载照旧落盘（证据），另带一句人话摘要——
     // 卡片底部的活动行显示的是摘要，而 `[{"type":"tool_use",…}]` 那种几百字符的 JSON 不是消息
-    // （用户口径 2026-09-29）。只有推理块时不给摘要（没有「在调用什么」可说）。
+    // （用户口径）。只有推理块时不给摘要（没有「在调用什么」可说）。
     drafts.push(logDraft('stdout', safeStringify(others), summarizeToolUse(others)));
   }
   // 没有任何可读内容块（纯 metadata 消息，或只有空文本块）：也要保留原始负载，不能产生空投影
@@ -491,9 +500,9 @@ function textOfBlock(block: unknown): string | null {
 /**
  * 工具块的人话摘要：`调用工具 <名>：<参数摘要>`（多个块用 `；` 串成一句，整句仍截断）。
  *
- * **带参数**（2026-10-07 统一）：从前这里只取 `name`，产出的是 `调用工具 Bash`——而同一行原始负载里
- * `input.command` 明明写着 `ls -la "D:/w"`。结果是这句摘要比它替换掉的那句人话（模型的答复文本）
- * 信息量更低，活动行反而变差。参数摘要的取法与另两家共用 `src/activity.ts`，只有一份实现。
+ * **带参数**：只取 `name` 会产出 `调用工具 Bash`，而同一行原始负载里 `input.command` 明明写着
+ * `ls -la "D:/w"`——那句摘要比它替换掉的人话（模型的答复文本）信息量更低，活动行反而变差。
+ * 参数摘要的取法与另两家共用 `src/activity.ts`，只有一份实现。
  *
  * 没有 `tool_use` 块时返回 `undefined`——「这一条没有工具名可说」与「名字是空串」是两件事：
  * 前者不给摘要（活动行于是保留上一句），后者不可能（空名字的块会被过滤掉）。
@@ -516,7 +525,7 @@ function summarizeToolUse(blocks: unknown[]): string | undefined {
 type TokenTrio = UsageTokens;
 
 /**
- * 跑动期的用量估算（用户口径，2026-09-26；2026-09-28 起改由投影返回、骨架发事件）。
+ * 跑动期的用量估算（用户口径；由投影返回、骨架发事件）。
  *
  * 为什么需要它：`result` 消息要等这一行跑完才到，而界面要在跑动期就看到 tok 在动。
  * assistant 消息从第一条起就带 `message.usage`，把它按 `message.id` 归并累加即可。
@@ -546,7 +555,7 @@ function estimateTokens(message: Record<string, unknown> | null, state: TurnStat
   const tokens = readUsageTrio(payload?.usage);
   if (tokens === null) return null;
   /**
-   * **全 0 的快照 = 「这一条还没填好」，不是「采到了 0」**（2026-09-28 真机实测补的）。
+   * **全 0 的快照 = 「这一条还没填好」，不是「采到了 0」**。
    *
    * 实测形状（本机 `likecode` 网关 + `jd/GLM-5.3`）：流式 assistant 消息带的
    * `usage` 三项**全是 0**（SDK 明写 `message.usage` is not final），真正的用量只在收尾的
@@ -624,14 +633,14 @@ function readUsageTrio(usage: unknown): TokenTrio | null {
  * 三条取舍：
  *   · **缺就 `null`，绝不填 0**：字段缺席 / 形状不对时返回 null。填 0 会让消费方算出
  *     「这家不做推理」，而事实是「这家不上报这个数」——与 `input/cached/output` 缺项即整格 null
- *     是同一条硬口径（§5.6.3）；
+ *     是同一条硬口径；
  *   · **`input` 保持原样、不做减法**：Anthropic 的 `input_tokens` 天生就**不含**缓存读
  *     （三格分列：`input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`），
  *     与 codex 那边「cached 是 input 的明细」正好相反。本仓契约定的是「`input` = 非缓存输入」，
  *     所以这一家**什么都不用改**——这就是归一化的意义：改的是那家口径不同的，不是三家一起改；
  *   · **`cache_creation_input_tokens` 仍然不计入 `cached`**：缓存**写**不是缓存**读**，
  *     它是这一轮新落进缓存的部分（下一轮才可能被读到）。把它算进命中率的分子会得出
- *     「第一轮就命中 100%」这种假象（spec §5.6.3 的表里也只有「输入 / 缓存读 / 输出」三格）。
+ *     「第一轮就命中 100%」这种假象（表里也只有「输入 / 缓存读 / 输出」三格）。
  */
 function readThinkingTokens(record: Record<string, unknown> | null): number | null {
   const details = asRecord(record?.output_tokens_details);
@@ -674,8 +683,8 @@ function resultTiming(message: Record<string, unknown> | null): TimingSpan | und
 /**
  * 取用量三元组：三项齐了才认。
  * cached 的语义是**缓存读**（`cache_read_input_tokens`）：缓存写（`cache_creation_input_tokens`）
- * 不计入——spec §5.6.3 的表写的是「输入 / 缓存读 / 输出」。
- * 形状异常（`usage` 根本不是对象、整段缺失、缺字段）**合流到同一条 WARN**（评审 N2）：
+ * 不计入——表里写的是「输入 / 缓存读 / 输出」。
+ * 形状异常（`usage` 根本不是对象、整段缺失、缺字段）**合流到同一条 WARN**：
  * `readNumber(null, …)` 天然返回 null，故不需要那条提前 return —— 有它的话，
  * `usage: 5` / `usage: 'x'` 这类形状会**静默**变成「没计量」，只剩逐笔翻原始日志才能发现。
  */

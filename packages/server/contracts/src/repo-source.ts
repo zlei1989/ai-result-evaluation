@@ -2,7 +2,7 @@
  * 用例的代码来源：形态判定（本地绝对路径 / 远端 git 地址）、归一与仓库名解析。
  *
  * 为什么放 contracts：core 的镜像层、api 的校验与文案、ui 的标签三层都要用它，各写一份必然漂移，
- * 而漂移的代价是「同一个字符串在保存时是远端、在准备时是本地」（RG1）。
+ * 而漂移的代价是「同一个字符串在保存时是远端、在准备时是本地」）。
  * 判定顺序是承重的，见 parseRepoSource 内的逐条注释。
  */
 import { z } from 'zod';
@@ -28,7 +28,7 @@ export type RepoSource =
 /**
  * 形态判定 + 归一 + 解析 host 与仓库名。
  * 判定顺序（改顺序就会误判）：
- *   ① 控制字符 / 以 `-` 开头 —— 硬拒绝（RG13：远端 URL 会作为参数交给 git）；
+ *   ① 控制字符 / 以 `-` 开头 —— ——硬拒绝（远端 URL 会作为参数交给 git）；
  *   ② Windows 盘符与 UNC —— 本地（先于 scp 形态：这是 spec 要求的判定顺序；`D:` 这种单字母 host
  *      当前 `SCP_LIKE` 本就吞不掉，这条守的是顺序本身，属防御性代码而**不是**正则冲突）；
  *   ③ `scheme://` —— 白名单内是远端，白名单外**拒绝**（不回落成本地路径）；
@@ -75,7 +75,7 @@ export function parseRepoSource(source: string): RepoSource {
 /**
  * 远端 URL 的归一：仅去尾部斜杠。
  * 刻意**不**做大小写折叠、不剥 `.git`、不把 https 改写成 ssh：它是镜像 key 与
- * 「用例来源是否改变」的判据，过度归一会让两个不同的远端指向同一份镜像（spec §4.1）。
+ * 「用例来源是否改变」的判据，过度归一会让两个不同的远端指向同一份镜像。
  */
 export function normalizeRemoteUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');

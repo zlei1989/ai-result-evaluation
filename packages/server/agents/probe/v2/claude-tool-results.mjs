@@ -1,10 +1,10 @@
 /**
- * claude 真机项③：工具**结果形状**三连（设计稿 §7.6.6 与 §11.1 第 27 项登记的未验证格）。
+ * claude 真机项③：工具**结果形状**三连（登记过的未验证格）。
  *
- *  ① `Read` 的结果**是否恒带 `<system-reminder>`**（§7.6.6 第 2 行：未验证；
+ *  ① `Read` 的结果**是否恒带 `<system-reminder>`**（未验证；
  *     若恒带则 `lineNumbersIncluded` 的判据要更细，且必须剥掉 reminder）；
- *  ② `Bash` **能否拿到退出码**（§7.6.6 第 3 行："倾向拿不到，但未真机确认"）；
- *  ③ `TaskCreate` 的**返回形状**（§11.1 第 27 项：`TaskStep.id` 的来源缺一环，
+ *  ② `Bash` **能否拿到退出码**（"倾向拿不到，但未真机确认"）；
+ *  ③ `TaskCreate` 的**返回形状**（`TaskStep.id` 的来源缺一环，
  *     而 `blockedBy` 要靠它解析）——顺带把 `TaskUpdate` / `TaskList` 的返回也抓下来。
  *
  * 判据：全部看 `tool_result` 的**原文**，不做任何解释性转写。
@@ -19,9 +19,9 @@ const workspace = makeClaudeWorkspace();
 note('工作区 =', workspace);
 
 /**
- * 工作区**之外**的一份文件：设计稿说 claude 的 `Read` 结果里前置/后置 `<system-reminder>`，
+ * 工作区**之外**的一份文件：claude 的 `Read` 结果里前置/后置 `<system-reminder>`，
  * 而那份 reminder 的常见触发条件正是「读了 cwd 之外的文件」。
- * 两个位置各读一次，才能把「恒带」与「条件带」分开（§7.6.6 第 2 行问的就是这个）。
+ * 两个位置各读一次，才能把「恒带」与「条件带」分开（问的就是这个）。
  */
 const outside = mkdtempSync(join(tmpdir(), 'aieval-v2-outside-'));
 const outsideFile = join(outside, 'outside.txt');

@@ -25,7 +25,7 @@ describe('Toolbar', () => {
   /**
    * 无标题时必须整体靠右。为什么值得钉：`justify` 若仍写死 `space-between`，
    * 只有动作区一个子元素时它会被推到**左**端——界面上就是「创建按钮莫名跑到左边」，
-   * 既不报错、也没有别的用例会红（实测：改成 space-between 后仅本条失败）。
+   * 既不报错、也没有别的用例会红。
    */
   it('不给 title 时只渲染动作区，且整体靠右', () => {
     const { container } = render(<Toolbar extra={<button type="button">创建用例</button>} />);

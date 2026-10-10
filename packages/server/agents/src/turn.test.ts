@@ -4,10 +4,10 @@
  * 用**合成 hooks**（不经过任何厂商消息形状）测骨架：每条断言恰好对应一条规则；厂商特有的注入与
  * 投影由各 provider 的用例覆盖。
  *
- * 2026-09-28 的口径修正（用户：「执行不限时间、评分不限轮次和时间」+「轮次按模型 API 往返算」）：
- *   · 骨架里**没有超时**了 —— 原来「内层超时 → timed-out」那一组用例改成「挂住的适配器不会被
- *     任何时间流逝叫停，只有 `signal` 能停它」，这是新口径的守卫；
- *   · `usage` 事件的发射门槛从「tokens 与 turns 同时在」改成**看轮次**（tokens 可空）。
+ * 两条口径（用户：「执行不限时间、评分不限轮次和时间」+「轮次按模型 API 往返算」）：
+ *   · 骨架里**没有超时**——「挂住的适配器不会被任何时间流逝叫停，只有 `signal` 能停它」
+ *     就是它的守卫；
+ *   · `usage` 事件的发射门槛是**轮次**（tokens 可空），不是「tokens 与 turns 同时在」。
  */
 import type { AgentEvent, AgentMessage, SubagentRecord } from '@aieval/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +49,7 @@ function createHarness(
     startError?: unknown;
     /** 固定投影，或**按事件**给投影（后者用来造「流内失败」：见下面那两条退出错误取舍的用例） */
     projection?: TurnProjection | ((raw: unknown) => TurnProjection);
-    /** dispose 自身的耗时（假定时器下用）：把释放窗口铺开，用来测「释放期间被终止」（评审 F4） */
+    /** dispose 自身的耗时（假定时器下用）：把释放窗口铺开，用来测「释放期间被终止」 */
     disposeDelayMs?: number;
     /** 收尾投影（`TurnStart.finalize`）：调用次数记在 `stats.finalizeCount` 上 */
     finalize?: () => TurnFinalize;
@@ -104,7 +104,7 @@ function createHarness(
   return { hooks, recorder, stats };
 }
 
-/** 收集 logger 的 error 级输出：事件回调抛错后必须仍然可见（评审 F1 的第二半） */
+/** 收集 logger 的 error 级输出：事件回调抛错后必须仍然可见 */
 function captureLoggerErrors(): string[] {
   const messages: string[] = [];
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -137,12 +137,12 @@ describe('runTurn', () => {
       turns: 3,
     });
     expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
-    // 正常出口也要释放（§5.6.6：所有出口一个都不能漏）
+    // 正常出口也要释放（所有出口一个都不能漏）
     expect(harness.stats.disposeCount).toBe(1);
   });
 
   /**
-   * 轮次的发射门槛（2026-09-28 用户口径修正）。三条一起钉：
+   * 轮次的发射门槛（用户口径）。三条一起钉：
    *   ① 只带轮次（tokens: null）也要发 —— 实测缺口：claude-code 的 token 采不到时整轮一条都不发，
    *      界面停在「轮次 1」；
    *   ② 轮次相同、计量也相同 ⇒ **不重复发**（同一条消息的重复快照不该刷日志）；
@@ -175,7 +175,7 @@ describe('runTurn', () => {
   });
 
   /**
-   * 归属格（2026-10-05）：骨架**只搬运**——投影没给就是 `null`（不结转上一条，也不拿 `turns` 顶替）。
+   * 归属格：骨架**只搬运**——投影没给就是 `null`（不结转上一条，也不拿 `turns` 顶替）。
    * 第二条判据是去重：同一条读数**换了归属**也要再发一条，否则界面上的落点会停在旧的那个轮次。
    */
   it('usage 事件带上投影交出的归属；归属变了要重发（骨架不做加法、不结转）', async () => {
@@ -286,7 +286,7 @@ describe('runTurn', () => {
   });
 
   /**
-   * **权威值一到，跑动期的估算必须让位**（2026-09-28 复查新增）：两者都是「到目前的累计」，
+   * **权威值一到，跑动期的估算必须让位**：两者都是「到目前的累计」，
    * 而估算的来源（`message.usage`）被 SDK 明写为 not final ⇒ 留着它，收尾那条 `usage` 事件就还会
    * 显示一个偏小的假数。判据看**权威值到达之后的每一条**：不许再回落到估算。
    */
@@ -325,7 +325,7 @@ describe('runTurn', () => {
   });
 
   /**
-   * **执行不限时间**（用户口径，2026-09-28）：适配器挂住时，再多的时间流逝也不会让它自己结束
+   * **执行不限时间**（用户口径）：适配器挂住时，再多的时间流逝也不会让它自己结束
    * ——没有内层超时、也没有外层兜底。唯一能停下它的是 `signal`（用户点「终止」）。
    * 这是删掉 `AgentRunInput.timeoutMs` 之后**必须**有的守卫：少了它，「有人把超时加回来」
    * 这件事没有任何用例会红。
@@ -355,7 +355,7 @@ describe('runTurn', () => {
     expect(harness.stats.disposeCount).toBe(1);
   });
 
-  it('适配器忽略 interrupt：5 秒后落 WARN 并强制释放，运行仍在有限时间内结束（Review Focus #3）', async () => {
+  it('适配器忽略 interrupt：5 秒后落 WARN 并强制释放，运行仍在有限时间内结束', async () => {
     // 常量值本身也要钉住：本用例走的是假定时器 + 默认 graceMs，
     // 若有人把 RELEASE_GRACE_MS 从 5_000 改成别的值，这一格必须红——所以除行为断言外，
     // 再直接断言常量值（`RELEASE_GRACE_MS === 5_000`，见本用例中段）。只验 `graceMs` 覆盖参数
@@ -373,7 +373,7 @@ describe('runTurn', () => {
     expect(harness.stats.disposeCount).toBe(1);
     // 非合作适配器的真实形状：interrupt 无人响应 → 第二段强制 dispose → 流这才结束
     expect(harness.recorder.order).toEqual(['interrupt', 'dispose', 'turn-end']);
-    // 只数**释放路径**那条 WARN：2026-09-28 起「用户终止」的结论摘要本身也带 `[WARN]` 前缀
+    // 只数**释放路径**那条 WARN：「用户终止」的结论摘要本身也带 `[WARN]` 前缀
     //（`assembleResult` 的 canceled 分支），所以不能再按「所有 [WARN]」计数——那样数出两条
     // 会让这条守卫失去区分力（它要钉的是「grace 只响了一次」）。
     const warns = events.filter(
@@ -575,9 +575,9 @@ describe('runTurn', () => {
     expect(logged).toContain('502 Bad Gateway');
   });
 
-  it('事件回调抛错不外抛：结论照常返回、释放照走完，失败落 logger.error（评审 F1）', async () => {
-    // 消费方抛错是**真实形状**：p4 的 publishRowEvent → appendEvent 按契约 R26 在写侧 schema 不过时抛
-    // ServiceError，磁盘写失败同样抛；而 p4 的编排层不给每一行套 try/catch（正因 run() 承诺不抛）。
+  it('事件回调抛错不外抛：结论照常返回、释放照走完，失败落 logger.error', async () => {
+    // 消费方抛错是**真实形状**：编排层的 publishRowEvent → appendEvent 在写侧 schema 不过时抛
+    // ServiceError，磁盘写失败同样抛；而编排层不给每一行套 try/catch（正因 run() 承诺不抛）。
     // 这里让 onEvent 对**每条**事件都抛：若发射口没有受保护，首条事件就会把异常冒进循环的 catch，
     // 被归因成 AGENT_FAILED（把「日志写盘失败」误报成「适配器运行失败」）。
     const loggerErrors = captureLoggerErrors();
@@ -599,13 +599,13 @@ describe('runTurn', () => {
       tokens: { input: 10, cached: 2, output: 5 },
       turns: 3,
     });
-    // 释放照走完：结论不能因为消费方抛错而丢掉回收（§5.6.6：所有出口一个都不能漏）
+    // 释放照走完：结论不能因为消费方抛错而丢掉回收（所有出口一个都不能漏）
     expect(harness.stats.disposeCount).toBe(1);
     // 必须仍然可见：release.ts 的对应修复刻意吞掉 onGraceExceeded 的异常，这层不记就彻底静默了
     expect(loggerErrors.some((line) => line.includes('事件回调失败'))).toBe(true);
   });
 
-  it('运行正常完成后、释放窗口内被终止：结论仍是 completed，不被翻转成 canceled（评审 F4）', async () => {
+  it('运行正常完成后、释放窗口内被终止：结论仍是 completed，不被翻转成 canceled', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     // 流正常结束（无事件、不挂住）⇒ 结论已定；dispose 自己慢 1 秒 ⇒ 铺开一个「已跑完但还在释放」的窗口
@@ -619,12 +619,12 @@ describe('runTurn', () => {
     expect(result.error).toBeUndefined();
   });
 
-  // 以下三条是复评 NEW-2 要求的「只在某一条出口抛」：上一条（对每条事件都抛）实测只踩到循环内 usage
+  // 以下三条是「只在某一条出口抛」：上一条（对每条事件都抛）只踩到循环内 usage
   // 一处——投影的 drafts 是空数组，而该轮走 completed，因此 drafts 与三个「最后出口」一次都没执行。
   // 致命的是：`assembleResult` 的 `emit` 实参若被换成**同类型未保护闭包**，vitest / tsc / eslint 三闸全绿
-  // （复评的存活变异体 (e)）⇒ 必须由用例逐个把调用点钉住。
+  // ⇒ 必须由用例逐个把调用点钉住。
 
-  it('只有循环内 drafts 出口抛错：不抛、结果 completed、释放照走完、失败落 logger.error（复评 NEW-2）', async () => {
+  it('只有循环内 drafts 出口抛错：不抛、结果 completed、释放照走完、失败落 logger.error', async () => {
     const loggerErrors = captureLoggerErrors();
     const harness = createHarness({
       events: [{ kind: 'message' }],
@@ -648,7 +648,7 @@ describe('runTurn', () => {
     expect(loggerErrors.some((line) => line.includes('事件回调失败'))).toBe(true);
   });
 
-  it('completed 结论本身不发任何事件（所以它只能靠 error 出口那条用例来钉）；onEvent 抛错不影响结论（复评 NEW-2）', async () => {
+  it('completed 结论本身不发任何事件（所以它只能靠 error 出口那条用例来钉）；onEvent 抛错不影响结论', async () => {
     const loggerErrors = captureLoggerErrors();
     const harness = createHarness();
     const result = await runTurn(
@@ -668,7 +668,7 @@ describe('runTurn', () => {
     expect(loggerErrors.some((line) => line.includes('事件回调失败'))).toBe(false);
   });
 
-  it('只有 error 事件出口抛错：不抛、结果仍 error + AGENT_FAILED、失败落 logger.error（复评 NEW-2）', async () => {
+  it('只有 error 事件出口抛错：不抛、结果仍 error + AGENT_FAILED、失败落 logger.error', async () => {
     const loggerErrors = captureLoggerErrors();
     const harness = createHarness({ events: [], streamError: new Error('spawn codex ENOENT') });
     const result = await runTurn(
@@ -685,7 +685,7 @@ describe('runTurn', () => {
     expect(loggerErrors.some((line) => line.includes('事件回调失败'))).toBe(true);
   });
 
-  // 最终答复出口（spec §8）：骨架只负责把 state.finalText 带进结果，不负责解释它。
+  // 最终答复出口：骨架只负责把 state.finalText 带进结果，不负责解释它。
   // 「未采到 = null」这一格必须与「采到空串」分得开——所以下面两条分别钉住「带出」与「不发明值」。
   it('finalText 在成功与失败两种结论下都被带出', async () => {
     // 造一个在流里写 state.finalText 的假适配器：骨架只负责把它带进结果，不负责解释它
@@ -751,7 +751,7 @@ describe('runTurn', () => {
  *
  * 为什么这一组必须存在：codex 的消息**只**从收尾这条通道出（事件流缺工具真名、结构化入参与
  * `call_id` 配对键），而它读的 `sessions/rollout-*.jsonl` **是 CLI 边跑边追加的**——
- * 失败 / 被终止的会话文件里同样有内容（真机实测：一条被中断的 codex 行留下 688 KB 会话文件）。
+ * 失败 / 被终止的会话文件里同样有内容（一条被中断的 codex 行可能留下 688 KB 会话文件）。
  * 原来只在「跑完且没失败」时收尾，代价是**失败的那一行抽屉里永远空着**（显示「还没有日志 ·
  * 这一行还没开始执行」，而这一行明明跑过），而那正是排障时最需要看的一行。
  *
@@ -890,7 +890,7 @@ describe('runTurn：收尾投影的调用时机', () => {
   });
 });
 
-describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () => {
+describe('subagentTokens：骨架只搬运，不做加法', () => {
   it('投影带这一格 ⇒ 下一条 usage 事件与结果都带上原样值（骨架不加到 tokens 上）', async () => {
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
@@ -1020,16 +1020,16 @@ describe('subagentTokens（2026-10-04）：骨架只搬运，不做加法', () =
 });
 
 /**
- * `subagentTurns`（2026-10-04，与 `subagentTokens` 逐条同一条骨架规则）。
+ * `subagentTurns`（与 `subagentTokens` 逐条同一条骨架规则）。
  *
- * 三条必须分开钉住，因为它们在实现上是**三个**分支（预检裁定 R2）：
+ * 三条必须分开钉住，因为它们在实现上是**三个**分支：
  *   · 投影带这一格 ⇒ 照原样搬运（骨架**不做加法**：合计由各家自己算好，骨架再加一次就是双计）；
  *   · 显式 `null` = 「明确没采到」⇒ **覆盖成 null**（读失败时旧的偏大分量必须能清掉，
  *     否则它与已退回主会话口径的 `turns` 一起破坏 `subagentTurns ≤ turns`）；
  *   · **缺省**（键不存在）= 「本条不带这一格」⇒ 保持原值。
  * 第四格是收尾（`finalize`）：它是 codex 子线程轮次唯一的落地路径，两处折叠必须同语义。
  */
-describe('subagentTurns（2026-10-04）：骨架只搬运，不做加法', () => {
+describe('subagentTurns：骨架只搬运，不做加法', () => {
   it('投影带这一格 ⇒ usage 事件与结果都带上原样值（骨架不加到 turns 上）', async () => {
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
@@ -1251,7 +1251,7 @@ describe('outputSchema：不支持的适配器降级（A1）', () => {
   });
 
   it('降级的留痕：只有「要了 schema 但这家不支持」那一次记 WARN，其余两次一条都不记', async () => {
-    // spec D3 要求降级在**包内**留一条 WARN（服务端日志是技术事实的落点）。它与「没要求 schema」
+    // 降级要在**包内**留一条 WARN（服务端日志是技术事实的落点）。它与「没要求 schema」
     // 那一支在 `applied` 上同值（都是 false）⇒ **日志是唯一能把两者分开的可观测量**；
     // 没有这条守卫，删掉 `runTurn` 里那句 `logger.warn` 不会有任何用例变红。
     const warnings: string[] = [];

@@ -175,7 +175,7 @@ describe('JudgeSettingsCard', () => {
     expect(onChange).toHaveBeenCalledWith({ defaultJudge: null });
   });
 
-  // 删供应商不级联改写 settings.defaultJudge（Task 1 的决定），所以这里必然出现悬空引用。
+  // 删供应商不级联改写 settings.defaultJudge，所以这里必然出现悬空引用。
   // 静默显示成「未配置」会让人以为只是没选，直到跑评测才发现评分不可用。
   it('默认评分模型已失效时显式提示，且下拉不再回显那个失效的 key', () => {
     render(
@@ -194,10 +194,9 @@ describe('JudgeSettingsCard', () => {
   });
 
   /**
-   * 这一格与根 `README.md` 的「输出契约（只读）」是同一条口径：讲的是**要求模型输出什么**
-   * （逐项达成 / 未达成 + 一句理由，不给总分）。旧文案列的是 5 个维度名与
-   * `round(sum(score) / (5 × 5) × 100)`——那套东西已随重构整体删除，
-   * 所以这里整句钉住新文案，并同时断言旧口径的痕迹一个都不许留。
+   * 这一格讲的是**要求模型输出什么**（逐项达成 / 未达成 + 一句理由，不给总分）。
+   * 这里整句钉住文案，并同时断言「按维度打分 / 满分 100」那一套的痕迹一个都不许留
+   * ——维度名与合成算式在界面上出现，就说明这一格又走回了按维度打分的旧口径。
    */
   it('输出契约预览写的是评分标准项的口径（逐项达成 / 未达成 + 理由，不给总分）', () => {
     render(<JudgeSettingsCard settings={settings()} providers={[openai]} onChange={noop} saving={false} />);
@@ -213,7 +212,7 @@ describe('JudgeSettingsCard', () => {
     expect(card).not.toHaveTextContent('round(');
   });
 
-  // 2026-09-28 用户口径：执行与评分都不限时间 ⇒「单行超时（分钟）」这一格连契约字段一起删了。
+  // 执行与评分都不限时间 ⇒ 没有「单行超时（分钟）」这一格，契约字段也没有。
   // 这条守卫钉的是「它真的不在界面上了」——加回来（或只删 UI 不删契约）都会红。
   it('不再有「单行超时（分钟）」这一格', () => {
     render(<JudgeSettingsCard settings={settings()} providers={[openai]} onChange={noop} saving={false} />);
@@ -295,11 +294,11 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
     const codex = await screen.findByText('Codex（与当前默认评分模型协议不匹配）');
     // antd 把 disabled 的选项渲染成 aria-disabled 的 .ant-select-item-option-disabled
     expect(codex.closest('.ant-select-item-option')).toHaveClass('ant-select-item-option-disabled');
-    // **阳性面对照**（终审 Minor）：只断言「Codex 被禁用」的话，「选了模型就把三家全禁用」这种实现
+    // **阳性面对照**：只断言「Codex 被禁用」的话，「选了模型就把三家全禁用」这种实现
     // 照样全绿——而那会让这一格彻底不可用。同协议的 claude-code 必须仍可选、标签不带后缀。
     const claude = await screen.findByText('Claude Code');
     expect(claude.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
-    // **双协议那家也必须可选**（2026-09-30 起 dsh 两条 wire 都能收）：判据是「集合里有没有」，
+    // **双协议那家也必须可选**（dsh 两条 wire 都能收）：判据是「集合里有没有」，
     // 写成 `accepted[0] !== judgeProtocol`（把集合当单值用）会让这一格当场变红——这是本条的区分力所在
     const dsh = await screen.findByText('DeepSeek Harness');
     expect(dsh.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
@@ -367,7 +366,7 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
       />,
     );
 
-    // 清除图标按 antd 的类名取，但**限定在这一格自己身上**（终审 Minor）：`document.querySelector`
+    // 清除图标按 antd 的类名取，但**限定在这一格自己身上**：`document.querySelector`
     // 取的是整页第一个命中的清除图标——本用例靠「默认评分模型那格没有值 ⇒ 没有清除图标」才碰巧
     // 命中智能体那一格，多一个 Select 或换一下顺序就会点到错的控件上。
     const select = screen.getByLabelText('默认评分智能体').closest('.ant-select');
@@ -382,10 +381,10 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
 });
 
 /**
- * 「思考强度」这一格（spec D8 / D10，2026-10-07）。
+ * 「思考强度」这一格。
  *
  * 为什么这一格的候选列表是**安全边界**而不是「界面偏好」：`settings.defaultJudge.effort` 在**写下侧**
- * 的 schema 只有 `z.string().min(1).optional()`（Task 5）——档位域**完全**由这里的候选列表把关。
+ * 的 schema 只有 `z.string().min(1).optional()`——档位域**完全**由这里的候选列表把关。
  * 算错一格，用户就能在界面上存下一个会被硬拒的值，而那道门连生成 / 识别一起拦
  * （`api/judge.ts` 两处也校验）。故本组的判据就是后端 `requireJudgeEffort` 的那一条：
  * `intersectEfforts(model, agentEfforts, CANONICAL_EFFORT_LEVELS)`，其中 `agentEfforts` 取**默认评分智能体**
@@ -416,7 +415,7 @@ describe('JudgeSettingsCard 的思考强度', () => {
   });
 
   /**
-   * **两种「取不到」不能混为一谈**（控制器裁定 2026-10-07，本任务的核心不变式：
+   * **两种「取不到」不能混为一谈**（本组件要守的核心不变式：
    * 「界面上能选到的任何值，保存后必须能通过 `requireJudgeEffort`」）：
    *   · 用户**没配**评分智能体 ⇒ 兜规范五档（上一条，那是对的）；
    *   · 配了、但注册表投影**还没到**（页面冷加载那一刻 `agentOptions` 还是 undefined ⇒ 传下来是 `[]`）

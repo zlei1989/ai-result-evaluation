@@ -24,7 +24,7 @@ describe('AGENT_KINDS 再导出', () => {
   });
 });
 
-describe('AgentKind 类型面（真源在 contracts，见 §11 R1）', () => {
+describe('AgentKind 类型面（真源在 contracts）', () => {
   it('与 contracts 的同义（编译期断言：两个方向都要能赋值）', () => {
     /**
      * 与下面 `ProtocolType` 那条同源的手法：用**函数签名**而不是 `const kind: AgentKind = 'dsh'` 再互相赋值——

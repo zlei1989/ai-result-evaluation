@@ -1,5 +1,5 @@
 /**
- * 设计稿 §6.5.2 / §11.1 第 20 项 / §9.3 的**最后一个 dsh 空白**：
+ * **最后一个 dsh 空白**：
  * 子任务**失败（非取消）**路径的 `subagent.finished` 形态。
  *
  * 已闭合的两格（2026-09-30）：成功 = `status:"ok"` + `stopReason:"completed"`；
@@ -16,7 +16,7 @@
  * 把本次运行的路由 `maxTokens` 压到 400，让子智能体的「最后一条普通 turn」撞上输出上限
  * ⇒ 期望 `stopReason: 'max-tokens'`（也可能落成 `error`）。
  *
- * 顺带抓 `subagent/descriptor`（设计稿「只见到事件名，未解析」的那一格）与 `subagent/catalog`。
+ * 顺带抓 `subagent/descriptor`（「只见到事件名，未解析」的那一格）与 `subagent/catalog`。
  *
  * 用法：node probe/v4/dsh-subagent-failure.mjs
  */

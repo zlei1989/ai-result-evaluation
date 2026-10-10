@@ -163,9 +163,9 @@ describe('classifyRemoteFailure', () => {
     }
   });
 
-  it('超时文案由分类层自己写：Node 的英文原文只进 context，不当原因（RG11）', () => {
+  it('超时文案由分类层自己写：Node 的英文原文只进 context，不当原因', () => {
     const classified = classifyRemoteFailure(timeoutKill(), { url, what: '读取远端仓库' });
-    // spec §5.6 的逐字文案（未传 timeoutMs → 默认 600_000 ms → 10 分钟）
+    // 逐字文案（未传 timeoutMs → 默认 600_000 ms → 10 分钟）
     expect(classified.message).toBe(`远端仓库拉取超时（超过 10 分钟）：${url}（已终止 git 进程）`);
     expect(classified.message).not.toContain('spawnSync');
     expect((classified.context as { gitMessage?: string }).gitMessage).toContain('ETIMEDOUT');
@@ -184,7 +184,7 @@ describe('classifyRemoteFailure', () => {
   });
 });
 
-describe('远端调用的环境（RG3 / RG4）', () => {
+describe('远端调用的环境', () => {
   it('尊重用户自己的 GIT_SSH_COMMAND：只在他没设时才追加 BatchMode=yes', () => {
     const root = makeTmp('aieval-mirror-');
     const marker = join(root, 'ssh-ran.txt');
@@ -237,7 +237,7 @@ describe('defaultBranchName', () => {
     const caught = caughtOf(() => defaultBranchName(dir));
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('NOT_A_GIT_REPO');
-    // RG11：中文原因在前、git 原文在后；原文同时另放 context
+    // 中文原因在前、git 原文在后；原文同时另放 context
     expect((caught as Error).message).toContain(dir);
     expect((caught as Error).message).toContain('not a symbolic ref');
     expect((caught as ServiceError).context).toMatchObject({ mirrorDir: dir });

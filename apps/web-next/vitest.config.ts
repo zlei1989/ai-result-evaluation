@@ -17,7 +17,7 @@ export default mergeConfig(
         '@/': `${packageRoot}/`,
         // `@aieval/evaluator` **不在本应用的依赖里**（`AGENTS.md` 的方向表：web-next 只到
         // api / core / ui / client / contracts），于是它的裸说明符从 apps/web-next 解析不到任何文件。
-        // 后果不是「报错」而是**静默失效**（实测，Task 10）：路由测试里的
+        // 后果不是「报错」而是**静默失效**：路由测试里的
         // `vi.mock('@aieval/evaluator')` 只能注册在**未解析的裸说明符**上，而 api 包内部那次
         // import 解析到真实源文件——两个 module id 不相等 ⇒ mock 一条都不生效，
         // 测试侧拿到 `vi.fn()` 的同时、api 侧仍在跑真实编排层（日志里出现 `[evaluator] 评测开始`，

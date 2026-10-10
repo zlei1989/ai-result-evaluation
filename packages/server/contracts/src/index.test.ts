@@ -23,6 +23,10 @@ import {
   JUDGE_OUTPUT_CONTRACT,
   JUDGE_OUTPUT_JSON_SCHEMA,
   MAX_ITEM_WEIGHT,
+  MCP_ENV_KEY_PATTERN,
+  MCP_NAME_PATTERN,
+  McpServerConfigSchema,
+  McpServersSchema,
   PROTOCOL_LABELS,
   ProviderCreateSchema,
   ProviderModelInputSchema,
@@ -42,22 +46,29 @@ import {
   RubricGroupSchema,
   RubricItemSchema,
   RunCreateSchema,
+  SENSITIVE_KEY_PATTERN,
   SETTINGS_DEFAULTS,
   ScoreResultSchema,
   ServiceError,
   SettingsPatchSchema,
   SettingsSchema,
+  SettingsViewSchema,
   TERMINAL_ROW_STATUSES,
   TestCaseSchema,
   ThemeModeSchema,
   composeTotalScore,
   displayRepoName,
+  endpointText,
+  hasSensitiveValue,
   httpStatusFor,
   isRunnableRow,
   isRunningRow,
+  isSensitiveKey,
   maskApiKey,
   normalizeRemoteUrl,
+  toSettingsView,
   parseRepoSource,
+  preserveUnchangedSecrets,
   repoNameFromSource,
   type AgentKind,
   type AgentEvent,
@@ -86,8 +97,11 @@ import {
   type CasePatch,
   type CommitCandidate,
   type RubricGroup,
+  type McpServerConfig,
+  type McpServers,
   type Settings,
   type SettingsPatch,
+  type SettingsView,
   type ThemeMode,
   type ErrorCode,
 } from './index';
@@ -104,7 +118,8 @@ describe('contracts 公共出口', () => {
       RunCreateSchema, RowDiffIndexSchema, RowDiffFileSchema,
       RubricGroupSchema, RubricItemSchema, ScoreResultSchema,
       AgentEventSchema,
-      SettingsSchema, SettingsPatchSchema, ThemeModeSchema,
+      SettingsSchema, SettingsPatchSchema, SettingsViewSchema, ThemeModeSchema,
+      McpServerConfigSchema, McpServersSchema,
     ]) {
       expect(typeof schema.safeParse).toBe('function');
     }
@@ -112,7 +127,7 @@ describe('contracts 公共出口', () => {
 
   it('导出全部常量', () => {
     expect([...AGENT_KINDS]).toEqual(['claude-code', 'codex', 'dsh']);
-    // 八个（2026-10-04 起含 `vendor-system`）：清单与联合成员的一一对应另有一条专测，
+    // 八个（含 `vendor-system`）：清单与联合成员的一一对应另有一条专测，
     // 这里只钉「包根确实把这份清单导出成了一个可枚举的值」
     expect([...AGENT_EVENT_TYPES]).toHaveLength(8);
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
@@ -121,10 +136,29 @@ describe('contracts 公共出口', () => {
     expect(TERMINAL_ROW_STATUSES).toContain('judged');
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
     expect(MAX_ITEM_WEIGHT).toBe(10_000);
-    // 两份投影（文本 / 结构化）都必须从**包根**可用：Task 6/7 的适配器只 import '@aieval/contracts'
+    // 两份投影（文本 / 结构化）都必须从**包根**可用：适配器只 import '@aieval/contracts'
     expect(JUDGE_OUTPUT_CONTRACT).toContain('judgments');
     expect(JUDGE_OUTPUT_JSON_SCHEMA.properties.judgments.type).toBe('array');
     expect(ERROR_CODES).toContain('NOT_A_GIT_REPO');
+    // MCP 的三份模式串也在包根上：名字与 env 键名是「一处拦、三家都安全」的那一处，
+    // 敏感键名模式则是出口掩码的判据——任一取不到都意味着某个消费方要自己抄一份
+    expect(MCP_NAME_PATTERN.test('my-server_1')).toBe(true);
+    expect(MCP_NAME_PATTERN.test('my.server')).toBe(false);
+    expect(MCP_ENV_KEY_PATTERN.test('CONTEXT7_API_KEY')).toBe(true);
+    expect(SENSITIVE_KEY_PATTERN.test('GITHUB_TOKEN')).toBe(true);
+    expect(SENSITIVE_KEY_PATTERN.test('NODE_ENV')).toBe(false);
+    // 敏感键的**唯一判据**与「有没有已配置的密钥」也要从包根可用：`api`（探活的匿名说明）与
+    // `ui`（「已配置密钥」小标）各自只能引 contracts，取不到就会各抄一份正则
+    expect(isSensitiveKey('GITHUB_TOKEN')).toBe(true);
+    expect(isSensitiveKey('NODE_ENV')).toBe(false);
+    expect(hasSensitiveValue({ CONTEXT7_API_KEY: 'sk-live' })).toBe(true);
+    expect(hasSensitiveValue({ CONTEXT7_API_KEY: '' })).toBe(false);
+    expect(hasSensitiveValue(undefined)).toBe(false);
+    // 「端点或命令」那一列的口径同源：`api` 的探活日志与 `ui` 的表格/预览读同一份实现
+    expect(endpointText({ transport: 'stdio', enabled: true, command: 'npx', args: ['-y', 'pkg'] })).toBe('npx -y pkg');
+    expect(endpointText({ transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp' })).toBe(
+      'https://mcp.invalid/mcp',
+    );
   });
 
   it('导出全部函数，且函数在包根上可用（不只是名字存在）', () => {
@@ -146,6 +180,11 @@ describe('contracts 公共出口', () => {
     expect(repoNameFromSource('https://host/group/repo.git')).toBe('repo');
     // 展示用取名走包根同样可用：它在渲染期取名字，坏数据不能让调用方抛
     expect(displayRepoName('ftp://host/x.git')).toBe('x');
+    // 出口掩码与「未改动」消解同源可用：两者是 MCP 密钥的两个方向，任一在包根上取不到都是漏出口
+    const oneServer = { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp' } as const;
+    const stored = { ...SETTINGS_DEFAULTS, mcpServers: { 'example-server': oneServer } };
+    expect(toSettingsView(stored).mcpServers['example-server']).toBeDefined();
+    expect(preserveUnchangedSecrets(SETTINGS_DEFAULTS, { mcpServers: stored.mcpServers }).mcpServers).toBeDefined();
   });
 
   it('类型出口存在（编译期守卫：这里只做一次赋值，真正的检查是 typecheck）', () => {
@@ -157,7 +196,10 @@ describe('contracts 公共出口', () => {
     const theme: ThemeMode = 'auto';
     const code: ErrorCode = 'INVALID_REF';
     const settings: Settings = SETTINGS_DEFAULTS;
+    const settingsView: SettingsView = toSettingsView(settings);
     const patch: SettingsPatch = { theme };
+    const entry: McpServerConfig = { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp' };
+    const servers: McpServers = { 'example-server': entry };
     const provider: Provider | null = null;
     const view: ProviderView | null = null;
     const model: ProviderModel | null = null;
@@ -182,16 +224,16 @@ describe('contracts 公共出口', () => {
     const event: AgentEvent | null = null;
 
     expect([
-      protocol, agent, mode, status, rubricItem, theme, code, settings, patch,
+      protocol, agent, mode, status, rubricItem, theme, code, settings, settingsView, patch, servers,
       provider, view, model, modelInput, providerCreate, providerPatch,
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
       generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
       score, rubricGroup, event,
-    ]).toHaveLength(31);
+    ]).toHaveLength(33);
   });
 
   /**
-   * 老 `run.json` 里那一行的构造夹具（本文件此前没有夹具，这是 Task 1 补的最小一份；
+   * 老 `run.json` 里那一行的构造夹具（最小一份；
    * `run.test.ts` 那份同名夹具在另一个模块作用域里，跨文件取不到）。
    * 刻意返回**字面量**而不是 `EvalRowSchema.parse` 的结果：这一条要验的正是「磁盘上已有的
    * 那一行**没有** `subagentTokens` 这一格时还能不能解析」——先 parse 再断言，就变成拿 schema
@@ -221,7 +263,7 @@ describe('contracts 公共出口', () => {
   }
 
   /**
-   * `EvalRow.subagentTokens`（2026-10-04 新增）。
+   * `EvalRow.subagentTokens`。
    * 两个方向都要钉住，与 `EvalRow.error.stage` / `EvalRow.attempts` 同一组理由：
    *   ① **老 run.json 必须照样解析**——它整格不存在，写成必填会让 `listRuns()` 静默跳过那一轮
    *      （使用者看到的是「我的评测记录凭空少了几轮」，两端都不报错）；
@@ -240,7 +282,7 @@ describe('contracts 公共出口', () => {
   });
 
   /**
-   * `EvalRow.subagentTurns`（2026-10-04 新增，与 `subagentTokens` 逐格同一条处置）：
+   * `EvalRow.subagentTurns`（与 `subagentTokens` 逐格同一条处置）：
    * 同一组两个方向——老 `run.json` 整格不存在时要照样解析（必填会让 `listRuns()` 静默跳过那一轮），
    * 而带上它（数字或显式 `null`）时必须原样保留（被 strip 掉的话适配器写的分量永远到不了界面）。
    * 与上面那一条分开写而不是合并：两格是**两个**可选键，合并之后只要有一格漏进 schema，
@@ -258,9 +300,9 @@ describe('contracts 公共出口', () => {
   });
 
   /**
-   * `EvalRow.streamingDelta`（2026-10-09 新增）：同一组两个方向 + **三态不许互相顶替**。
+   * `EvalRow.streamingDelta`：同一组两个方向 + **三态不许互相顶替**。
    *
-   * 这一格是「这次到底有没有收到逐字流」的唯一事后痕迹（增量帧只广播不落盘），
+   * 这一格是「本次到底有没有收到逐字流」的唯一事后痕迹（增量帧只广播不落盘），
    * 而它的三态在语义上是三件事：**缺格 = 没观测**、`frameCount: 0` = 观测到零帧、
    * `> 0` = 有增量。所以除了「老 run.json 照样解析」之外，还要钉住**数字原样保留**——
    * 被 strip 掉的话适配器写的观测永远到不了环境抽屉，界面继续把「没挂上」显示成「没观测」。

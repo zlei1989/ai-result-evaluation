@@ -90,7 +90,7 @@ function product(overrides: Partial<ConformanceProduct> = {}): ConformanceProduc
     environment: null,
     events: [],
     usage: { tokens: USAGE_OK, turns: 1, subagentTokens: null, subagentTurns: null },
-    // 缺省「跑成功、但没采到答复」：正例里没有主会话答复，故 §2.10 的通则不会被触发
+    // 缺省「跑成功、但没采到答复」：正例里没有主会话答复，故最终答复的通则不会被触发
     result: { ok: true, finalText: null },
     ...overrides,
   };
@@ -325,7 +325,7 @@ describe('一致性套件：每条判据都能拦（反例）', () => {
   });
 
   /**
-   * §2.10 的四条反例。第一条是**实锤过的那次缺陷**（codex 在 app-server 重构里漏写 `finalText`，
+   * 四条反例。第一条是**实锤过的那次缺陷**（codex 在 app-server 重构里漏写 `finalText`，
    * 各家自己的用例全绿而真机评分必挂）：产物里有答复、`finalText` 却是 `null`。
    */
   it('产物里有主会话答复、finalText 却是 null ⇒ 红（漏写那一格）', () => {
@@ -379,7 +379,7 @@ describe('一致性套件：每条判据都能拦（反例）', () => {
   });
 });
 
-describe('一致性套件：结构化输出（§2.11）', () => {
+describe('一致性套件：结构化输出', () => {
   it('给了探针且合规 ⇒ 不抛；不给探针 ⇒ 空转（消息级 fixture 看不到请求，不许它自述）', () => {
     const withProbe = fixture({
       scenarios: {

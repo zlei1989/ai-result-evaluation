@@ -1,7 +1,7 @@
 /**
- * 真机项⑤：**思考 token 的结算值**（设计稿 §7.7.2 / §7.7.7 / §9.3 新登记的一格）。
+ * 真机项⑤：**思考 token 的结算值**（新登记的一格）。
  *
- * 设计稿原文：「claude 的 `output_tokens_details.thinking_tokens`、codex 的 `reasoning_output_tokens`、
+ * 登记原文：「claude 的 `output_tokens_details.thinking_tokens`、codex 的 `reasoning_output_tokens`、
  * dsh 的 `reasoningTokens` **全部只在类型面上**，**没有一家有真机取值样本** ⇒ 三家的
  * `usageCapability.thinkingTokens` 一律先声明 `'unverified'`；首个实现必须各跑一次登记
  * （含"它与 `output_tokens` 的大小关系"，那决定 `basis` 能否从 `'unknown'` 升级）。」

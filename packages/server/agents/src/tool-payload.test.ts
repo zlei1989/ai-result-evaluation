@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * **族载荷的归一**（2026-10-04 收口）：`task` / `ask-user` 两族的厂商原始入参 → 契约的 `payload`。
+ * **族载荷的归一**：`task` / `ask-user` 两族的厂商原始入参 → 契约的 `payload`。
  *
  * 为什么要单开这一层：这两族的**载荷**过去没有归一，`ToolCallBlock.input` 原样带着厂商形状
  * 一路走到界面，于是「`todos` 还是 `plan`」「`multiSelect` 还是 `multi_select`」这些判断
  * 住在了 `packages/client/ui` 的 `build-model.ts` 里——那是把厂商适配搬进了浏览器，
  * 也正是分层守卫**扫不到**的那一块（那个文件在扫描面之外）。
  *
- * 判据表直接取自 spec §7.6.3 的三家映射表（dsh `todo_write` 的 `todos[]`、
+ * 判据表直接取自三家映射表（dsh `todo_write` 的 `todos[]`、
  * codex `update_plan` 的 `plan[]` + `explanation`、三家的 `questions[]`）。四条口径：
  *   ① 三家的形状**各自都能归一**，且归一到同一份结果；
  *   ② 认不出的形状 ⇒ `null`（**不猜**：`payload: null` 时界面走通用工具行，调用不会消失）；

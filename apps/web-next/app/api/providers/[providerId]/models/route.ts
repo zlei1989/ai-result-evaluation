@@ -1,5 +1,5 @@
 /**
- * 供应商的模型清单：POST 加一条 / DELETE 删一条（模型名走 query，见契约 §9）。
+ * 供应商的模型清单：POST 加一条 / DELETE 删一条（模型名走 query）。
  * 本文件只做「zod 校验 → 调 api → 错误映射」，不含业务逻辑。
  *
  * 三个口径：
@@ -32,7 +32,7 @@ export async function POST(req: Request, ctx: ProviderRouteContext): Promise<Res
 export async function DELETE(req: Request, ctx: ProviderRouteContext): Promise<Response> {
   try {
     const { providerId } = await ctx.params;
-    // searchParams 会把 %2F / %2B / %23 解回 / + #：客户端按 encodeURIComponent 传参（Task 3）
+    // searchParams 会把 %2F / %2B / %23 解回 / + #：客户端按 encodeURIComponent 传参
     const modelId = new URL(req.url).searchParams.get('modelId');
     if (modelId === null || modelId === '') {
       throw new ServiceError('INVALID_QUERY', '缺少查询参数 modelId');

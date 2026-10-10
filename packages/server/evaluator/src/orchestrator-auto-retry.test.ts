@@ -38,7 +38,7 @@ registerOrchestratorHooks();
 
 
 /* ===================================================================================================
- * 重试（2026-09-27，目标口径「单个评测项执行失败或评分失败支持重试」）
+ * 重试（目标口径「单个评测项执行失败或评分失败支持重试」）
  *
  * 两个层次，两套判据，**都**要钉住：
  *   · **自动**重试（`runRow` 内层循环）：只重试瞬时面（网络 / 5xx / 限流 / CLI 起不来），
@@ -49,7 +49,7 @@ registerOrchestratorHooks();
  * =================================================================================================== */
 
 /* ===================================================================================================
- * 重试（2026-09-27，目标口径「单个评测项执行失败或评分失败支持重试」）
+ * 重试（目标口径「单个评测项执行失败或评分失败支持重试」）
  *
  * 两个层次，两套判据，**都**要钉住：
  *   · **自动**重试（`runRow` 内层循环）：只重试瞬时面（网络 / 5xx / 限流 / CLI 起不来），
@@ -108,14 +108,14 @@ describe('runRow：瞬时失败的自动重试', { timeout: TEST_TIMEOUT_MS }, (
     const row = getRun(run.id).rows[0];
     expect(row?.status).toBe('failed');
     expect(row?.error?.code).toBe('AGENT_FAILED');
-    // 失败阶段落盘（2026-09-28）：候选 agent 段 ⇒ 'agent'
+    // 失败阶段落盘：候选 agent 段 ⇒ 'agent'
     expect(row?.error?.stage).toBe('agent');
     expect(fakeAgents.calls).toHaveLength(1 + ROW_RETRY.maxRetries);
     expect(row?.attempts).toBe(1 + ROW_RETRY.maxRetries);
   });
 
   /**
-   * **尝试账本**（2026-09-27 实测补的守卫）。
+   * **尝试账本**。
    *
    * 症状：自动重试每次都 `resetEvents`，于是「重试了几次、每次为什么失败」在日志抽屉里**一条都没有**
    * ——实测目标页那一行 `attempts = 6`，而 `events.jsonl` 里零条重试记录。
@@ -162,7 +162,7 @@ describe('runRow：瞬时失败的自动重试', { timeout: TEST_TIMEOUT_MS }, (
     await runRow(run.id, rowId);
 
     expect(getRun(run.id).rows[0]?.status).toBe('failed');
-    // 这一条同时钉住「抛出来的 ServiceError 也要带对失败阶段」（2026-09-28）：修复轮用尽走的是
+    // 这一条同时钉住「抛出来的 ServiceError 也要带对失败阶段」：修复轮用尽走的是
     // `settleFailed` 那条路，而它的阶段是由**抛异常时的行状态**推出来的（`judging` ⇒ 'judge'）。
     // 这一格今天只用于叙述与排障（判据不再读它），但错了会让事后复盘把失败段读反。
     expect(getRun(run.id).rows[0]?.error?.stage).toBe('judge');

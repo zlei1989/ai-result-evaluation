@@ -19,9 +19,9 @@ export function Providers({ children }: { children: ReactNode }): ReactNode {
   return (
     <ConfigProvider
       theme={themeConfig}
-      // 应用级 antd locale（契约 R31）：不配的话 antd 的内置文案全是英文
+      // 应用级 antd locale：不配的话 antd 的内置文案全是英文
       // （Empty 空图的 SVG `<title>No data</title>`、Modal 关闭按钮的 `aria-label="Close"`、
-      // Select 的 `No data`、校验规则模板……）。p1 时代只能给每个浮层逐个显式补中文，
+      // Select 的 `No data`、校验规则模板……）。否则只能在每个浮层上逐个显式补中文，
       // 漏一个就漏一个英文；在根上配一次即可一次性关掉这一整类。
       // 已有的显式中文文案不受影响：显式值优先于 locale 提供的默认值。
       locale={zhCN}

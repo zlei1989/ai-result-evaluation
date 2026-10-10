@@ -2,7 +2,7 @@
 /**
  * runRow：八步时序与落盘
  *
- * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：runRow：八步时序与落盘、runRow：改工作区根目录后仍在途收尾（R10 的快照侧）。
+ * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：runRow：八步时序与落盘、runRow：改工作区根目录后仍在途收尾（快照侧）。
  * 共享夹具、假适配器接缝与 `until` 等待器都在 `./testing/orchestrator-harness`——
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
@@ -33,7 +33,7 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
     const row = saved.rows[0];
     expect(row?.status).toBe('judged');
     expect(row?.branch).toBe(`test/${rowId}`);
-    // R2：基线必须是 40 位具体 hash，不能是 'HEAD' 之类的符号引用
+    // 基线必须是 40 位具体 hash，不能是 'HEAD' 之类的符号引用
     expect(row?.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(row?.tokens).toEqual({ input: 10, cached: 0, output: 20 });
     expect(row?.turns).toBe(1);
@@ -42,7 +42,7 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(row?.score?.totalScore).toBe(30); // 评分表两项全达成（20 + 10）= 满分
     expect(row?.error).toBeNull();
     expect(existsSync(join(row?.workspacePath ?? '', 'agent-output.txt'))).toBe(true);
-    // 轮级状态不归 runRow 管（它由 Task 6 的轮任务收尾）
+    // 轮级状态不归 runRow 管（它由轮任务收尾）
     expect(saved.status).toBe('idle');
 
     const events = readEvents(rowEventsFile(home.workspaceRoot, run.id, rowId));
@@ -71,12 +71,12 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * route 是「事实 → 方言」的唯一通道（spec D1）：编排层少填窗口这一格的后果是**静默**的
+   * route 是「事实 → 方言」的唯一通道：编排层少填窗口这一格的后果是**静默**的
    * —— cc 不加后缀、codex 不写 `model_context_window`、dsh 不写 settings.yaml，三家都照常跑完，
    * 只是模型跑在另一个窗口上。所以这里钉的是「清单里的窗口真的进了 route」。
    */
   /**
-   * 强度是**行上的配置**（spec D12）：编排层漏传它的后果同样是静默的 —— 三家都按模型默认档跑，
+   * 强度是**行上的配置**：编排层漏传它的后果同样是静默的 —— 三家都按模型默认档跑，
    * 而快照里明明写着用户选了 `high`（截图与实跑不一致，是横向对比里最难发现的那种失真）。
    */
   it('行上的 effort 到达适配器输入（没选则整个键都不出现）', async () => {
@@ -126,7 +126,7 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 子智能体那一份的**终态**落盘（Task 7）。
+   * 子智能体那一份的**终态**落盘。
    *
    * 为什么终态这一格非写不可（不是「跑动期已经回写过就够了」）：codex 的子线程用量与 claude 的
    * 子智能体用量都**只在收尾才知道**（前者要读 rollout 文件、后者要读 CLI 落盘的子会话文件），
@@ -136,9 +136,7 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
   it('终态把适配器结果的 subagentTokens 写进 run.json', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
     fakeAgents.scripts.set('codex', {
-      // 这一对必须**逐格 ≤**：`{4,1,2} ≤ {10,1,20}`（spec §2.4 的不变量）。
-      // 2026-10-04 收尾评审 I3：原来 `tokens.cached` 是 0，而分量 cached 是 1 ⇒ 夹具自己违反了
-      // 它下一条注释里引用的那条不变量（改成 1 之后等号那一格也真的被验到了）。
+      // 这一对必须**逐格 ≤**：`{4,1,2} ≤ {10,1,20}`（不变量），等号那一格也要真的被验到。
       tokens: { input: 10, cached: 1, output: 20 },
       turns: 1,
       subagentTokens: { input: 4, cached: 1, output: 2 },
@@ -148,7 +146,7 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
 
     const row = getRun(run.id).rows[0];
     expect(row?.status).toBe('judged');
-    // 分量与合计一起落盘，且逐格满足 `subagentTokens ≤ tokens`（spec §2.4 的不变量）
+    // 分量与合计一起落盘，且逐格满足 `subagentTokens ≤ tokens`（不变量）
     expect(row?.subagentTokens).toEqual({ input: 4, cached: 1, output: 2 });
     expect(row?.tokens).toEqual({ input: 10, cached: 1, output: 20 });
   });
@@ -178,16 +176,16 @@ describe('runRow：八步时序与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
 
 
 /**
- * R10 的**快照侧**（评审 H1）：用户在评测进行中改了工作区根目录后，在途轮次必须**正常收尾**。
+ * **快照侧**：用户在评测进行中改了工作区根目录后，在途轮次必须**正常收尾**。
  *
  * 未修的形态：`requireRow → getRun` 只扫当前根 ⇒ 第一次就抛 NOT_FOUND；而 `settleFailed` 也要先
- * `requireRow` ⇒ 行停在 `pending`、只留一行「落 failed 也失败（该行可能停在非终态）」——R10 声称
- * 消灭的「一次设置变更把在途轮次打死」换了扇门照样发生。
+ * `requireRow` ⇒ 行停在 `pending`、只留一行「落 failed 也失败（该行可能停在非终态）」——「一次设置变更把在途轮次打死」
+ * 换了扇门照样发生。
  *
  * 所以这条守卫必须断言**终态本身**（不是「发过事件」）：把 `requireRow` 改回 `getRun`、或去掉
  * `getRunForWrite` 的记忆兜底，都会让 `rows[0].status` 停在 `pending` ⇒ 红。
  */
-describe('runRow：改工作区根目录后仍在途收尾（R10 的快照侧）', { timeout: TEST_TIMEOUT_MS }, () => {
+describe('runRow：改工作区根目录后仍在途收尾（快照侧）', { timeout: TEST_TIMEOUT_MS }, () => {
   it('评测中途把工作区根目录改到 B：该行照样走完八步落到 judged（快照读写按该轮自己的根解析）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
     const rowId = run.rows[0]?.id ?? '';

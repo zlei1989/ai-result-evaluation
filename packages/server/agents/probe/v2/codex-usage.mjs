@@ -2,7 +2,7 @@
  * 补扫 codex 的 `turn.completed.usage`（上一轮漏了：那些 jsonl 是 **PowerShell 重定向**写出来的，
  * 默认编码是 **UTF-16LE**，按 UTF-8 读会整行解析失败）。
  *
- * 为什么值得单跑：设计稿 §7.7.2 说 `reasoning_output_tokens` "只在类型面上、没有真机取值样本"，
+ * 为什么值得单跑：登记口径是 `reasoning_output_tokens` "只在类型面上、没有真机取值样本"，
  * 而本轮 codex 的每一次成功 turn 都带这一格——只要按正确编码读出来就能当场登记。
  *
  * 用法：node probe/v2/codex-usage.mjs

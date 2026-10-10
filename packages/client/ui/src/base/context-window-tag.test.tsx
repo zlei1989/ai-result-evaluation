@@ -1,7 +1,7 @@
 /**
  * ContextWindowTag：上下文窗口的展示（今天只有创建评测的模型下拉在用它）。
  * 判据落在**文案**上而不是颜色上：颜色是主题层的实现细节，而「1.05M 不能被显示成 1M」
- * 是这条组件存在的理由 —— 它恰好横跨 cc 的 `[1m]` 后缀阈值（spec D4）。
+ * 是这条组件存在理由 —— 它恰好横跨 cc 的 `[1m]` 后缀阈值。
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -19,7 +19,7 @@ describe('formatContextWindow', () => {
 
   it('阈值两侧的字符串不同（999999 → 1000K，1000000 → 1M）', () => {
     // 这一条盯的是「别把 999999 也显示成 1M」：格式化函数若先把数字取整到「档」，阈值那两侧
-    // 就会长得一样，而 `[1m]` 后缀恰恰按阈值决定加不加（spec D4）
+    // 就会长得一样，而 `[1m]` 后缀恰恰按阈值决定加不加
     expect(formatContextWindow(999_999)).toBe('1000K');
     expect(formatContextWindow(1_000_000)).toBe('1M');
   });

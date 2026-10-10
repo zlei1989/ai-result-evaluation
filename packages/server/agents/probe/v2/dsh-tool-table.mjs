@@ -3,10 +3,10 @@
  * **块协议明细**（含是否存在 `reasoning-delta`）。
  *
  * 为什么要这一条：
- *  - `ask_user_question` 是否真的挂进本行 profile（设计稿 §9.3 称已确认，但工具表要从本条运行的**原文**里读）；
- *  - `data.stream[]` 是 `chunk: 'delta'` 映射的**唯一**依据（设计稿 §7.2 断言「dsh 不发 `reasoning-delta`
+ *  - `ask_user_question` 是否真的挂进本行 profile（登记为已确认，但工具表要从本条运行的**原文**里读）；
+ *  - `data.stream[]` 是 `chunk: 'delta'` 映射的**唯一**依据（既定口径是「dsh 不发 `reasoning-delta`
  *    （实测 0 次）：推理只能整块从 `block-end`/`assistant/message` 取」）——必须复核，
- *    因为那条结论的上一版曾被中继破坏 SSE 分块的假象误导过一次（§9.4.1）。
+ *    因为那条结论的上一版曾被中继破坏 SSE 分块的假象误导过一次。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

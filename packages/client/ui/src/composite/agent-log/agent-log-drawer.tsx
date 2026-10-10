@@ -6,9 +6,9 @@
  * 它是「评测页一行接线」的那个件：`open` / `onClose` / `model` 三格就能用，
  * 其余全是可选——**重组能力不要求调用方付税**。
  *
- * 几何（§5.1，全部按 antd 6 实测修正过）：
- *   · `width` **已废弃** ⇒ 用 `size`（CSS 表达式可以直接给）；
- *   · `maskClosable` **已废弃** ⇒ 用 `mask.closable`；
+ * 几何（全部按 antd 6 实测修正过）：
+ *   · `width` **已废弃**⇒ 用 `size`（CSS 表达式可以直接给）；
+ *   · `maskClosable` **已废弃**⇒ 用 `mask.closable`；
  *   · `styles.body.padding = 0`：内边距由内容自己给（否则正文贴死抽屉边框）；
  *   · `destroyOnHidden`：关掉即卸载，不留浮层状态（与环境抽屉同口径）。
  *

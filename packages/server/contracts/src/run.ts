@@ -1,18 +1,18 @@
 /**
  * 评测契约：智能体真源、行状态机、评测与候选行形状、创建入参、diff 响应。
  * 四个必须成立的口径：
- *   1. `AGENT_KINDS` 是三家智能体 id 的**唯一真源**（§11 R1）——agents 包再导出它，
+ *   1. `AGENT_KINDS` 是三家智能体 id 的**唯一真源**——agents 包再导出它，
  *      前端下拉与 `EvalRow.agentKind` 都从这里派生；contracts 反向不依赖 agents；
- *   2. `EvalRow.baselineCommit` 在 prepare 之后是 40 位**具体** hash（§11 R2）——`commitHash: null` 时
+ *   2. `EvalRow.baselineCommit` 在 prepare 之后是 40 位**具体** hash——`commitHash: null` 时
  *      diff 没有可比基线，准备阶段必须把 `HEAD` 解析成具体 hash 再写入；
- *   3. `TERMINAL_ROW_STATUSES` 供 SSE 判断「收到它即可关连接」（§8），
- *      `isRunnableRow` 供「开始」按钮判断哪些行会被执行（§5.3），两者语义不同不可互相替代；
+ *   3. `TERMINAL_ROW_STATUSES` 供 SSE 判断「收到它即可关连接」，
+ *      `isRunnableRow` 供「开始」按钮判断哪些行会被执行，两者语义不同不可互相替代；
  *   4. 两张标签表都是 `Record<枚举, string>`——新增枚举成员时 tsc 直接报错，
  *      不会出现「界面上一格空白」；
  *   5. 四条行级动作判据（`isRunnableRow` / `canRunRow` / `canRescoreRow` / `canRetryRow`）**都只有这一份**：
  *      界面用它决定按钮的 `disabled`，服务端用它抛 `CONFLICT`。两处各写一份必然漂移，
- *      漂移的表现是「按钮可点、点下去 409」（`canRunRow` 是 2026-09-29 追加的，见它的注释）；
- *   6. **两个按钮都是「重跑」出口，而不是「失败恢复」出口**（2026-09-28 晚间用户口径：
+ *      漂移的表现是「按钮可点、点下去 409」（`canRunRow` 见它自己的注释）；
+ *   6. **两个按钮都是「重跑」出口，而不是「失败恢复」出口**（用户口径：
  *      「已出分、无报错时取消禁用」）：只要**跑过一次且产出了改动**（有可比基线 + 有 diff）就可以
  *      再跑一次，已经出分的行同样给。判据里**不看** `EvalRow.error` / `error.stage`——
  *      失败发生在哪一段不再决定按钮的可用性（那一格仍照旧落盘，只是不再参与判定）。
@@ -30,7 +30,7 @@ import { ScoreResultSchema } from './score';
 // 这里**原样再导出**：所有既有消费方都从 `@aieval/contracts` 包根取这四个名字，路径不变。
 export { AGENT_KINDS, AGENT_LABELS, AgentKindSchema, type AgentKind } from './agent';
 
-/** 执行模式：并行不设并发上限，串行一行跑完（含评分）才起下一行（spec §5.2） */
+/** 执行模式：并行不设并发上限，串行一行跑完（含评分）才起下一行 */
 export const ExecutionModeSchema = z.enum(['parallel', 'serial']);
 export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 
@@ -41,7 +41,7 @@ export const EvalRowStatusSchema = z.enum([
 export type EvalRowStatus = z.infer<typeof EvalRowStatusSchema>;
 
 /**
- * 终态集合：SSE 收到它即可关连接（§8）。
+ * 终态集合：SSE 收到它即可关连接。
  * 顺序不参与界面排序，只用于判定——`pending` 与三个运行态都不在内。
  */
 export const TERMINAL_ROW_STATUSES: readonly EvalRowStatus[] = [
@@ -63,14 +63,14 @@ export const ROW_STATUS_LABELS: Record<EvalRowStatus, string> = {
 };
 
 /**
- * **失败发生在哪一段**（2026-09-28 追加）：候选智能体那一段（含准备）还是评分那一段。
+ * **失败发生在哪一段**：候选智能体那一段（含准备）还是评分那一段。
  *
  * 为什么必须落盘、而不能从状态里推：两段失败落的行状态可以**逐字相同**（候选 agent 起不来与
  * 评分模型起不来都是 `failed` + `AGENT_FAILED`；候选超时与评分超时都是 `timed-out` +
  * `AGENT_TIMED_OUT`），从终态本身读不出「是哪一段坏了」。
  *
- * ⚠️ **它今天只是一格叙述性的事实记录**（2026-09-28 晚间起）：早先版本用它决定给「重新执行」
- * 还是「重新评分」，后来两个按钮都放开给「跑过一次且有产出」的所有行 ⇒ **没有任何判据再读它**。
+ * ⚠️ **它今天只是一格叙述性的事实记录**：两个按钮都放开给「跑过一次且有产出」的所有行
+ * ⇒ **没有任何判据再读它**。
  * 留着是因为「这一笔失败发生在哪一段」是排障时最常问的那个问题（日志抽屉与 `run.json` 都靠它），
  * 而不是因为它还在参与控制流——改这里之前先确认没有判据依赖它。
  */
@@ -78,47 +78,135 @@ export const RowFailureStageSchema = z.enum(['agent', 'judge']);
 export type RowFailureStage = z.infer<typeof RowFailureStageSchema>;
 
 /**
- * **关闭思考**的档名（2026-10-06 统一）：契约、界面与三家适配器都用这一个值。
+ * **关闭思考**的档名：契约、界面与三家适配器都用这一个值。
  * 各适配器负责把它翻成厂商词汇（dsh = `off`；claude = `thinking: { type: 'disabled' }`；
  * codex = `none`），因为三家的「关闭」在 wire 上根本不是同一个东西。
  */
 export const EFFORT_OFF = 'off';
 
+/**
+ * 「本行 MCP」观测格的**结论**。四档缺一不可：
+ *   · `connected`——有**硬证据**说它连上了（今天 = 厂商工具表里有它的工具，见 `judgedBy`）；
+ *   · `unavailable`——有证据说它**没起来**（厂商报了失败状态）；
+ *   · `unverified`——我们投送了，但证据只到「厂商知道有它」（`pending` / `needs-auth`）、
+ *     或压根没有证据；**形状不对、压根没投送的那几条也记这一档**（`resolveMcpServers` 的 `invalid` 桶：
+ *     那是我方配置问题，不是厂商起不来 ⇒ 不许记成 `unavailable`，也就不许升级成行失败）。
+ *     **这一档既不许写成「已连上」也不许写成「没有」**；
+ *   · `skipped`——**我们主动没投送**（`${ENV}` 占位未设置；或 `command` / `url` / `args` 里写了占位
+ *     ——那几格不支持占位）。它与 `unavailable` 的区别是责任方：那是我们跳过的，
+ *     不是厂商起不来的。
+ *
+ * ⚠️ 任何一档都**不许**由模型答复推出来（实测抓到过「MCP 没调上、模型却把结果编出来」）。
+ */
+export const RowMcpVerdictSchema = z.enum(['connected', 'unavailable', 'unverified', 'skipped']);
+export type RowMcpVerdict = z.infer<typeof RowMcpVerdictSchema>;
+
+/**
+ * 厂商侧 MCP 事实的**通道**（三家各一格）——「这条事实是从哪儿读到的」。
+ *
+ * 值名直接写「谁说的」而不是「多可信」（与 `RowMcpBasisSchema` 同一条口径）。三档与三家一一对应：
+ *   · `vendor-status`——claude 的 `system/init` 里 `mcp_servers[].status`；
+ *   · `vendor-startup-status`——codex 的 `mcpServer/startupStatus/updated`（`starting` / `ready` / `failed`）；
+ *   · `vendor-tool-table`——**工具表本身就是判据**的那一家（dsh 的 `request/header`）：它起不来时
+ *     工具静默消失、会话照常跑完、没有结构化错误 ⇒ 「表在、里面没有它」就等于「没起来」。
+ *
+ * ⚠️ 通道**决定结论怎么读**，所以它必须跟着证据走、而不是按厂商名去查一张静态表：同一个形状
+ * （「表里没有这一台」）在前两档是「不判失败」，在第三档是「判失败」。声明与实际读到的东西会各自漂移。
+ */
+export const ROW_MCP_CHANNELS = ['vendor-status', 'vendor-startup-status', 'vendor-tool-table'] as const;
+export const RowMcpChannelSchema = z.enum(ROW_MCP_CHANNELS);
+export type RowMcpChannel = z.infer<typeof RowMcpChannelSchema>;
+
+/**
+ * 那条结论是**凭什么**下的（判据来源的四档）= 三条通道 + `none`（没有任何厂商证据）。
+ *
+ * **从同一份值域派生**：两处各写一份枚举必然漂移，而漂移的表现是
+ * 「事件自报 `vendor-startup-status`、观测格却记 `vendor-status`」——这一格唯一要回答的就是
+ * 「凭什么这么说」。`none` 只在结论侧存在（我们投送了但厂商没报，或我们主动跳过），它不是通道。
+ */
+export const RowMcpBasisSchema = z.enum([...ROW_MCP_CHANNELS, 'none']);
+export type RowMcpBasis = z.infer<typeof RowMcpBasisSchema>;
+
+/** 来源**未知**时的取值（厂商没给 `source`，或这一台压根没到厂商那儿）。见下面 `source` 的注释 */
+export const ROW_MCP_SOURCE_UNKNOWN = 'unknown';
+
+/**
+ * 观测格里的**一台**（四格：名称 / 来源 / 判据来源 / 结论）。
+ */
+export const RowMcpServerSchema = z.object({
+  /** 服务名（= 设置页那个键，也是工具名前缀 `mcp__<name>__` 里的那一段） */
+  name: z.string().min(1),
+  /**
+   * 这一台**从哪来**：**优先采信厂商原值**（claude 的 `source` 实测给 `dynamic` = 本仓程序化注入、
+   * `project` = 被测仓库自带 `.mcp.json`），厂商没给这一格时记 `ROW_MCP_SOURCE_UNKNOWN`。
+   *
+   * 为什么是自由字符串而不是枚举：厂商原值是**证据**，翻译成我们的词表就是第二个真源
+   * （与环境抽屉里那条口径逐字相同：「原值照抄、不翻译」）。`unknown` 是**我们**对这一格的
+   * 如实交代，不是厂商的取值。
+   */
+  source: z.string().min(1),
+  /** 结论的依据通道（见 `RowMcpBasisSchema`） */
+  judgedBy: RowMcpBasisSchema,
+  /** 结论（见 `RowMcpVerdictSchema`） */
+  verdict: RowMcpVerdictSchema,
+});
+export type RowMcpServer = z.infer<typeof RowMcpServerSchema>;
+
+/**
+ * 四档结论的中文文案。**放契约里**（与 `ROW_STATUS_LABELS` 同一条理由）：
+ * 界面、行卡片与服务端日志说的是同一件事，各抄一份必然漂移，而漂移的表现是
+ * 「设置页说已跳过、行详情说未验证」。
+ */
+export const ROW_MCP_VERDICT_LABELS: Record<RowMcpVerdict, string> = {
+  connected: '已连上',
+  unavailable: '未启动',
+  unverified: '未验证',
+  skipped: '已跳过',
+};
+
+/** 四档判据来源的中文文案（同上一条理由） */
+export const ROW_MCP_BASIS_LABELS: Record<RowMcpBasis, string> = {
+  'vendor-status': '厂商连接状态',
+  'vendor-tool-table': '厂商工具表',
+  'vendor-startup-status': '厂商启动状态',
+  none: '无厂商证据',
+};
+
 export const EvalRowSchema = z.object({
   id: z.string().min(1),
   agentKind: AgentKindSchema,
-  /** 执行期定位凭据用（R8）：按 id 去 config.providers 取 apiKey；供应商改名后这里仍指向同一条 */
+  /** 执行期定位凭据用：按 id 去 config.providers 取 apiKey；供应商改名后这里仍指向同一条 */
   providerId: z.string().min(1),
-  /** 冗余快照：供应商被改名或删除后仍能追溯这一行用的什么模型（§7.2） */
+  /** 冗余快照：供应商被改名或删除后仍能追溯这一行用的什么模型 */
   providerName: z.string(),
   baseUrl: z.string(),
   modelId: z.string(),
   status: EvalRowStatusSchema,
-  /** test/{rowId}：用行 id 而非轮 id，否则同用例下多候选会互相踩（§5.5） */
+  /** test/{rowId}：用行 id 而非轮 id，否则同用例下多候选会互相踩 */
   branch: z.string(),
   workspacePath: z.string(),
-  /** 40 位具体 hash（§11 R2）；**空串 = 尚未准备**：创建时为 ''，prepare 阶段解析 HEAD 后由 p4 写入 */
+  /** 40 位具体 hash；**空串 = 尚未准备**：创建时为 ''，prepare 阶段解析 HEAD 后由编排层写入 */
   baselineCommit: z.string(),
   /**
-   * null = 该次运行未采到计量；**绝不填 0**（§5.6.3）。
+   * null = 该次运行未采到计量；**绝不填 0**。
    *
-   * ⚠️ **2026-10-04 起这一格是「全树」合计**（主会话 + 我们数到的每一个子智能体，口径见
-   * `2026-10-01-agent-message-spec-design-v3.md` §2.4）；子那一份单列在 `subagentTokens`。
+   * ⚠️ **这一格是「全树」合计**（主会话 + 我们数到的每一个子智能体）。
+   * 子那一份单列在 `subagentTokens`。
    * 为什么写在这里：**老 `run.json` 里这一格存在、值也合法**，只是口径不同（当时只含主会话），
    * 而读侧无法从形状上分辨两者 ⇒ 跨期比较（对比表、历史轮次）必须知道这条分界线。
    */
   tokens: z.object({ input: z.number(), cached: z.number(), output: z.number() }).nullable(),
   turns: z.number().nullable(),
   /**
-   * **子智能体那一份**用量（2026-10-04 新增）：`tokens` 是「主会话 + 全部子智能体」的合计，
-   * 这一格是其中的分量（口径见 spec `2026-10-01-agent-message-spec-design-v3.md` §2.4）。
+   * **子智能体那一份**用量：`tokens` 是「主会话 + 全部子智能体」的合计，
+   * 这一格是其中的分量。
    * **可选**：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮
    * （与 `attempts` / `effort` / `error.stage` 同一条理由）。
    */
   subagentTokens: z.object({ input: z.number(), cached: z.number(), output: z.number() }).nullable().optional(),
   /**
-   * **子智能体那一份**轮次（2026-10-04 新增）：`turns` 是「主会话 + 全部子智能体」的合计，
-   * 这一格是其中的分量（口径与 `subagentTokens` 同源，见 spec §2.4）。
+   * **子智能体那一份**轮次：`turns` 是「主会话 + 全部子智能体」的合计，
+   * 这一格是其中的分量（口径与 `subagentTokens` 同源）。
    * **可选**：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮。
    * `null` = 有子智能体但轮次读不到（**不是 0**：`0` 说的是「确实没有子智能体」）；
    * 恒有 `subagentTurns ≤ turns`（分量关系，逐格）。
@@ -131,7 +219,7 @@ export const EvalRowSchema = z.object({
    * 口径由 evaluator 的 `runRowAttempt` 第 5 步写入，那里有为什么这么定的两条理由。
    */
   durationMs: z.number().nullable(),
-  /** 只存计数摘要，diff 正文按需现算（§7.2） */
+  /** 只存计数摘要，diff 正文按需现算 */
   diff: z
     .object({
       filesChanged: z.number(),
@@ -142,9 +230,9 @@ export const EvalRowSchema = z.object({
     .nullable(),
   score: ScoreResultSchema.nullable(),
   /**
-   * 失败归因（R9）：`code` 必填——界面靠它区分「超时 / 限流 / 密钥无效 / 评分解析失败」，
+   * 失败归因：`code` 必填——界面靠它区分「超时 / 限流 / 密钥无效 / 评分解析失败」，
    * 只留 message 的话界面只能按文案猜。它是 `z.string()` 而不是枚举：这一格要同时容纳
-   * agents 包的 `AgentErrorCode`（§5.6.7）与接口层的 `ErrorCode`（如 `JUDGE_PARSE_FAILED`）。
+   * agents 包的 `AgentErrorCode` 与接口层的 `ErrorCode`（如 `JUDGE_PARSE_FAILED`）。
    */
   error: z
     .object({
@@ -152,7 +240,7 @@ export const EvalRowSchema = z.object({
       message: z.string(),
       stack: z.string().optional(),
       /**
-       * 失败发生在哪一段（2026-09-28 追加，见 `RowFailureStageSchema`）。
+       * 失败发生在哪一段（见 `RowFailureStageSchema`）。
        * **可选**是载重的：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮
        * （与 `attempts` / `useAgentJudge` 同一条理由）。它**只是叙述性的事实记录**：没有任何判据读它
        * （`canRescoreRow` 只看「不在跑 + 有基线 + 有 diff」，`canRetryRow` 与它**逐字相同**，
@@ -163,7 +251,7 @@ export const EvalRowSchema = z.object({
     })
     .nullable(),
   /**
-   * 这一行走过的**执行尝试次数**（含失败的那些），未跑过为 0（2026-09-27 追加）。
+   * 这一行走过的**执行尝试次数**（含失败的那些），未跑过为 0。
    *
    * 为什么要落盘：瞬时失败（网络 / 5xx / 限流）在我们这一侧是**自动重试**的，而自动重试必须留痕——
    * 否则「这一次为什么慢了两倍」在事后没有任何线索，且「试了三次才成功」与「一次就成功」在界面上
@@ -173,17 +261,17 @@ export const EvalRowSchema = z.object({
    */
   attempts: z.number().int().min(0).default(0),
   /**
-   * 这一行要求的思考强度（spec D12）。**可选**：老 `run.json` 没有这一格，必填会让 `listRuns()`
+   * 这一行要求的思考强度。**可选**：老 `run.json` 没有这一格，必填会让 `listRuns()`
    * 静默跳过那一轮（与 `attempts` / `useAgentJudge` 同一条理由）。
-   * 记的是**我们要求的**档位，不是**实际生效的**档位（cc 可能静默降档，见 spec §9 第 7 条）。
+   * 记的是**我们要求的**档位，不是**实际生效的**档位（cc 可能静默降档）。
    * **未选 = 走该家适配器的缺省**（dsh 是 `high`；claude / codex 是不传、由厂商推断），
-   * **不是**「沿用厂商默认」也不是「关闭」；要关闭必须显式写 `EFFORT_OFF`（2026-10-06）。
+   * **不是**「沿用厂商默认」也不是「关闭」；要关闭必须显式写 `EFFORT_OFF`。
    */
   effort: z.string().min(1).optional(),
   /**
-   * 这一行的**流式增量观测**（2026-10-09 新增）：跑这一行时到底有没有、有多少条增量帧。
+   * 这一行的**流式增量观测**：跑这一行时到底有没有、有多少条增量帧。
    *
-   * 为什么需要它：增量帧**只广播不落盘**（`messages.jsonl` 里只有快照）⇒ 「这次有没有真的收到逐字流」
+   * 为什么需要它：增量帧**只广播不落盘**（`messages.jsonl` 里只有快照）⇒ 「本次有没有真的收到逐字流」
    * 在事后**没有任何痕迹**。而这件事的答案与厂商声明是两回事：声明 `yes` 的家可能在这一次什么都没投
    * （开关没生效 / 插件没挂上 / 厂商改了内部事件名），症状是「界面上就是不打字」，与「这家本来就没有」
    * 长得一模一样。这一格把两者分开，且**只记运行期证据、绝不回改厂商级静态声明**（声明是能力事实，
@@ -210,6 +298,28 @@ export const EvalRowSchema = z.object({
     })
     .nullable()
     .optional(),
+  /**
+   * 这一行的 **MCP 观测格**（「本行 MCP」）：逐台记
+   * **名称 / 来源 / 判据来源 / 结论**。
+   *
+   * 为什么单独立一格（而不是让界面去 `events.jsonl` 里现推）：事件流回答的是「厂商当时说了什么」，
+   * 而这里要回答的是「**这一行实际装上了哪几台、我们凭什么这么说**」——后者要能刷新后复盘、
+   * 也要能对**环境变量未设置而被我们主动跳过**的那几台给出结论（厂商事件里根本没有它们）。
+   * 推导只在编排层做一次（`evaluator` 的 `deriveRowMcpServers`），界面只渲染，不重推。
+   *
+   * ⚠️ **判据不许是模型答复**：模型可能把「MCP 派发失败」的结果直接编出来 ⇒ `verdict` 的每一档
+   * 都只由**厂商事件侧**的证据支撑（`judgedBy` 就是那条证据的名字），`connected` 更是要求工具表里
+   * 真的出现 `mcp__<name>__*`（比厂商自报的 `status` 更硬）。
+   *
+   * **三态与 `streamingDelta` 逐条同构**：
+   *   · **缺席 / `null`** = 未观测（老 `run.json` 没有这一格；这一行也没跑到候选执行）；
+   *   · **`[]`** = 观测了，本行一台 MCP 都没有——不许与上一态合并（那是「压成没观测」的老毛病）；
+   *   · 非空 = 逐台四格。
+   *
+   * **可选**：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮（与 `attempts` /
+   * `subagentTokens` 同一条理由）。
+   */
+  mcpServers: z.array(RowMcpServerSchema).nullable().optional(),
 });
 export type EvalRow = z.infer<typeof EvalRowSchema>;
 
@@ -219,7 +329,7 @@ export type RowStreamingDelta = NonNullable<EvalRow['streamingDelta']>;
 export const EvalRunSchema = z.object({
   id: z.string().min(1),
   caseId: z.string().min(1),
-  /** 冗余快照：用例被删除后仍能追溯这一轮测的是什么（§7.2） */
+  /** 冗余快照：用例被删除后仍能追溯这一轮测的是什么 */
   caseTitle: z.string(),
   repoPath: z.string(),
   commitHash: z.string().nullable(),
@@ -230,7 +340,7 @@ export const EvalRunSchema = z.object({
    * 为什么必须快照：评分阶段读的是它而不是 `testCase.rubric`——改了用例的评分表之后，
    * 历史记录里的分数与它自己的满分仍然自洽，「重新评分」用的也仍是当初那把尺子。
    * **必填**：旧 run.json 没有这一格会 `safeParse` 失败 ⇒ `listRuns()` 静默跳过那一轮
-   * （这正是本次升级要求清掉旧评测记录的原因，见计划 §兼容性）。
+   * （旧评测记录因此必须清掉）。
    */
   rubric: RubricSchema,
   status: z.enum(['idle', 'running', 'partial', 'done']),
@@ -299,7 +409,7 @@ export type RunUpdate = z.infer<typeof RunUpdateSchema>;
 /**
  * 「变更详情」抽屉首帧：文件索引，**不含任何 diff 正文**。
  *
- * 为什么拆成两个形状（spec §4）：正文有 256 KB 硬预算，但 `files` 没有上限——
+ * 为什么拆成两个形状：正文有 256 KB 硬预算，但 `files` 没有上限——
  * 一次改一万个文件，旧形状会把一万条条目与正文一起塞进一个响应，那才是会卡死的那一步。
  * 索引负责「有哪些文件、大概改了多少」，正文按需另外取。
  *
@@ -351,7 +461,7 @@ export const RowDiffFileSchema = z.object({
 export type RowDiffFile = z.infer<typeof RowDiffFileSchema>;
 
 /**
- * 「开始」按钮的可执行行判定（§5.3）：终态里除了 judged 都可重跑。
+ * 「开始」按钮的可执行行判定：终态里除了 judged 都可重跑。
  * judged 排除在外是刻意的——已经出分的行不该被一次误点重跑掉几十分钟。
  */
 export function isRunnableRow(status: EvalRowStatus): boolean {
@@ -391,18 +501,18 @@ export function hasLiveRows(run: EvalRun): boolean {
  * 编辑交回的这一行与现有行还是不是同一件事（`agentKind` / `providerId` / `modelId` / `effort` 逐字比较）。
  *
  * 为什么它必须在 contracts：这条判据有两个消费方——服务端的 `planRunUpdate` 用它决定重置哪一行，
- * 编辑表单用它**事先算出这次会作废哪几行**（保存前的确认框）。两处各写一份必然漂移，
+ * 编辑表单用它**事先算出本次会作废哪几行**（保存前的确认框）。两处各写一份必然漂移，
  * 漂移的症状是「确认框说会作废 2 行，实际作废了 1 行」——而那正是用户唯一能核对的地方。
  * `providerName` / `baseUrl` 是服务端快照（供应商改名后它们会变），**不参与**判定：
  * 改个供应商名字不该把一行已经跑出来的成绩打掉。
  *
- * **强度（`effort`）参与判定，且「一侧没给」算改了**（2026-09-29 追加）：档位是**被评对象**的一部分——
+ * **强度（`effort`）参与判定，且「一侧没给」算改了**：档位是**被评对象**的一部分——
  * 同一个模型、同一家供应商，把 high 改成 low 跑出来的是另一次评测，旧分数不能留在快照里。
- * 为什么缺省按「改了」处理、而不是按「和上次一样」：编辑载荷是候选行集合的**全量替换**（spec §5.1，
+ * 为什么缺省按「改了」处理、而不是按「和上次一样」：编辑载荷是候选行集合的**全量替换**（
  * 表单交回来的永远是全量行集合，不是补丁），所以「这一格没有」只能读成「未指定档位」，
  * 读不出「沿用原来那一档」。这是**安全方向**——宁可多重置一行，也不能静默保留一个用户已经改过的
  * 档位跑出来的分（那正是本判据存在的理由）。
- * Task 8 的编辑表单会回传它。**不回传的客户端，代价要说全**（本条是唯一记录这一支的地方）：
+ * 编辑表单会回传它。**不回传的客户端，代价要说全**（本条是唯一记录这一支的地方）：
  * 判成「改了这一行」之后，那一行会被 `resetRow` **原地重置**——不只是「要重跑一次」，落盘的
  * `effort` 键也会被删掉（`api/src/runs.ts` 的重置按 resolved 那一格重建，缺省即不写键：界面从此
  * 显示「默认」档），连同这一行的 `score` / `diff` / 计量与 `attempts` 一起归零——用户看到的分数
@@ -424,11 +534,11 @@ export function isSameRowTarget(
 
 /**
  * 该行能否「重新评分」：不重跑候选 agent，只在**既有工作区**上重跑评分步骤。
- * 三个条件缺一不可（**2026-09-28 晚间放开**：原来还要求 `error.stage === 'judge'`，
- * 于是已经出分的行与候选阶段失败的行都挂着禁用——用户口径改成「已出分、无报错时取消禁用」）：
+ * 三个条件缺一不可（用户口径「已出分、无报错时取消禁用」，故**不**要求 `error.stage === 'judge'`——
+ * 那一条会把已经出分的行与候选阶段失败的行都挂上禁用）：
  *   · 不在运行中——正在跑的行有自己的生命周期，终止它是另一件事；
- *   · `baselineCommit !== ''`——prepare 阶段成功过，diff 才有可比基线（§11 R2）；
- *   · `diff !== null`——第 6 步（collectDiff）跑过，说明候选 agent 阶段已经结束、有可复评的产出。
+ *   · `baselineCommit !== ''`——prepare 阶段成功过，diff 才有可比基线；
+ *   · `diff !== null`——collectDiff 跑过，说明候选 agent 阶段已经结束、有可复评的产出。
  * 于是可重评的面＝「跑过一次、产出了改动」的所有终态（`judged` / `failed` / `timed-out` /
  * `canceled` / `interrupted`），**与这一行是否失败过无关**。
  *
@@ -459,7 +569,7 @@ export function canRescoreRow(row: EvalRow): boolean {
  * 界面上是两个按钮，成本差一个数量级（分钟级 vs 几十秒），故不做成一个。
  *
  * 判据与 `canRescoreRow` 相同：「不在跑 + 有可比基线 + 有已产出的改动」。
- * **`judged` 不再是排除项**（2026-09-28 晚间口径「已出分、无报错时取消禁用」）：整段重跑一次
+ * **`judged` 不再是排除项**（口径「已出分、无报错时取消禁用」）：整段重跑一次
  * 已出分的行是分钟级成本，由 `Popconfirm` 二次确认拦一次，判据不再替使用者说不。
  * 硬前提仍然挡着「没跑过」的行——没有可比基线时重跑得到的 diff 没有对照物。
  */
@@ -469,15 +579,15 @@ export function canRetryRow(row: EvalRow): boolean {
 
 /**
  * 该行能否**单跑**（只跑这一行：候选 agent 与评分整段跑一遍，本轮其他行一律不动）。
- * 2026-09-29 追加，用户口径：「重新执行，只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」。
+ * 用户口径：「重新执行，只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」。
  *
  * 与 `canRetryRow` 的差别**只有一条**：「跑过没有」。`canRetryRow` 要求「有可比基线 + 有已产出的改动」
  * ——它回答的是「**重**跑这一行有没有对照物」；本判据只要求「不在跑」——它回答的是
  * 「能不能**就现在**把这一行跑起来」。所以**没跑过的行**（`pending` / `skipped`）也在这里放行。
  *
- * 为什么需要它（这是这次口径修订要解决的唯一问题）：过去没跑过的行只能靠「开始」跑，而「开始」的语义是
- * **所有可执行行**（`isRunnableRow`，spec §5.3）——想单独跑三行里的第二行时，它会顺带把失败过的行
- * 一起重跑一遍，而「我只想跑这一个候选」在这条路上**无处表达**。
+ * 为什么需要它：没跑过的行只能靠「开始」跑，而「开始」的语义是**所有可执行行**
+ * （`isRunnableRow`）——想单独跑三行里的第二行时，它会把失败过的行一起重跑一遍，
+ * 而「我只想跑这一个候选」在那条路上**无处表达**。
  *
  * 两个判据的**单调关系**（测试里有一条守卫钉着）：能重新执行 ⇒ 必然能单跑，反之不然。
  *

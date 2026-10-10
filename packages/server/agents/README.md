@@ -167,7 +167,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 这张表（`src/permission.ts`）是**唯一真源**，三份放一起才能逐格对照、也才能把「每一档在每一家都有落点」
 写成一条可执行断言。三条不能不记的坑：
 
-- **codex 的 `read-only` 在 Windows 上没有可用实现**（2026-10-07 真机）：该平台下 `read-only` 与
+- **codex 的 `read-only` 在 Windows 上没有可用实现**：该平台下 `read-only` 与
   `workspace-write` 连 `echo` / `git status` 都起不来（`CreateProcess … rejected: blocked by policy`），
   而 codex 读文件只能靠 shell ⇒ 评分会变成**盲评**（真机：候选三项全达成，却判 `0 / 25`）。故
   `codexPermissionOptions()` 在 Windows 上把只读档落成 `danger-full-access`，别的平台一字不改；
@@ -206,7 +206,7 @@ metadata: {
 | `codex` | Codex | `['openai']` | `true` | `true` | `true` |
 | `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
 
-**消息能力声明**（`metadata.messageCapability`，spec v3 §2.5）在同一份元数据里，逐格声明
+**消息能力声明**（`metadata.messageCapability`）在同一份元数据里，逐格声明
 「思考正文 / 工具入参 / 工具结果 / 子任务 / 流式增量」能不能拿到、从哪条通道拿、拿不到时为什么，
 外加这一族能力成立的前提（`notes`）。三家的差异只有两处结构性缺口：
 
@@ -240,7 +240,7 @@ metadata: {
 | base URL 处理 | **去掉**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补上** `/v1`（CLI 只走 `POST {base}/v1/responses`） | **保留**尾部 `/v1`（其 adapter 自己补 `/messages`） |
 | 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） |
 | 凭据 | `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN`（部分网关只认后者） | `apiKey` 进子进程环境（`OPENAI_API_KEY`）+ 该 provider 的 `env_key: OPENAI_API_KEY`（**Bearer 由 `env_key` 指定**；换成 `requires_openai_auth: true` 会走 ChatGPT 登录态、一个头都不附 ⇒ 全 401） | `DEEPSEEK_API_KEY`（空 `configHome` 下**只有这个变量能救**） |
-| 其它 | `settingSources: ['user','project','local']`（读得到被测仓库的 `CLAUDE.md`；`user` 档落在本行 `CLAUDE_CONFIG_DIR`，不是宿主 `~/.claude`）+ `settings.env` 把本次路由钉在 flag 档（否则仓库自带的 `.claude/settings.json` 会盖掉路由——2026-09-29 实测三档对照）；cwd 走 `realpathSync.native` 归一（Windows 8.3 短名会被 CLI 的安全门拦下、导致 0 改动）；`disallowedTools` 禁掉定时任务/推送等旁路工具（`WebSearch` 只在非 `claude` 模型上禁） | 注入完整 `model_providers` 条目 + `tools.web_search=false` + `features.multi_agent=true`（**显式打开**：子智能体是评测面之一，与 claude / dsh 两家口径一致；关掉只会让 `spawn_agent` 变成一次失败的工具调用、子任务面板恒空）；每次运行独占临时目录 | 通知流**先订阅再交提示词**（顺序错了会丢掉开头那批事件）；`start()` 先握手，失败归 `AGENT_FAILED` |
+| 其它 | `settingSources: ['user','project','local']`（读得到被测仓库的 `CLAUDE.md`；`user` 档落在本行 `CLAUDE_CONFIG_DIR`，不是宿主 `~/.claude`）+ `settings.env` 把本次路由钉在 flag 档（否则仓库自带的 `.claude/settings.json` 会盖掉路由——三档对照实测过）；cwd 走 `realpathSync.native` 归一（Windows 8.3 短名会被 CLI 的安全门拦下、导致 0 改动）；`disallowedTools` 禁掉定时任务/推送等旁路工具（`WebSearch` 只在非 `claude` 模型上禁） | 注入完整 `model_providers` 条目 + `tools.web_search=false` + `features.multi_agent=true`（**显式打开**：子智能体是评测面之一，与 claude / dsh 两家口径一致；关掉只会让 `spawn_agent` 变成一次失败的工具调用、子任务面板恒空）；每次运行独占临时目录 | 通知流**先订阅再交提示词**（顺序错了会丢掉开头那批事件）；`start()` 先握手，失败归 `AGENT_FAILED` |
 
 URL 归一只对**路径段**做，query / fragment 一个字符都不动（用户粘进来的地址可能带 `?x=1`）。
 
@@ -316,7 +316,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | `index.ts` | 唯一出口：注册表 + 类型 |
 | `registry.ts` | kind → provider 的显式静态注册表（加第四家只改这里 + 新目录） |
 | `types.ts` | 对外全部类型契约的真源 |
-| `message.ts` | **三家共用的消息归一公共层**：覆盖合并（delta 追加 / snapshot 覆盖）、块序号分配、`messageId` 的 `seq`、工具归族（十个族名按工具名判）、`assembly` 收尾标记（spec v3 §6 的唯一一份实现） |
+| `message.ts` | **三家共用的消息归一公共层**：覆盖合并（delta 追加 / snapshot 覆盖）、块序号分配、`messageId` 的 `seq`、工具归族（十个族名按工具名判）、`assembly` 收尾标记（唯一一份实现） |
 | `turn.ts` | **三家共用的运行骨架**：注入 → 消费事件流 → 释放 → 组装结果。判定优先级、轮次发射门槛、去重、消息合并器的接线都在这里，三家逐字一致（抄三遍必然漂移） |
 | `permission.ts` | 权限档 → 三家厂商选项的映射表（唯一真源） |
 | `route.ts` | base URL 归一 + 替换型子进程环境构造 |
@@ -327,7 +327,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | `load-once.ts` | 厂商 SDK 懒加载 + 只缓存成功 + 测试注入优先 |
 | `runtime.ts` | 测试注入点：`sdkModule`（包名 → 模块命名空间） |
 | `providers/<kind>/{index,sdk,events}.ts` | 一家的三件事：适配器本体 / SDK 窄结构（唯一知道厂商入口形状的地方）/ 事件投影 |
-| `providers/<kind>/message.ts` | 一家的**消息归一**（spec v3 §2）：把厂商载荷折成统一的 `AgentMessage` 与子任务行。三家的形状差异由 `src/message.ts` 的公共层吸收，这里只负责取值路径 |
+| `providers/<kind>/message.ts` | 一家的**消息归一**：把厂商载荷折成统一的 `AgentMessage` 与子任务行。三家的形状差异由 `src/message.ts` 的公共层吸收，这里只负责取值路径 |
 | `testing/agent-fixtures.ts` | 假厂商件：单测「不碰真实 API、不碰真实 CLI」的全部物质基础 |
 | `probe/` | 真实事件探测的产物：`raw-events.mts` 脚本 + `dumps/*.json`（三家入口形状与事件原文）。**不在** `src/**` 的源码级断言扫描面内 |
 
@@ -376,16 +376,16 @@ it('注入落点与结果贯通', async () => {
 
 ### 8.1 新增一家 SDK：接入清单与验证点
 
-加一家时按序做这七步，每步都有可执行的判据。**顺序不能颠倒**——前三步的缺陷只有真机能拦，后面几步拦不住它们（2026-10-07 的 codex 改造即实例：agents 包 585 条全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据/provider 没传到厂商进程」）。完整方案（失败分类学、四层结构、为什么不写假 SDK 替代真机）已熔炼进知识库 `docs/protocols/sdk-onboarding.md`（新增 SDK 接入流程）。
+加一家时按序做这七步，每步都有可执行的判据。**顺序不能颠倒**——前三步的缺陷只有真机能拦，后面几步拦不住它们（codex 的 app-server 改造即实例：agents 包 585 条全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据/provider 没传到厂商进程」）。完整方案（失败分类学、四层结构、为什么不写假 SDK 替代真机）已熔炼进知识库 `docs/protocols/sdk-onboarding.md`（新增 SDK 接入流程）。
 
 | # | 步骤 | 判据 |
 |---|---|---|
-| 1 | 写**能力声明**（§2.7 五态 × 五格 + `notes` 写清路由/模型前提） | 契约层「能力声明自身合规」 |
+| 1 | 写**能力声明**（五态 × 五格 + `notes` 写清路由/模型前提） | 契约层「能力声明自身合规」 |
 | 2 | 定**厂商入口的定位方式**（静态 import？子进程？）；走子进程就必须打包器免疫 | 静态层「打包器免疫」（`static-assertions.test.ts`） |
 | 3 | 定**凭据与 provider 的传递**：密钥进子进程环境；provider 条目名与 `model_provider` 类字段**成对**给出；base_url 归一（该补 `/v1` 就补） | 真机冒烟第 ② 格 |
 | 4 | 写 fixture 场景，**至少覆盖能力声明里所有 `yes` 的那几格** | 契约层「能力声明与产物互钉」 |
 | 5 | 接**生命周期**：取消能终止在途轮次、`dispose` 真正回收子进程、清理遇 `EPERM` 重试 | 集成层 + 真机冒烟第 ①/③ 格 |
-| 6 | 登记**缺失**：§7 缺失影响矩阵里每一格要么有产物、要么有 `MissingReason` | 契约层「缺失必须带原因」 |
+| 6 | 登记**缺失**：缺失影响矩阵里每一格要么有产物、要么有 `MissingReason` | 契约层「缺失必须带原因」 |
 | 7 | 跑**真机冒烟**，把四格证据写进当次关账记录 | 见下 |
 
 **契约层**（与厂商无关，任何一家都得过；一次接入的全部成本就是一个 fixture）：
@@ -399,7 +399,7 @@ describeProviderConformance({
 });
 ```
 
-判据逐条挂在规范条目上：信封 §2.1 / 内容块 §2.2 / 行级事件 §2.3 / 计量 §2.4–2.6 / 能力声明 §2.7（含与产物**互钉**）/ 子任务桥 §2.8 / 环境 §2.9 / 行结果 §2.10 / 工具族 §5 / 合并键 §6.2。**形状不在这里重复写**——它由 `@aieval/contracts` 的 zod schema 管，套件只补 schema 表达不了的语义不变量（两份形状必然漂移）。
+判据逐条挂在套件的各条规范上：信封、内容块、行级事件、计量、能力声明、子任务桥、环境、行结果、工具族、合并键。**形状不在这里重复写**——它由 `@aieval/contracts` 的 zod schema 管，套件只补 schema 表达不了的语义不变量（两份形状必然漂移）。
 
 **真机冒烟**（装载与传输两类缺陷的**唯一**拦法；默认跳过，不进内循环）：
 
@@ -438,8 +438,7 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 | **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「兜底超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |
 | **受保护发射** | 调 `onEvent` 一律包在 try/catch 里：那是**消费方**的代码（写盘 / 推流都会抛），而 `run()` 承诺「永不抛」 |
 | **`AGENT_*` 错误码** | 领域归因码（`AGENT_LOAD_FAILED` / `AGENT_FAILED` / `AGENT_TIMED_OUT` / `AGENT_CANCELED` / `AUTH_FAILED` / `RATE_LIMITED`）。**不是** contracts 的 `ErrorCode`：它没有 HTTP 状态，落点是该行的事件日志，不要塞进 `ERROR_CODES` |
-| **`§5.6.x` / `R33` 这类编号** | `§` 指向 spec / 计划的章节；`R` 是**裁定项编号**（对上游事实的裁决，例如 R33 = dsh 依赖走 `next` 线而不是 `latest`）。这些编号指向的设计 spec 与冒烟记录已熔炼进知识库（`docs/protocols/` 下各篇），注释里的「实测」指那里 |
-| **p3 / p4 / p5 / p6** | 历史实施计划的阶段代号（p3 适配器（本包）、p4 编排与评分、p5 评测域接口与界面、p6 真实冒烟与关账）；这些计划已按 ADR 0001 熔炼进知识库 |
+| **`R33` 这类裁定项编号** | `R` 是**裁定项编号**（对上游事实的裁决，例如 R33 = dsh 依赖走 `next` 线而不是 `latest`）。裁定过程与证据在 git 历史与 `docs/protocols/` 下各篇，注释里的「实测」指那里 |
 
 ## 11. 相关文档
 

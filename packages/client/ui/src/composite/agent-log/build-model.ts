@@ -50,7 +50,7 @@ import { formatUsageTriple } from '../../base/usage-metrics';
 
 /**
  * 组装 `AgentLogModel.facts` 需要的那几格。
- * **不是 `EvalRow`**：`agent-log` 不认「评测行」这个业务概念（D18），
+ * **不是 `EvalRow`**：`agent-log` 不认「评测行」这个业务概念，
  * 换一个消费场景时换的是喂进来的这个对象，不是组件。
  */
 export interface AgentLogFactsInput {
@@ -116,7 +116,7 @@ const UNVERIFIED: MessageCapabilityMap = {
  * `role` / `source` / `assembly` 三格**跟着块走**：它们是块自己的事实，
  * 界面不该再看信封（同一个块不可能同时来自 assistant 正文与工具结果）。
  *
- * **无正文的思考块在这一层整块过滤掉**（2026-10-07 用户口径）：数据层如实记着「有思考、无文本」
+ * **无正文的思考块在这一层整块过滤掉**：数据层如实记着「有思考、无文本」
  * 这条事实（`text: null` + `textKind: 'none'`），而它在界面上只能变成一句占位文案——
  * 那不是用户要看的思考，**没有就不显示**。放在这一层而不是某个组件里：时间轴、面包屑、
  * 以及将来任何一个消费方拿到的模型里都不该再有它（在组件里隐藏只会让别的出口漏出来）。
@@ -223,10 +223,9 @@ function byteLength(text: string): number {
 /**
  * 族载荷：**只挂 `tool-call` 块**，且只做「契约载荷 → 界面卡片」的搬运。
  *
- * **2026-10-04 收口**：厂商形状的归一（`todos` / `plan` / `multi_select` …）已经下沉到
- * agents 的 `tool-payload.ts`，这里只读契约的 `block.payload`。此前本函数读的是
- * `block.input`（厂商原文）并逐字认那些字段名——那是把厂商适配搬进了浏览器，
- * 而归一一旦有两份实现，漂移的表现是「同一族的卡片在某一家上是空的」。
+ * 厂商形状的归一（`todos` / `plan` / `multi_select` …）在 agents 的 `tool-payload.ts`，
+ * 这里只读契约的 `block.payload`。读 `block.input`（厂商原文）并逐字认那些字段名，
+ * 等于把厂商适配搬进浏览器，而归一一旦有两份实现，漂移的表现是「同一族的卡片在某一家上是空的」。
  *
  * 搬运只做两件界面自己的事（都不是归一，而是**摆版**）：
  *   · `counts` 四格**从 `steps` 数出来**（UI 按项渲染、看不到「上一轮」，但数当前这张表不需要历史）；
@@ -487,11 +486,10 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
 
   /**
    * **子任务身份的第二个名字**：`派生它的那次调用 id → 子任务身份`。
-   *
-   * 为什么必须有这一层（2026-10-03 真机实测的缺陷）：**同一条子任务在两处用了两套 id**——
-   *   · 子任务**记录**的身份是厂商的原生 id（claude 的 `task_id`、dsh 的 `agentId`）；
-   *   · 子任务的**消息**却挂在**派生它的那次工具调用 id** 上（claude 的 `parent_tool_use_id`，
-   *     真机与 `task_progress.tool_use_id`、`Agent` 工具调用块的 `callId` 三者同值）。
+   *   * 为什么必须有这一层：**同一条子任务在两处用了两套 id**——
+   * · 子任务**记录**的身份是厂商的原生 id（claude 的 `task_id`、dsh 的 `agentId`）；
+   * · 子任务的**消息**却挂在**派生它的那次工具调用 id** 上（claude 的 `parent_tool_use_id`，
+   * 真机与 `task_progress.tool_use_id`、`Agent` 工具调用块的 `callId` 三者同值）。
    * 两套 id 谁都不等于谁，于是按 `subagentId` 分桶时子任务的消息全部落空——
    * 点进子任务得到「没有逐条对话记录」，而消息就在文件里（真机：20 条消息、0 条被认领）。
    *
@@ -525,11 +523,11 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   /**
    * 派发点（四条判据，按可靠性从高到低）。
    *
-   * ➀ **子任务记录自己带的 `parentCallId`**（契约 §2.6）：它就是「派生这个子任务的那次工具调用 id」，
+   * ➀ **子任务记录自己带的 `parentCallId`**：它就是「派生这个子任务的那次工具调用 id」，
    *    三家各自从原生字段取（claude 是 `task_progress.tool_use_id`）。**这是唯一确定的一条**，
    *    所以排最前。
    * ① `parentCallId` 非空 ⇒ 它直接说明「父会话在哪次调用上派出了这个子任务」
-   *    （claude 的 `parent_tool_use_id` 与 `task_started.tool_use_id` 同值）。
+   * （claude 的 `parent_tool_use_id` 与 `task_started.tool_use_id` 同值）。
    * ② **子任务身份就是那次调用的 `callId`**（`sessions` 的键既能被 `subagentId` 命中，也能被
    *    `callId` 命中时）。真机里这条**常常落空**：dsh 的子任务身份是 `subagent.started` 给的独立
    *    UUID，而派发它的工具调用是另一个 `call_…|uuid` 形状的 id，两者不相等。
@@ -543,22 +541,22 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
    * 四条都命不中时保持 `null`——**不硬凑一个派发点**（宁可少一条导航，也不把它挂到别的调用上）。
    */
   /**
-   * ➀ **子任务记录自己带的 `parentCallId`**（契约 §2.6）优先落点。
+   * ➀ **子任务记录自己带的 `parentCallId`**优先落点。
    *
    * 它是「派生这个子任务的那次工具调用 id」，由适配器从原生字段取（claude 是
    * `task_progress.tool_use_id`），**是四条判据里唯一确定的一条**，故先落。
    *
-   * ⚠️ **只有「派发那一次」才有资格认领**（2026-10-03 真机实测的坑）：同一条子任务上会来
+   * ⚠️ **只有「派发那一次」才有资格认领**：同一条子任务上会来
    * **多条**协作调用记录（codex 真机：`spawn_agent` → `wait` → `close_agent`，每条都带**同一个**
    * `subagentId`）。若不分动作、先到先得，最终认领的会是 `close_agent`——于是时间轴上的
    * 「进入子任务」入口挂到了「收场」那一步上（点得到，但位置错）。
    * 判据按**派发动作名**认（`spawn` / `task` / `agent` 归一类，与下面的 `isDispatchCall` 同一口径）；
    * 认不出来时**不认领**，交给②③去认真正的那次调用——它们看的是调用入参，比动作名更硬。
    *
-   * ⚠️ **两处已知的弱**（2026-10-08 复核发现，行为今天正确、判据本身不硬）：
+   * ⚠️ **两处已知的弱**（行为正确、判据本身不硬）：
    *   1. **紧跟其后的那段循环（按 `parentCallId` 一律 `dispatchOf`）会把这里的结果原样重算一遍**
    *      ——入参相同、结果相同，所以 `claimsDispatch` 这道过滤**实际上不起作用**；
-   *   2. 那个动作名正则 `/spawn|task|agent/i` **区分不出动作**（`close_agent` 里就有 `agent`）⇒
+   *   2. 那个动作名正则 `/spawn|task|agent/i` **区分不出动作**（`close_agent` 里就有 `agent`） ⇒
    *      若真的按「最后一条记录赢」跑，认领的会是**收场**那次调用。
    *   今天不出问题是「两段循环等价」+ `build-model.test.ts` 的夹具靠投递顺序；
    *   待整理：要么只留一段循环，要么把动作名判据写成枚举。
@@ -577,7 +575,7 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   /**
    * **子任务身份的第二个名字**：`派生它的那次调用 id → 子任务身份`。
    *
-   * 为什么必须有这一层（2026-10-03 真机实测的缺陷）：**同一条子任务在两处用了两套 id**——
+   * 为什么必须有这一层：**同一条子任务在两处用了两套 id**——
    *   · 子任务**记录**的身份是厂商的原生 id（claude 的 `task_id`、dsh 的 `agentId`）；
    *   · 子任务的**消息**却挂在**派生它的那次工具调用 id** 上（claude 的 `parent_tool_use_id`）。
    * 两套 id 谁都不等于谁，于是按 `subagentId` 分桶时子任务的消息全部落空——
@@ -607,14 +605,13 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     for (const block of message.blocks) {
       if (block.type !== 'tool-call' || block.callId === '') continue;
       /**
-       * **这一段是死代码（2026-10-08 复核确认，行为无影响，留着只为不打断四条判据的阅读顺序）。**
+       * **这一段是死代码（行为无影响，留着只为不打断四条判据的阅读顺序）。**
        *
-       * 它原本自称「➀ 的时间回填」：走到调用所在的消息时把 `messageId` / `at` 补上。
+       * 它自称「➀ 的时间回填」：走到调用所在的消息时把 `messageId` / `at` 补上。
        * 但 `dispatchOf` 扫的与这里扫的是**同一张 `folded` 主会话表**、判据也一样（`callId` 逐字相同）
        * ⇒ 它找得到时返回的就是这一条的 `messageId` 与同源轮次；找不到时这里也找不到。
-       * 实测：把判据换成 `at === ''`（原写法）或直接换成 `true`，**用例与模型输出都不变**
-       * （紧随其后的那段无条件 `dispatchOf` 已经赋了同一个值）。
-       * 真要整理时就删掉它，并顺带把 `claimsDispatch` 那条判据收成枚举——那是另一次改动。
+       * 两个判据（`messageId === ''` / `at === ''`）都无从成立，紧随其后的那段无条件 `dispatchOf`
+       * 已经赋了同一个值。真要整理时就删掉它，并顺带把 `claimsDispatch` 那条判据收成枚举。
        */
       const claimed = sessions.get(block.callId);
       if (claimed !== undefined && claimed.node.spawnedBy?.callId === block.callId && claimed.node.spawnedBy.at === '') {
@@ -717,10 +714,9 @@ function turnHomeKey(turn: TurnRef): string {
  * 可能整行都不存在（异常形状）——那种「孤儿」要在**数据层**就抹成 `turn: null`，落到时间轴上按时刻
  * 归位（**不丢**）。
  *
- * **为什么只收主会话**（2026-10-07 口径变更）：子会话的读数**不再折成里程碑**（用户裁定：子智能体用量
- * 只在派发点那张子任务卡片里展示），归属键只可能落在主会话上。2026-10-05 终审那条「不可达子节点不算
- * 有家」随之退役——它服务的是子会话里程碑（`spawnedBy === null` 的节点进不去，若这里仍认它作有家，
- * 那条读数两处都落空），而那一类读数现在根本不进这里。
+ * **为什么只收主会话**：子会话的读数**不折成里程碑**（用户裁定：子智能体用量
+ * 只在派发点那张子任务卡片里展示），归属键只可能落在主会话上。子会话里那些
+ * `spawnedBy === null` 的不可达节点因此也不必再考虑——那一类读数根本不进这里。
  */
 function turnHomesOf(nodes: readonly LogNode[]): Set<string> {
   const homes = new Set<string>();
@@ -741,11 +737,11 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
 
 /**
  * 行级事件的去向（逐条决定，不留洞）：
- *   · `error` **恒**进时间轴（失败归因不能只留最后一条）；
- *   · `usage` **整行只出一条**（2026-10-07 用户裁定）：取**候选阶段**里最后一条**主会话**带计量的读数
- *     ——那是这一行交出来的结算读数。跑动期的逐轮累计快照不再各自成行：真机症状（run `8df6ff65` 的
- *     claude-code 行）是同一行串出 5 条「用量 … 轮次 N」，其中同一轮先出跑动期估算（`输出 0`）、
- *     一秒后再出厂商结算值，屏幕上就是两条几乎一样的「用量 … 轮次 4」。
+ *   · `error` **恒**进时间轴（失败归因不能只留最后一条）； * · `usage` **整行只出一条**（用户裁定）：取**候选阶段**里最后一条**主会话**带计量的读数
+ * ——那是这一行交出来的结算读数。跑动期的逐轮累计快照不再各自成行：`usage` 事件是每次模型往返
+ * 一条、带的是「到目前为止」的累计值，逐条成行会让同一行串出多条「用量 … 轮次 N」，
+ * 其中同一轮先出跑动期估算（`输出 0`）、一秒后再出厂商结算值，屏幕上就是两条几乎一样的
+ * 「用量 … 轮次 4」。
  *   · `log` **不进时间轴**（它走 `diagnosticsOf` 的原文面板）；
  *   · 其余（`status` / `diff-summary` / `score` / `end`）只在终点有意义，留在 `facts` 里。
  *

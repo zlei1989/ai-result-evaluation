@@ -100,7 +100,7 @@ describe('createCase / listCases / getCase', () => {
     expect(listStoredCases().cases).toEqual([]);
   });
 
-  // Review Focus 1 的服务端一侧：候选下拉只是便利，**不是白名单**。
+  // 服务端一侧：候选下拉只是便利，**不是白名单**。
   // 造 25 次提交，取最早那次（它必然不在「最近 20 条」里）——它必须能存进去。
   it('createCase 接受不在最近 20 条候选里的真实 commit（候选不是白名单）', () => {
     const { dir: manyRepo, hashes } = makeRepo('many-repo', 25);
@@ -153,7 +153,7 @@ describe('deleteCase', () => {
     expect(existsSync(cacheDir)).toBe(false);
   });
 
-  // Review Focus 4：缓存删不掉（Windows 上文件被占用、目录被别的进程锁住）不阻断删除本身。
+  // 缓存删不掉（Windows 上文件被占用、目录被别的进程锁住）不阻断删除本身。
   // 制造失败的方式是**把 rmSync 打挂一次**，而不是造一个「删不掉的目录」：
   // 后者在 CI 上不可靠（Node 的 rmSync 对文件路径会直接 unlink、对空目录总能删掉），
   // 断言会变成「删成功了也叫失败被容忍」的空转。
@@ -177,8 +177,8 @@ describe('deleteCase', () => {
     expect(listStoredCases().cases).toEqual([]);
   });
 
-  // 守的是 spec §4.4 的核心承诺：评测记录靠 EvalRun 的冗余快照继续可读。
-  // 变异体见下方 Step 5——把「顺手删掉相关运行目录」这种看似合理的实现制造回去，本用例必须失败。
+  // 守的是核心承诺：评测记录靠 EvalRun 的冗余快照继续可读。
+  // 变异验证——把「顺手删掉相关运行目录」这种看似合理的实现制造回去，本用例必须失败。
   it('删除用例后，引用它的评测记录仍可读，且 caseTitle / repoPath / commitHash 快照仍在', () => {
     const created = createCase(caseInput({ commitHash: git(['rev-parse', 'HEAD'], repo).trim() }));
     saveRun(makeRun('run-1', created.id, created.title, created.repoPath, created.commitHash));

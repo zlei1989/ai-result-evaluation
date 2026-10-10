@@ -1,6 +1,6 @@
 /**
  * CaseDetailPanel：字段回显、评分标准项（只读）、删除确认的文案与回调。
- * 重点是删除提示的两件事：**评测记录会保留**（这是用户敢按下去的依据，§4.4），
+ * 重点是删除提示的两件事：**评测记录会保留**（这是用户敢按下去的依据），
  * 以及引用数「未知」与「0」必须长得不一样（把 null 显示成 0 会让人以为删了没影响）。
  * 评分标准项那一组守的是「详情页用 `readOnly` 展示用例的评分表」：组名 / 目标 / 权重与表尾满分都在，
  * 而**增删控件一个都不渲染**（写侧只在使用例表单）；旧口径的「评分维度」行与「评分提示词」卡片
@@ -57,7 +57,7 @@ describe('CaseDetailPanel', () => {
     // 直接传进去过不了 getByText 的 Matcher 类型（strict TS），而详情栏这条钉的是**全量** hash
     expect(screen.getByText(COMMIT_HASH)).toBeInTheDocument();
     expect(screen.getByText(CASE.taskPrompt)).toBeInTheDocument();
-    // 期望值由**同一个格式化函数**算出，而不是写死 '2026-09-22 12:30'：
+    // 期望值由**同一个格式化函数**算出，而不是写死一个字面量时刻：
     // formatDateTime 按契约渲染**本地时间**（本机 UTC+8 下 12:30Z 就是 20:30），
     // 写死 UTC 值会让这条断言只在 UTC 机器上通过（format.test.ts 同样按「不依赖本机时区」写）。
     expect(screen.getByText(formatDateTime(CASE.updatedAt))).toBeInTheDocument();
@@ -145,7 +145,7 @@ describe('CaseDetailPanel', () => {
 
   /**
    * 评分标准项（只读）：详情栏是用户逐项核对「这一轮拿什么打分」的地方，故组名 / 目标 / 权重
-   * 与表尾满分都要在。判据走 Task 6 定下的 `data-testid` 契约与文本，不按 class 断言
+   * 与表尾满分都要在。判据走既定的 `data-testid` 契约与文本，不按 class 断言
    * （antd 换 token / 换主题不该让这条守卫红）。
    */
   it('评分标准项卡片：只读渲染组名、目标、权重与表尾满分', () => {

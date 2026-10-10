@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 子树回收的**有界重试**契约（2026-10-07）。
+ * 子树回收的**有界重试**契约。
  *
  * 为什么这一层值得独立守卫：行产物清理（`workspace.ts` 的 `clearRowArtifacts`）过去是「一次
  * `rmSync` 不成就折成 INTERNAL」，而 Windows 上的占用常常只持续几百毫秒——一次瞬时占用就能把一行

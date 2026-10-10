@@ -6,20 +6,20 @@
 
 具体形态：起 web-next（`http://localhost:3083`），用 MCP 浏览器工具按**真实用户路径**逐项操作（输入、按钮、弹窗、导航、拖拽），并用 CLI 复核落盘事实（配置文件、git 分支与 diff）。规则简明真源是 `AGENTS.md`「冒烟测试」节；MCP 浏览器工具的 `filename` 路径规则与几何断言细则在 [Playwright MCP](/guard/playwright-mcp)（活文档，互链不复制）。本篇展开三件事：四要素记录契约、页面与磁盘互证口径、真机红/绿判据。
 
-每次冒烟后，四要素写进对应计划/关账记录的「冒烟」小节，不新建过程档案；关账时按回写纪律把结论熔炼进知识文章（ADR 0001），过程可追溯性交给 git 历史。
+每次冒烟的完整记录留在 `.scratch/<feature-slug>/smoke.md`（与 spec、票据同处一处），知识库只收其中**能长期成立的那部分结论**——现时行为、边界、未覆盖项写进对应文章的小节，只写终态（口径说全见 `AGENTS.md`「知识库」节）。两者分工是本文与[变异验证](/guard/mutation-verification)共用的那条：**过程归台账，终态归知识库**。
 
 ## 形态与交互
 
 - **起真服务**：`pnpm dev` 起 web-next（`http://localhost:3083`）；端口被占用先 kill 占用进程再启动。dev server 必须能写工作区根之外——评测落盘全在工作区根外（默认 `~/.aieval-runs`），在受限沙箱里起的 dev 所有写盘一律 `EPERM`、接口全 500，症状与功能缺陷一模一样（排障先想沙箱/权限，再想代码）。
-- **要动真实数据就先起隔离实例**：3083 上那个实例用的是真实配置（`casesRoot` 指向真实用例仓库、`casesAutoCommit: true`），拿它冒烟会**往真实仓库写提交**。做法（先例 2026-10-09）：`mktemp -d` 造夹具——`config/config.json` 复制真配置的 `settings` + `providers`、只改用得着的那几格（`workspaceRoot` / `casesRoot` / `casesAutoCommit`），用例仓库真 `git init -b main` + 一个裸远端 `git init --bare`；然后 `AIEVAL_CONFIG_DIR=<夹具>/config` 起服务。**Next 16 拒绝同一项目目录的第二个 `next dev`**（`⨯ Another next dev server is already running.` 并给出 PID），故把 `apps/web-next` 复制到仓内临时目录（`.scratch/smoke-app`，gitignore 已盖）并软链 `node_modules`、换个端口起（那次用 3099）。收尾：杀掉实例、删掉夹具与副本。
+- **要动真实数据就先起隔离实例**：3083 上那个实例用的是真实配置（`casesRoot` 指向真实用例仓库、`casesAutoCommit: true`），拿它冒烟会**往真实仓库写提交**。做法：`mktemp -d` 造夹具——`config/config.json` 复制真配置的 `settings` + `providers`、只改用得着的那几格（`workspaceRoot` / `casesRoot` / `casesAutoCommit`），用例仓库真 `git init -b main` + 一个裸远端 `git init --bare`；然后 `AIEVAL_CONFIG_DIR=<夹具>/config` 起服务。**Next 16 拒绝同一项目目录的第二个 `next dev`**（`⨯ Another next dev server is already running.` 并给出 PID），故把 `apps/web-next` 复制到仓内临时目录（`.scratch/smoke-app`，gitignore 已盖）并软链 `node_modules`、换个端口起（如 3099）。收尾：杀掉实例、删掉夹具与副本。
 - **没有浏览器工具时如实降级**：把「页面操作」这一条通道换成 HTTP 驱动（`curl` 打真实路由），另一条通道仍是 CLI 复核（`git log --name-only`、配置文件、裸远端），并在范围清单里把 UI 项登记为「跳过 + 理由 + 替代证据（哪几个测试文件、几条用例）」——不写「看起来正常」。
 - **页面侧操作**：MCP 浏览器工具走真实用户路径——输入、按钮、弹窗、导航、拖拽。截图只作留档，不作判据；几何断言口径见「状态机与时序」。
 - **CLI 侧复核**：`curl` 打接口、读配置文件、`git` 看分支与 diff——页面展示的每个关键事实都到磁盘上复核一遍。
-- **记录落点**：四要素写进本次改动的计划/关账记录的「冒烟」小节。
+- **记录落点**：四要素写进本次改动的冒烟记录 `.scratch/<feature-slug>/smoke.md`；知识库不收这份记录（理由见「定位」）。
 
 ## 数据与契约
 
-四要素是冒烟记录的固定契约，缺一不可：
+四要素是冒烟记录的固定契约，缺一不可（记录落在 `.scratch/<feature-slug>/smoke.md`）：
 
 | 要素 | 实际形状 |
 |---|---|
@@ -51,8 +51,8 @@
        ├─ CLI 侧：curl / git / 配置文件读回，复核落盘事实
        └─ 每项落判定（✅ / ❌ / ⚠️ / 跳过+理由）与关键实测值
   └─ 撞见运行期问题：先修掉 → 按 FAQ 四格追加厂商 FAQ → 同步《故障索引》
-  └─ 收口：四要素写入本次计划/关账记录的「冒烟」小节
-  └─ 关账回写：结论熔炼进对应知识文章（ADR 0001）
+  └─ 收口：四要素写入 `.scratch/<feature-slug>/smoke.md`
+  └─ 知识库只收结论：现时行为 / 边界 / 未覆盖项按终态口径写进对应文章的小节
 ```
 
 - **几何断言别靠眼睛**：判断「宽度变了」「布局塌了」一律读 `getBoundingClientRect()`（`read_picked_element` 或 `browser_evaluate`），不要凭截图判断——2px 的差异在截图里看不出来，但会决定用例红不红。工具细节与 `filename` 路径规则见 [Playwright MCP](/guard/playwright-mcp)。
@@ -67,15 +67,31 @@
 | 无浏览器自动化工具的会话 | 跳过+理由 | 给替代证据（jsdom 用例数与文件名点名）——不是「没测」，是「换尺子测」 |
 | 拖拽在 jsdom 不可达 | 冒烟补位 | 容器尺寸 0，真实拖拽只在真机可达（如 Splitter 松手不弹回这类行为）；拖拽类操作优先排进范围清单 |
 | 受限沙箱起 dev server | 环境坏 | 写盘全 `EPERM`、接口全 500；替用户重启 dev 一律用完整权限（评测落盘全在工作区根外） |
+| **受限沙箱里冒烟「要写盘」的那几条路径** | **有解** | `PUT /api/settings` 会以 `EPERM: open '~/.aieval/config.json.tmp'` 收场（500 由**沙箱**造成，不是产品缺陷——错误映射本身是对的：中文 + 路径 + 原因一路传到界面）。`AIEVAL_CONFIG_DIR=<工作区内目录>` + `AIEVAL_CASES_ROOT=<工作区内目录>` 重启 dev server ⇒ 写路径全程走得通，**而且完全不碰用户的真实配置**（冒烟前后 `diff` 用户那份，应当逐字节一致）。比「借用户的 server」更稳：不用还原、不担心留下测试条目 |
 | 误落到别处的截图产物 | 不删 | 列出来交给用户；删文件前先读 [PowerShell](/guard/powershell)「文件删除安全」 |
 | 真实模型调用花额度 | 预算约束 | 批几轮跑几轮；「全程不落盘」类验证靠不点保存 + 复读接口，不靠多跑一轮 |
+| **真机用例挂住 / 所有真机一把全红** | 环境坏 | **先怀疑模型网关，别先改适配器**。判据三步见下节；网关不通时**如实标阻塞**，不拿单测绿当冒烟 |
 | 冒烟不代替门禁 | 分工 | 冒烟验真机行为，全量测试留给门禁；带负载时的红先隔离复跑再定性 |
+
+### 网关不可达：真机冒烟的外部阻塞
+
+症状是**看起来像代码坏了**：真机 `live-mcp.test.ts` 卡满 300 s 超时、留下活着的厂商 CLI 进程（超时的用例不会自己收掉子进程，要 `pkill -9 -f "claude-agent-sdk-darwin-arm64/claude"` 与 `pkill -9 -f "aieval-live-mcp-"` 手工清理）；三家一起挂，界面侧的注入文件、事件、观测格**全都正常**。
+
+判据三步（**按这个顺序，前一步定性了就别往下跑**；真源与坑 ⑥ 同一条）：
+
+1. **直连网关小请求**：用宿主 `~/.aieval/config.json` 里那条 `baseUrl` 发一个 8 token 的请求（`curl -X POST <baseUrl>/v1/messages … --max-time 20`）。实测 `http=000`、`time=20.003447`（打满 `--max-time`）⇒ 网络层不通，不是密钥 / 模型名。
+2. **DNS + TCP**：`dscacheutil -q host -a name <host>` 解析正常（实测 `172.23.68.200`）但 `nc -z -G 8 <host> 443` 与 `80` **都 `Operation timed out`** ⇒ 路由 / 服务不可达。判「不是本机断网」要同时给反例：同期 `https://registry.npmjs.org/` HTTP 200 / 1.13 s。
+3. **裸 SDK 探针**（绕开本仓适配器，`research/13-probes/tool-call.mjs`）：若它也 `timedOut: true`，而 `init.mcp_servers` 已 `[{name:'probe', status:'connected', source:'dynamic'}]`、`mcpTools` 已有 `mcp__probe__probe_echo` ⇒ **注入这一侧是好的，挂在模型调用这一跳**，属环境。这一步同时是「别把环境问题写成产品缺陷」的**分界线**：注入好不好，与模型调不调得动，是两条独立的判据。
+
+处置：**如实标阻塞**并写全证据链（哪条命令、什么输出、同期什么可用），**绝不**把单测绿当冒烟、**绝不**编造真机结果。仍然能做完的是不依赖模型的那几件：只读端到端核查（**只 `GET`**，那个 dev server 读的是用户真实配置，一次 `PUT` 就改用户配置）、静态核查落盘事实（翻译函数逐字输出 + 行内 `.npmrc`）、变异矩阵，以及把设计决策按终态口径回写进对应知识文章。另有一条判据上的坑：dev server 的代码状态可能**落后于集成分支**（HMR 只跟随它启动时那份工作树）——响应里缺字段时**先判「是不是它没重载」，别当成产品缺陷**；判「它是新的」要找**只有新代码才产出的那一格**作证据（先例：`GET /api/settings` 里有播种的 `mcpServers`，且掩码值 `${C************KEY}` 与 `maskApiKey('${CONTEXT7_API_KEY}')` 的前 3 后 4 逐字相同 ⇒ 它跑的确实是集成分支那份代码）。
 
 ## 相关链接
 
 - [Playwright MCP](/guard/playwright-mcp) —— `filename` 路径规则、几何断言、与冒烟的衔接（活文档）
+- [《MCP 配置》](/features/mcp-config) —— 真机冒烟的目标面：三家注入落点、失败判据与真机状态的证据链
 - [PowerShell](/guard/powershell) —— 冒烟现场涉及删除/清理时的安全底线
 - [变异验证](/guard/mutation-verification) —— 冒烟新增的守卫必须见过失败才算守卫
 - [故障索引](/faq/) —— 冒烟撞见的运行期问题按报错原文索引
 - [《密钥与环境变量》](/guard/secrets-and-env)、[《测试策略与提速》](/guard/test-strategy) —— 同域文章
-- 仓库内参考：`AGENTS.md`「冒烟测试」节 —— 规则简明真源
+- 仓库内参考：`AGENTS.md`「冒烟测试」节 —— 记录落点（`.scratch/<feature-slug>/smoke.md`）与知识库分工的规则真源
+- 判据钉在知识库守卫工程里：整份冒烟记录（范围清单 + 操作路径 + 未覆盖项三标记齐）出现在知识文章即红——`pnpm vitest run docs`

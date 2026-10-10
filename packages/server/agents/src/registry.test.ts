@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
- * 注册表：三家齐备、元数据与 spec §5.6.2 的表逐格一致、未注册 id 抛错且信息含可用清单。
- * 元数据那条是 F2（候选池按协议过滤）的**回归网**：表单读的是这里，不是另一份独立的对应关系表，
+ * 注册表：三家齐备、元数据与表逐格一致、未注册 id 抛错且信息含可用清单。
+ * 元数据那条是**回归网**（候选池按协议过滤）：表单读的是这里，不是另一份独立的对应关系表，
  * 所以任何一格改动（哪怕只是 usage 从 false 翻成 true）都必须与 provider 实现同一次提交里改掉期望。
  */
 import { AGENT_KINDS, EFFORT_OFF, ProtocolTypeSchema } from '@aieval/contracts';
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 /**
- * spec §5.6.2 的表：`protocolTypes` 是**集合**（DSH 两条 wire 都能收，见契约 R37 的收口与
+ * `protocolTypes` 是**集合**（DSH 两条 wire 都能收，见
  * "docs/protocols/dsh.md"）。本步只搬形状，三家都还是单元素。
  */
 const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
@@ -33,10 +33,10 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 消息能力声明由三家各自显式声明（`providers/<kind>/index.ts`）；这一份是形状桩，
     // 逐格取值另有 `message-conformance.test.ts` 与各家 index.test.ts 钉住
     messageCapability: permissiveMessageCapability(),
-    // 档位域来自 Agent SDK 的 `Options.effort` / `EffortLevel`（spec §4.4 的表），**外加**
-    // 本仓统一的关闭档 `off`。2026-10-06 变更：此前这里是五档、无 `off`；用户裁定
-    // 「未选 ≠ 关闭」，「关闭」只能由显式选 `off` 触发，而 claude 的 SDK 档位域里没有 `off`
-    // ⇒ 适配器把它翻成 `thinking: { type: 'disabled' }`（另一个字段），档名仍进档位域供界面选择。
+    // 档位域来自 Agent SDK 的 `Options.effort` / `EffortLevel`，**外加**
+    // 本仓统一的关闭档 `off`：用户口径「未选 ≠ 关闭」，
+    // 「关闭」只能由显式选 `off` 触发，而 claude 的 SDK 档位域里没有 `off` ⇒ 适配器把它翻成
+    // `thinking: { type: 'disabled' }`（另一个字段），档名仍进档位域供界面选择。
     reasoningEfforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'],
   },
   codex: {
@@ -44,17 +44,17 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
     messageCapability: permissiveMessageCapability(),
     // 档位域来自 `codex app-server` 的 `ReasoningEffort`（比上游网关用到的四个档更宽），**外加**
-    // 本仓统一的关闭档 `off`。2026-10-06 变更：此前这里是八档、无 `off`；用户裁定「未选 ≠ 关闭」，
+    // 本仓统一的关闭档 `off`：用户口径「未选 ≠ 关闭」，
     // 「关闭」只能由显式选 `off` 触发，而 codex 的关闭档在 CLI 里叫 `none`（`off` 会被网关拒）
     // ⇒ 适配器用 `codexEffortOf` 把 `off` 翻成 `none`，档名仍进档位域供界面选择。
     reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'],
   },
   dsh: {
-    // 两条 wire 都能收（R37 的收口）：anthropic-messages 与 openai-responses 各真机跑通过一次，
+    // 两条 wire 都能收：anthropic-messages 与 openai-responses 各真机跑通过一次，
     // 见 docs/protocols/dsh.md「pi-ai 路由与两条 wire」
     protocolTypes: ['openai', 'anthropic'],
-    // 实测确认：用量在 session.event → assistant/message → data.usage（探测报告 §3）
-    // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（F2 的回归网会拦漂移）
+    // 实测确认：用量在 session.event → assistant/message → data.usage
+    // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（回归网会拦漂移）
     capability: { cancelMidTurn: false, usage: true, structuredOutput: false },
     messageCapability: permissiveMessageCapability(),
     // 档位域来自 llm-deepseek 的 `reasoningEffort` schema（只有四档：没有 medium / xhigh）
@@ -83,8 +83,8 @@ describe('listAgentProviders', () => {
   });
 });
 
-describe('元数据投影（F2 的回归网）', () => {
-  it('三家与 spec §5.6.2 的表逐格一致（`messageCapability` 除外，它另有一处真源守卫）', () => {
+describe('元数据投影（回归网）', () => {
+  it('三家与表逐格一致（`messageCapability` 除外，它另有一处真源守卫）', () => {
     for (const provider of listAgentProviders()) {
       // 为什么排除 `messageCapability`：它由**各家自己**声明（三份真值在 `providers/<kind>/index.ts`），
       // 「声明过的东西真的拿得到」由 `message-conformance.test.ts` 钉住；这里再抄一份 stub 只会
@@ -119,7 +119,7 @@ describe('元数据投影（F2 的回归网）', () => {
   });
 
   /**
-   * 结构化输出能力必须**显式声明**（spec D3）。
+   * 结构化输出能力必须**显式声明**。
    *
    * 为什么要有这一条：`structuredOutput` 在类型上是必填，而**带类型标注**的构造点（本文件 `:29` 的
    * `Record<AgentKind, AgentProviderMetadata>`、三家 provider 的 `: AgentProvider`、
@@ -131,7 +131,7 @@ describe('元数据投影（F2 的回归网）', () => {
    */
   it('每家都显式声明 structuredOutput（能力只有一个查询点，不许靠默认值）', () => {
     for (const provider of listAgentProviders()) {
-      // 类型上它是必填（spec D3）；这一条是运行期复核——夹具/provider 走 any 或断言时仍会红
+      // 类型上它是必填；这一条是运行期复核——夹具/provider 走 any 或断言时仍会红
       expect(typeof provider.metadata.capability.structuredOutput, `${provider.kind} 的 structuredOutput`).toBe('boolean');
     }
   });
@@ -145,7 +145,7 @@ describe('元数据投影（F2 的回归网）', () => {
   });
 
   /**
-   * 档位域必须**显式声明**（spec D11）。
+   * 档位域必须**显式声明**。
    *
    * 为什么要有这一条：候选池给用户列的强度选项 = 上游档位 ∩ 这一格（D10），而交集为空时界面只给
    * 「默认」—— 缺了这一格，用户会看到一个「只有默认」的下拉，而没有任何地方说得出为什么。
@@ -158,12 +158,12 @@ describe('元数据投影（F2 的回归网）', () => {
   });
 
   /**
-   * `defaultEffort`（可选）必须落在自家档位域里、且**不是关闭档**（2026-10-06）。
+   * `defaultEffort`（可选）必须落在自家档位域里、且**不是关闭档**。
    *
    * 为什么要有这一条：API 侧用它拦「未选档位 + 上游模型不支持那个缺省档」的组合（`runs.ts` 的
    * `resolveRunRows`）——它不是展示用的，而是**校验判据**。写歪一格的后果分两种，都很隐蔽：
    *   · 不在自家档位域里 ⇒ 未选一定被判成「不支持」，用户看到「未选也跑不了」而无从理解；
-   *   · 写成关闭档 ⇒ 用户什么都没选却把思考**关掉**了，正是本计划（未选 ≠ 关闭）要消灭的事情。
+   *   · 写成关闭档 ⇒ 用户什么都没选却把思考**关掉**了，正是「未选 ≠ 关闭」要消灭的事情。
    * 可选是因为 claude / codex 的「未选」由厂商推断、我们无从预知，故它们不声明（不是漏写）。
    */
   it('声明了 defaultEffort 的家：该值必须在自己的档位域里，且不是关闭档', () => {
@@ -181,7 +181,7 @@ describe('getProvider', () => {
     expect(getProvider('codex')).toBe(getProvider('codex'));
   });
 
-  it('未注册的 id 抛错，且错误信息含可用清单（§5.6.7）', () => {
+  it('未注册的 id 抛错，且错误信息含可用清单', () => {
     const call = (): unknown => getProvider('gemini' as AgentKind);
     expect(call).toThrow(/未注册的智能体/);
     expect(call).toThrow(/claude-code/);
@@ -190,7 +190,7 @@ describe('getProvider', () => {
   });
 });
 
-describe('加载降级：失败面收窄到单家（Review Focus #4）', () => {
+describe('加载降级：失败面收窄到单家', () => {
   it('只有坏掉的那家失败，其余两家照常运行（整包仍可导入）', async () => {
     const dshRecorder = createRecorder();
     setAgentRuntimeForTesting({

@@ -1,5 +1,5 @@
 /**
- * 日志抽屉该渲染什么：把「读失败 / 实时通道故障 / 读取中 / 有内容」收成一个纯函数（页面只做拼装）。
+ * 日志抽屉该渲染什么：把「读失败 / 实时通道故障 / 读取中 / 有内容」收成一个纯函数。
  *
  * 为什么必须抽出来并有守卫：「读不出来」与「实时通道断了」这两件事只能在页面层表达；
  * 而抽屉在**两条来源都空**时给的空态是「还没有日志 · 这一行还没开始执行」——与故障同时出现时，
@@ -8,23 +8,23 @@
  * 说错一句则是把人引到错误的方向。
  * 页面本身没有测试面（`apps/web-next` 不能写 `.tsx` 测试），故判定与文案都在这里定死。
  *
- * **两条来源、各自独立**（2026-10-02 起）：抽屉的内容来自
+ * **两条来源、各自独立**：抽屉的内容来自
  * ① 行级**事件**（`/log` + `/stream`：固定事实条与「原始输出」）
  * ② 内容级**记录**（`/messages` + `/messages/stream`：时间轴）。
  * 两者会**各自失败**，而「事件读不出来」不等于「没有内容可看」——
  * 反过来也一样。故这里收的是**两条来源合起来的可渲染性**（`hasContent`）。
  *
  * 四条判定口径：
- *   1. **有错且两条来源都没有东西** → `failed`：整段替换抽屉内容（否则空态会误导）。
- *      两种错都走这里：`logError` 是**读文件失败**（带 `events.jsonl` 路径），`streamError` 是
- *      **实时通道不可用**（连接中断 / 环境不支持 EventSource / 坏帧）——后者过去被页面直接丢掉，
- *      于是断流只表现为「还没有日志 + 未连接」，没有原因；
- *   2. **有错但手上还有东西** → 照旧渲染（数据是真的），另给一条非破坏性提示
- *      —— 与用例页 `resolveCasePanel` 的 `stale` 同一口径：只要还有真数据就别把它藏起来。
- *      两种提示分开表达：`liveError` 是实时通道（不是「读取失败」），`warning` 是读文件失败；
- *   3. **没东西也没错** → `loading` 只表示「第一次拉取还在路上」，一旦拿到空结果就不是加载中，
- *      该由抽屉说「还没有日志」（那是真的没开始跑，两者必须能分开）；
- *   4. `streamError` 里 `undefined` 与 `null` 等价（`useRowStream().error` 的初值是 `null`）。
+ * 1. **有错且两条来源都没有东西**→ `failed`：整段替换抽屉内容。
+ * 两种错都走这里：`logError` 是**读文件失败**（带 `events.jsonl` 路径），`streamError` 是
+ * **实时通道不可用**（连接中断 / 环境不支持 EventSource / 坏帧）——后者过去被页面直接丢掉，
+ * 于是断流只表现为「还没有日志 + 未连接」，没有原因；
+ * 2. **有错但手上还有东西**→ 照旧渲染，另给一条非破坏性提示
+ * ——与用例页 `resolveCasePanel` 的 `stale` 同一口径：只要还有真数据就别把它藏起来。
+ * 两种提示分开表达：`liveError` 是实时通道，`warning` 是读文件失败；
+ * 3. **没东西也没错**→ `loading` 只表示「第一次拉取还在路上」，一旦拿到空结果就不是加载中，
+ * 该由抽屉说「还没有日志」（那是真的没开始跑，两者必须能分开）；
+ * 4. `streamError` 里 `undefined` 与 `null` 等价（`useRowStream.error` 的初值是 `null`）。
  */
 import { AGENT_LABELS, ROW_STATUS_LABELS, isRunningRow, type AgentEvent, type EvalRow } from '@aieval/contracts';
 import type { AgentLogFactsInput, AgentRunStatus, DomainFact, DomainFactSegment } from '@aieval/client';
@@ -164,14 +164,14 @@ function segmentsText(segments: readonly DomainFactSegment[]): string {
  * 这一行的事实 → `AgentLogModel.facts`。
  *
  * 三处必须守的口径：
- *   · **拿不到就是 `null`**：`tokens` 为空时不写 0（`null` 是「没采到」，0 是「采到了且为零」，
- *     两者在界面上是两句话）；
- *   · **行级读数只认主会话那一条**（2026-10-05）：`turn.subagentId` 非空的 `usage` 是**会话尺度**
- *     读数（那个子会话自己的累计，claude 收尾逐轮才发）⇒ 不许拿它当这一行的事实，判据见 `lastUsage`；
- *   · **`domain` 由这里拼成「一行文字 + 一个色档」**：`score` / `diff` 属于**领域事实**
- *     （通用组件不认识「评分」「改动」这两个业务概念），故格名与值都在这一层给；
- *   · **`turns.total` 恒为 `null`**：快照里的 `turns` 是「到目前为止」，不是「一共就这么多」
- *     ——写一个会走动的数当分母，进度条会在跑到第 3 轮时显示「3 / 3」。
+ * · **拿不到就是 `null`**：`tokens` 为空时不写 0（`null` 是「没采到」，0 是「采到了且为零」，
+ * 两者在界面上是两句话）；
+ * · **行级读数只认主会话那一条**：`turn.subagentId` 非空的 `usage` 是**会话尺度**
+ * 读数（那个子会话自己的累计，claude 收尾逐轮才发） ⇒ 不许拿它当这一行的事实，判据见 `lastUsage`；
+ * · **`domain` 由这里拼成「一行文字 + 一个色档」**：`score` / `diff` 属于**领域事实**
+ * （通用组件不认识「评分」「改动」这两个业务概念），故格名与值都在这一层给；
+ * · **`turns.total` 恒为 `null`**：快照里的 `turns` 是「到目前为止」，不是「一共就这么多」
+ * ——写一个会走动的数当分母，进度条会在跑到第 3 轮时显示「3 / 3」。
  *
  * 行级的**开始时刻只能从事件流取**：`EvalRow.startedAt` 是轮级字段，拿它当行级开始时刻
  * 会让同轮的另一行显示出一个不属于自己的耗时。
@@ -181,29 +181,29 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
   const live = isRunningRow(row.status);
   const startedAt = events.find((event) => event.type === 'status' && event.status === 'running')?.at ?? null;
   /**
-   * **行级读数只认主会话那一条**（2026-10-05，口径与 spec §2.1 的「行级三格不动」同一条）。
+   * **行级读数只认主会话那一条**。
    *
    * `turn.subagentId` **非空**的是**会话尺度**读数（那个子会话自己的累计，claude 收尾逐轮才发）；
-   * 拿它当行级事实，抽屉事实条在评分期就会显示子会话的 16,335 —— 而这一行的权威值是 34,101
+   * 拿它当行级事实，抽屉事实条在评分期就会显示子会话的 16,335 ——而这一行的权威值是 34,101
    *（真机复算，run `155f7f1e` 的 claude 行）。它**排在最后**，而这一格取的是「最后一条」。
    * 三档主会话读数（`turn` 整格缺席 / 显式 `null` / `subagentId === null`）合流成一处 `?? null`：
-   * 读侧它们本来就是同一件事（契约那一格的注释）。
+   * 读侧它们本来就是同一件事。
    */
   const lastUsage = lastEvent(events, 'usage', (event) => (event.turn?.subagentId ?? null) === null);
   const lastEnd = lastEvent(events, 'end');
 
   const domain: DomainFact[] = [];
   /**
-   * 「谁在跑」三格（用户 2026-10-07 口径）：智能体 / 模型 / 思考强度。它们与下面
+   * 「谁在跑」三格：智能体 / 模型 / 思考强度。它们与下面
    * 「改了多少 / 得了多少分」**同属固定区的第二行**（`agent-log-domain-facts.tsx`），
-   * 顺序即渲染顺序（界面不重排），故这三格先 push。
+   * 顺序即渲染顺序，故这三格先 push。
    *
-   * **为什么不给 `AgentLogFacts` 加三个字段**：`agent-log` 不认「评测行」这个业务概念（D18），
+   * **为什么不给 `AgentLogFacts` 加三个字段**：`agent-log` 不认「评测行」这个业务概念，
    * 加字段等于把评测行的形状写进通用件；而 `domain` 本来就是「数据层给格名与值、UI 只摆版」的口子。
    *
    * 值走 `segments` 的 `tag` 段、一色一格（智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`），
    * 与评分详情顶部那一段同色——同一个档位在本仓的两处长得一样。档位照上游词汇原样写：
-   * 显式关闭档就是 `off`，它**不是**「未指定」的同义词；键缺席（老快照）才是「未指定」。
+   * 显式关闭档就是 `off`，它**不是**「未指定」的同义词；键缺席才是「未指定」。
    */
   const agentText = AGENT_LABELS[row.agentKind];
   const effortText = row.effort === undefined ? '未指定' : row.effort;
@@ -229,7 +229,7 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
   );
   if (row.diff !== null) {
     /**
-     * 改动那一格按 git stat 排版（2026-10-07 用户口径）：文件数次要色 + `+N` 绿 + `−N` 红。
+     * 改动那一格按 git stat 排版：文件数次要色 + `+N` 绿 + `−N` 红。
      * **分段由这里给**（界面不解析文本，只按每一段的声明上色），纯文本 `value` 由同一份分段拼出来
      * ——写两遍必然漂移，而两者一旦不一致，「读屏 / 复制」拿到的那串字就与眼睛看到的不是一件事。
      */
@@ -248,7 +248,7 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
   }
   if (row.score !== null) {
     /**
-     * 「评分」这一格**只给分**（用户 2026-10-07 口径：删掉「评分模型：…」那句提示）。
+     * 「评分」这一格**只给分**。
      * 「谁当的尺子」（评分模型 / 评分智能体）归**评分详情**那一页说——事实条上再写一遍
      * 是与那一页争夺注意力，而那一页里连着通路（文本 API / 智能体）与强度一起给，信息是完整的。
      */

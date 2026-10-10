@@ -1,10 +1,10 @@
 /**
- * 复核 §7.5.2 那张「哪些模型自带 `multi_agent` profile」的表（**本地、不花模型调用**）。
+ * 复核那张「哪些模型自带 `multi_agent` profile」的表（**本地、不花模型调用**）。
  *
- * 设计稿的判据是 `codex debug models` 输出里 `model_messages.multi_agent` 是 `{role, mode}` 还是 `null`；
+ * 判据是 `codex debug models` 输出里 `model_messages.multi_agent` 是 `{role, mode}` 还是 `null`；
  * 它当时（0.154.0）记下"只有 3 个 slug 带它"，而 2026-10-01 的真机逐名探测发现**只认 `gpt-6-astra` 一个**。
  * 本轮网关回来了，顺带把这台机器上的**当前**表重打一遍：这张表是**版本相关**的事实，
- * 不能当成"codex 的能力"（§7.5.3 更正 1 的原话）。
+ * 不能当成"codex 的能力"（原话）。
  *
  * 用法：node probe/v4/codex-debug-models.mjs
  */

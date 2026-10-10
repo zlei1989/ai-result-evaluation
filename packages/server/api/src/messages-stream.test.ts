@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 消息流（spec v3 §2 的内容级通道）：回放 `messages.jsonl` 的折叠视图 → 接进程内记录总线。
+ * 消息流（内容级通道）：回放 `messages.jsonl` 的折叠视图 → 接进程内记录总线。
  *
  * 与 `run-stream.test.ts` 的三处**刻意不同**（本文件就是这三条的守卫）：
  *   ① **没有 `id:` 帧头**：记录没有单调序号（`messageId` 跨运行会重号），设了帧头浏览器会在重连时
@@ -34,7 +34,7 @@ import { removeTreeWithRetry } from './testing/cleanup';
 /** 本文件挂上去的总线监听（key = `${runId}/${rowId}`） */
 const listeners = new Map<string, Array<(record: RowRecord) => void>>();
 /**
- * **评分那条记录流**的监听表（2026-10-10）：与候选那张**刻意分开**——共用一个 Map 的话，
+ * **评分那条记录流**的监听表：与候选那张**刻意分开**——共用一个 Map 的话，
  * 「评分增量不投给候选订阅者」这条不变量在这个替身里会假绿（而那正是它要守的东西）。
  */
 const judgeListeners = new Map<string, Array<(record: RowRecord) => void>>();
@@ -115,7 +115,7 @@ function makeSubagent(overrides: Partial<SubagentRecord> = {}): SubagentRecord {
 /**
  * 往该行的记录日志里追加一条记录（写真实文件，走 core 的校验）。
  * 路径必须用 `rowMessagesFile(run.workspaceBase, …)` 推：`getRowRecords` 读的是**快照里那一轮的
- * `workspaceBase`**（用户改过工作区根之后历史产物仍留在旧根下，spec §6.3），夹具的
+ * `workspaceBase`**（用户改过工作区根之后历史产物仍留在旧根下），夹具的
  * `workspaceRoot` 与它不是同一个值。
  */
 function appendRecord(runId: string, rowId: string, record: RowRecord): void {
@@ -366,7 +366,7 @@ function textOf(record: RowRecord): string {
 }
 
 /**
- * 增量帧的**出口合并**（2026-10-09）——这一组守卫的是「O(n²) 字节」那个坑：
+ * 增量帧的**出口合并**——这一组守卫的是「O(n²) 字节」那个坑：
  * 帧是累积值（每条都带「到现在为止的完整块列表」），一段 n 个 token 的回复按 token 发帧
  * 就是第 k 帧重发前 k 个 token。中间态在客户端**注定被后一条覆盖**，故出口按 `mergeKey` 只留最后一条。
  *

@@ -72,7 +72,7 @@ describe('validateRepo / listCommitCandidates', () => {
 
 
 /**
- * commit 候选的远端那一半（spec §6.2）：候选只是**便利**，所以这一步刻意不联网——
+ * commit 候选的远端那一半：候选只是**便利**，所以这一步刻意不联网——
  * 镜像在校验时已经更新过，候选列表直接读它。第一条用例把「远端」整体改名就是这个口径的证明：
  * 任何一次真实的联网（fetch / clone / ls-remote）都会在那里失败。
  */
@@ -93,7 +93,7 @@ describe('listCommitCandidates（远端来源）', () => {
     const commits = listCommitCandidates({ repoPath: origin.url, repoBranch: 'feat/x' });
     // 断言两条而不是只看 `[0]`，并且先在夹具里放一个与分支同名的 **tag**（指向更早的提交）：
     // 这两件事合起来才让「`ref` 位置到底交了什么」可观察——把分支名而不是它的 tip hash 传下去时，
-    // git 的 ref 解析顺序会命中同名 tag，首条立刻变成那次更早的提交（变异验证实测如此）。
+    // git 的 ref 解析顺序会命中同名 tag，首条立刻变成那次更早的提交。
     // 「分支名只能出现在 `refs/heads/<branch>` 里」这条口径就钉在这里。
     expect(commits[0]?.hash).toBe(origin.hashes['feat/x']!.slice(0, 7));
     expect(commits[0]?.subject).toBe('feat/x 的提交');

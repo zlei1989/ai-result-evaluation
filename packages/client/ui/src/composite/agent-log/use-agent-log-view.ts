@@ -2,7 +2,7 @@
 
 /**
  * `agent-log` 的四份**视图态**的唯一持有者（headless，无渲染）：
- * 当前节点 / 跟随最新 / 过滤 / 环境抽屉开合，外加 `activeKey` 折叠态（§6.1）。
+ * 当前节点 / 跟随最新 / 过滤 / 环境抽屉开合，外加 `activeKey` 折叠态。
  *
  * 三条边界：
  *   1. **不持有 data**：节点内容、环境、原始输出一律由 props 注入——
@@ -16,8 +16,7 @@
  * `tool-item-detail`）：**依赖只准向下**，L1 不许 import L2，而 L2 可以 import L1。
  * 两处各写一份必然漂移，漂移的表现是「我展开的那条自己合上了」。
  *
- * 本文件曾经 import `toolEntryKey`（只为了「失败的行也入键」那一条）：用户口径改成「失败也收起」后
- * 不再需要行键，那一格 import 随之删掉——**本文件现在只算块级键**；行键由 L0 的 `ToolGroupPanel` 直接消费，并由 L1 的 `renderBlockKey` 从**首条行键**派生出组键。
+ * 本文件**只算块级键**（行键由 L0 的 `ToolGroupPanel` 直接消费，并由 L1 的 `renderBlockKey` 从**首条行键**派生出组键。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentLogModel, LogNodeIndex, LogTurn } from './types';
@@ -68,7 +67,7 @@ function withoutKey(keys: ReadonlySet<string>, key: string): ReadonlySet<string>
 /**
  * 打开抽屉时该选中哪个节点：
  * ① `model.activeNodeId` 若在 `nodes` 里就用它（页面可能已经指定了要看哪个子任务）；
- * ② 否则取第一个 `kind === 'main'` 的节点（主会话是默认视图，D4）；
+ * ② 否则取第一个 `kind === 'main'` 的节点（主会话是默认视图）；
  * ③ 再否则取第一个节点的 id；一个节点都没有时给空串。
  */
 export function defaultActiveNodeId(model: AgentLogModel): string {
@@ -79,11 +78,10 @@ export function defaultActiveNodeId(model: AgentLogModel): string {
 }
 
 /**
- * 一轮的**内置默认展开态**（§6.1 表格 + 例外），只加键、不加「收起」：
- *   · 进行中的工具组展开（`turn.running` 或组内有 `running` 的调用）——「这一步正在干什么」不能被折叠吞掉；
- *   · **失败不是展开的理由**（2026-10-03 用户口径，覆盖 §6.1 原来的例外 2）：失败的工具组与组内的
- *     失败行**都默认收起**，与成功的一视同仁。「这一组里有失败」由**组头的「失败 N」标记**承担
- *     （`ToolGroupPanel`），证据要用户自己点开——原来那条「失败的证据不该点两次」已作废；
+ * 一轮的**内置默认展开态**（表格 + 例外），只加键、不加「收起」：
+ *   · 进行中的工具组展开（`turn.running` 或组内有 `running` 的调用）——「这一步正在干什么」不能被折叠吞掉； * · **失败不是展开的理由**（覆盖的例外 2）：失败的工具组与组内的
+ * 失败行**都默认收起**，与成功的一视同仁。「这一组里有失败」由**组头的「失败 N」标记**承担
+ * （`ToolGroupPanel`），证据要用户自己点开；
  *   · 思考块 / `unrecognized` 块**不加键**（默认收起）；
  *   · 计划清单：首次（`change === null`）、进行中、或结果未采集时展开，其余收起；
  *   · 问答卡片：`pending && running` 展开（等待态是「卡住了」的唯一信号）；
@@ -113,7 +111,7 @@ export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex
       const key = renderBlockKey(block, index, turn.at);
       switch (block.kind) {
         case 'tool-group': {
-          // 只有「进行中」入键：**失败不入键**（用户口径 2026-10-03）。
+          // 只有「进行中」入键：**失败不入键**。
           // 于是组内那一行也不因失败而入键——组与行各自都收起，证据要点两次，
           // 这是刻意换来的版面整洁；失败在收起态的可见性由组头的「失败 N」标记负责
           // （那个标记画在 `ToolGroupPanel` 里，本函数只算折叠键、画不了它）。
@@ -179,7 +177,7 @@ export function useAgentLogView(input: {
   }, [model, activeNodeId]);
 
   // 当前节点的轮次 → 内置默认展开态。两份 memo 都挂在「节点 / 轮次」上：
-  // 同一份 `nodes` 引用不重算（§7.1(a) 的口径）。调用方自己给了默认态时不白算一遍。
+  // 同一份 `nodes` 引用不重算（(a) 的口径）。调用方自己给了默认态时不白算一遍。
   const currentNode = model.nodes.find((node) => node.id === activeNodeId);
   const currentTurns = currentNode !== undefined && currentNode.content.status === 'ready' ? currentNode.content.data : EMPTY_TURNS;
   const computedDefaults = useMemo(

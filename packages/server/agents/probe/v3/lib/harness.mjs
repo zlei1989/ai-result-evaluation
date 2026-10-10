@@ -1,7 +1,7 @@
 /**
  * 真实 harness 的共享外壳（v3）：起一个 `DeepSeekHarness`，**用我们自己的 pi-ai 路由**跑一次。
  *
- * 与 `probe/v2/lib/dsh.mjs` 的差别（也是本计划 D3/D3b 的验证点）：
+ * 与 `probe/v2/lib/dsh.mjs` 的差别：
  *   · 凭据不再走 `DEEPSEEK_API_KEY`，而是 overlay 里 `apiKeyEnv: AIEVAL_ROUTE_API_KEY` 指向的
  *     **自定义环境变量**（凭据引用由 pi-ai 逐请求经 credential seam 解析）；
  *   · 路由不再吃默认的 `deepseek-official`，而是 `provider: 'aieval-route'`

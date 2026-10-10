@@ -3,28 +3,28 @@
 /**
  * 创建评测表单：用例 + 执行模式 + 使用智能体评分 + 候选行（`Form.List`）。
  * 四条口径：
- *   1. 模型候选池按**行内的智能体**过滤（spec §5.1 F2）——池子由 `modelOptionsFor` 注入，
+ *   1. 模型候选池按**行内的智能体**过滤——池子由 `modelOptionsFor` 注入，
  *      本组件里没有「哪家智能体配哪种协议」这张表（那是 agents 注册表的事，A3）；
  *   2. 池子为空时**当场**给内联 Alert 与出路，而不是等人点了创建才在服务端炸；
  *   3. 模型的 Select 值编码成 `providerId::modelId`：两个不同供应商可能有同名模型，
  *      只存 modelId 会让提交的 providerId 无解。分隔符用 `::`——UUID 不含冒号，
- *      模型名里常见的是单个 `:` 与 `/`；解析时按**第一个** `::` 切，模型名里即使含 `::` 也能还原；
+ *      模型名里常见的是单个 `:` 与 `/`；解析时按**第一个**`::` 切，模型名里即使含 `::` 也能还原；
  *   4. 「使用智能体评分」默认**关闭**（用户口径），且开关打开而设置页没配默认评分智能体时
  *      同样当场给内联 Alert——判据由 `judgeAgentConfigured` 注入，本组件不知道设置页长什么样；
- *   5. 执行模式的顺序与默认值也是用户口径（2026-09-28）：**串行在前、并行在后，默认串行**。
- *   6. **编辑模式**（2026-09-28，spec §6.2）：`mode="edit"` + `initial` 预填，**不新写一个
+ *   5. 执行模式的顺序与默认值：**串行在前、并行在后，默认串行**。
+ *   6. **编辑模式**：`mode="edit"` + `initial` 预填，**不新写一个
  *      `RunEditPanel`**——两处字段表必然漂移。两个坑写在 `initialValues` 与 `caseOptions` 那两处：
  *      执行模式必须取自 `initial`（不能被表单缺省的「串行」盖掉），原用例被删掉时必须补一个禁用
  *      占位项（否则下拉空白，用户只改执行模式、一保存就换了个用例）——注意「用例列表未知」是
  *      **另一回事**，那时一个字都不许说（`cases` 可选，判据只认「已知且不含它」）。
  *      `mode` 与 `initial` 是**判别联合**（不是两个各自可选的格子）：`mode="edit"` 却没给 `initial`
  *      会让编译器当场拒绝，运行期还有一层 `return null` 兜底——理由见 `RunCreatePanelProps` 的注释。
- *   7. **候选行是一张 small Table**（用户口径 2026-09-29，与设置页「模型清单」同一形态）：一行一个候选，
- *      列序 智能体 ｜ 模型 ｜ 思考强度 ｜ （无标题的）操作列。竖排标签在多候选时是最贵的高度（右栏只有
+ *   7. **候选行是一张 small Table**（与设置页「模型清单」同一形态）：一行一个候选，
+ *      列序智能体 ｜ 模型 ｜ 思考强度 ｜（无标题的）操作列。竖排标签在多候选时是最贵的高度（右栏只有
  *      ~545px 宽，每个候选白多一行标签），故字段名交给**列头**承担，控件的可访问名改由各自的
  *      `aria-label` 承担（列头 `<th>` 不会成为输入框的可访问名）；操作列**右对齐**、三个图标按钮
- *      按 **上移 / 下移 / 删除** 排（用户口径），把「删除」「操作」这些字面宽度还给内容。
- *   8. **窄栏时首列与操作列钉在两侧**（用户口径 2026-10-02）：右栏窄到装不下四列时，表格内部横向
+ *      按 **上移 / 下移 / 删除**排（用户口径），把「删除」「操作」这些字面宽度还给内容。
+ *   8. **窄栏时首列与操作列钉在两侧**：右栏窄到装不下四列时，表格内部横向
  *      滚动，`智能体` 留在左边、三个图标按钮留在右边，中间两列从下面滑过。判据是
  *      `CANDIDATE_TABLE_MIN_WIDTH`（表格最小宽度，见该常量的注释：它就是「装得下」的分界）。
  *      三处**必须同时在场**，少一处就静默退回「溢出到容器外面、够不到」的老样子：
@@ -59,9 +59,9 @@ export interface RunModelOption {
   source: 'fetched' | 'manual';
   /** 上下文窗口（token）；缺省 = 未知（显示「未知」，不兜底一个数字） */
   contextWindow?: number;
-  /** 这一行**可选**的思考强度档位（服务端已把上游档位与本行智能体的档位求过交，spec D10） */
+  /**这一行**可选**的思考强度档位（服务端已把上游档位与本行智能体的档位求过交） */
   efforts?: string[];
-  /** 上游推荐档（且落在 `efforts` 里时才有值）；只在标签上标「推荐」，不预选（spec D14） */
+  /**上游推荐档（且落在 `efforts` 里时才有值）；只在标签上标「推荐」，不预选 */
   recommendedEffort?: string;
 }
 
@@ -80,7 +80,7 @@ interface RunCreatePanelBaseProps {
    *
    * **可选**：不给（老调用方 / 元数据还没到）或返回 `undefined`（这家不声明，如 Claude Code /
    * Codex 由厂商推断）时，占位符只说「未指定」——**不编一个档出来**（那是替厂商承诺）。
-   * 给这一格的用处：把「未指定」的后果说清（用户 2026-10-06 口径），且厂商名与档位都由
+   * 给这一格的用处：把「未指定」的后果说清，且厂商名与档位都由
    * `AGENT_LABELS` + 这一格拼装，UI 里不写死「（dsh 用 high）」这种缩写与第二份真源。
    */
   defaultEffortOf?: (agentKind: AgentKind) => string | undefined;
@@ -166,7 +166,7 @@ function decodeModelKey(key: string): { providerId: string; modelId: string } | 
 }
 
 /**
- * 用例下拉的文字过滤：**只按标题**匹配（用户口径，2026-09-26）。三条细则：
+ * 用例下拉的文字过滤：**只按标题**匹配。三条细则：
  *   · 大小写不敏感；
  *   · 空格分词后**每个词都要命中**（AND）——「入站 转换」能筛出「多协议入站转换」，
  *     而「入站 校验」一个都不留（两个词没有同时出现在任何标题里）；
@@ -187,14 +187,14 @@ export function matchCaseTitle(title: string, query: string): boolean {
   return tokens.every((token) => haystack.includes(token));
 }
 
-/** 「至少一行」（spec §5.1 的提交校验）：antd 的自定义校验器以抛错表示不通过 */
+/**「至少一行」（提交校验）：antd 的自定义校验器以抛错表示不通过 */
 async function requireAtLeastOneRow(_rule: unknown, value: unknown): Promise<void> {
   if (Array.isArray(value) && value.length > 0) return;
   throw new Error('至少需要一个候选行');
 }
 
 /**
- * 候选行里两格下拉的**依赖签名**：模型池看本行的智能体，强度档位看本行选中的模型（spec D10），
+ * 候选行里两格下拉的**依赖签名**：模型池看本行的智能体，强度档位看本行选中的模型，
  * 于是这两格一变，引用它们的列都要重画 —— 签名就是给表格那个 `shouldUpdate` 用的判据。
  *
  * 为什么用签名而不是逐格比 `prev.rows?.[i]?.agentKind !== next.rows?.[i]?.agentKind`：
@@ -224,7 +224,7 @@ interface CandidateRow {
 }
 
 /**
- * 候选表三列的宽度（px），浏览器里量出来的（2026-09-29，紧凑密度，右栏 676px 宽）。
+ * 候选表三列的宽度（px），浏览器里量出来的（紧凑密度，右栏 676px 宽）。
  * **模型列刻意不给宽度**：它是唯一需要吃掉剩余宽度的列，实测拿到 362px —— 长模型名 + 来源 Tag +
  * 窗口 Tag 一行放得下，不省略；写死宽度反而会在分隔条变窄时把模型名挤成省略号。
  *
@@ -232,14 +232,14 @@ interface CandidateRow {
  * + 单元格左右内边距各 4px + 余量，实测三个按钮贴右排开、右边距单元格右边 4px。
  * 130 / 120 按最长的内容量给：`Claude Code`、`自动拉取` / `手工维护` 的 Tag、`high（推荐）` 的档位标签。
  *
- * ⚠️ jsdom 没有布局引擎，**宽度量不了**：这三条数只由真机冒烟记录看着（本轮 `2026-09-29-candidate-table-smoke.md`），
+ * ⚠️ jsdom 没有布局引擎，**宽度量不了**：这三条数只能真机冒烟看，
  * 组件用例里没有、也不该有一条假装在量宽度的断言（那会是一条永远不会失败的守卫）。
  */
 const CANDIDATE_COLUMN_WIDTH = { agent: 130, effort: 120, actions: 80 } as const;
 
 /**
  * 候选表的最小宽度（px）：右栏窄于它时**才**横向滚动，并把首列 / 操作列钉在两侧
- * （用户口径 2026-10-02，见下面 Table 的 `scroll` 与两处 `fixed`）。
+ * （见下面 Table 的 `scroll` 与两处 `fixed`）。
  *
  * 为什么必须有这个数，而不是继续靠「列宽之和」自然撑开：不给 `scroll.x` 时 rc-table 不设
  * 任何宽度，`table-layout` 停在 `auto`，表格会**溢出到容器外面**——实测右栏内容宽 404px、
@@ -266,13 +266,13 @@ const CANDIDATE_TABLE_MIN_WIDTH = 636;
 const CELL_ITEM_STYLE = { marginBottom: 0 } as const;
 
 /**
- * 「思考强度」的占位符（清空态的唯一一句话，spec D14 禁了预选 ⇒ 它必须把语义说清，2026-10-06 口径）。
+ * 「思考强度」的占位符（清空态的唯一一句话， 禁了预选 ⇒ 它必须把语义说清）。
  *
  * 三档，判据只有两条：
  *   · 这一家**声明了**未选时会落的档（`defaultEffort`，今天只有 DeepSeek Harness 的 `high`）
- *     ⇒ 说出厂商名与那个档——厂商名取 `AGENT_LABELS`（**全名**，不是 `dsh` 这种 id）、档位取元数据，
+ * ⇒ 说出厂商名与那个档——厂商名取 `AGENT_LABELS`（**全名**，不是 `dsh` 这种 id）、档位取元数据，
  *     两处都不写死在文案里（写死就是第二份真源：厂商名或缺省档改了，这句会静默说错）；
- *   · 没声明（Claude Code / Codex 不传档位，由厂商推断；或元数据还没到）⇒ **只说「未指定」**。
+ *   · 没声明（Claude Code / Codex 不传档位，由厂商推断；或元数据还没到） ⇒ **只说「未指定」**。
  *     **不填一个「厂商默认档」**：那句承诺不是我们作出的（契约明说未选不是「沿用厂商默认档」）。
  *
  * 单独导出成纯函数（同 `matchCaseTitle`）：三档文案都要能**直接**测到，而组件层只能从
@@ -348,7 +348,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
   // 多了 `disabled` 这一格（给「原用例已删除」的占位项用）。`cases` 未知时只是一个空选项表。
   const caseOptions: { value: string; label: string; disabled?: boolean }[] = (cases ?? []).map((item) => ({
     value: item.id,
-    // 「标题 · 仓库名 · commit 短哈希」（spec §5.1）。
+    // 「标题 · 仓库名 · commit 短哈希」。
     // 仓库名走 contracts 的 `displayRepoName`（展示口径，**任何字符串都不抛**）：这里是在渲染期给
     // 落盘数据取名字，一条判定不认的历史来源不该让整页崩掉；判定路径用的是同包的 `repoNameFromSource`，
     // 那条对非法来源响亮地抛错——两者分工见 contracts 的注释。远端 URL 的末段与 `.git` 剥除两份口径一致
@@ -357,7 +357,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
     }`,
   }));
 
-  // 编辑模式下「当前用例不在选项里」有**两种完全不同的解释**，先分清再处置（spec §6.2 只写了第二种）：
+  // 编辑模式下「当前用例不在选项里」有**两种完全不同的解释**，先分清再处置（只写了第二种）：
   //   · 列表**已知**且不含它 ⇒ 另一个标签页把用例删了：补一个**禁用**的占位项并说明「原用例已删除」。
   //     不补的话 `Select` 显示空白，用户只改执行模式、一保存就把 caseId 换成了别的用例。
   //   · 列表**未知**（`cases === undefined`：直开 / 刷新编辑链接时这一轮的快照先到、`/api/cases` 还没回，
@@ -404,7 +404,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         agentKind: row.agentKind,
         providerId: decoded.providerId,
         modelId: decoded.modelId,
-        // 强度按需带：没选就**不写这个键**（服务端把「没说」与「说了某个档」分得很清，spec D12）
+        // 强度按需带：没选就**不写这个键**（服务端把「没说」与「说了某个档」分得很清）
         ...(row.effort === undefined ? {} : { effort: row.effort }),
       });
     }
@@ -496,7 +496,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       </Form.Item>
 
       <Form.Item name="executionMode" label="执行模式" rules={[{ required: true, message: '请选择执行模式' }]}>
-        {/* 顺序与默认值都是用户口径（2026-09-28）：串行在前、并行在后，且默认选中串行。
+        {/* 顺序与默认值是版面口径的一部分：串行在前、并行在后，且默认选中串行。
             默认串行而不是并行，是因为并行不设并发上限——多候选一起开跑时最先撞上的通常是供应商限流。 */}
         <Radio.Group
           options={[
@@ -543,7 +543,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       >
         {(fields, { add, remove, move }, { errors }) => (
           <Flex vertical gap={8}>
-            {/* 候选行 = small Table（用户口径 2026-09-29）：整张表订阅「智能体 / 模型」这一对键
+            {/* 候选行 = small Table：整张表订阅「智能体 / 模型」这一对键
                 （模型池跟着本行智能体、强度档位跟着本行模型）。原来这一层订阅挂在**每一行**上，
                 改成表格后列渲染全在同一个闭包里，逐行订阅反而要多挂一层 —— 判据见 `poolSignature`。 */}
             <Form.Item
@@ -564,7 +564,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                     agentKind,
                     pool,
                     // 池子里找不到 = 这一格是脏值（换过智能体、或那家供应商被删了）：不猜，
-                    // 于是一个强度档都不列 —— 交集是「服务端算好的」，本地兜不出第二份（spec D10）
+                    // 于是一个强度档都不列 —— 交集是「服务端算好的」，本地兜不出第二份
                     selected:
                       decoded === null
                         ? undefined
@@ -595,7 +595,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                       {
                         title: '智能体',
                         width: CANDIDATE_COLUMN_WIDTH.agent,
-                        // 钉在左边（用户口径 2026-10-02）：横向滚动时中间两列从它下面滑过，
+                        // 钉在左边：横向滚动时中间两列从它下面滑过，
                         // 「这一行是哪个智能体」始终看得见。定位是 rc-table 的 `getCellFixedInfo`
                         // 按**实测列宽**算出的 `position: sticky; left: …`，故宽度那一格必须留着。
                         fixed: 'left',
@@ -653,12 +653,12 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                                 }}
                                 options={row.pool.map((option) => ({
                                   value: encodeModelKey(option.providerId, option.modelId),
-                                  // 来源与窗口各一个 Tag（spec §5.1 / D4）；Select 默认不开启搜索，ReactNode 标签安全
+                                  // 来源与窗口各一个 Tag；Select 默认不开启搜索，ReactNode 标签安全
                                   label: (
                                     <Flex align="center" gap={4}>
                                       <span>{option.modelId}</span>
                                       {/**
-                                       * 供应商名（2026-09-30）：双协议智能体（DSH）的池子是**两类协议的并集**，
+                                       * 供应商名：双协议智能体（DSH）的池子是**两类协议的并集**，
                                        * 而 `providerId` 不同 ⇒ 选出来的是**不同的行**。只给模型名的话，
                                        * 「同一个模型名挂在两个网关」（`jd/GLM-5.2` 这类跨网关同名的模型很常见）
                                        * 两个选项会长得一模一样——用户无从判断自己选的是哪一个。
@@ -691,16 +691,16 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                             <Select
                               aria-label="思考强度"
                               allowClear
-                              // 不预选推荐档（spec D14）：预选会让「我没选过」与「我选了推荐档」在快照里长得一样。
-                              // 「未指定」是**清空态**，所以它只能由 placeholder 承担；2026-10-06：这句话要说清
+                              // 不预选推荐档：预选会让「我没选过」与「我选了推荐档」在快照里长得一样。
+                              // 「未指定」是**清空态**，所以它只能由 placeholder 承担；这句话要说清
                               // 未选**不是**「沿用厂商默认档」——哪一家会落到自家的哪个缺省档由元数据给
                               // （`effortPlaceholder`），其余家不传档位、由厂商推断；要关闭必须显式选
                               // 下面那个 `off`。
                               placeholder={effortPlaceholder(row.agentKind, defaultEffortOf)}
-                              // 强度选项**只列服务端算好的候选**（spec D10）：上游档位原样列出来会让
+                              // 强度选项**只列服务端算好的候选**：上游档位原样列出来会让
                               // 不支持的组合到运行时才炸（dsh 侧是硬报错），而就近取整是静默改语义。
-                              // 2026-10-06：该候选恒含关闭档 `off` 且保证它排第一；档位文案一律照上游
-                              // 的词汇原样写（改口径 2026-10-07：关闭档也不再加工，与行卡片上那个
+                              // 该候选恒含关闭档 `off` 且保证它排第一；档位文案一律照上游
+                              // 的词汇原样写（关闭档也不加工，与行卡片上那个
                               // `off` 标签是同一个词）。
                               options={(row.selected?.efforts ?? []).map((effort) => ({
                                 value: effort,
@@ -716,14 +716,14 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                         ),
                       },
                       {
-                        // 列名留空（用户口径 2026-09-29 二稿）：三个按钮各自带 Tooltip 与 `aria-label`，
+                        // 列名留空（二稿口径）：三个按钮各自带 Tooltip 与 `aria-label`，
                         // 表头再写一遍「操作」只是白占这一列的宽度（这一列只装得下三个图标）
                         title: '',
                         width: CANDIDATE_COLUMN_WIDTH.actions,
                         // 右对齐（用户口径）：三个动作贴在本列靠右的边上，列宽才压得下来 ——
                         // 在此之前「删除」是文字按钮，光它自己就占掉这一列近一半宽度
                         align: 'right',
-                        // 钉在右边（用户口径 2026-10-02）：横向滚动时三个按钮不被滚走 ——
+                        // 钉在右边：横向滚动时三个按钮不被滚走 ——
                         // 它们是**行上的唯一操作**，滚出去就等于这一行删不掉、也换不了顺序
                         fixed: 'right',
                         render: (_value, row) => (

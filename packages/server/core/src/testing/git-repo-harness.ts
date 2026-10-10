@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * git 原语（仓库侧）：真实 git CLI，禁 mock（spec §9）。
+ * git 原语（仓库侧）：真实 git CLI，禁 mock。
  * 为什么禁 mock：mock 掉的正是最容易错的地方——`cat-file -e` 的 `^{commit}` 语法、
  * `rev-parse --show-toplevel` 的返回形态、克隆后 `.git` 是否真的存在、复制是否带上 `.git`。
  * 三个环境上的注意点：
@@ -8,7 +8,7 @@
  *      否则 CI / 新机器上没有全局身份会直接 commit 失败；
  *   2. 所有仓库都建在 `os.tmpdir()` 下的临时目录里，结束即删；
  *   3. 每个用例前 `setConfigDirForTesting(tmp)` 并断言指向它——本模块不该读配置，
- *      这条断言是「将来有人顺手 loadConfig() 时会红」的护栏（Review Focus 5）。
+ *      这条断言是「将来有人顺手 loadConfig() 时会红」的护栏。
  */
 import { cpSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -11,6 +11,7 @@
 | 数据 | 位置 |
 |---|---|
 | 平台配置 | `AIEVAL_CONFIG_DIR` > `~/.aieval` 下的 `config.json`：**两段**——应用设置 `settings` + 供应商 `providers`（`0600`、密钥明文）。**用例已不在这里** |
+| MCP 服务器 | `settings.mcpServers`（同一份 `config.json` 的设置段）：name-keyed map（stdio / http 判别联合）；**键缺失才播预置两台**，删光不复播（见下节《MCP 配置的落盘与播种》） |
 | 用例 | `settings.casesRoot`（默认 `~/.aieval-cases`）下的 `<用例 id>.json`：**一用例一文件**，文件名即身份（见下节《用例目录》） |
 | 评测落盘根 | `settings.workspaceRoot`（默认 `~/.aieval-runs`） |
 | 一轮评测 | `{workspaceRoot}/{runId}/`：`run.json`（行快照）+ `rows/{rowId}/`（`events.jsonl` + `messages.jsonl` + `workspace/` + `.agenthome/` / `.judgehome/`） |
@@ -18,7 +19,7 @@
 
 ## 用例目录
 
-用例从 `config.json` 的 `cases` 数组搬了出来，改成**用例一文件**（2026-10）。为什么搬：用例是**会被 git 管理的内容**，而它原来和供应商凭据住在同一个文件里——那个文件一改就是整份覆盖写，一旦把它放进 git，凭据就跟着进了历史。搬出来之后：一个用例一个文件，diff 干净、冲突面小到单个用例，「提交哪些变更」也有了天然的粒度。
+用例**一文件一落**，不放在 `config.json` 的 `cases` 数组里。理由：用例是**会被 git 管理的内容**，而配置那份文件一改就是整份覆盖写——一旦和供应商凭据同住一个文件，凭据就跟着进了历史。分家之后：一个用例一个文件，diff 干净、冲突面小到单个用例，「提交哪些变更」也有了天然的粒度。
 
 ### 布局与单文件格式
 
@@ -68,43 +69,20 @@
 - 状态只活在**内存**（`api/src/case-sync.ts` 的 `SyncRuntime`）：不做持久化队列、不做启动补偿（改用设置页的「提交」按钮手动补）。磁盘上的 git 事实才是真源，重启后这份快照归零不影响正确性。
 - 状态接口每次读都可能要探远端：探测用的 `git fetch` 有 15 秒上限、结果缓存 30 秒（`probeRemoteState`），页面挂载不能等一次十分钟的网络往返。
 
-## 冒烟（2026-10-09，真机）
+## MCP 配置的落盘与播种
 
-**范围清单**
+MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住 `config.json` 的 `settings` 段，键名 `mcpServers`——一份原子写的快照里能同时看到「用什么模型评分」与「给候选注入哪些工具」，读侧只有一次 `loadConfig()`。功能面（配置 / 注入 / 失败判据）见[《MCP 配置》](/features/mcp-config)，本节点名的是**落盘事实**：
 
-| 项 | 结果 | 证据（CLI 复核） |
-|---|---|---|
-| 用例落盘到 `casesRoot` 且 `0600` | ✅ | `ls -l` 给出 `-rw------- … <id>.json` |
-| 变更后自动提交 + 推送，提交信息由真机智能体写 | ✅ | 提交 `82f971a 新增冒烟评测用例：为 target 的 index.js 补一条会失败的回归测试`；裸远端同 hash；`git status -sb` 为 `## main...origin/main`（齐平） |
-| 一条提交只含一个文件 | ✅ | `git log --format='%h %s' --name-only`：`82f971a` 名下只有 `<id>.json` 一行 |
-| 关掉「用例变更时自动提交」⇒ 变更只落盘 | ✅ | 建用例后等 4 秒：`pendingCount: 1`、`git log` 不动 |
-| 「提交」动作 = 逐文件提交 + 推送 | ✅ | 提交 `30575e4 …`；远端同步出现同一条 |
-| 无关文件永不进提交、但要计数 | ✅ | 手写的 `note.txt` 始终是 `?? note.txt`；状态 `ignoredCount: 1` |
-| 「拉取」动作（远端领先）⇒ 快进对齐 | ✅ | 同事的 `da0341b` 进入本地，`本地 HEAD == 远端 HEAD` |
-| 分叉 + **同一行**两端都改 ⇒ 智能体裁定合并 + 推送 | ✅ | 合并提交 `e6cc026 Merge remote-tracking branch 'origin/main'`；两端改动都在：`冒烟：同一条用例被两端同时改（本地）（远端）` |
-| **绝不 force push** | ✅ | 同事的提交 `da0341b` 仍是远端 `HEAD` 的祖先（`merge-base --is-ancestor` 通过） |
-| 设置页 UI（开关置灰、两个按钮按需出现、状态区渲染） | ⏭ 跳过 | 本会话没有浏览器 MCP 工具；改由 `workspace-settings-card.test.tsx`(19) / `settings-page-wiring.test.ts` / `route-cases-sync.test.ts`(7) 在测试层覆盖，两条人工动作与状态接口另有本表的真机驱动 |
-
-**操作路径（隔离实例：HTTP 驱动 + CLI 复核）**
-
-1. `mktemp -d` 造夹具：`config/config.json`（复制真配置的 `settings` + `providers`，只改 `workspaceRoot` / `casesRoot` / `casesAutoCommit`）、`cases`（真 `git init -b main` + 裸远端 `origin.git` + 首次 `push -u`）、`target`（建用例要的本地仓库）。
-2. 把 `apps/web-next` 复制到 `.scratch/smoke-app`（软链 `node_modules`）后以 `AIEVAL_CONFIG_DIR=<夹具>/config next dev -p 3099` 起服务——**刻意避开 3083**：那个实例的 `casesRoot` 是用户真实用例仓库，驱动它会往真实仓库写提交。
-3. `POST /api/cases` → 轮询 `GET /api/cases/sync-status` 到 `running: false` → `git -C <夹具>/cases log` 与 `git -C <夹具>/origin.git log` 互证（提交信息、单文件、远端齐平）。
-4. `PUT /api/settings {casesAutoCommit:false}` → 再建一条用例 → 等 4 秒查状态与提交历史（都不动）→ `POST /api/cases/sync {action:'commit'}` → 复查。
-5. 另一个克隆推一条提交 → **等满 30 秒探测缓存**后读状态（`remoteAhead: 1`）→ `POST /api/cases/sync {action:'pull'}`。
-6. 本地与另一个克隆同时改**同一条用例的同一行**并各自提交（本地不推）⇒ 真分叉 + 真冲突 → `POST /api/cases/sync {action:'pull'}` → 真机 `claude-code` 裁定合并（实测 40s）→ 复核合并提交、两端内容、远端祖先关系。
-7. 收尾：杀掉隔离实例、删掉夹具目录与复制出来的 app（`.scratch/smoke-app`）。
-
-**一条实测到的时序细节**：第 5 步里刚推完远端就读状态会拿到 `remoteAhead: 0`——那不是漏判，是 `probeRemoteState` 的 30 秒探测缓存仍在有效期内（同一窗口复用上一次 `fetch` 的结果）。界面上「拉取」按钮因此在缓存过期前不出现；这是设计口径（见《设置》的时序一节），不是缺陷。
-
-**未覆盖项与后续计划**
-
-- **设置页的浏览器级冒烟没做**：本会话没有浏览器 MCP，故开关、两个按钮、状态区只由测试层与 HTTP 层覆盖（见上表最后一行）。下次有浏览器时补一次页面级冒烟（换目录 → 建用例 → 关开关 → 点提交 → 造冲突 → 点拉取），并按 `docs/guard/playwright-mcp.md` 记几何断言。
-- **「未配置评分配置」分支**只由单测覆盖（`api/src/case-sync.test.ts`）：真机冒烟里评分配置是配好的。
+- **形状**：name-keyed map，键是服务名（也是工具名前缀 `mcp__<name>__` 里的那一段），值是传输判别联合——`{ transport: 'stdio', command, args?, env?, enabled? }` 或 `{ transport: 'http', url, headers?, enabled? }`。`enabled` 缺省 `true`；跨传输的多余字段在**贴入**时被丢掉并点名，手改文件塞进去的由消费方按「不认识」处置。
+- **播种（预置两台）**：`context7`（http，`headers.CONTEXT7_API_KEY` 是 `${CONTEXT7_API_KEY}` 占位）与 `playwright`（stdio，`npx -y @playwright/mcp@latest`）。判据在 `core/src/config-store.ts` 的 `normalizeSettings` 里单独写成一句显式判断：**`source.mcpServers === undefined` 才补**——「文件里没有这个键」而不是「值为空」。
+- **为什么判据是「键缺失」而不是「空 map」**：后者等于**删光即复播**，用户永远删不掉预置项。键在文件里就是「配过了」的唯一证据，空 map 与没写过因此可分（`{}` 与 `undefined` 在读侧是两件事）。守卫 `core/src/config-store-mcp.test.ts` 两条：键缺失 ⇒ 预置两台；显式存下 `{}` ⇒ 读回来仍是空，且「只读一次再原样保存」不会把它写回文件。
+- **原子写的口径与 `config.json` 其余部分完全一致**（临时文件创建即 `0600` → `renameSync` 覆盖；BOM 容忍；损坏抛含路径的中文原因），不因为多了这一格而分叉——见下节《数据与契约》。
+- **密钥落盘是明文**（与供应商同口径）：出口掩码只发生在 `GET /api/settings` 的投影上，`env` / `headers` 里的 `${VAR}` 占位**原样落盘**（真值只在注入那一刻从环境里解析，永不回写）。
+- **行内产物不在这份文件里**：注入的落点是**行私有目录**（`{workspaceRoot}/{runId}/rows/{rowId}/.agenthome/`）——claude 走 SDK 参数不落盘、codex 走线程级 `config`、dsh 落 `aieval-route.patch.yml` 的 `insert`；行内 `.npmrc` 也只写宿主 npm 配置里的 **registry 那一行**（`0600`）。宿主 `~/.aieval/config.json` 一个字节都不因注入而变。
 
 ## 数据与契约
 
-- **配置文件 `config.json` 是两段**：`settings` + `providers`（`core/src/config-store.ts` 的 `AppConfig`）。旧版残留的 `cases` 键（以及更早的 `rowTimeoutMs`）在读盘时被丢掉——**落盘文件里留着的东西不等于运行时认的东西**；`loadConfig` 故意不做 schema 校验（一条手改坏的值不该让设置页打不开）。
+- **配置文件 `config.json` 是两段**：`settings` + `providers`（`core/src/config-store.ts` 的 `AppConfig`）。旧版残留的 `cases` 键（以及更早的 `rowTimeoutMs`）在读盘时被丢掉——**落盘文件里留着的东西不等于运行时认的东西**；`loadConfig` 故意不做 schema 校验（一条手改坏的值不该让设置页打不开）。设置段里的 `mcpServers` 另有一条**播种**口径：键缺失才播预置两台、删光不复播（见《MCP 配置的落盘与播种》）。
 - **用例一文件一落**：`<casesRoot>/<用例 id>.json`，裸 `TestCase` JSON、文件名即身份、写盘原子且 `0600`、读时容忍 BOM、坏文件跳过并进 `warnings`——完整口径（含手工迁移与 git 自动同步）见上节《用例目录》。
 - **`run.json`**（行快照）：`EvalRow` 含状态、分数（`ScoreResult` 12 格，记账格全 `.default(...)`——`safeParse` 读盘的硬理由）、diff、计量。旧 `run.json`（带 `dimensions`）`safeParse` 失败 ⇒ `listRuns` **跳过并落汇总 WARN**（不炸整页）。快照与事件同源：`setRowStatus` 改状态 + 落盘 + 追加 `status` 事件**成对**。
 - **`events.jsonl`**（行级事件，执行的唯一真相源）：追加写、`seq` 单调递增、按 `seq` 去重续订（`Last-Event-ID`）。**读侧容忍坏行**：写一半的 JSON、空行只跳过该行并 WARN，其余按原序全量读出（可用性优先于完备性）。只有候选新尝试的 `resetEvents` 清空。
@@ -127,6 +105,7 @@
 | 边界 | 处置 |
 |---|---|
 | 旧 `config.json` 的 `cases` 数组**不迁移也不读** | 已登记的破坏性变更：`loadConfig` 只认 `settings` + `providers`，旧键静默丢掉，升级后用例列表为空；处置见《用例目录》的「手工迁移」 |
+| `settings.mcpServers` 删光（`{}`）后不再复播预置两台 | 有意为之：判据是「键缺失」不是「值为空」——否则用户永远删不掉预置项；要拿回预置项就手删 `config.json` 里那个键（下次读盘即播种） |
 | 改 `casesRoot` 不迁移已有用例文件 | 旧文件原目录、列表只认新目录（那一格的 `extra` 已写明）；要搬家得手工拷文件 |
 | `AIEVAL_CASES_ROOT` 只做默认值 | 设置页的 `casesRoot` 一旦填过就压过它（含手改回默认字面量的已知代价）；两处判据共用 `resolveCasesRootForRead` |
 | 同步状态只在内存、不做启动补偿 | 重启后「上次同步」归零不影响正确性（git 事实在磁盘上）；漏掉的同步靠设置页「提交」按钮手动补 |
@@ -137,5 +116,5 @@
 
 ## 相关链接
 
-- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
+- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与行内注入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
 - 仓库内参考：AGENTS.md「持久化」节（原子写 / BOM / EPERM 口径的真源，互链不复制）

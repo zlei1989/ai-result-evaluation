@@ -30,7 +30,7 @@
   | `off` | `thinking: { type: 'disabled' }` | `thinking: { type: 'disabled' }` |
   | 其它档 | `reasoning_effort: '<档>'` | `output_config: { effort: '<档>' }` |
 
-  智能体侧三家各管各的：claude `off` ⇒ `thinking: { type: 'disabled' }` + env 覆盖层；codex `off` ⇒ `effort: 'none'`（裸 `off` 网关拒、重试 6 次后 exit 1 ⇒ 映射必要）**同时** `model_reasoning_summary: 'none'`（实测空转）；dsh overlay 档位表 `off: null`、未指定落 `high`。`judgeEffort` 落盘语义：**记「我们要求的」档位，不是「实际生效的」**。关闭档文案现为「`off（要求不思考）`」（claude/codex 选 off 后并没有真的停止思考，旧文案是在向用户断言一件假事）。
+  智能体侧三家各管各的：claude `off` ⇒ `thinking: { type: 'disabled' }` + env 覆盖层；codex `off` ⇒ `effort: 'none'`（裸 `off` 网关拒、重试 6 次后 exit 1 ⇒ 映射必要）**同时** `model_reasoning_summary: 'none'`（空转）；dsh overlay 档位表 `off: null`、未指定落 `high`。`judgeEffort` 落盘语义：**记「我们要求的」档位，不是「实际生效的」**。关闭档文案是「`off（要求不思考）`」——claude/codex 选 off 后并没有真的停止思考，文案若写成「不思考」就是向用户断言一件假事。
 
 - **结构化输出三家落点**：
 
@@ -56,17 +56,15 @@
 |---|---|
 | **网关透传 schema 不报错**（最高风险）：schema 落 wire 只是请求体一格，网关不认时模型照旧自由生成 | 可观测手段只有 `structuredOutput` 与 `score.raw`；不假设网关一定认 |
 | **档位强度的效力未证实**（同档抖动不小于档间差） | 界面与契约只展示「我们要求的档位」，不给「高档=更准」的暗示 |
-| **codex `off` 关不掉思考**（未闭合）：`effort:'none'` 网关 200 但照常推理（28 条 reasoning、28,169 字，比未选还多） | 「接受 ≠ 关闭」；codex 上当前没有可用的「关闭思考」旋钮 |
-| claude `off` 曾未清零（CLI/SDK 层未落实 `Options.thinking`），已修 | 修法 = env 覆盖层；复验 0/0；claude 思考块在 UI 被 `foldMessages` 折叠抹掉（界面比真实产出少）——登记未修 |
+| **codex `off` 关不掉思考**（未闭合）：`effort:'none'` 网关 200 但照常推理（reasoning 条目与思考 token 都比未选档还多） | 「接受 ≠ 关闭」；codex 上当前没有可用的「关闭思考」旋钮 |
+| claude `off` 的关停点在 env 覆盖层（CLI/SDK 层不认 `Options.thinking`） | claude 思考块在 UI 被 `foldMessages` 折叠抹掉（界面比真实产出少）——登记未修 |
 | codex `model_reasoning_summary:'none'` 空转：注入了、既不报错也不影响推理产出 | 别指望它关掉什么 |
-| 带 `outputSchema` 的一轮 180s 超时（未定位）：同参数复跑 1.7s 收尾 | 已排除「字段被拒」「CLI 没发出去」；下一步带 relay 复现看 `response.completed` |
+| 带 `outputSchema` 的一轮会偶发 180s 超时（未定位；同参数有时 1.7s 就收尾） | 已排除「字段被拒」「CLI 没发出去」；下一步带 relay 复现看 `response.completed` |
 | **智能体评分通路真机未跑**（现网全是文本通路） | 单测覆盖透传与记账；闭合条件 = 开一次 `useAgentJudge` 跑一轮 |
-| 请求侧 schema `achieved` 严档与解析侧宽容读**不对称是有意的**（拦身份 vs 拦形状，作用域不同） | 别「顺手对齐」；不再多收 `"yes"`/`1` |
-| `MAX_TOKENS = 16_384` 截断风险仍在（4096 曾截断 11 项表的调整回复） | 症状 `JUDGE_PARSE_FAILED` + `raw` 断在半截 JSON |
+| 请求侧 schema `achieved` 严档与解析侧宽容读**不对称是有意的**（拦身份 vs 拦形状，作用域不同） | 别「顺手对齐」；`"yes"` / `1` 不在宽容读的名单里 |
+| `MAX_TOKENS = 16_384` 截断风险仍在（多项表的调整回复会被截断） | 症状 `JUDGE_PARSE_FAILED` + `raw` 断在半截 JSON |
 | 文本通路本期不开 schema（有自己的回问修复机制）；评分三动作（生成/识别/调整）走非流式调用、**没有思考档位格** | — |
 | 旧 `run.json`（带 `dimensions`）`safeParse` 失败 ⇒ `listRuns` 跳过并落汇总 WARN | 清理是使用者手动决定 |
-
-**冒烟锚点数字**：识别 11 项表（满分 100）50s；跑一轮后 A1+A2 达成 ⇒ `totalScore: 22 / 100`，编辑用例权重后快照与分数不变。智能调整第一次 500（JSON 被 4096 截断）⇒ 修 `MAX_TOKENS`；第二次 19.9s、清单恰一条「权重 7 → 25」。文本通路重评一行落盘 `judgeTokens = {input:859, cached:640, output:869}`、`judgeDurationMs = 3998`，页面逐字一致。codex 评分档修前 `0/25`（读不到工作区）、修后三项全达成 `25/25`。
 
 ## 相关链接
 

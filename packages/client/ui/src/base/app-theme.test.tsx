@@ -99,10 +99,10 @@ describe('useResolvedTheme', () => {
 
     // 查询串必须是导出的常量本身，不是抄一遍的字面量。这里**逐个调用**检查而不是
     // toHaveBeenCalledWith：readSystemDark 也会调 matchMedia，只查「存在一次匹配」的话，
-    // effect 里把字面量抄错会被 render 期那次正确调用蒙混过去（实测：只改 effect 的字面量仍然全绿）。
+    // effect 里把字面量抄错会被 render 期那次正确调用蒙混过去。
     for (const [query] of matchMedia.mock.calls) expect(query).toBe(SYSTEM_DARK_QUERY);
     // 再钉住常量**自己的取值**：上面那条比对的是「调用点用的是不是这个常量」，
-    // 常量本身被改成 light 查询时两条都还是绿的（读回的系统偏好会整体反过来）。
+    // 常量本身取值错了，上面那条比对也照样绿（读回的系统偏好会整体反过来）。
     expect(SYSTEM_DARK_QUERY).toBe('(prefers-color-scheme: dark)');
     // 挂载时注册一次 'change'
     expect(addEventListener).toHaveBeenCalledTimes(1);

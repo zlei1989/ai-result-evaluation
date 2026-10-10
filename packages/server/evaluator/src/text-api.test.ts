@@ -4,7 +4,7 @@
  * 注意：用 `vi.stubGlobal('fetch', …)` 桩掉 fetch（Node 18+ 有全局 fetch，不需要 polyfill）；
  * `afterEach` 必须 `vi.unstubAllGlobals()`，否则桩会泄漏给同文件后续用例。
  * 本文件要钉住的是**接线**（URL、请求头、请求体的形状、响应字段的取值路径），
- * 而不是 HTTP 客户端的行为——p4 的评分器与 p2 的「AI 生成」都依赖这份接线完全一致。
+ * 而不是 HTTP 客户端的行为——评分器与「AI 生成」都依赖这份接线完全一致。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
@@ -124,7 +124,7 @@ describe('callTextApi —— Anthropic 兼容协议', () => {
 });
 
 describe('callTextApi —— 错误映射', () => {
-  it('401 抛 AUTH_FAILED，message 与 context 都带 host（spec §10：错误信息指向设置页）', async () => {
+  it('401 抛 AUTH_FAILED，message 与 context 都带 host（错误信息指向设置页）', async () => {
     stubFetch(jsonResponse({ error: { message: 'invalid key' } }, 401));
     let caught: unknown;
     try {
@@ -138,7 +138,7 @@ describe('callTextApi —— 错误映射', () => {
     expect((caught as ServiceError).context).toMatchObject({ host: 'api.deepseek.com' });
   });
 
-  it('429 抛 RATE_LIMITED 并在 message 里建议改用串行（spec §10）', async () => {
+  it('429 抛 RATE_LIMITED 并在 message 里建议改用串行', async () => {
     stubFetch(jsonResponse({ error: { message: 'rate limited' } }, 429));
     let caught: unknown;
     try {
@@ -169,7 +169,7 @@ describe('callTextApi —— 错误映射', () => {
   });
 
   it('网络层抛错时折成 ServiceError 而不是把 fetch 的 TypeError 冒出去（且 message 里不留英文原文）', async () => {
-    // `message` 会被页面原样上屏：英文 `fetch failed` 是本仓 p6 冒烟 A3 的原始症状（spec §10 禁止）。
+    // `message` 会被页面原样上屏：英文 `fetch failed` 这类原文禁止进 message。
     // 英文原文只留在 `cause` 与 context 里供服务端排障。
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new TypeError('fetch failed');
@@ -189,20 +189,19 @@ describe('callTextApi —— 错误映射', () => {
 });
 
 /**
- * 以下四条**超出 task-14 brief 的用例清单**，是本实现补的接线守卫（后两条来自变异分析）。
- * 为什么补：brief 的用例在 anthropic 侧只断言了 x-api-key / anthropic-version / Authorization
+ * 以下四条**不在用例清单里**，是补的接线守卫（后两条来自变异分析）。
+ * 为什么补：现成的用例在 anthropic 侧只断言了 x-api-key / anthropic-version / Authorization
  * 缺席、max_tokens 与 messages，于是三处接线即使写错也全绿——① anthropic 少发 content-type
  * 或把 stream 写成 true；② 解析时不过滤块类型（把带 text 字段的非 text 块拼进正文）；
  * ③ anthropic 侧的空正文不报错、直接返回空串（空串会被当成一次成功的评分）；
- * ④ 403 被收窄出 AUTH_FAILED（brief 只造了 401，而网关对无效密钥常回 403）。
+ * ④ 403 被收窄出 AUTH_FAILED（原用例只造了 401，而网关对无效密钥常回 403）。
  * 它们都是「测试欠断言」型的漏洞：变异体活着，而线上表现为评分正文被污染、静默为空，
  * 或把「密钥错了」误导成「服务端内部错误」。
  *
- * ⚠️ 上面这条「其它非 2xx 的 message 含响应片段」是**改前**的口径，已按终审 H2 收窄：
- * 现在 message 只留中文归因 + host + modelId，正文只进 context 与服务端日志
+ * ⚠️ **message 里不放响应片段**：message 只留中文归因 + host + modelId，正文只进 context 与服务端日志
  * （守卫见文件末尾那一组「上游正文绝不进 message」）。
  */
-describe('callTextApi —— 补充守卫（brief 用例未覆盖的接线）', () => {
+describe('callTextApi —— 补充守卫（原用例未覆盖的接线）', () => {
   it('anthropic 也带 content-type: application/json，且请求体显式 stream: false', async () => {
     const fetchMock = stubFetch(jsonResponse({ content: [{ type: 'text', text: 'ok' }] }));
     await callTextApi(route('anthropic'), { prompt: 'x' });
@@ -230,7 +229,7 @@ describe('callTextApi —— 补充守卫（brief 用例未覆盖的接线）', 
 
   it('403 与 401 一样映射 AUTH_FAILED（网关对无效密钥常回 403 而不是 401）', async () => {
     // 这一条是**变异分析的产物**：把实现里的 `status === 401 || status === 403` 收窄成 `status === 401`
-    // 时，brief 的用例全绿（它只造了 401）——即「403 分支」是一段无人验证的死代码，
+    // 时，原用例全绿（它只造了 401）——即「403 分支」是一段无人验证的死代码，
     // 而它在真实网关上会以 INTERNAL（500）冒到界面，把「密钥错了」误导成「服务端内部错误」。
     stubFetch(jsonResponse({ error: { message: 'forbidden' } }, 403));
     let caught: unknown;
@@ -245,7 +244,7 @@ describe('callTextApi —— 补充守卫（brief 用例未覆盖的接线）', 
   });
 
   /**
-   * 终审 FIX-1：`input.signal` 必须**原样**递给 `fetch`，且中止的两种形状都要折成
+   * `input.signal` 必须**原样**递给 `fetch`，且中止的两种形状都要折成
    * 「已中止」而不是「请检查该供应商的地址与网络连通性」——后者会把一次用户终止 / 我们自己的
    * 兜底超时指向「查网络」这个完全错误的方向。
    *
@@ -280,7 +279,7 @@ describe('callTextApi —— 补充守卫（brief 用例未覆盖的接线）', 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as Error).message).toContain('已中止');
     expect((caught as Error).message).not.toContain('网络连通性');
-    // 英文原文（DOMException 的 message）同样不许进 message：spec §10 禁止它冒到界面
+    // 英文原文（DOMException 的 message）同样不许进 message：它不许冒到界面
     expect((caught as Error).message).not.toContain('aborted');
   });
 
@@ -315,18 +314,17 @@ describe('callTextApi —— 补充守卫（brief 用例未覆盖的接线）', 
 });
 
 /**
- * **上游正文不得出现在 `message` 里**（终审 H2）。
+ * **上游正文不得出现在 `message` 里**。
  *
- * 为什么这条必须在 evaluator 这一侧再钉一遍：同一件事在两条路径上曾经**相反**——
- * `@aieval/api` 的 `upstreamError()`（`providers.ts`）刻意把正文只放进 context 与日志，
- * 并写明了理由（网关可能回显 `Authorization: Bearer <明文密钥>`）；而本包的 `httpError()`
- * 把正文前 300 字拼进 message。上屏点是 `apps/web-next/src/runs-view.ts` 的 `describeError`
- * → `message.error(ServiceError.message)`（`app/runs/page.tsx`）⇒ 密钥会被画在界面上。
+ * 为什么这条必须在 evaluator 这一侧再钉一遍：本包的 `httpError()` 必须与 `@aieval/api` 的
+ * `upstreamError()`（`providers.ts`）**同口径**——正文只进 context 与日志，理由是网关可能回显
+ * `Authorization: Bearer <明文密钥>`。上屏点是 `apps/web-next/src/runs-view.ts` 的 `describeError`
+ * → `message.error(ServiceError.message)`（`app/runs/page.tsx`）⇒ 一旦拼进 message，密钥就会被画在界面上。
  *
  * 判据用一段**带明显标记的假正文**（正控）：只要实现里任何一处把它拼回 message，本组立刻红。
  * 标记同时覆盖「上游返回的 JSON 片段」与「网关回显的请求头」两种真实形状。
  */
-describe('callTextApi —— 上游正文只进 context 与服务端日志，绝不进 message（H2）', () => {
+describe('callTextApi —— 上游正文只进 context 与服务端日志，绝不进 message', () => {
   /** 假正文：既有显眼的哨兵串，也有真实网关最危险的那种回显 */
   const ECHOED = '<html>502 Bad Gateway: Authorization: Bearer sk-LEAKED-SENTINEL-9f3c</html>';
 
@@ -365,7 +363,7 @@ describe('callTextApi —— 上游正文只进 context 与服务端日志，绝
     expect(caught.message).not.toContain('LEAKED-SENTINEL');
     expect(caught.message).not.toContain('Authorization');
     expect(caught.message).not.toContain('Bearer');
-    // 归因能力不降级：中文 + host + 模型名（终审 H2 的「message 只留中文归因 + host + modelId」）
+    // 归因能力不降级：中文 + host + 模型名（「message 只留中文归因 + host + modelId」）
     expect(caught.message).toContain('api.deepseek.com');
     expect(caught.message).toContain('deepseek-chat');
     // 正文照旧进 context（诊断能力只在**去处**上变了，内容一字未减）
@@ -406,7 +404,7 @@ describe('callTextApi —— 上游正文只进 context 与服务端日志，绝
 });
 
 /**
- * 多轮对话（2026-09-27）：评分结构检查不合格时把**错误 + 它自己的原文**发回去重问。
+ * 多轮对话：评分结构检查不合格时把**错误 + 它自己的原文**发回去重问。
  * 这一组钉两件事：
  *   ① 对话按顺序进请求体，两种协议各自的形状都对（system 的位置不同，故两条都要钉）；
  *   ② 单轮路径是它的特例（`callTextApi` 与 `callTextApiConversation` 共用同一个请求体构造点）——
@@ -415,7 +413,7 @@ describe('callTextApi —— 上游正文只进 context 与服务端日志，绝
 describe('callTextApiConversation —— 多轮对话', () => {
   it('OpenAI：对话按顺序进 messages，system 仍在最前', async () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '修好了' } }] }));
-    // 多轮入口交出的是 `{ text, usage }`（2026-10-08 起）：这一条只看正文，用量另有专门一组用例
+    // 多轮入口交出的是 `{ text, usage }`：这一条只看正文，用量另有专门一组用例
     const { text } = await callTextApiConversation(route('openai'), {
       system: '只输出 JSON',
       messages: [
@@ -464,7 +462,7 @@ describe('callTextApiConversation —— 多轮对话', () => {
 });
 
 /**
- * 多轮入口把**这一次调用自己的用量**一起交出来（2026-10-08）：评分详情要回答「这一分是谁花的、
+ * 多轮入口把**这一次调用自己的用量**一起交出来：评分详情要回答「这一分是谁花的、
  * 花了多少」，而那份数据只能从响应体里读——读侧没法事后补采（响应体早就扔了）。
  *
  * 四类判据缺一不可：
@@ -474,7 +472,7 @@ describe('callTextApiConversation —— 多轮对话', () => {
  *   ② **两种缓存字段名都要认**：OpenAI 格式在 DeepSeek 上是 `prompt_cache_hit_tokens`，
  *      在官方 OpenAI 上是 `prompt_tokens_details.cached_tokens`——只认一个，另一家就永远报 0 缓存；
  *   ③ **没采到 = `null`，绝不填 0**（`tokens: {0,0,0}` 会被读成「这一分一个 token 都没花」）；
- *   ④ 单轮入口的形状不变（仍是正文一个字符串）：p2 的「生成 / 识别」那条通路不记账。
+ *   ④ 单轮入口的形状不变（仍是正文一个字符串）：「生成 / 识别」那条通路不记账。
  */
 describe('callTextApiConversation —— 用量随结果一起交出来', () => {
   it('OpenAI：prompt_tokens 减掉命中，cached 取 prompt_tokens_details.cached_tokens', async () => {
@@ -550,14 +548,14 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
     expect(result.usage).toBeNull();
   });
 
-  it('单轮入口的形状不变（p2 的生成 / 识别仍只拿正文）', async () => {    stubFetch(jsonResponse({ choices: [{ message: { content: '生成结果' } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
+  it('单轮入口的形状不变（生成 / 识别仍只拿正文）', async () => {    stubFetch(jsonResponse({ choices: [{ message: { content: '生成结果' } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
 
     await expect(callTextApi(route('openai'), { prompt: '写个 LRU' })).resolves.toBe('生成结果');
   });
 });
 
 /**
- * 思考强度的**唯一落点**（spec §5.2，2026-10-07）：文本通路只有这一张协议表，
+ * 思考强度的**唯一落点**：文本通路只有这一张协议表，
  * 而单轮与多轮共用 `buildBody` ⇒ 强度也必须加在那一处，否则「单轮能跑、多轮没强度」这类漂移
  * 只在一条路径上出现。三档 × 两协议：
  *   · **未指定 = 一个强度键都不加**（不是关闭）：把决定权交给网关的缺省。⚠️ 这与智能体侧
@@ -638,7 +636,7 @@ describe('思考强度落进请求体（唯一一份协议表）', () => {
 });
 
 /**
- * 瞬时失败重试（2026-09-27）：本机实测真实网关会回 `500 服务维护中，请稍后重试`，
+ * 瞬时失败重试：本机实测真实网关会回 `500 服务维护中，请稍后重试`，
  * 一次抖动就让整行落 failed 是不划算的。这一组钉三件事：
  *   ① **产品默认值**（一次抖动够用的次数与退避）——只钉注入值等于默认值无人验证；
  *   ② 瞬时面（5xx / 429 / 网络）会重试且**复用同一份请求体**（同一段对话，不是重新组装）；
@@ -676,7 +674,7 @@ describe('文本 API 的瞬时失败重试', () => {
     expect(fetchMock).toHaveBeenCalledTimes(PRODUCTION_ATTEMPTS);
   });
 
-  it('网络层抛错也算瞬时失败：重试一次就成功（p6 冒烟 A3 的同一类抖动）', async () => {
+  it('网络层抛错也算瞬时失败：重试一次就成功（冒烟 A3 的同一类抖动）', async () => {
     TEXT_API_RETRY.backoffMs = 1;
     let call = 0;
     vi.stubGlobal('fetch', vi.fn(async () => {

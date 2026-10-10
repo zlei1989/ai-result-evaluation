@@ -1,7 +1,7 @@
 /**
  * dsh 真机项④：`ask_user_question` 的**非正常收场**。
  *
- * 设计稿 §7.6.2 ⑩ 的两条硬约束都只有**文档级**依据（dsh 的 README/逐字文案），没有真机样本：
+ * 这两条硬约束都只有**文档级**依据（dsh 的 README/逐字文案），没有真机样本：
  *  - `outcome: 'unavailable'` ——「if no answer handler accepts it, the model receives an error」、
  *    「Without one, the tool call **fails with an error instead of degrading**」；
  *  - `outcome: 'rejected'` ——「A live child agent owned by another agent **cannot call this tool**

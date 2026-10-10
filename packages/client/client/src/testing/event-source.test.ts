@@ -1,15 +1,15 @@
 /**
  * `FakeEventSource` 自己的语义：它**必须像浏览器**，否则用它的守卫全是空转。
  *
- * 为什么单独给替身写用例（p5 阶段评审 C1 的直接教训）：旧版替身刻意不实现 `addEventListener`、
+ * 为什么单独给替身写用例：旧版替身刻意不实现 `addEventListener`、
  * `emit()` 一律喂 `onmessage` ⇒ 它比浏览器**弱**：真实链路一帧都到不了，而 12 条 hook 用例
  * 与 24 个变异体全部绿。把「替身是否忠实」本身钉成断言，才不会再有下一次。
  *
  * 四条浏览器语义（SSE 规范 + `EventTarget`）：
- *   1. 无名帧（SSE 里没有 `event:` 行）→ `onmessage` 与 `addEventListener('message')` 都收到；
- *   2. **具名帧 → 只有 `addEventListener('<type>')` 收到，`onmessage` 收不到**；
- *   3. 按名字摘掉之后不再派发（`stop()` 靠它）；
- *   4. `on<type>` 属性与监听器是两条独立路径，互不抑制。
+ * 1. 无名帧（SSE 里没有 `event:` 行）→ `onmessage` 与 `addEventListener('message')` 都收到；
+ * 2. **具名帧 → 只有 `addEventListener('<type>')` 收到，`onmessage` 收不到**；
+ * 3. 按名字摘掉之后不再派发` 靠它）；
+ * 4. `on<type>` 属性与监听器是两条独立路径，互不抑制。
  */
 import { describe, expect, it, vi } from 'vitest';
 import { AGENT_EVENT_TYPES } from '@aieval/contracts';

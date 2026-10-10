@@ -1,22 +1,22 @@
 /**
  * claude-code 的厂商 SDK 懒加载外壳。
  * 本文件是**唯一**知道 `@anthropic-ai/claude-agent-sdk` 入口形状的地方：窄结构在这里自定义、
- * 不从厂商包 import type（§5.6.2 末段），于是厂商的类型变更打不到本仓的 typecheck。
+ * 不从厂商包 import type，于是厂商的类型变更打不到本仓的 typecheck。
  * 注意：`import()` 必须是动态的——顶层静态导入会把「一家 SDK 故障」放大成「整包不可用」（A6）；
- * 字段名以真实事件探测的 dump 为准（§5.6.3，探测回写任务按实测修正本文件）。
+ * 字段名以真实事件探测的 dump 为准。
  */
 import { AgentLoadError } from '../../errors';
 import { createSdkLoader } from '../../load-once';
+import type { ClaudeMcpServer } from '../../mcp';
 import type { ClaudePermissionMode } from '../../permission';
 
 /**
  * 包名字面量：**不能**写成 `export const CLAUDE_PACKAGE_NAME = '@anthropic-ai/claude-agent-sdk';`。
- * 为什么：T5 的「厂商包只能动态 import」断言按 `^\s*(import|export)…[^;]*['"]<包名>['"]` 扫源码，
+ * 为什么：「厂商包只能动态 import」的断言按 `^\s*(import|export)…[^;]*['"]<包名>['"]` 扫源码，
  * 而那个模式区分不出 `export … from '@pkg'` 与 `export const X = '@pkg'`（行首关键字 + 引号包名即命中），
- * 于是**行首 export 的常量声明会被误判成静态导入**（实测：本文件按 brief 原文写就报
- * `providers/claude-code/sdk.ts：静态导入 @anthropic-ai/claude-agent-sdk`）。
- * 故字面量落在非 export 的语句里再转出：断言照样拦得住真正的静态导入，包名也仍是唯一真源。
- * 收窄那条模式归 T10 / 阶段评审；在它收窄前，三个适配器都按本写法落地。
+ * 于是**行首 export 的常量声明会被误判成静态导入**（报 `providers/claude-code/sdk.ts：静态导入
+ * @anthropic-ai/claude-agent-sdk`）。故字面量落在非 export 的语句里再转出：断言照样拦得住真正的
+ * 静态导入，包名也仍是唯一真源；三个适配器都按本写法落地。
  */
 const CLAUDE_PACKAGE_NAME_LITERAL = '@anthropic-ai/claude-agent-sdk';
 
@@ -27,7 +27,7 @@ export interface ClaudeQueryOptions {
   env: Record<string, string>;
   model: string;
   /**
-   * 权限档的落点（2026-09-28 起由 `permission.ts` 的 `CLAUDE_PERMISSION_OPTIONS` 决定）。
+   * 权限档的落点（由 `permission.ts` 的 `CLAUDE_PERMISSION_OPTIONS` 决定）。
    * 值域逐字取自安装态 SDK 的类型面：`sdk.d.ts:2417` 的
    * `PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'`。
    *
@@ -35,7 +35,7 @@ export interface ClaudeQueryOptions {
    * 于是「加一个只读档」在编译期就被这层外壳挡住——外壳比厂商窄，就等于把厂商的能力
    * 关在门外（本仓实测：`Type '"dontAsk"' is not assignable to type '"acceptEdits"'`）。
    * ⚠️ 它只放宽「编辑要不要逐个批准」，**不放宽路径安全门**（那道门与权限模式无关）⇒
-   * 与 `index.ts` 的 `canonicalCwd` 是两条一起做才完整的修法。
+   * 与 `index.ts` 的 `canonicalCwd` 是两条一起做才完整。
    */
   permissionMode: ClaudePermissionMode;
   /**
@@ -83,15 +83,15 @@ export interface ClaudeQueryOptions {
    *
    * 值域与语义逐字取自安装态 SDK 的 JSDoc（`sdk.d.ts:2175-2185`），其中两条是承重的：
    *  · 「Must include `'project'` to load CLAUDE.md files」——`[]` 会把被测仓库的 `CLAUDE.md`
-   *    一起挡在门外（2026-09-29 前的口径，已改）；
+   *    一起挡在门外；
    *  · 打开它就等于**允许 `${cwd}/.claude/settings.json` 的 `env` 块改写本次路由**（该文件在
    *    candidate 的可写工作区里）⇒ 必须与下面的 `settings` 成对给，缺一半就是路由被接管。
    */
   settingSources: readonly string[];
   /**
    * 等价 CLI 的 `--settings`（flag 档）。合并优先级**高于** `user` / `project` / `local`
-   * （本机实测：只开 `settingSources` 时被测仓库 settings 的 `env` 赢；补上这一格后本次路由赢）。
-   * 本仓只用它的 `env`：把 §5.6.5 的注入点（base URL + 两份凭据）钉在最外层，仓库改不动。
+   * （只开 `settingSources` 时被测仓库 settings 的 `env` 赢；补上这一格后本次路由赢）。
+   * 本仓只用它的 `env`：把注入点（base URL + 两份凭据）钉在最外层，仓库改不动。
    *
    * 厂商声明的类型是 `string | Settings`（一个完整 settings 对象或文件路径）；这里只声明用到的那一格。
    */
@@ -99,30 +99,29 @@ export interface ClaudeQueryOptions {
   /** 硬中止入口：dispose 时 abort，SDK 据此杀掉仍在跑的子进程 */
   abortController: AbortController;
   /**
-   * **不再有 `maxTurns`**（用户口径，2026-09-28）：它是「最大 API 往返次数」，而本仓执行与评分
-   * 都不限轮次。原来这里是必填的 `number`、`index.ts` 写死 60 —— 那个 60 实测把一次 60 次往返的
-   * 评测截在 `error_max_turns` 上。SDK 侧该选项本身可选，不给就是不限。
+   * **没有 `maxTurns`**（用户口径）：它是「最大 API 往返次数」，而本仓执行与评分都不限轮次。
+   * 写死 60 会把一次 60 次往返的评测截在 `error_max_turns` 上。SDK 侧该选项本身可选，不给就是不限。
    */
   /**
    * 把子智能体的**文本与思考**也当作 assistant/user 消息转发，并带上 `parent_tool_use_id`
-   * （`sdk.d.ts` 的 `Options.forwardSubagentText`，默认 `false`）。spec §6.4.2。
+   * （`sdk.d.ts` 的 `Options.forwardSubagentText`，默认 `false`）。
    *
    * 厂商 JSDoc 逐字：*"By default, only tool_use/tool_result blocks from subagents are emitted
    * (enough for a heartbeat counter). When true, the full subagent conversation is forwarded
    * so consumers can render a nested transcript."*
    *
-   * ⚠️ **这一格曾经不在这里，而 SDK 支持它**——本接口是「比厂商窄的外壳」，
+   * ⚠️ **这一格必须在壳里**（SDK 支持它）——本接口是「比厂商窄的外壳」，
    * 而文件上游（`permissionMode` 那一段）已经把这个教训写死了：
    * *「外壳比厂商窄，就等于把厂商的能力关在门外」*。
-   * 这次的表现更隐蔽：**不报错、不缺数据，只是子智能体永远只有工具流水**（静默的空）。
-   * 真机 A/B：不开时子智能体消息 5 条、开了 10 条（多出 `thinking:3` + `text:3`）。
+   * 漏掉它**不报错、不缺数据，只是子智能体永远只有工具流水**（静默的空）。
+   * 判据：不开时子智能体消息 5 条、开了 10 条（多出 `thinking:3` + `text:3`）。
    */
   forwardSubagentText?: boolean;
   /**
    * 流式增量（`Options.includePartialMessages`，SDK 拼成 CLI 的 `--include-partial-messages`）。
    * 开了之后 wire 上**先出 `stream_event` 再出完整快照**：`content_block_delta` 的
    * `text_delta` / `thinking_delta` / `signature_delta` 三种增量由 `message.ts` 的 `streamEvent`
-   * 投影成 `chunk: 'delta'` 的消息草稿（编排层只广播不落盘，2026-10-09）。
+   * 投影成 `chunk: 'delta'` 的消息草稿（编排层只广播不落盘）。
    *
    * 两个已知边界（`includePartialMessages` 的 JSDoc 与本仓探针一致）：
    *  · **只覆盖主会话**：`stream_event` 的 `parent_tool_use_id` 恒 `null`，子智能体没有 token 级增量
@@ -132,10 +131,28 @@ export interface ClaudeQueryOptions {
    *
    * ⚠️ 与 `forwardSubagentText` 同一条教训的镜像：**这格不声明、调用方不传，wire 上就永远不出
    * `stream_event`**——解析路径（`streamEvent`）整条空转，能力声明 `streamingDelta: 'yes'` 与实现
-   * 不一致（docs/protocols/message-spec 已知边界表 2026-10-09 前的旧账）。真机探针
+   * 不一致（见 `docs/protocols/message-spec` 的已知边界表）。探针
    * `probe/v4/claude-official-remedies.mjs` ② 验证过它确实给真增量。
    */
   includePartialMessages?: boolean;
+  /**
+   * 本次注入的 **MCP 服务器**（本仓一律走 SDK 参数，**不落
+   * `<configHome>/.claude.json`**）。
+   *
+   * 为什么走参数而不是磁盘配置：
+   *   · 参数是**编程入口**，同名时程序化注入赢且只留一条（`source: 'dynamic'` 顶掉 `'project'`）；
+   *   · 不落盘就不会与宿主那份 `.claude.json` 混起来——本行的 `CLAUDE_CONFIG_DIR` 是一个空目录，
+   *     磁盘上那份配置从哪来、谁改过，都不必再追。
+   *
+   * 形状是窄结构 `ClaudeMcpServer`（`../../mcp`，同一份真源，别在这里重抄一遍）：
+   * stdio = `{type:'stdio',command,args?,env?}`（**无 `cwd`**）、http = `{type:'http',url,headers?}`。
+   *
+   * **`strictMcpConfig` 刻意不在这里声明**（用户口径：不压制）：本仓不传它，
+   * 于是被测仓库自带的 `.mcp.json` 照常生效——那一格一旦打开，仓库那几台会**整批消失**，
+   * 而界面上没有任何提示（只剩「已下发的 MCP 服务」少了几行）。真要压制时再声明它，
+   * 并同步改那条守卫（`index.test.ts` 的「保持关闭」）。
+   */
+  mcpServers?: Record<string, ClaudeMcpServer>;
 }
 
 export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {

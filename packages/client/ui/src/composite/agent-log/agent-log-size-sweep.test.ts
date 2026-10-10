@@ -1,14 +1,13 @@
 // @vitest-environment node
 /**
- * 「执行日志里每个带 `size` 的组件都写死 `size="small"`」这条口径的可执行形式（用户 2026-10-03 口径）。
+ * 「执行日志里每个带 `size` 的组件都写死 `size="small"`」这条口径的可执行形式。
  *
  * 它是**静态扫描**而不是渲染断言：这类漂移没有任何运行时症状（`size` 缺一格，页面照样工作，
  * 只是那一格比旁边大一圈），既有的行为守卫会全绿——只有专门扫源文件的一条能拦住。
  * 与 `agent-log-layering.test.ts` 同一手法（用 `fs` 读本目录的源文件）。
  *
  * 三条边界，都是**刻意**的：
- *   1. **按组件名逐个查开标签**，不是「整份文件里有 `size="small"` 就算过」——后者只被一个按钮满足，
- *      剩下九处全漏（本仓多次实测过这类「无区分力的守卫」）；
+ *   1. **按组件名逐个查开标签**，不是「整份文件里有 `size="small"` 就算过」——后者只被一个按钮满足， * 剩下九处全漏（这类断言没有区分力）；
  *   2. **查的是「开标签里的 `size`」**，所以抽屉几何那两处（`size="max(50vw, 800px)"` /
  *      `size={NESTED_DRAWER_SIZE}`）不是靶子：它们给的是**宽度**，不在 `SIZED_COMPONENTS` 里，
  *      且 `Drawer` 的 `size` 类型是 `'default' | 'large' | number | string`——收不到 `'small'`；
@@ -59,7 +58,7 @@ const RENDER_FILES = readdirSync(dir)
  * `badge/Badge.d.ts` 的 Props 接口里有的。没有实测过的名字不进这张表：
  * 宁可少扫，也不要写一个在本仓根本查不到东西的靶子。
  *
- * `Table` 是 2026-10-07 加进来的（计划清单改成两列 small Table）：依据同样是实测
+ * `Table` 也在面上（计划清单是两列 small Table）：依据同样是实测
  * ——`antd/es/table/InternalTable.d.ts:52` 写 `size?: SizeType`。本目录里只有计划清单那一处
  * `<Table>`，故这一格是真的有靶子，不是凑数。
  */
@@ -90,9 +89,9 @@ interface Hit {
  * `/<Card[^>]*>/` 会在第一个 `>` 上停住（或干脆误吞到下一个标签），于是「查整个开标签」
  * 就退化成「查它前面那半截」——漏报正是这么来的。
  *
- * 同理要**先跳过显式类型参数**（2026-10-07 补）：`<Table<TaskStep> …>` 里那个 `>` 也是尖括号，
+ * 同理要**先跳过显式类型参数**：`<Table<TaskStep> …>` 里那个 `>` 也是尖括号，
  * 不是标签结束。不跳的话，扫描面上一出现泛型写法，这一格就报成「缺 `size="small"`」——
- * 明明是写了的（实测：`<Table<TaskStep>` 加了那四行 `size="small"` 仍然判红），
+ * 明明是写了的（`<Table<TaskStep>` 带那四行 `size="small"` 也会判红），
  * 而误伤会让人去改产品代码迁就守卫，那正是本仓不肯要的方向。
  */
 function openingTags(source: string, name: string): Hit[] {
@@ -109,7 +108,7 @@ function openingTags(source: string, name: string): Hit[] {
     }
     // 紧跟组件名的那一对尖括号 = 类型参数（属性位置上不会出现 `<`，故只看这一个字符）：
     // 跳到它闭合之后，里面的 `>` 一个都不当标签结束。**`=>` 的 `>` 不算闭合**
-    // （2026-10-07 复核实测：`<Table<Record<string, (row: string) => void>>` 不排除箭头就早停，
+    // （`<Table<Record<string, (row: string) => void>>` 不排除箭头就早停，
     // 于是「写了 size 仍判红」——那正是本条要消灭的误伤）。
     //
     // 已知局限（如实登记，与 `agent-log-layering.test.ts` 的 stripComments 同处置）：类型实参里的
@@ -215,7 +214,7 @@ describe('执行日志的 size 口径：带 size 的组件一律 small', () => {
   it('`Listy` 也不支持 size，spec 表格里那句「Listy size="small"」是 antd 6 的过期写法', () => {
     const listyTypes = installedFile('@rc-component/listy/es/List.d.ts');
     expect(listyTypes).not.toMatch(/\bsize\s*\??:/);
-    // 2026-10-07：任务清单改成 `Table`（那一处的 size 已由上面 `SIZED_COMPONENTS` 那一格守着），
+    // 任务清单是 `Table`（那一处的 size 已由上面 `SIZED_COMPONENTS` 那一格守着），
     // 还在 `Listy` 面上的只剩这两处
     for (const file of ['ask-user-card.tsx', 'virtual-turn-list.tsx']) {
       expect(RENDER_FILES).toContain(file);

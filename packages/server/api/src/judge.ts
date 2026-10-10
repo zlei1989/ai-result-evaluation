@@ -7,7 +7,7 @@
  *   2. **只用设置页的全局默认评分模型**（`resolveJudgeRoute()`，**无参**）：这里**没有**智能体通路，
  *      也不接受任何模型 id 入参——入参里带一对 id 就等于让调用方能绕开设置页那一格；
  *      强度（`resolveJudgeEffort()`）与它**同源**：同一份配置快照里读出来，经 `requireJudgeEffort()`
- *      校验后交给两条分支。它同样是**请求参数**而不是连接事实，故不在 `route` 上（spec §5.3）；
+ *      校验后交给两条分支。它同样是**请求参数**而不是连接事实，故不在 `route` 上；
  *   3. **两个分支的差别只有输入**：
  *      · `prompt` 为空 ⇒ 「智能生成」：校验仓库（取仓库名）→ 调模型 → **合并**；
  *      · `prompt` 非空 ⇒ 「智能识别」：**不碰仓库**（那段文本里已有全部信息）→ 调模型 → 整表替换。
@@ -30,7 +30,7 @@ import {
 import { loadConfig, resolveRepoInfo } from '@aieval/core';
 import { callTextApi, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from '@aieval/evaluator';
 
-/** 转出评分模型路由解析：HTTP 层要用它做「未配置评分模型」的即时报错（契约 §6） */
+/** 转出评分模型路由解析：HTTP 层要用它做「未配置评分模型」的即时报错 */
 export { resolveJudgeRoute } from '@aieval/evaluator';
 
 /** 原文片段保留长度：够定位问题，又不会把几百 KB 的回复塞进错误响应 */
@@ -55,7 +55,7 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
   const route = resolveJudgeRoute();
   // 强度与尺子同源（同一份 `defaultJudge` 快照，两次读之间没有 await）。校验紧挨着读点：
   // 手改 config.json 写进的越域档位 / 空串在这道门上拦下，且位置在**调模型之前**——
-  // 漏过去就要跑到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远（spec §5.4 / D8）
+  // 漏过去就要跑到 dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远
   const effort = resolveJudgeEffort();
   requireConfiguredJudgeEffort(effort);
 
@@ -96,7 +96,7 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
     });
     const parsed = parseGenerated(raw, '调整');
     // 清单**从两张表算出来**（不是模型自述的改动说明）：单一真源是那张表本身，
-    // 于是清单可以被单测、被变异验证，也不会出现「模型说改了 A、实际改的是 B」这种自相矛盾
+    // 于是清单可以被单测钉住，也不会出现「模型说改了 A、实际改的是 B」这种自相矛盾
     const changes = diffRubric(input.rubric, parsed);
     return {
       rubric: parsed,
@@ -127,7 +127,7 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
 }
 
 /**
- * 校验「评分配置里那一格强度」是否落在「模型声明 ∩ 评分智能体域」里（spec §5.4 / D8 的第二道门）。
+ * 校验「评分配置里那一格强度」是否落在「模型声明 ∩ 评分智能体域」里（第二道门）。
  *
  * 为什么要自己找一次模型记录：`resolveJudgeRoute()` 只回**连接事实**（`TextRoute` 上刻意没有
  * `supportedEfforts`），而档位判据需要它。找的是与路由解析**同一份快照**里的同一对 id（两次读之间

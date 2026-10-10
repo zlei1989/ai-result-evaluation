@@ -1,8 +1,8 @@
 /**
  * 评分路由解析：**只有一个来源**——设置页「评分配置」的全局默认评分模型；
  * 没有则抛 CONFLICT + 指向设置页的中文原因。
- * 为什么放在 evaluator 而不是 api 层：evaluator 在 p4 的评分阶段也要自己解析一次，
- * 而 evaluator 不能依赖 api（依赖方向单向）。api 层只做转出（契约 §6 的 `judge.ts`）。
+ * 为什么放在 evaluator 而不是 api 层：evaluator 在评分阶段也要自己解析一次，
+ * 而 evaluator 不能依赖 api（依赖方向单向）。api 层只做转出（`judge.ts`）。
  * 三种失败都要给出**具体到 id** 的原因，而不是笼统的「未配置」：
  *   ① 全局默认为空；② 指向的供应商已被删除；③ 模型不在该供应商的清单里。
  * ②③ 的共同点是「配置看起来有、实际用不了」——笼统报「未配置」会让用户去设置页反复确认一个明明填了的字段。
@@ -76,7 +76,7 @@ export function resolveJudgeRoute(): TextRoute {
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     modelId,
-    // 窗口两格（spec §4.2 / D1）：这条路由会被智能体评分通路**原样**当适配器路由用，
+    // 窗口两格：这条路由会被智能体评分通路**原样**当适配器路由用，
     // 少了它，cc 驱动的评分模型不会加 `[1m]`、codex 不写 `model_context_window` —— 与候选行的行为不一致。
     // 缺省时不写这两个键（适配器一律按「键不存在 = 未知」处理）。
     ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
@@ -97,7 +97,7 @@ export function resolveJudgeEffort(): string | undefined {
 }
 
 /**
- * 评分前的档位校验（spec §5.4 / D8）：档位必须落在「模型声明 ∩ 评分智能体域（未配则规范五档）」里。
+ * 评分前的档位校验：档位必须落在「模型声明 ∩ 评分智能体域（未配则规范五档）」里。
  *
  * 拦的是**手改 `config.json`** 与「换掉评分模型 / 评分智能体之后留下的悬空档位」——
  * `effort` 的 schema 守卫只作用于走 schema 的**写下侧**（设置页那条 patch 路由），而 `loadConfig()`
@@ -146,7 +146,7 @@ export function requireJudgeEffort(input: {
  * 可能来自另一种协议的供应商——两者不匹配时那家 CLI 根本驱动不了它（Codex 只吃 OpenAI 兼容，
  * Claude Code 只吃 Anthropic 兼容，DSH 两条都吃）。
  *
- * 第三道判据是**枚举之外的值**（终审 Minor）：类型上是 `AgentKind`，但 `loadConfig()` **不做 zod
+ * 第三道判据是**枚举之外的值**：类型上是 `AgentKind`，但 `loadConfig()` **不做 zod
  * 校验**（它只把磁盘上的 json 与默认值合并），手改过的 config.json 里可以写着 `"gemini"`。
  * 不拦的话它会一路走到 agents 的 `getProvider()`，那里抛的是**裸 Error** ⇒ 路由层折成
  * 500「服务端内部错误」，用户拿着一个指向服务的报错、却该去改评分配置。故这里先判枚举：

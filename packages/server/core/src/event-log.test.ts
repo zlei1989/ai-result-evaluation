@@ -62,7 +62,7 @@ describe('appendEvent', () => {
     expect(appendEvent(file, { type: 'status', status: 'judged' }).seq).toBe(100);
   });
 
-  it('BOM 开头的日志在追加时也认得已有 seq（R24：否则重号，Last-Event-ID 续订会丢事件）', () => {
+  it('BOM 开头的日志在追加时也认得已有 seq（否则重号，Last-Event-ID 续订会丢事件）', () => {
     // 外部工具（PowerShell 5.1 的 Set-Content / Out-File）会在文件开头留下 U+FEFF。
     // 若发号路径不剥 BOM：首行 JSON.parse 失败且被静默跳过 → max 退回 0 → 新事件拿到 seq 1，
     // 与文件里已有的事件重号；客户端拿 `Last-Event-ID: 1` 重连时，新事件会被前端去重悄悄丢掉。
@@ -92,7 +92,7 @@ describe('appendEvent', () => {
     appendEvent(file, { type: 'status', status: 'pending' });
     let caught: unknown;
     try {
-      // 模拟 p3/p4 的形状漂移：类型与契约不同步时，运行时送进来的就是这样一条缺 text 的 log 事件。
+      // 模拟 agents / 编排层的形状漂移：类型与契约不同步时，运行时送进来的就是这样一条缺 text 的 log 事件。
       // 没有写侧校验的话它会被写进文件，而 readEvents 的 schema 过滤会把它**静默丢掉**——
       // 写成功、读不到，抽屉 / `/log` / SSE 回放里这条事件凭空消失，且两端都不报错。
       appendEvent(file, { type: 'log', stream: 'stdout' } as unknown as PendingAgentEvent);
@@ -132,7 +132,7 @@ describe('readEvents', () => {
     expect(readEvents(join(dir, 'nope.jsonl'))).toEqual([]);
   });
 
-  it('跳过空行、坏 JSON 行与不符合 schema 的行，其余全部读出并 WARN（Review Focus 3）', () => {
+  it('跳过空行、坏 JSON 行与不符合 schema 的行，其余全部读出并 WARN', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     appendEvent(file, { type: 'status', status: 'running' });
     // ① 写了一半的 JSON（进程被杀在写盘中途）

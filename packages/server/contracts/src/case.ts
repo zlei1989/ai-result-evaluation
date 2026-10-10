@@ -5,7 +5,7 @@
  *      空串不合法，避免「留空」在落盘时变成两种不同的值；
  *   2. `repoBranch: null` 同一口径（null = 用远端默认分支），且带 `.default(null)`：
  *      旧 config.json 里根本没有这一列，读回来必须是 null 而不是 undefined；
- *   3. 仓库校验与 commit 候选按**仓库路径**入参（§11 R7）：创建用例时还没有 caseId，
+ *   3. 仓库校验与 commit 候选按**仓库路径**入参：创建用例时还没有 caseId，
  *      而这两件事的输入本来就是仓库路径。
  *
  * **用例不再持有评分模型**：评分与「AI 生成」一律走设置页「评分配置」的全局默认
@@ -84,7 +84,7 @@ export type CaseCreate = z.infer<typeof CaseCreateSchema>;
 export const CasePatchSchema = CaseCreateSchema.partial();
 export type CasePatch = z.infer<typeof CasePatchSchema>;
 
-/** 仓库校验结果：本地来源只填前三项 + kind='local'，远端另有镜像三件套与 tip（spec §4.3） */
+/** 仓库校验结果：本地来源只填前三项 + kind='local'，远端另有镜像三件套与 tip */
 export const RepoInfoSchema = z.object({
   repoPath: z.string(),
   repoName: z.string(),
@@ -97,14 +97,14 @@ export const RepoInfoSchema = z.object({
 });
 export type RepoInfo = z.infer<typeof RepoInfoSchema>;
 
-/** commit 候选（spec §4.2 最近 20 条）：纯便利功能，手工输入任意合法 hash 仍然可行 */
+/** commit 候选（最近 20 条）：纯便利功能，手工输入任意合法 hash 仍然可行 */
 export const CommitCandidateSchema = z.object({
   hash: z.string(),
   subject: z.string(),
 });
 export type CommitCandidate = z.infer<typeof CommitCandidateSchema>;
 
-/** 校验入参：**按仓库路径**而不是按 caseId（见 §11 R7） */
+/** 校验入参：**按仓库路径**而不是按 caseId */
 export const RepoPathInputSchema = z.object({ repoPath: z.string().min(1) });
 
 /**
@@ -121,7 +121,7 @@ export type RepoValidateInput = z.infer<typeof RepoValidateInputSchema>;
 export type RepoCommitsInput = z.infer<typeof RepoCommitsInputSchema>;
 
 /**
- * 「生成 / 识别 / 调整」三个动作**共用一个入口**，由 `mode` 显式分派（2026-10-08 起）。
+ * 「生成 / 识别 / 调整」三个动作**共用一个入口**，由 `mode` 显式分派。
  *
  * 为什么原来是隐式的（`prompt` 空不空）而现在必须显式：两支时「有没有粘文本」刚好等于「走哪一支」，
  * 加上第三支（`adjust`：拿一句话改**现有的**表）之后这个等式就不成立了——`recognize` 与 `adjust`

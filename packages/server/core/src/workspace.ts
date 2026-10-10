@@ -1,6 +1,6 @@
 /**
- * 工作区引擎：目录结构 + 行工作区准备（spec §5.5 第 1/2 步、§6.3）。
- * 目录布局是**硬约定**（契约 §10），每一层都有消费者：
+ * 工作区引擎：目录结构 + 行工作区准备。
+ * 目录布局是**硬约定**，每一层都有消费者：
  *   {workspaceRoot}/cases/{caseId}/cache/   用例级缓存仓库（首次评测克隆一次，之后复制）
  *   {workspaceRoot}/{runId}/run.json        运行快照
  *   {workspaceRoot}/{runId}/rows/{rowId}/workspace   该行工作副本（分支 test/{rowId}）
@@ -11,12 +11,12 @@
  *   1. 事件日志与 `run.json` **不在** workspace 里：agent 可以在 workspace 内随意建删文件，
  *      把证据放进去等于把证据交给被测对象；
  *   2. 重跑同一行必须**先清掉上一轮的工作副本与两个独立配置目录**（workspace + .agenthome + .judgehome）：
- *      留下上一轮的工作区，第二个候选就是在第一个候选的改动之上继续写，分数无意义（spec §3 F6）；
- *   3. 但**绝不能连 `events.jsonl` 一起清**（§11 R27）：清空日志的唯一所有者是 `resetEvents`
- *      （契约 §3.4），而 p4 的顺序是「先 `resetEvents` → 发 `preparing`（seq 1，这一步就建出了行目录）
+ *      留下上一轮的工作区，第二个候选就是在第一个候选的改动之上继续写，分数无意义；
+ *   3. 但**绝不能连 `events.jsonl` 一起清**：清空日志的唯一所有者是 `resetEvents`
+ *      ，而编排层的顺序是「先 `resetEvents` → 发 `preparing`（seq 1，这一步就建出了行目录）
  *      → 再 `prepareRowWorkspace`」。这里整目录删掉，刚写下的 `preparing` 就没了，
- *      下一次追加又从 seq 1 开始；p5 的 `useRowStream` 按 seq 去重，于是清空后的第一条状态事件
- *      被静默吞掉——正是 R24 存在的理由，而且每一轮都会发生。
+ *      下一次追加又从 seq 1 开始；界面的 `useRowStream` 按 seq 去重，于是清空后的第一条状态事件
+ *      被静默吞掉——正是这条保证存在的理由，而且每一轮都会发生。
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -54,7 +54,7 @@ export function rowWorkspaceDir(workspaceRoot: string, runId: string, rowId: str
 }
 
 /**
- * 该行的智能体独立配置目录（spec §3 F8）。
+ * 该行的智能体独立配置目录。
  * 必须**每行一个**：并行时多个 agent 会抢同一份 `~/.claude` / `~/.codex` 的会话文件，
  * 而且 `~/.claude/settings.json` 的 `env` 块会盖掉我们注入的模型路由。
  */
@@ -85,7 +85,7 @@ export function rowEventsFile(workspaceRoot: string, runId: string, rowId: strin
 }
 
 /**
- * 该行的**消息日志**（JSONL，spec v3 §2 的 `AgentMessage` 逐条追加）。
+ * 该行的**消息日志**（JSONL，`AgentMessage` 逐条追加）。
  *
  * 为什么与 `events.jsonl` 分开：两者是**两个维度**——事件是行级的（状态、日志、计量、失败、结束，
  * 按 `seq` 去重与续订），消息是内容级的（说话者、内容块、工具族、子智能体归属，按 `mergeKey`
@@ -97,7 +97,7 @@ export function rowMessagesFile(workspaceRoot: string, runId: string, rowId: str
 }
 
 /**
- * 该行**评分阶段的事件日志**（JSONL，2026-10-10）。
+ * 该行**评分阶段的事件日志**（JSONL）。
  *
  * 为什么与 `events.jsonl` 分开：行级事件日志回答的是「**这一行**跑成什么样」（状态、计量、失败、结束），
  * 而评分阶段的原始输出是**另一个会话**的流水（评审者自己的工具调用、推理、报错）。混在一条流里，
@@ -121,7 +121,7 @@ export function rowJudgeMessagesFile(workspaceRoot: string, runId: string, rowId
 }
 
 /**
- * 该行的**尝试账本**（JSONL，追加、永不清空；2026-09-27）。
+ * 该行的**尝试账本**（JSONL，追加、永不清空）。
  *
  * 为什么必须与 `events.jsonl` 分开：事件日志的语义是「**当前这次尝试**的事件」（`runRowAttempt`
  * 每次开跑前 `resetEvents` 清空它，见文件头口径 3 与 `resetEvents` 的注释）。而自动重试每重试一次
@@ -146,12 +146,12 @@ export function runSnapshotFile(workspaceRoot: string, runId: string): string {
  * （上一轮被测智能体的会话与配置）与 `.judgehome/`（上一轮**评分**智能体的会话与配置）。
  * 为什么 `.judgehome` 也要清：留着它，下一轮的评审者会带着上一轮的会话与配置跑——
  * 配置可能指向另一家 CLI（评分智能体换了），而 CLI 对读不懂的配置是**静默忽略**的。
- * 为什么不整目录删（§11 R27）：行目录里还住着 `events.jsonl`——唯一真相源，且它的清空归
+ * 为什么不整目录删：行目录里还住着 `events.jsonl`——唯一真相源，且它的清空归
  * `resetEvents` 独占。整目录删会把「重跑」这个动作变成对事件日志的隐式清空（见文件头口径 3）。
  * 三个名字逐个列出而不是删一个白名单之外的全清：将来行目录里再落新东西时，
  * 这条口径是「不被顺手删掉」，而不是「默认删掉」。
  *
- * 2026-10-07 补的第四条：**每一次删除都走有界重试**（`removeTreeWithRetry`）。成因是实测出来的
+ * 第四条：**每一次删除都走有界重试**（`removeTreeWithRetry`）。成因是实测出来的
  * ——厂商 CLI 会 spawn 一串继承句柄的孙进程（codex 的插件同步 `git` 链），它们持着 `.agenthome` /
  * `.judgehome`，而 Windows 上的句柄释放比「进程退出」晚；一次 `rmSync` 不成就把整行折成 INTERNAL，
  * 会让一行在锁消失之前**每次重跑都失败**（真机：同一条报错在 7 次尝试里逐字重复）。
@@ -174,11 +174,11 @@ function removeOrThrow(target: string): void {
  * → 建分支 → 建 `.agenthome`。
  * 为什么先确保缓存再清行产物：清完行产物、克隆却失败的话，这一行会停在一个「工作区不存在」
  * 的中间态；反过来先备好缓存，失败时旧工作区仍在原处，重跑是幂等的。
- * 为什么复制之后失败要回滚行产物（§11 R25）：见下面 catch 块里的理由——半成品比「什么都没有」更危险。
- * 返回值里的 `baselineCommit` 是 `checkoutRow` 解析出的 40 位具体 hash（§11 R2）——
- * p4 要把它写进 `EvalRow.baselineCommit`，p5 的 diff 路由要拿它去算 `collectDiff`。
+ * 为什么复制之后失败要回滚行产物：见下面 catch 块里的理由——半成品比「什么都没有」更危险。
+ * 返回值里的 `baselineCommit` 是 `checkoutRow` 解析出的 40 位具体 hash——
+ * 编排层要把它写进 `EvalRow.baselineCommit`，界面的 diff 路由要拿它去算 `collectDiff`。
  * `commitHash` 同时传给 `ensureCaseCache`：`null`（= 默认分支 HEAD）要求缓存先刷新到来源当前的 tip，
- * 否则「默认分支 HEAD」会退化成「上次克隆时的 HEAD」（§11 R28）。
+ * 否则「默认分支 HEAD」会退化成「上次克隆时的 HEAD」。
  */
 export function prepareRowWorkspace(input: {
   workspaceRoot: string;
@@ -194,10 +194,10 @@ export function prepareRowWorkspace(input: {
 
   const dir = rowDir(input.workspaceRoot, input.runId, input.rowId);
   if (existsSync(dir)) {
-    // 只清 workspace 与两个配置目录：events.jsonl 归 resetEvents（§11 R27），见 clearRowArtifacts
+    // 只清 workspace 与两个配置目录：events.jsonl 归 resetEvents，见 clearRowArtifacts
     log.info('清理上一轮的行产物（workspace、.agenthome、.judgehome）', { dir });
     // 删除失败（Windows 上上一轮 agent 进程还没退干净、句柄没释放 → EPERM/EBUSY）必须折成中文原因：
-    // 裸抛 errno 英文原文会一路冒到界面（spec §10 禁止），与 git.ts 的 executeOrFail 同一口径；
+    // 裸抛 errno 英文原文会一路冒到界面（禁止），与 git.ts 的 executeOrFail 同一口径；
     // 原文放 message 里供排查，调用方拿到的是可处置的 INTERNAL。
     try {
       clearRowArtifacts(dir);
@@ -226,11 +226,11 @@ export function prepareRowWorkspace(input: {
     log.info('行工作区已就绪', { workspacePath, agentHome, branch: input.branch, baselineCommit });
     return { workspacePath, agentHome, baselineCommit };
   } catch (error) {
-    // 失败**回滚本模块的产物**（§11 R25）：复制是在 checkout 之前做的，checkout 抛错（commit 不存在、
+    // 失败**回滚本模块的产物**：复制是在 checkout 之前做的，checkout 抛错（commit 不存在、
     // 分支建不起来）时磁盘上已经留下一个带 `.git` 的目录——它看起来「建好了」，实则 HEAD 还停在
     // 复制过来的那个位置。留着它，任何「目录已存在就跳过准备」的判断都会拿它去跑 agent，
-    // 产出的 diff 相对错误的基线（spec §3 F6 那类静默错分）。清掉后重跑与首次调用同路。
-    // events.jsonl 同样不动：回滚不该顺手把「这一行准备失败」这条证据删掉（§11 R27）。
+    // 产出的 diff 相对错误的基线（那类静默错分）。清掉后重跑与首次调用同路。
+    // events.jsonl 同样不动：回滚不该顺手把「这一行准备失败」这条证据删掉。
     // 回滚本身失败**绝不能顶替原始错误**：调用方要处置的是「commit 不存在」这类可修复的原因
     // （改完用例记录重跑正是这里最需要的动作），把它换成一个 EPERM/EBUSY 会把 code 与文案都指错方向。
     // 故清理单独包一层：清理失败只 WARN，原始 error 原样 rethrow。

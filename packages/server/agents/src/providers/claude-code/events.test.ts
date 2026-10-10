@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * claude-code 的消息投影：计量三项齐全才有值、缺项 → null + WARN、重复丢弃、未识别保留。
- * 这里的两条断言（未识别不丢失 / 缺失得 null）是本计划的核心守卫，必须逐字按 spec §5.6.3 的措辞验。
+ * 这里的两条断言（未识别不丢失 / 缺失得 null）是核心守卫，必须逐字验。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { TurnState } from '../../turn';
@@ -163,7 +163,7 @@ describe('projectClaudeMessage：result 与计量', () => {
   });
 
   /**
-   * 终态轮次的口径（2026-09-28）：**以我们数出来的为准**（跑动期界面看的就是它，两边必须同源），
+   * 终态轮次的口径：**以我们数出来的为准**（跑动期界面看的就是它，两边必须同源），
    * `num_turns` 只在一次都没数到时兜底；两者不一致要落 WARN——「厂商报 60、我们数出 58」这种事
    * 绝不静默。下面三条分别钉这三件事。
    */
@@ -206,7 +206,7 @@ describe('projectClaudeMessage：result 与计量', () => {
     expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('num_turns'))).toBe(false);
   });
 
-  it('usage 缺一项 → tokens null，并落一条保留原始负载的 WARN（Review Focus #5）', () => {
+  it('usage 缺一项 → tokens null，并落一条保留原始负载的 WARN', () => {
     const projection = projectClaudeMessage(
       {
         type: 'result',
@@ -236,7 +236,7 @@ describe('projectClaudeMessage：result 与计量', () => {
 });
 
 /**
- * 跑动期的实时用量估算（用户口径，2026-09-26：claude-code 也要在跑动期就看到 tok/轮次）。
+ * 跑动期的实时用量估算（用户口径：claude-code 也要在跑动期就看到 tok/轮次）。
  *
  * 依据（本机安装的 SDK 类型文档 `@anthropic-ai/claude-agent-sdk/sdk.d.ts`）：
  *   · assistant 消息带 `message.usage`，但它**不是最终值**（同一 message.id 会按内容块重复到达，
@@ -276,7 +276,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   it('主循环 assistant 消息：按 message.id 计一次轮次，估算以 tokensEstimated 交回骨架（界面靠它实时刷新）', () => {
     const projection = projectClaudeMessage(assistantMessage({ uuid: 'u1', messageId: 'm1', usage: TRIO }), newState(), CONTEXT);
 
-    // 轮次在这一条上就涨（**不等 token**）：这正是原来「轮次被 token 拖住」的修法
+    // 轮次在这一条上就涨（**不等 token**）：发射门槛是轮次，不是「轮次与 token 同时在」
     expect(projection.turns).toBe(1);
     // 估算走 tokens + tokensEstimated：只进事件、不进结果（见下一条）
     // （两个可选格在估算路径上是 `null`：`output_tokens_details` 不在流式中间快照里）
@@ -343,7 +343,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   });
 
   /**
-   * **全 0 的估算快照 = 「这一条还没填好」，不是「采到了 0」**（2026-09-28 真机实测）。
+   * **全 0 的估算快照 = 「这一条还没填好」，不是「采到了 0」**。
    *
    * 实测那一轮（`12eff3a1` 的 claude-code 行，`likecode` 网关 + `jd/GLM-5.3`）：17 条 assistant
    * 消息的 `usage` 三项**全是 0**，而收尾 `result` 上的结算值是 `输入 65,063 / 缓存 407,808 /
@@ -397,7 +397,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   });
 
   /**
-   * 归属（2026-10-05，spec §2.3）：claude 的读数只由**主循环**消息触发（侧链 `parent_tool_use_id`
+   * 归属：claude 的读数只由**主循环**消息触发（侧链 `parent_tool_use_id`
    * 非空时 `countModelRoundTrip` 返回 `null` ⇒ 骨架根本不发 `usage`）⇒ 归属恒是主会话 + 当前主循环计数。
    */
   it('usage 投影带归属（主会话 + 主循环计数）；侧链消息不带归属也不发 usage', () => {
@@ -413,14 +413,14 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
       CONTEXT,
     );
     // 侧链不占主循环的号（既有口径）⇒ 这一条没有轮次，也就没有归属可言。
-    // 归属格写**显式 `null`**（2026-10-05 审查轮 1 裁定）：投影层与草稿层同一种形状
+    // 归属格写**显式 `null`**：投影层与草稿层同一种形状
     //（`AgentEventDraft` 那一格恒在，没有归属就是 `null`），读的人不必去问「缺省与 null 在这里有没有别」。
     expect(side.turns).toBeNull();
     expect(side.turn).toBeNull();
   });
 
   /**
-   * 收尾读数的归属（2026-10-05，spec §2.3）：`result` 是**主循环**的收尾那条 ⇒ 它的**每一个**返回点
+   * 收尾读数的归属：`result` 是**主循环**的收尾那条 ⇒ 它的**每一个**返回点
    * 都要带同一格「(主会话, 数出来的号)」：结构化输出重试用尽、正常收尾、以及别种 `is_error` 的失败收尾。
    *
    * 为什么这一条要单独钉：`TurnProjection.turn` 是**可选格**，漏填既不报类型错、也不会让任何既有用例变红
@@ -466,7 +466,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   });
 
   /**
-   * 归属里的轮次必须是**刚数出来的那个数**，不是一个长得像的常量（2026-10-05 审查轮 1 / 发现 1）。
+   * 归属里的轮次必须是**刚数出来的那个数**，不是一个长得像的常量。
    *
    * 为什么这一条非有不可：上面两组的四处断言全是 `round: 1`（那两组的主循环只投了一条消息），
    * 于是**把四个出口统统硬编码成 `round: 1` 也能让整个包全绿**——而「轮次 = 主循环计数」正是本任务的
@@ -542,7 +542,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
   });
 
   /**
-   * stream_event **不进原始日志**（2026-10-09 用户口径，真机形状照抄）：
+   * stream_event **不进原始日志**（用户口径，真机形状照抄）：
    * 一条增量只带一小段 delta（真机一次运行几百上千条），落进未识别兜底会把「原始输出」面板
    * 刷成 JSON 流水。它的落点只有对话视图（消息侧 `streamEvent` 折成 `chunk:'delta'`、
    * 编排层只广播不落盘 ⇒ SSE 驱动执行日志打字机）。事件侧零产出、去重照常（同 uuid 再来仍丢）。
@@ -568,7 +568,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
   });
 
   /**
-   * `system/thinking_tokens`（**思考进度帧**）同样不进原始日志（2026-10-09 真机修的第二个通道）。
+   * `system/thinking_tokens`（**思考进度帧**）同样不进原始日志（第二个通道）。
    *
    * 为什么单独一条用例：第一版只挡了 `stream_event`，而真机上刷屏的其实是**这一种**——
    * run `7f05c765` 的 claude 行 12,509 条 `log` 里有 **11,629 条**是它（93%），
@@ -627,11 +627,11 @@ describe('projectClaudeMessage：重复与未识别', () => {
   });
 
   /**
-   * 工具块那一条的**人话摘要**（用户口径，2026-09-29）：卡片底部的活动行显示 `summary`，
+   * 工具块那一条的**人话摘要**（用户口径）：卡片底部的活动行显示 `summary`，
    * 而 `[{"type":"tool_use",…}]` 那种几百字符的 JSON 不是消息。原始负载仍逐字在 `text` 里。
    *
-   * **2026-10-07 加参数**：从前只给工具名（`调用工具 Bash`），而同一行原始负载里 `input.command`
-   * 写着 `ls -la "D:/w"` —— 那句摘要比它替换掉的人话信息量更低（活动行反而更差）。
+   * **带参数**：只给工具名（`调用工具 Bash`）时，同一行原始负载里 `input.command` 明明写着
+   * `ls -la "D:/w"` —— 那句摘要比它替换掉的人话信息量更低（活动行反而更差）。
    * 现在参数摘要与另两家共用 `src/activity.ts`：同一句句式、同一把截断尺子。
    */
   it('工具块带人话摘要（工具名 + 参数，多个块串成一句），原始 JSON 一个字段都不少', () => {
@@ -663,7 +663,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
     expect(projection.drafts).toHaveLength(1);
   });
 
-  it('空文本块不落成空日志：有别的块时只落别的块（评审 L4）', () => {
+  it('空文本块不落成空日志：有别的块时只落别的块', () => {
     // `{ type: 'text', text: '' }` 不是「未知事件」，但它也不是一条可读日志——落下去就是抽屉里的一行空白。
     const projection = projectClaudeMessage(
       {
@@ -699,7 +699,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
    * `user` 消息承载的是工具结果（真机形状：
    * `{"type":"user","message":{"role":"user","content":[{"tool_use_id":…,"type":"tool_result","content":…}]}}`）。
    *
-   * 口径（2026-10-07 统一）：**成功返回不播、报错必须播**——活动行回答「在做什么」，
+   * 口径：**成功返回不播、报错必须播**——活动行回答「在做什么」，
    * 而「这一行出事了」没有别的行级出口。原始负载两种情形都照旧逐字落盘。
    */
   it('工具结果：成功返回**不给摘要**、报错给「工具报错：…」，两者的原始负载都不动', () => {
@@ -744,7 +744,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
 });
 
 /**
- * 最终答复出口（spec §8 / D2）：评分智能体要从结果里读到「模型最后说了什么」，
+ * 最终答复出口：评分智能体要从结果里读到「模型最后说了什么」，
  * 而不是从 `log` 事件流里重建——重建三家形状各不相同，不可靠。
  * claude-code 的收尾消息是 `result`，故答复只在它上面采；中间轮次的 assistant 文本不算答复。
  */
@@ -766,8 +766,8 @@ describe('projectClaudeMessage：最终答复（finalText）', () => {
   });
 });
 
-describe('projectClaudeMessage：形状异常与空文案（评审 N2 / N3）', () => {
-  it('usage 根本不是对象（形状异常）→ tokens null 且仍落一条带原始负载的 WARN（N2：不得静默）', () => {
+describe('projectClaudeMessage：形状异常与空文案', () => {
+  it('usage 根本不是对象（形状异常）→ tokens null 且仍落一条带原始负载的 WARN（不得静默）', () => {
     const projection = projectClaudeMessage(
       { type: 'result', uuid: 'r6', result: '完成', usage: 5 },
       newState(),
@@ -802,7 +802,7 @@ describe('projectClaudeMessage：形状异常与空文案（评审 N2 / N3）', 
 });
 
 /**
- * 结构化输出的最终答复出口（2026-09-28 评分通路的结构化产出）。
+ * 结构化输出的最终答复出口（评分通路的结构化产出）。
  *
  * 为什么出口要优先取 `structured_output`：结构化那一轮可能以 tool_result 载体收尾、**没有尾随
  * assistant 消息**（`sdk.d.ts:2054-2065` 逐字写着 end-turn tool sessions "ends on a successful
@@ -828,7 +828,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
     };
     const projection = projectClaudeMessage(raw, state, CONTEXT);
     expect(state.finalText).toBe('{"dimensions":[],"totalScore":0,"verdict":"还行"}');
-    // 判据必须**点名**那条不一致 WARN（修复轮 2 / Finding 1）：本 fixture 没有 `usage`，而 `readTokens`
+    // 判据必须**点名**那条不一致 WARN：本 fixture 没有 `usage`，而 `readTokens`
     // 在三元组不齐时**无条件**落一条「用量负载不完整…」WARN ⇒ 原来那句 `includes('[WARN]')` 与「两源不
     // 一致」无关地**恒真**。实测形状：把 events.ts 里那条不一致 WARN 整段删掉，本文件 31 条**全绿** ——
     // 也就是说「两个来源不一致要落 WARN」这条要求在仓里当时没有任何会红的用例（plan-mandated 假守卫）。
@@ -839,7 +839,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
     ).toBe(true);
   });
 
-  it('两个来源同时存在且内容**一致** ⇒ 不落那条不一致 WARN（否证，修复轮 2 / R25）', () => {
+  it('两个来源同时存在且内容**一致** ⇒ 不落那条不一致 WARN（否证）', () => {
     const state = newState();
     // 一致时 `result` 与序列化逐字相同（结构化那条路径上 `result` 就是同一份 JSON 文本）
     const serialized = '{"verdict":"还行"}';
@@ -864,7 +864,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
   });
 
   /**
-   * 出厂形状的**四态**（修复轮 1 控制方 Finding A、B；修复轮 2 的 R24 补了空串那一格）。
+   * 出厂形状的**四态**（空串那一格也在内）。
    * `structured_output?: unknown` 什么都没承诺，下面三条把「没验证过的输入假设」两侧都封住：
    * 显式 `null` 与空串 `''` 都与「字段缺失」同义（没有**可用的**结构化产出），已序列化的 JSON
    * 字符串按 JSON 文本原样用（不二次编码）。真机只需要确认走的是哪一支。
@@ -915,7 +915,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
 });
 
 /**
- * 结构化输出重试用尽的归因（Task 3 Step 5）。
+ * 结构化输出重试用尽的归因。
  * 为什么这一格要单独钉：`error_max_structured_output_retries` 是**评分通路**才会遇到的收场
  * （候选执行阶段不传 schema），而它是 CLI 的英文 subtype。把它原样冒到界面，等于让使用者去猜
  * 「我的评分为什么没出分」；折成中文之后，界面上那句话本身就指向可执行的下一步。
@@ -935,16 +935,16 @@ describe('projectClaudeMessage：结构化输出重试用尽的归因', () => {
 });
 
 /**
- * 子智能体生命周期（spec §6 / §6.4）：claude 侧走 SDK **原生 `system/task_*` 消息**。
+ * 子智能体生命周期：claude 侧走 SDK **原生 `system/task_*` 消息**。
  *
  * 为什么这些守卫值得存在：`system` 类型过去**一律**落成 `unknownEventDraft`
  * （`events.ts` 的兜底分支），于是子智能体的派生与收场**只在原始 JSON 里躺着**、
- * 界面上完全不可见。真机实测（2.1.281）这些消息**默认就发**，不需要任何 SDK 选项。
+ * 界面上完全不可见。这些消息（CLI 2.1.281）**默认就发**，不需要任何 SDK 选项。
  *
- * 载荷逐字取自真机（§6.4.1），不是编的形状。
+ * 载荷逐字取自真机，不是编的形状。
  */
 describe('projectClaudeMessage：子智能体生命周期', () => {
-  /** 真机 task_started（§6.4.1 ①） */
+  /** 真机 task_started ① */
   const TASK_STARTED = {
     type: 'system',
     subtype: 'task_started',
@@ -959,7 +959,7 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
     prompt: 'Count the number of lines in the file notes.txt …',
   };
 
-  /** 真机 task_notification（§6.4.1 ②） */
+  /** 真机 task_notification ② */
   const TASK_DONE = {
     type: 'system',
     subtype: 'task_notification',
@@ -983,9 +983,9 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
     expect(payload.phase).toBe('start');
     expect(payload.source).toBe('wire');
     expect(payload.subagentId).toBe('ac9fca27ed014a4ea');
-    // 厂商原生 id ⇒ vendorId 与 subagentId 同值（spec §6.4.3：claude **不需要合成 id**）
+    // 厂商原生 id ⇒ vendorId 与 subagentId 同值（claude **不需要合成 id**）
     expect(payload.vendorId).toBe('ac9fca27ed014a4ea');
-    // 归属键：**这就是「用 parent_tool_use_id 划分归属」的那座桥**（真机实测三者相同）
+    // 归属键：**这就是「用 parent_tool_use_id 划分归属」的那座桥**（三者相同）
     expect(payload.parentToolUseId).toBe('call_e086fd6fde2f4f1ab029fce9');
     expect(payload.name).toBe('Count lines in notes.txt');
     expect(payload.subagentKind).toBe('general-purpose');
@@ -1031,7 +1031,7 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
     const payload = JSON.parse((projection.drafts[0] as { text: string }).text);
     expect(payload.phase).toBe('end');
     expect(payload.subagentId).toBe('ac9fca27ed014a4ea');
-    // spec §6：status 是真实终态 ⇒ **claude 侧用不到 statusMissing**（只有 codex 要用）
+    // status 是真实终态 ⇒ **claude 侧用不到 statusMissing**（只有 codex 要用）
     expect(payload.status).toBe('completed');
     expect(payload.statusMissing).toBeUndefined();
     expect(payload.outcome).toContain('3 lines');
@@ -1055,10 +1055,10 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
    *
    * 为什么不是"丢掉不投影"（我第一版就是那样）：那样会把**"派了一个子任务"这件事实**
    * 一起丢掉，而它恰好是派发面板要显示的东西。为什么不是"编一个 id"：编出来的 id
-   * 会让下游的配对**静默错位**（§4「缺就是缺」）。所以取第三条：**发事件、身份为 null**，
+   * 会让下游的配对**静默错位**（「缺就是缺」）。所以取第三条：**发事件、身份为 null**，
    * 让下游**显式**看到"这一条没有身份可用"，配对不上时是**响的**而不是错的。
    *
-   * 真机实测（两次运行）`task_id` 都非空 ⇒ 这条防御路径在生产上大概率不可达；
+   * 观测到的 `task_id` 都非空 ⇒ 这条防御路径在生产上大概率不可达；
    * 它保的是平台/版本差异。
    */
   it('task_started 缺 task_id ⇒ 仍发事件，但 subagentId / vendorId 都为 null（不编 id、也不丢事实）', () => {
@@ -1084,7 +1084,7 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
    * ⇒ 在 `TurnState` 里加一个谁都读不到的 Set 就是**死状态**。
    * 子任务的索引信息**就在这两条日志的载荷里**（`subagentId` / `parentToolUseId`），
    * 消费方按 `kind === 'subagent'` 过滤即可重建，不需要骨架替它维护一份镜像。
-   * spec §6 的 `message.subagentId` 是 **v2 契约**的事，等那一层落地时再从这里取。
+   * `message.subagentId` 是 **v2 契约**的事，等那一层落地时再从这里取。
    */
   it('两条日志自成索引：start 与 end 用同一个 subagentId，可配对', () => {
     const state = newState();
@@ -1100,7 +1100,7 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
 });
 
 /**
- * **厂商系统层事实的归一**（2026-10-04 收口）。
+ * **厂商系统层事实的归一**。
  *
  * 这一节补的缺口：`system/init` 行过去只以**原始 JSON** 落成一条 `log`，于是「这一行被下发了
  * 哪些工具 / 什么权限档」这件事在界面侧只能由**浏览器**去 `JSON.parse` 那条日志、并逐字认
@@ -1120,7 +1120,17 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
     tools: ['Task', 'Bash', 'Read', 'Write'],
     slash_commands: ['design', 'verify'],
     agents: ['claude', 'Explore'],
-    mcp_servers: [],
+    /**
+     * 真机形状（run `7f05c765` 的候选行 `057d00fb` 逐字，四台全给——回放这份样本就是
+     * 「真机上 claude 的 `mcp_servers` 不再被折成 `[]`」那条验收的证据）：
+     * `mcp_servers` 是**对象数组** `{name, status, source}`，不是字符串数组。
+     */
+    mcp_servers: [
+      { name: 'context7', status: 'pending', source: 'project' },
+      { name: 'playwright', status: 'pending', source: 'project' },
+      { name: 'find', status: 'connected', source: 'project' },
+      { name: 'japi', status: 'pending', source: 'project' },
+    ],
     permissionMode: 'bypassPermissions',
     output_style: 'default',
     claude_code_version: '2.0.1',
@@ -1134,7 +1144,16 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
       tools: ['Task', 'Bash', 'Read', 'Write'],
       slashCommands: ['design', 'verify'],
       agents: ['claude', 'Explore'],
-      mcpServers: [],
+      // 对象数组**逐格保留**：旧实现只留字符串项，把这四台折成了 `[]`
+      //（而 `[]` 在本仓是「投送了，确实是空的」——真机四台 MCP 于是从事件流里彻底消失）
+      mcpServers: [
+        { name: 'context7', status: 'pending', source: 'project', error: null },
+        { name: 'playwright', status: 'pending', source: 'project', error: null },
+        { name: 'find', status: 'connected', source: 'project', error: null },
+        { name: 'japi', status: 'pending', source: 'project', error: null },
+      ],
+      // 通道自报：claude 的判据来源是 `system/init` 里那一台的 `status`
+      mcpChannel: 'vendor-status',
       permissionMode: 'bypassPermissions',
       outputStyle: 'default',
     });
@@ -1153,9 +1172,70 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
       tools: null,
       slashCommands: ['design', 'verify'],
       agents: ['claude', 'Explore'],
-      mcpServers: [],
+      mcpServers: [
+        { name: 'context7', status: 'pending', source: 'project', error: null },
+        { name: 'playwright', status: 'pending', source: 'project', error: null },
+        { name: 'find', status: 'connected', source: 'project', error: null },
+        { name: 'japi', status: 'pending', source: 'project', error: null },
+      ],
+      // 通道自报：claude 的判据来源是 `system/init` 里那一台的 `status`
+      mcpChannel: 'vendor-status',
       permissionMode: 'bypassPermissions',
       outputStyle: 'default',
+    });
+  });
+
+  /**
+   * **厂商原文那一格**：`status: 'failed'` 的条目带 `error` 时逐字留下来——
+   * 行失败文案 `MCP「<name>」未能启动：<厂商原文首行>` 的后半句只能从这里来。
+   */
+  it('`mcp_servers[].error` 逐字保留（归一不会把它吃掉），没有这一格时记 `null`', () => {
+    const projection = projectClaudeMessage(
+      {
+        ...INIT,
+        uuid: 's-init-error',
+        mcp_servers: [
+          { name: 'probe', status: 'failed', error: 'MCP server "probe" failed to connect: spawn ENOENT\n第二行细节' },
+          { name: 'find', status: 'connected' },
+        ],
+      },
+      newState(),
+      CONTEXT,
+    );
+
+    expect(projection.drafts.find((draft) => draft.type === 'vendor-system')).toMatchObject({
+      mcpServers: [
+        {
+          name: 'probe',
+          status: 'failed',
+          source: null,
+          error: 'MCP server "probe" failed to connect: spawn ENOENT\n第二行细节',
+        },
+        // 厂商这一格没给 ⇒ `null`（不是空串，也不是「没有失败」）
+        { name: 'find', status: 'connected', source: null, error: null },
+      ],
+    });
+  });
+
+  /**
+   * `mcp_servers` 那一格的三态：
+   *   · 整格不在 / 不是数组 ⇒ `null`（厂商没投送）——**不编 `[]`**；
+   *   · `[]` ⇒ `[]`（投送了，确实是空的）；
+   *   · 对象项里缺的格 ⇒ 该格 `null`（厂商没给那一格，不是空串）。
+   */
+  it('`mcp_servers` 三态分开：缺格/非数组记 null、空数组记 []、对象里缺的格记 null', () => {
+    const of = (mcpServers: unknown, uuid: string): unknown => {
+      const { mcp_servers: _dropped, ...rest } = INIT;
+      const projection = projectClaudeMessage({ ...rest, mcp_servers: mcpServers, uuid }, newState(), CONTEXT);
+      return projection.drafts.find((draft) => draft.type === 'vendor-system');
+    };
+
+    expect(of(undefined, 'm-1')).toMatchObject({ mcpServers: null });
+    expect(of('context7', 'm-2')).toMatchObject({ mcpServers: null });
+    expect(of([], 'm-3')).toMatchObject({ mcpServers: [] });
+    // 只有名字的那一项（老形态）也读得动：名字是它真给了的，另两格真没给 ⇒ null
+    expect(of([{ name: 'japi' }], 'm-4')).toMatchObject({
+      mcpServers: [{ name: 'japi', status: null, source: null }],
     });
   });
 

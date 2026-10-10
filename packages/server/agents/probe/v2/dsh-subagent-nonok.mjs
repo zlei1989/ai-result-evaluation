@@ -1,7 +1,7 @@
 /**
  * dsh 真机项③：**子任务失败 / 取消路径的 `subagent.finished` 形态**。
  *
- * 设计稿 §6.5.2 / §11.1 第 20 项 / §9.3 三处都登记着同一个空白：
+ * 同一个空白被登记过三次：
  * 真机只覆盖了**成功路径**（`status: "ok"` + `stopReason: "completed"`），
  * **非 ok 的取值没抓到** ⇒ 那一格目前只能写 `statusMissing: 'unverified'`。
  *
@@ -10,7 +10,7 @@
  *  ② `abandon`  —— 子任务还在跑时直接关掉运行时（传输中断路径，最接近"评测中途被杀"）。
  *
  * 判据：`params.status` 与 `params.stopReason` 的**原始取值**——本脚本不做任何映射，
- * 只如实抄下来（设计稿 §6.5.2 的口径就是"未知取值原样透出，不假装映射成 failed"）。
+ * 只如实抄下来（口径就是"未知取值原样透出，不假装映射成 failed"）。
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -41,3 +41,20 @@ Claude Code（`@anthropic-ai/claude-agent-sdk`）在**真实运行环境**里踩
 - SDK 类型注释（本地安装态）：`node_modules/.pnpm/@anthropic-ai+claude-agent-sdk@0.3.281_*/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` 的 `SDKThinkingTokensMessage`（该 subtype 无公开文档页，故留本地路径）
 - [《消息规范》](/protocols/message-spec) —— 「非渲染增量」五类处置表（登记点）
 - [《Claude Code 接入》](/protocols/claude-code) —— 已知边界与取舍里同一条
+
+---
+
+## `AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.`
+
+**日期**：2026-10-10
+
+**现象原文**（真机探针那一行的失败文案，行级归因码 `AGENT_FAILED`；模型名 `test-model` 是夹具默认值，见根因）：
+```
+AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.
+```
+
+**根因**：机制层——行的模型名来自**行快照**（`EvalRow.modelId`，创建时写死的那一格），适配器把它原样交给 CLI（`modelForClaudeCode` 只可能在它后面追加 `[1m]`）。夹具工厂 `makeRowFixture` 的默认值是假适配器专用的 `test-model`，而真机路由里这个名字在网关的模型清单里**不存在** ⇒ CLI 自己的模型校验当场拒掉整轮，行落 `failed` / `AGENT_FAILED`。
+
+**测试环境 ≠ 运行环境**：单测里适配器被整个换成 `fakeAgents`，模型名从不发出去，于是这个默认值一路绿；只有在「真适配器 + 真网关」的探针里才会暴露（本仓的 live 探针就是这条差异的靶子）。
+
+**解决方案**：真机探针显式覆盖模型名——`packages/server/evaluator/src/live-row-mcp.test.ts` 用 `makeRowFixture({ modelId: live.modelId })`（`live` 从宿主 `~/.aieval/config.json` 的 anthropic 供应商里取第一条模型的 id）。**同一处另一条口径**：真机探针把 `ROW_RETRY.maxRetries` 临时置 0——瞬时失败自动重试在真机上是「再起一遍 CLI、再花一次配额」，而探针要的是「跑通一次」的证据，重试只把失败信息拉长。

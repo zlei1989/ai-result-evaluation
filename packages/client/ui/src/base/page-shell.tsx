@@ -9,10 +9,10 @@
  *   3. padding / gap 默认不落 style——原语默认值一旦非 0，页面迁移会凭空新增间距并可能制造溢出；
  *   4. **minHeight:0 无条件写在基础 style 里**（与 minWidth:0 并列）——纵向主轴默认 min-height:auto，
  *      内容（或子元素的自动最小尺寸）撑开容器时页面根就收缩不到 flex 分配的高度，
- *      整页被顶出「顶栏那一截」。实测：（已删除的）`/demo` 打开右栏 + 视口高 520 时页面溢出 **25px**
+ *      整页被顶出「顶栏那一截」：视口高 520、右栏打开时页面溢出 **25px**
  *      （documentElement.scrollHeight 545 > clientHeight 520）、PageShell 高卡在 520（本应 495.33）；
- *      运行时把它压成 0 后溢出归零。原先只在 scroll="inner" 分支里给，是因为当时只想到
- *      「内部滚动」那一类；但高度链是**每个**模式共用的，故上移为基础不变量。
+ *      把它压成 0 后溢出归零。高度链是**每个**模式共用的，故它是基础不变量，
+ *      而不是 `scroll="inner"` 分支的局部处置。
  *      scroll="inner" 仍额外要 overflow:auto（根自身滚动）——那一项留在分支里。
  *
  * 为什么结构性不变量**自己写进内联 style**，而不只靠 antd 的 Flex：antd 的 display /
@@ -24,9 +24,9 @@
  * （源码里 `value !== 0` 才补 px，因为 0 与 0px 等价），内联 style 会落成 `min-width: 0`。
  * 两者计算值相同，但 '0px' 让「横向不收缩」「纵向不收缩」这两条不变量在内联口径下可断言。
  *
- * 副作用（如实记录）：这条内联 display:flex 也压过了 antd 的 `.ant-flex:empty { display: none }`，
- * 于是 <PageShell /> 不带 children 时会占满整屏，而不再像偏离前那样收缩为零——
- * 对页面根容器而言这更合理，但它确实是一处相对偏离前渲染的真实行为变化。
+ * 副作用：这条内联 display:flex 也压过了 antd 的 `.ant-flex:empty { display: none }`，
+ * 于是 <PageShell /> 不带 children 时会占满整屏，而不是收缩为零——
+ * 对页面根容器而言这更合理。
  */
 import { ConfigProvider, Flex } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';

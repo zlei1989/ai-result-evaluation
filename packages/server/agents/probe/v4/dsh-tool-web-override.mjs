@@ -1,7 +1,7 @@
 /**
- * 设计稿 §11.1 第 30 项 / §7.9.1 注意点 1：dsh 顶层 id-targeted 覆盖是**合并**还是**整份替换**？
+ * dsh 顶层 id-targeted 覆盖是**合并**还是**整份替换**？
  *
- * 为什么必须机械核对（设计稿原话）：「若是整份替换，`{ search: false }` 会把 `dsh-base` 的
+ * 为什么必须机械核对（原话）：「若是整份替换，`{ search: false }` 会把 `dsh-base` 的
  * `{ fetch: true, searchTimeoutMs: 60000 }` 一并抹掉（连带改掉 `web_fetch` 的行为）。
  * ⇒ 实现时必须 `dsh --profile sdk --dump-config` 机械核对，不要靠推断。」
  *

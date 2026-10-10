@@ -1,6 +1,6 @@
 /**
  * 运行快照落盘：`{该轮自己的 workspaceBase}/{runId}/run.json` 的读写。
- * 本文件按接口契约 §5 的签名实现（用例域要数「引用该用例的评测数」，编排域要写快照）。
+ * 本文件按接口签名实现（用例域要数「引用该用例的评测数」，编排域要写快照）。
  *
  * 四个口径：
  *   1. **写盘原子**（临时文件 + rename）：快照是评测的唯一落盘真相，写到一半崩溃会让整轮评测不可读；
@@ -8,15 +8,15 @@
  *      必失败，只能先删再重试；而那个删除真的会制造一个「快照不存在」的窗口（getRun / SSE 会读到 NOT_FOUND），
  *      所以绝不在其它成因下走它（成因判定见 saveRun 的 catch，口径照 config-store）；
  *   2. **列表读容忍坏文件**：单个损坏的 run.json 只跳过并记 WARN。让一个坏文件把整个评测列表打不开，
- *      是把「一轮评测的本地故障」放大成「全站不可用」。**跳过必须可见**（spec §10）：`listRuns` 在
+ *      是把「一轮评测的本地故障」放大成「全站不可用」。**跳过必须可见**：`listRuns` 在
  *      同一趟扫描的最后对「读得出但已不合契约」的旧快照数记**一条汇总 WARN**（不是每个文件一条）——
  *      否则「评测记录凭空少了几轮」没有任何东西能把它与「产物真的没了」分开；
  *   3. **按用例筛选用用例 id 精确匹配**，不用标题——标题会重名、会被改，拿它筛必然出错；
- *   4. **写侧用该轮自己记录的根，读侧只扫当前设置里的根**（读侧口径见 R10）：一轮评测进行中用户改了
+ *   4. **写侧用该轮自己记录的根，读侧只扫当前设置里的根**（读侧口径见下）：一轮评测进行中用户改了
  *      工作区根目录时，该轮的全部产物必须**整体留在旧根**（events.ts 也是按 `run.workspaceBase` 定位的），
  *      否则快照进新根、事件留旧根，这一轮的产物裂成两半——比「找不到」更难查。把根目录改回去即可恢复可见。
  *      在途轮次（编排层）自己读写时走 `getRunForWrite`：同一个「当前根优先、进程内记忆兜底」的解析，
- *      与事件路径（events.ts）**同一个入口**——只兜事件侧会让行停在非终态（评审 H1）。
+ *      与事件路径（events.ts）**同一个入口**——只兜事件侧会让行停在非终态。
  */
 import {
   existsSync,
@@ -50,7 +50,7 @@ function workspaceRoot(): string {
  *
  * `incompatible` = **JSON 读得出来、却过不了 `EvalRunSchema`** 的文件数。评分口径升级后的旧
  * `run.json` 就是这个形状（重构前没有 `rubric` 快照这一格），而 `readSnapshot` 对它们只记一句
- * 每文件的 WARN 就返回 null ⇒ 列表**静默变短**（spec §10：症状是「评测记录凭空少了几轮」）。
+ * 每文件的 WARN 就返回 null ⇒ 列表**静默变短**（症状是「评测记录凭空少了几轮」）。
  * 为什么要单独汇总一条：一条 per-file WARN 说明「哪个文件坏了」，却回答不了「列表为什么短」——
  * 排障的人要能一眼把「旧轮次被跳过」与「产物真的没了 / 根目录改错了」分开。
  * 为什么**不把「读不出」（JSON 坏了）也数进来**：那一类的 per-file WARN 里带着文件路径与解析错误，
@@ -84,7 +84,7 @@ function readSnapshot(file: string, tally?: ScanTally): EvalRun | null {
 /**
  * 全部运行快照；根目录不存在时返回空数组（从没跑过评测是正常状态，不是错误）。
  *
- * **整趟扫描只在最后记一条汇总 WARN**（口径 2 的另一半，spec §10 要求的「可见性」）：
+ * **整趟扫描只在最后记一条汇总 WARN**（另一半：跳过必须可见）：
  * 扫到的快照里有 N 个读得出但已不合契约（旧口径的轮次）时，记「有 N 轮不再兼容、列表会比磁盘上少」
  * 一条，而不是每个文件一条（per-file WARN 已经在 `readSnapshot` 里有了）。
  * 为什么落在这里而不是启动钩子里：**这里是唯一一次同时看得见「读出来的」与「被跳过的」的扫描**——
@@ -126,10 +126,10 @@ export function listRunsForCase(caseId: string): EvalRun[] {
  * 空串同样拒绝：`join(root, '')` 把快照写到 `{workspaceRoot}/run.json`，那既不是任何一轮评测的目录，
  * `listRuns` 也永远看不到它。
  *
- * 为什么校验落在这里而不是调用方：这是唯一的路径拼接点。今天调用方都传 `randomUUID()`，但 p5 的
- * `GET /api/runs/{runId}` 会把**用户可控的 URL 段**喂给 `getRun`，而契约 §5 的签名不做任何形状约束。
+ * 为什么校验落在这里而不是调用方：这是唯一的路径拼接点。今天调用方都传 `randomUUID()`，但 api 层的
+ * `GET /api/runs/{runId}` 会把**用户可控的 URL 段**喂给 `getRun`，而该签名不做任何形状约束。
  *
- * 判据本身是 `run-root-memory` 的 `isRunIdShapeValid`（登记守卫用的是同一条规则，评审 N1）：
+ * 判据本身是 `run-root-memory` 的 `isRunIdShapeValid`（登记守卫用的是同一条规则）：
  * 两处各写一份，改一处就会分叉，而分叉的代价是「非法 id 从另一扇门进来」。
  */
 function assertRunId(runId: string): void {
@@ -144,7 +144,7 @@ function assertRunId(runId: string): void {
 const WINDOWS_DRIVE = /^[A-Za-z]:[\\/]/;
 
 /**
- * `workspaceBase` 的**形状**校验（与 `assertRunId` 并列，理由同 R36：它也是直接拼进路径的字段）。
+ * `workspaceBase` 的**形状**校验（与 `assertRunId` 并列，理由同形状校验：它也是直接拼进路径的字段）。
  *
  * `saveRun` 的落盘位置**完全取自这一项**（`runDir(root, id)`），而契约的 `EvalRunSchema.workspaceBase`
  * 只是 `z.string()`——没有 `.min(1)`、没有绝对路径约束。形状不对的值会让产物写到**读侧永远看不到的地方**：
@@ -152,8 +152,8 @@ const WINDOWS_DRIVE = /^[A-Za-z]:[\\/]/;
  *     （`getRunForWrite` 的兜底返回的也是 `''`），一轮评测的产物散落在启动目录里；
  *   · `'~/.aieval-runs'`（设置里合法的可读写法）⇒ 写进**字面 `~` 目录**，而读侧 `resolveRootForRead` 会把它
  *     展开成家目录下的真实路径 ⇒ 写进去的东西永远读不出来。
- * 「今天创建点都写绝对路径」（p5 的 `createRun` 走 `resolveRootForRead`）不是安全论证——写侧已经在
- * 依赖它了，R36 的教训正是「只有 randomUUID() 会进来」当日就被探针推翻。
+ * 「今天创建点都写绝对路径」（api 层的 `createRun` 走 `resolveRootForRead`）不是安全论证——写侧已经在
+ * 依赖它了，「只有 randomUUID() 会进来」这个假设当日就被探针推翻。
  * 检查顺序：写完侧自检之后（此时才确定是字符串）、`rememberRunRoot` 之前——坏根不许进记忆。
  */
 function assertWorkspaceBase(runId: string, root: string): void {
@@ -180,7 +180,7 @@ function readRunAt(root: string, runId: string): EvalRun {
 
 /**
  * 取单个快照（**对外读入口**）：不存在抛 NOT_FOUND，损坏抛 INTERNAL。
- * 读侧口径 = **只扫当前 `settings.workspaceRoot`**（R10 的裁决，p5 的路由用的就是它）。
+ * 读侧口径 = **只扫当前 `settings.workspaceRoot`**（裁决口径，api 层的路由用的就是它）。
  */
 export function getRun(runId: string): EvalRun {
   assertRunId(runId);
@@ -190,18 +190,18 @@ export function getRun(runId: string): EvalRun {
 /**
  * 在途轮次（编排层）读写快照的入口：**按这一轮自己记录的根**解析，而不是当前设置里的根。
  *
- * 与 `getRun` 的唯一差别是「当前根找不到时用进程内记忆兜底」（R10 的『记住 runId → workspaceBase』）。
- * 为什么必须有这个入口（评审 H1）：`getRun` 只扫当前根，而用户在评测进行中把工作区根目录从 A 改到 B 后，
+ * 与 `getRun` 的唯一差别是「当前根找不到时用进程内记忆兜底」（『记住 runId → workspaceBase』）。
+ * 为什么必须有这个入口：`getRun` 只扫当前根，而用户在评测进行中把工作区根目录从 A 改到 B 后，
  * 编排层第一次 `requireRow` 就抛 NOT_FOUND ⇒ `settleFailed` 也要先 `requireRow` ⇒ **行停在非终态**、
- * 只留一行 ERROR 日志——R10 想消灭的「一次设置变更把在途轮次打死」换个扇门照样发生。
+ * 只留一行 ERROR 日志——「一次设置变更把在途轮次打死」换个扇门照样发生。
  * 事件路径（`events.ts`）与快照路径现在共用这一个解析，两边的兜底口径不可能再分叉。
  *
  * 关键取舍（与 events.ts 原来的口径逐字一致）：**兜底只覆盖「这一轮不在当前根里」这一种失败**。
  *   · 其它失败（INVALID_QUERY 形状非法、INTERNAL 快照损坏）原样冒出去——它们各有各的处置，
  *     拿一个旧根去重试只会让「形状不对」伪装成「根不对」，把排查引向完全错误的方向；
- *   · 记忆里没有这个 runId 时同样原样冒 NOT_FOUND——那正是 R10 明确接受的局限
+ *   · 记忆里没有这个 runId 时同样原样冒 NOT_FOUND——那正是明确接受的局限
  *     （进程重启后 + 改过根目录），此时「找不到」就是正确结论。
- * **`getRun` 的对外语义不受影响**：它仍然只扫当前根（p5 的列表 / 详情路由要的就是「当前根里有什么」）。
+ * **`getRun` 的对外语义不受影响**：它仍然只扫当前根（api 层的列表 / 详情路由要的就是「当前根里有什么」）。
  */
 export function getRunForWrite(runId: string): EvalRun {
   assertRunId(runId);
@@ -243,7 +243,7 @@ function isReadOnly(file: string): boolean {
  */
 export function saveRun(run: EvalRun): void {
   assertRunId(run.id);
-  // 写侧自检（§11 R26 的同一条原则，与 event-log 的写入点校验对齐）：读侧 readSnapshot 用的是 safeParse，
+  // 写侧自检（与 event-log 的写入点校验同一原则）：读侧 readSnapshot 用的是 safeParse，
   // 它遇到不合契约的字段只 WARN 一句就跳过，于是脏数据照样写进磁盘、却在 listRuns 里**静默消失**
   //（这一轮评测从列表里凭空不见、两端都不报错，只有 getRun 会抛 INTERNAL）。
   // 校验必须在写入点，且落盘的是**校验后的对象**而不是原对象——否则「校验归校验、写归写」：
@@ -272,7 +272,7 @@ export function saveRun(run: EvalRun): void {
   // 落盘位置取自这一项 ⇒ 它的形状必须在这里拦住（空串写 CWD、`~` 写进字面目录，读侧永远看不到）。
   // 位置紧跟写侧自检：契约只保证 workspaceBase 是字符串，绝对路径是**写侧的额外要求**（M2）。
   assertWorkspaceBase(parsed.id, root);
-  // 把「这一轮自己的根」登记进事件总线的进程内记忆（R10，记忆本体在 run-root-memory.ts）：
+  // 把「这一轮自己的根」登记进事件总线的进程内记忆（记忆本体在 run-root-memory.ts）：
   // 一轮评测进行中用户改了工作区根目录后，events.ts / getRunForWrite 对**这一轮**会查不到，
   // 而那是「在途轮次中途崩（或停在非终态）」的成因。登记点选在这里（写侧唯一知道该轮落点的位置、
   // 写侧自检与根形状校验都已通过、尚未落盘）：形状不合契约的快照在上面已经抛错，不会留下记忆；

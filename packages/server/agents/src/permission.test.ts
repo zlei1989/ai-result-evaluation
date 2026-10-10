@@ -1,9 +1,9 @@
 // @vitest-environment node
 /**
- * 权限表的守卫（2026-09-28）。
+ * 权限表的守卫。
  *
  * 为什么这份守卫是**跨三家**的：这三份表只有放在一起才看得出「谁漏了哪一档」，
- * 而漏一档的后果在 p6 冒烟里是**静默**的——claude-code 当时是三家唯一没设写使能的那家，
+ * 而漏一档的后果在冒烟里是**静默**的——claude-code 当时是三家唯一没设写使能的那家，
  * 7 行候选**全部 0 改动**，测试全绿、界面照常出分（只是在空 diff 上打分）。
  * 所以这里钉的不是「字符串写对了」，而是三件会各自静默出错的事：
  *   ① 每一档在**三家**都有落点（新增一档时漏掉某一家，编译期就会拦，见下面第一条的 `satisfies`）；
@@ -56,7 +56,7 @@ describe('权限表', () => {
      * 值域之外的**逐字**断言（为什么值域那一层不够）：`readonly` / `danger` 这类错别字
      * **不在** dsh 的值域里，所以那一层能拦；但把只读档写成 `workspace-write`（一个**合法**的值）
      * 时值域照样放行——而它的语义是「可写」。三家的档位名与运行阶段的对应关系是这里唯一的规格，
-     * 所以逐字钉一遍。变异验证：把 dsh 只读档改成 `workspace-write` 而不改本行 → 本条红。
+     * 所以逐字钉一遍：只读档一旦被写成 `workspace-write`（一个**合法**的值），值域那一层照样放行。
      */
     expect(CLAUDE_PERMISSION_OPTIONS.full.permissionMode).toBe('bypassPermissions');
     expect(CLAUDE_PERMISSION_OPTIONS['read-only'].permissionMode).toBe('dontAsk');
@@ -83,7 +83,7 @@ describe('权限表', () => {
   });
 
   it('read-only 档在每一家都不给执行层写能力，且都不留人工批准的口子', () => {
-    // 变更日志（2026-09-28）：claude 这一格原来是 `acceptEdits`（能写），现在按运行阶段分档。
+    // claude 这一格按运行阶段分档：只读档是 `dontAsk`，**不是**能写的 `acceptEdits`。
     expect(CLAUDE_PERMISSION_OPTIONS['read-only']).toEqual({
       permissionMode: 'dontAsk',
       permissionPrompts: 'none',
@@ -104,7 +104,7 @@ describe('权限表', () => {
   });
 
   /**
-   * Windows 豁免（2026-10-07 真机裁决）：codex 的受限沙箱在 Windows 上**起不了任何子进程**
+   * Windows 豁免：codex 的受限沙箱在 Windows 上**起不了任何子进程**
    * （`read-only` 与 `workspace-write` 下连 `echo` / `git status` 都被 policy 拒），而它读文件
    * 只能靠 shell ⇒ 评分阶段会变成盲评（真机：候选三项全达成，评分 0/25）。故只读档在 Windows 上
    * 落最宽档，别的平台一个字不改。

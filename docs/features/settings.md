@@ -18,6 +18,7 @@
     - 「拉取」的出现条件：`remoteAhead !== 0`——`null`（本次没探到：离线 / 没有上游）**也要给按钮**，点了才会看到原因；把「没探到」当成「没有」会让用户以为远端确实没有新提交。`> 0` 时文案带「拉取（远端领先 N 个提交）」；
     - 两个按钮在有阻塞原因（`blockedReason !== null`）或动作正在跑时禁用。
 - **界面主题**：`light` / `dark` / `auto` 三档。
+- **MCP**（第 2 个 Tab）：配置面、注入面、失败判据与已知边界自成一篇文章——见[《MCP 配置》](/features/mcp-config)。
 
 ## 数据与契约
 
@@ -56,5 +57,5 @@
 
 ## 相关链接
 
-- 知识文章：[《评分》](/features/judging)（评分配置格的消费侧）、[《数据与存储》](/features/storage)（配置落盘与《用例目录》的完整口径）、[《用例管理》](/features/case-management)（用例的读写与删除侧）、[《功能总览》](/features/)（目录层）
+- 知识文章：[《MCP 配置》](/features/mcp-config)（第 5 个 Tab 的配置面 / 注入面 / 失败判据自成一文）、[《评分》](/features/judging)（评分配置格的消费侧）、[《数据与存储》](/features/storage)（配置落盘与《用例目录》的完整口径）、[《用例管理》](/features/case-management)（用例的读写与删除侧）、[《功能总览》](/features/)（目录层）
 - 仓库内参考：AGENTS.md「持久化」节（原子写与 BOM 口径的真源）

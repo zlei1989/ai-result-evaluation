@@ -1,26 +1,26 @@
 'use client';
 
 /**
- * 评测页：左侧列表 + 右侧栏（详情 / 创建表单 / 编辑表单），形态与用例页同口径（spec §4.1/§5.3）。
+ * 评测页：左侧列表 + 右侧栏（详情 / 创建表单 / 编辑表单），形态与用例页同口径。
  * 七条口径：
- *   1. `useSearchParams` 会把用到它的子树退化为客户端渲染，故给它一个 `Suspense` 边界
- *      （Next 16 文档 useSearchParams 的 Prerendering 一节）；
- *   2. **日志那一条 SSE 只在该行的日志抽屉打开时订阅**（实时指标那一路只为在跑的行各开一条，见 spec §8）；
- *   3. 三个抽屉的数据各自按需取：日志 = `useRowStream`（实时）+ `useRowLog`（下载要全量）
- *      + `useRowMessages`（时间轴的内容级记录）、改动 = `useRowDiffIndex` + `useRowDiffFile`（服务端每次现算）、
- *      评分详情 = 快照里的 `score` 与 `rubric`（不额外请求）；
- *   4. 页面的可测逻辑（URL 解析、错误文案、日志抽屉的三态）都在 `@/src/runs-view` 与
- *      `@/src/log-drawer-state`，本文件只做拼装；
- *   5. **本页自己不套 `PageShell`**：`ListDetailLayout` 内部已经是 `PageShell`（脚手架原语），
- *      再包一层会多出一个 `ConfigProvider` 与一圈 16px 内边距，与本仓另一处同样形态的
- *      `/cases` 页不一致——两页的骨架必须逐字同形，否则宽度偏好与吸底几何会各自漂移。
- *   6. **右栏三态**（2026-09-28）`?panel=detail|new|edit&id=…`：编辑与详情共用同一份快照
- *      （`selectedId` 两态都取 id）。与 `/cases` 的一处有意差异：runs 页没有需要复位的跨面板
- *      临时状态（用例页那套 `go()` 复位是为仓库校验回显服务的），故不引入那层。
- *   7. **「执行日志」全页只有一支抽屉**（2026-10-03 用户口径「点开会闪一下」的修法）：
- *      「读取中」那一支**什么都不渲染**——那时 `model` 还没算出来，弹出来的必然是空壳，
- *      而它会把真抽屉的入场动画重置（实测：遮罩与面板各重放一次）。根因与实测日志见
- *      `src/drawer-geometry.test.ts` 里那一组用例的注释。
+ * 1. `useSearchParams` 会把用到它的子树退化为客户端渲染，故给它一个 `Suspense` 边界
+ * （Next 16 文档 useSearchParams 的 Prerendering 一节）；
+ * 2. **日志那一条 SSE 只在该行的日志抽屉打开时订阅**（实时指标那一路只为在跑的行各开一条）；
+ * 3. 三个抽屉的数据各自按需取：日志 = `useRowStream`+ `useRowLog`
+ * + `useRowMessages`、改动 = `useRowDiffIndex` + `useRowDiffFile`、
+ * 评分详情 = 快照里的 `score` 与 `rubric`；
+ * 4. 页面的可测逻辑（URL 解析、错误文案、日志抽屉的三态）都在 `@/src/runs-view` 与
+ * `@/src/log-drawer-state`，本文件只做拼装；
+ * 5. **本页自己不套 `PageShell`**：`ListDetailLayout` 内部已经是 `PageShell`，
+ * 再包一层会多出一个 `ConfigProvider` 与一圈 16px 内边距，与本仓另一处同样形态的
+ * `/cases` 页不一致——两页的骨架必须逐字同形，否则宽度偏好与吸底几何会各自漂移。
+ * 6. **右栏三态**`?panel=detail|new|edit&id=…`：编辑与详情共用同一份快照
+ * （`selectedId` 两态都取 id）。与 `/cases` 的一处有意差异：runs 页没有需要复位的跨面板
+ * 临时状态（用例页那套 `go` 复位是为仓库校验回显服务的），故不引入那层。
+ * 7. **「执行日志」全页只有一支抽屉**：
+ * 「读取中」那一支**什么都不渲染**——那时 `model` 还没算出来，弹出来的必然是空壳，
+ * 而它会把真抽屉的入场动画重置（实测：遮罩与面板各重放一次）。根因与实测日志见
+ * `src/drawer-geometry.test.ts` 里那一组用例的注释。
  */
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -93,10 +93,10 @@ const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string 
 };
 
 /**
- * 「状态」列的排序序（用户口径 2026-10-08）：按**业务生命周期** idle → running → partial → done。
+ * 「状态」列的排序序：按**业务生命周期**idle → running → partial → done。
  * 不按枚举名、也不按中文标签的字符串排——「部分完成」按拼音会插在「未开始」前面，那是没人能预期的序。
- * 写成 `Record<EvalRun['status'], number>` 是为了让契约新增状态时 tsc 直接报错（漏一个键就编译不过）。
- * 枚举外的状态值进不了这张表：`run.json` 里状态不合枚举会被 run-store 的 `safeParse` 跳过（只留 WARN）。
+ * 写成 `Record<EvalRun['status'], number>` 是为了让契约新增状态时 tsc 直接报错。
+ * 枚举外的状态值进不了这张表：`run.json` 里状态不合枚举会被 run-store 的 `safeParse` 跳过。
  */
 const RUN_STATUS_RANK: Record<EvalRun['status'], number> = { idle: 0, running: 1, partial: 2, done: 3 };
 
@@ -107,8 +107,8 @@ const RUN_TITLE_MIN_WIDTH = 240;
 const RUN_COLUMN_WIDTH = { status: 96, rows: 80, executionMode: 96, createdAt: 150 } as const;
 
 /**
- * 列表表格的最小宽度（px）：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
- * （用户口径 2026-10-08：「标题列左悬浮」；与用例页、供应商表同一套口径，见
+ * 列表表格的最小宽度：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
+ * （用户口径：「标题列左悬浮」；与用例页、供应商表同一套口径，见
  * `ProviderTable` 的 `PROVIDER_TABLE_MIN_WIDTH`）。
  *
  * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把五列**按比例压扁**——
@@ -127,16 +127,16 @@ const RUNS_TABLE_MIN_WIDTH =
   RUN_COLUMN_WIDTH.createdAt;
 
 /**
- * 列表排序的两个比较器（用户口径 2026-10-08：默认「创建时间」倒序，标题 / 状态 / 创建时间三列可排）。
+ * 列表排序的两个比较器。
  * 三条口径，缺一条都会在真机上看见怪序：
  *
- *   ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
- *      `numeric` 让「测试2」排在「测试10」前面而不是后面；
- *   ② **空值当最小值**，而且走显式分支：排的「标题」其实是 `caseTitle` 快照，契约只声明
- *      `z.string()`（**没有 `min(1)`**），手改过的 `run.json` 能写空串进列表——不管的话
- *      `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
- *   ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
- *      自己再按方向翻一次就是翻两次。
+ * ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
+ * `numeric` 让「测试2」排在「测试10」前面而不是后面；
+ * ② **空值当最小值**，而且走显式分支：排的「标题」其实是 `caseTitle` 快照，契约只声明
+ * `z.string()`（**没有 `min(1)`**），手改过的 `run.json` 能写空串进列表——不管的话
+ * `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
+ * ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
+ * 自己再按方向翻一次就是翻两次。
  *
  * 同值的行不需要兜底键：服务端给的就是 `createdAt` 降序（api/runs.ts 的 `listRunsView`），
  * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序（同一用例的多轮自然聚在一起、
@@ -186,17 +186,17 @@ function DiffFileBody({
 }
 
 /**
- * 「变更详情」「评分详情」两个抽屉共用的几何口径（spec §5.3.4「抽屉几何」）——**与「执行日志」是同一份**。
+ * 「变更详情」「评分详情」两个抽屉共用的几何口径——**与「执行日志」是同一份**。
  *
  * 常量住在 `@aieval/ui` 的 `base/drawer-geometry`：那三个抽屉分居两个包（执行日志的几何在
- * `AgentLogDrawer` 里），各写一份必然漂移，而漂移是静默的（2026-10-03 实测：antd 6 废弃
+ * `AgentLogDrawer` 里），各写一份必然漂移，而漂移是静默的（实测：antd 6 废弃
  * `width` 后这两处漏改，抽屉掉回默认 `378px`，比执行日志窄一半，且没有任何用例变红）。
  *
  * ⚠️ **宽度走 `size`，不走 `styles.wrapper.width`**（antd 6 已废弃 `width`，控制台会打 warning）。
  * 所以本页的抽屉都摊开这一份 `{ size, styles }`：`size` 是宽度本身，`styles` 是
  * 「窄屏兜底 + 内容区 `padding: 0`」（内边距由各抽屉自己的内容给）。
  *
- * `push` 也在这里：二级抽屉（「模型原始返回」那种）打开时**被推开的正是这三个主抽屉**，
+ * `push` 也在这里：二级抽屉打开时**被推开的正是这三个主抽屉**，
  * 而位移量取的是被推开那一方自己的配置（见 `MAIN_DRAWER_PUSH` 的注释）。
  */
 const DRAWER_GEOMETRY = {
@@ -222,7 +222,7 @@ const LOG_FALLBACK_DRAWER = {
  *
  * 为什么必须有一个**非空**的模型：抽屉的内部空态判据是 `model.empty`（文案「还没有日志 ·
  * 这一行还没开始执行」），而 `empty === true` 与 `empty === false` 是**两种不同的空**
- * （见设计 §6.1 的三种空）——没有模型就没有事实条可画，故给一份如实为空的模型，
+ * （三种空）——没有模型就没有事实条可画，故给一份如实为空的模型，
  * 而不是让抽屉在 `model === undefined` 上崩掉。
  *
  * 这一支只在**真的没跑过**（`status === 'pending'`）时用到：跑了却没有任何记录的行
@@ -290,10 +290,10 @@ function logSource(input: {
     /**
      * **环境信息已经按值给了**（`environment` props），故这里是一次空操作——
      * 但**不能省略这个口子**：`AgentLogLayout` 拿「它存不存在」判重试按钮画不画
-     * （见 §6.8：`undefined` ⇒ 无重试按钮）。省掉它，读取失败时就只剩一句错误、没有重试。
+     * （`undefined` ⇒ 无重试按钮）。省掉它，读取失败时就只剩一句错误、没有重试。
      */
     requestEnvironment: () => undefined,
-    // 原始输出是**按需注入**的独立 Loadable（体积与时机两条理由，见设计文档 §5.3）；
+    // 原始输出是**按需注入**的独立 Loadable（体积与时机两条理由）；
     // 这一条本仓今天没有端点，故如实留空 ⇒ 界面显示「未提供」，而不是永远转圈。
     requestDiagnostics: () => undefined,
     retryNode: () => {
@@ -327,7 +327,7 @@ function RunsPage(): ReactNode {
   const { run, error: runError } = useRun(selectedId);
   const { cases } = useCases();
   /**
-   * 设置页那一格「默认评分智能体」是否已配置（spec §6）：开关打开而它没配时，创建表单要
+   * 设置页那一格「默认评分智能体」是否已配置：开关打开而它没配时，创建表单要
    * **当场**给内联提示，而不是等候选跑完几分钟后才在评分阶段失败。
    * `settings === undefined`（SWR 首帧 / 读设置失败）时传 `undefined`：未知 ≠ 没配，
    * 不能把「还没读到设置」显示成「你没配」。
@@ -345,10 +345,10 @@ function RunsPage(): ReactNode {
   const runId = run?.id ?? '';
   const logRowId = drawer?.kind === 'log' ? drawer.rowId : null;
   const diffRowId = drawer?.kind === 'diff' ? drawer.rowId : null;
-  // 只在该行的日志抽屉打开时才订阅它的事件流（spec §8 末段）
+  // 只在该行的日志抽屉打开时才订阅它的事件流
   const stream = useRowStream({ runId, rowId: logRowId ?? '', enabled: logRowId !== null });
   /**
-   * 跑动期的实时指标（用户口径，2026-09-26）：**只为在跑的行**各开一条连接，
+   * 跑动期的实时指标：**只为在跑的行**各开一条连接，
    * 界面上的 tok / 轮次 / 耗时因此不必等这一行结束。
    * 行集合每帧都是新数组：`useRunLiveMetrics` 内部按 join 出来的稳定键做依赖，
    * 所以这里不需要 useMemo（多一层记忆化只会多一个可能不同步的来源）。
@@ -356,8 +356,8 @@ function RunsPage(): ReactNode {
   const liveRowIds = (run?.rows ?? []).filter((row) => isRunningRow(row.status)).map((row) => row.id);
   const live = useRunLiveMetrics({ runId, rowIds: liveRowIds });
   /**
-   * 活动行的**实时内容**（2026-10-10）：与上面那条指标流并列的另一路——它折的是 AgentMessage
-   * （正文 / 工具块），指标那条折的是事件。活动行把两者叠起来用：消息流有内容就以它为准（正在打字），
+   * 活动行的**实时内容**：与上面那条指标流并列的另一路——它折的是 AgentMessage
+   *，指标那条折的是事件。活动行把两者叠起来用：消息流有内容就以它为准，
    * 没有才回落到 `log.summary`（`live.latestText`）。
    * 行集合同样只取在跑的：终态那一行已经收起，多开连接只是浪费（`useRunActivity` 里也再挡一次）。
    */
@@ -372,7 +372,7 @@ function RunsPage(): ReactNode {
    */
   const messages = useRowMessages({ runId, rowId: logRowId ?? '', enabled: logRowId !== null });
   /**
-   * 索引是**分页**的（spec §5.3.4：首帧只拉一页 30 条，其余按滚动逐页追加，**已加载的页不回收**），
+   * 索引是**分页**的（首帧只拉一页 30 条，其余按滚动逐页追加，**已加载的页不回收**），
    * 故这里自己累积已加载的文件：每次把新到的那一页接在后面，滚到底再由 `onLoadMore` 取下一页。
    * 不累积的话，头部写着「共 N 个文件」而列表只有 30 条，第 31 个之后的文件永远看不到。
    */
@@ -392,7 +392,7 @@ function RunsPage(): ReactNode {
    * 评分详情抽屉要的**两样东西来自同一份 run 快照**：这一行的 `score` 与这一轮的评分表 `rubric`
    * ——评分表是这一分生成时那张表的快照（与 `score.maxScore` 同源），改用例不会换掉它，
    * 而详情正是按**引用键**把判定与评分表逐项对齐的（少了这张表，逐项判定一项也画不出来）。
-   * 「这一分是谁打的、花了多少」那**五格**也全在 `score` 上（2026-10-08 用户口径）⇒ 这里**不再递候选行**：
+   * 「这一分是谁打的、花了多少」那**五格**也全在 `score` 上 ⇒ 这里**不再递候选行**：
    * 那是执行那一份数据，而抽屉叫「评分详情」。
    * 合成一个对象再判空：拆成多个变量时 JSX 里得各自判空，而「有分却没表」那一格一旦漏判，
    * 渲染出的是一张对不上任何判定的空表。
@@ -404,7 +404,7 @@ function RunsPage(): ReactNode {
     return { score: row.score, rubric: run.rubric };
   })();
   /**
-   * 「模型原始返回」二级抽屉的开合（2026-10-04 用户口径）：入口按钮挂在评分详情抽屉的 `footer` 上，
+   * 「模型原始返回」二级抽屉的开合：入口按钮挂在评分详情抽屉的 `footer` 上，
    * 故状态住在页面这一层，视图是**受控**的（`rawOpen` / `onRawOpenChange`）。
    *
    * **记的是「哪一行开着」，不是一个 boolean**：换行、关抽屉、URL 深链三条路都会换 `rowId`，
@@ -466,7 +466,7 @@ function RunsPage(): ReactNode {
    */
   const logFacts = logRow === undefined ? null : buildRowFacts({ row: logRow, events: stream.events });
   /**
-   * 这一行的**能力声明**（spec v3 §2.5）：五格各自带「从哪条通道取到 / 为什么取不到」。
+   * 这一行的**能力声明**：五格各自带「从哪条通道取到 / 为什么取不到」。
    *
    * 按**行**取而不是按轮取：同一轮的不同候选可以是不同智能体，取错一行就会把
    * 「codex 的思考正文只在会话文件里」说成「claude 的流式增量没投送」。
@@ -491,12 +491,12 @@ function RunsPage(): ReactNode {
   const logDiagnostics = useMemo(() => diagnosticsOf(stream.events), [stream.events]);
 
   /**
-   * 环境信息（设计 §4.3）：**按值给**抽屉，不新开端点——四组数据页面都已经拿在手上
+   * 环境信息：**按值给**抽屉，不新开端点——四组数据页面都已经拿在手上
    * （运行配置来自 `EvalRow` / `EvalRun` 的快照字段、厂商系统层来自事件流里的 `system/init` 行、
    * 实测统计来自内容记录里的 `tool-call`）。
    *
-   * 为什么不做成「点了才取」：`requestEnvironment` 那一格存在的意义是**把取数时机从组件里搬出去**，
-   * 而这里的「取数」是本进程内一次纯函数调用（无网络、无 IO）⇒ 按值给才是它该有的形态，
+   * 为什么不做成「点了才取」：`requestEnvironment` 那一格存在意义是**把取数时机从组件里搬出去**，
+   * 而这里的「取数」是本进程内一次纯函数调用 ⇒ 按值给才是它该有的形态，
    * 点开即有内容，不必先闪一下「读取中」。`logSource` 里仍然保留那个口子，见那里的注释。
    */
   // 「未选档位」时这一行会落到哪一档（注册表元数据）：运行配置那一格照着它写，
@@ -619,14 +619,14 @@ function RunsPage(): ReactNode {
 
   const columns: TableColumnsType<EvalRun> = [
     {
-      // 列名只叫「标题」（用户 2026-09-29）：与用例页的列表头逐字同形，左栏就一列标题，不必再冠以「用例」
+      // 列名只叫「标题」：与用例页的列表头逐字同形，左栏就一列标题，不必再冠以「用例」
       title: '标题',
       dataIndex: 'caseTitle',
       // 排的是 `caseTitle`（创建那一轮时的用例标题**快照**，run 上没有自己的标题字段）：
       // 用例改名不会改写历史轮次，所以这里排的是历史标题而不是当前标题。
       // 文本列首次点击升序：antd 的默认 `sortDirections` 是 `['ascend','descend']`，不用显式给
       sorter: (a: EvalRun, b: EvalRun) => compareSortText(a.caseTitle, b.caseTitle),
-      // 钉在左边（用户口径 2026-10-08）：横向滚动时其余四列从它下面滑过，「这一行是哪个用例的评测」
+      // 钉在左边：横向滚动时其余四列从它下面滑过，「这一行是哪个用例的评测」
       // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
       // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
       fixed: 'left',
@@ -659,7 +659,7 @@ function RunsPage(): ReactNode {
       title: '创建时间',
       dataIndex: 'createdAt',
       width: RUN_COLUMN_WIDTH.createdAt,
-      // 默认排序（用户口径 2026-10-08）：进入页面就是「创建时间」倒序。
+      // 默认排序：进入页面就是「创建时间」倒序。
       // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
       // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
       defaultSortOrder: 'descend',
@@ -727,7 +727,7 @@ function RunsPage(): ReactNode {
             // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
             // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
             scroll={{ x: RUNS_TABLE_MIN_WIDTH }}
-            // 同用例页：列宽由表头算，`EllipsisText` 的省略号才有确定的分母（用户 2026-09-29 的口径）。
+            // 同用例页：列宽由表头算，`EllipsisText` 的省略号才有确定的分母。
             // `sticky` 本就会让 rc-table 落到 `fixed`，显式写出来是为了不把这条前提交给巧合
             tableLayout="fixed"
             onRow={(record) => ({
@@ -890,7 +890,7 @@ function RunsPage(): ReactNode {
         onClose={() => setDrawer(null)}
         destroyOnHidden
         /*
-          「查看原始返回」的入口在 **footer** 上（2026-10-04 用户口径）：它不再占正文的高度、
+          「查看原始返回」的入口在 **footer** 上：它不再占正文的高度、
           也不再随正文一起滚走；正文里既没有标题也没有按钮。
           **没有分就没有入口**：那一格是空态「这一行还没有评分」，没有原文可看（footer 为 null 时
           antd 连那一条 footer 都不渲染）。
@@ -916,7 +916,7 @@ function RunsPage(): ReactNode {
           </div>
         ) : (
           <ScoreDetailView
-            // 抽屉里的**五格**全在 `score` 上（2026-10-08 用户口径：顶部那一段说的是**这一分**是谁打的、
+            // 抽屉里的**五格**全在 `score` 上（顶部那一段说的是**这一分**是谁打的、
             // 花了多少）⇒ 这里只递 `score` 与它的评分表快照，**不再传候选行**——少一个能配错的来源
             score={scoreDetail.score}
             rubric={scoreDetail.rubric}

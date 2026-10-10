@@ -66,7 +66,7 @@ describe('resolveLogDrawer', () => {
     expect(state.kind === 'failed' ? state.message : '').toBe('操作失败，请稍后重试');
   });
 
-  it('**实时通道故障且没有事件 → failed，带上原因**（M2：断流不能只说「还没有日志」）', () => {
+  it('**实时通道故障且没有事件 → failed，带上原因**（断流不能只说「还没有日志」）', () => {
     // 场景：`/stream` 建立了但一帧都收不到（C1 的零交付 / 中间层掐断），或环境没有 EventSource。
     // 过去页面只喂 `logError`（这里为 null）⇒ 抽屉回到 `log` 态、渲染空态
     // 「还没有日志 · 这一行还没开始执行」+ 徽标「未连接」——**没有原因、没有出路提示**。
@@ -187,17 +187,17 @@ const SCORE = {
   // 强度未指定（一个强度键都没发）：下面两条用例都不涉及评分者的强度通路
   judgeEffort: null,
   structuredOutput: false,
-  // 评分自己的花销（2026-10-08）：这一格进的是**评分详情抽屉**，不在事实条上，故这里给 null 即可
+  // 评分自己的花销：这一格进的是**评分详情抽屉**，不在事实条上，故这里给 null 即可
   judgeTokens: null,
   judgeDurationMs: null,
 } satisfies Omit<ScoreResult, 'judgeAgentKind'>;
 
 /**
- * 一条 `usage` 事件：`turn` 缺省 = 主会话读数；`turn.subagentId` **非空** = **那个子会话自己的**读数
- *（`tokens` 是该会话的累计，与这一行的累计不是一把尺子）。
+ * 一条 `usage` 事件：`turn` 缺省 = 主会话读数；`turn.subagentId` **非空**= **那个子会话自己的**读数
+ * （`tokens` 是该会话的累计，与这一行的累计不是一把尺子）。
  *
- * `turn` 允许显式 `null`（契约那一格是 `.nullable().optional()`，读侧与键缺席同一件事）——用例要能写出
- * 「三档主会话读数」里的中间那一档（2026-10-05 复审 N2）。
+ * `turn` 允许显式 `null`（契约那一格是 `.nullable.optional`，读侧与键缺席同一件事）——用例要能写出
+ * 「三档主会话读数」里的中间那一档。
  */
 function usageEvent(input: {
   seq: number;
@@ -216,14 +216,14 @@ function usageEvent(input: {
 }
 
 /**
- * 事实条的**行级读数只认主会话那一条**（2026-10-05，口径与 spec §2.1 的「行级三格不动」同一条）。
+ * 事实条的**行级读数只认主会话那一条**。
  *
  * 为什么这一格会被会话尺度读数污染：claude 收尾为每个子会话逐轮发一条 `turn.subagentId` 非空的 `usage`
- *（`tokens` = **该子会话自己的**累计），而它**排在主会话读数之后**；这一格取的是「最后一条 usage」。
+ * （`tokens` = **该子会话自己的**累计），而它**排在主会话读数之后**；这一格取的是「最后一条 usage」。
  * 真机复算（run `155f7f1e` 的 claude 行）：评分期事实条显示子会话的 16,335，而这一行的权威值是 34,101。
  * 行级读数没有第二个出口可退回——`row.tokens` 在 claude 上终态之前恒为 null。
  */
-describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-05）', () => {
+describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
   it('带会话身份的 usage 排在最后时，事实条仍取**最后一条主会话读数**', () => {
     const facts = buildRowFacts({
       row: row(),
@@ -250,7 +250,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
     expect(facts.tokens).toEqual({ input: 30580, cached: 59008, output: 3521 });
     expect(facts.turns).toEqual({ current: 6, total: null });
     // 思考 token 那一格**不在这里断**：主会话读数没带 `reasoningOutput` 时它恒为 `null`，删不删身份过滤
-    // 都成立（2026-10-05 复审 N2 点名的那条无区分力断言）⇒ 换到下面「主会话带 reasoningOutput」那条用例
+    // 都成立 ⇒ 换到下面「主会话带 reasoningOutput」那条用例
   });
 
   it('主会话三档（turn 缺省 / 显式 null / subagentId === null）照旧被采纳——判据是身份，不是 turn 在不在', () => {
@@ -291,7 +291,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
   });
 
   /**
-   * **身份判据是 `?? null`，不是真值**（2026-10-05 复审 N2 补的区分力）。
+   * **身份判据是 `?? null`，不是真值**。
    *
    * 上面那条只钉到「`null` 身份算主会话」，而 `subagentId` 的类型是 `string | null` ⇒ 空串是一个
    * **非 `null` 的身份**：`lastEvent` 的匹配谓词一旦写成真值判断（`!event.turn?.subagentId`），这一条会被
@@ -312,7 +312,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
   });
 
   /**
-   * **取「最后一条」而不是「第一条」**（2026-10-05 复审 N2）：`lastEvent` 这一轮从「过滤后取末尾」改写成了
+   * **取「最后一条」而不是「第一条」**：`lastEvent` 这一轮从「过滤后取末尾」改写成了
    * 从末尾往前找的那段循环，而新用例里主会话读数**最多一条** ⇒ 方向没有靶子。两条主会话读数**值不同**时，
    * 正向与反向给出的答案不同，这才叫钉住（取第一条会把事实条退回到旧的那条读数）。
    */
@@ -331,9 +331,9 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
 
   /**
    * **思考 token 那一格与 `tokens` 同源**（都取自那一条被采纳的主会话读数）：会话尺度读数里没有这一格
-   * ⇒ 不许把它清掉。⚠️ 这一格必须是**有区分力的**形状（2026-10-05 复审 N2 订正）：主会话读数带
+   * ⇒ 不许把它清掉。⚠️ 这一格必须是**有区分力的**形状：主会话读数带
    * `reasoningOutput`、会话尺度读数不带 ⇒ 删掉身份过滤时这一格会变成 `null`；原来那条断言写成
-   * `toBeNull()`，删不删过滤都成立 —— 它谁也钉不住。
+   * `toBeNull`，删不删过滤都成立 ——它谁也钉不住。
    */
   it('主会话读数带 reasoningOutput 时思考那一格留着（会话尺度读数不许把它清掉）', () => {
     const facts = buildRowFacts({
@@ -361,15 +361,15 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage（2026-10-0
 });
 
 /**
- * 领域事实的**分段**（2026-10-07 用户口径）：改动那一格按 git stat 上色（`+N` 绿 / `−N` 红）。
- * 评分那一格**只给分**——同一天的另一条口径把「评分模型：…」那句提示删了（见下方用例），
+ * 领域事实的**分段**：改动那一格按 git stat 上色（`+N` 绿 / `−N` 红）。
+ * 评分那一格**只给分**——同一天的另一条口径把「评分模型：…」那句提示删了，
  * 因为尺子是谁由**评分详情**那一页说，事实条上再写一遍是与它争夺注意力。
  *
  * 为什么守在这里：分段是**数据层声明**的（界面不解析文本，见 `DomainFactSegment` 的注释），
  * 而 `value` 是给读屏与排障用的纯文本——两者必须逐字一致。手写第二遍数字就会漂移，
  * 症状是「复制出来的那一串字」与眼睛看到的不是一件事，且**没有任何别的地方会红**。
  */
-describe('buildRowFacts：领域事实的分段（2026-10-07）', () => {
+describe('buildRowFacts：领域事实的分段', () => {
   it('改动那一格：分段拼起来逐字等于 `value`，且只有 `+N` / `−N` 两段带色档', () => {
     const facts = buildRowFacts({
       row: row({ diff: { filesChanged: 1, insertions: 111, deletions: 0, truncated: false } }),
@@ -406,10 +406,10 @@ describe('buildRowFacts：领域事实的分段（2026-10-07）', () => {
   });
 
   /**
-   * 「谁在跑」三格（用户 2026-10-07 口径）：智能体 · 模型 · 思考强度**排在最前**。
+   * 「谁在跑」三格：智能体 · 模型 · 思考强度**排在最前**。
    *
    * 为什么钉在这里：这三格与「改动 / 评分」同属固定区的**第二行**（`agent-log-domain-facts.tsx`），
-   * 顺序即渲染顺序（界面不重排）⇒ 顺序只能由数据层保证。值走 `segments` 的 `tag` 段、一色一格
+   * 顺序即渲染顺序 ⇒ 顺序只能由数据层保证。值走 `segments` 的 `tag` 段、一色一格
    * （`blue` / `geekblue` / `purple`），与评分详情顶部那一段同色。
    */
   it('「谁在跑」三格在最前：智能体 → 模型 → 思考强度（一色一格），改动与评分在后', () => {

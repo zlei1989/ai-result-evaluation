@@ -168,6 +168,18 @@ export type AppServerNotificationPayload =
   | { kind: 'commandOutputDelta'; threadId: string; turnId: string; itemId: string; delta: string }
   | { kind: 'tokenUsage'; threadId: string; usage: AppServerThreadUsage }
   | { kind: 'turnPlanUpdated'; threadId: string; turnId: string; steps: Array<{ step: string; status: string }> }
+  /**
+   * 一台 MCP server 的**启动状态**（codex 判据来源）。
+   *
+   * 厂商逐字形状：
+   * `{threadId, name, status: 'starting'|'ready'|'failed', error, failureReason}`。
+   * `error` 只在 `failed` 时有值，原文形如
+   * `MCP client for \`probe\` failed to start: MCP startup failed: No such file or directory (os error 2)`
+   * ——它是行失败文案后半句的唯一来源，故原样留下来、**不加工**。
+   *
+   * `failureReason` 真机恒 `null`（那一列是另一套枚举），**刻意不读**：没有样本的字段读进来就是猜。
+   */
+  | { kind: 'mcpStartupStatus'; threadId: string | null; name: string; status: string; error: string | null }
   | { kind: 'error'; threadId: string | null; message: string }
   | { kind: 'other'; method: string };
 
@@ -521,6 +533,13 @@ export function readNotification(method: string, params: unknown): AppServerNoti
       status: readString(one, 'status') ?? 'unknown',
     }));
     return { kind: 'turnPlanUpdated', threadId, turnId, steps };
+  }
+  if (method === 'mcpServer/startupStatus/updated') {
+    const name = readString(record, 'name');
+    const status = readString(record, 'status');
+    if (name !== null && status !== null) {
+      return { kind: 'mcpStartupStatus', threadId, name, status, error: readString(record, 'error') };
+    }
   }
   if (method === 'error') {
     const error = asRecord(record?.error);

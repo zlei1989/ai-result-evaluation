@@ -2,23 +2,23 @@
  * useRowStream：抽屉一打开就要有完整历史，然后按 seq 增量续订，终端态关连接并刷一次快照。
  *
  * 六个用例是本组件的全部风险面：
- *   1. 顺序必须是「先 /log 再 /stream」，且 /stream 的 afterSeq 等于 /log 的最大 seq；
- *   2. **同一 seq 出现两次只能留一条**（重连、代理重放、/log 与 SSE 在边界上重叠都会造成重复）；
- *   3. 终态后关连接 + mutate 一次快照（否则「跑完了界面还显示执行中」）；
- *   4. 环境没有 EventSource 时不能抛：历史照旧显示，连接状态如实为「未连接」。
+ * 1. 顺序必须是「先 /log 再 /stream」，且 /stream 的 afterSeq 等于 /log 的最大 seq；
+ * 2. **同一 seq 出现两次只能留一条**（重连、代理重放、/log 与 SSE 在边界上重叠都会造成重复）；
+ * 3. 终态后关连接 + mutate 一次快照（否则「跑完了界面还显示执行中」）；
+ * 4. 环境没有 EventSource 时不能抛：历史照旧显示，连接状态如实为「未连接」。
  *
  * ⚠️ **帧一律用具名事件投递**（`FakeEventSource.emitNamed(type, data)`）：api 的 `toFrame` 发的是
  * `event: <type>` 的具名事件，而规范规定 `EventSource.onmessage` **只收无名事件**
- * （契约 §11 R38 ①）。这里若用 `emit()`（= 喂 `onmessage`）就等于假装浏览器会把具名事件
- * 交给 `onmessage`——**替身比浏览器弱**，正是 p5 阶段评审 C1（真实链路零交付）能藏住的地方。
+ * （①）。这里若用 `emit()`（= 喂 `onmessage`）就等于假装浏览器会把具名事件
+ * 交给 `onmessage`——**替身比浏览器弱**，正是「真实链路零交付」能藏住的地方。
  * 唯一的例外是 `error`：它既是 `AgentEvent` 的合法类型、又是 `EventSource` 的连接失败事件，
- * 两个来源都落在 `onerror` 上 ⇒ 用 `emitNamed('error', …)` / `emitError()` 分别造（终审 H4）。
+ * 两个来源都落在 `onerror` 上 ⇒ 用 `emitNamed('error', …)` / `emitError()` 分别造。
  *
  * 两条本文件特有的写法：
- *   - 快照端点故意返回**已终态**的轮：终态行不轮询（spec §8 末段），于是用例 3 里那两个
- *     GET 只可能来自「终态后刷一次快照」这条路径，不会被 3 秒轮询蒙混过关；
- *   - 需要跨 hook 观察刷新的用例把消费者挂在**同一个 renderHook** 里（同一个 SWR provider）：
- *     分开 renderHook 会各拿一份缓存，`mutate(key)` 便找不到另一个缓存上的 fetcher。
+ * - 快照端点故意返回**已终态**的轮：终态行不轮询，于是用例 3 里那两个
+ * GET 只可能来自「终态后刷一次快照」这条路径，不会被 3 秒轮询蒙混过关；
+ * - 需要跨 hook 观察刷新的用例把消费者挂在**同一个 renderHook**里（同一个 SWR provider）：
+ * 分开 renderHook 会各拿一份缓存，`mutate(key)` 便找不到另一个缓存上的 fetcher。
  */
 import { createElement, type ReactNode } from 'react';
 import { SWRConfig } from 'swr';
@@ -106,8 +106,8 @@ describe('useRowStream', () => {
     expect(result.current.lastSeq).toBe(4);
   });
 
-  it('**具名事件必须能进 events**（R38 ①：api 发 `event: <type>`，只绑 onmessage 等于零交付）', async () => {
-    // 这条是 C1 的守卫：真实浏览器里 `onmessage` **只收无名事件**，api 的 `toFrame` 发的却是
+  it('**具名事件必须能进 events**（①：api 发 `event: <type>`，只绑 onmessage 等于零交付）', async () => {
+    // 这条守的是：真实浏览器里 `onmessage` **只收无名事件**，api 的 `toFrame` 发的却是
     // 具名事件（status/log/usage/diff-summary/score/error/end）。把实现改回「只绑 onmessage」
     // 时本用例必须红——否则「实时追加」这条通道在真实服务里会安安静静地全死。
     stubFetch([makeEvent({ seq: 1 })]);
@@ -129,7 +129,7 @@ describe('useRowStream', () => {
     expect(result.current.events.at(-1)).toMatchObject({ seq: 3, type: 'log', text: '实时来的' });
   });
 
-  it('八种事件类型全部按名字订阅，且 stop() 里逐个摘掉（R38 ①：类型清单取 contracts）', async () => {
+  it('八种事件类型全部按名字订阅，且 stop() 里逐个摘掉（①：类型清单取 contracts）', async () => {
     stubFetch([makeEvent({ seq: 1 })]);
 
     const { result } = mountStream();
@@ -137,10 +137,10 @@ describe('useRowStream', () => {
     const source = FakeEventSource.instances[0];
 
     // 每一种都挂了监听器（漏一种 = 那一种事件在真实浏览器里收不到）。
-    // **`error` 仍是 0**，但理由与改前**不同**（终审 H4 更正了这里原来那句假注释）：
+    // **`error` 仍是 0**，但理由与那句旧注释写的**不同**：
     // 它不是因为「api 不会把 error 成帧」（那是假的——`push` 对类型没有任何过滤），
     // 而是因为 `onerror` 属性**已经**是 `error` 的 handler，服务端发的具名 `error` 帧本来就会
-    // 走到那里按帧解析（见下面那条 H4 用例）；再 `addEventListener('error')` 会让同一帧被投递两次。
+    // 走到那里按帧解析（见下面那条具名 `error` 的用例）；再 `addEventListener('error')` 会让同一帧被投递两次。
     for (const type of AGENT_EVENT_TYPES) {
       expect(source?.listenerCount(type), `'${type}' 的监听器数量不对`).toBe(type === 'error' ? 0 : 1);
     }
@@ -165,7 +165,7 @@ describe('useRowStream', () => {
   });
 
   it('同一行重跑（seq 从 1 重新开始）时按新一代重置去重，新的 1 与 2 都要交付', async () => {
-    // 场景（R27 的客户端缺口）：抽屉一直开着，用户在卡片上点了「重跑」。编排层会先
+    // 场景（客户端缺口）：抽屉一直开着，用户在卡片上点了「重跑」。编排层会先
     // `resetEvents` 删掉 events.jsonl（core/event-log.ts 注释：「下一次 appendEvent 会重新建，
     // seq 自然从 1 开始」），于是**同一条已经建立的 SSE 连接**上会推来 seq=1、2……
     // 而抽屉的 effect 依赖是 [enabled, runId, rowId, mutate]，三者都没变 ⇒ effect 不重跑
@@ -315,7 +315,7 @@ describe('useRowStream', () => {
     expect(result.current.events.map((event) => event.seq)).toEqual([1]);
   });
 
-  it('**服务端发的具名 `error` 帧必须交付，且不得被误判成连接中断**（终审 H4）', async () => {
+  it('**服务端发的具名 `error` 帧必须交付，且不得被误判成连接中断**', async () => {
     // 两个来源共用 `error` 这个名字，本用例把**两个来源**都喂一遍，钉住「按帧形状分流」这条判据：
     //   ① 服务端帧：api 的 `toFrame` 对事件类型没有任何过滤，而 `type: 'error'` 的 AgentEvent
     //      确实会被发布（编排层的 settleStopped/settleFailed、agents 侧 turn.ts）⇒ **必然成帧**；

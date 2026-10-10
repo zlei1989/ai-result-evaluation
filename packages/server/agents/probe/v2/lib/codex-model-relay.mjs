@@ -2,7 +2,7 @@
  * 模型名中转（"牌 A" 的本机复现）：把 codex 发出的 **codex 认识、但网关没有**的模型名
  * 改写成网关**有**的名字，其余字节原样透传。
  *
- * 为什么需要它：设计稿 §7.5.3 牌 A 的结论是「只能由网关提供 `gpt-6-astra/sol/luna`，
+ * 为什么需要它：牌 A 的结论是「只能由网关提供 `gpt-6-astra/sol/luna`，
  * **本仓无解**」——那正是 `SubagentStart/Stop` hook 被定性为"无法实测"的唯一前提。
  * 但本轮实测发现 **codex 0.154.0 认识 `gpt-6-astra`**（无 `Model metadata … not found` 告警），
  * 而网关上有对应的 `gt-6-as-a`。⇒ 只要在两者之间放一层改名中转，
@@ -12,7 +12,7 @@
  * 边界（必须如实登记）：这是**探测用**的中转，不是本仓的解法——
  * 产品路径仍应要求网关直接提供带 profile 的模型名。
  *
- * ⚠️ 必须**逐块**转发（设计稿 §9.4.1 最贵的一课）：用 `await upstream.text()` 会把整条流转成一个
+ * ⚠️ 必须**逐块**转发（最贵的一课）：用 `await upstream.text()` 会把整条流转成一个
  * blob，破坏 SSE 分块语义，把"厂商不给增量"这类假象造出来。
  *
  * 用法：node probe/v2/lib/codex-model-relay.mjs <监听端口> <上游 base>
@@ -44,7 +44,7 @@ const server = createServer((request, response) => {
           rewritten = `${parsed.model} → ${target}`;
           parsed.model = target;
           /**
-           * `gt-6-*` 这一档的真机噪声是 `invalid_encrypted_content`（设计稿 §9.4 已登记）：
+           * `gt-6-*` 这一档的真机噪声是 `invalid_encrypted_content`（已登记）：
            * codex 会把上一轮的**加密推理条目**原样回传，而该模型不认。
            * ⇒ 改名之后必须同时 ①去掉 `include` 里的加密推理请求、②从 `input` 里剔除 `reasoning` 条目，
            * 否则子智能体的每一次模型调用都会以同一个错误收场（真机实测：父轮次 spawn 成功、

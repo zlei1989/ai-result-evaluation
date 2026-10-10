@@ -249,7 +249,7 @@ describe('坏文件：列表跳过并说出来，详情抛带路径的中文原�
    * 判据刻意打挂 `renameSync`（写临时文件那一步已经成功），于是两种实现分道扬镳：
    *   · 临时文件 + rename（正确）→ 目标还是旧内容，抛中文 INTERNAL；
    *   · 「先删目标再写」（变异体，AGENTS.md 点名的写法）→ 目标已经没了，这里直接 ENOENT。
-   * 这条守卫见过失败：变异验证时把 `if (isReadOnly(file)) rmSync(...)` 改成无条件先删，本用例当场红。
+   * 变异验证：把 `if (isReadOnly(file)) rmSync(...)` 改成无条件先删，本用例当场红。
    */
   it('rename 失败时旧文件原封不动（不是先删再写）', () => {
     writeCase(makeCase({ title: '旧的一版' }));

@@ -1,7 +1,7 @@
 /**
- * claude 真机项④：`Task*` 四个工具的**真实返回形状**（设计稿 §11.1 第 27 项的唯一缺口）。
+ * claude 真机项④：`Task*` 四个工具的**真实返回形状**（唯一缺口）。
  *
- * 设计稿原文：「`id` 从哪来（`TaskCreate` 的 result 形状未登记、`TaskCreated` hook 在 ⑨ 里没被用）**未说**
+ * 登记口径：「`id` 从哪来（`TaskCreate` 的 result 形状未登记、`TaskCreated` hook 在 ⑨ 里没被用）**未说**
  * ⇒ claude 侧的"依赖"维度（`blockedBy`）**会落空**。需真机看一次 `TaskCreate` 的返回。」
  *
  * 本脚本只调用 `Task*`（**不调 Bash**：本机 SDK 路径上 shell 工具不可用，见 `v2/claude-bash-variants`），

@@ -1,11 +1,11 @@
 /**
- * codex 真机探测的共享外壳：用**真实的 `@openai/codex-sdk`**（适配器唯一入口，§7.0）跑一条任务，
+ * codex 真机探测的共享外壳：用**真实的 `@openai/codex-sdk`**（适配器唯一入口）跑一条任务，
  * 把 SDK 透传的 CLI 事件逐条落盘。
  *
  * 网关口径（本轮实测）：`http://likecode-llm-proxy-test.jd.com/v1`，`wire_api: 'responses'`，
  * 凭据走 `apiKey`（codex 的 `requires_openai_auth` 会把它变成 Bearer）。
  *
- * ⚠️ 与设计稿 §7.5.2 的护栏口径**刻意不同**：本探测按"要看到什么就开什么"配置，
+ * ⚠️ 与既有护栏口径**刻意不同**：本探测按"要看到什么就开什么"配置，
  * 因此默认把 `multi_agent`、`tools.update_plan.enabled`、`tools.experimental_request_user_input.enabled`、
  * `features.default_mode_request_user_input` 全开——探测的目的是**观察厂商会产出什么**，
  * 不是复述本仓当前的护栏。
@@ -50,7 +50,7 @@ export function codexConfig({ extraTools = {}, extraFeatures = {}, baseUrl = COD
 /**
  * 跑一条 codex 任务，返回 `{ events, types, error, threadId }`。
  *
- * 注意：SDK 的 `runStreamed` 对不可达/不可用的网关**没有上界**（§2 的实测），
+ * 注意：SDK 的 `runStreamed` 对不可达/不可用的网关**没有上界**（实测），
  * 所以这里必须自带时限，否则探测会变成挂死。
  */
 export async function runCodexProbe({

@@ -1,5 +1,5 @@
 /**
- * 「这块内容还没写完」的**闪烁光标类名**（2026-10-10 从 `TextBlockView` 提到 base）。
+ * 「这块内容还没写完」的**闪烁光标类名**（base 里的共享常量）。
  *
  * 为什么单独一个文件：这个类名现在有**两个**使用者——执行日志里那条正文流
  * （`composite/agent-log/text-block-view.tsx`）与卡片底部的活动行（`base/agent-activity-line.tsx`）。

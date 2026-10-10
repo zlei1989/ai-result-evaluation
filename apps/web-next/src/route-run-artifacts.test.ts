@@ -7,7 +7,7 @@
  * 仓库建在 mkdtemp 出来的临时目录里，**不碰真实仓库、不碰真实 ~/.aieval**。
  * `@aieval/evaluator` 仍然被整块 mock（不起真实 agent 进程），快照由 POST 路由真实创建。
  *
- * 与 brief 原稿的三处修正（理由与 route-runs.test.ts 的文件头逐条相同）：
+ * 三处修正（理由与 route-runs.test.ts 的文件头逐条相同）：
  *   · mock 句柄走 `vi.hoisted`，测试里不再 `import '@aieval/evaluator'`（本应用没声明它，tsc 会红）；
  *   · mock 工厂多两个键（`resolveJudgeRoute` / `recoverInterruptedRuns`）：`@aieval/api` 的 index.ts
  *     会**转出**这两个名字，ESM 的转出绑定在模块求值期读取，缺键在 import 阶段就抛；
@@ -41,11 +41,11 @@ const evaluator = vi.hoisted(() => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
-  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // 评分那两条流：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
   // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
-  // 候选那条记录流（spec v3 §2）：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
+  // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
   subscribeRowRecords: vi.fn(() => () => {}),
   // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
   // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
@@ -158,7 +158,7 @@ async function createRun(): Promise<EvalRun> {
 
 /**
  * 动态段上下文：Next 16 的 `params` 是 Promise。
- * 必须**泛型**（brief 原稿写的是 `Record<string, string>`）：路由的上下文参数是
+ * 必须**泛型**（写成 `Record<string, string>` 就错了）：路由的上下文参数是
  * `{ runId: string; rowId: string }`，`Record<string, string>` 只提供索引签名、不提供具名属性，
  * `strictFunctionTypes` 下参数是逆变位置，传进去直接 TS2345（实测）。
  */
@@ -325,8 +325,8 @@ describe('GET .../rows/[rowId]/log', () => {
 });
 
 describe('GET .../rows/[rowId]/stream', () => {
-  it('段配置：nodejs runtime + force-dynamic（进程内事件总线，§11 R6）', () => {
-    // 事件总线是**进程内**的（§11 R6）：换到 edge 之类的 runtime，SSE 路由就连不上编排层，
+  it('段配置：nodejs runtime + force-dynamic（进程内事件总线）', () => {
+    // 事件总线是**进程内**的：换到 edge 之类的 runtime，SSE 路由就连不上编排层，
     // 而症状是「连上了、永远没有新事件」——零报错。段配置本身没有任何运行时守卫，故在这里钉住。
     expect(streamRuntime).toBe('nodejs');
     expect(streamDynamic).toBe('force-dynamic');
@@ -350,7 +350,7 @@ describe('GET .../rows/[rowId]/stream', () => {
     expect(res.headers.get('x-accel-buffering')).toBe('no');
 
     // 回放里带终态 ⇒ 流会自己结束（否则这里会挂住）。
-    // 首块是 ready 注释帧（打开即有首字节，F3-①）：它先 flush 响应头，之后才是历史帧
+    // 首块是 ready 注释帧（打开即有首字节，-①）：它先 flush 响应头，之后才是历史帧
     const text = await res.text();
     expect(text).toBe(
       ': ready\n\n' +
@@ -375,7 +375,7 @@ describe('GET .../rows/[rowId]/stream', () => {
     );
 
     const text = await res.text();
-    // 首块是 ready 注释帧（打开即有首字节，F3-①），回放从它之后开始
+    // 首块是 ready 注释帧（打开即有首字节，-①），回放从它之后开始
     expect(text.startsWith(': ready\n\n')).toBe(true);
     expect(text.slice(': ready\n\n'.length).startsWith(`id: ${end.seq}\n`)).toBe(true);
     expect(text).not.toContain('"text":"一"');

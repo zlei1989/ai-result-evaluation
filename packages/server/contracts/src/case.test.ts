@@ -109,7 +109,7 @@ describe('CasePatchSchema', () => {
 });
 
 describe('RepoInfoSchema / CommitCandidateSchema', () => {
-  it('回显仓库名与当前分支（spec §4.2「通过后回显仓库名与当前分支」）', () => {
+  it('回显仓库名与当前分支（通过后回显仓库名与当前分支）', () => {
     const info = RepoInfoSchema.parse({
       repoPath: 'D:/repos/demo',
       repoName: 'demo',
@@ -147,7 +147,7 @@ describe('RepoInfoSchema / CommitCandidateSchema', () => {
 });
 
 describe('校验入参', () => {
-  it('仓库校验只按仓库路径，不按 caseId（§11 R7：新建时还没有 caseId）', () => {
+  it('仓库校验只按仓库路径，不按 caseId（新建时还没有 caseId）', () => {
     expect(RepoPathInputSchema.safeParse({ repoPath: 'D:/repos/demo' }).success).toBe(true);
     expect(RepoPathInputSchema.safeParse({ repoPath: '' }).success).toBe(false);
     expect(RepoPathInputSchema.safeParse({ caseId: 'c-1' }).success).toBe(false);
@@ -163,7 +163,7 @@ describe('校验入参', () => {
   });
 
   /**
-   * 三支的**显式分派**（2026-10-08）：`mode` 必填且只认三个值。
+   * 三支的**显式分派**：`mode` 必填且只认三个值。
    * 为什么值得一条守卫：三支里有两支的 `prompt` 都是必填，靠它分不出意图——
    * 少了这条，把 `mode` 改回可选、再按 `prompt` 空不空猜分支的写法会一路绿到运行期，
    * 症状是「智能调整」被当成「智能识别」跑（整表替换掉用户的标准，而界面上一切正常）。

@@ -136,7 +136,7 @@ describe('LogNodeBreadcrumb', () => {
     ]);
   });
 
-  it('**站在子任务上点主会话那一段就回得去**（2026-10-03 修掉的死胡同）', () => {
+  it('**站在子任务上点主会话那一段就回得去**', () => {
     const onSelect = vi.fn();
     render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={onSelect} />);
 

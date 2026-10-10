@@ -5,7 +5,7 @@
  */
 import { ServiceError } from '@aieval/contracts';
 
-/** 右栏的三种内容（spec §5.3 / §6.3：同一个栏位换内容，不叠加、不弹层） */
+/**右栏的三种内容（/：同一个栏位换内容，不叠加、不弹层） */
 export type RunsPanelKind = 'detail' | 'new' | 'edit';
 
 /** 三个产物抽屉 */

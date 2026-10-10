@@ -1,7 +1,7 @@
 /**
  * 智能体评分通路：把评分交给一个**在该行工作区里跑的智能体会话**，而不是一次文本请求。
  *
- * 为什么需要它（spec §1 第 1 条）：纯文本通路要把「评分标准项表格 + diff」一次性塞进一次
+ * 为什么需要它：纯文本通路要把「评分标准项表格 + diff」一次性塞进一次
  * 请求。改动超过上下文窗口时只有两条路——请求失败，或按 `diffBudgetBytes` 裁掉一部分文件。后者更危险：
  * **分数照样出得来，只是在残缺输入上得出**，与正常分数在界面上一模一样。
  * 智能体通路的解法是让评审者自己去仓库里看：它按文件读、按需读，输入不再是一段文本。
@@ -10,7 +10,7 @@
  *   1. **解析与收口与文本通路共用**（`parseJudgeResponse` + `finalizeScore`）：围栏剥离、缺一项即失败、
  *      总分一律按权重加总——一个字都不改。两条通路给的必须是同一把尺子；
  *   2. **只读要求写进提示词**：工作区是候选的产出，评分智能体改了它就污染「查看改动」抽屉
- *      （抽屉按需现算 diff）。要求只读之外，编排层还会做一次摘要对照（spec §7.4）；
+ *      （抽屉按需现算 diff）。要求只读之外，编排层还会做一次摘要对照；
  *   3. **失败面分两类**：适配器自己失败 → `JudgeAgentError`（带 agents 的原始归因码）；
  *      「拿到了答复但解析不了」→ `ServiceError('JUDGE_PARSE_FAILED')` + `context.raw`。
  *      **绝不把 AGENT_* 折成 ServiceError**：它们不是 contracts 的 `ErrorCode`（errors.ts 只有 11 个，
@@ -19,7 +19,7 @@
  *   4. **`finalText === null` 不等于空答复**：前者是这一家没回传最终消息（适配器违约），
  *      后者是它明确回了空串——两种都要失败，但文案要能区分，故判据同时覆盖两者。
  *      **「哪条消息算答复」由适配器归一**（`AgentRunResult.finalText` 的契约：主会话、已收尾、
- *      非空；没采到记 `null`），一致性套件的「最终答复口径（§2.10）」逐家钉住 ⇒ 本层不需要知道
+ *      非空；没采到记 `null`），一致性套件的「最终答复口径」逐家钉住 ⇒ 本层不需要知道
  *      任何一家的采集点在哪，也不要在这里记各家的实现差异；
  *   5. **`ok` 判定先于读答复**：适配器的契约是「`ok:false` 时 `finalText` 不保证是模型答复」
  *      （某一家可能在自己的错误分支之前就采过一段文本，那里躺着的是厂商的错误文本）⇒
@@ -95,13 +95,13 @@ export interface AgentJudgeInput {
    */
   judgeEffort?: string;
   /**
-   * **不再有 `timeoutMs`**（用户口径，2026-09-28「评分不限轮次和时间」）：适配器与外层兜底
+   * **没有 `timeoutMs`**（用户口径「评分不限轮次和时间」）：适配器与外层兜底
    * 两处上限都删了，评审者跑到它自己收场为止，唯一的停止入口是 `signal`（用户点「终止」）。
    */
   signal: AbortSignal;
   onEvent: (event: AgentEvent) => void;
   /**
-   * 评审者交出的**内容消息**（2026-10-10）。与候选阶段的 `onMessage` 同形同口径：
+   * 评审者交出的**内容消息**。与候选阶段的 `onMessage` 同形同口径：
    * 快照落盘、增量只广播（分叉由调用方做，见 `orchestrator.ts`），只是落在**评分自己那条流**
    * （`judge-messages.jsonl`）里——执行日志那条时间轴只讲候选做了什么。
    */
@@ -148,7 +148,7 @@ export function buildAgentJudgePrompt(input: {
 /**
  * 给日志事件加前缀——**只加在 `text` 上**（抽屉读的是它）。
  *
- * 摘要**不戴前缀**（用户口径 2026-09-29：「我从『评分中』tag 可以了解阶段」）：卡片底部那一行
+ * 摘要**不戴前缀**（用户口径：「我从『评分中』tag 可以了解阶段」）：卡片底部那一行
  * 显示的是 `summary`，行上本来就有阶段 tag，再戴一遍前缀纯属噪声。于是摘要是**事件自己那句话**：
  * 源事件有摘要就透传，没有就用它自己的文本（`event.summary ?? event.text`，同样是原文）；
  * 这样**卡片上永远不会出现转发前缀**，而机器负载的形状不受影响——消费方的判据只认内容
@@ -185,7 +185,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
       // 强制——两者缺一：只有提示词时，一个不守规矩的评审者照样能改；只有这一格时，
       // 它会把「被拒的写操作」当成环境故障，而不是自己的越界。
       permission: 'read-only',
-      // 按需带：`undefined` / `null` 时适配器一个字段都不加（三家各自的守卫见 spec §5）。
+      // 按需带：`undefined` / `null` 时适配器一个字段都不加（三家各自的守卫在各自适配器里）。
       // 用条件展开而不是 `outputSchema: input.outputSchema`，是为了不给下游一个「键存在、值是
       // undefined」的格：条件展开之下「没给」在选项对象上就是**没有这个键**。这是写法上的事实，
       // 不是迁就某个消费者——仓内三家适配器都按值分支、夹具也无条件记录值，没有谁在读键的存在性。
@@ -213,7 +213,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     // 上抛会被 `runRow` 折成 `INTERNAL`（`EvalRow.error.code = INTERNAL`），而候选阶段的同形违约
     // 走的是 `classifyStop` 的 agentError 分支（归因码取自适配器）——两条通路的归因口径必须一致。
     // 两种形状分开：抛在 abort 之后 ⇒ 记为「被停止」，让编排层按用户终止收尾
-    //（2026-09-28 起评分阶段**只有**用户终止这一条停止通路：两处超时都已删除；
+    //（评分阶段**只有**用户终止这一条停止通路：两处超时都已删除；
     // 这里也判不了别的，signal 不带原因）；其余 ⇒ AGENT_FAILED，指向适配器。
     // 可达性低（`turn.ts` 明写不抛），故这一条是**纵深防御**：守卫见 judge-agent.test.ts。
     if (input.signal.aborted) {
@@ -252,7 +252,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     parsed = parseJudgeResponse(raw, input.rubric);
   } catch (error) {
     // 与文本通路同一个折错助手（`judge.ts` 的 `reason`）：`ServiceError` 也走 `Error.message`，
-    // 所以这里只需要「是 Error 就取 message」这一条判据（原先多写一档 `instanceof ServiceError` 是死分支）
+    // 所以这里只需要「是 Error 就取 message」这一条判据（多写一档 `instanceof ServiceError` 是死分支）
     const detail = reason(error);
     throw new ServiceError('JUDGE_PARSE_FAILED', `评分解析失败：${detail}`, {
       context: { raw: truncateRaw(raw) },
@@ -276,7 +276,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     // （`result.applied.structuredOutput` 就是那个结论，同一个式子在骨架里只算一次），这里原样透传，
     // 于是「声称被 schema 约束」与「实际被约束」不再可能分叉；本模块也因此不读注册表、不做能力判断。
     structuredOutput: result.applied.structuredOutput,
-    // 评分**自己**的花销（2026-10-08，用户口径）：与候选行的 `EvalRow.tokens` / `durationMs`
+    // 评分**自己**的花销（用户口径）：与候选行的 `EvalRow.tokens` / `durationMs`
     // 同一份原料（适配器自报值），故两者可以直接对着看。`result.tokens` 为 `null` 时原样记 null
     // ——「这家不报用量」与「一个 token 都没花」是两句相反的话，不许互相兜底。
     judgeTokens: result.tokens,

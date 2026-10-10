@@ -1,5 +1,5 @@
 /**
- * 智能体消息契约（agent message spec v3 §2）：统一消息信封、内容块、工具族、子任务行、
+ * 智能体消息契约：统一消息信封、内容块、工具族、子任务行、
  * 计量结构与能力声明。三家适配器**全部**归一成这里的形状，消费方（面板、导出、排障抽屉）
  * 因此永远只认一份形状，不必、也不许再问「这一条是哪个家发的」。
  *
@@ -70,7 +70,7 @@ export const ThinkingBlockSchema = z.object({
 });
 
 /**
- * 清单的一步（spec §7.6.2 ⑨ 的 `TaskStep`）。
+ * 清单的一步（`TaskStep`）。
  * `id` / `owner` / `blockedBy` 是**只有 claude 有**的三维（它的 `Task*` 是工作项注册表），
  * 另两家恒 `null`——「缺就是缺」，不编一个空依赖表出来。
  */
@@ -102,7 +102,7 @@ export const AskUserOptionSchema = z.object({
 });
 
 /**
- * 一个问题（spec §7.6.2 ⑩ 的三家并集）。
+ * 一个问题（三家并集）。
  *
  * `header` 是 `string` 而**不是** `nullable`：它是厂商给的**展示标签**，而回填答案的配对键
  * （`AskUserAnswer.header`）本身就是字符串——两处对「没有标题」用两种表示，配对逻辑就得在
@@ -163,7 +163,7 @@ export const ToolCallBlockSchema = z.object({
   /**
    * 归一后的族载荷；`null` = 本期没有为它收编卡片（见 `ToolCallPayloadSchema`）。
    *
-   * **可缺**（与 `usage.timing` 同一条理由，2026-10-04）：磁盘上已有的 `messages.jsonl`
+   * **可缺**（与 `usage.timing` 同一条理由）：磁盘上已有的 `messages.jsonl`
    * 里没有这一格，写成必填会让所有老记录在回放 / SSE 续订时**成片解析失败**。
    * 读侧因此要把「键不存在」与「显式的 `null`」当同一件事（`?? null`）。
    *
@@ -173,7 +173,7 @@ export const ToolCallBlockSchema = z.object({
    */
   payload: ToolCallPayloadSchema.nullable().optional(),
   /**
-   * **一句话活动摘要**（`调用工具 Read：a.ts`、`更新计划：3 步`，2026-10-10）。
+   * **一句话活动摘要**（`调用工具 Read：a.ts`、`更新计划：3 步`）。
    *
    * 为什么放进消息、而不是让界面自己从 `name` / `input` 算：那句话的词表（参数优先级、计划类特判、
    * 单行化与截断）在 `@aieval/agents` 的 `activity.ts`，而按分层表 `ui` / `client` **不许** import 它——
@@ -278,7 +278,7 @@ export const AgentMessageSchema = z.object({
   vendorId: z.string().nullable(),
   role: MessageRoleSchema,
   source: MessageSourceSchema,
-  /** 模型往返序号，从 1 递增；三家均为合成值，计数口径见 spec §3.1 */
+  /** 模型往返序号，从 1 递增；三家均为合成值 */
   roundTrip: z.number().int().positive(),
   /**
    * 厂商轮号（只有 dsh 有，且是**用户轮号**不是模型往返号）；无则为 `null`。
@@ -305,7 +305,7 @@ export const AgentMessageSchema = z.object({
    */
   assembly: z.enum(['snapshot', 'open']),
   /**
-   * **覆盖合并键**（spec v3 §6.2 的「载体」）：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>`。
+   * **覆盖合并键**（「载体」）：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>`。
    *
    * 消费方按它覆盖式累积（后到的同名键**整条替换**），键内再按**块序号**（= `blocks` 数组下标，
    * 首次到达顺序，一经分配不再变化）或块的 `callId` 合并到块一级。三件事因此不必让每个消费方
@@ -319,7 +319,7 @@ export const AgentMessageSchema = z.object({
   /** 内容块，按到达顺序；数组下标就是块序号 */
   blocks: z.array(ContentBlockSchema),
   /**
-   * 这条消息所属的**那一次模型调用**的用量（2026-10-06 新增；本仓只有 dsh 交）。
+   * 这条消息所属的**那一次模型调用**的用量（本仓只有 dsh 交）。
    *
    * 不是累计、**不进任何合计** —— 与 `roundTrip` / `step` 各自独立：那两格回答「这是第几次往返」，
    * 这一格回答「这一次往返花了多少」。三条口径：
@@ -379,7 +379,7 @@ export const SubagentRecordSchema = z.object({
    * 为什么必须单列一格、而不是「拿 `subagentId` 去时间轴上碰」：子任务身份（`task_id` /
    * 子线程 id / `agentId`）与派发它的工具调用 id 是**两套 id**，谁都不等于谁。
    * 少了这一格，界面就只能靠「工具名像不像派发工具 + 任务名逐字相同」这类启发式去猜派发点，
-   * 而猜不中时的表现是**整棵子任务在界面上不可达**（真机实测 2026-10-03：claude 的
+   * 而猜不中时的表现是**整棵子任务在界面上不可达**（claude 的
    * 子任务记录与消息都在文件里，主会话时间轴上却没有「进入子任务」的入口）。
    * claude 与 codex 都给得出：claude 用 `task_progress.tool_use_id`（与子消息上的
    * `parent_tool_use_id`、派发工具调用的 `id` 三者同值）；codex 用 `collab_tool_call` 的条目 id。

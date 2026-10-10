@@ -5,7 +5,7 @@
  * 但 Q3 已经证到：`features.multi_agent: true` + **DeepSeek 官方路由**下，`spawn_agent` **真的跑起来了**
  * （子线程真回了结论）。⇒ 前提变了，hook 这一格必须重测，不能沿用旧结论。
  *
- * 配置与旗标按 §7.5.5 ⑧ 的落法：
+ * 配置与旗标的落法：
  *   · `config.hooks.SubagentStart/SubagentStop = [{ matcher: '', hooks: [{ type: 'command', command }] }]`
  *     —— 经 SDK 的 `flattenConfigOverrides` 会变成 `--config hooks.SubagentStart=[{…}]`；
  *   · `--dangerously-bypass-hook-trust` 只能从 argv 进（SDK 没有任意 flag 透传口），故这里**直接 spawn exe**；

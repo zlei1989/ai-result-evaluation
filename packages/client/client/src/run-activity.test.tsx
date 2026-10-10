@@ -1,12 +1,12 @@
 /**
- * 活动行的**实时内容**（2026-10-10）：折 AgentMessage（正文 / 工具摘要）与「按阶段择一条流」。
+ * 活动行的**实时内容**：折 AgentMessage与「按阶段择一条流」。
  *
  * 四组判据，每一组都有独立的靶子：
- *   ① `activityOfMessage` —— 从消息里挑哪个块当活动文案（正文优先、工具给摘要、其余不给）；
- *   ② `parseActivityFrame` —— 坏帧不打断整条流（与服务端同一口径：一条畸形帧只丢它自己）；
- *   ③ 订阅哪条流 —— 评分阶段看评审者那条，终态一条都不开（开了就是白挂一条连接）；
- *   ④ 不回放历史 —— 两条流的 URL 都带 `?replay=0`（实测某行 `messages.jsonl` 4 MB，
- *      为一句文案把它搬过 socket 是纯浪费；这条只能靠 URL 钉住，拼错了浏览器不报错）。
+ * ① `activityOfMessage` ——从消息里挑哪个块当活动文案（正文优先、工具给摘要、其余不给）；
+ * ② `parseActivityFrame` ——坏帧不打断整条流（与服务端同一口径：一条畸形帧只丢它自己）；
+ * ③ 订阅哪条流 ——评分阶段看评审者那条，终态一条都不开；
+ * ④ 不回放历史 ——两条流的 URL 都带 `?replay=0`（实测某行 `messages.jsonl` 4 MB，
+ * 为一句文案把它搬过 socket 是纯浪费；这条只能靠 URL 钉住，拼错了浏览器不报错）。
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -79,7 +79,7 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
     expect(activity.text).toBeNull();
   });
 
-  it('推理 / 工具结果 / 空正文**都不占**这一行（2026-10-07 口径）；都没有时返回「没有内容」', () => {
+  it('推理 / 工具结果 / 空正文**都不占**这一行；都没有时返回「没有内容」', () => {
     const thinkingOnly = activityOfMessage(
       message({ blocks: [{ type: 'thinking', text: '想一下', textKind: 'full', signature: null }] }),
     );
@@ -93,7 +93,7 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
   });
 
   it('机器负载（评分阶段的评分结果 JSON）**不当正文**：跳过它继续往前找', () => {
-    // 真机形态（run 7f05c765 的 judge-messages.jsonl 最后一条逐字如此）：
+    // 真机形态（`judge-messages.jsonl` 最后一条逐字如此）：
     // 不过这道闸的话，卡片底部会逐字滚出这坨 JSON
     const verdict = '{"judgments":[{"id":"A1","achieved":true,"reason":"改了 DTO"}]}';
     const onlyJson = activityOfMessage(message({ chunk: 'snapshot', assembly: 'snapshot', blocks: [{ type: 'text', text: verdict }] }));

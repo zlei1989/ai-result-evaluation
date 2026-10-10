@@ -28,7 +28,7 @@ registerWorkspaceHooks();
 
 
 /**
- * 评分智能体的独立配置目录（spec §7.3 的 D8）。
+ * 评分智能体的独立配置目录。
  *
  * 为什么它必须是**另一个**目录、而不是复用 `.agenthome`：评分智能体可能与被测智能体不是同一家，
  * 而 `.agenthome` 是 `CLAUDE_CONFIG_DIR` / `DSH_HOME` / `CODEX_HOME` 的落点——两家的配置格式不同，
@@ -64,10 +64,10 @@ describe('评分智能体的独立配置目录（.judgehome）', () => {
     expect(existsSync(join(judgeHome, 'session.json'))).toBe(true);
 
     // 第二轮：重跑同一行。clearRowArtifacts 里 `.judgehome` 那一条是**逐个列出**的，
-    // 漏了它这条用例才会红（变异验证见 Step 9）
+    // 漏了它这条用例才会红
     prepareRowWorkspace(input);
     expect(existsSync(join(judgeHome, 'session.json'))).toBe(false);
-    // 这里**不**自己 rmSync(root)：`makeTmp` 已经把它登记进 afterEach 的清理列表（终审 ADD-5），
+    // 这里**不**自己 rmSync(root)：`makeTmp` 已经把它登记进 afterEach 的清理列表，
     // 多写一句只会让人以为「不删就会漏」，而真正的清理责任在那一处
   });
 });
@@ -95,7 +95,7 @@ describe('core 公共出口（`@aieval/core` 包根）', () => {
     // 所以本条的守卫本体在编译期：文件顶部那行
     //   `import type { AppConfig, Logger, PendingAgentEvent } from './index'`
     // 只要有一个名字不再从包根导出，`pnpm --filter @aieval/core typecheck` 就会以
-    // TS2305（Module has no exported member）点名本文件——这正是 R17 要求 PendingAgentEvent
+    // TS2305（Module has no exported member）点名本文件——这正是 PendingAgentEvent
     // 以 type 形式从包根可见的落点。下面的断言只是让这三个类型在值层面「被用到」，
     // 让 tsc 与 eslint 都不把它们当死代码删掉。
     const probe: [AppConfig | null, Logger | null, PendingAgentEvent | null] = [null, null, null];
@@ -105,17 +105,17 @@ describe('core 公共出口（`@aieval/core` 包根）', () => {
 
 
 /**
- * 交叉核验（Task 15 Step 4）：`EvalRow` 的字段名与必填项以 **contracts** 为真源，不是 spec §7.2 的 TS 块。
- * Task 4 给 `EvalRowSchema` 补了 `providerId`（R8）与 `error.code`（R9），而 spec §7.2 的 TS 块里没有这两个字段——
- * p1–p5 照 spec 构造行对象会编译不过或语义不全，所以这里留一条**可执行**的对齐证据（R8 / R9 的落实核验）。
+ * 交叉核验：`EvalRow` 的字段名与必填项以 **contracts** 为真源，不另立一份 TS 块。
+ * `EvalRowSchema` 有 `providerId` 与 `error.code` 这两格——这两格以 contracts 为准，
+ * 按早先的形状构造行对象会编译不过或语义不全，所以这里留一条**可执行**的对齐证据。
  */
-describe('EvalRow 契约与本计划产出的形状对齐（R8 / R9 的落实核验）', () => {
-  it('一个按契约构造的行对象能通过 EvalRowSchema（字段名与必填项以 contracts 为准，不是 spec §7.2 的 TS 块）', async () => {
+describe('EvalRow 契约与落盘形状对齐', () => {
+  it('一个按契约构造的行对象能通过 EvalRowSchema（字段名与必填项以 contracts 为准）', async () => {
     const { EvalRowSchema } = await import('@aieval/contracts');
     const row = {
       id: 'row-1',
       agentKind: 'claude-code',
-      // R8：执行期定位凭据用 id，展示快照 providerName 可以被改名
+      // 执行期定位凭据用 id，展示快照 providerName 可以被改名
       providerId: 'p-1',
       providerName: '网关',
       baseUrl: 'https://gw.example.com/anthropic',
@@ -123,18 +123,18 @@ describe('EvalRow 契约与本计划产出的形状对齐（R8 / R9 的落实核
       status: 'judged',
       branch: 'test/row-1',
       workspacePath: rowWorkspaceDir(root, 'run-1', 'row-1'),
-      // R2：40 位具体 hash（prepareRowWorkspace 的返回值就长这样）
+      // 40 位具体 hash（prepareRowWorkspace 的返回值就长这样）
       baselineCommit: 'a'.repeat(40),
       tokens: { input: 1, cached: 0, output: 2 },
       turns: 1,
       durationMs: 1000,
       diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false },
       score: null,
-      // R9：code 必填，且要能同时装下 AgentErrorCode 与接口层 ErrorCode
+      // code 必填，且要能同时装下 AgentErrorCode 与接口层 ErrorCode
       error: { code: 'JUDGE_PARSE_FAILED', message: '维度缺失' },
     };
     expect(EvalRowSchema.safeParse(row).success).toBe(true);
-    expect(EvalRowSchema.safeParse({ ...row, baselineCommit: 'abc1234' }).success).toBe(true); // 只要求是字符串；空串 = 尚未准备也是合法的（R2）
+    expect(EvalRowSchema.safeParse({ ...row, baselineCommit: 'abc1234' }).success).toBe(true); // 只要求是字符串；空串 = 尚未准备也是合法的
     expect(EvalRowSchema.safeParse({ ...row, providerId: undefined }).success).toBe(false);
     expect(EvalRowSchema.safeParse({ ...row, error: { message: '维度缺失' } }).success).toBe(false);
   });

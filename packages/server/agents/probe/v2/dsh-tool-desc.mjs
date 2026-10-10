@@ -2,7 +2,7 @@
  * 打印 dsh 某几个工具的**完整描述原文**（来自 `request/header.tools[]`）。
  *
  * 为什么要它：`ask_user_question` / `interrupt_agent` / `subagent` 的失败路径与副语言都在描述里
- * （设计稿 §7.6.2 ⑩ 引用的 dsh 逐字文案就出自这里）。要设计"能让子任务失败"的提示词，
+ * （dsh 的逐字文案就出自这里）。要设计"能让子任务失败"的提示词，
  * 先得看厂商自己怎么描述这些工具的收场方式。
  *
  * 用法：node probe/v2/dsh-tool-desc.mjs <jsonl 名> <工具名> [...]

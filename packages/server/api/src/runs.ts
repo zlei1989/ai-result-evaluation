@@ -1,12 +1,12 @@
 /**
  * 评测服务：创建（含候选池投影）、列表/详情读取、启动与终止。
  * 四条口径：
- *   1. 创建只**落库**，不自动开跑（spec §5.1）——「开始」是评测详情页的显式动作；
- *   2. 供应商名与 baseUrl 在创建时**快照**进行里（spec §7.2）：供应商改名或删除后，
+ *   1. 创建只**落库**，不自动开跑——「开始」是评测详情页的显式动作；
+ *   2. 供应商名与 baseUrl 在创建时**快照**进行里：供应商改名或删除后，
  *      历史评测仍能说清这一行当时用的是什么；
- *   3. 候选池的协议判据来自 agents 注册表元数据（spec §5.6.2 A3）——本文件里**没有**
+ *   3. 候选池的协议判据来自 agents 注册表元数据——本文件里**没有**
  *      「哪家智能体配哪种协议」的映射表，那张表只有注册表一份；
- *   4. 开了「使用智能体评分」就在**创建时**把评分配置问题拦下来（spec §6）：
+ *   4. 开了「使用智能体评分」就在**创建时**把评分配置问题拦下来：
  *      配置不对的表现原本是「候选跑完几分钟后才在评分阶段炸」，两处判定共用
  *      evaluator 的 `resolveJudgeRoute` / `requireJudgeAgent`（评分阶段还会再校验一次，配置可能被改过）。
  */
@@ -51,18 +51,18 @@ import { getSettings } from './settings';
 
 const log = createLogger('runs');
 
-/** 候选池里的一个模型：字段与 spec §5.1 的下拉选项一一对应 */
+/** 候选池里的一个模型：字段与下拉选项一一对应 */
 export interface AgentModelOption {
   providerId: string;
   providerName: string;
   /** 供应商侧的模型 id（选它就是选「这个供应商的这个模型」） */
   modelId: string;
-  /** 自动拉取 vs 手工维护：界面用 Tag 区分来源（spec §5.1） */
+  /** 自动拉取 vs 手工维护：界面用 Tag 区分来源 */
   source: 'fetched' | 'manual';
   /** 上下文窗口（token）；缺省 = 未知（界面显示「未知」，绝不兜底一个数字） */
   contextWindow?: number;
   /**
-   * 该组合**可选**的思考强度档位（spec D10；2026-10-06 放宽，规则在 contracts 的 `intersectEfforts` 里）：
+   * 该组合**可选**的思考强度档位（规则在 contracts 的 `intersectEfforts` 里）：
    * 上游声明过 ⇒ 交集，再**并上关闭档** `EFFORT_OFF`（关闭不受交集裁剪）；上游**没声明** ⇒
    * 该家**完整档位域**。缺省 = 一个档位都没有（界面只给「未指定」，见 `run-create-panel.tsx` 的
    * `effortPlaceholder`）——只有该家档位域为空时才会。
@@ -76,9 +76,9 @@ export interface AgentModelOption {
 
 /**
  * 一种智能体的创建期元数据 + 候选池。
- * 这是本计划新增的传输形状（契约 §6 只钉了单 kind 的 `listModelOptions`）：界面除了候选池，
+ * 这是新增的传输形状（只钉了单 kind 的 `listModelOptions`）：界面除了候选池，
  * 还需要 `usage` / `cancelMidTurn` 才能把「不支持计量」与「关闭运行时」这两处文案做对
- * （spec §5.6.2 / §5.6.3），而它们的唯一来源同样是注册表元数据。
+ * 而它们的唯一来源同样是注册表元数据。
  */
 export interface AgentOptionGroup {
   agentKind: AgentKind;
@@ -88,10 +88,10 @@ export interface AgentOptionGroup {
   usage: boolean;
   /** false ⇒ 「终止」按钮文案退化为「关闭运行时」 */
   cancelMidTurn: boolean;
-  /** 该智能体能收的思考强度档位（注册表元数据，spec D11）；界面用它解释「为什么只有这几档」 */
+  /** 该智能体能收的思考强度档位（注册表元数据）；界面用它解释「为什么只有这几档」 */
   efforts: readonly string[];
   /**
-   * 「未选档位」时该家**实际会用的档**（注册表元数据 `metadata.defaultEffort`，spec D12 的延伸）。
+   * 「未选档位」时该家**实际会用的档**（注册表元数据 `metadata.defaultEffort`）。
    *
    * 缺省 = 这家不声明（claude / codex 不传档位、由厂商推断）。界面用它拼创建表单「思考强度」的
    * 占位符（「未指定（DeepSeek Harness 用 high）」）——那一格说的正是「你没选，但它会落到哪」，
@@ -99,7 +99,7 @@ export interface AgentOptionGroup {
    */
   defaultEffort?: string;
   /**
-   * **消息能力声明**（spec v3 §2.5，2026-10-04 收口接上）。
+   * **消息能力声明**。
    *
    * 五格（思考文本 / 工具入参 / 工具结果 / 子任务 / 流式增量）各自带 `source` 与 `reason`，
    * 是界面那四句「这家结构上不支持 / 厂商没投送 / 我们还没接 / 没验证过」的**唯一**来源。
@@ -138,7 +138,7 @@ export interface ResolvedRunRow {
   baseUrl: string;
   modelId: string;
   /**
-   * 这一行要求的思考强度（可选，spec D12）：创建与编辑共用同一条校验链，故也由这里带出来。
+   * 这一行要求的思考强度（可选）：创建与编辑共用同一条校验链，故也由这里带出来。
    * 缺省 = 表单没选——「没说」与「说了 high」在快照里必须分得开，落盘时**不写这个键**。
    */
   effort?: string;
@@ -148,9 +148,9 @@ export interface ResolvedRunRow {
  * 候选行的校验链 + 供应商快照：**创建与编辑共用一份**。
  * 顺序逐字沿用创建时的口径（供应商存在 → 模型在该供应商清单里 → 协议兼容 → 强度在候选里）：
  * 顺序反了会把「供应商不存在」报成「模型不存在」，让用户往错误的方向排查。
- * 四个判定**都不在这里重写**：协议判据来自 agents 注册表元数据（spec §5.6.2 A3），强度候选来自
+ * 四个判定**都不在这里重写**：协议判据来自 agents 注册表元数据，强度候选来自
  * contracts 的 `intersectEfforts`（交集并上关闭档；上游未声明时给该家完整域）——本文件里既没有
- * 「哪家智能体配哪种协议」的映射表，也没有第二份档位算法（候选池与评分共用它，2026-10-07 提到 contracts）。
+ * 「哪家智能体配哪种协议」的映射表，也没有第二份档位算法（候选池与评分共用它，落在 contracts）。
  */
 export function resolveRunRows(
   rows: RunUpdate['rows'],
@@ -183,8 +183,8 @@ export function resolveRunRows(
         }),
       );
     }
-    // 强度校验（spec D10 的第二道闸）：表单只列候选，这里拦的是**绕过表单直接打接口**。
-    // 2026-10-06：**未选也要校验**——dsh 的「未选」会真的落到缺省档（`metadata.defaultEffort`），
+    // 强度校验（第二道闸）：表单只列候选，这里拦的是**绕过表单直接打接口**。
+    // **未选也要校验**——dsh 的「未选」会真的落到缺省档（`metadata.defaultEffort`），
     // 那个档不在候选里时必须**建行就拒**，否则要跑到 dsh 的硬校验处才失败
     // （`UNSUPPORTED_REASONING_EFFORT`，症状离真因很远）。
     const allowed = intersectEfforts(model, metadata.reasoningEfforts, metadata.reasoningEfforts) ?? [];
@@ -227,7 +227,7 @@ export function resolveRunRows(
  * 或让 `listRuns()` **静默跳过整轮**（使用者看到的是「我的评测记录凭空少了几轮」）。
  * 两条路径唯一该有的差别由入参表达：`rowId`（新行 id）与 `workspaceBase`（这一行的工作区根）——
  * 创建时是**创建那一刻**的 `settings.workspaceRoot`（与落库的 `run.workspaceBase` 是同一个值），
- * 编辑新增时是 `run.workspaceBase`（spec §3 D13：按当前设置算会让新行的产物落在另一个根里，两边都不报错）。
+ * 编辑新增时是 `run.workspaceBase`（按当前设置算会让新行的产物落在另一个根里，两边都不报错）。
  *
  * 注意「缺省」在这里有**两种写法**、各有理由：`effort` 缺省时**不写这个键**（可选展开，落盘物干净，
  * 且「没说」与「说了 high」要分得开），其余可空格则**显式写 null**（`baselineCommit` 写空串、
@@ -252,7 +252,7 @@ function buildRow(input: {
     providerName: input.providerName,
     baseUrl: input.baseUrl,
     modelId: input.modelId,
-    // 强度进快照（spec D12）：它是**这一行的配置**，必须跟着行一起被重跑、被展示、被比较。
+    // 强度进快照：它是**这一行的配置**，必须跟着行一起被重跑、被展示、被比较。
     // 缺省时**不写这个键**（而不是写 undefined）：落盘物要干净，且「没说」与「说了 high」要分得开。
     ...(input.effort === undefined ? {} : { effort: input.effort }),
     status: 'pending',
@@ -260,7 +260,7 @@ function buildRow(input: {
     // 工作区路径在创建时就能算出来：编排层建目录时用的是同一个 core 函数，不会漂移。
     // 落进去省掉「还没准备」这一种额外的空值状态（按需读产物时要按它定位）。
     workspacePath: rowWorkspaceDir(input.workspaceBase, input.runId, input.rowId),
-    // 基线在准备阶段才解析成 40 位 hash（§11 R2），创建时还没有
+    // 基线在准备阶段才解析成 40 位 hash，创建时还没有
     baselineCommit: '',
     tokens: null,
     turns: null,
@@ -275,7 +275,7 @@ function buildRow(input: {
 
 /**
  * 创建一轮评测：校验 → 快照 → 落库 idle。
- * 校验顺序固定为「**用例 → 评分通路 → 供应商 → 模型 → 协议**」（终审 Minor 纠正：原注释把
+ * 校验顺序固定为「**用例 → 评分通路 → 供应商 → 模型 → 协议**」（原注释把
  * 「评分通路」写在「用例」前面，而代码里 `getCase` 是最先跑的那一步），因为它们是递进的：
  * 先确认用例还在（题面与仓库来源都要它——评分表随创建快照进这一轮，不再回头查用例；
  * 后面每一步都拿它的字段），再确认这一轮
@@ -293,7 +293,7 @@ export function createRun(input: RunCreate): EvalRun {
   if (input.useAgentJudge) {
     // 「不要让人选完到运行时才失败」：智能体评分需要设置页那一格，而评分模型只有全局默认这一个来源
     // （用例上不再有覆盖）。评分阶段还会再校验一次（配置可能被改过），两处都留——
-    // 与 F2 的协议过滤「创建时拦一次、编排层再拦一次」同一模式。
+    // 与协议过滤「创建时拦一次、编排层再拦一次」同一模式。
     const route = resolveJudgeRoute();
     requireJudgeAgent({ defaultJudgeAgent: settings.defaultJudgeAgent, route });
   }
@@ -342,7 +342,7 @@ export function createRun(input: RunCreate): EvalRun {
 }
 
 /**
- * 启动：只跑未完成的行（spec §5.3 的「开始」语义）。
+ * 启动：只跑未完成的行（「开始」语义）。
  * 「没有可执行的行」在 api 层就拦掉并抛 CONFLICT：编排层的 startRun 只承诺「已有运行中的行则抛
  * CONFLICT」，全是 judged 时它会安静地什么都不做——而界面刚点过「开始」，静默无反应是最难排查的反馈。
  */
@@ -368,7 +368,7 @@ export function abortRun(runId: string): EvalRun {
   return run;
 }
 
-/** 终止单行：全开并发下某一行明显跑歪时不必等它超时（spec §5.3） */
+/** 终止单行：全开并发下某一行明显跑歪时不必等它超时 */
 export function abortRow(runId: string, rowId: string): EvalRun {
   const before = getRunSnapshot(runId);
   if (!before.rows.some((row) => row.id === rowId)) {
@@ -381,7 +381,7 @@ export function abortRow(runId: string, rowId: string): EvalRun {
 }
 
 /**
- * 重新评分：只重跑评分步骤（spec §9）。
+ * 重新评分：只重跑评分步骤。
  * 判据（`canRescoreRow`）与拒绝原因是编排层的活——api 层只做存在性检查与转出，
  * 与 `abortRow` 同一条分工（界面不该给它按钮，真调到了要明确报出来，而不是静默成功）。
  */
@@ -399,7 +399,7 @@ export function rescoreRow(runId: string, rowId: string): EvalRun {
 /**
  * 单行**执行**（内部名 retry；界面文案按行态分叉：没跑过 = 「开始执行」、跑过 = 「重新执行」）：
  * 只把这一行的候选 agent 与评分整段跑一遍，本轮其他行一律不动。
- * 可用判据 `canRunRow` 只要求「不在跑」（2026-09-29 起**包含没跑过的行**——用户口径
+ * 可用判据 `canRunRow` 只要求「不在跑」（**包含没跑过的行**——用户口径
  * 「只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」）；
  * 「跑过没跑过」只决定界面文案与确认框措辞（`canRetryRow`），不再决定能不能跑。
  * 与 `rescoreRow` 同一条分工：存在性检查在 api 层，可用性判据与拒绝原因在编排层
@@ -417,7 +417,7 @@ export function retryRow(runId: string, rowId: string): EvalRun {
 }
 
 /**
- * 候选池投影：某种智能体可用的全部模型（spec §5.1 F2）。
+ * 候选池投影：某种智能体可用的全部模型。
  * 过滤判据是注册表元数据的**协议集合**（`protocolTypes` + `acceptsProtocol`）——**不硬编码**
  * 「Codex 用 openai」这类对应关系（A3）：将来加第四家智能体、或某一家从单协议变成双协议
  * （DSH 就是这样），这里一行都不用改。
@@ -468,7 +468,7 @@ export function listAgentModelOptions(): AgentOptionGroup[] {
   });
 }
 
-/** 编辑时这一轮指向的用例（五格冗余快照的来源，spec §7.2） */
+/** 编辑时这一轮指向的用例（五格冗余快照的来源） */
 export interface RunTargetCase {
   caseId: string;
   caseTitle: string;
@@ -524,7 +524,7 @@ function resetRow(current: EvalRow, row: ResolvedRunRow): EvalRow {
  *
  * ⚠️ `workspacePath` 必须按 **`run.workspaceBase`**（这一轮自己记录的根）算，**不能**用当前
  * `settings.workspaceRoot`：`prepareRowWorkspace` 拿的就是 `run.workspaceBase`，按当前设置算会让新行
- * 的工作区落在另一个根里——这一轮的产物裂成两半，而两边都不报错（spec §3 D13 / run-store 口径 4）。
+ * 的工作区落在另一个根里——这一轮的产物裂成两半，而两边都不报错。
  */
 function newRow(run: EvalRun, row: ResolvedRunRow): EvalRow {
   return buildRow({
@@ -532,7 +532,7 @@ function newRow(run: EvalRun, row: ResolvedRunRow): EvalRow {
     runId: run.id,
     // ⚠️ 必须按 **`run.workspaceBase`**（这一轮自己记录的根）算，**不能**用当前 `settings.workspaceRoot`：
     // `prepareRowWorkspace` 拿的就是 `run.workspaceBase`，按当前设置算会让新行的工作区落在另一个根里——
-    // 这一轮的产物裂成两半，而两边都不报错（spec §3 D13 / run-store 口径 4）。
+    // 这一轮的产物裂成两半，而两边都不报错。
     workspaceBase: run.workspaceBase,
     agentKind: row.agentKind,
     providerId: row.providerId,
@@ -544,7 +544,7 @@ function newRow(run: EvalRun, row: ResolvedRunRow): EvalRow {
 }
 
 /**
- * 编辑之后的轮级状态（spec §5.1 口径 3）。
+ * 编辑之后的轮级状态。
  * **不复用编排层的 `finalizeRun`**：它对「全行 pending」会落 `partial`，把一个从没跑过的轮次
  * 显示成「部分完成」。三条分支：
  *   · 全行 judged ⇒ `done`（`finishedAt` 已是非 null 就保留原值，否则填当前时刻）；
@@ -559,13 +559,13 @@ function settleRunAfterEdit(run: EvalRun, rows: readonly EvalRow[], now: string)
 }
 
 /**
- * 算「编辑之后这一轮长什么样」（spec §5.1 的逐行处置表）：行对齐 → 原地重置 / 新增 / 删除 → 轮级收敛。
+ * 算「编辑之后这一轮长什么样」（逐行处置表）：行对齐 → 原地重置 / 新增 / 删除 → 轮级收敛。
  *
  * 纯函数：不读盘、不查配置与注册表、**不写盘**（调用方负责 `saveRun`）。唯一的外部状态是
  * 新增行的 `randomUUID()` 与时间戳——用例对新增行只断言「id 非空且不等于任何原行 id」。
  * 抽出它的理由：页面与组件层的间接断言盖不住「哪一行被重置了」，这条规则必须能被**直接**测到。
  *
- * 行对齐的**唯一键是行 id**（spec §3 D3）：
+ * 行对齐的**唯一键是行 id**：
  *   · 带 id 且命中 ⇒ 原地更新（目标没变就逐字保留，变了就重置）；
  *   · 带 id 但不命中 ⇒ `NOT_FOUND`，**不静默当新行**（静默会造出一行用户没打算要的候选）；
  *   · 带 id 但**重复** ⇒ `INVALID_QUERY`（见下面的 `seen`）；
@@ -614,17 +614,17 @@ export function planRunUpdate(
   const now = new Date().toISOString();
   return {
     ...run,
-    // 用例快照（`caseId` + 五格冗余字段）**只在换了用例时**重取——spec §5.1 的逐行处置表里，
+    // 用例快照（`caseId` + 五格冗余字段）**只在换了用例时**重取——逐行处置表里，
     // 只有「换来用例」那一行写了「重取 caseTitle / repoPath / commitHash / repoBranch 快照」，
     // `rubric` 与它们同路：换过去的那张评分表必须跟着走，否则新用例的行会拿旧用例的尺子评分。
-    // 无条件按 `target` 重写的后果（终审 Important）：用户改的是**用例自己**的 `commitHash` / `repoPath`
+    // 无条件按 `target` 重写的后果：用户改的是**用例自己**的 `commitHash` / `repoPath`
     // （`CasePatchSchema` 是 `CaseCreateSchema.partial()`，允许改），此后哪怕只是把这一轮的执行模式
     // 从串行改成并行，这一轮的「复现条件」也会悄悄变成新 commit，而每一行还挂着在**旧** commit 上
     // 挣来的分；再点「开始」时 pending / failed 的行按 `run.commitHash` 重跑（编排层 prepare 用的就是它）
     // ⇒ 一轮里出现两条基线，而两端都不报错。`rubric` 同理：无条件重写会把「这一轮当初那把尺子」
     // 换成用例当前那张表，历史分数与自己那一轮的满分不再自洽。
     // 也不改成「按值比较这几格」：那要连带改客户端的 `invalidatedRows`（「同一用例」的第二份判据），
-    // 而 §4.3 只允许「改了才重置」这一条判据只有一份（那一份是**行**的 `isSameRowTarget`）。
+    // 而「改了才重置」这一条判据只有一份（那一份是**行**的 `isSameRowTarget`）。
     ...(caseChanged
       ? {
         caseId: target.caseId,
@@ -643,7 +643,7 @@ export function planRunUpdate(
 }
 
 /**
- * 更新一轮评测（「修改」，spec §5.1）：校验 → 算新快照 → 落盘。
+ * 更新一轮评测（「修改」）：校验 → 算新快照 → 落盘。
  *
  * 顺序与失败语义都是承重的：
  *   1. **先判「能不能改」**（`hasLiveRows`）：正在跑的行有自己的生命周期，处置是「先终止」，
@@ -691,10 +691,10 @@ export function updateRun(runId: string, input: RunUpdate): EvalRun {
 }
 
 /**
- * 删除一轮评测（spec §5.3）：存在性检查 → 转编排层（那里才有在途任务表与产物路径）。
+ * 删除一轮评测：存在性检查 → 转编排层（那里才有在途任务表与产物路径）。
  * 为什么存在性检查在这里而不是只靠编排层：编排层的 `getRunForWrite` 有「按进程内记忆兜底」的
  * 分支，直接转过去的话，一个**别的根**下的同名轮次可能被解析到——而删除的语义是
- * 「删掉**当前工作区根里可见的这一轮**」（与读侧口径一致，R10）。
+ * 「删掉**当前工作区根里可见的这一轮**」（与读侧口径一致）。
  */
 export function deleteRun(runId: string): { workspaceRemoved: boolean } {
   getRunSnapshot(runId);

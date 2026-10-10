@@ -13,6 +13,7 @@
 - [用例管理](/features/case-management): 用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。
 - [功能总览](/features/): 功能说明域的目录层：三大功能模块与数据模型的清单，每项一句话定位；已落地文章给站内链接，未落地者以《书名号》提名。
 - [评分](/features/judging): 评分是一轮评测的第 7 步：把候选的**完整产出**（文本通路 = 裁剪后的 diff；智能体通路 = 候选自己的工作区）对照用例的**评分标准项表格**做逐项…。
+- [MCP 配置](/features/mcp-config): 设置页**紧跟「模型供应商」之后**那个 Tab 管**配了哪些 MCP 服务器**，候选执行时把**启用的那几台**翻译成各家的形状注入到那一行自己的配置目录…。
 - [行执行与日志](/features/row-execution): 一行候选从发起到落终态的全部执行事实，以及人在哪里看到这些事实。
 - [创建评测](/features/run-creation): 创建评测 = 给一道固定的题（用例）配一组候选（智能体 × 模型 × 思考强度）与执行模式。
 - [评测详情与候选行](/features/run-detail): 评测详情是评测管理域的「读」侧与操作中枢：`/runs` 左栏列表 + 右栏详情，右栏在 `?panel=detail|new|edit&id=…` 三种内容间…。
@@ -29,7 +30,7 @@
 - [Claude Code 接入](/protocols/claude-code): Claude Code 的适配器由 `@anthropic-ai/claude-agent-sdk`（进程内 SDK，spawn 原生 CLI 二进制）驱动：`…。
 - [Codex 接入](/protocols/codex): Codex 的适配器完全由 `codex app-server` 驱动与取数（JSON-RPC over stdio），厂商包是 `@openai/codex`…。
 - [三家横向对比](/protocols/comparison): claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的…。
-- [DeepSeek Harness 接入](/protocols/dsh): DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.1.7-rc.1`——R33 裁决不走 latest）是三家厂商里唯一「…。
+- [DeepSeek Harness 接入](/protocols/dsh): DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不走 latest；该包从未发过非预发…。
 - [事件流](/protocols/event-stream): 每候选行的 `events.jsonl` 是**执行的唯一真相源**：追加写、按 `seq` 去重续订、可回放；`messages.jsonl` 是与之**并行…。
 - [消息规范](/protocols/message-spec): 把 claude-code / codex / dsh 三家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `Sub…。
 - [进程生命周期](/protocols/process-lifecycle): 厂商智能体进程从 spawn 到整棵回收的完整口径：一次运行的进程树怎么起、怎么停、怎么保证不留孤儿。

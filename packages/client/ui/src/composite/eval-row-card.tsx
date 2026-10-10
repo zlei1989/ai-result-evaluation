@@ -2,64 +2,68 @@
 
 /**
  * 单候选卡片：标题行（智能体 · 模型 · 思考强度） + 分支 + 计量 + 状态 + 按钮组。
- * **供应商不占标题行的位置**（2026-10-07 用户口径）：名字与接口地址挂在**模型名**的浮层上，
+ * **供应商不占标题行的位置**：名字与接口地址挂在**模型名**的浮层上，
  * 悬浮才出——供应商是「这个模型跑在哪个网关上」的补充信息，不是并排比较时要看的那一格。
  * 版面上的分隔靠 `Card` 自己的标题栏与 `Flex` 的 `gap` 承担，**不额外插 `Divider`**：
  * 它的默认外边距是页面级的，塞进卡片里就得手调，与「间距走 antd 默认」相悖。
- * 四件必须显式表达的事（缺一件使用者就会误判）：
- *   1. `queued` → 「串行排队中：前一行结束后自动开始」；
- *   2. `row.diff.truncated` → 「diff 已截断」（这一次的分是在不完整输入下得出的）；
- *   3. `capability.cancelMidTurn === false` → 按钮文案退化为「关闭运行时」（spec §5.6.2）；
- *   4. `row.error` → 错误码 + 可读原因，不能只留一个红 Tag。
+ * 四件必须显式表达的事：
+ * 1. `queued` → 「串行排队中：前一行结束后自动开始」；
+ * 2. `row.diff.truncated` → 「diff 已截断」（这一次的分是在不完整输入下得出的）；
+ * 3. `capability.cancelMidTurn === false` → 按钮文案退化为「关闭运行时」；
+ * 4. `row.error` → 错误码 + 可读原因，不能只留一个红 Tag。
  * 另加一条**不可撤销**的动作口径：终止该行前必须 `Popconfirm`（它杀 agent 子进程）——
  * 与吸底栏的整轮终止同一套语义，见下方按钮处的注释。
  *
- * 两个「重跑」按钮的可用面（用户口径 2026-09-28 **晚间修订**，判据在 contracts 里）：
- *   · 「重新执行」（连候选 agent 带评分重跑）与「重新评分」（只重跑评分）的硬前提相同：
- *     **不在跑 + 有可比基线 + 有已产出的改动**——也就是「这一行真的跑过一次、留下了产出」；
- *   · **已经出分的行（`judged`）同样给**（晚间口径：「已出分、无报错时取消禁用」）。误点的代价
- *     改由 `Popconfirm` 二次确认承担（一个说清「候选会重跑」，一个说清「现有分数会被替换」）；
- *   · 判据**不看** `error` / `error.stage`：失败发生在哪一段不再决定按钮能不能按。
+ * 两个「重跑」按钮的可用面（判据在 contracts 里）：
+ * · 「重新执行」（连候选 agent 带评分重跑）与「重新评分」的硬前提相同：
+ * **不在跑 + 有可比基线 + 有已产出的改动**——也就是「这一行真的跑过一次、留下了产出」；
+ * · **已经出分的行同样给**（晚间口径：「已出分、无报错时取消禁用」）。误点的代价
+ * 改由 `Popconfirm` 二次确认承担（一个说清「候选会重跑」，一个说清「现有分数会被替换」）；
+ * · 判据**不看**`error` / `error.stage`：失败发生在哪一段不再决定按钮能不能按。
  * 禁用时一律用 `Tooltip` 说清原因。
  *
- * **单行执行（2026-09-29 用户口径）**：「只执行当前候选项，不要完成后重新执行下方已经执行过的
+ * **单行执行**：「只执行当前候选项，不要完成后重新执行下方已经执行过的
  * 候选项」。于是那个按钮的**可用面比上面宽一档**——判据换成 contracts 的 `canRunRow`（不在跑就放行，
  * **含一次都没跑过的行**），文案按行态分叉：
- *   · 没跑过（`baselineCommit === ''` 或没有 diff）⇒ 「**开始执行**」= 这一行的首跑；
- *   · 跑过 ⇒ 「**重新执行**」= 整段重跑（原来是唯一一档）。
+ * · 没跑过（`baselineCommit === ''` 或没有 diff） ⇒ 「**开始执行**」= 这一行的首跑；
+ * · 跑过 ⇒ 「**重新执行**」= 整段重跑。
  * 为什么必须放开这一档：过去没跑过的行只能靠「开始」跑，而「开始」的语义是**所有可执行行**
  * （`isRunnableRow`）——想单独跑三行里的第二行时，它会顺带把上面失败过的行一起重跑一遍。
  * `canRetryRow` 因此只剩「这次是首跑还是重跑」这一个用途：它决定文案与确认框措辞，不再决定能不能按。
  *
  * 两条本仓约定：
- *   · 两个汉字的按钮一律 `autoInsertSpace={false}`（antd 默认会在中间插一个空格，
- *     可访问名会变成「终 止」，用例与屏幕阅读器都会撞上；见 provider-table.tsx 的文件头）；
- *   · 状态文案取自 contracts 的 `ROW_STATUS_LABELS`，这里不抄第二份。
- * 第三条是终审 FIX-6 补上的（原本漏了，而 jsdom 不会提醒）：
- *   · **禁用控件的原因一律走 `Tooltip`，且 `Tooltip` 只能包在一个真实 DOM 元素（`span`）上**。
- *     它的直接子节点若是 `Popconfirm` 这类组件，悬浮事件会被那一条链吃掉——真实浏览器里鼠标悬浮
- *     禁用态的「重新评分」连一个 `.ant-tooltip` 节点都不出现（jsdom 照样绿）。见按钮处那段注释。
+ * · 两个汉字的按钮一律 `autoInsertSpace={false}`（antd 默认会在中间插一个空格，
+ * 可访问名会变成「终 止」，用例与屏幕阅读器都会撞上；见 provider-table.tsx 的文件头）；
+ * · 状态文案取自 contracts 的 `ROW_STATUS_LABELS`，这里不抄第二份。
+ * 第三条是 jsdom 提醒不了的那类缺口：
+ * · **禁用控件的原因一律走 `Tooltip`，且 `Tooltip` 只能包在一个真实 DOM 元素上**。
+ * 它的直接子节点若是 `Popconfirm` 这类组件，悬浮事件会被那一条链吃掉——真实浏览器里鼠标悬浮
+ * 禁用态的「重新评分」连一个 `.ant-tooltip` 节点都不出现。见按钮处那段注释。
  *
- * 卡片底部还有一行**活动行**（`AgentActivityLine`，用户口径 2026-09-29）：跑动期显示智能体最近一条
+ * 卡片底部还有一行**活动行**（`AgentActivityLine`）：跑动期显示智能体最近一条
  * 输出、文字上有一条周期性扫过的高光；终态整行消失。它是否出现**只由 `row.status` 决定**——
- * 拿不到实时值（历史还没拉回来）时显示回落文案，而不是整行消失（同 `MetricLine` 的 `live` 口径）。
+ * 拿不到实时值时显示回落文案，而不是整行消失（同 `MetricLine` 的 `live` 口径）。
  */
 import { Alert, Button, Card, Flex, Popconfirm, Tag, Tooltip, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
+  CODEX_MCP_DISPATCH_GAP_NOTE,
   EFFORT_OFF,
+  ROW_MCP_BASIS_LABELS,
+  ROW_MCP_VERDICT_LABELS,
   canRescoreRow,
   canRetryRow,
   canRunRow,
   isRunningRow,
   type EvalRow,
+  type RowMcpVerdict,
 } from '@aieval/contracts';
 import { AgentActivityLine, type AgentActivity } from '../base/agent-activity-line';
 import { MetricLine, type LiveMetricsView } from '../base/metric-line';
 import { RowStatusTag } from '../base/row-status-tag';
 
-/** 该行智能体的能力元数据（来自注册表，见计划「修正 3」） */
+/** 该行智能体的能力元数据（来自注册表） */
 export interface AgentCapabilityView {
   usage: boolean;
   cancelMidTurn: boolean;
@@ -80,7 +84,7 @@ export interface EvalRowCardProps {
    */
   live?: LiveMetricsView;
   /**
-   * 跑动期的**实时活动内容**（2026-10-10，来自 `useRunActivity` 的消息流折叠）：有正文在流时
+   * 跑动期的**实时活动内容**（来自 `useRunActivity` 的消息流折叠）：有正文在流时
    * 活动行逐字打字、换行清空重打；没有就回落到 `live.latestText` 那一档。
    * 与 `live` 同一条纪律：**透传即可**，「这一行是否在跑」由 `row.status` 决定。
    */
@@ -94,7 +98,7 @@ export interface EvalRowCardProps {
   rescorePending?: boolean;
   /**
    * 单行**执行**：只跑这一行（候选 agent + 评分整段），本轮其他行一律不动。
-   * 界面文案按行态分叉（2026-09-29）：没跑过 = 「开始执行」、跑过 = 「重新执行」。
+   * 界面文案按行态分叉：没跑过 = 「开始执行」、跑过 = 「重新执行」。
    * 与「重新评分」是**两个按钮**：前者要跑候选（分钟级），后者只重算评分（几十秒）——
    * 合成一个按钮会让用户按下去才知道跑的是哪一段。
    * 可用面由 contracts 的 `canRunRow` 决定（**不在跑就放行**，含一次都没跑过的行）；
@@ -108,9 +112,23 @@ export interface EvalRowCardProps {
 const DEFAULT_CAPABILITY: AgentCapabilityView = { usage: true, cancelMidTurn: true };
 
 /**
+ * 四档 MCP 结论的标签配色（用户口径的语义色，不走手写样式）。
+ *
+ * 为什么 `unverified` 与 `skipped` 刻意**都**不用红色：红 = 失败，而这两档都不是失败
+ * （前者是「没有证据」，后者是「我们主动跳过」， 明说 `unverified` 既不写进已连上、
+ * 也不写成没有）。`unavailable` 才是「有证据说它没起来」，故只有它红。
+ */
+const MCP_VERDICT_COLORS: Record<RowMcpVerdict, string> = {
+  connected: 'green',
+  unavailable: 'red',
+  unverified: 'default',
+  skipped: 'orange',
+};
+
+/**
  * 「执行」这一格不可用的原因（只有一个否定面：这一行正在跑）。
  *
- * 2026-09-29 起这条判据的**其余分支全部消失**：过去它逐条对应 `retryRefusal` 的三条硬前提
+ * 这条判据的**其余分支全部消失**：它曾逐条对应 `retryRefusal` 的三条硬前提
  * （在跑 → 没基线 → 没产出），而那时「没跑过的行」按不了这个按钮、只能靠「开始」跑整轮；
  * 用户口径改成「只执行当前候选项」之后，没跑过的行**必须**能按（文案变成「开始执行」），
  * 于是「没基线 / 没产出」不再是否定面——它们恰恰是**首跑**的正常形态。
@@ -127,7 +145,7 @@ function runDisabledReason(row: EvalRow, running: boolean): string {
 
 /**
  * 「重新评分」不可用的原因（与编排层的 `rescoreRefusal` **共享「在跑 / 没基线 / 没产出」那三条且同序**，文案**同义但不逐字**——服务端那句把状态放进 `ROW_STATUS_LABELS`，随「准备中 / 执行中 / 评分中」变；服务端另有界面看不见的 `settling` 一条）。
- * 判据**不看失败阶段**（2026-09-28 晚间口径）：已经出分的行、候选 agent 阶段失败的行都可重评，
+ * 判据**不看失败阶段**：已经出分的行、候选 agent 阶段失败的行都可重评，
  * 因此这里只剩「在跑 / 没基线 / 没产出」三条。
  */
 function rescoreDisabledReason(row: EvalRow, running: boolean): string {
@@ -157,19 +175,19 @@ export function EvalRowCard({
   retryPending = false,
 }: EvalRowCardProps): ReactNode {
   const running = isRunningRow(row.status);
-  // `row.diff === null` = 这一行还没有产出（计划「修正 5」）：点开只会拿到一个 CONFLICT，
+  // `row.diff === null` = 这一行还没有产出：点开只会拿到一个 CONFLICT，
   // 所以按钮禁用，并在 Tooltip 里说清原因——禁用而不解释等于一个坏掉的按钮。
   const hasDiff = row.diff !== null;
   // 两个动作的可用判据与**服务端同一份**（contracts 的 canRescoreRow / canRetryRow）：
   // 两处各写一份必然漂移，而漂移的表现是「按钮可点、点下去 409」。文案与服务端的关系分两种：
   // **重新评分**那一侧与 `rescoreRefusal` 共享那三条且同序（同义但不逐字，见上一条注释）；
   // **重跑**那一侧不是逐条对应——服务端 `retryRefusal` 只有竞态专用的一句（`retryRow` 的兜底），
-  // 而 `runDisabledReason` 今天只剩「正在运行中」一条真实分支（另两条已在 2026-09-29 删除）。
+  // 而 `runDisabledReason` 只剩「正在运行中」一条真实分支（另两条已不在代码里）。
   const rescorable = canRescoreRow(row);
   const rescoreHint = rescorable ? undefined : rescoreDisabledReason(row, running);
   /**
    * 单行执行（内部名仍是 retry：`canRunRow` / 路由 `/retry` 都不动，改的只是**能不能按**与**叫什么**）。
-   *   · 能不能按 = `canRunRow`（不在跑就放行，含一次都没跑过的行，2026-09-29 口径）；
+   *   · 能不能按 = `canRunRow`（不在跑就放行，含一次都没跑过的行）；
    *   · 叫什么 = 「这一行跑过没有」——**与此刻在不在跑无关**：正在首跑的行（`preparing` / `running`）
    *     也该显示「重新执行」（它确实已经跑起来了），显示「开始执行」会让人以为还没开始。
    * 文案与确认框措辞都从这里派生：两处各写一份判据，必然出现「按钮写重新执行、确认框说首跑」这种漂移。
@@ -223,9 +241,42 @@ export function EvalRowCard({
         <Typography.Text type="secondary">
           分支 <Typography.Text code>{row.branch}</Typography.Text>
         </Typography.Text>
+        {/* 「本行 MCP」：逐台结论 + 浮层里的来源与判据。
+            **格缺席（未观测）时不画这一行**——老 run.json 不该在这里显示成「一台都没有」；
+            `[]` 是观测到的值（确实零台），必须画出来（与前面两态的区分见契约那一格的注释）。 */}
+        {row.mcpServers === undefined || row.mcpServers === null ? null : (
+          <Flex gap={4} wrap align="center" data-testid="row-mcp">
+            <Typography.Text type="secondary">
+              {row.mcpServers.length === 0 ? '本行 MCP：0 台' : '本行 MCP'}
+            </Typography.Text>
+            {row.mcpServers.map((entry) => (
+              <Tooltip
+                key={entry.name}
+                /**
+                 * 浮层给的是**判据**（凭什么这么说），结论在标签上——两件事分开，
+                 * 免得「已连上」被读成「厂商说的」而其实是我们从工具表里推的。
+                 *
+                 * **codex 的能力缺口附在它自己的浮层里**：这一家的 `connected`
+                 * 只到「启动状态 ready」，工具**调不动**（上游网关拍平命名空间）。跟着所有人显示
+                 * 会把这句提示读成噪声，不显示则会让「probe 已连上」被读成「工具能用」。
+                 * 文案取契约里那份共用常量，并**换行**放在判据之后：它是注解，不是判据本身。
+                 */
+                title={
+                  row.agentKind === 'codex' && entry.verdict === 'connected'
+                    ? `来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]}\n${CODEX_MCP_DISPATCH_GAP_NOTE}`
+                    : `来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]}`
+                }
+              >
+                <Tag color={MCP_VERDICT_COLORS[entry.verdict]} style={{ marginInlineEnd: 0 }}>
+                  {entry.name} {ROW_MCP_VERDICT_LABELS[entry.verdict]}
+                </Tag>
+              </Tooltip>
+            ))}
+          </Flex>
+        )}
         <MetricLine
           tokens={row.tokens}
-          // 子智能体那一份（2026-10-04）：契约里是可选格，老快照没有它就退回一行浮层
+          // 子智能体那一份：契约里是可选格，老快照没有它就退回一行浮层
           subagentTokens={row.subagentTokens}
           // 轮次那一份同理（同一天追加）：少了这一行，卡片上的「轮次」浮层在任何一行都不出现，
           // 而 `tsc` 与其余用例全都照常通过（可选格）——`eval-row-card.test.tsx` 末尾那条

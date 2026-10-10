@@ -1,8 +1,8 @@
 /**
- * 从已落盘的 claude 消息流里抽取几个**用于回写设计稿**的字段：
- *  - `subagent_stats`（§6.4.5 说它"未收编进 SDK 类型面"，本轮要看它是否出现在 SDK 流里、形状如何）；
+ * 从已落盘的 claude 消息流里抽取几个**用于核对结论**的字段：
+ *  - `subagent_stats`（它"未收编进 SDK 类型面"，本轮要看它是否出现在 SDK 流里、形状如何）；
  *  - `claude_code_version` / `permission_denials` / `terminal_reason` 等信封级字段；
- *  - `Read` 结果里是否出现 `<system-reminder>`（§7.6.6 第 2 行）。
+ *  - `Read` 结果里是否出现 `<system-reminder>`（未验证）。
  *
  * 用法：node probe/v2/claude-consolidate.mjs
  */

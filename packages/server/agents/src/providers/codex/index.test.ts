@@ -42,6 +42,8 @@ interface Scenario {
   >;
   threadId?: string;
   threadError?: unknown;
+  /** 「某个请求处理到一半时投递这些通知」（见夹具的同名选项）：复现「响应还没回来、通知先到」 */
+  emitOnRequest?: Record<string, readonly FakeNotification[]>;
 }
 
 /** 把假 app-server 接到 provider 的注入口上（`createClient` 恒返回同一个实例 = 会话与取数共用） */
@@ -50,6 +52,7 @@ function wire(scenario: Scenario = {}): FakeAppServer {
     ...(scenario.threadId === undefined ? {} : { threadId: scenario.threadId }),
     ...(scenario.notifications === undefined ? {} : { notifications: scenario.notifications }),
     ...(scenario.threadError === undefined ? {} : { threadError: scenario.threadError }),
+    ...(scenario.emitOnRequest === undefined ? {} : { emitOnRequest: scenario.emitOnRequest }),
     hangUntilTerminal: scenario.hang === true,
     respond: {
       'thread/list': threadListPages(scenario.threads ?? [], 100),
@@ -170,7 +173,7 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
   /**
    * 权限档按阶段分给：候选要能改代码、评审者只能看。
    *
-   * ⚠️ **Windows 上的例外**（2026-10-07 真机）：codex 的受限沙箱在该平台起不了任何子进程
+   * ⚠️ **Windows 上的例外**：codex 的受限沙箱在该平台起不了任何子进程
    * （`read-only` / `workspace-write` 下连 `echo`、`git status` 都被 policy 拒），而它读文件只能靠
    * shell ⇒ 只读档会变成盲评。故 **Windows 上评分阶段落最宽档**，靠编排层的「评分前后 diff 摘要
    * 对照」兜底（不一致即该行失败）。豁免的逐格判据在 `permission.test.ts`，这里钉的是**接线**
@@ -330,7 +333,7 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
         name: 'exec_command',
         input: { command: 'npm test', cwd: 'D:/w' },
         payload: null,
-        // 摘要主体随块给出（2026-10-10，唯一构造点 `toolCallBlockDraft` 里算）；
+        // 摘要主体随块给出（唯一构造点 `toolCallBlockDraft` 里算）；
         // 活动行那一句（带 `调用工具 exec_command：` 前缀）由 `events.ts` 另算，见 events.test.ts
         summary: 'npm test',
       },
@@ -458,28 +461,71 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
     expect(subagents.some((one) => one.subagentId === CHILD && one.status === 'completed')).toBe(true);
   });
 
-  it('订阅前推入的通知不丢：首个订阅者按序补收，补投只发生一次', () => {
-    const server = createFakeAppServer({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
-    // 订阅建立前推入 ⇒ 缓冲。真实 app-server 的 `turn/completed` 必然晚于 `turn/start` 的响应，
-    // 而适配器在响应返回**之后**才订阅，故这条路径就是本轮结算所依赖的那条
+  /**
+   * 夹具的投递语义**与真实客户端逐字相同**：没有订阅者时通知进历史列表、但**不投递给任何人**。
+   *
+   * 为什么这条值得一条守卫：夹具原来是「缓冲到首个订阅者再补投」——比真实**更宽容**，
+   * 而它正好盖住了「适配器订阅晚于 `thread/start` ⇒ MCP 启动状态全丢」那条真机缺陷（
+   * 行照旧出分）。夹具一旦比真实宽容，这类缺陷在单测里就永远看不见。
+   */
+  it('没有订阅者时通知不投递（历史列表照留），订阅之后才即时到达', () => {
+    const server = createFakeAppServer({});
     server.emit('thread/started', { thread: { id: MAIN } });
 
-    const replayed: string[] = [];
     const received: string[] = [];
-    // 首个订阅者注册 ⇒ 按推入顺序补收之前缓冲的全部
-    const first = server.client.subscribe((notification) => {
-      replayed.push(notification.method);
-    });
-    expect(replayed).toEqual(['thread/started']);
-    // 补投之后再推入 ⇒ 即时到达；第二个订阅者只见「注册之后」的投递（补投只发生一次）
-    const second = server.client.subscribe((notification) => {
+    const off = server.client.subscribe((notification) => {
       received.push(notification.method);
     });
+    // 订阅之前那条**没有**补投（与真实客户端一致）
+    expect(received).toEqual([]);
+    // 历史列表仍留着它（`notifications()` 是排障用的那一份）
+    expect(server.client.notifications().map((one) => one.method)).toEqual(['thread/started']);
+
     server.emit('item/completed', { threadId: MAIN, turnId: 'turn-1', item: answer('m1', '答复') });
-    expect(replayed).toEqual(['thread/started', 'item/completed']);
     expect(received).toEqual(['item/completed']);
-    first();
-    second();
+    off();
+  });
+
+  /**
+   * **订阅必须早于 `thread/start`**（codex 判据）。
+   *
+   * 真机时序（探针实测）：`thread/start` +119 ms 返回，MCP 的 `starting` 与 `failed` 两条在
+   * `turn/start` 返回（+135 ms）之前**全部到齐** ⇒ 订阅若挂在 `turn/start` 之后，这两条一条都收不到。
+   * 症状是「MCP 明明没起来，行照旧出分」，而且**只在失败时**才看得见（`ready` 往往晚到一步，
+   * 于是成功路径看起来一切正常）。这条守卫就是那颗钉子：把订阅挪回 `turn/start` 之后 ⇒ 当场红。
+   */
+  it('`thread/start` 期间投递的 MCP 启动状态必须进流（订阅早于建线程）', async () => {
+    const { events } = await collect({
+      // 「响应还没回来、通知先到」的真实时序（真机：`thread/start` +119 ms 返回，两条启动状态 +135 ms 前到齐）
+      emitOnRequest: {
+        'thread/start': [
+          {
+            method: 'mcpServer/startupStatus/updated',
+            params: {
+              threadId: MAIN,
+              name: 'probe',
+              status: 'failed',
+              error: 'MCP client for `probe` failed to start: MCP startup failed: No such file or directory (os error 2)',
+              failureReason: null,
+            },
+          },
+        ],
+      },
+      notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })],
+    });
+
+    expect(events.filter((event) => event.type === 'vendor-system')).toMatchObject([
+      {
+        mcpChannel: 'vendor-startup-status',
+        mcpServers: [
+          {
+            name: 'probe',
+            status: 'failed',
+            error: 'MCP client for `probe` failed to start: MCP startup failed: No such file or directory (os error 2)',
+          },
+        ],
+      },
+    ]);
   });
 
   it('`turn/start` 处理内推入的终态先于订阅到达时，本轮仍要结算（不悬挂）', async () => {
@@ -784,7 +830,7 @@ describe('能力声明与 dsh 的逐格对齐', () => {
      * 两个方向都要钉住，别把这条写成「除了 `streamingDelta` 随便」：
      *   · 其余五格 + 四条取数通道必须逐格同形（原本的设计意图：两家能力面同形）；
      *   · `streamingDelta` 这一格**已知不同**，且差异有据：codex 的 app-server 有 `agentMessageDelta`
-     *     ⇒ 记 `yes` + `wire`；dsh 2026-10-09 起经 stream-tap 兑现（挂进厂商进程的插件采集
+     *     ⇒ 记 `yes` + `wire`；dsh 经 stream-tap 兑现（挂进厂商进程的插件采集
      *     `agent/assistant-stream`、旁路文件进适配器——stdio 通知流本身仍不投送，判例
      *     `docs/faq/deepseek-harness.md`）⇒ 记 `yes` + `hook`。
      *   任一侧被改都会让这条红——要改就连同依据一起改。
@@ -821,5 +867,81 @@ describe('纯函数：配置构造', () => {
     expect(Object.hasOwn(bare, 'model_reasoning_summary')).toBe(false);
     const both = buildCodexConfig('https://gw/v1', 1_048_576, 'none');
     expect(both).toMatchObject({ model_context_window: 1_048_576, model_reasoning_summary: 'none' });
+  });
+
+  /**
+   * MCP 的**落点**：`mcp_servers` 进同一格线程级 `config`。
+   *
+   * 为什么这条是「落点」而不是「形状」的守卫：形状由 `mcp.test.ts` 逐字钉住，而这里要钉的是
+   * 「它到底有没有被放进协议参数」——漏放的失败方式是**静默**的（一台 MCP 都没注入，模型照样
+   * 把任务跑完，只有「本行 MCP」那一格少一行，没有任何报错）。
+   */
+  it('MCP：`mcp_servers` 进线程级 config；空集**整个键都不给**（与 effort 同一条口径）', () => {
+    const empty = buildCodexConfig('https://gw/v1', undefined, undefined, {});
+    expect(Object.hasOwn(empty, 'mcp_servers')).toBe(false);
+    const bare = buildCodexConfig('https://gw/v1');
+    expect(Object.hasOwn(bare, 'mcp_servers')).toBe(false);
+
+    const withMcp = buildCodexConfig('https://gw/v1', undefined, undefined, {
+      probe: { command: 'node', args: ['/x.mjs'], startup_timeout_sec: 30 },
+    });
+    expect(withMcp['mcp_servers']).toEqual({ probe: { command: 'node', args: ['/x.mjs'], startup_timeout_sec: 30 } });
+  });
+
+});
+
+/**
+ * MCP 的**厂商侧判据**（codex）：`mcpServer/startupStatus/updated`
+ * → 一条 `vendor-system` 事件（通道 `vendor-startup-status`）。
+ *
+ * 三条口径都在下面钉住：
+ *   · **判据只到「装上了」**——`ready` 的结论是 `connected`（启动状态这一档），
+ *     而「工具能不能调」是另一回事（上游命名空间缺口，见 `CODEX_MCP_DISPATCH_GAP_NOTE`）；
+ *   · **每条通知交全量**：codex 只报**变化的那一台**，而推导要按名字对全表 ⇒ 适配器累积；
+ *   · **`error` 原文照抄**（行失败文案的后半句就是它）。
+ */
+describe('MCP 启动状态 → vendor-system', () => {
+  /** `mcpServer/startupStatus/updated` 的逐字形状（真机样本） */
+  const startup = (name: string, status: string, error: string | null = null): FakeNotification => ({
+    method: 'mcpServer/startupStatus/updated',
+    params: { threadId: MAIN, name, status, error, failureReason: null },
+  });
+
+  it('两条通知累积成**一份全量**厂商事实（最后一条自带全部服务器）', async () => {
+    const { events } = await collect({
+      notifications: [
+        startup('probe', 'starting'),
+        startup('probe', 'ready'),
+        startup('context7', 'failed', 'MCP client for `context7` failed to start: No such file or directory (os error 2)'),
+        turnCompleted({ id: 'turn-1' }, { threadId: MAIN }),
+      ],
+    });
+
+    const vendor = events.filter((event) => event.type === 'vendor-system');
+    expect(vendor.length).toBe(3);
+    // 通道自报（推导据此决定「没有工具」该怎么读）
+    expect(vendor.every((event) => event.type === 'vendor-system' && event.mcpChannel === 'vendor-startup-status')).toBe(true);
+    // 第一条：只有 probe、还是 starting
+    expect(vendor[0]).toMatchObject({ mcpServers: [{ name: 'probe', status: 'starting', source: null, error: null }] });
+    // 最后一条：两台都在，且 probe 已是 ready（**不是**只报变化的那一台）
+    expect(vendor[2]).toMatchObject({
+      mcpServers: [
+        { name: 'probe', status: 'ready', source: null, error: null },
+        {
+          name: 'context7',
+          status: 'failed',
+          source: null,
+          error: 'MCP client for `context7` failed to start: No such file or directory (os error 2)',
+        },
+      ],
+    });
+    // 这一家的工具表**结构性拿不到**（没有 `system/init` 那种事件）⇒ 如实记 null，不编一个空数组
+    expect(vendor[2]).toMatchObject({ tools: null });
+  });
+
+  it('没有启动状态通知 ⇒ 一条 vendor-system 都不发（「没投送」与「投送了是空的」必须分得开）', async () => {
+    const { events } = await collect({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+
+    expect(events.some((event) => event.type === 'vendor-system')).toBe(false);
   });
 });

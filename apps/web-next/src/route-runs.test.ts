@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 评测路由端到端：列表 / 创建（含三类校验） / 详情 / 启动 / 终止 / 单行终止 / 候选池。
+ * 评测路由端到端：列表 / 创建 / 详情 / 启动 / 终止 / 单行终止 / 候选池。
  *
  * **`@aieval/evaluator` 被整块 mock 掉**：这些用例要验的是「zod → api → 错误映射」这条链路，
  * 而编排层的启动会真的 spawn agent 子进程（评测执行用假的 evaluator：在 api 边界替换掉它，
@@ -9,27 +9,27 @@
  *
  * 配置目录与工作区根目录都在 mkdtemp 出来的临时目录里：**绝不触碰真实 ~/.aieval / ~/.aieval-runs**。
  *
- * 与 brief 原稿的四处**实测修正**（前三处是原稿在本机必然红的原因，第四处是它不安全的原因）：
- *   1. mock 句柄走 `vi.hoisted`，测试里**不再** `import '@aieval/evaluator'`：该说明符不在本应用的
- *      依赖里（`AGENTS.md` 的方向表），TS 直接 `Cannot find module`（`pnpm typecheck` 会红）；
- *      同时 `vi.mock` 的说明符由 `vitest.config.ts` 的 alias 指到真实源文件——没有那个 alias 时
- *      mock 只注册在裸说明符上，**api 包内部那次 import 解析到真实模块，mock 一条都不生效**，
- *      测试侧拿到 `vi.fn()`、api 侧却真的在跑编排层（实测日志里出现 `[evaluator] 评测开始`）；
- *   2. mock 工厂必须把这一整套名字都列出来（`resolveJudgeRoute` / `recoverInterruptedRuns` /
- *      `requireJudgeAgent` / `deleteRun` / `assertRunMutable`）：本文件经 `@/app/api/runs/route`
- *      间接 import `@aieval/api` 的 `index.ts`，而它**转出**了这些名字。
- *      ⚠️ 缺键**不在模块求值期**抛（这一句原来是「ESM 的转出绑定在模块求值期就被读取，缺键会直接抛」，
- *      2026-09-28 复核实测推翻）：模块照常求值，vitest 的 mock 命名空间是**访问那一刻**才抛
- *      `[vitest] No "…" export is defined on the mock`。于是红的是**走到那条路径**的用例
- *      （服务端 500，cause 就是那句 mock 错误），同文件其余用例照绿——实测删掉 `assertRunMutable`
- *      只有那两条真的走到 `updateRun` 的 PUT 用例红（21/23 照绿）；而**没有任何执行路径访问**的键
- *      （如只被启动钩子用的 `recoverInterruptedRuns`）缺了也**全绿**（实测 23/23 全过）。
- *      故这条规则是「照清单补键」：漏键不会当场响，只会让**别人的**用例在你改的另一处红；
- *   3. `listRuns` 必须装上实现（`[...store.values()]`）：原稿只用 `vi.fn()` 占位，于是
- *      `listRunsView()` 里的 `[...undefined]` 抛 TypeError、接口回 500；
- *   4. 列表顺序那条用例必须先 `store.clear()`：POST 真实创建的两轮评测，其 `createdAt` 是
- *      **本机当前时刻**（实测 2026-09-26），比用例写死的 `2026-09-22T09:00` 更新，
- *      不清掉它们就会排在最前，`toEqual(['new','old'])` 必然红。
+ * 四处**实测修正**（前三处是不修就在本机必然红的原因，第四处是不修就不安全的原因）：
+ * 1. mock 句柄走 `vi.hoisted`，测试里**不再**`import '@aieval/evaluator'`：该说明符不在本应用的
+ * 依赖里（`AGENTS.md` 的方向表），TS 直接 `Cannot find module`（`pnpm typecheck` 会红）；
+ * 同时 `vi.mock` 的说明符由 `vitest.config.ts` 的 alias 指到真实源文件——没有那个 alias 时
+ * mock 只注册在裸说明符上，**api 包内部那次 import 解析到真实模块，mock 一条都不生效**，
+ * 测试侧拿到 `vi.fn`、api 侧却真的在跑编排层（实测日志里出现 `[evaluator] 评测开始`）；
+ * 2. mock 工厂必须把这一整套名字都列出来（`resolveJudgeRoute` / `recoverInterruptedRuns` /
+ * `requireJudgeAgent` / `deleteRun` / `assertRunMutable`）：本文件经 `@/app/api/runs/route`
+ * 间接 import `@aieval/api` 的 `index.ts`，而它**转出**了这些名字。
+ * ⚠️ 缺键**不在模块求值期**抛（这一句原来是「ESM 的转出绑定在模块求值期就被读取，缺键会直接抛」，
+ * 实测推翻）：模块照常求值，vitest 的 mock 命名空间是**访问那一刻**才抛
+ * `[vitest] No "…" export is defined on the mock`。于是红的是**走到那条路径**的用例
+ * （服务端 500，cause 就是那句 mock 错误），同文件其余用例照绿——实测删掉 `assertRunMutable`
+ * 只有那两条真的走到 `updateRun` 的 PUT 用例红；而**没有任何执行路径访问**的键
+ * （如只被启动钩子用的 `recoverInterruptedRuns`）缺了也**全绿**（实测 23/23 全过）。
+ * 故这条规则是「照清单补键」：漏键不会当场响，只会让**别人的**用例在你改的另一处红；
+ * 3. `listRuns` 必须装上实现（`[...store.values]`）：原稿只用 `vi.fn` 占位，于是
+ * `listRunsView` 里的 `[...undefined]` 抛 TypeError、接口回 500；
+ * 4. 列表顺序那条用例必须先 `store.clear`：POST 真实创建的两轮评测，其 `createdAt` 是
+ * **本机当前时刻**，比用例写死的 `T09:00` 更新，
+ * 不清掉它们就会排在最前，`toEqual(['new','old'])` 必然红。
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,19 +69,19 @@ const evaluator = vi.hoisted(() => ({
   startRun: vi.fn(),
   abortRun: vi.fn(),
   abortRow: vi.fn(),
-  // `@aieval/api` 的 index.ts 转出了 `rescoreRow`（Task 7），而本文件经 `@/app/api/runs/route`
+  // `@aieval/api` 的 index.ts 转出了 `rescoreRow`，而本文件经 `@/app/api/runs/route`
   // 间接 import 了那个 index：缺键是**访问那一刻**才抛
-  // 「No "rescoreRow" export is defined on the mock」（与文件头修正 2 同一个坑）
+  // 「No "rescoreRow" export is defined on the mock」（与文件头第 2 条同一个坑）
   rescoreRow: vi.fn(),
-  // 单行重新执行（2026-09-27 引入，界面文案「重新执行」）与重评同一个形状、同一个坑：api 的 index 转出了 `retryRow`，
+  // 单行重新执行与重评同一个形状、同一个坑：api 的 index 转出了 `retryRow`，
   // 缺键在**访问到它**（走那条路由的用例）时才抛「No "retryRow" export is defined on the mock」
   retryRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
-  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // 评分那两条流：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
   // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
-  // 候选那条记录流（spec v3 §2）：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
+  // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
   subscribeRowRecords: vi.fn(() => () => {}),
   // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，而 run-events.ts
   // 在模块求值期就读这个键——缺了它，**任何**经 `@aieval/api` index 的 import 都当场抛
@@ -94,11 +94,11 @@ const evaluator = vi.hoisted(() => ({
   resolveJudgeRoute: vi.fn(),
   requireJudgeAgent: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
-  // 整轮删除（Task 5 的 DELETE 路由）：api 的 index.ts 转出了 `deleteRun`，同一个坑
+  // 整轮删除：api 的 index.ts 转出了 `deleteRun`，同一个坑
   deleteRun: vi.fn(),
   // 编辑的活性守卫（`updateRun` 在落盘前调它）：同样是 api 的 index.ts 转出的名字。
   // 留成空桩是有意的——这里钉的是传输链，活性判据在 contracts / api 自己的用例里。
-  // ⚠️ 缺了它**不会**在模块求值期报错（实测 2026-09-28）：删掉这一行文件照样加载，只有真的走到
+  // ⚠️ 缺了它**不会**在模块求值期报错：删掉这一行文件照样加载，只有真的走到
   // `updateRun` 的那两条 PUT 用例红（500，cause 是 `[vitest] No "assertRunMutable" export is
   // defined on the mock`），其余 21 条照绿——「手写键清单要一直照补」的理由就在这里。
   assertRunMutable: vi.fn(),
@@ -187,7 +187,7 @@ beforeEach(() => {
     if (run === undefined) throw new ServiceError('NOT_FOUND', `评测不存在：${runId}`);
     return run;
   });
-  // `listRunsView()` 会做 `[...listRuns()]`：不给实现就抛 TypeError，接口回 500（见文件头修正 3）
+  // `listRunsView()` 会做 `[...listRuns()]`：不给实现就抛 TypeError，接口回 500（见文件头第 3 条）
   evaluator.listRuns.mockImplementation(() => [...store.values()]);
 });
 
@@ -216,7 +216,7 @@ async function createRealRun(): Promise<EvalRun> {
 describe('GET /api/runs', () => {
   it('返回按创建时间倒序的列表', async () => {
     // 先真实创建两轮拿到完整快照，再清空 store 换成受控的 createdAt：
-    // POST 造出来的行带本机当前时刻，不清掉就会排在用例写死的时间之前（见文件头修正 4）
+    // POST 造出来的行带本机当前时刻，不清掉就会排在用例写死的时间之前（见文件头第 4 条）
     const first = await createRealRun();
     const second = await createRealRun();
     store.clear();
@@ -318,7 +318,7 @@ describe('GET /api/runs/[runId]', () => {
     expect(missing.status).toBe(404);
   });
 
-  it('形状不对的 runId 原样交给 api 层：路由里**没有**第二份形状校验（§11 R36）', async () => {
+  it('形状不对 runId 原样交给 api 层：路由里**没有**第二份形状校验', async () => {
     // 判据的唯一位置是 evaluator/run-store.ts 的入口（`assertRunId` → INVALID_QUERY），
     // 本文件把 evaluator 整块 mock 掉了，所以这里能验的不是「400 还是 404」，而是**路由的职责边界**：
     // 脏 id 必须原样落到 api 入口。一旦有人在这条路由里补上第二份形状校验（提前返回 400/404），
@@ -373,7 +373,7 @@ describe('POST /api/runs/[runId]/abort 与单行 abort', () => {
 });
 
 /**
- * 行级重新评分路由（Task 7，spec §9）。
+ * 行级重新评分路由。
  *
  * 这一条钉的是**传输链**：路由把 `params` 里两个 id 原样交给 `@aieval/api`，再把它的返回值
  * 作为 JSON 回出去。可重评的判据不在这里（它是 contracts 的 `canRescoreRow` + 编排层的
@@ -394,7 +394,7 @@ describe('POST /api/runs/[runId]/rows/[rowId]/rescore', () => {
 });
 
 /**
- * 单行**重新执行**路由（2026-09-27 引入，界面文案 2026-09-28 晚间起是「重新执行」，
+ * 单行**重新执行**路由（引入，界面文案 晚间起是「重新执行」，
  * 路由与 api 名保持 `retry`）：与 rescore 逐字同形的传输链守卫。
  * 判据（`canRetryRow`）与服务端拒绝原因都不在这里，这里只验「两个 id 原样转下去、回的是快照」。
  */
@@ -420,10 +420,10 @@ describe('GET /api/runs/model-options', () => {
     expect(res.status).toBe(200);
     expect(groups.map((group) => group.agentKind)).toEqual(['claude-code', 'codex', 'dsh']);
     // 键集合钉死：两侧（api / client）各声明过一次这个形状，谁偷偷加字段都会在这里失败。
-    // `efforts`（思考强度的档位域，spec D11）是 2026-09-29 有意加的第六格。
-    // `messageCapability`（消息能力声明，spec v3 §2.5）是 **2026-10-04** api 加的第七格——
-    // 当时这处期望值没跟着补，于是它一直红到 2026-10-06 收尾 fix 轮才补齐（本次顺手修，不是本线引入的格）。
-    // `defaultEffort`（未选档位时该家实际会用的档）是 **2026-10-08** 加的第八格：界面拿它拼
+    // `efforts`（思考强度的档位域）是有意加的第六格。
+    // `messageCapability`（消息能力声明）是 ****api 加的第七格——
+    // 当时这处期望值没跟着补，于是它一直红到 收尾 fix 轮才补齐（本次顺手修，不是本线引入的格）。
+    // `defaultEffort`（未选档位时该家实际会用的档）是 ****加的第八格：界面拿它拼
     // 创建表单的占位符，「未指定（DeepSeek Harness 用 high）」里的厂商名与档位都由它 + `AGENT_LABELS`
     // 拼出来（此前那句写死在 UI 里，且写的是 kind 缩写 `dsh`）。
     // ⚠️ 这一格按「有意义才出现」投影（与 `options` 里那三格同一条规则）⇒ 必须**两侧都钉**：
@@ -463,15 +463,15 @@ describe('GET /api/runs/model-options', () => {
   });
 
   /**
-   * `options[]` 的**键集合**（2026-10-06 fix 轮）：接缝的另一半。
+   * `options[]` 的**键集合**：接缝的另一半。
    *
    * 为什么必须有这一条：api 的 `AgentModelOption` 与 client 的同名接口是**两处手写的同一份形状**
    * （client 不能 import api），而类型上「可选属性缺失」**天然可赋值** ⇒ client 少写三格
    * （`contextWindow` / `efforts` / `recommendedEffort`，正是这次补上的）tsc 一个字都不报；
    * 症状是界面静默丢掉那一格——面板读的 `efforts` 一丢，「思考强度」下拉就永远是空的。
-   * 这一组按 api 的投影规则（**有意义才出现**）用两种模型各钉一条：
-   *   · 上游**没声明**档位 ⇒ 没有 `contextWindow` / `recommendedEffort` 这两格（只有 `efforts`）；
-   *   · 上游**声明过**档位与推荐档 + 有窗口 ⇒ 三格都在。
+   * 这一组按 api 的投影规则用两种模型各钉一条：
+   * · 上游**没声明**档位 ⇒ 没有 `contextWindow` / `recommendedEffort` 这两格（只有 `efforts`）；
+   * · 上游**声明过**档位与推荐档 + 有窗口 ⇒ 三格都在。
    */
   it('options 的键集合按「有意义才出现」钉住：声明的三格才出现，没声明的只有 efforts', async () => {
     const bare = { id: 'claude-opus-4-6', source: 'manual' as const };
@@ -524,7 +524,7 @@ describe('GET /api/runs/model-options', () => {
     }>;
     const dsh = groups.find((group) => group.agentKind === 'dsh');
 
-    // DSH 两条 wire 都能收（契约 R37 的收口）⇒ 两个元素；这条同时钉住「投影不许把集合拍平回单值」
+    // DSH 两条 wire 都能收（收口） ⇒ 两个元素；这条同时钉住「投影不许把集合拍平回单值」
     expect(dsh?.protocolTypes).toEqual(['openai', 'anthropic']);
     expect(dsh?.usage).toBe(true);
     expect(dsh?.cancelMidTurn).toBe(false);

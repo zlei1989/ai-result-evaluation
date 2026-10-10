@@ -28,7 +28,7 @@ import { removeTreeWithRetry } from './cleanup';
  * 写 `aieval-route.patch.yml`（`providers/dsh/index.ts`）。写成 `D:/tmp/rows/row-1/...` 时，
  * 它在 Windows 上是绝对路径、在 POSIX 上却**不是**（是相对路径）⇒ 产物落进进程 cwd（仓库根），
  * 长出一个名为 `D:/tmp` 的目录；同一条路径还会让「overlay 必须是绝对路径」那条不变量当场红
- * （2026-10-09 实测：`providers/dsh/index.test.ts` 的 `expect(isAbsolute(patches[0])).toBe(true)`）。
+ * （如 `providers/dsh/index.test.ts` 的 `expect(isAbsolute(patches[0])).toBe(true)`）。
  * 守卫见 `agent-fixtures.test.ts`。
  */
 const FIXTURE_ROOT = mkdtempSync(join(tmpdir(), 'aieval-agent-fixtures-'));
@@ -118,7 +118,7 @@ export function createFakeStream(
         }
         if (options.throwAfterEvents !== undefined) throw options.throwAfterEvents;
         if (options.hang === true) {
-          // 挂住之前再查一次（评审 F6）：`stop()` 可能早于迭代开始就被调用（例如适配器在 start() 里
+          // 挂住之前再查一次：`stop()` 可能早于迭代开始就被调用（例如适配器在 start() 里
           // 就停），那时 `release` 还是 null，`stop()` 只置了 stopped ⇒ 不查这一下就永远醒不过来，
           // 用例会靠 5 秒兜底才收敛，或被 settleWithFakeTimers 报成「用例可能是真的挂住了」。
           if (stopped) return;
@@ -266,7 +266,7 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
           if (options.interrupt !== 'ignore') stream.stop();
           if (options.interruptRejects === undefined) return undefined;
           // 真实 SDK 的 `interrupt()` 返回 promise，且**会**在被关掉的查询上拒绝
-          // （p6 实测原文：`Query closed before response received`）。
+          // （冒烟实测原文：`Query closed before response received`）。
           //
           // 怎么让「有没有人挂 handler」变成**同步可断言**的事实（不依赖 unhandledRejection 的
           // 报法、也不依赖微任务时序——两种写法都试过，都会得出错误结论）：
@@ -314,7 +314,7 @@ export interface FakeDshSdkOptions {
    */
   onConstruct?: () => void;
   /**
-   * stream-tap 旁路行（2026-10-09）：真实运行时由 tap 插件在流式期间逐行追加到
+   * stream-tap 旁路行：真实运行时由 tap 插件在流式期间逐行追加到
    * `<dshHome>/aieval-stream-tap.jsonl`；夹具在 `run()` 落笔（适配器已在该文件上清零），
    * 适配器的 tail 会在**第一条真通知之后**读到它们——快照到达前先出增量，与真机时序同构。
    * 行形状是 `{ sid, frame }`；`sid` 写 `DSH_SESSION_PLACEHOLDER` 的会被改写成真实会话 id
@@ -322,7 +322,7 @@ export interface FakeDshSdkOptions {
    */
   tapLines?: readonly unknown[];
   /**
-   * **订阅在中途失败**（2026-10-09 真机事故的复现开关）：放行 N 条通知之后让这条订阅 `fail(error)`
+   * **订阅在中途失败**（复现开关）：放行 N 条通知之后让这条订阅 `fail(error)`
    * ——与真实 SDK 的 `NotificationSubscriptionImpl.fail()` 同义（此后 `next()` 立刻拒绝、
    * 已入队的还能取），同时**停止投递**（过滤器抛错时 SDK 会顺手 `unsubscribe()`）。
    *
@@ -339,7 +339,7 @@ export interface FakeDshSdkOptions {
    */
   emitAsync?: boolean;
   /**
-   * 异步投递的**间隔**（毫秒，默认 2）。为什么这个旋钮是承重的（2026-10-10）：
+   * 异步投递的**间隔**（毫秒，默认 2）。为什么这个旋钮是承重的：
    * 适配器的消费循环每 `DSH_STREAM_TAP_POLL_MS`（100 ms）被 `tapWake` 唤醒一次并与
    * `subscription.next()` 竞速——**投递慢于这个间隔**时，竞速会输一次、而那一份 `next()`
    * 若被遗弃就会变成孤儿 waiter，此后每条通知都被交给孤儿。默认的 2 ms 比它快，永远踩不到那条路，
@@ -349,16 +349,15 @@ export interface FakeDshSdkOptions {
 }
 
 /**
- * dsh 的假通知订阅：**与真实 `NotificationSubscription` 同形**（Task 12 按实测入口重写）。
+ * dsh 的假通知订阅：**与真实 `NotificationSubscription` 同形**（按真实入口重写）。
  * 为什么专门写一份、不复用 `createFakeStream`：真实订阅的终止通道就是 `close()` —— 已安装的
- * `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2`（`lib/index.js:243-318`；2026-10-09 升级核对：该段与
- * 0.1.7-rc.1 逐字节相同）里，
+ * `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2`（`lib/index.js:243-318`）里，
  * `NotificationSubscriptionImpl.close()` 会**丢弃队列并 reject 所有挂起的等待者**
  * （`fail(new TransportClosedError('notification subscription closed'))`），而它的
  * `[Symbol.asyncIterator]()` 是 `for (;;) yield await this.next()` 形状的 async generator。
  * ⇒ 「关闭运行时」在 dsh 上是**真实存在**的终止通道（`cancelMidTurn: false` 的代价就是只能走它），
  * 夹具必须照这一格建模；照 claude 夹具那样用带外 `stop()` 会凭空给出一个真实 SDK 没有的能力，
- * 守卫会变成假绿（复评 I1 的教训：夹具形状不真，绿色不算数）。
+ * 守卫会变成假绿（夹具形状不真，绿色不算数）。
  * `'turn-end'` 记在迭代生成器的 finally：与另外两家同一个可观测量（在途消费结束）。
  * 另：`filter` 是真实存在的参数（`subscribe(filter?)`），夹具照收、照用——适配器靠它认领会话。
  */
@@ -387,7 +386,7 @@ function createFakeDshSubscription(
   const queue: unknown[] = [];
   let closed = false;
   /**
-   * **挂起的等待者是数组，不是单个**（2026-10-10 修正，与真实
+   * **挂起的等待者是数组，不是单个**（与真实
    * `NotificationSubscriptionImpl.state.waiters` 逐字同形）：真实实现里
    * `push()` 是 `const waiter = this.state.waiters.shift()` —— 投递交给**最老**的那个等待者，
    * 后来者排在后面。夹具此前只留一个 `waiter`（新的 `next()` 直接覆盖旧的），于是
@@ -467,13 +466,13 @@ function createFakeDshSubscription(
 /**
  * 夹具里代表「**本会话**」的**占位** id：用例的构造数据写它，`tagSession` 在投递前把它换成适配器
  * 真正 mint 的那个 id（真实 SDK 产出的通知一定带那个 id，见 `tagSession` 的 JSDoc）。
- * 为什么要有这个名字（2026-10-04）：子会话的事件带的是**它自己的** id（真机形状）⇒ 夹具必须能区分
+ * 为什么要有这个名字：子会话的事件带的是**它自己的** id（真机形状）⇒ 夹具必须能区分
  * 「这是占位、该改写」与「这是一个真实存在的另一个会话、改写会把多会话形状压平」。
  */
 export const DSH_SESSION_PLACEHOLDER = 'session-fake';
 
 /**
- * 假的 `@deepseek-ai/dsh-sdk-client`：**与真实入口同形**（Task 12 按实测重写）。
+ * 假的 `@deepseek-ai/dsh-sdk-client`：**与真实入口同形**。
  * 真实形态（`lib/types/api.d.ts` + `lib/types/client.d.ts`）：
  *   `new DeepSeekHarness(options)` → `start()`（幂等握手）→ `client.subscribe(filter?)` /
  *   `client.subscribeSessionTree(id)` → `run(prompt, { sessionId })` → `RunResult` → `close()`
@@ -482,7 +481,7 @@ export const DSH_SESSION_PLACEHOLDER = 'session-fake';
  * 注意：`close` **每次都计数**——真实 `HarnessClient.close()` 自身是幂等的，这里刻意不做幂等，
  * 让「适配器是否重复关闭」成为测试可见的观测量（`createDisposer` 恰好关一次的断言就靠它）。
  * 另：`'turn-end'`（在途消费结束）只在**有人真的在消费迭代器**时才会记——夹具不替适配器假装
- * 有人在消费（那正是复评 I1 那类「夹具特权」）。要在夹具用例里观察这一格，就自己 `for await` 那个订阅。
+ * 有人在消费（那正是「夹具特权」）。要在夹具用例里观察这一格，就自己 `for await` 那个订阅。
  */
 export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
   const { recorder } = options;
@@ -594,7 +593,7 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
      * 夹具的构造数据里写的是占位 id，若不改写就会被适配器的会话过滤器挡掉——那不是适配器的缺陷，
      * 而是夹具在这一点上不保真。
      *
-     * ⚠️ **只改写占位 id（`DSH_SESSION_PLACEHOLDER`）或没带 id 的那一些**（2026-10-04）：子会话的事件
+     * ⚠️ **只改写占位 id（`DSH_SESSION_PLACEHOLDER`）或没带 id 的那一些**：子会话的事件
      * 带的是**它自己的** `params.sessionId`（真机形状：主会话与子会话的通知在**同一条流**里，靠这一格
      * 区分，见 `providers/dsh/index.ts` 的放行规则）。原来无条件改写会把多会话形状压成一个会话——
      * 子会话的用量再也分不出来（`message.ts` 的 `sessionUsage` 正是按 `params.sessionId` 分组的），

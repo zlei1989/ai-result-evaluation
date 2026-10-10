@@ -1,7 +1,7 @@
 /**
  * 事件 → 日志行（纯函数，无 React 依赖，可单独测）。
  * 八种事件类型各有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
- * （spec §5.6.3 要求未识别的事件也要保留原始负载，不得丢弃）。
+ * （要求未识别的事件也要保留原始负载，不得丢弃）。
  *
  * 本模块**只负责把已落盘的事件渲染成行**：它不推断行状态、不看快照、不合并轮次——
  * 「这一行现在是什么状态」的唯一来源是 `EvalRow.status`（快照），拿日志反推状态等于
@@ -12,7 +12,7 @@
  * 界面上所有时间都是使用者的本地时间）；非法输入原样返回——显示 `Invalid Date`
  * 比显示原始串更糟。
  *
- * `score` 行有**两条通路**，文字上必须分得开（spec §10 展示表）：`judgeAgentKind === null`
+ * `score` 行有**两条通路**，文字上必须分得开（展示表）：`judgeAgentKind === null`
  * ⇔ 纯文本 API 评分（老记录经契约的 `.default(null)` 读盘后同样是 `null`），此时行文保持原样；
  * 非 null 才在模型名前面加上智能体名与「（智能体）」——同一行重跑后两次评分的日志混在一条流里，
  * 少了智能体名就分不出哪个分是哪条通路打的，而两条通路的分数不可比
@@ -24,9 +24,9 @@
  *     绝不当成 0 秒（0 秒会算出一个无穷大的 tok/s，而真正的事实是「这一家没报时间」）；
  *   · **派生比率用 `usage-metrics.ts` 的那一份实现**（跨三家统一的公式），本模块不再写第二份；
  *   · **来源必须标**：`'events'` 的时长含工具执行，与 `'vendor'` 的纯模型时间不可直接比
- *     （见 `timingSourceLabel`）——tok/s 后面缀一个 `(墙钟)` 就是为了不让人把两者放进同一张表。
+ * （见 `timingSourceLabel`）——tok/s 后面缀一个 `(墙钟)` 就是为了不让人把两者放进同一张表。
  */
-import { AGENT_LABELS, ROW_STATUS_LABELS, type AgentEvent } from '@aieval/contracts';
+import { AGENT_LABELS, ROW_STATUS_LABELS, normalizeMcpServers, type AgentEvent } from '@aieval/contracts';
 import { formatCacheHitRate, formatGenerationRate, formatTokens, timingSourceLabel } from '../base/usage-metrics';
 
 /** ISO 时间 → 本地 `HH:mm:ss`；非法输入原样返回 */
@@ -48,7 +48,7 @@ export function formatEventLine(event: AgentEvent): string {
     case 'status':
       return `[${time}] 状态 ${ROW_STATUS_LABELS[event.status]}`;
     case 'usage':
-      // 轮次与计量各自独立（2026-09-28）：一条只带轮次的 usage 是常态（轮次一到就发），
+      // 轮次与计量各自独立：一条只带轮次的 usage 是常态（轮次一到就发），
       // 这时只说轮次——写三个 0 会让人以为「这家很省」，写「未采集」又会与真正的终态混淆。
       return `[${time}] ${usageLine(event)}`;
     case 'diff-summary':
@@ -79,12 +79,19 @@ type VendorSystemEvent = Extract<AgentEvent, { type: 'vendor-system' }>;
 /**
  * `vendor-system` 事件的正文（不含 `[时间] ` 前缀）。
  *
- * 三段判据（2026-10-04）：
+ * 三段判据：
  *   · **计数写「N 项」而不是把工具名铺开**：真机 21 个工具、47 条斜杠命令，铺开来会把
  *     抽屉正文一屏占满，而这一行要回答的只是「有没有、大概多少」——逐项内容在环境抽屉里；
  *   · **缺的格整段不出现**：`null` 是「厂商没投送」，写成「斜杠命令 0 项」与它含义相反
  *     （`[]` 才是「采到了，确实是空的」，那时才写 0 项）；
  *   · 六格全空（理论上的边界）写「未采集」，**不留一行光秃秃的前缀**。
+ *
+ * MCP 那一格（现在是**对象数组**）多一步：台数必须走契约里**共用**的
+ * `normalizeMcpServers`，不能直接取 `event.mcpServers.length`。两个理由——
+ *   ① 历史 `events.jsonl` 里它是字符串数组（`["context7"]`），归一之后才数得出「几台」；
+ *   ② 槽位数不等于台数：数组里混进脏项时会数出编造的台数（「整格不是数组」的脏值更糟，
+ *      `'context7'.length` 会渲染成「MCP 8 项」）。归一之后 `null` 仍是「没投送」、
+ *      `[]` 仍是「投送了确实是空的」——两态在这一行上也分得开。
  */
 function vendorSystemLine(event: VendorSystemEvent): string {
   const parts: string[] = [];
@@ -92,12 +99,14 @@ function vendorSystemLine(event: VendorSystemEvent): string {
     ['tools', event.tools, '工具'],
     ['slashCommands', event.slashCommands, '斜杠命令'],
     ['agents', event.agents, '子智能体定义'],
-    ['mcpServers', event.mcpServers, 'MCP'],
   ];
   for (const [, values, label] of counted) {
     if (values === null) continue;
     parts.push(`${label} ${values.length} 项`);
   }
+  // MCP 单独走一趟归一（台数 = 归一到几台服务），排在「子智能体定义」之后、权限档之前
+  const mcpServers = normalizeMcpServers(event.mcpServers);
+  if (mcpServers !== null) parts.push(`MCP ${mcpServers.length} 项`);
   if (event.permissionMode !== null) parts.push(`权限档 ${event.permissionMode}`);
   if (event.outputStyle !== null) parts.push(`输出风格 ${event.outputStyle}`);
   return parts.length === 0 ? '系统层 未采集' : `系统层 ${parts.join(' · ')}`;

@@ -196,7 +196,7 @@ describe('startCodexSession —— 中断、终止与关闭', () => {
 });
 
 /**
- * 起手失败必须回收（2026-10-07）。
+ * 起手失败必须回收。
  *
  * 为什么单列一组：这三步抛错时 `runTurn` 里 `started` 还是 undefined ⇒ `dispose` **永远不会被调用**
  * （`dispose` 挂在 `TurnStart` 上，而它根本没被返回）。进程就此常驻，并一直持着该行的 `$CODEX_HOME`

@@ -2,14 +2,14 @@
  * AskUserCard：时间轴上唯一「会等人」的东西。
  *
  * 七条守卫：
- *   · `pending + running` 走秒表且**不出现任何收场文案**（把「还在等」说成「已经收场」是最容易犯的错）；
- *   · `pending + !running` 是**静态灰字**「结果未采集」，**不能一直转圈**（变异体 (j) 的落点）；
- *   · 七态各自的文案与色档，**`unavailable` 是中性不是红色错误**；
- *   · 答案按 **`label`** 回填：夹具里 `selected` 的顺序与选项顺序**不同**——
- *     按下标匹配会把「已选」标到错的那两项上，而界面上看起来「有答案」（变异体 (i)）；
- *   · `selected` 里 `options` 没有的标签**原样显示**，不静默丢弃；
- *   · `custom` 多选是**补充**、单选是**覆盖**；
- *   · `secret` 默认遮罩，展开才显示。
+ * · `pending + running` 走秒表且**不出现任何收场文案**（把「还在等」说成「已经收场」是最容易犯的错）；
+ * · `pending + !running` 是**静态灰字**「结果未采集」，**不能一直转圈**（变异体 (j) 的落点）；
+ * · 七态各自的文案与色档，**`unavailable` 是中性不是红色错误**；
+ * · 答案按 **`label`** 回填：夹具里 `selected` 的顺序与选项顺序**不同**——
+ * 按下标匹配会把「已选」标到错的那两项上，而界面上看起来「有答案」（变异体 (i)）；
+ * · `selected` 里 `options` 没有的标签**原样显示**，不静默丢弃；
+ * · `custom` 多选是**补充**、单选是**覆盖**；
+ * · `secret` 默认遮罩，展开才显示。
  */
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

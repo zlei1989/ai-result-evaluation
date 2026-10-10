@@ -3,13 +3,13 @@
  *   1. 用量未采集时**不显示 0**；错误格只在真有错误时出现；
  *   2. 耗时：未结束本地走秒表（数字在涨）、终态用 `endedAt − startedAt` 的结算值；
  *   3. 思考 token **只在与用量并列的那一格**显示，且**不与用量相加**（`basis !== 'additive'`
- *      时那一格也不附任何说明，2026-10-07 口径）；
- *   4. **领域事实不在这里**（用户 2026-10-07 口径）：`facts.domain`（智能体 · 模型 · 思考强度 ·
+ *      时那一格也不附任何说明）；
+ *   4. **领域事实不在这里**：`facts.domain`（智能体 · 模型 · 思考强度 ·
  *      改动 · 评分）自占一行，由 `agent-log-domain-facts.test.tsx` 守；本件只画「这一行跑了什么」；
  *   5. `status.label` 照数据给的渲染，**只有 `running` 才带动效**；
  *   6. 「等待答复」徽标只在真的在等时出现；
- *   7. **没有「结束原因」这一格**（用户 2026-10-07 口径）：它连着 `agent-log-facts-exit` 一起从
- *      事实条与 `AgentLogFacts` 里删掉了，重建那一格时守卫红。
+ *   7. **没有「结束原因」这一格**：它连着 `agent-log-facts-exit` 一起不在事实条与
+ *      `AgentLogFacts` 里，重建那一格时守卫红。
  */
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -70,9 +70,9 @@ describe('AgentLogFactsBar', () => {
   });
 
   /**
-   * 用量那一格的文案走 `formatUsageTriple`（千分位 + `tok`，用户 2026-10-07 口径）。
-   * 为什么值得钉：这一格此前只被「未采集」那条用例碰过，三元组的**形状**没人守——
-   * 把它改回裸数字（`输入 218 · 缓存 8832 · 输出 1420`）时肉眼看不出，只有字面量断言能拦住。
+   * 用量那一格的文案走 `formatUsageTriple`（千分位 + `tok`）。
+   * 为什么值得钉：三元组的**形状**只有字面量断言能拦住——写成裸数字
+   * （`输入 218 · 缓存 8832 · 输出 1420`）时肉眼看不出。
    */
   it('用量三元组带千分位与 `tok` 单位（与里程碑 / 页脚 / 子任务卡片同一出口）', () => {
     render(<AgentLogFactsBar facts={facts()} waitingSince={null} />);
@@ -81,8 +81,8 @@ describe('AgentLogFactsBar', () => {
   });
 
   /**
-   * **第一行的格序**（用户 2026-10-07 口径）：状态 → 用量（输入 · 缓存 · 输出）→ 耗时 → **轮次**。
-   * 轮次原先排在用量前面，把「这一次用了多少」那一串读断；它是「跑了几轮」这个过程读数，故排末尾。
+   * **第一行的格序**：状态 → 用量（输入 · 缓存 · 输出）→ 耗时 → **轮次**。
+   * 轮次排在末尾：它是「跑了几轮」这个过程读数，插在用量之前会把「这一次用了多少」那一串读断。
    *
    * 判据取**行文本里的位置**（`indexOf`），不数 DOM 下标：格子的元素类型会变（`Flex` / `Text`），
    * 而读者看到的是那一行字的先后。
@@ -156,7 +156,7 @@ describe('AgentLogFactsBar', () => {
 
     const cell = screen.getByTestId('agent-log-facts-tokens');
     expect(cell).toHaveTextContent('思考 640 tok');
-    // `subset-of-output` 那一格**不再附说明**（2026-10-07 用户口径：文案从简）；
+    // `subset-of-output` 那一格**不附说明**（文案从简）；
     // 靶子是那句已删掉的旧文案：把它加回来这条用例就红
     expect(cell).not.toHaveTextContent('是输出的子集');
     // 1420 + 640 = 2060：非可加时**绝不**给出这个和
@@ -203,9 +203,9 @@ describe('AgentLogFactsBar', () => {
   });
 
   /**
-   * 两条口径合一条（用户 2026-10-07）：
+   * 两条口径合一条：
    *   · 轮次 `total` 为 `null` 时只说当前值——不编一个自己会走动的分母；
-   *   · **「结束原因」这一格不再存在**：删掉字段与那一格之后，页面上不该再有它的痕迹。
+   *   · **「结束原因」这一格不存在**：字段与那一格都不在了，页面上不该再有它的痕迹。
    */
   it('轮次：total 为 null 时只说当前值；「结束原因」这一格不再出现', () => {
     render(<AgentLogFactsBar facts={facts({ turns: { current: 3, total: null } })} waitingSince={null} />);

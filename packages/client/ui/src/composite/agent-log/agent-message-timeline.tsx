@@ -3,13 +3,13 @@
 /**
  * 轮次时间轴（L1）：**逐轮 `map` 渲染，`turns` 多大就渲染多少**。
  *
- * 四条边界（§9.0 的三条纪律 + §7.2 的性能护栏）：
+ * 四条边界（三条纪律 + 性能护栏）：
  *   1. **不虚拟化**：虚拟滚动是 L2 `virtual-turn-list` 的事。内嵌只读视图常常只有几轮，
  *      为它引一层虚拟列表是净亏；
  *   2. **props 里没有任何 subagent 字段**：「当前在第几级」是 `AgentLogLayout` 的事，
  *      于是「子任务与主会话同形」是同一个组件、同一份 props 形状，不可能漂移；
  *   3. **不认识折叠态本身**：它只把 `openKeys` 翻译成每个块的 `BlockRenderContext`
- *      （`open` + `onOpenChange`），块怎么画在 L0 注册表里；
+ * （`open` + `onOpenChange`），块怎么画在 L0 注册表里；
  *   4. **`buildRenderBlocks` 只在单轮渲染入口（`renderTurn`）里被调用**：调用方若在渲染层外面
  *      先全建一遍，虚拟滚动就只省了 DOM、没省计算。
  *
@@ -76,14 +76,13 @@ export function turnKey(turn: LogTurn, index: number): string {
 }
 
 /**
- * 挂在第 `index` 轮之后的行级事件。**两条规则，不留洞**（2026-10-05，spec §2.4）：
- *   ① **有归属键**（`event.turn !== null`）：本轮的 `(subagentId, round)` 与它**逐字相同**才归本轮。
- *      本节点没有这一轮 ⇒ **本节点不显示它**（它属于别的会话节点，在那里显示）——回落按时刻会把
- *      「不属于这一轮的读数」混进最后一轮，那正是这次要修的毛病。
+ * 挂在第 `index` 轮之后的行级事件。**两条规则，不留洞**：
+ *   ① **有归属键**（`event.turn !== null`）：本轮的 `(subagentId, round)` 与它**逐字相同**才归本轮。 * 本节点没有这一轮 ⇒ **本节点不显示它**（它属于别的会话节点，在那里显示）——回落按时刻会把
+ * 「不属于这一轮的读数」混进最后一轮。
  *   ② **没有归属键**（`error` / `warning` / 算不出归属的里程碑）：沿用按时刻的老规则
  *      ——「该事件的 `at` <= 该轮 `at` 的**最后一轮**」。写成「本轮的 `at` 不晚于事件、且下一轮的
  *      `at` 晚于事件」是因为列表按项渲染时只看得到相邻两项；早于**所有**轮次的事件挂到第一轮
- *      （不丢），最后一轮兜住它之后的全部事件。
+ * （不丢），最后一轮兜住它之后的全部事件。
  * 比较用字符串字面序（两侧都是数据层给的 ISO 串，字面序即时间序；不解析成 `Date` 也就没有 NaN 这类分支）。
  */
 export function rowEventsOfTurn(
@@ -117,7 +116,7 @@ function formatClock(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-/** 轮次左槽宽（实测基线 §5.0.4：宽 64 + 右 padding 8）。写进内联样式：这是结构性不变量，不是排版偏好 */
+/**轮次左槽宽（实测基线：宽 64 + 右 padding 8）。写进内联样式：这是结构性不变量，不是排版偏好 */
 const TURN_GUTTER_WIDTH = 64;
 
 /**
@@ -146,7 +145,7 @@ export interface MessageTimelineProps {
   /** 用户提示词之后的补充提示（如「该子任务的对话未转发」）。**L1 不知道它从哪来，只负责摆** */
   notices?: readonly ReactNode[];
   /**
-   * 下面三个回调补的是 §9.1 的 props 清单里没有、但 `BlockRenderContext` 明确要的三格
+   * 下面三个回调补的是的 props 清单里没有、但 `BlockRenderContext` 明确要的三格
    * （`onEnterNode` 是子任务占位条唯一有副作用的动作）。不给就退化成「没有这个入口」，
    * 而不是在 L1 里自己造一份导航态。三格全可选 ⇒ 既有的 props 形状一个字段都不用改。
    */
@@ -187,12 +186,11 @@ export function renderTurn(turn: LogTurn, index: number, props: TurnRenderContex
 }
 
 /**
- * 这一轮里**每条 assistant 消息**自己的用量（2026-10-06）。
+ * 这一轮里**每条 assistant 消息**自己的用量。
  *
  * 为什么必须按逻辑消息去重：同一条消息的正文块与工具调用块带的是**同一个** usage ⇒ 逐块渲染
  * 会把同一行数字画两遍。去重键取 `mergeKey`（**逻辑消息**的定义，见 `ContentBlockBase.mergeKey`）。
  * ⚠️ 同一轮里用 `messageId` 当键**结果相同**（那些块来自同一条折叠后的消息，共用一个 id）——
- * 这不是区分力所在（2026-10-06 变异验证实测：把键换成 `messageId` 用例照样绿）；
  * 真正的靶子是「**根本不去重**」，用例 ① 钉的是它。
  *
  * 为什么在轮末渲染而不是插进渲染块之间：渲染块是判别联合、相邻工具条目会并成一个 `tool-group`
@@ -274,7 +272,7 @@ function TurnRow({
         })}
         {usageFootersOf(turn).map((footer) => (
           // 锚点照 `data-turn-row` / `data-row-event` 的既有习惯：断言数自己标的属性，不数 antd 内部类名。
-          // `italic` 是刻意的（用户 2026-10-06 口径）：顶部事实条是正体灰字、轮末里程碑是 Tag 色块，
+          // `italic` 是刻意的：顶部事实条是正体灰字、轮末里程碑是 Tag 色块，
           // 这一行只有斜体才与前两者两两可分；antd 没有比 secondary 更弱的档，所以不引入手写样式。
           <Typography.Text key={footer.mergeKey} type="secondary" italic data-usage-footer>
             本条 {formatUsageTriple(footer.usage)}
@@ -287,12 +285,12 @@ function TurnRow({
 }
 
 /**
- * 挂在轮末的行级事件（行距 4 = `marginXXS`，见 §5.0.4）。
+ * 挂在轮末的行级事件（行距 4 = `marginXXS`）。
  *
  * `data-row-event` 是**每一条行级事件**自己的锚点（值是色档 `event.level`）：`data-turn-row` 只标在
  * 轮次行上（一个轮次一行，与这一轮挂了几条事件无关），所以**数用量行只能用这个锚点**。
  * 少它的时候「主会话节点里恰好只有它自己那两条用量」这类断言会写成「数轮次行」——恒等于轮次数，
- * 任何水位变异下都绿（2026-10-05 审查 Important C：那条断言当时**没有**被落实）。
+ * 与这一轮挂了几条事件无关。
  */
 function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
   const { token } = theme.useToken();
@@ -310,7 +308,7 @@ function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
 }
 
 /**
- * 首条消息：用户提示词。**不折叠**——它是「这个节点被要求做什么」的唯一说明（D4）。
+ * 首条消息：用户提示词。**不折叠**——它是「这个节点被要求做什么」的唯一说明。
  * `userPrompt === null` 时整块不渲染（不给空卡片：「没采到」与「没有提示词」是两件事）。
  *
  * 具名导出是因为虚拟列表也要用它（L2 可以 import L1）：提示词在抽屉里同样是**首条消息**，

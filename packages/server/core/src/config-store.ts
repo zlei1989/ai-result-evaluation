@@ -17,11 +17,11 @@ const log = createLogger('config-store');
 
 /**
  * 应用配置的落盘形态：settings + providers **两段**。
- * providers 直接复用 contracts 的领域类型——core 曾经自己声明过四个同形类型
- * （ProviderRecord / ProviderModelRecord / TestCaseRecord / ProtocolType），那是两处会漂移的
- * 重复定义：契约加一个字段而 core 忘了跟，落盘文件就少一列，而 `loadConfig` 的类型却不会报错。
+ * providers 直接复用 contracts 的领域类型，不再自己声明那四个同形类型
+ * （ProviderRecord / ProviderModelRecord / TestCaseRecord / ProtocolType）：两处重复定义会漂移——
+ * 契约加一个字段而 core 忘了跟，落盘文件就少一列，而 `loadConfig` 的类型却不会报错。
  *
- * **用例不再住这里**（2026-10 起）：它改成 `<casesRoot>/<case-id>.json` 一文件一用例，
+ * **用例不住这里**：它住在 `<casesRoot>/<case-id>.json`，一文件一用例，
  * 读写收口在 `case-store.ts`。旧 config.json 里残留的 `cases` 键**读时静默忽略**——
  * 不迁移、不提示、不双写：留下任何一条兼容分支，都会让「用例到底存在哪」有两个答案。
  */
@@ -70,7 +70,7 @@ function defaults(): AppConfig {
  * 把落盘的 settings 归一化成契约形状：**只认 `SETTINGS_DEFAULTS` 里有的键**（缺的补默认值，
  * 多的丢掉）。
  *
- * 为什么要丢「多的」（2026-09-28）：loadConfig **故意不做 schema 校验**（一条手改坏的值不该让
+ * 为什么要丢「多的」：loadConfig **故意不做 schema 校验**（一条手改坏的值不该让
  * 设置页打不开），于是旧版本写下、如今已从契约里删掉的字段（例如「单行超时」`rowTimeoutMs`）
  * 会一路带进读侧——`GET /api/settings` 于是回一个契约里根本不存在的字段。键表直接取自
  * `SETTINGS_DEFAULTS`（契约的真源），新增字段只要进了默认值就自动被认，不需要在这里维护第二份清单。
@@ -81,6 +81,18 @@ function normalizeSettings(raw: unknown): Settings {
   for (const key of Object.keys(SETTINGS_DEFAULTS)) {
     if (source[key] !== undefined) normalized[key] = source[key];
   }
+  /**
+   * MCP 预置项的**播种**：判据是「文件里**没有这个键**」，不是「值为空」。
+   *
+   * 为什么这一格要单独写一句、而不是靠上面那张键表一并补上：上面那行 `{ ...SETTINGS_DEFAULTS }`
+   * 确实会在键缺失时给出预置两项，但它同时把两种**读侧可分**的状态混成了一处实现细节——
+   * 而它们对用户是两件事：没配过（首次打开 ⇒ 该看到两台）与**删光了**（配过 ⇒ 不许再冒出来）。
+   * 写成一句显式判断，判据才有唯一落点、才可以被守卫钉住（`config-store-mcp.test.ts` 的往返两条）。
+   *
+   * 为什么判据必须是「键缺失」而不是「数组 / 对象为空」：后者等于**删光即复播**，
+   * 用户永远删不掉预置项（键在文件里就是「配过了」的唯一证据，空 map 与没写过因此可分）。
+   */
+  if (source.mcpServers === undefined) normalized.mcpServers = structuredClone(SETTINGS_DEFAULTS.mcpServers);
   return normalized as unknown as Settings;
 }
 

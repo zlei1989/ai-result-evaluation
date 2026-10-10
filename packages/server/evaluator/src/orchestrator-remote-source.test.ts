@@ -54,14 +54,14 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
 
     const row = getRun(run.id).rows[0]!;
     expect(row.status).toBe('judged');
-    // R2：远端轮次的基线是**解析后的 40 位具体 hash**，且与来源逐字相同（不是镜像 HEAD 之类的代理）
+    // 远端轮次的基线是**解析后的 40 位具体 hash**，且与来源逐字相同（不是镜像 HEAD 之类的代理）
     expect(row.baselineCommit).toBe(origin.commit);
     expect(existsSync(join(row.workspacePath, '.git'))).toBe(true);
-    // 镜像落在工作区根下（与 cases/ 平级），而**不在行工作区里**（RG12：镜像不进任何行工作区）
+    // 镜像落在工作区根下（与 cases/ 平级），而**不在行工作区里**（镜像不进任何行工作区）
     expect(existsSync(mirrorDir(home.workspaceRoot, origin.url))).toBe(true);
     expect(existsSync(join(home.workspaceRoot, 'remotes'))).toBe(true);
     expect(existsSync(join(row.workspacePath, 'remotes'))).toBe(false);
-    // RG7 的**直接指纹**：用例缓存的来源记录里写的是镜像路径，core 从没见过那个 URL。
+    // **直接指纹**：用例缓存的来源记录里写的是镜像路径，core 从没见过那个 URL。
     // 为什么必须有这一条：git 把 `file://` URL 当路径用也能克隆（本机实测），
     // 故「基线 hash 对不对」根本区分不出「走了镜像」与「URL 被当成路径直接塞给 core」——
     // 来源记录（core 的 ensureCaseCache 落盘，见 core/src/git.ts）才是这条接缝的观测点。
@@ -104,7 +104,7 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
 
     // 「跟随分支」的定义就是这一条：第二轮不沿用第一轮解析出的 tip，而是重新解析
     expect(getRun(second.run.id).rows[0]!.baselineCommit).toBe(advanced);
-    // 重新解析发生在**镜像**上（RG7 的落点）：它自己的 main 也跟着前进了
+    // 重新解析发生在**镜像**上：它自己的 main 也跟着前进了
     expect(existsSync(mirrorDir(home.workspaceRoot, origin.url))).toBe(true);
     expect(gitIn(mirrorDir(home.workspaceRoot, origin.url), ['rev-parse', 'refs/heads/main']).trim()).toBe(advanced);
   });
@@ -136,7 +136,7 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
     const row = getRun(run.id).rows[0]!;
     expect(row.status).toBe('failed');
     // A7 的裁定：被改名/移走的是**远端不存在**（git 原文 does not appear to be a git repository），
-    // 按 spec §4.5 归到 NOT_A_GIT_REPO，而不是 REPO_UNREACHABLE —— 后者会把用户指向「查网络」，
+    // 归到 NOT_A_GIT_REPO，而不是 REPO_UNREACHABLE —— 后者会把用户指向「查网络」，
     // 而这里该做的是改地址。本机 git 2.47 实测该原文确实落进这条分支（探针见任务报告）。
     expect(row.error?.code).toBe('NOT_A_GIT_REPO');
     // 「绝不静默沿用旧镜像」的正面证据：镜像在盘上、内容完好，但这一行的工作区从没被准备出来

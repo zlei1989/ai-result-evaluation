@@ -6,22 +6,22 @@
  * （本组件不调接口）。
  *
  * 六处刻意的设计：
- *   1. **两种协议的模型都列**：这一格是**文本调用**的目标，与智能体协议无关（F3 / §6.2），
- *      按协议过滤会平白砍掉一半候选（Anthropic 协议的模型照样能评分）。
- *      「不过滤」只针对**模型**这一格；智能体那一格反过来必须按协议过滤 ——
- *      智能体驱动不了另一种协议的模型（Codex 只吃 OpenAI 兼容），选完再报错就晚了；
- *   2. **悬空的 defaultJudge 要显式提示**：删掉供应商后设置里仍留着它的 id（删除不级联改写设置），
- *      静默显示成「未配置」会让人以为只是没选，直到跑评测才发现评分不可用；
- *   3. **单位换算只在这里做**：配置存字节，界面用 KB（人填的是 256）；
- *   4. **这里没有「单行超时」这一格**（2026-09-28 用户口径）：执行与评分都不限时间，
- *      一行只会因为「跑完 / 失败 / 用户点终止」结束——那一格连契约字段一起删了。
- *   5. **「输出契约（只读）」那一格与根 `README.md` 的同名条目是同一条口径**：它描述的是我们**要求
- *      模型输出什么**（逐项达成 / 未达成 + 一句理由，**不给总分**），改一处必须同步另一处——
- *      「手册描述一个不存在的界面」正是本次重构评审点出来的那类缺陷。
- *   6. **「思考强度」的候选项是写下侧的安全边界**（2026-10-07）：`settings.defaultJudge.effort` 在 schema 上
- *      只有 `z.string().min(1).optional()`，档位域**完全**由本组件算出的候选把关 —— 算错一格，用户就能
- *      存下一个会被服务端硬拒的值（`requireJudgeEffort` 连生成 / 识别一起拦）。故它必须与后端**同一个
- *      函数、同一个参数序**：`intersectEfforts(model, agentEfforts, CANONICAL_EFFORT_LEVELS)`。
+ * 1. **两种协议的模型都列**：这一格是**文本调用**的目标，与智能体协议无关，
+ * 按协议过滤会平白砍掉一半候选（Anthropic 协议的模型照样能评分）。
+ * 「不过滤」只针对**模型**这一格；智能体那一格反过来必须按协议过滤 ——
+ * 智能体驱动不了另一种协议的模型（Codex 只吃 OpenAI 兼容），选完再报错就晚了；
+ * 2. **悬空的 defaultJudge 要显式提示**：删掉供应商后设置里仍留着它的 id（删除不级联改写设置），
+ * 静默显示成「未配置」会让人以为只是没选，直到跑评测才发现评分不可用；
+ * 3. **单位换算只在这里做**：配置存字节，界面用 KB（人填的是 256）；
+ * 4. **这里没有「单行超时」这一格**：执行与评分都不限时间，
+ * 一行只会因为「跑完 / 失败 / 用户点终止」结束——那一格连契约字段一起删了。
+ * 5. **「输出契约（只读）」那一格描述的是我们要求模型输出什么**（逐项达成 / 未达成 +
+ * 一句理由，**不给总分**）：它是只读预览，真源是评分提示词模板，改一处必须同步另一处——
+ * 「界面描述与手册各说一套」正是这类缺陷的典型。
+ * 6. **「思考强度」的候选项是写下侧的安全边界**：`settings.defaultJudge.effort` 在 schema 上
+ * 只有 `z.string().min(1).optional()`，档位域**完全**由本组件算出的候选把关 —— 算错一格，用户就能
+ * 存下一个会被服务端硬拒的值（`requireJudgeEffort` 连生成 / 识别一起拦）。故它必须与后端**同一个
+ * 函数、同一个参数序**：`intersectEfforts(model, agentEfforts, CANONICAL_EFFORT_LEVELS)`。
  */
 import { Alert, Card, Flex, Form, InputNumber, Select, Typography } from 'antd';
 import type { ReactNode } from 'react';
@@ -34,12 +34,12 @@ import {
   type AgentKind,
   type ProviderView,
   type ProtocolType,
-  type Settings,
+  type SettingsView,
   type SettingsPatch,
 } from '@aieval/contracts';
 
 export interface JudgeSettingsCardProps {
-  settings: Settings;
+  settings: SettingsView;
   providers: ProviderView[];
   /**
    * 每家的注册表投影（来自 `GET /api/runs/model-options`）：协议**集合** + 思考强度**档位域**。
@@ -175,7 +175,6 @@ export function JudgeSettingsCard({
             协议那两处也直接断言：进入这一支的前提（`incompatible()`）已经把该家的协议**集合**与
             `judgeProtocol` **都判成非 undefined**（两者缺一 `incompatible` 就是 false），
             故**不写** `?? []` / `?? 'openai'` 那种兜底——它不可达，只会给读者「这里可能取不到协议」的假印象
-            （终审 Minor 就是这么点出来的）。
             文案与 `@aieval/agents` 的 `protocolMismatchMessage` 同构（列出**集合**而不是单值）：
             DSH 两条 wire 都能收，写成「只接受 Anthropic 协议」会说谎。 */}
         {currentAgentDangling && (

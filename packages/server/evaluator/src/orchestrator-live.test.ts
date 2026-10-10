@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 跑动期的实时数据（用户口径，2026-09-26）：**行还在跑的时候，快照就要跟上**。
+ * 跑动期的实时数据（用户口径）：**行还在跑的时候，快照就要跟上**。
  *
  * 四条判据（A2 起回写口径**按每一条事件自己的性质**，不再按适配器在注册表里的静态声明）：
  *   ① 事件带 `tokensBasis: 'reported'` 一上报用量就**逐步回写**运行快照（tok / 轮次 / 分量）；
@@ -53,8 +53,8 @@ const TEST_TIMEOUT_MS = 150_000;
 const live = vi.hoisted(() => ({
   /**
    * 这一次 run 的用量发射口；假适配器启动时装上（用例靠它决定「什么时候上报多少」）。
-   * 第三格是**子智能体那一份**（Task 7 扩的签名，与 `usage` 事件那一格同名）：`undefined` = 这一条
-   * **没带这一格**（老版本事件），与显式的 `null`（= 明确没采到）在消费侧是**两件事**（R2 的三档）
+   * 第三格是**子智能体那一份**（与 `usage` 事件那一格同名）：`undefined` = 这一条
+   * **没带这一格**（老版本事件），与显式的 `null`（= 明确没采到）在消费侧是**两件事**（三档）
    * ——回写快照时前者「保持旧值」、后者「清空」，所以夹具必须能把两者分别发出来。
    */
   emitUsage: null as null | ((
@@ -76,19 +76,18 @@ const live = vi.hoisted(() => ({
   finalTurns: 4,
   /**
    * 结算值里的**子智能体那一份**（终态写入的那一份），同样刻意与跑动期上报值不同。
-   * 为什么不是 Task 3 留下的占位 `null`：终态与跑动期写的是**同一格**，默认取 `null` 时
+   * 为什么不是占位 `null`：终态与跑动期写的是**同一格**，默认取 `null` 时
    * 「跑动期写了、终态漏写」的实现照样绿——而「收尾才拿到数」正是这一格最可能的真实形状。
    * `beforeEach` 会把它复位成这个初值（有一条用例要把它改成 `null` 来钉「终态清空」）。
    *
-   * ⚠️ **必须逐格 ≤ `finalTokens`**（spec §2.4 的不变量：`{6,1,1} ≤ {7,1,9}`）：这两格会被写进
-   * **同一行快照**，夹具给出一个违反它的组合，就等于把一份**不可能落盘的快照**当成正常输入
-   * （2026-10-04 收尾评审 I3：原值 `cached: 2` 对 `1` 破坏的正是这条不变量）。
+   * ⚠️ **必须逐格 ≤ `finalTokens`**（不变量：`{6,1,1} ≤ {7,1,9}`）：这两格会被写进
+   * **同一行快照**，夹具给出一个违反它的组合，就等于把一份**不可能落盘的快照**当成正常输入。
    * 同时它与跑动期上报的 `{5,1,2}` 仍**刻意不同**（输入 6≠5、输出 1≠2）——否则下面那条
    * 「终态到底写没写这一格」的断言就分不出是谁写的。
    */
   finalSubagentTokens: { input: 6, cached: 1, output: 1 } as { input: number; cached: number; output: number } | null,
   /**
-   * 结算值里的**子智能体那一份轮次**（2026-10-04）：与 `finalTurns` 刻意不同（2 ≠ 4），
+   * 结算值里的**子智能体那一份轮次**：与 `finalTurns` 刻意不同（2 ≠ 4），
    * 判据是「跑动期写了、终态漏写」时断言能分得开。⚠️ 必须 ≤ `finalTurns`（同一行快照上的不变量）。
    */
   finalSubagentTurns: 2 as number | null,
@@ -115,9 +114,9 @@ vi.mock('@aieval/agents', async (importOriginal) => {
       kind: 'codex',
       displayName: '实时假适配器',
       metadata: {
-        // 集合形状（Task 1）：这一格是「智能体能接受哪些协议」，不是供应商的单值属性
+        // 集合形状：这一格是「智能体能接受哪些协议」，不是供应商的单值属性
         protocolTypes: ['openai'],
-        // R16：`structuredOutput` 是 `capability` 的**必填**格，这里必须照真值填（这个假 provider 声称
+        // `structuredOutput` 是 `capability` 的**必填**格，这里必须照真值填（这个假 provider 声称
         // 自己是 codex，真 codex 就是 `true`）。漏掉它 `pnpm typecheck` 一个字都不会报——vitest 的
         // mock 工厂返回值不与模块类型比对——而编排层读到的是 `undefined`（falsy）⇒ **静默**走降级分支，
         // 于是「支持的适配器不该发降级日志」这类断言就建立在一个不合法的元数据字面量上
@@ -145,7 +144,7 @@ vi.mock('@aieval/agents', async (importOriginal) => {
             // `subagentTokens: undefined`——两者在 JS 里等价，但夹具的形状该与契约的三档逐格对上，
             // 读的人不必自己推「缺席与 undefined 是不是同一件事」。
             ...(subagentTokens === undefined ? {} : { subagentTokens }),
-            // 轮次那一格的分量同一条处置（2026-10-04）：缺席 / 显式 null 是**两件事**（保持 / 清空）
+            // 轮次那一格的分量同一条处置：缺席 / 显式 null 是**两件事**（保持 / 清空）
             ...(subagentTurns === undefined ? {} : { subagentTurns }),
           });
         };
@@ -156,12 +155,12 @@ vi.mock('@aieval/agents', async (importOriginal) => {
           ok: true,
           exitReason: 'completed',
           tokens: live.finalTokens,
-          // `subagentTokens` 是 `AgentRunResult` 的**必填**格（2026-10-04）：这里交给 `live.finalSubagentTokens`
-          // 驱动真值（Task 7 之前写死的是占位 `null`）。为什么必须写出来（与上面 R16 那一格同一类陷阱）：
+          // `subagentTokens` 是 `AgentRunResult` 的**必填**格：这里交给 `live.finalSubagentTokens`
+          // 驱动真值（不是占位 `null`）。为什么必须写出来（与上面那一格同一类陷阱）：
           // 本对象在 `vi.mock` 工厂里，`pnpm.cmd typecheck` 看不见它 ⇒ 漏掉这一格时编排层读到的是
           // `undefined`，既不是「有值」也不是契约里的「未采集」；而写死 `null` 会让终态漏写分量的实现照样绿。
           subagentTokens: live.finalSubagentTokens,
-          // 轮次那一格的分量同样是**必填**格（2026-10-04）：漏掉它编排层读到的是 `undefined`，
+          // 轮次那一格的分量同样是**必填**格：漏掉它编排层读到的是 `undefined`，
           // 既不是「有值」也不是契约里的「未采集」（与上面那一格同一类陷阱）
           subagentTurns: live.finalSubagentTurns,
           turns: live.finalTurns,
@@ -212,7 +211,7 @@ beforeEach(() => {
   live.release = null;
   live.emitEstimated = false;
   // 有一条用例把它改成 `null`（钉「终态清空跑动期那个分量」）⇒ 逐用例复位成上面的初值，否则会串到后面
-  // （初值逐格 ≤ `finalTokens`：`{6,1,1} ≤ {7,1,9}`，见它自己的注释——2026-10-04 收尾评审 I3）
+  // （初值逐格 ≤ `finalTokens`：`{6,1,1} ≤ {7,1,9}`，见它自己的注释）
   live.finalSubagentTokens = { input: 6, cached: 1, output: 1 };
   // 同上：「终态清空跑动期那个分量」的用例会把它改成 `null` ⇒ 逐用例复位（初值 ≤ `finalTurns`）
   live.finalSubagentTurns = 2;
@@ -299,7 +298,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 子智能体那一份在**跑动期**的回写（Task 7）。三条判据就是 R2 的三档：
+   * 子智能体那一份在**跑动期**的回写。三条判据：
    *   · 事件带值 ⇒ 快照跟着变（与 `tokens` 同一条闸门、同一条落盘路径）；
    *   · 事件带**显式 `null`** ⇒ **清空**（读失败时同一条事件的 `tokens` 已退回主会话口径，
    *     留着旧的偏大分量会让快照满足不了 `subagentTokens ≤ tokens`）；
@@ -358,7 +357,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 终态**必须**写这一格（brief Step 5 的变异体正是删掉它）。
+   * 终态**必须**写这一格。
    *
    * 为什么这一条比 `orchestrator-run-row` 里那条同名判据更能钉住它：这里跑动期**已经**把分量写进快照了，
    * 删掉 `measured` 里那一行之后快照会停在跑动期那个值上（`{5,1,2}`），而断言要的是 `null`
@@ -381,8 +380,8 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 轮次那一格的分量在**跑动期**的回写（2026-10-04）：三条判据与 `subagentTokens` **逐字相同**
-   * （R2 的三档）——带值 ⇒ 跟着变；显式 `null` ⇒ 清空；整格缺席 ⇒ 保持。
+   * 轮次那一格的分量在**跑动期**的回写：三条判据与 `subagentTokens` **逐字相同**
+   * （三档）——带值 ⇒ 跟着变；显式 `null` ⇒ 清空；整格缺席 ⇒ 保持。
    *
    * 为什么这一格也要单独钉：它是**另一格**，而两格的写法在同一处（`onEvent` 的 `patchRow`）——
    * 只钉用量那一格的话，「顺手复制了用量那一行、忘了轮次这一行」的实现照样全绿，
@@ -457,7 +456,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * A2 的**有意行为变更**（spec §4 的 D5）：回写口径按每一条事件自己的 `tokensBasis`，不再按整家的
+   * 回写口径按每一条事件自己的 `tokensBasis`，不再按整家的
    * 静态声明。于是「估算的家」（claude-code 的跑动期读数按 assistant 消息累加）也**实时回写轮次**了
    * ——旧口径把轮次与 tokens 一起挡掉，界面因此在整个跑动期都看不到「轮到第几轮」。
    * 唯一不许进快照的仍然只有**估算的 `tokens`**：快照是唯一落盘真相，写进去会让崩溃 / 被杀的行
@@ -547,7 +546,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 用户终止之后，耗时必须**冻结在终止那一刻**（用户口径 2026-10-06，真机实测补的）。
+   * 用户终止之后，耗时必须**冻结在终止那一刻**（用户口径）。
    *
    * 实测现场（run `8df6ff65` 的 codex 行）：`canceled` 落在 18:25:31，而快照里的 `durationMs`
    * 到 18:27:33 还在每 5 秒涨一次（`1712966 → 1722983 → 1728000`）；界面在终态读的正是快照值

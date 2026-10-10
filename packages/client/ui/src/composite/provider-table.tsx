@@ -22,10 +22,10 @@
  *      回显当前掩码）。`apiKeyMasked` 仍在契约 `ProviderView` 里，只是这张表不展示。
  *   6. **「添加供应商」在表格左下方**（用户口径）：新增是「读完列表之后」的收尾动作，跟在表格后面
  *      顺着视线走；放工具条右侧会与标题同行、离列表本体太远，放右下角则会和「操作」列的按钮抢视线。
- *   7. **「模型」是本行的第一个动作**（用户口径 2026-09-30）：模型清单已从编辑弹窗里单独提成
+ *   7. **「模型」是本行的第一个动作**：模型清单已从编辑弹窗里单独提成
  *      一个对话框，入口就落在这里。它排在最前是因为使用频率：清单维护是高频动作，改接线是低频动作；
  *      破坏性的「删除」仍在最后，且隔着「编辑」一格。
- *   8. **卡片窄到装不下时，名称列钉在左边、操作列钉在右边**（用户口径 2026-10-08，与
+ *   8. **卡片窄到装不下时，名称列钉在左边、操作列钉在右边**（与
  *      `RunCreatePanel` 的候选行表同款）：表格内部横向滚动，中间三列从两侧固定列下面滑过。
  *      三处**必须同时在场**，少一处就静默退回「被压扁 / 滚出去够不到」的老样子：
  *      ① `scroll={{ x: 数值 }}`、② 名称列 `fixed: 'left'`、③ 操作列 `fixed: 'right'`。
@@ -48,7 +48,7 @@ export interface ProviderTableProps {
   loading?: boolean;
 }
 
-/** 协议 → 标签颜色：两种协议在表里必须一眼可分（它决定模型能喂给哪些智能体，F1 / F2） */
+/**协议 → 标签颜色：两种协议在表里必须一眼可分（它决定模型能喂给哪些智能体） */
 const PROTOCOL_COLORS: Record<ProviderView['protocolType'], string> = {
   openai: 'blue',
   anthropic: 'purple',
@@ -62,7 +62,7 @@ const BASE_URL_MIN_WIDTH = 280;
 
 /**
  * 表格的最小宽度（px）：卡片窄于它时**才**横向滚动，并把名称列 / 操作列钉在两侧
- * （用户口径 2026-10-08，见下面 Table 的 `scroll` 与两处 `fixed`；做法与常量来历见
+ * （见下面 Table 的 `scroll` 与两处 `fixed`；做法与常量来历见
  * `RunCreatePanel` 的 `CANDIDATE_TABLE_MIN_WIDTH`，两份是同一套口径）。
  *
  * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，卡片窄了只会把各列**按比例压扁**——
@@ -99,11 +99,11 @@ export function ProviderTable({
       dataIndex: 'name',
       key: 'name',
       width: PROVIDER_COLUMN_WIDTH.name,
-      // 钉在左边（用户口径 2026-10-08）：横向滚动时中间三列从它下面滑过，「这一行是谁」始终看得见。
+      // 钉在左边：横向滚动时中间三列从它下面滑过，「这一行是谁」始终看得见。
       // 定位是 rc-table 的 `getCellFixedInfo` 按**实测列宽**算出的 `position: sticky; left: …`，
       // 故上面那一格宽度必须留着。
       fixed: 'left',
-      // 与「API 地址」同口径（用户 2026-09-29）：**默认包 Tooltip**，省略号只在列放不下时出现。
+      // 与「API 地址」同口径：**默认包 Tooltip**，省略号只在列放不下时出现。
       // 名字可能比 180px 长（`xxx-兼容-正式环境` 这类），裸 `Typography.Text` 会换行或顶出格子，
       // 且没有任何办法看全——它和地址是同一类字段，不该只有地址有这套待遇
       render: (name: string) => <EllipsisText text={name} strong />,
@@ -122,13 +122,13 @@ export function ProviderTable({
       dataIndex: 'baseUrl',
       key: 'baseUrl',
       // 地址**默认就包着 Tooltip**（`EllipsisText` 的行为），省略号只在真的放不下时才出现。
-      // 所以这一格不给写死的 px 宽度（用户 2026-09-29）：原先的 `width={260}` 会在列还有富余时
+      // 所以这一格不给写死的 px 宽度：写死 `width={260}` 会在列还有富余时
       // 就把地址截断——「展示不全」是列宽说的，不该由一个魔数提前宣判。
       // 代价是「放不下」需要一个确定的分母，故表格显式 `tableLayout="fixed"`：auto 布局下这一列的
       // 最小内容宽度就是整条地址（`nowrap`），长地址会把表格顶出卡片；fixed 之后列宽由表头算，
       // 省略号稳稳落在列边缘。分母的另一半是 `scroll={{ x }}`（见 `PROVIDER_TABLE_MIN_WIDTH`）：
       // 它替这一列兜住 280 的下限，卡片再窄也只是横向滚动，不会被压到只剩一串省略号。
-      // 另外**不给 `monospace`**（用户 2026-09-29）：`Typography.Text code` 会给地址套一个灰底圆角的
+      // 另外**不给 `monospace`**：`Typography.Text code` 会给地址套一个灰底圆角的
       // `<code>` 盒子，看着像一枚标签，而这一格要的就是一条地址文本。
       render: (baseUrl: string) => <EllipsisText text={baseUrl} />,
     },
@@ -143,11 +143,11 @@ export function ProviderTable({
       key: 'actions',
       /**
        * 200 是三个两字按钮 + 两个 8px 间距 + 单元格左右内边距实测出来的宽度（浏览器里量的）。
-       * 「模型」放在**最前**（用户口径 2026-09-30）：清单维护是高频动作，改接线是低频动作，
+       * 「模型」放在**最前**：清单维护是高频动作，改接线是低频动作，
        * 常用入口靠左、且与「删除」这个破坏性动作隔开一格。
        */
       width: PROVIDER_COLUMN_WIDTH.actions,
-      // 钉在右边（用户口径 2026-10-08）：横向滚动时三个按钮始终够得到 —— 这一行最常用的动作
+      // 钉在右边：横向滚动时三个按钮始终够得到 —— 这一行最常用的动作
       // 「模型」与唯一的破坏性动作「删除」都不该需要先把表格拖到尽头才能点（同 `fixed: 'left'` 的理由）
       fixed: 'right',
       render: (_value, provider) => (

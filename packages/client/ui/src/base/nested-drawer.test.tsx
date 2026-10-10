@@ -35,8 +35,8 @@ const BODY = '二级抽屉的正文';
 describe('NestedDrawer（行为）', () => {
   /**
    * **`destroyOnHidden` 的判据必须是「开过再关」**：抽屉从没开过时，antd 本来就不挂载正文
-   * （`forceRender` 默认 false），只断言「一开始是 null」的话，把 `destroyOnHidden` 删掉照样绿
-   * ——**实测**（变异体 N3 第一次跑绿）：删掉之后本用例仍通过，因为它的判据只覆盖了「没开过」。
+   * （`forceRender` 默认 false），把 `destroyOnHidden` 删掉也照样绿 —— 判据只覆盖「没开过」时，
+   * 它量不到「卸载」这件事。
    */
   it('没开过 → 正文不在 DOM；开过再关 → 正文从 DOM 里消失（是真卸载，不是视觉隐藏）', () => {
     const { rerender } = render(

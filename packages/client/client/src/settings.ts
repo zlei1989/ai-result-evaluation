@@ -5,22 +5,24 @@
  */
 import useSWR from 'swr';
 import useSWRMutation from 'swr/mutation';
-import type { Settings, SettingsPatch } from '@aieval/contracts';
+import type { SettingsPatch, SettingsView } from '@aieval/contracts';
 import { getJson, putJson } from './http';
 
 const KEY = '/api/settings';
 
 export function useSettings(): {
-  settings: Settings | undefined;
+  settings: SettingsView | undefined;
   error: unknown;
   isLoading: boolean;
-  update: (patch: SettingsPatch) => Promise<Settings>;
+  update: (patch: SettingsPatch) => Promise<SettingsView>;
   isUpdating: boolean;
 } {
-  const { data, error, isLoading } = useSWR<Settings>(KEY, getJson);
+  // 类型是**出口形态**（`SettingsView`）：GET 与 PUT 回的都是掩码后的那份，明文密钥不会经这里到界面。
+  // 服务端要明文时读落盘的 `Settings`（见 api 的 settings.ts），那是另一条线，别从这里绕回去。
+  const { data, error, isLoading } = useSWR<SettingsView>(KEY, getJson);
   const { trigger, isMutating } = useSWRMutation(
     KEY,
-    (key: string, { arg }: { arg: SettingsPatch }) => putJson<Settings>(key, arg),
+    (key: string, { arg }: { arg: SettingsPatch }) => putJson<SettingsView>(key, arg),
     { populateCache: true, revalidate: false },
   );
   return { settings: data, error, isLoading, update: trigger, isUpdating: isMutating };

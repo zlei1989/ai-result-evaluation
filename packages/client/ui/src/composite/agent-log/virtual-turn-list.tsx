@@ -45,7 +45,7 @@ export interface VirtualTurnListProps {
   /**
    * 子任务占位条上的「进入 ▸」（`BlockRenderContext` 的三个出口之一）。
    *
-   * ⚠️ **必须在这里显式接上**（2026-10-03 真机实测的缺陷）：`TurnRenderContext` 与
+   * ⚠️ **必须在这里显式接上**：`TurnRenderContext` 与
    * `MessageTimelineProps` 同形，而这一格漏传时占位条的按钮**看上去完全正常、点下去毫无反应**——
    * 视图态切不过去，子任务的记录也就永远进不去（这正是「原始日志有内容、抽屉里看不到」的形状）。
    */
@@ -57,7 +57,7 @@ export interface VirtualTurnListProps {
   /**
    * 当前节点的能力声明（`BlockRenderContext` 的第四个出口）。
    *
-   * ⚠️ **必须在这里显式接上**（与上面三个出口同一条理由，2026-10-04 实测踩中）：
+   * ⚠️ **必须在这里显式接上**（与上面三个出口同一条理由）：
    * 本组件是**逐格重建** `TurnRenderContext` 的，漏传时 `AgentRunStateTag` 会静默退回
    * 那句光秃秃的「结果未采集」——界面上看起来完全正常，只是**永远说不出原因**。
    */
@@ -187,7 +187,7 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
       <VirtualList
         items={rows}
         rowKey={(row) => row.key}
-        // 按项渲染：`buildRenderBlocks` 在这一层才被调用（§7.2 的护栏）
+        // 按项渲染：`buildRenderBlocks` 在这一层才被调用（护栏）
         itemRender={(row) => (row.kind === 'head' ? row.node : renderTurn(row.turn, row.index, turnContext))}
         // 宿主由 `VirtualList` 交回来：已渲染计数与高度测量是同一次回调
         onMeasured={countRendered}

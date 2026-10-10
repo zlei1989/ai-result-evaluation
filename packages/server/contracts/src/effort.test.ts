@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 档位域算法（spec D10）：**一处实现、两种兜底**。
+ * 档位域算法：**一处实现、两种兜底**。
  *
  * 这个文件钉的是「两处消费只差一个参数」这件事本身——候选池兜**该家完整域**、评分兜**规范五档**，
  * 而算法只有这一份（抄第二份必然漂移）。第四条的 dsh 域**没有 `medium`** 是有意的：它是唯一能
@@ -37,7 +37,7 @@ describe('intersectEfforts：一处实现、两种兜底', () => {
 
   it('dsh 没有 medium ⇒ 规范五档与它求交后要少一格', () => {
     // 兜底那一份域**同样**过智能体域：否则评分那一格会摆出 dsh 硬报错的 medium
-    // （`UNSUPPORTED_REASONING_EFFORT`，正是本计划要避免的「症状离真因很远」）
+    // （`UNSUPPORTED_REASONING_EFFORT`，正是要避免的「症状离真因很远」）
     expect(intersectEfforts({}, dsh, CANONICAL_EFFORT_LEVELS)).toEqual(['off', 'low', 'high', 'max']);
   });
 
@@ -52,7 +52,7 @@ describe('intersectEfforts：一处实现、两种兜底', () => {
    *
    * 后果是实打实的：`intersectEfforts` 有 4 个生产调用点（候选池投影 `listModelOptions`、创建/编辑校验
    * `resolveRunRows`、评分那道门 `requireJudgeEffort`、设置页那一格），拿一个「该家一个档都收不了」的域去兜底，就会摆出一个运行时硬报错的档
-   * （`UNSUPPORTED_REASONING_EFFORT`，正是本计划要消灭的「症状离真因很远」）。
+   * （`UNSUPPORTED_REASONING_EFFORT`，正是要消灭的「症状离真因很远」）。
    */
   it('智能体域为空而兜底非空 ⇒ undefined（兜底那一份同样要过这道筛）', () => {
     expect(intersectEfforts({}, [], CANONICAL_EFFORT_LEVELS)).toBeUndefined();

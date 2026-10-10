@@ -1,5 +1,5 @@
 /**
- * dsh 的**消息归一**（spec v3 §3.1 / §3.2 / §3.3 / §4.3）：把会话通知折成统一的 `AgentMessage`
+ * dsh 的**消息归一**：把会话通知折成统一的 `AgentMessage`
  * 与 `SubagentRecord`。事件投影仍在 `events.ts`（行级审计与摘要），本文件只管内容级视图。
  *
  * 取值路径逐条（真机逐字核过，见 `probe/dumps/v4/dsh-*.jsonl`）：
@@ -8,7 +8,7 @@
  *     ⇒ 一律先按 `type` 过滤，绝不按 `text` 取值（否则推理正文会混进最终答复）。
  *   · 信封：`data.message.id` → `vendorId`；`data.turn` → `turn`（**用户轮号**）；
  *     `data.step` → `step`。
- *   · `roundTrip`：**取厂商给的每会话 `step` 号**（2026-10-05，spec §2.3）——一次模型 API 往返
+ *   · `roundTrip`：**取厂商给的每会话 `step` 号**——一次模型 API 往返
  *     = 一个 step，而 `data.step` 是**每个会话各自从 1 数**的（真机：主会话 1,2,3；子会话 1,2,3）
  *     ⇒ 主会话的号不再被别的会话推高。下面那个 `dshTurnAttribution` 是**唯一实现**（消息的
  *     `roundTrip` 与 `usage.turn.round` 必须是同一个数）。dsh 是三家唯一同时给出厂商轮号与
@@ -21,7 +21,7 @@
  *     ⇒ 那一格恒 `null`（能力位记 `not-projected-by-vendor`），**不许**拿 `outputTokens` 去凑。
  *   · 时间：只能用会话事件的 `time`（毫秒）算跨度，来源标 `'events'`；`apiMs` / `ttftMs` 恒 `null`。
  *
- * 子任务（§4.3 步骤 4）：
+ * 子任务：
  *   · 身份取 `agentId`（与 `childSessionId` 同值，真机核过）；收场之前 `subagent.started` 只给
  *     `childSessionId` ⇒ 那时用它认人，收场时两者同值、记录被完整快照覆盖。
  *   · 名称与类型在另一条会话事件 `subagent/catalog`（`childId` / `mode` / `label`）；
@@ -58,7 +58,7 @@ const catalog = new Map<string, { label: string | null; mode: string | null }>()
 const sessionUsage = new Map<string, UsageTokens>();
 
 /**
- * 子会话轮次：`sessionId → 该会话已观察到的 `step/start` 次数`（2026-10-04 新增）。
+ * 子会话轮次：`sessionId → 该会话已观察到的 `step/start` 次数`。
  *
  * 为什么需要第二张表：本行的 `turns` 是**全树**口径（`events.ts` 的 `step/start` 那一支不按会话
  * 分叉，是既成口径），而「轮次」那一格现在要拆出**子智能体那一份** ⇒ 只能按会话另记一遍。
@@ -161,7 +161,7 @@ export function dshAssistantMessageDraft(
     subagentId: sessionIdProfileSubagent(sessionId),
     chunk: 'snapshot',
     /**
-     * 这条消息**自己那一次调用**的用量（2026-10-06）：wire 上每条 `assistant/message` 的
+     * 这条消息**自己那一次调用**的用量：wire 上每条 `assistant/message` 的
      * `data.usage` 就是它。**不参与行级累计**（那是 `events.ts` 的 `state.usage*` 与 `cumulativeTokens`
      * 的事），也不是「到这一步为止」的快照。子会话消息走同一个函数 ⇒ 同样带上。
      */
@@ -292,7 +292,7 @@ export function dshToolResultDraft(
 /**
  * 主子会话判定：**子会话 id 就是子任务身份**。
  *
- * 真机（2026-10-03 探针逐条核过）：`subagent.started` 的 `params.subagentId` 与随后
+ * 探测（逐条核过）：`subagent.started` 的 `params.subagentId` 与随后
  * 子会话事件里的 `params.sessionId` **同值**（都是那个裸 UUID），而主会话是另一种形状
  * （`session-<32 位 hex>`）。所以归属判据是「这张表里登记过的 id 才是子会话」，
  * 登记来源见 `dshSubagentRecord`。
@@ -364,7 +364,7 @@ export function dshSubagentRecord(notification: Record<string, unknown> | null):
   const childSessionId = readString(params, 'childSessionId');
   const parentSessionId = readString(params, 'parentSessionId');
   /**
-   * 身份取值**三级兜底**（真机逐条核过 2026-10-03）：
+   * 身份取值**三级兜底**：
    *   · `subagent.started` / `subagent.finished` 的本机形状给的是 **`subagentId`**
    *     （与随后子会话事件里的 `params.sessionId` 同值）；
    *   · 规范描述的另一种形状给 `agentId`（与 `childSessionId` 同值）；
@@ -400,7 +400,7 @@ export function dshSubagentRecord(notification: Record<string, unknown> | null):
     kind: entry?.mode ?? null,
     source: 'wire' as const,
     /**
-     * 派生它的那次工具调用 id（契约 v3 §2.6 的 `parentCallId`）。
+     * 派生它的那次工具调用 id（`parentCallId`）。
      *
      * 真机的 `subagent.started` / `subagent.finished` 载荷**没有 `childSessionId`、也没有 `agentId`**
      * （只有 `subagentId` / `vendorId` / `parentSessionId`），而 `subagent` 工具调用的 `callId`
@@ -487,7 +487,7 @@ export function dshSessionRoundOf(sessionId: string | null): number | null {
 }
 
 /**
- * 这一条读数属于**哪个会话的第几次模型往返**（2026-10-05，spec §2.3）。
+ * 这一条读数属于**哪个会话的第几次模型往返**。
  *
  * 为什么是**唯一实现**：消息的 `roundTrip` 与 `usage.turn.round` 必须是同一个数——两处各算一遍，
  * 漂移的表现就是「用量那一行落在与它同号的轮次之外」，而那正是本次要修的毛病。
@@ -512,7 +512,7 @@ export function isDshSubagentCatalog(type: string | null): boolean {
  *
  * 为什么单独抽出来而不是写在 `dshSubagentUsage` 里：这个判据有**两个**读者——
  * `dshSubagentUsage` 用它决定「整格交 `null`」，收尾那条**点名 WARN** 用它说清「是谁没报」
- * （spec §2.2 的第三档要求 `null` 必须伴随一条点名的 WARN，codex / claude 都有）。
+ * （第三档要求 `null` 必须伴随一条点名的 WARN，codex / claude 都有）。
  * 两处各写一遍必然漂移，而漂移的症状正是本仓最不接受的那一类：结果里是 `null`、日志里却点不出人
  * （或反过来，WARN 点了名而那一格其实有数）。
  */
@@ -530,7 +530,7 @@ export function dshSilentChildSessions(input: {
 }
 
 /**
- * 本行的**子智能体那一份**用量（spec 2026-10-04 §2.3）。
+ * 本行的**子智能体那一份**用量。
  *
  * 为什么按**本行的**子会话白名单（参数 `input.childSessions`）求和、而不是「主会话之外的全部」：
  * `sessionUsage` 是**模块级**的（同一个 Node 进程里并行跑着好几行），主会话之外还有**别的行**的会话
@@ -540,7 +540,7 @@ export function dshSilentChildSessions(input: {
  * `sessionIdProfileSubagent` 判归属，跨 run 累积、刻意不清），不是本行的白名单——
  * 同名不同物，这里读的**只有参数**那一份。
  *
- * 三档（spec §2.2 的「全量或 null」）：
+ * 三档（「全量或 null」）：
  *   · 没有子会话 ⇒ `{0,0,0}`（确实没有，不是 null）；
  *   · 子会话**已收场**却一条用量都没有 ⇒ `null`（事实缺失，宁可不出数；**谁没报**见
  *     `dshSilentChildSessions`——收尾那条点名 WARN 与这里是**同一个判据**）；
@@ -562,7 +562,7 @@ export function dshSubagentUsage(input: {
 }
 
 /**
- * 本行的**子智能体那一份**轮次（2026-10-04，spec §2.3 dsh 段）。
+ * 本行的**子智能体那一份**轮次。
  *
  * 为什么不是「拿 `turns` 减主会话的轮次」：主会话的轮次没有任何一处单独记过（`turns` 是全树累加），
  * 而按会话记一笔是**同一个计数点**上的顺手动作 ⇒ 两格由同一条 `step/start` 驱动，

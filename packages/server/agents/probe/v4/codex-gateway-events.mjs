@@ -6,7 +6,7 @@
  *  Q-A **`spawn_agent` 的执行器到底由什么决定**——上一轮在内网网关上得到 `unsupported call`
  *      （模型预设不带 `multi_agent` profile），2026-10-01 在 DeepSeek 路由上却**真跑通了**。
  *      本轮用**同一台网关**对比两个名字：
- *        · `gpt-5.6-sol` —— codex **认识**它（元数据存在，但 §7.5.2 记 profile 为 `null`）；
+ *        · `gpt-5.6-sol` —— codex **认识**它（元数据存在，但记 profile 为 `null`）；
  *        · `gt-6-as-a`   —— codex **不认识**它 ⇒ 落 fallback 元数据（DeepSeek 那次的同款情形）。
  *      判据：`collab_tool_call` 出不出、`agents_states` 里能不能拿到子智能体的答复。
  *

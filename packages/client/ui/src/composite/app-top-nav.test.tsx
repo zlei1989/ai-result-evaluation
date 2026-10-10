@@ -7,7 +7,7 @@ import { installResizeObserverStub } from '../testing/resize-observer';
 
 // jsdom 不提供 ResizeObserver，而横向 Menu 的溢出折叠（@rc-component/overflow）会经由
 // @rc-component/resize-observer 直接 new 全局构造器：不打桩，挂载即抛 ReferenceError ——
-// 环境缺口，不是被测代码的问题（同 Task 11 的既定口径：需要的用例自己装桩，不进共享 setup）。
+// 环境缺口，不是被测代码的问题（同全仓既定口径：需要的用例自己装桩，不进共享 setup）。
 beforeEach(() => {
   installResizeObserverStub();
 });
@@ -42,7 +42,7 @@ describe('AppTopNav', () => {
   });
 
   it('不再渲染产品名与主题切换（主题的唯一入口在设置页，顶栏只留导航）', () => {
-    // 这条守的是「入口唯一」：顶栏曾经也放一份三档主题切换，与设置页那份读同一状态、
+    // 这条守的是「入口唯一」：三档主题切换只在设置页有一份，顶栏不放第二份——两份读同一状态、
     // 成为第二处真源。若有人把它加回来，这条会失败并提醒他把入口收敛到设置页。
     setup();
     expect(screen.queryByText('AI 代码评测')).toBeNull();

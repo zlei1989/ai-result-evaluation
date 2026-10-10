@@ -10,7 +10,7 @@
  *   3. **删除供应商不级联改写 `settings.defaultJudge` 与用例的评分模型**：那会把「删一个供应商」
  *      变成一次跨域事务；悬空引用由设置页显式提示、由评分路由解析时报错兜底。
  *
- * 密钥的安全取舍（spec §6.1 末段，必须留在代码里）：服务端需要原 token 才能代调供应商 API，
+ * 密钥的安全取舍（必须留在代码里）：服务端需要原 token 才能代调供应商 API，
  * 无法只存哈希；缓解措施是配置文件写盘时 `chmod 0600`（属主独占，见 core 的 `saveConfig`）
  * 加上对外出口一律掩码。Windows 无 POSIX 权限位，`chmod` 仅能近似切换只读位，
  * 属主独占实际由 NTFS ACL 与用户目录隔离承担 —— 尽力而为、失败不报错、不阻断保存。
@@ -212,7 +212,7 @@ export function removeProviderModel(providerId: string, modelId: string): Provid
  *      `contextWindowSource` 三格——**该条目已声明的 `supportedEfforts` / `recommendedEffort` 会被一并清掉**
  *      （重建的代价：保存一次窗口就退回该家完整档位域；想要保留就得在这里显式带过来，
  *      而那是「窗口编辑该不该动档位声明」的口径变更，别顺手加）；
- *   ② 一律把 `contextWindowSource` 置成 `'manual'` —— **清空也算**（spec D3）；
+ *   ② 一律把 `contextWindowSource` 置成 `'manual'` —— **清空也算**；
  *   ③ 清单里没有这条 ⇒ NOT_FOUND（与 removeProviderModel 同口径，不静默新建条目）。
  */
 export function setProviderModelContext(providerId: string, input: ProviderModelContextInput): ProviderView {
@@ -240,11 +240,11 @@ export function setProviderModelContext(providerId: string, input: ProviderModel
 }
 
 /**
- * 全部可选的评分模型（**两种协议都要**，spec §4.2 / §6.2）：评分模型只被**文本调用**
+ * 全部可选的评分模型（**两种协议都要**）：评分模型只被**文本调用**
  *（智能体评分通路复用的也是这一对，协议匹配由「默认评分智能体」那一格反向约束），
  * 因此 anthropic 协议的模型与 openai 协议的一样可选 —— 这里刻意不做协议过滤。
  * 消费方是服务端（用例表单的候选池、评测行的校验）；设置页的 Select 直接由 `ProviderView[]`
- * 在前端派生，不为本函数开 HTTP 路由（见「本计划对 spec / 契约的实现层修正」第 5 条）。
+ * 在前端派生，不为本函数开 HTTP 路由。
  */
 export function listAllModelOptions(): {
   providerId: string;
@@ -302,7 +302,7 @@ function pathOf(url: string): string {
 }
 
 /**
- * 窗口 / 输出上限的字段优先级（spec D2）：按顺序取第一个能解析成正整数的。
+ * 窗口 / 输出上限的字段优先级：按顺序取第一个能解析成正整数的。
  * 点号表示嵌套路径 —— 这两组字段实测**同时**出现在 likecode 的一个响应里
  * （`max_input_tokens` / `contextWindow` / `context_window` / `context_length` / `limit.context` /
  * `capabilities.contextWindow`），只认一个就会在别的网关上瞎；而深遍历整个 JSON 会把
@@ -338,7 +338,7 @@ function readPath(entry: unknown, path: string): unknown {
 
 /**
  * 正整数才认（'5000000' 这种数字字符串也认——有网关就是这么给的）。
- * 其余一律 undefined：`0` 与「没采到」含义相反（见 §5.6.3 的同一口径），小数与负数更不是窗口。
+ * 其余一律 undefined：`0` 与「没采到」含义相反（同一口径），小数与负数更不是窗口。
  */
 function positiveInteger(value: unknown): number | undefined {
   if (typeof value !== 'number' && typeof value !== 'string') return undefined;
@@ -357,7 +357,7 @@ function firstPositive(entry: unknown, keys: readonly string[]): number | undefi
 }
 
 /**
- * 档位表 / 推荐档的字段优先级（spec §5.1.1）：与窗口同一条「按顺序取第一个像档位表的」。
+ * 档位表 / 推荐档的字段优先级：与窗口同一条「按顺序取第一个像档位表的」。
  * 第三种形态是 `capabilities.effort` 的**逐档对象**（实测 likecode 就是这种）：
  * `{ supported: true, low: { supported: true }, high: { supported: true, recommend: true }, … }`。
  */
@@ -387,7 +387,7 @@ function declaredRecommendation(entry: unknown): string | undefined {
  * 档位表：数组形态优先（`supportedEffortLevels` → `reasoning.supported_efforts`），
  * 都没有才看 `capabilities.effort` 的逐档对象；空数组 = 上游没说。
  *
- * ⚠️ **自相矛盾的响应整格不采信**（spec §5.4）：声明了一个推荐档、而它不在档位表里时，
+ * ⚠️ **自相矛盾的响应整格不采信**：声明了一个推荐档、而它不在档位表里时，
  * 返回空档位表（= 未知）而不是「留着档位表、丢掉推荐」。理由：这说明上游的这份元数据本身不可信，
  * 而档位表是我们唯一会拿去和智能体求交的东西 —— 基于一份自相矛盾的数据选出来的档，
  * 到了运行时就是 dsh 的 `UNSUPPORTED_REASONING_EFFORT`（用户看到的是「选完才炸」）。
@@ -426,12 +426,12 @@ function effortLevelsOf(entry: unknown): { efforts: string[]; recommended?: stri
 /**
  * 从 /models 响应里抽出模型条目。
  * 三条口径：
- *   ① 容忍两种形态（spec §6.1 第 1 点）：既有 `{ data: [{ id: 'a' }] }`，也有 `{ data: ['a', 'b'] }`；
+ *   ① 容忍两种形态：既有 `{ data: [{ id: 'a' }] }`，也有 `{ data: ['a', 'b'] }`；
  *   ② 判空用 trim，**入库的也是 trim 后的串**：清单的另外三个入口（新建/补丁的 manualModels、
  *      手工添加、按名删除）都按 trim 后的形态比对，这里若存原串，上游的 `' m1 '` 会与手工的 `'m1'`
  *      并存成两条，而按 `' m1 '` 删除时比对的是 `'m1'` —— 删掉的是**手工那条**，清单里剩下一条
  *      用户从没手工加过、又删不掉的带空白条目（下次拉取还会把它原样带回来）；
- *   ③ 窗口 / 档位取不到就是 undefined —— 绝不兜底成 0、空数组或某个「常见值」（spec D8）。
+ *   ③ 窗口 / 档位取不到就是 undefined —— 绝不兜底成 0、空数组或某个「常见值」。
  */
 function extractModels(payload: unknown): ExtractedModel[] {
   if (typeof payload !== 'object' || payload === null) return [];
@@ -475,8 +475,23 @@ async function readJson(res: Response, url: string): Promise<unknown> {
 }
 
 /**
+ * 上游状态码 → 契约错误码：401/403 → `AUTH_FAILED`，429 → `RATE_LIMITED`，其余 `null`
+ * （由各自路径的兜底档处理，例如这里的 `INTERNAL` + 状态码）。
+ *
+ * **这是「哪个状态码算哪一档」的唯一判据**，MCP 探活（`api/src/mcp.ts`）也要复用它。
+ * 那边接不上 `upstreamError` 的**形状**——探活的失败是 HTTP 200 里的一段分档结论 + 厂商原文，
+ * 不是抛给路由的 `ServiceError`（状态码 + 单段 message）——两条路径能共用、也必须共用的正是这一句判断：
+ * 各写一份的话，迟早出现「供应商那块说鉴权失败、探活说限流」这种对不上的口径。
+ */
+export function upstreamStatusErrorCode(status: number): 'AUTH_FAILED' | 'RATE_LIMITED' | null {
+  if (status === 401 || status === 403) return 'AUTH_FAILED';
+  if (status === 429) return 'RATE_LIMITED';
+  return null;
+}
+
+/**
  * 上游非 2xx → 契约错误码：401/403 → AUTH_FAILED（context 带 host），
- * 429 → RATE_LIMITED（§10 要求限流提示改用串行），其余 INTERNAL 并带上状态码与 host。
+ * 429 → RATE_LIMITED（限流提示改用串行），其余 INTERNAL 并带上状态码与 host。
  *
  * 上游正文只留在 `context` 与服务端日志里，**绝不进 message**：message 会被页面
  * `message.error(error.message)` 原样渲染给用户，而网关的正文既可能是一整页登录 HTML，
@@ -485,7 +500,7 @@ async function readJson(res: Response, url: string): Promise<unknown> {
  * 路由层那条 error 日志只打 message，片段移出 message 后就只剩状态码，故这里自己落一条。
  * 注意 WARN 里同样只有片段本身，不带请求头（服务端从不把密钥写进日志）。
  *
- * **本口径是两条上游调用路径的共用契约**（终审 H2 点名它们曾经相反）：`@aieval/evaluator` 的
+ * **本口径是两条上游调用路径的共用契约**：`@aieval/evaluator` 的
  * `callTextApi` 走同一套规则——上游正文同样只进 context 与服务端日志，message 只留中文归因 +
  * host + `modelId`。两侧各有一条「假正文不得出现在 message 里」的守卫钉住这条口径。
  *
@@ -494,12 +509,14 @@ async function readJson(res: Response, url: string): Promise<unknown> {
  */
 async function upstreamError(res: Response, url: string, attempted: readonly string[] = [url]): Promise<ServiceError> {
   const host = hostOf(url);
-  if (res.status === 401 || res.status === 403) {
+  // 分档判据走共用那一句（`upstreamStatusErrorCode`）：文案留在这里，判据不落第二份
+  const code = upstreamStatusErrorCode(res.status);
+  if (code === 'AUTH_FAILED') {
     return new ServiceError('AUTH_FAILED', `${host} 拒绝了该密钥（HTTP ${res.status}），请到设置里检查 API 密钥`, {
       context: { host },
     });
   }
-  if (res.status === 429) {
+  if (code === 'RATE_LIMITED') {
     return new ServiceError('RATE_LIMITED', `${host} 触发限流（HTTP 429），请稍后重试`, { context: { host } });
   }
   // 上游正文可能是一整页 HTML：只留前 200 字，且只往 context / 日志走（见上方 JSDoc）
@@ -523,7 +540,7 @@ async function upstreamError(res: Response, url: string, attempted: readonly str
  *
  * 为什么用自建的 AbortController + setTimeout，而不是 `AbortSignal.timeout(15_000)`：
  * 后者的计时器不在全局 `setTimeout` 上（本机 Node v24 + vitest 4 实测：`vi.useFakeTimers()`
- * 把假时钟推进 15 秒后它仍未 abort，见 fix wave 报告的探针输出），于是「15 秒」这个真实的配置值
+ * 把假时钟推进 15 秒后它仍未 abort），于是「15 秒」这个真实的配置值
  * 在测试里无法验证，只能退化成一个「signal 存在吗」的结构断言；自建计时器还给出一个与运行时
  * 无关的超时判据 —— 各家实现的 abort 拒绝物分别是 TimeoutError / AbortError 与自定义 reason，
  * 按 name 猜会漏，而「我们自己掐的那一次」必然让 `controller.signal.aborted` 为真。
@@ -553,7 +570,7 @@ function baseAndRoot(baseUrl: string): { base: string; root: string } {
 }
 
 /**
- * 模型清单的候选地址，按尝试顺序（spec §6.1，2026-09-26 修订 + 2026-09-30 补根回退）。
+ * 模型清单的候选地址，按尝试顺序。
  *
  * 为什么不止一条：用户在设置页填的「API 地址」有四种都合理的形态 ——
  *   - `https://api.deepseek.com/v1`（OpenAI 文档口径：版本段写在地址里）；
@@ -625,7 +642,7 @@ async function fetchModelIds(
 /**
  * 只挑「窗口」那几格，缺席的键**不写 undefined**：落盘物要干净，而且 `{ contextWindow: undefined }`
  * 会让 `toEqual` 断言与调试输出都变吵。传入 undefined 就是空对象（条目缺失的情形）。
- * 注意它与 `pickEfforts` 是**两个**函数：窗口这一格有「用户手工覆盖」这一说，档位没有（spec D3）。
+ * 注意它与 `pickEfforts` 是**两个**函数：窗口这一格有「用户手工覆盖」这一说，档位没有。
  */
 function pickWindow(
   source:
@@ -652,18 +669,18 @@ function pickEfforts(
 }
 
 /**
- * 拉取供应商的模型清单并**合并**进现有清单（spec §6.1）。
+ * 拉取供应商的模型清单并**合并**进现有清单。
  *
  * 合并规则（三条，缺一条都会丢用户的数据）：
  *   - `source: 'manual'` 的条目**原样保留**（位置在前、来源不变），拉取结果里同 id 的条目不会顶掉它；
  *   - 上一轮 `fetched` 的条目这次没再返回，视为上游已下架，清掉 —— 这才是「刷新」的语义；
  *   - 其余新 id 追加为 `fetched`。
  *
- * 返回 `Promise<ProviderView>`：契约 §6 把本函数写成同步返回，但它必须发一次 HTTP 请求，
- * 只能是异步（契约 §7 的客户端 `fetchModels` 也返回 Promise）。不改名、不改参数，只把返回值包成 Promise。
+ * 返回 `Promise<ProviderView>`：按契约本函数是同步返回，但它必须发一次 HTTP 请求，
+ * 只能是异步（客户端的 `fetchModels` 也返回 Promise）。不改名、不改参数，只把返回值包成 Promise。
  *
- * 协议**不参与**本函数的判定，地址形态由 `modelListCandidates` 兜底（2026-09-26 修订 + 2026-09-30 补根回退）：
- * 原先「Anthropic 协议一律拒绝」那条判断只对 api.anthropic.com 成立，而多数自建网关在版本段上
+ * 协议**不参与**本函数的判定，地址形态由 `modelListCandidates` 兜底：
+ * 「Anthropic 协议不能拉清单」只对 api.anthropic.com 成立，而多数自建网关在版本段上
  * 同时提供 OpenAI 风格的清单接口 —— 把协议当判据，等于替这类用户少拉一次清单。
  * 同理，地址填成 Messages 根（`/anthropic`）或带网关前缀（`/api/v1`）时清单接口仍在站点根上，
  * 故候选里也含根的 `/models` 与 `/v1/models`。
@@ -706,7 +723,7 @@ export async function fetchProviderModels(providerId: string): Promise<ProviderV
 
   if (extracted.length === 0) {
     // 一条都认不出时**不落盘**：把空清单写回去会静默清掉用户手工维护的模型，
-    // 而「上游这次返回了空」与「我们没看懂它的响应」在界面上完全无法区分（§10）。
+    // 而「上游这次返回了空」与「我们没看懂它的响应」在界面上完全无法区分。
     throw new ServiceError(
       'INTERNAL',
       `拉取模型失败：${hostOf(candidates[0])} 的响应里没有可识别的模型（data 字段缺失或为空）`,

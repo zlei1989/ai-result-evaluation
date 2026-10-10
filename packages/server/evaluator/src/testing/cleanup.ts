@@ -4,8 +4,8 @@
  * `rmSync` 的 `maxRetries` / `retryDelay` 在本机（Node v26.7.0 / Windows）**形同虚设**：
  * 白名单（`EPERM`/`EBUSY`/`EMFILE`/`ENFILE`/`ENOTEMPTY`）只存在于**异步** `fs.rm` 那条路，
  * 而 `fs.rmSync` 直接下沉 C++（`binding.rmSync(path, maxRetries, recursive, retryDelay)`）
- * ⇒ 一个**已经空了**的目录照样 3ms 就抛 `EPERM`，40 次重试一次都没发生（2026-10-07 复测；
- * 同一结论早已记在 `core/src/testing/mirror-harness.ts` 的注释里）。
+ * ⇒ 一个**已经空了**的目录照样 3ms 就抛 `EPERM`，40 次重试一次都没发生（同一结论也记在
+ * `core/src/testing/mirror-harness.ts` 的注释里）。
  * 而锁本身是**瞬时的**：失败后隔 200ms 再删即成功——持锁者是**刚退出的 git 子进程**
  * （Windows 上句柄释放晚于 `execFileSync` 返回几 ms），而本包的夹具根里正是 git 的 cwd
  * （`runs/cases/<id>` 与 `runs/<run>/rows/<row>/workspace`）。

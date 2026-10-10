@@ -1,13 +1,13 @@
 /**
- * 每候选行的事件总线：**一次 publish 做两件事**——追加到 `events.jsonl`（唯一真相源，F14）
+ * 每候选行的事件总线：**一次 publish 做两件事**——追加到 `events.jsonl`（唯一真相源）
  * 与扇出给进程内订阅者（SSE 的实时通道）。
  * 为什么两件事必须由同一个调用完成：分开写必然出现「落盘了但没推」或「推了但没落盘」，
  * 而事件日志是唯一真相源——它和实时流一旦分叉，刷新页面看到的与刚才推送的就对不上。
- * 为什么只做进程内（契约 §11 R6）：单个 Next 服务进程，跨进程要额外消息层而收益为零；
- * 「刷新页面不丢事件」由消费方「重读文件 + 按 seq 续订」实现（spec §7.4）。
+ * 为什么只做进程内：单个 Next 服务进程，跨进程要额外消息层而收益为零；
+ * 「刷新页面不丢事件」由消费方「重读文件 + 按 seq 续订」实现。
  *
  * 注意：
- *   1. `seq` / `at` 的归属（core 的 `event-log.ts` 是唯一分配者，R17）：
+ *   1. `seq` / `at` 的归属（core 的 `event-log.ts` 是唯一分配者）：
  *      · `seq` **恒由写入器分配**——调用方传进来的会被覆盖（按文件里已用的最大 seq 续号）；
  *      · `at` 是**缺省补齐**——调用方没给就补当前时间，给了就**保留**（core 的
  *        `at: event.at ?? new Date().toISOString()` 只在缺省时兜）。
@@ -16,7 +16,7 @@
  *   2. 订阅只收订阅**之后**发布的事件。要历史就自己读文件——**先订阅、再读文件、按 seq 去重**，
  *      顺序反了会在「读完」与「订阅上」之间丢事件；
  *   3. 订阅者抛错只记日志：一个坏订阅者不能让正在跑的 agent 事件流断掉；
- *   4. **写侧另有一层进程内兜底**（R10）：改过工作区根目录之后，这一轮的事件仍要写进
+ *   4. **写侧另有一层进程内兜底**：改过工作区根目录之后，这一轮的事件仍要写进
  *      「这一轮自己的根」。读侧（`listRuns` / `getRun`）**不变**，仍只扫当前设置里的根。
  */
 import { mkdirSync } from 'node:fs';
@@ -40,7 +40,7 @@ interface RowEventBus {
 }
 
 /**
- * **事件总线必须挂在 `globalThis` 上**（2026-09-28 实测补的；原来放模块作用域）。
+ * **事件总线必须挂在 `globalThis` 上**（放模块作用域会被 HMR 裂成两份）。
  *
  * 为什么：Next 的 dev（turbopack HMR）在源文件变化时会**重新实例化模块**。一次评测跑到一半时
  * 改一个文件，编排层（那一轮开始时加载的**旧**实例）仍然 publish 到旧 Map，而随后建立的 SSE
@@ -68,7 +68,7 @@ const subscribers = bus.subscribers;
 
 /**
  * 解析「这一轮的事件该写在哪个根下」：**委托给 `run-store` 的 `getRunForWrite`**——
- * 编排层的快照读与这里的事件写因此共用同一个「当前根优先、进程内记忆兜底」的解析（R10，H1 的修法），
+ * 编排层的快照读与这里的事件写因此共用同一个「当前根优先、进程内记忆兜底」的解析（在途轮次的根解析），
  * 兜底口径（只在 NOT_FOUND 时用记忆、INVALID_QUERY / INTERNAL 原样抛出、记忆里没有就照旧 NOT_FOUND）
  * 与取值理由都写在那个函数上，本文件不再抄第二份。
  */
@@ -77,7 +77,7 @@ function resolveRunRoot(runId: string): string {
 }
 
 /**
- * 评分子通道的键后缀（2026-10-10）：同一个 `runId:rowId` 上有**两条**事件流（行级 / 评分），
+ * 评分子通道的键后缀：同一个 `runId:rowId` 上有**两条**事件流（行级 / 评分），
  * 路径缓存与订阅表都靠它分开。行级那条回答「这一行跑成什么样」，评分那条是**另一个会话**的流水。
  */
 const JUDGE_CHANNEL = ':judge';
@@ -121,7 +121,7 @@ function fanOutEvent(input: { key: string; runId: string; rowId: string; event: 
 
 /**
  * 发布一条事件：落盘 → 扇出。**同步**函数（适配器的 `onEvent` 契约就是同步、不 await，
- * 见 §5.6.2：事件流不能被消费者拖慢）。
+ * 事件流不能被消费者拖慢）。
  * 落盘失败**必须冒出去**：静默丢事件等于事后无法复盘这一行到底发生了什么。
  * `judge` 只决定落在哪个文件与投给哪张订阅表（见 `channelOf`）。
  */
@@ -139,7 +139,7 @@ export function publishRowEvent(runId: string, rowId: string, event: AgentEvent 
 }
 
 /**
- * 发布一条**评分阶段**的行事件（2026-10-10）：落 `judge-events.jsonl`。
+ * 发布一条**评分阶段**的行事件：落 `judge-events.jsonl`。
  * 判据是**产出者**不是类型——评审者那次 `run()` 交出来的事件（含 `log` / `usage` / `vendor-system` /
  * `error`）全部走这里，而编排层自己发的行级事件（`setRowStatus`、降级留痕、终止留痕）仍走
  * `publishRowEvent`。分开之后，执行日志那条流里只有候选这一段。
@@ -150,7 +150,7 @@ export function publishJudgeEvent(runId: string, rowId: string, event: AgentEven
 
 /**
  * 订阅一条事件流的**后续**事件，返回取消订阅函数（可重复调用）。
- * 不在这里回放历史：回放要读文件、要定 afterSeq、要去重，那是消费方（p5 的 SSE）按 seq 处理的活；
+ * 不在这里回放历史：回放要读文件、要定 afterSeq、要去重，那是消费方（SSE）按 seq 处理的活；
  * 本函数只保证「订阅之后发布的每一条都推给你」。
  */
 function subscribeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void, judge: boolean): () => void {
@@ -176,7 +176,7 @@ export function subscribeRowEvents(runId: string, rowId: string, listener: (even
   return subscribeEvents(runId, rowId, listener, false);
 }
 
-/** 订阅**评分**那条事件流（2026-10-10）：与执行日志分开的第二条流 */
+/** 订阅**评分**那条事件流：与执行日志分开的第二条流 */
 export function subscribeJudgeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
   return subscribeEvents(runId, rowId, listener, true);
 }

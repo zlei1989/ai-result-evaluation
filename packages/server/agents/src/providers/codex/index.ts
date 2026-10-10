@@ -21,6 +21,13 @@ import { createLogger } from '@aieval/core';
 import { EFFORT_OFF, type SubagentRecord, type UsageTokens } from '@aieval/contracts';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import type { MessageDraft } from '../../message';
+import {
+  hostNpmrcPath,
+  readNpmrcText,
+  toCodexMcpServers,
+  writeRowNpmrc,
+  type CodexMcpServer,
+} from '../../mcp';
 import { codexPermissionOptions } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, ensureV1Suffix } from '../../route';
@@ -42,7 +49,7 @@ const logger = createLogger('agents/codex');
 const CODEX_OFF_EFFORT = EFFORT_OFF;
 
 /**
- * 关闭档的**第二格**（spec §3.2）：CLI 的 `model_reasoning_summary`。
+ * 关闭档的**第二格**：CLI 的 `model_reasoning_summary`。
  * 它与 `effort: 'none'` 是**两格一起**才生效的前后半：只给 effort 时请求体里仍有 `summary: 'auto'`，
  * 而 `include ∧ summary` 的合取让网关照旧推理（两半各缺一次都会退回）。
  */
@@ -66,7 +73,7 @@ const CODEX_PROVIDER_ID = 'aieval';
  * 线程级配置：把本次运行的路由写进 app-server 的 `config`。
  *
  * 为什么整份给 `model_providers` 而不是只给一个 base URL：环境里已有的 `~/.codex` 配置会**赢过**
- * 我们注入的地址（§5.6.5），只有显式建条目才由我们说了算。键名按本仓探测过的 CLI 配置面：
+ * 我们注入的地址，只有显式建条目才由我们说了算。键名按本仓探测过的 CLI 配置面：
  * `wire_api` 只能是 `responses`、**`env_key` 决定 Bearer 从哪个环境变量取**（缺它一个头都不附，
  * 全部 401）、`features.multi_agent` 决定子智能体工具是否注册（关掉之后模型照样会调，只是拿回一句配置提示）。
  *
@@ -74,7 +81,7 @@ const CODEX_PROVIDER_ID = 'aieval';
  * `model_provider` 时，CLI 会退回它**内置的默认 provider**（`api.openai.com`）——表现是
  * `Reconnecting... waiting for network`（网络层连不上），而不是我们网关的 401，极难从表象归因。
  *
- * ⚠️ **不要改回 `requires_openai_auth: true`**：它走的是 ChatGPT 登录态那条路，实测即使
+ * ⚠️ **`requires_openai_auth` 必须保持 `false`**：`true` 走的是 ChatGPT 登录态那条路，即使
  * `OPENAI_API_KEY` 就在子进程环境里也 `auth.header_attached=false` ⇒ 全部 401（`api_request`
  * 日志里三格同时出现：`status_code=401` / `header_attached=false` / `env_openai_api_key_present=true`）。
  * 换 `env_key` 后同一网关 `status_code=200` 且 `header_attached=true`。
@@ -87,6 +94,7 @@ export function buildCodexConfig(
   baseUrl: string,
   contextWindow?: number,
   reasoningSummary?: string,
+  mcpServers?: Record<string, CodexMcpServer>,
 ): Record<string, unknown> {
   return {
     model_provider: CODEX_PROVIDER_ID,
@@ -103,8 +111,28 @@ export function buildCodexConfig(
     features: { multi_agent: true },
     ...(contextWindow === undefined ? {} : { model_context_window: contextWindow }),
     ...(reasoningSummary === undefined ? {} : { model_reasoning_summary: reasoningSummary }),
+    /**
+      * MCP 条目：形状由 `toCodexMcpServers` 一处定（snake_case、无 `type`），
+     * 这里只决定「放不放进去」。**空集整个键都不给**（与 effort 同一条口径）：给了空表等于向
+     * codex 声明「本行显式要零台」，与「本次没有程序化注入」不是一件事。
+     */
+    ...(mcpServers === undefined || Object.keys(mcpServers).length === 0 ? {} : { mcp_servers: mcpServers }),
   };
 }
+
+/**
+ * codex 的 **MCP 能力缺口**：本机自定义 OpenAI 兼容 Responses 网关下，
+ * 注入成功（`mcpServer/startupStatus: ready`）、零审批请求，但模型发起的调用回来是
+ * `unsupported call: <tool>`，MCP server 侧零 `tools/call`；同轮内置 shell 工具正常。
+ *
+ * 根因（定性）：codex 自 0.156 起按「命名空间」暴露 MCP 工具，而自定义网关转发时把它**拍平**
+ * （上游同型 issue：#26977 / #20652 / #26234）；本地矩阵五组全败（两模型 / 一个特性开关 /
+ * 升级到 0.163.0-alpha.5）⇒ **不是本仓能解的**，写进已知边界而不是硬修。
+ *
+ * 面向用户的文案是契约里的 `CODEX_MCP_DISPATCH_GAP_NOTE`（界面与知识库共用那一份）——
+ * 适配器这一侧只留**事实与证据**：启动状态事件照投（`mcpChannel: 'vendor-startup-status'`），
+ * 一个字都不暗示「工具可用」。
+ */
 
 /**
  * 一次运行的取数面（可注入）。
@@ -166,6 +194,23 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     },
   });
   const baseUrl = ensureV1Suffix(input.route.baseUrl);
+  /**
+   * 行内 npm registry（与 claude / dsh 同一条口径）：宿主的 `.npmrc` 里那一行**照抄**进
+   * 行私有 `configHome`。本行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc`
+   * 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 掉回公网，行内首次注入 playwright MCP 从 ~4 s
+   * 变成 17.2 s / 61 MB（≥ 20 s 的等待预算就是被它撑起来的）。
+   * 时机：必须在 app-server 起 MCP 子进程**之前**——写完再 spawn。
+   */
+  const registryLine = writeRowNpmrc({
+    configHome: input.configHome,
+    hostNpmrc: readNpmrcText(hostNpmrcPath()),
+  });
+  /**
+   * MCP 条目 → 线程级 config 的 `mcp_servers`。
+   * 落点为什么是线程级 config（而不是 `$CODEX_HOME/config.toml`）见 `toCodexMcpServers` 的 JSDoc
+   * （两条路都真机验过：A 臂走 config 能到 `ready`，B 臂写文件是已知可达的对照）。
+   */
+  const mcpServers = toCodexMcpServers(input.mcpServers ?? {});
   const binary = hooks.resolveBinary();
   const client = hooks.createClient({ binary, env });
   /**
@@ -187,6 +232,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
       baseUrl,
       input.route.contextWindow,
       input.effort === CODEX_OFF_EFFORT ? CODEX_OFF_REASONING_SUMMARY : undefined,
+      mcpServers,
     ),
     prompt: input.prompt,
     /**
@@ -203,6 +249,10 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     effort: input.effort,
     baseUrl,
     threadId: session.threadId,
+    // **只记名字**（条目的 env / http_headers 里可能有密钥，日志不该能把它带出去）；
+    // registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容（与 claude 侧同一条口径）
+    mcpServers: Object.keys(mcpServers),
+    npmRegistry: registryLine === null ? null : 'row-npmrc-written',
   });
 
   const run: CodexRun = {
@@ -411,7 +461,7 @@ function finalizeCodex(run: CodexRun): {
    */
   const mainTurns = observedTurns(run.runState, run.mainThreadId);
   /**
-   * 被**显式丢弃**的增量通道（2026-10-09）：`item/plan/delta` 与 `item/commandExecution/outputDelta`
+   * 被**显式丢弃**的增量通道：`item/plan/delta` 与 `item/commandExecution/outputDelta`
    * 没有渲染落点，但「丢」必须留痕——否则排障时分不清「我们主动丢了」与「上游没发」。
    * 一条 DEBUG 汇总，不落任何事件（落事件就把原始输出面板刷满了，那正是这条口径要防的事）。
    */
@@ -445,7 +495,7 @@ function finalizeCodex(run: CodexRun): {
        */
       turn: mainTurns === null ? null : { subagentId: null, round: mainTurns },
       /**
-       * 来源（A2）：这一条是**结算值**（`usageOfRun` 从会话文件读回的累计），与跑动期那些
+       * 来源：这一条是**结算值**（`usageOfRun` 从会话文件读回的累计），与跑动期那些
        * `thread/tokenUsage/updated` 同源、同口径 ⇒ `'reported'`。填错成 `'estimated'` 的代价是
        * 编排层不回写这一条的 tokens——它恰好是收尾那一刻唯一的权威值。
        */
@@ -463,7 +513,7 @@ function finalizeCodex(run: CodexRun): {
      * 两格都进结果：编排层终态那一步用 `result.*` 覆盖快照，只在事件里给数会被随后那次写入清掉。
      *
      * `subagentTurns` 跟着 `subagentTokens` 一起记 `null`：有子线程、但它没报用量时，
-     * `usageOfRun` 已经把分量整格判成「未采集」，此时那一份**份数**同样是被这次缺失带走的读数
+     * `usageOfRun` 已经把分量整格判成「未采集」，此时那一份**份数**同样随本次缺失一起作废
      * ——只把计量记 `null`、份数照旧交累计值，界面会按「主会话 = 合计 − 分量」拿一个只剩份数的
      * 孤儿分量去配一个不存在的计量（两格是一对，见 `usageOfRun` 的口径）。
      */

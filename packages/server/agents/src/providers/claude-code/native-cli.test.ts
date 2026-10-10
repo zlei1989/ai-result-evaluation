@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 环境级不变量：Claude Code SDK 的**本机平台二进制**真实躺在 node_modules 里（2026-10-08 真机故障的守卫）。
+ * 环境级不变量：Claude Code SDK 的**本机平台二进制**真实躺在 node_modules 里。
  *
  * 故障形态：`node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-darwin-arm64@0.3.281` 只剩空目录骨架
  * （中断的 install 留下的残缺 slot），而 pnpm 的 lockfile 与 `node_modules/.package-map.json` 都认为
@@ -55,7 +55,7 @@ function resolveClaudeNativeBinary(target: { platform: string; arch: string } = 
   return undefined;
 }
 
-describe('Claude Code 平台二进制的环境守卫（2026-10-08 真机故障）', () => {
+describe('Claude Code 平台二进制的环境守卫', () => {
   it('本机平台的 claude 原生二进制可被 SDK 的解析链找到（复刻 BK；空壳残缺会红）', () => {
     const resolved = resolveClaudeNativeBinary();
     // 报错文案带判据来源：红的时候一眼能看出缺的是哪个平台包、该走什么修复路径

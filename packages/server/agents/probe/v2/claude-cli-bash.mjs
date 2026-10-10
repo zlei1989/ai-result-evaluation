@@ -6,7 +6,7 @@
  * 而**直接跑 CLI 时同一个提示词能跑通**。为了把"claude 的 Bash 结果里有没有退出码"这个问题
  * 用真机证据回答掉，这里改走 CLI 的原生流式 JSON（与适配器无关，只取厂商原文）。
  *
- * 注意：CLI 路径 ≠ SDK 路径（这一条在 codex 侧已被设计稿 §7.0 强调过），
+ * 注意：CLI 路径 ≠ SDK 路径（codex 侧同样如此），
  * 所以结论里必须标明"证据来自 CLI 路径"，并在 SDK 路径上如实登记为**环境受限、未取得样本**。
  */
 import { execFileSync } from 'node:child_process';

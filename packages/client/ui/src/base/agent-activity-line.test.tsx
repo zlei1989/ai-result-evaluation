@@ -1,5 +1,5 @@
 /**
- * `AgentActivityLine`：候选卡片底部的「智能体活动行」（用户口径，2026-09-29）。
+ * `AgentActivityLine`：候选卡片底部的「智能体活动行」。
  *
  * 这一行是**跑动期的动效 + 智能体最近一条输出**。四条口径必须有区分力：
  *   ① 终态不渲染——它是「正在……中」的指示，跑完还挂着等于在骗人；
@@ -82,12 +82,12 @@ describe('AgentActivityLine', () => {
 });
 
 /**
- * 打字态（2026-10-10）：实时正文在流时逐字显示**最后一个非空段**，换行即清空重打。
+ * 打字态：实时正文在流时逐字显示**最后一个非空段**，换行即清空重打。
  *
  * 判据分工（每条都有独立靶子）：
  *   · `lastSegmentOf` —— 取哪一段、段号怎么算（段号是 React `key`，它决定「重挂/不重挂」）；
  *   · `typingOf` —— 什么状态才走打字态（工具摘要与 `log.summary` 不走：它们没有「还在写」这个事实）；
- *   · 组件 —— 类名与光标真的带上了（跨包字符串契约的另一半），且不传 `activity` 时行为与改造前相同。
+ *   · 组件 —— 类名与光标真的带上了（跨包字符串契约的另一半），且不传 `activity` 时退回非打字态。
  */
 describe('lastSegmentOf（换行取最后一段）', () => {
   it('多段取最后一段，段号是它在切分结果里的下标', () => {
@@ -127,7 +127,7 @@ describe('typingOf / staticActivityText（这一拍走打字还是走静态档�
     expect(staticActivityText('judged', '上一轮的残留文本', streaming)).toBeNull();
   });
 
-  it('没有 activity（老调用方 / 环境没有 EventSource）⇒ 与改造前逐字相同', () => {
+  it('没有 activity（老调用方 / 环境没有 EventSource）⇒ 只渲染回落文案、不带打字态', () => {
     expect(typingOf('running', undefined)).toBeNull();
     expect(staticActivityText('running', '正在思考…', undefined)).toBe('正在思考…');
   });

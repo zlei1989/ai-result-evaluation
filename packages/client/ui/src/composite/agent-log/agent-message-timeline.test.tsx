@@ -1,10 +1,9 @@
 /**
  * `AgentMessageTimeline`（L1）的守卫。四条：
- *   1. **逐轮 `map` 渲染**：50 轮就要在 DOM 里数到 50 行——这条钉的正是「L1 不虚拟化」（变异体 (n)）；
- *   2. **默认收起**：`openKeys` 为空时，思考正文与工具结果都不在 DOM 里（是真收起，不是视觉收起）；
- *   3. **进行中的组默认展开**：把 `defaultOpenKeysOf` 算出来的键传进去，正文必须立刻可见；
- *      **失败的组与失败的行都默认收起**（2026-10-03 用户口径：失败不再是展开的理由）；
- *   4. **分派**：`renderBlock` 不传走默认注册表，传了就用传入的（§9.2）。
+ * 1. **逐轮 `map` 渲染**：50 轮就要在 DOM 里数到 50 行——这条钉的正是「L1 不虚拟化」（变异体 (n)）；
+ * 2. **默认收起**：`openKeys` 为空时，思考正文与工具结果都不在 DOM 里（是真收起，不是视觉收起）；
+ * 3. **进行中的组默认展开**：把 `defaultOpenKeysOf` 算出来的键传进去，正文必须立刻可见； * **失败的组与失败的行都默认收起**（失败不是展开的理由）；
+ * 4. **分派**：`renderBlock` 不传走默认注册表，传了就用传入的。
  *
  * 断言用两个锚点：`data-turn-row` 数**轮次行**、`data-row-event` 数**行级事件行**（两者都由本组件自己标，
  * 不是 antd 的内部类名）。⚠️ 数用量行必须用后者（见 `eventRowTexts` 的注释）。
@@ -239,9 +238,9 @@ function usageEvent(seq: number, input: number, turn: { subagentId: string | nul
 /**
  * 逐条**行级事件**的文本（判据是组件自己标的 `data-row-event` 锚点，不是 antd 内部类名）。
  *
- * ⚠️ **不要用 `data-turn-row` 数用量行**（2026-10-05 审查 Important C）：那个锚点只标在 `TurnRow` 上，
- * 事件标签（`RowEventLines`）根本没有锚点 ⇒ 数出来的恒等于**轮次数**，与这一轮挂了几条事件无关。
- * 于是「主会话节点里恰好只有它自己那两条用量」这类判据当时**没有被落实**——任何水位变异下它都绿。
+ * ⚠️ **不要用 `data-turn-row` 数用量行**：那个锚点只标在 `TurnRow` 上，
+ * 事件标签（`RowEventLines`）根本没有锚点 ⇒ 数出来的恒等于**轮次数**，与这一轮挂了几条事件无关，
+ * 「主会话节点里恰好只有它自己那两条用量」这类判据会因此失去区分力。
  */
 const eventRowTexts = (container: HTMLElement): string[] =>
   [...container.querySelectorAll('[data-row-event]')].map((row) => row.textContent ?? '');
@@ -427,9 +426,9 @@ describe('AgentMessageTimeline', () => {
   });
 
   /**
-   * 归属规则（2026-10-05，spec §2.4）：**有归属键的只按号**（身份也必须对上），**无键的仍按时刻**。
+   * 归属规则：**有归属键的只按号**（身份也必须对上），**无键的仍按时刻**。
    * 三个靶子：① 号对得上就落在那一轮（哪怕它的 `at` 与那一轮的时刻对不上）；② 身份对不上 ⇒ 本节点不显示
-   * （子会话同号的轮次不许认领主会话的里程碑）；③ `error` 这类没有键的，行为与今天逐字相同。
+   * （子会话同号的轮次不许认领主会话的里程碑）；③ `error` 这类没有键的，仍按时刻落位。
    */
   it('有归属键的里程碑按「会话 + 号」归位；对不上本节点的不显示；无键的仍按时刻', () => {
     const turns = [
@@ -462,7 +461,7 @@ describe('AgentMessageTimeline', () => {
   });
 
   /**
-   * 子会话节点的**主路径**（2026-10-05，Task 7 审查 Minor）：带**非空身份**的归属键必须能在它自己节点的
+   * 子会话节点的**主路径**：带**非空身份**的归属键必须能在它自己节点的
    * 对应轮次上命中——上一条用例只钉了「主会话命中」与「别的会话不命中」，而子会话时间轴上的用量里程碑
    * 走的正是这一格（数据层给子会话节点发的里程碑自带 `subagentId`）。
    *
@@ -475,7 +474,7 @@ describe('AgentMessageTimeline', () => {
    * 都成立 ⇒ 它也证明不了「不是按时刻落进来的」。它守的是「**非空身份能命中**」这条主路径；身份比对那一格
    * 由上面的用例（别的会话同号不命中）守。
    * 能证伪它的变异体：让有键的分支**只认主会话**（`turn.subagentId === null && event.turn.subagentId === null && …`）
-   * ⇒ 本用例红（实测整个 `@aieval/ui` 包里只有这一条变红，见 `task-8-guard-mutants.txt`）。
+   * ⇒ 本用例红。
    */
   it('子会话自己的用量里程碑落在 `sub-1` 那一轮的行里（非空身份能命中的主路径）', () => {
     const turns = [turn({ round: 1, subagentId: 'sub-1', at: AT, blocks: [textBlock('t1', '子会话第一轮')] })];
@@ -499,8 +498,7 @@ describe('AgentMessageTimeline', () => {
   });
 
   /**
-   * **整条链**：`events → buildAgentLogModel → rowEvents → 时间轴`（计划守卫 15 的另一半，
-   * 2026-10-05 终审 A 补；2026-10-07 改成主会话读数——子会话那一条已经不再折行）。
+   * **整条链**：`events → buildAgentLogModel → rowEvents → 时间轴`（子会话那一条不进折行，这里只认主会话读数）。
    *
    * 上面两条用例是 **props 级**的：`rowEvents` 由用例手写直接喂给组件，于是「数据层真算出来的
    * `model.rowEvents` 到底带不带归属键」这一半没有守卫（`build-model.test.ts` 那侧只断到
@@ -606,10 +604,10 @@ describe('AgentMessageTimeline', () => {
     expect(eventRowTexts(childView.container)).toEqual([]);
   });
   /**
-   * **整行一条的端到端**（2026-10-07 用户裁定）：主会话报了两轮、子会话也报了两轮，数据层只交出
+   * **整行一条的端到端**：主会话报了两轮、子会话也报了两轮，数据层只交出
    * **一条**（候选阶段里最后那条主会话读数）；DOM 上主会话节点恰好一行、子会话节点一行都没有。
    *
-   * 旧口径（水位按会话分桶）在这里会有三条——真机 run `8df6ff65` 的 claude 行就是这么串出 5 条的。
+   * 按会话分桶的水位口径在这里会串出三条。
    */
   it('端到端：整行只有一条用量行（取最后那条主会话读数），子会话节点一行都没有', () => {
     const model = sessionChainModel({
@@ -643,7 +641,7 @@ describe('AgentMessageTimeline', () => {
 
     /**
      * 前提：那一条真的进了 `model.rowEvents`（否则上面数出 0 行会像「组件没渲染」）。
-     * ⚠️ 刻意放在 DOM 断言**之后**（2026-10-05 审查 Important C 起）：这一格与 DOM 上的
+     * ⚠️ 刻意放在 DOM 断言**之后**：这一格与 DOM 上的
      * `data-row-event` 数的是同一批行，先断言 DOM 才能让「折行把行丢了」在判据本身上见红，
      * 而不是停在数据层的前提上。
      */
@@ -699,13 +697,12 @@ describe('AgentMessageTimeline', () => {
 });
 
 /**
- * 消息级用量页脚（2026-10-06，spec `2026-09-30-exec-log-drawer-redesign-design.md` §6.13；
- * 用户裁定「消息级没有 usage 就不展示，避免口径混乱」）。四条判据：
+ * 消息级用量页脚（用户裁定「消息级没有 usage 就不展示，避免口径混乱」）。四条判据：
  *   ① 一条消息一行（多个块只出一行）；② `usage === null` 一行都不出；
  *   ③ 文案是「本条 …」而不是「用量 …」（同屏已有行级事实条与轮末里程碑 Tag 两处同形数字）；
  *   ④ 形制与里程碑两两可分：页脚是**纯文本行**，不许被 Tag / Badge 包成色块。
  */
-describe('消息级用量页脚（2026-10-06）', () => {
+describe('消息级用量页脚', () => {
   const usage = { input: 295, cached: 7424, output: 841 };
   const footers = (container: HTMLElement): string[] =>
     [...container.querySelectorAll('[data-usage-footer]')].map((node) => node.textContent ?? '');
@@ -722,7 +719,7 @@ describe('消息级用量页脚（2026-10-06）', () => {
     const { container } = render(<AgentMessageTimeline turns={turns} nodes={nodeIndex([])} />);
 
     expect(footers(container)).toEqual(['本条 输入 295 tok · 缓存 7,424 tok · 输出 841 tok']);
-    // 形制与轮末里程碑 Tag 必须两两可分（用户 2026-10-06 追加口径）
+    // 形制与轮末里程碑 Tag 必须两两可分
     expect(container.querySelectorAll('[data-usage-footer].ant-tag')).toHaveLength(0);
   });
 
@@ -750,7 +747,7 @@ describe('消息级用量页脚（2026-10-06）', () => {
   });
 
   /**
-   * 与轮末里程碑**是两个不同锚点**（spec §5 守卫 6 的后半）：同屏同时出现时，
+   * 与轮末里程碑**是两个不同锚点**（守卫 6 的后半）：同屏同时出现时，
    * 页脚归 `[data-usage-footer]`、里程碑归 `[data-row-event]`，互不嵌套
    * ⇒ 将来任一侧换形制（比如把页脚也做成 Tag）都能被各自的断言抓住。
    */

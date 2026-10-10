@@ -5,15 +5,15 @@
  *   1. **只校验本次改动到的字段**：仓库临时不可用（网络盘掉线、目录被移走）时，
  *      改标题 / 改评分标准项不该被 NOT_A_GIT_REPO 拦住——与设置域「只改主题不校验工作区根目录」同一口径；
  *      「改动到」按**值**判（与当前值相同 = 没改），因为 UI 发出来的补丁永远是全量的（见 updateCase 内注释）；
- *   2. **commitHash 一律落解析后的完整 40 位 hash**：短哈希会随仓库增长变得有歧义，而 §4.1 的列表
+ *   2. **commitHash 一律落解析后的完整 40 位 hash**：短哈希会随仓库增长变得有歧义，而候选列表
  *      要能 Tooltip 显全量；null / 空串（表单清空输入框拿到的是空串）都表示「默认分支 HEAD」；
  *   3. **删除时缓存仓库删不掉不阻断删除**：缓存只是磁盘垃圾（首次评测前压根不存在、Windows 上可能被占用），
  *      让它把「删用例」这个用户动作弄失败，是把内部细节泄漏成用户故障；
  *   4. **远端来源只读镜像**：校验 = 快探活（15s 上限）→ 建 / 更新镜像 → 解析要用的分支，全程不 checkout、
- *      不建工作树（那是评测准备的活）；本地来源填了分支一律拒绝，不静默忽略（RG9 / RG12）；
+ *      不建工作树（那是评测准备的活）；本地来源填了分支一律拒绝，不静默忽略；
  *   5. **写侧拦不合法 / 用之前拒旧版**：落盘前按契约 + `validateRubric` 自检（空表、有组无项、ID 重复
  *      都写不进去），**用**这个用例时（取详情 `getCase` / 编辑 `updateCase`）`rubric` 不是合法表的旧用例
- *      显式抛中文 INTERNAL（spec §10，见 `asUsableCase` 与 `assertUsableRubric`）。注意这条守卫
+ *      显式抛中文 INTERNAL（见 `asUsableCase` 与 `assertUsableRubric`）。注意这条守卫
  *      **不在列表路径上**：一条旧用例不能让整页列表 500（那样用户连删它的入口都没有），
  *      列表照常返回、详情/编辑/建评测才拒。
  */
@@ -96,7 +96,7 @@ export function getCase(caseId: string): TestCase {
  * 「**用**这个用例」：归一（`asStoredCase`）+ 判评分表（`assertUsableRubric`）。
  * **两条入口共用这一份**：`getCase`（详情 / 创建评测 / 换用例）与 `updateCase`（编辑时的当前行）。
  * 各写一遍必然漂移，而漂移的症状正是「详情给的是那句中文、编辑给的是一串 schema issues」——
- * 后者是 Task 5 修复轮实测到的：编辑一条旧用例原本落到 `assertStorable` 的 `TestCaseSchema.parse`，
+ * 编辑一条旧用例若直接落到 `assertStorable` 的 `TestCaseSchema.parse`，
  * 抛出裸 `ZodError`，路由层折成技术性的 `INVALID_QUERY`。
  */
 function asUsableCase(record: TestCase): TestCase {
@@ -104,11 +104,11 @@ function asUsableCase(record: TestCase): TestCase {
 }
 
 /**
- * 「**用**这个用例」之前的守卫（spec §10 的处置）：旧用例（重构前建的）只有一段 `judgePrompt`、
+ * 「**用**这个用例」之前的守卫：旧用例（重构前建的）只有一段 `judgePrompt`、
  * 没有 `rubric`，读出来就是一份已经失去意义的旧口径。**详情、创建评测、换用例、编辑**都经过它，
  * 用户拿到的是能照做的那句话（点名 caseId）。
  *
- * 为什么**不放在 `asStoredCase`**（那是最初的实现，Task 5 评审实测的后果）：`listCases` 用的是同一个
+ * 为什么**不放在 `asStoredCase`**：`listCases` 用的是同一个
  * 归一函数，于是**一条**旧用例就让 `GET /api/cases` 变成 500——而那句话让用户「删除它」，
  * 偏偏能删它的那个页面渲染不出来（出路只剩手改 config.json 或直接打 DELETE）。
  * 守卫落在**用**的路径上，不是**列**的路径上：列表照常把这条用例返回给界面，用户能把它删掉。
@@ -140,15 +140,15 @@ function assertUsableRubric(testCase: TestCase): Rubric {
  *     而裸 spread 会把它们原样交给下游——下游拿到的是一份「类型上没有、运行时却有」的数据，
  *     只能靠猜它算不算数。`judgePrompt` 尤其不能漏：契约上 `TestCase` 已经没有这一格，
  *     它却是一整段**看起来还能用**的评分口径，留着它就是在给「按旧口径评分」留一扇暗门
- *     （整支复审 Finding 3 实测：前两列被删掉了，这一列照样从 `GET /api/cases` 流出去）；
+ *     （实测：前两列被删掉了，这一列照样从 `GET /api/cases` 流出去）；
  *   · `rubric` 过一遍**不抛**的 `safeParse`：靠 schema 缺省值的合法记录（例如某一项没写 `id`，
  *     由 `RubricItemSchema.id` 的 `.default('')` 补齐）也必须以 `id: ''` 流出去，而不是
  *     `id: undefined`——契约声明的是 `id: string`，第三态要留给下游猜（A10③ 的口径）。
  *     解析不过就把这一格**删掉**（`delete`，与上面那三列同一形状）：`stale` 是整行的 spread，
  *     `rubric` 本来就在里面——在失败分支里 spread 一个空对象**删不掉**任何东西，一个非 `Rubric`
- *     的值就这么从列表流出去了（Task 5 复审实测：`{ groups: '这不是数组' }` 原样透传）。
+ *     的值就这么从列表流出去了（`{ groups: '这不是数组' }` 会原样透传）。
  *     这条路径（`listCases`）必须能渲染，该用例会在 `asUsableCase` 里被明确拒绝。
- * 除此之外一律原样——`TestCaseSchema` 的读路径**刻意不加**业务 refine（R32③），
+ * 除此之外一律原样——`TestCaseSchema` 的读路径**刻意不加**业务 refine，
  * 这里也不能变成第二份校验器；**旧用例的拒绝也不在这里**（`listCases` 与本函数共用同一个归一，
  * 放这儿会让列表整页 500，见 `assertUsableRubric`）。
  */
@@ -171,7 +171,7 @@ function asStoredCase(record: TestCase): TestCase {
   };
 }
 
-/** 新建用例：先校验仓库与 commit（§10 要求这两个场景在写入前被拦下），再落盘 */
+/** 新建用例：先校验仓库与 commit（这两个场景要在写入前被拦下），再落盘 */
 export function createCase(input: CaseCreate): TestCase {
   // 来源与分支一次判定成型（本地来源走 resolveRepoInfo，远端走镜像），落盘的就是这里的三个值
   const { source, repoPath, repoBranch } = resolveCaseSource(input.repoPath, input.repoBranch);
@@ -208,7 +208,7 @@ export function createCase(input: CaseCreate): TestCase {
  * 更新用例：只校验本次改动到的字段（见文件头口径 1）。
  * 两个容易写错的点：
  *   - 只换仓库、没给新 commit 时，旧 commit 必须拿到**新仓库**里再确认一次：留着它只会让这一轮评测
- *     在准备阶段失败（§5.5 第 2 步），宁可在保存时以 INVALID_REF 拦下；
+ *     在准备阶段失败，宁可在保存时以 INVALID_REF 拦下；
  *   - 编辑也是**用**这个用例：当前行要过 `asUsableCase`（与 `getCase` 同一份判据）。少了它，一条旧用例
  *     会落到下面 `assertStorable` 的 `TestCaseSchema.parse`，抛出裸 `ZodError`（路由层折成技术性的
  *     `INVALID_QUERY`），用户拿不到那句能照做的「旧版数据，请删除它或重新创建：<caseId>」。
@@ -269,7 +269,7 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
     repoPath: resolved?.repoPath ?? current.repoPath,
     commitHash,
     // 必须**合并** patch.repoBranch：漏了这一行，用户切分支保存会拿到 200、界面显示成功、落盘还是旧分支
-    // （RG9 点名的最坏失败：用户以为生效了）
+    // （最坏的失败：用户以为生效了）
     repoBranch: resolved?.repoBranch ?? current.repoBranch ?? null,
     ...(patch.taskPrompt === undefined ? {} : { taskPrompt: patch.taskPrompt }),
     ...(patch.rubric === undefined ? {} : { rubric: patch.rubric }),
@@ -284,7 +284,7 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
 
 /**
  * 删除用例：返回受影响的评测数，并清掉用例级缓存仓库。
- * **评测记录本身不删**——它带着 caseTitle / repoPath / commitHash 的冗余快照，删了用例照样可读（§4.4）。
+ * **评测记录本身不删**——它带着 caseTitle / repoPath / commitHash 的冗余快照，删了用例照样可读。
  */
 export function deleteCase(caseId: string): { affectedRuns: number } {
   const target = readStoredCase(caseId);
@@ -304,17 +304,17 @@ export function deleteCase(caseId: string): { affectedRuns: number } {
 }
 
 /**
- * 仓库校验：本地走既有 git 口径；远端先快探活、再确保镜像并增量更新，最后解析要用的分支（spec §6.1）。
+ * 仓库校验：本地走既有 git 口径；远端先快探活、再确保镜像并增量更新，最后解析要用的分支。
  * 顺序有意如此：探活（15s 上限）先把「不可达 / 认证失败 / 不存在 / 空仓库」分开，
  * 再让用户为一次真实克隆等待——两者失败时的处置完全不同。
  * 来源形态由**字符串本身**判定（parseRepoSource），不看界面当时处于哪个输入模式：URL 填进「本地路径」
- * 那一栏同样按远端走，否则同一个串在保存与准备两处会得到两种解释（RG1）。
+ * 那一栏同样按远端走，否则同一个串在保存与准备两处会得到两种解释。
  */
 export function validateRepo(input: { repoPath: string; repoBranch: string | null }): RepoInfo {
   const source = parseRepoSource(input.repoPath);
   const branch = normalizeBranch(input.repoBranch);
   if (source.kind === 'local') {
-    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的（RG9）
+    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
     return resolveRepoInfo(source.path);
   }
@@ -333,7 +333,7 @@ export function validateRepo(input: { repoPath: string; repoBranch: string | nul
   const mirror = ensureMirror({ workspaceRoot, url: source.url });
   // 刚克隆出来的镜像**不再抓一次**：克隆本身就是这一次从远端取回（HEAD 由 clone 按远端 HEAD 写好、
   // 镜像记录也是那一刻写的），紧接着再 fetch 一次是白等一个往返——大仓库首次校验是分钟级的。
-  // 既有镜像必须更新：「跟随分支 / 默认分支」的语义要求新鲜度，绝不静默沿用旧镜像（RG10）。
+  // 既有镜像必须更新：「跟随分支 / 默认分支」的语义要求新鲜度，绝不静默沿用旧镜像。
   if (!mirror.created) {
     fetchMirror(mirror.mirrorDir, source.url, { defaultBranch: probe.defaultBranch });
   }
@@ -380,8 +380,8 @@ function ensureRemoteMirror(url: string): string {
 }
 
 /**
- * commit 候选（spec §6.2）：本地来源照旧读 HEAD；远端来源从**镜像**读，拿到 tip 之后这一步不联网
- * （`fetch: false`）——镜像在校验仓库时已经更新过。为什么不该联网：候选只是输入框旁边的便利（§4.2），
+ * commit 候选：本地来源照旧读 HEAD；远端来源从**镜像**读，拿到 tip 之后这一步不联网
+ * （`fetch: false`）——镜像在校验仓库时已经更新过。为什么不该联网：候选只是输入框旁边的便利，
  * 为它付一次远端往返不值当，而镜像里已经有一份事实。
  * 唯一的例外是首访：镜像还没建时 `ensureRemoteMirror` 会克隆一次（见它的注释）——那次慢是不可避免的，
  * 但它是**建镜像**，不是为候选列表做的额外往返。
@@ -397,7 +397,7 @@ export function listCommitCandidates(input: { repoPath: string; repoBranch: stri
   const source = parseRepoSource(input.repoPath);
   const branch = normalizeBranch(input.repoBranch);
   if (source.kind === 'local') {
-    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的（RG9），与 validateRepo 同口径
+    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的，与 validateRepo 同口径
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
     return listCommits(source.path);
   }
@@ -407,7 +407,7 @@ export function listCommitCandidates(input: { repoPath: string; repoBranch: stri
 }
 
 /**
- * 删掉用例级缓存仓库（§4.4）。**尽力而为**：失败只记 WARN。
+ * 删掉用例级缓存仓库。**尽力而为**：失败只记 WARN。
  * 缓存目录常常压根不存在（首次评测前），也可能因为 Windows 上文件被占用而删不掉——
  * 两种情形都不该让「删除用例」这个用户动作失败。
  */
@@ -434,7 +434,7 @@ function normalizeSourceString(repoPath: string): string {
 }
 
 /**
- * 落盘前把来源与分支判定成型（spec §6.3）：本地来源不允许分支；远端来源先确保镜像，
+ * 落盘前把来源与分支判定成型：本地来源不允许分支；远端来源先确保镜像，
  * 分支判不过时**只 fetch 一次**再判——远端刚推上来的分支不该因为镜像还没更新而被拒
  * （与 ensureCaseCache「先本地判、失败只抓一次」同口径）。
  * 返回的 `repoPath` / `repoBranch` 就是**要落盘的那两个值**：来源去尾斜杠、分支 trim 后为空即 null。
@@ -446,7 +446,7 @@ function resolveCaseSource(
   const source = parseRepoSource(repoPath);
   const branch = normalizeBranch(repoBranch);
   if (source.kind === 'local') {
-    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的（RG9）
+    // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
     resolveRepoInfo(source.path);
     return { source, repoPath: source.path, repoBranch: null };
@@ -466,7 +466,7 @@ function resolveCaseSource(
 /**
  * commit 输入归一化：null / undefined / 空串都表示「默认分支 HEAD」；
  * 其余一律交给 core.assertCommit 判定（不存在 → INVALID_REF），并把短哈希解析成完整 40 位。
- * **不在这里比对候选列表**：候选只是便利（§4.2），拿它当白名单会把「钉一个更早的提交」变成不可能。
+ * **不在这里比对候选列表**：候选只是便利，拿它当白名单会把「钉一个更早的提交」变成不可能。
  *
  * 远端来源的 commit 在**镜像**里判（不碰工作区）：镜像里没有时只 fetch 一次再判，
  * 与 resolveCaseSource 处理「刚推上来的分支」同一口径。失败文案点名**远端 URL**——

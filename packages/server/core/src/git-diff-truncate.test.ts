@@ -36,7 +36,7 @@ describe('truncateDiff', () => {
     expect(result.text).toBe(text);
   });
 
-  it('超预算时按文件裁剪：保留前面的文件、丢掉后面的，并列出被丢文件名（spec §9）', () => {
+  it('超预算时按文件裁剪：保留前面的文件、丢掉后面的，并列出被丢文件名', () => {
     const text = makeDiffText(4, 400);
     // 预算只够段落头 + 一个文件：先量一个文件的真实大小，再给一个「刚够一个」的预算
     const oneFile = truncateDiff(makeDiffText(1, 400), 64 * 1024).text.length;
@@ -55,7 +55,7 @@ describe('truncateDiff', () => {
     expect(result.droppedFiles).toContain('file4.ts');
   });
 
-  it('预算小于单个文件时也绝不产出「看起来没改动」的空文本（Review Focus 1）', () => {
+  it('预算小于单个文件时也绝不产出「看起来没改动」的空文本', () => {
     const text = makeDiffText(1, 4096);
     const result = truncateDiff(text, 64);
     expect(result.truncated).toBe(true);

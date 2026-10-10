@@ -25,7 +25,7 @@ export const GATEWAY_ORIGIN = 'https://likecode-llm-proxy.jd.com';
 export const GATEWAY_BASE_URL = `${GATEWAY_ORIGIN}/v1`;
 
 /**
- * 2026-09-30 实测**可达**的 DeepSeek 官方 API —— 本计划 Task 0 的真机靶子。
+ * 实测**可达**的 DeepSeek 官方 API —— 探针的真机靶子。
  * 三条 wire 全通（16 token 最小推理）：`/v1/responses`、`/anthropic/v1/messages`、`/chat/completions`。
  * 凭据来自 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`（**不落进仓库**）。
  */

@@ -1,5 +1,5 @@
 /**
- * 释放：`interrupt()` → 终结在途 turn → `dispose()`（spec §5.6.6）。
+ * 释放：`interrupt()` → 终结在途 turn → `dispose()`。
  * 顺序不可颠倒：直接 dispose 会与在途 turn 争抢同一批资源（dsh 的子进程、codex 的临时目录）。
  * 超时分两段：第一段等 5 秒（RELEASE_GRACE_MS），超限先给出可见信号再强制 dispose——非合作的
  * 适配器必须可见，不能静默（否则界面上一行永远停在 running，没人知道是适配器不响应）。
@@ -7,7 +7,7 @@
  * 「中断 → 下一轮新建客户端 → 释放」这条路径下，闭锁会让新客户端再也没人关，留下孤儿子进程。
  */
 
-/** 第一段等待上限：发出 interrupt 后等 5 秒（§5.6.6） */
+/** 第一段等待上限：发出 interrupt 后等 5 秒 */
 export const RELEASE_GRACE_MS = 5_000;
 
 export interface TurnLifecycle {
@@ -44,9 +44,9 @@ export async function releaseTurn(
       onGraceExceeded();
     } catch {
       // 可见信号自身失败不得挡住释放：与 interrupt 的 try/catch 同一条理由。
-      // 这个回调不是「只是打个日志」——T6 的 turn.ts 传进来的实现会走 onEvent → p4 的 appendEvent，
-      // 而契约 R26 规定写侧 schema 不过就抛 ServiceError；裸调用一旦抛错，下面的 dispose 永不执行，
-      // 子进程与临时目录就没人回收了（§5.6.6 要防的孤儿）。
+      // 这个回调不是「只是打个日志」——turn.ts 传进来的实现会走 onEvent → 编排层的 appendEvent，
+      // 而写侧 schema 不过就抛 ServiceError；裸调用一旦抛错，下面的 dispose 永不执行，
+      // 子进程与临时目录就没人回收了（要防的孤儿）。
     }
   }
   try {

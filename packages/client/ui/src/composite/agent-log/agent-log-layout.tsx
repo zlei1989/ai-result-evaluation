@@ -5,14 +5,14 @@
  * 内嵌只读视图（S1）直接用这个件，几何口径不变，只是参照物从 `body` 换成宿主容器。
  *
  * 六条口径：
- *   1. **最外层取满父容器的全部高度**（`height: '100%'`，不是 `minHeight`）：虚拟列表要有确定高度的视口
- *      才能算出「渲染哪几项」；滚动容器不是 `.ant-drawer-body`；
- *   2. **根节点显式声明 `color` / `background`**（§5.0.7 的硬要求）：宿主 `.ant-app` 带外层主题类名时，
- *      「靠继承拿颜色」的文字会变成近黑落在暗底上，而读 token 的组件不受影响——页面呈「组件正常、正文发黑」；
- *   3. **节点内容四态作用于时间轴区，不是整个抽屉**：固定区（进度条 / 面包屑 / 工具条）在任何一态下都在；
- *   4. **过滤在轮次级生效**（两个开关 AND），过滤不改面包屑与提示条的可见性（它们是导航，不是内容）；
- *   5. **跟随最新只有一份 state**：工具条开关、角落浮出按钮、`scrollToBottom` 都读 `viewState.follow`；
- *   6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设（变异体 (p) 的守卫）。
+ * 1. **最外层取满父容器的全部高度**（`height: '100%'`，不是 `minHeight`）：虚拟列表要有确定高度的视口
+ * 才能算出「渲染哪几项」；滚动容器不是 `.ant-drawer-body`；
+ * 2. **根节点显式声明 `color` / `background`**（硬要求）：宿主 `.ant-app` 带外层主题类名时，
+ * 「靠继承拿颜色」的文字会变成近黑落在暗底上，而读 token 的组件不受影响——页面呈「组件正常、正文发黑」；
+ * 3. **节点内容四态作用于时间轴区，不是整个抽屉**：固定区（进度条 / 面包屑 / 工具条）在任何一态下都在；
+ * 4. **过滤在轮次级生效**（两个开关 AND），过滤不改面包屑与提示条的可见性（它们是导航，不是内容）；
+ * 5. **跟随最新只有一份 state**：工具条开关、角落浮出按钮、`scrollToBottom` 都读 `viewState.follow`；
+ * 6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设（变异体 (p) 的守卫）。
  */
 import { Alert, Badge, Button, Flex, InputNumber, Skeleton, Switch, Tooltip, Typography, theme } from 'antd';
 import { ArrowDownOutlined } from '@ant-design/icons';
@@ -53,7 +53,7 @@ const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
 
 /** `timeline` 槽位收到的 props：**已经定好的分派函数 + 折叠态 + 轮次**，调用方不必自己重新拼一遍 */
 export interface TimelineSlotProps {
-  /** 当前节点的轮次（已过滤、已分组、未建渲染块——§7.2 的护栏） */
+  /** 当前节点的轮次（已过滤、已分组、未建渲染块） */
   turns: readonly LogTurn[];
   nodes: LogNodeIndex;
   /** 块分派（默认实现 = 注册表） */
@@ -99,7 +99,7 @@ export interface AgentLogLayoutProps {
   liveError?: ReactNode;
   /**
    * 实时通道是否连着；**不给就不渲染那一格**（不假装在实时，也不把「没有这个信息」说成「未连接」）。
-   * 那一格落在**原文行**的最左侧（用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间）。
+   * 那一格落在**原文行**的最左侧（与「原始输出 N 条」合并成一行省空间）。
    */
   connected?: boolean;
 }
@@ -164,7 +164,7 @@ function hasToolBlocks(turns: readonly LogTurn[]): boolean {
 }
 
 /**
- * 第二、三种「空」的提示条（§6.1 / D38）。三段文案各有判据，**互不替代**：
+ * 第二、三种「空」的提示条。三段文案各有判据，**互不替代**：
  *   ① 能力声明说子任务轨迹拿不到 ⇒ 把**原因**带上（原因是 `MissingReason` 四态，四句互不相同）；
  *   ② 内容来自会话文件、而这一行还没结束 ⇒ 说明「完整轨迹要等运行结束」；
  *   ③ 其余 ⇒「该子任务的对话未转发（只投送了工具调用）」，**不写「它什么都没说」**。
@@ -195,9 +195,9 @@ export function notForwardedNotice(node: LogNode, turns: readonly LogTurn[]): Re
  *
  * 两句**互不替代**，按「手上到底有没有东西」分：
  *   · 有 `outcome` ⇒ 内容**在**，只是不在轨迹里（它是另一条通道：适配器从子任务收场载荷里取）
- *     ⇒ 文案直接指向那条占位条，别让读者以为「什么都没采到」；
+ * ⇒ 文案直接指向那条占位条，别让读者以为「什么都没采到」；
  *   · 没有 `outcome` ⇒ 连结果摘要都没有，这时才说「轨迹不可用」并带上能力声明里的原因
- *     （四句原因互不相同，见 §6.1；`level === 'yes'` 时原因那格没意义，只陈述事实）。
+ * （四句原因互不相同，见；`level === 'yes'` 时原因那格没意义，只陈述事实）。
  */
 function subagentEmptyState(node: SessionNode): ReactNode {
   const name = nodeDisplayName(node);
@@ -228,7 +228,7 @@ function subagentEmptyState(node: SessionNode): ReactNode {
  *
  * 语义与 `render-blocks.ts` 的 `hasToolCall` 相同（两族卡片本来就是 `tool-call` 块，
  * 配不上调用的 `tool-result` 也会成组），**但故意不建渲染块**：过滤是**全轮扫描**，
- * 在渲染层外面为每一轮建一次渲染块正是 §7.2 明令禁止的那件事（虚拟滚动就只省了 DOM）。
+ * 在渲染层外面为每一轮建一次渲染块正是明令禁止的那件事（虚拟滚动就只省了 DOM）。
  */
 function turnHasToolCall(turn: LogTurn): boolean {
   return turn.blocks.some((block) => block.kind === 'tool-call' || block.kind === 'tool-result');
@@ -321,7 +321,7 @@ function ToolbarActions({
                 disabled={action.disabled}
                 aria-label={action.label}
                 onChange={(value) => onNumberDraft(typeof value === 'number' ? value : null)}
-                // 回车 / 失焦即跳（§6.5）；越界在提交时 clamp，回显值由动作数据给
+                // 回车 / 失焦即跳；越界在提交时 clamp，回显值由动作数据给
                 onPressEnter={() => onNumberCommit({ ...action, number })}
                 onBlur={() => onNumberCommit({ ...action, number })}
               />
@@ -329,7 +329,7 @@ function ToolbarActions({
           );
         }
 
-        // 纯图标按钮：`aria-label` 与 `Tooltip` 都写 label（§6.8 的「？环境信息」是唯一一处）
+        // 纯图标按钮：`aria-label` 与 `Tooltip` 都写 label（「？环境信息」是唯一一处）
         if (action.icon !== undefined) {
           return (
             <Tooltip key={action.key} title={action.label}>
@@ -393,7 +393,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
 
   // ——— 折叠态：默认展开键由 `defaultOpenKeysOf` 算（住在 hook 里，故这里不重复算一遍）———
 
-  // ——— 跟随最新（§6.4）———
+  // ——— 跟随最新———
   /** 已读水位：跟随期间的轮次数。用户上翻后它冻住，`未读 = 当前轮数 - 水位` */
   const readCountRef = useRef(filtered.length);
   /** 滚动区容器（原生捕获监听挂在它上面）与它当前认下的那个滚动容器 */
@@ -488,7 +488,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
    *
    * 「有没有原文」这一条取自 `RawOutputPanel` 的 `hasRawEntry`——两处各写一遍必然漂移，
    * 而漂移的症状是「原文 0 条时下载按钮上面多一条空隙」。
-   * 「有连接状态」这一条是 2026-10-07 加的：连接徽标从事实条那一行挪到这一行，若还按旧判据，
+   * 「有连接状态」这一条必须算进去：连接徽标住这一行，漏了它，
    * 「实时通道通不通」会随原文入口一起消失——那不是收起了版面，是丢了一个读数。
    */
   const rawRowVisible =
@@ -537,10 +537,10 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   /** 时间轴区的内容：四态各有一幅画面（**不是整个抽屉**，固定区在任何一态下都在） */
   const timelineArea = ((): ReactNode => {
     /**
-     * 节点级空态**排在模型级空态之前**（2026-10-03 真机修正）。
+     * 节点级空态**排在模型级空态之前**。
      *
      * 为什么顺序重要：站在子任务节点上时 `model.empty` 与 `turns.length === 0` 会**同时成立**
-     * （整行只有主会话的内容），于是那一档原先落到模型级空态，显示
+     * （整行只有主会话的内容），于是那一档若落到模型级空态，会显示
      * 「还没有日志 · **这一行还没开始执行**，或执行尚未产生输出」——而这一行明明跑完了，
      * 站在子任务上的读者会把它读成「界面坏了」。两句文案说的是两件不同的事：
      *   · 节点级：**这个子任务**的内容没到这里（不是这一行没跑）；
@@ -593,7 +593,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   })();
 
   return (
-    // ⚠️ `color` / `background` 必须写在**自己的根节点**上（§5.0.7）：宿主 `.ant-app` 带外层主题类名时，
+    // ⚠️ `color` / `background` 必须写在**自己的根节点**上：宿主 `.ant-app` 带外层主题类名时，
     // 靠继承拿颜色的文字会变成近黑落在暗底上，而读 token 的 Card / Tag / Button 不受影响
     <Flex
       vertical

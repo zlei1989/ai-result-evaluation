@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * dsh 的通知投影（**按真实探测回写后的口径**，Task 12）。
+ * dsh 的通知投影（按真实探测到的厂商事件形态）。
  * 探测结论（`docs/protocols/dsh.md`）：
  * 通知是 `{ method, params }`，事件全在 `method === 'session.event'` 里；用量在
  * `params.event.type === 'assistant/message'` 的 `params.event.data.usage`；轮次结束与失败在
@@ -51,27 +51,27 @@ function newState(): TurnState {
 /**
  * 造一条真实的会话事件通知（外形照 dump：`{ method, params: { sessionId, event } }`）。
  * 第三参是**会话身份**（缺省 = 主会话 `session-1`）：子会话的事件与主会话在同一条流里，
- * 靠这一格区分（2026-10-05 归属口径的守卫要按会话喂数据）。
+ * 靠这一格区分（归属口径的守卫要按会话喂数据）。
  */
 function sessionEvent(type: string, data: unknown, sessionId = 'session-1'): unknown {
   return { method: 'session.event', params: { sessionId, event: { type, seq: 1, time: 1, data } } };
 }
 
 /**
- * 子智能体生命周期（spec §6 / §6.5）：dsh 侧是**顶层通知**（`{ method, params }`，
+ * 子智能体生命周期：dsh 侧是**顶层通知**（`{ method, params }`，
  * 不是 `session.event` 包一层）+ 一条 `subagent/catalog` 会话事件。
  *
- * 载荷逐字取自真机（§6.5.1）。为什么这些守卫值得存在：`projectDshNotification` 过去
+ * 载荷逐字取自真机。为什么这些守卫值得存在：`projectDshNotification` 过去
  * **只认 `session.event` 一种外形**，其余一律落 `unknownEventDraft` ⇒ 真机抓到两条
  * `subagent.*` 通知，却是 31 条 log 里的一坨原始 JSON，界面上看不出派过子任务。
  */
 describe('projectDshNotification：子智能体生命周期', () => {
-  /** 真机 subagent.started（§6.5.1 ①） */
+  /** 真机 subagent.started ① */
   const STARTED = {
     method: 'subagent.started',
     params: { parentSessionId: 'session-16c91eba4bf54932a23c6dd4f39eb05b', childSessionId: 'a5e63152-5662-4986-a190-7849eeac0f0b' },
   };
-  /** 真机 subagent/catalog（§6.5.1 ②）——**任务名在这一条里** */
+  /** 真机 subagent/catalog ②——**任务名在这一条里** */
   const CATALOG = {
     method: 'session.event',
     params: {
@@ -84,7 +84,7 @@ describe('projectDshNotification：子智能体生命周期', () => {
       },
     },
   };
-  /** 真机 subagent.finished（§6.5.1 ③） */
+  /** 真机 subagent.finished ③ */
   const FINISHED = {
     method: 'subagent.finished',
     params: {
@@ -148,7 +148,7 @@ describe('projectDshNotification：子智能体生命周期', () => {
     expect(payload.confidence).toBe('unknown');
   });
 
-  it('status/stopReason 映射到 §6 的值域：ok+completed ⇒ completed', () => {
+  it('status/stopReason 映射到契约值域：ok+completed ⇒ completed', () => {
     const projection = projectDshNotification(FINISHED, newState(), CONTEXT);
     const payload = JSON.parse((projection.drafts[0] as { text: string }).text);
     expect(payload.status).toBe('completed');
@@ -186,7 +186,7 @@ describe('projectDshNotification：子智能体生命周期', () => {
 });
 
 /**
- * 最终答复出口（spec §8 / D2）：答复在 `assistant/message` 的
+ * 最终答复出口：答复在 `assistant/message` 的
  * `params.event.data.message.content[]` 里，**必须按块类型过滤**——
  * 同一个数组里的 `reasoning` 块也带 `text` 字段，不过滤会把推理混进答复。
  */
@@ -213,7 +213,7 @@ describe('projectDshNotification：最终答复（finalText）', () => {
     expect(state.finalText).toBe('{"dimensions":[]}');
   });
 
-  // Review Focus 第 5 条：同一个 content 数组里的 reasoning 块**也带 text 字段**（实测 dump）。
+  // 同一个 content 数组里的 reasoning 块**也带 text 字段**（dump 形状）。
   // 不过滤就会把推理内容拼进答复 ⇒ JSON 解析失败，而表象像「模型不守契约」。
   it('reasoning 块不算答复（它也带 text 字段，必须按 type 过滤）', () => {
     const state = newState();
@@ -244,7 +244,7 @@ describe('projectDshNotification：最终答复（finalText）', () => {
   });
 
   /**
-   * **推理原文必须留下证据**（2026-09-30 真机更正）。
+   * **推理原文必须留下证据**。
    *
    * 为什么这条守卫值得存在：过滤掉 reasoning 是**对的**（否则推理混进答复），但**只过滤不落盘
    * 就是把证据丢了**——dsh 实测每次模型往返都带完整推理文本（真机三次往返分别 259 / 68 / 143 字符），
@@ -254,8 +254,7 @@ describe('projectDshNotification：最终答复（finalText）', () => {
    * （`providers/claude-code/events.ts` 的 `assistantDrafts`），所以两家的推理在抽屉里都看得到。
    *
    * ⚠️ 一条被推翻的旧口径：本文件上游曾写「dsh 的 reasoning 实测 `text` 恒为空串」——
-   * 那是**探测中继把整条流转成单块、破坏 SSE 分块**造成的假象（2026-09-30 复现并定位）。
-   * 真机走 SDK 时推理文本完整。
+   * **探测中继把整条流转成单块、破坏 SSE 分块**会造成这个假象；走 SDK 时推理文本完整。
    */
   it('reasoning 块要落一条日志（原始信封是证据，只过滤不落盘等于丢掉它），但**不给摘要**', () => {
     const state = newState();
@@ -307,7 +306,7 @@ describe('projectDshNotification：最终答复（finalText）', () => {
   });
 });
 
-describe('projectDshNotification（按实测回写）', () => {
+describe('projectDshNotification（通知投影）', () => {
   it('未识别的通知保留原始负载（一条都不丢）', () => {
     const payload = { method: 'session.update', params: { text: 'hello', nested: [1, 2] } };
     const projection = projectDshNotification(payload, newState(), CONTEXT);
@@ -348,7 +347,7 @@ describe('projectDshNotification（按实测回写）', () => {
     expect(projection.turns).toBeNull();
   });
 
-  it('用量字段缺席（可选字段）⇒ null + WARN，绝不填 0（§5.6.3：没采到与 0 必须能区分）', () => {
+  it('用量字段缺席（可选字段）⇒ null + WARN，绝不填 0（没采到与 0 必须能区分）', () => {
     const projection = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
         usage: { [DSH_USAGE_FIELDS.input]: 12, [DSH_USAGE_FIELDS.output]: 5 }, // 没有 cacheReadTokens
@@ -363,7 +362,7 @@ describe('projectDshNotification（按实测回写）', () => {
   });
 
   /**
-   * 轮次口径（用户口径，2026-09-28）：**一次模型 API 往返 = 一个 step**。
+   * 轮次口径（用户口径）：**一次模型 API 往返 = 一个 step**。
    * 计数点选 `step/start`（「这一次请求已经发出去了」），而不是收尾的 `turn/end`
    * ——实测那一轮 59 个 step、而 `turn/end` 只有 1 条，按它数出来永远是「轮次 1」。
    */
@@ -401,7 +400,7 @@ describe('projectDshNotification（按实测回写）', () => {
 
   it('turn/end 的字符串型失败（SDK 把非结构化异常折成 errorChain 字符串）同样被认出来', () => {
     // 实测依据：`errorChain(error)` 对普通 Error 返回 string，而 `TurnEndReasonMap.error` 的声明是
-    // `LlmFailure` 对象 ⇒ 真实载荷与类型面不一致。只认对象会让这一类失败静默变成 ok:true（评审 L2）
+    // `LlmFailure` 对象 ⇒ 真实载荷与类型面不一致。只认对象会让这一类失败静默变成 ok:true
     const projection = projectDshNotification(
       sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind: 'error', error: '传输中断' } }),
       newState(),
@@ -412,9 +411,9 @@ describe('projectDshNotification（按实测回写）', () => {
   });
 
   it('收尾交出的是**累计**计量（不清零），发射权归骨架（同一轮只发一条 usage）', () => {
-    // 裁决（Task 11 真机端到端实测到同一轮两条 usage）：投影只交 tokens/turns，
+    // 裁决（端到端出现过同一轮两条 usage）：投影只交 tokens/turns，
     // 由骨架唯一的循环内发射口发那一条 usage（去重也在骨架里）。
-    // 2026-09-28 起累计值**不再取走归零**：事件本身是覆盖语义，跨 step 相加由累计值天然给出。
+    // 用户口径：累计值**不取走归零**——事件本身是覆盖语义，跨 step 相加由累计值天然给出。
     const state = newState();
     projectDshNotification(sessionEvent('step/start', { turn: 1, step: 1 }), state, CONTEXT);
     projectDshNotification(
@@ -469,7 +468,7 @@ describe('projectDshNotification（按实测回写）', () => {
 
   it('已识别但有意不投影的通知（session.status）也保留原始负载，不静默丢弃', () => {
     // 实测：`session.status` 是 running/idle 两条，与轮次语义无关，骨架不需要它。
-    // 「有意不投影」不等于「可以丢」——它仍然落一条保留负载的日志事件（§5.6.3）
+    // 「有意不投影」不等于「可以丢」——它仍然落一条保留负载的日志事件
     const projection = projectDshNotification(
       { method: 'session.status', params: { sessionId: 'session-1', status: 'idle' } },
       newState(),
@@ -481,12 +480,12 @@ describe('projectDshNotification（按实测回写）', () => {
 });
 
 /**
- * 消息级用量（2026-10-06，spec `2026-10-01-agent-message-spec-design-v3.md` §3.2）。三条判据：
+ * 消息级用量。三条判据：
  *   · wire 上的 `data.usage` **逐字**进这条消息的 `usage`（不是累计快照、不是行级 tokens）；
  *   · 三项缺一 ⇒ 消息级与行级**同时**是「未采集」（都不填 0）；
  *   · 子会话的消息同样带它自己的用量（与主会话共用同一个归一函数）。
  */
-describe('assistant/message 的消息级 usage（2026-10-06）', () => {
+describe('assistant/message 的消息级 usage', () => {
   it('wire 的 data.usage 逐字进这条消息的 usage', () => {
     const projection = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
@@ -560,11 +559,11 @@ describe('assistant/message 的消息级 usage（2026-10-06）', () => {
 });
 
 /**
- * **消息级用量与行级累计并存且互不影响**（2026-10-06 的回归钉）。
+ * **消息级用量与行级累计并存且互不影响**。
  * 两条口径同源于同一条 wire 负载，但一个是「这一次调用」、一个是「到目前为止」——
  * 改动最容易在这里出静默的错：拿累计当消息级（页脚数字越滚越大）或反过来（卡片少报）。
  */
-describe('消息级与行级两条口径并存（2026-10-06）', () => {
+describe('消息级与行级两条口径并存', () => {
   it('同一条通知喂两处：消息级各是各的，行级是两次之和', () => {
     const state = newState();
     const first = projectDshNotification(
@@ -597,8 +596,8 @@ describe('消息级与行级两条口径并存（2026-10-06）', () => {
 });
 
 /**
- * 归属与**每会话自己的**轮次号（2026-10-05，spec
- * "docs/protocols/message-spec.md"「轮次归属」）。
+ * 归属与**每会话自己的**轮次号（spec
+ * `docs/protocols/message-spec.md`「轮次归属」）。
  *
  * 口径：消息的 `roundTrip` 与 `usage.turn.round` 是**同一个数**，都由 `message.ts` 的
  * `dshTurnAttribution` 算出来——取厂商给的**每会话** `step`（真机：主会话 1,2,3、子会话 1,2,3），
@@ -614,9 +613,9 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
   const CHILD_STARTED = { method: 'subagent.started', params: { subagentId: 'child-1', parentSessionId: 'session-1' } };
 
   /**
-   * 每会话自己的轮次号（2026-10-05，spec §2.3）：`data.step` 是厂商给的**每会话**序号
+   * 每会话自己的轮次号：`data.step` 是厂商给的**每会话**序号
    * （真机：主会话 1,2,3、子会话 1,2,3），消息的 `roundTrip` 与 `usage.turn.round` 都用它。
-   * 变异体：改回 `state.turns`（本行全局计数）⇒ 主会话第二条读到的是**别人**的数——实测 **1**
+   * 用 `state.turns`（本行全局计数）⇒ 主会话第二条读到的是**别人**的数——**1**
    * （全局计数里只有子会话那一步），子会话再多跑几步时它还会被推得更高。号因此既不等于自己的步数、
    * 也不等于任何会话的步数。
    */
@@ -662,9 +661,9 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
 });
 
 /**
- * 工具调用 / 结果的**人话摘要**（用户口径，2026-09-29）。
+ * 工具调用 / 结果的**人话摘要**（用户口径）。
  *
- * 背景：卡片底部那一条活动行显示的是 `log.summary`。真机实测（run `bea0564d` 的 dsh 行）里
+ * 背景：卡片底部那一条活动行显示的是 `log.summary`。实测里
  * 142 条日志绝大多数是 `{"method":"session.event","params":{…}}` 信封——没有摘要时界面只能
  * 把那坨 JSON 滚出来（用户原话：「动画内容应该是具体的消息，不应该是 json 字符串」）。
  *
@@ -736,10 +735,10 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
   });
 
   /**
-   * 模型说的话要能在卡片上滚（用户口径 2026-09-29：「实时滚动智能体的 event message」，
+   * 模型说的话要能在卡片上滚（用户口径：「实时滚动智能体的 event message」，
    * 而且「评分的消息也在这里滚动展示」——评分阶段跑的是同一个适配器，走的就是这条出口）。
    *
-   * **不带摘要**（2026-10-07 统一）：它本身就是人话，`activityOf` 在没有摘要时直接取 `text`；
+   * **不带摘要**（统一口径）：它本身就是人话，`activityOf` 在没有摘要时直接取 `text`；
    * 再配一份截断过的摘要等于同一句话存两份（两处口径还会漂移）。
    */
   it('assistant/message 的文本落成一条日志（过去只进 finalText，整轮不出现在任何地方）', () => {
@@ -816,12 +815,12 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
 });
 
 /**
- * stream-tap 增量伪事件（`aieval/delta`，2026-10-09）：**只产内容消息、事件侧零草稿**。
+ * stream-tap 增量伪事件（`aieval/delta`）：**只产内容消息、事件侧零草稿**。
  *
- * 为什么这一条必须有专门守卫（原先全仓没有）：这是 dsh 唯一一条**自造**的通知类型，
+ * 为什么这一条必须有专门守卫：这是 dsh 唯一一条**自造**的通知类型，
  * 而它的分流一旦写错（落进末尾的未识别 `log` 兜底），一次运行几百上千条增量帧就会把
  * 「原始输出」面板刷成 JSON 流水——那正是这条口径要防的事，且症状（面板卡死）与故障原因
- * （分流写错）在界面上完全对不上。套件的 §2.12 用条数间接钉它，这里直接钉草稿数组。
+ * （分流写错）在界面上完全对不上。套件的增量隔离判据用条数间接钉它，这里直接钉草稿数组。
  */
 describe('projectDshNotification：stream-tap 增量（aieval/delta）', () => {
   /** 一条 tap 伪通知（形状与 `stream-tap.ts` 的 `lineToNotification` 逐字同构） */
@@ -849,11 +848,11 @@ describe('projectDshNotification：stream-tap 增量（aieval/delta）', () => {
 });
 
 /**
- * **通知流中断**伪事件（`aieval/stream-failure`，2026-10-09 真机事故的产物）。
+ * **通知流中断**伪事件（`aieval/stream-failure`，真机事故的产物）。
  *
  * 为什么必须有这一支：SDK 的订阅失败是**静默**的（兄弟订阅与传输读循环都不受影响，
- * 见 `lib/index.js` 的 `NotificationSubscriptionImpl.push/fail`），而我们的消费循环原先把它
- * 当成「流正常结束」⇒ 真机形状是**执行日志整段空白、行照旧判 judged、任何日志里零线索**
+ * 见 `lib/index.js` 的 `NotificationSubscriptionImpl.push/fail`），把它当成「流正常结束」就会
+ * 得到**执行日志整段空白、行照旧判 judged、任何日志里零线索**的真机形状
  * （run `7f05c765` 的 dsh 行：厂商会话日志 201 条事件、我们只收到前 13 条）。
  * 这一支的存在意义只有一个：让「为什么是空的」在界面上有答案——**一条** stderr 的 log。
  */

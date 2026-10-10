@@ -1,5 +1,5 @@
 /**
- * 路由注入：base URL 规范化 + 「替换型」子进程环境构造（spec §5.6.5）。
+ * 路由注入：base URL 规范化 + 「替换型」子进程环境构造。
  * 三条硬性不变量：
  *  1. 注入后返回**新对象**，输入的 route 只读，`process.env` 永不写入（有静态断言守着）；
  *  2. 子进程环境以宿主环境为底（不展开就补不上 PATH，子进程连 node 都找不到），再覆盖该行独立 HOME；
@@ -24,7 +24,7 @@ export function ensureV1Suffix(baseUrl: string): string {
 }
 
 /**
- * 只对 **URL 的路径段** 做规范化，query / fragment 一个字符都不动（评审 F3）。
+ * 只对 **URL 的路径段** 做规范化，query / fragment 一个字符都不动。
  * 为什么不能用「整串结尾」的正则：用户粘进来的 baseUrl 可能带 `?x=1`/`#frag`/重复斜杠，
  * 于是 `…/anthropic/v1?x=1` 会**不拆** `/v1`（claude 拼成 `/v1/v1/messages`），
  * 而 `…/anthropic?x=1` 会把 `/v1` **追加进 query 值**（codex 打到错误路径）——主动写坏比原样放过更糟。
@@ -55,7 +55,7 @@ function trimTrailingSlash(path: string): string {
  * 把路径段里连续的斜杠收敛成一个。
  * 为什么必须自己做：实测 `new URL('https://gw/a//v1')` 的 pathname **保留** `//`（只有空路径 `https://gw`
  * 才被序列化成 `/`）——不收敛的话 `stripV1Suffix('…/anthropic//v1')` 会残留尾斜杠、与 SDK 追加的
- * `/v1/messages` 拼成 `//v1/messages`（评审 F3 那一格）。
+ * `/v1/messages` 拼成 `//v1/messages`。
  */
 function collapseSlashes(path: string): string {
   return path.replace(/\/{2,}/g, '/');
@@ -78,7 +78,7 @@ export interface SubprocessEnvInput {
  * 为什么必须是替换型（而不是往 process.env 里塞再让 SDK 自己读）：并行时多行同时驱动不同供应商，
  * 一旦靠读 `process.env` 再兜底写回来注入，第二行起就再也拿不到自己的凭据——写入是粘性的（A5）。
  *
- * 键名口径（评审 F4）：**逐项保留宿主的键名形态**，不额外补 `PATH` 的另一种拼写——
+ * 键名口径：**逐项保留宿主的键名形态**，不额外补 `PATH` 的另一种拼写——
  * Windows 的环境块通常写 `Path`，POSIX 写 `PATH`，而子进程查环境变量在 Windows 上不区分大小写，
  * 两种拼写都能让 CLI 找到 `node`。因此 `env.PATH` 在 Windows 真实进程里可能是 `undefined`
  * （值在 `env.Path` 上），这是**正确行为**而非缺陷；断言要大小写不敏感地找 path 键。

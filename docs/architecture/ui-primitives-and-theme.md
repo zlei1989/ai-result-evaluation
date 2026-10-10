@@ -6,10 +6,10 @@
 
 ## 形态与交互
 
-三层组织：`src/base/` 单一职责原语、`src/composite/` 面向功能块的组装（`AppTopNav`、`eval-row-card`、`agent-log/` 全家、`provider-*`、`rubric-*` 等）、`src/testing/` jsdom 桩。base 随真实消费者生长（脚手架期只实现有消费者的），当前核心原语与各自的实现契约：
+三层组织：`src/base/` 单一职责原语、`src/composite/` 面向功能块的组装（`AppTopNav`、`eval-row-card`、`agent-log/` 全家、`provider-*`、`rubric-*` 等）、`src/testing/` jsdom 桩。base 随真实消费者生长（只实现有消费者的），当前核心原语与各自的实现契约：
 
 - **PageShell**（页面根容器，「弹性布局 + 横向沾满」唯一出口）：四条不变量——纵向 Flex 根 + `width:100%` + `minWidth:0` + `height:100%`；**刻意不设 `alignItems`**（纵向 Flex 的交叉轴是水平方向，`flex-start` 会让子元素不横向拉伸）；`padding` / `gap` 默认不落 style（原语默认值一旦非 0，页面迁移会凭空新增间距）；**`minHeight:0` 无条件写**（高度链每个 scroll 模式共用，内容撑开容器时页面根收缩不到 flex 分配的高度，整页被顶出「顶栏那一截」）。结构性不变量自己写进**内联 style**——antd 的 `display` / `flex-direction` 走 CSS 类，内联读不到；不变量若只活在类名里，antd 换实现或改类名就静默失效。
-- **ResizableColumns**（多栏可拖）：尺寸口径三条（读 antd `useSizes.js` / `useResize.js` 得出）——任一 Panel 带 `size` 整体走 propSizes 分支 ⇒ **弹性列必须不给 `size`**（条件展开而非 `size={0}`，给它传期望值会让它钉死、另一栏被压成 0）；`size` 是响应式受控入口，还原宽度必须给 `size`（`defaultSize` 刷新回旧值）；**受控拖拽必须把 `onResize` 回写进 `size`** 否则松手弹回（以 `onResize` 为准，别只监听 `onResizeEnd`）。`HANDLE_HIT_WIDTH = 6`；`restoreWidthsToAvailable` 是比例还原纯函数（弹性列原样回填）。栏增减后必须重收集宿主观察器，否则 `onPaneWidthChange` 从此**静默失效**。
+- **ResizableColumns**（多栏可拖）：尺寸口径三条（以 antd `useSizes.js` / `useResize.js` 的实现为准）——任一 Panel 带 `size` 整体走 propSizes 分支 ⇒ **弹性列必须不给 `size`**（条件展开而非 `size={0}`，给它传期望值会让它钉死、另一栏被压成 0）；`size` 是响应式受控入口，还原宽度必须给 `size`（`defaultSize` 刷新回旧值）；**受控拖拽必须把 `onResize` 回写进 `size`** 否则松手弹回（以 `onResize` 为准，别只监听 `onResizeEnd`）。`HANDLE_HIT_WIDTH = 6`；`restoreWidthsToAvailable` 是比例还原纯函数（弹性列原样回填）。栏增减后必须重收集宿主观察器，否则 `onPaneWidthChange` 从此**静默失效**。
 - **ListDetailLayout**（「列表 + 可拖拽右栏」唯一出口，用例页 / 评测页复用）：右栏显示条件 = `detailOpen && detail !== null && detail !== undefined`（**两个都判**，只判开关会渲染一条空栏）；单栏退化不用宽 0 的 Panel、不用 SplitPane；`PANE_PADDING`（= 8）导出常量（同时是吸底操作栏对齐依据）。内部已是 `PageShell`，页面**不再自己套一层**。
 - **SplitPane**（两栏薄适配）：`defaultSize`（挂载读一次），**不支持刷新还原拖过的宽度**——需要还原用 ResizableColumns；现状**无生产消费者**，保留为「不需要还原宽度时的两栏原语」。
 - **stored-preference**（偏好记忆）：URL 记「在看什么」（`?panel=` / `?id=`）、localStorage 记「怎么显示」（栏宽、开关）——个人偏好不该随链接串味。读取路径**绝不抛错**（SSR / 隐私模式 / 禁用 / 脏值一律回落默认）；`useStoredWidth` **挂载后再读**（首帧读会产生水合不一致）。
@@ -39,10 +39,10 @@
 
 | 边界 | 状态 | 处置与判据 |
 |---|---|---|
-| 双击复位不是 antd 能力 | 已纠正的口径 | antd 6.6.5 `Splitter` 无内置双击复位（`es/splitter/SplitBar.js:203` 只把双击转给可选的 `onDraggerDoubleClick`，无人传）；需要时调用方自行实现，本期不做 |
+| 双击复位不是 antd 能力 | 现状 | antd 6.6.5 `Splitter` 无内置双击复位（`es/splitter/SplitBar.js:203` 只把双击转给可选的 `onDraggerDoubleClick`，无人传）；需要时调用方自行实现，本期不做 |
 | ListDetailLayout 比例还原实测未生效 | 已知弱点，本期不修 | 传给 `restoreWidthsToAvailable` 的 `widths` 是 `[0, preferredWidth]`（弹性列写死 0），只要 `available ≥ preferredWidth + 6` 就原样返回 ⇒ 缩窄时右栏恒保偏好宽（实测恒 380），左栏被压到 88px、16px——低于它声明的 `min: 120`；修法（扣掉弹性列 min，或把左栏实测宽喂进 widths）留给后续。底线是「窗口变窄不崩」，勿把比例收缩写成已兑现能力 |
 | SplitPane 无生产消费者 | 保留 | 留在 ui 出口作「不需要还原宽度的两栏原语」；「右栏一律用 `end`」是给未来调用方的约定，非现状描述 |
-| `CopyOnClick` / `OperationStatus` 未实现 | 现状 | 别照脚手架期的占位去代码里找；中止按钮分别写在 `run-detail-panel.tsx`（运行级）与 `eval-row-card.tsx`（行级），未抽成原语 |
+| `CopyOnClick` / `OperationStatus` 未实现 | 现状 | 别照脚手架占位去代码里找；中止按钮分别写在 `run-detail-panel.tsx`（运行级）与 `eval-row-card.tsx`（行级），未抽成原语 |
 | `.tsx` 测试只能在库包写 | 硬边界 | web-next 必须留 `jsx: preserve`（Next 需要），Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`，改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效；应用内测试一律 `.ts` |
 | `styles.dragger` 覆盖陷阱 | 实测钉住 | 传 `width` 会把命中带改成 0（实测三条分隔条全为 0）；命中带宽度由 antd 尺寸变量决定，运行时变量名是 `--ant-splitter-split-bar-size` 等（`--ant-splitter-bar-size` 不存在）；两栏**间距**是组件自己写的 CSS `gap`，与 antd 无关 |
 | 顶栏高度的两处实测数字 | 实测钉住 | `height: 40` 与 `flexShrink: 0` 都是确定值；37.84px / 38.27px 随视口浮动，**不要当固定常数**引用 |

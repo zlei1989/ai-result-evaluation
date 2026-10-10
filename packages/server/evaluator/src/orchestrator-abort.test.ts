@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * 终止语义（§5.4 的表）
+ * 终止语义
  *
- * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：终止语义（§5.4 的表）。
+ * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：终止语义。
  * 共享夹具、假适配器接缝与 `until` 等待器都在 `./testing/orchestrator-harness`——
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
@@ -21,7 +21,7 @@ vi.mock('./run-store', async (importOriginal) => {
 
 registerOrchestratorHooks();
 
-describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
+describe('终止语义', { timeout: TEST_TIMEOUT_MS }, () => {
   it('终止（串行）：正在跑的行 canceled，还没轮到的行 skipped，两者可区分', async () => {
     const { run } = seedRunnableRun({ rowCount: 3, executionMode: 'serial' });
     fakeAgents.scripts.set('codex', { mode: 'gate' });
@@ -90,7 +90,7 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
    * 判据不靠 sleep：等**轮收尾**——终止后队列必须立刻停下，轮很快落到 `partial`；少了那笔轮级记录时
    * 队列会去起第二行（gate 挂住）⇒ 轮永远收不了场，`until` 超时即红。
    */
-  it('终止（串行）：整轮终止后队列一个都不再起——队列里那行不是 pending（上一轮的 failed）也不例外（§5.4）', async () => {
+  it('终止（串行）：整轮终止后队列一个都不再起——队列里那行不是 pending（上一轮的 failed）也不例外', async () => {
     const { run } = seedRunnableRun({ rowCount: 3, executionMode: 'serial' });
     const rows = run.rows;
     const first = rows[0];
@@ -116,9 +116,9 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 单行终止（**运行中分支**，终审 M3）：`orchestrator.ts:767-775` 此前零测试——
+   * 单行终止（**运行中分支**）：
    * 同一 describe 里 `abortRow` 打的是 **pending** 行（走 `:777-782` 的 skipped 分支），
-   * 另有 CONFLICT 用例；而 p6 的 `canceled` 证据来自 `abortRun`（整轮终止，另一个函数）。
+   * 另有 CONFLICT 用例；而 `canceled` 的证据来自 `abortRun`（整轮终止，另一个函数）。
    * 「单行终止 ⇒ canceled ⇒ 子进程与工作区按释放顺序收掉」这条路径既无单测也无真机（Run D 自认未执行）。
    *
    * 判据三条，缺一条都不足以说这条分支对：
@@ -226,9 +226,9 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(row?.score).toBeNull(); // 快照里不写分数
     const events = readEvents(rowEventsFile(home.workspaceRoot, run.id, rowId));
     /**
-     * 证据留在日志里，而且**必须标出它的来源**（评审 Minor-1）。这一笔续作跑的时候行任务早已收尾
+     * 证据留在日志里，而且**必须标出它的来源**。这一笔续作跑的时候行任务早已收尾
      * （`clearRowRuntime` 释放了 `rowAborts`），用户可能已经点了「重新执行」——孤儿的 `score` 会夹在
-     * 新一轮的事件之间（改动前不可能），没有标记就会被当成**新一轮的分数**（F14：事件日志是唯一真相源）。
+     * 新一轮的事件之间，没有标记就会被当成**新一轮的分数**（事件日志是唯一真相源）。
      * 三条判据各钉一面：分**只出现一次**（标记不复制它）、带标记的 log 存在、且它紧排在分**之前**。
      */
     const scores = events.filter((event) => event.type === 'score');
@@ -239,7 +239,7 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * **准备阶段（`preparing`）被终止**（阶段评审 High-1）。
+   * **准备阶段（`preparing`）被终止**。
    *
    * `startRun` 的同步前缀（`executeRun` → `runRow` → `runRowAttempt`）会把并行行**全部**推到 `preparing`
    * 之后才返回（串行则是第一行），而 `isRunningRow('preparing') === true`（`contracts/src/run.ts`）⇒
@@ -287,13 +287,13 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * **评分阶段的终止 race**（spec §6 / D13）：评分器不理 abort 时，用户终止之后这一行也必须收场。
+   * **评分阶段的终止 race**：评分器不理 abort 时，用户终止之后这一行也必须收场。
    *
-   * 未修的形态（挂住）：评分那一步原先只有裸 `await`，而「行落终态」的唤醒器只接在**候选**阶段那个
+   * 未修的形态（挂住）：评分那一步只有裸 `await`，而「行落终态」的唤醒器只接在**候选**阶段那个
    * `Promise.race` 上 ⇒ `abortRow` 同步把行落成 `canceled`，`runRowAttempt` 却一直等在评分调用上
    * （`turn.ts` 明写 `run()` 可能无界返回）：`runRow` 的 finally（`clearRowRuntime`）永不执行、
    * 轮级任务永不收尾。使用者的观感是「点了终止、状态变成已终止」，而这一轮从此永远停在「执行中」
-   * （`assertRunMutable` 也一直拒它）——正是 §1.4 记的那条缺口。
+   * （`assertRunMutable` 也一直拒它）——正是那条缺口。
    *
    * 判据为什么**不是**「行状态是 canceled」：那一格由 `abortRow` **同步**落库，没有 race 的实现照样
    * 满足它（它只证明按钮生效，不证明任务收场）。收场的判据取**轮级收尾**：`finalizeRun` 只在所有行
@@ -327,7 +327,7 @@ describe('终止语义（§5.4 的表）', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   /**
-   * 同一条 race 在**重新评分**那条旁路上的形状（spec §6：`rescoreAttempt` 自己造唤醒器并注册
+   * 同一条 race 在**重新评分**那条旁路上的形状（`rescoreAttempt` 自己造唤醒器并注册
    * `terminalWaiters`，保持两条路同形）。
    *
    * 为什么必须单独一条：重评不在 `runTasks` 里，「行落终态」的唤醒器对它**没有任何现成的来源**——

@@ -36,7 +36,7 @@ vi.mock('./run-store', async (importOriginal) => {
 registerOrchestratorHooks();
 
 describe('执行模式：并行与串行', { timeout: TEST_TIMEOUT_MS }, () => {
-  it('串行下每行都有**独立**工作目录（防回归到「共用目录」这个致命错误，F6）', async () => {
+  it('串行下每行都有**独立**工作目录（防回归到「共用目录」这个致命错误）', async () => {
     const { run } = seedRunnableRun({ rowCount: 3, executionMode: 'serial' });
 
     startRun(run.id);
@@ -54,7 +54,7 @@ describe('执行模式：并行与串行', { timeout: TEST_TIMEOUT_MS }, () => {
       expect(row.workspacePath).toBe(expectedWorkspace(run.id, row.id));
       expect(existsSync(join(row.workspacePath, '.git'))).toBe(true);
     }
-    // 分支名也必须各不相同（同一用例下多候选共用分支名会互相踩，§5.5）
+    // 分支名也必须各不相同（同一用例下多候选共用分支名会互相踩）
     expect(new Set(rows.map((row) => row.branch)).size).toBe(3);
   });
   it('「开始」只跑未完成的行：已 judged 的行不重跑', async () => {

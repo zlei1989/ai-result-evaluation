@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * SSE 帧产出：回放历史 → 接进程内事件总线 → 终态关流。
- * 帧格式是本文件最硬的断言对象：`id` 缺了浏览器就无法按 Last-Event-ID 续订（spec §7.4）；
+ * 帧格式是本文件最硬的断言对象：`id` 缺了浏览器就无法按 Last-Event-ID 续订；
  * `data` 里出现裸换行会把一帧劈成两帧，所以断言的是逐行的精确文本。
  *
  * `subscribeRowEvents` 由本文件自己实现（vi.mock 的工厂里维护一张监听表），
@@ -22,7 +22,7 @@ import { removeTreeWithRetry } from './testing/cleanup';
 /** 本文件挂上去的总线监听（key = `${runId}/${rowId}`） */
 const listeners = new Map<string, Array<(event: AgentEvent) => void>>();
 /**
- * **评分那条事件流**的监听表（2026-10-10）：与候选那张**刻意分开**——共用一个 Map 的话，
+ * **评分那条事件流**的监听表：与候选那张**刻意分开**——共用一个 Map 的话，
  * 「评分事件不投给执行日志的订阅者」这条不变量在这个替身里会假绿。
  */
 const judgeListeners = new Map<string, Array<(event: AgentEvent) => void>>();
@@ -120,7 +120,7 @@ describe('streamRowEvents', () => {
     const text = await readAll(streamRowEvents('run-1', 'r-1', 0));
 
     const lines = text.split('\n');
-    // 首块是 ready 注释帧（打开即有首字节，F3-①）：两行，客户端按 SSE 规范忽略它
+    // 首块是 ready 注释帧（打开即有首字节）：两行，客户端按 SSE 规范忽略它
     expect(lines[0]).toBe(': ready');
     expect(lines[1]).toBe('');
     expect(lines[2]).toBe(`id: ${first.seq}`);
@@ -166,7 +166,7 @@ describe('streamRowEvents', () => {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
 
-    // 首块是 ready 注释帧（打开即有首字节，F3-①），历史回放在它之后
+    // 首块是 ready 注释帧（打开即有首字节），历史回放在它之后
     expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
     const replayed = await reader.read();
     expect(decoder.decode(replayed.value)).toContain('event: status');
@@ -187,7 +187,7 @@ describe('streamRowEvents', () => {
 
   it('总线推来一条「已经发出过的 seq」时不再成帧（历史与实时按 seq 去重）', async () => {
     // 服务侧不主动制造重复帧：重号事件会让浏览器按 Last-Event-ID 续订时把新事件去重丢掉
-    //（spec §7.4 / §8）。这里让总线把回放过的那一条原样再推一次。
+    // 这里让总线把回放过的那一条原样再推一次。
     store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
     const replayed = append('run-1', 'r-1', { type: 'status', status: 'running' });
 
@@ -244,7 +244,7 @@ describe('streamRowEvents', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('打开即有首字节：不等 15s 心跳就发一条 ready 注释帧（F3-①）', async () => {
+  it('打开即有首字节：不等 15s 心跳就发一条 ready 注释帧', async () => {
     // 为什么这条重要：SSE 的响应头要等第一次 `controller.enqueue` 才 flush ⇒ 空历史 + 无新事件时
     // 浏览器迟迟不触发 `onopen`，徽标停在「未连接」，代理也可能把空连接当空闲回收。
     // 用假定时器把时间钉住：**一次都不推进时钟**，首块必须已经拿到——没有 ready 帧时这里挂住。

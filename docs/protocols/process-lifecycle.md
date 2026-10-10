@@ -34,6 +34,48 @@
 | 临时目录残留（`%TEMP%\aieval-evaluator-*` 长期既存且累积） | 已知代价；清理靠外层，不进产品逻辑 |
 | dsh 停止走「等 5 秒宽限 → WARN → 强制关闭」 | 设计（`cancelMidTurn: false`）；点「终止」后该行晚 5 秒变 `canceled` |
 
+## FAQ：行结束后留下的浏览器
+
+这条是**跨家 / 环境类**的（任何一家只要注入了会拉起浏览器的 MCP server 都成立），故不进三份厂商 FAQ，
+落在这里；《故障索引》有登记。
+
+### 行结束后仍能 `pgrep` 到上一轮的浏览器（重跑同一行撞 `Browser is already in use for …, use --isolated …`）
+
+**现象**：行已经收尾、厂商 CLI 与 MCP server 都从进程表里消失了，但 `pgrep -f <浏览器标记>` / `kill -0 <pid>`
+仍能找到**上一轮那个浏览器**——它由 MCP server 拉起，**没有任何人收**。后果最容易在「重跑同一行」时现形：
+同一个 rowId ⇒ 同一个 `configHome` ⇒ 同一个 profile，playwright MCP 启动前的锁检查
+（`isProfileLocked5Times`：重试 5 次、每次隔 1 s）失败后抛出下面这句（原文照抄，`<profile 目录>` 是那一行的
+profile 路径）：
+
+```text
+Browser is already in use for <profile 目录>, use --isolated to run multiple instances of the same browser
+```
+
+⚠️ **本环境的一条测量坑**：沙箱拒绝 `/bin/ps`（`bash: /bin/ps: Operation not permitted`，退出码 **126**）——
+拿 `ps -p <pid>` 判存活会把「被拒」读成「进程已消失」。可用判据是 `kill -0 <pid>` 与
+`pgrep -f <唯一标记>`（标记要唯一：用每行专属的路径或 argv 片段）。
+
+**日期**：2026-10-10（两臂真机 claude 会话 + 一台注入的 MCP server，它自己再生一个孙进程）
+
+**根因**：**孤儿是孙进程，不是 MCP server**——两层之间的耦合方式不一样：
+
+- **CLI ↔ MCP server**：MCP 的 stdio 传输把 server 的生命周期绑在**管道**上。父进程一死（或被 abort 杀掉），
+  管道写端关闭 ⇒ server 读到 EOF ⇒ 自己退出。产品口径的停止序列（`interrupt()` → 等 5 s →
+  `controller.abort()`）与猝死口径（拿到 init 直接 `process.exit(0)`）**两臂下 CLI 与 server 都被带走**。
+- **MCP server ↔ 浏览器**：没有任何协议层耦合（浏览器不读 server 的 stdin）。上游死得再干净也带不走它，
+  而**我们够不着**：claude 这一类由 SDK 代 spawn，公开面拿不到 CLI 的 pid（`providers/claude-code/index.ts`
+  已写明「进程树回收是尽力不是保证」），更别说孙进程；按 profile 路径扫全表杀的跨平台成本与误杀风险不划算。
+
+**解决方案**：**不清理孤儿**（进程树这条路不可达 + 收益为负），改从**根上**消掉它的后果——默认参数里带
+`--isolated`（`SETTINGS_DEFAULTS.mcpServers.playwright` 的 `args`）：profile 留在内存、不落盘 ⇒ 既没有
+`SingletonLock` 可撞，也没有 20 MB+ 残留可攒。判据与守卫：`contracts/src/settings.test.ts` 钉住播种参数逐字
+（`--isolated` 掉了会红）、`agents/src/mcp.test.ts` 钉住翻译后的形状；真机冒烟验残留**只能查进程**
+（`--isolated` 下没有 profile 目录可查），用 `kill -0` / `pgrep -f`，本环境不要用 `ps`。
+
+**未覆盖（如实列出）**：浏览器那一半没有直接实测（受限环境起不了浏览器），但「孙进程存活」这条主干结论
+不依赖孙进程具体是什么——它只依赖「MCP server 与它的子进程之间没有 stdio 耦合」；codex / dsh 的收尾形状
+不同，两家的孙进程命运**未测**。
+
 ## 相关链接
 
 - 活文档：[Codex FAQ](/faq/codex)——EPERM 清理失败条（完整证据链与真机守卫）、`Reconnecting` 条

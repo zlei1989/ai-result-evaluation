@@ -56,12 +56,12 @@ describe('评分尺子只有一个来源：全局默认', { timeout: TEST_TIMEOU
   });
 
   /**
-   * M1 的那个窗口：编排层原先取一次 `settings` 快照，而 `resolveJudgeRoute` 在评分时刻
-   * 又 `loadConfig()` 一次。窗口 = 整段 agent 执行时间（秒到分钟）：用户在设置页换掉默认评分模型，
-   * 记在行上的 `judgeProviderId`（旧）与真正发出的 `route.modelId`（新）就不是同一把尺子。
-   * 修法：评分前**现取一次** `loadConfig()`（与 `resolveJudgeRoute` 内部那次之间没有 await）。
+   * 评分时刻的 `settings` 窗口：编排层若复用一开始那份 `settings` 快照，而 `resolveJudgeRoute` 在评分
+   * 时刻又 `loadConfig()` 一次，窗口就是整段 agent 执行时间（秒到分钟）——用户在设置页换掉默认评分模型，
+   * 记在行上的 `judgeProviderId` 与真正发出的 `route.modelId` 就不是同一把尺子。
+   * 判据：评分前**现取一次** `loadConfig()`（与 `resolveJudgeRoute` 内部那次之间没有 await）。
    */
-  it('评分前改默认评分模型：行上记录的 providerId 与真正生效的路由仍是同一把尺子（M1 的窗口）', async () => {
+  it('评分前改默认评分模型：行上记录的 providerId 与真正生效的路由仍是同一把尺子（评分时刻的 settings 窗口）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
     const rowId = run.rows[0]?.id ?? '';
     const second = makeProviderFixture({
@@ -96,7 +96,7 @@ describe('评分尺子只有一个来源：全局默认', { timeout: TEST_TIMEOU
 
 
 /**
- * 第 7 步的两条通路（spec §7.3 / §7.4）。
+ * 第 7 步的两条通路。
  *
  * 本组用例统一用**候选 = codex（openai）+ 评分智能体 = claude-code（anthropic）**：假适配器的脚本
  * 按 `kind` 索引，两家同 kind 时无法分阶段驱动（`fakeAgents.scripts.set` 会同时命中候选与评审者）。
@@ -132,15 +132,15 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     expect(fakeAgents.calls[1]?.configHome).toContain('.judgehome');
     expect(fakeAgents.calls[0]?.configHome).toContain('.agenthome');
     /**
-     * 权限档按**阶段**分给（用户口径，2026-09-28）：候选要能改代码、装依赖、跑测试，
+     * 权限档按**阶段**分给（用户口径）：候选要能改代码、装依赖、跑测试，
      * 评审者只能看。为什么这两条必须钉在**编排层**：适配器那一侧两档都正确实现，也可能被
-     * 编排层传反——而传反的后果是**静默**的：候选改不动文件（在空 diff 上被评分，p6 冒烟 A1 的形状），
+     * 编排层传反——而传反的后果是**静默**的：候选改不动文件（在空 diff 上被评分，冒烟 A1 的形状），
      * 或者评审者把工作区改了（「查看改动」抽屉显示的不再是候选的产出）。别处没有任何观测量能区分。
      */
     expect(fakeAgents.calls[0]?.permission).toBe('full');
     expect(fakeAgents.calls[1]?.permission).toBe('read-only');
-    // 阴性面（F2）：评分前后的改动摘要一致时**一条污染记录都不该有**（2026-10-07 起它同时也是
-    // 「该行不许因污染被判失败」的阴性面）。少了这条断言，「无条件告警」的实现（不管摘要变没变都发
+    // 阴性面：评分前后的改动摘要一致时**一条污染记录都不该有**，它同时也是
+    // 「该行不许因污染被判失败」的阴性面。少了这条断言，「无条件告警」的实现（不管摘要变没变都发
     // 那条记录）在整套用例面前照样全绿——而它会天天误报。
     const events = readEvents(rowEventsFile(run.workspaceBase, run.id, rowId));
     expect(events.some((event) => event.type === 'log' && event.text.includes('改动了工作区'))).toBe(false);
@@ -168,7 +168,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     // 先把调用顺序钉住，再按索引取那一次：不钉的话，「断言看错了那一次调用」会以一条与能力判断
     // 无关的红/绿出现（候选那一次永远不带 schema，取错索引时 dsh 那条也会以另一种方式假绿）
     expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
-    // 端到端①（R34/R38）：评分阶段那一次 `run()` 的入参里**有** `outputSchema`，且逐格等于契约里那一份
+    // 端到端①：评分阶段那一次 `run()` 的入参里**有** `outputSchema`，且逐格等于契约里那一份
     // ——不是另拼一份、也不是 `{}`：schema 少一格，CLI 侧的约束就静默消失，而分数照出、行照样绿
     expect(fakeAgents.calls[1]?.outputSchema).toEqual(JUDGE_OUTPUT_JSON_SCHEMA);
     expect(getRun(run.id).rows[0]?.score?.structuredOutput).toBe(true);
@@ -185,7 +185,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     await runRow(run.id, rowId);
 
     expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'dsh']);
-    // 端到端②（R34/R38）：dsh 那一次 `run()` 的入参里**也**有这一格（A1 的关键：编排层不再替它
+    // 端到端②：dsh 那一次 `run()` 的入参里**也**有这一格（A1 的关键：编排层不再替它
     // 决定「这家给不了」）。降级是适配器按自己的能力做的，唯一痕迹是它报回的 `applied`
     // ——下面那条日志与 `structuredOutput=false` 都从它来，而不是从我们传没传 schema 推的。
     expect(fakeAgents.calls[1]?.outputSchema).toEqual(JUDGE_OUTPUT_JSON_SCHEMA);
@@ -214,7 +214,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     await runRow(run.id, run.rows[0]?.id ?? '');
     const row = getRun(run.id).rows[0];
     expect(row?.status).toBe('failed');
-    // 文案取自 `protocolMismatchMessage`（**四个判定点共用同一份**，计划 Task 2 Step 2）：
+    // 文案取自 `protocolMismatchMessage`（**四个判定点共用同一份**）：
     // 前缀点明「谁只接受什么」，再点明「被拒绝的那个模型属于哪种协议」。断言两半都要有——
     // 只钉前缀的话，`accepted` 那一段写错（比如把集合当单值用）也照样绿。
     expect(row?.error?.message).toMatch(/Codex 只接受 OpenAI 兼容协议/);
@@ -223,7 +223,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
   });
 
   /**
-   * **「评分不限时间」的形状**（用户口径，2026-09-28）：评分智能体长时间不返回时，这一行**不再**自己
+   * **「评分不限时间」的形状**（用户口径）：评分智能体长时间不返回时，这一行**不再**自己
    * 超时——外层兜底 + 硬停随「单行超时」一起删除。它停在 `judging`，唯一的出口是用户点「终止」。
    *
    * 这一条同时是「有人把兜底超时加回来」的守卫：加回来的话，下面 3 秒后的状态断言就会看到
@@ -265,7 +265,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
 });
 
 /**
- * 评分强度（spec §5.3）：`settings.defaultJudge.effort` 由 `resolveJudgeEffort()` 读一次，两条分支各自递下去。
+ * 评分强度：`settings.defaultJudge.effort` 由 `resolveJudgeEffort()` 读一次，两条分支各自递下去。
  *
  * 为什么必须在**编排层**再钉一次：`judge.test.ts` / `judge-agent.test.ts` 只能证明「值交到评分器手里
  * 之后会透下去」，证明不了「编排层把配置里的值交给了评分器」。少了这一段，用户在设置页选了 `max`
@@ -358,7 +358,7 @@ describe('评分强度：唯一读点 → 两条通路', { timeout: TEST_TIMEOUT
   });
 
   /**
-   * **第二道门**（spec §5.4 / D8）在编排层这一侧的落点：手改 config.json 写成 `dsh + medium`
+   * **第二道门**在编排层这一侧的落点：手改 config.json 写成 `dsh + medium`
    * （dsh 的域是 off/low/high/max，没有 medium）。不拦的话要跑到 dsh 的
    * `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远。
    * 两条通路**各自**有一道（它们是两个独立的调用点），故两条都要钉；判据都要有区分力：

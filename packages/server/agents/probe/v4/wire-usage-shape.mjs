@@ -1,7 +1,7 @@
 /**
- * 设计稿 §7.7.2 / §7.7.7 / §9.3 的 dsh 行：`assistant/message → data.usage.reasoningTokens` **真机从未观测到**。
+ * dsh 行：`assistant/message → data.usage.reasoningTokens` **真机从未观测到**。
  *
- * 本脚本做**两段证据**（缺一不可，见 §9.4.1 的教训：任何「厂商不产出 X」的结论，先证明抓取链路没损坏 X）：
+ * 本脚本做**两段证据**（缺一不可：任何「厂商不产出 X」的结论，先证明抓取链路没损坏 X）：
  *   ① **链路**：DeepSeek 三条 wire 上，`deepseek-chat` / `deepseek-reasoner` 各自回的 usage 到底有哪些键、
  *      有没有思考 token 那一格（这是**上游能不能给**的问题，与 dsh 无关）；
  *   ② **投影**：dsh 经 pi-ai 把上游 usage 映射成 `TokenUsage` 后，`reasoningTokens` 出不出现

@@ -2,26 +2,26 @@
 /**
  * 两个列表页（`/runs`、`/cases`）的**表格滚动口径**接线守卫。
  *
- * 要挡的缺陷（2026-09-28 用户口径：「右侧那条常驻滚动条藏起来」）：
- *   ① 把 `scroll={{ y: … }}` 加回 `Table` —— 给了它之后 rc-table 会把 `.ant-table-body` 的
- *      `overflow-y` 写死成 `scroll`（`@rc-component/table` 的 `Table.js`），数据只有两三行、
- *      毫无可滚内容时右侧也永远挂着一条空滚动条，而**没有任何用例会红**（页面照常渲染、
- *      类型照常通过）；
- *   ② 丢掉 `sticky` —— 表头不再钉住：外层容器滚动时表头跟着划走，长列表里连列名都看不到；
- *   ③ 表格落到 `TableScrollArea` 外面 —— 栏宿主的 `overflow: hidden` 会直接裁掉超出的行，
- *      下面的行点不到（`minHeight` / `float` 那类高度链问题同理，见下面 UI 组件的用例）。
+ * 要挡的缺陷：
+ * ① 把 `scroll={{ y: … }}` 加回 `Table` ——给了它之后 rc-table 会把 `.ant-table-body` 的
+ * `overflow-y` 写死成 `scroll`（`@rc-component/table` 的 `Table.js`），数据只有两三行、
+ * 毫无可滚内容时右侧也永远挂着一条空滚动条，而**没有任何用例会红**（页面照常渲染、
+ * 类型照常通过）；
+ * ② 丢掉 `sticky` ——表头不再钉住：外层容器滚动时表头跟着划走，长列表里连列名都看不到；
+ * ③ 表格落到 `TableScrollArea` 外面 ——栏宿主的 `overflow: hidden` 会直接裁掉超出的行，
+ * 下面的行点不到（`minHeight` / `float` 那类高度链问题同理，见下面 UI 组件的用例）。
  *
- * 2026-10-08 扩口（用户口径：「标题列左悬浮」，先 `/cases` 后 `/runs`）：两张表都**必须**给
+ * 扩口（用户口径：「标题列左悬浮」，先 `/cases` 后 `/runs`）：两张表都**必须**给
  * `scroll={{ x }}` 与标题列 `fixed: 'left'`，否则左栏被拖窄时各列只会被按比例压扁（标题是唯一
  * 吃剩余宽度的列，第一个被压成省略号）、更谈不上吸边。口径**没有放松**：那一刀仍砍在 `y` 上
- * （下面第 2 条断言，两种页面都管）；横向那一格只许钉**标题列**，钉到别的列上照红（第 4 条）。
+ * （下面第 2 条断言，两种页面都管）；横向那一格只许钉**标题列**，钉到别的列上照红。
  *
  * 为什么是读源码的文本守卫：`apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 硬约束：该应用
  * `jsx: preserve`），页面这一层没有渲染测试面——与本目录另外两个 `*-page-wiring.test.ts` 同一处境。
- * 断言口径分两块，都要**抠到就断、抠不到就抛**（守卫不许静默失效）：
- *   · `<TableScrollArea> … </TableScrollArea>` 之间（表格元素与它的 props）；
- *   · `const columns: TableColumnsType<…> = [ … ];` 那一段（列定义在滚动容器**外面**，是独立变量；
- *     第一版守卫就是在这里踩了空切片，靠「抠不到就抛」当场发现）。
+ * 断言口径分两块，都要**抠到就断、抠不到就抛**：
+ * · `<TableScrollArea> … </TableScrollArea>` 之间（表格元素与它的 props）；
+ * · `const columns: TableColumnsType<…> = [ … ];` 那一段（列定义在滚动容器**外面**，是独立变量；
+ * 第一版守卫就是在这里踩了空切片，靠「抠不到就抛」当场发现）。
  * 两块之外的换行重构不会误红，而上面几种缺陷必红。「这些不变量真的落在渲染结果上」由
  * `packages/client/ui/src/base/table-scroll-area.test.tsx` 与 `provider-table.test.tsx` 各守一半，
  * 真机几何（吸边 + 吸顶同时成立）由 `docs/guard/smoke-testing.md` 的真机红/绿判据与四要素口径看着。

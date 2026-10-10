@@ -4,7 +4,7 @@
  * 验两件事，都是适配器 D3/D3b 的前提：
  *   ① `- id: llm-pi-ai` 的 id 定向覆盖是否真的把路由装进合成树（判据：合成树里出现我们的路由键）；
  *   ② `- insert:` 是否能**从 overlay**（而不是 profile patch 文件）把 `ask_user_question` 挂上
- *      （判据：`tool-ask-user` 的出现次数从 0 变 2——与 p6 那次 `--dump-config` 观测同口径）。
+ *      （判据：`tool-ask-user` 的出现次数从 0 变 2——与那次 `--dump-config` 观测同口径）。
  *
  * 为什么先跑它：花 0 次模型调用就能证伪「overlay 写错了」，把失败面从
  * 「跑一次 DSH 要几分钟」缩到「一条 CLI 命令」。命令用真实的 dsh 二进制

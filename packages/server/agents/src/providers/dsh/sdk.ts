@@ -1,9 +1,9 @@
 /**
- * dsh 的厂商 SDK 懒加载外壳：**按真实探测回写后的入口形态**（Task 12 第 0 步）。
+ * dsh 的厂商 SDK 懒加载外壳：**按真实探测回写后的入口形态**。
  * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2` 的
  * `lib/types/{index,api,client,types,launch}.d.ts` 与 `lib/index.js`，实测记录见
  * "docs/protocols/dsh.md"（DSH 接入）与探测 dump。
- * 2026-10-09 从 0.1.7-rc.1 升到 **0.2.0-rc.2**（next 线最新非 alpha；该包从未发过非预发布版本）：
+ * 版本是 **0.2.0-rc.2**（next 线最新非 alpha；该包从未发过非预发布版本）：
  * 客户端 `lib/` 两版**逐字节相同**（md5 一致，仅锁定的 runtime `@deepseek-ai/dsh` 0.1.7→0.2.0），
  * 真机双协议探针（`probe/v3/dsh-pi-ai-both.mjs`）升级后跑通含计量——本文件的窄结构无需任何改动：
  *
@@ -19,7 +19,7 @@
  *    cancel: a timed-out request stays running server-side until the runtime is closed」）⇒
  *    `cancelMidTurn: false` 是实测结论，`close()` 是**必需**的释放出口（A7）。
  *
- * 注入落点（实测，与 spec §5.6.5 的口径有差异，见探测报告 §4/§5）：
+ * 注入落点（实测，与探测报告的口径有差异）：
  *  - 配置根是 `dshHome`（SDK 把它写成子进程的 `DSH_HOME`，`lib/index.js:161-190`），**不是 `HOME`**；
  *  - `env` 是**整体替换父进程环境**语义（`lib/types/types.d.ts` 的 `HarnessClientOptions.env`）⇒
  *    调用方必须自己展开宿主环境（本仓走 `buildSubprocessEnv`）；
@@ -72,7 +72,7 @@ export interface DshRunResult {
 }
 
 /**
- * 高层入口 `DeepSeekHarness` 的窄结构（只声明用到的方法与字段；厂商类型面一律不 import，§5.6.2）。
+ * 高层入口 `DeepSeekHarness` 的窄结构（只声明用到的方法与字段；厂商类型面一律不 import）。
  * `start()` 的幂等性来自实现（`this.initialized ??= …`），适配器因此可以在 `run()` 之前先把
  * 通知订阅挂上——否则「订阅之前到达的通知」会丢，而 `session.event` 是唯一的事件通道。
  */
@@ -109,9 +109,9 @@ export interface DshHarnessOptions {
   /**
    * 初始 profile 握手的墙钟上限（`HarnessClientOptions.initializeTimeoutMs`，**SDK 默认 10000**）。
    *
-   * 为什么必须由我们显式给：这一行**每次都跑在一个全新的 `configHome` 上**（§5.6.5 不变量 3：
+   * 为什么必须由我们显式给：这一行**每次都跑在一个全新的 `configHome` 上**（不变量 3：
    * 每行独立配置目录），也就是说**每一次运行都是冷启动**——dsh 要把整棵插件树解析完才回 initialize。
-   * 真机实测（Task 9，`probe/v3/dsh-adapter-dual-protocol.mts`）：在 SDK 默认的 10s 下，
+   * 实测（`probe/v3/dsh-adapter-dual-protocol.mts`）：在 SDK 默认的 10s 下，
    * **两条协议双双**以 `initialize timed out after 10000ms waiting for dsh profile "sdk"` 收场，
    * 适配器把它折成 `AGENT_FAILED`——界面上只看到「这一行失败了」，而真实原因与协议、与凭据、
    * 与 overlay 内容都无关，正是本仓最忌讳的那类「症状离真因很远」的失败。
@@ -120,7 +120,7 @@ export interface DshHarnessOptions {
   /**
    * 思考强度（`DeepSeekHarnessOptions.reasoningEffort`，值域由适配器插件定：`off/low/high/max`）。
    * 本仓按供应商声明的档位名原样透传。
-   * ⚠️ **不给 ≠ 沿用模型默认**（2026-10-06 更正）：实测「不给」落到 `reasoning:{effort:'none'}`，
+   * ⚠️ **不给 ≠ 沿用模型默认**：实测「不给」落到 `reasoning:{effort:'none'}`，
    * 也就是**显式关闭**。缺省档由适配器显式给（`DSH_DEFAULT_EFFORT`），关闭只有显式 `off` 才发生。
    * ⚠️ 这一格 dsh 侧是**硬校验**的（不支持的档位报 `UNSUPPORTED_REASONING_EFFORT`）。
    */
@@ -150,7 +150,7 @@ function hasHarnessCtor(raw: unknown): boolean {
   return typeof (raw as { DeepSeekHarness?: unknown } | null)?.DeepSeekHarness === 'function';
 }
 
-/** 懒加载 + 形状校验：形状不对与「包没装」都归 AGENT_LOAD_FAILED，但**文案必须分开**（评审 M1）。
+/** 懒加载 + 形状校验：形状不对与「包没装」都归 AGENT_LOAD_FAILED，但**文案必须分开**。
  * 期望入口从 `createRuntime`（探测前的假设）换成 `DeepSeekHarness`（实测），
  * 实测导出面一并写进文案，省掉一轮「你装的是哪个版本」。
  */

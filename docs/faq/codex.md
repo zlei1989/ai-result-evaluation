@@ -42,6 +42,31 @@ provider: aieval
 
 ---
 
+## `unsupported call: probe_echo`（MCP 注入成功、`mcpServer/startupStatus` 报 `ready`，但模型调不动那台工具）
+
+**日期**：2026-10-10
+
+**现象原文**（模型答复，同一轮里内置 shell 工具完全正常、审批请求为零）：
+```
+unsupported call: probe_echo
+```
+配套三格：`mcpServer/startupStatus/updated` → `status: "ready"`；事件流里 `mcpToolCall` **零条**；MCP server 侧（`PROBE_CALL_LOG`）**零 `tools/call`**。⚠️ 同一矩阵里还抓到一次**假绿**：某一轮最终答复是 `hello`（像是调用成功了），而 server 侧同样零调用——**判据只能是 server 侧记录**，模型答复不算证据。
+
+**根因**：**上游命名空间缺口**（不是本仓配置问题）。codex 自 0.156 起把 MCP 工具按「命名空间」暴露给模型（推理里逐字说 `namespace listed function is mcp__probe with probe_echo`），而**自定义 OpenAI 兼容 Responses 网关**（本仓的 `likecode-llm-proxy`，issue 里的 llama.cpp / Ollama / LM Studio / OpenRouter 同型）在转发时把它**拍平**成普通 function call ⇒ codex 的工具注册表（错误文案出自 `core/src/tools/registry.rs`）解析不了扁平函数名，回 `unsupported call`。官方 Responses 会保留那层结构，所以只有自定义网关中招。
+
+**不是配置能解的**（本地矩阵五组全败）：`GLM-5.3` ❌、`DeepSeek-V4.1-Flash-a` ❌、打开 `features.non_prefixed_mcp_tool_names = { server_names = ["probe"] }` ❌（它改的是**暴露给模型的名字**，不改「回传时缺失命名空间」）、**升级到 `0.163.0-alpha.5` ❌**。三条出路（网关侧还原命名空间 / 追上游 / 退到命名空间机制之前的版本，最后一条代价最大）留给运维层决定。
+
+**解决方案**：**本仓不硬解**，按「已知边界」处置（`docs/protocols/codex.md` 的 MCP 条目 + 契约常量 `CODEX_MCP_DISPATCH_GAP_NOTE`）：
+- 判据只到「装上了」——`mcpServer/startupStatus === 'ready'` ⇒ 行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；界面的行卡片浮层与环境抽屉的「本行 MCP」都附上那句话（`build-environment.ts` / `eval-row-card.tsx`，文案取契约里那份共用常量）；
+- 冒烟对 codex 只验 `ready`（只验 `ready` 的口径），**不把调不动当本仓缺陷**去修；
+- 复跑探针定期确认上游是否已修：`AIEVAL_LIVE_MCP=1` 跑 `packages/server/agents/src/providers/codex/live-mcp.test.ts`（判据仍是**事件侧 + server 侧**两处——`mcpServer/startupStatus` 与 server 自己的调用记录，模型答复不算）。
+
+证据矩阵（五组本地矩阵 + 三格配套信号）见[《MCP 配置》](/features/mcp-config)的「已知边界与取舍」；同一句结论已落成契约常量 `CODEX_MCP_DISPATCH_GAP_NOTE`（界面与文档都取那一份）。外部同型 issue（#26977 / #20652 / #26234）见下方「相关资料」。
+
+**相关资料**：[MCP tools return 'unsupported call' with custom Responses API provider (llama.cpp) · #26977](https://github.com/openai/codex/issues/26977)、[Resolution failure for flattened MCP tool names from OpenAI-compatible proxies · #20652](https://github.com/openai/codex/issues/20652)、[Flatten MCP namespace tools for non-OpenAI Responses API providers · #26234](https://github.com/openai/codex/issues/26234)
+
+---
+
 ## `Reconnecting... waiting for network`（App 里一直重连；同一份配置在 CLI 里 200）
 
 **日期**：2026-10-07

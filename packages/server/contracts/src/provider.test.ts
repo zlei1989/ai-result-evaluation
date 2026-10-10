@@ -29,7 +29,7 @@ const provider = {
 };
 
 describe('ProtocolTypeSchema', () => {
-  it('只认 openai / anthropic 两种协议（F1 的唯一判据）', () => {
+  it('只认 openai / anthropic 两种协议（唯一判据）', () => {
     expect(ProtocolTypeSchema.safeParse('openai').success).toBe(true);
     expect(ProtocolTypeSchema.safeParse('anthropic').success).toBe(true);
     expect(ProtocolTypeSchema.safeParse('gemini').success).toBe(false);
@@ -48,7 +48,7 @@ describe('PROTOCOL_LABELS', () => {
 });
 
 /**
- * 期望串的星号数按契约 §2.2「保留前 3 后 4，长度 <8 时全掩码」推导：
+ * 期望串的星号数按「保留前 3 后 4，长度 <8 时全掩码」推导：
  * 掩码后长度恒等于原密钥长度（短密钥也不泄露长度之外的信息），故星号数 = 长度 - 7。
  * 计划文档里这几条字面量多敲/少敲了一位（如 17 位密钥写 11 颗星、'sk-abc' 写 7 颗星），
  * 且 8 位边界写成 `abc****h` 与「后 4」自相矛盾，此处以契约语义为准。
@@ -101,7 +101,7 @@ describe('Provider schema', () => {
 });
 
 /**
- * 窗口三格（spec §5.1.1）：它们必须**可选**（磁盘上已有的 config.json 一个都没有），
+ * 窗口三格：它们必须**可选**（磁盘上已有的 config.json 一个都没有），
  * 同时必须真的**进得来**（zod 3 的 z.object 默认 strip 未知键：不声明就会静默丢掉）。
  */
 describe('ProviderModelSchema 的窗口三格', () => {

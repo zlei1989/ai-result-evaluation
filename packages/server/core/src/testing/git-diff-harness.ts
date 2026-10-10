@@ -1,10 +1,10 @@
 // @vitest-environment node
 /**
- * 三样 diff 合并与裁剪：真实 git CLI，禁 mock（spec §9）。
- * 本文件是整个 p0 最关键的回归网，覆盖 spec §9 要求的五种组合与三条专门用例：
+ * 三样 diff 合并与裁剪：真实 git CLI，禁 mock。
+ * 本文件是最关键的回归网，覆盖五种组合与三条专门用例：
  *   · 只有已提交改动 / 只有未提交改动 / 只有未跟踪新文件 / 三者都有 / 全空；
  *   · 「只取 commit..HEAD 会漏掉未提交改动」的专门用例；
- *   · 「未跟踪文件的**正文**必须出现在 diff 文本里」的专门用例（R3 的核心）；
+ *   · 「未跟踪文件的**正文**必须出现在 diff 文本里」的专门用例（核心）；
  *   · 「未跟踪清单必须在 `git add --intent-to-add` **之前**读」的专门用例（实测校准）。
  * 注意：每个用例都拿到一个**独立的**临时仓库（`beforeAll` 建的模板的副本，见下方 `fixtureRepo`），
  * 临时仓库的 `git commit` 一律带身份（见 git()）。
@@ -111,7 +111,7 @@ export function registerGitDiffHooks(): void {
     removeTreeWithRetry(fixtureRepo);
   });
   beforeEach(() => {
-    // Review Focus 5：本模块不读配置，但这条指针保证任何「顺手 loadConfig()」都在临时目录外发生
+    // 本模块不读配置，但这条指针保证任何「顺手 loadConfig()」都在临时目录外发生
     configDir = makeTmp('aieval-diff-cfg-');
     setConfigDirForTesting(configDir);
   });

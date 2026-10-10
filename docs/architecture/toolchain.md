@@ -26,11 +26,11 @@
 
 ### 为什么一个进程：启动税占大头
 
-逐包跑的实测数字是脚手架期的量级，结论至今成立：逐包跑 eslint 实测 14.5s，其中约 12s 是 8 次 Node + 插件加载的启动税、94 个源文件本身不到 1s；逐包跑 vitest 实测 22.6s，约 20s 是启动税，各包测试自身的 Duration 只有 600ms 上下；逐包跑 typecheck 实测 12.7s，绝大部分是启动与重复装载。2026-10-08 口径：8 包共 476 个 `.ts` / `.tsx`（`git ls-files` 口径 475）、229 个测试文件——文件数涨了数倍，**启动税占大头**的结论不变。
+**启动税占大头**：逐包跑要给 8 个包各起一次 Node + 加载一遍插件（eslint）、各建一次 tsconfig 图（typecheck）、各起一次运行器（vitest），源文件与测试本身只占零头——包自身测试的耗时只有几百毫秒量级。8 包现有 476 个 `.ts` / `.tsx`（`git ls-files` 口径 475）、229 个测试文件，逐包跑就要多付 8 份启动税。
 
 ### vitest 的 projects 收集
 
-根配置的 `projects` 是 glob：`packages/server/*/vitest.config.ts`、`packages/client/*/vitest.config.ts`、`apps/*/vitest.config.ts`，外加**显式列出**的 `docs/vitest.config.ts`（知识库内容守卫工程，2026-10-09 并入；docs 不是 workspace 包，glob 会把无关目录扫进来）。glob 不写死路径：新包自带 `vitest.config.ts` 即自动被收进根测试，不出现「新包没进根测试」的静默漏测。**改动收集方式后必须核对用例总数**。
+根配置的 `projects` 是 glob：`packages/server/*/vitest.config.ts`、`packages/client/*/vitest.config.ts`、`apps/*/vitest.config.ts`，外加**显式列出**的 `docs/vitest.config.ts`（知识库内容守卫工程；docs 不是 workspace 包，glob 会把无关目录扫进来）。glob 不写死路径：新包自带 `vitest.config.ts` 即自动被收进根测试，不出现「新包没进根测试」的静默漏测。**改动收集方式后必须核对用例总数**。
 
 ### tsconfig 并集
 
@@ -39,15 +39,15 @@
 ### vitest 双配置与线程池
 
 - `vitest.node.ts`（库包与 web-next）/ `vitest.jsdom.ts`（ui 与 client，jsdom + setup）两份共享配置，各包 `vitest.config.ts` 直接复用；纯函数测试标 `// @vitest-environment node`。
-- `pool: 'threads'`：vitest 4 默认池是 `forks`（每次起子进程），而本机（i7-1260P，4 性能核 + 8 能效核）的进程创建极贵——企业 DLP / EDR 在每个新进程上挂钩，实测 `git --version` 350–566ms、`node --version` 530ms 量级；threads 用 worker_threads 免掉这层。本仓测试不用 `process.chdir()` / `process.exit()` / 原生模块（正是 vitest 把默认池从 threads 改回 forks 的三类原因），故可安全换。
+- `pool: 'threads'`：vitest 4 默认池是 `forks`（每次起子进程），而本机（i7-1260P，4 性能核 + 8 能效核）的进程创建极贵——企业 DLP / EDR 在每个新进程上挂钩，`git --version` 350–566ms、`node --version` 530ms 量级；threads 用 worker_threads 免掉这层。本仓测试不用 `process.chdir()` / `process.exit()` / 原生模块（正是 vitest 把默认池从 threads 改回 forks 的三类原因），故可安全换。
 
 ### 超时预算
 
-共享基线 `testTimeout: 40_000` / `hookTimeout: 60_000`：默认的 5s / 10s 在满载下会假红——`Test timed out in 5000ms` 是单条用例掉队，`Error: Hook timed out in 10000ms` 是整个文件 suite 级掉队（该文件全部用例被标 skipped）。core 与 api 包级再把 `testTimeout` 加宽到 60s（core 真跑 git 子进程，一个用例里 12 次 git 进程本机实测 4.0–4.7s；api 的 `cases.test.ts` 一条用例要造 25 次提交、合计 75 次 git 进程）。口径：等待上限按「宁可超时也不假红」定，真正的死循环仍会被挡住。
+共享基线 `testTimeout: 40_000` / `hookTimeout: 60_000`：默认的 5s / 10s 在满载下会假红——`Test timed out in 5000ms` 是单条用例掉队，`Error: Hook timed out in 10000ms` 是整个文件 suite 级掉队（该文件全部用例被标 skipped）。core 与 api 包级再把 `testTimeout` 加宽到 60s（core 真跑 git 子进程，一个用例里 12 次 git 进程在本机要 4.0–4.7s；api 的 `cases.test.ts` 一条用例要造 25 次提交、合计 75 次 git 进程）。口径：等待上限按「宁可超时也不假红」定，真正的死循环仍会被挡住。
 
-### 并发档位：不设上限的演化
+### 并发档位：不设上限
 
-曾因两个 250–370s 巨型文件 + 15 路 worker 假红一片而取 `maxWorkers: 8`（同一棵树实测：默认并发 307.0s / 20 红，8 路 343.5s / 8 红——拿 +12% 墙钟换 −60% 假红）。长杆文件全部拆成 ≤80s 的小文件后，同一份代码四档实测全部 0 失败（6 路 156.7s / 8 路 150.5s / 12 路 129.9s / 15 路 125.4s），上限拿掉回默认。口径：**若再出现巨型文件 + `Test timed out` 假红，先拆文件，再把 `--maxWorkers` 调低当临时手段**（命令行覆盖永远赢过配置文件）。
+当前**不设 `maxWorkers` 上限**（走 vitest 默认并发），前提是长杆文件已全部拆成 ≤80s 的小文件。口径：**若再出现巨型文件 + `Test timed out` 假红，先拆文件，再把 `--maxWorkers` 调低当临时手段**（命令行覆盖永远赢过配置文件）。
 
 ### 内循环经济学
 
@@ -61,7 +61,7 @@
 | 共享超时基线与包级加宽并存 | 取舍 | 基线 40s / 60s，core 与 api 包级 `testTimeout` 60s；按「宁可超时也不假红」定，别随手调小 |
 | 满载假红判据 | 已登记 | 红不红看**隔离复跑**：满载的 `Test timed out` 是已知噪声，零断言失败 + 隔离全过 ⇒ 不是回归；机器带负载时 `pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000` |
 | 根 `pnpm test` 的形态误判 | 已登记 | 它是根上单跑（projects 收齐 8 包），**不是**每包一行输出；不能用「输出里有没有 8 段包级汇总」判断跑全了；`.next/types` 陈旧会让 typecheck 假红（删过源码先重建产物） |
-| ESLint flat config **不读 `.gitignore`** | 已发生过 | `.gitignore` 以「生成物」为由忽略的目录，只要可能落 `.js` / `.ts`，就得在 `eslint.shared.ts` 的仓库级 `ignores` 里再写一遍——两边的忽略集合本来就不一致。反例实测两次：一次真机探针把第三方模板的 63 个 `.ts` 克隆进 `probe/dumps/**`，`pnpm lint` 的报错从 0 涨到 14050；2026-10-09 是 VitePress 把依赖预打包的第三方 `.js` 放进 `docs/.vitepress/cache/deps/`，其中一条 `es5/no-es6-methods` 以 `Definition for rule 'es5/no-es6-methods' was not found` 让 `pnpm lint` 退出码 1（补 `**/.vitepress/cache/**` 与 `**/.vitepress/dist/**` 后归零） |
+| ESLint flat config **不读 `.gitignore`** | 已登记 | `.gitignore` 以「生成物」为由忽略的目录，只要可能落 `.js` / `.ts`，就得在 `eslint.shared.ts` 的仓库级 `ignores` 里再写一遍——两边的忽略集合本来就不一致。两类已知后果：真机探针把第三方模板的 `.ts` 克隆进 `probe/dumps/**` 时，`pnpm lint` 的报错会涨到上万条；VitePress 把依赖预打包的第三方 `.js` 放进 `docs/.vitepress/cache/deps/` 时，其中一条 `es5/no-es6-methods` 会以 `Definition for rule 'es5/no-es6-methods' was not found` 让 `pnpm lint` 退出码 1（故 `**/.vitepress/cache/**` 与 `**/.vitepress/dist/**` 必须在 ignores 里） |
 
 ## 相关链接
 

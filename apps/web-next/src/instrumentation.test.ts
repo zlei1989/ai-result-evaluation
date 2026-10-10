@@ -75,7 +75,7 @@ function seedRun(rowStatuses: string[]): string {
         branch: `test/row-${index}`,
         workspacePath: '',
         // 任意字符串都能解析成功（`EvalRowSchema.baselineCommit` 就是 `z.string()`，没有 `.min(1)`，
-        // p0 的 run.test.ts 明确断言「空串 = 尚未准备」合法）；这里用 40 位只是为贴近真实快照
+        // run.test.ts 明确断言「空串 = 尚未准备」合法）；这里用 40 位只是为贴近真实快照
         baselineCommit: 'a'.repeat(40),
         tokens: null,
         turns: null,

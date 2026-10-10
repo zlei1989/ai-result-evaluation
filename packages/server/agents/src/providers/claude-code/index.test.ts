@@ -6,7 +6,7 @@
  * `onGraceExceeded` 这条 `release.ts ↔ turn.ts` 接缝上的抛错路径。
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EFFORT_OFF, type AgentEvent, type SubagentRecord } from '@aieval/contracts';
@@ -33,11 +33,23 @@ import {
 import { CLAUDE_PACKAGE_NAME } from './sdk';
 import { removeTreeWithRetry } from '../../testing/cleanup';
 
+/**
+ * 假的宿主家目录（`homedir()` 的替身）：行内 `.npmrc` 的**来源**是宿主那一份 `.npmrc`，
+ * 而真实家目录在测试里既不该读也不该写（读到开发机上的真实配置会造出一类最难查的假绿）。
+ *
+ * 为什么用环境变量传参而不是在工厂里直接造目录：`vi.mock` 的工厂是**提升**的，
+ * 那里拿不到本文件的 import；环境变量是那一刻唯一活得着的通道，且只有测试会设它。
+ */
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: () => process.env['AIEVAL_TEST_HOST_HOME'] ?? actual.homedir() };
+});
+
 afterEach(() => {
   setAgentRuntimeForTesting(null);
   vi.useRealTimers();
   vi.restoreAllMocks();
-  // 环境还原：本文件有 `vi.stubEnv` 的用例（body 覆盖层；WARN 加固那一批由 T3 加），漏还原会漏给后面的用例
+  // 环境还原：本文件有 `vi.stubEnv` 的用例（body 覆盖层与 WARN 加固那两批），漏还原会漏给后面的用例
   vi.unstubAllEnvs();
 });
 
@@ -70,7 +82,7 @@ describe('claudeCodeProvider', () => {
     expect(recorder.env?.CLAUDE_CONFIG_DIR).toBe(FIXTURE_CONFIG_HOME);
     expect(recorder.env?.HOME).toBe(FIXTURE_CONFIG_HOME);
     /**
-     * 任务跟踪工具必须**常开**（用户口径 2026-09-30）。
+     * 任务跟踪工具必须**常开**（用户口径）。
      * 为什么这条守卫值得存在：不开它时 claude 的工具表里**一个 `Task*` 都没有**
      * （A/B 实测 26 → 30），`task` 族在 claude 侧恒为空 —— 那是**静默的空**，
      * 界面上与「这一轮没做规划」长得一模一样，跨家比较会因此失真。
@@ -82,7 +94,7 @@ describe('claudeCodeProvider', () => {
     // 「Must include `'project'` to load CLAUDE.md files」）——`[]` 会把仓库自己的作业说明一起挡住。
     expect(recorder.options?.settingSources).toEqual(['user', 'project', 'local']);
     /**
-     * 子智能体的文本/思考必须转发（spec §6.4.2）。
+     * 子智能体的文本/思考必须转发。
      * 为什么这条守卫值得存在：不开它时子智能体只发 `tool_use`/`tool_result`
      * （官方逐字 "enough for a heartbeat counter"），于是**子智能体说了什么、想了什么全都看不到**——
      * 真机 A/B：不开时子智能体消息 5 条、开了 10 条（多出 `thinking:3` + `text:3`）。
@@ -90,7 +102,7 @@ describe('claudeCodeProvider', () => {
      */
     expect(recorder.options?.forwardSubagentText).toBe(true);
     /**
-     * 流式增量必须**常开**（2026-10-09，兑现 `streamingDelta: 'yes'` 的声明）。
+     * 流式增量必须**常开**（兑现 `streamingDelta: 'yes'` 的声明）。
      * 为什么这条守卫值得存在：不开它 wire 上一个 `stream_event` 都没有，解析路径整条空转——
      * 能力声明与实现不一致（旧账：《消息规范》已知边界表「声明与实现不一致」一行，本次闭合）。
      * 那是**静默的空**：界面永远整块出正文，与「厂商不支持」长得一模一样。
@@ -126,7 +138,7 @@ describe('claudeCodeProvider', () => {
     // 为什么这一格要单独钉两端：它是名单里**唯一随模型变**的一项，而写坏的方式恰好是最静默的两种——
     //   · 判据写成 `modelId === 'claude'` / 只匹配小写前缀 ⇒ 网关侧的 `anthropic/claude-sonnet-4-6`
     //     被当成「非 Claude 模型」，WebSearch 白禁；
-    //   · 判据反过来（`!includes`）⇒ 第三方模型拿到网关不实现的工具（§5.6.5：网关对这类命名空间
+    //   · 判据反过来（`!includes`）⇒ 第三方模型拿到网关不实现的工具（网关对这类命名空间
     //     工具回 400），行会以工具报错收场，而界面上只看到「模型报错」。
     const cases: Array<{ modelId: string; webSearchBanned: boolean }> = [
       { modelId: 'claude-sonnet-4-6', webSearchBanned: false },
@@ -149,9 +161,93 @@ describe('claudeCodeProvider', () => {
     }
   });
 
+  /**
+   * MCP 注入：本行的条目经 `AgentRunInput.mcpServers` 进来，
+   * 翻译成 SDK 的 `Options.mcpServers`。
+   *
+   * 三条各自都是**静默**的坏法，故各有一条守卫：
+   *   · 不给条目时**整个键缺席**（给一个空 map 等于向厂商显式声明「一台都不要」，而 `strictMcpConfig`
+   *     关闭的语义是「不压制仓库自带的 `.mcp.json`」⇒ 空 map 与缺席在厂商侧的读数不同）；
+   *   · `strictMcpConfig` **保持关闭**：它一旦打开会**完全压制**被测仓库自带的 `.mcp.json`
+   *     （用户口径是不压制），而这件事在界面上看不出来（只是那几台不见了）；
+   *   · 形状逐字：stdio 不许带 `cwd`，http 带 `headers`。
+   */
+  it('MCP 注入：条目译成 Options.mcpServers（形状逐字），不给条目时整个键缺席', async () => {
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(
+      createRunInput({
+        mcpServers: {
+          playwright: {
+            transport: 'stdio',
+            enabled: true,
+            command: 'npx',
+            args: ['-y', '@playwright/mcp@latest'],
+            env: { PLAYWRIGHT_BROWSERS_PATH: '/tmp/browsers' },
+          },
+          context7: {
+            transport: 'http',
+            enabled: true,
+            url: 'https://mcp.context7.com/mcp',
+            headers: { CONTEXT7_API_KEY: 'sk-live' },
+          },
+        },
+      }),
+    );
+
+    expect(recorder.options?.mcpServers).toEqual({
+      playwright: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@playwright/mcp@latest'],
+        env: { PLAYWRIGHT_BROWSERS_PATH: '/tmp/browsers' },
+      },
+      context7: { type: 'http', url: 'https://mcp.context7.com/mcp', headers: { CONTEXT7_API_KEY: 'sk-live' } },
+    });
+    // 保持关闭：不压制仓库自带的 `.mcp.json`（开了它那几台会整批消失，而界面上没有任何提示）
+    expect(recorder.options?.strictMcpConfig).toBeUndefined();
+  });
+
+  it('MCP 注入：没有条目 ⇒ 不给 SDK 这一格（不是给空对象）；空集同理', async () => {
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({ mcpServers: {} }));
+    expect('mcpServers' in (recorder.options ?? {})).toBe(false);
+
+    const recorder2 = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: recorder2, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({}));
+    expect('mcpServers' in (recorder2.options ?? {})).toBe(false);
+  });
+
+  it('行内 .npmrc：宿主有 registry 时只把那一行写进 configHome（宿主那份一个字都不动）', async () => {
+    // 为什么这条必须在**适配器**这一层钉：写盘的时机与位置就是注入落点本身——
+    // 写在 `sdk.query()` 之前、写在行私有的 `configHome` 下，两者都对才有效（早一步没有目录、
+    // 晚一步 MCP 子进程已经带着公网 registry 起来了）。
+    const hostHome = mkdtempSync(join(tmpdir(), 'claude-host-home-'));
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-row-home-'));
+    const previousHostHome = process.env['AIEVAL_TEST_HOST_HOME'];
+    try {
+      process.env['AIEVAL_TEST_HOST_HOME'] = hostHome;
+      writeFileSync(join(hostHome, '.npmrc'), 'registry=http://registry.m.jd.com/\nsave-exact=true\n', 'utf8');
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+      await claudeCodeProvider.run(createRunInput({ configHome }));
+
+      expect(readFileSync(join(configHome, '.npmrc'), 'utf8')).toBe('registry=http://registry.m.jd.com/\n');
+      // 宿主那份没被动过
+      expect(readFileSync(join(hostHome, '.npmrc'), 'utf8')).toBe('registry=http://registry.m.jd.com/\nsave-exact=true\n');
+    } finally {
+      if (previousHostHome === undefined) delete process.env['AIEVAL_TEST_HOST_HOME'];
+      else process.env['AIEVAL_TEST_HOST_HOME'] = previousHostHome;
+      removeTreeWithRetry(hostHome);
+      removeTreeWithRetry(configHome);
+    }
+  });
+
   it('执行阶段的权限档：permissionMode: bypassPermissions **必须**带 allowDangerouslySkipPermissions', async () => {
     // 为什么这条是必修：缺权限档的后果不是「偶尔要确认一次」，而是本产品的核心动作
-    // （改工作区里的文件）根本发生不了——p6 冒烟里 7 行 claude-code **全部 0 改动**，
+    // （改工作区里的文件）根本发生不了——冒烟里 7 行 claude-code **全部 0 改动**，
     // 评分在「无改动」输入上打出 20 分（run.json 里评分模型自己写「diff 为空」）。
     // 而 `bypassPermissions` **单独给是无效的**：SDK 把它与 `allowDangerouslySkipPermissions`
     // 拼成两个独立 argv（`--permission-mode` / `--allow-dangerously-skip-permissions`），
@@ -178,7 +274,7 @@ describe('claudeCodeProvider', () => {
     expect(recorder.options?.allowDangerouslySkipPermissions).toBeUndefined();
   });
 
-  it('不给 SDK 传 maxTurns（执行段完全不限轮次，2026-09-28 用户口径）', async () => {
+  it('不给 SDK 传 maxTurns（执行段完全不限轮次，用户口径）', async () => {
     // 为什么这条必须钉住：SDK 的 `maxTurns` 是「最大 API 往返次数」，加回来就等于**我们自己**给执行段
     // 装了上限——而口径是「一行只会因为跑完 / 失败 / 用户点终止结束」。删它的时候一个用例都不会红，
     // 所以「有人顺手加个保险」这件事今天只有这条守卫能拦住。
@@ -189,9 +285,9 @@ describe('claudeCodeProvider', () => {
     expect(recorder.options?.maxTurns).toBeUndefined();
   });
 
-  it('cwd 做 realpath 归一：8.3 短名路径不得原样交给 SDK（终审 H1 的另一半）', async (ctx) => {
+  it('cwd 做 realpath 归一：8.3 短名路径不得原样交给 SDK（8.3 短名这一半）', async (ctx) => {
     // 两条一起做才完整：`permissionMode` 只放宽「编辑要不要逐个批准」，**不放宽路径安全门**。
-    // 那道门把含 8.3 短名的路径判为「需要人工确认」，连 Read 都拦（p6 `04-runA.md:93-109` 的
+    // 那道门把含 8.3 短名的路径判为「需要人工确认」，连 Read 都拦（
     // decision_reason 原文 + CLI 自述）⇒ 冒烟夹具的 `C:\Users\ZHANGL~1\...` 让整行写不动。
     //
     // 这里钉的是**实现细节，不是措辞**：把真实存在的目录换成短名形态（`GetShortPathName` 的产物），
@@ -206,11 +302,11 @@ describe('claudeCodeProvider', () => {
     if (!/~\d/.test(shortRoot)) {
       // 用一条可读的跳过原因，而不是悄悄 return：静默跳过会让「守卫还在不在」无从判断。
       //
-      // 为什么是 `ctx.skip(原因)` 而不是 `expect.soft(…)`（2026-10-07 修正）：后者**判这条红**，
-      // 于是「本机造不出短名」这件事表现成一条恒红——实测（本机 8.3 生成已关，`tmpdir()` 是长名
-      // `C:\Users\Zlei1\AppData\Local\Temp`）整个门禁永远挂着一条与代码无关的红。
+      // 为什么是 `ctx.skip(原因)` 而不是 `expect.soft(…)`：后者**判这条红**，
+      // 于是「本机造不出短名」这件事表现成一条恒红（8.3 生成已关的机器上 `tmpdir()` 是长名
+      // `C:\Users\Zlei1\AppData\Local\Temp`），整个门禁永远挂着一条与代码无关的红。
       // `ctx.skip` 仍然**看得见**：摘要里记一条 skipped，并把这句原因原样带出来。
-      ctx.skip(`本机 tmpdir 不含 8.3 短名（${shortRoot}），H1 的归一用例在此环境不可构造`);
+      ctx.skip(`本机 tmpdir 不含 8.3 短名（${shortRoot}），归一用例在此环境不可构造`);
     }
     const probeRoot = join(shortRoot, `aieval-h1-cwd-${randomUUID()}`);
     const shortDir = join(probeRoot, 'workspace');
@@ -230,8 +326,8 @@ describe('claudeCodeProvider', () => {
     }
   });
 
-  it('终止时的 interrupt() 不许留下没人处理的 rejection（终审 H3：裸 void 会打崩进程）', async () => {
-    // p6 实测 14 次 `unhandledRejection: Error: Query closed before response received`，
+  it('终止时的 interrupt() 不许留下没人处理的 rejection（裸 void 会打崩进程）', async () => {
+    // 冒烟实测 14 次 `unhandledRejection: Error: Query closed before response received`，
     // 堆栈逐层指向 `providers/claude-code/index.ts` 的 `void query.interrupt?.()`。
     // 生产环境 Node 默认 `--unhandled-rejections=throw` ⇒ 这是**能终结进程**的形状。
     // 判据是「那份被拒 promise 有没有被挂上 handler」（夹具在下一个微任务结算），
@@ -268,7 +364,7 @@ describe('claudeCodeProvider', () => {
     expect(recorder.order[0]).toBe('interrupt');
   });
 
-  it('凭据隔离：子进程拿到了密钥，宿主 process.env 一个字段都没变（Review Focus #2）', async () => {
+  it('凭据隔离：子进程拿到了密钥，宿主 process.env 一个字段都没变', async () => {
     const before = { ...process.env };
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
@@ -310,7 +406,7 @@ describe('claudeCodeProvider', () => {
     expect(events[0]?.seq).toBe(1); // run 内 seq 从 1 开始
   });
 
-  it('用户终止：顺序为 interrupt → turn 终结 → dispose（§5.6.6）', async () => {
+  it('用户终止：顺序为 interrupt → turn 终结 → dispose', async () => {
     vi.useFakeTimers();
     const recorder = createRecorder();
     const controller = new AbortController();
@@ -325,7 +421,7 @@ describe('claudeCodeProvider', () => {
     expect(recorder.order).toEqual(['interrupt', 'turn-end', 'dispose']);
   });
 
-  it('厂商包缺失或形状不对：AGENT_LOAD_FAILED 且文案含包名与安装方式；同一进程内后续一轮可重试成功（Review Focus #4）', async () => {
+  it('厂商包缺失或形状不对：AGENT_LOAD_FAILED 且文案含包名与安装方式；同一进程内后续一轮可重试成功', async () => {
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: {} } });
     const first = await claudeCodeProvider.run(createRunInput());
     expect(first).toMatchObject({ ok: false, exitReason: 'error' });
@@ -341,7 +437,7 @@ describe('claudeCodeProvider', () => {
 
   it('厂商消息里的失败（投影 failure 非空）折进结果：exitReason error + error 事件落到 onEvent，run 不抛（b4 派发稿点名的无主出口）', async () => {
     // 这条出口是三个适配器共用的：`runTurn` 只在 `projection.failure` 非空时把厂商消息里的失败
-    // 折成 `ok:false` + `exitReason:'error'`。此前没有任何用例覆盖它（T6 的合成 hooks 从没让它非空）。
+    // 折成 `ok:false` + `exitReason:'error'`。此前没有任何用例覆盖它（合成 hooks 从没让它非空）。
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({
@@ -372,8 +468,8 @@ describe('claudeCodeProvider', () => {
   });
 
   it('第二段兜底的 emit 出口抛错：不外抛、仍判 canceled、dispose 恰好一次、失败落 logger.error', async () => {
-    // 控制方追加的回归钉（T5/T6 评审：6 个发射口里 onGraceExceeded 这一处至今无单出口用例）。
-    // 消费方抛错是真实形状：p4 的 publishRowEvent → appendEvent 按契约 R26 在写侧 schema 不过时抛。
+    // 控制方追加的回归钉：6 个发射口里 onGraceExceeded 这一处没有单出口用例。
+    // 消费方抛错是真实形状：编排层的 publishRowEvent → appendEvent 在写侧 schema 不过时抛。
     const loggerErrors = captureLoggerErrors();
     vi.useFakeTimers();
     const recorder = createRecorder();
@@ -452,7 +548,7 @@ describe('claudeCodeProvider', () => {
   });
 
   it('轮次与计量分两条消息给 ⇒ 结果值仍然对，且轮次一到那条把**已经采到的**计量一起发出去', async () => {
-    // 2026-09-28 的口径：`usage` 的发射门槛是**轮次**（tokens 可空）。所以「只有 tokens 的那一条」
+    // 用户口径：`usage` 的发射门槛是**轮次**（tokens 可空）。所以「只有 tokens 的那一条」
     // 不发事件，而随后给出轮次的那一条会把到目前为止的累计计量带上——少了这个携带，
     // 界面上的 tok 会在只带轮次的那条事件上掉回「采集中」。
     const events: AgentEvent[] = [];
@@ -485,7 +581,7 @@ describe('claudeCodeProvider', () => {
   });
 
   /**
-   * 结构化输出的厂商选项落点（2026-09-28 评分通路）。
+   * 结构化输出的厂商选项落点（评分通路）。
    *
    * 两条一起才完整：**给了**要真的落到 SDK 的 `outputFormat`（少一半就是「中性入参被适配器吃掉」，
    * 评分通路仍旧只能靠提示词请求 JSON）；**没给**要连这个键都不出现——候选执行阶段与文本评分走的是
@@ -511,7 +607,7 @@ describe('claudeCodeProvider', () => {
     await claudeCodeProvider.run(createRunInput());
 
     const options = recorder.options;
-    // 先钉住「选项对象确实到手了」（修复轮 2 / R25）：`options !== null && 'outputFormat' in options` 在
+    // 先钉住「选项对象确实到手了」：`options !== null && 'outputFormat' in options` 在
     // `recorder.options` 为 `null` 时短路成 `false` ⇒ 那半句断言会把「SDK 压根没被调用」也判成通过。
     // 空洞守卫比没有守卫更坏：它在报告里长得像一条已覆盖的约束。
     expect(recorder.options).not.toBeNull();
@@ -520,7 +616,7 @@ describe('claudeCodeProvider', () => {
 
   /**
    * 入口侧 null 口径的**唯一守卫**（与 `providers/codex/index.test.ts` 的「显式为 null」那条成对）。
-   * ⚠️ 不可删：类型检查拦不住它（条件展开这一形状零诊断——声明类型本就不含 `null`，变异后仍窄化到
+   * ⚠️ 不可删：类型检查拦不住它（条件展开这一形状零诊断——声明类型本就不含 `null`，两种实现都窄化到
    * 可赋值类型），lint 也拦不住（`eslint.shared.ts` 里没有类型感知规则）⇒ 删掉这条用例，CI 面上就
    * 再没有东西拦「显式 `null` 被当成有效值透给厂商 SDK」。这一退化在 CI 面是**静默**的
    * （要到运行期才由 CLI 自己响亮报错），所以只能靠用例守。
@@ -540,7 +636,7 @@ describe('claudeCodeProvider', () => {
 });
 
 /**
- * 窗口 ⇒ 模型名（spec §6.1 / D4）：cc 三家唯一能表达「1M 变体」的通道就是**模型名后缀**
+ * 窗口 ⇒ 模型名：cc 三家唯一能表达「1M 变体」的通道就是**模型名后缀**
  * （Agent SDK 里那个 `betas: ['context-1m-2025-08-07']` 入口已随 beta 退役）。
  * 判据用 `recorder.options?.model`（`createFakeClaudeSdk` 记录的**真实** query 入参），
  * 而不是本项目自己算出来的中间变量——中间变量绿了而 SDK 收到别的名字，正是这条要防的事。
@@ -599,10 +695,10 @@ describe('claude-code 的 1M 后缀', () => {
 });
 
 /**
- * 思考强度（spec §6.4 / D13）：档位字符串**原样**透传给 SDK 的 `options.effort`，
+ * 思考强度：档位字符串**原样**透传给 SDK 的 `options.effort`，
  * 没给就一个键都不加 —— SDK 会把 `undefined` 当成「没有这一格」还是「要一个 undefined 档」
  * 我们无从保证，而这条路径上的两种解释差别是「按默认档跑」与「报错」。
- * ⚠️ **唯一的例外是关闭档 `off`**（2026-10-06）：它**不走** `effort`（`off` 不在 SDK 的
+ * ⚠️ **唯一的例外是关闭档 `off`**：它**不走** `effort`（`off` 不在 SDK 的
  * `EffortLevel` 值域里，直传会让 CLI 校验失败），而是翻成 `thinking: { type: 'disabled' }`
  * —— 见本组下面那条用例。
  */
@@ -613,14 +709,14 @@ describe('claude-code 的思考强度', () => {
    * 而它是 `buildSubprocessEnv` 合并后的对象（以宿主 `process.env` 为底，`route.ts:88-90`）
    * ⇒ 宿主设过 `CLAUDE_CODE_EXTRA_BODY` 时那一条会**假红**（它不是我们的缺陷 ——
    * 真机 A/B 的 B 臂恰恰就是靠宿主设这个变量做到的，所以这台机器上它真有可能在场）。
-   * 策略与 spec §5.1.1 一致：「键不存在」的判据落在**纯函数**上；真实运行面那一条
+   * 策略：「键不存在」的判据落在**纯函数**上；真实运行面那一条
    * 则先把宿主那一格清干净。
    * 用 `vi.stubEnv(name, undefined)` 而不是 `delete process.env.X`：后者在测试里也是写入写法。
    * 还原交给文件级 `afterEach` 的 `vi.unstubAllEnvs()`（上面刚加的那一行）。
    */
   beforeEach(() => {
     vi.stubEnv(CLAUDE_CODE_EXTRA_BODY, undefined);
-    // 同一个钩子里补这一行（Task 3，`HOST_DISABLE_BETAS_ENV`）：上面那段理由对它**逐字成立**
+    // 同一个钩子里补这一行（`HOST_DISABLE_BETAS_ENV`）：上面那段理由对它**逐字成立**
     // ——本组新加的「宿主没设 ⇒ `off` 档不出现 WARN」读的也是合并后的 `recorder.env`，
     // 宿主设过就假红。**并进同一个钩子**而不是另起一个 describe：两者都是「本组用例的宿主环境基线」，
     // 分成两处写必然漂移（一处补了新变量、另一处没有）。
@@ -634,9 +730,9 @@ describe('claude-code 的思考强度', () => {
     });
     await claudeCodeProvider.run(createRunInput({ effort: 'max' }));
     expect(withEffort.options?.effort).toBe('max');
-    // 2026-10-06（Task 6 补）：**非 `off` 的档位不许带上 `thinking`**。此前这条用例只断 `effort`，
-    // 于是把适配器改成「无条件加 `thinking: { type: 'disabled' }`」时全部用例仍绿
-    // ⇒「关闭只在显式 `off` 时发生」这半句没有守卫（Task 2 评审 Minor 1）。
+    // **非 `off` 的档位不许带上 `thinking`**：只断 `effort` 的话，「无条件加
+    // `thinking: { type: 'disabled' }`」这种实现仍然全绿 ⇒「关闭只在显式 `off` 时发生」
+    // 这半句就没有守卫。
     expect(Object.hasOwn(withEffort.options ?? {}, 'thinking')).toBe(false);
 
     const bare = createRecorder();
@@ -644,12 +740,12 @@ describe('claude-code 的思考强度', () => {
     await claudeCodeProvider.run(createRunInput());
     expect(bare.options).not.toBeNull();
     expect(Object.hasOwn(bare.options ?? {}, 'effort')).toBe(false);
-    // 守卫 6 的另一半：**未给**时 `thinking` 也不出现（同一变异体的第二条见证）
+    // 守卫 6 的另一半：**未给**时 `thinking` 也不出现
     expect(Object.hasOwn(bare.options ?? {}, 'thinking')).toBe(false);
   });
 
   /**
-   * 显式关闭（2026-10-06 口径）：契约与界面统一用档名 `off`，**这一家要翻成
+   * 显式关闭（用户口径）：契约与界面统一用档名 `off`，**这一家要翻成
    * `thinking: { type: 'disabled' }`**（SDK 的 `EffortLevel` 里没有 off 档，关闭是另一个字段）。
    */
   it('显式 off ⇒ thinking: disabled 且不传 effort', async () => {
@@ -666,7 +762,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **`off` 的修复（2026-10-06，spec §3.1）**：契约与界面统一用档名 `off`，而 CLI 的**模型能力门**
+   * **`off` 的落点**：契约与界面统一用档名 `off`，而 CLI 的**模型能力门**
    * 会**故意**不把 `thinking:{type:'disabled'}` 写进请求体（它不认识 `deepseek-flash` 这类网关模型名，
    * 真机 A/B 逐字证据：不带 env ⇒ 请求体 8 个顶层键、**没有** `thinking`，响应里仍有思考块；
    * 带 env ⇒ 9 个键、多出 `"thinking":{"type":"disabled"}`，响应 `content_block` 只有 `text`）。
@@ -684,12 +780,12 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **值的合法性与形状**（spec §3.3）：CLI 对 `CLAUDE_CODE_EXTRA_BODY` 的**非法 JSON 静默忽略整条**
+   * **值的合法性与形状**：CLI 对 `CLAUDE_CODE_EXTRA_BODY` 的**非法 JSON 静默忽略整条**
    * ——不报错、`thinking` 仍缺失、思考照旧。真机上就是这么踩的（第一次 A/B 的 B 臂作废：
    * PowerShell 5.1 吃掉了内层双引号，env 变成 `{thinking:{type:disabled}}`）。
    *
-   * 这条用例就是「注入值必须是合法 JSON」的守卫，**变异体逐字同形于真机那次作废**：
-   * 把实现从 `JSON.stringify(...)` 改成手写常量 `'{thinking:{type:disabled}}'` ⇒ `JSON.parse` 当场抛。
+   * 这条用例就是「注入值必须是合法 JSON」的守卫：手写常量 `'{thinking:{type:disabled}}'`
+   * （而不是 `JSON.stringify(...)`）会让 `JSON.parse` 当场抛。
    */
   it('注入的值是合法 JSON，且深等于 { thinking: { type: disabled } }（非法 JSON 会被 CLI 静默整条忽略）', () => {
     const raw = claudeExtraEnvFor(EFFORT_OFF)[CLAUDE_CODE_EXTRA_BODY];
@@ -707,7 +803,7 @@ describe('claude-code 的思考强度', () => {
     expect(Object.keys(claudeExtraEnvFor(EFFORT_OFF))).toStrictEqual(['CLAUDE_CODE_EXTRA_BODY']);
   });
 
-  /** 其余档位**不注入**：**纯函数**判据，与宿主是否设过同名变量无关（spec §5.1.1） */
+  /** 其余档位**不注入**：**纯函数**判据，与宿主是否设过同名变量无关 */
   it('其它档位不注入：claudeExtraEnvFor(max) 里没有这个键', () => {
     expect(Object.hasOwn(claudeExtraEnvFor('max'), CLAUDE_CODE_EXTRA_BODY)).toBe(false);
   });
@@ -718,13 +814,13 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **其它档位与未选在真实运行里也逐字不变**（spec §1.3 约束 2）。
+   * **其它档位与未选在真实运行里也逐字不变**。
    * 为什么值得单开一条：上面两条走的是纯函数，证明的是「函数会返回空对象」；这一条证明的是
    * **空对象被条件展开进了 `injected` 之后没有留下任何键**——即「没有**新增**」那一半。
    *
    * ⚠️ 它**拦不住** `[CLAUDE_CODE_EXTRA_BODY]: off ? VALUE : undefined` 那种实现：`buildSubprocessEnv`
    * （`route.ts:94-96`）把 `undefined` 解释成「**删键**」，删完之后 `Object.hasOwn` 恰好就是 `false`，
-   * 正好**满足**这条断言（2026-10-06 实测：那种实现下这一条**照绿**，宿主设没设同名变量都一样）。
+   * 正好**满足**这条断言（宿主设没设同名变量都一样）。
    * ⇒「不许删键」那一半由下面那条「宿主设过同名变量…」见证，两条合起来才是「逐字不变」。
    */
   it('非 off 档位的注入键集合逐字不变：max 与未选都不带 CLAUDE_CODE_EXTRA_BODY', async () => {
@@ -740,7 +836,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **「不许删键」那一半**（spec §3.1 约束 1 的正身，2026-10-06 实测补）：上面那条只证明
+   * **「不许删键」那一半**：上面那条只证明
    * 「非 off 档**没有新增**这个键」，而它**拦不住** `[KEY]: off ? VALUE : undefined` 那种实现——
    * `buildSubprocessEnv`（`route.ts:94-96`）把 `undefined` 解释成「**删键**」，删完之后
    * `Object.hasOwn` 恰好就是 `false`，正好**满足**上面那条断言（实测：把实现改成显式 `undefined`，
@@ -768,7 +864,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9a（纯判据四例）**（spec §5.1.1 守卫 9a 的判据三件套）：
+   * **守卫 9a（纯判据四例）**：
    * ① env 无该键 ⇒ `null`；② 设 `'1'` ⇒ 返回命中（**键名原文**）；③ 设**小写拼写** ⇒ 同样命中、
    * 且回报的是**原拼写**（`route.ts:76-84`：逐项保留宿主的键名形态，Windows 常写 `Path`）；
    * ④ `'high'` 与未选 ⇒ 一律 `null`（**非 off 档不看**）。
@@ -782,7 +878,7 @@ describe('claude-code 的思考强度', () => {
     expect(hostDisablesBetas({}, EFFORT_OFF)).toBeNull();
     expect(hostDisablesBetas({ [HOST_DISABLE_BETAS_ENV]: '1' }, EFFORT_OFF)).toBe(HOST_DISABLE_BETAS_ENV);
 
-    // ③ 大小写不敏感、回报原拼写（变异体⑨的靶子：大小写敏感的精确键查找会在这里漏报）
+    // ③ 大小写不敏感、回报原拼写（大小写敏感的精确键查找会在这里漏报）
     const lower = 'claude_code_disable_experimental_betas';
     expect(hostDisablesBetas({ [lower]: '1' }, EFFORT_OFF)).toBe(lower);
 
@@ -792,21 +888,21 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9b 的第一、二半**（spec §5.1.1）：`off` 档 + 宿主设过 ⇒ `console.warn` 收到 WARN，
-   * **且 message 逐字等于 §5.1.1 那段**（`<键名原文>` 处替换成实际拼写）。
+   * **守卫 9b 的第一、二半**：`off` 档 + 宿主设过 ⇒ `console.warn` 收到 WARN，
+   * **且 message 逐字等于导出的那段模板**（`<键名原文>` 处替换成实际拼写）。
    *
    * ⚠️ 第二半是**「不许改写」的守卫**：文案既然是契约，就得有断言钉住，否则必然漂。
-   * 正文在这里是**字面量**（门审 Important，2026-10-06：改为**不**经 `CLAUDE_OFF_DISABLED_WARNING_TEXT` 拼）：
+   * 正文在这里是**字面量**（**不**经 `CLAUDE_OFF_DISABLED_WARNING_TEXT` 拼）：
    * 常量的**字面值**若只改大小写（例如 `Claude_Code_Disable_Experimental_Betas`），9a 只有一条
    * **大小写不敏感**的字面量判据 ⇒ 六条断言会**全绿**，而产品侧拿去查宿主环境的名字跟着常量一起错
    * （POSIX 上大小写敏感 ⇒ WARN **永不触发**）——那正是本线反复出现的「经共享常量读键 ⇒ 一起错」。
    * 用字面量之后，常量的大小写漂移在这里**当场红**；常量模板与 spec 正文的逐字比对仍由本组最后那条
-   * `WARN 文案模板与 spec §5.1.1 逐字一致` 看管（两半各钉一件事，不是两份正文）。
+   * `WARN 文案模板逐字一致` 看管（两半各钉一件事，不是两份正文）。
    *
    * ⚠️ 取值用 `'true'`（宿主的常见写法）而**不是** `'1'`：判据是「变量在不在」，
-   * 窄成 `=== '1'` 会在这一形态下不告警（变异体⑩）。
+   * 窄成 `=== '1'` 会在这一形态下不告警。
    */
-  it('off 档 + 宿主设过 ⇒ 落一条 WARN，message 逐字等于 spec §5.1.1 那段', async () => {
+  it('off 档 + 宿主设过 ⇒ 落一条 WARN，message 逐字等于导出的那段模板', async () => {
     vi.stubEnv(HOST_DISABLE_BETAS_ENV, 'true');
     /** `console.warn(message, context)` 的原文（两个参数都收下：下面分别比对 message 与 context） */
     const calls: unknown[][] = [];
@@ -822,7 +918,7 @@ describe('claude-code 的思考强度', () => {
      * ① message **逐字**：日志器的前缀 `[WARN] [agents/claude-code] ` 由 `core/src/logger.ts:25-27`
      * 的 `format` 拼出，**不在** message 里 ⇒ 这里比的是去掉前缀之后的那一段。
      *
-     * ⚠️ 契约正文**逐字写在这里**、且键名用**字面量**（理由见上，门审 Important）：
+     * ⚠️ 契约正文**逐字写在这里**、且键名用**字面量**（理由见上）：
      * 常量的字面值一旦漂移（尤其只改大小写），走常量拼出来的判据会跟着一起错、当场全绿。
      */
     const expected =
@@ -830,14 +926,14 @@ describe('claude-code 的思考强度', () => {
     expect(calls.length).toBeGreaterThan(0);
     const hit = calls.find((args) => String(args[0]).endsWith(expected));
     expect(hit).toBeDefined();
-    // 顺带钉住「没有第二个参数混进 message」：参数 0 必须**以那段文案结尾**（前缀之外一字不多）
+    // 同时钉住「没有第二个参数混进 message」：参数 0 必须**以那段文案结尾**（前缀之外一字不多）
     expect(String(hit?.[0])).toBe(`[WARN] [agents/claude-code] ${expected}`);
     // ② context 固定为 `{ variable: '<键名原文>', effort: 'off' }`（作为第二个参数透传，不 JSON.stringify）
     expect(hit?.[1]).toStrictEqual({ variable: HOST_DISABLE_BETAS_ENV, effort: EFFORT_OFF });
   });
 
   /**
-   * **接线级的「回报原拼写」**（spec §5.1.1 ②；门审 Important，2026-10-06 补）：
+   * **接线级的「回报原拼写」**：
    * 宿主写成**小写拼写**时，WARN 里带的、以及 context 里回报的，都必须是**那个小写原文**。
    *
    * 为什么纯函数那一例不够：9a 第③例只证明「函数会回报原拼写」，而**接线**处若把它丢掉
@@ -868,7 +964,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **守卫 9b 的第三半 + 变异体⑪的靶子**（spec §5.1.1「它是观测，不是拦截」）：
+   * **守卫 9b 的第三半**（「它是观测，不是拦截」）：
    * WARN 出现时 `CLAUDE_CODE_EXTRA_BODY` **照旧逐字注入**，本行也**照常跑完**（不抛、不跳过）。
    */
   it('观测不拦截：WARN 出现时覆盖层仍逐字注入，本行照常跑完', async () => {
@@ -898,7 +994,7 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **其余档位连一条日志都不多**（spec §5.1.1 判据③：这是**新增的输出**，
+   * **其余档位连一条日志都不多**（这属于**新增的输出**，
    * 不能漏到别的档位上）。与上一条分成两个用例：一个是「它不说话」、一个是「它乱说话」，
    * 失败原因完全不同。
    */
@@ -917,11 +1013,11 @@ describe('claude-code 的思考强度', () => {
   });
 
   /**
-   * **导出给测试的那段文案必须与 spec §5.1.1 逐字一致**（含唯一可变 token 的位置）。
+   * **导出给测试的那段文案必须逐字一致**（含唯一可变 token 的位置）。
    * 这条用例是**最后一道**防漂移：上面那条比的是「运行时 message = 实现导出的常量」，
    * 这一条比的是「那个常量 = spec 的原文」——两半合起来才等价于「message = spec 原文」。
    */
-  it('WARN 文案模板与 spec §5.1.1 逐字一致（<键名原文> 是唯一可变 token）', () => {
+  it('WARN 文案模板逐字一致（<键名原文> 是唯一可变 token）', () => {
     expect(CLAUDE_OFF_DISABLED_WARNING_TEXT).toBe(
       'off 档的关闭被静默忽略：子进程环境里存在 <键名原文>，它使 CLAUDE_CODE_EXTRA_BODY 的 body 覆盖失效，本次运行的 off 档读数作废；处置：从运行环境里去掉该变量后重跑，或改用别的方式关闭思考。',
     );
@@ -929,7 +1025,7 @@ describe('claude-code 的思考强度', () => {
 });
 
 /**
- * 本文件下面**两组 describe 共用**的两条夹具（2026-10-04 复核 M-d 改正）。
+ * 本文件下面**两组 describe 共用**的两条夹具。
  *
  * 此前它们各在每个 describe 里抄了一份，而两处的注释都写着「与…**同一份**夹具」——那是假的：
  * 同一份实现被抄了两遍，改一处不会带上另一处（正是本仓最忌讳的那种「两份必然漂移」）。
@@ -961,7 +1057,7 @@ function mainAssistant(uuid: string, messageId: string): unknown {
 /**
  * **真派发**的 `task_started`（真机形状：`subagent_type` / `spawn_depth` / `prompt` **三格齐**）。
  *
- * ⚠️ 这三格不是装饰（spec §4 **R19**，2026-10-05）：`message.ts` 的**形状判据**就是「三格至少一格
+ * ⚠️ 这三格不是装饰：`message.ts` 的**形状判据**就是「三格至少一格
  * **非 `null`**」（`''` 与 `0` 也算，刻度见 `message.test.ts` 的「刻度」那条），
  * 而它决定两件事——① 面板会不会为这个 id 产一条子任务行；② 这个 id 进不进「事实核对名单」
  * （`index.ts` 的 `subagentIds`，收尾据此点名「读不到 X」）。**夹具漏了这三格，写的就不是一次派发**
@@ -982,7 +1078,7 @@ function dispatchStarted(taskId: string, extra: Record<string, unknown> = {}): R
 }
 
 /**
- * 子智能体那一份用量（spec 2026-10-04 §2.3/§2.4）：claude 的**唯一**权威源是 CLI 落盘的
+ * 子智能体那一份用量：claude 的**唯一**权威源是 CLI 落盘的
  * `<CLAUDE_CONFIG_DIR>/projects/<项目>/<sessionId>/subagents/agent-<agentId>.jsonl`，
  * 由收尾（`finalize`）读出来并折进结果。
  *
@@ -1026,7 +1122,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * **真机缺陷的回归测试**（2026-10-05，产物 `11a5feb5…/0d881bdc…`）：事件流的 `task_*` 里除了真派发的
+   * **真机缺陷的回归测试**（产物 `11a5feb5…/0d881bdc…`）：事件流的 `task_*` 里除了真派发的
    * 子智能体，还混着 CLI 给**非 Agent 任务**发的条目——那条 Bash 命令的 `description`
    * （"Check latest Vue version on npm"）就是 wire 上那个「子智能体的名字」，而它的
    * `parentToolUseId` 是**子智能体自己那条 Bash 调用**的 id（`call_01_…`），盘上永远没有它的转录。
@@ -1083,24 +1179,24 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
     // 幻影条目**不是事实缺失** ⇒ 那条点名 WARN 不该出现（它以前点的正是那个 task id）
     expect(events.some((event) => event.type === 'log' && event.text.includes('读不到子智能体'))).toBe(false);
     /**
-     * **面板里不许有幽灵行**（R19 的后果①，2026-10-05）：幻影条目既不产 `SubagentRecord`，
+     * **面板里不许有幽灵行**（后果①）：幻影条目既不产 `SubagentRecord`，
      * 也不该被 `finalize` 的重交带上（它压根不在 `lastSubagentRecordById` 里）。
      * 真派发的那个会出现**两条**（派发帧 + 收尾重交帧），但身份只有一个
      * ⇒ 判据按**身份去重**，不数条数（条数由「收尾重交」这条机制决定，与幽灵行无关）。
-     * 旧行为：这里会多出一条 `bey1yc1n7`（名字是那条 Bash 的 `description`、用量恒「未采集」）。
+     * 按形状登记（见到 `task_id` 就收）会让这里多出一条 `bey1yc1n7`（名字是那条 Bash 的 `description`、用量恒「未采集」）。
      */
     expect([...new Set(records.map((record) => record.subagentId))]).toEqual(['ae63ead9521ee0d28']);
     expect(records.some((record) => record.subagentId === 'bey1yc1n7')).toBe(false);
     /**
-     * ⚠️ 这一条钉的是**「没有终态通知的子智能体也拿得到最终用量」**（2026-10-06 修）：
-     * 这个真派发只发过**派发帧**（没有 `task_notification`），而改前派发帧**提前返回、什么都不记**
+     * ⚠️ 这一条钉的是**「没有终态通知的子智能体也拿得到最终用量」**：
+     * 这个真派发只发过**派发帧**（没有 `task_notification`），只登记收场帧的实现会把它漏掉
      * ⇒ 它不在收尾的重交名单里，用量永远是 `null`（子任务条恒「用量未采集」），哪怕转录就在盘上。
      */
     expect(records.at(-1)?.usage).toEqual({ input: 14658, cached: 13568, output: 792, reasoningOutput: null, total: null });
   });
 
   /**
-   * **只有幻影的 wire**（spec §4 **R19** 的后果②）：事件流里那两条 `task_*` 全是 CLI 给**非 Agent
+   * **只有幻影的 wire**：事件流里那两条 `task_*` 全是 CLI 给**非 Agent
    * 后台任务**发的（真机：子智能体里那条带 `description` 的 Bash），盘上一个转录都没有。
    *
    * 诚实答案是 `{0,0,0}`（**确实没有子智能体**）+ 「轮次 0」，**一句 WARN 都不该有**——
@@ -1144,7 +1240,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * **R1 那个价码的关闭口**（spec §4 **R1** / **R19**，2026-10-05）：一个**形状像派发**的子智能体
+   * **关闭口**：一个**形状像派发**的子智能体
    * 转录缺失、而盘上另有可读转录时，交出去的**绝不能是部分和**。
    *
    * 旧行为（只枚举目录、不与名单对账）：这里给的是 `task-1` 那一份（4 / 0 / 2）——一个**部分和**，
@@ -1192,14 +1288,14 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * **只见到收场帧**（没有 `start` 可判形状）这一档的完整处置（R19 + 2026-10-05 复核裁定；
+   * **只见到收场帧**（没有 `start` 可判形状）这一档的完整处置（
    * 盘上**没有**实例，触发条件未刻画——真机三个 claude 产物的每一个真派发都是 start + 收场成对出现）。
    * 三条一起才是这一档的全部含义：
    *   · **面板照产一行**：「**丢一个真派发比多一条幽灵行更坏**」（用户裁定）；
    *   · **不要求它有转录、也不改两格**：说它是子智能体（`null` + 「读不到」）会把一条幻影的代价转嫁给
    *     真子智能体——正是用户报的症状；所以两格照算（这一档里没有转录 ⇒ 仍是 `{0,0,0}` 与 0 轮）；
    *   · **但必须点一句名**：`[WARN] 只见到收场帧的 task 条目 X 没有转录：这一行的 tok / 缓存命中 /
-   *     轮次可能少算它（无法判定它是不是子智能体）`——既不静默少算，也**不叫它子智能体**（R19 的教训）。
+   *     轮次可能少算它（无法判定它是不是子智能体）`——既不静默少算，也**不叫它子智能体**（那条教训）。
    */
   it('只见到收场帧 ⇒ 面板照产一行、两格仍是 {0,0,0}，且落一条**不叫它子智能体**的「可能少算」WARN', async () => {
     const configHome = mkdtempSync(join(tmpdir(), 'claude-end-only-'));
@@ -1238,7 +1334,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * 同一档的**另一半**（2026-10-05 复核 Important 1 的正例）：判不了的条目**在盘上另有可读转录**时，
+   * 同一档的**另一半**：判不了的条目**在盘上另有可读转录**时，
    * 两格交的是**读到的那些的和**（可能少算了那条判不了的条目），**同时**落同一条「可能少算」WARN。
    *
    * 为什么必须有这一条：这一档里「两格照算」与「点名」是**两句必须同时成立**的话——
@@ -1304,7 +1400,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * **合计与分量同生共死**（2026-10-04 收尾评审 Important 2）。
+   * **合计与分量同生共死**。
    *
    * 为什么单开一条：收尾那条路**声称**覆盖「被中断 / 失败」的运行（见 `finalize` 的 JSDoc），
    * 而那种运行最常见的形状就是**一条 `result` 消息都没有**——`result` 是 CLI 自己的收尾消息，
@@ -1342,7 +1438,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
   });
 
   /**
-   * **子智能体自己的那一格用量**（2026-10-04 用户报的缺陷：抽屉里「Agent」工具下的子任务条永远
+   * **子智能体自己的那一格用量**（用户报的缺陷：抽屉里「Agent」工具下的子任务条永远
    * 显示「用量未采集」，而 dsh / codex 两家都有数）。
    *
    * 为什么这条与上面三条不是同一件事：那三条钉的是**行快照**（`result.subagentTokens`，走
@@ -1396,7 +1492,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
     /**
      * 三帧、同一条身份（覆盖累积按 `subagentId` 折叠 ⇒ 界面上只有一条子任务）：
      *   ① `task_started` 的派发帧（`running`）；
-     *   ② `task_notification` 到达时的终态帧——**不带用量**（2026-10-06 起跑动期不读盘）；
+     *   ② `task_notification` 到达时的终态帧——**不带用量**（跑动期不读盘）；
      *   ③ `finalize` 的重交帧——**它才带最终用量**，且兜住「通知先到、CLI 那份 jsonl 还没写完」的竞态。
      */
     expect(records).toHaveLength(3);
@@ -1416,7 +1512,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
 });
 
 /**
- * 轮次那一格的**分量**（`subagentTurns`，spec 2026-10-04 §2.2 补注 / §2.3 claude 段 / §2.4）。
+ * 轮次那一格的**分量**（`subagentTurns`）。
  *
  * 口径与 `subagentTokens` 逐字同构，只是取值域换成非负整数：子那一份 = **各子智能体文件里
  * `message.id` 去重后的个数之和**（`readClaudeSubagentUsage` 的 `turns`——与用量同一次读盘、
@@ -1506,8 +1602,8 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
      * 「分量是 `null`」既可能是「读失败」（诚实），也可能是「这一格压根没接线」——两者在界面上
      * 同形，只有前者该被接受。
      *
-     * ⚠️ 2026-10-05 口径修正：判据从「事件流的每个 id 都要有同名文件」换成「目录里的转录都得读得动」
-     * ——事件流里混着 CLI 的**非 Agent task 条目**，它们本来就没有转录。所以这一条现在钉的是
+     * ⚠️ 判据是「目录里的转录都得读得动」，而不是「事件流的每个 id 都要有同名文件」
+     * ——事件流里混着 CLI 的**非 Agent task 条目**，它们本来就没有转录。所以这一条钉的是
      * **读不动那一档**（空文件），不再钉「事件流 id 找不到同名文件」（那一条见下面的真机回归测试）。
      */
     const withBoth = mkdtempSync(join(tmpdir(), 'claude-turns-'));
@@ -1531,9 +1627,9 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
     // 「全量或 null」：两个转录只读得动一个 ⇒ 分量整格 null，绝不拿读到的那个 1 冒充总数
     expect(one.result.subagentTurns).toBeNull();
     /**
-     * 合计照 §2.2 那条回落口径退回**主会话**那一份（1 轮）——机制是「收尾那一格**不交** ⇒ 骨架
+     * 合计照回落口径退回**主会话**那一份（1 轮）——机制是「收尾那一格**不交** ⇒ 骨架
      * 保留投影已经给出的主会话轮次」。两格因此是这样一对：**合计有主会话那个数、分量是 `null`**
-     * ⇒ 界面退回只有合计的那一行（§2.5），而分量绝不会在合计退回时还留着旧值。
+     * ⇒ 界面退回只有合计的那一行，而分量绝不会在合计退回时还留着旧值。
      * 这一条是**既成事实的前提钉**（它由 `turns` 的省略与骨架的「缺省保持」共同给出，不是本次新写的）。
      */
     expect(one.result.turns).toBe(1);
@@ -1591,7 +1687,7 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
     /**
      * 真机形状：主会话派一次活就算 1 轮，子智能体自己跑好几轮。若运行期就把子那一份交出去，
      * 界面按「主会话 = 合计 − 分量」会算出 `1 − 2 = −1`——`subagentTurns ≤ turns` 那条硬口径
-     * 当场被破坏（与 codex 同一档：它的运行期 `turns` 也只有主线程，见 spec §4 **R17**）。
+     * 当场被破坏（与 codex 同一档：它的运行期 `turns` 也只有主线程）。
      * claude 的运行期 `turns` 同为主会话口径（`countModelRoundTrip` 按 `parent_tool_use_id` 退出）
      * ⇒ 分量**只在收尾与合计一起给**。
      */
@@ -1619,7 +1715,7 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
 
     const usage = events.filter((event) => event.type === 'usage');
     /**
-     * **claude 的事件流里 `turn.subagentId` 恒为 `null`**（2026-10-06 用户裁定：只交最终用量）。
+     * **claude 的事件流里 `turn.subagentId` 恒为 `null`**（用户裁定：只交最终用量）。
      * 「每个子智能体自己花了多少」走 `SubagentRecord.usage`（收尾重交，判据见
      * `subagent-usage-cache.test.ts`），不再有带会话身份的逐轮读数 ⇒ 这一组同时钉住两件事：
      * **运行期**那两格恒 `null`（界面只画一行），且整条事件流里**一条带会话身份的读数都没有**。
@@ -1627,7 +1723,7 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
     // 不能是空数组：下面那个循环为空时恒真（那正是「没接线」与「接对了」同形的地方）
     expect(usage.length).toBeGreaterThan(0);
     for (const event of usage) {
-      // 没有任何读数带会话身份（那条路已于 2026-10-06 删除）
+      // 没有任何读数带会话身份（逐轮读数那条路不存在）
       expect(event.turn?.subagentId ?? null).toBeNull();
       // 跑动期的合计只有主会话那一份（子智能体的轮次要到收尾读盘才知道）
       expect(event.turns).toBe(1);
@@ -1642,11 +1738,11 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
 });
 
 /**
- * **收尾只交最终用量：整条事件流里没有一条带会话身份的读数**（2026-10-06 用户裁定）。
+ * **收尾只交最终用量：整条事件流里没有一条带会话身份的读数**（用户裁定）。
  *
- * 背景：2026-10-05 曾实现「每个子会话**每一轮**发一条带 `turn = { subagentId, round }` 的 `usage`」，
- * 好让子会话节点的时间轴上有逐轮里程碑。那批读数要按轮拆 CLI 落盘的转录文件，而用户的口径是
- * 「通过读取文件的方式，成本过高无必要，**展示最终用量即可**」⇒ 本次删除。
+ * 每个子会话**每一轮**发一条带 `turn = { subagentId, round }` 的 `usage` 能让子会话节点的时间轴上
+ * 有逐轮里程碑，但那要按轮拆 CLI 落盘的转录文件；用户的口径是「通过读取文件的方式，成本过高无必要，
+ * **展示最终用量即可**」⇒ 不发逐轮读数。
  * claude 因此与 codex 同形：主会话走事件流，**每个子智能体自己的最终用量**走
  * `SubagentRecord.usage`（抽屉里子任务条那一格，收尾重交——见 `subagent-usage-cache.test.ts`）。
  *
@@ -1654,7 +1750,7 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
  * 「各转录按 `message.id` 去重后求和」、`subagentTurns` 仍是它们的往返数之和、`tokens` / `turns`
  * 仍是「主 + 子」。
  */
-describe('claude-code 收尾只交最终用量（2026-10-06：删掉子会话逐轮读数）', () => {
+describe('claude-code 收尾只交最终用量（不含子会话逐轮读数）', () => {
   /**
    * **两个**子会话、各两轮（task-1 的 `task-1-m-1` 出现两次、后到覆盖 ⇒ 仍是两轮）。
    *
@@ -1700,7 +1796,7 @@ describe('claude-code 收尾只交最终用量（2026-10-06：删掉子会话逐
     return { result, events };
   }
 
-  /** 带会话身份的读数（2026-10-06 之后应当**恒为空**）；`subagentId` 是 `null` 的才是主会话读数 */
+  /** 带会话身份的读数（应当**恒为空**）；`subagentId` 是 `null` 的才是主会话读数 */
   function ownReadings(events: readonly AgentEvent[], subagentId: string): Array<Extract<AgentEvent, { type: 'usage' }>> {
     return events.filter(
       (event): event is Extract<AgentEvent, { type: 'usage' }> =>
@@ -1729,7 +1825,7 @@ describe('claude-code 收尾只交最终用量（2026-10-06：删掉子会话逐
     writeTwoSubagents(configHome, 's-own');
     const { result } = await runTwoSubagents(configHome, 's-own');
 
-    // 分量 = **两个**子会话各自的合计（128/240/20）：不是任何一个会话的末轮累计（那是 M2 要拦的形状）
+    // 分量 = **两个**子会话各自的合计（128/240/20）：不是任何一个会话的末轮累计（那是「拿单个会话末轮当分量」的形状）
     expect(result.subagentTokens).toEqual({ input: 128, cached: 240, output: 20, reasoningOutput: null, total: null });
     expect(result.subagentTurns).toBe(4);
     // 合计 = 主会话（100/0/10） + 分量，逐格相加；轮次 = 主 1 + 子 4

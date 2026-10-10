@@ -20,7 +20,7 @@
  *   4. **颜色取 `theme` 之外的两个既有主题变量**（`--app-muted` / `--app-fg`，见 globals.css）：
  *      把 antd token 再复制一份进 CSS 就是第二份真源，主题一改必漂移。字号与行内边距一律不写
  *      （交紧凑密度与 `Typography` 的默认值，AGENTS.md 的硬口径）；
- *   5. **实时正文优先、历史摘要兜底**（2026-10-10）：有 `activity.text` 就走打字态
+ *   5. **实时正文优先、历史摘要兜底**：有 `activity.text` 就走打字态
  *      （最后一个非空段 + 闪烁光标），否则看工具块的摘要，最后才回落到 `log.summary`。
  *      这条分层是有意的——实时那条流**不回放历史**，刷新页面后它拿不到任何东西，
  *      而 `log.summary` 那一路有历史，两者叠起来才是「实时优先、历史兜底」；
@@ -39,7 +39,7 @@ import { STREAM_CURSOR_CLASS } from './stream-cursor';
 export const ACTIVITY_SWEEP_CLASS = 'aieval-activity-sweep';
 
 /**
- * 打字态类名（2026-10-10）。换行重打的入场动画挂在它下面（样式在 `globals.css`），
+ * 打字态类名。换行重打的入场动画挂在它下面（样式在 `globals.css`），
  * 与 `ACTIVITY_SWEEP_CLASS` 同一处置：跨包一致性由同一条守卫钉住。
  */
 export const ACTIVITY_TYPING_CLASS = 'aieval-activity-typing';
@@ -176,7 +176,7 @@ export interface AgentActivityLineProps {
    * **给人看的一句话**（`log.summary` 优先，判定在 `@aieval/client` 的 `activityOf`）；
    * null = 还没有可说的事（显示回落文案）。
    * 传进来的**必须是消息**：厂商信封那种 JSON 早在数据层就被挡在门外了
-   *（用户口径 2026-09-29：这一行动效里不能出现 `{"method":"session.event",…}`）——
+   *（这一行动效里不能出现 `{"method":"session.event",…}`）——
    * 所以这里不做任何 JSON 判断，`activityText` 只负责「运行态怎么显示、终态怎么收起」。
    */
   latestText: string | null;

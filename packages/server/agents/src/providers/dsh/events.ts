@@ -1,6 +1,6 @@
 /**
- * dsh 的通知投影（§5.6.3）：**按真实探测回写**（Task 12 第 1 步）。
- * 实测口径（探测报告 §2/§3，`probe/dumps/dsh.json`）：
+ * dsh 的通知投影：按真实探测到的厂商事件形态投影。
+ * 口径（`probe/dumps/dsh.json` 的实测）：
  *  - 通知外形是 `{ method, params }`，method 只有四种；**事件全在 `session.event` 里**，
  *    真正的判别字段是 `params.event.type`（`agent/inbox/spliced`、`turn/start`、`step/start`、
  *    `system/message`、`user/message`、`request/header`、`request/context`、`session/title`、
@@ -10,7 +10,7 @@
  *    `inputTokens` 只算未命中缓存的输入，缓存读单独在 `cacheReadTokens` ⇒ 映射到本仓三元组不会双计）；
  *  - **轮次结束是 `turn/end`**：`params.event.data = { turn, reason: { kind } }`，`kind` 取值实测
  *    `completed` / `error`（类型面另有 `aborted` / `blocked` / `max-tokens` / `interrupted` / `forked`）；
- *  - **一次模型 API 往返 = 一个 step**（用户口径，2026-09-28）：实测事件序列是
+ *  - **一次模型 API 往返 = 一个 step**（用户口径）：事件序列是
  *    `turn/start` → `step/start` → `request/header` → `request/context` → `assistant/message`
  *    → `step/end`（→ 下一个 `step/start` …）→ `turn/end`，`assistant/message` 上带着 `{turn, step}`。
  *    所以**轮次从 `step/start` 数**：它是「这一次请求已经发出去了」的落点，而不是等整段任务收尾。
@@ -20,7 +20,7 @@
  *    结构化 `{ message, code:"TRANSPORT" }`（传输失败）与**纯字符串** `"…"`（SDK 把非结构化异常
  *    折成 `{ message: errorChain(error), code: 'UNKNOWN' }`，而 `errorChain` 对普通 Error 返回 string）。
  *    两种都要认，否则一次失败的运行会被投影成普通日志、骨架返回 `ok: true, completed`
- *    （「界面显示成功、实际没干活」——评审 L2 点名的那一格）。
+ *    （「界面显示成功、实际没干活」）。
  * 其余口径不变：未识别一律 `unknownEventDraft(payload)` 保留原始负载；计量三项齐了才认，缺项 → null + WARN。
  * **时长（2026-10-XX 新增）**：dsh 的用量载荷里**没有任何时间字段**，时间只在会话事件自己身上
  * （`params.event.time`，epoch 毫秒，每条事件都有）⇒ 本行的 `timing` 一律 `source: 'events'`
@@ -36,25 +36,24 @@
  * 子会话的 `assistant/message` 与 `step/start` 与主会话同形，而这一层**只认 `event.type`、
  * 不按 `sessionId` 分流**：`assistant/message` 那一支把三元组**无条件**累进本行的 `state.usage*`
  * （`sessionId` 只喂 `noteDshSessionUsage` 那张按会话分组的表），`step/start` 那一支把
- * `state.turns` **无条件** +1 ⇒ **dsh 的三格（tok / 缓存命中 / 轮次）从第一天起就含它派发的
- * 子智能体**，是**构造上如此**，不是投影漏了一层过滤。原文把这条行为记成「碰巧对」；
- * 2026-10-04 起它是**有意**的既成口径并由守卫钉住（spec §3 的 #4 / #5）：本行的读数问的就是
- * 「这个候选一共花了多少」，子会话干的活正是它干的活 ⇒ 要改成主 / 子两把尺子是另一次口径变更。
- * 本次唯一的新增是把**其中的分量**另外交出来（`subagentTokens`，按本行的子会话白名单求和），
- * 合计口径一个字未动——另两家（codex / claude）过去把子那一份留在子任务行上，本次才并进合计。
+ * `state.turns` **无条件** +1 ⇒ **dsh 的三格（tok / 缓存命中 / 轮次）含它派发的
+ * 子智能体**，是**构造上如此**，不是投影漏了一层过滤。它是**有意**的既成口径并由守卫钉住
+ * 本行的读数问的就是「这个候选一共花了多少」，子会话干的活正是它干的活
+ * ⇒ 换成主 / 子两把尺子等于换一套口径。
+ * 分量另外交出来（`subagentTokens`，按本行的子会话白名单求和），合计口径不受影响。
  *
- * 2026-10-05 补一句新口径（`docs/protocols/message-spec.md`）：
- * **合计**（`tokens` / `turns`，服务卡片与快照）仍**不分会话**——上面那一段一个字未动；而
+ * 另一条口径（`docs/protocols/message-spec.md`）：
+ * **合计**（`tokens` / `turns`，服务卡片与快照）仍**不分会话**——与上面那一段同一口径；而
  * **消息的轮次号与 `usage.turn`** 改按**各会话自己的 `step`** 走（两者是同一个数，
  * `message.ts` 的 `dshTurnAttribution` 是唯一实现）。两者不是一回事：合计答的是「这一行一共花了
  * 多少」，归属答的是「这条读数属于哪个会话的第几次模型往返」——同一个数在两边都成立才是错的。
  *
- * 2026-10-04 追加**轮次那一格的分量**（`subagentTurns`，见 v3 spec §3.4 的子任务级轮次）：同一份白名单、
+ * **轮次那一格的分量**（`subagentTurns`，子任务级轮次）：同一份白名单、
  * 同一个事实缺失谓词（`dshSilentChildSessions`）——判据只有一份，收尾那条点名 WARN 与它同源。
  * 数据面是 `step/start` 那一支里**紧挨着** `state.turns += 1` 的按会话计数（`noteDshSessionTurn`）：
  * 两格由同一条事件驱动 ⇒ `subagentTurns ≤ turns` 是构造上的，不是事后校验的。
  *
- * 2026-09-29 追加三类投影（用户口径：卡片底部那一行动效要**实时滚动智能体的 event message**，
+ * 三类投影（用户口径：卡片底部那一行动效要**实时滚动智能体的 event message**，
  * 不能只显示一句「正在思考…」，也不能是 JSON）：
  *  - `tool/call`：`params.event.data = { turn, step, callId, name, arguments }`，其中 `arguments` 是
  *    **JSON 字符串**（实测 `{"job_id": "pwsh-16", "timeout_ms": 420000, "wait": true}`）；
@@ -62,9 +61,9 @@
  *  - `assistant/message` 的{文本}落成一条日志（过去只进 `finalText`，整轮不出现在任何地方）——
  *    评分阶段跑的是同一个适配器，它的消息因此同样会滚上去。
  *
- * **2026-10-07 收敛：活动行只播「正在做什么」**（用户裁定；词表与实现只有一份，在 `src/activity.ts`）。
- * 在此之前，本文件给「答复 / 推理 / 轮次 / 工具返回」**每一条都配了摘要**，于是卡片底部那一行会被
- * 最新一句占据——真机形态（run `08b56e95` 的 dsh 行与 claude 行）是**永久停在英文推理**上：
+ * **活动行只播「正在做什么」**（用户裁定；词表与实现只有一份，在 `src/activity.ts`）：
+ * 给「答复 / 推理 / 轮次 / 工具返回」**每一条都配摘要**会让卡片底部那一行被最新一句占据——
+ * 真机形态（run `08b56e95` 的 dsh 行与 claude 行）是**永久停在英文推理**上：
  * `思考：Only one file changed: index.html. Now evaluate each item…`，因为同一轮里推理行排在答复行**之后**。
  * 现在的分工：
  *  - **给摘要**：工具调用（`调用工具 <名>：<参数摘要>`）、工具**报错**、子任务派发/收场——都是「在做什么」；
@@ -74,8 +73,8 @@
  *  - **答复文本仍然落一条日志**，且**不带摘要**：它本身就是人话，由 `activityOf` 直取 `text`——
  *    多配一份截断过的摘要等于同一句话有两个版本。
  *
- * 2026-10-04 追加**子智能体那一份**（spec §2.3）：`tokens` / `turns` **已经含**子会话（上面那条
- * 「投影不按会话分叉」的口径，本次不改）——新增的一格交出的是**其中的分量**，按 run 作用域的
+ * **子智能体那一份**：`tokens` / `turns` **已经含**子会话（与上面那条
+ * 「投影不按会话分叉」的口径一致）——这一格交出的是**其中的分量**，按 run 作用域的
  * **子会话白名单**求和（`childSessions` 是模块级的表，同一个进程里还跑着别的行 ⇒ 只有白名单能圈出
  * 这一行）。它随 `runState` 走：`projectDshNotification` 的第 4 个参数，**可选**（缺省 = 空集合，
  * 既有直调用例不必改）。
@@ -87,7 +86,7 @@ import {
   toolCallSummary,
   toolErrorSummary,
 } from '../../activity';
-import { logDraft, safeStringify, unknownEventDraft, type AgentEventDraft } from '../../emit';
+import { logDraft, safeStringify, unknownEventDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
 import { mergeTiming, type TimingSpan, type TurnProjection, type TurnState } from '../../turn';
@@ -109,6 +108,7 @@ import {
 } from './message';
 import {
   DSH_ASSISTANT_MESSAGE_TYPE,
+  DSH_REQUEST_HEADER_TYPE,
   DSH_SESSION_EVENT_METHOD,
   DSH_STEP_START_TYPE,
   DSH_STREAM_DELTA_TYPE,
@@ -120,12 +120,14 @@ import {
   DSH_TOOL_RESULT_TYPE,
   DSH_TURN_END_TYPE,
   DSH_TURN_START_TYPE,
-  // 读数规则与字段名只有 `protocol.ts` 一份（2026-10-06 起；见那边的文件头）
+  // 读数规则与字段名只有 `protocol.ts` 一份（见那边的文件头）
+  readHeaderTools,
   readUsageTokens,
 } from './protocol';
 
 export {
   DSH_ASSISTANT_MESSAGE_TYPE,
+  DSH_REQUEST_HEADER_TYPE,
   DSH_SESSION_EVENT_METHOD,
   DSH_STEP_START_TYPE,
   DSH_SUBAGENT_CATALOG_TYPE,
@@ -145,7 +147,7 @@ export { resetSubagentCatalogForTesting } from './message';
 /** 用量载荷在事件信封里的路径：`params.event.data.usage`。 */
 export const DSH_USAGE_PATH = ['params', 'event', 'data', 'usage'] as const;
 /**
- * 字段名表已搬到 `protocol.ts`（2026-10-06：`message.ts` 也要按同一份字段名读，
+ * 字段名表住在 `protocol.ts`（`message.ts` 也要按同一份字段名读，
  * 留在本文件会与 `message.ts` 形成循环依赖）。这里 re-export 保持既有 import 路径不动
  * （`events.test.ts` 从 `./events` import 它）。
  */
@@ -164,24 +166,29 @@ export function projectDshNotification(
   /**
    * 本行的子会话白名单与已收场集合（可选，缺省 = 空）。
    * 为什么走参数而不是塞进 `TurnState`：那是**骨架**的状态形状（三家共用），
-   * 而这两个集合是 dsh 自己的取数面（spec 2026-10-04 §2.3）。
+    * 而这两个集合是 dsh 自己的取数面。
    */
-  runState: { childSessions: ReadonlySet<string>; finishedSessions: ReadonlySet<string> } = {
+  runState: {
+    childSessions: ReadonlySet<string>;
+    finishedSessions: ReadonlySet<string>;
+    /** 上一条 `request/header` 的工具表（见下面 `request/header` 那一支：只在**变了**的时候发事件） */
+    headerTools?: string[] | null;
+  } = {
     childSessions: new Set(),
     finishedSessions: new Set(),
   },
 ): TurnProjection {
   const notification = asRecord(raw);
   const method = readString(notification, 'method');
-  // 子智能体的两条**顶层通知**（不是 session.event 包一层）——真机实测的通道，见 §6.5.1
+  // 子智能体的两条**顶层通知**（不是 session.event 包一层）——实测的通道
   if (method === DSH_SUBAGENT_STARTED_METHOD || method === DSH_SUBAGENT_FINISHED_METHOD) {
-    // 事件那条是给人看的摘要（含原始载荷），子任务行才是有类型的契约形状（spec v3 §2.6）
+    // 事件那条是给人看的摘要（含原始载荷），子任务行才是有类型的契约形状
     const record = dshSubagentRecord(notification);
     return {
       drafts: [subagentDraft(notification)],
       tokens: null,
       /**
-       * ⚠️ 这一支**不交**「子智能体那一份」（2026-10-04）：带分量的出口是**三条**——
+        * ⚠️ 这一支**不交**「子智能体那一份」：带分量的出口是**三条**——
        * `step/start` / `assistant/message` / `turn/end`（**三处都同时带两格**，见各自的注释），
        * 而这一支**两格都不带**。理由与 `turn/start` 那一类同源：`usage` 事件的发射门槛是**轮次**
        * （`turn.ts` 的发射点），而这一支按既有口径给 `turns: null`（子任务的派发/收场不是一次模型
@@ -195,7 +202,7 @@ export function projectDshNotification(
       subagents: record === null ? [] : [record],
     };
   }
-  // 只认一种通知外形：`{ method, params }`。其余（含未来新增方法）保留原始负载（§5.6.3）
+  // 只认一种通知外形：`{ method, params }`。其余（含未来新增方法）保留原始负载
   if (method !== DSH_SESSION_EVENT_METHOD) {
     return unknown(raw);
   }
@@ -210,7 +217,7 @@ export function projectDshNotification(
    * 子任务目录项：**只登记、不产出事件**。
    *
    * 为什么必须记：`label`（任务名）与 `mode` **只在这一条消息里**，而 `subagent.started` 只带
-   * 两个 sessionId ⇒ 不跨消息记住的话，start/finish 两条都拿不到名字（真机实测 §6.5.1）。
+   * 两个 sessionId ⇒ 不跨消息记住的话，start/finish 两条都拿不到名字。
    * 为什么自己不产出事件：它是**身份补充**，不是进度——落成日志只会给抽屉添噪声。
    */
   if (type === DSH_SUBAGENT_CATALOG_TYPE) {
@@ -223,7 +230,7 @@ export function projectDshNotification(
      * stream-tap 的增量伪事件（见 `protocol.ts` 的命名与处置两条硬口径）：**只产内容消息、
      * 零事件草稿**。绝不能落进未识别的 `log` 兜底——一条增量一行 log 会把「原始输出」面板
      * 刷成几百条 JSON 流水（真要看的 stderr 反而被冲掉）。delta 的落点只有对话视图；
-     * 编排层对 delta 只广播不落盘（2026-10-09 三家统一），事件侧彻底没有它的位置。
+       * 编排层对 delta 只广播不落盘（三家统一），事件侧彻底没有它的位置。
      */
     return {
       drafts: [],
@@ -256,7 +263,7 @@ export function projectDshNotification(
     const drafts: AgentEventDraft[] = [];
     noteEventTime(state, eventRecord);
     /**
-     * 子会话的用量按 `sessionId` 分组求和（spec v3 §3.3：`subagent.started` / `finished`
+     * 子会话的用量按 `sessionId` 分组求和（`subagent.started` / `finished`
      * **不带用量** ⇒ 子任务级用量只能这样拿）。这一个调用对主会话也有记录，
      * 而 `dshSubagentRecord` 只按**子任务身份**取值 ⇒ 主会话那一条永远不会被读到。
      */
@@ -288,32 +295,32 @@ export function projectDshNotification(
     if (reply !== '') {
       state.finalText = reply;
       /**
-       * 模型说的话**落一条日志**（用户口径 2026-09-29：活动行要滚动智能体实时的 event message
+        * 模型说的话**落一条日志**（用户口径：活动行要滚动智能体实时的 event message
        * ——「评分的消息也在这里滚动展示」）。这一格过去只进 `finalText`，整轮都不出现在任何地方，
        * 于是卡片上只能看到工具 JSON。
        *
-       * **不给摘要**（2026-10-07 统一）：它本身就是人话，`activityOf` 在没有摘要时会直接取 `text`；
+        * **不给摘要**（统一口径）：它本身就是人话，`activityOf` 在没有摘要时会直接取 `text`；
        * 再配一份截断过的摘要等于同一句话在事件里存两份、两处口径可能漂移。筛不筛 JSON 同样只由
        * 消费方判（评分阶段模型吐的就是 JSON 评分结果）——判据只能有一份。
        */
       drafts.push(logDraft('stdout', reply));
     }
     /**
-     * **推理原文单独落一条**（2026-09-30 真机更正；2026-10-07 改为只作证据）。
+      * **推理原文单独落一条**（只作证据）。
      *
      * 过滤掉 reasoning **是对的**（否则推理混进答复），但**只过滤不落盘就是把证据丢了**：
-     * 真机实测 dsh 每次模型往返都带完整推理文本（三次往返 259 / 68 / 143 字符），
+     * dsh 每次模型往返都带完整推理文本（三次往返 259 / 68 / 143 字符），
      * 而修复前这里一个字都不留。
      *
      * 落法改了：`text` 取**厂商原始信封**（与 `turn/start` 那一支同源），**不给摘要**。
      * 两个理由，缺一条都不成立：
      *   · 推理的**人话落点**是思考块（`message.ts` 的 `thinkingBlockDraft`，档位 `full`）——日志这一条是
      *     排障证据，不是第二个展示面；
-     *   · 给它配摘要（旧文案 `思考：<推理>`）会让活动行**永久停在英文推理上**：同一轮里推理行排在
-     *     答复行之后 ⇒ 最新一句恒是它（真机形态见文件头 2026-10-07 那段）。
+     *   · 给它配一句摘要（`思考：<推理>` 那种文案）会让活动行**永久停在英文推理上**：同一轮里推理行排在
+     *     答复行之后 ⇒ 最新一句恒是它（真机形态见文件头那一段）。
      *
-     * ⚠️ 被推翻的旧口径（留档）：本文件上游曾断言「dsh 的 reasoning `text` 实测恒为空串」——
-     * 那是**探测中继把整条流转成单块、破坏 SSE 分块**造成的假象（2026-09-30 复现并定位）。
+     * ⚠️ **探测中继把整条流转成单块、破坏 SSE 分块**时，会看到「dsh 的 reasoning `text` 恒为空串」
+     * 的假象——它不是厂商的行为。
      */
     const reasoning = readAssistantReasoning(data);
     if (reasoning !== '') {
@@ -334,11 +341,49 @@ export function projectDshNotification(
       turns: state.turns > 0 ? state.turns : null,
       failure: null,
       /**
-       * 内容级消息（spec v3 §2）：同一个 `assistant/message` 的 `content[]` 是**完整快照**
+       * 内容级消息：同一个 `assistant/message` 的 `content[]` 是**完整快照**
        * ⇒ 一条消息带齐全部块（推理 + 正文），块序号按内容顺序分配。
        * 与上面的日志**并行**：事件是行级审计与活动行，消息是对话视图与工具族统计的载体。
        */
       messages: optionalMessage(dshAssistantMessageDraft(notification, sessionId, roundOf(sessionId, data))),
+    };
+  }
+
+  if (type === DSH_REQUEST_HEADER_TYPE) {
+    /**
+      * **MCP 的唯一判据**（dsh）：`data.header.tools` 是这一轮模型看到的工具面。
+     *
+     * 三条口径：
+     *   · 只在表**变了**的时候发（`runState.headerTools` 记上一条）：`request/header` 每个 step 都投一条，
+     *     逐条落盘等于把同一份几十 KB 的表抄进 `events.jsonl` N 遍；
+     *   · **交全量**（不是增量）：后端（编排层）取最后一条当判据，最后一条必须自足；
+     *   · 读不到形状（`readHeaderTools` 给 `null`）⇒ **不发**：`[]` 在本仓的定义是「投送了、确实是空的」，
+     *     而「读不动」与「确实没有工具」是两件事——混起来会把一台起来了的 MCP 判成没起来。
+     *
+     * 通道自报 `vendor-tool-table`：推导据此把「表里没有这一台」读成**失败**（另两家在这一点上读法相反）。
+     */
+    noteEventTime(state, eventRecord);
+    const tools = readHeaderTools(data);
+    if (tools === null || sameTools(tools, runState.headerTools ?? null)) {
+      return { drafts: [], tokens: null, turns: null, failure: null };
+    }
+    runState.headerTools = tools;
+    return {
+      drafts: [
+        vendorSystemDraft({
+          tools: [...tools],
+          slashCommands: null,
+          agents: null,
+          // 这一家没有「每台 MCP 一张状态表」那种东西：只有工具面这一格
+          mcpServers: null,
+          mcpChannel: 'vendor-tool-table',
+          permissionMode: null,
+          outputStyle: null,
+        }),
+      ],
+      tokens: null,
+      turns: null,
+      failure: null,
     };
   }
 
@@ -358,7 +403,7 @@ export function projectDshNotification(
       turn: dshTurnAttribution(sessionId, data),
       turns: state.turns,
       /**
-       * ⚠️ **两格分量都在这一支交**（2026-10-04 复核 M1 的收口；此前只交轮次那一格）。
+        * ⚠️ **两格分量都在这一支交**（只交轮次那一格会让用量分量永远缺一份）。
        *
        * 合计那一格在这里刚刚 +1，两格分量若不跟上，界面上那两行会**短暂地算错**
        * （主会话 = 合计 − 旧分量 ⇒ 主会话多 1、子智能体少 1，而这是能画出来的一行假拆分）。
@@ -370,11 +415,10 @@ export function projectDshNotification(
        *
        * 代价照实登记：这一支多一次 `dshSubagentUsage`（两次遍历白名单 + 每个子会话一次 Map 查找，
        * O(子会话数)，通常 1–3）。它**不在任何定时器路径上**（dsh 没有 codex 那种 500ms 读盘刷新，
-       * 见 `CONTENT_READ_MIN_INTERVAL_MS` 的用处），只在每个 `step/start` 上跑一次。⚠️ 间隔按真机
-       * 量级写（2026-10-04 复核 Minor 改正，原文写「分钟级」**偏大**）：本机产物
-       * `runs/8e13e7a3…/rows/08c61bc6…` 那一行 34 个 `step/start` / `durationMs 47821`
+       * 见 `CONTENT_READ_MIN_INTERVAL_MS` 的用处），只在每个 `step/start` 上跑一次。⚠️ 间隔的量级：
+       * 本机产物 `runs/8e13e7a3…/rows/08c61bc6…` 那一行 34 个 `step/start` / `durationMs 47821`
        * ⇒ 平均 **≈1.4 秒**一次（子会话多、并发的行更密）。代价的结论不变（两次白名单遍历远低于
-       * 一次读盘），但量级要写对——数字写大一个数量级，下次就不会有人真去量它了。
+       * 一次读盘）。
        */
       subagentTokens: dshSubagentUsage(runState),
       subagentTurns: dshSubagentTurns(runState),
@@ -384,8 +428,8 @@ export function projectDshNotification(
 
   if (type === DSH_TURN_START_TYPE) {
     /**
-     * 轮次边界：只**补一条原始负载**，不给摘要（2026-10-07 统一）。
-     * 从前这里写「第 N 轮开始」——它是纯播报，会把活动行从「在做什么」挤成「跑到第几轮」；
+      * 轮次边界：只**补一条原始负载**，不给摘要（统一口径）。
+      * 写「第 N 轮开始」是纯播报，会把活动行从「在做什么」挤成「跑到第几轮」；
      * 轮次的落点是卡片上的「轮次」那一格，不是这一行。时间照旧在这里记一笔（见下）。
      */
     noteEventTime(state, eventRecord);
@@ -407,7 +451,7 @@ export function projectDshNotification(
     const tokens = cumulativeTokens(state);
     const timing = state.timing ?? undefined;
     /**
-     * **分量也按同一条口径再交一次**（2026-10-04 评审 Important 1 的可选那一半）：这一支的既有语义
+      * **分量也按同一条口径再交一次**：这一支的既有语义
      * 就是「把最新的一份带上」（tokens / timing / turns 都这样），分量不能例外——否则它是唯一可能
      * 停在旧值的格子：「子会话刚收场却没报到用量」这条结论是在**不带轮次**的通知上成立的，
      * 若这一轮之后再没有 `assistant/message`，界面就会一直显示上一版那个偏小的数。
@@ -461,8 +505,8 @@ export function projectDshNotification(
   }
   if (type === DSH_TOOL_RESULT_TYPE) {
     /**
-     * 工具结果：**只有报错才给摘要**（2026-10-07 统一）。
-     * 成功返回那句「工具返回：<内容>」会把活动行变成流水账——实测最新一句常常停在
+     * 工具结果：**只有报错才给摘要**（统一口径）。
+     * 成功返回那句「工具返回：<内容>」会把活动行变成流水账——最新一句常常停在
      * `工具返回：<path>D:\.tmp\aieval\runs\…`；结果的落点是结果块与抽屉的原始输出面板。
      * 报错必须播：那是「这一行出事了」，而它没有别的行级出口。
      */
@@ -480,7 +524,7 @@ export function projectDshNotification(
 }
 
 /**
- * 这条消息属于**哪个会话的第几次模型往返**（spec 2026-10-05 §2.3）。
+ * 这条消息属于**哪个会话的第几次模型往返**。
  * 与 `usage.turn` 同源：`dshTurnAttribution` 是唯一实现（消息这一格是必填正整数，故 `null` 时给 1——
  * 真机每一次往返都带 `step`，这条路径不可达）。
  */
@@ -557,7 +601,7 @@ function readAssistantText(data: Record<string, unknown> | null): string {
  * （那边只要 `'text'`、这边只要 `'reasoning'`），而**共同点**是"绝不按 text 字段取值"。
  * 合成一个带 `kind` 参数的函数会让调用点看不出这个反面约束，正是那个坑的复发路径。
  *
- * 实测（2026-09-30 真机，dsh SDK 的原始会话事件）：三次模型往返的推理文本长度分别为
+ * 观测到的形状（dsh SDK 的原始会话事件）：三次模型往返的推理文本长度分别为
  * 259 / 68 / 143 字符，且**只有 `block-end` 带整块文本**——dsh **不发** `reasoning-delta`
  * （实测 `reasoning-delta: 0`），所以推理没有增量可推，只能整块取。
  */
@@ -592,7 +636,7 @@ function readContentText(content: unknown): string {
 
 /**
  * `childSessionId → { label, mode }` 的关联表：**唯一一份实现**在 `message.ts`
- * （真机 §6.5.1：任务名与 mode 只在 `subagent/catalog` 里，而 `subagent.started`/`finished`
+ * （真机：任务名与 mode 只在 `subagent/catalog` 里，而 `subagent.started`/`finished`
  * 只带 sessionId）。这里只做读取，不再维护第二份镜像——两份必然漂移，而漂移的症状是
  * 「日志里有名字、子任务行里没有」。
  */
@@ -601,9 +645,9 @@ function catalogOf(identity: string | null): { label: string | null; mode: strin
 }
 
 /**
- * dsh 的子智能体通知 → 一条**可解析**的日志（spec §6.5.2）。
+ * dsh 的子智能体通知 → 一条**可解析**的日志。
  *
- * 三条实测决定的口径（§6.5.1）：
+ * 三条实测决定的口径：
  *  1. **身份**取 `agentId`（真机与 `childSessionId` 同值）⇒ `subagentId`/`vendorId` 都是厂商原生值，
  *     **不需要合成**；
  *  2. **任务名/mode 来自 `subagent/catalog`**（另一条消息）⇒ 这里查关联表，查不到就写 `null`
@@ -626,7 +670,7 @@ function subagentDraft(notification: Record<string, unknown> | null): AgentEvent
   const payload: Record<string, unknown> = {
     kind: 'subagent',
     phase: isStart ? 'start' : 'end',
-    /** `'wire'` = 厂商通知流（spec §6.1）。dsh 侧既不是 SDK hook，也不是聚合计数 */
+    /** `'wire'` = 厂商通知流。dsh 侧既不是 SDK hook，也不是聚合计数 */
     source: 'wire',
     subagentId: identity,
     vendorId: identity,
@@ -643,7 +687,7 @@ function subagentDraft(notification: Record<string, unknown> | null): AgentEvent
   if (isStart) {
     payload.subagentKind = catalog?.mode ?? null;
     // dsh 的通知里**没有**归属键（真机：无 tool_use_id）⇒ parentToolUseId 恒 null。
-    // 与 claude 的真实差异：那边三者同值可精确归属，这边只能靠 sessionId（§6.5.3）。
+    // 与 claude 的真实差异：那边三者同值可精确归属，这边只能靠 sessionId。
     payload.parentToolUseId = null;
   } else {
     payload.subagentKind = catalog?.mode ?? null;
@@ -680,7 +724,7 @@ function mappedStatusOf(status: string | null): string | null {
 }
 
 /**
- * dsh 的 `status` + `stopReason` → spec v3 的 `status` 值域：**以 `stopReason` 分档**，
+ * dsh 的 `status` + `stopReason` → 契约的 `status` 值域：**以 `stopReason` 分档**，
  * `status` **只在 `stopReason === 'completed'` 那一支**参与（不是一张笛卡尔表）。
  * 未观测的组合返回 `null`（调用方写 `statusMissing: 'unverified'`）——**不猜**。
  * ⚠️ 这里与 `message.ts` 的 `mapDshSubagentStatus` 是**同一张表的两处投影**（日志载荷 / 契约形状）：
@@ -732,9 +776,9 @@ function readTurnFailure(data: Record<string, unknown> | null): string | null {
 }
 
 /**
- * 三项齐了才认；缺项时落一条 WARN 并保留原始负载——「没采到」与「0」必须能区分（§5.6.3）。
+ * 三项齐了才认；缺项时落一条 WARN 并保留原始负载——「没采到」与「0」必须能区分。
  * `cacheReadTokens` / `cacheWriteTokens` 在类型上是可选的 ⇒ 字段缺席按**未采到**处理（不填 0）。
- * 形状异常（`usage` 根本不是对象、整段缺失）与缺项**合流到同一条 WARN**（评审 N2 的口径）。
+ * 形状异常（`usage` 根本不是对象、整段缺失）与缺项**合流到同一条 WARN**。
  *
  * **`input` 不做减法**（2026-10-XX 补注）：dsh 的 `TokenUsage` 三格**互斥**，本机恒等式判定逐字验过
  * （`{inputTokens:1219, cacheReadTokens:7040, cacheWriteTokens:0, outputTokens:1, totalTokens:8260}`，
@@ -756,7 +800,17 @@ function readTokens(usage: unknown, drafts: AgentEventDraft[]): UsageTokens | nu
   return tokens;
 }
 
-/** 未识别的通知 / 事件：保留原始负载（§5.6.3 唯一允许丢弃的是重复事件） */
+/** 未识别的通知 / 事件：保留原始负载（唯一允许丢弃的是重复事件） */
+/**
+ * 两张工具表是不是同一份（逐字比较 + 顺序敏感）。
+ *
+ * 顺序敏感是刻意的：dsh 每次投的都是完整的一份表，而工具顺序变了（插件挂载顺序变化）本身
+ * 就是一条值得留下的证据——按集合比较会把它抹掉，代价只是一条重复事件的噪声。
+ */
+function sameTools(left: readonly string[], right: readonly string[] | null): boolean {
+  return right !== null && left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
 function unknown(raw: unknown): TurnProjection {
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
 }

@@ -1,5 +1,5 @@
 /**
- * dsh 的**流式增量旁路**（stream-tap，2026-10-09）：把厂商进程内的逐字流接到我们手里。
+ * dsh 的**流式增量旁路**（stream-tap）：把厂商进程内的逐字流接到我们手里。
  *
  * 为什么需要它：厂商的逐字流只存在于 runtime 进程内的 `agent/assistant-stream` 事件里
  * （`AssistantStreamFrame`，携带 `text-delta` / `reasoning-delta` / `block-start` / `block-end`
@@ -7,7 +7,7 @@
  * `session/event` / `agent/status` / `session/created` / `subagent/end` 四个进程内事件
  * （源码与真机双重证据，见 `docs/faq/deepseek-harness.md`）。执行日志的打字机效果需要
  * token 级增量 ⇒ 适配器把一个**插件**写进每行的 profile 目录（overlay `insert`，相对名按
- * **`<dshHome>`** 解析——2026-10-10 实测修正，见 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH`），由它把 chunk 帧
+ * **`<dshHome>`** 解析——见 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH`），由它把 chunk 帧
  * 追加写到 `<configHome>/aieval-stream-tap.jsonl`；本文件在父进程里 tail 这个文件，
  * 把每一行包成 `aieval/delta` **伪通知**（见 `protocol.ts` 的 `DSH_STREAM_DELTA_TYPE`）。
  *
@@ -29,10 +29,10 @@ import { DSH_STREAM_DELTA_TYPE } from './protocol';
 /** 旁路文件相对 `configHome` 的落点（插件写、本文件读，两边逐字一致） */
 export const DSH_STREAM_TAP_RELATIVE_PATH = 'aieval-stream-tap.jsonl';
 /**
- * 插件本体相对 `configHome` 的落点（2026-10-10 修正）。
+ * 插件本体相对 `configHome` 的落点。
  *
  * **必须落在 `configHome` 根下**，不是 `profiles/sdk/`：overlay 里写的是 `name: "./aieval-stream-tap.mjs"`，
- * 而运行时按 **`dshHome`** 解析这个 `./` 相对名。原先写在 `profiles/sdk/` 里的后果是**插件从来没被加载过**，
+ * 而运行时按 **`dshHome`** 解析这个 `./` 相对名。写在 `profiles/sdk/` 里的后果是**插件从来没被加载过**，
  * 每次运行都打一行 stderr（探针实证两次）：
  *   `dsh: warning: 1 entry did not activate`
  *   `aieval-stream-tap (file:///<dshHome>/aieval-stream-tap.mjs): failed to import`

@@ -1,5 +1,5 @@
 /**
- * claude-code 的**消息归一**（spec v3 §3.1 / §3.2 / §3.3 / §3.4 / §4.1）：把 SDK 消息流折成统一的
+ * claude-code 的**消息归一**：把 SDK 消息流折成统一的
  * `AgentMessage` 与 `SubagentRecord`。事件投影仍在 `events.ts`（行级审计与活动行），本文件只管内容级视图。
  *
  * 取值路径逐条（真机逐字核过，见 `probe/dumps/v4/claude-*.jsonl`）：
@@ -13,17 +13,15 @@
  *     `parent_tool_use_id` → **`subagentId`**（真机：`task_started.tool_use_id`、派生它的工具调用 id、
  *     子消息上的 `parent_tool_use_id` **三者同值** ⇒ 不需要另建关联表）。
  *   · `roundTrip`：按 `assistant.message.id` 去重计数（一次 API 往返 = 一条 id，流式响应按内容块
- *     多次到达、共享同一个 id）。**主会话与侧链各数各的**（`roundTripOfSession`，2026-10-05 修正）：
+ *     多次到达、共享同一个 id）。**主会话与侧链各数各的**（`roundTripOfSession`）：
  *     主会话仍是 `state.turns` 那一套（`events.ts` 的 `countModelRoundTrip` 只数主循环），
  *     而 `parent_tool_use_id` 非空的侧链消息按**该子会话自己的** 1..N 编号——进子会话节点时
  *     时间轴因此按它自己的轮次分行（与 codex 的 `threadMessages` 同形：那家本来就是一线程一套号）。
- *     ⚠️ **改前是共用一个计数器**（侧链沿用主会话当前的号）⇒ 子会话节点整条时间轴只有 1 个轮次行
- *     （真机 run `2921fee3`）。⚠️ 2026-10-05 加这一条时的**直接理由**是「让收尾那批子会话逐轮读数
- *     落进自己的行」，而那批读数已于 **2026-10-06 删除**（成本与收益不成比例，见 `index.ts` 的
- *     `finalize` 注记）——**这条编号保留**，因为它独立地决定子会话节点好不好读。
+ *     ⚠️ **不能共用一个计数器**（侧链沿用主会话当前的号）：子会话节点整条时间轴只会剩 1 个轮次行，
+ *     它自己那几十条消息全挤在那一行里。按会话各数各的才对——它独立地决定子会话节点好不好读。
  *   · `turn` / `step`：**这家没有**（恒 `null`）。不许拿 `roundTrip` 冒充 `turn`。
  *   · 子任务行：`system` 下的 `task_started` / `task_notification` → `SubagentRecord`。⚠️ **但不是每一条都算**
- *     （2026-10-05，spec §4 **R19**）：CLI 也给**非 Agent 的后台任务**发这两条（真机：子智能体自己那条
+ *     CLI 也给**非 Agent 的后台任务**发这两条（真机：子智能体自己那条
  *     带 `description` 的 Bash），照 subtype 收下就会在派发面板里多出一条**幽灵「子任务」**。
  *     判据是**形状**（`ClaudeTaskShape` / `isDispatchShaped`），判决结果随每条 `task_*` 帧一起返回
  *     （`ClaudeMessageOutput.taskShape`）——它是 `index.ts` 那份「事实核对名单」的唯一来源。
@@ -32,7 +30,7 @@
  *     （`stream_event` 的 `parent_tool_use_id` 恒为 null）；它的轮次号走**同一个** `roundTripOfSession`
  *     ——拿得到归属就按那一会话数，拿不到就是主会话那一档。
  *
- * 覆盖合并（§4.1 步骤 4，本家的关键坑）：同一个 `message.id` 会被**多条**投递，每条只带一个内容块
+ * 覆盖合并（本家的关键坑）：同一个 `message.id` 会被**多条**投递，每条只带一个内容块
  * （思考 / 正文 / 工具调用各一条）⇒ 每条投递的块都是**新块**，只能追加到末尾；把它当成「整条消息的
  * 第 0 块」会让后到的块反复覆盖第一个。块序号按**首次到达**分配：流式那条通道先按
  * `content_block_start.index` 占号，随后的完整消息按 `content` 数组顺序对齐到同一批号。
@@ -64,7 +62,7 @@ export interface ClaudeMessageOutput {
 }
 
 /**
- * `task_*` 帧的**形状判决**（spec 2026-10-04 §4 **R19** 的裁定）。
+ * `task_*` 帧的**形状判决**。
  *
  * 为什么要它：CLI 的 `task_started` / `task_notification` **不只给真派发的 `Task`**，也给**非 Agent
  * 的后台任务**——真机那一条是子智能体自己跑的 Bash（wire 上的「名字」就是那条命令的 `description`，
@@ -96,7 +94,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
   /**
    * **消息侧自己的去重表**（`uuid → 已处理`）。
    *
-   * ⚠️ **不能与事件侧共用 `state.seen`**（2026-10-03 实测的真缺陷）：`project` 总是先跑事件投影
+   * ⚠️ **不能与事件侧共用 `state.seen`**：`project` 总是先跑事件投影
    * （`projectClaudeMessage`），它会把这一条的 `uuid` 记进 `state.seen`；随后本归一器读到同一张表，
    * 于是一条 `assistant` / `user` 消息**全部被判成重复并丢弃** ⇒ `messages.jsonl` 一行都不写、
    * 抽屉里永远是「还没有日志」，而 `events.jsonl` 里内容齐全。
@@ -185,7 +183,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
    * 解析好的对象（`tool_use.input`），而流式那一格是 **JSON 片段**（`partial_json`）——把它当
    * `input` 落库会让消费方拿到半截字符串。工具调用按**块结束的完整快照**产出，这与
    * 「消费方只实现 snapshot 也能正确渲染」那条契约保证一致。
-   * ⚠️ **签名分片（`signature_delta`）同样不进 delta 通道**（2026-10-09）：它是同一个思考块的一部分，
+   * ⚠️ **签名分片（`signature_delta`）同样不进 delta 通道**：它是同一个思考块的一部分，
    * 而完整快照本来就带 `signature` ⇒ 进出只会多一条无正文的思考帧（`text: null` +
    * `textKind: 'none'`），消费方按块类型判「思考增量」却拿到空正文。上面两类都登记在
    * 《消息规范》的「非渲染增量」统一表里（禁止无登记的静默丢弃）。
@@ -235,7 +233,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       return [deltaMessage(envelope, thinkingBlockDraft(text, 'full', 'delta', null, identity))];
     }
     /**
-     * `signature_delta`（2026-10-09 起）**不进 delta 通道**：签名是**同一个思考块**的一部分、
+     * `signature_delta` **不进 delta 通道**：签名是**同一个思考块**的一部分、
      * 只进审计视图，而它落在这里会产出一条 `type: 'thinking'` + `text: null` + `textKind: 'none'`
      * 的帧——消费方按块类型判「这是思考增量」却拿到空正文（空转动画、空块闪现），
      * 而完整快照本来就带 `signature`（见下面 `assistant` 的 `thinking` 支）⇒ 一分信息都不丢。
@@ -430,7 +428,7 @@ function user(
 }
 
 /**
- * **「形状像一次派发」的判据**（spec §4 R19 的裁定）：`subagent_type` / `spawn_depth` / `prompt`
+ * **「形状像一次派发」的判据**：`subagent_type` / `spawn_depth` / `prompt`
  * **至少一格非 `null`**（**不是**「非空串 / 非零」：`''` 与 `0` 都算「给了」——刻度由 `message.test.ts`
  * 的「刻度」那条用例钉住；判严了会把一个真派发判成幻影，那比幽灵行更坏）。
  *
@@ -477,8 +475,7 @@ function resultText(content: unknown): string {
  * task_notification keys = ["type","subtype","task_id","tool_use_id","status","output_file","summary","usage","uuid","session_id"]
  * ```
  * ⇒ 收场帧既没有 `description` 也没有 `subagent_type`。不记名字的话，活动行上会出现
- * 「已派发子任务：Review hello world page」紧跟着一句无名的「子任务已完成」（2026-10-07 真机
- * run `e68351a5` 的 claude 行就是这么显示的），而 dsh 因为有 catalog 反而带得上名字——同一件事两个说法。
+ * 「已派发子任务：Review hello world page」紧跟着一句无名的「子任务已完成」，而 dsh 因为有 catalog 反而带得上名字——同一件事两个说法。
  *
  * 为什么放模块级而不是 `TurnState`：那是**三家共用的骨架形状**，往里塞一家专有的名字表会让另两家
  * 读到一个永远为空的格子（与 dsh 的 catalog 同一处置，见 `providers/dsh/message.ts` 的注记）。
@@ -507,7 +504,7 @@ export function resetClaudeTaskNamesForTesting(): void {
 }
 
 /**
- * `system` 子类型 `task_started` / `task_notification` → 子任务行（spec v3 §3.3）。
+ * `system` 子类型 `task_started` / `task_notification` → 子任务行。
  *
  * 三格的口径：
  *   · `status`：`task_notification.status` ∈ `completed` / `failed` / `stopped`；还没收到通知
@@ -516,7 +513,7 @@ export function resetClaudeTaskNamesForTesting(): void {
  *   · `name` ← `task_started.description`；`kind` ← `subagent_type`。
  *   · `parentCallId` ← **`tool_use_id`**（`task_started` / `task_progress` / `task_notification`
  *     都带这一格）：它是**派生这个子任务的那次工具调用 id**，与子消息上的 `parent_tool_use_id`、
- *     `Agent` 工具调用块的 `callId` 三者同值（真机逐条核过 2026-10-03）。**没有它，界面上的
+ *     `Agent` 工具调用块的 `callId` 三者同值。**没有它，界面上的
  *     「进入子任务」入口只能靠任务名去猜**，而猜不中时整棵子任务在时间轴上不可达。
  *   · `parentSubagentId` 恒 `null`：载荷里**没有父 id**（只有 `spawn_depth`）⇒ 层级只能用深度表达，
  *     **不推测**父节点。
@@ -526,7 +523,7 @@ export function resetClaudeTaskNamesForTesting(): void {
  *
  * ⚠️ **本函数不判形状**（它只回答「这一条 `task_*` 描述的子任务行长什么样」）：唯一调用方是
  * `subagentFrame`，而它已经用**形状判决**把幻影挡在外面了（`ClaudeTaskShape`）。别单独调它——
- * 那等于绕开 R19 的判据、把 CLI 的非 Agent 任务重新收成一条子任务行。
+ * 那等于绕开形状判据、把 CLI 的非 Agent 任务重新收成一条子任务行。
  */
 function subagentRecord(message: Record<string, unknown> | null): SubagentRecord | null {
   const subtype = readString(message, 'subtype');
@@ -573,15 +570,15 @@ function currentRoundOf(rounds: ReadonlyMap<string, number>): number {
 }
 
 /**
- * 一条消息该带哪个轮次号——**按会话各数各的**（spec `…-claude-subagent-own-usage-design` §2.5）。
+ * 一条消息该带哪个轮次号——**按会话各数各的**。
  *
- * 为什么要按会话分开数（2026-10-05 真机冒烟抓出来的缺口，run `2921fee3` 的 claude 行 `71e35c51`）：
- * 改前所有消息**共用一个计数器**（`state.turns` 口径）⇒ 子会话那 37 条消息的 `roundTrip`
- * **全等于父会话派发那一轮**（真机 = 3），而界面按 `message.roundTrip` 给**每个会话节点**分轮
+ * 为什么要按会话分开数（冒烟抓出来的缺口）：
+ * 所有消息**共用一个计数器**（`state.turns` 口径）时，子会话那几十条消息的 `roundTrip`
+ * **全等于父会话派发那一轮**，而界面按 `message.roundTrip` 给**每个会话节点**分轮
  * （`build-model.ts`）⇒ 子会话节点整条时间轴只有 **1 个轮次行**，它自己那几十条消息全挤在那一行里。
  *
- * ⚠️ **它当初的直接目的（让收尾那批子会话逐轮读数对齐自己的行）已于 2026-10-06 取消**——那批读数
- * 的成本与收益不成比例，已删除（见 `index.ts` 的 `finalize` 注记）。**这一条保留**：它独立地回答
+ * ⚠️ **它不依赖逐轮读数**（那批读数成本与收益不成比例，已取消，见 `index.ts` 的 `finalize` 注记）。
+ * 它独立地回答
  * 「子会话节点按什么分轮」，且与 codex 的 `threadMessages`（一线程一套号）保持同一形态。
  *
  * 判据：按 `parent_tool_use_id` 分组，每组数**去重后的 `assistant.message.id` 个数**，首次出现顺序 = 1..N。

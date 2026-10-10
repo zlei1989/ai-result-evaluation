@@ -6,9 +6,9 @@
  *
  * 三条保真要求（不满足就会给出真实进程没有的能力、守卫变假绿）：
  *   1. **通知是推的**：`subscribe` 之后由夹具主动投递，测试不能替适配器「拉」；
- *      订阅前推入的那些**缓冲到首个订阅者注册时按序补投**——真实 app-server 的
- *      `turn/completed` 必然在 `turn/start` 响应之后才到（一轮要跑），而适配器是在响应返回
- *      **之后**才订阅（`session.ts`），「先到即丢」比真实更苛刻、会让本轮永不结算；
+ *      订阅前推入的那些**丢掉**（与真实 `appserver/client.ts` 逐字同语义：通知照进历史列表，
+ *      但没有订阅者时不投递给任何人）。⚠️ 「缓冲到首个订阅者再补投」是**比真实更宽容**的语义——
+ *      它正好盖住「订阅晚于 `thread/start` ⇒ MCP 启动状态全丢」这条真机缺陷，故按真实行为收紧；
  *   2. **请求是配对的**：`thread/list` / `thread/read` / `thread/items/list` 走 `respond` 表，
  *      未登记的方法**响亮失败**（静默返回 `{}` 会让「请求没发」与「发了没人管」长得一样）；
  *   3. **帧序可断言**：`requests` 按序记下每一次方法名与参数（对账注入落点的唯一客观量）。
@@ -47,8 +47,8 @@ export interface FakeAppServerOptions {
   turnId?: string;
   /**
    * `turn/start` 受理时投递的通知（按序）。
-   * 此时适配器还没订阅（订阅在 `turn/start` 响应之后）⇒ 这一批先缓冲，首个订阅者注册时按序补投；
-   * 时间敏感的用例（要精确控制「先订阅、再投递」）改用 `emit` 手动投递。
+   * 适配器**在这之前就已经订阅**（`session.ts` 的骨架建在 `thread/start` 之前），故这一批直接到达；
+   * 若哪天订阅又挪到 `turn/start` 之后，这一批会**静默丢掉**（与真实客户端一致，见 `emit` 的注释）。
    */
   notifications?: readonly FakeNotification[];
   /**
@@ -60,6 +60,13 @@ export interface FakeAppServerOptions {
   respond?: Record<string, (params: Record<string, unknown>) => unknown>;
   /** `thread/start` 抛错（模拟 CLI 未安装 / 线程建不起来） */
   threadError?: unknown;
+  /**
+   * 「某个请求**处理到一半**时投递这些通知」：`方法 → 通知列表`。
+   * 用来复现「响应还没回来，通知先到」的真实时序——MCP 启动状态就落在
+   * `thread/start` 与 `turn/start` 之间（见 `codex/index.test.ts` 的那条守卫）。
+   * **没有订阅者时它们照样丢**（与真实客户端同语义，见 `emit` 的注释）。
+   */
+  emitOnRequest?: Record<string, readonly FakeNotification[]>;
   /**
    * 不投递 `turn/completed`：通知流保持开着（`turn/start` 之后只挂住）。
    * 用来观察「本轮还没结算」时的行为——终止、运行期事件、`interrupt` 的帧。
@@ -75,8 +82,9 @@ export interface FakeAppServer {
   turnId: string;
   /**
    * 手动投递一条通知。
-   * 已有订阅者 ⇒ 立刻收到；尚无 ⇒ 与 `notifications` 同一口径缓冲，等首个订阅者注册时补投
-   * （用例若要在「订阅之前」就把通知丢掉，那不是真实 app-server 的行为，夹具不提供）。
+   * 与**真实客户端逐字同语义**（`appserver/client.ts`）：通知照进历史列表，但**没有订阅者时
+   * 不投递给任何人**（丢）。「缓冲到首个订阅者再补投」是**比真实更宽容**的语义，
+   * 而那正好把「订阅晚于 `thread/start` ⇒ MCP 启动状态全丢」这条真机缺陷盖住。
    */
   emit: (method: string, params: unknown) => void;
   /** 模拟进程退出 / 启动失败：待收请求全部拒绝，通知流随之结束 */
@@ -92,8 +100,6 @@ export function createFakeAppServer(options: FakeAppServerOptions = {}): FakeApp
   const listeners = new Set<(notification: AppServerNotification) => void>();
   const terminalListeners = new Set<(reason: string) => void>();
   const serverRequests: AppServerServerRequest[] = [];
-  /** 尚无订阅者时推入的通知：真实时序里它们晚于 `turn/start` 的响应到达，故首个订阅者注册时按序补投 */
-  const pending: AppServerNotification[] = [];
   let terminal: string | null = null;
   let closed = false;
 
@@ -101,12 +107,8 @@ export function createFakeAppServer(options: FakeAppServerOptions = {}): FakeApp
     const notification: AppServerNotification = { method, params };
     notifications.push(notification);
     stats.notificationMethods.push(method);
-    // 没有订阅者 ⇒ 缓冲，不丢：订阅建立在 `turn/start` 返回**之后**（`session.ts`），
-    // 而响应与通知的先后由夹具的时序决定，不该让「通知先到」表现成「本轮永不结算」
-    if (listeners.size === 0) {
-      pending.push(notification);
-      return;
-    }
+    // **没有订阅者 = 丢**（与真实客户端逐字同语义，见 `emit` 的注释）：夹具不能比真实更宽容，
+    // 否则「订阅晚了一步」这类缺陷在单测里永远看不见
     for (const listener of listeners) listener(notification);
   };
 
@@ -118,6 +120,7 @@ export function createFakeAppServer(options: FakeAppServerOptions = {}): FakeApp
     },
     request: <T,>(method: string, params?: unknown): Promise<T> => {
       stats.requests.push({ method, params });
+      for (const one of options.emitOnRequest?.[method] ?? []) push(one.method, one.params);
       if (closed) return Promise.reject(new Error('codex app-server 客户端已关闭'));
       if (terminal !== null) return Promise.reject(new Error(terminal));
       if (method === 'thread/start') {
@@ -143,13 +146,7 @@ export function createFakeAppServer(options: FakeAppServerOptions = {}): FakeApp
     },
     notifications: () => notifications,
     subscribe: (listener) => {
-      const isFirst = listeners.size === 0;
       listeners.add(listener);
-      // 只补给**首个**订阅者：补投只发生一次，之后 `pending` 已空，故不会有人收到第二遍
-      if (isFirst) {
-        for (const notification of pending) listener(notification);
-        pending.length = 0;
-      }
       return () => {
         listeners.delete(listener);
       };

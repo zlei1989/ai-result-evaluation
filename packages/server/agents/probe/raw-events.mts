@@ -1,5 +1,5 @@
 /**
- * 真实事件探测（spec §5.6.3 的实施前置 / §11 第 5 步）。
+ * 真实事件探测。
  * 做什么：对指定的一家智能体跑一条最小任务，把**原始事件流**与**注入对象原文** dump 到 probe/dumps/。
  * 怎么跑（人工，需要真实凭据，会产生真实费用，每家只跑一次）：
  *   node packages/server/agents/probe/raw-events.mts --kind=claude-code
@@ -8,7 +8,7 @@
  *   node packages/server/agents/probe/raw-events.mts --kind=dsh --mode=entry   # Step 0：只 dump 入口形态，不联网、不计费
  * 注意：
  *  - 本文件**不在** `src/` 下，因此不进 `pnpm typecheck` / `pnpm test`（单测一律不碰真实 API）；
- *  - 它刻意不 import 本包的实现：探测要看到未经我们投影的原始事件（字段名以它为准，§5.6.3）；
+ *  - 它刻意不 import 本包的实现：探测要看到未经我们投影的原始事件（字段名以它为准）；
  *  - dump 里可能混进密钥：写盘前一律 redact（把密钥替换成 ***）；
  *  - Node 24 直接跑 .mts（类型剥离），不需要额外工具链；
  *  - `--mode=entry` 只 dump 静态入口形态（导出面 / 签名文本 / 通知外形），**不 spawn、不联网**，
@@ -31,7 +31,7 @@ interface ProbeEnv {
   modelId: string;
   cwd: string;
   prompt: string;
-  /** 该行的独立配置目录（§5.6.4 不变量 3）。默认临时目录；`AIEVAL_PROBE_CONFIG_HOME` 可覆盖。 */
+  /** 该行的独立配置目录（不变量 3）。默认临时目录；`AIEVAL_PROBE_CONFIG_HOME` 可覆盖。 */
   configHome: string;
   /** 覆盖 HOME 的显式开关。默认关闭：**已登录的 CLI 靠真实的 `$HOME/<tool>` 找凭据**，
    *  换掉 HOME 会让三家一起变成「没登录」。开了会在 dump 的 `env.homeOverridden` 里留痕。 */
@@ -44,7 +44,7 @@ interface ProbeResult {
   notes?: string[];
 }
 
-// 三家的 base URL 口径（与 §5.6.4 的表一致；这里独立实现，避免探测依赖被测代码）
+// 三家的 base URL 口径（与契约的表一致；这里独立实现，避免探测依赖被测代码）
 const trimSlash = (url: string): string => url.replace(/\/+$/, '');
 const stripV1 = (url: string): string => trimSlash(url).replace(/\/v1$/, '');
 const ensureV1 = (url: string): string => (/\/v1$/.test(trimSlash(url)) ? trimSlash(url) : `${trimSlash(url)}/v1`);
@@ -226,7 +226,7 @@ async function probeClaudeCode(env: ProbeEnv): Promise<ProbeResult> {
 
 // ─────────────────────────────────────── codex ───────────────────────────────────────
 
-/** codex 需要一份**完整**的 model_providers 条目；这里按 §5.6.4 的注入口径构造。 */
+/** codex 需要一份**完整**的 model_providers 条目；这里按契约的注入口径构造。 */
 function codexConfig(baseUrl: string, requiresOpenAiAuth: boolean): Record<string, unknown> {
   const provider: Record<string, unknown> = {
     name: 'aieval gateway',
@@ -256,7 +256,7 @@ async function probeCodex(env: ProbeEnv): Promise<ProbeResult> {
   };
   const baseUrl = ensureV1(env.baseUrl);
   // `requires_openai_auth` 这一格由 `AIEVAL_PROBE_CODEX_OPENAI_AUTH=0` 关掉：第三方网关不需要它，
-  // 且开着时 CLI 只认自己的 OpenAI 鉴权（§5.6.4 说「缺它不发 Bearer」是**针对 OpenAI 官方**的口径）。
+  // 且开着时 CLI 只认自己的 OpenAI 鉴权（「缺它不发 Bearer」是**针对 OpenAI 官方**的口径）。
   const requiresOpenAiAuth = readEnv('codex', 'CODEX_OPENAI_AUTH', '1') !== '0';
   const config = codexConfig(baseUrl, requiresOpenAiAuth);
   const threadOptions = {
@@ -350,9 +350,9 @@ async function probeDsh(env: ProbeEnv): Promise<ProbeResult> {
   notes.push(
     'route 不由环境变量决定：SDK 的 resolveDshLaunch 只把 env 透传给子进程，base URL 来自 dsh 自身的 profile/适配器',
   );
-  // 实测（四格对照，见探测报告 §5）：`dshHome` 一旦指向空目录，凭据库里就没有 key，
+  // 实测（四格对照）：`dshHome` 一旦指向空目录，凭据库里就没有 key，
   // 运行会以 `turn/end(kind:'error')` 收场（`llm-deepseek: no API key for provider route "deepseek-official"`）；
-  // 此时**只有环境变量 `DEEPSEEK_API_KEY` 能救**（格 3 成功、格 2 失败）。这正是 §5.6.4 不变量 3
+  // 此时**只有环境变量 `DEEPSEEK_API_KEY` 能救**（格 3 成功、格 2 失败）。这正是那条不变量
   // （每行独立 configHome）与 dsh 凭据落点的真实交互，必须显式注入。
   const dshApiKey = readEnv('dsh', 'DEEPSEEK_API_KEY');
   const injected = {
@@ -418,7 +418,7 @@ async function probeDsh(env: ProbeEnv): Promise<ProbeResult> {
 
 /**
  * Step 0：先 dump 真实入口形态，**不 spawn、不联网**。
- * 回答计划里 Step 0 的五问；产出的 `dumps/<kind>-entry.json` 就是 Task 12 回写的依据。
+ * 目的：dump 真实入口形态；产 `dumps/<kind>-entry.json` 就是后续判定的依据。
  */
 async function entryDump(kind: string): Promise<void> {
   const notes: string[] = [];

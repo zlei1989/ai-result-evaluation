@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 夹具自己的回归网（评审 M2）。
+ * 夹具自己的回归网。
  * 为什么单开一个文件测夹具：夹具是「单测不碰真实 API / 真实 CLI」的全部物质基础，而夹具**悄悄变弱**
  * 时依赖它的用例不会红，只会变成假绿——所以下面每一条断言都是「把夹具的语义钉成常驻证据」。
  * `createFakeDshNotifications` 里「挂起前再查一次」的守卫
@@ -60,7 +60,7 @@ interface FakeDshSdkModule {
 }
 
 /**
- * 造一个「订阅已建立」的夹具状态（Task 12 按真实入口重写后，通知不再来自 `createRuntime`，
+ * 造一个「订阅已建立」的夹具状态（通知不再来自 `createRuntime`，
  * 而是来自 `client.subscribe()` 的返回值）。三个用例共用，避免三份重复的引导代码。
  */
 function openSubscription(sdk: FakeDshSdkModule, options: Record<string, unknown> = {}): {
@@ -73,7 +73,7 @@ function openSubscription(sdk: FakeDshSdkModule, options: Record<string, unknown
 }
 
 describe('夹具 createFakeDshSdk：关闭语义照真实订阅建模', () => {
-  it('close() 早于迭代到达挂起点 ⇒ 第一次 next() 立刻拒绝，不是挂死（评审 M2 的那条守卫）', async () => {
+  it('close() 早于迭代到达挂起点 ⇒ 第一次 next() 立刻拒绝，不是挂死', async () => {
     /**
      * 这一格是「保真」而不是「收敛」：真实订阅在 close 后队列已丢弃，`next()` 立即 reject
      * （`lib/index.js:256-259`：先取队列，队列空且 `state.failure` 已置上就 `Promise.reject`）。
@@ -88,7 +88,7 @@ describe('夹具 createFakeDshSdk：关闭语义照真实订阅建模', () => {
     await harness.close(); // 关闭发生在迭代**之前**：此刻还没有任何挂起的等待者
     expect(recorder.closeCount).toBe(1);
     // 真实语义：close 后队列已丢弃、`next()` 立即 reject ⇒ 「谁在消费就在那一刻结束」。
-    // 夹具不替适配器假装有人在消费（复评 I1 那类「夹具特权」的教训），所以这里自己 `for await`。
+    // 夹具不替适配器假装有人在消费（「夹具特权」那类教训），所以这里自己 `for await`。
     const drained = (async (): Promise<void> => {
       for await (const _notification of subscription) {
         // 不该交付任何东西
@@ -150,7 +150,7 @@ describe('夹具 createFakeDshSdk：关闭语义照真实订阅建模', () => {
 });
 
 describe('夹具 createFakeStream：stop() 早于迭代同样不能挂死', () => {
-  it('stop() 先于第一次 next() ⇒ 迭代立刻结束（F6 的同款前置检查）', async () => {
+  it('stop() 先于第一次 next() ⇒ 迭代立刻结束（同款前置检查）', async () => {
     const recorder = createRecorder();
     const stream = createFakeStream([], recorder, { hang: true });
     stream.stop();
@@ -161,7 +161,7 @@ describe('夹具 createFakeStream：stop() 早于迭代同样不能挂死', () =
 });
 
 /**
- * 夹具里的磁盘地址必须是**当前平台认得的绝对路径**（2026-10-09）。
+ * 夹具里的磁盘地址必须是**当前平台认得的绝对路径**。
  *
  * 为什么这条守卫值得存在：`createRunInput` 的 `cwd` / `configHome` 会被**真的**拿去碰盘——dsh 适配器
  * 在 `configHome` 下 `mkdirSync` 并写 `aieval-route.patch.yml`。写成 `D:/tmp/rows/row-1/…` 时，它在
@@ -180,7 +180,7 @@ describe('夹具里的磁盘地址按当前平台拼（不许盘符字面量）'
     for (const [label, value] of paths) {
       expect(isAbsolute(value), `${label} 必须是平台绝对路径：${value}`).toBe(true);
       expect(value.startsWith(tmpdir()), `${label} 必须落在系统临时目录下：${value}`).toBe(true);
-      // 盘符字面量在 POSIX 上等于「相对 cwd」——落进仓库就是 2026-10-09 那次事故的形状
+      // 盘符字面量在 POSIX 上等于「相对 cwd」——落进仓库就是绝对路径被当成相对路径用的形状
       expect(value.startsWith(process.cwd()), `${label} 不许落在仓库工作目录里：${value}`).toBe(false);
     }
   });

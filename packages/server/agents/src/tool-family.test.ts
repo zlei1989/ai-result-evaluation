@@ -2,10 +2,9 @@
 /**
  * 工具名 → 族 的映射守卫。
  *
- * 为什么单独一份（2026-10-10 的变异验证查出来的缺口）：把 `bash: 'run-shell'` 从表里摘掉，
- * **全仓 789 条 agents 用例一条都不红**——而后果是真机 7 次 `dsh|bash` 调用退化成
- * 「紧凑 JSON + 没有族标签」。这张表是**按名字查**的，漏一个别名不会报错、只会静默降级，
- * 所以别名必须有逐字的守卫，不能只靠「真机跑一次看看」。
+ * 为什么单独一份：这张表是**按名字查**的，漏一个别名不会报错、只会静默降级——把
+ * `bash: 'run-shell'` 摘掉，其余用例一条都不会红，而 `dsh|bash` 调用会退化成
+ * 「紧凑 JSON + 没有族标签」。所以别名必须有逐字的守卫，不能只靠「跑一次看看」。
  *
  * 两条判据：
  *   ① **跨家同名同族**：同一个工具在三家的不同叫法要落进同一个族（摘要的「每族一种拼法」
@@ -22,7 +21,7 @@ describe('classifyTool：按名字查表，跨家同族', () => {
     expect(classifyTool('Read')).toBe('read-file');
     expect(classifyTool('read')).toBe('read-file');
     // 跑命令：claude `Bash` / dsh `pwsh` **与 `bash`** / codex `exec_command`
-    // `bash` 这一条是 2026-10-10 补的：真机 7 次调用全是 `bash`，而表里只有 `pwsh`
+    // `bash` 这一条不能少：dsh 侧实测调用全是 `bash`，而表里另外只列了 `pwsh`
     expect(classifyTool('Bash')).toBe('run-shell');
     expect(classifyTool('pwsh')).toBe('run-shell');
     expect(classifyTool('bash')).toBe('run-shell');

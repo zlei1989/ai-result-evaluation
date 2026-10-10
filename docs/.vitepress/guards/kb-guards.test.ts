@@ -4,14 +4,14 @@
  * 风格仿 package-dependency-boundaries.test.ts——真源唯一（页面/文章/活文档/FAQ 清单全部
  * 来自 pages.mjs，本文件不抄第二份清单）、解析失败响亮报错，不静默通过。
  *
- * 六条守卫对应票 02 + 票 05 的验收面：
+ * 六条守卫对应 + 的验收面：
  * 1. 自含守卫——知识文章正文不得出现指向冻结档案（docs/superpowers/，ADR 0001）的链接；
  * 2. 骨架守卫——每篇文章六节齐全（④允许域内变体；目录层 index.md 豁免）；
  * 3. 标题守卫——无编号前缀、无内部代号、长度 ≤10 字（中文 1 字、英文 1 词）；
  * 4. llms.txt 同步守卫——清单与已发布页面集合一致，漏收一篇是静默漏测；
  * 5. 单一真源守卫——五份活文档在 docs 树内只此一份，没有第二份副本；
  * 6. 故障索引同步守卫——《故障索引》目录层条目与三份 FAQ 的二级标题集合逐字一致——
- *    FAQ「发现即追加」后忘了同步索引，这条守卫红（票 05）。
+ * FAQ「发现即追加」后忘了同步索引，这条守卫红。
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -202,7 +202,7 @@ describe('单一真源守卫：活文档无第二份副本', () => {
   });
 });
 
-describe('断链守卫：冻结档案退役门禁（票 21）', () => {
+describe('断链守卫：冻结档案退役门禁', () => {
   it('全仓（除档案自身与票据）对 docs/superpowers 的引用计数为 0', () => {
     /** 仓库根：docs/ 的上一级 */
     const repoRoot = join(docsRoot, '..');
@@ -278,6 +278,138 @@ describe('断链守卫：冻结档案退役门禁（票 21）', () => {
   });
 });
 
+/**
+ * 断链守卫：**取材目录（`.scratch/`）不得当真源**。
+ *
+ * `.scratch/` 在 `.gitignore` 里 ⇒ **任何 clone 都读不到它**。于是「见 `.scratch/<…>`」这种写法在
+ * 写它的那台机器上完全成立，换一台机器就是一个死链——而且四层判据全绿：
+ * 注释/文章照样读得通、`tsc` / `eslint` 照样过、用例照样跑。只有「想复核那句话的人」会撞墙，
+ * 所以这条只能在最外层用「扫全仓 + 逐字比对」拦。
+ *
+ * 换成什么：**耐久指针**——知识库里的对应小节（MCP 那条链路的正文在 `docs/features/mcp-config.md`）、
+ * 契约里的共用常量（`CODEX_MCP_DISPATCH_GAP_NOTE`），或者把事实**自含**地写进那句话里
+ * （一次性脚本 / 探针尤其如此：「脚本一次性、不入库」本身就是那句注释要说的事实）。
+ *
+ * **面有多宽**：全部 `.scratch/…` 路径引用，不只 `.scratch/mcp-config/…`
+ * ——判据是「引用了一个 clone 读不到的位置」，与那次取材叫什么无关。两类放行写在下面各自的注释里
+ * （模板形态 `.scratch/<feature-slug>/`、以及 `.scratch/` 下的**落盘目标**）。
+ *
+ * 扫描面与上面那条档案断链守卫同款；排除：`.scratch/` 自身、
+ * `docs/.vitepress`（*本守卫自己**必须写出这个名字）、`docs/public`、
+ * `node_modules` / `.next` 等工具产物。
+ */
+describe('断链守卫：取材目录（.scratch/）不得当真源', () => {
+  /**
+   * 命中即违规：把 gitignore 的取材目录当**路径引用**。
+   * 面是**全部**`.scratch/…` 路径引用，不只某一个 slug：只认一个 slug 时，换一个 feature 的
+   * 取材路径（或直接写 `.scratch/notes.md`）照样能溜过去——
+   * 而这条守卫要拦的是「引用一个 clone 读不到的位置」这件事本身，与目录里装的是哪次取材无关。
+   *
+   * 正则的三处细节都是判据的一部分：`[\w.-]+` 至少要有一个字符（`.scratch/`、`.scratch/ 已 gitignore`
+   * 这种**指称目录本身**的写法不命中——它不是路径引用），`(?:\/[\w.-]+)*` 把整条路径一次吃掉
+   * （否则 `.scratch/smoke-app/notes.md` 只会命中前半截、被误当成落盘目标放行），
+   * 而 `<` 不在字符类里 ⇒ tracker 约定文档里的模板形态 `.scratch/<feature-slug>/` 天然不命中。
+   */
+  const SCRATCH_REFERENCE = /\.scratch\/[\w.-]+(?:\/[\w.-]+)*/g;
+
+  /**
+   * **落盘目标**：说的是「把东西**写到** `.scratch/` 下面」，不是「事实在 `.scratch/` 里」。
+   * 逐个列出而不是写成一条通用规则，是因为每一条的「为什么不算真源」都要单独交代：
+   *   · `.scratch/smoke-app`（`docs/features/storage.md` / `docs/guard/smoke-testing.md`）：
+   *     起隔离实例时把 `apps/web-next` 复制过去的**目标目录**，`smoke-testing.md` 那句自带
+   *     「gitignore 已盖」的交代；clone 的人读到的是「你要建这个目录」，不是一个够不着的引用；
+   *   · `.scratch/mutation-check.mjs`（`docs/guard/mutation-verification.md`）：一次性变异脚本的
+   *     **落地路径**，同一句里已写明「`.scratch/` 已 gitignore」——脚本一次性、不入库**正是那句话要说的事实**。
+   * 注意白名单是**路径级**的：`.scratch/smoke-app/notes.md` 这种「往里面再指一层」的写法不在名单里，
+   * 照旧命中（那时它已经是一个引用，而不是一个落盘目标）。
+   */
+  const SCRATCH_TARGET_PATHS = new Set(['.scratch/smoke-app', '.scratch/mutation-check.mjs']);
+
+  /** 判据本体（抽出来是为了让「它有覆盖」也能被单独断言——没见过命中的判据不算判据） */
+  function scratchSourceReferences(files: ReadonlyArray<{ rel: string; text: string }>): string[] {
+    const offenders: string[] = [];
+    for (const file of files) {
+      for (const match of file.text.matchAll(SCRATCH_REFERENCE)) {
+        if (SCRATCH_TARGET_PATHS.has(match[0])) continue;
+        const line = file.text.slice(0, match.index ?? 0).split('\n').length;
+        offenders.push(`${file.rel}:${line} 引用了 ${match[0]}`);
+      }
+    }
+    return offenders;
+  }
+
+  it('判据有覆盖：真源式引用命中（任意 slug，不只 mcp-config），自含表述与耐久指针不命中', () => {
+    expect(
+      scratchSourceReferences([{ rel: 'a.ts', text: '见 .scratch/mcp-config/research/01.md §5' }]),
+      '取材路径必须命中',
+    ).toHaveLength(1);
+    // 放宽到全部 `.scratch/` 后的新增覆盖：换一个 feature 的取材目录同样要拦
+    expect(
+      scratchSourceReferences([{ rel: 'a.ts', text: '样本见 .scratch/case-sync/notes.md 第 3 节' }]),
+      '别家的取材目录也是取材目录',
+    ).toHaveLength(1);
+    // 白名单是路径级：往落盘目标里再指一层就已经是引用
+    expect(
+      scratchSourceReferences([{ rel: 'b.md', text: '见 .scratch/smoke-app/notes.md' }]),
+      '落盘目标的**子路径**不在白名单里',
+    ).toHaveLength(1);
+    expect(
+      scratchSourceReferences([
+        { rel: 'b.ts', text: '判据与样本见 docs/features/mcp-config.md 的「三家的判据通道」' },
+        { rel: 'c.md', text: '脚本一次性、不入库（逐条记录见《变异验证》的实测一节）' },
+        // tracker 约定文档描述的是 `.scratch/<feature-slug>/` 这套契约，不是取材索引
+        { rel: 'docs/agents/issue-tracker.md', text: 'Issues live under `.scratch/<feature-slug>/`' },
+        // 只指称目录本身（没有路径段）：它不是路径引用
+        { rel: 'd.md', text: '把矩阵写成一次性脚本（`.scratch/` 已 gitignore）' },
+        // 两个落盘目标：写进去的东西，不是读得到的真源（见 SCRATCH_TARGET_PATHS 的逐条交代）
+        { rel: 'docs/features/storage.md', text: '把 `apps/web-next` 复制到 `.scratch/smoke-app`（软链 `node_modules`）' },
+        { rel: 'docs/guard/mutation-verification.md', text: '把矩阵写成一次性脚本（`.scratch/mutation-check.mjs`，`.scratch/` 已 gitignore）' },
+      ]),
+      '自含表述 / 耐久指针 / 模板形态 / 落盘目标不该命中',
+    ).toEqual([]);
+  });
+
+  it('全仓（产品代码 + 知识库）对 `.scratch/` 取材路径的引用计数为 0', () => {
+    const repoRoot = join(docsRoot, '..');
+    const files: Array<{ rel: string; text: string }> = [];
+    const scan = (dir: string, skip: string[]) => {
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        // 点开头目录一律跳过（工具产物），条目消失要容忍（TOCTOU，与上面那条档案断链守卫同款）
+        if (skip.includes(name) || name.startsWith('.')) continue;
+        const full = join(dir, name);
+        let st;
+        try {
+          st = statSync(full);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          scan(full, skip);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts|mjs|md)$/.test(name)) continue;
+        files.push({ rel: full.slice(repoRoot.length + 1), text: readFileSync(full, 'utf8') });
+      }
+    };
+    scan(join(repoRoot, 'packages'), ['node_modules']);
+    scan(join(repoRoot, 'apps'), ['node_modules', '.next']);
+    scan(join(repoRoot, 'scripts'), []);
+    scan(docsRoot, ['.vitepress', 'public']);
+
+    const offenders = scratchSourceReferences(files);
+    expect(
+      offenders,
+      `产品代码与知识库不得把取材目录（gitignore，clone 读不到）当真源，换成耐久指针或自含表述：\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+});
+
 describe('故障索引同步守卫：目录层与三份 FAQ 的现象标题集合一致', () => {
   /**
    * 解析《故障索引》的条目区：`### <厂商>` 分组，其下 ` - [标题](锚点)` 每行一条。
@@ -324,7 +456,7 @@ describe('故障索引同步守卫：目录层与三份 FAQ 的现象标题集�
 
   it('每家厂商的条目与 FAQ 二级标题集合逐字一致（少一条/多一条/改写一条都红）', () => {
     if (!existsSync(join(docsRoot, FAQ_INDEX))) {
-      throw new Error(`《故障索引》目录层（${FAQ_INDEX}）不存在：票 05 未落地`);
+      throw new Error(`《故障索引》目录层（${FAQ_INDEX}）不存在`);
     }
     const sections = parseIndexEntries(mustRead(FAQ_INDEX));
     const missingVendors = FAQ_DOCS.map((f) => f.vendor).filter((v) => !sections.has(v));

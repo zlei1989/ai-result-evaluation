@@ -34,7 +34,7 @@ export async function PUT(req: Request, context: CaseRouteContext): Promise<Resp
 export async function DELETE(_req: Request, context: CaseRouteContext): Promise<Response> {
   try {
     const { caseId } = await context.params;
-    // 响应体带 affectedRuns：页面用它提示「N 个评测记录仍可查看」（§4.4）
+    // 响应体带 affectedRuns：页面用它提示「N 个评测记录仍可查看」
     return Response.json(deleteCase(caseId));
   } catch (error) {
     return handleApiError(error);

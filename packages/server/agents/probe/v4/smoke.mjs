@@ -1,7 +1,7 @@
 /**
  * v4 冒烟：本轮探测的两条外部通路是否可用（**先证明链路，再谈结论**）。
  *
- * 判据（§9.4.1 的教训：任何「厂商不产出 X」的结论，先证明抓取链路没损坏 X）：
+ * 判据（任何「厂商不产出 X」的结论，先证明抓取链路没损坏 X）：
  *   ① DeepSeek anthropic wire（`/anthropic/v1/messages`）能否回一个 turn；
  *   ② DeepSeek OpenAI responses wire（`/v1/responses`）能否回一个 turn；
  *   ③ dsh 二进制与 SDK 自带 codex 二进制的解析路径是否找得到。

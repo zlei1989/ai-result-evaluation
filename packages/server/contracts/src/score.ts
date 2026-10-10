@@ -66,13 +66,13 @@ export const ScoreResultSchema = z.object({
    */
   structuredOutput: z.boolean().default(false),
   /**
-   * **评分这一次调用自己**的用量（2026-10-08 加）；`null` = 没采到（**绝不填 0**，与 `EvalRow.tokens`
+   * **评分这一次调用自己**的用量；`null` = 没采到（**绝不填 0**，与 `EvalRow.tokens`
    * 同一条口径）。形状取与行上一样的**三元组**（不是 `UsageTokensSchema` 那个带
    * `reasoningOutput` / `total` 的宽档）：两条通路交出来的原料不同（智能体侧是适配器结果、
    * 文本侧是响应体里的 `usage`），只有这三格两边都拿得到，多出来的格必然有一侧永远是 `null`。
    *
    * 为什么必须落盘、而不是界面去读候选行的那一格：界面要回答的是「**这一分**是谁花的、花了多少」
-   * （用户 2026-10-08 口径），而 `EvalRow.tokens` / `EvalRow.durationMs` 是**执行**那一份
+   * （用户口径），而 `EvalRow.tokens` / `EvalRow.durationMs` 是**执行**那一份
    * （后者契约里就写明不含评分阶段）。拿执行的数据当评分数据显示，是一处看不出来的错位。
    *
    * 口径（两条通路一致）：文本侧 = **各轮成功调用之和**（结构修复是额外请求，钱要算进去）；
@@ -82,7 +82,7 @@ export const ScoreResultSchema = z.object({
    */
   judgeTokens: z.object({ input: z.number(), cached: z.number(), output: z.number() }).nullable().default(null),
   /**
-   * **评分那一段**的耗时（毫秒，2026-10-08 加）；`null` = 没采到。
+   * **评分那一段**的耗时（毫秒）；`null` = 没采到。
    * 与 `judgeTokens` 同一格口径、同一条理由（界面那一段说的是评分的花销，不是执行的）。
    * 取值的优先级与候选行的 `durationMs` 一致：有适配器结果时取它自报的值，否则取我们自己的掐表
    * （文本通路只有掐表）——故它**含**结构修复的额外请求，与「这一分为什么多花了十几秒」对得上。

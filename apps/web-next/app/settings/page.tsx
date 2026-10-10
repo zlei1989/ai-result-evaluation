@@ -1,25 +1,27 @@
 'use client';
 
 /**
- * 设置页：四个 Tab —— 界面主题 / 模型供应商 / 评分配置 / 工作区。
+ * 设置页：三个 Tab —— 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 / MCP。
  *
  * 本页是全仓唯一把 client hooks 与 ui 组件接起来的地方：组件保持纯展示（不调接口、不认识 message），
  * 数据与回调在这里注入；异步与错误提示也留在这里。
  *
- * 评分配置与工作区都写同一个 `PUT /api/settings`：它们同属一份 Settings、同一次原子落盘，
- * 不为其中任一块单开路由。工作区那格里两格根目录的「校验并保存」= `PUT { workspaceRoot }` / `PUT { casesRoot }`，
- * 服务端校验通过才落盘（§6.3）；用例同步的**状态**另走 `GET /api/cases/sync-status`（只读快照），
+ * 评分配置与存储目录都写同一个 `PUT /api/settings`：它们同属一份 Settings、同一次原子落盘，
+ * 不为其中任一块单开路由。存储目录那格里两格根目录的「校验并保存」= `PUT { workspaceRoot }` / `PUT { casesRoot }`，
+ * 服务端校验通过才落盘；用例同步的**状态**另走 `GET /api/cases/sync-status`（只读快照），
  * **动作**走 `POST /api/cases/sync`（跑完一轮才答复）。
  *
- * 注意：本页**没有渲染测试** —— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
+ * 注意：本页**没有渲染测试**—— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
  * （见 AGENTS.md）；`src/settings-page-wiring.test.ts` 那类守卫只读源码钉接线。因此页面逻辑必须薄到
  * 只剩「取值 → 传参 → 把 Promise 折成 message」：业务判断都在 ui 组件与 hooks 里，本页只负责接线
  * 与**三态分支**（就绪 / 仍在读 / 读失败）——组件 props 里没有 error 位（契约冻结），
  * 这三个状态只能由页面分，而「读失败」必须说出来，不能让「还没读到」冒充「你还没配」。
  * 验收靠 `pnpm typecheck` + `pnpm lint` + 冒烟。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  // 测试连接：无缓存的一次性 POST，两个入口各测一份（已保存的 / 表单当前值）
+  probeMcpServer,
   useCaseSyncAction,
   useCaseSyncStatus,
   useCreateProvider,
@@ -33,6 +35,9 @@ import {
 } from '@aieval/client';
 import type {
   CaseSyncAction,
+  McpProbeResult,
+  McpServerConfig,
+  McpServers,
   ProviderModelCapability,
   ProviderPatch,
   ProviderView,
@@ -42,11 +47,19 @@ import type {
 import {
   AppTopNav,
   JudgeSettingsCard,
+  McpPasteModal,
+  McpServerFormModal,
+  McpServerTable,
   PageShell,
   ProviderFormModal,
   ProviderModelsModal,
   ProviderTable,
   WorkspaceSettingsCard,
+  buildMcpConfig,
+  removeServer,
+  upsertServer,
+  type McpServerFormValues,
+  type McpServerRow,
   type ProviderFormValues,
 } from '@aieval/ui';
 import { Alert, Card, Flex, Form, Segmented, Skeleton, Tabs, message } from 'antd';
@@ -74,10 +87,21 @@ export default function Page(): React.ReactNode {
   // 不取 isMutating：模型清单的增删没有对应的「卡片级」加载态，弹窗里按按钮粒度给反馈即可
   const { add: addModel, remove: removeModel, setContext: setModelContext } = useProviderModels();
   // 评分卡要拿「智能体 → 协议」这张表来禁用协议不匹配的智能体。表只有服务端的注册表有真源，
-  // 界面按 §11 R1 不许自己再抄一份，故从同一份注册表投影里取。
+  // 界面不许自己再抄一份，故从同一份注册表投影里取。
   // 取不到时不拦（空清单 = 每家协议都未知 = 一个都不禁用）：这一格的失败方向必须是「少拦一次」，
   // 而不是拿编出来的协议误禁用，服务端在创建与评分两处还有各自的校验兜着。
   const { options: agentOptions } = useRunModelOptions();
+
+  /**
+   * 供应商表单弹窗要**挂载后**才渲染：它内部是 antd `Modal` + `forceRender`（表单必须常挂 useForm
+   * 实例，见 `provider-form-modal.tsx`），而它住在默认激活的「基础」Tab 里、会参与首屏 SSR——
+   * 服务端渲染不出 Modal 的 portal 容器、客户端首帧却会渲染，于是每次打开设置页都报一条
+   * hydration mismatch（React 之后会整棵重渲染，用户看不出，但控制台都是红的）。
+   * 首帧两边都渲染 null 才一致：effect 跑完置 true，此后 Modal 常挂，`forceRender` 的语义不变；
+   * 用户点开弹窗前必然已经挂载。
+   */
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const [modalOpen, setModalOpen] = useState(false);
   // 弹窗模式**自己记**，不从「列表现取的结果」反推：编辑期间列表一刷新（别的标签页删除、CLI 改配置、
@@ -85,7 +109,7 @@ export default function Page(): React.ReactNode {
   // 反推的话弹窗会当场翻成「添加供应商」、清掉用户输入，保存更会从 PUT 退化成 POST（凭空多一个供应商）。
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [editingId, setEditingId] = useState<string | null>(null);
-  // 模型清单对话框（用户口径 2026-09-30：它从编辑弹窗里单独提出来了）用的是同一套「记 id，不记对象」的
+  // 模型清单对话框用的是同一套「记 id，不记对象」的
   // 口径与同一条理由：增删模型 / 拉取之后列表会重取，对话框必须跟着刷新，而目标消失时要能看出来。
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsId, setModelsId] = useState<string | null>(null);
@@ -95,6 +119,20 @@ export default function Page(): React.ReactNode {
   // 用例同步：状态是只读快照（不轮询），动作的成功/失败提示与缓存回写都在 hook 里
   const { status: syncStatus, error: syncError } = useCaseSyncStatus();
   const { run: runSync, isRunning: syncing } = useCaseSyncAction();
+
+  /**
+   * MCP 弹窗记的是**被编辑那条的名字**（不是对象）：名字住在 map 的键上，而列表每次刷新都会给出新对象。
+   * 记对象会在刷新后与列表脱节；记名字则天然对上，且改名时正好用它当 `previousName`。
+   */
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [editingMcpName, setEditingMcpName] = useState<string | null>(null);
+  // 「粘贴 JSON」弹窗自己一格开关：它与表单弹窗**互斥**地开（两个弹窗叠着开只会互相挡，
+  // 同供应商那张卡的处置）
+  const [mcpPasteOpen, setMcpPasteOpen] = useState(false);
+  // MCP 集合走同一份 `settings.mcpServers`；读不到时给空 map —— 界面这一侧**不替服务端播种**：
+  // 配置文件里没有这个键时，预置两项由服务端的读盘路径（`normalizeSettings`）补上，
+  // 页面再抄一份就等于「播种」有两个实现，而契约里那句「键缺失才播」会在界面这里悄悄变宽
+  const mcpServers: McpServers = settings?.mcpServers ?? {};
 
   // 被编辑的那条从列表里现取：列表一刷新，弹窗里的字段跟着走（编辑的是哪一条由 editingId 记着）
   const editing = providers?.find((provider) => provider.id === editingId) ?? null;
@@ -230,12 +268,106 @@ export default function Page(): React.ReactNode {
     void setModelContext(modelsTarget.id, modelId, capability).catch(onError);
   };
 
+  /**
+   * 供应商 / MCP 两条列表之外的第五个动作口：**MCP 的增删改**
+   * 保存语义：条目增删改都走弹窗的「确定」，提交时**整份**`settings.mcpServers` 走
+   * `PUT /api/settings`（浅合并、整份替换，不做深合并）；只有开关是即时落盘。
+   */
+  const openMcpCreate = (): void => {
+    closeMcpPaste();
+    setEditingMcpName(null);
+    setMcpModalOpen(true);
+  };
+  const openMcpEdit = (row: McpServerRow): void => {
+    closeMcpPaste();
+    setEditingMcpName(row.name);
+    setMcpModalOpen(true);
+  };
+  const closeMcpModal = (): void => {
+    setMcpModalOpen(false);
+    setEditingMcpName(null);
+  };
+
+  /** 「粘贴 JSON」：先把表单弹窗收起来（同供应商卡片的 `openModels`，两个弹窗叠着开只会互相挡） */
+  const openMcpPaste = (): void => {
+    closeMcpModal();
+    setMcpPasteOpen(true);
+  };
+  const closeMcpPaste = (): void => {
+    setMcpPasteOpen(false);
+  };
+
+  /**
+   * 粘贴导入的落盘：弹窗交出的已经是**算好的整份 map**（覆盖 / 跳过 / 先清空都在它内部定了），
+   * 页面这一层只做**一次** `PUT { mcpServers }`，不再合并第二次 —— 再合并一次的话
+   * 「预览说导入 3 台、落盘 4 台」这类偏差会重新出现（而那正是预览这道工序要消灭的东西）。
+   */
+  const submitMcpPaste = (next: McpServers): void => {
+    void update({ mcpServers: next }).then(closeMcpPaste, onError);
+  };
+
+  /**
+   * 保存一条（新增或编辑）：表单值 → 契约条目由 `buildMcpConfig` 做（与组件共用同一份语义）。
+   * `enabled` 沿用**当前那条**的值：表单里没有启停这一格（它在表格的开关上即时改），
+   * 而 `buildMcpConfig` 给出的是新条目的缺省 true —— 直接用会把用户停用的那条悄悄打开。
+   * 新建时没有「当前那条」，才用缺省的 true。
+   *
+   * `current` 还兼任 `buildMcpConfig` 的第二个参数（**同一条**，别分两次取）：值格留空时，
+   * 只有「这一格原来就在」的行才交空串（服务端据此认「未改动」并换回落盘原值）——不喂的话那些行被
+   * 整条丢掉，于是「打开编辑弹窗、一个字不改直接保存」就把原密钥从补丁里删掉了（`mcpServers` 是整份替换）。
+   */
+  const submitMcpServer = (values: McpServerFormValues): void => {
+    const current: McpServerConfig | undefined = mcpServers[editingMcpName ?? values.name];
+    const built = buildMcpConfig(values, current);
+    const config: McpServerConfig = { ...built, enabled: current?.enabled ?? built.enabled };
+    void update({ mcpServers: upsertServer(mcpServers, editingMcpName, values.name, config) }).then(
+      closeMcpModal,
+      onError,
+    );
+  };
+
+  /** 单项启停：即时落盘（与「自动提交」开关同口径，不做乐观翻转——失败时保持原值并说出来） */
+  const toggleMcpServer = (name: string, enabled: boolean): void => {
+    const entry = mcpServers[name];
+    if (entry === undefined) {
+      onError(new Error('这条 MCP 服务器已不在列表里（可能已被删除），请刷新后重试'));
+      return;
+    }
+    void update({ mcpServers: upsertServer(mcpServers, null, name, { ...entry, enabled }) }).catch(onError);
+  };
+
+  const deleteMcpServer = (row: McpServerRow): void => {
+    void update({ mcpServers: removeServer(mcpServers, row.name) }).catch(onError);
+  };
+
+  /**
+   * 测试连接——两个入口各测一份，**都不写盘**：
+   *   · 行内：`{ name }`，服务端读**已保存**的那份（表格里显示的就是它）；
+   *   · 表单：`{ entry }`，用**当前表单值**（还没保存的输入），保存仍然只由「保存」按钮触发。
+   * 探活的 loading 与结果状态留在两个组件内部（逐行逐弹窗），这一层只负责把请求接上。
+   *
+   * 表单那条的 `enabled` 沿用被编辑那条的值（与 `submitMcpServer` 同口径）：表单里没有启停这一格，
+   * 而 `buildMcpConfig` 给的是缺省 true —— 直接用会把「已停用，不会注入」这条结论说反。
+   */
+  const testMcpServer = (row: McpServerRow): Promise<McpProbeResult> => probeMcpServer({ name: row.name });
+
+  /**
+   * 表单入口**刻意不**把 `current` 喂给 `buildMcpConfig`（与保存那条不同）：探活拿的是**要发出去的**
+   * 那一份，而「留空 = 不修改」只在落盘那一跳成立——探活里交空串会把一个空值的请求头发给上游，
+   * 换回一句「需要鉴权」，比这里少一个头发出去更容易看错。要测带密钥的那一份就用行内入口（读已保存的配置）。
+   */
+  const testMcpForm = (values: McpServerFormValues): Promise<McpProbeResult> => {
+    const built = buildMcpConfig(values);
+    const current: McpServerConfig | undefined = mcpServers[editingMcpName ?? values.name];
+    return probeMcpServer({ entry: { ...built, enabled: current?.enabled ?? built.enabled } });
+  };
+
   const changeSettings = (patch: SettingsPatch): void => {
     void update(patch).catch(onError);
   };
 
   /**
-   * 工作区「校验并保存」：一次 `PUT { workspaceRoot }`，服务端校验通过才落盘（§6.3）。
+   * 工作区「校验并保存」：一次 `PUT { workspaceRoot }`，服务端校验通过才落盘。
    * 用 then 的两个参数而不是 try/catch：失败既不吞掉、也不留下未处理的 rejection，
    * 结果交给卡片展示（失败时卡片会保留用户输入）。
    */
@@ -296,35 +428,10 @@ export default function Page(): React.ReactNode {
         <Tabs
           items={[
             {
-              key: 'theme',
-              label: '界面主题',
-              children: (
-                <Card title="界面主题" size="small" data-testid="theme-card">
-                  {settings ? (
-                    <Form layout="vertical" size="small" component={false}>
-                      <Form.Item label="主题偏好" style={{ marginBottom: 0 }}>
-                        <Segmented
-                          data-testid="theme-segmented"
-                          size="small"
-                          value={settings.theme}
-                          options={[
-                            { label: '跟随系统', value: 'auto' },
-                            { label: '明亮', value: 'light' },
-                            { label: '暗色', value: 'dark' },
-                          ]}
-                          onChange={(value) => void update({ theme: value as ThemeMode }).catch(onError)}
-                        />
-                      </Form.Item>
-                    </Form>
-                  ) : (
-                    settingsPending
-                  )}
-                </Card>
-              ),
-            },
-            {
-              key: 'providers',
-              label: '模型供应商',
+              key: 'basic',
+              // 基础 = 「开始评测之前先配一次」的三块，按配的先后排：模型从哪来（供应商）、
+              // 这块界面长什么样（主题）、评测产物落哪（存储目录）
+              label: '基础',
               children: (
                 <Flex vertical gap={12}>
                   {/* 读失败必须显式说清：ProviderTable 的 props 是按契约冻结的（没有 error 位），
@@ -338,13 +445,17 @@ export default function Page(): React.ReactNode {
                     onEdit={openEdit}
                     onDelete={deleteProvider}
                   />
-                  <ProviderFormModal
-                    open={modalOpen}
-                    initial={editing}
-                    saving={isCreating || isSavingProvider}
-                    onSubmit={submitProvider}
-                    onCancel={closeModal}
-                  />
+                  {/* 挂载后才渲染（见 mounted 的注释）：SSR 与客户端首帧都渲染 null，Modal 的 portal
+                      才不会撞出 hydration mismatch */}
+                  {mounted && (
+                    <ProviderFormModal
+                      open={modalOpen}
+                      initial={editing}
+                      saving={isCreating || isSavingProvider}
+                      onSubmit={submitProvider}
+                      onCancel={closeModal}
+                    />
+                  )}
                   <ProviderModelsModal
                     open={modelsOpen}
                     provider={modelsTarget}
@@ -355,12 +466,57 @@ export default function Page(): React.ReactNode {
                     onRemoveModel={removeProviderModel}
                     onSetModelContext={setProviderModelContext}
                   />
+                  <Card title="界面主题" size="small" data-testid="theme-card">
+                    {settings ? (
+                      <Form layout="vertical" size="small" component={false}>
+                        <Form.Item label="主题偏好" style={{ marginBottom: 0 }}>
+                          <Segmented
+                            data-testid="theme-segmented"
+                            size="small"
+                            value={settings.theme}
+                            options={[
+                              { label: '跟随系统', value: 'auto' },
+                              { label: '明亮', value: 'light' },
+                              { label: '暗色', value: 'dark' },
+                            ]}
+                            onChange={(value) => void update({ theme: value as ThemeMode }).catch(onError)}
+                          />
+                        </Form.Item>
+                      </Form>
+                    ) : (
+                      settingsPending
+                    )}
+                  </Card>
+                  {/* 存储目录：两格根目录 + 自动提交开关 + 同步状态与两个动作全部由一张卡承担。
+                      同步状态读不出来必须显式说清 —— 卡片的 props 里没有 error 位（契约冻结），
+                      少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 */}
+                  {settings ? (
+                    <Flex vertical gap={12}>
+                      {syncError !== undefined && loadFailure(syncError, '用例同步状态')}
+                      <WorkspaceSettingsCard
+                        settings={settings}
+                        saving={isUpdating}
+                        lastValidated={validation}
+                        onValidate={validateWorkspace}
+                        onValidateCasesRoot={validateCasesRoot}
+                        lastValidatedCases={casesValidation}
+                        onToggleAutoCommit={toggleAutoCommit}
+                        syncStatus={syncStatus}
+                        syncError={syncError}
+                        syncing={syncing}
+                        onSyncAction={runSyncAction}
+                      />
+                    </Flex>
+                  ) : (
+                    settingsPending
+                  )}
                 </Flex>
               ),
             },
             {
               key: 'judge',
-              label: '评分配置',
+              // Tab 名「评分」说的是动作（这一页决定怎么评），卡片标题仍叫「评分配置」——那说的是配置本身
+              label: '评分',
               // 评分卡要的是**已保存的**清单：只有拿到它才能判 defaultJudge 是否悬空。
               // 清单没到时不能拿 `?? []` 顶替 —— 空清单会被卡片读成「供应商或模型被删了」，
               // 对着完好的 defaultJudge 报一条红色的失效告警（假消息）。等或报错，二者选一。
@@ -388,26 +544,47 @@ export default function Page(): React.ReactNode {
               ),
             },
             {
-              key: 'workspace',
-              label: '工作区',
+              key: 'mcp',
+              // 第 3 个 Tab，排在最后：基础与评分是日常要动的两处，MCP 是「接入外部能力」的配置，
+              // 配一次就很少再进来。顺序即导航路径，别随手调
+              // （`settings-page-wiring.test.ts` 有守卫钉着）
+              label: 'MCP',
               children: settings ? (
                 <Flex vertical gap={12}>
-                  {/* 同步状态读不出来必须显式说清：卡片的 props 里没有 error 位（契约冻结），
-                      少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 —— 用户既等不到也没有解释 */}
-                  {syncError !== undefined && loadFailure(syncError, '用例同步状态')}
-                  {/* 两格根目录 + 自动提交开关 + 同步状态与两个动作，全部由这一张卡片承担 */}
-                  <WorkspaceSettingsCard
-                    settings={settings}
+                  {/* 与仓库自带条目的关系那条**静态说明**（spec §3）**已移进卡片**：落点是 `McpServerTable`
+                      表格上方那一行（`data-testid="mcp-priority-note"`，`Typography.Text type="secondary"`）。
+                      为什么不再摆页面这一层：它说的是这张卡片里这些条目的事，摆在页面层会读成「在说整个设置页」，
+                      而规格要求的落点本来就是「卡片头部」。
+                      ⚠️ **别在这里再印一份**：两处都印就是两处真源，措辞迟早漂移成两句不同的话 */}
+                  <McpServerTable
+                    servers={mcpServers}
+                    loading={isUpdating}
+                    onToggle={toggleMcpServer}
+                    onEdit={openMcpEdit}
+                    onDelete={deleteMcpServer}
+                    onCreate={openMcpCreate}
+                    onPasteJson={openMcpPaste}
+                    onTest={testMcpServer}
+                  />
+                  <McpServerFormModal
+                    open={mcpModalOpen}
+                    initialName={editingMcpName}
+                    // 目标从当前集合里现取：弹窗开着时列表一刷新（别的标签页删了它），这里跟着变 null，
+                    // 而 `initialName` 仍记着那个名字 —— 保存会走 upsert 把旧键挪走（不静默失联）
+                    initial={editingMcpName === null ? null : (mcpServers[editingMcpName] ?? null)}
+                    servers={mcpServers}
                     saving={isUpdating}
-                    lastValidated={validation}
-                    onValidate={validateWorkspace}
-                    onValidateCasesRoot={validateCasesRoot}
-                    lastValidatedCases={casesValidation}
-                    onToggleAutoCommit={toggleAutoCommit}
-                    syncStatus={syncStatus}
-                    syncError={syncError}
-                    syncing={syncing}
-                    onSyncAction={runSyncAction}
+                    onSubmit={submitMcpServer}
+                    onCancel={closeMcpModal}
+                    onTest={testMcpForm}
+                  />
+                  {/* 粘贴导入：贴进去 → 预览 → 确认。弹窗自己算好整份 map，页面只落盘一次（见 submitMcpPaste） */}
+                  <McpPasteModal
+                    open={mcpPasteOpen}
+                    servers={mcpServers}
+                    saving={isUpdating}
+                    onImport={submitMcpPaste}
+                    onCancel={closeMcpPaste}
                   />
                 </Flex>
               ) : (

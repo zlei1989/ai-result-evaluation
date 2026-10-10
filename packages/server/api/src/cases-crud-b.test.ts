@@ -62,7 +62,7 @@ describe('createCase / listCases / getCase', () => {
   });
   // 时间的分辨率是毫秒：两次操作之间必须隔开一格，否则 updatedAt 相同、排序落到 id 兜底上，测试会随机飘。
   // 改的必须是**后建**的那条：配置文件里的插入序是 [first, second]，而更新时间倒序是 [second, first]——
-  // 两个顺序在这里必须不同，否则「整条 sort 删掉」也能让本用例通过（变异验证实测：改 first 时它是空转的）。
+  // 两个顺序在这里必须不同，否则「整条 sort 删掉」也能让本用例通过（改 first 时它是空转的）。
   it('listCases 按更新时间倒序（最近动过的用例在最上面）', async () => {
     const first = createCase(caseInput({ title: '先建的' }));
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -113,7 +113,7 @@ describe('createCase / listCases / getCase', () => {
     expect(fromGet).not.toHaveProperty('judgeModelId');
   });
   /**
-   * spec §10 的读侧处置（计划此前与 spec 矛盾，Task 4 评审路由而来的 Step 14）：旧用例
+   * 读侧处置：旧用例
    * （重构前建的、只有一段 `judgePrompt` 而没有 `rubric`）被**使用**时显式抛中文 INTERNAL，
    * message 明写「这个用例是旧版数据，请删除它或重新创建：<caseId>」。
    *
@@ -127,7 +127,7 @@ describe('createCase / listCases / getCase', () => {
    *
    * 两种坏数据都在这一条里（判据用的是 `RubricSchema.safeParse`，不是判 `=== undefined`）：
    * `config.json` 是手可编辑的，`rubric` 可能**存在但形状不对**（半截对象、`items` 写成字符串），
-   * 而它对用户的处置与「整格不见」是同一句话——只判 undefined 就会漏掉后一种（变异验证见报告）。
+   * 而它对用户的处置与「整格不见」是同一句话——只判 undefined 就会漏掉后一种。
    */
   it('旧用例（有 judgePrompt、没有 rubric / rubric 形状不对）取详情时抛 INTERNAL 并点名「旧版数据」', () => {
     for (const { label, mangle } of legacyCaseShapes) {
@@ -147,17 +147,17 @@ describe('createCase / listCases / getCase', () => {
   });
 
   /**
-   * 上面那条的**对偶**（Task 5 评审的 Important 2）：列表**不能**抛。
+   * 上面那条的**对偶**：列表**不能**抛。
    * 最初把守卫写在了 `listCases` 与 `getCase` 共用的归一函数里，于是一条旧用例就让 `GET /api/cases`
    * 变成 500——而那句 message 让用户「删除它」，偏偏能删它的那个页面渲染不出来（出路只剩手改
    * `config.json` 或直接打 DELETE）。列表照常返回这条用例，用户才拿得到那个删除按钮。
    *
    * 同时钉住「列表路径**不抛**、但也不是原样透传」，两种坏形状各跑一遍：
    *   · rubric 解析不过 ⇒ 这一格必须**整个不在**（`{ groups: '这不是数组' }` 原样透传就是把一个
-   *     非 `Rubric` 的值交给下游——契约声明之外的第三态，复审实测出来的那个漏）；
+   *     非 `Rubric` 的值交给下游——契约声明之外的第三态）；
    *   · rubric 合法但靠 schema 缺省值补齐（某一项没写 `id`）⇒ 必须是 `id: ''` 而不是 `id: undefined`
    *     （A10③ 的口径，与 `repoBranch` 的归一同一个理由）；
-   *   · 契约上**已经删除的旧列**（`judgePrompt`，见整支复审 Finding 3）⇒ 列表里必须**根本没有这一格**，
+   *   · 契约上**已经删除的旧列**（`judgePrompt`）⇒ 列表里必须**根本没有这一格**，
    *     与 `judgeProviderId` / `judgeModelId` 同一处置：留着它就是给「按旧口径评分」留一扇暗门。
    */
   it('列表不抛：两种旧版形状都照常列出且**整格不带 rubric**；靠缺省值补齐的记录读回来是 `id: \'\'`', () => {
@@ -177,7 +177,7 @@ describe('createCase / listCases / getCase', () => {
       expect('rubric' in listed, label).toBe(false);
       expect(listed.rubric, label).toBeUndefined();
       /**
-       * Fix（整支复审 Finding 3）：`judgePrompt` 与上面那两列同一形状——契约上
+       * `judgePrompt` 与上面那两列同一形状——契约上
        * `TestCase` 已经没有它了，读侧归一却只删了 `judgeProviderId` / `judgeModelId`，
        * 于是**一条旧用例会把一整段旧口径的评分标准从 `GET /api/cases` 原样发出去**：
        * 类型上说没有这一格、运行时却有，下游只能靠猜它算不算数。

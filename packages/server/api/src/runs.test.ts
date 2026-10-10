@@ -10,7 +10,7 @@
  *   2. 断言「api 有没有把该做的事交给编排层」（调用次数与入参），这比 sdk 层的行为更能定位问题；
  *   3. 快照的读写在假实现里是一个内存 Map，用例可以精确控制「磁盘上有什么」。
  *
- * `@aieval/agents` **保持真实**：注册表是静态注册 + 纯元数据（§5.6.1 A6：厂商 SDK 是函数作用域
+ * `@aieval/agents` **保持真实**：注册表是静态注册 + 纯元数据（厂商 SDK 是函数作用域
  * 懒加载），import 它不会拉起任何厂商包，而候选池的协议判据正需要这份真实元数据。
  *
  * `@aieval/core` 保持真实（只把三个函数包一层 spy，语义不变），因为「落盘」「按路径读事件」
@@ -98,10 +98,10 @@ vi.mock('@aieval/evaluator', async (importOriginal) => {
     abortRow: vi.fn(),
     rescoreRow: vi.fn(),
     retryRow: vi.fn(),
-    // 守卫（2026-09-28 复核顺修）：真实实现读的是编排层的在途任务表，而本层没有在途任务 ⇒ 恒通过，
+    // 守卫：真实实现读的是编排层的在途任务表，而本层没有在途任务 ⇒ 恒通过，
     // 于是「它一抛就不许落盘」这条不变式一直没人守。换成可抛的替身，下面那条用例才钉得住它。
     assertRunMutable: vi.fn(),
-    // 删除（2026-09-28）：api 层的 deleteRun 只是转发，本层要断言的是「转过去了吗」
+    // 删除：api 层的 deleteRun 只是转发，本层要断言的是「转过去了吗」
     deleteRun: vi.fn(),
   };
 });
@@ -188,7 +188,7 @@ describe('createRun', () => {
     expect(first?.baseUrl).toBe('https://gw.example.com/anthropic');
     expect(first?.modelId).toBe('claude-opus-4-6');
     expect(second?.providerName).toBe('OpenAI 网关');
-    // 分支名用行 id（同一用例下多候选共用分支名会互相踩，spec §5.5）
+    // 分支名用行 id（同一用例下多候选共用分支名会互相踩）
     expect(first?.branch).toBe(`test/${first?.id ?? ''}`);
     expect(first?.workspacePath.startsWith(join(dir, 'ws'))).toBe(true);
     expect(first?.tokens).toBeNull();
@@ -197,9 +197,9 @@ describe('createRun', () => {
     expect(vi.mocked(saveRun)).toHaveBeenCalledTimes(1);
   });
 
-  it('创建时落 baselineCommit 空串（= 尚未准备），绝不伪造 40 位假 hash（R2）', () => {
-    // 基线要到准备阶段才解析成具体 hash（contracts §2.4 的 EvalRowSchema 就是 z.string()，
-    // p0 有一条断言明确要求空串必须解析成功）。写假 hash 会让界面显示一个不存在的 commit，
+  it('创建时落 baselineCommit 空串（= 尚未准备），绝不伪造 40 位假 hash', () => {
+    // 基线要到准备阶段才解析成具体 hash（contracts 的 EvalRowSchema 就是 z.string()，
+    // 早先有一条断言明确要求空串必须解析成功）。写假 hash 会让界面显示一个不存在的 commit，
     // 也让「准备阶段把 HEAD 解析成具体 hash」这一步失去判据。
     const run = createRun({
       caseId: 'c-1',
@@ -234,7 +234,7 @@ describe('createRun', () => {
   });
 
   /**
-   * 远端用例的「跟哪条分支」必须随这一轮落库（spec §6.5 / §7.2 的冗余快照口径）。
+   * 远端用例的「跟哪条分支」必须随这一轮落库（冗余快照口径）。
    * 为什么不能只留在用例里：分支是**这一轮开始时**的选择，之后在用例里改分支（评测还要继续重跑某一行）
    * 时，历史轮次仍要说得清自己当时跟的是哪条；编排层的远端准备也直接读这一份快照，不回头查配置。
    */
@@ -257,7 +257,7 @@ describe('createRun', () => {
   });
 
   /**
-   * **这一轮用的是哪张评分表**必须随创建落库（`EvalRunSchema.rubric`，spec §7.2 的冗余快照口径）。
+   * **这一轮用的是哪张评分表**必须随创建落库（`EvalRunSchema.rubric`，冗余快照口径）。
    * 为什么它是承重的：评分阶段读的是**快照**而不是 `testCase.rubric`——不写下这一格，
    * 「改了用例的评分表之后，历史分数仍与当初那把尺子自洽」这条不变式就没有载体
    * （评分阶段拿到 `undefined`，`rubricMaxScore` 会当场炸；或者更坏：悄悄按用例现取的表评分）。
@@ -379,9 +379,9 @@ describe('createRun', () => {
   });
 
   /**
-   * 开关打开时必须在**创建**这一刻把评分配置问题拦下来（spec §6）。
+   * 开关打开时必须在**创建**这一刻把评分配置问题拦下来。
    * 为什么不能等评分阶段：候选 agent 已经白跑了几分钟，使用者为此付出的等待不可撤，
-   * 而错误出现在「与刚才那次选择无关」的地方。两条用例对应 spec §6 的两项校验：
+   * 而错误出现在「与刚才那次选择无关」的地方。两条用例对应两项校验：
    *   ① 没配默认评分智能体；② 默认评分智能体的协议与这一轮的评分模型不匹配。
    * ②的判据是**全局默认评分模型**的协议（用例上不再有覆盖，评分配置是唯一来源）。
    */
@@ -405,7 +405,7 @@ describe('createRun', () => {
     const anthropicProvider = makeAnthropicProvider({ models: [{ id: 'claude-sonnet-5', source: 'manual' }] });
     seedConfig({ providers: [makeProvider(), anthropicProvider], cases: [makeCase()] });
     // 尺子只有全局默认这一个来源：把它指向 Anthropic 协议的模型，再让 Codex 去驱动它
-    // Codex 走 chat-completions，驱动不了 Anthropic 协议的评分模型（R37 的注册表元数据是唯一判据）
+    // Codex 走 chat-completions，驱动不了 Anthropic 协议的评分模型（注册表元数据是唯一判据）
     updateSettings({
       defaultJudge: { providerId: anthropicProvider.id, modelId: 'claude-sonnet-5' },
       defaultJudgeAgent: 'codex',
@@ -435,7 +435,7 @@ describe('createRun', () => {
   });
 });
 
-describe('runId 的形状校验不重复实现（R36）', () => {
+describe('runId 的形状校验不重复实现', () => {
   it('getRunView 把原样 id 直通编排层：形状判定只有 run-store 一份，错误按原对象抛出', () => {
     // `run-store` 的 getRun/saveRun 入口已有 assertRunId（空串 / 以 . 开头 / 含 / \ .. ⇒ INVALID_QUERY）。
     // api 若自己再判一次形状，就会对同一个 id 给出第二个（且往往是 NOT_FOUND）结论——
@@ -541,7 +541,7 @@ describe('abortRun / abortRow', () => {
 });
 
 /**
- * 重新评分（Task 7，spec §9）的 api 侧分工。
+ * 重新评分的 api 侧分工。
  *
  * 本层**不重写可用性判据**（那是 contracts 的 `canRescoreRow` + 编排层的 `rescoreRefusal`）：
  * 它只做「这一行在不在这一轮里」的存在性检查，然后把请求转给编排层。故这两条用例钉的是**分工**，
@@ -577,7 +577,7 @@ describe('rescoreRow', () => {
 });
 
 /**
- * 单行重新执行（2026-09-27 引入，内部名 retry，界面文案「重新执行」）的 api 侧分工：与 `rescoreRow` **逐字同形**——只有存在性检查在本层，
+ * 单行重新执行（内部名 retry，界面文案「重新执行」）的 api 侧分工：与 `rescoreRow` **逐字同形**——只有存在性检查在本层，
  * 可用性判据与拒绝原因都在编排层。两条路径分开写是因为它们**做的是两件事**：
  * 重评只重跑评分，重新执行连候选 agent 一起重跑（分钟级 vs 几十秒）。
  */
@@ -608,7 +608,7 @@ describe('retryRow', () => {
 
 describe('listModelOptions', () => {
   /**
-   * 2026-10-06 口径变更带来的期望对象变化：夹具里的模型**都没声明** `supportedEfforts`
+   * 期望对象：夹具里的模型**都没声明** `supportedEfforts`
    * ⇒ 候选档位从「没有这一格」变成该家的**完整档位域**，故本组三条断言里各多一格 `efforts`。
    * 本组的主题是**协议过滤**（看得见哪些模型），所以档位格按注册表真值回填，
    * 不在这里抄第二份档位表——档位域本身另有 `registry.test.ts` 的守卫与下面「思考强度」那两组的用例。
@@ -638,7 +638,7 @@ describe('listModelOptions', () => {
   });
 
   /**
-   * **本次放宽的靶子**（计划 Task 7）：DSH 两条 wire 都能收（`anthropic-messages` / `openai-responses`），
+   * **判据**：DSH 两条 wire 都能收（`anthropic-messages` / `openai-responses`），
    * 所以它的候选池是**两类协议的并集**。
    *
    * 为什么这条必须存在：只改元数据、没有这条正向用例的话，「放宽」这件事在测试里**没有靶子**——
@@ -647,7 +647,7 @@ describe('listModelOptions', () => {
   it('DSH 同时接受两种协议：openai 供应商的模型也进候选池', () => {
     // 顺序 = **供应商清单的顺序**（`listModelOptions` 按 `listProviders()` 逐个 flatMap，
     // 不是按协议集合的顺序）——夹具里 openai 那条排在前面，所以它先出现
-    // （`efforts` 这一格的来由见本组开头 2026-10-06 的说明）
+    // （`efforts` 这一格的来由见本组开头的说明）
     const dshEfforts = getProvider('dsh').metadata.reasoningEfforts;
     expect(listModelOptions('dsh')).toEqual([
       { providerId: 'p-openai', providerName: 'OpenAI 网关', modelId: 'gpt-5', source: 'fetched', efforts: dshEfforts },
@@ -675,7 +675,7 @@ describe('listAgentModelOptions', () => {
     expect(groups.map((group) => group.agentKind)).toEqual(['claude-code', 'codex', 'dsh']);
     expect(groups[0]?.protocolTypes).toEqual(['anthropic']);
     expect(groups[1]?.protocolTypes).toEqual(['openai']);
-    // dsh 两条 wire 都能收 ⇒ 集合是两个元素（契约 R37 的收口）
+    // dsh 两条 wire 都能收 ⇒ 集合是两个元素（双协议声明的收口）
     expect(groups[2]?.protocolTypes).toEqual(['openai', 'anthropic']);
     expect(groups[0]?.options.map((option) => option.modelId)).toEqual(['claude-opus-4-6']);
     expect(groups[1]?.options.map((option) => option.modelId)).toEqual(['gpt-5']);
@@ -689,11 +689,11 @@ describe('listAgentModelOptions', () => {
 
     expect(dsh?.cancelMidTurn).toBe(false);
     expect(groups.find((group) => group.agentKind === 'claude-code')?.cancelMidTurn).toBe(true);
-    // dsh 的 usage 以 p3 的真实探测结果为准（spec §5.6.3），这里只断言它是一个布尔
+    // dsh 的 usage 以真实探测结果为准，这里只断言它是一个布尔
     expect(typeof dsh?.usage).toBe('boolean');
   });
 
-  it('三个 kind 的元数据逐字段等于注册表真值（接缝守卫：api 不许有第二份对应表，A3/R11）', () => {
+  it('三个 kind 的元数据逐字段等于注册表真值（接缝守卫：api 不许有第二份对应表）', () => {
     // 这一条不是重复断言上面两条：它把「值来自注册表」这件事本身钉住。
     // 若有人在 api 里硬编码 protocolType / usage / cancelMidTurn（或漏透传某一项），
     // 注册表换了值而这里不同步，界面就会按错的文案工作（「终止」写成「关闭运行时」或反之），
@@ -705,7 +705,7 @@ describe('listAgentModelOptions', () => {
       expect(group.usage).toBe(metadata.capability.usage);
       expect(group.cancelMidTurn).toBe(metadata.capability.cancelMidTurn);
       /**
-       * **消息能力声明也要透传**（2026-10-04 收口）。
+       * **消息能力声明也要透传**。
        *
        * 它是界面那四句「这家结构上不支持 / 厂商没投送 / 我们还没接 / 没验证过」的**唯一**来源
        * （`MISSING_REASON_LABELS` 的取值全来自这五格 + 各自的 `source` / `reason`）。
@@ -748,14 +748,14 @@ describe('listAgentModelOptions', () => {
 });
 
 /**
- * 思考强度的**交集**与创建期校验（spec D10）。
+ * 思考强度的**交集**与创建期校验。
  * 这一组盯的是「不要让人选完到运行时才失败」：dsh 对不支持的档位是硬报错
  * （`UNSUPPORTED_REASONING_EFFORT`），所以不支持的组合必须在**列选项**与**创建**两处都被拦下；
  * 而「就近取整」（medium → high）是静默改语义，明确不做。
  */
 describe('思考强度：候选池交集与创建校验', () => {
   /**
-   * 2026-10-06 口径变更（本用例的三条候选断言随之改判据，逐条在下面点名）：
+   * 候选判据（本用例的三条断言逐条在下面点名）：
    * ① 上游**没声明** `supportedEfforts` ⇒ 不再是「没有档位可选」，而是给该家**完整档位域**
    *    （本机两个 provider 都是 `source: fetched` 且不带这一格 ⇒ 旧写法让界面连档位都没有）；
    * ② 候选里**恒含关闭档** `EFFORT_OFF` 且排第一——它表达的是「我们这一侧关掉思考」，
@@ -790,7 +790,7 @@ describe('思考强度：候选池交集与创建校验', () => {
   });
 
   /**
-   * 候选构成（2026-10-06 口径变更）：上游**没声明** `supportedEfforts` ⇒ 给该家**完整档位域**
+   * 候选构成：上游**没声明** `supportedEfforts` ⇒ 给该家**完整档位域**
    * （本机两个 provider 都是这种形态，旧写法让界面连档位都没有）；声明过 ⇒ 交集 **∪ 关闭档**
    * （关闭档表达的是「我们这一侧关掉思考」，不受交集裁剪）。
    */
@@ -840,7 +840,7 @@ describe('思考强度：候选池交集与创建校验', () => {
     expect(run.rows[0]?.effort).toBe('high');
 
     /**
-     * **关闭档也要能落盘**（2026-10-06 fix 轮）：上游只声明了 `low/high/max`，`off` 靠
+     * **关闭档也要能落盘**：上游只声明了 `low/high/max`，`off` 靠
      * `intersectEfforts` 的并集才在候选里 ⇒ 这一条同时钉住「候选里真有它」与「校验放它过去」。
      * 为什么必须有一条：全仓此前**没有一处**用 `effort: EFFORT_OFF` 建过行（ui 与 api 的用例
      * 都只提交过 `high` / `low`）⇒ 把关闭档从候选里去掉、或让校验误拒它，今天照样全绿，
@@ -865,9 +865,9 @@ describe('思考强度：候选池交集与创建校验', () => {
   });
 
   /**
-   * **未选也要校验**（2026-10-06，Task 1 评审查出的缺口）：dsh 的「未选」不是「什么都没要求」，
+   * **未选也要校验**：dsh 的「未选」不是「什么都没要求」，
    * 它会真的落到缺省档 `high` ⇒ 该档不在候选里时必须**建行就拒**，否则要跑到 dsh 的硬校验处
-   * 才失败（`UNSUPPORTED_REASONING_EFFORT`，正是本计划要避免的「症状离真因很远」）。
+   * 才失败（`UNSUPPORTED_REASONING_EFFORT`，正是要避免的「症状离真因很远」）。
    */
   it('未选档位也校验：dsh 的缺省档 high 不在候选里 ⇒ 建行即拒并点名', () => {
     // dsh 的档位域是 off/low/high/max；上游只声明 low ⇒ 候选 = [off, low]，而未选时 dsh 会用 high
@@ -905,7 +905,7 @@ describe('思考强度：候选池交集与创建校验', () => {
 });
 
 /**
- * `planRunUpdate`：编辑的**逐行处置**（spec §5.1 的那张表）。
+ * `planRunUpdate`：编辑的**逐行处置**。
  * 这是本功能最容易写错的一处——「多重置一行」等于静默丢分，「少重置一行」等于让待开始的行挂着旧分。
  * 故它被抽成纯函数并在这里**直接**测，不走 HTTP（间接断言盖不住「哪一行被重置了」）。
  */
@@ -922,7 +922,7 @@ describe('planRunUpdate', () => {
       durationMs: 1_000,
       diff: { filesChanged: 1, insertions: 2, deletions: 0, truncated: false },
       score: {
-        // Task 2 的评分契约：模型只给逐项二元判定，总分与满分由系统按权重加总。
+        // 评分契约：模型只给逐项二元判定，总分与满分由系统按权重加总。
         // 这一行按「A1（80 分，达成）+ A2（20 分，未达成）」这张表打出来 ⇒ 80 分 / 满分 100。
         // 本组用例断言的是「重置有没有把这一行的分清掉」，与分是怎么算出来的无关
         judgments: [
@@ -940,7 +940,7 @@ describe('planRunUpdate', () => {
         // 强度未指定（一个强度键都没发）：本组用例不涉及强度通路
         judgeEffort: null,
         structuredOutput: false,
-        // 评分自己的花销（2026-10-08）：本组用例不涉及这两格
+        // 评分自己的花销：本组用例不涉及这两格
         judgeTokens: null,
         judgeDurationMs: null,
       },
@@ -974,7 +974,7 @@ describe('planRunUpdate', () => {
 
   /**
    * 「跑过一轮」的轮次要带上 `startedAt`：`settleRunAfterEdit` 正是按它区分「一次都没跑过」与
-   * 「跑过一轮、现在又有行待跑」（spec §5.1 口径 3）。有 judged 行却没有 `startedAt` 的轮次
+   * 「跑过一轮、现在又有行待跑」。有 judged 行却没有 `startedAt` 的轮次
    * 在真实数据里不存在（跑过就一定写过它），按那种形状造夹具会让断言落在错的分支上。
    */
   const ranRun = (overrides: Partial<EvalRun> = {}): EvalRun =>
@@ -987,7 +987,7 @@ describe('planRunUpdate', () => {
 
   /**
    * 轮级那六格用例快照（`caseId` + 五格冗余字段，含 `rubric`）。
-   * A（终审 Important）的判据就是它：`caseId` 没变时这六格必须**逐字保留**——取成对象整体 `toEqual`，
+   * 判据就是它：`caseId` 没变时这六格必须**逐字保留**——取成对象整体 `toEqual`，
    * 任一格跟着当前用例漂了都会红（`rubric` 那一格漂了 = 改了用例的评分表就改写了历史分数）。
    */
   const caseSnapshotOf = (
@@ -1020,7 +1020,7 @@ describe('planRunUpdate', () => {
   });
 
   /**
-   * A（终审 Important）：**没换用例就不许动轮级快照**。
+   * **没换用例就不许动轮级快照**。
    *
    * 症状链（可达路径，不是理论）：用户改的是**用例自己**的 `commitHash` / `repoPath`（`CasePatchSchema`
    * 是 `CaseCreateSchema.partial()`，允许改），此后哪怕只想把这一轮从串行改成并行，无条件按当前用例
@@ -1064,16 +1064,16 @@ describe('planRunUpdate', () => {
     // 五格逐字不变（任一格跟着 `editedCase` 漂了就红）
     expect(caseSnapshotOf(next)).toEqual(caseSnapshotOf(run));
     expect(next.executionMode).toBe('serial');
-    // 行也一行都不动（spec §5.1 处置表的第一行：只改执行模式）
+    // 行也一行都不动（处置表的第一行：只改执行模式）
     expect(next.rows).toEqual([row]);
   });
 
   /**
-   * F1：重置必须把失败归因（`error`）一起清掉。
+   * 重置必须把失败归因（`error`）一起清掉。
    *
    * 为什么值得单独一条：夹具里的行 `error` 恒为 `null`（`makeRow` 的初值），于是「漏清 error」这一格
    * 在别的用例眼里等于「本来就是 null」——把 `resetRow` 里那句 `error: null` 删掉，既有用例**一条都不红**。
-   * 症状：换了模型的行回到「待开始」，卡片上却还挂着**上一任被评对象**的失败原因（R9 的归因是那一次跑的事实）。
+   * 症状：换了模型的行回到「待开始」，卡片上却还挂着**上一任被评对象**的失败原因。
    */
   it('重置清掉失败归因：换了模型的行不再挂着旧 error', () => {
     const failed = judgedRow('r-1', {
@@ -1120,7 +1120,7 @@ describe('planRunUpdate', () => {
     expect(reset?.durationMs).toBeNull();
     expect(reset?.baselineCommit).toBe('');
     expect(reset?.attempts).toBe(0);
-    // 行身份稳定：id / 分支 / 工作区路径一个字都不变（原地重置，spec §3 D4）
+    // 行身份稳定：id / 分支 / 工作区路径一个字都不变（原地重置）
     expect(reset?.branch).toBe(changed.branch);
     expect(reset?.workspacePath).toBe(changed.workspacePath);
     // 服务端快照跟着新供应商走
@@ -1150,14 +1150,14 @@ describe('planRunUpdate', () => {
     expect(added?.status).toBe('pending');
     expect(added?.attempts).toBe(0);
     expect(added?.baselineCommit).toBe('');
-    // E1（spec §5.4 明文要求）：新行的 id **非空且不等于任何原行 id**。
+    // 新行的 id **非空且不等于任何原行 id**。
     // 只钉「两条路径的 id 互不相同」（下面那条差分守卫）盖不住这一格：复用**同一轮里**某一行的 id
     // 照样能过那条，而快照里就出现两行同 id——`rowKey` / 行工作区 / 事件目录三处同时撞车，
     // 界面上的候选数与进度分母还会各算一份，两端都不报错。
     expect(added?.id).toBeTruthy();
     expect(run.rows.map((row) => row.id)).not.toContain(added?.id);
     expect(added?.branch).toBe(`test/${added?.id ?? ''}`);
-    // ⚠️ 必须落在**这一轮自己记录的根**下：用当前 settings.workspaceRoot 算会让产物裂成两半（spec §3 D13）
+    // ⚠️ 必须落在**这一轮自己记录的根**下：用当前 settings.workspaceRoot 算会让产物裂成两半
     expect(added?.workspacePath).toBe(rowWorkspaceDir('D:\\runs-old', run.id, added?.id ?? ''));
     expect(next.status).toBe('partial');
   });
@@ -1326,7 +1326,7 @@ describe('planRunUpdate', () => {
   });
 
   /**
-   * 强度（spec D12）是**这一行的配置**，与 agent / 模型同级：编辑换掉被评对象时它必须跟着换。
+   * 强度是**这一行的配置**，与 agent / 模型同级：编辑换掉被评对象时它必须跟着换。
    * 两条面都要钉住——「新档位没写进去」（这一行按旧档位跑）与「清回默认后旧键还留着」
    * （界面显示默认、实际按旧档位跑）都是静默的错配，而 `...current` 的展开正好会犯第二种。
    */
@@ -1406,7 +1406,7 @@ describe('planRunUpdate', () => {
 });
 
 /**
- * 编辑一轮评测（spec §5.1）的 api 侧：**校验 → 算新快照 → 落盘**，且顺序承重。
+ * 编辑一轮评测的 api 侧：**校验 → 算新快照 → 落盘**，且顺序承重。
  * 这一组钉的是那三件在纯函数层看不见的事——「能不能改」的判据先跑、校验失败一个字节都不写、
  * 落盘的是新快照而不是内存里那一份。逐行处置（哪一行被重置）在 `planRunUpdate` 那一组里。
  */
@@ -1437,7 +1437,7 @@ describe('updateRun', () => {
             // 强度未指定（一个强度键都没发）：本组用例不涉及强度通路
             judgeEffort: null,
             structuredOutput: false,
-            // 评分自己的花销（2026-10-08）：本组用例不涉及这两格
+            // 评分自己的花销：本组用例不涉及这两格
             judgeTokens: null,
             judgeDurationMs: null,
           },
@@ -1503,7 +1503,7 @@ describe('updateRun', () => {
       caught = error;
     }
 
-    // 只钉文案等于没钉 409：路由层（Task 5）按 **code** 映射 HTTP 状态，文案是给人看的
+    // 只钉文案等于没钉 409：路由层按 **code** 映射 HTTP 状态，文案是给人看的
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('CONFLICT');
     expect((caught as ServiceError).message).toContain('运行');

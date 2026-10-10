@@ -1,18 +1,18 @@
 // @vitest-environment node
 /**
  * dsh 适配器：环境变量注入（保留尾部 /v1 + 显式 API key）、终止必然走第二段（5 秒 → WARN → 关闭运行时）、
- * 实测回写后的用量提取、加载降级。
+ * 用量提取与加载降级。
  * dsh 是「非合作适配器」的真实样本：cancelMidTurn 为 false、interrupt() 是刻意空实现，所以它的终止
- * 路径 100% 会经过 §5.6.6 的第二段——这条用例同时是那段兜底逻辑的真实性证明。
+ * 路径 100% 会经过释放兜底的第二段——这条用例同时是那段兜底逻辑的真实性证明。
  * 「在途通知消费被终结」这一格在 dsh 上是**可达且可钉**的：真实 `NotificationSubscription.close()`
  * 会 reject 挂起的等待者（见夹具 `createFakeDshSdk` 的 JSDoc），所以这里连 `recorder.order` 一起钉住，
  * 而不是像 codex 那样只登记能力边界。
  * 事件构造数据一律照 `probe/dumps/dsh.json` 的真实外形：`{ method:'session.event', params:{ event } }`。
- * 收尾轮（Task 11 真机端到端登记的去重缺陷）：**一轮恰好一条 `usage`**，以及「两轮各一条、tokens 是当轮的量」。
+ * 收尾轮（去重缺陷）：**一轮恰好一条 `usage`**，以及「两轮各一条、tokens 是当轮的量」。
  */
 import { EFFORT_OFF, type AgentEvent } from '@aieval/contracts';
 import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RELEASE_GRACE_MS } from '../../release';
@@ -36,6 +36,7 @@ import {
 } from '../../testing/agent-fixtures';
 import {
   DSH_ASSISTANT_MESSAGE_TYPE,
+  DSH_REQUEST_HEADER_TYPE,
   DSH_SUBAGENT_FINISHED_METHOD,
   DSH_SUBAGENT_STARTED_METHOD,
   DSH_TURN_END_TYPE,
@@ -63,7 +64,7 @@ afterEach(() => {
 });
 
 /**
- * **放行判据：会话树，不是同一个会话**（2026-10-03 用户口径：「dsh 展示的不对」）。
+ * **放行判据：会话树，不是同一个会话**（用户口径：「dsh 展示的不对」）。
  *
  * 缺陷形状：子智能体的会话事件**在同一条通知流里**，而 `params.sessionId` 是**子会话自己的 id**
  * （真机探针：主会话 `session-e8c4…`、子会话 `7be765b2-…`）。原来的判据「认领第一个带
@@ -150,7 +151,7 @@ describe('dshProvider', () => {
     // overlay 路径必须是**绝对路径**：SDK 用 `resolve(callerCwd, path)` 解析，而 callerCwd 是宿主进程的
     // cwd ⇒ 相对路径会让文件落到别处（甚至不在本行的 .agenthome 里）。
     // ⚠️ 这条断言同时是夹具的守卫：夹具的 configHome 若写盘符字面量（`D:/tmp/…`），它在 POSIX 上
-    // 不是绝对路径——这行会当场红，而不是悄悄把 overlay 写进仓库根（2026-10-09 实测）。
+    // 不是绝对路径——这行会当场红，而不是悄悄把 overlay 写进仓库根。
     const patches = recorder.options?.patches as string[] | undefined;
     expect(patches).toHaveLength(1);
     expect(isAbsolute(patches?.[0] ?? '')).toBe(true);
@@ -159,13 +160,13 @@ describe('dshProvider', () => {
   });
 
   /**
-   * 退役旧凭据通道（计划 D6a）：**显式删除**，而不是「不再注入」。
+   * 退役旧凭据通道：**显式删除**，而不是「不再注入」。
    *
    * 为什么必须单独一条：`buildSubprocessEnv` 以**宿主环境为底**展开，而开发机上 `DEEPSEEK_API_KEY`
    * 很常见。只「不再注入」的实现会让宿主的密钥被子进程继承，于是那条已无人配置的
    * `deepseek-official` 路由静默可用（安装态 0.1.7 的 llm-deepseek 账号 token 优先于 API key）
    * ⇒ 悄悄跑到公网并计费；`web_search` 也会拿它去打搜索接口。
-   * 变异体 M13b「只是不再注入、不写 undefined」只有这条用例能杀——其余用例在那种实现下全绿。
+   * 「只是不再注入、不写 undefined」这种实现只有这条用例能杀——其余用例在那种实现下全绿。
    */
   it('宿主环境里的 DEEPSEEK_* 必须被显式删除，而不是「不再注入」（D6a）', async () => {
     const recorder = createRecorder();
@@ -183,15 +184,15 @@ describe('dshProvider', () => {
   });
 
   /**
-   * 冷启动握手预算（Task 9 真机发现的缺陷，2026-09-30）。
+   * 冷启动握手预算。
    *
    * 为什么这条必须存在：SDK 的 `initializeTimeoutMs` 默认 **10s**（`launch.d.ts` 的
    * `DEFAULT_INITIALIZE_TIMEOUT_MS = 10000`），而本适配器每次都跑在**全新的 `configHome`** 上
-   *（§5.6.5 不变量 3）⇒ 每次都是冷启动。实测：默认值下两条协议**双双**
+   *（不变量 3）⇒ 每次都是冷启动。实测：默认值下两条协议**双双**
    * `initialize timed out after 10000ms waiting for dsh profile "sdk"`，被折成 `AGENT_FAILED`，
-   * 界面上只看到「这一行失败了」。变异体验证：删掉 `startDsh` 里这一行 ⇒ 本用例变红（`undefined`）。
+   * 界面上只看到「这一行失败了」；少了 `startDsh` 里这一行，本用例当场红（`undefined`）。
    */
-  it('冷启动握手预算显式给足：不吃 SDK 的 10s 默认值（Task 9 真机缺陷）', async () => {
+  it('冷启动握手预算显式给足：不吃 SDK 的 10s 默认值', async () => {
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
     await dshProvider.run(createRunInput());
@@ -203,8 +204,8 @@ describe('dshProvider', () => {
   it('执行阶段的权限档：DSH_PERMISSION_MODE=danger-full-access 进子进程环境', async () => {
     // 为什么必须显式给：不设它时 dsh 自己回落到 `workspace-write`（`dsh-base/cordis.patch.yml` 的
     // `sandbox-policy` 行逐字：`process.env.DSH_PERMISSION_MODE ?? 'workspace-write'`）——
-    // p6 冒烟实测到的启动形状正是那一档，而它的 approval 是 `ask`：越界操作会挂在无人应答的批准上。
-    // 同一个变量在 `danger-full-access` 下顺带把 approval 设成 `never`（同一份 yml 的 `approval` 行），
+    // 冒烟实测到的启动形状正是那一档，而它的 approval 是 `ask`：越界操作会挂在无人应答的批准上。
+    // 同一个变量在 `danger-full-access` 下同时把 approval 设成 `never`（同一份 yml 的 `approval` 行），
     // 所以「全权限」在 dsh 上就是这一个变量，不需要第二个开关。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
@@ -223,11 +224,11 @@ describe('dshProvider', () => {
   });
 
   it('收到 outputSchema ⇒ **降级**跑完：不发 schema，结果记 applied.structuredOutput=false', async () => {
-    // A1 起口径反转（spec D12）：`outputSchema` 表达的是「我想要」，支不支持由骨架按
+    // 口径：`outputSchema` 表达的是「我想要」，支不支持由骨架按
     // `capability.structuredOutput` 统一处置——`run` 把 dsh 那一格 `false` 转发给 `runTurn`，
     // 骨架在 `start` 之前就把这一格摘掉了，所以走到适配器时它必定不存在。
-    // 这里**曾经**断言「报中文错且不构造运行时」（第二道防线）：那条口径会让一次本来就能跑的评分
-    // 直接失败，而「降级为提示词契约」才是没有 schema 通道的这一家该有的收场。
+    // 这里**不**断言「报中文错且不构造运行时」：那条口径会让一次本来就能跑的评分直接失败，
+    // 而「降级为提示词契约」才是没有 schema 通道的这一家该有的收场。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
 
@@ -241,9 +242,9 @@ describe('dshProvider', () => {
   });
 
   it('outputSchema 显式为 null ⇒ 与「没给」同义：不报错，按「不支持结构化输出」正常跑完', async () => {
-    // 空值口径与 codex（Task 4）逐字统一：判据是「既非 undefined 也非 null 才拦」。
+    // 空值口径与 codex 逐字统一：判据是「既非 undefined 也非 null 才拦」。
     // `null` 在这条路径上与「没给」同义——它表达的是「这一格没有值」，不是「要一份 schema」；
-    // 三个适配器不能各写一套口径（Task 3 在出口侧、Task 4 在入口侧都封过「假值被当成有效值」那一族）。
+    // 三个适配器不能各写一套口径（出口侧与入口侧都封过「假值被当成有效值」那一族）。
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
@@ -284,7 +285,7 @@ describe('dshProvider', () => {
     // 两条，内容各不相同：① `step/start` 时轮次就涨（此刻还没有用量 ⇒ tokens 为 null）；
     // ② `assistant/message` 的用量一到，补一条把 tok 带上。
     // 收尾的 `turn/end` 交出的是**同一对值** ⇒ 被骨架去重掉（这正是「同一轮只有一条收尾信号」的守卫：
-    // Task 11 的真机端到端实测到过同一轮两条内容相同的 usage）。
+    // 端到端跑动里出现过同一轮两条内容相同的 usage）。
     expect(usages.map((event) => [event.turns, event.tokens])).toEqual([
       [1, null],
       [1, { input: 218, cached: 8832, output: 2, reasoningOutput: null, total: null }],
@@ -300,8 +301,8 @@ describe('dshProvider', () => {
   });
 
   it('两个 step：轮次实时涨到 2，计量是**累计**值（不再是「当轮的量」）', async () => {
-    // 2026-09-28 口径变化：事件里的 tokens 是「到目前为止」的累计（覆盖语义），
-    // 所以第二个 step 交出的必须是两段之和。原来「取走即归零」的做法会让第二轮看起来**更便宜**。
+    // 用户口径：事件里的 tokens 是「到目前为止」的累计（覆盖语义），所以第二个 step 交出的
+    // 必须是两段之和；「取走即归零」会让第二轮看起来**更便宜**。
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     const usage = (step: number, input: number, cached: number, output: number): unknown =>
@@ -376,7 +377,7 @@ describe('dshProvider', () => {
     for (const event of usages) expect(event.timing).toBeNull();
   });
 
-  it('失败的运行：turn/end(kind:error) ⇒ 结果 error，不是「界面显示成功、实际没干活」（评审 L2）', async () => {
+  it('失败的运行：turn/end(kind:error) ⇒ 结果 error，不是「界面显示成功、实际没干活」', async () => {
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({
@@ -399,7 +400,7 @@ describe('dshProvider', () => {
     expect(events.some((event) => event.type === 'error')).toBe(true);
   });
 
-  it('终止：interrupt 不被响应 → 5 秒后落 WARN → 关闭运行时恰好一次，结果为 canceled（Review Focus #3）', async () => {
+  it('终止：interrupt 不被响应 → 5 秒后落 WARN → 关闭运行时恰好一次，结果为 canceled', async () => {
     vi.useFakeTimers();
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
@@ -413,8 +414,8 @@ describe('dshProvider', () => {
     const result = await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 10 });
     expect(result.exitReason).toBe('canceled');
     expect(result.error?.code).toBe('AGENT_CANCELED');
-    // 先钉「可见信号」（§5.6.6：非合作的适配器必须可见，不能静默），再钉计数——
-    // 与 codex 的同类用例同一顺序，也让「第二段没跑」这类变异体红在最有信息量的那条断言上
+    // 先钉「可见信号」（非合作的适配器必须可见，不能静默），再钉计数——
+    // 与 codex 的同类用例同一顺序，也让「第二段没跑」这类缺陷红在最有信息量的那条断言上
     const warn = events.find((event) => event.type === 'log' && event.text.includes('[WARN]'));
     expect(warn?.type === 'log' ? warn.text : '').toContain(`${RELEASE_GRACE_MS / 1000} 秒`);
     expect(recorder.closeCount).toBe(1); // dispose 幂等：终止与第二段只关一次
@@ -440,7 +441,7 @@ describe('dshProvider', () => {
     expect(recorder.closeCount).toBe(1); // 正常出口也要释放
   });
 
-  it('运行中未识别通知同样保留原始负载（§5.6.3：不得静默丢弃）', async () => {
+  it('运行中未识别通知同样保留原始负载（不得静默丢弃）', async () => {
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({
@@ -456,7 +457,7 @@ describe('dshProvider', () => {
     expect(logs.some((text) => text.includes('tool/result') && text.includes('pwsh'))).toBe(true);
   });
 
-  it('包已安装但导出面不匹配：AGENT_LOAD_FAILED，且文案**不含** `pnpm add`（评审 M1）', async () => {
+  it('包已安装但导出面不匹配：AGENT_LOAD_FAILED，且文案**不含** `pnpm add`', async () => {
     // 注入 `{}` = 「包装好了，但没有 DeepSeekHarness」——文案在这条分支上必须指向
     // 「适配器期望的入口 vs 实测导出面」，而不是让人去重装一个已装好的包
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: {} } });
@@ -483,7 +484,7 @@ describe('dshProvider', () => {
     expect(result.error?.message).toContain('HarnessClient'); // 实测拿到的
   });
 
-  it('握手失败：折进 AGENT_FAILED，run() 不抛，且没有「被关闭的对象」就不去关（评审 L1）', async () => {
+  it('握手失败：折进 AGENT_FAILED，run() 不抛，且没有「被关闭的对象」就不去关', async () => {
     // 运行时起不来时，用户看到的是这一次运行的失败原因，而不是一个抛出去的异常。
     // 实测入口把「起不来」落在 `start()` 上（探测前落在 `createRuntime()` 上）
     const recorder = createRecorder();
@@ -500,7 +501,7 @@ describe('dshProvider', () => {
     expect(recorder.closeCount).toBe(0); // 从没建出运行时 ⇒ 不该有任何关闭动作
   });
 
-  it('通知流运行中抛出：折进 AGENT_FAILED，且运行时**仍然被释放**（评审 L1：失败路径不泄漏）', async () => {
+  it('通知流运行中抛出：折进 AGENT_FAILED，且运行时**仍然被释放**（失败路径不泄漏）', async () => {
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({
@@ -523,7 +524,7 @@ describe('dshProvider', () => {
 });
 
 /**
- * overlay 的**落点与内容**（计划 Task 5/6）：适配器在**运行时启动之前**把
+ * overlay 的**落点与内容**：适配器在**运行时启动之前**把
  * `<configHome>/aieval-route.patch.yml` 写出来，那份文件同时承载路由、模型能力、档位与工具挂载。
  * 判据是**磁盘上的文件内容**——只看适配器内部算了什么，证明不了 dsh 读得到。
  *
@@ -588,7 +589,7 @@ describe('dsh 的 overlay 落点', () => {
   });
 
   /**
-   * 模型名里带 `"` / `\` / `:` 时写出的 YAML 必须能**原样读回**（spec §6.3 的转义口径）。
+   * 模型名里带 `"` / `\` / `:` 时写出的 YAML 必须能**原样读回**（转义口径）。
    * 判据是往返逐字相等，而不是「文件里出现了某个字符串」——后者在转义写错时也可能成立。
    * 为什么这个坑是真的：网关的模型名里 `/` `-` `.` 是常态，`:` 也出现过（命名空间前缀），
    * 而裸写的 `id: a:b` 在 YAML 里是合法的「键值对」写法，读回来就不再是那个 id 了。
@@ -619,7 +620,7 @@ describe('dsh 的 overlay 落点', () => {
 });
 
 /**
- * 思考强度（spec §6.4 / D13；**2026-10-06 口径变更**：未选不再等于「不传」）。
+ * 思考强度（未选不等于「不传」）。
  *
  * 为什么改：dsh 的「不传」实际是**显式关闭**（pi-ai 不写 reasoning 字段 ⇒ 落
  * `reasoning:{effort:'none'}`，见探测记录与 `sdk.ts` 的口径）。用户口径是「不能默认关闭，
@@ -653,17 +654,17 @@ describe('dsh 的思考强度', () => {
 });
 
 /**
- * `ask_user_question` 的工具挂载（用户口径 2026-09-30）：
+ * `ask_user_question` 的工具挂载（用户口径）：
  * `@deepseek-ai/dsh-tool-ask-user` **已随 dsh 装好**，但 `dsh-base` 与 `dsh-sdk-app` 两个 bundle
  * 都**没有**把它装进 profile（只有 `dsh-web-app` 的 preset 有）⇒ 适配器必须补一行 insert。
  *
- * **落点已搬进 overlay**（计划 D3b）：`insert` 与路由同住一份 per-launch patch，而不是写
+ * **落点已搬进 overlay**：`insert` 与路由同住一份 per-launch patch，而不是写
  * `profiles/sdk/cordis.patch.yml`——那是 dsh 自己的持久化层（Settings / config-editor 会写它），
  * 适配器整份重写它会让两份来源混在一个文件里。
  *
  * 判据是磁盘上的文件内容：只看适配器内部算了什么，证明不了 dsh 读得到。
  * 实测依据：`dsh --profile sdk --patch <overlay> --dump-config` 下 `tool-ask-user` 由 0 处变 2 处、
- * 无 patch 告警（探测报告 §1），且**不需要**改 profile 的 `dependencies`（dsh 从自身安装解析插件）。
+ * 无 patch 告警，且**不需要**改 profile 的 `dependencies`（dsh 从自身安装解析插件）。
  */
 describe('dsh 的 ask_user_question 挂载', () => {
   const ROUTE = {
@@ -708,7 +709,7 @@ describe('dsh 的 ask_user_question 挂载', () => {
       expect(snapshotAtBoot).toContain('id: tool-ask-user');
       expect(snapshotAtBoot).toContain('name: "@deepseek-ai/dsh-tool-ask-user"');
       /**
-       * stream-tap 的挂载行（2026-10-09）：**相对名**（`./aieval-stream-tap.mjs`，按 profile 目录
+       * stream-tap 的挂载行：**相对名**（`./aieval-stream-tap.mjs`，按 profile 目录
        * 解析）+ 插件本体在装配时刻就落盘。少了 insert 行，runtime 起来后没有任何人写旁路文件
        * ⇒ delta 一条都不到——那是静默的空（能力声明 `yes` 与实现不一致，界面打字机不动）。
        */
@@ -721,7 +722,7 @@ describe('dsh 的 ask_user_question 挂载', () => {
       expect(readFileSync(overlayPath(home), 'utf8')).toContain('tool-ask-user');
       expect(readFileSync(overlayPath(home), 'utf8')).toContain('aieval-stream-tap');
       /**
-       * ③ **反向断言**：旧落点一个都不许出现（计划 Task 6 的「退役」判据）。
+       * ③ **反向断言**：旧落点一个都不许出现。
        * 少了这条，把 insert 又搬回 profile patch（或顺手恢复 settings.yaml）也能让上面全绿，
        * 而那样就回到「两份来源写同一个文件」的老问题。
        */
@@ -770,13 +771,13 @@ describe('dsh 的 ask_user_question 挂载', () => {
 });
 
 /**
- * overlay patch 生成器（计划 Task 4）：**纯函数**，输入即全部事实。
+ * overlay patch 生成器：**纯函数**，输入即全部事实。
  *
  * 为什么单独一组用例：这份文本是「本仓的路由事实」到「pi-ai 路由配置」的**唯一**翻译点，
  * 三件事都只在这里发生——协议选 wire、baseURL 按 wire 归一化、档位映射成 wire 拼写。
  * 它错了不会在本仓炸，而是让 dsh 子进程在 `initialize` 阶段以
  * `no adapter registered` / `UNKNOWN_MODEL` / `UNSUPPORTED_REASONING_EFFORT` 收场，
- * 报错点离原因很远（真机探测报告 §2/§5 记录了这三条失败通道）。
+ * 报错点离原因很远（这三条失败通道有真机记录）。
  */
 describe('buildDshRoutePatch', () => {
   const base = {
@@ -804,7 +805,7 @@ describe('buildDshRoutePatch', () => {
       ['https://gw/anthropic/v1/', 'https://gw/anthropic', 'https://gw/anthropic/v1'],
       // 裸 host：规范化会补一个尾部 `/`（`withPath` 用 `new URL().toString()`，这是既有行为）。
       // 它**不是**缺陷：厂商 SDK 拼路径时会吃掉首斜杠（`baseURL.endsWith('/') && path.startsWith('/')`
-      // ⇒ `path.slice(1)`），实测落到 `/v1/messages?beta=true` 与 `/v1/responses` 都正确（探测报告 §2）。
+      // ⇒ `path.slice(1)`），实测落到 `/v1/messages?beta=true` 与 `/v1/responses` 都正确。
       ['https://gw', 'https://gw/', 'https://gw/v1'],
     ] as const;
     for (const [input, expectedAnthropic, expectedOpenai] of cases) {
@@ -843,11 +844,11 @@ describe('buildDshRoutePatch', () => {
 
   it('档位值是 wire 拼写：off 写成 null（显式关闭），其余原样', () => {
     const patch = buildDshRoutePatch(base);
-    // 探测报告 §2：`off: null` ⇒ 实测发 `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`
+    // `off: null` ⇒ 实测发 `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`
     expect(patch).toContain('off: null');
     expect(patch).toContain('low: "low"');
     expect(patch).toContain('high: "high"');
-    // responses 的 OpenAI 枚举里没有 max，但实测七种拼写全部 200 ⇒ 原样透传（探测报告 §4）
+    // responses 的 OpenAI 枚举里没有 max，但实测七种拼写全部 200 ⇒ 原样透传
     expect(patch).toContain('max: "max"');
   });
 
@@ -929,7 +930,7 @@ const MAIN_USAGE = sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
 });
 
 /**
- * 子智能体那一份用量（spec 2026-10-04 §2.3）。
+ * 子智能体那一份用量。
  *
  * 今天的事实（本任务**不改**）：dsh 的 `assistant/message` 与 `step/start` 两支**都不按会话分叉**
  * ⇒ `tokens` 与 `turns` 已经含子会话；本组钉的是新那一格——「其中的**子智能体分量**」，
@@ -951,7 +952,7 @@ const MAIN_USAGE = sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
  * 这不影响本组的判据（判的是「分量怎么算」），但它让「收场那一刻的结论何时送到消费方」在这一层
  * 观察不到——第 4 条用例的注记说明了这一点。
  */
-describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
+describe('子智能体那一份用量', () => {
   /**
    * 模块级的关联表（`sessionUsage` / 子会话身份）按用例清空：本组的 id 是固定字面量
    * （`child-1` / `other-row-session`），不清就会跨用例串味——而串味的方向恰好是「白名单之外
@@ -990,7 +991,7 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
     // 4 / 1 / 3 确实进了 `tokens`），但**子那一份必须只算白名单**。
     // ⚠️ 夹具层面：这个会话不在白名单里，会被会话过滤**挡在投影之外**（见本组的 JSDoc），所以下面钉的
     // 是「分量只认白名单」这件事本身——去掉白名单（遍历 `sessionUsage` 全部键）时它会红：
-    // 主会话那一笔就在表里（变异验证 M1 实测如此）。
+    // 主会话那一笔就在表里。
     expect(usageEvents(events).at(-1)?.subagentTokens).toMatchObject({ input: 0, cached: 0, output: 0 });
   });
 
@@ -999,7 +1000,7 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
      * ⚠️ 这一条**在实现之前也是绿的**，原因有两层，都值得知道：
      *   · 骨架那个局部量的初值就是 `null`（投影**整格缺席** = 保持原值，见 `turn.ts`），所以「还没实现」
      *     与「明确算成 null」在事件上长得一样 ⇒ 它的区分力不来自「有没有实现」，而来自
-     *     **`dshSubagentUsage` 里那一支在不在**（去掉 `finishedSessions` 那支的变异体正是被它杀掉的）；
+     *     **`dshSubagentUsage` 里那一支在不在**（去掉 `finishedSessions` 那支的实现正是被它杀掉的）；
      *   · 假 harness 是**一口气**把整串通知投递进来的（筛选回调在投递时跑完），所以「已收场」这件事在
      *     投影看到主会话那条用量时就已经登记好了——真机是逐条到达的，结论会在**下一条**
      *     `assistant/message` 上出现（见 `events.ts` 里那一支的注记）。
@@ -1025,11 +1026,11 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
   });
 
   /**
-   * 收尾那一格（2026-10-04 评审 Important 1）：`startDsh` 的 `TurnStart` 也要给 `finalize`，
+   * 收尾那一格：`startDsh` 的 `TurnStart` 也要给 `finalize`，
    * 否则「子会话收场却没报到用量 ⇒ 没采到」这个结论**在整轮再也没有消息**时就送不出去——
    * 留在 `AgentRunResult.subagentTokens`（进而进行快照）里的是骨架那个初值或上一版的旧数。
    * `finalize` 在 `finally` 里跑（正常 / 失败 / 被终止都跑，`turn.ts:611-626`），
-   * 且 `subagentTokens` 的**显式 `null` 会覆盖**（R2）。
+   * 且 `subagentTokens` 的**显式 `null` 会覆盖**。
    */
   it('收尾（finalize）也交一次分量：跑完那一格说得清是「没采到」还是「确实没有」', async () => {
     // ① 子会话收场却一条用量都没有 ⇒ 结果里是 **null**（不是 `{0,0,0}`、也不是缺席）
@@ -1042,19 +1043,19 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
     expect(finished.subagentTokens).toBeNull();
     // ② 只有一条「派发」、整轮一条用量都没有 ⇒ 结果里是 `{0,0,0}`（还在跑，它还会报）。
     //    这一半是**「收尾交没交」的可观测判据**：不交的话留在结果里的是骨架那个初值 `null`
-    //    （假 harness 一口气投递通知，所以「旧数残留」那一半在这个夹具里构造不出来，见报告 §8）。
+    //    （假 harness 一口气投递通知，所以「旧数残留」那一半在这个夹具里构造不出来）。
     const running = await runDshResultWith([subagentStarted('child-3')]);
     expect(running.subagentTokens).toMatchObject({ input: 0, cached: 0, output: 0 });
   });
 
   /**
-   * R17（Task 9 收口裁定）：`null` 那一格**不能是静默的**。spec §2.2 的第三档承诺「`null` 伴随一条
+   * 口径：`null` 那一格**不能是静默的**。第三档承诺「`null` 伴随一条
    * **点名**的 WARN」，运维据此分得清「没采到」与「确实没有子智能体」——codex
    * （`codex/transcript.ts` 的「未找到子线程 …」）与 claude（`claude-code/index.ts` 的
    * 「读不到子智能体 …」，用例 `claude-code/index.test.ts` 那条）都落了这条 WARN，
    * 而 dsh 原来在 `finalize` 里给的是 `drafts: []` ⇒ 一格 `null` 悄无声息。
    */
-  it('子会话收场却无用量 ⇒ 一条**点名**的 WARN（R17：null 那一格不能是静默的）', async () => {
+  it('子会话收场却无用量 ⇒ 一条**点名**的 WARN（null 那一格不能是静默的）', async () => {
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
     setAgentRuntimeForTesting({
@@ -1084,10 +1085,10 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
   });
 
   /**
-   * 身份**三级兜底**必须与白名单登记**同源**（2026-10-04 评审 Minor 2）：规范描述的那一支形状
+   * 身份**三级兜底**必须与白名单登记**同源**：规范描述的那一支形状
    * （`agentId` / `childSessionId`，真机给 `subagentId`）只被 `noteChildSession` 认、
    * 而 `noteFinishedChildSession` 只认 `subagentId` 的话，收场那一条就白来了——
-   * 白名单里的子会话被当成「还在跑」⇒ R2 的 `null` 静默降级成 `{0,0,0}`（把「没采到」说成「确实没有」）。
+   * 白名单里的子会话被当成「还在跑」⇒ `null` 静默降级成 `{0,0,0}`（把「没采到」说成「确实没有」）。
    */
   it('收场通知只带 childSessionId（规范形状）时也认得出——身份兜底与白名单同源', async () => {
     const events = await runDshWith([
@@ -1103,9 +1104,9 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
   });
 
   /**
-   * 两把尺子不互相顶替（spec 2026-10-05 §3.1 守卫 4 / 5）：`usage.turn` 是**每会话自己的** `step`
+   * 两把尺子不互相顶替（守卫 4 / 5）：`usage.turn` 是**每会话自己的** `step`
    * （这条读数属于哪个会话的第几次模型往返），而 `turns` 仍是**全树合计**（`step/start` 一个都不落）。
-   * 变异体：把 `turns` 顺手改成每会话 ⇒ 这里读到的合计会掉回 2（主会话自己的步数）。
+   * 把 `turns` 改成每会话 ⇒ 这里读到的合计会掉回 2（主会话自己的步数）。
    */
   it('归属按每会话自己的 step 走，而 `turns` 仍是全树合计（两把尺子不互相顶替）', async () => {
     const events = await runDshWith([
@@ -1124,13 +1125,13 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
 });
 
 /**
- * 子智能体那一份**轮次**（2026-10-04，spec §2.3 dsh 段）。
+ * 子智能体那一份**轮次**。
  *
  * 与用量那一组是同一件事的两半，但 dsh 的**取数面不同**：`turns` 从第一天起就是全树口径
  * （`step/start` 那一支不按会话分叉，`events.ts` 的既成口径）⇒ 分量必须**另按会话数**，
  * 而圈出「本行的子会话」的唯一依据仍是**同一份白名单**。
  *
- * 三条口径与用量**逐字相同**（spec §2.2 的三档）：
+ * 三条口径与用量**逐字相同**（三档）：
  *   · 没有子会话 ⇒ `0`（确实没有，不是 `null`）；
  *   · 白名单里的子会话 ⇒ 按「到目前为止」求它自己的 `step/start` 数；
  *   · 有子会话**已收场却没报到** ⇒ `null`，且判据是 `dshSilentChildSessions`——**与用量同一个谓词**
@@ -1141,7 +1142,7 @@ describe('子智能体那一份用量（spec 2026-10-04 §2.3）', () => {
  * 界面上「主会话 = 合计 − 分量」会短暂地多算 1（一行画得出来的假拆分）。
  * 本组第一条用例正是钉这件事：最后一条事件是**子会话的 `step/start`**，两格都得是新的。
  */
-describe('子智能体那一份轮次（spec 2026-10-04 §2.3 dsh 段）', () => {
+describe('子智能体那一份轮次', () => {
   beforeEach(() => {
     resetDshMessageStateForTesting();
   });
@@ -1228,11 +1229,11 @@ describe('子智能体那一份轮次（spec 2026-10-04 §2.3 dsh 段）', () =>
   });
 
   /**
-   * `null` 那一格**不能是静默的**（R17）：这一格与用量同源，所以**同一条**点名 WARN 必须说清
+   * `null` 那一格**不能是静默的**：这一格与用量同源，所以**同一条**点名 WARN 必须说清
    * 「给不出的是**哪一格**」。
    *
-   * ⚠️ **措辞在 2026-10-04 复核（I2）时改过一次，判据也一起改了**：原来的文案抄了另两家的
-   * 「这一行的 tok / 缓存命中 / 轮次**不含**它们」——那句话在 codex / claude 上成立（那两家的
+   * ⚠️ **措辞与判据一起定**：抄另两家的「这一行的 tok / 缓存命中 / 轮次**不含**它们」不行——
+   * 那句话在 codex / claude 上成立（那两家的
    * 合计真的会退回主线程口径），**在 dsh 上是假的**：dsh 的 `turns` 是**构造上的全树累加**
    * （`step/start` 不按会话分叉，上一条「轮次继续含子会话的 step」用例钉着它）⇒ 一个收场却没报
    * 用量的子会话，它的 `step` **已经在合计里**，缺的只是**分量**。
@@ -1256,7 +1257,7 @@ describe('子智能体那一份轮次（spec 2026-10-04 §2.3 dsh 段）', () =>
     //    两条一起钉：缺的是分量（①），而合计并没有因此少算谁的轮次（②）。
     expect(warns[0]).toContain('轮次含');
     // ③ 另两家那句句式（「…/ 轮次**不含**它们」，在 dsh 上是假的）不许借过来：
-    //    变异（改回旧句式）⇒ ① 与 ③ 同时红
+    //    换成另两家那种句式 ⇒ ① 与 ③ 同时红
     expect(warns[0]).not.toContain('不含它们');
   });
 });
@@ -1265,17 +1266,16 @@ describe('子智能体那一份轮次（spec 2026-10-04 §2.3 dsh 段）', () =>
 const PROJECT_CONTEXT = { kind: 'dsh', baseUrl: 'https://gw.example.com/anthropic' } as const;
 
 /**
- * R2 的**三档**只能在投影这一层钉（预检裁定 R2，2026-10-04）：
+ * **三档**只能在投影这一层钉：
  *   · 值（没有子会话 ⇒ `{0,0,0}`；有 ⇒ 子会话之和）；
  *   · **显式 `null`**（已收场却没报到用量 = 事实缺失，宁可不出数）；
  *   · **键缺席**（这一条不谈它 ⇒ 骨架保持上一份，见 `turn.ts` 的 `TurnProjection.subagentTokens`）。
  *
  * 为什么不能只靠上面那组集成用例：投影整格缺席时，骨架交出来的事件里那一格是它**自己的初始 `null`**
  * ⇒「缺席」与「显式 null」在**事件层**长得一样（去重判据也按三元组比，那一格只参与「变了没」），
- * 只有直接看投影才分得开。这一组因此在**实现之前**就能红（`undefined` vs `null`），
- * 也正是 brief 里 Step 2 说的那个失败形状。
+ * 只有直接看投影才分得开。这一组因此在**实现之前**就能红（`undefined` vs `null`）。
  */
-describe('projectDshNotification：子智能体那一份的三档（R2）', () => {
+describe('projectDshNotification：子智能体那一份的三档', () => {
   beforeEach(() => {
     resetDshMessageStateForTesting();
   });
@@ -1327,10 +1327,10 @@ describe('projectDshNotification：子智能体那一份的三档（R2）', () =
   });
 
   /**
-   * R2 的第三档（「本条不谈它」⇒ 键缺席）在 `turn/start` 这一支上钉。
+   * 第三档（「本条不谈它」⇒ 键缺席）在 `turn/start` 这一支上钉。
    *
-   * ⚠️ **这一条原来挂在 `step/start` 上，2026-10-04 复核后搬家**：`step/start` 现在**两格分量都交**
-   * （M1 的收口，理由见 `events.ts` 那一支的注释）——合计在那里刚 +1，只交其中一格会让事件上出现
+   * ⚠️ **这一条挂在 `step/start` 上**：`step/start` **两格分量都交**
+   * （理由见 `events.ts` 那一支的注释）——合计在那里刚 +1，只交其中一格会让事件上出现
    * 「旧的用量分量 + `null` 的轮次分量」这种不一致（两格各自与自己的上一版自洽，但摆在一起是错的）。
    * 而 `turn/start`（轮次开始）既不重量也不重轮次 ⇒ 它才是这一档的落点。
    */
@@ -1343,7 +1343,7 @@ describe('projectDshNotification：子智能体那一份的三档（R2）', () =
     expect('subagentTokens' in projection).toBe(false);
     expect(projection.subagentTokens).toBeUndefined();
     // 轮次那一格同一条规则（两格都是「本条不带」⇒ 保持）：
-    // 变异：让 `turn/start` 也带上它们 ⇒ 这几条断言当场红
+    // 让 `turn/start` 也带上它们 ⇒ 这几条断言当场红
     expect('subagentTurns' in projection).toBe(false);
     expect(projection.subagentTurns).toBeUndefined();
   });
@@ -1359,7 +1359,7 @@ describe('projectDshNotification：子智能体那一份的三档（R2）', () =
   });
 
   /**
-   * `turn/end` **也谈它**（2026-10-04 评审 Important 1 的可选那一半）：收尾那一条按既有口径
+   * `turn/end` **也谈它**：收尾那一条按既有口径
    * 「把最新的一份再交一次」（tokens / timing / turns 都是这样），分量不能例外——否则它是三条格子里
    * 唯一可能停在旧值的那个，界面在「子会话刚收场、本轮再无消息」时看不到「没采到」。
    * 正常与失败**两条出口都要带**（失败那条同样会发 usage 事件，漏一条就有一半的运行停在旧值）。
@@ -1388,11 +1388,11 @@ describe('projectDshNotification：子智能体那一份的三档（R2）', () =
  * `null`，于是「整格缺席」与「显式 null」在事件层长得一样）。额外两条：
  *   · **分量与合计同源同刻**：两格都由同一条 `step/start` 驱动 ⇒ `subagentTurns ≤ turns` 是构造上的；
  *   · **分量在哪几条出口上出现，是「全有或全无」**：`step/start` / `assistant/message` / `turn/end`
- *     **三条出口都同时带两格**（复核 M1 的收口，理由见 `events.ts` 那两支的注释）；
- *     而 `turn/start` / `tool/call` / `tool/result` 这些两格**都不带**（R2 的第三档「本条不谈它」，
+ *     **三条出口都同时带两格**（理由见 `events.ts` 那两支的注释）；
+ *     而 `turn/start` / `tool/call` / `tool/result` 这些两格**都不带**（第三档「本条不谈它」，
  *     骨架保持上一份）——本组最后那条用例的落点因此是 `turn/start`，不是 `step/start`。
  */
-describe('projectDshNotification：子智能体那一份轮次的三档（R2）', () => {
+describe('projectDshNotification：子智能体那一份轮次的三档', () => {
   beforeEach(() => {
     resetDshMessageStateForTesting();
   });
@@ -1469,7 +1469,7 @@ describe('projectDshNotification：子智能体那一份轮次的三档（R2）'
   });
 
   /**
-   * ⚠️ `step/start` 这一支**两格分量都交**（2026-10-04 复核 M1 的收口）：这一条刚把合计 +1，
+   * ⚠️ `step/start` 这一支**两格分量都交**：这一条刚把合计 +1，
    * 而两格分量若不跟上，事件上就会出现「上一版的非零用量分量 + `null` 的轮次分量」——
    * 真机可达的时序：子 A 报过用量（两格都写进骨架）→ 子 B 收场却一条都没报 → 主会话开下一步
    * ⇒ 只交轮次那一格的话，界面上「子智能体 1 轮」与「子智能体 0 token」会同时摆着。
@@ -1524,8 +1524,8 @@ describe('projectDshNotification：子智能体那一份轮次的三档（R2）'
 });
 
 /**
- * **订阅中途失败**（2026-10-09 真机事故的守卫）：SDK 的 `fail()` 是静默的，而我们的消费循环
- * 原先把它当成「流正常结束」。真机形状：厂商会话日志 201 条事件、我们只收到前 13 条，
+ * **订阅中途失败**（真机事故的守卫）：SDK 的 `fail()` 是静默的，把它当成「流正常结束」就会
+ * 漏掉整段执行日志。真机形状：厂商会话日志 201 条事件、我们只收到前 13 条，
  * 之后 138 秒的内容一条不剩，**而行照旧判 judged、执行日志整段空白、任何日志里都没有线索**。
  *
  * 三条判据各自有靶子：
@@ -1603,7 +1603,7 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
   });
 
   /**
-   * **2026-10-10 真机事故的形状**：客户端把 181 条全投递了（过滤器每条都会被调用、全部接受），
+   * **真机事故的形状**：客户端把 181 条全投递了（过滤器每条都会被调用、全部接受），
    * 而我们只消费了 15 条 ⇒ 断点在**我们这一侧的消费循环**（根因是生成器把 `next()` promise 遗弃成
    * 孤儿）。这条用例钉的是「原因里必须能读出这个差额」——只报「我们收到 15 条」会把矛头指向厂商。
    */
@@ -1631,7 +1631,7 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
 });
 
 /**
- * **孤儿 `next()` 的回归守卫**（2026-10-10 真机事故的根因，见 `notificationStream` 的注释）。
+ * **孤儿 `next()` 的回归守卫**（真机事故的根因，见 `notificationStream` 的注释）。
  *
  * 靶子：消费循环每 100 ms 被 `tapWake` 唤醒并**与 `subscription.next()` 竞速**；若每一轮都新建一个
  * `next()` 并在竞速输掉后把它遗弃，那份 promise 仍挂在 SDK 的 waiter 队列里 ⇒ 此后每条通知都被交给
@@ -1665,5 +1665,148 @@ describe('dsh 通知消费：慢投递不许丢帧（孤儿 next() 守卫）', (
     // 轮次与收尾同理：`turn/end` 是最后一条，收到它才算真的没丢
     expect(result.turns).toBe(1);
     expect(usageEvents(events).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * MCP 的**注入落点与判据**（dsh）。
+ *
+ * 落点：per-launch overlay 的 `insert` 里每台一行 `@deepseek-ai/dsh-mcp-client`
+ * （dsh 的插件方法表是封闭的 ⇒ 没有「程序化入口」那种东西）。
+ *
+ * 判据：`request/header` 事件的 `data.header.tools` —— **这是唯一判据**。dsh 起不来时工具
+ * 静默从表里消失、会话照常跑完、我们这一侧没有结构化错误（四臂实测），
+ * 所以「表在、里面没有 `mcp__<serverName>__*`」= 这一台没起来。工具名的形状与另两家一致。
+ */
+describe('dsh 的 MCP 注入与判据', () => {
+  /** `request/header` 的逐字形状（真机：`data.header.tools` 是对象数组，取 `name` 那一格） */
+  const header = (tools: readonly string[]): unknown =>
+    sessionEvent(DSH_REQUEST_HEADER_TYPE, {
+      header: {
+        config: { provider: DSH_ROUTE_KEY, model: 'GLM-5.3' },
+        tools: tools.map((name) => ({ name, description: `${name} 的说明` })),
+      },
+    });
+
+  it('overlay 的 insert 里有每一台的插件行（`serverName` = 我们的名字、传输名是 dsh 的两档）', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-mcp-'));
+    try {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) },
+      });
+
+      await dshProvider.run(
+        createRunInput({
+          configHome: home,
+          mcpServers: {
+            probe: { transport: 'stdio', enabled: true, command: 'node', args: ['/probe.mjs'], env: { P: '1' } },
+            context7: { transport: 'http', enabled: true, url: 'https://mcp.context7.com/mcp', headers: { K: 'v' } },
+          },
+        }),
+      );
+
+      const overlay = readFileSync(join(home, DSH_ROUTE_PATCH_RELATIVE_PATH), 'utf8');
+      expect(overlay).toContain('- id: mcp-probe');
+      expect(overlay).toContain('- id: mcp-context7');
+      expect(overlay).toContain('name: "@deepseek-ai/dsh-mcp-client"');
+      expect(overlay).toContain('serverName: "probe"');
+      expect(overlay).toContain('transport: stdio');
+      expect(overlay).toContain('serverName: "context7"');
+      expect(overlay).toContain('transport: streamable-http');
+      // 路由行与两条既有 insert 一个都没被挤掉（overlay 是**整份重建**的，改一处别把别处写丢）
+      expect(overlay).toContain('- id: llm-pi-ai');
+      expect(overlay).toContain('id: tool-ask-user');
+      expect(overlay).toContain('id: aieval-stream-tap');
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+
+  it('一台都没配 ⇒ overlay 里一行 MCP 插件都没有（不写空壳行）', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-mcp-'));
+    try {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) },
+      });
+
+      await dshProvider.run(createRunInput({ configHome: home }));
+
+      const overlay = readFileSync(join(home, DSH_ROUTE_PATCH_RELATIVE_PATH), 'utf8');
+      expect(overlay).not.toContain('dsh-mcp-client');
+      expect(overlay).not.toContain('serverName:');
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+
+  it('行内 `.npmrc` 复刻宿主的 registry 那一行（dsh 也要——行内首次注入 61 MB 就卡在这一格）', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-mcp-'));
+    try {
+      const previous = process.env['npm_config_registry'];
+      delete process.env['npm_config_registry'];
+      try {
+        const recorder = createRecorder();
+        setAgentRuntimeForTesting({
+          sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) },
+        });
+        await dshProvider.run(createRunInput({ configHome: home }));
+        // 宿主的 `.npmrc` 有没有 registry 由这台机器决定：**有就复刻、没有就什么都不做**
+        // （判据与 `writeRowNpmrc` 的守卫同源，这里只钉「这家也调了它」——本机有配置时文件必须在）
+        const hostNpmrc = join(homedir(), '.npmrc');
+        const hostHasRegistry = existsSync(hostNpmrc) && /^\s*registry\s*=/im.test(readFileSync(hostNpmrc, 'utf8'));
+        expect(existsSync(join(home, '.npmrc'))).toBe(hostHasRegistry);
+      } finally {
+        if (previous !== undefined) process.env['npm_config_registry'] = previous;
+      }
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+
+  it('`request/header` 的工具表 → 一条 vendor-system（通道 `vendor-tool-table`、tools 逐字）', async () => {
+    const events = await runDshWith([
+      header(['bash', 'mcp__probe__probe_echo', 'mcp__other__x']),
+      sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind: 'completed' } }),
+    ]);
+
+    const vendor = events.filter((event) => event.type === 'vendor-system');
+    expect(vendor.length).toBe(1);
+    expect(vendor[0]).toMatchObject({
+      mcpChannel: 'vendor-tool-table',
+      // 工具面逐字（**只取名字**：描述是几千字的英文，进事件流只会把它撑大）
+      tools: ['bash', 'mcp__probe__probe_echo', 'mcp__other__x'],
+      // 这一家没有「每台 MCP 一张状态表」那种东西 ⇒ 如实记 null，不编一个空数组
+      mcpServers: null,
+    });
+  });
+
+  it('工具表没变 ⇒ 不重复发（一个 step 一条 header，重复发会把事件流灌满同一份表）', async () => {
+    const events = await runDshWith([
+      header(['bash']),
+      header(['bash']),
+      header(['bash', 'mcp__probe__probe_echo']),
+      header(['bash', 'mcp__probe__probe_echo']),
+      sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind: 'completed' } }),
+    ]);
+
+    // 只在**变了**的那两条上发（第一条 + 工具出现的那一条），且各自带全量
+    const vendor = events.filter((event) => event.type === 'vendor-system');
+    expect(vendor.map((event) => (event.type === 'vendor-system' ? event.tools : null))).toEqual([
+      ['bash'],
+      ['bash', 'mcp__probe__probe_echo'],
+    ]);
+  });
+
+  it('`data.header` 形状不对（没有 tools / 不是数组）⇒ 不发事件，绝不编一个空表', async () => {
+    const events = await runDshWith([
+      sessionEvent(DSH_REQUEST_HEADER_TYPE, { header: { config: {} } }),
+      sessionEvent(DSH_REQUEST_HEADER_TYPE, { header: { tools: 'bash' } }),
+      sessionEvent(DSH_REQUEST_HEADER_TYPE, {}),
+    ]);
+
+    // `[]` 在本仓的定义是「投送了、确实是空的」——拿一个读不动的形状去发它就是在说谎
+    expect(events.some((event) => event.type === 'vendor-system')).toBe(false);
   });
 });

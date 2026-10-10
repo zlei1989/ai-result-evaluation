@@ -10,7 +10,7 @@
 
 `Table` 列 = 标题 / 仓库 / commit / 更新时间（commit 列名逐字是 `commit`）。`commitHash === null` 的格子是次要色「默认 HEAD」；非空时是 `code` 样式的 7 位短哈希 + `Tooltip` 显全量。仓库名渲染走 `displayRepoName(source)`——渲染期任何字符串都不抛错（读侧拿到的是已落盘的数据，一个坏行不该让整页白屏）；会抛错的 `parseRepoSource` / `RepoSourceStringSchema` 只在写侧校验用。右上「创建用例」，空态用 `EmptyState` 引导。
 
-**列表排序**（用户口径 2026-10-08：默认「标题」倒序，标题 / 仓库 / 更新时间三列可排；`commit` 列不参与）：
+**列表排序**（用户口径：默认「标题」倒序，标题 / 仓库 / 更新时间三列可排；`commit` 列不参与）：
 
 - 比较口径写在页面文件内的 `compareSortText` / `compareSortTime`（**刻意不抽模块**，与 `/runs` 页各持一份；改一处必须同时改另一处）：
   - 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`——默认的码点比较对中文等于乱序，`numeric` 让「测试2」排在「测试10」前面；
@@ -24,8 +24,8 @@
   - 其余列：升序 → 降序 → 取消；
   - `defaultSortOrder` 只是**页面初始**状态——点过别的列之后 antd 会丢弃它，某列的首次点击方向回到该列 `sortDirections` 的首项。故「标题」列显式写了 `sortDirections: ['descend', 'ascend']`：默认的 `['ascend','descend']` 在「当前已是 descend」时 `indexOf + 1` 越界，第一次点击会**直接取消排序**而不是切到升序。
 
-**冒烟（2026-10-08，真机）**：把 `apps/web-next` 复制到仓内临时目录、`AIEVAL_CONFIG_DIR` 指向 `/tmp` 夹具起隔离实例（**避开真实 cases 仓库的自动提交**：真实 `casesRoot` 是带 remote 的 git 仓库且 `casesAutoCommit: true`），无头 Chrome 151 + CDP 驱动，33 项断言全绿。证据：首屏 `标题[aria-sort=descending]`；`commit` 列 `sorter=0`；四列 `th` 高均 **29**（多了排序按钮不折行）；`sticky` 表头仍在；左栏 740px 时 `clientWidth == scrollWidth == 740`（`CASES_TABLE_MIN_WIDTH = 700` 这个阈值不动）；点击序列的顺序逐项对上（空标题排最末、非法 `updatedAt` 当最小值、`复杂测试2` 在 `复杂测试10` 前、仓库按显示名 `aaa < middle < zulu` 而非全路径序、取消后回到 `updatedAt` 字典序降序）。
-**守卫缺口**：排序语义（空值口径、首次方向、取消态、显示名排序）**零自动化守卫**——本次口径明确不抽模块、不加单测，判据只有上面这段真机冒烟与本文档；改这两张表的列时照本段逐条核对。
+**列表几何**：四列 `th` 高均 **29**（有排序按钮也不折行）；`CASES_TABLE_MIN_WIDTH = 700`，左栏 740px 时 `clientWidth == scrollWidth == 740`（不横滚）。
+**守卫缺口**：排序语义（空值口径、首次方向、取消态、显示名排序）**零自动化守卫**——口径刻意不抽模块、不加单测，判据只有本节的文字与真机核对；改这两张表的列时照本节逐条核对。
 
 **坏文件告警**：`GET /api/cases` 的响应除 `cases` 还带 `warnings`（契约 `CaseList`）——文件名不合 id 形状 / 读不出 / 不是合法 JSON / 内容不是对象的文件由存储层**跳过**，列表页据此出一条 warning Alert「有 N 个用例文件被跳过，这些用例没有显示出来」+ 逐条原因（`apps/web-next/app/cases/page.tsx`）。一条坏文件不能让整页列表 500（用户要能从这一页把那个文件删掉），但也不能不说：跳过而不说，用户的症状是「我的用例不见了」却查不到原因。
 
@@ -92,7 +92,7 @@
 6. `does not appear to be a git repository` → `NOT_A_GIT_REPO`「不是 git 仓库」。
 7. `not found` / `Repository not found` → `NOT_A_GIT_REPO`「远端仓库不存在或无权访问」；其余 → 无法归因（同样 `NOT_A_GIT_REPO`，原文照带）。
 
-**这张表匹配的是 git 的 stderr 原文，所以它是版本敏感的**：同一件事换一个 git 版本就可能换措辞，而漏收的后果是掉进第 7 条「无法归因」。实测过两次：本机 git 2.47 报 `Failed to connect to …: Could not connect to server`（整句里**没有** `Connection refused`），git 2.50.1（Apple Git-155）同一场景报 `…: Couldn't connect to server`——只差一个撇号。新增/改动文案时先拿 `git ls-remote` 复现一次原文再往表里加，别照抄旧记录（守卫：`core/src/mirror-fetch.test.ts` 的「没人监听的端口」）。
+**这张表匹配的是 git 的 stderr 原文，所以它是版本敏感的**：同一件事换一个 git 版本就可能换措辞——有的版本报 `Failed to connect to …: Could not connect to server`（整句里**没有** `Connection refused`），有的把 `Could not` 写成 `Couldn't`，两种都得收；漏收的后果是掉进第 7 条「无法归因」。新增 / 改动文案时先拿 `git ls-remote` 复现一次原文再往表里加，别照抄旧记录（守卫：`core/src/mirror-fetch.test.ts` 的「没人监听的端口」）。
 
 认证失败与墙钟超时两支只给中文原因——超时那一支被墙钟杀掉时 git 原文只有 Node 的英文，写成「原因」是误导。
 
@@ -117,7 +117,7 @@
 
 ### 提示词渲染
 
-详情面板**只有考题提示词走 markdown**（`MarkdownText`，`react-markdown@10.1.0` + `remark-gfm@4.0.1`）：h1 → antd `Title` 4 级、h2–h6 → `Title` 5 级、链接新标签打开并带 `rel=noreferrer`、`pre` 保留 `white-space: pre` 并横向滚动；`code` / `strong` / `del` / `ul` / `ol` / `blockquote` / `table` 全部交给 antd 排版样式。带 `remark-gfm` 是因为真实题面里出现过 8855 字符、含 23 行 GFM 表格的提示词——不带插件这些行退化成一堆竖线文本；不带 `rehype-raw` 是因为提示词是外部输入（模型 / 外部系统产生），默认转义成文本即可看见内容，又不引入 XSS 面。旧的「评分维度」行与「评分提示词」卡片已随评分标准项重构删除（`judgePrompt` 连契约字段一起没了）——照旧渲染它们等于给用户看一个不存在的字段。
+详情面板**只有考题提示词走 markdown**（`MarkdownText`，`react-markdown@10.1.0` + `remark-gfm@4.0.1`）：h1 → antd `Title` 4 级、h2–h6 → `Title` 5 级、链接新标签打开并带 `rel=noreferrer`、`pre` 保留 `white-space: pre` 并横向滚动；`code` / `strong` / `del` / `ul` / `ol` / `blockquote` / `table` 全部交给 antd 排版样式。带 `remark-gfm` 是因为题面里会出现大段 GFM 表格（不带插件那些行退化成一堆竖线文本）；不带 `rehype-raw` 是因为提示词是外部输入（模型 / 外部系统产生），默认转义成文本即可看见内容，又不引入 XSS 面。详情面板不渲染「评分维度」行与「评分提示词」卡片（契约里没有 `judgePrompt` 这个字段）——渲染一个不存在的字段等于给用户看假话。
 
 ### 删除
 
@@ -134,13 +134,13 @@
 
 | 字段 / 契约 | 内容 |
 |---|---|
-| `TestCaseSchema.repoPath` | 语义扩为「来源」，改用 `RepoSourceStringSchema`（旧值判定结果不变）；schema 失败时把 `ServiceError` 的中文原因原样塞进 zod issue，不另写一份文案 |
+| `TestCaseSchema.repoPath` | 语义是「来源」，落 `RepoSourceStringSchema`（旧值的判定结果不变）；schema 失败时把 `ServiceError` 的中文原因原样塞进 zod issue，不另写一份文案 |
 | `CASE_ID_PATTERN` / `isCaseIdShapeValid` | 用例 id 的形状判据（**文件名安全**）：`/^[A-Za-z0-9_-]{1,64}$/`。id 直接当文件名用，这条判据同时是路径穿越的安全边界——写侧 `assertCaseId` 抛 `INVALID_QUERY` + 中文原因，读侧跳过并记进 `warnings` |
 | `CaseList` | `{ cases, warnings }`：坏文件被跳过时把原因带出来（界面在列表页出告警条）。列表必须能渲染，否则用户连删掉那个坏文件的入口都没有 |
 | `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：迁移前住在 `config.json` 里的旧用例没有这一列，读侧必须按 null 读 |
 | `RepoInfoSchema` | `kind: 'local' \| 'remote'`、`mirrorPath`、`mirrorReady`、`mirrorFetchedAt`、`tip`（短哈希 7 位，仅远端有值）；`branch` 语义：本地 = 当前分支，远端 = 默认分支或用户填的分支 |
 | `EvalRunSchema.repoBranch` | 快照口径：用例改分支 / 删除后，这一轮从哪个分支的哪个 commit 起跑仍读得出来 |
-| `errors.ts` | 只增 `REPO_UNREACHABLE`（400）；认证沿用 `AUTH_FAILED`（`context.host`），不存在 / 不是仓库 / 无法归因沿用 `NOT_A_GIT_REPO`，分支与提交不存在沿用 `INVALID_REF` |
+| `errors.ts` | `REPO_UNREACHABLE`（400）；认证用 `AUTH_FAILED`（`context.host`），不存在 / 不是仓库 / 无法归因用 `NOT_A_GIT_REPO`，分支与提交不存在用 `INVALID_REF` |
 | `parseRepoSource` / `repoNameFromSource` / `displayRepoName` | 判定路径用前两者（非法来源响亮地抛错），渲染路径用 `displayRepoName`（任何字符串都不抛错）。放 contracts（不是 core / ui）：三层都要用（core 镜像层、api 校验与文案、ui 标签），放一处才有唯一真源 |
 | rubric 契约 | `RubricItemSchema` / `RubricGroupSchema` / `RubricSchema`、`rubricMaxScore`（空表返回 0）、`rubricItemKeys`（有 id 用它，没 id 用 `#k`）、`validateRubric`、`composeTotalScore`、`renderRubricForJudge`（两条评分通路共用同一份）、`MAX_ITEM_WEIGHT = 10_000` |
 
@@ -176,7 +176,7 @@
 | 从裸镜像克隆出的工作副本 `refs/heads` 恰好一条 | 守卫缺口 | 这是行工作区解析的前提依赖；「来源仓库变了就重克隆」的守卫落在用例缓存（`git-repo-cache.test.ts`），不在镜像层 |
 | 镜像来源 URL 变更后重建目录 | 由设计覆盖 | 目录身份已由 `mirrorDir` 的 URL hash 段覆盖，未单独设守卫 |
 | markdown 渲染的暗色主题未真机切换 | 未闭合 | 组件里没有任何写死的颜色 / 字号 / 内边距（样式全部来自 antd 排版 token / CSS 变量，随 `darkAlgorithm` 自动生效）；外链行为只有 jsdom 单测钉住（该题面 0 个外链，真机没有可点样本）；窄栏横向滚动未在 320px 实测 |
-| 界面三处未在真机走查 | 未覆盖 | 来源切换、回显文案、候选按钮三处由服务层全链路冒烟 + ui 单测 + 读源码接线守卫覆盖，真机点检未做（当时 3083 端口被另一会话的 dev server 占用）；真实远端（scp 形态、带凭据）未触网验证 |
+| 界面三处未在真机走查 | 未覆盖 | 来源切换、回显文案、候选按钮三处由服务层全链路冒烟 + ui 单测 + 读源码接线守卫覆盖，真机点检未做（3083 端口被别的 dev server 占用，起不了隔离实例）；真实远端（scp 形态、带凭据）未触网验证 |
 
 ## 相关链接
 

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 目录结构（spec §6.3 / 契约 §10）（切分后的第二块）
+ * 目录结构（切分后的第二块）
  *
  * 本文件是 `workspace.test.ts` 拆分后的一块：临时家目录 / 仓库模板与清理钩子都在 `./testing/workspace-harness`。
  */
@@ -24,7 +24,7 @@ import {
 registerWorkspaceHooks();
 
 describe('prepareRowWorkspace', () => {
-  it('commitHash 为 null 时跟随来源仓库的新 tip（克隆一次不把「默认分支 HEAD」冻结在克隆那一刻，R28）', () => {
+  it('commitHash 为 null 时跟随来源仓库的新 tip（克隆一次不把「默认分支 HEAD」冻结在克隆那一刻）', () => {
     const { dir } = makeRepo();
     const input = {
       workspaceRoot: root,
@@ -49,7 +49,7 @@ describe('prepareRowWorkspace', () => {
     expect(second.baselineCommit).not.toBe(first.baselineCommit);
     expect(existsSync(join(second.workspacePath, 'later.txt'))).toBe(true);
   });
-  it('两行的目录互不相同（串行模式下也各自独立，spec §3 F6 的防回归）', () => {
+  it('两行的目录互不相同（串行模式下也各自独立，防回归）', () => {
     const { dir } = makeRepo();
     const base = { workspaceRoot: root, caseId: 'c-4', repoPath: dir, commitHash: null };
     const a = prepareRowWorkspace({ ...base, runId: 'run-4', rowId: 'row-a', branch: 'test/row-a' });
@@ -79,7 +79,7 @@ describe('prepareRowWorkspace', () => {
     expect((caught as { code?: unknown }).code).toBe('INVALID_REF');
     expect(existsSync(join(rowWorkspaceDir(root, 'run-5', 'row-5'), '.git'))).toBe(false);
   });
-  it('配置目录指针生效（本模块不读配置，这条是 Review Focus 5 的护栏）', () => {
+  it('配置目录指针生效（本模块不读配置，这条是护栏）', () => {
     expect(getConfigDir()).toBe(configDir);
   });
 });

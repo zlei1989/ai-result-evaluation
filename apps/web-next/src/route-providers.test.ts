@@ -177,7 +177,7 @@ describe('POST /api/providers', () => {
 });
 
 describe('PUT /api/providers/[providerId]', () => {
-  // 编辑弹窗留空密钥 → 页面不下发 apiKey（Task 8）→ 服务端保留原密钥。
+  // 编辑弹窗留空密钥 → 页面不下发 apiKey→ 服务端保留原密钥。
   // 这条链路断了的表现是「改个名字，所有代调开始 401」。
   it('不带 apiKey 的补丁只改名字，密钥与掩码都不变', async () => {
     seedProvider();
@@ -203,7 +203,7 @@ describe('PUT /api/providers/[providerId]', () => {
     expect(after.apiKeyMasked).not.toBe(maskApiKey('sk-original-key'));
   });
 
-  // 页面侧的「空串不下发」（Task 8 的折叠）没有任何自动化测试可写（该应用不能写 .tsx 测试），
+  // 页面侧的「空串不下发」没有任何自动化测试可写（该应用不能写 .tsx 测试），
   // 所以这里守的是它的**兜底**：万一哪天折叠退化、真的把空串发出来，必须是一次响亮的 400，
   // 而不是静默地把用户的密钥抹成空（服务层的空串语义是「保留原密钥」，只靠它看不出发送方错了）。
   // 这条同时钉住 ProviderPatchSchema.apiKey 的 min(1) —— 把它放宽成 z.string() 本用例就红。
@@ -333,7 +333,7 @@ describe('DELETE /api/providers/[providerId]/models', () => {
   });
 
   // 模型名里带 `/` `+` `#` 是常态（`vendor/model+x`）。客户端按 encodeURIComponent 传参
-  // （Task 3 的守卫），服务端这一侧必须解出**逐字符相同**的 id：
+  //，服务端这一侧必须解出**逐字符相同**的 id：
   // 少了这半边，`+` 会被解成空格、`#` 之后会被当片段丢掉，表现为「点了删除没反应」。
   it('编码过的 modelId（含 / + #）能精确命中那一条', async () => {
     seedProvider({
@@ -388,7 +388,7 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer sk-original-key');
   });
 
-  // 2026-09-26 修订：协议不再阻止拉取（原 F1 的服务端 400 已删除），改由地址形态兜底 ——
+  // 修订：协议不再阻止拉取（原的服务端 400 已删除），改由地址形态兜底 ——
   // 路由层要钉的是「anthropic 供应商也能拉到」，以及回退确实发生在服务端这一层。
   it('anthropic 协议：地址缺 /v1 时回退 /v1/models，返回 200 并合并进清单', async () => {
     seedProvider({ protocolType: 'anthropic', baseUrl: 'https://gw.example.com' });
@@ -416,7 +416,7 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
     ]);
   });
 
-  // 2026-09-30 修订：地址填的是 Messages 根（`/anthropic`）时清单接口仍在站点根上 ——
+  // 修订：地址填的是 Messages 根（`/anthropic`）时清单接口仍在站点根上 ——
   // 路由层要钉的是「子路径两条都 404 后确实又打了根的两条」，不是只把第一条的 404 报回去。
   it('anthropic 协议：地址带子路径时回退到站点根，返回 200 并合并进清单', async () => {
     seedProvider({ protocolType: 'anthropic', baseUrl: 'https://gw.example.com/anthropic' });

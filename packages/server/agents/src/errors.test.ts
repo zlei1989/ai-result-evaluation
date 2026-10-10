@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 错误归因：加载失败要点名包名与安装方式；401/429/404 的文案要求见 §5.6.7 的表。
+ * 错误归因：加载失败要点名包名与安装方式；401/429/404 各有文案要求。
  * 为什么归因必须由适配器做：事件流里拿到的往往只有一句上游文案，编排层无法知道网关是「限流」还是
  * 「模型名拼错」——这两件事给用户的下一步动作完全不同。
  */
@@ -22,7 +22,7 @@ describe('AgentLoadError', () => {
   });
 
   /**
-   * 第二种语义（评审 M1）：包**已安装**，只是导出面与适配器期望的不一致。
+   * 第二种语义：包**已安装**，只是导出面与适配器期望的不一致。
    * 为什么这条是必修：dsh 在探测回写之前，这条路径是它**唯一**的用户可见结论，而旧模板让它去
    * `pnpm add` 一个已在 `dependencies` 里、`node_modules` 完整、镜像无关的包 ⇒ 补救恒无效，
    * 还把排查方向带向「网络 / 重装」。
@@ -100,11 +100,11 @@ describe('classifyAgentFailure', () => {
 });
 
 /**
- * 字符串型状态码（评审 N1）：有的厂商 SDK 给 `status: '429'`，而 `readNumber` 的既定口径是
+ * 字符串型状态码：有的厂商 SDK 给 `status: '429'`，而 `readNumber` 的既定口径是
  * 「只认 number」。若这里不认字符串，`'429'` / `'401'` 会落到兜底分支——用户拿到的是无指向的原文，
  * 而不是「改用串行」/「去设置页核对密钥」这两条可执行建议，等于 `classifyAgentFailure` 白写。
  */
-describe('字符串型状态码（评审 N1）', () => {
+describe('字符串型状态码', () => {
   it('`status: "429"` → RATE_LIMITED，文案建议改用串行', () => {
     const failure = classifyAgentFailure(Object.assign(new Error('slow down'), { status: '429' }), CONTEXT);
     expect(failure.code).toBe('RATE_LIMITED');

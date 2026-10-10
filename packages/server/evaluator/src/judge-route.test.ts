@@ -4,7 +4,7 @@
  * 没配（或配成了悬空引用）则 CONFLICT + 指向设置页的中文原因。
  * 本文件覆盖同一件事的两半：`resolveJudgeRoute`（尺子落在哪个模型）与 `requireJudgeAgent`
  * （谁来驱动它，见下面的同名 describe）。
- * 为什么解析放在 evaluator 而不是 api 层：evaluator 在评分阶段（p4）也要自己解析一次，
+ * 为什么解析放在 evaluator 而不是 api 层：evaluator 在评分阶段也要自己解析一次，
  * 而 evaluator 不能依赖 api（依赖方向单向）。
  * 注意：本文件用 setConfigDirForTesting + saveConfig 造出真实的配置文件，不 mock loadConfig——
  * 「全局默认那一对 id 真的被读盘读出来」这条只有在真的走一遍读盘时才会被验证到。
@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ServiceError, SETTINGS_DEFAULTS, type AgentKind, type Provider } from '@aieval/contracts';
 import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
 import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
-// 包根出口的守卫（见文件末尾「evaluator 包根出口」的第二个用例）：p2 / p5 只从
+// 包根出口的守卫（见文件末尾「evaluator 包根出口」的第二个用例）：api 层只从
 // `@aieval/evaluator` 取 `TextRoute` 这个类型，而类型在运行时被擦除——只有 tsc 看得见。
 import type { TextRoute } from './index';
 import { removeTreeWithRetry } from './testing/cleanup';
@@ -39,7 +39,7 @@ function provider(id: string, models: string[]): Provider {
 
 /**
  * 写入一份含默认评分模型的配置。
- * `effort` 可选（Task 9 加的）：`resolveJudgeEffort` 读的就是这一格，缺它就没法造出
+ * `effort` 可选：`resolveJudgeEffort` 读的就是这一格，缺它就没法造出
  * 「配置里带了档位」这个初态。省略时**不写这个键**（与老配置读盘后的形状一致：`undefined` = 未指定）。
  */
 function seed(defaultJudge: { providerId: string; modelId: string; effort?: string } | null, providers: Provider[]): void {
@@ -71,12 +71,12 @@ describe('resolveJudgeRoute', () => {
   });
 
   /**
-   * 评分路由也带上模型声明的窗口（spec §4.2 / D1）。
+   * 评分路由也带上模型声明的窗口。
    * 为什么必须有：智能体评分通路把这条 route **原样**交给适配器（`judge-agent.ts` 的 `route: input.route`），
    * 少了这一格，cc 驱动的评分模型不会加 `[1m]`、codex 不会写 `model_context_window`、dsh 不会写 settings.yaml
    * —— 与候选行的行为不一致，而界面上看不出任何差别（评分照样出分）。
    * 强度（`effort`）**也不在**这条路由上，但理由与上面两条不同：它是**请求参数**，不是连接事实
-   * （spec §5.3）——由 `resolveJudgeEffort()` 读出来后走 `judgeEffort` 入参进两条评分通路；
+   * 由 `resolveJudgeEffort()` 读出来后走 `judgeEffort` 入参进两条评分通路；
    * 「跨轮次可比」改由**记账**保证（`ScoreResult.judgeEffort`：不同强度打的分数在数据上可分）。
    */
   it('带上该模型声明的窗口与输出上限；没声明时这两个键都不出现', () => {
@@ -215,7 +215,7 @@ describe('requireJudgeAgent', () => {
   });
 
   /**
-   * 终审 Minor：**枚举之外的值**（手改 config.json 写进 `"gemini"`）必须折成 CONFLICT + 指向评分配置。
+   * **枚举之外的值**（手改 config.json 写进 `"gemini"`）必须折成 CONFLICT + 指向评分配置。
    *
    * 为什么这条守卫真的需要：`loadConfig()` 不做 zod 校验（只把磁盘 json 与默认值合并），
    * 于是这个值能一路走到 agents 的 `getProvider()`——那里抛的是裸 `Error`，路由层折成
@@ -242,12 +242,12 @@ describe('requireJudgeAgent', () => {
 });
 
 /**
- * 评分档位的**读点**（`resolveJudgeEffort`）与**第二道门**（`requireJudgeEffort`，spec §5.4 / D8）。
+ * 评分档位的**读点**（`resolveJudgeEffort`）与**第二道门**（`requireJudgeEffort`）。
  *
  * 为什么这道门必须有：`effort: ''` / 越域档位的守卫只作用于走 schema 的**写下侧**（设置页那条
  * patch 路由），而 `loadConfig()` **故意不做 schema 校验**（一条手改坏的值不该让设置页打不开）
  * ⇒ 手改 `config.json` 写进去的值会一路到消费方。不拦的话要跑到 dsh 的
- * `UNSUPPORTED_REASONING_EFFORT` 才失败——症状离真因很远（这正是本计划要消灭的那类报错）。
+ * `UNSUPPORTED_REASONING_EFFORT` 才失败——症状离真因很远（这正是要消灭的那类报错）。
  * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunRows`）**同源**：都用 `intersectEfforts`，
  * 故这里不 mock `@aieval/agents`：`allowed` 的取值全在「真实注册表元数据」上（dsh 的域没有 `medium`）。
  */
@@ -353,14 +353,14 @@ describe('resolveJudgeEffort / requireJudgeEffort', () => {
 });
 
 /**
- * 以下用例**超出 task-14 brief 的用例清单**，是本实现补的守卫。
- * 为什么补：brief 的 `provider()` 夹具把 protocolType 写死成 'openai'，于是
+ * 以下用例**不在用例清单里**，是补的守卫。
+ * 为什么补：现成的 `provider()` 夹具把 protocolType 写死成 'openai'，于是
  * `return { protocolType: 'openai', … }` 这种「常量实现」能让上面六条用例全绿——
  * 而真值来自供应商记录：Anthropic 供应商被判成 openai 时，评分会拿着 Bearer 去打
  * `/chat/completions`，症状是 401（或 404），且只在 anthropic 供应商上出现。
- * 归属不变：`protocolType` 的映射是本模块的职责（契约 §5 的 `TextRoute`），不是调用方的。
+ * 归属不变：`protocolType` 的映射是本模块的职责（`TextRoute`），不是调用方的。
  */
-describe('resolveJudgeRoute —— 补充守卫（brief 的夹具只有 openai 供应商）', () => {
+describe('resolveJudgeRoute —— 补充守卫（夹具只有 openai 供应商）', () => {
   it('供应商是 anthropic 时 protocolType 原样带进路由，而不是写死的 openai', () => {
     seed({ providerId: 'pa', modelId: 'ma' }, [
       { ...provider('pa', ['ma']), protocolType: 'anthropic', baseUrl: 'https://pa.example.com/anthropic' },
@@ -375,12 +375,12 @@ describe('resolveJudgeRoute —— 补充守卫（brief 的夹具只有 openai �
 });
 
 /**
- * 以下用例**超出 task-14 brief 的用例清单**，是本实现补的包根出口守卫（变异分析发现的缺口）。
+ * 以下用例**不在用例清单里**，是补的包根出口守卫（变异分析发现的缺口）。
  * 为什么补：上面所有用例都从**模块路径**（`'./text-api'` / `'./judge-route'`）import，
- * 于是本任务 Step 6 的交付物 `src/index.ts` 即使把 `callTextApi` / `TextRoute` 漏掉，
+ * 于是包根出口 `src/index.ts` 即便把 `callTextApi` / `TextRoute` 漏掉，
  * 整套用例依然 21/21 全绿（实测：把 `export { callTextApi, type TextRoute } from './text-api';`
- * 整行删掉后全绿）——而 p2 的「AI 生成评分标准项」与 p5 只会从包根 `@aieval/evaluator` 取这两个名字，
- * 漏出口的表现是 p2 开工第一天 `tsc` 报 TS2305，或运行时 `callTextApi is not a function`。
+ * 整行删掉后全绿）——而「AI 生成评分标准项」与 api 层只会从包根 `@aieval/evaluator` 取这两个名字，
+ * 漏出口的表现是接入第一天 `tsc` 报 TS2305，或运行时 `callTextApi is not a function`。
  * 两个名字的可见性不同，故分两条：运行时看得到的是函数，类型只有 tsc 看得见。
  */
 describe('evaluator 包根出口（`@aieval/evaluator`）', () => {

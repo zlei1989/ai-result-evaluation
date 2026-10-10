@@ -2,7 +2,7 @@
 
 ## 定位
 
-给评测平台接一家新的厂商智能体 SDK 的七步接入清单与验证点。每一步都有可执行的判据；**顺序不能颠倒**——前三步（能力声明、入口定位、凭据传递）的缺陷只有真机能拦，后面几步拦不住它们。实例：2026-10-07 的 codex 改造中 agents 包 585 条测试全绿，真机上连挂「打包器把 `createRequire` 换掉」与「凭据 / provider 没传到厂商进程」两题。
+给评测平台接一家新的厂商智能体 SDK 的七步接入清单与验证点。每一步都有可执行的判据；**顺序不能颠倒**——前三步（能力声明、入口定位、凭据传递）的缺陷只有真机能拦，后面几步拦不住它们：agents 包全绿也可能连挂「打包器把 `createRequire` 换掉」与「凭据 / provider 没传到厂商进程」两题。
 
 ## 形态与交互
 
@@ -11,7 +11,7 @@
 | # | 步骤 | 判据 |
 |---|---|---|
 | 1 | 写**能力声明**（五态 × 五格 + `notes` 写清路由 / 模型前提） | 契约层「能力声明自身合规」 |
-| 2 | 定**厂商入口的定位方式**（静态 import？子进程？）；走子进程就必须**打包器免疫**——Next/Turbopack 会把 `import.meta.createRequire` 换成带 `[externals]` 的产物（报错原文 `The argument 'filename' must be a file URL object… Received '[externals]/@openai/codex/package.json [external]'`），修法是 `process.getBuiltinModule('module')` 取真 `createRequire` + 结果形状校验（`isAbsolute` 且不含 `[external`） | 静态层守卫（`static-assertions.test.ts`） |
+| 2 | 定**厂商入口的定位方式**（静态 import？子进程？）；走子进程就必须**打包器免疫**——Next/Turbopack 会把 `import.meta.createRequire` 换成带 `[externals]` 的产物（报错原文 `The argument 'filename' must be a file URL object… Received '[externals]/@openai/codex/package.json [external]'`），做法是 `process.getBuiltinModule('module')` 取真 `createRequire` + 结果形状校验（`isAbsolute` 且不含 `[external`） | 静态层守卫（`static-assertions.test.ts`） |
 | 3 | 定**凭据与 provider 的传递**：密钥进子进程环境；provider 条目名与 `model_provider` 类字段**成对**给出；base_url 归一（该补 `/v1` 就补、该剥就剥） | 真机冒烟第 ② 格 |
 | 4 | 写 fixture 场景，**至少覆盖能力声明里所有 `yes` 的那几格** | 契约层「能力声明与产物互钉」 |
 | 5 | 接**生命周期**：取消能终止在途轮次、`dispose` 真正回收子进程、清理遇 `EPERM` 重试 | 集成层 + 真机冒烟第 ①/③ 格 |

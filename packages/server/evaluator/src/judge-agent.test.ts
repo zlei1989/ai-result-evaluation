@@ -77,7 +77,7 @@ describe('judgeRowByAgent', () => {
     expect(prompt).toContain('a'.repeat(40));
     // ② 按需读、不要整段打印 —— 这正是本通路能处理大 diff 的原因
     expect(prompt).toContain('不要试图把它整段打印出来');
-    // ③ 只读要求：工作区是候选的产出（spec §7.4 的处置）
+    // ③ 只读要求：工作区是候选的产出（处置）
     expect(prompt).toContain('只读评审');
     // ④ 输出契约与文本通路**逐字同一份**（单一真源；抄一份必然漂移）
     expect(prompt).toContain(JUDGE_OUTPUT_CONTRACT);
@@ -114,7 +114,7 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 思考强度（spec §1.3：评分强度**可配**，跨轮次可比改由记账保证）。它与窗口那两格**不同类**：
+   * 思考强度（评分强度**可配**，跨轮次可比改由记账保证）。它与窗口那两格**不同类**：
    * 强度是**请求参数**（走 `judgeEffort` 入参），不是连接事实（route 上没有这一格）。
    * 为什么正反两条都要：只钉「给了会透」看不出「没给会不会凭空塞一个缺省档」（那会让「未指定」
    * 在适配器眼里变成一次显式要求）；只钉「没给是 undefined」则看不出这一格根本没接线。
@@ -137,7 +137,7 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 评分自己的用量与耗时（2026-10-08，用户口径：评分详情里那一段说的是**评分的花销**，
+   * 评分自己的用量与耗时（用户口径：评分详情里那一段说的是**评分的花销**，
    * 不是被评那一行的执行花销）。这条通路的两格**取适配器自报值**——与候选行 `EvalRow.tokens` /
    * `durationMs` 同一份原料，故两者可以直接对着看。
    * 耗时用夹具的 `durationMs` 钉一个具体数字：不钉的话「取自报值」「写死 0」「取我们的掐表」
@@ -239,7 +239,7 @@ describe('judgeRowByAgent', () => {
 
   /**
    * 「适配器说没落到实处」与「我们传没传 schema」是两件事（A1）。夹具的 `applied` 是**照它自己的
-   * `metadata.capability.structuredOutput` 现算的**（Task 1 的产物，见 `testing/fixtures.ts`），
+   * `metadata.capability.structuredOutput` 现算的**（见 `testing/fixtures.ts`），
    * 所以降级只能用一家能力为 false 的 kind（dsh）来造。这一条正是新判据的鉴别器：**我们确实传了
    * schema，而分数必须记 false**——旧的「入参里有没有这一格」在这条用例面前恒 true。
    */
@@ -266,7 +266,7 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 显式 `null` 与「没给」同义（R39b）：这一格的类型不含 `null`，但运行期真能传进来（mock / JSON
+   * 显式 `null` 与「没给」同义：这一格的类型不含 `null`，但运行期真能传进来（mock / JSON
    * 反序列化 / 断言过的调用方），而**三家适配器都把 `null` 当「没给」**——编排层若在这里把 `null`
    * 转出去，就会出现「声称要了 schema、实际一个字段都没传出去」的自相矛盾：适配器照旧报
    * `applied=false`，而我们的入参里躺着一个被下游忽略的格。
@@ -298,7 +298,7 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 摘要**不戴**前缀、`text` 戴（用户口径 2026-09-29：「删除 [评分智能体] 前缀，我从『评分中』
+   * 摘要**不戴**前缀、`text` 戴（用户口径：「删除 [评分智能体] 前缀，我从『评分中』
    * tag 可以了解阶段」）。两个方向都要钉住，各自有靶子：
    *   ① 卡片底部那一行读的是 `summary` —— 它必须是**事件自己那句话**，戴上转发前缀就是噪声；
    *   ② 没有摘要的源事件也要给出一句不带前缀的摘要（否则消费方退回读 `text`，前缀又漏到卡片上）；
@@ -405,7 +405,7 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 适配器**违约抛异常**（`turn.ts` 明写 run() 不抛，故这是纵深防御，终审 ADD-3）。
+   * 适配器**违约抛异常**（`turn.ts` 明写 run() 不抛，故这是纵深防御）。
    *
    * 为什么必须折成 `JudgeAgentError`：上抛会被 `runRow` 折成 `INTERNAL`
    * （`EvalRow.error.code = INTERNAL`），也就是把「适配器违约」记到我们自己头上；
@@ -436,11 +436,11 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 评分这一轮的 route 也带上模型声明的窗口（spec §4.2 / D1）。
+   * 评分这一轮的 route 也带上模型声明的窗口。
    * 为什么值得单独钉：候选行那条路由由编排层组装，而评分这条由 `resolveJudgeRoute()` 组装后
    * **原样**交给适配器 —— 少传一格的后果是**静默**的（评分照样出分，只是 cc 不加 `[1m]`、
    * codex 不写 `model_context_window`），界面上一个字都看不出来。
-   * 强度**不在**这条路由上（spec §5.3）：它是**请求参数**，走 `judgeEffort` 入参——
+   * 强度**不在**这条路由上：它是**请求参数**，走 `judgeEffort` 入参——
    * 与候选侧 `AgentRunInput.effort` 同一条口径（`TextRoute` 只承载连接事实）。
    * 给了强度的那一路见上面「给了 judgeEffort ⇒ 原样透给适配器」。
    * ⚠️ 真正拦住「route 长出一格强度」的是 `judge-route.test.ts` 里那两条 `toEqual`（route **逐格**相等）

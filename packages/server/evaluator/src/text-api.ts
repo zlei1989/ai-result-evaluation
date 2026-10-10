@@ -1,6 +1,6 @@
 /**
- * 非流式文本 API 外壳：一次调用拿一段文本，供「AI 生成评分标准项」（p2）与评分调用（p4）共用。
- * 为什么要共用一个外壳（§11 R5）：两处都是「非流式文本 API + 双协议路由」，
+ * 非流式文本 API 外壳：一次调用拿一段文本，供「AI 生成评分标准项」与评分调用共用。
+ * 为什么要共用一个外壳：两处都是「非流式文本 API + 双协议路由」，
  * 写两份必然漂移——而漂移的表现是「生成能跑、评分 401」这类只在某一条路径上出现的故障。
  * 三个必须成立的口径：
  *   1. 双协议的接线不同，必须各自正确：OpenAI 打 `/chat/completions` 用 `Authorization: Bearer`、
@@ -11,24 +11,24 @@
  *   3. 失败一律折成带中文原因的 `ServiceError`：401 → `AUTH_FAILED`（带 host，指向设置页）、
  *      429 → `RATE_LIMITED`（建议改用串行）、其余 → `INTERNAL`。绝不放任 `TypeError: fetch failed`
  *      冒到路由层——那对用户等于没有解释。
- *   4. **上游正文只进 `context` 与服务端日志，绝不进 `message`**（终审 H2；与 `@aieval/api` 的
+ *   4. **上游正文只进 `context` 与服务端日志，绝不进 `message`**（与 `@aieval/api` 的
  *      `upstreamError()` 逐字同一口径）：`message` 会被页面 `message.error(error.message)` 原样
  *      上屏（`apps/web-next/src/runs-view.ts` 的 `describeError`），而网关的正文既可能是一整页登录
  *      HTML，也可能**回显了我们的请求头**（`Authorization: Bearer <明文密钥>`）——那等于把密钥画在界面上。
- *      `fetch` 自身抛错的原文同理（`TypeError: fetch failed` 是英文，spec §10 禁止它冒到界面；
- *      p6 的 A3 就是这个形状）：英文原文放 `cause`/`context`，`message` 只留中文归因 + host + 模型名。
- *   5. **可中止**（终审 FIX-1）：`input.signal` 原样交给 `fetch`，且**响应体读取也在它的管辖内**——
+ *      `fetch` 自身抛错的原文同理（`TypeError: fetch failed` 是英文，禁止冒到界面；
+ *      冒烟 A3 就是这个形状）：英文原文放 `cause`/`context`，`message` 只留中文归因 + host + 模型名。
+ *   5. **可中止**：`input.signal` 原样交给 `fetch`，且**响应体读取也在它的管辖内**——
  *      滴流响应（头已到、正文一直不来）会不断重置 HTTP 客户端的 `bodyTimeout` ⇒ 那一层根本没有上界，
  *      唯一能切断它的是我们自己的 abort。两个 `await`（发请求 / 读正文）都要按同一口径折成中文：
  *      被中止**不是**连通性故障，文案必须分开（否则日志会把一次用户终止指向「检查网络」这个错误方向）。
- *   6. **支持多轮对话与瞬时失败重试**（2026-09-27，评分结构修复）：`callTextApiConversation` 是多轮
+ *   6. **支持多轮对话与瞬时失败重试**（评分结构修复）：`callTextApiConversation` 是多轮
  *      入口（评分解析失败时把结构错误反馈给模型再问一轮），`callTextApi` 是它的单轮特例——
  *      两条路径共用 `buildBody` 与 `callOnce`，**请求体形状只有一个构造点**，否则「单轮能跑、
  *      多轮 400」这类漂移只会在多轮那一条路径上出现。
  *  7. **瞬时失败（网络 / 5xx / 限流）自动重试一次以上**：本机实测真实网关会回 `500 服务维护中`，
  *      一次抖动就让一整行落 `failed`（还要人工重跑）是不划算的。重试**只覆盖瞬时面**
  *      （见 `RETRYABLE_CODES`），`AUTH_FAILED` / `CONFLICT` 与「已中止」一次都不重试。
- *  8. **思考强度只有一张协议表**（2026-10-07，spec §5.2）：`reasoningFields` 是文本侧**唯一**的落点，
+ *  8. **思考强度只有一张协议表**：`reasoningFields` 是文本侧**唯一**的落点，
  *      且 `buildBody` 的两个分支都要展开它；未指定 = 不下发任何强度键（听网关的缺省，**不是**关闭，
  *      也**不等强**于智能体侧 `EvalRow.effort` 的「走适配器缺省」），关闭档 `EFFORT_OFF` =
  *      两协议同一个 `thinking: { type: 'disabled' }`。
@@ -39,7 +39,7 @@ import { createLogger } from '@aieval/core';
 /**
  * 一次文本调用的路由：三种协议的必填项完全一致（模型 id 与凭据都在这里）。
  *
- * 后两格（2026-09-29 追加）是**模型能力**，只有「智能体评分」那条路用得上：评分路由由
+ * 后两格是**模型能力**，只有「智能体评分」那条路用得上：评分路由由
  * `resolveJudgeRoute()` 解析出来后会被**原样**当成 `AgentRunInput.route` 交给适配器
  * （`judge-agent.ts` 的 `route: input.route`），于是这一份类型同时扮演两个角色。
  * 纯文本调用（`callTextApi` / `callTextApiConversation`）**不读**这两格 —— 窗口是给 CLI 的，
@@ -50,7 +50,7 @@ export interface TextRoute {
   baseUrl: string;
   apiKey: string;
   modelId: string;
-  /** 模型声明的上下文窗口；缺省 = 未知（适配器不注入，spec D8） */
+  /** 模型声明的上下文窗口；缺省 = 未知（适配器不注入） */
   contextWindow?: number;
   /** 单次输出上限；今天只有 dsh 用得上 */
   maxOutputTokens?: number;
@@ -69,7 +69,7 @@ export interface TextCallInput {
   /**
    * 要求的思考强度（可选）；**缺省 = 不下发任何强度键**（听网关的缺省，不是关闭）。
    * 要关闭必须显式给 `EFFORT_OFF`；取值来自 `settings.defaultJudge.effort`——今天只保证它是
-   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验（spec §5.4），不在这一层。
+   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验，不在这一层。
    */
   effort?: string;
   signal?: AbortSignal;
@@ -82,7 +82,7 @@ export interface TextConversationInput {
   /**
    * 要求的思考强度（可选）；**缺省 = 不下发任何强度键**（听网关的缺省，不是关闭）。
    * 要关闭必须显式给 `EFFORT_OFF`；取值来自 `settings.defaultJudge.effort`——今天只保证它是
-   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验（spec §5.4），不在这一层。
+   * 非空字符串（`.min(1)`），**档名白名单**是评分那一段的校验，不在这一层。
    */
   effort?: string;
   signal?: AbortSignal;
@@ -100,7 +100,7 @@ export interface TextUsage {
 }
 
 /**
- * 一次文本调用的结果：正文 + **这一次调用自己的用量**（2026-10-08）。
+ * 一次文本调用的结果：正文 + **这一次调用自己的用量**。
  * 用量只可能从这里拿到（响应体读完就扔了），故评分那条通路必须在这一层把它接住——
  * `null` = 上游没报（**绝不填 0**：`0 tok` 是「一个都没花」，与「没报」相反）。
  */
@@ -116,18 +116,16 @@ const ANTHROPIC_VERSION = '2023-06-01';
 /**
  * 非流式调用的输出上限。
  *
- * 4096 → 16384（2026-10-08，真机实测改的）：「智能调整」要求模型**回显整张评分表**，一张
- * 14 项、目标各几十字的表在 GLM-5.3（anthropic 协议、`max` 档思考）上实测被 4096 截断——
- * 回显的 JSON 中途断掉，`parseGenerated` 报「不是合法 JSON」，界面只能让人重试或换模型
- * （症状见本轮冒烟记录；那次调用里模型其实已照办，是额度把它掐断的）。评分结果仍是几十行
- * JSON，上限调高对它只是「天花板更高」，不改变实际开销；「防跑飞」的护栏仍在——只是
- * 跑飞一次的封顶从 4K 变 16K token。
+ * 取 16384：「智能调整」要求模型**回显整张评分表**，一张 14 项、目标各几十字的表在 GLM-5.3
+ * （anthropic 协议、`max` 档思考）上实测会被 4096 截断——回显的 JSON 中途断掉，
+ * `parseGenerated` 报「不是合法 JSON」，界面只能让人重试或换模型。评分结果仍是几十行 JSON，
+ * 这个上限对它只是「天花板更高」，不改变实际开销；「防跑飞」的护栏仍在——跑飞一次的封顶是 16K token。
  */
 const MAX_TOKENS = 16_384;
 
 /**
  * 瞬时失败的重试预算（**不含首次**）与退避间隔。
- * 为什么要有它：2026-09-27 真实网关实测回 `500 {"type":"api_error","message":"服务维护中，请稍后重试"}`
+ * 为什么要有它：真实网关实测会回 `500 {"type":"api_error","message":"服务维护中，请稍后重试"}`
  * ——一次抖动就把整行判 `failed`、还要人工点一次重跑，而重试一次的成本是几秒。
  * 3 次尝试（首次 + 2 次重试）是「临时抖动够用」与「不把一次真故障拖成分钟级」之间的折中；
  * 退避只用固定 600ms：上游是「维护中」这类短时故障，指数退避在这里买不到更多东西，
@@ -156,7 +154,7 @@ const RETRYABLE_CODES: readonly string[] = ['RATE_LIMITED', 'INTERNAL'];
 
 /**
  * 拼请求地址。
- * openai：`{base}/chat/completions`——用户在设置页填的就是含 `/v1` 的 baseURL（spec §6.1 的例子），
+ * openai：`{base}/chat/completions`——用户在设置页填的就是含 `/v1` 的 baseURL（例子），
  *   所以这里**不再补** `/v1`，只去掉末尾多余的斜杠。
  * anthropic：`{base}/v1/messages`——但用户很可能把 baseURL 填成已经带 `/v1` 的形式，
  *   这时再拼一次会得到 `/v1/v1/messages`（上游 404）。故先把结尾的 `/v1` 剥掉再拼。
@@ -181,7 +179,7 @@ function hostOf(url: string): string {
 /**
  * 思考强度的**唯一落点**（文本通路）：按协议翻成厂商字段。
  *
- * 依据是 DeepSeek 官方文档（2026-10-07 核对，见 spec §5.2）：OpenAI 格式的开关是
+ * 依据是 DeepSeek 官方文档：OpenAI 格式的开关是
  * `thinking.type`、强度是 `reasoning_effort`（[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)）；
  * Anthropic 格式的强度是 `output_config.effort`
  * （[使用 Anthropic API](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)，`thinking.budget_tokens` 被上游忽略）。
@@ -194,8 +192,8 @@ function hostOf(url: string): string {
  * 由网关按它自己的映射表折（文档给的是 `minimal→low`、`medium→high`、`xhigh→high`、`ultra→max`）。
  * 本地归一要么把档位信息丢掉、要么把网关的映射表抄第二份（抄第二份必然漂移）。
  *
- * ⚠️ 换到非 DeepSeek 网关时这两个字段名未经实测（spec §5.5.2 的边界只覆盖本机探针）——
- * 其它网关可能忽略它们、也可能直接 400；这一条在 spec §5.5.2 里如实登记为未验证。
+ * ⚠️ 换到非 DeepSeek 网关时这两个字段名未经实测（边界只覆盖本机探针）——
+ * 其它网关可能忽略它们、也可能直接 400；这一条如实登记为未验证。
  */
 function reasoningFields(protocolType: ProtocolType, effort: string | undefined): Record<string, unknown> {
   if (effort === undefined) return {};
@@ -367,7 +365,7 @@ export async function callTextApi(route: TextRoute, input: TextCallInput): Promi
 /**
  * 多轮调用：把**完整对话**交给模型（含它上一轮不合格的答复与我们的纠错要求），
  * 并把**这一次调用自己的用量**一起交出来（评分详情要显示「这一分花了多少」）。
- * 为什么需要它（2026-09-27，目标页实测）：评分模型偶尔回一段散文或半截 JSON，一次解析失败就
+ * 为什么需要它（目标页实测）：评分模型偶尔回一段散文或半截 JSON，一次解析失败就
  * 让整行落 `failed`——而它手里已经有全部上下文，只要告诉它「哪里不合格」就能答对。
  * 与 `callTextApi` 共用请求体构造、折错、中止、思考强度与瞬时重试（见文件头第 6/7/8 条）。
  * **求和不在这一层**：本函数一次只交一次调用的读数，结构修复的每一轮各算一次，
@@ -413,7 +411,7 @@ function fetchFailure(
 }
 
 /**
- * 非 2xx → 可展示的中文原因（状态码分类见 spec §10 的错误表）。
+ * 非 2xx → 可展示的中文原因（状态码分类见错误表）。
  *
  * 上游正文（`raw`）**只进 context 与服务端日志**，绝不进 message（口径见文件头第 4 条）。
  * 诊断能力不降级：片段（仍是前 300 字）同时进 context 与一条 WARN 日志——路由层那条 error 日志

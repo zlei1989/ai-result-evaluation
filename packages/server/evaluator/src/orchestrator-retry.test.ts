@@ -39,12 +39,10 @@ registerOrchestratorHooks();
 
 describe('retryRow：单个评测项的重新执行（手动出口，界面文案「重新执行」）', { timeout: TEST_TIMEOUT_MS }, () => {
   /**
-   * **2026-09-29 口径修订**：这条用例原来是 `expect(() => retryRow(...)).toThrowError(/工作区未就绪/)`
-   * ——「没跑过的行」当时被这条判据挡着，用户只能靠「开始」跑它，而「开始」会把**所有**可执行行一起跑。
-   * 用户原话：「重新执行，只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」。
-   * 于是「没跑过」不再是拒绝理由（判据换成 `canRunRow`），这条用例随之翻面成**正例**：
-   * 「没跑过的行也能单跑，而且 attempts 从 0 起算」由 `orchestrator-single-row.test.ts` 钉住
-   * （那里还钉了「只动这一行」），这里只留一句「它不再是拒绝理由」的反向对照。
+   * **「没跑过」不是拒绝理由**（判据是 `canRunRow`）：用户原话「重新执行，只执行当前候选项，
+   * 不要完成后重新执行下方已经执行过的候选项」——「开始」会把**所有**可执行行一起跑，单行出口必须能只跑它。
+   * 正向面（「没跑过的行也能单跑，attempts 从 0 起算」「只动这一行」）由 `orchestrator-single-row.test.ts` 钉住，
+   * 这里只留一句反向对照。
    */
   it('「没跑过」不再被拦下（判据换成 canRunRow 之后，这条路上不再有 CONFLICT）', () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
@@ -58,9 +56,8 @@ describe('retryRow：单个评测项的重新执行（手动出口，界面文�
   });
 
   /**
-   * **用户口径（2026-09-28 晚间修订）**：「已出分、无报错时取消禁用」。
-   * 与之相对，早先那版口径是「已经测试完成且没有错误就不能重新评测」——本条用例正是那次反转的落点：
-   * 判据不再排除 `judged`，重跑一次已出分的行是允许的（误点的代价由界面的 `Popconfirm` 拦）。
+   * **用户口径**：「已出分、无报错时取消禁用」。
+   * 判据**不排除** `judged`：重跑一次已出分的行是允许的（误点的代价由界面的 `Popconfirm` 拦）。
    */
   it('已经出分且没有报错的行照样能重新执行：整段重跑一遍，分数被新的结果替换', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', withJudge: true });
@@ -135,7 +132,7 @@ describe('retryRow：单个评测项的重新执行（手动出口，界面文�
   });
 
   it('超时 / 被终止 / 被重启打断的行照样可以重新执行（它们同样「跑过一次且有产出」）', async () => {
-    // 适配器**自报**超时（2026-09-28 起没有内层 timeoutMs、也没有编排层兜底超时了）
+    // 适配器**自报**超时（没有内层 timeoutMs、也没有编排层兜底超时）
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
     const rowId = run.rows[0]?.id ?? '';
     // 行落 `timed-out`（阶段是 agent），并且工作区与 diff 都已就绪

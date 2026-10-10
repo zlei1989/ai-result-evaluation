@@ -3,13 +3,13 @@
  *
  * 两条约定：
  *   1. **cache key 就是路由 URL**（列表用 `/api/cases`，详情用 `/api/cases/{id}`），
- *      这样「URL 写错」在测试里立刻表现为请求打到了不存在的路由，而不是安静地拿旧数据；
+ *      这样「URL 写错」在测试里立刻表现为请求打到了不存在路由，而不是安静地拿旧数据；
  *   2. mutation 的响应形状与列表 key **不同形**（列表是 `{ cases, warnings }`、mutation 返回单条），所以一律
  *      `populateCache: false` + `revalidate: true`：不回写（会把数组换成对象），改为重新拉一次列表。
  *      详情缓存单独用全局 mutate 回写，否则「保存后详情栏还显示旧值」。
  *
  * 三个「动作型」接口（校验仓库 / commit 候选 / 生成评分标准项）都**按仓库来源**走，URL 里不出现 caseId
- * （接口契约 §11 R7）：新建用例时还没有 caseId，而这三件事的输入本来就是来源（远端来源另带分支）。
+ *：新建用例时还没有 caseId，而这三件事的输入本来就是来源（远端来源另带分支）。
  */
 import useSWR, { useSWRConfig } from 'swr';
 import useSWRMutation from 'swr/mutation';

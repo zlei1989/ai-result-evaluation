@@ -1,5 +1,5 @@
 /**
- * 设计稿「dsh 派生面板的 `subagent/descriptor` —— 只见到事件名，未解析」这一格。
+ * 「dsh 派生面板的 `subagent/descriptor` —— 只见到事件名，未解析」这一格。
  *
  * 上一轮（probe/v4/dsh-subagent-failure.mjs，单前台子任务）已经拿到它的**载荷**：
  * `{"version":3,"mode":"one-shot","provider":"spawn","label":"Long essay"}`——

@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * 用例域路由端到端：/api/cases 全套 + R7 的「按仓库路径」结构守卫。
+ * 用例域路由端到端：/api/cases 全套 + 「按仓库路径」结构守卫。
  *
  * 这份用例管三件事：
  *   1. 「zod 校验 → 调 api → 错误映射」这条链真的接通了（用坏值走真实请求：只有 contracts 导出的
  *      那一份 zod 实例才会映射成 400 + issues，复制出来的第二份会落到 500）；
- *   2. R7 的路由形态钉在**文件系统**上：仓库校验与 commit 候选挂在 cases/validate-repo 与
+ *   2.  的路由形态钉在**文件系统**上：仓库校验与 commit 候选挂在 cases/validate-repo 与
  *      cases/commits，且**不存在**按 caseId 的旧形态；
- *   3. 评分标准项的生成 / 识别整条链路（含 p0 的 callTextApi）用**假 fetch** 跑通——测试绝不打真实网络。
+ *   3. 评分标准项的生成 / 识别整条链路（含 callTextApi）用**假 fetch**跑通——测试绝不打真实网络。
  *
  * 配置目录、仓库、工作区一律是 mkdtempSync 出来的临时目录：绝不碰真实的 ~/.aieval 与真实仓库。
  */
@@ -204,7 +204,7 @@ describe('/api/cases/[caseId]', () => {
   });
 });
 
-describe('R7：仓库校验与 commit 候选按仓库路径', () => {
+describe('仓库校验与 commit 候选按仓库路径', () => {
   it('POST cases/validate-repo 回显仓库名与分支', async () => {
     const res = await validateRepo(jsonRequest('/api/cases/validate-repo', 'POST', JSON.stringify({ repoPath: repo })));
 
@@ -213,7 +213,7 @@ describe('R7：仓库校验与 commit 候选按仓库路径', () => {
     expect(body.repoName).toBe('gateway');
     expect(body.repoPath).toBe(repo);
     expect(typeof body.branch).toBe('string');
-    // kind 是 RepoInfo 新增的来源判据（spec §4.3）：路由必须原样透出，界面靠它决定回显哪一套字段
+    // kind 是 RepoInfo 新增的来源判据：路由必须原样透出，界面靠它决定回显哪一套字段
     expect(body.kind).toBe('local');
   });
 
@@ -285,15 +285,15 @@ describe('R7：仓库校验与 commit 候选按仓库路径', () => {
     expect((await res.json()).error.code).toBe('INVALID_QUERY');
   });
 
-  // R7 的结构守卫：钉的是**文件系统**，因为「路由挂在哪个路径」在单元测试里唯一可观察的面就是文件位置。
-  // 变异验证见 Step 5。
+  // 「按仓库路径」结构守卫：钉的是**文件系统**，因为「路由挂在哪个路径」在单元测试里唯一可观察的面就是文件位置。
+  // 变异验证：把路由挂回按 caseId 的旧形态，本用例必须失败。
   it('路由文件挂在 cases/validate-repo 与 cases/commits，不存在按 caseId 的旧形态', () => {
     const casesApiDir = join(import.meta.dirname, '..', 'app', 'api', 'cases');
 
     expect(existsSync(join(casesApiDir, 'validate-repo', 'route.ts'))).toBe(true);
     expect(existsSync(join(casesApiDir, 'commits', 'route.ts'))).toBe(true);
     expect(existsSync(join(casesApiDir, 'generate-judge-prompt', 'route.ts'))).toBe(true);
-    // 旧形态：创建用例时还没有 caseId，「按 caseId 校验仓库」根本没法在新建流程里调用（契约 §11 R7）
+    // 旧形态：创建用例时还没有 caseId，「按 caseId 校验仓库」根本没法在新建流程里调用
     expect(existsSync(join(casesApiDir, '[caseId]', 'validate-repo'))).toBe(false);
     expect(existsSync(join(casesApiDir, '[caseId]', 'commits'))).toBe(false);
   });
@@ -314,7 +314,7 @@ describe('/api/cases/generate-judge-prompt', () => {
   /**
    * 配置一个全局默认评分模型。
    * 假响应按 OpenAI Chat Completions 的形状给（`choices[0].message.content`），正文是**评分表**的 JSON
-   * ——若 p0 的 callTextApi 取的是别的字段，要改的是**这里的假响应**，不是被测行为。
+   * ——若 callTextApi 取的是别的字段，要改的是**这里的假响应**，不是被测行为。
    */
   function configureJudge(): void {
     saveConfig({
@@ -412,14 +412,14 @@ describe('/api/cases/generate-judge-prompt', () => {
 });
 
 /**
- * **真实 payload 形状**的路由级守卫（收口复审追加）。
+ * **真实 payload 形状**的路由级守卫。
  *
  * 为什么要单独有这么一层：服务函数级的守卫（`packages/server/api/src/cases.test.ts`）证的是**判定逻辑**，
- * 而收口复审 N1 的成因恰恰是「真实形状到了路由、判定却按『字段出现与否』」的错配——那一层只有当 body
+ * 而这一层要挡的恰恰是「真实形状到了路由、判定却按『字段出现与否』」的错配——那一层只有当 body
  * 真的以 HTTP 形状喂进 `PUT /api/cases/{id}` 时才看得见（路由只做 `CasePatchSchema.parse` 后转出，
  * 见 `app/api/cases/[caseId]/route.ts:24-32`）。
  *
- * 这里的 body 一律按面板 `handleFinish`（`case-form-panel.tsx`）交出来的 **6 字段全量形状** 构造：
+ * 这里的 body 一律按面板 `handleFinish`（`case-form-panel.tsx`）交出来的 **6 字段全量形状**构造：
  * 面板不做任何 diff，PUT 收到的就是这 6 个字段（用例级评分模型那一格已删除，故它不再出现——
  * 夹具的字段表一旦不跟着面板走，这层守卫的全部价值就没了）。
  */

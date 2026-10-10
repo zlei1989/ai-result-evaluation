@@ -1,7 +1,7 @@
 /**
  * git CLI 原语：仓库校验、commit 判定、用例级缓存克隆、文件系统级目录复制、行分支。
  * 三个必须成立的口径：
- *   1. **只用真实 git 进程**，不做任何 mock 封装（spec §9）：mock 掉的正是最容易错的地方
+ *   1. **只用真实 git 进程**，不做任何 mock 封装：mock 掉的正是最容易错的地方
  *      （`cat-file -e` 的 `^{commit}` 语法、`rev-parse --show-toplevel` 的返回形态、
  *      复制目录是否带上 `.git`）；
  *   2. 所有 git 调用都带两个 `-c`，且必须放在子命令之前，两条都是**为了不被跑它的那台机器左右**：
@@ -15,7 +15,7 @@
  *      补充跟在后面**（`executeOrFail` 与 `resolveRepoInfo` 都这么做），同一份原文另放 `context.gitMessage`。
  *      为什么不把原文从 message 里摘掉：本模块的失败里有一类「无法归因」的（`index.lock` 被 agent 占着、
  *      git 自己坏了、来源仓库被删），它们与原文件头这条口径下的「commit 不存在」在中文文案上长得一模一样，
- *      而处置完全不同；spec §4.5 要求这类失败保留上游文本供排查。本文件早先写的「原文绝不出现在用户文案里」
+ *      而处置完全不同；这类失败要保留上游文本供排查。本文件早先写的「原文绝不出现在用户文案里」
  *      与实现、spec 都不符，已按实际行为改正（行为未变，只改注释）。
  * 执行入口本身的理由（`execFileSync` 而不是 `execSync` 的注入面、stdin 为何必须断开、maxBuffer 为何调大）
  * 见 git-exec.ts；两个 `-c` 的理由就是上面第 2 条，本文件不再另存一份。
@@ -28,11 +28,11 @@ import { createLogger } from './logger';
 
 const log = createLogger('git');
 
-/** 行分支的命名空间（spec §5.5 的 `test/{rowId}`）：解析默认分支时要整个排除，见 R20 */
+/** 行分支的命名空间（`test/{rowId}`）：解析默认分支时要整个排除 */
 const ROW_BRANCH_PREFIX = 'test/';
 
 /**
- * `execute` 的失败包装：中文原因当用户文案，git 的英文 `fatal:` 原文只进 `context`（spec §10）。
+ * `execute` 的失败包装：中文原因当用户文案，git 的英文 `fatal:` 原文只进 `context`。
  * 为什么每次读取都要过它：`collectDiff` 的六次调用都可能失败（基线不存在、仓库中途被删、
  * `index.lock` 被 agent 占着），裸抛 `execFileSync` 的错误会让英文原文一路冒到界面——
  * 本文件头的第 3 条口径明确禁止，而且界面拿到 `fatal:` 也无从处置。
@@ -118,7 +118,7 @@ export function resolveRepoInfo(repoPath: string): RepoInfo {
   const repoName = basename(topLevel) || topLevel;
   log.debug('仓库校验通过', { repoPath, repoName, branch });
   // RepoInfo 契约新增的四个字段对本地来源是常量取值：远端那套（镜像路径 / 就绪 / 更新时间 / tip）
-  // 一律为 null / false，界面按 kind 决定回显哪一套（spec §4.3）
+  // 一律为 null / false，按 kind 决定回显哪一套
   return { repoPath, repoName, branch, kind: 'local', mirrorPath: null, mirrorReady: false, mirrorFetchedAt: null, tip: null };
 }
 
@@ -132,7 +132,7 @@ export function resolveRepoInfo(repoPath: string): RepoInfo {
  * 而 `--verify` 一条就能同时给出两者（实测：短 hash 归一成 40 位、blob 与非 commit 对象非零退出、
  * 不存在的 hash 非零退出），在「每次 git 进程创建 ≈ 0.5s」的机器上每行准备省一次。
  * **不加 `--quiet`**：它会连 stderr 一起吃掉，`context.gitMessage` 就空了——那是区分
- * 「hash 不存在」与「仓库坏了 / index.lock 被占」的唯一线索（spec §10）。
+ * 「hash 不存在」与「仓库坏了 / index.lock 被占」的唯一线索。
  * 失败原因合成一条中文文案（早先 `cat-file` 与 `rev-parse` 各有一条，而调用方无法分辨两者，
  * 两条文案只会让同一种失败看起来像两种）。
  */
@@ -151,7 +151,7 @@ export function assertCommit(repoPath: string, hash: string): string {
   }
 }
 
-/** 最近 n 条提交（`git log --format=%h%x09%s -n <limit>`），默认 20（spec §4.2）；`ref` 只给远端候选那条路用 */
+/** 最近 n 条提交（`git log --format=%h%x09%s -n <limit>`），默认 20；`ref` 只给远端候选那条路用 */
 export function listCommits(repoPath: string, limit = 20, ref: string | null = null): CommitCandidate[] {
   let output: string;
   try {
@@ -184,21 +184,21 @@ export function listCommits(repoPath: string, limit = 20, ref: string | null = n
 }
 
 /**
- * 用例级本地缓存仓库（spec §5.5 第 1 步）：不存在才 `git clone <repoPath> <cacheDir>`。
+ * 用例级本地缓存仓库：不存在才 `git clone <repoPath> <cacheDir>`。
  * 判据是「缓存目录里有没有 `.git`」而不是「目录在不在」：克隆中途失败会留下一个没有 `.git`
  * 的空目录，只看目录存在的话，之后每一轮评测都会拿这个空目录去复制，失败点会被推到 checkout。
  *
- * 缓存**不是**一份可以永久沿用的冻结快照，它是「某一个来源仓库」的克隆，故三件事必须成立（§11 R28）：
+ * 缓存**不是**一份可以永久沿用的冻结快照，它是「某一个来源仓库」的克隆，故三件事必须成立：
  *   ① 记录来源（`{cacheDir}/.git/aieval-origin.json`）：来源路径变了（用例改填了另一个仓库）
  *      就重克隆——沿用旧缓存会把**另一个仓库**的内容当成被测对象，而且完全静默；
- *   ② `commitHash === null`（语义是「默认分支 HEAD」，spec §4.2 / §11 R2、R20）必须在用之前把缓存
+ *   ② `commitHash === null`（语义是「默认分支 HEAD」）必须在用之前把缓存
  *      刷新到来源当前的 HEAD：本地路径 `git fetch` 很便宜，而「缓存只建一次」若顺带把 tip 冻结在
  *      克隆那一刻，「默认分支 HEAD」就成了「上次克隆时的 HEAD」——来源新增的提交不会被评测；
  *   ③ 请求了具体 `commitHash` 而缓存里没有（来源在缓存建立之后才有的提交）先 `git fetch` 一次再判，
- *      仍没有才报 INVALID_REF，且 message 点名**来源仓库路径**：p2 校验这个 hash 用的是来源仓库，
+ *      仍没有才报 INVALID_REF，且 message 点名**来源仓库路径**：用例域校验这个 hash 用的是来源仓库，
  *      错误信息里出现行工作区路径会把用户指向完全无关的地方。
  * 来源记录放 `.git` 里面而不是工作树根：工作树根的文件会被 `copyWorkspace` 复制进行工作区，
- * 再被 `git status` 当成「agent 新建的文件」计入三样 diff 与 p5 的文件树（污染评分输入）。
+ * 再被 `git status` 当成「agent 新建的文件」计入三样 diff 与界面的文件树（污染评分输入）。
  */
 export function ensureCaseCache(repoPath: string, cacheDir: string, commitHash: string | null = null): void {
   // 来源路径归一成真实路径：同一个仓库用不同写法（尾部分隔符 / 8.3 短名 / 大小写）传进来时不该被当成换了来源
@@ -348,7 +348,7 @@ function cloneCaseCache(repoPath: string, cacheDir: string): void {
  * `reset --hard` 丢掉缓存工作树里的脏改动**是要的**：缓存是来源的只读快照，agent 的改动在行工作区里；
  * 缓存脏着会让「复制出的工作区 == 来源 tip」这个前提不成立，行里凭空出现没人改过的改动。
  * 来源不可达（路径被删 / 移走）时**抛错而不是沿用旧缓存**：此时「默认分支 HEAD」根本无法确定，
- * 沿用等于把一个用户已经看不到的快照当成当前代码来评分（spec §3 F6 那类静默错分）。
+ * 沿用等于把一个用户已经看不到的快照当成当前代码来评分（那类静默错分）。
  */
 function refreshCacheToSourceHead(repoPath: string, cacheDir: string): void {
   const target = sourceHeadCommit(repoPath);
@@ -398,15 +398,15 @@ function sourceHeadCommit(repoPath: string): string | null {
 }
 
 /**
- * 文件系统级目录复制（spec §5.5 第 2 步）：缓存 → 行工作区；目标父目录不存在则创建。
+ * 文件系统级目录复制：缓存 → 行工作区；目标父目录不存在则创建。
  * 为什么不是每行 `git clone`：本地路径克隆仍是完整对象复制与打包传输，
  * 而缓存已是完整仓库，复制出的目录直接 `checkout` 即可——每行准备时间从「克隆耗时」
- * 降到「磁盘复制耗时」，这是「开一轮评测」秒开的关键（spec §5.5 第 2 步的说明）。
+ * 降到「磁盘复制耗时」，这是「开一轮评测」秒开的关键。
  * `cpSync` 会连同 `.git` 一起复制，这正是我们要的（复制出来的必须是个能 checkout 的仓库）。
  */
 export function copyWorkspace(srcDir: string, destDir: string): void {
   if (!existsSync(join(srcDir, '.git'))) {
-    // INTERNAL 而不是 NOT_A_GIT_REPO：spec §10 把 NOT_A_GIT_REPO 留给**用户填的仓库路径**，
+    // INTERNAL 而不是 NOT_A_GIT_REPO：NOT_A_GIT_REPO 留给**用户填的仓库路径**，
     // 而这里坏掉的是我们自己建出来的缓存（`.git` 被手工删了 / 克隆中途失败）。给用户看「不是 git 仓库」
     // 会让他去改用例里的仓库路径——方向完全错，真正该做的是把这个缓存目录删掉重跑。
     throw new ServiceError('INTERNAL', `用例缓存不是 git 仓库（缓存状态损坏，删除该缓存目录后重跑即可）：${srcDir}`, {
@@ -427,18 +427,18 @@ export function copyWorkspace(srcDir: string, destDir: string): void {
 }
 
 /**
- * 解析「默认分支 HEAD」（`commitHash === null` 的语义，§11 R2 + R20），返回 40 位具体 hash。
+ * 解析「默认分支 HEAD」（`commitHash === null` 的语义），返回 40 位具体 hash。
  * 为什么不直接 `rev-parse HEAD`：重跑同一行时工作区的 HEAD 已经切在 `test/{rowId}` 上，
  * 而那是个**已经前移**的分支（上一轮 agent 的提交）——拿它当基线等于「以上一轮的产出为起点」，
- * 第二轮 diff 会变成空的，评分模型据此给出错误的高分（spec §5.5 第 6 步要防的正是这个）。
+ * 第二轮 diff 会变成空的，评分模型据此给出错误的高分（要防的正是这个）。
  * 两条路径：
- *   ① HEAD 不在行分支上（全新工作副本的常态：p4 的 prepareRowWorkspace 每次清掉行目录再复制）
+ *   ① HEAD 不在行分支上（全新工作副本的常态：prepareRowWorkspace 每次清掉行目录再复制）
  *      → HEAD 就是默认分支的 tip，与 `rev-parse HEAD` 等价；
  *   ② HEAD 已在行分支上（同一个工作区被重跑）→ 从本地分支表里排除**行分支与整个 `test/*`
- *      命名空间**（R20）后取那一个。为什么要连整个命名空间一起排除：同一用例下多候选行各自
+ *      命名空间**后取那一个。为什么要连整个命名空间一起排除：同一用例下多候选行各自
  *      建 `test/{rowId}`，重跑某一行时别的行分支还留在工作区里；只排自己那一个会把它们当成
  *      默认分支候选，于是「多候选」误报成不唯一，重跑直接失败。
- * ② 成立的前提（R20，必须写在这里而不只是体现在代码里）：用例缓存来自
+ * ② 成立的前提（必须写在这里而不只是体现在代码里）：用例缓存来自
  * `git clone <本地路径>`，而本地路径克隆**只建一个本地分支**——来源仓库的默认分支；
  * 其余分支都被映射成 `refs/remotes/origin/*` 远程跟踪引用。于是工作区的本地分支集合
  * 在行分支建立前是 {默认分支}，建立后是 {默认分支, test/rowId}，排除行分支后必然唯一。
@@ -473,12 +473,12 @@ function resolveBaselineCommit(dir: string, rowBranch: string): string {
 }
 
 /**
- * 在工作副本里取基线并建行分支（spec §5.5 第 2 步）：checkout <commit> → checkout -b <branch>。
+ * 在工作副本里取基线并建行分支：checkout <commit> → checkout -b <branch>。
  * 用 `checkout -B` 一条命令同时办成两件事：把分支重置到基线并切过去。
  * 为什么是 `-B` 而不是 `-b`：重跑同一行时 `test/{rowId}` 已存在，`-b` 会直接以
- * 「分支已存在」失败；`-B` 等价于 spec §10 要求的「先删旧分支再建」，且是原子的。
+ * 「分支已存在」失败；`-B` 等价于「先删旧分支再建」，且是原子的。
  * `baselineCommit` 返回的是**解析后的 40 位具体 hash**：`commitHash: null`（用默认分支 HEAD）时
- * 必须把默认分支解析成具体值，否则后面没有可比基线（§11 R2，见 resolveBaselineCommit）。
+ * 必须把默认分支解析成具体值，否则后面没有可比基线（见 resolveBaselineCommit）。
  * 先 `assertCommit` 再切换：否则失败会留下一个「切了一半」的工作区，错误码也分不清是
  * 「commit 不存在」还是「checkout 失败」。
  */
@@ -499,36 +499,36 @@ export function checkoutRow(
   return { baselineCommit: target };
 }
 
-/** 三样 diff 的段落标题（供评分模型与 diff 抽屉共用；改文案要同步改测试与 p5 的展示） */
+/** 三样 diff 的段落标题（供评分模型与 diff 抽屉共用；改文案要同步改测试与界面的展示） */
 const SECTION_COMMITTED = '### 已提交改动';
 const SECTION_UNCOMMITTED = '### 未提交改动';
 const SECTION_UNTRACKED = '### 未跟踪文件';
 /** 段落为空时的占位：显式写「（无）」，避免「这一段落不存在」与「这一段落为空」被混为一谈 */
 const EMPTY_SECTION = '（无）';
-/** 裁剪标记（spec §5.5 第 7 步要求显式标明，否则评分模型会把「看不到的改动」当成「没改」） */
+/** 裁剪标记（要求显式标明，否则评分模型会把「看不到的改动」当成「没改」） */
 const TRUNCATED_MARK = '\n\n> **diff 已截断**：以下文件因超出体积上限未包含在本次评分输入中';
 
 /**
- * 三样 diff 合并 + 计数（spec §5.5 第 6 步，口径见 §11 R3）。
- * `baselineCommit` 必须是具体 hash：空串（「尚未准备」，§11 R2）在函数第一行就抛 INTERNAL，
+ * 三样 diff 合并 + 计数。
+ * `baselineCommit` 必须是具体 hash：空串（「尚未准备」）在函数第一行就抛 INTERNAL，
  * 绝不降级成 `HEAD..HEAD` 的空 diff（理由见那里的行内注释）。
  * 读取次序是**刻意选定**的（①→⑤，本机实测于 `git version 2.47.0.windows.2`），但**顺序本身不承重**：
- *   ① `git status --porcelain -z` 先读未跟踪清单：spec §5.5 第 6 步的第三个来源就是 `??` 清单，
+ *   ① `git status --porcelain -z` 先读未跟踪清单：第三个来源就是 `??` 清单，
  *      先读也让 `parseUntracked` 的主用例保持为 `?? `（实测 `-N` 之后同一份输出里
  *      `?? brand-new.txt` 会变成 ` A brand-new.txt`）。**但这是冗余保险，不是硬约束**：
  *      `parseUntracked` 同时接受 `?? ` 与 ` A `，把本行挪到 ② 之后没有任何可观测差异——
- *      变异验证实测：整套 `git-diff-*.test.ts`（拆自原 `git.diff.test.ts`；今天 29 条）仍绿。真正保住结果的是那次「接受 ` A `」的放宽；
- *      若日后把它收窄回只认 `?? `，本行的顺序就**重新**变成承重的（完整证据见计划 `## 执行记录` §15.7）。
+ *      变异验证：整套 `git-diff-*.test.ts`（29 条）仍绿。真正保住结果的是「接受 ` A `」那次放宽；
+ *      若日后把它收窄回只认 `?? `，本行的顺序就**重新**变成承重的。
  *   ② `git add --intent-to-add --all`：只**登记**不暂存（实测登记后 `tracked.txt` 仍是 ` M`），
  *      让未跟踪文件的正文进入 `git diff HEAD`。不加它，新文件只有文件名——评分模型看不见内容，
  *      会把「看不到的改动」当成「没改」，静默给出错误的高分。
- *      **被 gitignore 的文件不进 diff**（R19）：`git add` 没有 `--include-ignored` 这个选项
+ *      **被 gitignore 的文件不进 diff**：`git add` 没有 `--include-ignored` 这个选项
  *      （实测同一版本报 `error: unknown option 'include-ignored'` 并非零退出），而且忽略本身就是
  *      「这不是产出」的信号——把 `.env` 的正文送进评分是密钥泄漏，把 `node_modules`
- *      送进去是噪声淹没真改动。spec §5.5 第 6 步的第三个来源也只说 `??` 未跟踪文件。
+ *      送进去是噪声淹没真改动。第三个来源也只说 `??` 未跟踪文件。
  *   ③ `git diff HEAD --numstat`：已改未提交的「文件 → 增删行数」。**必须在 ② 之后读**：
  *      实测登记前它只给出 `1\t0\ttracked.txt`（未跟踪的新文件根本不出现），登记后才多出
- *      `1\t0\tbrand-new.txt`。三个计数与 `files` 要把未跟踪文件算进去（spec §5.5 第 6 步的
+ *      `1\t0\tbrand-new.txt`。三个计数与 `files` 要把未跟踪文件算进去（
  *      三个来源缺一不可），故这一次读取不能提到 ② 之前。
  *   ④ `git diff {baseline}..HEAD` + `git diff HEAD`：已提交与已改未提交的两份正文。
  *   ⑤ 已提交部分的计数用 `git diff --numstat {baseline}..HEAD`（不受 `-N` 影响，随时可读）。
@@ -547,7 +547,7 @@ export function collectDiff(
   } {
   // 空基线必须在这里拦住：`git diff ..HEAD` 会被 git 当成 `HEAD..HEAD`，退出码 0、输出为空，
   // 于是「准备阶段失败、baselineCommit 还空着」的行会拿到一份**看起来没改动**的 diff 并照常打分
-  //（spec §3 F6 最坏的那类失败：静默给出错误的高分）。空串的语义是「尚未准备」（§11 R2），
+  //（最坏的那类失败：静默给出错误的高分）。空串的语义是「尚未准备」，
   // 它不是合法基线，调用方也无法从返回值里看出基线是空的，故只能在这里抛。
   if (baselineCommit.trim() === '') {
     throw new ServiceError('INTERNAL', `基线 commit 为空（空串表示「尚未准备」，见 §11 R2）：${dir}`, {
@@ -578,7 +578,7 @@ export function collectDiff(
   const uncommitted = splitNumstatPatch(uncommittedRaw).patch.trimEnd();
   const committedFiles = parseNumstat(splitNumstatPatch(committedRaw).counts);
 
-  // 未跟踪段的正文**只有路径清单**（契约 §3.2 钉死的格式）：p5 直接渲染这段文本，
+  // 未跟踪段的正文**只有路径清单**（钉死的格式）：界面直接渲染这段文本，
   // 早先这里还拼了一段 `uncommitted`，结果是同一份 diff 在文本里出现两次、受跟踪文件的
   // hunk 挂在「未跟踪文件」标题下面，还会让 truncateDiff 报「某文件被丢弃」而它的孪生正文
   // 仍在文本里。新文件的正文不会因此丢失：它本来就在未提交段里（`-N` 之后 `git diff HEAD` 带它）。
@@ -628,10 +628,10 @@ function splitNumstatPatch(output: string): { counts: string; patch: string } {
 }
 
 /**
- * 按路径合并同一文件的两段计数（R22）。
+ * 按路径合并同一文件的两段计数。
  * 为什么必须合并：一个文件完全可以既在 `baseline..HEAD` 里改过、又在工作区里再改一次，
  * 两段 numstat 于是各给一行；不合并的话 `filesChanged` 会把同一个文件数两次，
- * p5 的文件树也会出现两行同名条目。
+ * 界面的文件树也会出现两行同名条目。
  * 合并口径：键是**归一后的新路径**（见 parseNumstat），增删行数**相加**——展示的是
  * 「这条路径相对 baseline 一共变了多少」；`text` 里的两段 hunk 原样保留，不做任何合并
  * （那是评分模型的真相，diff 抽屉也要按段展示）。
@@ -704,8 +704,8 @@ function parseNumstat(output: string): { path: string; insertions: number; delet
  * 把 `--numstat` 的路径列归一成「改动后的新路径」。
  * 花括号形态必须**就地**替换：早先的实现切掉最后一个 `=>` 之前的全部内容，把 `packages/` 前缀
  * 一起丢了，`packages/{old => new}/x.ts` 于是变成 `new/x.ts`——一个根本不存在的路径：
- * p5 的文件树会渲染出幽灵条目，而两个不同目录下的重命名（`a/{old => new}/x.ts` 与
- * `b/{old => new}/x.ts`）还会在 R22 的按路径去重里撞成同一个键、行数被错误相加。
+ * 界面的文件树会渲染出幽灵条目，而两个不同目录下的重命名（`a/{old => new}/x.ts` 与
+ * `b/{old => new}/x.ts`）还会在按路径去重里撞成同一个键、行数被错误相加。
  * 无花括号形态（`old => new`）按最后一个 `=>` 之后取：git 只在两条路径没有公共前后缀时才这么写，
  * 新路径里不会再出现 `=>`（真的叫这个名字的路径会被 git 加引号，属于另一个议题）。
  *
@@ -723,7 +723,7 @@ export function rewriteRenamePath(rawPath: string): string {
 }
 
 /**
- * 按体积裁剪（spec §5.5 第 7 步 / §9）：按文件切分，保留到预算为止，
+ * 按体积裁剪：按文件切分，保留到预算为止，
  * 输出含「已截断」标记与被丢弃文件清单。
  * 四个必须成立的行为：
  *   ① 被丢弃的文件名要逐个列在正文里——否则界面与评分模型都不知道漏了什么；

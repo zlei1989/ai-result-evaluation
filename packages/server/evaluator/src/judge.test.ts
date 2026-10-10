@@ -132,10 +132,10 @@ describe('parseJudgeResponse：第 3 类翻车点（缺项 / 多余 / 重复）'
   });
 });
 
-describe('parseJudgeResponse：achieved 的宽容读（Review Focus 5）', () => {
+describe('parseJudgeResponse：achieved 的宽容读', () => {
   /**
    * 模型很爱把布尔写成字符串或中文。schema 那一关只在**上游认了**的时候才拦得住
-   * （网关不透传时它形同虚设，见 structured-judge-output spec §9 第 1 条），
+   * （网关不透传时它形同虚设），
    * 故解析侧必须宽容——否则一次「格式小毛病」会让整行失败。
    */
   it('接受布尔与两种语言的写法（大小写不敏感）："是"/"否"、"达成"/"未达成"、`True`；认不出的值才失败', () => {
@@ -147,7 +147,6 @@ describe('parseJudgeResponse：achieved 的宽容读（Review Focus 5）', () =>
       { given: '是', expected: true },
       { given: '否', expected: false },
       // 这两个词是本工具自己的词（评分口径、界面、输出契约都用它们），模型照题面用词回答必须收
-      // （整支复审 Finding 7：`coerceAchieved` 一直收它们，而 JSDoc 与这张表都只写了四个词）
       { given: '达成', expected: true },
       { given: '未达成', expected: false },
       // 大小写不敏感（`.toLowerCase()` 之后再比对）：`True` 与 `true` 没有语义差别
@@ -248,7 +247,7 @@ describe('finalizeScore：两条通路共用的收口', () => {
   });
 
   /**
-   * 评分**自己**的用量与耗时（2026-10-08）：与 `judgeEffort` / `structuredOutput` 同一条处置
+   * 评分**自己**的用量与耗时：与 `judgeEffort` / `structuredOutput` 同一条处置
    * ——**必填**，两条通路各自表一次态。给缺省会让「忘了把入参传下来」与「确实没采到」在数据上同形，
    * 而界面那两格正是拿它判「用量未采集」的（`null` 与 `{0,0,0}` 是两件事）。
    */
@@ -340,7 +339,7 @@ describe('judgeRow：成功路径', () => {
   });
 
   /**
-   * 思考强度（spec §5.2）：**请求参数**，由调用方从配置读出来传进 `judgeEffort`——
+   * 思考强度：**请求参数**，由调用方从配置读出来传进 `judgeEffort`——
    * 本模块不读配置、不碰落盘（它今天是纯入参的）。
    * 为什么正反两条都要：只钉「给了会透」看不出「没给会不会凭空塞一个缺省档」（那会让「未指定」
    * 在网关上变成一次显式要求，而记账那一格照样写它）；只钉「没给是 undefined」则看不出这一格
@@ -364,7 +363,7 @@ describe('judgeRow：成功路径', () => {
   });
 
   /**
-   * 评分自己的用量与耗时（2026-10-08，用户口径：评分详情里那一段说的必须是**评分的花销**）。
+   * 评分自己的用量与耗时（用户口径：评分详情里那一段说的必须是**评分的花销**）。
    *
    * 三条判据一条都不能省：
    *   · **跨轮累计**——结构修复是额外请求，两轮的数**不同**才测得出「累计」与「只记最后一轮」的差别；

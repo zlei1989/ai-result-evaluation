@@ -24,7 +24,7 @@ import {
 registerGitRepoHooks();
 
 describe('checkoutRow', () => {
-  it('建出 test/{rowId} 分支并切换过去，baselineCommit 是 40 位具体 hash（R2）', () => {
+  it('建出 test/{rowId} 分支并切换过去，baselineCommit 是 40 位具体 hash', () => {
     const { dir } = makeRepoWithCommit('aieval-git-src-');
     const workspace = join(makeTmp('aieval-ws-'), 'workspace');
     copyWorkspace(dir, workspace);
@@ -53,7 +53,7 @@ describe('checkoutRow', () => {
     expect(existsSync(join(workspace, 'second.txt'))).toBe(false);
   });
 
-  it('分支已存在时重置而不是报错（重跑同一行，spec §10「仍冲突则先删旧分支再建」）', () => {
+  it('分支已存在时重置而不是报错（重跑同一行，仍冲突则先删旧分支再建）', () => {
     const { dir } = makeRepoWithCommit('aieval-git-src-');
     const workspace = join(makeTmp('aieval-ws-'), 'workspace');
     copyWorkspace(dir, workspace);
@@ -88,12 +88,12 @@ describe('checkoutRow', () => {
 
 
 /**
- * R20 的两条模糊路径：默认分支唯一这个前提不成立时报 INTERNAL，绝不猜一个。
- * 为什么值得单独守：这是生产流程**走不到**的两条路（p4 的 prepareRowWorkspace 每次都清掉行目录
+ * 两条模糊路径：默认分支唯一这个前提不成立时报 INTERNAL，绝不猜一个。
+ * 为什么值得单独守：这是生产流程**走不到**的两条路（prepareRowWorkspace 每次都清掉行目录
  * 再复制缓存，副本必然是「一个本地分支 + 行分支」），但也正因为没人走，一旦有人改了
  * 「猜一个候选」的写法，代价是 diff 悄悄变成空、评分模型给出错误的高分——必须由测试钉住。
  */
-describe('checkoutRow —— 默认分支不唯一时报错而不是猜（R20）', () => {
+describe('checkoutRow —— 默认分支不唯一时报错而不是猜', () => {
   it('除行分支外还有两个本地分支时报 INTERNAL，且 message 逐个列出候选', () => {
     const { dir } = makeRepoWithCommit('aieval-git-ambig-');
     const defaultBranch = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim();

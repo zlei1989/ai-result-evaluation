@@ -1,9 +1,9 @@
 /**
- * Task 9：**走真实适配器**的双协议端到端 —— 与 Task 0 的 `dsh-pi-ai-both.mjs` 的关键差别是
+ * **走真实适配器**的双协议端到端 —— 与 `dsh-pi-ai-both.mjs` 的关键差别是
  * 「谁在装配」：那份探针自己 new `DeepSeekHarness`、自己拼 overlay、自己设 `provider` / `patches`，
  * 证明的是 **pi-ai 路由机制**成立；本探针只交一个 `AgentRunInput`，其余全部由
  * `dshProvider.run()` 自己做——overlay 生成与落盘、`provider` / `patches` / 环境变量、
- * 通知投影、计量归集。**这是本计划唯一能证明「两种协议真的都能从产品代码路径跑通」的一步**：
+ * 通知投影、计量归集。**这是唯一能证明「两种协议真的都能从产品代码路径跑通」的一步**：
  * 适配器里任何一处接线写错（patch 的 model id 漂移、档位缺键、baseURL 归一化方向反了、
  * `patches` 给了相对路径），都会在这里以真实的 `ok:false` / `initialize` 报错现形，
  * 而单测里的假 SDK 看不到这些。
@@ -14,10 +14,10 @@
  * 解析规则处理扩展名 ⇒ 与 `tsc` 看到的是同一张图。
  *
  * 为什么读 `~/.aieval/config.json`（产品自己的供应商记录）而不是自己编一份：探测与生产必须是
- * 同一份事实。本机那两条记录恰好覆盖 D8 的两个归一化方向（见探测报告 §0）。
+ * 同一份事实。本机那两条记录恰好覆盖 D8 的两个归一化方向。
  *
  * 用法：`node probe/v3/dsh-adapter-dual-protocol.mts [anthropic|openai|both]`（默认 both）。
- * 判据（与 Task 9 的三条一致，两条协议各自独立判定）：
+ * 判据（三条，两条协议各自独立判定）：
  *   · `result.ok === true`；
  *   · `result.tokens !== null`（「跑完了但没计量」不算通过）；
  *   · `result.turns !== null && result.turns >= 1`。
@@ -84,7 +84,7 @@ async function probe(protocolType) {
   }
   const durationMs = Date.now() - startedAt;
 
-  // 适配器的落点是 `configHome/<相对路径>`（per-launch overlay，Task 5/6）
+  // 适配器的落点是 `configHome/<相对路径>`（per-launch overlay）
   const patchPath = join(configHome, DSH_ROUTE_PATCH_RELATIVE_PATH);
   const patch = existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : null;
 

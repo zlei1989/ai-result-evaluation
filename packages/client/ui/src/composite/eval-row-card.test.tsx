@@ -1,13 +1,11 @@
 /**
- * EvalRowCard：候选卡片。版面口径来自 spec §5.3 的 ASCII 稿；
+ * EvalRowCard：候选卡片。版面口径来自一张 ASCII 版面稿；
  * 五件容易被漏掉、漏掉就会误判的事各一条用例：
  *   1. 串行排队中的行要说清「为什么会等」（不是没反应）；
  *   2. diff 被截断要标出来（这一次的分是在不完整输入下得出的）；
  *   3. `cancelMidTurn === false` 的智能体，按钮文案是「关闭运行时」而不是「终止」；
- *   4. 错误要带码与原因，不能只留一个红 Tag；
- *   5. **显式关闭档写着 `off`**（2026-10-07 口径）：`off` 不是「未指定」的同义词，
- *      档位标签必须逐字写出来，浮层再用一句「关闭思考」注解它。
- *   6. **供应商信息挂在模型名上**（2026-10-07 用户口径）：标题行不再有「供应商」Tag，名字与接口
+ *   4. 错误要带码与原因，不能只留一个红 Tag； * 5. **显式关闭档写着 `off`**：`off` 不是「未指定」的同义词，
+ *      档位标签必须逐字写出来，浮层再用一句「关闭思考」注解它。 * 6. **供应商信息挂在模型名上**：标题行不再有「供应商」Tag，名字与接口
  *      地址只在悬浮模型名时浮出。「挪进浮层」与「静默删掉」在页面上长得一模一样，故两条分开钉：
  *      一条要浮层里有那句「供应商：名字（地址）」，一条要标题行上**再也找不到**那个名字。
  * 另外「没有产出时不给看改动」与「运行中才给终止」也在这里钉住。
@@ -17,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, act } from '@testing-library/react';
-import { EFFORT_OFF, type EvalRow } from '@aieval/contracts';
+import { CODEX_MCP_DISPATCH_GAP_NOTE, EFFORT_OFF, type EvalRow } from '@aieval/contracts';
 import { EvalRowCard } from './eval-row-card';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
@@ -38,7 +36,7 @@ const row: EvalRow = {
   diff: { filesChanged: 3, insertions: 25, deletions: 7, truncated: false },
   score: null,
   error: null,
-  // 这一行走过几次尝试（2026-09-27，契约新增）：1 = 没重试过（不显示「已重试」徽标）
+  // 这一行走过几次尝试（契约里的可选格）：1 = 没重试过（不显示「已重试」徽标）
   attempts: 1,
 };
 
@@ -52,14 +50,14 @@ const handlers = {
 };
 
 /**
- * 两档失败归因（2026-09-28 起 `EvalRow.error` 多了一格 `stage`）：它今天只用于**叙述**
+ * 两档失败归因（`EvalRow.error` 的 `stage` 一格）：它只用于**叙述**
  * （界面上不显示，也不参与任何按钮的可用性判定）。两档的行状态与错误码可以逐字相同
  * （都是 `failed` + `AGENT_FAILED`），只有这一格不同——故本文件用它们当**形状齐全**的两条夹具，
- * 而不是当「哪条路该给哪个按钮」的依据（那个依据 2026-09-28 晚间已经取消）。
+ * 而不是当「哪条路该给哪个按钮」的依据（那个依据已取消）。
  */
 const judgeFailed: EvalRow['error'] = { code: 'JUDGE_PARSE_FAILED', message: '评分模型返回的不是合法 JSON', stage: 'judge' };
 const agentFailed: EvalRow['error'] = { code: 'AGENT_FAILED', message: 'Codex Exec exited with code 1', stage: 'agent' };
-/** 老快照：`stage` 是 2026-09-28 才加的，磁盘上已有的记录读出来是 undefined */
+/** 老快照：磁盘上已有的记录没有 `stage` 这一格，读出来是 undefined */
 const legacyFailed: EvalRow['error'] = { code: 'AGENT_FAILED', message: '老记录没有失败阶段' };
 
 // 终止走 Popconfirm ⇒ 浮层对齐要 ResizeObserver + matchMedia（jsdom 两个都没有），
@@ -88,9 +86,8 @@ function buttonByText(text: string): HTMLButtonElement {
  * 断言**在任何实现下都为真**：`title` 是 `undefined` 时它为真，`title` 挂着一句真原因时**它同样为真**
  * ——浮层还没到出场时间。它测的不是实现，是时序，等于没写。
  *
- * 这不是推演，是变异验证实测出来的：把 `rescoreHint` 改成**无条件**给出原因（正是 :445 那条用例声称
- * 要拦的缺陷）、或把轮次那一格的 `> 0` 判据删掉，同步断言都**照样绿**；等满一个延迟窗口再判，
- * 两条才分别变红（登记在 spec §3 的 #17 与本文件末尾那段）。
+ * 两条断言都有区分力：把 `rescoreHint` 改成**无条件**给出原因（正是下面那条用例声称要拦的缺陷）、
+ * 或把轮次那一格的 `> 0` 判据删掉，同步断言**照样绿**，等满一个延迟窗口再判才会红。
  * 本仓 `metric-line.test.tsx` 与 `ellipsis-text.test.tsx` 也各登记过同一件事（后者写明
  * 「`.ant-tooltip` 那一句单独不构成守卫」）。
  *
@@ -139,6 +136,75 @@ describe('EvalRowCard', () => {
     expect(screen.getByText('diff 已截断')).toBeInTheDocument();
   });
 
+  /**
+   * 卡片上的「**本行 MCP**」：逐台给结论，来源与判据在浮层里。
+   *
+   * 为什么要在卡片上（而不只在环境抽屉里）：抽屉要三步才打开（执行日志 → 环境 → 找到那一格），
+   * 而「这一行的 MCP 到底装上没有」是横向比较候选时要看的一格——与 tok / 耗时同级。
+   * 三态各自可辨：**没观测**（格缺席）不画这一行、`[]` 画「0 台」、非空逐台。
+   */
+  it('本行 MCP：逐台给结论（来源与判据在浮层里）；`[]` 画「0 台」，格缺席时不画这一行', () => {
+    const { unmount } = render(
+      <EvalRowCard
+        row={{
+          ...row,
+          mcpServers: [
+            { name: 'playwright', source: 'dynamic', judgedBy: 'vendor-tool-table', verdict: 'connected' },
+            { name: 'context7', source: 'unknown', judgedBy: 'none', verdict: 'skipped' },
+          ],
+        }}
+        {...handlers}
+      />,
+    );
+    expect(screen.getByText('本行 MCP')).toBeInTheDocument();
+    // 结论用契约里的中文标签（不在这里抄第二份词表）
+    expect(screen.getByText('playwright 已连上')).toBeInTheDocument();
+    expect(screen.getByText('context7 已跳过')).toBeInTheDocument();
+    unmount();
+
+    // `[]` = 观测了、确实一台都没有：这一格必须在场（否则「零台」与「没观测」在卡片上同形）
+    render(<EvalRowCard row={{ ...row, mcpServers: [] }} {...handlers} />);
+    expect(screen.getByText('本行 MCP：0 台')).toBeInTheDocument();
+  });
+
+  /**
+   * **codex 的能力缺口要跟着它自己那条结论走**（「写进界面提示与文档，不藏起来」）。
+   *
+   * `connected` 在 codex 上只到「启动状态 ready」——工具**调不动**（上游网关拍平命名空间）。
+   * 浮层里那句解释只在 codex 行上出现：跟着所有人显示会把这句提示读成噪声，而不显示则会让
+   * 「probe 已连上」被读成「工具能用」。文案取契约里那份共用常量（界面与知识库同一份）。
+   */
+  it('codex 行的 MCP 浮层里带能力缺口说明；另两家不带', async () => {
+    const codexRow: EvalRow = {
+      ...row,
+      agentKind: 'codex',
+      mcpServers: [{ name: 'probe', source: 'unknown', judgedBy: 'vendor-startup-status', verdict: 'connected' }],
+    };
+    const { unmount } = render(<EvalRowCard row={codexRow} {...handlers} />);
+    // antd 的 Tooltip 有 mouseEnterDelay（默认 0.1s），悬浮之后要等它出场（见 `expectNoTooltip` 的注释）
+    fireEvent.mouseEnter(screen.getByText('probe 已连上'));
+    await waitFor(() =>
+      expect(document.querySelector('.ant-tooltip')?.textContent ?? '').toContain(CODEX_MCP_DISPATCH_GAP_NOTE),
+    );
+    unmount();
+
+    render(
+      <EvalRowCard
+        row={{
+          ...row,
+          agentKind: 'dsh',
+          mcpServers: [{ name: 'probe', source: 'unknown', judgedBy: 'vendor-tool-table', verdict: 'connected' }],
+        }}
+        {...handlers}
+      />,
+    );
+    fireEvent.mouseEnter(screen.getByText('probe 已连上'));
+    await waitFor(() =>
+      expect(document.querySelector('.ant-tooltip')?.textContent ?? '').toContain('来源 unknown · 判据 厂商工具表'),
+    );
+    expect(document.querySelector('.ant-tooltip')?.textContent ?? '').not.toContain(CODEX_MCP_DISPATCH_GAP_NOTE);
+  });
+
   it('不支持的计量显示「不支持计量」而不是 0', () => {
     render(
       <EvalRowCard
@@ -178,7 +244,7 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 跑动期的实时指标透传（用户口径，2026-09-26）。
+   * 跑动期的实时指标透传。
    * 两条都必要：只测「实时值能显示」会漏掉「终态还在用实时值」，
    * 而后者正是「结算值被一个还在涨的秒表/旧估算顶掉」的形状。
    */
@@ -236,7 +302,7 @@ describe('EvalRowCard', () => {
     const onAbort = vi.fn();
     render(<EvalRowCard row={{ ...row, status: 'running' }} {...handlers} onAbort={onAbort} />);
 
-    // 取消：关掉浮层，什么都没发生（对照冒烟 §1 第 16 项对整轮终止的实测）
+    // 取消：关掉浮层，什么都没发生（对照冒烟第 16 项对整轮终止的实测）
     fireEvent.click(screen.getByRole('button', { name: '终止' }));
     fireEvent.click(await screen.findByRole('button', { name: '取消' }));
     expect(onAbort).not.toHaveBeenCalled();
@@ -305,7 +371,7 @@ describe('EvalRowCard', () => {
             judgeEffort: null,
             // false ⇔ 这一分只靠提示词契约拿到（本用例不涉及 schema 通路）
             structuredOutput: false,
-            // 评分自己的花销（2026-10-08）：行卡片不展示这两格
+            // 评分自己的花销：行卡片不展示这两格
             judgeTokens: null,
             judgeDurationMs: null,
           },
@@ -329,16 +395,13 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 按钮顺序（2026-09-28 **用户指定的版面口径**）：执行日志 / 变更详情 / 执行这一行 / 评分详情 / 重新评分。
+   * 按钮顺序（**用户指定的版面口径**）：执行日志 / 变更详情 / 执行这一行 / 评分详情 / 重新评分。
    *
    * 为什么值得单独钉一条：本文件其余用例全按**可访问名**查按钮，顺序被改回去它们照样全绿
-   * （M5 那次把文案改回「重试」时就是靠名字才发现，顺序反而是没人盯的一格）。
+   * ——顺序是没人盯的一格。
    * 顺序是按位置找按钮的使用者的读数习惯，改它必须显式改这一条。
-   *
-   * 两处字面量变更，**位置一格没动**：
-   *   · 「查看改动」→「变更详情」（抽屉重设计，2026-09-29）；
-   *   · 「重新执行」按行态分叉成「开始执行 / 重新执行」——这一格的位置仍是第 3 个（2026-09-29）；
-   *   · 「查看日志」→「执行日志」（执行日志抽屉重设计，2026-10-02）——第 1 个，位置不变。
+   *   * 文案会随抽屉重设计改名，但**位置一格都不动**：第 1 个是执行日志、第 3 个是
+   * 「开始执行 / 重新执行」那一格。
    *
    * 起点用**没跑过**的行（`pending`，没有基线也没有 diff）⇒ 那一格显示「开始执行」。
    * 为什么不断言「数组里必须有这五个」：写了它，将来删掉一个按钮时这条用例会因为
@@ -357,14 +420,14 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 行级「重新评分」的二次确认（Task 7，spec §9 的用户口径）。
+   * 行级「重新评分」的二次确认（用户口径）。
    *
-   * 三条缺一不可：①首点**不发** `onRescore`（它会替换掉现有分数），②确认框要**说清代价**
+   * 三条缺一不可：①首点**不发**`onRescore`（它会替换掉现有分数），②确认框要**说清代价**
    * （候选 agent 不会再跑、旧分会被替换），③确认之后才真的发出去。少了第 ① 条，一次误点就会
    * 静默重算；少了第 ② 条，使用者不知道自己的旧分正在被丢掉。
    *
    * ⚠️ 起点用「评分阶段失败」的行（判据不读这一档，只是这条夹具形状齐全：跑过 + 有基线 + 有 diff）。
-   * 它**不必**是评分失败——2026-09-28 晚间口径放开之后，已经出分的行同样可点（见下面那组正面用例）。
+   * 它**不必**是评分失败——判据放开之后，已经出分的行同样可点（见下面那组正面用例）。
    */
   it('点「重新评分」先弹确认框且首点不发请求，确认框说清「候选不会再跑、旧分会被替换」', async () => {
     const onRescore = vi.fn();
@@ -395,13 +458,13 @@ describe('EvalRowCard', () => {
   /**
    * 可用性判据与**服务端同一份**（contracts 的 `canRescoreRow`）：两处各写一份必然漂移，
    * 而漂移的表现是「按钮可点、点下去 409」。这里钉住每个否定面**以及它对应的原因文案**
-   * ——禁用而不解释等于一个坏掉的按钮（spec §9.2）。
+   * ——禁用而不解释等于一个坏掉的按钮。
    *
-   * ⚠️ 这组用例**验不出文案是否真的能看见**（终审 FIX-6 实测的教训）：真实浏览器里鼠标悬浮禁用态的
+   * ⚠️ 这组用例**验不出文案是否真的能看见**：真实浏览器里鼠标悬浮禁用态的
    * 「重新评分」时，Tooltip 的直接子节点若是 `Popconfirm` 组件，浮层**根本不出现**；而 jsdom 里
    * `fireEvent.mouseEnter(button)` 是直接派发到按钮上的合成事件，会照常沿 React 树冒泡上去 ⇒
-   * 下面这几条断言在两种结构下都绿。**改动这一处之后必须在真实浏览器里悬浮一次**（见
-   * `eval-row-card.tsx` 里那段注释与冒烟记录）。
+   * 下面这几条断言在两种结构下都绿。**改动这一处之后必须在真实浏览器里悬浮一次**
+   * （见 `eval-row-card.tsx` 里那段注释）。
    */
   it('没跑过的行（无 diff）不给重评，并说明原因', async () => {
     render(<EvalRowCard row={{ ...row, status: 'pending', diff: null, baselineCommit: '' }} {...handlers} />);
@@ -434,7 +497,7 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * **2026-09-28 晚间口径**（用户：「已出分、无报错时取消禁用」）落在界面上的两条正面：
+   * 用户口径「已出分、无报错时取消禁用」落在界面上的两条正面：
    *   · 已经出分的行 ⇒ **两个按钮都可点**（这是这次改动的全部目的）；
    *   · 候选 agent 阶段失败的行 ⇒ 也可点（判据不再看失败阶段）。
    * 误点的代价由各自的 `Popconfirm` 承担，不由 `disabled` 承担——下一条用例钉住那个确认框。
@@ -483,11 +546,10 @@ describe('EvalRowCard', () => {
     /**
      * 阴性面：`title={undefined}` 时 antd 不建浮层。
      *
-     * ⚠️ 这一条**曾经是没有区分力的**（2026-10-04 T2 复核实测）：原来写的是悬浮后**同步**查
-     * `.ant-tooltip`，而 antd 的浮层要等 `mouseEnterDelay`（默认 0.1s）才进 portal ⇒ 那句断言在任何
-     * 实现下都为真。把 `rescoreHint` 改成**无条件**给出原因（也就是这条用例声称要拦的缺陷）之后，
-     * 它**照样绿**——旧注释写的「少了这条…照样绿」恰好说反了：**加上**这条也照样绿。
-     * 现在走 `expectNoTooltip()`（等满一个延迟窗口再判）：同一个缺陷会让浮层在窗口内落定 ⇒ 当场变红。
+     * ⚠️ 判据必须走 `expectNoTooltip()`（等满一个延迟窗口再判）：悬浮后**同步**查
+     * `.ant-tooltip` 的话，antd 的浮层要等 `mouseEnterDelay`（默认 0.1s）才进 portal ⇒ 那句断言在任何
+     * 实现下都为真（把 `rescoreHint` 改成**无条件**给出原因也照样绿）。等满窗口之后，
+     * 同一个缺陷会让浮层在窗口内落定 ⇒ 当场变红。
      */
     await expectNoTooltip();
   });
@@ -515,14 +577,12 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 行级「执行」（2026-09-27 引入为「重新执行」，2026-09-28 改过文案与可用面，
-   * 2026-09-29 按用户口径「只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」**再放开一档**）：
+   * 行级「执行」（按用户口径「只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」放开）：
    * 与「重新评分」并列的第二条出口。
    *
    * 为什么必须是**两个**按钮：要跑候选 agent（分钟级）与只重跑评分（几十秒）的处置与成本都不同，
    * 合成一个按钮等于让人按下去才知道跑的是哪一段。这一组钉住：
-   *   · 跑过的行 ⇒ 「重新执行」+ 确认框说清「候选 agent 也会重跑」「只跑这一行」；
-   *   · **没跑过的行 ⇒ 「开始执行」且可点**（首跑出口，2026-09-29 新增的那一档）+ 确认框说清
+   *   · 跑过的行 ⇒ 「重新执行」+ 确认框说清「候选 agent 也会重跑」「只跑这一行」；   * · **没跑过的行 ⇒ 「开始执行」且可点**（首跑出口）+ 确认框说清
    *     「本轮其他行都不会重跑」；
    *   · 在跑的行 ⇒ 禁用并给出原因。
    */
@@ -555,8 +615,8 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * **2026-09-29 口径修订的正面**（用户原话：「重新执行，只执行当前候选项，不要完成后重新执行下方
-   * 已经执行过的候选项」）：没跑过的行那一格从「禁用 + 请先点『开始』」变成「**开始执行**且可点」。
+   * **首跑出口的正面**（用户原话：「重新执行，只执行当前候选项，不要完成后重新执行下方
+   * 已经执行过的候选项」）：没跑过的行那一格是「**开始执行**且可点」。
    *
    * 这一条钉三件事，缺一条这个功能就等于没做：
    *   ① 文案是「开始执行」而不是「重新执行」（没跑过的行说「重新」字面上就不通）；
@@ -610,7 +670,7 @@ describe('EvalRowCard', () => {
   /**
    * 「跑过没有」的判据是 `canRetryRow`（**两条**都要满足：有可比基线 + 有产出），不是「基线有没有」。
    * 只有一条成立的行（prepare 成功过、但候选 agent 阶段没产出 diff）仍然算首跑：
-   * 这一档过去被「重新执行」判据挡着，只能靠「开始」跑——正是 2026-09-29 要解决的那个形状。
+   * 这一档若被「重新执行」判据挡着，就只能靠「开始」跑整轮——那正是首跑出口要解决的形状。
    */
   it('有基线但没产出 diff 的行也算首跑：文案「开始执行」且可点', () => {
     render(<EvalRowCard row={{ ...row, status: 'failed', error: agentFailed, diff: null }} {...handlers} />);
@@ -660,7 +720,7 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * `attempts` 的可视化（2026-09-27）：瞬时失败是**自动重试**的，不标出来的话
+   * `attempts` 的可视化：瞬时失败是**自动重试**的，不标出来的话
    * 「试了三次才成功」与「一次就成功」在卡片上长得一模一样——而那两件事的含义完全不同
    * （一个说明上游不稳，一个说明一切正常）。
    */
@@ -675,7 +735,7 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 思考强度的可视化（spec D12 / §7 第 4 条）：有意选了档的行必须看得出来。
+   * 思考强度的可视化（/  第 4 条）：有意选了档的行必须看得出来。
    * 没有这一格，横向对比就会把「跑 max 的行」与「跑默认档的行」并排展示而**不加区分**——
    * 那正是「分高的那一行可能是模型更强，也可能只是它跑了更高档」这件事在界面上消失的地方。
    */
@@ -691,7 +751,7 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 显式关闭档（2026-10-07 口径）：档位一律照上游词汇原样显示，`off` 就写 `off`。
+   * 显式关闭档：档位一律照上游词汇原样显示，`off` 就写 `off`。
    * 靶子是**这一格还在**：把关闭档并进「没说」那一支（`row.effort === undefined || === EFFORT_OFF`）
    * 这条用例就红——「我要求关掉思考」与「我没选、由适配器决定」必须分得开，关掉思考这件事
    * 只有写出来才看得见（浮层里的「关闭思考」是它的注解，见下一条）。
@@ -702,9 +762,9 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 档位浮层的文案（2026-10-07 用户口径）：写成一行「思考强度：<档>」——标签上已经写着档位名，
+   * 档位浮层的文案：写成一行「思考强度：<档>」——标签上已经写着档位名，
    * 浮层再说一遍「这一行**要求的**思考强度」是把同一件事说两遍。
-   * 靶子是那句**逐字**的文案：留着旧那句（或改成别的措辞）这条用例就红。
+   * 靶子是那句**逐字**的文案：换一种措辞这条用例就红。
    */
   it('行上写了档位 ⇒ 浮层写「思考强度：high」', async () => {
     render(<EvalRowCard row={{ ...row, effort: 'high' }} {...handlers} />);
@@ -715,9 +775,9 @@ describe('EvalRowCard', () => {
   });
 
   /**
-   * 关闭档的 Tooltip 也要说清它是什么（2026-10-07 用户口径：文案压到最短）：标签上已经是 `off`，
+   * 关闭档的 Tooltip 也要说清它是什么（文案压到最短）：标签上已经是 `off`，
    * 浮层若照普通档抄一遍只把用户看不懂的词重复一遍，故写「关闭思考」。
-   * 靶子是那句**逐字**的文案：留着旧那句（「这一行要求关闭思考」）这条用例就红。
+   * 靶子是那句**逐字**的文案：换成别的措辞这条用例就红。
    */
   it('显式 off 的行：Tooltip 写「关闭思考」，不是重复一遍 off', async () => {
     render(<EvalRowCard row={{ ...row, effort: EFFORT_OFF }} {...handlers} />);
@@ -730,7 +790,7 @@ describe('EvalRowCard', () => {
 });
 
 /**
- * 供应商信息的位置（2026-10-07 用户口径）：标题行不再有「供应商」Tag，只留
+ * 供应商信息的位置：标题行不再有「供应商」Tag，只留
  * 智能体 · 模型 · 思考强度；供应商名与接口地址改挂在**模型名**上，鼠标移入才浮出。
  * 两面分开钉：只钉「浮层里有」那一面的话，把 Tag 留着照样全绿，而「悬浮能看到」与
  * 「一眼占着标题行」是两种版面。
@@ -753,7 +813,7 @@ describe('EvalRowCard：供应商信息挂在模型名上', () => {
 });
 
 /**
- * 卡片底部的**活动行**（用户口径，2026-09-29）：跑动期显示智能体最近一条输出、文字上有一条
+ * 卡片底部的**活动行**：跑动期显示智能体最近一条输出、文字上有一条
  * 周期性扫过的高光；终态整行消失。四条口径各自有靶子：
  *   ① 判据必须是 `row.status`：终态还挂着「正在思考」比不显示更糟，而「传没传 `live`」不能当判据
  *      ——历史还没拉回来的跑动行同样要显示（第三条）；
@@ -805,7 +865,7 @@ describe('EvalRowCard 底部的活动行', () => {
 });
 
 /**
- * **卡片 → Tooltip 的透传**（Task 8 评审补的守卫，2026-10-04）。
+ * **卡片 → Tooltip 的透传**。
  *
  * 为什么非要有这一条：本文件其余夹具的 `subagentTokens` 全是 `null`（那一格是后加的，夹具只需
  * 形状齐全），于是 `eval-row-card.tsx` 里那行 `subagentTokens={row.subagentTokens}` 写成
@@ -816,7 +876,7 @@ describe('EvalRowCard 底部的活动行', () => {
  * 浮层判据与 `metric-line.test.tsx` 同一套：hover 打开（`fireEvent.mouseEnter`），
  * 依赖文件顶部那个 `installResizeObserverStub()`（jsdom 没有 ResizeObserver，浮层对齐会抛）。
  */
-describe('EvalRowCard：子智能体那一份透传到 Tooltip（spec 2026-10-04 §2.5）', () => {
+describe('EvalRowCard：子智能体那一份透传到 Tooltip', () => {
   it('行上有分量时，卡片的 tok 浮层是两行（主会话 = 合计 − 分量）', async () => {
     render(
       <EvalRowCard
@@ -837,7 +897,7 @@ describe('EvalRowCard：子智能体那一份透传到 Tooltip（spec 2026-10-04
 });
 
 /**
- * **卡片 → 「轮次」浮层的透传**（2026-10-04，与上面那条 token 透传守卫同源）。
+ * **卡片 → 「轮次」浮层的透传**（与上面那条 token 透传守卫同源）。
  *
  * 为什么非要有这一条：本文件其余夹具的 `subagentTurns` 都是 `null` / 缺格（那一格是后加的），
  * 于是 `eval-row-card.tsx` 里那行 `subagentTurns={row.subagentTurns}` 写成 `row.turns`、
@@ -849,7 +909,7 @@ describe('EvalRowCard：子智能体那一份透传到 Tooltip（spec 2026-10-04
  * 浮层判据与 `metric-line.test.tsx` 同一套：hover 打开（`fireEvent.mouseEnter`），
  * 依赖 `ResizeObserver` 桩（jsdom 没有它，浮层对齐会抛 ⇒ 浮层永不出现）。
  */
-describe('EvalRowCard：子智能体的轮次透传到 Tooltip（spec 2026-10-04 §2.5）', () => {
+describe('EvalRowCard：子智能体的轮次透传到 Tooltip', () => {
   /** 这一组自带桩与解除：与 `metric-line.test.tsx` 最后一段同一对（桩会影响整个文件的全局） */
   beforeEach(() => {
     installResizeObserverStub();

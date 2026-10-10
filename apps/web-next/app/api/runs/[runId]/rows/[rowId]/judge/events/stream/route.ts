@@ -1,12 +1,12 @@
 /**
- * 行级**评分事件流** SSE（2026-10-10）：`judge-events.jsonl` 的历史回放 + 实时扇出，
- * 与 `../../stream`（执行日志）**分开**。评审者的原始输出因此不再混进执行日志那条流。
+ * 行级**评分事件流**SSE：`judge-events.jsonl` 的历史回放 + 实时扇出，
+ * 与 `../../stream`**分开**。评审者的原始输出因此不再混进执行日志那条流。
  *
  * 三处与执行日志那条**逐字相同**的口径（理由见 `../../stream/route.ts`）：
- *   1. 响应头四件套（含给反向代理的 `X-Accel-Buffering: no`）；
- *   2. `afterSeq` 的来源优先级：`Last-Event-ID` 头 > `?afterSeq=`；**注意这条流的 `seq` 是独立一套**，
- *      游标不许拿执行日志的号来续；
- *   3. `runtime = 'nodejs'`：事件总线是**进程内**的（§11 R6）。
+ * 1. 响应头四件套（含给反向代理的 `X-Accel-Buffering: no`）；
+ * 2. `afterSeq` 的来源优先级：`Last-Event-ID` 头 > `?afterSeq=`；**注意这条流的 `seq` 是独立一套**，
+ * 游标不许拿执行日志的号来续；
+ * 3. `runtime = 'nodejs'`：事件总线是**进程内**的。
  */
 import { streamJudgeEvents } from '@aieval/api';
 import { handleApiError } from '@/src/server-context';

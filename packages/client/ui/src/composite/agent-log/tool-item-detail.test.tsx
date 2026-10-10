@@ -55,8 +55,8 @@ function orphanResult(overrides: Partial<OrphanToolResult> = {}): OrphanToolResu
 
 describe('ToolItemDetail', () => {
   /**
-   * 行首那一块牌子的口径（2026-10-10 用户口径）：`Bash` 与「跑命令」是同一件事的两种说法，
-   * **二选一、族名优先，且都在行首**——改前是「工具名在行首、族 Tag 在行尾」，一行里说两遍。
+   * 行首那一块牌子的口径：`Bash` 与「跑命令」是同一件事的两种说法，
+   * **二选一、族名优先，且都在行首**——「工具名在行首、族 Tag 在行尾」是一行里说两遍。
    * 这条闸同时钉住「工具名没有被丢掉」：它原样落到展开后的正文。
    */
   it('行首是族名（人话）、工具名落到展开后的正文，参数摘要照旧', () => {
@@ -147,7 +147,7 @@ describe('ToolItemDetail', () => {
   /**
    * 标题（摘要行）**先给模型自己写的那句话**（`input.description`），没有才回落参数原文首行。
    *
-   * 为什么必须钉（2026-10-10 真机）：dsh 的 `pwsh` 把 `{command, description}` 一起送来，
+   * 为什么必须钉（真机）：dsh 的 `pwsh` 把 `{command, description}` 一起送来，
    * 照原文首行渲染就是 1495px 宽的一整串 JSON——而「这一步在干什么」只在 `description` 里。
    * 这条闸拦的是「又退回照原文首行渲染」：那是**看不出错**的回归（字都在，只是没法读），
    * 所以两半都要断言——摘要行有人话，且**摘要行里没有那串 JSON**。
@@ -171,7 +171,7 @@ describe('ToolItemDetail', () => {
   });
 
   /**
-   * 摘要行的**第一档**是数据层算好的 `tool-call.summary`（2026-10-10 口径变更：
+   * 摘要行的**第一档**是数据层算好的 `tool-call.summary`（口径：
    * 词表真源收在 `@aieval/agents` 的 `activity.ts`，界面按分层表不许 import 它）。
    *
    * 为什么必须钉：这一档一旦失效，界面会**静默**退回自己抽 `description` 的老路——
@@ -260,7 +260,7 @@ describe('ToolItemDetail', () => {
 
     expect(screen.getByText('结构化结果')).toBeInTheDocument();
     expect(container.textContent).toContain('totalLines');
-    // 2026-10-04：这一格与其它 JSON 原文同档（`JsonText`）——缩进 + 高亮都得真的落到节点上
+    // 这一格与其它 JSON 原文同档（`JsonText`）——缩进 + 高亮都得真的落到节点上
     expect(container.querySelectorAll('[data-json-token]').length).toBeGreaterThan(0);
     unmount();
 

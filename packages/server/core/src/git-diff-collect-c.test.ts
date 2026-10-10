@@ -30,7 +30,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
    * 用例造一个**文件名里就含 `diff --git `** 的文件——计数行是 `2\t0\tdiff --git fake.txt`，
    * 那个子串出现在行中而不是行首。切分点改成按子串找（`indexOf('diff --git ')`）时会在这里提前切断：
    * 计数段只剩 `2\t0\t`（路径解析成空串）、正文段以一个不存在的文件名开头。
-   * 变异验证：把切分改成 `indexOf` 后这条**确实红**（不是恒绿的空转）。
+   * 变异验证：把切分改成 `indexOf` 后这条**确实红**。
    */
   it('二进制文件的两列是 `-`：按 0/0 计，绝不把 NaN 带进三个计数', () => {
     const { dir, base } = makeRepo('aieval-diff-binary-');
@@ -43,7 +43,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     expect(result.files.map((file) => file.path)).toContain('blob.bin');
     expect(result.files[0]?.insertions).toBe(0);
     expect(result.files[0]?.deletions).toBe(0);
-    // 关键：不能是 NaN——NaN 会污染 p5 的展示与落盘 JSON，三个计数一起废
+    // 关键：不能是 NaN——NaN 会污染界面的展示与落盘 JSON，三个计数一起废
     expect(Number.isNaN(result.insertions)).toBe(false);
     expect(Number.isNaN(result.deletions)).toBe(false);
     expect(result.insertions).toBe(0);
@@ -70,7 +70,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     // git 只在两条路径没有公共前后缀时才写 `old => new`；有公共前后缀时写成 `prefix/{old => new}/suffix`
     // （本机实测于 git 2.47：`0\t0\tpackages/{old => new}/x.ts`）。
     // 切掉最后一个 `=>` 之前的全部内容的实现会得到 `new/x.ts`——一个根本不存在的路径：
-    // p5 的文件树会渲染出幽灵条目，两个不同目录下的同名重命名还会在 R22 的按路径去重里撞成一个键。
+    // 界面的文件树会渲染出幽灵条目，两个不同目录下的同名重命名还会在按路径去重里撞成一个键。
     const { dir } = makeRepo('aieval-diff-rename-sub-');
     git(dir, 'config', 'diff.renames', 'true');
     mkdirSync(join(dir, 'packages', 'old'), { recursive: true });
@@ -92,7 +92,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     expect(result.insertions).toBe(0);
     expect(result.deletions).toBe(0);
   });
-  it('同一路径既已提交又未提交：只算一行，行数是两段之和（R22）', () => {
+  it('同一路径既已提交又未提交：只算一行，行数是两段之和', () => {
     const { dir, base } = makeRepo('aieval-diff-same-path-');
     writeFileSync(join(dir, 'a.txt'), 'hello\ncommitted\n', 'utf8');
     git(dir, 'add', 'a.txt');
@@ -119,17 +119,17 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     }
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INTERNAL');
-    // 用户文案必须是中文的（spec §10 不允许把 git 的英文原文当用户文案）
+    // 用户文案必须是中文的（不允许把 git 的英文原文当用户文案）
     expect((caught as Error).message).toContain('读取已提交改动失败');
     // 但 git 的原文必须留在 context 里供排查
     expect((caught as ServiceError).context).toMatchObject({
       gitMessage: expect.stringContaining('deadbeef') as unknown as string,
     });
   });
-  it('空基线（空串 = 尚未准备，R2）直接抛中文 INTERNAL，绝不降级成 `HEAD..HEAD` 的空 diff', () => {
+  it('空基线（空串 = 尚未准备）直接抛中文 INTERNAL，绝不降级成 `HEAD..HEAD` 的空 diff', () => {
     // `git diff ..HEAD` 是合法的：git 把它当成 `HEAD..HEAD`，退出码 0、输出为空（本机实测 git 2.47）。
     // 于是「准备阶段失败、baselineCommit 还空着」的行会拿到一份**看起来没改动**的 diff 并照常打分——
-    // spec §3 F6 最坏的那类失败（静默给出错误的高分），而调用方从返回值里看不出基线是空的。
+    // 最坏的那类失败（静默给出错误的高分），而调用方从返回值里看不出基线是空的。
     const { dir } = makeRepo('aieval-diff-emptybase-');
     writeFileSync(join(dir, 'a.txt'), 'hello\nagent 的改动\n', 'utf8');
 
@@ -142,7 +142,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INTERNAL');
     expect((caught as Error).message).toContain('基线');
-    // 纯空白同样不是合法基线（R2 只把 `''` 定义为「尚未准备」，空白串连语义都没有）
+    // 纯空白同样不是合法基线（只有 `''` 是「尚未准备」，空白串连语义都没有）
     expect(() => collectDiff(dir, '   ')).toThrow(ServiceError);
   });
 });

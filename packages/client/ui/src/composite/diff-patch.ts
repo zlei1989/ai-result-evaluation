@@ -78,7 +78,7 @@ export function reconstructSides(patch: string): { oldValue: string; newValue: s
     }
   }
 
-  // **不做「把短的一侧补空串到等长」**（这一条曾按计划写成口径③，是错的，2026-09-29 修正）：
+  // **不做「把短的一侧补空串到等长」**（理由见下面那条用例）：
   // 组件不是按下标逐行比较两侧字符串，而是把两个字符串**重新做一次 diff**
   // （`diff.diffLines(old, new, { newlineIsToken: false })`）。
   // 补空串会让两侧**结尾不同**（一侧以 `\n` 收尾、另一侧以内容收尾），jsdiff 于是把尾部重新配对，

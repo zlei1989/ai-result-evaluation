@@ -5,7 +5,7 @@
  * 逐条验（每条都打印原始形态，不下结论在前）：
  *   ① 侧链 `assistant` 消息（`parent_tool_use_id` 非空）的 `message.usage` —— 在不在？是不是全 0 快照？能不能按
  *      `message.id` 去重求出「该子会话到目前」的累计？
- *   ② `system/task_notification` 的 `usage`（spec v3 的表里登记过 `total_tokens` / `tool_uses` / `duration_ms`
+ *   ② `system/task_notification` 的 `usage`（登记过 `total_tokens` / `tool_uses` / `duration_ms`
  *      —— 到底是哪些键？够不够填 input/cached/output 三元组？）；
  *   ③ `result.usage` 的覆盖面：把主循环逐条按 id 求和、子链逐条按 id 求和，看 `result.usage` 等于哪一个；
  *   ④ `result.modelUsage`（按模型的合计）的覆盖面与键名；

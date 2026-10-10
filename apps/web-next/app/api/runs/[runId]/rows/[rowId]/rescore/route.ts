@@ -1,4 +1,4 @@
-/** 重新评分：POST。只重跑评分步骤，不重跑候选 agent（spec §9）。 */
+/**重新评分：POST。只重跑评分步骤，不重跑候选 agent。 */
 import { rescoreRow } from '@aieval/api';
 import { handleApiError } from '@/src/server-context';
 

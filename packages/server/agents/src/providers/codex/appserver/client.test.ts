@@ -187,7 +187,7 @@ describe('createAppServerClient —— 帧与配对', () => {
   it('close 之后请求立即拒绝，且**整棵进程树**被回收', async () => {
     const { client, child, killedTrees } = harness();
     await client.close();
-    // 判据是「按 pid 走了杀树那条路」，不是「调过 child.kill()」——后者正是 2026-10-07 那个 EPERM 的成因
+    // 判据是「按 pid 走了杀树那条路」，不是「调过 child.kill()」——后者正是那个 EPERM 的成因
     expect(killedTrees).toEqual([child.pid]);
     await expect(client.request('thread/list', {})).rejects.toThrow(/已关闭/);
   });

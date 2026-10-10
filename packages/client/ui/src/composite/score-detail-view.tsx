@@ -11,7 +11,7 @@
  *   4. 判定与评分表按**引用键**对齐；评分表里有而判定里没有的项**显式标出**（不静默跳过）
  *      ——那种「看起来正常」的表格比报错危险得多；
  *   5. 原始返回必须可见（解析失败时它是判断「提示词问题还是模型问题」的唯一线索），但**不占正文高度**：
- *      正文在**二级抽屉**里整段看，入口按钮**挂在主抽屉的 `footer`** 上（2026-10-03 立、2026-10-04 改），
+ *      正文在**二级抽屉**里整段看，入口按钮**挂在主抽屉的 `footer`** 上，
  *      正文里既没有标题也没有按钮；开合态**受控**（`rawOpen` / `onRawOpenChange`）——入口在页面那一层，
  *      状态只能由页面持（切行 / 关抽屉时也要能一起收掉，见 `apps/web-next/app/runs/page.tsx`）；
  *      正文由 `JsonText` 渲染：是 JSON 就缩进格式化 + 高亮，不是就逐字原样；
@@ -22,7 +22,7 @@
  *   7. **顶部那两行说的是「这一分是谁打的、花了多少」**——全部取自 `score` 自己的五格
  *      （`judgeAgentKind` / `judgeModelId` / `judgeEffort` / `judgeTokens` / `judgeDurationMs`），
  *      形态沿用「无标题、两行」（第一行身份、第二行用量 / 耗时，理由见正文那段注释）。
- *      ⚠️ **2026-10-08 用户口径**：这一整段此前是**被评那一行**的执行信息（`EvalRow` 的五格），
+ *      ⚠️ 这一整段是**评分自己**的花销，不是被评那一行（`EvalRow` 的五格）——
  *      而抽屉叫「评分详情」——读者拿执行的花销去理解评分，两件事差了整整一个阶段（`EvalRow.durationMs`
  *      契约里就写明不含评分阶段）。故候选那五格**不再进这个抽屉**（行卡片与执行日志里都有），
  *      评分的两格由两条评分通路**在评分时落盘**（见 `contracts/src/score.ts` 的 `judgeTokens`）。
@@ -159,7 +159,7 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
     <Flex vertical gap={16} style={{ padding: 16 }}>
       {/* 评分运行信息（口径 7）：这一段说的是**这一分**——谁打的（评分智能体 / 评分模型 / 强度）
           与花了多少（用量 / 耗时），五格全部取自 `score`。**不写标题、并成两行**（形态沿用用户
-          2026-10-07 晚口径；内容按 2026-10-08 口径整段换成评分的花销）：
+          内容说的是评分的花销）：
           原来那五行 `Descriptions` 连标题一起占掉一百多像素，而这一段一个取数也没有——它只是把
           **已经落盘**的字段摊开给人核对。标题删掉之后「这一格是谁的」靠标签自带的「评分」二字承担
           （「评分智能体」「评分模型」），抽屉本身又叫「评分详情」，故不需再写一行小标题。
@@ -167,7 +167,7 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
           第二行放「花了多少」（用量 / 耗时）——自然折行会把用得最多的那一格（用量）挤到第一行、
           把「耗时」甩到第二行单独挂着，量化信息就散了。每一行自己 `wrap`：抽屉更窄时行内折，
           不横向溢出。
-          **第一行那三个值走 antd `Tag`、一色一格**（用户 2026-10-07 晚口径）：评分智能体 `blue`、
+          **第一行那三个值走 antd `Tag`、一色一格**：评分智能体 `blue`、
           评分模型 `geekblue`、思考强度 `purple`。标签留在 Tag **外面**、仍是次要色文字
           ——一个 Tag 里塞两种语义（谁是标签、谁是值）会让人一眼读不出来。`purple` 与评测行卡片上
           那个档位 Tag（`eval-row-card.tsx`）同色：同一个档位在本仓的四处展示点长得一样。
@@ -219,7 +219,7 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
           <Flex vertical gap={4} key={`${groupIndex}-${group.name}`}>
             <Typography.Text strong>{group.name}</Typography.Text>
             <Table<ScoreRow>
-              // 紧凑尺寸与 `rubric-table` 的只读形态同口径（用户 2026-10-03 口径）
+              // 紧凑尺寸与 `rubric-table` 的只读形态同口径
               size="small"
               // 分页在这一页没有意义（一张表就是一组，最多十几行），关掉省一截高度
               pagination={false}
@@ -246,7 +246,7 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
       </Flex>
 
       {/* 记账那一行（口径 7 之后剩下的两格）：**身份与强度已经在顶部那一段里了**，这里不再重复
-          （2026-10-08 用户口径：那一段整段换成评分的五格 ⇒ 旧版这里那句「评分智能体：X · 模型：Y ·
+          （那一段写的是评分的五格 ⇒ 这里不再有「评分智能体：X · 模型：Y ·
           思考强度：Z」与顶部说的是同一件事，两处各排一套只会互相争夺注意力）。
           留下的两格是我们这一侧的**执行事实**：
           「输出约束」= `score.structuredOutput`（spec D10）：**它是骨架按该家能力算出的结论**——

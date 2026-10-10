@@ -28,7 +28,7 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 **内置工具交集**（精确同名）：dsh ∩ codex = `create_goal` / `get_goal` / `update_goal` / `web_search`；claude 与另两家**精确同名交集为空**；三家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10），能力声明必须带前提。**别名要逐个登记**：真机这批数据里 dsh 跑命令用的是 `bash` 而不是表里原有的 `pwsh`（7 次调用全是 `bash`），漏登记不会报错、只会让摘要退化成紧凑 JSON 且族标签消失 ⇒ 别名由 `tool-family.test.ts` 逐字钉住。
 
-**叙述性字段（「模型自己写的一句话」）三家不一致**（2026-10-10 协议核查，一手证据：官方 SDK 类型、`codex app-server generate-ts` 的生成物、DSH `tool-catalog` 与本地包 schema）：
+**叙述性字段（「模型自己写的一句话」）三家不一致**（一手证据：官方 SDK 类型、`codex app-server generate-ts` 的生成物、DSH `tool-catalog` 与本地包 schema）：
 
 | 家 | 有这一格的工具 | 逐字字段名 | 必填性 | 我们读得到吗 |
 |---|---|---|---|---|
@@ -43,7 +43,22 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 **skill 注入对照**（三家都无编程式注册，skill 只能以文件落盘）：claude 三条加法（项目 `.claude/skills/` / 用户 `$CLAUDE_CONFIG_DIR/skills/` / 插件 `plugins`）+ 两个开关（`settingSources` / `skills`）；dsh 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根 `.dsh/skills/` 自动发现）+ skill 根表 rank；codex 走 `config.mcp_servers` 同款配置面（snake_case）。三家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用）。
 
-**MCP 接法对照**：claude `Options.mcpServers`（经 `--mcp-config` 内联 JSON，4 种传输，stdio **无 `cwd`**）；codex `config.mcp_servers.<name>`（snake_case，传输靠字段推断**无 `type`**，超时 30s/300s）；dsh 一台 server = 一个插件行（封闭方法表 ⇒ 只能走配置文件，2 种传输，`failOnStartupError` 默认 false）。工具名三家一致：`mcp__<server>__<tool>`。
+**MCP 接法对照**（三家注入落点与判据通道均已真机验证；配置面、逐字形状与完整边界见[《MCP 配置》](/features/mcp-config)）：
+
+| 维度 | Claude Code | Codex | DeepSeek Harness |
+|---|---|---|---|
+| 注入通道 | SDK 参数 `Options.mcpServers`（不落 `<configHome>/.claude.json`） | **线程级** `config.mcp_servers`（随 `thread/start`；退路 `$CODEX_HOME/config.toml`） | per-launch overlay（`aieval-route.patch.yml`）的 `insert` 插件行 |
+| 传输名 | `stdio` / `http` | **无 `type`**（靠字段推断） | `stdio` / `streamable-http` |
+| http 的头叫 | `headers` | **`http_headers`** | `headers` |
+| stdio 的 `cwd` | **没有这个字段** | 没有（继承 app-server 的 cwd） | 没有（继承 harness 的 cwd） |
+| 额外格 | — | `startup_timeout_sec`（本仓给 30 s） | `serverName` / `toolCallTimeoutMs` / `failOnStartupError`（默认 false） |
+| 判据来源 | `system/init` 的 `mcp_servers[].status` **+ 工具表**（工具表更硬） | `mcpServer/startupStatus/updated`（带 `error` 原文） | **只有** `request/header` 的 `data.header.tools` |
+| 失败长什么样 | `status: 'failed'` | `startupStatus: 'failed'` + `error` | **静默**：工具消失、会话照常跑完、无结构化错误 |
+| 判据到什么档 | 已连上（工具表里有 `mcp__<name>__`） | **只到「装上了」**——自定义网关下有 `unsupported call` 的上游缺口 | 已连上（表里有 `mcp__<serverName>__*`） |
+
+- 工具名三家一致：`mcp__<server>__<tool>`；**同名优先级只有 claude 实测过**（程序化注入赢、只留一条，`strictMcpConfig` 关闭 ⇒ 不压制仓库自带），codex / dsh 两家**未证实**（均无已知的项目级 MCP 自动发现）。
+- 三家都把各自的厂商信号归一成同一条 `vendor-system` 事件并用 `mcpChannel` 自报通道（`vendor-status` / `vendor-startup-status` / `vendor-tool-table`），行级观测格（`EvalRow.mcpServers`）据此给出 `connected` / `unavailable` / `unverified` / `skipped` 四档结论；**`unverified` 不许写成「已连上」，也不许写成「没有」**。
+- 三家都把行内首次下载的成本留给了行：playwright MCP 首次 **17.2 s / 61 MB**（宿主 registry 是公网时）⇒ 等待预算 ≥ 20 s，缓解手段（行内 `.npmrc` 只写宿主 registry 那一行）三家共用同一处实现。
 
 ## 数据与契约
 
@@ -65,5 +80,5 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 ## 相关链接
 
-- 知识文章：[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
+- 知识文章：[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
 - 活文档：三份厂商 FAQ（[Codex](/faq/codex) / [Claude Code](/faq/claude-code) / [DeepSeek Harness](/faq/deepseek-harness)）——按报错原文 grep

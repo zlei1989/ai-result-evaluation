@@ -1,12 +1,12 @@
 /**
  * 评测产物的按需读取：代码改动（现场算）与执行日志（读 events.jsonl）。
  * 两条口径：
- *   1. **不预先落库**（spec §7.2）：一轮评测的 diff 正文可达数 MB，只在有人打开抽屉时才算；
+ *   1. **不预先落库**：一轮评测的 diff 正文可达数 MB，只在有人打开抽屉时才算；
  *      `EvalRow.diff` 只存计数摘要；
- *   2. 一切都以**该轮自己的 `workspaceBase`** 为根（spec §6.3）：用户改过工作区根目录之后，
+ *   2. 一切都以**该轮自己的 `workspaceBase`** 为根：用户改过工作区根目录之后，
  *      历史评测的产物仍留在旧根目录下——按当前设置去找会「产物明明在、抽屉却是空的」。
  *
- * 另有一条本文件刻意**不做**的事（§11 R36）：`runId` 的形状校验（空串 / 以 `.` 开头 / 含 `/`、`\`、`..`）
+ * 另有一条本文件刻意**不做**的事：`runId` 的形状校验（空串 / 以 `.` 开头 / 含 `/`、`\`、`..`）
  * 已经在 `evaluator/run-store.ts` 的 `getRun` / `saveRun` 入口做掉了，这里只经 `getRunView` 直通——
  * 再写第二份的代价是两份判据漂移，而把形状不对的 id 当成 `NOT_FOUND` 会让「id 脏」与「这一轮不存在」
  * 在排障时无法区分。
@@ -51,7 +51,7 @@ function findRow(run: EvalRun, rowId: string): EvalRow {
   return row;
 }
 
-/** 索引每页默认条数（spec §5.3.4：首帧只渲染一页，其余按滚动追加、已加载的页不回收） */
+/** 索引每页默认条数（首帧只渲染一页，其余按滚动追加、已加载的页不回收） */
 const DIFF_PAGE_DEFAULT = 30;
 /** 索引每页上限：手改 URL 也不能把全量拉回来 */
 const DIFF_PAGE_MAX = 200;
@@ -115,7 +115,7 @@ function evictRowDiffCache(): void {
  *
  * 为什么用 `row.workspacePath` 而不是现算：它是创建这一轮时按**那一轮的根**算出来并落进快照的
  * （`createRun` 与编排层的 `prepareRowWorkspace` 用的是同一个 `core.rowWorkspaceDir`），
- * 拿它定位等于「读快照」，不受「后来改了设置里的 workspaceRoot」影响（Review Focus 2）。
+ * 拿它定位等于「读快照」，不受「后来改了设置里的 workspaceRoot」影响。
  */
 function collectRowDiff(runId: string, rowId: string): CacheEntry {
   const key = `${runId}/${rowId}`;
@@ -214,7 +214,7 @@ export function getRowDiffIndex(runId: string, rowId: string, offset = 0, limit 
 /**
  * 单文件正文。
  *
- * 两条错误必须分开（spec §6.2）：「这个文件不在本次改动里」与
+ * 两条错误必须分开：「这个文件不在本次改动里」与
  * 「它在，但正文被预算丢了」在排障时是两回事——合成一条 NOT_FOUND 会让人以为文件没改过。
  */
 export function getRowDiffFile(runId: string, rowId: string, path: string): RowDiffFile {
@@ -248,7 +248,7 @@ export function getRowDiffFile(runId: string, rowId: string, path: string): RowD
 }
 
 /**
- * 该行的**消息与子任务行**（spec v3 §2，折叠后的最终视图）。
+ * 该行的**消息与子任务行**（折叠后的最终视图）。
  *
  * 与 `getRowLog` 同一处置、**不排序**：`readRowRecords` 逐行读的是一个只追加的文件，
  * 而 `foldMessages` / `foldSubagents` 按**首次出现顺序**输出——那正是「这条逻辑消息第一次被说到」
@@ -280,7 +280,7 @@ export function getRowRecords(runId: string, rowId: string): { messages: AgentMe
  *
  * 排序与 seq 的来源（派发稿的高危口径）：本函数**只读盘、不排序、也不另造 seq**。
  * `readEvents` / `readEventsAfter` 逐行读的是一个**只追加**的文件，而 seq 由 `core.appendEvent`
- * 按「文件里已用的最大 seq + 1」分配（§11 R24），因此文件顺序**恒等于** seq 升序——
+ * 按「文件里已用的最大 seq + 1」分配，因此文件顺序**恒等于** seq 升序——
  * 这正是 SSE 按 `Last-Event-ID` 续订与前端按 seq 去重的前提，在 api 层再排一次只会多一个会漂移的判据。
  */
 export function getRowLog(runId: string, rowId: string, afterSeq?: number): AgentEvent[] {
@@ -302,7 +302,7 @@ export function getRowLog(runId: string, rowId: string, afterSeq?: number): Agen
 }
 
 /**
- * 只做**行存在性校验**、不读任何日志（2026-10-10）。
+ * 只做**行存在性校验**、不读任何日志。
  *
  * 给「不回放历史」的那条 SSE 用（卡片活动行）：它只要「此刻之后」的记录，而把校验一起省掉，
  * 客户端拿到的就不是带原因的 404，而是一条「开了即静默」的连接——那种失败在界面上表现为
@@ -314,7 +314,7 @@ export function assertRowExists(runId: string, rowId: string): void {
 }
 
 /**
- * 该行**评分阶段**的消息与子任务行（2026-10-10）：与 `getRowRecords` 逐字同口径
+ * 该行**评分阶段**的消息与子任务行：与 `getRowRecords` 逐字同口径
  * （折叠、不排序、文件不存在即两个空数组），只是读 `judge-messages.jsonl` 那条**独立的流**。
  *
  * 为什么是独立的一份而不是给 `getRowRecords` 加个筛选参数：两条流记的是**两个会话**
@@ -339,7 +339,7 @@ export function getRowJudgeRecords(runId: string, rowId: string): { messages: Ag
 }
 
 /**
- * 评分阶段的日志（2026-10-10）：与 `getRowLog` 逐字同口径（`afterSeq` 语义、不排序、文件不存在返回 `[]`），
+ * 评分阶段的日志：与 `getRowLog` 逐字同口径（`afterSeq` 语义、不排序、文件不存在返回 `[]`），
  * 只是读 `judge-events.jsonl`。它的 `seq` 是**独立一套**（`appendEvent` 按文件续号），
  * 所以 `afterSeq` 也必须取自这条流自己的号，不能拿行级那条流的游标来续。
  */

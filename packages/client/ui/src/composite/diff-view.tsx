@@ -10,8 +10,8 @@
  *      由它为每个文件挂一份自己的订阅——hook 不能按参数循环调用，故「每文件一个组件实例」
  *      是唯一站得住的形状；
  *   3. **吸顶相对 `.ant-drawer-body`**：抽屉内容区 padding 已置 0 且它自己 `overflow: auto`，
- *      故本组件**不再套第二层滚动容器**——滚动容器只有一个，标题才能正确吸顶（spec §5.3.4「抽屉几何」③）；
- *   4. **截断提示是硬要求**（spec §5.5 第 7 步）：文案必须说「评分模型看不到」，
+ *      故本组件**不再套第二层滚动容器**——滚动容器只有一个，标题才能正确吸顶（「抽屉几何」③）；
+ *   4. **截断提示是硬要求**：文案必须说「评分模型看不到」，
  *      只说「已截断」会让使用者以为只是界面没显示全；
  *   5. 正文用 `react-diff-viewer-continued` 渲染，它要的是**两侧完整正文**而不是 diff 文本，
  *      故先经 `reconstructSides` 还原（理由见 diff-patch.ts 的文件头）。
@@ -63,7 +63,7 @@ export function DiffFileContent({
 /**
  * 单个文件的 diff 视图。
  *
- * **标题（文件路径）由本组件的吸顶条负责，不交给 diff 组件**（用户口径 2026-09-29）：
+ * **标题（文件路径）由本组件的吸顶条负责，不交给 diff 组件**：
  * 组件内部那个头部也是 `position: sticky`，两层吸顶必然互相压——把路径交给它，
  * 下滚时就会与我们的标题条重叠，或者反过来把标题条盖住。
  * 边界很清楚：**标题归我们**（它对每个文件都必须存在，哪怕没有正文可取），
@@ -79,7 +79,7 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
   }
 
   return (
-    // **不限高、不自滚**（用户口径 2026-09-29）：正文随内容自然展开，抽屉里只保留
+    // **不限高、不自滚**：正文随内容自然展开，抽屉里只保留
     // `.ant-drawer-body` 这一条滚动条——正文自己再滚一次就会出现右侧第二条滚动条。
     <DiffViewer
       oldValue={sides.oldValue}
@@ -97,7 +97,7 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
         contentText: { fontFamily: token.fontFamilyCode, fontSize: token.fontSizeSM },
         lineNumber: { fontFamily: token.fontFamilyCode },
         /**
-         * **避免横向滚动**（用户口径 2026-09-29）：组件给表格的默认样式里带
+         * **避免横向滚动**：组件给表格的默认样式里带
          * `minWidth: '1000px'` 与 `overflowX: 'auto'`，而抽屉只有 800px —— 于是必然出现横向滚动条。
          * 这里把最小宽度放开、改成按容器宽度排版；正文本身已是 `pre-wrap` + `lineBreak: anywhere`，
          * 长行会在单元格内折行，所以不需要靠横向滚动来看全。
@@ -165,13 +165,13 @@ function DiffFileSection({
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
         }}
       >
-        {/* 路径**不用 Typography/Tag 包裹**（用户口径 2026-09-29）：`EllipsisText` 内部已经是
+        {/* 路径**不用 Typography/Tag 包裹**：`EllipsisText` 内部已经是
             一个 `Typography.Text code`，再包一层 `<Typography.Text code>` 会套出两层等宽壳，
             既多一层 DOM 又让省略号的宽度算错。这里直接用它，过长走省略号 + Tooltip 显全量。 */}
         <EllipsisText text={path} monospace />
         <Flex align="center" gap={8} style={{ flexShrink: 0 }}>
           {untracked && <Tag color="green">未跟踪</Tag>}
-          {/* 增删行数按 git 惯例上色（2026-10-07 用户口径）：`+N` 绿、`−Y` 红，
+          {/* 增删行数按 git 惯例上色：`+N` 绿、`−Y` 红，
               与执行日志事实条里「改动」那一格是同一套视觉语言（见 `agent-log-facts-bar.tsx`）。
               颜色取 antd token，light / dark 都跟着主题走。 */}
           <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>

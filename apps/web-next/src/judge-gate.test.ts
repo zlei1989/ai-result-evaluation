@@ -3,10 +3,10 @@
  * 「AI 生成」可用性（`judgeConfigured`）的守卫。
  *
  * 为什么它必须是一个**纯函数**而不是页面里的一行布尔表达式：`apps/web-next` 保留 `jsx: preserve`，
- * 不能写 `.tsx` 测试，页面本身没有任何自动化测试面（p1 阶段评审的建议就是把页面决策抽成 `.ts` 助手）。
+ * 不能写 `.tsx` 测试，页面本身没有任何自动化测试面（建议就是把页面决策抽成 `.ts` 助手）。
  * 而这条判定正是页面里最容易退化的决策——它要同时看设置、供应商清单和模型清单三份数据。
  *
- * 守的是契约 §11 R30：**必须拿全局默认那一对 id 去 `providers` 里解析**，只判「非 null」会让
+ * 守的是：**必须拿全局默认那一对 id 去 `providers` 里解析**，只判「非 null」会让
  * 删掉供应商 / 移除模型之后的悬空引用显示成「可用」，用户点下去才在服务端 `resolveJudgeRoute` 里拿到 409。
  *
  * 判定只看全局默认：用例级覆盖已删除（`resolveJudgeRoute()` 也是无参的），
@@ -50,7 +50,7 @@ describe('isJudgeConfigured', () => {
     expect(isJudgeConfigured(settingsWith({ providerId: PROVIDER.id, modelId: 'deepseek-chat' }), [PROVIDER])).toBe(true);
   });
 
-  // R30 的核心：供应商被删除后 defaultJudge 成了悬空引用，只判非空会显示成「可用」
+  //  的核心：供应商被删除后 defaultJudge 成了悬空引用，只判非空会显示成「可用」
   it('供应商已被删除（悬空引用）→ 不可用', () => {
     expect(isJudgeConfigured(settingsWith({ providerId: 'provider-deleted', modelId: 'deepseek-chat' }), [PROVIDER])).toBe(
       false,

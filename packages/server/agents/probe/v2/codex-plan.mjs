@@ -1,13 +1,13 @@
 /**
  * codex 真机项①：**`update_plan` / `request_user_input` 到底以哪种 `item.type` 出现在事件流里**
- * （设计稿 §7.3.1 与 §11.1 第 23 项的"三个候选，不得推断"）。
+ * （"三个候选，不得推断"）。
  *
- * 设计稿的现状：
+ * 现状：
  *  - `update_plan` 存在于工具表 ✅ 已证；输入是 `{explanation?, plan:[{step,status}]}` ✅ 已证；
  *  - 但它**以哪种 `item.type` 出现在 `exec --json` 事件流里** ❌ 未验证；
  *  - `todo_list` 与 `update_plan` 是否同一个东西 ❌ 未验证。
  *
- * 本脚本把两个配置开关按设计稿 §7.6.2 的口径打开后跑一条**明确要求先做计划**的任务，
+ * 本脚本把两个配置开关按既定口径打开后跑一条**明确要求先做计划**的任务，
  * 逐条 dump 事件；判据是 `item.type` 的**全集**，不做推断。
  */
 import { note, writeDump } from './lib/gateway.mjs';

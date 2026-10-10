@@ -79,7 +79,7 @@ describe('resolveRemoteRef', () => {
 
 
 /**
- * 最终整支复审 Important 1：**远端默认分支改名**（main → trunk）之后镜像要能自愈。
+ * **远端默认分支改名**（main → trunk）之后镜像要能自愈。
  *
  * 为什么这是一条独立的守卫：本机 git 2.47 实测 `git -C <mirror> fetch --prune origin` **不会**刷新
  * 镜像的 HEAD 符号引用（被删的 ref 它倒是会剪掉）。于是远端改名 + 删旧分支之后，镜像 HEAD 停在

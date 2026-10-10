@@ -160,7 +160,7 @@ export function composeTotalScore(rubric: Rubric, judgments: readonly RubricJudg
  *   2. **组名、引用键与目标走同一份转义**：它们里带一个竖线或换行就会让整行列错位，
  *      而错位之后模型读到的是一张与界面不同的表。引用键与目标、组名**同为自由文本**：
  *      键来自用户填的 `item.id`，`RubricSchema` 与 `validateRubric` 只 `trim()` 与查重、
- *      不限定字符（`|` / 换行都合法），所以它也必须过 `escapeCell`——整支复审 Finding 1 实测：
+ *      不限定字符（`|` / 换行都合法），所以它也必须过 `escapeCell`——实测：
  *      键漏转义时 `A|B` 排出来的行有 5 个真分隔符，模型会按错位后的列去认权重；
  *   3. 表尾给汇总（共几项、满分多少），让模型知道权重之和是满分。
  */

@@ -37,7 +37,7 @@ registerOrchestratorHooks();
 
 describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { timeout: TEST_TIMEOUT_MS }, () => {
   /**
-   * **FIX-3：用户终止发生在「评分智能体正在跑」的时候**（终审补的守卫）。
+   * **用户终止发生在「评分智能体正在跑」的时候**。
    *
    * 为什么必须单独钉：`judgeStageAttempt` 的 catch 里，`AGENT_CANCELED` 这一支现在**只**代表用户终止
    * ——原来「终止发生在评分阶段」这条路径**一条用例都没有**，而界面上写错会变成
@@ -60,7 +60,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     let rowTaskDone = false;
     const running = runRow(run.id, rowId).finally(() => { rowTaskDone = true; });
     // 等待上限放到 20 秒：本机的工作区准备（真 git 复制）实测 2–7 秒，默认的 5 秒会偶发把
-    // 「还没到 judging」报成守卫失败（实测踩过：变异验证里它就假红过一次）
+    // 「还没到 judging」报成守卫失败（变异验证里它假红过一次）
     await until(() => getRun(run.id).rows[0]?.status === 'judging', '行进入 judging', 20_000);
     // 前提复检：此刻起的必须是**评分**那一次（否则下面测到的可能还是候选阶段）
     expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
@@ -86,7 +86,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
    * （`dispose` 只能尽力让迭代结束，见 `turn.ts`），它随后吐出的日志会**无条件**追加进
    * `events.jsonl`——日志抽屉里于是出现「这一行已经结束了，却还在往外冒日志」。
    * 夹具的 `mode: 'late'` 就是那个形状：睡够一段时间，然后在**已经收尾之后**投递一条日志。
-   * 收尾由**用户终止**触发（2026-09-28 起没有兜底超时了，这也是这一行唯一可能的收尾方式）。
+   * 收尾由**用户终止**触发（没有兜底超时，这也是这一行唯一可能的收尾方式）。
    */
   it('行收尾之后适配器才吐出来的日志不再落盘（迟到事件闸门）', async () => {
     const { run } = seedRunnableRun({
@@ -109,8 +109,8 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     const texts = logTextOf(run.id, rowId);
     expect(texts).not.toContain('迟到的日志'); // 闸门之后的那一条**不许**落盘
   }, TEST_TIMEOUT_MS);
-  // Review Focus 第 4 条：抽屉按需现算 diff，评审者改过工作区就会显示成候选的产出
-  // 2026-10-07（用户裁决）：从「落一条 WARN」升级为**该行失败**——那一份分建立在一个被评审者
+  // 抽屉按需现算 diff，评审者改过工作区就会显示成候选的产出
+  // 用户裁决：**该行失败**——那一份分建立在一个被评审者
   // 改过的现场上，收下它就等于把一个不可信的分数当成正常分数
   it('评分智能体改了工作区 → 该行 failed（污染不再只是 WARN）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
@@ -141,7 +141,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
    * （那一段就是 `rescoreRefusal` 的 `settling` 要挡的窗口）。接上 signal 之后，这次调用会**当场**
    * 以「已中止」结束，而它绝不许：① 改回状态；② 再补一条 `end`；③ 让 `settleFailed` 折出一条
    * `error` 事件（`settleFailed` 的 `error` 是无条件发布的——只按终态守卫拦不住它）。
-   * 2026-09-28 起这**也是**评分阶段唯一的收尾方式：兜底超时删除后，挂住的文本调用没有别的出口。
+   * 这**也是**评分阶段唯一的收尾方式：没有兜底超时，挂住的文本调用没有别的出口。
    */
   it('文本评分在飞时用户终止 → 该行 canceled、恰好一条 end{canceled}、不留 error 事件', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', withJudge: true });

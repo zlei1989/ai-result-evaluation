@@ -11,12 +11,12 @@
  *   3. **缺失不隐藏**：`present: false` 的条目渲染成「标签 · 原因」，四句原因互不相同——
  *      藏起来就把「这家结构上就没有」与「我们没接」说成了同一件事；
  *   4. **不内套第二层滚动区**：长文本交给抽屉自己的 body 滚，否则这一个抽屉里会出现两条滚动条；
- *   5. **本件不写 `push`**（2026-10-07 去掉）：推动量归**被推开的主抽屉**那一侧
- *      （`MAIN_DRAWER_PUSH`，见 `base/drawer-geometry.ts`）。**实测**：把这里写成
- *      `push={{ distance: 100 }}` 再整页重载，主抽屉的位移**仍是 -360** ⇒ 这一格完全空转，
+ *   5. **本件不写 `push`**：推动量归**被推开的主抽屉**那一侧
+ *      （`MAIN_DRAWER_PUSH`，见 `base/drawer-geometry.ts`）。把这里写成
+ *      `push={{ distance: 100 }}` 也不会改变主抽屉的位移（**仍是 -360**）⇒ 这一格完全空转，
  *      留着只会让读的人以为推动是它干的（`NestedDrawer` 那一侧同此口径）。
  *
- * 2026-10-04 新增「能力声明」一节：它回答的是**这一次我们能拿到什么**（五格各自带等级与原因），
+ * 「能力声明」一节回答的是**这一次我们能拿到什么**（五格各自带等级与原因），
  * 与被下发了什么是同一抽屉里并列的两件事，且四句原因与下面 `EnvItemRow` 的 `missing` 共用
  * `MISSING_REASON_LABELS` 一张表——放两处才不会出现「同一个原因两种说法」。
  * 它是**可选**的：不给就整段不出现（宁可不显示，也不编一份「都支持」出来）。
@@ -76,15 +76,15 @@ function summaryItems(summary: AgentEnvironment['summary']): { key: string; labe
     /**
      * 「智能体」那一格画的是数据层给的**显示名**（`summary.agentLabel`），不是 kind。
      *
-     * 为什么不由本件查 `AGENT_LABELS`（2026-10-08 定）：那一查就是 L0 持有「厂商 → 文案」的表
-     * ——`agent-log-layering.test.ts` 的 (e) 条**当场红**（实测），而那条纪律的理由是实的：
+     * 为什么不由本件查 `AGENT_LABELS`：那一查就是 L0 持有「厂商 → 文案」的表
+     * ——`agent-log-layering.test.ts` 的 (e) 条**当场红**，而那条纪律的理由是实的：
      * 文案与厂商名的对应关系属于数据层（同 `facts.domain` / `effortPlaceholder`），
      * 组件只摆版 ⇒ 换一家、改一个显示名都不必动渲染件。
      */
     { key: 'agentLabel', label: '智能体', children: summary.agentLabel },
     { key: 'modelId', label: '模型', children: summary.modelId },
     // `effort === null` ⇒「未指定」：不显示空白（空白会被读成「这一格没有这个概念」）；
-    // 档位照上游词汇原样写（改口径 2026-10-07：关闭档也不再加工，与行卡片上那个 `off` 同一份）
+    // 档位照上游词汇原样写（关闭档也不加工，与行卡片上那个 `off` 同一份）
     { key: 'effort', label: '思考强度', children: summary.effort === null ? '未指定' : summary.effort },
     { key: 'providerName', label: '供应商', children: summary.providerName },
     { key: 'baseUrl', label: '接口地址', children: summary.baseUrl },
@@ -156,8 +156,7 @@ export function AgentEnvironmentDrawer({
       placement="right"
       // ⚠️ antd 6 已废弃 `width`，几何走 `size`（CSS 表达式可以直接给）
       // 宽度与二级抽屉同一档（`NESTED_DRAWER_SIZE`，`min(60vw, 900px)`）：它本来就是「从主抽屉里
-      // 再推出来的一层」，用户 2026-10-07 口径「宽一些」——旧值 `min(42vw, 640px)` 在 1432px 视口上
-      // 只有 601px（比它推开的那个主抽屉还窄），长工具名与工作区路径全被折行
+      // 再推出来的一层」，更窄的宽度会让长工具名与工作区路径全被折行
       size={NESTED_DRAWER_SIZE}
       open={open}
       onClose={() => onOpenChange(false)}

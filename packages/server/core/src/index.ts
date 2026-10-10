@@ -89,6 +89,15 @@ export {
   runSnapshotFile,
 } from './workspace';
 export { appendEvent, readEvents, readEventsAfter, resetEvents, type PendingAgentEvent } from './event-log';
+// MCP stdio 探活原语：机制进 core（与 git-exec.ts 同一类「非智能体子进程原语」），
+// 策略（失败分档与文案）在 api/src/mcp.ts。⚠️ 探活不是跑智能体，不受 agentProvider.run 唯一入口约束。
+export {
+  McpStdioProbeError,
+  probeMcpStdio,
+  type McpStdioProbeErrorKind,
+  type McpStdioProbeInput,
+  type McpStdioProbeOutcome,
+} from './mcp-probe';
 export {
   appendMessage,
   appendRecord,

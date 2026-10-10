@@ -1,13 +1,13 @@
 /**
- * TextBlockView：**只有正文走 markdown**，以及 §6.9 的角色 / 来源 / 动效三格。
+ * TextBlockView：**只有正文走 markdown**，以及的角色 / 来源 / 动效三格。
  *
  * 五条守卫：
- *   · `assistant` **不标注**（默认主角，标了反而吵）；`user` 出「用户」；`system` 出「系统」
- *     且整块降一档（`ant-typography-secondary`）；
- *   · `source` 非 `wire` 时出角标（`session-file` → 「补录」、`aggregate` → 「汇总」），
- *     `wire` / `hook` 不出；
- *   · `assembly === 'open'` 挂流式光标类名、`snapshot` **不挂**（变异体 (y) 的落点之一）；
- *   · 正文是 markdown（`**粗体**` 变成 `strong`）——这是「只有 text 块走 markdown」的可见形式。
+ * · `assistant` **不标注**（默认主角，标了反而吵）；`user` 出「用户」；`system` 出「系统」
+ * 且整块降一档（`ant-typography-secondary`）；
+ * · `source` 非 `wire` 时出角标（`session-file` → 「补录」、`aggregate` → 「汇总」），
+ * `wire` / `hook` 不出；
+ * · `assembly === 'open'` 挂流式光标类名、`snapshot` **不挂**（变异体 (y) 的落点之一）；
+ * · 正文是 markdown（`**粗体**` 变成 `strong`）——这是「只有 text 块走 markdown」的可见形式。
  */
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';

@@ -15,11 +15,11 @@
 import type { AgentMessage, Capability, MessageCapability, MessageSource, MissingReason, SubagentRecord, ThinkingTextKind, ToolFamily } from '@aieval/contracts';
 
 /**
- * **环境信息模型从 contracts 转出**（2026-10-03 落点修正）。
+ * **环境信息模型从 contracts 转出**。
  *
- * 它原来是本文件里的一份定义，而设计 §4.3 写的就是「进 `@aieval/contracts`」——
+ *  写的就是「进 `@aieval/contracts`」——
  * 那些名字里没有一个界面词汇（没有色档、折叠键、渲染块），全是「这次运行被下发了什么」的事实；
- * 留在 ui 里的后果是**服务端永远造不出这个对象**，而它是排障第一个要看的东西。
+ * 留在 ui 里则**服务端永远造不出这个对象**，而它是排障第一个要看的东西。
  * 这里 `export type` 转出，本目录与消费方的 import 路径一个都不用改。
  */
 export type {
@@ -49,7 +49,7 @@ export interface AgentTokens {
 }
 
 /**
- * 领域事实里的一**段**内容（2026-10-07 用户口径：改动那一格按 git 惯例给 `+N` / `−N` 上色，
+ * 领域事实里的一**段**内容（改动那一格按 git 惯例给 `+N` / `−N` 上色，
  * 模型名 / 智能体 / 档位做成一枚 `Tag`）。
  *
  * 为什么必须由数据层给成段、而不是界面自己拆：**UI 不解析领域事实**（它不知道「改动」「智能体」
@@ -64,7 +64,7 @@ export interface DomainFactSegment {
   /**
    * `tag` 段的**色档**（不给 = `blue`）。与 `AgentRunStatus.tone` / `DomainFact.tone` 同一条口径：
    * 数据层给的是**档位**（界面词汇），渲染层把它翻成 antd 的具体预设色。
-   * 2026-10-07 的三格：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`——同一个档位在本仓的
+   * 今天的三格：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`——同一个档位在本仓的
    * 两处（事实条那一行与评分详情顶部）长得一样。
    */
   tagTone?: 'blue' | 'geekblue' | 'purple';
@@ -210,7 +210,7 @@ export interface ToolInput {
   /**
    * 模型写在入参里的那句话（**已去首尾空白**）；`null` = 没有这一格，或只有空白。
    *
-   * **它现在是回落档**（2026-10-10）：这一句已经进了块的 `summary`（`description` 优先那一档），
+   * **它是回落档**：这一句已经进了块的 `summary`（`description` 优先那一档），
    * 而 `summary` 还多带「目标」（`描述（命令）`）与每族拼法。留着这一格只为**老记录**
    * ——磁盘上已有的 `messages.jsonl` 里 `summary` 可能缺格，而那一格当年就是靠它撑起来的。
    */
@@ -232,7 +232,7 @@ export interface ToolCallBlock extends ContentBlockBase {
    * `src/index.ts:10-120`、`2 步`——冒号后面那一段，**不含 `调用工具 <名>：` 前缀**
    * （工具行把工具名渲染成独立元素，带前缀就是同一件事说两遍）。
    *
-   * **可缺**（与契约的 `summary` 同一条理由，2026-10-10）：磁盘上已有的 `messages.jsonl` 里
+   * **可缺**（与契约的 `summary` 同一条理由）：磁盘上已有的 `messages.jsonl` 里
    * 没有这一格，写成必填会让全部老记录在类型上对不上。读侧把「键不存在」当「没采到」（`?? null`），
    * 摘要行据此回落到 `input.description`、再回落参数原文首行。
    *
@@ -252,7 +252,7 @@ export interface ToolCallBlock extends ContentBlockBase {
  * 而 dsh 的 `read` / `write` / `edit` / `grep` / `glob` 的结果正文只是一段人读的摘要
  * （`<path>…</path>` 那种），**行数、命中数、改动对象这些已解析过的事实只在 `structured` 里**。
  * 丢掉它，界面上就只剩摘要可读——那是「有数据但看不见」的另一种形状。
- * 呈现口径（§12.6 的既有取舍）：**等宽原文，不做族专属渲染**，并如实标注它是结构化结果。
+ * 呈现口径（既有取舍）：**等宽原文，不做族专属渲染**，并如实标注它是结构化结果。
  */
 export interface ToolResultBlock extends ContentBlockBase {
   kind: 'tool-result';
@@ -413,7 +413,7 @@ export interface RowEvent {
   level: 'milestone' | 'error' | 'warning';
   text: string;
   /**
-   * 归属键（2026-10-05）：有时间轴的落点由它决定——**有键按「身份 + 号」精确归位，无键按时刻**
+   * 归属键：有时间轴的落点由它决定——**有键按「身份 + 号」精确归位，无键按时刻**
    * （见 `rowEventsOfTurn`）。`null` = 没有归属信息（`error` / `warning`，以及算不出归属的里程碑）。
    */
   turn: TurnRef | null;
@@ -580,8 +580,8 @@ export const CAPABILITY_LEVEL_LABELS: Record<Exclude<Capability, 'yes'>, string>
 /**
  * 一维能力声明 → 「为什么没有」的**那一句中文**；拿不到原因时给 `null`。
  *
- * 三条口径（2026-10-04 收敛：此前这段判定在 `agent-log-layout.tsx` 里抄了两遍，
- * 而它马上要有第三、第四个调用点——每抄一遍就多一次说错话的机会）：
+ * 三条口径（这段判定曾在 `agent-log-layout.tsx` 里抄两遍，而它有几个调用点——
+ * 每抄一遍就多一次说错话的机会）：
  *   · `level === 'yes'` ⇒ `null`：「有」没有缺失原因可给（契约里那一格的 `reason` 就是 `null`）；
  *   · **没谈到那一维**（`undefined`）⇒ 也给 `null`：声明里没有这一格是「没验证到这一步」，
  *     不是「这一维没有」——编一句「没验证过」出来就等于替厂商下了结论；

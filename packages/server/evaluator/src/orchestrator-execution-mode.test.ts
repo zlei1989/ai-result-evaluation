@@ -66,7 +66,7 @@ describe('执行模式：并行与串行', { timeout: TEST_TIMEOUT_MS }, () => {
 
     releaseAgent(startedCwds()[0] ?? '');
     await until(() => startedCwds().length === 2, '第二行进入假适配器', 30_000);
-    // 起第二行时，第一行必须已经 judged：串行的定义是「一行跑完**含评分**才起下一行」（§5.2）
+    // 起第二行时，第一行必须已经 judged：串行的定义是「一行跑完**含评分**才起下一行」
     expect(getRun(run.id).rows[0]?.status).toBe('judged');
     expect(fakeAgents.maxConcurrent).toBe(1);
 
@@ -85,11 +85,11 @@ describe('执行模式：并行与串行', { timeout: TEST_TIMEOUT_MS }, () => {
 
 
 /**
- * 轮收尾的失败面（阶段评审 Medium-3）。
+ * 轮收尾的失败面。
  *
- * `finalizeRun` 会因 `setRunStatus → saveRun` 失败而抛（磁盘满 / 快照被删 / 根目录形状非法），而它原先是在
- * `.finally` 里**裸调**的：`runTasks.delete(runId)` / `abortedRuns.delete(runId)` 排在它后面 ⇒ 抛了就
- * **永远不执行**。两个后果都不是「少写一行日志」：
+ * `finalizeRun` 会因 `setRunStatus → saveRun` 失败而抛（磁盘满 / 快照被删 / 根目录形状非法），而它在
+ * `.finally` 里**裸调**时，`runTasks.delete(runId)` / `abortedRuns.delete(runId)` 排在它后面 ⇒ 抛了就
+ * **永远不执行**。后果不是「少写一行日志」：
  *   · 这一轮在**进程存活期内再也 `startRun` 不了**——第一道闸门 `runTasks.has(runId)` 恒真，恒抛
  *     CONFLICT「该评测已有候选行在运行」，而实际一行都没在跑（使用者只能重启服务）；
  *   · `drainRunningTasks` 的 `while (runTasks.size > 0)` 因为这条永不消失的条目**空转**；
@@ -98,7 +98,7 @@ describe('执行模式：并行与串行', { timeout: TEST_TIMEOUT_MS }, () => {
  * 判据取「收尾失败之后这一轮仍能重新开始」：这一轮的行故意跑成 `failed`
  *（`isRunnableRow('failed') === true`，即用户还能点「开始」补跑）⇒ 少了那次 `delete` 时它会红。
  */
-describe('轮收尾的失败面（Medium-3）', { timeout: TEST_TIMEOUT_MS }, () => {
+describe('轮收尾的失败面', { timeout: TEST_TIMEOUT_MS }, () => {
   it('收尾落盘失败不会把这一轮锁死：在途记账照清、之后还能重新开始、错误有日志', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });

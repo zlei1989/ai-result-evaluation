@@ -3,7 +3,7 @@
  * 真机冒烟：对**指定的一家**跑一次真实评测，四格断言（判据源见 `../conformance/kit.ts` 的同名方案）。
  *
  * 为什么必须存在这一层：一致性套件验的是**归一产物**，装载与传输两类缺陷在它那里原理上不可见——
- * 2026-10-07 的 codex 改造就是实例：单测 585 条全绿，真机上连挂「打包器把 createRequire 换掉」与
+ * codex 的 app-server 改造就是实例：单测 585 条全绿，真机上连挂「打包器把 createRequire 换掉」与
  * 「凭据/provider 没传到厂商进程」两类。**只有真跑一次才拦得住它们。**
  *
  * 开关（默认跳过，避免进内循环与 CI）：
@@ -22,7 +22,7 @@
  *   ② 传输：本次运行实际使用的 `providerId` / `baseUrl` / `modelId` 与服务端记录一致，
  *      且失败不是凭据类（401/403）——**这一格是「密钥与服务端选择真的传到了」的最小可判定事实**；
  *   ③ 产物：行跑到 `judged` 且有分数；
- *   ④ 形状：`messages` 接口返回的消息**逐个过契约 schema**（§2.1/§2.2/§2.8 的线上形态）。
+ *   ④ 形状：`messages` 接口返回的消息**逐个过契约 schema**（线上形态）。
  */
 import { AgentMessageSchema, SubagentRecordSchema } from '@aieval/contracts';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -37,7 +37,7 @@ const CASE_ID = process.env.AIEVAL_LIVE_CASE_ID ?? '';
  * 用**智能体评分**跑这一轮（`AIEVAL_LIVE_AGENT_JUDGE=1`）。
  *
  * 为什么要这一档：确定性评分只读 diff，而「智能体评分」那条通路只读 `AgentRunResult.finalText`
- * ——它是这条产品通路的**唯一入口**（2026-10-07 的 `finalText` 漏写缺陷就只在这里发作：
+ * ——它是这条产品通路的**唯一入口**（`finalText` 漏写这类缺陷只在这里发作：
  * `providers/codex/*` 全绿、真机上评分永远拿不到答复）。用确定性评分跑，那一格是否写对**看不见**。
  */
 const AGENT_JUDGE = process.env.AIEVAL_LIVE_AGENT_JUDGE === '1';
@@ -131,8 +131,8 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
     expect(row.score, '跑完了但没有分数').not.toBeNull();
   });
 
-  it('④ 形状：消息与子任务行逐个过契约 schema（§2.1/2.2/2.8）', async () => {
-    // 该端点的信封是 `{ messages, subagents }`（不是 `RowRecord[]`）——2026-10-07 首次跑冒烟时
+  it('④ 形状：消息与子任务行逐个过契约 schema', async () => {
+    // 该端点的信封是 `{ messages, subagents }`（不是 `RowRecord[]`）——首次跑冒烟时
     // 按后者写、红在这一格，说明这一格确实在按**线上真实返回**判，而不是按实现者的记忆判。
     const payload = await api<{ messages: unknown[]; subagents: unknown[] }>(
       `/api/runs/${detail.id}/rows/${row.id}/messages`,

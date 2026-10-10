@@ -1,8 +1,8 @@
 /**
  * RunDetailPanel：顶部信息卡 + 串行进度 + 候选卡片列表 + 吸底操作栏。
- * 本文件钉住 spec §5.3 的界面语义：
+ * 本文件钉住的界面语义：
  *   · 顶部信息卡的字段（用例标题 / 代码仓库 / 分支 / commit 全量 / 工作基目录），
- *     形态与用例详情同构：`Card` + `Descriptions`（用户口径 2026-09-28）；
+ *     形态与用例详情同构：`Card` + `Descriptions`；
  *   · 串行才有进度文案「3/6 已完成」，且零行时不能出现 NaN；
  *   · 出分后的排序与名次共用同一份判据：总分降序 → 耗时升序 → tok（输入+输出）升序，
  *     三项全同并列（同名次）、前三名带徽标；未采集的耗时/tok 按最差算；
@@ -12,7 +12,7 @@
  *
  * 两处与 plan 原稿的**有意偏离**（都属于「让用例真的在测它声称在测的东西」）：
  *   ① 按钮可访问名无空格：本仓两个汉字的按钮一律 `autoInsertSpace={false}`
- *      （provider-table.tsx 的文件头），故确认按钮是「开始 / 确定 / 取消」而不是「开 始 / 确 定 / 取 消」；
+ * （provider-table.tsx 的文件头），故确认按钮是「开始 / 确定 / 取消」而不是「开始 / 确定 / 取消」；
  *   ② 能力透传用例额外断言 `usage: false` 的文案：只断言 `cancelMidTurn` 的话，
  *      「`capabilityOf` 根本没透给卡片」这个变异体也能通过（缺省能力里 `cancelMidTurn` 恰好是 true，
  *      而 `cancelMidTurn: false` 只会让断言失败——这条把两个字段都钉住才不空转）。
@@ -41,13 +41,13 @@ const score = (totalScore: number): NonNullable<EvalRun['rows'][number]['score']
   judgeProviderId: 'p-1',
   judgeModelId: 'claude-opus-4-6',
   judgedAt: '2026-09-22T08:10:00.000Z',
-  // 这一分是哪把尺子打的（Task 1 的必填格）：null = 纯文本通路，与夹具的默认评分方式一致
+  // 这一分是哪把尺子打的：null = 纯文本通路，与夹具的默认评分方式一致
   judgeAgentKind: null,
   // 同上：强度未指定（一个强度键都没发）
   judgeEffort: null,
   // 同上：false = 只靠提示词契约拿到这一分
   structuredOutput: false,
-  // 同上：评分自己的花销（2026-10-08）——面板不展示这两格
+  // 同上：评分自己的花销——面板不展示这两格
   judgeTokens: null,
   judgeDurationMs: null,
 });
@@ -70,7 +70,7 @@ function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): 
     diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false },
     score: score(60),
     error: null,
-    // 这一行走过几次尝试（2026-09-27）：默认 1 次（「没重试过」那一档）
+    // 这一行走过几次尝试：默认 1 次（「没重试过」那一档）
     attempts: 1,
     ...overrides,
   };
@@ -87,11 +87,11 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     // 轮级评分表**快照**（必填）：评分详情抽屉读的就是它，而不是用例现取的那张表
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 60 }] }] },
     // 轮级状态默认取**空闲**：这是「什么都没在跑」的那一档，也是编辑 / 删除可用的那一档
-    // （`hasLiveRows` 会读它，见 Task 7）。此前这里是 `'running'`——那时没有任何用例读轮级状态，
+    // （`hasLiveRows` 会读它）。此前这里是 `'running'`——那时没有任何用例读轮级状态，
     // 值是什么都不参与断言；「有行在跑」那一档由用例自己显式 overrides 出来（判据要看得见）。
     status: 'idle',
     executionMode: 'parallel',
-    // 评分方式快照（Task 1 的必填格）：这一轮走纯文本评分通路
+    // 评分方式快照：这一轮走纯文本评分通路
     useAgentJudge: false,
     rows: [makeRow('w-1')],
     workspaceBase: 'D:\\runs',
@@ -113,7 +113,7 @@ const handlers = {
   onOpenLog: vi.fn(),
   onOpenDiff: vi.fn(),
   onOpenScore: vi.fn(),
-  // 编辑 / 删除（2026-09-28）
+  // 编辑 / 删除
   onEdit: vi.fn(),
   onDelete: vi.fn(),
   deleting: false,
@@ -170,7 +170,7 @@ describe('RunDetailPanel 顶部信息卡', () => {
 });
 
 /**
- * 跑动期的实时指标按行注入（用户口径，2026-09-26）。
+ * 跑动期的实时指标按行注入。
  * 判据是「每一行拿**自己**的那份」：只断言「有实时值出现」的实现，
  * 把第一行的指标发给所有行也能绿——而并行跑多个候选时那正是最常见的形状（一排一模一样的数字）。
  */
@@ -317,7 +317,7 @@ describe('RunDetailPanel 卡片列表', () => {
 });
 
 /**
- * 排序与名次的判据（用户口径 2026-09-29）：**总分优先，同分比耗时，耗时再相同比谁省 tok**。
+ * 排序与名次的判据：**总分优先，同分比耗时，耗时再相同比谁省 tok**。
  * 每条用例各自的理由：
  *   · 判据只有**一份**——展示顺序与徽标都从它派生。「排在第 2 张却挂着第 1 名」正是两处各写
  *     一份判据的形状，故这里既断言顺序、也断言名次落在同一张卡上；
@@ -468,7 +468,7 @@ describe('RunDetailPanel 排序与名次的判据', () => {
 });
 
 describe('RunDetailPanel 吸底操作栏', () => {
-  // 「终止」在页面上有两个（卡片上那个与吸底栏那个，spec §5.3 有意如此），
+  // 「终止」在页面上有两个（卡片上那个与吸底栏那个， 有意如此），
   // 所以吸底栏的断言一律先收窄到 footer 再查——否则用例自己会撞上「找到多个」而红。
   const footer = (): ReturnType<typeof within> => within(screen.getByTestId('run-footer'));
 
@@ -544,7 +544,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
   });
 
   /**
-   * 吸底栏的**上下空隙一样宽**（2026-10-07 用户口径）。
+   * 吸底栏的**上下空隙一样宽**。
    *
    * jsdom 量不出布局，所以这里钉的是**那两个值本身**：上边 8px、下边 0。
    * 下边为什么是 0：栏底到内容之间那 8px 是 `ListDetailLayout` 详情槽的 `padding` 给的
@@ -563,12 +563,12 @@ describe('RunDetailPanel 吸底操作栏', () => {
 });
 
 /**
- * 行级「重新评分」的**透传**（Task 7）：判据与二次确认都在卡片自己身上（`EvalRowCard` 的用例
+ * 行级「重新评分」的**透传**：判据与二次确认都在卡片自己身上（`EvalRowCard` 的用例
  * 已经钉住），本面板只负责把「哪一行」和「在途没有」交给卡片。这一条钉的正是那个 id——
  * 传错 id 的表现是「点了 A 行，重评的是 B 行」，而两行的界面在那一刻完全相同。
  *
  * ⚠️ 起点仍是「跑过一次且有产出」的行（本文件用「评分阶段失败」造这一形状，最省事）。
- * 2026-09-28 晚间口径放开之后 `judged` 的行两个按钮同样可点，这条夹具不再有「`judged` 点不动」
+ * 判据放开之后 `judged` 的行两个按钮同样可点，这条夹具没有「`judged` 点不动」
  * 那层顾虑；它与真实形状的差别只剩「有分 / 无分」，而本文件验的是 id 透传，与分数无关。
  */
 describe('RunDetailPanel：行级重新评分的透传', () => {
@@ -605,7 +605,7 @@ describe('RunDetailPanel：行级重新评分的透传', () => {
 });
 
 /**
- * 「编辑 / 删除」两个入口（spec §6.1）：与用例详情逐字同形，且**不在运行中**才可用。
+ * 「编辑 / 删除」两个入口：与用例详情逐字同形，且**不在运行中**才可用。
  * 三条各自的理由：
  *   · 两个汉字的按钮必须关掉 antd 的自动空格，否则可访问名是「编 辑」/「删 除」；
  *   · `Popconfirm` 的 `onConfirm` 必须**回交 promise**（返回 undefined 时确认框立刻关闭，

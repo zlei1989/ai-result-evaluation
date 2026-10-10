@@ -20,7 +20,7 @@ describe('ERROR_CODES', () => {
     ]);
   });
 
-  it('AgentErrorCode 不进 ERROR_CODES（§5.6.7：它没有对应的 HTTP 状态）', () => {
+  it('AgentErrorCode 不进 ERROR_CODES（它没有对应的 HTTP 状态）', () => {
     // 这两个名字是 agents 包的领域归因，与接口层的 AUTH_FAILED / RATE_LIMITED 只是重名。
     // 一旦有人把它们并进 ERROR_CODES，STATUS_BY_CODE 就要为它们编造状态码。
     expect(ERROR_CODES).not.toContain('AGENT_FAILED');

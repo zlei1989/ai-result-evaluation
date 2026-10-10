@@ -1,7 +1,7 @@
 /**
  * 供应商契约：协议类型、落盘形态、下行形态与增删改入参。
  * 三个必须成立的口径：
- *   1. 协议类型是「模型能否驱动某智能体」的唯一判据（spec §3 F1），故它是枚举而不是自由字符串；
+ *   1. 协议类型是「模型能否驱动某智能体」的唯一判据，故它是枚举而不是自由字符串；
  *   2. 落盘形态含**明文** apiKey（服务端要原 token 才能代调供应商 API），因此它只在服务端内部流转；
  *   3. 下行形态（ProviderView）用 omit 掉 apiKey 而不是「记得别传」——字段的存在与否由类型保证。
  */
@@ -11,10 +11,10 @@ import { z } from 'zod';
  * 协议类型：openai 兼容 / anthropic 兼容。
  * 它只决定**文本调用怎么接线**（`/chat/completions` vs `/v1/messages`，见 evaluator 的 `text-api`），
  * **不决定能不能拉模型清单**：清单按地址形态兜底（`{地址}/models` → 404 再依次回退 `{地址}/v1/models`、
- * 站点根的 `/models` 与 `/v1/models`，见 api 的 `modelListCandidates`）。原先「Anthropic 没有 /models 接口，
+ * 站点根的 `/models` 与 `/v1/models`，见 api 的 `modelListCandidates`）。「Anthropic 没有 /models 接口，
  * 模型名只能手工维护」那条只对 api.anthropic.com 成立，自建网关普遍在版本段上提供 OpenAI 风格的清单接口
- * （2026-09-26 修订）；而 `/anthropic` 一类 Messages 根、`/api/v1` 一类带前缀的地址，清单接口往往挂在站点根上
- * （2026-09-30 补根回退）。
+ * 只是历史上的说法；而 `/anthropic` 一类 Messages 根、`/api/v1` 一类带前缀的地址，清单接口往往挂在站点根上
+ * ⇒ 清单候选必须包含站点根那一批。
  */
 export const ProtocolTypeSchema = z.enum(['openai', 'anthropic']);
 export type ProtocolType = z.infer<typeof ProtocolTypeSchema>;
@@ -26,7 +26,7 @@ export const PROTOCOL_LABELS: Record<ProtocolType, string> = {
 };
 
 /**
- * 模型清单条目：source 区分自动拉取与手工维护（拉取是合并，不能冲掉手工项，见 spec §6.1）。
+ * 模型清单条目：source 区分自动拉取与手工维护（拉取是合并，不能冲掉手工项）。
  *
  * 后三格是「模型能力」，全部可选 —— **缺省 = 未知**，绝不兜底成 0 或某个默认窗口：
  *   · `contextWindow`：上下文窗口（token）。原生 anthropic / openai 的 /models 不带它，
@@ -44,10 +44,10 @@ export const ProviderModelSchema = z.object({
   contextWindowSource: z.enum(['fetched', 'manual']).optional(),
   /**
    * 上游声明的思考强度档位（原样保留上游的顺序与拼写：`low` / `medium` / `high` / `xhigh` / `max` …）。
-   * 空 / 缺省 = 上游没说（实测 47 条里 21 条如此）⇒ 界面给该家**完整档位域**（2026-10-06 起，
+   * 空 / 缺省 = 上游没说（实测 47 条里 21 条如此）⇒ 界面给该家**完整档位域**（
    * 见 `contracts/src/effort.ts` 的 `intersectEfforts`）。**改前是「界面上只有『默认』可选」**——那条口径让
    * 「关闭思考」这个档位在本机两个 provider 上永远点不到（它们都没声明过这一格）。
-   * **不做归一化、不做「翻译成各家方言」**：档位名是上游的词汇，交集与方言都在别处（spec D1 / D10）。
+   * **不做归一化、不做「翻译成各家方言」**：档位名是上游的词汇，交集与方言都在别处。
    */
   supportedEfforts: z.array(z.string().min(1)).optional(),
   /** 上游推荐的档位；不在 supportedEfforts 里时按「没有推荐」处置（不猜） */
@@ -68,7 +68,7 @@ export const ProviderSchema = z.object({
 });
 export type Provider = z.infer<typeof ProviderSchema>;
 
-/** 下行形态：apiKey 已掩码（spec §6.1「落盘后列表只显示掩码」） */
+/** 下行形态：apiKey 已掩码（「落盘后列表只显示掩码」） */
 export const ProviderViewSchema = ProviderSchema.omit({ apiKey: true }).extend({ apiKeyMasked: z.string() });
 export type ProviderView = z.infer<typeof ProviderViewSchema>;
 
@@ -97,7 +97,7 @@ export type ProviderCreate = z.infer<typeof ProviderCreateSchema>;
 export const ProviderPatchSchema = ProviderCreateSchema.partial();
 export type ProviderPatch = z.infer<typeof ProviderPatchSchema>;
 
-/** 单条模型的增删入参（spec §8 的 models 路由）：与落盘条目同形，避免两套字段名 */
+/** 单条模型的增删入参（models 路由）：与落盘条目同形，避免两套字段名 */
 export const ProviderModelInputSchema = ProviderModelSchema;
 export type ProviderModelInput = z.infer<typeof ProviderModelInputSchema>;
 
@@ -116,7 +116,7 @@ export type ProviderModelCapability = z.infer<typeof ProviderModelCapabilitySche
 /**
  * 单条模型的窗口入参（设置页的行内编辑器）：`contextWindow: null` = **明确清空**。
  * 为什么用 null 而不是「字段缺席」：缺席与「不改」在语义上不可区分，而清空是一次真实意图
- * —— 它同样要把 `contextWindowSource` 置成 manual（见 spec D3：清空 = 别用上游那个数）。
+ * —— 它同样要把 `contextWindowSource` 置成 manual（清空 = 别用上游那个数）。
  * `maxOutputTokens` 可选是为了兼容只改窗口的老客户端。
  */
 export const ProviderModelContextSchema = ProviderModelCapabilitySchema.extend({

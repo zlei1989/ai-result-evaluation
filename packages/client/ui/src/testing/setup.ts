@@ -8,7 +8,7 @@ import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
 
 /**
- * 把 Node ≥22 **顶掉**的 `localStorage` 装回 jsdom 的实现（2026-10-07，Node v26.7.0 + vitest 4.1.11）。
+ * 把 Node ≥22 **顶掉**的 `localStorage` 装回 jsdom 的实现（Node v26.7.0 + vitest 4.1.11）。
  *
  * 机制：Node 22 起自带一个实验性的 `localStorage` 全局，不带 `--localstorage-file` 启动时它是个
  * **取值即 `undefined`** 的访问器（还会打一条 `ExperimentalWarning`）；而 vitest 的 `populateGlobal`
@@ -18,8 +18,8 @@ import { afterEach } from 'vitest';
  * `sessionStorage` 不受影响（Node 没有同名全局），差别只在 `localStorage` 这一格。
  *
  * 症状不是「测不到」而是**成片假红**：凡读写 localStorage 的用例全部挂在
- * `Cannot read properties of undefined (reading 'getItem')`。实测：本包 `stored-preference.test.tsx`
- * 12 条全红、`list-detail-layout.test.tsx` 红 2 条，且都与被测代码无关。
+ * `Cannot read properties of undefined (reading 'getItem')`（本包 `stored-preference.test.tsx`
+ * 12 条、`list-detail-layout.test.tsx` 2 条），且都与被测代码无关。
  *
  * 为什么从 `_globalProxy` 取（jsdom 的内部字段）：`populateGlobal` 把 `window` 指成了 global 自己
  * （`global.window = global`），真正的 jsdom Window 实例只剩这一条路摸得到；透过它读 `localStorage`

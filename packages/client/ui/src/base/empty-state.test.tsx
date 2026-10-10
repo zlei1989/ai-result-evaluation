@@ -30,7 +30,7 @@ describe('EmptyState', () => {
    * 创建 / 添加类空态的形态守卫（全站新增按钮：前导加号 + 虚线边框）。
    *
    * 为什么值得钉：`variant` 在 antd 6 里**单独给不生效**——`Button.js` 只在 `color` 与 `variant`
-   * 同时存在时才用它们，否则静默回落到 `['default','outlined']`。实测漏掉 `color` 时按钮照常渲染、
+   * 同时存在时才用它们，否则静默回落到 `['default','outlined']`。漏掉 `color` 时按钮照常渲染、
    * 只是边框从虚线变实线（类名 `ant-btn-variant-outlined`），没有任何报错或告警：
    * 「看起来还行、其实已经不是约定的样子」。下面按类名断言，正是为了拦住这种静默降级。
    */

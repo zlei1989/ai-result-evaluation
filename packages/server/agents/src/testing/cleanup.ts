@@ -6,7 +6,7 @@
  * （`node --expose-internals` 读 `internal/fs/rimraf` 的 `retryErrorCodes` 可见），
  * 而 `fs.rmSync` 直接下沉 C++（`binding.rmSync(path, maxRetries, recursive, retryDelay)`）
  * ⇒ 一个**已经空了**的目录照样 3ms 就抛 `EPERM`，给多少 `maxRetries` 都没重试过一次
- * （2026-10-01 与 2026-10-07 两次实测；同场景异步 `fs.rm` 631ms 内自愈）。
+ * （同场景异步 `fs.rm` 631ms 内自愈）。
  *
  * 而锁本身是**瞬时的**：持锁者是**刚退出的子进程**——Windows 上句柄释放晚于
  * `execFileSync` 返回几 ms，而本包夹具里的 `.agenthome` 与仓库目录正是 git / agent CLI 的 cwd。

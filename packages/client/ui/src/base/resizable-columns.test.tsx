@@ -147,7 +147,7 @@ describe('ResizableColumns', () => {
     rerender(<ResizableColumns panes={threePanes} onWidthsChange={() => {}} />);
     expect(screen.getByTestId('resizable-pane-extra')).toBeInTheDocument();
     expect(container.querySelectorAll('.ant-splitter-bar').length).toBe(2);
-    // 只断言 DOM 看不出「重新收集」：把 effect 依赖从 [paneCount] 改成 [] 后，上面两条照样通过，
+    // 只断言 DOM 看不出「重新收集」：effect 依赖漏掉 [paneCount] 时上面两条照样通过，
     // 而新宿主从此不被观察、onPaneWidthChange 静默失效。这条断言观察器**真的观察到了新宿主**。
     const observedKeys = FakeResizeObserver.instances
       .flatMap((observer) => observer.observed.map((el) => el.getAttribute('data-pane-key')))

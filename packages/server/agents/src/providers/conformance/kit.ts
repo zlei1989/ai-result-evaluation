@@ -1,5 +1,5 @@
 /**
- * 新增智能体 SDK 的一致性套件（判据源：spec v3）。
+ * 新增智能体 SDK 的一致性套件。
  *
  * 为什么需要它：加一家 SDK 时各写一套 provider 测试的结果是**每家的判据都不一样**，
  * 于是「新那家漏了某条契约」不会被任何用例拦住。这里把**与厂商无关**的判据集中成一份，
@@ -50,9 +50,9 @@ export type ConformanceScenarioName =
 export interface ConformanceProduct {
   messages: AgentMessage[];
   subagents: SubagentRecord[];
-  /** §2.9：没有 `vendor-system` 通道的那家给 `null`（不要造空壳） */
+  /** 没有 `vendor-system` 通道的那家给 `null`（不要造空壳） */
   environment: unknown;
-  /** §2.3 行级事件；形状由契约的事件 schema 管，这里只查「三类 + log 带 stream」 */
+  /** 行级事件；形状由契约的事件 schema 管，这里只查「三类 + log 带 stream」 */
   events: Array<Record<string, unknown>>;
   usage: {
     tokens: UsageTokens | null;
@@ -60,10 +60,10 @@ export interface ConformanceProduct {
     subagentTokens: UsageTokens | null;
     subagentTurns: number | null;
   };
-  /** §2.10 行结果（最终答复与结论） */
+  /** 行结果（最终答复与结论） */
   result: ConformanceRunResult;
   /**
-   * §2.11 结构化输出（评分者通路）的探针：**能真观测到「schema 有没有发给厂商」的 fixture 才给**。
+   * 结构化输出（评分者通路）的探针：**能真观测到「schema 有没有发给厂商」的 fixture 才给**。
    *
    * 为什么是可选而不是必填：消息级的 fixture（把协议载荷喂进归一函数那种）**看不到请求**，
    * 硬要它填这一格就只能自述「我带了 schema」——那是无区分力的假判据。给不出就不给，
@@ -81,9 +81,9 @@ export interface ConformanceProduct {
 }
 
 /**
- * §2.10 **行结果**：一次运行交回给调用方的那两格（`AgentRunResult` 里与归一产物同源的部分）。
+ * **行结果**：一次运行交回给调用方的那两格（`AgentRunResult` 里与归一产物同源的部分）。
  *
- * 为什么单列一个判据组（2026-10-07）：评分通路只读 `finalText`——它是「智能体评分」这条产品
+ * 为什么单列一个判据组：评分通路只读 `finalText`——它是「智能体评分」这条产品
  * 通路的**唯一入口**。而在这条判据之前，「哪条消息算最终答复」只有各家自己的用例在管：
  * codex 在 app-server 重构里整体漏写了这一格，`providers/codex/*` 全绿、真机上评分智能体却
  * 永远拿不到答复（见 `docs/faq/codex.md` 的 `JUDGE_PARSE_FAILED` 条目）。
@@ -105,20 +105,20 @@ export interface ConformanceRunResult {
 export interface ConformanceFixture {
   /** 这一家的 kind（报错文案里点名用） */
   kind: string;
-  /** §2.7 本次运行的能力声明 */
+  /** 本次运行的能力声明 */
   capability: MessageCapability;
   /** 场景 → 产物；可以只给一部分，套件按能力声明要求它必须有的那些 */
   scenarios: Partial<Record<ConformanceScenarioName, () => ConformanceProduct>>;
-  /** §2.8 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
+  /** 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
   observedStatusIds?: string[];
   /**
-   * §2.10 场景期望的最终答复（缺省 = 不额外比对，只查下面那三条通则）。
+   * 场景期望的最终答复（缺省 = 不额外比对，只查下面那三条通则）。
    * 用途：把「这一家在这条路径上到底该给出什么」钉成字面量（例如「失败场景也不许交空串」）。
    */
   expectedFinalText?: Partial<Record<ConformanceScenarioName, string | null>>;
   /**
-   * §2.12 **喂了增量帧的场景**必须声明的事件条数（见 `checkDeltaChannelIsolation`）。
-   * 这一格是「增量不产事件」这条口径的全部判据：原先是零守卫，把 `events.ts` 的分支删回去也不会红。
+   * **喂了增量帧的场景**必须声明的事件条数（见 `checkDeltaChannelIsolation`）。
+   * 这一格是「增量不产事件」这条口径的全部判据：没有它，把 `events.ts` 的分支删回去也不会红。
    */
   expectedEventCounts?: Partial<Record<ConformanceScenarioName, number>>;
 }
@@ -132,7 +132,7 @@ const CAPABILITY_PROOF: ReadonlyArray<readonly [string, readonly ConformanceScen
   ['streamingDelta', ['plain-reply']],
 ];
 
-/** 能力五态 → 允许的缺失原因（§2.7 的对应关系） */
+/** 能力五态 → 允许的缺失原因（对应关系） */
 const REASON_BY_CAPABILITY: Record<string, readonly MissingReason[]> = {
   no: ['not-supported'],
   'not-projected-by-vendor': ['not-exposed'],
@@ -143,12 +143,12 @@ const REASON_BY_CAPABILITY: Record<string, readonly MissingReason[]> = {
 const SCENARIO_ENTRIES = (fixture: ConformanceFixture): Array<[ConformanceScenarioName, () => ConformanceProduct]> =>
   Object.entries(fixture.scenarios) as Array<[ConformanceScenarioName, () => ConformanceProduct]>;
 
-/** §6.2 的合并键公式：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>` */
+/** 合并键公式：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>` */
 export function mergeKeyOf(message: Pick<AgentMessage, 'subagentId' | 'roundTrip' | 'role' | 'parentCallId'>): string {
   return [message.subagentId ?? 'main', String(message.roundTrip), message.role, message.parentCallId ?? '-'].join('|');
 }
 
-/** 能力声明自身合规（§2.7）。zod 的 `superRefine` 已在 schema 层拦「yes 无 source / 非 yes 无 reason」 */
+/** 能力声明自身合规。zod 的 `superRefine` 已在 schema 层拦「yes 无 source / 非 yes 无 reason」 */
 export function checkCapabilityDeclaration(fixture: ConformanceFixture): void {
   const parsed = MessageCapabilitySchema.safeParse(fixture.capability);
   if (!parsed.success) {
@@ -156,7 +156,7 @@ export function checkCapabilityDeclaration(fixture: ConformanceFixture): void {
   }
 }
 
-/** 消息与子任务行过契约 schema（§2.1/§2.2/§2.8），环境过 §2.9 schema 或显式 null */
+/** 消息与子任务行过契约 schema，环境过 schema 或显式 null */
 export function checkContracts(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     for (const message of build().messages) {
@@ -174,7 +174,7 @@ export function checkContracts(fixture: ConformanceFixture): void {
   }
 }
 
-/** 合并键必须等于公式（§6.2）：信封里那一格是算好的，消费方不再自己拼 */
+/** 合并键必须等于公式：信封里那一格是算好的，消费方不再自己拼 */
 export function checkMergeKeys(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     for (const message of build().messages) {
@@ -186,7 +186,7 @@ export function checkMergeKeys(fixture: ConformanceFixture): void {
   }
 }
 
-/** §2.8 的桥：`parentCallId` 指向真实工具调用，`parentSubagentId` 指向真实子任务或 null；状态与「是否采到」分开记 */
+/** 子任务桥：`parentCallId` 指向真实工具调用，`parentSubagentId` 指向真实子任务或 null；状态与「是否采到」分开记 */
 export function checkSubagentBridge(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const product = build();
@@ -216,7 +216,7 @@ export function checkSubagentBridge(fixture: ConformanceFixture): void {
   }
 }
 
-/** §2.4–2.6：分量与合计同一把尺（「缺一格就整格 null」由 schema 保证：三个必填格是 `number`，整格才可空） */
+/** 分量与合计同一把尺（「缺一格就整格 null」由 schema 保证：三个必填格是 `number`，整格才可空） */
 export function checkUsagePairing(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const { usage } = build();
@@ -224,7 +224,7 @@ export function checkUsagePairing(fixture: ConformanceFixture): void {
      * 配对的方向是**单向**的：分量的「轮次」是**从合计推出来的**（claude 的 `index.ts`：
      * `subagentTurns = turns === null ? null : read.turns`）——合计不知道时分量必然为 `null`；
      * 反过来不成立（分量 token 可以独立采到，合计轮次却可能采不到）。
-     * 2026-10-07 接 claude 时这条抓出过我的判据写反了方向，故在此写明理由。
+     * 接 claude 时这条抓出过判据写反了方向，故在此写明理由。
      */
     if (usage.subagentTurns !== null && usage.turns === null) {
       throw new Error(`${fixture.kind}/${name}：给了 subagentTurns 却把合计 turns 记成 null（分量不可能比合计更清楚）`);
@@ -235,7 +235,7 @@ export function checkUsagePairing(fixture: ConformanceFixture): void {
   }
 }
 
-/** §2.7：声明 `yes` 就必须造得出该块；声明非 `yes` 必须给出与该态对应的原因 */
+/** 声明 `yes` 就必须造得出该块；声明非 `yes` 必须给出与该态对应的原因 */
 export function checkCapabilityNailing(fixture: ConformanceFixture): void {
   const declaration = fixture.capability as unknown as Record<string, unknown>;
   for (const [cell, proofNames] of CAPABILITY_PROOF) {
@@ -288,7 +288,7 @@ function assertCapabilityProof(kind: string, scenario: ConformanceScenarioName, 
   }
 }
 
-/** §2.9：`present:false` 的环境项**必须**带 `missing`；§2.7 同一口径 */
+/** `present:false` 的环境项**必须**带 `missing`；能力声明同一口径 */
 export function checkMissingReasons(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const environment = build().environment as { groups?: Array<{ items?: Array<Record<string, unknown>> }> } | null;
@@ -315,7 +315,7 @@ function settledMainReplies(product: ConformanceProduct): string[] {
 }
 
 /**
- * §2.10：`finalText` 的三条通则（跨家同一把尺）。
+ * `finalText` 的三条通则（跨家同一把尺）。
  *
  * 判据刻意**不看厂商**，只看「产物里有什么」与「结果里报了什么」是否自洽：
  *   1. 空串一律红——「没采到」必须记 `null`（调用方对两者给的是两句不同的归因）；
@@ -349,7 +349,7 @@ export function checkFinalAnswer(fixture: ConformanceFixture): void {
   }
 }
 
-/** §2.3：行级事件只有三类，`log` 必须带 `stream`；§2.1：消息来源在闭集内 */
+/** 行级事件只有三类，`log` 必须带 `stream`；消息来源在闭集内 */
 export function checkLineEventsAndSources(fixture: ConformanceFixture): void {
   const allowedSources: MessageSource[] = ['wire', 'hook', 'session-file', 'aggregate'];
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
@@ -371,7 +371,7 @@ export function checkLineEventsAndSources(fixture: ConformanceFixture): void {
 }
 
 /**
- * §2.11 结构化输出（评分者通路）：逐场景跑探针。判据本体在 `./structured-output.ts`
+ * 结构化输出（评分者通路）：逐场景跑探针。判据本体在 `./structured-output.ts`
  * （独立成模块的理由见该文件头；本函数只负责挂上场景名，让红的时候能点名）。
  */
 export function checkStructuredOutputGroup(fixture: ConformanceFixture): void {
@@ -404,10 +404,10 @@ export function checkTransportDeliveryGroup(fixture: ConformanceFixture): void {
 }
 
 /**
- * §2.12 **增量通道隔离**：喂了增量帧的场景必须声明**事件条数**，且实际条数必须等于它。
+ * **增量通道隔离**：喂了增量帧的场景必须声明**事件条数**，且实际条数必须等于它。
  *
- * 为什么这条需要专门的守卫（2026-10-09）：增量帧只该走内容通道，而**漏进事件通道是一条真实的
- * 回归路径**——claude 的 `stream_event` 原先就掉进「未识别厂商负载落 `log` 保留原始负载」的兜底，
+ * 为什么这条需要专门的守卫：增量帧只该走内容通道，而**漏进事件通道是一条真实的
+ * 回归路径**——claude 的 `stream_event` 就掉进过「未识别厂商负载落 `log` 保留原始负载」的兜底，
  * 一次运行几百上千条 ⇒ 「原始输出」面板被刷成 JSON 流水（用户口径：浏览器卡死，且真要看的
  * stderr / init 全被冲掉）。三条 `events.ts` 的分支都补上了，但**当时没有任何跨家守卫**：
  * 把分支删回去，三家各自的用例里只有 claude 会红。
@@ -441,18 +441,18 @@ export function checkDeltaChannelIsolation(fixture: ConformanceFixture): void {
 /** 把全部判据注册成一家的用例；红的时候组名直接指向被违反的那条契约 */
 export function describeProviderConformance(fixture: ConformanceFixture): void {
   const cases: ReadonlyArray<readonly [string, () => void]> = [
-    ['能力声明自身合规（§2.7）', () => checkCapabilityDeclaration(fixture)],
-    ['消息 / 子任务 / 环境过契约 schema（§2.1/2.2/2.8/2.9）', () => checkContracts(fixture)],
-    ['合并键等于 §6.2 公式', () => checkMergeKeys(fixture)],
-    ['子任务桥与状态口径（§2.8）', () => checkSubagentBridge(fixture)],
-    ['用量与轮次配对（§2.4–2.6）', () => checkUsagePairing(fixture)],
-    ['能力声明与产物互钉（§2.7）', () => checkCapabilityNailing(fixture)],
-    ['缺失必须带原因（§2.9）', () => checkMissingReasons(fixture)],
-    ['最终答复口径（§2.10）', () => checkFinalAnswer(fixture)],
-    ['结构化输出与产出可解析（§2.11）', () => checkStructuredOutputGroup(fixture)],
+    ['能力声明自身合规', () => checkCapabilityDeclaration(fixture)],
+    ['消息 / 子任务 / 环境过契约 schema', () => checkContracts(fixture)],
+    ['合并键等于契约公式', () => checkMergeKeys(fixture)],
+    ['子任务桥与状态口径', () => checkSubagentBridge(fixture)],
+    ['用量与轮次配对', () => checkUsagePairing(fixture)],
+    ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
+    ['缺失必须带原因', () => checkMissingReasons(fixture)],
+    ['最终答复口径', () => checkFinalAnswer(fixture)],
+    ['结构化输出与产出可解析', () => checkStructuredOutputGroup(fixture)],
     ['传输时序（C 类：缓冲补投 / 终态不早于响应 / 不重复）', () => checkTransportDeliveryGroup(fixture)],
-    ['行级事件三类与来源闭集（§2.3/§2.1）', () => checkLineEventsAndSources(fixture)],
-    ['增量通道隔离：喂了增量就必须钉住事件条数（§2.12）', () => checkDeltaChannelIsolation(fixture)],
+    ['行级事件三类与来源闭集', () => checkLineEventsAndSources(fixture)],
+    ['增量通道隔离：喂了增量就必须钉住事件条数', () => checkDeltaChannelIsolation(fixture)],
   ];
   describe(`${fixture.kind} 一致性套件`, () => {
     for (const [title, run] of cases) it(title, run);

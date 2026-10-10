@@ -25,14 +25,14 @@ export interface LogNodeBreadcrumbProps {
   onSelect(nodeId: string): void;
 }
 
-/** 能进面包屑的节点：`kind === 'row'` 除外（不可点，见 §6.3） */
+/**能进面包屑的节点：`kind === 'row'` 除外（不可点） */
 function navigableNodes(nodes: readonly LogNode[]): LogNode[] {
   return nodes.filter((node) => node.kind !== 'row');
 }
 
 /**
  * 节点的显示名。主会话是固定文案「主会话」；子任务给不出任务名时用 `subagentId` 前 8 位，
- * 再给不出才用节点 id 前 8 位——**不显示空白**（v2 spec §6.2 明确 `name` 可为 null）。
+ * 再给不出才用节点 id 前 8 位——**不显示空白**（v2  明确 `name` 可为 null）。
  */
 export function nodeDisplayName(node: LogNode): string {
   if (node.kind === 'main') return '主会话';
@@ -63,13 +63,11 @@ export function nodeChain(nodes: readonly LogNode[], activeNodeId: string): read
  *   2. **祖先段 + 同层还有别的节点**：给下拉，菜单 = 这一段的兄弟列表（本段标 `disabled`）
  *      ——「当前项」指「这一层你现在站在哪个节点上」，不是整条链的末尾；
  *   3. **祖先段 + 同层只有它自己**：**整段可点、不给下拉**（点了就回到它）。
- *
- * ⚠️ 第 3 种是两种真机缺陷的共同修法（2026-10-03）：
- *   · 原来写成 `candidate.parentId === node.parentId`，而 `node` 是**这一段的节点**——
+ * * ⚠️ 第 3 种是两种真机缺陷的共同修法：
+ * · 写成 `candidate.parentId === node.parentId`、而 `node` 是**这一段的节点**时——
  *     `主会话` 那一段列出的是「与主会话同父的节点」，主会话 `parentId === null`
  *     ⇒ 列表里只有它自己、且被标成 `disabled`。表现是**站在子任务上回不去主会话**：
- *     抽屉上唯一的入口是个灰项，点不动。正确口径：某一段的兄弟 = **它父节点的子节点**。
- *   · 改对之后仍留一个死胡同：主会话是根、本来就没有同层兄弟 ⇒ 那一段必然只有一个灰项。
+ *     抽屉上唯一的入口是个灰项，点不动。正确口径：某一段的兄弟 = **它父节点的子节点**。 * · 光改对判据仍留一个死胡同：主会话是根、本来就没有同层兄弟 ⇒ 那一段必然只有一个灰项。
  *     所以「同层只有一个」时不能再给下拉，要把**这一段本身**做成入口。
  */
 export function breadcrumbItems(

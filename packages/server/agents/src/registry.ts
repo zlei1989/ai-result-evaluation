@@ -17,7 +17,7 @@ const BY_KIND: ReadonlyMap<AgentKind, AgentProvider> = new Map(
   PROVIDERS.map((provider) => [provider.kind, provider] as const),
 );
 
-/** 按 kind 解析 provider；未注册的 kind 抛错，错误信息必须含可用清单（§5.6.7） */
+/** 按 kind 解析 provider；未注册的 kind 抛错，错误信息必须含可用清单 */
 export function getProvider(kind: AgentKind): AgentProvider {
   const provider = BY_KIND.get(kind);
   if (provider === undefined) {

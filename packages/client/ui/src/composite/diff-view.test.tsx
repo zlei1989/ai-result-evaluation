@@ -1,7 +1,7 @@
 /**
  * DiffView：逐文件列表 + 吸顶标题 + 惰性加载 + 骨架 + 截断提示。
  *
- * 截断提示是硬要求（spec §5.5 第 7 步）：评分模型看不到的改动必须让人知道，
+ * 截断提示是硬要求：评分模型看不到的改动必须让人知道，
  * 否则使用者会把「这一次的分」当成完整输入下的结论。
  *
  * 注意：`Skeleton` / `Input` 会读全局 `ResizeObserver` / `matchMedia`，jsdom 都没有，
@@ -108,7 +108,7 @@ describe('DiffView', () => {
   });
 
   /**
-   * 每个文件标题上的增删行数按 git 惯例上色（2026-10-07 用户口径）：`+N` 绿、`−Y` 红，
+   * 每个文件标题上的增删行数按 git 惯例上色：`+N` 绿、`−Y` 红，
    * 与执行日志事实条里「改动」那一格是同一套视觉语言。
    *
    * 颜色判据用**自定义 token**（同 `json-text.test.tsx`）：写死字面量——哪怕是当前默认值——都会红；
@@ -275,7 +275,7 @@ describe('DiffView', () => {
     expect(screen.getByText(/仅在已加载的 2 个文件里过滤/)).toBeInTheDocument();
   });
 
-  it('标题里的路径走省略号，且不再用 Tag 包裹（用户口径 2026-09-29）', () => {
+  it('标题里的路径走省略号，且不用 Tag 包裹', () => {
     render(<DiffView index={index} renderFileBody={bodySpy()} dark={false} />);
 
     const title = screen.getByTestId('diff-file-title-lib/a.ts');
@@ -313,8 +313,8 @@ describe('DiffView', () => {
   });
 
   /**
-   * 分页：**这条曾经缺失，导致「第 31 个之后的文件永远看不到」溜过了全部测试**
-   * （code review 2026-09-29 的 Critical #1）。哨兵存在 + `onLoadMore` 被真的调到，
+   * 分页：**漏了它，「第 31 个之后的文件永远看不到」会溜过全部测试**。
+   * 哨兵存在 + `onLoadMore` 被真的调到，
    * 两件事必须一起钉：只钉「传了 onLoadMore」而不钉「它会被触发」，等于没钉。
    */
   it('还有更多文件时挂哨兵，滚到底（哨兵进入视口）会调 onLoadMore', () => {

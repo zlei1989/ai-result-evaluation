@@ -84,7 +84,7 @@ describe('parseRepoSource', () => {
     expect(caught?.message).toContain('ftp');
   });
 
-  it('含控制字符或以 - 开头一律拒绝（RG13：参数注入面）', () => {
+  it('含控制字符或以 - 开头一律拒绝（参数注入面）', () => {
     const control = (() => {
       try {
         parseRepoSource('https://host/x.git\n');

@@ -24,13 +24,13 @@ import {
   toolCallSummary,
   toolErrorSummary,
 } from '../../activity';
-import { logDraft, safeStringify, unknownEventDraft, type AgentEventDraft } from '../../emit';
+import { logDraft, safeStringify, unknownEventDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type FailureContext } from '../../errors';
 import { usageTokens } from '../../message';
 import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
 import type { AppServerItem, AppServerNotificationPayload, AppServerTurn } from './appserver/protocol';
 import { APPLY_PATCH_TOOL_NAME, COMMAND_TOOL_NAME, collabStatusOf, subAgentActivityStatus } from './message';
-import { countRoundTrips, normalizedInput, observedTurns, type CodexRunState } from './run-state';
+import { countRoundTrips, normalizedInput, noteMcpStartup, observedTurns, type CodexRunState } from './run-state';
 
 /** 一轮已交出的权威读数（收尾要与它比「是否真的更新」） */
 export interface CodexEventContext {
@@ -118,6 +118,35 @@ export function projectCodexEvent(
     return idle();
   }
 
+  if (payload.kind === 'mcpStartupStatus') {
+    /**
+     * **MCP 的厂商侧判据**（codex）：`starting` / `ready` / `failed`。
+     *
+     * 三条口径：
+     *   · 每条通知交**累积之后的全部服务器**（`noteMcpStartup` 的返回值）：codex 只报变化的那一台，
+     *     而观测格按名字对全表 ⇒ 最后那一条必须自足；
+     *   · 通道自报 `vendor-startup-status`：推导据此把 `ready` 读成「已就绪」、把「没有这一台工具」
+     *     读成「不判失败」（这一家拿不到工具表）；
+     *   · 其余五格如实记 `null`（**不是空数组**）：这一条事实里只有 MCP 那一格，投送面就是它。
+     *
+     * ⚠️ **能力缺口**：`ready` 只证明「装上了」，不证明「调得动」——本机自定义 Responses 网关下
+     * 模型发起的 MCP 调用回 `unsupported call`（上游命名空间被拍平，见 `docs/protocols/codex.md` 的「能力缺口」
+     * 与 `CODEX_MCP_DISPATCH_GAP_NOTE`）。本条事件因此**只承载启动状态**，一个字都不暗示可用性。
+     */
+    const servers = noteMcpStartup(runState, payload.name, payload.status, payload.error);
+    return idle([
+      vendorSystemDraft({
+        tools: null,
+        slashCommands: null,
+        agents: null,
+        mcpServers: servers.map((one) => ({ name: one.name, status: one.status, source: null, error: one.error })),
+        mcpChannel: 'vendor-startup-status',
+        permissionMode: null,
+        outputStyle: null,
+      }),
+    ]);
+  }
+
   if (payload.kind === 'error') {
     /**
      * `error` 通知是**每次尝试**都会发的过路消息（它的同名声明还带 `willRetry`，协议层这一侧只留了
@@ -151,7 +180,7 @@ export function projectCodexEvent(
  * `message.ts` 的块** ⇒ 只出块不出日志，那一行整轮只剩「更新计划：N 步」。真机症状
  * （run `7d8d5f3b`）：74 条事件 / 44 条 log / **10 条带摘要且全是计划那一句**，最后一条摘要还是
  * `{"method":"account/rateLimits/updated"}`（机器负载 ⇒ 被 `activityOf` 挡下）
- * ⇒ 活动行自第 6 条事件起**永久冻住**；而真机抓包证明 `item/started` 起来时就带着完整 `command`
+ * ⇒ 活动行自第 6 条事件起**永久冻住**；而抓包证明 `item/started` 起来时就带着完整 `command`
  * （`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`）——信息一直都在。
  * 另两家（dsh / claude）都是「同一条工具通知既出块、也出一行带摘要的日志」，这里补的就是那半边。
  *
@@ -233,7 +262,7 @@ function activityDrafts(item: AppServerItem, completed: boolean, runState: Codex
  * ⚠️ **派发为什么不能放在 `item/started`**（真机抓包 `probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`）：
  * `L48 item/started` 的 `receiverThreadIds` 是**空数组**（`agentsStates` 也是 `{}`），id 要到
  * `L51 item/completed` 才出现（`["01a115e7-…"]`）⇒ 在开始那一刻遍历 receiver 只会得到零条，
- * 「已派发子任务」在生产里永不播（这一支曾经是死代码，守卫也因为夹具写了厂商不产出的形状而假绿）。
+ * 「已派发子任务」在生产里永不播（这一支是死代码，而夹具若写厂商不产出的形状，守卫就会假绿）。
  * 而 `wait` 那一支在 `item/started` 就带 id（`L59`）⇒ 它照旧在开始播「调用工具 wait」。
  *
  * 收场判据是「终态 ∧ 与上次不同」（`runState.subagentStatus`）：同一次收场会在多次协作调用、
@@ -242,7 +271,7 @@ function activityDrafts(item: AppServerItem, completed: boolean, runState: Codex
  * **名字**：`thread/started` 登记昵称这条路只在主线程实测到（同一份抓包里 `thread/started` 仅一条、
  * 且 `agentNickname: null`；子线程的昵称只出现在收尾 `thread/list` 的响应里）⇒ 运行期的派发/收场行
  * **多数是无名的那一档**，这是词表允许的形状，不是缺陷。子任务行在收尾取数后会有名字，
- * 两个面因此可能不一致——登记在「2026-09-22-features-design.md」§5.6.9，不在这一层编名字。
+ * 两个面因此可能不一致——登记在《进程生命周期》的归属表，不在这一层编名字。
  */
 function collabDrafts(
   item: Extract<AppServerItem, { kind: 'collabToolCall' }>,
@@ -359,7 +388,7 @@ function evidenceOf(item: AppServerItem): unknown {
       tool: item.tool,
       status: item.status,
       durationMs: item.durationMs,
-      // 入参留着：它说明「这次调用要干什么」，而结果正文不留（落点是结果块）
+      // 入参留着：它说明「本次调用要干什么」，而结果正文不留（落点是结果块）
       arguments: item.arguments,
     };
   }

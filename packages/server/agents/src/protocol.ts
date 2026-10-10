@@ -7,9 +7,8 @@
  *
  * 三条口径：
  *   1. 判据是 `acceptsProtocol()`，四个消费点一个都不许自己写 `includes`；
- *   2. 文案是 `protocolMismatchMessage()`。它统一之前，api 那处说「协议的**供应商**」、evaluator
- *      两处说「协议的**模型**」，同一条规则在界面上有三种说法——多协议之后第一种说法还会直接说谎
- *      （「只接受 Anthropic 协议」对 DSH 已不成立）；
+ *   2. 文案是 `protocolMismatchMessage()`：同一条规则只能有一种说法——说成「协议的**供应商**」
+ *      或「协议的**模型**」都会在界面上分叉，而前者对多协议的 DSH 直接说谎；
  *   3. 集合里只有一家时文案保持单数（不写「两种协议」），因为 claude-code / codex 确实只吃一条 wire。
  */
 import { PROTOCOL_LABELS, type ProtocolType } from '@aieval/contracts';

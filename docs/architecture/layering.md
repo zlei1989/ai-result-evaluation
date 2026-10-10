@@ -51,15 +51,15 @@ packages/client/
 
 ## 机制与演化
 
-### 8 包为何脚手架期一次建全
+### 8 包为何一次建全
 
-边界规则只有在「包真实存在」时才被 ESLint 校验，后补包会一次性冲击边界；空包（`export {}`）成本近零，所以 8 个包在脚手架期一次建全、之后只往里填东西。agents 单列的理由：三家厂商 SDK 是重量级外部依赖，单列才不污染 core / evaluator；core 只依赖 contracts + Node 内置，可独立测试。全仓只做一个 Next.js 应用，服务端逻辑收敛进 Route Handlers（「双下游应用」是被否决的备选）。
+边界规则只有在「包真实存在」时才被 ESLint 校验，后补包会一次性冲击边界；空包（`export {}`）成本近零，所以 8 个包一次建全、之后只往里填东西。agents 单列的理由：三家厂商 SDK 是重量级外部依赖，单列才不污染 core / evaluator；core 只依赖 contracts + Node 内置，可独立测试。全仓只做一个 Next.js 应用，服务端逻辑收敛进 Route Handlers（不做第二个下游应用）。
 
-### api 对 agents 是后来加的边
+### api → agents：这条边为什么存在
 
-脚手架期 api 只有 evaluator / core / contracts 三条边；后来 `api/src/runs.ts` 要读 provider 注册表（`getProvider(agentKind)`、`acceptsProtocol` / `protocolMismatchMessage`、按注册表过滤候选池），判据不硬编码在 api——于是补了 `api → agents` 这条边。内部边加得再顺，也必须显式落进方向表。
+`api → agents` 这条边的存在理由：`api/src/runs.ts` 要读 provider 注册表（`getProvider(agentKind)`、`acceptsProtocol` / `protocolMismatchMessage`、按注册表过滤候选池），判据不硬编码在 api。内部边加得再顺，也必须显式落进方向表。
 
-**这条边后来还多了一种用法：api 层自己起智能体**（2026-10-09）。用例同步（`api/src/case-sync.ts`）要用「评分配置」的智能体写提交信息、并在与远端分叉时裁定合并，于是它调了 `getProvider(kind).run(...)`。为什么不放进另外两层：`core` 只依赖 contracts + Node 内置，起不了智能体，也不该为一次 git 同步把厂商 SDK 拖进最底层；`evaluator` 反向依赖 api 不成立，而这次编排同时要读设置、要用 `resolveJudgeRoute` / `requireJudgeAgent`（evaluator）与 git 原语（core）——**api 是唯一同时够得着这三者的层**。代价如实记：`provider.run` 的调用点不再只落在评测轮次内，跨轮次的那一处见《Provider 抽象与 run 入口》的调用点一节。
+**这条边的第二种用法：api 层自己起智能体**。用例同步（`api/src/case-sync.ts`）要用「评分配置」的智能体写提交信息、并在与远端分叉时裁定合并，所以它调 `getProvider(kind).run(...)`。为什么不放进另外两层：`core` 只依赖 contracts + Node 内置，起不了智能体，也不该为一次 git 同步把厂商 SDK 拖进最底层；`evaluator` 反向依赖 api 不成立，而这次编排同时要读设置、要用 `resolveJudgeRoute` / `requireJudgeAgent`（evaluator）与 git 原语（core）——**api 是唯一同时够得着这三者的层**。代价如实记：`provider.run` 的调用点不只在评测轮次内，跨轮次的那一处见《Provider 抽象与 run 入口》的调用点一节。
 
 ### ESLint 边界规则
 
@@ -76,10 +76,10 @@ packages/client/
 
 ### 四条不能省的加固
 
-每条对应一条实测过的绕过路径：
+每条对应一条已知的绕过路径：
 
 1. **动态 `import()` / `require()` 是 `no-restricted-imports` 的盲区**：另配 `no-restricted-syntax`，且选择器按说明符过滤——裸 `ImportExpression` 会把合法的代码分割一并禁掉。
-2. **跨包相对引用是盲区**（库包直出 TS 源码，`../../client/ui/src/index` 这种相对路径真能跑通）：用 `import-x/no-relative-packages`，且必须补 `settings['import-x/resolver'].node.extensions` 的 `.ts` / `.tsx`——否则规则内部的 `resolve()` 失败时**静默 return**（实测只开规则不加 settings 时，跨包相对引用照样以退出码 0 通过）。豁免名单按文件名限定 `**/{eslint,vitest,next}.config.{ts,tsx}`：各包配置文件要相对引用仓库根的共享配置，这是合法的；写成 `**/*.config.{ts,tsx}` 是任意深度匹配，产品模块会被顺带豁免。
+2. **跨包相对引用是盲区**（库包直出 TS 源码，`../../client/ui/src/index` 这种相对路径真能跑通）：用 `import-x/no-relative-packages`，且必须补 `settings['import-x/resolver'].node.extensions` 的 `.ts` / `.tsx`——否则规则内部的 `resolve()` 失败时**静默 return**（只开规则不加 settings 时，跨包相对引用照样以退出码 0 通过）。豁免名单按文件名限定 `**/{eslint,vitest,next}.config.{ts,tsx}`：各包配置文件要相对引用仓库根的共享配置，这是合法的；写成 `**/*.config.{ts,tsx}` 是任意深度匹配，产品模块会被顺带豁免。
 3. **禁 `require()` 的常量在 baseConfig 与 withBoundary 各放一份**：flat config 对同名规则是**整体替换**不是选项合并，withBoundary 排在后面，会把 baseConfig 那条整个盖掉——两处各放一份、共用同一常量对象。
 4. **`escapeRegExp` 必须转义 `/`**：漏了 ESLint 直接以退出码 2 崩溃（`Invalid regular expression: /^(@aieval/: Unterminated group`）。
 
@@ -97,11 +97,11 @@ packages/client/
 
 解析方式刻意用正则读 `AGENTS.md` 的代码块而不是硬编码第二份表——硬编码等于第二个真相源，两处漂移时守卫会替错的那份背书。箭头用 `String.fromCharCode(0x2192)` 现造而不写字面量：多字节字符被工具链改写时匹配会**静默失败**，而守卫的失效方式必须是响亮报错；解析不出 8 行就抛，不静默通过。
 
-真机实例（2026-10-03）：`@aieval/client` 曾把 `@aieval/ui` 写进 `dependencies` 而表里 client 只有 contracts——错位**没有任何可观测后果**（client 对 ui 只有一条 `export type`，编译期即被抹掉），不会被任何运行时用例逮住，只能靠读清单本身。
+**类型转出边的错位没有任何可观测后果**：client 对 ui 只有一条 `export type`，编译期即被抹掉——把 ui 写进 client 的 `dependencies` 不会被任何运行时用例逮住，只能靠读清单本身（守卫正是为此而设）。
 
 ### web-next 的运行期特例：厂商 SDK 的声明口径
 
-「厂商 SDK 只在 agents 包内」是 **import 口径不是声明口径**：三家 SDK（`@anthropic-ai/claude-agent-sdk` / `@openai/codex` / `@deepseek-ai/dsh-sdk-client`）必须**同时**声明在 `apps/web-next/package.json` 的 `dependencies`（版本区间与 agents 逐字相同），还要进 `next.config.ts` 的 `serverExternalPackages`。原因：外置包是运行期按裸说明符在产物目录（`.next/server/chunks/`）逐级向上找 `node_modules` 定位的，而 pnpm 的隔离式布局只把它们链在 agents 包下——少了应用侧这条声明，运行期第一次定位就 `MODULE_NOT_FOUND`。这不是打包优化，是「能不能跑起来」的问题。判据由 `apps/web-next/src/runtime-deps.test.ts`（契约 R35）钉住：声明与区间两边读 JSON 现比，另做「只解析路径、不加载模块」的真解析。
+「厂商 SDK 只在 agents 包内」是 **import 口径不是声明口径**：三家 SDK（`@anthropic-ai/claude-agent-sdk` / `@openai/codex` / `@deepseek-ai/dsh-sdk-client`）必须**同时**声明在 `apps/web-next/package.json` 的 `dependencies`（版本区间与 agents 逐字相同），还要进 `next.config.ts` 的 `serverExternalPackages`。原因：外置包是运行期按裸说明符在产物目录（`.next/server/chunks/`）逐级向上找 `node_modules` 定位的，而 pnpm 的隔离式布局只把它们链在 agents 包下——少了应用侧这条声明，运行期第一次定位就 `MODULE_NOT_FOUND`。这不是打包优化，是「能不能跑起来」的问题。判据由 `apps/web-next/src/runtime-deps.test.ts` 钉住：声明与区间两边读 JSON 现比，另做「只解析路径、不加载模块」的真解析。
 
 ## 已知边界与取舍
 
@@ -111,7 +111,7 @@ packages/client/
 | 类型转出边（client → ui） | 已收口 | 只允许 `export type`、落 `devDependencies`；第三段断言钉住（写回 `dependencies` 就红） |
 | 测试期别名边（web-next → evaluator 源码） | 已收口 | 只活在 `apps/web-next/vitest.config.ts` 的 `resolve.alias`，不进依赖清单；`apps/web-next/instrumentation.ts` 调 `recoverInterruptedRuns` 必须经 `@aieval/api` 转出（web-next 不直接 import evaluator） |
 | FORBIDDEN 名单管不到 `@aieval/*` 依赖边 | 已登记 | 加内部边必须显式落方向表；这条边不会报错，不落文档就是隐性依赖 |
-| ESLint 边界报错文案曾指向冻结架构档案 | 已修 | 报错文案现指本页「依赖方向」（断链修复时改指，档案退役后无死链） |
+| ESLint 边界报错文案的指向 | 已收口 | 报错文案指向本页「依赖方向」——不指向任何外部档案，因此没有死链 |
 
 ## 相关链接
 

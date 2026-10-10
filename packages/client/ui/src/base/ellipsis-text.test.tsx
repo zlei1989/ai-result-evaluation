@@ -29,11 +29,26 @@ describe('EllipsisText', () => {
     expect(screen.getByText('abcdef1').tagName.toLowerCase()).toBe('code');
   });
 
+  /**
+   * `muted`（次级色）：给「这一行不生效，但内容照旧要读」的格用（MCP 表的停用行名称）。
+   * 两半都要钉：传了要**真有**那个语义类；不传时**不许**带上——只钉前者会放过「一律加灰」，
+   * 那正是这条 prop 要避免的（整行涂淡会把排障要读的字一起藏起来）。
+   */
+  it('muted 时带 antd 的次级语义类，不传时一个字节都不带（弱化 ≠ 一律加灰）', () => {
+    render(<EllipsisText text="playwright" muted />);
+    render(<EllipsisText text="context7" />);
+
+    expect(screen.getByText('playwright').className).toContain('ant-typography-secondary');
+    expect(screen.getByText('context7').className).not.toContain('ant-typography-secondary');
+    // 弱化不等于隐藏：文本照旧在 DOM 里（次级色只是换了个颜色）
+    expect(screen.getByText('playwright')).toHaveTextContent('playwright');
+  });
+
   it('空串不挂 Tooltip（空浮层无意义）', () => {
     const { container } = render(<EllipsisText text="" />);
     expect(container.querySelector('.ant-tooltip')).toBeNull();
     // 上面这条**单独不构成守卫**：antd 的浮层要 hover 才渲染，而且渲染在 body 的 portal 里，
-    // container 内本来就永远查不到 .ant-tooltip。实测（包与不包 Tooltip 逐字节比对 innerHTML）：
+    // container 内本来就永远查不到 .ant-tooltip。包与不包 Tooltip 逐字节比对 innerHTML：
     // 两种写法的 DOM 完全相同，而 <Tooltip title=""> 即便 hover 也不开浮层——DOM 层面这条契约
     // 不可观测。要钉住它只能在元素层断言：空串时返回的是裸内容。
     const bare = EllipsisText({ text: '' });
