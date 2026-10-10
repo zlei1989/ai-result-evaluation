@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 工作区卡：工作区根目录 + 用例目录两格「校验并保存」、用例变更自动提交开关、用例同步状态与两个人工动作。
+ * 存储目录卡：工作区根目录 + 用例目录两格「校验并保存」、用例变更自动提交开关、用例同步状态与两个人工动作。
  * 纯展示：输入框是本地状态，点按钮把值交给 `onValidate*`（调用方去发 PUT /api/settings）；
  * 状态区与按钮的显隐全部由 props 决定（组件**不调接口、不认识 message**，失败提示是页面的事）。
  *
@@ -83,7 +83,7 @@ export function WorkspaceSettingsCard({
   const pullLabel = pullCount !== null && pullCount > 0 ? `拉取（远端领先 ${pullCount} 个提交）` : '拉取';
 
   return (
-    <Card size="small" title="工作区" data-testid="workspace-settings-card">
+    <Card size="small" title="存储目录" data-testid="workspace-settings-card">
       <Form layout="vertical" size="small" component={false}>
         <Form.Item
           label="工作区根目录"
