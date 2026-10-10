@@ -13,7 +13,7 @@ import {
   seedLegacyJudgeOverrideCase,
   seedRowWithoutItemId,
   ServiceError,
-  loadConfig,
+  listStoredCases,
   createCase,
   getCase,
   listCases,
@@ -43,7 +43,7 @@ describe('createCase / listCases / getCase', () => {
     }
 
     expect(caught).toBeDefined();
-    expect(loadConfig().cases).toEqual([]);
+    expect(listStoredCases().cases).toEqual([]);
   });
   // 成功日志只能在**真正落盘之后**打：被拒绝的保存留下「创建用例」的 INFO，等于在日志里把失败读成成功。
   it('保存被拒绝时不留「创建用例」成功日志（日志只在写盘成功后打）', () => {
@@ -71,7 +71,7 @@ describe('createCase / listCases / getCase', () => {
 
     updateCase(second.id, { title: '后建的（刚改过）' });
 
-    expect(listCases().map((item) => item.id)).toEqual([second.id, first.id]);
+    expect(listCases().cases.map((item) => item.id)).toEqual([second.id, first.id]);
   });
   /**
    * 用例级评分模型已经删除（只使用全局评分配置）：入参里多给这两个字段必须**被剥掉**。
@@ -88,9 +88,9 @@ describe('createCase / listCases / getCase', () => {
 
     expect(created).not.toHaveProperty('judgeProviderId');
     expect(created).not.toHaveProperty('judgeModelId');
-    expect(listCases()[0]).not.toHaveProperty('judgeProviderId');
+    expect(listCases().cases[0]).not.toHaveProperty('judgeProviderId');
     // 落盘的那一份（绕开读侧归一直接看配置）同样不许有
-    const stored = loadConfig().cases[0] as unknown as Record<string, unknown>;
+    const stored = listStoredCases().cases[0] as unknown as Record<string, unknown>;
     expect(stored).not.toHaveProperty('judgeProviderId');
     expect(stored).not.toHaveProperty('judgeModelId');
   });
@@ -103,9 +103,9 @@ describe('createCase / listCases / getCase', () => {
     const created = createCase(caseInput());
     seedLegacyJudgeOverrideCase(created.id, { providerId: 'provider-legacy', modelId: 'legacy-model' });
     // 先确认这份「历史数据」真的写进了盘上（否则下面两条断言测的是空气）
-    expect((loadConfig().cases[0] as unknown as Record<string, unknown>).judgeProviderId).toBe('provider-legacy');
+    expect((listStoredCases().cases[0] as unknown as Record<string, unknown>).judgeProviderId).toBe('provider-legacy');
 
-    const fromList = listCases()[0] as unknown as Record<string, unknown>;
+    const fromList = listCases().cases[0] as unknown as Record<string, unknown>;
     expect(fromList).not.toHaveProperty('judgeProviderId');
     expect(fromList).not.toHaveProperty('judgeModelId');
     const fromGet = getCase(created.id) as unknown as Record<string, unknown>;
@@ -165,10 +165,10 @@ describe('createCase / listCases / getCase', () => {
       const legacy = seedLegacyCase(label, mangle);
 
       // 非空对照：盘上那一行**真的**带着旧字段时才断言列表里没有它（形状②不带，硬断言等于空转）
-      const stored = loadConfig().cases.find((item) => item.id === legacy.id) as unknown as Record<string, unknown>;
+      const stored = listStoredCases().cases.find((item) => item.id === legacy.id) as unknown as Record<string, unknown>;
       expect('judgePrompt' in stored, label).toBe(carriesJudgePrompt);
 
-      const listed = listCases().find((item) => item.id === legacy.id) as unknown as Record<string, unknown>;
+      const listed = listCases().cases.find((item) => item.id === legacy.id) as unknown as Record<string, unknown>;
 
       expect(listed, label).toBeDefined();
       // 其余字段照常可读（归一不是「把整行换掉」）
@@ -188,7 +188,7 @@ describe('createCase / listCases / getCase', () => {
 
     // Fix A：缺省值必须在**列表**这条路上也补齐（此前只有 getCase 补，列表会把 undefined 发出去）
     const defaulted = seedRowWithoutItemId();
-    const fromList = listCases().find((item) => item.id === defaulted.id);
+    const fromList = listCases().cases.find((item) => item.id === defaulted.id);
     expect(fromList?.rubric.groups[0]?.items[0]?.id).toBe('');
   });
 

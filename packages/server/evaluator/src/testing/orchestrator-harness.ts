@@ -490,5 +490,5 @@ export { loadConfig, mirrorDir, readEvents, rowAttemptsFile, rowEventsFile, runS
 export { abortRow, abortRun, drainRunningTasks, recoverInterruptedRuns, rescoreRow, retryRow, ROW_RETRY, runRow, startRun } from '../orchestrator';
 export { getRun, listRuns, saveRun } from '../run-store';
 export type { TextRoute } from '../text-api';
-export { createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
+export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
 export type { TempHome } from './fixtures';

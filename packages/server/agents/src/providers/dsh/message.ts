@@ -6,7 +6,7 @@
  *   · 正文与思考：`session.event` → `params.event.type === 'assistant/message'` →
  *     `data.message.content[]` 的 `{type:'text'|'reasoning'}`。⚠️ `reasoning` 块**也带 `text` 字段**
  *     ⇒ 一律先按 `type` 过滤，绝不按 `text` 取值（否则推理正文会混进最终答复）。
- *   · 信封：`data.message.id` → `vendorId`；`data.turn` → `vendorTurn`（**用户轮号**）；
+ *   · 信封：`data.message.id` → `vendorId`；`data.turn` → `turn`（**用户轮号**）；
  *     `data.step` → `step`。
  *   · `roundTrip`：**取厂商给的每会话 `step` 号**（2026-10-05，spec §2.3）——一次模型 API 往返
  *     = 一个 step，而 `data.step` 是**每个会话各自从 1 数**的（真机：主会话 1,2,3；子会话 1,2,3）
@@ -154,7 +154,7 @@ export function dshAssistantMessageDraft(
     role: 'assistant',
     source: 'wire',
     roundTrip,
-    vendorTurn: readNumber(data, 'turn'),
+    turn: readNumber(data, 'turn'),
     step: readNumber(data, 'step'),
     parentCallId: null,
     // 子会话的事件带的是子会话自己的 id ⇒ 那一份 sessionId 就是子智能体身份（主会话为 null）
@@ -167,6 +167,52 @@ export function dshAssistantMessageDraft(
      */
     usage: readUsageTokens(data?.usage),
     blocks,
+    raw: notification,
+  };
+}
+
+/**
+ * 归一 stream-tap 的增量伪事件（`aieval/delta`，机制见 `stream-tap.ts`）：一条 `chunk: 'delta'`
+ * 的消息草稿。块序号用**预换算的 content 位次**（tap 读取器按该次尝试的块首见顺序发号），
+ * 与 `dshAssistantMessageDraft` 给快照块的 `blocks.length` 是**同一个空间** ⇒ 同一条逻辑消息的
+ * 增量与快照落进同一个槽位，快照到达即覆盖收尾（「只实现 snapshot 也能正确渲染」不破）。
+ *
+ * 与快照侧的三处刻意差异：
+ *  · `source: 'hook'`——数据来自挂进厂商进程的插件（stream-tap），不是 stdio 通知线；
+ *    快照仍然 `'wire'`。同一条逻辑消息折叠后留最后一条 ⇒ 终态是 `'wire'`；
+ *  · `usage: null`——增量帧不带用量（流里的 usage 快照与 `assistant/message.data.usage`
+ *    同源，等快照那一次带值即可，合并器「带值覆盖、缺省保留」）；
+ *  · 思考增量的档位随通道：`reasoning-delta` 给的是**完整推理正文** ⇒ `'full'`。
+ */
+export function dshStreamDeltaDraft(
+  notification: Record<string, unknown> | null,
+  sessionId: string | null,
+  roundTrip: number,
+): MessageDraft | null {
+  const params = asRecord(notification?.params);
+  const data = asRecord(asRecord(params?.event)?.data);
+  const delta = asRecord(data?.delta);
+  if (delta === null) return null;
+  const text = readString(delta, 'text') ?? '';
+  if (text === '') return null;
+  const position = readNumber(delta, 'position');
+  if (position === null) return null;
+  const identity = { kind: 'index' as const, index: position };
+  return {
+    vendorId: null,
+    role: 'assistant',
+    source: 'hook',
+    roundTrip,
+    turn: readNumber(data, 'turn'),
+    step: readNumber(data, 'step'),
+    parentCallId: null,
+    subagentId: sessionIdProfileSubagent(sessionId),
+    chunk: 'delta',
+    usage: null,
+    blocks:
+      readString(delta, 'kind') === 'reasoning'
+        ? [thinkingBlockDraft(text, 'full', 'delta', null, identity)]
+        : [textBlockDraft(text, 'delta', identity)],
     raw: notification,
   };
 }
@@ -190,7 +236,7 @@ export function dshToolCallDraft(
     role: 'assistant',
     source: 'wire',
     roundTrip,
-    vendorTurn: readNumber(data, 'turn'),
+    turn: readNumber(data, 'turn'),
     step: readNumber(data, 'step'),
     parentCallId: null,
     subagentId: sessionIdProfileSubagent(sessionId),
@@ -225,7 +271,7 @@ export function dshToolResultDraft(
     role: 'tool',
     source: 'wire',
     roundTrip,
-    vendorTurn: readNumber(data, 'turn'),
+    turn: readNumber(data, 'turn'),
     step: readNumber(data, 'step'),
     // dsh 没有「调用级」归属（子任务归属只有会话 id 层级）⇒ 这一格恒 `null`
     parentCallId: null,

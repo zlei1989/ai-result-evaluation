@@ -62,6 +62,8 @@ ProviderView（剥掉 apiKey，只带 apiKeyMasked：前 3 位 + *** + 后 4 位
 - **Windows 无 POSIX 权限位**：`chmod 0600` 在 NTFS 上只是近似，属主隔离依赖用户目录边界。跨平台硬隔离需要操作系统级凭据库，超出本仓范围。
 - **测试环境 ≠ 运行环境**：单测的 mock 层（jsdom、注入桩）与真机差异是假绿的温床。写用例时必须显式点名「这条断言在真机上依赖什么环境条件」，否则单测绿只是自欺。已知的具体形态：打包器对动态导入的改写、子进程环境变量继承差异。
 - **配置目录解析的两级优先**（`AIEVAL_CONFIG_DIR` > `~/.aieval`）是测试隔离的基础设施，但测试仍应显式用 `setConfigDirForTesting`——依赖优先级本身不构成隔离，显式指向临时目录才构成。
+- **「默认根在真实家目录下」的目录有两处，各自要显式覆盖**：配置目录（上面那条）与**用例目录**（`settings.casesRoot` > `AIEVAL_CASES_ROOT` > `~/.aieval-cases`，用例里用 `setCasesRootForTesting`）。`setConfigDirForTesting` **管不到**用例目录——这正是 2026-10-09 迁移时最容易漏的一格：批量写用例的夹具若没被指向临时目录，`listCases` + `deleteCaseFile` 会去读写开发者的真实 `~/.aieval-cases`。故夹具各带一道安全阀：先查 `getCasesRootOverrideForTesting()`，为 null 就抛错（`evaluator/src/testing/fixtures.ts` 的 `assertCasesRootOverride`、`api/src/testing/run-fixtures.ts` 的 `seedConfig` 同形）。
+- **环境变量只做默认值、不做覆盖**（用例目录这一格）：`AIEVAL_CASES_ROOT` 在设置页填过之后就不再生效——界面可见可改的一格被看不见的环境变量压掉，用户会「改了没反应且查不出原因」。写测试时据此判「改环境变量能不能影响用例落点」。
 
 ## 相关链接
 

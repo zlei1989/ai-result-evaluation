@@ -77,7 +77,7 @@ function toolCall(id: string, callId: string, tool: ToolCallBlock['tool'] = null
     name: 'pwsh',
     nameMissing: null,
     family: tool === null ? 'run-shell' : tool.family,
-    input: { value: null, text: null, bytes: null },
+    input: { value: null, text: null, bytes: null, description: null },
     tool,
   };
 }

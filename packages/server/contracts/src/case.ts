@@ -39,6 +39,36 @@ export const TestCaseSchema = z.object({
 });
 export type TestCase = z.infer<typeof TestCaseSchema>;
 
+/**
+ * 用例 id 的形状判据（**文件名安全**）。
+ *
+ * 为什么必须有这条判据：用例现在一文件一落（`<casesRoot>/<case-id>.json`），id 会**直接当文件名**用，
+ * 而今天的 id 从 `randomUUID()` 来、路上没有任何人校验过它。一个带 `/` 或 `..` 的 id
+ * （手工造的用例文件、外部脚本写进来的）会让读写跑到 `<casesRoot>` 之外去——读侧是路径穿越，
+ * 写侧是往用户目录里落文件。runId 早有同类判据（core 的 `isRunIdShapeValid`），用例这一侧是缺的。
+ *
+ * 值域与 UUID 兼容（十六进制 + 连字符，大小写都收），同时容得下手写的可读 id，
+ * 上限 64 与运行目录口径一致：宁可在写侧拒掉一个奇怪 id，也不要在磁盘上留一个走不出去的目录。
+ */
+export const CASE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** id 是否满足文件名安全形状（写侧拒绝、读侧跳过，见 core 的 `assertCaseId`） */
+export function isCaseIdShapeValid(caseId: string): boolean {
+  return CASE_ID_PATTERN.test(caseId);
+}
+
+/**
+ * 用例列表的下行形状：`cases` + **跳过的坏文件原因**。
+ *
+ * 为什么把 warnings 放在同一份响应里而不是只写日志：用例一文件一落后，`<casesRoot>` 里多出一个
+ * 手改坏的 / 非法的文件是很自然的事，读侧又是**跳过**（一条坏文件不能让整页列表 500）。
+ * 跳过而不说，用户的症状是「我的用例不见了」却查不到原因；这一格就是那句话的唯一出口。
+ */
+export interface CaseList {
+  cases: TestCase[];
+  warnings: string[];
+}
+
 /** 新建用例入参：两个可空字段缺省为 null，表单不填就是「用默认」 */
 export const CaseCreateSchema = z.object({
   title: z.string().min(1),

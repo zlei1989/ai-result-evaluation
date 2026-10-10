@@ -3,9 +3,15 @@
 /**
  * 工具行：摘要行（收起时可见）+ 展开后的完整命令/参数与结果。组内每条一行（嵌套 `Collapse ghost`）。
  *
- * 四条口径：
- *   · **工具名原样透传**：改名会让厂商认不出自己的调用；拿不到时是空串 + `nameMissing`，
- *     这时写「工具名未采集」+ 原因，**不编一个名字**；
+ * 五条口径：
+ *   · **行首只有一块身份牌子：族名（人话，如「跑命令」）优先，没有族映射才给工具名**——
+ *     `Bash` 与「跑命令」是同一件事的两种说法，各占一头（行首 / 行尾）就是说两遍；
+ *     两者都拿不到时写「工具名未采集」+ 原因，**不编一个名字**（编出来的名字会让排障的人
+ *     去找一个不存在的工具）。工具名原样透传到**展开后的正文**（见 `IdentityLabel` /
+ *     `OriginalToolName`）；
+ *   · **摘要行读数据层算好的那一句**（`tool-call.summary`：描述优先、每族拼法），
+ *     老记录（没有这一格）才回落到 `input.description`、再回落参数原文首行——
+ *     照原文首行渲染就是一整串 JSON，而原文在展开后的正文里一字不少（见 `inputSummary`）；
  *   · **孤立结果不编工具名**：`orphan-result` 回答的是「这个结果配不上调用」，
  *     编一个名字会让一次配对失败看起来像一次成功的调用；
  *   · 「进行中」与「结果未采集」的分派**收在 `AgentRunStateTag`**（工具行 / 工具组 / 计划清单三处共用；
@@ -63,9 +69,23 @@ export function toolEntryKey(entry: ToolGroupEntry): string {
   return entry.callId ?? entry.blockId;
 }
 
-/** 参数摘要：`value ?? text` 的第一行；两者都没有（或只有空白）时如实说「参数未采集」 */
-function inputSummary(input: ToolItem['input']): { text: string; missing: boolean } {
-  const raw = input.value ?? input.text;
+/**
+ * 摘要行那一段（收起态唯一可见的一行），**三级回落**：
+ *   ① 数据层算好的 `tool-call.summary`——词表真源是 `@aieval/agents` 的 `activity.ts`
+ *      （描述优先、每族拼法、截断尺子），界面按分层表不许 import 它，故只能读这一格；
+ *   ② `input.description`——**老记录**（`summary` 这一格落盘之前的 `messages.jsonl`）里
+ *      当年就是靠它撑起这一行的，留着是为了刷新老 run 时不出现回退；
+ *   ③ 参数原文首行——`{command, description}` 那种形状照原文渲染是一整串 JSON（真机 1495px 宽），
+ *      而原文在**展开后的正文**里一字不少（见 `CallBody`）。
+ *
+ * 这一行**不自己拼词表**：`summary` 为空串时按「没有」处理（数据层对「没参数」给的就是空串），
+ * 也不在这里补一句「调用工具 <名>」——工具名是这一行左边那个独立元素。
+ */
+function inputSummary(item: ToolItem): { text: string; missing: boolean } {
+  const fromServer = item.summary ?? '';
+  if (fromServer.trim() !== '') return { text: fromServer, missing: false };
+  if (item.input.description !== null) return { text: item.input.description, missing: false };
+  const raw = item.input.value ?? item.input.text;
   if (raw === null) return { text: '参数未采集', missing: true };
   const first = raw.split('\n')[0]?.trim() ?? '';
   return first === '' ? { text: '参数未采集', missing: true } : { text: first, missing: false };
@@ -86,25 +106,24 @@ export function ToolItemDetail({ entry, open, onOpenChange, missingReason }: Too
   );
 }
 
-/** 摘要行：工具名（或「未采集」+ 原因）+ 参数摘要 + 族 Tag + 状态 */
+/**
+ * 摘要行（收起态那一行）：**行首只有一块身份牌子** + 这件事的一句话（`description` 优先）
+ * + 失败 / 状态。
+ *
+ * 为什么行首只有一块（2026-10-10 用户口径）：`Bash` 与「跑命令」本来各占一头
+ * （工具名在行首、族 Tag 在行尾），同一件事在一行里说两遍；现在二选一、**族名优先**，
+ * 且都放在**行首**。工具名没有被丢掉——它落到展开后的正文（`CallBody` 的「工具原名」）。
+ */
 function CallSummary({ item, missingReason }: { item: ToolItem; missingReason: string | null }): ReactNode {
-  const summary = inputSummary(item.input);
+  const summary = inputSummary(item);
   return (
     <Flex align="center" gap={4} wrap>
-      {item.name === '' ? (
-        <Typography.Text type="warning">
-          {`工具名未采集 · ${MISSING_REASON_LABELS[item.nameMissing ?? 'unverified']}`}
-        </Typography.Text>
-      ) : (
-        // 工具名是厂商的标识符，等宽显示便于与日志原文对照
-        <Typography.Text code>{item.name}</Typography.Text>
-      )}
+      <IdentityLabel item={item} />
       {summary.missing ? (
         <Typography.Text type="secondary">{summary.text}</Typography.Text>
       ) : (
         <EllipsisText text={summary.text} />
       )}
-      {item.family !== null && <Tag>{TOOL_FAMILY_LABELS[item.family]}</Tag>}
       {/* 失败的结果要看得见：`AgentRunStateTag` 在结果到手时不表态，这一格不能也沉默 */}
       {item.output !== null && item.output.status === 'error' && <Tag color="error">失败</Tag>}
       <AgentRunStateTag
@@ -114,6 +133,25 @@ function CallSummary({ item, missingReason }: { item: ToolItem; missingReason: s
         since={item.at}
       />
     </Flex>
+  );
+}
+
+/**
+ * 行首那**一块**牌子：族名（人话）优先，没有族映射才回落工具名本身。
+ *
+ * 两者缺一不可的兜底：都拿不到时写「工具名未采集」+ 原因——**不编一个名字**
+ * （编出来的名字会让排障的人去找一个不存在的工具）。
+ */
+function IdentityLabel({ item }: { item: ToolItem }): ReactNode {
+  if (item.family !== null) return <Tag>{TOOL_FAMILY_LABELS[item.family]}</Tag>;
+  if (item.name !== '') {
+    // 工具名是厂商的标识符，等宽显示便于与日志原文对照
+    return <Typography.Text code>{item.name}</Typography.Text>;
+  }
+  return (
+    <Typography.Text type="warning">
+      {`工具名未采集 · ${MISSING_REASON_LABELS[item.nameMissing ?? 'unverified']}`}
+    </Typography.Text>
   );
 }
 
@@ -129,6 +167,8 @@ function CallBody({ item, missingReason }: { item: ToolItem; missingReason: stri
   const note = item.output === null ? null : truncationNote(item.output.truncation);
   return (
     <Flex vertical gap={4}>
+      {/* 摘要行把行首让给了族名（人话）⇒ 厂商的工具名原样落到这里；摘要行已经写着工具名时不再重复 */}
+      {item.family !== null && <OriginalToolName item={item} />}
       {full === null ? (
         <Typography.Text type="secondary">参数未采集</Typography.Text>
       ) : (
@@ -148,6 +188,28 @@ function CallBody({ item, missingReason }: { item: ToolItem; missingReason: stri
           <StructuredResult structured={item.output.structured} />
         </>
       )}
+    </Flex>
+  );
+}
+
+/**
+ * 「工具原名」那一行：摘要行把行首让给族名之后，厂商的标识符落在这里。
+ *
+ * 为什么不干脆丢掉：工具名是**排障时唯一能与厂商日志对上号的东西**（原始输出里那些 `tool_use`
+ * 事件认的就是它的名字）。没采到就如实说「工具原名未采集」+ 原因——空着会被读成「这家没有工具名」。
+ */
+function OriginalToolName({ item }: { item: ToolItem }): ReactNode {
+  if (item.name === '') {
+    return (
+      <Typography.Text type="warning">
+        {`工具原名未采集 · ${MISSING_REASON_LABELS[item.nameMissing ?? 'unverified']}`}
+      </Typography.Text>
+    );
+  }
+  return (
+    <Flex align="center" gap={4}>
+      <Typography.Text type="secondary">工具原名</Typography.Text>
+      <Typography.Text code>{item.name}</Typography.Text>
     </Flex>
   );
 }

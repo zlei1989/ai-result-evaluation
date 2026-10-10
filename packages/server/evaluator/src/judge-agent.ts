@@ -33,8 +33,10 @@ import {
   renderRubricForJudge,
   type AgentEvent,
   type AgentKind,
+  type AgentMessage,
   type Rubric,
   type ScoreResult,
+  type SubagentRecord,
 } from '@aieval/contracts';
 import { getProvider, type AgentErrorCode, type AgentRunResult } from '@aieval/agents';
 import { finalizeScore, parseJudgeResponse, reason, truncateRaw } from './judge';
@@ -98,6 +100,14 @@ export interface AgentJudgeInput {
    */
   signal: AbortSignal;
   onEvent: (event: AgentEvent) => void;
+  /**
+   * 评审者交出的**内容消息**（2026-10-10）。与候选阶段的 `onMessage` 同形同口径：
+   * 快照落盘、增量只广播（分叉由调用方做，见 `orchestrator.ts`），只是落在**评分自己那条流**
+   * （`judge-messages.jsonl`）里——执行日志那条时间轴只讲候选做了什么。
+   */
+  onMessage?: (message: AgentMessage) => void;
+  /** 评审者自己派发的子任务行（同上，走评分那条记录流） */
+  onSubagent?: (record: SubagentRecord) => void;
 }
 
 /**
@@ -189,6 +199,14 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
       onEvent: (event) => {
         input.onEvent(prefixEvent(event));
       },
+      /**
+       * 内容消息与子任务行原样转出（**不加前缀**）：事件那层的前缀是因为评分与候选的 log 挤在同一条
+       * 行级流里，靠 `[评分智能体]` 才能分辨来源；消息与子任务行落在**文件层面就分开**条流里，
+       * 再加一个标签只是给每一行都镶一遍同样的字。
+       * 可缺（老调用方 / 夹具不传）：与 `onMessage` 在 `AgentRunInput` 里同一条口径——不传就是不消费。
+       */
+      ...(input.onMessage === undefined ? {} : { onMessage: input.onMessage }),
+      ...(input.onSubagent === undefined ? {} : { onSubagent: input.onSubagent }),
     });
   } catch (error) {
     // 契约说 run() 返回 ok:false、**绝不抛**（见 `turn.ts`）；违约也必须归因到**适配器**而不是我们：

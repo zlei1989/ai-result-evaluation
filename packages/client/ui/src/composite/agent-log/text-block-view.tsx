@@ -17,14 +17,15 @@
 import { Flex, Tag, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import { MarkdownText } from '../../base/markdown-text';
+import { STREAM_CURSOR_CLASS } from '../../base/stream-cursor';
 import type { TextBlock } from './types';
 import { MESSAGE_SOURCE_LABELS } from './types';
 
 /**
- * 流式光标类名。导出而不是就地写字面量：`apps/web-next` 的样式守卫要拿它去 `globals.css` 里核对，
- * 两处各写一份字符串必然漂移，而漂移的症状是静默的（光标不闪、无任何报错）。
+ * 流式光标类名（2026-10-10 起真源在 `base/stream-cursor.ts`：活动行也用它）。
+ * 这里原样转出，是为了不动既有 import 路径与那条跨包守卫的靶子。
  */
-export const STREAM_CURSOR_CLASS = 'aieval-stream-cursor';
+export { STREAM_CURSOR_CLASS };
 
 export function TextBlockView({ block }: { block: TextBlock }): ReactNode {
   const { token } = theme.useToken();

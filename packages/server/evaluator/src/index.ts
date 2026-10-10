@@ -12,8 +12,9 @@ export { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudge
 // 运行快照：一轮评测的可展示状态都在这里（Task 1）
 export { getRun, listRuns, listRunsForCase, saveRun } from './run-store';
 
-// 事件总线：落盘 + 进程内扇出（Task 2）。`PendingRowEvent` 不导出：只有本包的编排层在发事件
-export { publishRowEvent, subscribeRowEvents } from './events';
+// 事件总线：落盘 + 进程内扇出（Task 2）。`PendingRowEvent` 不导出：只有本包的编排层在发事件。
+// 2026-10-10 起有**两条**：行级（候选 + 编排层留痕）与评分（评审者自己的流水，`judge-events.jsonl`）
+export { publishJudgeEvent, publishRowEvent, subscribeJudgeEvents, subscribeRowEvents } from './events';
 
 // run 级信号总线：`saveRun` 落盘后的「快照变了」提示。`subscribeRunChanges` 出口给 api 层的
 // SSE 端点（/api/runs/events）用；`publishRunChanged` 刻意不出口——唯一发射点在 `saveRun` 体内，
@@ -22,11 +23,18 @@ export { subscribeRunChanges } from './run-signals';
 
 // 记录总线（spec v3 §2）：消息与子任务行共用 `messages.jsonl`，落盘 + 进程内扇出。
 // `publishRowRecord` 与两个窄包装都出口：api 层的回放路由要读文件，而想按类型分流的订阅方
-// 需要拿到整个 `RowRecord`；`publishRow*` 是编排层用的写入口（跨包只需要读侧，但出口面成对更好用）
+// 需要拿到整个 `RowRecord`；`publishRow*` 是编排层用的写入口（跨包只需要读侧，但出口面成对更好用）。
+// 2026-10-10 起评分有**自己的一条**（`judge-messages.jsonl`）：写侧只有编排层用，读侧给 api 的评分路由
 export {
+  broadcastJudgeMessage,
+  broadcastRowMessage,
+  publishJudgeMessage,
+  publishJudgeRecord,
+  publishJudgeSubagentRecord,
   publishRowMessage,
   publishRowRecord,
   publishSubagentRecord,
+  subscribeJudgeRecords,
   subscribeRowRecords,
 } from './row-messages';
 

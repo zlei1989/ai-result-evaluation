@@ -21,15 +21,21 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ServiceError } from '@aieval/contracts';
+import { assertCaseId } from './case-store';
 import { createLogger } from './logger';
 import { removeTreeWithRetry } from './remove-tree';
 import { checkoutRow, copyWorkspace, ensureCaseCache } from './git';
 
 const log = createLogger('workspace');
 
-/** 用例级缓存仓库目录 */
+/**
+ * 用例级缓存仓库目录。
+ * **拼路径前先过 id 形状校验**：这个函数的历史调用方里有直接把路由参数传进来的
+ * （`api/cases.ts` 删除用例后清缓存），而 `join` 不拦 `..`——一个越界的 id 会让紧接着的
+ * `rmSync(recursive)` 删到工作区之外。判据与用例文件名同源（`assertCaseId`）。
+ */
 export function caseCacheDir(workspaceRoot: string, caseId: string): string {
-  return join(workspaceRoot, 'cases', caseId, 'cache');
+  return join(workspaceRoot, 'cases', assertCaseId(caseId), 'cache');
 }
 
 /** 一轮评测的产物目录（`run.json` 与 `rows/` 都在它下面） */
@@ -88,6 +94,30 @@ export function rowEventsFile(workspaceRoot: string, runId: string, rowId: strin
  */
 export function rowMessagesFile(workspaceRoot: string, runId: string, rowId: string): string {
   return join(rowDir(workspaceRoot, runId, rowId), 'messages.jsonl');
+}
+
+/**
+ * 该行**评分阶段的事件日志**（JSONL，2026-10-10）。
+ *
+ * 为什么与 `events.jsonl` 分开：行级事件日志回答的是「**这一行**跑成什么样」（状态、计量、失败、结束），
+ * 而评分阶段的原始输出是**另一个会话**的流水（评审者自己的工具调用、推理、报错）。混在一条流里，
+ * 卡片与快照的读数会被评审者的用量挤占（口径 5 那套冻结逻辑正是为它写的），而「评审到底干了什么」
+ * 也没有独立的落点——要看只能连同候选的日志一起翻。
+ *
+ * `seq` 由写入器按**文件里已用的最大号**续（core 的 `appendEvent`），所以本文件自带一套从 1 起的号，
+ * 与行级 `seq` 不共享：两条流的续订游标因此互不影响（评分重新开始时不会把行级游标带偏）。
+ */
+export function rowJudgeEventsFile(workspaceRoot: string, runId: string, rowId: string): string {
+  return join(rowDir(workspaceRoot, runId, rowId), 'judge-events.jsonl');
+}
+
+/**
+ * 该行评分阶段的**消息日志**（`AgentMessage` 逐条追加）。
+ * 与 `rowMessagesFile` 同一处置（快照落盘、增量只广播），只是**另一个会话**：分开之后，
+ * 执行日志里那条时间轴只讲候选做了什么，评审者的对话在它自己的文件里。
+ */
+export function rowJudgeMessagesFile(workspaceRoot: string, runId: string, rowId: string): string {
+  return join(rowDir(workspaceRoot, runId, rowId), 'judge-messages.jsonl');
 }
 
 /**

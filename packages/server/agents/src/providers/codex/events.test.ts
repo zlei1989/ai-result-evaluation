@@ -5,7 +5,7 @@
  * 逐条钉住计划表的行级那几格：增量给不给轮次、`turn/completed` 的计量与时长、
  * 失败/中止的分档、按线程的用量累计、未识别通知不丢。
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { TurnState } from '../../turn';
@@ -478,17 +478,30 @@ describe('活动行：`调用工具 <名>：<参数摘要>`（词表在 src/acti
   });
 });
 
+/**
+ * 真机抓包的路径（本机保留，不入库：`probe/dumps/**` 在 `.gitignore` 里——抓包可能含网关返回的敏感原文）。
+ * 提到模块级是为了让 `it.skipIf` 能在**收集期**判它在不在。
+ */
+const SUBAGENT_DUMP = join(
+  import.meta.dirname,
+  '../../../probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl',
+);
+
 describe('真机抓包重放：活动行在真实通知序列上的产出', () => {
   /**
-   * 跑**仓内自带的真机抓包**（`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`，
+   * 跑**本机保留的真机抓包**（`probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl`，
    * 97 条原始 app-server 通知）过一遍投影，把活动行产出的摘要按顺序钉住。
    *
    * 为什么必须有一条这样的守卫：合成夹具曾经把「派发的 receiver id 在 `item/started` 就有了」写成前提，
    * 而真机那一刻是空数组、id 要等 `item/completed`（这一条抓包的 L48/L51）⇒ 夹具绿、生产里那句话永不播
    * （审查 B1）。判据取**真实形状**才算数，这一条就是那个形状。
+   *
+   * **抓包缺席时跳过，而不是红**（2026-10-09）：它不入库（见上），干净检出上必然没有这个文件——
+   * 硬要它存在，等于让一条永远不能变绿的守卫常驻在门禁里，只会训练人忽略红。
+   * 判据没有丢：跑过探针的机器照常执行这条重放；要恢复抓包就重跑一次探针。
    */
-  it('`spawnAgent` → `wait` 的真实序列产出「已派发子任务」与「子任务已完成」各一次', () => {
-    const path = join(import.meta.dirname, '../../../probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl');
+  it.skipIf(!existsSync(SUBAGENT_DUMP))('`spawnAgent` → `wait` 的真实序列产出「已派发子任务」与「子任务已完成」各一次', () => {
+    const path = SUBAGENT_DUMP;
     const notifications = readFileSync(path, 'utf8')
       .split('\n')
       .filter((line) => line !== '')

@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_DEFAULTS, type Provider, type TestCase } from '@aieval/contracts';
-import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
+import { loadConfig, readCase as readStoredCase, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase } from '@aieval/core';
 import { GET as listCases, POST as createCase } from '@/app/api/cases/route';
 import { DELETE as deleteCase, GET as getCase, PUT as updateCase } from '@/app/api/cases/[caseId]/route';
 import { POST as listCommits } from '@/app/api/cases/commits/route';
@@ -72,9 +72,18 @@ afterAll(() => {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-route-cases-'));
   setConfigDirForTesting(dir);
+  // 用例目录也指到临时目录（用例是一文件一落，config 目录的 override 管不到它）；
+  // 顺带关掉「变更即自动提交」：本文件测的是路由，不该顺手起后台同步
+  // （那会去读用例目录的 git 状态，1 秒防抖的定时器还可能漏到下一个用例之后）
+  setCasesRootForTesting(join(dir, 'cases'));
   saveConfig({
     ...loadConfig(),
-    settings: { ...SETTINGS_DEFAULTS, workspaceRoot: join(dir, 'runs') },
+    settings: {
+      ...SETTINGS_DEFAULTS,
+      workspaceRoot: join(dir, 'runs'),
+      casesRoot: join(dir, 'cases'),
+      casesAutoCommit: false,
+    },
   });
   repo = join(dir, 'gateway');
   mkdirSync(repo, { recursive: true });
@@ -84,6 +93,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 
@@ -125,7 +135,10 @@ describe('/api/cases', () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.map((item: { id: string }) => item.id)).toEqual([id]);
+    // 列表的下行形状是 `CaseList`（`cases` + `warnings`）：坏文件被跳过时原因要能到界面，
+    // 故这里连 warnings 一起钉住——干净目录必须是空数组，而不是 undefined
+    expect(body.cases.map((item: { id: string }) => item.id)).toEqual([id]);
+    expect(body.warnings).toEqual([]);
   });
 
   it('请求体不是合法 JSON → 400 + 「请求体不是合法 JSON」（不是 500）', async () => {
@@ -456,24 +469,19 @@ describe('PUT 的真实 payload 形状（路由级守卫）', () => {
   /**
    * 旧版本留下的用例级评分模型（那一版会把它写进配置）**经路由造不出来**——
    * 契约上这两列已经不存在、路由的 `CasePatchSchema.parse` 会把它们剥掉。所以按它的真实来路造：
-   * 先经路由 POST 一条合法的，再把那两列直接写进配置。
+   * 先经路由 POST 一条合法的，再直接覆盖那个用例文件把两列写进去（读侧不过 schema，照原样读出来）。
    */
   async function seedLegacyJudgeOverrideCase(): Promise<TestCase> {
     const created = await createViaRoute();
-    const config = loadConfig();
-    config.cases = config.cases.map((item) =>
-      item.id === created.id
-        ? ({ ...item, judgeProviderId: 'provider-1', judgeModelId: 'deepseek-chat' } as unknown as TestCase)
-        : item,
-    );
-    saveConfig(config);
+    const stored = readStoredCase(created.id)!;
+    writeCase({ ...stored, judgeProviderId: 'provider-1', judgeModelId: 'deepseek-chat' } as unknown as TestCase);
     return readCase(created.id);
   }
 
   it('PUT 收到 UI 的真实全量 body（只改标题）→ 200，历史残留的评分字段在响应体与盘上一起消失', async () => {
     const current = await seedLegacyJudgeOverrideCase();
     // 先确认这份「历史数据」真的在盘上（否则下面几条断言测的是空气）
-    expect((loadConfig().cases[0] as unknown as Record<string, unknown>).judgeProviderId).toBe('provider-1');
+    expect(readStoredCase(current.id) as unknown as Record<string, unknown>).toHaveProperty('judgeProviderId', 'provider-1');
 
     const body = uiBody(current, { title: '路由层：历史残留用例改标题' });
     // 形状本身也是被钉的一部分：真的是 6 个字段，不是手写的片段，也**不再含**评分模型两列
@@ -492,7 +500,7 @@ describe('PUT 的真实 payload 形状（路由级守卫）', () => {
     expect(stored).not.toHaveProperty('judgeProviderId');
     expect(stored).not.toHaveProperty('judgeModelId');
     // 盘上也真的清掉了（这条才是「保存一次顺手迁移」的实质）
-    const after = loadConfig().cases[0] as unknown as Record<string, unknown>;
+    const after = readStoredCase(current.id) as unknown as Record<string, unknown>;
     expect(after).not.toHaveProperty('judgeProviderId');
     expect(after).not.toHaveProperty('judgeModelId');
   });
@@ -513,7 +521,7 @@ describe('PUT 的真实 payload 形状（路由级守卫）', () => {
     expect(stored).not.toHaveProperty('judgeProviderId');
     expect(stored).not.toHaveProperty('judgeModelId');
     // 落盘的那一份同样不许有（读侧归一能挡住泄漏，挡不住真写进去）
-    expect(loadConfig().cases[0]).not.toHaveProperty('judgeProviderId');
-    expect(loadConfig().cases[0]).not.toHaveProperty('judgeModelId');
+    expect(readStoredCase(current.id)).not.toHaveProperty('judgeProviderId');
+    expect(readStoredCase(current.id)).not.toHaveProperty('judgeModelId');
   });
 });

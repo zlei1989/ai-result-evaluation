@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, maskApiKey, type ProviderCreate } from '@aieval/contracts';
-import { loadConfig, setConfigDirForTesting } from '@aieval/core';
+import { loadConfig, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import {
   addProviderModel,
   createProvider,
@@ -29,11 +29,15 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-providers-'));
   setConfigDirForTesting(dir);
+  // 用例目录也要指到临时目录：seedConfig 会清一遍上一批用例（core 的 `case-store`），
+  // 而 config 目录的 override 管不到它——少了这行，安全阀会当场抛错
+  setCasesRootForTesting(join(dir, 'cases'));
 });
 
 afterEach(() => {
   // 顺序要紧：先复位再删目录，否则万一删目录抛错，覆盖值会漏给下一个文件
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   vi.useRealTimers();
   vi.unstubAllGlobals();
   // console.warn 的桩（上游非 2xx 的 WARN 日志）逐个用例装、在这里统一还原

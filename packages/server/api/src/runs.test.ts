@@ -36,7 +36,7 @@ import {
   type Rubric,
   type TestCase,
 } from '@aieval/contracts';
-import { rowWorkspaceDir, setConfigDirForTesting } from '@aieval/core';
+import { rowWorkspaceDir, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import {
   abortRow as abortRowInOrchestrator,
   abortRun as abortRunInOrchestrator,
@@ -118,6 +118,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   dir = mkdtempSync(join(tmpdir(), 'aieval-runs-'));
   setConfigDirForTesting(dir);
+  // 用例目录也要指到临时目录：用例是一文件一落（core 的 `case-store`），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   store = new Map();
   vi.mocked(saveRun).mockImplementation((run: EvalRun) => {
     store.set(run.id, run);
@@ -155,6 +157,7 @@ afterEach(() => {
   // `resetAllMocks` 连同实现一起清掉，beforeEach 会重新装同一份实现。
   vi.resetAllMocks();
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 

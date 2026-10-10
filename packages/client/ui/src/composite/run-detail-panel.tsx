@@ -48,6 +48,7 @@ import {
 import { PANE_PADDING } from '../base/list-detail-layout';
 import type { LiveMetricsView } from '../base/metric-line';
 import { EvalRowCard, type AgentCapabilityView } from './eval-row-card';
+import type { AgentActivity } from '../base/agent-activity-line';
 
 export interface RunDetailPanelProps {
   run: EvalRun;
@@ -61,6 +62,11 @@ export interface RunDetailPanelProps {
    * 而「哪些行要订阅」是页面的事（只有在这一屏里、且正在跑的行才值得开连接）。
    */
   liveOf?: (rowId: string) => LiveMetricsView | undefined;
+  /**
+   * 每行的**实时活动内容**（2026-10-10）：与 `liveOf` 并列的第二路（`useRunActivity` 折 AgentMessage）。
+   * 由调用方提供是同一个理由：ui 层不许 import 数据层，而「哪些行要订阅」是页面的事。
+   */
+  activityOf?: (rowId: string) => AgentActivity | undefined;
   onStart: () => void;
   onAbortRun: () => void;
   onAbortRow: (rowId: string) => void;
@@ -178,6 +184,7 @@ export function RunDetailPanel({
   aborting,
   capabilityOf,
   liveOf,
+  activityOf,
   onStart,
   onAbortRun,
   onAbortRow,
@@ -363,6 +370,7 @@ export function RunDetailPanel({
               queued={serial && row.status === 'pending'}
               capability={capabilityOf === undefined ? OPTIMISTIC_CAPABILITY : capabilityOf(row.agentKind)}
               live={liveOf?.(row.id)}
+              activity={activityOf?.(row.id)}
               onAbort={() => onAbortRow(row.id)}
               onRescore={() => onRescoreRow(row.id)}
               rescorePending={rescoring}

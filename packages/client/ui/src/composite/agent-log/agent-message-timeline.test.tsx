@@ -91,7 +91,7 @@ function toolCall(id: string, callId: string, name: string): ToolCallBlock {
     name,
     nameMissing: null,
     family: 'run-shell',
-    input: { value: 'pnpm vitest run', text: null, bytes: null },
+    input: { value: 'pnpm vitest run', text: null, bytes: null, description: null },
     tool: null,
   };
 }
@@ -166,7 +166,7 @@ function sessionChainModel(input: { mainRounds: number; childRounds: number; eve
       role: 'assistant',
       source: 'wire',
       roundTrip,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId: null,
       subagentId,
@@ -518,7 +518,7 @@ describe('AgentMessageTimeline', () => {
         role: 'assistant',
         source: 'wire',
         roundTrip: 1,
-        vendorTurn: null,
+        turn: null,
         step: null,
         parentCallId: null,
         subagentId: input.subagentId,

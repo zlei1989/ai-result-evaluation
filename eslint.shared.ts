@@ -72,7 +72,22 @@ export const baseConfig: Linter.Config[] = [
   // 里面就有 `.ts`（实测一次 63 个）⇒ `pnpm lint` 从 0 报错变成 **14050 条**（几乎全是
   // 「Strings must use singlequote」这类对着别人的模板发的报错），一条门禁指令就这样被一次探测跑红。
   // 口径：**凡是 `.gitignore` 里以「生成物」为由忽略的目录，只要可能落 `.ts`/`.tsx`，都要在这里再写一遍。**
-  { ignores: ['**/node_modules/**', '**/dist/**', '**/.next/**', '**/out/**', '**/coverage/**', '**/probe/dumps/**'] },
+  // `**/.vitepress/cache/**` 与 `**/.vitepress/dist/**` 是 2026-10-09 补的同类（知识库构建产物）：
+  // VitePress 的依赖预打包把第三方 `.js` 整份复制进 `cache/deps/`，其中一条 `es5/no-es6-methods`
+  // 会以「Definition for rule … was not found」让 `pnpm lint` 直接退出码 1（`.gitignore:26-27` 已忽略它们，
+  // 但 flat config 不读 `.gitignore`，故必须在这里再写一遍）。
+  {
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.next/**',
+      '**/out/**',
+      '**/coverage/**',
+      '**/probe/dumps/**',
+      '**/.vitepress/cache/**',
+      '**/.vitepress/dist/**',
+    ],
+  },
   {
     // files 含 `.mts`：VitePress 的站点配置是 ESM-only，配置文件必须用 `.mts` 后缀
     // （`.ts` 会走 require 通路，报 "ESM file cannot be loaded by require"）。

@@ -2,7 +2,7 @@
 
 ## 定位
 
-DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.1.7-rc.1`——R33 裁决不走 latest）是三家厂商里唯一「双协议一家」的智能体：`protocolTypes: ['openai', 'anthropic']`，两条 wire 统一走 pi-ai 路由。适配器 = 路由注入（overlay patch）+ 通知投影（`session.event`）+ 关闭式释放（SDK 无 wire-level cancel）。
+DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不走 latest；2026-10-09 从 0.1.7-rc.1 升级，该包从未发过非预发布版本，「稳定版」即 next 线最新 rc。客户端 `lib/` 两版逐字节相同、仅锁定的 runtime 0.1.7→0.2.0，真机双协议探针升级后跑通含计量）是三家厂商里唯一「双协议一家」的智能体：`protocolTypes: ['openai', 'anthropic']`，两条 wire 统一走 pi-ai 路由。适配器 = 路由注入（overlay patch）+ 通知投影（`session.event`）+ 关闭式释放（SDK 无 wire-level cancel）。
 
 ## 形态与交互
 
@@ -31,6 +31,7 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.1.7-rc.1`——R33 裁决不�
 - **同源同算**（D7）：patch 里 `provider` / `model` / `reasoningEfforts` 与交给 harness 的三个值必须同源，dsh 的 `initialize` 会 `resolveCallConfig` 二次校验，漂移报 `UNKNOWN_MODEL` / `UNSUPPORTED_REASONING_EFFORT` / `no adapter registered for provider "…"`。路由键 `aieval-route` 不与 pi-ai@0.85.1 catalog 的 39 个键撞车 ⇒ 走手声明路径；404 重试走 harness 的 `llm/retry`（实测 ×5），pi-ai 自己 `maxRetries: 0`，不会双重重试。
 - **skill 注入**（SDK 客户端零 skill API，但运行时默认全开——「给 dsh 加 skill」= 让运行时看见文件，落在配置层）：三条加法——**A** 落 `$DSH_HOME/skills/<name>/SKILL.md`（与每行 `.agenthome` 隔离天然同构）；**B** overlay 里 `skill-filesystem` 的 `customSkillDirs` + `includeDefaultRoots: false`（真隔离；⚠️ patch 替换整格 config 不深合并，要用的键必须全量重述）；**C** 项目根 `.dsh/skills/` / `.agents/skills/` 自动发现（rank 100/200——静默口径差异，与 claude 的 `.claude/skills/` 问题同源同形）。skill 根表 rank：100 project-dsh / 200 project-agents / 300 custom / 400 user-dsh / 500 user-agents / 600 bundled，rank 小者先赢同名，第一层扫描不递归。隔离约束：`dshHome` 指向空目录且无 `DEEPSEEK_API_KEY` 时运行必然 `turn/end(kind:'error')`（`llm-deepseek: no API key for provider route "deepseek-official"`）⇒ 走 pi-ai 后凭据走 `AIEVAL_ROUTE_API_KEY`，隔离目录不再隔离凭据。
 - **MCP 接法**：SDK 的 JSON-RPC 方法表**封闭三个**（`initialize` / `session/prompt` / `shutdown`），服务端对未知方法直接抛错 ⇒ MCP 只能走配置文件。一台 server = 一个插件行（`- insert: - id: mcp-*, name: '@deepseek-ai/dsh-mcp-client'`）。传输只有 `stdio` 与 `streamable-http`；`serverName` 须匹配 `[A-Za-z0-9_-]{1,32}`、`toolCallTimeoutMs` 默认 60000、`failOnStartupError` 默认 **false**（连接失败 harness 照常启动、工具静默消失）。stdio 子进程环境先清洗（`/KEY|PASSWORD|SECRET|TOKEN/i` 命中的与所有 `DSH_*` 被删）再合并 `config.env`——宿主的 `GITHUB_TOKEN` 不会自动传进去。工具名 `mcp__<serverName>__<tool>`。
+- **流式增量旁路**（2026-10-09）：通知层不投送逐字流（见「已知边界」），而打字机要 token 级增量 ⇒ 适配器**换一层拿**：`startDsh` 在 boot 前把一份零依赖插件写到 `<configHome>/profiles/sdk/aieval-stream-tap.mjs`（overlay `insert` 一条，`name: "./aieval-stream-tap.mjs"` 必须是**相对名**——loader 按 profile 目录解析），插件订阅 runtime 进程内的 `agent/assistant-stream`，把 `block-start` / `text-delta` / `reasoning-delta` / `block-end` 四类 chunk 帧追加写到 `<configHome>/aieval-stream-tap.jsonl`；父进程按 `DSH_STREAM_TAP_POLL_MS = 100` tail 该文件，折成 `session.event` 信封、事件类型 `aieval/delta`（`DSH_STREAM_DELTA_TYPE`）的伪通知，再由 `dshStreamDeltaDraft` 归一成 `chunk: 'delta'`、`source: 'hook'` 的内容消息。三条硬约束：① **绝不伪造 `session/event`**——runtime 对它是「先落厂商会话日志、再通知」，伪造型会混进厂商持久化日志（故走 sidecar 文件）；② 该支**只产消息、零事件草稿**（落进 `log` 兜底会把原始输出面板刷成 JSON 流水）；③ **会话门闸**——子会话的增量行可能早于 `subagent.started` 落盘，未登记的 sid 会被当主会话，故未知会话的伪通知**挂起**，等放行过 `subagent.started` 再补投。块位次按「该次尝试内首见顺序」发号（与厂商 `BlockAssembler.order` 同算法），保证增量与随后快照落进同一槽位。
 - **内置工具清单**（24 项，`request/header` 原文顺序）：`create_goal, edit, exit_plan_mode, get_goal, glob, grep, interrupt_agent, job_kill, job_list, job_output, list_agents, pwsh, read, read_image, send_message, skill, subagent, subagent_fork, todo_write, update_goal, web_fetch, web_search, workflow, write`。dsh ∩ codex = `create_goal / get_goal / update_goal / web_search`（精确同名）；claude 与另两家精确同名交集为空 ⇒ 命名不是对齐键。dsh 独有 `pwsh`（与 codex 的 `exec_command` 异名同义）。
 
 ## 已知边界与取舍
@@ -41,12 +42,14 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.1.7-rc.1`——R33 裁决不�
 | 版本偏斜：实跑 pi-ai@0.85.1，上游 O(n²) 修复打在 0.87.1 上打不到（实测 8KB→13.7ms、512KB→37.7s） | 已裁决可接受 | 代价是一次性 CPU 税非挂起；触发条件「大文件写入明显停顿」再启动三步预案；**不要只升版本**（`^0.85.1` 对 0.x 只允许 <0.86，会与 peer 校验打架） |
 | 退役 `DEEPSEEK_*` 必须显式删除（不删则继承宿主 ⇒ `deepseek-official` 静默可用并计费） | 已修 | 守卫：宿主环境守卫用例（先塞假键再断言子进程环境里没有）——只断言「没注入」是假绿 |
 | `web_search` 必然失败（`searchProvider: deepseek-official`，错误码 `WEB_PROVIDER_CREDENTIAL_MISSING`） | 已知 | 非新回归；要不要 overlay 关掉 tool-web 默认不动 |
-| streamingDelta 五态：厂商 LLM 层有 `text-delta` 但 SDK 订阅的通知层没有（真机 20 条通知、增量类 0 条） | 已修 | 能力位 `not-projected-by-vendor`；**最值钱教训：文档说的层 ≠ 我们能拿到的层**，「厂商有没有」的判定落到「我们能不能拿到」上才算数；判据 `providers/dsh/conformance.test.ts` 11/11 |
+| streamingDelta：厂商 LLM 层有 `text-delta` 但 SDK 订阅的**通知层**没有（真机 20 条通知、增量类 0 条） | 已修（换通道） | 通知层判定不变，**改从进程内事件取**：适配器往行 profile 目录写一个 tap 插件，它订阅 `agent/assistant-stream` 把 chunk 帧追加到 `<configHome>/aieval-stream-tap.jsonl`，父进程 100 ms tail 成 `aieval/delta` 伪通知 ⇒ 能力位 `yes` + `streamingDeltaSource: 'hook'`。**最值钱教训保留**：文档说的层 ≠ 我们能拿到的层——这次的解法不是「厂商投送了」，而是**换一层拿**。代价与失效模式见《接入》「流式增量旁路」与《事件流》已知边界 |
 | `session.status` 刻意不投影（与轮次语义无关，投影只添噪声） | 有意取舍 | 「已识别且有意不投影」，不是未识别 |
 | `turn/end` 的 kind 实测只有 completed / error，类型面另有 aborted / blocked / max-tokens / interrupted / forked | 口径 | 按类型面写防未来 |
 | MCP 重连预算耗尽后工具被注销且不再自动恢复（默认 10 次连续失败） | 厂商设计 | 停机期间工具仍列出但调用失败 |
 | 改配置要重启运行时进程（sdk profile 的 bundle `hmr: disabled: true`） | 厂商设计 | — |
 | 未跑真实评测任务（带工具调用、多轮、大文件写入）；skill 注入本次没有真机跑过 dsh | 未覆盖 | 如实登记证据层级 |
+| 消费循环**把 `subscription.next()` 的 promise 遗弃成孤儿**（每 100 ms 的 `tapWake` 竞速输一次就留一个）⇒ SDK 按「先到先得」把后续每条通知都交给孤儿，真正在等的那一个永远拿不到 | 已修（2026-10-10） | 症状：客户端投递并接受 **181 条**、我们只 `yield` **15 条**（全在前 50 ms），之后 137 秒静默且**零报错**；`messages.jsonl` 为 0、执行日志整段空白、行照旧判成功。修法：在飞的 promise **记忆化复用**（`pendingNext ??=`），settle 后才新建。守卫：`dsh/index.test.ts` 的「投递 150ms > 轮询拍 100ms」用例（夹具原先只留一个 waiter，孤儿根本造不出来——替身比真实实现弱）。证据与变异记录见 [DeepSeek Harness FAQ](/faq/deepseek-harness) 的 `原始输出 38164 行，但执行日志是空的` 条 |
+| stream-tap 插件**从未被加载**：`name: "./aieval-stream-tap.mjs"` 由运行时按 **`dshHome`** 解析，而适配器写在 `profiles/sdk/` | 已修（2026-10-10） | stderr 每次只有 `dsh: warning: 1 entry did not activate` + `aieval-stream-tap (file:///<dshHome>/aieval-stream-tap.mjs): failed to import` ⇒ 旁路文件恒 0 字节、能力位声称 `streamingDelta: yes` 而界面一条增量都没有。改 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH = 'aieval-stream-tap.mjs'`；探针实证 stderr 干净、**旁路文件 0 → 720 字节**（`probe/v3/dsh-tap-truncation.mjs` 变体 B） |
 
 ## 相关链接
 

@@ -12,6 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AgentMessageSchema, type AgentMessage } from '@aieval/contracts';
+import { toolCallHint } from './activity';
 import {
   createBlockIndexAllocator,
   createMessageAssembler,
@@ -29,7 +30,7 @@ function draft(overrides: Partial<MessageDraft> & Pick<MessageDraft, 'blocks'>):
     role: 'assistant',
     source: 'wire',
     roundTrip: 1,
-    vendorTurn: null,
+    turn: null,
     step: null,
     parentCallId: null,
     subagentId: null,
@@ -92,6 +93,38 @@ describe('messageAssembler：增量与快照', () => {
   });
 });
 
+/**
+ * 工具块的**摘要主体**（2026-10-10）：随块给出，供抽屉的工具行直接渲染。
+ *
+ * 为什么钉在这里：这句话的词表真源是 `activity.ts`，而消费方（浏览器）按分层表不许 import `agents`
+ * ——摘要必须**随块落进消息**。它一旦漏填，工具行的摘要行会静默回落到参数原文首行
+ * （`{command, description}` 那种形状就是一整串 JSON），看起来「只是不那么好看」，没有任何报错。
+ *
+ * **口径（2026-10-10 变更）**：这一格是 `toolCallHint` 的产物——**只有冒号后面那一段**，
+ * 不带 `调用工具 <名>：` 前缀。工具行把工具名渲染成独立元素，带前缀就是同一件事说两遍；
+ * 活动行另有 `toolCallSummary`（同词表加前缀，见 `activity.test.ts`）。
+ */
+describe('toolCallBlockDraft：块自带摘要主体', () => {
+  it('摘要与 `activity.ts` 的词表逐字一致（描述优先、每族拼法、计划类特判）', () => {
+    const read = toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' });
+    expect(read.block).toMatchObject({ summary: toolCallHint('Read', { file_path: 'a.ts' }) });
+    expect((read.block as { summary?: string }).summary).toBe('a.ts');
+
+    // 描述优先：两个键都在时给 `描述（目标）`
+    const described = toolCallBlockDraft('call_desc', 'Bash', { command: 'ls -la', description: 'List files' });
+    expect((described.block as { summary?: string }).summary).toBe('List files（ls -la）');
+
+    // 计划类入参只说几步（「更新计划」那四个字是活动行的句式，工具行不复述）
+    const plan = toolCallBlockDraft('call_2', 'TodoWrite', { todos: [{ subject: 'a' }, { subject: 'b' }] });
+    expect((plan.block as { summary?: string }).summary).toBe('2 步');
+  });
+
+  it('没名字 / 没参数时摘要主体是空串（界面据此说「参数未采集」），不编一句话', () => {
+    const bare = toolCallBlockDraft('call_3', '', null);
+    expect((bare.block as { summary?: string }).summary).toBe('');
+  });
+});
+
 describe('messageAssembler：块序号与合并键', () => {
   it('新块追加到末尾（claude 把同一条消息按内容块分多条投递：每条都是新块）', () => {
     const messages = run([
@@ -103,25 +136,24 @@ describe('messageAssembler：块序号与合并键', () => {
     expect(messages.at(-1)?.blocks.map((block) => block.type)).toEqual(['thinking', 'text', 'tool-call']);
   });
 
-  it('工具块按 `callId` 区分：同轮两次调用互不覆盖，结果按 `callId` 落回同一条', () => {
-    const messages = run([
-      draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' })] }),
-      draft({ blocks: [toolCallBlockDraft('call_2', 'Read', { file_path: 'b.ts' })] }),
-      // 工具结果的载体是 `role: 'tool'`（与调用那条不同）⇒ 它是一条**独立**的逻辑消息，
-      // 靠 `callId` 这个块标识与调用配对（只看块序号会把两次调用的结果互相盖掉）
-      draft({ role: 'tool', blocks: [toolResultBlockDraft('call_1', '内容 A')] }),
-    ]);
+  it('工具块按 `callId` 区分：同轮两次调用互不覆盖，结果按 `callId` 落回同一条', () => {    const messages = run([
+    draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' })] }),
+    draft({ blocks: [toolCallBlockDraft('call_2', 'Read', { file_path: 'b.ts' })] }),
+    // 工具结果的载体是 `role: 'tool'`（与调用那条不同）⇒ 它是一条**独立**的逻辑消息，
+    // 靠 `callId` 这个块标识与调用配对（只看块序号会把两次调用的结果互相盖掉）
+    draft({ role: 'tool', blocks: [toolResultBlockDraft('call_1', '内容 A')] }),
+  ]);
     /** 收集所有承载某个 `callId` 的槽位：`[载体 role, 该槽位的块类型]` */
-    const carriersOf = (callId: string): string[] =>
-      messages
-        .filter((message) => message.blocks.some((block) => 'callId' in block && block.callId === callId))
-        .map((message) => `${message.role}:${message.blocks.map((block) => block.type).join('+')}`);
+  const carriersOf = (callId: string): string[] =>
+    messages
+      .filter((message) => message.blocks.some((block) => 'callId' in block && block.callId === callId))
+      .map((message) => `${message.role}:${message.blocks.map((block) => block.type).join('+')}`);
     // 两条调用消息的块**同时存在**（第二次没有覆盖第一次）
-    expect(carriersOf('call_1')).toContain('assistant:tool-call+tool-call');
-    expect(carriersOf('call_2')).toContain('assistant:tool-call+tool-call');
-    // 结果按同一个 `callId` 配对：它落在 `role: 'tool'` 的那条消息里，且与 `call_2` 无关
-    expect(carriersOf('call_1')).toContain('tool:tool-result');
-    expect(carriersOf('call_2')).not.toContain('tool:tool-result');
+  expect(carriersOf('call_1')).toContain('assistant:tool-call+tool-call');
+  expect(carriersOf('call_2')).toContain('assistant:tool-call+tool-call');
+  // 结果按同一个 `callId` 配对：它落在 `role: 'tool'` 的那条消息里，且与 `call_2` 无关
+  expect(carriersOf('call_1')).toContain('tool:tool-result');
+  expect(carriersOf('call_2')).not.toContain('tool:tool-result');
   });
 
   it('合并键含载体：同一轮里工具结果消息的块不会盖到正文块上', () => {

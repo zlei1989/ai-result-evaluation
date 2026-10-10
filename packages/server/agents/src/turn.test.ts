@@ -768,7 +768,7 @@ describe('runTurn：收尾投影的调用时机', () => {
       role: 'assistant',
       source: 'session-file',
       roundTrip: 1,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId: null,
       subagentId: null,

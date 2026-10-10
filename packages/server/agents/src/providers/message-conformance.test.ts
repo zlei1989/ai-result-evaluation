@@ -2,7 +2,7 @@
 /**
  * **三端一致性**（spec v3 §2 / §3）：同一件事在 claude-code / codex / dsh 上归一之后，
  * 消息结果必须逐字段一致——只有「这一家结构上没有」的格才允许不同（`messageId` / `vendorId` /
- * `vendorTurn` / `step` / 工具的 `name` / 思考块的 `signature` / `raw`，以及 codex 工具块上
+ * `turn` / `step` / 工具的 `name` / 思考块的 `signature` / `raw`，以及 codex 工具块上
  * app-server 独有的事实 `cwd` / `durationMs`），且那些差异必须由**能力声明**说明。
  *
  * 三条用例的靶子：
@@ -73,7 +73,7 @@ function assembleCodex(
  * 去掉的七格与理由（都是「这一家结构上没有」，不是实现差异）：
  *   · `messageId`：本项目生成的序号，逐家不同；
  *   · `vendorId`：厂商 id 空间不同（契约明写「不得当去重键」）；
- *   · `vendorTurn` / `step`：**只有 dsh 有**厂商轮号与步骤号，另两家结构上没有（恒 `null`）；
+ *   · `turn` / `step`：**只有 dsh 有**厂商轮号与步骤号，另两家结构上没有（恒 `null`）；
  *   · `raw`：厂商原始载荷；
  *   · 工具块的 `name` 与思考块的 `signature`：厂商真名与签名本来就不同——跨家可比的是归一后的
  *     `family` 与 `textKind`（逐家的值另有用例单独钉）。
@@ -243,10 +243,10 @@ describe('三端一致性：一次纯文本答复', () => {
     expect(claudeMessages.map((message) => message.chunk)).toEqual(['delta', 'snapshot']);
     const codexMessages = codex();
     const dshMessages = dsh();
-    expect(dshMessages).toMatchObject([{ subagentId: null, vendorTurn: 1, step: 1, roundTrip: 1 }]);
+    expect(dshMessages).toMatchObject([{ subagentId: null, turn: 1, step: 1, roundTrip: 1 }]);
     expect(codexMessages).toMatchObject([
-      { subagentId: null, vendorTurn: null, step: null, roundTrip: 1 },
-      { subagentId: null, vendorTurn: null, step: null, roundTrip: 1 },
+      { subagentId: null, turn: null, step: null, roundTrip: 1 },
+      { subagentId: null, turn: null, step: null, roundTrip: 1 },
     ]);
     expect(codexMessages.map((message) => message.chunk)).toEqual(['delta', 'snapshot']);
     // 增量与快照落在**同一条逻辑消息**上（合并键相同）⇒ 消费方最终只看到一个块，不出现两份正文
@@ -260,11 +260,11 @@ describe('三端一致性：一次纯文本答复', () => {
   it('封装差异只出现在允许的七格上（其余格都由契约钉死）', () => {
     const [claudeMessage] = comparable([claude().at(-1)!]) as [Record<string, unknown>];
     const [dshMessage] = comparable([dsh().at(-1)!]) as [Record<string, unknown>];
-    // `vendorTurn` / `step` 不在比对集里（只有 dsh 有）⇒ 逐家单独钉住「谁有、谁是 null」
+    // `turn` / `step` 不在比对集里（只有 dsh 有）⇒ 逐家单独钉住「谁有、谁是 null」
     const claudeRaw = claude().at(-1)!;
     const dshRaw = dsh().at(-1)!;
-    expect([claudeRaw.vendorTurn, claudeRaw.step]).toEqual([null, null]);
-    expect([dshRaw.vendorTurn, dshRaw.step]).toEqual([1, 1]);
+    expect([claudeRaw.turn, claudeRaw.step]).toEqual([null, null]);
+    expect([dshRaw.turn, dshRaw.step]).toEqual([1, 1]);
     // `subagentId`：主会话消息在三家都是 null（子会话消息才带身份，见子任务场景）
     expect(claudeMessage.subagentId).toBeNull();
     expect(dshMessage.subagentId).toBeNull();

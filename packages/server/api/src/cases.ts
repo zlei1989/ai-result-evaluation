@@ -26,6 +26,7 @@ import {
   parseRepoSource,
   validateRubric,
   type CaseCreate,
+  type CaseList,
   type CasePatch,
   type CommitCandidate,
   type RepoInfo,
@@ -38,21 +39,22 @@ import {
   caseCacheDir,
   createLogger,
   defaultBranchName,
+  deleteCaseFile,
   ensureMirror,
   ensureRemotesDir,
   fetchMirror,
-  getConfigDir,
   listCommits,
-  loadConfig,
+  listCases as listStoredCases,
   probeRemote,
+  readCase as readStoredCase,
   readMirrorRecord,
   remotesDir,
   resolveRemoteRef,
   resolveRepoInfo,
-  saveConfig,
-  type AppConfig,
+  writeCase,
 } from '@aieval/core';
 import { listRunsForCase } from '@aieval/evaluator';
+import { enqueueCaseSync } from './case-sync';
 import { getSettings } from './settings';
 
 const log = createLogger('cases');
@@ -60,14 +62,21 @@ const log = createLogger('cases');
 /**
  * 列表：最近改动的用例在最前。
  * 同一毫秒创建的两条按 id 兜底排序——否则顺序依赖 Array.sort 的实现细节，测试会随机飘。
- * `repoBranch` 走一遍读侧归一：旧 config.json 里根本没有这一列（`?? null` 补 undefined），
+ * `repoBranch` 走一遍读侧归一：旧用例文件里可能根本没有这一列（`?? null` 补 undefined），
  * 而契约声明的是 `string | null`——读出来是 undefined 就是在对一个不存在的第三态做承诺（A10③）。
+ *
+ * 坏文件（名字不合 id 形状 / 不是合法 JSON）由 core 的存储层**跳过**并把原因带出来，
+ * 这里原样透给界面：列表必须能渲染（用户要能从这一页删掉那条坏文件），但**不能不说**。
  */
-export function listCases(): TestCase[] {
-  return [...loadConfig().cases].map(asStoredCase).sort((a, b) => {
-    if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+export function listCases(): CaseList {
+  const stored = listStoredCases();
+  return {
+    cases: stored.cases.map(asStoredCase).sort((a, b) => {
+      if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    }),
+    warnings: stored.warnings,
+  };
 }
 
 /**
@@ -76,8 +85,8 @@ export function listCases(): TestCase[] {
  * （创建评测、换用例编辑都走它），见 `assertUsableRubric`。
  */
 export function getCase(caseId: string): TestCase {
-  const found = loadConfig().cases.find((item) => item.id === caseId);
-  if (found === undefined) {
+  const found = readStoredCase(caseId);
+  if (found === null) {
     throw new ServiceError('NOT_FOUND', `用例不存在：${caseId}`, { context: { caseId } });
   }
   return asUsableCase(found);
@@ -186,13 +195,12 @@ export function createCase(input: CaseCreate): TestCase {
     createdAt: now,
     updatedAt: now,
   };
-  const config = loadConfig();
   const stored = assertStorable(created);
-  config.cases = [...config.cases, stored];
-  saveCases(config);
+  writeCase(stored);
   // 成功日志必须在**落盘之后**打（`updateCase` 同口径）：校验不过或写盘失败时留下一条「创建用例」的 INFO，
   // 会让排障的人把一次被拒绝的保存读成成功——日志是这一刻唯一的旁证。
   log.info('创建用例', { caseId: stored.id, repoName, branch: loggedBranch });
+  scheduleSync('创建用例');
   return stored;
 }
 
@@ -206,9 +214,8 @@ export function createCase(input: CaseCreate): TestCase {
  *     `INVALID_QUERY`），用户拿不到那句能照做的「旧版数据，请删除它或重新创建：<caseId>」。
  */
 export function updateCase(caseId: string, patch: CasePatch): TestCase {
-  const config = loadConfig();
-  const found = config.cases.find((item) => item.id === caseId);
-  if (found === undefined) {
+  const found = readStoredCase(caseId);
+  if (found === null) {
     throw new ServiceError('NOT_FOUND', `用例不存在：${caseId}`, { context: { caseId } });
   }
   const current = asUsableCase(found);
@@ -269,9 +276,9 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
     updatedAt: new Date().toISOString(),
   };
   const stored = assertStorable(next);
-  config.cases = config.cases.map((item) => (item.id === caseId ? stored : item));
-  saveCases(config);
+  writeCase(stored);
   log.info('用例已更新', { caseId });
+  scheduleSync('更新用例');
   return stored;
 }
 
@@ -280,20 +287,19 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
  * **评测记录本身不删**——它带着 caseTitle / repoPath / commitHash 的冗余快照，删了用例照样可读（§4.4）。
  */
 export function deleteCase(caseId: string): { affectedRuns: number } {
-  const config = loadConfig();
-  const target = config.cases.find((item) => item.id === caseId);
-  if (target === undefined) {
+  const target = readStoredCase(caseId);
+  if (target === null) {
     throw new ServiceError('NOT_FOUND', `用例不存在：${caseId}`, { context: { caseId } });
   }
 
   // 引用数在删除前数：返回值要能回答「这次删除影响了多少评测」
   const affectedRuns = listRunsForCase(caseId).length;
 
-  config.cases = config.cases.filter((item) => item.id !== caseId);
-  saveCases(config);
+  deleteCaseFile(caseId);
   log.info('用例已删除', { caseId, affectedRuns });
 
   removeCaseCache(caseId);
+  scheduleSync('删除用例');
   return { affectedRuns };
 }
 
@@ -515,13 +521,17 @@ function assertStorable(testCase: TestCase): TestCase {
   return parsed;
 }
 
-/** 保存配置：把 saveConfig 的原始 errno（EPERM / ENOSPC / 只读盘）折成可直接展示的中文原因 */
-function saveCases(config: AppConfig): void {
-  try {
-    saveConfig(config);
-  } catch (error) {
-    throw error instanceof ServiceError
-      ? error
-      : new ServiceError('INTERNAL', `用例保存失败（${getConfigDir()}）：${error instanceof Error ? error.message : String(error)}`, { cause: error });
-  }
+/**
+ * 用例落盘**之后**：按设置页的「用例变更时自动提交」决定要不要排一次后台同步。
+ *
+ * 三条刻意的口径：
+ *   1. **绝不 await**：保存用例的响应必须立刻返回（用户口径「不阻塞文件保存流程」）。
+ *      同步快慢取决于智能体与远端，把它挂在 HTTP 响应上等于让一次保存等几分钟；
+ *   2. **开关关掉就什么都不做**：此时变更只在磁盘上，用户到设置页点「提交」才进 git——
+ *      状态接口会显示「待提交 N 个」，两态都看得见；
+ *   3. 排队的合并与串行由 `case-sync` 内部负责（连续保存只产出一轮同步），这里不判「有没有在跑」。
+ */
+function scheduleSync(reason: string): void {
+  if (!getSettings().casesAutoCommit) return;
+  enqueueCaseSync(reason);
 }

@@ -410,6 +410,16 @@ function finalizeCodex(run: CodexRun): {
    * ——**不编一个 0**。
    */
   const mainTurns = observedTurns(run.runState, run.mainThreadId);
+  /**
+   * 被**显式丢弃**的增量通道（2026-10-09）：`item/plan/delta` 与 `item/commandExecution/outputDelta`
+   * 没有渲染落点，但「丢」必须留痕——否则排障时分不清「我们主动丢了」与「上游没发」。
+   * 一条 DEBUG 汇总，不落任何事件（落事件就把原始输出面板刷满了，那正是这条口径要防的事）。
+   */
+  if (run.runState.droppedDeltas.size > 0) {
+    logger.debug('codex 显式丢弃的增量通道统计', {
+      dropped: Object.fromEntries(run.runState.droppedDeltas),
+    });
+  }
   const subagentTurns = threads === null ? null : threads.reduce((sum, one) => sum + threadRoundTrips(one.content, one.ref.threadId, run.runState), 0);
   const finalTurns = mainTurns === null || subagentTurns === null ? null : mainTurns + subagentTurns;
 

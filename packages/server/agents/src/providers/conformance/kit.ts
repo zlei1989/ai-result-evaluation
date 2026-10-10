@@ -112,10 +112,15 @@ export interface ConformanceFixture {
   /** §2.8 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
   observedStatusIds?: string[];
   /**
-   * §2.10 某一场景期望的最终答复（缺省 = 不额外比对，只查下面那三条通则）。
+   * §2.10 场景期望的最终答复（缺省 = 不额外比对，只查下面那三条通则）。
    * 用途：把「这一家在这条路径上到底该给出什么」钉成字面量（例如「失败场景也不许交空串」）。
    */
   expectedFinalText?: Partial<Record<ConformanceScenarioName, string | null>>;
+  /**
+   * §2.12 **喂了增量帧的场景**必须声明的事件条数（见 `checkDeltaChannelIsolation`）。
+   * 这一格是「增量不产事件」这条口径的全部判据：原先是零守卫，把 `events.ts` 的分支删回去也不会红。
+   */
+  expectedEventCounts?: Partial<Record<ConformanceScenarioName, number>>;
 }
 
 /** 顺序固定的一对：能力格 → 它需要哪个场景来证明自己真的拿得到 */
@@ -398,6 +403,41 @@ export function checkTransportDeliveryGroup(fixture: ConformanceFixture): void {
   }
 }
 
+/**
+ * §2.12 **增量通道隔离**：喂了增量帧的场景必须声明**事件条数**，且实际条数必须等于它。
+ *
+ * 为什么这条需要专门的守卫（2026-10-09）：增量帧只该走内容通道，而**漏进事件通道是一条真实的
+ * 回归路径**——claude 的 `stream_event` 原先就掉进「未识别厂商负载落 `log` 保留原始负载」的兜底，
+ * 一次运行几百上千条 ⇒ 「原始输出」面板被刷成 JSON 流水（用户口径：浏览器卡死，且真要看的
+ * stderr / init 全被冲掉）。三条 `events.ts` 的分支都补上了，但**当时没有任何跨家守卫**：
+ * 把分支删回去，三家各自的用例里只有 claude 会红。
+ *
+ * 判据为什么是「事件条数」而不是「事件里有没有 delta 字样」：产物里的事件已经是契约形状，
+ * 认不出哪一条来自增量；而**条数**有区分力——增量一旦混进事件通道，条数就是 baseline + 帧数。
+ * 代价是这格数要人工维护，故只对**真有增量帧的场景**强制（`hasDelta` 判据取自产物本身，
+ * 不靠 fixture 自述，否则「我说我这个场景没有增量」就是一句无区分力的自述）。
+ */
+export function checkDeltaChannelIsolation(fixture: ConformanceFixture): void {
+  for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
+    const product = build();
+    // 判据取自**产物**（不是 fixture 自述）：这个场景确实产出了增量帧
+    if (!product.messages.some((message) => message.chunk === 'delta')) continue;
+    const expected = fixture.expectedEventCounts?.[name];
+    if (expected === undefined) {
+      throw new Error(
+        `${fixture.kind}/${name}：场景里有增量帧，却没声明 expectedEventCounts —— 「增量不产事件」这条口径当场失去判据`
+        + '（把增量掉回 log 兜底的回归谁都不会红）',
+      );
+    }
+    if (product.events.length !== expected) {
+      throw new Error(
+        `${fixture.kind}/${name}：事件条数 ${product.events.length} ≠ 声明的 ${expected}`
+        + '——多出来的极可能就是增量帧混进了事件通道（原始输出面板会被刷成 JSON 流水）',
+      );
+    }
+  }
+}
+
 /** 把全部判据注册成一家的用例；红的时候组名直接指向被违反的那条契约 */
 export function describeProviderConformance(fixture: ConformanceFixture): void {
   const cases: ReadonlyArray<readonly [string, () => void]> = [
@@ -412,6 +452,7 @@ export function describeProviderConformance(fixture: ConformanceFixture): void {
     ['结构化输出与产出可解析（§2.11）', () => checkStructuredOutputGroup(fixture)],
     ['传输时序（C 类：缓冲补投 / 终态不早于响应 / 不重复）', () => checkTransportDeliveryGroup(fixture)],
     ['行级事件三类与来源闭集（§2.3/§2.1）', () => checkLineEventsAndSources(fixture)],
+    ['增量通道隔离：喂了增量就必须钉住事件条数（§2.12）', () => checkDeltaChannelIsolation(fixture)],
   ];
   describe(`${fixture.kind} 一致性套件`, () => {
     for (const [title, run] of cases) it(title, run);

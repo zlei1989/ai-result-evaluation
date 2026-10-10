@@ -17,8 +17,8 @@
 - [创建评测](/features/run-creation): 创建评测 = 给一道固定的题（用例）配一组候选（智能体 × 模型 × 思考强度）与执行模式。
 - [评测详情与候选行](/features/run-detail): 评测详情是评测管理域的「读」侧与操作中枢：`/runs` 左栏列表 + 右栏详情，右栏在 `?panel=detail|new|edit&id=…` 三种内容间…。
 - [修改、重跑与删除评测](/features/run-edit-rerun-delete): 创建之后的三个动作族：**改**（编辑整轮，被改的行原地重置）、**重跑**（两个出口——单行执行连候选 agent 带评分整段重跑、重新评分只重跑评分那一步）…。
-- [设置](/features/settings): 设置页承载平台级的全部配置：模型供应商、评分配置、工作区、界面主题。
-- [数据与存储](/features/storage): 平台全部落盘事实的地图：配置、评测产物、事件日志各落在哪、怎么写、坏了怎么读。
+- [设置](/features/settings): 设置页承载平台级的全部配置：模型供应商、评分配置、工作区（含**用例目录**与**用例变更自动提交**）、界面主题。
+- [数据与存储](/features/storage): 平台全部落盘事实的地图：配置、**用例文件**、评测产物、事件日志各落在哪、怎么写、坏了怎么读。
 - [变异验证](/guard/mutation-verification): 新增回归守卫必须把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希——没见过失败的守卫不算守卫。
 - [Playwright MCP](/guard/playwright-mcp): 用 MCP 浏览器工具前先读本文件。
 - [PowerShell](/guard/powershell): 跑 PowerShell 前先读本文件。

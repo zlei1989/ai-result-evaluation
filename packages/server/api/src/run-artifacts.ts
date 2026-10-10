@@ -32,6 +32,8 @@ import {
   readEventsAfter,
   readRowRecords,
   rowEventsFile,
+  rowJudgeEventsFile,
+  rowJudgeMessagesFile,
   rowMessagesFile,
   truncateDiff,
 } from '@aieval/core';
@@ -294,6 +296,64 @@ export function getRowLog(runId: string, rowId: string, afterSeq?: number): Agen
     throw new ServiceError(
       'INTERNAL',
       `读取执行日志失败（${file}）：${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * 只做**行存在性校验**、不读任何日志（2026-10-10）。
+ *
+ * 给「不回放历史」的那条 SSE 用（卡片活动行）：它只要「此刻之后」的记录，而把校验一起省掉，
+ * 客户端拿到的就不是带原因的 404，而是一条「开了即静默」的连接——那种失败在界面上表现为
+ * 「活动行一直不动」，与「这一行真的没在输出」完全同形。
+ */
+export function assertRowExists(runId: string, rowId: string): void {
+  const run = getRunView(runId);
+  findRow(run, rowId);
+}
+
+/**
+ * 该行**评分阶段**的消息与子任务行（2026-10-10）：与 `getRowRecords` 逐字同口径
+ * （折叠、不排序、文件不存在即两个空数组），只是读 `judge-messages.jsonl` 那条**独立的流**。
+ *
+ * 为什么是独立的一份而不是给 `getRowRecords` 加个筛选参数：两条流记的是**两个会话**
+ * （候选 / 评审者），消费方也是两处（执行日志抽屉 / 卡片活动行）。混在一个出口里，
+ * 调用方每次都得自己再分一次，而分错的症状是「执行日志里冒出评审者的对话」。
+ */
+export function getRowJudgeRecords(runId: string, rowId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
+  const run = getRunView(runId);
+  const row = findRow(run, rowId);
+  const file = rowJudgeMessagesFile(run.workspaceBase, run.id, row.id);
+
+  try {
+    const { messages, subagents } = readRowRecords(file);
+    return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
+  } catch (error) {
+    throw new ServiceError(
+      'INTERNAL',
+      `读取评分消息记录失败（${file}）：${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * 评分阶段的日志（2026-10-10）：与 `getRowLog` 逐字同口径（`afterSeq` 语义、不排序、文件不存在返回 `[]`），
+ * 只是读 `judge-events.jsonl`。它的 `seq` 是**独立一套**（`appendEvent` 按文件续号），
+ * 所以 `afterSeq` 也必须取自这条流自己的号，不能拿行级那条流的游标来续。
+ */
+export function getRowJudgeLog(runId: string, rowId: string, afterSeq?: number): AgentEvent[] {
+  const run = getRunView(runId);
+  const row = findRow(run, rowId);
+  const file = rowJudgeEventsFile(run.workspaceBase, run.id, row.id);
+
+  try {
+    return afterSeq === undefined || afterSeq <= 0 ? readEvents(file) : readEventsAfter(file, afterSeq);
+  } catch (error) {
+    throw new ServiceError(
+      'INTERNAL',
+      `读取评分日志失败（${file}）：${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }

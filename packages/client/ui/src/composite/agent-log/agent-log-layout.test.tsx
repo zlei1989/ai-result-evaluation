@@ -69,7 +69,7 @@ function toolCall(id: string, callId: string, at = AT): ToolCallBlock {
     name: 'pwsh',
     nameMissing: null,
     family: 'run-shell',
-    input: { value: null, text: null, bytes: null },
+    input: { value: null, text: null, bytes: null, description: null },
     tool: null,
   };
 }

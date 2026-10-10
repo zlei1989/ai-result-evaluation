@@ -348,6 +348,13 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        */
       forwardSubagentText: true,
       /**
+       * 流式增量（2026-10-09，spec v3 §3.5 兑现「`streamingDelta: 'yes'`」的声明）：
+       * 开了它 wire 上才会出 `stream_event`（text/thinking/signature 三种 delta），`streamEvent`
+       * 把它们投影成 `chunk: 'delta'` 的消息——编排层**只广播不落盘**（`messages.jsonl` 仍由快照独占）。
+       * 只覆盖主会话（`parent_tool_use_id` 恒 null）；真机探针见 `probe/v4/claude-official-remedies.mjs` ②。
+       */
+      includePartialMessages: true,
+      /**
        * 本次路由的**第二道落点**：flag 档（等价 CLI 的 `--settings`），合并优先级高于 project / local。
        *
        * 为什么必需：上面打开了 `settingSources`，而被测仓库自带的 `.claude/settings.json` 就在

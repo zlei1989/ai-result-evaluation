@@ -19,14 +19,27 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 | `structuredOutput` | true（`options.outputFormat`） | true（`turn/start` 的 `outputSchema`） | **false**（SDK 无此格，骨架摘格 + 有痕降级） |
 | 权限 full 档 | `bypassPermissions` + `allowDangerouslySkipPermissions: true`（必须成对） | `danger-full-access`（`workspace-write` 默认关网络） | `DSH_PERMISSION_MODE=danger-full-access` |
 | 权限 read-only 档 | `dontAsk`（刻意不是 `plan`） | `read-only`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` |
-| 流式增量 | 声明 yes 但 `includePartialMessages` 未开（仅主会话） | yes（`item/*/delta`） | **not-projected-by-vendor**（通知层没有 delta——文档说的层 ≠ 能拿到的层） |
+| 流式增量 | **yes**（`includePartialMessages: true` 常开，`stream_event`；**仅主会话**） | **yes**（`item/agentMessage/delta` + 两条 reasoning delta；`plan` / `commandExecution` 两条显式丢+计数） | **yes**（`source: 'hook'`：通知层没有 delta ⇒ 插件旁路 sidecar 文件 + 100 ms tail，见《接入》「流式增量旁路」） |
 | 消息级 usage | 恒 `null`（wire 上 `output_tokens` 恒 0） | 恒 `null`（协议只到线程级） | **有**（`assistant/message` 的 `data.usage`） |
 | `reasoningTokens` | `output_tokens_details.thinking_tokens` | 按线程累计（`input − cached`） | 恒 `null`（路由 `mapUsage()` 有意不投影） |
 | `apiMs` / `ttftMs` | 有（三家唯一） | 恒 `null` | 恒 `null` |
 | effort off 落点 | `thinking:{type:'disabled'}` + env 覆盖层（两半各管一批模型） | `effort:'none'` + `model_reasoning_summary:'none'`（后者空转）；**off 关不掉思考（未闭合）** | `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`（真机 0/0 成立） |
 | 终结信号 | `result` 消息恰好一条 | 主线程那条 `turn/completed`（按 `threadId` 认） | `turn/end`（`status` + `stopReason` 两格合读） |
 
-**内置工具交集**（精确同名）：dsh ∩ codex = `create_goal` / `get_goal` / `update_goal` / `web_search`；claude 与另两家**精确同名交集为空**；三家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10），能力声明必须带前提。
+**内置工具交集**（精确同名）：dsh ∩ codex = `create_goal` / `get_goal` / `update_goal` / `web_search`；claude 与另两家**精确同名交集为空**；三家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10），能力声明必须带前提。**别名要逐个登记**：真机这批数据里 dsh 跑命令用的是 `bash` 而不是表里原有的 `pwsh`（7 次调用全是 `bash`），漏登记不会报错、只会让摘要退化成紧凑 JSON 且族标签消失 ⇒ 别名由 `tool-family.test.ts` 逐字钉住。
+
+**叙述性字段（「模型自己写的一句话」）三家不一致**（2026-10-10 协议核查，一手证据：官方 SDK 类型、`codex app-server generate-ts` 的生成物、DSH `tool-catalog` 与本地包 schema）：
+
+| 家 | 有这一格的工具 | 逐字字段名 | 必填性 | 我们读得到吗 |
+|---|---|---|---|---|
+| claude-code | `Bash` | `description` | **可选**（CLI 侧另有 `getToolUseSummary` 兜底合成一句，但那**只在 CLI 的 UI 层、不走 wire**） | 读得到 |
+| claude-code | `Agent`（旧名 `Task`）/ `Monitor` / `TaskCreate` | `description` | 必填 | 读得到 |
+| dsh | `bash` / `pwsh` / `subagent` | `description` | **必填**（JSON Schema `required` + 运行期校验 `invalid description: expected a non-empty string`） | 读得到 |
+| codex | `update_plan` | `explanation` | 可选 | **读不到**：`TurnPlanUpdatedNotification.explanation` 协议面上有（本机 0.156.1 生成物逐字），但本仓 `appserver/protocol.ts` 的窄声明未收 ⇒ `payload.note` 恒 `null`（未闭合，见 FAQ） |
+| codex | `exec_command` | `justification` | 可选（**审批语义**） | **读不到**：`ThreadItem.commandExecution` 的字段里没有它（协议面就丢了） |
+| codex | `command_execution` / `apply_patch` / `web_search` / `dynamicToolCall` / `collab_tool_call` | — | — | 协议里**真没有**这一格 |
+
+依据：Claude `BashInput.description` 的官方注释逐字 *"the user reads this description, often without seeing the command"*（`sdk-tools.d.ts`）；DSH 同一格的说明逐字 "…(shown in the UI)"。**所以「优先 `description`」在 claude 与 dsh 上立刻兑现，在 codex 上一笔都兑现不了**——codex 的摘要只能走「族拼法」（`exec_command` 给命令原文、`apply_patch` 给改动清单）。这不是实现偷懒，是协议与通道的差异，横向对比时会被反复问到，故记在这里。
 
 **skill 注入对照**（三家都无编程式注册，skill 只能以文件落盘）：claude 三条加法（项目 `.claude/skills/` / 用户 `$CLAUDE_CONFIG_DIR/skills/` / 插件 `plugins`）+ 两个开关（`settingSources` / `skills`）；dsh 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根 `.dsh/skills/` 自动发现）+ skill 根表 rank；codex 走 `config.mcp_servers` 同款配置面（snake_case）。三家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用）。
 

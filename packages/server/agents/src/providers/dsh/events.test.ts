@@ -814,3 +814,69 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
     expect(bad.drafts[0]).toMatchObject({ summary: '工具报错：ENOENT: no such file' });
   });
 });
+
+/**
+ * stream-tap 增量伪事件（`aieval/delta`，2026-10-09）：**只产内容消息、事件侧零草稿**。
+ *
+ * 为什么这一条必须有专门守卫（原先全仓没有）：这是 dsh 唯一一条**自造**的通知类型，
+ * 而它的分流一旦写错（落进末尾的未识别 `log` 兜底），一次运行几百上千条增量帧就会把
+ * 「原始输出」面板刷成 JSON 流水——那正是这条口径要防的事，且症状（面板卡死）与故障原因
+ * （分流写错）在界面上完全对不上。套件的 §2.12 用条数间接钉它，这里直接钉草稿数组。
+ */
+describe('projectDshNotification：stream-tap 增量（aieval/delta）', () => {
+  /** 一条 tap 伪通知（形状与 `stream-tap.ts` 的 `lineToNotification` 逐字同构） */
+  const delta = (kind: 'text' | 'reasoning', text: string, position: number): unknown =>
+    // 事件类型**写字面量**（不是 import 常量）：这个名字是适配器自己造、写 sidecar 又读回来的，
+    // 钉住字面量才能拦住「改名之后两边对不上」——那时 delta 会静默掉进未识别兜底。
+    sessionEvent('aieval/delta', { turn: 1, step: 1, delta: { kind, text, position } });
+
+  it('零事件草稿 + 一条 `chunk: delta` 消息（原始输出面板上一条都不该有）', () => {
+    const projection = projectDshNotification(delta('text', '没问题，', 0), newState(), CONTEXT);
+    expect(projection.drafts).toEqual([]);
+    expect(projection.messages).toHaveLength(1);
+    const message = projection.messages?.[0];
+    expect(message?.chunk).toBe('delta');
+    expect(message?.source).toBe('hook');
+    expect(message?.blocks).toEqual([{ phase: 'delta', identity: { kind: 'index', index: 0 }, block: { type: 'text', text: '没问题，' } }]);
+  });
+
+  it('`reasoning` 档走思考块（**结果与思考的判别式就是块类型**，不新增信封格）', () => {
+    const projection = projectDshNotification(delta('reasoning', '先看配置', 1), newState(), CONTEXT);
+    expect(projection.drafts).toEqual([]);
+    const block = projection.messages?.[0]?.blocks[0];
+    expect(block?.phase === 'delta' ? block.block.type : null).toBe('thinking');
+  });
+});
+
+/**
+ * **通知流中断**伪事件（`aieval/stream-failure`，2026-10-09 真机事故的产物）。
+ *
+ * 为什么必须有这一支：SDK 的订阅失败是**静默**的（兄弟订阅与传输读循环都不受影响，
+ * 见 `lib/index.js` 的 `NotificationSubscriptionImpl.push/fail`），而我们的消费循环原先把它
+ * 当成「流正常结束」⇒ 真机形状是**执行日志整段空白、行照旧判 judged、任何日志里零线索**
+ * （run `7f05c765` 的 dsh 行：厂商会话日志 201 条事件、我们只收到前 13 条）。
+ * 这一支的存在意义只有一个：让「为什么是空的」在界面上有答案——**一条** stderr 的 log。
+ */
+describe('projectDshNotification：通知流中断（aieval/stream-failure）', () => {
+  it('产且只产一条 stderr 的 log，把原因与「断在哪」写出来（不判失败：产物是有效的）', () => {
+    const projection = projectDshNotification(
+      sessionEvent('aieval/stream-failure', {
+        reason: 'TransportClosedError: notification subscription closed',
+        receivedNotifications: 13,
+      }),
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.drafts).toHaveLength(1);
+    const draft = projection.drafts[0];
+    expect(draft?.type).toBe('log');
+    expect(draft?.type === 'log' ? draft.stream : null).toBe('stderr');
+    const text = draft?.type === 'log' ? draft.text : '';
+    expect(text).toContain('通知流中断');
+    expect(text).toContain('TransportClosedError');
+    expect(text).toContain('13');
+    // 归因**不**落 failure：丢的是过程证据，不是结果（那一轮的 diff 与评分照旧有效）
+    expect(projection.failure).toBeNull();
+    expect(projection.messages ?? []).toEqual([]);
+  });
+});

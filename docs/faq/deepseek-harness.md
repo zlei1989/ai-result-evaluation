@@ -54,3 +54,34 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 **相关资料**：
 - [Node.js `path.isAbsolute()`：POSIX 与 Windows 的「绝对路径」判定不同（盘符路径在 POSIX 上是普通相对路径）](https://nodejs.org/api/path.html#pathisabsolutepath)
 - [Node.js `fs.mkdtempSync()`：推荐的临时目录 API（本仓口径：能用现成 API 就别手写递归删除）](https://nodejs.org/api/fs.html#fsmkdtempsyncprefix-options)
+
+---
+## `原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）
+
+**日期**：2026-10-10（首次观测 2026-10-09）
+
+**根因**：**适配器自己把 `subscription.next()` 的 promise 遗弃成了孤儿**，于是 SDK 把后续每一条通知都交给了没人等的等待者。
+
+1. 消费循环每 `DSH_STREAM_TAP_POLL_MS`（100 ms）被 `tapWake` 唤醒一次，并把它与 `subscription.next()` **竞速**（`Promise.race`）。每一轮都**新建**一个 `next()`，竞速输给 `tapWake` 之后那份 promise 没人再 await，**但它仍挂在 SDK 的等待者队列里**。
+2. SDK 的 `NotificationSubscriptionImpl.push()` 是 `const waiter = this.state.waiters.shift(); … waiter.resolve(notification)` —— **先到先得**（最老的等待者拿这一条）。于是此后每条通知都落到那个**孤儿**上（resolve 后丢弃），真正在等的那一个永远拿不到。孤儿数随静默时长线性增长 ⇒「握手之后彻底静默」是必然，不是偶发。
+3. 结果：`messages.jsonl` 为 0、执行日志整段空白、`streamingDelta` 为 `{0,0}`，而**行照旧判成功**（diff 与评分都是真的）。真机运行 `7f05c765` 的 dsh 行连续三次都是这个形状。
+
+**量级与判据**（真机一次 + 本机复现一次，数字逐字相同）：客户端**投递并接受 181 条**（含 18 条 `assistant/message`、tool call/result 各 52 条），我们的生成器只 `yield` **15 条**（全在前 50 ms 内——那批是先入队、被 `tryNext()` 取走的），之后 137 秒一条不剩且**零报错**。
+
+- 探针 `probe/v3/dsh-tap-truncation.mjs`：同一 SDK / 运行时 / overlay / 权限 / **真题面 + 真工作区副本**，变体 A–E **全部收齐内容** ⇒ 上游与数据格式无罪。
+- 回放：厂商会话日志的 191 条事件喂真实投影 ⇒ **127 条消息、185 条草稿、零抛错** ⇒ 投影层无罪。
+- 本机复现（真网关 + 真题面 + 真工作区副本直接跑 `dshProvider.run`）：修前 `事件 16 / 消息 0`，修后 **`事件 175 / 消息 78`**；埋点从 `delivered 181 / yield 15` 变成 **`delivered 136 / yield 136`（1:1）+ `sawTurnEnd: true`**。
+
+**为什么此前所有守卫都绿**：① 夹具的假订阅**只留一个 `waiter`**（新的 `next()` 直接覆盖旧的），真实实现是**等待者数组 + `shift()`** ⇒ 孤儿这条路径在夹具层根本不存在；② 夹具默认同步 / 2 ms 投递，永远抢在 100 ms 轮询拍之前，连「竞速输一次」都造不出来。**测试环境 ≠ 运行环境**在这里就是这两点：替身比真实实现弱，守卫就没有区分力。
+
+**解决方案**：`packages/server/agents/src/providers/dsh/index.ts` 把在飞的 promise **记忆化复用**（`pendingNext ??= …`，settle 后才允许再建一个）。夹具补两处保真度：`waiters` 改数组 + `shift()`（与真实同序）、新增 `emitIntervalMs` 旋钮。回归守卫：`dsh/index.test.ts` 的「投递间隔 150ms > tap 轮询拍 100ms：三条通知一条都不许丢」，判据取**最后一条** `assistant/message` 带出的 `tokens`。**变异验证**：把记忆化改回「每轮新建」⇒ 守卫红（`expected null to deeply equal { input: 218, … }`），还原后哈希 `326a644fff9a0499861f7b0cc7452555a4b2d4af5096c602ef5425c1d0786f3b` 逐字一致、129 条复绿。
+
+**顺带定位并修掉的第二个缺陷**：tap 插件落点错了——overlay 里 `name: "./aieval-stream-tap.mjs"` 由运行时按 **`dshHome`** 解析，而适配器写在 `profiles/sdk/` ⇒ 每次运行 stderr 只有 `dsh: warning: 1 entry did not activate` + `aieval-stream-tap (file:///<dshHome>/aieval-stream-tap.mjs): failed to import`，**插件从未加载**、旁路文件恒 0 字节、能力位声称 `streamingDelta: yes` 而界面一条增量都没有。改 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH` 为 `'aieval-stream-tap.mjs'` 后探针实证：stderr 干净、**旁路文件 0 → 720 字节**。
+
+**方法论留档**：这一条最初被误判为「订阅在中途静默失败」（并据此加了 `aieval/stream-failure` 伪事件与「静默停滞」判据）。那些改动无害（只在真断流时出现），但当时的原因文案把矛头指向了厂商——**判据必须能分开「客户端投递了几条」与「我们消费了几条」**，这一格是最后才补上的，也是本次排障耗时最久的地方。`diagnoseStreamEnd` 现在同时报告两个数并直接指出断点在哪一侧。
+
+**相关资料**：
+
+- SDK 源码（本地安装态）：`node_modules/.pnpm/@deepseek-ai+dsh-sdk-client@0.2.0-rc.2_*/node_modules/@deepseek-ai/dsh-sdk-client/lib/index.js` 的 `NotificationSubscriptionImpl.push/next`
+- 探针（可复跑）：`packages/server/agents/probe/v3/dsh-tap-truncation.mjs`
+- [《DeepSeek Harness 接入》](/protocols/dsh) —— 已知边界与取舍里同一条

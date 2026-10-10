@@ -16,16 +16,28 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentMessage, type EvalRun, type RowRecord, type SubagentRecord } from '@aieval/contracts';
-import { appendMessage, appendSubagent, resetRecords, rowMessagesFile, setConfigDirForTesting } from '@aieval/core';
+import {
+  appendMessage,
+  appendSubagent,
+  resetRecords,
+  rowMessagesFile,
+  setCasesRootForTesting,
+  setConfigDirForTesting,
+} from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { getRowRecords } from './run-artifacts';
-import { streamRowRecords } from './messages-stream';
+import { createDeltaCoalescer, streamRowRecords } from './messages-stream';
 import { updateSettings } from './settings';
 import { makeCase, makeRow, makeRun, seedConfig } from './testing/run-fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /** 本文件挂上去的总线监听（key = `${runId}/${rowId}`） */
 const listeners = new Map<string, Array<(record: RowRecord) => void>>();
+/**
+ * **评分那条记录流**的监听表（2026-10-10）：与候选那张**刻意分开**——共用一个 Map 的话，
+ * 「评分增量不投给候选订阅者」这条不变量在这个替身里会假绿（而那正是它要守的东西）。
+ */
+const judgeListeners = new Map<string, Array<(record: RowRecord) => void>>();
 
 vi.mock('@aieval/evaluator', () => ({
   listRuns: vi.fn(),
@@ -35,6 +47,7 @@ vi.mock('@aieval/evaluator', () => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeRowRecords: vi.fn((runId: string, rowId: string, listener: (record: RowRecord) => void) => {
     const key = `${runId}/${rowId}`;
     const bucket = listeners.get(key) ?? [];
@@ -43,6 +56,16 @@ vi.mock('@aieval/evaluator', () => ({
     return () => {
       const current = listeners.get(key) ?? [];
       listeners.set(key, current.filter((item) => item !== listener));
+    };
+  }),
+  subscribeJudgeRecords: vi.fn((runId: string, rowId: string, listener: (record: RowRecord) => void) => {
+    const key = `${runId}/${rowId}`;
+    const bucket = judgeListeners.get(key) ?? [];
+    bucket.push(listener);
+    judgeListeners.set(key, bucket);
+    return () => {
+      const current = judgeListeners.get(key) ?? [];
+      judgeListeners.set(key, current.filter((item) => item !== listener));
     };
   }),
 }));
@@ -59,7 +82,7 @@ function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
     role: 'assistant',
     source: 'wire',
     roundTrip: 1,
-    vendorTurn: null,
+    turn: null,
     step: null,
     parentCallId: null,
     subagentId: null,
@@ -136,6 +159,9 @@ function captureThrow(action: () => unknown): ServiceError {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-messages-'));
   setConfigDirForTesting(dir);
+  // 用例目录也要指到临时目录：seedConfig 把用例写成一文件一落（core 的 `case-store`），
+  // config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   workspaceRoot = join(dir, 'ws');
   updateSettings({ workspaceRoot });
   seedConfig({ cases: [makeCase()] });
@@ -144,8 +170,9 @@ beforeEach(() => {
   store = new Map();
   const run = makeRun({ rows: [makeRow()] });
   store.set(run.id, run);
-  // 快照夹具的 `workspaceBase` 是个**固定值**（`D:\runs`），跨用例会共用同一个文件
-  // ⇒ 每条用例开头清一次，否则上一条用例写进去的记录会漏进下一条的断言
+  // 快照夹具的 `workspaceBase` 是**本文件共用的那一棵临时树**（`fixtureWorkspaceRoot()`，夹具模块按
+  // 测试文件建一棵），跨用例会共用同一个文件 ⇒ 每条用例开头清一次，否则上一条用例写进去的记录
+  // 会漏进下一条的断言
   resetRecords(rowMessagesFile(run.workspaceBase, run.id, run.rows[0]!.id));
   vi.mocked(getRunSnapshot).mockImplementation((runId: string) => {
     const found = store.get(runId);
@@ -156,6 +183,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 
@@ -318,5 +346,135 @@ describe('streamRowRecords：SSE 帧与响应语义', () => {
     const { runId, rowId } = ids();
     expect(captureThrow(() => streamRowRecords('run-never', rowId)).code).toBe('NOT_FOUND');
     expect(captureThrow(() => streamRowRecords(runId, 'row-never')).code).toBe('NOT_FOUND');
+  });
+});
+
+/** 一条增量帧记录（`chunk: 'delta'` + `assembly: 'open'`，与适配器交出来的形状同构） */
+function deltaRecord(text: string, mergeKey: string, messageId = 'run-1:d'): RowRecord {
+  return {
+    type: 'message',
+    message: makeMessage({ messageId, chunk: 'delta', assembly: 'open', mergeKey, blocks: [{ type: 'text', text }] }),
+  };
+}
+
+/** 一条记录里第一块正文（用例只造文本块） */
+function textOf(record: RowRecord): string {
+  if (record.type !== 'message') throw new Error('预期是消息记录');
+  const block = record.message.blocks[0];
+  if (block?.type !== 'text') throw new Error('预期第一块是文本块');
+  return block.text;
+}
+
+/**
+ * 增量帧的**出口合并**（2026-10-09）——这一组守卫的是「O(n²) 字节」那个坑：
+ * 帧是累积值（每条都带「到现在为止的完整块列表」），一段 n 个 token 的回复按 token 发帧
+ * 就是第 k 帧重发前 k 个 token。中间态在客户端**注定被后一条覆盖**，故出口按 `mergeKey` 只留最后一条。
+ *
+ * 四条不变量各自有靶子：只合并增量（快照一条都不许丢）、只丢被覆盖的中间态（不许跨键丢）、
+ * 窗口到点必发（否则光标停在半路）、非增量记录是**屏障**（顺序不许变——增量排到快照后面，
+ * 界面就会从「已写完」退回半截）。
+ */
+describe('createDeltaCoalescer：增量帧的出口合并', () => {
+  it('同一 mergeKey 的连续增量只发最后一条，被丢掉的计入 coalescedCount', () => {
+    const out: RowRecord[] = [];
+    const coalescer = createDeltaCoalescer((record) => out.push(record), 16);
+    try {
+      coalescer.push(deltaRecord('我先', 'main|1|assistant|-'));
+      coalescer.push(deltaRecord('我先看', 'main|1|assistant|-'));
+      coalescer.push(deltaRecord('我先看一下', 'main|1|assistant|-'));
+      // 窗口没到 ⇒ 一条都不发（发出去就等于没合并）
+      expect(out).toHaveLength(0);
+      expect(coalescer.coalescedCount).toBe(2);
+      coalescer.flush();
+      expect(out).toHaveLength(1);
+      // 发出去的是**累积值**里最新那条，不是拼接——拼接会得到三段重复的正文
+      expect(textOf(out[0]!)).toBe('我先看一下');
+    } finally {
+      coalescer.dispose();
+    }
+  });
+
+  it('不同 mergeKey 各自留一条（主会话与子会话的增量不许互相盖掉）', () => {
+    const out: RowRecord[] = [];
+    const coalescer = createDeltaCoalescer((record) => out.push(record), 16);
+    try {
+      coalescer.push(deltaRecord('主会话', 'main|1|assistant|-'));
+      coalescer.push(deltaRecord('子会话', 'child|1|assistant|-'));
+      expect(coalescer.coalescedCount).toBe(0);
+      coalescer.flush();
+      expect(out.map(textOf)).toEqual(['主会话', '子会话']);
+    } finally {
+      coalescer.dispose();
+    }
+  });
+
+  it('非增量记录是**屏障**：先把待发增量冲出去，再原样发自己（顺序不变）', () => {
+    const out: RowRecord[] = [];
+    const coalescer = createDeltaCoalescer((record) => out.push(record), 16);
+    try {
+      coalescer.push(deltaRecord('半截', 'main|1|assistant|-'));
+      const snapshot: RowRecord = { type: 'message', message: makeMessage({ messageId: 'run-1:2', blocks: [{ type: 'text', text: '完整答复。' }] }) };
+      coalescer.push(snapshot);
+      // 增量在前、快照在后（反过来的话客户端折叠完停在半截正文上）
+      expect(out.map((record) => (record.type === 'message' ? record.message.chunk : 'subagent'))).toEqual(['delta', 'snapshot']);
+      expect(textOf(out[1]!)).toBe('完整答复。');
+      // 子任务行同理：它不该被窗口拖后
+      const subagent: RowRecord = { type: 'subagent', subagent: makeSubagent() };
+      coalescer.push(subagent);
+      expect(out).toHaveLength(3);
+    } finally {
+      coalescer.dispose();
+    }
+  });
+
+  it('窗口到点必发（定时器不是「有流量才动」，否则光标停在半路）', () => {
+    vi.useFakeTimers();
+    try {
+      const out: RowRecord[] = [];
+      const coalescer = createDeltaCoalescer((record) => out.push(record), 16);
+      coalescer.push(deltaRecord('最后一片', 'main|1|assistant|-'));
+      expect(out).toHaveLength(0);
+      vi.advanceTimersByTime(16);
+      expect(out.map(textOf)).toEqual(['最后一片']);
+      coalescer.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dispose 之后待发帧不再发出（客户端已断开，窗口定时器也必须清掉）', () => {
+    vi.useFakeTimers();
+    try {
+      const out: RowRecord[] = [];
+      const coalescer = createDeltaCoalescer((record) => out.push(record), 16);
+      coalescer.push(deltaRecord('半截', 'main|1|assistant|-'));
+      coalescer.dispose();
+      vi.advanceTimersByTime(100);
+      expect(out).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('接线：连推三条增量 + 一条快照 ⇒ 流里只出两帧（末条增量 + 快照），且是那个顺序', async () => {
+    const { runId, rowId } = ids();
+    const stream = streamRowRecords(runId, rowId);
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    await reader.read(); // ready 帧
+
+    publish(runId, rowId, deltaRecord('我先', 'main|1|assistant|-', 'run-1:d1'));
+    publish(runId, rowId, deltaRecord('我先看', 'main|1|assistant|-', 'run-1:d2'));
+    publish(runId, rowId, deltaRecord('我先看一下', 'main|1|assistant|-', 'run-1:d3'));
+    publish(runId, rowId, { type: 'message', message: makeMessage({ messageId: 'run-1:2', blocks: [{ type: 'text', text: '我先看一下配置文件。' }] }) });
+
+    const first = decoder.decode((await reader.read()).value);
+    const second = decoder.decode((await reader.read()).value);
+    await reader.cancel();
+
+    expect(first).toContain('"text":"我先看一下"');
+    expect(second).toContain('"text":"我先看一下配置文件。"');
+    expect(first.startsWith('event: message')).toBe(true);
+    expect(second.startsWith('event: message')).toBe(true);
   });
 });

@@ -553,6 +553,10 @@ const AUTH_PATTERNS = [
  * 网络类原文。后两条是 curl 8 的措辞：本机 git 2.47 实测「连接被拒」报的是
  * `Failed to connect to 127.0.0.1 port N after N ms: Could not connect to server`，
  * **整句里没有 `Connection refused`**——只按 spec §4.5 的旧措辞匹配会让它掉进「无法归因」。
+ *
+ * **同一条文案跨 git 版本还会变形**（2026-10-09）：git 2.50.1（Apple Git-155）把同一句话写成缩写
+ * `…: Couldn't connect to server`。`Could not` 与 `Couldn't` 只差一个撇号，却足以让它又掉回「无法归因」
+ * ——两种写法都要收，它们是**同一件事的两种措辞**，不是两条独立的失败。
  */
 const UNREACHABLE_PATTERNS = [
   'Connection timed out',
@@ -560,6 +564,8 @@ const UNREACHABLE_PATTERNS = [
   'Network is unreachable',
   'Operation timed out',
   'Could not connect to server',
+  // git 2.50+ 的缩写形式（`mirror-fetch.test.ts` 的「没人监听的端口」那条钉着它）
+  'Couldn\'t connect to server',
   'Timeout was reached',
 ];
 /** 远端不存在 / 无权访问（`does not appear to be a git repository` 由上面那条更具体的分支接走） */

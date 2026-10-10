@@ -21,7 +21,7 @@
  *     （真机 run `2921fee3`）。⚠️ 2026-10-05 加这一条时的**直接理由**是「让收尾那批子会话逐轮读数
  *     落进自己的行」，而那批读数已于 **2026-10-06 删除**（成本与收益不成比例，见 `index.ts` 的
  *     `finalize` 注记）——**这条编号保留**，因为它独立地决定子会话节点好不好读。
- *   · `vendorTurn` / `step`：**这家没有**（恒 `null`）。不许拿 `roundTrip` 冒充 `vendorTurn`。
+ *   · `turn` / `step`：**这家没有**（恒 `null`）。不许拿 `roundTrip` 冒充 `turn`。
  *   · 子任务行：`system` 下的 `task_started` / `task_notification` → `SubagentRecord`。⚠️ **但不是每一条都算**
  *     （2026-10-05，spec §4 **R19**）：CLI 也给**非 Agent 的后台任务**发这两条（真机：子智能体自己那条
  *     带 `description` 的 Bash），照 subtype 收下就会在派发面板里多出一条**幽灵「子任务」**。
@@ -185,6 +185,10 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
    * 解析好的对象（`tool_use.input`），而流式那一格是 **JSON 片段**（`partial_json`）——把它当
    * `input` 落库会让消费方拿到半截字符串。工具调用按**块结束的完整快照**产出，这与
    * 「消费方只实现 snapshot 也能正确渲染」那条契约保证一致。
+   * ⚠️ **签名分片（`signature_delta`）同样不进 delta 通道**（2026-10-09）：它是同一个思考块的一部分，
+   * 而完整快照本来就带 `signature` ⇒ 进出只会多一条无正文的思考帧（`text: null` +
+   * `textKind: 'none'`），消费方按块类型判「思考增量」却拿到空正文。上面两类都登记在
+   * 《消息规范》的「非渲染增量」统一表里（禁止无登记的静默丢弃）。
    */
   const streamEvent = (message: Record<string, unknown> | null, state: TurnState): MessageDraft[] => {
     const event = asRecord(message?.event);
@@ -230,12 +234,13 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       if (text === '') return [];
       return [deltaMessage(envelope, thinkingBlockDraft(text, 'full', 'delta', null, identity))];
     }
-    if (deltaType === 'signature_delta') {
-      const signature = readString(delta, 'signature');
-      if (signature === null || signature === '') return [];
-      // 签名是**同一个思考块**的一部分（只进审计视图）⇒ 与正文落进同一个槽位
-      return [deltaMessage(envelope, thinkingBlockDraft(null, 'none', 'delta', signature, identity))];
-    }
+    /**
+     * `signature_delta`（2026-10-09 起）**不进 delta 通道**：签名是**同一个思考块**的一部分、
+     * 只进审计视图，而它落在这里会产出一条 `type: 'thinking'` + `text: null` + `textKind: 'none'`
+     * 的帧——消费方按块类型判「这是思考增量」却拿到空正文（空转动画、空块闪现），
+     * 而完整快照本来就带 `signature`（见下面 `assistant` 的 `thinking` 支）⇒ 一分信息都不丢。
+     * 四类非渲染增量的统一处置表见 `docs/protocols/message-spec.md`。
+     */
     return [];
   };
 
@@ -291,7 +296,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
           role: 'assistant',
           source: 'wire',
           roundTrip,
-          vendorTurn: null,
+          turn: null,
           step: null,
           parentCallId,
           subagentId,
@@ -331,7 +336,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
 }
 
 /**
- * 流式增量消息的空壳：这一层拿不到 `vendorId`，`vendorTurn` / `step` 这家没有。
+ * 流式增量消息的空壳：这一层拿不到 `vendorId`，`turn` / `step` 这家没有。
  * 归属两格（`parentCallId` / `subagentId`）与轮次号都由调用方按会话解析好带进来——
  * 它们与完整快照的取值**同一处**（`roundTripOfSession`），增量的块才能落进快照那个载体。
  */
@@ -349,7 +354,7 @@ function deltaMessage(
     role: 'assistant',
     source: 'wire',
     roundTrip: envelope.roundTrip,
-    vendorTurn: null,
+    turn: null,
     step: null,
     parentCallId: envelope.parentCallId,
     subagentId: envelope.subagentId,
@@ -407,7 +412,7 @@ function user(
          * ——两档与改前的主会话行为逐字相同，只是侧链不再借用主会话的号。
          */
         roundTrip: roundTripOfSession(state, sessionRoundIds, subagentId, null),
-        vendorTurn: null,
+        turn: null,
         step: null,
         // 这一格是「派生这条消息的那次工具调用 id」：工具结果不派生任何东西 ⇒ `null`
         parentCallId: null,

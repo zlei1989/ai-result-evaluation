@@ -45,6 +45,35 @@ export const DSH_SUBAGENT_FINISHED_METHOD = 'subagent.finished';
 export const DSH_SUBAGENT_CATALOG_TYPE = 'subagent/catalog';
 /** 子任务目录项的第二种载体（子会话里的事件，身份只在信封 `params.sessionId` 上） */
 export const DSH_SUBAGENT_DESCRIPTOR_TYPE = 'subagent/descriptor';
+/**
+ * **流式增量伪事件**（2026-10-09，stream-tap 机制——本仓自造、不经厂商通知通道）。
+ *
+ * 厂商的逐字流（`agent/assistant-stream` 进程内事件）不投送到 stdio 通知流（任何版本都不投，
+ * 见 `docs/faq/deepseek-harness.md`），适配器把一个插件写进每行的 profile 目录、由它把
+ * `StreamChunk` 旁路到 `<configHome>/aieval-stream-tap.jsonl`；适配器 tail 该文件后包成这种
+ * `session.event` 形状的**伪通知**喂给投影——与真通知同一条 `project` 路径，读侧零分叉。
+ *
+ * 命名与处置两条硬口径：
+ *  · 类型名用 **delta**（与契约词汇 `chunk: 'delta'` 同源），不用厂商存储层的 `chunk`/`text-chunks`
+ *    字眼——那两个词在本仓另有所指（信封字段 / packed row），混用排障时对不上号；
+ *  · `events.ts` 里**必须显式分流**：这一支只产 `chunk: 'delta'` 的内容消息、**零事件草稿**——
+ *    绝不能落进「未识别厂商负载一律落 `log`」的兜底（否则一条增量一行 log，原始输出面板
+ *    会被几百条 JSON 刷满，真要看的 stderr 反而没了）。
+ */
+export const DSH_STREAM_DELTA_TYPE = 'aieval/delta';
+
+/**
+ * **通知流中断伪事件**（2026-10-09，同样是本仓自造）：适配器观察到自己的通知订阅**中途失败**
+ * （SDK 的 `NotificationSubscriptionImpl.fail()`——过滤器抛错、或传输读循环死掉）时补投的一条
+ * `session.event`，投影成一条 stderr 的 `log`。
+ *
+ * 为什么必须有它：那种失败在 SDK 里是**静默**的（兄弟订阅与传输不受影响），而我们的消费循环原先
+ * 把它当成「流正常结束」⇒ 症状是**执行日志整段空白、行照旧判成功、任何日志里都没有线索**
+ * （2026-10-09 run `7f05c765` 的 dsh 行：厂商会话日志 201 条事件、我们只收到前 13 条）。
+ * 与 `DSH_STREAM_DELTA_TYPE` 同一处置纪律：**显式分流**，且这一支**只产一条 log**，
+ * 绝不许落进「未识别负载」的兜底（那会把一条诊断淹没在几百条 JSON 里）。
+ */
+export const DSH_STREAM_FAILURE_TYPE = 'aieval/stream-failure';
 
 /**
  * 用量三元组的字段名，**逐字来自真实探测**（`probe/dumps/dsh.json` 的

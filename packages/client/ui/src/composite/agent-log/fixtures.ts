@@ -57,7 +57,7 @@ function message(input: MessageInput): RowRecord {
       role: input.role,
       source: input.source ?? 'wire',
       roundTrip: input.roundTrip,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId,
       subagentId,

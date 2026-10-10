@@ -11,7 +11,7 @@
  * 收尾轮（Task 11 真机端到端登记的去重缺陷）：**一轮恰好一条 `usage`**，以及「两轮各一条、tokens 是当轮的量」。
  */
 import { EFFORT_OFF, type AgentEvent } from '@aieval/contracts';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,12 +19,19 @@ import { RELEASE_GRACE_MS } from '../../release';
 import { setAgentRuntimeForTesting } from '../../runtime';
 import type { AgentRunResult } from '../../types';
 import {
+  DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH,
+  DSH_STREAM_TAP_PLUGIN_SOURCE,
+  DSH_STREAM_TAP_RELATIVE_PATH,
+} from './stream-tap';
+import {
   collectEvents,
   createFakeDshSdk,
   createRecorder,
   createRunInput,
   createTurnState,
   DSH_SESSION_PLACEHOLDER,
+  FIXTURE_CONFIG_HOME,
+  FIXTURE_CWD,
   settleWithFakeTimers,
 } from '../../testing/agent-fixtures';
 import {
@@ -43,6 +50,7 @@ import {
   DSH_ROUTE_PATCH_RELATIVE_PATH,
   acceptsRunNotification,
   buildDshRoutePatch,
+  diagnoseStreamEnd,
   dshProvider,
 } from './index';
 import { resetDshMessageStateForTesting } from './message';
@@ -131,20 +139,22 @@ describe('dshProvider', () => {
     );
     // 凭据走**我们自己的变量名**（overlay 里 `apiKeyEnv` 逐字引用它），不再用 DEEPSEEK_API_KEY
     expect(recorder.env?.[DSH_ROUTE_API_KEY_ENV]).toBe('sk-dsh');
-    expect(recorder.env?.DSH_HOME).toBe('D:/tmp/rows/row-1/.agenthome');
-    expect(recorder.env?.HOME).toBe('D:/tmp/rows/row-1/.agenthome');
-    expect(recorder.options?.dshHome).toBe('D:/tmp/rows/row-1/.agenthome');
+    expect(recorder.env?.DSH_HOME).toBe(FIXTURE_CONFIG_HOME);
+    expect(recorder.env?.HOME).toBe(FIXTURE_CONFIG_HOME);
+    expect(recorder.options?.dshHome).toBe(FIXTURE_CONFIG_HOME);
     expect(recorder.options?.model).toBe('deepseek-x');
-    expect(recorder.options?.cwd).toBe('D:/tmp/rows/row-1/workspace');
-    expect(recorder.options?.processCwd).toBe('D:/tmp/rows/row-1/workspace');
+    expect(recorder.options?.cwd).toBe(FIXTURE_CWD);
+    expect(recorder.options?.processCwd).toBe(FIXTURE_CWD);
     // 路由：`provider` 必须是 overlay 里声明的那个键（三者不同源就会在 initialize 阶段报 no adapter）
     expect(recorder.options?.provider).toBe(DSH_ROUTE_KEY);
     // overlay 路径必须是**绝对路径**：SDK 用 `resolve(callerCwd, path)` 解析，而 callerCwd 是宿主进程的
-    // cwd ⇒ 相对路径会让文件落到别处（甚至不在本行的 .agenthome 里）
+    // cwd ⇒ 相对路径会让文件落到别处（甚至不在本行的 .agenthome 里）。
+    // ⚠️ 这条断言同时是夹具的守卫：夹具的 configHome 若写盘符字面量（`D:/tmp/…`），它在 POSIX 上
+    // 不是绝对路径——这行会当场红，而不是悄悄把 overlay 写进仓库根（2026-10-09 实测）。
     const patches = recorder.options?.patches as string[] | undefined;
     expect(patches).toHaveLength(1);
     expect(isAbsolute(patches?.[0] ?? '')).toBe(true);
-    expect(patches?.[0]).toBe(join('D:/tmp/rows/row-1/.agenthome', DSH_ROUTE_PATCH_RELATIVE_PATH));
+    expect(patches?.[0]).toBe(join(FIXTURE_CONFIG_HOME, DSH_ROUTE_PATCH_RELATIVE_PATH));
     expect(recorder.prompt).toBe('把 README 的标题改成「示例项目」，然后结束。');
   });
 
@@ -697,8 +707,19 @@ describe('dsh 的 ask_user_question 挂载', () => {
       expect(snapshotAtBoot).toContain('- insert:');
       expect(snapshotAtBoot).toContain('id: tool-ask-user');
       expect(snapshotAtBoot).toContain('name: "@deepseek-ai/dsh-tool-ask-user"');
+      /**
+       * stream-tap 的挂载行（2026-10-09）：**相对名**（`./aieval-stream-tap.mjs`，按 profile 目录
+       * 解析）+ 插件本体在装配时刻就落盘。少了 insert 行，runtime 起来后没有任何人写旁路文件
+       * ⇒ delta 一条都不到——那是静默的空（能力声明 `yes` 与实现不一致，界面打字机不动）。
+       */
+      expect(snapshotAtBoot).toContain('id: aieval-stream-tap');
+      expect(snapshotAtBoot).toContain('name: "./aieval-stream-tap.mjs"');
+      expect(readFileSync(join(home, DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH), 'utf8')).toBe(DSH_STREAM_TAP_PLUGIN_SOURCE);
+      // 旁路文件装配时刻**清零**（重跑同一行绝不能重放上一轮尝试的增量行）
+      expect(statSync(join(home, DSH_STREAM_TAP_RELATIVE_PATH)).size).toBe(0);
       // ② 运行结束后仍在
       expect(readFileSync(overlayPath(home), 'utf8')).toContain('tool-ask-user');
+      expect(readFileSync(overlayPath(home), 'utf8')).toContain('aieval-stream-tap');
       /**
        * ③ **反向断言**：旧落点一个都不许出现（计划 Task 6 的「退役」判据）。
        * 少了这条，把 insert 又搬回 profile patch（或顺手恢复 settings.yaml）也能让上面全绿，
@@ -1499,5 +1520,150 @@ describe('projectDshNotification：子智能体那一份轮次的三档（R2）'
       runState,
     );
     expect(failed.subagentTurns).toBe(1);
+  });
+});
+
+/**
+ * **订阅中途失败**（2026-10-09 真机事故的守卫）：SDK 的 `fail()` 是静默的，而我们的消费循环
+ * 原先把它当成「流正常结束」。真机形状：厂商会话日志 201 条事件、我们只收到前 13 条，
+ * 之后 138 秒的内容一条不剩，**而行照旧判 judged、执行日志整段空白、任何日志里都没有线索**。
+ *
+ * 三条判据各自有靶子：
+ *   ① 运行照常收场（内容缺失不是「适配器失败」——diff 与评分由产物独立成立）；
+ *   ② 但必须留痕：**一条** stderr 的 log，指名通知流中断并带原因（否则现象无法解释）；
+ *   ③ **不许忙循环**：订阅死了以后 `next()` 会立刻拒绝，若还把它放进 race 就是 100% CPU 空转
+ *      （`recorder.subscriptionNextCalls` 是这条的判据——没有它，「不忙循环」只是个说法）。
+ */
+describe('dsh 通知订阅中途失败：如实报出、不忙循环', () => {
+  it('放行 1 条之后订阅失败 ⇒ 一条 stderr log 指名中断，且 run 照常收场', async () => {
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    const boom = new Error('notification subscription failed (filter threw)');
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          // 真实序列：turn/start → step/start → assistant/message → step/end → turn/end
+          events: [STEP_START_EVENT, USAGE_EVENT, TURN_END_EVENT],
+          /**
+           * 异步投递（夹具默认同步吐完）：真机的事件是在 `run()` 未落定期间陆续到达的，
+           * 而订阅中途失败只发生在「消费者正等 `next()`」那条路径上——同步吐完的夹具
+           * 一进循环就 `settled` 为真、永不调 `next()`，守卫会假绿。
+           */
+          emitAsync: true,
+          failSubscriptionAfter: { notifications: 1, error: boom },
+        }),
+      },
+    });
+
+    const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+    // ① 收场方式不变：这一轮的产品（diff / 评分）不由通知流决定
+    expect(result.ok).toBe(true);
+    expect(recorder.closeCount).toBe(1);
+    // ② 唯一线索：一条 stderr 的 log，带原因与「断在哪」
+    const failure = events.filter((event) => event.type === 'log' && event.text.includes('通知流中断'));
+    expect(failure).toHaveLength(1);
+    const line = failure[0];
+    expect(line?.type === 'log' ? line.stream : null).toBe('stderr');
+    expect(line?.type === 'log' ? line.text : '').toContain(boom.message);
+    expect(line?.type === 'log' ? line.text : '').toContain('已放行');
+    // 中断之后的事件确实没进来 ⇒ 这条 log 是这一行唯一的解释（`turn/end` 拿不到了）
+    expect(events.some((event) => event.type === 'end')).toBe(false);
+    // ③ 不忙循环：订阅失败后我们不再把立刻拒绝的 `next()` 放进 race
+    //    （放宽到 50：正常路径每轮最多一次，忙循环在同样墙钟内是几千次）
+    expect(recorder.subscriptionNextCalls).toBeLessThan(50);
+  });
+});
+
+/**
+ * **循环退出时的四种收场**（纯函数 `diagnoseStreamEnd`）：这是「执行日志为什么是空的」唯一答案来源。
+ *
+ * 为什么值得单独钉：真机上出现过**两种**互不相同的形状——
+ *   ① 订阅被 SDK `fail()` 判死（过滤器抛错 / 传输死）⇒ 有报错可抓；
+ *   ② **什么都没报，投送就是停了**（第二次重跑：厂商会话日志 245 KB 内容齐全，我们 13 条之后再无音信）。
+ * 只做 ① 的话，② 依旧是一句无法解释的空白。而「没见过 turn/end」这一条判据必须**配一个静默时长**
+ * 才敢下结论，否则夹具那种「事件吐完就落定」的形状会被误报成故障。
+ */
+describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点在哪一侧）', () => {
+  it('见过 turn/end ⇒ ok（正常的收尾就是它）', () => {
+    expect(diagnoseStreamEnd({ failure: null, delivered: 20, received: 20, sawTurnEnd: true, silentMs: 0 })).toEqual({ kind: 'ok' });
+  });
+
+  it('订阅被 fail() ⇒ failed，原因带 name: message（原文照抄给排障）', () => {
+    const verdict = diagnoseStreamEnd({
+      failure: new TypeError('x is not a function'),
+      delivered: 13,
+      received: 13,
+      sawTurnEnd: false,
+      silentMs: 120_000,
+    });
+    expect(verdict.kind).toBe('failed');
+    expect(verdict.kind === 'failed' ? verdict.reason : '').toBe('TypeError: x is not a function');
+  });
+
+  /**
+   * **2026-10-10 真机事故的形状**：客户端把 181 条全投递了（过滤器每条都会被调用、全部接受），
+   * 而我们只消费了 15 条 ⇒ 断点在**我们这一侧的消费循环**（根因是生成器把 `next()` promise 遗弃成
+   * 孤儿）。这条用例钉的是「原因里必须能读出这个差额」——只报「我们收到 15 条」会把矛头指向厂商。
+   */
+  it('投递 181 / 消费 15 ⇒ stalled 且原因点明「断点在我们这一侧的消费循环」', () => {
+    const verdict = diagnoseStreamEnd({ failure: null, delivered: 181, received: 15, sawTurnEnd: false, silentMs: 138_000 });
+    expect(verdict.kind).toBe('stalled');
+    const reason = verdict.kind === 'stalled' ? verdict.reason : '';
+    expect(reason).toContain('未收到 turn/end');
+    expect(reason).toContain('181');
+    expect(reason).toContain('15');
+    expect(reason).toContain('我们这一侧的消费循环');
+  });
+
+  it('投递与消费相等 ⇒ 原因说「客户端也只投递了 N 条」，指向投送侧', () => {
+    const verdict = diagnoseStreamEnd({ failure: null, delivered: 13, received: 13, sawTurnEnd: false, silentMs: 138_000 });
+    expect(verdict.kind).toBe('stalled');
+    const reason = verdict.kind === 'stalled' ? verdict.reason : '';
+    expect(reason).toContain('客户端也只投递了 13 条');
+    expect(reason).toContain('投送侧');
+  });
+
+  it('静默没超过阈值 ⇒ unknown 且**不报**（夹具那种「吐完就落定」不许被误报成故障）', () => {
+    expect(diagnoseStreamEnd({ failure: null, delivered: 3, received: 3, sawTurnEnd: false, silentMs: 40 })).toEqual({ kind: 'unknown' });
+  });
+});
+
+/**
+ * **孤儿 `next()` 的回归守卫**（2026-10-10 真机事故的根因，见 `notificationStream` 的注释）。
+ *
+ * 靶子：消费循环每 100 ms 被 `tapWake` 唤醒并**与 `subscription.next()` 竞速**；若每一轮都新建一个
+ * `next()` 并在竞速输掉后把它遗弃，那份 promise 仍挂在 SDK 的 waiter 队列里 ⇒ 此后每条通知都被交给
+ * **孤儿**（resolve 后丢弃），真正在等的那一个永远拿不到。真机形状：客户端投递 181 条、过滤器全部接受，
+ * 而生成器只放行前 15 条（都在前 50 ms 内先入队的那批），之后 137 秒一条不剩、**零报错**、
+ * `messages.jsonl` 为 0、行照旧判成功。
+ *
+ * 为什么必须把投递间隔调到 **150 ms（> 轮询拍 100 ms）**：默认的 2 ms 投递永远抢在 `tapWake` 之前，
+ * 孤儿根本产生不了 —— 那条路径在夹具层是完全隐形的（这正是它此前全绿的原因）。
+ * 判据取 `tokens`：它只由**最后那条** `assistant/message` 带出来，前两条被丢掉时它必为 `null`。
+ */
+describe('dsh 通知消费：慢投递不许丢帧（孤儿 next() 守卫）', () => {
+  it('投递间隔 150ms > tap 轮询拍 100ms：三条通知（含用量与 turn/end）一条都不许丢', async () => {
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          events: [STEP_START_EVENT, USAGE_EVENT, TURN_END_EVENT],
+          emitAsync: true,
+          emitIntervalMs: 150,
+        }),
+      },
+    });
+
+    const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+    // 用量在**第三条**（+450ms，早于它的两次竞速都已输过）：丢了它就说明孤儿把通知吃掉了
+    expect(result.tokens).toEqual({ input: 218, cached: 8832, output: 2, reasoningOutput: null, total: null });
+    // 轮次与收尾同理：`turn/end` 是最后一条，收到它才算真的没丢
+    expect(result.turns).toBe(1);
+    expect(usageEvents(events).length).toBeGreaterThan(0);
   });
 });

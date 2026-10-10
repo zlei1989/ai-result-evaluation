@@ -17,6 +17,8 @@ import {
   createFakeClaudeSdk,
   createRecorder,
   createRunInput,
+  FIXTURE_CONFIG_HOME,
+  FIXTURE_CWD,
   settleWithFakeTimers,
 } from '../../testing/agent-fixtures';
 import type { AgentRunResult } from '../../types';
@@ -65,8 +67,8 @@ describe('claudeCodeProvider', () => {
     expect(recorder.env?.ANTHROPIC_BASE_URL).toBe('https://gw.example.com/anthropic');
     expect(recorder.env?.ANTHROPIC_API_KEY).toBe('sk-claude');
     expect(recorder.env?.ANTHROPIC_AUTH_TOKEN).toBe('sk-claude');
-    expect(recorder.env?.CLAUDE_CONFIG_DIR).toBe('D:/tmp/rows/row-1/.agenthome');
-    expect(recorder.env?.HOME).toBe('D:/tmp/rows/row-1/.agenthome');
+    expect(recorder.env?.CLAUDE_CONFIG_DIR).toBe(FIXTURE_CONFIG_HOME);
+    expect(recorder.env?.HOME).toBe(FIXTURE_CONFIG_HOME);
     /**
      * 任务跟踪工具必须**常开**（用户口径 2026-09-30）。
      * 为什么这条守卫值得存在：不开它时 claude 的工具表里**一个 `Task*` 都没有**
@@ -75,7 +77,7 @@ describe('claudeCodeProvider', () => {
      */
     expect(recorder.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe('1');
     expect(recorder.options?.model).toBe('claude-x');
-    expect(recorder.options?.cwd).toBe('D:/tmp/rows/row-1/workspace');
+    expect(recorder.options?.cwd).toBe(FIXTURE_CWD);
     // 打开 settings 是被测仓库的 CLAUDE.md 能生效的**前提**（SDK 的 JSDoc 逐字：
     // 「Must include `'project'` to load CLAUDE.md files」）——`[]` 会把仓库自己的作业说明一起挡住。
     expect(recorder.options?.settingSources).toEqual(['user', 'project', 'local']);
@@ -87,6 +89,13 @@ describe('claudeCodeProvider', () => {
      * 那是**静默的空**：派发面板看起来"工作正常"，只是永远只有工具流水。
      */
     expect(recorder.options?.forwardSubagentText).toBe(true);
+    /**
+     * 流式增量必须**常开**（2026-10-09，兑现 `streamingDelta: 'yes'` 的声明）。
+     * 为什么这条守卫值得存在：不开它 wire 上一个 `stream_event` 都没有，解析路径整条空转——
+     * 能力声明与实现不一致（旧账：《消息规范》已知边界表「声明与实现不一致」一行，本次闭合）。
+     * 那是**静默的空**：界面永远整块出正文，与「厂商不支持」长得一模一样。
+     */
+    expect(recorder.options?.includePartialMessages).toBe(true);
     // 禁用名单逐字钉死：少一项就是「那条旁路又回来了」，多一项得先在 ALWAYS_DISALLOWED_TOOLS 里写清理由。
     // 这里用的是 `claude-x`（含 `claude`）⇒ **不含** `WebSearch`；那一格随模型名分档，两端由下一条用例钉。
     expect(recorder.options?.disallowedTools).toEqual([
@@ -983,8 +992,9 @@ function dispatchStarted(taskId: string, extra: Record<string, unknown> = {}): R
  */
 describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文件）', () => {
   it('finalize 把子智能体那一份加进结果，taskId 与 sessionId 都用对', async () => {
-    // configHome 必须指向**真的临时目录**（收尾要按它去读子智能体会话文件）；
-    // `createRunInput` 的默认值是假路径 'D:/tmp/rows/row-1/.agenthome'（见上面第 57 行那条断言）
+    // configHome 必须指向**本用例自己的**临时目录（收尾要按它去读子智能体会话文件，
+    // 而这条用例要往里面写 agent-*.jsonl）；夹具默认值 `FIXTURE_CONFIG_HOME` 是共享的，
+    // 写进去会漏给同文件其它用例（默认值的形状见上面「注入落点」那条断言）
     const configHome = mkdtempSync(join(tmpdir(), 'claude-row-'));
     writeAgentFile(configHome, 's-1', 'task-1', [
       assistant('m-1', { input_tokens: 4, cache_read_input_tokens: 0, output_tokens: 0 }),

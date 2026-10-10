@@ -17,7 +17,7 @@ import { ServiceError, type EvalRun } from '@aieval/contracts';
 // `collectDiff` / `truncateDiff` / `readEvents` 取自被 mock 之后的那一份：
 // `vi.mock` 会被提升到所有 import 之前（无论 import 写在文件哪一行），故与其余导出同一条语句引入——
 // 分两条 import 同一模块会撞仓库的 `import-x/no-duplicates`（error 级）。
-import { appendEvent, collectDiff, readEvents, setConfigDirForTesting, truncateDiff } from '@aieval/core';
+import { appendEvent, collectDiff, readEvents, setCasesRootForTesting, setConfigDirForTesting, truncateDiff } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { getRowDiffFile, getRowDiffIndex, getRowLog, resetRowDiffCache } from './run-artifacts';
 import { updateSettings } from './settings';
@@ -59,6 +59,8 @@ function seedRun(run: EvalRun, options: { createWorkspace?: boolean } = {}): voi
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-artifacts-'));
   setConfigDirForTesting(dir);
+  // 用例目录也要指到临时目录：用例是一文件一落（core 的 `case-store`），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   workspaceRoot = join(dir, 'ws');
   updateSettings({ workspaceRoot });
   seedConfig({ providers: [makeAnthropicProvider()], cases: [makeCase()] });
@@ -87,6 +89,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 

@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ProviderSchema, ServiceError, SETTINGS_DEFAULTS, TestCaseSchema } from '@aieval/contracts';
+import { ProviderSchema, ServiceError, SETTINGS_DEFAULTS, TestCaseSchema, type TestCase } from '@aieval/contracts';
+import { readCase, setCasesRootForTesting, writeCase } from './case-store';
 import { getConfigDir, loadConfig, saveConfig, setConfigDirForTesting } from './config-store';
 import { removeTreeWithRetry } from './testing/cleanup';
 
@@ -16,10 +17,14 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-config-'));
   setConfigDirForTesting(dir);
+  // 用例住 `<casesRoot>/<id>.json`，不在配置目录里——本文件那条跨存储的回归守卫要写一份用例文件，
+  // 故用例目录也要指到临时目录（默认根目录是真实的 ~/.aieval-cases）
+  setCasesRootForTesting(join(dir, 'cases'));
 });
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 
@@ -48,7 +53,30 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.settings).toEqual(SETTINGS_DEFAULTS);
     expect(config.providers).toEqual([]);
-    expect(config.cases).toEqual([]);
+    // 用例已搬去 `<casesRoot>/<id>.json`：配置对象里**没有**这一格。
+    // 多一个键就等于两份真源（写入侧只写一份，读侧看到的是另一份）
+    expect('cases' in config).toBe(false);
+  });
+
+  /**
+   * 旧版本把用例写在 `config.json` 的 `cases` 数组里。搬到独立文件之后这一格被**静默忽略**
+   * （用户口径 2026-10-09：不做迁移、不做兼容，用例由用户手工搬），但「忽略」不等于「读进运行时」——
+   * 一条手改残留的 `cases` 若又进了 `AppConfig`，设置页保存时就会把整份覆盖写回，等于凭空复活一份旧数据。
+   * 判据刻意是「键在不在」而不是「值等不等于空数组」：后者在实现重新读它时照样绿。
+   */
+  it('旧 config.json 里的 cases 数组被忽略，不进 AppConfig', () => {
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ settings: SETTINGS_DEFAULTS, providers: [], cases: [{ id: 'c-legacy', title: '旧用例' }] }),
+      'utf8',
+    );
+
+    const config = loadConfig();
+
+    expect('cases' in config).toBe(false);
+    expect(config.providers).toEqual([]);
+    // 反向对照：同一份文件里 settings 照常读回来（不是把整份配置丢了）
+    expect(config.settings.theme).toBe(SETTINGS_DEFAULTS.theme);
   });
 
   it('两次 loadConfig 返回的对象互不影响（注释承诺的「每次返回新对象」）', () => {
@@ -316,7 +344,7 @@ describe('saveConfig', () => {
   });
 });
 
-describe('AppConfig 与契约同形（去重复类型后的回归守卫）', () => {
+describe('落盘的 Provider / TestCase 与契约同形（去重复类型后的回归守卫）', () => {
   it('写出的 Provider / TestCase 记录能被 contracts 的 schema 直接解析', () => {
     const config = loadConfig();
     config.providers.push({
@@ -329,7 +357,9 @@ describe('AppConfig 与契约同形（去重复类型后的回归守卫）', () 
       createdAt: '2026-09-22T10:30:00.000Z',
       updatedAt: '2026-09-22T10:30:00.000Z',
     });
-    config.cases.push({
+    saveConfig(config);
+    // 用例走另一个存储（`case-store` 的 `writeCase`）：两者各写各的，读回来一起过契约 schema
+    const testCase: TestCase = {
       id: 'c-1',
       title: 'LRU 缓存',
       repoPath: 'D:/repos/demo',
@@ -341,17 +371,18 @@ describe('AppConfig 与契约同形（去重复类型后的回归守卫）', () 
       rubric: { groups: [{ name: '一、功能实现', items: [{ id: 'A1', goal: '实现 LRU 缓存', weight: 20 }] }] },
       createdAt: '2026-09-22T10:30:00.000Z',
       updatedAt: '2026-09-22T10:30:00.000Z',
-    });
-    saveConfig(config);
+    };
+    writeCase(testCase);
 
     const roundTripped = loadConfig();
+    const storedCase = readCase('c-1');
     // 用契约 schema 解析落盘再读回的对象：core 的本地类型一旦与契约漂移（少字段、多字段、
     // 枚举取值不同），这里会直接失败——这正是「去重复声明」要守的那条线。
     const provider = ProviderSchema.safeParse(roundTripped.providers[0]);
-    const testCase = TestCaseSchema.safeParse(roundTripped.cases[0]);
+    const testCaseParsed = TestCaseSchema.safeParse(storedCase);
     expect(provider.success).toBe(true);
-    expect(testCase.success).toBe(true);
+    expect(testCaseParsed.success).toBe(true);
     expect(roundTripped.providers[0]?.protocolType).toBe('openai');
-    expect(roundTripped.cases[0]?.commitHash).toBeNull();
+    expect(storedCase?.commitHash).toBeNull();
   });
 });

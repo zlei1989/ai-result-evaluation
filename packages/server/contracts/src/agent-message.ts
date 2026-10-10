@@ -172,6 +172,19 @@ export const ToolCallBlockSchema = z.object({
    * 字面量由 `static-assertions.test.ts` 拦下。
    */
   payload: ToolCallPayloadSchema.nullable().optional(),
+  /**
+   * **一句话活动摘要**（`调用工具 Read：a.ts`、`更新计划：3 步`，2026-10-10）。
+   *
+   * 为什么放进消息、而不是让界面自己从 `name` / `input` 算：那句话的词表（参数优先级、计划类特判、
+   * 单行化与截断）在 `@aieval/agents` 的 `activity.ts`，而按分层表 `ui` / `client` **不许** import 它——
+   * 界面自算就是第二份实现，漂移的症状是「同一件事在两处长成两句话」。它与 `log.summary`
+   * 由**同一个函数**产出（真源仍只有一处），不是两份词表。
+   *
+   * **可缺**（与 `payload` 同一条理由）：磁盘上已有的 `messages.jsonl` 里没有这一格，写成必填会让
+   * 老记录在回放 / SSE 续订时成片解析失败。读侧把「键不存在」当「没采到」（`?? null`），
+   * 活动行据此回落到「调用工具 <名字>」。
+   */
+  summary: z.string().optional(),
 });
 
 /**
@@ -252,7 +265,7 @@ export type UnrecognizedPayloadBlock = z.infer<typeof UnrecognizedPayloadBlockSc
  * | 字段 | 为 `null` 的含义 | 消费方义务 |
  * |---|---|---|
  * | `vendorId` | 该家没有可用的消息级 id | 不得把它当去重键；用 `messageId` |
- * | `vendorTurn` | 该家没有厂商轮号 | 不得用 `roundTrip` 冒充（两者语义不同） |
+ * | `turn` | 该家没有厂商轮号 | 不得用 `roundTrip` 冒充（两者语义不同） |
  * | `step` | 该家没有「一轮内第几次调用」 | 不得按 `step` 分组做跨家对比 |
  * | `parentCallId` | 该家给不出派生关系 | 子任务归属改用 `subagentId` |
  * | `subagentId` | 这条来自主线程 | — |
@@ -267,8 +280,13 @@ export const AgentMessageSchema = z.object({
   source: MessageSourceSchema,
   /** 模型往返序号，从 1 递增；三家均为合成值，计数口径见 spec §3.1 */
   roundTrip: z.number().int().positive(),
-  /** 厂商轮号（只有 dsh 有，且是**用户轮号**不是模型往返号）；无则为 `null` */
-  vendorTurn: z.number().nullable(),
+  /**
+   * 厂商轮号（只有 dsh 有，且是**用户轮号**不是模型往返号）；无则为 `null`。
+   *
+   * ⚠️ 别与用量事件里那一格 `turn` 混：那是**归属**（`{subagentId, round}`，`UsageTurn`），
+   * 回答「这次读数属于哪个会话的第几次模型往返」；本格是厂商自己的**用户轮号**。
+   */
+  turn: z.number().nullable(),
   /** 一轮内的第几次调用（只有 dsh 有）；无则为 `null` */
   step: z.number().nullable(),
   /** 派生这条消息的那次工具调用 id；无则为 `null` */

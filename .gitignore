@@ -32,3 +32,4 @@ docs/.vitepress/dist/
 # 真机验证临时文件
 .probe-*/
 mcp-bundles/
+.playwright-mcp/

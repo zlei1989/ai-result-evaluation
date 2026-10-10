@@ -1,8 +1,11 @@
 /**
  * dsh 的厂商 SDK 懒加载外壳：**按真实探测回写后的入口形态**（Task 12 第 0 步）。
- * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.1.7-rc.1` 的
+ * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2` 的
  * `lib/types/{index,api,client,types,launch}.d.ts` 与 `lib/index.js`，实测记录见
- * "docs/protocols/dsh.md"（DSH 接入）与探测 dump：
+ * "docs/protocols/dsh.md"（DSH 接入）与探测 dump。
+ * 2026-10-09 从 0.1.7-rc.1 升到 **0.2.0-rc.2**（next 线最新非 alpha；该包从未发过非预发布版本）：
+ * 客户端 `lib/` 两版**逐字节相同**（md5 一致，仅锁定的 runtime `@deepseek-ai/dsh` 0.1.7→0.2.0），
+ * 真机双协议探针（`probe/v3/dsh-pi-ai-both.mjs`）升级后跑通含计量——本文件的窄结构无需任何改动：
  *
  *  - **值出口是 7 个**（`Object.keys` 排序后逐字）：
  *    `DeepSeekHarness` / `HarnessClient` / `HarnessSession` / `JsonRpcResponseError` /

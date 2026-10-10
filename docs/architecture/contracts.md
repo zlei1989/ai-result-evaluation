@@ -13,7 +13,8 @@
 | `errors.ts` | 错误码表 `ERROR_CODES` + `STATUS_BY_CODE` / `httpStatusFor` + `ServiceError` |
 | `settings.ts` | 设置契约与默认值（`SETTINGS_DEFAULTS`、主题三档、评分默认） |
 | `provider.ts` | 供应商：落盘形态、下行形态（掩码）、create / patch 入参 |
-| `case.ts` | 用例：`TestCaseSchema`、创建 / 补丁入参、`RepoInfo` |
+| `case.ts` | 用例：`TestCaseSchema`、创建 / 补丁入参、`RepoInfo`、`CASE_ID_PATTERN` / `isCaseIdShapeValid`（id 文件名安全）、`CaseList`（列表 + 被跳过的坏文件原因） |
+| `case-sync.ts` | 用例同步：`CaseSyncStatus`（`GET /api/cases/sync-status` 的只读快照，含 `remoteAhead` 的「未知用 `null`」口径）、`CaseSyncAction`（人工提交 / 拉取） |
 | `run.ts` | 评测与候选行：`EvalRunSchema` / `EvalRowSchema`、行状态机、diff 响应 |
 | `score.ts` | 评分结果 + 送模型的输出契约（两份投影，见「机制与演化」） |
 | `agent.ts` | `AGENT_KINDS` / `AgentKind` / `AGENT_LABELS` |

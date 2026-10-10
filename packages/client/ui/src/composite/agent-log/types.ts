@@ -191,6 +191,32 @@ export interface ThinkingBlock extends ContentBlockBase {
   textKind: ThinkingTextKind;
 }
 
+/**
+ * 工具入参的界面形状：**原文两份 + 模型自己写的一句人话**。
+ *
+ * `description` 为什么单独拎出来：claude / dsh 的 Bash 类调用把 `{command, description}` 一起送来，
+ * 而收起态唯一可见的那一行（摘要行）照原文首行渲染就是**一整串 JSON**
+ * （真机实测 1495px 宽的一行，参数藏在第 100 个字符之后）；`description` 是模型为
+ * 「这一步在干什么」写的一句话。**没有就是 `null`**（codex 的 `exec_command` 不带这一格）
+ * ——摘要行回落到原文首行，不编一句话。
+ */
+export interface ToolInput {
+  /** 原文（`arguments` 是 JSON 字符串时也已序列化好）；`null` = 没采到，不是空串 */
+  value: string | null;
+  /** 逐字原文（与 `value` 同源；展开后的正文那一格用 `text` 优先） */
+  text: string | null;
+  /** 原文的 UTF-8 字节数；`null` = 原文没采到（不写 0——0 会被读成「空的」） */
+  bytes: number | null;
+  /**
+   * 模型写在入参里的那句话（**已去首尾空白**）；`null` = 没有这一格，或只有空白。
+   *
+   * **它现在是回落档**（2026-10-10）：这一句已经进了块的 `summary`（`description` 优先那一档），
+   * 而 `summary` 还多带「目标」（`描述（命令）`）与每族拼法。留着这一格只为**老记录**
+   * ——磁盘上已有的 `messages.jsonl` 里 `summary` 可能缺格，而那一格当年就是靠它撑起来的。
+   */
+  description: string | null;
+}
+
 /** 工具调用：与 `tool-result` 按 `callId` 配对 */
 export interface ToolCallBlock extends ContentBlockBase {
   kind: 'tool-call';
@@ -200,7 +226,20 @@ export interface ToolCallBlock extends ContentBlockBase {
   nameMissing: MissingReason | null;
   /** 归一后的族名；`null` = 适配器不认识这个工具 */
   family: ToolFamily | null;
-  input: { value: string | null; text: string | null; bytes: number | null };
+  input: ToolInput;
+  /**
+   * **摘要主体**（`tool-call.summary`，由适配器算好）：`Check surefire report summaries`、
+   * `src/index.ts:10-120`、`2 步`——冒号后面那一段，**不含 `调用工具 <名>：` 前缀**
+   * （工具行把工具名渲染成独立元素，带前缀就是同一件事说两遍）。
+   *
+   * **可缺**（与契约的 `summary` 同一条理由，2026-10-10）：磁盘上已有的 `messages.jsonl` 里
+   * 没有这一格，写成必填会让全部老记录在类型上对不上。读侧把「键不存在」当「没采到」（`?? null`），
+   * 摘要行据此回落到 `input.description`、再回落参数原文首行。
+   *
+   * 为什么这一格必须由数据层给、界面不许自己算：词表（描述优先、每族拼法、截断尺子）真源是
+   * `@aieval/agents` 的 `activity.ts`，而按分层表 `ui` / `client` 不许 import 它。
+   */
+  summary?: string;
   /** 族载荷。`null` = 本期没有为它收编专门卡片（UI 走通用工具行） */
   tool: ToolFamilyPayload | null;
 }

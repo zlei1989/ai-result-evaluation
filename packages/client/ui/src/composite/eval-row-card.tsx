@@ -55,7 +55,7 @@ import {
   isRunningRow,
   type EvalRow,
 } from '@aieval/contracts';
-import { AgentActivityLine } from '../base/agent-activity-line';
+import { AgentActivityLine, type AgentActivity } from '../base/agent-activity-line';
 import { MetricLine, type LiveMetricsView } from '../base/metric-line';
 import { RowStatusTag } from '../base/row-status-tag';
 
@@ -79,6 +79,12 @@ export interface EvalRowCardProps {
    * 终态的行即使还带着一份实时值，也必须显示快照里的权威值。
    */
   live?: LiveMetricsView;
+  /**
+   * 跑动期的**实时活动内容**（2026-10-10，来自 `useRunActivity` 的消息流折叠）：有正文在流时
+   * 活动行逐字打字、换行清空重打；没有就回落到 `live.latestText` 那一档。
+   * 与 `live` 同一条纪律：**透传即可**，「这一行是否在跑」由 `row.status` 决定。
+   */
+  activity?: AgentActivity | null;
   onAbort: () => void;
   onOpenLog: () => void;
   onOpenDiff: () => void;
@@ -140,6 +146,7 @@ export function EvalRowCard({
   queued = false,
   capability = DEFAULT_CAPABILITY,
   live,
+  activity,
   onAbort,
   onOpenLog,
   onOpenDiff,
@@ -337,7 +344,7 @@ export function EvalRowCard({
             都是稳定信息，把动效夹在中间会让每次重渲染都像「卡片在跳」。
             **是否显示由 `row.status` 决定**（不是由传没传 `live` 决定，与 `MetricLine` 的 `live` 同口径）：
             拿不到实时值（历史还没拉回来）时它显示回落文案，而不是整行消失。 */}
-        <AgentActivityLine status={row.status} latestText={live?.latestText ?? null} />
+        <AgentActivityLine status={row.status} latestText={live?.latestText ?? null} activity={activity} />
       </Flex>
     </Card>
   );

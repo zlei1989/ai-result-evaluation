@@ -256,4 +256,29 @@ describe('contracts 公共出口', () => {
     const unknown = makeRow({ subagentTurns: null });
     expect(EvalRowSchema.parse(unknown).subagentTurns).toBeNull();
   });
+
+  /**
+   * `EvalRow.streamingDelta`（2026-10-09 新增）：同一组两个方向 + **三态不许互相顶替**。
+   *
+   * 这一格是「这次到底有没有收到逐字流」的唯一事后痕迹（增量帧只广播不落盘），
+   * 而它的三态在语义上是三件事：**缺格 = 没观测**、`frameCount: 0` = 观测到零帧、
+   * `> 0` = 有增量。所以除了「老 run.json 照样解析」之外，还要钉住**数字原样保留**——
+   * 被 strip 掉的话适配器写的观测永远到不了环境抽屉，界面继续把「没挂上」显示成「没观测」。
+   */
+  it('EvalRow 的 streamingDelta：可选、可空，三态各自可辨', () => {
+    const legacy = makeRow();
+    expect('streamingDelta' in legacy).toBe(false); // 老记录：整格不存在 = 没观测
+    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
+
+    const withDelta = makeRow({ streamingDelta: { frameCount: 12, lastFrameChars: 340 } });
+    expect(EvalRowSchema.parse(withDelta).streamingDelta).toEqual({ frameCount: 12, lastFrameChars: 340 });
+
+    // `0` 是**观测到的值**（不是「没采到」）：显式 null 才是「没观测」，两者必须都能表达
+    const zero = makeRow({ streamingDelta: { frameCount: 0, lastFrameChars: 0 } });
+    expect(EvalRowSchema.parse(zero).streamingDelta).toEqual({ frameCount: 0, lastFrameChars: 0 });
+    expect(EvalRowSchema.parse(makeRow({ streamingDelta: null })).streamingDelta).toBeNull();
+
+    // 负数帧数不是「没观测」的近义词，而是坏数据：schema 层就拒（免得界面画出负的条数）
+    expect(EvalRowSchema.safeParse(makeRow({ streamingDelta: { frameCount: -1, lastFrameChars: 0 } })).success).toBe(false);
+  });
 });

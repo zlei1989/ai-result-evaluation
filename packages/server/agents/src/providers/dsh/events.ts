@@ -95,6 +95,7 @@ import type { MessageDraft } from '../../message';
 import {
   dshAssistantMessageDraft,
   dshSessionIdOf,
+  dshStreamDeltaDraft,
   dshSubagentRecord,
   dshSubagentTurns,
   dshSubagentUsage,
@@ -110,6 +111,8 @@ import {
   DSH_ASSISTANT_MESSAGE_TYPE,
   DSH_SESSION_EVENT_METHOD,
   DSH_STEP_START_TYPE,
+  DSH_STREAM_DELTA_TYPE,
+  DSH_STREAM_FAILURE_TYPE,
   DSH_SUBAGENT_CATALOG_TYPE,
   DSH_SUBAGENT_FINISHED_METHOD,
   DSH_SUBAGENT_STARTED_METHOD,
@@ -213,6 +216,40 @@ export function projectDshNotification(
   if (type === DSH_SUBAGENT_CATALOG_TYPE) {
     rememberDshSubagentCatalog(data);
     return { drafts: [], tokens: null, turns: null, failure: null };
+  }
+
+  if (type === DSH_STREAM_DELTA_TYPE) {
+    /**
+     * stream-tap 的增量伪事件（见 `protocol.ts` 的命名与处置两条硬口径）：**只产内容消息、
+     * 零事件草稿**。绝不能落进未识别的 `log` 兜底——一条增量一行 log 会把「原始输出」面板
+     * 刷成几百条 JSON 流水（真要看的 stderr 反而被冲掉）。delta 的落点只有对话视图；
+     * 编排层对 delta 只广播不落盘（2026-10-09 三家统一），事件侧彻底没有它的位置。
+     */
+    return {
+      drafts: [],
+      tokens: null,
+      turns: null,
+      failure: null,
+      messages: optionalMessage(dshStreamDeltaDraft(notification, sessionId, roundOf(sessionId, data))),
+    };
+  }
+
+  if (type === DSH_STREAM_FAILURE_TYPE) {
+    /**
+     * **通知流中断**伪事件（见 `protocol.ts`）：只产**一条** stderr 的 `log`——它存在的唯一理由
+     * 就是让「执行日志为什么是空的」在界面上有答案（真机事故里那句话一个字都没有）。
+     * 为什么不做成 `error` 事件的归因：那一格会把这行判成失败，而这一轮的产物（diff 与评分）
+     * 是真实有效的——丢的是**过程证据**，不是结果。如实记一句、不改结论，是这里唯一诚实的处置。
+     */
+    const reason = readString(asRecord(data), 'reason') ?? '未知原因';
+    const received = readNumber(asRecord(data), 'receivedNotifications');
+    const receivedText = received === null ? '' : `（中断前已放行 ${received} 条通知）`;
+    return {
+      drafts: [logDraft('stderr', `[dsh] 通知流中断：${reason}${receivedText}；此后的事件与全部未采集，本次运行的执行日志因此不完整`)],
+      tokens: null,
+      turns: null,
+      failure: null,
+    };
   }
 
   if (type === DSH_ASSISTANT_MESSAGE_TYPE) {

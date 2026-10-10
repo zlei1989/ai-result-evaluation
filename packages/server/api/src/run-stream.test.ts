@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
-import { appendEvent, setConfigDirForTesting } from '@aieval/core';
+import { appendEvent, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { streamRowEvents } from './run-stream';
 import { updateSettings } from './settings';
@@ -21,6 +21,11 @@ import { removeTreeWithRetry } from './testing/cleanup';
 
 /** 本文件挂上去的总线监听（key = `${runId}/${rowId}`） */
 const listeners = new Map<string, Array<(event: AgentEvent) => void>>();
+/**
+ * **评分那条事件流**的监听表（2026-10-10）：与候选那张**刻意分开**——共用一个 Map 的话，
+ * 「评分事件不投给执行日志的订阅者」这条不变量在这个替身里会假绿。
+ */
+const judgeListeners = new Map<string, Array<(event: AgentEvent) => void>>();
 
 vi.mock('@aieval/evaluator', () => ({
   listRuns: vi.fn(),
@@ -37,6 +42,16 @@ vi.mock('@aieval/evaluator', () => ({
     return () => {
       const current = listeners.get(key) ?? [];
       listeners.set(key, current.filter((item) => item !== listener));
+    };
+  }),
+  subscribeJudgeEvents: vi.fn((runId: string, rowId: string, listener: (event: AgentEvent) => void) => {
+    const key = `${runId}/${rowId}`;
+    const bucket = judgeListeners.get(key) ?? [];
+    bucket.push(listener);
+    judgeListeners.set(key, bucket);
+    return () => {
+      const current = judgeListeners.get(key) ?? [];
+      judgeListeners.set(key, current.filter((item) => item !== listener));
     };
   }),
 }));
@@ -74,6 +89,8 @@ function captureThrow(action: () => unknown): ServiceError {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aieval-stream-'));
   setConfigDirForTesting(dir);
+  // 用例目录也要指到临时目录：用例是一文件一落（core 的 `case-store`），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   workspaceRoot = join(dir, 'ws');
   updateSettings({ workspaceRoot });
   seedConfig({ cases: [makeCase()] });
@@ -90,6 +107,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 

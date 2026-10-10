@@ -36,7 +36,7 @@ function call(overrides: Partial<ToolItem> = {}): ToolItem {
     name: 'Read',
     nameMissing: null,
     family: 'read-file',
-    input: { value: '{"path":"a.ts"}', text: '{"path":"a.ts"}', bytes: 14 },
+    input: { value: '{"path":"a.ts"}', text: '{"path":"a.ts"}', bytes: 14, description: null },
     output: { text: '结果原文', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'none' } },
     at: AT,
     running: false,
@@ -109,16 +109,17 @@ describe('ToolGroupPanel', () => {
   });
 
   it('展开后出组内的工具行，收起时行不在 DOM 里', () => {
-    const { container, unmount } = render(<ToolGroupPanel {...props} entries={[call()]} />);
-    // 组头也有一份名字汇总，故按行内那一格（等宽工具名）来断言
-    expect(container.querySelector('code')?.textContent).toBe('Read');
+    const { unmount } = render(<ToolGroupPanel {...props} entries={[call()]} />);
+    // 组头也有一份名字汇总，故按行内那两格（族名 Tag + 参数摘要）来断言
+    expect(screen.getByText('读文件')).toBeInTheDocument();
+    expect(screen.getByText('{"path":"a.ts"}')).toBeInTheDocument();
     unmount();
 
     const { container: closed } = render(<ToolGroupPanel {...props} open={false} entries={[call()]} />);
     // 收起时组头在、组内一行都不渲染
     expect(screen.getByText('工具调用 × 1')).toBeInTheDocument();
     expect(closed.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
-    expect(closed.querySelector('code')).toBeNull();
+    expect(screen.queryByText('{"path":"a.ts"}')).toBeNull();
   });
 
   it('组状态汇总：有结果还没到的调用时转圈，全部到齐时不表态', () => {
@@ -179,8 +180,8 @@ describe('ToolGroupPanel', () => {
       />,
     );
 
-    // 组头也有一份名字汇总 ⇒ 只点行里那一格（等宽工具名）
-    fireEvent.click(screen.getByText('Grep', { selector: 'code' }));
+    // 组头也有一份名字汇总 ⇒ 只点行里那一格（参数摘要）
+    fireEvent.click(screen.getByText('{"path":"a.ts"}'));
 
     expect(onEntryOpenChange).toHaveBeenCalledWith('call-9', true);
   });
@@ -247,8 +248,9 @@ describe('ToolGroupPanel', () => {
       <ToolGroupPanel {...props} onEntryOpenChange={onEntryOpenChange} entries={entries} />,
     );
 
-    // 两行的工具名逐字相同 ⇒ 按下标点第二条（组头也有一份名字汇总，故只取行内那两格）
-    const rows = screen.getAllByText('Bash', { selector: 'code' });
+    // 行首现在是族名（「读文件」），`code` 那一格（工具名）已经让到展开后的正文里 ⇒
+    // 用参数摘要定位这两行；两行的摘要逐字相同，故仍按下标点第二条
+    const rows = screen.getAllByText('{"path":"a.ts"}');
     const secondRow = rows[1];
     if (secondRow === undefined) throw new Error('应有两条同名调用行');
     fireEvent.click(secondRow);

@@ -20,7 +20,7 @@ import {
   renameSync,
   writeFileSync,
   join,
-  loadConfig,
+  listStoredCases,
   createCase,
   deleteCase,
   getCase,
@@ -53,7 +53,7 @@ describe('用例保存（远端来源）', () => {
 
     expect(created.repoPath).toBe(origin.url);
     expect(created.repoBranch).toBe('feat/x');
-    expect(loadConfig().cases.find((item) => item.id === created.id)).toMatchObject({
+    expect(listStoredCases().cases.find((item) => item.id === created.id)).toMatchObject({
       repoPath: origin.url,
       repoBranch: 'feat/x',
     });
@@ -63,7 +63,7 @@ describe('用例保存（远端来源）', () => {
     const origin = makeRemoteOrigin('remote-save-bad');
     expect(() => createCase(caseInput({ repoPath: origin.url, repoBranch: 'feat/nope' }))).toThrow(/分支不存在/);
     expect(() => createCase(caseInput({ repoPath: origin.url, commitHash: '0'.repeat(40) }))).toThrow(/commit 不存在/);
-    expect(loadConfig().cases).toHaveLength(0);
+    expect(listStoredCases().cases).toHaveLength(0);
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
   /**
@@ -100,7 +100,7 @@ describe('用例保存（远端来源）', () => {
     const created = createCase(caseInput({ repoPath: origin.url, repoBranch: '   ' }));
 
     expect(created.repoBranch).toBeNull();
-    expect(loadConfig().cases[0]?.repoBranch).toBeNull();
+    expect(listStoredCases().cases[0]?.repoBranch).toBeNull();
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
   /**

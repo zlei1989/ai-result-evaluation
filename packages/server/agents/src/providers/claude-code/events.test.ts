@@ -541,6 +541,69 @@ describe('projectClaudeMessage：重复与未识别', () => {
     expect(JSON.parse(draft?.type === 'log' ? draft.text : '')).toEqual(payload);
   });
 
+  /**
+   * stream_event **不进原始日志**（2026-10-09 用户口径，真机形状照抄）：
+   * 一条增量只带一小段 delta（真机一次运行几百上千条），落进未识别兜底会把「原始输出」面板
+   * 刷成 JSON 流水。它的落点只有对话视图（消息侧 `streamEvent` 折成 `chunk:'delta'`、
+   * 编排层只广播不落盘 ⇒ SSE 驱动执行日志打字机）。事件侧零产出、去重照常（同 uuid 再来仍丢）。
+   */
+  it('stream_event 零事件产出（thinking/text 两种 delta 都不落原始日志），重复 uuid 照常丢弃', () => {
+    const state = newState();
+    const thinkingDelta = {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '.' } },
+      session_id: '871f7b1e-2643-4680-8cdb-04def93bd8a4',
+      parent_tool_use_id: null,
+      uuid: '4f922758-dffb-4b88-af65-c4a3f6a28fbc',
+    };
+    expect(projectClaudeMessage(thinkingDelta, state, CONTEXT).drafts).toEqual([]);
+    const textDelta = {
+      type: 'stream_event',
+      uuid: 'se-text-1',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '正在' } },
+    };
+    expect(projectClaudeMessage(textDelta, state, CONTEXT).drafts).toEqual([]);
+    // 去重照常：同一 uuid 的第二条增量仍然零产出（不因「本来就不落」而跳过 seen 表）
+    expect(projectClaudeMessage(textDelta, state, CONTEXT).drafts).toEqual([]);
+  });
+
+  /**
+   * `system/thinking_tokens`（**思考进度帧**）同样不进原始日志（2026-10-09 真机修的第二个通道）。
+   *
+   * 为什么单独一条用例：第一版只挡了 `stream_event`，而真机上刷屏的其实是**这一种**——
+   * run `7f05c765` 的 claude 行 12,509 条 `log` 里有 **11,629 条**是它（93%），
+   * 评分智能体那条路再叠 670 条。形状逐字取自那次真机的 `events.jsonl`。
+   *
+   * 它不是内容也不是计量：SDK 的 `SDKThinkingTokensMessage` 注释逐字写着
+   * *Live thinking-token estimate … Approximate progress for spinners/pills, not the authoritative
+   * billed output_tokens* ⇒ 权威值在收尾的 `result.usage.output_tokens_details.thinking_tokens`。
+   */
+  it('system/thinking_tokens 零事件产出（真机 11,629 条的那种刷屏帧），重复 uuid 照常丢弃', () => {
+    const state = newState();
+    // 真机原文（run 7f05c765 的 claude 行，只删掉与本条无关的字段顺序差异）
+    const frame = {
+      type: 'system',
+      subtype: 'thinking_tokens',
+      estimated_tokens: 1,
+      estimated_tokens_delta: 1,
+      session_id: '8a23d018-0dec-4c5c-b67f-8d98ac31d970',
+      uuid: 'b51b18af-2b8c-4af6-a4d8-abbc51c011ac',
+    };
+    expect(projectClaudeMessage(frame, state, CONTEXT).drafts).toEqual([]);
+    // 去重表照常走：同 uuid 第二条仍零产出（也仍然不许落盘）
+    expect(projectClaudeMessage(frame, state, CONTEXT).drafts).toEqual([]);
+
+    /**
+     * 反向判据（这条用例的靶子）：`system` 下**别的** subtype 照旧保留原始负载——
+     * 把排除条件写成「凡 system 一律丢」会让 `status` / `compact_boundary` 这些真事实消失，
+     * 那种「顺手多丢一点」正是本条要拦的另一半。
+     */
+    const status = { type: 'system', subtype: 'status', status: 'compacting', uuid: 'status-1' };
+    const projection = projectClaudeMessage(status, newState(), CONTEXT);
+    expect(projection.drafts).toHaveLength(1);
+    expect(JSON.parse(projection.drafts[0]?.type === 'log' ? projection.drafts[0].text : '')).toEqual(status);
+  });
+
   it('assistant 的文本块与工具块都落盘（工具调用是候选行为的一部分）', () => {
     const projection = projectClaudeMessage(
       {

@@ -475,3 +475,29 @@ A 组（`only=wire`，离线）另证 chat 不可用；完整读数与未验证�
 **边界（如实说）**：「子线程的思考内容会不会推给父连接」本轮**无样本**——两轮里子线程那一轮都是
 `reasoningOutputTokens = 0`，没有内容可推 ⇒ **不能**据此说「子线程思考不推送」，别把它当结论用。
 
+---
+
+## `Error: ENOENT: no such file or directory, open '…/probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl'`（干净检出上「真机抓包重放」那条守卫必红）
+
+**日期**：2026-10-09
+
+**现象原文**：
+```
+ FAIL  |@aieval/agents| src/providers/codex/events.test.ts > 真机抓包重放：活动行在真实通知序列上的产出 > `spawnAgent` → `wait` 的真实序列产出「已派发子任务」与「子任务已完成」各一次
+Error: ENOENT: no such file or directory, open '/Users/…/packages/server/agents/probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl'
+ ❯ src/providers/codex/events.test.ts:492:27
+    491|     const path = join(import.meta.dirname, '../../../probe/dumps/v6/co…
+    492|     const notifications = readFileSync(path, 'utf8')
+```
+
+**根因**：这条守卫判的是「**真机抓包的形状**」，而抓包文件本身**不入库**——`probe/dumps/` 在 `.gitignore:21`（抓包可能含网关返回的敏感原文），`eslint.shared.ts` 的仓库级 `ignores` 也把同一目录排掉。于是干净检出、或任何没跑过探针的机器上，那个文件**必然不存在**：守卫从「真机形状」退化成「本机跑没跑过探针」，而且**永远不会变绿**——一条常驻红只会训练人忽略红。
+
+这是「测试环境 ≠ 运行环境」的另一种方向：**单测红、代码无辜**。本 FAQ 前面几条记的是「单测绿、真机红」（假绿），成因同类——判据依赖了机器上的东西，而那个东西不在仓库里。
+
+**解决方案**（`packages/server/agents/src/providers/codex/events.test.ts`）：把抓包路径提到模块级常量 `SUBAGENT_DUMP`，用例改成 `it.skipIf(!existsSync(SUBAGENT_DUMP))(…)`——**缺席跳过、在场照跑**。判据（双向验证过）：
+1. 本机无抓包 ⇒ 该文件 `34 passed | 1 skipped`（此前是 `1 failed`）；
+2. 临时往那个路径放一份**假**抓包 ⇒ 这条守卫真的跑起来并失败（`1 failed | 34 skipped`）⇒ 证明是「有条件跳过」而不是「被关掉」；
+3. 删掉假文件复原 ⇒ 回到 `1 skipped`。
+
+要在本机恢复这条重放，重跑一次探针把抓包生成回来即可：`node probe/v6/codex-chat-wire-appserver.mjs only=live`（需 `AIEVAL_PROBE_DEEPSEEK_API_KEY`，见上一条「子智能体用量与思考正文」）。「依赖未入库产物的守卫怎么写」已回写进[《测试策略与提速》](/guard/test-strategy)。
+

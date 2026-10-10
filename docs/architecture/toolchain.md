@@ -61,6 +61,7 @@
 | 共享超时基线与包级加宽并存 | 取舍 | 基线 40s / 60s，core 与 api 包级 `testTimeout` 60s；按「宁可超时也不假红」定，别随手调小 |
 | 满载假红判据 | 已登记 | 红不红看**隔离复跑**：满载的 `Test timed out` 是已知噪声，零断言失败 + 隔离全过 ⇒ 不是回归；机器带负载时 `pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000` |
 | 根 `pnpm test` 的形态误判 | 已登记 | 它是根上单跑（projects 收齐 8 包），**不是**每包一行输出；不能用「输出里有没有 8 段包级汇总」判断跑全了；`.next/types` 陈旧会让 typecheck 假红（删过源码先重建产物） |
+| ESLint flat config **不读 `.gitignore`** | 已发生过 | `.gitignore` 以「生成物」为由忽略的目录，只要可能落 `.js` / `.ts`，就得在 `eslint.shared.ts` 的仓库级 `ignores` 里再写一遍——两边的忽略集合本来就不一致。反例实测两次：一次真机探针把第三方模板的 63 个 `.ts` 克隆进 `probe/dumps/**`，`pnpm lint` 的报错从 0 涨到 14050；2026-10-09 是 VitePress 把依赖预打包的第三方 `.js` 放进 `docs/.vitepress/cache/deps/`，其中一条 `es5/no-es6-methods` 以 `Definition for rule 'es5/no-es6-methods' was not found` 让 `pnpm lint` 退出码 1（补 `**/.vitepress/cache/**` 与 `**/.vitepress/dist/**` 后归零） |
 
 ## 相关链接
 

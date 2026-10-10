@@ -44,12 +44,14 @@ import {
   rubricMaxScore,
   type AgentEvent,
   type AgentKind,
+  type AgentMessage,
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
   type Provider,
   type RowFailureStage,
   type ScoreResult,
+  type SubagentRecord,
   type TestCase,
 } from '@aieval/contracts';
 import {
@@ -60,18 +62,30 @@ import {
   rowAttemptsFile,
   loadConfig,
   prepareRowWorkspace,
+  // 用例已从 config.json 搬到 `<casesRoot>/<case-id>.json`（2026-10）：题面必须从**用例文件**读，
+  // 配置文件里已经没有 `cases` 那一段了
+  readCase,
   resetEvents,
   resetRecords,
   resolveRemoteRef,
   rowEventsFile,
+  rowJudgeEventsFile,
+  rowJudgeMessagesFile,
   rowMessagesFile,
   runDir,
   runSnapshotFile,
   truncateDiff,
 } from '@aieval/core';
 import { acceptsProtocol, getProvider, protocolMismatchMessage, type AgentRunResult } from '@aieval/agents';
-import { publishRowEvent } from './events';
-import { publishRowMessage, publishSubagentRecord } from './row-messages';
+import { publishJudgeEvent, publishRowEvent } from './events';
+import {
+  broadcastJudgeMessage,
+  broadcastRowMessage,
+  publishJudgeMessage,
+  publishJudgeSubagentRecord,
+  publishRowMessage,
+  publishSubagentRecord,
+} from './row-messages';
 import { judgeRow } from './judge';
 import { judgeRowByAgent, JudgeAgentError } from './judge-agent';
 import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
@@ -393,13 +407,23 @@ function clippedDiffText(workspacePath: string, baselineCommit: string, budgetBy
  * **进入本函数之前**算好（完整跑一行用第 6 步那一份、重新评分现算）：那一步自己会抛
  * （工作区被删 / git 不可用），而它抛在 `try` 之外时就没有 `finally` 能做对照了。
  */
+/**
+ * 评分阶段的三个外发出口（与候选阶段 `agentProvider.run` 的 `onEvent` / `onMessage` / `onSubagent`
+ * 同形）：三条都受**同一道迟到闸门**约束，也都落在**评分自己那条流**里（2026-10-10 起与执行日志分开）。
+ */
+interface JudgeSinks {
+  onEvent: (event: AgentEvent) => void;
+  onMessage: (message: AgentMessage) => void;
+  onSubagent: (record: SubagentRecord) => void;
+}
+
 async function judgeStageAttempt(input: {
   ctx: JudgeStageContext;
   label: string;
   /** 真正去拿这一次分：智能体通路启动评审者，文本通路调一次文本 API（signal 都由 ctx 那一把提供）。
-   *  `emit` 是**受 settled 闸门约束**的事件转发（见下面 forward）：智能体通路把它接到 `onEvent` 上，
-   *  文本通路没有事件可转、直接忽略。 */
-  attempt: (emit: (event: AgentEvent) => void) => Promise<ScoreResult>;
+   *  `sink` 的三个出口都**受 settled 闸门约束**（见下面 forward*）：智能体通路把它们接到
+   *  `onEvent` / `onMessage` / `onSubagent` 上，文本通路没有内容可转、整个忽略。 */
+  attempt: (sink: JudgeSinks) => Promise<ScoreResult>;
   /** 污染对照的「评分前」那一份摘要（spec §7.4）；不传 / null = 不做对照（文本通路） */
   beforeSummary?: NonNullable<EvalRow['diff']> | null;
   /** 智能体名（只有智能体通路有）：只进服务端日志，便于从一堆失败里认出是哪一家 */
@@ -417,9 +441,34 @@ async function judgeStageAttempt(input: {
   /** 迟到事件闸门（两道）：本函数自身落定之后，以及**行已被判定终态**之后（用户终止会让后者先发生，
    *  而适配器的 `run()` 可能还在飞——见 `settledRows` 的注释）。 */
   let settled = false;
+  /** 闸门的唯一判据：三条出口（事件 / 消息 / 子任务）共用它，免得三处各写一遍条件而漏掉一条 */
+  const gateOpen = (): boolean => !settled && !isRowSettled(ctx.runId, ctx.rowId);
+  /**
+   * 评审者的事件（`log` / `usage` / `vendor-system` / `error`）→ **评分自己的事件流**
+   * （`judge-events.jsonl`，2026-10-10）。行级那条流因此只讲候选发生了什么；编排层自己的留痕
+   * （降级、终止、失败归因）仍走 `publishRowEvent`——判据是**产出者**，不是事件类型。
+   */
   const forward = (event: AgentEvent): void => {
-    if (settled || isRowSettled(ctx.runId, ctx.rowId)) return;
-    publishRowEvent(ctx.runId, ctx.rowId, event);
+    if (!gateOpen()) return;
+    publishJudgeEvent(ctx.runId, ctx.rowId, event);
+  };
+  /**
+   * 评审者的内容消息：与候选阶段**同一套分叉**（快照落盘、增量只广播），只是落在评分那条流
+   * （`judge-messages.jsonl`）。**刻意不记 `streamingDelta`**：那一格是**候选**的流式观测
+   * （`EvalRow.streamingDelta` 回答「候选到底有没有在打字」），把评审者的帧数写进去就是答非所问。
+   */
+  const forwardMessage = (message: AgentMessage): void => {
+    if (!gateOpen()) return;
+    if (message.chunk === 'delta') {
+      broadcastJudgeMessage(ctx.runId, ctx.rowId, message);
+      return;
+    }
+    publishJudgeMessage(ctx.runId, ctx.rowId, message);
+  };
+  /** 评审者自己派发的子任务行（同一道闸门、同一条评分流） */
+  const forwardSubagent = (record: SubagentRecord): void => {
+    if (!gateOpen()) return;
+    publishJudgeSubagentRecord(ctx.runId, ctx.rowId, record);
   };
 
   /** 这一次拿到分了吗：污染判定据此决定「升级为失败」还是「只留痕」（见 finally） */
@@ -431,7 +480,7 @@ async function judgeStageAttempt(input: {
      * 不执行、`rowAborts` 记账不清、`drainRunningTasks` 空转）。宽限为 **0**：这一分反正落不了快照
      * （行已是终态，用户意图优先），没必要为交卷多等（与候选阶段的 `TERMINATION_GRACE_MS` 5 秒不同）。
      */
-    const attempt = input.attempt(forward);
+    const attempt = input.attempt({ onEvent: forward, onMessage: forwardMessage, onSubagent: forwardSubagent });
     // 先挂一个 catch：race 输了之后它仍在飞（适配器可能永远不交卷），而裸的孤儿 promise 一旦 reject
     // 就是 unhandledRejection（Node 默认 `--unhandled-rejections=throw`，能打崩进程）——
     // 与候选阶段那句 `runPromise.catch(() => {})` 同一条理由
@@ -656,7 +705,7 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
     agentKind: kind,
     // 第 6 步已经算过一份（`ctx.diffSummary`）；重新评分没有它，现算一份（spec §7.4 的对照不能省）
     beforeSummary: ctx.diffSummary ?? diffSummaryOf(ctx.workspacePath, ctx.baselineCommit),
-    attempt: (emit) =>
+    attempt: (sink) =>
       judgeRowByAgent({
         kind,
         cwd: ctx.workspacePath,
@@ -672,7 +721,11 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
         ...(judgeEffort === undefined ? {} : { judgeEffort }),
         // 总是表达「我想要 schema」：能不能给由适配器按能力决定（A1），降级会经 applied 报回来
         outputSchema: JUDGE_OUTPUT_JSON_SCHEMA,
-        onEvent: emit,
+        // 三条出口一起接上（2026-10-10）：评审者的事件、消息、子任务行都落**评分自己那条流**，
+        // 执行日志那条只讲候选做了什么
+        onEvent: sink.onEvent,
+        onMessage: sink.onMessage,
+        onSubagent: sink.onSubagent,
       }),
   });
   /**
@@ -1191,8 +1244,8 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
 
   const config = loadConfig();
   const settings = config.settings;
-  const testCase = config.cases.find((item) => item.id === run.caseId);
-  if (testCase === undefined) {
+  const testCase = readCase(run.caseId);
+  if (testCase === null) {
     // §4.4 允许删用例后评测仍可读，但「跑」必须有题面——题面**没有**快照进 run.json
     // （评分表已经快照了：`EvalRunSchema.rubric`，见 run.ts）
     throw new ServiceError('CONFLICT', `用例已删除（${run.caseId}），无法执行该行；历史记录仍可查看`);
@@ -1228,6 +1281,24 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   resetEvents(rowEventsFile(run.workspaceBase, runId, rowId));
   // 记录日志（消息与子任务行）同一条口径：它记的也是「当前这一次尝试」的对话
   resetRecords(rowMessagesFile(run.workspaceBase, runId, rowId));
+  /**
+   * **评分那两份产物同一条口径**（2026-10-10）：它们记的也是「当前这一次尝试」的评审过程。
+   * 不清的话，重评之后 `judge-events.jsonl` 里会留着上一次评审的流水，而它的 `seq` 从 1 起的假设
+   * （`appendEvent` 按文件续号）当场失效——新一轮的事件会接着旧号往下发，
+   * 任何「按 seq 续订」的消费方都会把两轮评审读成一整条时间线。
+   */
+  resetEvents(rowJudgeEventsFile(run.workspaceBase, runId, rowId));
+  resetRecords(rowJudgeMessagesFile(run.workspaceBase, runId, rowId));
+
+  /**
+   * 这一行的**流式增量观测**（2026-10-09）：增量帧只广播不落盘 ⇒ 「这次到底有没有真的收到逐字流」
+   * 事后在文件里找不到任何痕迹，而它恰恰是「界面为什么不打字」的唯一判据（厂商声明说是 `yes`，
+   * 但开关没生效 / 插件没挂上时也是 `yes`）。故在这里数两份事实，收尾时写进 `EvalRow.streamingDelta`：
+   *   · `frameCount`：转给实时通道的增量帧数——**`0` 与「没数过」必须分得开**（后者是格缺席）；
+   *   · `lastFrameChars`：最后一帧的累积正文字符数，给**中断行**回答「它当时写到哪」。
+   * 注意这里数的是**归一后的帧**，不是厂商原始 chunk：三家的切片粒度不同，跨家比这个数没有意义。
+   */
+  const streamingDelta = { frameCount: 0, lastFrameChars: 0 };
 
   // `attempts` **累加**而不是重置成 1（2026-09-27）：这一格回答的是「这一行走过几次尝试」
   // （含自动重试与用户点的「重新执行」），而每次进入本函数恰好就是一次尝试。
@@ -1440,10 +1511,24 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     /**
      * 消息与子任务行（spec v3 §2）：**与事件同一条闸门与同一条落盘路径**——「行已终态」之后
      * 适配器收尾期间吐出来的迟到消息同样不落盘（理由与事件逐字相同：它们会把已结束的对话拖长）。
-     * 落盘走 `publishRowMessage`（`messages.jsonl`，唯一真相源），实时通道另有订阅者。
+     * 落盘按块形态分叉（2026-10-09，用户口径「三家统一」）：
+     *   · **快照**（`chunk === 'snapshot'`）→ `publishRowMessage`（`messages.jsonl` 唯一真相源 + 实时扇出）；
+     *   · **增量**（`chunk === 'delta'`）→ `broadcastRowMessage`（**只扇出**，不进文件——块结束必有快照，
+     *     delta 只是实时预告；落下来的中间态在折叠读侧全被盖掉，纯死重，见 `row-messages.ts` 的分叉注释）。
+     * 增量这一支**顺手记账**（`streamingDelta`）：帧数与末帧字符数是这条通道事后唯一的痕迹。
      */
     onMessage: (message) => {
       if (settled || isRowSettled(runId, rowId)) return;
+      if (message.chunk === 'delta') {
+        streamingDelta.frameCount += 1;
+        // 末帧累积正文长度：文本与思考块都算（签名/工具入参不进这条通道，故这里只有这两种块）
+        streamingDelta.lastFrameChars = message.blocks.reduce(
+          (total, block) => total + (block.type === 'text' || block.type === 'thinking' ? (block.text ?? '').length : 0),
+          0,
+        );
+        broadcastRowMessage(runId, rowId, message);
+        return;
+      }
       publishRowMessage(runId, rowId, message);
     },
     /**
@@ -1537,6 +1622,13 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   patchRow(runId, rowId, {
     ...measured,
     durationMs,
+    /**
+     * 流式增量观测（2026-10-09）：**这里写的不是「有没有」而是「数到了几条」**——`frameCount === 0`
+     * 明确表示「这一次观测到零增量帧」，与老数据的「没观测」（格缺席）是两件事（见契约那一格的 JSDoc）。
+     * 中断行也走到这里（`Promise.race` 的宽限窗口结束后照常收尾）⇒ 半截正文虽然不落盘，
+     * 「它当时写到哪」仍有据可查。
+     */
+    streamingDelta,
     diff: {
       filesChanged: collected.filesChanged,
       insertions: collected.insertions,
@@ -1784,7 +1876,7 @@ export function retryRow(runId: string, rowId: string): EvalRun {
   // 题面没有快照进 run.json（§7.2 只冗余了 caseTitle / repoPath / commitHash；**评分表已经在快照里**，
   // 见 run.ts 的 `EvalRunSchema.rubric`），
   // 与 `startRun` / `rescoreRow` 同一条口径：用例被删了就只能看、不能跑。
-  if (!config.cases.some((item) => item.id === run.caseId)) {
+  if (readCase(run.caseId) === null) {
     throw new ServiceError('CONFLICT', `用例已删除（${run.caseId}），无法执行该行；历史记录仍可查看`);
   }
 
@@ -1939,8 +2031,8 @@ export function rescoreRow(runId: string, rowId: string): EvalRun {
   if (refusal !== null) throw new ServiceError('CONFLICT', refusal);
 
   const config = loadConfig();
-  const testCase = config.cases.find((item) => item.id === run.caseId);
-  if (testCase === undefined) {
+  const testCase = readCase(run.caseId);
+  if (testCase === null) {
     // 题面没有快照进 run.json（§7.2 只冗余了 caseTitle / repoPath / commitHash；**评分表已经在快照里**，
     // 见 run.ts 的 `EvalRunSchema.rubric`）
     throw new ServiceError('CONFLICT', `用例已删除（${run.caseId}），无法重新评分；历史记录仍可查看`);
@@ -2133,7 +2225,7 @@ export function startRun(runId: string): EvalRun {
     throw new ServiceError('CONFLICT', `该评测已有候选行在运行（${runId}），请先等它结束或终止`);
   }
   const config = loadConfig();
-  if (!config.cases.some((item) => item.id === run.caseId)) {
+  if (readCase(run.caseId) === null) {
     // 题面没有快照进 run.json（§7.2 只冗余了 caseTitle / repoPath / commitHash；**评分表已经在快照里**，
     // 见 run.ts 的 `EvalRunSchema.rubric`），
     // 所以用例被删掉之后这轮可以看、不能跑——必须在启动前拦下，而不是等每行各自失败

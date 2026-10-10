@@ -14,10 +14,9 @@
  *      `readString(notification,'method')`（`message.ts:313-316`），身份取 `params.subagentId`
  *      （三级兜底 `subagentId` → `agentId` → `childSessionId`）。
  *
- * 本夹具**不造正文增量**：dsh 的 `streamingDelta` 记 `not-projected-by-vendor`（原因 `not-exposed`，
- * 见 `index.ts` 的声明：**厂商侧有** `text-delta` / 会话日志里的 `text-chunks`，但**订阅到的通知流里
- * 一条增量都没有**——真机转储 `probe/dumps/v2/dsh-chunk-shape.jsonl`），故这一格不要求「造得出」
- * ——按套件口径，非 `yes` 只需原因对得上（`kit.ts` 的 `REASON_BY_CAPABILITY`）。
+ * 本夹具**造正文/思考增量**（2026-10-09 stream-tap 起）：`streamingDelta` 记 `'yes'`（source
+ * `'hook'`）——增量经旁路文件进适配器（夹具的 `tapLines` 落到同一文件、同一时序），
+ * 套件第 7 组「能力声明与产物互钉」据此要求 `plain-reply` 场景真出 delta 消息。
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -65,53 +64,96 @@ const sessionEvent = (type: string, data: Record<string, unknown>): unknown => (
 });
 
 /**
+ * 造一条 stream-tap 旁路行（`{ sid, frame }`，frame 是 `AssistantStreamFrame` 的 chunk 形状；
+ * sid 用占位 id，夹具在 `run()` 落笔时改写成真实会话 id——与通知的 `tagSession` 同一理由）。
+ */
+const tapChunk = (
+  chunk: Record<string, unknown>,
+  sid: string = MAIN,
+  attemptId = 'att-1',
+  turn = 1,
+  step = 1,
+): unknown => ({
+  sid,
+  frame: { type: 'chunk', attemptId, revision: 1, index: 0, time: 1, turn, step, chunk },
+});
+
+/**
  * 四个场景覆盖 dsh 能力声明里全部为 `yes` 的格：
- * `plain-reply` → 最终答复、`thinking-full` → thinkingText、
+ * `plain-reply` → 最终答复 + streamingDelta、`thinking-full` → thinkingText、
  * `tool-shell` → toolInput + toolResult、`subagent` → subagent。
  */
-const SCENARIOS: Readonly<Record<string, readonly unknown[]>> = {
-  'plain-reply': [stepStart(MAIN, 1, 1), assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: '没问题，工具已就绪。' }])],
-  // `reasoning` 块**也带 `text` 字段** ⇒ 必须按 `type` 过滤，否则推理正文会混进最终答复
-  'thinking-full': [
-    stepStart(MAIN, 1, 1),
-    assistant(MAIN, 'm1', 1, 1, [{ type: 'reasoning', text: '先看配置，再看入口。' }]),
-    stepStart(MAIN, 1, 2),
-    assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '看完了。' }]),
-  ],
-  'tool-shell': [
-    stepStart(MAIN, 1, 1),
-    sessionEvent('tool/call', { callId: 'call_read', name: 'read', arguments: '{"path":"notes.txt"}' }),
-    sessionEvent('tool/result', {
-      message: { toolCallId: 'call_read', content: [{ type: 'text', text: '3 lines' }], isError: false },
-      meta: { lines: 3 },
-    }),
-    stepStart(MAIN, 1, 2),
-    assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '读完了。' }]),
-  ],
+const SCENARIOS: Readonly<Record<string, { events: readonly unknown[]; tapLines?: readonly unknown[] }>> = {
+  // tap 时序与真机同构：block-start 占位 → 两条 text-delta → 快照（assistant/message）覆盖收尾
+  'plain-reply': {
+    events: [stepStart(MAIN, 1, 1), assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: '没问题，工具已就绪。' }])],
+    tapLines: [
+      tapChunk({ type: 'block-start', index: 0, blockType: 'text' }),
+      tapChunk({ type: 'text-delta', index: 0, text: '没问题，' }),
+      tapChunk({ type: 'text-delta', index: 0, text: '工具已就绪。' }),
+    ],
+  },
+  // `reasoning` 块**也带 `text` 字段** ⇒ 必须按 `type` 过滤，否则推理正文会混进最终答复；
+  // 思考增量走 `reasoning-delta`（kind: reasoning），档位随通道是 `'full'`
+  'thinking-full': {
+    events: [
+      stepStart(MAIN, 1, 1),
+      assistant(MAIN, 'm1', 1, 1, [{ type: 'reasoning', text: '先看配置，再看入口。' }]),
+      stepStart(MAIN, 1, 2),
+      assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '看完了。' }]),
+    ],
+    tapLines: [
+      tapChunk({ type: 'block-start', index: 0, blockType: 'reasoning' }),
+      tapChunk({ type: 'reasoning-delta', index: 0, text: '先看配置，' }),
+      tapChunk({ type: 'reasoning-delta', index: 0, text: '再看入口。' }),
+      tapChunk({ type: 'block-start', index: 0, blockType: 'text' }, MAIN, 'att-2', 1, 2),
+      tapChunk({ type: 'text-delta', index: 0, text: '看完' }, MAIN, 'att-2', 1, 2),
+      tapChunk({ type: 'text-delta', index: 0, text: '了。' }, MAIN, 'att-2', 1, 2),
+    ],
+  },
+  'tool-shell': {
+    events: [
+      stepStart(MAIN, 1, 1),
+      sessionEvent('tool/call', { callId: 'call_read', name: 'read', arguments: '{"path":"notes.txt"}' }),
+      sessionEvent('tool/result', {
+        message: { toolCallId: 'call_read', content: [{ type: 'text', text: '3 lines' }], isError: false },
+        meta: { lines: 3 },
+      }),
+      stepStart(MAIN, 1, 2),
+      assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '读完了。' }]),
+    ],
+  },
   // 派发工具调用的 `callId` 必须与子任务记录的 `parentCallId` 同值——子任务桥（§2.8）靠它连起两套 id
-  subagent: [
-    stepStart(MAIN, 1, 1),
-    sessionEvent('tool/call', { callId: TASK_CALL, name: 'subagent', arguments: '{"task":"count lines"}' }),
-    // 顶层 method（不是 session.event）：身份在 params.subagentId
-    { method: 'subagent.started', params: { childSessionId: TASK_ID, subagentId: TASK_ID } },
-    // 子会话自己的往返：params.sessionId 用子任务身份（与 subagentId 同值）
-    stepStart(TASK_ID, 1, 1),
-    assistant(TASK_ID, 'c1', 1, 1, [{ type: 'text', text: '3 lines' }]),
-    // 终态两格合读：ok + completed ⇒ completed（映射表见 message.ts:305-311）
-    {
-      method: 'subagent.finished',
-      params: { childSessionId: TASK_ID, subagentId: TASK_ID, status: 'ok', stopReason: 'completed' },
-    },
-    stepStart(MAIN, 1, 2),
-    assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '数完了。' }]),
-  ],
+  subagent: {
+    events: [
+      stepStart(MAIN, 1, 1),
+      sessionEvent('tool/call', { callId: TASK_CALL, name: 'subagent', arguments: '{"task":"count lines"}' }),
+      // 顶层 method（不是 session.event）：身份在 params.subagentId
+      { method: 'subagent.started', params: { childSessionId: TASK_ID, subagentId: TASK_ID } },
+      // 子会话自己的往返：params.sessionId 用子任务身份（与 subagentId 同值）
+      stepStart(TASK_ID, 1, 1),
+      assistant(TASK_ID, 'c1', 1, 1, [{ type: 'text', text: '3 lines' }]),
+      // 终态两格合读：ok + completed ⇒ completed（映射表见 message.ts:305-311）
+      {
+        method: 'subagent.finished',
+        params: { childSessionId: TASK_ID, subagentId: TASK_ID, status: 'ok', stopReason: 'completed' },
+      },
+      stepStart(MAIN, 1, 2),
+      assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '数完了。' }]),
+    ],
+    // 子会话增量：sid 直接写子任务身份（非占位）——门闸必须等 subagent.started 投影之后才放行，
+    // 放早了 `sessionIdProfileSubagent` 不认它 ⇒ 会挤进主会话载体（守卫见 index.test.ts）
+    tapLines: [tapChunk({ type: 'text-delta', index: 0, text: '3 ' }, TASK_ID), tapChunk({ type: 'text-delta', index: 0, text: 'lines' }, TASK_ID)],
+  },
 };
 
 /** 跑一个场景：注入假 SDK → 跑一次真实运行路径 → 收三个回调的产物 */
-async function runScenario(events: readonly unknown[]): Promise<ConformanceProduct> {
+async function runScenario(scenario: { events: readonly unknown[]; tapLines?: readonly unknown[] }): Promise<ConformanceProduct> {
   const configHome = mkdtempSync(join(tmpdir(), 'dsh-conformance-'));
   const recorder = createRecorder();
-  setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events }) } });
+  setAgentRuntimeForTesting({
+    sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: scenario.events, tapLines: scenario.tapLines }) },
+  });
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
   const agentEvents: AgentEvent[] = [];
@@ -128,7 +170,13 @@ async function runScenario(events: readonly unknown[]): Promise<ConformanceProdu
       messages,
       subagents,
       environment: null,
-      events: [],
+      /**
+       * 行级事件**如实收**（2026-10-09）：`onEvent` 本来就在收（`agentEvents`），原先只是不往外给、
+       * 产物里恒填 `events: []` ⇒ 套件的 §2.12（增量通道隔离）在这家**永远不可能红**。
+       * dsh 的增量是**自造伪通知**走的消息支，最需要这条判据：分流一旦写错（伪通知落进 `log` 兜底），
+       * 一次运行几百条就会把「原始输出」面板刷满。
+       */
+      events: agentEvents,
       usage: {
         // 计量那一格留空：`assistant/message.data.usage` 的字段名未实测核对，
         // 按「没采到记 null」处理，**不拿猜出来的数**填（计量配对判据因此在这一家部分空转）
@@ -145,8 +193,8 @@ async function runScenario(events: readonly unknown[]): Promise<ConformanceProdu
 }
 
 const products: Record<string, ConformanceProduct> = {};
-for (const [name, events] of Object.entries(SCENARIOS)) {
-  products[name] = await runScenario(events);
+for (const [name, scenario] of Object.entries(SCENARIOS)) {
+  products[name] = await runScenario(scenario);
 }
 setAgentRuntimeForTesting(null);
 
@@ -159,4 +207,10 @@ describeProviderConformance({
     'tool-shell': () => products['tool-shell']!,
     subagent: () => products['subagent']!,
   },
+  /**
+   * 喂了增量帧的场景必须钉住事件条数（套件 §2.12）：三条各自**实测**得来。
+   * `subagent` 比另两个场景大得多，因为它含子会话自己的往返与 `subagent.started` / `finished`
+   * 两条投影——把 `events.ts` 的增量排除分支删回去，这三个数会当场变大（守卫因此有区分力）。
+   */
+  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 14 },
 });

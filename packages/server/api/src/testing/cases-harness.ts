@@ -11,7 +11,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from 'vitest';
 import { SETTINGS_DEFAULTS, type CasePatch, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
-import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
+import {
+  loadConfig,
+  readCase,
+  saveConfig,
+  setCasesRootForTesting,
+  setConfigDirForTesting,
+  writeCase,
+} from '@aieval/core';
 
 import { createCase, getCase } from '../cases';
 import { removeTreeWithRetry } from './cleanup';
@@ -27,6 +34,13 @@ import { removeTreeWithRetry } from './cleanup';
 export let dir: string;
 export let ws: string;
 export let repo: string;
+/**
+ * 用例根目录（`<casesRoot>/<case-id>.json`）。
+ * **必须**由 `setCasesRootForTesting` 指到临时目录：默认根目录是真实的 `~/.aieval-cases`，
+ * 而 `setConfigDirForTesting` 只管 `config.json` 所在目录，管不到它——少了这一行，
+ * 整套用例测试会去读写开发者的家目录。
+ */
+export let casesRoot: string;
 
 /**
  * 用例仓库的**模板**：`beforeAll` 里建一次（真实 `git init` + 真实提交），每个用例 `cpSync` 一份。
@@ -203,14 +217,20 @@ export function caseInput(overrides: Partial<Parameters<typeof createCase>[0]> =
  * 运行时却有」的数据）；写路径的职责是别让它们有机会回来。这个夹具就是那两处的输入。
  */
 export function seedLegacyJudgeOverrideCase(caseId: string, override: { providerId: string; modelId: string }): TestCase {
-  const config = loadConfig();
-  config.cases = config.cases.map((item) =>
-    item.id === caseId
-      ? ({ ...item, judgeProviderId: override.providerId, judgeModelId: override.modelId } as unknown as TestCase)
-      : item,
-  );
-  saveConfig(config);
+  const current = mustReadCase(caseId);
+  writeCase({
+    ...current,
+    judgeProviderId: override.providerId,
+    judgeModelId: override.modelId,
+  } as unknown as TestCase);
   return getCase(caseId);
+}
+
+/** 取用例文件；不存在就当场失败（夹具的输入错了，不该让断言去测「空气」） */
+function mustReadCase(caseId: string): TestCase {
+  const found = readCase(caseId);
+  if (found === null) throw new Error(`夹具失败：用例文件不存在 ${caseId}`);
+  return found;
 }
 
 /**
@@ -248,11 +268,10 @@ export const legacyCaseShapes: Array<{ label: string; mangle: (row: TestCase) =>
  */
 export function seedLegacyCase(label: string, mangle: (row: TestCase) => TestCase): TestCase {
   const created = createCase(caseInput({ title: `旧用例：${label}` }));
-  const config = loadConfig();
-  config.cases = config.cases.map((item) => (item.id === created.id ? mangle(item) : item));
-  saveConfig(config);
+  // 按真实来路的第一半：先落一条合法用例；第二半是把它改成旧版形状后**覆盖同一个用例文件**
+  writeCase(mangle(mustReadCase(created.id)));
   // 先确认这份「历史数据」真的写进了盘上（否则调用方的断言测的是空气）
-  expect(loadConfig().cases.find((item) => item.id === created.id)?.rubric).not.toEqual(created.rubric);
+  expect(mustReadCase(created.id).rubric).not.toEqual(created.rubric);
   return created;
 }
 
@@ -262,7 +281,6 @@ export function seedLegacyCase(label: string, mangle: (row: TestCase) => TestCas
  * 手改过的 config.json 那样直接写盘。读侧归一必须把它补成 `id: ''`，而不是把 `undefined` 流出去。
  */
 export function seedRowWithoutItemId(): TestCase {
-  const config = loadConfig();
   const base = caseInput();
   const row = {
     id: 'c-hand-edited',
@@ -275,8 +293,8 @@ export function seedRowWithoutItemId(): TestCase {
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   } as unknown as TestCase;
-  config.cases = [...config.cases, row];
-  saveConfig(config);
+  // 直接写文件（而不是过 createCase）：这一条要复现的正是「手改过的用例文件」那种绕过写侧自检的来路
+  writeCase(row);
   return row;
 }
 
@@ -349,12 +367,16 @@ export function registerCasesHooks(): void {
     ws = join(dir, 'runs');
     mkdirSync(ws, { recursive: true });
     setConfigDirForTesting(dir);
-    saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: ws } });
+    // 用例目录也指到临时目录（见 `casesRoot` 的注释）；与 config 目录一并设、一并还原
+    casesRoot = join(dir, 'cases');
+    setCasesRootForTesting(casesRoot);
+    saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: ws, casesRoot } });
     repo = join(dir, 'repo');
     cpSync(fixtureRepo, repo, { recursive: true });
   });
   afterEach(() => {
     setConfigDirForTesting(null);
+    setCasesRootForTesting(null);
     removeTreeWithRetry(dir);
   });
 }
@@ -365,5 +387,15 @@ export { join } from 'node:path';
 export { SETTINGS_DEFAULTS, ServiceError } from '@aieval/contracts';
 export type { CasePatch, EvalRun, TestCase } from '@aieval/contracts';
 export { getConfigDir, loadConfig, mirrorDir, saveConfig, setConfigDirForTesting } from '@aieval/core';
+// 用例存储（core 的 case-store）：测试要能直接落/读 `<casesRoot>/<id>.json`，以及把根目录指向临时目录
+export {
+  caseFile,
+  deleteCaseFile,
+  getCasesRoot,
+  listCases as listStoredCases,
+  readCase,
+  setCasesRootForTesting,
+  writeCase,
+} from '@aieval/core';
 export { getRun, saveRun } from '@aieval/evaluator';
 export { createCase, deleteCase, getCase, listCases, listCommitCandidates, normalizeBranch, updateCase, validateRepo } from '../cases';

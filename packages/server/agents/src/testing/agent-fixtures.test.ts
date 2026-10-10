@@ -11,8 +11,10 @@
  * 前置检查就会在这一格**挂死**，比真实件更弱。所以本文件的立场是：**不删守卫，把夹具的语义钉成常驻证据**。
  * 本文件只驱动夹具本身，不经过任何适配器；所有断言都在毫秒级真实定时器上完成（不碰网络与真实 CLI）。
  */
+import { tmpdir } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createFakeDshSdk, createFakeStream, createRecorder } from './agent-fixtures';
+import { createFakeDshSdk, createFakeStream, createRecorder, createRunInput } from './agent-fixtures';
 
 /** 夹具里「挂住」的形状只存在于 promise 上；把「挂死」变成一次可读的失败，而不是让用例超时 */
 async function withTimeout<T>(promise: Promise<T>, ms = 200): Promise<T> {
@@ -155,5 +157,31 @@ describe('夹具 createFakeStream：stop() 早于迭代同样不能挂死', () =
     const iterator = stream.iterable[Symbol.asyncIterator]();
     await expect(withTimeout(iterator.next())).resolves.toEqual({ value: undefined, done: true });
     expect(recorder.order).toEqual(['turn-end']);
+  });
+});
+
+/**
+ * 夹具里的磁盘地址必须是**当前平台认得的绝对路径**（2026-10-09）。
+ *
+ * 为什么这条守卫值得存在：`createRunInput` 的 `cwd` / `configHome` 会被**真的**拿去碰盘——dsh 适配器
+ * 在 `configHome` 下 `mkdirSync` 并写 `aieval-route.patch.yml`。写成 `D:/tmp/rows/row-1/…` 时，它在
+ * Windows 上是对的、在 POSIX 上却是**相对路径**：产物落进进程 cwd（仓库根）长出一个名为 `D:/tmp`
+ * 的目录，同一条路径还会让「overlay 必须是绝对路径」那条不变量在 macOS 上直接红
+ * （`providers/dsh/index.test.ts` 的 `expect(isAbsolute(patches[0])).toBe(true)`）。
+ * 判据刻意问「是不是平台绝对路径 + 在不在临时目录」：只断言「等于某个常量」的话，常量本身改错也不会红。
+ */
+describe('夹具里的磁盘地址按当前平台拼（不许盘符字面量）', () => {
+  it('cwd / configHome 是绝对路径、落在系统临时目录下，且不在仓库工作目录里', () => {
+    const input = createRunInput();
+    const paths: ReadonlyArray<readonly [string, string]> = [
+      ['cwd', input.cwd],
+      ['configHome', input.configHome],
+    ];
+    for (const [label, value] of paths) {
+      expect(isAbsolute(value), `${label} 必须是平台绝对路径：${value}`).toBe(true);
+      expect(value.startsWith(tmpdir()), `${label} 必须落在系统临时目录下：${value}`).toBe(true);
+      // 盘符字面量在 POSIX 上等于「相对 cwd」——落进仓库就是 2026-10-09 那次事故的形状
+      expect(value.startsWith(process.cwd()), `${label} 不许落在仓库工作目录里：${value}`).toBe(false);
+    }
   });
 });

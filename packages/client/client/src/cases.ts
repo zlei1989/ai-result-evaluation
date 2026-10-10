@@ -1,10 +1,10 @@
 /**
- * 用例数据层：列表 / 详情 / 增删改 + 仓库校验 + commit 候选 + 评分标准项的生成与识别。
+ * 用例数据层：列表 / 详情 / 增删改 + 仓库校验 + commit 候选 + 评分标准项的生成与识别 + 用例同步。
  *
  * 两条约定：
  *   1. **cache key 就是路由 URL**（列表用 `/api/cases`，详情用 `/api/cases/{id}`），
  *      这样「URL 写错」在测试里立刻表现为请求打到了不存在的路由，而不是安静地拿旧数据；
- *   2. mutation 的响应形状与列表 key **不同形**（列表是数组、mutation 返回单条），所以一律
+ *   2. mutation 的响应形状与列表 key **不同形**（列表是 `{ cases, warnings }`、mutation 返回单条），所以一律
  *      `populateCache: false` + `revalidate: true`：不回写（会把数组换成对象），改为重新拉一次列表。
  *      详情缓存单独用全局 mutate 回写，否则「保存后详情栏还显示旧值」。
  *
@@ -15,7 +15,10 @@ import useSWR, { useSWRConfig } from 'swr';
 import useSWRMutation from 'swr/mutation';
 import type {
   CaseCreate,
+  CaseList,
   CasePatch,
+  CaseSyncAction,
+  CaseSyncStatus,
   CommitCandidate,
   GenerateRubricInput,
   GenerateRubricResult,
@@ -26,6 +29,9 @@ import { delJson, getJson, postJson, putJson } from './http';
 
 const LIST_KEY = '/api/cases';
 const VALIDATE_REPO_KEY = '/api/cases/validate-repo';
+/** 用例同步状态 / 动作的 cache key（与路由 URL 逐字相同，见上面的约定 1） */
+const CASE_SYNC_STATUS_KEY = '/api/cases/sync-status';
+const CASE_SYNC_KEY = '/api/cases/sync';
 /**
  * 生成 / 识别 / 调整评分标准项的 cache key：**路由路径沿用** `/api/cases/generate-judge-prompt`
  * （spec 的接口口径：三个按钮打同一个接口、由入参的 `mode` 显式分派，不为一次改名新增一条路由），
@@ -49,16 +55,28 @@ export function matchesCommitsKey(key?: unknown): boolean {
   return Array.isArray(key) && key[0] === COMMITS_KEY;
 }
 
-/** 用例列表；refresh 供「外部改了数据」后手动刷新（例如删除后想立刻对齐另一台标签页） */
+/**
+ * 用例列表。下行形状是 `CaseList`（`{ cases, warnings }`），但**对外仍然只叫 `cases`**——
+ * 调用方（用例页）拿到的一直是数组，多出来的那层壳不该泄漏到每个消费点。
+ *
+ * `warnings` 是「有文件被跳过」的唯一出口：用例一文件一落后，`<casesRoot>` 里出现手改坏的 /
+ * 文件名不合法的 json 是很自然的事，读侧是**跳过**（一条坏文件不能让整页列表 500）。
+ * 跳过而不说，用户的症状是「我的用例不见了」却查不到原因，故这一格必须一起透出来。
+ * 无数据时给 `[]` 而不是 undefined：页面渲染告警时不必再判一次空。
+ *
+ * refresh 供「外部改了数据」后手动刷新（例如删除后想立刻对齐另一台标签页）。
+ */
 export function useCases(): {
   cases: TestCase[] | undefined;
+  warnings: string[];
   error: unknown;
   isLoading: boolean;
   refresh: () => void;
 } {
-  const { data, error, isLoading, mutate } = useSWR<TestCase[]>(LIST_KEY, getJson);
+  const { data, error, isLoading, mutate } = useSWR<CaseList>(LIST_KEY, getJson);
   return {
-    cases: data,
+    cases: data?.cases,
+    warnings: data?.warnings ?? [],
     error,
     isLoading,
     // 包一层而不是直接把 mutate 透出去：refresh 是「无参、无返回」的动作，返回的 Promise 无人接
@@ -66,6 +84,60 @@ export function useCases(): {
       void mutate();
     },
   };
+}
+
+/**
+ * 用例同步状态（`GET /api/cases/sync-status`）。**刻意不轮询**：状态里唯一会自己变的两格
+ * （`running` / `pendingCount`）都由用户动作驱动——要更新时页面自己 `refresh`（动作成功后回写、
+ * 或用户重新进页面），比固定间隔拉一个「多数时候没变」的快照省事得多；
+ * 定时轮询还会让「正在同步」这段 loading 与真实进度各说各话。
+ *
+ * 读失败（error 非 undefined）必须由页面说出来：`status === undefined` 单独一个状态既可能是
+ * 「还在读」也可能是「读失败」，把后者说成前者，用户会一直等一个不会自己出现的骨架屏。
+ */
+export function useCaseSyncStatus(): {
+  status: CaseSyncStatus | undefined;
+  error: unknown;
+  isLoading: boolean;
+  refresh: () => void;
+} {
+  const { data, error, isLoading, mutate } = useSWR<CaseSyncStatus>(CASE_SYNC_STATUS_KEY, getJson);
+  return {
+    status: data,
+    error,
+    isLoading,
+    refresh: (): void => {
+      void mutate();
+    },
+  };
+}
+
+/**
+ * 用例同步的人工动作（提交 / 拉取）。`run` 的 Promise **等到服务端跑完**才 settle：
+ * 服务端就是这么设计的（`runCaseSync` 把本次动作排进队列、动作跑完才答复），
+ * 页面据此决定按钮的 loading 何时结束与结果提示说什么。
+ *
+ * `populateCache: false, revalidate: false`：该路由只有 POST，SWR 默认的 revalidate 会对它发 GET（405）；
+ * 而 `sync-status` 的缓存**回写**成这次的响应——响应本身就是最新快照，
+ * 与 `useUpdateCase` 回写详情缓存同源（revalidate:false：再拉一次既多余、又可能被慢响应覆盖成旧值）。
+ * 不回写的话，按钮跑完到下一次 GET 之间，界面显示的仍是动作前那一份状态（「点了没反应」的观感）。
+ */
+export function useCaseSyncAction(): {
+  run: (action: CaseSyncAction) => Promise<CaseSyncStatus>;
+  isRunning: boolean;
+} {
+  const { mutate } = useSWRConfig();
+  const { trigger, isMutating } = useSWRMutation(
+    CASE_SYNC_KEY,
+    (key: string, { arg }: { arg: CaseSyncAction }) => postJson<CaseSyncStatus>(key, { action: arg }),
+    { populateCache: false, revalidate: false },
+  );
+  const run = async (action: CaseSyncAction): Promise<CaseSyncStatus> => {
+    const result = await trigger(action);
+    await mutate(CASE_SYNC_STATUS_KEY, result, { revalidate: false });
+    return result;
+  };
+  return { run, isRunning: isMutating };
 }
 
 /**

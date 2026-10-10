@@ -19,8 +19,9 @@ import {
   mkdirSync,
   join,
   ServiceError,
-  loadConfig,
-  saveConfig,
+  listStoredCases,
+  readCase,
+  writeCase,
   createCase,
   getCase,
   listCases,
@@ -65,7 +66,7 @@ describe('updateCase', () => {
     const next = updateCase(created.id, { title: '仓库掉线时改标题' });
 
     expect(next.title).toBe('仓库掉线时改标题');
-    expect(loadConfig().cases[0]?.title).toBe('仓库掉线时改标题');
+    expect(listStoredCases().cases[0]?.title).toBe('仓库掉线时改标题');
   });
 
   /**
@@ -85,7 +86,7 @@ describe('updateCase', () => {
     const next = updateCase(created.id, uiPatchOf(created, { title: '仓库掉线时改标题（全量补丁）' }));
 
     expect(next.title).toBe('仓库掉线时改标题（全量补丁）');
-    expect(loadConfig().cases[0]?.title).toBe('仓库掉线时改标题（全量补丁）');
+    expect(listStoredCases().cases[0]?.title).toBe('仓库掉线时改标题（全量补丁）');
   });
 
   // 反向对照：同一个全量形状里 repoPath 真的变了、而新路径不是可用仓库 → 仍然必须拦下。
@@ -105,7 +106,7 @@ describe('updateCase', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('NOT_A_GIT_REPO');
-    expect(loadConfig().cases[0]?.repoPath).toBe(repo);
+    expect(listStoredCases().cases[0]?.repoPath).toBe(repo);
   });
 
   /**
@@ -123,7 +124,7 @@ describe('updateCase', () => {
 
     expect(next.title).toBe('仓库掉线时改标题（钉了 commit）');
     expect(next.commitHash).toBe(created.commitHash);
-    expect(loadConfig().cases[0]?.commitHash).toBe(created.commitHash);
+    expect(listStoredCases().cases[0]?.commitHash).toBe(created.commitHash);
   });
 
   // N2 的反向对照：commit 的**值真的变了**（换成一个不存在的 hash）⇒ 仍然必须重新解析并拦下，
@@ -140,7 +141,7 @@ describe('updateCase', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INVALID_REF');
-    expect(loadConfig().cases[0]?.commitHash).toBe(created.commitHash);
+    expect(listStoredCases().cases[0]?.commitHash).toBe(created.commitHash);
   });
 
   it('改动 repoPath 时校验新路径（不是 git 仓库则拒绝且不落盘）', () => {
@@ -149,7 +150,7 @@ describe('updateCase', () => {
     mkdirSync(notRepo, { recursive: true });
 
     expect(() => updateCase(created.id, { repoPath: notRepo })).toThrow(ServiceError);
-    expect(loadConfig().cases[0]?.repoPath).toBe(repo);
+    expect(listStoredCases().cases[0]?.repoPath).toBe(repo);
   });
 
   it('换仓库且未显式给 commit 时，把旧 commit 拿到新仓库里再确认一次（不存在则 INVALID_REF）', () => {
@@ -166,7 +167,7 @@ describe('updateCase', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INVALID_REF');
-    expect(loadConfig().cases[0]?.repoPath).toBe(repo);
+    expect(listStoredCases().cases[0]?.repoPath).toBe(repo);
   });
 
   it('可以显式把 commitHash 改回 null（= 回到默认分支 HEAD）', () => {
@@ -189,7 +190,7 @@ describe('updateCase', () => {
 
     updateCase(created.id, uiPatchOf(getCase(created.id), { title: '改个标题' }));
 
-    const stored = loadConfig().cases[0] as unknown as Record<string, unknown>;
+    const stored = listStoredCases().cases[0] as unknown as Record<string, unknown>;
     expect(stored).not.toHaveProperty('judgeProviderId');
     expect(stored).not.toHaveProperty('judgeModelId');
     // 无关编辑照常生效（别为了清理把这次编辑一起吞掉）
@@ -213,27 +214,27 @@ describe('updateCase', () => {
 
     expect(next).not.toHaveProperty('judgeProviderId');
     expect(next).not.toHaveProperty('judgeModelId');
-    const stored = loadConfig().cases[0] as unknown as Record<string, unknown>;
+    const stored = listStoredCases().cases[0] as unknown as Record<string, unknown>;
     expect(stored).not.toHaveProperty('judgeProviderId');
     expect(stored).not.toHaveProperty('judgeModelId');
     expect(stored.title).toBe('带评分字段的全量补丁');
   });
 
   /**
-   * A10③ 的守卫：旧 config.json 里的用例**根本没有 `repoBranch` 这个键**（这一列是后加的），
-   * 而 `loadConfig` 不过 schema，所以读路径拿到的是 `undefined`——契约声明的却是 `string | null`。
+   * A10③ 的守卫：旧版本写下的用例文件里**根本没有 `repoBranch` 这个键**（这一列是后加的），
+   * 而存储层读文件不过 schema，所以读路径拿到的是 `undefined`——契约声明的却是 `string | null`。
    * 不归一的话，`GET /api/cases` 会把「没有这一列」当成第三种状态发出去，前端与评测快照都要自己防一次。
-   * 夹具按历史数据的真实来路造：先落盘一条合法用例，再从配置里把那把键删掉。
+   * 夹具按历史数据的真实来路造：先落盘一条合法用例，再把那把键从文件里删掉。
    */
-  it('旧配置里缺 repoBranch 的用例读出来是 null（不是 undefined）', () => {
+  it('旧用例文件里缺 repoBranch 的读出来是 null（不是 undefined）', () => {
     const created = createCase(caseInput({ commitHash: git(['rev-parse', 'HEAD'], repo).trim() }));
-    const config = loadConfig();
     // 模拟旧版本写下的那一行：整把键不存在（`delete` 而不是置 null——两者的区别正是这条守卫要钉的）
-    for (const item of config.cases) delete (item as Partial<TestCase>).repoBranch;
-    saveConfig(config);
+    const row = readCase(created.id)!;
+    delete (row as Partial<TestCase>).repoBranch;
+    writeCase(row);
 
     expect(getCase(created.id).repoBranch).toBeNull();
-    expect(listCases()[0]?.repoBranch).toBeNull();
+    expect(listCases().cases[0]?.repoBranch).toBeNull();
     // 反向对照：同一份读数里其余字段照常（归一不是「把整行换掉」）
     expect(getCase(created.id).commitHash).toBe(created.commitHash);
   });
@@ -293,7 +294,7 @@ describe('updateCase', () => {
     }
 
     // 被拒绝的保存不留半份改动：盘上仍然只有那一条、内容逐字未变
-    expect(loadConfig().cases).toHaveLength(1);
+    expect(listStoredCases().cases).toHaveLength(1);
     expect(getCase(created.id).rubric).toEqual(created.rubric);
   });
 
@@ -321,7 +322,7 @@ describe('updateCase', () => {
     expect((caught as ServiceError).message).not.toContain('invalid_type');
     expect((caught as ServiceError).message).not.toContain('"code"');
     // 被拒绝的编辑不留半份改动
-    expect(loadConfig().cases.find((item) => item.id === legacy.id)?.title).toBe(legacy.title);
+    expect(listStoredCases().cases.find((item) => item.id === legacy.id)?.title).toBe(legacy.title);
   });
 
   it('updateCase 对不存在的 id 抛 NOT_FOUND', () => {
@@ -344,11 +345,8 @@ describe('updateCase', () => {
    */
   it('手改坏的 legacy 行只改标题：拦下它的是写入口的 schema，不是来源解析（解析是懒的）', () => {
     const created = createCase(caseInput());
-    const config = loadConfig();
-    config.cases = config.cases.map((item) =>
-      item.id === created.id ? { ...item, repoPath: 'ftp://host/x.git' } : item,
-    );
-    saveConfig(config);
+    // 按手改用例文件的真实来路造：直接覆盖那个文件（绕过写侧自检）
+    writeCase({ ...readCase(created.id)!, repoPath: 'ftp://host/x.git' });
 
     let caught: unknown;
     try {

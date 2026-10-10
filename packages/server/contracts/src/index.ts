@@ -42,6 +42,7 @@ export {
   type RepoSource,
 } from './repo-source';
 export {
+  CASE_ID_PATTERN,
   CaseCreateSchema,
   CasePatchSchema,
   CommitCandidateSchema,
@@ -51,7 +52,9 @@ export {
   RepoPathInputSchema,
   RepoValidateInputSchema,
   TestCaseSchema,
+  isCaseIdShapeValid,
   type CaseCreate,
+  type CaseList,
   type CasePatch,
   type CommitCandidate,
   type GenerateRubricInput,
@@ -61,6 +64,12 @@ export {
   type RepoValidateInput,
   type TestCase,
 } from './case';
+export {
+  CASE_SYNC_ACTIONS,
+  CaseSyncActionSchema,
+  type CaseSyncAction,
+  type CaseSyncStatus,
+} from './case-sync';
 export {
   AGENT_KINDS,
   AGENT_LABELS,
@@ -92,6 +101,7 @@ export {
   type RowDiffFile,
   type RowDiffIndex,
   type RowFailureStage,
+  type RowStreamingDelta,
   type RunCreate,
   type RunUpdate,
 } from './run';

@@ -118,6 +118,24 @@ export interface ClaudeQueryOptions {
    * 真机 A/B：不开时子智能体消息 5 条、开了 10 条（多出 `thinking:3` + `text:3`）。
    */
   forwardSubagentText?: boolean;
+  /**
+   * 流式增量（`Options.includePartialMessages`，SDK 拼成 CLI 的 `--include-partial-messages`）。
+   * 开了之后 wire 上**先出 `stream_event` 再出完整快照**：`content_block_delta` 的
+   * `text_delta` / `thinking_delta` / `signature_delta` 三种增量由 `message.ts` 的 `streamEvent`
+   * 投影成 `chunk: 'delta'` 的消息草稿（编排层只广播不落盘，2026-10-09）。
+   *
+   * 两个已知边界（`includePartialMessages` 的 JSDoc 与本仓探针一致）：
+   *  · **只覆盖主会话**：`stream_event` 的 `parent_tool_use_id` 恒 `null`，子智能体没有 token 级增量
+   *    （子任务视图不做逐字动画，等快照整块到）；
+   *  · 开销：wire 上多一批增量帧（1 delta ≈ 1 token）。编排层对 delta **不落盘** ⇒ `messages.jsonl`
+   *    不膨胀，代价只在传输与广播。
+   *
+   * ⚠️ 与 `forwardSubagentText` 同一条教训的镜像：**这格不声明、调用方不传，wire 上就永远不出
+   * `stream_event`**——解析路径（`streamEvent`）整条空转，能力声明 `streamingDelta: 'yes'` 与实现
+   * 不一致（docs/protocols/message-spec 已知边界表 2026-10-09 前的旧账）。真机探针
+   * `probe/v4/claude-official-remedies.mjs` ② 验证过它确实给真增量。
+   */
+  includePartialMessages?: boolean;
 }
 
 export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {

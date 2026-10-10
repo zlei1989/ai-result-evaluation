@@ -27,15 +27,24 @@ describe('@aieval/evaluator 导出面', () => {
         'listRuns',
         'listRunsForCase',
         'saveRun',
-        // 事件总线（Task 2）
+        // 事件总线（Task 2）；2026-10-10 起两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）
         'publishRowEvent',
+        'publishJudgeEvent',
         'subscribeRowEvents',
+        'subscribeJudgeEvents',
         // run 级信号总线（/api/runs/events 的订阅端）：只出口读侧，发射点在 saveRun 体内不出包
         'subscribeRunChanges',
-        // 记录总线（spec v3 §2）：消息与子任务行共用 messages.jsonl
+        // 记录总线（spec v3 §2）：消息与子任务行共用 messages.jsonl；
+        // 2026-10-10 起评分另有自己的一条（judge-messages.jsonl）
+        'broadcastJudgeMessage',
+        'broadcastRowMessage',
+        'publishJudgeMessage',
+        'publishJudgeRecord',
+        'publishJudgeSubagentRecord',
         'publishRowMessage',
         'publishRowRecord',
         'publishSubagentRecord',
+        'subscribeJudgeRecords',
         'subscribeRowRecords',
         // 评分器（Task 3 / Task 4）
         'judgeRow',

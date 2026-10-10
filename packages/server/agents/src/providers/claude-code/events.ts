@@ -6,6 +6,10 @@
  *     工具 / 推理块那一条（`[{type:'tool_use',…}]`）在 2026-09-29 起**额外带一句人话摘要**
  *     （`log.summary`，用户口径：卡片底部的活动行要显示具体的消息，不能是 JSON）——
  *     原始负载仍然逐字在 `text` 里，抽屉的证据一个字没少；
+ *     **唯一一类例外是「流式 / 进度帧」**（2026-10-09）：`stream_event` 与
+ *     `system/thinking_tokens` 逐 token 各一条，落进这条兜底就是「抽屉刷成 JSON 流水 + 单行产物涨到
+ *     MB 级」（真机 11,629 条，见那一支的注释）。它们**显式丢弃**（不是默默丢弃）：登记点是这条规则
+ *     + 知识库《消息规范》的「非渲染增量」表——「不许静默丢弃」对它们依然成立，只是处置写的是「丢」；
  *  3. 计量只在 `result` 消息上取（§5.6.3 表）：`usage.input_tokens` /
  *     `usage.cache_read_input_tokens` / `usage.output_tokens` **三项齐了才有值**；缺一项就是
  *     「没采到」→ null 并落一条 WARN，绝不填 0（0 会让人得出「这家很省」的错误结论）；
@@ -49,6 +53,15 @@ const TASK_STARTED = 'task_started';
 const TASK_NOTIFICATION = 'task_notification';
 /** `system` 下承载「厂商系统层事实」的那一个 subtype（真机 2.1.281 实测） */
 const INIT_SUBTYPE = 'init';
+/**
+ * `system` 下那个**逐 token 的思考进度** subtype（2026-10-09 真机实测）。
+ *
+ * SDK 的类型注释逐字说明它的身份：*Live thinking-token estimate, digested from
+ * `thinking_delta.estimated_tokens` during the redacted-thinking phase … **Approximate progress for
+ * spinners/pills, not the authoritative billed `output_tokens`***。即：它既不是内容、也不是计量，
+ * 而是**给 spinner 用的近似进度**——每个思考 token 发一条，与 `stream_event` 同属「流式/进度帧」这一类。
+ */
+const THINKING_TOKENS_SUBTYPE = 'thinking_tokens';
 
 /**
  * `system/init` → **厂商系统层事实**（2026-10-04 收口）。
@@ -137,6 +150,27 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
     if (failure !== null) {
       return { drafts: [logDraft('stdout', safeStringify(raw), failure)], tokens: null, turns: null, failure: null };
     }
+  }
+  /**
+   * **流式 / 进度帧不进原始日志**（2026-10-09 用户口径；两类，都必须显式登记，不许静默丢弃）：
+   *
+   *   ① `stream_event`（内容增量）：每条只带一小段 delta，落进下面的未识别兜底会把「原始输出」
+   *      面板刷成 JSON 流水，真要看的 stderr / init 反而被冲掉。它的落点只有对话视图：消息侧
+   *      （`message.ts` 的 `streamEvent`）把 delta 折成 `chunk: 'delta'` 的消息、编排层**只广播不落盘**
+   *      ⇒ SSE 实时驱动执行日志的打字机效果。事件侧零产出（`uuid` 去重照常在上面做——重复帧仍丢）。
+   *   ② `system` + `subtype: 'thinking_tokens'`（**思考进度帧**，见 `THINKING_TOKENS_SUBTYPE` 的 SDK 原文）：
+   *      它是给 spinner 用的近似进度，每个思考 token 一条。**真机量级**（2026-10-09，run `7f05c765`
+   *      的 claude 行）：这一种帧 **11,629 条**，占该行 12,509 条 `log` 的 **93%**；评分智能体那条路
+   *      （走同一个适配器，编排层加 `[评分智能体] ` 前缀）再叠 **670 条**。后果两条都很硬：
+   *      「原始输出」面板被刷成 JSON 流水且卡死、`events.jsonl` 的单行产物涨到 MB 级。
+   *      而它承载的信息与收尾的权威值（`result.usage.output_tokens_details.thinking_tokens`）重复且更差
+   *      （SDK 自己写明 "approximate … not the authoritative billed output_tokens"）⇒ 丢掉不损失事实。
+   */
+  if (type === 'stream_event') {
+    return emptyProjection();
+  }
+  if (type === 'system' && readString(message, 'subtype') === THINKING_TOKENS_SUBTYPE) {
+    return emptyProjection();
   }
   // system / user / 未来新增的类型：一律保留原始负载（§5.6.3）
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };

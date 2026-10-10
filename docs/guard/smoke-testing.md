@@ -11,6 +11,8 @@
 ## 形态与交互
 
 - **起真服务**：`pnpm dev` 起 web-next（`http://localhost:3083`）；端口被占用先 kill 占用进程再启动。dev server 必须能写工作区根之外——评测落盘全在工作区根外（默认 `~/.aieval-runs`），在受限沙箱里起的 dev 所有写盘一律 `EPERM`、接口全 500，症状与功能缺陷一模一样（排障先想沙箱/权限，再想代码）。
+- **要动真实数据就先起隔离实例**：3083 上那个实例用的是真实配置（`casesRoot` 指向真实用例仓库、`casesAutoCommit: true`），拿它冒烟会**往真实仓库写提交**。做法（先例 2026-10-09）：`mktemp -d` 造夹具——`config/config.json` 复制真配置的 `settings` + `providers`、只改用得着的那几格（`workspaceRoot` / `casesRoot` / `casesAutoCommit`），用例仓库真 `git init -b main` + 一个裸远端 `git init --bare`；然后 `AIEVAL_CONFIG_DIR=<夹具>/config` 起服务。**Next 16 拒绝同一项目目录的第二个 `next dev`**（`⨯ Another next dev server is already running.` 并给出 PID），故把 `apps/web-next` 复制到仓内临时目录（`.scratch/smoke-app`，gitignore 已盖）并软链 `node_modules`、换个端口起（那次用 3099）。收尾：杀掉实例、删掉夹具与副本。
+- **没有浏览器工具时如实降级**：把「页面操作」这一条通道换成 HTTP 驱动（`curl` 打真实路由），另一条通道仍是 CLI 复核（`git log --name-only`、配置文件、裸远端），并在范围清单里把 UI 项登记为「跳过 + 理由 + 替代证据（哪几个测试文件、几条用例）」——不写「看起来正常」。
 - **页面侧操作**：MCP 浏览器工具走真实用户路径——输入、按钮、弹窗、导航、拖拽。截图只作留档，不作判据；几何断言口径见「状态机与时序」。
 - **CLI 侧复核**：`curl` 打接口、读配置文件、`git` 看分支与 diff——页面展示的每个关键事实都到磁盘上复核一遍。
 - **记录落点**：四要素写进本次改动的计划/关账记录的「冒烟」小节。

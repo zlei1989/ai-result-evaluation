@@ -8,7 +8,7 @@
  *
  * 为什么先跑它：花 0 次模型调用就能证伪「overlay 写错了」，把失败面从
  * 「跑一次 DSH 要几分钟」缩到「一条 CLI 命令」。命令用真实的 dsh 二进制
- * （`@deepseek-ai/dsh@0.1.7-rc.1` 的 `lib/bin.js`），与 SDK spawn 的是同一份。
+ * （`@deepseek-ai/dsh@0.2.0-rc.2` 的 `lib/bin.js`），与 SDK spawn 的是同一份。
  */
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';

@@ -76,13 +76,13 @@ describe('globals.css 里的活动行高光', () => {
  *   ③ 同名 `@keyframes` 在——少了它光标常亮，「闪烁」这个信号消失。
  */
 describe('globals.css 里的流式光标', () => {
-  /** 从 `TextBlockView` 源码里抠出类名；抠不到直接抛（守卫不许静默失效） */
+  /** 从 `base/stream-cursor.ts` 源码里抠出类名；抠不到直接抛（守卫不许静默失效） */
   function cursorClass(): string {
-    const path = join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src', 'composite', 'agent-log', 'text-block-view.tsx');
+    const path = join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src', 'base', 'stream-cursor.ts');
     const matched = /export const STREAM_CURSOR_CLASS = '([^']+)'/.exec(readFileSync(path, 'utf8'));
     const value = matched?.[1];
     if (value === undefined) {
-      throw new Error('text-block-view.tsx 里找不到 STREAM_CURSOR_CLASS 的字面量定义，本守卫无法核对');
+      throw new Error('stream-cursor.ts 里找不到 STREAM_CURSOR_CLASS 的字面量定义，本守卫无法核对');
     }
     return value;
   }
@@ -100,5 +100,47 @@ describe('globals.css 里的流式光标', () => {
 
   it('定义了同名 @keyframes（少了它光标常亮，「还在写」这个信号就没了）', () => {
     expect(readFileSync(cssPath, 'utf8')).toContain(`@keyframes ${cursorClass()} {`);
+  });
+});
+
+/**
+ * 活动行**打字态**（换行清空重打）的跨包字符串契约（2026-10-10）。
+ *
+ * 缺口与上面两条同形，但**症状不同**：这条动画挂在 `key={段号}` 重挂的那个 `span` 上，
+ * 类名或 `@keyframes` 少一个，浏览器都不报错——少类名 = 换段时文字直接跳变（观感退化成
+ * 「整行被替换」），少 `@keyframes` = 动画声明指向一个不存在的关键帧，元素停在最终态。
+ * 两者都只有肉眼看得出，而「看得出」正是本仓不接受的判据。
+ *
+ * 三条断言各有各的靶子：
+ *   ① 类名在 CSS 里（且是 `> span` 这一层：动画要落在**重挂的那个元素**上才叫「重打」）；
+ *   ② 同名 `@keyframes` 在——删掉它元素停在最终态，与没有动画长得一样；
+ *   ③ 「减少动态效果」兜底在——动画只是入场装饰，关掉之后内容必须照旧显示。
+ */
+describe('globals.css 里的活动行打字态', () => {
+  /** 从 `AgentActivityLine` 源码里抠出类名；抠不到直接抛（守卫不许静默失效） */
+  function typingClass(): string {
+    const matched = /export const ACTIVITY_TYPING_CLASS = '([^']+)'/.exec(readFileSync(componentPath, 'utf8'));
+    const value = matched?.[1];
+    if (value === undefined) {
+      throw new Error('agent-activity-line.tsx 里找不到 ACTIVITY_TYPING_CLASS 的字面量定义，本守卫无法核对');
+    }
+    return value;
+  }
+
+  it('动画挂在 `> span` 上（换段重挂的正是那个元素）', () => {
+    expect(readFileSync(cssPath, 'utf8')).toContain(`.${typingClass()} > span {`);
+  });
+
+  it('定义了同名 @keyframes（少了它元素停在最终态，动画等于没有）', () => {
+    expect(readFileSync(cssPath, 'utf8')).toContain(`@keyframes ${typingClass()} {`);
+  });
+
+  it('「减少动态效果」下关掉入场动画（内容照旧，只是不播那一下）', () => {
+    const source = readFileSync(cssPath, 'utf8');
+    // 逐个媒体块找：写死「最后一个」的话，将来在其后追加任何媒体查询都会误报
+    const blocks = source.split('@media (prefers-reduced-motion: reduce)').slice(1);
+    const guard = blocks.find((block) => block.includes(`.${typingClass()} > span`));
+    expect(guard, 'globals.css 里没有针对活动行打字态的减少动效兜底').toBeDefined();
+    expect(guard ?? '', '兜底里没有关掉动画').toContain('animation: none');
   });
 });

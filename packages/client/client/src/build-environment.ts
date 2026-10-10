@@ -11,7 +11,7 @@
  *   | 用户层 | `user` | 发起这一轮的人给了什么（附件 / 上下文引用。**不含用户提示词**——那个在时间轴首条） |
  *   | 厂商系统层 | `vendor` | 厂商自己下发了什么（系统提示词 / 已调度的工具 / 斜杠命令或子智能体定义 / 工具模式串） |
  *   | 运行配置 | `project` | **本仓**下发了什么（权限档 / 被禁用的工具 / 模型与思考强度 / 工作区与基线） |
- *   | 实测统计 | `observed` | 这一行**实际**发生了什么（用过的工具及次数） |
+ *   | 实测统计 | `observed` | 这一行**实际**发生了什么（用过的工具及次数 / 流式增量观测） |
  *
  * 「已调度的工具」与「用过的工具」**必须分开**（§4.3 最容易做错的一处）：前者是厂商自报的**工具面**
  * （「它当时手里有什么」），后者是从实际调用统计出来的（「它用了什么」）。混成一个列表就会出现
@@ -34,6 +34,8 @@
  *   · 实测统计 —— 内容记录（`messages.jsonl`）里的 `tool-call` 块按 `name` 计数。
  *     它不从事件流数：事件流的工具名字在 codex 上是 `exec_command` 这类**入口名**，
  *     与会话文件里的真名不是一回事。
+ *     同组的**流式增量观测**（2026-10-09）来源不同：它读 `EvalRow.streamingDelta` 的快照格，
+ *     因为增量帧**不落盘**——恰恰是「文件里没有」这件事让这一格必须存在（见那一格的注释）。
  */
 import {
   AGENT_LABELS,
@@ -285,8 +287,38 @@ function projectGroup(input: BuildEnvironmentInput, events: readonly AgentEvent[
   return { id: 'project', title: '运行配置（本仓下发）', source: 'project', items };
 }
 
+/**
+ * 流式增量的**运行期观测**（2026-10-09 新增，`EvalRow.streamingDelta`）。
+ *
+ * 为什么它必须在环境抽屉里有一格：增量帧**只广播不落盘**，而厂商级能力声明是静态的
+ * （`streamingDelta: 'yes'` 说的是「这家结构上有」）——开关没生效、插件没挂上、厂商改了内部事件名
+ * 的时候，声明照样是 `yes`，界面照样不打字。这一格是**唯一**能把两者分开的东西。
+ * 三态各自如实说（缺一态就会有「观测到零帧」被读成「没观测」）：
+ *   · 格缺席 / `null` ⇒ 「没观测」（老数据或这一行没跑到统计那一步）；
+ *   · `frameCount === 0` ⇒ 「观测了，一条都没有」——这是**异常信号**，不是「这家没有」；
+ *   · `frameCount > 0` ⇒ 帧数与**末帧累积字数**（正文不落盘，这一格只回答「写到哪」）。
+ */
+function streamingDeltaItem(row: EvalRow): EnvItem {
+  const observed = row.streamingDelta;
+  if (observed === undefined || observed === null) return missing('observed-streaming-delta', '流式增量', 'not-observed');
+  if (observed.frameCount === 0) {
+    return envItem(
+      'observed-streaming-delta',
+      '流式增量',
+      '本次观测到 0 条增量帧：能力位声明为 yes 的家也可能一条都不投（开关未生效 / 插件未挂上 / 厂商换了内部事件名）',
+      null,
+    );
+  }
+  return envItem(
+    'observed-streaming-delta',
+    '流式增量',
+    `增量帧 ${observed.frameCount} 条 · 末帧累积 ${observed.lastFrameChars} 字（正文不落盘，刷新后看不到半截正文）`,
+    null,
+  );
+}
+
 /** 用过的工具及次数。**这是统计，不是事实声明**，故单列一组、标 `observed`（§4.3） */
-function observedGroup(records: readonly RowRecord[]): EnvGroup {
+function observedGroup(row: EvalRow, records: readonly RowRecord[]): EnvGroup {
   const counts = new Map<string, number>();
   for (const record of records) {
     if (record.type !== 'message') continue;
@@ -303,7 +335,7 @@ function observedGroup(records: readonly RowRecord[]): EnvGroup {
       id: 'observed',
       title: '实测统计',
       source: 'observed',
-      items: [missing('observed-tools', '用过的工具及次数', 'not-observed')],
+      items: [streamingDeltaItem(row), missing('observed-tools', '用过的工具及次数', 'not-observed')],
     };
   }
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
@@ -313,6 +345,7 @@ function observedGroup(records: readonly RowRecord[]): EnvGroup {
     title: '实测统计',
     source: 'observed',
     items: [
+      streamingDeltaItem(row),
       envItem(
         'observed-tools',
         `用过的工具及次数（${sorted.length} 种 / 共 ${total} 次）`,
@@ -330,7 +363,7 @@ function observedGroup(records: readonly RowRecord[]): EnvGroup {
 export function buildAgentEnvironment(input: BuildEnvironmentInput): AgentEnvironment {
   return {
     summary: summaryOf(input),
-    groups: [userGroup(), vendorGroup(input.events), projectGroup(input, input.events), observedGroup(input.records)],
+    groups: [userGroup(), vendorGroup(input.events), projectGroup(input, input.events), observedGroup(input.row, input.records)],
   };
 }
 

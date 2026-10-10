@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EFFORT_OFF, ServiceError, type EvalRun } from '@aieval/contracts';
-import { loadConfig, saveConfig, setConfigDirForTesting, type AppConfig } from '@aieval/core';
+import { loadConfig, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
 import { GET as getRuns, POST as postRun } from '@/app/api/runs/route';
 import { GET as getModelOptions } from '@/app/api/runs/model-options/route';
 import {
@@ -77,6 +77,12 @@ const evaluator = vi.hoisted(() => ({
   // 缺键在**访问到它**（走那条路由的用例）时才抛「No "retryRow" export is defined on the mock」
   retryRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
+  subscribeJudgeEvents: vi.fn(() => () => {}),
+  subscribeJudgeRecords: vi.fn(() => () => {}),
+  // 候选那条记录流（spec v3 §2）：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
+  subscribeRowRecords: vi.fn(() => () => {}),
   // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，而 run-events.ts
   // 在模块求值期就读这个键——缺了它，**任何**经 `@aieval/api` index 的 import 都当场抛
   // 「No "subscribeRunChanges" export is defined on the mock」（比 rescoreRow 那类访问时才抛更早）。
@@ -160,14 +166,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   dir = mkdtempSync(join(tmpdir(), 'aieval-route-runs-'));
   setConfigDirForTesting(dir);
+  // 用例目录也指到临时目录：用例是一文件一落（core 的 case-store），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   const config = loadConfig();
   const seeded: AppConfig = {
     ...config,
-    settings: { ...config.settings, workspaceRoot: join(dir, 'ws') },
+    settings: { ...config.settings, workspaceRoot: join(dir, 'ws'), casesRoot: join(dir, 'cases'), casesAutoCommit: false },
     providers: [openaiProvider, anthropicProvider],
-    cases: [testCase],
   };
   saveConfig(seeded);
+  // 用例按真实来路写：它是独立文件，不再随配置一起覆盖写
+  writeCase(testCase);
 
   store = new Map();
   evaluator.saveRun.mockImplementation((run: EvalRun) => {
@@ -184,6 +193,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 

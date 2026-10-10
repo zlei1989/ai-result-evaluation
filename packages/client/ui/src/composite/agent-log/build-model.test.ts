@@ -7,7 +7,7 @@
  *   1. **`mergeKey` 覆盖而不是追加**：同一条逻辑消息投递多次时，时间轴上只能出现一次，
  *      且是**最后那一次**（它的 `blocks` 已是全量）。错成追加的症状是「同一段正文出现两遍，
  *      后一遍还是半截的」——看着像内容错，其实是合并错。
- *   2. **`round` 用 `roundTrip`**：`vendorTurn` 三家语义不同、明文禁止用于分组。
+ *   2. **`round` 用 `roundTrip`**：`turn` 三家语义不同、明文禁止用于分组。
  *   3. **`running` 不由「有没有后续块」推断**：只有最后一轮可能是「还没结束」的那一轮，
  *      一次被中断的回复停了就是停了（`facts.live === false` ⇒ 全部 `running === false`）。
  */
@@ -36,7 +36,7 @@ function message(input: {
       role: input.role ?? 'assistant',
       source: input.source ?? 'wire',
       roundTrip: input.roundTrip,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId: input.parentCallId ?? null,
       subagentId: input.subagentId ?? null,
@@ -113,7 +113,7 @@ describe('buildAgentLogModel：合并与分组', () => {
     expect(first?.kind === 'text' ? first.text : null).toBe('完整正文');
   });
 
-  it('按 `roundTrip` 分轮并升序排列；`vendorTurn` 不参与分组', () => {
+  it('按 `roundTrip` 分轮并升序排列；`turn` 不参与分组', () => {
     const records: RowRecord[] = [
       message({ id: 'm2', mergeKey: 'main|2|assistant|-', roundTrip: 2, blocks: [{ type: 'text', text: '第二轮' }] }),
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '第一轮' }] }),
@@ -1022,5 +1022,97 @@ describe('没有正文的思考块整块隐藏（2026-10-07）', () => {
     ]);
     expect(blocks.map((block) => block.kind)).toEqual(['thinking', 'thinking']);
     for (const block of blocks) expect(block.kind === 'thinking' ? block.textMissing : 'n/a').toBeNull();
+  });
+});
+
+/**
+ * 工具入参：**原文两份 + 模型自己写的一句话**（2026-10-10）。
+ *
+ * `description` 的用处是工具行摘要行的标题（收起态唯一可见的一行）：照原文首行渲染就是
+ * 一整串 JSON。它由**数据层**抽出来（`serializeInput`），组件不自己反解原文——
+ * 故这一层必须钉住「抽得出来 / 抽不出来时如实 `null`」，否则组件那边会拿一个恒 `null` 的格子
+ * 静默回落到老行为（字都还在，只是又没法读了）。
+ *
+ * 抽不出就 `null`，**不拿别的字段凑**：这一格同时是派发调用的任务名（claude 的 `Task`、
+ * dsh 的 `subagent`），凑出来的名字配不上任何子任务。
+ */
+describe('工具入参：原文与 `description`（2026-10-10）', () => {
+  /** 走一遍真实链路（契约块 → 界面模型），取第一条 `tool-call` 的入参形状 */
+  function inputOf(raw: unknown) {
+    const model = buildAgentLogModel({
+      records: [
+        message({
+          id: 'm1',
+          mergeKey: 'main|1|assistant|-',
+          roundTrip: 1,
+          blocks: [{ type: 'tool-call', callId: 'call_1', name: 'pwsh', family: 'run-shell', input: raw }],
+        }),
+      ],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const block = main.content.data.flatMap((turn) => turn.blocks).find((one) => one.kind === 'tool-call');
+    if (block?.kind !== 'tool-call') throw new Error('应有工具调用块');
+    return block.input;
+  }
+
+  it('`tool-call.summary`（数据层算好的那一句）原样搬到界面块上；老记录缺格 ⇒ `undefined`', () => {
+    // 这一格是摘要行的**第一档**（2026-10-10 口径变更）：词表真源在 `@aieval/agents` 的
+    // `activity.ts`，界面按分层表不许 import 它 ⇒ 只能读这一格。它一旦在搬运路上丢了，
+    // 界面会**静默**退回下面那两档（描述 → 原文首行），症状是「每族拼法全丢」而用例不红。
+    const model = buildAgentLogModel({
+      records: [
+        message({
+          id: 'm1',
+          mergeKey: 'main|1|assistant|-',
+          roundTrip: 1,
+          blocks: [
+            { type: 'tool-call', callId: 'call_1', name: 'Read', family: 'read-file', input: { file_path: 'a.ts' }, summary: 'a.ts:10-120' },
+            { type: 'tool-call', callId: 'call_2', name: 'Read', family: 'read-file', input: { file_path: 'b.ts' } },
+          ],
+        }),
+      ],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const calls = main.content.data.flatMap((turn) => turn.blocks).filter((one) => one.kind === 'tool-call');
+    expect(calls[0]?.summary).toBe('a.ts:10-120');
+    // 老记录：`messages.jsonl` 里没有这一格 ⇒ 如实 `undefined`（界面据此回落到 `description`）
+    expect(calls[1]?.summary).toBeUndefined();
+  });
+
+  it('对象入参：`description` 进那一格，原文照旧逐字两份', () => {
+    const input = inputOf({ command: 'git --no-pager diff', description: '看生产改动与状态' });
+
+    expect(input.description).toBe('看生产改动与状态');
+    expect(input.value).toBe('{"command":"git --no-pager diff","description":"看生产改动与状态"}');
+    expect(input.text).toBe(input.value);
+  });
+
+  it('JSON 字符串入参（`arguments` 还没被解析那一档）也抽得出来；不是 JSON 就只留原文', () => {
+    expect(inputOf('{"command":"ls","description":"列目录"}').description).toBe('列目录');
+    // 纯文本入参（如 `Read` 的路径直接是字符串）：原文照留，`description` 如实 `null`
+    expect(inputOf('Get-ChildItem env:').description).toBeNull();
+  });
+
+  it('没有这一格 / 只有空白 / 不是字符串 ⇒ `null`（**不拿别的字段凑**）', () => {
+    expect(inputOf({ command: 'ls' }).description).toBeNull();
+    expect(inputOf({ description: '   ' }).description).toBeNull();
+    expect(inputOf({ description: 7 }).description).toBeNull();
+    expect(inputOf({ command: 'ls' }).value).toBe('{"command":"ls"}');
+  });
+
+  it('`description` 前后的空白去掉（它直接进标题那一行）', () => {
+    expect(inputOf({ description: '  看改动  ' }).description).toBe('看改动');
+  });
+
+  it('入参整个没采到：四格一起是 `null`（不是空串、不是 0）', () => {
+    expect(inputOf(null)).toEqual({ value: null, text: null, bytes: null, description: null });
   });
 });

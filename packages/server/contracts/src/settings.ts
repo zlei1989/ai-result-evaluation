@@ -26,6 +26,20 @@ export const SettingsSchema = z.object({
   theme: ThemeModeSchema,
   /** 工作区根目录（绝对路径）；目录不存在时由服务端创建 */
   workspaceRoot: z.string().min(1),
+  /**
+   * 用例根目录（绝对路径）：**一用例一文件**存在它下面（`<casesRoot>/<case-id>.json`）。
+   * 用例已不再进 `config.json` 的 `cases` 数组，这里是它在磁盘上的唯一落点
+   * （口径见 core 的 `case-store.ts`：原子写、容忍 BOM、id 形状校验）。
+   * 「默认值从配置里取」这条优先级由服务端 `resolveCasesRoot` 承担：
+   * 这一格为空 / 缺失时回落到 `AIEVAL_CASES_ROOT`，再回落到 `~/.aieval-cases`。
+   */
+  casesRoot: z.string().min(1),
+  /**
+   * 用例变更时是否自动在后台提交并推送（`casesRoot` 是 git 仓库时才有意义）。
+   * 关掉之后用例照常落盘，但要到设置页点「提交」才进 git —— 两态都必须让用户看得见，
+   * 不能出现「以为提交了、其实没提交」。
+   */
+  casesAutoCommit: z.boolean(),
   /** 全局默认评分模型；未配置时为 null（此时用例页的「AI 生成」与评测评分不可用） */
   defaultJudge: DefaultJudgeSchema.nullable(),
   /** 默认评分智能体：null = 未配置（此时「使用智能体评分」的评测会在创建时被拦下） */
@@ -48,10 +62,12 @@ export type Settings = z.infer<typeof SettingsSchema>;
 export const SettingsPatchSchema = SettingsSchema.partial();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 
-/** 默认值：workspaceRoot 的 `~` 由服务端在读取时展开为真实家目录 */
+/** 默认值：workspaceRoot / casesRoot 的 `~` 由服务端在读取时展开为真实家目录 */
 export const SETTINGS_DEFAULTS: Settings = {
   theme: 'auto',
   workspaceRoot: '~/.aieval-runs',
+  casesRoot: '~/.aieval-cases',
+  casesAutoCommit: true,
   defaultJudge: null,
   defaultJudgeAgent: null,
   diffBudgetBytes: 262_144,

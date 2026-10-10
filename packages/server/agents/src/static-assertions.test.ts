@@ -387,7 +387,7 @@ describe('源码级不变量', () => {
   /**
    * R33 的守卫（终审 §2-M7 点名它「有落点但无守卫」）。
    *
-   * R33 的裁决内容是「p3 的 dsh 依赖走 **`next` 线**，实测写入 **0.1.7-rc.1**，**不是** `latest`」，
+   * R33 的裁决内容是「p3 的 dsh 依赖走 **`next` 线**，不是 `latest`」，
    * 理由是 `latest`（0.0.1-rc.1）把那几个包声明成 peerDependencies，pnpm 自动装 peer 时
    * `dsh-session` 又 peer 到 `@deepseek-ai/dsh-type-meta`，而该包在三家公开源**全 404**
    * ⇒ 按 `latest` 装在本机**不可能完成**。
@@ -396,17 +396,24 @@ describe('源码级不变量', () => {
    * 于是「有人把版本改回 `latest`」不会有任何测试变红 —— 而那会让 `pnpm install` 直接失败。
    * 这里补的判据刻意与 R35 的应用侧守卫**同口径**：版本区间不抄成测试字面量，
    * 读 `package.json` 现比「它是 next 线上的预发布版本」这一件事。
+   *
+   * 2026-10-09 跳到 **0.2.0-rc.2**（用户口径「选择刚发的稳定版」：该包**从未发过非预发布版本**，
+   * 最新非 alpha 即 next 线的 0.2.0-rc.2）。形状断言随之从 `0.1.x-rc` 放宽为
+   * 「任意 minor 的精确 rc 版本 + 不是 latest 线的 0.0.1-rc.1」——next 线会继续往前走，
+   * 把 minor 钉死在 0.1 会让每次正常升级都要回来改守卫，而守卫真正要拦的只有
+   * 「退回 latest 线（装不上）」与「写成带前缀的区间（预发布区间会静默漂移）」两件事。
    */
-  it('dsh SDK 走 next 线：package.json 里是 0.1.x-rc 形状的精确版本，不是 latest 线（R33）', () => {
+  it('dsh SDK 走 next 线：package.json 里是精确的 x.y.z-rc.N 版本，不是 latest 线（R33）', () => {
     const manifest = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
     ) as { dependencies?: Record<string, string> };
     const declared = manifest.dependencies?.['@deepseek-ai/dsh-sdk-client'];
 
     expect(declared, 'dsh SDK 必须声明在 agents 包的 dependencies 里').toBeTypeOf('string');
-    // `latest` 线的形态是 `0.0.1-rc.1`（或带 ^ 的区间），而 next 线是 `0.1.x-rc.N` 精确值
+    // `latest` 线的形态是 `0.0.1-rc.1`，而 next 线是精确的 `x.y.z-rc.N` 预发布值
     // （pnpm 对预发布不写前缀，这也是 R33 原文「实测写入 0.1.7-rc.1」的由来）
-    expect(declared).toMatch(/^0\.1\.\d+-rc\.\d+$/);
+    expect(declared).toMatch(/^\d+\.\d+\.\d+-rc\.\d+$/);
+    expect(declared).not.toBe('0.0.1-rc.1');
     expect(declared).not.toContain('latest');
     expect(declared).not.toMatch(/^[\^~]/);
   });

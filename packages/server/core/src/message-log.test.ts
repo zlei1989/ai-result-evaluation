@@ -52,7 +52,7 @@ function message(overrides: Partial<AgentMessage> = {}): AgentMessage {
     role: 'assistant',
     source: 'wire',
     roundTrip: 1,
-    vendorTurn: null,
+    turn: null,
     step: null,
     parentCallId: null,
     subagentId: null,

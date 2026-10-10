@@ -58,7 +58,14 @@ export {
   // 类名要跨包核对的缘故见 `agent-activity-line.tsx` 的文件头：样式在 apps/web-next 的 globals.css 里，
   // 两处各写一份字符串必然漂移，而「类名对不上」在浏览器里是静默的（动画消失、无报错）。
   ACTIVITY_SWEEP_CLASS,
+  ACTIVITY_TYPING_CLASS,
   AgentActivityLine,
+  activityText,
+  lastSegmentOf,
+  staticActivityText,
+  typingOf,
+  type ActivityTyping,
+  type AgentActivity,
   type AgentActivityLineProps,
 } from './base/agent-activity-line';
 export { ListDetailLayout, type ListDetailLayoutProps } from './base/list-detail-layout';

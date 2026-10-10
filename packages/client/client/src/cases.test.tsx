@@ -1,6 +1,7 @@
 /**
  * 用例 hooks：路由 URL 就是 SWR 的 cache key、mutation 后列表被刷新、详情缓存被回写、
- * 以及「校验仓库 / commit 候选 / 生成评分标准项按**仓库路径**走，URL 里不出现 caseId」（接口契约 §11 R7）。
+ * 以及「校验仓库 / commit 候选 / 生成评分标准项按**仓库路径**走，URL 里不出现 caseId」（接口契约 §11 R7）、
+ * 用例同步的状态读取与人工动作（动作成功后要把状态缓存回写）。
  *
  * 每个用例挂一份全新的 SWR 缓存：默认 cache 是模块级单例，用例之间沿用会让第二个用例
  * 直接命中上一个用例的数据与在飞去重项，一次请求都不发，断言随之失真。
@@ -9,11 +10,13 @@ import { createElement, type ReactNode } from 'react';
 import { SWRConfig, useSWRConfig } from 'swr';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, renderHook, waitFor } from '@testing-library/react';
-import { ServiceError, type RepoInfo, type TestCase } from '@aieval/contracts';
+import { ServiceError, type CaseSyncStatus, type RepoInfo, type TestCase } from '@aieval/contracts';
 import {
   COMMITS_KEY,
   matchesCommitsKey,
   useCases,
+  useCaseSyncAction,
+  useCaseSyncStatus,
   useCommitCandidates,
   useCreateCase,
   useDeleteCase,
@@ -46,6 +49,11 @@ function makeCase(overrides: Partial<TestCase> = {}): TestCase {
   };
 }
 
+/** 列表的下行形状是 `CaseList`（用例一文件一落后，坏文件被跳过并进 warnings） */
+function caseList(cases: TestCase[], warnings: string[] = []): { cases: TestCase[]; warnings: string[] } {
+  return { cases, warnings };
+}
+
 /** 记下每次请求的 (url, method)，并按 url 返回预设响应 */
 function stubFetch(routes: Record<string, unknown>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -58,14 +66,26 @@ function stubFetch(routes: Record<string, unknown>): ReturnType<typeof vi.fn> {
 }
 
 describe('useCases / useTestCase', () => {
-  it('列表的 cache key 就是 /api/cases', async () => {
-    const fetchMock = stubFetch({ 'GET /api/cases': [makeCase()] });
+  it('列表的 cache key 就是 /api/cases，且 cases / warnings 分别透出（对外仍叫 cases）', async () => {
+    const fetchMock = stubFetch({
+      'GET /api/cases': caseList([makeCase()], ['跳过文件名不合法的用例文件：bad name.json']),
+    });
 
     const { result } = renderHook(() => useCases(), { wrapper });
 
     await waitFor(() => expect(result.current.cases).toBeDefined());
     expect(result.current.cases).toHaveLength(1);
+    // warnings 是「有文件被跳过」的唯一出口：不透出来，用户的症状是「我的用例不见了」却查不到原因
+    expect(result.current.warnings).toEqual(['跳过文件名不合法的用例文件：bad name.json']);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/cases');
+  });
+
+  it('列表还没有数据时 warnings 给空数组（页面渲染告警时不必再判一次空）', () => {
+    stubFetch({});
+
+    const { result } = renderHook(() => useCases(), { wrapper });
+
+    expect(result.current.warnings).toEqual([]);
   });
 
   it('id 为 null 时不发详情请求（打开「新建」栏不该去打一个不存在的详情）', async () => {
@@ -90,7 +110,7 @@ describe('useCases / useTestCase', () => {
 describe('useCreateCase / useUpdateCase / useDeleteCase', () => {
   it('create 发 POST /api/cases，并在之后刷新列表', async () => {
     const created = makeCase({ id: 'case-new' });
-    const fetchMock = stubFetch({ 'GET /api/cases': [], 'POST /api/cases': created });
+    const fetchMock = stubFetch({ 'GET /api/cases': caseList([]), 'POST /api/cases': created });
 
     const { result } = renderHook(() => ({ list: useCases(), create: useCreateCase() }), { wrapper });
     await waitFor(() => expect(result.current.list.cases).toBeDefined());
@@ -347,7 +367,7 @@ describe('commit 候选的 cache key 与过滤函数', () => {
   it('用 matchesCommitsKey 过滤重取：候选被重新拉取，列表不受影响', async () => {
     const fetchMock = stubFetch({
       'POST /api/cases/commits': [{ hash: 'abc1234', subject: '初始提交' }],
-      'GET /api/cases': [makeCase()],
+      'GET /api/cases': caseList([makeCase()]),
     });
 
     const { result } = renderHook(
@@ -387,5 +407,172 @@ describe('commit 候选的 cache key 与过滤函数', () => {
     // 反向对照：**漂移后的字面量**（页面自带一份副本时最可能写出的东西）必须匹配不到——
     // 它演示的正是「点了没反应」的成因
     expect(matchesCommitsKey(['/api/cases/commit-candidates', 'D:\\projects\\gateway'])).toBe(false);
+  });
+});
+
+/**
+ * 用例同步的两个 hook。三件事必须钉住：
+ *   ① cache key 就是路由 URL（`/api/cases/sync-status`、`/api/cases/sync`），写在别处就是「请求打到不存在的路由」；
+ *   ② 状态**不轮询**：它是用户动作驱动的快照，定时拉只会让「正在同步」与真实进度各说各话；
+ *   ③ 动作成功后要把响应**回写**状态缓存——不回写，按钮跑完到下一次 GET 之间界面还显示动作前的状态（像点了没反应）。
+ */
+describe('用例同步：状态与人工动作', () => {
+  const syncStatus = (patch: Partial<CaseSyncStatus> = {}): CaseSyncStatus => ({
+    isRepo: true,
+    hasRemote: true,
+    blockedReason: null,
+    running: false,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastCommit: null,
+    lastError: null,
+    pendingCount: 0,
+    ignoredCount: 0,
+    remoteAhead: 0,
+    localAhead: 0,
+    ...patch,
+  });
+
+  it('sync-status 的 cache key 就是 /api/cases/sync-status（GET）', async () => {
+    const fetchMock = stubFetch({ 'GET /api/cases/sync-status': syncStatus({ pendingCount: 2 }) });
+
+    const { result } = renderHook(() => useCaseSyncStatus(), { wrapper });
+
+    await waitFor(() => expect(result.current.status).toBeDefined());
+    expect(result.current.status?.pendingCount).toBe(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/cases/sync-status');
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.method).toBeUndefined();
+  });
+
+  /**
+   * 守卫：**不许开定时轮询**（`refreshInterval` 一个字都不给）。
+   * 断言落在「时间推进之后请求数没变」上而不是读源码：`refreshInterval` 是 SWR 的运行时配置，
+   * 加回去之后界面照常能用，只有当「正在同步」的 loading 与真实进度对不上时用户才会察觉。
+   * 10 分钟足以覆盖任何现实里的轮询间隔（本 hook 的候选值是 1–60s 这一档）。
+   */
+  it('sync-status 不轮询：时间推进 10 分钟也不会再取一次', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetchMock = stubFetch({ 'GET /api/cases/sync-status': syncStatus() });
+      const { result } = renderHook(() => useCaseSyncStatus(), { wrapper });
+      await waitFor(() => expect(result.current.status).toBeDefined());
+      const callsAfterLoad = fetchMock.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+      expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('状态读失败时把错误透出来（页面据此给 Alert，而不是一直等骨架屏）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { code: 'INTERNAL', message: '读不出用例目录' } }), { status: 500 }),
+      ),
+    );
+
+    const { result } = renderHook(() => useCaseSyncStatus(), { wrapper });
+
+    await waitFor(() => expect(result.current.error).toBeDefined());
+    expect((result.current.error as ServiceError).message).toContain('读不出用例目录');
+  });
+
+  it('run 发 POST /api/cases/sync，body 是 {action}，返回服务端跑完后的快照', async () => {
+    const next = syncStatus({ lastCommit: 'abcdef1', lastSuccessAt: '2026-10-09T00:00:00.000Z' });
+    const fetchMock = stubFetch({ 'POST /api/cases/sync': next });
+
+    const { result } = renderHook(() => useCaseSyncAction(), { wrapper });
+
+    await expect(result.current.run('commit')).resolves.toEqual(next);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/cases/sync');
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe('POST');
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).body).toBe(JSON.stringify({ action: 'commit' }));
+  });
+
+  it('run 的 Promise 等服务端跑完才 settle（按钮的 loading 与结果提示都靠它收口）', async () => {
+    const next = syncStatus();
+    // 用一个对象装「放行」句柄：`let release: (() => void) | null` 在闭包里赋值时，
+    // 类型检查在调用点会把它窄化成 never（TS 的流分析看不到嵌套函数里的赋值）
+    const server: { release: () => void } = { release: () => {} };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Promise<Response>((resolve) => {
+            // 服务端还在跑：此刻 resolve 掉就等于把 loading 提前关掉
+            server.release = () => resolve(new Response(JSON.stringify(next), { status: 200 }));
+          }),
+      ),
+    );
+
+    const { result } = renderHook(() => useCaseSyncAction(), { wrapper });
+    let settled = false;
+    const pending = result.current.run('pull').then(() => {
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    server.release();
+    await pending;
+    expect(settled).toBe(true);
+  });
+
+  /**
+   * 守卫：动作成功后回写 `sync-status` 缓存（与 `useUpdateCase` 回写详情缓存同源）。
+   *
+   * 断言落在**已挂载的状态 hook 的 data** 上而不是内部 cache 对象：页面看到的就是这个 data。
+   * 同时要求「没有多取一次」——该路由只有 POST，SWR 默认的 revalidate 会对它发 GET（405）；
+   * 回写本身也不该触发状态重取（响应就是最新快照）。
+   */
+  it('动作成功后把状态缓存回写成响应，且不再多取一次状态', async () => {
+    const before = syncStatus({ pendingCount: 3 });
+    const after = syncStatus({ pendingCount: 0, lastCommit: 'abcdef1', lastSuccessAt: '2026-10-09T00:00:00.000Z' });
+    const fetchMock = stubFetch({ 'GET /api/cases/sync-status': before, 'POST /api/cases/sync': after });
+
+    const { result } = renderHook(
+      () => ({ status: useCaseSyncStatus(), action: useCaseSyncAction() }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.status.status).toEqual(before));
+
+    await result.current.action.run('commit');
+
+    await waitFor(() => expect(result.current.status.status).toEqual(after));
+    const syncCalls = fetchMock.mock.calls.map(
+      ([url, init]) => `${(init as RequestInit | undefined)?.method ?? 'GET'} ${url}`,
+    );
+    expect(syncCalls.filter((call) => call.includes('/api/cases/sync'))).toEqual([
+      'GET /api/cases/sync-status',
+      'POST /api/cases/sync',
+    ]);
+  });
+
+  it('动作失败时把服务端的中文原因抛出来（页面据此 message.error）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { code: 'CONFLICT', message: '用例变更未提交：同步需要一个智能体' } }), {
+          status: 409,
+        }),
+      ),
+    );
+
+    const { result } = renderHook(() => useCaseSyncAction(), { wrapper });
+
+    let caught: unknown;
+    try {
+      await result.current.run('pull');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ServiceError);
+    expect((caught as ServiceError).code).toBe('CONFLICT');
+    expect((caught as ServiceError).message).toContain('同步需要一个智能体');
   });
 });

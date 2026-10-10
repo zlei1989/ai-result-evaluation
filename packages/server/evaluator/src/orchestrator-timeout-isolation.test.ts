@@ -7,7 +7,7 @@
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
 import { vi, describe, expect, it } from 'vitest';
-import { registerOrchestratorHooks, TEST_TIMEOUT_MS, until, seedRunnableRun, startedCwds, loadConfig, saveConfig, abortRow, abortRun, drainRunningTasks, runRow, startRun, getRun, saveRun, fakeAgents, makeProviderFixture, releaseAllAgents } from './testing/orchestrator-harness';
+import { clearCases, registerOrchestratorHooks, TEST_TIMEOUT_MS, until, seedRunnableRun, startedCwds, loadConfig, saveConfig, abortRow, abortRun, drainRunningTasks, runRow, startRun, getRun, saveRun, fakeAgents, makeProviderFixture, releaseAllAgents } from './testing/orchestrator-harness';
 
 vi.mock('@aieval/agents', async () => (await import('./testing/orchestrator-seams')).agentsMock());
 vi.mock('./judge', async (importOriginal) => {
@@ -112,9 +112,9 @@ describe('超时与失败隔离', { timeout: TEST_TIMEOUT_MS }, () => {
     // ② 没有可执行的行（全部已 judged）
     expect(() => startRun(running.run.id)).toThrow(/没有可执行/);
 
-    // ③ 用例已删除
+    // ③ 用例已删除（用例是一文件一落：删文件才是「已删除」）
     const orphan = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
-    saveConfig({ ...loadConfig(), cases: [] });
+    clearCases();
     expect(() => startRun(orphan.run.id)).toThrow(/用例已删除/);
   });
 

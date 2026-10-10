@@ -7,16 +7,21 @@
  * 数据与回调在这里注入；异步与错误提示也留在这里。
  *
  * 评分配置与工作区都写同一个 `PUT /api/settings`：它们同属一份 Settings、同一次原子落盘，
- * 不为其中任一块单开路由。工作区的「校验并保存」= `PUT { workspaceRoot }`，服务端校验通过才落盘（§6.3）。
+ * 不为其中任一块单开路由。工作区那格里两格根目录的「校验并保存」= `PUT { workspaceRoot }` / `PUT { casesRoot }`，
+ * 服务端校验通过才落盘（§6.3）；用例同步的**状态**另走 `GET /api/cases/sync-status`（只读快照），
+ * **动作**走 `POST /api/cases/sync`（跑完一轮才答复）。
  *
- * 注意：本页**没有自动化测试** —— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
- * （见 AGENTS.md）。因此页面逻辑必须薄到只剩「取值 → 传参 → 把 Promise 折成 message」：
- * 业务判断都在 ui 组件与 hooks 里，本页只负责接线与**三态分支**（就绪 / 仍在读 / 读失败）——
- * 组件 props 里没有 error 位（契约冻结），这三个状态只能由页面分，而「读失败」必须说出来，
- * 不能让「还没读到」冒充「你还没配」。验收靠 `pnpm typecheck` + `pnpm lint` + p6 冒烟。
+ * 注意：本页**没有渲染测试** —— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
+ * （见 AGENTS.md）；`src/settings-page-wiring.test.ts` 那类守卫只读源码钉接线。因此页面逻辑必须薄到
+ * 只剩「取值 → 传参 → 把 Promise 折成 message」：业务判断都在 ui 组件与 hooks 里，本页只负责接线
+ * 与**三态分支**（就绪 / 仍在读 / 读失败）——组件 props 里没有 error 位（契约冻结），
+ * 这三个状态只能由页面分，而「读失败」必须说出来，不能让「还没读到」冒充「你还没配」。
+ * 验收靠 `pnpm typecheck` + `pnpm lint` + 冒烟。
  */
 import { useState } from 'react';
 import {
+  useCaseSyncAction,
+  useCaseSyncStatus,
   useCreateProvider,
   useDeleteProvider,
   useFetchProviderModels,
@@ -26,7 +31,14 @@ import {
   useSettings,
   useUpdateProvider,
 } from '@aieval/client';
-import type { ProviderModelCapability, ProviderPatch, ProviderView, SettingsPatch, ThemeMode } from '@aieval/contracts';
+import type {
+  CaseSyncAction,
+  ProviderModelCapability,
+  ProviderPatch,
+  ProviderView,
+  SettingsPatch,
+  ThemeMode,
+} from '@aieval/contracts';
 import {
   AppTopNav,
   JudgeSettingsCard,
@@ -41,8 +53,8 @@ import { Alert, Card, Flex, Form, Segmented, Skeleton, Tabs, message } from 'ant
 import { useRouter } from 'next/navigation';
 import { NAV_ITEMS, type NavKey } from '@/src/nav';
 
-/** 最近一次工作区校验的结果：null = 还没校验过；ok=false 时 message 是服务端的中文原因 */
-interface WorkspaceValidation {
+/** 最近一次根目录校验的结果（工作区 / 用例目录共用一个形状）：null = 还没校验过；ok=false 时 message 是服务端的中文原因 */
+interface RootValidation {
   root: string;
   ok: boolean;
   message?: string;
@@ -77,7 +89,12 @@ export default function Page(): React.ReactNode {
   // 口径与同一条理由：增删模型 / 拉取之后列表会重取，对话框必须跟着刷新，而目标消失时要能看出来。
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsId, setModelsId] = useState<string | null>(null);
-  const [validation, setValidation] = useState<WorkspaceValidation | null>(null);
+  const [validation, setValidation] = useState<RootValidation | null>(null);
+  // 用例目录那一格的校验结果**独立一格**：两格共用一份会让「刚校验过工作区」把用例目录的结果顶掉
+  const [casesValidation, setCasesValidation] = useState<RootValidation | null>(null);
+  // 用例同步：状态是只读快照（不轮询），动作的成功/失败提示与缓存回写都在 hook 里
+  const { status: syncStatus, error: syncError } = useCaseSyncStatus();
+  const { run: runSync, isRunning: syncing } = useCaseSyncAction();
 
   // 被编辑的那条从列表里现取：列表一刷新，弹窗里的字段跟着走（编辑的是哪一条由 editingId 记着）
   const editing = providers?.find((provider) => provider.id === editingId) ?? null;
@@ -230,6 +247,46 @@ export default function Page(): React.ReactNode {
     );
   };
 
+  /**
+   * 用例目录「校验并保存」：与工作区那一格**逐字同一套**（`PUT { casesRoot }`，服务端校验通过才落盘）。
+   * 结果记进独立那一格：两格共用一份 state 会让「刚校验过工作区」把用例目录的结果顶掉，
+   * 而两格的可访问名一样，界面上分不出哪条结论属于哪一格。
+   */
+  const validateCasesRoot = (root: string): void => {
+    update({ casesRoot: root }).then(
+      (next) => setCasesValidation({ root: next.casesRoot, ok: true }),
+      (error: unknown) =>
+        setCasesValidation({ root, ok: false, message: error instanceof Error ? error.message : String(error) }),
+    );
+  };
+
+  /**
+   * 自动提交开关：直接落盘（`PUT { casesAutoCommit }`）。
+   * 不做乐观翻转——开关的 `checked` 读的是 `settings.casesAutoCommit`，失败时保持原值，
+   * 而失败原因由 `onError` 说出来：翻转了再翻回去会让用户以为是自己点错了。
+   */
+  const toggleAutoCommit = (value: boolean): void => {
+    void update({ casesAutoCommit: value }).catch(onError);
+  };
+
+  /**
+   * 用例同步的人工动作（提交 / 拉取）。`run` 等到服务端跑完才 settle：结果提示按**跑完之后**的快照说话
+   * ——「提交完了」与「还剩 N 个没提交」是两句话，不能都报成功。
+   * 失败走统一的 `onError`（服务端已给中文原因，这里不再包一层）。
+   */
+  const runSyncAction = (action: CaseSyncAction): void => {
+    void runSync(action).then(
+      (next) => {
+        if (next.pendingCount > 0) {
+          void message.success(`同步已完成；仍有 ${next.pendingCount} 个用例文件待提交`);
+        } else {
+          void message.success(action === 'commit' ? '用例变更已提交' : '已与远端对齐');
+        }
+      },
+      onError,
+    );
+  };
+
   const activeNav: NavKey = 'settings';
 
   return (
@@ -334,12 +391,25 @@ export default function Page(): React.ReactNode {
               key: 'workspace',
               label: '工作区',
               children: settings ? (
-                <WorkspaceSettingsCard
-                  settings={settings}
-                  saving={isUpdating}
-                  lastValidated={validation}
-                  onValidate={validateWorkspace}
-                />
+                <Flex vertical gap={12}>
+                  {/* 同步状态读不出来必须显式说清：卡片的 props 里没有 error 位（契约冻结），
+                      少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 —— 用户既等不到也没有解释 */}
+                  {syncError !== undefined && loadFailure(syncError, '用例同步状态')}
+                  {/* 两格根目录 + 自动提交开关 + 同步状态与两个动作，全部由这一张卡片承担 */}
+                  <WorkspaceSettingsCard
+                    settings={settings}
+                    saving={isUpdating}
+                    lastValidated={validation}
+                    onValidate={validateWorkspace}
+                    onValidateCasesRoot={validateCasesRoot}
+                    lastValidatedCases={casesValidation}
+                    onToggleAutoCommit={toggleAutoCommit}
+                    syncStatus={syncStatus}
+                    syncError={syncError}
+                    syncing={syncing}
+                    onSyncAction={runSyncAction}
+                  />
+                </Flex>
               ) : (
                 settingsPending
               ),

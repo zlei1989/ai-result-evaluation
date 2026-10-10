@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
-import { appendEvent, loadConfig, rowEventsFile, saveConfig, setConfigDirForTesting, type AppConfig } from '@aieval/core';
+import { appendEvent, loadConfig, rowEventsFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
 import { POST as postRun } from '@/app/api/runs/route';
 import { GET as getDiff } from '@/app/api/runs/[runId]/rows/[rowId]/diff/route';
 import { GET as getLog } from '@/app/api/runs/[runId]/rows/[rowId]/log/route';
@@ -41,6 +41,12 @@ const evaluator = vi.hoisted(() => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
+  subscribeJudgeEvents: vi.fn(() => () => {}),
+  subscribeJudgeRecords: vi.fn(() => () => {}),
+  // 候选那条记录流（spec v3 §2）：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
+  subscribeRowRecords: vi.fn(() => () => {}),
   // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
   // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
   subscribeRunChanges: vi.fn(() => () => {}),
@@ -84,11 +90,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   dir = mkdtempSync(join(tmpdir(), 'aieval-route-artifacts-'));
   setConfigDirForTesting(dir);
+  // 用例目录也指到临时目录：用例是一文件一落（core 的 case-store），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   workspaceRoot = join(dir, 'ws');
   const config = loadConfig();
   const seeded: AppConfig = {
     ...config,
-    settings: { ...config.settings, workspaceRoot },
+    settings: { ...config.settings, workspaceRoot, casesRoot: join(dir, 'cases'), casesAutoCommit: false },
     providers: [
       {
         id: 'p-anthropic',
@@ -101,22 +109,21 @@ beforeEach(() => {
         updatedAt: '2026-09-22T00:00:00.000Z',
       },
     ],
-    cases: [
-      {
-        id: 'c-1',
-        title: '多协议入站转换',
-        repoPath: 'D:\\projects\\gateway',
-        commitHash: null,
-        repoBranch: null,
-        taskPrompt: '补齐转换',
-        // 读侧对**旧版数据**（只有 judgePrompt、没有 rubric）显式抛 INTERNAL：夹具必须带这一格
-        rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
-        createdAt: '2026-09-22T00:00:00.000Z',
-        updatedAt: '2026-09-22T00:00:00.000Z',
-      },
-    ],
   };
   saveConfig(seeded);
+  // 用例按真实来路写：它是文件，不再随配置一起覆盖写
+  writeCase({
+    id: 'c-1',
+    title: '多协议入站转换',
+    repoPath: 'D:\\projects\\gateway',
+    commitHash: null,
+    repoBranch: null,
+    taskPrompt: '补齐转换',
+    // 读侧对**旧版数据**（只有 judgePrompt、没有 rubric）显式抛 INTERNAL：夹具必须带这一格
+    rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
+    createdAt: '2026-09-22T00:00:00.000Z',
+    updatedAt: '2026-09-22T00:00:00.000Z',
+  });
 
   store = new Map();
   evaluator.saveRun.mockImplementation((run: EvalRun) => {
@@ -132,6 +139,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 

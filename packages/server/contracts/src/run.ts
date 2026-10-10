@@ -180,8 +180,41 @@ export const EvalRowSchema = z.object({
    * **不是**「沿用厂商默认」也不是「关闭」；要关闭必须显式写 `EFFORT_OFF`（2026-10-06）。
    */
   effort: z.string().min(1).optional(),
+  /**
+   * 这一行的**流式增量观测**（2026-10-09 新增）：跑这一行时到底有没有、有多少条增量帧。
+   *
+   * 为什么需要它：增量帧**只广播不落盘**（`messages.jsonl` 里只有快照）⇒ 「这次有没有真的收到逐字流」
+   * 在事后**没有任何痕迹**。而这件事的答案与厂商声明是两回事：声明 `yes` 的家可能在这一次什么都没投
+   * （开关没生效 / 插件没挂上 / 厂商改了内部事件名），症状是「界面上就是不打字」，与「这家本来就没有」
+   * 长得一模一样。这一格把两者分开，且**只记运行期证据、绝不回改厂商级静态声明**（声明是能力事实，
+   * 证据是这一次的事实，混在一起会让声明随运行漂移）。
+   *
+   * **三态，且每态都必须可分辨**（缺一态就会有「观测到零帧」被读成「没观测」）：
+   *   · **缺席 / `null`** = 未观测（老 `run.json` 没有这一格；这一行也没跑到统计那一步）；
+   *   · **`frameCount === 0`** = 观测了，这一次**一条增量帧都没有**——就落这一格，不许与上一态合并；
+   *   · **`frameCount > 0`** = 有增量，`lastFrameChars` 是**最后一帧**的累积正文字符数。
+   *
+   * `lastFrameChars` 是给**中断行**复盘用的：增量不落盘 ⇒ 半截正文刷新后见（口径见
+   * `evaluator/src/row-messages.ts` 的分叉注释），这一格至少回答「它当时写到哪」。
+   * 它**不是**「这一行写了多少字」：帧是累积值、不同合并键各自累积，这里取的是最后那一条帧的读数。
+   *
+   * **可选**：老 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮（与 `attempts` /
+   * `subagentTokens` 同一条理由）。
+   */
+  streamingDelta: z
+    .object({
+      /** 转给实时通道的增量帧数（一条帧 = 一次 `onMessage` 的 `chunk === 'delta'`） */
+      frameCount: z.number().int().min(0),
+      /** 最后一帧的累积正文字符数（`text` 与 `thinking` 块的正文合计） */
+      lastFrameChars: z.number().int().min(0),
+    })
+    .nullable()
+    .optional(),
 });
 export type EvalRow = z.infer<typeof EvalRowSchema>;
+
+/** 这一行的**流式增量观测**（`EvalRow.streamingDelta` 的形状，供 orchestration 与界面共用） */
+export type RowStreamingDelta = NonNullable<EvalRow['streamingDelta']>;
 
 export const EvalRunSchema = z.object({
   id: z.string().min(1),

@@ -24,7 +24,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createLogger } from '@aieval/core';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { DSH_PERMISSION_OPTIONS } from '../../permission';
@@ -34,8 +34,16 @@ import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult, ProtocolType } from '../../types';
 import { projectDshNotification } from './events';
 import { dshSilentChildSessions, dshSubagentTurns, dshSubagentUsage } from './message';
-import { DSH_SUBAGENT_FINISHED_METHOD } from './protocol';
+import { DSH_STREAM_FAILURE_TYPE, DSH_SUBAGENT_FINISHED_METHOD, DSH_TURN_END_TYPE } from './protocol';
 import { loadDshSdk, type DshHarness, type DshNotification, type DshRuntime } from './sdk';
+import {
+  createDshStreamTapGate,
+  DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH,
+  DSH_STREAM_TAP_PLUGIN_SOURCE,
+  DSH_STREAM_TAP_POLL_MS,
+  DSH_STREAM_TAP_RELATIVE_PATH,
+  type DshStreamTapGate,
+} from './stream-tap';
 
 const logger = createLogger('agents/dsh');
 
@@ -195,6 +203,11 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     '- insert:',
     '    - id: tool-ask-user',
     '      name: "@deepseek-ai/dsh-tool-ask-user"',
+    // stream-tap 插件（流式增量旁路，见 `stream-tap.ts`）：**相对名**按 profile 目录解析
+    //（loader 的 baseUrl 就是 <dshHome>/profiles/sdk/），插件文件由适配器在同一次启动里落盘。
+    // 纯 node: 内建依赖 ⇒ 不需要 profile 的 pnpm 安装（与 `tool-ask-user` 不同，那个是包名）。
+    '    - id: aieval-stream-tap',
+    '      name: "./aieval-stream-tap.mjs"',
     '',
   ].join('\n');
 }
@@ -246,25 +259,79 @@ function notificationStream(
   sessionId: string,
   prompt: string,
   runState: DshRunState,
+  tap: DshStreamTapGate,
 ): AsyncIterable<unknown> {
   return {
     async *[Symbol.asyncIterator]() {
       const subscription = harness.client.subscribe((notification: DshNotification) => {
-        noteChildSession(notification, sessionId, runState.childSessions);
-        noteFinishedChildSession(notification, runState.finishedSessions);
-        return acceptsRunNotification(notification, sessionId, runState.childSessions);
+        deliveredNotifications += 1;
+        /**
+         * ⚠️ **过滤器绝不许抛**（2026-10-09 真机事故的直接教训）：
+         * SDK 的 `NotificationSubscriptionImpl.push()` 有一条硬语义——**过滤器抛错 = 这条订阅当场
+         * detach 并带上终态错误**（`unsubscribe()` + `fail(error)`），此后 `next()` 立刻拒绝，
+         * 而**兄弟订阅与传输读循环都不受影响**（也就是说：SDK 自己的那条订阅照常跑到收尾，
+         * 我们这一条悄悄死了，外面完全看不出区别）。
+         * 原样写这三行就等于把「通知流的生死」押在三个纯函数的健壮性上，而它们的失败模式是
+         * **整段对话静默消失**：真机 run `7f05c765` 的 dsh 行，厂商会话日志 201 条事件、
+         * 我们只收到前 13 条（+56ms 后彻底断），那次运行照旧判 `judged`、执行日志整段空白。
+         * 故这里 **fail-open**：抛了就记 ERROR、放行该条，绝不把一条通知的解析问题升级成
+         * 「这一轮的内容全不要了」。
+         */
+        try {
+          noteChildSession(notification, sessionId, runState.childSessions);
+          noteFinishedChildSession(notification, runState.finishedSessions);
+          return acceptsRunNotification(notification, sessionId, runState.childSessions);
+        } catch (error) {
+          logger.error('dsh 通知过滤器抛错（已 fail-open 放行该条；订阅若被 SDK 判死会另记 ERROR）', {
+            method: notification?.method,
+            reason: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : null,
+          });
+          return true;
+        }
       });
+      /**
+       * **会话已知表**（stream-tap 的放行判据，见 `stream-tap.ts` 的门闸注释）：
+       * 自己的会话先入；每放行一条真通知，把它带出的会话身份（`params.sessionId` 与
+       * `subagent.*` 通知的子会话三级兜底）记进来。子会话的增量行必须等 `subagent.started`
+       * **投影之后**才放——`sessionIdProfileSubagent` 只认登记过的 id，早放会把子智能体的话
+       * 挤进主会话同 step 号的载体。
+       */
+      const knownSessions = new Set<string>([sessionId]);
+      const noteKnown = (notification: DshNotification): void => {
+        const sid = readSessionId(notification);
+        if (sid !== null) knownSessions.add(sid);
+        for (const identity of childSessionIdentities(notification)) knownSessions.add(identity);
+      };
       let settled = false;
+      /** 已放行的通知条数（失败上报时用它说明「断在哪」：收到 N 条之后就再没有了） */
+      let received = 0;
+      /**
+       * **客户端投递**给我们的通知条数（SDK 对每条通知都会调用一次过滤器 ⇒ 这里就是投送总量）。
+       * 它与 `received` 的差额是「断在消费侧还是投送侧」的唯一判据（2026-10-10 排障的关键一格）。
+       */
+      let deliveredNotifications = 0;
+      /** 最后一次收到通知的时刻（停滞判据的输入） */
+      let lastNotificationAt = Date.now();
+      /** 这一轮有没有见过终态信号 `turn/end`（dsh 的终结信号，见《进程生命周期》） */
+      let sawTurnEnd = false;
       // 「run 交出去」与「promise 落定」分开记：promise 的 rejection **必须被消费掉**，否则会成为
       // unhandled rejection；但也**不能就此丢掉**——传输中断时 run() 直接拒绝、流里一条失败通知都没有，
       // 丢掉它这次运行就会被报成 `ok: true, completed`（「界面显示成功、实际没干活」）。
       // 所以记下来，在队列排空之后抛出去，交给骨架归因（AGENT_FAILED / AUTH_FAILED / …）。
       let runError: { error: unknown } | null = null;
+      /**
+       * 通知订阅**失败**的原因（`fail(error)`，不是 `close()`）。非 null 表示「投送在中途死了」——
+       * 与「这一轮本来就没内容」必须分得开：前者要如实报出去（见 `nextOrSettled` 的注释与收尾那一段），
+       * 否则整段对话静默消失，而行照旧判成功。
+       */
+      let streamFailure: unknown = null;
       let runPromise: Promise<unknown>;
       try {
         runPromise = harness.run(prompt, { sessionId });
       } catch (error) {
         subscription.close();
+        tap.close();
         throw error;
       }
       void runPromise.then(
@@ -276,12 +343,50 @@ function notificationStream(
           runError = { error };
         },
       );
+      /**
+       * **在飞的 `next()` 只能有一份，且绝不许丢弃**（2026-10-10 真机事故的根因）。
+       *
+       * 症状：客户端把**全部** 181 条通知都投递了、过滤器也全部接受，而我们的生成器只
+       * `yield` 了**前 15 条**（都在前 50 ms 内），此后 137 秒一条不落地丢掉，且**没有任何报错**——
+       * `messages.jsonl` 为 0、执行日志整段空白、行照旧判成功。
+       *
+       * 机制：循环每 `DSH_STREAM_TAP_POLL_MS`（100 ms）被 `tapWake` 唤醒一次，而**每一次竞速都新建**
+       * 一个 `subscription.next()`。竞速输给 `tapWake` 之后那个 promise 没人再 await，但它**仍然挂在
+       * SDK 的 waiter 队列里**（`NotificationSubscriptionImpl.push()` 是
+       * `const waiter = this.state.waiters.shift(); if (waiter !== undefined) waiter.resolve(notification)`）
+       * ⇒ 此后每一条通知都被交给队列里最老的**孤儿** promise（resolve 后丢弃），真正在等的那一个永远
+       * 拿不到。孤儿数量随静默时长线性增长，于是「握手之后彻底静默」成了必然，而不是偶发。
+       *
+       * 为什么探针复现不出：探针是连续 `await next()`，没有与超时竞速 ⇒ 从不产生孤儿。
+       * 修法：把在飞的 promise 记住并复用（`pendingNext`），它 settle 之后才允许再建一个。
+       */
+      let pendingNext: Promise<{ notification: DshNotification | null }> | null = null;
       const nextOrSettled = (): Promise<{ notification: DshNotification | null }> =>
-        subscription.next().then(
+        (pendingNext ??= subscription.next().then(
           (notification) => ({ notification }),
-          // 订阅在关闭时 reject 挂起的等待者（真实语义）：那一刻流就该结束
-          () => ({ notification: null }),
-        );
+          /**
+           * 订阅 reject 有**两种**截然不同的含义，而原实现把它们当成同一件事（静默返回 `null`）：
+           *   · **`close()`**（我们自己收尾调用的）⇒ 正常结束，流就该结束；
+           *   · **`fail(error)`**（SDK 的 `push()` 在过滤器抛错时调的，或传输读循环死了）⇒
+           *     **投送已经死了，而这一轮还远没结束**。
+           * 把第二种读成第一种的后果是真机上看到的形状：厂商会话日志 201 条、
+           * 我们只收到前 13 条，之后 138 秒的内容一条不剩，**而这一行照旧判 `judged`、
+           * 执行日志整段空白、任何一条日志都没有**（2026-10-09 run `7f05c765` 的 dsh 行）。
+           * 所以这里把失败**留下来**（`streamFailure`），收尾时如实进行事件流。
+           */
+          (error: unknown) => {
+            /**
+             * 只有**run 还没落定**时的拒绝才算「投送中途死掉」：`finally` 里我们自己的
+             * `close()` 同样会 reject 挂起的等待者（真实语义），那属于正常收尾——
+             * 不加这一条，每次用户终止都会平白多一条「通知流中断」。
+             */
+            if (!settled) streamFailure ??= error;
+            return { notification: null };
+          },
+        ).finally(() => {
+          // 这一份已经 settle ⇒ 允许下一次迭代再建一个（复用而不是遗弃，孤儿因此不可能出现）
+          pendingNext = null;
+        }));
       try {
         for (;;) {
           // **先排空再判结束**：run 落定与通知入队是两件事，`settled` 只是「不会再有新的了」，
@@ -289,31 +394,179 @@ function notificationStream(
           // 都在 run 落定之前入队，顺序反了会把它们全丢掉、用量一条都采不到）
           const immediate = subscription.tryNext();
           if (immediate !== undefined) {
+            // 计数必须**两条路径都算**：只数 `next()` 那一路会把「已放行 14 条」报成 6 条
+            received += 1;
+            lastNotificationAt = Date.now();
+            if (notificationEventType(immediate) === DSH_TURN_END_TYPE) sawTurnEnd = true;
             yield immediate;
+            noteKnown(immediate);
+            // 每放行一条真通知就读一轮旁路：子会话身份刚记进表，未知的增量行自然被门闸挂住
+            yield* tap.drain(knownSessions);
             continue;
           }
           if (settled) break;
+          /**
+           * **tap 轮询拍**（stream-tap 的关键一环）：流式期间厂商通知流是**静默**的——
+           * 一个 step 内没有任何 session 事件，增量只在旁路文件里长。没有这一拍，
+           * 增量要等到 `assistant/message` 快照之后才被读出，打字机根本不会动。
+           */
+          let tapTimer: ReturnType<typeof setTimeout> | undefined;
+          const tapWake = new Promise<{ notification: DshNotification | null }>((resolve) => {
+            tapTimer = setTimeout(() => resolve({ notification: null }), DSH_STREAM_TAP_POLL_MS);
+          });
+          /**
+           * 订阅一旦失败，`nextOrSettled()` 会**立刻**拒绝 ⇒ 再把它放进 race 就是 100% CPU 的忙循环
+           * （每次迭代秒回、跑满整轮）。故失败之后只等「run 落定」与 tap 拍——旁路是独立通道，
+           * 订阅死了它照样可能还有帧。
+           */
           const { notification } = await Promise.race([
-            nextOrSettled(),
+            ...(streamFailure === null ? [nextOrSettled()] : []),
             runPromise.then(() => ({ notification: null })),
+            tapWake,
           ]);
-          if (notification !== null) yield notification;
+          if (tapTimer !== undefined) clearTimeout(tapTimer);
+          if (notification !== null) {
+            received += 1;
+            lastNotificationAt = Date.now();
+            if (notificationEventType(notification) === DSH_TURN_END_TYPE) sawTurnEnd = true;
+            yield notification;
+            noteKnown(notification);
+          }
+          yield* tap.drain(knownSessions);
+        }
+        /**
+         * 投送中途死掉 ⇒ **必须如实报出去**（这条流是这一行唯一的内容来源）：
+         * 一条 ERROR 日志（带原因与堆栈，给排障）+ **一条 stderr 的 `log` 事件**（给界面——
+         * 否则「执行日志整段空白」就成了一句无法解释的现象，真机事故里正是如此）。
+         * 顺序在 `runError` 之前：先留下「内容为什么不全」，再让骨架按 run 的失败归因收场。
+         */
+        const end = diagnoseStreamEnd({
+          failure: streamFailure,
+          delivered: deliveredNotifications,
+          received,
+          sawTurnEnd,
+          silentMs: Date.now() - lastNotificationAt,
+        });
+        if (end.kind === 'failed' || end.kind === 'stalled') {
+          logger.error(
+            end.kind === 'failed'
+              ? 'dsh 通知订阅在中途失败：此后的事件与消息全部未采集（这一行的执行日志会不完整）'
+              : 'dsh 通知流静默停滞：既没有 turn/end、也没报错，此后的事件与消息全部未采集',
+            {
+              sessionId,
+              receivedNotifications: received,
+              sawTurnEnd,
+              silentMs: Date.now() - lastNotificationAt,
+              reason: end.reason,
+              stack: streamFailure instanceof Error ? streamFailure.stack : null,
+            },
+          );
+          yield streamFailureNotification(sessionId, end.reason, received);
         }
         // 队列已空、run 也已落定：若它是**拒绝**收场的，把原因抛出去。
         // 注意顺序——先 drain 再抛：`turn/end(kind:'error')` 那条通知可能已经在队列里，
         // 它带着厂商原文（更有归因价值），骨架会先看见它。
         if (runError !== null) throw (runError as { error: unknown }).error;
+        // 收尾排空：settle 之后旁路上仍可能有未读的行（最后一批增量先于 idle 落盘）
+        yield* tap.drain(knownSessions);
       } finally {
         subscription.close();
+        tap.close();
       }
     },
   };
+}
+
+/**
+ * 「静默停滞」的判据阈值：一轮结束前**超过这么久**没有任何通知、且整轮**没见过 `turn/end`**，
+ * 就认定投送在中途停住了（真机 run `7f05c765` 的 dsh 行是 **138 秒**）。
+ *
+ * 为什么用 5 秒：正常一轮的收尾几乎与最后一条通知同刻（`turn/end` → `session.status: idle` →
+ * `run()` 落定），间隔是毫秒级；而长的工具调用虽然也让流静默，但那时 `run()` **还没落定**、
+ * 循环仍在等——这个判据只在**循环退出时**看，所以不会把「模型在跑长命令」误判成停滞。
+ */
+export const DSH_SILENT_STALL_MS = 5_000;
+
+/**
+ * 循环退出时的**四种收场**（纯函数，故可单独钉住——这是「执行日志为什么是空的」的唯一答案来源）：
+ *   · `ok`      —— 正常：见过 `turn/end`，或本来就是 `runError` 收场（失败归因另有出口）；
+ *   · `failed`  —— 订阅被 SDK 判死（`fail(error)`：过滤器抛错 / 传输读循环死）；
+ *   · `stalled` —— **没有报错，但投送就是停了**：没见过 `turn/end` 且静默超过阈值。
+ *     真机第二次重跑（attempt 2）就是这一种：厂商会话日志 245 KB 内容齐全，我们 13 条之后再无音信。
+ *   · `unknown` —— 没见过 `turn/end`，但静默没超过阈值（多半是夹具那种「事件吐完就落定」的形状）
+ *     ⇒ **不报**：没有证据就不要编一个故障。
+ */
+export type DshStreamEnd =
+  | { kind: 'ok' }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'stalled'; reason: string }
+  | { kind: 'unknown' };
+
+export function diagnoseStreamEnd(input: {
+  failure: unknown;
+  /** 客户端**投递**给我们的通知条数（SDK 的过滤器每条都会被调用一次） */
+  delivered: number;
+  /** 我们真正**放行给消费侧**的条数 */
+  received: number;
+  sawTurnEnd: boolean;
+  silentMs: number;
+}): DshStreamEnd {
+  if (input.failure !== null && input.failure !== undefined) {
+    const reason = input.failure instanceof Error ? `${input.failure.name}: ${input.failure.message}` : String(input.failure);
+    return { kind: 'failed', reason };
+  }
+  if (input.sawTurnEnd) return { kind: 'ok' };
+  if (input.silentMs < DSH_SILENT_STALL_MS) return { kind: 'unknown' };
+  return {
+    kind: 'stalled',
+    /**
+     * 原因里**同时给两个数**（客户端投递了几条 vs 我们消费了几条）——这是 2026-10-10 那次
+     * 排障花了最久才拿到的一格：只报「我们收到 N 条」会把矛头指向厂商，
+     * 而真相是客户端把 181 条全投递了、我们只消费了 15 条（生成器把 `next()` promise 遗弃成孤儿）。
+     */
+    reason: input.delivered > input.received
+      ? `未收到 turn/end：客户端投递了 ${input.delivered} 条，我们只消费了 ${input.received} 条`
+        + `（最后一条距今 ${Math.round(input.silentMs / 1000)} 秒）⇒ 断点在我们这一侧的消费循环`
+      : `未收到 turn/end：客户端也只投递了 ${input.delivered} 条`
+        + `（最后一条距今 ${Math.round(input.silentMs / 1000)} 秒）⇒ 断点在投送侧`,
+  };
+}
+
+/** 一条通知里的会话事件类型（`params.event.type`）；不是会话事件就是 `null` */
+function notificationEventType(notification: DshNotification): string | null {
+  const event = notification.params?.event;
+  if (event === null || typeof event !== 'object') return null;
+  const type = (event as Record<string, unknown>).type;
+  return typeof type === 'string' ? type : null;
 }
 
 /** 从一条通知里读会话归属：两条已知方法都把它放在 `params.sessionId`。 */
 function readSessionId(notification: DshNotification): string | null {
   const value = notification.params?.sessionId;
   return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * 造一条**通知流中断**的伪通知（`aieval/stream-failure`，见 `protocol.ts`）。
+ *
+ * 它走与真通知**完全相同**的投影路径（`projectDshNotification` → 一条 stderr 的 `log`）：
+ * 读侧零分叉，且这条诊断会出现在用户当时正在看的那个「原始输出」面板里——
+ * 真机事故（2026-10-09 run `7f05c765` 的 dsh 行）里那份面板有 38,164 行、却**没有一行**
+ * 说明「执行日志为什么是空的」。
+ */
+function streamFailureNotification(sessionId: string, reason: string, receivedNotifications: number): DshNotification {
+  return {
+    method: 'session.event',
+    params: {
+      sessionId,
+      event: {
+        type: DSH_STREAM_FAILURE_TYPE,
+        seq: 0,
+        time: Date.now(),
+        data: { reason, receivedNotifications },
+      },
+    },
+  };
 }
 
 /**
@@ -498,6 +751,18 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     }),
     { encoding: 'utf8', mode: 0o600 },
   );
+  /**
+   * stream-tap 的两份落盘（**与 overlay 同一个时序**：boot 在 `new DeepSeekHarness(...)` 那一步
+   * 读 patch 装配清单并 import 插件，写晚了这一行照样「跑完」，只是没有任何增量）：
+   *   · 插件本体落 profile 目录（overlay 里 `./aieval-stream-tap.mjs` 的相对名按它解析）；
+   *   · 旁路文件**整份清零**而不是「不存在就跳过」：重跑同一行时上一轮尝试的增量行绝不能
+   *     当本轮的重放——增量只广播不落盘（2026-10-09），重放的旧行会顶掉新一轮的实时视图。
+   */
+  const tapPluginPath = join(input.configHome, DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH);
+  const tapFilePath = join(input.configHome, DSH_STREAM_TAP_RELATIVE_PATH);
+  mkdirSync(dirname(tapPluginPath), { recursive: true });
+  writeFileSync(tapPluginPath, DSH_STREAM_TAP_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(tapFilePath, '', { encoding: 'utf8' });
   const runtime: DshRuntime = new sdk.DeepSeekHarness({
     cwd: input.cwd,
     dshHome: input.configHome,
@@ -541,7 +806,13 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const finishedSessions = new Set<string>();
   const runState: DshRunState = { childSessions, finishedSessions };
   return {
-    stream: notificationStream(runtime, sessionId, input.prompt, runState),
+    stream: notificationStream(
+      runtime,
+      sessionId,
+      input.prompt,
+      runState,
+      createDshStreamTapGate(tapFilePath),
+    ),
     // 刻意空实现：dsh 不支持中途取消（元数据 cancelMidTurn: false，§5.6.2），
     // 停止请求会由第二段兜底成「关闭运行时」
     interrupt: () => {
@@ -619,11 +890,11 @@ export const dshProvider: AgentProvider = {
       structuredOutput: false,
     },
     /**
-     * 消息能力声明（spec v3 §3.5）：**四格** `'yes'`；两处缺口各按五态如实登记——
+     * 消息能力声明（spec v3 §3.5）：**五格** `'yes'`。正文增量经 **stream-tap**（`'hook'`：挂进
+     * 厂商进程的插件采集，2026-10-09）——stdio 通知流本身仍不投送增量（判例见
+     * `docs/faq/deepseek-harness.md`），机制与边界全在 `stream-tap.ts` 的文件头。
      * **思考 token**（**没有对应能力维度** ⇒ 只在 `notes` 里记「那一格恒 `null`」）（`reasoningTokens` 在本仓这条 pi-ai 路由上永不投影——`mapUsage()` 有意把推理并入
-     * `outputTokens`，而上游确实给了这个数）记 `not-projected-by-vendor`；
-     * **正文增量**同记 `not-projected-by-vendor`（厂商侧有 `text-delta`，但订阅到的通知流里没有，
-     * 真机实测见 `notes` 第一条）。
+     * `outputTokens`，而上游确实给了这个数）记 `not-projected-by-vendor`。
      */
     messageCapability: {
       thinkingText: 'yes',
@@ -631,7 +902,7 @@ export const dshProvider: AgentProvider = {
       toolInput: 'yes',
       toolResult: 'yes',
       subagent: 'yes',
-      streamingDelta: 'not-projected-by-vendor',
+      streamingDelta: 'yes',
       thinkingTextSource: 'wire',
       thinkingTextReason: null,
       toolInputSource: 'wire',
@@ -640,16 +911,21 @@ export const dshProvider: AgentProvider = {
       toolResultReason: null,
       subagentSource: 'wire',
       subagentReason: null,
-      streamingDeltaSource: null,
-      streamingDeltaReason: 'not-exposed',
+      streamingDeltaSource: 'hook',
+      streamingDeltaReason: null,
       notes: [
-        '正文增量：厂商侧**有**这个数据（LLM 层的 `text-delta`、会话日志默认把它们压成 `text-chunks` 行），'
-          + '但**订阅到的通知流里没有**——2026-10-07 真机探针实测一次完整往返共 20 条通知，'
-          + '正文只有一条整块的 `assistant/message`，增量类事件 0 条（转储 `probe/dumps/v2/dsh-chunk-shape.jsonl`）'
-          + '⇒ 这一格记 `not-projected-by-vendor`（厂商有数据，不投送到我们拿得到的通道）。'
-          + '**界面不得按「有增量」渲染**（否则是一个永远不动的打字机光标）；'
-          + '若换路由/SDK 选项后能拿到增量，改回 `yes` 并补含 delta 的场景。',
-        '思考没有逐字增量（本路由不产出 `reasoning-delta`，推理整块在 `block-end` 到达）⇒ 思考按整块渲染',
+        '正文/思考增量经 stream-tap 采集（2026-10-09）：适配器把一个插件写进每行 profile 目录'
+          + '（overlay `insert`、相对名按 profile 目录解析），插件订阅厂商进程内的 '
+          + '`agent/assistant-stream`、把 chunk 帧旁路到 `<configHome>/aieval-stream-tap.jsonl`，'
+          + '适配器 tail 后包成 `aieval/delta` 伪通知走同一条投影。stdio 通知流本身不投送增量'
+          + '（jsonrpc-server 任何版本都不订阅该进程内事件，判例 `docs/faq/deepseek-harness.md`）。',
+        '增量只广播不落盘（编排层 2026-10-09 三家统一）：`messages.jsonl` 里只有快照；'
+          + '被打断的块没有快照，那段半截正文刷新后不可见（实时视图仍有、光标停在断点）。',
+        '工具入参增量不投（block-start/block-end 只用于占位换算块位次）：tool-call 的参数走快照整块。',
+        '思考增量按 wire 实际产出投送：本路由若不产 `reasoning-delta`，思考仍整块到达（`block-end`/快照）。',
+        'max-tokens 截断的那次尝试：厂商把 `content[]` 里的 tool-call 全部丢弃，块位次按流序换算'
+          + '可能与截断后的快照错位 ⇒ 实时视图或短暂出现重复块（快照覆盖后自愈；该行本就落截断终态）。',
+        '子会话增量只放行「已登记」的会话（等 `subagent.started` 投影之后）——避免误归主会话载体。',
         '思考 token（`reasoningTokens`）结构性不可达：`llm-pi-ai` 的 `mapUsage()` 把推理并入 `outputTokens`，那一格恒 `null`',
         '子任务级用量不在 `subagent.*` 通知里 ⇒ 按 `params.sessionId` 把子会话的 `assistant/message.usage` 分组求和',
         '运行时被强制终止时收不到 `subagent.finished` ⇒ 界面必须能显示「未收场」',

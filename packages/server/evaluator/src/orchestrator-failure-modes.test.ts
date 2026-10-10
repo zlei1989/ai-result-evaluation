@@ -7,7 +7,7 @@
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
 import { vi, describe, expect, it } from 'vitest';
-import { registerOrchestratorHooks, TEST_TIMEOUT_MS, until, home, seedRunnableRun, mkdirSync, join, loadConfig, readEvents, rowEventsFile, saveConfig, saveRun, rescoreRow, runRow, getRun, fakeAgents, fakeJudge } from './testing/orchestrator-harness';
+import { clearCases, registerOrchestratorHooks, TEST_TIMEOUT_MS, until, home, seedRunnableRun, mkdirSync, join, loadConfig, overwriteCase, readEvents, rowEventsFile, saveConfig, saveRun, rescoreRow, runRow, getRun, fakeAgents, fakeJudge } from './testing/orchestrator-harness';
 
 vi.mock('@aieval/agents', async () => (await import('./testing/orchestrator-seams')).agentsMock());
 vi.mock('./judge', async (importOriginal) => {
@@ -139,8 +139,8 @@ describe('runRow：失败面与配置漂移（每一行都必须落到终态 + �
 
   it('用例已删除 → failed 且说明「历史可看、不能跑」', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
-    const config = loadConfig();
-    saveConfig({ ...config, cases: [] });
+    // 用例是一文件一落：把用例文件删掉才是「用例已被删除」（配置里已经没有 cases 这一格了）
+    clearCases();
 
     await runRow(run.id, run.rows[0]?.id ?? '');
 
@@ -269,11 +269,10 @@ describe('runRow：失败面与配置漂移（每一行都必须落到终态 + �
     // `withJudge: true` 是承重的：不配评分模型的话，「评分器一次都没被调用」会因为另一个原因成立（假绿）
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', withJudge: true });
     const rowId = run.rows[0]?.id ?? '';
-    // 空表同时写进**用例**与这一轮的**快照**：真实来路是「手改过的 config.json 里那条用例是空表，
+    // 空表同时写进**用例**与这一轮的**快照**：真实来路是「手改过的用例文件里那条用例是空表，
     // 这一轮照着它建、于是快照也是空表」（用例的写入路径拦得住空表，落盘的这一份只能从工具外来）
     const emptyRubric = { groups: [] };
-    const config = loadConfig();
-    saveConfig({ ...config, cases: config.cases.map((item) => ({ ...item, rubric: emptyRubric })) });
+    overwriteCase(run.caseId, { rubric: emptyRubric });
     saveRun({ ...run, rubric: emptyRubric });
 
     await runRow(run.id, rowId);

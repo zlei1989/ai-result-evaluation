@@ -26,6 +26,8 @@
 - **别名**：`apps/web-next` 的 `@/*` 指应用根目录；**vitest 不读 tsconfig 的 `paths`**，故在 `apps/web-next/vitest.config.ts` 显式给 `resolve.alias`（其中把 evaluator 指向源码只为让路由测试的 `vi.mock` 生效，只活在测试期——别改成 devDependency）。
 - **jsdom 的缺口，桩的分寸**：`matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**——放进去，兜底分支再也测不到；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉，jsdom 里钉不住。jsdom 钉不住的行为由[冒烟测试方法论](/guard/smoke-testing)在真机补位。
 - **`vi.mock` 逐文件重复**：前置提升只作用于本文件。`orchestrator-*.test.ts` 每个文件都要自己写全三条 `vi.mock`（`@aieval/agents`、`./judge`、`./run-store`，`orchestrator-run-row.test.ts` 头部是标准形）；漏一条不报错，会**静默 spawn 真厂商 CLI**。这条静默坑由静态守卫兜住：`packages/server/evaluator/src/static-assertions.test.ts` 判每个 mock 工厂体的运行时边（`export {} from` 空子句也算运行时边——转译后是一条真请求），守卫自身做过变异验证：拿掉那行判据，恰好对应的新增负样本红。
+- **两处家目录默认根，两个 override 钩子**：`setConfigDirForTesting`（配置目录）与 `setCasesRootForTesting`（用例目录，默认 `~/.aieval-cases`）**互不覆盖**，夹具必须两个都设；批量动用例文件的夹具再加一道安全阀（`getCasesRootOverrideForTesting()` 为 null 就抛错，见 `evaluator/src/testing/fixtures.ts`）。隔离细节见[密钥与环境变量](/guard/secrets-and-env)。
+- **依赖「未入库产物」的守卫用 `it.skipIf(!existsSync(...))`，并在用例注释里交代怎么恢复那份产物**：真机抓包（`probe/dumps/**`）在 `.gitignore` 里、干净检出上必然没有，硬要它存在等于让一条永远不能变绿的守卫常驻门禁。先例：`agents/src/providers/codex/events.test.ts` 的抓包重放（2026-10-09），**双向验证过**——抓包缺席时该文件 `34 passed | 1 skipped`，临时放一份假抓包回去则那条守卫真的跑并失败（`1 failed | 34 skipped`），证明是「有条件跳过」而不是「被关掉」。详见 [Codex FAQ](/faq/codex) 的那条 ENOENT 条目。
 
 ## 数据与契约
 
@@ -52,6 +54,8 @@
 **墙钟由最长的文件决定**：vitest 按文件并行、文件内用例串行，套件墙钟 ≈ 最长文件的耗时。长杆文件**按 describe 拆开**，把串行长杆切成可并行的短杆——削长杆比优化每条用例划算。
 
 **历史基线（转述，只当数量级参考）**：提速前全量 `tests` 累积安静时约 2604s、带负载约 8154s（当时墙钟约 225s / 699.6s）；提速后一次全量实测 770.88s（213 个文件 / 2694 条用例，墙钟 150.12s），约 0.30× 安静基线。基线记录早于当前套件构成——**不可横比、不可当逐项判据**。
+
+**当前构成（2026-10-09，仅供判读「跑全了没有」）**：`pnpm test` 一次收 **242 个文件**（含 docs 的知识库守卫工程），安静机器上墙钟约 90s；其中 3266 条通过、8 条既有跳过。用例目录迁移那一批新增了 40 条（`core/src/case-store.test.ts` 18、`core/src/case-git.test.ts` 12、`api/src/case-sync.test.ts` 10），另把 17 个既有文件的夹具从 `config.json` 的 `cases` 迁到独立文件。
 
 **清理期 EPERM flake 的机制**（判读依据见《已知边界与取舍》）：
 

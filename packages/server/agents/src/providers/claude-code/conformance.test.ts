@@ -61,6 +61,20 @@ const TASK_ID = 'ac9fca27ed014a4ea';
 const SCENARIOS: Readonly<Record<string, readonly unknown[]>> = {
   'plain-reply': [
     textDelta('u1', '没问题'),
+    /**
+     * 思考进度帧（`system/thinking_tokens`，真机每个思考 token 一条）：它必须**零事件产出**，
+     * 摆进这个场景就是为了让套件 §2.12 的条数判据连这条通道一起钉住——只挡 `stream_event`
+     * 挡不住真机上真正刷屏的那一种（run `7f05c765` 的 claude 行里 11,629 条都是它）。
+     * 声明的事件条数（2）不变：这一条要么被丢掉、要么让条数当场变 3。
+     */
+    {
+      type: 'system',
+      subtype: 'thinking_tokens',
+      estimated_tokens: 1,
+      estimated_tokens_delta: 1,
+      session_id: '8a23d018-0dec-4c5c-b67f-8d98ac31d970',
+      uuid: 'thinking-tokens-1',
+    },
     assistant([{ type: 'text', text: '没问题，工具已就绪。' }], 'u2'),
     result('没问题，工具已就绪。'),
   ],
@@ -125,8 +139,13 @@ async function runScenario(events: readonly unknown[]): Promise<ConformanceProdu
       subagents,
       // claude 没有 `vendor-system` 通道（系统提示词不投送），故这一组整组 not-exposed
       environment: null,
-      // §2.3 的行级事件由 `agent-event.ts` 的契约管；这里不收，避免与消息组的判据混淆
-      events: [],
+      /**
+       * 行级事件**如实收**（2026-10-09）：原先这里写死 `[]`，理由是「避免与消息组的判据混淆」——
+       * 代价是套件的 §2.12（增量通道隔离）在 claude 身上**永远不可能红**：喂了增量帧、事件却恒为空数组，
+       * 把 `events.ts` 的排除分支删回去这条守卫照样绿。而 claude 恰恰是**唯一曾经真的漏过**的一家
+       * （`stream_event` 原本掉进未识别兜底）。收真事件之后，条数变化才有判据。
+       */
+      events: agentEvents,
       usage: {
         tokens: {
           input: WIRE_USAGE.input_tokens - WIRE_USAGE.cache_read_input_tokens,
@@ -161,4 +180,5 @@ describeProviderConformance({
     'tool-shell': () => products['tool-shell']!,
     subagent: () => products['subagent']!,
   },
+  expectedEventCounts: { 'plain-reply': 2 },
 });

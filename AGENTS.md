@@ -155,6 +155,7 @@ core     → contracts
 ## 持久化
 
 - 配置目录：`AIEVAL_CONFIG_DIR` > `~/.aieval`；测试用 `setConfigDirForTesting(dir)` 指向临时目录，**不得触碰真实 `~/.aieval`**
+- **用例目录是第二处「默认根在真实家目录下」**：`settings.casesRoot` > `AIEVAL_CASES_ROOT` > `~/.aieval-cases`，一用例一文件（`<id>.json`）；测试用 `setCasesRootForTesting(dir)`——`setConfigDirForTesting` **管不到**它，夹具动手前先查 `getCasesRootOverrideForTesting()`（详见 `docs/features/storage.md` 的《用例目录》）
 - **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖；不要先删目标再 rename（中间崩溃会让配置彻底消失，而 `loadConfig()` 会静默回落默认值）
 - rename 的 `EPERM` 有两种成因、处置相反：目标是只读文件（只能先删）与杀软瞬时占用（重试即可）。用 `statSync(file).mode & 0o200` 区分，别无脑先删
 - **读盘必须容忍 UTF-8 BOM**（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，`JSON.parse` 遇到就抛）；自己落盘不要产 BOM

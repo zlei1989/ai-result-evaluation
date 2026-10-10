@@ -35,6 +35,8 @@ import type {
   UsageTokens,
 } from '@aieval/contracts';
 import { toolPayloadOf } from './tool-payload';
+import { toolCallHint } from './activity';
+import { classifyTool } from './tool-family';
 
 /** 工具结果的文本上限：超出即截断，`truncation` 记 `{ kind: 'truncated' }`（结果正文与工具族统计都只看这一段） */
 export const TOOL_RESULT_MAX_CHARS = 20_000;
@@ -62,7 +64,7 @@ export interface MessageDraft {
   /** 模型往返序号，从 1 递增（三家均为合成值） */
   roundTrip: number;
   /** 厂商轮号；无则为 `null` */
-  vendorTurn: number | null;
+  turn: number | null;
   /** 一轮内的第几次调用；无则为 `null` */
   step: number | null;
   /** 派生这条消息的那次工具调用 id；无则为 `null` */
@@ -160,7 +162,7 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
         role: draft.role,
         source: draft.source,
         roundTrip: draft.roundTrip,
-        vendorTurn: draft.vendorTurn,
+        turn: draft.turn,
         step: draft.step,
         parentCallId: draft.parentCallId,
         subagentId: draft.subagentId,
@@ -242,8 +244,14 @@ function mergeDelta(current: ContentBlock, incoming: ContentBlock): ContentBlock
       text: `${current.text ?? ''}${incoming.text ?? ''}`,
       // 增量只带正文时文本档位沿用当前值：`textKind` 是随能力一起声明的事实，不由片段改写
       textKind: incoming.textKind === 'none' ? current.textKind : incoming.textKind,
-      // 签名（claude 的 `signature_delta`）只进审计：增量片段带了就覆盖，没带就保留
-      signature: incoming.signature ?? current.signature,
+      /**
+       * 签名**只能保留、不能由增量改写**（2026-10-09）：三家的增量通道都不带签名（claude 的
+       * `signature_delta` 按「非渲染增量」表不进通道，codex / dsh 结构上没有），而这一格在契约里
+       * 是**必填**（`signature: string | null`，快照路径会给真值）⇒ 合并时必须原样带过去。
+       * 注意它**不是**「后到覆盖」那一类：增量到不了这里，写 `incoming.signature ?? current.signature`
+       * 会让人以为增量可以带签名。
+       */
+      signature: current.signature,
     };
   }
   if (current.type === 'tool-call' && incoming.type === 'tool-call') {
@@ -326,6 +334,15 @@ export function thinkingBlockDraft(
  * **族载荷在这一处归一**（2026-10-04）：`payload` 由 `toolPayloadOf(family, input)` 从厂商原文算出
  * （见 `tool-payload.ts`）。放在这个咽喉点而不是各家的 `message.ts` 里，是因为三家的工具调用
  * **全部**流经本函数——每家各写一遍必然漂移，而漂移的症状是「同一族的卡片在某一家上是空的」。
+ *
+ * **摘要也在这一处生成**（2026-10-10 口径变更）：`summary` 取 `toolCallHint(name, input)`——
+ * **只有冒号后面那一段**（`Check surefire report summaries`），不带 `调用工具 <名>：` 前缀。
+ * 为什么去掉前缀（2026-10-10 用户口径）：这一格有**两个消费方**，而它们对前缀的需求相反——
+ *   · **工具行**（`ToolItemDetail` 的摘要行）把工具名渲染成一个独立元素 ⇒ 带前缀就是同一件事说两遍；
+ *   · **活动行**（卡片底部那一行）只有一行、名字必须在句子里 ⇒ 它取 `toolCallSummary(...)`
+ *     （同一个词表加前缀），不是把这一格拿去用。
+ * 词表真源仍只有 `activity.ts` 一处：界面按分层表不许 import `agents`，故那句人话随块给出，
+ * 浏览器不必把「描述优先 / 每族拼法 / 截断」再实现一遍。
  */
 export function toolCallBlockDraft(
   callId: string,
@@ -336,7 +353,15 @@ export function toolCallBlockDraft(
   return {
     phase: 'snapshot',
     identity: { kind: 'call', callId },
-    block: { type: 'tool-call', callId, family, name, input, payload: toolPayloadOf(family, input) },
+    block: {
+      type: 'tool-call',
+      callId,
+      family,
+      name,
+      input,
+      payload: toolPayloadOf(family, input),
+      summary: toolCallHint(name, input),
+    },
   };
 }
 
@@ -382,66 +407,13 @@ export function truncate(text: string, max = TOOL_RESULT_MAX_CHARS): { text: str
 }
 
 /**
- * 工具名 → 族（spec §5.2 的映射表，**三家的名字都在这张表里，按名字判、不按家判**）。
+ * 工具名 → 族（spec §5.2 的映射表）：**表在 `tool-family.ts`**。
  *
- * 名字是否出现由各家的配置与模型决定，不影响映射本身：`MultiEdit` / `LS` / `PowerShell`
- * 在当前工具表里不出现、`Task` 与 `Agent` 是同一个工具的两种叫法，映射都要在表里
- * （按名字查不到就落 `null`，消费方走通用渲染）。
+ * 为什么表不在这里：`message.ts` 要用 `toolCallSummary`（`activity.ts`），而 `activity.ts` 要用
+ * `classifyTool`（本文件）——表留在任何一边都会造成循环 import。两个消费方都只依赖
+ * `tool-family.ts`，一边一份表就会漂（「同一个名字在两处判出不同的族」是最难查的一类）。
  */
-const TOOL_FAMILY_BY_NAME: Record<string, ToolFamily> = {
-  // claude-code
-  Read: 'read-file',
-  Write: 'write-file',
-  Edit: 'edit-file',
-  MultiEdit: 'edit-file',
-  NotebookEdit: 'edit-file',
-  Grep: 'search-content',
-  Glob: 'list-files',
-  LS: 'list-files',
-  Bash: 'run-shell',
-  PowerShell: 'run-shell',
-  WebSearch: 'web-search',
-  WebFetch: 'web-search',
-  Task: 'spawn-agent',
-  Agent: 'spawn-agent',
-  TaskCreate: 'task',
-  TaskUpdate: 'task',
-  TaskList: 'task',
-  TaskGet: 'task',
-  TodoWrite: 'task',
-  AskUserQuestion: 'ask-user',
-  // codex（真名只在会话文件里；事件流的条目名也在这里登记，事件流那条通道只有派生名可用）
-  exec_command: 'run-shell',
-  shell: 'run-shell',
-  command_execution: 'run-shell',
-  write_stdin: 'run-shell',
-  web_search: 'web-search',
-  spawn_agent: 'spawn-agent',
-  collab_tool_call: 'spawn-agent',
-  update_plan: 'task',
-  request_user_input: 'ask-user',
-  // dsh
-  read: 'read-file',
-  write: 'write-file',
-  edit: 'edit-file',
-  grep: 'search-content',
-  glob: 'list-files',
-  pwsh: 'run-shell',
-  web_fetch: 'web-search',
-  subagent: 'spawn-agent',
-  subagent_fork: 'spawn-agent',
-  todo_write: 'task',
-  ask_user_question: 'ask-user',
-};
-
-/**
- * 按工具名归族；判不出来返回 `null`。
- * `mcp__<server>__<tool>` 形态（三家一致的命名）**不进这十族**：它承载的是任意 MCP 工具，
- * 猜一个族等于编一个事实（spec §5.2 的口径：归不进任何一族就 `family: null`、`name` 保留原名）。
- */
-export function classifyTool(name: string): ToolFamily | null {
-  return TOOL_FAMILY_BY_NAME[name] ?? null;
-}
+export { classifyTool } from './tool-family';
 
 /**
  * 造一份**形状恒定**的计量：两个可选格恒带（缺就是 `null`，不是缺席）。

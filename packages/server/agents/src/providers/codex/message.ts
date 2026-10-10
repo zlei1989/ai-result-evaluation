@@ -142,6 +142,24 @@ export function projectCodexMessages(
     };
   }
 
+  /**
+   * 两条**没有渲染消费点**的增量通道：显式丢弃并计数（2026-10-09，三家统一的「非渲染增量」表）。
+   *
+   * 为什么不能像原先那样落到函数末尾的 `return empty`：那样「我们主动丢了」与「上游压根没发」
+   * 在日志里**长得一模一样**，排障时只能靠猜。这里登记进 `runState.droppedDeltas`，
+   * 收尾由 `finalizeCodex` 打一条 DEBUG 汇总；**只记数、不记正文**（记正文就是另一个 O(n²) 文件）。
+   *
+   * 两条各自为什么可以丢：
+   *   · `item/plan/delta` —— 计划是**整表覆盖**的清单（`turn/plan/updated` 已经出计划卡片），
+   *     逐字流没有中间态可渲染；
+   *   · `item/commandExecution/outputDelta` —— 命令输出在工具结果里有一份完整的，
+   *     逐字流进界面只会把卡片刷屏。
+   */
+  if (payload.kind === 'planDelta' || payload.kind === 'commandOutputDelta') {
+    runState.droppedDeltas.set(payload.kind, (runState.droppedDeltas.get(payload.kind) ?? 0) + 1);
+    return empty;
+  }
+
   return empty;
 }
 
@@ -597,7 +615,7 @@ function draft(envelope: DraftEnvelope & { role: MessageDraft['role']; blocks: M
     source: 'wire',
     roundTrip: Math.max(roundTripsOf(runState, threadId), 1),
     // 厂商轮号是 `Turn.id`（标识，不是序号）⇒ 不冒充数字；这一家没有「一轮内第几次调用」
-    vendorTurn: null,
+    turn: null,
     step: null,
     // 派生关系挂在子任务行的 `parentCallId` 上（消息这一格留给工具结果与调用的配对）
     parentCallId: null,

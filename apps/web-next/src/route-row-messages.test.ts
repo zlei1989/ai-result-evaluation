@@ -16,7 +16,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type EvalRun } from '@aieval/contracts';
-import { appendMessage, loadConfig, rowMessagesFile, saveConfig, setConfigDirForTesting, type AppConfig } from '@aieval/core';
+import {
+  appendMessage,
+  loadConfig,
+  rowMessagesFile,
+  saveConfig,
+  setCasesRootForTesting,
+  setConfigDirForTesting,
+  writeCase,
+  type AppConfig,
+} from '@aieval/core';
 import { POST as postRun } from '@/app/api/runs/route';
 import { GET as getMessages } from '@/app/api/runs/[runId]/rows/[rowId]/messages/route';
 import {
@@ -35,6 +44,10 @@ const evaluator = vi.hoisted(() => ({
   abortRun: vi.fn(),
   abortRow: vi.fn(),
   subscribeRowEvents: vi.fn(() => () => {}),
+  // 评分那两条流（2026-10-10）：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
+  // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
+  subscribeJudgeEvents: vi.fn(() => () => {}),
+  subscribeJudgeRecords: vi.fn(() => () => {}),
   subscribeRowRecords: vi.fn(() => () => {}),
   // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
   // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
@@ -66,11 +79,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   dir = mkdtempSync(join(tmpdir(), 'aieval-route-messages-'));
   setConfigDirForTesting(dir);
+  // 用例目录也指到临时目录：用例是一文件一落（core 的 case-store），config 目录的 override 管不到它
+  setCasesRootForTesting(join(dir, 'cases'));
   workspaceRoot = join(dir, 'ws');
   const config = loadConfig();
   const seeded: AppConfig = {
     ...config,
-    settings: { ...config.settings, workspaceRoot },
+    settings: { ...config.settings, workspaceRoot, casesRoot: join(dir, 'cases'), casesAutoCommit: false },
     providers: [
       {
         id: 'p-anthropic',
@@ -83,21 +98,20 @@ beforeEach(() => {
         updatedAt: '2026-09-22T00:00:00.000Z',
       },
     ],
-    cases: [
-      {
-        id: 'c-1',
-        title: '多协议入站转换',
-        repoPath: 'D:\\projects\\gateway',
-        commitHash: null,
-        repoBranch: null,
-        taskPrompt: '补齐转换',
-        rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
-        createdAt: '2026-09-22T00:00:00.000Z',
-        updatedAt: '2026-09-22T00:00:00.000Z',
-      },
-    ],
   };
   saveConfig(seeded);
+  // 用例按真实来路写：它是独立文件，不再随配置一起覆盖写
+  writeCase({
+    id: 'c-1',
+    title: '多协议入站转换',
+    repoPath: 'D:\\projects\\gateway',
+    commitHash: null,
+    repoBranch: null,
+    taskPrompt: '补齐转换',
+    rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
+    createdAt: '2026-09-22T00:00:00.000Z',
+    updatedAt: '2026-09-22T00:00:00.000Z',
+  });
 
   store = new Map();
   evaluator.saveRun.mockImplementation((run: EvalRun) => {
@@ -113,6 +127,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   removeTreeWithRetry(dir);
 });
 
@@ -149,7 +164,7 @@ describe('GET .../rows/[rowId]/messages', () => {
       role: 'assistant' as const,
       source: 'wire' as const,
       roundTrip: 1,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId: null,
       subagentId: null,

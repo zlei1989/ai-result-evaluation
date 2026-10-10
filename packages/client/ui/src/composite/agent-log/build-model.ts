@@ -15,7 +15,7 @@
  *     同一个块的 delta 与 snapshot 是**两条** `messageId` 不同的消息。
  *   · **不编造**：拿不到的格一律 `null`（不写 0、不写空串）；`running` 由「该节点是否还在跑」
  *     与「这一轮是不是最后一轮」决定，**不由「有没有下一个块」推断**。
- *   · **`round` 用 `roundTrip`**：厂商轮号（`vendorTurn`）三家语义不同，明文禁止用于分组——
+ *   · **`round` 用 `roundTrip`**：厂商轮号（`turn`）三家语义不同，明文禁止用于分组——
  *     拿它当轮次号会得到「进度条 60 轮、时间轴 1 轮」的自相矛盾。
  */
 import {
@@ -41,6 +41,7 @@ import {
   type RowNode,
   type SessionNode,
   type ToolFamilyPayload,
+  type ToolInput,
   type TurnRef,
 } from './types';
 import { formatUsageTriple } from '../../base/usage-metrics';
@@ -165,6 +166,8 @@ function toContentBlock(block: ContractBlock, message: AgentMessage, id: string,
         nameMissing: block.name === '' ? 'not-observed' : null,
         family: block.family,
         input: serializeInput(block.input),
+        // 摘要主体随块从数据层下来（词表真源在 `@aieval/agents` 的 `activity.ts`）；老记录缺这一格
+        summary: block.summary ?? undefined,
         tool: familyPayloadOf(block, live, base.at),
       };
     }
@@ -191,12 +194,17 @@ function toContentBlock(block: ContractBlock, message: AgentMessage, id: string,
 /**
  * 工具入参：**结构化与原文各留一份**（dsh 的 `arguments` 是 JSON 字符串）。
  * `bytes` 按原文算，拿不到原文时**留 `null` 而不是 0**（0 会被读成「空的」）。
+ *
+ * `description` 在这里就抽出来给摘要行用（`ToolItemDetail` 的标题）：让渲染层去
+ * `JSON.parse(input.value)` 反解等于把「入参是什么形状」放成两份实现——原文那一格是**已经序列化过**
+ * 的字符串，而 `description` 是**模型自己写的一句人话**（见 `descriptionOf`）。
  */
-function serializeInput(input: unknown): { value: string | null; text: string | null; bytes: number | null } {
-  if (input === null || input === undefined) return { value: null, text: null, bytes: null };
-  if (typeof input === 'string') return { value: input, text: input, bytes: byteLength(input) };
+function serializeInput(input: unknown): ToolInput {
+  const description = descriptionOf(input);
+  if (input === null || input === undefined) return { value: null, text: null, bytes: null, description };
+  if (typeof input === 'string') return { value: input, text: input, bytes: byteLength(input), description };
   const text = safeJson(input);
-  return { value: text, text, bytes: text === null ? null : byteLength(text) };
+  return { value: text, text, bytes: text === null ? null : byteLength(text), description };
 }
 
 function safeJson(value: unknown): string | null {
@@ -279,16 +287,20 @@ function structuredOf(input: unknown): Record<string, unknown> | null {
 }
 
 /**
- * 派发调用入参里的**任务名**（`description` 是三家共用的那一格：claude 的 `Task`、dsh 的
- * `subagent`、codex 的协作调用都在这里给同一个字符串）。
- * 没有就返回 `null`——**不用 prompt 或其它字段凑**：凑出来的名字配不上任何子任务，
+ * 入参里的 `description`：**模型自己写的一句人话**。
+ *
+ * 两个消费方读的是**同一格**：工具行摘要行的标题（`serializeInput` → `ToolItemDetail`）与
+ * 派发调用的任务名（claude 的 `Task`、dsh 的 `subagent` 都用它当子任务名）。
+ * 判据只留这一份——两处各写一遍必然漂，漂了的表现是「标题里那句话与子任务名不是一句」。
+ *
+ * 没有（或只有空白）就返回 `null`——**不拿 `prompt` 或其它字段凑**：凑出来的名字配不上任何子任务，
  * 只会让「哪次调用派出了它」变成一个看起来成立、实际是错答案的关联。
  */
-function dispatchNameOf(input: unknown): string | null {
+function descriptionOf(input: unknown): string | null {
   const structured = structuredOf(input);
   if (structured === null) return null;
   const description = structured.description;
-  return typeof description === 'string' && description !== '' ? description : null;
+  return typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
 }
 
 /**
@@ -620,7 +632,7 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
       }
       // ③ 名字回填：只认「还没找到派发点的子任务」且**名字逐字相同**的那一个
       if (!isDispatchCall(block.name, block.family)) continue;
-      const description = dispatchNameOf(block.input);
+      const description = descriptionOf(block.input);
       if (description === null) continue;
       for (const candidate of sessions.values()) {
         if (candidate.node.kind === 'main' || candidate.node.spawnedBy !== null) continue;

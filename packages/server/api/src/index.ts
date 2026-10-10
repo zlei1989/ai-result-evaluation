@@ -20,6 +20,9 @@ export {
   updateCase,
   validateRepo,
 } from './cases';
+// 用例同步（2026-10）：后台把用例文件逐文件提交并推到远端，冲突由智能体裁定。
+// `enqueueCaseSync` 由 `cases.ts` 的写路径调用（不 await），另两个从 web-next 的状态/动作路由取。
+export { enqueueCaseSync, getCaseSyncStatus, resetCaseSyncForTesting, runCaseSync } from './case-sync';
 export { generateRubric, resolveJudgeRoute, type GenerateRubricResult } from './judge';
 // 重启恢复的调用点在 web-next 的启动钩子里，而依赖方向表里 web-next 只到 api / core / ui / client / contracts
 // （AGENTS.md），evaluator 不在其中，也没出现在 apps/web-next/package.json 的依赖里——pnpm 的严格
@@ -47,9 +50,20 @@ export {
   type AgentModelOption,
   type AgentOptionGroup,
 } from './runs';
-export { getRowDiffFile, getRowDiffIndex, getRowLog, getRowRecords, resetRowDiffCache } from './run-artifacts';
-export { streamRowEvents } from './run-stream';
-// 消息流（spec v3 §2）：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同
-export { streamRowRecords } from './messages-stream';
+export {
+  assertRowExists,
+  getRowDiffFile,
+  getRowDiffIndex,
+  getRowJudgeLog,
+  getRowJudgeRecords,
+  getRowLog,
+  getRowRecords,
+  resetRowDiffCache,
+} from './run-artifacts';
+// 两条事件流：行级（候选 + 编排层留痕）与评分（`judge-events.jsonl`，2026-10-10 起分开）
+export { streamJudgeEvents, streamRowEvents } from './run-stream';
+// 消息流（spec v3 §2）：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同。
+// 记录流同样有两条：候选（`messages.jsonl`）与评分（`judge-messages.jsonl`）
+export { streamJudgeRecords, streamRowRecords, type RecordStreamOptions } from './messages-stream';
 // run 级信号流：跨轮次的状态翻转通道（快照变了 ⇒ 客户端重读 REST），与三条行级流并行
 export { streamRunSignals } from './run-events';

@@ -10,21 +10,24 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ServiceError, SETTINGS_DEFAULTS, type Provider, type Settings, type TestCase } from '@aieval/contracts';
+import { ServiceError, SETTINGS_DEFAULTS, type Provider, type Settings } from '@aieval/contracts';
 import { createLogger } from './logger';
 
 const log = createLogger('config-store');
 
 /**
- * 应用配置的落盘形态：settings + providers + cases 三段。
- * providers / cases 直接复用 contracts 的领域类型——core 曾经自己声明过四个同形类型
+ * 应用配置的落盘形态：settings + providers **两段**。
+ * providers 直接复用 contracts 的领域类型——core 曾经自己声明过四个同形类型
  * （ProviderRecord / ProviderModelRecord / TestCaseRecord / ProtocolType），那是两处会漂移的
  * 重复定义：契约加一个字段而 core 忘了跟，落盘文件就少一列，而 `loadConfig` 的类型却不会报错。
+ *
+ * **用例不再住这里**（2026-10 起）：它改成 `<casesRoot>/<case-id>.json` 一文件一用例，
+ * 读写收口在 `case-store.ts`。旧 config.json 里残留的 `cases` 键**读时静默忽略**——
+ * 不迁移、不提示、不双写：留下任何一条兼容分支，都会让「用例到底存在哪」有两个答案。
  */
 export interface AppConfig {
   settings: Settings;
   providers: Provider[];
-  cases: TestCase[];
 }
 
 /** 测试可覆盖的配置目录；为 null 时回落到环境变量与家目录 */
@@ -60,7 +63,7 @@ function configFile(): string {
  * 调用方改一下嵌套字段就永久污染 SETTINGS_DEFAULTS，此后每次读取都拿到脏值。
  */
 function defaults(): AppConfig {
-  return { settings: structuredClone(SETTINGS_DEFAULTS), providers: [], cases: [] };
+  return { settings: structuredClone(SETTINGS_DEFAULTS), providers: [] };
 }
 
 /**
@@ -92,10 +95,11 @@ export function loadConfig(): AppConfig {
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   try {
     const parsed = JSON.parse(text) as Partial<AppConfig>;
+    // 只认这两段：多出来的键（旧版的 `cases`、更早的 `rowTimeoutMs`）一律丢掉，
+    // 用法与 `normalizeSettings` 的键表过滤同源——落盘文件里留着的东西不等于运行时认的东西
     return {
       settings: normalizeSettings(parsed.settings),
       providers: parsed.providers ?? [],
-      cases: parsed.cases ?? [],
     };
   } catch (error) {
     throw new ServiceError(

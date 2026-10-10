@@ -7,7 +7,45 @@ export {
   setConfigDirForTesting,
   type AppConfig,
 } from './config-store';
-export { defaultWorkspaceRoot, expandHome, resolveRootForRead, validateWorkspaceRoot } from './paths';
+export {
+  assertCaseId,
+  caseFile,
+  deleteCaseFile,
+  getCasesRoot,
+  getCasesRootOverrideForTesting,
+  listCases,
+  readCase,
+  setCasesRootForTesting,
+  writeCase,
+} from './case-store';
+export {
+  abortPendingGitOperation,
+  aheadBehind,
+  commitFile,
+  currentBranch,
+  fastForwardToUpstream,
+  fetchRemote,
+  headCommit,
+  isPathDirty,
+  isRepoRoot,
+  listCommitsSince,
+  mergeUpstream,
+  pathStatusCode,
+  pushRemote,
+  readWorktreeState,
+  remoteNames,
+  resetSoft,
+  upstreamRef,
+} from './case-git';
+export {
+  defaultCasesRoot,
+  defaultWorkspaceRoot,
+  expandHome,
+  resolveCasesRootForRead,
+  resolveRootForRead,
+  validateCasesRoot,
+  validateWorkspaceRoot,
+} from './paths';
 export {
   assertCommit,
   checkoutRow,
@@ -42,7 +80,9 @@ export {
   rowAttemptsFile,
   rowDir,
   rowEventsFile,
+  rowJudgeEventsFile,
   rowJudgeHomeDir,
+  rowJudgeMessagesFile,
   rowMessagesFile,
   rowWorkspaceDir,
   runDir,

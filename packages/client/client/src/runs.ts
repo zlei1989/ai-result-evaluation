@@ -59,6 +59,25 @@ export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
   return runRowUrl(runId, rowId, 'messages/stream');
 }
 
+/**
+ * 一行的**候选活动流**端点（2026-10-10）：`/messages/stream?replay=0` = **不回放历史**。
+ * 给卡片底部那一行的实时打字用——它只要「此刻在打字的那一句」，而历史里没有增量（delta 不落盘），
+ * 回放只会把整份 `messages.jsonl`（实测某行 4 MB）读出来、推过 socket 再丢掉。
+ * 刷新之后的静态内容由 `log.summary` 那一路兜底（它有历史回放），两层合起来才是「实时优先、历史兜底」。
+ */
+export function runRowActivityStreamUrl(runId: string, rowId: string): string {
+  return runRowUrl(runId, rowId, 'messages/stream', '?replay=0');
+}
+
+/**
+ * 一行的**评分活动流**端点（2026-10-10）：`/judge/messages/stream?replay=0`。
+ * 评审者是**另一个会话**，它的消息落在自己的文件里（`judge-messages.jsonl`）——活动行在评分阶段
+ * 看的是这一条，不是候选那条（两条同时订阅会让那一行被候选的残留内容占住）。
+ */
+export function runRowJudgeActivityStreamUrl(runId: string, rowId: string): string {
+  return `${runKey(runId)}/rows/${rowId}/judge/messages/stream?replay=0`;
+}
+
 /** 候选池与能力元数据的端点（见计划「修正 2/3」） */
 export const AGENT_OPTIONS_KEY = '/api/runs/model-options';
 

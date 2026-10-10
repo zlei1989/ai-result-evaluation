@@ -89,6 +89,41 @@ const CASES_TABLE_MIN_WIDTH =
   CASE_COLUMN_WIDTH.commitHash +
   CASE_COLUMN_WIDTH.updatedAt;
 
+/**
+ * 列表排序的两个比较器（用户口径 2026-10-08：默认「标题」倒序，标题 / 仓库 / 更新时间三列可排）。
+ * 三条口径，缺一条都会在真机上看见怪序：
+ *
+ *   ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
+ *      `numeric` 让「测试2」排在「测试10」前面而不是后面（`repoPath` 里也常带数字）；
+ *   ② **空值当最小值**，而且走显式分支：`updatedAt` 契约只声明 `z.string()`、读路径
+ *      `parseCaseFile` 又不过 schema，手改过的用例文件能让这两个排序键为空——不管的话
+ *      `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
+ *   ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
+ *      自己再按方向翻一次就是翻两次。
+ *
+ * 同值的行不需要兜底键：服务端给的就是 `updatedAt` 降序（api/cases.ts 的 `listCases`），
+ * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序，与排序方向无关。
+ *
+ * ⚠️ runs 页有同口径的两份就地实现（本次口径：比较器不抽模块）。改这里必须同时改那边。
+ */
+function compareSortText(left: unknown, right: unknown): number {
+  const leftBlank = typeof left !== 'string' || left.trim() === '';
+  const rightBlank = typeof right !== 'string' || right.trim() === '';
+  if (leftBlank || rightBlank) return leftBlank === rightBlank ? 0 : leftBlank ? -1 : 1;
+  return (left as string).localeCompare(right as string, 'zh-Hans-CN', { numeric: true });
+}
+
+/** 时间比较器（升序语义）：一律按时刻值比；解析不出时刻的（脏数据）与文本空值同一档，当最小值 */
+function compareSortTime(left: unknown, right: unknown): number {
+  const leftMs = typeof left === 'string' ? Date.parse(left) : Number.NaN;
+  const rightMs = typeof right === 'string' ? Date.parse(right) : Number.NaN;
+  const leftInvalid = Number.isNaN(leftMs);
+  const rightInvalid = Number.isNaN(rightMs);
+  // 同类 ISO 串的字典序与时刻序一致，但混进带时区偏移的写法（+08:00 与 Z 表示同一时刻）就会错位，故一律比毫秒数
+  if (leftInvalid || rightInvalid) return leftInvalid === rightInvalid ? 0 : leftInvalid ? -1 : 1;
+  return leftMs - rightMs;
+}
+
 export default function Page(): React.ReactNode {
   return (
     <Suspense fallback={<CasesFallback />}>
@@ -129,7 +164,7 @@ function CasesWorkspace(): React.ReactNode {
   const id = searchParams.get('id');
   const caseIdForQuery = panel === 'detail' || panel === 'edit' ? id : null;
 
-  const { cases, error: listError } = useCases();
+  const { cases, warnings, error: listError } = useCases();
   const { testCase, error: caseError } = useTestCase(caseIdForQuery);
   const { create, isCreating } = useCreateCase();
   const { update, isUpdating } = useUpdateCase();
@@ -290,6 +325,15 @@ function CasesWorkspace(): React.ReactNode {
     {
       title: '标题',
       dataIndex: 'title',
+      // 默认排序（用户口径 2026-10-08）：进入页面就是「标题」倒序。
+      // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
+      // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
+      defaultSortOrder: 'descend',
+      // 首次点击升序：**这一列必须显式给** `['descend','ascend']`——antd 默认的 `['ascend','descend']`
+      // 在「当前已是 descend」时 `indexOf+1` 越界，点一下会直接**取消排序**（回到服务端顺序），
+      // 而不是切到升序。首项是本列的默认方向，循环才是 降序 → 升序 → 取消。
+      sortDirections: ['descend', 'ascend'],
+      sorter: (a: TestCase, b: TestCase) => compareSortText(a.title, b.title),
       // 钉在左边（用户口径 2026-10-08）：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
       // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
       // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
@@ -302,6 +346,10 @@ function CasesWorkspace(): React.ReactNode {
       title: '仓库',
       dataIndex: 'repoPath',
       width: CASE_COLUMN_WIDTH.repoPath,
+      // 按**显示的仓库名**排（所见即所排，用户口径 2026-10-08）；同名再按全路径兜底，两个键同向翻转
+      sorter: (a: TestCase, b: TestCase) =>
+        compareSortText(displayRepoName(a.repoPath), displayRepoName(b.repoPath)) ||
+        compareSortText(a.repoPath, b.repoPath),
       render: (repoPath: string) => (
         // 列里只给末段，全路径在 Tooltip：深路径会把这列撑开、把标题挤没。
         // 取名一律走 contracts 的 `displayRepoName`（**渲染期专用、任何字符串都不抛**）：列表画的是
@@ -331,6 +379,9 @@ function CasesWorkspace(): React.ReactNode {
       title: '更新时间',
       dataIndex: 'updatedAt',
       width: CASE_COLUMN_WIDTH.updatedAt,
+      // 时间列首次点击降序（先给「最近更新在前」才符合直觉）：`sortDirections` 的首项就是首次方向
+      sortDirections: ['descend', 'ascend'],
+      sorter: (a: TestCase, b: TestCase) => compareSortTime(a.updatedAt, b.updatedAt),
       render: (updatedAt: string) => formatDateTime(updatedAt),
     },
   ];
@@ -359,6 +410,17 @@ function CasesWorkspace(): React.ReactNode {
       {/* `!= null` 一次挡住 undefined 与 null：SWR 用 undefined 表示「没有错误」，写法越多越容易漏掉一个 */}
       {listError != null && (
         <Alert type="error" showIcon title={`用例列表读不出来：${errorMessage(listError)}`} />
+      )}
+      {/* 用例一文件一落后，坏文件是**跳过**的（一条坏文件不能让整页列表 500）。跳过而不说，
+          用户的症状是「我的用例不见了」却查不到原因——这条例外清单就是那句话的唯一出口 */}
+      {warnings.length > 0 && (
+        <Alert
+          data-testid="cases-warnings"
+          type="warning"
+          showIcon
+          title={`有 ${warnings.length} 个用例文件被跳过，这些用例没有显示出来`}
+          description={warnings.join('；')}
+        />
       )}
       {cases === undefined ? (
         <Card size="small">

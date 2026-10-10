@@ -5,6 +5,8 @@ export {
   COMMITS_KEY,
   matchesCommitsKey,
   useCases,
+  useCaseSyncAction,
+  useCaseSyncStatus,
   useCommitCandidates,
   useCreateCase,
   useDeleteCase,
@@ -54,6 +56,18 @@ export {
   type UseRowMessagesResult,
 } from './row-messages';
 export { useRunLiveMetrics, type RowLiveMetrics } from './row-live';
+/**
+ * 活动行的**实时打字内容**（2026-10-10）：折 AgentMessage 的内容流（正文 / 工具摘要），
+ * 与 `useRunLiveMetrics` 折事件流是同一层的两条路——活动行把两者叠起来用（实时优先、历史兜底）。
+ */
+export {
+  EMPTY_ACTIVITY,
+  activityOfMessage,
+  parseActivityFrame,
+  useRunActivity,
+  type ActivityRowInput,
+  type RowActivity,
+} from './run-activity';
 /**
  * 环境信息的拼装（设计 §4.3）。**纯函数**，与 `buildRowFacts` / `buildAgentLogModel` 同一条边界：
  * 页面只做拼装，判定与文案都在数据层定死（页面没有测试面）。

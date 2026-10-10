@@ -323,7 +323,17 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
     });
     const blocks = messages.filter((one) => one.subagentId === null).flatMap((one) => one.blocks);
     expect(blocks).toEqual([
-      { type: 'tool-call', callId: 'c1', family: 'run-shell', name: 'exec_command', input: { command: 'npm test', cwd: 'D:/w' }, payload: null },
+      {
+        type: 'tool-call',
+        callId: 'c1',
+        family: 'run-shell',
+        name: 'exec_command',
+        input: { command: 'npm test', cwd: 'D:/w' },
+        payload: null,
+        // 摘要主体随块给出（2026-10-10，唯一构造点 `toolCallBlockDraft` 里算）；
+        // 活动行那一句（带 `调用工具 exec_command：` 前缀）由 `events.ts` 另算，见 events.test.ts
+        summary: 'npm test',
+      },
       { type: 'tool-result', callId: 'c1', structured: { exitCode: 0, durationMs: 12 }, isError: false, text: 'ok', truncation: { kind: 'unknown' } },
     ]);
   });
@@ -774,9 +784,9 @@ describe('能力声明与 dsh 的逐格对齐', () => {
      * 两个方向都要钉住，别把这条写成「除了 `streamingDelta` 随便」：
      *   · 其余五格 + 四条取数通道必须逐格同形（原本的设计意图：两家能力面同形）；
      *   · `streamingDelta` 这一格**已知不同**，且差异有据：codex 的 app-server 有 `agentMessageDelta`
-     *     ⇒ 记 `yes` + `wire`；dsh 的通知流不投送增量（2026-10-07 真机实测：一次往返 20 条通知、
-     *     增量类 0 条、正文只有整块 `assistant/message`）⇒ 记 `not-projected-by-vendor` + `not-exposed`。
-     *     依据：`docs/faq/deepseek-harness.md` 首条、`dsh/index.ts` 的 `notes` 第一条。
+     *     ⇒ 记 `yes` + `wire`；dsh 2026-10-09 起经 stream-tap 兑现（挂进厂商进程的插件采集
+     *     `agent/assistant-stream`、旁路文件进适配器——stdio 通知流本身仍不投送，判例
+     *     `docs/faq/deepseek-harness.md`）⇒ 记 `yes` + `hook`。
      *   任一侧被改都会让这条红——要改就连同依据一起改。
      */
     for (const cell of ['thinkingText', 'thinkingTextKind', 'toolInput', 'toolResult', 'subagent'] as const) {
@@ -787,9 +797,9 @@ describe('能力声明与 dsh 的逐格对齐', () => {
     }
     expect(codex?.streamingDelta).toBe('yes');
     expect(codex?.streamingDeltaSource).toBe('wire');
-    expect(dsh?.streamingDelta).toBe('not-projected-by-vendor');
-    expect(dsh?.streamingDeltaSource).toBeNull();
-    expect(dsh?.streamingDeltaReason).toBe('not-exposed');
+    expect(dsh?.streamingDelta).toBe('yes');
+    expect(dsh?.streamingDeltaSource).toBe('hook');
+    expect(dsh?.streamingDeltaReason).toBeNull();
   });
 
   it('`reasoningOutput` / `total` / `cancelMidTurn` / `structuredOutput` 不降级', () => {

@@ -61,11 +61,18 @@ function product(payloads: readonly AppServerNotificationPayload[], options: { o
   const turnState = createTurnState();
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
+  /**
+   * 行级事件**如实收**（2026-10-09）：事件投影本来就在跑（`finalText` 由它写），原先只是把返回值丢掉、
+   * 产物里恒填 `events: []` ⇒ 套件的 §2.12（增量通道隔离）在这家**永远不可能红**。
+   * 收进来之后「增量的落点是内容块、不是事件」这条口径才有条数判据。
+   */
+  const events: Array<Record<string, unknown>> = [];
   for (const payload of payloads) {
     const projected = projectCodexMessages(payload, runState, CONTEXT);
     for (const draft of projected.drafts) assembler.ingest(draft, (message) => messages.push(message));
     subagents.push(...projected.subagents);
-    projectCodexEvent(payload, turnState, runState, { kind: 'codex', baseUrl: 'https://gw.example.com/v1', mainThreadId: MAIN });
+    const event = projectCodexEvent(payload, turnState, runState, { kind: 'codex', baseUrl: 'https://gw.example.com/v1', mainThreadId: MAIN });
+    events.push(...(event.projection.drafts as unknown as Array<Record<string, unknown>>));
   }
   // 用量走本家的累计快照（`usageByThread`），轮次走本家的计数（主线程 + 子线程各数各的）
   const snapshot = runState.usageByThread.get(MAIN);
@@ -85,7 +92,7 @@ function product(payloads: readonly AppServerNotificationPayload[], options: { o
     subagents,
     // codex 的 `vendor-system` 通道：app-server 不投送系统提示词，故这一组整组 not-exposed
     environment: null,
-    events: [],
+    events,
     usage: { tokens, turns: turns === 0 ? null : turns, subagentTokens: null, subagentTurns: null },
     result: { ok: options.ok ?? true, finalText: turnState.finalText },
   };
@@ -118,6 +125,7 @@ describeProviderConformance({
     'plain-reply': '正在检查仓库。',
     subagent: null,
   },
+  expectedEventCounts: { 'plain-reply': 1 },
   scenarios: {
     'plain-reply': () =>
       product([delta('m1', '正在'), completed({ kind: 'agentMessage', id: 'm1', text: '正在检查仓库。', phase: null })]),

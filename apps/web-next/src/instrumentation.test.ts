@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // `SETTINGS_DEFAULTS` 在 contracts（core 只转出 loadConfig / saveConfig / setConfigDirForTesting）：
 // 计划里的那一行把它一起从 core import，实测解析不到（core 的出口清单里没有它）。
 import { SETTINGS_DEFAULTS } from '@aieval/contracts';
-import { saveConfig, setConfigDirForTesting } from '@aieval/core';
+import { saveConfig, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import { register } from '@/instrumentation';
 import { removeTreeWithRetry } from './testing/cleanup';
 
@@ -31,11 +31,15 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aieval-instrumentation-'));
   workspaceRoot = join(root, 'runs');
   setConfigDirForTesting(join(root, 'config'));
-  saveConfig({ settings: { ...SETTINGS_DEFAULTS, workspaceRoot }, providers: [], cases: [] });
+  // 用例目录也指到临时目录：恢复流程会按 caseId 去读用例（core 的 case-store），
+  // 少了这一行它读的是真实家目录下的 ~/.aieval-cases
+  setCasesRootForTesting(join(root, 'cases'));
+  saveConfig({ settings: { ...SETTINGS_DEFAULTS, workspaceRoot }, providers: [] });
 });
 
 afterEach(() => {
   setConfigDirForTesting(null);
+  setCasesRootForTesting(null);
   delete process.env.NEXT_RUNTIME;
   removeTreeWithRetry(root);
 });

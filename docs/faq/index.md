@@ -20,21 +20,17 @@
 - [思考块恒为 `{"type":"thinking","text":null,"textKind":"none"}`（增量明明带着文本；界面显示「思考文本未采集」，修前显示「厂商有、我们还没接」）](/faq/codex#思考块恒为-type-thinking-text-null-textkind-none-增量明明带着文本-界面显示「思考文本未采集」-修前显示「厂商有、我们还没接」)
 - [`turn/completed` 只收到**子线程**那一条，主线程仍是 `"status":"inProgress","completedAt":null`](/faq/codex#turn-completed-只收到子线程那一条-主线程仍是-status-inprogress-completedat-null)
 - [子智能体用量与思考正文：responses 上真机已可得（**不必**换 `wire_api`）](/faq/codex#子智能体用量与思考正文-responses-上真机已可得-不必换-wire-api)
+- [`Error: ENOENT: no such file or directory, open '…/probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl'`（干净检出上「真机抓包重放」那条守卫必红）](/faq/codex#error-enoent-no-such-file-or-directory-open-probe-dumps-v6-codex-chat-wire-appserver-live-responses-subagent-jsonl-干净检出上「真机抓包重放」那条守卫必红)
 
 ### Claude Code
 
 - [`AGENT_FAILED：Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional, or set options.pathToClaudeCodeExecutable.`](/faq/claude-code#agent-failed-native-cli-binary-for-darwin-arm64-not-found-reinstall-anthropic-ai-claude-agent-sdk-without-omit-optional-or-set-options-pathtoclaudecodeexecutable)
+- [`[22:21:22] stdout {"type":"system","subtype":"thinking_tokens","estimated_tokens":1,"estimated_tokens_delta":1,"session_id":"8a23d018-0dec-4c5c-b67f-8d98ac31d970","uuid":"b51b18af-2b8c-4af6-a4d8-abbc51c011ac"}`（「原始输出」抽屉被思考进度帧刷满、页面卡死）](/faq/claude-code#_22-21-22-stdout-type-system-subtype-thinking-tokens-estimated-tokens-1-estimated-tokens-delta-1-session-id-8a23d018-0dec-4c5c-b67f-8d98ac31d970-uuid-b51b18af-2b8c-4af6-a4d8-abbc51c011ac-「原始输出」抽屉被思考进度帧刷满、页面卡死)
 
 ### DeepSeek Harness
 
 - [`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`](/faq/deepseek-harness#dsh-声明-streamingdelta-yes-但-plain-reply-场景里没有任何-delta-消息)
 - [`AssertionError: expected false to be true // Object.is equality`（`providers/dsh/index.test.ts` 的 overlay 绝对路径那条）＋仓库根长出 `D:\runs\run-1\rows\r-1\workspace`](/faq/deepseek-harness#assertionerror-expected-false-to-be-true-object-is-equality-providers-dsh-index-test-ts-的-overlay-绝对路径那条-仓库根长出-d-runs-run-1-rows-r-1-workspace)
+- [`原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）](/faq/deepseek-harness#原始输出-38164-行-但执行日志是空的-dsh-行-厂商会话日志-201-条事件-我们只收到前-13-条)
+
 ## 维护口径
-
-FAQ 按「发现即追加」持续增长：往任一份厂商 FAQ 追加二级标题条目后，必须同步本页对应厂商分组——索引同步守卫（`pnpm vitest run docs`）按二级标题解析比对三份 FAQ 的现象标题集合，少一条、多一条、改写一条都红，不允许静默漂移。本页条目的锚点由 `docs/.vitepress/pages.mjs` 复算（与 VitePress 构建产物的 heading id 逐字一致），不要手写锚点、也不要改写现象标题。
-
-## 相关链接
-
-- [Codex FAQ](/faq/codex)
-- [Claude Code FAQ](/faq/claude-code)
-- [DeepSeek Harness FAQ](/faq/deepseek-harness)

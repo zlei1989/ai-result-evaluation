@@ -247,8 +247,12 @@ export function activityOf(event: { text: string; summary?: string | undefined }
  *      带了这三个字符的不是标签，而是 JSON 的一部分。
  * 解析不动时一律按**人话**处理：宁可显示一句奇怪的话，也不要静默丢掉一条消息
  *（`[WARN] 用量负载不完整` 就走这一支）。
+ *
+ * 2026-10-10 **导出**：活动行的打字档（`run-activity.ts`）也要过这一关——评分阶段的正文就是那坨
+ * 评分结果 JSON（真机 `judge-messages.jsonl` 最后一条正是 `{"judgments":[…]}`），不过闸就会
+ * 把它逐字滚到卡片上，而口径同 2026-09-29（判据只能有一份，两边各写一遍必然漂移）。
  */
-function looksLikeMachinePayload(text: string): boolean {
+export function looksLikeMachinePayload(text: string): boolean {
   if (isJsonContainer(text)) return true;
   const tag = /^\[[^\]{}"]*\]\s*/.exec(text);
   return tag !== null && isJsonContainer(text.slice(tag[0].length));

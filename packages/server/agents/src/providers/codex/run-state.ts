@@ -58,6 +58,16 @@ export interface CodexRunState {
    * （合并器按标识归位），真机形状「同一条消息里既想又想写」会静默只剩最后一块。
    */
   blockIndices: Map<string, number>;
+  /**
+   * `通知 kind → 被**显式丢弃**的增量帧数`（2026-10-09）。
+   *
+   * 为什么要有这一格：协议里五条增量通道只有三条有渲染落点（正文 + 推理全文 + 推理摘要），
+   * 另外两条（`item/plan/delta`、`item/commandExecution/outputDelta`）**没有消费方**。
+   * 原先它们是「不写分支、落到兜底 return」——与「厂商压根没发这一条」在日志里长得一样。
+   * 这里留计数：收尾时一条 DEBUG 汇总，把「我们主动丢了什么」与「上游没给」分开。
+   * 只记数、不记正文（落正文就是另一个 O(n²) 的日志文件）。
+   */
+  droppedDeltas: Map<string, number>;
 }
 
 export function createCodexRunState(): CodexRunState {
@@ -69,6 +79,7 @@ export function createCodexRunState(): CodexRunState {
     subagentStatus: new Map(),
     reasoningDeltas: new Map(),
     blockIndices: new Map(),
+    droppedDeltas: new Map(),
   };
 }
 

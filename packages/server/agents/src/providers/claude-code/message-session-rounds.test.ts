@@ -16,7 +16,7 @@
  * ⚠️ **两条不许被下面这几条用例误伤的既有口径**（它们各有自己的守卫，这里只声明）：
  *   · 主会话的号仍是 `state.turns` 那一套（`events.ts` 的 `countModelRoundTrip` 只在主循环上加），
  *     侧链消息**不进**那个计数 ⇒ 行级轮次仍是「主 + 子」；
- *   · `vendorTurn` / `step` 仍恒 `null`（这家没有这两格）。
+ *   · `turn` / `step` 仍恒 `null`（这家没有这两格）。
  */
 import { describe, expect, it } from 'vitest';
 import { carrierKeyOf, type MessageDraft } from '../../message';

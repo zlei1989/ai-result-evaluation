@@ -12,7 +12,7 @@
  * 而 codex 与 dsh 的事件流里**没有这一类行**（逐份扫过）——那是 `not-exposed` 而不是 `not-observed`。
  */
 import { describe, expect, it } from 'vitest';
-import { EFFORT_OFF, type AgentEvent, type EnvGroup, type EvalRow, type RowRecord } from '@aieval/contracts';
+import { EFFORT_OFF, type AgentEvent, type EnvGroup, type EnvItem, type EvalRow, type RowRecord } from '@aieval/contracts';
 import { ENV_GROUP_ORDER, buildAgentEnvironment, envItem } from './build-environment';
 
 const ROW = {
@@ -93,7 +93,7 @@ function toolCall(name: string, id: string): RowRecord {
       role: 'assistant',
       source: 'wire',
       roundTrip: 1,
-      vendorTurn: null,
+      turn: null,
       step: null,
       parentCallId: null,
       subagentId: null,
@@ -353,7 +353,8 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
     const records = [toolCall('Read', 'c1'), toolCall('Read', 'c2'), toolCall('Bash', 'c3')];
     const environment = build([vendorSystemEvent()], records);
     const observed = groupOf(environment.groups, 'observed');
-    const item = observed.items[0];
+    // 按 id 取格（2026-10-09）：这一组里现在有两格，按下标取会随新增格静默取错对象
+    const item = observed.items.find((entry) => entry.id === 'observed-tools');
     if (item?.present !== true) throw new Error('实测统计应当在场');
     expect(item.text).toBe('Read × 2\nBash × 1');
     expect(item.label).toContain('2 种 / 共 3 次');
@@ -373,10 +374,51 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
 
   it('工具名为空时归到显式桶里，**不并进任何一个真名**', () => {
     const observed = groupOf(build([], [toolCall('', 'c1'), toolCall('Read', 'c2')]).groups, 'observed');
-    const item = observed.items[0];
+    const item = observed.items.find((entry) => entry.id === 'observed-tools');
     if (item?.present !== true) throw new Error('实测统计应当在场');
     expect(item.text).toContain('(未采到工具名) × 1');
     expect(item.text).toContain('Read × 1');
+  });
+
+  /**
+   * 流式增量的**运行期观测**（2026-10-09，`EvalRow.streamingDelta`）：三态必须各自可辨。
+   * 这一组的靶子是「厂商声明 yes、实际一条都没投」这档异常——它原先在界面上与「这家本来就没有」
+   * 完全同形（都是不打字），而增量帧不落盘 ⇒ 事后没有第二个地方能看出区别。
+   */
+  describe('流式增量观测（增量帧只广播不落盘，事后唯一痕迹）', () => {
+    const envWith = (streamingDelta: EvalRow['streamingDelta']): EnvGroup =>
+      groupOf(
+        buildAgentEnvironment({ row: { ...ROW, streamingDelta }, workspaceBase: '', events: [], records: [] }).groups,
+        'observed',
+      );
+    const itemOf = (group: EnvGroup): EnvItem => {
+      const item = group.items.find((entry) => entry.id === 'observed-streaming-delta');
+      if (item === undefined) throw new Error('没有 observed-streaming-delta 这一格');
+      return item;
+    };
+
+    it('格缺席 ⇒ `not-observed`（老数据 / 这一行没跑到统计那一步）', () => {
+      expect(missingOf(envWith(undefined), 'observed-streaming-delta')).toBe('not-observed');
+    });
+
+    it('显式 `null` 与缺席**同义**（契约新增可选格的老口径）', () => {
+      expect(missingOf(envWith(null), 'observed-streaming-delta')).toBe('not-observed');
+    });
+
+    it('`frameCount === 0` ⇒ **在场**且写明「观测到 0 条」，不得与「没观测」合并', () => {
+      const item = itemOf(envWith({ frameCount: 0, lastFrameChars: 0 }));
+      if (!item.present) throw new Error('观测到零帧也是一条观测，必须在场');
+      expect(item.text).toContain('0 条增量帧');
+      expect(item.text).toContain('开关未生效');
+    });
+
+    it('有增量 ⇒ 帧数与**末帧累积字数**都给（正文不落盘，这一格回答「写到哪」）', () => {
+      const item = itemOf(envWith({ frameCount: 12_345, lastFrameChars: 1_240 }));
+      if (!item.present) throw new Error('有增量时必须在场');
+      expect(item.text).toContain('增量帧 12345 条');
+      expect(item.text).toContain('末帧累积 1240 字');
+      expect(item.text).toContain('正文不落盘');
+    });
   });
 });
 

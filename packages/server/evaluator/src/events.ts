@@ -22,7 +22,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { AgentEvent } from '@aieval/contracts';
-import { appendEvent, createLogger, rowEventsFile, type PendingAgentEvent } from '@aieval/core';
+import { appendEvent, createLogger, rowEventsFile, rowJudgeEventsFile, type PendingAgentEvent } from '@aieval/core';
 import { getRunForWrite } from './run-store';
 
 const log = createLogger('events');
@@ -76,41 +76,43 @@ function resolveRunRoot(runId: string): string {
   return getRunForWrite(runId).workspaceBase;
 }
 
-/** 该行事件日志的绝对路径：优先用缓存，未命中时从**这一轮自己的根**推出来（见 resolveRunRoot） */
-function eventsFileFor(runId: string, rowId: string): string {
-  const key = cacheKey(runId, rowId);
-  const cached = eventsPaths.get(key);
-  if (cached !== undefined) return cached;
-  const file = rowEventsFile(resolveRunRoot(runId), runId, rowId);
-  eventsPaths.set(key, file);
-  return file;
-}
+/**
+ * 评分子通道的键后缀（2026-10-10）：同一个 `runId:rowId` 上有**两条**事件流（行级 / 评分），
+ * 路径缓存与订阅表都靠它分开。行级那条回答「这一行跑成什么样」，评分那条是**另一个会话**的流水。
+ */
+const JUDGE_CHANNEL = ':judge';
 
 function cacheKey(runId: string, rowId: string): string {
   return `${runId}:${rowId}`;
 }
 
 /**
- * 发布一条行事件：落盘 → 扇出。**同步**函数（适配器的 `onEvent` 契约就是同步、不 await，
- * 见 §5.6.2：事件流不能被消费者拖慢）。
- * 落盘失败**必须冒出去**：静默丢事件等于事后无法复盘这一行到底发生了什么。
+ * 取一条事件流的落点：优先用缓存，未命中时从**这一轮自己的根**推出来（见 `resolveRunRoot`）。
+ * `judge` = 评分阶段那条流（`judge-events.jsonl`）——`seq` 由 `appendEvent` 按**文件里已用的最大号**续，
+ * 所以它自带一套从 1 起的号，评分重新开始时不会把行级那条流的续订游标带偏。
  */
-export function publishRowEvent(runId: string, rowId: string, event: AgentEvent | PendingRowEvent): void {
-  const file = eventsFileFor(runId, rowId);
-  // 行目录可能还没建起来（「准备中」这条状态事件先于 prepareRowWorkspace 的目录复制）——补一次 mkdir
-  mkdirSync(dirname(file), { recursive: true });
-  const written = appendEvent(file, event);
+function channelOf(runId: string, rowId: string, judge: boolean): { key: string; file: string } {
+  const key = judge ? `${cacheKey(runId, rowId)}${JUDGE_CHANNEL}` : cacheKey(runId, rowId);
+  const cached = eventsPaths.get(key);
+  if (cached !== undefined) return { key, file: cached };
+  const root = resolveRunRoot(runId);
+  const file = judge ? rowJudgeEventsFile(root, runId, rowId) : rowEventsFile(root, runId, rowId);
+  eventsPaths.set(key, file);
+  return { key, file };
+}
 
-  const listeners = subscribers.get(cacheKey(runId, rowId));
+/** 扇出给一条流的订阅者；`scope` 只用于出错时的日志措辞（事件 / 评分事件） */
+function fanOutEvent(input: { key: string; runId: string; rowId: string; event: AgentEvent; scope: string }): void {
+  const listeners = subscribers.get(input.key);
   if (listeners === undefined) return;
   // 先复制一份再遍历：订阅者在回调里取消订阅是合法用法，直接遍历原集合会漏掉后续订阅者
   for (const listener of [...listeners]) {
     try {
-      listener(written);
+      listener(input.event);
     } catch (error) {
-      log.error('事件订阅者抛错（落盘与其它订阅者不受影响）', {
-        runId,
-        rowId,
+      log.error(`${input.scope}订阅者抛错（落盘与其它订阅者不受影响）`, {
+        runId: input.runId,
+        rowId: input.rowId,
         reason: error instanceof Error ? error.message : String(error),
       });
     }
@@ -118,12 +120,41 @@ export function publishRowEvent(runId: string, rowId: string, event: AgentEvent 
 }
 
 /**
- * 订阅某一行的**后续**事件，返回取消订阅函数（可重复调用）。
+ * 发布一条事件：落盘 → 扇出。**同步**函数（适配器的 `onEvent` 契约就是同步、不 await，
+ * 见 §5.6.2：事件流不能被消费者拖慢）。
+ * 落盘失败**必须冒出去**：静默丢事件等于事后无法复盘这一行到底发生了什么。
+ * `judge` 只决定落在哪个文件与投给哪张订阅表（见 `channelOf`）。
+ */
+function publishEvent(input: { runId: string; rowId: string; event: AgentEvent | PendingRowEvent; judge: boolean }): void {
+  const { key, file } = channelOf(input.runId, input.rowId, input.judge);
+  // 行目录可能还没建起来（「准备中」这条状态事件先于 prepareRowWorkspace 的目录复制）——补一次 mkdir
+  mkdirSync(dirname(file), { recursive: true });
+  const written = appendEvent(file, input.event);
+  fanOutEvent({ key, runId: input.runId, rowId: input.rowId, event: written, scope: input.judge ? '评分事件' : '事件' });
+}
+
+/** 发布一条**行级**事件（状态、计量、失败、结束，以及编排层自己的留痕） */
+export function publishRowEvent(runId: string, rowId: string, event: AgentEvent | PendingRowEvent): void {
+  publishEvent({ runId, rowId, event, judge: false });
+}
+
+/**
+ * 发布一条**评分阶段**的行事件（2026-10-10）：落 `judge-events.jsonl`。
+ * 判据是**产出者**不是类型——评审者那次 `run()` 交出来的事件（含 `log` / `usage` / `vendor-system` /
+ * `error`）全部走这里，而编排层自己发的行级事件（`setRowStatus`、降级留痕、终止留痕）仍走
+ * `publishRowEvent`。分开之后，执行日志那条流里只有候选这一段。
+ */
+export function publishJudgeEvent(runId: string, rowId: string, event: AgentEvent | PendingRowEvent): void {
+  publishEvent({ runId, rowId, event, judge: true });
+}
+
+/**
+ * 订阅一条事件流的**后续**事件，返回取消订阅函数（可重复调用）。
  * 不在这里回放历史：回放要读文件、要定 afterSeq、要去重，那是消费方（p5 的 SSE）按 seq 处理的活；
  * 本函数只保证「订阅之后发布的每一条都推给你」。
  */
-export function subscribeRowEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
-  const key = cacheKey(runId, rowId);
+function subscribeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void, judge: boolean): () => void {
+  const key = judge ? `${cacheKey(runId, rowId)}${JUDGE_CHANNEL}` : cacheKey(runId, rowId);
   let listeners = subscribers.get(key);
   if (listeners === undefined) {
     listeners = new Set();
@@ -138,4 +169,14 @@ export function subscribeRowEvents(runId: string, rowId: string, listener: (even
     // 空集合立刻回收：长驻服务里跑几百行，不回收就是一条缓慢的内存泄漏
     if (current.size === 0) subscribers.delete(key);
   };
+}
+
+/** 订阅候选那条事件流（行级 SSE） */
+export function subscribeRowEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
+  return subscribeEvents(runId, rowId, listener, false);
+}
+
+/** 订阅**评分**那条事件流（2026-10-10）：与执行日志分开的第二条流 */
+export function subscribeJudgeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
+  return subscribeEvents(runId, rowId, listener, true);
 }

@@ -88,6 +88,12 @@ export interface ToolItem {
   /** 归一后的族名；`null` = 适配器不认识（与「族认得但卡片没收录」不是一回事，后者 `family` 非空） */
   family: ToolCallBlock['family'];
   input: ToolCallBlock['input'];
+  /**
+   * **摘要主体**（数据层算好的一句话，不含 `调用工具 <名>：` 前缀）。
+   * **可缺**（与契约同一条理由）：老记录的 `messages.jsonl` 里没有这一格 ⇒ 读侧 `?? null`，
+   * 摘要行回落到 `input.description`、再回落参数原文首行。
+   */
+  summary?: string;
   output: ToolOutput | null;
   at: string;
   /** 有调用、结果还没到、且所在轮次尚未结束 —— 只有这一种情况才转圈（`LogTurn.running` 转发） */
@@ -354,6 +360,7 @@ export function buildRenderBlocks(
           nameMissing: block.nameMissing,
           family: block.family,
           input: block.input,
+          summary: block.summary,
           output: null,
           at: block.at,
           running: turn.running,

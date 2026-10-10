@@ -59,6 +59,8 @@ packages/client/
 
 脚手架期 api 只有 evaluator / core / contracts 三条边；后来 `api/src/runs.ts` 要读 provider 注册表（`getProvider(agentKind)`、`acceptsProtocol` / `protocolMismatchMessage`、按注册表过滤候选池），判据不硬编码在 api——于是补了 `api → agents` 这条边。内部边加得再顺，也必须显式落进方向表。
 
+**这条边后来还多了一种用法：api 层自己起智能体**（2026-10-09）。用例同步（`api/src/case-sync.ts`）要用「评分配置」的智能体写提交信息、并在与远端分叉时裁定合并，于是它调了 `getProvider(kind).run(...)`。为什么不放进另外两层：`core` 只依赖 contracts + Node 内置，起不了智能体，也不该为一次 git 同步把厂商 SDK 拖进最底层；`evaluator` 反向依赖 api 不成立，而这次编排同时要读设置、要用 `resolveJudgeRoute` / `requireJudgeAgent`（evaluator）与 git 原语（core）——**api 是唯一同时够得着这三者的层**。代价如实记：`provider.run` 的调用点不再只落在评测轮次内，跨轮次的那一处见《Provider 抽象与 run 入口》的调用点一节。
+
 ### ESLint 边界规则
 
 `eslint.shared.ts` 的 `withBoundary(pkg)` 把每个包的禁止名单展开成 `no-restricted-imports` 的 `patterns.group`——不能用 `paths.name`，精确匹配会被 `next/headers` 这类子路径绕过。现值：

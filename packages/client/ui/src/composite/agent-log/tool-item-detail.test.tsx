@@ -1,12 +1,13 @@
 /**
  * ToolItemDetail：单条工具行（摘要行 + 展开后的命令/参数与结果）。
  *
- * 五条守卫：
- *   · 摘要行有工具名与参数摘要（`value ?? text` 的第一行）；
- *   · `name === ''` 时写「工具名未采集」+ 原因，**不编名字**；
+ * 七条守卫：
+ *   · 摘要行的行首有**一块**身份牌子 + 参数摘要（`description` 缺席时是 `value ?? text` 的第一行）；
+ *   · **行首族名优先、没映射才回落工具名**（二选一，都在行首）；工具名落到展开后的正文；
+ *   · **摘要行优先给入参里的 `description`**（模型自己写的一句人话），原文仍留在展开后的正文里；
+ *   · `name === ''` 时**不编名字**，如实写「未采集」+ 原因；
  *   · `output === null && missingReason` 时写清「结果未采集 · 原因」；
- *   · `family !== null` 时出族 `Tag`；
- *   · **孤立结果不编工具名**（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）。
+ *   · 孤立结果不编工具名（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）。
  */
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +34,7 @@ function callItem(overrides: Partial<ToolItem> = {}): ToolItem {
     name: 'Bash',
     nameMissing: null,
     family: 'run-shell',
-    input: { value: '{"command":"npm test"}', text: '{"command":"npm test"}', bytes: 22 },
+    input: { value: '{"command":"npm test"}', text: '{"command":"npm test"}', bytes: 22, description: null },
     output: null,
     at: AT,
     running: false,
@@ -53,18 +54,52 @@ function orphanResult(overrides: Partial<OrphanToolResult> = {}): OrphanToolResu
 }
 
 describe('ToolItemDetail', () => {
-  it('摘要行有工具名、参数摘要与族 Tag', () => {
-    render(<ToolItemDetail entry={callItem()} open={false} onOpenChange={vi.fn()} missingReason={null} />);
+  /**
+   * 行首那一块牌子的口径（2026-10-10 用户口径）：`Bash` 与「跑命令」是同一件事的两种说法，
+   * **二选一、族名优先，且都在行首**——改前是「工具名在行首、族 Tag 在行尾」，一行里说两遍。
+   * 这条闸同时钉住「工具名没有被丢掉」：它原样落到展开后的正文。
+   */
+  it('行首是族名（人话）、工具名落到展开后的正文，参数摘要照旧', () => {
+    const { container } = render(<ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />);
 
-    expect(screen.getByText('Bash')).toBeInTheDocument();
-    expect(screen.getByText('{"command":"npm test"}')).toBeInTheDocument();
-    expect(screen.getByText('跑命令')).toBeInTheDocument();
+    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
+    const body = container.querySelector('.ant-collapse-body')?.textContent ?? '';
+    // 二选一：行首只有「跑命令」，`Bash` 一个字母都不在收起态那一行里
+    expect(header).toContain('跑命令');
+    expect(header).not.toContain('Bash');
+    expect(header).toContain('{"command":"npm test"}');
+    // 工具名没丢：展开后的正文里原样给出（排障要与厂商日志对号）
+    expect(body).toContain('工具原名');
+    expect(body).toContain('Bash');
   });
 
-  it('name 为空串时写「工具名未采集」+ 原因，且不出族以外的名字', () => {
+  it('没有族映射（`family === null`）时行首回落工具名——且正文不再重复一遍', () => {
     const { container } = render(
+      <ToolItemDetail entry={callItem({ family: null })} open onOpenChange={vi.fn()} missingReason={null} />,
+    );
+
+    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
+    expect(header).toContain('Bash');
+    expect(header).not.toContain('跑命令');
+    expect(container.querySelector('.ant-collapse-body')?.textContent).not.toContain('工具原名');
+  });
+
+  it('name 为空串：行首给族名，正文如实写「工具原名未采集 · 原因」（**不编名字**）', () => {
+    const { container } = render(
+      <ToolItemDetail entry={callItem({ name: '', nameMissing: null })} open onOpenChange={vi.fn()} missingReason={null} />,
+    );
+
+    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
+    expect(header).toContain('跑命令');
+    // 不编名字：整件里一个等宽标识符都不出
+    expect(container.querySelector('code')).toBeNull();
+    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain('工具原名未采集 · 没验证过');
+  });
+
+  it('name 为空串且没有族映射：行首就是「工具名未采集 · 原因」', () => {
+    render(
       <ToolItemDetail
-        entry={callItem({ name: '', nameMissing: null })}
+        entry={callItem({ name: '', nameMissing: null, family: null })}
         open={false}
         onOpenChange={vi.fn()}
         missingReason={null}
@@ -72,7 +107,6 @@ describe('ToolItemDetail', () => {
     );
 
     expect(screen.getByText('工具名未采集 · 没验证过')).toBeInTheDocument();
-    expect(container.querySelector('code')).toBeNull();
   });
 
   it('结果没到且给了原因时写清「结果未采集 · 原因」', () => {
@@ -94,7 +128,7 @@ describe('ToolItemDetail', () => {
     render(
       <ToolItemDetail
         entry={callItem({
-          input: { value: '{"command":"ls"}', text: '{\n  "command": "ls"\n}', bytes: 24 },
+          input: { value: '{"command":"ls"}', text: '{\n  "command": "ls"\n}', bytes: 24, description: null },
           output: { text: 'a.txt\nb.txt', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'truncated', reason: '只留前 100KB' } },
         })}
         open
@@ -108,6 +142,80 @@ describe('ToolItemDetail', () => {
     expect(screen.getByText('参数原文 24 字节')).toBeInTheDocument();
     expect(screen.getByText(/a\.txt/)).toBeInTheDocument();
     expect(screen.getByText('输出已被截断（只留前 100KB）')).toBeInTheDocument();
+  });
+
+  /**
+   * 标题（摘要行）**先给模型自己写的那句话**（`input.description`），没有才回落参数原文首行。
+   *
+   * 为什么必须钉（2026-10-10 真机）：dsh 的 `pwsh` 把 `{command, description}` 一起送来，
+   * 照原文首行渲染就是 1495px 宽的一整串 JSON——而「这一步在干什么」只在 `description` 里。
+   * 这条闸拦的是「又退回照原文首行渲染」：那是**看不出错**的回归（字都在，只是没法读），
+   * 所以两半都要断言——摘要行有人话，且**摘要行里没有那串 JSON**。
+   */
+  it('摘要行用入参里的 `description`（人话优先），原文仍留在展开后的正文里', () => {
+    const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
+    const { container } = render(
+      <ToolItemDetail
+        entry={callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } })}
+        open
+        onOpenChange={vi.fn()}
+        missingReason={null}
+      />,
+    );
+
+    expect(screen.getByText('看生产改动与状态')).toBeInTheDocument();
+    // 摘要行（收起态唯一可见的一行）里不再有那串 JSON……
+    expect(container.querySelector('.ant-collapse-header')?.textContent).not.toContain('git --no-pager diff');
+    // ……但它一字不少地留在展开后的正文里（「原文可查」不靠标题兜）
+    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain(raw);
+  });
+
+  /**
+   * 摘要行的**第一档**是数据层算好的 `tool-call.summary`（2026-10-10 口径变更：
+   * 词表真源收在 `@aieval/agents` 的 `activity.ts`，界面按分层表不许 import 它）。
+   *
+   * 为什么必须钉：这一档一旦失效，界面会**静默**退回自己抽 `description` 的老路——
+   * 症状是「每族拼法全丢」（`Read` 又变回一串绝对路径、计划类又变回 JSON），
+   * 而所有包的用例照样能绿（下面那两档回落还在）。故这里**两格都给且值不同**，
+   * 用完整的 header 文本相等来证明用的是服务端那一句。
+   */
+  it('摘要行优先用数据层算好的 `summary`（带目标那句），压过 `input.description`', () => {
+    const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
+    const { container } = render(
+      <ToolItemDetail
+        entry={callItem({
+          summary: '看生产改动与状态（git --no-pager diff）',
+          input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' },
+        })}
+        open
+        onOpenChange={vi.fn()}
+        missingReason={null}
+      />,
+    );
+
+    // 摘要行（收起态唯一可见的一行）逐字是服务端那一句——`description` 单独那句已被它吸收
+    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
+    expect(header).toContain('看生产改动与状态（git --no-pager diff）');
+    // 原文一字不少地留在展开后的正文里
+    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain(raw);
+  });
+
+  /**
+   * 老记录（`summary` 这一格落盘之前的 `messages.jsonl`）**必须还能读**：
+   * 那一格不存在时回落到 `input.description`，刷新旧 run 不出现回退。
+   */
+  it('老记录没有 `summary` 这一格 ⇒ 回落到 `description`', () => {
+    const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
+    const { container } = render(
+      <ToolItemDetail
+        entry={callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } })}
+        open
+        onOpenChange={vi.fn()}
+        missingReason={null}
+      />,
+    );
+
+    expect(container.querySelector('.ant-collapse-header')?.textContent).toContain('看生产改动与状态');
   });
 
   it('结果失败时看得见（`AgentRunStateTag` 在结果到手时不表态，这一格不能也沉默）', () => {

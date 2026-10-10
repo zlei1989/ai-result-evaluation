@@ -396,7 +396,7 @@ describe('AgentMessageSchema 的消息级 usage（2026-10-06）', () => {
     role: 'assistant' as const,
     source: 'wire' as const,
     roundTrip: 1,
-    vendorTurn: null,
+    turn: null,
     step: null,
     parentCallId: null,
     subagentId: null,

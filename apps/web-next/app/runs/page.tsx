@@ -41,6 +41,7 @@ import {
   useRowMessages,
   useRowStream,
   useRun,
+  useRunActivity,
   useRunLiveMetrics,
   useRunModelOptions,
   useRuns,
@@ -91,6 +92,14 @@ const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string 
   done: { label: '已完成', color: 'success' },
 };
 
+/**
+ * 「状态」列的排序序（用户口径 2026-10-08）：按**业务生命周期** idle → running → partial → done。
+ * 不按枚举名、也不按中文标签的字符串排——「部分完成」按拼音会插在「未开始」前面，那是没人能预期的序。
+ * 写成 `Record<EvalRun['status'], number>` 是为了让契约新增状态时 tsc 直接报错（漏一个键就编译不过）。
+ * 枚举外的状态值进不了这张表：`run.json` 里状态不合枚举会被 run-store 的 `safeParse` 跳过（只留 WARN）。
+ */
+const RUN_STATUS_RANK: Record<EvalRun['status'], number> = { idle: 0, running: 1, partial: 2, done: 3 };
+
 /** 「标题」列的兜底最小宽度：左栏被拖窄时，这一列至少还得读得下一整个用例名（与用例页同口径的 240） */
 const RUN_TITLE_MIN_WIDTH = 240;
 
@@ -116,6 +125,42 @@ const RUNS_TABLE_MIN_WIDTH =
   RUN_COLUMN_WIDTH.rows +
   RUN_COLUMN_WIDTH.executionMode +
   RUN_COLUMN_WIDTH.createdAt;
+
+/**
+ * 列表排序的两个比较器（用户口径 2026-10-08：默认「创建时间」倒序，标题 / 状态 / 创建时间三列可排）。
+ * 三条口径，缺一条都会在真机上看见怪序：
+ *
+ *   ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
+ *      `numeric` 让「测试2」排在「测试10」前面而不是后面；
+ *   ② **空值当最小值**，而且走显式分支：排的「标题」其实是 `caseTitle` 快照，契约只声明
+ *      `z.string()`（**没有 `min(1)`**），手改过的 `run.json` 能写空串进列表——不管的话
+ *      `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
+ *   ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
+ *      自己再按方向翻一次就是翻两次。
+ *
+ * 同值的行不需要兜底键：服务端给的就是 `createdAt` 降序（api/runs.ts 的 `listRunsView`），
+ * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序（同一用例的多轮自然聚在一起、
+ * 组内最近创建的在前面），与排序方向无关。
+ *
+ * ⚠️ cases 页有同口径的两份就地实现（本次口径：比较器不抽模块）。改这里必须同时改那边。
+ */
+function compareSortText(left: unknown, right: unknown): number {
+  const leftBlank = typeof left !== 'string' || left.trim() === '';
+  const rightBlank = typeof right !== 'string' || right.trim() === '';
+  if (leftBlank || rightBlank) return leftBlank === rightBlank ? 0 : leftBlank ? -1 : 1;
+  return (left as string).localeCompare(right as string, 'zh-Hans-CN', { numeric: true });
+}
+
+/** 时间比较器（升序语义）：一律按时刻值比；解析不出时刻的（脏数据）与文本空值同一档，当最小值 */
+function compareSortTime(left: unknown, right: unknown): number {
+  const leftMs = typeof left === 'string' ? Date.parse(left) : Number.NaN;
+  const rightMs = typeof right === 'string' ? Date.parse(right) : Number.NaN;
+  const leftInvalid = Number.isNaN(leftMs);
+  const rightInvalid = Number.isNaN(rightMs);
+  // 同类 ISO 串的字典序与时刻序一致，但混进带时区偏移的写法（+08:00 与 Z 表示同一时刻）就会错位，故一律比毫秒数
+  if (leftInvalid || rightInvalid) return leftInvalid === rightInvalid ? 0 : leftInvalid ? -1 : 1;
+  return leftMs - rightMs;
+}
 
 /** 当前打开的是哪个抽屉（`null` = 都关着） */
 type OpenDrawer = { kind: DrawerKind; rowId: string };
@@ -310,6 +355,16 @@ function RunsPage(): ReactNode {
    */
   const liveRowIds = (run?.rows ?? []).filter((row) => isRunningRow(row.status)).map((row) => row.id);
   const live = useRunLiveMetrics({ runId, rowIds: liveRowIds });
+  /**
+   * 活动行的**实时内容**（2026-10-10）：与上面那条指标流并列的另一路——它折的是 AgentMessage
+   * （正文 / 工具块），指标那条折的是事件。活动行把两者叠起来用：消息流有内容就以它为准（正在打字），
+   * 没有才回落到 `log.summary`（`live.latestText`）。
+   * 行集合同样只取在跑的：终态那一行已经收起，多开连接只是浪费（`useRunActivity` 里也再挡一次）。
+   */
+  const activityRows = (run?.rows ?? [])
+    .filter((row) => isRunningRow(row.status))
+    .map((row) => ({ id: row.id, status: row.status }));
+  const activity = useRunActivity({ runId, rows: activityRows });
   const log = useRowLog(runId, logRowId ?? '', logRowId !== null);
   /**
    * 时间轴的来源：内容级记录（消息 + 子任务行）。与上一条事件流**并列**、各自独立——
@@ -567,6 +622,10 @@ function RunsPage(): ReactNode {
       // 列名只叫「标题」（用户 2026-09-29）：与用例页的列表头逐字同形，左栏就一列标题，不必再冠以「用例」
       title: '标题',
       dataIndex: 'caseTitle',
+      // 排的是 `caseTitle`（创建那一轮时的用例标题**快照**，run 上没有自己的标题字段）：
+      // 用例改名不会改写历史轮次，所以这里排的是历史标题而不是当前标题。
+      // 文本列首次点击升序：antd 的默认 `sortDirections` 是 `['ascend','descend']`，不用显式给
+      sorter: (a: EvalRun, b: EvalRun) => compareSortText(a.caseTitle, b.caseTitle),
       // 钉在左边（用户口径 2026-10-08）：横向滚动时其余四列从它下面滑过，「这一行是哪个用例的评测」
       // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
       // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
@@ -579,6 +638,8 @@ function RunsPage(): ReactNode {
       title: '状态',
       dataIndex: 'status',
       width: RUN_COLUMN_WIDTH.status,
+      // 生命周期正序（未开始 → 执行中 → 部分完成 → 已完成）首次即升序：默认 `sortDirections` 就够
+      sorter: (a: EvalRun, b: EvalRun) => RUN_STATUS_RANK[a.status] - RUN_STATUS_RANK[b.status],
       render: (status: EvalRun['status']) => <Tag color={RUN_STATUS_META[status].color}>{RUN_STATUS_META[status].label}</Tag>,
     },
     {
@@ -598,6 +659,13 @@ function RunsPage(): ReactNode {
       title: '创建时间',
       dataIndex: 'createdAt',
       width: RUN_COLUMN_WIDTH.createdAt,
+      // 默认排序（用户口径 2026-10-08）：进入页面就是「创建时间」倒序。
+      // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
+      // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
+      defaultSortOrder: 'descend',
+      // 时间列首次点击降序（先给「最新在前」才符合直觉）：`sortDirections` 的首项就是首次方向
+      sortDirections: ['descend', 'ascend'],
+      sorter: (a: EvalRun, b: EvalRun) => compareSortTime(a.createdAt, b.createdAt),
       render: (createdAt: string) => formatDateTime(createdAt),
     },
   ];
@@ -720,6 +788,7 @@ function RunsPage(): ReactNode {
         aborting={isAborting}
         capabilityOf={capabilityOf}
         liveOf={(rowId) => live[rowId]}
+        activityOf={(rowId) => activity[rowId]}
         onStart={() => void guard(() => start(run.id))}
         onAbortRun={() => void guard(() => abort(run.id))}
         onAbortRow={(rowId) => void guard(() => abortRow(run.id, rowId))}

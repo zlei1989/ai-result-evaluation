@@ -37,7 +37,7 @@ function call(id: string, callId: string | null, name: string, family: ToolItem[
     name,
     nameMissing: null,
     family,
-    input: { value: '{"a":1}', text: '{"a":1}', bytes: 7 },
+    input: { value: '{"a":1}', text: '{"a":1}', bytes: 7, description: null },
     tool: null,
   };
 }

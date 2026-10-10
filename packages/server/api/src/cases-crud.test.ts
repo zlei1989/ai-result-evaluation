@@ -20,7 +20,7 @@ import {
   writeFileSync,
   join,
   ServiceError,
-  loadConfig,
+  listStoredCases,
   getRun,
   saveRun,
   createCase,
@@ -29,8 +29,7 @@ import {
   listCases,
   listCommitCandidates,
   registerCasesHooks,
-  setConfigDirForTesting,
-  getConfigDir,
+  setCasesRootForTesting,
 } from './testing/cases-harness';
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -53,7 +52,7 @@ describe('createCase / listCases / getCase', () => {
     expect(created.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
     expect(created.commitHash).toBeNull();
     // 落盘是它唯一的价值：重新读配置必须能拿到（响应体是内存对象，证明不了持久化）
-    expect(loadConfig().cases.map((item) => item.id)).toEqual([created.id]);
+    expect(listStoredCases().cases.map((item) => item.id)).toEqual([created.id]);
     expect(getCase(created.id)).toEqual(created);
   });
 
@@ -85,7 +84,7 @@ describe('createCase / listCases / getCase', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('NOT_A_GIT_REPO');
-    expect(loadConfig().cases).toEqual([]);
+    expect(listStoredCases().cases).toEqual([]);
   });
 
   it('commit hash 不存在时抛 INVALID_REF，且不落盘', () => {
@@ -98,7 +97,7 @@ describe('createCase / listCases / getCase', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INVALID_REF');
-    expect(loadConfig().cases).toEqual([]);
+    expect(listStoredCases().cases).toEqual([]);
   });
 
   // Review Focus 1 的服务端一侧：候选下拉只是便利，**不是白名单**。
@@ -132,7 +131,7 @@ describe('deleteCase', () => {
     const result = deleteCase(created.id);
 
     expect(result.affectedRuns).toBe(2);
-    expect(listCases().map((item) => item.id)).toEqual([other.id]);
+    expect(listCases().cases.map((item) => item.id)).toEqual([other.id]);
   });
 
   // 真实场景里缓存目录常常压根不存在（第一次评测还没跑）。它绝不能让「删用例」失败。
@@ -158,16 +157,24 @@ describe('deleteCase', () => {
   // 制造失败的方式是**把 rmSync 打挂一次**，而不是造一个「删不掉的目录」：
   // 后者在 CI 上不可靠（Node 的 rmSync 对文件路径会直接 unlink、对空目录总能删掉），
   // 断言会变成「删成功了也叫失败被容忍」的空转。
-  it('缓存删除失败不阻断删除（用例照样从配置里消失，只记一条 WARN）', () => {
+  //
+  // 用例搬成一文件一落之后，`deleteCase` 里有两处 rmSync（先删用例文件、再清缓存目录），
+  // 故失败必须精确打在**第二次**上：打错一次，被测的「删掉了没有」本身就没了。
+  // 顺序由 `deleteCase` 定死（`deleteCaseFile` → `removeCaseCache`），这里顺带把它钉住。
+  it('缓存删除失败不阻断删除（用例文件照样消失，只记一条 WARN）', () => {
     const created = createCase(caseInput());
-    vi.mocked(rmSync).mockImplementationOnce(() => {
-      throw new Error('EPERM: operation not permitted, rmdir');
-    });
+    // 第一次（删用例文件）走真实实现：工厂里给的就是真 rmSync
+    const realRmSync = vi.mocked(rmSync).getMockImplementation();
+    vi.mocked(rmSync)
+      .mockImplementationOnce((target, options) => realRmSync?.(target, options))
+      .mockImplementationOnce(() => {
+        throw new Error('EPERM: operation not permitted, rmdir');
+      });
 
     const result = deleteCase(created.id);
 
     expect(result.affectedRuns).toBe(0);
-    expect(loadConfig().cases).toEqual([]);
+    expect(listStoredCases().cases).toEqual([]);
   });
 
   // 守的是 spec §4.4 的核心承诺：评测记录靠 EvalRun 的冗余快照继续可读。
@@ -193,15 +200,15 @@ describe('deleteCase', () => {
 
 /**
  * 保存失败的归因：对外必须是可直接展示的中文原因，而不是裸 errno。
- * 这条用「把配置目录换成一个被文件占住的路径」制造真实的写盘失败。
+ * 用例现在**一文件一落**（不再写 `config.json`），故制造失败的位置也换成了用例目录：
+ * 把根目录换成一个被同名文件占住的路径，`mkdirSync(recursive)` 就会抛 ENOTDIR。
  */
 describe('用例保存失败的错误信封', () => {
-  // 保存失败时对外必须是可直接展示的中文原因，而不是裸 errno。
-  // 这条用「把配置目录换成一个被文件占住的路径」来制造真实的写盘失败。
-  it('配置写盘失败时折成带配置目录的 INTERNAL 中文错误', () => {
-    const occupied = join(dir, 'occupied-config');
+  it('用例文件写盘失败时折成带用例目录路径的中文 INTERNAL', () => {
+    const occupied = join(dir, 'occupied-cases');
     writeFileSync(occupied, 'x', 'utf8');
-    setConfigDirForTesting(occupied);
+    // 覆盖值就是存储层的根目录：写盘必然失败，且失败原因必须点名它落在哪
+    setCasesRootForTesting(occupied);
 
     let caught: unknown;
     try {
@@ -213,6 +220,6 @@ describe('用例保存失败的错误信封', () => {
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INTERNAL');
     expect((caught as ServiceError).message).toContain('用例保存失败');
-    expect((caught as ServiceError).message).toContain(getConfigDir());
+    expect((caught as ServiceError).message).toContain(occupied);
   });
 });

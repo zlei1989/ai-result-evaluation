@@ -1,9 +1,15 @@
 // @vitest-environment node
 /**
- * 设置页「评分配置」卡的**接线**守卫：协议过滤的判据在卡片里（`JudgeSettingsCard` 自己的用例钉住了
- * 「协议不匹配的智能体被禁用且说明原因」），但卡片看不见「页面有没有把那张表传进来」——
- * `agentProtocols` 在卡片上是可选 prop，漏传时 `pnpm typecheck` 不响，过滤静默退化成「一个都不过滤」：
+ * 设置页两张卡的**接线**守卫：评分配置卡的协议 / 档位域投影，以及工作区卡的用例目录与用例同步。
+ *
+ * 协议过滤的判据在卡片里（`JudgeSettingsCard` 自己的用例钉住了「协议不匹配的智能体被禁用且说明原因」），
+ * 但卡片看不见「页面有没有把那张表传进来」——`agentProtocols` 在卡片上是可选 prop，漏传时
+ * `pnpm typecheck` 不响，过滤静默退化成「一个都不过滤」：
  * 每家智能体照旧全部可选，直到创建 / 评分时被服务端的 CONFLICT 拦下，用户才知道自己选错了。
+ *
+ * 工作区那一段同一条理由：用例目录与同步的 props 虽然必填（漏传会红），
+ * 但**回调体接错线**（写错 SettingsPatch 的键）类型查不出、界面上两格长得一模一样，只有源码锚点拦得住。
+ *
  * 同目录 `runs-page-wiring.test.ts` 的文件头记着同一类缺陷（纯函数全绿而调用方漏喂输入），本文件是它在设置页的对应物。
  *
  * 为什么读源码而不是渲染页面：`apps/web-next` 保留 `jsx: preserve`（Next 需要），
@@ -61,5 +67,42 @@ describe('settings 页面的评分配置卡接线', () => {
     expect(openingTag('JudgeSettingsCard'), 'agentProtocols 不是从 agentOptions 现算的').toContain('agentOptions');
     expect(source, '页面没有调用 useRunModelOptions()').toContain('useRunModelOptions()');
     expect(source, 'agentOptions 不是 useRunModelOptions() 的 options 投影').toContain('options: agentOptions');
+  });
+});
+
+/**
+ * 工作区卡新增的「用例目录」与「用例同步」两块的接线。
+ *
+ * 卡片自己的用例钉住了显隐与禁用（组件那一侧），但卡片看不见「页面有没有把状态与回调喂进来」：
+ * 这些都是必填 prop（漏了 typecheck 会红），真正红不出来的是**回调体接错线**——
+ * 用例目录的校验写成 `update({ workspaceRoot })` 时 props 一个不少、类型也对，
+ * 而两格的输入框与按钮长得一模一样，肉眼冒烟分不出来，症状是「用例目录改了没生效」。
+ */
+describe('settings 页面的用例目录与用例同步接线', () => {
+  it('接上同步状态与动作两个 hook——漏了它们，卡片只能一直画骨架屏且没有任何动作按钮', () => {
+    expect(source, '页面没有调用 useCaseSyncStatus()').toContain('useCaseSyncStatus()');
+    expect(source, '页面没有调用 useCaseSyncAction()').toContain('useCaseSyncAction()');
+
+    const tag = openingTag('WorkspaceSettingsCard');
+    expect(tag, '少了 syncStatus=').toContain('syncStatus=');
+    expect(tag, '少了 onSyncAction=').toContain('onSyncAction=');
+    expect(tag, '少了 syncing=').toContain('syncing=');
+  });
+
+  it('把用例目录那一格交给卡片：settings（含 casesRoot）+ 独立回调 + 开关都在开标签里', () => {
+    const tag = openingTag('WorkspaceSettingsCard');
+    expect(tag, '少了 settings=——casesRoot 就在它里面').toContain('settings=');
+    expect(tag, '少了 onValidateCasesRoot=').toContain('onValidateCasesRoot=');
+    expect(tag, '少了 lastValidatedCases=').toContain('lastValidatedCases=');
+    expect(tag, '少了 onToggleAutoCommit=').toContain('onToggleAutoCommit=');
+  });
+
+  it('两个回调体各自写到对的键（用例目录写成 workspaceRoot 是静默错线，类型查不出）', () => {
+    expect(source, '用例目录没有落到 PUT { casesRoot }').toContain('update({ casesRoot: root })');
+    expect(source, '自动提交开关没有落到 PUT { casesAutoCommit }').toContain('update({ casesAutoCommit: value })');
+  });
+
+  it('同步状态读失败要显式渲染——否则一次 GET 失败就只剩一个永远转不完的骨架屏', () => {
+    expect(source, 'syncError 没有被渲染出来').toContain('loadFailure(syncError');
   });
 });

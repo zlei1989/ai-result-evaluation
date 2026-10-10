@@ -125,3 +125,33 @@ body {
     animation: none;
   }
 }
+
+/*
+ * 活动行**换行重打**的入场（类名由 ui 包的 `AgentActivityLine` 带上，且只在打字态）。
+ * 判据是「最后一段变了」：ui 用 `key={段号}` 重挂那个 `span`，于是每换一段这条动画重放一次——
+ * 观感就是「上一段被清掉、新一段从头写出来」，而不是整行文字被替换一下。
+ * **逐字增长本身不需要动画**（delta 帧就是逐字来的），这里只负责换段那一下；
+ * 位移用 `em`（相对字号）而不是像素：字号归紧凑密度与 antd 主题，动效不该钉死一个像素值。
+ */
+.aieval-activity-typing > span {
+  display: inline-block;
+  animation: aieval-activity-typing 180ms ease-out;
+}
+
+@keyframes aieval-activity-typing {
+  from {
+    opacity: 0;
+    transform: translateY(0.15em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 减少动态效果时静止成完整文本：动画只是入场装饰，关掉之后内容照旧（不需要还原颜色） */
+@media (prefers-reduced-motion: reduce) {
+  .aieval-activity-typing > span {
+    animation: none;
+  }
+}

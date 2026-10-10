@@ -2,7 +2,7 @@
 
 ## 定位
 
-用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。用例只回答「测什么」——表单里既没有评分模型（评分与生成都走设置页的全局默认），也没有评分提示词（自由文本的评分要求已由评分标准项取代）。`/cases` 页 = 列表 + 右侧栏，右栏三种内容（详情 / 创建 / 编辑）由 `?panel=detail|new|edit&id=…` 决定，同一栏位换内容、不弹层。
+用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。用例只回答「测什么」——表单里既没有评分模型（评分与生成都走设置页的全局默认），也没有评分提示词（自由文本的评分要求已由评分标准项取代）。`/cases` 页 = 列表 + 右侧栏，右栏三种内容（详情 / 创建 / 编辑）由 `?panel=detail|new|edit&id=…` 决定，同一栏位换内容、不弹层。用例**一文件一落**：`<casesRoot>/<用例 id>.json`（文件名即身份，默认 `~/.aieval-cases`）——布局、路径优先级、落盘与 git 自动同步见《数据与存储》的《用例目录》。
 
 ## 页面形态与交互
 
@@ -26,6 +26,8 @@
 
 **冒烟（2026-10-08，真机）**：把 `apps/web-next` 复制到仓内临时目录、`AIEVAL_CONFIG_DIR` 指向 `/tmp` 夹具起隔离实例（**避开真实 cases 仓库的自动提交**：真实 `casesRoot` 是带 remote 的 git 仓库且 `casesAutoCommit: true`），无头 Chrome 151 + CDP 驱动，33 项断言全绿。证据：首屏 `标题[aria-sort=descending]`；`commit` 列 `sorter=0`；四列 `th` 高均 **29**（多了排序按钮不折行）；`sticky` 表头仍在；左栏 740px 时 `clientWidth == scrollWidth == 740`（`CASES_TABLE_MIN_WIDTH = 700` 这个阈值不动）；点击序列的顺序逐项对上（空标题排最末、非法 `updatedAt` 当最小值、`复杂测试2` 在 `复杂测试10` 前、仓库按显示名 `aaa < middle < zulu` 而非全路径序、取消后回到 `updatedAt` 字典序降序）。
 **守卫缺口**：排序语义（空值口径、首次方向、取消态、显示名排序）**零自动化守卫**——本次口径明确不抽模块、不加单测，判据只有上面这段真机冒烟与本文档；改这两张表的列时照本段逐条核对。
+
+**坏文件告警**：`GET /api/cases` 的响应除 `cases` 还带 `warnings`（契约 `CaseList`）——文件名不合 id 形状 / 读不出 / 不是合法 JSON / 内容不是对象的文件由存储层**跳过**，列表页据此出一条 warning Alert「有 N 个用例文件被跳过，这些用例没有显示出来」+ 逐条原因（`apps/web-next/app/cases/page.tsx`）。一条坏文件不能让整页列表 500（用户要能从这一页把那个文件删掉），但也不能不说：跳过而不说，用户的症状是「我的用例不见了」却查不到原因。
 
 ### 创建与修改表单（两态同构，编辑态预填）
 
@@ -85,10 +87,12 @@
 1. **先判超时**（`signal === 'SIGTERM'` 或 `code === 'ETIMEDOUT'`，不靠关键词——远端自己报的 timeout 原文长得很像）⇒ `REPO_UNREACHABLE`「远端仓库拉取 / 探活超时（超过 N）…已终止 git 进程」。
 2. `Permission denied (publickey` / `Authentication failed` / `could not read Username` / `HTTP Basic: Access denied` / `terminal prompts disabled` → `AUTH_FAILED`（只给中文原因）。
 3. `Could not resolve host` → 不可达（点名 DNS）。
-4. `Connection timed out` / `Connection refused` / `Network is unreachable` / `Operation timed out` / `Could not connect to server` / `Timeout was reached` → 不可达。
+4. `Connection timed out` / `Connection refused` / `Network is unreachable` / `Operation timed out` / `Could not connect to server` / `Couldn't connect to server` / `Timeout was reached` → 不可达。
 5. `Host key verification failed` → 指纹未信任（同样 `REPO_UNREACHABLE`）。
 6. `does not appear to be a git repository` → `NOT_A_GIT_REPO`「不是 git 仓库」。
 7. `not found` / `Repository not found` → `NOT_A_GIT_REPO`「远端仓库不存在或无权访问」；其余 → 无法归因（同样 `NOT_A_GIT_REPO`，原文照带）。
+
+**这张表匹配的是 git 的 stderr 原文，所以它是版本敏感的**：同一件事换一个 git 版本就可能换措辞，而漏收的后果是掉进第 7 条「无法归因」。实测过两次：本机 git 2.47 报 `Failed to connect to …: Could not connect to server`（整句里**没有** `Connection refused`），git 2.50.1（Apple Git-155）同一场景报 `…: Couldn't connect to server`——只差一个撇号。新增/改动文案时先拿 `git ls-remote` 复现一次原文再往表里加，别照抄旧记录（守卫：`core/src/mirror-fetch.test.ts` 的「没人监听的端口」）。
 
 认证失败与墙钟超时两支只给中文原因——超时那一支被墙钟杀掉时 git 原文只有 Node 的英文，写成「原因」是误导。
 
@@ -108,7 +112,7 @@
 | 真相层 | `api/cases.ts` 的 `assertStorable()` | 抛 `INVALID_QUERY` + 中文原因（**落一处**，两处各写一遍必然漂移） |
 | 兜底层 | 编排层起一行评分之前 | 满分 ≤ 0 ⇒ 该行落**评分失败** + 中文原因，不许走到评分器 |
 
-  兜底层会真的开火：`config.json` 是手可编辑的，而 `{ groups: [] }` 是一张合法的 `Rubric` ⇒ 手改的空表用例读得出来、创建评测会把空表快照进 `run.json`，开跑时兜底层把它变成一句可展示的 `CONFLICT`（文案点名「这一轮的表在创建时已快照，改用例不影响它，出路是新建一轮」）。**不要在 `createRun` 再加「空表不许建轮」的守卫**——空表是写用例过程中的合法初态。
+  兜底层会真的开火：用例文件（`<casesRoot>/<用例 id>.json`）是手可编辑的，而 `{ groups: [] }` 是一张合法的 `Rubric` ⇒ 手改的空表用例读得出来、创建评测会把空表快照进 `run.json`，开跑时兜底层把它变成一句可展示的 `CONFLICT`（文案点名「这一轮的表在创建时已快照，改用例不影响它，出路是新建一轮」）。**不要在 `createRun` 再加「空表不许建轮」的守卫**——空表是写用例过程中的合法初态。
 - **旧数据**：旧用例带着评分提示词 / 用例级评分模型——读侧（`asStoredCase`）显式删这三键后照常列出（列表不该因为一条老数据白屏），真正的拦截发生在使用路径（`asUsableCase`）：缺 `rubric` 或形状不合法时抛中文 `INTERNAL`「这个用例是旧版数据（没有评分标准项），请删除它或重新创建：`<caseId>`」——**绝不给它 `.default({ groups: [] })`**（那会让旧用例看起来只是「还没配」，而它实际带着一份已无意义的旧提示词）。
 
 ### 提示词渲染
@@ -122,6 +126,7 @@
 - **确认框不显示引用数**（契约里没有「按用例查评测数」的路由，页面传 `referencedRuns={null}`，界面走「不显示数字」那一支——把「不知道」显示成 0 会让用户以为删除没有影响）；删除**成功之后**的提示才列出数字（`{affectedRuns}` 个评测记录的冗余快照仍可查看），删除本身**不阻塞**。
 - 已完成的评测记录**保留**：评测里冗余存了仓库来源、分支、commit 与**评分表快照**，不依赖用例仍存在。
 - 用例级本地缓存仓库（`{workspaceRoot}/cases/{caseId}/cache`）一并删除。
+- **落到磁盘的是删文件**：删掉 `<casesRoot>/<用例 id>.json`（`deleteCaseFile` 幂等——文件本来就不在也算成功），随后按设置页的「用例变更时自动提交」排一次后台同步。开着时这次删除会作为**一个只含该文件的提交**进 git（回退文案「删除用例「标题」」），关掉时删除只落在磁盘上，要到设置页点「提交」才进 git。
 - **不动远端镜像**（它按 URL 命名、可能被多个用例共用，且不随用例消失）。
 - 删除动作的 `onConfirm` 必须回交在途 promise：antd 的 `ActionButton` 只在 `onConfirm` 返回 thenable 时才等待——返回 `undefined` 时确认框**立刻关闭**，用户看到「点一下就没反应」，再点一次就是第二次 DELETE。
 
@@ -130,7 +135,9 @@
 | 字段 / 契约 | 内容 |
 |---|---|
 | `TestCaseSchema.repoPath` | 语义扩为「来源」，改用 `RepoSourceStringSchema`（旧值判定结果不变）；schema 失败时把 `ServiceError` 的中文原因原样塞进 zod issue，不另写一份文案 |
-| `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：旧 `config.json` 的用例没有这一列，读侧必须按 null 读 |
+| `CASE_ID_PATTERN` / `isCaseIdShapeValid` | 用例 id 的形状判据（**文件名安全**）：`/^[A-Za-z0-9_-]{1,64}$/`。id 直接当文件名用，这条判据同时是路径穿越的安全边界——写侧 `assertCaseId` 抛 `INVALID_QUERY` + 中文原因，读侧跳过并记进 `warnings` |
+| `CaseList` | `{ cases, warnings }`：坏文件被跳过时把原因带出来（界面在列表页出告警条）。列表必须能渲染，否则用户连删掉那个坏文件的入口都没有 |
+| `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：迁移前住在 `config.json` 里的旧用例没有这一列，读侧必须按 null 读 |
 | `RepoInfoSchema` | `kind: 'local' \| 'remote'`、`mirrorPath`、`mirrorReady`、`mirrorFetchedAt`、`tip`（短哈希 7 位，仅远端有值）；`branch` 语义：本地 = 当前分支，远端 = 默认分支或用户填的分支 |
 | `EvalRunSchema.repoBranch` | 快照口径：用例改分支 / 删除后，这一轮从哪个分支的哪个 commit 起跑仍读得出来 |
 | `errors.ts` | 只增 `REPO_UNREACHABLE`（400）；认证沿用 `AUTH_FAILED`（`context.host`），不存在 / 不是仓库 / 无法归因沿用 `NOT_A_GIT_REPO`，分支与提交不存在沿用 `INVALID_REF` |

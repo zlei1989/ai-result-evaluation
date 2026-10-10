@@ -213,6 +213,9 @@ describe('工具：命令、文件改动、MCP、计划', () => {
         name: 'exec_command',
         input: { command: 'npm run build', cwd: 'D:/repo' },
         payload: null,
+        // 摘要主体随块给出（2026-10-10）：词表真源是 `activity.ts`，浏览器直接读这一格。
+        // codex 侧**没有** `description` 这一格（协议里真没有）⇒ 走 `run-shell` 族拼法：给命令原文
+        summary: 'npm run build',
       },
     });
     expect(drafts[1]?.blocks[0]).toMatchObject({

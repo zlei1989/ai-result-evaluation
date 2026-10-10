@@ -30,8 +30,16 @@ import {
   type SubagentRecord,
   type TestCase,
 } from '@aieval/contracts';
-import { saveConfig, setConfigDirForTesting } from '@aieval/core';
-/**
+import {
+  deleteCaseFile,
+  getCasesRootOverrideForTesting,
+  listCases,
+  readCase,
+  saveConfig,
+  setCasesRootForTesting,
+  setConfigDirForTesting,
+  writeCase,
+} from '@aieval/core';/**
  * ⚠️ **这一条必须是类型专用的（2026-10-06）**：`@aieval/agents` 是被 `vi.mock` 的模块之一，
  * 而本文件落在工厂的**动态 import 闭包**上（`orchestrator-seams.ts:36`（T3 前 `:22`）静态 import 本文件，
  * 而各测试文件的工厂又 `await import('./testing/orchestrator-seams')`）⇒ 只要 import 里多出
@@ -67,6 +75,8 @@ export interface TempHome {
   configDir: string;
   /** 临时工作区根目录（相当于测试期的 ~/.aieval-runs） */
   workspaceRoot: string;
+  /** 临时用例根目录（相当于测试期的 ~/.aieval-cases；用例一文件一落在这里） */
+  casesRoot: string;
   cleanup: () => void;
 }
 
@@ -82,14 +92,19 @@ export function createTempHome(): TempHome {
   const root = mkdtempSync(join(tmpdir(), 'aieval-evaluator-'));
   const configDir = join(root, 'config');
   const workspaceRoot = join(root, 'runs');
+  const casesRoot = join(root, 'cases');
   setConfigDirForTesting(configDir);
+  // 用例目录也必须指到临时目录：默认根目录是真实的 ~/.aieval-cases，而 config 目录的 override 管不到它
+  setCasesRootForTesting(casesRoot);
   seedConfig({ workspaceRoot });
   return {
     root,
     configDir,
     workspaceRoot,
+    casesRoot,
     cleanup: () => {
       setConfigDirForTesting(null);
+      setCasesRootForTesting(null);
       /**
        * 清理必须带重试：Windows 上**刚退出的 git 进程还会短暂捏着它自己的 cwd 句柄**
        * （用例里最后一次 git 调用与这里的删除之间没有任何同步点），现象是一次全量里随机一条用例红在
@@ -240,16 +255,55 @@ export function makeRunFixture(input: {
   };
 }
 
-/** 写一份临时配置（settings + 供应商 + 用例）：默认评分模型为 null，需要评分的用例自己给 */
+/** 安全阀：夹具批量动用例文件之前，必须先确认用例目录被指向了临时目录 */
+function assertCasesRootOverride(): void {
+  if (getCasesRootOverrideForTesting() === null) {
+    // 安全阀：没有测试 override 时 `listCases()` 读的是真实家目录下的 ~/.aieval-cases，
+    // 这里的一句 deleteCaseFile 就会删掉开发者的真实用例
+    throw new Error('夹具失败：调用用例夹具前必须先 createTempHome()（用例目录尚未指向临时目录）');
+  }
+}
+
+/**
+ * 删掉当前（临时）用例目录里的**全部**用例文件。
+ * 夹具表达「用例已被删除 / 这一轮还没建用例」的唯一方式——用例是一文件一落，
+ * 光把配置里的 `cases` 置空已经不再表达任何事（那一格已经不在配置里了）。
+ */
+export function clearCases(): void {
+  assertCasesRootOverride();
+  for (const existing of listCases().cases) deleteCaseFile(existing.id);
+}
+
+/**
+ * 覆盖某条已落盘用例的字段，按「手改过用例文件」的真实来路造：**直接写文件**，绕过写侧自检
+ * （`createCase` / `updateCase` 拦得住空表与坏来源，而盘上那一份只能从工具外来）。
+ */
+export function overwriteCase(caseId: string, patch: Partial<TestCase>): TestCase {
+  assertCasesRootOverride();
+  const current = readCase(caseId);
+  if (current === null) throw new Error(`夹具失败：用例文件不存在 ${caseId}`);
+  const next = { ...current, ...patch };
+  writeCase(next);
+  return next;
+}
+
+/** 写一份临时配置（settings + 供应商）并把用例落到临时用例目录：默认评分模型为 null，需要评分的用例自己给 */
 export function seedConfig(input: {
   workspaceRoot: string;
   providers?: Provider[];
   cases?: TestCase[];
   diffBudgetBytes?: number;
   defaultJudge?: Settings['defaultJudge'];
-  /** 默认评分智能体；不填即 `null`（= 未配置，与 `SETTINGS_DEFAULTS` 一致） */
+  /** 默认评分智能体；不填即 `null`= 未配置，与 `SETTINGS_DEFAULTS` 一致） */
   defaultJudgeAgent?: Settings['defaultJudgeAgent'];
 }): void {
+  // 用例是**一文件一落**，不再随 saveConfig 覆盖写：所以每次 seed 都要先把上一批清掉，
+  // 否则「这一次 seed 没给用例」的用例（`seedConfig({ workspaceRoot })` 表示「用例已被删除」）
+  // 会因为上一批文件还在而测不到它要测的那条分支
+  assertCasesRootOverride();
+  clearCases();
+  for (const item of input.cases ?? []) writeCase(item);
+
   saveConfig({
     settings: {
       ...SETTINGS_DEFAULTS,
@@ -259,7 +313,6 @@ export function seedConfig(input: {
       defaultJudgeAgent: input.defaultJudgeAgent ?? null,
     },
     providers: input.providers ?? [],
-    cases: input.cases ?? [],
   });
 }
 
@@ -557,8 +610,10 @@ export interface FakeAgentScript {
    * `finish()` 之前逐条投给 `input.onMessage` 的消息（spec v3 §2）：用来验证编排层把
    * 「消息 → `messages.jsonl`」这条接线接上了（**只给消息内容，信封由夹具补全**，
    * 用例因此不必手写 `messageId` / `mergeKey` 这些与断言无关的格）。
+   * `chunk` 缺省 `'snapshot'`；给 `'delta'` 的那条**不落盘、只广播**（编排层 2026-10-09 的分叉，
+   * 用例靠它钉住「delta 只进实时通道」——夹具同步把 `assembly` 补成 `'open'`，形状与真实 delta 一致）。
    */
-  messages?: { text: string; roundTrip?: number; subagentId?: string | null }[];
+  messages?: { text: string; roundTrip?: number; subagentId?: string | null; chunk?: 'snapshot' | 'delta' }[];
   /**
    * `finish()` 之前逐条投给 `input.onSubagent` 的子任务行：验证「派发视图 → 同一个记录文件」这条接线。
    * 只给身份与状态，其余格由夹具补成合法形状。
@@ -769,18 +824,20 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         const emit = (): void => {
           for (const [index, item] of (current.messages ?? []).entries()) {
             const roundTrip = item.roundTrip ?? 1;
+            // `chunk` 缺省快照；delta 那条 `assembly` 补成 `'open'`（真实形状：块没结束就没有快照）
+            const chunk = item.chunk ?? 'snapshot';
             input.onMessage?.({
               messageId: `${generation}:${index + 1}`,
               vendorId: null,
               role: 'assistant',
               source: 'wire',
               roundTrip,
-              vendorTurn: null,
+              turn: null,
               step: null,
               parentCallId: null,
               subagentId: item.subagentId ?? null,
-              chunk: 'snapshot',
-              assembly: 'snapshot',
+              chunk,
+              assembly: chunk === 'delta' ? 'open' : 'snapshot',
               mergeKey: `${item.subagentId ?? 'main'}|${roundTrip}|assistant|-`,
               blocks: [{ type: 'text', text: item.text }],
               raw: null,
