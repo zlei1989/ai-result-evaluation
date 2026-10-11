@@ -9,7 +9,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ServiceError } from './errors';
-import { normalizeRemoteUrl, parseRepoSource, RepoSourceStringSchema, displayRepoName, repoNameFromSource } from './repo-source';
+import {
+  NONE_SOURCE,
+  displayRepoName,
+  isNoneSource,
+  normalizeRemoteUrl,
+  parseRepoSource,
+  RepoSourceStringSchema,
+  repoNameFromSource,
+} from './repo-source';
 
 describe('parseRepoSource', () => {
   it('Windows 盘符与 UNC 一律本地（先于 URL 判定）', () => {
@@ -106,6 +114,47 @@ describe('parseRepoSource', () => {
     })();
     expect(dash?.code).toBe('INVALID_QUERY');
     expect(dash?.message).toContain('不能以 - 开头');
+  });
+});
+
+describe('无来源哨兵 none://', () => {
+  it('哨兵值解析成 kind=none，两侧空白按归一处理', () => {
+    expect(parseRepoSource(NONE_SOURCE)).toEqual({ kind: 'none' });
+    expect(parseRepoSource(`  ${NONE_SOURCE}  `)).toEqual({ kind: 'none' });
+  });
+
+  it('哨兵先于 scheme 白名单与本地判定：裸词 none 仍是本地路径（哨兵必须撞不上真实形态）', () => {
+    expect(parseRepoSource('none').kind).toBe('local');
+    // `none:path` 是 scp 形态但 host 无点无 @，仍是本地；`none://x` 与别的非法协议一样被拒绝——
+    // 只有逐字哨兵值 `none://` 算无来源，形态上不会误吞任何真实输入
+    expect(parseRepoSource('none:other').kind).toBe('local');
+    const caught = (() => {
+      try {
+        parseRepoSource(`${NONE_SOURCE}x`);
+        return null;
+      } catch (error) {
+        return error as ServiceError;
+      }
+    })();
+    expect(caught?.code).toBe('INVALID_QUERY');
+    expect(caught?.message).toContain('不支持的 git 地址协议');
+  });
+
+  it('契约接受哨兵值', () => {
+    expect(RepoSourceStringSchema.safeParse(NONE_SOURCE).success).toBe(true);
+  });
+
+  it('isNoneSource 只认逐字哨兵值', () => {
+    expect(isNoneSource(NONE_SOURCE)).toBe(true);
+    expect(isNoneSource(` ${NONE_SOURCE} `)).toBe(true);
+    expect(isNoneSource(`${NONE_SOURCE}x`)).toBe(false);
+    expect(isNoneSource('/home/me/repo')).toBe(false);
+    expect(isNoneSource('')).toBe(false);
+  });
+
+  it('仓库名与展示名：无来源给短标签「无」（不把哨兵串透给界面）', () => {
+    expect(repoNameFromSource(NONE_SOURCE)).toBe('无');
+    expect(displayRepoName(NONE_SOURCE)).toBe('无');
   });
 });
 

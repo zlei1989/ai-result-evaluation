@@ -63,6 +63,7 @@ import {
   installableSkills,
   rowAttemptsFile,
   loadConfig,
+  prepareEmptyRowWorkspace,
   prepareRowWorkspace,
   // 题面从**用例文件**读（`<casesRoot>/<case-id>.json`），配置文件里没有 `cases` 那一段
   readCase,
@@ -1422,37 +1423,44 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   // core 的 ensureCaseCache / copyWorkspace / checkoutRow / collectDiff 一行都不改，它们只认本地路径。
   const branch = `test/${rowId}`;
   const source = parseRepoSource(run.repoPath);
-  let preparedRepoPath: string;
-  let preparedCommit: string | null = run.commitHash;
-  if (source.kind === 'local') {
-    preparedRepoPath = source.path;
+  let prepared: { workspacePath: string; agentHome: string; baselineCommit: string };
+  if (source.kind === 'none') {
+    // 无来源：跳过镜像 / 用例缓存整条克隆链，现场初始化空仓库（mkdir + git init -b main +
+    // 空提交 + 建 test/{rowId} 行分支），基线就是那次空提交——见 core 的 prepareEmptyRowWorkspace。
+    prepared = prepareEmptyRowWorkspace({ workspaceRoot: run.workspaceBase, runId, rowId, branch });
   } else {
-    // 就绪即复用（不联网）：本轮**唯一**一次联网在下面的 resolveRemoteRef 里
-    const mirror = ensureMirror({ workspaceRoot: run.workspaceBase, url: source.url });
-    // 分支 tip 在这一步被重新解析：这是「跟随分支」与「钉死 commit」的分岔点，
-    // 也是「来源不可达就失败、绝不静默沿用旧镜像」的落点（fetch 在这一步内部发生，失败即抛）。
-    // `repoBranch` 为 null 时跟的是**远端此刻的默认分支**：这次 fetch 之后镜像 HEAD 会被对齐到
-    // 远端当前的默认分支（core 的 alignDefaultBranch），所以远端改了默认分支名这一行也跟得上。
-    // 给 prepareRowWorkspace 传**具体 hash** 而不是 null：镜像刚 fetch 过，用例缓存只需从镜像取对象，
-    // 不走 ensureCaseCache 的「刷新到来源 HEAD」分支（那条读的是**本地** HEAD 语义）。
-    // `run.repoBranch ?? null`：编排层读的是磁盘上的快照，而 `EvalRunSchema` 给这一列的是
-    // `.default(null)`（旧 run.json 里根本没有这一列，读出来已经是 null）——所以 `?? null` 是**防御性的**，
-    // 拦的是「有人绕过 schema 直接塞了一份 run 对象」这条路，不是在补 schema 的缺口
-    preparedRepoPath = mirror.mirrorDir;
-    preparedCommit = resolveRemoteRef(mirror.mirrorDir, source.url, {
-      branch: run.repoBranch ?? null,
-      commitHash: run.commitHash,
+    let preparedRepoPath: string;
+    let preparedCommit: string | null = run.commitHash;
+    if (source.kind === 'local') {
+      preparedRepoPath = source.path;
+    } else {
+      // 就绪即复用（不联网）：本轮**唯一**一次联网在下面的 resolveRemoteRef 里
+      const mirror = ensureMirror({ workspaceRoot: run.workspaceBase, url: source.url });
+      // 分支 tip 在这一步被重新解析：这是「跟随分支」与「钉死 commit」的分岔点，
+      // 也是「来源不可达就失败、绝不静默沿用旧镜像」的落点（fetch 在这一步内部发生，失败即抛）。
+      // `repoBranch` 为 null 时跟的是**远端此刻的默认分支**：这次 fetch 之后镜像 HEAD 会被对齐到
+      // 远端当前的默认分支（core 的 alignDefaultBranch），所以远端改了默认分支名这一行也跟得上。
+      // 给 prepareRowWorkspace 传**具体 hash** 而不是 null：镜像刚 fetch 过，用例缓存只需从镜像取对象，
+      // 不走 ensureCaseCache 的「刷新到来源 HEAD」分支（那条读的是**本地** HEAD 语义）。
+      // `run.repoBranch ?? null`：编排层读的是磁盘上的快照，而 `EvalRunSchema` 给这一列的是
+      // `.default(null)`（旧 run.json 里根本没有这一列，读出来已经是 null）——所以 `?? null` 是**防御性的**，
+      // 拦的是「有人绕过 schema 直接塞了一份 run 对象」这条路，不是在补 schema 的缺口
+      preparedRepoPath = mirror.mirrorDir;
+      preparedCommit = resolveRemoteRef(mirror.mirrorDir, source.url, {
+        branch: run.repoBranch ?? null,
+        commitHash: run.commitHash,
+      });
+    }
+    prepared = prepareRowWorkspace({
+      workspaceRoot: run.workspaceBase,
+      caseId: run.caseId,
+      repoPath: preparedRepoPath,
+      runId,
+      rowId,
+      commitHash: preparedCommit,
+      branch,
     });
   }
-  const prepared = prepareRowWorkspace({
-    workspaceRoot: run.workspaceBase,
-    caseId: run.caseId,
-    repoPath: preparedRepoPath,
-    runId,
-    rowId,
-    commitHash: preparedCommit,
-    branch,
-  });
   patchRow(runId, rowId, {
     workspacePath: prepared.workspacePath,
     branch,

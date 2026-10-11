@@ -16,8 +16,8 @@
  *      ——照旧渲染它们等于给用户看一个不存在字段；
  *   5. **只有考题提示词走 markdown 渲染**（`MarkdownText`，理由见那张卡片的注释）。
  */
-import type { TestCase } from '@aieval/contracts';
-import { Button, Card, Descriptions, Flex, Popconfirm, Typography } from 'antd';
+import { isNoneSource, type TestCase } from '@aieval/contracts';
+import { Button, Card, Descriptions, Flex, Popconfirm, Tooltip, Typography } from 'antd';
 import type { DescriptionsProps } from 'antd';
 import type { ReactNode } from 'react';
 import { formatDateTime } from '../base/format';
@@ -57,8 +57,15 @@ export function CaseDetailPanel({ testCase, referencedRuns, onEdit, onDelete, de
     {
       key: 'repoPath',
       label: '代码仓库',
-      // 全量路径 + 可选中复制：右栏可能只有 320px，靠换行而不是省略
-      children: <Typography.Text code>{testCase.repoPath}</Typography.Text>,
+      // 全量路径 + 可选中复制：右栏可能只有 320px，靠换行而不是省略。
+      // 无来源显示短标签「无」，哨兵串 `none://` 不是给用户看的信息，说全的话放 Tooltip 里
+      children: isNoneSource(testCase.repoPath) ? (
+        <Tooltip title="空仓库，无来源代码">
+          <Typography.Text code>无</Typography.Text>
+        </Tooltip>
+      ) : (
+        <Typography.Text code>{testCase.repoPath}</Typography.Text>
+      ),
     },
     ...(testCase.repoBranch === null
       ? []

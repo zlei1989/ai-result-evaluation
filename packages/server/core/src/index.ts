@@ -71,6 +71,7 @@ export {
   copyWorkspace,
   ensureCaseCache,
   extractDiffFile,
+  initEmptySourceRepository,
   isGitRepo,
   listCommits,
   resolveRepoInfo,
@@ -93,6 +94,7 @@ export {
 export {
   caseCacheDir,
   ensureRowJudgeHome,
+  prepareEmptyRowWorkspace,
   prepareRowWorkspace,
   rowAgentHomeDir,
   rowAttemptsFile,

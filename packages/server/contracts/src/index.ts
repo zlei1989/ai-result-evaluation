@@ -126,8 +126,11 @@ export {
   type VendorSkillOrigin,
 } from './skill';
 export {
+  NONE_SOURCE,
+  NONE_SOURCE_REPO_NAME,
   RepoSourceStringSchema,
   displayRepoName,
+  isNoneSource,
   normalizeRemoteUrl,
   parseRepoSource,
   repoNameFromSource,
@@ -256,11 +259,13 @@ export {
   EnvGroupSchema,
   EnvItemSchema,
   EnvSourceSchema,
+  EnvVerdictLineSchema,
   type AgentEnvironment,
   type AgentEnvironmentSummary,
   type EnvGroup,
   type EnvItem,
   type EnvSource,
+  type EnvVerdictLine,
 } from './agent-environment';
 export {
   AgentMessageSchema,

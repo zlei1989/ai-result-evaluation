@@ -23,7 +23,26 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 export type RepoSource =
   | { kind: 'local'; path: string }
-  | { kind: 'remote'; url: string; host: string; repoName: string };
+  | { kind: 'remote'; url: string; host: string; repoName: string }
+  | { kind: 'none' };
+
+/**
+ * 「无来源」的哨兵值：用例表单选「无」时，`repoPath` 落的就是这一个字符串。
+ * 为什么用 `none://` 而不是裸词：裸词（如 `none`）会被形态判定归成**本地路径**（与同名目录撞形态），
+ * 而 scheme 形态撞不上任何真实路径 / 远端地址，且不在远端白名单里，与非法协议天然互斥。
+ */
+export const NONE_SOURCE = 'none://';
+
+/**
+ * 「无来源」的仓库名替身：智能生成的提示词、创建日志这类**需要一个仓库名**的位置用它。
+ * 与展示口径的「无」刻意分开：列表 / 详情要的是短标签，提示词与日志要的是说全「为什么没有代码」。
+ */
+export const NONE_SOURCE_REPO_NAME = '空仓库（无来源代码）';
+
+/** 是不是「无来源」哨兵值（界面按它决定显示什么、不显示什么） */
+export function isNoneSource(source: string): boolean {
+  return source.trim() === NONE_SOURCE;
+}
 
 /**
  * 形态判定 + 归一 + 解析 host 与仓库名。
@@ -44,6 +63,9 @@ export function parseRepoSource(source: string): RepoSource {
   if (trimmed.startsWith('-')) {
     throw new ServiceError('INVALID_QUERY', `代码来源不能以 - 开头：${trimmed}`);
   }
+  // 哨兵值先于 scheme 白名单判：`none` 不在白名单里，靠后会被当成非法协议拒掉（也先于「其余=本地」，
+  // 否则裸词形态会与同名本地目录撞车——哨兵因此刻意取 scheme 形态）
+  if (trimmed === NONE_SOURCE) return { kind: 'none' };
   if (WINDOWS_DRIVE.test(trimmed) || UNC_PREFIX.test(trimmed)) return { kind: 'local', path: trimmed };
 
   const schemeMatch = SCHEME_PREFIX.exec(trimmed);
@@ -81,9 +103,10 @@ export function normalizeRemoteUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
 }
 
-/** 仓库名：远端取归一后末段去 `.git`（无路径段时回落 host），本地取路径末段（界面标签与远端提示词共用） */
+/** 仓库名：远端取归一后末段去 `.git`（无路径段时回落 host），本地取路径末段，无来源给短标签「无」（界面标签与远端提示词共用） */
 export function repoNameFromSource(source: string): string {
   const parsed = parseRepoSource(source);
+  if (parsed.kind === 'none') return '无';
   return parsed.kind === 'remote' ? parsed.repoName : lastSegment(parsed.path);
 }
 

@@ -39,6 +39,7 @@ import {
   AGENT_LABELS,
   TERMINAL_ROW_STATUSES,
   hasLiveRows,
+  isNoneSource,
   isRunnableRow,
   isRunningRow,
   type AgentKind,
@@ -265,7 +266,14 @@ export function RunDetailPanel({
     {
       key: 'repoPath',
       label: '代码仓库',
-      children: <Typography.Text code>{run.repoPath}</Typography.Text>,
+      // 无来源显示短标签「无」，哨兵串 `none://` 不是给用户看的信息，说全的话放 Tooltip 里
+      children: isNoneSource(run.repoPath) ? (
+        <Tooltip title="空仓库，无来源代码">
+          <Typography.Text code>无</Typography.Text>
+        </Tooltip>
+      ) : (
+        <Typography.Text code>{run.repoPath}</Typography.Text>
+      ),
     },
     ...(run.repoBranch === null
       ? []

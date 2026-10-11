@@ -247,6 +247,22 @@ describe('generateRubric：智能生成分支（prompt 为空）', () => {
     );
     expect(callTextApi).not.toHaveBeenCalled();
   });
+
+  /**
+   * 无来源（`none://`）：生成分支**跳过仓库校验**（没有仓库可校验，也不该为一句提示词去 resolveRepoInfo），
+   * 提示词里【仓库】那一格用固定替身，模型以题面为唯一依据起草。
+   */
+  it('无来源哨兵：跳过仓库校验，提示词里仓库名是固定替身「空仓库（无来源代码）」', async () => {
+    configureGlobalJudge();
+    modelReplies(JSON.stringify({ groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: 'g', weight: 5 }] }] }));
+
+    const result = await generateRubric({ mode: 'generate', rubric: { groups: [] }, taskPrompt: '从空仓库开始实现', prompt: '', repoPath: 'none://' });
+
+    const [, request] = vi.mocked(callTextApi).mock.calls[0]!;
+    expect(request.prompt).toContain('空仓库（无来源代码）');
+    expect(request.prompt).toContain('从空仓库开始实现');
+    expect(result.addedItems).toBe(1);
+  });
 });
 
 describe('generateRubric：智能识别分支（prompt 非空）', () => {

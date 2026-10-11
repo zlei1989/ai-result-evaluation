@@ -542,11 +542,11 @@ const REMOTE_INFO: RepoInfo = {
 const REMOTE_CASE: TestCase = { ...INITIAL, repoPath: 'git@host:group/repo.git', repoBranch: 'feat/x' };
 
 describe('CaseFormPanel 来源切换（远端）', () => {
-  /** 远端在前、本地在后，且新建态默认选中远端 */
+  /** 远端在前、本地其次、无最后，且新建态默认选中远端 */
   it('新建态：远端仓库排在前且默认选中', () => {
     setup({ mode: 'new' });
 
-    expect(screen.getAllByRole('radio').map((node) => (node as HTMLInputElement).value)).toEqual(['remote', 'local']);
+    expect(screen.getAllByRole('radio').map((node) => (node as HTMLInputElement).value)).toEqual(['remote', 'local', 'none']);
     expect((screen.getByRole('radio', { name: '远端仓库' }) as HTMLInputElement).checked).toBe(true);
   });
 
@@ -765,5 +765,81 @@ describe('CaseFormPanel 来源切换（远端）', () => {
     // 交出去的仍是输入原文（归一是服务端的活），回显用的是服务端返回的那一份
     expect(onValidateRepo).toHaveBeenCalledWith({ repoPath: 'https://host/group/repo.git/', repoBranch: 'feat/x' });
     expect(screen.getByTestId('case-repo-info').textContent).toContain('仓库：repo');
+  });
+});
+
+/** 无来源初值：编辑一条「无」用例（来源态从初值判定，哨兵值落的是无态） */
+const NONE_CASE: TestCase = { ...INITIAL, repoPath: 'none://', commitHash: null };
+
+describe('CaseFormPanel 来源切换（无）', () => {
+  /** 无态不用填仓库路径：只填标题 / 题面 + 一项评分标准项 */
+  function fillNoneRequired(): void {
+    fireEvent.change(screen.getByTestId('case-title'), { target: { value: '新用例' } });
+    fireEvent.change(screen.getByTestId('case-task-prompt'), { target: { value: '补一条回归' } });
+    fireEvent.click(screen.getByTestId('rubric-add-group'));
+    fireEvent.change(screen.getByTestId('rubric-group-name-0'), { target: { value: '一、生产代码' } });
+    fireEvent.change(screen.getByTestId('rubric-item-goal-0-0'), { target: { value: '追加 agent 字段' } });
+  }
+
+  it('切到「无」：地址 / 分支 / commit 三格全部隐藏，且不发出任何校验', () => {
+    const onValidateRepo = vi.fn(async () => REMOTE_INFO);
+    setup({ mode: 'edit', initial: REMOTE_CASE, onValidateRepo });
+
+    fireEvent.click(screen.getByRole('radio', { name: '无' }));
+
+    expect(screen.queryByTestId('case-repo-path')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('case-repo-branch')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('commit hash')).not.toBeInTheDocument();
+    expect(onValidateRepo).not.toHaveBeenCalled();
+  });
+
+  it('无态提交：repoPath 落哨兵值 none://，分支与 commit 恒为 null', async () => {
+    const onSubmit = vi.fn<(values: CaseCreate) => void>();
+    setup({ onSubmit, mode: 'new' });
+    fireEvent.click(screen.getByRole('radio', { name: '无' }));
+    fillNoneRequired();
+
+    fireEvent.click(screen.getByTestId('case-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+      title: '新用例',
+      repoPath: 'none://',
+      commitHash: null,
+      repoBranch: null,
+      taskPrompt: '补一条回归',
+    });
+  });
+
+  it('编辑无来源用例：默认选中「无」，三格隐藏', () => {
+    setup({ mode: 'edit', initial: NONE_CASE });
+
+    expect((screen.getByRole('radio', { name: '无' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId('case-repo-path')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('commit hash')).not.toBeInTheDocument();
+  });
+
+  it('无 → 远端：地址与分支的输入都不丢（切「无」只隐藏，不销毁）', () => {
+    setup({ mode: 'edit', initial: REMOTE_CASE });
+
+    fireEvent.click(screen.getByRole('radio', { name: '无' }));
+    fireEvent.click(screen.getByRole('radio', { name: '远端仓库' }));
+
+    expect((screen.getByTestId('case-repo-path') as HTMLInputElement).value).toBe('git@host:group/repo.git');
+    expect((screen.getByTestId('case-repo-branch') as HTMLInputElement).value).toBe('feat/x');
+  });
+
+  it('无态智能生成：交出去的是哨兵值（服务端用它走「空仓库」那一支）', async () => {
+    const onGenerate = vi.fn<CaseFormPanelProps['onGenerate']>(async () => ({
+      rubric: { groups: [{ name: 'g', items: [{ id: 'A1', goal: '生成出来的目标', weight: 10 }] }] },
+      addedItems: 1,
+    }));
+    setup({ mode: 'edit', initial: NONE_CASE, onGenerate });
+    fireEvent.change(screen.getByTestId('case-task-prompt'), { target: { value: '补一条回归' } });
+
+    fireEvent.click(screen.getByTestId('case-generate-rubric'));
+
+    await waitFor(() => expect(onGenerate).toHaveBeenCalledTimes(1));
+    expect(onGenerate.mock.calls[0]?.[0]).toMatchObject({ mode: 'generate', repoPath: 'none://' });
   });
 });

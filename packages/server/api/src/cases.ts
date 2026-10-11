@@ -20,6 +20,8 @@
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import {
+  NONE_SOURCE,
+  NONE_SOURCE_REPO_NAME,
   RubricSchema,
   ServiceError,
   TestCaseSchema,
@@ -180,9 +182,11 @@ export function createCase(input: CaseCreate): TestCase {
   //   · 分支：本地来源拿 `resolveRepoInfo` 回显的**实际检出分支**（对本地来说「分支」就是它的 HEAD，
   //     写死一句「默认分支」等于在日志里丢掉唯一有用的那条信息）；远端来源记请求的分支，没指定才写「默认分支」。
   // **远端不能走 `resolveRepoInfo`**：远端来源只有 `url`、没有 `path`（也不该为一个日志字段去联网校验）。
+  // 无来源同样只有哨兵串：日志里给固定替身（`NONE_SOURCE_REPO_NAME`），分支写「默认分支」。
   const localInfo = source.kind === 'local' ? resolveRepoInfo(source.path) : null;
-  const repoName = source.kind === 'local' ? localInfo!.repoName : source.repoName;
-  const loggedBranch = source.kind === 'local' ? localInfo!.branch : repoBranch ?? '默认分支';
+  const repoName = source.kind === 'local' ? localInfo!.repoName : source.kind === 'remote' ? source.repoName : NONE_SOURCE_REPO_NAME;
+  const loggedBranch =
+    source.kind === 'local' ? localInfo!.branch : source.kind === 'remote' ? repoBranch ?? '默认分支' : '默认分支';
   const now = new Date().toISOString();
   const created: TestCase = {
     id: randomUUID(),
@@ -313,6 +317,9 @@ export function deleteCase(caseId: string): { affectedRuns: number } {
 export function validateRepo(input: { repoPath: string; repoBranch: string | null }): RepoInfo {
   const source = parseRepoSource(input.repoPath);
   const branch = normalizeBranch(input.repoBranch);
+  if (source.kind === 'none') {
+    throw new ServiceError('INVALID_QUERY', '无来源用例没有代码仓库：无需校验', { context: { repoPath: input.repoPath } });
+  }
   if (source.kind === 'local') {
     // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
@@ -396,6 +403,9 @@ function ensureRemoteMirror(url: string): string {
 export function listCommitCandidates(input: { repoPath: string; repoBranch: string | null }): CommitCandidate[] {
   const source = parseRepoSource(input.repoPath);
   const branch = normalizeBranch(input.repoBranch);
+  if (source.kind === 'none') {
+    throw new ServiceError('INVALID_QUERY', '无来源用例没有代码仓库：没有提交候选', { context: { repoPath: input.repoPath } });
+  }
   if (source.kind === 'local') {
     // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的，与 validateRepo 同口径
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
@@ -430,6 +440,7 @@ function removeCaseCache(caseId: string): void {
  */
 function normalizeSourceString(repoPath: string): string {
   const source = parseRepoSource(repoPath);
+  if (source.kind === 'none') return NONE_SOURCE;
   return source.kind === 'local' ? source.path : source.url;
 }
 
@@ -445,6 +456,11 @@ function resolveCaseSource(
 ): { source: RepoSource; repoPath: string; repoBranch: string | null } {
   const source = parseRepoSource(repoPath);
   const branch = normalizeBranch(repoBranch);
+  if (source.kind === 'none') {
+    // 无来源没有仓库：分支与 commit 一样没有落点，一律拒绝（不静默忽略）
+    if (branch !== null) throw new ServiceError('INVALID_QUERY', '无来源用例不支持分支：没有代码仓库');
+    return { source, repoPath: NONE_SOURCE, repoBranch: null };
+  }
   if (source.kind === 'local') {
     // 本地来源的分支一律拒绝（不静默忽略）：用户以为生效了才是最坏的
     if (branch !== null) throw new ServiceError('INVALID_QUERY', `本地目录来源不支持分支：${source.path}`);
@@ -476,6 +492,11 @@ function resolveCommitInput(source: RepoSource, commitHash: string | null | unde
   if (commitHash === null || commitHash === undefined) return null;
   const trimmed = commitHash.trim();
   if (trimmed === '') return null;
+  if (source.kind === 'none') {
+    throw new ServiceError('INVALID_QUERY', '无来源用例不能指定 commit：没有代码仓库', {
+      context: { commit: trimmed },
+    });
+  }
   if (source.kind === 'local') return assertCommit(source.path, trimmed);
 
   const mirrorDir = ensureRemoteMirror(source.url);

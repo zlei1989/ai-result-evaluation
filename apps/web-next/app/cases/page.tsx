@@ -28,6 +28,7 @@ import {
 } from '@aieval/client';
 import {
   displayRepoName,
+  isNoneSource,
   type CaseCreate,
   type GenerateRubricInput,
   type GenerateRubricResult,
@@ -357,8 +358,12 @@ function CasesWorkspace(): React.ReactNode {
         // 一条坏数据抛在渲染里就是整页白屏。`repoNameFromSource` 留给判定路径（那边抛错是对的）。
         // 「创建评测」的用例下拉用同一个函数：两处口径分叉会让同一个仓库显示成两个名字。
         // 末段本身也可能是长名字，故省略与提示仍交给 `EllipsisText`——注意提示里要的是**全路径**
-        // （`tooltip` 与显示的末段不同形，不能让它默认拿 `text`）。
-        <EllipsisText text={displayRepoName(repoPath)} tooltip={repoPath} />
+        // （`tooltip` 与显示的末段不同形，不能让它默认拿 `text`）。无来源没有「全路径」可提示，
+        // 提示换成一句说全的话（哨兵串 `none://` 本身不是给用户看的信息）。
+        <EllipsisText
+          text={displayRepoName(repoPath)}
+          tooltip={isNoneSource(repoPath) ? '空仓库，无来源代码' : repoPath}
+        />
       ),
     },
     {

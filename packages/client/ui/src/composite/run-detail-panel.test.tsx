@@ -147,6 +147,22 @@ describe('RunDetailPanel 顶部信息卡', () => {
   });
 
   /**
+   * 无来源轮次：来源显示短标签「无」（哨兵串 `none://` 不是给用户看的信息），悬停给说全的话；
+   * 不显示分支行（repoBranch 恒为 null），commit 行是「默认分支 HEAD」。
+   */
+  it('无来源轮次：来源显示「无」+ 悬停说明，且没有分支行', async () => {
+    renderPanel(makeRun({ repoPath: 'none://', commitHash: null, repoBranch: null }));
+
+    const header = within(screen.getByTestId('run-header'));
+    expect(header.queryByText('none://')).toBeNull();
+    expect(header.queryByText('分支')).toBeNull();
+    expect(header.getByText('默认分支 HEAD')).toBeInTheDocument();
+
+    fireEvent.mouseEnter(header.getByText('无'));
+    expect(await screen.findByText('空仓库，无来源代码')).toBeInTheDocument();
+  });
+
+  /**
    * 远端轮次要显示分支：这一轮到底从哪条历史取起点，是核对一次评测时最先要看的两个事实之一
    * （另一个是 commit）。本地轮次（`repoBranch === null`）**整行不渲染**——旧数据的界面逐字不变。
    *

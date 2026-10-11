@@ -24,7 +24,7 @@ import { ServiceError } from '@aieval/contracts';
 import { assertCaseId } from './case-store';
 import { createLogger } from './logger';
 import { removeTreeWithRetry } from './remove-tree';
-import { checkoutRow, copyWorkspace, ensureCaseCache } from './git';
+import { checkoutRow, copyWorkspace, ensureCaseCache, initEmptySourceRepository } from './git';
 
 const log = createLogger('workspace');
 
@@ -170,6 +170,42 @@ function removeOrThrow(target: string): void {
 }
 
 /**
+ * 清上一轮的行产物（workspace + 两个配置目录，**不含** events.jsonl，见文件头口径 3）；目录不存在则跳过。
+ * 删除失败（Windows 上上一轮 agent 进程还没退干净、句柄没释放 → EPERM/EBUSY）必须折成中文原因：
+ * 裸抛 errno 英文原文会一路冒到界面（禁止），与 git.ts 的 executeOrFail 同一口径；
+ * 原文放 message 里供排查，调用方拿到的是可处置的 INTERNAL。文案里点出**常见成因**：
+ * 判据是目录里还有活进程的句柄，而最常见的就是厂商 CLI 的下级进程 ⇒ 提示先看进程。
+ */
+function resetRowDir(dir: string): void {
+  if (!existsSync(dir)) return;
+  log.info('清理上一轮的行产物（workspace、.agenthome、.judgehome）', { dir });
+  try {
+    clearRowArtifacts(dir);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ServiceError(
+      'INTERNAL',
+      `清理上一轮的行产物失败：${dir}（${detail}）。该目录仍被另一个进程占用：`
+        + '常见成因是上一轮的厂商子进程（codex/claude/dsh 及其下级进程）尚未退出，稍后重试即可；'
+        + '若持续失败，先结束残留的厂商进程再重跑这一行。',
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * 准备失败的**回滚**：清掉本模块刚建的产物。失败只 WARN、绝不顶替原始错误——
+ * 调用方要处置的是「commit 不存在」这类可修复的原因，把它换成 EPERM/EBUSY 会把 code 与文案都指错方向。
+ */
+function rollbackRowArtifacts(dir: string): void {
+  try {
+    clearRowArtifacts(dir);
+  } catch (cleanupError) {
+    log.warn('回滚行产物失败，已忽略（原始错误原样抛出）', { dir, cleanupError });
+  }
+}
+
+/**
  * 建行工作区：确保用例缓存 → 清掉上一轮的行产物（重跑同一行时）→ 复制缓存 → checkout 基线
  * → 建分支 → 建 `.agenthome`。
  * 为什么先确保缓存再清行产物：清完行产物、克隆却失败的话，这一行会停在一个「工作区不存在」
@@ -193,28 +229,7 @@ export function prepareRowWorkspace(input: {
   ensureCaseCache(input.repoPath, cache, input.commitHash);
 
   const dir = rowDir(input.workspaceRoot, input.runId, input.rowId);
-  if (existsSync(dir)) {
-    // 只清 workspace 与两个配置目录：events.jsonl 归 resetEvents，见 clearRowArtifacts
-    log.info('清理上一轮的行产物（workspace、.agenthome、.judgehome）', { dir });
-    // 删除失败（Windows 上上一轮 agent 进程还没退干净、句柄没释放 → EPERM/EBUSY）必须折成中文原因：
-    // 裸抛 errno 英文原文会一路冒到界面（禁止），与 git.ts 的 executeOrFail 同一口径；
-    // 原文放 message 里供排查，调用方拿到的是可处置的 INTERNAL。
-    try {
-      clearRowArtifacts(dir);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      // 文案里点出**常见成因**：这一条报错过去只说「清理失败 + errno 原文」，于是「上一轮的厂商进程
-      // 还没退干净」这个真因得靠人肉猜（真机排障链：EPERM → 谁占着？→ 进程表里找 git/codex）。
-      // 判据是目录里还有活进程的句柄，而最常见的就是厂商 CLI 的下级进程 ⇒ 提示先看进程。
-      throw new ServiceError(
-        'INTERNAL',
-        `清理上一轮的行产物失败：${dir}（${detail}）。该目录仍被另一个进程占用：`
-          + '常见成因是上一轮的厂商子进程（codex/claude/dsh 及其下级进程）尚未退出，稍后重试即可；'
-          + '若持续失败，先结束残留的厂商进程再重跑这一行。',
-        { cause: error },
-      );
-    }
-  }
+  resetRowDir(dir);
 
   const workspacePath = rowWorkspaceDir(input.workspaceRoot, input.runId, input.rowId);
   const agentHome = rowAgentHomeDir(input.workspaceRoot, input.runId, input.rowId);
@@ -231,14 +246,38 @@ export function prepareRowWorkspace(input: {
     // 复制过来的那个位置。留着它，任何「目录已存在就跳过准备」的判断都会拿它去跑 agent，
     // 产出的 diff 相对错误的基线（那类静默错分）。清掉后重跑与首次调用同路。
     // events.jsonl 同样不动：回滚不该顺手把「这一行准备失败」这条证据删掉。
-    // 回滚本身失败**绝不能顶替原始错误**：调用方要处置的是「commit 不存在」这类可修复的原因
-    // （改完用例记录重跑正是这里最需要的动作），把它换成一个 EPERM/EBUSY 会把 code 与文案都指错方向。
-    // 故清理单独包一层：清理失败只 WARN，原始 error 原样 rethrow。
-    try {
-      clearRowArtifacts(dir);
-    } catch (cleanupError) {
-      log.warn('回滚行产物失败，已忽略（原始错误原样抛出）', { dir, cleanupError });
-    }
+    rollbackRowArtifacts(dir);
+    throw error;
+  }
+}
+
+/**
+ * 「无来源」用例的行工作区准备：没有缓存可复制，改为**现场初始化空仓库**——
+ * `initEmptySourceRepository`（mkdir + `git init -b main` + 空提交）之后照常走
+ * `checkoutRow` 建 `test/{rowId}` 行分支，基线就是那次空提交。此后该行与其它来源
+ * 共用同一套 checkout / 基线 / diff 口径，只是工作树是空的。
+ * 清上一轮行产物与失败回滚同 `prepareRowWorkspace` 一份逻辑（`resetRowDir` / `rollbackRowArtifacts`）。
+ */
+export function prepareEmptyRowWorkspace(input: {
+  workspaceRoot: string;
+  runId: string;
+  rowId: string;
+  branch: string;
+}): { workspacePath: string; agentHome: string; baselineCommit: string } {
+  const dir = rowDir(input.workspaceRoot, input.runId, input.rowId);
+  resetRowDir(dir);
+
+  const workspacePath = rowWorkspaceDir(input.workspaceRoot, input.runId, input.rowId);
+  const agentHome = rowAgentHomeDir(input.workspaceRoot, input.runId, input.rowId);
+  try {
+    initEmptySourceRepository(workspacePath);
+    const { baselineCommit } = checkoutRow(workspacePath, null, input.branch);
+    mkdirSync(agentHome, { recursive: true });
+
+    log.info('行工作区已就绪（无来源：空仓库）', { workspacePath, agentHome, branch: input.branch, baselineCommit });
+    return { workspacePath, agentHome, baselineCommit };
+  } catch (error) {
+    rollbackRowArtifacts(dir);
     throw error;
   }
 }

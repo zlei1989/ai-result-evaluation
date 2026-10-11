@@ -23,10 +23,10 @@
  *      antd 的禁用按钮不触发鼠标事件，Tooltip 必须挂在**外层 span**上，否则禁用态下浮层永远不出现；
  *   5. **等宽字体取 antd token**（`theme.useToken().fontFamilyCode`），不写死字体名——
  *      主题换字体时这里跟着走；正文是代码，等宽是语义要求而不是装饰；
- *   6. **来源态只影响渲染与提交的分支归一，服务端永远按字符串形态判定**：界面上的「本地 / 远端」是
+ *   6. **来源态只影响渲染与提交的归一，服务端永远按字符串形态判定**：界面上的「本地 / 远端 / 无」是
  *      给用户的一个显式选择（决定渲染哪些字段、提交时分支归不归一），它**不参与**任何判定——
- *      填成什么形态由服务端 `parseRepoSource` 按字符串本身决定。切错态不该让服务端判错，
- *      也不该让界面显示的和存下去的成为两回事；
+ *      填成什么形态由服务端 `parseRepoSource` 按字符串本身决定；「无」提交时把哨兵值 `NONE_SOURCE`
+ *      （`none://`）写进 `repoPath`。切错态不该让服务端判错，也不该让界面显示的和存下去的成为两回事；
  *   7. **远端两个动作要把「正在拉取远端仓库…」说出来**：首次校验 / 首访候选会真的克隆，
  *      而克隆期间整个 Node 进程阻塞，用户点完没有反馈只会以为没点上、于是再点一次；
  *      本地态不许出现这句话——本地来源一个字节都不上网，说成拉取是错误的方向指引；
@@ -43,6 +43,7 @@
  * 多存一份只会得到一份与表单必然漂移的副本（见要点 1）。
  */
 import {
+  NONE_SOURCE,
   parseRepoSource,
   validateRubric,
   type CaseCreate,
@@ -70,8 +71,9 @@ const GLOBAL_JUDGE_TOOLTIP = '请先到设置里配置默认评分模型';
 
 /**
  * 来源类型：界面的态（用户可以显式选），与服务端「按形态判定」是两件事——那边永远以字符串形态为准。
+ * 「无」落盘时 `repoPath` 写成哨兵值 `NONE_SOURCE`（`none://`），渲染时地址 / 分支 / commit 三格都隐藏。
  */
-type SourceKind = 'local' | 'remote';
+type SourceKind = 'local' | 'remote' | 'none';
 
 /**
  * 初值看起来是远端就按远端渲染；判定失败（未填 / 协议不支持）按本地渲染，让用户在本地态里改掉它。
@@ -188,17 +190,22 @@ export function CaseFormPanel({
   const loadCommitsLabel = sourceKind === 'remote' && loadingCommits ? '正在拉取远端仓库…' : '重新加载候选';
 
   /**
-   * 提交给服务端的分支：本地态恒为 null（不让界面上残留的值溜进请求）。
+   * 提交给服务端的分支：本地与无来源恒为 null（不让界面上残留的值溜进请求）。
    * 空串同样归一成 null —— 契约里 `repoBranch` 是 `min(1).nullable()`，空串会被拒。
    */
   const submitBranch = (value: string | undefined): string | null => {
-    if (sourceKind === 'local') return null;
+    if (sourceKind === 'local' || sourceKind === 'none') return null;
     const trimmed = (value ?? '').trim();
     return trimmed === '' ? null : trimmed;
   };
 
-  /** 当前选中的来源（归一后）：回显是否作数、以及报给页面的都是它 */
-  const currentSelection = { repoPath: repoPathValue.trim(), repoBranch: submitBranch(repoBranchValue) };
+  /** 当前选中的来源（归一后）：回显是否作数、以及报给页面的都是它。
+   *  无来源时报**哨兵值**而不是地址框里的残留文本：页面拿它去比「上一次校验过的那一对」，
+   *  任何真实路径都不可能等于 `none://`，于是候选与回显在「无」态下天然失效、不发请求。 */
+  const currentSelection = {
+    repoPath: sourceKind === 'none' ? NONE_SOURCE : repoPathValue.trim(),
+    repoBranch: submitBranch(repoBranchValue),
+  };
   const showRepoInfo =
     repoInfo !== null &&
     validatedSelection !== null &&
@@ -251,9 +258,12 @@ export function CaseFormPanel({
     }
   };
 
-  /** 智能生成：把**当前表格**一起交出去（AI 要靠它做「只增不改」） */
+  /** 智能生成：把**当前表格**一起交出去（AI 要靠它做「只增不改」）。
+   *  无来源时交哨兵值（服务端认它、用固定仓库名替身起草），且地址格已隐藏、不参与校验。 */
   const handleGenerate = async (): Promise<void> => {
-    const values = await form.validateFields(['taskPrompt', 'repoPath']).catch(() => null);
+    const values = await form
+      .validateFields(sourceKind === 'none' ? (['taskPrompt'] as const) : (['taskPrompt', 'repoPath'] as const))
+      .catch(() => null);
     if (values === null) return;
     try {
       const generated = await onGenerate({
@@ -261,7 +271,7 @@ export function CaseFormPanel({
         rubric: form.getFieldValue('rubric') ?? { groups: [] },
         taskPrompt: values.taskPrompt ?? '',
         prompt: '',
-        repoPath: (values.repoPath ?? '').trim(),
+        repoPath: sourceKind === 'none' ? NONE_SOURCE : (values.repoPath ?? '').trim(),
       });
       form.setFieldValue('rubric', generated.rubric);
     } catch {
@@ -317,13 +327,14 @@ export function CaseFormPanel({
     setRecognizeOpen(false);
   };
 
-  /** 提交：把表单值归一成契约形状（空串 → null，两侧空白 trim） */
+  /** 提交：把表单值归一成契约形状（空串 → null，两侧空白 trim）。
+   *  无来源：`repoPath` 落哨兵值 `none://`，分支与 commit 恒为 null（服务端对「无 + 分支/commit」是硬拒绝）。 */
   const handleFinish = (values: CaseFormValues): void => {
     const commitHash = (values.commitHash ?? '').trim();
     onSubmit({
       title: values.title.trim(),
-      repoPath: values.repoPath.trim(),
-      commitHash: commitHash === '' ? null : commitHash,
+      repoPath: sourceKind === 'none' ? NONE_SOURCE : values.repoPath.trim(),
+      commitHash: sourceKind === 'none' ? null : commitHash === '' ? null : commitHash,
       // 分支必须交真实值：编辑一条远端用例时交 null 等于**静默清掉它的分支**（保存后这一轮会换起点）
       repoBranch: submitBranch(values.repoBranch),
       taskPrompt: values.taskPrompt,
@@ -470,7 +481,10 @@ export function CaseFormPanel({
 
       {/* 来源类型：显式选择（界面态），与服务端的形态判定是两件事（见文件头要点 6）。
           `Radio.Group` 用 options 写法（不手写 Radio 子元素）：选项文本与值一处给出，少一层手写节点 */}
-      <Form.Item label="来源类型" extra="远端仓库的代码由服务端镜像到工作区根下，评测时按分支或 commit 取起点">
+      <Form.Item
+        label="来源类型"
+        extra="远端仓库的代码由服务端镜像到工作区根下，评测时按分支或 commit 取起点；无 = 空仓库（无来源代码），评测时初始化一个空 git 仓库"
+      >
         <Radio.Group
           size="small"
           value={sourceKind}
@@ -485,50 +499,53 @@ export function CaseFormPanel({
             setValidatedSelection(null);
           }}
           options={[
-            // 顺序即默认口径的一部分：远端在前、本地在后
+            // 顺序即默认口径的一部分：远端在前、本地其次、无最后
             { label: '远端仓库', value: 'remote' },
             { label: '本地目录', value: 'local' },
+            { label: '无', value: 'none' },
           ]}
         />
       </Form.Item>
 
       {/* 仓库路径也要两条规则：`required` 只判空串，纯空格要 `whitespace` 才拦得住。
           少了后者，纯空格的路径先被 `handleFinish` 的 trim 变成 `''` 交给服务端，用户白等一次往返、
-          拿到的还是一句与字段无关的「查询参数不合法」 */}
-      <Form.Item
-        name="repoPath"
-        label="代码仓库"
-        rules={[
-          { required: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
-          { whitespace: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
-        ]}
-        extra={repoPathExtra}
-      >
-        <Input
-          data-testid="case-repo-path"
-          placeholder={sourceKind === 'local' ? 'D:\\projects\\gateway' : 'ssh://git@coding.jd.com/FlowAI/rbac-server.git'}
-          // 校验按钮走 `suffix`，不用 antd 6 已弃用的 `addonAfter`（后者每次挂载都打一条 **error 级**的
-          // `[antd: Input] addonAfter is deprecated`，而告警只在开发/测试环境出现，生产里静默——
-          // 既不会被用户报障发现，又会长期淹没控制台里真正的错误）。同包 `judge-settings-card.tsx`
-          // 的单位后缀就是这么处理的。
-          // 官方给的替代是 `Space.Compact`，但它会在 Form.Item 与 Input 之间插一层：antd 只给 Form.Item 的
-          // **直接孩子**注入 value/onChange（口径同本文件 AutoComplete 处的注释），包一层等于这个字段永远收不到
-          // 用户输入，`validateFields(['repoPath'])` 只能拿到空串，「校验」按钮就成了死键。
-          // suffix 把按钮留在输入框右端（可见布局不变），绑定与字段级报错都原地不动。
-          suffix={
-            <Button
-              size="small"
-              type="text"
-              autoInsertSpace={false}
-              loading={validating}
-              data-testid="case-validate-repo"
-              onClick={() => void handleValidate()}
-            >
-              {validatingLabel}
-            </Button>
-          }
-        />
-      </Form.Item>
+          拿到的还是一句与字段无关的「查询参数不合法」。无来源时整格隐藏（提交时落哨兵值）。 */}
+      {sourceKind !== 'none' && (
+        <Form.Item
+          name="repoPath"
+          label="代码仓库"
+          rules={[
+            { required: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
+            { whitespace: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
+          ]}
+          extra={repoPathExtra}
+        >
+          <Input
+            data-testid="case-repo-path"
+            placeholder={sourceKind === 'local' ? 'D:\\projects\\gateway' : 'ssh://git@coding.jd.com/FlowAI/rbac-server.git'}
+            // 校验按钮走 `suffix`，不用 antd 6 已弃用的 `addonAfter`（后者每次挂载都打一条 **error 级**的
+            // `[antd: Input] addonAfter is deprecated`，而告警只在开发/测试环境出现，生产里静默——
+            // 既不会被用户报障发现，又会长期淹没控制台里真正的错误）。同包 `judge-settings-card.tsx`
+            // 的单位后缀就是这么处理的。
+            // 官方给的替代是 `Space.Compact`，但它会在 Form.Item 与 Input 之间插一层：antd 只给 Form.Item 的
+            // **直接孩子**注入 value/onChange（口径同本文件 AutoComplete 处的注释），包一层等于这个字段永远收不到
+            // 用户输入，`validateFields(['repoPath'])` 只能拿到空串，「校验」按钮就成了死键。
+            // suffix 把按钮留在输入框右端（可见布局不变），绑定与字段级报错都原地不动。
+            suffix={
+              <Button
+                size="small"
+                type="text"
+                autoInsertSpace={false}
+                loading={validating}
+                data-testid="case-validate-repo"
+                onClick={() => void handleValidate()}
+              >
+                {validatingLabel}
+              </Button>
+            }
+          />
+        </Form.Item>
+      )}
 
       {/* 分支：只在远端来源渲染。留空 = 远端默认分支 HEAD（提交成 null），填了就用该分支的 tip，
           且每次评测重新解析——所以这里不做任何「记住上次 tip」的展示（tip 只在上面那次校验的回显里） */}
@@ -567,29 +584,32 @@ export function CaseFormPanel({
       {/* AutoComplete 直接做 Form.Item 的孩子（**不套一层 Flex**）：antd 只会给直接孩子注入 value/onChange
           与 label 的 htmlFor 所指的 id，套一层容器会让绑定丢在内层控件上——测试里的 getByLabelText 也会失效。
           这里刻意**不给 data-testid**：antd 的 Select 系组件把额外 props 放到外层容器，对着容器触发 change
-          改不到表单值；测试用 label 关联取内层 input（见测试里的 commitInput）。 */}
-      <Form.Item
-        name="commitHash"
-        label="commit hash"
-        extra={
-          <Flex justify="space-between" align="center" gap={8}>
-            <Typography.Text type="secondary">留空 = 默认分支 HEAD；候选只是便利，可手工输入任意合法 hash</Typography.Text>
-            {/* 这个按钮在远端首访可能触发一次真实克隆（用户跳过了校验直接点它），而克隆期间整个进程
-                是阻塞的（spec §6.8）：loading 与「正在拉取远端仓库…」就是那段时间里唯一的反馈 */}
-            <Button size="small" type="text" data-testid="case-load-commits" loading={loadingCommits} onClick={onLoadCommits}>
-              {loadCommitsLabel}
-            </Button>
-          </Flex>
-        }
-      >
-        <AutoComplete
-          placeholder="留空 = 默认分支 HEAD"
-          options={commits.map((commit) => ({ value: commit.hash, label: `${commit.hash} ${commit.subject}` }))}
-          // 候选只有 20 条：按输入前缀过滤即可，不过滤的话输入短哈希时下拉会把无关项排满
-          filterOption={(input, option) => String(option?.value ?? '').toLowerCase().startsWith(input.toLowerCase())}
-          notFoundContent="暂无候选提交，可手工输入完整 hash"
-        />
-      </Form.Item>
+          改不到表单值；测试用 label 关联取内层 input（见测试里的 commitInput）。
+          无来源没有提交历史，整格隐藏（提交时 commitHash 恒为 null）。 */}
+      {sourceKind !== 'none' && (
+        <Form.Item
+          name="commitHash"
+          label="commit hash"
+          extra={
+            <Flex justify="space-between" align="center" gap={8}>
+              <Typography.Text type="secondary">留空 = 默认分支 HEAD；候选只是便利，可手工输入任意合法 hash</Typography.Text>
+              {/* 这个按钮在远端首访可能触发一次真实克隆（用户跳过了校验直接点它），而克隆期间整个进程
+                  是阻塞的（spec §6.8）：loading 与「正在拉取远端仓库…」就是那段时间里唯一的反馈 */}
+              <Button size="small" type="text" data-testid="case-load-commits" loading={loadingCommits} onClick={onLoadCommits}>
+                {loadCommitsLabel}
+              </Button>
+            </Flex>
+          }
+        >
+          <AutoComplete
+            placeholder="留空 = 默认分支 HEAD"
+            options={commits.map((commit) => ({ value: commit.hash, label: `${commit.hash} ${commit.subject}` }))}
+            // 候选只有 20 条：按输入前缀过滤即可，不过滤的话输入短哈希时下拉会把无关项排满
+            filterOption={(input, option) => String(option?.value ?? '').toLowerCase().startsWith(input.toLowerCase())}
+            notFoundContent="暂无候选提交，可手工输入完整 hash"
+          />
+        </Form.Item>
+      )}
 
       <Flex justify="end" gap={8} style={{ marginTop: 12 }}>
         {/* 取消只有这一个入口（卡片头上没有第二个）：

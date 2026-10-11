@@ -2,13 +2,13 @@
 
 ## 定位
 
-用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。用例只回答「测什么」——表单里既没有评分模型（评分与生成都走设置页的全局默认），也没有评分提示词（自由文本的评分要求已由评分标准项取代）。`/cases` 页 = 列表 + 右侧栏，右栏三种内容（详情 / 创建 / 编辑）由 `?panel=detail|new|edit&id=…` 决定，同一栏位换内容、不弹层。用例**一文件一落**：`<casesRoot>/<用例 id>.json`（文件名即身份，默认 `~/.aieval-cases`）——布局、路径优先级、落盘与 git 自动同步见《数据与存储》的《用例目录》。
+用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。用例只回答「测什么」——表单里既没有评分模型（评分与生成都走设置页的全局默认），也没有评分提示词（自由文本的评分要求已由评分标准项取代）。仓库一格的第三种选择是**无**（无来源）：`repoPath` 落哨兵值 `none://`，评测准备阶段现场初始化一个空 git 仓库（`git init -b main` + 空提交），智能体从空工作树开始。`/cases` 页 = 列表 + 右侧栏，右栏三种内容（详情 / 创建 / 编辑）由 `?panel=detail|new|edit&id=…` 决定，同一栏位换内容、不弹层。用例**一文件一落**：`<casesRoot>/<用例 id>.json`（文件名即身份，默认 `~/.aieval-cases`）——布局、路径优先级、落盘与 git 自动同步见《数据与存储》的《用例目录》。
 
 ## 页面形态与交互
 
 ### 列表
 
-`Table` 列 = 标题 / 仓库 / commit / 更新时间（commit 列名逐字是 `commit`）。`commitHash === null` 的格子是次要色「默认 HEAD」；非空时是 `code` 样式的 7 位短哈希 + `Tooltip` 显全量。仓库名渲染走 `displayRepoName(source)`——渲染期任何字符串都不抛错（读侧拿到的是已落盘的数据，一个坏行不该让整页白屏）；会抛错的 `parseRepoSource` / `RepoSourceStringSchema` 只在写侧校验用。右上「创建用例」，空态用 `EmptyState` 引导。
+`Table` 列 = 标题 / 仓库 / commit / 更新时间（commit 列名逐字是 `commit`）。`commitHash === null` 的格子是次要色「默认 HEAD」；非空时是 `code` 样式的 7 位短哈希 + `Tooltip` 显全量。仓库名渲染走 `displayRepoName(source)`——渲染期任何字符串都不抛错（读侧拿到的是已落盘的数据，一个坏行不该让整页白屏）；会抛错的 `parseRepoSource` / `RepoSourceStringSchema` 只在写侧校验用。无来源显示短标签「无」，`Tooltip` 是「空仓库，无来源代码」（哨兵串 `none://` 不透给界面）。右上「创建用例」，空态用 `EmptyState` 引导。
 
 **列表排序**（用户口径：默认「标题」倒序，标题 / 仓库 / 更新时间三列可排；`commit` 列不参与）：
 
@@ -35,13 +35,13 @@
 |---|---|
 | 标题 | `Input`，必填 |
 | 考题提示词 | `Input.TextArea`（等宽字体），必填 |
-| 代码来源 · 类型 | `Radio.Group`：远端仓库（默认）/ 本地目录。纯展示层状态，落到同一个 `repoPath` 字段；编辑态按形态回填，切到本地清空分支 |
-| 代码来源 · 地址 | 远端填 URL、本地填绝对路径，服务端 `parseRepoSource` 判形态 |
-| 分支（仅远端） | 留空 = 远端默认分支；本地来源填了直接 `INVALID_QUERY` |
-| commit hash | `AutoComplete`：候选项 = 最近 20 条提交（`git log --format=%h%x09%s -n 20`），也可手工输入任意合法 hash（`git rev-parse --verify <hash>^{commit}` 判存在并把短哈希归一成 40 位）——纯便利功能，不能只允许从候选里选 |
+| 代码来源 · 类型 | `Radio.Group`：远端仓库（默认）/ 本地目录 / 无。纯展示层状态，落到同一个 `repoPath` 字段；编辑态按形态回填，切到本地清空分支 |
+| 代码来源 · 地址 | 远端填 URL、本地填绝对路径，服务端 `parseRepoSource` 判形态；选「无」时整格隐藏（含校验按钮），提交时落哨兵值 `none://` |
+| 分支（仅远端） | 留空 = 远端默认分支；本地来源填了直接 `INVALID_QUERY`；「无」来源不支持分支（写侧同样 `INVALID_QUERY`） |
+| commit hash | `AutoComplete`：候选项 = 最近 20 条提交（`git log --format=%h%x09%s -n 20`），也可手工输入任意合法 hash（`git rev-parse --verify <hash>^{commit}` 判存在并把短哈希归一成 40 位）——纯便利功能，不能只允许从候选里选；「无」来源没有提交历史，整格隐藏、恒为 null |
 | 评分标准项 | 表格编辑器（见下节） |
 
-「校验」按钮挂在「代码仓库」格的 `suffix` 上、连同分支一起校验；「重新加载候选」挂在同一格的 `extra` 槽。远端首次点击可能触发克隆（分钟级），loading 文案分别是「正在校验并拉取远端仓库…」「正在拉取远端仓库…」，背后有 10 分钟墙钟上限。校验回显：
+「校验」按钮挂在「代码仓库」格的 `suffix` 上、连同分支一起校验；「重新加载候选」挂在同一格的 `extra` 槽。选「无」时这一格与校验按钮、候选按钮、commit 格、校验回显一起隐藏（没有仓库可校验、没有提交可列）。远端首次点击可能触发克隆（分钟级），loading 文案分别是「正在校验并拉取远端仓库…」「正在拉取远端仓库…」，背后有 10 分钟墙钟上限。校验回显：
 
 - 远端：`仓库：{repoName} · {默认分支|分支}：{branch} · tip {7 位短哈希} · 镜像：已就绪（更新于 YYYY-MM-DD HH:mm）`——`tip` 与镜像时间各自可缺，缺时不占位。
 - 本地：`仓库：{repoName} · 当前分支：{branch}`（这句逐字不变）。
@@ -58,13 +58,15 @@
 | 序 | 形态 | 判定 | 例 |
 |---|---|---|---|
 | 0 | 含控制字符（`\u0000-\u001f\u007f`）· 以 `-` 开头 | 拒绝 `INVALID_QUERY` | 粘贴带换行的 URL；`-x` |
-| 1 | Windows 盘符 `^[A-Za-z]:[\\/]`、UNC `^\\\\` | local | `D:\repos\demo`、`\\host\share\repo` |
-| 2 | 白名单 scheme：`ssh://` / `http://` / `https://` / `git://` / `file://` | remote | `https://host/group/repo.git`、`file:///D:/tmp/origin.git` |
-| 3 | 其它 `^[A-Za-z][A-Za-z0-9+.-]*://`（scheme 大小写不敏感） | 拒绝 `INVALID_QUERY`，不回落成本地路径 | `ftp://host/x.git`、`FTP://host/x.git` |
-| 4 | scp 形态 `^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]{2,}:.+$` 且「含 `@`」或「host 段含 `.`」 | remote | `git@host:group/repo.git` |
-| 5 | 其余 | local | `/home/me/tool-id`、`./repo` |
+| 1 | 哨兵值 `none://`（逐字） | none（无来源） | `none://` |
+| 2 | Windows 盘符 `^[A-Za-z]:[\\/]`、UNC `^\\\\` | local | `D:\repos\demo`、`\\host\share\repo` |
+| 3 | 白名单 scheme：`ssh://` / `http://` / `https://` / `git://` / `file://` | remote | `https://host/group/repo.git`、`file:///D:/tmp/origin.git` |
+| 4 | 其它 `^[A-Za-z][A-Za-z0-9+.-]*://`（scheme 大小写不敏感） | 拒绝 `INVALID_QUERY`，不回落成本地路径 | `ftp://host/x.git`、`FTP://host/x.git` |
+| 5 | scp 形态 `^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]{2,}:.+$` 且「含 `@`」或「host 段含 `.`」 | remote | `git@host:group/repo.git` |
+| 6 | 其余 | local | `/home/me/tool-id`、`./repo` |
 
-- 第 4 条的附加条件是为了不把 `src:foo` 这类含冒号的本地相对路径误判成远端；`localhost:repo` 因此判 local（要指定它请写 `ssh://localhost/repo`）。
+- 第 5 条的附加条件是为了不把 `src:foo` 这类含冒号的本地相对路径误判成远端；`localhost:repo` 因此判 local（要指定它请写 `ssh://localhost/repo`）。
+- 哨兵值取 scheme 形态是刻意的：裸词 `none` 会落进「其余 = local」（与同名目录撞形态），而 `none://` 撞不上任何真实路径 / 远端地址；**逐字**匹配（`none://x` 与别的非法协议一样被拒），不误吞任何真实输入。
 - `file://` 判 remote 是刻意的：整条远端链路（镜像、基线解析、超时、失败分类）可以用本地裸仓库全覆盖，不需要网络。
 - 控制字符查**原串**（先 `trim` 就等于放行最常见的粘贴事故）；「以 `-` 开头」防 URL 被 `git clone` / `git ls-remote` 当成选项解析。
 - **归一**：两侧空白 `trim`，远端仅去掉尾部 `/`，此外不做任何归一（不折叠大小写、不剥 `.git`、不把 https 改写成 ssh）——它是镜像 key 与「来源是否改变」的判据。
@@ -103,7 +105,7 @@
 - 项的 `id` 允许为空：空 id 的项按**位置**分配引用键 `#k`（全表顺序号，跨组连续，按 `trim()` 判空）。`validateRubric` 额外断言**生成的引用键两两不同**——两把相同的键会让模型的一次判定被同时记到两项上，分数悄悄多出一块而界面一切正常。
 - `validateRubric` 是**提交用例时的唯一判据**（界面与后端共用）：至少一组、每组至少一项、组名非空、目标非空、权重正整数（上限 `MAX_ITEM_WEIGHT = 10_000`）、id 不重复、引用键不重复；返回点名哪一组、哪一项的中文原因，不是笼统的「表格不合法」。
 - `renderRubricForJudge` 渲染 Markdown 二级表格，第一列是**引用键**（模型据此指认「我评的是哪一项」）；组名、引用键与目标走同一份转义——它们同为自由文本（`|` 与换行都合法），漏转义会让整行列错位，而错位之后模型读到的是一张与界面不同的表。
-- **智能生成与智能识别**（`generateRubric`）：两个分支都是**一次非流式文本调用**（`callTextApi`）——不建工作区、不起 CLI、不走 `AgentJudgeInput`，只用设置页的全局默认评分模型。生成分支（`prompt` 为空）输入题面 + 仓库名 + 当前表格，输出**只新增**的组与项（禁止复用已有 ID、同名组复用原名、表格已完备时返回空 `groups` 不凑数）；识别分支（`prompt` 非空）用户原文**原样放入**、整表替换（组数项数数字一个都不许改）、`addedItems` 固定 0。`mergeRubric` 按组名归位（同名组追加到该组末尾，否则新建组追加到表尾）。两个按钮打同一个接口 `/api/cases/generate-judge-prompt`；**失败绝不改调用方状态**（弹窗不关、文本原样保留）。
+- **智能生成与智能识别**（`generateRubric`）：两个分支都是**一次非流式文本调用**（`callTextApi`）——不建工作区、不起 CLI、不走 `AgentJudgeInput`，只用设置页的全局默认评分模型。生成分支（`prompt` 为空）输入题面 + 仓库名 + 当前表格，输出**只新增**的组与项（禁止复用已有 ID、同名组复用原名、表格已完备时返回空 `groups` 不凑数）；识别分支（`prompt` 非空）用户原文**原样放入**、整表替换（组数项数数字一个都不许改）、`addedItems` 固定 0。`mergeRubric` 按组名归位（同名组追加到该组末尾，否则新建组追加到表尾）。两个按钮打同一个接口 `/api/cases/generate-judge-prompt`；**失败绝不改调用方状态**（弹窗不关、文本原样保留）。无来源用例的生成分支**跳过仓库校验**（没有仓库可校验），提示词里【仓库】那一格用固定替身「空仓库（无来源代码）」，模型以题面为唯一依据起草；识别分支本就不碰仓库。
 - **三层职责**（各只做一件事）：
 
 | 层 | 落点 | 不合格时 |
@@ -134,7 +136,7 @@
 
 | 字段 / 契约 | 内容 |
 |---|---|
-| `TestCaseSchema.repoPath` | 语义是「来源」，落 `RepoSourceStringSchema`（旧值的判定结果不变）；schema 失败时把 `ServiceError` 的中文原因原样塞进 zod issue，不另写一份文案 |
+| `TestCaseSchema.repoPath` | 语义是「来源」，落 `RepoSourceStringSchema`（旧值的判定结果不变）；schema 失败时把 `ServiceError` 的中文原因原样塞进 zod issue，不另写一份文案。无来源 = 哨兵值 `none://`，用例文件照常落 `<casesRoot>`、照常参与题库 git 同步（同步判据只看文件名，不读来源） |
 | `CASE_ID_PATTERN` / `isCaseIdShapeValid` | 用例 id 的形状判据（**文件名安全**）：`/^[A-Za-z0-9_-]{1,64}$/`。id 直接当文件名用，这条判据同时是路径穿越的安全边界——写侧 `assertCaseId` 抛 `INVALID_QUERY` + 中文原因，读侧跳过并记进 `warnings` |
 | `CaseList` | `{ cases, warnings }`：坏文件被跳过时把原因带出来（界面在列表页出告警条）。列表必须能渲染，否则用户连删掉那个坏文件的入口都没有 |
 | `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：迁移前住在 `config.json` 里的旧用例没有这一列，读侧必须按 null 读 |
@@ -148,8 +150,8 @@
 
 - **校验时序**（`validateRepo`，远端分支）：`probeRemote` →（镜像未就绪时）`ensureMirror` 首次克隆——**克隆本身就是这一次取回，紧接着不再 fetch**（大仓库首次校验是分钟级的）→ 镜像已存在时 `fetchMirror`（增量，通常 1–3 秒；把探活拿到的默认分支名传进去对齐镜像 HEAD）→ `resolveRemoteRef(…, { fetch: false })`（分支不存在在这里就拦下）→ 回 `kind:'remote'`、`repoName`、`branch`、`tip`（7 位）、`mirrorPath`、`mirrorReady: true`。远端校验**不 checkout、不碰工作树、不建行工作区**。
 - **候选时序**（`listCommitCandidates`）：remote = `ensureMirror`（就绪则纯本地、**不联网**——来源临时改名移走后候选照常出）→ `resolveRemoteRef(…, { fetch: false })` 取该 ref 的 40 位 tip → `git -C <dir> log --format=%h%x09%s -n 20 <tip>`；复用 `resolveRemoteRef` 而不自己算 ref 名（默认分支的取名只在一处实现）。
-- **保存时序**（`createCase` / `updateCase`）：形态判定走 `parseRepoSource`；本地来源 + 非 null 分支 → `INVALID_QUERY`（**按值判**，避免 UI 的全量补丁把无关保存拦下）；远端分支 / commit **先在镜像里判**，判不过时只 `fetchMirror` 一次再判，仍判不过才抛（远端刚推上来的分支不该因为镜像还没更新而被拒）；落盘时 `commitHash` 归一成 40 位、`repoBranch` trim（空串 → null）。
-- **评测准备阶段**（消费这些字段的时刻，`repoPath` / `repoBranch` / `commitHash` 已快照进 `run.json`）：remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；**钉死的 commit 已在镜像里时一次都不抓**，否则这是本轮唯一一次 fetch）→ `prepareRowWorkspace` 传**具体 hash**（基线已解析成 40 位具体值，缓存只需从镜像取对象）→ `EvalRow.baselineCommit` = 该 hash。基线解析口径：
+- **保存时序**（`createCase` / `updateCase`）：形态判定走 `parseRepoSource`；本地来源 + 非 null 分支 → `INVALID_QUERY`（**按值判**，避免 UI 的全量补丁把无关保存拦下）；无来源 + 分支 / commit 一律 `INVALID_QUERY`（没有仓库可判，且全程**零 git 进程**）；远端分支 / commit **先在镜像里判**，判不过时只 `fetchMirror` 一次再判，仍判不过才抛（远端刚推上来的分支不该因为镜像还没更新而被拒）；落盘时 `commitHash` 归一成 40 位、`repoBranch` trim（空串 → null）。
+- **评测准备阶段**（消费这些字段的时刻，`repoPath` / `repoBranch` / `commitHash` 已快照进 `run.json`）：remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；**钉死的 commit 已在镜像里时一次都不抓**，否则这是本轮唯一一次 fetch）→ `prepareRowWorkspace` 传**具体 hash**（基线已解析成 40 位具体值，缓存只需从镜像取对象）→ `EvalRow.baselineCommit` = 该 hash；none 时**绕过镜像与用例缓存整条克隆链**，`prepareEmptyRowWorkspace` 现场初始化空仓库（mkdir → `git init -b main` → 空提交，提交者带显式 `-c user.name/user.email`、不依赖机器全局身份）→ 照常 `checkoutRow` 建 `test/{rowId}` 行分支，基线 = 那次空提交，此后该行的 checkout / diff / 评分口径与其它来源完全一致（diff 相对空提交基线，即全部产出）。基线解析口径：
 
 | 来源 | `repoBranch` | `commitHash` | 基线 |
 |---|---|---|---|
@@ -159,6 +161,8 @@
 | remote | null | null | 远端**默认分支** tip（每次评测 fetch 后重新解析） |
 | remote | `feat/x` | null | `refs/heads/feat/x` 的 tip（同上） |
 | remote | 任意 | hash | 该 commit（镜像里没有 → fetch 一次 → 仍没有 → `INVALID_REF`） |
+| none | null | null | 现场初始化的空仓库 HEAD = 空提交（`initial commit`） |
+| none | 非 null 分支 / 非 null commit | — | 写入口就 `INVALID_QUERY`（到不了准备阶段） |
 
   local 与 remote 的「默认分支 HEAD」**不是同一个东西**：local 取来源仓库**当前检出的 HEAD**（可能停在特性分支上），remote 取**远端默认分支**——这是两种来源的固有差异，不试图统一。
 

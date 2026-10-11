@@ -499,6 +499,40 @@ export function checkoutRow(
   return { baselineCommit: target };
 }
 
+/**
+ * 空提交的提交者身份：**只作用于这一次提交**（`-c` 优先级最高、不写任何 config 文件），
+ * 与机器全局 git 身份无关——case-sync 的裸 commit 依赖全局身份是同类先例，这里不复刻。
+ */
+const EMPTY_COMMIT_AUTHOR = { name: 'Aieval Bot', email: 'bot@aieval.local' };
+
+/**
+ * 「无来源」用例的工作区初始化：建空目录 → `git init -b main` → 空提交。
+ * 空提交不是仪式：HEAD 不存在（unborn HEAD）时，checkoutRow 的基线解析（`assertCommit(dir, 'HEAD')`）
+ * 与 collectDiff 都会以「commit 不存在」失败——有了这一次提交，基线 / 行分支 / diff 全部照常成立。
+ * 默认分支显式 `-b main`：`git init` 的初始分支随机器配置走（master / main 不定），
+ * 而工具要求跨机器行为一致（测试夹具同口径）。
+ */
+export function initEmptySourceRepository(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  executeOrFail(dir, ['init', '--quiet', '-b', 'main'], '初始化空仓库');
+  executeOrFail(
+    dir,
+    [
+      '-c',
+      `user.name=${EMPTY_COMMIT_AUTHOR.name}`,
+      '-c',
+      `user.email=${EMPTY_COMMIT_AUTHOR.email}`,
+      'commit',
+      '--allow-empty',
+      '--quiet',
+      '-m',
+      'initial commit',
+    ],
+    '创建初始空提交',
+  );
+  log.info('空仓库已初始化（main + initial commit）', { dir });
+}
+
 /** 三样 diff 的段落标题（供评分模型与 diff 抽屉共用；改文案要同步改测试与界面的展示） */
 const SECTION_COMMITTED = '### 已提交改动';
 const SECTION_UNCOMMITTED = '### 未提交改动';

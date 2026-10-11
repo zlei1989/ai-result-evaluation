@@ -9,13 +9,15 @@
  *      强度（`resolveJudgeEffort()`）与它**同源**：同一份配置快照里读出来，经 `requireJudgeEffort()`
  *      校验后交给两条分支。它同样是**请求参数**而不是连接事实，故不在 `route` 上；
  *   3. **两个分支的差别只有输入**：
- *      · `prompt` 为空 ⇒ 「智能生成」：校验仓库（取仓库名）→ 调模型 → **合并**；
+ *      · `prompt` 为空 ⇒ 「智能生成」：校验仓库（取仓库名；**无来源哨兵 `none://` 跳过校验**，
+ *        用固定替身 `NONE_SOURCE_REPO_NAME`）→ 调模型 → **合并**；
  *      · `prompt` 非空 ⇒ 「智能识别」：**不碰仓库**（那段文本里已有全部信息）→ 调模型 → 整表替换。
  *      两分支都是**非流式**文本调用，都不落盘。
  *   顺序：两分支都先解析路由 → 再读强度并校验（未配置评分模型、档位越域都由这两步当场抛 CONFLICT，
  *   一次上游调用都不花）；生成分支随后才校验仓库，识别分支则连 `repoPath` 都不看。
  */
 import {
+  NONE_SOURCE_REPO_NAME,
   RubricSchema,
   ServiceError,
   diffRubric,
@@ -111,7 +113,10 @@ export async function generateRubric(input: GenerateRubricInput): Promise<Genera
 
   // ── 智能生成：先校验仓库（顺带把「路径早就不可用」挡在模型调用之前），再调模型，最后合并 ──
   const source = parseRepoSource(input.repoPath);
-  const repoName = source.kind === 'local' ? resolveRepoInfo(source.path).repoName : source.repoName;
+  // 无来源没有仓库可回显，也没有路径可校验：给固定的仓库名替身（提示词里【仓库】这一格照常成立，
+  // 模型以题面为唯一依据起草）。本地需要 git 回显（软链接 / 盘根等情形它更准），远端取 URL 自身。
+  const repoName =
+    source.kind === 'local' ? resolveRepoInfo(source.path).repoName : source.kind === 'none' ? NONE_SOURCE_REPO_NAME : source.repoName;
   const raw = await callTextApi(route, {
     system: buildSystemPrompt('生成'),
     prompt: buildGeneratePrompt({ current: input.rubric, taskPrompt: input.taskPrompt, repoName }),

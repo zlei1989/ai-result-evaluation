@@ -73,7 +73,7 @@
 - **执行模式随评测落库，运行中不可改**：中途切换会让 `skipped` 语义混乱，且「这一轮用什么模式跑的」本身是复现条件。修改见《修改、重跑与删除评测》。
 - **串行不是「共用一个工作目录」**：每候选行依然有独立工作区与独立配置目录——串行若共用一个目录，第二个智能体是在第一个智能体的改动之上继续写，分数无意义、整轮作废；串行省的是 CPU 与供应商配额，不省工作区（靠用例级本地缓存，每行复制是秒级的）。
 - **并行不设并发上限**：最先触发的通常是限流而不是机器瓶颈，靠**失败隔离**（一行的失败不牵动其他行）兜住；**时限不设**——执行与评分都跑到自己收场，已登记的代价：滴流的上游响应、或忽略停止信号的适配器会把这一行一直挂在 `running` / `judging`，出路只剩用户点「终止」。
-- **编排层准备阶段**（第 1/2 步之前）：`parseRepoSource(run.repoPath)` → remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；钉死的 commit 已在镜像里时一次都不抓，否则这是本轮唯一一次 fetch）→ `prepareRowWorkspace` 传**具体 hash** → `EvalRow.baselineCommit` = 该 40 位 hash。基线解析口径（local 取来源仓库当前检出的 HEAD，remote 取远端默认分支）见《用例管理》的评测准备一节。
+- **编排层准备阶段**（第 1/2 步之前）：`parseRepoSource(run.repoPath)` → remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；钉死的 commit 已在镜像里时一次都不抓，否则这是本轮唯一一次 fetch）→ `prepareRowWorkspace` 传**具体 hash** → `EvalRow.baselineCommit` = 该 40 位 hash；none（无来源）时绕过镜像与用例缓存，`prepareEmptyRowWorkspace` 现场初始化空仓库（`git init -b main` + 空提交）→ 照常建 `test/{rowId}` 行分支，基线 = 那次空提交。基线解析口径（local 取来源仓库当前检出的 HEAD，remote 取远端默认分支，none 取空仓库的空提交）见《用例管理》的评测准备一节。
 
 ## 已知边界与取舍
 

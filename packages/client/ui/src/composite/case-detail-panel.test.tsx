@@ -124,6 +124,21 @@ describe('CaseDetailPanel', () => {
   });
 
   /**
+   * 无来源用例：来源显示短标签「无」（哨兵串 `none://` 不是给用户看的信息），悬停给说全的话；
+   * 不显示分支行（repoBranch 恒为 null），commit 行是「默认分支 HEAD」。
+   */
+  it('无来源用例：来源显示「无」+ 悬停说明，且没有分支行', async () => {
+    setup({ testCase: { ...CASE, repoPath: 'none://', commitHash: null, repoBranch: null } });
+
+    expect(screen.queryByText('none://')).toBeNull();
+    expect(screen.queryByText('分支')).not.toBeInTheDocument();
+    expect(screen.getByText('默认分支 HEAD')).toBeInTheDocument();
+
+    fireEvent.mouseEnter(screen.getByText('无'));
+    expect(await screen.findByText('空仓库，无来源代码')).toBeInTheDocument();
+  });
+
+  /**
    * 渲染范围：**只有考题提示词那一张卡片**走 markdown（它的原文常带标题 / 表格 / 围栏代码块）。
    * 这条守卫要求内容**留在自己的卡片里**：卡片标题栏与边框是用户读这张卡的一部分，
    * 不能被内容替换掉。

@@ -350,6 +350,25 @@ describe('RunCreatePanel', () => {
     expect(visibleOptionTexts()).toContain('历史遗留用例 · x · 默认分支 HEAD');
   });
 
+  /** 无来源用例：下拉标签里的仓库名是短标签「无」（哨兵串 `none://` 不透给界面） */
+  it('无来源用例：下拉标签显示「无」（哨兵串不透出）', () => {
+    const noneCase: TestCase = {
+      id: 'c-none',
+      title: '从零开始的用例',
+      repoPath: 'none://',
+      commitHash: null,
+      repoBranch: null,
+      taskPrompt: '从空仓库开始实现',
+      rubric: CASE_RUBRIC,
+      createdAt: '2026-09-22T00:00:00.000Z',
+      updatedAt: '2026-09-22T00:00:00.000Z',
+    };
+    renderPanel({ cases: [noneCase] });
+    fireEvent.mouseDown(screen.getAllByLabelText('用例')[0] as HTMLElement);
+
+    expect(visibleOptionTexts()).toContain('从零开始的用例 · 无 · 默认分支 HEAD');
+  });
+
   /**
    * ⚠️ 显式放宽到 90s：本用例要建两行 + 反复开下拉，而每行现在有**三个** antd Select
    * （智能体 / 模型 / 思考强度）。antd 的 Select 在 jsdom 里挂载很贵，本机又有企业杀软在进程创建上收税，
