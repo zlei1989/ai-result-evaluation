@@ -25,7 +25,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from 'vitest';
-import type { AgentKind, AgentMessage, EvalRun, McpServers, Provider, SubagentRecord } from '@aieval/contracts';
+import type { AgentKind, AgentMessage, EvalRun, McpServers, Provider, Settings, SubagentRecord } from '@aieval/contracts';
 import {
   caseCacheDir,
   foldMessages,
@@ -269,6 +269,11 @@ export function seedRunnableRun(options: {
    * 不填 = 用契约的预置两项（与 `seedConfig` 同口径）——要测「一台都没配」的用例显式传 `{}`。
    */
   mcpServers?: McpServers;
+  /**
+   * `settings.skills.entries`：**停用名单**（不填 = 空名单 = 全部启用）。
+   * 技能本体由用例造在 `home.configDir/skills/` 下（技能根跟着配置目录走）。
+   */
+  skills?: Settings['skills']['entries'];
 }): { run: EvalRun; provider: Provider } {
   // 夹具仓库走模板副本（见 repoTemplate 的说明）：真仓库、独立路径、内容与模板逐字节相同，
   // 因此 commit 也相同 —— 省下每次 7 个 git 进程。
@@ -313,6 +318,7 @@ export function seedRunnableRun(options: {
     // 评分模型只有这一个来源（用例级覆盖已删除）：`withJudge: false` 造的就是「没配全局默认」那个失败面
     defaultJudge: options.withJudge === false ? null : { providerId: judgeProvider.id, modelId: 'judge-model' },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
   });
   const rows = Array.from({ length: options.rowCount }, () =>
     makeRowFixture({

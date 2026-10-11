@@ -79,7 +79,7 @@
  * 这一行）。它随 `runState` 走：`projectDshNotification` 的第 4 个参数，**可选**（缺省 = 空集合，
  * 既有直调用例不必改）。
  */
-import type { UsageTokens } from '@aieval/contracts';
+import { namedVendorSkill, type UsageTokens, type VendorSkill } from '@aieval/contracts';
 import {
   subagentDispatchSummary,
   subagentSettledSummary,
@@ -110,6 +110,7 @@ import {
   DSH_ASSISTANT_MESSAGE_TYPE,
   DSH_REQUEST_HEADER_TYPE,
   DSH_SESSION_EVENT_METHOD,
+  DSH_SKILL_CATALOG_KIND,
   DSH_STEP_START_TYPE,
   DSH_STREAM_DELTA_TYPE,
   DSH_STREAM_FAILURE_TYPE,
@@ -120,8 +121,10 @@ import {
   DSH_TOOL_RESULT_TYPE,
   DSH_TURN_END_TYPE,
   DSH_TURN_START_TYPE,
+  DSH_USER_MESSAGE_TYPE,
   // 读数规则与字段名只有 `protocol.ts` 一份（见那边的文件头）
   readHeaderTools,
+  readSkillCatalog,
   readUsageTokens,
 } from './protocol';
 
@@ -173,6 +176,8 @@ export function projectDshNotification(
     finishedSessions: ReadonlySet<string>;
     /** 上一条 `request/header` 的工具表（见下面 `request/header` 那一支：只在**变了**的时候发事件） */
     headerTools?: string[] | null;
+    /** 上一条技能目录（同上：只在**变了**的时候发事件。两条通道各自发出时都要带上对方那一格） */
+    skillCatalog?: string[] | null;
   } = {
     childSessions: new Set(),
     finishedSessions: new Set(),
@@ -379,6 +384,57 @@ export function projectDshNotification(
           mcpChannel: 'vendor-tool-table',
           permissionMode: null,
           outputStyle: null,
+          /**
+           * 技能目录那一格**一起带上**（哪怕这一次是工具表变了才发的）：消费方（行级 MCP 证据、
+           * 环境抽屉的厂商那一组）都是**取最后一条**读的，一条不带它的 `vendor-system` 会把先前
+           * 采到的清单在界面上抹成「厂商没投送」。真机顺序上目录先到、工具表后到，
+           * 少了这一步最后一条事件里的技能面**恒为空**。
+           *
+           * 目录**还没到**时不给这一格（`undefined`，不是 `null`）：`null` 的读数是
+           * 「厂商投送了、清单是空的」，而那时我们一个字都没读到——那是替厂商说话。
+           */
+          skills: namedSkillsOf(runState.skillCatalog ?? null),
+        }),
+      ],
+      tokens: null,
+      turns: null,
+      failure: null,
+    };
+  }
+
+  if (type === DSH_USER_MESSAGE_TYPE) {
+    /**
+     * **技能目录**（dsh 的 skills 判据）：厂商把「本次会话有哪些 skill」合成一条 user 消息注入提示词。
+     *
+     * 三条口径：
+     *   · **只认 `data.source.kind === 'skill-catalog'`**：真机控制臂证明「正文里出现过
+     *     `<available_skills>` 这个词」会得到 5 条噪声（厂商自己的提示词与工具描述里就有它）；
+     *   · **显式分流**：不认的那一类 `user/message` 走 `unknown(raw)` 兜底（一条几十 KB 的原始
+     *     JSON 日志）——这一支只处理目录这一类，**其余 `user/message` 原样落到下面的兜底**，
+     *     行为逐字不变（分流不是「静默丢掉不认识的消息」）；
+     *   · **只在清单变了的时候发**（照 `request/header` 的工具表那一支），且交**全量**
+     *     （工具表那一格一起带上，见上面的理由）。
+     */
+    const source = asRecord(data?.['source']);
+    if (source?.['kind'] !== DSH_SKILL_CATALOG_KIND) return unknown(raw);
+    const catalog = readSkillCatalog(data);
+    // 读不动（`null`）⇒ **不发**：`[]` 的定义是「投送了、确实一条都没有」，
+    // 而「读不动」与「确实没有」是两件事——混起来会把每一条都判成「厂商没认」
+    if (catalog === null || sameTools(catalog, runState.skillCatalog ?? null)) {
+      return { drafts: [], tokens: null, turns: null, failure: null };
+    }
+    runState.skillCatalog = catalog;
+    return {
+      drafts: [
+        vendorSystemDraft({
+          tools: runState.headerTools == null ? null : [...runState.headerTools],
+          slashCommands: null,
+          agents: null,
+          mcpServers: null,
+          mcpChannel: 'vendor-tool-table',
+          permissionMode: null,
+          outputStyle: null,
+          skills: namedSkillsOf(catalog),
         }),
       ],
       tokens: null,
@@ -800,7 +856,17 @@ function readTokens(usage: unknown, drafts: AgentEventDraft[]): UsageTokens | nu
   return tokens;
 }
 
-/** 未识别的通知 / 事件：保留原始负载（唯一允许丢弃的是重复事件） */
+/**
+ * 技能目录里的名字 → `vendor-system.skills` 那一格。
+ *
+ * dsh 的清单**只有名字**（没有来源、没有落点）⇒ 每一条的来源都是「来源未证实」，
+ * 由契约的 `namedVendorSkill` 一处构造（三处各拼一遍时总有一处会顺手填一个看起来合理的来源）。
+ * `null`（还没采到）给 `undefined` = **不带这一格**——它不是「清单是空的」（那是 `[]`）。
+ */
+function namedSkillsOf(names: readonly string[] | null): VendorSkill[] | undefined {
+  return names === null ? undefined : names.map((name) => namedVendorSkill(name));
+}
+
 /**
  * 两张工具表是不是同一份（逐字比较 + 顺序敏感）。
  *
@@ -811,6 +877,7 @@ function sameTools(left: readonly string[], right: readonly string[] | null): bo
   return right !== null && left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
+/** 未识别的通知 / 事件：保留原始负载（唯一允许丢弃的是重复事件） */
 function unknown(raw: unknown): TurnProjection {
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
 }

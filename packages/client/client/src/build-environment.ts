@@ -41,6 +41,9 @@ import {
   CODEX_MCP_DISPATCH_GAP_NOTE,
   ROW_MCP_BASIS_LABELS,
   ROW_MCP_VERDICT_LABELS,
+  ROW_SKILL_BASIS_LABELS,
+  ROW_SKILL_VERDICT_LABELS,
+  VENDOR_SKILL_ORIGIN_LABELS,
   normalizeMcpServers,
   type AgentEnvironment,
   type AgentEnvironmentSummary,
@@ -48,10 +51,12 @@ import {
   type EnvGroup,
   type EnvItem,
   type EnvSource,
+  type EnvVerdictLine,
   type EvalRow,
   type McpServerEntry,
   type MissingReason,
   type RowRecord,
+  type VendorSkill,
 } from '@aieval/contracts';
 
 /**
@@ -127,12 +132,20 @@ function missing(id: string, label: string, reason: MissingReason): EnvItem {
 /**
  * 一条「拿到了」的格子。`text` 超上限就截断并带上**原因与字节数**——
  * 界面据此显示「输出可能不完整」，而不是静默少半段。
+ * `verdictLines` 是可选的结构化渲染声明（「一台一个结论」的观测格才给）：
+ * 渲染层据它把结论画成 Tag，`text` 仍是复制按钮与回退渲染读的那一份。
  */
-export function envItem(id: string, label: string, text: string, at: string | null): EnvItem {
+export function envItem(
+  id: string,
+  label: string,
+  text: string,
+  at: string | null,
+  verdictLines?: EnvVerdictLine[],
+): EnvItem {
   // 字节数用 `TextEncoder` 而不是 `Buffer`：这一层跑在**浏览器**里（页面直接调它），
   // 而 `Buffer` 在浏览器侧要靠打包器兜底。中文字符一字符三字节，故不能拿 `text.length` 当字节数。
   const bytes = new TextEncoder().encode(text).length;
-  if (text.length <= MAX_ITEM_CHARS) return { present: true, id, label, text, truncated: null, at };
+  if (text.length <= MAX_ITEM_CHARS) return { present: true, id, label, text, truncated: null, at, verdictLines };
   return {
     present: true,
     id,
@@ -140,6 +153,7 @@ export function envItem(id: string, label: string, text: string, at: string | nu
     text: text.slice(0, MAX_ITEM_CHARS),
     truncated: { reason: `超过单格上限 ${MAX_ITEM_CHARS} 字符`, bytes },
     at,
+    verdictLines,
   };
 }
 
@@ -163,6 +177,12 @@ interface VendorInit {
    * 而客户端的 `/log` 是 `getJson<AgentEvent[]>`（**没有运行时校验**）——不归一就会把老事件读成空。
    */
   mcpServers: McpServerEntry[] | null;
+  /**
+   * 厂商当时**看见了哪几条技能**（`vendor-system.skills`）。
+   * 逐条带**归一后的来源分档**（`origin`）与厂商原值（`source`）：
+   * 界面按 `VENDOR_SKILL_ORIGIN_LABELS` 渲染分档，原值照抄在后面（同 `mcpServerLine` 的口径）。
+   */
+  skills: VendorSkill[] | null;
   at: string;
 }
 
@@ -175,14 +195,23 @@ interface VendorInit {
  *
  * 取**最后一条**（与编排层行级观测格的 `mcpVendor` 同口径）：claude 只在开头
  * 报一次（取最后 = 取唯一），而 **codex / dsh 的 MCP 事实是逐拍长出来的**（`starting → ready`、
- * 工具表逐拍补全，**每条都交全量**）——取第一条会让环境抽屉显示最早那一拍，与行详情、行级观测格
- * （都取最后）对**同一行**给出两种状态。本函数看的是本次尝试的事件流（重跑时 `seq` 回到 1）。
+ * 工具表逐拍补全，**每条都交全量**）——取第一条会让「已下发的 MCP 服务」显示最早那一拍，
+ * 与同抽屉的「本行 MCP」观测格（都取最后）对**同一行**给出两种状态。本函数看的是本次尝试的事件流（重跑时 `seq` 回到 1）。
  * 时间随之取最后那条的 `at`——「这份事实是什么时候知道的」才是可追溯的那一半。
  */
 function parseVendorInit(events: readonly AgentEvent[]): VendorInit | null {
+  /**
+   * 已读到的两半**分开记**：技能的采集发生在**运行中途**（claude 的 `getContextUsage`、
+   * codex 的 `skills/list`、dsh 的目录消息），而 `system/init` 那条早于它、**不带这一格**。
+   * 按「整条覆盖」读会把先采到的清单抹成「厂商没投送」⇒ 这一格**只在本条带了它时才覆盖**
+   * （缺格 = 这一条没带 / 老事件 ⇒ 保持前值；显式 `null` 只可能来自历史事件，读作「采不到」）。
+   * 其余六格仍是「取最后一条」（与行级观测格同口径：后到的覆盖先到的）。
+   */
+  let latestSkills: VendorInit['skills'] = null;
   let latest: VendorInit | null = null;
   for (const event of events) {
     if (event.type !== 'vendor-system') continue;
+    if (event.skills !== undefined) latestSkills = event.skills;
     latest = {
       tools: event.tools,
       slashCommands: event.slashCommands,
@@ -191,6 +220,7 @@ function parseVendorInit(events: readonly AgentEvent[]): VendorInit | null {
       outputStyle: event.outputStyle,
       // 读侧兼容归一（`null` = 没投送、`[]` = 投送了确实是空的，两态各自保留）
       mcpServers: normalizeMcpServers(event.mcpServers),
+      skills: latestSkills,
       at: event.at,
     };
   }
@@ -227,6 +257,45 @@ function mcpServersItem(mcpServers: McpServerEntry[] | null, at: string): EnvIte
     return envItem('vendor-mcp-servers', '已下发的 MCP 服务', '0 台：厂商投送了这一格，但清单确实是空的（与「没投送」不是一回事）', at);
   }
   return envItem('vendor-mcp-servers', '已下发的 MCP 服务', `${mcpServers.length} 台：\n${listText(mcpServers.map(mcpServerLine))}`, at);
+}
+
+/**
+ * 一条厂商下发的技能：**来源分档逐条表达**（本机启用项 / 厂商内置 / 被测仓库自带 / 来源未证实），
+ * 分档后面照抄厂商原值（`userSettings` / `projectSettings` / `built-in` / `user` / `system`）。
+ *
+ * 两条口径（与 `mcpServerLine` 逐字同源）：
+ *   · **分档由适配器判**（`classifySkillOrigin`，它同时知道行配置目录与工作目录），界面只渲染
+ *     标签表——在这里按名字推来源就是第二个真源；
+ *   · **原值照抄、不翻译**：分档是**我们**的结论，原值是**厂商**的证据，两者都留着才追得回事件。
+ */
+function vendorSkillLine(entry: VendorSkill): string {
+  const origin = VENDOR_SKILL_ORIGIN_LABELS[entry.origin];
+  return entry.source === null ? `${entry.name}（${origin}）` : `${entry.name}（${origin} · 厂商原值 ${entry.source}）`;
+}
+
+/**
+ * 「**已下发的技能**」那一格（厂商系统层）。三态各自如实说（与 `mcpServersItem` 同一条处置）：
+ *   · `null`（厂商没投送 / 我们没采到）⇒ 不在场的一格；
+ *   · `[]`（投送了，确实一条都没有）⇒ **在场**的一格，写「0 条」；
+ *   · 有值 ⇒ 逐条列出（名字 + 来源分档 + 厂商原值）。
+ *
+ * **安全提示**只在本行确实装到了「**来自被测仓库**」的 skill 时出现（数量 = 那些条数）：
+ * 它们是被测内容的一部分，模型读到的东西可能来自被测方，用户得知道这件事。
+ */
+function vendorSkillsItem(skills: VendorSkill[] | null, at: string): EnvItem {
+  if (skills === null) return missing('vendor-skills', '已下发的技能', 'not-exposed');
+  const repoOwned = skills.filter((entry) => entry.origin === 'repo-provided').length;
+  const note =
+    repoOwned === 0 ? '' : `\n\n本行额外装载了来自被测仓库的 ${repoOwned} 条 skill —— 它们是被测内容的一部分`;
+  if (skills.length === 0) {
+    return envItem(
+      'vendor-skills',
+      '已下发的技能',
+      `0 条：厂商投送了这一格，但清单确实是空的（与「没投送」不是一回事）${note}`,
+      at,
+    );
+  }
+  return envItem('vendor-skills', '已下发的技能', `${skills.length} 条：\n${listText(skills.map(vendorSkillLine))}${note}`, at);
 }
 
 /** 厂商系统层。**这一组整组取决于 init 行在不在**，故一次判完 */
@@ -271,6 +340,8 @@ function vendorGroup(events: readonly AgentEvent[]): EnvGroup {
       ),
     // MCP 服务清单：`null`（没投送）/ `[]`（投送了确实是空的）/ 逐台列出，三态各不相同
     mcpServersItem(init.mcpServers, init.at),
+    // 已下发的技能：同一套三态 + 逐条来源分档 + 来自被测仓库时那句安全提示
+    vendorSkillsItem(init.skills, init.at),
     // 工具模式串（JSON Schema）从来不在这条通道上——真机 init 行只有工具**名字**
     missing('vendor-tool-schemas', '工具模式串', 'not-observed'),
   );
@@ -375,10 +446,10 @@ function streamingDeltaItem(row: EvalRow): EnvItem {
  * 三态与 `streamingDelta` 逐条同构（缺一态就会有「观测到零台」被读成「没观测」）：
  *   · 格缺席 / `null` ⇒ `not-observed`（老 `run.json`，或这一行没跑到候选执行）；
  *   · `[]` ⇒ **在场**的一格，如实写「0 台」；
- *   · 非空 ⇒ 逐台「名称：来源 · 判据 · 结论」。
+ *   · 非空 ⇒ 逐台「名称：来源 · 判据 · 结论」，结论在抽屉里画成 Tag（`verdictLines`）。
  *
  * 文案取自契约的两张标签表（`ROW_MCP_VERDICT_LABELS` / `ROW_MCP_BASIS_LABELS`）：
- * 界面、行卡片与服务端说的是同一件事，各抄一份必然漂移。
+ * 环境抽屉与服务端说的是同一件事，各抄一份必然漂移。
  * 唯一不翻译的是**来源**——`dynamic` / `project` 是厂商原值，照抄（见 `mcpServerLine` 的同一条口径）。
  */
 function mcpObservationItem(row: EvalRow): EnvItem {
@@ -392,10 +463,15 @@ function mcpObservationItem(row: EvalRow): EnvItem {
       null,
     );
   }
-  const lines = observed.map(
-    (entry) =>
-      `${entry.name}：来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]} · 结论 ${ROW_MCP_VERDICT_LABELS[entry.verdict]}`,
-  );
+  /**
+   * 逐台的「结论 Tag 行」与纯文本从**同一份** `rows` 拼出：`text` 进纯文本
+   * （复制按钮与回退渲染读它），Tag 行进 `verdictLines`（渲染层把结论画成 Tag）——
+   * 同一行在两种渲染里不得差一个字。
+   */
+  const rows: EnvVerdictLine[] = observed.map((entry) => ({
+    text: `${entry.name}：来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]} · 结论 `,
+    verdict: entry.verdict,
+  }));
   /**
    * **codex 的能力缺口**：它的 `connected` 只到「启动状态 ready」——
    * 工具**调不动**（上游网关拍平命名空间）。这句话必须在**看得见的地方**：不然「probe 已连上」
@@ -403,9 +479,47 @@ function mcpObservationItem(row: EvalRow): EnvItem {
    *
    * 三条边界：只对 codex；只在**观测到至少一台**时附（没有可误解的结论就不必解释）；
    * 文案取契约里那份共用常量（界面与知识库同一份，各抄一份必然漂移）。
+   * 它是注解、不是结论，故 `verdict: null`（照纯文本画，不挂 Tag）。
    */
-  if (row.agentKind === 'codex') lines.push(CODEX_MCP_DISPATCH_GAP_NOTE);
-  return envItem('observed-mcp-servers', '本行 MCP', `${observed.length} 台：\n${listText(lines)}`, null);
+  if (row.agentKind === 'codex') rows.push({ text: CODEX_MCP_DISPATCH_GAP_NOTE, verdict: null });
+  const text = `${observed.length} 台：\n${listText(rows.map((line) => line.text + (line.verdict === null ? '' : ROW_MCP_VERDICT_LABELS[line.verdict])))}`;
+  // 与 `listText` 同一把尺：超 `LIST_LIMIT` 时两格都截到前 N 项并各补同一句「只列前 N 项」
+  const verdictLines: EnvVerdictLine[] = [{ text: `${observed.length} 台：`, verdict: null }, ...rows.slice(0, LIST_LIMIT)];
+  if (rows.length > LIST_LIMIT) verdictLines.push({ text: `…（共 ${rows.length} 项，只列前 ${LIST_LIMIT} 项）`, verdict: null });
+  return envItem('observed-mcp-servers', '本行 MCP', text, null, verdictLines);
+}
+
+/**
+ * 「**本行技能**」那一格。数据源是**行快照**上的观测格（`EvalRow.skillInstall`，编排层推导一次）。
+ *
+ * 与厂商那一组里的「已下发的技能」回答两个不同的问题：
+ *   · 那一格回答「**厂商当时说它手里有哪几条**」（含内置与被测仓库自带的，原样、不配对）；
+ *   · 这一格回答「**我们装进去的那几条落地了没有、凭什么这么说**」——`missing` 那一档就是
+ *     「采到了厂商清单、里面没有它」，也就是「文件在盘上被当成结论」那个坑的解药。
+ *
+ * 三态与 `streamingDelta` / `mcpServers` 逐条同构：
+ *   · 格缺席 / `null` ⇒ `not-observed`（老 `run.json`，或这一行没跑到候选执行）；
+ *   · `[]` ⇒ **在场**的一格，如实写「0 条」（用户把清单全停用是**有意义**的状态）；
+ *   · 非空 ⇒ 逐条「名称：结论 · 判据 来源」（**三句用户文案**由两张标签表拼出）。
+ *
+ * **行级这格不重复来源分档**（那是厂商侧那格的事）：它只说「我们装了哪几条、凭什么」。
+ */
+function skillObservationItem(row: EvalRow): EnvItem {
+  const observed = row.skillInstall;
+  if (observed === undefined || observed === null) return missing('observed-skills', '本行技能', 'not-observed');
+  if (observed.length === 0) {
+    return envItem(
+      'observed-skills',
+      '本行技能',
+      '0 条：这一行观测到了，确实一条技能都没装（用户把清单全停用时是正常状态，与「没观测」不是一回事）',
+      null,
+    );
+  }
+  const lines = observed.map(
+    (entry) =>
+      `${entry.name}：${ROW_SKILL_VERDICT_LABELS[entry.verdict]} · 判据 ${ROW_SKILL_BASIS_LABELS[entry.judgedBy]} · 来源 ${entry.source}`,
+  );
+  return envItem('observed-skills', '本行技能', `${observed.length} 条：\n${listText(lines)}`, null);
 }
 
 /**用过的工具及次数。**这是统计，不是事实声明**，故单列一组、标 `observed` */
@@ -427,7 +541,12 @@ function observedGroup(row: EvalRow, records: readonly RowRecord[]): EnvGroup {
       id: 'observed',
       title: '实测统计',
       source: 'observed',
-      items: [mcp, streamingDeltaItem(row), missing('observed-tools', '用过的工具及次数', 'not-observed')],
+      items: [
+        mcp,
+        skillObservationItem(row),
+        streamingDeltaItem(row),
+        missing('observed-tools', '用过的工具及次数', 'not-observed'),
+      ],
     };
   }
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
@@ -438,6 +557,7 @@ function observedGroup(row: EvalRow, records: readonly RowRecord[]): EnvGroup {
     source: 'observed',
     items: [
       mcp,
+      skillObservationItem(row),
       streamingDeltaItem(row),
       envItem(
         'observed-tools',

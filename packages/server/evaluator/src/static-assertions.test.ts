@@ -449,9 +449,9 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
   it('拆分出的文件条数与登记一致（新增文件必须回到这里更新清单）', () => {
     // 这是一条**绊线**：它不校验什么业务规则，只保证「有人新增一个拆分文件」时这里先红一次，
     // 逼作者回来看一眼（新增的那个文件有没有照抄三条 `vi.mock`）。
-    // 18 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
+    // 19 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
     // 新增一个拆分文件就要把这个数加一——下一条用例会检查它有没有照抄三条 `vi.mock`。
-    expect(splitFiles).toHaveLength(18);
+    expect(splitFiles).toHaveLength(19);
   });
 
   it('每个文件都自己注册了三条 mock', () => {
@@ -964,5 +964,62 @@ describe('MCP 注入的单一消费点', () => {
     // 探活是 api 层的独立入口（设置页那两个按钮），跑一行**永远**不该顺手连一遍 MCP：
     // 违反时类型全过、行照跑，只是每行多一次握手（stdio 那侧还会真的起一个子进程）。
     expect(sourceHits(PROBE_CALLS), 'evaluator 调了探活——它只能在设置页那两个入口被调').toEqual([]);
+  });
+});
+
+/**
+ * 技能装入的**单一消费点**（与上面 MCP 那组同一条思路，两组判据各自独立）。
+ *
+ * 为什么只能扫源码：多填一处 `AgentRunInput.skills` 时**类型全过**（那一格是可选的），
+ * 表现是「评分 / 用例同步那两次运行也把技能装进了它们的配置目录」——而那两个目录是
+ * **跨轮共享**的（`<配置目录>/case-sync/.agenthome` 没有任何清理点），装进去的副本会一直堆着，
+ * 且从第二次运行起就不再是「这一次配置的产物」。运行期没有任何一处能分辨这两种实现。
+ */
+describe('技能装入的单一消费点', () => {
+  /** 读配置里那份**停用名单**的唯一写法（`settings` 是 `loadConfig()` 快照上的那一格） */
+  const SETTINGS_SKILLS = /\bsettings\.skills\b/g;
+
+  /** 把技能根扫成「本行要装入的那一份」的那个函数（core）的**调用点** */
+  const INSTALLABLE_SKILLS = /(?<![\w.])installableSkills\(/g;
+
+  /** 清单的填点：只有 `AgentRunInput.skills` 那一格吃它 */
+  const SKILLS_FILL = /skills:\s*skillsPlan/g;
+
+  it('停用名单只从 settings 读：`settings.skills` 整包只有一处（第二处读点就是第二个真源）', () => {
+    const hits = sourceHits(SETTINGS_SKILLS);
+
+    // 只钉文件名不钉行号（同 MCP 那条）：行号会随排版漂，而这条判据问的是「有几处读点、在哪个文件」
+    expect(hits, '技能停用名单必须只从 loadConfig() 的那一份 settings 快照里取').toHaveLength(1);
+    expect(filesOf(hits), '读点跑到编排层之外了').toEqual([ORCHESTRATOR]);
+    // 反向钉：那一处读的是**同一个函数**要的那一份（读进来却不喂给扫描器等于白读）
+    expect(readSource(ORCHESTRATOR)).toContain('installableSkills(settings.skills?.entries)');
+  });
+
+  it('只在候选执行那一处消费：扫清单与填点各一处，评分路径一个字都不碰', () => {
+    expect(sourceHits(INSTALLABLE_SKILLS), '扫技能清单的地方不止候选执行那一处').toHaveLength(1);
+    const fills = sourceHits(SKILLS_FILL);
+    expect(fills, '技能清单被填进了第二个地方（评分 / 用例同步也吃到了它）').toHaveLength(1);
+    expect(filesOf(fills)).toEqual([ORCHESTRATOR]);
+
+    // 评分路径（`judge.ts` 选路、`judge-route.ts` 读配置、`judge-agent.ts` 起评分智能体、
+    // `text-api.ts` 发请求）里一个技能字样都不许有——评审者不该拿到候选的技能面
+    for (const file of ['judge.ts', 'judge-route.ts', 'judge-agent.ts', 'text-api.ts']) {
+      const text = stripComments(readSource(file));
+      expect(text, `${file} 里出现了技能字样——评分这条路不该认识技能`).not.toMatch(/skill/i);
+    }
+  });
+
+  it('行级观测格只由编排层推导一次：`deriveRowSkillInstall` 的调用点只有一处', () => {
+    // 定义在 `row-skill.ts`，`skillMissingMessage` 内部复用同一份推导（那是**刻意**的第二读点：
+    // 两处各拼一份的表现是「快照里记着厂商没认、行却照常出了分」）。编排层那一处是唯一的落盘推导点。
+    const hits = sourceHits(/deriveRowSkillInstall\(/g);
+    expect(filesOf(hits).filter((file) => file === ORCHESTRATOR), '编排层里的推导点不止一处').toHaveLength(1);
+    expect(new Set(filesOf(hits)), '推导跑到了第三个文件里——它只该出现在定义处与编排层').toEqual(
+      new Set([ORCHESTRATOR, 'row-skill.ts']),
+    );
+    // 落盘那一格与失败判定读的是**同一份**证据（两处各拼一份 ⇒ 快照记着「厂商没认」、行却出了分）
+    const orchestrator = stripComments(readSource(ORCHESTRATOR));
+    expect(orchestrator).toContain('skillInstall: deriveRowSkillInstall(skillEvidence)');
+    expect(orchestrator).toContain('skillMissingMessage(skillEvidence');
   });
 });

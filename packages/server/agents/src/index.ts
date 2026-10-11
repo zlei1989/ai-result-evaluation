@@ -19,4 +19,5 @@ export {
   type AgentRunInput,
   type AgentRunResult,
   type ProtocolType,
+  type SkillRef,
 } from './types';

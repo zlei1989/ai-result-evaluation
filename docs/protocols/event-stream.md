@@ -12,7 +12,7 @@
 |---|---|---|
 | `status` | 编排层 | `EvalRowStatus` |
 | `log` | 适配器 | 唯一带「给人看的一句话」的类型：`text` 原文照旧逐字进原始输出面板、`summary?` 缺格＝这条没有可说的事，两格不许互相顶替 |
-| `vendor-system` | 适配器 | 六格（`tools` / `slashCommands` / `agents` / `mcpServers` / `permissionMode` / `outputStyle`），只在厂商真的投送了那行时才有；未识别厂商负载一律落 `log` 保留原始负载（唯一允许丢的是重复事件） |
+| `vendor-system` | 适配器 | 七格（`tools` / `slashCommands` / `agents` / `mcpServers` / `mcpChannel` / `permissionMode` / `outputStyle`，外加**可选**的 `skills`），只在厂商真的投送了那行时才有；未识别厂商负载一律落 `log` 保留原始负载（唯一允许丢的是重复事件） |
 | `usage` | 适配器 | 见「数据与契约」 |
 | `diff-summary` / `score` / `error` | 编排层 | 评分智能体输出也进同一条流，`text` 带 `[评分智能体] ` 前缀（`summary` 不戴） |
 | `end` | 编排层 | `exitReason` 契约是**开放字符串**（`z.string()`），现为七值两层（适配层 `completed` / `timed-out` / `canceled` / `error`，编排层 `interrupted` / `rescored` / `skipped`）⇒ 消费方按字符串原样渲染、不按四值穷举；**不在「原始输出」面板**（该面板只收 `type === 'log'`），落点是事件行与台账 |
@@ -34,6 +34,7 @@
 ## 数据与契约
 
 - **`usage` 事件**：必填只有 `turns`；`tokens` / `timing` / `subagentTokens` / `subagentTurns` / `turn` 可空。**发射门槛是轮次不是 token**（轮次一到就发，token 采不到不停发轮次）。`tokensBasis: 'reported' | 'estimated'`——**只有 `'reported'` 才回写行快照**（编排层只认显式 `'reported'`，缺格老事件按 `'estimated'`，安全侧）；它只描述 `tokens` 那一格，`turns` 与两格分量恒回写。去重判据必须含 `tokensBasis`（数值相同而「估算→权威」仍是真实变化）。
+- **`vendor-system` 各格可空，`skills` 还多一档「整格缺席」**：`null` = 这一格厂商没投送到我们能读的通道（`not-exposed`）、`[]` = 采到了确实是空的——两者在界面上是两句不同的话。`skills` 那一格是**可选格**（早期落盘的事件里没有它，写成必填会让那些历史行整行解析失败），消费方把它当「缺席 = 未观测」，与 `null` / `[]` 分得开。**采不到时另有一条点名的 WARN**：「厂商没报」与「我们没读到」在事件流里长得一样，不许把后者写成前者还不留痕。逐条形状是 `{ name, source, path, origin }`——`origin` 由采集它的适配器判（那一层同时知道行配置目录与工作目录），界面只按标签表渲染。它回答「**厂商当时说它手里有哪几条**」，与行级 `EvalRow.skillInstall`（我们装的哪几条、凭什么）是两件事，见[《技能配置》](/features/skills-config)。
 - **`subagentTokens` / `subagentTurns` 三档**：整格缺席＝本条不带（保持上一份）；`null`＝有子智能体但没采到（**必须清掉旧值**）；`{0,0,0}` / `0`＝确实没有。两格恒有 `subagentTokens ≤ tokens`、`subagentTurns ≤ turns`；分量与合计**同刻成对交出**（只给分量会让「主会话＝合计−分量」算出负数）。读侧两行语义相反不许合并：`tokens` 的 `null` **保留上一份**、子份两格的显式 `null` **必须清掉**。
 - **两文件分工**：`events.jsonl` 与 `messages.jsonl` 同行目录、互不合并——事件按 `seq` 去重与续订（行级），记录按 `mergeKey` / `subagentId` 覆盖累积（内容级）；`RowRecord` 两种载体 `{type:'message'}` 与 `{type:'subagent'}`；**四格计量不在 `messages.jsonl` 里**（走 `usage` 事件与 `EvalRow`）；一行都不产出时不建文件；每次尝试开始清空。读侧容忍坏行（只跳过该行并 WARN——`message-log.ts` 对坏行与 schema 不过各落一条「已跳过」WARN）。历史产物删除、不做读侧兼容；契约新增可选格例外——读侧把「键缺席」与显式 `null` 当同一件事。
 
@@ -90,4 +91,4 @@
 ## 相关链接
 
 - 活文档：`packages/server/agents/README.md`——§5.3 事件流（`onEvent` 收到什么）、§5.2 停止与释放、§9 常见坑
-- 知识文章：[《消息规范》](/protocols/message-spec)（姊妹篇，双流分工的另一半）、《进程生命周期》（终态事件从哪来、interrupt 后的收敛）、《行执行与日志》（抽屉与原始输出面板的消费侧）、《数据与存储》（`events.jsonl` 落盘与原子写）、《评分》（`score` 事件与前缀）
+- 知识文章：[《消息规范》](/protocols/message-spec)（姊妹篇，双流分工的另一半）、《进程生命周期》（终态事件从哪来、interrupt 后的收敛）、《行执行与日志》（抽屉与原始输出面板的消费侧）、《数据与存储》（`events.jsonl` 落盘与原子写）、《评分》（`score` 事件与前缀）、[《技能配置》](/features/skills-config)（`vendor-system.skills` 那一格的判据与三态）

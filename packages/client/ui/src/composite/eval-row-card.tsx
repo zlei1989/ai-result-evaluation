@@ -48,16 +48,12 @@ import { Alert, Button, Card, Flex, Popconfirm, Tag, Tooltip, Typography } from 
 import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
-  CODEX_MCP_DISPATCH_GAP_NOTE,
   EFFORT_OFF,
-  ROW_MCP_BASIS_LABELS,
-  ROW_MCP_VERDICT_LABELS,
   canRescoreRow,
   canRetryRow,
   canRunRow,
   isRunningRow,
   type EvalRow,
-  type RowMcpVerdict,
 } from '@aieval/contracts';
 import { AgentActivityLine, type AgentActivity } from '../base/agent-activity-line';
 import { MetricLine, type LiveMetricsView } from '../base/metric-line';
@@ -110,20 +106,6 @@ export interface EvalRowCardProps {
 
 /** 缺省能力：按「都支持」处理——多给一个终止按钮，比无端禁用安全 */
 const DEFAULT_CAPABILITY: AgentCapabilityView = { usage: true, cancelMidTurn: true };
-
-/**
- * 四档 MCP 结论的标签配色（用户口径的语义色，不走手写样式）。
- *
- * 为什么 `unverified` 与 `skipped` 刻意**都**不用红色：红 = 失败，而这两档都不是失败
- * （前者是「没有证据」，后者是「我们主动跳过」， 明说 `unverified` 既不写进已连上、
- * 也不写成没有）。`unavailable` 才是「有证据说它没起来」，故只有它红。
- */
-const MCP_VERDICT_COLORS: Record<RowMcpVerdict, string> = {
-  connected: 'green',
-  unavailable: 'red',
-  unverified: 'default',
-  skipped: 'orange',
-};
 
 /**
  * 「执行」这一格不可用的原因（只有一个否定面：这一行正在跑）。
@@ -241,39 +223,6 @@ export function EvalRowCard({
         <Typography.Text type="secondary">
           分支 <Typography.Text code>{row.branch}</Typography.Text>
         </Typography.Text>
-        {/* 「本行 MCP」：逐台结论 + 浮层里的来源与判据。
-            **格缺席（未观测）时不画这一行**——老 run.json 不该在这里显示成「一台都没有」；
-            `[]` 是观测到的值（确实零台），必须画出来（与前面两态的区分见契约那一格的注释）。 */}
-        {row.mcpServers === undefined || row.mcpServers === null ? null : (
-          <Flex gap={4} wrap align="center" data-testid="row-mcp">
-            <Typography.Text type="secondary">
-              {row.mcpServers.length === 0 ? '本行 MCP：0 台' : '本行 MCP'}
-            </Typography.Text>
-            {row.mcpServers.map((entry) => (
-              <Tooltip
-                key={entry.name}
-                /**
-                 * 浮层给的是**判据**（凭什么这么说），结论在标签上——两件事分开，
-                 * 免得「已连上」被读成「厂商说的」而其实是我们从工具表里推的。
-                 *
-                 * **codex 的能力缺口附在它自己的浮层里**：这一家的 `connected`
-                 * 只到「启动状态 ready」，工具**调不动**（上游网关拍平命名空间）。跟着所有人显示
-                 * 会把这句提示读成噪声，不显示则会让「probe 已连上」被读成「工具能用」。
-                 * 文案取契约里那份共用常量，并**换行**放在判据之后：它是注解，不是判据本身。
-                 */
-                title={
-                  row.agentKind === 'codex' && entry.verdict === 'connected'
-                    ? `来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]}\n${CODEX_MCP_DISPATCH_GAP_NOTE}`
-                    : `来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]}`
-                }
-              >
-                <Tag color={MCP_VERDICT_COLORS[entry.verdict]} style={{ marginInlineEnd: 0 }}>
-                  {entry.name} {ROW_MCP_VERDICT_LABELS[entry.verdict]}
-                </Tag>
-              </Tooltip>
-            ))}
-          </Flex>
-        )}
         <MetricLine
           tokens={row.tokens}
           // 子智能体那一份：契约里是可选格，老快照没有它就退回一行浮层

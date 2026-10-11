@@ -25,7 +25,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createLogger } from '@aieval/core';
+import { createLogger, materializeSkills } from '@aieval/core';
 import type { McpServers } from '@aieval/contracts';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeRowNpmrc } from '../../mcp';
@@ -234,6 +234,13 @@ export interface DshRunState {
    * 而投影只在表**变了**的时候发 `vendor-system`（否则同一份几十 KB 的表会被抄 N 遍）。
    */
   headerTools: string[] | null;
+  /**
+   * 上一条 `user/message`（`source.kind === 'skill-catalog'`）里的**技能目录**：厂商说这一行
+   * 有哪些 skill（真机全轮恰好一条）。与 `headerTools` 同一处置——只在清单变了的时候发事件，
+   * 且**两条通道各自发出时都要带上对方那一格**（消费方取最后一条读，缺一格就等于把它抹掉）。
+   * `null` = 还没采到（不是「清单是空的」）。
+   */
+  skillCatalog: string[] | null;
 }
 
 /**
@@ -740,13 +747,13 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    */
   const routePatchPath = join(input.configHome, DSH_ROUTE_PATCH_RELATIVE_PATH);
   /**
-   * 写 overlay 之前**先建 `configHome`**：本适配器是三家唯一在厂商进程起来之前就往配置目录里写文件的
-   * （另两家只把路径交给 CLI，由 CLI 自己建）。
+   * 写盘之前**先建 `configHome`**：三家适配器都在厂商进程起来之前往行配置目录里写文件
+   * （技能物化、行内 `.npmrc`、本家的 overlay 与 stream-tap），谁都不许假设父进程已经建好它。
    *
-   * 为什么必须自己 mkdir：它**不能假设父进程已经建好**——`AgentRunInput.configHome` 的契约只说
-   * 「该行独立配置目录」，没说它一定存在（生产路径上 `prepareRowWorkspace` 会建，但那是**编排层的
-   * 实现细节**，不是这一层的输入前提）。不建的表现是 `ENOENT: open '…\.agenthome\aieval-route.patch.yml'`，
-   * 归因成 `AGENT_FAILED`，而真正的原因（目录不存在）离得很远。
+   * 为什么必须自己 mkdir：`AgentRunInput.configHome` 的契约只说「该行独立配置目录」，没说它一定存在
+   * （生产路径上 `prepareRowWorkspace` 会建，但那是**编排层的实现细节**，不是这一层的输入前提）。
+   * 不建的表现是 `ENOENT: open '…\.agenthome\aieval-route.patch.yml'`，归因成 `AGENT_FAILED`，
+   * 而真正的原因（目录不存在）离得很远。
    */
   mkdirSync(input.configHome, { recursive: true });
   writeFileSync(
@@ -761,6 +768,19 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     }),
     { encoding: 'utf8', mode: 0o600 },
   );
+  /**
+   * 本行的**技能装入**：把清单里那几条整目录复制进 `<DSH_HOME>/skills/`（= `configHome/skills`）。
+   *
+   * 时机：必须在 `new sdk.DeepSeekHarness(...)` **之前**——那是 dsh 的 boot 点，技能目录在那一刻进
+   * 装配清单。写晚了这一行照样「跑完」，但**没有任何 skill、也没有任何报错**（日志里连线索都没有）。
+   *
+   * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
+   * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   */
+  if (input.skills !== undefined) {
+    materializeSkills({ configHome: input.configHome, skills: input.skills });
+  }
   /**
    * 行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有 `configHome`。
    *
@@ -813,6 +833,8 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     // **只记名字**（条目的 env / headers 里可能有密钥，日志不该能把它带出去）；
     // registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容（与 claude 侧同一条口径）
     mcpServers: Object.keys(input.mcpServers ?? {}),
+    // 技能那一格只记条名（源目录路径进日志没有额外信息量，且可能很长）
+    skills: (input.skills ?? []).map((skill) => skill.name),
     npmRegistry: registryLine === null ? null : 'row-npmrc-written',
     protocolType: input.route.protocolType,
     api: wireForProtocol(input.route.protocolType),
@@ -829,7 +851,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    */
   const childSessions = new Set<string>();
   const finishedSessions = new Set<string>();
-  const runState: DshRunState = { childSessions, finishedSessions, headerTools: null };
+  const runState: DshRunState = { childSessions, finishedSessions, headerTools: null, skillCatalog: null };
   return {
     stream: notificationStream(
       runtime,
@@ -939,12 +961,12 @@ export const dshProvider: AgentProvider = {
       streamingDeltaSource: 'hook',
       streamingDeltaReason: null,
       notes: [
-        '正文/思考增量经 stream-tap 采集（2026-10-09）：适配器把一个插件写进每行 profile 目录'
+        '正文/思考增量经 stream-tap 采集：适配器把一个插件写进每行 profile 目录'
           + '（overlay `insert`、相对名按 profile 目录解析），插件订阅厂商进程内的 '
           + '`agent/assistant-stream`、把 chunk 帧旁路到 `<configHome>/aieval-stream-tap.jsonl`，'
           + '适配器 tail 后包成 `aieval/delta` 伪通知走同一条投影。stdio 通知流本身不投送增量'
           + '（jsonrpc-server 任何版本都不订阅该进程内事件，判例 `docs/faq/deepseek-harness.md`）。',
-        '增量只广播不落盘（编排层 2026-10-09 三家统一）：`messages.jsonl` 里只有快照；'
+        '增量只广播不落盘（编排层三家统一）：`messages.jsonl` 里只有快照；'
           + '被打断的块没有快照，那段半截正文刷新后不可见（实时视图仍有、光标停在断点）。',
         '工具入参增量不投（block-start/block-end 只用于占位换算块位次）：tool-call 的参数走快照整块。',
         '思考增量按 wire 实际产出投送：本路由若不产 `reasoning-delta`，思考仍整块到达（`block-end`/快照）。',

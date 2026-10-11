@@ -10,6 +10,7 @@ import {
   readItem,
   readItemEntry,
   readNotification,
+  readSkillsList,
   readSourceKind,
   readSubAgentSpawn,
   readThread,
@@ -360,5 +361,54 @@ describe('readNotification —— 通知归一化', () => {
 
   it('未识别的方法归 other 并保留方法名', () => {
     expect(readNotification('thread/realtime/started', {})).toEqual({ kind: 'other', method: 'thread/realtime/started' });
+  });
+});
+
+/**
+ * `skills/list` 的响应读取器（本仓 skills 判据里最硬的一条：厂商的**结构化清单**）。
+ *
+ * 形状（真机原文）：`{ data: [ { cwd, skills: [{name, description, path, scope, enabled, pluginId}], errors } ] }`
+ * ——`data` 是**按 cwd 分组**的数组。两条口径各钉一条：
+ *   · `enabled === false` 的条目**不进清单**（它不在本会话可用的技能面里，算进去就是假绿）；
+ *   · 形状不认识（没有 `data` 数组）⇒ `null` = **采不到**，与 `[]`（厂商回了、确实一条都没有）
+ *     是两句不同的话——后者会让行级判据把我们装的每一条都判成「厂商没认」。
+ */
+describe('readSkillsList', () => {
+  const response = {
+    data: [
+      {
+        cwd: '/tmp/ws',
+        skills: [
+          { name: 'alpha', description: '示例', path: '/home/skills/alpha/SKILL.md', scope: 'user', enabled: true, pluginId: null },
+          { name: 'off', description: '停用', path: '/home/skills/off/SKILL.md', scope: 'user', enabled: false, pluginId: null },
+          { name: 'imagegen', description: '内置', path: '/home/skills/.system/imagegen/SKILL.md', scope: 'system', enabled: true, pluginId: null },
+          // 没有名字的条目：这一格的主键是名字，没名字就没法与我们的清单配对
+          { description: '没名字', scope: 'user', enabled: true },
+        ],
+        errors: [],
+      },
+    ],
+  };
+
+  it('摊平各组的 skills，只留名字 / scope / path 三格，丢掉 enabled:false 与没名字的', () => {
+    expect(readSkillsList(response)).toEqual([
+      { name: 'alpha', scope: 'user', path: '/home/skills/alpha/SKILL.md' },
+      // `.system/` 那一条**照收**（它是厂商内置，来源分档要在消费方判出来）
+      { name: 'imagegen', scope: 'system', path: '/home/skills/.system/imagegen/SKILL.md' },
+    ]);
+  });
+
+  it('形状不认识 ⇒ null（采不到）；空 data ⇒ []（厂商回了、确实一条都没有）', () => {
+    expect(readSkillsList({ unexpected: true })).toBeNull();
+    expect(readSkillsList(null)).toBeNull();
+    expect(readSkillsList('skills')).toBeNull();
+    expect(readSkillsList({ data: [] })).toEqual([]);
+    expect(readSkillsList({ data: [{ cwd: '/tmp/ws', skills: [], errors: [] }] })).toEqual([]);
+  });
+
+  it('缺 scope / path 的条目照收（两格记 null，不编一个值）', () => {
+    expect(readSkillsList({ data: [{ skills: [{ name: 'bare', enabled: true }] }] })).toEqual([
+      { name: 'bare', scope: null, path: null },
+    ]);
   });
 });

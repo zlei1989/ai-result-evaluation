@@ -8,6 +8,24 @@ export {
   type AppConfig,
 } from './config-store';
 export {
+  assertSkillName,
+  compareSkillNames,
+  getSkillsRoot,
+  isSkillDisabled,
+  readSkillFile,
+  scanSkills,
+  skillsDirOf,
+  type ScannedSkill,
+  type SkillScan,
+} from './skill-store';
+export {
+  SkillMaterializeError,
+  installableSkills,
+  materializeSkills,
+  type SkillMaterializeInput,
+  type SkillSource,
+} from './skill-materialize';
+export {
   assertCaseId,
   caseFile,
   deleteCaseFile,

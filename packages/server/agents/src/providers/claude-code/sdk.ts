@@ -158,6 +158,72 @@ export interface ClaudeQueryOptions {
 export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {
   /** 优雅停止：结束在途 turn（不是 kill 进程） */
   interrupt?: () => unknown;
+  /**
+   * 上下文用量快照（SDK 的控制请求 `get_context_usage`）。
+   *
+   * 为什么要它：本仓**唯一**能确证「这条 skill 真进了会话的技能面」的通道就在这里
+   * ——`skills.skillFrontmatter[].name` 是厂商自己列出来的那份清单（带 `source`），
+   * 比 `system/init` 的 `skills` 数组硬（那个数组不受允许列表影响、且内置项永远在里面 ⇒ 假绿）。
+   *
+   * 两个坑：
+   *   · **它是异步的，而 `TurnStart.finalize` 是同步的**（`turn.ts` 在 `finally` 里调一次、不 await）
+   *     ⇒ 不能在 `finalize` 里发起，必须在流循环里 await 一次再把结果交出去；
+   *   · 必须在**会话已建**之后调（`system/init` 到了才算），否则拿到的是空的那一份。
+   *
+   * 返回 `unknown`：形状由 `readClaudeContextUsage` 收窄成我们那几格，不从厂商包 `import type`。
+   */
+  getContextUsage?: (opts?: { detail?: 'summary' | 'full' }) => Promise<unknown>;
+}
+
+/**
+ * 我们**用得到的那几格**上下文用量（厂商返回 `SDKControlGetContextUsageResponse`，字段远多于此）。
+ *
+ * 只声明 `skills` 一格：它是本仓唯一消费的东西（其余各格是 `/context` 面板的排版素材）。
+ * 读成 `unknown` 再逐个字段判形状——厂商加字段打不到这里，字段改名则**降级成采不到**
+ * （`null`）而不是崩。
+ */
+export interface ClaudeContextUsage {
+  skills: {
+    totalSkills: number;
+    includedSkills: number;
+    skillFrontmatter: { name: string; source: string }[];
+  } | null;
+}
+
+/** 一个非负整数格；不是数字就 `null`（厂商形态变了 ⇒ 采不到，不猜） */
+function readCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * 把厂商的上下文用量**收窄成我们那几格**。
+ *
+ * 三条处置：
+ *   · 整格 `skills` 缺席（厂商口径：没有任何 skill 占用上下文时它省略）⇒ `skills: null`
+ *     ——那是**采不到**，与「投送了、确实是空的」（`includedSkills: 0` + 空数组）不是一回事；
+ *   · `skillFrontmatter` 里名字读不出来的条目**整条丢掉**：这一格的主键是名字，
+ *     没名字就没法与我们的清单配对，留着只会在界面上多一行空白（来源读不出记空串）；
+ *   · 形状不对（整格不是对象、两个计数格读不出）⇒ 返回 `null`，调用方据此记一条点名的 WARN、
+ *     判据降级成 `unverified`。
+ */
+export function readClaudeContextUsage(raw: unknown): ClaudeContextUsage | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const skills = (raw as { skills?: unknown }).skills;
+  if (skills === undefined || skills === null) return { skills: null };
+  if (typeof skills !== 'object') return { skills: null };
+  const record = skills as { totalSkills?: unknown; includedSkills?: unknown; skillFrontmatter?: unknown };
+  const total = readCount(record.totalSkills);
+  const included = readCount(record.includedSkills);
+  if (total === null || included === null) return { skills: null };
+  const rows = Array.isArray(record.skillFrontmatter) ? record.skillFrontmatter : [];
+  const skillFrontmatter: { name: string; source: string }[] = [];
+  for (const row of rows) {
+    if (typeof row !== 'object' || row === null) continue;
+    const { name, source } = row as { name?: unknown; source?: unknown };
+    if (typeof name !== 'string' || name === '') continue;
+    skillFrontmatter.push({ name, source: typeof source === 'string' ? source : '' });
+  }
+  return { skills: { totalSkills: total, includedSkills: included, skillFrontmatter } };
 }
 
 export interface ClaudeMessage {

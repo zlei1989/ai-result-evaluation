@@ -81,6 +81,7 @@ export default defineConfig({
             { text: '行执行与日志', link: '/features/row-execution' },
             { text: '评分', link: '/features/judging' },
             { text: '设置', link: '/features/settings' },
+            { text: '技能配置', link: '/features/skills-config' },
             { text: '数据与存储', link: '/features/storage' },
           ],
         },

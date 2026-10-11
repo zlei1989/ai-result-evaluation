@@ -15,6 +15,7 @@
  */
 import { z } from 'zod';
 import { MissingReasonSchema } from './agent-message';
+import { RowMcpVerdictSchema } from './run';
 
 /**
  * 一组环境信息。`source` 是**必须**的：它回答「这条要求是谁下发的」，
@@ -22,6 +23,17 @@ import { MissingReasonSchema } from './agent-message';
  */
 export const EnvSourceSchema = z.enum(['user', 'project', 'vendor', 'observed']);
 export type EnvSource = z.infer<typeof EnvSourceSchema>;
+
+/**
+ * 「结论 Tag」的一行。`text` 是结论之前的半行文字（服务名 / 来源 / 判据），
+ * `verdict` 是结论的档位（渲染层把它翻成四档中文与颜色）；`verdict: null`
+ * 表示这一行没有结论——纯文本注解（如 codex 的能力缺口说明），整行照 `text` 画。
+ */
+export const EnvVerdictLineSchema = z.object({
+  text: z.string(),
+  verdict: RowMcpVerdictSchema.nullable(),
+});
+export type EnvVerdictLine = z.infer<typeof EnvVerdictLineSchema>;
 
 /**
  * 一条环境信息。`present: false` 时 **`missing` 必填**——「这一格没有」必须带原因，
@@ -39,6 +51,14 @@ export const EnvItemSchema = z.discriminatedUnion('present', [
     /** 约定路径：非空时界面额外给「复制」按钮 */
     copyPath: z.string().optional(),
     at: z.string().nullable(),
+    /**
+     * 逐行「结论 Tag」的渲染声明（可选）。给定时渲染层按行画：`text` 照常等宽文本，
+     * `verdict` 非空的那一枚画成 Tag；不给就整段 `text` 纯文本。
+     * `text` 仍是纯文本的那一份（复制按钮与回退渲染都读它），两格**同义**：
+     * 各行的 `text` 与结论文案拼起来等于 `text` 里对应的那几行。
+     * 只有「一台一个结论」的观测格（今天是「本行 MCP」）才给；其余条目没有结论可标。
+     */
+    verdictLines: z.array(EnvVerdictLineSchema).optional(),
   }),
   z.object({
     present: z.literal(false),

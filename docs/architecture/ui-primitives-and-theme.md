@@ -46,6 +46,7 @@
 | `.tsx` 测试只能在库包写 | 硬边界 | web-next 必须留 `jsx: preserve`（Next 需要），Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`，改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效；应用内测试一律 `.ts` |
 | `styles.dragger` 覆盖陷阱 | 实测钉住 | 传 `width` 会把命中带改成 0（实测三条分隔条全为 0）；命中带宽度由 antd 尺寸变量决定，运行时变量名是 `--ant-splitter-split-bar-size` 等（`--ant-splitter-bar-size` 不存在）；两栏**间距**是组件自己写的 CSS `gap`，与 antd 无关 |
 | 顶栏高度的两处实测数字 | 实测钉住 | `height: 40` 与 `flexShrink: 0` 都是确定值；37.84px / 38.27px 随视口浮动，**不要当固定常数**引用 |
+| `MonoText` 的等宽字体必须挂在**承载文本的那个元素**上 | 真机钉住 | 挂在宿主上会被 antd 自己的 `font-family` 盖掉（`Typography.Text` 渲染出的 `.ant-typography` 自带一条 `font-family`，继承打不过它）⇒ 宿主上写着等宽、真机量出来是系统字体，而**代码与截图都看不出这件事**。判据只能是真机读 `getComputedStyle(承载文本的元素).fontFamily` 含 `monospace`——**jsdom 里永远看不出来**（没有 CSS 级联，用例全绿），所以这条不靠单测、靠冒烟 |
 | `Splitter` / `Flex` / `Button` 各坑 | 收口在原语层 | 受控 `size` + `onResize` 回写、弹性列不给 `size`；`Flex` 的 `display` / `flex-direction` 走 CSS 类（结构性不变量写内联 style）；antd 6 `Button` 的 `variant` 单给不生效（须与 `color` 成对，或用 `type` 语法糖，单给 `variant="dashed"` 静默渲染成实线）——三坑的完整表述以 `AGENTS.md`「边界与工具链的已知坑」表为真源，本文不复制第二份 |
 
 ## 相关链接

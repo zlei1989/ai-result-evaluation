@@ -7,7 +7,15 @@
  *  2. 提供把任意厂商负载折成日志事件的出口（未识别事件不得静默丢弃）。
  * 注意：`onEvent` 是同步回调，本模块**不 await**、不做背压。
  */
-import type { AgentEvent, McpServerEntry, RowMcpChannel, UsageTiming, UsageTokens, UsageTurn } from '@aieval/contracts';
+import type {
+  AgentEvent,
+  McpServerEntry,
+  RowMcpChannel,
+  UsageTiming,
+  UsageTokens,
+  UsageTurn,
+  VendorSkill,
+} from '@aieval/contracts';
 import { inspect } from 'node:util';
 
 /** 适配器能发的三类事件；status / diff-summary / score / end 由编排层发（行状态的唯一写入点在编排层） */
@@ -88,6 +96,16 @@ export type AgentEventDraft =
     mcpChannel: RowMcpChannel;
     permissionMode: string | null;
     outputStyle: string | null;
+    /**
+     * 厂商当时**看见了哪几条技能**（含厂商内置与被测仓库自带，逐条带来源分档）。
+     *
+     * **不给这一格 = 采不到**（探针失败、厂商那条通道还没到、或压根没去读）。它与其余各格
+     * 刻意不同：这里没有 `null` 这一态——`null` 在读侧的读数是「厂商没投送这一格」，
+     * 而我们没采到时写它是**替厂商说一句我们并不知道的话**；采不到时另有一条点名的 WARN 承载
+     * 「我们没读到」这个事实。`[]` 仍是「投送了、确实一条都没有」，与非空数组各自成立。
+     * 契约那边 `.optional().nullable()`：磁盘上有早期落的老事件带着 `null`，读侧按「采不到」处置。
+     */
+    skills?: VendorSkill[];
   };
 
 export interface EventEmitter {
@@ -120,10 +138,11 @@ export function unknownEventDraft(payload: unknown): AgentEventDraft {
 
 /**
  * 厂商系统层事实草稿。
- * 六格由调用方（各家的投影）取好——本函数只做形状搬运，**不补默认值**：
+ * 各格由调用方（各家的投影）取好——本函数只做形状搬运，**不补默认值**：
  * 取不到的格必须是 `null`，`[]` 与 `null` 在界面侧是两句不同的话（见契约里那条注释）。
  * `mcpServers` 那一格是对象数组（每台四格），归一由契约的 `normalizeMcpServers` 一处承担；
  * `mcpChannel` 由调用方**报出自己是从哪条通道读到的**（见契约里那一格）。
+ * `skills` 是唯一**可选**的格：不给 = 采不到（见上面那一格的注释），调用方不拿 `null` 表达它。
  */
 export function vendorSystemDraft(facts: {
   tools: string[] | null;
@@ -133,6 +152,7 @@ export function vendorSystemDraft(facts: {
   mcpChannel: RowMcpChannel;
   permissionMode: string | null;
   outputStyle: string | null;
+  skills?: VendorSkill[];
 }): AgentEventDraft {
   return { type: 'vendor-system', ...facts };
 }
@@ -172,7 +192,12 @@ function withMeta(draft: AgentEventDraft, seq: number): AgentEvent {
         turns: draft.turns,
       };
     case 'vendor-system':
-      // 六格 + 通道逐格照搬（含 `null`）：这一层不做任何取舍，见 `vendorSystemDraft`
+      /**
+       * 七格 + 通道逐格照搬（含 `null`）：这一层不做任何取舍，见 `vendorSystemDraft`。
+       * `skills` 是唯一的例外，处置与 `log.summary` 逐字相同：**没采到就不带这个键**
+       * ——带上 `undefined` 会在「先序列化再解析」的路径上留下噪声，而写 `null` 会把它
+       * 变成另一句话（「厂商投送了、清单是空的」，见 `vendorSystemDraft` 那一格）。
+       */
       return {
         seq,
         at,
@@ -184,6 +209,7 @@ function withMeta(draft: AgentEventDraft, seq: number): AgentEvent {
         mcpChannel: draft.mcpChannel,
         permissionMode: draft.permissionMode,
         outputStyle: draft.outputStyle,
+        ...(draft.skills === undefined ? {} : { skills: draft.skills }),
       };
     case 'error':
       return { seq, at, type: 'error', message: draft.message, stack: draft.stack };

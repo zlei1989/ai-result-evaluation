@@ -235,6 +235,14 @@ export interface FakeClaudeSdkOptions {
   hang?: boolean;
   /** 吐完消息后抛出（模拟进程非零退出） */
   throwAfterEvents?: unknown;
+  /**
+   * 假的 `getContextUsage()` 返回值（**原始形状**，由适配器侧的 `readClaudeContextUsage` 收窄）。
+   * 不设这一项 = 该 SDK 没有这个方法（老版本），适配器据此记一条点名的 WARN、不判失败。
+   * 给 `'reject'` = 控制请求失败（网关不回、超时那一类）。
+   */
+  contextUsage?: unknown | 'reject';
+  /** `getContextUsage()` 被调了几次（判据：**一行只采一次**） */
+  contextUsageCalls?: { count: number };
 }
 
 /** 假的 `@anthropic-ai/claude-agent-sdk`：形状与 sdk.ts 的自声明窄结构一致 */
@@ -259,7 +267,7 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
         },
         { once: true },
       );
-      return {
+      const query: Record<string, unknown> = {
         [Symbol.asyncIterator]: () => stream.iterable[Symbol.asyncIterator](),
         interrupt: (): unknown => {
           recorder.order.push('interrupt');
@@ -290,6 +298,18 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
           return probe;
         },
       };
+      /**
+       * 上下文用量（技能面的 L3 判据）：只在用例要求时挂上去——**不挂**才是「SDK 没有这个方法」
+       * 那一档，适配器据此记一条点名的 WARN（与「厂商没投送」分开）。
+       */
+      if (options.contextUsage !== undefined) {
+        query['getContextUsage'] = (): Promise<unknown> => {
+          if (options.contextUsageCalls !== undefined) options.contextUsageCalls.count += 1;
+          if (options.contextUsage === 'reject') return Promise.reject(new Error('控制请求失败（假夹具）'));
+          return Promise.resolve(options.contextUsage);
+        };
+      }
+      return query;
     },
   };
 }

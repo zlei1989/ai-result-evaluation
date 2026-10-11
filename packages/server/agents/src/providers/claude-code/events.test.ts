@@ -1156,6 +1156,9 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
       mcpChannel: 'vendor-status',
       permissionMode: 'bypassPermissions',
       outputStyle: 'default',
+      // 技能面只在流循环里采一次（`getContextUsage`），init 这一条还没有它 ⇒ **不带这一格**
+      //（不是 `null`：`null` 会被读侧读成「厂商投送了、清单是空的」）
+      // 技能那一格缺席在这一条上（`.toEqual` 按「键不存在」比，故这里不写它）
     });
     // 原文必须还在：归一之后的形状答不了「厂商当时到底发了什么」
     expect(
@@ -1182,6 +1185,7 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
       mcpChannel: 'vendor-status',
       permissionMode: 'bypassPermissions',
       outputStyle: 'default',
+      // 同一条口径：技能面还没采 ⇒ 这一条不带那一格（见上面那条用例）
     });
   });
 

@@ -1,6 +1,8 @@
 /** client 公共出口：数据获取 hooks 与 HTTP 原语。类型全部来自 contracts。 */
 export { delJson, getJson, postJson, putJson } from './http';
 export { useSettings } from './settings';
+// 技能清单与单条正文：清单 key 恒定（刷新 = 重新扫盘），正文 key 带名字（未选中不发请求）
+export { SKILLS_KEY, skillFileKey, useSkillFile, useSkills } from './skills';
 // MCP 探活：无缓存的一次性 POST，行级 loading 与结果留在展示层
 export { MCP_TEST_URL, probeMcpServer } from './mcp';
 export {

@@ -31,7 +31,7 @@
  * 注意：`parent_tool_use_id` 非空的 assistant 消息来自 Task 子智能体，不在主循环的往返计数里
  * （与 `result.usage` 排除侧链的口径一致）。
  */
-import { normalizeMcpServers, type UsageTokens } from '@aieval/contracts';
+import { classifySkillOrigin, normalizeMcpServers, type UsageTokens, type VendorSkill } from '@aieval/contracts';
 import {
   clipSummary,
   subagentDispatchSummary,
@@ -44,6 +44,7 @@ import { classifyAgentMessage, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
 import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
 import { lookupClaudeTaskName, rememberClaudeTaskName } from './message';
+import type { ClaudeContextUsage } from './sdk';
 
 /** 子智能体消息的标记字段：非空即「主循环之外」，不参与轮次计数 */
 const SIDE_CHAIN_FIELD = 'parent_tool_use_id';
@@ -86,7 +87,10 @@ const THINKING_TOKENS_SUBTYPE = 'thinking_tokens';
  * `cwd` / `session_id` / `model` / `claude_code_version` **刻意不收**：前三个与运行快照里的
  * 权威值重复（收进来就有第二份真值），版本号今天没有消费者——要用时再加，别先囤着。
  */
-function vendorSystemDraftOf(message: Record<string, unknown> | null): AgentEventDraft {
+export function vendorSystemDraftOf(
+  message: Record<string, unknown> | null,
+  skills?: VendorSkill[],
+): AgentEventDraft {
   const strings = (key: string): string[] | null => {
     const value = message?.[key];
     if (!Array.isArray(value)) return null;
@@ -106,6 +110,39 @@ function vendorSystemDraftOf(message: Record<string, unknown> | null): AgentEven
     mcpChannel: 'vendor-status',
     permissionMode: nonEmpty('permissionMode'),
     outputStyle: nonEmpty('output_style'),
+    skills,
+  });
+}
+
+/**
+ * 上下文用量里的技能面 → `vendor-system.skills` 那一格。
+ *
+ * 三条口径：
+ *   · **采不到就不给这一格**（`usage` 为 `null`、或厂商省了 `skills` 整格）：`undefined` =
+ *     「我们没读到」，调用方据此**不带** `skills` 那个键——写 `null` 会被读侧读成
+ *     「厂商投送了、清单是空的」，那是替厂商说一句我们并不知道的话。`[]`（投送了、确实一条都没有）
+ *     与非空数组各自成立；
+ *   · `source` 是**厂商原值照抄**（真机 `userSettings`），空串按「没给」记 `null`——把空串留在
+ *     契约里会让界面显示一个空来源，而事实是厂商没报这一格；
+ *   · `origin` 是**我们**按落点与原值归一出来的分档，判据只有 `classifySkillOrigin` 一份
+ *     （本层恰好同时知道行配置目录与工作目录，故由这里判，界面不再重推）。
+ *
+ * claude 的 `getContextUsage().skills.skillFrontmatter` **不带落点**（只有名字、来源、token 数）
+ * ⇒ `path` 恒 `null`，来源只能靠原值那一档。
+ */
+export function skillsDraftOf(
+  usage: ClaudeContextUsage | null,
+  layout: { configHome: string; cwd: string },
+): VendorSkill[] | undefined {
+  if (usage === null || usage.skills === null) return undefined;
+  return usage.skills.skillFrontmatter.map((row) => {
+    const source = row.source === '' ? null : row.source;
+    return {
+      name: row.name,
+      source,
+      path: null,
+      origin: classifySkillOrigin({ source, path: null, configHome: layout.configHome, cwd: layout.cwd }),
+    };
   });
 }
 

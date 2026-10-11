@@ -41,7 +41,21 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 依据：Claude `BashInput.description` 的官方注释逐字 *"the user reads this description, often without seeing the command"*（`sdk-tools.d.ts`）；DSH 同一格的说明逐字 "…(shown in the UI)"。**所以「优先 `description`」在 claude 与 dsh 上立刻兑现，在 codex 上一笔都兑现不了**——codex 的摘要只能走「族拼法」（`exec_command` 给命令原文、`apply_patch` 给改动清单）。这不是实现偷懒，是协议与通道的差异，横向对比时会被反复问到，故记在这里。
 
-**skill 注入对照**（三家都无编程式注册，skill 只能以文件落盘）：claude 三条加法（项目 `.claude/skills/` / 用户 `$CLAUDE_CONFIG_DIR/skills/` / 插件 `plugins`）+ 两个开关（`settingSources` / `skills`）；dsh 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根 `.dsh/skills/` 自动发现）+ skill 根表 rank；codex 走 `config.mcp_servers` 同款配置面（snake_case）。三家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用）。
+**skill 对照**（三家都无编程式注册，skill 只能以文件落盘；配置面、落点与判据的完整写法见[《技能配置》](/features/skills-config)与三家接入文章各自的「skills 接法」）：
+
+| 维度 | Claude Code | Codex | DeepSeek Harness |
+|---|---|---|---|
+| 落点 | `<configHome>/skills/<名称>/SKILL.md`（`configHome` = `CLAUDE_CONFIG_DIR`） | 同形（`configHome` = `CODEX_HOME`） | 同形（`configHome` = `DSH_HOME`） |
+| 落位时序 | 无更紧要求（`query()` 之前写完即可） | **必须早于 spawn app-server** | **必须早于 `new DeepSeekHarness(...)`**（boot 点，写晚了**静默无 skill 且无报错**） |
+| 发现根 | 项目 `<cwd>/.claude/skills/`、用户 `$CLAUDE_CONFIG_DIR/skills/`、插件 `plugins[]` | 六个（`$CODEX_HOME/skills` / `~/.agents/skills` / `.system` / `<repo>/.codex/skills` / 每层 `.agents/skills` / `/etc/codex/skills`），**同名不去重** | 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根自动发现），skill 根表按 rank 定胜负 |
+| 同行同名谁赢 | **本机赢**（`userSettings` > `projectSettings`） | 两条都进清单（不去重） | **仓库赢**（项目级 rank 100/200 压过我们的 400） |
+| 厂商内置 | `built-in` 一批（不压） | `.system` 下 6 条，**每行首启自动物化**，与我们的条目同住一层 | bundled 一批（不压） |
+| L3 判据通道 | `getContextUsage().skills.skillFrontmatter`（带厂商原值 `source`，无落点） | `skills/list`（带 `scope` 与落点 `path`） | `user/message` 的 `source.kind === 'skill-catalog'`（只有名字 ⇒ 来源只能记「未证实」） |
+| 行为确证长什么样 | 发 `tool_use(name='Skill')`——**本机网关下拿不到**（模型一次都不发） | **这家没有 `Skill` 工具**：认它真去读 `SKILL.md` | 真发 `skill` 工具调用 |
+| 判据弱档（拿到名字 ≠ 模型能用它） | `system/init` 的 `skills` / `tools` 两格：厂商自报的名字表，**不反映允许列表**（挡得住工具调用、挡不住 `/<name>` 提示词派发）⇒ 假阳性 | `skills/list`（app-server 的请求；`enabled: false` 的条目**也列**）+ 入站 developer 段（只证明它进了提示词，答不了「清单里还有没有别的」） | `user/message` 的 `skill-catalog`：**只有名字**（没有来源、没有落点 ⇒ 分档只能记「来源未证实」） |
+
+- 三家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用），且**同名冲突三家解法不同**——设置页那条 Alert 只写原则，点名归行详情的「本行技能」格。
+- 三家的行内装入都用**文件级不放**这一个手段表达「停用」（没有任何一家有按名字关的配置键）；行级结论三态（`installed` / `missing` / `unverified`）由同一份契约推导，`missing` ⇒ 该行失败且不自动重试。
 
 **MCP 接法对照**（三家注入落点与判据通道均已真机验证；配置面、逐字形状与完整边界见[《MCP 配置》](/features/mcp-config)）：
 
@@ -80,5 +94,5 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 ## 相关链接
 
-- 知识文章：[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
+- 知识文章：[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《技能配置》](/features/skills-config)（三家 skills 接法的配置面与三态判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
 - 活文档：三份厂商 FAQ（[Codex](/faq/codex) / [Claude Code](/faq/claude-code) / [DeepSeek Harness](/faq/deepseek-harness)）——按报错原文 grep

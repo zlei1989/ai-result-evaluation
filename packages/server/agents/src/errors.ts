@@ -5,6 +5,7 @@
  * 用户可见文案的要求：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
  * 限流提示改用串行；模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
  */
+import { SkillMaterializeError } from '@aieval/core';
 import { asRecord, readNumber, readString } from './json';
 import type { AgentErrorCode, AgentKind } from './types';
 
@@ -80,6 +81,15 @@ function shapeMismatchMessage(packageName: string, reason: string, options: Agen
 export function classifyAgentFailure(error: unknown, context: FailureContext): AgentFailure {
   if (error instanceof AgentLoadError) {
     return { code: error.code, message: error.message, stack: error.stack };
+  }
+  /**
+   * 技能装不进去：`core` 的物化函数抛的错**自带中文原因与条名**，照原样归因。
+   *
+   * 为什么必须在这里认它：缺省那条路会把任意未知错误归成 `AGENT_FAILED`，而它在自动重试表里
+   * ⇒「源目录读不到」会被静默重跑两遍（每次再等 3 秒），而它重试多少次都是同一个失败。
+   */
+  if (error instanceof SkillMaterializeError) {
+    return { code: 'AGENT_SKILLS_UNAVAILABLE', message: error.message, stack: error.stack };
   }
   const host = hostOf(context.baseUrl);
   const status = statusOf(error);

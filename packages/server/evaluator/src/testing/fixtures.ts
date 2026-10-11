@@ -62,6 +62,7 @@ import type {
   AgentProviderMetadata,
   AgentRunInput,
   AgentRunResult,
+  SkillRef,
 } from '@aieval/agents';
 import type { JudgeInput } from '../judge';
 // 同样是**类型专用**：`text-api` 是被 `vi.mock` 的模块，值 import 会在这里造出第二条环
@@ -301,6 +302,11 @@ export function seedConfig(input: {
    * 「没配」与「配了预置那两项」在注入侧是两件事，故要测「一台都没有」的用例必须显式传 `{}`。
    */
   mcpServers?: McpServers;
+  /**
+   * `settings.skills.entries`：**停用名单**（缺省 = 空名单 = 全部启用）。
+   * 技能本身不在这里 seed——它们住在 `<配置目录>/skills/`（`home.configDir` 下），由用例直接造。
+   */
+  skills?: Settings['skills']['entries'];
 }): void {
   // 用例是**一文件一落**，不再随 saveConfig 覆盖写：所以每次 seed 都要先把上一批清掉，
   // 否则「这一次 seed 没给用例」的用例（`seedConfig({ workspaceRoot })` 表示「用例已被删除」）
@@ -317,6 +323,7 @@ export function seedConfig(input: {
       defaultJudge: input.defaultJudge ?? null,
       defaultJudgeAgent: input.defaultJudgeAgent ?? null,
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+      ...(input.skills === undefined ? {} : { skills: { entries: input.skills } }),
     },
     providers: input.providers ?? [],
   });
@@ -549,6 +556,15 @@ export interface FakeAgentCall {
    * 两个方向都只有这一格看得见，故取值刻意保留 `undefined`，不兜成 `{}`。
    */
   mcpServers?: McpServers;
+  /**
+   * 实际交给适配器的**技能清单**（原样记下；`undefined` = 这一格根本没传）。
+   *
+   * 为什么必须记录：这一格的落点是「**只有**候选执行阶段、且由编排层从技能根扫出来」——
+   * 漏传是静默的（那一行照常跑完，只是行配置目录里一条 skill 都没有，而厂商侧对「没有这条 skill」
+   * 不报任何错），多传（评分那一次也带上）同样是静默的。两个方向都只有这一格看得见，
+   * 故取值刻意保留 `undefined`，不兜成 `[]`。
+   */
+  skills?: SkillRef[];
   startedAt: number;
   finishedAt: number | null;
   exitReason: AgentExitReason | null;
@@ -581,6 +597,13 @@ export interface FakeAgentScript {
    *（与 `omitError` 同一类旋钮：都是为了让契约违例 / 各归因分支能被真的走一遍）。
    */
   errorCode?: AgentErrorCode;
+  /**
+   * `mode: 'error'` 时返回的**文案**（缺省那句「假适配器：进程非零退出」）。
+   * 为什么需要这一格：有几条归因的文案是**适配器自己写的**（技能装不进去那条点名到条：
+   * 「装入技能「x」失败：源目录读不到 …」），而「编排层原样照传」与「编排层重写一遍」
+   * 在别的格子上没有任何区别。
+   */
+  errorMessage?: string;
   tokens?: { input: number; cached: number; output: number } | null;
   /**
    * 适配器自报的耗时（毫秒）。不写就按夹具自己的墙钟算（真实适配器也是自报值，见
@@ -759,6 +782,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         permission: input.permission,
         outputSchema: input.outputSchema,
         mcpServers: input.mcpServers,
+        skills: input.skills,
         baseUrl: input.route.baseUrl,
         modelId: input.route.modelId,
         contextWindow: input.route.contextWindow,
@@ -922,7 +946,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           false,
           script.omitError === true
             ? undefined
-            : { code: script.errorCode ?? 'AGENT_FAILED', message: '假适配器：进程非零退出' },
+            : { code: script.errorCode ?? 'AGENT_FAILED', message: script.errorMessage ?? '假适配器：进程非零退出' },
         );
       }
       if (script.selfTimeout === true) {

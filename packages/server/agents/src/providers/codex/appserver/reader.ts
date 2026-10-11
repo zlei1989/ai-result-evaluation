@@ -15,8 +15,10 @@ import { asRecord, readString } from '../../../json';
 import type { AppServerClient } from './client';
 import {
   readItemEntry,
+  readSkillsList,
   readThread,
   type AppServerItemEntry,
+  type AppServerSkillEntry,
   type AppServerThread,
   type AppServerThreadStatus,
 } from './protocol';
@@ -119,4 +121,19 @@ export async function readThreadContent(
     return { thread, items };
   }
   return { thread, items: await listThreadItems(client, threadId) };
+}
+
+/**
+ * 读一次技能清单（`skills/list`）——**厂商的结构化清单**，行级「本行技能」那一格最硬的证据。
+ *
+ * 参数只给 `cwds`：真机三种参数形状（`{}` / `{cwds:[]}` / `{cwds:[cwd]}`）都能通，而带上 cwd 才会
+ * 把**项目级** skill 根（`<cwd>/.{agents,codex}/skills/`）一并列出来——那正是「被测仓库自带的
+ * skill」唯一能被观测到的通道（不带 cwd 的话它们在清单里根本不出现，界面上那句安全提示就永远不会出现）。
+ *
+ * 返回 `null` = **采不到**（响应形状不认识）：与 `[]`（厂商回了、确实一条都没有）不是一回事。
+ * 抛错由调用方处置（那一条路上失败**不许**改本次运行的结论）。
+ */
+export async function listSkills(client: AppServerClient, cwd: string): Promise<AppServerSkillEntry[] | null> {
+  const response = await client.request<unknown>('skills/list', { cwds: [cwd] });
+  return readSkillsList(response);
 }

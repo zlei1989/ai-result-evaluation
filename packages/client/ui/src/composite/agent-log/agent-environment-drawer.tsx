@@ -23,6 +23,7 @@
  */
 import { Alert, Button, Collapse, Descriptions, Drawer, Flex, Skeleton, Tag, Typography, theme } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
+import { ROW_MCP_VERDICT_LABELS, type RowMcpVerdict } from '@aieval/contracts';
 import type { ReactNode } from 'react';
 import type { AgentEnvironment, EnvGroup, EnvItem, Loadable, MessageCapabilityMap } from './types';
 import { MISSING_REASON_LABELS } from './types';
@@ -51,6 +52,19 @@ const SOURCE_LABELS: Record<EnvGroup['source'], string> = {
   vendor: '厂商系统层',
   project: '运行配置',
   observed: '实测统计',
+};
+
+/**
+ * 四档 MCP 结论 Tag 的预设色（用户口径的语义色，不走手写样式）。
+ *
+ * 为什么 `unverified` 与 `skipped` 刻意**都**不用红色：红 = 失败，而这两档都不是失败
+ * （前者是「没有证据」，后者是「我们主动跳过」）。`unavailable` 才是「有证据说它没起来」，故只有它红。
+ */
+const MCP_VERDICT_TAG_COLORS: Record<RowMcpVerdict, string> = {
+  connected: 'green',
+  unavailable: 'red',
+  unverified: 'default',
+  skipped: 'orange',
 };
 
 /**
@@ -107,12 +121,31 @@ function EnvItemRow({ item }: { item: EnvItem }): ReactNode {
   }
 
   const copyPath = item.copyPath;
+  const verdictLines = item.verdictLines;
 
   return (
     <Flex vertical gap={token.marginXXS}>
       <Typography.Text strong>{item.label}</Typography.Text>
       {/* 不传 `maxHeight`：长文本交给抽屉 body 滚，这里不再开第二个滚动区 */}
-      <MonoText text={item.text} />
+      {verdictLines === undefined ? (
+        <MonoText text={item.text} />
+      ) : (
+        // 「一台一个结论」的观测格：结论画成 Tag、其余照常等宽原文。
+        // `text` 那一格仍是完整原文（复制按钮读它），这里只换了画法。
+        <Flex vertical gap={token.marginXXS} data-testid="verdict-lines">
+          {verdictLines.map((line) => (
+            // 行内文字逐台唯一（服务名在设置页里是唯一键），当 React key 不会串行
+            <Flex key={line.text} gap={token.marginXXS} align="center" wrap>
+              {line.text !== '' && <MonoText text={line.text} />}
+              {line.verdict !== null && (
+                <Tag color={MCP_VERDICT_TAG_COLORS[line.verdict]} style={{ marginInlineEnd: 0 }}>
+                  {ROW_MCP_VERDICT_LABELS[line.verdict]}
+                </Tag>
+              )}
+            </Flex>
+          ))}
+        </Flex>
+      )}
       <Flex align="center" gap={token.marginXS} wrap>
         {item.truncated !== null && (
           <>

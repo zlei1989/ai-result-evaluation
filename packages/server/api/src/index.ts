@@ -1,5 +1,7 @@
 /** api 公共出口：业务服务层，框架层只从这里 import。 */
 export { getSettings, updateSettings } from './settings';
+// 技能清单：扫盘（core）+ 合并停用名单（缺省 = 开启），每条恒给 disabled 布尔
+export { listSkills } from './skills';
 // MCP 探活（「测试连接」）：策略层（http 三步 + 一次只读调用、失败分档、串行），
 // 机制在 core/src/mcp-probe.ts。⚠️ 探活不是跑智能体，不走 agentProvider.run。
 export { probeMcpServer } from './mcp';

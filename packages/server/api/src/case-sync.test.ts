@@ -14,7 +14,7 @@
  * git 与文件系统则一律是真的（mkdtemp 出来的仓库 + 本地裸远端），不 mock。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -350,5 +350,35 @@ describe('自动触发：防抖 + 合并', () => {
     // 两次变更合并成**一轮**：智能体只被叫一次，而两个文件各拿到一条提交
     expect(runMock).toHaveBeenCalledTimes(1);
     expect(listCommitsSince(root, base)).toHaveLength(2);
+  });
+});
+
+/**
+ * **技能不进入用例同步**。
+ *
+ * 用例同步那两处（提交信息 / 分叉裁定）的配置目录是 `<配置目录>/case-sync/.agenthome`：
+ * 它**跨轮共享**、而且**没有任何清理点**（与行目录那三份产物完全不同——`clearRowArtifacts`
+ * 每次都整棵重建）。给它们传 `skills` 的后果是副本一直堆在共享目录里，且从第二次运行起
+ * 就不再是「这一次配置的产物」；而这件事**不报错**，只是目录越来越肥。
+ *
+ * 判据两道：① 这一次真实运行的入参里没有那一格（行为面）；
+ * ② 源码里两个调用点都不出现 `skills`（分叉裁定那一条要在用例里造出分叉，代价远高于这道网）。
+ */
+describe('技能不进入用例同步（共享配置目录里堆副本 = 永久残留）', () => {
+  it('同步智能体的入参不带 skills，源码里两个调用点也一个字都不出现', async () => {
+    writeCaseFile('c-1', '用例一');
+    runMock.mockResolvedValue(agentResult(messagesFor([['c-1.json', '补充用例']])));
+
+    await runCaseSync('commit');
+
+    expect(runMock).toHaveBeenCalled();
+    for (const call of runMock.mock.calls) {
+      expect(Object.keys(call[0] as object)).not.toContain('skills');
+    }
+    // 源码那道网（注释先剥掉：文档里讨论这件事是允许的）
+    const source = readFileSync(join(import.meta.dirname, 'case-sync.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, '');
+    expect(source).not.toMatch(/skills/i);
   });
 });

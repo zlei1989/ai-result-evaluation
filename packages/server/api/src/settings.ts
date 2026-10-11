@@ -15,6 +15,7 @@
 import {
   ServiceError,
   SETTINGS_DEFAULTS,
+  mergeSkillsEntries,
   preserveUnchangedSecrets,
   toSettingsView,
   type Settings,
@@ -67,11 +68,27 @@ export function getSettings(): SettingsView {
  *
  * 合并**之前**先消解 MCP 密钥的「未改动」信号（空串 / 与本服务端掩码串逐字相同 ⇒ 保留落盘原值）：
  * `mcpServers` 是整份替换，界面拿到的是掩码，原样回传会把真密钥覆盖成掩码串。
+ *
+ * `skills` 是**逐条合并**（`mergeSkillsEntries`），与 `mcpServers` 的整份替换**刻意不同**：
+ * 浅合并会把整个停用名单换成补丁里那几个名字，于是「改一条 MCP」的保存会顺手把其余停用条目
+ * 悄悄打开。逐条合并还让「目录已删、键还在」的残条目天然留住——那一格不必靠界面回传。
  * 返回值同 `getSettings` —— 出口形态，别拿它当落盘真源用。
  */
 export function updateSettings(patch: SettingsPatch): SettingsView {
   const config = loadConfig();
-  let next: Settings = { ...config.settings, ...preserveUnchangedSecrets(config.settings, patch) };
+  // `skills` 从浅合并里**摘出来**（类型上也必须摘：补丁那格的值是 `{disabled:boolean}`，
+  // 而落盘只收 `{disabled:true}`——两者不同形，直接摊进 `Settings` 连编译都过不去）。
+  // 其余键照旧浅合并：`mcpServers` 的「整份替换」语义正是它自然产生的。
+  const { skills: skillsPatch, ...rest } = preserveUnchangedSecrets(config.settings, patch);
+  let next: Settings = { ...config.settings, ...rest };
+
+  // 逐条合并的基准是**落盘那份**（`config.settings.skills`），不是浅合并后的 `next`：
+  // 后者已经不含 skills 这一格，而补丁里那份名单只是「要动的名字」，不是新的全量。
+  // `?.… ?? {}` 与 `listSkills` 同款防御：`loadConfig` 不做 schema 校验，手改坏的整格按「没有名单」处置。
+  if (skillsPatch !== undefined) {
+    const current = config.settings.skills?.entries ?? {};
+    next = { ...next, skills: { entries: mergeSkillsEntries(current, skillsPatch.entries) } };
+  }
 
   if (patch.workspaceRoot !== undefined) {
     const { resolved } = validateWorkspaceRoot(patch.workspaceRoot);

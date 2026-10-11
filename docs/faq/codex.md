@@ -57,7 +57,7 @@ unsupported call: probe_echo
 **不是配置能解的**（本地矩阵五组全败）：`GLM-5.3` ❌、`DeepSeek-V4.1-Flash-a` ❌、打开 `features.non_prefixed_mcp_tool_names = { server_names = ["probe"] }` ❌（它改的是**暴露给模型的名字**，不改「回传时缺失命名空间」）、**升级到 `0.163.0-alpha.5` ❌**。三条出路（网关侧还原命名空间 / 追上游 / 退到命名空间机制之前的版本，最后一条代价最大）留给运维层决定。
 
 **解决方案**：**本仓不硬解**，按「已知边界」处置（`docs/protocols/codex.md` 的 MCP 条目 + 契约常量 `CODEX_MCP_DISPATCH_GAP_NOTE`）：
-- 判据只到「装上了」——`mcpServer/startupStatus === 'ready'` ⇒ 行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；界面的行卡片浮层与环境抽屉的「本行 MCP」都附上那句话（`build-environment.ts` / `eval-row-card.tsx`，文案取契约里那份共用常量）；
+- 判据只到「装上了」——`mcpServer/startupStatus === 'ready'` ⇒ 行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；环境抽屉的「本行 MCP」格在逐台结论之后附上那句话（`build-environment.ts` 拼进那一格、`agent-environment-drawer.tsx` 渲染，文案取契约里那份共用常量）；
 - 冒烟对 codex 只验 `ready`（只验 `ready` 的口径），**不把调不动当本仓缺陷**去修；
 - 复跑探针定期确认上游是否已修：`AIEVAL_LIVE_MCP=1` 跑 `packages/server/agents/src/providers/codex/live-mcp.test.ts`（判据仍是**事件侧 + server 侧**两处——`mcpServer/startupStatus` 与 server 自己的调用记录，模型答复不算）。
 

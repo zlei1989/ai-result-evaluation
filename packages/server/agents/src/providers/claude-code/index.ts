@@ -12,7 +12,7 @@
  */
 import { realpathSync } from 'node:fs';
 import { EFFORT_OFF, type SubagentRecord, type UsageTokens } from '@aieval/contracts';
-import { createLogger } from '@aieval/core';
+import { createLogger, materializeSkills } from '@aieval/core';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { asRecord, readString } from '../../json';
 import { hostNpmrcPath, readNpmrcText, toClaudeMcpServers, writeRowNpmrc } from '../../mcp';
@@ -22,9 +22,9 @@ import { buildSubprocessEnv, stripV1Suffix } from '../../route';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult } from '../../types';
 import { addUsage } from '../../usage';
-import { projectClaudeMessage } from './events';
+import { projectClaudeMessage, skillsDraftOf, vendorSystemDraftOf } from './events';
 import { createClaudeMessageNormalizer } from './message';
-import { loadClaudeSdk } from './sdk';
+import { loadClaudeSdk, readClaudeContextUsage, type ClaudeContextUsage, type ClaudeQuery } from './sdk';
 import {
   createClaudeSubagentUsageCache,
   readClaudeSubagentFile,
@@ -254,6 +254,56 @@ function canonicalCwd(cwd: string): string {
   }
 }
 
+/**
+ * 上下文用量控制请求的**等待上限**（毫秒）。
+ *
+ * 为什么要上限：`getContextUsage()` 是一条控制请求，网关后端不回它时**它不会自己失败**，
+ * 而采集是在**流循环里** await 的（`finalize` 是同步的，见下面）⇒ 没有上限就等于
+ * 「一条控制请求能把整行的消息流挂住」，而界面看起来只是「这一行卡在跑」。
+ * 到点按**采不到**处置（记一条点名的 WARN、判据降级成 `unverified`），绝不改本次运行的结论。
+ */
+const SKILL_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * 上下文用量的**取数档**。
+ *
+ * `'summary'` 从最近一次响应的用量与本地估算作答，**不逐类调计数 API**；`'full'` 会为每个类别
+ * 调一次计数接口。本仓只要 `skills` 那一格（名字与来源），故取前者——它是**每一行**都会跑一次的
+ * 控制请求，用 `'full'` 等于给每次运行加一串额外 API 往返。
+ * ⚠️ 若某天厂商把 `skills` 那一格改成只在 `'full'` 下返回，判据会整体降级成 `unverified`
+ * （不报错、只是没证据）——真机判据：`vendor-system.skills` 那一格非 `null`。
+ */
+const SKILL_PROBE_DETAIL = 'summary' as const;
+
+/**
+ * 取一次技能面（尽力而为，**永不抛**）。
+ *
+ * 失败与「SDK 没这个方法」都归成 `error` 文案：调用方据此落一条点名的 WARN，
+ * 而**不是**把它变成一次运行失败——观测是补充信息，改变结论是 MCP 那条判据才有的权力。
+ */
+async function probeClaudeSkills(
+  query: ClaudeQuery,
+): Promise<{ usage: ClaudeContextUsage | null; error: string | null }> {
+  if (typeof query.getContextUsage !== 'function') {
+    return { usage: null, error: '该 SDK 版本没有 getContextUsage（技能面无法确证）' };
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`超过 ${SKILL_PROBE_TIMEOUT_MS / 1000} 秒未返回`)), SKILL_PROBE_TIMEOUT_MS);
+    });
+    const raw = await Promise.race([query.getContextUsage({ detail: SKILL_PROBE_DETAIL }), timeout]);
+    const usage = readClaudeContextUsage(raw);
+    return usage === null
+      ? { usage: null, error: '返回的形状不认识（skills 那一格收窄失败）' }
+      : { usage, error: null };
+  } catch (error) {
+    return { usage: null, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   const { input, controller } = context;
   const sdk = await loadClaudeSdk();
@@ -306,6 +356,21 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     logger.warn(claudeOffDisabledWarning(betasVariable), { variable: betasVariable, effort: input.effort });
   }
   const cwd = canonicalCwd(input.cwd);
+  /**
+   * 本行的**技能装入**：把清单里那几条整目录复制进 `<configHome>/skills/`。
+   *
+   * 时机：必须在 `sdk.query()` **之前**——CC 在这一刻扫 `CLAUDE_CONFIG_DIR/skills` 装配技能清单，
+   * 写晚了这一次启动就看不到它们，而**它不报错**（只是这一行按「没有这条 skill」跑完）。
+   * 这一家除了「装配前落盘」之外**不需要改任何 query option**：`settingSources` 已含 `'user'`，
+   * 而 `CLAUDE_CONFIG_DIR` 指的正是 `configHome`（见上面 `env` 那一块）。
+   *
+   * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
+   * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   */
+  if (input.skills !== undefined) {
+    materializeSkills({ configHome: input.configHome, skills: input.skills });
+  }
   /**
    * 行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有的 `configHome`。
    *
@@ -424,10 +489,49 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
      * MCP 与 registry 的注入读数。**只记名字，不记条目本体**：条目里有解析后的密钥
      * （`${CONTEXT7_API_KEY}` 已经换成真值），整条打出来就等于把密钥写进日志。
      * registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容——排障要的是「有没有生效」。
+     * 技能那一格只记条名（源目录路径进事件流没有额外信息量，且可能很长）。
      */
     mcpServers: Object.keys(mcpServers),
+    skills: (input.skills ?? []).map((skill) => skill.name),
     npmRegistry: registryLine === null ? null : 'row-npmrc-written',
   });
+  /**
+   * **技能面（L3）的采集**：一行里取一次上下文用量，答「厂商当时到底认了哪几条 skill」。
+   *
+   * 三件事决定了这段的形状，缺一条都会静默失效：
+   *   1. **不能在 `finalize` 里发起**：`TurnStart.finalize` 是**同步**的（`turn.ts` 在 `finally`
+   *      里调一次、不 await），而 `getContextUsage()` 是异步控制请求 ⇒ 只能在这里（流循环里）
+   *      await 一次、把结果缓存下来，由 `finalize` 同步交出去；
+   *   2. **必须在 `system/init` 之后取**：会话还没建时拿到的那份是空的。这里把流的消费与采集
+   *      串成一条：**先 yield 给消费方，再采**（采集期间 SDK 的消息在它自己的队列里排着，
+   *      不会丢），于是 init 那一帧照旧第一时间到编排层，而采集不占它的时间；
+   *   3. **一行只取一次**（`skillsProbed`）：它是控制请求，重复取只是多花时间。
+   *
+   * ⚠️ `initRecord` 同时是**这条采集能不能发事件**的前提：没有 init 就没有「会话已建」，
+   * 也就没有可解释的技能面（这条路上一次都不采）。
+   */
+  let initRecord: Record<string, unknown> | null = null;
+  let skillsProbed = false;
+  let skillsUsage: ClaudeContextUsage | null = null;
+  let skillsProbeError: string | null = null;
+  const stream = (async function* (): AsyncGenerator<unknown> {
+    for await (const message of query) {
+      const record = asRecord(message);
+      if (initRecord === null && readString(record, 'subtype') === 'init') initRecord = record;
+      yield message;
+      /**
+       * **本行没装技能（`skills` 缺席）就一次都不采**：评分与用例同步那两处不传这一格，
+       * 它们不该付这条控制请求的钱、也不该在事件流里多出一条「采不到」的 WARN。
+       * 与物化那一步同一条判据（「不传 `skills` ⇒ 一次都不调」）。
+       */
+      if (input.skills !== undefined && initRecord !== null && !skillsProbed) {
+        skillsProbed = true;
+        const probed = await probeClaudeSkills(query);
+        skillsUsage = probed.usage;
+        skillsProbeError = probed.error;
+      }
+    }
+  })();
   /**
    * 本行**形状像一次派发**的子智能体 id（不是「见过 `task_id` 就算」，见 `project` 里的登记点）
    * 与 `system/init` 回显的 **session id**：收尾读子智能体会话文件时，这两个是定位它所需的全部信息。
@@ -515,7 +619,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     });
 
   return {
-    stream: query,
+    /**
+     * 交给骨架的是**包了一层的**流（见上面 `stream` 的构造）：每一帧先原样 yield 出去，
+     * 见到 `system/init` 之后在**同一趟迭代里**补一次技能面采集。
+     * 其余行为逐字不变——`interrupt` / `dispose` 拿的仍是厂商那个 `query` 对象本身。
+     */
+    stream,
     interrupt: () => {
       // 吞掉 rejection（冒烟实测 14 次 `unhandledRejection: Query closed before response received`）：
       // `void` 不挂 handler，而全仓没有 unhandledRejection 处理器 ⇒ SDK 一旦拒绝就是打崩进程
@@ -581,6 +690,26 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         cache: subagentUsageCache,
       });
       const drafts: AgentEventDraft[] = [];
+      /**
+       * **技能面那一条事件**（`vendor-system.skills`）：由收尾**同步**交出在流循环里采到的那一份。
+       *
+       * 为什么交的是**整份**厂商标称事实（而不是只带 `skills` 一格）：`vendor-system` 的消费方
+       * （编排层的行级 MCP 证据、环境抽屉的厂商那一组）都是**取最后一条**读的，
+       * 一条只带一格的事件会把先前那条里的工具面 / MCP 清单在界面上抹掉。
+       * 故这里用 `initRecord` 那份**原始 init 消息**重放六格，再补上 `skills`。
+       *
+       * 采不到时**不带 `skills` 那一格**（`skillsDraftOf` 交 `undefined`）并落一条点名的 WARN：
+       * 写 `skills: null` 会让读侧读到「厂商投送了、清单是空的」——那是替厂商说一句我们并不知道的
+       * 话；「我们没采到」由那条 WARN 承载，行级判据据此降级成 `unverified`、不据此判失败。
+       */
+      if (initRecord !== null && skillsProbed) {
+        drafts.push(vendorSystemDraftOf(initRecord, skillsDraftOf(skillsUsage, { configHome: input.configHome, cwd })));
+      }
+      if (skillsProbeError !== null) {
+        drafts.push(
+          logDraft('stderr', `[WARN] 采不到 claude 的技能面（${skillsProbeError}）：本行「技能」判据降级为未验证，不据此判失败`),
+        );
+      }
       if (read.missing.length > 0) {
         drafts.push(logDraft('stderr', `[WARN] 读不到子智能体 ${read.missing.join('、')} 的会话文件，这一行的 tok / 缓存命中 / 轮次**不含**它们（不编造）`));
       }

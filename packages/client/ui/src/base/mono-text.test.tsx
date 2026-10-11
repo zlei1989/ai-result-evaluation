@@ -31,6 +31,23 @@ describe('MonoText', () => {
     expect(host.scrollTop).toBe(123);
   });
 
+  /**
+   * 等宽字体必须落在**承载文本的那个元素**上。
+   *
+   * 宿主上的 `fontFamily` 会被 `.ant-typography` 自己的 `font-family` 盖掉（实测：真机上宿主写着
+   * `SFMono-Regular…`，文本那一格算出来是系统字体），于是「等宽」变成一句写在代码里的话术。
+   * jsdom 没有 CSS 级联，量不出计算值，所以这里钉的是**机制**：字体在文本元素自己也有一份；
+   * 真机上的计算值由界面冒烟量 `getComputedStyle` 兜底。
+   */
+  it('等宽字体也挂在文本元素上（只挂在宿主上会被 .ant-typography 覆盖）', () => {
+    render(<MonoText text="a" dataTestId="log-text" />);
+
+    const inner = screen.getByTestId('log-text').querySelector('span');
+    expect(inner).not.toBeNull();
+    expect(inner?.style.fontFamily).not.toBe('');
+    expect(inner?.style.fontFamily).toBe(screen.getByTestId('log-text').style.fontFamily);
+  });
+
   it('maxHeight 落到宿主的限高上，且文本保留换行', () => {
     render(<MonoText text={'a\nb'} maxHeight={240} dataTestId="log-text" />);
 

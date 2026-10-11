@@ -15,6 +15,7 @@
  *   3. **派发台账只记观测到的事实**：`dispatches` 的键是子线程 id，值是「谁派发了它、用的哪次调用」。
  *      昵称来自 `thread/started` 的 `Thread.agentNickname`；收尾时 `reader` 给出更权威的一份。
  */
+import type { VendorSkill } from '@aieval/contracts';
 import type { AppServerItem, AppServerThreadUsage } from './appserver/protocol';
 
 /** 一个子线程的派发台账（身份在本行的运行期就能拿到，不必等收尾） */
@@ -79,6 +80,17 @@ export interface CodexRunState {
    * 而投影是**逐条无状态**调用的（`projectCodexEvent` 每次只看到一个 payload）。
    */
   mcpStartup: Map<string, { status: string; error: string | null }>;
+  /**
+   * 本行的**技能清单**（`skills/list` 采到的那一份，起会话之后立刻取一次）。
+   *
+   * 为什么放在 run 状态：两个消费方都要读它——`events.ts` 的 MCP 启动状态那一支（每发一条
+   * `vendor-system` 都要把这一格带上，否则最后那条事件会把技能面抹成「厂商没投送」），
+   * 以及收尾那条事件本身。与 `mcpStartup` 同一条理由（投影是逐条无状态调用的）。
+   *
+   * `null` = 探针还没跑（理论上不会：它在流开始之前就 await 完了）。
+   * `entries: null` = **采不到**，与 `[]`（厂商回了、确实一条都没有）不是一回事。
+   */
+  skillProbe: { entries: VendorSkill[] | null; error: string | null } | null;
 }
 
 export function createCodexRunState(): CodexRunState {
@@ -92,6 +104,7 @@ export function createCodexRunState(): CodexRunState {
     blockIndices: new Map(),
     droppedDeltas: new Map(),
     mcpStartup: new Map(),
+    skillProbe: null,
   };
 }
 
@@ -108,6 +121,19 @@ export function noteMcpStartup(
   error: string | null,
 ): Array<{ name: string; status: string; error: string | null }> {
   state.mcpStartup.set(name, { status, error });
+  return [...state.mcpStartup].map(([serverName, one]) => ({ name: serverName, status: one.status, error: one.error }));
+}
+
+/**
+ * 当前的 MCP 启动状态**全量**（与 `noteMcpStartup` 的返回值逐字同形，只是不写状态）。
+ *
+ * 为什么需要它：`vendor-system` 的消费方（编排层的行级 MCP 证据、环境抽屉）都**取最后一条**读，
+ * 于是「收尾再发一条带技能清单的事件」必须把 MCP 那一格一起带上，否则最后那条事件里的
+ * MCP 事实就是空的、把先前那几拍抹掉（`null` 的读数是「厂商没投送」）。
+ */
+export function currentMcpStartup(
+  state: CodexRunState,
+): Array<{ name: string; status: string; error: string | null }> {
   return [...state.mcpStartup].map(([serverName, one]) => ({ name: serverName, status: one.status, error: one.error }));
 }
 

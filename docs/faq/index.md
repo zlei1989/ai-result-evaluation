@@ -28,6 +28,8 @@
 - [`AGENT_FAILED：Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional, or set options.pathToClaudeCodeExecutable.`](/faq/claude-code#agent-failed-native-cli-binary-for-darwin-arm64-not-found-reinstall-anthropic-ai-claude-agent-sdk-without-omit-optional-or-set-options-pathtoclaudecodeexecutable)
 - [`[22:21:22] stdout {"type":"system","subtype":"thinking_tokens","estimated_tokens":1,"estimated_tokens_delta":1,"session_id":"8a23d018-0dec-4c5c-b67f-8d98ac31d970","uuid":"b51b18af-2b8c-4af6-a4d8-abbc51c011ac"}`（「原始输出」抽屉被思考进度帧刷满、页面卡死）](/faq/claude-code#_22-21-22-stdout-type-system-subtype-thinking-tokens-estimated-tokens-1-estimated-tokens-delta-1-session-id-8a23d018-0dec-4c5c-b67f-8d98ac31d970-uuid-b51b18af-2b8c-4af6-a4d8-abbc51c011ac-「原始输出」抽屉被思考进度帧刷满、页面卡死)
 - [`AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.`](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-there-s-an-issue-with-the-selected-model-test-model-it-may-not-exist-or-you-may-not-have-access-to-it)
+- [技能面确证 `[{"name":"tang-poem-meal","source":"userSettings"},…]` 在，但 `工具调用名：[]`、哨兵 `AIEVAL-SKILL-OK-7f3a` 未命中](/faq/claude-code#技能面确证-name-tang-poem-meal-source-usersettings-在-但-工具调用名-、哨兵-aieval-skill-ok-7f3a-未命中)
+- [Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-rows-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
 
 ### DeepSeek Harness
 

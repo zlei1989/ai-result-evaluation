@@ -1,7 +1,7 @@
 // @vitest-environment node
 /** 设置契约：默认值、解析容错、补丁的部分性与边界校验。 */
 import { describe, expect, it } from 'vitest';
-import { SETTINGS_DEFAULTS, SettingsPatchSchema, SettingsSchema } from './settings';
+import { SETTINGS_DEFAULTS, SettingsPatchSchema, SettingsSchema, mergeSkillsEntries } from './settings';
 
 describe('SETTINGS_DEFAULTS', () => {
   it('给出可直接落地运行的默认值', () => {
@@ -134,5 +134,75 @@ describe('SettingsPatchSchema', () => {
     expect(SettingsPatchSchema.safeParse({ theme: 'blue' }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ diffBudgetBytes: 0 }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ diffBudgetBytes: 1.5 }).success).toBe(false);
+  });
+
+  /**
+   * `skills` 这一格在补丁里走的是**另一条 schema**（`SkillsPatchSchema`，值收 `disabled: boolean`），
+   * 不是落盘那条。判据是「同一个补丁里 `{disabled:false}` 过、`{disabled:true}` 也过」：
+   * 继承落盘那条的话，前者会被判 400，「再打开 = 删键」这条路当场走不通。
+   */
+  it('skills 收期望状态：{disabled:false} 与 {disabled:true} 都合法', () => {
+    for (const disabled of [true, false]) {
+      const result = SettingsPatchSchema.safeParse({ skills: { entries: { 'tang-poem-meal': { disabled } } } });
+      expect(result.success, `disabled=${disabled}`).toBe(true);
+    }
+  });
+
+  it('skills 的非法名与缺 entries 都在门口被拦下（partial 只让顶层键可选）', () => {
+    expect(SettingsPatchSchema.safeParse({ skills: { entries: { Tang: { disabled: true } } } }).success).toBe(false);
+    // `entries` 这一层不能省：`{ skills: {} }` 是「没说改哪一条」，不是「一条都不改」
+    expect(SettingsPatchSchema.safeParse({ skills: {} }).success).toBe(false);
+    // 顶层键本身仍可缺席（部分更新），落盘的 skills 一字不动
+    expect(SettingsPatchSchema.safeParse({ theme: 'dark' }).success).toBe(true);
+  });
+});
+
+/**
+ * 停用名单的**逐条合并 + 规范化**（`true` ⇒ 写 `{disabled:true}`、`false` ⇒ 删键）。
+ *
+ * 两件事必须同时在这一处发生，理由不同：
+ *   · **逐条**（只动补丁里出现的名字）是「残条目保留」这条边界的结构性保证——靠界面每次都把残条目
+ *     回传是不可靠的（漏一条就是静默丢数据）；
+ *   · **规范化**（`false` ⇒ 删键）是「配置里只出现停用」的唯一实现点。写侧 schema 只许 `{disabled:true}`，
+ *     所以「打开」这件事在文件里只能是「那个键不在」。
+ */
+describe('mergeSkillsEntries：逐条合并 + 规范化', () => {
+  it('true ⇒ 写 {disabled:true}；false ⇒ 删键（启用不落盘）', () => {
+    expect(mergeSkillsEntries({}, { 'tang-poem-meal': { disabled: true } })).toEqual({
+      'tang-poem-meal': { disabled: true },
+    });
+    expect(mergeSkillsEntries({ 'tang-poem-meal': { disabled: true } }, { 'tang-poem-meal': { disabled: false } })).toEqual(
+      {},
+    );
+  });
+
+  it('只动补丁里出现的名字：别的停用条目照旧', () => {
+    const merged = mergeSkillsEntries(
+      { alpha: { disabled: true }, zulu: { disabled: true } },
+      { zulu: { disabled: false } },
+    );
+
+    expect(merged).toEqual({ alpha: { disabled: true } });
+  });
+
+  it('残留条目（目录已删）保留：目录放回来时那个开关还是关的', () => {
+    // 补丁里没有它 ⇒ 合并结果里仍有它。整份替换会让它消失，而界面看不出任何异常
+    expect(mergeSkillsEntries({ gone: { disabled: true } }, { other: { disabled: true } })).toEqual({
+      gone: { disabled: true },
+      other: { disabled: true },
+    });
+  });
+
+  it('删一个不在名单里的名字是幂等的（不抛、不造出键）', () => {
+    expect(mergeSkillsEntries({}, { never: { disabled: false } })).toEqual({});
+  });
+
+  it('不改入参：返回的是新对象（挡掉就地改写把落盘那份也改掉的路径）', () => {
+    const current: Record<string, { disabled: true }> = { alpha: { disabled: true } };
+
+    const merged = mergeSkillsEntries(current, { alpha: { disabled: false }, beta: { disabled: true } });
+
+    expect(current).toEqual({ alpha: { disabled: true } });
+    expect(merged).not.toBe(current);
   });
 });

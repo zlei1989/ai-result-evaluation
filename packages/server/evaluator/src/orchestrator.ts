@@ -60,6 +60,7 @@ import {
   createLogger,
   ensureMirror,
   ensureRowJudgeHome,
+  installableSkills,
   rowAttemptsFile,
   loadConfig,
   prepareRowWorkspace,
@@ -88,6 +89,12 @@ import {
 } from './row-messages';
 import { judgeRow } from './judge';
 import { deriveRowMcpServers, AGENT_MCP_UNAVAILABLE, mcpUnavailableMessage, type RowMcpEvidence } from './row-mcp';
+import {
+  AGENT_SKILLS_UNAVAILABLE,
+  deriveRowSkillInstall,
+  skillMissingMessage,
+  type RowSkillEvidence,
+} from './row-skill';
 import { judgeRowByAgent, JudgeAgentError } from './judge-agent';
 import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
 import { forgetRunRoot } from './run-root-memory';
@@ -126,7 +133,11 @@ export const ROW_RETRY = {
  * 行落在 `failed`，而它是可以重跑的——评分是一次廉价、可重复的动作，再问一次可能就过了
  *（真实成因见 `judge.ts`：模型偶尔回散文 / 半截 JSON）；重试重跑的是整行，但那一行的候选产出
  * 会从同一基线重新生成，成本与处置都清楚可预期。
- * **不收**：`AUTH_FAILED`（密钥错）、`CONFLICT`（配置不成立）、`NOT_FOUND`、`INVALID_*`。
+ * **不收**：`AUTH_FAILED`（密钥错）、`CONFLICT`（配置不成立）、`NOT_FOUND`、`INVALID_*`，
+ * 以及 `AGENT_SKILLS_UNAVAILABLE`——技能装不进去（源目录读不到 / 复制失败）是**本次配置的直接后果**，
+ * 不是瞬时故障：重试只会把同一个失败延后 `3s × N`，而它**必须**重跑的那一步是「回设置页把源目录修好」。
+ * 同一个字符串在编排层还有第二个来源（`missing`：厂商清单采到了、里面没有它），那条同样不进这张表——
+ * 理由逐字相同，且它与 `AGENT_MCP_UNAVAILABLE` 一样属于**编排层的判定**，不由厂商归因。
  */
 const TRANSIENT_ROW_RETRY_CODES: readonly string[] = [
   'AGENT_FAILED',
@@ -1254,6 +1265,17 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
    */
   const mcpPlan = resolveMcpServers(settings.mcpServers, process.env);
   /**
+   * **本行要装入的 skill 清单**：扫技能根（`<配置目录>/skills/`）→ 只留合格条目 →
+   * 剔掉停用名单里的名字。与上面那条 supplier / MCP 读的是**同一份** `settings` 快照
+   * （`loadConfig()` 的返回值），故三者在同一次执行里看到的是同一份配置。
+   *
+   * 为什么在**这里**扫而不是让适配器自己去读（控制权在编排层）：与 MCP 逐字同源——
+   *   · 「只在候选执行阶段装入」要由类型 + 调用点保证（评分与用例同步两处根本没有这一格）；
+   *   · 判定要用扫描结果（准入门 + 停用名单），而适配器只该收到「已解析的清单」：
+   *     技能根跟着配置目录走，让每家适配器自己去扫就等于让厂商知识碰配置层。
+   */
+  const skillsPlan = installableSkills(settings.skills?.entries);
+  /**
    * 被跳过的条目**必须说出来**（跳过 + WARN，行照跑）：不说的话，用户只会看到
    * 「我配的那台怎么没生效」，而这条线索（哪个键的哪个变量没设）只存在于这一刻。
    */
@@ -1350,6 +1372,17 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
    * 再读一次盘等于把同一件事做两遍，还要处理「文件被重跑清掉」的竞态。
    */
   let mcpVendor: RowMcpEvidence['vendor'] = null;
+  /**
+   * 本行的**厂商侧技能证据**：`vendor-system.skills` 那一格（**取最后一条带这一格的事件**）。
+   *
+   * 为什么与 `mcpVendor` 分开记账而不是合成一份：两者的**产出通道与节奏都不同**
+   * （MCP 那一格在 claude 的 init 上、codex 的启动状态上、dsh 的工具表上逐拍长；技能面只在
+   * 采集到的那一条上），合并成一个「最后一条 vendor-system」会让**任一条不带对方格的事件**
+   * 把另一格清成 `null`——而 `null` 在这两格里的读数是「厂商没投送」，是一句我们并不知道的话。
+   *
+   * `null` = 没有一条事件带过这一格（采不到）⇒ 判据降级成 `unverified`，行照跑。
+   */
+  let skillVendor: RowSkillEvidence['vendor'] = null;
 
   // `attempts` **累加**而不是重置成 1：这一格回答的是「这一行走过几次尝试」
   // （含自动重试与用户点的「重新执行」），而每次进入本函数恰好就是一次尝试。
@@ -1520,6 +1553,13 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      */
     if (event.type === 'vendor-system') {
       mcpVendor = { servers: event.mcpServers, tools: event.tools, channel: event.mcpChannel ?? 'vendor-status' };
+      /**
+       * 技能那一格**单独取**（`!== undefined` 才算「这一条带了它」）：一条不带这一格的事件
+       * （探针失败、目录还没到、老事件）不该把已经采到的清单清成「厂商没投送」。
+       * 适配器只在**采到了**的时候才带这一格（`[]` = 厂商投送了、确实一条都没有），
+       * 故这里读到什么都照收；显式 `null` 只可能来自历史事件，读作「采不到」。
+       */
+      if (event.skills !== undefined) skillVendor = event.skills;
     }
     // 「计量在跑的过程中逐步落库」（patchRow 的注释里承诺的就是这里）：权威值一到就写快照，
     // 于是列表、刷新后的页面、以及任何不接 SSE 的消费方都能在中途看到当前用量
@@ -1579,6 +1619,12 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      * 而「没配」与「配了零台」在那几家厂商侧未必是同一件事。
      */
     ...(Object.keys(mcpPlan.injectable).length === 0 ? {} : { mcpServers: mcpPlan.injectable }),
+    /**
+     * 技能清单：**只有这一个调用点填它**（评分与用例同步两处留空，见 `AgentRunInput` 那一格）。
+     * 空集**不给键**（与 MCP 同一条口径）：给了空数组等于向适配器声明「本行显式要零条」，
+     * 而「一条都没启用」与「本次没有程序化装入」在落盘侧是两件事（后者一个文件都不写）。
+     */
+    ...(skillsPlan.length === 0 ? {} : { skills: skillsPlan }),
     onEvent,
     /**
      * 消息与子任务行：**与事件同一条闸门与同一条落盘路径**——「行已终态」之后
@@ -1697,6 +1743,15 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     invalid: mcpPlan.invalid.map((item) => item.name),
     vendor: mcpVendor,
   } satisfies RowMcpEvidence;
+  /**
+   * 技能的两半证据**同样只构造一次**（观测格与「行该不该失败」读同一份，理由与 MCP 逐字相同）。
+   * `installed` 取的是**真的装进去**的那一份：`skillsPlan` 已经过准入门与停用名单，
+   * 而适配器侧落盘失败会让这一行走另一条失败路径（`AGENT_SKILLS_UNAVAILABLE`，见适配器）。
+   */
+  const skillEvidence = {
+    installed: skillsPlan.map((skill) => skill.name),
+    vendor: skillVendor,
+  } satisfies RowSkillEvidence;
 
   // 第 6 步：算 diff（三样合并），并按 diffBudgetBytes 裁剪
   const collected = collectDiff(prepared.workspacePath, prepared.baselineCommit);
@@ -1718,6 +1773,12 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      * 一行跑到这里（无论成败）就一定有值：`[]` 是「观测了、确实一台都没有」，不是「没观测」。
      */
     mcpServers: deriveRowMcpServers(mcpEvidence),
+    /**
+     * 「本行技能」观测格：逐条记 名称 / 来源 / 判据来源 / 结论。
+     * `[]` 是「观测了、本行一条技能都没装」（用户把清单全停用是**有意义**的状态），
+     * 与「没观测」（格缺席，评分行与老 `run.json`）是两件事。
+     */
+    skillInstall: deriveRowSkillInstall(skillEvidence),
     diff: {
       filesChanged: collected.filesChanged,
       insertions: collected.insertions,
@@ -1788,6 +1849,33 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     settleStopped(runId, rowId, outcome);
     return outcome;
   }
+  /**
+   * **厂商没认我们装的 skill ⇒ 这一行失败**（判据三态里的 `missing`）。
+   *
+   * 与 MCP 那一条同处（终止类判定**之后**、评分**之前**），理由逐字相同：评分不跑是因为
+   * 评测环境残缺（模型手里没有那条技能面），出分只会误导。
+   *
+   * ⚠️ 与 `AGENT_MCP_UNAVAILABLE` 同一个字符串、同一条处置：**刻意不进
+   * `TRANSIENT_ROW_RETRY_CODES`**（装不进去不是瞬时故障，重试只是把同一个失败延后 3s × N）。
+   * `unverified`（采不到厂商清单）**不在此列**——判据不成立绝不等于厂商没认。
+   */
+  const skillFailure = skillMissingMessage(skillEvidence, AGENT_LABELS[row.agentKind]);
+  if (skillFailure !== null) {
+    log.warn('本行有技能未被厂商认下，按行失败收口（不自动重试）', {
+      runId,
+      rowId,
+      message: skillFailure,
+    });
+    const outcome: RowOutcome = {
+      status: 'failed',
+      error: { code: AGENT_SKILLS_UNAVAILABLE, message: skillFailure },
+      exitReason: 'error',
+      stage: 'agent',
+    };
+    settleStopped(runId, rowId, outcome);
+    return outcome;
+  }
+
   // 这里不需要 `if (agentError !== null) throw agentError;`：classifyStop 在 agentError 非 null 时
   // 必定返回非 null（违约分支排在 `result === null` 之前），那一行是**不可达**的——留着会让人以为
   // 违约不存在第二条兜底路径：违约的归因与 error 事件都在 classifyStop → settleStopped 这一条路上。

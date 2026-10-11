@@ -1,6 +1,6 @@
 // @vitest-environment node
 /** 设置服务：读取时的归一化、补丁合并、改工作区根目录时的可用性校验。 */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,12 +9,14 @@ import {
   defaultCasesRoot,
   defaultWorkspaceRoot,
   getConfigDir,
+  getSkillsRoot,
   loadConfig,
   saveConfig,
   setConfigDirForTesting,
   validateWorkspaceRoot,
 } from '@aieval/core';
 import { getSettings, updateSettings } from './settings';
+import { listSkills } from './skills';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 // 守卫要把 saveConfig 打挂成裸 errno；「只改主题不做目录校验」要能直接数
@@ -299,5 +301,95 @@ describe('MCP 密钥：出口掩码与「未改动」信号', () => {
     expect(storedHeaders('context7')['CONTEXT7_API_KEY']).toBe('ctx7-rotated-0009');
     expect(JSON.stringify(next)).not.toContain('ctx7-rotated-0009');
     expect(JSON.stringify(next)).toContain(maskApiKey('ctx7-rotated-0009'));
+  });
+});
+
+/**
+ * 技能停用名单的写路径：**逐条合并 + 规范化**（`true` ⇒ 写、`false` ⇒ 删键）。
+ *
+ * 与 MCP 那一组的分界是这一组的要害：`mcpServers` 是整份 map 替换，`skills` 只动补丁里出现的名字。
+ * 两者在同一个补丁里同时出现时**不许互相污染**——逐条合并的语义被写宽成整份替换时，
+ * 用户的停用名单会在一次「改 MCP」的保存里被悄悄冲掉，而响应看起来完全正常。
+ *
+ * 断言一律落到 `loadConfig()`（磁盘那份）而不是返回值：返回值是内存对象，证明不了持久化，
+ * 而「只出现停用」这条不变量本来就是关于**文件里写了什么**的。
+ */
+describe('技能停用：逐条合并 + 规范化（落盘只出现停用）', () => {
+  /** 落盘那份的停用名单；形状不对就抛——守卫不许因为取不到值而静默通过 */
+  function storedEntries(): Record<string, { disabled?: unknown }> {
+    const entries = loadConfig().settings.skills?.entries;
+    if (entries === undefined) throw new Error('落盘配置里没有 settings.skills.entries');
+    return entries;
+  }
+
+  it('关掉一条 ⇒ 文件里只有 {disabled:true}，重新读盘仍是关的', () => {
+    const view = updateSettings({ skills: { entries: { 'tang-poem-meal': { disabled: true } } } });
+
+    expect(storedEntries()).toEqual({ 'tang-poem-meal': { disabled: true } });
+    expect(view.skills.entries['tang-poem-meal']).toEqual({ disabled: true });
+  });
+
+  it('再打开 ⇒ 那个键整个消失（不是落成 {disabled:false}）', () => {
+    updateSettings({ skills: { entries: { 'tang-poem-meal': { disabled: true } } } });
+
+    const view = updateSettings({ skills: { entries: { 'tang-poem-meal': { disabled: false } } } });
+
+    expect(storedEntries()).toEqual({});
+    expect('tang-poem-meal' in view.skills.entries).toBe(false);
+    // 判据取**原始文件文本**而不是那份对象：`{disabled:false}` 与「键不在」在读侧都能读成「开着」，
+    // 只有文件里那个名字是不是真的没了能分开它们（「配置里只出现停用」这条不变量说的就是文本）
+    expect(readFileSync(join(getConfigDir(), 'config.json'), 'utf8')).not.toContain('tang-poem-meal');
+  });
+
+  it('⑤ 逐条合并：补丁只提另一条时，已有的停用条目不被冲掉', () => {
+    updateSettings({ skills: { entries: { alpha: { disabled: true } } } });
+
+    updateSettings({ skills: { entries: { beta: { disabled: true } } } });
+
+    // 整份替换（浅合并的自然结果）会让 alpha 当场消失：用户以为只关了 beta，alpha 被悄悄打开
+    expect(storedEntries()).toEqual({ alpha: { disabled: true }, beta: { disabled: true } });
+  });
+
+  it('残留条目保留：目录已删、键还在；补丁改别的名字也不动它', () => {
+    updateSettings({ skills: { entries: { gone: { disabled: true } } } });
+
+    updateSettings({ skills: { entries: { other: { disabled: true } } } });
+    updateSettings({ skills: { entries: { other: { disabled: false } } } });
+
+    expect(storedEntries()).toEqual({ gone: { disabled: true } });
+  });
+
+  it('同一个补丁里两种语义互不污染：mcpServers 仍整份替换、skills 逐条合并', () => {
+    const context7 = {
+      transport: 'http',
+      enabled: true,
+      url: 'https://mcp.invalid/mcp',
+      headers: { CONTEXT7_API_KEY: '${CONTEXT7_API_KEY}' },
+    } as const;
+    updateSettings({ skills: { entries: { alpha: { disabled: true } } }, mcpServers: { context7 } });
+
+    // 同一个补丁里：MCP 换了一台（playwright 缺席 ⇒ 整份替换把它删掉），而 skills 只加不改
+    updateSettings({
+      skills: { entries: { beta: { disabled: true } } },
+      mcpServers: { 'other-server': { transport: 'stdio', enabled: true, command: 'npx', args: ['-y', 'x'] } },
+    });
+
+    expect(Object.keys(loadConfig().settings.mcpServers)).toEqual(['other-server']);
+    expect(storedEntries()).toEqual({ alpha: { disabled: true }, beta: { disabled: true } });
+  });
+
+  it('出口恒给布尔：停用后 listSkills 给 true，再打开给 false', () => {
+    mkdirSync(join(getSkillsRoot(), 'tang-poem-meal'), { recursive: true });
+    writeFileSync(
+      join(getSkillsRoot(), 'tang-poem-meal', 'SKILL.md'),
+      '---\nname: tang-poem-meal\ndescription: 一件技能\n---\n正文\n',
+      'utf8',
+    );
+
+    updateSettings({ skills: { entries: { 'tang-poem-meal': { disabled: true } } } });
+    expect(listSkills().skills.map((skill) => [skill.name, skill.disabled])).toEqual([['tang-poem-meal', true]]);
+
+    updateSettings({ skills: { entries: { 'tang-poem-meal': { disabled: false } } } });
+    expect(listSkills().skills.map((skill) => [skill.name, skill.disabled])).toEqual([['tang-poem-meal', false]]);
   });
 });

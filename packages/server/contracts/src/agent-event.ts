@@ -13,6 +13,8 @@ import { z } from 'zod';
 // （同一份「通道」值域，与行级观测格的 `judgedBy` 同源派生——各写一份枚举必然漂移）
 import { EvalRowStatusSchema, RowMcpChannelSchema } from './run';
 import { ScoreResultSchema } from './score';
+// `VendorSkillSchema` 给 `vendor-system.skills`（厂商当时看见了哪几条技能）
+import { VendorSkillSchema } from './skill';
 
 /** 事件公共字段：序号（从 1 开始）与 ISO 8601 时间戳 */
 const baseFields = { seq: z.number().int().positive(), at: z.string() };
@@ -245,6 +247,23 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     /** 厂商回显的权限档（真机 `bypassPermissions` 逐字）：**它比本仓那份常量更可信**，见环境抽屉 */
     permissionMode: z.string().nullable(),
     outputStyle: z.string().nullable(),
+    /**
+     * 厂商当时**看见了哪几条技能**（本机启用项 / 厂商内置 / 被测仓库自带，逐条带来源）。
+     *
+     * 三态（`[]` 与「没有这一格」是两句不同的话）：
+     *   · **键缺席** = 我们没采到（探针失败 / 那一格还没到）——采不到时另有一条点名的 WARN，
+     *     因为「我们没读到」必须留下自己的痕迹，**不许**改写成「厂商没投送」；
+     *   · **`[]`** = 投送了，确实一条都没有；
+     *   · 非空 = 逐条 `{name, source, path, origin}`。
+     *
+     * 与行级 `EvalRow.skillInstall` 的分工：这一格是**厂商原话**（含不是我们装的那些），
+     * 那一格是「我们装的哪几条、凭什么」。
+     *
+     * `.optional()`：早期落盘的 `vendor-system` 事件里没有这一格，写成必填会让它整行解析失败
+     * （同 `mcpChannel` 的历史兼容）。`.nullable()` 只为**历史数据**留着——那时候适配器把
+     * 「没采到」写成显式 `null`，读侧一律按「键缺席」处置。
+     */
+    skills: z.array(VendorSkillSchema).nullable().optional(),
   }),
   /**
    * 计量快照。两个字段**各自独立**（用户口径）：

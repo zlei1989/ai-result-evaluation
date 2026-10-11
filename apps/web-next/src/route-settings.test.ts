@@ -72,6 +72,38 @@ describe('PUT /api/settings', () => {
     expect(loadConfig().settings.theme).toBe('auto');
   });
 
+  /**
+   * 技能停用名单的三态，逐条走**真路由**：非法名与缺 `entries` 都要 **400**（不是 500、不是静默接受），
+   * 而 `{disabled:false}` 必须过——那是「再打开」这条路在 API 门口的唯一形状。
+   * 判据取 HTTP 状态码而不是服务函数抛没抛：路由是唯一把 zod 错误折成 400 的地方，
+   * 少了这一层，非法名会一路走到服务层（手改坏的值按「没有名单」处置）而**照常 200**。
+   */
+  it('skills 的非法名字 400 INVALID_QUERY，且不落盘', async () => {
+    const res = await PUT(putRequest('{"skills":{"entries":{"Tang Poem":{"disabled":true}}}}'));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('INVALID_QUERY');
+    expect(loadConfig().settings.skills.entries).toEqual({});
+  });
+
+  it('skills 缺 entries 一层也 400（`{skills:{}}` 不是「一条都不改」）', async () => {
+    const res = await PUT(putRequest('{"skills":{}}'));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.path).toBeUndefined();
+  });
+
+  it('skills 收期望状态：{disabled:false} 与 {disabled:true} 都 200，且落盘只出现停用', async () => {
+    const off = await PUT(putRequest('{"skills":{"entries":{"tang-poem-meal":{"disabled":true}}}}'));
+    expect(off.status).toBe(200);
+    expect(loadConfig().settings.skills.entries).toEqual({ 'tang-poem-meal': { disabled: true } });
+
+    const on = await PUT(putRequest('{"skills":{"entries":{"tang-poem-meal":{"disabled":false}}}}'));
+    expect(on.status).toBe(200);
+    // 「启用 = 删键」在 HTTP 这一层同样成立：文件里那个名字整个没了
+    expect(loadConfig().settings.skills.entries).toEqual({});
+  });
+
   it('语法坏掉的请求体返回 400「请求体不是合法 JSON」，且不带 context 键', async () => {
     const res = await PUT(putRequest('{bad json'));
 

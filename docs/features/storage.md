@@ -12,6 +12,8 @@
 |---|---|
 | 平台配置 | `AIEVAL_CONFIG_DIR` > `~/.aieval` 下的 `config.json`：**两段**——应用设置 `settings` + 供应商 `providers`（`0600`、密钥明文）。**用例已不在这里** |
 | MCP 服务器 | `settings.mcpServers`（同一份 `config.json` 的设置段）：name-keyed map（stdio / http 判别联合）；**键缺失才播预置两台**，删光不复播（见下节《MCP 配置的落盘与播种》） |
+| 技能停用名单 | `settings.skills.entries`（同一份 `config.json` 的设置段）：name-keyed map，值里**永远只有 `{disabled:true}`**——启用 = 删键；**没有预置项**，逐条合并（见下节《技能停用名单的落盘》） |
+| 技能目录 | `<配置目录>/skills/`（`AIEVAL_CONFIG_DIR` > `~/.aieval`）：一条 skill = 一层目录 + 里面的 `SKILL.md`，只扫这一层、不递归（见[《技能配置》](/features/skills-config)） |
 | 用例 | `settings.casesRoot`（默认 `~/.aieval-cases`）下的 `<用例 id>.json`：**一用例一文件**，文件名即身份（见下节《用例目录》） |
 | 评测落盘根 | `settings.workspaceRoot`（默认 `~/.aieval-runs`） |
 | 一轮评测 | `{workspaceRoot}/{runId}/`：`run.json`（行快照）+ `rows/{rowId}/`（`events.jsonl` + `messages.jsonl` + `workspace/` + `.agenthome/` / `.judgehome/`） |
@@ -79,6 +81,19 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 - **原子写的口径与 `config.json` 其余部分完全一致**（临时文件创建即 `0600` → `renameSync` 覆盖；BOM 容忍；损坏抛含路径的中文原因），不因为多了这一格而分叉——见下节《数据与契约》。
 - **密钥落盘是明文**（与供应商同口径）：出口掩码只发生在 `GET /api/settings` 的投影上，`env` / `headers` 里的 `${VAR}` 占位**原样落盘**（真值只在注入那一刻从环境里解析，永不回写）。
 - **行内产物不在这份文件里**：注入的落点是**行私有目录**（`{workspaceRoot}/{runId}/rows/{rowId}/.agenthome/`）——claude 走 SDK 参数不落盘、codex 走线程级 `config`、dsh 落 `aieval-route.patch.yml` 的 `insert`；行内 `.npmrc` 也只写宿主 npm 配置里的 **registry 那一行**（`0600`）。宿主 `~/.aieval/config.json` 一个字节都不因注入而变。
+- **技能装入也不在这份文件里**：物化的落点是行私有目录的 `<.agenthome>/skills/<名称>/`（三家同形），源侧是 `<配置目录>/skills/`——`config.json` 里只留一份**停用名单**，技能本体按目录住。
+
+## 技能停用名单的落盘
+
+技能与 MCP 同住 `config.json` 的 `settings` 段，但两格的口径**刻意不同**——照抄邻居就会写错：
+
+- **形状**：`settings.skills.entries` 是 name-keyed map，值里**只允许 `{ disabled: true }`**（`strict()`：`{disabled:true, enabled:false}` 这种自相矛盾的输入在 API 门口 400，不静默 strip 成一个「看起来对」的值）。**「启用」不落盘：启用 = 删键**，文件里只留一份「被关掉过」的名单。
+- **写侧是另一个形状**：补丁收的是期望状态 `{ disabled: boolean }`（`SkillsPatchSchema`），与落盘那条不同形是刻意的——同形会让「再打开」在 API 门口被判 400。规范化与逐条合并在**同一处**完成（`mergeSkillsEntries`，纯函数放契约层）：`true` ⇒ 写 `{disabled:true}`、`false` ⇒ 删键。
+- **合并语义 = 逐条合并**（只动补丁里出现的名字），与 `mcpServers` 的**整份替换**相反。理由：「目录已删、键还在」的残条目因此由合并语义**结构性**保住，而不是靠界面每次都记得把它们回传（漏一条就是静默丢数据）。同一个补丁里两格各按各的语义走，互不污染。
+- **没有预置项、没有播种**：默认就是空 map。MCP 那套「键在不在文件里 = 播过没播过」的判据在这里无事可做。
+- **读侧不做校验**：「缺省 = 开启」的唯一实现在 `core/src/skill-store.ts` 的 `isSkillDisabled`——判据是 `entries[name]?.disabled === true` 而不是「键在不在」：手改坏的 `config.json` 里那个键可能挂着别的值，把「键在」当成「关着」会**静默关掉**用户的技能，而这个结论在界面上看不出任何异常。
+- **技能根本身不落盘在任何配置里**：它就是配置目录下的 `skills/`（不设 `settings.skillsRoot` 键，改根就是改配置目录）。
+- 功能面（目录文法、准入、装入时序、行级三态）见[《技能配置》](/features/skills-config)。
 
 ## 数据与契约
 
@@ -116,5 +131,5 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 
 ## 相关链接
 
-- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与行内注入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
+- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与行内注入落点）、[《技能配置》](/features/skills-config)（`settings.skills` 的停用名单、`<配置目录>/skills/` 的目录文法与行内装入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
 - 仓库内参考：AGENTS.md「持久化」节（原子写 / BOM / EPERM 口径的真源，互链不复制）

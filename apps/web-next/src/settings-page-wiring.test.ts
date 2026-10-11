@@ -348,3 +348,122 @@ describe('settings 页面的粘贴 JSON 导入接线', () => {
     expect(source, '粘贴导入没有落到 PUT { mcpServers }').toContain('update({ mcpServers: next })');
   });
 });
+
+/**
+ * Tab「技能」的接线。
+ *
+ * 卡片与抽屉自己的行为由 `ui` 包那两组用例钉（三列 / 固定列 / 空态 / frontmatter 逐字 / markdown 渲染），
+ * 页面这一层红不出来的是三类**静默错线**：
+ *   · 清单或正文的 hook 没接（`skillList` 永远 undefined ⇒ 只剩骨架屏，或抽屉永远没有正文）；
+ *   · 卡片吃到的东西接错（喂了 `settings.providers` 这类别的集合：界面看起来照常，只是永远空着）；
+ *   · 页面层那条静态说明漏了 / 文案抄了 MCP 那句。
+ *
+ * 「抽屉走 `MarkdownText`」这一条**跨包**：判据在 `ui` 的抽屉源码里（页面只是把它挂上去），
+ * 故这里一并读那份源码钉住渲染器与「不引 `rehype-raw`」这两条**选型**——行为断言（粗体成 `strong`、
+ * GFM 表格成表、原始 HTML 只当文本）在 `skill-detail-drawer.test.tsx` 里，两处合起来才是完整证据。
+ */
+describe('settings 页面的技能 Tab 接线', () => {
+  /** 抽屉源码：判据与 `page.tsx` 同源（都用文件自身位置推导，不依赖 `process.cwd()`） */
+  const drawerPath = join(
+    import.meta.dirname,
+    '..',
+    '..',
+    '..',
+    'packages',
+    'client',
+    'ui',
+    'src',
+    'composite',
+    'skill-detail-drawer.tsx',
+  );
+  const drawerSource = readFileSync(drawerPath, 'utf8');
+
+  it('Tab 的 key 是 skills、label 是「技能」，且排在 mcp 之后', () => {
+    expect(source, 'Tab 的 key 不是 skills').toContain('key: \'skills\'');
+    expect(source, '技能 Tab 的 label 不对').toContain('label: \'技能\'');
+    // 相对位置而不是序号：Tab 分组被重排过两次，写死数字迟早在合并时对不上
+    expect(source.indexOf('key: \'mcp\'')).toBeGreaterThan(-1);
+    expect(source.indexOf('key: \'mcp\''), '技能必须排在 MCP 之后').toBeLessThan(source.indexOf('key: \'skills\''));
+  });
+
+  it('接上清单与正文两个 hook——漏了任一，页面只剩骨架屏或抽屉永远没有正文', () => {
+    expect(source, '页面没有调用 useSkills()').toContain('useSkills()');
+    expect(source, '页面没有调用 useSkillFile()').toContain('useSkillFile(');
+  });
+
+  it('卡片吃到这份清单（skills / skillWarnings / root 都从 list 来，不是另抄一份）', () => {
+    const tag = openingTag('SkillTable');
+
+    expect(tag, '少了 skills=').toContain('skills={skillList.skills}');
+    expect(tag, '少了 skillWarnings=').toContain('skillWarnings={skillList.skillWarnings}');
+    // 路径不能由界面从条目路径反推：空列表时没有任何条目可推（卡片工具条要显示它）
+    expect(tag, '少了 root=').toContain('root={skillList.root}');
+    // 两个动作都在：漏了 onOpen 抽屉打不开，漏了 onRescan「重新扫描」是个点了没反应的按钮
+    expect(tag, '少了 onOpen=').toContain('onOpen=');
+    expect(tag, '少了 onRescan=').toContain('onRescan={refreshSkills}');
+  });
+
+  /**
+   * 启停开关的接线。组件那一侧钉住了「交出去的是这一行 + 期望状态」，看不见**页面有没有把它接上**：
+   *   · 漏传 `onToggle` ⇒ typecheck 会红（必填 prop），但传错**回调体**不会：写成 `update({ mcpServers })`
+   *     或整条替换 `skills` 也能编译，界面上开关照常翻转，而停用名单在一次刷新后被服务端冲掉；
+   *   · 少写 `entries` 这一层 ⇒ 服务端的补丁 schema 判 400（开关点了没反应，原因只在网络面板里）。
+   */
+  it('开关接上写路径：一次 PUT { skills: { entries: { <名>: { disabled } } } }，只带被点的那一条', () => {
+    expect(openingTag('SkillTable'), '少了 onToggle=').toContain('onToggle=');
+
+    const body = actionBody('toggleSkill');
+    expect(body, '开关没有落到 PUT { skills }').toContain('skills: { entries:');
+    // 键是**被点那一行的名字**（不是整份名单）：服务端逐条合并，只动补丁里出现的名字
+    expect(body, '补丁里带的不是被点那一行').toContain('[skill.name]: { disabled }');
+    // 落盘成功之后必须**重新取一次清单**：开关的 checked 读的是清单里那条 `disabled`，
+    // 不重取的话它永远停在旧值上——写成功了而界面上「点了没反应」（比乐观翻转更难查）
+    expect(body, '写成功后没有重新取清单，开关会停在旧值上').toContain('refreshSkills');
+  });
+
+  it('点一行开抽屉：回调体把名字交给 useSkillFile（记名字不记对象，刷新后事实跟着走）', () => {
+    expect(openingTag('SkillTable'), '行点击没有落到 setSkillName').toContain('setSkillName(skill.name)');
+    expect(source, '被打开的那条不是从当前清单里现取的').toContain(
+      'skillList?.skills.find((skill) => skill.name === skillName)',
+    );
+  });
+
+  it('抽屉吃到正文与三态，且 open 读现取到的那条（目标消失就收起，不留空壳）', () => {
+    const tag = openingTag('SkillDetailDrawer');
+
+    for (const prop of ['skill=', 'file=', 'error=', 'loading=', 'onClose=']) {
+      expect(tag, `少了 ${prop}`).toContain(prop);
+    }
+    expect(tag, 'open 没有读现取到的那条').toContain('open={selectedSkill !== null}');
+  });
+
+  it('读失败显式说：首屏失败走说明分支，重新验证失败也压在卡片上面', () => {
+    // 卡片自己的空态是「目录不存在 / 目录空」两句（ui 那一组钉），页面这一层必须另给错误说明：
+    // 少了它，一次 GET 失败在界面上就是「还没有技能」这种假结论。
+    // 两处都要有：① 首屏就失败（没有数据，只出这一条）；② **有旧数据时重新验证失败**——
+    // SWR 失败会保留上一份数据，「重新扫描」失败却照旧显示旧列表，用户会以为扫成功了。
+    const occurrences = source.split('loadFailure(skillsError').length - 1;
+    expect(occurrences, '技能清单读失败只在其中一支里说了').toBe(2);
+  });
+
+  it('抽屉走 MarkdownText，且不引 rehype-raw（SKILL.md 是外部输入，原始 HTML 必须转义）', () => {
+    expect(drawerSource, '抽屉没有用 MarkdownText').toContain('<MarkdownText');
+    // 判据取 **import 语句**而不是全文：文件头那句「不引 `rehype-raw`」是说明，不是引入
+    expect(drawerSource, '抽屉引入了 rehype-raw——SKILL.md 的原始 HTML 会变成活元素').not.toMatch(
+      /from\s+'rehype-raw'/,
+    );
+  });
+
+  it('与仓库自带 skill 的关系摆在页面层，且不许抄 MCP 那句「同名时以设置页为准」', () => {
+    const tab = tabSlice('skills');
+
+    expect(tab, '少了 skills-repo-note').toContain('data-testid="skills-repo-note"');
+    // 判据取**这条说明的文案本身**（Alert 的 description），而不是整个 Tab 的源码：
+    // 注释里引用了那句不许抄的原文，全文比对会被自己的注释绊倒
+    const description = /description="([^"]*)"/.exec(tab)?.[1] ?? '';
+    expect(description, '三家裁决那句没写全').toContain('同名时谁赢三家不同');
+    // 三家同名裁决不同（claude 以本机为准 / dsh 以仓库为准 / codex 两条都进）：
+    // MCP 卡片那条的结论是「同名时以设置页为准」，抄过来就是一句统一了口径的假话
+    expect(description, '技能那条说明抄了 MCP 的「同名时以设置页为准」').not.toContain('同名时以设置页为准');
+  });
+});

@@ -154,8 +154,8 @@ export type RowMcpServer = z.infer<typeof RowMcpServerSchema>;
 
 /**
  * 四档结论的中文文案。**放契约里**（与 `ROW_STATUS_LABELS` 同一条理由）：
- * 界面、行卡片与服务端日志说的是同一件事，各抄一份必然漂移，而漂移的表现是
- * 「设置页说已跳过、行详情说未验证」。
+ * 环境抽屉与服务端日志说的是同一件事，各抄一份必然漂移，而漂移的表现是
+ * 「设置页说已跳过、环境抽屉说未验证」。
  */
 export const ROW_MCP_VERDICT_LABELS: Record<RowMcpVerdict, string> = {
   connected: '已连上',
@@ -171,6 +171,96 @@ export const ROW_MCP_BASIS_LABELS: Record<RowMcpBasis, string> = {
   'vendor-startup-status': '厂商启动状态',
   none: '无厂商证据',
 };
+
+/**
+ * 一行技能观测的**结论**三档。**没有 `skipped`**：落盘失败 = 该行失败，
+ * 不存在「我们主动跳过一条」；被停用的那些根本不进清单（`installableSkills` 已经剔掉）。
+ */
+export const ROW_SKILL_VERDICTS = ['installed', 'missing', 'unverified'] as const;
+export const RowSkillVerdictSchema = z.enum(ROW_SKILL_VERDICTS);
+export type RowSkillVerdict = z.infer<typeof RowSkillVerdictSchema>;
+
+/**
+ * 那条结论是**凭什么**下的（判据来源三档）——「这条事实是从哪儿读到的」。
+ *
+ *   · `vendor-skill-list`——厂商有**结构化的技能清单**：codex 的 `skills/list`、
+ *     dsh 的 `skill-catalog`、claude 的 `getContextUsage().skills`（本仓走这三条）；
+ *   · `vendor-prompt-listing`——只见到厂商**请求**里出现了它（codex 的入站 developer 段）。
+ *     比清单弱一档：它证明「厂商把它写进了提示词」，回答不了「清单里还有没有别的」；
+ *   · `local-materialized`——**只有我们的落盘**（L1）：厂商侧一个字都没采到。
+ *
+ * ⚠️ 本仓今天**不产出** `vendor-prompt-listing`（没有读入站请求那一层）；它留在值域里是为了
+ * 与 MCP 那一格的通道数**同形**，将来接上那条通道时不必再改契约（`RowMcpBasis` 的 `none` 同理）。
+ */
+export const ROW_SKILL_BASES = ['vendor-skill-list', 'vendor-prompt-listing', 'local-materialized'] as const;
+export const RowSkillBasisSchema = z.enum(ROW_SKILL_BASES);
+export type RowSkillBasis = z.infer<typeof RowSkillBasisSchema>;
+
+/** 来源**未知**时的取值（厂商没给 `source`，或这一条压根没到厂商那儿） */
+export const ROW_SKILL_SOURCE_UNKNOWN = 'unknown';
+
+/**
+ * 观测格里的**一条**（四格：名称 / 来源 / 判据来源 / 结论）。
+ *
+ * ⚠️ **命名撞车**：这一格回答「**这一行实际装上了哪几条、我们凭什么这么说**」，
+ * 与 `SkillsSettingsSchema`（设置页的停用名单）、`VendorSkillSchema`（厂商当时说它手里有哪几条）
+ * 是三件不同的事。
+ */
+export const RowSkillInstallSchema = z.object({
+  /** 技能名（= 技能目录名 = 厂商清单里的名字，三处可直接配对） */
+  name: z.string().min(1),
+  /**
+   * 这一条**从哪来**：**优先采信厂商原值**（claude 的 `source`、codex 的 `scope`），
+   * 厂商没给这一格时记 `ROW_SKILL_SOURCE_UNKNOWN`。
+   *
+   * 为什么是自由字符串而不是枚举（与 `RowMcpServerSchema.source` 逐字同一条理由）：
+   * 厂商原值是**证据**，翻译成我们的词表就是第二个真源。`unknown` 是**我们**对这一格的
+   * 如实交代，不是厂商的取值。行级这格**不重复**来源分档（那是厂商侧那格的事，见 `VendorSkillSchema`）。
+   */
+  source: z.string().min(1),
+  /** 结论的依据通道（见 `RowSkillBasisSchema`） */
+  judgedBy: RowSkillBasisSchema,
+  /** 结论（见 `RowSkillVerdictSchema`） */
+  verdict: RowSkillVerdictSchema,
+});
+export type RowSkillInstall = z.infer<typeof RowSkillInstallSchema>;
+
+/**
+ * 三档结论的中文文案。**放契约里**（与 `ROW_MCP_VERDICT_LABELS` 同一条理由）。
+ * 界面上那三句话由它 + `ROW_SKILL_BASIS_LABELS` 拼出：`已装上 · 判据 厂商清单` /
+ * `未验证 · 判据 仅落盘` / `缺失 · 判据 厂商清单`。
+ */
+export const ROW_SKILL_VERDICT_LABELS: Record<RowSkillVerdict, string> = {
+  installed: '已装上',
+  missing: '缺失',
+  unverified: '未验证',
+};
+
+/** 三档判据来源的中文文案（同上一条理由） */
+export const ROW_SKILL_BASIS_LABELS: Record<RowSkillBasis, string> = {
+  'vendor-skill-list': '厂商清单',
+  'vendor-prompt-listing': '厂商提示词清单',
+  'local-materialized': '仅落盘',
+};
+
+/**
+ * **配对规则**：判据来源与结论必须自洽，否则这一格会同时说两句互相拆台的话
+ * （「没采到厂商清单」+「厂商清单里没有它」）。
+ *
+ * 三条都是**单向蕴含**（与 MCP 那一格的配对规则同一条口径）：
+ *   · `installed` ⇒ 必须带厂商证据（`local-materialized` 说的是「只有落盘」，
+ *     而「文件在盘上被当成结论」正是 MCP 那趟踩过的坑）；
+ *   · `missing` ⇒ 只在 `vendor-skill-list` 下成立（另两档都没有「清单里没有它」所需的完整性）；
+ *   · `unverified` ⇒ 配 `local-materialized`（它是「没有证据」那一档，凭落盘下的结论）。
+ *
+ * 唯一真源放在契约里：推导（evaluator）与守卫（`run.test.ts`）读同一份，
+ * 免得「服务端写了一个不可能的配对、界面照着渲染」。
+ */
+export function isValidSkillPairing(entry: Pick<RowSkillInstall, 'judgedBy' | 'verdict'>): boolean {
+  if (entry.verdict === 'installed') return entry.judgedBy !== 'local-materialized';
+  if (entry.verdict === 'missing') return entry.judgedBy === 'vendor-skill-list';
+  return entry.judgedBy === 'local-materialized';
+}
 
 export const EvalRowSchema = z.object({
   id: z.string().min(1),
@@ -320,6 +410,29 @@ export const EvalRowSchema = z.object({
    * `subagentTokens` 同一条理由）。
    */
   mcpServers: z.array(RowMcpServerSchema).nullable().optional(),
+  /**
+   * 这一行的**技能观测格**（「本行技能」）：逐条记**名称 / 来源 / 判据来源 / 结论**。
+   *
+   * 与 `mcpServers` 回答两个不同的问题（两格分属两组，不合并）：`vendor-system.skills` 回答
+   * 「**厂商当时说它手里有哪几条**」，这一格回答「**这一行实际装上了哪几条、我们凭什么这么说**」
+   * ——后者要能对「厂商清单里没有它」（`missing`）下结论，而那条结论只有编排层同时拿得到
+   * 我们的装入清单与厂商证据时才推得出来。
+   *
+   * ⚠️ **判据不许是模型答复**（硬要求，与 MCP 那一格同源）：本格一个字都不读消息流。
+   * 真机抓到过「skill 没调上、模型却把结果编出来」——模型说「我按技能做了」在证据等级上是零。
+   *
+   * **三态与 `streamingDelta` / `mcpServers` 逐条同构**：
+   *   · **缺席 / `null`** = 未观测（老 `run.json` 没有这一格；评分行不装技能）；
+   *   · **`[]`** = 观测了，本行一条技能都没装——用户把清单全停用是**有意义**的状态，
+   *     不许与上一态合并（那是「压成没观测」的老毛病）；
+   *   · 非空 = 逐条四格。
+   *
+   * **可选**是载重的：老 `run.json` 里没有这一格，必填会让 `listRuns()` **静默跳过那一轮**
+   * （与 `attempts` / `mcpServers` 同一条理由）。`.nullable()` 也必须在：读侧要同时容纳
+   * 「字段缺席」与「显式 `null`」两种历史形态（写侧永不写 `null`——装入是我们自己的动作，
+   * 不存在「第三方没投送」这回事）。
+   */
+  skillInstall: z.array(RowSkillInstallSchema).nullable().optional(),
 });
 export type EvalRow = z.infer<typeof EvalRowSchema>;
 

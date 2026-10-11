@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { AgentKindSchema } from './agent';
 import { McpServersSchema, type McpServerConfig, type McpServers } from './mcp';
 import { maskApiKey } from './provider';
+import { SkillsPatchSchema, SkillsSettingsSchema, type SkillsPatch, type SkillsSettings } from './skill';
 
 /** 主题偏好：auto=跟随操作系统、light=明亮、dark=暗色 */
 export const ThemeModeSchema = z.enum(['auto', 'light', 'dark']);
@@ -67,11 +68,30 @@ export const SettingsSchema = z.object({
    * `SETTINGS_DEFAULTS`，缺了它，落盘的 `mcpServers` 会在**读盘时被静默丢掉**。
    */
   mcpServers: McpServersSchema,
+  /**
+   * 本机 skill 的**停用名单**（形状见 `skill.ts`）：`entries[<名字>] = { disabled: true }`。
+   *
+   * 为什么只存「停用」而不存「启用」：条目本身是**从磁盘扫出来的**（`<配置目录>/skills/`），
+   * 配置里没有条目可挂——落一份「启用」的名单等于给同一个事实造第二份会漂移的真源。
+   * 于是「启用」在文件里就是不出现，启用 = **删键**。
+   *
+   * 这一格必须是**必填**（默认值 `{ entries: {} }`）：`normalizeSettings` 的键表取自
+   * `SETTINGS_DEFAULTS`，缺了它，落盘的停用名单会在**读盘时被静默丢掉**（与 `mcpServers` 同一条）。
+   * 与 MCP 不同的是**没有预置项**，故那边「键在不在文件里 = 播过没播过」的播种判据在这里无事可做。
+   */
+  skills: SkillsSettingsSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
-/** 部分更新：所有字段可选；空对象合法（无改动） */
-export const SettingsPatchSchema = SettingsSchema.partial();
+/**
+ * 部分更新：所有字段可选；空对象合法（无改动）。
+ *
+ * `skills` 单独换成补丁形状（`SkillsPatchSchema`，值收 `disabled: boolean`），**不复用**落盘那条 ——
+ * `SettingsSchema.partial()` 会让补丁继承落盘的值形状（只许 `{disabled:true}`），
+ * 于是「再打开」（`{disabled:false}` ⇒ 删键）在 API 门口就被判 400。
+ * 放宽落盘那条同样不行：「配置里只出现停用」这条不变量就没人守了。
+ */
+export const SettingsPatchSchema = SettingsSchema.partial().extend({ skills: SkillsPatchSchema.optional() });
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 
 /**
@@ -116,6 +136,11 @@ export const SETTINGS_DEFAULTS: Settings = {
    * 守卫在 `core/src/config-store-mcp.test.ts`（走 `loadConfig` / `saveConfig` 真实读盘路径）。
    */
   mcpServers: PRESET_MCP_SERVERS,
+  /**
+   * skill 停用名单的默认值：**空**（没有预置项，也没有「播过没播过」这一说）。
+   * 它必须在这里给出，否则 `normalizeSettings` 认不出这个键、落盘的名单读不回来。
+   */
+  skills: { entries: {} },
 };
 
 /**
@@ -232,4 +257,33 @@ export function preserveUnchangedSecrets(current: Settings, patch: SettingsPatch
     servers[name] = resolveEntrySecrets(entry, current.mcpServers[name]);
   }
   return { ...patch, mcpServers: servers };
+}
+
+/**
+ * 停用名单的**逐条合并 + 规范化**：返回合并后的 `entries`（落盘形态），不改成入参。
+ *
+ * 与 `mcpServers` 的差别是这一格的全部要害：那边是**整份 map 替换**（浅合并自然产生的语义），
+ * 这边只动补丁里出现的名字 —— 补丁里没有的条目一字不动，于是「目录已删、键还在」的残条目
+ * 由合并语义**结构性**保住，而不是靠界面每次都记得把它们回传（漏一条就是静默丢数据）。
+ *
+ * 规范化也落在这一处：`true` ⇒ 写 `{ disabled: true }`（值由这里构造，不是把补丁那份塞回去），
+ * `false` ⇒ **删键**（启用 = 键不出现）。写侧 schema 只认字面量 `true`，所以「规范化」与
+ * 「逐条合并」必须是同一次改写——分成两处就会出现「合法但没人调用」的那一步。
+ *
+ * 纯函数（无 IO）且放在契约层：服务端的合并点只是调用方，两个方向（补丁形态 ↔ 落盘形态）
+ * 才不会各自漂移，与 `preserveUnchangedSecrets` 同一条理由。
+ */
+export function mergeSkillsEntries(
+  current: SkillsSettings['entries'],
+  patch: SkillsPatch['entries'],
+): SkillsSettings['entries'] {
+  const merged: SkillsSettings['entries'] = { ...current };
+  for (const [name, entry] of Object.entries(patch)) {
+    if (entry.disabled) {
+      merged[name] = { disabled: true };
+      continue;
+    }
+    delete merged[name];
+  }
+  return merged;
 }

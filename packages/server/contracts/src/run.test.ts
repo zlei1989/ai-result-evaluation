@@ -32,6 +32,10 @@ import {
   ROW_MCP_BASIS_LABELS,
   ROW_MCP_CHANNELS,
   ROW_MCP_VERDICT_LABELS,
+  ROW_SKILL_BASES,
+  ROW_SKILL_BASIS_LABELS,
+  ROW_SKILL_VERDICT_LABELS,
+  ROW_SKILL_VERDICTS,
   RowDiffFileSchema,
   RowDiffIndexSchema,
   RowMcpBasisSchema,
@@ -46,10 +50,14 @@ import {
   isRunnableRow,
   isRunningRow,
   isSameRowTarget,
+  isValidSkillPairing,
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
   type RowMcpServer,
+  type RowSkillBasis,
+  type RowSkillInstall,
+  type RowSkillVerdict,
 } from './run';
 
 /** 一个字段齐全的候选行；只覆盖要测的那一格 */
@@ -853,5 +861,101 @@ describe('isSameRowTarget', () => {
     const none = makeRow({ agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5' });
     expect(isSameRowTarget(high, { agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5' })).toBe(false);
     expect(isSameRowTarget(none, { agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5', effort: 'high' })).toBe(false);
+  });
+});
+
+/**
+ * `EvalRow.skillInstall` 这一格是「**本行技能**」观测格。
+ *
+ * 与 MCP 那一格（`mcpServers`）的分工：那一格回答「这一行装上了哪几台 MCP、凭什么」，
+ * 这一格回答「**这一行装上了哪几条 skill、凭什么**」。两者共同的硬口径：
+ *   · **判据不许是模型答复**——结论只由厂商事件侧的证据支撑（`judgedBy` 就是那条证据的名字）；
+ *   · 三态与 `streamingDelta` 逐条同构：**缺席 / `null`** = 未观测（老记录、评分行）；
+ *     **`[]`** = 观测了、确实一条都没装（用户把清单全停用是**有意义**的状态）；
+ *     非空 = 逐条四格。
+ *
+ * 另两条必须钉住：`verdict` / `judgedBy` 是**闭集**，以及**配对规则**——
+ * 「没采到厂商清单」+「厂商清单里没有它」这两句话同时出现在一条上时，界面无论怎么渲染都是错的。
+ */
+describe('EvalRow.skillInstall（本行技能观测格）', () => {
+  const entry = {
+    name: 'tang-poem-meal',
+    source: 'userSettings',
+    judgedBy: 'vendor-skill-list' as const,
+    verdict: 'installed' as const,
+  };
+
+  it('可选可空：老 run.json 照样解析（缺格 = 未观测），显式 null 与空数组各自可辨', () => {
+    const legacy = makeRow();
+    expect('skillInstall' in legacy).toBe(false);
+    // ① 老 `run.json` 仍能过（必填会让 `listRuns()` **静默跳过那一轮**）
+    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
+    expect(EvalRowSchema.parse(makeRow({ skillInstall: null })).skillInstall).toBeNull();
+    expect(EvalRowSchema.parse(makeRow({ skillInstall: [] })).skillInstall).toEqual([]);
+  });
+
+  it('逐条四格原样保留（来源采信厂商原值，判据与结论各是闭集）', () => {
+    const parsed = EvalRowSchema.parse(makeRow({ skillInstall: [entry] }));
+    // ② 新写的一行也能过（与①同一个 schema，两个方向都要跑）
+    expect(parsed.skillInstall).toEqual([entry]);
+    for (const verdict of ROW_SKILL_VERDICTS) {
+      const judgedBy = verdict === 'missing' ? 'vendor-skill-list' : verdict === 'unverified' ? 'local-materialized' : 'vendor-skill-list';
+      expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [{ ...entry, verdict, judgedBy }] })).success).toBe(true);
+    }
+    // 判据三档都收得住（`vendor-prompt-listing` 今天不产出，但它属于值域：将来接上那条通道不改契约）
+    for (const judgedBy of ROW_SKILL_BASES) {
+      const verdict = judgedBy === 'local-materialized' ? 'unverified' : 'installed';
+      expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [{ ...entry, judgedBy, verdict }] })).success).toBe(true);
+    }
+  });
+
+  it('编造的结论 / 判据被拒，空名字被拒（`skipped` 这一档刻意不存在）', () => {
+    const badVerdict = { ...entry, verdict: 'skipped' } as unknown as RowSkillInstall;
+    const badBasis = { ...entry, judgedBy: 'model-said-so' } as unknown as RowSkillInstall;
+    expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [badVerdict] })).success).toBe(false);
+    expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [badBasis] })).success).toBe(false);
+    expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [{ ...entry, name: '' }] })).success).toBe(false);
+    // 来源是**自由字符串**（厂商原值是证据，翻译成我们的词表就是第二个真源），只要求非空
+    expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [{ ...entry, source: 'projectSettings' }] })).success).toBe(true);
+    expect(EvalRowSchema.safeParse(makeRow({ skillInstall: [{ ...entry, source: '' }] })).success).toBe(false);
+  });
+
+  /**
+   * **配对规则**：判据来源与结论必须自洽。
+   *   · `installed` ⇒ 必须带厂商证据（`local-materialized` 说的是「只有落盘」，
+   *     而「文件在盘上被当成结论」正是 MCP 那趟踩过的坑）；
+   *   · `missing` ⇒ 只在 `vendor-skill-list` 下成立（另两档都没有「清单里没有它」所需的完整性）；
+   *   · `unverified` ⇒ 配 `local-materialized`。
+   */
+  it('配对规则：三种合法组合之外一律判非法', () => {
+    expect(isValidSkillPairing({ judgedBy: 'vendor-skill-list', verdict: 'installed' })).toBe(true);
+    expect(isValidSkillPairing({ judgedBy: 'vendor-skill-list', verdict: 'missing' })).toBe(true);
+    expect(isValidSkillPairing({ judgedBy: 'local-materialized', verdict: 'unverified' })).toBe(true);
+    // 「只有落盘」不能说「已装上」（同一条理由的反面）
+    expect(isValidSkillPairing({ judgedBy: 'local-materialized', verdict: 'installed' })).toBe(false);
+    // 「没有证据」不能说「厂商没认」（那是两句相反的话）
+    expect(isValidSkillPairing({ judgedBy: 'local-materialized', verdict: 'missing' })).toBe(false);
+    // 「提示词里出现过」不足以支撑「清单里没有它」（完整性不够）
+    expect(isValidSkillPairing({ judgedBy: 'vendor-prompt-listing', verdict: 'missing' })).toBe(false);
+    // 「采到了清单」时不许记「未验证 · 仅落盘」——那会把一条有证据的结论说成没证据
+    expect(isValidSkillPairing({ judgedBy: 'vendor-skill-list', verdict: 'unverified' })).toBe(false);
+    // 值域里的每一档都要有明确判决（漏一格 = 静默放行一个自相矛盾的组合）
+    for (const judgedBy of ROW_SKILL_BASES) {
+      for (const verdict of ROW_SKILL_VERDICTS) {
+        expect(typeof isValidSkillPairing({ judgedBy, verdict })).toBe('boolean');
+      }
+    }
+  });
+
+  it('两张中文标签表覆盖整个值域，且三句用户文案逐字可拼', () => {
+    expect(Object.keys(ROW_SKILL_VERDICT_LABELS).sort()).toEqual(['installed', 'missing', 'unverified']);
+    expect(Object.keys(ROW_SKILL_BASIS_LABELS).sort()).toEqual([
+      'local-materialized', 'vendor-prompt-listing', 'vendor-skill-list',
+    ]);
+    const sentence = (judgedBy: RowSkillBasis, verdict: RowSkillVerdict): string =>
+      `${ROW_SKILL_VERDICT_LABELS[verdict]} · 判据 ${ROW_SKILL_BASIS_LABELS[judgedBy]}`;
+    expect(sentence('vendor-skill-list', 'installed')).toBe('已装上 · 判据 厂商清单');
+    expect(sentence('local-materialized', 'unverified')).toBe('未验证 · 判据 仅落盘');
+    expect(sentence('vendor-skill-list', 'missing')).toBe('缺失 · 判据 厂商清单');
   });
 });

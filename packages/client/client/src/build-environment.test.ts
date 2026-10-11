@@ -403,7 +403,7 @@ describe('buildAgentEnvironment：厂商系统层', () => {
  *
  * 为什么：claude 只在开头报一次（取最后 = 取唯一），而 codex / dsh 的 MCP 事实是逐拍长出来的
  * （`starting → ready`、工具表逐拍补全，每条交全量）。取第一条会让环境抽屉显示最早那一拍，
- * 与行详情、行级观测格（都取最后）对**同一行**给出两种状态。
+ * 与同抽屉的「本行 MCP」观测格（都取最后）对**同一行**给出两种状态。
  */
   it('厂商事实逐拍长时取最后一条（与行级观测格同口径），时间也取那一条', () => {
     const environment = build([
@@ -497,6 +497,8 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
       if (!item.present) throw new Error('观测到零台也是一条观测，必须在场');
       expect(item.label).toBe('本行 MCP');
       expect(item.text).toContain('0 台');
+      // 没有逐台结论可标，就不给 Tag 渲染声明（渲染层回落纯文本）
+      expect(item.verdictLines).toBeUndefined();
     });
 
     /**
@@ -524,6 +526,8 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
       );
       if (!item.present) throw new Error('这一格应当在场');
       expect(item.text).toContain(CODEX_MCP_DISPATCH_GAP_NOTE);
+      // 注解不是结论：末尾那行 verdict 为 null（渲染层照纯文本画，不挂 Tag）
+      expect(item.verdictLines?.at(-1)).toEqual({ text: CODEX_MCP_DISPATCH_GAP_NOTE, verdict: null });
 
       // 另两家**不许**带上这句话（它是 codex 一家的缺口；跟着所有人显示会把提示读成噪声）
       for (const agentKind of ['claude-code', 'dsh'] as const) {
@@ -568,6 +572,13 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
           'context7：来源 unknown · 判据 无厂商证据 · 结论 已跳过',
         ].join('\n'),
       );
+      // 结论 Tag 的渲染声明与纯文本逐字同义：半行文字 + 档位，档位留给渲染层翻文案
+      expect(item.verdictLines).toEqual([
+        { text: '3 台：', verdict: null },
+        { text: 'playwright：来源 dynamic · 判据 厂商工具表 · 结论 ', verdict: 'connected' },
+        { text: 'find：来源 project · 判据 厂商连接状态 · 结论 ', verdict: 'connected' },
+        { text: 'context7：来源 unknown · 判据 无厂商证据 · 结论 ', verdict: 'skipped' },
+      ]);
     });
   });
 
@@ -625,5 +636,116 @@ describe('buildAgentEnvironment：单格的截断与字节数', () => {
     expect(item.truncated?.reason).toContain('上限');
     // 一个汉字三字节 ⇒ 70000 字符 = 210000 字节；拿 `text.length` 当字节数会得到 70000
     expect(item.truncated?.bytes).toBe(210_000);
+  });
+});
+
+/**
+ * **技能的两格**：厂商组的「已下发的技能」+ 实测统计组的「本行技能」。
+ *
+ * 两格回答两个不同的问题（照 MCP 那两格的既有分工，不合并）：
+ *   · 厂商那一格 = 「**厂商当时说它手里有哪几条**」（含厂商内置与被测仓库自带的，逐条标来源）；
+ *   · 行级那一格 = 「**我们装进去的那几条落地了没有、凭什么**」。
+ *
+ * 三态逐条与 `streamingDelta` / `mcpServers` 同构，两个方向都要钉：
+ * `null`（没投送 / 没观测）与 `[]`（投送了、确实是空的）**不许互相顶替**。
+ */
+describe('buildAgentEnvironment：技能两格', () => {
+  /** 带行级技能格的行（`ROW` 是共享夹具，不能就地改） */
+  function buildWith(row: Partial<EvalRow>, events: AgentEvent[] = []): ReturnType<typeof buildAgentEnvironment> {
+    return buildAgentEnvironment({ row: { ...ROW, ...row } as EvalRow, workspaceBase: 'D:/tmp/runs/run-1', events, records: [] });
+  }
+
+  function itemOf(environment: ReturnType<typeof buildAgentEnvironment>, source: string, id: string): EnvItem {
+    const item = groupOf(environment.groups, source).items.find((entry) => entry.id === id);
+    if (item === undefined) throw new Error(`${source} 组里没有 ${id}`);
+    return item;
+  }
+
+  /** 真机 `getContextUsage().skills.skillFrontmatter` 的三档（本机实测原值）；命名常量便于按下标取用 */
+  const LOCAL_SKILL = { name: 'tang-poem-meal', source: 'userSettings', path: null, origin: 'local-enabled' as const };
+  const REPO_SKILL = { name: 'repo-owned-probe', source: 'projectSettings', path: null, origin: 'repo-provided' as const };
+  const BUILTIN_SKILL = { name: 'dataviz', source: 'built-in', path: null, origin: 'vendor-builtin' as const };
+  const VENDOR_SKILLS = [
+    LOCAL_SKILL,
+    REPO_SKILL,
+    BUILTIN_SKILL,
+    { name: 'mystery', source: null, path: null, origin: 'unverified' as const },
+  ];
+
+  it('厂商那一格：逐条「名字（分档 · 厂商原值）」，四档文案来自契约的标签表', () => {
+    const item = itemOf(build([vendorSystemEvent({ skills: VENDOR_SKILLS })]), 'vendor', 'vendor-skills');
+
+    expect(item.present).toBe(true);
+    expect(item.present ? item.text : '').toContain('tang-poem-meal（本机启用项 · 厂商原值 userSettings）');
+    expect(item.present ? item.text : '').toContain('repo-owned-probe（被测仓库自带 · 厂商原值 projectSettings）');
+    expect(item.present ? item.text : '').toContain('dataviz（厂商内置 · 厂商原值 built-in）');
+    // 厂商给不出这一格 ⇒ 「来源未证实」，**不许猜**
+    expect(item.present ? item.text : '').toContain('mystery（来源未证实）');
+  });
+
+  it('厂商那一格的三态：`null` ⇒ not-exposed；`[]` ⇒ 在场写「0 条」', () => {
+    expect(missingOf(groupOf(build([vendorSystemEvent({ skills: null })]).groups, 'vendor'), 'vendor-skills')).toBe('not-exposed');
+    const empty = itemOf(build([vendorSystemEvent({ skills: [] })]), 'vendor', 'vendor-skills');
+    expect(empty.present ? empty.text : '').toContain('0 条');
+    // 老事件（没有这一格）⇒ 与 `null` 同一档，而不是「厂商说零条」
+    expect(missingOf(groupOf(build([legacyMcpEvent(['context7'])]).groups, 'vendor'), 'vendor-skills')).toBe('not-exposed');
+  });
+
+  it('安全提示只在真的装到「来自被测仓库」的 skill 时出现，数量 = 那些条数', () => {
+    const withRepo = itemOf(build([vendorSystemEvent({ skills: VENDOR_SKILLS })]), 'vendor', 'vendor-skills');
+    expect(withRepo.present ? withRepo.text : '').toContain('本行额外装载了来自被测仓库的 1 条 skill —— 它们是被测内容的一部分');
+
+    const withoutRepo = itemOf(
+      build([vendorSystemEvent({ skills: [LOCAL_SKILL, BUILTIN_SKILL] })]),
+      'vendor',
+      'vendor-skills',
+    );
+    expect(withoutRepo.present ? withoutRepo.text : '').not.toContain('被测仓库');
+  });
+
+  it('技能那一格**不被后到的、不带它的 `vendor-system` 抹掉**（采集发生在运行中途）', () => {
+    // 真机顺序：init（无技能面）→ … → 收尾那条带技能面；反过来（带技能面的先到、后面又来一条
+    // 只报工具表的）时，按「整条覆盖」读会把清单抹成「厂商没投送」
+    const env = build([vendorSystemEvent({ skills: VENDOR_SKILLS }), vendorSystemEvent({ tools: ['Skill'] }, 2)]);
+
+    expect(itemOf(env, 'vendor', 'vendor-skills').present).toBe(true);
+  });
+
+  it('行级那一格：三句文案各自出现在对的条件上（四格逐条列出）', () => {
+    const item = itemOf(
+      buildWith({
+        skillInstall: [
+          { name: 'alpha', source: 'userSettings', judgedBy: 'vendor-skill-list', verdict: 'installed' },
+          { name: 'beta', source: 'unknown', judgedBy: 'vendor-skill-list', verdict: 'missing' },
+          { name: 'gamma', source: 'unknown', judgedBy: 'local-materialized', verdict: 'unverified' },
+        ],
+      }),
+      'observed',
+      'observed-skills',
+    );
+
+    const text = item.present ? item.text : '';
+    expect(text).toContain('alpha：已装上 · 判据 厂商清单 · 来源 userSettings');
+    expect(text).toContain('beta：缺失 · 判据 厂商清单 · 来源 unknown');
+    expect(text).toContain('gamma：未验证 · 判据 仅落盘 · 来源 unknown');
+    // **行级那格不重复来源分档**（那是厂商侧那格的事）
+    expect(text).not.toContain('本机启用项');
+  });
+
+  it('行级那一格的三态：缺席 / `null` ⇒ not-observed；`[]` ⇒ 在场写「0 条」', () => {
+    expect(missingOf(groupOf(buildWith({}).groups, 'observed'), 'observed-skills')).toBe('not-observed');
+    expect(missingOf(groupOf(buildWith({ skillInstall: null }).groups, 'observed'), 'observed-skills')).toBe('not-observed');
+    const empty = itemOf(buildWith({ skillInstall: [] }), 'observed', 'observed-skills');
+    expect(empty.present ? empty.text : '').toContain('0 条');
+  });
+
+  it('两格**不新起组**：仍在既有的「系统层（厂商下发）」与「实测统计」两组里', () => {
+    const env = build([vendorSystemEvent({ skills: VENDOR_SKILLS })]);
+
+    expect(env.groups.map((group) => group.id)).toEqual(ENV_GROUP_ORDER);
+    expect(groupOf(env.groups, 'vendor').items.some((entry) => entry.id === 'vendor-skills')).toBe(true);
+    expect(groupOf(env.groups, 'observed').items.some((entry) => entry.id === 'observed-skills')).toBe(true);
+    // 没有新组：组的数量与顺序逐字不变
+    expect(env.groups).toHaveLength(4);
   });
 });

@@ -303,6 +303,54 @@ export function readSubAgentSpawn(value: unknown): AppServerSubAgentSpawn | null
   };
 }
 
+/**
+ * `skills/list` 里的一条 skill（厂商的**结构化技能清单**）。
+ *
+ * 只有本仓用得到的三格：名字（与我们的目录名配对）、`scope`（`user` / `system`，来源原值）、
+ * `path`（`SKILL.md` 的绝对路径，判「装在谁的地盘上」最硬的那条证据）。
+ * `description` / `enabled` / `pluginId` 刻意不收：正文与描述进事件流没有消费者，
+ * 而 `enabled` 在**筛选**那一步就用掉了（见 `readSkillsList`）。
+ */
+export interface AppServerSkillEntry {
+  name: string;
+  scope: string | null;
+  path: string | null;
+}
+
+/**
+ * 读 `skills/list` 的响应。
+ *
+ * 形状（真机原文）：`{ data: [ { cwd, skills: [ {name, description, path, scope, enabled, pluginId} ], errors } ] }`
+ * ——`data` 是**按 cwd 分组**的数组，这里把各组的 `skills` 摊平（`cwds` 只传一个，
+ * 摊平是为了不假设厂商一定只回一组）。
+ *
+ * 两条口径：
+ *   · **`enabled === false` 的条目丢掉**：它不在本会话可用的技能面里，把它算进「厂商认了」
+ *     就是一条假绿（本仓从不停用厂商侧的 skill，故这一档实际不可达，留着是为了不撒谎）；
+ *   · 形状不认识（`data` 不是数组）⇒ `null` = **采不到**。它与 `[]`（厂商回了、确实一条都没有）
+ *     是两句不同的话，而后者会让行级判据把我们的每一条判成「厂商没认」。
+ */
+export function readSkillsList(value: unknown): AppServerSkillEntry[] | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const data = record.data;
+  if (!Array.isArray(data)) return null;
+  const entries: AppServerSkillEntry[] = [];
+  for (const group of data) {
+    const skills = asRecord(group)?.skills;
+    if (!Array.isArray(skills)) continue;
+    for (const one of skills) {
+      const skill = asRecord(one);
+      if (skill === null) continue;
+      const name = readString(skill, 'name');
+      if (name === null || name === '') continue;
+      if (skill.enabled === false) continue;
+      entries.push({ name, scope: readString(skill, 'scope'), path: readString(skill, 'path') });
+    }
+  }
+  return entries;
+}
+
 /** 归一化一个条目；`type` 未知时归 `other`（不丢，便于日志里看见上游新增了什么） */
 export function readItem(value: unknown): AppServerItem | null {
   const record = asRecord(value);

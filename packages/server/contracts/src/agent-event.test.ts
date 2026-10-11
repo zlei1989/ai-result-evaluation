@@ -582,3 +582,58 @@ describe('AgentMessageSchema 的消息级 usage', () => {
     ).toEqual({ input: 1, cached: 2, output: 3, reasoningOutput: null, total: 7 });
   });
 });
+
+/**
+ * `vendor-system.skills`：厂商当时**看见了哪几条技能**（逐条带来源分档）。
+ *
+ * 三态与 `mcpServers` 逐条同构，理由也一样——它们回答的是不同的问题：
+ *   · **缺席**（老 `events.jsonl` 里没有这一格）⇒ `undefined`，读侧按「没这一格」处置；
+ *   · **`null`** ⇒ 厂商**没投送**这一格（或我们没采到）；
+ *   · **`[]`** ⇒ 投送了、确实一条都没有。
+ * 把「没投送」写成 `[]`（或反过来）会让界面说一句厂商没说过的话。
+ *
+ * `origin` 那一格是**归一后的来源分档**（由采集它的适配器按 `classifySkillOrigin` 判：
+ * 那一层同时知道行配置目录与工作目录）；`source` 是**厂商原值照抄**，两格都在才追得回事件。
+ */
+describe('vendor-system 的 skills', () => {
+  /** 真机 `getContextUsage().skills.skillFrontmatter` 的三档原值（本机实测） */
+  const REAL_SKILLS = [
+    { name: 'tang-poem-meal', source: 'userSettings', path: null, origin: 'local-enabled' },
+    { name: 'repo-owned-probe', source: 'projectSettings', path: null, origin: 'repo-provided' },
+    { name: 'dataviz', source: 'built-in', path: null, origin: 'vendor-builtin' },
+  ];
+
+  const vendorEvent = (skills: unknown): Record<string, unknown> => ({
+    ...base,
+    type: 'vendor-system',
+    tools: ['Task'],
+    slashCommands: ['design'],
+    agents: ['claude'],
+    mcpServers: null,
+    permissionMode: 'bypassPermissions',
+    outputStyle: 'default',
+    skills,
+  });
+
+  it('逐条原样保留（名字 / 厂商原值 / 落点 / 归一后的来源分档）', () => {
+    const parsed = AgentEventSchema.safeParse(vendorEvent(REAL_SKILLS));
+    expect(parsed.success).toBe(true);
+    expect(parsed.success ? parsed.data : null).toMatchObject({ skills: REAL_SKILLS });
+  });
+
+  it('三态不许互相顶替：缺席 / null / []', () => {
+    const absent = AgentEventSchema.safeParse({ ...vendorEvent(null), skills: undefined });
+    expect(absent.success && 'skills' in absent.data ? absent.data.skills : 'parse-failed').toBeUndefined();
+    const nothing = AgentEventSchema.safeParse(vendorEvent(null));
+    expect(nothing.success && nothing.data.type === 'vendor-system' ? nothing.data.skills : 'parse-failed').toBeNull();
+    const empty = AgentEventSchema.safeParse(vendorEvent([]));
+    expect(empty.success && empty.data.type === 'vendor-system' ? empty.data.skills : 'parse-failed').toEqual([]);
+  });
+
+  it('编造的来源分档被拒，空名字被拒（名字是这一格与我们的清单配对的唯一键）', () => {
+    expect(AgentEventSchema.safeParse(vendorEvent([{ ...REAL_SKILLS[0], origin: 'mine' }])).success).toBe(false);
+    expect(AgentEventSchema.safeParse(vendorEvent([{ ...REAL_SKILLS[0], name: '' }])).success).toBe(false);
+    // 厂商没给来源 ⇒ source 为 null（不是空串）：那是「厂商没报这一格」，与「报了一个空来源」不同
+    expect(AgentEventSchema.safeParse(vendorEvent([{ name: 'x', source: null, path: null, origin: 'unverified' }])).success).toBe(true);
+  });
+});

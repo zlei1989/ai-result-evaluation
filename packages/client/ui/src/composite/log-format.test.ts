@@ -172,6 +172,51 @@ describe('formatEventLine', () => {
   });
 
   /**
+   * `vendor-system.skills`：技能那一格也要有可读文本（否则「原始输出」面板里那一格
+   * 排版上像少了一件东西）。三态与 MCP 那一格逐条同形：
+   * `undefined`（老事件没这一格）与 `null`（厂商没投送）都**整段不出现**，`[]` 才写「0 项」。
+   */
+  it('vendor-system：技能那一格按「厂商列了几条」计，三态各自如实', () => {
+    const line = (skills: unknown): string =>
+      formatEventLine({
+        seq: 3,
+        at,
+        type: 'vendor-system',
+        tools: null,
+        slashCommands: null,
+        agents: null,
+        mcpServers: null,
+        permissionMode: null,
+        outputStyle: null,
+        skills,
+      } as unknown as AgentEvent);
+
+    expect(
+      line([
+        { name: 'tang-poem-meal', source: 'userSettings', path: null, origin: 'local-enabled' },
+        { name: 'dataviz', source: 'built-in', path: null, origin: 'vendor-builtin' },
+      ]),
+    ).toBe(`[${expectedClock(at)}] 系统层 技能 2 项`);
+    // `[]` = 投送了、确实一条都没有 ⇒ 写 0 项；`null` = 没投送 ⇒ 整段不出现
+    expect(line([])).toBe(`[${expectedClock(at)}] 系统层 技能 0 项`);
+    expect(line(null)).toBe(`[${expectedClock(at)}] 系统层 未采集`);
+    // 老事件（连这一格都没有）与 `null` 同档：不许把「我们没读到」写成「厂商说零条」
+    expect(
+      formatEventLine({
+        seq: 4,
+        at,
+        type: 'vendor-system',
+        tools: null,
+        slashCommands: null,
+        agents: null,
+        mcpServers: null,
+        permissionMode: null,
+        outputStyle: null,
+      } as unknown as AgentEvent),
+    ).toBe(`[${expectedClock(at)}] 系统层 未采集`);
+  });
+
+  /**
    * 时间格（2026-10-XX 新增）：`cost/s` 是**派生**的，原料是 `output` 与 `timing`。
    * 三个断言分别钉三件事：① 时长/首字按秒显示；② tok/s 用 `apiMs − ttftMs`（**纯生成**那段）；
    * ③ **来源必须标出来**——`'vendor'` 是纯模型时间，与另两家的墙钟不可直接比。

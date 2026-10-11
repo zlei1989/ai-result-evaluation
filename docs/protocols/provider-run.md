@@ -39,7 +39,17 @@
 | **不设内层上限** | 没有 `timeoutMs` 也没有 `maxTurns`：一次运行只会因「跑完 / 失败 / 外部要求停止」结束 |
 | **同步回调** | `onEvent` / `onMessage` / `onSubagent` 同步调用、不 await；回调抛错被吞掉并记 `logger.error`，**不改变**本次运行结论（受保护发射） |
 
-**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（要求模型按 JSON Schema 生成最终答复；该家不支持时**降级**——`runTurn` 不交给 `start`、包内记 WARN、结果里 `applied.structuredOutput = false`，调用方据它记账，不要自己再去查能力表）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
+**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件 / 技能）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（要求模型按 JSON Schema 生成最终答复；该家不支持时**降级**——`runTurn` 不交给 `start`、包内记 WARN、结果里 `applied.structuredOutput = false`，调用方据它记账，不要自己再去查能力表）、`mcpServers`、`skills`（本行要装入的技能清单，逐条 `{ name, sourceDir }`）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
+
+**`skills` 那一格的三条口径**（与 `mcpServers` 同层，但语义刻意不同）：
+
+| 事实 | 说明 |
+|---|---|
+| **缺席 ≠ 空数组** | **不传** `skills` ⇒ 一个文件都不写（连 `skills/` 目录都不建）；传 `[]` 会被物化成「建了目录、零条」。**「这一行不装技能」唯一的表达方式是「不传」**——评分与用例同步两处因此都不传 |
+| **落点是行配置目录** | `<configHome>/skills/<名称>/SKILL.md`（三家同形），适配器只调 `core` 的物化函数（`agents` 包禁 readdir）；落不下去时物化**抛**并点名哪一条，由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败 |
+| **时序逐家不同** | claude 无更紧要求；codex 必须早于 spawn app-server；dsh 必须早于 `new DeepSeekHarness(...)`（boot 点）——写晚了那两家**静默无 skill 且无报错**，所以时序判据在装配时刻取快照 |
+
+调用点：**候选执行那一处传它**（`installableSkills(settings.skills?.entries)` 的一处快照），评分与用例同步两处不传——「只有候选执行阶段装入」由**类型 + 调用点**共同保证，静态断言钉住填点恰好一处。完整链路（扫盘 → 准入 → 停用剔除 → 物化 → 采集 → 三态结论）见[《技能配置》](/features/skills-config)。
 
 **`onMessage` 把内容视图接进入参**（与它同层的是 `onSubagent`；两者与 `onEvent` **并行**，不是它的子集）：
 
@@ -68,7 +78,7 @@
 
 | 调用点 | 档 / `cwd` | 说明 |
 |---|---|---|
-| `evaluator/src/orchestrator.ts`（候选执行） | `'full'` / 行工作区 | 增量走 `onEvent` / `onMessage`，终态看 `AgentRunResult`；**全仓唯一传 `onMessage` / `onSubagent` 的生产调用点**（另两处只读 `finalText`，因此收不到任何消息）。消息按**块形态**分叉：`chunk === 'snapshot'` 落 `messages.jsonl` 并扇出（唯一真相源），`delta` **只扇出、不落盘**（块结束必有快照，中间态在折叠读侧全被盖掉）；**顺手记观测**——`EvalRow.streamingDelta` = 增量帧数 + 末帧累积字数（增量不落盘 ⇒ 这是「这次到底有没有真的收到逐字流」的唯一事后痕迹，环境抽屉按它渲染三态）；行已终态之后到达的迟到消息与事件同一条闸门，一并丢弃。出口另有一层 16ms 合并（见《事件流》「消息流的出口合并」） |
+| `evaluator/src/orchestrator.ts`（候选执行） | `'full'` / 行工作区 | 增量走 `onEvent` / `onMessage`，终态看 `AgentRunResult`；**全仓唯一传 `onMessage` / `onSubagent` 的生产调用点**（另两处只读 `finalText`，因此收不到任何消息），也是**唯一传 `skills` / `mcpServers` 的调用点**。消息按**块形态**分叉：`chunk === 'snapshot'` 落 `messages.jsonl` 并扇出（唯一真相源），`delta` **只扇出、不落盘**（块结束必有快照，中间态在折叠读侧全被盖掉）；**顺手记观测**——`EvalRow.streamingDelta` = 增量帧数 + 末帧累积字数（增量不落盘 ⇒ 这是「这次到底有没有真的收到逐字流」的唯一事后痕迹，环境抽屉按它渲染三态），技能那一侧另记 `EvalRow.skillInstall`（逐条四格：名称 / 厂商原值来源 / 判据通道 / 结论三态，由编排层推导一次）；行已终态之后到达的迟到消息与事件同一条闸门，一并丢弃。出口另有一层 16ms 合并（见《事件流》「消息流的出口合并」） |
 | `evaluator/src/judge-agent.ts`（智能体评分） | `'read-only'` / 行工作区 | 提示词明写只读：工作区是候选的产出，改了就污染「查看改动」抽屉 |
 | `api/src/case-sync.ts`（用例同步；**两处调用**：写提交信息、分叉合并裁定） | `'full'` / `casesRoot` | **唯一发生在评测轮次之外**的调用——它不挂在任何一轮 / 一行的生命周期上，编排与队列因此落在 api 层（见《仓库分层与依赖方向》）；对它只要求「读仓库、回一段 JSON」或「把远端合进来」，提交与推送仍由服务端自己执行 |
 
@@ -90,4 +100,4 @@
 ## 相关链接
 
 - 活文档：`packages/server/agents/README.md`——§2 API 一览、§3 方法说明、§4 属性说明（本篇的真源，互链不复制）
-- 知识文章：[《新增 SDK 接入流程》](/protocols/sdk-onboarding)、[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《三家横向对比》](/protocols/comparison)、[《消息规范》](/protocols/message-spec)（事件类型的契约侧）
+- 知识文章：[《新增 SDK 接入流程》](/protocols/sdk-onboarding)、[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《三家横向对比》](/protocols/comparison)、[《消息规范》](/protocols/message-spec)（事件类型的契约侧）、[《技能配置》](/features/skills-config)（`skills` 入参与 `skillInstall` 观测格的全链）

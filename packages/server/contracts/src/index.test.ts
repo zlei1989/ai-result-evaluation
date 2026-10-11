@@ -48,11 +48,23 @@ import {
   RunCreateSchema,
   SENSITIVE_KEY_PATTERN,
   SETTINGS_DEFAULTS,
+  SKILL_DESCRIPTION_MAX_LENGTH,
+  SKILL_FILE_NAME,
+  SKILL_NAME_MAX_LENGTH,
   ScoreResultSchema,
   ServiceError,
   SettingsPatchSchema,
   SettingsSchema,
   SettingsViewSchema,
+  SkillDisabledPatchSchema,
+  SkillDisabledSchema,
+  SkillEntrySchema,
+  SkillFileSchema,
+  SkillListSchema,
+  SkillNameSchema,
+  SkillWarningSchema,
+  SkillsPatchSchema,
+  SkillsSettingsSchema,
   TERMINAL_ROW_STATUSES,
   TestCaseSchema,
   ThemeModeSchema,
@@ -65,7 +77,11 @@ import {
   isRunningRow,
   isSensitiveKey,
   maskApiKey,
+  mergeSkillsEntries,
+  isValidSkillDescription,
+  isValidSkillName,
   normalizeRemoteUrl,
+  splitSkillMarkdown,
   toSettingsView,
   parseRepoSource,
   preserveUnchangedSecrets,
@@ -99,6 +115,14 @@ import {
   type RubricGroup,
   type McpServerConfig,
   type McpServers,
+  type SkillEntry,
+  type SkillFile,
+  type SkillList,
+  type SkillMarkdown,
+  type SkillName,
+  type SkillWarning,
+  type SkillsPatch,
+  type SkillsSettings,
   type Settings,
   type SettingsPatch,
   type SettingsView,
@@ -120,6 +144,8 @@ describe('contracts 公共出口', () => {
       AgentEventSchema,
       SettingsSchema, SettingsPatchSchema, SettingsViewSchema, ThemeModeSchema,
       McpServerConfigSchema, McpServersSchema,
+      SkillNameSchema, SkillDisabledSchema, SkillDisabledPatchSchema, SkillsSettingsSchema, SkillsPatchSchema,
+      SkillEntrySchema, SkillWarningSchema, SkillListSchema, SkillFileSchema,
     ]) {
       expect(typeof schema.safeParse).toBe('function');
     }
@@ -159,6 +185,13 @@ describe('contracts 公共出口', () => {
     expect(endpointText({ transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp' })).toBe(
       'https://mcp.invalid/mcp',
     );
+    // skill 的识别单位与两条准入边界：`api`（扫描的准入判定）与 `ui`（列表里的原因文案）
+    // 各自只能引 contracts，任一取不到就会各抄一份数字
+    expect(SKILL_FILE_NAME).toBe('SKILL.md');
+    expect(SKILL_NAME_MAX_LENGTH).toBe(64);
+    expect(SKILL_DESCRIPTION_MAX_LENGTH).toBe(1024);
+    // 停用名单必须进默认值：不进的话 `normalizeSettings` 认不出这个键，落盘的名单读盘即丢
+    expect(SETTINGS_DEFAULTS.skills).toEqual({ entries: {} });
   });
 
   it('导出全部函数，且函数在包根上可用（不只是名字存在）', () => {
@@ -185,6 +218,18 @@ describe('contracts 公共出口', () => {
     const stored = { ...SETTINGS_DEFAULTS, mcpServers: { 'example-server': oneServer } };
     expect(toSettingsView(stored).mcpServers['example-server']).toBeDefined();
     expect(preserveUnchangedSecrets(SETTINGS_DEFAULTS, { mcpServers: stored.mcpServers }).mcpServers).toBeDefined();
+    // skill 的三条纯函数也要从包根可用：准入（两个方向）与 frontmatter 切分
+    expect(isValidSkillName('tang-poem-meal')).toBe(true);
+    expect(isValidSkillName('Tang')).toBe(false);
+    expect(isValidSkillDescription('推荐唐诗')).toBe(true);
+    expect(isValidSkillDescription('  ')).toBe(false);
+    expect(splitSkillMarkdown('正文').frontmatter).toBeNull();
+    expect(splitSkillMarkdown('---\nname: a\n---\n正文').fields['name']).toBe('a');
+    // 停用名单的逐条合并 + 规范化也要从包根可用：服务层是它唯一的调用方，
+    // 取不到就会在 `api` 里就地再写一份「true 写 / false 删」——两份实现迟早只改一处
+    expect(mergeSkillsEntries({}, { 'tang-poem-meal': { disabled: true } })).toEqual({
+      'tang-poem-meal': { disabled: true },
+    });
   });
 
   it('类型出口存在（编译期守卫：这里只做一次赋值，真正的检查是 typecheck）', () => {
@@ -222,6 +267,16 @@ describe('contracts 公共出口', () => {
     const score: ScoreResult | null = null;
     const rubricGroup: RubricGroup | null = null;
     const event: AgentEvent | null = null;
+    const skillEntry: SkillEntry | null = null;
+    const skillWarning: SkillWarning | null = null;
+    const skillList: SkillList | null = null;
+    const skillFile: SkillFile | null = null;
+    const skillMarkdown: SkillMarkdown | null = null;
+    const skillName: SkillName | null = null;
+    const skillsSettings: SkillsSettings | null = null;
+    // 补丁那条形状也要从包根可用，且**在类型面**收下 `disabled:false`：
+    // 类型上收不下的后果与运行时同形——「再打开」只能靠 `as` 硬塞，而下一个人会去放宽落盘那条
+    const skillsPatch: SkillsPatch = { entries: { 'tang-poem-meal': { disabled: false } } };
 
     expect([
       protocol, agent, mode, status, rubricItem, theme, code, settings, settingsView, patch, servers,
@@ -229,7 +284,8 @@ describe('contracts 公共出口', () => {
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
       generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
       score, rubricGroup, event,
-    ]).toHaveLength(33);
+      skillEntry, skillWarning, skillList, skillFile, skillMarkdown, skillName, skillsSettings, skillsPatch,
+    ]).toHaveLength(41);
   });
 
   /**

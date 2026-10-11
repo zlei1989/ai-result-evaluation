@@ -73,6 +73,8 @@ export { AppTopNav, type AppTopNavItem, type AppTopNavProps } from './composite/
 export { CaseFormPanel, type CaseFormPanelProps } from './composite/case-form-panel';
 export { CaseDetailPanel, type CaseDetailPanelProps } from './composite/case-detail-panel';
 export { ProviderTable, type ProviderTableProps } from './composite/provider-table';
+export { SkillTable, type SkillTableProps } from './composite/skill-table';
+export { SkillDetailDrawer, type SkillDetailDrawerProps } from './composite/skill-detail-drawer';
 export {
   ProviderFormModal,
   type ProviderFormModalProps,

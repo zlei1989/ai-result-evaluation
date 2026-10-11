@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 设置页：三个 Tab —— 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 / MCP。
+ * 设置页：四个 Tab —— 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 / MCP / 技能。
  *
  * 本页是全仓唯一把 client hooks 与 ui 组件接起来的地方：组件保持纯展示（不调接口、不认识 message），
  * 数据与回调在这里注入；异步与错误提示也留在这里。
@@ -31,6 +31,8 @@ import {
   useProviders,
   useRunModelOptions,
   useSettings,
+  useSkillFile,
+  useSkills,
   useUpdateProvider,
 } from '@aieval/client';
 import type {
@@ -42,6 +44,7 @@ import type {
   ProviderPatch,
   ProviderView,
   SettingsPatch,
+  SkillEntry,
   ThemeMode,
 } from '@aieval/contracts';
 import {
@@ -54,6 +57,8 @@ import {
   ProviderFormModal,
   ProviderModelsModal,
   ProviderTable,
+  SkillDetailDrawer,
+  SkillTable,
   WorkspaceSettingsCard,
   buildMcpConfig,
   removeServer,
@@ -129,6 +134,19 @@ export default function Page(): React.ReactNode {
   // 「粘贴 JSON」弹窗自己一格开关：它与表单弹窗**互斥**地开（两个弹窗叠着开只会互相挡，
   // 同供应商那张卡的处置）
   const [mcpPasteOpen, setMcpPasteOpen] = useState(false);
+  /**
+   * 技能预览记的是**被打开那条的名字**（不是对象）：条目是实时扫出来的，列表每次刷新都会给出
+   * 新对象；记对象会在刷新后与列表脱节（抽屉里的事实停在旧的那一份）。记名字则天然对上，
+   * 目标消失时现取得到 null，抽屉自己知道「没选中」。
+   */
+  const [skillName, setSkillName] = useState<string | null>(null);
+  // 清单是实时扫描的快照：`refresh` = 重新扫一遍（卡片上的「重新扫描」）
+  const { list: skillList, error: skillsError, isLoading: skillsLoading, refresh: refreshSkills } = useSkills();
+  // 正文按名字单独取（清单里没有正文）：没选中时 name 为 null，一个请求都不发
+  const { file: skillFile, error: skillFileError, isLoading: skillFileLoading } = useSkillFile(skillName);
+  // 被打开的那条从当前清单里现取：清单刷新后事实跟着走，目标消失时为 null
+  const selectedSkill: SkillEntry | null = skillList?.skills.find((skill) => skill.name === skillName) ?? null;
+
   // MCP 集合走同一份 `settings.mcpServers`；读不到时给空 map —— 界面这一侧**不替服务端播种**：
   // 配置文件里没有这个键时，预置两项由服务端的读盘路径（`normalizeSettings`）补上，
   // 页面再抄一份就等于「播种」有两个实现，而契约里那句「键缺失才播」会在界面这里悄悄变宽
@@ -419,6 +437,21 @@ export default function Page(): React.ReactNode {
     );
   };
 
+  /**
+   * 技能启停：即时落盘（`PUT { skills: { entries: { <名>: { disabled } } } }`），与 MCP 的单项启停同口径。
+   * 不做乐观翻转——开关的 `checked` 读的是服务端返回的 `disabled`，失败时保持原值，原因由 `onError` 说出来。
+   *
+   * 补丁**只带被点的那一条**：`skills` 在服务端是逐条合并，其余停用条目（含目录已删的残条目）
+   * 由那一步保住。把整份名单回传一遍看着「更保险」，实际是把两处真源的问题搬进界面
+   * ——漏一条就是静默打开一条。
+   *
+   * 写成功之后必须**重新取一次清单**：开关的 `checked` 读的是清单里那一条的 `disabled`
+   * （界面不留本地状态，见 `SkillTable`），不重取就永远停在旧值上——落盘成功、界面上却「点了没反应」。
+   */
+  const toggleSkill = (skill: SkillEntry, disabled: boolean): void => {
+    void update({ skills: { entries: { [skill.name]: { disabled } } } }).then(refreshSkills, onError);
+  };
+
   const activeNav: NavKey = 'settings';
 
   return (
@@ -545,8 +578,8 @@ export default function Page(): React.ReactNode {
             },
             {
               key: 'mcp',
-              // 第 3 个 Tab，排在最后：基础与评分是日常要动的两处，MCP 是「接入外部能力」的配置，
-              // 配一次就很少再进来。顺序即导航路径，别随手调
+              // 第 3 个 Tab：基础与评分是日常要动的两处，MCP 是「接入外部能力」的配置，
+              // 配一次就很少再进来（「技能」紧跟在它之后，两者同族）。顺序即导航路径，别随手调
               // （`settings-page-wiring.test.ts` 有守卫钉着）
               label: 'MCP',
               children: settings ? (
@@ -590,6 +623,63 @@ export default function Page(): React.ReactNode {
               ) : (
                 settingsPending
               ),
+            },
+            {
+              key: 'skills',
+              // 第 4 个 Tab，紧跟在 MCP 之后：同族相邻（都是「往智能体里装外部东西」）。
+              // 顺序即导航路径，别随手调（`settings-page-wiring.test.ts` 有守卫钉着相对位置）
+              label: '技能',
+              // 三态与其余两处同源：还没读到给骨架屏、读失败给带服务端中文原因的说明，
+              // **绝不让读失败退化成「还没有技能」**——那是把一次故障说成一个配置结论。
+              // 有结果时（哪怕是空列表）才渲染卡片：空态的两句话由卡片按根级 warning 挑。
+              children:
+                skillList === undefined ? (
+                  skillsError === undefined ? (
+                    <Skeleton active />
+                  ) : (
+                    loadFailure(skillsError, '技能清单')
+                  )
+                ) : (
+                  <Flex vertical gap={12}>
+                    {/* 读失败**每一轮都要说**：SWR 在重新验证失败时保留上一份数据，所以
+                        「有数据」不等于「这次读到了」——「重新扫描」失败却照旧显示旧列表，
+                        用户会以为扫描成功了。没有数据时（首屏就失败）走上面那条分支，只给这一条说明，
+                        绝不落进卡片的空态去说「还没有技能」 */}
+                    {skillsError !== undefined && loadFailure(skillsError, '技能清单')}
+                    {/* 与仓库自带 skill 的关系：**页面层**而不是卡片内——它说的是
+                        「与仓库自带的关系」，卡片是「这一份配置」的卡片；放页面层也让两张卡片
+                        不会各印一份。⚠️ 不许抄 MCP 那句「同名时以设置页为准」：skills 的同名结果
+                        三家各不相同（Claude Code 以本机为准 / DeepSeek Harness 以仓库为准 /
+                        Codex 两条都会进清单），给一个统一结论就是假话 */}
+                    <Alert
+                      type="info"
+                      showIcon
+                      title="与仓库自带 skill 的关系"
+                      description="这里只决定本机启用项；被测仓库自带的 skill 三家都会自动发现、不压制。同名时谁赢三家不同：Claude Code 以本机为准，DeepSeek Harness 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
+                      data-testid="skills-repo-note"
+                    />
+                    <SkillTable
+                      skills={skillList.skills}
+                      skillWarnings={skillList.skillWarnings}
+                      root={skillList.root}
+                      loading={skillsLoading}
+                      onOpen={(skill) => setSkillName(skill.name)}
+                      onToggle={toggleSkill}
+                      onRescan={refreshSkills}
+                    />
+                    {/* 预览抽屉：正文（`SKILL.md` 的 frontmatter + markdown）由 `useSkillFile` 取，
+                        组件只负责渲染。`open` 读**现取到的那条**：清单刷新后目标没了就自动收起，
+                        不留一个空壳 */}
+                    <SkillDetailDrawer
+                      open={selectedSkill !== null}
+                      skill={selectedSkill}
+                      file={skillFile}
+                      error={skillFileError}
+                      loading={skillFileLoading}
+                      onClose={() => setSkillName(null)}
+                    />
+                  </Flex>
+                ),
             },
           ]}
         />

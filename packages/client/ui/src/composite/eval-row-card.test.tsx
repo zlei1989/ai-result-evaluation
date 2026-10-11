@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, act } from '@testing-library/react';
-import { CODEX_MCP_DISPATCH_GAP_NOTE, EFFORT_OFF, type EvalRow } from '@aieval/contracts';
+import { EFFORT_OFF, type EvalRow } from '@aieval/contracts';
 import { EvalRowCard } from './eval-row-card';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
@@ -134,75 +134,6 @@ describe('EvalRowCard', () => {
     );
 
     expect(screen.getByText('diff 已截断')).toBeInTheDocument();
-  });
-
-  /**
-   * 卡片上的「**本行 MCP**」：逐台给结论，来源与判据在浮层里。
-   *
-   * 为什么要在卡片上（而不只在环境抽屉里）：抽屉要三步才打开（执行日志 → 环境 → 找到那一格），
-   * 而「这一行的 MCP 到底装上没有」是横向比较候选时要看的一格——与 tok / 耗时同级。
-   * 三态各自可辨：**没观测**（格缺席）不画这一行、`[]` 画「0 台」、非空逐台。
-   */
-  it('本行 MCP：逐台给结论（来源与判据在浮层里）；`[]` 画「0 台」，格缺席时不画这一行', () => {
-    const { unmount } = render(
-      <EvalRowCard
-        row={{
-          ...row,
-          mcpServers: [
-            { name: 'playwright', source: 'dynamic', judgedBy: 'vendor-tool-table', verdict: 'connected' },
-            { name: 'context7', source: 'unknown', judgedBy: 'none', verdict: 'skipped' },
-          ],
-        }}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByText('本行 MCP')).toBeInTheDocument();
-    // 结论用契约里的中文标签（不在这里抄第二份词表）
-    expect(screen.getByText('playwright 已连上')).toBeInTheDocument();
-    expect(screen.getByText('context7 已跳过')).toBeInTheDocument();
-    unmount();
-
-    // `[]` = 观测了、确实一台都没有：这一格必须在场（否则「零台」与「没观测」在卡片上同形）
-    render(<EvalRowCard row={{ ...row, mcpServers: [] }} {...handlers} />);
-    expect(screen.getByText('本行 MCP：0 台')).toBeInTheDocument();
-  });
-
-  /**
-   * **codex 的能力缺口要跟着它自己那条结论走**（「写进界面提示与文档，不藏起来」）。
-   *
-   * `connected` 在 codex 上只到「启动状态 ready」——工具**调不动**（上游网关拍平命名空间）。
-   * 浮层里那句解释只在 codex 行上出现：跟着所有人显示会把这句提示读成噪声，而不显示则会让
-   * 「probe 已连上」被读成「工具能用」。文案取契约里那份共用常量（界面与知识库同一份）。
-   */
-  it('codex 行的 MCP 浮层里带能力缺口说明；另两家不带', async () => {
-    const codexRow: EvalRow = {
-      ...row,
-      agentKind: 'codex',
-      mcpServers: [{ name: 'probe', source: 'unknown', judgedBy: 'vendor-startup-status', verdict: 'connected' }],
-    };
-    const { unmount } = render(<EvalRowCard row={codexRow} {...handlers} />);
-    // antd 的 Tooltip 有 mouseEnterDelay（默认 0.1s），悬浮之后要等它出场（见 `expectNoTooltip` 的注释）
-    fireEvent.mouseEnter(screen.getByText('probe 已连上'));
-    await waitFor(() =>
-      expect(document.querySelector('.ant-tooltip')?.textContent ?? '').toContain(CODEX_MCP_DISPATCH_GAP_NOTE),
-    );
-    unmount();
-
-    render(
-      <EvalRowCard
-        row={{
-          ...row,
-          agentKind: 'dsh',
-          mcpServers: [{ name: 'probe', source: 'unknown', judgedBy: 'vendor-tool-table', verdict: 'connected' }],
-        }}
-        {...handlers}
-      />,
-    );
-    fireEvent.mouseEnter(screen.getByText('probe 已连上'));
-    await waitFor(() =>
-      expect(document.querySelector('.ant-tooltip')?.textContent ?? '').toContain('来源 unknown · 判据 厂商工具表'),
-    );
-    expect(document.querySelector('.ant-tooltip')?.textContent ?? '').not.toContain(CODEX_MCP_DISPATCH_GAP_NOTE);
   });
 
   it('不支持的计量显示「不支持计量」而不是 0', () => {

@@ -107,6 +107,13 @@ function vendorSystemLine(event: VendorSystemEvent): string {
   // MCP 单独走一趟归一（台数 = 归一到几台服务），排在「子智能体定义」之后、权限档之前
   const mcpServers = normalizeMcpServers(event.mcpServers);
   if (mcpServers !== null) parts.push(`MCP ${mcpServers.length} 项`);
+  /**
+   * 技能那一格与其余各格同形：没带这一格（采不到 / 老事件）与历史数据里的 `null` 都**整段不出现**，
+   * `[]`（投送了、确实一条都没有）写「技能 0 项」。这一行整条**只走下载日志**——
+   * 「原始输出」面板收的是 `log` 事件的逐字原文（`diagnosticsOf`），派生文本不进那里；
+   * `MCP N 项` 那一格是同一个落点，两者别分家。
+   */
+  if (event.skills !== undefined && event.skills !== null) parts.push(`技能 ${event.skills.length} 项`);
   if (event.permissionMode !== null) parts.push(`权限档 ${event.permissionMode}`);
   if (event.outputStyle !== null) parts.push(`输出风格 ${event.outputStyle}`);
   return parts.length === 0 ? '系统层 未采集' : `系统层 ${parts.join(' · ')}`;

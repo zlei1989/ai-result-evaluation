@@ -879,3 +879,105 @@ describe('projectDshNotification：通知流中断（aieval/stream-failure）', 
     expect(projection.messages ?? []).toEqual([]);
   });
 });
+
+/**
+ * `user/message` 的**技能目录**（`data.source.kind === 'skill-catalog'`）——这一家的 skills 判据。
+ *
+ * 真机口径：目录正文是一个 `<available_skills>` 块，逐行
+ * `` - `<name>`: <description> ``；全轮**恰好一条**。判据必须按 `source.kind` 数，
+ * **不许按「正文里出现过 `<available_skills>` 这个词」**——控制臂（一个 skill 都没有）
+ * 用后者会得到 5 条纯噪声（厂商自己的提示词与工具描述里就有这个词）。
+ *
+ * 这一支还必须**显式分流**：未识别的 `session.event` 会走 `unknown(raw)` 兜底，
+ * 把一条几十 KB 的 JSON 落进「原始输出」面板（真机目录正文本身就有几 KB）。
+ */
+describe('projectDshNotification：技能目录（user/message / skill-catalog）', () => {
+  const catalog = (names: readonly string[]): unknown => ({
+    method: 'session.event',
+    params: {
+      sessionId: 'session-1',
+      event: {
+        type: 'user/message',
+        data: {
+          source: { kind: 'skill-catalog' },
+          content: [
+            {
+              type: 'text',
+              text: [
+                '<system-reminder>',
+                'A skill is a reusable set of task-specific instructions. The following skills are available in this session:',
+                '',
+                '<available_skills>',
+                ...names.map((name) => `- \`${name}\`: probe skill ${name}`),
+                '</available_skills>',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  it('目录消息 ⇒ 一条带 skills 的 vendor-system（名字按厂商顺序，来源未证实）', () => {
+    const runState = { childSessions: new Set<string>(), finishedSessions: new Set<string>(), headerTools: null, skillCatalog: null };
+    const projection = projectDshNotification(catalog(['alpha', 'beta']), newState(), CONTEXT, runState);
+
+    expect(projection.drafts).toHaveLength(1);
+    expect(projection.drafts[0]).toMatchObject({
+      type: 'vendor-system',
+      skills: [
+        // 这一家的目录**只有名字** ⇒ 来源未证实（不许猜）
+        { name: 'alpha', source: null, path: null, origin: 'unverified' },
+        { name: 'beta', source: null, path: null, origin: 'unverified' },
+      ],
+    });
+    // 跨消息状态记下来了：后面那条 `request/header` 发出时要把这一格一起带上
+    expect(runState.skillCatalog).toEqual(['alpha', 'beta']);
+  });
+
+  it('清单没变 ⇒ 不再发事件（每个 step 都投一条，逐条落盘等于抄 N 遍）', () => {
+    const runState = { childSessions: new Set<string>(), finishedSessions: new Set<string>(), headerTools: null, skillCatalog: ['alpha'] };
+    const projection = projectDshNotification(catalog(['alpha']), newState(), CONTEXT, runState);
+
+    expect(projection.drafts).toEqual([]);
+  });
+
+  it('读不出块 ⇒ 不发事件（`[]` 是「投送了、确实一条都没有」，与「读不动」不是一回事）', () => {
+    const runState = { childSessions: new Set<string>(), finishedSessions: new Set<string>(), headerTools: null, skillCatalog: null };
+    const projection = projectDshNotification(
+      {
+        method: 'session.event',
+        params: {
+          sessionId: 'session-1',
+          event: { type: 'user/message', data: { source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: '换了形状的正文' }] } },
+        },
+      },
+      newState(),
+      CONTEXT,
+      runState,
+    );
+
+    expect(projection.drafts).toEqual([]);
+    expect(runState.skillCatalog).toBeNull();
+  });
+
+  it('别的 `user/message`（不是目录）照旧落原始 JSON 兜底——分流不是「静默丢掉不认识的消息」', () => {
+    const runState = { childSessions: new Set<string>(), finishedSessions: new Set<string>(), headerTools: null, skillCatalog: null };
+    const projection = projectDshNotification(
+      {
+        method: 'session.event',
+        params: {
+          sessionId: 'session-1',
+          event: { type: 'user/message', data: { source: { kind: 'user-input' }, content: [{ type: 'text', text: '你好' }] } },
+        },
+      },
+      newState(),
+      CONTEXT,
+      runState,
+    );
+
+    expect(projection.drafts).toHaveLength(1);
+    expect(projection.drafts[0]?.type).toBe('log');
+    expect(projection.drafts[0]?.type === 'log' ? projection.drafts[0].text : '').toContain('user-input');
+  });
+});

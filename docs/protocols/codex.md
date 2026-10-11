@@ -71,6 +71,19 @@ turn/plan/updated
 - **推理正文（reasoning）现口径**：`codex exec --json` 里 `item.type === 'reasoning'` 恒 0 条（exec 的 JSONL 投影只取 `summary` 丢弃 `content`）——**取思考内容一律走 app-server**。快照取 `item/completed` 的 `reasoning.content[]`（一项即全文，实测 4 case 117 / 227 / 151 / 278 字；`item/started` 那帧两格都是空数组，别在 started 取值）；增量 `item/reasoning/textDelta` 逐字拼接后与 `content[0]` 完全相等（4/4，实测 39 / 54 / 49 / 72 条，条数恰等于 `reasoningOutputTokens`，1 delta ≈ 1 token）。摘要在 DeepSeek 网关上结构性拿不到（`summaryTextDelta` 恒 0 条，上游不给），`model_reasoning_summary` 不设或写 `auto`；`effort === 'off'` 时注入的 `CODEX_OFF_REASONING_SUMMARY = 'none'` 真机上既不报错也不影响推理照常产出（空转格，别指望它关掉任何东西）。
 - **线程树**：`thread/list{ ancestorThreadId }` 一次返回任意深度的全部后代（分页 `limit` 100、`nextCursor` 续读；不含主线程自身）；深度与昵称取厂商声明 `source.subagent.thread_spawn`（`{ depth, agent_path, agent_nickname }`），不按链长推算——旧 SDK 时代的深度 8 / 广度 32 上限不复存在。子智能体工具是 `collabAgentToolCall`（`spawnAgent` / `wait` / `closeAgent`），`wait` 的 `agentsStates[<childId>].message` 直接是子智能体结论原文。
 
+## skills 接法
+
+codex **有原生 skills 机制**，落点是**文件**而不是配置键：把清单里的每条整目录复制进行配置目录的 `<configHome>/skills/<名称>/SKILL.md`，app-server 起来时自己扫。⚠️ 这面能力在 **CLI 与 app-server 协议**那一层，不在 SDK 封装层（SDK 的 `dist/index.d.ts` 里 `skill` 出现 0 次，静态看会以为这家没有 skills）。
+
+- **发现根六个**（第一层扫描、不递归）：`$CODEX_HOME/skills`（scope `user`，源码注释 deprecated but kept）、`~/.agents/skills`（`user`）、`$CODEX_HOME/skills/.system`（`system`）、`<项目根>/.codex/skills`（`repo`）、项目根→cwd 每一层的 `.agents/skills`（`repo`）、`/etc/codex/skills`（`admin`）。**同名不去重**：两条都进清单。
+- **时序：物化必须早于 spawn**（在 `hooks.createClient` 之前写完）。写完这一次会话就能看见，**不要赌 watch**——`skills/changed` 是空 params 的失效信号，本仓未捕获。
+- **隔离要把 `HOME` 一起改**：`~/.agents/skills` 跟着 `HOME` 走，只改 `CODEX_HOME` 挡不住宿主家目录那一批（真机：宿主 27 条；行内 `HOME` ⇒ 一条都不在）。`HOME` / `USERPROFILE` / `CODEX_HOME` 三格全指行配置目录是本仓的 L2 前提。
+- **内置那 6 条本仓不关**：`$CODEX_HOME/skills/.system` 在**每行首启时自动物化** 6 个内置 skill，而它与我们的条目**同住 `skills/` 这一层** ⇒ 物化函数**不删任何东西**、只按清单逐条覆盖（整目录清空会把内置静默抹掉）。要关只在线程级 `config` 里加 `skills: { bundled: { enabled: false } }`（实测生效，不必写 `config.toml`），本仓刻意不关：厂商能力面本就不同，压掉会让行为与默认分叉。
+- **判据两条，强度差一档**：**结构化清单** = `skills/list`（本仓在 `startCodex` 的本地 `client` 上发 `{ cwds: [cwd] }`，不给会话开洞），每条带 `scope` 与落点 `path`——来源分档靠这两格；**行为确证** = 该 turn 入站 `/v1/responses` 的 developer 段里出现 `<skills_instructions>…### Available skills - name: desc (file: …)`，或模型在 `commandExecution` 里**真去读 `SKILL.md`**。
+  - ⚠️ `path` 是**这家独有的落点证据**，而它报的是 app-server 自己看到的路径：与我们手里的行配置目录常常只是**同一个目录的两种写法**（macOS 上临时目录给软链形态 `/var/folders/…`、真实路径是 `/private/var/folders/…`）⇒ 判「在不在那个目录之下」之前两侧都要按真实路径归一，只比字符串会让这条更细的判据**整条失效**（表现是那两条显示成「来源未证实」，而它本该是「本机启用项」）。
+- **这家没有 `Skill` 工具**（工具表 9 项里没有）⇒「模型会用技能」表现为**读文件 + 按文件里的规则作答**。⚠️「出现在 `skills/list` 里」是**弱判据**：`enabled: false` 的条目照样列出，本仓因此把这类条目**丢弃**——不在可用技能面里的条目算成「厂商认了」就是假绿。
+- 技能**不走模型工具调用**，所以本文《MCP 接法》那条「看得见、调不动」的上游缺口**不适用于 skills**（读文件走 shell，而 shell 在这条网关下正常）。
+
 ## MCP 接法
 
 - **落点 = 线程级 `config.mcp_servers`**（`buildCodexConfig` 的第 4 格，随 `thread/start` 经 app-server 协议传入，与本次运行的路由同格）。形状：snake_case、**无 `type`**（传输靠字段推断）、`command` / `args` / `env` 或 `url` / `http_headers`，另加 `startup_timeout_sec`（本仓给 30 s ≥ 20 s 的等待预算——行内首次注入 playwright MCP 要现下 61 MB）。
@@ -95,6 +108,9 @@ turn/plan/updated
 | 二进制解析「第二跳基准」守卫缺口 | 未闭合 | vitest 里裸说明符解析被运行器接管比生产宽松，基准改错仍绿；两条闭合路径（真 Node 子进程验 / 形状式源码断言）都未做，如实登记 |
 | 平台包空壳（`@openai/codex-darwin-arm64` 只剩空壳 ⇒ `Cannot find module '@openai/codex-darwin-arm64/package.json'`） | 环境坏 | pnpm 的「已安装」真源是 `node_modules/.pnpm/lock.yaml`，不校验盘上文件——`--frozen-lockfile` / 重装 / `--force` 全部无效；修法：取镜像 tarball 校验 `shasum` 后手工物化到 `.pnpm` 位置（保住 `0755`）；判据：真 Node 两跳解析通过、`codex --version` ⇒ `codex-cli 0.156.1`；清空 `node_modules` 重装会重踩 |
 | 插件 startup sync（`thread/start` 时同步 curated 插件目录，spawn `git` 孙进程链） | 未闭合 | 线程级 `config` 管不到它（`features.plugins=false` 只有盘上 `config.toml` 或 `-c` 生效）；处置是 `close()` 异步杀整棵树并等 exit；真机守卫 `AIEVAL_LIVE_DISPOSE=1 pnpm vitest run packages/server/agents/src/providers/codex/lifecycle-live.test.ts` |
+| skills：core 加载器的 frontmatter 精确允许集、同名 skill 的模型侧选择、spawn 后落盘能否被同 turn 看到、`SKILL.json` 用法 | 未证实 | 本仓只依赖「`<configHome>/skills/<名称>/SKILL.md` + spawn 前写完」这两条已实测的前提；其余按未证实处置，不写死 |
+| skills：按 `name` 禁用会被 `path` 条目压制（推测）、`skills/extraRoots/set` 未测、`skills/changed` 通知未捕获 | 未闭合 | 本仓不用这三个通道（停用走文件级不放）；要用先跑探针 |
+| skills：真实家目录里的**插件**技能未在真实会话验证 | 未覆盖 | 行内 `HOME` 隔离已经实测挡住宿主家目录那一批；插件来源那一档仍按未证实登记 |
 | `thread/list` 用量粒度是否到每个模型往返 | 无样本 | 文章不写死 |
 | 退出码 | 结构性缺 | `app-server` 在 `turn/completed` 后不自退，kill 后退出码恒 `null`（4/4）⇒ 退出码不得当本轮成败判据，只认 `turn/completed.status` + `error` |
 
@@ -104,5 +120,5 @@ turn/plan/updated
 
 - 活文档：[Codex FAQ](/faq/codex)——加载与凭据、网关与 wire、评分通路、计量与思考、进程与收尾五组现象条目，拿报错原文一搜即命中
 - 仓库内参考：`packages/server/agents/README.md`——§4.4 能力查询的唯一入口、§5 各家差异（注入落点 / 停止与释放 / 事件流 / 轮次与计量）、§8.1 新增 SDK 接入清单
-- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/claude-code)、[《三家横向对比》](/protocols/comparison)、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
+- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/claude-code)、[《三家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
 - 外部资料：[openai/codex discussions#7782](https://github.com/openai/codex/discussions/7782)（chat wire 移除）、[process.getBuiltinModule](https://nodejs.org/api/process.html#processgetbuiltinmodulemoduleid)（跨打包器取真 `createRequire`）

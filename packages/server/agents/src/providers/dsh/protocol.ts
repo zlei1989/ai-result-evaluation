@@ -40,6 +40,17 @@ export const DSH_TOOL_RESULT_TYPE = 'tool/result';
  */
 export const DSH_REQUEST_HEADER_TYPE = 'request/header';
 /**
+ * **注入的 user-role 消息**（真机：`data.content[0].text` 是正文，`data.source.kind` 说明它是什么）。
+ *
+ * 它是 skills 那一格的载体：这一家把「本次会话有哪些 skill」合成一条 user 消息塞进提示词
+ * （真机全轮**恰好一条**）。⚠️ 它必须**显式分流**——未识别的 `session.event` 会走
+ * `unknown(raw)` 兜底，落成一条几十 KB 的原始 JSON 日志，把「原始输出」面板刷满。
+ */
+export const DSH_USER_MESSAGE_TYPE = 'user/message';
+/** 上一条消息里「技能目录」那一类的 `data.source.kind`（真机逐字） */
+export const DSH_SKILL_CATALOG_KIND = 'skill-catalog';
+
+/**
  * 子智能体**派生**通知的方法名（真机 `subagent.started` ①）。
  * ⚠️ 它是**顶层通知**（`{ method, params }`），**不是** `session.event` 包一层——
  * 这是它必须显式分流的原因（只认 `session.event` 一种外形会把它落进 `unknownEventDraft`）。
@@ -144,4 +155,62 @@ export function readUsageTokens(usage: unknown): UsageTokens | null {
     reasoningOutput: readNumber(record, DSH_USAGE_FIELDS.reasoning),
     total: readNumber(record, DSH_USAGE_FIELDS.total),
   };
+}
+
+/** `<available_skills>` 块的登记行：`- \`<name>\`: <description>`（真机逐字） */
+const SKILL_CATALOG_LINE = /^-\s+`([^`]+)`\s*:/;
+/** 块围栏（厂商原文；两行之间的登记行才是清单本体） */
+const SKILL_CATALOG_OPEN = '<available_skills>';
+const SKILL_CATALOG_CLOSE = '</available_skills>';
+
+/**
+ * 从 `user/message` 的 `data` 里读**技能目录里的名字**；读不到给 `null`。
+ *
+ * 形状（真机）：`data.source.kind === 'skill-catalog'` 的那些消息，正文是
+ * ```
+ * <system-reminder>
+ * A skill is a reusable set of task-specific instructions. The following skills are available in this session:
+ *
+ * <available_skills>
+ * - `agents-skill`: probe skill agents-skill
+ * ...
+ * </available_skills>
+ * ```
+ * 正文可能落在 `data.content[]`（user-role 消息的本体）——`.text` 块的原文按 `readContentText` 的
+ * 口径拼起来再切块；`data.message.content[]`（另一条既有载体的形状）也读，两处都读不到就是 `null`。
+ *
+ * ⚠️ **判据是 `<available_skills>` 块本身，不是「正文里出现过这个词」**：真机控制臂（一个 skill
+ * 都没有）用 grep 那个词会得到 5 条噪声——厂商自己的提示词与工具描述里就有它。
+ * 两条口径：
+ *   · 块在、行读得出 ⇒ 名字数组（`[]` = 「投送了、确实一条都没有」）；
+ *   · 块不在 / 正文读不出 ⇒ `null`（采不到）——与上一条是两句不同的话。
+ */
+export function readSkillCatalog(data: unknown): string[] | null {
+  const record = asRecord(data);
+  if (record === null) return null;
+  const text = contentText(record['content']) || contentText(asRecord(record['message'])?.['content']);
+  if (text === '') return null;
+  const open = text.indexOf(SKILL_CATALOG_OPEN);
+  const close = text.indexOf(SKILL_CATALOG_CLOSE, open + SKILL_CATALOG_OPEN.length);
+  if (open < 0 || close < 0) return null;
+  const names: string[] = [];
+  for (const line of text.slice(open + SKILL_CATALOG_OPEN.length, close).split('\n')) {
+    const matched = SKILL_CATALOG_LINE.exec(line.trim());
+    // 一项坏不牵连整块（与 `readHeaderTools` 同一条处置）
+    if (matched !== null && matched[1] !== undefined && matched[1] !== '') names.push(matched[1]);
+  }
+  return names;
+}
+
+/** `content[]` 里的文本块按顺序拼成一个字符串；形状不对给空串 */
+function contentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) => {
+      const record = asRecord(block);
+      return record?.['type'] === 'text' && typeof record['text'] === 'string' ? record['text'] : '';
+    })
+    .filter((text) => text !== '')
+    .join('\n');
 }

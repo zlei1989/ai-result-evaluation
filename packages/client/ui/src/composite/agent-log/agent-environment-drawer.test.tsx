@@ -177,6 +177,53 @@ describe('AgentEnvironmentDrawer', () => {
   });
 
   /**
+   * 结论 Tag 渲染：带 `verdictLines` 的条目按行画——结论那一枚是 Tag
+   * （文案取契约的四档标签、颜色是 antd 预设色，不手写色值），
+   * 其余半行照常等宽原文；不带这一格的条目仍走整段 `MonoText`。
+   */
+  it('带 verdictLines 的条目把结论画成 Tag（文案与色档都不在组件里写第二份）', () => {
+    renderDrawer({
+      environment: {
+        status: 'ready',
+        data: {
+          ...ENVIRONMENT,
+          groups: [
+            {
+              id: 'observed',
+              title: '实测统计',
+              source: 'observed',
+              items: [
+                {
+                  present: true,
+                  id: 'observed-mcp-servers',
+                  label: '本行 MCP',
+                  text: '2 台：\nplaywright：来源 unknown · 判据 厂商启动状态 · 结论 已连上\ncontext7：来源 unknown · 判据 无厂商证据 · 结论 已跳过',
+                  truncated: null,
+                  at: null,
+                  verdictLines: [
+                    { text: '2 台：', verdict: null },
+                    { text: 'playwright：来源 unknown · 判据 厂商启动状态 · 结论 ', verdict: 'connected' },
+                    { text: 'context7：来源 unknown · 判据 无厂商证据 · 结论 ', verdict: 'skipped' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    // 结论文案来自契约的四档标签（不在这里抄第二份词表）
+    const connected = screen.getByText('已连上');
+    const skipped = screen.getByText('已跳过');
+    expect(connected.closest('.ant-tag')?.className ?? '').toContain('ant-tag-green');
+    expect(skipped.closest('.ant-tag')?.className ?? '').toContain('ant-tag-orange');
+    // 结论之前的半行与表头照常等宽原文（`MonoText`）
+    expect(screen.getByText('2 台：')).toBeInTheDocument();
+    expect(screen.getByText(/playwright：来源 unknown · 判据 厂商启动状态 · 结论/)).toBeInTheDocument();
+  });
+
+  /**
    * 能力声明（界面落点）。
    *
    * 为什么放在环境抽屉里：这一节回答的是「这一次运行**我们能拿到什么**」，与「被下发了什么」

@@ -17,9 +17,10 @@
  * 能力面与 `providers/dsh` 逐格对齐；结构性给不了的格子登记在 `messageCapability.notes` 与
  * `docs/protocols/codex.md`（Codex 接入，含能力对齐判据）。
  */
-import { createLogger } from '@aieval/core';
-import { EFFORT_OFF, type SubagentRecord, type UsageTokens } from '@aieval/contracts';
-import { logDraft, type AgentEventDraft } from '../../emit';
+import { realpathSync } from 'node:fs';
+import { createLogger, materializeSkills } from '@aieval/core';
+import { classifySkillOrigin, EFFORT_OFF, type SubagentRecord, type UsageTokens, type VendorSkill } from '@aieval/contracts';
+import { logDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
 import type { MessageDraft } from '../../message';
 import {
   hostNpmrcPath,
@@ -37,11 +38,17 @@ import { addUsage, sumUsageTokens } from '../../usage';
 import { resolveCodexBinary } from './appserver/binary';
 import { createAppServerClient, type AppServerClient, type AppServerEnv } from './appserver/client';
 import type { AppServerNotificationPayload } from './appserver/protocol';
-import { listDescendantThreads, readThreadContent, type AppServerThreadContent, type AppServerThreadRef } from './appserver/reader';
+import {
+  listDescendantThreads,
+  listSkills,
+  readThreadContent,
+  type AppServerThreadContent,
+  type AppServerThreadRef,
+} from './appserver/reader';
 import { startCodexSession, type CodexSession } from './appserver/session';
 import { breakdownToTokens, projectCodexEvent } from './events';
 import { noteThreadStarted, projectCodexMessages, projectSubagentRecord, projectThreadMessages, threadRoundTrips } from './message';
-import { createCodexRunState, observedTurns, type CodexRunState } from './run-state';
+import { createCodexRunState, currentMcpStartup, observedTurns, type CodexRunState } from './run-state';
 
 const logger = createLogger('agents/codex');
 
@@ -195,6 +202,20 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   });
   const baseUrl = ensureV1Suffix(input.route.baseUrl);
   /**
+   * 本行的**技能装入**：把清单里那几条整目录复制进 `<CODEX_HOME>/skills/`（= `configHome/skills`）。
+   *
+   * 时机：必须在 `hooks.createClient(...)` **之前**——app-server 起来的那一刻就把
+   * `<CODEX_HOME>/skills` 扫进技能清单，写晚了这一次 spawn 就看不到它们，而**它不报错**
+   * （只是这一行按「没有这条 skill」跑完）。
+   *
+   * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
+   * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   */
+  if (input.skills !== undefined) {
+    materializeSkills({ configHome: input.configHome, skills: input.skills });
+  }
+  /**
    * 行内 npm registry（与 claude / dsh 同一条口径）：宿主的 `.npmrc` 里那一行**照抄**进
    * 行私有 `configHome`。本行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc`
    * 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 掉回公网，行内首次注入 playwright MCP 从 ~4 s
@@ -252,6 +273,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     // **只记名字**（条目的 env / http_headers 里可能有密钥，日志不该能把它带出去）；
     // registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容（与 claude 侧同一条口径）
     mcpServers: Object.keys(mcpServers),
+    // 技能那一格只记条名（源目录路径进日志没有额外信息量，且可能很长）
+    skills: (input.skills ?? []).map((skill) => skill.name),
     npmRegistry: registryLine === null ? null : 'row-npmrc-written',
   });
 
@@ -262,6 +285,19 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     lastTokens: null,
     readback: null,
   };
+  /**
+   * 技能面：**起会话之后立刻取一次**（app-server 已就绪、`thread/start` 已回来 ⇒ 连接可用）。
+   * **只在本行真的装了技能时取**（`input.skills` 给过）：评分与用例同步那两处不传这一格，
+   * 它们不该付这次 RPC 的钱、也不该在事件流里多出一条「采不到」的 WARN（与物化同一条判据）。
+   *
+   * 之所以在这里同步 await 而不是像收尾取数那样后台跑：它是一次**本地进程**的 RPC（不是模型调用），
+   * 耗时毫秒级；而收尾取数读的是「跑到收尾才知道」的会话文件，两者不是一类东西。
+   * 失败**只记文案**（`entries: null`）：观测是补充信息，不许把一次正常运行翻成失败。
+   * 落点在 `runState`（不是 `CodexRun` 的另一个字段）：事件投影也要读它，两处各存一份必然漂移。
+   */
+  if (input.skills !== undefined) {
+    run.runState.skillProbe = await probeCodexSkills(client, { configHome: input.configHome, cwd: input.cwd });
+  }
   // 收尾取数：以「本轮结算」为闸门在后台跑，`finalize` 只读已经落定的结果（见文件头第 4 条）
   const readback = startFinalizeReader(run, session);
 
@@ -283,6 +319,36 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     finalize: () => finalizeCodex(run),
     project: (raw, state) => projectNotification(run, input, raw, state),
   };
+}
+
+/**
+ * 取一次 codex 的技能面（**永不抛**）。
+ *
+ * 失败与「形状不认识」都归成 `error` 文案，调用方落一条点名的 WARN 并把这一格记成 `null`
+ * （= 采不到）——与 claude 侧同一条处置：观测失败不改本次运行的结论。
+ */
+async function probeCodexSkills(
+  client: AppServerClient,
+  layout: { configHome: string; cwd: string },
+): Promise<{ entries: VendorSkill[] | null; error: string | null }> {
+  try {
+    const entries = await listSkills(client, layout.cwd);
+    if (entries === null) return { entries: null, error: 'skills/list 的响应形状不认识' };
+    return {
+      entries: entries.map((entry) => ({
+        name: entry.name,
+        // 厂商原值照抄（真机实测 `user` / `system`），拿不到记 null（界面写「来源未证实」）
+        source: entry.scope,
+        path: entry.path,
+        // `resolveRealPath` 由这一侧注入：契约是同构包，**不许自己引 `node:fs`**（界面也读它的标签表，
+        // 顶层引 node 内建会让浏览器那侧打包直接失败，而 tsc / eslint / 单测都看不见这一层）
+        origin: classifySkillOrigin({ source: entry.scope, path: entry.path, ...layout, resolveRealPath: realpathSync }),
+      })),
+      error: null,
+    };
+  } catch (error) {
+    return { entries: null, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
@@ -502,6 +568,52 @@ function finalizeCodex(run: CodexRun): {
       tokensBasis: 'reported',
       turns: finalTurns,
     });
+  }
+
+  /**
+   * **技能面那一条事件**（`vendor-system.skills`）：起会话时采到的 `skills/list` 清单。
+   *
+   * 为什么在收尾才发、而且带**整份**事实：`vendor-system` 的消费方（行级 MCP 证据、环境抽屉的
+   * 厂商那一组）都是**取最后一条**读的，故这一条必须把 MCP 那一格一起带上（用
+   * `currentMcpStartup` 的累积全量），否则最后那条事件里的 MCP 事实是空的，把先前那几拍
+   * （`starting → ready`）在界面上抹掉。
+   *
+   * 采不到时**这一条不发**、只落一条点名的 WARN（见下面那一段）：`skills: null` 的读数是
+   * 「厂商回了、确实一条都没有」，而我们那时一个字都没读到。
+   */
+  const skillProbe = run.runState.skillProbe;
+  if (skillProbe?.entries !== undefined && skillProbe.entries !== null) {
+    /**
+     * `mcpServers` **只在厂商真的报过启动状态时给**：一条都没有的时候给 `[]` 说的是
+     * 「厂商投送了、确实一台都没有」，而事实是「这一家压根没投这一格」——两句话不许混
+     * （`vendor-system` 的三态纪律）。
+     */
+    const startup = currentMcpStartup(run.runState);
+    drafts.push(
+      vendorSystemDraft({
+        tools: null,
+        slashCommands: null,
+        agents: null,
+        mcpServers:
+          startup.length === 0
+            ? null
+            : startup.map((one) => ({ name: one.name, status: one.status, source: null, error: one.error })),
+        mcpChannel: 'vendor-startup-status',
+        permissionMode: null,
+        outputStyle: null,
+        skills: skillProbe.entries,
+      }),
+    );
+  }
+  /**
+   * 采不到时**不发 vendor-system 事件**、只落这一条 WARN：一条 `skills: null` 的事件在界面上的
+   * 读数是「厂商没投送这一格」——那是替厂商说一句我们并不知道的话；而「我们没采到」有这条日志
+   * 自己承载（行级判据据此降级成 `unverified`，不会误判成 `missing`）。
+   */
+  if (skillProbe !== null && skillProbe.error !== null) {
+    drafts.push(
+      logDraft('stderr', `[WARN] 采不到 codex 的技能清单（${skillProbe.error}）：本行「技能」判据降级为未验证，不据此判失败`),
+    );
   }
 
   return {

@@ -143,6 +143,15 @@ export function projectCodexEvent(
         mcpChannel: 'vendor-startup-status',
         permissionMode: null,
         outputStyle: null,
+        /**
+         * 技能清单**一起带上**（哪怕这一次是 MCP 状态变了才发的）：`vendor-system` 的消费方
+         * 都是**取最后一条**读的，一条不带它的 `vendor-system` 会把先采到的技能面在界面上
+         * 抹成「厂商没投送」。MCP 启动状态几乎必然晚于探针（探针在流开始之前就 await 完了）。
+         *
+         * **探针还没落定 / 采不到时不给这一格**（`undefined`，不是 `null`）：`null` 在这一格上的
+         * 读数是「厂商投送了、清单是空的」，而我们那时一个字都没读到——那是替厂商说话。
+         */
+        skills: runState.skillProbe?.entries ?? undefined,
       }),
     ]);
   }
