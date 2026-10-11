@@ -22,6 +22,7 @@
 - [`turn/completed` 只收到**子线程**那一条，主线程仍是 `"status":"inProgress","completedAt":null`](/faq/codex#turn-completed-只收到子线程那一条-主线程仍是-status-inprogress-completedat-null)
 - [子智能体用量与思考正文：responses 上真机已可得（**不必**换 `wire_api`）](/faq/codex#子智能体用量与思考正文-responses-上真机已可得-不必换-wire-api)
 - [`Error: ENOENT: no such file or directory, open '…/probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl'`（干净检出上「真机抓包重放」那条守卫必红）](/faq/codex#error-enoent-no-such-file-or-directory-open-probe-dumps-v6-codex-chat-wire-appserver-live-responses-subagent-jsonl-干净检出上「真机抓包重放」那条守卫必红)
+- [`当前会话没有暴露 Playwright MCP 工具或资源`（注入成功、`mcpServer/startupStatus` 也报了 `ready`，模型却从第一轮起就断言没有这台工具）](/faq/codex#当前会话没有暴露-playwright-mcp-工具或资源-注入成功、mcpserver-startupstatus-也报了-ready-模型却从第一轮起就断言没有这台工具)
 
 ### Claude Code
 
@@ -30,6 +31,7 @@
 - [`AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.`](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-there-s-an-issue-with-the-selected-model-test-model-it-may-not-exist-or-you-may-not-have-access-to-it)
 - [技能面确证 `[{"name":"tang-poem-meal","source":"userSettings"},…]` 在，但 `工具调用名：[]`、哨兵 `AIEVAL-SKILL-OK-7f3a` 未命中](/faq/claude-code#技能面确证-name-tang-poem-meal-source-usersettings-在-但-工具调用名-、哨兵-aieval-skill-ok-7f3a-未命中)
 - [Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-rows-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
+- [执行日志里没有思考、原始输出里有（`messages.jsonl` 折叠后只剩 `text`；原文 `[{"type":"thinking","thinking":"…","signature":""}]`）](/faq/claude-code#执行日志里没有思考、原始输出里有-messages-jsonl-折叠后只剩-text-原文-type-thinking-thinking-signature)
 
 ### DeepSeek Harness
 

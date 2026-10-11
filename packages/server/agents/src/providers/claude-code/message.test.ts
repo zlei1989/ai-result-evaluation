@@ -16,6 +16,7 @@
  * 抽屉那一格用量永远「未采集」）——所以判决按 **id 记账**，收场帧追随同一个 id 的 `start` 帧。
  */
 import { describe, expect, it } from 'vitest';
+import { createMessageAssembler } from '../../message';
 import { createClaudeMessageNormalizer } from './message';
 import type { TurnState } from '../../turn';
 
@@ -127,5 +128,56 @@ describe('claude-code：task_* 帧的形状判决', () => {
     );
     expect(zeroDepth.taskShape).toBe('dispatch');
     expect(zeroDepth.subagent?.subagentId).toBe('task-zero-depth');
+  });
+});
+
+/**
+ * 同一条厂商消息的**多次投递**（覆盖合并）。
+ *
+ * 真机形状（claude 行 `ceec6cb1`，transcript `[22]` / `[23]`）：CLI 对**同一个**
+ * `assistant.message.id` 分两次投递，**每次只带一个内容块**（先 `thinking`、后 `text`）。
+ * 契约要求每次投递都带「该消息到目前为止的完整块」，但块序号**必须按投递顺序继续分配**——
+ * 每次投递都新建分配器的话，第二次的 `text` 会拿到 `i:0`，把第一次的 `thinking` 从槽里盖掉。
+ * 症状：**原始输出里有思考、执行日志里没有**（用户报的就是这个）。
+ *
+ * 为什么第 1 轮（`thinking` + `tool_use`）没暴露：工具调用按 `c:<callId>` 分槽，撞不上 `i:0`。
+ */
+describe('claude-code：同一条消息的多次投递（覆盖合并）', () => {
+  /** 走完整链路：归一器 → 装配器，取**最终视图**（读侧就是它） */
+  function finalView(frames: unknown[]): { blocks: { type: string }[] } | undefined {
+    const normalizer = createClaudeMessageNormalizer();
+    const turnState = state();
+    const assembler = createMessageAssembler({ runId: 'run-test' });
+    const out: { blocks: { type: string }[] }[] = [];
+    for (const frame of frames) {
+      for (const draft of normalizer.normalize(frame, turnState).messages) {
+        assembler.ingest(draft, (message) => out.push(message as { blocks: { type: string }[] }));
+      }
+    }
+    return out.at(-1);
+  }
+
+  it('先 thinking 后 text 的两次投递：最终视图里两块都在，且 thinking 在前', () => {
+    const final = finalView([
+      { type: 'assistant', uuid: 'u-think', message: { id: 'msg_A', content: [{ type: 'thinking', thinking: '想了半天', signature: '' }] } },
+      { type: 'assistant', uuid: 'u-text', message: { id: 'msg_A', content: [{ type: 'text', text: '正文' }] } },
+    ]);
+    expect(final?.blocks.map((block) => block.type)).toEqual(['thinking', 'text']);
+  });
+
+  it('反向顺序（先 text 后 thinking）同样两块都在——序号按投递顺序走，不按块类型', () => {
+    const final = finalView([
+      { type: 'assistant', uuid: 'u-text2', message: { id: 'msg_B', content: [{ type: 'text', text: '正文' }] } },
+      { type: 'assistant', uuid: 'u-think2', message: { id: 'msg_B', content: [{ type: 'thinking', thinking: '补想的', signature: '' }] } },
+    ]);
+    expect(final?.blocks.map((block) => block.type)).toEqual(['text', 'thinking']);
+  });
+
+  it('判据不误伤：第二条投递里 tool_use 仍与 thinking 并存（第 1 轮那种真机形状）', () => {
+    const final = finalView([
+      { type: 'assistant', uuid: 'u-think3', message: { id: 'msg_C', content: [{ type: 'thinking', thinking: '先想', signature: '' }] } },
+      { type: 'assistant', uuid: 'u-tool3', message: { id: 'msg_C', content: [{ type: 'tool_use', id: 'call_1', name: 'Skill', input: {} }] } },
+    ]);
+    expect(final?.blocks.map((block) => block.type)).toEqual(['thinking', 'tool-call']);
   });
 });

@@ -13,14 +13,31 @@
  * 第四条：**起手三步失败要把已经 spawn 的进程收掉**——`close()` 是 `dispose` 之外
  * 唯一的回收出口，而 `dispose` 只在会话句柄成功返回之后才存在（见 `startCodexSession` 的 catch）。
  */
-import { asRecord, readString } from '../../../json';
+import { createLogger } from '@aieval/core';
+import { asRecord, readNumber, readString } from '../../../json';
 import {
   createAppServerClient,
   type AppServerClient,
   type AppServerEnv,
+  type AppServerNotification,
   type AppServerSpawn,
 } from './client';
 import { readNotification, type AppServerNotificationPayload } from './protocol';
+
+const logger = createLogger('agents/codex/session');
+
+/**
+ * 等注入的 MCP 落定的预算。**写成可变对象**（口径同仓库的 `TEXT_API_RETRY` / `ROW_RETRY`）：
+ * 用例要把它调小才跑得动，`beforeEach` 读产品默认值、`afterEach` 还原，默认值另有一条用例钉住。
+ *
+ *  - `fallbackSec`：条目**没申报** `startup_timeout_sec` 时的启动预算（秒）；
+ *  - `graceMs`：收尾余量——`startup_timeout_sec` 是 codex 自己的启动预算，它到点才投 `failed`，
+ *    不加余量就会在结论投出前的一刹那收手，日志里的读数从「失败」退化成「超时」。
+ */
+export const CODEX_MCP_STARTUP_WAIT = {
+  fallbackSec: 30,
+  graceMs: 5_000,
+};
 
 export interface CodexSessionInput {
   /** codex 可执行文件（`binary.ts` 解析） */
@@ -72,6 +89,90 @@ function requireId(value: unknown, holder: string, field: string, context: strin
   const id = readString(asRecord(asRecord(value)?.[holder]), field);
   if (id === null) throw new Error(`${context} 未返回 ${holder}.${field}`);
   return id;
+}
+
+/** 线程级 config 里的 `mcp_servers` 表（没有这一格 / 不是对象 ⇒ 空表） */
+function mcpServerEntries(config: Record<string, unknown> | undefined): Record<string, unknown> {
+  return asRecord(config?.['mcp_servers']) ?? {};
+}
+
+/**
+ * 等注入的 MCP 落定的上限（毫秒）：**申报了** `startup_timeout_sec` 的按最大的那一台算，
+ * 一台都没申报才用 `fallbackSec`。导出是给守卫钉默认值用的（纯函数，不读时钟）。
+ */
+export function mcpStartupWaitMs(config: Record<string, unknown> | undefined): number {
+  const declared = Object.values(mcpServerEntries(config))
+    .map((entry) => readNumber(asRecord(entry), 'startup_timeout_sec'))
+    .filter((sec): sec is number => sec !== null && sec > 0);
+  const budgetSec = declared.length === 0 ? CODEX_MCP_STARTUP_WAIT.fallbackSec : Math.max(...declared);
+  return budgetSec * 1000 + CODEX_MCP_STARTUP_WAIT.graceMs;
+}
+
+/**
+ * 起轮次之前，等注入的每一台 MCP **落定**（`ready` / `failed`）。
+ *
+ * 为什么非等不可：MCP 工具要 server 到 `ready` 之后才进 codex 的工具表，而工具表是**随每条模型
+ * 请求重算**的——`turn/start` 一发出去，紧接着那条请求就已经带着当时的表走了。而
+ * `thread/start` 与 `turn/start` 之间只隔毫秒，playwright MCP 走 `npx` 首次要 ~5–6 s（公网 registry
+ * 下 17 s）⇒ 不等的话开局 1–2 轮的请求里根本没有 `mcp__<name>`，模型据此断言「当前会话没有暴露
+ * MCP 工具」并整轮退化成 shell（真机读数：`starting` 后 6 s 才 `ready`，而首轮请求早 5 s 就发出去了）。
+ * 探针 A/B（`probe/v10/codex-mcp-tools-capture.mjs`，读数见同目录 `REPORT.md`）：
+ * 不等 ⇒ 请求体 `tools` 里没有那一格；等 ⇒ 有。
+ *
+ * 四条边界：
+ *   · **历史先扫一遍**：`client.subscribe` 不补投历史（见 `client.ts` 的口径），而毫秒级启动的
+ *     server 完全可能在我们登记之前就到 `ready`；
+ *   · **有上限**：谁都不上报时按 `startup_timeout_sec` + 余量收手（`failed` 也算落定，codex 自己
+ *     会在超时后投它）；等超了只记 WARN，**不改失败语义**——判据仍只在事件流那一侧；
+ *   · **进程终止也放行**：等待窗口里 app-server 死掉时立刻返回，不白等满预算；
+ *   · **没有注入就直接返回**（不订阅、不等待）：没注入 MCP 的行不该付这笔时间。
+ *
+ * 只按**名字**认，不按 `threadId`：这一步在 `turn/start` 之前，子线程还不存在，那条判据在此恒真。
+ */
+async function settleMcpStartup(client: AppServerClient, config: Record<string, unknown> | undefined): Promise<void> {
+  const pending = new Set(Object.keys(mcpServerEntries(config)));
+  if (pending.size === 0) return;
+  const waitMs = mcpStartupWaitMs(config);
+  const failed: string[] = [];
+  let settle: () => void = () => undefined;
+  const done = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  const consume = (notification: AppServerNotification): void => {
+    const payload = readNotification(notification.method, notification.params);
+    if (payload.kind !== 'mcpStartupStatus' || !pending.has(payload.name)) return;
+    if (payload.status === 'ready') {
+      pending.delete(payload.name);
+    } else if (payload.status === 'failed') {
+      pending.delete(payload.name);
+      failed.push(payload.name);
+    } else {
+      // `starting` 不是终态：它之后还会变，等它没有意义
+      return;
+    }
+    if (pending.size === 0) settle();
+  };
+  for (const one of client.notifications()) consume(one);
+  if (pending.size > 0) {
+    const unsubscribe = client.subscribe(consume);
+    /**
+     * 进程死在启动窗口里也要**立刻放行**：否则这一行会白等到预算上限，而那几十秒里轮次根本没机会起
+     * （`turn/start` 会照旧报进程已退出，回收走 `startCodexSession` 的 catch）。
+     */
+    const unsubscribeTerminal = client.onTerminal(settle);
+    const timer = setTimeout(settle, waitMs);
+    await done;
+    clearTimeout(timer);
+    unsubscribe();
+    unsubscribeTerminal();
+  }
+  if (failed.length > 0) {
+    // 不在这里抛：这一行的失败判据是事件流那一侧（`AGENT_MCP_UNAVAILABLE` 的文案要厂商原文）
+    logger.warn('注入的 MCP 启动失败：本轮工具表里不会有它', { failed });
+  }
+  if (pending.size > 0) {
+    logger.warn('MCP 启动未在预算内落定，先起轮次', { timedOut: [...pending], waitMs });
+  }
 }
 
 /**
@@ -189,6 +290,12 @@ export async function startCodexSession(input: CodexSessionInput): Promise<Codex
     });
     const threadId = requireId(threadResult, 'thread', 'id', 'thread/start');
     core.mainThreadId = threadId;
+
+    /**
+     * 注入的 MCP 落定之后才起轮次：工具表随每条模型请求重算，而 MCP 工具要 server `ready`
+     * 之后才进表 ⇒ 起早了会让开局那几轮的请求里没有它（机制与判据见 `settleMcpStartup`）。
+     */
+    await settleMcpStartup(client, input.config);
 
     const turnResult = await client.request<unknown>('turn/start', {
       threadId,

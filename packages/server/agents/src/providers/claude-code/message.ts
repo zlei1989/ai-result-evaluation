@@ -34,6 +34,12 @@
  * （思考 / 正文 / 工具调用各一条）⇒ 每条投递的块都是**新块**，只能追加到末尾；把它当成「整条消息的
  * 第 0 块」会让后到的块反复覆盖第一个。块序号按**首次到达**分配：流式那条通道先按
  * `content_block_start.index` 占号，随后的完整消息按 `content` 数组顺序对齐到同一批号。
+ *
+ * ⚠️ **块序号账必须按 `message.id` 跨投递存活**（`ordinalBooks`）：每条投递各自新建分配器时，
+ * 第二次投递的块会从 0 重新起号，于是**盖掉**第一次投递已经占下的槽。真机症状（claude 行
+ * `ceec6cb1`）：同一条消息先投 `thinking` 再投 `text`，最终视图里只剩 `text` —— **原始输出里有思考、
+ * 执行日志里没有**。第 1 轮之所以看不出：那条消息第二次投的是 `tool_use`，它按 `c:<callId>` 分槽，
+ * 撞不上 `i:0`。
  */
 import type { SubagentRecord } from '@aieval/contracts';
 import { asRecord, readNumber, readString } from '../../json';
@@ -117,8 +123,32 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
   const dispatchIds = new Set<string>();
   const phantomIds = new Set<string>();
 
-  /** 流式消息的块序号分配器：`message_start` 时重建（`message.id` 用于与完整消息对齐） */
-  let streaming: { messageId: string | null; allocator: BlockIndexAllocator } | null = null;
+  /**
+   * **每条厂商 assistant 消息一本块序号账**（key = `message.id`；无 id 的畸形帧退到 `rt:<轮次>`）。
+   *
+   * 账里两格：`allocator` 把「厂商消息内的块序号」换算成「该载体内第几个块」，`delivered` 是
+   * **已经投递过的块数**——完整消息那一侧用它给本帧的块续号（`delivered + position`），
+   * 于是第二次投递的块落在第一次之后的槽里，而不是从 0 重来盖掉前一块。
+   *
+   * ⚠️ **不能每条投递新建**（这正是本节要修的缺陷）：CLI 对同一条消息分多条投递、每条只带一个块，
+   * 而契约要求「每条投递都带该消息到目前为止的完整块」——两次独立起号会让后一块把前一块挤掉。
+   * ⚠️ 增量那一侧不推进 `delivered`：增量是**同一个块**的碎片，不是新块（它按 `forSource(厂商序号)`
+   * 与随后的完整快照落进同一个槽）。
+   */
+  const ordinalBooks = new Map<string, { allocator: BlockIndexAllocator; delivered: number }>();
+  /** 当前正在流式到达的那条消息 id（`message_start` 记下；`content_block_delta` 靠它找账） */
+  let streamingMessageId: string | null = null;
+
+  /** 取一本账；`reset` 用于 `message_start`（同一条消息重开时把号与已投递数一并归零） */
+  const ordinalBookOf = (key: string, reset = false): { allocator: BlockIndexAllocator; delivered: number } => {
+    if (!reset) {
+      const existing = ordinalBooks.get(key);
+      if (existing !== undefined) return existing;
+    }
+    const book = { allocator: createBlockIndexAllocator(), delivered: 0 };
+    ordinalBooks.set(key, book);
+    return book;
+  };
 
   /**
    * **每会话自己的轮次号账**（`SessionRoundIds`）。
@@ -128,17 +158,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
    */
   const sessionRoundIds: SessionRoundIds = new Map();
 
-  /** 取走当前流式分配器（只在 `message.id` 对得上时）：完整消息要用同一批块序号 */
-  const takeStreaming = (messageId: string | null): BlockIndexAllocator | null => {
-    if (streaming === null) return null;
-    if (messageId !== null && streaming.messageId !== null && messageId !== streaming.messageId) return null;
-    const allocator = streaming.allocator;
-    streaming = null;
-    return allocator;
-  };
-
-  /**
-   * 一条 `task_*` 帧的形状判决（三档的含义见 `ClaudeTaskShape`）。
+  /** 取一条 `task_*` 帧的形状判决（三档的含义见 `ClaudeTaskShape`）。
    *
    * 状态只有两张 id 账（`dispatchIds` / `phantomIds`），判据只有 `isDispatchShaped` 一处；
    * 判决只在 `task_started` 上做（收场帧按 id 追随，理由见那两张账的注释）。
@@ -192,7 +212,9 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
     const event = asRecord(message?.event);
     const kind = readString(event, 'type');
     if (kind === 'message_start') {
-      streaming = { messageId: readString(asRecord(event?.message), 'id'), allocator: createBlockIndexAllocator() };
+      streamingMessageId = readString(asRecord(event?.message), 'id');
+      // 新消息重开一本账：厂商序号从 0 起、已投递数也归零
+      if (streamingMessageId !== null) ordinalBookOf(streamingMessageId, true);
       return [];
     }
     if (kind !== 'content_block_delta') return [];
@@ -213,11 +235,14 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
      */
     const parentCallId = readString(message, SIDE_CHAIN_FIELD);
     const subagentId = parentCallId === null || parentCallId === '' ? null : parentCallId;
-    const allocator = streaming?.allocator ?? createBlockIndexAllocator();
+    // 增量的槽必须与它后面那条完整快照同一本账（键同为 `message_start` 记下的 id）；
+    // 没有 `message_start` 的畸形流（拿不到 id）保持既有行为：本帧现开一本。
+    const allocator = (streamingMessageId === null ? null : ordinalBookOf(streamingMessageId).allocator)
+      ?? createBlockIndexAllocator();
     const index = allocator.forSource(sourceIndex);
     const identity = { kind: 'index' as const, index };
     const envelope = {
-      roundTrip: roundTripOfSession(state, sessionRoundIds, subagentId, streaming?.messageId ?? null),
+      roundTrip: roundTripOfSession(state, sessionRoundIds, subagentId, streamingMessageId),
       vendorId: null as string | null,
       parentCallId,
       subagentId,
@@ -256,12 +281,18 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
     const roundTrip = roundTripOfSession(state, sessionRoundIds, subagentId, readString(payload, 'id'));
     const content = payload?.content;
     if (!Array.isArray(content)) return EMPTY;
-    const allocator = takeStreaming(readString(payload, 'id')) ?? createBlockIndexAllocator();
+    /**
+     * 块序号取自**这条消息那本账**：本帧第 `position` 个块的号 = `delivered + position`——
+     * `delivered` 是这条消息**此前已投递过的块数**，故第二次投递的块接在第一次之后，
+     * 不会回到 0 把前一块盖掉（见 `ordinalBooks` 的注释）。
+     */
+    const vendorId = readString(payload, 'id');
+    const book = ordinalBookOf(vendorId ?? `rt:${roundTrip}`);
     const blocks: MessageBlockDraft[] = [];
     content.forEach((rawBlock, position) => {
       const block = asRecord(rawBlock);
       const type = readString(block, 'type');
-      const identity = { kind: 'index' as const, index: allocator.forSource(position) };
+      const identity = { kind: 'index' as const, index: book.allocator.forSource(book.delivered + position) };
       if (type === 'text') {
         const text = readString(block, 'text');
         if (text !== null && text !== '') blocks.push(textBlockDraft(text, 'snapshot', identity));
@@ -286,11 +317,14 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
         blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.input ?? null, undefined));
       }
     });
+    // 已投递数**按厂商 `content` 数组长度**推进（不是「产了几块」）：序号空间属于厂商那条消息，
+    // 空文本等被跳过的块同样占一格，否则后面每一块的号都会差一
+    book.delivered += content.length;
     if (blocks.length === 0) return EMPTY;
     return {
       messages: [
         {
-          vendorId: readString(payload, 'id'),
+          vendorId,
           role: 'assistant',
           source: 'wire',
           roundTrip,

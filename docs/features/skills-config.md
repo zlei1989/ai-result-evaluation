@@ -65,7 +65,7 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 | **`missing` 的语义边界** | 它说的是「厂商清单里没有它」，不是「模型不会用」；codex 的 `enabled:false` 条目被丢弃（不在可用技能面里的条目算成「厂商认了」就是假绿），这一档实际不可达 |
 | **行为门槛只用于冒烟，不是行内自动判据** | 行内 L3「尽力而为」、采不到记 `unverified`、不阻塞行；**冒烟**那一次才要求「模型真按 skill 走了一次」（codex 认它真读了 `SKILL.md`、dsh 认真发了 `skill` 工具调用） |
 | **落点分档的守卫必须在真文件系统上造不对称** | 合成路径（`/runs/…` 这类字面量）只走「原样形态」那一支，对**同一个目录的两种写法**没有区分力；判它要 `mkdtempSync` + `symlinkSync` 造出软链 ↔ 真实这一对，再让两侧交叉给 |
-| **claude 在本机网关下拿不到行为证据** | 技能面确证在（`getContextUsage().skills.skillFrontmatter` 里出现、来源 `userSettings`），但**这条网关路由下的模型不发出 `Skill` 工具调用**（两个不同模型都如此）⇒ 行级结论只到「厂商确证技能面里有它」，「模型会用它」这一格**缺失且原因已知**，见 [Claude Code FAQ](/faq/claude-code) |
+| **claude 在本机网关下拿不到行为证据** | 技能面确证在（`getContextUsage().skills.skillFrontmatter` 里出现、来源 `userSettings`），但**模型收不到那份清单**：CC 把整份 `<system-reminder>` 放在 `messages[]` 里一条 `role: "system"` 的消息上，而网关转换器（`proxyGateway` 的 `anthropicToOpenAI`）对非直连目标把它整条 `continue` 掉（判据：同一请求体只改这一格，`role` 为 `user` 时两个模型都发出 `Skill` 调用；原样时上游 usage 与「整条删掉」逐字相同）⇒ 行级结论只到「厂商确证技能面里有它」。**网关侧已改为就地降级为 user 并留诊断，待部署**，见 [Claude Code FAQ](/faq/claude-code) |
 | **扁平形态不被准入** | 只认 `<根>/<名称>/SKILL.md`；用户丢一个扁平 `<根>/<名称>.md` 会得到「缺 SKILL.md」，而 dsh 本来能吃扁平形态——是否在扫描侧也认它或至少在原因里点明「扁平 `.md` 请改成目录」**未裁决** |
 | **frontmatter 的权限字段未接** | claude 的 `allowed-tools` 与三档权限的交互、dsh 的 `disable-model-invocation` / `user-invocable` 与「单条停用」的关系（已证：两个都写才全关，只写前者仍可被 `/<name>` 注入）都未使用 |
 | **并发装入未测** | 多行同时从同一源目录装入有没有竞态**未证实**；缓解是物化只读源目录、只写本行配置目录 |

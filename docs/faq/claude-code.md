@@ -65,20 +65,59 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 **日期**：2026-10-11
 
-**根因**：缺口在**这条网关路由下的模型不发出 `Skill` 工具调用**这一层，不在装入链。判据链两半都对得上，唯独行为面是空的：
+**现象原文**（模型自己的话，两条指向同一件事）：
+
+```
+关于技能：本次会话里我**没有**收到任何可用技能（skill）的清单，因此没有可逐行列出的名字。
+关于令牌：没看到。
+```
+
+**根因**：**技能清单压根没到模型** —— 不是模型不肯调 `Skill`，也不是装入链有缺陷。机制一层：
+
+**丢弃点已定位（不再是「某处翻译层」）：`proxyGateway` 的 `lib/convert/anthropic.js` 的 `anthropicToOpenAI` 里那一行显式丢弃** —— `if (role === "system") continue;`。抓包原文：主请求体 `messages[0].role='user'` 是题面（587 字符）、`messages[1].role='system'` 是那坨 reminder（7694 字符，技能清单在里面），`tools[]` 里 `Skill` 在；Anthropic 的 Messages API 只定义 `user` / `assistant`，而这一行不认它，整条 `continue` 掉 ⇒ 模型上下文里从来没有这份清单。清单里没有名字、`Skill` 的入参无处可来，「不主动读 skill」是**信息缺失**的必然结果，不是模型偏好。
+
+三个细节决定了它为什么能长期静默（**三处都以为别人管着**）：
+
+- **丢弃处零留痕**：`lib/convert/anthropic.js` 一条 `addDiagnostic` 都没有，而该模块自己的规约（`lib/diagnostics.js:3-4`、`lib/protocol/steps.js:92`）要求「每一次丢弃/降级都必须在丢弃的那一行发诊断，绝不静默」；
+- **本该兜底的门禁主动豁免了它**：`lib/fidelity.js` 的「类 3 会话中途系统指令 → 400」对 `from = anthropic` **明写放行**（原文：「anthropic 入站是这里的第一道放行」），而 `chat_completions` 又不在它那份「承载不了中途 system」的目标集合里；
+- **旧行为有专门的守卫测试**：`test/system-prefix.test.js`（文件头写明这份守卫是为**prompt cache 命中率**立的）断言「中途 system 不进上游报文」，注释给的理由是「避免被 `mergeSystemMessages` 前移到头部、改变上游缓存前缀」。
+
+⚠️ 同一个现象在网关里有**两种处置**：`anthropic → anthropic` 直连路由走 `convertSystemToUser`（**就地转 user**，注解说它修掉了 joybuilder 的 400），只有非直连目标（chat / responses / gemini）走那条丢弃。**要防的是「前移」而不是「存在」**——转成 `user` 后 `mergeSystemMessages` 根本不看它，内容与位置都能保住，前缀缓存性质与旧实现相同。
+
+**判据一：同一请求体、只改一个字段**（`packages/server/agents/probe/v9/replay-role-differential.mjs`，请求体由同目录的 `claude-skill-mount-capture.mjs` 现场抓取），`DeepSeek-V4.1-Flash-a` 与 `GLM-5.3` 各 3 轮：
+
+| 臂 | 请求体差异 | `Skill` 调用 | 模型自述 |
+|---|---|---|---|
+| 原样 | `role: "system"` | **0 / 3** | 「系统并没有向我提供任何技能（skill）清单」 |
+| 只改 role | `role: "user"`，其余逐字节相同 | **3 / 3**，入参 `{"skill":"tang-poem-meal"}` | — |
+| 删掉该条 | 无清单（对照） | 0 / 3 | — |
+| 原样 + 条末拼令牌再追问 | `role: "system"` | 0 / 3 | 「关于令牌：没看到」 |
+
+**判据二：量化判别——该内容根本没进上游上下文**。该条为 `role:"system"` 时上游 usage 与「整条删掉」**逐字相同**（`input_tokens` 158 / `cache_read_input_tokens` 11392，多次运行同值）；改成 `user` 后总上下文抬升（`input_tokens` 216～1880 / `cache_read_input_tokens` 11520～13184，随提示缓存浮动，两次测量的抬升量约 1850 token，与 7694 字符的 reminder 同量级）。模型自述与 token 账两头对上，排除「内容进去了但模型不理」。
+
+**判据三：同时排除「挂载方式 / `settingSources` 传错」**——这正是本条目最初被误判的方向。同一抓包探针按四档 A/B 数主请求体里的清单条数：`['user','project','local']` **14 条**（含我们物化的 `tang-poem-meal` 与仓库自带的 `repo-owned-probe`）/ `[]` **12 条**（两条都没有）/ `['user']` **13 条**（只有我们那条）/ `['project','local']` **13 条**（只有仓库那条——**剔掉 `'user'`，我们物化的 skill 就从请求体里消失**）⇒ `settingSources` 传对了、且正是它在起作用，缺陷不在这里；离线守卫 `packages/server/agents/src/skills-config-prereq.test.ts` 钉的也是这一格。
+
+**测试环境 ≠ 运行环境**：单测里适配器整个换成 `fakeAgents`，行为面在 `pnpm test` 里永远是绿的；而**这一层连真机行也看不出来**——`getContextUsage().skills.skillFrontmatter` 是 CLI **自己报的装配读数**（「我装上了」），与「模型收到了」隔着网关那一跳，把前者当后者用就会得出「模型不肯读」这个错判——那就是**把 L1 的装配结论当 L3 的行为证据**用。装配链那两半的事实如下（仍成立，是上面三条判据的前提）：
 
 - **装入链没问题**（L1 + 厂商确证）：`<行配置目录>/skills/tang-poem-meal/SKILL.md` 与源目录逐字相同，`SKILL.md` 在 `query()` 之前落盘；厂商自己报的技能面里**有它**——`getContextUsage().skills.skillFrontmatter` = `[{"name":"tang-poem-meal","source":"userSettings"},…]`（同一条里另有 12 条 `built-in`；另造一条仓库自带 skill，来源原值 `projectSettings`，说明这条通道真的在按来源分档）。`source: userSettings` 就是「本机启用项那一份进了系统提示的技能面」的厂商原话。
-- **行为面是空的**：该行 `工具调用名：[]`——一个工具都没调；答复是一首唐诗，**末行没有哨兵串**。`Skill` 是 CLI 侧的工具，模型要在 wire 上回一个 `tool_use(name='Skill', input.skill='…')` 才会触发；这条路由下的模型只回文本。**换 `GLM-5.3` 同样一次都不调** ⇒ 不是某一个模型的怪癖，是**这条网关路由下的模型行为**。
+- **行为面是空的**：该行 `工具调用名：[]`——一个工具都没调；答复是一首唐诗，**末行没有哨兵串**。`Skill` 是 CLI 侧的工具，模型要在 wire 上回一个 `tool_use(name='Skill', input.skill='…')` 才会触发；这条路由下的模型只回文本。**换 `GLM-5.3` 同样一次都不调** ⇒ 不是某一个模型的怪癖，而是**两个模型都拿不到那份清单**：只把那条消息的 `role` 改成 `user`，两个模型都会调（见上表）。
 
-**测试环境 ≠ 运行环境**：单测里适配器整个换成 `fakeAgents`，模型答复是夹具造的，行为面在 `pnpm test` 里**永远是绿的**；这个缺口只有「真适配器 + 真 CLI + 真网关」的一行才看得见。另一半更隐蔽——**技能面那一格是厂商自己报的，与模型会不会照做是两层**，把「技能面里有它」当成「模型会用它」就是把 L1 的结论当 L3 用。
+**解决方案**：**网关侧已修，待部署**——丢弃点不在本仓，修的是 `proxyGateway`（同一台机器上的 `~/Coding/proxyGateway`）。四件事：
 
-**解决方案**：判据改成**技能面确证**——`getContextUsage().skills.skillFrontmatter` 里出现该条且来源为 `userSettings`（行级观测格仍记 `installed · 判据 厂商清单`，但**不把「模型会用它」写成已兑现**；已经装上多少条 ≠ 模型用了哪条）。要复验行为面：换**真 Claude 模型**（`modelId` 匹配 `/claude/i`）或另一条网关重跑同一行，三条判据同时看——真发 `tool_use(name='Skill')`、答复**末行逐字**命中哨兵串（只出现唐诗不算，唐诗是模型本来就会的东西）、`SKILL.md` 在行配置目录里。守卫：`packages/server/agents/src/providers/claude-code/live-skills-context.test.ts`（`AIEVAL_LIVE_SKILL_CONTEXT=1`，真 CLI + 真网关）把这条判据链钉住；配置前提那一半由离线的 `packages/server/agents/src/skills-config-prereq.test.ts` 钉。
+- **改法**：`lib/convert/anthropic.js` 的 `anthropicToOpenAI` 把「中途 system 整条丢弃」改为**就地降级为 `user`**（内容与位置都保留，只改指令角色），并发一条 `semantic` 诊断 `mid_sequence_system_downgraded_to_user`（`path` = `messages[i].role`，登记在 spec §19.2 表第四处）。**前导连续段不改写、不发诊断**（与 `lib/convert/responses.js` 的 S3 同口径）。
+- **守卫**：`test/system-prefix.test.js` 的三处断言随之改写（原断言钉的正是旧行为）；`test/diagnostic-sites.test.js` 新增 S4（正例 + 两条「位置未变则零诊断」反例 + 三条目标各保 reminder 原文的复验）与一条真实 HTTP 往返的端到端用例。**变异验证**：把 `continue` 放回去 ⇒ 6 条守卫同时变红（3 条反例仍绿），还原后 `lib/convert/anthropic.js` 哈希 `1bd66503d7e208bfa7001bfa0ad42547bc8609c581de7904b13ec2ea27bcb756` 逐字一致。
+- **本机端到端**：真启动改后的网关 + 假上游，把本轮抓到的**真实请求体**POST 进 `/v1/messages` ⇒ 上游报文的 `messages` = `[system 62, user 647, **user 7694**]`，技能清单标题、`Primary working directory`、reminder 原文全部逐字到达，控制台出现 `转换诊断 1 条(semantic=1) codes=mid_sequence_system_downgraded_to_user`。
+- **生效条件**：远端 `likecode-llm-proxy.jd.com` 仍跑旧代码 ⇒ **部署前本仓现象照旧**。
+- **行级判据维持「技能面确证」不变**：`getContextUsage().skills.skillFrontmatter` 里出现该条且来源为 `userSettings`（观测格记 `installed · 判据 厂商清单`），**但绝不把「模型会用它」写成已兑现**；它报的是装配读数，与模型是否收到隔着网关那一跳。**换真 Claude 模型或另一条网关是唯一的替代复验路径**：三条判据同时看——真发 `tool_use(name='Skill')`、答复**末行逐字**命中哨兵串（只出现唐诗不算，唐诗是模型本来就会的东西）、`SKILL.md` 在行配置目录里。
+- **兜底（未实施，网关修好后不再是必需）**：候选执行的任务提示里显式注入技能清单。它只补技能一项，补不了环境块 / agent 类型表 / 日期 / token 预算——那些随网关这一修一起回来。
+- **复验判据**：跑 `packages/server/agents/probe/v9/replay-role-differential.mjs`，`A1-原样(system)` 臂的 `Skill调用` 由 0 变正即说明这一跳被修好（**部署后**才可能变正）；请求体由 `claude-skill-mount-capture.mjs` 现场抓取，不依赖上游会答题。真机那一半仍由 `packages/server/agents/src/providers/claude-code/live-skills-context.test.ts`（`AIEVAL_LIVE_SKILL_CONTEXT=1`）与离线的 `packages/server/agents/src/skills-config-prereq.test.ts` 钉。
 
 **相关资料**：
 
 - [《技能配置》](/features/skills-config) —— 已知边界里同一条登记（「厂商确证技能面里有它」这一档的上限）
 - [《Claude Code 接入》](/protocols/claude-code) —— skills 落地口径（落点、`options.skills` 的三档、判据通道）与已知边界表
 - SDK 类型（本地安装态）：`getContextUsage()` 的 `skills.skillFrontmatter[].source` 取值域 `userSettings` / `projectSettings` / `built-in`（`sdk.d.ts`）
+- 探针与判定原文：`packages/server/agents/probe/v9/REPORT.md`（两个脚本的跑法与四张判定表）；抓包落 `probe/dumps/v9/`（已 gitignore）
 
 ---
 
@@ -88,8 +127,8 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 **根因**：机制层三层，前两层是绿的事实、缺口在第三层：
 
-- **平台三层全绿**：① `system/init` 帧 `cwd` = `…/rows/<rowId>/workspace`（给 CLI 的 cwd 正确）；② 厂商确证技能面里有该条——`getContextUsage().skills.skillFrontmatter` 含 `{"name":"tang-poem-meal","source":"userSettings"}`；③ **CC 2.1.281 在主请求的 `<system-reminder>` 里确实注入了技能清单**（原文 `The following skills are available for use with the Skill tool: - tang-poem-meal: …`）——本地假网关捕获真实请求体逐项对齐真机 options（模型名 `glm-5.3` / `GLM-5.3[1m]` / `claude-sonnet-4-5`、`CLAUDE_CODE_ENABLE_TODO_TOOLS`、禁用名单、`forwardSubagentText`、`includePartialMessages`、`settings.env`）全部带清单；第一轮请求构造先于任何网关响应，故「清单没注入」这一半被排除。
-- **模型未利用清单，改翻文件系统**：该行模型（GLM-5.3 走 likecode anthropic 协议网关）的 thinking 自述 `I don't see a system-reminder listing skills in this conversation`，于是用 Bash `find $HOME/skills` 找技能——命中平台物化目录，**输出把 `<行目录>/.agenthome/skills/<名>/SKILL.md` 的绝对路径送进上下文**。
+- **平台三层全绿**：① `system/init` 帧 `cwd` = `…/rows/<rowId>/workspace`（给 CLI 的 cwd 正确）；② 厂商确证技能面里有该条——`getContextUsage().skills.skillFrontmatter` 含 `{"name":"tang-poem-meal","source":"userSettings"}`；③ **CC 2.1.281 在主请求的 `<system-reminder>` 里确实注入了技能清单**（原文 `The following skills are available for use with the Skill tool: - tang-poem-meal: …`）——本地假网关捕获真实请求体逐项对齐真机 options（模型名 `glm-5.3` / `GLM-5.3[1m]` / `claude-sonnet-4-5`、`CLAUDE_CODE_ENABLE_TODO_TOOLS`、禁用名单、`forwardSubagentText`、`includePartialMessages`、`settings.env`）全部带清单；第一轮请求构造先于任何网关响应，故「CLI 没把清单注入请求体」这一半被排除——**至于它到不到模型，是网关那一跳的事，见上一条**。
+- **模型没见过清单（不是「没利用」），改翻文件系统**：该行模型（GLM-5.3 走 likecode anthropic 协议网关）的 thinking 自述 `I don't see a system-reminder listing skills in this conversation`，于是用 Bash `find $HOME/skills` 找技能——命中平台物化目录，**输出把 `<行目录>/.agenthome/skills/<名>/SKILL.md` 的绝对路径送进上下文**。那句自述是**字面事实**：整份 `<system-reminder>` 随 `role:"system"` 那条消息一起被网关丢掉（判据见上一条），模型确实没收到过它。
 - **落点**：模型随后 Write 时复用该绝对路径前缀，`poetry.md` 落在 `.agenthome` 的**父目录**（行目录）——比正确工作区少一级 `workspace`。diff 采集只扫 `workspace/`（口径：工作区外的产物对评分不可见），于是 `diff = 0 改动` → 评分判「未达成」→ 0 分。
 
 与同日「技能面确证在但 `工具调用名：[]`」条目同源（模型不调 `Skill` 工具），本条目是它的下游一环：**文件系统翻找把平台私有目录（`.agenthome`）的绝对路径送进模型上下文，模型复用它拼产物路径**。「经常」的机制：skills 冒烟场景每次重跑都可能触发同一条模型行为链。
@@ -99,3 +138,33 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 **相关资料**：
 
 - [Claude Code skills 官方文档](https://code.claude.com/docs/en/skills.md)：*"Every skill in the skill listing adds to your context on every turn"*（清单每轮进上下文）与 *"a skill's body loads only when it's used"*（正文只在被调用时注入）
+
+---
+
+## 执行日志里没有思考、原始输出里有（`messages.jsonl` 折叠后只剩 `text`；原文 `[{"type":"thinking","thinking":"…","signature":""}]`）
+
+**现象原文**（「原始输出」抽屉里看得到这一串，「执行日志」抽屉里同一条消息只剩正文块）：
+
+```
+[{"type":"thinking","thinking":"The skill instructions are clear:\n1. Pick a poem from 唐诗三百首 …","signature":""}]
+```
+
+**日期**：2026-10-11
+
+**根因**：机制层——**适配器给同一条厂商消息的多次投递各自重新起块序号**，后一块把前一块从槽里盖掉。三层：
+
+- **厂商形状**（真机转录 `[22]` / `[23]`，同一个 `assistant.message.id`）：CLI 对一条 assistant 消息**分多次投递、每次只带一个内容块**——先 `thinking`、再 `text`。
+- **契约口径**：文本 / 思考块的块标识就是「**该载体内第几个块**」（`i:<index>`），`MessageAssembler.applyBlock` 对「已有键 + 快照」的处置是**覆盖**——这正是「增量片段与它后面的块结束快照落进同一个槽」所要求的。
+- **缺陷**：`providers/claude-code/message.ts` 的 `assistant()` 每条投递都走 `takeStreaming(id) ?? createBlockIndexAllocator()`，而 `takeStreaming` **取一次就清空** ⇒ 第二次投递拿到一本新账、`forSource(0)` 又算出 `i:0`，把第一次的 `thinking` 覆盖成 `text`。账本必须**按 `message.id` 跨投递存活**（即分配器文档里那句「每个载体一个实例」）。
+- **为什么第 1 轮（`thinking` + `tool_use`）看不出**：工具调用按 `c:<callId>` 分槽，撞不上 `i:0` ⇒ 这个缺陷只在「两次投递都是文本 / 思考块」时暴露。
+
+**判据**（真机产物 `96e5f6e2…/rows/ceec6cb1…`）：`messages.jsonl` 里同一个 `mergeKey`（`main|2|assistant|-`）有两条记录，一条只有 `[thinking]`、一条只有 `[text]`；读侧按 `mergeKey` 留最后一条 ⇒ 最终视图只剩 `text`，而原始输出里思考原文俱在。把那一行的转录逐帧复放（归一器 + 装配器）修复前打印 `main|2|assistant|- → ["text"]`、修复后 `["thinking","text"]`。
+
+**解决方案**：`packages/server/agents/src/providers/claude-code/message.ts` 把「每条投递一本新账」改为**按 `message.id` 一本账**（`ordinalBooks`：`{ allocator, delivered }` 随消息存活；`assistant()` 用 `delivered + position` 续号并按厂商 `content` 数组长度推进 `delivered`；`message_start` 重开一本；增量那一侧不推进 `delivered`）。守卫：`providers/claude-code/message.test.ts` 新增三条（先 thinking 后 text / 反向顺序 / `tool_use` 对照）。**变异验证**：把 `assistant()` 那本账改回「每帧新建」（`ordinalBookOf(key, true)`）⇒ 两条红 + 真机复放打印回 `["text"]`，`tool_use` 对照仍绿；还原后 `message.ts` 哈希 `20229089889a8728e5ac25be9abf016f5c1a66dd01a5366218d17f80c5616945` 逐字一致。**残留**：已经写进 `messages.jsonl` 的历史行**不会自愈**（读侧不做重算）——要让某一行的执行日志补上思考，得**重跑那一行**。
+
+**相邻未修（另一处，本次未动）**：主会话**增量**的轮次号取的是 `state.turns` 的当前值（不 +1），而推进它的是**完整** assistant 消息 ⇒ 第 2 轮起增量的 `roundTrip` 比快照**小 1**（实测 `增量 roundTrip=1 快照 roundTrip=2`），实时打字那一段因此归到上一轮的载体里。它在代码里被注为「既有口径、本次不动」。
+
+**相关资料**：
+
+- [《消息规范》](/protocols/message-spec) —— 「帧是累积值，不是本片」与「合并键分两层」（块标识不进 `mergeKey`）
+- [《Claude Code 接入》](/protocols/claude-code) —— 「覆盖合并（关键）」那一节

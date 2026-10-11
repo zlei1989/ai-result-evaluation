@@ -4,17 +4,24 @@
  *
  * 用假 client（不 spawn 真进程）：真机联通性由 `protocol` 的录播报文与探针覆盖。
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppServerClient, AppServerNotification } from './client';
-import { startCodexSession, type CodexSession } from './session';
+import { CODEX_MCP_STARTUP_WAIT, mcpStartupWaitMs, startCodexSession, type CodexSession } from './session';
 
 class FakeClient implements AppServerClient {
   readonly requests: Array<{ method: string; params: unknown }> = [];
   closed = false;
   /** 让某一条请求失败（用来钉「起手失败要回收」那条路） */
   failOn: string | null = null;
+  /** 终结原因（`die()` 之后非 null）：此后所有请求被拒，与真客户端同语义 */
+  private terminalReason: string | null = null;
   private readonly notificationListeners = new Set<(notification: AppServerNotification) => void>();
   private readonly terminalListeners = new Set<(reason: string) => void>();
+  /**
+   * 通知历史（与真 `client.ts` 同语义：**先追加历史、再投给当时的订阅者**）。
+   * 两者分开才守得住「订阅不补投历史」那条口径——`emit` 在订阅之前发生时，只有历史留得下它。
+   */
+  private readonly history: AppServerNotification[] = [];
 
   initialize(): Promise<void> {
     this.requests.push({ method: 'initialize', params: null });
@@ -24,6 +31,8 @@ class FakeClient implements AppServerClient {
 
   request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
+    // 终结之后不再受理（真客户端的 `terminal` 判据）：等待窗口里进程死掉后 `turn/start` 必被拒
+    if (this.terminalReason !== null) return Promise.reject(new Error(this.terminalReason));
     if (this.failOn === method) return Promise.reject(new Error(`${method} 失败（30s 超时）`));
     if (method === 'thread/start') return Promise.resolve({ thread: { id: 'thread-1' } } as T);
     if (method === 'turn/start') return Promise.resolve({ turn: { id: 'turn-1' } } as T);
@@ -31,7 +40,7 @@ class FakeClient implements AppServerClient {
   }
 
   notifications(): readonly AppServerNotification[] {
-    return [];
+    return this.history;
   }
 
   subscribe(listener: (notification: AppServerNotification) => void): () => void {
@@ -58,10 +67,14 @@ class FakeClient implements AppServerClient {
   }
 
   emit(method: string, params: unknown): void {
-    for (const listener of this.notificationListeners) listener({ method, params });
+    const notification: AppServerNotification = { method, params };
+    this.history.push(notification);
+    for (const listener of this.notificationListeners) listener(notification);
   }
 
   die(reason: string): void {
+    // 与真 `client.ts` 同语义：终结之后**新的请求一律被拒**（`terminal` 那条判据）
+    this.terminalReason = reason;
     for (const listener of this.terminalListeners) listener(reason);
   }
 }
@@ -122,6 +135,118 @@ describe('startCodexSession —— 帧序与参数', () => {
       return Promise.resolve({} as T);
     };
     await expect(start(client)).rejects.toThrow(/thread\/start/);
+  });
+});
+
+/**
+ * 起轮次之前等注入的 MCP 落定。
+ *
+ * 为什么这组守卫值得单列：工具表**随每条模型请求重算**，而 MCP 工具要 server `ready` 之后才进表
+ * ⇒ 起早了，开局那几轮的请求里根本没有 `mcp__<name>`，模型据此断言「当前会话没有暴露 MCP 工具」
+ * 并整轮退化成 shell（真机现象与探针 A/B 见 `probe/v10/REPORT.md`）。
+ * 判据取**请求顺序**（`turn/start` 在终态通知之后）与**不挂死**（预算到点就放行）两件事。
+ */
+describe('startCodexSession —— 起轮次前等注入的 MCP 落定', () => {
+  /** 让等待器拿到控制权的两拍：一条宏任务足够走完 `await` 链 */
+  const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+  const methods = (client: FakeClient): string[] => client.requests.map((one) => one.method);
+  /**
+   * 预算按仓库口径写成可变对象，用例把它调小才跑得动；还原放 `afterEach`——
+   * **不能放用例体内的 `finally`**：等待不落定时 `await start(...)` 永远不返回，那一段轮不到执行，
+   * 被改小的预算会污染后面的用例（表现是「预算」那条无辜见红）。
+   */
+  const PRODUCT_WAIT = { ...CODEX_MCP_STARTUP_WAIT };
+  beforeEach(() => {
+    Object.assign(CODEX_MCP_STARTUP_WAIT, PRODUCT_WAIT);
+  });
+  afterEach(() => {
+    Object.assign(CODEX_MCP_STARTUP_WAIT, PRODUCT_WAIT);
+  });
+
+  it('注入的 MCP 没落定 ⇒ turn/start 不发；到 ready 才发', async () => {
+    const client = new FakeClient();
+    const started = start(client, {
+      config: { mcp_servers: { probe: { command: 'node', startup_timeout_sec: 30 } } },
+    });
+    await tick();
+    expect(methods(client)).toEqual(['initialize', 'thread/start']);
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'probe', status: 'ready' });
+    await started;
+    expect(methods(client)).toEqual(['initialize', 'thread/start', 'turn/start']);
+  }, 3000);
+
+  it('`starting` 不算落定（把它当终态就是这条缺陷本身）', async () => {
+    const client = new FakeClient();
+    const started = start(client, {
+      config: { mcp_servers: { probe: { command: 'node', startup_timeout_sec: 30 } } },
+    });
+    await tick();
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'probe', status: 'starting' });
+    await tick();
+    expect(methods(client)).toEqual(['initialize', 'thread/start']);
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'probe', status: 'ready' });
+    await started;
+    expect(methods(client)).toContain('turn/start');
+  }, 3000);
+
+  it('ready 早于等待登记（只在历史里）⇒ 不卡，立刻起轮次', async () => {
+    const client = new FakeClient();
+    // 订阅之前就到了：真客户端只把它追加进历史，`subscribe` 不补投
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'probe', status: 'ready' });
+    await start(client, {
+      config: { mcp_servers: { probe: { command: 'node', startup_timeout_sec: 30 } } },
+    });
+    expect(methods(client)).toEqual(['initialize', 'thread/start', 'turn/start']);
+  }, 3000);
+
+  it('failed 也是终态（不等满预算）', async () => {
+    const client = new FakeClient();
+    const started = start(client, {
+      config: { mcp_servers: { probe: { command: 'node', startup_timeout_sec: 30 } } },
+    });
+    await tick();
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'probe', status: 'failed', error: '起不来' });
+    await started;
+    expect(methods(client)).toContain('turn/start');
+  }, 3000);
+
+  it('谁都不上报 ⇒ 到预算就起轮次（不挂死）', async () => {
+    CODEX_MCP_STARTUP_WAIT.fallbackSec = 0.05;
+    CODEX_MCP_STARTUP_WAIT.graceMs = 20;
+    const client = new FakeClient();
+    await start(client, { config: { mcp_servers: { probe: { command: 'node' } } } });
+    expect(methods(client)).toContain('turn/start');
+  }, 3000);
+
+  it('等待窗口里进程终止 ⇒ 立刻放行（不白等预算），且照旧回收', async () => {
+    const client = new FakeClient();
+    const started = start(client, {
+      config: { mcp_servers: { probe: { command: 'node', startup_timeout_sec: 30 } } },
+    });
+    await tick();
+    client.die('codex app-server 进程已退出（code=1）');
+    await expect(started).rejects.toThrow(/进程已退出/);
+    expect(client.closed).toBe(true);
+  }, 3000);
+
+  it('没有注入的 MCP ⇒ 不烧预算（不等）', async () => {
+    // 预算调到「量得出来」的量级：真去等就一定超过下面那条上限
+    CODEX_MCP_STARTUP_WAIT.fallbackSec = 0.3;
+    CODEX_MCP_STARTUP_WAIT.graceMs = 0;
+    const client = new FakeClient();
+    client.emit('mcpServer/startupStatus/updated', { threadId: 'thread-1', name: 'other', status: 'starting' });
+    const at = Date.now();
+    await start(client);
+    expect(Date.now() - at).toBeLessThan(150);
+    expect(methods(client)).toEqual(['initialize', 'thread/start', 'turn/start']);
+  }, 3000);
+
+  it('预算：条目没申报时按 30 s + 余量；申报了就按最大的那一台算', () => {
+    expect(CODEX_MCP_STARTUP_WAIT).toEqual({ fallbackSec: 30, graceMs: 5_000 });
+    expect(mcpStartupWaitMs(undefined)).toBe(35_000);
+    expect(mcpStartupWaitMs({})).toBe(35_000);
+    expect(mcpStartupWaitMs({ mcp_servers: { a: { startup_timeout_sec: 30 } } })).toBe(35_000);
+    expect(mcpStartupWaitMs({ mcp_servers: { a: { startup_timeout_sec: 30 }, b: { startup_timeout_sec: 45 } } })).toBe(50_000);
   });
 });
 

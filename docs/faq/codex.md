@@ -44,26 +44,91 @@ provider: aieval
 
 ## `unsupported call: probe_echo`（MCP 注入成功、`mcpServer/startupStatus` 报 `ready`，但模型调不动那台工具）
 
-**日期**：2026-10-10
+**日期**：2026-10-10（2026-10-11 收窄根因并验证补法）
 
 **现象原文**（模型答复，同一轮里内置 shell 工具完全正常、审批请求为零）：
 ```
 unsupported call: probe_echo
 ```
+真机同一形态的三个名字（run `bad59dce` 的 codex 行，模型连试三个都在 codex 自己的会话记录里留下 `function_call_output`）：
+```
+unsupported call: browser_navigate
+unsupported call: browser_snapshot
+unsupported call: browser_tabs
+```
 配套三格：`mcpServer/startupStatus/updated` → `status: "ready"`；事件流里 `mcpToolCall` **零条**；MCP server 侧（`PROBE_CALL_LOG`）**零 `tools/call`**。⚠️ 同一矩阵里还抓到一次**假绿**：某一轮最终答复是 `hello`（像是调用成功了），而 server 侧同样零调用——**判据只能是 server 侧记录**，模型答复不算证据。
 
-**根因**：**上游命名空间缺口**（不是本仓配置问题）。codex 自 0.156 起把 MCP 工具按「命名空间」暴露给模型（推理里逐字说 `namespace listed function is mcp__probe with probe_echo`），而**自定义 OpenAI 兼容 Responses 网关**（本仓的 `likecode-llm-proxy`，issue 里的 llama.cpp / Ollama / LM Studio / OpenRouter 同型）在转发时把它**拍平**成普通 function call ⇒ codex 的工具注册表（错误文案出自 `core/src/tools/registry.rs`）解析不了扁平函数名，回 `unsupported call`。官方 Responses 会保留那层结构，所以只有自定义网关中招。
+**根因**：**回程的 `function_call` 少了 `namespace` 这一格**（上游网关的锅，不是本仓配置、也不是「没注入」）。
 
-**不是配置能解的**（本地矩阵五组全败）：`GLM-5.3` ❌、`DeepSeek-V4.1-Flash-a` ❌、打开 `features.non_prefixed_mcp_tool_names = { server_names = ["probe"] }` ❌（它改的是**暴露给模型的名字**，不改「回传时缺失命名空间」）、**升级到 `0.163.0-alpha.5` ❌**。三条出路（网关侧还原命名空间 / 追上游 / 退到命名空间机制之前的版本，最后一条代价最大）留给运维层决定。
+codex 自 0.156 起把 MCP 工具按**命名空间**暴露给模型：请求体里那一台是
+`{"type":"namespace","name":"mcp__probe","tools":[{"type":"function","name":"probe_echo",…}]}`。
+它收回调用时，`ResponseItem::FunctionCall`（`codex-rs/protocol/src/models.rs`）**有一格独立的
+`namespace`**——注册表的键是 `ToolName { namespace: "mcp__probe", name: "probe_echo" }`
+（`codex-mcp/src/tools.rs` 的 `canonical_tool_name()`），所以模型回传时必须**同时**给出
+`name` 与 `namespace`。而自定义 OpenAI 兼容 Responses 网关（本仓的 `likecode-llm-proxy`，
+issue 里的 llama.cpp / Ollama / LM Studio / OpenRouter 同型）把这一格**丢掉**，只留一个被拍平的
+`name`（`probe_echo` / `browser_navigate`）⇒ 注册表按「默认命名空间 + 这个名字」查，查不到，
+回 `unsupported call: <name>`（文案出自 `core/src/tools/registry.rs`）。官方 Responses 会保留那一格，
+所以只有自定义网关中招。
 
-**解决方案**：**本仓不硬解**，按「已知边界」处置（`docs/protocols/codex.md` 的 MCP 条目 + 契约常量 `CODEX_MCP_DISPATCH_GAP_NOTE`）：
-- 判据只到「装上了」——`mcpServer/startupStatus === 'ready'` ⇒ 行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；环境抽屉的「本行 MCP」格在逐台结论之后附上那句话（`build-environment.ts` 拼进那一格、`agent-environment-drawer.tsx` 渲染，文案取契约里那份共用常量）；
-- 冒烟对 codex 只验 `ready`（只验 `ready` 的口径），**不把调不动当本仓缺陷**去修；
-- 复跑探针定期确认上游是否已修：`AIEVAL_LIVE_MCP=1` 跑 `packages/server/agents/src/providers/codex/live-mcp.test.ts`（判据仍是**事件侧 + server 侧**两处——`mcpServer/startupStatus` 与 server 自己的调用记录，模型答复不算）。
+**判据（真机 + 探针，`probe/v10/codex-mcp-tools-capture.mjs`）**：在 codex 与网关之间放一个只改这一格的
+记录型中转（回程给注入的 MCP 嵌套工具名补 `namespace`），两端各跑一次、其余全同：
+
+| 臂 | 厂商侧 `mcpToolCall` | MCP server 侧 | 模型答复 |
+|---|---|---|---|
+| 不改（现状） | 零条 | 零 `tools/call` | `unsupported call: probe_echo` |
+| 补 `namespace` | `{server:"probe", tool:"probe_echo", status:"completed"}` | **收到** `{"name":"probe_echo","args":{"value":"hello"}}` | `echo:hello` |
+
+真 playwright MCP 同样打通（`mcpToolCall {server:"playwright", tool:"browser_navigate"}`、
+`browser_close` 回了真实结果）；那一次 `browser_navigate` 报 `Target crashed` 是**探针临时 HOME 里
+Chromium 不匹配**的环境问题，与分发无关。
+
+**名字形态矩阵**（同一条探针，改回程名字的写法；**只有补字段这一种能过**）：
+
+| 回程名字 | codex 的读数 |
+|---|---|
+| `probe_echo`（网关现状） | `unsupported call: probe_echo` |
+| `mcp__probe__probe_echo`（拍平限定名） | `unsupported call: mcp__probe.probe_echo` |
+| `probe.probe_echo` / `probe__probe_echo` | 分别不结算 / `unsupported call: mcp__tools__probe_echo` |
+| **name + `namespace: "mcp__probe"`** | **分发成功，server 侧收到调用** |
+
+**不是配置能解的**（本地矩阵五组全败 + 本次复核）：`GLM-5.3` ❌、`DeepSeek-V4.1-Flash-a` ❌、
+`features.non_prefixed_mcp_tool_names = { server_names = ["probe"] }` ❌（**本次复跑单变量 A/B 仍 ❌**：
+请求体里那台照样是 `namespace mcp__probe`、回程照样 `unsupported call`——它改的是**暴露给模型的名字前缀**，
+不改「回程缺字段」）、**升级到 `0.163.0-alpha.5` ❌**。
+
+**修在哪一层**：**网关侧那一格**（本仓不做本地中转兜底——那等于把 codex 的模型出路改成本机多一个
+活动部件，而正解只是回程多带一格）。两种查法：
+
+- **不经 codex 的最小复现**：`node packages/server/agents/probe/v10/gateway-namespace-repro.mjs`
+  —— 缺字段时打印 `type=function_call name=probe_echo namespace=(缺这一格)`，修好后是 `namespace="mcp__probe"`；
+- **网关侧改动面**（单一真源 `lib/tool-namespace.js`）：请求方向的 `responses.pre` 展开容器时把
+  「子工具名 → 容器名」按请求记下来（`lib/request-context.js` 的 ALS 流转），回程在 responses 方言的
+  两个渲染点补回这一格——流式 `lib/response/stream-sink.js` 的 `itemOf()`（added / done / completed
+  三处同源）、非流式 `lib/convert/chat-to-responses.js`。判据在网关仓库的
+  `test/tool-namespace.test.js`（含两条真走代理链路 + mock 上游的端到端用例）。
+
+**解决方案**：本仓仍按「已知边界」处置（`docs/protocols/codex.md` 的 MCP 条目 + 契约常量
+`CODEX_MCP_DISPATCH_GAP_NOTE`）——**判据只到「装上了」**：`mcpServer/startupStatus === 'ready'` ⇒
+行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；环境抽屉的
+「本行 MCP」格在逐台结论之后附上那句话（`build-environment.ts` 拼进那一格、
+`agent-environment-drawer.tsx` 渲染，文案取契约里那份共用常量）。网关侧补上之后，用这两条判据收口：
+
+```
+node packages/server/agents/probe/v10/gateway-namespace-repro.mjs          # 回程有那一格了
+AIEVAL_LIVE_MCP=1 pnpm vitest run packages/server/agents/src/providers/codex/live-mcp.test.ts
+```
+后者 A 臂的模型答复不再是 `unsupported call: probe_echo`，且探针 MCP server 侧出现调用记录
+（模型答复不算证据，server 侧记录才算）。
+
+⚠️ **顺带收窄一条相邻现象**：模型说「当前会话没有暴露 Playwright MCP 工具」**不等于**「没注入」——
+那一半是**起轮次早于 server `ready`**（MCP 工具还没进工具表），已修，判据与守卫见下面那条
+「当前会话没有暴露 Playwright MCP 工具或资源」。两件事**都表现为「用不了 MCP」，但一层是我们自己的
+时序、一层在网关上**，别混成一条。
 
 证据矩阵（五组本地矩阵 + 三格配套信号）见[《MCP 配置》](/features/mcp-config)的「已知边界与取舍」；同一句结论已落成契约常量 `CODEX_MCP_DISPATCH_GAP_NOTE`（界面与文档都取那一份）。外部同型 issue（#26977 / #20652 / #26234）见下方「相关资料」。
 
-**相关资料**：[MCP tools return 'unsupported call' with custom Responses API provider (llama.cpp) · #26977](https://github.com/openai/codex/issues/26977)、[Resolution failure for flattened MCP tool names from OpenAI-compatible proxies · #20652](https://github.com/openai/codex/issues/20652)、[Flatten MCP namespace tools for non-OpenAI Responses API providers · #26234](https://github.com/openai/codex/issues/26234)
+**相关资料**：[MCP tools return 'unsupported call' with custom Responses API provider (llama.cpp) · #26977](https://github.com/openai/codex/issues/26977)、[Resolution failure for flattened MCP tool names from OpenAI-compatible proxies · #20652](https://github.com/openai/codex/issues/20652)、[Flatten MCP namespace tools for non-OpenAI Responses API providers · #26234](https://github.com/openai/codex/issues/26234)、[Codex wraps MCP tools in type:"namespace" for custom/local providers · #23186](https://github.com/openai/codex/issues/23186)、[Support flattened deferred MCP tool calls · PR #17556](https://github.com/openai/codex/pull/17556)（codex 侧接受哪些名字形态的另一半证据）
 
 ---
 
@@ -525,4 +590,62 @@ Error: ENOENT: no such file or directory, open '/Users/…/packages/server/agent
 3. 删掉假文件复原 ⇒ 回到 `1 skipped`。
 
 要在本机恢复这条重放，重跑一次探针把抓包生成回来即可：`node probe/v6/codex-chat-wire-appserver.mjs only=live`（需 `AIEVAL_PROBE_DEEPSEEK_API_KEY`，见上一条「子智能体用量与思考正文」）。「依赖未入库产物的守卫怎么写」已回写进[《测试策略与提速》](/guard/test-strategy)。
+
+---
+
+## `当前会话没有暴露 Playwright MCP 工具或资源`（注入成功、`mcpServer/startupStatus` 也报了 `ready`，模型却从第一轮起就断言没有这台工具）
+
+**日期**：2026-10-11
+
+**现象原文**（同一行里三处，缺一处都读不出因果）：
+
+```
+// 模型第一轮的思考（rollout；round 1 答复 07:50:34.5 早于 server ready 07:50:36.271）
+We have no playwright MCP tools listed; tools only shell etc.
+// 第二轮的答复（界面「执行日志」逐字）
+当前会话没有暴露 Playwright MCP 工具或资源。我改用本地 Playwright 访问页面，并保留同样的分析目标。
+```
+```
+// 同一份事件流（`vendor-system`），与上面两条**并行**发生
+{"mcpServers":[{"name":"playwright","status":"starting","source":null,"error":null}],"mcpChannel":"vendor-startup-status"}   // 07:50:30.316
+{"mcpServers":[{"name":"playwright","status":"ready","source":null,"error":null}],"mcpChannel":"vendor-startup-status"}      // 07:50:36.271
+```
+
+反直觉处：注入侧全绿——`ready` 报了、`mcpServerStatus/list{threadId}` 直接交出 `runtimeStatus: "connected"` 与 `browser_click … browser_wait_for` **25 个工具**、发出去的请求体里也有 `{"type":"namespace","name":"mcp__playwright","tools":[…]}`——而模型开局就说没有它，整轮（10 轮）用 shell + 本地 playwright 绕路；直到第 11 轮回头去调，撞上的是**另一条**缺口（`unsupported call: browser_navigate`，见上面那条）。
+
+**根因**：**首轮起在了 MCP 服务器就绪之前**（本仓的时序缺陷；不是注入没成，也不是模型不听话）。
+
+MCP 工具的落点是**工具表**，而工具表**随每条模型请求重算**——但 server `ready` 之前，那一格根本不在表里。适配器是 `thread/start` 一回来就 `turn/start`（两者相差毫秒），而 playwright MCP 走 `npx`：真机 `starting` 07:50:30.316 → `ready` 07:50:36.271，首轮请求 07:50:31.4 就发出去了 ⇒ 开局 1–2 轮的 `tools[]` 里没有 `mcp__playwright`，模型据此下结论并锁定路线（`ready` 之后的轮次工具会补上，但它已经不再回头看）。
+
+判据（探针 A/B，`node packages/server/agents/probe/v10/codex-mcp-tools-capture.mjs`，只改「起轮次时机」一个变量）：
+
+| 臂 | 起轮次时机 | 第一条模型请求的 `tools[]` |
+|---|---|---|
+| 与适配器同序 | `thread/start` 后立刻 `turn/start`，server 6 s 才 `ready` | `toolCount=12`，**没有** `namespace mcp__probe` |
+| 等就绪 | 等 `startupStatus=ready` 再 `turn/start` | `toolCount=13`，**有** `namespace mcp__probe`（嵌套 `probe_echo`） |
+
+⚠️ **不要用「模型答复」当判据**：模型会把结果编出来。硬判据只有两处——**事件侧**（`mcpServer/startupStatus/updated`）与 **wire 侧**（请求体的 `tools[]`，用记录型中转抓）。
+
+**解决方案**（`packages/server/agents/src/providers/codex/appserver/session.ts`）：`thread/start` 与 `turn/start` 之间加 `settleMcpStartup()`——等**注入的每一台** MCP 落到终态（`ready` / `failed`）再起轮次。五条边界：
+
+1. **预算**：`CODEX_MCP_STARTUP_WAIT` = 各台申报的 `startup_timeout_sec` 取最大（一台都没申报时按 30 s）+ 余量（5 s，给 codex 投出 `failed` 留时间）。等超了只记 WARN 并照常起轮次——**不改失败语义**，行失败的判据仍在事件流那一侧（`AGENT_MCP_UNAVAILABLE` 要厂商原文）。
+2. **历史先扫一遍**：`client.subscribe` 不补投历史，而毫秒级启动的 server 可能在我们登记之前就到 `ready`。
+3. **`starting` 不算落定**：把它当终态就是这条缺陷本身。
+4. **app-server 在等待窗口里终止 ⇒ 立刻放行**：不白等满预算（`turn/start` 会照旧报进程已退出，回收走起手失败那条路）。
+5. **没有注入就一次不等**（不订阅、不烧预算）：评分与用例同步两处不注入 MCP，不该付这笔时间。
+
+判据：`appserver/session.test.ts` 新增 7 条守卫，**8 条变异各自见过失败**（删掉等待 ⇒ 2 红；`starting` 当终态 ⇒ 1 红；去掉历史兜底 / `failed` 不算落定 / 去掉超时兜底 / 预算取最小 / 空集也等一轮 / 进程终止不放行 ⇒ 各 1 红），`session.ts` 的 sha256 变异后复原一致。真机守卫是 `live-mcp.test.ts` 的 **C 臂**（默认跳过）：
+
+```
+AIEVAL_LIVE_MCP=1 pnpm vitest run packages/server/agents/src/providers/codex/live-mcp.test.ts
+```
+
+它让探针 server 的 `initialize` 晚 4 s 回，断言**第一条**请求的工具表里就有 `mcp__probe`（实测 `@4369ms tools=14 namespace=["multi_agent_v1","mcp__probe"]`）。
+
+**未闭合**：上游命名空间缺口（上面那条 `unsupported call` / issue #23186）还在，所以「工具看得见」之后仍然「调不动」——这次修的是**别让它开局就断言没有**，不是让它能调。
+
+**顺带登记（采集面，未改）**：codex 未识别通知的 **params 被丢掉**——产品日志里只有 `{"method":"warning"}`，而真机原文是 `` Model metadata for `GLM-5.3` not found. Defaulting to fallback metadata; this can degrade performance and cause issues. ``（`providers/codex/events.ts` 的 `other` 分支只带 method）。排这条故障时它正是「模型元数据缺失、能力面按 fallback 走」的旁证，值得单独开口补。
+
+**相关资料**：[Codex wraps MCP tools in type:"namespace" for custom/local providers · #23186](https://github.com/openai/codex/issues/23186)（自定义 Responses 网关解不开命名空间，工具「看不见或调不动」且双方都不报错）、[First-turn API call blocks until pending MCP tools/list times out · #19556](https://github.com/openai/codex/issues/19556)（首轮与 MCP 启动的时序关系）。探针与读数：`packages/server/agents/probe/v10/`（`codex-mcp-inject-status.mjs` 不调模型即可验注入；`codex-mcp-tools-capture.mjs` 抓请求体；`REPORT.md` 是这次的读数）。
+
 

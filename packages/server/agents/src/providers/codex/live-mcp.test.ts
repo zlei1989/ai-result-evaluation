@@ -24,6 +24,7 @@
  * 供应商读**宿主的** `~/.aieval/config.json` 里第一条 `openai`。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -52,6 +53,10 @@ process.stdin.on('data', (chunk) => {
     if (line === '') continue;
     let msg; try { msg = JSON.parse(line); } catch { continue; }
     if (msg.method === 'initialize') {
+      // PROBE_DELAY_MS：同步晚回 initialize，把「playwright MCP 走 npx 首次要 5-6 s」这件事
+      // 搬进探针（C 臂的自变量）。同步等待是因为这里在非 async 的 data 回调里。
+      const delay = Number(process.env.PROBE_DELAY_MS ?? 0);
+      if (delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
       send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'aieval-live-codex', version: '1.0.0' } } });
     } else if (msg.method === 'tools/list') {
       send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: TOOL, description: '回显给定字符串（真机探针用）', inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] } }] } });
@@ -88,6 +93,76 @@ function lastMcpServers(events: readonly AgentEvent[]): { name: string | null; s
   return vendor === undefined || vendor.type !== 'vendor-system' ? null : vendor.mcpServers;
 }
 
+/**
+ * 记录型中转：把 codex 发出的 `/v1/responses` 请求体里 `tools[]` 的**形状**记下来，再逐块转发。
+ *
+ * 为什么要它：工具表只在**请求体**里看得见，而适配器的事件流没有这一格。判据取「第一条请求」——
+ * 这一条探针问的就是「起轮次那一刻工具表里有没有那台 MCP」。
+ * 凭据只在转发头里用，不进任何日志与断言。
+ */
+async function startToolRecorder(upstreamBaseUrl: string): Promise<{
+  baseUrl: string;
+  requests: { atMs: number; tools: { type: string | null; name: string | null }[] }[];
+  close: () => void;
+}> {
+  const requests: { atMs: number; tools: { type: string | null; name: string | null }[] }[] = [];
+  const at0 = Date.now();
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      void (async () => {
+        const raw = Buffer.concat(chunks);
+        if (raw.length > 0 && String(request.url).includes('/responses')) {
+          const body = JSON.parse(raw.toString('utf8')) as { tools?: { type?: string; name?: string }[] };
+          requests.push({
+            atMs: Date.now() - at0,
+            tools: (body.tools ?? []).map((tool) => ({ type: tool.type ?? null, name: tool.name ?? null })),
+          });
+        }
+        const headers = { ...request.headers } as Record<string, string | string[] | undefined>;
+        delete headers['host'];
+        delete headers['content-length'];
+        delete headers['transfer-encoding'];
+        // 与 product relay 同一条教训：逐块转发 + 强制不压缩，否则整条流转成一个 blob
+        headers['accept-encoding'] = 'identity';
+        headers['content-length'] = String(raw.length);
+        const upstream = await fetch(`${upstreamBaseUrl.replace(/\/+$/, '')}${String(request.url)}`, {
+          method: request.method,
+          headers: headers as Record<string, string>,
+          body: request.method === 'GET' ? undefined : raw,
+        });
+        if (upstream.status >= 400) {
+          response.writeHead(upstream.status, { 'content-type': 'application/json' });
+          response.end(await upstream.text());
+          return;
+        }
+        const outHeaders: Record<string, string> = {};
+        upstream.headers.forEach((value, key) => {
+          if (key === 'content-encoding' || key === 'content-length' || key === 'transfer-encoding') return;
+          outHeaders[key] = value;
+        });
+        response.writeHead(upstream.status, outHeaders);
+        const reader = upstream.body?.getReader();
+        if (reader === undefined) {
+          response.end();
+          return;
+        }
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          response.write(value);
+        }
+        response.end();
+      })();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  return { baseUrl: `http://127.0.0.1:${port}`, requests, close: () => server.close() };
+}
+
 /** 跑一次 codex 候选（两臂共用），返回事件、答复与 server 侧调用数 */
 async function runOnce(input: {
   command: string;
@@ -95,6 +170,8 @@ async function runOnce(input: {
   callLog: string;
   route: { baseUrl: string; apiKey: string; modelId: string };
   root: string;
+  /** server 的 initialize 晚这么久才回（毫秒）：C 臂用它模拟慢启动 */
+  delayMs?: number;
 }): Promise<{ events: AgentEvent[]; finalText: string | null; calls: string[] }> {
   const cwd = join(input.root, 'workspace');
   const configHome = join(input.root, '.agenthome');
@@ -116,7 +193,11 @@ async function runOnce(input: {
         enabled: true,
         command: input.command,
         args: [input.serverPath],
-        env: { PROBE_TOOL: 'probe_echo', PROBE_CALL_LOG: input.callLog },
+        env: {
+          PROBE_TOOL: 'probe_echo',
+          PROBE_CALL_LOG: input.callLog,
+          ...(input.delayMs === undefined ? {} : { PROBE_DELAY_MS: String(input.delayMs) }),
+        },
       },
     },
     onEvent: (event) => events.push(event),
@@ -175,6 +256,50 @@ describe.skipIf(!ENABLED)('真机：codex 的 MCP 注入与启动状态判据', 
       expect(failed?.[0]?.error ?? '').toContain('No such file or directory');
     } finally {
       if (KEEP_ARTIFACTS) console.log('[live-codex-mcp] 产物目录（保留，供 CLI 复核）：', root);
+      else removeTreeWithRetry(root);
+    }
+  }, TIMEOUT_MS);
+
+  /**
+   * C 臂：server **慢启动**（initialize 晚 4 s）时，第一条模型请求的工具表里也要有它。
+   *
+   * 为什么这条必须有：工具表随每条请求重算，而 MCP 工具要 server `ready` 之后才进表 ⇒
+   * `thread/start` 一回来就 `turn/start` 的话，开局那几轮的请求里没有 `mcp__<name>`，
+   * 模型据此断言「当前会话没有暴露 MCP 工具」并整轮退化成 shell（现象与探针见 Codex FAQ
+   * 的「当前会话没有暴露 Playwright MCP 工具或资源」条）。单元守卫钉的是**顺序**，
+   * 这一条钉的是**真机上工具表真的长出了那一格**。
+   */
+  it('C 臂：慢启动的 server 也进**第一条**模型请求的工具表', async () => {
+    const live = hostOpenaiProvider();
+    if (live === null) {
+      console.warn('宿主配置里没有 openai 供应商，跳过真机 codex MCP 探针');
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), 'aieval-live-codex-mcp-slow-'));
+    const serverPath = join(root, 'echo-server.mjs');
+    const callLog = join(root, 'mcp-calls.jsonl');
+    writeFileSync(serverPath, ECHO_SERVER_SOURCE, 'utf8');
+    writeFileSync(callLog, '', 'utf8');
+    const recorder = await startToolRecorder(live.baseUrl);
+    try {
+      await runOnce({
+        command: process.execPath,
+        serverPath,
+        callLog,
+        route: { ...live, baseUrl: `${recorder.baseUrl}/v1` },
+        root: join(root, 'c'),
+        delayMs: 4_000,
+      });
+      const first = recorder.requests[0];
+      console.log('[live-codex-mcp] C 臂请求数：', recorder.requests.length);
+      for (const one of recorder.requests) {
+        console.log(`[live-codex-mcp] C 臂 @${one.atMs}ms tools=${one.tools.length}`,
+          JSON.stringify(one.tools.filter((tool) => tool.type === 'namespace').map((tool) => tool.name)));
+      }
+      expect(first?.tools.some((tool) => tool.type === 'namespace' && tool.name === 'mcp__probe')).toBe(true);
+    } finally {
+      recorder.close();
+      if (KEEP_ARTIFACTS) console.log('[live-codex-mcp] C 臂产物目录（保留，供 CLI 复核）：', root);
       else removeTreeWithRetry(root);
     }
   }, TIMEOUT_MS);
