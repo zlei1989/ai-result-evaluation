@@ -136,7 +136,7 @@ function assertUsableRubric(testCase: TestCase): Rubric {
 
 /**
  * 读侧归一：把配置里那一行补成契约声明的形状——
- *   · `repoBranch` 的第三态 undefined → null；
+ *   · `repoBranch` 的第三态 undefined → null；`includeSteps` 缺列 → false（老用例文件没有这两列）；
  *   · **丢掉契约上已经不存在的三列**：用例级评分模型那两列（`judgeProviderId` / `judgeModelId`）
  *     与旧口径的 `judgePrompt`。三者是同一件事：`loadConfig()` 不校验、旧 config.json 里还留着它们，
  *     而裸 spread 会把它们原样交给下游——下游拿到的是一份「类型上没有、运行时却有」的数据，
@@ -169,6 +169,9 @@ function asStoredCase(record: TestCase): TestCase {
   return {
     ...stale,
     repoBranch: normalizeBranch(record.repoBranch),
+    // 「包含步骤」缺列兜底：这一列比 repoBranch 还新，旧用例文件里根本没有它，读路径拿到的是 undefined；
+    // 兜成 false 是语义正确的（老用例跑出来的评测本来就是「评分只看最终改动」），而不是把第三态流出去
+    includeSteps: record.includeSteps ?? false,
     ...(rubric.success ? { rubric: rubric.data } : {}),
   };
 }
@@ -196,6 +199,8 @@ export function createCase(input: CaseCreate): TestCase {
     repoBranch,
     taskPrompt: input.taskPrompt,
     rubric: input.rubric,
+    // 开关值按入参原样落盘：路由层已用 `CaseCreateSchema` 解析过（缺省 false），这里不再兜第二次
+    includeSteps: input.includeSteps,
     createdAt: now,
     updatedAt: now,
   };
@@ -277,6 +282,8 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
     repoBranch: resolved?.repoBranch ?? current.repoBranch ?? null,
     ...(patch.taskPrompt === undefined ? {} : { taskPrompt: patch.taskPrompt }),
     ...(patch.rubric === undefined ? {} : { rubric: patch.rubric }),
+    // 开关不参与来源 / commit 校验，按补丁原样透传；UI 发的是全量补丁（`uiPatchOf`），每次保存都会带它
+    ...(patch.includeSteps === undefined ? {} : { includeSteps: patch.includeSteps }),
     updatedAt: new Date().toISOString(),
   };
   const stored = assertStorable(next);

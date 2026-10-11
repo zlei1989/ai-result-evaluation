@@ -49,6 +49,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     commitHash: null,
     repoBranch: null,
     rubric: FIXTURE_RUBRIC,
+    includeSteps: false,
     status: 'done',
     executionMode: 'parallel',
     useAgentJudge: false,

@@ -55,7 +55,7 @@ import {
   type RubricChange,
   type TestCase,
 } from '@aieval/contracts';
-import { Alert, AutoComplete, Button, Card, Flex, Form, Input, Radio, Tooltip, Typography, theme } from 'antd';
+import { Alert, AutoComplete, Button, Card, Flex, Form, Input, Radio, Switch, Tooltip, Typography, theme } from 'antd';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { formatDateTime } from '../base/format';
 import { RubricAdjustModal } from './rubric-adjust-modal';
@@ -100,6 +100,11 @@ interface CaseFormValues {
   commitHash?: string;
   /** 远端来源的分支；空串 = 没填（提交时归一成 null = 远端默认分支 HEAD） */
   repoBranch?: string;
+  /**
+   * 「包含步骤」开关：开启 = 评分阶段把候选的执行过程记录纳入评分证据，关闭 = 评分只看最终改动。
+   * 单一布尔开关，**只影响评分阶段**（考题提示词与执行阶段不变），提交时原值透传进 CaseCreate。
+   */
+  includeSteps: boolean;
 }
 
 export interface CaseFormPanelProps {
@@ -339,6 +344,8 @@ export function CaseFormPanel({
       repoBranch: submitBranch(values.repoBranch),
       taskPrompt: values.taskPrompt,
       rubric: values.rubric,
+      // 开关值原样透传：它是表单里的一个真实字段（valuePropName="checked"），不是提交时的临时常量
+      includeSteps: values.includeSteps,
     });
   };
 
@@ -348,7 +355,7 @@ export function CaseFormPanel({
    */
   const initialValues: Partial<CaseFormValues> =
     initial === null
-      ? { rubric: { groups: [] } }
+      ? { rubric: { groups: [] }, includeSteps: false }
       : {
         title: initial.title,
         taskPrompt: initial.taskPrompt,
@@ -357,6 +364,8 @@ export function CaseFormPanel({
         commitHash: initial.commitHash ?? '',
         // null（本地用例 / 旧数据）落成空串：表单里「没有分支」的表示就是空串
         repoBranch: initial.repoBranch ?? '',
+        // 契约里 includeSteps 必填（旧文件由读侧兜成 false），直接回显用例上的值
+        includeSteps: initial.includeSteps,
       };
 
   return (
@@ -462,6 +471,18 @@ export function CaseFormPanel({
           <RubricTable value={rubricValue} onChange={(next) => form.setFieldValue('rubric', next)} />
         </Form.Item>
       </Card>
+
+      {/* 「包含步骤」：单一布尔开关（valuePropName="checked" 把 Switch 的 checked 绑进表单）。
+          开启 = 评分阶段把候选的执行过程记录纳入评分证据，评分标准可针对每一步推理给分；
+          关闭 = 评分只看最终改动。只影响评分阶段——考题提示词与执行阶段与开关无关。 */}
+      <Form.Item
+        name="includeSteps"
+        label="包含步骤"
+        valuePropName="checked"
+        extra="开启后评分阶段会读到候选的执行过程记录，评分标准可针对每一步推理给分；关闭时评分只看最终改动"
+      >
+        <Switch data-testid="case-include-steps" />
+      </Form.Item>
 
       <RubricRecognizeModal
         open={recognizeOpen}

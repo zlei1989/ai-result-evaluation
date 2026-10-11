@@ -57,7 +57,7 @@
 - `RunCreateSchema.rows[]` 每行 `agentKind` / `providerId` / `modelId` / `effort`：`effort` **逐行且必须显式声明**——zod 3 的 `z.object` 默认 strip 未知键，不声明的话表单提交的强度会被**静默丢弃**（不是 400）。`useAgentJudge` 同理，payload 显式补 `useAgentJudge: values.useAgentJudge ?? false`，不显式声明就会被静默丢掉。
 - **服务端创建时再拦一次**（`createRun`）：`useAgentJudge === true` 时校验 `defaultJudgeAgent` 非空、且**设置页全局默认评分模型**所属供应商的协议能被该智能体接受（用例上不再有评分模型覆盖）；三处都抛 `CONFLICT` + 可直接展示的中文原因（未配置 / 枚举之外的值 / 协议不接受，`requireJudgeAgent`）。
 - **强度进行快照**（`rows[].effort`），**窗口不进**：窗口是模型属性（与 `baseUrl` 同口径，运行时现读），强度是这一行的配置（与 `modelId` 同级，必须跟着行一起被重跑、被展示、被比较）。记的是**我们要求的**档位，不是实际生效的档位。
-- `EvalRun` 冗余快照：`caseId` + `caseTitle` / `repoPath` / `repoBranch` / `commitHash` / `rubric` 六格——用例改分支 / 删除后，这一轮从哪个分支的哪个 commit、用哪把尺子起跑仍读得出来；分支 tip 每次评测重新解析（跟随语义），`commitHash` 钉死（优先于分支）。
+- `EvalRun` 冗余快照：`caseId` + `caseTitle` / `repoPath` / `repoBranch` / `commitHash` / `rubric` / `includeSteps` 七格——用例改分支 / 删除后，这一轮从哪个分支的哪个 commit、用哪把尺子、开没开「包含步骤」起跑仍读得出来；分支 tip 每次评测重新解析（跟随语义），`commitHash` 钉死（优先于分支）。
 - `AgentModelOption`：`contextWindow?`、`efforts?`（已按规则算过）、`recommendedEffort?`（必须落在 `efforts` 里才有值）；`AgentOptionGroup`：`efforts`（该家完整取值域，**唯一消费方是设置页的评分配置卡片**——候选行表单不读它，行内强度选项来自模型条目自己的 `efforts`）、`defaultEffort`、`messageCapability`。
 
 ## 状态机与时序

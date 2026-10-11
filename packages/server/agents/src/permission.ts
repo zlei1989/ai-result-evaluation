@@ -17,6 +17,13 @@
  *     三行——`DSH_PERMISSION_MODE` 同时决定沙箱档与批准策略，**无需**再传别的开关。
  *
  * 这里只放**权限相关**的选项；模型、cwd、env、超时等仍由各适配器自己拼。
+ *
+ * **`AgentRunInput.extraReadPaths` 刻意不落这三张表**：它只被 claude 消费——翻成 SDK 的
+ * `Options.additionalDirectories`（`--add-dir`），是 **query option** 而不是权限档选项
+ * （转发点在 `providers/claude-code/index.ts`，与权限档并列地扩进 `dontAsk` 的预授权范围）。
+ * codex / dsh 不映射它：codex 的 read-only 沙箱官方语义全盘可读、dsh 的 read-only 只拦写读全放行，
+ * 两家的读放行不需要额外通道。把它塞进表里只会让这两家去消费一个它们不映射的格；
+ * 三份表的键集合由 `permission.test.ts` 逐字钉死（守卫名：「extraReadPaths 不进三份权限档表」）。
  */
 import type { AgentPermission } from './types';
 

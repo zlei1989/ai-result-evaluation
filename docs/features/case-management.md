@@ -40,6 +40,7 @@
 | 分支（仅远端） | 留空 = 远端默认分支；本地来源填了直接 `INVALID_QUERY`；「无」来源不支持分支（写侧同样 `INVALID_QUERY`） |
 | commit hash | `AutoComplete`：候选项 = 最近 20 条提交（`git log --format=%h%x09%s -n 20`），也可手工输入任意合法 hash（`git rev-parse --verify <hash>^{commit}` 判存在并把短哈希归一成 40 位）——纯便利功能，不能只允许从候选里选；「无」来源没有提交历史，整格隐藏、恒为 null |
 | 评分标准项 | 表格编辑器（见下节） |
+| 包含步骤 | `Switch`（`valuePropName="checked"`），位于评分标准项 Card 与来源类型之间；`extra` 说明「开启后评分阶段会读到候选的执行过程记录，评分标准可针对每一步推理给分；关闭时评分只看最终改动」。只影响评分阶段——考题提示词与执行阶段与开关无关；列表 / 详情不展示 |
 
 「校验」按钮挂在「代码仓库」格的 `suffix` 上、连同分支一起校验；「重新加载候选」挂在同一格的 `extra` 槽。选「无」时这一格与校验按钮、候选按钮、commit 格、校验回显一起隐藏（没有仓库可校验、没有提交可列）。远端首次点击可能触发克隆（分钟级），loading 文案分别是「正在校验并拉取远端仓库…」「正在拉取远端仓库…」，背后有 10 分钟墙钟上限。校验回显：
 
@@ -142,6 +143,7 @@
 | `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：迁移前住在 `config.json` 里的旧用例没有这一列，读侧必须按 null 读 |
 | `RepoInfoSchema` | `kind: 'local' \| 'remote'`、`mirrorPath`、`mirrorReady`、`mirrorFetchedAt`、`tip`（短哈希 7 位，仅远端有值）；`branch` 语义：本地 = 当前分支，远端 = 默认分支或用户填的分支 |
 | `EvalRunSchema.repoBranch` | 快照口径：用例改分支 / 删除后，这一轮从哪个分支的哪个 commit 起跑仍读得出来 |
+| `TestCaseSchema.includeSteps` | 必填布尔，创建缺省 `false`（`CaseCreateSchema` 上 `.default(false)`，老客户端与手工 POST 不带这一格仍合法）；读侧旧用例文件缺列兜成 `false`。与 rubric 同链快照进 `EvalRun.includeSteps`（旧 `run.json` 缺列读 `false`），评分阶段读快照、不读当前用例；重评分沿用快照、改用例不影响已建轮次 |
 | `errors.ts` | `REPO_UNREACHABLE`（400）；认证用 `AUTH_FAILED`（`context.host`），不存在 / 不是仓库 / 无法归因用 `NOT_A_GIT_REPO`，分支与提交不存在用 `INVALID_REF` |
 | `parseRepoSource` / `repoNameFromSource` / `displayRepoName` | 判定路径用前两者（非法来源响亮地抛错），渲染路径用 `displayRepoName`（任何字符串都不抛错）。放 contracts（不是 core / ui）：三层都要用（core 镜像层、api 校验与文案、ui 标签），放一处才有唯一真源 |
 | rubric 契约 | `RubricItemSchema` / `RubricGroupSchema` / `RubricSchema`、`rubricMaxScore`（空表返回 0）、`rubricItemKeys`（有 id 用它，没 id 用 `#k`）、`validateRubric`、`composeTotalScore`、`renderRubricForJudge`（两条评分通路共用同一份）、`MAX_ITEM_WEIGHT = 10_000` |
@@ -186,7 +188,7 @@
 
 - [功能总览](/features/) —— 本域目录层：三大模块与数据模型清单
 - [创建评测](/features/run-creation) —— 用例被引用进评测时的快照口径与准备阶段
-- [修改、重跑与删除评测](/features/run-edit-rerun-delete) —— 评测侧换用例时的六格快照重取
+- [修改、重跑与删除评测](/features/run-edit-rerun-delete) —— 评测侧换用例时的七格快照重取
 - [Codex 接入](/protocols/codex)、[《Claude Code 接入》](/protocols/claude-code)、[《DeepSeek Harness 接入》](/protocols/dsh) —— 三家候选智能体
 - [《设置》](/features/settings)、[《数据与存储》](/features/storage) —— 全局默认评分模型（评分标准项的生成与识别只用它）、工作区目录与镜像落点
 - [故障索引](/faq/) —— 远端 git 与评分标准项相关报错的排障入口

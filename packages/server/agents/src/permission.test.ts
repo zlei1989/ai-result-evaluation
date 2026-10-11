@@ -104,6 +104,30 @@ describe('权限表', () => {
   });
 
   /**
+   * extraReadPaths 不落这三张表。
+   *
+   * 为什么钉**键集合**而不是值：`extraReadPaths` 的映射通道是 claude 的 query option
+   * （`Options.additionalDirectories` / `--add-dir`，在 `providers/claude-code/index.ts` 里转发），
+   * 不是权限档选项——把它塞进 `CLAUDE_PERMISSION_OPTIONS` 会逼 codex / dsh 两家的表也去消费一个
+   * 它们不映射的格（那两家的只读档本就全盘可读）。键集合逐字钉死：谁往表里加一格，这里当场红，
+   * 而不是靠「某个值恰好多出来」碰巧被发现。
+   */
+  it('extraReadPaths 不进三份权限档表：键集合逐字钉死（它是 claude 的 query option，不是权限档选项）', () => {
+    expect(Object.keys(CLAUDE_PERMISSION_OPTIONS.full).sort()).toEqual([
+      'allowDangerouslySkipPermissions',
+      'permissionMode',
+    ]);
+    expect(Object.keys(CLAUDE_PERMISSION_OPTIONS['read-only']).sort()).toEqual([
+      'permissionMode',
+      'permissionPrompts',
+    ]);
+    expect(Object.keys(CODEX_PERMISSION_OPTIONS.full).sort()).toEqual(['approvalPolicy', 'sandboxMode']);
+    expect(Object.keys(CODEX_PERMISSION_OPTIONS['read-only']).sort()).toEqual(['approvalPolicy', 'sandboxMode']);
+    expect(Object.keys(DSH_PERMISSION_OPTIONS.full).sort()).toEqual(['env']);
+    expect(Object.keys(DSH_PERMISSION_OPTIONS['read-only']).sort()).toEqual(['env']);
+  });
+
+  /**
    * Windows 豁免：codex 的受限沙箱在 Windows 上**起不了任何子进程**
    * （`read-only` 与 `workspace-write` 下连 `echo` / `git status` 都被 policy 拒），而它读文件
    * 只能靠 shell ⇒ 评分阶段会变成盲评（真机：候选三项全达成，评分 0/25）。故只读档在 Windows 上

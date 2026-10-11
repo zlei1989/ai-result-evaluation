@@ -37,6 +37,7 @@ const CASE: TestCase = {
   repoBranch: null,
   taskPrompt: '为 anthropic-to-chat 补一条回归用例',
   rubric: RUBRIC,
+  includeSteps: false,
   createdAt: '2026-09-22T10:00:00.000Z',
   updatedAt: '2026-09-22T12:30:00.000Z',
 };

@@ -83,6 +83,7 @@ function makeCase(overrides: Partial<TestCase> = {}): TestCase {
     repoBranch: null,
     taskPrompt: '实现一个 LRU 缓存',
     rubric: { groups: [{ name: '一、功能实现', items: [{ id: 'A1', goal: '实现 LRU 缓存', weight: 20 }] }] },
+    includeSteps: false,
     createdAt: '2026-09-22T10:30:00.000Z',
     updatedAt: '2026-09-22T10:30:00.000Z',
     ...overrides,

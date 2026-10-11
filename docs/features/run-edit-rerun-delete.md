@@ -54,7 +54,7 @@
 | 改某行的 agent / 模型 / 强度 | 该行**原地重置**：`status → 'pending'`、`baselineCommit → ''`、`tokens / turns / durationMs / diff / score / error → null`、`attempts → 0`、`effort` 按新值重建（缺省即不写键——界面从此显示「默认」档） | 不动（重跑时既有机制清：`prepareRowWorkspace` 清 `workspace/`、`.agenthome/`、`.judgehome/`） |
 | 新增一行 | 新 `rowId`（`randomUUID`）+ `branch = test/{rowId}` + `workspacePath` 按 `run.workspaceBase` 现算；`providerName` / `baseUrl` 由服务端快照 | 无（首次 prepare 时建） |
 | 删掉一行 | 从快照移除 | **不动**（孤儿目录留给整轮删除时回收） |
-| 换来用例 | 重取六格快照（`caseId` + 标题 / `repoPath` / `repoBranch` / `commitHash` / `rubric`）+ **所有行**按「原地重置」处理 | 同上 |
+| 换来用例 | 重取七格快照（`caseId` + 标题 / `repoPath` / `repoBranch` / `commitHash` / `rubric` / `includeSteps`）+ **所有行**按「原地重置」处理 | 同上 |
 
   新增行的 `workspacePath` 按 **`run.workspaceBase`** 现算，**不用当前 `settings.workspaceRoot`**——一轮的产物必须与它的快照同根。
 - **`attempts` 在重置时清零（与 `retryRow` 刻意不清零相反）**：重试重跑的是同一件事，编辑换掉的是**被评对象**——留着「尝试 3 次」等于让新模型凭空背上旧模型的账。
@@ -99,7 +99,7 @@ PUT /api/runs/{runId}（顺序承重）
 ## 相关链接
 
 - [创建评测](/features/run-creation) —— 编辑复用的那张表单、执行模式与候选行的创建侧口径
-- [用例管理](/features/case-management) —— 换用例时重取的六格快照从哪来、`assertStorable` 真相层
+- [用例管理](/features/case-management) —— 换用例时重取的七格快照从哪来、`assertStorable` 真相层
 - [功能总览](/features/) —— 本域目录层：三大模块与数据模型清单
 - [《评测详情与候选行》](/features/run-detail)、[《评分》](/features/judging)、[《行执行与日志》](/features/row-execution) —— 详情页形态与吸底操作栏（开始 / 终止）、重新评分重跑的那一步（`runJudgeStage` 与两条通路）、事件日志与 SSE 口径
 - [故障索引](/faq/) —— 评测编辑与重跑链路上的报错排障入口

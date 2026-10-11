@@ -98,6 +98,7 @@ import {
 } from './row-skill';
 import { judgeRowByAgent, JudgeAgentError } from './judge-agent';
 import { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudgeRoute } from './judge-route';
+import { assembleProcessEvidence } from './process-evidence';
 import { forgetRunRoot } from './run-root-memory';
 import { getRunForWrite, listRuns, saveRun } from './run-store';
 
@@ -362,6 +363,8 @@ interface JudgeStageContext {
   testCase: TestCase;
   workspacePath: string;
   baselineCommit: string;
+  /** 候选行用的智能体（执行过程证据按它的注册表元数据决定要不要补 messages.jsonl） */
+  agentKind: AgentKind;
   /** 第 6 步已算好的裁剪后正文；重新评分传 null（自己现算） */
   diffText: string | null;
   /** 第 6 步已算好的改动摘要（污染对照的「评分前」那一份）；重新评分传 null（自己现算） */
@@ -663,6 +666,22 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
   // 内部的 `providerId` 是同一个来源（同一份 `config` 快照里的 `defaultJudge`），不再有两处表达式要对齐。
   const judgeProviderId = config.settings.defaultJudge?.providerId ?? '';
 
+  /**
+   * 执行过程记录证据：`EvalRun.includeSteps` 快照门控 → events.jsonl raw 原文 →
+   * codex 按注册表元数据补 messages.jsonl → 按 `diffBudgetBytes` 逐行截断。
+   * 在选通路**之前**组装一次，两条通路共用同一份产物——文本通路（judgeRow）拿
+   * `content` 拼 text 块，智能体通路（judgeRowByAgent）拿 `absolutePath` 写提示词；
+   * 同一份输入里结构修复的多轮重发也不再重读盘（截断结果一致）。
+   */
+  const processEvidence = assembleProcessEvidence({
+    workspaceBase: ctx.run.workspaceBase,
+    runId: ctx.runId,
+    rowId: ctx.rowId,
+    includeSteps: ctx.run.includeSteps,
+    agentKind: ctx.agentKind,
+    budgetBytes: config.settings.diffBudgetBytes,
+  });
+
   if (!ctx.run.useAgentJudge) {
     // 文本通路没有智能体驱动它，故「评分智能体域」按设置里那一格判：与设置页给出候选档位时同一条口径
     // （这一格没配、或是个枚举之外的坏值时，`requireJudgeEffort` 自己取规范五档）
@@ -679,6 +698,8 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
           taskPrompt: ctx.testCase.taskPrompt,
           route,
           judgeProviderId,
+          // 「包含步骤」的执行过程证据（快照门控 + 截断已在进入评分前完成；文本通路按此拼 text 块）
+          processEvidence,
           // 强度按需带（没配就一个键都不出现）：与候选执行同一条口径——**请求参数**由两条通路
           // 各自递下去，不在 `route` 上（那是连接事实）。记账在评分器里做（`finalizeScore`）
           ...(judgeEffort === undefined ? {} : { judgeEffort }),
@@ -726,6 +747,8 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
         taskPrompt: ctx.testCase.taskPrompt,
         signal: ctx.controller.signal,
         judgeProviderId,
+        // 「包含步骤」的执行过程证据（与文本通路同一份产物；智能体通路按 absolutePath 写提示词）
+        processEvidence,
         // 与文本通路同一格、同一份快照（两条通路的要求强度必须是同一个值，否则分数不可比）
         ...(judgeEffort === undefined ? {} : { judgeEffort }),
         // 总是表达「我想要 schema」：能不能给由适配器按能力决定，降级会经 applied 报回来
@@ -1907,6 +1930,7 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
       testCase,
       workspacePath: prepared.workspacePath,
       baselineCommit: prepared.baselineCommit,
+      agentKind: row.agentKind,
       diffText: clipped.text,
       diffSummary: {
         filesChanged: collected.filesChanged,
@@ -2349,6 +2373,7 @@ async function rescoreAttempt(input: {
       testCase: input.testCase,
       workspacePath: input.row.workspacePath,
       baselineCommit: input.row.baselineCommit,
+      agentKind: input.row.agentKind,
       // 第 6 步那一份没有落在快照里（快照只存计数摘要）：这里传 null，由评分阶段自己现算
       diffText: null,
       // 改动摘要同样传 null：评分阶段现算的那一份 `truncated` 恒为 false（它只用于计数对照），

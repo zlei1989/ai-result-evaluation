@@ -352,6 +352,34 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(parsed.repoBranch).toBeNull();
   });
 
+  /**
+   * 「包含步骤」快照：显式值逐字保留，缺列读成 false。
+   * 为什么缺列必须按 false 而不是必填：这一列比 `useAgentJudge` 还新，磁盘上已有的 `run.json`
+   * 都没有它——必填会让 `run-store` 的 `safeParse` 失败 ⇒ `listRuns()` 静默跳过那一轮
+   * （与 `useAgentJudge` 同一条理由）。false 也是语义正确的兜底：老一轮评测本来就是
+   * 「评分只看最终改动」跑出来的。
+   */
+  it('EvalRun.includeSteps 缺字段读成 false（旧 run.json 没有这一列），显式值逐字保留', () => {
+    const run = {
+      id: 'run-1',
+      caseId: 'c-1',
+      caseTitle: 'LRU 缓存',
+      repoPath: 'D:/repos/demo',
+      commitHash: null,
+      rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
+      status: 'idle' as const,
+      executionMode: 'parallel' as const,
+      rows: [row],
+      workspaceBase: 'D:/runs',
+      createdAt: '2026-09-22T10:30:00.000Z',
+      startedAt: null,
+      finishedAt: null,
+    };
+    const parsed = EvalRunSchema.parse({ ...run, includeSteps: undefined });
+    expect(parsed.includeSteps).toBe(false);
+    expect(EvalRunSchema.parse({ ...run, includeSteps: true }).includeSteps).toBe(true);
+  });
+
   it('RunCreate 至少一行候选，每行三个字段都必填', () => {
     const input = {
       caseId: 'c-1',
@@ -782,6 +810,7 @@ function runWith(status: EvalRun['status'], rowStatuses: EvalRowStatus[]): EvalR
     commitHash: null,
     repoBranch: null,
     rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
+    includeSteps: false,
     status,
     executionMode: 'parallel',
     useAgentJudge: false,

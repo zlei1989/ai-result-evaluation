@@ -122,6 +122,8 @@ vi.mock('@aieval/agents', async (importOriginal) => {
         // 于是「支持的适配器不该发降级日志」这类断言就建立在一个不合法的元数据字面量上
         //（判据本身还是对的，但它之所以是绿，靠的是这一格恰好缺失，而不是被测行为）。
         capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
+        // 照真值填：这个假 provider 声称自己是 codex，而 codex 的推理证据需要 messages.jsonl
+        needsMessagesForReasoningEvidence: true,
       },
       // 挂住不返回：让用例在「行还在跑」的时刻自己决定发什么用量、什么时候结束
       run: async (input: { onEvent: (event: unknown) => void }) => {

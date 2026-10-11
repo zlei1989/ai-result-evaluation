@@ -1,14 +1,16 @@
 /**
- * CaseFormPanel：表单字段、提交归一化、评分标准项的生成 / 识别回填、仓库校验回显，以及六条守卫。
+ * CaseFormPanel：表单字段、提交归一化、评分标准项的生成 / 识别回填、仓库校验回显，以及七条守卫。
  *
- * 六条守卫：
+ * 七条守卫：
  *   1. 手工输入的 commit hash 不在候选列表里也能提交（候选只是便利）；
  *   2. 生成 / 识别**失败**都不动用户已有的东西：表格原样、识别文本原样——
  *      反面写法是「先清空再请求」，一次网络抖动就清掉用户刚调好的表或刚粘进来的长文；
  *   3. **空表能存在、不能提交**：表格常驻可见、新建时就是空表，提交由 rubric 那条规则拦下；
  *   4. **在途的识别可以取消**：按了取消，之后才回来的结果一个字都不回填（取消就是取消）；
  *   5. 仓库信息只在「当前输入框的值 == 校验通过的那次值」时回显（否则会让人以为新路径也校验过了）；
- *   6. 挂载面板不产生 antd 的弃用告警（`addonAfter` 那一类，见文件末尾的 describe）。 * 表单上**没有**「默认评分模型」这一格：评分模型只来自设置页「评分配置」，
+ *   6. 挂载面板不产生 antd 的弃用告警（`addonAfter` 那一类，见文件末尾的 describe）。
+ *   7. 「包含步骤」开关的值进提交、编辑回显 false/true（见「CaseFormPanel 的「包含步骤」开关」describe）。
+ * 表单上**没有**「默认评分模型」这一格：评分模型只来自设置页「评分配置」，
  * 所以这份文件里也不再需要任何 provider 清单夹具。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +47,7 @@ const INITIAL: TestCase = {
   repoBranch: null,
   taskPrompt: '为 anthropic-to-chat 补一条回归用例',
   rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 18 }] }] },
+  includeSteps: false,
   createdAt: '2026-09-22T10:00:00.000Z',
   updatedAt: '2026-09-22T10:00:00.000Z',
 };
@@ -124,6 +127,8 @@ describe('CaseFormPanel 提交', () => {
       repoBranch: null,
       taskPrompt: '补一条回归',
       rubric: { groups: [{ name: '一、生产代码', items: [{ id: '', goal: '追加 agent 字段', weight: 1 }] }] },
+      // 「包含步骤」开关默认关闭：新建用例不碰它就是 false（与契约创建侧 `.default(false)` 同值）
+      includeSteps: false,
     });
   });
 
@@ -239,6 +244,57 @@ describe('CaseFormPanel 提交', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0]?.[0]?.commitHash).toBe(HASH_IN_LIST);
+  });
+});
+
+describe('CaseFormPanel 的「包含步骤」开关', () => {
+  it('新建模式：开关常驻渲染且默认关闭，extra 说明语义', () => {
+    setup({ mode: 'new' });
+
+    const switchEl = screen.getByTestId('case-include-steps');
+    expect(switchEl).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('包含步骤')).toBeInTheDocument();
+    // 这句说明把开关的语义讲全：开启 = 评分阶段看执行过程记录，关闭 = 只看最终改动
+    expect(
+      screen.getByText('开启后评分阶段会读到候选的执行过程记录，评分标准可针对每一步推理给分；关闭时评分只看最终改动'),
+    ).toBeInTheDocument();
+  });
+
+  it('新建模式：打开开关后提交 includeSteps: true', async () => {
+    const onSubmit = vi.fn<(values: CaseCreate) => void>();
+    setup({ onSubmit });
+    fillRequired();
+
+    fireEvent.click(screen.getByTestId('case-include-steps'));
+    fireEvent.click(screen.getByTestId('case-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]?.includeSteps).toBe(true);
+  });
+
+  it('编辑模式：includeSteps=false 回显为关闭，提交仍是 false', async () => {
+    const onSubmit = vi.fn<(values: CaseCreate) => void>();
+    setup({ mode: 'edit', initial: INITIAL, onSubmit });
+
+    expect(screen.getByTestId('case-include-steps')).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(screen.getByTestId('case-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]?.includeSteps).toBe(false);
+  });
+
+  it('编辑模式：includeSteps=true 回显为开启，提交仍是 true', async () => {
+    const onSubmit = vi.fn<(values: CaseCreate) => void>();
+    const withSteps: TestCase = { ...INITIAL, includeSteps: true };
+    setup({ mode: 'edit', initial: withSteps, onSubmit });
+
+    expect(screen.getByTestId('case-include-steps')).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(screen.getByTestId('case-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]?.includeSteps).toBe(true);
   });
 });
 

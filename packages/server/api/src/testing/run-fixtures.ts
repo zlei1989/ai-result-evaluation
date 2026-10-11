@@ -94,6 +94,7 @@ export function makeCase(overrides: Partial<TestCase> = {}): TestCase {
     repoBranch: null,
     taskPrompt: '补齐转换并加回归用例',
     rubric: FIXTURE_RUBRIC,
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
     ...overrides,
@@ -150,6 +151,7 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
  * `rubric` 与 `makeCase` 逐字相同（见 `FIXTURE_RUBRIC` 的说明）：它是这一轮**创建时**拍下的那把尺子，
  * 不填这一格等于造一轮「快照里没有评分表」的评测——`saveRun` 的写侧自检会当场拒绝，
  * 而「没换用例就不许动快照」那条守卫的保留侧也会退化成 `undefined`（拦不住「被丢掉/清空」）。
+ * `includeSteps` 同理与 `makeCase` 逐字相同（缺省 false）：它是这一轮创建时拍下的开关值。
  */
 export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
   return {
@@ -160,6 +162,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     commitHash: null,
     repoBranch: null,
     rubric: FIXTURE_RUBRIC,
+    includeSteps: false,
     status: 'idle',
     executionMode: 'parallel',
     useAgentJudge: false,

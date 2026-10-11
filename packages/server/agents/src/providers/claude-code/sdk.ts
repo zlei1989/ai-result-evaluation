@@ -69,6 +69,16 @@ export interface ClaudeQueryOptions {
    */
   permissionPrompts?: 'host' | 'none';
   /**
+   * 权限范围内**额外放行**的只读绝对路径（`sdk.d.ts:1467` 的 `Options.additionalDirectories`，
+   * SDK 拼成 CLI 的 `--add-dir`；厂商 JSDoc 逐字：「Additional directories Claude can access
+   * beyond the current working directory. Paths should be absolute.」）。
+   *
+   * 与 `dontAsk` 兼容：工作目录内的读由 `dontAsk` 预授权，这一格把预授权范围扩到 cwd 之外的
+   * 目录/文件，语义仍是「未预授权的一律拒」——它只扩大**读**的放行范围，不改变写仍被拒。
+   * 路径必须是绝对路径（厂商口径）；空数组在 SDK 侧不追加任何 argv。
+   */
+  additionalDirectories?: readonly string[];
+  /**
    * 从模型上下文里摘掉的内置工具名（厂商把它拼成 `--disallowedTools <逗号分隔>`，非空才追加）。
    * 只读地传：名单由 `index.ts` 的 `ALWAYS_DISALLOWED_TOOLS` / `NON_CLAUDE_DISALLOWED_TOOLS` 持有，
    * 每次运行按 `disallowedToolsFor(modelId)` 现拼一份（`WebSearch` 随模型名分档）——厂商声明的是

@@ -2,7 +2,7 @@
 
 ## 定位
 
-评分是一轮评测的第 7 步：把候选的**完整产出**（文本通路 = 裁剪后的 diff；智能体通路 = 候选自己的工作区）对照用例的**评分标准项表格**做逐项二元判定（达成 / 未达成），总分 = 达成项权重之和、满分 = 全部项权重之和，**模型不给总分**。两条通路（`judgeRow` 文本 API / `judgeRowByAgent` 智能体）共用同一把尺子：`parseJudgeResponse`（解析）+ `finalizeScore`（收口）+ `judgeStageAttempt`（执行骨架）。
+评分是一轮评测的第 7 步：把候选的**完整产出**（文本通路 = 裁剪后的 diff；智能体通路 = 候选自己的工作区）对照用例的**评分标准项表格**做逐项二元判定（达成 / 未达成），总分 = 达成项权重之和、满分 = 全部项权重之和，**模型不给总分**；用例开启「包含步骤」时两条通路都另把候选的**执行过程记录**纳入评分证据（文本通路 = 独立 text 块、智能体通路 = 提示词里的绝对路径）。两条通路（`judgeRow` 文本 API / `judgeRowByAgent` 智能体）共用同一把尺子：`parseJudgeResponse`（解析）+ `finalizeScore`（收口）+ `judgeStageAttempt`（执行骨架）。
 
 ## 页面形态与交互
 
@@ -11,7 +11,7 @@
 - **识别弹窗**：只有一个多行文本域；**失败不关窗、不清文本**；识别中按钮禁用。
 - **调整弹窗**（智能调整）：输入一句话 → 模型回整表 + 服务端 `diffRubric` 算改动清单（七类改动）→ **预览清单、点「应用」才回写**（不点应用表格不动；空表在调模型之前拒，不花额度）。
 - **评分详情抽屉**（props 只有 `score` + `rubric`）：顶部两行是**评分自己**的运行信息（评分智能体（文本通路写「文本 API」）/ 评分模型 / 思考强度 + 评分用量 / 评分耗时）；中部逐项达成 / 未达成（缺判定项 `Tag warning`「缺少判定」不静默跳过）；总评；底部「输出约束（schema 约束 / 提示词约束）· 评分时间」；模型原始返回可见。**总分原样显示权威值，前端不重算；满分来自 `maxScore` 不是常量 100**。
-- **设置页评分配置**：默认评分模型（跨协议候选）、思考强度（`allowClear`，清空 = 未指定）、默认评分智能体（协议不兼容项 `disabled`）、输出契约（只读文案）、diff 上限（KB 计，配置存字节，默认 256）。onChange 自动保存。
+- **设置页评分配置**：默认评分模型（跨协议候选）、思考强度（`allowClear`，清空 = 未指定）、默认评分智能体（协议不兼容项 `disabled`）、输出契约（只读文案）、diff 上限（KB 计，配置存字节，默认 256；同一预算也是「包含步骤」执行过程证据的截断上限）。onChange 自动保存。
 - **行卡片**：「重新评分」Popconfirm；「使用智能体评分」Switch（创建时快照、编辑可改）。
 
 ## 数据与契约
@@ -20,7 +20,8 @@
 - **派生函数**：`rubricMaxScore`（空表 0）、`validateRubric`（中文报错点名组 / 项）、`composeTotalScore`（达成项权重之和，可 >100）、`renderRubricForJudge`（Markdown 二级表格：引用键 / 目标 / 权重，`|` 转义、换行压空格防列错位）、`diffRubric`（七类改动 + 三段式配对：id → goal 逐字 → 组内位置）。
 - **ScoreResult**（12 格）：`judgments[]`（`{ id, achieved, reason }`）、`totalScore`、`maxScore`（满分快照）、`verdict`、`raw`、`judgeProviderId`、`judgeModelId`、`judgedAt`、`judgeAgentKind`（null ⇔ 文本 API）、`judgeEffort`（null ⇔ 我们没指定）、`structuredOutput`（记**骨架算出的「schema 真的下发给了适配器」**，不承诺上游照做）、`judgeTokens` / `judgeDurationMs`（评分自己的花销，与行卡片那份分开）。所有记账格 `.default(...)`——`run-store` 用 `safeParse` 读盘，必填新字段会让旧 `run.json` 解析失败 ⇒ `listRuns()` 静默跳过。
 - **两投影同批替换**：`JUDGE_OUTPUT_CONTRACT`（提示词文本，作 system）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出）是同一条契约的两个投影，改一份必须同批改另一份；两份里都**没有** `totalScore`；同形守卫从契约文本正则抽字段名与 schema 逐一对齐。
-- **快照链**：`TestCase.rubric`（必填）→ 创建评测时快照进 `EvalRun.rubric` → 评分阶段只读 `run.rubric`。改用例的表**不影响**历史分数与其满分；重评分按**当前配置**的模型 / 智能体 / 强度打，但尺子（表）不变。
+- **快照链**：`TestCase.rubric`（必填）→ 创建评测时快照进 `EvalRun.rubric` → 评分阶段只读 `run.rubric`。改用例的表**不影响**历史分数与其满分；重评分按**当前配置**的模型 / 智能体 / 强度打，但尺子（表）不变。「包含步骤」与尺子**同链**：`TestCase.includeSteps`（创建缺省 false）创建评测时快照进 `EvalRun.includeSteps`（旧 `run.json` 缺列读 false）——评分阶段看的是快照、不是当前用例的开关；重评分沿用快照。
+- **执行过程证据（开关开启时组装）**：`assembleProcessEvidence` 读候选的 `events.jsonl` **raw 原文**（坏行与缺字段的历史行照留——它们同样是候选行为的证据，解析侧会丢它们、证据侧必须留）；候选 `agentKind` 的 provider 元数据声明 `needsMessagesForReasoningEvidence`（codex true、claude / dsh false——厂商差异只问注册表，**不硬编码厂商名**）时追加 `messages.jsonl` raw 原文。内容在进入评分上下文**之前**按 `settings.diffBudgetBytes` 按**字节**截断（`Buffer.byteLength`、逐行裁剪、**头尾保留 + 中间截断处显著标注**）。两条通路共用同一份产物：文本通路取截断后的 `content` 拼成带 `## 文件名` 标题的独立 text 块，智能体通路取 `absolutePath` 指路、评审者读磁盘原文（那一侧不截断）。记录文件缺失（候选没跑到产出）时跳过该份、评分照常，跳过以「files 里少一份」留痕、不静默。
 - **旧数据处置**：不删历史、不写迁移。旧用例在「用」的路径（详情 / 建评测 / 换用例 / 编辑保存）被拒（INTERNAL：`这个用例是旧版数据（没有评分标准项），请删除它或重新创建：<caseId>`）；**列表路径故意不拒**（否则一条旧用例让整页 500、连删除入口都没有）。
 - **effort 档位**（文本侧 `reasoningFields(protocolType, effort)`，单轮 / 多轮共用）：
 
@@ -46,9 +47,9 @@
 
 - **第 7 步骨架**（`runJudgeStage`，两条通路共用）：`setRowStatus('judging')` → **空表兜底守卫**（`rubricMaxScore(run.rubric) <= 0` ⇒ `CONFLICT`：`这一轮用的评分标准项是空的，无法评分：这一轮的评分表在创建时就已快照，改用例不会影响它——请在用例里补上评分项后新建一轮评测`，**评分器一次都不调用**）→ 取同一份 config 快照 → `useAgentJudge` 分流 → `judgeStageAttempt` → 失败面折行终态（`AGENT_CANCELED` ⇒ canceled；其余 failed 且原样保留归因码）。
 - **`judgeStageAttempt` 四件事**：迟到事件闸门（落定后收尾事件不再落盘）；用户终止归因（`userAborted` 记账）；**污染对照**（仅智能体通路：评分前后各算一次改动摘要，不一致 ⇒ 拿到分时该行判 `failed`，拿不到分只留痕）；终止 race（`Promise.race`，终止赢 ⇒ 不改状态、在途结果只落「`[已终止的尝试]`」日志；**宽限为 0**，孤儿 promise 先挂 `.catch`）。
-- **文本通路**：提示词 = 题面 → `renderRubricForJudge(快照)` → diff（空 diff 显式写「（无改动）」）；结构检查不合格**回问**（`JUDGE_REPAIR_ROUNDS = 2`，即最多 3 次请求；反馈点名缺项 + 引用键 / 目标 / 权重清单）；调用失败（网络 / 鉴权 / 限流）**透传原错误码**、一次都不回问；`MAX_TOKENS = 16_384`。
+- **文本通路**：评分上下文 = **意图 text 块 + 独立 text 块**。意图 text 块只含【题面 + 评分标准表】；diff 作为独立 text 块（块标题 `## candidate-diff.txt`）与意图分开输入——这对**所有文本评分生效**、与开关无关；空 diff 显式写「（无改动）」。开关开启时在 diff 块之后按序追加执行过程证据 text 块（`## candidate-events.jsonl`，codex 候选再加 `## candidate-messages.jsonl`；标题与内容照组装产物原样）。块翻译只在 `text-api.ts` 一处：attachment 块两协议统一翻成带 `## 文件名` 标题的 text 块（`{type:'text', text: '## <filename>\n\n<原文>'}`）。**为什么不是协议附件（anthropic document / openai file part）**：DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成 `[Unsupported Document]` 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在两协议三端点真机可用（判据 = 哨兵词复述）。网关将来支持协议附件后，重跑探针再议。结构检查不合格**回问**（`JUDGE_REPAIR_ROUNDS = 2`，即最多 3 次请求；修复轮全量重发同一份 diff 块与证据块，纠错文本在前；反馈点名缺项 + 引用键 / 目标 / 权重清单）；调用失败（网络 / 鉴权 / 限流）**透传原错误码**、一次都不回问；`MAX_TOKENS = 16_384`。
 - **解析唯一真源 `collectJudgeJudgments`**：剥围栏只剥整段的（中间夹散文不救）；**按引用键逐个取，缺一项即不合格**（`缺少对 <键>（<目标>）的判定：评分表里的每一项都必须恰好给出一条判定`）；多余判定忽略、重复键取第一条；`achieved` 宽容读（`"true"/"false"/"是"/"否"/"达成"/"未达成"`）；缺 verdict / reason 给占位文案（占位不是失败）。
-- **智能体通路**：`getProvider(kind).run`，`permission: 'read-only'`（提示词「只读评审」是要求、这一格是强制）、`configHome` = 独立 `.judgehome`、`outputSchema` 总是传；**先判 `result.ok` 再读 `finalText`**（先读会把「没问到」当「答错了」）；`finalText === null` 与空答复两种 `JUDGE_PARSE_FAILED` 文案分开；评分智能体日志行带 `[评分智能体] ` 前缀（summary 不戴）；其用量不进行级三格，随分记 `judgeTokens` / `judgeDurationMs`。
+- **智能体通路**：`getProvider(kind).run`，`permission: 'read-only'`（提示词「只读评审」是要求、这一格是强制）、`configHome` = 独立 `.judgehome`、`outputSchema` 总是传；**先判 `result.ok` 再读 `finalText`**（先读会把「没问到」当「答错了」）；`finalText === null` 与空答复两种 `JUDGE_PARSE_FAILED` 文案分开；评分智能体日志行带 `[评分智能体] ` 前缀（summary 不戴）；其用量不进行级三格，随分记 `judgeTokens` / `judgeDurationMs`。开关开启时：提示词在既有段落**之后追加**「## 候选的执行过程」段——逐项列出证据文件的**绝对路径**与它是什么，加读取指引（文件可能很大：先看结构再按需读，不要整份打印）；记录原文**不截断**，评审者直接读磁盘。记录文件落在 cwd 之外，同一条路径透传进 `run` 的 `extraReadPaths`（claude 映射 SDK `additionalDirectories` = `--add-dir`，扩进 `dontAsk` 的预授权范围；codex / dsh 不映射，只读档读本就放行）——没有这一格，claude 的 `dontAsk` 会拒读工作目录外的记录。证据为空（开关关 / 两份记录都缺失）时提示词与入参都不多这一格。
 
 ## 已知边界与取舍
 

@@ -40,6 +40,7 @@ import {
 } from '@aieval/contracts';
 import { getProvider, type AgentErrorCode, type AgentRunResult } from '@aieval/agents';
 import { finalizeScore, parseJudgeResponse, reason, truncateRaw } from './judge';
+import { EVIDENCE_FILE_LABELS, type ProcessEvidence } from './process-evidence';
 import type { TextRoute } from './text-api';
 
 /** 转发进该行事件日志时的前缀：日志抽屉里必须能区分候选的输出与评审者的输出 */
@@ -99,6 +100,13 @@ export interface AgentJudgeInput {
    * 两处上限都删了，评审者跑到它自己收场为止，唯一的停止入口是 `signal`（用户点「终止」）。
    */
   signal: AbortSignal;
+  /**
+   * 「包含步骤」的执行过程记录证据（编排层组装，与文本通路**同一份产物**：快照门控 +
+   * codex 补 messages + 预算截断）。智能体通路用 `files[].absolutePath` 在提示词里指给
+   * 评审者读原文（这一侧不截断）；`content` 是截断产物，只服务文本通路的独立 text 块。
+   * `files` 为空 = 开关关闭 / 两份记录都缺失。
+   */
+  processEvidence?: ProcessEvidence;
   onEvent: (event: AgentEvent) => void;
   /**
    * 评审者交出的**内容消息**。与候选阶段的 `onMessage` 同形同口径：
@@ -111,16 +119,31 @@ export interface AgentJudgeInput {
 }
 
 /**
+ * 证据文件在提示词里的一句话说明：评审者要据此知道这一份是什么、什么时候该读它。
+ * 标签从组装层的映射表（`process-evidence.ts` 的 `EVIDENCE_FILE_LABELS`）查——文件名与
+ * 中文说明同源，新证据类型只改那一张表。表里没有的文件名原样列出：新的证据类型宁可在
+ * 提示词里少一句说明，也不该被改名后静默消失。
+ */
+function evidenceFileLabel(filename: string): string {
+  return EVIDENCE_FILE_LABELS[filename] ?? filename;
+}
+
+/**
  * 拼评分请求。顺序与文本通路的 `buildJudgePrompt` 对齐，但多一段「改动怎么看」——
  * 那一段正是本通路存在的理由：不让模型把改动整段打印出来，而是让它按文件读。
  * 「只读」必须显式写：工作区是候选的产出，被评审者改动之后「查看改动」抽屉显示的就不再是候选的产出。
+ *
+ * 「包含步骤」开启（`processEvidence.files` 非空）时在既有段落之后**追加**一段「候选的执行过程」：
+ * 逐项列出记录文件的绝对路径与它是什么，并给读取指引。既有段落不因开关而变化（逐字相同）；
+ * 记录原文**不截断**——评审者自己按绝对路径读磁盘原文，提示词只指路。
  */
 export function buildAgentJudgePrompt(input: {
   taskPrompt: string;
   rubric: Rubric;
   baselineCommit: string;
+  processEvidence?: ProcessEvidence;
 }): string {
-  return [
+  const sections = [
     '你是一名资深代码评审专家。你要评的是下面这道考题的候选实现，评分依据是**工作区里的真实改动**。',
     '',
     '## 考题（候选拿到的任务）',
@@ -142,7 +165,23 @@ export function buildAgentJudgePrompt(input: {
     '3. 把最终答复**作为你最后一条消息的正文**直接给出，不要写进任何文件。',
     '',
     JUDGE_OUTPUT_CONTRACT,
-  ].join('\n');
+  ];
+  const evidenceFiles = input.processEvidence?.files ?? [];
+  // 开关开（证据非空）才追加：记录文件落在 cwd 之外，评审者拿到的是绝对路径，读不读得到由
+  // 权限层放行（extraReadPaths），提示词这里只负责「指路 + 怎么读」
+  if (evidenceFiles.length > 0) {
+    sections.push(
+      '',
+      '## 候选的执行过程',
+      '候选做这道题时的执行过程记录落在以下文件（绝对路径），需要时直接读取：',
+      ...evidenceFiles.map((file) => `- \`${file.absolutePath}\`：${evidenceFileLabel(file.filename)}`),
+      '读取指引：',
+      '- 用 Read 工具或 `cat` 读取；',
+      '- 文件可能很大：先看文件结构（行数、首尾几行），再按需读与本题相关的片段，不要把整份记录打印出来；',
+      '- 评分标准项涉及推理过程 / 步骤时，结合这些记录判定；记录缺失时按「看不到的部分不要臆测」处理。',
+    );
+  }
+  return sections.join('\n');
 }
 
 /**
@@ -169,10 +208,12 @@ function prefixEvent(event: AgentEvent): AgentEvent {
  */
 export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResult> {
   const provider = getProvider(input.kind);
+  const evidenceFiles = input.processEvidence?.files ?? [];
   const prompt = buildAgentJudgePrompt({
     taskPrompt: input.taskPrompt,
     rubric: input.rubric,
     baselineCommit: input.baselineCommit,
+    processEvidence: input.processEvidence,
   });
 
   let result: AgentRunResult;
@@ -185,6 +226,12 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
       // 强制——两者缺一：只有提示词时，一个不守规矩的评审者照样能改；只有这一格时，
       // 它会把「被拒的写操作」当成环境故障，而不是自己的越界。
       permission: 'read-only',
+      // 执行过程记录的磁盘路径透传成 read-only 档的额外读放行（`extraReadPaths`）：
+      // 记录文件落在 cwd 之外，claude 的 `dontAsk` 只预授权工作目录内的读，这一格让它把
+      // `--add-dir` 扩进预授权范围；codex / dsh 不消费这一格（read-only 下读本来就全放行）。
+      // 证据为空（开关关 / 两份记录都缺失）= 这一格不存在，与「缺省不传」逐字同义
+      //（条件展开的写法理由与下面 outputSchema 那一格相同）。
+      ...(evidenceFiles.length > 0 ? { extraReadPaths: evidenceFiles.map((file) => file.absolutePath) } : {}),
       // 按需带：`undefined` / `null` 时适配器一个字段都不加（三家各自的守卫在各自适配器里）。
       // 用条件展开而不是 `outputSchema: input.outputSchema`，是为了不给下游一个「键存在、值是
       // undefined」的格：条件展开之下「没给」在选项对象上就是**没有这个键**。这是写法上的事实，

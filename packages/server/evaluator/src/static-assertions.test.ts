@@ -449,9 +449,9 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
   it('拆分出的文件条数与登记一致（新增文件必须回到这里更新清单）', () => {
     // 这是一条**绊线**：它不校验什么业务规则，只保证「有人新增一个拆分文件」时这里先红一次，
     // 逼作者回来看一眼（新增的那个文件有没有照抄三条 `vi.mock`）。
-    // 19 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
+    // 21 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
     // 新增一个拆分文件就要把这个数加一——下一条用例会检查它有没有照抄三条 `vi.mock`。
-    expect(splitFiles).toHaveLength(19);
+    expect(splitFiles).toHaveLength(21);
   });
 
   it('每个文件都自己注册了三条 mock', () => {
@@ -532,6 +532,8 @@ const MOCKED_MODULES: ReadonlyArray<{ label: string; key: string }> = [
   { label: './judge', key: 'judge' },
   { label: './run-store', key: 'run-store' },
   { label: './text-api', key: 'text-api' },
+  // 本地：orchestrator-process-evidence.test.ts 的智能体通路观察口
+  { label: './judge-agent', key: 'judge-agent' },
 ];
 
 /** `src/**\/*.test.ts`（相对 src，正斜杠）——`vi.mock` 只可能写在测试文件里 */
@@ -807,7 +809,7 @@ describe('工厂动态 import 的闭包不得运行时 import 被 mock 的模块
     // 「新模块要不要纳入 MOCKED_MODULES、会不会构成同类环」——沿用本仓的计数绊线手法
     // （见上面 `:449-459`）。
     expect([...mockedKeys].sort()).toEqual(MOCKED_MODULES.map((module) => module.key).sort());
-    expect([...mockedKeys].sort()).toEqual(['@aieval/agents', 'judge', 'run-store', 'text-api']);
+    expect([...mockedKeys].sort()).toEqual(['@aieval/agents', 'judge', 'judge-agent', 'run-store', 'text-api']);
     // 工厂目标今天只有这两个模块（现状：全包的 `import('./testing/…')` 只落在这两处）
     expect([...factoryTargets].sort()).toEqual(['testing/fixtures', 'testing/orchestrator-seams']);
   });

@@ -369,6 +369,7 @@ describe('落盘的 Provider / TestCase 与契约同形（去重复类型后的�
       // 判据已换成**评分表**（`TestCase.judgePrompt` → `rubric`）。形状与 evaluator 夹具同一约定：
       // 一组、一项、带 id——本用例只关心「core 写出的记录能被契约 schema 解析」，表的内容是叙述性的
       rubric: { groups: [{ name: '一、功能实现', items: [{ id: 'A1', goal: '实现 LRU 缓存', weight: 20 }] }] },
+      includeSteps: false,
       createdAt: '2026-09-22T10:30:00.000Z',
       updatedAt: '2026-09-22T10:30:00.000Z',
     };

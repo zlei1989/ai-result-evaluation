@@ -50,6 +50,7 @@ import {
   makeScoreFixture,
   resetFakeAgents,
   resetFakeJudge,
+  resetFakeJudgeAgent,
   seedConfig,
   type TempHome,
 } from './fixtures';
@@ -216,6 +217,7 @@ export function registerOrchestratorHooks(): void {
     home = createTempHome();
     resetFakeAgents();
     resetFakeJudge();
+    resetFakeJudgeAgent();
     // 自动重试：默认关（见 PRODUCTION_ROW_RETRIES 的注释），退避压到 1ms
     ROW_RETRY.maxRetries = 0;
     ROW_RETRY.delayMs = 1;
@@ -244,6 +246,8 @@ export function seedRunnableRun(options: {
   withJudge?: boolean;
   agentKind?: AgentKind;
   repoPath?: string;
+  /** 这一轮的「包含步骤」快照（`EvalRun.includeSteps`）；不填即 false（与契约缺省一致） */
+  includeSteps?: boolean;
   /**
    * 轮快照里钉死的 commit。
    * 默认是**本文件另一个**夹具仓库（`repoPath` 没被覆盖时的那个）的 tip；远端来源的用例必须显式传 `null`：
@@ -333,6 +337,7 @@ export function seedRunnableRun(options: {
     caseId: testCase.id,
     executionMode: options.executionMode,
     useAgentJudge: options.useAgentJudge ?? false,
+    includeSteps: options.includeSteps ?? false,
     rows,
     repoPath,
     commitHash,
@@ -502,5 +507,5 @@ export { loadConfig, mirrorDir, readEvents, rowAttemptsFile, rowEventsFile, runS
 export { abortRow, abortRun, drainRunningTasks, recoverInterruptedRuns, rescoreRow, retryRow, ROW_RETRY, runRow, startRun } from '../orchestrator';
 export { getRun, listRuns, saveRun } from '../run-store';
 export type { TextRoute } from '../text-api';
-export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
+export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, fakeJudgeAgent, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
 export type { TempHome } from './fixtures';

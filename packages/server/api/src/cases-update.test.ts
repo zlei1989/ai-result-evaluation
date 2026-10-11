@@ -81,7 +81,7 @@ describe('updateCase', () => {
     const created = createCase(caseInput());
     removeTreeWithRetry(repo);
 
-    // 这里必须发**全部 7 个字段**（`uiPatchOf`），不是「title + 两个承重字段」
+    // 这里必须发**全部 8 个字段**（`uiPatchOf`），不是「title + 两个承重字段」
     const next = updateCase(created.id, uiPatchOf(created, { title: '仓库掉线时改标题（全量补丁）' }));
 
     expect(next.title).toBe('仓库掉线时改标题（全量补丁）');
@@ -236,6 +236,43 @@ describe('updateCase', () => {
     expect(listCases().cases[0]?.repoBranch).toBeNull();
     // 反向对照：同一份读数里其余字段照常（归一不是「把整行换掉」）
     expect(getCase(created.id).commitHash).toBe(created.commitHash);
+  });
+
+  /**
+   * 「包含步骤」缺列的兜底（与 `repoBranch` 同一条 A10③ 口径）：旧版本写下的用例文件里
+   * **根本没有 `includeSteps` 这个键**，存储层读文件不过 schema，读路径拿到的是 `undefined`——
+   * 契约声明的是 `boolean`。不归一的话，`GET /api/cases` 会把「没有这一列」当成第三种状态
+   * 发出去，前端开关组件与评测快照都要自己防一次。兜底值必须是 **false**：老用例跑出来的
+   * 评测本来就是「评分只看最终改动」，读成 true 等于把历史记录翻译成它没做过的事。
+   */
+  it('旧用例文件里缺 includeSteps 键的读出来是 false（不是 undefined）', () => {
+    const created = createCase(caseInput({ includeSteps: true }));
+    // 模拟旧版本写下的那一行：整把键不存在（`delete` 而不是置 false——两者的区别正是这条守卫要钉的）
+    const row = readCase(created.id)!;
+    delete (row as Partial<TestCase>).includeSteps;
+    writeCase(row);
+
+    expect(getCase(created.id).includeSteps).toBe(false);
+    expect(listCases().cases[0]?.includeSteps).toBe(false);
+    // 反向对照：同一份读数里其余字段照常（归一不是「把整行换掉」）
+    expect(getCase(created.id).commitHash).toBe(created.commitHash);
+  });
+
+  it('updateCase 透传 includeSteps：显式给值即落盘，不给值保持原值', () => {
+    const created = createCase(caseInput({ includeSteps: true }));
+
+    const switched = updateCase(created.id, { includeSteps: false });
+    expect(switched.includeSteps).toBe(false);
+    expect(getCase(created.id).includeSteps).toBe(false);
+
+    const kept = updateCase(created.id, { title: '只改标题' });
+    expect(kept.includeSteps).toBe(false);
+    expect(kept.title).toBe('只改标题');
+
+    // 照 UI 的真实全量形状发补丁：开关值随补丁走
+    const viaUi = updateCase(created.id, uiPatchOf(getCase(created.id), { includeSteps: true, title: '改标题并开开关' }));
+    expect(viaUi.includeSteps).toBe(true);
+    expect(listStoredCases().cases[0]?.includeSteps).toBe(true);
   });
 
   /**

@@ -456,6 +456,12 @@ export const EvalRunSchema = z.object({
    * （旧评测记录因此必须清掉）。
    */
   rubric: RubricSchema,
+  /**
+   * 创建时的「包含步骤」快照（与 `rubric` 同一条链：创建时从用例拍下、rescore 沿用、改用例不影响）。
+   * `.default(false)` 是**载重**的：磁盘上已有的 `run.json` 没有这一列，必填会 `safeParse` 失败 ⇒
+   * `listRuns()` 静默跳过那一轮；false 也是语义正确的兜底——老一轮评测本来就是「评分只看最终改动」。
+   */
+  includeSteps: z.boolean().default(false),
   status: z.enum(['idle', 'running', 'partial', 'done']),
   executionMode: ExecutionModeSchema,
   /**

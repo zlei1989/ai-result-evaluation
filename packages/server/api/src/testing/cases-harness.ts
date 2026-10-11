@@ -205,6 +205,7 @@ export function caseInput(overrides: Partial<Parameters<typeof createCase>[0]> =
     repoBranch: null,
     taskPrompt: '为 anthropic-to-chat 补一条回归用例',
     rubric: FIXTURE_RUBRIC,
+    includeSteps: false,
     ...overrides,
   };
 }
@@ -290,6 +291,7 @@ export function seedRowWithoutItemId(): TestCase {
     repoBranch: base.repoBranch,
     taskPrompt: base.taskPrompt,
     rubric: { groups: [{ name: '一、生产代码', items: [{ goal: '没写 id 的一项', weight: 5 }] }] },
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   } as unknown as TestCase;
@@ -316,6 +318,7 @@ export function uiPatchOf(current: TestCase, overrides: Partial<CasePatch> = {})
     repoBranch: current.repoBranch,
     taskPrompt: current.taskPrompt,
     rubric: current.rubric,
+    includeSteps: current.includeSteps,
     ...overrides,
   };
 }
@@ -333,6 +336,7 @@ export function makeRun(runId: string, caseId: string, caseTitle: string, repoPa
     commitHash,
     repoBranch: null,
     rubric: FIXTURE_RUBRIC,
+    includeSteps: false,
     status: 'done',
     executionMode: 'parallel',
     useAgentJudge: false,

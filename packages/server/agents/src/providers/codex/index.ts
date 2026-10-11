@@ -730,6 +730,12 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
         '子线程的实时性取决于上游是否把它的 `item/*` 推给本条连接：收尾一律用 `thread/read` 补齐，两条入口共用同一个归一函数',
       ],
     },
+    /**
+     * 推理证据必须补 messages.jsonl：思考全文与工具结果正文**结构性不进** events.jsonl
+     * （事件流只有摘要与结构件），唯一落点是消息账本 ⇒ 编排层据此给 codex 候选行多拼一份
+     * messages.jsonl 证据，而不是把厂商名硬编码进编排层。
+     */
+    needsMessagesForReasoningEvidence: true,
     // 档位域 = app-server 的 `ReasoningEffort` **加上**本仓统一的关闭档 `off`（它翻成 CLI 的 `none`）
     reasoningEfforts: [EFFORT_OFF, 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'],
   },

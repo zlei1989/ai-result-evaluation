@@ -140,6 +140,7 @@ const testCase = {
   // 用例的评分表：读侧对**旧版数据**（只有 judgePrompt、没有 rubric）显式抛 INTERNAL，
   // 故任何喂进 getCase / createRun 的夹具都必须带上这一格（夹具与契约同批换形状）
   rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
+  includeSteps: false,
   createdAt: '2026-09-22T00:00:00.000Z',
   updatedAt: '2026-09-22T00:00:00.000Z',
 };

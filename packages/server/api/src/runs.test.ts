@@ -283,6 +283,34 @@ describe('createRun', () => {
   });
 
   /**
+   * 「包含步骤」与 rubric 同一条快照链：创建时把用例当前的开关值拍进这一轮，
+   * 评分阶段读的是**快照**而不是用例现取的那一份——之后用户在用例上把开关改掉，
+   * 不该影响已经跑起来的这一轮怎么评分（rescore 沿用的也是这份快照）。
+   * 缺省用例是 false、显式开启的用例是 true，两个方向都要钉。
+   */
+  it('创建评测时把用例的 includeSteps 快照进这一轮（之后改用例的开关不影响）', () => {
+    seedConfig({ providers: [makeAnthropicProvider()], cases: [makeCase(), makeCase({ id: 'c-2', includeSteps: true })] });
+
+    const off = createRun({
+      caseId: 'c-1',
+      executionMode: 'parallel',
+      useAgentJudge: false,
+      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    const on = createRun({
+      caseId: 'c-2',
+      executionMode: 'parallel',
+      useAgentJudge: false,
+      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+
+    expect(off.includeSteps).toBe(false);
+    expect(on.includeSteps).toBe(true);
+    // 落盘的那一份也要有：编排层读的是磁盘上的快照，不是当前配置里的用例
+    expect(vi.mocked(saveRun).mock.calls[1]?.[0]?.includeSteps).toBe(true);
+  });
+
+  /**
    * 旧 config.json 里的用例**没有** `repoBranch` 这一列（这一列是后加的），而 `loadConfig` 不过 schema，
    * 运行期读到的就是 `undefined`——契约声明的却是 `string | null`。
    * 不做 `?? null` 归一的话，创建出来的这一轮会带着 `undefined`：JSON.stringify 把这把键整个丢掉，
@@ -970,6 +998,7 @@ describe('planRunUpdate', () => {
     commitHash: null,
     repoBranch: null,
     rubric: targetRubric,
+    includeSteps: true,
   };
 
   /**
@@ -986,19 +1015,21 @@ describe('planRunUpdate', () => {
     });
 
   /**
-   * 轮级那六格用例快照（`caseId` + 五格冗余字段，含 `rubric`）。
-   * 判据就是它：`caseId` 没变时这六格必须**逐字保留**——取成对象整体 `toEqual`，
-   * 任一格跟着当前用例漂了都会红（`rubric` 那一格漂了 = 改了用例的评分表就改写了历史分数）。
+   * 轮级那七格用例快照（`caseId` + 六格冗余字段，含 `rubric` 与 `includeSteps`）。
+   * 判据就是它：`caseId` 没变时这七格必须**逐字保留**——取成对象整体 `toEqual`，
+   * 任一格跟着当前用例漂了都会红（`rubric` 那一格漂了 = 改了用例的评分表就改写了历史分数；
+   * `includeSteps` 漂了 = 改了用例的开关就改写了这一轮当初的评分证据口径）。
    */
   const caseSnapshotOf = (
     run: EvalRun,
-  ): Pick<EvalRun, 'caseId' | 'caseTitle' | 'repoPath' | 'commitHash' | 'repoBranch' | 'rubric'> => ({
+  ): Pick<EvalRun, 'caseId' | 'caseTitle' | 'repoPath' | 'commitHash' | 'repoBranch' | 'rubric' | 'includeSteps'> => ({
     caseId: run.caseId,
     caseTitle: run.caseTitle,
     repoPath: run.repoPath,
     commitHash: run.commitHash,
     repoBranch: run.repoBranch,
     rubric: run.rubric,
+    includeSteps: run.includeSteps,
   });
 
   it('只改执行模式：所有行逐字不变（含分数 / diff / 计量 / attempts）', () => {
@@ -1041,9 +1072,12 @@ describe('planRunUpdate', () => {
       repoBranch: 'main',
       // 保留侧必须是个**具体的**表（不是夹具缺省）：否则「被丢掉 / 清空」这一半拦不住
       rubric: preservedRubric,
+      // 保留侧同样必须是**具体的**开关值（夹具缺省是 false）：false ≠ editedCase 的 true 时，
+      // 「无条件重写」这一半才拦得住（两边都取夹具缺省时无条件重写等于没改）
+      includeSteps: false,
       rows: [row],
     });
-    // 当前用例：六格与上面**全不相同**（`rubric` 也换一张，否则「无条件重写」瞒得过这一条）
+    // 当前用例：七格与上面**全不相同**（`rubric` 也换一张，否则「无条件重写」瞒得过这一条）
     const editedCase: RunTargetCase = {
       caseId: 'c-1',
       caseTitle: '新标题（用户后来改用例改的）',
@@ -1051,6 +1085,7 @@ describe('planRunUpdate', () => {
       commitHash: 'c'.repeat(40),
       repoBranch: 'release',
       rubric: editedRubric,
+      includeSteps: true,
     };
     const input = {
       caseId: 'c-1',
@@ -1280,6 +1315,7 @@ describe('planRunUpdate', () => {
       commitHash: 'b'.repeat(40),
       repoBranch: 'feat/x',
       rubric: targetRubric,
+      includeSteps: true,
     };
 
     const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), newCase);
@@ -1290,6 +1326,8 @@ describe('planRunUpdate', () => {
     // 换过去的那张评分表必须跟着走：不重取的话，新用例的行会拿**旧用例**的尺子评分
     // （评分阶段读的是 `run.rubric` 这份快照，不是用例现取的那一份）
     expect(next.rubric).toEqual(targetRubric);
+    // 开关值同样跟着走：新用例开着「包含步骤」，换过去之后的行要按新口径评分
+    expect(next.includeSteps).toBe(true);
     // 目标一个字都没变，但题面变了 ⇒ 照样重置
     expect(next.rows[0]?.status).toBe('pending');
     expect(next.rows[0]?.score).toBeNull();
@@ -1564,7 +1602,7 @@ describe('updateRun', () => {
       providers: [makeProvider(), makeAnthropicProvider()],
       cases: [
         makeCase(),
-        makeCase({ id: 'c-2', title: '另一个用例', repoPath: 'D:\\projects\\other', commitHash: 'c'.repeat(40) }),
+        makeCase({ id: 'c-2', title: '另一个用例', repoPath: 'D:\\projects\\other', commitHash: 'c'.repeat(40), includeSteps: true }),
       ],
     });
 
@@ -1577,6 +1615,8 @@ describe('updateRun', () => {
 
     expect(next.caseTitle).toBe('另一个用例');
     expect(next.repoPath).toBe('D:\\projects\\other');
+    // 开关值随用例快照一起重取（新用例开着「包含步骤」，换过去之后要按新口径评分）
+    expect(next.includeSteps).toBe(true);
     expect(next.rows[0]?.status).toBe('pending');
   });
 

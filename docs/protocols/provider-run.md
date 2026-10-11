@@ -39,7 +39,7 @@
 | **不设内层上限** | 没有 `timeoutMs` 也没有 `maxTurns`：一次运行只会因「跑完 / 失败 / 外部要求停止」结束 |
 | **同步回调** | `onEvent` / `onMessage` / `onSubagent` 同步调用、不 await；回调抛错被吞掉并记 `logger.error`，**不改变**本次运行结论（受保护发射） |
 
-**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件 / 技能）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（要求模型按 JSON Schema 生成最终答复；该家不支持时**降级**——`runTurn` 不交给 `start`、包内记 WARN、结果里 `applied.structuredOutput = false`，调用方据它记账，不要自己再去查能力表）、`mcpServers`、`skills`（本行要装入的技能清单，逐条 `{ name, sourceDir }`）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
+**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件 / 技能）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（要求模型按 JSON Schema 生成最终答复；该家不支持时**降级**——`runTurn` 不交给 `start`、包内记 WARN、结果里 `applied.structuredOutput = false`，调用方据它记账，不要自己再去查能力表）、`extraReadPaths`（可选：read-only 档下**额外放行**的只读绝对路径——只扩大「哪些路径可以读」、写仍被拒；**只 claude 消费**，映射 SDK `additionalDirectories`（`--add-dir`）；codex / dsh 不映射，只读档读本就全放行）、`mcpServers`、`skills`（本行要装入的技能清单，逐条 `{ name, sourceDir }`）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
 
 **`skills` 那一格的三条口径**（与 `mcpServers` 同层，但语义刻意不同）：
 
@@ -71,6 +71,8 @@
 |---|---|---|
 | `'full'` | 候选**执行**阶段；**用例同步**（写提交信息 / 分叉合并裁定，`cwd` = 用例目录） | claude `bypassPermissions` + `allowDangerouslySkipPermissions: true`（**必须成对**，少后者静默失效、表现为候选 0 改动）；codex `danger-full-access`（`workspace-write` 默认**关网络**，装依赖会失败）；dsh `DSH_PERMISSION_MODE=danger-full-access` |
 | `'read-only'` | **评分**阶段 | claude `dontAsk`（**刻意不是 `plan`**——`plan` 连 `git diff` 都跑不了）；codex `read-only`（**Windows 上落 `danger-full-access`**——该平台只读连 `echo` 都起不来，评分会盲评；代价由编排层污染对照兜底）；dsh `read-only` |
+
+- **`extraReadPaths` 不是第四档**：它只扩大 read-only 下的**读范围**、不改变「写仍被拒」，也**刻意不落**上面三份档位表（`permission.ts` 的键集合有守卫钉死）——codex 的 read-only 沙箱与 dsh 的只读档本就全盘可读，把这一格塞进表里等于让它们消费一个它们不映射的选项。当前唯一消费方是智能体评分通路：执行过程记录（`events.jsonl` / `messages.jsonl`）落在 cwd 之外，路径经这一格透传，让 claude 的 `dontAsk` 把 `--add-dir` 扩进预授权范围。
 
 ## 状态机与时序
 

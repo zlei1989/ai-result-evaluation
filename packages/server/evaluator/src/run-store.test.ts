@@ -70,6 +70,7 @@ function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): 
     commitHash: null,
     repoBranch: null,
     rubric: RUBRIC_FIXTURE,
+    includeSteps: false,
     status: 'idle',
     executionMode: 'parallel',
     useAgentJudge: false,

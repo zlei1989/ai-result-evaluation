@@ -65,8 +65,10 @@ import type {
   SkillRef,
 } from '@aieval/agents';
 import type { JudgeInput } from '../judge';
+// 类型专用（理由同上）：judge-agent 是编排测试里会被 mock 的模块，值 import 会造出收集期环
+import type { AgentJudgeInput } from '../judge-agent';
 // 同样是**类型专用**：`text-api` 是被 `vi.mock` 的模块，值 import 会在这里造出第二条环
-import type { TextUsage } from '../text-api';
+import type { TextContentBlock, TextUsage } from '../text-api';
 import { removeTreeWithRetry } from './cleanup';
 
 /** 一个用完即删的临时家目录 */
@@ -179,6 +181,7 @@ export function makeCaseFixture(overrides: Partial<TestCase> = {}): TestCase {
     repoBranch: null,
     taskPrompt: '把 README 的标题改成中文',
     rubric: RUBRIC_FIXTURE,
+    includeSteps: false,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -231,6 +234,8 @@ export function makeRunFixture(input: {
    * 否则假评分器生成的引用键与编排层交给评分器的表对不上。
    */
   rubric?: Rubric;
+  /** 这一轮的「包含步骤」快照；不填即 `false`（与 `EvalRunSchema.includeSteps` 的缺省一致） */
+  includeSteps?: boolean;
   executionMode?: ExecutionMode;
   /** 这一轮是否由评分智能体评分；不填即 `false`（与 `RunCreate.useAgentJudge` 的缺省一致） */
   useAgentJudge?: boolean;
@@ -245,6 +250,7 @@ export function makeRunFixture(input: {
     commitHash: input.commitHash ?? null,
     repoBranch: input.repoBranch ?? null,
     rubric: input.rubric ?? RUBRIC_FIXTURE,
+    includeSteps: input.includeSteps ?? false,
     status: input.status ?? 'idle',
     executionMode: input.executionMode ?? 'parallel',
     useAgentJudge: input.useAgentJudge ?? false,
@@ -332,8 +338,11 @@ export function seedConfig(input: {
 /** 假文本 API 的一次调用记录：单轮与多轮共用同一个入口（多轮的 messages 长度会大于 1） */
 export interface FakeTextCall {
   route: unknown;
-  /** 完整对话（单轮就是一条 user 消息；修复轮是 `user / assistant / user`） */
-  messages: { role: string; content: string }[];
+  /**
+   * 完整对话（单轮就是一条 user 消息；修复轮是 `user / assistant / user`）。
+   * `content` 与真实 `ChatMessage` 同形：字符串（纯文本消息）或内容块数组（意图 + 附件）。
+   */
+  messages: { role: string; content: string | TextContentBlock[] }[];
   system?: string;
   /**
    * 实际交给文本 API 的**思考强度**（未给则 `undefined`）。
@@ -399,12 +408,12 @@ export function fakeTextApiModule(): {
   callTextApi: (route: unknown, input: { system?: string; prompt: string; effort?: string }) => Promise<string>;
   callTextApiConversation: (
   route: unknown,
-  input: { system?: string; messages: { role: string; content: string }[]; effort?: string },
+  input: { system?: string; messages: { role: string; content: string | TextContentBlock[] }[]; effort?: string },
   ) => Promise<{ text: string; usage: TextUsage | null }>;
 } {
   const run = async (
     route: unknown,
-    input: { system?: string; messages: { role: string; content: string }[]; effort?: string },
+    input: { system?: string; messages: { role: string; content: string | TextContentBlock[] }[]; effort?: string },
   ): Promise<{ text: string; usage: TextUsage | null }> => {
     fakeTextApi.calls.push({
       route,
@@ -534,6 +543,15 @@ export interface FakeAgentCall {
    * 没有任何别的可观测差异（提示词里那句「只读评审」只是要求，不是强制）。
    */
   permission: AgentPermission;
+  /**
+   * 实际交给适配器的 read-only 额外读放行路径（原样记下；`undefined` = 这一格根本没传）。
+   *
+   * 为什么必须记录：评分通路要把执行过程记录的磁盘路径透传进 `extraReadPaths`
+   * （claude 据此把 `--add-dir` 扩进 `dontAsk` 的预授权范围），而**漏传是静默的**——评审者
+   * 只是读不到 cwd 之外的记录文件，分数照样出得来；多传 / 传错同样没有任何别的可观测差异。
+   * 故取值刻意保留 `undefined`，不兜成 `[]`。
+   */
+  extraReadPaths?: string[];
   /**
    * 实际交给适配器的结构化输出 schema（原样记下；`undefined` = 这一格根本没传）。
    *
@@ -729,6 +747,9 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           : ['off', 'low', 'high', 'max'],
     // `defaultEffort` 同真值：只有 dsh 有（API 侧要用它拦「未选 + 模型不支持缺省档」）
     ...(kind === 'dsh' ? { defaultEffort: 'high' } : {}),
+    // 推理证据需求同真值：只有 codex 的思考全文与工具结果正文只在 messages.jsonl 里，
+    // 编排层据它决定「执行过程记录」证据要不要多拼一份消息账本
+    needsMessagesForReasoningEvidence: kind === 'codex',
     /**
      * 消息能力声明：编排层不读它（它服务内容级视图），故这里用最宽松的一份形状桩；
      * 三家的真值在各自的 `providers/<kind>/index.ts` 里，由 agents 包的一致性用例钉住。
@@ -780,6 +801,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         cwd: input.cwd,
         configHome: input.configHome,
         permission: input.permission,
+        extraReadPaths: input.extraReadPaths,
         outputSchema: input.outputSchema,
         mcpServers: input.mcpServers,
         skills: input.skills,
@@ -1072,6 +1094,39 @@ export function resetFakeJudge(): void {
 /** 放行当前所有评分 gate */
 export function releaseJudge(): void {
   for (const release of fakeJudge.gates.splice(0)) release();
+}
+
+/** 假评分智能体的状态（与 fakeJudge 同形，但记的是 `judgeRowByAgent` 的入参） */
+export const fakeJudgeAgent = {
+  calls: [] as AgentJudgeInput[],
+  /** ok=返回固定判定；fail=抛 JudgeAgentError（记完入参再抛，用例仍能看到证据传没传） */
+  mode: 'ok' as 'ok' | 'fail',
+  achieved: true,
+};
+
+/** 每个用例开头调它 */
+export function resetFakeJudgeAgent(): void {
+  fakeJudgeAgent.calls.length = 0;
+  fakeJudgeAgent.mode = 'ok';
+  fakeJudgeAgent.achieved = true;
+}
+
+/**
+ * 供测试里的 `vi.mock('./judge-agent', …)` 用作替代模块：只换 `judgeRowByAgent`，
+ * `JudgeAgentError` 必须是真的（编排层靠 `instanceof` 分路，换成假类会静默走错归因）。
+ * 失败档刻意抛**假类的裸 Error** 而不是真 `JudgeAgentError`：编排层把它折成 INTERNAL 的
+ * 行为由别处测，本夹具只服务「证据有没有传进智能体通路」这一件事。
+ */
+export function fakeJudgeAgentModule(): { judgeRowByAgent: (input: AgentJudgeInput) => Promise<ScoreResult> } {
+  return {
+    judgeRowByAgent: async (input) => {
+      fakeJudgeAgent.calls.push(input);
+      if (fakeJudgeAgent.mode === 'fail') {
+        throw new Error('假评分智能体：脚本要求失败（证据入参已记入 fakeJudgeAgent.calls）');
+      }
+      return makeScoreFixture(fakeJudgeAgent.achieved, input.judgeProviderId, input.route.modelId, input.kind);
+    },
+  };
 }
 
 /** 供 `vi.mock('./judge', …)` 用作替代模块 */

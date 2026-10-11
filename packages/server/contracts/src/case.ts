@@ -34,6 +34,12 @@ export const TestCaseSchema = z.object({
    * 在提交时给出。`judgePrompt`（一段自由文本）已随本次重构删除——评分口径现在只有这一份真源。
    */
   rubric: RubricSchema,
+  /**
+   * 「包含步骤」开关：开启 = 评分阶段把候选的**执行过程记录**纳入评分证据（评分标准可针对每一步
+   * 推理给分），关闭 = 评分只看最终改动。**必填**：旧用例文件缺这一列由 `api/cases.ts` 的读侧
+   * 归一兜成 false（契约不设默认值——写侧漏掉这一格要当场失败，而不是静默落成 false）。
+   */
+  includeSteps: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -77,6 +83,8 @@ export const CaseCreateSchema = z.object({
   repoBranch: z.string().min(1).nullable().default(null),
   taskPrompt: z.string().min(1),
   rubric: RubricSchema,
+  /** 「包含步骤」开关（见 `TestCaseSchema.includeSteps`）：创建缺省 false，老客户端与手工 POST 不带它仍合法 */
+  includeSteps: z.boolean().default(false),
 });
 export type CaseCreate = z.infer<typeof CaseCreateSchema>;
 

@@ -33,6 +33,8 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 消息能力声明由三家各自显式声明（`providers/<kind>/index.ts`）；这一份是形状桩，
     // 逐格取值另有 `message-conformance.test.ts` 与各家 index.test.ts 钉住
     messageCapability: permissiveMessageCapability(),
+    // 推理证据 events.jsonl 即齐（assistant 文本与思考都进事件流），不需要补 messages.jsonl
+    needsMessagesForReasoningEvidence: false,
     // 档位域来自 Agent SDK 的 `Options.effort` / `EffortLevel`，**外加**
     // 本仓统一的关闭档 `off`：用户口径「未选 ≠ 关闭」，
     // 「关闭」只能由显式选 `off` 触发，而 claude 的 SDK 档位域里没有 `off` ⇒ 适配器把它翻成
@@ -43,6 +45,8 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     protocolTypes: ['openai'],
     capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
     messageCapability: permissiveMessageCapability(),
+    // 思考全文与工具结果正文结构性不进 events.jsonl，唯一落点是 messages.jsonl ⇒ 必须补
+    needsMessagesForReasoningEvidence: true,
     // 档位域来自 `codex app-server` 的 `ReasoningEffort`（比上游网关用到的四个档更宽），**外加**
     // 本仓统一的关闭档 `off`：用户口径「未选 ≠ 关闭」，
     // 「关闭」只能由显式选 `off` 触发，而 codex 的关闭档在 CLI 里叫 `none`（`off` 会被网关拒）
@@ -57,6 +61,8 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（回归网会拦漂移）
     capability: { cancelMidTurn: false, usage: true, structuredOutput: false },
     messageCapability: permissiveMessageCapability(),
+    // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
+    needsMessagesForReasoningEvidence: false,
     // 档位域来自 llm-deepseek 的 `reasoningEffort` schema（只有四档：没有 medium / xhigh）
     reasoningEfforts: ['off', 'low', 'high', 'max'],
     // dsh 的「未选」会真的落到一个具体档上 ⇒ 它必须声明 `defaultEffort`（另两家由厂商推断，
@@ -142,6 +148,30 @@ describe('元数据投影（回归网）', () => {
       .map((provider) => provider.kind)
       .sort();
     expect(supported).toEqual(['claude-code', 'codex']);
+  });
+
+  /**
+   * 推理证据需求必须**显式声明**，且开集只有 codex。
+   *
+   * 为什么要有这一条：编排层据它决定「评分证据要不要补 messages.jsonl」——codex 的思考全文与
+   * 工具结果正文**结构性不进 events.jsonl**（事件流只有摘要与结构件），唯一落点是 messages.jsonl；
+   * 另两家的事件流本就齐。这一格若靠默认值蒙混，漏成 `false` 会让 codex 候选的评分证据**静默缺一块**
+   * （链路全通、结论偏掉，见 docs/faq/codex.md 的盲评形状）；把别家翻成 `true` 则会去读一份
+   * 根本不存在的账本。开集钉死：哪一家翻值都要在这里表一次态。
+   */
+  it('推理证据需求：只有 codex 需要 messages.jsonl（另两家 events.jsonl 即齐）', () => {
+    for (const provider of listAgentProviders()) {
+      // 类型上它是必填；这一条是运行期复核——夹具/provider 走 any 或断言时仍会红
+      expect(
+        typeof provider.metadata.needsMessagesForReasoningEvidence,
+        `${provider.kind} 的 needsMessagesForReasoningEvidence`,
+      ).toBe('boolean');
+    }
+    const needs = listAgentProviders()
+      .filter((provider) => provider.metadata.needsMessagesForReasoningEvidence)
+      .map((provider) => provider.kind)
+      .sort();
+    expect(needs).toEqual(['codex']);
   });
 
   /**

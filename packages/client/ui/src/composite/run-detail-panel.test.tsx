@@ -86,6 +86,7 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     repoBranch: null,
     // 轮级评分表**快照**（必填）：评分详情抽屉读的就是它，而不是用例现取的那张表
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 60 }] }] },
+    includeSteps: false,
     // 轮级状态默认取**空闲**：这是「什么都没在跑」的那一档，也是编辑 / 删除可用的那一档
     // （`hasLiveRows` 会读它）。此前这里是 `'running'`——那时没有任何用例读轮级状态，
     // 值是什么都不参与断言；「有行在跑」那一档由用例自己显式 overrides 出来（判据要看得见）。

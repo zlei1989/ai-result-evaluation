@@ -979,6 +979,10 @@ export const dshProvider: AgentProvider = {
         '`stopReason` 的 `error` / `refusal` 两档真机未观测 ⇒ 未覆盖档记 `unknown` + `statusMissing`，不猜',
       ],
     },
+    /**
+     * 推理证据 events.jsonl 即齐（思考正文与工具结果都在事件流里）⇒ 不需要补 messages.jsonl。
+     */
+    needsMessagesForReasoningEvidence: false,
     // 档位域 = 本文件的 `DSH_REASONING_WIRE`（**与 overlay 声明同源派生**）：pi-ai 路由的档位是
     // 「档位名 → wire 拼写」的字典，两边各写一份必然漂移，而漂移的代价是「界面能选、运行时才失败」。
     // 为什么是这四档：`llm-deepseek` 的 `reasoningEffort` schema 只有 `off/low/high/max`

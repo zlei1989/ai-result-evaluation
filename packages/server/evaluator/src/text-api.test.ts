@@ -8,7 +8,13 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
-import { TEXT_API_RETRY, callTextApi, callTextApiConversation, type TextRoute } from './text-api';
+import {
+  TEXT_API_RETRY,
+  callTextApi,
+  callTextApiConversation,
+  type ChatMessage,
+  type TextRoute,
+} from './text-api';
 
 /** 造一个 fetch 响应（只需要 ok / status / json / text 四个成员） */
 function jsonResponse(body: unknown, status = 200): Response {
@@ -458,6 +464,110 @@ describe('callTextApiConversation —— 多轮对话', () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [] }));
     await expect(callTextApiConversation(route('openai'), { messages: [] })).rejects.toThrow(/一条消息都没有/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 内容块数组（意图 + 附件）：评分通路把 diff 作为**独立 text 块**与意图消息分开输入，
+ * 网关不会再把长 diff 当正文去「读」，模型拿到的是带文件名标题的独立段落。
+ * 两条协议的 wire 形状**同形**：attachment 块一律翻成
+ * `{type:'text', text: '## <filename>\n\n<原文>'}`（标题行用 filename）。
+ * 为什么不是各家自己的协议附件（anthropic `document` / openai `file` part）：
+ * DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成 `[Unsupported Document]`
+ * 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在两协议三端点真机可用
+ * （判据 = 哨兵词复述）。
+ * 字符串形态向后兼容由上面的既有用例钉住（三按钮与生成/识别通路不走附件）。
+ */
+describe('callTextApiConversation —— 内容块数组（意图 + 附件）', () => {
+  it('anthropic：附件翻成带标题的独立 text 块（标题行 = ## + filename）', async () => {
+    const fetchMock = stubFetch(jsonResponse({ content: [{ type: 'text', text: '修好了' }] }));
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '按下面的评分表给改动打分' },
+          { type: 'attachment', text: '### 未提交改动\n+ 中文标题\n', filename: 'candidate-diff.txt' },
+        ],
+      },
+    ];
+    await callTextApiConversation(route('anthropic'), { messages });
+
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[] };
+    expect(body.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '按下面的评分表给改动打分' },
+          { type: 'text', text: '## candidate-diff.txt\n\n### 未提交改动\n+ 中文标题\n' },
+        ],
+      },
+    ]);
+  });
+
+  it('openai：附件同样翻成带标题的 text part（与 anthropic 同形，无 file/file_data）', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '修好了' } }] }));
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '按下面的评分表给改动打分' },
+          { type: 'attachment', text: '+ 中文标题\n', filename: 'candidate-diff.txt' },
+        ],
+      },
+    ];
+    await callTextApiConversation(route('openai'), { messages });
+
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[] };
+    expect(body.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '按下面的评分表给改动打分' },
+          { type: 'text', text: '## candidate-diff.txt\n\n+ 中文标题\n' },
+        ],
+      },
+    ]);
+  });
+
+  it('同一段对话里字符串消息与块数组消息共存（修复轮：assistant 原文 + 带附件的纠错）', async () => {
+    const fetchMock = stubFetch(jsonResponse({ content: [{ type: 'text', text: '第二次' }] }));
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '给个分' },
+          { type: 'attachment', text: '+ 改动\n', filename: 'candidate-diff.txt' },
+        ],
+      },
+      { role: 'assistant', content: '{"judgments":[]}' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '缺项：A1' },
+          { type: 'attachment', text: '+ 改动\n', filename: 'candidate-diff.txt' },
+        ],
+      },
+    ];
+    await callTextApiConversation(route('anthropic'), { messages });
+
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[] };
+    expect(body.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '给个分' },
+          { type: 'text', text: '## candidate-diff.txt\n\n+ 改动\n' },
+        ],
+      },
+      { role: 'assistant', content: '{"judgments":[]}' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '缺项：A1' },
+          { type: 'text', text: '## candidate-diff.txt\n\n+ 改动\n' },
+        ],
+      },
+    ]);
   });
 });
 

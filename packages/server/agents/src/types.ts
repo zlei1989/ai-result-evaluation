@@ -46,6 +46,11 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
  * | `'full'`    | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
  * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**，见 `codexPermissionOptions`） | `DSH_PERMISSION_MODE=read-only` |
  *
+ * 这张表之外还有一条**只被 claude 消费**的读放行通道：`AgentRunInput.extraReadPaths`（可选）
+ * 翻成 SDK 的 `additionalDirectories`（`--add-dir`），只扩大「哪些路径可以读」、不改变
+ * 「写仍被拒」。它**刻意不进**三份权限档表（见 `permission.ts` 的文件头）——codex / dsh 的
+ * 只读档本就全盘可读，把这一格塞进表里会让它们去消费一个它们不映射的选项。
+ *
  * ⚠️ 两家有**必须成对**的选项，少一个就静默失效：
  *   · claude 的 `bypassPermissions` 需要 `allowDangerouslySkipPermissions: true`——SDK 只是把两者
  *     拼成两个独立 argv（`--permission-mode` 与 `--allow-dangerously-skip-permissions`），
@@ -111,6 +116,20 @@ export interface AgentRunInput {
    * 少给一个就会在编译期报错，而不是运行时静默用一个「谁也没选过」的默认档。
    */
   permission: AgentPermission;
+  /**
+   * read-only 权限下**额外放行**的只读绝对路径（目录或文件）。**可选**：缺省不传时三家行为逐字不变。
+   *
+   * 为什么需要它：三家 read-only 的**读放行范围不等价**——claude 的 `dontAsk` 只预授权
+   * 工作目录内的读，而执行过程记录（`events.jsonl` / `messages.jsonl`）落在 cwd 之外，
+   * 评审者读不到。这一格是「工作目录之外还有哪些本次可以读」的中性事实，翻译成哪家的什么
+   * 选项由各适配器自己决定：
+   *   · claude → `additionalDirectories`（SDK 拼成 `--add-dir`，扩进 `dontAsk` 的预授权范围，
+   *     与它兼容——写仍被拒）；
+   *   · codex → **不映射**（read-only 沙箱官方语义全盘可读，见 `permission.ts`）；
+   *   · dsh → **不映射**（read-only 只拦写，读在所有档直通）。
+   * 口径与 `mcpServers` / `skills` 同源：适配器只认入参，不自己决定「哪些路径可以放行」。
+   */
+  extraReadPaths?: string[];
   /** 考题提示词 */
   prompt: string;
   /** 路由：只读输入；适配器只读、不写回、也不写 process.env（不变量 1） */
@@ -324,6 +343,16 @@ export interface AgentProviderMetadata {
    * 拿不到」挤进同一格。
    */
   messageCapability: MessageCapability;
+  /**
+   * 评分要拿**推理证据**时，除了 events.jsonl 是否还必须补 messages.jsonl（**必填**）。
+   *
+   * 为什么需要它：codex 的思考全文与工具结果正文**结构性不进** events.jsonl
+   * （事件流只有摘要与结构件，唯一落点是消息账本 messages.jsonl），而另两家的执行过程记录
+   * 事件流即齐。编排层据此决定「执行过程记录」证据里要不要多拼一份文件——厂商差异吸收在本包，
+   * 编排层按 kind 查询，**不硬编码厂商名**。逐格取值与理由见各家的 `providers/<kind>/index.ts`；
+   * 改值的消费方是评分证据的组装（codex 候选行多一个 messages.jsonl 附件块）。
+   */
+  needsMessagesForReasoningEvidence: boolean;
   /**
    * 该家能表达的思考强度档位（**完整值域**）。**必填**并由 `registry.test.ts` 守卫：
    * 候选池的「上游档位 ∩ 智能体档位」交集（D10）全靠它，缺一格就是静默少一批可选档。

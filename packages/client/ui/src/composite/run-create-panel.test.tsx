@@ -60,6 +60,7 @@ const cases: TestCase[] = [
     repoBranch: null,
     taskPrompt: '补齐转换',
     rubric: CASE_RUBRIC,
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   },
@@ -71,6 +72,7 @@ const cases: TestCase[] = [
     repoBranch: null,
     taskPrompt: '加校验',
     rubric: CASE_RUBRIC,
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   },
@@ -120,6 +122,7 @@ const editRun: EvalRun = {
   repoBranch: null,
   // 轮级评分表**快照**（必填）：编辑这一轮时保存的原样回传，它不随用例现取的那张表变
   rubric: CASE_RUBRIC,
+  includeSteps: false,
   status: 'done',
   // 故意与「默认串行」不同：取值来源不对时这一条会红
   executionMode: 'parallel',
@@ -315,6 +318,7 @@ describe('RunCreatePanel', () => {
       repoBranch: 'feat/x',
       taskPrompt: '补齐转换',
       rubric: CASE_RUBRIC,
+      includeSteps: false,
       createdAt: '2026-09-22T00:00:00.000Z',
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
@@ -341,6 +345,7 @@ describe('RunCreatePanel', () => {
       repoBranch: null,
       taskPrompt: '补齐转换',
       rubric: CASE_RUBRIC,
+      includeSteps: false,
       createdAt: '2026-09-22T00:00:00.000Z',
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
@@ -360,6 +365,7 @@ describe('RunCreatePanel', () => {
       repoBranch: null,
       taskPrompt: '从空仓库开始实现',
       rubric: CASE_RUBRIC,
+      includeSteps: false,
       createdAt: '2026-09-22T00:00:00.000Z',
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
@@ -790,6 +796,7 @@ describe('RunCreatePanel', () => {
         repoBranch: null,
         taskPrompt: '修解析',
         rubric: CASE_RUBRIC,
+        includeSteps: false,
         createdAt: '2026-09-22T00:00:00.000Z',
         updatedAt: '2026-09-22T00:00:00.000Z',
       };

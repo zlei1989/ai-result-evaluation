@@ -121,6 +121,7 @@ beforeEach(() => {
     taskPrompt: '补齐转换',
     // 读侧对**旧版数据**（只有 judgePrompt、没有 rubric）显式抛 INTERNAL：夹具必须带这一格
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   });

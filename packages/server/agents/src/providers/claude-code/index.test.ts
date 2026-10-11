@@ -274,6 +274,45 @@ describe('claudeCodeProvider', () => {
     expect(recorder.options?.allowDangerouslySkipPermissions).toBeUndefined();
   });
 
+  it('extraReadPaths 原样转发成 additionalDirectories，与 read-only 档共存（dontAsk 只预授权工作目录内的读）', async () => {
+    // 为什么必须同时钉这三格：`dontAsk` 的语义是「未预授权的一律拒」，而它只预授权**工作目录内**的读；
+    // 执行过程记录（events.jsonl / messages.jsonl）落在 cwd 之外，不扩 `--add-dir` 评审者读不到，
+    // 且 SDK 不报错——只是每一次 Read 都被拒。这一格与权限档是**两条正交的通道**：
+    // 它只扩大「哪些路径可以读」，不改变「写仍被拒」。
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(
+      createRunInput({
+        permission: 'read-only',
+        extraReadPaths: ['/data/events.jsonl', '/data/messages.jsonl'],
+      }),
+    );
+    expect(recorder.options?.additionalDirectories).toEqual(['/data/events.jsonl', '/data/messages.jsonl']);
+    // 共存：additionalDirectories 只扩读范围，只读档的落点逐字不变
+    expect(recorder.options?.permissionMode).toBe('dontAsk');
+    expect(recorder.options?.permissionPrompts).toBe('none');
+  });
+
+  it('extraReadPaths 缺省时 additionalDirectories 是空数组（不把 undefined 透给 SDK，行为与「没给」逐字相同）', async () => {
+    // 判据是 `[]` 而不是 `undefined`：SDK 对空数组不追加任何 argv，与「没给」行为相同；
+    // 直接把 `input.extraReadPaths` 透下去时缺省会是 `undefined`——那正是「缺省不传时行为不变」要防的漂移。
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({}));
+    expect(recorder.options?.additionalDirectories).toEqual([]);
+  });
+
+  it('extraReadPaths 与权限档无关：full 档同样原样转发（这一格是读路径，不是只读档的专用开关）', async () => {
+    // 为什么 full 档也钉一条：把转发条件写成「只 read-only 才传」时上一条仍然全绿，
+    // 而执行阶段（full）也会收到 extraReadPaths 的调用方（形状上它是纯可选格，与档位无关）
+    // ——静默少传等于替调用方丢了参数。
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({ permission: 'full', extraReadPaths: ['/data/events.jsonl'] }));
+    expect(recorder.options?.permissionMode).toBe('bypassPermissions');
+    expect(recorder.options?.additionalDirectories).toEqual(['/data/events.jsonl']);
+  });
+
   it('不给 SDK 传 maxTurns（执行段完全不限轮次，用户口径）', async () => {
     // 为什么这条必须钉住：SDK 的 `maxTurns` 是「最大 API 往返次数」，加回来就等于**我们自己**给执行段
     // 装了上限——而口径是「一行只会因为跑完 / 失败 / 用户点终止结束」。删它的时候一个用例都不会红，

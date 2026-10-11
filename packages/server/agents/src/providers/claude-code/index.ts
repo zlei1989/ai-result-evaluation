@@ -427,6 +427,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       settingSources: [...CLAUDE_SETTING_SOURCES],
       disallowedTools: disallowedToolsFor(input.route.modelId),
       /**
+       * 只读档的读放行范围：`dontAsk` 只预授权**工作目录内**的读，执行过程记录
+       * （`events.jsonl` / `messages.jsonl`）落在 cwd 之外时需要 `--add-dir` 扩出去。
+       * 缺省时给空数组（SDK 对空数组不追加任何 argv）——`undefined` 不透给 SDK。
+       */
+      additionalDirectories: input.extraReadPaths ?? [],
+      /**
        * **子智能体的文本与思考也要拿到**。
        *
        * 官方逐字："Forward subagent text and thinking blocks as assistant/user messages with
@@ -853,6 +859,11 @@ export const claudeCodeProvider: AgentProvider = {
         '`thinking_tokens` 这一格在第三方 anthropic 兼容后端上可能恒为 0：0 不得读成「这家不思考」',
       ],
     },
+    /**
+     * 推理证据 events.jsonl 即齐（assistant 文本与思考都进事件流）⇒ 不需要补 messages.jsonl。
+     * 与 codex 的 `true` 对照读：那一家的思考全文与工具结果正文只在消息账本里。
+     */
+    needsMessagesForReasoningEvidence: false,
     // 档位域 = Agent SDK 的 `EffortLevel`（`Options.effort`）**加上**本仓统一的关闭档
     // `off`（它走 `thinking: { type: 'disabled' }`，不是 `effort` 的取值）；`max` 是
     // 「select models only」，但那由模型侧决定，智能体这一层能收的就是这些

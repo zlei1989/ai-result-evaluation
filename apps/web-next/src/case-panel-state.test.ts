@@ -20,6 +20,7 @@ const CASE: TestCase = {
   // 评分口径现在是**一张表**（旧的 `judgePrompt` 一段自由文本已删）：这一格必须给，
   // 它取代的是「评分维度 / 评分提示词」那两处已删除的展示面
   rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 100 }] }] },
+  includeSteps: false,
   createdAt: '2026-09-22T10:00:00.000Z',
   updatedAt: '2026-09-22T10:00:00.000Z',
 };

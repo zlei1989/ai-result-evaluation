@@ -31,7 +31,7 @@
  */
 import { vi } from 'vitest';
 import { ServiceError, type EvalRun } from '@aieval/contracts';
-import { fakeAgentsModule, fakeJudgeModule } from './fixtures';
+import { fakeAgentsModule, fakeJudgeAgentModule, fakeJudgeModule } from './fixtures';
 
 /**
  * 提升到 import 之前的接缝对象（`vi.hoisted`：夹具在所有 import 之前就要能读写它）。
@@ -79,6 +79,14 @@ export function agentsMock() {
  */
 export function judgeMock(actual: typeof import('../judge')) {
   return { ...actual, ...fakeJudgeModule() };
+}
+
+/**
+ * judge-agent：只替换 `judgeRowByAgent`，`JudgeAgentError` 必须是真的（编排层按 `instanceof`
+ * 分路）。智能体通路的用例靠它观察「编排层把什么交给了评分智能体」（如执行过程证据）。
+ */
+export function judgeAgentMock(actual: typeof import('../judge-agent')) {
+  return { ...actual, ...fakeJudgeAgentModule() };
 }
 
 /** run-store：落盘失败 / 陈旧列表两个接缝（守卫靠它） */

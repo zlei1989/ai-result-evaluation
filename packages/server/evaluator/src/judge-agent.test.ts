@@ -9,6 +9,8 @@
  *   2. 「没采到最终答复」与「空答复」是两回事，文案必须分得开（`null` 判据不能简化成 falsy）；
  *   3. 适配器失败（`ok:false`）必须**先于**读 `finalText` 判掉：claude-code 的采集点在 `is_error`
  *      分支之前，出错时 `finalText` 里是**厂商的错误文本**，先读它会把「没问到」当「答错了」。
+ *   4. 「包含步骤」的证据要么整条进、要么完全不进：提示词追加段 + `extraReadPaths`
+ *      透传两者缺一都是**静默**的——评审者照样出分，只是读不到（或不知道去读）cwd 之外的记录。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JUDGE_OUTPUT_CONTRACT, ServiceError, type AgentEvent, type Rubric } from '@aieval/contracts';
@@ -26,6 +28,46 @@ const ROUTE = { protocolType: 'openai' as const, baseUrl: 'https://fake.invalid/
 const RUBRIC: Rubric = {
   groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }, { id: 'A2', goal: '补 Javadoc', weight: 10 }] }],
 };
+
+/**
+ * 「包含步骤」开时的证据夹具：两份文件，codex 候选的形态。
+ * `content` 是文本通路专用的截断产物，智能体通路不用它（评审者读磁盘原文），
+ * 故这里的值只作占位，断言只看 `filename` / `absolutePath`。
+ */
+const EVIDENCE = {
+  files: [
+    {
+      filename: 'candidate-events.jsonl',
+      content: 'raw 事件账本（占位：智能体通路不消费这一格）',
+      truncated: false,
+      absolutePath: '/srv/aieval/workspace/run-1/rows/r-1/events.jsonl',
+    },
+    {
+      filename: 'candidate-messages.jsonl',
+      content: 'raw 消息账本（占位，同上）',
+      truncated: true,
+      absolutePath: '/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl',
+    },
+  ],
+};
+
+/**
+ * 追加段在提示词里的**期望字面**（独立真源：按追加段「逐项路径 + 这一份是什么 + 读取指引」
+ * 的口径写死，不是从实现代码照抄）：
+ * 逐项列出绝对路径 + 这一份是什么 + 读取指引（Read/cat、可能很大先看结构、涉及过程时结合记录判定）。
+ * 提示词逐字断言（`toBe`）靠它把「追加段长什么样」整个钉住。
+ */
+const EVIDENCE_SECTION = [
+  '',
+  '## 候选的执行过程',
+  '候选做这道题时的执行过程记录落在以下文件（绝对路径），需要时直接读取：',
+  '- `/srv/aieval/workspace/run-1/rows/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
+  '- `/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl`：候选消息记录（messages 账本：候选的思考全文与工具结果正文）',
+  '读取指引：',
+  '- 用 Read 工具或 `cat` 读取；',
+  '- 文件可能很大：先看文件结构（行数、首尾几行），再按需读与本题相关的片段，不要把整份记录打印出来；',
+  '- 评分标准项涉及推理过程 / 步骤时，结合这些记录判定；记录缺失时按「看不到的部分不要臆测」处理。',
+].join('\n');
 
 /** 一份合法的评分 JSON 答复（判定形状由评分表推出来，不手抄引用键） */
 function judgeReplyJson(achieved = true): string {
@@ -87,6 +129,55 @@ describe('judgeRowByAgent', () => {
     expect(prompt).toContain(RUBRIC.groups[0]!.name);
     expect(prompt).toContain('A1');
     expect(prompt).toContain('满分 30 分');
+  });
+
+  /**
+   * 「包含步骤」开时的追加段。为什么用 `toBe(关态提示词 + 期望段)` 钉：
+   * 口径是「既有段落**逐字不动**、只在证据非空时**追加**一段」——`toContain('## 候选的执行过程')`
+   * 拦不住「顺手改了既有段落」或「把段插进中间」，逐字相等才行。关态提示词本身就是
+   * 「不追加」的参照（上面那条用例钉住它的关键内容），追加段的字面独立于实现（见 EVIDENCE_SECTION）。
+   */
+  it('证据非空：提示词 = 关态提示词逐字 + 追加的执行过程段（路径、是什么、读取指引都在）', () => {
+    const off = buildAgentJudgePrompt({ taskPrompt: '把 README 改成中文', rubric: RUBRIC, baselineCommit: 'a'.repeat(40) });
+    const on = buildAgentJudgePrompt({
+      taskPrompt: '把 README 改成中文',
+      rubric: RUBRIC,
+      baselineCommit: 'a'.repeat(40),
+      processEvidence: EVIDENCE,
+    });
+    expect(on).toBe(`${off}\n${EVIDENCE_SECTION}`);
+  });
+
+  it('证据只有 events 一份（dsh 候选的形态）也追加段，只列那一份', () => {
+    const off = buildAgentJudgePrompt({ taskPrompt: 't', rubric: RUBRIC, baselineCommit: 'a'.repeat(40) });
+    const on = buildAgentJudgePrompt({
+      taskPrompt: 't',
+      rubric: RUBRIC,
+      baselineCommit: 'a'.repeat(40),
+      processEvidence: { files: [EVIDENCE.files[0]!] },
+    });
+    expect(on).toBe(
+      [
+        off,
+        '',
+        '## 候选的执行过程',
+        '候选做这道题时的执行过程记录落在以下文件（绝对路径），需要时直接读取：',
+        '- `/srv/aieval/workspace/run-1/rows/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
+        '读取指引：',
+        '- 用 Read 工具或 `cat` 读取；',
+        '- 文件可能很大：先看文件结构（行数、首尾几行），再按需读与本题相关的片段，不要把整份记录打印出来；',
+        '- 评分标准项涉及推理过程 / 步骤时，结合这些记录判定；记录缺失时按「看不到的部分不要臆测」处理。',
+      ].join('\n'),
+    );
+  });
+
+  it('证据缺省 / 空文件表：提示词与关态逐字相同，不出现执行过程段', () => {
+    const off = buildAgentJudgePrompt({ taskPrompt: 't', rubric: RUBRIC, baselineCommit: 'a'.repeat(40) });
+    expect(
+      buildAgentJudgePrompt({ taskPrompt: 't', rubric: RUBRIC, baselineCommit: 'a'.repeat(40), processEvidence: { files: [] } }),
+    ).toBe(off);
+    expect(buildAgentJudgePrompt({ taskPrompt: 't', rubric: RUBRIC, baselineCommit: 'a'.repeat(40) })).toBe(off);
+    expect(off).not.toContain('候选的执行过程');
   });
 
   it('finalText 是合法评分 JSON 时出分，judgeAgentKind 记为实际 kind', async () => {
@@ -222,6 +313,36 @@ describe('judgeRowByAgent', () => {
     await callJudge();
     expect(fakeAgents.calls).toHaveLength(1);
     expect(fakeAgents.calls[0]?.permission).toBe('read-only');
+  });
+
+  /**
+   * 证据路径透传进 `extraReadPaths`（read-only 档的读放行格）。为什么必须单开一条钉：
+   * 记录文件落在 cwd **之外**，claude 的 `dontAsk` 只预授权工作目录内的读——不透传时评审者
+   * 只是读不到这两份文件，分数照样出得来（提示词里路径写对了也没用，读会被拒），
+   * 界面上一个字都看不出来。codex / dsh 不消费这一格（read-only 下读本来就全放行），
+   * 透传对它们是无害的多余信息——所以这一格在**评分通路**统一给，不按评委厂商分支。
+   */
+  it('证据非空：absolutePath 透传成 run 的 extraReadPaths，提示词也带上执行过程段', async () => {
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
+    await callJudge(undefined, { processEvidence: EVIDENCE });
+    expect(fakeAgents.calls[0]?.extraReadPaths).toEqual([
+      '/srv/aieval/workspace/run-1/rows/r-1/events.jsonl',
+      '/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl',
+    ]);
+    expect(fakeAgents.calls[0]?.prompt).toContain('## 候选的执行过程');
+  });
+
+  it('证据缺省 / 空文件表：extraReadPaths 这一格不传（undefined，与「缺省不传」逐字同义）', async () => {
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
+    await callJudge(undefined, { processEvidence: { files: [] } });
+    expect(fakeAgents.calls[0]?.extraReadPaths).toBeUndefined();
+    expect(fakeAgents.calls[0]?.prompt).not.toContain('候选的执行过程');
+
+    // 缺省（这一格整个没给）走同一条路：老调用方 / 夹具不被新格子的形状挡住
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
+    await callJudge();
+    expect(fakeAgents.calls[1]?.extraReadPaths).toBeUndefined();
+    expect(fakeAgents.calls[1]?.prompt).not.toContain('候选的执行过程');
   });
 
   it('带 outputSchema ⇒ 原样传给适配器；codex 报回 applied=true ⇒ 记 structuredOutput=true', async () => {

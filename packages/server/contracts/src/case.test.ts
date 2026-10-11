@@ -30,6 +30,7 @@ const testCase = {
       { name: '二、测试', items: [{ id: 'D1', goal: '补一条透传用例', weight: 14 }] },
     ],
   },
+  includeSteps: false,
   createdAt: '2026-09-22T10:30:00.000Z',
   updatedAt: '2026-09-22T10:30:00.000Z',
 };
@@ -56,6 +57,17 @@ describe('TestCaseSchema', () => {
   it('repoBranch 缺字段读成 null（旧 config.json 的用例没有这一列）', () => {
     const parsed = TestCaseSchema.parse({ ...testCase, repoBranch: undefined });
     expect(parsed.repoBranch).toBeNull();
+  });
+
+  /**
+   * 「包含步骤」是**必填布尔**：开关只有开 / 关两态，落进用例文件的每一份记录都必须带着它。
+   * 旧文件缺列按 false 读是 api 层 `asStoredCase` 的归一职责（那一层知道哪些记录是老数据），
+   * 契约本身不设 `.default(false)`——否则「写侧漏掉这一格」会静默落成 false 而不是当场失败。
+   */
+  it('includeSteps 是必填布尔（缺格与非布尔一律拒）', () => {
+    expect(TestCaseSchema.safeParse({ ...testCase, includeSteps: true }).success).toBe(true);
+    expect(TestCaseSchema.safeParse({ ...testCase, includeSteps: undefined }).success).toBe(false);
+    expect(TestCaseSchema.safeParse({ ...testCase, includeSteps: 'yes' }).success).toBe(false);
   });
 
   it('repoPath 走来源判定：ftp:// 被拒、git 地址通过', () => {
@@ -99,12 +111,22 @@ describe('CaseCreateSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('includeSteps 缺省 false（老客户端与手工 POST 不带这个字段时仍然合法）', () => {
+    const parsed = CaseCreateSchema.parse({ title: 't', repoPath: 'D:/r', taskPrompt: 'p', rubric: { groups: [] } });
+    expect(parsed.includeSteps).toBe(false);
+    expect(
+      CaseCreateSchema.parse({ title: 't', repoPath: 'D:/r', taskPrompt: 'p', rubric: { groups: [] }, includeSteps: true })
+        .includeSteps,
+    ).toBe(true);
+  });
 });
 
 describe('CasePatchSchema', () => {
   it('允许空补丁与单字段补丁（改标题不该被迫重填仓库路径）', () => {
     expect(CasePatchSchema.safeParse({}).success).toBe(true);
     expect(CasePatchSchema.parse({ title: '新标题' })).toEqual({ title: '新标题' });
+    expect(CasePatchSchema.parse({ includeSteps: true })).toEqual({ includeSteps: true });
   });
 });
 

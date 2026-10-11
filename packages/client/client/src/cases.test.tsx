@@ -43,6 +43,7 @@ function makeCase(overrides: Partial<TestCase> = {}): TestCase {
     repoBranch: null,
     taskPrompt: '补一条回归用例',
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 18 }] }] },
+    includeSteps: false,
     createdAt: '2026-09-22T10:00:00.000Z',
     updatedAt: '2026-09-22T10:00:00.000Z',
     ...overrides,
@@ -116,7 +117,7 @@ describe('useCreateCase / useUpdateCase / useDeleteCase', () => {
     await waitFor(() => expect(result.current.list.cases).toBeDefined());
     const getCountBefore = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === undefined).length;
 
-    await result.current.create.create({ title: 'x', repoPath: 'D:\\r', commitHash: null, repoBranch: null, taskPrompt: 't', rubric: { groups: [] } });
+    await result.current.create.create({ title: 'x', repoPath: 'D:\\r', commitHash: null, repoBranch: null, taskPrompt: 't', rubric: { groups: [] }, includeSteps: false });
 
     const calls = fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? 'GET'} ${url}`);
     expect(calls).toContain('POST /api/cases');

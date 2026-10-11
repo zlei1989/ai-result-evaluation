@@ -56,10 +56,29 @@ export interface TextRoute {
   maxOutputTokens?: number;
 }
 
-/** 对话里的一条消息：两种协议的 `role` 取值完全一致（`system` 只有 OpenAI 侧走消息数组） */
+/**
+ * 内容块：对话消息里 content 为**块数组**时的一种块（协议中立的中间形状）。
+ * 为什么是协议中立而不是直接写两家字段：`judge.ts` 只表达「意图 + 若干份命名文本」，
+ * 不该知道每种协议各自的附件字段长什么样——翻译集中在 `buildBody` 的 `wireContent`
+ * （唯一构造点口径不变，翻译表也只有那一张）。
+ */
+export type TextContentBlock =
+  /** 意图文本块：两协议都翻成 `{type:'text', text}` */
+  | { type: 'text'; text: string }
+  /** 文本附件块：两协议都翻成带文件名标题的独立 text 块（`## filename` + 空行 + 原文） */
+  | { type: 'attachment'; text: string; filename: string };
+
+/**
+ * 对话里的一条消息：两种协议的 `role` 取值完全一致（`system` 只有 OpenAI 侧走消息数组）。
+ * `content` 有两种形态：
+ *   · **字符串** = 纯文本消息（向后兼容形态：「AI 生成/识别/调整」三按钮与既有调用全走它）；
+ *   · **块数组** = 意图文本块 + 文本附件块（评分通路把 diff 与执行过程证据作为独立 text 块
+ *     与意图分开输入，wire 上见 `wireContent`）。
+ * 只有 user 消息会拿到块数组：assistant 消息恒为模型原文（字符串）。
+ */
 export interface ChatMessage {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | readonly TextContentBlock[];
 }
 
 /** 单轮调用的入参：一条 prompt，外加可选的 system / 思考强度 / 中止信号 */
@@ -202,10 +221,31 @@ function reasoningFields(protocolType: ProtocolType, effort: string | undefined)
 }
 
 /**
+ * 把一条消息的 content 翻成 wire 形状（**附件块的唯一翻译点**）：
+ * 字符串原样透传（向后兼容形态）；块数组里两种块**两协议同形**——
+ *   · text 块 → `{type:'text', text}`；
+ *   · attachment 块 → `{type:'text', text: '## <filename>\n\n<原文>'}`：标题行用文件名，
+ *     让模型与网关日志都能定位这一块是哪个文件。
+ * 为什么两协议统一翻成 text 块、而不是各家自己的协议附件（anthropic `document` /
+ * openai `file` part）：DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成
+ * `[Unsupported Document]` 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在
+ * 两协议三端点真机可用（哨兵词复述判据）。附件块不做 cache_control：那是缓存成本优化，
+ * 不是正确性问题。
+ */
+function wireContent(content: string | readonly TextContentBlock[]): unknown {
+  if (typeof content === 'string') return content;
+  return content.map((block) => {
+    if (block.type === 'text') return { type: 'text', text: block.text };
+    return { type: 'text', text: `## ${block.filename}\n\n${block.text}` };
+  });
+}
+
+/**
  * 请求体构造（**唯一一处**，单轮与多轮共用）。
- * 两个协议的形状差异只有三处：system 是顶层字段还是消息数组的第一条、`content` 是字符串还是块数组、
- * 以及 OpenAI 侧要显式 `stream: false`。这三处写两份必然在某一处漂移，而漂移的表现是
+ * 两个协议的形状差异只有两处：system 是顶层字段还是消息数组的第一条、
+ * 以及 OpenAI 侧要显式 `stream: false`。这两处写两份必然在某一处漂移，而漂移的表现是
  * 「单轮能跑、多轮 400」（或者反过来的 401）——只在多轮那条路径上出现，最难查。
+ * content 的块翻译（`wireContent`）两协议同形，故不在差异清单里。
  * 思考强度（`reasoningFields`）两个分支都要展开：它在两种协议里都是**顶层**字段，
  * 漏掉任一分支就是「某个协议的评分悄悄按厂商默认强度跑」；未指定时它展开成 `{}`（一个键都不加）。
  */
@@ -218,7 +258,7 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
       ...reasoningFields('anthropic', input.effort),
       // Anthropic 的 system 是**顶层字段**，放进 messages 会被当成普通用户消息
       ...(input.system === undefined ? {} : { system: input.system }),
-      messages: input.messages.map((message) => ({ role: message.role, content: message.content })),
+      messages: input.messages.map((message) => ({ role: message.role, content: wireContent(message.content) })),
     }
     : {
       model: route.modelId,
@@ -226,7 +266,7 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
       ...reasoningFields('openai', input.effort),
       messages: [
         ...(input.system === undefined ? [] : [{ role: 'system', content: input.system }]),
-        ...input.messages.map((message) => ({ role: message.role, content: message.content })),
+        ...input.messages.map((message) => ({ role: message.role, content: wireContent(message.content) })),
       ],
     };
 }

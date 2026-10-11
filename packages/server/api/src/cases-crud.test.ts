@@ -62,6 +62,16 @@ describe('createCase / listCases / getCase', () => {
     expect(created.commitHash).toBeNull();
   });
 
+  it('includeSteps 缺省为 false、显式为 true 时透传落盘（磁盘上读回来也是同一个值）', () => {
+    const plain = createCase(caseInput());
+    const withSteps = createCase(caseInput({ includeSteps: true, title: '带执行过程证据' }));
+
+    expect(plain.includeSteps).toBe(false);
+    expect(withSteps.includeSteps).toBe(true);
+    // 落盘是它唯一的价值：重新读盘必须拿到同一个开关值
+    expect(listStoredCases().cases.find((item) => item.id === withSteps.id)?.includeSteps).toBe(true);
+  });
+
   it('短哈希被解析成完整 40 位 hash 落盘（否则列表的 Tooltip 显不出全量）', () => {
     const fullHash = git(['rev-parse', 'HEAD'], repo).trim();
 

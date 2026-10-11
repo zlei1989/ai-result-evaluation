@@ -109,6 +109,7 @@ beforeEach(() => {
     repoBranch: null,
     taskPrompt: '补齐转换',
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 20 }] }] },
+    includeSteps: false,
     createdAt: '2026-09-22T00:00:00.000Z',
     updatedAt: '2026-09-22T00:00:00.000Z',
   });

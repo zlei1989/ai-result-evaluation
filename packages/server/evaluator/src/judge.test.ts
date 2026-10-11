@@ -17,6 +17,9 @@ import {
   validateJudgeResponse,
   type JudgeInput,
 } from './judge';
+// 两个类型都是**类型专用** import：text-api 是被 `vi.mock` 的模块，值 import 会在测试期
+// 把「正在求值中」的 mock 工厂拖进环里（见 fixtures 文件头同一条注释）；verbatimModuleSyntax 会擦除它们
+import type { TextContentBlock } from './text-api';
 import { fakeTextApi, resetFakeTextApi } from './testing/fixtures';
 
 vi.mock('./text-api', async () => {
@@ -206,6 +209,19 @@ function judgeInput(overrides: Partial<JudgeInput> = {}): JudgeInput {
   };
 }
 
+/**
+ * 取出对话里第 `index` 条消息的 content，并断言它是块数组（测试期窄化）：
+ * 评分通路现在要求 user 消息 content 是「意图 text 块 + 附件块」，是字符串就当场红。
+ */
+function contentAsBlocks(
+  messages: { role: string; content: string | TextContentBlock[] }[],
+  index = 0,
+): TextContentBlock[] {
+  const content = messages[index]?.content;
+  expect(Array.isArray(content)).toBe(true);
+  return content as unknown as TextContentBlock[];
+}
+
 describe('finalizeScore：两条通路共用的收口', () => {
   it('总分 = 达成项权重之和；maxScore = 评分表满分（两条通路同一把尺子）', () => {
     const parsed = { judgments: parseJudgeResponse(JSON.stringify(VALID), rubric()).judgments, verdict: '总评' };
@@ -317,20 +333,32 @@ describe('judgeRow：成功路径', () => {
     expect(score.judgeModelId).toBe('judge-model');
   });
 
-  it('system 用 contracts 的输出契约，prompt 里带题面、评分表（组名/引用键/权重）与 diff', async () => {
+  it('system 用 contracts 的输出契约；意图与 diff 以附件形态分开输入（text 块只有题面与评分表）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
     await judgeRow(judgeInput());
     expect(fakeTextApi.calls[0]?.system).toBe(JUDGE_OUTPUT_CONTRACT);
-    const prompt = fakeTextApi.calls[0]?.messages[0]?.content ?? '';
-    expect(prompt).toContain('把 README 的标题改成中文');
-    expect(prompt).toContain('一、生产代码');
-    expect(prompt).toContain('A1');
-    expect(prompt).toContain('| 18 |');
-    expect(prompt).toContain('满分 45 分');
-    expect(prompt).toContain('+ 中文标题');
+    const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment']);
+    const intent = blocks[0] as { type: 'text'; text: string };
+    expect(intent.text).toContain('把 README 的标题改成中文');
+    expect(intent.text).toContain('一、生产代码');
+    expect(intent.text).toContain('A1');
+    expect(intent.text).toContain('| 18 |');
+    expect(intent.text).toContain('满分 45 分');
+    // 意图文本不再内联 diff：改动作为协议附件分开输入（这是本重构要钉住的分家）
+    expect(intent.text).not.toContain('+ 中文标题');
+    expect(blocks[1]).toEqual({
+      type: 'attachment',
+      text: '### 未提交改动（工作区 vs HEAD）\n+ 中文标题\n',
+      filename: 'candidate-diff.txt',
+    });
+  });
 
+  it('空 diff → 附件文本显式写「（无改动）」（附件不能空：模型会把「看不到改动」当成「没改」）', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
     await judgeRow(judgeInput({ diffText: '   ' }));
-    expect(fakeTextApi.calls[1]?.messages[0]?.content).toContain('（无改动）');
+    const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    expect(blocks[1]).toEqual({ type: 'attachment', text: '（无改动）', filename: 'candidate-diff.txt' });
   });
 
   it('文本通路本期不开 schema：structuredOutput 记 false', async () => {
@@ -416,6 +444,93 @@ describe('judgeRow：成功路径', () => {
   });
 });
 
+describe('judgeRow：执行过程证据附件（「包含步骤」开关）', () => {
+  /** codex 候选的组装产物形状（与 `ProcessEvidence` 同一形状）：events + messages 两份，第二份带截断标注 */
+  const evidence = {
+    files: [
+      {
+        filename: 'candidate-events.jsonl',
+        content: '{"type":"system","subtype":"init"}\n{"type":"assistant","message":{}}\n',
+        truncated: false,
+        absolutePath: '/tmp/fake/events.jsonl',
+      },
+      {
+        filename: 'candidate-messages.jsonl',
+        content: '{"role":"assistant","blocks":[{"type":"thinking","text":"思考全文"}]}\n…（中间 3 行已截断，预算 2000 字节）…\n',
+        truncated: true,
+        absolutePath: '/tmp/fake/messages.jsonl',
+      },
+    ],
+  };
+
+  /**
+   * 本票最承重的守卫：开关开启（files 非空）时证据附件必须真的出现在协议块里，
+   * 且按组装产物的 `files` 顺序排在 diff 附件**之后**。把证据附件丢掉（或拼错顺序、
+   * 或把 filename/content 张冠李戴）都会让这条用例红。
+   */
+  it('开关开启：diff 附件之后按 files 顺序追加证据附件，filename 与 content 原样透传（截断标注不加工）', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    await judgeRow(judgeInput({ processEvidence: evidence }));
+    const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment', 'attachment', 'attachment']);
+    // diff 附件仍在证据之前（协议形态：意图 + diff + 证据）
+    expect(blocks[1]).toEqual({
+      type: 'attachment',
+      text: '### 未提交改动（工作区 vs HEAD）\n+ 中文标题\n',
+      filename: 'candidate-diff.txt',
+    });
+    // 两份证据按产物的顺序原样进附件块：文件名用产物的 filename，内容用已截断的 content
+    expect(blocks[2]).toEqual({ type: 'attachment', text: evidence.files[0]?.content, filename: 'candidate-events.jsonl' });
+    expect(blocks[3]).toEqual({ type: 'attachment', text: evidence.files[1]?.content, filename: 'candidate-messages.jsonl' });
+    // 证据不进意图文本：意图仍只留题面与评分表，证据内容（含截断标注）只出现在附件块里
+    const intent = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(intent).not.toContain('已截断');
+    expect(intent).not.toContain('candidate-events.jsonl');
+  });
+
+  it('只有 events 一份（非 codex 候选）→ diff 之后恰好追加一个附件块', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    await judgeRow(judgeInput({ processEvidence: { files: [evidence.files[0]!] } }));
+    const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment', 'attachment']);
+    expect(blocks[2]).toEqual({ type: 'attachment', text: evidence.files[0]?.content, filename: 'candidate-events.jsonl' });
+  });
+
+  it('开关关闭（files 空数组）与缺省（未给 processEvidence）→ 块与现状逐字一致（意图 + diff 附件，再无其他）', async () => {
+    fakeTextApi.reply = JSON.stringify(VALID);
+    await judgeRow(judgeInput({ processEvidence: { files: [] } }));
+    const off = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    resetFakeTextApi();
+    fakeTextApi.reply = JSON.stringify(VALID);
+    await judgeRow(judgeInput());
+    const missing = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
+    // 两态**逐块相等**（不是「都只有两条」这类弱判据）：空数组与缺省都必须与现状一字不差
+    expect(off).toEqual(missing);
+    expect(off).toEqual([
+      { type: 'text', text: expect.stringContaining('## 评分标准项') },
+      { type: 'attachment', text: '### 未提交改动（工作区 vs HEAD）\n+ 中文标题\n', filename: 'candidate-diff.txt' },
+    ]);
+  });
+
+  it('结构修复轮沿用同一附件形态重发：第二轮 user 消息 = 纠错 text + diff 附件 + 证据全量', async () => {
+    fakeTextApi.replies = ['这份改动整体不错。', JSON.stringify(VALID)];
+    await judgeRow(judgeInput({ processEvidence: evidence }));
+    expect(fakeTextApi.calls).toHaveLength(2);
+    const second = fakeTextApi.calls[1]?.messages ?? [];
+    expect(second.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    const blocks = contentAsBlocks(second, 2);
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment', 'attachment', 'attachment']);
+    expect((blocks[0] as { type: 'text'; text: string }).text).toContain('不是合法 JSON');
+    expect(blocks[1]).toEqual({
+      type: 'attachment',
+      text: '### 未提交改动（工作区 vs HEAD）\n+ 中文标题\n',
+      filename: 'candidate-diff.txt',
+    });
+    expect(blocks[2]).toEqual({ type: 'attachment', text: evidence.files[0]?.content, filename: 'candidate-events.jsonl' });
+    expect(blocks[3]).toEqual({ type: 'attachment', text: evidence.files[1]?.content, filename: 'candidate-messages.jsonl' });
+  });
+});
+
 describe('judgeRow：失败面与修复循环', () => {
   it('每一轮都缺项 → JUDGE_PARSE_FAILED，文案带回问轮数，context.raw 是最后一轮的原文', async () => {
     const missing = withoutJudgment('D1');
@@ -436,7 +551,16 @@ describe('judgeRow：失败面与修复循环', () => {
     expect(fakeTextApi.calls).toHaveLength(2);
     const second = fakeTextApi.calls[1]?.messages ?? [];
     expect(second.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
-    expect(second[2]?.content).toContain('不是合法 JSON');
+    // assistant 的原文仍是字符串；修复轮的纠错消息沿用同一附件形态重发（模型手里仍有 diff）
+    expect(second[1]?.content).toBe('这份改动整体不错。');
+    const feedbackBlocks = contentAsBlocks(second, 2);
+    expect(feedbackBlocks.map((block) => block.type)).toEqual(['text', 'attachment']);
+    expect((feedbackBlocks[0] as { type: 'text'; text: string }).text).toContain('不是合法 JSON');
+    expect(feedbackBlocks[1]).toEqual({
+      type: 'attachment',
+      text: '### 未提交改动（工作区 vs HEAD）\n+ 中文标题\n',
+      filename: 'candidate-diff.txt',
+    });
     expect(progress).toHaveLength(1);
     expect(progress[0]?.round).toBe(1);
   });

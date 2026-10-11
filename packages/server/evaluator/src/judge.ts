@@ -2,6 +2,14 @@
  * 评分器（**文本评分通路**）：把用例的**评分标准项表格** + 裁剪后的 diff 交给评分模型（纯文本 API），
  * 解析出逐项判定（达成 / 未达成）。另一条通路是智能体评分（`judge-agent.ts`），它复用本文件的解析与收口。
  *
+ * 评分上下文以「意图 text 块 + 独立 text 块」分开输入：意图文本只留【题面 + 评分标准表】，
+ * diff 作为带文件名标题的独立 text 块（`## candidate-diff.txt`）随首轮与结构修复轮一起发
+ * （见 `buildJudgePrompt` 与 `judgeUserBlocks`）。「包含步骤」开关开启时
+ * （`processEvidence.files` 非空）在 diff 块之后按组装产物的顺序追加执行过程证据块
+ * （`## candidate-events.jsonl` / `## candidate-messages.jsonl`，标题与内容照产物原样）。
+ * 块内容**不做截断**——diff 与证据都在进入评分前按 diffBudgetBytes 裁剪好
+ * （证据的裁剪在 `process-evidence.ts` 的组装里完成）。
+ *
  * 判据：**按评分表逐项取，缺一项即整行失败**。
  * 为什么缺项不能算「未达成」：那会让「模型漏答」与「确实没做」在分数上完全同形；
  * 当送分更糟——白送一整项权重，而分数看起来完全正常。
@@ -32,7 +40,8 @@ import {
   type RubricJudgment,
   type ScoreResult,
 } from '@aieval/contracts';
-import { callTextApiConversation, type ChatMessage, type TextRoute } from './text-api';
+import { callTextApiConversation, type ChatMessage, type TextContentBlock, type TextRoute } from './text-api';
+import type { ProcessEvidence, ProcessEvidenceFile } from './process-evidence';
 
 /** 解析失败时随错误一起保留的原文上限（字符）：够看清模型回了什么，又不至于把事件日志撑爆 */
 export const RAW_KEEP_CHARS = 2_000;
@@ -325,6 +334,12 @@ export interface JudgeInput {
   judgeEffort?: string;
   /** 这一行的停止信号（可选：不传即「不可中止」） */
   signal?: AbortSignal;
+  /**
+   * 「包含步骤」的执行过程记录证据（编排层组装：快照门控 + codex 补 messages + 预算截断，
+   * 见 `process-evidence.ts`）。`files` 为空 = 开关关闭 / 两份记录都缺失。
+   * 由编排层传入——本模块只负责把它拼成独立的 text 块，不读盘、不再截断。
+   */
+  processEvidence?: ProcessEvidence;
   /** 结构修复的进度回调（可选；编排层把它接到该行的事件日志上） */
   onProgress?: (progress: JudgeProgress) => void;
   /** 「编排层开始了一次新的行尝试」的接缝（可选；生产代码里它是一个 no-op） */
@@ -341,22 +356,50 @@ export function truncateRaw(text: string, max = RAW_KEEP_CHARS): string {
 }
 
 /**
- * 拼评分请求：题面 → **评分标准项表格** → 待评的改动。
- * 为什么把改动放最后：长输入里尾部内容最不容易被忽略；空 diff 显式写「（无改动）」，
- * 否则模型会把「看不到改动」当成「没改」。
+ * diff 块的标题文件名：改动以带 `## <filename>` 标题的独立 text 块与意图消息分开输入
+ * （对所有文本评分生效），模型拿到的是带标题的独立段落而不是一段内联正文。
+ * 稳定命名让网关日志与模型视角都能定位它。
  */
-function buildJudgePrompt(input: JudgeInput): string {
-  const diff = input.diffText.trim() === '' ? '（无改动）' : input.diffText;
-  return [
-    '## 考题（候选拿到的任务）',
-    input.taskPrompt,
-    '',
-    '## 评分标准项（逐项判定：达成给 true，未达成给 false）',
-    renderRubricForJudge(input.rubric),
-    '',
-    '## 候选的代码改动',
-    diff,
-  ].join('\n');
+const DIFF_ATTACHMENT_FILENAME = 'candidate-diff.txt';
+
+/**
+ * 拼评分请求：意图文本只留【题面 → 评分标准项表格】，待评的改动作为**独立 text 块**分开输入。
+ * 为什么把改动挪出正文：长 diff 内联在 user 消息里既撑大提示词、又容易被模型当散文跳读；
+ * 分块下网关把它作为带标题的独立段落交给模型。空 diff 显式写「（无改动）」放进附件文本——
+ * 否则模型会把「看不到改动」当成「没改」（与内联时代的判据同一个词）。
+ * 块内容**不做截断**：diff 已在进入评分前按 diffBudgetBytes 裁剪好，这里原样透传。
+ */
+function buildJudgePrompt(input: JudgeInput): { intent: string; attachment: string } {
+  const attachment = input.diffText.trim() === '' ? '（无改动）' : input.diffText;
+  return {
+    intent: [
+      '## 考题（候选拿到的任务）',
+      input.taskPrompt,
+      '',
+      '## 评分标准项（逐项判定：达成给 true，未达成给 false）',
+      renderRubricForJudge(input.rubric),
+    ].join('\n'),
+    attachment,
+  };
+}
+
+/**
+ * 一条 user 消息的块数组形态：意图 text 块在前，diff 块随后，「包含步骤」开关开启时
+ * 再按组装产物的顺序追加执行过程证据块（events.jsonl / messages.jsonl）。
+ * 首轮与结构修复轮**共用**它——修复轮重发同一份 diff 块与证据块（模型手里仍有改动全文与过程记录，
+ * 而结构错误反馈作为 text 块放在最前）。
+ * 证据列表为空（开关关闭 / 两份记录都缺失）时不追加任何块，产出的块与没有证据时逐字一致。
+ */
+function judgeUserBlocks(text: string, attachment: string, evidenceFiles: readonly ProcessEvidenceFile[]): TextContentBlock[] {
+  const blocks: TextContentBlock[] = [
+    { type: 'text', text },
+    { type: 'attachment', text: attachment, filename: DIFF_ATTACHMENT_FILENAME },
+  ];
+  // 证据块的标题文件名与内容照组装产物原样透传：截断已在进入评分前完成，这里不再加工
+  for (const file of evidenceFiles) {
+    blocks.push({ type: 'attachment', text: file.content, filename: file.filename });
+  }
+  return blocks;
 }
 
 /**
@@ -369,10 +412,13 @@ function buildJudgePrompt(input: JudgeInput): string {
  *   - 形状不合契约 → 由 `finalizeScore` 里的 `ScoreResultSchema` 兜住，并折成中文 `ServiceError`。
  */
 export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
-  const prompt = buildJudgePrompt(input);
+  const { intent, attachment } = buildJudgePrompt(input);
   // system 用 contracts 的输出契约文本：生成侧与解析侧共用同一份字段名
   const system = JUDGE_OUTPUT_CONTRACT;
-  const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
+  // 「包含步骤」的证据块列表：空 = 开关关闭 / 两份记录都缺失（见 process-evidence.ts 的产物口径）
+  const evidenceFiles = input.processEvidence?.files ?? [];
+  // 首轮就是块数组形态（意图 text 块 + diff 块 [+ 证据块]）：改动与证据以独立 text 块输入，与开关无关
+  const messages: ChatMessage[] = [{ role: 'user', content: judgeUserBlocks(intent, attachment, evidenceFiles) }];
   /**
    * 这一分的花销：文本通路没有适配器替我们记账，两格都只能在这里采。
    * 耗时从**进函数就开始掐**：结构修复的每一轮与瞬时重试的退避都算这一次评分的成本，
@@ -430,7 +476,15 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
       repairs += 1;
       input.onProgress?.({ round: repairs, message: checked.message });
       messages.push({ role: 'assistant', content: raw });
-      messages.push({ role: 'user', content: buildJudgeFeedback({ message: checked.message, raw, rubric: input.rubric }) });
+      // 修复轮沿用同一形态：纠错文本在前、diff 块与证据块全量重发在后
+      messages.push({
+        role: 'user',
+        content: judgeUserBlocks(
+          buildJudgeFeedback({ message: checked.message, raw, rubric: input.rubric }),
+          attachment,
+          evidenceFiles,
+        ),
+      });
     }
   } catch (error) {
     if (error instanceof ServiceError) throw error;

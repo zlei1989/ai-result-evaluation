@@ -143,6 +143,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `signal` | `AbortSignal` | ✅ | 外部要求停止（用户点「终止」）。**只**用来判 `canceled`，不用它推断其它原因；已 abort 时连进程都不起 |
 | `outputSchema` | `Record<string, unknown>` | — | 要求模型**按这份 JSON Schema 生成**最终答复。缺省 = 不约束，行为与今天逐字相同。它是**中性事实**：翻成 claude 的 `outputFormat` 还是 codex 的 `outputSchema` 是适配器的事。该家不支持（`capability.structuredOutput: false`）时**降级**：`runTurn` 不把 schema 交给 `start`、包内记一条 WARN，结果里 `applied.structuredOutput = false`——调用方据它记账，不要自己再去查能力表 |
 | `onEvent` | `(e: AgentEvent) => void` | ✅ | 事件回调：同步、不 await。每行独立一份，`seq` 从 1 在 run 内自增，`at` 是 ISO 8601 |
+| `extraReadPaths` | `string[]` | — | read-only 档下**额外放行**的只读绝对路径（目录或文件）。只扩大「哪些路径可以读」、写仍被拒；**只被 claude 消费**——映射 SDK `additionalDirectories`（`--add-dir`，扩进 `dontAsk` 的预授权范围）；codex（read-only 沙箱全盘可读）与 dsh（只读只拦写、读直通）**不映射**。评分通路把落在 cwd 之外的执行过程记录路径透传进这一格 |
 
 ### 4.2 `AgentRunResult`（返回值）
 
@@ -178,6 +179,10 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
   `full` 走 `danger-full-access`（不设沙箱）。
 - `read-only` 的语义是「读放行、写被拒」，**刻意不是 claude 的 `plan`**：`plan` 连 `git diff` 都跑不了，
   而评审者的工作正是自己去看改动。
+- `AgentRunInput.extraReadPaths`（可选）是 read-only 档下**额外放行**的只读绝对路径，**不是第四档**：
+  只扩大读范围、写仍被拒。**只 claude 消费**——翻成 SDK 的 `additionalDirectories`（`--add-dir`，与 `dontAsk`
+  兼容）；codex / dsh **不映射**（read-only 读本就全放行）。它刻意不落上面三份档位表（键集合由
+  `permission.test.ts` 逐字钉死），语义真源在 `types.ts` 的字段注释。
 
 ### 4.4 `AgentProvider.metadata`——能力查询的唯一入口
 

@@ -324,6 +324,9 @@ export function createRun(input: RunCreate): EvalRun {
     // 与 caseTitle / repoPath 同一套冗余快照：这一轮用的是哪张评分表。
     // 评分阶段读的是它而不是 testCase.rubric——改了用例的评分表之后，历史记录与「重新评分」仍按当初那把尺子
     rubric: testCase.rubric,
+    // 与 rubric 同一条快照链：这一轮是否把候选的执行过程记录纳入评分证据。
+    // 评分阶段读的是它而不是用例现取的那一份——之后改用例的开关，不影响这一轮当初的口径（rescore 也沿用快照）
+    includeSteps: testCase.includeSteps,
     status: 'idle',
     executionMode: input.executionMode,
     // 这一轮**怎么评分**的快照：不写这一格，`EvalRunSchema` 的 `.default(false)` 会在落盘时
@@ -468,7 +471,7 @@ export function listAgentModelOptions(): AgentOptionGroup[] {
   });
 }
 
-/** 编辑时这一轮指向的用例（五格冗余快照的来源） */
+/** 编辑时这一轮指向的用例（六格冗余快照的来源） */
 export interface RunTargetCase {
   caseId: string;
   caseTitle: string;
@@ -477,11 +480,16 @@ export interface RunTargetCase {
   repoBranch: string | null;
   /**
    * 这张评分表（`EvalRunSchema.rubric` 的来源）。
-   * 与其余五格同一个来路：换用例时重取、`caseId` 没变时**逐字保留**——
+   * 与其余六格同一个来路：换用例时重取、`caseId` 没变时**逐字保留**——
    * 「改了用例的评分表不许改写历史」这条不变式在**换用例**这条路上同样成立，
    * 而换过去的那张表必须跟着走（否则新用例的行会拿旧用例的尺子评分）。
    */
   rubric: Rubric;
+  /**
+   * 这一轮的「包含步骤」开关（`EvalRunSchema.includeSteps` 的来源）。
+   * 与 `rubric` 同一条链：换用例时跟着新用例重取，`caseId` 没变时逐字保留这一轮当初的快照。
+   */
+  includeSteps: boolean;
 }
 
 /**
@@ -574,8 +582,9 @@ function settleRunAfterEdit(run: EvalRun, rows: readonly EvalRow[], now: string)
  * 「改了才重置」按**值**判：表单交回来的永远是全量行集合，按「字段出现没有」判会把每次保存
  * 都变成全行清空重来（与 `updateCase` 同口径，判据是 contracts 的 `isSameRowTarget`）。
  *
- * 轮级那六格用例快照（`caseId` / `caseTitle` / `repoPath` / `commitHash` / `repoBranch` / `rubric`）**只在换用例时**
- * 重取；`caseId` 没变就逐字保留这一轮的原快照，理由见函数体里那段注释（无条件重写会让一轮里出现两条基线）。
+ * 轮级那七格用例快照（`caseId` / `caseTitle` / `repoPath` / `commitHash` / `repoBranch` / `rubric` /
+ * `includeSteps`）**只在换用例时**重取；`caseId` 没变就逐字保留这一轮的原快照，理由见函数体里那段注释
+ * （无条件重写会让一轮里出现两条基线）。
  */
 export function planRunUpdate(
   run: EvalRun,
@@ -614,7 +623,7 @@ export function planRunUpdate(
   const now = new Date().toISOString();
   return {
     ...run,
-    // 用例快照（`caseId` + 五格冗余字段）**只在换了用例时**重取——逐行处置表里，
+    // 用例快照（`caseId` + 六格冗余字段）**只在换了用例时**重取——逐行处置表里，
     // 只有「换来用例」那一行写了「重取 caseTitle / repoPath / commitHash / repoBranch 快照」，
     // `rubric` 与它们同路：换过去的那张评分表必须跟着走，否则新用例的行会拿旧用例的尺子评分。
     // 无条件按 `target` 重写的后果：用户改的是**用例自己**的 `commitHash` / `repoPath`
@@ -622,7 +631,8 @@ export function planRunUpdate(
     // 从串行改成并行，这一轮的「复现条件」也会悄悄变成新 commit，而每一行还挂着在**旧** commit 上
     // 挣来的分；再点「开始」时 pending / failed 的行按 `run.commitHash` 重跑（编排层 prepare 用的就是它）
     // ⇒ 一轮里出现两条基线，而两端都不报错。`rubric` 同理：无条件重写会把「这一轮当初那把尺子」
-    // 换成用例当前那张表，历史分数与自己那一轮的满分不再自洽。
+    // 换成用例当前那张表，历史分数与自己那一轮的满分不再自洽。`includeSteps` 也同理：
+    // 无条件重写会把「这一轮当初的评分证据口径」换成用例当前的开关值。
     // 也不改成「按值比较这几格」：那要连带改客户端的 `invalidatedRows`（「同一用例」的第二份判据），
     // 而「改了才重置」这一条判据只有一份（那一份是**行**的 `isSameRowTarget`）。
     ...(caseChanged
@@ -633,6 +643,7 @@ export function planRunUpdate(
         commitHash: target.commitHash,
         repoBranch: target.repoBranch,
         rubric: target.rubric,
+        includeSteps: target.includeSteps,
       }
       : {}),
     executionMode: input.executionMode,
@@ -656,7 +667,7 @@ export function planRunUpdate(
  *
  * 「使用智能体评分」的判定与创建**共用同一份**（`resolveJudgeRoute` 无参读全局默认 + `requireJudgeAgent`）：
  * 判据只有那一处，这里抄第二份必然漂移（评分阶段还会再校验一次，配置可能被改过）。
- * 指向的用例只取 `input.caseId` 那一份，`planRunUpdate` 的六格用例快照与换用例判定都由它来，
+ * 指向的用例只取 `input.caseId` 那一份，`planRunUpdate` 的七格用例快照与换用例判定都由它来，
  * 故「行引用了一个这一轮并不拥有的用例」不需要另一条一致性检查。
  */
 export function updateRun(runId: string, input: RunUpdate): EvalRun {
@@ -683,6 +694,7 @@ export function updateRun(runId: string, input: RunUpdate): EvalRun {
     commitHash: testCase.commitHash,
     repoBranch: testCase.repoBranch ?? null,
     rubric: testCase.rubric,
+    includeSteps: testCase.includeSteps,
   });
 
   saveRun(next);
