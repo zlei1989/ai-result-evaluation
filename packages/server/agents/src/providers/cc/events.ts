@@ -207,7 +207,7 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
    *   ② `system` + `subtype: 'thinking_tokens'`（**思考进度帧**，见 `THINKING_TOKENS_SUBTYPE` 的 SDK 原文）：
    *      它是给 spinner 用的近似进度，每个思考 token 一条。**量级**（run `7f05c765`
    *      的 claude 行）：这一种帧 **11,629 条**，占该行 12,509 条 `log` 的 **93%**；评分智能体那条路
-   *      （走同一个适配器，编排层加 `[评分智能体] ` 前缀）再叠 **670 条**。后果两条都很硬：
+   *      （走同一个适配器）再叠 **670 条**。后果两条都很硬：
    *      「原始输出」面板被刷成 JSON 流水且卡死、`events.jsonl` 的单行产物涨到 MB 级。
    *      而它承载的信息与收尾的权威值（`result.usage.output_tokens_details.thinking_tokens`）重复且更差
    *      （SDK 自己写明 "approximate … not the authoritative billed output_tokens"）⇒ 丢掉不损失事实。
@@ -371,6 +371,19 @@ function countModelRoundTrip(message: Record<string, unknown> | null, state: Tur
 }
 
 /**
+ * 这条消息有没有交出**可用的原生结构化产出**（cc 的 `structured_output`）。
+ *
+ * 单一判据、两个消费方：投影（决定 `state.finalText` 取哪一支）与适配器（`applied.structuredOutput`
+ * 的上报，见 `index.ts` 的 project 包装）。两处各写一份必然漂移，而漂移的表现是
+ * 「答复明明按结构化走的，结果里却记着没走」——那种账对不上的形态最难查。
+ * 四态都收在这里：字段缺失 / 显式 `null` / 空串都算「没有」，只有非空才有（理由见 `projectResult`）。
+ */
+export function hasClaudeStructuredOutput(message: Record<string, unknown> | null): boolean {
+  const structured = message?.structured_output;
+  return structured !== undefined && structured !== null && structured !== '';
+}
+
+/**
  * `result` 消息：最终答复进日志与结果、计量与轮次取数值、is_error 归因成失败。
  * 轮次以**我们自己数出来的**为准（跑动期界面看的就是它，两边必须同源），`num_turns` 只在
  * 我们一次都没数到（没有 `message.id` 可归并）时兜底；两者不一致时落一条 WARN——
@@ -406,7 +419,7 @@ function projectResult(
   //     编码（`'"{\"a\":1}"'`），下游 parse 出来是**字符串**而不是对象 ⇒ schema 约束下的每一行都失败在
   //     「顶层不是对象」。只有对象形态才走 `safeStringify`。
   const structured = message?.structured_output;
-  if (structured !== undefined && structured !== null && structured !== '') {
+  if (hasClaudeStructuredOutput(message)) {
     const serialized = typeof structured === 'string' ? structured : safeStringify(structured);
     if (text !== null && text !== '' && text !== serialized) {
       drafts.push(
@@ -444,12 +457,14 @@ function projectResult(
    * 两个分支都带。而 `TurnProjection.turn` 是**可选格**，漏填既不报类型错、也不会让既有用例变红。
    */
   const turns = state.turns > 0 ? state.turns : reported;
-  // 结构化输出重试用尽：这是**评分通路**才会遇到的收场（候选阶段不传 schema）。CLI 的 subtype 是英文，
+  // 结构化输出重试用尽：只有**要求了 schema 的运行**才会遇到的收场。CLI 的 subtype 是英文，
   // 直接冒到界面等于让使用者去猜；这里折成一句能直接展示的中文，并保留 subtype 供排障。
+  // 文案**只说技术事实**：调用方是拿它评分还是干别的，本包不知道，也不该替它猜
+  //（「去改什么」由编排层按归因码补，见 `orchestrator.ts` 的 `withProductHint`）。
   if (message?.is_error === true && readString(message, 'subtype') === 'error_max_structured_output_retries') {
     const friendly =
-      'cc 的结构化输出重试用尽：模型在多次重试内没有给出符合评分 schema 的 JSON。'
-      + '请检查用例的评分标准项，或把评分智能体换成另一家';
+      'cc 的结构化输出重试用尽：模型在多次重试内没有给出符合本次 JSON Schema 的答复。'
+      + '请检查本次的输出约束，或换一个模型再试';
     drafts.push({ type: 'error', message: friendly });
     // 「保留 subtype 供排障」的落点**只能**是这条 stderr 日志，不能是 `friendly`：界面直接展示的是
     // `failure.message`，把英文代号拼在它尾巴上，那句中文归因就白写了（这条路径上 `result` 通常是

@@ -8,7 +8,8 @@
  * 2. **日志那一条 SSE 只在该行的日志抽屉打开时订阅**（实时指标那一路只为在跑的行各开一条）；
  * 3. 三个抽屉的数据各自按需取：日志 = `useRowStream`+ `useRowLog`
  * + `useRowMessages`、改动 = `useRowDiffIndex` + `useRowDiffFile`、
- * 评分详情 = 快照里的 `score` 与 `rubric`；
+ * 评分详情 = 快照里的 `score` 与 `rubric` + 评分那条事件流 `useRowJudgeEvents`
+ * （评审者自己的原始输出，只在抽屉开着才取、judging 才接 SSE）；
  * 4. 页面的可测逻辑（URL 解析、错误文案、日志抽屉的三态）都在 `@/src/runs-view` 与
  * `@/src/log-drawer-state`，本文件只做拼装；
  * 5. **本页自己不套 `PageShell`**：`ListDetailLayout` 内部已经是 `PageShell`，
@@ -37,6 +38,7 @@ import {
   useDeleteRun,
   useRowDiffFile,
   useRowDiffIndex,
+  useRowJudgeEvents,
   useRowLog,
   useRowMessages,
   useRowStream,
@@ -75,6 +77,7 @@ import {
   diagnosticsOf,
   formatDateTime,
   formatEventLog,
+  rawOutputLabel,
   useAppliedThemeMode,
   // 表单交回的值的形状：创建与编辑两条路径都按它收敛（`RunUpdate` 与它逐字段一致）
   type Loadable,
@@ -388,6 +391,13 @@ function RunsPage(): ReactNode {
    * diff 视图却按暗色渲染（症状：亮色主题下背景不对）。真正的解析在 `providers.tsx`。
    */
   const themeMode = useAppliedThemeMode();
+  /** 当前评分详情对应的行 id（不是评分抽屉时为 null）：footer 的入口与二级抽屉都以它为判据 */
+  const scoreRowId = drawer?.kind === 'score' ? drawer.rowId : null;
+  /**
+   * 评分详情对应的那一行（分与状态都在它身上）：`scoreDetail` 与「原始输出」入口的可见性都读它。
+   * 行状态也在这里取——**judging ⇔ 无分**（首评 / 重评的入口都会同步清分），两个判据读同一行才不会漂。
+   */
+  const scoreRow = scoreRowId === null ? undefined : run?.rows.find((row) => row.id === scoreRowId);
   /**
    * 评分详情抽屉要的**两样东西来自同一份 run 快照**：这一行的 `score` 与这一轮的评分表 `rubric`
    * ——评分表是这一分生成时那张表的快照（与 `score.maxScore` 同源），改用例不会换掉它，
@@ -398,10 +408,8 @@ function RunsPage(): ReactNode {
    * 渲染出的是一张对不上任何判定的空表。
    */
   const scoreDetail = ((): { score: ScoreResult; rubric: Rubric } | null => {
-    if (drawer === null || drawer.kind !== 'score' || run === undefined) return null;
-    const row = run.rows.find((candidate) => candidate.id === drawer.rowId);
-    if (row === undefined || row.score === null) return null;
-    return { score: row.score, rubric: run.rubric };
+    if (run === undefined || scoreRow === undefined || scoreRow.score === null) return null;
+    return { score: scoreRow.score, rubric: run.rubric };
   })();
   /**
    * 「模型原始返回」二级抽屉的开合：入口按钮挂在评分详情抽屉的 `footer` 上，
@@ -412,9 +420,38 @@ function RunsPage(): ReactNode {
    * ——那种 bug 只在特定点击顺序下出现。带上行 id 之后判据自动为假（关抽屉时 `drawer` 已是 null）。
    */
   const [rawRowId, setRawRowId] = useState<string | null>(null);
-  /** 当前评分详情对应的行 id（不是评分抽屉时为 null）：footer 的入口与二级抽屉都以它为判据 */
-  const scoreRowId = drawer?.kind === 'score' ? drawer.rowId : null;
   const rawOpen = scoreRowId !== null && rawRowId === scoreRowId;
+  /** 「原始输出 N 条」二级抽屉（评分那条流）的开合：与 `rawRowId` 同一条「记哪一行」的口径 */
+  const [judgeOutputRowId, setJudgeOutputRowId] = useState<string | null>(null);
+  const judgeOutputOpen = scoreRowId !== null && judgeOutputRowId === scoreRowId;
+  /** 这一行正在评分（judging）吗：SSE 的开关（judging 才接，终态行只拉历史） */
+  const judgeLive = scoreRow?.status === 'judging';
+  /**
+   * 「原始输出」入口的可见性（设计口径）：**有分**时按 `score.judgeAgentKind` 判——文本 API 评分
+   * 没有评审会话（`judge-events.jsonl` 不存在）⇒ 不渲染；智能体评分的行**常驻**（含 0 条：
+   * 空态写在二级抽屉的正文里，不靠藏按钮表达）。**评分进行中**（judging ⇔ 无分，
+   * `judgeAgentKind` 要等分落下来才有）按轮级开关 `run.useAgentJudge` 判。重跑候选
+   * （running）期间不渲染——评审还没开始，那时文件已被清空、一个字都不剩。
+   */
+  const judgeOutputVisible =
+    scoreRow !== undefined &&
+    ((scoreDetail !== null && scoreDetail.score.judgeAgentKind !== null) ||
+      (run?.useAgentJudge === true && judgeLive));
+  /**
+   * 评分那条事件流（评审者自己的流水）：入口可见才取数；judging 才接 SSE（空闲零连接）。
+   * `live` 进依赖 ⇒ judging → 终态的翻转会把 effect 重挂一次、历史重读成终值（口径见
+   * `judge-events.ts` 文件头）；分落进行里那一刀不归它管（run 信号流的职责）。
+   */
+  const judgeOutput = useRowJudgeEvents({
+    runId,
+    rowId: scoreRowId ?? '',
+    enabled: judgeOutputVisible,
+    live: judgeLive,
+  });
+  /** 折成「原始输出」面板的行（`log` 事件逐字原文）：与执行日志抽屉共用同一个折法 */
+  const judgeDiagnostics = useMemo(() => diagnosticsOf(judgeOutput.events), [judgeOutput.events]);
+  /** 入口按钮与二级抽屉标题同文（`rawOutputLabel` 是同一份实现）：ready 才带条数，读取中 / 失败不带 */
+  const judgeOutputLabel = rawOutputLabel(judgeOutput.status === 'ready' ? judgeDiagnostics.lines.length : null);
 
   /** 换一行（或重开抽屉）时把累积清空，免得看到上一行的文件 */
   useEffect(() => {
@@ -890,22 +927,36 @@ function RunsPage(): ReactNode {
         onClose={() => setDrawer(null)}
         destroyOnHidden
         /*
-          「查看原始返回」的入口在 **footer** 上：它不再占正文的高度、
-          也不再随正文一起滚走；正文里既没有标题也没有按钮。
-          **没有分就没有入口**：那一格是空态「这一行还没有评分」，没有原文可看（footer 为 null 时
-          antd 连那一条 footer 都不渲染）。
+          「查看原始返回」与「原始输出 N 条」两个入口都在 **footer** 上：不占正文的高度、
+          也不随正文一起滚走；正文里既没有标题也没有按钮。
+          **没有分就没有「查看原始返回」**：那一格是空态「这一行还没有评分」，没有原文可看。
+          「原始输出」有自己的可见性判据（`judgeOutputVisible`：智能体评分的行常驻、评分进行中
+          也开、文本 API 与 running 期间没有）——两个按钮各判各的，footer 整段为 null
+          才是「两个入口都没有」。
         */
         footer={
-          scoreDetail === null ? null : (
-            <Flex justify="flex-end">
-              <Button
-                size="small"
-                autoInsertSpace={false}
-                data-testid="score-raw-open"
-                onClick={() => setRawRowId(scoreRowId)}
-              >
-                查看原始返回
-              </Button>
+          scoreDetail === null && !judgeOutputVisible ? null : (
+            <Flex justify="flex-end" gap={8}>
+              {scoreDetail !== null && (
+                <Button
+                  size="small"
+                  autoInsertSpace={false}
+                  data-testid="score-raw-open"
+                  onClick={() => setRawRowId(scoreRowId)}
+                >
+                  查看原始返回
+                </Button>
+              )}
+              {judgeOutputVisible && (
+                <Button
+                  size="small"
+                  autoInsertSpace={false}
+                  data-testid="score-judge-output-open"
+                  onClick={() => setJudgeOutputRowId(scoreRowId)}
+                >
+                  {judgeOutputLabel}
+                </Button>
+              )}
             </Flex>
           )
         }
@@ -923,6 +974,26 @@ function RunsPage(): ReactNode {
             rawOpen={rawOpen}
             // 二级抽屉只能开、由它自己关；这里的 `false` 就是「关掉了」这一个动作
             onRawOpenChange={(next) => setRawRowId(next ? scoreRowId : null)}
+            // 「原始输出」那一组（口径见 ScoreJudgeOutputProps）：可见性已在 judgeOutputVisible
+            // 判过，这里只管折数据——错误折成中文（describeError）、三态交给视图
+            judgeOutput={
+              judgeOutputVisible
+                ? {
+                  state:
+                      judgeOutput.status === 'error'
+                        ? { status: 'error', error: judgeOutput.error }
+                        : judgeOutput.status === 'loading'
+                          ? { status: 'loading' }
+                          : { status: 'ready', data: judgeDiagnostics },
+                  errorText: judgeOutput.status === 'error' ? describeError(judgeOutput.error) : null,
+                  judging: judgeLive,
+                  liveError: judgeOutput.liveError,
+                  onRetry: judgeOutput.retry,
+                  open: judgeOutputOpen,
+                  onOpenChange: (next) => setJudgeOutputRowId(next ? scoreRowId : null),
+                }
+                : undefined
+            }
           />
         )}
       </Drawer>

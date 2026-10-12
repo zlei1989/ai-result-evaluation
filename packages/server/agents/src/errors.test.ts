@@ -57,17 +57,21 @@ describe('AgentLoadError', () => {
 });
 
 describe('classifyAgentFailure', () => {
-  it('401 → AUTH_FAILED，文案带 host 并指向设置页', () => {
+  it('401 → AUTH_FAILED，文案**只说技术事实**（带 host，不替产品指路）', () => {
     const failure = classifyAgentFailure(Object.assign(new Error('unauthorized'), { status: 401 }), CONTEXT);
     expect(failure.code).toBe('AUTH_FAILED');
     expect(failure.message).toContain('gw.example.com');
-    expect(failure.message).toContain('设置');
+    // 「去哪儿改」由编排层按归因码追加（`orchestrator.ts` 的 `withProductHint`）：
+    // 适配层替产品说话，会让这个包换一处复用就说不通
+    expect(failure.message).not.toContain('设置');
   });
 
-  it('429 → RATE_LIMITED，文案建议改用串行', () => {
+  it('429 → RATE_LIMITED，文案带 host 与本次是哪一家（建议也由编排层补）', () => {
     const failure = classifyAgentFailure(Object.assign(new Error('too many requests'), { statusCode: 429 }), CONTEXT);
     expect(failure.code).toBe('RATE_LIMITED');
-    expect(failure.message).toContain('串行');
+    expect(failure.message).toContain('gw.example.com');
+    expect(failure.message).toContain('codex');
+    expect(failure.message).not.toContain('串行');
   });
 
   it('404 / 400 → AGENT_FAILED，且保留上游响应正文', () => {
@@ -102,20 +106,20 @@ describe('classifyAgentFailure', () => {
 /**
  * 字符串型状态码：有的厂商 SDK 给 `status: '429'`，而 `readNumber` 的既定口径是
  * 「只认 number」。若这里不认字符串，`'429'` / `'401'` 会落到兜底分支——用户拿到的是无指向的原文，
- * 而不是「改用串行」/「去设置页核对密钥」这两条可执行建议，等于 `classifyAgentFailure` 白写。
+ * 而不是「上游限流（host）」/「密钥无效或无权访问（host）」这两条带 host 的归因，
+ * 等于 `classifyAgentFailure` 白写（可执行建议由编排层按归因码补）。
  */
 describe('字符串型状态码', () => {
-  it('`status: "429"` → RATE_LIMITED，文案建议改用串行', () => {
+  it('`status: "429"` → RATE_LIMITED', () => {
     const failure = classifyAgentFailure(Object.assign(new Error('slow down'), { status: '429' }), CONTEXT);
     expect(failure.code).toBe('RATE_LIMITED');
-    expect(failure.message).toContain('串行');
+    expect(failure.message).toContain('gw.example.com');
   });
 
-  it('`statusCode: "401"` → AUTH_FAILED，文案带 host 并指向设置页', () => {
+  it('`statusCode: "401"` → AUTH_FAILED，文案带 host', () => {
     const failure = classifyAgentFailure(Object.assign(new Error('denied'), { statusCode: '401' }), CONTEXT);
     expect(failure.code).toBe('AUTH_FAILED');
     expect(failure.message).toContain('gw.example.com');
-    expect(failure.message).toContain('设置');
   });
 
   it('非纯数字字符串不算状态（绝不把 `abc` / 空串硬转成假归因）', () => {

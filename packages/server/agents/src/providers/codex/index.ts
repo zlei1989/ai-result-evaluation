@@ -32,6 +32,7 @@ import {
 import { codexPermissionOptions } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, ensureV1Suffix } from '../../route';
+import { asSchemaObject } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult } from '../../types';
 import { addUsage, sumUsageTokens } from '../../usage';
@@ -241,6 +242,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
    * 那一层把豁免收在一处（否则评分智能体会在 Windows 上盲评，见该函数的注释）。
    */
   const permissionOptions = codexPermissionOptions(input.permission);
+  // 收窄一次交给厂商：非对象一律按「没给」处置（见 `asSchemaObject` 的注释）
+  const outputSchema = asSchemaObject(input.outputSchema);
   const session = await startCodexSession({
     binary,
     env,
@@ -257,11 +260,11 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     ),
     prompt: input.prompt,
     /**
-     * 结构化输出按需带：`undefined` 与 `null` 在这一条路径上同义（都是「没给」）⇒ 一个键都不加。
-     * 骨架按 `capability.structuredOutput` 决定降级与否（A1）：降级在 `runTurn` 里摘掉 schema 并记
-     * `applied.structuredOutput = false`，到这一层只剩「给 / 没给」两种输入，本层只管透传。
+     * 结构化输出按需带：给了 schema ⇒ 交给 `turn/start` 的一等字段 `outputSchema`
+     * （形状由 codex 侧约束）。非对象（字符串 / 数组 / null）**什么都不传**——那不是一个能交给
+     * 厂商的 JSON Schema（收窄理由见 `asSchemaObject`）。
      */
-    ...(input.outputSchema === undefined || input.outputSchema === null ? {} : { outputSchema: input.outputSchema }),
+    ...(outputSchema === null ? {} : { outputSchema }),
     client,
   });
   logger.debug('codex 已启动 app-server 会话', {
@@ -316,7 +319,11 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
       });
     },
     dispose: createDisposer(() => session.close()),
-    finalize: () => finalizeCodex(run),
+    finalize: () => ({
+      ...finalizeCodex(run),
+      // 通道事实（每-run）：这一次真的把 schema 发进了 `turn/start` 吗（不是「这家有没有这个字段」）
+      applied: { structuredOutput: outputSchema !== null },
+    }),
     project: (raw, state) => projectNotification(run, input, raw, state),
   };
 }
@@ -695,10 +702,9 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
     // 只讲一条 wire（codex CLI 走 Responses）⇒ 集合只有一个元素
     protocolTypes: ['openai'],
     /**
-     * `cancelMidTurn: true`——app-server 有 `turn/interrupt`（协议能力，不是本适配器模拟的）；
-     * `structuredOutput: true`——`turn/start` 有 `outputSchema` 一等字段。
+     * `cancelMidTurn: true`——app-server 有 `turn/interrupt`（协议能力，不是本适配器模拟的）。
      */
-    capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
+    capability: { cancelMidTurn: true, usage: true },
     /**
      * 消息能力声明：五格与 `providers/dsh` 逐格同形同口径（`'yes'` 必须配 `source`、
      * 非 `'yes'` 必须配 `reason`——契约的 `superRefine` 会在解析层拦下自相矛盾的组合）。
@@ -742,8 +748,6 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
   run: (input: AgentRunInput): Promise<AgentRunResult> =>
     runTurn(input, {
       kind: 'codex',
-      // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
-      capability: { structuredOutput: codexProvider.metadata.capability.structuredOutput },
       start: (context) => startCodex(context, codexProvider.runtimeHooks),
     }),
 };

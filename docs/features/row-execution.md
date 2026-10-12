@@ -38,7 +38,7 @@
 
   `preparing` 阶段失败（复制失败、commit 不存在、远端不可达、工作区不可写）仍落 `failed` 并保留错误详情，不静默跳过。可重评终态 = `judged` / `failed` / `timed-out` / `canceled`。
 
-- **八类事件**（全行级、每行带单调 `seq`）：`status` / `log`（带 `summary?`）/ `vendor-system` / `usage` / `diff-summary` / `score` / `error` / `end`。`setRowStatus` 落点唯一：改状态 + 落盘快照 + 追加 `status` 事件**成对**；`EvalRow.error.stage`（`'agent' | 'judge'`）只是叙述性记录，无判据读它。
+- **八类事件**（全行级、每行带单调 `seq`）：`status` / `log`（带 `summary?`）/ `vendor-system` / `usage` / `diff-summary` / `score` / `error` / `end`。`setRowStatus` 落点唯一：改状态 + 落盘快照 + 追加 `status` 事件**成对**；`EvalRow.error.stage`（`'agent' | 'judge'`）是**自动重试的单位判据**：失败在评分段（`'judge'`）⇒ 只重跑评分、候选产出一个字不动；在候选段 ⇒ 整行重跑（见《评分》「评分段失败只重跑评分」）。
 - **`usage.tokensBasis`**：`'reported'` 才回写 `run.json`；`'estimated'` 只走事件流；缺省按 `'estimated'` 安全侧；`turns` 与两格子智能体分量恒回写。**用量里程碑（整行只出一条）**：取候选阶段（第一条 `judging` 或终态帧为界）里最后一条**主会话**带计量的 `usage`；子会话读数一条不进；孤儿抹成 `turn: null` 按时刻归位不丢。
 - **子智能体三格**：`{0,0,0}` / `0` = 确实没有（「本次未观察到」），`null` = 没采到（**全量或 null** + 点名 WARN）；恒有 `subagentTokens ≤ tokens`（逐格）、`subagentTurns ≤ turns`。
 - **三处用量形制**：顶部事实条 = **整行累计**（正体 secondary）；轮末里程碑 = 整行一条 Tag 色块；消息页脚 = **本条消息自己那次调用**（italic，`data-usage-footer`，`usage === null` 整行不渲染、同一逻辑消息多个块只出一行）。
@@ -77,7 +77,7 @@
 | 虚拟滚动用 antd 6 `Listy`：必须显式传 `virtual`、`height`、`rowKey`（稳定键）；**不传 `itemHeight`**（`ListyProps` 把它 `Omit` 掉）；`height` 量不到时不虚拟化全量渲染、不抛 | jsdom 单测因此能数全部轮次 |
 | codex 收尾节流两道闸门：条目数变了 + 距上次读盘 ≥ 500ms；交出按 `mergeKey` 判三条 | 这道闸门省下的量级：一次两分多钟的运行写出 `messages.jsonl` 5.69 MB / 722 条 / 61 个 mergeKey，同一条逻辑消息最多被写 31 次；不节流的全量重发是 34.5 MB |
 | 判读口径：`vi.mock` 与静态 import 并存造成静态边 ⇒ vitest 收集期挂死（零 CPU） | 区分清理期 flake 与真红看「**失败条数 === EPERM 条数**」。硬依据：全量 213 文件全部自行退出、`Test timed out` 计数为 0 ⇒「机器慢」不成立。沙箱里（禁写家目录）跑全量时 `core/src/paths.test.ts > 支持 ~ 开头的路径` 会以 `EPERM mkdir '/Users/<me>/.aieval-runs-test-should-not-exist'` 变红——该用例刻意在**真实家目录**下建临时目录验证 `~` 展开，被沙箱挡住即假红，**不是**回归（判据同上） |
-| 评分阶段的原始输出与消息**当前没有界面落点**（活动行只取一句话、抽屉只画候选那条流） | 有意分开的代价（用户裁决「消息与 log 都拆、只给活动行用」）：排障直接读 `judge-events.jsonl` / `judge-messages.jsonl`；四条读数路由（REST + SSE）已就位，接界面是后续动作 |
+| 评分阶段的**事件侧**原始输出已接界面（评分详情抽屉 footer 的「原始输出 N 条」二级抽屉，见《评分》）；**消息侧**（评审者的时间轴 / 对话）仍无落点 | 有意分开的代价（用户裁决「消息与 log 都拆、只给活动行用」）：消息侧排障直接读 `judge-messages.jsonl`；其读数路由（REST + SSE）已就位，接界面是后续动作 |
 | 活动行的打字文本只取**最后一个非空段**，长段仍被单行省略号截断 | 口径如此（行卡片只有一位高）；全量内容在「执行日志」抽屉与「原始输出」二级抽屉里 |
 
 ## 相关链接

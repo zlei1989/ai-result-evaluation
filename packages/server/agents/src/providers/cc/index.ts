@@ -19,10 +19,11 @@ import { hostNpmrcPath, readNpmrcText, toClaudeMcpServers, writeRowNpmrc } from 
 import { CLAUDE_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, stripV1Suffix } from '../../route';
+import { asSchemaObject } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult } from '../../types';
 import { addUsage } from '../../usage';
-import { projectClaudeMessage, skillsDraftOf, vendorSystemDraftOf } from './events';
+import { hasClaudeStructuredOutput, projectClaudeMessage, skillsDraftOf, vendorSystemDraftOf } from './events';
 import { createClaudeMessageNormalizer } from './message';
 import { loadClaudeSdk, readClaudeContextUsage, type ClaudeContextUsage, type ClaudeQuery } from './sdk';
 import {
@@ -402,6 +403,8 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   // 类型面也写着「Must be set to true when using …」）——那正是冒烟里 claude 全部 0 改动的形状。
   const permission = CLAUDE_PERMISSION_OPTIONS[input.permission];
   const model = modelForClaudeCode(input.route.modelId, input.route.contextWindow);
+  // 收窄一次交给厂商：非对象一律按「没给」处置（见 `asSchemaObject` 的注释）
+  const outputSchema = asSchemaObject(input.outputSchema);
   const query = sdk.query({
     prompt: input.prompt,
     options: {
@@ -409,13 +412,10 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       env,
       model,
       ...permission,
-      // 结构化输出按需带：`undefined` / `null` 时**一个字段都不加**（候选阶段与文本评分的行为逐字不变）。
-      // 为什么把 `null` 与「没给」归为同一格（与 codex `providers/codex/index.ts` 的口径逐字同一）：
-      // `null` 在这条路径上就是「没给」，而 `schema: null` 会把一个**假值**当成有效值透给 SDK 的
-      // `outputFormat`——在本侧封住它，而不是等它在 CLI 侧变成一次难查的失败。
-      ...(input.outputSchema === undefined || input.outputSchema === null
-        ? {}
-        : { outputFormat: { type: 'json_schema' as const, schema: input.outputSchema } }),
+      // 结构化输出按需带：给了 schema ⇒ 翻成 SDK 的 `outputFormat`（形状由 CLI 侧约束）。
+      // 非对象（字符串 / 数组 / null）**什么都不传**——那不是一个能交给厂商的 JSON Schema，
+      // 透下去只会在 CLI 侧变成一句离真因很远的错（填充层与骨架的修正轮仍然兜着）。
+      ...(outputSchema === null ? {} : { outputFormat: { type: 'json_schema' as const, schema: outputSchema } }),
       // 思考强度：未选 ⇒ 两个键都不加（沿用 SDK/模型默认，
       // 这一家的「不传」是会思考的）。显式 `off` ⇒ 走 `thinking` 的关闭档，**effort 不传**
       // （off 不在 SDK 的 `EffortLevel` 值域里，传下去会让 CLI 校验失败）。
@@ -549,6 +549,15 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    */
   const unjudgedTaskIds = new Set<string>();
   let sessionId: string | null = null;
+  /**
+   * **通道事实**（每-run）：CLI 有没有真的按 schema 交出答复。由 `project` 在见到带
+   * `structured_output` 的消息时置真（判据与投影同源，见 `hasClaudeStructuredOutput`），
+   * 收尾时上报进 `TurnFinalize.applied`。
+   *
+   * 为什么不是「我们传了 schema 就算」：厂商可能因为网关不透传而在这一轮没照做——
+   * 那一格记的是**发生过什么**，不是**我们要求过什么**（契约就是这么定的）。
+   */
+  let nativeStructuredOutput = false;
   /**
    * 子任务行的**账**：本行每一个子智能体**最后一次交出去的那一条**（`taskId` → 记录），
    * 由 `project` 每收到一条子任务记录就登记一次；收尾把它们连**最终用量**重新交一次
@@ -778,6 +787,8 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
          */
         subagentTurns,
         subagents: finalSubagents(),
+        // 通道事实：这一轮真的走成了原生 schema 通道吗（不是「我们传没传」）
+        applied: { structuredOutput: nativeStructuredOutput },
       };
     },
     /**
@@ -791,6 +802,8 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       const projection = projectClaudeMessage(raw, state, { kind: 'cc', baseUrl: input.route.baseUrl });
       const normalized = messages.normalize(raw, state);
       const rawRecord = asRecord(raw);
+      // 通道事实（每-run）：CLI 这一轮**真的**把答复按 schema 交出来了吗（判据与投影同源）
+      if (hasClaudeStructuredOutput(rawRecord)) nativeStructuredOutput = true;
       if (sessionId === null && readString(rawRecord, 'subtype') === 'init') {
         sessionId = readString(rawRecord, 'session_id');
       }
@@ -828,9 +841,7 @@ export const claudeCodeProvider: AgentProvider = {
   metadata: {
     // 只讲一条 wire（Agent SDK 打 Anthropic Messages）⇒ 集合只有一个元素
     protocolTypes: ['anthropic'],
-    // structuredOutput: true —— SDK 的 `outputFormat` 能带 JSON Schema（原生 schema 开关），
-    // 返回形状由 CLI 侧约束，而不是靠提示词里写「请只输出 JSON」
-    capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
+    capability: { cancelMidTurn: true, usage: true },
     /**
      * 消息能力声明：这一家六格全 `'yes'`，唯一的代价是**子智能体轨迹的完整度**
      * 取决于 `forwardSubagentText`——默认只投送子智能体的 `tool_use` / `tool_result` 块，
@@ -872,8 +883,6 @@ export const claudeCodeProvider: AgentProvider = {
   run: (input: AgentRunInput): Promise<AgentRunResult> =>
     runTurn(input, {
       kind: 'cc',
-      // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
-      capability: { structuredOutput: claudeCodeProvider.metadata.capability.structuredOutput },
       start: startClaudeCode,
     }),
 };

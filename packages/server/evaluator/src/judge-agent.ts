@@ -43,9 +43,6 @@ import { finalizeScore, parseJudgeResponse, reason, truncateRaw } from './judge'
 import { EVIDENCE_FILE_LABELS, type ProcessEvidence } from './process-evidence';
 import type { TextRoute } from './text-api';
 
-/** 转发进该行事件日志时的前缀：日志抽屉里必须能区分候选的输出与评审者的输出 */
-const AGENT_LOG_PREFIX = '[评分智能体] ';
-
 /**
  * 评分智能体**自身**的停止 / 失败：不是契约的 `ErrorCode`，故不能折成 `ServiceError`。
  * 携带 agents 的原始归因码（`AgentErrorCode`），由编排层翻译成行的终态：
@@ -185,23 +182,6 @@ export function buildAgentJudgePrompt(input: {
 }
 
 /**
- * 给日志事件加前缀——**只加在 `text` 上**（抽屉读的是它）。
- *
- * 摘要**不戴前缀**（用户口径：「我从『评分中』tag 可以了解阶段」）：卡片底部那一行
- * 显示的是 `summary`，行上本来就有阶段 tag，再戴一遍前缀纯属噪声。于是摘要是**事件自己那句话**：
- * 源事件有摘要就透传，没有就用它自己的文本（`event.summary ?? event.text`，同样是原文）；
- * 这样**卡片上永远不会出现转发前缀**，而机器负载的形状不受影响——消费方的判据只认内容
- *（`[评分智能体] {"method":…}` 与裸 JSON 都不当消息）。
- *
- * 抽屉那一条（`text`）继续戴前缀：它是一条**连续时间线**，往回滚时只有前缀能分清哪几行是评委说的
- * ——行上的 tag 只说「此刻」是什么阶段，说不出历史里某一行是谁说的。
- */
-function prefixEvent(event: AgentEvent): AgentEvent {
-  if (event.type !== 'log') return event;
-  return { ...event, text: `${AGENT_LOG_PREFIX}${event.text}`, summary: event.summary ?? event.text };
-}
-
-/**
  * 跑一次智能体评分：启动适配器 → 取最终答复 → 解析 → 收口。
  * 已中止的 signal 也要走一次 `run()`：适配器自己知道「进入即已中止」该怎么收场
  * （`turn.ts` 的对应分支会给 canceled 且不建任何运行时），在这里另写一份判断只会造出第二条真相。
@@ -243,13 +223,12 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
       prompt,
       route: input.route,
       signal: input.signal,
-      onEvent: (event) => {
-        input.onEvent(prefixEvent(event));
-      },
+      onEvent: input.onEvent,
       /**
-       * 内容消息与子任务行原样转出（**不加前缀**）：事件那层的前缀是因为评分与候选的 log 挤在同一条
-       * 行级流里，靠 `[评分智能体]` 才能分辨来源；消息与子任务行落在**文件层面就分开**条流里，
-       * 再加一个标签只是给每一行都镶一遍同样的字。
+       * 事件、消息与子任务行**原样转出（不加任何前缀、不补摘要）**：三个出口各自落在评分
+       * 自己的流里（`judge-events.jsonl` / `judge-messages.jsonl` / 子任务记录，分流在编排层
+       * `judgeStageAttempt`），消费侧靠「读的是哪条流」分辨来源——候选与评分的日志分开之后，
+       * 同一格文本上再镶一个标签只是给每一行重复一遍同样的字。
        * 可缺（老调用方 / 夹具不传）：与 `onMessage` 在 `AgentRunInput` 里同一条口径——不传就是不消费。
        */
       ...(input.onMessage === undefined ? {} : { onMessage: input.onMessage }),

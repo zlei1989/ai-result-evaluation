@@ -29,7 +29,7 @@ afterEach(() => {
 const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
   'cc': {
     protocolTypes: ['anthropic'],
-    capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
+    capability: { cancelMidTurn: true, usage: true },
     // 消息能力声明由三家各自显式声明（`providers/<kind>/index.ts`）；这一份是形状桩，
     // 逐格取值另有 `message-conformance.test.ts` 与各家 index.test.ts 钉住
     messageCapability: permissiveMessageCapability(),
@@ -43,7 +43,7 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
   },
   codex: {
     protocolTypes: ['openai'],
-    capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
+    capability: { cancelMidTurn: true, usage: true },
     messageCapability: permissiveMessageCapability(),
     // 思考全文与工具结果正文结构性不进 events.jsonl，唯一落点是 messages.jsonl ⇒ 必须补
     needsMessagesForReasoningEvidence: true,
@@ -59,7 +59,7 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     protocolTypes: ['openai', 'anthropic'],
     // 实测确认：用量在 session.event → assistant/message → data.usage
     // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（回归网会拦漂移）
-    capability: { cancelMidTurn: false, usage: true, structuredOutput: false },
+    capability: { cancelMidTurn: false, usage: true },
     messageCapability: permissiveMessageCapability(),
     // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,
@@ -125,29 +125,19 @@ describe('元数据投影（回归网）', () => {
   });
 
   /**
-   * 结构化输出能力必须**显式声明**。
+   * 结构化输出的**通道事实**必须由适配器上报，框架里不留任何能力位。
    *
-   * 为什么要有这一条：`structuredOutput` 在类型上是必填，而**带类型标注**的构造点（本文件 `:29` 的
-   * `Record<AgentKind, AgentProviderMetadata>`、三家 provider 的 `: AgentProvider`、
-   * `evaluator/src/testing/fixtures.ts` 那处）由 tsc 兜住——tsc 真在这里抓到过缺口；真正拦不住的是
-   * **未标注**的 `vi.mock` 字面量（例如 `orchestrator-live.test.ts` 的假 provider）。而契约层与编排层
-   * 都**只认这一个查询点**（A3）——一格缺失就等于「这一家能不能强约束返回形状」没有答案。
-   * 这条守卫把「靠默认值蒙混」变成当场变红。
-   * 第二条把三家的**开集**钉死：新增第四家、或某一家悄悄翻值，都要在这里表一次态。
+   * 为什么要有这一条：`structuredOutput` 曾经是 `metadata.capability` 上的必填格，由骨架读它决定
+   * 「摘不摘 schema」。那条路把厂商差异写进了框架——现在能力差异全部落在适配器内部
+   * （dsh 用自己的填充层：提示词注入 + 同会话修正轮），框架只搬运适配器上报的每-run 事实
+   * （`TurnFinalize.applied`）。这条守卫把「悄悄把能力位加回来」变成当场变红：
+   * 三家的 `capability` 只允许 `cancelMidTurn` / `usage` 两格。
    */
-  it('每家都显式声明 structuredOutput（能力只有一个查询点，不许靠默认值）', () => {
+  it('capability 只有 cancelMidTurn 与 usage 两格（结构化输出不再有框架级能力位）', () => {
     for (const provider of listAgentProviders()) {
-      // 类型上它是必填；这一条是运行期复核——夹具/provider 走 any 或断言时仍会红
-      expect(typeof provider.metadata.capability.structuredOutput, `${provider.kind} 的 structuredOutput`).toBe('boolean');
+      const keys = Object.keys(provider.metadata.capability).sort();
+      expect(keys, `${provider.kind} 的 capability 格数`).toEqual(['cancelMidTurn', 'usage']);
     }
-  });
-
-  it('支持结构化输出的只有 cc 与 codex（dsh 的 SDK 客户端没有这一格）', () => {
-    const supported = listAgentProviders()
-      .filter((provider) => provider.metadata.capability.structuredOutput)
-      .map((provider) => provider.kind)
-      .sort();
-    expect(supported).toEqual(['cc', 'codex']);
   });
 
   /**

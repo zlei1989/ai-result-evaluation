@@ -59,8 +59,10 @@ export const ScoreResultSchema = z.object({
   judgeEffort: z.string().nullable().default(null),
   /**
    * 这一分是不是在 **schema 约束**下拿到的（false = 只靠提示词契约）。
-   * 它记的是**「schema 真的下发给了适配器」**（骨架按 `hooks.capability.structuredOutput` 算出的
-   * `result.applied.structuredOutput`），不是「我们传了 schema」——调用方总是传（那是表达「我想要」）。
+   * 它记的是**「schema 真的下发给了适配器」**（`result.applied.structuredOutput`），
+   * 不是「我们传了 schema」——调用方总是传（那是表达「我想要」）。
+   * 它是**适配器上报的每-run 事实**：谁走哪条原生通道只有适配器知道，结论由适配器在收尾时给出、
+   * 骨架只搬运，不按任何静态能力表折算。
    * ⚠️ 但仍**不承诺上游照做**：网关依旧可能把这一格丢掉，而那一分照样记 `true`。
    * `.default(false)` 同 `judgeAgentKind`：磁盘上已有的评分记录要能读回。
    */

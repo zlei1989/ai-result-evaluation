@@ -70,12 +70,12 @@ describe('runRow：瞬时失败的自动重试', { timeout: TEST_TIMEOUT_MS }, (
     expect(PRODUCTION_ROW_RETRY_DELAY_MS).toBe(3_000);
   });
 
-  it('第一次评分失败（JUDGE_PARSE_FAILED）→ 第二次尝试成功：状态 judged、attempts=2、候选重跑', async () => {
+  it('第一次评分失败（JUDGE_PARSE_FAILED）→ 只重跑评分：状态 judged、attempts=2、**候选只跑一次**', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', withJudge: true });
     const rowId = run.rows[0]?.id ?? '';
-    // 候选 agent 每次尝试都写一个文件：重试要**重跑候选**（不是只重跑评分）
+    // 候选 agent 每次尝试都写一个文件：这一格用来钉住「候选**没有**被重跑」
     fakeAgents.scripts.set('codex', { files: [{ path: 'out.txt', content: '候选的产出\n' }] });
-    // 第一次 `judgeRow` 就失败、第二次成功 = 「整个第一次尝试都失败」（真实评分器内部把修复轮用尽后的形状）
+    // 第一次 `judgeRow` 就失败、第二次成功 = 「评分段那次尝试失败」（真实评分器内部把修复轮用尽后的形状）
     fakeJudge.failFirstNCalls = 1;
 
     await runRow(run.id, rowId);
@@ -84,8 +84,8 @@ describe('runRow：瞬时失败的自动重试', { timeout: TEST_TIMEOUT_MS }, (
     expect(row?.status).toBe('judged');
     expect(row?.score).not.toBeNull();
     expect(row?.error).toBeNull();
-    // 候选 agent 真的跑了两次（重试重跑的是整行，不是只重跑评分）
-    expect(fakeAgents.calls).toHaveLength(2);
+    // **重试的单位是评分段**：候选产出是已定终态的事实，为一个评分侧的打嗝重新生成它会换掉被打分的对象
+    expect(fakeAgents.calls).toHaveLength(1);
     expect(fakeJudge.calls).toHaveLength(2);
     // attempts 累加：试了两次才成功这件事必须留在快照里
     expect(row?.attempts).toBe(2);
@@ -95,7 +95,38 @@ describe('runRow：瞬时失败的自动重试', { timeout: TEST_TIMEOUT_MS }, (
     // 「重试发生过」由 `attempts`、`fakeAgents.calls` 与 `fakeJudge.calls` 三者钉住（它们都不受 reset 影响）。
     const events = readEvents(rowEventsFile(run.workspaceBase, run.id, rowId));
     expect(events.some((event) => event.type === 'score')).toBe(true);
-    expect(events.at(-1)).toMatchObject({ type: 'end', exitReason: 'completed' });
+    // 收场那条 `end` 记 `rescored`（与手动「重新评分」同一个词）：只重跑评分那一段的收尾就是它，
+    // 而这一行的事件日志里**两条 `end` 都在**（第一次尝试的 `end/error` 与这次的 `end/rescored`）
+    // ——同一个词不区分开，读日志的人就分不清「哪条才是最后一次收场」
+    expect(events.at(-1)).toMatchObject({ type: 'end', exitReason: 'rescored' });
+  });
+
+  it('评分段一直失败 → 预算用满后落 failed（stage=judge），**候选始终只跑一次**', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', withJudge: true });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { files: [{ path: 'out.txt', content: '候选的产出\n' }] });
+    // 评分每次都失败：重试预算全部花在评分段上
+    fakeJudge.failFirstNCalls = 99;
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('failed');
+    expect(row?.error?.code).toBe('JUDGE_PARSE_FAILED');
+    // 失败阶段落盘：评分段 ⇒ 'judge'（它同时是「下一次重试只重跑评分」的判据）
+    expect(row?.error?.stage).toBe('judge');
+    expect(fakeAgents.calls).toHaveLength(1);
+    expect(fakeJudge.calls).toHaveLength(1 + ROW_RETRY.maxRetries);
+    expect(row?.attempts).toBe(1 + ROW_RETRY.maxRetries);
+
+    // 账本里那几条重试的 `scope` 必须是 'judge'：只记「又试了一次」而不记「试的是哪一段」，
+    // 事后无法回答「这一行为什么没有重新生成候选」
+    const records = readFileSync(rowAttemptsFile(run.workspaceBase, run.id, rowId), 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as { phase: string; scope?: string });
+    expect(records.filter((record) => record.phase === 'start').map((record) => record.scope))
+      .toEqual(['row', 'judge', 'judge']);
   });
 
   it('瞬时面一直失败 → 重试次数用满后落 failed，attempts = 1 + 上限', async () => {

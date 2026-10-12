@@ -22,21 +22,20 @@ import {
   type FakeVendorRecorder,
 } from './testing/agent-fixtures';
 import type { MessageDraft } from './message';
-import { runTurn, type TurnFinalize, type TurnHooks, type TurnProjection, type TurnStart } from './turn';
+import {
+  runTurn,
+  STRUCTURED_OUTPUT_REPAIR_ROUNDS,
+  type TurnFinalize,
+  type TurnHooks,
+  type TurnProjection,
+  type TurnStart,
+} from './turn';
 
 interface Harness {
   hooks: TurnHooks;
   recorder: FakeVendorRecorder;
   stats: { startCount: number; disposeCount: number; finalizeCount: number };
 }
-
-/**
- * 假 hooks 的能力声明（A1 起 `TurnHooks.capability` 必填）：本文件只测骨架的处置，而绝大多数的
- * 假 start 连 `outputSchema` 都不传（`createRunInput` 不填这一格）⇒ 这一格在那些用例里**是惰性的**。
- * 统一给「支持」（= cc / codex 的真值），免得十几处内联 hooks 各抄一份字面量；
- * 「不支持 ⇒ 降级」那一族用例各自显式覆盖它。
- */
-const CAPABILITY_SUPPORTED: TurnHooks['capability'] = { structuredOutput: true };
 
 /** 造一套合成 hooks：事件流可挂住、interrupt 可合作也可忽略、start 可直接抛 */
 function createHarness(
@@ -59,7 +58,6 @@ function createHarness(
   const stats = { startCount: 0, disposeCount: 0, finalizeCount: 0 };
   const hooks: TurnHooks = {
     kind: 'cc',
-    capability: CAPABILITY_SUPPORTED,
     start: async (context) => {
       stats.startCount += 1;
       if (options.startError !== undefined) throw options.startError;
@@ -691,7 +689,6 @@ describe('runTurn', () => {
     // 造一个在流里写 state.finalText 的假适配器：骨架只负责把它带进结果，不负责解释它
     const hooks: TurnHooks = {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { type: 'x' };
@@ -712,7 +709,6 @@ describe('runTurn', () => {
     // 漏掉失败那一条，症状就是「超时/报错的行查不到它到底说了什么」——正好是最需要它的时候。
     const failing: TurnHooks = {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { type: 'x' };
@@ -733,7 +729,6 @@ describe('runTurn', () => {
   it('没采到答复时 finalText 是 null（不猜、不填空串）', async () => {
     const hooks: TurnHooks = {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {})(),
         interrupt: () => {},
@@ -895,7 +890,6 @@ describe('subagentTokens：骨架只搬运，不做加法', () => {
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -921,7 +915,6 @@ describe('subagentTokens：骨架只搬运，不做加法', () => {
   it('收尾（finalize）交回的计量折进结果——这是 codex 子线程用量唯一的落地路径', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -945,7 +938,6 @@ describe('subagentTokens：骨架只搬运，不做加法', () => {
   it('收尾交回 null：tokens/turns 保持不变，但 subagentTokens 被清成 null（两者的 null 语义刻意不同）', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -971,7 +963,6 @@ describe('subagentTokens：骨架只搬运，不做加法', () => {
   it('收尾**不带**这一格（缺省）时保持原值——与显式 null 是两件事', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -996,7 +987,6 @@ describe('subagentTokens：骨架只搬运，不做加法', () => {
     const tokens = { input: 100, cached: 0, output: 10 };
     await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1034,7 +1024,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1062,7 +1051,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
     const events: AgentEvent[] = [];
     const result = await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1088,7 +1076,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
   it('投影**不带**这一格（缺省）⇒ 保持原值——与显式 null 是两件事', async () => {
     const result = await runTurn(createRunInput(), {
       kind: 'dsh',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1111,7 +1098,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
   it('收尾（finalize）交回的轮次折进结果；显式 null 清空、缺省保持', async () => {
     const carried = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1127,7 +1113,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
 
     const cleared = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1145,7 +1130,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
 
     const untouched = await runTurn(createRunInput(), {
       kind: 'codex',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'one' };
@@ -1163,7 +1147,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
     const events: AgentEvent[] = [];
     await runTurn(createRunInput({ onEvent: collectEvents(events) }), {
       kind: 'dsh',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => ({
         stream: (async function* () {
           yield { kind: 'a' };
@@ -1190,7 +1173,6 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
     controller.abort();
     const result = await runTurn(createRunInput({ signal: controller.signal }), {
       kind: 'dsh',
-      capability: CAPABILITY_SUPPORTED,
       start: async () => {
         throw new Error('不该被调用');
       },
@@ -1211,97 +1193,214 @@ function emptyStart(): TurnStart {
   };
 }
 
-describe('outputSchema：不支持的适配器降级（A1）', () => {
-  it('能力为 false ⇒ schema 不交给 start，结果记 applied.structuredOutput=false', async () => {
-    const seen: (Record<string, unknown> | undefined)[] = [];
-    const result = await runTurn(createRunInput({ outputSchema: { type: 'object' } }), {
+describe('outputSchema：一律交给 start，applied 由适配器上报', () => {
+  it('要了 schema ⇒ 原样交给 start（骨架不摘键、也不判任何能力）', async () => {
+    const schema = { type: 'object' };
+    const seen: unknown[] = [];
+    const result = await runTurn(createRunInput({ outputSchema: schema }), {
       kind: 'dsh',
-      capability: { structuredOutput: false },
       start: async (context) => {
         seen.push(context.input.outputSchema);
         return emptyStart();
       },
     });
-    expect(seen).toEqual([undefined]);
+    expect(seen).toEqual([schema]);
+    // 没上报就是 false（「没走原生通道」与「没上报」同义）
     expect(result.applied).toEqual({ structuredOutput: false });
   });
 
-  it('能力为 true ⇒ schema 原样交给 start，applied 记 true', async () => {
-    const schema = { type: 'object' };
-    let seen: Record<string, unknown> | undefined;
-    const result = await runTurn(createRunInput({ outputSchema: schema }), {
+  it('没要求 schema ⇒ applied 也是 false', async () => {
+    const result = await runTurn(createRunInput({}), {
       kind: 'codex',
-      capability: { structuredOutput: true },
-      start: async (context) => {
-        seen = context.input.outputSchema;
-        return emptyStart();
-      },
+      start: async () => emptyStart(),
     });
-    expect(seen).toBe(schema);
+    expect(result.applied).toEqual({ structuredOutput: false });
+  });
+
+  it('适配器上报 true ⇒ 结果记 true（骨架只搬运，不自己算）', async () => {
+    const result = await runTurn(createRunInput({ outputSchema: { type: 'object' } }), {
+      kind: 'codex',
+      start: async () => ({
+        ...emptyStart(),
+        finalize: () => ({ drafts: [], applied: { structuredOutput: true } }),
+      }),
+    });
     expect(result.applied).toEqual({ structuredOutput: true });
   });
+});
 
-  it('没要求 schema ⇒ applied 也是 false（但不算降级）', async () => {
-    const result = await runTurn(createRunInput({}), {
-      kind: 'codex',
-      capability: { structuredOutput: true },
-      start: async () => emptyStart(),
-    });
-    expect(result.applied).toEqual({ structuredOutput: false });
-  });
-
-  it('降级的留痕：只有「要了 schema 但这家不支持」那一次记 WARN，其余两次一条都不记', async () => {
-    // 降级要在**包内**留一条 WARN（服务端日志是技术事实的落点）。它与「没要求 schema」
-    // 那一支在 `applied` 上同值（都是 false）⇒ **日志是唯一能把两者分开的可观测量**；
-    // 没有这条守卫，删掉 `runTurn` 里那句 `logger.warn` 不会有任何用例变红。
-    const warnings: string[] = [];
-    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      warnings.push(args.map((arg) => String(arg)).join(' '));
-    });
-    const hooksWith = (structuredOutput: boolean): TurnHooks => ({
-      kind: 'dsh',
-      capability: { structuredOutput },
-      start: async () => emptyStart(),
-    });
-    const schema = { type: 'object' };
-
-    const degraded = await runTurn(createRunInput({ outputSchema: schema }), hooksWith(false));
-    const supported = await runTurn(createRunInput({ outputSchema: schema }), hooksWith(true));
-    const notRequested = await runTurn(createRunInput(), hooksWith(true));
-
-    expect(degraded.applied).toEqual({ structuredOutput: false });
-    expect(supported.applied).toEqual({ structuredOutput: true });
-    expect(notRequested.applied).toEqual({ structuredOutput: false });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('不支持结构化输出');
-  });
-
+describe('结构化输出的修正轮', () => {
   /**
-   * 上面那组漏掉的**第四格**：能力 `false` **且没要 schema**（`hooksWith(false)` + 不传 `outputSchema`）。
-   * 上面三次运行里「没要 schema」那一次用的是 `hooksWith(true)`（支持能力）⇒ 这一格无人覆盖，
-   * 而它正是「只按 `!schemaApplied` 判降级」时唯一会多记一条 WARN 的输入。
-   *
-   * 判据是「一条日志都不记」：`applied` 在这一格与真降级同值（都是 false，见 `applied` 的 JSDoc），
-   * 故**日志是唯一能把「没要求」与「降级」分开的可观测量**——把两者混成一条 WARN，
-   * 排障时读到的就是「这一分被降级了」，而真相是「这一分压根没要求 schema」。
+   * 造一份「答了这么一段」的流：流里出一条事件、投影把答复写进 `state.finalText`
+   * （真实各家是在投影里识别收尾消息，这里只造那个事实）。
    */
-  it('能力为 false 且**没要** schema ⇒ 既不记降级 WARN，也不把 schema 交给 start', async () => {
-    const warnings: string[] = [];
-    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      warnings.push(args.map((arg) => String(arg)).join(' '));
-    });
-    const seen: (Record<string, unknown> | undefined)[] = [];
-    const result = await runTurn(createRunInput({}), {
+  function replyingStart(text: string, onContinue?: (prompt: string) => TurnStart): TurnStart {
+    return {
+      stream: (async function* () {
+        yield { reply: text };
+      })(),
+      interrupt: () => {},
+      dispose: async () => undefined,
+      project: (_raw, state) => {
+        state.finalText = text;
+        return { drafts: [], tokens: null, turns: null, failure: null };
+      },
+      ...(onContinue === undefined ? {} : { continue: async (prompt: string) => onContinue(prompt) }),
+    };
+  }
+
+  /** 造一份「一条消息都没回」的流：`state.finalText` 保持 null */
+  function silentStart(onContinue?: (prompt: string) => TurnStart): TurnStart {
+    return {
+      stream: (async function* () {})(),
+      interrupt: () => {},
+      dispose: async () => undefined,
+      project: () => ({ drafts: [], tokens: null, turns: null, failure: null }),
+      ...(onContinue === undefined ? {} : { continue: async (prompt: string) => onContinue(prompt) }),
+    };
+  }
+  const SCHEMA = {
+    type: 'object',
+    required: ['ok'],
+    additionalProperties: false,
+    properties: { ok: { type: 'boolean' } },
+  };
+
+  it('答复不合格 + 有 continue ⇒ 在同一会话里追问，问题清单与 schema 都进提示词', async () => {
+    const prompts: string[] = [];
+    const result = await runTurn(createRunInput({ outputSchema: SCHEMA }), {
       kind: 'dsh',
-      capability: { structuredOutput: false },
+      start: async () => replyingStart('{"ok":"yes"}', (prompt) => {
+        prompts.push(prompt);
+        return replyingStart('{"ok":true}');
+      }),
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('$.ok：期望 boolean，实际 string');
+    expect(prompts[0]).toContain('"required"');
+    expect(prompts[0]).toContain('不要重新读取工作区');
+    expect(result.ok).toBe(true);
+    expect(result.exitReason).toBe('completed');
+    // 最终答复取**最后一轮**（修正后的那一份）
+    expect(result.finalText).toBe('{"ok":true}');
+  });
+
+  it('追问一轮就合格 ⇒ 只追问一次（不把上限当配额烧完）', async () => {
+    let asks = 0;
+    await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'dsh',
+      start: async () => replyingStart('{"ok":1}', () => {
+        asks += 1;
+        return replyingStart('{"ok":false}');
+      }),
+    });
+    expect(asks).toBe(1);
+  });
+
+  it('连续不合格 ⇒ 追问到上限为止，且**不改写结论**（ok 仍为 true、原文是最后一轮）', async () => {
+    let asks = 0;
+    // 每一轮都还能再追问（假的「永远答不对」的模型）：上限必须由骨架自己收住
+    const alwaysWrong = (text: string): TurnStart => replyingStart(text, () => {
+      asks += 1;
+      return alwaysWrong(`还是不对 ${asks}`);
+    });
+    const result = await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'dsh',
+      start: async () => alwaysWrong('不是 JSON'),
+    });
+    expect(asks).toBe(STRUCTURED_OUTPUT_REPAIR_ROUNDS);
+    expect(result.ok).toBe(true);
+    expect(result.finalText).toBe(`还是不对 ${STRUCTURED_OUTPUT_REPAIR_ROUNDS}`);
+  });
+
+  it('没有 continue（另两家不实现）⇒ 不追问，答复原样交回（由调用方的解析面处置）', async () => {
+    const result = await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'codex',
+      start: async () => replyingStart('{"ok":"yes"}'),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.finalText).toBe('{"ok":"yes"}');
+  });
+
+  it('首轮就以失败收场 ⇒ 一次都不追问（那是「没问到」，不是「答错了」）', async () => {
+    let asks = 0;
+    const result = await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'dsh',
+      start: async () => ({
+        ...replyingStart('{"ok":"yes"}', () => {
+          asks += 1;
+          return replyingStart('{"ok":true}');
+        }),
+        stream: (async function* () {
+          yield { fail: true };
+        })(),
+        project: (_raw, state) => {
+          state.finalText = '{"ok":"yes"}';
+          return { drafts: [], tokens: null, turns: null, failure: { code: 'AGENT_FAILED', message: '坏了' } };
+        },
+      }),
+    });
+    expect(asks).toBe(0);
+    expect(result.ok).toBe(false);
+  });
+
+  it('一条消息都没回（finalText 为 null）⇒ 不追问：没有可回灌的原文，追问等于凭空重问', async () => {
+    let asks = 0;
+    await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'dsh',
+      start: async () => silentStart(() => {
+        asks += 1;
+        return replyingStart('{"ok":true}');
+      }),
+    });
+    expect(asks).toBe(0);
+  });
+
+  it('回了空串 ⇒ 仍按不合格追问（空串是「采到了一段空白」，与 null 是两件事）', async () => {
+    let asks = 0;
+    await runTurn(createRunInput({ outputSchema: SCHEMA }), {
+      kind: 'dsh',
+      start: async () => replyingStart('', () => {
+        asks += 1;
+        return replyingStart('{"ok":true}');
+      }),
+    });
+    expect(asks).toBe(1);
+  });
+
+  it('已经要求停止 ⇒ 不追问（不再产生任何模型往返）', async () => {
+    const controller = new AbortController();
+    let asks = 0;
+    const result = await runTurn(createRunInput({ outputSchema: SCHEMA, signal: controller.signal }), {
+      kind: 'dsh',
       start: async (context) => {
-        seen.push(context.input.outputSchema);
-        return emptyStart();
+        const started = replyingStart('{"ok":"yes"}', () => {
+          asks += 1;
+          return replyingStart('{"ok":true}');
+        });
+        return {
+          ...started,
+          project: (raw, state) => {
+            controller.abort();
+            return started.project(raw, state);
+          },
+        };
       },
     });
+    expect(asks).toBe(0);
+    expect(result.exitReason).toBe('canceled');
+  });
 
-    expect(seen).toEqual([undefined]);
-    expect(result.applied).toEqual({ structuredOutput: false });
-    expect(warnings).toEqual([]);
+  it('schema 编不出来 ⇒ 退化成「只判可解析」，不追问（少判形状，不误伤）', async () => {
+    let asks = 0;
+    const result = await runTurn(createRunInput({ outputSchema: { type: 'quaternion' } }), {
+      kind: 'dsh',
+      start: async () => replyingStart('{"任意":"值"}', () => {
+        asks += 1;
+        return replyingStart('{}');
+      }),
+    });
+    expect(asks).toBe(0);
+    expect(result.ok).toBe(true);
   });
 });

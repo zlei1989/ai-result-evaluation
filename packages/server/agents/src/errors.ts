@@ -2,8 +2,10 @@
  * 适配器的错误归因。
  * 注意：这里的 `AgentErrorCode` **不是** contracts 的 `ErrorCode`——它没有对应的 HTTP 状态，落点是
  * 该行的事件日志；不要塞进 `ERROR_CODES`（那会逼 `STATUS_BY_CODE` 为它编造状态码）。
- * 用户可见文案的要求：加载失败点名包名与安装方式；密钥无效带 host 指向设置页；
- * 限流提示改用串行；模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
+ * 用户可见文案的要求：**只说技术事实**——加载失败点名包名与安装方式、密钥无效带 host、
+ * 限流带 host 与本次是哪一家、模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
+ * 「去哪儿改、按哪个按钮」属**产品知识**，由编排层按归因码追加（见 `orchestrator.ts` 的
+ * `withProductHint`）：写在这里等于让适配层替产品说话，换一处复用就说不通。
  */
 import { SkillMaterializeError } from '@aieval/core';
 import { asRecord, readNumber, readString } from './json';
@@ -99,14 +101,16 @@ export function classifyAgentFailure(error: unknown, context: FailureContext): A
   if (status === 401 || status === 403) {
     return {
       code: 'AUTH_FAILED',
-      message: `密钥无效或无权访问（${host}）：请到「设置 → 模型供应商」核对该供应商的密钥后重跑本行`,
+      // 只说技术事实（谁的密钥不对、在哪台上游）：**「去哪儿改」由编排层补**——
+      // 那是本产品的知识，适配层替产品说话会让这个包换一处复用就说不通
+      message: `密钥无效或无权访问（${host}）：请核对该供应商的密钥后重试`,
       stack,
     };
   }
   if (status === 429) {
     return {
       code: 'RATE_LIMITED',
-      message: `上游限流（${host}）：稍后重试，或把本评测的执行模式改为串行以减少并发（${context.kind}）`,
+      message: `上游限流（${host}）：稍后重试，或降低并发后重试（${context.kind}）`,
       stack,
     };
   }

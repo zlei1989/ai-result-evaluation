@@ -51,6 +51,8 @@ export {
   type AgentOptionGroup,
 } from './runs';
 export { useRowStream } from './row-stream';
+/** 评分那条事件流（评审者自己的流水）：与行级流分开的读数与续订（口径见该文件头） */
+export { useRowJudgeEvents, type UseRowJudgeEventsInput, type UseRowJudgeEventsResult } from './judge-events';
 export {
   foldRowRecords,
   mergeRowRecords,

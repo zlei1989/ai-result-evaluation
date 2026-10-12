@@ -19,7 +19,7 @@ getProvider(kind).run(input): Promise<AgentRunResult>
 
 ```bash
 pnpm install                         # 仓库根目录；仅允许 pnpm（preinstall 强制）
-pnpm --filter @aieval/agents test        # 本包用例（19 文件 / 208 例，秒级）
+pnpm --filter @aieval/agents test        # 本包用例（秒级）
 pnpm --filter @aieval/agents typecheck   # 本包 tsc --noEmit
 pnpm --filter @aieval/agents lint        # 本包 eslint
 ```
@@ -141,7 +141,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `prompt` | `string` | ✅ | 考题 |
 | `route` | `{ protocolType, baseUrl, apiKey, modelId }` | ✅ | 只读输入。协议必须在本家 `metadata.protocolTypes` 里，否则那家 CLI 根本驱动不了它 |
 | `signal` | `AbortSignal` | ✅ | 外部要求停止（用户点「终止」）。**只**用来判 `canceled`，不用它推断其它原因；已 abort 时连进程都不起 |
-| `outputSchema` | `Record<string, unknown>` | — | 要求模型**按这份 JSON Schema 生成**最终答复。缺省 = 不约束，行为与今天逐字相同。它是**中性事实**：翻成 claude 的 `outputFormat` 还是 codex 的 `outputSchema` 是适配器的事。该家不支持（`capability.structuredOutput: false`）时**降级**：`runTurn` 不把 schema 交给 `start`、包内记一条 WARN，结果里 `applied.structuredOutput = false`——调用方据它记账，不要自己再去查能力表 |
+| `outputSchema` | `unknown` | — | 要求模型**按这份 JSON Schema 生成**最终答复；**语义是「我想要」**——这一格一律交给 `start`，走原生通道还是填充层由各适配器自己决定（有原生通道的家翻成 claude 的 `outputFormat` / codex 的 `outputSchema`；没有的家在适配器内部**填充**：首轮把 schema 约束追加在调用方提示词之后 + 自校验 + 同会话修正轮）。缺省 = 不约束。**非对象**（数组 / 字符串 / `null`）不是任何一家能用的 schema ⇒ 适配器按「没给」处置。结果里 `applied.structuredOutput` 记的是**这一次有没有真的走原生通道**——调用方据它记账；`capability` 里没有这一格，不要自己另查能力表 |
 | `onEvent` | `(e: AgentEvent) => void` | ✅ | 事件回调：同步、不 await。每行独立一份，`seq` 从 1 在 run 内自增，`at` 是 ISO 8601 |
 | `extraReadPaths` | `string[]` | — | read-only 档下**额外放行**的只读绝对路径（目录或文件）。只扩大「哪些路径可以读」、写仍被拒；**只被 claude 消费**——映射 SDK `additionalDirectories`（`--add-dir`，扩进 `dontAsk` 的预授权范围）；codex（read-only 沙箱全盘可读）与 dsh（只读只拦写、读直通）**不映射**。评分通路把落在 cwd 之外的执行过程记录路径透传进这一格 |
 
@@ -155,7 +155,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `turns` | `number \| null` | 轮次 = **一次模型 API 往返**（见 §5.4）；`null` = 一次都没观察到 |
 | `durationMs` | `number` | 本次运行的墙钟耗时（适配器自报） |
 | `finalText` | `string \| null` | 智能体的最终答复文本。**「未采到」（`null`）与「空答复」（`''`）是两件事**，不要互相兜底。需要结构化答复的调用方（评分智能体）从这里取文本，不要从事件流里重建 |
-| `applied` | `{ structuredOutput: boolean }` | 这一次**实际按能力处置成了什么**（A1）。**必填**：调用方据此记账（`ScoreResult.structuredOutput` 就是它）。`false` = 该家不支持那个能力，或本次压根没要求 schema——要分开这两种情形就看入参 |
+| `applied` | `{ structuredOutput: boolean }` | **适配器上报的每-run 通道事实**：这一次有没有把答复落到原生 schema 通道上。**必填**：调用方据此记账（`ScoreResult.structuredOutput` 就是它）。骨架只搬运、缺省 `false`。`false` 不等于答复不合格——该家可能没有原生通道（走填充层）、也可能本次压根没要求 schema；走填充层同样可能交出一份完全合格的 JSON |
 | `error` | `{ code, message, stack? }` | 失败与终止时都在；`code` 是 `AgentErrorCode` |
 
 ### 4.3 `AgentPermission`（权限档）——**按阶段给，不按厂商给**
@@ -192,7 +192,6 @@ metadata: {
   capability: {
     cancelMidTurn: boolean,                    // false ⇒ 界面文案必须是「关闭运行时」而不是「终止」
     usage: boolean,                            // false ⇒ 界面显示「不支持计量」，不是 0
-    structuredOutput: boolean,                 // 能不能把入参 outputSchema 落到实处（必填）
   },
   messageCapability: MessageCapability,        // 消息级能力（见下面第二张表）
   reasoningEfforts: readonly string[],         // 该家能表达的思考强度档位（完整值域，必填）
@@ -205,11 +204,11 @@ metadata: {
 
 三家的实际取值（与 `registry.test.ts` 的期望表逐格一致，改动会红）：
 
-| kind | displayName | protocolTypes | cancelMidTurn | usage | structuredOutput |
-|---|---|---|---|---|---|
-| `cc` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
-| `codex` | Codex | `['openai']` | `true` | `true` | `true` |
-| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
+| kind | displayName | protocolTypes | cancelMidTurn | usage |
+|---|---|---|---|---|
+| `cc` | Claude Code | `['anthropic']` | `true` | `true` |
+| `codex` | Codex | `['openai']` | `true` | `true` |
+| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` |
 
 **消息能力声明**（`metadata.messageCapability`）在同一份元数据里，逐格声明
 「思考正文 / 工具入参 / 工具结果 / 子任务 / 流式增量」能不能拿到、从哪条通道拿、拿不到时为什么，
@@ -228,10 +227,10 @@ metadata: {
 > `dsh` 的 `cancelMidTurn: false` 是**实测**结论（SDK 没有 wire-level cancel，只有 `close()`），
 > 代价是：点「终止」后该行会**晚 5 秒**才变 `canceled`（走释放的第二段兜底）。
 >
-> `structuredOutput` 是**必填**（不是「可选 + 守卫」）：可选会被默认成 false 而无人验证。
-> 降级由**包内**处置（A1）：`runTurn` 不把 schema 交给 `start`，同时记一条 WARN 与
-> `applied.structuredOutput = false`——**用户可见的行事件由调用方按 `applied` 发**，
-> 绝不让调用方以为「已经强约束」而实际什么都没发生。
+> **结构化输出不在 `capability` 里**：它不是「这家有没有这个能力」的静态声明，而是**每-run 的通道事实**
+> （`applied.structuredOutput`），由适配器按本次运行上报——`false` 不等于答复不合格，走填充层的家
+> 同样可能交出一份完全合格的 JSON。**用户可见的行事件由调用方按 `applied` 发**，绝不让调用方以为
+> 「已经强约束」而实际什么都没发生。
 
 ---
 
@@ -295,6 +294,20 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 2. **估算值不进结果**（cc 的跑动期估算只走 `usage` 事件）；
 3. `turns` 与 `tokens` **互不兜底**——轮次不因为 token 没采到就停涨，反之亦然。
 
+### 5.5 结构化输出：原生通道与填充层
+
+入参 `outputSchema` 的语义只有「我想要」，各家怎么落实由**适配器**决定，交付契约三家相同（要么交出一段符合它的 JSON、要么如实失败）：
+
+| | 通道 | 厂商落点 | `applied.structuredOutput` 的判据 |
+|---|---|---|---|
+| cc | 原生 | SDK 的 `outputFormat`，收尾消息带回 `structured_output` | 按收尾消息里有没有那一格上报 |
+| codex | 原生 | `turn/start` 的一等字段 `outputSchema`，形状由 codex 侧约束 | 按这次有没有把 schema 发进 `turn/start` 上报 |
+| dsh | **填充层**（SDK 没有这一格） | 首轮把 schema 约束追加在提示词之后；不合格时由骨架驱动**同会话修正轮** | 恒 `false`（提示词级填充不是原生通道） |
+
+- **填充层与修正轮**：判据只有一份（`src/structured-output.ts`：剥整段围栏 → `JSON.parse` → 「JSON Schema 子集 → zod」校验），不认识的 keyword 不生成约束（fail-open，记 DEBUG），整份 schema 编不出来就退化成「只判合法 JSON」并记 WARN。修正轮由**骨架**驱动（`TurnHooks.continue`，上限 **2 轮**），只修形状——提示词明写不要重新读工作区 / 不要重新执行任务 / 不要改判定；耗尽后 `ok` / `finalText` **保持最后一轮原样**，由调用方按「答复不可解析」处置。
+- **没有 `continue` 的家不修**：cc / codex 在第一条不合格答复上落一条 WARN 就如实收场（它们有原生通道，本来就不靠这一层）。
+- **修正轮的花销**：它是模型往返 ⇒ 计入 `turns` / `tokens`；只发该行日志事件，**没有新增结果字段**。
+
 ---
 
 ## 6. 包边界与不变量（改代码前必读）
@@ -313,6 +326,16 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 
 厂商 SDK 的加载语义（`load-once.ts`）也是不变量：**函数作用域懒加载** + **只缓存成功的加载**
 （一次镜像抖动不该毒化长驻服务的后续所有行）+ **注入优先**（测试注入表按包名查）。
+
+### 6.1 本包**不知道评测领域**（业务无关）
+
+它只认「一次运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类**通用概念**，不知道调用方拿这次运行去做什么：
+
+- **不许值导入** contracts 的业务域契约——判据是导出名命中 `Rubric` / `Score` / `Judge` / `TestCase` / `SETTINGS_`（评分 / 评分表 / 用例 / 设置四域的名字），`import type` 允许（类型在编译期即被抹掉，不算依赖边，见根 `AGENTS.md`「依赖方向」节）；
+- 运行时的**用户可见字符串**里不许出现业务词（`评分` / `考题` / `候选` / `评审` / `评测` / `rubric` / `scoring`）：失败文案只说技术事实（谁、哪台上游、什么错），**业务建议由编排层按归因码追加**（`orchestrator.ts` 的 `withProductHint` 是那一处）；
+- **厂商能力差异是本包的私有知识**：某个入参在哪家有没有原生通道（例如结构化输出）由该家适配器自己判、自己在收尾如实上报，框架层不出现「按家判能力」的分支；
+- 判据是 `business-agnostic.test.ts`（AST 扫非测试源码的字符串字面量 + import 检查，每条禁令各有反例）。**注释不在扫描面内**——注释里可以出现业务词（讲清「谁在用这一格」）。
+- 唯一一处**有意的**业务耦合是 `providers/live-smoke.test.ts` 的产物断言（见 §8.1 真机冒烟）：它验证的是端到端产物，不在导出面、也不影响依赖图。
 
 ## 7. 模块地图（包内维护者视角）
 
@@ -416,6 +439,8 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 
 四格：① **装载**（没有落到入口解析/加载类失败）② **传输**（服务端记录的路由与本次选择一致、且不是凭据类失败）③ **产物**（跑到 `judged` 且有分数）④ **形状**（`messages` 接口的**线上形态**逐个过 schema）。`AIEVAL_LIVE_KIND` **必填**——不给默认家，避免「默认跑的那家绿了就当四家都绿」。
 
+**登记：本包唯一的业务耦合就是这里的产物断言**——③，以及只在 `AIEVAL_LIVE_AGENT_JUDGE=1` 时跑的 ⑤（智能体评分拿到答复并给出结论）与 ⑥（评分者产出可解析、记录里带「输出约束」那一格）。它们验证的是端到端产物，**不在导出面、也不影响依赖图**；除此之外本包对评测领域一无所知（见 §6.1）。
+
 ## 9. 常见坑
 
 | 现象 | 原因 / 处置 |
@@ -439,6 +464,8 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 | **采不到就是 `null`，绝不填 0** | 全包最硬的一条口径。0 是「采到了，值就是 0」，与「没采到」含义相反；混淆会让人得出「这家很省 / 这位候选没干活」的错误结论。`tokens` / `turns` / `finalText` 都按它办 |
 | **估算 vs 上报** | 跑动期的用量有两种：`estimated`（推理出来的、只给界面看）与 `reported`（适配器上报值与终值同口径、可以落盘）。判据挂在**每一条 `usage` 事件**自带的 `tokensBasis` 上（A2，见 `@aieval/contracts` 的 `agent-event.ts`）——它是事件的性质，不是某一家的静态能力声明 |
 | **轮次** | **一次模型 API 往返**，不是「CLI 自己的 turn」（那是整段任务一条）。见 §5.4 |
+| **填充层** | 没有原生 schema 通道的家为 `outputSchema` 补上的那两层：首轮在提示词里追加 schema 约束 + 同会话修正轮。它是**方法**，不是原生通道 ⇒ `applied.structuredOutput` 恒 `false`。见 §5.5 |
+| **修正轮** | 首轮答复拿到了但不合格时，骨架在同一会话里追问一轮、**只改形状**（不重跑任务、不改判定），上限 2 轮（`STRUCTURED_OUTPUT_REPAIR_ROUNDS`）；耗尽后 `ok` / `finalText` 保持最后一轮原样。见 §5.5 |
 | **替换型子进程环境** | 以宿主环境为底、覆盖 `HOME` / `USERPROFILE` 与厂商变量后**整体交给**子进程，而不是往 `process.env` 里塞。并行多行时后者会互相串凭据 |
 | **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「兜底超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |
 | **受保护发射** | 调 `onEvent` 一律包在 try/catch 里：那是**消费方**的代码（写盘 / 推流都会抛），而 `run()` 承诺「永不抛」 |

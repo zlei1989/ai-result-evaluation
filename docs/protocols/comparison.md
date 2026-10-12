@@ -16,7 +16,8 @@ cc / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差
 | base URL 处理 | **剥**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补** `/v1`（CLI 只走 `POST {base}/v1/responses`） | 按 wire 分叉：anthropic 剥、openai 补（pi-ai 不归一化） |
 | 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） |
 | `cancelMidTurn` | true | true | **false**（终止晚 5 秒是设计） |
-| `structuredOutput` | true（`options.outputFormat`） | true（`turn/start` 的 `outputSchema`） | **false**（SDK 无此格，骨架摘格 + 有痕降级） |
+| 结构化输出通道 | **原生**：`options.outputFormat`（收尾消息回 `structured_output`） | **原生**：`turn/start` 一等字段 `outputSchema` | **无原生通道 ⇒ 适配器内部填充层**：首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮 ≤ 2 轮 |
+| `applied.structuredOutput` | 按本次收尾消息里有没有 `structured_output` 上报 | 按本次有没有把 schema 发进 `turn/start` 上报 | **恒 `false`**（填充层不是原生通道） |
 | 权限 full 档 | `bypassPermissions` + `allowDangerouslySkipPermissions: true`（必须成对） | `danger-full-access`（`workspace-write` 默认关网络） | `DSH_PERMISSION_MODE=danger-full-access` |
 | 权限 read-only 档 | `dontAsk`（刻意不是 `plan`） | `read-only`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` |
 | 流式增量 | **yes**（`includePartialMessages: true` 常开，`stream_event`；**仅主会话**） | **yes**（`item/agentMessage/delta` + 两条 reasoning delta；`plan` / `commandExecution` 两条显式丢+计数） | **yes**（`source: 'hook'`：通知层没有 delta ⇒ 插件旁路 sidecar 文件 + 100 ms tail，见《接入》「流式增量旁路」） |
@@ -25,6 +26,8 @@ cc / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差
 | `apiMs` / `ttftMs` | 有（三家唯一） | 恒 `null` | 恒 `null` |
 | effort off 落点 | `thinking:{type:'disabled'}` + env 覆盖层（两半各管一批模型） | `effort:'none'` + `model_reasoning_summary:'none'`（后者空转）；**off 关不掉思考（未闭合）** | `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`（真机 0/0 成立） |
 | 终结信号 | `result` 消息恰好一条 | 主线程那条 `turn/completed`（按 `threadId` 认） | `turn/end`（`status` + `stopReason` 两格合读） |
+
+**结构化输出：通道不同，交付契约相同**。三家都只有两种收场——交出一段符合 `outputSchema` 的 JSON，或如实失败（不合格的答复不会被静默当成合格）。差别在**谁来保证形状**：cc / codex 由厂商按 schema 约束；dsh 靠适配器内部的填充层（首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮）兜住，**保证强度不同**（追问两轮后仍可能不合格）。`applied.structuredOutput` 是**每-run 的通道事实**、不是能力位：它回答「这一次走的是哪条路」，不回答「答复合格不合格」——走填充层也可能交出一份完全合格的 JSON 而这一格仍是 `false`。判据三家共用一份（`packages/server/agents/src/structured-output.ts`，一致性套件的 `structured-output` 组同源）。
 
 **内置工具交集**（精确同名）：dsh ∩ codex = `create_goal` / `get_goal` / `update_goal` / `web_search`；claude 与另两家**精确同名交集为空**；三家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10），能力声明必须带前提。**别名要逐个登记**：真机这批数据里 dsh 跑命令用的是 `bash` 而不是表里原有的 `pwsh`（7 次调用全是 `bash`），漏登记不会报错、只会让摘要退化成紧凑 JSON 且族标签消失 ⇒ 别名由 `tool-family.test.ts` 逐字钉住。
 

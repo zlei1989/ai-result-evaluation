@@ -76,7 +76,7 @@ export default function aievalStreamTap(ctx) {
       if (typeof sid !== 'string' || sid === '') return;
       appendFileSync(file, JSON.stringify({ sid, frame }) + '\\n');
     } catch {
-      // 旁路失败不影响运行：丢一行比打断一次评测便宜得多
+      // 旁路失败不影响运行：丢一行比打断一次运行便宜得多
     }
   });
 }

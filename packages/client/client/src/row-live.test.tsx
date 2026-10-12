@@ -13,8 +13,9 @@
  * ② **seq 回到 1 = 新一代**：同一行重跑（编排层会先删掉事件日志，seq 重新从 1 发号）时，
  * 上一轮的指标必须清掉——否则界面会拿旧一轮的 tok 冒充新一轮的起手值；
  * ③ 终态帧之后**这一行的连接要关掉**，且不能牵连别行的连接；
- * ④ **进评分即冻结**：`status: judging` 之后的 `usage` 报的是**评审者**的
- * 用量（评分智能体跑在同一个工作区、事件进同一条流），一律不再折进候选的 tok / 轮次。
+ * ④ **进评分即冻结**：`status: judging` 之后的 `usage` 报的是**评审者**的用量
+ * （评分事件落 `judge-events.jsonl`，与行级流分开；历史 `events.jsonl` 回放时仍会
+ * 出现这种形状——评分事件曾与候选同一条流的时期落盘），一律不再折进候选的 tok / 轮次。
  */
 import { createElement, type ReactNode } from 'react';
 import { SWRConfig } from 'swr';
@@ -274,9 +275,10 @@ describe('foldLiveMetrics（纯折叠）', () => {
     expect(folded.latestText).toBe('调用工具 read：评分标准.md');
   });
 
-  it('**前缀标签 + JSON** 也不当消息（评分智能体转发出来的正是这种形状）', () => {
-    // 真机踩到：评分阶段转发出来的日志是 `[评分智能体] {"method":"session.event",…}`——
-    // 只判整串开头（`[` 后面跟的是中文）会把它当人话放行，卡片上于是滚出一坨 JSON
+  it('**前缀标签 + JSON** 也不当消息（历史 events.jsonl 里评分行正是这种形状）', () => {
+    // 历史 `events.jsonl`（评分日志与执行日志分开之前落盘）里，评分行是
+    // `[评分智能体] {"method":"session.event",…}`——只判整串开头（`[` 后面跟的是中文）
+    // 会把它当人话放行，卡片上于是滚出一坨 JSON；回放仍要挡住
     const folded = foldLiveMetrics([
       makeEvent({ seq: 1, type: 'log', stream: 'stdout', text: '候选：正在读 lib/http.js' }),
       makeEvent({
@@ -291,8 +293,7 @@ describe('foldLiveMetrics（纯折叠）', () => {
   });
 
   it('戴了前缀的**人话**照常显示（判据只清洗机器负载，不清洗历史消息）', () => {
-    // 新数据里卡片上不会再出现转发前缀（摘要不带前缀，见 `judge-agent.ts`）；这一条钉的是
-    // **老数据**：磁盘上已有的行 `text` 是带前缀的，回放时只要它是人话就照原样显示——
+    // 历史 `events.jsonl` 里 `text` 带前缀的行，回放时只要它是人话就照原样显示——
     // 判据只负责把机器负载挡在门外，不做「把前缀剪掉」的清洗（剪错了就静默改写了别人的日志）
     const folded = foldLiveMetrics([
       makeEvent({ seq: 1, type: 'log', stream: 'stdout', text: '[评分智能体] 调用工具 read：README.md' }),
@@ -305,11 +306,13 @@ describe('foldLiveMetrics（纯折叠）', () => {
 /**
  * **候选阶段结束即冻结**。
  *
- * 评分智能体跑在候选**同一个工作区**里，事件也被转发进同一行同一条流（`judgeRowByAgent`），
- * 于是 `status: judging` 之后每一条 `usage` 报的都是**评审者**的用量：轮次从 1 重新数、token 是
- * 评审者自己的。真机实测（run `bea0564d` 的 codex 行）：候选收尾上报 `input 483,723 /
- * cached 455,552 / output 7,183`、`turns 28`，随后评分阶段推来十几条 `turns 1..13` 的小用量——
- * 卡片上那几格当时显示的是 `tok 13,715 / 缓存命中 45% / 轮次 2`，全是评审者的数字。
+ * 评分智能体跑在候选**同一个工作区**里，它的事件落评分自己的 `judge-events.jsonl`（与行级流
+ * 分开）；这条判据的输入源是**历史数据回放**——评分事件曾与候选同一条流的时期落盘的
+ * `events.jsonl`，回放时 `status: judging` 之后每一条 `usage` 报的都是**评审者**的用量：
+ * 轮次从 1 重新数、token 是评审者自己的。真机形状（run `bea0564d` 的 codex 行）：候选收尾
+ * 上报 `input 483,723 / cached 455,552 / output 7,183`、`turns 28`，随后评分阶段推来十几条
+ * `turns 1..13` 的小用量——卡片上那几格当时显示的是 `tok 13,715 / 缓存命中 45% / 轮次 2`，
+ * 全是评审者的数字。
  *
  * 五条判据：
  * ① `judging` 之后的 `usage` 一律不进 `tokens` / `turns`；

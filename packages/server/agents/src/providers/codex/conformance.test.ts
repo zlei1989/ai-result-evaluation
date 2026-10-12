@@ -7,6 +7,12 @@
  *
  * 为什么用「造载荷」而不是「起假 app-server」：套件验的是**归一产物**（消息 / 子任务 / 计量），
  * 传输与进程那一层由 `index.test.ts` 与真机冒烟管——两层不混。
+ *
+ * ⚠️ **本夹具不挂结构化输出探针**（那一组对 codex 因此是空转），原因是结构性的：消息级的夹具
+ * 只看得到载荷，看不到 `turn/start` 的**请求**，而探针的第一条判据正是「上报走了原生通道 ⇒ 请求里
+ * 必须真有那份 schema」——在这里填 `hasOutputSchema: true` 只能靠夹具自述，是无区分力的假判据。
+ * codex 的请求侧事实由 `index.test.ts` 的 `turn/start` 两态断言（给 / 不给 `outputSchema`）守，
+ * 真机那一侧由 `providers/live-smoke.test.ts` 守。
  */
 import type { AgentMessage, SubagentRecord, UsageTokens } from '@aieval/contracts';
 import { createMessageAssembler } from '../../message';

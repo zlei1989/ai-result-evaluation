@@ -184,13 +184,17 @@ export interface AgentRunInput {
   skills?: SkillRef[];
   /**
    * 要求模型**按这份 JSON Schema 生成**最终答复（可选）。**语义是「我想要」**：
-   * 不支持的适配器**降级**（骨架在 `runTurn` 里判能力，把这一格从交给 `start` 的输入里摘掉），
-   * 并在结果里如实报 `applied.structuredOutput = false`。调用方**不再需要**先读注册表判能力。
+   * 有原生 schema 通道的家把它翻成厂商方言（claude 的 `outputFormat`、codex 的 `outputSchema`），
+   * 没有原生通道的家**在适配器内部填充**（把 schema 写进提示词 + 自校验 + 同会话修正轮）。
    *
-   * 为什么是中性事实：翻译成 claude 的 `outputFormat` 还是 codex 的 `outputSchema`
-   * 是适配器的事；契约里出现某一家 CLI 的语法，等于让跨端契约知道厂商方言。
+   * 两条口径：
+   *   · **骨架不替厂商判能力**：这一格一律交给 `start`，摘不摘、怎么用由各适配器自己决定；
+   *   · **各家保证强度不同、契约相同**：要么交出一段符合这份 schema 的 JSON，要么在
+   *     `applied.structuredOutput` 与最终答复上如实失败——不允许静默给一个坏形状。
+   * 为什么是中性事实：翻译成哪一家的什么选项是适配器的事；契约里出现某一家 CLI 的语法，
+   * 等于让跨端契约知道厂商方言。
    */
-  outputSchema?: Record<string, unknown>;
+  outputSchema?: unknown;
   /**
    * 要求的思考强度（可选）。**为什么放这里而不是 route**：route 是**连接事实**
    * （协议 / 地址 / 密钥 / 模型名 / 窗口），而强度是**请求参数**——它与 `permission` 同类，
@@ -286,11 +290,20 @@ export interface AgentRunResult {
    */
   finalText: string | null;
   /**
-   * 这一次**实际按能力处置成了什么**（A1）。必填：调用方据此记账（`ScoreResult.structuredOutput` 就是它），
-   * 缺格会让"降级了吗"变成"没采到"。
+   * 这一次运行**实际**走的是哪条通道（由**适配器**上报，骨架只搬运）。必填：调用方据此记账
+   * （`ScoreResult.structuredOutput` 就是它），缺格会让「真的用上了吗」变成「没采到」。
    */
   applied: {
-    /** schema 是否**真的下发给了适配器**（false = 该家不支持，或本次压根没要求 schema） */
+    /**
+     * **本次运行有没有把答复落到原生 schema 通道上**：`true` = 厂商按 schema 约束了形状
+     * （claude 的 `structured_output` / codex 的 `outputSchema` 真的生效），
+     * `false` = 没有（该家没有原生通道、本次没要求 schema、或厂商这一轮没照做）。
+     *
+     * 它是**每-run 的事实**而不是「这家有没有这个能力」的声明：谁走哪条通道只有适配器知道，
+     * 故由适配器在 `TurnFinalize.applied` 里上报，骨架取缺省 `false`。
+     * 与「答复是否合格」是两件事：没有原生通道的家走填充层（提示词约束 + 自校验 + 修正轮），
+     * 可能交出一份完全合格的 JSON 而这一格仍是 `false`——那一格回答的是**方法**，不是**结果**。
+     */
     structuredOutput: boolean;
   };
 }
@@ -318,20 +331,6 @@ export interface AgentProviderMetadata {
      * 那是每一条事件的性质，不是这一家的静态属性，故这里没有对应的能力格。
      */
     usage: boolean;
-    /**
-     * 该适配器能不能把 `AgentRunInput.outputSchema` 落到实处（**必填**）。
-     * 为什么必填而不是「可选 + 守卫」：可选会被默认成 false 而无人验证；`cancelMidTurn` / `usage`
-     * 已经是必填，这里保持 `capability` 内部同一形状。
-     *
-     * **A1 起这一格只有一个消费方**：适配器在 `run` 里把它**转发**进 `TurnHooks.capability`
-     * （`providers/<kind>/index.ts`），由骨架 `runTurn` 在 `start` 之前统一处置——`false` 且调用方
-     * 要了 schema ⇒ **摘掉这一格**再交给 `start`，并在结果里记 `applied.structuredOutput = false`。
-     * 调用方（编排层）因此**不再需要**先读这一格自己判能力。
-     *
-     * 「适配器拿到 schema 就报错」那道纵深防御**不再需要**：降级口径只该有一处。
-     * 代价：绕过 `run` 直接构造 `AgentRunInput` 的旁路不再报错——知情接受并登记。
-     */
-    structuredOutput: boolean;
   };
   /**
    * **消息能力声明**：这一家在**消息层**到底能拿到什么，逐格给出取值、
@@ -344,13 +343,13 @@ export interface AgentProviderMetadata {
    */
   messageCapability: MessageCapability;
   /**
-   * 评分要拿**推理证据**时，除了 events.jsonl 是否还必须补 messages.jsonl（**必填**）。
+   * 要拿**推理证据**时，除了 events.jsonl 是否还必须补 messages.jsonl（**必填**）。
    *
    * 为什么需要它：codex 的思考全文与工具结果正文**结构性不进** events.jsonl
    * （事件流只有摘要与结构件，唯一落点是消息账本 messages.jsonl），而另两家的执行过程记录
-   * 事件流即齐。编排层据此决定「执行过程记录」证据里要不要多拼一份文件——厂商差异吸收在本包，
-   * 编排层按 kind 查询，**不硬编码厂商名**。逐格取值与理由见各家的 `providers/<kind>/index.ts`；
-   * 改值的消费方是评分证据的组装（codex 候选行多一个 messages.jsonl 附件块）。
+   * 事件流即齐。调用方据此决定「要推理证据」时要不要多拼一份文件——厂商差异吸收在本包，
+   * 调用方按 kind 查询，**不硬编码厂商名**。逐格取值与理由见各家的 `providers/<kind>/index.ts`；
+   * 它讲的是**厂商事实**（哪家的推理证据不在事件流里），与调用方拿证据去做什么无关。
    */
   needsMessagesForReasoningEvidence: boolean;
   /**

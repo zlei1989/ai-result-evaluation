@@ -253,4 +253,10 @@ export {
   type ToolFamilyPayload,
   type TruncationState,
 } from './composite/agent-log/types';
+/**
+ * 评分详情抽屉的「原始输出」二级抽屉要的两样：正文（与执行日志的原文面板共用一份）
+ * 与入口 / 标题共用的文案。页面（footer 按钮）与视图（抽屉标题）各消费一半，
+ * 不从包根转出就只能深路径 import 或各写一份。
+ */
+export { diagnosticsBody, rawOutputLabel } from './composite/agent-log/raw-output-panel';
 export { allFixtures, claudeFixture, codexFixture, dshFixture, type AgentLogFixture } from './composite/agent-log/fixtures';

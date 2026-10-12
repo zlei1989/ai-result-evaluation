@@ -377,8 +377,9 @@ describe('runs 页面的编辑 / 删除接线', () => {
 });
 
 /**
- * 「模型原始返回」入口的**接线**守卫（用户：删掉正文里的「模型原始返回」标题、
- * 只留「查看原始返回」按钮，按钮插进评分详情抽屉的 `footer`）。
+ * 「模型原始返回」与「原始输出 N 条」两个入口的**接线**守卫（用户：删掉正文里的
+ * 「模型原始返回」标题、只留「查看原始返回」按钮，按钮插进评分详情抽屉的 `footer`；
+ * 「原始输出 N 条」并排新增，正文 = 评审会话的 log 原文）。
  *
  * 为什么必须在这一层钉：入口按钮搬到了**页面**渲染的 `Drawer footer` 上，而正文
  * 仍在 `@aieval/ui` 的 `ScoreDetailView` 里 ——两边各自有自己的用例，**「页面有没有把这一对
@@ -408,24 +409,70 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     return text.slice(start, end);
   }
 
-  it('入口按钮在评分详情抽屉的 footer 上，且带那个 data-testid', () => {
+  it('两个入口按钮都在评分详情抽屉的 footer 上，且各带那个 data-testid', () => {
     const block = scoreDrawerBlock();
 
     expect(block, '评分详情抽屉没有 footer：入口按钮又回到正文里了').toContain('footer={');
     expect(block, 'footer 里没有「查看原始返回」的入口按钮').toContain('data-testid="score-raw-open"');
-    // 按钮必须在 **footer 属性里**，不是在 children 里（后者就是这次要拆掉的形状）
+    expect(block, 'footer 里没有「原始输出 N 条」的入口按钮').toContain('data-testid="score-judge-output-open"');
+    // 两个按钮都必须在 **footer 属性里**，不是在 children 里（后者就是那次要拆掉的形状）
     const footerStart = block.indexOf('footer={');
-    const footerEnd = block.indexOf('>', block.indexOf('查看原始返回', footerStart));
-    expect(footerEnd, '「查看原始返回」不在 footer 表达式里').toBeGreaterThan(footerStart);
-    expect(block.slice(footerStart, footerEnd), '按钮没挂在 footer 上').toContain('查看原始返回');
+    for (const label of ['查看原始返回', '{judgeOutputLabel}']) {
+      const footerEnd = block.indexOf('>', block.indexOf(label, footerStart));
+      expect(footerEnd, `「${label}」不在 footer 表达式里`).toBeGreaterThan(footerStart);
+      expect(block.slice(footerStart, footerEnd), `「${label}」没挂在 footer 上`).toContain(label);
+    }
   });
 
-  it('没有分就不给入口（空态那一格没有原文可看，footer 为 null）', () => {
+  it('两个入口各判各的：没有分就没有「查看原始返回」；「原始输出」跟着 judgeOutputVisible', () => {
     // 归一化空白后再比：判据是**条件本身**，不该被换行/缩进打红
     const block = scoreDrawerBlock().replace(/\s+/g, ' ');
 
-    expect(block, 'footer 不再跟着 scoreDetail 判空：空态那一格也会长出一个点不动的入口').toContain(
-      'footer={ scoreDetail === null ? null :',
+    // footer 整段为 null = 两个入口都没有；只缺分时（judging）「原始输出」仍在
+    expect(block, 'footer 不再跟着「无分且无原始输出入口」判空：空态那一格也会长出点不动的入口').toContain(
+      'footer={ scoreDetail === null && !judgeOutputVisible ? null :',
+    );
+    // 「查看原始返回」只在有分时渲染（judging 那一态没有原文可看）
+    expect(block, '「查看原始返回」不再跟着 scoreDetail 判空').toContain('{scoreDetail !== null && (');
+    // 「原始输出」跟着自己的可见性判据渲染
+    expect(block, '「原始输出」按钮没有跟着 judgeOutputVisible 渲染').toContain('{judgeOutputVisible && (');
+  });
+
+  /**
+   * 「原始输出」入口的**可见性判据**守卫（设计口径，两半缺一不可）：
+   * 有分时按 `score.judgeAgentKind` 判（文本 API 评分没有评审会话 ⇒ 不渲染）；
+   * 评分进行中（judging ⇔ 无分，`judgeAgentKind` 要等分落下来才有）按轮级开关
+   * `run.useAgentJudge` 判。判据写在页面这一层，包里的用例看不见它。
+   */
+  it('「原始输出」的可见性：有分看 judgeAgentKind，judging 看 run.useAgentJudge', () => {
+    const text = source();
+
+    expect(text, '没有按 judgeAgentKind 判（文本 API 评分也会长出入口）').toContain(
+      'scoreDetail.score.judgeAgentKind !== null',
+    );
+    expect(text, '没有按 run.useAgentJudge + judging 判（评分进行中没有入口，SSE 无处可达）').toContain(
+      'run?.useAgentJudge === true && judgeLive',
+    );
+    expect(text, 'judging 判据不是行状态（与「judging ⇔ 无分」的服务端口径漂移）').toContain(
+      'scoreRow?.status === \'judging\'',
+    );
+  });
+
+  /**
+   * 「原始输出」那条流的**订阅接线**：入口可见才取数、judging 才接 SSE。
+   * 两端（hook 与视图）各有自己的用例，只有这一层看得见「页面把参数传对了没有」。
+   */
+  it('评分事件流的订阅：enabled 跟着可见性、live 跟着 judging、折法与执行日志同源', () => {
+    const text = source();
+
+    expect(text, '页面没有订阅评分事件流').toContain('useRowJudgeEvents({');
+    expect(text, '订阅没有跟着入口可见性（不可见也拉历史是白请求）').toContain('enabled: judgeOutputVisible,');
+    expect(text, 'SSE 的开关不是 judging（终态行会挂一条只发心跳的空连接）').toContain('live: judgeLive,');
+    // 折法与执行日志抽屉同一份（`diagnosticsOf`）：两处各写一遍必然漂移
+    expect(text, '评分原始输出没有走 diagnosticsOf 折行').toContain('diagnosticsOf(judgeOutput.events)');
+    // 入口与抽屉标题同文：两处各写一个模板字符串也会漂移
+    expect(text, '入口文案没有走 rawOutputLabel（与抽屉标题不是同一份实现）').toContain(
+      'rawOutputLabel(judgeOutput.status === \'ready\'',
     );
   });
 
@@ -437,6 +484,13 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     );
     expect(text, '没有把 rawOpen 受控传给 ScoreDetailView（点了按钮不会有反应）').toContain('rawOpen={rawOpen}');
     expect(text, '没有把 onRawOpenChange 传给 ScoreDetailView（二级抽屉关不掉）').toContain('onRawOpenChange=');
+    // 「原始输出」同一个口径：也是「记哪一行开着」
+    expect(text, '「原始输出」开合态不是按行 id 判据：换一行后二级抽屉会自己弹出来').toContain(
+      'judgeOutputRowId === scoreRowId',
+    );
+    expect(text, '没有把 judgeOutput 传给 ScoreDetailView（正文与三态都进不去）').toContain('judgeOutput=');
+    expect(text, '没有把受控开合传给 judgeOutput（点了按钮没反应 / 关不掉）').toContain('open: judgeOutputOpen,');
+    expect(text, 'judgeOutput 的关合动作没有回写页面状态').toContain('onOpenChange: (next) => setJudgeOutputRowId(');
   });
 
   /**

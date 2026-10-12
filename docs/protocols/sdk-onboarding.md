@@ -18,6 +18,12 @@
 | 6 | 登记**缺失**：缺失影响矩阵里每一格要么有产物、要么有 `MissingReason`（四句分工），不许静默空格 | 契约层「缺失必须带原因」 |
 | 7 | 跑**真机冒烟**，把四格证据写进当次关账记录 | 见下 |
 
+**结构化输出这一格的接入要求**（每家都要面对入参 `outputSchema`，两种合法接法）：
+
+- **有原生 schema 通道的家**：把它翻成厂商选项（`turn/start` 那一类一等字段），并**如实上报**本次有没有真的走成（`applied.structuredOutput`）——「厂商这一轮没照做」与「我们已经要求了」是两件事。
+- **没有原生通道的家**：在适配器内部**填充**——首轮把 schema 约束（schema 原文 + 「只输出 JSON、不要围栏」）追加在调用方提示词之后，并**实现 `TurnStart.continue`**：骨架的修正轮靠它在**同一会话**里追问，模型手里保留工作区与自己的上一轮答复，只改形状、不重跑任务。
+- **实现不了同会话追问的家如实收场**：答复不合格时骨架落一条 WARN，`ok` / `finalText` 保持原样，由调用方按 `finalText` 的既有契约处置（评分通路的落点是 `JUDGE_PARSE_FAILED`）——**不许假装合格**。两种接法的**保证强度不同、交付契约相同**。
+
 ## 数据与契约
 
 **契约层 conformance 套件**（与厂商无关，任何一家都得过；一次接入的全部成本就是一个 fixture）：
@@ -50,7 +56,8 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 
 | 边界 | 处置 |
 |---|---|
-| conformance 夹具空转：`structured-output.ts` 判据本体在，但三家夹具都没挂探针 | 「声明 `structuredOutput: true` 的家必须真把 schema 发出去」靠三家 `index.test.ts` + 骨架 `turn.test.ts` |
+| 一致性套件的 `structured-output` 组：判据本体 `providers/conformance/structured-output.ts` 与运行时**共用** `src/structured-output.ts`；cc 与 dsh 的夹具已挂探针（请求侧事实分别取假 SDK 的 `options.outputFormat` 与首轮提示词里的输出约束），codex 的夹具是**消息级**的（造 `AppServerNotificationPayload` 喂归一函数，看不到 `turn/start` 的请求）⇒ 这一家在套件里仍空转 | 这一组判三件事：① **上报与请求互钉**——上报走了原生 schema 通道（`applied.structuredOutput`）就必须真的把 schema 发给了厂商，没走原生通道是**允许**的（填充层那条路）；② **答复可解析**——非失败场景的 `finalText` 必须过同一份判据（剥整段围栏 → `JSON.parse`），给了期望再逐字段比对；③ **失败可见**——失败场景必须带归因，空串不算答复（`finalText === ''` 是「没采到」的伪装）。codex 的请求侧事实由 `providers/codex/index.test.ts` 的 `turn/start` 两态断言（给 / 不给 `outputSchema`）守 |
+| 无原生 schema 通道的家怎么过这一组 | 靠适配器内部的填充层（首轮提示词追加 schema 约束）交出 JSON，`applied.structuredOutput` 记 `false` **不算失败**——那一格回答的是**方法**，不是结果；答复仍不合格时走调用方的既有处置（不静默） |
 | 前三步的缺陷单测拦不住（打包器改写、子进程环境差异——测试环境 ≠ 运行环境） | 真机冒烟是唯一拦法；这也是「为什么不写假 SDK 替代真机」的原因 |
 | codex 二进制解析「第二跳基准」守卫缺口：vitest 里裸说明符解析被运行器接管比生产宽松，基准改错仍绿 | 未闭合，两条闭合路径（真 Node 子进程验 / 形状式源码断言）都未做 |
 

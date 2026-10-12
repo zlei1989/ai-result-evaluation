@@ -42,10 +42,16 @@ import { delJson, getJson, postJson, putJson } from './http';
 export { RUNS_KEY, runKey };
 
 /**
- * 一行的产物端点（diff / log / stream / messages 同前缀）——SSE 与两处按需读取共用，免得字面量三份。
- * `query` 由调用方给（含 `?`），本函数只负责拼，不解释语义。
+ * 一行的产物端点（diff / log / stream / messages / 评分那两条同前缀）——SSE 与多处按需读取共用，
+ * 免得字面量三份。`query` 由调用方给（含 `?`），本函数只负责拼，不解释语义。
+ * 评分那条的 `seq` 是**独立一套**（`appendEvent` 按文件续号），`afterSeq` 不许拿执行日志的号来续。
  */
-export function runRowUrl(runId: string, rowId: string, artifact: 'diff' | 'log' | 'stream' | 'messages' | 'messages/stream', query = ''): string {
+export function runRowUrl(
+  runId: string,
+  rowId: string,
+  artifact: 'diff' | 'log' | 'stream' | 'messages' | 'messages/stream' | 'judge/events' | 'judge/events/stream',
+  query = '',
+): string {
   return `${runKey(runId)}/rows/${rowId}/${artifact}${query}`;
 }
 

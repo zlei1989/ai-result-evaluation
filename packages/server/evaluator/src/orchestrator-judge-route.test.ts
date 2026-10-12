@@ -158,7 +158,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
    *     两件事：dsh 那一次 `run()` **也**收到了 schema（不再被扣下），而这一分仍记 `false`。
    * 两条一起，四种写法（都传 / 都不传 / 按能力扣下 / 传反）才两两分得开。
    */
-  it('评分智能体支持结构化输出 ⇒ 没有降级日志，且这一分记 structuredOutput=true', async () => {
+  it('评分智能体走原生 schema 通道 ⇒ 没有通道留痕日志，且这一分记 structuredOutput=true', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
     fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
@@ -173,10 +173,10 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     expect(fakeAgents.calls[1]?.outputSchema).toEqual(JUDGE_OUTPUT_JSON_SCHEMA);
     expect(getRun(run.id).rows[0]?.score?.structuredOutput).toBe(true);
     const events = readEvents(rowEventsFile(run.workspaceBase, run.id, rowId));
-    expect(events.some((event) => event.type === 'log' && event.text.includes('没有把结构化输出落到实处'))).toBe(false);
+    expect(events.some((event) => event.type === 'log' && event.text.includes('没有走原生 schema 通道'))).toBe(false);
   });
 
-  it('评分智能体不支持（dsh）⇒ 一条降级日志，且这一分记 structuredOutput=false', async () => {
+  it('评分智能体没有原生通道（dsh）⇒ 一条通道留痕日志，且这一分记 structuredOutput=false', async () => {
     // 候选仍是 codex/openai；`judgeAgentKind: 'dsh'` 会把评分模型接上一条 anthropic 供应商（dsh 只吃它）
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'dsh' });
     const rowId = run.rows[0]?.id ?? '';
@@ -185,8 +185,8 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     await runRow(run.id, rowId);
 
     expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'dsh']);
-    // 端到端②：dsh 那一次 `run()` 的入参里**也**有这一格（A1 的关键：编排层不再替它
-    // 决定「这家给不了」）。降级是适配器按自己的能力做的，唯一痕迹是它报回的 `applied`
+    // 端到端②：dsh 那一次 `run()` 的入参里**也**有这一格（骨架不再替它决定「这家给不了」；
+    // 没有原生通道的家在适配器内部用填充层对齐）。唯一痕迹是适配器报回的 `applied`
     // ——下面那条日志与 `structuredOutput=false` 都从它来，而不是从我们传没传 schema 推的。
     expect(fakeAgents.calls[1]?.outputSchema).toEqual(JUDGE_OUTPUT_JSON_SCHEMA);
     expect(getRun(run.id).rows[0]?.score?.structuredOutput).toBe(false);
@@ -194,7 +194,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     // 不是 schema 约束下拿到的」必须能从该行日志里读出来，否则一组分数里混着两种口径而无人知晓。
     // 断「恰好一条」而不是「至少一条」：同一件事被发两遍同样会把日志抽屉读乱。
     const events = readEvents(rowEventsFile(run.workspaceBase, run.id, rowId));
-    const degradation = events.filter((event) => event.type === 'log' && event.text.includes('没有把结构化输出落到实处'));
+    const degradation = events.filter((event) => event.type === 'log' && event.text.includes('没有走原生 schema 通道'));
     expect(degradation).toHaveLength(1);
   });
 

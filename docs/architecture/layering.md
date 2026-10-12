@@ -13,7 +13,8 @@ apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错
 packages/server/
   core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
   agents/          智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）；唯一允许引厂商
-                   SDK 的包，对外只暴露 provider 注册表，差异吸收在 providers/<kind>/
+                   SDK 的包，对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；
+                   **业务无关**：只认「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念
   evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
   api/             功能服务层，一个功能一个文件；禁止 import 任何框架
   contracts/       zod schema + 领域类型 + 错误码
@@ -111,6 +112,7 @@ packages/client/
 | 类型转出边（client → ui） | 已收口 | 只允许 `export type`、落 `devDependencies`；第三段断言钉住（写回 `dependencies` 就红） |
 | 测试期别名边（web-next → evaluator 源码） | 已收口 | 只活在 `apps/web-next/vitest.config.ts` 的 `resolve.alias`，不进依赖清单；`apps/web-next/instrumentation.ts` 调 `recoverInterruptedRuns` 必须经 `@aieval/api` 转出（web-next 不直接 import evaluator） |
 | FORBIDDEN 名单管不到 `@aieval/*` 依赖边 | 已登记 | 加内部边必须显式落方向表；这条边不会报错，不落文档就是隐性依赖 |
+| agents 的**业务无关**边界（只认通用概念，不知道评测领域） | 已收口 | 不许**值导入** contracts 的业务域契约（判据是导出名命中 `Rubric` / `Score` / `Judge` / `TestCase` / `SETTINGS_`；`import type` 允许）；运行时**用户可见字符串**里不出现业务词（`评分` / `考题` / `候选` / `评审` / `评测` / `rubric` / `scoring`）；厂商能力差异（有没有原生 schema 通道）是**适配器私有知识**。守卫 `packages/server/agents/src/business-agnostic.test.ts`（AST 扫字符串字面量与模板片段 + 值导入检查）；**注释与测试文件不在扫描面内** |
 | ESLint 边界报错文案的指向 | 已收口 | 报错文案指向本页「依赖方向」——不指向任何外部档案，因此没有死链 |
 
 ## 相关链接

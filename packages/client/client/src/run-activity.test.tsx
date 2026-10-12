@@ -115,6 +115,8 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
   });
 
   it('带 `[标签]` 前缀的 JSON 同样挡下（与 `log.summary` 那道闸同一份判据）', () => {
+    // 标签样本取历史 `events.jsonl` 里真实出现过的形态（评分行曾带转发前缀）；这里钉的是
+    // 判据本身——任何「`[标签]` + JSON」的载荷都不许上卡片，与哪条流无关
     const tagged = activityOfMessage(
       message({ chunk: 'snapshot', assembly: 'snapshot', blocks: [{ type: 'text', text: '[评分智能体] {"text":"评分中的信封"}' }] }),
     );

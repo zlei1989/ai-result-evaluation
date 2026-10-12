@@ -1,8 +1,9 @@
 'use client';
 
 /**
- * 评分详情：评分运行信息 + 总分 + 满分 + 逐项达成 / 未达成 + 每项理由 + 总评 + 记账 + 模型原始返回。
- * 七条口径：
+ * 评分详情：评分运行信息 + 总分 + 满分 + 逐项达成 / 未达成 + 每项理由 + 总评 + 记账 + 模型原始返回
+ * + 评分原始输出（评审会话的 `log` 原文）。
+ * 八条口径：
  *   1. **总分原样显示 `score.totalScore`，前端不重算**——它是服务端按权重加总出来的权威值
  *      （缺一项即整行判失败），在这里「按评分表现场加一遍」会把数据不一致静默改写成另一个数；
  *   2. **满分来自 `score.maxScore`**（不是常量 100，也不现算）——它是这一分生成时那张表的权重之和；
@@ -26,9 +27,17 @@
  *      而抽屉叫「评分详情」——读者拿执行的花销去理解评分，两件事差了整整一个阶段（`EvalRow.durationMs`
  *      契约里就写明不含评分阶段）。故候选那五格**不再进这个抽屉**（行卡片与执行日志里都有），
  *      评分的两格由两条评分通路**在评分时落盘**（见 `contracts/src/score.ts` 的 `judgeTokens`）。
- *      于是本视图**只吃 `score` 与 `rubric`**：没有「行数据配错分」这条缝了。
+ *      于是本视图的**评分与评分表**只吃 `score` 与 `rubric`：没有「行数据配错分」这条缝了；
+ *   8. **评分原始输出**（评审者会话的 `log` 事件逐字原文，与执行日志的「原始输出」同口径同正文）
+ *      与原始返回同一套形态：入口按钮在页面 `footer` 上、正文在本层二级抽屉里、开合受控
+ *      （`judgeOutput.open` / `onOpenChange`）。它与 `score` / `rubric` **不是同一份数据**
+ *      （`judge-events.jsonl` 是评审过程的流水，不是这一分的结构化产物），故走独立的
+ *      `judgeOutput` prop 组、不并进 `score`——判据、三态与提示行全在 `ScoreJudgeOutputProps`。
+ *      它**不判可见性**：文本 API 评分没有这条流、评分没开始也没有，判据在调用方（页面）；
+ *      **0 条原文也照常渲染**（智能体评分的行没有「藏入口」的口径——空态写在正文里，见
+ *      「这一行评分没有留下原始输出记录」那一支）。
  */
-import { Flex, Table, Tag, Typography, theme } from 'antd';
+import { Alert, Button, Flex, Skeleton, Table, Tag, Typography, theme } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { HTMLAttributes, ReactNode } from 'react';
 import { AGENT_LABELS, rubricItemKeys, type Rubric, type ScoreResult } from '@aieval/contracts';
@@ -38,6 +47,8 @@ import { formatDuration } from '../base/metric-line';
 import { NestedDrawer } from '../base/nested-drawer';
 import { formatDateTime } from '../base/format';
 import { formatUsageTriple } from '../base/usage-metrics';
+import { diagnosticsBody, rawOutputLabel } from './agent-log/raw-output-panel';
+import type { AgentLogDiagnostics, Loadable } from './agent-log/types';
 
 export interface ScoreDetailViewProps {
   score: ScoreResult;
@@ -49,6 +60,32 @@ export interface ScoreDetailViewProps {
    */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
+  /**
+   * 「评分原始输出」二级抽屉（口径 8）：**不给 = 这一行没有这个入口**（文本 API 评分 /
+   * 评分还没开始——判据在调用方），此时连抽屉都不渲染。给了就由本视图负正文与三态。
+   */
+  judgeOutput?: ScoreJudgeOutputProps;
+}
+
+/**
+ * 评分原始输出那一格的全部输入（口径 8）。数据是**评审会话的 `log` 事件原文**
+ * （`judge-events.jsonl` 经 `diagnosticsOf` 折成行），不是 `score` 的一部分——
+ * 读取有自己的三态与重试，故独立成组而不是塞进 `score`。
+ */
+export interface ScoreJudgeOutputProps {
+  /** 历史读取的三态（与执行日志抽屉的 `Loadable` 同一形状） */
+  state: Loadable<AgentLogDiagnostics>;
+  /** `state === 'error'` 时已经折好的中文原因（本包不认识 `ServiceError`，折错在数据层做） */
+  errorText: string | null;
+  /** 评分进行中（judging ⇔ 无分）：正文顶部多一行「正在评分」的提示，终态行恒 false */
+  judging: boolean;
+  /** SSE 断线的一句警示（历史已在手时仍可能非空；重连成功自动清空） */
+  liveError: string | null;
+  /** 历史读取失败后的重试入口（`state === 'error'` 时才有机会被点到） */
+  onRetry(): void;
+  /** 二级抽屉开合（**受控**，同 `rawOpen` 的口径：入口按钮在页面那一层） */
+  open: boolean;
+  onOpenChange(next: boolean): void;
 }
 
 /** 判定（`score.judgments` 的一项）：按引用键与评分表的项对齐 */
@@ -123,7 +160,76 @@ const COLUMNS: TableColumnsType<ScoreRow> = [
   },
 ];
 
-export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: ScoreDetailViewProps): ReactNode {
+/** 评分原始输出正文区的内边距（px）：二级抽屉的 `body.padding` 已置 0，由内容自己给（与原文面板同口径） */
+const JUDGE_BODY_PADDING = 16;
+
+/**
+ * 评分原始输出的正文（口径 8）：三态 + 顶部两行可选提示（「正在评分」/ 实时连接警示）
+ * + ready 态复用 `diagnosticsBody`（与执行日志的原文面板**同一份**行渲染）。
+ *
+ * 布局用**结构性不变量**写进内联 style（`display` / `flexDirection`）：antd 的 `Flex` 这两个属性
+ * 走 CSS 类、内联读不到，而这里「列表吃满剩余高度」是虚拟滚动的**前提**（`base/virtual-list.tsx`
+ * 口径 3：量不到高度就静默退化为全量渲染）。
+ */
+function judgeOutputBody(props: ScoreJudgeOutputProps): ReactNode {
+  const { state, errorText, judging, liveError, onRetry } = props;
+  return (
+    <Flex vertical style={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="score-judge-output-body">
+      {/* judging 提示：此刻页面上还没有分（judging ⇔ 无分），先说清「以下是当前尝试的输出」， */}
+      {/* 免得半截流水被当成上一次评分的依据；终态自动消失（judging 由调用方按行状态给） */}
+      {judging && (
+        <Flex style={{ padding: `0 ${JUDGE_BODY_PADDING}px 8px` }} data-testid="score-judge-live-note">
+          <Typography.Text type="secondary">正在评分，以下为当前尝试的输出</Typography.Text>
+        </Flex>
+      )}
+      {/* 实时连接故障的一句警示（浏览器自动重连，已收内容不丢）：不占高度的固定行，跟着列表滚走就等于没说 */}
+      {liveError !== null && (
+        <Flex style={{ padding: `0 ${JUDGE_BODY_PADDING}px 8px` }} data-testid="score-judge-live-error">
+          <Typography.Text type="warning">{liveError}</Typography.Text>
+        </Flex>
+      )}
+      {state.status === 'loading' && (
+        <Flex style={{ padding: JUDGE_BODY_PADDING }}>
+          <Skeleton active title={false} paragraph={{ rows: 4 }} />
+        </Flex>
+      )}
+      {state.status === 'error' && (
+        <Flex style={{ padding: JUDGE_BODY_PADDING }}>
+          <Alert
+            type="error"
+            showIcon
+            title="评分原始输出读取失败"
+            // 已折好的中文原因（本包不认识 ServiceError，折错在数据层做）
+            description={errorText ?? undefined}
+            action={
+              <Button size="small" autoInsertSpace={false} onClick={onRetry}>
+                重试
+              </Button>
+            }
+          />
+        </Flex>
+      )}
+      {state.status === 'ready' &&
+        (state.data.lines.length === 0 ? (
+          // 0 条也是事实（智能体评分但一条 log 都没留下、或旧数据没有 judge-events 文件）：
+          // 空态写在正文里，不藏入口（口径 8）。judging 期间的 0 条另有说法——评分刚开始，不是「没有」
+          <Flex style={{ padding: JUDGE_BODY_PADDING }}>
+            <Typography.Text type="secondary">
+              {judging ? '评分刚开始，还没有原始输出记录' : '这一行评分没有留下原始输出记录'}
+            </Typography.Text>
+          </Flex>
+        ) : (
+          // 有原文：与执行日志共用同一份正文（行渲染、虚拟滚动、截断提示位都只有一份）。
+          // flex:1 + minHeight:0 让它吃满提示行之外的剩余高度（虚拟滚动的前提）
+          <Flex vertical flex={1} style={{ minHeight: 0 }}>
+            {diagnosticsBody(state.data)}
+          </Flex>
+        ))}
+    </Flex>
+  );
+}
+
+export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange, judgeOutput }: ScoreDetailViewProps): ReactNode {
   // 未达成项的语义色取 antd token（不写 `var(--ant-color-error)` 字面量：换主题时这里跟着走）
   const { token } = theme.useToken();
   const keys = rubricItemKeys(rubric);
@@ -271,6 +377,19 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange }: Sco
           <JsonText text={score.raw} dataTestId="score-raw" />
         </Flex>
       </NestedDrawer>
+
+      {/* 评分原始输出（口径 8）：与原始返回同一套形态——入口在页面 footer、正文在这里、开合受控。
+          标题与入口按钮**同文**（`rawOutputLabel`：ready 带条数，读取中 / 失败不带——那不是一个真读数）。
+          `judgeOutput` 不给时整段不渲染（这一行没有这个入口）。 */}
+      {judgeOutput !== undefined && (
+        <NestedDrawer
+          open={judgeOutput.open}
+          onClose={() => judgeOutput.onOpenChange(false)}
+          title={rawOutputLabel(judgeOutput.state.status === 'ready' ? judgeOutput.state.data.lines.length : null)}
+        >
+          {judgeOutputBody(judgeOutput)}
+        </NestedDrawer>
+      )}
     </Flex>
   );
 }

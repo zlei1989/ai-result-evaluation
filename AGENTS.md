@@ -66,7 +66,8 @@ apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错
 packages/server/
   core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
   agents/          智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）；唯一允许引厂商 SDK 的包，
-                   对外只暴露 provider 注册表，差异吸收在 providers/<kind>/
+                   对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；**业务无关**——只认
+                   「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念，不知道评测领域
   evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
   api/             功能服务层，一个功能一个文件；禁止 import 任何框架
   contracts/       zod schema + 领域类型 + 错误码

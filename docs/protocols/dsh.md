@@ -21,6 +21,7 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不�
 - **逐消息用量**（这家独有）：`assistant/message` 的 `data.usage.{inputTokens, cacheReadTokens, outputTokens}`（另有 `cacheWriteTokens?` / `totalTokens?`）进消息信封；claude / codex 构造点 `usage: null`。真机：23 条 message 里 16 条带 usage、7 条 null（全是 role:'tool'）——页脚与 wire 0 处不符。消息级不进任何合计；行级与消息级并存的差额来自流式中间帧与收尾投影（不带 usage 的投递）——不是对不上账。同一逻辑消息多次投递带的用量相同 ⇒ 合并器「带值覆盖、缺省保留」。
 - **计量与计时**：`reasoningTokens` 恒 `null`（`llm-pi-ai` 的 `mapUsage()` 有意不投影，能力位 `not-projected-by-vendor`——不许拿 `outputTokens` 去凑）；`apiMs` / `ttftMs` 恒 `null`（载荷无时间字段，时间只在 `params.event.time`）⇒ `timing` 一律 `source:'events'` 且是累计口径。
 - **子任务**：`agentId` 与 `childSessionId` 同值；名称 / 类型在 `subagent/catalog`；终态两格合读 `status`（ok/error）+ `stopReason`（五档）——取消是 `error + aborted`、截断是 `ok + max-tokens`，单读一个方向都会骗人。
+- **结构化输出走填充层**（SDK 客户端没有 schema 入参：`DeepSeekHarnessOptions` 只有 cwd / provider / model / reasoningEffort / maxTokens，argv 只有 `--profile` / `--patch`）。两件事：① 本次给了 `outputSchema` 就把 `buildStructuredOutputInstruction(schema)` 追加在调用方提示词**之后**（中性措辞，含 schema 原文与「只输出 JSON、不要围栏」；非对象按「没给」处置）；② 实现 `continue` ——骨架发现答复形状不对时回到这里，用**同一个 `sessionId`** 再跑一条 `harness.run(prompt, { sessionId })`，会话历史留在厂商进程里 ⇒ 模型手里保留工作区与自己的上一轮答复，只改形状、不重跑任务。因此 `applied.structuredOutput` **恒 `false`**：那一格记的是「有没有走原生 schema 通道」，提示词级填充不算（它是**方法**的如实记录，不代表没交付）。修正轮由骨架驱动、上限 **2 轮**（`STRUCTURED_OUTPUT_REPAIR_ROUNDS`），耗尽后 `ok` / `finalText` 保持最后一轮原样。
 
 ## wire 形态与事件
 
@@ -50,6 +51,7 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不�
 | 退役 `DEEPSEEK_*` 必须显式删除（不删则继承宿主 ⇒ `deepseek-official` 静默可用并计费） | 已修 | 守卫：宿主环境守卫用例（先塞假键再断言子进程环境里没有）——只断言「没注入」是假绿 |
 | `web_search` 必然失败（`searchProvider: deepseek-official`，错误码 `WEB_PROVIDER_CREDENTIAL_MISSING`） | 已知 | 非新回归；要不要 overlay 关掉 tool-web 默认不动 |
 | streamingDelta：厂商 LLM 层有 `text-delta` 但 SDK 订阅的**通知层**没有（真机 20 条通知、增量类 0 条） | 已修（换通道） | 通知层判定不变，**改从进程内事件取**：适配器往行 profile 目录写一个 tap 插件，它订阅 `agent/assistant-stream` 把 chunk 帧追加到 `<configHome>/aieval-stream-tap.jsonl`，父进程 100 ms tail 成 `aieval/delta` 伪通知 ⇒ 能力位 `yes` + `streamingDeltaSource: 'hook'`。**最值钱教训保留**：文档说的层 ≠ 我们能拿到的层——解法不是「厂商投送了」，而是**换一层拿**。代价与失效模式见《接入》「流式增量旁路」与《事件流》已知边界 |
+| 结构化输出只有填充层：提示词约束 + 适配器自校验 + 同会话修正 ≤ 2 轮（无原生 schema 通道） | 保证强度已知边界 | **保证强度低于原生通道**：两次追问后仍可能不合格，失败由调用方按「答复不可解析」处置（评分通路落 `JUDGE_PARSE_FAILED`）；`applied.structuredOutput` 恒 `false` 是方法的如实记录，不代表没交付 |
 | `session.status` 刻意不投影（与轮次语义无关，投影只添噪声） | 有意取舍 | 「已识别且有意不投影」，不是未识别 |
 | `turn/end` 的 kind 实测只有 completed / error，类型面另有 aborted / blocked / max-tokens / interrupted / forked | 口径 | 按类型面写防未来 |
 | MCP 重连预算耗尽后工具被注销且不再自动恢复（默认 10 次连续失败） | 厂商设计 | 停机期间工具仍列出但调用失败 |

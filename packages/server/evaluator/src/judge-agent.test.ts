@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 智能体评分通路：拼词、日志前缀、失败面。
+ * 智能体评分通路：拼词、事件透传、失败面。
  * 适配器被 mock 成 `fakeAgentsModule()`（`testing/fixtures.ts`），它的行为由 `fakeAgents.scripts` 驱动。
  * 注意 `vi.mock` 的工厂**会被提升**：里面不能引用顶层的 import，只能动态 import（与 orchestrator.test.ts 同形）。
  *
@@ -419,13 +419,16 @@ describe('judgeRowByAgent', () => {
   });
 
   /**
-   * 摘要**不戴**前缀、`text` 戴（用户口径：「删除 [评分智能体] 前缀，我从『评分中』
-   * tag 可以了解阶段」）。两个方向都要钉住，各自有靶子：
-   *   ① 卡片底部那一行读的是 `summary` —— 它必须是**事件自己那句话**，戴上转发前缀就是噪声；
-   *   ② 没有摘要的源事件也要给出一句不带前缀的摘要（否则消费方退回读 `text`，前缀又漏到卡片上）；
-   *   ③ 抽屉读的是 `text` —— 它继续戴前缀（连续时间线里只有它能分清哪几行是评委说的）。
+   * 事件**原样透传，不加前缀**（用户口径：「候选执行与评分的日志是分开的，不用再添加
+   * `[评分智能体] ` 前缀」）。评分的出口落在自己的流里（`judge-events.jsonl`，编排层
+   * `judgeStageAttempt` 分流），消费侧靠「读的是哪条流」分辨来源——转发时再给文本镶一个
+   * 标签，只是给每一行重复一遍同样的字。三个方向都要钉住，各有靶子：
+   *   ① `text` 一字不动（戴上转发前缀就是噪声）；
+   *   ② 源事件的 `summary` 原样透传，**没有摘要的不补**（补出来的那一句是转发层的编造；
+   *      消费方读卡片时自己按 `summary ?? text` 兜底，两层兜底会漂移）；
+   *   ③ 逐字段相等（不是「包含」）：多补一个字段、动一个字符都会被这条抓住。
    */
-  it('日志事件的摘要不带 [评分智能体] 前缀（text 仍带，供抽屉区分）', async () => {
+  it('日志事件原样转发：text 与 summary 都不加前缀，无摘要的也不补', async () => {
     const collected: AgentEvent[] = [];
     fakeAgents.scripts.set('codex', {
       mode: 'ok',
@@ -439,7 +442,8 @@ describe('judgeRowByAgent', () => {
           text: '{"method":"session.event","params":{"sessionId":"s-1"}}',
           summary: '调用工具 read：README.md',
         },
-        // 源事件没有摘要（codex 的纯文本增量、stderr 的 WARN 都是这种）：摘要要退回它自己的文本
+        // 源事件没有摘要（codex 的纯文本增量、stderr 的 WARN 都是这种）：保持没有，
+        // 由消费方按自己的口径兜底
         { seq: 10, at: '2026-09-26T00:00:00.000Z', type: 'log', stream: 'stderr', text: '[WARN] 用量负载不完整' },
       ],
     });
@@ -457,18 +461,20 @@ describe('judgeRowByAgent', () => {
       onEvent: (event) => collected.push(event),
     });
 
-    const logs = collected.filter((event) => event.type === 'log');
-    expect(logs.map((event) => (event.type === 'log' ? event.summary : ''))).toEqual([
-      '调用工具 read：README.md',
-      '[WARN] 用量负载不完整',
-    ]);
-    expect(logs.map((event) => (event.type === 'log' ? event.text : ''))).toEqual([
-      '[评分智能体] {"method":"session.event","params":{"sessionId":"s-1"}}',
-      '[评分智能体] [WARN] 用量负载不完整',
+    expect(collected.filter((event) => event.type === 'log')).toEqual([
+      {
+        seq: 9,
+        at: '2026-09-26T00:00:00.000Z',
+        type: 'log',
+        stream: 'stdout',
+        text: '{"method":"session.event","params":{"sessionId":"s-1"}}',
+        summary: '调用工具 read：README.md',
+      },
+      { seq: 10, at: '2026-09-26T00:00:00.000Z', type: 'log', stream: 'stderr', text: '[WARN] 用量负载不完整' },
     ]);
   });
 
-  it('日志事件加 [评分智能体] 前缀后转发，其余类型逐字段透传（日志抽屉里能区分候选与评审者的输出）', async () => {
+  it('日志事件原样转发（不加前缀），其余类型逐字段透传', async () => {
     const collected: AgentEvent[] = [];
     fakeAgents.scripts.set('codex', {
       mode: 'ok',
@@ -478,7 +484,7 @@ describe('judgeRowByAgent', () => {
         { stream: 'stdout', text: '我先看看 git diff' },
         { stream: 'stderr', text: '警告：改动很大' },
       ],
-      // 非 log 类型原样透传：只有 log 加前缀。usage / error 被顺手加上 text 前缀的话，
+      // 非 log 类型原样透传。usage / error 被顺手加上 text 前缀的话，
       // 前者会污染计量事件（多出一个字段），后者会把「结论」写成一条日志的样子。
       rawEvents: [
         { seq: 7, at: '2026-09-26T00:00:00.000Z', type: 'usage', tokens: { input: 1, cached: 0, output: 2 }, turns: 1 },
@@ -500,7 +506,7 @@ describe('judgeRowByAgent', () => {
     });
 
     const logs = collected.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
-    expect(logs).toEqual(['[评分智能体] 我先看看 git diff', '[评分智能体] 警告：改动很大']);
+    expect(logs).toEqual(['我先看看 git diff', '警告：改动很大']);
     // 逐字段相等（不是「包含」）：多加一个 text 字段就会被这条抓住
     expect(collected.find((event) => event.type === 'usage')).toEqual({
       seq: 7,

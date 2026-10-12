@@ -14,7 +14,7 @@
 | `log` | 适配器 | 唯一带「给人看的一句话」的类型：`text` 原文照旧逐字进原始输出面板、`summary?` 缺格＝这条没有可说的事，两格不许互相顶替 |
 | `vendor-system` | 适配器 | 七格（`tools` / `slashCommands` / `agents` / `mcpServers` / `mcpChannel` / `permissionMode` / `outputStyle`，外加**可选**的 `skills`），只在厂商真的投送了那行时才有；未识别厂商负载一律落 `log` 保留原始负载（唯一允许丢的是重复事件） |
 | `usage` | 适配器 | 见「数据与契约」 |
-| `diff-summary` / `score` / `error` | 编排层 | 评分智能体输出也进同一条流，`text` 带 `[评分智能体] ` 前缀（`summary` 不戴） |
+| `diff-summary` / `score` / `error` | 编排层 | `score` 载 `ScoreResult`、`error` 载行级失败归因；评审者自己的流水**不进这条流**（落 `judge-events.jsonl`，见下「分流判据」） |
 | `end` | 编排层 | `exitReason` 契约是**开放字符串**（`z.string()`），现为七值两层（适配层 `completed` / `timed-out` / `canceled` / `error`，编排层 `interrupted` / `rescored` / `skipped`）⇒ 消费方按字符串原样渲染、不按四值穷举；**不在「原始输出」面板**（该面板只收 `type === 'log'`），落点是事件行与台账 |
 
 **通道拓扑共六条**：run 级信号流 `GET /api/runs/events`（SSE，`event: run-updated` + `data: {"runId":"…"}`，打开即 `: ready`，响应头 `text/event-stream` + `no-cache` + `X-Accel-Buffering: no`——只带 `runId` 不载数据，驱动列表重验）；**行级**两条：事件流 `…/stream`（`events.jsonl` 的 SSE 扇出）、消息流 `…/messages/stream`（`messages.jsonl`）；**评分**两条：`…/judge/events/stream`、`…/judge/messages/stream`。四条的响应头与心跳口径逐字相同，`runtime = 'nodejs'`（总线是进程内的）。
@@ -84,11 +84,11 @@
 | `agents/src` 禁目录扫描 API（`/\breaddir(Sync)?\s*\(/`），唯一豁免＝claude 转录目录枚举 | 硬约束；新增豁免必须显式登记 |
 | 增量帧**只广播不落盘** ⇒ 被中断的块没有快照，那段半截正文刷新后不可见 | **已认领的代价**（用户口径）；事后唯一痕迹是行快照的 `EvalRow.streamingDelta`（缺席＝没观测 / `0`＝观测到零帧 / `>0`＝有增量，`lastFrameChars` 回答「写到哪」），环境抽屉的「实测统计」组按它渲染 |
 | 增量不产事件这条口径的守卫 | 一致性套件要求喂了增量帧的场景**必须声明事件条数**，三家夹具**收真事件**——夹具若把 `events` 恒填 `[]`，这条守卫在真漏增量的那一家上永远不可能红 |
-| 评分阶段的 `log` / `vendor-system` **不进执行日志**（用户口径「与执行日志分开」） | **有意的**：执行日志只讲候选做了什么。代价如实登记——这些原始输出在当前界面**没有落点**（活动行只取一句话，抽屉只画候选那条流），排障要直接读 `judge-events.jsonl`；`…/judge/events` 两条路由已备好，接界面是后续动作 |
+| 评分阶段的 `log` / `vendor-system` **不进执行日志**（用户口径「与执行日志分开」） | **有意的**：执行日志只讲候选做了什么。`log` 的原始输出已接界面（评分详情抽屉 footer 的「原始输出 N 条」二级抽屉，`…/judge/events` REST + SSE 两条路由的消费方，见《评分》）；`vendor-system` 与其余事件类型仍在界面外，排障读 `judge-events.jsonl` |
 | 评分 `usage` 落在 `judge-events.jsonl`（行级流里收不到） | 行为等价：卡片那几格本来就按 `candidateEnded` **冻结**、不收评审者的用量，「评分 usage 冒充候选读数」那条特判因此没有输入源。`stepLiveState` 的注释里留着那条判据（老数据仍可能带） |
 | 打字态只有「最后一个非空段」这一档，长段仍会被单行省略号截断 | 口径如此（活动行是一位高，换行会把卡片撑高、把按钮挤出视口）；全量内容在读日志的地方 |
 
 ## 相关链接
 
 - 活文档：`packages/server/agents/README.md`——§5.3 事件流（`onEvent` 收到什么）、§5.2 停止与释放、§9 常见坑
-- 知识文章：[《消息规范》](/protocols/message-spec)（姊妹篇，双流分工的另一半）、《进程生命周期》（终态事件从哪来、interrupt 后的收敛）、《行执行与日志》（抽屉与原始输出面板的消费侧）、《数据与存储》（`events.jsonl` 落盘与原子写）、《评分》（`score` 事件与前缀）、[《技能配置》](/features/skills-config)（`vendor-system.skills` 那一格的判据与三态）
+- 知识文章：[《消息规范》](/protocols/message-spec)（姊妹篇，双流分工的另一半）、《进程生命周期》（终态事件从哪来、interrupt 后的收敛）、《行执行与日志》（抽屉与原始输出面板的消费侧）、《数据与存储》（`events.jsonl` 落盘与原子写）、《评分》（`score` 事件与两条评分通路）、[《技能配置》](/features/skills-config)（`vendor-system.skills` 那一格的判据与三态）

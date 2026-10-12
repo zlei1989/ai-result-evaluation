@@ -223,12 +223,12 @@ describe('dshProvider', () => {
     expect(recorder.env?.DSH_PERMISSION_MODE).toBe('read-only');
   });
 
-  it('收到 outputSchema ⇒ **降级**跑完：不发 schema，结果记 applied.structuredOutput=false', async () => {
-    // 口径：`outputSchema` 表达的是「我想要」，支不支持由骨架按
-    // `capability.structuredOutput` 统一处置——`run` 把 dsh 那一格 `false` 转发给 `runTurn`，
-    // 骨架在 `start` 之前就把这一格摘掉了，所以走到适配器时它必定不存在。
+  it('收到 outputSchema ⇒ 走填充层跑完：结果记 applied.structuredOutput=false', async () => {
+    // 口径：`outputSchema` 表达的是「我想要」，而**骨架一律把它交给 `start`**（不替厂商摘键）。
+    // dsh 没有原生 schema 通道 ⇒ 走适配器内的填充层：把约束写进首轮提示词（断言的落点是
+    // 「填充层：提示词注入与同会话修正」那一组），形状由骨架的自校验 + 最多两轮同会话修正兜住。
     // 这里**不**断言「报中文错且不构造运行时」：那条口径会让一次本来就能跑的评分直接失败，
-    // 而「降级为提示词契约」才是没有 schema 通道的这一家该有的收场。
+    // 而「提示词约束 + 自校验 + 修正轮」才是没有原生通道的这一家该有的收场。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
 
@@ -236,13 +236,13 @@ describe('dshProvider', () => {
 
     expect(result).toMatchObject({ ok: true, exitReason: 'completed' });
     expect(result.applied).toEqual({ structuredOutput: false });
-    // 降级不是失败：运行时照常构造、照常释放（与下面「显式 null」那一格同一收场）
+    // 没有原生通道不是失败：运行时照常构造、照常释放（与下面「显式 null」那一格同一收场）
     expect(recorder.options).not.toBeNull();
     expect(recorder.closeCount).toBe(1);
   });
 
-  it('outputSchema 显式为 null ⇒ 与「没给」同义：不报错，按「不支持结构化输出」正常跑完', async () => {
-    // 空值口径与 codex 逐字统一：判据是「既非 undefined 也非 null 才拦」。
+  it('outputSchema 显式为 null ⇒ 与「没给」同义：不注入、不报错，正常跑完', async () => {
+    // 空值口径与 codex 逐字统一：判据是「非对象（含 null）就按没给处置」。
     // `null` 在这条路径上与「没给」同义——它表达的是「这一格没有值」，不是「要一份 schema」；
     // 三个适配器不能各写一套口径（出口侧与入口侧都封过「假值被当成有效值」那一族）。
     const events: AgentEvent[] = [];
@@ -1808,5 +1808,209 @@ describe('dsh 的 MCP 注入与判据', () => {
 
     // `[]` 在本仓的定义是「投送了、确实是空的」——拿一个读不动的形状去发它就是在说谎
     expect(events.some((event) => event.type === 'vendor-system')).toBe(false);
+  });
+});
+
+/** 一次 `harness.run` 的原文：填充层的判据全落在这两格上（提示词与会话归属） */
+interface DshRunCall {
+  prompt: string;
+  sessionId: string | undefined;
+}
+
+/**
+ * 造一个**按调用次数换台词**的假 dsh SDK：订阅语义、会话归属改写、`idle` 收尾与关闭全部照旧走既有夹具，
+ * 只在 `run()` 上包一层——先记下本次的提示词与会话 id，再把「这一轮该吐的通知」换进夹具共用的那张表。
+ *
+ * 为什么需要这一层：既有夹具一次运行只认一份事件表、也只在 `recorder.prompt` 上留**最后一次**提示词；
+ * 而填充层的两条路径都发生在**两次 `run` 之间**（首轮把 schema 追加进提示词、答复不合格时同会话追问），
+ * 判据正是「第一次收到了什么、第二次又收到了什么、两次的会话归属是否逐字相同」。
+ * 时序上安全：夹具的 `run()` 在**调用期同步**读那张表，故换台词必须发生在 `super.run()` 之前。
+ */
+function createRoundDshSdk(options: { rounds: readonly (readonly unknown[])[] }): {
+  sdkModule: unknown;
+  recorder: ReturnType<typeof createRecorder>;
+  calls: DshRunCall[];
+} {
+  const events: unknown[] = [];
+  const recorder = createRecorder();
+  const calls: DshRunCall[] = [];
+  // 夹具的返回值是 `unknown`，这里收窄到「构造一个带 run 的 harness」——适配器用的其余成员照旧存在
+  const base = createFakeDshSdk({ recorder, events }) as {
+    DeepSeekHarness: new (clientOptions: Record<string, unknown>) => {
+      run(prompt: string, runOptions?: { sessionId?: string }): Promise<unknown>;
+    };
+  };
+
+  class RoundHarness extends base.DeepSeekHarness {
+    /** 记下本次调用的原文，并把这一轮的通知换成 `rounds[n]`（n 从 1 数起，超出即空表） */
+    override async run(prompt: string, runOptions?: { sessionId?: string }): Promise<unknown> {
+      calls.push({ prompt, sessionId: runOptions?.sessionId });
+      const round = options.rounds[calls.length - 1] ?? [];
+      events.length = 0;
+      events.push(...round);
+      return super.run(prompt, runOptions);
+    }
+  }
+  return { sdkModule: { DeepSeekHarness: RoundHarness }, recorder, calls };
+}
+
+/**
+ * 一条 `assistant/message`（答复正文）：`data.message.content[]` 里 `type: 'text'` 的块是
+ * `finalText` 的唯一来源（`dsh/events.ts` 的 `readAssistantText`）⇒ 结构化答复就靠它喂进去。
+ */
+function assistantReply(text: string): unknown {
+  return sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
+    turn: 1,
+    step: 1,
+    message: { content: [{ type: 'text', text }] },
+  });
+}
+
+/**
+ * **填充层**：dsh 的 SDK 没有 schema 入参（原生通道不存在）⇒ 适配器用两件事对齐另两家——
+ * 首轮把 JSON Schema 追加进提示词，答复不合格时用**同一个 `sessionId`** 在同一会话里追问。
+ *
+ * 这一组钉四件事：
+ *   ① 首轮注入：给了 schema ⇒ 提示词以调用方原文**开头**并带上约束段；没给 ⇒ 与原文逐字相同；
+ *   ② 非对象 schema（字符串 / 数组 / `null`）按「没给」处置：不注入、也不报错；
+ *   ③ 同会话追问：第二次 `run()` 与第一次**逐字同一个** `sessionId`，提示词带问题清单与 schema 原文，
+ *      答复合格后 `finalText` 取第二次那一份；
+ *   ④ `applied.structuredOutput` 恒为 `false`：它记的是「有没有走原生通道」，填充层不算。
+ *
+ * 判据取「假 harness 收到了什么」而不是最终答复：注入与追问都发生在两次 `run` 之间，
+ * 只看结果证明不了模型当时看到的是哪一份提示词。
+ */
+describe('填充层：提示词注入与同会话修正', () => {
+  /**
+   * 判据 schema：一个必填布尔字段 + 拒多余字段。
+   * 三件都是承重的：`type` 与 `required` 决定问题清单的原文（`$.achieved：期望 boolean，实际 string`），
+   * 而 `additionalProperties: false` 在提示词里以**可逐字断言的 JSON 字面量**出现
+   * （缩进两格的 `"additionalProperties": false`）⇒ 断言它才证明 schema 原文真的进了提示词，
+   * 而不是「提示词里提到了 schema」这种一改就假的弱判据。
+   */
+  const SCHEMA = {
+    type: 'object',
+    properties: { achieved: { type: 'boolean' } },
+    required: ['achieved'],
+    additionalProperties: false,
+  };
+
+  /** 调用方原文：多行 + 中文标点。`startsWith` 与 `toBe` 靠它划清「原文」与「追加段」的边界 */
+  const CALLER_PROMPT = '数出工作区里 .ts 文件的个数。\n最后只回一个 JSON 对象。';
+  /** 不合格的答复：`achieved` 是字符串 ⇒ 问题清单恰好一条（路径 `$.achieved`） */
+  const INVALID_REPLY = '{"achieved":"yes"}';
+  /** 合格的那一份 */
+  const VALID_REPLY = '{"achieved":true}';
+
+  it('给了 outputSchema ⇒ 首轮提示词以调用方原文开头，并追加「## 输出约束」与 schema 原文', async () => {
+    const { sdkModule, calls } = createRoundDshSdk({ rounds: [[assistantReply(VALID_REPLY)]] });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    await dshProvider.run(createRunInput({ prompt: CALLER_PROMPT, outputSchema: SCHEMA }));
+
+    expect(calls, '答复本来就合格 ⇒ 只该有一次 run（多出来的追问会白烧一次模型往返）').toHaveLength(1);
+    const prompt = calls[0]?.prompt ?? '';
+    // 追加段只能长在原文**之后**：前 N 个字符必须逐字是调用方原文（被 trim / 被改写都在这里见红）
+    expect(prompt.slice(0, CALLER_PROMPT.length), '提示词必须以调用方原文逐字开头，追加段只能接在它后面').toBe(CALLER_PROMPT);
+    expect(prompt, '提示词里必须有约束段的标题「## 输出约束」').toContain('## 输出约束');
+    expect(prompt, '约束段必须带 schema 的 JSON 原文（additionalProperties 那一行逐字）').toContain(
+      '"additionalProperties": false',
+    );
+    expect(prompt, '约束段必须带 schema 的属性名（缺了它模型不知道要出什么字段）').toContain('"achieved": {');
+  });
+
+  it('没给 outputSchema ⇒ 提示词与调用方原文逐字相同（一个字符都不多）', async () => {
+    const { sdkModule, calls } = createRoundDshSdk({ rounds: [[assistantReply(VALID_REPLY)]] });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    await dshProvider.run(createRunInput({ prompt: CALLER_PROMPT }));
+
+    expect(calls[0]?.prompt, '没要 schema 就不许往提示词里加任何东西：逐字相同，连换行都不许多').toBe(CALLER_PROMPT);
+  });
+
+  it('outputSchema 是字符串 / 数组 / null ⇒ 按「没给」处置：不注入、也不报错', async () => {
+    const cases: ReadonlyArray<readonly [string, unknown]> = [
+      ['字符串', '{"type":"object"}'],
+      ['数组', []],
+      ['null', null],
+    ];
+    for (const [label, value] of cases) {
+      const events: AgentEvent[] = [];
+      const { sdkModule, calls } = createRoundDshSdk({ rounds: [[assistantReply(VALID_REPLY)]] });
+      setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+      const result = await dshProvider.run(
+        createRunInput({ prompt: CALLER_PROMPT, outputSchema: value, onEvent: collectEvents(events) }),
+      );
+
+      expect(calls[0]?.prompt, `${label} 形态的 schema 必须按「没给」处置：提示词逐字等于原文`).toBe(CALLER_PROMPT);
+      expect(result.ok, `${label} 形态的 schema 不是失败：它与「没给」同义，照常跑完`).toBe(true);
+      expect(events.some((event) => event.type === 'error'), `${label} 形态的 schema 不该落 error 事件`).toBe(false);
+    }
+  });
+
+  it('首轮答复不合格 ⇒ 第二次 run 用逐字相同的 sessionId 追问，提示词带问题清单、schema 原文与「不要重新读取工作区」', async () => {
+    const events: AgentEvent[] = [];
+    const { sdkModule, recorder, calls } = createRoundDshSdk({
+      rounds: [[assistantReply(INVALID_REPLY)], [assistantReply(VALID_REPLY)]],
+    });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    await dshProvider.run(
+      createRunInput({ prompt: CALLER_PROMPT, outputSchema: SCHEMA, onEvent: collectEvents(events) }),
+    );
+
+    expect(calls, '首轮答复不合格必须触发第二次 run（dsh 没有原生通道，修正只能靠追问）').toHaveLength(2);
+    const firstId = calls[0]?.sessionId ?? '';
+    // 先钉「第一次确实带了会话 id」：不钉的话 `undefined === undefined` 也会让下面那条相等断言通过
+    expect(firstId, '第一次 run 必须带会话 id——没有它，「同会话」这条判据就是空的').not.toBe('');
+    expect(calls[1]?.sessionId, '追问必须用与首轮逐字相同的 sessionId（新建会话 = 让模型把活重干一遍）').toBe(firstId);
+    expect(recorder.order, '追问不建新运行时：整轮只有一次 start 与一次 dispose').toEqual(['start', 'dispose']);
+
+    const feedback = calls[1]?.prompt ?? '';
+    expect(feedback, '修正提示词必须点名问题（点号路径 + 期望/实际），模型才知道要改哪儿').toContain(
+      '$.achieved：期望 boolean，实际 string',
+    );
+    expect(feedback, '修正提示词必须再给一次 schema 原文（追问是一份自足的提示词）').toContain(
+      '"additionalProperties": false',
+    );
+    expect(feedback, '修正提示词必须带上模型自己上一次的答复原文').toContain(INVALID_REPLY);
+    expect(feedback, '修正只修形状：必须明写不要重新读取工作区').toContain('不要重新读取工作区');
+    // 修正轮必须**可见**（只进日志这一条是刻意的：界面上的「输出约束」仍只回答原生通道）
+    const repairLogs = events
+      .filter((event) => event.type === 'log')
+      .map((event) => (event.type === 'log' ? event.text : ''));
+    expect(
+      repairLogs.some((text) => text.includes('结构化输出未通过校验') && text.includes('第 1/2 轮')),
+      '修正轮必须落一条带轮次的 WARN（否则「为什么多了一轮模型往返」在日志里查不到）',
+    ).toBe(true);
+  });
+
+  it('修正轮答复合格 ⇒ result.finalText 是第二次的答复（骨架取最后一轮）', async () => {
+    const { sdkModule } = createRoundDshSdk({
+      rounds: [[assistantReply(INVALID_REPLY)], [assistantReply(VALID_REPLY)]],
+    });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    const result = await dshProvider.run(createRunInput({ prompt: CALLER_PROMPT, outputSchema: SCHEMA }));
+
+    expect(result.finalText, 'finalText 必须取**最后一轮**的答复（跨活动区间复用同一份 state.finalText）').toBe(
+      VALID_REPLY,
+    );
+  });
+
+  it('要了 schema 且真的跑了修正轮 ⇒ applied.structuredOutput 仍是 false（填充层不算原生通道）', async () => {
+    const { sdkModule, calls } = createRoundDshSdk({
+      rounds: [[assistantReply(INVALID_REPLY)], [assistantReply(VALID_REPLY)]],
+    });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    const result = await dshProvider.run(createRunInput({ prompt: CALLER_PROMPT, outputSchema: SCHEMA }));
+
+    // 前置：这一轮确实走了填充层（没有它，这条用例证明不了「填充层不算原生」）
+    expect(calls, '前置：本轮必须真的追问过一次').toHaveLength(2);
+    expect(result.applied, 'dsh 没有原生 schema 通道：填充层做没做事，这一格都只能是 false').toEqual({
+      structuredOutput: false,
+    });
   });
 });

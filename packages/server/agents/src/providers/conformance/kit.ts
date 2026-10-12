@@ -65,6 +65,9 @@ export interface ConformanceProduct {
   /**
    * 结构化输出（评分者通路）的探针：**能真观测到「schema 有没有发给厂商」的 fixture 才给**。
    *
+   * 探针要同时交出两份事实：本次运行**上报**的通道事实（`nativeChannel`）与夹具在**请求侧**
+   * 观测到的事实（`hasOutputSchema`）——判据是「上报走了原生通道 ⇒ 请求里必须真有那份 schema」。
+   *
    * 为什么是可选而不是必填：消息级的 fixture（把协议载荷喂进归一函数那种）**看不到请求**，
    * 硬要它填这一格就只能自述「我带了 schema」——那是无区分力的假判据。给不出就不给，
    * 这一组对该家即为空转；真机那一侧由 `providers/live-smoke.test.ts` 的第 ⑥ 格守。
@@ -336,7 +339,7 @@ export function checkFinalAnswer(fixture: ConformanceFixture): void {
     if (ok && replies.length > 0 && finalText === null) {
       throw new Error(
         `${fixture.kind}/${name}：产物里有主会话答复 ${JSON.stringify(replies.at(-1))}，但 finalText 是 null`
-        + '（这一格漏写＝评分通路永远拿不到答复）',
+        + '（这一格漏写＝需要最终答复的调用方永远拿不到答复）',
       );
     }
     if (finalText !== null && !replies.includes(finalText)) {

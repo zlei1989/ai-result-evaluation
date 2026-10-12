@@ -2,7 +2,7 @@
 
 ## 定位
 
-Codex 的适配器完全由 `codex app-server` 驱动与取数（JSON-RPC over stdio），厂商包是 `@openai/codex`（纯 JS 启动器，原生二进制在平台包 `@openai/codex-<platform>-<arch>` 的 `vendor/<triple>/bin/codex(.exe)`）。协议能力面与 DSH 逐格对齐且不降级，`cancelMidTurn` / `structuredOutput` / 子任务父链与昵称深度 / `reasoningOutput` / 用量合计是 Codex 更强的格子。能力声明：`protocolTypes: ['openai']`，`cancelMidTurn` / `usage` / `structuredOutput` 三格全 `true`。
+Codex 的适配器完全由 `codex app-server` 驱动与取数（JSON-RPC over stdio），厂商包是 `@openai/codex`（纯 JS 启动器，原生二进制在平台包 `@openai/codex-<platform>-<arch>` 的 `vendor/<triple>/bin/codex(.exe)`）。协议能力面与 DSH 逐格对齐且不降级，`cancelMidTurn` / **原生结构化输出通道** / 子任务父链与昵称深度 / `reasoningOutput` / 用量合计是 Codex 更强的格子。能力声明：`protocolTypes: ['openai']`，`cancelMidTurn` / `usage` 两格全 `true`；结构化输出不是能力位——`turn/start` 的 `outputSchema` 是原生通道，本次有没有真的走成由适配器在收尾上报（`applied.structuredOutput`）。
 
 ## 形态与交互
 

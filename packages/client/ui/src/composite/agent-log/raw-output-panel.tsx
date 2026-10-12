@@ -81,8 +81,12 @@ function hasText(value: string | null): value is string {
  *
  * **截断提示留在列表外的固定位置**（不放进虚拟列表）：它是「这份原文本身不全」的结论，
  * 跟着滚出屏幕就等于没说。
+ *
+ * 具名导出是因为**评分详情抽屉的「原始输出」二级抽屉共用这一份正文**（同一个 `log` 原文
+ * 的两处消费：候选在执行日志、评审者在评分详情）。它只吃数据不吃 props，两处长得一样
+ * 是这条共用关系要的结果——各写一份就是两套行渲染、两个截断提示位。
  */
-function diagnosticsBody(diagnostics: AgentLogDiagnostics): ReactNode {
+export function diagnosticsBody(diagnostics: AgentLogDiagnostics): ReactNode {
   return (
     <Flex vertical style={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="agent-log-diagnostics">
       <VirtualList
@@ -142,12 +146,23 @@ export function hasRawEntry(source: RawOutputPanelProps['source']): boolean {
   return !(source.kind === 'diagnostics' && source.diagnostics.lines.length === 0);
 }
 
+/**
+ * 「原始输出」入口与抽屉标题共用的文案：`null` = 还没拿到读数（读取中 / 读失败），
+ * **不编一个数**——`0 条` 是「确认一条都没有」的读数，与「还没读到」是两件事
+ * （`agent-log-toolbar-preset.ts` 的 `rawLineCount` 同一条口径）。
+ * 具名导出是因为评分详情抽屉的入口按钮（页面 footer）与二级抽屉标题（本包视图）
+ * 也要同一份：两处各写一个模板字符串必然漂移。
+ */
+export function rawOutputLabel(count: number | null): string {
+  return count === null ? '原始输出' : `原始输出 ${count} 条`;
+}
+
 export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: RawOutputPanelProps): ReactNode {
   // 判据见 `hasRawEntry`（调用方用的是同一条）
   if (!hasRawEntry(source)) return null;
 
   const text =
-    source.kind === 'diagnostics' ? `原始输出 ${source.diagnostics.lines.length} 条` : label ?? '原始结果';
+    source.kind === 'diagnostics' ? rawOutputLabel(source.diagnostics.lines.length) : label ?? '原始结果';
 
   return (
     /*

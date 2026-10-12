@@ -125,7 +125,11 @@ export const ROW_RETRY = {
 };
 
 /**
- * 值得**自动**重跑整行的失败码（**只增不减**）。
+ * 值得**自动重试**的失败码（**只增不减**）。
+ *
+ * 它只回答「值不值得再试一次」；**重试什么**由失败发生在哪一段决定（见 `RowFailure.stage`）：
+ * 候选段 ⇒ 整行重跑；评分段 ⇒ 只重跑评分（候选产出不动）。两张判断刻意分开——
+ * 把「重跑什么」也塞进码表，就得维护一份「哪些码属于评分段」的名单，而那份名单会随错误码增加而腐烂。
  * `RATE_LIMITED` 是「稍后重试」的正式语义；`AGENT_FAILED` 是「CLI 起不来 / 进程非零退出」，
  * 成因是网关瞬时不可用（`Codex Exec exited with code 1` 之前跟着一串
  * 「We're currently experiencing high demand」）；`AGENT_LOAD_FAILED` 是厂商包加载失败
@@ -133,8 +137,8 @@ export const ROW_RETRY = {
  * `INTERNAL` 也收进来：文本评分通路的网络与 5xx 都折成它（见 text-api 的折错口径）。
  * `JUDGE_PARSE_FAILED` 同样收（目标口径「评分失败支持重试」）：**评分那一步**失败时
  * 行落在 `failed`，而它是可以重跑的——评分是一次廉价、可重复的动作，再问一次可能就过了
- *（真实成因见 `judge.ts`：模型偶尔回散文 / 半截 JSON）；重试重跑的是整行，但那一行的候选产出
- * 会从同一基线重新生成，成本与处置都清楚可预期。
+ *（真实成因见 `judge.ts`：模型偶尔回散文 / 半截 JSON）。它属于**评分段**⇒ 重试只重跑评分，
+ * 候选产出一个字都不动（为评分侧的打嗝重新生成候选会换掉被打分的对象，而界面上看不出来）。
  * **不收**：`AUTH_FAILED`（密钥错）、`CONFLICT`（配置不成立）、`NOT_FOUND`、`INVALID_*`，
  * 以及 `AGENT_SKILLS_UNAVAILABLE`——技能装不进去（源目录读不到 / 复制失败）是**本次配置的直接后果**，
  * 不是瞬时故障：重试只会把同一个失败延后 `3s × N`，而它**必须**重跑的那一步是「回设置页把源目录修好」。
@@ -761,22 +765,22 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
       }),
   });
   /**
-   * 降级留痕。判据来自**结果**（`applied`）而不来自注册表：包外不再预读 `capability`，于是
-   * 「这一次有没有真的把结构化输出落到实处」由**骨架**算（`runTurn` 按适配器转发的能力声明摘掉
-   * schema 并记下 `applied.structuredOutput`），编排层只负责把那个结论留在这一行的日志上。
+   * 通道留痕。判据来自**结果**（`applied.structuredOutput`）而不来自注册表：包外不预读任何能力表，
+   * 「这一次有没有走原生 schema 通道」由**适配器**按本次运行如实上报，编排层只负责把那个结论留在
+   * 这一行的日志上。
    *
    * 为什么必须在**拿到分之后**才留痕：判据本身来自这一次运行的结果，跑之前无从得知。
-   * 为什么留痕不能省：降级是允许的，静默降级不是——「这一分是在 schema 约束下拿到的」与「只靠
-   * 提示词契约拿到的」在分数与界面上长得一模一样，横向比较时（同一批用例、改过评分配置前后、
-   * 重评过的行）必须能从这一行的日志里读出这个差别。
+   * 为什么留痕不能省：没有原生通道是允许的，**静默**才是问题——「这一分由厂商按 schema 保证形状」
+   * 与「这一分靠提示词约束 + 自校验 + 修正轮兜住」在分数与界面上长得一模一样，横向比较时
+   * （同一批用例、改过评分配置前后、重评过的行）必须能从这一行的日志里读出这个差别。
    */
   if (score.structuredOutput === false) {
     publishRowEvent(ctx.runId, ctx.rowId, {
       type: 'log',
       stream: 'stderr',
       text:
-        `[评分] ${AGENT_LABELS[kind]} 没有把结构化输出落到实处（适配器 SDK 无 schema 入参），`
-        + '本行回落到提示词契约：返回形状由结构检查兜底，不合格会落 JUDGE_PARSE_FAILED',
+        `[评分] ${AGENT_LABELS[kind]} 这一次没有走原生 schema 通道：`
+        + '输出约束由提示词交代，适配器另做一次自校验与最多两轮同会话修正；仍不合格时按答复不可解析处置',
     });
   }
   return score;
@@ -954,21 +958,46 @@ function clearRowRuntime(runId: string, rowId: string): void {
  * 落库时把 `outcome.stage` 拼进 `error.stage`：`canceled` 没有 error，其余两种终态
  * 都带上「失败发生在哪一段」——它是排障时最常问的那个问题的事实记录（不参与任何按钮判定）。
  */
+/**
+ * 归因之外**补一句本产品的处置建议**。
+ *
+ * 为什么落在编排层：`@aieval/agents` 是**业务无关**的适配层，它只该说技术事实
+ * （「密钥无效或无权访问（host）」「上游限流（host）」）；「去哪儿改、按哪个按钮」是本产品的知识
+ * （设置页在哪、执行模式能不能切成串行）。这两句以前写在适配器的文案里——等于让适配层替产品说话，
+ * 而这个包本来就该能被换一处复用。
+ *
+ * 判据**只看归因码**、不认识的一律原样返回：它因此不会与厂商文案耦合，也不需要在适配器里
+ * 留一个「这句话该不该带建议」的开关。
+ */
+function withProductHint(code: string, message: string): string {
+  if (code === 'AUTH_FAILED') return `${message}；请到「设置 → 模型供应商」核对该供应商的密钥`;
+  if (code === 'RATE_LIMITED') return `${message}；可把本评测的执行模式改为串行以减少并发`;
+  return message;
+}
+
 function settleStopped(runId: string, rowId: string, outcome: RowOutcome): void {
   const { row } = requireRow(runId, rowId);
   if (TERMINAL_ROW_STATUSES.includes(row.status)) {
     log.debug('行已被同步终止，执行侧不再改状态', { runId, rowId, status: row.status });
     return;
   }
-  if (outcome.status === 'failed' && outcome.error !== null) {
+  // 带建议的文案**算一次用两处**（日志与快照）：两处各拼一遍必然漂移，
+  // 而漂移的表现是「抽屉里说去设置页、行卡片上没说」
+  const error = outcome.error === null
+    ? null
+    : {
+      ...outcome.error,
+      message: withProductHint(outcome.error.code, outcome.error.message),
+      stage: outcome.stage,
+    };
+  if (outcome.status === 'failed' && error !== null) {
     publishRowEvent(runId, rowId, {
       type: 'error',
-      message: `${outcome.error.code}：${outcome.error.message}`,
-      ...(outcome.error.stack === undefined ? {} : { stack: outcome.error.stack }),
+      message: `${error.code}：${error.message}`,
+      ...(error.stack === undefined ? {} : { stack: error.stack }),
     });
   }
   // 只有真的有 error 时才落 stage：`canceled` 的 error 是 null，多挂一个「失败阶段」是假语义
-  const error = outcome.error === null ? null : { ...outcome.error, stage: outcome.stage };
   setRowStatus(runId, rowId, outcome.status, { error });
   publishRowEvent(runId, rowId, { type: 'end', exitReason: outcome.exitReason });
 }
@@ -987,9 +1016,11 @@ function settleFailed(
   durationMs: number | null,
   stage: RowFailureStage,
 ): void {
+  // 与 `settleStopped` 同一条处置：建议补一次，事件与快照共用同一份文案
+  const message = withProductHint(error.code, error.message);
   publishRowEvent(runId, rowId, {
     type: 'error',
-    message: `${error.code}：${error.message}`,
+    message: `${error.code}：${message}`,
     ...(error.stack === undefined ? {} : { stack: error.stack }),
   });
   const raw = rawFromContext(error.context);
@@ -1004,7 +1035,7 @@ function settleFailed(
     return;
   }
   setRowStatus(runId, rowId, 'failed', {
-    error: { code: error.code, message: error.message, ...(error.stack === undefined ? {} : { stack: error.stack }), stage },
+    error: { code: error.code, message, ...(error.stack === undefined ? {} : { stack: error.stack }), stage },
     durationMs: row.durationMs ?? durationMs,
   });
   publishRowEvent(runId, rowId, { type: 'end', exitReason: 'error' });
@@ -1032,14 +1063,19 @@ function settleFailed(
  */
 export async function runRow(runId: string, rowId: string): Promise<void> {
   try {
+    /**
+     * 这一次尝试要跑哪一段：首轮永远是整行；重试的**单位**由上一次失败发生在哪一段决定
+     * （`'judge'` ⇒ 只重跑评分段，候选产出一个字都不动）。
+     */
+    let scope: 'row' | 'judge' = 'row';
     for (let attempt = 0; ; attempt += 1) {
       let failure: RowFailure | null = null;
       let outcome: 'judged' | 'failed' | 'stopped' | 'skipped' = 'judged';
-      appendAttemptRecord(runId, rowId, { attempt: attempt + 1, phase: 'start' });
+      appendAttemptRecord(runId, rowId, { attempt: attempt + 1, phase: 'start', scope });
       try {
         // `outcome` 为 null = 这一行已经**成功**落终态（judged）或被终止后跳过，不该再有任何动作；
         // 非 null = 它落了 failed，由下面决定要不要自动重试
-        const settled = await runRowAttempt(runId, rowId);
+        const settled = scope === 'judge' ? await judgeRetryAttempt(runId, rowId) : await runRowAttempt(runId, rowId);
         if (settled === null) {
           appendAttemptRecord(runId, rowId, { attempt: attempt + 1, phase: 'end', outcome: rowStatus(runId, rowId) });
           return;
@@ -1056,7 +1092,7 @@ export async function runRow(runId: string, rowId: string): Promise<void> {
          * 那一侧（宁可少给一个按钮，也不给一个会跑错段的按钮，与 `canRescoreRow` 同一条口径）。
          */
         const stage: RowFailureStage = rowStatus(runId, rowId) === 'judging' ? 'judge' : 'agent';
-        failure = { code: serviceError.code, message: serviceError.message };
+        failure = { code: serviceError.code, message: serviceError.message, stage };
         outcome = 'failed';
         log.error('候选行执行失败', { runId, rowId, code: serviceError.code, message: serviceError.message, stage });
         try {
@@ -1089,23 +1125,34 @@ export async function runRow(runId: string, rowId: string): Promise<void> {
       });
       if (!willRetry) return;
 
+      /**
+       * **重试的单位**：失败在评分段 ⇒ 只重跑评分；在候选段 ⇒ 整行重跑。
+       *
+       * 为什么必须分开：候选产出在评分阶段开始时**已经是定终态的事实**（工作区、分支、diff 摘要
+       * 都落好了）。为了一个评分侧的瞬时打嗝（解析失败 / 限流 / 评分智能体起不来）把候选 agent
+       * 从同一基线重新生成一遍，既白花几分钟，又**换掉了被打分的对象**——两次的分不再是同一份
+       * 产出打的，而界面上看不出区别。整行重跑留给真正的候选段失败（那一段的产出本来就不可信）。
+       */
+      scope = failure.stage === 'judge' ? 'judge' : 'row';
+      const next = attempt + 1;
       // 重试要留痕：既写事件日志（用户看得到），也写服务端 WARN（运维看得到）——
       // 自动重试若静默，使用者只会看到「这一行莫名其妙慢了三倍」
-      const next = attempt + 1;
       log.warn('候选行瞬时失败，准备自动重试', {
         runId,
         rowId,
         attempt: next,
         maxRetries: ROW_RETRY.maxRetries,
         code: failure.code,
+        scope,
       });
       try {
         publishRowEvent(runId, rowId, {
           type: 'log',
           stream: 'stderr',
           text:
-            `[编排] 该行判定为瞬时失败（${failure.code}：${failure.message}），` +
-            `将在 ${ROW_RETRY.delayMs} ms 后自动重试第 ${next}/${ROW_RETRY.maxRetries} 次`,
+            `[编排] ${scope === 'judge' ? '评分阶段' : '该行'}判定为瞬时失败（${failure.code}：${failure.message}），`
+            + `将在 ${ROW_RETRY.delayMs} ms 后自动重试第 ${next}/${ROW_RETRY.maxRetries} 次`
+            + (scope === 'judge' ? '——**只重跑评分，不重跑候选**' : '（整行重跑：候选与评分都会再跑一遍）'),
         });
       } catch (publishError) {
         // 事件写不进去不该挡住重试本身（与耗时心跳同一处置：日志是锦上添花，终态那一次才权威）
@@ -1125,6 +1172,76 @@ export async function runRow(runId: string, rowId: string): Promise<void> {
 }
 
 /**
+ * 自动重试里的**只重跑评分段**：候选产出、工作区、分支与 diff 摘要一个字都不动，只把那一分重算一遍。
+ *
+ * 与手动「重新评分」（`rescoreRow`）的关系：复用**同一个执行体** `rescoreAttempt`（于是两条路的评分
+ * 口径、记账与中止语义逐字相同），差别只在入口——这里没有 HTTP 拒绝面，且「能不能重评」的判据
+ * 用同一份 `canRescoreRow`（产物被清理、用例被删、工作区没就绪都判为不可重评）。
+ *
+ * 返回值与 `runRowAttempt` 同形：`null` = 这一行已经落终态（重评成功 → `judged`，或用户中途终止 →
+ * `canceled`），不必再重试；非 null = 又失败了一次，由 `runRow` 的循环按预算决定还要不要再来。
+ * 不可重评时同样返回 `null`（**放弃重试**），但一定留痕：一条 WARN + 一条事件日志——
+ * 静默放弃会让人以为「这一行压根没重试过」。
+ */
+async function judgeRetryAttempt(runId: string, rowId: string): Promise<RowOutcome | null> {
+  const { run, row } = requireRow(runId, rowId);
+  // 用户在这中间按了「终止」：行已是终态，重试让位（与 `shouldRetryFailedRow` 的复检同一件事，
+  // 这里再判一次是因为读快照与上一次判定之间隔着退避等待）
+  if (row.status !== 'failed') return null;
+  if (!canRescoreRow(row)) {
+    const reason = '候选产出不可用（工作区未就绪 / 没有可复评的改动）';
+    log.warn('评分段自动重试被放弃', { runId, rowId, reason });
+    try {
+      publishRowEvent(runId, rowId, {
+        type: 'log',
+        stream: 'stderr',
+        text: `[编排] 本来要只重跑评分，但${reason}——该行保持失败，请点「开始」重跑这一行`,
+      });
+    } catch (publishError) {
+      log.warn('放弃重试的事件写入失败（不影响结论）', {
+        runId,
+        rowId,
+        reason: toServiceError(publishError).message,
+      });
+    }
+    return null;
+  }
+  const testCase = readCase(run.caseId);
+  if (testCase === null) {
+    log.warn('评分段自动重试被放弃：用例已删除', { runId, rowId, caseId: run.caseId });
+    return null;
+  }
+
+  const key = rowKey(runId, rowId);
+  const controller = new AbortController();
+  // 与 `runRowAttempt` / `rescoreRow` 同一把钥匙：「终止」按钮在这一段里照旧有效
+  rowAborts.set(key, controller);
+  try {
+    publishRowEvent(runId, rowId, {
+      type: 'log',
+      stream: 'stdout',
+      text: '[编排] 自动重试：只重跑评分段（候选产出与工作区不动）',
+    });
+    // 清掉上一次的失败归因与分数再算：界面停在「评分中」却还挂着旧分数会让人以为已经出分了
+    // （与 `rescoreRow` 的入口同口径；`rescoreAttempt` 内部还会把状态落成 `judging`）
+    // `attempts` 累加（与 `runRowAttempt` 那条逐字同源）：只重跑评分**也是一次尝试**，
+    // 「试了两次才成功」必须留在快照里
+    setRowStatus(runId, rowId, 'judging', { error: null, score: null, attempts: row.attempts + 1 });
+  } catch (error) {
+    clearRowRuntime(runId, rowId);
+    throw error;
+  }
+
+  // `run` 是刚刚读到的那一份快照：`runJudgeStage` 按它的 `useAgentJudge` 选通路
+  await rescoreAttempt({ runId, rowId, run, testCase, row, controller });
+
+  const after = rowStatus(runId, rowId);
+  if (after !== 'failed') return null; // judged / canceled / interrupted：收场
+  const { row: failed } = requireRow(runId, rowId);
+  return { status: 'failed', error: failed.error, exitReason: 'error', stage: 'judge' };
+}
+
+/**
  * 一次**失败**的行级归因（`runRow` 的自动重试只看它的 `code`）。
  * 为什么不复用 `ServiceError`：候选 / 评分阶段的失败是 `RowOutcome` 带回来的（`settleStopped`
  * 那条路，不是抛异常），把它硬塞进 `ServiceError` 就得给一个假的契约错误码
@@ -1135,6 +1252,13 @@ export async function runRow(runId: string, rowId: string): Promise<void> {
 interface RowFailure {
   code: string;
   message: string;
+  /**
+   * 这次失败发生在哪一段（`EvalRow.error.stage` 的同义值）。
+   * **它是重试单位的判据**：`'judge'` ⇒ 只重跑评分段，`'agent'` ⇒ 整行重跑。
+   * 为什么按段而不是按错误码：码表只回答「值不值得重试」，而「重试要重跑什么」是另一个问题——
+   * 用码表回答它就得维护一份「哪些码属于评分段」的名单，那份名单会随错误码增加而腐烂。
+   */
+  stage: RowFailureStage;
 }
 
 /** `RowOutcome` → `RowFailure`：`error` 为空时给一句可读的兜底原因（界面与日志都不该出现空白） */
@@ -1142,6 +1266,7 @@ function rowFailureOf(outcome: RowOutcome): RowFailure {
   return {
     code: outcome.error?.code ?? 'AGENT_FAILED',
     message: outcome.error?.message ?? '该行执行失败（编排层未给出原因）',
+    stage: outcome.stage,
   };
 }
 
@@ -1160,6 +1285,11 @@ interface AttemptRecord {
   /** 这一行的第几次尝试（从 1 开始，与 `EvalRow.attempts` 同源） */
   attempt: number;
   phase: 'start' | 'end';
+  /**
+   * 这一次尝试**跑了哪些段**（只有 `phase: 'start'` 有）：`'row'` = 整行（候选 + 评分），
+   * `'judge'` = 只重跑评分段（候选产出不动）。老账本没有这一格 ⇒ 读侧按 `'row'` 认。
+   */
+  scope?: 'row' | 'judge';
   /** 结局（只有 `phase: 'end'` 有）：与 `EvalRow.status` 同口径 */
   outcome?: EvalRowStatus;
   /** 失败归因（只有失败时有）：与 `EvalRow.error.code` 同口径 */
@@ -1203,9 +1333,10 @@ function rowStatus(runId: string, rowId: string): EvalRowStatus {
 }
 
 /**
- * 「这一次失败值不值得自动重跑整行」——判据有两半，**缺一不可**：
+ * 「这一次失败值不值得自动重试」——判据有两半，**缺一不可**：
  *   ① 错误码在 `TRANSIENT_ROW_RETRY_CODES` 里（瞬时面）；
  *   ② 该行此刻**仍然是那个失败终态**（`failed`），且没有被用户终止 / 没有正在跑别的执行。
+ * 它**不管重试要跑哪一段**：那是 `failure.stage` 的事（见 `runRow` 的循环）。
  * ② 不是多余的：等待退避的那几秒里用户可能按了「终止」（行 → `canceled`）或点了「重新执行」
  * （行 → `preparing`）——此时再跑一遍会与那一件事抢同一行（两条执行同时改状态）。
  * 读的是**磁盘上的当前快照**（`getRunForWrite`），不是循环开始时的缓存。

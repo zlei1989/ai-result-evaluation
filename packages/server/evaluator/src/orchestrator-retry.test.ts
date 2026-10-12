@@ -121,7 +121,8 @@ describe('retryRow：单个评测项的重新执行（手动出口，界面文�
     expect(after.rows.find((row) => row.id === second?.id)?.status).toBe('failed');
     // attempts 从 1（失败那次）累加到 2（手动重试那次）——不清零
     expect(after.rows.find((row) => row.id === firstId)?.attempts).toBe(2);
-    // 候选真的又跑了一次（重试重跑整行，不是只重跑评分）
+    // 候选真的又跑了一次：**手动**「重新执行」重跑的是整行（与自动重试里「评分段失败只重跑评分」不同——
+    // 那条口径见 `orchestrator-auto-retry.test.ts` 的评分段重试用例）
     expect(fakeAgents.calls.length).toBe(callsAfterFailures + 1);
     expect(fakeAgents.calls.at(-1)?.prompt).toContain('把 README 的标题改成中文');
 

@@ -747,7 +747,9 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
  *
  * 三条边界：
  *   · **候选阶段的边界**认第一条 `judging` 或终态状态帧——与 `@aieval/client` 的 `row-live.ts` 口径 5
- *     是**同一条判据**（评分智能体在同一条流里接着报用量、轮次从 1 重新数，那些读数不属于这一行）；
+ *     是**同一条判据**（评审者的用量落 `judge-events.jsonl`，与行级流分开；这条判据的输入源是
+ *     历史数据回放——评分事件曾与候选同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，
+ *     那些读数不属于这一行）；
  *   · **子会话的读数一条都不出**：`turn.subagentId` 非空的那一类是**那个子会话自己**的累计，它只在
  *     派发点那张子任务卡片里展示（`SessionNode.usage`，数据来自 `SubagentRecord.usage`，与本函数无关）；
  *   · **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
@@ -760,7 +762,7 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
   const rows: { index: number; row: RowEvent }[] = [];
   /** 候选阶段里最后一条**主会话**带计量的读数（整行唯一那条里程碑的候选；计量一并记下，取用时不重判） */
   let lastCandidateUsage: { index: number; event: UsageEvent; tokens: NonNullable<UsageEvent['tokens']> } | null = null;
-  /** 候选阶段是否已经结束（第一条 `judging` / 终态帧之后，每条 `usage` 都是评分智能体的） */
+  /** 候选阶段是否已经结束（第一条 `judging` / 终态帧之后，行级流里再出现的 `usage` 是评审者的——历史数据形态） */
   let candidateEnded = false;
 
   for (let index = 0; index < events.length; index += 1) {

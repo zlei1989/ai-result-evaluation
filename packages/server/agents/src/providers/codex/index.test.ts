@@ -848,9 +848,11 @@ describe('能力声明与 dsh 的逐格对齐', () => {
     expect(dsh?.streamingDeltaReason).toBeNull();
   });
 
-  it('`reasoningOutput` / `total` / `cancelMidTurn` / `structuredOutput` 不降级', () => {
+  it('`reasoningOutput` / `total` / `cancelMidTurn` 不降级', () => {
     const codex = listAgentProviders().find((one) => one.kind === 'codex');
-    expect(codex?.metadata.capability).toEqual({ cancelMidTurn: true, usage: true, structuredOutput: true });
+    // 结构化输出没有能力位：走没走原生通道由适配器在 `TurnFinalize.applied` 里**按本次运行**上报
+    // （守卫见 `registry.test.ts` 的「capability 只有两格」与 `turn.test.ts` 的 applied 搬运）
+    expect(codex?.metadata.capability).toEqual({ cancelMidTurn: true, usage: true });
   });
 
   it('说明面不留与实际不符的话（运行期**是**实时投递的，不是「只在结束投一次」）', () => {

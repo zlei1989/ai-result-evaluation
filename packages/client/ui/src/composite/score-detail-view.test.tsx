@@ -1,6 +1,7 @@
 /**
- * ScoreDetailView：评分运行信息 + 总分 + 逐项达成 / 未达成 + 理由 + 总评 + 记账 + 原始返回。
- * 八条守卫：
+ * ScoreDetailView：评分运行信息 + 总分 + 逐项达成 / 未达成 + 理由 + 总评 + 记账 + 原始返回
+ * + 评分原始输出（评审会话的 `log` 原文）。
+ * 九条守卫：
  *   1. **总分原样显示 `score.totalScore`，前端不重算**（它是服务端按权重加总出来的权威值）；
  *   2. **未达成的项要能被看出来**（它们才是使用者要看的重点，不能与达成项长得一样）——
  *      数据属性 / 文案一条，**语义色**另一条（只钉前者的话，把颜色改掉没有任何东西会红）；
@@ -19,16 +20,22 @@
  *      `judgeDurationMs`）。⚠️ 这一段说的是**评分自己**的花销，不是被评那一行（那五格在 `EvalRow` 上）
  *      ——候选的智能体 / 模型 / 用量 / 耗时**不进这个抽屉**
  *      （行卡片与执行日志里都有）。故本文件不再需要行夹具，
- *      而「页面有没有把 row 又接回来」由 `apps/web-next/src/runs-page-wiring.test.ts` 反向钉住。
+ *      而「页面有没有把 row 又接回来」由 `apps/web-next/src/runs-page-wiring.test.ts` 反向钉住；
+ *   9. **评分原始输出与原始返回同一套形态**（入口在页面 footer、正文在本层二级抽屉、
+ *      开合受控）：`judgeOutput` 不给 ⇒ 连抽屉都不渲染（文本 API 评分 / 评分未开始，判据在页面）；
+ *      给了 ⇒ 三态各有画面（加载骨架 / 错误 + 重试 / 逐行原文），行渲染与执行日志的
+ *      「原始输出」面板**共用一份**（`diagnosticsBody`）——判据钉在 `raw-output-line` 上，
+ *      两处长得不一样时这条会红。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import type { ReactNode } from 'react';
 import { AGENT_LABELS, type Rubric, type ScoreResult } from '@aieval/contracts';
 import { formatDateTime } from '../base/format';
 import { installResizeObserverStub } from '../testing/resize-observer';
-import { ScoreDetailView } from './score-detail-view';
+import { ScoreDetailView, type ScoreJudgeOutputProps } from './score-detail-view';
+import type { AgentLogDiagnostics } from './agent-log/types';
 
 // jsdom 既没有 ResizeObserver 也没有 matchMedia，而 antd 的 Table 两者都要
 // （见 src/testing/resize-observer.ts）：不打桩，挂载即抛。
@@ -474,5 +481,108 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
     expect(screen.queryByText('claude-opus-4-6')).toBeNull();
     expect(screen.queryByText(/128,450/)).toBeNull();
     expect(screen.queryByText(/6m23s/)).toBeNull();
+  });
+});
+
+/**
+ * 评分原始输出（口径 9）：评审会话的 `log` 事件逐字原文。入口按钮在页面 footer 上
+ * （判据与接线守卫都在 `apps/web-next/src/runs-page-wiring.test.ts`），这里只守正文：
+ * 受控开合、三态画面、行渲染与执行日志的原文面板同形、judging 提示与空态的分野。
+ */
+describe('评分原始输出（judgeOutput 那一组）', () => {
+  const JUDGE_LINES: AgentLogDiagnostics = {
+    lines: [
+      { at: '2026-10-02T08:00:01.000Z', source: 'stdout', text: '评审者读了 diff', summary: '调用工具 Read' },
+      { at: '2026-10-02T08:00:02.000Z', source: 'stderr', text: '一条警告', summary: null },
+    ],
+    truncatedReason: null,
+  };
+
+  /** judgeOutput 那一组 props 的缺省形状：正文三态、开合、提示都由用例覆盖 */
+  function judgeOutput(overrides: Partial<ScoreJudgeOutputProps> = {}): ScoreJudgeOutputProps {
+    return {
+      state: { status: 'ready', data: JUDGE_LINES },
+      errorText: null,
+      judging: false,
+      liveError: null,
+      onRetry: vi.fn(),
+      open: true,
+      onOpenChange: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  /** 渲染整件（judgeOutput 默认不给：那是「这一行没有入口」的形状） */
+  function judgeView(props?: ScoreJudgeOutputProps): ReactNode {
+    return (
+      <ScoreDetailView
+        score={score({ judgeAgentKind: 'dsh' })}
+        rubric={RUBRIC}
+        rawOpen={false}
+        onRawOpenChange={vi.fn()}
+        {...(props === undefined ? {} : { judgeOutput: props })}
+      />
+    );
+  }
+
+  it('judgeOutput 不给 ⇒ 连抽屉都不渲染（这一行没有这个入口，判据在页面那一层）', () => {
+    render(judgeView());
+    expect(screen.queryByTestId('score-judge-output-body')).toBeNull();
+    // 入口按钮不属于本视图（在页面 footer 上）
+    expect(screen.queryByTestId('score-judge-output-open')).toBeNull();
+  });
+
+  it('受控：关着时正文不在 DOM；打开后标题「原始输出 N 条」与入口同文、行渲染与执行日志同形', () => {
+    const { unmount } = render(judgeView(judgeOutput({ open: false })));
+    // destroyOnHidden：关着时正文一个节点都不在 DOM 里
+    expect(screen.queryByTestId('score-judge-output-body')).toBeNull();
+    unmount();
+
+    render(judgeView(judgeOutput({ open: true })));
+
+    // 标题带条数、只出现一处（入口按钮在页面那一层，不在本视图）
+    expect(screen.getAllByText('原始输出 2 条')).toHaveLength(1);
+    // 行渲染与执行日志的「原始输出」面板共用一份（diagnosticsBody）：同一批 testid、同一形态
+    expect(screen.getAllByTestId('raw-output-line')).toHaveLength(2);
+    // summary 优先、原文照给（与 raw-output-panel 同口径）
+    expect(screen.getByText('调用工具 Read')).toBeInTheDocument();
+    expect(screen.getByText(/^\[\d{2}:\d{2}:\d{2}\] stdout 评审者读了 diff$/)).toBeInTheDocument();
+    expect(screen.getByText(/^\[\d{2}:\d{2}:\d{2}\] stderr 一条警告$/)).toBeInTheDocument();
+  });
+
+  it('0 条原文也是入口（空态写在正文里，不靠藏按钮）：终态与 judging 的空态各说各的', () => {
+    const { unmount } = render(
+      judgeView(judgeOutput({ state: { status: 'ready', data: { lines: [], truncatedReason: null } } })),
+    );
+    // 标题如实写 0 条（「原始输出 0 条」是一个读数，不是「没有入口」）
+    expect(screen.getAllByText('原始输出 0 条')).toHaveLength(1);
+    expect(screen.getByText('这一行评分没有留下原始输出记录')).toBeInTheDocument();
+    unmount();
+
+    // judging 期间的 0 条是「评分刚开始」——judging ⇔ 无分，说「没有留下」是把进行中说成了终态
+    render(judgeView(judgeOutput({ state: { status: 'ready', data: { lines: [], truncatedReason: null } }, judging: true })));
+    expect(screen.getByText('评分刚开始，还没有原始输出记录')).toBeInTheDocument();
+    expect(screen.getByText('正在评分，以下为当前尝试的输出')).toBeInTheDocument();
+  });
+
+  it('读取失败 ⇒ Alert + 已折好的中文原因 + 重试按钮（点了回调一次）', () => {
+    const onRetry = vi.fn();
+    render(judgeView(judgeOutput({ state: { status: 'error', error: new Error('x') }, errorText: '读取评分日志失败（磁盘）', onRetry })));
+
+    expect(screen.getByText('评分原始输出读取失败')).toBeInTheDocument();
+    expect(screen.getByText('读取评分日志失败（磁盘）')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('读取中 ⇒ 骨架屏（不是一个空抽屉）', () => {
+    render(judgeView(judgeOutput({ state: { status: 'loading' } })));
+    expect(document.querySelectorAll('.ant-skeleton').length).toBeGreaterThan(0);
+  });
+
+  it('实时连接故障 ⇒ 一行警示，且已收内容不受影响', () => {
+    render(judgeView(judgeOutput({ liveError: '实时连接中断：浏览器会自动重连，已收到的输出不受影响' })));
+    expect(screen.getByTestId('score-judge-live-error')).toHaveTextContent('实时连接中断');
+    expect(screen.getAllByTestId('raw-output-line')).toHaveLength(2);
   });
 });

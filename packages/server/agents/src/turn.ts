@@ -12,6 +12,12 @@ import { createEventEmitter, logDraft, type AgentEventDraft, type EventEmitter }
 import { classifyAgentFailure, type AgentFailure } from './errors';
 import { createMessageAssembler, type BlockIndexAllocator, type MessageDraft } from './message';
 import { releaseTurn, RELEASE_GRACE_MS } from './release';
+import {
+  buildStructuredOutputFeedback,
+  inspectStructuredOutput,
+  planStructuredOutput,
+  type StructuredOutputInspection,
+} from './structured-output';
 import type { AgentKind, AgentRunInput, AgentRunResult } from './types';
 
 export interface TurnContext {
@@ -52,6 +58,14 @@ export interface TurnFinalize {
    */
   subagentTurns?: number | null;
   turns?: number | null;
+  /**
+   * 本次运行**实际**走的是哪条通道（可选）：`true` = 答复落在原生 schema 通道上。
+   * 缺省 = 没走原生通道（该家没有这条通道，或本次没要求 schema）——缺省与 `false` 同义，
+   * 因为「没上报」在消费侧与「没走」是同一件事。
+   * 为什么由适配器上报：只有适配器知道厂商这一轮到底照做没有（cc 的收尾消息里有没有
+   * `structured_output`、codex 有没有把 schema 发进 `turn/start`）。骨架**不再**读任何能力位。
+   */
+  applied?: { structuredOutput: boolean };
 }
 
 /** 一次运行的消费句柄：各家 start() 造出来，骨架负责按固定顺序使用并保证一定会释放 */
@@ -116,6 +130,27 @@ export interface TurnStart {
    * 硬套投影形状会逼实现写一堆 `tokens: null, turns: null, failure: null` 的噪声。
    */
   finalize?: () => TurnFinalize;
+  /**
+   * **在同一会话里追问一轮**（可选）：返回**新的活动区间**（新的 `stream` / `project`），
+   * 骨架把它与首轮**逐字同形地**消费（同一套去重、累计与失败取舍）。
+   *
+   * 用途只有一个：**结构化输出的形状修正**——首轮答复过了 `JSON.parse` 但不符合
+   * `AgentRunInput.outputSchema` 时，骨架把「问题清单 + schema + 它自己的原文」交给这一格，
+   * 让模型**只改形状、不重跑任务**（`buildStructuredOutputFeedback` 的原文就是这么写的）。
+   *
+   * 三条契约（缺一条就会在真机上出问题）：
+   *   · **同一个运行时**：`dispose` 仍然只由首轮那一格负责（`releaseTurn` 记忆化，整 run 一次），
+   *     追问**不许**新建进程——新建一个等于把「同会话」这件事丢掉，成本也翻倍；
+   *   · **同一会话**：模型手里已经有首轮的全部上下文（工作区、工具结果、自己的答复），
+   *     换会话重问就是让它把活重干一遍，而那正是这一格要避免的；
+   *   · **不实现就是不修**：没有这条通道的家在答复不合格时如实收场（骨架会落一条 WARN），
+   *     由调用方按 `finalText` 的既有契约处置。
+   *
+   * 为什么挂在 `start` 的产物上而不是 `TurnHooks` 上：追问要用到**这一次运行**的运行时与会话
+   * （dsh 的 `sessionId`、codex 的 thread、cc 的 session），那些东西只有 `start` 造得出来——
+   * 挂在 hooks 上就得靠模块级表去捞它们。
+   */
+  continue?: (prompt: string) => Promise<TurnStart>;
   /** 投影一条原始消息；state 由骨架维护并传给每一家 */
   project: (raw: unknown, state: TurnState) => TurnProjection;
 }
@@ -330,13 +365,25 @@ export interface TurnProjection {
 
 export interface TurnHooks {
   kind: AgentKind;
-  /**
-   * 该家能不能把 `outputSchema` 落到实处（由适配器从自己的 metadata **转发**，骨架不反查注册表
-   * —— 与 `TurnProjection.tokensEstimated` 同一条口径：谁知道自己是什么，就由谁说）。
-   */
-  capability: { structuredOutput: boolean };
   /** 建运行时并返回消费句柄；抛错由骨架折进结果（加载失败 → AGENT_LOAD_FAILED） */
   start: (context: TurnContext) => Promise<TurnStart>;
+}
+
+/**
+ * 结构化输出的**修正轮上限**（不含首次回答）：2 轮 = 最多 3 次模型往返。
+ * 为什么是 2：与文本评分通路的 `JUDGE_REPAIR_ROUNDS` 同数（两条通路的成本口径要对齐），
+ * 而形状错误通常一轮就够——继续追问只会在一个不肯守契约的模型上白烧上下文。
+ */
+export const STRUCTURED_OUTPUT_REPAIR_ROUNDS = 2;
+
+/**
+ * 问题清单的第一条 → 一行可展示的文本。
+ * 日志里只放第一条：完整清单是**回灌给模型**的原料（在修正提示词里），日志的读者是人，
+ * 他要的是「哪儿不对」而不是一份逐格报告。
+ */
+function firstProblem(inspected: Extract<StructuredOutputInspection, { ok: false }>): string {
+  const first = inspected.problems[0];
+  return first === undefined ? '（未给出具体问题）' : `${first.path}：${first.message}`;
 }
 
 export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<AgentRunResult> {
@@ -441,6 +488,11 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    * 初值 `null` = 还没有任何一家交过这一格；骨架**只搬运、不累加**（合计由各家自己算好）。
    */
   let subagentTurns: number | null = null;
+  /**
+   * 本次运行**实际**走的是哪条通道：由适配器在收尾投影里上报，骨架只搬运。
+   * 初值 `false` = 没走原生 schema 通道——「没上报」与「没走」在消费侧是同一件事。
+   */
+  let appliedStructuredOutput = false;
   /** 估算计量（cc 的跑动期估算）：只进事件，绝不进结果 */
   let estimatedTokens: AgentRunResult['tokens'] = null;
   let turns: number | null = null;
@@ -517,34 +569,39 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   let started: Awaited<ReturnType<TurnHooks['start']>> | undefined;
 
   /**
-   * 结构化输出的**降级点**（A1，唯一一处）：`outputSchema` 表达的是「我想要」，
-   * 能不能给由 `hooks.capability` 说了算。降级时**不把这一格交给 `start`**——
-   * 三家的 start 因此都不需要自己判能力（它们只管把拿到的 schema 翻成厂商方言）。
+   * 结构化输出的**编排**（骨架侧的全部内容）：schema 一律交给 `start`（不再替厂商摘键），
+   * 编译一次判据（`planStructuredOutput`），首轮答复不合格时按需追问。
+   * 「要不要 schema」只看调用方给没给——本层不读任何能力位。
    */
-  const wantsSchema = input.outputSchema !== undefined && input.outputSchema !== null;
-  const schemaApplied = wantsSchema && hooks.capability.structuredOutput;
-  if (wantsSchema && !schemaApplied) {
-    logger.warn('该适配器不支持结构化输出，本次降级为提示词契约', { kind: hooks.kind });
-  }
-
-  /** 摘掉 schema 的输入（降级那一支用；`delete` 对可选属性合法，不改原对象） */
-  function withoutOutputSchema(source: AgentRunInput): AgentRunInput {
-    const next: AgentRunInput = { ...source };
-    delete next.outputSchema;
-    return next;
-  }
-
-  try {
-    started = await hooks.start({ input: schemaApplied ? input : withoutOutputSchema(input), controller, emitter });
-    handle = started;
-    if (stopRequested) requestStop();
-    logger.debug('适配器已启动，开始消费事件流', {
+  const plan = input.outputSchema === undefined || input.outputSchema === null
+    ? null
+    : planStructuredOutput(input.outputSchema);
+  if (plan !== null && plan.kind === 'parse-only') {
+    // 编译不出来必须留痕：否则「我们其实没校验形状」这件事就静默了
+    logger.warn('这份 JSON Schema 不在可编译的子集里，本次只判「答复是不是合法 JSON」', {
       kind: hooks.kind,
-      cwd: input.cwd,
-      model: input.route.modelId,
+      reason: plan.reason,
     });
-    for await (const raw of started.stream) {
-      const projection = started.project(raw, state);
+  } else if (plan !== null && plan.ignoredKeywords.length > 0) {
+    logger.debug('JSON Schema 里有不认识的 keyword（已 fail-open 放行，不作为不合格的理由）', {
+      kind: hooks.kind,
+      keywords: plan.ignoredKeywords,
+    });
+  }
+
+  /**
+   * 消费**一条活动区间**（首轮与每一修正轮共用同一段）：投影 → 发事件 → 累计计量 → 收失败。
+   *
+   * 为什么抽成函数：修正轮是「同一会话里的又一条活动区间」，它与首轮必须**逐字同形**
+   * （同一套去重、同一套发射门槛、同一套失败取舍）。抄一遍的代价不是代码量，而是
+   * 「修正轮里采到的用量不算数」这类只在真机上偶发的问题。
+   */
+  async function consume(interval: TurnStart): Promise<void> {
+    handle = interval;
+    // 停止请求若在区间之间到达：这一刻才拿到「被关闭的对象」，补一次释放
+    if (stopRequested) requestStop();
+    for await (const raw of interval.stream) {
+      const projection = interval.project(raw, state);
       for (const draft of projection.drafts) emit(draft);
       for (const message of projection.messages ?? []) emitMessage(message);
       for (const record of projection.subagents ?? []) emitSubagent(record);
@@ -655,6 +712,84 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       }
       if (projection.failure !== null) failure = projection.failure;
     }
+  }
+
+  /**
+   * 结构化输出的修正轮：首轮答复「拿到了但不合格」时在同一会话里追问，最多
+   * `STRUCTURED_OUTPUT_REPAIR_ROUNDS` 轮。**只修形状**——提示词里明写不许重跑任务、不许改判定。
+   *
+   * 四条不做修正的边界（该说的都留痕，不静默）：
+   *   · 没要求 schema（`plan === null`）；
+   *   · 首轮就以失败收场（`failure !== null`）——那是「没问到」，不是「答错了」；
+   *   · 已经被要求停止（`stopRequested`）：不再产生任何模型往返；
+   *   · 没采到最终答复（`finalText === null`）：没有可回灌的原文，追问等于凭空重问一遍。
+   *
+   * 耗尽后**不改写结论**：`ok` / `exitReason` / `finalText` 保持最后一轮的样子，由调用方按
+   * 「答复解析不了」的既有面处置（评分通路的 `JUDGE_PARSE_FAILED`）。
+   */
+  async function repairStructuredOutput(): Promise<void> {
+    if (plan === null || failure !== null || stopRequested) return;
+    let text = state.finalText;
+    if (text === null) {
+      logger.warn('要求了结构化输出，但这一次没有采到可读的最终答复 ⇒ 不做修正', { kind: hooks.kind });
+      return;
+    }
+    let inspected = inspectStructuredOutput(plan, text);
+    if (inspected.ok) return;
+    for (let round = 1; round <= STRUCTURED_OUTPUT_REPAIR_ROUNDS; round += 1) {
+      const askAgain = handle?.continue;
+      if (askAgain === undefined) {
+        // 没有同会话追问通道的家：如实收场。这条 WARN 是「为什么没修」的唯一答案，不能省
+        const problem = firstProblem(inspected);
+        emit(logDraft('stderr', `[WARN] 答复不符合本次要求的 JSON Schema，且该适配器不支持同会话修正：${problem}`));
+        logger.warn('答复不符合 JSON Schema，该适配器不支持同会话修正', { kind: hooks.kind, problem });
+        return;
+      }
+      if (stopRequested) return;
+      emit(
+        logDraft(
+          'stderr',
+          `[WARN] 结构化输出未通过校验，要求模型修正（第 ${round}/${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 轮）：${firstProblem(inspected)}`,
+        ),
+      );
+      const prompt = buildStructuredOutputFeedback({
+        outputSchema: input.outputSchema,
+        raw: text,
+        problems: inspected.problems,
+      });
+      await consume(await askAgain(prompt));
+      // 追问本身把这一轮跑失败了：结论按失败收场（修正不掩盖失败）
+      if (failure !== null || stopRequested) return;
+      text = state.finalText ?? text;
+      inspected = inspectStructuredOutput(plan, text);
+      if (inspected.ok) {
+        emit(logDraft('stderr', `[INFO] 结构化输出在第 ${round} 轮修正后通过了校验`));
+        return;
+      }
+    }
+    const problem = firstProblem(inspected);
+    emit(
+      logDraft(
+        'stderr',
+        `[WARN] 结构化输出修正 ${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 轮后仍未通过校验：${problem}`,
+      ),
+    );
+    logger.warn('结构化输出修正用尽仍不合格（结论不改写：由调用方按答复不可解析处置）', {
+      kind: hooks.kind,
+      rounds: STRUCTURED_OUTPUT_REPAIR_ROUNDS,
+      problems: inspected.problems,
+    });
+  }
+
+  try {
+    started = await hooks.start({ input, controller, emitter });
+    logger.debug('适配器已启动，开始消费事件流', {
+      kind: hooks.kind,
+      cwd: input.cwd,
+      model: input.route.modelId,
+    });
+    await consume(started);
+    await repairStructuredOutput();
   } catch (cause) {
     if (stopRequested) {
       // 停止请求引发的流中断不是失败：结论由 canceled 通路给出（判定优先级）
@@ -675,15 +810,19 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
        * 不该抹掉，但绝不让它**顶替**原因。退出错误的原文一个字符都不删（它在 cause 里，
        * 另有出口把它落进该行事件流）。
        */
-      if (failure !== null && !exitErrorAddsDetail(classified, cause)) {
+      // 读进局部变量再判：`failure` 会被下面的闭包（`consume` / 修正轮）赋值，
+      // 而 tsc 的控制流分析看不见闭包里的写入 ⇒ 这里必须显式断言回声明类型，
+      // 否则它把此刻的值窄化成 `null`、再取属性就是 `never`
+      const failureSoFar = failure as AgentFailure | null;
+      if (failureSoFar !== null && !exitErrorAddsDetail(classified, cause)) {
         failure = {
-          code: failure.code,
-          message: `${failure.message}（随后 codex CLI 以退出码 ${exitCodeOf(cause) ?? '未知'} 收场）`,
-          ...(failure.stack === undefined ? {} : { stack: failure.stack }),
+          code: failureSoFar.code,
+          message: `${failureSoFar.message}（随后 codex CLI 以退出码 ${exitCodeOf(cause) ?? '未知'} 收场）`,
+          ...(failureSoFar.stack === undefined ? {} : { stack: failureSoFar.stack }),
         };
         logger.error('适配器运行失败（保留事件流里的原因，退出错误只是 CLI 收场）', {
           kind: hooks.kind,
-          code: failure.code,
+          code: failureSoFar.code,
           exitMessage: classified.message,
         });
       } else {
@@ -737,6 +876,9 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         if (finalized.subagentTokens !== undefined) subagentTokens = finalized.subagentTokens;
         if (finalized.subagentTurns !== undefined) subagentTurns = finalized.subagentTurns;
         if (finalized.turns != null) turns = finalized.turns;
+        // 通道事实（谁走哪条只有适配器知道）：与上面几格不同，`false` 与「没上报」同义，
+        // 故只在上报为 `true` 时覆盖——缺省保持 false
+        if (finalized.applied?.structuredOutput === true) appliedStructuredOutput = true;
       } catch (error) {
         logger.error('收尾投影失败（已忽略，不影响本次运行的结论）', { kind: hooks.kind, error });
       }
@@ -758,7 +900,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     subagentTurns,
     turns,
     finalText: state.finalText,
-    applied: { structuredOutput: schemaApplied },
+    applied: { structuredOutput: appliedStructuredOutput },
     emit,
   });
   logger.info('适配器运行结束', {

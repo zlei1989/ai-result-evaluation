@@ -386,7 +386,7 @@ describe('一致性套件：结构化输出', () => {
         'structured-output': () =>
           product({
             structuredOutput: {
-              structuredOutput: true,
+              nativeChannel: true,
               hasOutputSchema: true,
               finalText: '{"verdict":"还行"}',
             },
@@ -397,24 +397,41 @@ describe('一致性套件：结构化输出', () => {
     expect(() => checkStructuredOutputGroup(fixture())).not.toThrow();
   });
 
-  it('声明能用结构化却没把 schema 发给厂商 ⇒ 红（并点名到场景）', () => {
+  it('没有原生通道（填充层）但答复是可解析 JSON ⇒ 过（dsh 的形状）', () => {
+    const filling = fixture({
+      scenarios: {
+        'structured-output': () =>
+          product({
+            structuredOutput: {
+              nativeChannel: false,
+              hasOutputSchema: false,
+              finalText: '{"verdict":"还行"}',
+              expected: { verdict: '还行' },
+            },
+          }),
+      },
+    });
+    expect(() => checkStructuredOutputGroup(filling)).not.toThrow();
+  });
+
+  it('上报走了原生通道却没把 schema 发给厂商 ⇒ 红（并点名到场景）', () => {
     const broken = fixture({
       scenarios: {
         'structured-output': () =>
           product({
-            structuredOutput: { structuredOutput: true, hasOutputSchema: false, finalText: '{"verdict":"还行"}' },
+            structuredOutput: { nativeChannel: true, hasOutputSchema: false, finalText: '{"verdict":"还行"}' },
           }),
       },
     });
     expect(() => checkStructuredOutputGroup(broken)).toThrow(/acme\/structured-output：.*没有把 schema 发给厂商/);
   });
 
-  it('产出不可解析（既没结构化也没吐 JSON）⇒ 红', () => {
+  it('产出不可解析（既没走原生通道也没吐 JSON）⇒ 红', () => {
     const broken = fixture({
       scenarios: {
         'structured-output': () =>
           product({
-            structuredOutput: { structuredOutput: false, hasOutputSchema: false, finalText: '我觉得还行' },
+            structuredOutput: { nativeChannel: false, hasOutputSchema: false, finalText: '我觉得还行' },
           }),
       },
     });
@@ -426,7 +443,7 @@ describe('一致性套件：结构化输出', () => {
       scenarios: {
         'structured-output': () =>
           product({
-            structuredOutput: { structuredOutput: true, hasOutputSchema: true, finalText: null, failed: true, failureReason: '' },
+            structuredOutput: { nativeChannel: true, hasOutputSchema: true, finalText: null, failed: true, failureReason: '' },
           }),
       },
     });

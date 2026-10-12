@@ -19,11 +19,13 @@
 
 **三家的实际能力值**（与 `registry.test.ts` 的期望表逐格一致，改动会红）：
 
-| kind | displayName | protocolTypes | cancelMidTurn | usage | structuredOutput |
-|---|---|---|---|---|---|
-| `cc` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
-| `codex` | Codex | `['openai']` | `true` | `true` | `true` |
-| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
+| kind | displayName | protocolTypes | cancelMidTurn | usage |
+|---|---|---|---|---|
+| `cc` | Claude Code | `['anthropic']` | `true` | `true` |
+| `codex` | Codex | `['openai']` | `true` | `true` |
+| `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` |
+
+`metadata.capability` 只有 **`cancelMidTurn`**（`false` ⇒ 「终止」按钮在该行退化为「关闭运行时」）与 **`usage`**（`false` ⇒ 界面显示「不支持计量」而不是 0）两格。**结构化输出不在这里**：它不是「这一家有没有这个能力」的静态声明，而是**每-run 的通道事实**（`applied.structuredOutput`），由适配器按本次运行上报——把它写成能力位等于让框架替厂商判降级，也会把「厂商这一轮没照做」误记成「这家没有这个能力」。
 
 `metadata.messageCapability` 逐格声明「思考正文 / 工具入参 / 工具结果 / 子任务 / 流式增量」能不能拿到、从哪条通道拿、拿不到时为什么（`MissingReason` 四句：`not-supported` / `not-exposed` / `not-observed` / `unverified`），外加成立前提（`notes`）。
 
@@ -39,7 +41,7 @@
 | **不设内层上限** | 没有 `timeoutMs` 也没有 `maxTurns`：一次运行只会因「跑完 / 失败 / 外部要求停止」结束 |
 | **同步回调** | `onEvent` / `onMessage` / `onSubagent` 同步调用、不 await；回调抛错被吞掉并记 `logger.error`，**不改变**本次运行结论（受保护发射） |
 
-**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件 / 技能）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（要求模型按 JSON Schema 生成最终答复；该家不支持时**降级**——`runTurn` 不交给 `start`、包内记 WARN、结果里 `applied.structuredOutput = false`，调用方据它记账，不要自己再去查能力表）、`extraReadPaths`（可选：read-only 档下**额外放行**的只读绝对路径——只扩大「哪些路径可以读」、写仍被拒；**只 claude 消费**，映射 SDK `additionalDirectories`（`--add-dir`）；codex / dsh 不映射，只读档读本就全放行）、`mcpServers`、`skills`（本行要装入的技能清单，逐条 `{ name, sourceDir }`）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
+**入参 `AgentRunInput`**：`cwd`（行工作区）、`configHome`（行独立配置目录，行与行共用会互相注入 MCP / 插件 / 技能）、`permission`（**必填是刻意的**：执行与评分各表一次态，少给一个就编译不过）、`prompt`、`route`（`protocolType` / `baseUrl` / `apiKey` / `modelId`，只读）、`signal`（只用来判 `canceled`，已 abort 时连进程都不起）、`outputSchema`（**要求模型按 JSON Schema 生成最终答复**，类型是 `unknown`。语义只有「我想要」：**一律交给 `start`**，走原生通道还是填充层由各适配器自己决定——有原生通道的家翻成厂商方言（claude 的 `outputFormat`、codex 的 `outputSchema`），没有的家在适配器内部**填充**（首轮提示词追加 schema 约束 + 自校验 + 同会话修正轮）。非对象（数组 / 字符串 / `null`）不是任何一家能用的 schema ⇒ 适配器按「没给」处置（不传原生通道、也不追加提示词）；骨架那一侧的判据这时退化成「只判合法 JSON」并记 WARN。结果里那一格记的是**这一次有没有真的走原生通道**，调用方据它记账，不要自己另查能力表——`capability` 里没有这一格）、`extraReadPaths`（可选：read-only 档下**额外放行**的只读绝对路径——只扩大「哪些路径可以读」、写仍被拒；**只 claude 消费**，映射 SDK `additionalDirectories`（`--add-dir`）；codex / dsh 不映射，只读档读本就全放行）、`mcpServers`、`skills`（本行要装入的技能清单，逐条 `{ name, sourceDir }`）、`onEvent`、`onMessage`（内容级消息回调，见下）、`onSubagent`。
 
 **`skills` 那一格的三条口径**（与 `mcpServers` 同层，但语义刻意不同）：
 
@@ -63,7 +65,7 @@
 
 `onSubagent` 交的是**子任务行**（`SubagentRecord`）而非消息：一行一子任务，同一身份会**多次投递**（派发时一条、收场时一条），后者是前者的完整快照 ⇒ 消费方按 `subagentId` 覆盖即可。它不并进消息流，是因为子任务没有说话者与内容块，字段（名称、类型、父链、用量）与消息没有交集。
 
-**返回 `AgentRunResult`**：`ok` / `exitReason`（判定优先级固定：`signal` 已中止 → `canceled`；`timed-out` 当前**没有生产者**，保留为读历史与重试判据）/ `tokens`（**采不到就是 `null`，绝不填 0**——0 会让人得出「这家很省」的错误结论）/ `turns`（轮次 = **一次模型 API 往返**；`null` = 一次都没观察到）/ `durationMs` / `finalText`（**「未采到」（`null`）与「空答复」（`''`）是两件事**，不互相兜底；需要结构化答复的调用方从这里取，不要从事件流里重建）/ `applied.structuredOutput` / `error`（`code` 是 `AGENT_*` 领域归因码，没有 HTTP 状态，落点是该行的事件日志）。
+**返回 `AgentRunResult`**：`ok` / `exitReason`（判定优先级固定：`signal` 已中止 → `canceled`；`timed-out` 当前**没有生产者**，保留为读历史与重试判据）/ `tokens`（**采不到就是 `null`，绝不填 0**——0 会让人得出「这家很省」的错误结论）/ `turns`（轮次 = **一次模型 API 往返**；`null` = 一次都没观察到）/ `durationMs` / `finalText`（**「未采到」（`null`）与「空答复」（`''`）是两件事**，不互相兜底；需要结构化答复的调用方从这里取，不要从事件流里重建）/ `applied.structuredOutput`（**适配器上报的每-run 通道事实**：这一次有没有把答复落到原生 schema 通道上。骨架只搬运、缺省 `false`；`false` 不等于答复不合格——走填充层的家可能交出一份完全合格的 JSON 而这一格仍是 `false`）/ `error`（`code` 是 `AGENT_*` 领域归因码，没有 HTTP 状态，落点是该行的事件日志）。
 
 **权限档按阶段给，不按厂商给**（`permission.ts` 是唯一真源）：
 
@@ -76,7 +78,7 @@
 
 ## 状态机与时序
 
-**调用点（全仓三处，都不流式：结果从 `run` 的返回值取）**：
+**调用点（今天全仓三处，都不流式：结果从 `run` 的返回值取）**——**这张表是举例，不是契约**：调用点随功能增长，别按行数或行内容校验；真正的契约是上面那张入参与返回值。
 
 | 调用点 | 档 / `cwd` | 说明 |
 |---|---|---|
@@ -90,13 +92,28 @@
 - `dispose()` 幂等（可能被「用户终止」与「兜底超时」先后触发）；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（不是运行时级闭锁，那会让新建的客户端没人关）。
 - dsh 的 `cancelMidTurn: false` 是实测结论（SDK 没有 wire-level cancel，只有 `close()`）——点「终止」后该行晚 5 秒才变 `canceled` 是设计。
 
+**结构化输出：要了 schema 就得交出符合它的 JSON**（三家同一条交付契约，保证强度不同）：
+
+| 环节 | 口径 |
+|---|---|
+| 通道 | 有原生 schema 通道的家把入参翻成厂商选项（cc 的 `outputFormat`、codex 的 `turn/start` 的 `outputSchema`）；没有的家在适配器内部**填充**——首轮把 schema 约束追加在调用方提示词之后，并由 `continue` 支持同会话追问 |
+| 判据 | 剥「整段以 ``` 开头」的围栏 → `JSON.parse` → 「JSON Schema 子集 → zod」校验（`src/structured-output.ts`）。不认识的 keyword **不生成约束**（fail-open，记 DEBUG）；整份 schema 编不出来 ⇒ 退化成「只判合法 JSON」并记 WARN |
+| 修正轮 | 首轮答复**拿到了但不合格**时，骨架把「问题清单（点号路径 + 说明）+ schema 原文 + 它自己的原文（上限 20000 字符，截断处标注）」交给 `continue`，上限 **2 轮**（`STRUCTURED_OUTPUT_REPAIR_ROUNDS`）；提示词明写只输出一个 JSON、不要围栏、不要重新读工作区 / 不要重新执行任务 / 不要改判定 |
+| 不做修正的四条边界 | 没要求 schema；首轮就以 `failure` 收场（那是「没问到」，不是「答错了」）；已要求停止；没采到最终答复（`finalText === null`，没有可回灌的原文） |
+| 耗尽 | **不改写结论**：`ok` / `exitReason` / `finalText` 保持最后一轮原样，由调用方按「答复不可解析」处置；没有 `continue` 的家在第一条不合格答复上就如实收场（落一条 WARN） |
+| 记账 | 修正轮只发该行日志事件（`[WARN] 结构化输出未通过校验，要求模型修正（第 N/2 轮）：<首条问题>` 一类），它是模型往返 ⇒ 自然计入 `turns` / `tokens`；**没有新增结果字段** |
+| 留痕 | `applied.structuredOutput` 由适配器上报本次事实：cc 按「收尾消息里有没有 `structured_output`」、codex 按「这次有没有把 schema 发进 `turn/start`」、dsh 恒 `false` |
+
+**`run` 的内部骨架**（`turn.ts`，包内类型、不从包出口转出）按 `TurnHooks = { kind; start; continue? }` 组织：`start` 造出一次运行的消费句柄 `TurnStart`（`stream` / `interrupt` / `dispose` / `finalize?` / `continue?` / `project`），骨架负责消费、按固定顺序释放、组装结果；`continue` 是**可选的同会话追问**，返回一段新的活动区间、与首轮逐字同形地消费（同一运行时、同一会话、释放仍只做一次）。**只有能同会话再跑一轮的家实现它**——实现不了的家如实收场，不假装修正过。
+
 ## 已知边界与取舍
 
 | 边界 | 处置 |
 |---|---|
 | `getProvider` 对未注册 kind 抛裸 Error（无 `ServiceError` 语义） | 调用方先判 `AGENT_KINDS`（`loadConfig` 不做 zod 校验，手改 config.json 写 `"gemini"` 到不了这里才对） |
 | `timed-out` 没有生产者 | 适配器没有内层超时（刻意的）；超时由编排层负责，且它无法中断卡住的迭代 ⇒ 收敛靠兜底上限 |
-| `structuredOutput` 是必填（不是「可选 + 守卫」） | 可选会被默认成 false 而无人验证；降级由包内处置，用户可见的行事件由调用方按 `applied` 发 |
+| 结构化输出是**每-run 通道事实**（`applied.structuredOutput`），不是能力位 | 由适配器上报、骨架只搬运；「有没有走原生通道」与「答复合格不合格」是两件事——`false` 可能是一份完全合格的 JSON（填充层交出来的），用户可见的行事件由调用方按 `applied` 发 |
+| 修正轮的花销不可见 | 修正轮**只进日志**：界面「输出约束」那一格仍只回答「有没有走原生通道」，不反映追问了几轮；花销在 `turns` / `tokens` 里（修正轮是模型往返） |
 | `protocolTypes` 是候选池过滤的数据源 | 不要另写一份「智能体 ↔ 协议」对应表——填错会列出不兼容的网关（选完到运行时才失败） |
 
 ## 相关链接

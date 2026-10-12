@@ -32,6 +32,7 @@ import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeRowN
 import { DSH_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, ensureV1Suffix, stripV1Suffix } from '../../route';
+import { asSchemaObject, buildStructuredOutputInstruction } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult, ProtocolType } from '../../types';
 import { projectDshNotification } from './events';
@@ -852,14 +853,29 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const childSessions = new Set<string>();
   const finishedSessions = new Set<string>();
   const runState: DshRunState = { childSessions, finishedSessions, headerTools: null, skillCatalog: null };
-  return {
-    stream: notificationStream(
-      runtime,
-      sessionId,
-      input.prompt,
-      runState,
-      createDshStreamTapGate(tapFilePath),
-    ),
+  /**
+   * **填充层**：dsh 的 SDK 没有 schema 入参（`DeepSeekHarnessOptions` 只有 cwd / provider /
+   * model / reasoningEffort / maxTokens，argv 只有 `--profile` / `--patch`）⇒ 原生通道不存在。
+   * 要对齐另两家「要了 schema 就按它出 JSON」，这里补两件事：
+   *   1. **首轮就把约束写进提示词**（把原生通道本该传达的那份 JSON Schema 附在最后一段）；
+   *   2. **提供同会话追问**（`continue`）：骨架发现答复形状不对时回到这里，用**同一个 `sessionId`**
+   *      再跑一条 prompt——模型手里已经有工作区与自己的答复，只改形状、不重跑任务。
+   * `applied.structuredOutput` 因此**恒为 false**：那一格记的是「有没有走原生 schema 通道」，
+   * 填充层是提示词级的，不算（见 `AgentRunResult.applied` 的 JSDoc）。
+   */
+  const outputSchema = asSchemaObject(input.outputSchema);
+  const promptWithSchema = outputSchema === null
+    ? input.prompt
+    : `${input.prompt}\n${buildStructuredOutputInstruction(outputSchema)}`;
+  /**
+   * **一份 tap 门闸跨全部活动区间**：它持有旁路文件的读偏移与块位次表（见 `stream-tap.ts`），
+   * 每次追问都新建一个会让偏移归零——第一轮的增量会被当成新内容重放一遍。
+   * 每条区间的流收尾时都会 `close()` 它（幂等、不重置偏移）⇒ 下一条区间重新打开文件接着读。
+   */
+  const tap = createDshStreamTapGate(tapFilePath);
+  /** 造一条活动区间（首轮与每次追问同形）：同一运行时、同一会话、同一份 runState 与门闸 */
+  const intervalFor = (prompt: string): TurnStart => ({
+    stream: notificationStream(runtime, sessionId, prompt, runState, tap),
     // 刻意空实现：dsh 不支持中途取消（元数据 cancelMidTurn: false），
     // 停止请求会由第二段兜底成「关闭运行时」
     interrupt: () => {
@@ -906,11 +922,21 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
         drafts: subagentTokens === null ? silentSubagentWarns(runState) : [],
         subagentTokens,
         subagentTurns,
+        // 通道事实：dsh 没有原生 schema 通道 ⇒ 恒 false（填充层不算原生，见上面那段注释）
+        applied: { structuredOutput: false },
       };
     },
     project: (raw, state) =>
       projectDshNotification(raw, state, { kind: 'dsh', baseUrl: input.route.baseUrl }, runState),
-  };
+    /**
+     * 同会话追问：同一个 `runtime` + 同一个 `sessionId` 再跑一条 prompt。
+     * SDK 的 `run(input, { sessionId })` 对已存在的 id 就是「在这条会话上再跑一轮」
+     * （`lib/types/api.d.ts`：「Run one prompt on a fresh (or named) session」），
+     * 会话历史留在厂商进程里 ⇒ 模型看得见自己上一轮的答复与全部工具结果。
+     */
+    continue: async (nextPrompt: string) => intervalFor(nextPrompt),
+  });
+  return intervalFor(promptWithSchema);
 }
 export const dshProvider: AgentProvider = {
   kind: 'dsh',
@@ -931,10 +957,6 @@ export const dshProvider: AgentProvider = {
       // 实测确认：用量在 `session.event → assistant/message → data.usage`
       // （`inputTokens` / `cacheReadTokens` / `outputTokens`）⇒ 打开提取并把这一格改成 true
       usage: true,
-      // SDK 客户端没有 schema 入参（`DeepSeekHarnessOptions` 只有 cwd/provider/model/reasoningEffort/
-      // maxTokens，argv 只有 --profile/--patch）⇒ 顶层会话拿不到结构化输出。
-      // A1 起 `run` 把这一格转发给骨架，由 `runTurn` 摘掉 schema 并记 `applied.structuredOutput=false`。
-      structuredOutput: false,
     },
     /**
      * 消息能力声明：**五格** `'yes'`。正文增量经 **stream-tap**（`'hook'`：挂进
@@ -996,8 +1018,6 @@ export const dshProvider: AgentProvider = {
   run: (input: AgentRunInput): Promise<AgentRunResult> =>
     runTurn(input, {
       kind: 'dsh',
-      // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
-      capability: { structuredOutput: dshProvider.metadata.capability.structuredOutput },
       start: startDsh,
     }),
 };

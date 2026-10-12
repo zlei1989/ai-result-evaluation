@@ -555,16 +555,12 @@ export interface FakeAgentCall {
   /**
    * 实际交给适配器的结构化输出 schema（原样记下；`undefined` = 这一格根本没传）。
    *
-   * 为什么必须记录：A1 之后**编排层总是传**这一格（`outputSchema` 表达「我想要」），能不能给由
-   * **骨架**按 `hooks.capability.structuredOutput` 决定（谁知道能力、谁决定，答案在
-   * `runTurn` 里算一次），降级结论再经 `applied.structuredOutput` 报回来。于是这一格是「骨架到底
-   * 有没有把它交给适配器」的唯一观测点：若改成「无脑交给适配器」，别处没有任何可观测差异——
-   * 行照样跑完、分数照样出得来；而不支持这一格的那一家（dsh）要么直接报错、
-   * 要么把提示词契约静默当成「已经强约束」。判据在 `judge-agent.test.ts` 的降级那条：
-   * dsh 那一次收到的必须是 `undefined`。
-   * 取值刻意保留 `undefined`（而不是缺省成 `false` / `null`）：「这一格被摘掉了」正是要被钉住的事实。
+   * 为什么必须记录：编排层总是传这一格（`outputSchema` 表达「我想要」），而**骨架一律把它交给
+   * `start`**（不再替厂商摘键）⇒ 这一格是「调用方要的 schema 到底有没有走到适配器」的唯一观测点：
+   * 若某处把它吞掉，别处没有任何可观测差异——行照样跑完、分数照样出得来，只是答复不再被约束。
+   * 取值保留 `undefined`（而不是缺省成 `null`）：「这一格根本没传」正是要被钉住的事实。
    */
-  outputSchema?: Record<string, unknown>;
+  outputSchema?: unknown;
   /**
    * 实际交给适配器的 **MCP 条目**（原样记下；`undefined` = 这一格根本没传）。
    *
@@ -645,19 +641,26 @@ export interface FakeAgentScript {
   subagentTurns?: number | null;
   turns?: number | null;
   /**
+   * `applied.structuredOutput`（适配器上报的**每-run**通道事实）。不写就按真适配器的行为现算：
+   * cc / codex 拿到 schema 时报 `true`（原生通道），dsh 恒 `false`（只有填充层）。
+   * 为什么留这一格旋钮：要造「厂商这一轮没照做」（网关把 schema 丢了）这种形态时，
+   * 写死现算式子就造不出来——而那一格正是记账与降级留痕的判据。
+   */
+  structuredOutput?: boolean;
+  /**
    * 最终答复（`AgentRunResult.finalText`）。
    * 不填即 `null`（= 没采到），`''` 是「明确回了空答复」——两者含义相反，与 tokens/turns 同一格口径。
    */
   finalText?: string | null;
   /**
    * `finish()` 之前逐条投给 `input.onEvent` 的脚本事件：模拟适配器在跑动期发出的日志行
-   * （评分通路的用例靠它验证 `[评分智能体]` 前缀确实加在了转发出去的日志上）。
+   * （评分通路的用例靠它钉住转发出去的日志**原样落流、不加前缀**）。
    * `seq` 由 core 的事件写入器分配（`events.ts` 的口径：调用方传进来的会被覆盖），这里给 0 即可。
    */
   events?: { stream: 'stdout' | 'stderr'; text: string }[];
   /**
-   * `finish()` 之前**原样**投递的事件（不经任何加工）：用来钉住「只有 `log` 加前缀、其余类型逐字段透传」
-   * 这类透传口径。
+   * `finish()` 之前**原样**投递的事件（不经任何加工）：用来钉住「所有类型逐字段透传、
+   * 谁都不加前缀」这类透传口径。
    * 与 `events` 分开而不是合并成一格：后者是「日志行」的便捷写法（绝大多数用例只需要它），
    * 合并会变成「按 type 变形的联合」，用例读起来还得先解类型。
    */
@@ -734,8 +737,9 @@ export function releaseAllAgents(): void {
 function makeFakeProvider(kind: AgentKind): AgentProvider {
   const metadata: AgentProviderMetadata = {
     protocolTypes: kind === 'dsh' ? ['openai', 'anthropic'] : kind === 'codex' ? ['openai'] : ['anthropic'],
-    // structuredOutput 也照真值填：cc / codex 有原生 schema 开关，dsh 的 SDK 客户端没有
-    capability: { cancelMidTurn: kind !== 'dsh', usage: true, structuredOutput: kind !== 'dsh' },
+    // capability 只有两格（照着真注册表）：结构化输出没有能力位——走没走原生通道由适配器按本次
+    // 运行上报（`applied.structuredOutput`），框架里不留任何按家判能力的代码
+    capability: { cancelMidTurn: kind !== 'dsh', usage: true },
     // 档位域照**真值**填（三家首项都是 `off`，claude 的关闭走
     // `thinking: { type: 'disabled' }`、codex 的走 `none`）。编排层不读它（交集在 api 层算），
     // 但填成一份万能表会让「假 provider 与真注册表逐格一致」这条前提在审计时看不出破绽。
@@ -841,17 +845,17 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         // 显式 `null` 因此不会被 `??` 一并兜掉（那是「保持」与「清空」的区别）
         const subagentTurns = script.subagentTurns === undefined ? null : script.subagentTurns;
         /**
-         * `applied`（A1，必填格）。真 `run` 由骨架现算（`runTurn` 里
-         * `wantsSchema && capability.structuredOutput`），而假 provider **不走骨架** ⇒ 这里照同一条式子
-         * 现算，两个操作数都取真值：能力读自己的 `metadata`（上面那一格与真注册表逐格一致），
-         * 「要没要 schema」读这一格有没有真被传进来。
+         * `applied`（必填格）：**适配器上报的每-run 通道事实**，而假 provider 不走骨架 ⇒ 这里照真适配器
+         * 的行为现算：cc / codex 拿到 schema 就走原生通道（`true`），dsh 只有填充层（恒 `false`）。
          *
-         * 为什么不写死 `false`：cc / codex 走 `run` 时**真的**会下发 schema，写死会让夹具的
-         * 绿色建立在「与真行为相反」的假值上——正是本文件顶部那条「元数据与真实注册表逐格一致」要防的
-         * 事。`dsh` 那一格因此如实报 `false`，调用方那两条分支（降级留痕 / 记账）也才都能被走到。
+         * 为什么不写死 `false`：cc / codex 走真 `run` 时**真的**走原生通道，写死会让夹具的绿色建立在
+         * 「与真行为相反」的假值上——正是本文件顶部那条「与真实注册表逐格一致」要防的事。
+         * `script.structuredOutput` 可以显式覆盖（要造「网关把 schema 丢了」这一类形态时用）。
          */
         const schemaWanted = input.outputSchema !== undefined && input.outputSchema !== null;
-        const applied = { structuredOutput: schemaWanted && metadata.capability.structuredOutput };
+        const applied = {
+          structuredOutput: script.structuredOutput ?? (schemaWanted && kind !== 'dsh'),
+        };
         return {
           ok,
           exitReason,
