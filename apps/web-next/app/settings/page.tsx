@@ -3,6 +3,9 @@
 /**
  * 设置页：四个 Tab —— 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 / MCP / 技能。
  *
+ * Tab 的状态记在 URL 里（`?tab=basic|judge|mcp|skills`，解析与反向构造在 `src/settings-tab-state.ts`）：
+ * 当前停在哪个 Tab 刷新后不变、地址可直接分享；切换走 `router.replace`（视图切换不进历史栈）。
+ *
  * 本页是全仓唯一把 client hooks 与 ui 组件接起来的地方：组件保持纯展示（不调接口、不认识 message），
  * 数据与回调在这里注入；异步与错误提示也留在这里。
  *
@@ -18,7 +21,7 @@
  * 这三个状态只能由页面分，而「读失败」必须说出来，不能让「还没读到」冒充「你还没配」。
  * 验收靠 `pnpm typecheck` + `pnpm lint` + 冒烟。
  */
-import { useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import {
   // 测试连接：无缓存的一次性 POST，两个入口各测一份（已保存的 / 表单当前值）
   probeMcpServer,
@@ -68,8 +71,9 @@ import {
   type ProviderFormValues,
 } from '@aieval/ui';
 import { Alert, Card, Flex, Form, Segmented, Skeleton, Tabs, message } from 'antd';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { NAV_ITEMS, type NavKey } from '@/src/nav';
+import { normalizeSettingsTab, parseSettingsTab, settingsTabHref } from '@/src/settings-tab-state';
 
 /** 最近一次根目录校验的结果（工作区 / 用例目录共用一个形状）：null = 还没校验过；ok=false 时 message 是服务端的中文原因 */
 interface RootValidation {
@@ -79,7 +83,35 @@ interface RootValidation {
 }
 
 export default function Page(): React.ReactNode {
+  // useSearchParams 需要 Suspense 边界：没有它，整页都会掉出预渲染
+  //（生产构建直接以 Missing Suspense boundary 失败，见《用例》页文件头同一条说明）
+  return (
+    <Suspense fallback={null}>
+      <SettingsPage />
+    </Suspense>
+  );
+}
+
+function SettingsPage(): React.ReactNode {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  /**
+   * Tab 的唯一真源是 URL（`?tab=…`）：受控 `activeKey` 直接从解析结果来，页面不留本地 Tab 状态。
+   * null = URL 里没有合法 Tab，回落第一个 Tab「基础」——与 `parseSettingsTab` 的脏 URL 回落同一条规则，
+   * 于是「刷新后停在同一 Tab」与「把某个 Tab 的地址发给别人」都天然成立。
+   */
+  const activeTab = parseSettingsTab(searchParams);
+  /**
+   * 切 Tab 写回 URL 用 replace 而不是 push：Tab 是**同一页面内的视图切换**，不是一次导航——
+   * push 会让「后退」在 Tab 之间逐个倒退，想离开这页的用户得把切过的 Tab 全退一遍。
+   * replace 后地址栏仍是最新 Tab，刷新还原不受影响。
+   */
+  const go = useCallback(
+    (key: string): void => {
+      router.replace(settingsTabHref(normalizeSettingsTab(key)));
+    },
+    [router],
+  );
   // error 必须接住：读失败时 data 仍是 undefined，不区分「还在读」与「读失败」，
   // 界面会把一次网络故障说成「你还没配」甚至「你的默认评分模型已失效」（都是假结论）。
   const { settings, update, isUpdating, error: settingsError } = useSettings();
@@ -458,7 +490,11 @@ export default function Page(): React.ReactNode {
     <>
       <AppTopNav items={[...NAV_ITEMS]} active={activeNav} onNavigate={(href) => router.push(href)} />
       <PageShell density="default" gap={16} padding={16}>
+        {/* 受控 Tabs：activeKey 从 URL 解析来、onChange 写回 URL（两个都是可选 prop，漏一个就退回
+            antd 内部状态——URL 照写但界面不读，刷新还原悄悄失效，typecheck 一个字不报） */}
         <Tabs
+          activeKey={activeTab ?? 'basic'}
+          onChange={go}
           items={[
             {
               key: 'basic',

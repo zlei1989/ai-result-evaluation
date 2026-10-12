@@ -1,6 +1,7 @@
 // @vitest-environment node
 /**
- * 设置页两张卡的**接线**守卫：评分配置卡的协议 / 档位域投影，以及工作区卡的用例目录与用例同步。
+ * 设置页的**接线**守卫：评分配置卡的协议 / 档位域投影、工作区卡的用例目录与用例同步，
+ * 以及 Tab 状态进 URL（`?tab=`）的受控接线。
  *
  * 协议过滤的判据在卡片里（`JudgeSettingsCard` 自己的用例钉住了「协议不匹配的智能体被禁用且说明原因」），
  * 但卡片看不见「页面有没有把那张表传进来」——`agentProtocols` 在卡片上是可选 prop，漏传时
@@ -465,5 +466,50 @@ describe('settings 页面的技能 Tab 接线', () => {
     // 三家同名裁决不同（claude 以本机为准 / dsh 以仓库为准 / codex 两条都进）：
     // MCP 卡片那条的结论是「同名时以设置页为准」，抄过来就是一句统一了口径的假话
     expect(description, '技能那条说明抄了 MCP 的「同名时以设置页为准」').not.toContain('同名时以设置页为准');
+  });
+});
+
+/**
+ * Tab 状态进 URL（`?tab=`）的接线。
+ *
+ * 受控三件（Suspense 边界 / activeKey / onChange）全都**红不出来**：
+ *   · Suspense 边界：typecheck / lint / dev 全绿，生产构建才以「Missing Suspense boundary with
+ *     useSearchParams」失败——本地内循环全绿、错误只在 build 上现身的那种错位；
+ *   · activeKey / onChange 都是可选 prop：漏了 antd 用内部状态顶住，界面照常能切，
+ *     只是 URL 照写、界面不读，「刷新后停在同一 Tab」悄悄失效。纯函数测试（`settings-tab-state.test.ts`）
+ *     只测解析与反向构造，测不到页面有没有把解析结果喂进 `<Tabs>`。
+ * 切 Tab 走 replace 是**行为**判据：换成 push 时一切测试照绿，症状是「后退」在 Tab 之间逐个倒退。
+ */
+describe('settings 页面的 Tab 状态接线（?tab=）', () => {
+  it('default export 包在 Suspense 里——useSearchParams 没有边界时生产构建直接失败', () => {
+    expect(source, '页面没有 <Suspense fallback={null}> 边界').toContain('<Suspense fallback={null}>');
+    expect(source, 'Suspense 里渲染的不是 SettingsPage').toContain('<SettingsPage />');
+  });
+
+  it('Tabs 受控：activeKey 从 URL 解析来（null 回落第一个 Tab「基础」）', () => {
+    // 只扫 <Tabs 到 items={ 之间的属性头：items 的 children 里嵌着一堆子组件的自闭合标签，
+    // 沿用 openingTag 会一路切进 items 内部，锚点就失焦了
+    const start = source.indexOf('<Tabs');
+    expect(start, '页面里找不到 <Tabs').toBeGreaterThan(-1);
+    const head = source.slice(start, source.indexOf('items={[', start));
+    expect(head, 'Tabs 没有受控 activeKey——URL 照写界面不读，刷新还原悄悄失效').toContain(
+      'activeKey={activeTab ?? \'basic\'}',
+    );
+    expect(head, 'Tabs 没有接 onChange——URL 永远停在进入时的那个 Tab').toContain('onChange={go}');
+  });
+
+  it('activeTab 来自 searchParams 的解析，不是页面自己另存的一份 state', () => {
+    expect(source, '页面没有读 searchParams').toContain('useSearchParams()');
+    expect(source, 'activeTab 不是从 URL 解析来的').toContain(
+      'const activeTab = parseSettingsTab(searchParams)',
+    );
+  });
+
+  it('切 Tab 走 router.replace + settingsTabHref（push 会让「后退」在 Tab 之间逐个倒退）', () => {
+    const body = actionBody('go');
+    expect(body, 'onChange 没有经 settingsTabHref 构造地址').toContain(
+      'settingsTabHref(normalizeSettingsTab(key))',
+    );
+    expect(body, '切 Tab 用了 push——后退会在 Tab 之间逐个倒退').toContain('router.replace(');
   });
 });
