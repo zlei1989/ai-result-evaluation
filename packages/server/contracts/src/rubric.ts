@@ -1,6 +1,6 @@
 /**
  * 评分表契约（**评分体系的唯一真源**）：组 → 评分项（id / goal / weight）二级表格，
- * 以及由它派生的五个纯函数：满分、项引用键、校验、总分、送模型的渲染。
+ * 以及由它派生的纯函数：满分、摊平（引用键 + 项 + 组上下文）、项引用键、校验、总分、送模型的渲染。
  *
  * 五个必须成立的口径：
  *   1. **组不带权重**，只有项带权重；**满分 = 全部项权重之和**，不强制等于 100
@@ -62,20 +62,36 @@ export function rubricMaxScore(rubric: Rubric): number {
   return sum;
 }
 
+/** 摊平后的一项：引用键 + 项本身 + 它属于哪一组。组上下文是给「按项逐行展示」的消费方用的（见 `rubricEntries`） */
+export interface RubricEntry {
+  /** 引用键（有 id 用 id、没 id 用 `#k`）——**判定就是按它对齐的**（`ScoreResult.judgments[].id`） */
+  key: string;
+  item: RubricItem;
+  /** 所属组名，逐字取自快照 */
+  groupName: string;
+  /** 所属组在全表中的序号（从 0 开始） */
+  groupIndex: number;
+}
+
 /**
  * 表里每一项摊平成「(引用键, 项)」对：**引用键生成的唯一实现**，`rubricItemKeys` /
  * `composeTotalScore` / `renderRubricForJudge` 三处都从这里取，`#k` 规则不会写成几份后各自漂移。
  * id **按 `trim()` 后是否为空**判定「写没写」：`'   '` 与 `''` 同档，都按位置分配 `#k`
  * ——否则空白 ID 会变成一把用户与模型都想不到的隐形引用键。
+ * 顺序就是「组序 → 项序」，`#k` 跨组连续。
+ *
+ * 带**组上下文**（`groupName` / `groupIndex`）是因为展示侧要按组分段：判定与项的对齐只能靠引用键，
+ * 而消费方若各自按组切片去凑键（`keys.slice(游标, 游标 + 组项数)`），就是在写第二份枚举规则——
+ * 组与项的边界一变，那几份游标不会一起错，错法是「判定贴到别的项上」而表格看起来一切正常。
  */
-function rubricEntries(rubric: Rubric): { key: string; item: RubricItem }[] {
-  const entries: { key: string; item: RubricItem }[] = [];
+export function rubricEntries(rubric: Rubric): RubricEntry[] {
+  const entries: RubricEntry[] = [];
   let index = 0;
-  for (const group of rubric.groups) {
+  for (const [groupIndex, group] of rubric.groups.entries()) {
     for (const item of group.items) {
       index += 1;
       const id = item.id.trim();
-      entries.push({ key: id === '' ? `#${index}` : id, item });
+      entries.push({ key: id === '' ? `#${index}` : id, item, groupName: group.name, groupIndex });
     }
   }
   return entries;
@@ -166,15 +182,14 @@ export function composeTotalScore(rubric: Rubric, judgments: readonly RubricJudg
  */
 export function renderRubricForJudge(rubric: Rubric): string {
   const lines: string[] = [];
-  // 逐组的行数就是组的项数 ⇒ 按组切片取「(引用键, 项)」对，不需要按索引取值再兜 undefined
+  // 逐组取项**按 `groupIndex` 过滤**（不按「游标 + 组项数」切片）：组的边界由 `rubricEntries` 自己算，
+  // 消费方再算一次就等于把同一条枚举规则写成两份，两份不会一起错
   const entries = rubricEntries(rubric);
-  let cursor = 0;
-  for (const group of rubric.groups) {
+  for (const [groupIndex, group] of rubric.groups.entries()) {
     lines.push(escapeCell(group.name), '| 引用键 | 目标 | 权重 |', '| --- | --- | --- |');
-    for (const { key, item } of entries.slice(cursor, cursor + group.items.length)) {
+    for (const { key, item } of entries.filter((entry) => entry.groupIndex === groupIndex)) {
       lines.push(`| ${escapeCell(key)} | ${escapeCell(item.goal)} | ${item.weight} |`);
     }
-    cursor += group.items.length;
     lines.push('');
   }
   lines.push(`以上共 ${entries.length} 项，满分 ${rubricMaxScore(rubric)} 分。`);

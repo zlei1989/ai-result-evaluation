@@ -139,9 +139,26 @@ export {
   //（并在正文里论证它「必须抽出来」：留在组件里时「零行不出现 NaN」那条守卫只能退化成
   // 间接断言）。它必须出现在包根出口清单里，否则 – 的逐名比对不成立。
   completionPercent,
+  // 名次与展示顺序的判据也一并转出：排名抽屉要拿**同一份**名次去排它的列，
+  // 页面若自己再算一遍就会出现「卡片挂第 1 名、抽屉里排第 2」（`rankOf` 的注释同此口径）
+  orderForDisplay,
+  rankOf,
   type RunDetailPanelProps,
 } from './composite/run-detail-panel';
 export { ScoreDetailView, type ScoreDetailViewProps } from './composite/score-detail-view';
+export {
+  // 排名表：列是候选、行是各项事实（身份 / 执行 / 评分 / 总分），左首列锁住、其余列横向滚动。
+  // 三个几何常量、判据说明与名次标记一并转出：守卫按它们断言（判据那几句由具名片段拼装，
+  // 改判据时必须回来改这几段；名次标记的拼法同理——用例照抄一份就会与实现漂移）。
+  RANK_CANDIDATE_WIDTH,
+  RANK_CRITERIA_PARTS,
+  RANK_CRITERIA_TEXT,
+  RANK_LABEL_WIDTH,
+  RankTable,
+  rankMarker,
+  rankTableMinWidth,
+  type RankTableProps,
+} from './composite/rank-table';
 export { DiffFileContent, DiffView, type DiffViewProps } from './composite/diff-view';
 export { formatEventLine, formatEventLog } from './composite/log-format';
 /**

@@ -65,6 +65,7 @@ import {
   EmptyState,
   ListDetailLayout,
   MAIN_DRAWER_PUSH,
+  RankTable,
   RunCreatePanel,
   RunDetailPanel,
   ScoreDetailView,
@@ -85,7 +86,7 @@ import {
 } from '@aieval/ui';
 import { buildRowFacts, resolveLogDrawer } from '@/src/log-drawer-state';
 import { NAV_ITEMS } from '@/src/nav';
-import { describeError, parseRunsPanel, runsPanelHref, type DrawerKind } from '@/src/runs-view';
+import { describeError, parseRunsPanel, runsPanelHref, type OpenDrawer } from '@/src/runs-view';
 
 /** 轮级状态 → 中文与颜色（行级状态在 ui 的 RowStatusTag 里；轮级只有 4 个值） */
 const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string }> = {
@@ -164,9 +165,6 @@ function compareSortTime(left: unknown, right: unknown): number {
   if (leftInvalid || rightInvalid) return leftInvalid === rightInvalid ? 0 : leftInvalid ? -1 : 1;
   return leftMs - rightMs;
 }
-
-/** 当前打开的是哪个抽屉（`null` = 都关着） */
-type OpenDrawer = { kind: DrawerKind; rowId: string };
 
 /**
  * 一个文件的正文。
@@ -490,8 +488,9 @@ function RunsPage(): ReactNode {
     isLoading: log.isLoading || messages.isLoading,
   });
 
-  /** 抽屉要渲染的那一行（评分详情那一支也用它；拿不到就整段不渲染） */
-  const logRow = drawer === null ? undefined : run?.rows.find((row) => row.id === drawer.rowId);
+  /** 抽屉要渲染的那一行（评分详情那一支也用它；拿不到就整段不渲染）。排名抽屉没有行 id，故恒 undefined */
+  const logRow =
+    drawer === null || drawer.kind === 'rank' ? undefined : run?.rows.find((row) => row.id === drawer.rowId);
 
   /**
    * 事实条与时间轴模型：**页面只做拼装**——`buildRowFacts`（行级事实的界面口径）与
@@ -836,6 +835,8 @@ function RunsPage(): ReactNode {
         onOpenLog={(rowId) => setDrawer({ kind: 'log', rowId })}
         onOpenDiff={(rowId) => setDrawer({ kind: 'diff', rowId })}
         onOpenScore={(rowId) => setDrawer({ kind: 'score', rowId })}
+        // 排名抽屉比的是候选之间的名次：它没有「哪一行」这一维，故不开行 id
+        onOpenRank={() => setDrawer({ kind: 'rank' })}
         onEdit={() => router.replace(runsPanelHref('edit', run.id))}
         onDelete={handleDelete}
         deleting={isDeleting}
@@ -997,6 +998,30 @@ function RunsPage(): ReactNode {
           />
         )}
       </Drawer>
+
+      {/*
+        「排名」抽屉：第四个主抽屉，几何与上面三个同一份（`DRAWER_GEOMETRY`）——
+        它比的是候选之间的名次，比评分详情更需要宽度，不该另立一档。
+        数据全部来自**已在内存里的这一份 run 快照**（各行的 `score` + 轮级 `rubric`）：
+        没有任何一次网络往返，也没有「详情按需再拉一次」这一步。
+        `runningCount` 数的是 `isRunningRow` 的行数（不是 `hasLiveRows` 那个布尔：
+        后者的轮级那一格数不出 N，会出现「有 0 行正在执行」这种自相矛盾的句子）。
+        run 未知（首帧 / 快照没到）时整段不渲染：排名表没有「部分数据」可言，少一行就是错的名次。
+      */}
+      {run !== undefined && (
+        <Drawer
+          title="排名"
+          placement="right"
+          {...DRAWER_GEOMETRY}
+          open={drawer?.kind === 'rank'}
+          onClose={() => setDrawer(null)}
+          // 关掉即卸载：再次打开要按**那一刻**的快照重算名次（分数还在 SSE 里变），
+          // 留着上一次的结点只会让「重新打开的排名」看起来没刷新
+          destroyOnHidden
+        >
+          <RankTable run={run} runningCount={liveRowIds.length} />
+        </Drawer>
+      )}
     </>
   );
 }

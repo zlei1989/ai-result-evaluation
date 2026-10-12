@@ -168,3 +168,33 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 - [《消息规范》](/protocols/message-spec) —— 「帧是累积值，不是本片」与「合并键分两层」（块标识不进 `mergeKey`）
 - [《Claude Code 接入》](/protocols/cc) —— 「覆盖合并（关键）」那一节
+
+---
+
+## `AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这一行在 `running` 上挂了 6 分钟才失败）
+
+**现象原文**（`attempts.jsonl` 的 `phase: "end"` 那一行，逐字）：
+
+```
+{"attempt":1,"phase":"end","outcome":"failed","code":"AGENT_FAILED","message":"Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)","retrying":true}
+```
+
+同一行在界面上表现为：`选手` 格长期停在 `执行中`、`耗时` 一直涨（实测 **6 分 14 秒**才落到终态），「执行日志」抽屉里是清一色的重试帧：
+
+```
+{"type":"system","subtype":"api_retry","attempt":8,"max_retries":10,"retry_delay_ms":36089,"error_status":null,"error":"unknown","session_id":"…"}
+```
+
+**日期**：2026-10-12
+
+**根因**：**这一行的供应商端点没有进程在监听**——不是防火墙、不是平台。三层：
+
+- **我们的配置**：这一行的 `providerId` 指向 `local` 供应商，`baseUrl = http://127.0.0.1:7999`（`~/.aieval/config.json` 的 `providers[]` 里可逐字核到）。该端点上没有任何服务在跑：同机 `curl http://127.0.0.1:7999/v1/models` 得到的是连接层失败（退出码非零、无 HTTP 状态），即 TCP `ECONNREFUSED`。
+- **厂商那一层**：CC 的 CLI 拿到连接被拒后不会立刻放弃，而是**带指数退避重试同一请求**（`api_retry` 帧：`attempt` 1→10、`retry_delay_ms` 逐次翻倍到 36 秒量级），重试耗尽才把整轮判失败；我们的编排层再把整个 attempt 重来一遍（`attempts.jsonl` 里 `attempt: 1` 与 `2` 都是同样的 `ECONNREFUSED`，间隔约 3 分钟）。
+- **那句「a firewall or proxy may be blocking it」是 CLI 自己加的猜测**，不是诊断结论：真实原因就是「本机那个端口没人监听」。这一格会把人往网络策略上引，而实际上只要把本地网关起起来（或换一个在线的供应商）就好。
+
+**解决方案**：**未闭合**（不需要改代码：本仓没有任何一处该做而未做的事）。判据链按顺序核三格即可定位同类问题：① `run.json` 里该行 `providerId` → ② 配置里它的 `baseUrl` → ③ 在**同一台机器**上 `curl` 那个 `baseUrl`。第三格失败即根因落定。**代价**：这一格从现象到终态要 **6 分钟以上**（CLI 的 10 次退避 + 我们的一次 attempt 重试），期间行状态是 `running`、名次表里那一列显示「执行中」——看的人容易以为它在正常干活。要更快失败只能改厂商侧的退避策略（不在本仓控制内）。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 供应商端点与凭据的解析口径（`providerId` → `baseUrl` / `apiKey`）

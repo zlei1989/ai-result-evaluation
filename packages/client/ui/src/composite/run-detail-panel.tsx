@@ -81,6 +81,11 @@ export interface RunDetailPanelProps {
   onOpenLog: (rowId: string) => void;
   onOpenDiff: (rowId: string) => void;
   onOpenScore: (rowId: string) => void;
+  /**
+   * 打开「排名」抽屉（比的是候选之间的名次，**不带行 id**）。
+   * 与上面三个读单行产物的入口并列，但它是**整轮**的视角。
+   */
+  onOpenRank: () => void;
   /** 打开编辑表单（右栏切到 edit） */
   onEdit: () => void;
   /**
@@ -157,8 +162,14 @@ function totalTokens(row: EvalRow): number {
   return row.tokens.input + row.tokens.output;
 }
 
-/** 名次 = 1 + 按同一判据**严格优于**它的行数；三项全同 ⇒ 同名次（并列）；没有分的行不给名次 */
-function rankOf(rows: EvalRow[], row: EvalRow): number | undefined {
+/**
+ * 名次 = 1 + 按同一判据**严格优于**它的行数；三项全同 ⇒ 同名次（并列）；没有分的行不给名次。
+ *
+ * 导出它（而不是留在组件里）是因为**排名抽屉**要拿同一份名次去排它的列：名次在本仓只有一个判据，
+ * 两处各算一次的形状是「卡片挂第 1 名、抽屉里排第 2」——那种错看起来像数据坏了，而不是判据分叉。
+ * 入参是**全量行**（含未出分的），未出分的行既不给自己名次、也不让别人多一名。
+ */
+export function rankOf(rows: EvalRow[], row: EvalRow): number | undefined {
   if (row.score === null) return undefined;
   let better = 0;
   for (const other of rows) {
@@ -170,7 +181,7 @@ function rankOf(rows: EvalRow[], row: EvalRow): number | undefined {
 }
 
 /** 展示顺序：有分的按同一判据在前（全同时 `sort` 稳定，保持创建顺序），其余保持原始顺序 */
-function orderForDisplay(rows: EvalRow[]): EvalRow[] {
+export function orderForDisplay(rows: EvalRow[]): EvalRow[] {
   const scored = rows.filter((row) => row.score !== null).sort(compareRows);
   const rest = rows.filter((row) => row.score === null);
   return [...scored, ...rest];
@@ -196,6 +207,7 @@ export function RunDetailPanel({
   onOpenLog,
   onOpenDiff,
   onOpenScore,
+  onOpenRank,
   onEdit,
   onDelete,
   deleting = false,
@@ -217,6 +229,14 @@ export function RunDetailPanel({
    */
   const live = hasLiveRows(run);
   const mutateDisabledReason = live ? '有候选行正在运行：先终止，再编辑 / 删除' : undefined;
+
+  /**
+   * 「排名」能不能点：**至少要有一行出了分**——没有分就没有名次，抽屉会是一张只有行标签的空表。
+   * 判据落在「有没有分」而不是「跑完没有」：跑到一半也能看此刻的名次（那是调试用例时最想看的），
+   * 而**部分失败**的轮次里「所有候选都评分完成」这个条件可能永远不成立，按钮会等于永久消失。
+   */
+  const rankDisabled = run.rows.every((row) => row.score === null);
+  const rankDisabledReason = rankDisabled ? '还没有出分的候选：评分完成后才能排名' : undefined;
 
   const startDisabled = starting || hasRunning || runnable.length === 0;
   const startDisabledReason = hasRunning
@@ -440,6 +460,20 @@ export function RunDetailPanel({
                 终止
               </Button>
             </Popconfirm>
+            {/* 「排名」常驻在「开始 / 终止」之后（边界置灰而不是隐藏：会自己冒出来的按钮，
+                用户得先知道它存在）。禁用时**必须**挂 Tooltip 说明条件——这个按钮是新面孔，
+                不像「终止」那样一看就懂，而「点了没反应」是最难自查的一种静默。
+                两个汉字 ⇒ `autoInsertSpace={false}`（否则可访问名会变成「排 名」）。 */}
+            {/* 禁用时按钮自己收不到鼠标事件 ⇒ 宿主必须是一个**包住它的**元素
+                （antd 的 `Tooltip` 需要一个能接事件又没被禁用的宿主，否则浮层永远不弹）。
+                `Flex` 只是个内联盒子，不改变按钮的位置与尺寸。 */}
+            <Tooltip title={rankDisabledReason}>
+              <Flex>
+                <Button size="small" autoInsertSpace={false} disabled={rankDisabled} onClick={onOpenRank}>
+                  排名
+                </Button>
+              </Flex>
+            </Tooltip>
           </Flex>
         </Flex>
       </Layout.Footer>

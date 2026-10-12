@@ -1,7 +1,8 @@
 // @vitest-environment node
 /**
- * 评分表契约：满分 / 引用键 / 校验 / 总分 / 送模型的渲染。
- * 五组口径各自钉住一条：空表合法、空 id 按位置引用、权重上限、id 重复被拒、单元格转义。
+ * 评分表契约：满分 / 摊平 / 引用键 / 校验 / 总分 / 送模型的渲染。
+ * 各组口径各自钉住一条：空表合法、空 id 按位置引用、权重上限、id 重复被拒、单元格转义，
+ * 以及摊平结果上的组上下文（`groupName` / `groupIndex`）与 `rubricItemKeys` **逐位同源**。
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,6 +10,7 @@ import {
   RubricSchema,
   composeTotalScore,
   renderRubricForJudge,
+  rubricEntries,
   rubricItemKeys,
   rubricMaxScore,
   validateRubric,
@@ -29,7 +31,7 @@ function sample(): Rubric {
  * 数一行里的**真列边界**：GFM 只在「前面有偶数个反斜杠」的 `|` 上切列——
  * `\|` 是转义的竖线，而 `\\|` 是「一个字面反斜杠 + 一个真分隔符」。
  * 为什么不用 `row.split(/(?<!\\)\|/)`：它只看前一个字符，`\\|` 会被当成转义而漏判，
- * 于是「反斜杠没先转义」这类缺陷能在段数断言下蒙混过关（本文件的 round 1 修复就踩过这个坑）。
+ * 于是「反斜杠没先转义」这类缺陷能在段数断言下蒙混过关。
  */
 function countRowDelimiters(row: string): number {
   let delimiters = 0;
@@ -108,6 +110,36 @@ describe('rubricItemKeys', () => {
   });
 });
 
+describe('rubricEntries', () => {
+  it('键与项逐条摊平，并各自带上所属组名与组序号（展示侧按它分段，不必自己再算组边界）', () => {
+    expect(rubricEntries(sample())).toEqual([
+      { key: 'A1', item: { id: 'A1', goal: '追加 agent 字段', weight: 18 }, groupName: '一、生产代码', groupIndex: 0 },
+      { key: 'A2', item: { id: 'A2', goal: '补 Javadoc', weight: 4 }, groupName: '一、生产代码', groupIndex: 0 },
+      { key: 'D1', item: { id: 'D1', goal: '有值透传用例', weight: 14 }, groupName: '二、测试', groupIndex: 1 },
+      { key: '#4', item: { id: '', goal: '缺失→null 用例', weight: 9 }, groupName: '二、测试', groupIndex: 1 },
+    ]);
+  });
+
+  it('键与 `rubricItemKeys` **逐位相同**（两条出口是同一份枚举，不是两份实现）', () => {
+    // 空组夹在中间：组序号按**组的位置**走，与项的序号（`#k` 跨组连续）不是同一个计数器
+    const rubric: Rubric = {
+      groups: [
+        { name: 'g1', items: [{ id: 'A', goal: 'a', weight: 1 }] },
+        { name: 'g2 空组', items: [] },
+        { name: 'g3', items: [{ id: '', goal: 'c', weight: 1 }] },
+      ],
+    };
+    const entries = rubricEntries(rubric);
+    expect(entries.map((entry) => entry.key)).toEqual(rubricItemKeys(rubric));
+    expect(entries.map((entry) => entry.groupIndex)).toEqual([0, 2]);
+    expect(entries.map((entry) => entry.groupName)).toEqual(['g1', 'g3']);
+  });
+
+  it('空表返回空数组（`{ groups: [] }` 是真实初值，这里不许抛）', () => {
+    expect(rubricEntries({ groups: [] })).toEqual([]);
+  });
+});
+
 describe('validateRubric', () => {
   it('合格的表格返回 ok', () => {
     expect(validateRubric(sample())).toEqual({ ok: true });
@@ -145,7 +177,7 @@ describe('validateRubric', () => {
   });
 
   /**
-   * 守卫（Review round 1）：逐项 ID 不重复**不等于**引用键不重复——没写 ID 的项按位置拿 `#k`，
+   * 逐项 ID 不重复**不等于**引用键不重复——没写 ID 的项按位置拿 `#k`，
    * 于是「第 2 项的 ID 直接写成 `#1`」会与「第 1 个没写 ID 的项」撞在同一把键上。
    * 放行的后果：`rubricItemKeys` 会返回两把 `#1`，模型的一次判定被同时算进两项的权重
    * （10 + 20 = 30），界面上却一切正常。解析侧按引用键逐项取判定，这条是它的前提。
@@ -250,7 +282,7 @@ describe('renderRubricForJudge', () => {
   });
 
   /**
-   * 守卫（Review round 1）：目标里**先出现反斜杠、再出现竖线**（`foo\|bar`）时，
+   * 目标里**先出现反斜杠、再出现竖线**（`foo\|bar`）时，
    * 只转义竖线是不够的——`foo\\|bar` 里那个 `|` 仍然是真分隔符，列照旧错位。
    * 所以 `escapeCell` 必须先转义反斜杠。断言方式与上面几条一致：**数这一行的真列边界**
    * （`countRowDelimiters` 按反斜杠的奇偶判 `|` 算不算分隔符），三列的行必须是 4 个。

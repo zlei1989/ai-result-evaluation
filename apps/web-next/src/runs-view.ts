@@ -8,8 +8,16 @@ import { ServiceError } from '@aieval/contracts';
 /**右栏的三种内容（/：同一个栏位换内容，不叠加、不弹层） */
 export type RunsPanelKind = 'detail' | 'new' | 'edit';
 
-/** 三个产物抽屉 */
-export type DrawerKind = 'log' | 'diff' | 'score';
+/**
+ * 当前打开的是哪个抽屉（`null` = 都关着）。
+ * **判别联合**（不是「kind + 恒有 rowId」）：三个抽屉读的是**某一行**的产物，而排名读的是**整轮**
+ * ——它比的是候选之间的名次，没有「哪一行」这一维。硬塞一个 `rowId: ''` 会让「按行取快照」凭空
+ * 多出一个「空 id 时怎么办」的分支，而那个分支没有意义。
+ *
+ * 住在这一层（而不是页面里）是因为它是**可分享状态**的一部分：页面的 `?panel=…&id=…` 与它同源，
+ * 两边各写一份形态必然漂移（页面那份判别联合不再被这里的类型约束）。
+ */
+export type OpenDrawer = { kind: 'log' | 'diff' | 'score'; rowId: string } | { kind: 'rank' };
 
 export interface RunsPanelState {
   /** null = 不显示右栏（列表占满） */

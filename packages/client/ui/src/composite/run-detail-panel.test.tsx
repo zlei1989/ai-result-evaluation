@@ -114,6 +114,7 @@ const handlers = {
   onOpenLog: vi.fn(),
   onOpenDiff: vi.fn(),
   onOpenScore: vi.fn(),
+  onOpenRank: vi.fn(),
   // 编辑 / 删除
   onEdit: vi.fn(),
   onDelete: vi.fn(),
@@ -501,6 +502,46 @@ describe('RunDetailPanel 吸底操作栏', () => {
 
     expect(footer().getByRole('button', { name: '开始' })).toBeDisabled();
     expect(footer().getByRole('button', { name: '终止' })).toBeDisabled();
+  });
+
+  /**
+   * 「排名」：常驻渲染、靠 `disabled` 控可用性（边界置灰而不是隐藏——会自己冒出来的按钮，
+   * 用户得先知道它存在）。判据是「有没有出分的行」，不是「跑完没有」。
+   */
+  it('有行出分时「排名」可用，点了就开抽屉（不带行 id）', () => {
+    const onOpenRank = vi.fn();
+    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }), { onOpenRank });
+
+    const button = footer().getByRole('button', { name: '排名' });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onOpenRank).toHaveBeenCalledTimes(1);
+  });
+
+  it('一行分都没有时「排名」禁用（没有名次可排），且挂 Tooltip 说明条件', async () => {
+    renderPanel(
+      makeRun({
+        rows: [makeRow('w-1', { status: 'failed', score: null }), makeRow('w-2', { status: 'pending', score: null })],
+      }),
+    );
+
+    const button = footer().getByRole('button', { name: '排名' });
+    expect(button).toBeDisabled();
+    // 禁用时**必须**能查到原因：这个按钮是新面孔，而「点了没反应」是最难自查的一种静默。
+    // 事件打在**包住按钮的宿主**上（禁用按钮自己收不到鼠标事件）
+    fireEvent.mouseEnter(button.parentElement as HTMLElement);
+    await waitFor(() => expect(screen.getByText('还没有出分的候选：评分完成后才能排名')).toBeInTheDocument());
+  });
+
+  it('跑到一半也能看排名（判据是「有没有分」，不是「跑完没有」）', () => {
+    renderPanel(
+      makeRun({
+        rows: [makeRow('w-1', { status: 'judged' }), makeRow('w-2', { status: 'running', score: null })],
+      }),
+    );
+
+    // 「开始」因为还有行在跑而禁用，但「排名」照常可用——中间名次正是调试用例时最想看的
+    expect(footer().getByRole('button', { name: '排名' })).toBeEnabled();
   });
 
   // 确认框的浮层根节点：`.run-start-confirm` 由组件显式挂上（页面上「开始」不止一处，

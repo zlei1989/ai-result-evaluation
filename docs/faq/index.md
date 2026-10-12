@@ -32,6 +32,7 @@
 - [技能面确证 `[{"name":"tang-poem-meal","source":"userSettings"},…]` 在，但 `工具调用名：[]`、哨兵 `AIEVAL-SKILL-OK-7f3a` 未命中](/faq/claude-code#技能面确证-name-tang-poem-meal-source-usersettings-在-但-工具调用名-、哨兵-aieval-skill-ok-7f3a-未命中)
 - [Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-rows-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
 - [执行日志里没有思考、原始输出里有（`messages.jsonl` 折叠后只剩 `text`；原文 `[{"type":"thinking","thinking":"…","signature":""}]`）](/faq/claude-code#执行日志里没有思考、原始输出里有-messages-jsonl-折叠后只剩-text-原文-type-thinking-thinking-signature)
+- [`AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这一行在 `running` 上挂了 6 分钟才失败）](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-api-error-connection-refused-—-a-firewall-or-proxy-may-be-blocking-it-econnrefused-这一行在-running-上挂了-6-分钟才失败)
 
 ### DeepSeek Harness
 

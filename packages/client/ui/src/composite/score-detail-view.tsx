@@ -40,7 +40,7 @@
 import { Alert, Button, Flex, Skeleton, Table, Tag, Typography, theme } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { HTMLAttributes, ReactNode } from 'react';
-import { AGENT_LABELS, rubricItemKeys, type Rubric, type ScoreResult } from '@aieval/contracts';
+import { AGENT_LABELS, rubricEntries, type Rubric, type RubricEntry, type ScoreResult } from '@aieval/contracts';
 import { EllipsisText } from '../base/ellipsis-text';
 import { JsonText } from '../base/json-text';
 import { formatDuration } from '../base/metric-line';
@@ -232,33 +232,36 @@ function judgeOutputBody(props: ScoreJudgeOutputProps): ReactNode {
 export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange, judgeOutput }: ScoreDetailViewProps): ReactNode {
   // 未达成项的语义色取 antd token（不写 `var(--ant-color-error)` 字面量：换主题时这里跟着走）
   const { token } = theme.useToken();
-  const keys = rubricItemKeys(rubric);
   const byId = new Map(score.judgments.map((judgment) => [judgment.id, judgment]));
 
   /**
-   * 每组的引用键：`rubricItemKeys` 的展平顺序就是「组序 → 项序」，按各组的项数切片即可
-   * （与 `rubric-table` 同一手法）。**不按对象反查**（早先那版是 `items.indexOf(item)`）：
-   * 两项内容完全相同时它永远命中第一项，第二项的判定会被贴到第一行上——表格化之后这个错
-   * 更看不出来（一行一列都长得对）。
+   * 每组的项与它们的引用键：由契约的 `rubricEntries` 一次摊平、**按 `groupIndex` 分组**
+   * （组边界由它自己算，本组件不再「按各组项数切片取键」——那是同一条枚举规则的第二份实现）。
+   * **不按对象反查**（`items.indexOf(item)`）：两项内容完全相同时它永远命中第一项，
+   * 第二项的判定会被贴到第一行上——表格化之后这个错更看不出来（一行一列都长得对）。
    */
-  const keysByGroup = ((): string[][] => {
-    const sliced: string[][] = [];
-    let cursor = 0;
-    for (const group of rubric.groups) {
-      sliced.push(keys.slice(cursor, cursor + group.items.length));
-      cursor += group.items.length;
+  const entriesByGroup = ((): RubricEntry[][] => {
+    const grouped: RubricEntry[][] = rubric.groups.map(() => []);
+    for (const entry of rubricEntries(rubric)) {
+      // rubricEntries 的 groupIndex 必然落在 groups 的范围内 ⇒ 兜底分支只为类型收敛，不会真的走到
+      (grouped[entry.groupIndex] ??= []).push(entry);
     }
-    return sliced;
+    return grouped;
   })();
+
+  /** 全表项数（「满分 N 分 · 共 M 项」那一行用）：它就是摊平结果的长度，不另算一遍 */
+  const itemCount = entriesByGroup.reduce((sum, entries) => sum + entries.length, 0);
 
   /** 某一组的行：判定按引用键取，取不到就是 `undefined`（由判定列如实显示「缺少判定」） */
   const rowsFor = (groupIndex: number): ScoreRow[] => {
-    const items = rubric.groups[groupIndex]?.items ?? [];
-    const groupKeys = keysByGroup[groupIndex] ?? [];
-    return items.map((item, index) => {
-      const key = groupKeys[index] ?? '';
-      return { index, key, goal: item.goal, weight: item.weight, judgment: byId.get(key) };
-    });
+    const entries = entriesByGroup[groupIndex] ?? [];
+    return entries.map((entry, index) => ({
+      index,
+      key: entry.key,
+      goal: entry.item.goal,
+      weight: entry.item.weight,
+      judgment: byId.get(entry.key),
+    }));
   };
 
   return (
@@ -315,7 +318,7 @@ export function ScoreDetailView({ score, rubric, rawOpen, onRawOpenChange, judge
         {/* 总分原样显示（见文件头口径 1） */}
         <Typography.Title level={4}>{score.totalScore}</Typography.Title>
         <Typography.Text type="secondary">
-          满分 {score.maxScore} 分 · 共 {keys.length} 项
+          满分 {score.maxScore} 分 · 共 {itemCount} 项
         </Typography.Text>
       </Flex>
 

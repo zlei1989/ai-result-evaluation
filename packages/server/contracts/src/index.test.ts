@@ -86,9 +86,11 @@ import {
   parseRepoSource,
   preserveUnchangedSecrets,
   repoNameFromSource,
+  rubricEntries,
   type AgentKind,
   type AgentEvent,
   type RubricItem,
+  type RubricEntry,
   type EvalRow,
   type EvalRun,
   type EvalRowStatus,
@@ -230,6 +232,11 @@ describe('contracts 公共出口', () => {
     expect(mergeSkillsEntries({}, { 'tang-poem-meal': { disabled: true } })).toEqual({
       'tang-poem-meal': { disabled: true },
     });
+    // 评分表摊平也要从包根可用：展示侧（评分详情、排名表）按它把判定贴回项上，
+    // 取不到就会各自按组切片再算一遍组边界——那正是 `rubricEntries` 要收掉的东西
+    expect(rubricEntries(rubric)).toEqual([
+      { key: 'A', item: { id: 'A', goal: 'g', weight: 100 }, groupName: 'g', groupIndex: 0 },
+    ]);
   });
 
   it('类型出口存在（编译期守卫：这里只做一次赋值，真正的检查是 typecheck）', () => {
@@ -238,6 +245,7 @@ describe('contracts 公共出口', () => {
     const mode: ExecutionMode = 'parallel';
     const status: EvalRowStatus = 'judged';
     const rubricItem: RubricItem = { id: 'A1', goal: '追加 agent 字段', weight: 18 };
+    const rubricEntry: RubricEntry = { key: 'A1', item: rubricItem, groupName: '一、生产代码', groupIndex: 0 };
     const theme: ThemeMode = 'auto';
     const code: ErrorCode = 'INVALID_REF';
     const settings: Settings = SETTINGS_DEFAULTS;
@@ -279,13 +287,13 @@ describe('contracts 公共出口', () => {
     const skillsPatch: SkillsPatch = { entries: { 'tang-poem-meal': { disabled: false } } };
 
     expect([
-      protocol, agent, mode, status, rubricItem, theme, code, settings, settingsView, patch, servers,
+      protocol, agent, mode, status, rubricItem, rubricEntry, theme, code, settings, settingsView, patch, servers,
       provider, view, model, modelInput, providerCreate, providerPatch,
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
       generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
       score, rubricGroup, event,
       skillEntry, skillWarning, skillList, skillFile, skillMarkdown, skillName, skillsSettings, skillsPatch,
-    ]).toHaveLength(41);
+    ]).toHaveLength(42);
   });
 
   /**
