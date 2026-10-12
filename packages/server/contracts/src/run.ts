@@ -78,13 +78,6 @@ export const RowFailureStageSchema = z.enum(['agent', 'judge']);
 export type RowFailureStage = z.infer<typeof RowFailureStageSchema>;
 
 /**
- * **关闭思考**的档名：契约、界面与三家适配器都用这一个值。
- * 各适配器负责把它翻成厂商词汇（dsh = `off`；claude = `thinking: { type: 'disabled' }`；
- * codex = `none`），因为三家的「关闭」在 wire 上根本不是同一个东西。
- */
-export const EFFORT_OFF = 'off';
-
-/**
  * 「本行 MCP」观测格的**结论**。四档缺一不可：
  *   · `connected`——有**硬证据**说它连上了（今天 = 厂商工具表里有它的工具，见 `judgedBy`）；
  *   · `unavailable`——有证据说它**没起来**（厂商报了失败状态）；
@@ -355,7 +348,7 @@ export const EvalRowSchema = z.object({
    * 静默跳过那一轮（与 `attempts` / `useAgentJudge` 同一条理由）。
    * 记的是**我们要求的**档位，不是**实际生效的**档位（cc 可能静默降档）。
    * **未选 = 走该家适配器的缺省**（dsh 是 `high`；claude / codex 是不传、由厂商推断），
-   * **不是**「沿用厂商默认」也不是「关闭」；要关闭必须显式写 `EFFORT_OFF`。
+   * **不是**「沿用厂商默认」也不是「关闭」；要关闭必须显式写 `EFFORT_OFF`（见 `./provider`）。
    */
   effort: z.string().min(1).optional(),
   /**

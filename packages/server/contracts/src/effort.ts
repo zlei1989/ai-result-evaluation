@@ -17,7 +17,7 @@
  * `medium` ⇒ 求交后必须少一格，否则那一格会摆出一个 dsh 硬报错的档（`UNSUPPORTED_REASONING_EFFORT`，
  * 正是要避免的「症状离真因很远」）。
  */
-import { EFFORT_OFF } from './run';
+import { EFFORT_OFF } from './provider';
 
 /**
  * 上游没声明档位时给**评分**用的规范档位域（用户口径）：

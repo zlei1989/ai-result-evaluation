@@ -26,6 +26,15 @@ export const PROTOCOL_LABELS: Record<ProtocolType, string> = {
 };
 
 /**
+ * **关闭思考**的档名：契约、界面与三家适配器都用这一个值。
+ * 它是**本仓统一的关闭档**，不是任何一家厂商的档名——三家的「关闭」在 wire 上根本不是同一个东西，
+ * 厂商拼写由各适配器自己翻：claude = `thinking: { type: 'disabled' }`；codex = `none`；
+ * dsh 收的也是 `off`（它把这一档在 overlay 里映射成「不发 reasoning」⇒ harness 落到显式关闭）。
+ * 它同时是候选池里那个不受上游声明裁剪的档（见 `./effort` 的 `intersectEfforts`）。
+ */
+export const EFFORT_OFF = 'off';
+
+/**
  * 模型清单条目：source 区分自动拉取与手工维护（拉取是合并，不能冲掉手工项）。
  *
  * 后三格是「模型能力」，全部可选 —— **缺省 = 未知**，绝不兜底成 0 或某个默认窗口：

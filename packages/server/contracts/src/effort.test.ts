@@ -12,7 +12,7 @@ import {
   CANONICAL_EFFORT_LEVELS as CANONICAL_FROM_BARREL,
   intersectEfforts as intersectFromBarrel,
 } from './index';
-import { EFFORT_OFF } from './run';
+import { EFFORT_OFF } from './provider';
 
 /** 上游声明的宽域（codex 那一类）：比规范五档多出 minimal / xhigh / ultra / persistent */
 const codex = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'];
