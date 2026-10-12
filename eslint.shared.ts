@@ -84,6 +84,11 @@ export const baseConfig: Linter.Config[] = [
       '**/out/**',
       '**/coverage/**',
       '**/probe/dumps/**',
+      // `.scratch/**`：冒烟记录与取材克隆的落点（`.gitignore:8` 忽略）。探针会把第三方包整棵克隆
+      // 进去（`.scratch/pi-research/pkg/package/examples/**` 一类），里面上千个 `.ts`/`.mjs`
+      // 全是别人的模板 ⇒ 不忽略就是几千条对着别人代码发的报错。与 `probe/dumps/**` 同一条口径：
+      // flat config 不读 `.gitignore`，生成物目录必须在这里再写一遍。
+      '**/.scratch/**',
       '**/.vitepress/cache/**',
       '**/.vitepress/dist/**',
     ],

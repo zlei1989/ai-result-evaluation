@@ -737,6 +737,26 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
       ],
     },
     /**
+     * 注入面能力：MCP 随 `thread/start` 的**线程级配置**下发，skill 副本落在 `<CODEX_HOME>/skills/`
+     * 并由 app-server 的 `skills/list` 报回来——两条通路都通。
+     */
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [
+        'MCP 的判据通道是 `mcpServer/startupStatus/updated`（带厂商 `error` 原文），档位**只到「装上了」**：自建网关路由下工具调用可能被上游判 `unsupported call`',
+        'skill 的判据通道是 `skills/list`（带 `scope` 与落点 `path`）——它证明厂商认出了清单，且 `enabled: false` 的条目也会列出来',
+      ],
+    },
+    /**
+     * 耗时量级：一次运行在**分钟级**（含 `codex app-server` 的启动到收尾）。
+     * 真机冒烟的默认等待预算按这一档派生——声明小了，那一轮会被自己的预算掐掉。
+     */
+    timing: {
+      runScale: 'minutes',
+      notes: ['本机实测：一次运行的墙钟在分钟级；app-server 启动是其中的固定开销'],
+    },
+    /**
      * 推理证据必须补 messages.jsonl：思考全文与工具结果正文**结构性不进** events.jsonl
      * （事件流只有摘要与结构件），唯一落点是消息账本 ⇒ 编排层据此给 codex 候选行多拼一份
      * messages.jsonl 证据，而不是把厂商名硬编码进编排层。

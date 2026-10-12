@@ -12,6 +12,7 @@ import {
   type AgentEvent,
   type AgentKind,
   type AgentMessage,
+  type InjectionCapability,
   type McpServers,
   type MessageCapability,
   type SubagentRecord,
@@ -308,6 +309,23 @@ export interface AgentRunResult {
   };
 }
 
+/**
+ * **耗时量级**：这一家跑完一行典型任务要多久。
+ *
+ * 为什么是**量级**而不是精确数字：耗时由机器、模型、路由与任务规模共同决定，写一个精确值必然
+ * 很快过期或变成假话；而量级有两个真实消费方——**真机冒烟的等待预算按它派生**（声明小了，
+ * 这一轮会被自己的预算掐掉，红在产物格而不是红在一句注释里），以及将来编排层若要给超时定档。
+ *
+ * 为什么必须有这一格：新家接入时「这家要跑多久」从来没有人回答过，而它直接决定等待预算与用户
+ * 预期；漏了它，一个比另两家慢一个数量级的接入不会被任何判据发现。
+ */
+export interface ProviderTiming {
+  /** 一行典型任务跑完的量级；实测超出这一档的上限就是声明与事实不符 */
+  runScale: 'seconds' | 'minutes';
+  /** 这一格成立的**前提**（机器 / 模型 / 路由 / 任务规模）；空数组 = 无条件成立 */
+  notes: readonly string[];
+}
+
 /** 注册表元数据：协议兼容性 / 行级能力 / 消息能力 / 档位域的**唯一**查询点（A3） */
 export interface AgentProviderMetadata {
   /**
@@ -342,6 +360,23 @@ export interface AgentProviderMetadata {
    * 拿不到」挤进同一格。
    */
   messageCapability: MessageCapability;
+  /**
+   * **注入面能力**：我们下发给厂商进程的东西（MCP server、skill 副本），这一家收不收得到。
+   *
+   * 为什么单列一组：`capability` 说的是**行级**（能不能中止、能不能计量），`messageCapability`
+   * 说的是**内容级**（拿得到哪些块），而这一组说的是**下发级**——三条通路的问题、消费方与
+   * 变化原因都不同。少了它，「这家装不上 MCP」没有任何地方说得出口：只能等真跑一次、
+   * 去 `vendor-system` 事件里事后翻，而「没声明」与「声明了不支持」对使用者是两件事。
+   *
+   * 声明与产物**互钉**：声明 `yes` 的家，一致性套件的 fixture 必须给出对应场景，
+   * 且该场景产物里必须真的有那件事（判据在 `providers/conformance/` 的套件与接入守卫里）。
+   */
+  injection: InjectionCapability;
+  /**
+   * **耗时量级**：真机冒烟的等待预算按它派生，实测超出这一档的上限即判声明与事实不符。
+   * 见 `ProviderTiming`。
+   */
+  timing: ProviderTiming;
   /**
    * 要拿**推理证据**时，除了 events.jsonl 是否还必须补 messages.jsonl（**必填**）。
    *

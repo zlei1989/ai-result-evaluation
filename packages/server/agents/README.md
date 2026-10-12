@@ -194,6 +194,8 @@ metadata: {
     usage: boolean,                            // false ⇒ 界面显示「不支持计量」，不是 0
   },
   messageCapability: MessageCapability,        // 消息级能力（见下面第二张表）
+  injection: InjectionCapability,              // 注入面能力：MCP / skills 两条「我们下发、厂商接收」的通路
+  timing: { runScale: 'seconds' | 'minutes', notes: readonly string[] },   // 耗时量级（真机等待预算按它派生）
   reasoningEfforts: readonly string[],         // 该家能表达的思考强度档位（完整值域，必填）
   defaultEffort?: string,                      // 「未选档位」时实际会用的档（只有 dsh 声明）
 }
@@ -231,6 +233,27 @@ metadata: {
 > （`applied.structuredOutput`），由适配器按本次运行上报——`false` 不等于答复不合格，走填充层的家
 > 同样可能交出一份完全合格的 JSON。**用户可见的行事件由调用方按 `applied` 发**，绝不让调用方以为
 > 「已经强约束」而实际什么都没发生。
+
+**注入面能力声明**（`metadata.injection`）说的是**我们下发的东西厂商认不认**。它与上面那张表分列的理由：
+那一组是**内容级**（能拿到哪些块），这一组是**下发级**（发出去的东西收不收得到），问题、消费方与
+变化原因都不同。两格各用同一套五态 + `MissingReason`（非 `yes` 必须给原因），声明 `yes` 的家必须
+拿得出证明——场景或显式登记，见 §8.1：
+
+| kind | mcp | skills | 判据通道 |
+|---|---|---|---|
+| `cc` | `yes` | `yes` | MCP：`system/init` 的服务状态 + 工具表；skill：`getContextUsage().skills` |
+| `codex` | `yes` | `yes` | MCP：`mcpServer/startupStatus`（档位只到「装上了」）；skill：`skills/list` 的响应 |
+| `dsh` | `yes` | `yes` | MCP：`request/header` 的**工具表**（这家没有服务状态那一格）；skill：`user/message` 的 `skill-catalog` |
+
+> 「认不认」的判据都落在 `vendor-system` 事件上，但**读法要两家合读**：服务状态表（cc / codex）与
+> 工具表（dsh）是同一件事的两条通道，只认其中一条会把另一家判成「没注入」——那是判据错，不是它错。
+
+**耗时量级**（`metadata.timing.runScale`）声明一次运行是秒级还是分钟级，`notes` 写这一格成立的
+前提（机器 / 模型 / 路由 / 任务规模）。它是**量级**不是精确值——耗时随机器与模型变，写死数字必然
+过期或变成假话；而量级有真实消费方：**真机冒烟的等待预算按它派生**（声明小了，那一轮会被自己的
+预算掐掉、红在产物格），⑦ 格再从结果侧判一次「跑完了但远超声明」。三家都是分钟级；
+差异会在第四家出现时体现——那正是这一格存在的理由。
+
 
 ---
 
@@ -408,13 +431,30 @@ it('注入落点与结果贯通', async () => {
 
 | # | 步骤 | 判据 |
 |---|---|---|
-| 1 | 写**能力声明**（五态 × 五格 + `notes` 写清路由/模型前提） | 契约层「能力声明自身合规」 |
+| 1 | 写**能力声明**：消息面五格 + **注入面两格**（MCP / skills）+ **耗时量级**（`runScale`），`notes` 写清路由/模型/机器前提 | 契约层 schema 的 `superRefine` + 元数据回归网（`registry.test.ts`） |
 | 2 | 定**厂商入口的定位方式**（静态 import？子进程？）；走子进程就必须打包器免疫 | 静态层「打包器免疫」（`static-assertions.test.ts`） |
 | 3 | 定**凭据与 provider 的传递**：密钥进子进程环境；provider 条目名与 `model_provider` 类字段**成对**给出；base_url 归一（该补 `/v1` 就补） | 真机冒烟第 ② 格 |
-| 4 | 写 fixture 场景，**至少覆盖能力声明里所有 `yes` 的那几格** | 契约层「能力声明与产物互钉」 |
-| 5 | 接**生命周期**：取消能终止在途轮次、`dispose` 真正回收子进程、清理遇 `EPERM` 重试 | 集成层 + 真机冒烟第 ①/③ 格 |
-| 6 | 登记**缺失**：缺失影响矩阵里每一格要么有产物、要么有 `MissingReason` | 契约层「缺失必须带原因」 |
-| 7 | 跑**真机冒烟**，把四格证据写进当次关账记录 | 见下 |
+| 4 | 写 fixture 场景覆盖所有 `yes` 的格；注入面的 `yes` 格要给**请求侧探针 + 厂商侧事实**两份，**或**登记证明在哪一层 | 契约层「能力声明与产物互钉」+ **接入守卫**（`providers/conformance/onboarding.test.ts`） |
+| 5 | 接**生命周期**：取消能终止在途轮次、`dispose` 真正回收子进程、清理遇 `EPERM` 重试 | 一致性套件「生命周期」判据（见下：释放恰好一次 + 取消与声明一致） |
+| 6 | 登记**缺失**：非 `yes` 的格必须带 `MissingReason`（四句分工） | 契约层两条 `superRefine` |
+| 7 | 跑**真机冒烟**，把四格证据写进当次关账记录，并在覆盖台账里登记这一家 | 判据见 `src/testing/live-smoke-checks.ts`（每格有正反例） |
+
+**第 4 步的强制层是接入守卫**：套件由各家自己 `import` 自己调、没有总驱动，因此「新家压根不写这个文件」
+不会让任何用例变红——`onboarding.test.ts` 把「参加」本身变成判据（目录与注册表一一对应、每家都交 fixture
+且真的调用套件、`yes` 的格在本家 fixture 里有证明场景或显式登记）。三层判据与「为什么是「运行期读声明 +
+静态读 fixture 源码」见知识库《新增 SDK 接入流程》。
+
+**注入面为什么要两份事实**：只判厂商侧会放过「适配器压根没把 `input.mcpServers` / `input.skills` 交给
+厂商」——夹具喂的厂商载荷照样产出那条事实，套件全绿而 MCP 一台都没装到。请求侧事实由假件在 run 期间
+记录（cc 的 SDK recorder、dsh 的 overlay 落点、codex 的假 app-server RPC 台账），夹具手搓不出来。
+这一层拦的是「顺着写但漏了一环」，不是「成心骗」——后者只有真机冒烟拦得住。
+
+**生命周期（释放 / 取消）**：这两条出口是**行为**，产物里没有它们的形状，所以各家交一个**异步观测函数**
+（`ConformanceFixture.lifecycle`，真跑两次运行、其中一次要中断），套件在用例里 `await`。判据三条：
+正常收尾后释放**恰好一次**、取消之后同样恰好一次、`canceledMidTurn` 与 `metadata.capability.cancelMidTurn`
+**一致**（声明能中途取消却做不到，是这一层最该拦的假话）。证明不了的家在 `lifecycleElsewhere` 登记。
+**并发隔离不在这里**：它由静态层守（`process.env` 写入被 7 种写法的禁令封死，「替换型子进程环境」是
+唯一可行实现 ⇒ 真并行没有串扰载体）。
 
 **契约层**（与厂商无关，任何一家都得过；一次接入的全部成本就是一个 fixture）：
 
@@ -422,7 +462,9 @@ it('注入落点与结果贯通', async () => {
 // providers/<kind>/conformance.test.ts
 describeProviderConformance({
   kind: '<kind>',
-  capability: codexProvider.metadata.messageCapability,   // 本家的能力声明
+  capability: codexProvider.metadata.messageCapability,   // 本家的消息能力声明
+  injection: codexProvider.metadata.injection,             // 本家的注入面声明（MCP / skills）
+  injectionProof: { mcp: 'mcp-injection' },                // 声明 yes 的注入面格 → 证明场景
   scenarios: { 'plain-reply': () => …, 'thinking-full': () => …, subagent: () => … },
 });
 ```
@@ -439,7 +481,21 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 
 四格：① **装载**（没有落到入口解析/加载类失败）② **传输**（服务端记录的路由与本次选择一致、且不是凭据类失败）③ **产物**（跑到 `judged` 且有分数）④ **形状**（`messages` 接口的**线上形态**逐个过 schema）。`AIEVAL_LIVE_KIND` **必填**——不给默认家，避免「默认跑的那家绿了就当四家都绿」。
 
-**登记：本包唯一的业务耦合就是这里的产物断言**——③，以及只在 `AIEVAL_LIVE_AGENT_JUDGE=1` 时跑的 ⑤（智能体评分拿到答复并给出结论）与 ⑥（评分者产出可解析、记录里带「输出约束」那一格）。它们验证的是端到端产物，**不在导出面、也不影响依赖图**；除此之外本包对评测领域一无所知（见 §6.1）。
+**一条命令跑完几家**：`pnpm live-smoke`（`scripts/live-smoke.mjs`）。它从 `GET /api/runs/model-options`
+取候选（哪家配哪个 provider / model 的知识在服务端，脚本不复制），逐家串行跑、打印四格、汇总，
+并给出可粘贴进 `LIVE_SMOKE_COVERAGE` 的证据行；`--dry-run` 只列候选与将执行的命令，`--kind cc` 只跑一家，
+`--agent-judge` 连 ⑤⑥（智能体评分档）一起跑。它不读配置文件、不碰密钥。前置：`pnpm dev` 起着。
+
+**绿的口径**：①②③④⑦ 必跑（跳过即异常），⑤⑥ 只在 `--agent-judge` 档有意义——不给开关时跳过属正常，
+但汇总会写明「未覆盖」，台账建议行也随之改写，不让「绿」被读成「七格都验过了」。
+
+**判据住在 `src/testing/live-smoke-checks.ts`（纯函数），不留在那个默认跳过的文件里**：跳过意味着它们
+从没有机会见红——装载那一格就因为读了行上不存在的 `errorCode`（契约里叫 `error.code`）而恒绿过。
+抽出来之后每格都有正反例（`live-smoke-checks.test.ts`），真机那一层只负责调用；
+`LIVE_SMOKE_COVERAGE`（同文件）逐家登记「怎么跑的、结论是什么」，加第四家时 `Record<AgentKind, …>`
+缺格会被 `tsc` 直接点名——它是一张**编译期强制回答的清单**，不是机器验证。
+
+**登记：本包唯一的业务耦合就是这里的产物断言**——③，以及只在 `AIEVAL_LIVE_AGENT_JUDGE=1` 时跑的 ⑤（智能体评分拿到答复并给出结论）与 ⑥（评分者产出可解析、记录里带「输出约束」那一格）。它们验证的是端到端产物，**不在导出面、也不影响依赖图**；除此之外本包对评测领域一无所知（见 §6.1）。`src/testing/` 下的测试辅助因此也受业务无关守卫管：给用户的失败原因里只写契约字段名（`score` / `judgeProviderId`），不写领域词。
 
 ## 9. 常见坑
 

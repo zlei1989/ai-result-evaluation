@@ -33,6 +33,10 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 消息能力声明由三家各自显式声明（`providers/<kind>/index.ts`）；这一份是形状桩，
     // 逐格取值另有 `message-conformance.test.ts` 与各家 index.test.ts 钉住
     messageCapability: permissiveMessageCapability(),
+    // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
+    injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
+    timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐（assistant 文本与思考都进事件流），不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,
     // 档位域来自 Agent SDK 的 `Options.effort` / `EffortLevel`，**外加**
@@ -45,6 +49,10 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     protocolTypes: ['openai'],
     capability: { cancelMidTurn: true, usage: true },
     messageCapability: permissiveMessageCapability(),
+    // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
+    injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
+    timing: { runScale: 'minutes', notes: [] },
     // 思考全文与工具结果正文结构性不进 events.jsonl，唯一落点是 messages.jsonl ⇒ 必须补
     needsMessagesForReasoningEvidence: true,
     // 档位域来自 `codex app-server` 的 `ReasoningEffort`（比上游网关用到的四个档更宽），**外加**
@@ -61,6 +69,10 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // ⇒ 与 providers/dsh/{events,index}.ts 的提取消口径**同一次提交**改成 true（回归网会拦漂移）
     capability: { cancelMidTurn: false, usage: true },
     messageCapability: permissiveMessageCapability(),
+    // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
+    injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
+    timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,
     // 档位域来自 llm-deepseek 的 `reasoningEffort` schema（只有四档：没有 medium / xhigh）
@@ -90,15 +102,24 @@ describe('listAgentProviders', () => {
 });
 
 describe('元数据投影（回归网）', () => {
-  it('三家与表逐格一致（`messageCapability` 除外，它另有一处真源守卫）', () => {
+  it('三家与表逐格一致（`messageCapability`、注入面的 `notes` 与耗时 `notes` 除外，它们各有真源）', () => {
     for (const provider of listAgentProviders()) {
       // 为什么排除 `messageCapability`：它由**各家自己**声明（三份真值在 `providers/<kind>/index.ts`），
       // 「声明过的东西真的拿得到」由 `message-conformance.test.ts` 钉住；这里再抄一份 stub 只会
       // 让同一件事有两个真源，而两份必然漂移。
-      const { messageCapability: _declared, ...rest } = provider.metadata;
-      const { messageCapability: _expected, ...wanted } = EXPECTED_METADATA[provider.kind];
+      const { messageCapability: _declared, injection, timing, ...rest } = provider.metadata;
+      const { messageCapability: _expected, injection: expectedInjection, timing: expectedTiming, ...wanted } =
+        EXPECTED_METADATA[provider.kind];
       // 报错信息带上 kind：这一格是「哪一家错了」的定位线索（三家共用同一个断言体）
       expect(rest, `${provider.kind} 的元数据`).toEqual(wanted);
+      // 注入面的两格进回归网：悄悄把 `yes` 改成 `no` 会直接改变界面上「这家不支持 MCP / skills」
+      // 的结论，必须与适配器同一次提交里改掉期望。`notes` 不进——它是实测前提的说明，随真机更新。
+      expect(
+        { mcp: injection.mcp, skills: injection.skills },
+        `${provider.kind} 的注入面声明`,
+      ).toEqual({ mcp: expectedInjection.mcp, skills: expectedInjection.skills });
+      // 耗时量级同理：改档会改真机冒烟的等待预算，属于「必须与适配器同一次提交里改掉」的那类
+      expect(timing.runScale, `${provider.kind} 的耗时量级`).toBe(expectedTiming.runScale);
     }
   });
 

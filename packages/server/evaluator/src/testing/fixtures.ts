@@ -751,6 +751,21 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           : ['off', 'low', 'high', 'max'],
     // `defaultEffort` 同真值：只有 dsh 有（API 侧要用它拦「未选 + 模型不支持缺省档」）
     ...(kind === 'dsh' ? { defaultEffort: 'high' } : {}),
+    /**
+     * 注入面声明：照**真值**填（三家 MCP 与 skill 两条下发通路都通）。编排层不读它，
+     * 但「假 provider 与真注册表逐格一致」是这份夹具的前提——填一份宽松桩会让审计看不出破绽。
+     * 三家的真值在各自的 `providers/<kind>/index.ts`，由 agents 包的元数据回归网钉住。
+     */
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [],
+    },
+    /**
+     * 耗时量级同真值：三家都是分钟级（真机冒烟的等待预算按这一档派生）。编排层不读它，
+     * 但「假 provider 与真注册表逐格一致」是这份夹具的前提。
+     */
+    timing: { runScale: 'minutes', notes: [] },
     // 推理证据需求同真值：只有 codex 的思考全文与工具结果正文只在 messages.jsonl 里，
     // 编排层据它决定「执行过程记录」证据要不要多拼一份消息账本
     needsMessagesForReasoningEvidence: kind === 'codex',

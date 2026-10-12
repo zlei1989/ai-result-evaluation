@@ -15,13 +15,14 @@
  * 把它们注册成用例。这样套件自己也能被测——不然它只是一堆「看起来会拦」的断言。
  */
 import {
-  AgentEnvironmentSchema,
+  AgentEventSchema,
   AgentMessageSchema,
   MessageCapabilitySchema,
+  MessageSourceSchema,
   SubagentRecordSchema,
   type AgentMessage,
+  type InjectionCapability,
   type MessageCapability,
-  type MessageSource,
   type MissingReason,
   type SubagentRecord,
   type UsageTokens,
@@ -44,15 +45,17 @@ export type ConformanceScenarioName =
   | 'env-vendor-system'
   | 'structured-output'
   | 'cancel'
-  | 'failure';
+  | 'failure'
+  /** 注入面：本次运行真的把 MCP server 下发给了厂商，且厂商侧收到了（服务表或工具表两台通道之一） */
+  | 'mcp-injection'
+  /** 注入面：本次运行真的物化了 skill 副本，且厂商侧报回了清单 */
+  | 'skill-injection';
 
 /** 一次运行的归一产物：**这就是被测对象** */
 export interface ConformanceProduct {
   messages: AgentMessage[];
   subagents: SubagentRecord[];
-  /** 没有 `vendor-system` 通道的那家给 `null`（不要造空壳） */
-  environment: unknown;
-  /** 行级事件；形状由契约的事件 schema 管，这里只查「三类 + log 带 stream」 */
+  /** 行级事件；形状由 `checkEventShapes` 逐个过契约 schema，这里只查类型与 `log` 的 `stream` */
   events: Array<Record<string, unknown>>;
   usage: {
     tokens: UsageTokens | null;
@@ -62,6 +65,12 @@ export interface ConformanceProduct {
   };
   /** 行结果（最终答复与结论） */
   result: ConformanceRunResult;
+  /**
+   * **注入面探针**：能观测请求侧的 fixture 才给（判据见 `checkInjectionNailing`）。
+   * 为什么不给就是缺陷：只判厂商侧事实会放过「适配器压根没把我们给的输入交给厂商」——
+   * 那种情况下 MCP 一台都装不上，而套件全绿。
+   */
+  injectionProbe?: InjectionProbe;
   /**
    * 结构化输出（评分者通路）的探针：**能真观测到「schema 有没有发给厂商」的 fixture 才给**。
    *
@@ -108,8 +117,29 @@ export interface ConformanceRunResult {
 export interface ConformanceFixture {
   /** 这一家的 kind（报错文案里点名用） */
   kind: string;
-  /** 本次运行的能力声明 */
+  /** 本次运行的**消息层**能力声明 */
   capability: MessageCapability;
+  /** 本家的**注入面**能力声明（MCP / skills）；判据见 `checkInjectionNailing` */
+  injection: InjectionCapability;
+  /** 注入面两格的**证明场景**（格 → 场景名）：声明 `yes` 的格靠它证明 */
+  injectionProof: Partial<Record<'mcp' | 'skills', ConformanceScenarioName>>;
+  /**
+   * 本夹具**结构上证明不了**的注入面格 → 它在哪一层被证明（**相对仓库根**的路径）。
+   *
+   * 为什么留这条路：消息级夹具（把协议载荷喂进归一函数那种）看不到 RPC 往返——codex 的技能清单
+   * 来自 `skills/list` 的响应，在那一层造不出来；硬要它填个场景，填出来的只能是夹具自述。
+   * 登记**不是免检**：接入守卫核对点名的文件真的存在，写一个不存在的路径比不写更糟。
+   */
+  injectionProofElsewhere?: Partial<Record<'mcp' | 'skills', string>>;
+  /**
+   * 这一家声明的「能不能中途取消」（`metadata.capability.cancelMidTurn`）。
+   * 判据拿它与 `lifecycle()` 的**观测**对照：声明能、实际不能是这一层最该拦的假话。
+   */
+  cancelMidTurn: boolean;
+  /** 生命周期观测（**异步**：要真跑两次运行、其中一次要中断）；判据见 `checkLifecycle` */
+  lifecycle?: () => Promise<LifecycleEvidence>;
+  /** 本夹具证明不了生命周期时 → 它在哪一层被证明（**相对仓库根**路径，接入守卫核对存在） */
+  lifecycleElsewhere?: string;
   /** 场景 → 产物；可以只给一部分，套件按能力声明要求它必须有的那些 */
   scenarios: Partial<Record<ConformanceScenarioName, () => ConformanceProduct>>;
   /** 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
@@ -135,6 +165,25 @@ const CAPABILITY_PROOF: ReadonlyArray<readonly [string, readonly ConformanceScen
   ['streamingDelta', ['plain-reply']],
 ];
 
+/**
+ * 这份能力声明里声明 `yes` 的格，各自**需要哪一组场景**来证明（组内任一即可）。
+ *
+ * 为什么导出：套件运行时靠 `CAPABILITY_PROOF` 判「声明过的东西真的拿得到」，而接入守卫
+ * （`./onboarding.test.ts`）要在**手上没有 fixture** 的时候判「新家交上来的 fixture 真的覆盖了
+ * 它自己声明为 `yes` 的格」。两处引用的必须是同一张表——各写一份的话，接入期与运行期会各有
+ * 各的「覆盖」定义，新家漏掉一整格时两边都以为对方在管。
+ *
+ * 空数组 = 这份声明没有 `yes` 格（全 `no` / `unverified` 也合法，只要按契约给出缺失原因）。
+ */
+export function capabilityProofGroups(capability: MessageCapability): Array<readonly ConformanceScenarioName[]> {
+  const declaration = capability as unknown as Record<string, unknown>;
+  const groups: Array<readonly ConformanceScenarioName[]> = [];
+  for (const [cell, proofNames] of CAPABILITY_PROOF) {
+    if (declaration[cell] === 'yes') groups.push(proofNames);
+  }
+  return groups;
+}
+
 /** 能力五态 → 允许的缺失原因（对应关系） */
 const REASON_BY_CAPABILITY: Record<string, readonly MissingReason[]> = {
   no: ['not-supported'],
@@ -159,7 +208,7 @@ export function checkCapabilityDeclaration(fixture: ConformanceFixture): void {
   }
 }
 
-/** 消息与子任务行过契约 schema，环境过 schema 或显式 null */
+/** 消息与子任务行过契约 schema（行级事件的形状另有 `checkEventShapes`） */
 export function checkContracts(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     for (const message of build().messages) {
@@ -170,10 +219,6 @@ export function checkContracts(fixture: ConformanceFixture): void {
       const parsed = SubagentRecordSchema.safeParse(record);
       if (!parsed.success) throw new Error(`${fixture.kind}/${name} 的子任务行不合规：${JSON.stringify(parsed.error.issues)}`);
     }
-    const environment = build().environment;
-    if (environment === null) continue;
-    const parsed = AgentEnvironmentSchema.safeParse(environment);
-    if (!parsed.success) throw new Error(`${fixture.kind}/${name} 的环境信息不合规：${JSON.stringify(parsed.error.issues)}`);
   }
 }
 
@@ -248,8 +293,12 @@ export function checkCapabilityNailing(fixture: ConformanceFixture): void {
       if (usable.length === 0) {
         throw new Error(`${fixture.kind}：${cell} 声明 yes，但没有任何能证明它的场景（缺 ${proofNames.join(' / ')}）`);
       }
+      const prove = CELL_PROOF[cell]!;
       for (const scenarioName of usable) {
-        assertCapabilityProof(fixture.kind, scenarioName, fixture.scenarios[scenarioName]!());
+        const problem = prove(fixture.scenarios[scenarioName]!());
+        if (problem !== null) {
+          throw new Error(`${fixture.kind}：声明 ${cell}=yes，但 ${scenarioName} 场景里${problem}`);
+        }
       }
       continue;
     }
@@ -262,44 +311,80 @@ export function checkCapabilityNailing(fixture: ConformanceFixture): void {
   }
 }
 
-/** 断言某一格声明 `yes` 时，产物里**确实**出现了对应的块 */
-function assertCapabilityProof(kind: string, scenario: ConformanceScenarioName, product: ConformanceProduct): void {
-  const blocks = product.messages.flatMap((message) => message.blocks);
-  switch (scenario) {
-    case 'thinking-full':
-    case 'thinking-encrypted':
-      if (!blocks.some((block) => block.type === 'thinking')) {
-        throw new Error(`${kind}：声明 thinkingText=yes，但 ${scenario} 场景里没有任何 thinking 块`);
-      }
-      return;
-    case 'tool-shell':
-    case 'tool-edit':
-    case 'tool-plan':
-      if (!blocks.some((block) => block.type === 'tool-call' && block.input !== null)) {
-        throw new Error(`${kind}：声明 toolInput=yes，但 ${scenario} 场景里的 tool-call 块没有入参`);
-      }
-      return;
-    case 'subagent':
-      if (product.subagents.length === 0) {
-        throw new Error(`${kind}：声明 subagent=yes，但 subagent 场景没有产出子任务行`);
-      }
-      return;
-    default:
-      if (!product.messages.some((message) => message.chunk === 'delta')) {
-        throw new Error(`${kind}：声明 streamingDelta=yes，但 ${scenario} 场景里没有任何 delta 消息`);
-      }
-  }
+/**
+ * 每个能力格的**证明**：在这份产物上判「声明 `yes` 的东西真的拿得到」。
+ * 返回一句人话（拿不到）或 `null`（拿得到），kind / 场景名由调用方拼上。
+ *
+ * 为什么按**格**分派而不是按场景名分派：一格声明 `yes` 时，能证明它的场景常常不止一个
+ * （`toolInput` 就有 tool-shell / tool-edit / tool-plan 三个候选）。按场景分派会把「这一格要什么」
+ * 与「这个场景里该有什么」绑死——`toolResult` 就这样被绑在 `tool-shell` 上，于是它的证明只查了
+ * tool-call 的入参：**产物里一个工具结果块都没有也照样绿**。按格分派后，每格只认自己的形态。
+ */
+const CELL_PROOF: Readonly<Record<string, (product: ConformanceProduct) => string | null>> = {
+  /**
+   * 要的是**正文**：`text: null` 的密文思考证明不了这一格——「有思考拿不到文本」是契约里的合法形态
+   * （`textKind: 'none'`），但它与「拿得到思考正文」是两件事。
+   */
+  thinkingText: (product) => {
+    const thinking = product.messages.flatMap((message) => message.blocks).filter((block) => block.type === 'thinking');
+    if (thinking.length === 0) return '没有任何 thinking 块';
+    if (!thinking.some((block) => block.text !== null && block.text !== '')) {
+      return '有 thinking 块但都没有正文（密文思考证明不了 thinkingText=yes）';
+    }
+    return null;
+  },
+  toolInput: (product) =>
+    product.messages.flatMap((message) => message.blocks).some((block) => block.type === 'tool-call' && block.input !== null)
+      ? null
+      : '没有带入参的 tool-call 块',
+  toolResult: (product) =>
+    product.messages.flatMap((message) => message.blocks).some((block) => block.type === 'tool-result')
+      ? null
+      : '没有 tool-result 块',
+  subagent: (product) => (product.subagents.length > 0 ? null : '没有产出子任务行'),
+  streamingDelta: (product) =>
+    product.messages.some((message) => message.chunk === 'delta') ? null : '没有任何 delta 消息',
+};
+
+/**
+ * **注入面探针**：请求侧的事实——「我们发出去什么」。
+ *
+ * 为什么必须单列：厂商侧事实（`vendor-system` 事件）只证明「厂商报了什么」，**不证明**
+ * 「我们把 `input.mcpServers` / `input.skills` 真的交给了厂商」。适配器整段忽略入参时，
+ * 夹具喂进去的厂商载荷照样产出那条事实——判据全绿，而 MCP 一台都没装到。
+ *
+ * 请求侧事实由**假件在 run 期间记录**（cc 的 SDK recorder 里的 `mcpServers`、dsh 的 overlay
+ * 落点、落盘的技能目录），这是夹具手搓不出来的那一半。与 `structuredOutput` 的
+ * `hasOutputSchema` 同一条设计：**两份事实互钉**，只判一份等于没判。
+ */
+export interface InjectionProbe {
+  /** 本次运行真的交给厂商的 MCP 配置；`null` / 空对象 = 一台都没发出去 */
+  mcpSent?: unknown;
+  /** 本次运行真的落盘的技能副本名（对账对象是 `AgentRunInput.skills` 给的那几个） */
+  skillsInstalled?: readonly string[];
 }
 
-/** `present:false` 的环境项**必须**带 `missing`；能力声明同一口径 */
-export function checkMissingReasons(fixture: ConformanceFixture): void {
+/** 请求侧事实「在不在」：数组看长度、对象看键数（`null` / `undefined` / 空 = 没发出去） */
+function hasRequestFact(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value !== null && typeof value === 'object') return Object.keys(value).length > 0;
+  return false;
+}
+
+/**
+ * 行级事件**逐个过契约 schema**（`AgentEventSchema`）。
+ *
+ * 为什么需要它：`events` 在产物里是 `Record<string, unknown>[]`，类型系统管不到，而形状本该由契约管。
+ * 少了这一条，适配器发一条形状残缺的事件不会有任何判据发现——少了 `status` 的 status 事件、
+ * 少了 `mcpServers` 的 `vendor-system`，界面只是少画一格，链路全绿。
+ * `vendor-system` 尤其要紧：**MCP 与技能面的厂商事实都在它身上**，注入对不对齐全看它。
+ */
+export function checkEventShapes(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
-    const environment = build().environment as { groups?: Array<{ items?: Array<Record<string, unknown>> }> } | null;
-    for (const group of environment?.groups ?? []) {
-      for (const item of group.items ?? []) {
-        if (item.present === false && item.missing === undefined) {
-          throw new Error(`${fixture.kind}/${name}：环境项 ${String(item.id)} 标了 present:false 却没给 missing`);
-        }
+    for (const event of build().events) {
+      const parsed = AgentEventSchema.safeParse(event);
+      if (!parsed.success) {
+        throw new Error(`${fixture.kind}/${name} 的行级事件不合契约：${JSON.stringify(parsed.error.issues)}`);
       }
     }
   }
@@ -352,13 +437,24 @@ export function checkFinalAnswer(fixture: ConformanceFixture): void {
   }
 }
 
-/** 行级事件只有三类，`log` 必须带 `stream`；消息来源在闭集内 */
+/**
+ * 契约里的事件类型闭集。`AgentEventSchema` 是判别联合：`.options` 是各分支，
+ * 每个分支的 `.shape.type.value` 就是那个 `z.literal`。
+ */
+const CONTRACT_EVENT_TYPES: readonly string[] = AgentEventSchema.options.map((option) => option.shape.type.value);
+
+/**
+ * 事件类型与消息来源都必须落在**契约的闭集**内；`log` 必须带 `stream`。
+ *
+ * 两个闭集都从 schema **派生**，不在这里手抄一份：手抄的那份必然与契约漂移，而漂移的表现是
+ * **误红**——适配器确实会发 `vendor-system`（`emit.ts` 把厂商系统事实转成这条事件），而一份抄成
+ * 「只有 usage / log / error」的清单会把它判成契约外的类型，红在一条完全合法的产物上。
+ */
 export function checkLineEventsAndSources(fixture: ConformanceFixture): void {
-  const allowedSources: MessageSource[] = ['wire', 'hook', 'session-file', 'aggregate'];
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const product = build();
     for (const event of product.events) {
-      if (!['usage', 'log', 'error'].includes(String(event.type))) {
+      if (!CONTRACT_EVENT_TYPES.includes(String(event.type))) {
         throw new Error(`${fixture.kind}/${name}：出现了契约外的行级事件 ${JSON.stringify(event.type)}`);
       }
       if (event.type === 'log' && !['stdout', 'stderr'].includes(String(event.stream))) {
@@ -366,7 +462,7 @@ export function checkLineEventsAndSources(fixture: ConformanceFixture): void {
       }
     }
     for (const message of product.messages) {
-      if (!allowedSources.includes(message.source)) {
+      if (!MessageSourceSchema.options.includes(message.source)) {
         throw new Error(`${fixture.kind}/${name}：消息来源 ${message.source} 不在契约闭集内`);
       }
     }
@@ -441,21 +537,173 @@ export function checkDeltaChannelIsolation(fixture: ConformanceFixture): void {
   }
 }
 
+/** 产物里的 `vendor-system` 事实（三家的 MCP 与技能面都落在这条事件上；消费方取最后一条读，这里看全部） */
+function vendorSystemEvents(product: ConformanceProduct): Array<Record<string, unknown>> {
+  return product.events.filter((event) => event.type === 'vendor-system');
+}
+
+/**
+ * MCP 那一格的事实判据：**两台通道合读**。
+ *
+ * 为什么是「或」而不是只看服务表：三家的判据通道本来就不同——cc 报 `mcp_servers[].status`、
+ * codex 报 `mcpServer/startupStatus`，而 **dsh 没有「每台一张状态表」这种东西**，它只有
+ * `request/header` 的工具表（那条事件的 `mcpServers` 恒 `null`）。只认服务表会把 dsh 判成
+ * 「没注入」——那是判据错，不是它错。
+ */
+function hasMcpFact(product: ConformanceProduct): boolean {
+  return vendorSystemEvents(product).some((event) => {
+    const servers = event['mcpServers'];
+    if (Array.isArray(servers) && servers.length > 0) return true;
+    const tools = event['tools'];
+    return Array.isArray(tools) && tools.some((tool) => typeof tool === 'string' && tool.startsWith('mcp__'));
+  });
+}
+
+/** 技能那一格的事实判据：厂商侧报回了**非空**清单（`vendor-system.skills` 缺席 = 没采到，不是「空清单」） */
+function hasSkillFact(product: ConformanceProduct): boolean {
+  return vendorSystemEvents(product).some((event) => Array.isArray(event['skills']) && event['skills'].length > 0);
+}
+
+const INJECTION_FACT: Readonly<Record<'mcp' | 'skills', (product: ConformanceProduct) => string | null>> = {
+  mcp: (product) =>
+    hasMcpFact(product) ? null : '没有任何 MCP 事实（`vendor-system` 的服务表与 `mcp__` 工具表都没有）',
+  skills: (product) =>
+    hasSkillFact(product) ? null : '厂商侧技能清单为空（`vendor-system.skills` 没有非空清单）',
+};
+
+/**
+ * 注入面：声明 `yes` 的通路必须给出**两份互钉的事实**——请求侧（我们发出去什么）与厂商侧
+ * （厂商报回来什么），或者如实登记「这一格的证明在别处」（`injectionProofElsewhere`，
+ * 由接入守卫核对文件存在）。
+ *
+ * 为什么两份都要：只判厂商侧会放过「适配器压根没把 `input.mcpServers` / `input.skills` 交给
+ * 厂商」——夹具喂的厂商载荷照样产出那条事实，套件全绿而 MCP 一台都没装到。只判请求侧则会放过
+ * 「发出去了但厂商没认」。**互钉才说明这条通路真的通了。**
+ *
+ * 与消息面同一形状（声明与产物互钉），差别在**证明看哪里**：消息面看内容块（`CELL_PROOF`），
+ * 注入面看请求侧探针 + `vendor-system` 事件。
+ *
+ * 反向也判：声明非 `yes` 却给了证明场景 = 「声明不支持、却造得出事实」，同样自相矛盾。
+ *
+ * **已知边界**：探针本身仍写在夹具里，一个刻意造假的接入者能把两边一起写对。这一层拦的是
+ * 「顺着写但漏了一环」（适配器忽略入参、请求侧没接），不是「成心骗」——后者只有真机冒烟拦得住。
+ */
+export function checkInjectionNailing(fixture: ConformanceFixture): void {
+  for (const cell of ['mcp', 'skills'] as const) {
+    const declared = fixture.injection[cell];
+    const scenarioName = fixture.injectionProof[cell];
+    const elsewhere = fixture.injectionProofElsewhere?.[cell];
+    if (declared.state !== 'yes') {
+      if (scenarioName !== undefined) {
+        throw new Error(
+          `${fixture.kind}：${cell} 声明 ${declared.state}，却给了证明场景 ${scenarioName}——声明与产物自相矛盾`,
+        );
+      }
+      continue;
+    }
+    if (scenarioName === undefined) {
+      if (elsewhere === undefined) {
+        throw new Error(
+          `${fixture.kind}：${cell} 声明 yes，却既没有证明场景、也没有登记它在哪一层被证明（空转不许静默）`,
+        );
+      }
+      continue;
+    }
+    const build = fixture.scenarios[scenarioName];
+    if (build === undefined) {
+      throw new Error(`${fixture.kind}：${cell} 的证明场景 ${scenarioName} 没有产物`);
+    }
+    const product = build();
+    // ① 请求侧：我们真的发出去了吗（这一半夹具手搓不出来——它由假件在 run 期间记录）
+    const sent = cell === 'mcp' ? product.injectionProbe?.mcpSent : product.injectionProbe?.skillsInstalled;
+    if (!hasRequestFact(sent)) {
+      throw new Error(
+        `${fixture.kind}：声明 ${cell}=yes，但 ${scenarioName} 场景没有**请求侧**事实`
+        + '——适配器可能压根没把我们给的输入交给厂商（只判厂商侧会放过这一整类缺陷）',
+      );
+    }
+    // ② 厂商侧：厂商真的收到了吗
+    const problem = INJECTION_FACT[cell](product);
+    if (problem !== null) {
+      throw new Error(`${fixture.kind}：声明 ${cell}=yes，但 ${scenarioName} 场景里${problem}`);
+    }
+  }
+}
+
+/**
+ * **生命周期证据**：这一家在「跑完」与「被取消」两条出口上的行为。
+ *
+ * 为什么不走产物：释放与取消是**行为**，产物里没有它们的形状——它们只能在运行期观测
+ * （数释放次数、看中断有没有真的终结在途轮次）。所以各家提供一个**异步观测函数**，
+ * 套件在用例里 `await` 它。
+ *
+ * 为什么必须有这一格：这两条出口原先在契约层**一个字都没有**——某家泄漏子进程、或声明
+ * 「能中途取消」而实际取消不动，任何判据都不会红。
+ */
+export interface LifecycleEvidence {
+  /** 一次**正常运行**收尾后，厂商运行时被释放了几次（0 = 泄漏，>1 = 重复释放） */
+  disposeAfterRun: number;
+  /** 一次**取消**之后释放了几次（同一口径：两条出口都要恰好一次） */
+  disposeAfterCancel: number;
+  /**
+   * 取消是否**真的终结了在途轮次**：`true` = 中断通道起了作用；
+   * `false` = 只能走释放的第二段兜底（声明 `cancelMidTurn: false` 的家如实填 `false`）。
+   */
+  canceledMidTurn: boolean;
+}
+
+/**
+ * 生命周期：释放恰好一次、且取消的观测与声明一致。
+ *
+ * 判据是**声明与观测对照**，不是「有没有调 dispose」：声明 `cancelMidTurn: true` 的家必须拿得出
+ * 「取消真的终结了在途轮次」的证据——声明能、实际不能，是这一层最该拦的假话。
+ * 证明不了的家在 `lifecycleElsewhere` 里登记它在哪一层被证明（接入守卫核对路径存在）。
+ */
+export async function checkLifecycle(fixture: ConformanceFixture): Promise<void> {
+  if (fixture.lifecycle === undefined) {
+    if (fixture.lifecycleElsewhere === undefined) {
+      throw new Error(
+        `${fixture.kind}：既没有生命周期观测、也没有登记它在哪一层被证明（释放与取消不许静默）`,
+      );
+    }
+    return;
+  }
+  const evidence = await fixture.lifecycle();
+  if (evidence.disposeAfterRun !== 1) {
+    throw new Error(
+      `${fixture.kind}：正常运行收尾后释放了 ${evidence.disposeAfterRun} 次——必须恰好一次（0 = 泄漏，>1 = 重复释放）`,
+    );
+  }
+  if (evidence.disposeAfterCancel !== 1) {
+    throw new Error(
+      `${fixture.kind}：取消之后释放了 ${evidence.disposeAfterCancel} 次——同一口径，必须恰好一次`,
+    );
+  }
+  if (evidence.canceledMidTurn !== fixture.cancelMidTurn) {
+    throw new Error(
+      `${fixture.kind}：声明 cancelMidTurn=${String(fixture.cancelMidTurn)}，`
+      + `但观测到取消${evidence.canceledMidTurn ? '终结了' : '没有终结'}在途轮次——声明与观测不符`,
+    );
+  }
+}
+
 /** 把全部判据注册成一家的用例；红的时候组名直接指向被违反的那条契约 */
 export function describeProviderConformance(fixture: ConformanceFixture): void {
-  const cases: ReadonlyArray<readonly [string, () => void]> = [
+  const cases: ReadonlyArray<readonly [string, () => void | Promise<void>]> = [
     ['能力声明自身合规', () => checkCapabilityDeclaration(fixture)],
     ['消息 / 子任务 / 环境过契约 schema', () => checkContracts(fixture)],
     ['合并键等于契约公式', () => checkMergeKeys(fixture)],
     ['子任务桥与状态口径', () => checkSubagentBridge(fixture)],
     ['用量与轮次配对', () => checkUsagePairing(fixture)],
     ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
-    ['缺失必须带原因', () => checkMissingReasons(fixture)],
+    ['注入面（MCP / skills）声明与产物互钉', () => checkInjectionNailing(fixture)],
+    ['行级事件逐个过契约 schema', () => checkEventShapes(fixture)],
     ['最终答复口径', () => checkFinalAnswer(fixture)],
     ['结构化输出与产出可解析', () => checkStructuredOutputGroup(fixture)],
     ['传输时序（C 类：缓冲补投 / 终态不早于响应 / 不重复）', () => checkTransportDeliveryGroup(fixture)],
     ['行级事件三类与来源闭集', () => checkLineEventsAndSources(fixture)],
     ['增量通道隔离：喂了增量就必须钉住事件条数', () => checkDeltaChannelIsolation(fixture)],
+    ['生命周期：释放恰好一次 + 取消与声明一致', () => checkLifecycle(fixture)],
   ];
   describe(`${fixture.kind} 一致性套件`, () => {
     for (const [title, run] of cases) it(title, run);

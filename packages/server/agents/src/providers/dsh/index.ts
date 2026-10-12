@@ -1002,6 +1002,26 @@ export const dshProvider: AgentProvider = {
       ],
     },
     /**
+     * 注入面能力：MCP 走 per-launch overlay 的 `insert` 插件行，skill 副本落在 `<DSH_HOME>/skills/`
+     * 并由 `user/message` 的 `skill-catalog` 报回来——两条通路都通。
+     */
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [
+        'MCP 的判据通道**只有** `request/header` 的 `data.header.tools`（没有服务状态那一格）：起不来时工具静默消失、会话照常跑完、不投结构化错误',
+        'skill 的判据通道是 `user/message` 的 `source.kind`：值为 `skill-catalog` 时只有名字 ⇒ 来源只能记「未证实」（`unverified`）',
+      ],
+    },
+    /**
+     * 耗时量级：一次运行在**分钟级**（含 overlay 注入、stream-tap 插件到收尾）。
+     * 真机冒烟的默认等待预算按这一档派生——声明小了，那一轮会被自己的预算掐掉。
+     */
+    timing: {
+      runScale: 'minutes',
+      notes: ['本机实测：一次运行的墙钟在分钟级；行内首次注入与插件落盘是其中的固定开销'],
+    },
+    /**
      * 推理证据 events.jsonl 即齐（思考正文与工具结果都在事件流里）⇒ 不需要补 messages.jsonl。
      */
     needsMessagesForReasoningEvidence: false,

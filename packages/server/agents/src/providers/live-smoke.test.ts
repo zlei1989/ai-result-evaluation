@@ -24,8 +24,18 @@
  *   ③ 产物：行跑到 `judged` 且有分数；
  *   ④ 形状：`messages` 接口返回的消息**逐个过契约 schema**（线上形态）。
  */
-import { AgentMessageSchema, SubagentRecordSchema } from '@aieval/contracts';
+import { AgentMessageSchema, SubagentRecordSchema, type EvalRow, type EvalRun } from '@aieval/contracts';
 import { beforeAll, describe, expect, it } from 'vitest';
+import {
+  checkAgentJudgeCell,
+  checkDurationCell,
+  checkLoadCell,
+  checkProductCell,
+  checkStructuredScoreCell,
+  checkTransportCell,
+  scaleOf,
+  waitBudgetFor,
+} from '../testing/live-smoke-checks';
 
 const ENABLED = process.env.AIEVAL_LIVE_SMOKE === '1';
 const BASE = process.env.AIEVAL_LIVE_BASE ?? 'http://localhost:3083';
@@ -41,26 +51,22 @@ const CASE_ID = process.env.AIEVAL_LIVE_CASE_ID ?? '';
  * `providers/codex/*` 全绿、真机上评分永远拿不到答复）。用确定性评分跑，那一格是否写对**看不见**。
  */
 const AGENT_JUDGE = process.env.AIEVAL_LIVE_AGENT_JUDGE === '1';
-const TIMEOUT_MS = Number(process.env.AIEVAL_LIVE_TIMEOUT_MS ?? '600000');
+
+/**
+ * 等待预算：环境变量优先；不给就按**这一家声明的耗时量级**派生。
+ * 声明因此是活的——声明小了，这一轮会被自己的预算掐掉（红在 ③ 产物格，不是红在一句注释里）。
+ */
+const TIMEOUT_MS = Number(process.env.AIEVAL_LIVE_TIMEOUT_MS ?? String(waitBudgetFor(scaleOf(KIND))));
 const POLL_MS = 2_000;
 
-interface RunRow {
-  id: string;
-  agentKind: string;
-  providerId: string;
-  baseUrl: string;
-  modelId: string;
-  status: string;
-  score: Record<string, unknown> | null;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-}
-
-interface RunDetail {
-  id: string;
-  status: string;
-  rows: RunRow[];
-}
+/**
+ * 行与轮次的形状**直接取契约类型**（`EvalRow` / `EvalRun`），不在测试里另立影子接口。
+ *
+ * 为什么必须如此：影子接口配 `as T` 强转会让**字段名写错时静默通过**——断言拿到的恒是
+ * `undefined`，于是那一格永远绿。① 装载与 ② 的凭据条判的正是失败归因（契约里叫
+ * `error.code` / `error.message`），影子接口把它们写成 `errorCode` / `errorMessage` 就抹掉了
+ * 这两格的全部区分力；而「真机冒烟是装载与传输缺陷的唯一拦法」这句话就靠这两格成立。
+ */
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
@@ -76,19 +82,19 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 /** 终态：行不再变化（与 evaluator 的词表对齐，`judged` 是跑完且已评分） */
 const TERMINAL = new Set(['judged', 'failed', 'canceled', 'interrupted']);
 
-async function waitForRun(runId: string): Promise<RunDetail> {
+async function waitForRun(runId: string): Promise<EvalRun> {
   const deadline = Date.now() + TIMEOUT_MS;
-  let detail = await api<RunDetail>(`/api/runs/${runId}`);
+  let detail = await api<EvalRun>(`/api/runs/${runId}`);
   while (!TERMINAL.has(detail.rows[0]?.status ?? 'pending') && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-    detail = await api<RunDetail>(`/api/runs/${runId}`);
+    detail = await api<EvalRun>(`/api/runs/${runId}`);
   }
   return detail;
 }
 
 describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KIND）'}`, () => {
-  let detail: RunDetail;
-  let row: RunRow;
+  let detail: EvalRun;
+  let row: EvalRow;
 
   beforeAll(async () => {
     expect(KIND, 'AIEVAL_LIVE_KIND 必填——不给默认家，避免「默认跑的那家绿了就当四家都绿」').not.toBe('');
@@ -97,7 +103,7 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
     const caseId = CASE_ID !== '' ? CASE_ID : (await api<Array<{ id: string }>>('/api/cases'))[0]?.id;
     expect(caseId, '至少要有一个用例（或用 AIEVAL_LIVE_CASE_ID 指定）').toBeTypeOf('string');
 
-    const created = await api<RunDetail>('/api/runs', {
+    const created = await api<EvalRun>('/api/runs', {
       method: 'POST',
       body: JSON.stringify({
         caseId,
@@ -114,21 +120,15 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
   }, TIMEOUT_MS + 60_000);
 
   it('① 装载：没有落到「厂商入口解析/加载」类失败', () => {
-    const message = `${row.errorCode ?? ''} ${row.errorMessage ?? ''}`;
-    // 这一类在实现里统一走 AgentLoadError：包没装、平台包缺 vendor、解析链断在哪一级都会带这些字样
-    expect(message, `装载失败：${message}`).not.toMatch(/AGENT_LOAD_FAILED|找不到 .*可执行文件|Cannot find module/i);
+    expect(checkLoadCell(row)).toBeNull();
   });
 
   it('② 传输：服务端记录的路由与本次选择一致，且不是凭据类失败', () => {
-    expect(row.providerId, '行的 providerId 与本次选择不一致——说明行没拿到我们给的那条路由').toBe(PROVIDER_ID);
-    expect(row.modelId, '行的 modelId 与本次选择不一致').toBe(MODEL_ID);
-    expect(row.baseUrl, '行的 baseUrl 为空——凭据/网关地址没有随行落下去').toBeTruthy();
-    expect(`${row.errorCode ?? ''} ${row.errorMessage ?? ''}`).not.toMatch(/AUTH_FAILED|401|403|Unauthorized/i);
+    expect(checkTransportCell(row, { providerId: PROVIDER_ID, modelId: MODEL_ID })).toBeNull();
   });
 
   it('③ 产物：跑完并拿到分数', () => {
-    expect(row.status, `行没跑完（${row.status}）：${row.errorMessage ?? ''}`).toBe('judged');
-    expect(row.score, '跑完了但没有分数').not.toBeNull();
+    expect(checkProductCell(row)).toBeNull();
   });
 
   it('④ 形状：消息与子任务行逐个过契约 schema', async () => {
@@ -156,12 +156,7 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
    * 真机上评分却恒失败（`JUDGE_PARSE_FAILED`）。**确定性评分档看不见这一格**，所以必须单开一档真跑。
    */
   it.skipIf(!AGENT_JUDGE)('⑤ 智能体评分拿到了答复并给出结论（finalText 通路的真机判据）', () => {
-    const message = `${row.errorCode ?? ''} ${row.errorMessage ?? ''}`;
-    expect(message, `评分阶段失败：${message}`).not.toMatch(/JUDGE_|PARSE_FAILED/i);
-    expect(row.score, '智能体评分档下必须落一份评分').not.toBeNull();
-    expect(row.score?.judgeProviderId, '评分记录里没有 judgeProviderId——说明评分不是由智能体给出的').toBeTruthy();
-    const verdict = row.score?.verdict;
-    expect(typeof verdict === 'string' && verdict.length > 0, '评分结论为空——评分智能体没拿到答复').toBe(true);
+    expect(checkAgentJudgeCell(row)).toBeNull();
   });
 
   /**
@@ -179,15 +174,17 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
    *   3. 不得出现解析失败码——**解析失败必须可见**，不许静默落成空评分。
    */
   it.skipIf(!AGENT_JUDGE)('⑥ 评分者的产出可解析，且记录里带「输出约束」那一格（结构化与文本降级两条通路都要过）', () => {
-    expect(row.score, '智能体评分档下必须落一份评分').not.toBeNull();
-    expect(typeof row.score?.structuredOutput, '评分记录缺少 `structuredOutput` 这一格（无法回答「有没有按 schema 作答」）').toBe(
-      'boolean',
-    );
-    const raw = row.score?.raw;
-    expect(typeof raw === 'string' && raw.length > 0, '评分记录里没有 `raw` 原文').toBe(true);
-    const parsed = JSON.parse(String(raw)) as Record<string, unknown>;
-    expect(Array.isArray(parsed.judgments), '`raw` 解析出来没有 `judgments`').toBe(true);
-    expect(String(parsed.verdict ?? ''), '`raw` 解析出来没有 `verdict`').not.toBe('');
-    expect(`${row.errorCode ?? ''} ${row.errorMessage ?? ''}`, '出现解析失败码').not.toMatch(/PARSE_FAILED/i);
+    expect(checkStructuredScoreCell(row)).toBeNull();
+  });
+
+  /**
+   * ⑦ 耗时：这一轮的墙钟与**声明的量级**一致。
+   *
+   * 为什么单列：`metadata.timing.runScale` 不只是注释——本文件的等待预算就是按它派生的
+   * （声明小了会被自己的预算掐掉、红在 ③ 产物格）。这一格是**结果侧**的同一件事：
+   * 即使预算被 `AIEVAL_LIVE_TIMEOUT_MS` 放大，声明与事实不符仍然会红。
+   */
+  it('⑦ 耗时：这一轮的墙钟与声明的量级一致', () => {
+    expect(checkDurationCell(row.durationMs, scaleOf(KIND))).toBeNull();
   });
 });

@@ -18,11 +18,11 @@
  * `'hook'`）——增量经旁路文件进适配器（夹具的 `tapLines` 落到同一文件、同一时序），
  * 套件第 7 组「能力声明与产物互钉」据此要求 `plain-reply` 场景真出 delta 消息。
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent, AgentMessage, SubagentRecord } from '@aieval/contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import type { AgentEvent, AgentMessage, McpServers, SubagentRecord } from '@aieval/contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setAgentRuntimeForTesting } from '../../runtime';
 import {
   collectEvents,
@@ -30,10 +30,11 @@ import {
   createRecorder,
   createRunInput,
   DSH_SESSION_PLACEHOLDER,
+  settleWithFakeTimers,
 } from '../../testing/agent-fixtures';
 import { removeTreeWithRetry } from '../../testing/cleanup';
-import { describeProviderConformance, type ConformanceProduct } from '../conformance/kit';
-import { dshProvider } from './index';
+import { describeProviderConformance, type ConformanceProduct, type LifecycleEvidence } from '../conformance/kit';
+import { dshProvider, DSH_ROUTE_PATCH_RELATIVE_PATH } from './index';
 import { DSH_PACKAGE_NAME } from './sdk';
 
 afterEach(() => {
@@ -92,6 +93,35 @@ interface Scenario {
   outputSchema?: unknown;
   /** 探针里与答复逐字段比对的期望对象（键序不同不算不符） */
   expected?: unknown;
+  /** 本次运行要下发的 MCP 服务器（canonical 形状）。**请求侧判据靠它**——不给就没有「发出去什么」可判 */
+  mcpServers?: McpServers;
+  /**
+   * 本次运行是否**真的装一份技能**（物化到行配置目录）。
+   * 技能面的两条事实缺一不可：落盘的那份与厂商报回的那份。
+   */
+  withSkills?: boolean;
+}
+
+/** 行配置目录下真的落了哪些技能副本（落点 `<configHome>/skills/<名称>/`；这家的 `DSH_HOME` 就是它） */
+function readInstalledSkills(configHome: string): string[] {
+  try {
+    return readdirSync(join(configHome, 'skills'));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 请求侧：per-launch overlay 里那几行 MCP 插件声明（`serverName:` 一行一台，由 `toDshMcpPluginLines` 写进去）。
+ * 这一家**没有 SDK 参数那条通道**——注入口是 overlay 文件，所以请求侧事实只能从落点读。
+ */
+function overlayMcpServers(configHome: string): string[] {
+  try {
+    const text = readFileSync(join(configHome, DSH_ROUTE_PATCH_RELATIVE_PATH), 'utf8');
+    return text.split('\n').filter((line) => line.includes('serverName:'));
+  } catch {
+    return [];
+  }
 }
 
 /** 结构化输出场景的期望对象与其 JSON Schema（形状照评分通路的可移植子集） */
@@ -186,11 +216,46 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
     expected: JUDGE_OUTPUT,
     events: [stepStart(MAIN, 1, 1), assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: JUDGE_JSON }])],
   },
+  /**
+   * 注入面两景，两条载荷都是这家**独有**的形态：
+   *   · MCP 走 `request/header` 的**工具表**——这家没有「每台一张状态表」那种东西，
+   *     起不来时工具静默消失，所以工具表就是唯一判据；
+   *   · 技能面走 `user/message` 的 `skill-catalog` 块（厂商把清单合成一条 user 消息塞进提示词）。
+   *     它必须走显式分流：未识别的 `session.event` 会落成一条几十 KB 的原始 JSON 日志。
+   */
+  'mcp-injection': {
+    mcpServers: { probe: { transport: 'stdio', enabled: true, command: 'node', args: ['echo.mjs'] } },
+    events: [
+      stepStart(MAIN, 1, 1),
+      sessionEvent('request/header', { header: { tools: [{ name: 'Bash' }, { name: 'mcp__probe__echo' }] } }),
+      assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: 'MCP 接上了。' }]),
+    ],
+  },
+  'skill-injection': {
+    withSkills: true,
+    events: [
+      stepStart(MAIN, 1, 1),
+      sessionEvent('user/message', {
+        source: { kind: 'skill-catalog' },
+        content: [{ type: 'text', text: '<available_skills>\n- `alpha`: 示例技能\n</available_skills>' }],
+      }),
+      assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: '技能已就位。' }]),
+    ],
+  },
 };
 
 /** 跑一个场景：注入假 SDK → 跑一次真实运行路径 → 收三个回调的产物 */
 async function runScenario(scenario: Scenario): Promise<{ product: ConformanceProduct; prompt: string | null }> {
   const configHome = mkdtempSync(join(tmpdir(), 'dsh-conformance-'));
+  /** 技能源目录另起一个临时根（与行配置目录分开，物化是「读源、写目标」两处） */
+  const skillRoot = scenario.withSkills === true ? mkdtempSync(join(tmpdir(), 'dsh-conformance-skill-')) : null;
+  let skills: { name: string; sourceDir: string }[] | undefined;
+  if (skillRoot !== null) {
+    const sourceDir = join(skillRoot, 'alpha');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'SKILL.md'), '---\nname: alpha\ndescription: 示例\n---\n\n正文\n', 'utf8');
+    skills = [{ name: 'alpha', sourceDir }];
+  }
   const recorder = createRecorder();
   setAgentRuntimeForTesting({
     sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: scenario.events, tapLines: scenario.tapLines }) },
@@ -202,6 +267,8 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
     const outcome = await dshProvider.run(
       createRunInput({
         configHome,
+        ...(skills === undefined ? {} : { skills }),
+        ...(scenario.mcpServers === undefined ? {} : { mcpServers: scenario.mcpServers }),
         ...(scenario.outputSchema === undefined ? {} : { outputSchema: scenario.outputSchema }),
         onMessage: (message) => messages.push(message),
         onSubagent: (record) => subagents.push(record),
@@ -211,7 +278,6 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
     const product: ConformanceProduct = {
       messages,
       subagents,
-      environment: null,
       /**
        * 行级事件**如实收**：`onEvent` 本来就在收（`agentEvents`），不往外给的话、
        * 产物里恒填 `events: []` ⇒ 套件的增量隔离判据在这家**永远不可能红**。
@@ -228,6 +294,15 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
         subagentTurns: outcome.subagentTurns ?? null,
       },
       result: { ok: outcome.ok, finalText: outcome.finalText },
+      /**
+       * 注入面探针（**请求侧**）：这一家的注入口是 overlay 文件，所以事实从落点读——
+       * MCP 看插件行、技能看物化出来的副本目录。两者都不是夹具自述，
+       * 缺了它「适配器没把入参写进 overlay」这一整类缺陷不会被任何判据发现。
+       */
+      injectionProbe: {
+        mcpSent: overlayMcpServers(configHome),
+        skillsInstalled: readInstalledSkills(configHome),
+      },
       ...(scenario.outputSchema === undefined
         ? {}
         : {
@@ -248,6 +323,54 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
     return { product, prompt: recorder.prompt };
   } finally {
     removeTreeWithRetry(configHome);
+    if (skillRoot !== null) removeTreeWithRetry(skillRoot);
+  }
+}
+
+/**
+ * 生命周期观测：正常收尾与中途取消各跑一次**真 run**，数假 SDK 的关闭次数。
+ *
+ * 取消那一格要**假定时器**：这一家没有 wire-level cancel，取消只能走释放的第二段
+ * （`RELEASE_GRACE_MS` = 5 秒的兜底等待），真实计时器下这条用例要跑满 5 秒。
+ * 观测到的 `canceledMidTurn` 因此恒 `false`——与它自己的声明一致（那一格对声明 `false` 的家
+ * 没有区分力，它拦的是「声明 true 却做不到」）。
+ */
+async function observeLifecycle(): Promise<LifecycleEvidence> {
+  const configHome = mkdtempSync(join(tmpdir(), 'dsh-lifecycle-'));
+  try {
+    // ① 正常收尾：释放恰好一次
+    const runRecorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder: runRecorder,
+          events: [stepStart(MAIN, 1, 1), assistant(MAIN, 'm1', 1, 1, [{ type: 'text', text: '收尾。' }])],
+        }),
+      },
+    });
+    await dshProvider.run(createRunInput({ configHome }));
+    const disposeAfterRun = runRecorder.closeCount;
+
+    // ② 中途取消：interrupt 不被响应 ⇒ 等兜底那一段，释放仍然恰好一次
+    vi.useFakeTimers();
+    const cancelRecorder = createRecorder();
+    const controller = new AbortController();
+    setAgentRuntimeForTesting({
+      sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder: cancelRecorder, events: [], hang: true }) },
+    });
+    const running = dshProvider.run(createRunInput({ configHome, signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    await settleWithFakeTimers(running, { stepMs: 1_000, steps: 10 });
+    return {
+      disposeAfterRun,
+      disposeAfterCancel: cancelRecorder.closeCount,
+      canceledMidTurn: false,
+    };
+  } finally {
+    vi.useRealTimers();
+    setAgentRuntimeForTesting(null);
+    removeTreeWithRetry(configHome);
   }
 }
 
@@ -264,12 +387,18 @@ setAgentRuntimeForTesting(null);
 describeProviderConformance({
   kind: dshProvider.kind,
   capability: dshProvider.metadata.messageCapability,
+  injection: dshProvider.metadata.injection,
+  injectionProof: { mcp: 'mcp-injection', skills: 'skill-injection' },
+  cancelMidTurn: dshProvider.metadata.capability.cancelMidTurn,
+  lifecycle: observeLifecycle,
   scenarios: {
     'plain-reply': () => products['plain-reply']!,
     'thinking-full': () => products['thinking-full']!,
     'tool-shell': () => products['tool-shell']!,
     subagent: () => products['subagent']!,
     'structured-output': () => products['structured-output']!,
+    'mcp-injection': () => products['mcp-injection']!,
+    'skill-injection': () => products['skill-injection']!,
   },
   /**
    * 喂了增量帧的场景必须钉住事件条数（一致性套件）：三条各自**实测**得来。

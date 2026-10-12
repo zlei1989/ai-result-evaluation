@@ -11,6 +11,7 @@
     "format": "eslint . --fix --cache --cache-location node_modules/.cache/eslint/",
     "test": "vitest run --passWithNoTests",
     "test:changed": "vitest run --changed --passWithNoTests",
+    "live-smoke": "node scripts/live-smoke.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs && node docs/.vitepress/build-llms.mjs"

@@ -10,15 +10,21 @@
  * 这里在模块加载期把各场景各跑一次建好产物，再把同步取值器交给套件——
  * 既不用改套件签名，也保证每个场景的**真实运行只跑一次**（套件对每个场景会多次取值）。
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent, AgentMessage, SubagentRecord } from '@aieval/contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import type { AgentEvent, AgentMessage, McpServers, SubagentRecord } from '@aieval/contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setAgentRuntimeForTesting } from '../../runtime';
-import { collectEvents, createFakeClaudeSdk, createRecorder, createRunInput } from '../../testing/agent-fixtures';
+import {
+  collectEvents,
+  createFakeClaudeSdk,
+  createRecorder,
+  createRunInput,
+  settleWithFakeTimers,
+} from '../../testing/agent-fixtures';
 import { removeTreeWithRetry } from '../../testing/cleanup';
-import { describeProviderConformance, type ConformanceProduct } from '../conformance/kit';
+import { describeProviderConformance, type ConformanceProduct, type LifecycleEvidence } from '../conformance/kit';
 import { claudeCodeProvider } from './index';
 import { CLAUDE_PACKAGE_NAME } from './sdk';
 
@@ -88,12 +94,62 @@ interface Scenario {
   outputSchema?: unknown;
   /** 探针里与答复逐字段比对的期望对象（键序不同不算不符） */
   expected?: unknown;
+  /**
+   * 本次运行假 SDK 的**控制请求**返回（`getContextUsage()`）——技能面的采集通道。
+   * 只有给了它的场景才挂，没给的场景走「采不到」那条路（少一格技能面、落一条 WARN）。
+   */
+  contextUsage?: unknown;
+  /**
+   * 本次运行是否**真的装一份技能**（物化到行配置目录）。
+   * 技能面的两条事实缺一不可：落盘的那份与控制请求报回的那份——而适配器在
+   * `input.skills` 缺席时**一次都不采**（那是刻意的：评分与用例同步不该付这条控制请求的钱）。
+   */
+  withSkills?: boolean;
+  /**
+   * 本次运行要下发的 MCP 服务器（canonical 形状）。**请求侧判据靠它**：不给输入就没有
+   * 「我们发出去什么」可判——那种场景只能证明厂商侧，是半条判据。
+   */
+  mcpServers?: McpServers;
+}
+
+/** 行配置目录下真的落了哪些技能副本（落点：`<configHome>/skills/<名称>/`） */
+function readInstalledSkills(configHome: string): string[] {
+  try {
+    return readdirSync(join(configHome, 'skills'));
+  } catch {
+    return [];
+  }
+}
+
+/** 一条最小可用的 `system/init`（会话已建的判据）；两个注入场景都在它上面改 */
+const INIT = {
+  type: 'system',
+  subtype: 'init',
+  uuid: 'init-1',
+  session_id: 'session-1',
+  tools: ['Task', 'Bash', 'Skill'],
+  slash_commands: [],
+  agents: [],
+  mcp_servers: [],
+  permissionMode: 'bypassPermissions',
+  output_style: 'default',
+};
+
+/** 厂商控制请求返回的那一格（形状取自真机 dump，只留本仓消费的字段）——技能面的唯一采集通道 */
+function contextUsage(skills: { name: string; source: string }[]): unknown {
+  return {
+    categories: [],
+    totalTokens: 100,
+    maxTokens: 200_000,
+    skills: { totalSkills: skills.length, includedSkills: skills.length, tokens: 42, skillFrontmatter: skills },
+  };
 }
 
 /**
- * 五个场景恰好覆盖 claude 能力声明里全部为 `yes` 的格：
- * `plain-reply` → streamingDelta、`thinking-full` → thinkingText、
+ * 七个场景覆盖 claude 声明为 `yes` 的全部格：
+ * 消息面 `plain-reply` → streamingDelta、`thinking-full` → thinkingText、
  * `tool-shell` → toolInput + toolResult、`subagent` → subagent；
+ * 注入面 `mcp-injection` / `skill-injection` → MCP 与技能两条下发通路；
  * `structured-output` 是评分通路：本次要了 schema（落成 SDK 的 `options.outputFormat`）、
  * 收尾消息带原生 `structured_output` ⇒ 探针两份事实都能观测到。
  */
@@ -175,14 +231,51 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       { type: 'result', subtype: 'success', result: JUDGE_JSON, structured_output: JUDGE_OUTPUT, usage: WIRE_USAGE },
     ],
   },
+  /**
+   * 注入面两景。MCP 的两条事实一次给全：`mcp_servers` 是状态表、工具表里那一项是更硬的那条
+   * （判据 `hasMcpFact` 两台通道合读，因为 dsh 只有后者）。技能面走控制请求，
+   * 采集点在收尾 ⇒ 清单出现在最后那条 `vendor-system` 上。
+   */
+  'mcp-injection': {
+    mcpServers: { probe: { transport: 'stdio', enabled: true, command: 'node', args: ['echo.mjs'] } },
+    events: [
+      {
+        ...INIT,
+        mcp_servers: [{ name: 'probe', status: 'connected' }],
+        tools: ['Task', 'Bash', 'Skill', 'mcp__probe__echo'],
+      },
+      assistant([{ type: 'text', text: 'MCP 接上了。' }], 'u1'),
+      result('MCP 接上了。'),
+    ],
+  },
+  'skill-injection': {
+    withSkills: true,
+    contextUsage: contextUsage([{ name: 'alpha', source: 'userSettings' }]),
+    events: [INIT, assistant([{ type: 'text', text: '技能已就位。' }], 'u1'), result('技能已就位。')],
+  },
 };
 
 /** 跑一个场景：注入假 SDK → 跑一次真实运行路径 → 收三个回调的产物 */
 async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
   const configHome = mkdtempSync(join(tmpdir(), 'claude-conformance-'));
+  /** 技能源目录另起一个临时根（与行配置目录分开，物化是「读源、写目标」两处） */
+  const skillRoot = scenario.withSkills === true ? mkdtempSync(join(tmpdir(), 'claude-conformance-skill-')) : null;
+  let skills: { name: string; sourceDir: string }[] | undefined;
+  if (skillRoot !== null) {
+    const sourceDir = join(skillRoot, 'alpha');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'SKILL.md'), '---\nname: alpha\ndescription: 示例\n---\n\n正文\n', 'utf8');
+    skills = [{ name: 'alpha', sourceDir }];
+  }
   const recorder = createRecorder();
   setAgentRuntimeForTesting({
-    sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: scenario.events }) },
+    sdkModule: {
+      [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({
+        recorder,
+        events: scenario.events,
+        ...(scenario.contextUsage === undefined ? {} : { contextUsage: scenario.contextUsage }),
+      }),
+    },
   });
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
@@ -191,6 +284,8 @@ async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
     const outcome = await claudeCodeProvider.run(
       createRunInput({
         configHome,
+        ...(skills === undefined ? {} : { skills }),
+        ...(scenario.mcpServers === undefined ? {} : { mcpServers: scenario.mcpServers }),
         ...(scenario.outputSchema === undefined ? {} : { outputSchema: scenario.outputSchema }),
         onMessage: (message) => messages.push(message),
         onSubagent: (record) => subagents.push(record),
@@ -200,8 +295,6 @@ async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
     return {
       messages,
       subagents,
-      // claude 没有 `vendor-system` 通道（系统提示词不投送），故这一组整组 not-exposed
-      environment: null,
       /**
        * 行级事件**如实收**：写死 `[]` 会让套件的增量隔离判据在 claude 身上**永远不可能红**
        * ——喂了增量帧、事件却恒为空数组，把 `events.ts` 的排除分支删回去这条守卫照样绿。
@@ -238,8 +331,69 @@ async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
             ...(scenario.expected === undefined ? {} : { expected: scenario.expected }),
           },
         }),
+      /**
+       * 注入面探针（**请求侧**）：两份事实都由本次运行的实际动作产生，不是夹具自述——
+       * MCP 是假 SDK 记下的 `options.mcpServers`，技能是行配置目录下真的落了哪几个副本。
+       * 缺了它，「适配器压根没把入参交给厂商」这一整类缺陷不会被任何判据发现。
+       */
+      injectionProbe: {
+        mcpSent: recorder.options?.['mcpServers'] ?? null,
+        skillsInstalled: readInstalledSkills(configHome),
+      },
     };
   } finally {
+    removeTreeWithRetry(configHome);
+    if (skillRoot !== null) removeTreeWithRetry(skillRoot);
+  }
+}
+
+/**
+ * 生命周期观测：真跑**两次**运行（一次正常收尾、一次中途取消），数释放次数与取消有没有终结在途轮次。
+ *
+ * 为什么不复用 `SCENARIOS` 的产物：产物里没有「释放了几次」这种事实——那是运行期行为，
+ * 只能在那一次运行里数。取消那一次要**假定时器**（在途轮次靠计时推进），
+ * 故这一格不能建在模块加载期，由套件在用例里 `await`（见 `checkLifecycle`）。
+ */
+async function observeLifecycle(): Promise<LifecycleEvidence> {
+  const configHome = mkdtempSync(join(tmpdir(), 'claude-lifecycle-'));
+  /**
+   * 释放次数取自假 SDK 的 `order`（abort ⇒ `'dispose'`）而不是 `closeCount`：
+   * claude 的硬回收走 `controller.abort()`，假件在那条路上记的是顺序表。
+   */
+  const disposals = (recorder: ReturnType<typeof createRecorder>): number =>
+    recorder.order.filter((one) => one === 'dispose').length;
+  try {
+    // ① 正常收尾：释放恰好一次
+    const runRecorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: runRecorder, events: [INIT, result('收尾。')] }),
+      },
+    });
+    await claudeCodeProvider.run(createRunInput({ configHome }));
+    const disposeAfterRun = disposals(runRecorder);
+
+    // ② 中途取消：在途轮次被终结，且释放仍然恰好一次
+    vi.useFakeTimers();
+    const cancelRecorder = createRecorder();
+    const controller = new AbortController();
+    setAgentRuntimeForTesting({
+      sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: cancelRecorder, events: [], hang: true }) },
+    });
+    const running = claudeCodeProvider.run(createRunInput({ configHome, signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    await settleWithFakeTimers(running, { stepMs: 500, steps: 10 });
+    return {
+      disposeAfterRun,
+      disposeAfterCancel: disposals(cancelRecorder),
+      // 判据是「在途轮次被终结」而不是「interrupt 被调过」：只调 interrupt 不算数，
+      // 要走到 `turn-end`（那正是「取消真的生效」与「只是关掉运行时」的分界）
+      canceledMidTurn: cancelRecorder.order.includes('turn-end'),
+    };
+  } finally {
+    vi.useRealTimers();
+    setAgentRuntimeForTesting(null);
     removeTreeWithRetry(configHome);
   }
 }
@@ -253,12 +407,18 @@ setAgentRuntimeForTesting(null);
 describeProviderConformance({
   kind: claudeCodeProvider.kind,
   capability: claudeCodeProvider.metadata.messageCapability,
+  injection: claudeCodeProvider.metadata.injection,
+  injectionProof: { mcp: 'mcp-injection', skills: 'skill-injection' },
+  cancelMidTurn: claudeCodeProvider.metadata.capability.cancelMidTurn,
+  lifecycle: observeLifecycle,
   scenarios: {
     'plain-reply': () => products['plain-reply']!,
     'thinking-full': () => products['thinking-full']!,
     'tool-shell': () => products['tool-shell']!,
     subagent: () => products['subagent']!,
     'structured-output': () => products['structured-output']!,
+    'mcp-injection': () => products['mcp-injection']!,
+    'skill-injection': () => products['skill-injection']!,
   },
   expectedEventCounts: { 'plain-reply': 2 },
 });

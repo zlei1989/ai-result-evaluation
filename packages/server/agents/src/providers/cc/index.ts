@@ -871,6 +871,25 @@ export const claudeCodeProvider: AgentProvider = {
       ],
     },
     /**
+     * 注入面能力：MCP 走 SDK 参数 `Options.mcpServers`，skill 副本落在 `<CLAUDE_CONFIG_DIR>/skills/`
+     * 并由 `settingSources: ['user']` 发现——两条通路都通。
+     */
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [
+        '两条通路的判据通道不同：MCP 看 `system/init` 的服务状态与工具表（工具表更硬——状态说「装上了」不等于工具可调），skill 看 `getContextUsage().skills` 的前言清单',
+      ],
+    },
+    /**
+     * 耗时量级：一次运行在**分钟级**。真机冒烟的默认等待预算按这一档派生——声明小了，
+     * 那一轮会被自己的预算掐掉（红在产物格，而不是红在一句注释里）。
+     */
+    timing: {
+      runScale: 'minutes',
+      notes: ['本机实测：一次运行的墙钟在分钟级（从厂商进程启动到收尾）；模型与网关不同会变，量级不变'],
+    },
+    /**
      * 推理证据 events.jsonl 即齐（assistant 文本与思考都进事件流）⇒ 不需要补 messages.jsonl。
      * 与 codex 的 `true` 对照读：那一家的思考全文与工具结果正文只在消息账本里。
      */

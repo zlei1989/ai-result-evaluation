@@ -348,6 +348,53 @@ export type Capability = z.infer<typeof CapabilitySchema>;
 export const MissingReasonSchema = z.enum(['not-supported', 'not-exposed', 'not-observed', 'unverified']);
 export type MissingReason = z.infer<typeof MissingReasonSchema>;
 
+/**
+ * **注入面的一格**：我们下发给厂商进程的东西（MCP server / skill 副本），这一家认不认。
+ *
+ * 与 `MessageCapabilitySchema` 的每一格同一条口径：非 `yes` **必须**给出 `MissingReason`，
+ * `yes` 时 `reason` 为 `null`。把「这家结构上没有」与「我们有数据但没接」说成同一句话，
+ * 会把使用者引到错的方向去排查。
+ *
+ * 为什么没有 `source` 那一格：`MessageSource` 回答的是「这条**消息**从哪条通道来」，
+ * 而注入面问的是「我们发出去的东西厂商收不收得到」——三家的落点各不相同
+ * （cc 走 SDK 参数、codex 走线程配置、dsh 走 overlay），没有一张跨家闭集放得下它。
+ */
+export const InjectionStateSchema = z
+  .object({
+    state: CapabilitySchema,
+    /** 为什么收不到；`state` 为 `yes` 时必须为 `null` */
+    reason: MissingReasonSchema.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.state === 'yes' && value.reason !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'state 为 yes ⇒ reason 必须为 null' });
+    }
+    if (value.state !== 'yes' && value.reason === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: `state 为 ${value.state} ⇒ 必须给出缺失原因` });
+    }
+  });
+export type InjectionState = z.infer<typeof InjectionStateSchema>;
+
+/**
+ * **注入面能力声明**：MCP 与 skills 两条「我们下发、厂商接收」的通路，这一家各自收不收得到。
+ *
+ * 为什么与 `MessageCapability` 并列而不是并进它：那一组说的是**内容层**能拿到什么
+ * （思考正文、工具入参、工具结果、子任务、流式增量），这一组说的是**下发层**我们给出去的东西
+ * 认不认。两者的变化原因、消费方与判据通道都不同，合成一组会让「思考正文拿不到」与
+ * 「MCP 装不上」挤进同一格。
+ *
+ * 为什么必须有这一格：这两条通路今天**不在任何能力位里**——某家不支持 MCP 时没有任何地方
+ * 说得出这件事，只能靠每-run 的运行事实（`vendor-system` 事件）事后看，而「没声明」与
+ * 「声明了不支持」在消费侧是两件事（前者是漏接，后者是已知边界）。
+ */
+export const InjectionCapabilitySchema = z.object({
+  mcp: InjectionStateSchema,
+  skills: InjectionStateSchema,
+  /** 这一族能力成立的**前提**（路由 / 模型 / 开关）；空数组 = 无条件成立（与 `MessageCapability.notes` 同义） */
+  notes: z.array(z.string()),
+});
+export type InjectionCapability = z.infer<typeof InjectionCapabilitySchema>;
+
 /** 子任务状态：采不到就 `'unknown'`，**不得用 `null` 表示未采集**（未采集的原因写在 `statusMissing`） */
 export const SubagentStatusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'unknown']);
 export type SubagentStatus = z.infer<typeof SubagentStatusSchema>;
