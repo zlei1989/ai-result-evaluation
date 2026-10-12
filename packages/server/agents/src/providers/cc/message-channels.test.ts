@@ -41,14 +41,14 @@ function assistantMessage(uuid: string, messageId: string, text: string): unknow
   };
 }
 
-describe('claude-code：事件与消息两条通道互不吞掉对方', () => {
+describe('cc：事件与消息两条通道互不吞掉对方', () => {
   it('先跑事件投影、再跑消息归一，消息仍然产得出来（共用 `state.seen` 时会全被丢掉）', () => {
     const turnState = state();
     const normalizer = createClaudeMessageNormalizer();
     const raw = assistantMessage('u-1', 'msg-1', '你好');
 
     // 顺序与 `index.ts` 的 `project()` 逐字相同：事件在前、消息在后
-    projectClaudeMessage(raw, turnState, { kind: 'claude-code', baseUrl: 'http://x' });
+    projectClaudeMessage(raw, turnState, { kind: 'cc', baseUrl: 'http://x' });
     const output = normalizer.normalize(raw, turnState);
 
     expect(turnState.seen.has('u-1'), '事件侧应当记下这一条的去重键').toBe(true);

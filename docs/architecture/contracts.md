@@ -40,7 +40,7 @@
 
 ## 机制与演化
 
-- **两份契约投影同批替换**（最核心的口径，真源在 `score.ts` 文件头）：`JUDGE_OUTPUT_CONTRACT`（文本契约，进提示词）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出，给 claude-code 的 `outputFormat` 与 codex 的 `outputSchema`）是**同一条契约的两个投影**，必须**同批修改**——只动一侧会让「模型按 schema 回的」与「解析器按提示词认的」分叉，界面表现为「模型回得挺好、解析就是失败」。守卫在 `score.test.ts`：同形守卫（字段名逐项对齐）+「两份投影里都不出现 `totalScore`」+「`minItems` / `maxItems` 不存在」（项数由每张评分表决定，编译期字面量表达不了，只能由结构检查判）。schema 手写字面量，**不引 `zod-to-json-schema`、不写通用转换器**（那是第二份真源）；只用可移植子集（无 `oneOf` / `const` / `prefixItems` / `uniqueItems`）。`achieved` 请求侧取 boolean 严档、解析侧宽容读——有意登记的差异。
+- **两份契约投影同批替换**（最核心的口径，真源在 `score.ts` 文件头）：`JUDGE_OUTPUT_CONTRACT`（文本契约，进提示词）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出，给 cc 的 `outputFormat` 与 codex 的 `outputSchema`）是**同一条契约的两个投影**，必须**同批修改**——只动一侧会让「模型按 schema 回的」与「解析器按提示词认的」分叉，界面表现为「模型回得挺好、解析就是失败」。守卫在 `score.test.ts`：同形守卫（字段名逐项对齐）+「两份投影里都不出现 `totalScore`」+「`minItems` / `maxItems` 不存在」（项数由每张评分表决定，编译期字面量表达不了，只能由结构检查判）。schema 手写字面量，**不引 `zod-to-json-schema`、不写通用转换器**（那是第二份真源）；只用可移植子集（无 `oneOf` / `const` / `prefixItems` / `uniqueItems`）。`achieved` 请求侧取 boolean 严档、解析侧宽容读——有意登记的差异。
 - **schema 分层机制**：schema 同时承担运行时校验与类型推导的单一真源。读侧容忍——`listRuns()` 对坏快照跳过并记汇总 WARN（一条坏数据不该让整个列表白屏）；写侧 `appendEvent` 也做 `safeParse`（写侧容忍的后果是静默少一条事件）。
 - **契约先行的组织方式**：全部契约一次性建好、后续只消费。跨边界可见的名字由一份「接缝契约」钉死——**为什么、怎么做、叫什么**各由一份文档回答，名字只在一处定义。
 - **类型期与运行期依赖边的区分**：`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故依赖方向表不列这条边、ui 放 `devDependencies`。**只允许 `export type`**：写成值导出就真有运行时依赖，得回来改表。

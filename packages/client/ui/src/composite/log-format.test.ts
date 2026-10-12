@@ -347,7 +347,7 @@ describe('formatEventLine', () => {
       seq: 1,
       at,
       type: 'score',
-      score: scoreFixture({ judgeAgentKind: 'claude-code' }),
+      score: scoreFixture({ judgeAgentKind: 'cc' }),
     });
 
     expect(line).toContain('Claude Code');

@@ -263,7 +263,7 @@ export function seedRunnableRun(options: {
    * 全局默认评分智能体（`settings.defaultJudgeAgent`）。
    * `undefined` = 本用例不关心（与 `null` 同路：不配）；显式 `null` 是「开关打开了但没配评分智能体」
    * 那个失败面要用到的取值。给了非 null 的 kind 时，`defaultJudge` 会自动指向一条 **anthropic**
-   * 供应商——`claude-code` 只吃 anthropic（`dsh` 两条都吃），
+   * 供应商——`cc` 只吃 anthropic（`dsh` 两条都吃），
    * 配错协议会让那几条以「协议不匹配」变红，而那是 `judgeAgentKind: 'codex'` 才要测的东西。
    * 评分模型那一对刻意留在 anthropic 上：这样「评分智能体协议不匹配」这条才有靶子。
    */

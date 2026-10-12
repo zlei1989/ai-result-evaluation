@@ -37,7 +37,7 @@
 
   | kind | 能力 | 落点 | 结果出口 |
   ||---|---|
-  | claude-code | true | `options.outputFormat` | 收尾消息 `structured_output`；与 `result` 不一致落 WARN 且以 structured_output 为准 |
+  | cc | true | `options.outputFormat` | 收尾消息 `structured_output`；与 `result` 不一致落 WARN 且以 structured_output 为准 |
   | codex | true | `turn/start` 一等字段 `outputSchema`（JSON-RPC，不落命令行） | 主会话答复文本写 `state.finalText` |
   | dsh | false | 无（SDK 客户端没有这一格） | 骨架摘格后照常跑，`structuredOutput = false` + 有痕降级日志 |
 

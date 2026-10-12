@@ -268,12 +268,12 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
   /**
    * 计量快照。两个字段**各自独立**（用户口径）：
    *   · `turns` **必填**——「到目前为止观察到的主循环模型请求次数」（一次模型 API 往返算一次）。
-   *     它是本轮唯一能实时、跨三家同口径拿到的量（claude-code 数 `assistant.message.id`、
+   *     它是本轮唯一能实时、跨三家同口径拿到的量（cc 数 `assistant.message.id`、
    *     dsh 数 `step`、codex 数模型产出条目），故每见到一次新请求就该发一条事件；
    *   · `tokens` **可空**——采不到就是 `null`（绝不发三个 0）。
    *
    * 为什么 tokens 从「必填」放宽成「可空」：原来的 schema 要求 tokens 与 turns 同时在，
-   * 于是 claude-code 的轮次被**它采不到的 token** 拖住——实测一轮 60 次模型往返，
+   * 于是 cc 的轮次被**它采不到的 token** 拖住——实测一轮 60 次模型往返，
    * 整轮只发得出一条 `usage`（`turns: 1, tokens: {0,0,0}`），界面于是永远停在「轮次 1」。
    * 轮次是独立的一把尺子，不该等另一把尺子。
    */

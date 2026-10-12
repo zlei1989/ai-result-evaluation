@@ -18,14 +18,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { FailureContext } from './errors';
 import { createTurnState } from './testing/agent-fixtures';
-import { projectClaudeMessage } from './providers/claude-code/events';
-import { resetClaudeTaskNamesForTesting } from './providers/claude-code/message';
+import { projectClaudeMessage } from './providers/cc/events';
+import { resetClaudeTaskNamesForTesting } from './providers/cc/message';
 import type { AppServerItem, AppServerNotificationPayload } from './providers/codex/appserver/protocol';
 import { projectCodexEvent } from './providers/codex/events';
 import { createCodexRunState, type CodexRunState } from './providers/codex/run-state';
 import { projectDshNotification, resetSubagentCatalogForTesting } from './providers/dsh/events';
 
-const CLAUDE_CONTEXT = { kind: 'claude-code', baseUrl: 'https://gw.example.com/anthropic' } as const;
+const CLAUDE_CONTEXT = { kind: 'cc', baseUrl: 'https://gw.example.com/anthropic' } as const;
 const DSH_CONTEXT = { kind: 'dsh', baseUrl: 'https://gw.example.com/deepseek/v1' } as const;
 const CODEX_CONTEXT = { kind: 'codex', baseUrl: 'https://gw.example.com/v1', mainThreadId: 'thread-main' } as const;
 

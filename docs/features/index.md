@@ -34,7 +34,7 @@
 | 行执行与日志 | 每候选行独立工作区与独立配置目录（串行也独立）；事件日志是执行的唯一真相源，SSE 由它扇出、刷新不丢事件；失败隔离、不限时间 |
 | 评分 | 两条通路——纯文本 API 与智能体评分，每一次评分只用一条；尺子是快照进轮次的评分标准项（总分 = 达成项权重之和），评分者 = 设置页全局默认 |
 
-详情层文章：[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)、[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)。候选智能体的接入细节见协议规范域：[Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/claude-code)、[DeepSeek Harness 接入](/protocols/dsh)。
+详情层文章：[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)、[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)。候选智能体的接入细节见协议规范域：[Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh)。
 
 ## 设置
 
@@ -73,7 +73,7 @@
 
 ## 相关链接
 
-- [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/claude-code)、[DeepSeek Harness 接入](/protocols/dsh) —— 协议规范域三家厂商文章
+- [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh) —— 协议规范域三家厂商文章
 - 本域已落地详情层文章：[用例管理](/features/case-management)、[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)
 - 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)、[设置](/features/settings)、[MCP 配置](/features/mcp-config)、[技能配置](/features/skills-config)、[数据与存储](/features/storage)
 - 协议层背景：[Provider 抽象与 run 入口](/protocols/provider-run)、[消息规范](/protocols/message-spec)、[事件流](/protocols/event-stream) ——本页消费的智能体协议、消息与事件口径

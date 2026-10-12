@@ -147,7 +147,7 @@ describe.skipIf(!ENABLED)('真机整行：注入的 MCP 工具被调用，观测
     // 真机下它会被网关拒（`There's an issue with the selected model`）——那是夹具的默认值在真机上的形状，
     // 与被测的那条链路无关。
     const row = makeRowFixture({
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       providerId: provider.id,
       providerName: provider.name,
       baseUrl: provider.baseUrl,
@@ -271,7 +271,7 @@ describe.skipIf(!ENABLED)('真机整行：三家各一行', () => {
     // 每行的 `modelId` 必须显式给（夹具默认的 `test-model` 在真机上会被网关拒，与本题无关）
     const rows = [
       makeRowFixture({
-        agentKind: 'claude-code',
+        agentKind: 'cc',
         providerId: anthropicProvider.id,
         providerName: anthropicProvider.name,
         baseUrl: anthropicProvider.baseUrl,
@@ -347,7 +347,7 @@ describe.skipIf(!ENABLED)('真机整行：三家各一行', () => {
       // 来源那一格两家不同，而且**必须不同**：claude 的 `system/init` 真的给了 `source`（`dynamic`
       // = 本仓程序化注入），dsh 的事件里没有这一格 ⇒ 如实记 `unknown`（**不编**一个来源）。
       const SKIPPED = { name: 'needs-key', source: 'unknown', judgedBy: 'none', verdict: 'skipped' } as const;
-      expect(of('claude-code'), 'claude-code 那一行的观测格').toEqual([
+      expect(of('cc'), 'cc 那一行的观测格').toEqual([
         { name: 'probe', source: 'dynamic', judgedBy: 'vendor-tool-table', verdict: 'connected' },
         SKIPPED,
       ]);

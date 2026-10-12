@@ -193,18 +193,18 @@ describe('评分产物走独立文件', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('评审者的消息进 judge-messages.jsonl，候选那条流不被污染', async () => {
-    // 两家分开配：夹具按 `kind` 索引脚本，于是**能分阶段驱动**（候选 codex / 评审者 claude-code），
+    // 两家分开配：夹具按 `kind` 索引脚本，于是**能分阶段驱动**（候选 codex / 评审者 cc），
     // 两条流的内容因此可以不同——「各进各的文件」这条判据才有区分力。
     // 评审者必须是吃 anthropic 的那家：harness 给评分配的供应商是 anthropic（协议不匹配会让这一行直接失败）
     const { run } = seedRunnableRun({
       rowCount: 1,
       executionMode: 'serial',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
     const rowId = getRun(run.id).rows[0]!.id;
     fakeAgents.scripts.set('codex', { messages: [{ text: '候选说的话' }] });
-    fakeAgents.scripts.set('claude-code', { messages: [{ text: '评审者说的话' }], finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { messages: [{ text: '评审者说的话' }], finalText: judgeReplyJson() });
 
     startRun(run.id);
     await drainRunningTasks();

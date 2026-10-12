@@ -152,7 +152,7 @@ describe('contracts 公共出口', () => {
   });
 
   it('导出全部常量', () => {
-    expect([...AGENT_KINDS]).toEqual(['claude-code', 'codex', 'dsh']);
+    expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh']);
     // 八个（含 `vendor-system`）：清单与联合成员的一一对应另有一条专测，
     // 这里只钉「包根确实把这份清单导出成了一个可枚举的值」
     expect([...AGENT_EVENT_TYPES]).toHaveLength(8);

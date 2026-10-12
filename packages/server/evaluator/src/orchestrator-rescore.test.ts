@@ -286,7 +286,7 @@ describe('rescoreRow：只重跑评分，不重跑候选', { timeout: TEST_TIMEO
    * 为什么必须单独钉：`useAgentJudge` 在夹具里的缺省是 `false`，上面六条用例全都走的**文本**通路。
    * 于是「`rescoreAttempt` 有没有把它自己读到的那份 run 快照交给 `runJudgeStage`」这条接缝
    * **一条用例都没碰**——一旦它退化成「不传 / 传一个陈旧的轮级开关」，一轮智能体评分的评测会被
-   * 重新用**文本模型**评分，而 `score.judgeAgentKind` 会从 `claude-code` 悄悄变成 `null`：
+   * 重新用**文本模型**评分，而 `score.judgeAgentKind` 会从 `cc` 悄悄变成 `null`：
    * 界面上只是「分数变了」，看不出换了尺子——正是本功能存在的理由所反对的那种失败。
    */
   it('开关打开时重评仍走评分智能体：judgeAgentKind 落库、评分智能体真的又跑了一次、评分模型一次都没走', async () => {
@@ -294,27 +294,27 @@ describe('rescoreRow：只重跑评分，不重跑候选', { timeout: TEST_TIMEO
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
     const rowId = run.rows[0]?.id ?? '';
     // 起点是「评分阶段失败」的行（这时失败阶段落成 'judge'）：判据不看这一段，这里只是顺手
     // 让这一条走「评分智能体」那条路——本用例要钉的是**通路**与 `judgeAgentKind` 落库
-    fakeAgents.scripts.set('claude-code', { mode: 'error', errorCode: 'AGENT_FAILED' });
+    fakeAgents.scripts.set('cc', { mode: 'error', errorCode: 'AGENT_FAILED' });
     await runRow(run.id, rowId);
     expect(getRun(run.id).rows[0]?.status).toBe('failed');
     expect(getRun(run.id).rows[0]?.error?.stage).toBe('judge');
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
 
     // 换一把尺子的读数：第二次评分智能体全达成（满分 30）
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
     rescoreRow(run.id, rowId);
     await until(() => getRun(run.id).rows[0]?.score?.totalScore === 30, '重评走智能体通路并落盘');
 
     const row = getRun(run.id).rows[0];
     expect(row?.status).toBe('judged');
-    expect(row?.score?.judgeAgentKind).toBe('claude-code');
+    expect(row?.score?.judgeAgentKind).toBe('cc');
     // 候选（codex）没有再跑：只有评分智能体多跑了一次
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc', 'cc']);
     // 阴性面：纯文本通路一次都没走（走错通路时它会在这里出现，而 judgeAgentKind 会是 null）
     expect(fakeJudge.calls).toHaveLength(0);
   });

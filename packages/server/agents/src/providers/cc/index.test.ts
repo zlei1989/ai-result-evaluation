@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 适配器：注入落点、凭据隔离正反两面、事件贯通、超时释放顺序、加载降级。
+ * cc 适配器：注入落点、凭据隔离正反两面、事件贯通、超时释放顺序、加载降级。
  * 全部走假 SDK 注入 —— 单测不碰真实 CLI、不碰真实 API、不产生费用。
  * 另含两条控制方追加的回归钉：投影 `failure` 非空的出口（三个适配器共用）、以及
  * `onGraceExceeded` 这条 `release.ts ↔ turn.ts` 接缝上的抛错路径。
@@ -247,7 +247,7 @@ describe('claudeCodeProvider', () => {
 
   it('执行阶段的权限档：permissionMode: bypassPermissions **必须**带 allowDangerouslySkipPermissions', async () => {
     // 为什么这条是必修：缺权限档的后果不是「偶尔要确认一次」，而是本产品的核心动作
-    // （改工作区里的文件）根本发生不了——冒烟里 7 行 claude-code **全部 0 改动**，
+    // （改工作区里的文件）根本发生不了——冒烟里 7 行 cc **全部 0 改动**，
     // 评分在「无改动」输入上打出 20 分（run.json 里评分模型自己写「diff 为空」）。
     // 而 `bypassPermissions` **单独给是无效的**：SDK 把它与 `allowDangerouslySkipPermissions`
     // 拼成两个独立 argv（`--permission-mode` / `--allow-dangerously-skip-permissions`），
@@ -367,7 +367,7 @@ describe('claudeCodeProvider', () => {
 
   it('终止时的 interrupt() 不许留下没人处理的 rejection（裸 void 会打崩进程）', async () => {
     // 冒烟实测 14 次 `unhandledRejection: Error: Query closed before response received`，
-    // 堆栈逐层指向 `providers/claude-code/index.ts` 的 `void query.interrupt?.()`。
+    // 堆栈逐层指向 `providers/cc/index.ts` 的 `void query.interrupt?.()`。
     // 生产环境 Node 默认 `--unhandled-rejections=throw` ⇒ 这是**能终结进程**的形状。
     // 判据是「那份被拒 promise 有没有被挂上 handler」（夹具在下一个微任务结算），
     // 不与运行器如何处置 unhandledRejection 挂钩。
@@ -680,7 +680,7 @@ describe('claudeCodeProvider', () => {
  * 判据用 `recorder.options?.model`（`createFakeClaudeSdk` 记录的**真实** query 入参），
  * 而不是本项目自己算出来的中间变量——中间变量绿了而 SDK 收到别的名字，正是这条要防的事。
  */
-describe('claude-code 的 1M 后缀', () => {
+describe('cc 的 1M 后缀', () => {
   /** 一份最小可用的 anthropic 路由：`createRunInput` 是浅覆盖，route 必须整份给 */
   const ROUTE = {
     protocolType: 'anthropic' as const,
@@ -741,7 +741,7 @@ describe('claude-code 的 1M 后缀', () => {
  * `EffortLevel` 值域里，直传会让 CLI 校验失败），而是翻成 `thinking: { type: 'disabled' }`
  * —— 见本组下面那条用例。
  */
-describe('claude-code 的思考强度', () => {
+describe('cc 的思考强度', () => {
   /**
    * 基线：先把宿主可能设过的同名变量清掉。
    * 为什么必须有：本组那条「非 off 档位的注入键集合逐字不变」读的是 `recorder.env`，
@@ -954,7 +954,7 @@ describe('claude-code 的思考强度', () => {
     await claudeCodeProvider.run(createRunInput({ effort: EFFORT_OFF }));
 
     /**
-     * ① message **逐字**：日志器的前缀 `[WARN] [agents/claude-code] ` 由 `core/src/logger.ts:25-27`
+     * ① message **逐字**：日志器的前缀 `[WARN] [agents/cc] ` 由 `core/src/logger.ts:25-27`
      * 的 `format` 拼出，**不在** message 里 ⇒ 这里比的是去掉前缀之后的那一段。
      *
      * ⚠️ 契约正文**逐字写在这里**、且键名用**字面量**（理由见上）：
@@ -966,7 +966,7 @@ describe('claude-code 的思考强度', () => {
     const hit = calls.find((args) => String(args[0]).endsWith(expected));
     expect(hit).toBeDefined();
     // 同时钉住「没有第二个参数混进 message」：参数 0 必须**以那段文案结尾**（前缀之外一字不多）
-    expect(String(hit?.[0])).toBe(`[WARN] [agents/claude-code] ${expected}`);
+    expect(String(hit?.[0])).toBe(`[WARN] [agents/cc] ${expected}`);
     // ② context 固定为 `{ variable: '<键名原文>', effort: 'off' }`（作为第二个参数透传，不 JSON.stringify）
     expect(hit?.[1]).toStrictEqual({ variable: HOST_DISABLE_BETAS_ENV, effort: EFFORT_OFF });
   });
@@ -996,7 +996,7 @@ describe('claude-code 的思考强度', () => {
 
     const expected =
       'off 档的关闭被静默忽略：子进程环境里存在 claude_code_disable_experimental_betas，它使 CLAUDE_CODE_EXTRA_BODY 的 body 覆盖失效，本次运行的 off 档读数作废；处置：从运行环境里去掉该变量后重跑，或改用别的方式关闭思考。';
-    expect(calls.map((args) => String(args[0]))).toContain(`[WARN] [agents/claude-code] ${expected}`);
+    expect(calls.map((args) => String(args[0]))).toContain(`[WARN] [agents/cc] ${expected}`);
     // context 里的 `variable` 是第二份「原拼写」：文案对了、context 写规范拼写同样是漂移
     const hit = calls.find((args) => String(args[0]).endsWith(expected));
     expect(hit?.[1]).toStrictEqual({ variable: lower, effort: EFFORT_OFF });
@@ -1125,7 +1125,7 @@ function dispatchStarted(taskId: string, extra: Record<string, unknown> = {}): R
  * 而它只在**收尾**才产生 ⇒ 少接一根线（没记 `task_id`、没记 `session_id`、没交回结果）
  * 的表现都是「界面上的 tok 只有主会话」——与今天的行为**一模一样**，静默且看不出缺。
  */
-describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文件）', () => {
+describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', () => {
   it('finalize 把子智能体那一份加进结果，taskId 与 sessionId 都用对', async () => {
     // configHome 必须指向**本用例自己的**临时目录（收尾要按它去读子智能体会话文件，
     // 而这条用例要往里面写 agent-*.jsonl）；夹具默认值 `FIXTURE_CONFIG_HOME` 是共享的，
@@ -1566,7 +1566,7 @@ describe('claude-code 的子智能体用量（收尾读 CLI 落盘的会话文�
  *   ③ 合计拿不出来（主会话一次往返都没数到）⇒ **不交孤儿分量**，哪怕盘上读得到；
  *   ④ 运行期**不交**这一格（浮层只有一行），终态两格一起换成权威值。
  */
-describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）', () => {
+describe('cc 的子智能体轮次（轮次那一格的 claude 段）', () => {
 
   /**
    * 跑一次「主会话 1 轮 + 每个 taskId 派一次活」的固定形状（②③ 两组共用）。
@@ -1789,7 +1789,7 @@ describe('claude-code 的子智能体轮次（轮次那一格的 claude 段）',
  * 「各转录按 `message.id` 去重后求和」、`subagentTurns` 仍是它们的往返数之和、`tokens` / `turns`
  * 仍是「主 + 子」。
  */
-describe('claude-code 收尾只交最终用量（不含子会话逐轮读数）', () => {
+describe('cc 收尾只交最终用量（不含子会话逐轮读数）', () => {
   /**
    * **两个**子会话、各两轮（task-1 的 `task-1-m-1` 出现两次、后到覆盖 ⇒ 仍是两轮）。
    *

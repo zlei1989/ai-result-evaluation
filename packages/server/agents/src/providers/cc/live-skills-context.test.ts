@@ -21,7 +21,7 @@
  * ```
  * AIEVAL_LIVE_SKILL_CONTEXT=1 \
  * [AIEVAL_LIVE_SKILL_CONTEXT_MODEL=GLM-5.3] \
- * ./node_modules/.bin/vitest run packages/server/agents/src/providers/claude-code/live-skills-context.test.ts
+ * ./node_modules/.bin/vitest run packages/server/agents/src/providers/cc/live-skills-context.test.ts
  * ```
  * 供应商读**宿主的** `~/.aieval/config.json` 里第一条 `anthropic`（与其他真机探针同一个来源）。
  */

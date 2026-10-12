@@ -150,7 +150,7 @@ async function createRun(): Promise<EvalRun> {
     jsonRequest({
       caseId: 'c-1',
       executionMode: 'serial',
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     }),
   );
   expect(res.status).toBe(201);

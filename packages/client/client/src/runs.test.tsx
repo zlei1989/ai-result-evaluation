@@ -321,7 +321,7 @@ describe('四个动作', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code' as const, providerId: 'p-1', modelId: 'm-1' }],
+      rows: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm-1' }],
     };
     await act(async () => {
       await result.current.create.create(input);
@@ -492,7 +492,7 @@ describe('useRunModelOptions', () => {
   it('按 agentKind 给出候选池与能力元数据，未知 kind 退回乐观默认值', async () => {
     const groups = [
       {
-        agentKind: 'claude-code',
+        agentKind: 'cc',
         protocolTypes: ['anthropic'],
         usage: true,
         cancelMidTurn: true,
@@ -507,7 +507,7 @@ describe('useRunModelOptions', () => {
     await flushMount();
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/runs/model-options');
-    expect(result.current.optionsFor('claude-code').map((option) => option.modelId)).toEqual(['claude-opus-4-6']);
+    expect(result.current.optionsFor('cc').map((option) => option.modelId)).toEqual(['claude-opus-4-6']);
     expect(result.current.capabilityOf('dsh')).toEqual({ usage: true, cancelMidTurn: false });
     // 数据还没到 / kind 未知时按「都支持」处理：多给一个终止按钮，比无端禁用安全
     expect(result.current.capabilityOf('codex')).toEqual({ usage: true, cancelMidTurn: true });
@@ -517,7 +517,7 @@ describe('useRunModelOptions', () => {
      * 界面用它拼占位符（「未指定（DeepSeek Harness 用 high）」），猜错就是替那一家承诺。
      */
     expect(result.current.defaultEffortOf('dsh')).toBe('high');
-    expect(result.current.defaultEffortOf('claude-code')).toBeUndefined();
+    expect(result.current.defaultEffortOf('cc')).toBeUndefined();
     // 响应里没有这一组的 kind：同样给 undefined（不是空串、也不是别家的档）
     expect(result.current.defaultEffortOf('codex')).toBeUndefined();
     //  钉的原始形状也在（页面照解构时不必自己再 find 一遍）
@@ -588,7 +588,7 @@ describe('useRunModelOptions', () => {
 
   /**
    * 候选池与能力元数据**完全来自服务端**（A3 /）：前端不许再抄一份「哪家配哪种协议」。
-   * 所以这里喂一份**反直觉**的响应（dsh 带模型、claude-code 缺席）：任何在前端硬编码
+   * 所以这里喂一份**反直觉**的响应（dsh 带模型、cc 缺席）：任何在前端硬编码
    * 「谁属于哪组 / 谁有哪些模型」的实现都会在这条用例上露馅。
    */
   it('候选池完全由服务端响应驱动，不硬编码「哪家配哪种协议」', async () => {
@@ -607,8 +607,8 @@ describe('useRunModelOptions', () => {
     await flushMount();
 
     expect(result.current.optionsFor('dsh').map((option) => option.modelId)).toEqual(['deepseek-v4']);
-    // 响应里没有 claude-code 这一组 ⇒ 它的池子是空的（而不是「本地写死的默认池」）
-    expect(result.current.optionsFor('claude-code')).toEqual([]);
+    // 响应里没有 cc 这一组 ⇒ 它的池子是空的（而不是「本地写死的默认池」）
+    expect(result.current.optionsFor('cc')).toEqual([]);
     expect(result.current.capabilityOf('dsh')).toEqual({ usage: true, cancelMidTurn: false });
   });
 
@@ -695,7 +695,7 @@ describe('useUpdateRun', () => {
       rows: [
         {
           id: 'w-1',
-          agentKind: 'claude-code',
+          agentKind: 'cc',
           providerId: 'p-anthropic',
           modelId: 'claude-opus-4-6',
           effort: 'high',
@@ -739,7 +739,7 @@ describe('useUpdateRun', () => {
           executionMode: 'serial',
           useAgentJudge: false,
           rows: [
-            { agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+            { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
           ],
         }),
       ).rejects.toThrowError(/正在运行|在运行/);

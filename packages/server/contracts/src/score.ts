@@ -93,7 +93,7 @@ export const ScoreResultSchema = z.object({
 export type ScoreResult = z.infer<typeof ScoreResultSchema>;
 
 /**
- * 评分输出的 JSON Schema（结构化输出用）：给 claude-code 的 `outputFormat` 与 codex 的 `outputSchema` 用。
+ * 评分输出的 JSON Schema（结构化输出用）：给 cc 的 `outputFormat` 与 codex 的 `outputSchema` 用。
  * 四条口径：
  *   1. **只用可移植子集**：不出现 `oneOf` / `const` / `prefixItems` / `uniqueItems`；
  *   2. **与 `JUDGE_OUTPUT_CONTRACT` 同形**：改一份必须同批改另一份；

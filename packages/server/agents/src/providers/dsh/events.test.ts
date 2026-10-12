@@ -250,8 +250,8 @@ describe('projectDshNotification：最终答复（finalText）', () => {
    * 就是把证据丢了**——dsh 实测每次模型往返都带完整推理文本（真机三次往返分别 259 / 68 / 143 字符），
    * 而修复前适配器**一个字都不留**（`assistant/message` 只投影 `type==='text'`）。
    *
-   * 与 claude-code 同待遇：那边非文本块走 `others` 分支落一条原始负载日志
-   * （`providers/claude-code/events.ts` 的 `assistantDrafts`），所以两家的推理在抽屉里都看得到。
+   * 与 cc 同待遇：那边非文本块走 `others` 分支落一条原始负载日志
+   * （`providers/cc/events.ts` 的 `assistantDrafts`），所以两家的推理在抽屉里都看得到。
    *
    * ⚠️ 一条被推翻的旧口径：本文件上游曾写「dsh 的 reasoning 实测 `text` 恒为空串」——
    * **探测中继把整条流转成单块、破坏 SSE 分块**会造成这个假象；走 SDK 时推理文本完整。

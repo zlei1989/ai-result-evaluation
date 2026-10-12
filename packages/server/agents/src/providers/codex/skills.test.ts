@@ -2,7 +2,7 @@
 /**
  * codex 的**技能装入**接缝：`AgentRunInput.skills` → 行配置目录里的那份副本。
  *
- * 与 claude 那份同名守卫（`providers/claude-code/skills.test.ts`）逐条同形，分开写是因为
+ * 与 claude 那份同名守卫（`providers/cc/skills.test.ts`）逐条同形，分开写是因为
  * **两家的 boot 点不是同一个符号**：这一家的时序判据挂在 `hooks.createClient(...)` 那一行
  * （真正的 `spawn` 在 `appserver/client.ts` 里），换家换点，合写一处反而会让「哪家钉在哪一步」变模糊。
  *

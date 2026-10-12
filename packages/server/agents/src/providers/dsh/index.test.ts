@@ -1051,8 +1051,8 @@ describe('子智能体那一份用量', () => {
   /**
    * 口径：`null` 那一格**不能是静默的**。第三档承诺「`null` 伴随一条
    * **点名**的 WARN」，运维据此分得清「没采到」与「确实没有子智能体」——codex
-   * （`codex/transcript.ts` 的「未找到子线程 …」）与 claude（`claude-code/index.ts` 的
-   * 「读不到子智能体 …」，用例 `claude-code/index.test.ts` 那条）都落了这条 WARN，
+   * （`codex/transcript.ts` 的「未找到子线程 …」）与 claude（`cc/index.ts` 的
+   * 「读不到子智能体 …」，用例 `cc/index.test.ts` 那条）都落了这条 WARN，
    * 而 dsh 原来在 `finalize` 里给的是 `drafts: []` ⇒ 一格 `null` 悄无声息。
    */
   it('子会话收场却无用量 ⇒ 一条**点名**的 WARN（null 那一格不能是静默的）', async () => {

@@ -1,5 +1,5 @@
 /**
- * claude-code 的**消息归一**：把 SDK 消息流折成统一的
+ * cc 的**消息归一**：把 SDK 消息流折成统一的
  * `AgentMessage` 与 `SubagentRecord`。事件投影仍在 `events.ts`（行级审计与活动行），本文件只管内容级视图。
  *
  * 取值路径逐条（真机逐字核过，见 `probe/dumps/v4/claude-*.jsonl`）：

@@ -538,7 +538,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
           antd 的「已有值优先」在这里变成「谁赢看不出」的不确定状态。 */}
       <Form.List
         name="rows"
-        {...(editingRun === undefined ? { initialValue: [{ agentKind: 'claude-code' as const }] } : {})}
+        {...(editingRun === undefined ? { initialValue: [{ agentKind: 'cc' as const }] } : {})}
         rules={[{ validator: requireAtLeastOneRow }]}
       >
         {(fields, { add, remove, move }, { errors }) => (
@@ -788,7 +788,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
               variant="dashed"
               size="small"
               icon={<PlusOutlined aria-hidden />}
-              onClick={() => add({ agentKind: 'claude-code' })}
+              onClick={() => add({ agentKind: 'cc' })}
             >
               添加候选
             </Button>

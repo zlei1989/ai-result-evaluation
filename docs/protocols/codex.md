@@ -121,5 +121,5 @@ codex **有原生 skills 机制**，落点是**文件**而不是配置键：把�
 
 - 活文档：[Codex FAQ](/faq/codex)——加载与凭据、网关与 wire、评分通路、计量与思考、进程与收尾五组现象条目，拿报错原文一搜即命中
 - 仓库内参考：`packages/server/agents/README.md`——§4.4 能力查询的唯一入口、§5 各家差异（注入落点 / 停止与释放 / 事件流 / 轮次与计量）、§8.1 新增 SDK 接入清单
-- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/claude-code)、[《三家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
+- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/cc)、[《三家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
 - 外部资料：[openai/codex discussions#7782](https://github.com/openai/codex/discussions/7782)（chat wire 移除）、[process.getBuiltinModule](https://nodejs.org/api/process.html#processgetbuiltinmodulemoduleid)（跨打包器取真 `createRequire`）

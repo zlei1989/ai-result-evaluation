@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * **三端一致性**：同一件事在 claude-code / codex / dsh 上归一之后，
+ * **三端一致性**：同一件事在 cc / codex / dsh 上归一之后，
  * 消息结果必须逐字段一致——只有「这一家结构上没有」的格才允许不同（`messageId` / `vendorId` /
  * `turn` / `step` / 工具的 `name` / 思考块的 `signature` / `raw`，以及 codex 工具块上
  * app-server 独有的事实 `cwd` / `durationMs`），且那些差异必须由**能力声明**说明。
@@ -16,7 +16,7 @@ import { MessageCapabilitySchema, type AgentMessage, type ContentBlock } from '@
 import { createMessageAssembler, type MessageDraft } from '../message';
 import { listAgentProviders } from '../registry';
 import { createTurnState } from '../testing/agent-fixtures';
-import { createClaudeMessageNormalizer } from './claude-code/message';
+import { createClaudeMessageNormalizer } from './cc/message';
 import { projectCodexMessages } from './codex/message';
 import type { AppServerItem, AppServerNotificationPayload } from './codex/appserver/protocol';
 import { createCodexRunState, type CodexRunState } from './codex/run-state';
@@ -32,7 +32,7 @@ beforeEach(() => {
   resetDshMessageStateForTesting();
 });
 
-const CLAUDE_CONTEXT = { kind: 'claude-code', baseUrl: 'https://gw.example.com/anthropic' } as const;
+const CLAUDE_CONTEXT = { kind: 'cc', baseUrl: 'https://gw.example.com/anthropic' } as const;
 
 /** 跑一条消息流经合并器，返回消费方真正看到的那些消息 */
 function assemble(drafts: readonly MessageDraft[]): AgentMessage[] {
@@ -680,7 +680,7 @@ describe('三端一致性：能力声明与实测行为对齐', () => {
       kind: provider.kind,
       capability: provider.metadata.messageCapability,
     }));
-    expect(declared.map((entry) => entry.kind)).toEqual(['claude-code', 'codex', 'dsh']);
+    expect(declared.map((entry) => entry.kind)).toEqual(['cc', 'codex', 'dsh']);
 
     const claudeCapability = declared[0]!.capability;
     // 思考正文：声明 yes ⇒ 必须真拿得到（用例里喂了 `thinking` 块）
@@ -755,6 +755,6 @@ describe('三端一致性：投影上下文不影响消息结果', () => {
       comparable(assemble(second.normalize(raw, createTurnState()).messages)),
     );
     // 这个常量只用来提醒：投影上下文（`FailureContext`）是事件层的输入，消息层不消费它
-    expect(CLAUDE_CONTEXT.kind).toBe('claude-code');
+    expect(CLAUDE_CONTEXT.kind).toBe('cc');
   });
 });

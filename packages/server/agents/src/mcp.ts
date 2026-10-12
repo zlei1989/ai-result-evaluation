@@ -19,7 +19,7 @@ import type { McpServerConfig, McpServers } from '@aieval/contracts';
 
 /**
  * claude Agent SDK 的 `Options.mcpServers` 条目（窄结构，**不从厂商包 import type**，
- * 与 `providers/claude-code/sdk.ts` 同一条纪律）。
+ * 与 `providers/cc/sdk.ts` 同一条纪律）。
  *
  * 形状逐字取自安装态 SDK 的类型面（`sdk.d.ts` 的 `McpStdioServerConfig` / `McpHttpServerConfig`）：
  *   · stdio 是 `type:'stdio'` + `command` / `args?` / `env?`，**没有 `cwd`**（子进程继承 CLI 的 cwd）；

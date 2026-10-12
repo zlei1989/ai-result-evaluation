@@ -41,7 +41,7 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
  * 三家的落点（哪一档给哪个厂商选项，**真源是 `permission.ts`**——三份表放一起才能逐格对照，
  * 也才能让「三家都实现了同一份档位表」变成一条可执行的守卫）：
  *
- * | permission  | claude-code                                              | codex                                            | dsh                    |
+ * | permission  | cc                                                       | codex                                            | dsh                    |
  * |-------------|----------------------------------------------------------|--------------------------------------------------|------------------------|
  * | `'full'`    | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
  * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**，见 `codexPermissionOptions`） | `DSH_PERMISSION_MODE=read-only` |
@@ -305,7 +305,7 @@ export interface AgentProviderMetadata {
    * `openai-responses`，两条都跑通含计量），单值字段装不下；再出现多 wire 的家也不必再改形状。
    * 判据与结论见 `docs/protocols/dsh.md`。
    *
-   * claude-code / codex 仍是单元素（它们各自只讲一条 wire），集合形状对它们只是多一层数组。
+   * cc / codex 仍是单元素（它们各自只讲一条 wire），集合形状对它们只是多一层数组。
    */
   protocolTypes: readonly ProtocolType[];
   /** **行级**能力：这一家在「跑这一行」这件事上能做什么（内容级能力见下面的 `messageCapability`） */

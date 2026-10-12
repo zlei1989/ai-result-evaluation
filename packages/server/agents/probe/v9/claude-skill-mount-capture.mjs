@@ -9,7 +9,7 @@
  * 不需要上游真的会答题、也不需要模型配合——它测的是**装配**，不是行为。
  *
  * 四条口径：
- *  1. **对齐适配器**（`src/providers/claude-code/index.ts` 的 options 逐格抄过来）：HOME / USERPROFILE /
+ *  1. **对齐适配器**（`src/providers/cc/index.ts` 的 options 逐格抄过来）：HOME / USERPROFILE /
  *     CLAUDE_CONFIG_DIR 全指向行私有目录、`settings.env` 钉路由、`settingSources` 由参数给、
  *     禁用名单 / `forwardSubagentText` / `includePartialMessages` / `CLAUDE_CODE_ENABLE_TODO_TOOLS` 同值；
  *  2. **捕获先于响应**：本地网关对任何路径都回一个最小合法 SSE，请求体在回之前已经落进 `records`；

@@ -6,7 +6,7 @@
  */
 import { AGENT_KINDS, EFFORT_OFF, ProtocolTypeSchema } from '@aieval/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CLAUDE_PACKAGE_NAME } from './providers/claude-code/sdk';
+import { CLAUDE_PACKAGE_NAME } from './providers/cc/sdk';
 import { createFakeAppServer } from './providers/codex/appserver-fixtures';
 import { codexProvider } from './providers/codex/index';
 import { DSH_PACKAGE_NAME } from './providers/dsh/sdk';
@@ -27,7 +27,7 @@ afterEach(() => {
  * "docs/protocols/dsh.md"）。本步只搬形状，三家都还是单元素。
  */
 const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
-  'claude-code': {
+  'cc': {
     protocolTypes: ['anthropic'],
     capability: { cancelMidTurn: true, usage: true, structuredOutput: true },
     // 消息能力声明由三家各自显式声明（`providers/<kind>/index.ts`）；这一份是形状桩，
@@ -119,7 +119,7 @@ describe('元数据投影（回归网）', () => {
    * 与编排复检）。它自己错一格，四处会一起错——所以单独钉一条，而不是只靠消费点的用例间接覆盖。
    */
   it('acceptsProtocol 只认集合里的协议', () => {
-    const claude = getProvider('claude-code').metadata;
+    const claude = getProvider('cc').metadata;
     expect(acceptsProtocol(claude, 'anthropic')).toBe(true);
     expect(acceptsProtocol(claude, 'openai')).toBe(false);
   });
@@ -142,12 +142,12 @@ describe('元数据投影（回归网）', () => {
     }
   });
 
-  it('支持结构化输出的只有 claude-code 与 codex（dsh 的 SDK 客户端没有这一格）', () => {
+  it('支持结构化输出的只有 cc 与 codex（dsh 的 SDK 客户端没有这一格）', () => {
     const supported = listAgentProviders()
       .filter((provider) => provider.metadata.capability.structuredOutput)
       .map((provider) => provider.kind)
       .sort();
-    expect(supported).toEqual(['claude-code', 'codex']);
+    expect(supported).toEqual(['cc', 'codex']);
   });
 
   /**
@@ -214,9 +214,9 @@ describe('getProvider', () => {
   it('未注册的 id 抛错，且错误信息含可用清单', () => {
     const call = (): unknown => getProvider('gemini' as AgentKind);
     expect(call).toThrow(/未注册的智能体/);
-    expect(call).toThrow(/claude-code/);
-    expect(call).toThrow(/codex/);
-    expect(call).toThrow(/dsh/);
+    // 逐字锚定整张清单（顺序即注册表顺序）：`cc` 只有两个字符，用 `/cc/` 断言等于没断言——
+    // 任何含 "cc" 的文案都能蒙混过去，而清单漏一家、串了顺序都要红
+    expect(call).toThrow(/可用清单：cc \/ codex \/ dsh/);
   });
 });
 
@@ -247,7 +247,7 @@ describe('加载降级：失败面收窄到单家', () => {
       createClient: () => fake.client,
     };
     try {
-      const claudeResult = await getProvider('claude-code').run(createRunInput());
+      const claudeResult = await getProvider('cc').run(createRunInput());
       expect(claudeResult.error?.code).toBe('AGENT_LOAD_FAILED');
       const codexRun = getProvider('codex').run(createRunInput());
       // 订阅是在 `thread/start` 与 `turn/start` 返回之后才建立的 ⇒ 终态必须**之后**手动投递，

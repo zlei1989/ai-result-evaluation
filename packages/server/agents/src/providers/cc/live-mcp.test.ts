@@ -16,7 +16,7 @@
  * ```
  * AIEVAL_LIVE_MCP=1 \
  * [AIEVAL_LIVE_MCP_MODEL=DeepSeek-V4.1-Flash-a] \
- * pnpm vitest run packages/server/agents/src/providers/claude-code/live-mcp.test.ts
+ * pnpm vitest run packages/server/agents/src/providers/cc/live-mcp.test.ts
  * ```
  * 供应商读**宿主的** `~/.aieval/config.json` 里第一条 `anthropic`（与那两条探针同一个来源）。
  */

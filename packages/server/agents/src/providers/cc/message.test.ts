@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 的**子任务帧形状判决**。
+ * cc 的**子任务帧形状判决**。
  *
  * 这个文件守的是一个真机缺陷：CLI 的 `task_started` / `task_notification` **不只给真派发的 `Task`**，
  * 也给**非 Agent 的后台任务**——真机那一条是子智能体自己跑的 Bash（wire 上的「名字」就是那条命令的
@@ -60,7 +60,7 @@ const PHANTOM_START = {
   is_backgrounded: false,
 };
 
-describe('claude-code：task_* 帧的形状判决', () => {
+describe('cc：task_* 帧的形状判决', () => {
   it('三格全空的 task 帧**不产**子任务行（面板里那条幽灵「子任务」就是它）', () => {
     const output = createClaudeMessageNormalizer().normalize(PHANTOM_START, state());
     expect(output.taskShape).toBe('phantom');
@@ -142,7 +142,7 @@ describe('claude-code：task_* 帧的形状判决', () => {
  *
  * 为什么第 1 轮（`thinking` + `tool_use`）没暴露：工具调用按 `c:<callId>` 分槽，撞不上 `i:0`。
  */
-describe('claude-code：同一条消息的多次投递（覆盖合并）', () => {
+describe('cc：同一条消息的多次投递（覆盖合并）', () => {
   /** 走完整链路：归一器 → 装配器，取**最终视图**（读侧就是它） */
   function finalView(frames: unknown[]): { blocks: { type: string }[] } | undefined {
     const normalizer = createClaudeMessageNormalizer();

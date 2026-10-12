@@ -1,5 +1,5 @@
 /**
- * claude-code 的消息投影。
+ * cc 的消息投影。
  * 规则：
  *  1. 唯一允许丢弃的是**重复消息**：同一 `uuid` 只投影一次（SDK 重放 / 续传会给重复）；
  *  2. 其余任何消息（含未识别的 type）都必须落成**保留原始负载**的日志事件，不得静默丢弃；
@@ -412,7 +412,7 @@ function projectResult(
       drafts.push(
         logDraft(
           'stderr',
-          '[WARN] claude-code 的 structured_output 与 result 文本不一致；本行的最终答复以 structured_output 为准'
+          '[WARN] cc 的 structured_output 与 result 文本不一致；本行的最终答复以 structured_output 为准'
             + '（结构化输出是 CLI 按 schema 校验过的产出）',
         ),
       );
@@ -428,7 +428,7 @@ function projectResult(
     drafts.push(
       logDraft(
         'stderr',
-        `[WARN] claude-code 自报的 num_turns=${reported} 与本轮按 assistant 消息数出的轮次=${state.turns} 不一致；` +
+        `[WARN] cc 自报的 num_turns=${reported} 与本轮按 assistant 消息数出的轮次=${state.turns} 不一致；` +
           '界面与本行快照以数出来的为准（一次模型 API 往返算一次）',
       ),
     );
@@ -448,7 +448,7 @@ function projectResult(
   // 直接冒到界面等于让使用者去猜；这里折成一句能直接展示的中文，并保留 subtype 供排障。
   if (message?.is_error === true && readString(message, 'subtype') === 'error_max_structured_output_retries') {
     const friendly =
-      'claude-code 的结构化输出重试用尽：模型在多次重试内没有给出符合评分 schema 的 JSON。'
+      'cc 的结构化输出重试用尽：模型在多次重试内没有给出符合评分 schema 的 JSON。'
       + '请检查用例的评分标准项，或把评分智能体换成另一家';
     drafts.push({ type: 'error', message: friendly });
     // 「保留 subtype 供排障」的落点**只能**是这条 stderr 日志，不能是 `friendly`：界面直接展示的是
@@ -457,7 +457,7 @@ function projectResult(
     drafts.push(
       logDraft(
         'stderr',
-        '[WARN] claude-code 本次以 subtype=error_max_structured_output_retries 收场（结构化输出重试用尽）',
+        '[WARN] cc 本次以 subtype=error_max_structured_output_retries 收场（结构化输出重试用尽）',
       ),
     );
     return {
@@ -485,7 +485,7 @@ function projectResult(
   const failureText =
     text !== null && text !== ''
       ? text
-      : `claude-code 返回失败结果（subtype: ${readString(message, 'subtype') ?? 'unknown'}）`;
+      : `cc 返回失败结果（subtype: ${readString(message, 'subtype') ?? 'unknown'}）`;
   drafts.push({ type: 'error', message: failureText });
   return {
     drafts,

@@ -113,7 +113,7 @@ describe('评分阶段组装执行过程证据（快照门控 + codex 补 messag
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
       agentKind: 'dsh',
       includeSteps: true,
     });

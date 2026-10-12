@@ -75,7 +75,7 @@ function opensOf(taskId: string): number {
   return fsSpies.openSync.mock.calls.filter((call) => String(call[0]).endsWith(`agent-${taskId}.jsonl`)).length;
 }
 
-describe('claude-code 的子会话读盘缓存接线（审查 M-3）', () => {
+describe('cc 的子会话读盘缓存接线（审查 M-3）', () => {
   /**
    * 一次真实收尾把两条路径全走一遍：`task-1` **有**终态通知、`task-2` **没有**（只有派发帧）。
    * **同一版本**的两个转录文件各只该被打开一次——没接线 / 少接一处会是 2 次。

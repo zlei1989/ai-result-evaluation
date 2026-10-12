@@ -157,7 +157,7 @@ function staticallyImports(text: string, packageName: string): boolean {
  *
  * 为什么这一条要写成一张**有界的表**、而不是让下面那条断言悄悄放过它：那条断言的判据是**标识符**
  * （`/\breaddir(Sync)?\s*\(/`），它守的是 A3 —— 「打包后扫不到模块」⇒ 本包的**注册表**必须是显式静态注册。
- * 而 `providers/claude-code/subagent-usage.ts` 扫的不是代码目录，是**运行期数据目录**
+ * 而 `providers/cc/subagent-usage.ts` 扫的不是代码目录，是**运行期数据目录**
  * （`<configHome>/projects/<项目目录>/<sessionId>/subagents/`）：项目目录名是 CLI 自己按 cwd 拼的，
  * 本仓明确**不重算那条规则**（算错会静默读到空目录，见 `readClaudeSubagentUsage` 的注释）
  * ⇒ 列举是唯一诚实的取数方式，而它与「打包」无关。
@@ -167,7 +167,7 @@ function staticallyImports(text: string, packageName: string): boolean {
  * 豁免只按**逐项路径**匹配（不做目录前缀匹配）⇒ **其余文件的覆盖一字不减**：任何一个别的文件出现
  * `readdir` / `readdirSync` 照样被下面那条断言点名。
  */
-const READDIR_ALLOWED: readonly string[] = ['providers/claude-code/subagent-usage.ts'];
+const READDIR_ALLOWED: readonly string[] = ['providers/cc/subagent-usage.ts'];
 
 describe('源码级不变量', () => {
   it('源码里不出现任何写入宿主环境的写法（不变量 2）', () => {
@@ -376,7 +376,7 @@ describe('源码级不变量', () => {
     // 而豁免面正是「注册表必须静态注册」这条不变量的缺口。三半合起来才说得清缺口有多大：
     //   · 表**逐字**等于那一个元素 —— 加第二项、换路径都必须回来改这条断言，评审一定看得见；
     //   · 表里每一项都真的命中那个正则 —— 留一个不再扫盘的条目，等于豁免面在没人察觉时变宽。
-    expect(READDIR_ALLOWED).toEqual(['providers/claude-code/subagent-usage.ts']);
+    expect(READDIR_ALLOWED).toEqual(['providers/cc/subagent-usage.ts']);
     for (const file of READDIR_ALLOWED) {
       const text = readFileSync(join(import.meta.dirname, file), 'utf8');
       expect(/\breaddir(Sync)?\s*\(/.test(text), `${file} 已不再扫盘，应从例外表里删掉`).toBe(true);

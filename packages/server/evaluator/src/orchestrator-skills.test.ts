@@ -105,16 +105,16 @@ describe('编排层填技能清单', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('评分那一次**不带**技能（口径的另一半：只有候选执行阶段装入）', async () => {
-    // 候选走默认的 codex（夹具的默认供应商是 openai），**评审者**用 claude-code：
+    // 候选走默认的 codex（夹具的默认供应商是 openai），**评审者**用 cc：
     // 于是「同一次 runRow 里的两次 run，只有候选那一次带技能」在一个用例里就能对上。
     // 假适配器要回一份能解析的评分答复，否则评审那一段会以解析失败收场（与本题无关的噪声）。
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
     seedSkill('alpha');
     const { run } = seedRunnableRun({
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
 
     await runRow(run.id, run.rows[0]?.id ?? '');
@@ -147,7 +147,7 @@ describe('技能装不进去 ⇒ 行失败且不自动重试', () => {
     ROW_RETRY.delayMs = 1;
     try {
       // 假适配器只负责那一份「适配器交回来的失败」：真实的物化失败在 agents 包的用例里逐条钉住
-      // （`providers/claude-code/skills.test.ts`），这里钉的是编排层拿到它之后怎么收口
+      // （`providers/cc/skills.test.ts`），这里钉的是编排层拿到它之后怎么收口
       fakeAgents.scripts.set('codex', { mode: 'error', errorCode: 'AGENT_SKILLS_UNAVAILABLE' });
       const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
       const rowId = run.rows[0]?.id ?? '';

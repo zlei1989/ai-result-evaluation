@@ -64,7 +64,7 @@ export default function Page(): ReactNode {
             type="info"
             showIcon
             title="这份页面只吃夹具，不读任何接口"
-            description="dsh 覆盖全部块类型与两族卡片；codex 证明「补录」与「摘要」；claude-code 证明「这一类内容没被转发」那一档。"
+            description="dsh 覆盖全部块类型与两族卡片；codex 证明「补录」与「摘要」；cc 证明「这一类内容没被转发」那一档。"
           />
           <Flex align="center" gap={8} wrap>
             <Segmented

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 的消息投影：计量三项齐全才有值、缺项 → null + WARN、重复丢弃、未识别保留。
+ * cc 的消息投影：计量三项齐全才有值、缺项 → null + WARN、重复丢弃、未识别保留。
  * 这里的两条断言（未识别不丢失 / 缺失得 null）是核心守卫，必须逐字验。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -17,7 +17,7 @@ beforeEach(() => {
   resetClaudeTaskNamesForTesting();
 });
 
-const CONTEXT = { kind: 'claude-code', baseUrl: 'https://gw.example.com/anthropic' } as const;
+const CONTEXT = { kind: 'cc', baseUrl: 'https://gw.example.com/anthropic' } as const;
 
 /** 每个用例一份新状态：seen / turns / turnKeys 是同一次 run 内的累计量 */
 function newState(): TurnState {
@@ -236,7 +236,7 @@ describe('projectClaudeMessage：result 与计量', () => {
 });
 
 /**
- * 跑动期的实时用量估算（用户口径：claude-code 也要在跑动期就看到 tok/轮次）。
+ * 跑动期的实时用量估算（用户口径：cc 也要在跑动期就看到 tok/轮次）。
  *
  * 依据（本机安装的 SDK 类型文档 `@anthropic-ai/claude-agent-sdk/sdk.d.ts`）：
  *   · assistant 消息带 `message.usage`，但它**不是最终值**（同一 message.id 会按内容块重复到达，
@@ -345,7 +345,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   /**
    * **全 0 的估算快照 = 「这一条还没填好」，不是「采到了 0」**。
    *
-   * 实测那一轮（`12eff3a1` 的 claude-code 行，`likecode` 网关 + `jd/GLM-5.3`）：17 条 assistant
+   * 实测那一轮（`12eff3a1` 的 cc 行，`likecode` 网关 + `jd/GLM-5.3`）：17 条 assistant
    * 消息的 `usage` 三项**全是 0**，而收尾 `result` 上的结算值是 `输入 65,063 / 缓存 407,808 /
    * 输出 5,940`。不过滤的话界面整轮显示「tok 0」——那是与「采集中」含义相反的假数。
    */
@@ -746,7 +746,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
 /**
  * 最终答复出口：评分智能体要从结果里读到「模型最后说了什么」，
  * 而不是从 `log` 事件流里重建——重建三家形状各不相同，不可靠。
- * claude-code 的收尾消息是 `result`，故答复只在它上面采；中间轮次的 assistant 文本不算答复。
+ * cc 的收尾消息是 `result`，故答复只在它上面采；中间轮次的 assistant 文本不算答复。
  */
 describe('projectClaudeMessage：最终答复（finalText）', () => {
   it('result 消息的 result 字段被记为最终答复（AgentRunResult.finalText 的来源）', () => {

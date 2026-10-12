@@ -82,7 +82,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files).toHaveLength(1);
@@ -119,11 +119,11 @@ describe('assembleProcessEvidence', () => {
 
   /**
    * **回归守卫：判定来自 provider 元数据，不是厂商名硬编码。**
-   * 把元数据拧成与真实厂商相反（claude-code 也声明要补 messages）时，组装必须照元数据走——
+   * 把元数据拧成与真实厂商相反（cc 也声明要补 messages）时，组装必须照元数据走——
    * 硬编码 `agentKind === 'codex'` 的写法会让这条红（那正是本票验收要做的变异）。
    */
-  it('元数据声明要补 messages 的任何一家都照补：claude-code 被拧成 true 时同样拿到两个文件', () => {
-    agentsState.needsMessages['claude-code'] = true;
+  it('元数据声明要补 messages 的任何一家都照补：cc 被拧成 true 时同样拿到两个文件', () => {
+    agentsState.needsMessages['cc'] = true;
     const root = makeRowDir({
       'events.jsonl': `${EVENT_LINE}\n`,
       'messages.jsonl': '{"messageId":"m1","role":"assistant","blocks":[{"type":"text","text":"x"}]}\n',
@@ -133,7 +133,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files).toHaveLength(2);
@@ -141,7 +141,7 @@ describe('assembleProcessEvidence', () => {
   });
 
   it('非 codex（元数据声明不需要补）只有 events 一个文件，即使 messages.jsonl 在盘上', () => {
-    agentsState.needsMessages['claude-code'] = false;
+    agentsState.needsMessages['cc'] = false;
     const root = makeRowDir({
       'events.jsonl': `${EVENT_LINE}\n`,
       'messages.jsonl': '{"messageId":"m1"}\n',
@@ -151,7 +151,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files.map((file) => file.filename)).toEqual(['candidate-events.jsonl']);
@@ -164,7 +164,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files).toEqual([]);
@@ -191,7 +191,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files).toHaveLength(1);
@@ -206,7 +206,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: 262_144,
     });
     expect(evidence.files[0]?.content).toBe(`${EVENT_LINE}\n`);
@@ -221,7 +221,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: budget,
     });
     const file = evidence.files[0];
@@ -245,7 +245,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: budget,
     });
     const content = evidence.files[0]?.content ?? '';
@@ -265,7 +265,7 @@ describe('assembleProcessEvidence', () => {
       runId: 'run-1',
       rowId: 'row-1',
       includeSteps: true,
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       budgetBytes: budget,
     });
     expect(evidence.files[0]?.truncated).toBe(false);

@@ -141,12 +141,12 @@ describe('run-store', () => {
    * 三条断言各钉一件事：① 全都读得出时**一条都没有**（否则这条 WARN 迟早变成被忽略的背景噪声）；
    * ② 两条旧快照 ⇒ **恰好一条**（不是每个文件一条——那是 per-file WARN 的活）；
    * ③ 计数是 2 而不是 3：**损坏文件（JSON 都读不出）不算进这个数**——它有自己那条带路径的 WARN，
-   * 处置是修文件，而汇总句说的是「因评分口径升级不再兼容」，混进来这句话就说假了。
+   * 处置是修文件，而汇总句说的是「不再符合当前契约」，混进来这句话就说假了。
    */
   it('旧口径快照被跳过时记一条汇总 WARN（计数只含「读得出但不再兼容」的文件）', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const aggregateCalls = (): unknown[][] =>
-      warn.mock.calls.filter((call) => String(call[0]).includes('不再兼容'));
+      warn.mock.calls.filter((call) => String(call[0]).includes('不再符合当前契约'));
     try {
       saveRun(makeRun({ id: 'run-ok', caseId: 'case-1' }));
       // ① 反向对照：全都能读时不许有汇总（这一趟的读数就是「干净」的基准）

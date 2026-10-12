@@ -68,7 +68,7 @@ const input: AgentRunInput = {
   onEvent,
 };
 
-const result: AgentRunResult = await getProvider('claude-code').run(input);
+const result: AgentRunResult = await getProvider('cc').run(input);
 if (!result.ok) console.error(result.error?.code, result.error?.message);
 ```
 
@@ -84,7 +84,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `acceptsProtocol(metadata, protocol)` | 函数 | 该家能不能收这条协议（读 `metadata.protocolTypes` 的**集合**）；表单过滤、创建校验、评分智能体校验与编排层复检四处都读它，**不许各写一份** |
 | `protocolMismatchMessage(metadata, protocol)` | 函数 | 协议不匹配时的**中文文案**（列出该家接受的**集合**而不是单值） |
 | `ProtocolMismatchInput` | 类型 | 上面那个文案函数的入参（适配器元数据 + 目标协议） |
-| `AgentKind` | 类型 | `'claude-code' \| 'codex' \| 'dsh'` |
+| `AgentKind` | 类型 | `'cc' \| 'codex' \| 'dsh'` |
 | `AgentProvider` | 类型 | 适配器形状：`kind` / `displayName` / `metadata` / `run()` |
 | `AgentProviderMetadata` | 类型 | 协议兼容性 / 行级能力 / 消息能力 / 档位域 |
 | `AgentRunInput` | 类型 | 一次运行的全部输入 |
@@ -106,7 +106,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 
 - 返回的是注册表里的**同一个实例**（`getProvider('codex') === getProvider('codex')`），可安全地反复调用；
 - 未注册的 kind（例如手改过的 `config.json` 里写着 `"gemini"`）抛**裸 `Error`**，文案形如
-  `[agents] 未注册的智能体：gemini；可用清单：claude-code / codex / dsh`。
+  `[agents] 未注册的智能体：gemini；可用清单：cc / codex / dsh`。
 
 > ⚠️ 调用方注意：这个错误**没有** `ServiceError` 语义，直接冒到 HTTP 层会折成 500「服务端内部错误」。
 > 读配置得到 kind 的地方要先自己判枚举（`AGENT_KINDS.includes(kind)`）再解析，并折成可处置的错误
@@ -160,7 +160,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 
 ### 4.3 `AgentPermission`（权限档）——**按阶段给，不按厂商给**
 
-| 档 | 用在哪 | claude-code | codex | dsh |
+| 档 | 用在哪 | cc | codex | dsh |
 |---|---|---|---|---|
 | `'full'` | 候选**执行**阶段 | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
 | `'read-only'` | **评分**阶段 | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` |
@@ -207,7 +207,7 @@ metadata: {
 
 | kind | displayName | protocolTypes | cancelMidTurn | usage | structuredOutput |
 |---|---|---|---|---|---|
-| `claude-code` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
+| `cc` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
 | `codex` | Codex | `['openai']` | `true` | `true` | `true` |
 | `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
 
@@ -217,7 +217,7 @@ metadata: {
 
 | kind | thinkingText | toolInput | toolResult | subagent | streamingDelta |
 |---|---|---|---|---|---|
-| `claude-code` | `yes`（SDK 消息流，`full`） | `yes` | `yes` | `yes` | `yes`（仅主会话） |
+| `cc` | `yes`（SDK 消息流，`full`） | `yes` | `yes` | `yes` | `yes`（仅主会话） |
 | `codex` | `yes`（**app-server 通知流**，`full`） | `yes` | `yes` | `yes` | `yes` |
 | `dsh` | `yes`（会话通知流，`full`） | `yes` | `yes` | `yes` | `yes` |
 
@@ -239,7 +239,7 @@ metadata: {
 
 ### 5.1 注入落点
 
-| | claude-code | codex | dsh |
+| | cc | codex | dsh |
 |---|---|---|---|
 | 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex` | `@deepseek-ai/dsh-sdk-client` |
 | base URL 处理 | **去掉**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补上** `/v1`（CLI 只走 `POST {base}/v1/responses`） | **保留**尾部 `/v1`（其 adapter 自己补 `/messages`） |
@@ -256,7 +256,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 
 | | `interrupt()` 是什么 | `dispose()` 做什么 |
 |---|---|---|
-| claude-code | SDK 的优雅停止（结束在途 turn，不是 kill 进程） | `controller.abort()` ⇒ SDK 杀掉仍在跑的子进程 |
+| cc | SDK 的优雅停止（结束在途 turn，不是 kill 进程） | `controller.abort()` ⇒ SDK 杀掉仍在跑的子进程 |
 | codex | `session.interrupt()`（发 `turn/interrupt`；协议能力，不 kill 进程） | `session.close()` 关掉 app-server 子进程 + 删本次运行的临时目录 |
 | dsh | **刻意空实现**（不支持中途取消） | `runtime.close()`——唯一真实存在的终止通道 |
 
@@ -285,14 +285,14 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 
 | | 计数键 | 保真度 |
 |---|---|---|
-| claude-code | 主循环 `assistant.message.id`（同一响应的多个内容块共享 id，去重后计数）；`parent_tool_use_id` 非空的子智能体消息不计 | 与 SDK 自己的 `maxTurns`（API round-trips）同口径；`num_turns` 只在我们一次都没数到时兜底 |
+| cc | 主循环 `assistant.message.id`（同一响应的多个内容块共享 id，去重后计数）；`parent_tool_use_id` 非空的子智能体消息不计 | 与 SDK 自己的 `maxTurns`（API round-trips）同口径；`num_turns` 只在我们一次都没数到时兜底 |
 | codex | **模型答复条目**（app-server 的 `agentMessage`）的 `item.id`，**按线程分别去重**：主线程与子线程各数各的，收尾相加 | **近似值**：协议里没有逐次请求事件。误差方向如实登记：只发工具调用、**没有答复**的那几段**偏低**；一个答复条目都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）。主线程与子线程共用同一把尺子，故 `subagentTurns ≤ turns` 成立 |
 | dsh | `step/start`（实测序列 `turn/start → step/start → … → assistant/message → step/end → turn/end`） | 与 `assistant/message` 条数实测一致（59 = 59），而 `turn/end` 只有 1 条 |
 
 计量的三条硬口径，三家和调用方都要守：
 
 1. **采不到就是 `null`，绝不填 0**；
-2. **估算值不进结果**（claude-code 的跑动期估算只走 `usage` 事件）；
+2. **估算值不进结果**（cc 的跑动期估算只走 `usage` 事件）；
 3. `turns` 与 `tokens` **互不兜底**——轮次不因为 token 没采到就停涨，反之亦然。
 
 ---
@@ -345,8 +345,8 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 ```ts
 // @vitest-environment node
 import { afterEach, expect, it } from 'vitest';
-import { claudeCodeProvider } from './providers/claude-code/index';
-import { CLAUDE_PACKAGE_NAME } from './providers/claude-code/sdk';
+import { claudeCodeProvider } from './providers/cc/index';
+import { CLAUDE_PACKAGE_NAME } from './providers/cc/sdk';
 import { setAgentRuntimeForTesting } from './runtime';
 import { createFakeClaudeSdk, createRecorder, createRunInput } from './testing/agent-fixtures';
 

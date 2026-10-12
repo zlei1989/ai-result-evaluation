@@ -100,6 +100,6 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 ## 相关链接
 
 - 知识文章：[《设置》](/features/settings)（供应商 / 评分配置 / 工作区与用例目录，MCP 卡片的邻居）、[《数据与存储》](/features/storage)（`config.json` 落盘、原子写与 BOM 口径）、[《行执行与日志》](/features/row-execution)（行级观测格的消费侧）、[《事件流》](/protocols/event-stream)（`vendor-system` 的投送语义）
-- 协议侧：[Claude Code 接入](/protocols/claude-code)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh) 各自的「MCP 接法」一节，[三家横向对比](/protocols/comparison)的 MCP 对照表
+- 协议侧：[Claude Code 接入](/protocols/cc)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh) 各自的「MCP 接法」一节，[三家横向对比](/protocols/comparison)的 MCP 对照表
 - 规约与排障：[变异验证](/guard/mutation-verification)、[冒烟测试方法论](/guard/smoke-testing)、[密钥与环境变量](/guard/secrets-and-env)、[故障索引](/faq/)
 - 仓库内参考：`packages/server/contracts/src/mcp.ts`（canonical 形状与解析）、`packages/server/agents/src/mcp.ts`（三家翻译与行内 `.npmrc`）、`packages/server/evaluator/src/row-mcp.ts`（观测格结论）

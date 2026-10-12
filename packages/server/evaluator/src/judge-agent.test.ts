@@ -7,7 +7,7 @@
  * 本节守卫的三条口径（每一条都对应一个会静默出错的写法）：
  *   1. 四条提示词要素与输出契约必须逐字在提示词里——少一条，智能体就会凭猜打分；
  *   2. 「没采到最终答复」与「空答复」是两回事，文案必须分得开（`null` 判据不能简化成 falsy）；
- *   3. 适配器失败（`ok:false`）必须**先于**读 `finalText` 判掉：claude-code 的采集点在 `is_error`
+ *   3. 适配器失败（`ok:false`）必须**先于**读 `finalText` 判掉：cc 的采集点在 `is_error`
  *      分支之前，出错时 `finalText` 里是**厂商的错误文本**，先读它会把「没问到」当「答错了」。
  *   4. 「包含步骤」的证据要么整条进、要么完全不进：提示词追加段 + `extraReadPaths`
  *      透传两者缺一都是**静默**的——评审者照样出分，只是读不到（或不知道去读）cwd 之外的记录。
@@ -270,7 +270,7 @@ describe('judgeRowByAgent', () => {
     await expect(callJudge()).rejects.toMatchObject({ agentCode: 'AGENT_FAILED' });
   });
 
-  it('失败时即使适配器给了最终答复也先按失败处置（claude-code 会把厂商错误文本写进 finalText）', async () => {
+  it('失败时即使适配器给了最终答复也先按失败处置（cc 会把厂商错误文本写进 finalText）', async () => {
     // 契约违例的复现：ok:false 却带着一段**看起来可解析**的答复。若把 finalText 的判据放在 ok 之前，
     // 这一行会拿到一个「厂商错误文本被当成评分」的结果，而状态是成功。
     fakeAgents.scripts.set('codex', { mode: 'error', finalText: judgeReplyJson() });

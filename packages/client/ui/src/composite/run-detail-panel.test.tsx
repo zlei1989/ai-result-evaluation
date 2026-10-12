@@ -55,7 +55,7 @@ const score = (totalScore: number): NonNullable<EvalRun['rows'][number]['score']
 function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): EvalRun['rows'][number] {
   return {
     id,
-    agentKind: 'claude-code',
+    agentKind: 'cc',
     providerId: 'p-anthropic',
     providerName: 'Anthropic 网关',
     baseUrl: 'https://gw.example.com/anthropic',

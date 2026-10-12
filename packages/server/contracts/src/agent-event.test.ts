@@ -93,7 +93,7 @@ describe('AgentEventSchema', () => {
   });
 
   // 用户口径：轮次（一次模型 API 往返算一次）必须能**独立于 token** 上报。
-  // 实测缺口：原来 tokens 必填 ⇒ claude-code 那一轮的 token 采不到，整轮只发得出一条
+  // 实测缺口：原来 tokens 必填 ⇒ cc 那一轮的 token 采不到，整轮只发得出一条
   // `usage`（`turns: 1, tokens: {0,0,0}`），界面永远停在「轮次 1」。
   it('usage 允许 tokens 为 null（轮次独立上报），但 turns 仍然必填', () => {
     const turnsOnly = { ...base, type: 'usage', tokens: null, turns: 7 };

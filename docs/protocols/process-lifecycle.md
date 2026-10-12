@@ -63,7 +63,7 @@ Browser is already in use for <profile 目录>, use --isolated to run multiple i
   管道写端关闭 ⇒ server 读到 EOF ⇒ 自己退出。产品口径的停止序列（`interrupt()` → 等 5 s →
   `controller.abort()`）与猝死口径（拿到 init 直接 `process.exit(0)`）**两臂下 CLI 与 server 都被带走**。
 - **MCP server ↔ 浏览器**：没有任何协议层耦合（浏览器不读 server 的 stdin）。上游死得再干净也带不走它，
-  而**我们够不着**：claude 这一类由 SDK 代 spawn，公开面拿不到 CLI 的 pid（`providers/claude-code/index.ts`
+  而**我们够不着**：claude 这一类由 SDK 代 spawn，公开面拿不到 CLI 的 pid（`providers/cc/index.ts`
   已写明「进程树回收是尽力不是保证」），更别说孙进程；按 profile 路径扫全表杀的跨平台成本与误杀风险不划算。
 
 **解决方案**：**不清理孤儿**（进程树这条路不可达 + 收益为负），改从**根上**消掉它的后果——默认参数里带

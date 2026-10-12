@@ -149,7 +149,7 @@ describe('resolveLogDrawer', () => {
 function row(overrides: Partial<EvalRow> = {}): EvalRow {
   return {
     id: 'row-1',
-    agentKind: 'claude-code',
+    agentKind: 'cc',
     providerId: 'p-anthropic',
     providerName: 'Anthropic 网关',
     baseUrl: 'https://gw.example.com/anthropic',
@@ -399,7 +399,7 @@ describe('buildRowFacts：领域事实的分段', () => {
     expect(textCell?.hintSegments).toBeUndefined();
 
     // 智能体通路**同一口径**：一条给一条不给，会让人以为只有文本通路才说得出尺子是谁
-    const agentPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: 'claude-code' } }), events: [] });
+    const agentPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: 'cc' } }), events: [] });
     const agentCell = agentPath.domain.find((fact) => fact.id === 'score');
     expect(agentCell?.hint).toBeUndefined();
     expect(agentCell?.hintSegments).toBeUndefined();
@@ -426,8 +426,8 @@ describe('buildRowFacts：领域事实的分段', () => {
 
     const agent = facts.domain[0];
     expect(agent?.label).toBe('智能体');
-    expect(agent?.value).toBe(AGENT_LABELS['claude-code']);
-    expect(agent?.segments).toEqual([{ text: AGENT_LABELS['claude-code'], tag: true, tagTone: 'blue' }]);
+    expect(agent?.value).toBe(AGENT_LABELS['cc']);
+    expect(agent?.segments).toEqual([{ text: AGENT_LABELS['cc'], tag: true, tagTone: 'blue' }]);
     expect(facts.domain[1]?.segments).toEqual([{ text: 'claude-opus-4-6', tag: true, tagTone: 'geekblue' }]);
     expect(facts.domain[2]?.value).toBe('max');
     expect(facts.domain[2]?.segments).toEqual([{ text: 'max', tag: true, tagTone: 'purple' }]);

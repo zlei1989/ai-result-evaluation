@@ -48,11 +48,11 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
     const rowId = run.rows[0]?.id ?? '';
     // 协作适配器：挂住直到 signal 被 abort，然后如实报 canceled（与既有的兜底用例同一形状）
-    fakeAgents.scripts.set('claude-code', { mode: 'gate' });
+    fakeAgents.scripts.set('cc', { mode: 'gate' });
 
     // 与文本通路那条同理：`abortRow` 是同步落库的，只看行状态的话「signal 没递给适配器、
     // 评审者还挂在半空」的实现照样绿 ⇒ 单独钉住「这一行任务真的收尾了」，且要有界
@@ -63,7 +63,7 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
     // 「还没到 judging」报成守卫失败（变异验证里它假红过一次）
     await until(() => getRun(run.id).rows[0]?.status === 'judging', '行进入 judging', 20_000);
     // 前提复检：此刻起的必须是**评分**那一次（否则下面测到的可能还是候选阶段）
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
 
     abortRow(run.id, rowId);
     expect(getRun(run.id).rows[0]?.status).toBe('canceled'); // 同步落库（界面靠这一帧画卡片）
@@ -93,10 +93,10 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
     const rowId = run.rows[0]?.id ?? '';
-    fakeAgents.scripts.set('claude-code', { mode: 'late', lateMs: 3_600, lateText: '迟到的日志：编排层已经收尾了' });
+    fakeAgents.scripts.set('cc', { mode: 'late', lateMs: 3_600, lateText: '迟到的日志：编排层已经收尾了' });
 
     const running = runRow(run.id, rowId);
     await until(() => getRun(run.id).rows[0]?.status === 'judging', '行进入 judging', TEST_TIMEOUT_MS);
@@ -113,11 +113,11 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
   // 用户裁决：**该行失败**——那一份分建立在一个被评审者
   // 改过的现场上，收下它就等于把一个不可信的分数当成正常分数
   it('评分智能体改了工作区 → 该行 failed（污染不再只是 WARN）', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
-    // 只有评分智能体（claude-code）写文件；候选（codex）不写 —— 这样「评分前/后摘要不一致」
+    // 只有评分智能体（cc）写文件；候选（codex）不写 —— 这样「评分前/后摘要不一致」
     // 唯一的成因就是评审者动了工作区
-    fakeAgents.scripts.set('claude-code', {
+    fakeAgents.scripts.set('cc', {
       files: [{ path: 'judge-touched.txt', content: '评审者写的\n' }],
       finalText: judgeReplyJson(),
     });

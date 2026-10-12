@@ -38,7 +38,7 @@ export function makeClaudeWorkspace() {
 }
 
 /**
- * 与**本仓适配器对齐**的启动口径（`src/providers/claude-code/index.ts:176-236`）：
+ * 与**本仓适配器对齐**的启动口径（`src/providers/cc/index.ts:176-236`）：
  *  - `settingSources: ['user','project','local']`（适配器**不是**空数组——2026-09-29 的口径变更）；
  *  - `permissionMode: 'bypassPermissions'` **必须**配 `allowDangerouslySkipPermissions: true`，
  *    少了后者整个权限档静默失效；

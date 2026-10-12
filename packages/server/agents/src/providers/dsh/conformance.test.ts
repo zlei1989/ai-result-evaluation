@@ -3,7 +3,7 @@
  * dsh 接入一致性套件（判据源见 `../conformance/kit.ts`）。
  *
  * 与 claude 那份同形：走 **run 级测试台**（注入假 SDK 跑真实运行路径），模块加载期把各场景跑一次
- * 建好产物，再把同步取值器交给套件（理由见 `claude-code/conformance.test.ts` 的文件头）。
+ * 建好产物，再把同步取值器交给套件（理由见 `cc/conformance.test.ts` 的文件头）。
  *
  * 两条「看不见的匹配键」，错了会让判据红在完全误导性的位置：
  *   1. **`params.sessionId` 必须用 `DSH_SESSION_PLACEHOLDER`**（假件的会话号）。自造一个会让

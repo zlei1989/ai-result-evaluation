@@ -114,6 +114,7 @@ describe('SettingsSchema', () => {
     expect(SETTINGS_DEFAULTS.defaultJudgeAgent).toBeNull();
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudgeAgent: null }).success).toBe(true);
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudgeAgent: 'dsh' }).success).toBe(true);
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudgeAgent: 'cc' }).success).toBe(true);
     // 自造的名字必须被拒：写进配置之后评分阶段才炸，等于让人去设置页反复确认一个填了的字段
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, defaultJudgeAgent: 'gemini' }).success).toBe(false);
   });

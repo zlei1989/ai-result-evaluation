@@ -205,7 +205,7 @@ async function createRealRun(): Promise<EvalRun> {
       caseId: 'c-1',
       executionMode: 'parallel',
       rows: [
-        { agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     }),
@@ -286,7 +286,7 @@ describe('POST /api/runs', () => {
       jsonRequest({
         caseId: 'c-1',
         executionMode: 'parallel',
-        rows: [{ agentKind: 'claude-code', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       }),
     );
 
@@ -299,7 +299,7 @@ describe('POST /api/runs', () => {
       jsonRequest({
         caseId: 'c-1',
         executionMode: 'parallel',
-        rows: [{ agentKind: 'claude-code', providerId: 'p-openai', modelId: 'gpt-5' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     );
 
@@ -419,7 +419,7 @@ describe('GET /api/runs/model-options', () => {
     const groups = (await res.json()) as Array<Record<string, unknown>>;
 
     expect(res.status).toBe(200);
-    expect(groups.map((group) => group.agentKind)).toEqual(['claude-code', 'codex', 'dsh']);
+    expect(groups.map((group) => group.agentKind)).toEqual(['cc', 'codex', 'dsh']);
     // 键集合钉死：两侧（api / client）各声明过一次这个形状，谁偷偷加字段都会在这里失败。
     // `efforts`（思考强度的档位域）是有意加的第六格。
     // `messageCapability`（消息能力声明）是 ****api 加的第七格——
@@ -451,11 +451,11 @@ describe('GET /api/runs/model-options', () => {
       'protocolTypes',
       'usage',
     ]);
-    // 值是注册表真值（今天只有 DSH 声明它），且 claude-code 那一组**没有这一格**（不是空串 / undefined）
+    // 值是注册表真值（今天只有 DSH 声明它），且 cc 那一组**没有这一格**（不是空串 / undefined）
     expect(dsh.defaultEffort).toBe('high');
     expect('defaultEffort' in (groups[0] ?? {})).toBe(false);
 
-    const claude = groups.find((group) => group.agentKind === 'claude-code') as { options: Array<{ modelId: string }> };
+    const claude = groups.find((group) => group.agentKind === 'cc') as { options: Array<{ modelId: string }> };
     const codex = groups.find((group) => group.agentKind === 'codex') as { options: Array<{ modelId: string }> };
     expect(claude.options.map((option) => option.modelId)).toEqual(['claude-opus-4-6']);
     expect(codex.options.map((option) => option.modelId)).toEqual(['gpt-5']);
@@ -487,7 +487,7 @@ describe('GET /api/runs/model-options', () => {
 
     const res = await getModelOptions();
     const groups = (await res.json()) as Array<{ agentKind: string; options: Array<Record<string, unknown>> }>;
-    const claude = groups.find((group) => group.agentKind === 'claude-code');
+    const claude = groups.find((group) => group.agentKind === 'cc');
     const [undeclared, withEfforts] = claude?.options ?? [];
 
     // 未声明：只有五格（`efforts` 是「该家完整档位域」，与上游声明与否无关 ⇒ 它恒在）
@@ -549,7 +549,7 @@ describe('PUT /api/runs/[runId]', () => {
     // 编排层被 mock，故这里断言的是「api 层收到了带 id 的那一行」——用 saveRun 的落盘物反向核对
     store.set(run.id, run);
 
-    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: rowId, agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }), {
+    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: rowId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }), {
       params: Promise.resolve({ runId: run.id }),
     });
 
@@ -574,7 +574,7 @@ describe('PUT /api/runs/[runId]', () => {
   it('未知的行 id → 404，且带出那个 id（不许静默当新行）', async () => {
     const run = await createRealRun();
     const res = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: 'r-404', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: 'r-404', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
       { params: Promise.resolve({ runId: run.id }) },
     );
 
@@ -588,7 +588,7 @@ describe('PUT /api/runs/[runId]', () => {
     const run = await createRealRun();
     store.set(run.id, { ...run, status: 'running' });
     const res = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
       { params: Promise.resolve({ runId: run.id }) },
     );
 

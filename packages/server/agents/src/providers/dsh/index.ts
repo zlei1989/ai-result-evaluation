@@ -886,7 +886,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
      *
      * 这一格走 `null` 时**必须点名**（第三档）：`null` 是
      * 「没采到」，而它与「确实没有子智能体」（`{0,0,0}`）在日志里本来长得一样——另两家都落一条
-     * 点名的 WARN（`claude-code/index.ts` 的「读不到子智能体 …」、`codex/transcript.ts` 的
+     * 点名的 WARN（`cc/index.ts` 的「读不到子智能体 …」、`codex/transcript.ts` 的
      * 「未找到子线程 …」），dsh 原来在这里给的是 `drafts: []` ⇒ 一格 `null` 悄无声息。
      * 活的那一半（`usage` 事件）由 `step/start`、`assistant/message` 与 `turn/end` 三条出口带
      * （**三处都同时带两格**，见 `events.ts` 的注记）。

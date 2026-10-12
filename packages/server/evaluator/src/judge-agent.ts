@@ -269,7 +269,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     throw new JudgeAgentError('AGENT_FAILED', `评分智能体执行失败（适配器违约抛了异常）：${reason(error)}`);
   }
 
-  // 先判运行结论，再读答复：顺序不能换。claude-code 的采集点在 `is_error` 分支之前，出错时
+  // 先判运行结论，再读答复：顺序不能换。cc 的采集点在 `is_error` 分支之前，出错时
   // `finalText` 里是厂商的错误文本——先读就会把一次「没问到」当成一次成功的评分（且状态是成功）。
   if (!result.ok) {
     // 适配器违约（ok:false 却不给 error）也要给出可读归因，不能让界面显示空白原因

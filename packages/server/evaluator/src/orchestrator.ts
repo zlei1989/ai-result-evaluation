@@ -1533,7 +1533,7 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
       // 处置：**自停**（不再反复尝试），终态写入与失败归因照常走。
       // 为什么记 DEBUG 而不是 WARN：① 真正的故障会在收尾那一次写入上以 ERROR 现身
       //（`runRow` 的二级 catch 打的就是 ERROR），这里不丢信息；② 本仓有用例故意让
-      // `console.warn` 抛错来验证释放顺序（见 claude-code/index.ts 的注释），
+      // `console.warn` 抛错来验证释放顺序（见 cc/index.ts 的注释），
       // 一个后台定时器在那些用例里响 WARN 会把它们整条顶掉。
       stopRowHeartbeat(key);
       log.debug('耗时心跳写入失败，已停止这一行的心跳（终态写入与失败归因不受影响）', {
@@ -1556,7 +1556,7 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
    * 跑动期用量的回写口径（A2 起**按每一条事件自己的性质**，不再按整家的静态声明——那是
    * `capability.liveUsage` 的最后一处消费点，删掉它之后包外不再读 agents 的任何能力格）：
    *   · `tokens`：**只有显式声明「厂商上报」的那一条**（`tokensBasis === 'reported'`）才写快照。
-   *     `'estimated'`（claude-code 的跑动期估算）与**整格缺席**（老适配器 / 第三方 provider 直接
+   *     `'estimated'`（cc 的跑动期估算）与**整格缺席**（老适配器 / 第三方 provider 直接
    *     发事件）一律不写——缺省的判据落在安全侧，见 contracts 的 `tokensBasis` 注释。估算进快照会
    *     让崩溃 / 被杀的行看起来像「采到了计量」，而快照是唯一落盘真相；
    *   · `turns` 与子智能体两格：**恒回写**（它们只有权威形态，契约里没有对应的估算标记）。
@@ -1620,7 +1620,7 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   /**
    * 跑这一次适配器。**先挂一个 catch**：下面可能在「已经不再等它」之后才 reject（终止宽限用尽、
    * 或 `terminalWaiters` 先唤醒），而裸的孤儿 promise 会在 Node 上变成 unhandledRejection
-   * （默认 `--unhandled-rejections=throw`，能打崩进程）——与 claude-code 里吞掉 `interrupt()`
+   * （默认 `--unhandled-rejections=throw`，能打崩进程）——与 cc 里吞掉 `interrupt()`
    * 拒绝的那处是同一条理由。
    */
   const runPromise = agentProvider.run({

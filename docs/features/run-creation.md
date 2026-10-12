@@ -42,7 +42,7 @@
 
 | 智能体 | `reasoningEfforts` | `defaultEffort` |
 |---|---|---|
-| claude-code | `['off', 'low', 'medium', 'high', 'xhigh', 'max']` | ——（未选由厂商推断） |
+| cc | `['off', 'low', 'medium', 'high', 'xhigh', 'max']` | ——（未选由厂商推断） |
 | codex | `['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']` | —— |
 | dsh | `['off', 'low', 'high', 'max']` | `'high'` |
 
@@ -90,6 +90,6 @@
 - [功能总览](/features/) —— 本域目录层：三大模块与数据模型清单
 - [用例管理](/features/case-management) —— 表单里那个「用例」带来什么：题面、仓库来源（含远端镜像）、commit 与评分表快照
 - [修改、重跑与删除评测](/features/run-edit-rerun-delete) —— 创建之后的编辑（复用同一张表单、候选行可带 `id`）与两个重跑出口
-- [Codex 接入](/protocols/codex)、[《Claude Code 接入》](/protocols/claude-code)、[《DeepSeek Harness 接入》](/protocols/dsh) —— 三家候选智能体
+- [Codex 接入](/protocols/codex)、[《Claude Code 接入》](/protocols/cc)、[《DeepSeek Harness 接入》](/protocols/dsh) —— 三家候选智能体
 - [《设置》](/features/settings)、[《评分》](/features/judging)、[《评测详情与候选行》](/features/run-detail) —— 供应商协议与模型清单（窗口 / 档位的维护口径）、两条评分通路、详情页形态
 - [故障索引](/faq/) —— 创建链路上的报错排障入口

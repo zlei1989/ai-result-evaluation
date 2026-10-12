@@ -21,7 +21,7 @@
 
 | kind | displayName | protocolTypes | cancelMidTurn | usage | structuredOutput |
 |---|---|---|---|---|---|
-| `claude-code` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
+| `cc` | Claude Code | `['anthropic']` | `true` | `true` | `true` |
 | `codex` | Codex | `['openai']` | `true` | `true` | `true` |
 | `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` | `false` |
 
@@ -102,4 +102,4 @@
 ## 相关链接
 
 - 活文档：`packages/server/agents/README.md`——§2 API 一览、§3 方法说明、§4 属性说明（本篇的真源，互链不复制）
-- 知识文章：[《新增 SDK 接入流程》](/protocols/sdk-onboarding)、[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《三家横向对比》](/protocols/comparison)、[《消息规范》](/protocols/message-spec)（事件类型的契约侧）、[《技能配置》](/features/skills-config)（`skills` 入参与 `skillInstall` 观测格的全链）
+- 知识文章：[《新增 SDK 接入流程》](/protocols/sdk-onboarding)、[《Claude Code 接入》](/protocols/cc)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《三家横向对比》](/protocols/comparison)、[《消息规范》](/protocols/message-spec)（事件类型的契约侧）、[《技能配置》](/features/skills-config)（`skills` 入参与 `skillInstall` 观测格的全链）

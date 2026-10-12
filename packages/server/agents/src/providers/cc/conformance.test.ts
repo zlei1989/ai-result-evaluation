@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 接入一致性套件（判据源见 `../conformance/kit.ts`）。
+ * cc 接入一致性套件（判据源见 `../conformance/kit.ts`）。
  *
  * 与 codex 那份 fixture 的差别：claude 的归一走**运行路径**（`provider.run` + 假 SDK），
  * 因为它的 `SubagentRecord` 不在消息归一里产出（`events.ts:145` 点名的：面板与 `messages.jsonl`

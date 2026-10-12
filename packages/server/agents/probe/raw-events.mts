@@ -2,7 +2,7 @@
  * 真实事件探测。
  * 做什么：对指定的一家智能体跑一条最小任务，把**原始事件流**与**注入对象原文** dump 到 probe/dumps/。
  * 怎么跑（人工，需要真实凭据，会产生真实费用，每家只跑一次）：
- *   node packages/server/agents/probe/raw-events.mts --kind=claude-code
+ *   node packages/server/agents/probe/raw-events.mts --kind=cc
  *   node packages/server/agents/probe/raw-events.mts --kind=codex
  *   node packages/server/agents/probe/raw-events.mts --kind=dsh
  *   node packages/server/agents/probe/raw-events.mts --kind=dsh --mode=entry   # Step 0：只 dump 入口形态，不联网、不计费
@@ -185,7 +185,7 @@ function extractDeclarations(source: string, pattern: RegExp, limit = 6): string
   return source.split('\n').filter((line) => pattern.test(line)).slice(0, limit);
 }
 
-// ─────────────────────────────────────── claude-code ───────────────────────────────────────
+// ─────────────────────────────────────── cc ───────────────────────────────────────
 
 async function probeClaudeCode(env: ProbeEnv): Promise<ProbeResult> {
   const sdk = (await import('@anthropic-ai/claude-agent-sdk')) as {
@@ -491,7 +491,7 @@ async function entryDump(kind: string): Promise<void> {
         12,
       ),
     };
-  } else if (kind === 'claude-code') {
+  } else if (kind === 'cc') {
     const moduleNamespace = (await import('@anthropic-ai/claude-agent-sdk')) as Record<string, unknown>;
     payload.exports = Object.keys(moduleNamespace).sort();
     payload.packageFacts = packageFacts('@anthropic-ai/claude-agent-sdk');
@@ -514,13 +514,13 @@ async function entryDump(kind: string): Promise<void> {
 // ─────────────────────────────────────── 入口 ───────────────────────────────────────
 
 const PROBES: Record<string, (env: ProbeEnv) => Promise<ProbeResult>> = {
-  'claude-code': probeClaudeCode,
+  'cc': probeClaudeCode,
   codex: probeCodex,
   dsh: probeDsh,
 };
-const ENTRY_KINDS = ['claude-code', 'codex', 'dsh'];
+const ENTRY_KINDS = ['cc', 'codex', 'dsh'];
 
-const kind = readArg('kind') ?? 'claude-code';
+const kind = readArg('kind') ?? 'cc';
 const mode = readArg('mode') ?? 'events';
 
 if (mode === 'entry') {

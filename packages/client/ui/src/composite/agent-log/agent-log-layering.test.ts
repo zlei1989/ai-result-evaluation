@@ -197,7 +197,7 @@ const VENDOR_BRANCH_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
   { name: 'agentKind !==', pattern: /agentKind\s*!==/ },
   { name: 'switch (…agentKind)', pattern: /switch\s*\(\s*\w*agentKind/ },
   { name: 'agentKind 索引查表', pattern: /agentKind\]/ },
-  { name: '厂商字面量', pattern: /['"](dsh|codex|claude-code)['"]/ },
+  { name: '厂商字面量', pattern: /['"](dsh|codex|cc)['"]/ },
   { name: '数据层的厂商文案表', pattern: /AGENT_LABELS\s*\[/ },
 ];
 

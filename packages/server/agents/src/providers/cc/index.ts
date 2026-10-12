@@ -1,5 +1,5 @@
 /**
- * claude-code 适配器：注入路由 → 消费消息流 → 释放。
+ * cc 适配器：注入路由 → 消费消息流 → 释放。
  * 注意：
  *  - `run()` 的骨架由 `runTurn` 提供，本文件只负责厂商特有的三件事：注入、拿停止句柄、投影消息；
  *  - 输入的 `route` 只读，绝不写 `process.env`（不变量 1/2）；
@@ -31,7 +31,7 @@ import {
   readClaudeSubagentUsage,
 } from './subagent-usage';
 
-const logger = createLogger('agents/claude-code');
+const logger = createLogger('agents/cc');
 
 /**
  * 与评测无关的旁路工具：**无条件**禁用（用户口径）。
@@ -222,7 +222,7 @@ const CLAUDE_SETTING_SOURCES: readonly string[] = ['user', 'project', 'local'];
  * `ZHANGL~1`），而 claude 的 harness 有一道**路径模式安全门**——它把「含 8.3 短名 / ADS /
  * 长路径前缀 / 连续三个点」的路径判为「需要人工确认」。冒烟实测：
  * 该门连 `Read` 都拦，CLI 自己写下「Every read and write path to the target file is gated by
- * the harness」，于是 7 行 claude-code **全部 0 改动**、评分在「无改动」输入上打出 20 分。
+ * the harness」，于是 7 行 cc **全部 0 改动**、评分在「无改动」输入上打出 20 分。
  *
  * ⚠️ **这里必须用 `realpathSync.native`，不能用 JS 版 `realpathSync`**（本机实测，Node 24）：
  * ```
@@ -482,7 +482,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // 唯一能停下这一行的仍是 `signal`（用户点「终止」）与模型自己收场。
     },
   });
-  logger.debug('claude-code 已注入路由并启动查询', {
+  logger.debug('cc 已注入路由并启动查询', {
     // `model` 是**真正传给 CLI 的名字**（可能带 `[1m]` 后缀），排障要看的就是它；
     // `declaredModel` 是业务身份（供应商清单里的那一条）——两者不同时才说明后缀生效了。
     model,
@@ -788,7 +788,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
      * （事件侧按 `uuid` 去重、消息侧按内容块归并），所以两处各自维护，互不代劳。
      */
     project: (raw, state) => {
-      const projection = projectClaudeMessage(raw, state, { kind: 'claude-code', baseUrl: input.route.baseUrl });
+      const projection = projectClaudeMessage(raw, state, { kind: 'cc', baseUrl: input.route.baseUrl });
       const normalized = messages.normalize(raw, state);
       const rawRecord = asRecord(raw);
       if (sessionId === null && readString(rawRecord, 'subtype') === 'init') {
@@ -823,7 +823,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
 }
 
 export const claudeCodeProvider: AgentProvider = {
-  kind: 'claude-code',
+  kind: 'cc',
   displayName: 'Claude Code',
   metadata: {
     // 只讲一条 wire（Agent SDK 打 Anthropic Messages）⇒ 集合只有一个元素
@@ -871,7 +871,7 @@ export const claudeCodeProvider: AgentProvider = {
   },
   run: (input: AgentRunInput): Promise<AgentRunResult> =>
     runTurn(input, {
-      kind: 'claude-code',
+      kind: 'cc',
       // 能力从自己的 metadata 转发（骨架不反查注册表）：改 metadata 就是改这里的行为，两处同源
       capability: { structuredOutput: claudeCodeProvider.metadata.capability.structuredOutput },
       start: startClaudeCode,

@@ -98,7 +98,7 @@ describe('评分尺子只有一个来源：全局默认', { timeout: TEST_TIMEOU
 /**
  * 第 7 步的两条通路。
  *
- * 本组用例统一用**候选 = codex（openai）+ 评分智能体 = claude-code（anthropic）**：假适配器的脚本
+ * 本组用例统一用**候选 = codex（openai）+ 评分智能体 = cc（anthropic）**：假适配器的脚本
  * 按 `kind` 索引，两家同 kind 时无法分阶段驱动（`fakeAgents.scripts.set` 会同时命中候选与评审者）。
  * 分家的另一面是「评分模型那一对来自一条 anthropic 供应商」——`seedRunnableRun` 的 `judgeAgentKind`
  * 会自动把它接上。
@@ -113,21 +113,21 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
   });
 
   it('开关打开 → 走智能体通路，评分智能体在该行工作区里跑，judgeAgentKind 落库', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
 
     await runRow(run.id, rowId);
 
     const row = getRun(run.id).rows[0];
     expect(row?.status).toBe('judged');
-    expect(row?.score?.judgeAgentKind).toBe('claude-code');
+    expect(row?.score?.judgeAgentKind).toBe('cc');
     // 满分 30（评分表 A1 20 + A2 10），全部达成 ⇒ 30：编排层把 `run.rubric` 那份快照交给了评分器，
     // 引用的正是夹具那张表的键——传错（或漏传）时这一条会先红
     expect(row?.score?.totalScore).toBe(30);
     expect(fakeJudge.calls).toHaveLength(0); // 纯文本通路一次都没走
-    // 两次适配器调用：候选（codex）一次、评分（claude-code）一次
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    // 两次适配器调用：候选（codex）一次、评分（cc）一次
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
     expect(fakeAgents.calls[1]?.cwd).toBe(row?.workspacePath);
     expect(fakeAgents.calls[1]?.configHome).toContain('.judgehome');
     expect(fakeAgents.calls[0]?.configHome).toContain('.agenthome');
@@ -152,22 +152,22 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
    * 替不支持的家把这一格扣下）。判据只剩一个来源：适配器在结果里报的 `applied.structuredOutput`。
    *
    * 为什么这两条必须成对出现，缺一条就退化成假绿：
-   *   · 只有 claude-code 那一条绿 ⇒ 「谁也不传」的实现照样绿——那正是本任务开工前线上每一分的形状
+   *   · 只有 cc 那一条绿 ⇒ 「谁也不传」的实现照样绿——那正是本任务开工前线上每一分的形状
    *     （`structuredOutput` 恒 `false`、整条链路只在测试里被点亮），而当时整套用例是全绿的；
    *   · 只有 dsh 那一条绿 ⇒ 「降级不留痕」或「记账不看 `applied`」的实现照样绿——它必须同时钉住
    *     两件事：dsh 那一次 `run()` **也**收到了 schema（不再被扣下），而这一分仍记 `false`。
    * 两条一起，四种写法（都传 / 都不传 / 按能力扣下 / 传反）才两两分得开。
    */
   it('评分智能体支持结构化输出 ⇒ 没有降级日志，且这一分记 structuredOutput=true', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
 
     await runRow(run.id, rowId);
 
     // 先把调用顺序钉住，再按索引取那一次：不钉的话，「断言看错了那一次调用」会以一条与能力判断
     // 无关的红/绿出现（候选那一次永远不带 schema，取错索引时 dsh 那条也会以另一种方式假绿）
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
     // 端到端①：评分阶段那一次 `run()` 的入参里**有** `outputSchema`，且逐格等于契约里那一份
     // ——不是另拼一份、也不是 `{}`：schema 少一格，CLI 侧的约束就静默消失，而分数照出、行照样绿
     expect(fakeAgents.calls[1]?.outputSchema).toEqual(JUDGE_OUTPUT_JSON_SCHEMA);
@@ -236,11 +236,11 @@ describe('runRow：评分通路（开关决定谁去驱动那把尺子）', { ti
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
     });
     const rowId = run.rows[0]?.id ?? '';
-    // 候选（codex）照默认脚本正常完成；评分（claude-code）挂住等放行
-    fakeAgents.scripts.set('claude-code', { mode: 'gate' });
+    // 候选（codex）照默认脚本正常完成；评分（cc）挂住等放行
+    fakeAgents.scripts.set('cc', { mode: 'gate' });
 
     const running = runRow(run.id, rowId);
     await until(() => getRun(run.id).rows[0]?.status === 'judging', '行进入 judging', TEST_TIMEOUT_MS);
@@ -313,15 +313,15 @@ describe('评分强度：唯一读点 → 两条通路', { timeout: TEST_TIMEOUT
   });
 
   it('智能体通路：同一个强度到达适配器，并记进这一分（配置 → run → 落盘的分数）', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
     seedJudgeEffort('max');
 
     await runRow(run.id, rowId);
 
     // 先把调用顺序钉住再按索引取：候选（codex）那一次不该带评分强度，取错索引会让这条断言失去意义
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
     expect(fakeAgents.calls[1]?.effort).toBe('max');
     // 端到端：这一分记的是那个档（这一段走的是**真实** judgeRowByAgent 与真实 finalizeScore，只有适配器是假的）
     expect(getRun(run.id).rows[0]?.score?.judgeEffort).toBe('max');
@@ -345,13 +345,13 @@ describe('评分强度：唯一读点 → 两条通路', { timeout: TEST_TIMEOUT
   });
 
   it('未配置强度 ⇒ 智能体通路不带这一格，且这一分记 null（不许凭空塞缺省档）', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', useAgentJudge: true, judgeAgentKind: 'cc' });
     const rowId = run.rows[0]?.id ?? '';
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
 
     await runRow(run.id, rowId);
 
-    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'claude-code']);
+    expect(fakeAgents.calls.map((call) => call.kind)).toEqual(['codex', 'cc']);
     expect(fakeAgents.calls[1]?.effort).toBeUndefined();
     // 端到端那一半：落盘的分数记 `null`（这一段走真实 judgeRowByAgent 与真实 finalizeScore）
     expect(getRun(run.id).rows[0]?.score?.judgeEffort).toBeNull();

@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildSubprocessEnv, ensureV1Suffix, stripV1Suffix } from './route';
 
-describe('stripV1Suffix（claude-code：拆掉尾部 /v1）', () => {
+describe('stripV1Suffix（cc：拆掉尾部 /v1）', () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ['https://gw.example.com/anthropic', 'https://gw.example.com/anthropic'],
     ['https://gw.example.com/anthropic/', 'https://gw.example.com/anthropic'],

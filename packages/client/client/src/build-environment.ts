@@ -187,10 +187,10 @@ interface VendorInit {
 }
 
 /**
- * claude-code 的 `system/init` 行 → 厂商系统层那一组。
+ * cc 的 `system/init` 行 → 厂商系统层那一组。
  *
  * **本层不解析厂商原文。** 那一行由适配器归一成 `vendor-system` 事件
- * （`providers/claude-code/events.ts` 的 `vendorSystemDraftOf`），这里只按事件取字段——
+ * （`providers/cc/events.ts` 的 `vendorSystemDraftOf`），这里只按事件取字段——
  * 于是「厂商改一个字段名」不再等于「浏览器侧静默少一格」，加第四家也不必动这一层。
  *
  * 取**最后一条**（与编排层行级观测格的 `mcpVendor` 同口径）：claude 只在开头

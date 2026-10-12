@@ -14,12 +14,12 @@
  *      一经分配不再变化**），工具调用块与工具结果块用 `callId`（同轮多次调用因此互不覆盖）。
  *   2. **收到 `delta`**：片段追加进该键的累积缓冲区；
  *      **收到 `snapshot`**：其内容**覆盖**该键的缓冲区与最终内容（不追加、不拼接）。
- *      claude-code 把同一个 `message.id` 按内容块分多次投递（每条只带一个块）⇒ 新块只能
+ *      cc 把同一个 `message.id` 按内容块分多次投递（每条只带一个块）⇒ 新块只能
  *      **追加到末尾**，同键才覆盖；把它当成「整条消息的第 0 块」会让后到的块反复覆盖第一个。
  *   3. **`snapshot` 之后到达的同键 `delta` 丢弃**：快照按定义已含它之前的内容，追加会写重。
  *   4. 合并键**不含 `messageId`**：同一个块的 delta 与 snapshot 是两条消息，配对只靠上面的键。
  *
- * 每一块**最终都要到一个 snapshot**（dsh 在 `block-end`、claude-code 在流式事件之后的完整
+ * 每一块**最终都要到一个 snapshot**（dsh 在 `block-end`、cc 在流式事件之后的完整
  * assistant 消息上、codex 的条目本身就是快照），只有进程被中断的块例外 ⇒ 由 `assembly` 标记
  * 「这块收尾了没有」，消费方据此区分「未收尾」而不是拿 `truncated` 冒充
  * （`truncated` 是 `tool-result` 块自己的字段，文本块与消息都没有这一格）。
@@ -205,7 +205,7 @@ function identityKey(identity: BlockIdentity): string {
  *   · **新键 + 增量**：分配槽位并以该片段起头；
  *   · **已有键 + 增量**：追加（文本拼字符串、思考拼字符串、工具入参拼 JSON 片段）；
  *   · **已有键 + 快照**：**覆盖**（含已 seal 的槽位被新快照更新——dsh 的 `block-end` 会在
- *     `usage` 之后再补一份，claude-code 的完整 assistant 消息也会在流式之后重投同一个块）；
+ *     `usage` 之后再补一份，cc 的完整 assistant 消息也会在流式之后重投同一个块）；
  *   · **已 seal + 增量**：丢弃（快照已含它之前的内容，追加会写重）。
  */
 function applyBlock(carrier: Carrier, draft: MessageBlockDraft): void {
@@ -266,7 +266,7 @@ function mergeDelta(current: ContentBlock, incoming: ContentBlock): ContentBlock
  *
  * 它的存在只为一条规则：**新块只能追加到末尾，序号一经分配不再变化**。
  * 号源是该载体里已经开过的块数，所以：
- *   · claude-code 的多次投递（每个完成的内容块一条消息）各占一个新号；
+ *   · cc 的多次投递（每个完成的内容块一条消息）各占一个新号；
  *   · dsh 的 `chunk.index` 是**该次模型输出内**的序号（每次输出都从 0 起），
  *     直接拿它当块序号会让第二次输出的第 0 块盖掉第一次输出的第 0 块 ⇒ 必须先过这里换算成
  *     「该载体内的第几个块」；

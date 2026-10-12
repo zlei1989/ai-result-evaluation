@@ -8,13 +8,13 @@
 import { z } from 'zod';
 
 /** 三家智能体 id 的**唯一真源** */
-export const AGENT_KINDS = ['claude-code', 'codex', 'dsh'] as const;
+export const AGENT_KINDS = ['cc', 'codex', 'dsh'] as const;
 export const AgentKindSchema = z.enum(AGENT_KINDS);
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 /** 智能体中文标签（设置页与候选池共用） */
 export const AGENT_LABELS: Record<AgentKind, string> = {
-  'claude-code': 'Claude Code',
+  cc: 'Claude Code',
   codex: 'Codex',
   dsh: 'DeepSeek Harness',
 };

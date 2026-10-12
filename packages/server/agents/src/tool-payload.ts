@@ -9,7 +9,7 @@
  *
  * 三家的原始形状（映射表，逐条都有实测来源）：
  *
- * | 族 | claude-code | dsh | codex |
+ * | 族 | cc | dsh | codex |
  * |---|---|---|---|
  * | `task` | `TodoWrite` 的 `{todos: [{content, status}]}`（`Task*` 是逐条 patch 的注册表，**不在这里合成整表**） | `todo_write` 的 `{todos: [{content, status}]}`（整表覆盖） | `update_plan` 的 `{explanation?, plan: [{step, status}]}` |
  * | `ask-user` | `AskUserQuestion` 的 `{questions: [{id, question, header, options[], multiSelect}]}` | `ask_user_question` 的 `{questions: [{id, question, header?, options[]?, multi_select?}]}` | `request_user_input` 的 `{questions: [{id, header, question, options[]}]}` + 答案侧的 `isOther` / `isSecret` |

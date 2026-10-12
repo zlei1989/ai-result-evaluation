@@ -14,7 +14,7 @@
 import type { ToolFamily } from '@aieval/contracts';
 
 const TOOL_FAMILY_BY_NAME: Record<string, ToolFamily> = {
-  // claude-code
+  // cc
   Read: 'read-file',
   Write: 'write-file',
   Edit: 'edit-file',

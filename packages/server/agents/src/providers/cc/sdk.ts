@@ -1,5 +1,5 @@
 /**
- * claude-code 的厂商 SDK 懒加载外壳。
+ * cc 的厂商 SDK 懒加载外壳。
  * 本文件是**唯一**知道 `@anthropic-ai/claude-agent-sdk` 入口形状的地方：窄结构在这里自定义、
  * 不从厂商包 import type，于是厂商的类型变更打不到本仓的 typecheck。
  * 注意：`import()` 必须是动态的——顶层静态导入会把「一家 SDK 故障」放大成「整包不可用」（A6）；
@@ -14,7 +14,7 @@ import type { ClaudePermissionMode } from '../../permission';
  * 包名字面量：**不能**写成 `export const CLAUDE_PACKAGE_NAME = '@anthropic-ai/claude-agent-sdk';`。
  * 为什么：「厂商包只能动态 import」的断言按 `^\s*(import|export)…[^;]*['"]<包名>['"]` 扫源码，
  * 而那个模式区分不出 `export … from '@pkg'` 与 `export const X = '@pkg'`（行首关键字 + 引号包名即命中），
- * 于是**行首 export 的常量声明会被误判成静态导入**（报 `providers/claude-code/sdk.ts：静态导入
+ * 于是**行首 export 的常量声明会被误判成静态导入**（报 `providers/cc/sdk.ts：静态导入
  * @anthropic-ai/claude-agent-sdk`）。故字面量落在非 export 的语句里再转出：断言照样拦得住真正的
  * 静态导入，包名也仍是唯一真源；三个适配器都按本写法落地。
  */

@@ -87,12 +87,12 @@ function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
 
 describe('AGENT_KINDS', () => {
   it('三家智能体与表同序同值（真源在 contracts）', () => {
-    expect([...AGENT_KINDS]).toEqual(['claude-code', 'codex', 'dsh']);
+    expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh']);
     expect(AgentKindSchema.options).toEqual([...AGENT_KINDS]);
   });
 
   it('每家都有中文标签', () => {
-    expect(AGENT_LABELS['claude-code']).toBe('Claude Code');
+    expect(AGENT_LABELS['cc']).toBe('Claude Code');
     expect(AGENT_LABELS.codex).toBe('Codex');
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
   });
@@ -190,7 +190,7 @@ describe('RowDiffIndexSchema / RowDiffFileSchema', () => {
 describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
   const row = {
     id: 'row-1',
-    agentKind: 'claude-code' as const,
+    agentKind: 'cc' as const,
     providerId: 'p-1',
     providerName: '网关',
     baseUrl: 'https://gw.example.com/anthropic',
@@ -254,7 +254,7 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     const create = {
       caseId: 'c-1',
       executionMode: 'serial' as const,
-      rows: [{ agentKind: 'claude-code' as const, providerId: 'p-1', modelId: 'm' }],
+      rows: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm' }],
     };
     expect(RunCreateSchema.parse(create).rows[0]?.effort).toBeUndefined();
     expect(
@@ -856,7 +856,7 @@ describe('isSameRowTarget', () => {
   });
 
   it('强度以外的三个字段各自变化都 ⇒ false（漏掉任何一个都会让那一行的旧分数留下来）', () => {
-    expect(isSameRowTarget(row, { agentKind: 'claude-code', providerId: 'p-1', modelId: 'gpt-5' })).toBe(false);
+    expect(isSameRowTarget(row, { agentKind: 'cc', providerId: 'p-1', modelId: 'gpt-5' })).toBe(false);
     expect(isSameRowTarget(row, { agentKind: 'codex', providerId: 'p-2', modelId: 'gpt-5' })).toBe(false);
     expect(isSameRowTarget(row, { agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5-mini' })).toBe(false);
   });

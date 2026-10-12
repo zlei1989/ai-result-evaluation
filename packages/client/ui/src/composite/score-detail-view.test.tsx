@@ -328,11 +328,11 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
    * 判据落在两行的**数据属性**上（不是 class）：合并成一层 Flex 时这两格都找不到，用例直接红。
    */
   it('分组显式：第一行「谁打的」，第二行「花了多少」（不靠自然折行）', () => {
-    render(view(score({ judgeAgentKind: 'claude-code', judgeModelId: 'claude-opus-4-6', judgeEffort: 'max' })));
+    render(view(score({ judgeAgentKind: 'cc', judgeModelId: 'claude-opus-4-6', judgeEffort: 'max' })));
 
     const meta = within(screen.getByTestId('score-judge-meta'));
     expect(meta.getByText('评分智能体')).toBeInTheDocument();
-    expect(meta.getByText(AGENT_LABELS['claude-code'])).toBeInTheDocument();
+    expect(meta.getByText(AGENT_LABELS['cc'])).toBeInTheDocument();
     expect(meta.getByText('评分模型')).toBeInTheDocument();
     expect(meta.getByText('claude-opus-4-6')).toBeInTheDocument();
     expect(meta.getByText('思考强度')).toBeInTheDocument();
@@ -462,7 +462,7 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
 
   /**
    * **候选那一套数据一格都不许出现**：下面这些哨兵值就是候选行那一套
-   * （`claude-code` / `claude-opus-4-6` / 128,450 tok / 6m23s）。
+   * （`cc` / `claude-opus-4-6` / 128,450 tok / 6m23s）。
    * 组件已经不吃候选行（`ScoreDetailViewProps` 里没有 `row`），把那一格接回来、或让某处回落到它时，
    * 这一条立刻红。页面那一侧的对应守卫是 `apps/web-next/src/runs-page-wiring.test.ts` 的反向断言。
    */
@@ -470,7 +470,7 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
     render(view(score({ judgeTokens: { input: 15_763, cached: 45_824, output: 2_164 }, judgeDurationMs: 192_000 })));
 
     expect(screen.queryByText('候选运行信息')).toBeNull();
-    expect(screen.queryByText(AGENT_LABELS['claude-code'])).toBeNull();
+    expect(screen.queryByText(AGENT_LABELS['cc'])).toBeNull();
     expect(screen.queryByText('claude-opus-4-6')).toBeNull();
     expect(screen.queryByText(/128,450/)).toBeNull();
     expect(screen.queryByText(/6m23s/)).toBeNull();

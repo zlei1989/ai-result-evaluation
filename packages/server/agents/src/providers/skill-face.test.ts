@@ -24,9 +24,9 @@ import type { AgentEvent } from '@aieval/contracts';
 import { setAgentRuntimeForTesting } from '../runtime';
 import { createFakeClaudeSdk, createFakeDshSdk, createRecorder, createRunInput } from '../testing/agent-fixtures';
 import { removeTreeWithRetry } from '../testing/cleanup';
-import { CLAUDE_PACKAGE_NAME } from './claude-code/sdk';
+import { CLAUDE_PACKAGE_NAME } from './cc/sdk';
 import { DSH_PACKAGE_NAME } from './dsh/sdk';
-import { claudeCodeProvider } from './claude-code';
+import { claudeCodeProvider } from './cc';
 import { dshProvider } from './dsh';
 
 let tempRoot: string;

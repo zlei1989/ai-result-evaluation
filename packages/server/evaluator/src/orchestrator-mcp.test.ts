@@ -231,16 +231,16 @@ describe('编排层填 MCP 入参', { timeout: TEST_TIMEOUT_MS }, () => {
   });
 
   it('评分那一次**不带** MCP（口径的另一半：只有候选执行阶段注入）', async () => {
-    // 候选那一行走默认的 codex（夹具的默认供应商是 openai；claude-code 行会被协议复检挡下——
-    // 那条口径由 `orchestrator-failure-modes.test.ts` 钉）。**评审者**用 claude-code，
+    // 候选那一行走默认的 codex（夹具的默认供应商是 openai；cc 行会被协议复检挡下——
+    // 那条口径由 `orchestrator-failure-modes.test.ts` 钉）。**评审者**用 cc，
     // 于是「同一次 runRow 里的两次 run，只有候选那一次带 MCP」在一个用例里就能对上。
     // 假适配器要回一份能解析的评分答复，否则评审那一段会以解析失败收场（与本题无关的噪声）。
-    fakeAgents.scripts.set('claude-code', { finalText: judgeReplyJson() });
+    fakeAgents.scripts.set('cc', { finalText: judgeReplyJson() });
     const { run } = seedRunnableRun({
       rowCount: 1,
       executionMode: 'parallel',
       useAgentJudge: true,
-      judgeAgentKind: 'claude-code',
+      judgeAgentKind: 'cc',
       mcpServers: { playwright: { transport: 'stdio', enabled: true, command: 'npx' } },
     });
     await runRow(run.id, run.rows[0]?.id ?? '');

@@ -3,7 +3,7 @@
  * 权限表的守卫。
  *
  * 为什么这份守卫是**跨三家**的：这三份表只有放在一起才看得出「谁漏了哪一档」，
- * 而漏一档的后果在冒烟里是**静默**的——claude-code 当时是三家唯一没设写使能的那家，
+ * 而漏一档的后果在冒烟里是**静默**的——cc 当时是三家唯一没设写使能的那家，
  * 7 行候选**全部 0 改动**，测试全绿、界面照常出分（只是在空 diff 上打分）。
  * 所以这里钉的不是「字符串写对了」，而是三件会各自静默出错的事：
  *   ① 每一档在**三家**都有落点（新增一档时漏掉某一家，编译期就会拦，见下面第一条的 `satisfies`）；
@@ -107,7 +107,7 @@ describe('权限表', () => {
    * extraReadPaths 不落这三张表。
    *
    * 为什么钉**键集合**而不是值：`extraReadPaths` 的映射通道是 claude 的 query option
-   * （`Options.additionalDirectories` / `--add-dir`，在 `providers/claude-code/index.ts` 里转发），
+   * （`Options.additionalDirectories` / `--add-dir`，在 `providers/cc/index.ts` 里转发），
    * 不是权限档选项——把它塞进 `CLAUDE_PERMISSION_OPTIONS` 会逼 codex / dsh 两家的表也去消费一个
    * 它们不映射的格（那两家的只读档本就全盘可读）。键集合逐字钉死：谁往表里加一格，这里当场红，
    * 而不是靠「某个值恰好多出来」碰巧被发现。
@@ -154,7 +154,7 @@ describe('权限表', () => {
     // 断言的两侧都是「约定的名字」：左边来自注册表，右边是本文件显式维护的清单——
     // 它的作用是**逼人回来读这张表**，而不是假装它能自动发现新厂商。
     expect(listAgentProviders().map((provider) => provider.kind).sort()).toEqual([
-      'claude-code',
+      'cc',
       'codex',
       'dsh',
     ]);

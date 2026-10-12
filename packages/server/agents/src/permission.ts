@@ -3,7 +3,7 @@
  *
  * 为什么单独一个文件、而不是各自写在 provider 里：这三份表只有**放在一起**才能逐格对照，
  * 而它们必须同时正确——「两家给全权限、第三家忘给」正是冒烟实测过的缺陷形状
- *（claude-code 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
+ *（cc 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
  * 见 `docs/protocols/provider-run.md`「权限档按阶段给」表）。放一起之后，
  * `permission.test.ts` 能把「每一档在每一家都有落点」写成一条可执行断言。
  *
@@ -20,7 +20,7 @@
  *
  * **`AgentRunInput.extraReadPaths` 刻意不落这三张表**：它只被 claude 消费——翻成 SDK 的
  * `Options.additionalDirectories`（`--add-dir`），是 **query option** 而不是权限档选项
- * （转发点在 `providers/claude-code/index.ts`，与权限档并列地扩进 `dontAsk` 的预授权范围）。
+ * （转发点在 `providers/cc/index.ts`，与权限档并列地扩进 `dontAsk` 的预授权范围）。
  * codex / dsh 不映射它：codex 的 read-only 沙箱官方语义全盘可读、dsh 的 read-only 只拦写读全放行，
  * 两家的读放行不需要额外通道。把它塞进表里只会让这两家去消费一个它们不映射的格；
  * 三份表的键集合由 `permission.test.ts` 逐字钉死（守卫名：「extraReadPaths 不进三份权限档表」）。

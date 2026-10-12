@@ -223,7 +223,7 @@ export function stepLiveState(state: RowLiveState, event: AgentEvent): RowLiveSt
  * **保留上一句**：原始负载是排障证据，把它滚到卡片上就是拿 JSON 冒充消息。
  * **摘要也要过这一关**：适配器会把模型的 JSON 评分结果原样压成一行摘要发下来（评分阶段正是这种
  * 形状），那一句同样不该滚到卡片上——判据只有这一份，两边各写一遍必然漂移；
- * · 其余情况（claude-code 的答复、codex 的增量、stderr 的 WARN）本身就是人写的，直接用。
+ * · 其余情况（cc 的答复、codex 的增量、stderr 的 WARN）本身就是人写的，直接用。
  * 空串按「这一条没带内容」处理：界面上宁可停在上一条，也不要闪成一片空白
  * （`emit` 层已经不肯把 `''` 落成日志，这里不假设调用方一定干净）。
  */
@@ -238,7 +238,7 @@ export function activityOf(event: { text: string; summary?: string | undefined }
  * 这一行是不是**机器负载**（厂商信封那类 JSON），而不是写给人看的一句话。
  *
  * 两步，顺序不能换：
- * 1. **整串**解析得动且是对象 / 数组 ⇒ 机器负载。`[{"type":"tool_use",…}]`（claude-code 的工具块）
+ * 1. **整串**解析得动且是对象 / 数组 ⇒ 机器负载。`[{"type":"tool_use",…}]`（cc 的工具块）
  * 本身就是 JSON **数组**，先摘「前缀标签」会把这一整行摘空（第一版就是这么错的，
  * `row-live.test.tsx` 里那条「第一帧就是 JSON」当场变红）；
  * 2. 否则摘掉**前缀标签**再看——本仓转发出来的厂商信封长这样：
@@ -373,7 +373,7 @@ export function useRunLiveMetrics(input: { runId: string; rowIds: readonly strin
      * 一帧的处理：折叠 → （那几个字段变了才）发布 → 终态则关这一行的连接并刷一次快照。
      *
      * **只有那几个字段变了才立刻 setState**：真实一行会推来几千条 `log` / `diff-summary` 帧，
-     * 逐帧发布等于每秒几十次整页重渲染（而它们一个字段都没改）——实测一条 4 分钟的 claude-code 行
+     * 逐帧发布等于每秒几十次整页重渲染（而它们一个字段都没改）——实测一条 4 分钟的 cc 行
      * 有 5500 条事件，其中 `usage` 只有 2 条。折叠本身仍然要跑（`lastSeq` 要推进）。
      * **文本这一路不在这里发布**：它由下面的采样定时器按固定节奏推出（文件头口径 4）。
      */

@@ -54,7 +54,7 @@ const settings = (patch: Partial<Settings> = {}): Settings => ({ ...SETTINGS_DEF
  * 类型直接取自组件的 props ⇒ 改 props 形状时这里跟着红（不必再抄一份形状）。
  */
 const agentProtocols: NonNullable<ComponentProps<typeof JudgeSettingsCard>['agentProtocols']> = [
-  { agentKind: 'claude-code', protocolTypes: ['anthropic'], efforts: [EFFORT_OFF, 'low', 'medium', 'high', 'xhigh', 'max'] },
+  { agentKind: 'cc', protocolTypes: ['anthropic'], efforts: [EFFORT_OFF, 'low', 'medium', 'high', 'xhigh', 'max'] },
   {
     agentKind: 'codex',
     protocolTypes: ['openai'],
@@ -295,7 +295,7 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
     // antd 把 disabled 的选项渲染成 aria-disabled 的 .ant-select-item-option-disabled
     expect(codex.closest('.ant-select-item-option')).toHaveClass('ant-select-item-option-disabled');
     // **阳性面对照**：只断言「Codex 被禁用」的话，「选了模型就把三家全禁用」这种实现
-    // 照样全绿——而那会让这一格彻底不可用。同协议的 claude-code 必须仍可选、标签不带后缀。
+    // 照样全绿——而那会让这一格彻底不可用。同协议的 cc 必须仍可选、标签不带后缀。
     const claude = await screen.findByText('Claude Code');
     expect(claude.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
     // **双协议那家也必须可选**（dsh 两条 wire 都能收）：判据是「集合里有没有」，

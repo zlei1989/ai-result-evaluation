@@ -8,7 +8,7 @@
  * 只差那四个字。故这里逐格钉住**原因**，不只是「有没有」。
  *
  * 夹具里的 `system/init` 行**逐字取自真机**（`D:\.tmp\aieval\runs\…\events.jsonl`）：
- * claude-code 报 `tools` / `slash_commands` / `agents` / `permissionMode` / `output_style`，
+ * cc 报 `tools` / `slash_commands` / `agents` / `permissionMode` / `output_style`，
  * 而 codex 与 dsh 的事件流里**没有这一类行**（逐份扫过）——那是 `not-exposed` 而不是 `not-observed`。
  */
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,7 @@ import { ENV_GROUP_ORDER, buildAgentEnvironment, envItem } from './build-environ
 
 const ROW = {
   id: 'row-1',
-  agentKind: 'claude-code',
+  agentKind: 'cc',
   providerId: 'p-1',
   providerName: 'deepseek-anthropic',
   baseUrl: 'https://api.deepseek.com/anthropic',
@@ -67,7 +67,7 @@ function logEvent(text: string, seq = 1): AgentEvent {
 /**
  * **归一后的**厂商系统层事件。
  *
- * 这一格现在由适配器产出（claude 的 `system/init` 在 `providers/claude-code/events.ts` 里归一），
+ * 这一格现在由适配器产出（claude 的 `system/init` 在 `providers/cc/events.ts` 里归一），
  * 数据层只读它——**不再解析那条原始 JSON 日志**。默认值逐字取自真机那一行。
  */
 function vendorSystemEvent(
@@ -238,7 +238,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
   it('`effort` 没给且这一家声明了缺省档 ⇒ 写全名与该档，不是「沿用厂商默认」', () => {
     const project = groupOf(
       buildAgentEnvironment({
-        // 真值形状：ROW 是 claude-code，而**只有 dsh** 声明了缺省档 ⇒ 夹具按 dsh 那一家给
+        // 真值形状：ROW 是 cc，而**只有 dsh** 声明了缺省档 ⇒ 夹具按 dsh 那一家给
         row: { ...ROW, agentKind: 'dsh', effort: undefined } as unknown as EvalRow,
         workspaceBase: 'D:/tmp/runs/run-1',
         events: [],
@@ -530,7 +530,7 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
       expect(item.verdictLines?.at(-1)).toEqual({ text: CODEX_MCP_DISPATCH_GAP_NOTE, verdict: null });
 
       // 另两家**不许**带上这句话（它是 codex 一家的缺口；跟着所有人显示会把提示读成噪声）
-      for (const agentKind of ['claude-code', 'dsh'] as const) {
+      for (const agentKind of ['cc', 'dsh'] as const) {
         const other = itemOf(
           groupOf(
             buildAgentEnvironment({

@@ -593,7 +593,7 @@ export function codexFixture(): AgentLogFixture {
 }
 
 /**
- * `claude-code`：**「有内容但这一类没被转发」**那一档。
+ * `cc`：**「有内容但这一类没被转发」**那一档。
  * 子任务只投送了工具调用与结果、没有一句 assistant 正文 —— 界面必须如实说明
  * 「该子任务的对话未转发」，而**不能**渲染成「它什么都没说」。
  */
@@ -633,7 +633,7 @@ export function claudeFixture(): AgentLogFixture {
   const events: AgentEvent[] = [statusEvent(0, 'running'), statusEvent(45, 'judged')];
 
   return {
-    name: 'claude-code',
+    name: 'cc',
     proves: '「该子任务的对话未转发」这一档（有工具块、无 assistant 正文，不写成「它什么都没说」）',
     events,
     capability: capability({ subagent: { level: 'yes', source: 'aggregate', reason: null } }),

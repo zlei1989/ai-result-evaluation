@@ -1,5 +1,5 @@
 /**
- * **同步分块逐行读**（今天只有 claude 这一条读盘路径用它：`providers/claude-code/subagent-usage.ts`；
+ * **同步分块逐行读**（今天只有 claude 这一条读盘路径用它：`providers/cc/subagent-usage.ts`；
  * codex 自 app-server 改造后只走协议取数，不再读转录文件）。
  *
  * 为什么需要它（用户点名）：会话转录是 CLI **边跑边追加**的，

@@ -33,7 +33,7 @@ interface Harness {
 /**
  * 假 hooks 的能力声明（A1 起 `TurnHooks.capability` 必填）：本文件只测骨架的处置，而绝大多数的
  * 假 start 连 `outputSchema` 都不传（`createRunInput` 不填这一格）⇒ 这一格在那些用例里**是惰性的**。
- * 统一给「支持」（= claude-code / codex 的真值），免得十几处内联 hooks 各抄一份字面量；
+ * 统一给「支持」（= cc / codex 的真值），免得十几处内联 hooks 各抄一份字面量；
  * 「不支持 ⇒ 降级」那一族用例各自显式覆盖它。
  */
 const CAPABILITY_SUPPORTED: TurnHooks['capability'] = { structuredOutput: true };
@@ -58,7 +58,7 @@ function createHarness(
   const recorder = createRecorder();
   const stats = { startCount: 0, disposeCount: 0, finalizeCount: 0 };
   const hooks: TurnHooks = {
-    kind: 'claude-code',
+    kind: 'cc',
     capability: CAPABILITY_SUPPORTED,
     start: async (context) => {
       stats.startCount += 1;
@@ -143,7 +143,7 @@ describe('runTurn', () => {
 
   /**
    * 轮次的发射门槛（用户口径）。三条一起钉：
-   *   ① 只带轮次（tokens: null）也要发 —— 实测缺口：claude-code 的 token 采不到时整轮一条都不发，
+   *   ① 只带轮次（tokens: null）也要发 —— 实测缺口：cc 的 token 采不到时整轮一条都不发，
    *      界面停在「轮次 1」；
    *   ② 轮次相同、计量也相同 ⇒ **不重复发**（同一条消息的重复快照不该刷日志）；
    *   ③ 只有 tokens、还没有轮次 ⇒ **不发**（turns 必填），但结果里照样带上 tokens（采到的计量不丢）。
@@ -201,7 +201,7 @@ describe('runTurn', () => {
     ]);
   });
 
-  // `tokensEstimated` 是 claude-code 的跑动期估算：它只进事件，**绝不进结果**——
+  // `tokensEstimated` 是 cc 的跑动期估算：它只进事件，**绝不进结果**——
   // 否则崩溃 / 被杀的行会带着一份估算被写成「采到了计量」，而快照是唯一落盘真相。
   it('估算计量只进事件、不进结果（tokensEstimated）', async () => {
     const events: AgentEvent[] = [];

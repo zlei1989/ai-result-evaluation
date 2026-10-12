@@ -17,8 +17,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAgentRuntimeForTesting } from './runtime';
 import { createFakeClaudeSdk, createFakeDshSdk, createRecorder, createRunInput, FIXTURE_CONFIG_HOME } from './testing/agent-fixtures';
-import { claudeCodeProvider } from './providers/claude-code';
-import { CLAUDE_PACKAGE_NAME } from './providers/claude-code/sdk';
+import { claudeCodeProvider } from './providers/cc';
+import { CLAUDE_PACKAGE_NAME } from './providers/cc/sdk';
 import { createFakeAppServer, threadListPages, turnCompleted } from './providers/codex/appserver-fixtures';
 import { codexProvider, defaultCodexRuntimeHooks, type CodexRuntimeHooks } from './providers/codex';
 import { dshProvider } from './providers/dsh';

@@ -81,5 +81,5 @@ node packages/server/agents/probe/v9/replay-role-differential.mjs [--runs=3] [--
 - 本仓这一侧的兜底（候选执行的任务提示里显式注入技能清单）**未实施**，且在网关修好后不再是必需：
   它只补技能一项，补不了被同一条消息一起丢弃的环境块 / agent 类型表 / 日期 / token 预算。
 - 本探针**不进单测**：它要真 CLI + 真网关，且「A1 臂为 0」是**当前厂商行为的读数**而非我们的缺陷——
-  写成断言会在网关修好那一天假红。真机守卫仍由 `providers/claude-code/live-skills-context.test.ts`
+  写成断言会在网关修好那一天假红。真机守卫仍由 `providers/cc/live-skills-context.test.ts`
   与离线的 `skills-config-prereq.test.ts` 承担。

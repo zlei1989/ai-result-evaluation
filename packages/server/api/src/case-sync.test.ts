@@ -41,7 +41,7 @@ vi.mock('@aieval/agents', async (importOriginal) => {
   return {
     ...actual,
     // 只替掉「怎么起智能体」这一件事：元数据（协议集合）留给真实注册表的口径，
-    // `requireJudgeAgent` 会读它来判断 claude-code 能不能驱动 anthropic 路由
+    // `requireJudgeAgent` 会读它来判断 cc 能不能驱动 anthropic 路由
     getProvider: vi.fn(() => ({ metadata: { protocolTypes: ['anthropic'] }, run: runMock })),
   };
 });
@@ -125,7 +125,7 @@ function seedSettings(options: { judge?: boolean } = {}): void {
       casesRoot: root,
       casesAutoCommit: false,
       defaultJudge: options.judge === false ? null : { providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
-      defaultJudgeAgent: options.judge === false ? null : 'claude-code',
+      defaultJudgeAgent: options.judge === false ? null : 'cc',
     },
     providers: [makeAnthropicProvider()],
   });

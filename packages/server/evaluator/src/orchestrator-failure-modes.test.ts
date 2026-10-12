@@ -93,7 +93,7 @@ describe('runRow：失败面与配置漂移（每一行都必须落到终态 + �
   });
 
   it('协议不匹配（openai 供应商 + Claude Code 行）→ failed 且两种协议都说清楚', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', agentKind: 'claude-code' });
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel', agentKind: 'cc' });
 
     await runRow(run.id, run.rows[0]?.id ?? '');
 

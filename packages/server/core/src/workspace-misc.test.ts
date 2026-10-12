@@ -114,7 +114,7 @@ describe('EvalRow 契约与落盘形状对齐', () => {
     const { EvalRowSchema } = await import('@aieval/contracts');
     const row = {
       id: 'row-1',
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       // 执行期定位凭据用 id，展示快照 providerName 可以被改名
       providerId: 'p-1',
       providerName: '网关',

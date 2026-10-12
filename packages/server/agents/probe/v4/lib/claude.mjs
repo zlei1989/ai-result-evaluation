@@ -31,7 +31,7 @@ export function makeWorkspace() {
 }
 
 /**
- * 与**本仓适配器对齐**的启动口径（`src/providers/claude-code/index.ts`）：
+ * 与**本仓适配器对齐**的启动口径（`src/providers/cc/index.ts`）：
  * `settingSources: ['user','project','local']` + `permissionMode: 'bypassPermissions'`
  * + `allowDangerouslySkipPermissions: true`（少了最后一格整个权限档静默失效）。
  */

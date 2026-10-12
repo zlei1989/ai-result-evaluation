@@ -724,7 +724,7 @@ export function releaseAllAgents(): void {
 }
 
 /**
- * 假 provider：元数据与**真实注册表**逐格一致 —— claude-code `['anthropic']` / codex `['openai']` /
+ * 假 provider：元数据与**真实注册表**逐格一致 —— cc `['anthropic']` / codex `['openai']` /
  * dsh `['openai','anthropic']`（两条 wire 都能收）。
  * 为什么不能随手写个「默认值」：编排层的协议校验读的就是这份元数据
  *（`orchestrator.ts`：`acceptsProtocol(agentProvider.metadata, providerRecord.protocolType)`），
@@ -734,13 +734,13 @@ export function releaseAllAgents(): void {
 function makeFakeProvider(kind: AgentKind): AgentProvider {
   const metadata: AgentProviderMetadata = {
     protocolTypes: kind === 'dsh' ? ['openai', 'anthropic'] : kind === 'codex' ? ['openai'] : ['anthropic'],
-    // structuredOutput 也照真值填：claude-code / codex 有原生 schema 开关，dsh 的 SDK 客户端没有
+    // structuredOutput 也照真值填：cc / codex 有原生 schema 开关，dsh 的 SDK 客户端没有
     capability: { cancelMidTurn: kind !== 'dsh', usage: true, structuredOutput: kind !== 'dsh' },
     // 档位域照**真值**填（三家首项都是 `off`，claude 的关闭走
     // `thinking: { type: 'disabled' }`、codex 的走 `none`）。编排层不读它（交集在 api 层算），
     // 但填成一份万能表会让「假 provider 与真注册表逐格一致」这条前提在审计时看不出破绽。
     reasoningEfforts:
-      kind === 'claude-code'
+      kind === 'cc'
         ? ['off', 'low', 'medium', 'high', 'xhigh', 'max']
         : kind === 'codex'
           ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']
@@ -846,7 +846,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
          * 现算，两个操作数都取真值：能力读自己的 `metadata`（上面那一格与真注册表逐格一致），
          * 「要没要 schema」读这一格有没有真被传进来。
          *
-         * 为什么不写死 `false`：claude-code / codex 走 `run` 时**真的**会下发 schema，写死会让夹具的
+         * 为什么不写死 `false`：cc / codex 走 `run` 时**真的**会下发 schema，写死会让夹具的
          * 绿色建立在「与真行为相反」的假值上——正是本文件顶部那条「元数据与真实注册表逐格一致」要防的
          * 事。`dsh` 那一格因此如实报 `false`，调用方那两条分支（降级留痕 / 记账）也才都能被走到。
          */

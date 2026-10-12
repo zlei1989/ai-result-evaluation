@@ -8,7 +8,7 @@
  */
 
 /**
- * claude-code：拆掉尾部 `/v1`。
+ * cc：拆掉尾部 `/v1`。
  * 为什么：该 SDK 自己追加 `/v1/messages`，留着会变成 `/v1/v1/messages`。
  */
 export function stripV1Suffix(baseUrl: string): string {

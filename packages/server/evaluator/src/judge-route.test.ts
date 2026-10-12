@@ -205,13 +205,13 @@ describe('requireJudgeAgent', () => {
     expect(
       requireJudgeAgent({ defaultJudgeAgent: 'dsh', route: { protocolType: 'anthropic', baseUrl: 'x', apiKey: 'k', modelId: 'm' } }),
     ).toBe('dsh');
-    // claude-code 也是 anthropic 协议：三家都要被覆盖到，否则「只放行 dsh」的实现也能全绿
+    // cc 也是 anthropic 协议：三家都要被覆盖到，否则「只放行 dsh」的实现也能全绿
     expect(
       requireJudgeAgent({
-        defaultJudgeAgent: 'claude-code',
+        defaultJudgeAgent: 'cc',
         route: { protocolType: 'anthropic', baseUrl: 'x', apiKey: 'k', modelId: 'm' },
       }),
-    ).toBe('claude-code');
+    ).toBe('cc');
   });
 
   /**

@@ -2,13 +2,13 @@
 
 ## 定位
 
-claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的对比表。命名不是对齐键——对齐只在语义类别层做。
+cc / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的对比表。命名不是对齐键——对齐只在语义类别层做。
 
 ## 形态与交互
 
 **接入形状总表**：
 
-| 维度 | claude-code | codex | dsh |
+| 维度 | cc | codex | dsh |
 |---|---|---|---|
 | 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex` | `@deepseek-ai/dsh-sdk-client`（next 线，R33） |
 | 驱动形态 | 进程内 SDK，spawn 原生 CLI | `codex app-server`（JSON-RPC/stdio） | SDK spawn 运行时，通知流 |
@@ -32,8 +32,8 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 | 家 | 有这一格的工具 | 逐字字段名 | 必填性 | 我们读得到吗 |
 |---|---|---|---|---|
-| claude-code | `Bash` | `description` | **可选**（CLI 侧另有 `getToolUseSummary` 兜底合成一句，但那**只在 CLI 的 UI 层、不走 wire**） | 读得到 |
-| claude-code | `Agent`（旧名 `Task`）/ `Monitor` / `TaskCreate` | `description` | 必填 | 读得到 |
+| cc | `Bash` | `description` | **可选**（CLI 侧另有 `getToolUseSummary` 兜底合成一句，但那**只在 CLI 的 UI 层、不走 wire**） | 读得到 |
+| cc | `Agent`（旧名 `Task`）/ `Monitor` / `TaskCreate` | `description` | 必填 | 读得到 |
 | dsh | `bash` / `pwsh` / `subagent` | `description` | **必填**（JSON Schema `required` + 运行期校验 `invalid description: expected a non-empty string`） | 读得到 |
 | codex | `update_plan` | `explanation` | 可选 | **读不到**：`TurnPlanUpdatedNotification.explanation` 协议面上有（本机 0.156.1 生成物逐字），但本仓 `appserver/protocol.ts` 的窄声明未收 ⇒ `payload.note` 恒 `null`（未闭合，见 FAQ） |
 | codex | `exec_command` | `justification` | 可选（**审批语义**） | **读不到**：`ThreadItem.commandExecution` 的字段里没有它（协议面就丢了） |
@@ -94,5 +94,5 @@ claude-code / codex / dsh 三家厂商智能体的逐项对照：接了三家之
 
 ## 相关链接
 
-- 知识文章：[《Claude Code 接入》](/protocols/claude-code)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《技能配置》](/features/skills-config)（三家 skills 接法的配置面与三态判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
+- 知识文章：[《Claude Code 接入》](/protocols/cc)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《技能配置》](/features/skills-config)（三家 skills 接法的配置面与三态判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
 - 活文档：三份厂商 FAQ（[Codex](/faq/codex) / [Claude Code](/faq/claude-code) / [DeepSeek Harness](/faq/deepseek-harness)）——按报错原文 grep

@@ -2,7 +2,7 @@
 
 ## 定位
 
-把 claude-code / codex / dsh 三家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `SubagentRecord` 的统一契约，配套能力声明表达「缺了什么、为什么缺」。设计基线只有一条：**事件形状能归一，数据的来源与完备性归不了一**——所以 `source` / `MissingReason` / 能力五态是承重结构，不是可选严谨。契约名不随厂商版本漂移：厂商侧新增量进 `raw` 与映射表，不改契约面；反过来映射表可以随时改。
+把 cc / codex / dsh 三家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `SubagentRecord` 的统一契约，配套能力声明表达「缺了什么、为什么缺」。设计基线只有一条：**事件形状能归一，数据的来源与完备性归不了一**——所以 `source` / `MissingReason` / 能力五态是承重结构，不是可选严谨。契约名不随厂商版本漂移：厂商侧新增量进 `raw` 与映射表，不改契约面；反过来映射表可以随时改。
 
 ## 形态与交互
 
@@ -80,7 +80,7 @@
 
 | 厂商 | 通道 | 要点 |
 |---|---|---|
-| claude-code | SDK 消息流（`system` / `assistant` / `user` / `result` / `stream_event`）＋ CLI 落盘的子智能体转录 | 转录在 `<configHome>/projects/<项目目录>/<sessionId>/subagents/agent-<agentId>.jsonl`，只供子智能体用量与轮次，`source: 'session-file'`——当前全仓仅剩这一档非 wire 来源 |
+| cc | SDK 消息流（`system` / `assistant` / `user` / `result` / `stream_event`）＋ CLI 落盘的子智能体转录 | 转录在 `<configHome>/projects/<项目目录>/<sessionId>/subagents/agent-<agentId>.jsonl`，只供子智能体用量与轮次，`source: 'session-file'`——当前全仓仅剩这一档非 wire 来源 |
 | codex | `codex app-server`（JSON-RPC/stdio，适配器自己 spawn）通知流＋收尾请求 | 收尾 `thread/list{ancestorThreadId}` / `thread/read` / `thread/items/list`；**不读会话文件、不发 hook**；通知 15 种 kind（14 归一＋`other` 兜底）、条目 13 种 kind |
 | dsh | 会话通知流四种 method | `session.event` / `session.status` / `subagent.started` / `subagent.finished`；**子会话事件在同一条流里**，靠 `params.sessionId` 分辨归属 |
 
@@ -137,4 +137,4 @@
 - FAQ 判例（条目标题原文照抄）：
   - [DeepSeek Harness FAQ](/faq/deepseek-harness)——`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`（`not-projected-by-vendor` 的判例与探针证据）
   - [Codex FAQ](/faq/codex)——思考块恒为 `{"type":"thinking","text":null,"textKind":"none"}`（增量明明带着文本；界面显示「思考文本未采集」，修前显示「厂商有、我们还没接」）；`codex exec --json` 里一条 `item.type === 'reasoning'` 都没有（`show_raw_agent_reasoning=true` 也不管用）；子智能体用量与思考正文：responses 上真机已可得（**不必**换 `wire_api`）；`turn/completed` 只收到**子线程**那一条，主线程仍是 `"status":"inProgress","completedAt":null`
-- 知识文章：[Codex 接入](/protocols/codex)（字段级映射的厂商细节）、[《Claude Code 接入》](/protocols/claude-code)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《进程生命周期》](/protocols/process-lifecycle)、[《三家横向对比》](/protocols/comparison)
+- 知识文章：[Codex 接入](/protocols/codex)（字段级映射的厂商细节）、[《Claude Code 接入》](/protocols/cc)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《进程生命周期》](/protocols/process-lifecycle)、[《三家横向对比》](/protocols/comparison)

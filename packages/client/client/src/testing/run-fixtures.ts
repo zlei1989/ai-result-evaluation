@@ -18,7 +18,7 @@ const FIXTURE_RUBRIC: Rubric = {
 export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
   return {
     id: 'w-1',
-    agentKind: 'claude-code',
+    agentKind: 'cc',
     providerId: 'p-anthropic',
     providerName: 'Anthropic 网关',
     baseUrl: 'https://gw.example.com/anthropic',

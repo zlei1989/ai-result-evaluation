@@ -168,7 +168,7 @@ describe('createRun', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       rows: [
-        { agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     });
@@ -206,7 +206,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       rows: [
-        { agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     });
@@ -224,7 +224,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.caseTitle).toBe('为多协议入站补齐 Anthropic 到 Chat 的转换');
@@ -248,7 +248,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.repoBranch).toBe('feat/x');
@@ -274,7 +274,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.rubric).toEqual(rubric);
@@ -295,13 +295,13 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     const on = createRun({
       caseId: 'c-2',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(off.includeSteps).toBe(false);
@@ -329,7 +329,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.repoBranch).toBeNull();
@@ -342,7 +342,7 @@ describe('createRun', () => {
         caseId: 'c-missing',
         executionMode: 'parallel',
         useAgentJudge: false,
-        rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -360,7 +360,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
-        rows: [{ agentKind: 'claude-code', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -376,7 +376,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
-        rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
       });
     } catch (error) {
       caught = error;
@@ -393,7 +393,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
-        rows: [{ agentKind: 'claude-code', providerId: 'p-openai', modelId: 'gpt-5' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       });
     } catch (error) {
       caught = error;
@@ -422,7 +422,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: true,
-        rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/没有配置默认评分智能体/);
     // 拦下来就等于没创建：不能在磁盘上留一轮「永远跑不了评分」的评测
@@ -456,7 +456,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.useAgentJudge).toBe(false);
@@ -642,13 +642,13 @@ describe('listModelOptions', () => {
    * 不在这里抄第二份档位表——档位域本身另有 `registry.test.ts` 的守卫与下面「思考强度」那两组的用例。
    */
   it('Claude Code 只看到 anthropic 协议的模型', () => {
-    expect(listModelOptions('claude-code')).toEqual([
+    expect(listModelOptions('cc')).toEqual([
       {
         providerId: 'p-anthropic',
         providerName: 'Anthropic 网关',
         modelId: 'claude-opus-4-6',
         source: 'manual',
-        efforts: getProvider('claude-code').metadata.reasoningEfforts,
+        efforts: getProvider('cc').metadata.reasoningEfforts,
       },
     ]);
   });
@@ -692,7 +692,7 @@ describe('listModelOptions', () => {
   it('没有任何匹配协议的供应商时返回空数组（不是全部模型）', () => {
     seedConfig({ providers: [makeProvider()], cases: [makeCase()] });
 
-    expect(listModelOptions('claude-code')).toEqual([]);
+    expect(listModelOptions('cc')).toEqual([]);
   });
 });
 
@@ -700,7 +700,7 @@ describe('listAgentModelOptions', () => {
   it('按 AGENT_KINDS 的顺序给出三个 kind 的元数据与候选池', () => {
     const groups = listAgentModelOptions();
 
-    expect(groups.map((group) => group.agentKind)).toEqual(['claude-code', 'codex', 'dsh']);
+    expect(groups.map((group) => group.agentKind)).toEqual(['cc', 'codex', 'dsh']);
     expect(groups[0]?.protocolTypes).toEqual(['anthropic']);
     expect(groups[1]?.protocolTypes).toEqual(['openai']);
     // dsh 两条 wire 都能收 ⇒ 集合是两个元素（双协议声明的收口）
@@ -716,7 +716,7 @@ describe('listAgentModelOptions', () => {
     const dsh = groups.find((group) => group.agentKind === 'dsh');
 
     expect(dsh?.cancelMidTurn).toBe(false);
-    expect(groups.find((group) => group.agentKind === 'claude-code')?.cancelMidTurn).toBe(true);
+    expect(groups.find((group) => group.agentKind === 'cc')?.cancelMidTurn).toBe(true);
     // dsh 的 usage 以真实探测结果为准，这里只断言它是一个布尔
     expect(typeof dsh?.usage).toBe('boolean');
   });
@@ -799,13 +799,13 @@ describe('思考强度：候选池交集与创建校验', () => {
     });
     seedConfig({ providers: [provider] });
 
-    const cc = listModelOptions('claude-code');
+    const cc = listModelOptions('cc');
     // 变更①的前半：交集照旧，只是前面多了关闭档（上游没声明 off，它不受交集裁剪）
     expect(cc.find((option) => option.modelId === 'three')?.efforts).toEqual([EFFORT_OFF, 'low', 'high', 'max']);
     expect(cc.find((option) => option.modelId === 'narrow')?.efforts).toEqual([EFFORT_OFF, 'low', 'medium', 'xhigh']);
     // 变更①：上游未声明 ⇒ 该家完整档位域（此前断言的是 `undefined`）
     expect(cc.find((option) => option.modelId === 'unknown')?.efforts).toEqual(
-      getProvider('claude-code').metadata.reasoningEfforts,
+      getProvider('cc').metadata.reasoningEfforts,
     );
     expect(cc.find((option) => option.modelId === 'unknown')?.recommendedEffort).toBeUndefined();
 
@@ -826,8 +826,8 @@ describe('思考强度：候选池交集与创建校验', () => {
     const provider = makeAnthropicProvider({ models: [{ id: 'unknown', source: 'manual' }] });
     seedConfig({ providers: [provider] });
 
-    const cc = listModelOptions('claude-code').find((option) => option.modelId === 'unknown');
-    expect(cc?.efforts).toEqual(getProvider('claude-code').metadata.reasoningEfforts);
+    const cc = listModelOptions('cc').find((option) => option.modelId === 'unknown');
+    expect(cc?.efforts).toEqual(getProvider('cc').metadata.reasoningEfforts);
     expect(cc?.efforts?.[0]).toBe(EFFORT_OFF);
   });
 
@@ -837,7 +837,7 @@ describe('思考强度：候选池交集与创建校验', () => {
     });
     seedConfig({ providers: [provider] });
 
-    const cc = listModelOptions('claude-code').find((option) => option.modelId === 'three');
+    const cc = listModelOptions('cc').find((option) => option.modelId === 'three');
     expect(cc?.efforts).toEqual([EFFORT_OFF, 'low', 'high', 'max']);
   });
 
@@ -926,7 +926,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: provider.id, modelId: 'only-low' }],
+      rows: [{ agentKind: 'cc', providerId: provider.id, modelId: 'only-low' }],
     });
     expect(run.rows[0]?.effort).toBeUndefined();
   });
@@ -1039,7 +1039,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'serial' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
     const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
@@ -1091,7 +1091,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'serial' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
     const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), editedCase);
@@ -1140,7 +1140,7 @@ describe('planRunUpdate', () => {
       useAgentJudge: false,
       rows: [
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
-        { id: 'r-2', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       ],
     };
 
@@ -1174,7 +1174,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       rows: [
-        { id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     };
@@ -1216,7 +1216,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
     });
 
     // 编辑路径：同一条候选（同 kind / 供应商 / 模型 / 档位）作为**新行**加进另一轮
@@ -1226,8 +1226,8 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       rows: [
-        { id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
-        { agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' },
+        { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' },
       ],
     };
     const addedRow = planRunUpdate(run, input, resolveRunRows(input.rows, [provider]), target).rows[1]!;
@@ -1250,7 +1250,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-2', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
     const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
@@ -1264,7 +1264,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-404', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-404', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
     expect(() => planRunUpdate(run, input, resolveRunRows(input.rows, providers), target)).toThrowError(/r-404/);
@@ -1283,7 +1283,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       rows: [
-        { id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     };
@@ -1306,7 +1306,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-2',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
     const newCase: RunTargetCase = {
       caseId: 'c-2',
@@ -1336,7 +1336,7 @@ describe('planRunUpdate', () => {
 
   it('轮级状态收敛三条分支（没跑过 ⇒ idle / 跑过又有待跑 ⇒ partial / 全 judged ⇒ done 且保留 finishedAt）', () => {
     const pending = makeRow({ id: 'r-1', status: 'pending', baselineCommit: '', attempts: 0 });
-    const untouchedRows = [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
+    const untouchedRows = [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
     const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, rows: untouchedRows };
     const resolved = resolveRunRows(input.rows, providers);
 
@@ -1382,7 +1382,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
     };
 
     const next = planRunUpdate(run, input, resolveRunRows(input.rows, [provider]), target);
@@ -1393,7 +1393,7 @@ describe('planRunUpdate', () => {
     // 同时换了模型，不影响本格断言。
     const cleared = {
       ...input,
-      rows: [{ id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'm-new' }],
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new' }],
     };
     const afterClear = planRunUpdate(run, cleared, resolveRunRows(cleared.rows, [provider]), target);
     expect(afterClear.rows[0]?.status).toBe('pending');
@@ -1416,8 +1416,8 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       rows: [
-        { id: 'r-1', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'low' },
-        { id: 'r-2', agentKind: 'claude-code' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
+        { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'low' },
+        { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       ],
     };
 
@@ -1439,7 +1439,7 @@ describe('planRunUpdate', () => {
     const bad = (providerId: string, modelId: string) => [{ agentKind: 'codex' as const, providerId, modelId }];
     expect(() => resolveRunRows(bad('p-gone', 'gpt-5'), providers)).toThrowError(/p-gone/);
     expect(() => resolveRunRows(bad('p-openai', 'nope'), providers)).toThrowError(/模型清单/);
-    expect(() => resolveRunRows([{ agentKind: 'claude-code' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers)).toThrowError(/协议/);
+    expect(() => resolveRunRows([{ agentKind: 'cc' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers)).toThrowError(/协议/);
   });
 });
 
@@ -1497,7 +1497,7 @@ describe('updateRun', () => {
       caseId: before.caseId,
       executionMode: 'serial',
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(next.executionMode).toBe('serial');
@@ -1535,7 +1535,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: false,
-        rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -1581,7 +1581,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: false,
-        rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -1610,7 +1610,7 @@ describe('updateRun', () => {
       caseId: 'c-2',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(next.caseTitle).toBe('另一个用例');
@@ -1628,7 +1628,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: true,
-        rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/评分智能体|评分/);
     expect(store.get(before.id)).toEqual(before);

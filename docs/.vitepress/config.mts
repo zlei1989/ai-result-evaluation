@@ -65,7 +65,7 @@ export default defineConfig({
             { text: '事件流', link: '/protocols/event-stream' },
             { text: '进程生命周期', link: '/protocols/process-lifecycle' },
             { text: 'Codex 接入', link: '/protocols/codex' },
-            { text: 'Claude Code 接入', link: '/protocols/claude-code' },
+            { text: 'Claude Code 接入', link: '/protocols/cc' },
             { text: 'DeepSeek Harness 接入', link: '/protocols/dsh' },
             { text: '三家横向对比', link: '/protocols/comparison' },
           ],

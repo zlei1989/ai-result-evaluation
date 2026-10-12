@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 的**技能装入**接缝：`AgentRunInput.skills` → 行配置目录里的那份副本。
+ * cc 的**技能装入**接缝：`AgentRunInput.skills` → 行配置目录里的那份副本。
  *
  * 为什么这几条守卫落在适配器这一层：物化本体在 `core`（整目录复制、穿越拦截、幂等都在那边测），
  * 而这里要钉的是**谁来调、什么时候调、不传时写不写**——三者都是静默失效型：
@@ -48,7 +48,7 @@ async function runClaude(input: Parameters<typeof claudeCodeProvider.run>[0]) {
   return { result, recorder };
 }
 
-describe('claude-code 装入技能', () => {
+describe('cc 装入技能', () => {
   it('不传 skills ⇒ 技能目录一个字节都不写（「只候选执行」由「不传」表达）', async () => {
     await runClaude(createRunInput({ configHome }));
 

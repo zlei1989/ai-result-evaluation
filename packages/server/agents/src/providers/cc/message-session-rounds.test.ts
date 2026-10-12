@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * claude-code 的**每会话自己的轮次号**（`message.ts` 的 `roundTripOfSession`）。
+ * cc 的**每会话自己的轮次号**（`message.ts` 的 `roundTripOfSession`）。
  *
  * 它回答的是「进子会话节点之后时间轴按什么分轮」：主会话仍用 `state.turns` 那一套
  * （`events.ts` 的 `countModelRoundTrip` 只数主循环），而 `parent_tool_use_id` 非空的侧链消息
@@ -60,7 +60,7 @@ function pairOf(draft: MessageDraft): [session: string | null, roundTrip: number
  * 用例会以「主会话也只有 1」的形式自我说服（那是假绿）。
  */
 function feed(normalizer: ClaudeMessageNormalizer, state: TurnState, raw: unknown): MessageDraft[] {
-  projectClaudeMessage(raw, state, { kind: 'claude-code', baseUrl: 'http://gw.test' });
+  projectClaudeMessage(raw, state, { kind: 'cc', baseUrl: 'http://gw.test' });
   return normalizer.normalize(raw, state).messages;
 }
 
@@ -76,7 +76,7 @@ function roundsBySession(normalizer: ClaudeMessageNormalizer, state: TurnState, 
   return out;
 }
 
-describe('claude-code：侧链消息按「每会话自己的」轮次号编号（与读数同一把尺子）', () => {
+describe('cc：侧链消息按「每会话自己的」轮次号编号（与读数同一把尺子）', () => {
   /**
    * 靶子：**两个子会话交错投递**时，各自的号必须各自从 1 起、互不吃对方的号，
    * 也不能吃主会话的号（改前的形状：所有侧链消息一律带主会话当前的号）。

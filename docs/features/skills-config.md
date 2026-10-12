@@ -75,6 +75,6 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 ## 相关链接
 
 - 知识文章：[《设置》](/features/settings)（四个 Tab 的全貌、「技能」的邻居）、[《MCP 配置》](/features/mcp-config)（同为「往智能体里装东西」的配置面，两处的合并语义刻意不同）、[《数据与存储》](/features/storage)（`config.json` 的落盘与原子写口径）、[《评测详情与候选行》](/features/run-detail)（环境抽屉里「已下发的技能」与「本行技能」两格）、[《行执行与日志》](/features/row-execution)、[《事件流》](/protocols/event-stream)（`vendor-system` 的投送语义）、[《Provider 抽象与 run 入口》](/protocols/provider-run)（`run` 入参与 `skillInstall` 观测格）
-- 协议侧：[Claude Code 接入](/protocols/claude-code)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh) 各自的「skills 接法」，[三家横向对比](/protocols/comparison)的 skill 对照表
+- 协议侧：[Claude Code 接入](/protocols/cc)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh) 各自的「skills 接法」，[三家横向对比](/protocols/comparison)的 skill 对照表
 - 规约与排障：[变异验证](/guard/mutation-verification)、[冒烟测试方法论](/guard/smoke-testing)、[故障索引](/faq/)（claude 行为证据缺失那条按现象可搜）
 - 仓库内参考：`packages/server/contracts/src/skill.ts`（准入规则、落盘 / 补丁两种形状、来源分档）、`packages/server/core/src/skill-store.ts`（扫描与停用名单的唯一读法）、`packages/server/core/src/skill-materialize.ts`（整目录复制与路径穿越的两道门）、`packages/server/evaluator/src/row-skill.ts`（三态结论与 `missing` 文案）

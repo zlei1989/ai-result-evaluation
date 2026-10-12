@@ -54,7 +54,7 @@ const TIMEOUT_MS = 600_000;
 
 /** 三家各跑一行：同一份技能根、同一个题面，差异只在 `agentKind` 与它认的协议 */
 const VENDORS: ReadonlyArray<{ kind: AgentKind; protocol: ProtocolType }> = [
-  { kind: 'claude-code', protocol: 'anthropic' },
+  { kind: 'cc', protocol: 'anthropic' },
   { kind: 'codex', protocol: 'openai' },
   { kind: 'dsh', protocol: 'openai' },
 ];
@@ -291,7 +291,7 @@ describe.skipIf(!ENABLED)('真机整行：装不进去 ⇒ 该行失败', () => 
     const testCase = makeCaseFixture({ repoPath: repo.repoPath, commitHash: repo.commit, taskPrompt: '随便说点什么。' });
     seedConfig({ workspaceRoot: home.workspaceRoot, providers: [provider], cases: [testCase], defaultJudge: null });
     const row = makeRowFixture({
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       providerId: provider.id,
       providerName: provider.name,
       baseUrl: provider.baseUrl,

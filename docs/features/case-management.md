@@ -189,6 +189,6 @@
 - [功能总览](/features/) —— 本域目录层：三大模块与数据模型清单
 - [创建评测](/features/run-creation) —— 用例被引用进评测时的快照口径与准备阶段
 - [修改、重跑与删除评测](/features/run-edit-rerun-delete) —— 评测侧换用例时的七格快照重取
-- [Codex 接入](/protocols/codex)、[《Claude Code 接入》](/protocols/claude-code)、[《DeepSeek Harness 接入》](/protocols/dsh) —— 三家候选智能体
+- [Codex 接入](/protocols/codex)、[《Claude Code 接入》](/protocols/cc)、[《DeepSeek Harness 接入》](/protocols/dsh) —— 三家候选智能体
 - [《设置》](/features/settings)、[《数据与存储》](/features/storage) —— 全局默认评分模型（评分标准项的生成与识别只用它）、工作区目录与镜像落点
 - [故障索引](/faq/) —— 远端 git 与评分标准项相关报错的排障入口

@@ -5,7 +5,7 @@
  * 禁止出现目录扫描）。
  * 注意：清单顺序 = `listAgentProviders()` 的顺序 = 前端下拉顺序，必须与 contracts 的 AGENT_KINDS 同序。
  */
-import { claudeCodeProvider } from './providers/claude-code';
+import { claudeCodeProvider } from './providers/cc';
 import { codexProvider } from './providers/codex';
 import { dshProvider } from './providers/dsh';
 import type { AgentKind, AgentProvider } from './types';

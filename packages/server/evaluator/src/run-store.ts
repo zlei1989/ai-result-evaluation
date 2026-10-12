@@ -48,13 +48,14 @@ function workspaceRoot(): string {
 /**
  * 一次扫描的记账（只有 `listRuns` 传它）。
  *
- * `incompatible` = **JSON 读得出来、却过不了 `EvalRunSchema`** 的文件数。评分口径升级后的旧
- * `run.json` 就是这个形状（重构前没有 `rubric` 快照这一格），而 `readSnapshot` 对它们只记一句
+ * `incompatible` = **JSON 读得出来、却过不了 `EvalRunSchema`** 的文件数。旧口径的
+ * `run.json` 就是这个形状（例如缺 `rubric` 快照这一格、`agentKind` 是历史枚举值），
+ * 而 `readSnapshot` 对它们只记一句
  * 每文件的 WARN 就返回 null ⇒ 列表**静默变短**（症状是「评测记录凭空少了几轮」）。
  * 为什么要单独汇总一条：一条 per-file WARN 说明「哪个文件坏了」，却回答不了「列表为什么短」——
  * 排障的人要能一眼把「旧轮次被跳过」与「产物真的没了 / 根目录改错了」分开。
  * 为什么**不把「读不出」（JSON 坏了）也数进来**：那一类的 per-file WARN 里带着文件路径与解析错误，
- * 处置是修文件；汇总句写的是「因评分口径升级不再兼容」，把损坏文件混进这个数会让这句话说假话。
+ * 处置是修文件；汇总句说的是「不再符合当前契约」，把损坏文件混进这个数会让这句话说假话。
  */
 interface ScanTally {
   incompatible: number;
@@ -105,7 +106,7 @@ export function listRuns(): EvalRun[] {
     if (run !== null) runs.push(run);
   }
   if (tally.incompatible > 0) {
-    log.warn('有运行快照因评分口径升级不再兼容，已从列表跳过（列表显示的轮次会比磁盘上的少）', {
+    log.warn('有运行快照不再符合当前契约，已从列表跳过（列表显示的轮次会比磁盘上的少）', {
       root,
       incompatible: tally.incompatible,
     });

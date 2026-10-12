@@ -86,7 +86,7 @@ const openaiOptions: RunModelOption[] = [
 ];
 
 /**
- * 默认的池子：**与注册表元数据一致** —— `codex` 只走 openai；`claude-code` 只走 anthropic；
+ * 默认的池子：**与注册表元数据一致** —— `codex` 只走 openai；`cc` 只走 anthropic；
  * 而 **`dsh` 两条协议都收** ⇒ 它的池子是**并集**。
  * 夹具按最终真值写：把 dsh 写成单协议会让「并集」这件事在界面用例里没有靶子。
  */
@@ -130,7 +130,7 @@ const editRun: EvalRun = {
   rows: [
     {
       id: 'r-1',
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       providerId: 'p-anthropic',
       providerName: 'Anthropic 网关',
       baseUrl: 'https://gw.example.com/anthropic',
@@ -424,7 +424,7 @@ describe('RunCreatePanel', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
       rows: [
-        { agentKind: 'claude-code', modelId: 'claude-opus-4-6' },
+        { agentKind: 'cc', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', modelId: 'gpt-5' },
       ],
     });
@@ -455,7 +455,7 @@ describe('RunCreatePanel', () => {
       // 智能体评分开关的默认值也要进 payload（默认关闭）：`toEqual` 是**精确**比较，
       // 少了这一格说明提交出去的东西与这张表单显示的不是一回事
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
@@ -476,7 +476,7 @@ describe('RunCreatePanel', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
-      rows: [{ agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
@@ -1012,7 +1012,7 @@ describe('RunCreatePanel：思考强度', () => {
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
     const text = strength.closest('.ant-select')?.textContent ?? '';
     expect(text).toContain('未指定');
-    // 不编档位：没声明 `defaultEffort` 的家（claude-code）不许出现「用 <档>」那半句
+    // 不编档位：没声明 `defaultEffort` 的家（cc）不许出现「用 <档>」那半句
     expect(text).not.toMatch(/用 /);
     // 不写缩写：`dsh` 出现在页面上就是本条要拦的那处缺陷（全名走 `AGENT_LABELS`）
     expect(text).not.toContain('dsh');
@@ -1078,7 +1078,7 @@ describe('RunCreatePanel：思考强度', () => {
    * 重开，antd 的浮层仍渲染着上一个模型的旧候选（组件自己的 `options` 已是新的，但浮层 DOM 不刷新），
    * 于是「候选换了一份」这件事在那条路径上读不到。
    * **环境限定（真机实测）**：真浏览器里浮层**会**跟着刷新 —— 把智能体从
-   * claude-code（6 项）换成 codex（9 项）、重选模型后重开下拉，读到的是 codex 的那 9 项；换回来又是 6 项
+   * cc（6 项）换成 codex（9 项）、重选模型后重开下拉，读到的是 codex 的那 9 项；换回来又是 6 项
    * （换智能体会重置模型，走的是「同一实例的 `options` 从一份换成另一份」这条路径）。
    * ⇒ 上面那句是 **jsdom 的产物、不是产品缺陷**。两条用例仍然各自挂载（跨环境都稳的写法才留得住），
    * 但别把这条注释读成「真机上也有这个限制」。
@@ -1121,7 +1121,7 @@ describe('RunCreatePanel：思考强度', () => {
    * （6 项、含只有它才有的 `medium`）——这才叫「本机形态」。
    */
   it('真下拉（本机形态：上游没声明 supportedEfforts）：第一项是 off，候选是该家完整档位域', () => {
-    // 该家（claude-code）的完整档位域，首项是关闭档——与注册表元数据同序
+    // 该家（cc）的完整档位域，首项是关闭档——与注册表元数据同序
     const fullDomain = [EFFORT_OFF, 'low', 'medium', 'high', 'xhigh', 'max'];
     renderPanel({
       modelOptionsFor: () => [
@@ -1209,7 +1209,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
       caseId: 'c-1',
       executionMode: 'parallel',
-      rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
@@ -1397,7 +1397,7 @@ describe('invalidatedRows', () => {
   function rowOf(overrides: Partial<EvalRow> = {}): EvalRow {
     return {
       id: 'r-1',
-      agentKind: 'claude-code',
+      agentKind: 'cc',
       providerId: 'p-anthropic',
       providerName: 'Anthropic 网关',
       baseUrl: 'https://gw.example.com/anthropic',
@@ -1469,7 +1469,7 @@ describe('invalidatedRows', () => {
       caseId: runWithHigh.caseId,
       executionMode: runWithHigh.executionMode,
       useAgentJudge: runWithHigh.useAgentJudge,
-      rows: [{ id: 'r-1', agentKind: 'claude-code', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
+      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
     });
 
     expect(invalidatedRows(runWithHigh, keep('low')).map((row) => row.id)).toEqual(['r-1']);
@@ -1487,7 +1487,7 @@ describe('invalidatedRows', () => {
  * 覆盖到夹具给的那两家，而「没选智能体」这一档在组件上要先造一个空智能体的行才够得着。
  */
 describe('effortPlaceholder', () => {
-  const declared: (agentKind: 'claude-code' | 'codex' | 'dsh') => string | undefined = (agentKind) =>
+  const declared: (agentKind: 'cc' | 'codex' | 'dsh') => string | undefined = (agentKind) =>
     agentKind === 'dsh' ? 'high' : undefined;
 
   it('这一家声明了缺省档 ⇒ 写全名与该档（**不是** kind 缩写）', () => {
@@ -1497,9 +1497,9 @@ describe('effortPlaceholder', () => {
     expect(text).not.toContain('dsh');
   });
 
-  it('这一家没声明缺省档（claude-code / codex）⇒ 只说「未指定」，不编一个档', () => {
+  it('这一家没声明缺省档（cc / codex）⇒ 只说「未指定」，不编一个档', () => {
     // 编一个「沿用厂商默认档」是契约明禁的误读：我们没作出那个承诺
-    expect(effortPlaceholder('claude-code', declared)).toBe('未指定');
+    expect(effortPlaceholder('cc', declared)).toBe('未指定');
     expect(effortPlaceholder('codex', declared)).toBe('未指定');
   });
 

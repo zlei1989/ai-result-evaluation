@@ -10,17 +10,21 @@ import { AGENT_KINDS, AGENT_LABELS, AgentKindSchema } from './agent';
 
 describe('智能体真源', () => {
   it('恰好三家且顺序固定', () => {
-    expect([...AGENT_KINDS]).toEqual(['claude-code', 'codex', 'dsh']);
+    expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh']);
   });
 
   it('每个 id 都有中文标签', () => {
-    expect(AGENT_LABELS['claude-code']).toBe('Claude Code');
+    expect(AGENT_LABELS['cc']).toBe('Claude Code');
     expect(AGENT_LABELS.codex).toBe('Codex');
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
   });
 
   it('schema 只认这三个 id', () => {
+    expect(AgentKindSchema.safeParse('cc').success).toBe(true);
     expect(AgentKindSchema.safeParse('dsh').success).toBe(true);
     expect(AgentKindSchema.safeParse('gemini').success).toBe(false);
+    // `claude-code` 是这一格的历史字符串形态：闭集不收历史值，读侧也不做归一
+    // （放它进来等于同一格两个答案：旧 run.json 里是它、新写的配置里是 cc）
+    expect(AgentKindSchema.safeParse('claude-code').success).toBe(false);
   });
 });

@@ -126,7 +126,7 @@ export interface TurnState {
   seen: Set<string>;
   /**
    * 已累计的轮次：**一次模型 API 往返算一次**（用户口径）。三家各自在这个字段上
-   * 累加/覆盖自己的口径（claude-code 用「见过的 `assistant.message.id` 数」覆盖；codex 数**模型答复
+   * 累加/覆盖自己的口径（cc 用「见过的 `assistant.message.id` 数」覆盖；codex 数**模型答复
    * 条目**（`item.type === 'agent_message'`——推理与工具条目对这把尺子透明）；
    * dsh 数 `step`），骨架只负责把它交给结果与 `usage` 事件。
    * **这个 `0` 只表示「已观察到的轮次累计」，不是「采到了 0 轮」**：适配器不要把 state.turns
@@ -167,7 +167,7 @@ export interface TurnState {
    */
   timing: TimingSpan | null;
   /**
-   * claude-code 的**跑动期用量估算**：`message.id` → 那条 API 轮次的用量。
+   * cc 的**跑动期用量估算**：`message.id` → 那条 API 轮次的用量。
    *
    * 为什么需要它：SDK 在流式响应里按**完成的内容块**逐条发 assistant 消息，若干条共享
    * `message.id`、各自带一份尚未最终的 `message.usage`（`sdk.d.ts`：message.usage is not final），
@@ -178,12 +178,12 @@ export interface TurnState {
   usageByMessageId: Map<string, UsageTokens>;
   /**
    * **轮次计数键**（一次模型 API 往返一个键，按集合去重后 `size` 就是轮次）。各家用自己能拿到的
-   * 那个键：claude-code 用主循环的 `assistant.message.id`（一条响应会按内容块多条到达、共享同一个
+   * 那个键：cc 用主循环的 `assistant.message.id`（一条响应会按内容块多条到达、共享同一个
    * id）；codex 用**模型答复条目**（`item.type === 'agent_message'`）的 `item.id`
    * （`item.started`/`updated`/`completed` 共享同一个 id；推理与工具条目不算——它们对这把尺子透明，
    * 见 `providers/codex/events.ts` 的 `TURN_ITEM_TYPES`）。
    * 为什么与 `usageByMessageId` 分开、且**不用** `state.turns` 自增：那张表只收「三项用量齐全」
-   * 的消息，而轮次必须在采不到用量时照样涨——实测那一轮 claude-code 的用量几乎采不到，
+   * 的消息，而轮次必须在采不到用量时照样涨——实测那一轮 cc 的用量几乎采不到，
    * 「轮次被 token 拖住」的根因正在这里。
    */
   turnKeys: Set<string>;
@@ -441,12 +441,12 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    * 初值 `null` = 还没有任何一家交过这一格；骨架**只搬运、不累加**（合计由各家自己算好）。
    */
   let subagentTurns: number | null = null;
-  /** 估算计量（claude-code 的跑动期估算）：只进事件，绝不进结果 */
+  /** 估算计量（cc 的跑动期估算）：只进事件，绝不进结果 */
   let estimatedTokens: AgentRunResult['tokens'] = null;
   let turns: number | null = null;
   /**
    * 上一次**发出去**的那一对（轮次 / 计量）：同一条消息的重复快照不该刷屏。
-   * 去重放在骨架里而不是各家投影里（原来 claude-code 的 `isSameUsage` 就在做这件事）：
+   * 去重放在骨架里而不是各家投影里（原来 cc 的 `isSameUsage` 就在做这件事）：
    * 三家的「什么时候值得发一条」必须是同一条规则，否则界面上的数会因家而异。
    */
   let emittedUsage: {
@@ -573,7 +573,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
           tokens = projection.tokens;
           /**
            * 权威值一到，估算**作废**。两者都是「到目前为止的累计」
-           * （claude-code 的估算按 `message.id` 归并求和，权威值只在收尾的 `result` 上），
+           * （cc 的估算按 `message.id` 归并求和，权威值只在收尾的 `result` 上），
            * 而估算的来源被 SDK 明写为 not final ⇒ 留着它，收尾那条 `usage` 事件就还会显示一个
            * 偏小的假数，正是本仓最忌讳的那种「看起来采到了」。
            */
@@ -583,7 +583,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       /**
        * 发射门槛是**轮次**，不是「tokens 与轮次同时在」（用户口径）。
        *
-       * 改之前：只有本条投影**同时**给出 tokens 与 turns 才发 `usage`。后果实测过——claude-code
+       * 改之前：只有本条投影**同时**给出 tokens 与 turns 才发 `usage`。后果实测过——cc
        * 的 assistant 消息常常不带完整用量，于是那一轮 60 次模型往返、整轮只发得出一条
        * `usage`（`turns: 1, tokens: {0,0,0}`），界面永远停在「轮次 1」。
        *
@@ -925,7 +925,7 @@ const CLI_STDERR_BOILERPLATE: readonly RegExp[] = [];
  * 三条都不成立（正文为空、或只剩一句状态行）⇒ 保留流内原因，并把退出码写成补充。
  *
  * 判据③是**机械判据**：它只问「剥完样板还剩不剩正文」，不看流内错误缺不缺、也不分厂商
- * （改成「只在流内错误缺失时才生效」会让 claude-code / dsh 的失败归因静默改变）。
+ * （改成「只在流内错误缺失时才生效」会让 cc / dsh 的失败归因静默改变）。
  */
 function exitErrorAddsDetail(classified: AgentFailure, cause: unknown): boolean {
   if (classified.code === 'AUTH_FAILED' || classified.code === 'RATE_LIMITED') return true;

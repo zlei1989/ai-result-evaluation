@@ -63,4 +63,4 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不�
 
 - 活文档：[DeepSeek Harness FAQ](/faq/deepseek-harness)——含「声明 streamingDelta=yes 但没有 delta 消息」条目（文档说的层 ≠ 能拿到的层）
 - 仓库内参考：`packages/server/agents/README.md`——§4.4 能力查询的唯一入口、§5 各家差异、§10 术语对照（R33 在表里）
-- 知识文章：[《Codex 接入》](/protocols/codex)、[《Claude Code 接入》](/protocols/claude-code)（对照面）、《Provider 抽象与 run 入口》（protocolTypes 是 metadata 一格）、[《消息规范》](/protocols/message-spec)（roundTrip=step 号）、《事件流》《进程生命周期》（interrupt 空实现与 5 秒宽限）、《三家横向对比》《评分》（D2b 归评分侧）、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）
+- 知识文章：[《Codex 接入》](/protocols/codex)、[《Claude Code 接入》](/protocols/cc)（对照面）、《Provider 抽象与 run 入口》（protocolTypes 是 metadata 一格）、[《消息规范》](/protocols/message-spec)（roundTrip=step 号）、《事件流》《进程生命周期》（interrupt 空实现与 5 秒宽限）、《三家横向对比》《评分》（D2b 归评分侧）、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）

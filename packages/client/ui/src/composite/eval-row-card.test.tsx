@@ -21,7 +21,7 @@ import { installResizeObserverStub } from '../testing/resize-observer';
 
 const row: EvalRow = {
   id: 'w-1',
-  agentKind: 'claude-code',
+  agentKind: 'cc',
   providerId: 'p-anthropic',
   providerName: 'Anthropic 网关',
   baseUrl: 'https://gw.example.com/anthropic',
