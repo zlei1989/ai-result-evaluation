@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * `ask-user` 族的问答卡片：时间轴上**唯一「会等人」的东西**，而本仓恰恰是无人值守
- * （`approvalPolicy: 'never'`，没有应答面）。故它的第一职责不是好看，
+ * `ask-user` 族的问答卡片：时间轴上**唯一「会等人」的东西**，而应答面是**按轮显式开启**的
+ * （`EvalRun.askUser`；没开的轮次里模型连提问工具都拿不到）。故它的第一职责不是好看，
  * 而是**让「卡在等人回答」一眼可见**。
  *
  * 七条口径（每条都对应一次真实的误读）：
@@ -13,9 +13,9 @@
  *   2. **答案按 `label` 匹配回填**：`selected` 装的是选项标签，不是 id、也不是下标；
  *   3. **选项里没有的标签原样显示**（多一个 `Tag`）：配不上是事实，
  *      藏起来就成了「答的和问的对不上时界面上看不出来」；
- *   4. **`custom` 的语义随 `multiSelect` 变**：多选是**补充**，单选是**覆盖**；
- *   5. **只读复盘视图**：不提供任何「回答」按钮（本仓没有应答 handler，
- *      `approvalPolicy: 'never'`），没有应答面就没有可用的输入框；
+ *   4. **`custom` 与 `selected` 的关系随 `multiSelect` 分档**：多选是**并存**（两半都画），单选是**覆盖**（`custom` 就是全部答案）；
+ *   5. **只读复盘视图**：不提供任何「回答」按钮——应答面在**弹层**（宿主 + 弹层组件），
+ *      卡片只回答「当时问了什么、最后怎么收场的」；
  *   6. **不重排选项、不美化截断 `header`**：`recommended` 的置顶是厂商给的顺序，UI 只加一个 `Tag`；
  *      截断会改事实（与「工具名原样透传」同一口径）；
  *   7. `secret: true` 的遮罩**是显示口径、不是安全边界**（原文仍在结果与事件台账里）。
@@ -55,8 +55,12 @@ function parseAt(iso: string): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** 取第一行（`header` 为空时的回落标题）；整段只有空白时原样返回 */
-function firstLine(text: string): string {
+/**
+ * 取第一行（`header` 为空时的回落标题）；整段只有空白时原样返回。
+ * **应答弹层也用它**：标题取 `header`、为空退回 `prompt` 第一行这条口径两边必须逐字一致，
+ * 否则同一问在问答两侧显示成两个不同的名字。
+ */
+export function firstLine(text: string): string {
   const first = text.split('\n')[0]?.trim() ?? '';
   return first === '' ? text.trim() : first;
 }

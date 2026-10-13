@@ -32,9 +32,10 @@
 | 重跑 | 两个出口：单行执行（只跑当前候选，该行事件清空从头来）与重新评分（只重跑评分那一步，事件追加不清空） |
 | 详情与候选行 | 顶部信息行 + 串行进度 + 候选卡片；三个抽屉——执行日志（流式）、变更详情（逐文件吸顶、惰性加载）、评分详情（逐组判定表） |
 | 行执行与日志 | 每候选行独立工作区与独立配置目录（串行也独立）；事件日志是执行的唯一真相源，SSE 由它扇出、刷新不丢事件；失败隔离、不限时间 |
+| 提问与应答 | 模型问到人时，那一问进**挂起表**（进程内内存、唯一真相源），人从弹层答；三个端点——待答快照、信号式 SSE（只推「变了，重读」）、应答 POST（按 `askId` 幂等：首个生效 / 后到 409 / 未知 404）；服务重启即表为空，旧提问无从应答 |
 | 评分 | 两条通路——纯文本 API 与智能体评分，每一次评分只用一条；尺子是快照进轮次的评分标准项（总分 = 达成项权重之和），评分者 = 设置页全局默认 |
 
-详情层文章：[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)、[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)。候选智能体的接入细节见协议规范域：[Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh)。
+详情层文章：[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)、[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[提问与应答](/features/ask-user-answer)、[评分](/features/judging)。候选智能体的接入细节见协议规范域：[Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh)。
 
 ## 设置
 
@@ -75,6 +76,6 @@
 
 - [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh)、[Pi Coding Agent 接入](/protocols/pi) —— 协议规范域四家厂商文章
 - 本域已落地详情层文章：[用例管理](/features/case-management)、[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)
-- 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)、[设置](/features/settings)、[MCP 配置](/features/mcp-config)、[技能配置](/features/skills-config)、[数据与存储](/features/storage)
+- 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[提问与应答](/features/ask-user-answer)、[评分](/features/judging)、[设置](/features/settings)、[MCP 配置](/features/mcp-config)、[技能配置](/features/skills-config)、[数据与存储](/features/storage)
 - 协议层背景：[Provider 抽象与 run 入口](/protocols/provider-run)、[消息规范](/protocols/message-spec)、[事件流](/protocols/event-stream) ——本页消费的智能体协议、消息与事件口径
 - [知识库地图](/) —— 五域导航与 FAQ 台账入口

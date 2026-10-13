@@ -13,8 +13,11 @@ import {
   type AppServerSpawn,
 } from './client';
 
-/** 假子进程：只实现 `AppServerChild` 那几个成员，够测协议行为与回收行为 */
-class FakeChild implements AppServerChild {
+/**
+ * 假子进程：只实现 `AppServerChild` 那几个成员，够测协议行为与回收行为。
+ * 导出给 `../index.test.ts` 的那条**接线**用例（它要拿真客户端 + 假子进程验「回帧真的写进 stdin」）。
+ */
+export class FakeChild implements AppServerChild {
   readonly written: string[] = [];
   killed = false;
   /** 假 pid：回收时按它走「整棵树」那条路（真实进程树由 `process-tree.test.ts` 与真机探针覆盖） */
@@ -131,11 +134,76 @@ describe('createAppServerClient —— 帧与配对', () => {
     await expect(pending).resolves.toBeNull();
   });
 
-  it('服务端主动请求（带 id 但不在待收表）单独归类，且客户端不应答', async () => {
+  it('服务端主动请求（带 id 但不在待收表）单独归类，且没挂应答者时不应答', async () => {
     const { client, child, frames } = harness();
     child.emit({ jsonrpc: '2.0', id: 99, method: 'item/commandExecution/requestApproval', params: { threadId: 't' } });
     expect(client.serverRequests().map((one) => one.method)).toEqual(['item/commandExecution/requestApproval']);
     expect(frames()).toHaveLength(0);
+  });
+
+  /**
+   * 应答者那条通道的三条：什么进应答者、什么写回 stdin、什么**不写**。
+   *
+   * `null` 与「回一帧空结果」是两件事，正是审批类与问答类的分界线：前者是「本类请求本仓不应答」
+   * （评测非交互，回帧等于替用户批准），后者是「应答了但没有人给答案」。
+   */
+  it('服务端主动请求 → 应答者拿得到原始帧；给结果就写回同一 id 的结果帧', async () => {
+    const child = new FakeChild();
+    const spawnFn: AppServerSpawn = vi.fn(() => child);
+    const seen: Array<{ id: number | string; method: string; params: unknown }> = [];
+    const client = createAppServerClient({
+      binary: 'C:/fake/codex.exe',
+      env: {},
+      spawnFn,
+      onServerRequest: (request) => {
+        seen.push(request);
+        return Promise.resolve({ answers: { q1: { answers: ['选项 A'] } } });
+      },
+    });
+    child.emit({ jsonrpc: '2.0', id: 7, method: 'item/tool/requestUserInput', params: { itemId: 'call_1' } });
+    await vi.waitFor(() => {
+      expect(child.written).toHaveLength(1);
+    });
+    expect(seen).toEqual([{ id: 7, method: 'item/tool/requestUserInput', params: { itemId: 'call_1' } }]);
+    expect(JSON.parse(child.written[0] ?? '')).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      result: { answers: { q1: { answers: ['选项 A'] } } },
+    });
+    // 归类照旧（服务端请求那一格不因应答者而变）
+    expect(client.serverRequests().map((one) => one.id)).toEqual([7]);
+  });
+
+  it('应答者返回 `null` ⇒ 一个字都不写回（审批类走这一支）', async () => {
+    const child = new FakeChild();
+    const spawnFn: AppServerSpawn = vi.fn(() => child);
+    const client = createAppServerClient({
+      binary: 'C:/fake/codex.exe',
+      env: {},
+      spawnFn,
+      onServerRequest: () => Promise.resolve(null),
+    });
+    child.emit({ jsonrpc: '2.0', id: 8, method: 'item/commandExecution/requestApproval', params: {} });
+    // 让应答者的微任务跑完再判「没写」：直接断言会与「还没轮到它」混淆
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(child.written).toHaveLength(0);
+    expect(client.serverRequests().map((one) => one.method)).toEqual(['item/commandExecution/requestApproval']);
+  });
+
+  it('应答者抛错 ⇒ 回一帧空结果（厂商在等这一帧，让它等下去比回空的更坏）', async () => {
+    const child = new FakeChild();
+    const spawnFn: AppServerSpawn = vi.fn(() => child);
+    const client = createAppServerClient({
+      binary: 'C:/fake/codex.exe',
+      env: {},
+      spawnFn,
+      onServerRequest: () => Promise.reject(new Error('端口炸了')),
+    });
+    child.emit({ jsonrpc: '2.0', id: 9, method: 'item/tool/requestUserInput', params: { itemId: 'call_1' } });
+    await vi.waitFor(() => {
+      expect(child.written).toHaveLength(1);
+    });
+    expect(JSON.parse(child.written[0] ?? '')).toEqual({ jsonrpc: '2.0', id: 9, result: {} });
   });
 
   it('一次投递多行时不丢帧（粘包）', async () => {

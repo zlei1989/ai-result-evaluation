@@ -23,6 +23,11 @@
 - [子智能体用量与思考正文：responses 上真机已可得（**不必**换 `wire_api`）](/faq/codex#子智能体用量与思考正文-responses-上真机已可得-不必换-wire-api)
 - [`Error: ENOENT: no such file or directory, open '…/probe/dumps/v6/codex-chat-wire-appserver-live-responses-subagent.jsonl'`（干净检出上「真机抓包重放」那条守卫必红）](/faq/codex#error-enoent-no-such-file-or-directory-open-probe-dumps-v6-codex-chat-wire-appserver-live-responses-subagent-jsonl-干净检出上「真机抓包重放」那条守卫必红)
 - [`当前会话没有暴露 Playwright MCP 工具或资源`（注入成功、`mcpServer/startupStatus` 也报了 `ready`，模型却从第一轮起就断言没有这台工具）](/faq/codex#当前会话没有暴露-playwright-mcp-工具或资源-注入成功、mcpserver-startupstatus-也报了-ready-模型却从第一轮起就断言没有这台工具)
+- [`codex app-server --listen unix://<path>` 连得上、但一行 JSON-RPC 都不回](/faq/codex#codex-app-server-listen-unix-path-连得上、但一行-json-rpc-都不回)
+- [`request_user_input is unavailable in Default mode`（模型调了提问工具，我们一条服务端请求都收不到）](/faq/codex#request-user-input-is-unavailable-in-default-mode-模型调了提问工具-我们一条服务端请求都收不到)
+- [提问请求到了不回帧 ⇒ 厂商**不会**自己收场（那一轮一直挂着）](/faq/codex#提问请求到了不回帧-⇒-厂商不会自己收场-那一轮一直挂着)
+- [两臂产物指纹恒红：未识别通知只留方法名、厂商通知里又带本次运行的线程 id](/faq/codex#两臂产物指纹恒红-未识别通知只留方法名、厂商通知里又带本次运行的线程-id)
+- [执行日志里没有「向用户提问」卡片：codex 那一条只剩一句 `这一问的答案（收场方式：answered）：`](/faq/codex#执行日志里没有「向用户提问」卡片-codex-那一条只剩一句-这一问的答案-收场方式-answered)
 
 ### Claude Code
 
@@ -33,11 +38,15 @@
 - [Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-rows-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
 - [执行日志里没有思考、原始输出里有（`messages.jsonl` 折叠后只剩 `text`；原文 `[{"type":"thinking","thinking":"…","signature":""}]`）](/faq/claude-code#执行日志里没有思考、原始输出里有-messages-jsonl-折叠后只剩-text-原文-type-thinking-thinking-signature)
 - [`AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这一行在 `running` 上挂了 6 分钟才失败）](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-api-error-connection-refused-—-a-firewall-or-proxy-may-be-blocking-it-econnrefused-这一行在-running-上挂了-6-分钟才失败)
+- [`No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.`（没有批准面时，提问工具根本不提供给模型）](/faq/claude-code#no-such-tool-available-askuserquestion-askuserquestion-is-disabled-for-this-session-in-subagents-as-well-as-here-没有批准面时-提问工具根本不提供给模型)
+- [`[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted.`（全权档并没有遮蔽提问工具）](/faq/claude-code#claude-sdk-can-use-tool-shadowed-warning-canusetool-will-not-be-invoked-permissionmode-bypasspermissions-auto-approves-every-tool-call-except-explicit-deny-rules-before-the-callback-is-consulted-全权档并没有遮蔽提问工具)
+- [`updatedInput.response` 一给就把选项答案整条盖掉：`The user responded: …`（自由输入该走选项值那一格）](/faq/claude-code#updatedinput-response-一给就把选项答案整条盖掉-the-user-responded-自由输入该走选项值那一格)
 
 ### DeepSeek Harness
 
 - [`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`](/faq/deepseek-harness#dsh-声明-streamingdelta-yes-但-plain-reply-场景里没有任何-delta-消息)
 - [`AssertionError: expected false to be true // Object.is equality`（`providers/dsh/index.test.ts` 的 overlay 绝对路径那条）＋仓库根长出 `D:\runs\run-1\rows\r-1\workspace`](/faq/deepseek-harness#assertionerror-expected-false-to-be-true-object-is-equality-providers-dsh-index-test-ts-的-overlay-绝对路径那条-仓库根长出-d-runs-run-1-rows-r-1-workspace)
+- [同一条脚本两次运行的行级事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）](/faq/deepseek-harness#同一条脚本两次运行的行级事件条数差一条-24-24-25-25-收尾那条-usage-与-run-落定抢跑)
 - [`原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）](/faq/deepseek-harness#原始输出-38164-行-但执行日志是空的-dsh-行-厂商会话日志-201-条事件-我们只收到前-13-条)
 
 ### Pi Coding Agent

@@ -127,6 +127,7 @@ const editRun: EvalRun = {
   // 故意与「默认串行」不同：取值来源不对时这一条会红
   executionMode: 'parallel',
   useAgentJudge: false,
+  askUser: false,
   rows: [
     {
       id: 'r-1',
@@ -452,9 +453,10 @@ describe('RunCreatePanel', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toEqual({
       caseId: 'c-1',
       executionMode: 'serial',
-      // 智能体评分开关的默认值也要进 payload（默认关闭）：`toEqual` 是**精确**比较，
-      // 少了这一格说明提交出去的东西与这张表单显示的不是一回事
+      // 两个开关的默认值也要进 payload（都默认关闭）：`toEqual` 是**精确**比较，
+      // 少了哪一格都说明提交出去的东西与这张表单显示的不是一回事
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
@@ -476,6 +478,7 @@ describe('RunCreatePanel', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
@@ -857,6 +860,30 @@ describe('RunCreatePanel', () => {
       expect(onSubmit).toHaveBeenCalled();
     });
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ useAgentJudge: true });
+  });
+
+  /**
+   * 「允许智能体向我提问」开关（应答面的**开启闸门**）。两条口径与上面那条逐字同源：
+   *   1. **默认关闭**——开着它的一轮会为等人停下（一问最多等十分钟），不该是默认行为，
+   *      而「不问就不动」那条零回归边界正建立在「没开就不传回调」上；
+   *   2. 打开它就必须把 `askUser` 送进 payload：`RunCreateSchema` 有这一格（zod 默认 strip），
+   *      界面不发它 = 服务端收到的是缺省值 `false`，而这一轮看起来「开了」，跑起来却没有应答面。
+   */
+  it('「允许智能体向我提问」默认关闭，提交时进 payload', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ onSubmit });
+
+    expect(screen.getByRole('switch', { name: '允许智能体向我提问' })).not.toBeChecked();
+
+    pickOption('用例', '多协议入站转换 · gateway · 71e6280');
+    pickOption('模型', /claude-opus-4-6/);
+    fireEvent.click(screen.getByRole('switch', { name: '允许智能体向我提问' }));
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalled();
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ askUser: true });
   });
 
   /**
@@ -1429,6 +1456,7 @@ describe('invalidatedRows', () => {
       caseId: run.caseId,
       executionMode: run.executionMode,
       useAgentJudge: run.useAgentJudge,
+      askUser: run.askUser,
       rows: rows.map((row) => ({ id: row.id, agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId })),
       ...overrides,
     };
@@ -1469,6 +1497,7 @@ describe('invalidatedRows', () => {
       caseId: runWithHigh.caseId,
       executionMode: runWithHigh.executionMode,
       useAgentJudge: runWithHigh.useAgentJudge,
+      askUser: runWithHigh.askUser,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
     });
 

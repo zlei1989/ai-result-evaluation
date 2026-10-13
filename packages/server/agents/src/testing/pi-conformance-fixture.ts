@@ -25,7 +25,7 @@ import { removeTreeWithRetry } from './cleanup';
 import { piProvider } from '../providers/pi';
 import { PI_AI_PACKAGE_NAME, PI_PACKAGE_NAME } from '../providers/pi/sdk';
 import { RELEASE_GRACE_MS } from '../release';
-import type { AgentPermission, AgentRunResult } from '../types';
+import type { AgentPermission, AgentRunInput, AgentRunResult } from '../types';
 import { piRequestSkills, piRequestToolDeclaration, piRequestToolNames, type PiRequestSkill, type PiRequestToolDeclaration } from '../providers/pi/observer';
 import { PI_STRUCTURED_OUTPUT_TOOL } from '../providers/pi/structured-output';
 import type { ConformanceProduct } from '../providers/conformance/kit';
@@ -297,6 +297,13 @@ export interface PiConformanceOptions {
   cwdSetup?: (cwd: string) => void;
   /** 权限档（缺省 `full`，与 `createRunInput` 一致）。只读档的用例用它判出站工具表 */
   permission?: AgentPermission;
+  /**
+   * 提问回调：给不给它决定这一轮有没有应答面（不给 ⇒ 适配器一个钩子都不挂、一个工具都不注册）。
+   * 提问应答场景要拿同一行跑两次（带 / 不带），差别只在这一格。
+   *
+   * 提问工具只装在全权限档，故只读档 + 这一格非空 = 工具面里没有它（这条也是判据）。
+   */
+  onAskUser?: AgentRunInput['onAskUser'];
 }
 
 /**
@@ -335,6 +342,7 @@ export async function runPiConformanceRow(options: PiConformanceOptions): Promis
       ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
       ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
       ...(options.permission === undefined ? {} : { permission: options.permission }),
+      ...(options.onAskUser === undefined ? {} : { onAskUser: options.onAskUser }),
     });
     const last = gateway.requests.at(-1)?.body;
     const requestSkills = last === undefined ? [] : piRequestSkills(last, 'anthropic-messages');

@@ -31,7 +31,7 @@
 
 - `messageId`：`run-<kind>:<seq>`（如 `run-codex:12`），供日志与排障、客户端兜底去重；**不含真实 run id、跨运行重号**——别当全局唯一键，去重折叠按 `mergeKey`。
 - `vendorId` / `role`：厂商侧 id 与角色。
-- `source`：四值 `'wire'` / `'hook'` / `'session-file'` / `'aggregate'`；**今天真正产出的只有 `wire` 与 `session-file` 两值**。
+- `source`：四值 `'wire'` / `'hook'` / `'session-file'` / `'aggregate'`；**今天真正产出的有三值**——`wire`（厂商通道）、`hook`（我们自己那一侧的通道：dsh 的流式增量旁路，以及编排层落的那条提问答复）、`session-file`（pi 的子任务转写）。`'aggregate'` 今天没有产出方。
 - `roundTrip`：正整数必填，四家都合成（方法不同 ⇒ 跨家比较前必须核对口径）。
 - `turn` / `step`：仅 dsh 有值（`data.turn` 是**用户轮号**、`data.step` 是步骤号），另两家恒 `null`。
 - `parentCallId` / `subagentId`：子会话归属；`subagentId` 是厂商原生 id（claude 任务 id / codex 线程 id / dsh 子会话 id，dsh 三级兜底 `subagentId`→`agentId`→`childSessionId`）。
@@ -49,9 +49,9 @@
 - `tool-call`：`family` 十族之一或 `null`；`payload` 族载荷只有 `task` / `ask-user` 两族；**`summary`**（可选）是适配器在**唯一构造点** `toolCallBlockDraft` 里算好的**摘要主体**——**冒号后面那一段**（`Check surefire report summaries` / `src/index.ts:10-120` / `2 步`），**不带 `调用工具 <名>：` 前缀**。前缀与整句另有出口：`toolCallSummary(name, input)` 给**活动行**（它只有一行，名字必须在句子里）、`toolCallHint(name, input)` 给**工具行**与这一格（工具行把工具名渲染成一个独立元素，带前缀就是同一件事说两遍）；`toolCallTitle` 单独给前缀。**词表真源仍是 `activity.ts`**，浏览器因此不必把「描述优先 / 每族拼法 / 截断尺子」再实现一遍（`ui` / `client` 按分层表不许 import `agents`）。它与 `log.summary` 由**同一份词表**产出（不是两份）；这一格缺席（老记录）时工具行回落 `input.description`、再回落参数原文首行。**两格都可缺**——老记录里没有它们，读侧把「键不存在」与「显式 `null`」当同一件事。
 
   **取参口径（用户裁定：description 优先，没有就按每个簇自己拼）**，顺序不可换：① 计划类入参（`todos` / `plan` / `steps`）先说步数——它的值是一整张清单，「几步」才是使用者要的；② **`input.description` 优先**（只有这一个键名算数；`reason` / `justification` 是审批语义、`explanation` 归计划卡片那一格，都不进摘要），有目标（`command` / `file_path` / `pattern` / `url`）时拼成 `描述（目标）`——描述说明「为什么」、目标说明「哪一个」，**只留描述会让同一行里两次 `exec_command` 长得一模一样**；③ 没有描述**按族拼**（判据是族不是家：同一个工具在四家的名字不同，族才是跨家一致的那个轴）：读文件 `路径:起-止`、改文件 路径或 `changes[].path` 清单、搜内容 `模式（范围）`、列文件 `pattern`、跑命令 命令原文、联网 `query`/`url`、派子任务 `prompt`、提问 第一个问题正文；④ 只剩「本仓不认识的工具」（`family === null`）才走通用优先键 → `changes[].path` → 紧凑 JSON → 原样。守卫：`activity.test.ts`（逐族文案 + 描述优先级）、`tool-family.test.ts`（别名逐字）、`activity-conformance.test.ts`（跨家同一句）、`message.test.ts`（块上那一格 = `toolCallHint`）。
-- `tool-result`：`structured` 是厂商结构化结果原文透传；`truncation` 三态 `none` / `truncated` / `unknown`，正文超长按 `TOOL_RESULT_MAX_CHARS = 20_000` 截断。
+- `tool-result`：`structured` 是厂商结构化结果原文透传；`truncation` 三态 `none` / `truncated` / `unknown`，正文超长按 `TOOL_RESULT_MAX_CHARS = 20_000` 截断。**`ask-user` 一族横跨两个内容块**：问题在 `tool-call` 那一半的 `payload`（`AskUserPayloadSchema`，`kind: 'ask-user'`），答案与收场在 `tool-result` 这一半的 `structured`（`AskUserResultSchema`）——两半共用 `callId`，读侧靠它配对；答案与问题**逐问对齐**（`header` 是唯一配对键，`selected` 装选项标签），故两半的 `questions` 顺序就是答案的顺序。
 - `attachment` 与 `unrecognized`：契约保留、当前四家都无消息侧产出点。
-- **硬约束**：工具块只允许经适配器公共层构造器（`toolCallBlockDraft` / `toolResultBlockDraft`）产出，手搓块会静默少掉 `payload`；源码级断言已拦 `providers/**` 手搓 `tool-call` 块。
+- **硬约束**：工具块只允许经适配器公共层构造器（`toolCallBlockDraft` / `toolResultBlockDraft`）产出，手搓块会静默少掉 `payload`；源码级断言已拦 `providers/**` 手搓 `tool-call` 块。**产出通道有两条**：厂商通知流（`project` 的返回值，三家走这条），以及骨架给适配器的**流外投递口** `TurnContext.emitMessage`——厂商把一次调用放在通知流之外时用它（codex 的提问请求是 server→client 请求，线程条目里没有那一格），两条通道进的是同一个合并器，消息号 / 合并键 / 块序号仍只有一处分配。
 
 **计量结构**：
 
@@ -68,7 +68,7 @@
 | `not-observed` | 有通道但我们没接，或本次运行没出现 |
 | `unverified` | 有通道没验证过，不敢说采到 |
 
-今天真正被声明的只有 `yes` 一态：四家的消息面五格与注入面两格（逐家七格）**逐格都给得出来**；`no` / `unverified` / `off-by-adapter` / `not-projected-by-vendor` 四态当前没有实例——它们是承重结构，谁给不出哪一格就从这里落。
+今天真正被声明的只有 `yes` 一态：四家的消息面五格、注入面两格（逐家七格）与交互面那一组（`askUser`）**逐格都给得出来**；`no` / `unverified` / `off-by-adapter` / `not-projected-by-vendor` 四态当前没有实例——它们是承重结构，谁给不出哪一格就从这里落。
 
 **子任务行 `SubagentRecord`**：10 个顶层格全必填；`status` 五态 `running` / `completed` / `failed` / `stopped` / `unknown`，另有 `statusMissing` 分开记「状态是否采到」；`parentCallId` 是两套 id 之间的**唯一桥**——子任务记录的身份是厂商原生 id，子任务消息挂在派生它的工具调用 id 上，缺了这格子任务消息会全部落回主会话或被丢；`kind` 是厂商原文**不做归一、不得用来判派发点**。
 
@@ -80,7 +80,7 @@
 
 | 厂商 | 通道 | 要点 |
 |---|---|---|
-| cc | SDK 消息流（`system` / `assistant` / `user` / `result` / `stream_event`）＋ CLI 落盘的子智能体转录 | 转录在 `<configHome>/projects/<项目目录>/<sessionId>/subagents/agent-<agentId>.jsonl`，只供子智能体用量与轮次，`source: 'session-file'`——当前全仓仅剩这一档非 wire 来源 |
+| cc | SDK 消息流（`system` / `assistant` / `user` / `result` / `stream_event`）＋ CLI 落盘的子智能体转录 | 转录在 `<configHome>/projects/<项目目录>/<sessionId>/subagents/agent-<agentId>.jsonl`，只供子智能体用量与轮次，`source: 'session-file'` |
 | codex | `codex app-server`（JSON-RPC/stdio，适配器自己 spawn）通知流＋收尾请求 | 收尾 `thread/list{ancestorThreadId}` / `thread/read` / `thread/items/list`；**不读会话文件、不发 hook**；通知 15 种 kind（14 归一＋`other` 兜底）、条目 13 种 kind |
 | dsh | 会话通知流四种 method | `session.event` / `session.status` / `subagent.started` / `subagent.finished`；**子会话事件在同一条流里**，靠 `params.sessionId` 分辨归属 |
 
@@ -102,7 +102,8 @@
 | claude 思考 token 子集口径 | 可用对零违例；第三方 anthropic 兼容后端**恒 0**——0 不得读成「不思考」 |
 | codex `SubagentStart` 载荷与设计逐字吻合、`SubagentStop` 12 字段且**确证没有 `status`**（比 `SubagentStart` 多 `agent_transcript_path` / `stop_hook_active` / `last_assistant_message`） | schema 级证据 ≠ 真机证据，以真机为准 |
 | dsh `subagent/descriptor` **不是逐子任务必发**、身份只在信封 `params.sessionId`、`data` 里没有 `childId` | 不得当身份来源 |
-| codex `request_user_input` 在 exec 模式结构性不支持，报错原文 `request_user_input is not supported in exec mode for thread …` | ⇒ `ask-user` 族恒空、**不合成任何问答块**（没有块就没有 `outcome` 可挂） |
+| codex 提问的**工具面**与**协议面**是两件事：`exec` 模式结构性不支持（报错原文 `request_user_input is not supported in exec mode for thread …`），而本仓跑的是 `app-server`，协议里有 server→client 的 `item/tool/requestUserInput` 请求与 `ToolRequestUserInputResponse{answers}` 应答 | 协议面那条通道**存在且已接**：线程级配置的两格开关随应答面同开、请求到了由适配器装帧回帧（通道、递答案与收场见《Codex 接入》的《提问与应答面》）。⚠️ 反向也读不得——0.156.1 默认就把 `request_user_input` 列进工具表，而未开应答面时**调用被运行期弹回**（工具结果逐字 `request_user_input is unavailable in Default mode`）⇒「表里有它」不蕴含「这次调用受理得了」 |
+| codex 提问的两道厂商门禁：`request_user_input requires an interactive stdin terminal`、`request_user_input can only be used by the root thread` | 前一句**不是服务端闸门**：它属于厂商自带的参照客户端，不是下发前的拦截——真路径里 fd 0 是管道时请求照样下发（判据是「开关打开后请求真的到」，读的是客户端那一侧的服务端请求列表）。后一句决定子线程提问的收场：厂商自己拒，落「子智能体不能向用户提问」 |
 | claude `update_plan` 的事件投影 `todo_list ≡ update_plan`，形状 `{text, completed}` 二态 | 恢复不出 `in_progress`，契约记 `unknown` |
 
 ## 已知边界与取舍
@@ -132,7 +133,7 @@
 
 ## 相关链接
 
-- 姊妹篇：[事件流](/protocols/event-stream)——行级八型事件与双流分工；`log.summary` 词表属该篇，消息级 `usage` 属本篇
+- 姊妹篇：[事件流](/protocols/event-stream)——行级九型事件与双流分工；`log.summary` 词表属该篇，消息级 `usage` 属本篇
 - 活文档：`packages/server/agents/README.md`——§5.4 轮次与计量的口径（四家计数键）、§10 术语对照（「采不到就是 `null`，绝不填 0」「估算 vs 上报」「轮次」）、§4.4 `AgentProvider.metadata`（能力查询唯一入口）
 - FAQ 判例（条目标题原文照抄）：
   - [DeepSeek Harness FAQ](/faq/deepseek-harness)——`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`（`not-projected-by-vendor` 的判例与探针证据）

@@ -23,12 +23,62 @@
  *
  * 替身只忠实于本仓用到的部分：构造 / `onopen` / `onmessage` / `onerror` / `close` /
  * `addEventListener` / `removeEventListener`（含 `on*` 属性与监听器**去重**、`this` 指向实例、
- * 以及「一个监听器抛错不打断其余监听器」这三条 `EventTarget.dispatchEvent` 的既有语义）。
+ * 以及「一个监听器抛错不打断其余监听器」这三条 `EventTarget.dispatchEvent` 的既有语义）、
+ * 以及 `feed()` 那条**按规范解析原始字节**的入口（见下）。
+ *
+ * ## 第三条浏览器语义：没有 `data` 字段的块**不派发**
+ *
+ * 具名事件只解决「派发给谁」，还没解决「这一块到底派不派发」。规范在「派发事件」这一步的头一条
+ * 写着：**data buffer 是空串就清空缓冲直接返回** —— 因而只写 `event: <type>` 而**没有 `data:`
+ * 字段**的块，浏览器一个事件都不发。`emitNamed(type, '')` 这类**绕过字节、直接投递**的驱动方式
+ * 正好盖住这一条：帧文本写错（少了 `data:`）时替身照旧派发，链路在真机上零交付而用例全绿。
+ * 故需要「帧的字节形态」参与判断的用例一律走 `feed(text)`：它按规范解析，该丢的块会丢。
  */
 import { vi } from 'vitest';
 
 /** `addEventListener` / `removeEventListener` 的两种入参：本仓只用函数形态，对象形态原样接受、一并移除 */
 type EventListenerLike = (event: never) => void;
+
+/** 一段流里**会被派发**的一个事件：事件名（无名事件是 `message`）+ 已去掉尾换行的载荷 */
+export interface ParsedEvent {
+  readonly type: string;
+  readonly data: string;
+}
+
+/**
+ * 按 SSE 规范把原始字节解析成**浏览器会派发的事件**（只实现本仓用到的字段：`event` / `data`，
+ * 注释行忽略）。两处判据都与规范逐字对齐，它们是替身忠实性的全部所在：
+ *   · 空行**结束一块**并触发派发；
+ *   · 派发前先看 data buffer：**空串就整块丢掉**（没有 `data:` 字段的块因此不产生事件）。
+ * 流结束时未闭合的块按规范丢弃（不补派发）。
+ */
+export function parseEventStream(text: string): ParsedEvent[] {
+  const events: ParsedEvent[] = [];
+  let data = '';
+  let type = '';
+  for (const line of text.split('\n')) {
+    // 空行 = 一块的边界：先派发，再清空两个缓冲
+    if (line === '') {
+      if (data !== '') {
+        // 规范：派发前去掉 data 末尾那一个换行（每收一行 `data:` 都会补一个）
+        events.push({ type: type === '' ? 'message' : type, data: data.endsWith('\n') ? data.slice(0, -1) : data });
+      }
+      data = '';
+      type = '';
+      continue;
+    }
+    // 注释行（ready / keep-alive）按规范忽略
+    if (line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    // 规范：字段值以单个空格开头时去掉那一个
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (field === 'data') data += `${value}\n`;
+    else if (field === 'event') type = value;
+  }
+  return events;
+}
 
 /** MessageEvent 的最小形状（jsdom 有 `MessageEvent`，但替身不依赖它） */
 export interface FakeMessageEvent {
@@ -106,6 +156,19 @@ export class FakeEventSource {
   /** 用例驱动：模拟服务端推来一帧**无名**事件（SSE 里没有 `event:` 行的帧） */
   emit(data: string): void {
     this.dispatch('message', { type: 'message', data, origin: this.origin });
+  }
+
+  /**
+   * 用例驱动：喂**服务端推来的原始字节**（可含多块 / 注释行），按规范解析后派发该派发的事件。
+   *
+   * 与 `emitNamed` 的分工：`emitNamed` 回答「派发给谁」（具名事件不进 `onmessage`），`feed`
+   * 回答「这一块到底派不派发」（没有 `data:` 字段的块不派发）。要断言帧的**字节形态**够不够
+   * 派发，只能用 `feed` —— 直接 `emitNamed` 等于跳过了被断言的那一步。
+   */
+  feed(text: string): void {
+    for (const event of parseEventStream(text)) {
+      this.dispatch(event.type, { type: event.type, data: event.data, origin: this.origin });
+    }
   }
 
   /**

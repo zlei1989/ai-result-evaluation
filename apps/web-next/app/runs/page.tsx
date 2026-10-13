@@ -585,6 +585,7 @@ function RunsPage(): ReactNode {
       caseId: values.caseId,
       executionMode: values.executionMode,
       useAgentJudge: values.useAgentJudge,
+      askUser: values.askUser,
       // 三个必填字段与 effort 保持同一行：`runs-page-wiring.test.ts` 按这一串文本钉住「创建路径重映射过」
       rows: values.rows.map((row) => ({
         agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId, effort: row.effort,

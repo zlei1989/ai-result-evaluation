@@ -19,7 +19,7 @@
 | `score.ts` | 评分结果 + 送模型的输出契约（两份投影，见「机制与演化」） |
 | `agent.ts` | `AGENT_KINDS` / `AgentKind` / `AGENT_LABELS` |
 | `agent-event.ts` | 行级事件日志条目（`seq` 从 1 单调递增，判别联合用 `discriminatedUnion`） |
-| `agent-message.ts` | 统一消息信封、内容块、工具族、子任务行、计量结构与能力声明 |
+| `agent-message.ts` | 统一消息信封、内容块、工具族、子任务行、计量结构，以及**四组能力声明**（行级 `capability` / 内容级 `messageCapability` / 下发级 `injection` / 交互面 `interaction`）——四组分开的理由同源：变化原因、消费方与判据通道各不相同 |
 | `agent-environment.ts` | 智能体环境信息模型（与执行日志解耦，由日志层展示） |
 | `rubric.ts` | 评分表：schema、引用键、`validateRubric`、`composeTotalScore`、`renderRubricForJudge` |
 | `effort.ts` | 档位域算法（`CANONICAL_EFFORT_LEVELS` / `intersectEfforts`） |

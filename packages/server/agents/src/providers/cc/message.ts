@@ -327,7 +327,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       if (type === 'tool_use') {
         const callId = readString(block, 'id');
         if (callId === null || callId === '') return;
-        blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.input ?? null, undefined));
+        blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.input ?? null, 'cc', undefined));
       }
     });
     // 已投递数**按厂商 `content` 数组长度**推进（不是「产了几块」）：序号空间属于厂商那条消息，

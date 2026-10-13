@@ -81,6 +81,7 @@ export default defineConfig({
             { text: '修改、重跑与删除评测', link: '/features/run-edit-rerun-delete' },
             { text: '评测详情与候选行', link: '/features/run-detail' },
             { text: '行执行与日志', link: '/features/row-execution' },
+            { text: '提问与应答', link: '/features/ask-user-answer' },
             { text: '评分', link: '/features/judging' },
             { text: '设置', link: '/features/settings' },
             { text: '技能配置', link: '/features/skills-config' },

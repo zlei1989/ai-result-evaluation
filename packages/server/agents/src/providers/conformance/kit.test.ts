@@ -11,12 +11,20 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentMessage, MessageCapability, SubagentRecord } from '@aieval/contracts';
 import {
+  askUserProductDigest,
+  askUserProductDigestExcludingNotices,
+  askUserProductDigestExcludingTool,
+  vendorNoticeMethodOf,
+  type AskUserProbe,
+} from './ask-user';
+import {
   checkCapabilityDeclaration,
   checkCapabilityNailing,
   checkContracts,
   checkEventShapes,
   checkFinalAnswer,
   checkInjectionNailing,
+  checkInteractionNailing,
   checkLifecycle,
   checkLineEventsAndSources,
   checkMergeKeys,
@@ -115,6 +123,11 @@ function fixture(overrides: Partial<ConformanceFixture> = {}): ConformanceFixtur
       skills: { state: 'no', reason: 'not-supported' },
       notes: [],
     },
+    /**
+     * 交互面默认「结构上没有」：消息面的正例不该被这一组牵连。
+     * 交互面的正反例各自单独造（见「交互面（提问应答）」那一段）。
+     */
+    interaction: { askUser: 'no', askUserChannel: null, askUserReason: 'not-supported', askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
     injectionProof: {},
     /**
      * 生命周期：正例只要求「有安排」，故默认登记到别处——一个真实存在的仓内文件
@@ -177,6 +190,7 @@ const SEMANTIC_CHECKS: ReadonlyArray<readonly [string, (one: ConformanceFixture)
   ['用量配对', checkUsagePairing],
   ['能力互钉', checkCapabilityNailing],
   ['注入面互钉', checkInjectionNailing],
+  ['交互面互钉', checkInteractionNailing],
   ['事件形状', checkEventShapes],
   ['生命周期', checkLifecycle],
   ['最终答复口径', checkFinalAnswer],
@@ -923,5 +937,670 @@ describe('一致性套件：生命周期（释放 / 取消）', () => {
   it('登记了别处 ⇒ 不抛（那一层由接入守卫核对文件存在）', async () => {
     const ok = fixture({ cancelMidTurn: true, lifecycleElsewhere: 'packages/server/agents/src/providers/cc/index.test.ts' });
     await expect(checkLifecycle(ok)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * 交互面（今天只有「能不能问人」那一格）：声明 `yes` 的家必须拿得出一个能造出「问了一次」的场景，
+ * 且那次运行的产物要过 `./ask-user.ts` 的四格判据。
+ *
+ * ⚠️ 这一组与注入面**刻意不同的一格**在最后一条用例里钉住：**声明非 `yes` 也允许有场景**——
+ * 非 `yes` 说的是适配器那一半没接，场景证的是骨架那一半（端口问得对、不传回调时一个字都不动）。
+ * 写成注入面那样「非 yes 不许有场景」，接线之前四家就都得把场景删掉。
+ */
+describe('一致性套件：交互面（提问应答）', () => {
+  const QUESTION = {
+    header: '选路径',
+    prompt: '用哪条路径？',
+    options: [{ label: '选项 A', description: null, recommended: true }],
+    multiSelect: false,
+    allowOther: true,
+    secret: false,
+  };
+
+  /**
+   * 一次真答复：答案必须**非空**——空答复证明不了「答案进得了帧」。
+   * 默认取**多选 + 自由输入**那一档（两格同时有值）：契约里它是「并存」，两半都要在帧里；
+   * **单选**那一档（`selected` 为空、`custom` 有值 = 覆盖）另有独立用例，见下面两条。
+   */
+  const REPLY = {
+    outcome: 'answered' as const,
+    answers: [{ header: '选路径', selected: ['选项 A'], custom: '都不对，走第三条路' }],
+  };
+
+  /** 只把 askUser 声明成 `yes` 的交互面声明 */
+  const askYes = (): ConformanceFixture['interaction'] => ({
+    askUser: 'yes',
+    askUserChannel: 'vendor-tool',
+    askUserReason: null,
+    askUserProofDriver: 'real-path',
+    askUserProofDriverReason: null,
+    notes: [],
+  });
+
+  /**
+   * 账本里那条提问调用（判据见 `checkAskUserLedger`）：题面取**端口收到的那一份**。
+   * 少了它，这一组的每个正例都会红在「提问那一半没进账本」上——那正是它要拦的形态。
+   */
+  const withLedger = (one: AskUserProbe, extra: Partial<ConformanceProduct> = {}): ConformanceProduct =>
+    product({
+      askUser: one,
+      messages: [
+        message({
+          mergeKey: mergeKeyOf({ subagentId: null, roundTrip: 1, role: 'assistant', parentCallId: null }),
+          blocks: [{
+            type: 'tool-call',
+            callId: 'call_ask_1',
+            family: 'ask-user',
+            name: one.requests[0]?.toolName ?? 'AskUserQuestion',
+            input: null,
+            payload: { kind: 'ask-user', questions: one.requests[0]?.questions ?? [] },
+            summary: '向用户提问：选路径',
+          }] as AgentMessage['blocks'],
+        }),
+      ],
+      ...extra,
+    });
+
+  /** 探针：只填判据真正读的字段（形状由 `./ask-user.ts` 的接口管） */
+  const probe = (overrides: Partial<AskUserProbe> = {}): AskUserProbe => ({
+    calls: 1,
+    requests: [{ questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call_ask_1', vendorBudgetMs: null, subagentId: null }],
+    replies: [REPLY],
+    answerFrame: { behavior: 'allow', updatedInput: { answers: REPLY.answers } },
+    control: {
+      calls: 0,
+      reply: { outcome: 'unavailable', answers: null },
+      digestWithCallback: '同一份产物',
+      digestWithoutCallback: '同一份产物',
+      digestWithCallbackExcludingAskTool: '同一份产物',
+      digestWithoutCallbackExcludingAskTool: '同一份产物',
+      requestTools: ['read', 'bash'],
+    },
+    ...overrides,
+  });
+
+  /** 宿主工具那一档的声明与探针（`vendor-tool` 的对照判据不许放宽，故两档各造一份） */
+  const hostToolDeclaration = (): ConformanceFixture['interaction'] => ({
+    askUser: 'yes',
+    askUserChannel: 'host-tool',
+    askUserReason: null,
+    askUserProofDriver: 'real-path',
+    askUserProofDriverReason: null,
+    notes: [],
+  });
+  const HOST_TOOL = 'ask_user_question';
+  const hostProbe = (overrides: Partial<AskUserProbe> = {}): AskUserProbe =>
+    probe({
+      requests: [{
+        questions: [QUESTION],
+        toolName: HOST_TOOL,
+        callId: 'call_ask_1',
+        vendorBudgetMs: null,
+        subagentId: null,
+      }],
+      control: {
+        calls: 0,
+        reply: { outcome: 'unavailable', answers: null },
+        digestWithCallback: '带那一件工具的答案（原始，逐字比会不同）',
+        digestWithoutCallback: '带那一件工具的错误结果（原始，逐字比会不同）',
+        digestWithCallbackExcludingAskTool: '两臂归一到同一形态之后的产物',
+        digestWithoutCallbackExcludingAskTool: '两臂归一到同一形态之后的产物',
+        missingToolError: `Tool ${HOST_TOOL} not found`,
+        requestTools: ['read', 'bash'],
+      },
+      ...overrides,
+    });
+  const withHostAsk = (one: AskUserProbe): ConformanceFixture =>
+    fixture({
+      interaction: hostToolDeclaration(),
+      askUserHostTool: HOST_TOOL,
+      scenarios: { 'ask-user': () => withLedger(one) },
+    });
+
+  const withAsk = (one: AskUserProbe, declaration = askYes()): ConformanceFixture =>
+    fixture({ interaction: declaration, scenarios: { 'ask-user': () => withLedger(one) } });
+
+  it('声明 askUser=yes：场景在、探针四格齐 ⇒ 不抛', () => {
+    expect(() => checkInteractionNailing(withAsk(probe()))).not.toThrow();
+  });
+
+  it('声明 askUser=yes 却没有能证明它的场景 ⇒ 红（声明过的东西必须真的拿得到）', () => {
+    const broken = fixture({ interaction: askYes() });
+    expect(() => checkInteractionNailing(broken)).toThrow(/没有任何能证明它的场景/);
+  });
+
+  it('证明场景的产物里没有提问应答探针 ⇒ 红（空转不许静默）', () => {
+    const broken = fixture({ interaction: askYes(), scenarios: { 'ask-user': () => product({}) } });
+    expect(() => checkInteractionNailing(broken)).toThrow(/没有提问应答探针/);
+  });
+
+  it('回调被调用了两次 ⇒ 红（同一个问题不许问两遍）', () => {
+    expect(() => checkInteractionNailing(withAsk(probe({ calls: 2 })))).toThrow(/必须恰好一次/);
+  });
+
+  it('入参形状不对（厂商预算给了 0）⇒ 红（0 会被读成立刻超时）', () => {
+    const broken = probe({
+      requests: [{ questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call_ask_1', vendorBudgetMs: 0, subagentId: null }],
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/0 会被读成/);
+  });
+
+  it('答复没进到该家的应答帧里 ⇒ 红（装帧把答案丢了）', () => {
+    const broken = probe({ answerFrame: { behavior: 'allow', updatedInput: {} } });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/找不到被选中的选项/);
+  });
+
+  /**
+   * **提问那一半进账本**（`checkAskUserLedger`）：判据挂在**运行事实**上（端口真被问过），
+   * 因此「账本里没有那条 `ask-user` 调用」这一形态必须当场红——codex 的提问走服务端请求、
+   * 不进通知流，账本里那一半没有第二个来源，忘了物化时界面上只剩一条没有题目的答复行。
+   */
+  it('端口真被问过、账本里却没有 `ask-user` 调用 ⇒ 红（卡片没有驱动，只剩一条没题目的答复行）', () => {
+    const broken = fixture({ interaction: askYes(), scenarios: { 'ask-user': () => product({ askUser: probe() }) } });
+    expect(() => checkInteractionNailing(broken)).toThrow(/账本里却没有一条 `ask-user` 族的工具调用/);
+  });
+
+  it('账本里那条调用没有族载荷 ⇒ 红（没有题目就没有卡片）', () => {
+    const broken = fixture({
+      interaction: askYes(),
+      scenarios: {
+        'ask-user': () => {
+          const one = withLedger(probe());
+          const [first] = one.messages;
+          return product({
+            askUser: probe(),
+            messages: [{
+              ...first!,
+              blocks: [{ type: 'tool-call', callId: 'call_ask_1', family: 'ask-user', name: 'AskUserQuestion', input: null, payload: null }],
+            } as AgentMessage],
+          });
+        },
+      },
+    });
+    expect(() => checkInteractionNailing(broken)).toThrow(/没有族载荷/);
+  });
+
+  it('账本里那条调用的 id 与端口收到的那一个不同 ⇒ 红（有卡片没答案）', () => {
+    const broken = fixture({
+      interaction: askYes(),
+      scenarios: {
+        'ask-user': () => {
+          const one = withLedger(probe());
+          const [first] = one.messages;
+          return product({
+            askUser: probe(),
+            messages: [{
+              ...first!,
+              blocks: [{ type: 'tool-call', callId: 'call_别的', family: 'ask-user', name: 'AskUserQuestion', input: null, payload: { kind: 'ask-user', questions: [QUESTION] } }],
+            } as AgentMessage],
+          });
+        },
+      },
+    });
+    expect(() => checkInteractionNailing(broken)).toThrow(/就是「有卡片没答案」/);
+  });
+
+  it('账本里的题面与端口收到的那一份不同 ⇒ 红（卡片上问的与模型问的不是同一道题）', () => {
+    const broken = fixture({
+      interaction: askYes(),
+      scenarios: {
+        'ask-user': () => {
+          const changed = probe({
+            requests: [{
+              questions: [{ ...QUESTION, header: '另一题' }],
+              toolName: 'AskUserQuestion',
+              callId: 'call_ask_1',
+              vendorBudgetMs: null,
+              subagentId: null,
+            }],
+          });
+          return product({
+            askUser: changed,
+            messages: [
+              message({
+                mergeKey: mergeKeyOf({ subagentId: null, roundTrip: 1, role: 'assistant', parentCallId: null }),
+                blocks: [{
+                  type: 'tool-call',
+                  callId: 'call_ask_1',
+                  family: 'ask-user',
+                  name: 'AskUserQuestion',
+                  input: null,
+                  payload: { kind: 'ask-user', questions: [QUESTION] },
+                  summary: '向用户提问：选路径',
+                }] as AgentMessage['blocks'],
+              }),
+            ],
+          });
+        },
+      },
+    });
+    expect(() => checkInteractionNailing(broken)).toThrow(/账本里的题面与端口收到的那一份不同/);
+  });
+
+  it('账本里那一问没有任何一题允许自由输入 ⇒ 红（弹层永远没有输入框）', () => {
+    const broken = probe({
+      requests: [{
+        // 提问形状里没有 `allowOther`（两家把自由输入写在**答复面**上，只读提问形状必然恒 false）
+        questions: [{ ...QUESTION, allowOther: false }],
+        toolName: 'AskUserQuestion',
+        callId: 'call_ask_1',
+        vendorBudgetMs: null,
+        subagentId: null,
+      }],
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/没有任何一题声明「允许自由输入」/);
+  });
+
+  it('声明了允许自由输入、答复里却没有一条自由输入 ⇒ 红（这一格是无区分力的空转）', () => {
+    const broken = probe({
+      replies: [{ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: null }] }],
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/答复里却没有一条写下自己的答案/);
+  });
+
+  it('自由输入没进应答帧 ⇒ 红（只查被选中的选项会放过它）', () => {
+    const broken = probe({
+      answerFrame: { behavior: 'allow', updatedInput: { answers: [{ header: '选路径', selected: ['选项 A'] }] } },
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/找不到自由输入的答案/);
+  });
+
+  /**
+   * **单选 + 自由输入 = 覆盖**：用户自己写的那句话就是全部答案，`selected` 为空数组。
+   * 此时帧里只有那句话（选项一个都没有），判据不许把「没选任何选项」读成「答复没进帧」。
+   */
+  it('单选覆盖档：`selected` 为空、`custom` 有值且进了帧 ⇒ 不抛（覆盖不是丢答案）', () => {
+    const override = probe({
+      replies: [{ outcome: 'answered', answers: [{ header: '选路径', selected: [], custom: '都不对，走第三条路' }] }],
+      answerFrame: { behavior: 'allow', updatedInput: { answers: { '用哪条路径？': '都不对，走第三条路' } } },
+    });
+    expect(() => checkInteractionNailing(withAsk(override))).not.toThrow();
+  });
+
+  it('既是空选又是空写 ⇒ 红（两条路都没走，等于没答）', () => {
+    const empty = probe({
+      replies: [{ outcome: 'answered', answers: [{ header: '选路径', selected: [], custom: null }] }],
+      answerFrame: { behavior: 'allow', updatedInput: { answers: {} } },
+    });
+    expect(() => checkInteractionNailing(withAsk(empty))).toThrow(/既没选也没写/);
+  });
+
+  /** **多选 = 并存**：勾选的标签与自由输入是两半，少渲染哪一半都要红 */
+  it('多选并存档：两半都在帧里 ⇒ 不抛；只装下选项那一半 ⇒ 红', () => {
+    const both = probe({
+      replies: [{ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: '再加一句' }] }],
+      answerFrame: { behavior: 'allow', updatedInput: { answers: { '用哪条路径？': ['选项 A', '再加一句'] } } },
+    });
+    expect(() => checkInteractionNailing(withAsk(both))).not.toThrow();
+    const halfOnly = probe({
+      replies: [{ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: '再加一句' }] }],
+      answerFrame: { behavior: 'allow', updatedInput: { answers: { '用哪条路径？': ['选项 A'] } } },
+    });
+    expect(() => checkInteractionNailing(withAsk(halfOnly))).toThrow(/找不到自由输入的答案/);
+  });
+
+  it('不传回调的对照运行里回调仍被调用 ⇒ 红（「默认不介入」不成立）', () => {
+    const broken = probe({
+      control: {
+        calls: 1,
+        reply: { outcome: 'unavailable', answers: null },
+        digestWithCallback: '同一份产物',
+        digestWithoutCallback: '同一份产物',
+        digestWithCallbackExcludingAskTool: '同一份产物',
+        digestWithoutCallbackExcludingAskTool: '同一份产物',
+        requestTools: ['read', 'bash'],
+      },
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/「默认不介入」不成立/);
+  });
+
+  it('不传回调时端口没有立即给「无人应答」⇒ 红（不挂起这条边界）', () => {
+    const broken = probe({
+      control: {
+        calls: 0,
+        reply: { outcome: 'timeout', answers: null },
+        digestWithCallback: '同一份产物',
+        digestWithoutCallback: '同一份产物',
+        digestWithCallbackExcludingAskTool: '同一份产物',
+        digestWithoutCallbackExcludingAskTool: '同一份产物',
+        requestTools: ['read', 'bash'],
+      },
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/必须立即给「无人应答」/);
+  });
+
+  it('不传回调的对照运行产物与带回调那次不同 ⇒ 红（「不问就不动」不成立）', () => {
+    const broken = probe({
+      control: {
+        calls: 0,
+        reply: { outcome: 'unavailable', answers: null },
+        digestWithCallback: '带回调的产物',
+        digestWithoutCallback: '少了一次工具调用的产物',
+        digestWithCallbackExcludingAskTool: '带回调的产物',
+        digestWithoutCallbackExcludingAskTool: '少了一次工具调用的产物',
+        requestTools: ['read', 'bash'],
+      },
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/「不问就不动」不成立/);
+  });
+
+  it('**声明非 yes 也允许有场景** ⇒ 不抛（接线之前四家正是这个状态）', () => {
+    // 与注入面刻意不同的那一格：`no` / `off-by-adapter` 说的是适配器那一半没接，
+    // 而场景证的是骨架那一半——把这条写成注入面那样，接线之前四家的场景都得删掉
+    const beforeWiring: ConformanceFixture['interaction'] = {
+      askUser: 'off-by-adapter',
+      askUserChannel: null,
+      askUserReason: 'not-observed',
+      askUserProofDriver: 'synthetic-fixture',
+      askUserProofDriverReason: '夹具扮演厂商那一端（这一条判的是声明与场景的配对，与驱动器无关）',
+      notes: [],
+    };
+    expect(() => checkInteractionNailing(withAsk(probe(), beforeWiring))).not.toThrow();
+  });
+
+  /**
+   * **`host-tool` 档：对照臂判据的放宽与它的守卫**（理由见 `./ask-user.ts` 的模块头）。
+   *
+   * 这一档的对照运行里那件工具按定义不存在，于是同一条剧本的那一问必然落成一条错误结果——
+   * 逐字比指纹在这一档**结构上做不到**。放宽的是「那一件工具」这一格，其余每一格照旧比对。
+   * 下面几条各守一半：正例过；工具名不给 / 对照臂工具表里仍有它 / 拿不到「工具不存在」原文 /
+   * 归一之后两臂仍不同——四种都必须红。
+   */
+  it('host-tool 档：对照臂里没有那件工具、拿到「工具不存在」原文、归一之后两臂相同 ⇒ 不抛', () => {
+    expect(() => checkInteractionNailing(withHostAsk(hostProbe()))).not.toThrow();
+  });
+
+  it('host-tool 档却没交出那件工具的名字 ⇒ 红（这一档的对照臂判据无从谈起）', () => {
+    const broken = fixture({
+      interaction: hostToolDeclaration(),
+      scenarios: { 'ask-user': () => withLedger(hostProbe()) },
+    });
+    expect(() => checkInteractionNailing(broken)).toThrow(/却没有交出那件工具的名字/);
+  });
+
+  it('host-tool 档没交出对照臂的出站工具表 ⇒ 红（产物里看不出「有没有声明出去」）', () => {
+    const source = hostProbe();
+    const broken = hostProbe({
+      control: { ...source.control, requestTools: undefined },
+    });
+    expect(() => checkInteractionNailing(withHostAsk(broken))).toThrow(/出站工具表/);
+  });
+
+  it('host-tool 档的对照臂出站工具表里仍有那件工具 ⇒ 红（「不问就不动」在这一档的落点是「不注册它」）', () => {
+    const source = hostProbe();
+    const broken = hostProbe({
+      control: { ...source.control, requestTools: ['read', 'bash', HOST_TOOL] },
+    });
+    expect(() => checkInteractionNailing(withHostAsk(broken))).toThrow(/出站工具表仍带着/);
+  });
+
+  it('host-tool 档的对照臂没落成「工具不存在」⇒ 红（两臂跑的不是同一件事）', () => {
+    const source = hostProbe();
+    const broken = hostProbe({ control: { ...source.control, missingToolError: null } });
+    expect(() => checkInteractionNailing(withHostAsk(broken))).toThrow(/没有落成「工具不存在」类错误/);
+  });
+
+  it('host-tool 档归一之后两臂仍不同 ⇒ 红（放宽的只是那一件工具，不是整份判据）', () => {
+    const source = hostProbe();
+    const broken = hostProbe({
+      control: {
+        ...source.control,
+        digestWithCallbackExcludingAskTool: '两臂归一到同一形态之后的产物',
+        digestWithoutCallbackExcludingAskTool: '别处也变了（例如少了一条事件）',
+      },
+    });
+    expect(() => checkInteractionNailing(withHostAsk(broken))).toThrow(/「不问就不动」不成立/);
+  });
+
+  it('`vendor-tool` 档不许走归一那条路：原始指纹不同就红', () => {
+    // 同一份构造，声明仍是 `vendor-tool`：那一档比的就是原始指纹（那两格在这份探针里不同）
+    const source = probe();
+    const broken = probe({
+      control: {
+        ...source.control,
+        digestWithCallback: '带回调的产物',
+        digestWithoutCallback: '带一件错误结果的产物',
+        digestWithCallbackExcludingAskTool: '带回调的产物（这一档也不许用归一那一格）',
+        digestWithoutCallbackExcludingAskTool: '带一件错误结果的产物',
+      },
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/「不问就不动」不成立/);
+  });
+
+  /**
+   * **归一函数本身的两条守卫**：它只许抹掉那一件工具，别处一律照旧。
+   *
+   * 没有这两条，一个「把所有工具结果都抹掉」的实现也能让上面那条正例通过——判据会被放宽成空转。
+   */
+  it('归一函数：只抹那一件提问工具，别的工具调用与结果一字不动', () => {
+    const blocks = (toolName: string): AgentMessage['blocks'] => [
+      { type: 'tool-call', callId: 'call_ask', family: 'ask-user', name: toolName, input: { questions: [] }, payload: null },
+      { type: 'tool-result', callId: 'call_ask', structured: null, isError: false, text: '答案', truncation: 'none' },
+      { type: 'tool-call', callId: 'call_bash', family: 'shell', name: 'bash', input: { command: 'ls' }, payload: null },
+      { type: 'tool-result', callId: 'call_bash', structured: null, isError: false, text: 'a.txt', truncation: 'none' },
+    ] as AgentMessage['blocks'];
+    const withAnswer = product({ messages: [message({ mergeKey: 'k', blocks: blocks(HOST_TOOL) })] });
+    const withError = product({
+      messages: [message({
+        mergeKey: 'k',
+        blocks: blocks(HOST_TOOL).map((block) =>
+          block.type === 'tool-result' && block.callId === 'call_ask'
+            ? { ...block, text: `Tool ${HOST_TOOL} not found`, isError: true }
+            : block),
+      })],
+    });
+    const digestOf = (value: ConformanceProduct): string => askUserProductDigestExcludingTool(value, HOST_TOOL);
+    // 那一件工具被归一到同一形态 ⇒ 两臂相同
+    expect(digestOf(withAnswer)).toBe(digestOf(withError));
+
+    // 别的工具结果改了内容 ⇒ 指纹必须跟着变（归一没有波及它）
+    const othersChanged = product({
+      messages: [message({
+        mergeKey: 'k',
+        blocks: blocks(HOST_TOOL).map((block) =>
+          block.type === 'tool-result' && block.callId === 'call_bash' ? { ...block, text: 'b.txt' } : block),
+      })],
+    });
+    expect(digestOf(othersChanged)).not.toBe(digestOf(withAnswer));
+
+    // 事件条数变了 ⇒ 也要跟着变（归一保留位置与条数这一格）
+    const fewerEvents = product({
+      messages: [message({ mergeKey: 'k', blocks: blocks(HOST_TOOL) })],
+      events: [{ type: 'log', at: 1, text: 'x' }],
+    });
+    expect(digestOf(fewerEvents)).not.toBe(digestOf(withAnswer));
+    // 事件里带那件工具名的那几条：归一之后两臂相同（它们在对照臂里是「工具不存在」的错误）
+    const eventsWithTool = (isError: boolean): Record<string, unknown>[] => [
+      { type: 'log', at: 1, toolName: HOST_TOOL, text: isError ? '工具报错' : '调用工具', summary: '那一问' },
+    ];
+    expect(digestOf(product({ events: eventsWithTool(true) }))).toBe(
+      digestOf(product({ events: eventsWithTool(false) })),
+    );
+  });
+
+  /**
+   * **厂商通知那一格**（`control.askSwitchNotices`）：本仓对未识别通知的落点是抄原文 ⇒ 厂商自己的
+   * 通知节奏进了产物，两臂对比必须点名允许出入的那几条。四条判据各有一条反例，缺一条这一格就会
+   * 退化成「厂商爱发就发」。
+   */
+  const noticeProbe = (overrides: {
+    notices?: Record<string, 'switch-only' | 'volatile'>;
+    arms?: Record<string, { withCallback: boolean; withoutCallback: boolean }>;
+    raw?: [string, string];
+    normalized?: [string, string];
+  } = {}): AskUserProbe => {
+    const source = probe();
+    const notices = overrides.notices ?? { warning: 'switch-only' };
+    const arms = overrides.arms ?? { warning: { withCallback: true, withoutCallback: false } };
+    return probe({
+      control: {
+        ...source.control,
+        // 原始指纹不同（那一条通知只在一臂里）——这是登记这一格的前提
+        digestWithCallback: overrides.raw?.[0] ?? '带回调（多一条厂商通知）',
+        digestWithoutCallback: overrides.raw?.[1] ?? '对照臂',
+        askSwitchNotices: notices,
+        noticeArms: arms,
+        // 归一之后两臂逐字相同
+        digestWithCallbackExcludingAskTool: overrides.normalized?.[0] ?? '两臂归一之后',
+        digestWithoutCallbackExcludingAskTool: overrides.normalized?.[1] ?? '两臂归一之后',
+      },
+    });
+  };
+
+  it('厂商通知：登记得对（只在恰好一臂出现、去掉之后两臂逐字相同）⇒ 不抛', () => {
+    expect(() => checkInteractionNailing(withAsk(noticeProbe()))).not.toThrow();
+  });
+
+  it('登记了厂商通知，两臂的**原始**指纹却逐字相同 ⇒ 红（这一格没有区分力，等于白放宽）', () => {
+    const broken = noticeProbe({ raw: ['同一份产物', '同一份产物'], normalized: ['a', 'b'] });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/原始.*逐字相同/);
+  });
+
+  it('点名的厂商通知在两臂里都没出现过 ⇒ 红（名字写错了，这一格什么都没抹掉）', () => {
+    const broken = noticeProbe({ arms: { warning: { withCallback: false, withoutCallback: false } } });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/两臂里都没出现过/);
+  });
+
+  it('按 `switch-only` 记的厂商通知两臂都发（或都没发）⇒ 红（它与提问开关无关）', () => {
+    const broken = noticeProbe({ arms: { warning: { withCallback: true, withoutCallback: true } } });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/switch-only/);
+  });
+
+  it('`volatile` 档允许两臂都发（厂商自己的节奏）⇒ 不抛', () => {
+    const volatile = noticeProbe({
+      notices: { 'account/rateLimits/updated': 'volatile' },
+      arms: { 'account/rateLimits/updated': { withCallback: true, withoutCallback: true } },
+    });
+    expect(() => checkInteractionNailing(withAsk(volatile))).not.toThrow();
+  });
+
+  it('归一之后的两臂指纹与原始指纹一模一样 ⇒ 红（点名一条都没命中）', () => {
+    const broken = noticeProbe({
+      normalized: ['带回调（多一条厂商通知）', '对照臂'],
+    });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/没有生效/);
+  });
+
+  it('去掉点名的厂商通知之后两臂仍不同 ⇒ 红（放宽的只是那几条，不是整份判据）', () => {
+    const broken = noticeProbe({ normalized: ['两臂归一之后', '别处也变了（例如少了一条事件）'] });
+    expect(() => checkInteractionNailing(withAsk(broken))).toThrow(/「不问就不动」不成立/);
+  });
+
+  /**
+   * `vendorNoticeMethodOf` 与 `askUserProductDigestExcludingNotices` 各自的守卫：
+   * 前者只认**严格形状**（放宽判据的地方认错了比不认更坏），后者只丢点名的那几条、并按剩下的重编 `seq`。
+   */
+  it('厂商通知的正身判据只认「正文是一个只有 method 的 JSON 对象」这一种形状', () => {
+    expect(vendorNoticeMethodOf({ type: 'log', text: '{"method":"warning"}' })).toBe('warning');
+    // 带别的键、不是对象、方法名为空、根本不是 JSON —— 一律不认
+    expect(vendorNoticeMethodOf({ text: '{"method":"warning","params":{"a":1}}' })).toBeNull();
+    expect(vendorNoticeMethodOf({ text: '["warning"]' })).toBeNull();
+    expect(vendorNoticeMethodOf({ text: '{"method":""}' })).toBeNull();
+    expect(vendorNoticeMethodOf({ text: '警告：Under-development features enabled' })).toBeNull();
+    expect(vendorNoticeMethodOf({ text: '{"method":' })).toBeNull();
+    expect(vendorNoticeMethodOf({})).toBeNull();
+    expect(vendorNoticeMethodOf(null)).toBeNull();
+  });
+
+  it('按厂商通知归一：只丢点名的那几条、并按剩下的重编 `seq`，别处一律照旧', () => {
+    const notice = (method: string): Record<string, unknown> => ({
+      type: 'log',
+      seq: 0,
+      stream: 'stdout',
+      text: `{"method":"${method}"}`,
+      summary: `{"method":"${method}"}`,
+    });
+    const built = (): ConformanceProduct =>
+      product({
+        events: [
+          { ...notice('warning'), seq: 1 },
+          { type: 'log', seq: 2, stream: 'stdout', text: '正文', summary: '跑起来了' },
+          { ...notice('account/rateLimits/updated'), seq: 3 },
+          { type: 'usage', seq: 4 },
+        ],
+      });
+    const digestOf = (methods: readonly string[]): string =>
+      askUserProductDigestExcludingNotices(built(), methods);
+    // 零条点名 = 与原始指纹逐字相同（这一档不碰任何东西）
+    expect(digestOf([])).toBe(askUserProductDigest(built()));
+    // 只丢 warning ⇒ 剩下的三条按 1/2/3 重编（不重编的话与「不丢」两臂会整体错位）
+    expect(digestOf(['warning'])).not.toBe(digestOf([]));
+    const renumbered = (): ConformanceProduct =>
+      product({
+        events: [
+          { type: 'log', seq: 1, stream: 'stdout', text: '正文', summary: '跑起来了' },
+          { ...notice('account/rateLimits/updated'), seq: 2 },
+          { type: 'usage', seq: 3 },
+        ],
+      });
+    expect(digestOf(['warning'])).toBe(askUserProductDigest(renumbered()));
+    // 别处的正文照旧参与比对
+    const changed = built();
+    expect(digestOf(['warning'])).not.toBe(
+      askUserProductDigestExcludingNotices(
+        { ...changed, events: [...changed.events, { type: 'log', seq: 5, stream: 'stdout', text: '多一条' }] },
+        ['warning'],
+      ),
+    );
+  });
+
+  it('产物指纹：厂商载荷里的线程身份（`threadId` / `turnId`）不算行为，别处的载荷差异照旧算', () => {
+    const notice = (payload: Record<string, unknown>): Record<string, unknown> => ({
+      type: 'log',
+      seq: 1,
+      stream: 'stdout',
+      text: '{"method":"warning"}',
+      // 真实形状：`text` 是方法名那一段、`summary` 是原始负载那一整段（见 `emit.ts` 的 `logDraft`）
+      summary: JSON.stringify(payload),
+    });
+    // 同一条通知、两次运行各自的线程号 ⇒ 指纹相同（否则任何两臂比对都恒红）
+    const first = product({ events: [notice({ method: 'warning', params: { threadId: '01a1-aaa', turnId: 'turn-1' } })] });
+    const second = product({ events: [notice({ method: 'warning', params: { threadId: '01a1-bbb', turnId: 'turn-9' } })] });
+    expect(askUserProductDigest(first)).toBe(askUserProductDigest(second));
+    // ⚠️ 只抹那两个键的值：厂商正文不同照旧要区分得开
+    const otherText = product({
+      events: [notice({ method: 'warning', params: { threadId: '01a1-aaa', turnId: 'turn-1', message: '别的警告' } })],
+    });
+    expect(askUserProductDigest(first)).not.toBe(askUserProductDigest(otherText));
+  });
+
+  it('产物指纹：时刻不同 ⇒ 相同；归一产物变了 ⇒ 不同', () => {
+    const log = (at: number): Record<string, unknown> => ({ type: 'log', at, stream: 'stdout', text: '跑起来了' });
+    const first = product({ events: [log(1_000)] });
+    const second = product({ events: [log(2_000)] });
+    expect(askUserProductDigest(first)).toBe(askUserProductDigest(second));
+    // 多一条行级事件（哪怕正文一样）就是行为不同：指纹只丢正文，不丢结构
+    expect(askUserProductDigest(first)).not.toBe(askUserProductDigest(product({ events: [log(1_000), log(1_000)] })));
+    // 归一产物的正文（消息内容块）照旧逐字比
+    const said = (text: string): ConformanceProduct =>
+      product({ messages: [message({ mergeKey: 'main|1|assistant|-', blocks: [{ type: 'text', text }] as AgentMessage['blocks'] })] });
+    expect(askUserProductDigest(said('甲'))).not.toBe(askUserProductDigest(said('乙')));
+    // 探针本身（两次运行按定义就不同）不进指纹
+    expect(askUserProductDigest(product({ askUser: probe() }))).toBe(askUserProductDigest(product({})));
+  });
+
+  it('产物指纹：每次运行现生成的会话身份与计时读数都不算行为（它们只出现在原始载荷与时钟格上）', () => {
+    // dsh 的会话号是每次运行现生成的随机串，厂商原文那一份会照进 `raw` 与「原始输出」的日志正文；
+    // pi 的 provider id 由每行一份临时目录派生、载荷里还有 epoch 毫秒。三种都不进指纹。
+    const frame = (sessionId: string, totalMs: number): ConformanceProduct =>
+      product({
+        events: [
+          { type: 'log', at: 1, stream: 'stdout', text: `{"method":"session.status","params":{"sessionId":"${sessionId}"}}` },
+          { type: 'usage', at: 2, timing: { totalMs, apiMs: null, ttftMs: null } },
+        ],
+        messages: [
+          {
+            mergeKey: 'main|1|assistant|-',
+            raw: { params: { sessionId, timestamp: 1_791_864_915_571 } },
+          } as unknown as AgentMessage,
+        ],
+      });
+    expect(askUserProductDigest(frame('session-0bd8044e74dd48c0843e0f8604a2be2a', 0)))
+      .toBe(askUserProductDigest(frame('session-18ae887c3dc84a04ba461c1570b45e38', 7)));
+    // ⚠️ 只丢正文，不丢结构：日志的**条数与通道**照旧比——「不传回调时多出一条日志」仍然拦得住
+    const withExtraLog = product({ events: [{ type: 'log', at: 1, stream: 'stdout', text: '一模一样的正文' }] });
+    const withoutLog = product({ events: [] });
+    expect(askUserProductDigest(withExtraLog)).not.toBe(askUserProductDigest(withoutLog));
   });
 });

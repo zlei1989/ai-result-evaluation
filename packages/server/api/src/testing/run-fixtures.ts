@@ -166,6 +166,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     status: 'idle',
     executionMode: 'parallel',
     useAgentJudge: false,
+    askUser: false,
     rows: [makeRow()],
     workspaceBase: FIXTURE_WORKSPACE_ROOT,
     createdAt: '2026-09-22T08:00:00.000Z',

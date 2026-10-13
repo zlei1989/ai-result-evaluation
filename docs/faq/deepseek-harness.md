@@ -55,7 +55,33 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 - [Node.js `path.isAbsolute()`：POSIX 与 Windows 的「绝对路径」判定不同（盘符路径在 POSIX 上是普通相对路径）](https://nodejs.org/api/path.html#pathisabsolutepath)
 - [Node.js `fs.mkdtempSync()`：推荐的临时目录 API（本仓口径：能用现成 API 就别手写递归删除）](https://nodejs.org/api/fs.html#fsmkdtempsyncprefix-options)
 
+## 同一条脚本两次运行的行级事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）
+
+**日期**：2026-10-13
+
+**现象**：dsh 的真路径一致性场景（真运行时 + 本机假 `/v1/messages` 上游 + 应答者插件）连跑四次，**同一臂**产出的行级事件条数是 `24 / 24 / 25 / 25`，多出来的那一条是**收尾处**的计量事件，载荷与上一条逐字相同（`seq` 与时刻除外）：
+
+```json
+{"type":"usage","turns":2,"tokensBasis":"reported","tokens":null,"subagentTokens":{"input":0,"cached":0,"output":0,"reasoningOutput":null,"total":null},"subagentTurns":0,"turn":{"round":2,"subagentId":null}}
+```
+
+上行文里还有一条 `[WARN] 用量负载不完整，本次运行按「未采集计量」处理（不填 0）：{"inputTokens":12,"outputTokens":4,"totalTokens":16}` —— 它与这条竞态**无关**（把上游 SSE 的用量字段补全，警告照旧、条数照旧抖）。
+
+**根因**：`packages/server/agents/src/providers/dsh/index.ts` 的通知投送循环「先排空再判结束」在 `run` 落定与**在飞的** `next()` 之间没有屏障。
+
+1. `harness.run(...)` 的 promise 落定时把 `settled` 置真；而 `turn/end` 那条通知是 SDK 的读循环**稍后**才 `push()` 进订阅的。
+2. 循环那一拍的顺序可能是「`subscription.tryNext()` 拿到 `undefined` ⇒ `settled` 已真 ⇒ `break`」，于是**最后一条通知永远读不到**。它恰恰是厂商在 `turn/end` 上再交一次的那份累计计量（`events.ts` 的 `DSH_TURN_END_TYPE` 一支刻意「把最新的一份带上」，最后一版的用量与轮次都靠它）。
+3. 谁先谁后由进程调度决定 ⇒ 同一份脚本两次运行的事件条数会抖。丢的是一条**重复**读数（内容与上一条逐字相同），所以运行语义没错，错的是「两次运行可比」。
+
+**测试环境 ≠ 运行环境**：夹具的假订阅是**同步投递**（`run` 落定之前所有通知都已入队）⇒ 这条竞态在单测里造不出来。与《原始输出 38164 行，但执行日志是空的》那条孤儿 promise 的教训同源：替身比真实实现「更整齐」，守卫就没有区分力。
+
+**解决方案**（分两层，第二层**未闭合**）：
+
+- **夹具层（已落）**：真路径驱动器在收口产物时把「与上一条逐字相同（`seq` 与时刻除外）」的 `usage` 事件折成一条（`packages/server/agents/src/testing/dsh-real-path-fixture.ts` 的 `foldRepeatedUsage`），于是那一格判据拿到的是确定条数；两臂指纹也才有可比性。
+- **适配器层（未闭合）**：根因在投送循环里，修法是 `settled` 之后给在飞的 `nextOrSettled()` 一个有界宽限再 `break`（或等订阅真正 `close()`）。**代价**：那是投送循环的时序语义，`providers/dsh/index.test.ts` 里有按投递间隔与轮询拍设计的用例；按本仓口径，动 `run` 的取数面要先澄清。今天不修的代价不是正确性，而是**同一份脚本两次运行的事件条数不可比**（跨轮次对比条数这类判据不能用）。
+
 ---
+
 ## `原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）
 
 **日期**：2026-10-10（首次观测 2026-10-09）

@@ -135,14 +135,16 @@ describe('抽屉几何', () => {
     expect(nestedDrawer, '二级抽屉又写了 push——那一格不会生效').not.toContain('push=');
   });
 
-  it('语义槽样式：窄屏兜底 `maxWidth: 100vw` + 内容区 `padding: 0`（钉整个常量定义）', () => {
+  it('语义槽样式：窄屏兜底 `maxWidth: 100vw` + 纵向兜底 `maxHeight: 100vh` + 内容区 `padding: 0`（钉整个常量定义）', () => {
     // 断言**整个 `DRAWER_SEMANTIC_STYLES` 定义**，不拆成两条零散子串断言：文件头注释里就写着
     // `` `maxWidth: '100vw'` `` 与 `` `body.padding: 0` ``（那是讲给读的人听的口径），
     // 扫全文的话，把常量掏空也照样绿——**实测**（本文件首次跑时）：`wrapper: { maxWidth: '100vw' }`
     // 改成 `wrapper: {}`、`body: { padding: 0 }` 改成 `body: {}`，两条子串断言一条都没红。
     // 这一份**主抽屉与二级抽屉共用**（二级那一档只差宽度），故它掏空等于两档一起坏。
+    // `maxHeight` 是**纵向那一半**：antd 只给水平方向留兜底，垂直方向什么都不给 ⇒ 底部弹入那一档
+    // 的高度表达式在矮视口下会顶穿屏幕（它同样是共用常量的一部分，掏空一样要红）。
     expect(geometry).toMatch(
-      /export const DRAWER_SEMANTIC_STYLES = \{\s*wrapper: \{ maxWidth: '100vw' \},\s*body: \{ padding: 0 \},\s*\} as const;/,
+      /export const DRAWER_SEMANTIC_STYLES = \{\s*wrapper: \{ maxWidth: '100vw', maxHeight: '100vh' \},\s*body: \{ padding: 0 \},\s*\} as const;/,
     );
   });
 

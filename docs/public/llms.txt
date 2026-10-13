@@ -11,6 +11,7 @@
 - [DeepSeek Harness 适配 FAQ](/faq/deepseek-harness): DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里踩过的坑。
 - [故障索引](/faq/): 四家厂商适配 FAQ 的现象条目索引：标题照抄报错原文（含报错码与英文原句），排障时拿报错原文在本页一搜即命中，锚点直达对应 FAQ 的方案层条目。
 - [Pi Coding Agent FAQ](/faq/pi): pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的坑。
+- [提问与应答](/features/ask-user-answer): 评测跑起来之后，**模型会问人**：cc / codex / dsh 走厂商自带的提问工具，pi 走我们注册的宿主工具。
 - [用例管理](/features/case-management): 用例固定「同一道题」：仓库 + commit + 考题提示词 + 评分标准项，固定之后任意候选的产出可被完整复现与追溯。
 - [功能总览](/features/): 功能说明域的目录层：三大功能模块与数据模型的清单，每项一句话定位；已落地文章给站内链接，未落地者以《书名号》提名。
 - [评分](/features/judging): 评分是一轮评测的第 7 步：把候选的**完整产出**（文本通路 = 裁剪后的 diff；智能体通路 = 候选自己的工作区）对照用例的**评分标准项表格**做逐项…。

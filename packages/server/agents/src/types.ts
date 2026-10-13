@@ -12,7 +12,11 @@ import {
   type AgentEvent,
   type AgentKind,
   type AgentMessage,
+  type AskUserAnswer,
+  type AskUserOutcome,
+  type AskUserQuestion,
   type InjectionCapability,
+  type InteractionCapability,
   type McpServers,
   type MessageCapability,
   type SubagentRecord,
@@ -20,6 +24,8 @@ import {
 
 export { AGENT_KINDS };
 export type { AgentKind };
+/** 交互面声明（形状真源在 contracts）在本包内也要能被引用：`AgentProviderMetadata.interaction` 就是它 */
+export type { InteractionCapability };
 
 /** 与路由的 ProtocolType 同义；此处重复声明避免为两个字符串引入依赖 */
 export type ProtocolType = 'openai' | 'anthropic';
@@ -257,6 +263,54 @@ export interface AgentRunInput {
    * 与消息没有交集；并进去只会让两边的形状互相将就。
    */
   onSubagent?: (record: SubagentRecord) => void;
+  /**
+   * **提问回调**：模型问到用户时把这一问交给调用方，等它的答复再继续。
+   *
+   * ⚠️ **它与上面三条流不是同一种形状**，四格差别缺一不可说清：
+   *   · 上面三条是**同步、不 await**（回调慢一点就拖慢事件流），这一格**必须 await**；
+   *   · 上面三条**抛错被吞**（一条投影失败不该毁掉整行），这一格抛错 ⇒ 这一问落「无人应答」，
+   *     但仍**不改变**本次运行的 `ok` / 退出原因——「没人答」与「行失败」是两件事；
+   *   · 上面三条**不改变本次运行的结论**，这一格会（用户答了什么，模型就照什么干）；
+   *   · 它是**唯一一格允许阻塞本次运行**的回调，因此等待语义（超时预算、行终止、
+   *     静止超时豁免）全部归骨架，适配器只负责把厂商钩子接上来、把答复按各家形状喂回去。
+   *
+   * **可选**：不传 = 这次运行没有应答面——适配器一个钩子都不挂、一个开关都不开、
+   * 权限档也不改（「默认不介入」这条边界靠它成立，既有行为因此逐字不变）。
+   */
+  onAskUser?: (request: AskUserRequest) => Promise<AskUserReply>;
+}
+
+/**
+ * **一次提问**（骨架交给回调的那一份）：模型刚调了提问工具，问题与厂商上下文原样带过来。
+ *
+ * 五格各自回答一个「消费方不然就得自己猜」的问题：
+ *   · `questions` 是**归一后**的问题数组（契约形状，不是厂商方言）——回调侧不用认四家的字段名；
+ *   · `toolName` 是**厂商原始工具名**（如 `AskUserQuestion`）：提示与排障要能报出模型实际调的是谁；
+ *   · `callId` 是这次工具调用的 id：答案要按它回填进消息账本的 `tool-result` 那一半；
+ *   · `vendorBudgetMs` 是**厂商侧**自己的等待预算（厂商到点会自己收场）；`null` = 这一家没有
+ *     （宿主工具那两档吃我们的预算）或没采到——不填 `0`，那会被读成「立刻超时」；
+ *   · `subagentId` 是**子智能体身份**（`null` = 主线程）：子智能体发起的提问按「子智能体不能向用户
+ *     提问」收场，回调侧靠它区分，而不是靠自己去猜调用栈。
+ */
+export interface AskUserRequest {
+  questions: AskUserQuestion[];
+  toolName: string;
+  callId: string;
+  vendorBudgetMs: number | null;
+  subagentId: string | null;
+}
+
+/**
+ * **一次提问的答复**：收场方式 + 答案。
+ *
+ * 两格成对出现（与界面侧那份「已收场」形状同义）：`answers` 为 `null` = 收场了但没有答案可回填
+ * （等超时、通道不可用、随行取消…），与「答了但一个选项都没选」（空数组 + 可能只有自由输入）
+ * 是两件事——合成一个空数组，落盘的收场标记就再也说不清到底有没有人答过。
+ * 七态词表与只读复盘卡片上的那一套同名同义，本包不新造。
+ */
+export interface AskUserReply {
+  outcome: AskUserOutcome;
+  answers: AskUserAnswer[] | null;
 }
 
 /** 一次运行的结果：计量采不到时一律 null，绝不填 0 */
@@ -395,6 +449,18 @@ export interface AgentProviderMetadata {
    * 且该场景产物里必须真的有那件事（判据在 `providers/conformance/` 的套件与接入守卫里）。
    */
   injection: InjectionCapability;
+  /**
+   * **交互面能力**：模型问出来的时候，这一家有没有人能答、提问工具是谁提供的、不能时为什么。
+   *
+   * 为什么单列一组：前四组回答「跑这一行能做什么」「拿得到哪些块」「我们下发的东西认不认」，
+   * 这一组回答「模型向用户提问时这条路通不通」——变化原因（厂商通道的有无与投送）、消费方
+   * （应答面与弹层）与判据通道都不同。少了它，三种「没有」只能混成一句「不支持」：
+   * 结构上没有（`no`）、厂商有但我们没接（`off-by-adapter`）、厂商有但不投送到我们拿得到的
+   * 通道（`not-projected-by-vendor`）——排查时前一种是「白写代码」，后一种是「能写代码解决」。
+   *
+   * 声明与产物**互钉**：把哪一格改成 `yes` 就要同时给出对应的一致性场景（否则接入守卫红）。
+   */
+  interaction: InteractionCapability;
   /**
    * **耗时量级**：真机冒烟的等待预算按它派生，实测超出这一档的上限即判声明与事实不符。
    * 见 `ProviderTiming`。

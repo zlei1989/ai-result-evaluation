@@ -128,6 +128,8 @@ export interface RunFormValues {
   caseId: string;
   executionMode: ExecutionMode;
   useAgentJudge: boolean;
+  /** 这一轮开不开应答面（`RunCreate.askUser`）：模型提问时等人回答 */
+  askUser: boolean;
   /**
    * 候选行。`effort` 必须**原样回传**（编辑时）：编辑载荷是行集合的**全量替换**，而
    * contracts 的 `isSameRowTarget` 把 effort 一起比（一侧没给就算改了档位）——
@@ -150,6 +152,7 @@ interface FormValues {
   caseId?: string;
   executionMode?: 'parallel' | 'serial';
   useAgentJudge?: boolean;
+  askUser?: boolean;
   rows?: RowFormValue[];
 }
 
@@ -414,6 +417,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       executionMode: values.executionMode ?? 'serial',
       // 缺省 false：开关没被碰过时 antd 给的是 `initialValues` 那一份，这里兜的是「值确实缺失」的极端情况
       useAgentJudge: values.useAgentJudge ?? false,
+      askUser: values.askUser ?? false,
       rows,
     };
 
@@ -460,11 +464,12 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       // 用户只改了个模型、执行模式却被悄悄改成串行）；新建：只给两个缺省值，行由 Form.List 自带
       initialValues={
         editingRun === undefined
-          ? { executionMode: 'serial', useAgentJudge: false }
+          ? { executionMode: 'serial', useAgentJudge: false, askUser: false }
           : {
             caseId: editingRun.caseId,
             executionMode: editingRun.executionMode,
             useAgentJudge: editingRun.useAgentJudge,
+            askUser: editingRun.askUser,
             rows: editingRun.rows.map((row) => ({
               // id 与 effort 都原样进表单值：前者是「哪一行」，后者是「这一行怎么跑的」，
               // 少任何一格都会让一次无改动的保存被服务端判成「改了」（见 RunFormValues 的注释）
@@ -512,6 +517,17 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         valuePropName="checked"
         // 说明写在 extra 里而不是另起一段文字：它解释的是这一格，跟着它走才不会在版式变化时脱节
         extra="改动很大、diff 塞不进一次请求的上下文时用它：由设置页配置的评分智能体在候选工作区里自行查看代码后打分。默认关闭。"
+        style={{ marginBottom: 8 }}
+      >
+        <Switch />
+      </Form.Item>
+
+      <Form.Item
+        name="askUser"
+        label="允许智能体向我提问"
+        valuePropName="checked"
+        // 说明同样写在 extra 里（跟着这一格走）：它要说清代价——这一轮会被人工介入，产物与没开过的不可直接比
+        extra="模型中途拿不准时会向你提问，你在弹出的问答卡片里回答，它拿到答复再继续。代价如实说：这一轮会为等人停下来，一问最多等十分钟，产物与没开过的轮次不可直接比。默认关闭。"
         style={{ marginBottom: 8 }}
       >
         <Switch />

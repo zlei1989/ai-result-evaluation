@@ -24,10 +24,18 @@
  *   4. **缺的格记 `null`，不编 0 / 空串**。唯一的例外是 `subject` 与 `header`：它们在三家
  *      都可能**本身就是空串**（厂商给了空），那时保留空串而不是改写成 `null`。
  *
+ * **`allowOther` 成立有两条路**（`vendor` 因此是必填入参，不能从工具名反推）：
+ *   · **题目上声明**：codex 的 `isOther`、pi 的 `allowOther`（后者是我们注册的宿主工具，schema 由我们写）；
+ *   · **答案面固有**：cc 的提问工具入参里没有这一格（它的 schema 逐字写着「不要给 'Other' 选项，
+ *     那个界面上自动提供」），dsh 的答复项恒带可选 `custom`
+ *     （源码：`...answer.custom !== undefined ? { custom: answer.custom } : {}`）⇒ 这两家恒 `true`。
+ *     判据是**答复形状**而不是提问形状：这一格问的是「用户能不能自己写一句话」，这两家无论题目
+ *     怎么写都收得下那句话——cc 真机读数逐字 `The user answered: "…"="<自由输入>"`。
+ *
  * 输入允许是 **JSON 字符串**（codex 与 dsh 的 `arguments` 在归一前就是字符串）
  * 或已经是对象；坏 JSON 与标量一律按「认不出」处置（`null`），**不抛**。
  */
-import type { AskUserQuestion, TaskStep, ToolCallPayload, ToolFamily } from '@aieval/contracts';
+import type { AgentKind, AskUserQuestion, TaskStep, ToolCallPayload, ToolFamily } from '@aieval/contracts';
 
 /**
  * 取 `input` 的结构化半边。
@@ -125,7 +133,16 @@ function optionOf(raw: unknown): AskUserQuestion['options'][number] {
   };
 }
 
-function questionOf(raw: unknown): AskUserQuestion {
+/**
+ * 这一家的**答案面**是否恒收得下用户自己写的话（见模块头那两条路）。只有这两家成立：
+ * cc 的提问由 CLI 自己的界面兜底「Other」、dsh 的答复项恒带可选 `custom`；
+ * 另两家由厂商（codex）或我们自己（pi）在题目上声明，不看这一格。
+ */
+function answerSurfaceTakesFreeText(vendor: AgentKind): boolean {
+  return vendor === 'cc' || vendor === 'dsh';
+}
+
+function questionOf(raw: unknown, vendor: AgentKind): AskUserQuestion {
   const item = asRecord(raw);
   return {
     header: asString(item.header) ?? '',
@@ -133,25 +150,31 @@ function questionOf(raw: unknown): AskUserQuestion {
     options: asArray(item.options).map(optionOf),
     // `multi_select` 是 dsh 的写法：只认驼峰版本会让它的多选静默显示成单选
     multiSelect: item.multiSelect === true || item.multi_select === true,
-    // codex 的 `isOther` 与答案侧的 `custom`（dsh）是同一件事的两种拼法
-    allowOther: item.allowOther === true || item.isOther === true,
+    // codex 的 `isOther` 与 pi 的 `allowOther` 是同一件事的两种拼法；cc / dsh 另有答案面这一处来源
+    allowOther: item.allowOther === true || item.isOther === true || answerSurfaceTakesFreeText(vendor),
     secret: item.secret === true || item.isSecret === true,
   };
 }
 
-/** 问答形状 → `ask-user` 载荷；没有 `questions` 键 ⇒ `null`（不是这一族） */
-function askUserPayloadOf(structured: Record<string, unknown>): ToolCallPayload | null {
+/**
+ * 问答形状 → `ask-user` 载荷；没有 `questions` 键 ⇒ `null`（不是这一族）。
+ * `vendor` 只影响 `allowOther` 那一格（见模块头）——两家答案面固有自由输入的家靠它把这一格点亮。
+ */
+function askUserPayloadOf(structured: Record<string, unknown>, vendor: AgentKind): ToolCallPayload | null {
   if (!('questions' in structured)) return null;
-  return { kind: 'ask-user', questions: asArray(structured.questions).map(questionOf) };
+  return { kind: 'ask-user', questions: asArray(structured.questions).map((raw) => questionOf(raw, vendor)) };
 }
 
 /**
  * 一次工具调用的族载荷。`family` 为 `null`（适配器不认识这个工具）或不属于本期两族时一律 `null`——
  * 其余八族今天没有卡片，**不替它们猜**（猜出来的卡片会把工具行顶掉）。
+ *
+ * `vendor` 必填（不是可选、也不是按工具名反推）：`allowOther` 那一格要看**这一家**的答案面
+ * （见模块头），反推会在同名工具跨家出现时静默给错这一格——而错的那一格正是「弹层有没有自由输入」。
  */
-export function toolPayloadOf(family: ToolFamily | null, input: unknown): ToolCallPayload | null {
+export function toolPayloadOf(family: ToolFamily | null, input: unknown, vendor: AgentKind): ToolCallPayload | null {
   if (family !== 'task' && family !== 'ask-user') return null;
   const structured = structuredOf(input);
   if (structured === null) return null;
-  return family === 'task' ? planPayloadOf(structured) : askUserPayloadOf(structured);
+  return family === 'task' ? planPayloadOf(structured) : askUserPayloadOf(structured, vendor);
 }

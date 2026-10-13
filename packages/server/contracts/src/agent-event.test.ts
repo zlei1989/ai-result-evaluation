@@ -1,8 +1,13 @@
 // @vitest-environment node
 /**
- * 契约 schema 的守卫：**事件**（八个成员的判别联合、类型清单、以及两条最容易漏的字段约束）
- * 与**消息信封**（`AgentMessageSchema` 的可选格；仓里没有 `agent-message.test.ts`，
- * 信封的守卫就住在本文件末尾那一组）。
+ * 契约 schema 的守卫：**事件**（九个成员的判别联合、类型清单、以及两条最容易漏的字段约束）、
+ * **消息信封**（`AgentMessageSchema` 的可选格）与 **`agent-message.ts` 里另外两组形状**
+ * （ask-user 的答案侧、交互面能力声明）。
+ *
+ * 为什么这些守卫都住在本文件：`agent-message.ts` 的形状没有独立的测试文件，
+ * 而它们与前两组是同一份契约文件里的同一类东西（zod 形状 + 字段之间的对应关系），
+ * 分散到多个文件只会让「这个形状有没有人管」变成要翻目录才知道的事。
+ *
  * 注意：`seq` 从 1 开始单调递增（由 core 的事件日志写入器分配），`at` 是 ISO 8601 字符串——
  * 这两条决定了 SSE 的 `Last-Event-ID` 续订能不能工作。
  * 另有一条守卫钉住 `seq` 的「正整数」约束（见对应 it 内注释）：把 `.int().positive()` 删掉会失败；
@@ -10,12 +15,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AGENT_EVENT_TYPES, AgentEventSchema, normalizeMcpServers } from './agent-event';
-import { AgentMessageSchema } from './agent-message';
+import {
+  AgentMessageSchema,
+  AskUserAnswerSchema,
+  AskUserOutcomeSchema,
+  AskUserResultSchema,
+  InteractionCapabilitySchema,
+} from './agent-message';
 
 const base = { seq: 1, at: '2026-09-22T10:30:00.000Z' };
 
 describe('AgentEventSchema', () => {
-  it('接受行级事件成员（八个成员各有样本；`vendor-system` 的形状另有一组专测）', () => {
+  it('接受行级事件成员（九个成员各有样本；`vendor-system` 的形状另有一组专测）', () => {
     const events = [
       { ...base, type: 'status', status: 'running' },
       { ...base, type: 'log', stream: 'stdout', text: '开始执行' },
@@ -31,6 +42,16 @@ describe('AgentEventSchema', () => {
       },
       { ...base, type: 'usage', tokens: { input: 10, cached: 2, output: 3 }, turns: 1 },
       { ...base, type: 'diff-summary', filesChanged: 2, insertions: 12, deletions: 3, truncated: false },
+      {
+        ...base,
+        type: 'ask-user',
+        askId: 'ask-1',
+        callId: 'call-1',
+        toolName: 'AskUserQuestion',
+        channel: 'vendor-tool',
+        outcome: 'answered',
+        waitedMs: 12_000,
+      },
       {
         ...base,
         type: 'score',
@@ -436,11 +457,12 @@ describe('vendor-system 的 mcpServers', () => {
 });
 
 describe('AGENT_EVENT_TYPES', () => {
-  it('八个类型、顺序即书写顺序（`vendor-system` 紧随 `log`）', () => {
-    // `vendor-system` 挨着 `log` 排：两者都是**厂商侧投送的事实**（原文 / 归一之后的形状），
-    // `usage` 之后那一串则是本仓自己发的过程事件（计量 / 改动 / 评分 / 失败 / 结束）
+  it('九个类型、顺序即书写顺序（`vendor-system` 紧随 `log`）', () => {
+    // `vendor-system` 挨着 `log` 排：两者都是**厂商侧投送的事实**（原文 / 归一之后的形状）；
+    // `usage` 之后那一串则是本仓自己发的过程事件（计量 / 改动 / 提问收场 / 评分 / 失败 / 结束），
+    // 其中 `diff-summary` 与 `ask-user` 相邻——两条都是编排层自己算出来的行级观测
     expect([...AGENT_EVENT_TYPES]).toEqual([
-      'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'score', 'error', 'end',
+      'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'score', 'error', 'end',
     ]);
   });
 
@@ -635,5 +657,149 @@ describe('vendor-system 的 skills', () => {
     expect(AgentEventSchema.safeParse(vendorEvent([{ ...REAL_SKILLS[0], name: '' }])).success).toBe(false);
     // 厂商没给来源 ⇒ source 为 null（不是空串）：那是「厂商没报这一格」，与「报了一个空来源」不同
     expect(AgentEventSchema.safeParse(vendorEvent([{ name: 'x', source: null, path: null, origin: 'unverified' }])).success).toBe(true);
+  });
+});
+
+/**
+ * **ask-user 的答案侧**（问题侧见 `AskUserQuestionSchema`）。
+ *
+ * 两条判据的靶子：① 一份答案的三个格子各有归处——`selected` 装**选项标签**（配对键只有
+ * `header`，装 id 或下标会让答案配到另一个问题上）、`custom` 的 `null` 表示「没写自己的话」；
+ * ② 收场方式是**既有七态**，不新造枚举也不许少一格（少了哪一格，落盘的收场标记与只读卡片
+ * 就会各说一套）。
+ */
+describe('ask-user 答案侧', () => {
+  it('一份答案 = header + selected（选项标签）+ custom；三项缺一不可', () => {
+    const answer = { header: '选路径', selected: ['选项 A', '选项 C'], custom: null };
+    const parsed = AskUserAnswerSchema.safeParse(answer);
+    expect(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues)).toBe(true);
+    expect(parsed.success ? parsed.data : null).toEqual(answer);
+    // `custom` 必填可空：`null` = 没写自己的话，`''` = 写了但内容为空——两种事实不许互相顶替
+    expect(AskUserAnswerSchema.safeParse({ header: 'H', selected: [] }).success).toBe(false);
+    // `selected` 是标签数组：自由输入不是选项，不许混进这一格；数字更不行
+    expect(AskUserAnswerSchema.safeParse({ header: 'H', selected: '选项 A', custom: null }).success).toBe(false);
+    expect(AskUserAnswerSchema.safeParse({ header: 'H', selected: [1], custom: null }).success).toBe(false);
+    // 空选择合法：多选里「一个都没勾、只写了自己的话」是真实答案
+    expect(AskUserAnswerSchema.safeParse({ header: 'H', selected: [], custom: '都不选' }).success).toBe(true);
+  });
+
+  it('收场方式就是既有七态（不新造，也不许少一格）', () => {
+    expect([...AskUserOutcomeSchema.options]).toEqual([
+      'answered',
+      'auto-resolved',
+      'skipped',
+      'timeout',
+      'unavailable',
+      'rejected',
+      'canceled',
+    ]);
+    // 「还没收场」不是收场方式：它是提问的另一支状态，混进这一格会让「答完了吗」永远判不出来
+    expect(AskUserOutcomeSchema.safeParse('pending').success).toBe(false);
+  });
+
+  /**
+   * **结果载荷**（答案在 `tool-result` 那一半）：只读卡片的回填只认这一格，
+   * 故它必须①不接受缺答案的 `answered`、②不接受「六态里带了答案」——
+   * 那两种形状都会让「有没有人答过」这个问题再也答不出来。
+   */
+  it('结果载荷 = outcome + answers；`answered` 与「有答案」成对，其余六态恒 null', () => {
+    const answered = { outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: null }] };
+    expect(AskUserResultSchema.safeParse(answered).success).toBe(true);
+    // 答了但一个选项都没选（自由输入那一支）：空数组是**有答案**，与 null 不是一回事
+    expect(AskUserResultSchema.safeParse({ outcome: 'answered', answers: [{ header: 'H', selected: [], custom: '都不对' }] }).success).toBe(true);
+    expect(AskUserResultSchema.safeParse({ outcome: 'timeout', answers: null }).success).toBe(true);
+    // 缺答案数组本身就不合法（「没采到」与「没人答」是两件事，前者是坏数据）
+    expect(AskUserResultSchema.safeParse({ outcome: 'timeout' }).success).toBe(false);
+    // 收场方式必须是那七态之一：从磁盘上塞一个我们不认识的档进来要当场拒
+    expect(AskUserResultSchema.safeParse({ outcome: 'gave-up', answers: null }).success).toBe(false);
+  });
+});
+
+/**
+ * **交互面能力声明**（与「行级」「内容级」「下发级」并列的一组）。
+ *
+ * 五条判据的靶子，与 `InjectionStateSchema` 同源：
+ *   · `askUser` 用**既有五态词表**（不新造取值）；
+ *   · 非 `yes` ⇒ 必须给出缺失原因，`yes` ⇒ 原因必须为 `null`；
+ *   · `askUserChannel` **只在 `yes` 时有值**——它回答「模型看到的提问工具是厂商提供的还是
+ *     我们注册的」，没有这条通道时留着它等于给消费方一个查不到的来源；
+ *   · `askUserProofDriver` **必填**：这一句 `yes` 是靠真路径证出来的、还是夹具代跑的；
+ *   · **`yes` 不许配 `synthetic-fixture`**——声明得出「能被问」就得拿真路径证明，而
+ *     `synthetic-fixture` 必须给出原因（它是临时档，说不清为什么就该删掉它）。
+ */
+describe('交互面能力声明', () => {
+  /** 一份可解析的声明；`driver` 与 `driverReason` 由各条用例按要判的那一格覆盖 */
+  const declaration = (
+    askUser: unknown,
+    askUserChannel: unknown,
+    askUserReason: unknown,
+    driver: unknown = 'real-path',
+    driverReason: unknown = null,
+  ) => ({
+    askUser,
+    askUserChannel,
+    askUserReason,
+    askUserProofDriver: driver,
+    askUserProofDriverReason: driverReason,
+    notes: [],
+  });
+
+  it('yes：必须给出通道（厂商工具 / 宿主工具），原因必须为 null', () => {
+    for (const channel of ['vendor-tool', 'host-tool'] as const) {
+      expect(InteractionCapabilitySchema.safeParse(declaration('yes', channel, null)).success, channel).toBe(true);
+    }
+    expect(InteractionCapabilitySchema.safeParse(declaration('yes', 'vendor-tool', 'not-observed')).success).toBe(false);
+    // 声明得出「这家能被问」却说不出提问工具是谁提供的 ⇒ 消费方分不清提示词来源
+    expect(InteractionCapabilitySchema.safeParse(declaration('yes', null, null)).success).toBe(false);
+  });
+
+  it('yes 必须拿真路径证明：`yes` + `synthetic-fixture` 被拒', () => {
+    // 夹具扮演厂商那一端能让判据全绿，却证不到「请求真的到了我们手里、答复真的回到了厂商」——
+    // 那句 `yes` 因此只能是假的
+    expect(
+      InteractionCapabilitySchema.safeParse(
+        declaration('yes', 'vendor-tool', null, 'synthetic-fixture', '这一家今天驱动不了真路径'),
+      ).success,
+    ).toBe(false);
+    // 同一组字段在真路径上照旧可解析（被拒的是组合，不是这两个字段本身）
+    expect(InteractionCapabilitySchema.safeParse(declaration('yes', 'vendor-tool', null, 'real-path')).success).toBe(true);
+  });
+
+  it('synthetic-fixture 是临时档：必须给出非空原因', () => {
+    expect(InteractionCapabilitySchema.safeParse(declaration('no', null, 'not-supported', 'synthetic-fixture', null)).success).toBe(false);
+    expect(InteractionCapabilitySchema.safeParse(declaration('no', null, 'not-supported', 'synthetic-fixture', '   ')).success).toBe(false);
+    expect(InteractionCapabilitySchema.safeParse(declaration('no', null, 'not-supported', 'synthetic-fixture', '驱动器还没接')).success).toBe(true);
+    // real-path 反过来不许挂原因：那时没有要解释的东西，留着它只会让读者以为这一档有保留
+    expect(InteractionCapabilitySchema.safeParse(declaration('no', null, 'not-supported', 'real-path', '驱动器还没接')).success).toBe(false);
+  });
+
+  it('驱动器那一格必填（答不出就不该声明 yes）', () => {
+    const { askUserProofDriver: _driver, ...withoutDriver } = declaration('yes', 'vendor-tool', null);
+    expect(InteractionCapabilitySchema.safeParse(withoutDriver).success).toBe(false);
+  });
+
+  it('四种「没有」：必须给出原因、通道必须为 null', () => {
+    const nonYes: ReadonlyArray<readonly [string, string]> = [
+      ['no', 'not-supported'],
+      ['unverified', 'unverified'],
+      ['off-by-adapter', 'not-observed'],
+      ['not-projected-by-vendor', 'not-exposed'],
+    ];
+    for (const [askUser, reason] of nonYes) {
+      expect(InteractionCapabilitySchema.safeParse(declaration(askUser, null, reason)).success, askUser).toBe(true);
+    }
+    // 非 yes 不给原因 ⇒ 「这家结构上没有」与「我们有这个能力但没接」在数据上同形
+    expect(InteractionCapabilitySchema.safeParse(declaration('no', null, null)).success).toBe(false);
+    // 非 yes 却带着通道 ⇒ 消费方会去读一条并不存在的通道
+    expect(InteractionCapabilitySchema.safeParse(declaration('off-by-adapter', 'host-tool', 'not-observed')).success).toBe(false);
+  });
+
+  it('取值域就是既有五态（编造的档被拒）', () => {
+    for (const state of ['yes', 'no', 'unverified', 'off-by-adapter', 'not-projected-by-vendor'] as const) {
+      const channel = state === 'yes' ? 'host-tool' : null;
+      const reason = state === 'yes' ? null : 'unverified';
+      expect(InteractionCapabilitySchema.safeParse(declaration(state, channel, reason)).success, state).toBe(true);
+    }
+    expect(InteractionCapabilitySchema.safeParse(declaration('maybe', null, 'unverified')).success).toBe(false);
   });
 });

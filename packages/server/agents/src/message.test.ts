@@ -106,21 +106,21 @@ describe('messageAssembler：增量与快照', () => {
  */
 describe('toolCallBlockDraft：块自带摘要主体', () => {
   it('摘要与 `activity.ts` 的词表逐字一致（描述优先、每族拼法、计划类特判）', () => {
-    const read = toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' });
+    const read = toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' }, 'cc');
     expect(read.block).toMatchObject({ summary: toolCallHint('Read', { file_path: 'a.ts' }) });
     expect((read.block as { summary?: string }).summary).toBe('a.ts');
 
     // 描述优先：两个键都在时给 `描述（目标）`
-    const described = toolCallBlockDraft('call_desc', 'Bash', { command: 'ls -la', description: 'List files' });
+    const described = toolCallBlockDraft('call_desc', 'Bash', { command: 'ls -la', description: 'List files' }, 'cc');
     expect((described.block as { summary?: string }).summary).toBe('List files（ls -la）');
 
     // 计划类入参只说几步（「更新计划」那四个字是活动行的句式，工具行不复述）
-    const plan = toolCallBlockDraft('call_2', 'TodoWrite', { todos: [{ subject: 'a' }, { subject: 'b' }] });
+    const plan = toolCallBlockDraft('call_2', 'TodoWrite', { todos: [{ subject: 'a' }, { subject: 'b' }] }, 'cc');
     expect((plan.block as { summary?: string }).summary).toBe('2 步');
   });
 
   it('没名字 / 没参数时摘要主体是空串（界面据此说「参数未采集」），不编一句话', () => {
-    const bare = toolCallBlockDraft('call_3', '', null);
+    const bare = toolCallBlockDraft('call_3', '', null, 'cc');
     expect((bare.block as { summary?: string }).summary).toBe('');
   });
 });
@@ -130,15 +130,15 @@ describe('messageAssembler：块序号与合并键', () => {
     const messages = run([
       draft({ blocks: [thinkingBlockDraft('想一下', 'full', 'snapshot', null, { kind: 'index', index: 0 })] }),
       draft({ blocks: [textBlockDraft('答复', 'snapshot', { kind: 'index', index: 1 })] }),
-      draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' })] }),
+      draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' }, 'cc')] }),
     ]);
     // 最后一条消息带齐三块，且顺序 = 首次到达顺序
     expect(messages.at(-1)?.blocks.map((block) => block.type)).toEqual(['thinking', 'text', 'tool-call']);
   });
 
   it('工具块按 `callId` 区分：同轮两次调用互不覆盖，结果按 `callId` 落回同一条', () => {    const messages = run([
-    draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' })] }),
-    draft({ blocks: [toolCallBlockDraft('call_2', 'Read', { file_path: 'b.ts' })] }),
+    draft({ blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' }, 'cc')] }),
+    draft({ blocks: [toolCallBlockDraft('call_2', 'Read', { file_path: 'b.ts' }, 'cc')] }),
     // 工具结果的载体是 `role: 'tool'`（与调用那条不同）⇒ 它是一条**独立**的逻辑消息，
     // 靠 `callId` 这个块标识与调用配对（只看块序号会把两次调用的结果互相盖掉）
     draft({ role: 'tool', blocks: [toolResultBlockDraft('call_1', '内容 A')] }),
@@ -232,7 +232,7 @@ describe('产出的每条消息都符合契约（含 `mergeKey`）', () => {
         subagentId: 'call_Task',
         parentCallId: 'call_Task',
         roundTrip: 2,
-        blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' })],
+        blocks: [toolCallBlockDraft('call_1', 'Read', { file_path: 'a.ts' }, 'cc')],
       }),
     ]);
     for (const message of messages) {

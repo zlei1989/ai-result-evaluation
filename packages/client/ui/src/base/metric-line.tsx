@@ -61,6 +61,7 @@
 import { Flex, Tooltip, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import type { ScoreResult } from '@aieval/contracts';
+import { formatDuration } from './format';
 import { formatCacheHitRate, formatCount, formatUsageTriple } from './usage-metrics';
 import { useNow } from './use-now';
 
@@ -138,17 +139,12 @@ export interface MetricLineProps {
   live?: Pick<LiveMetricsView, 'startedAtMs' | 'tokens' | 'subagentTokens' | 'subagentTurns' | 'turns' | 'candidateEnded' | 'candidateEndedAtMs'>;
 }
 
-/** 毫秒 → `45s` / `6m23s` / `1h05m`；负数与非有限数按 `0s` 处理（脏值不该让界面出现 NaN） */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '0s';
-  const totalSeconds = Math.round(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h${String(minutes).padStart(2, '0')}m`;
-  if (minutes > 0) return `${minutes}m${String(seconds).padStart(2, '0')}s`;
-  return `${seconds}s`;
-}
+/**
+ * 毫秒 → `45s` / `6m23s` / `1h05m` 的实现搬去了 `base/format.ts`（纯函数模块）：
+ * 日志行那一层也要用它，而它不该 import 本文件（`.tsx` 会把 React 拖进纯逻辑的依赖图）。
+ * 这里只做**再导出**，既有调用点一个字都不用改。
+ */
+export { formatDuration };
 
 /**
  * 缓存命中率（`formatCacheHitRate`）与千分位 / token 文案（`formatCount` / `formatTokens` /

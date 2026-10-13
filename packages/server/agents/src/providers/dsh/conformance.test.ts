@@ -21,7 +21,13 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent, AgentMessage, McpServers, SubagentRecord } from '@aieval/contracts';
+import type {
+  AgentEvent,
+  AgentMessage,
+  AskUserQuestion,
+  McpServers,
+  SubagentRecord,
+} from '@aieval/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setAgentRuntimeForTesting } from '../../runtime';
 import {
@@ -33,7 +39,13 @@ import {
   settleWithFakeTimers,
 } from '../../testing/agent-fixtures';
 import { removeTreeWithRetry } from '../../testing/cleanup';
+import { dshToolResultTextOf, runDshRealPath, type DshRealPathRun } from '../../testing/dsh-real-path-fixture';
+import {
+  askUserProductDigest,
+  askUserProductDigestExcludingTool,
+} from '../conformance/ask-user';
 import { describeProviderConformance, type ConformanceProduct, type LifecycleEvidence } from '../conformance/kit';
+import type { AskUserReply } from '../../types';
 import { dshProvider, DSH_ROUTE_PATCH_RELATIVE_PATH } from './index';
 import { DSH_PACKAGE_NAME } from './sdk';
 
@@ -395,6 +407,128 @@ async function observeLifecycle(): Promise<LifecycleEvidence> {
   }
 }
 
+/**
+ * 提问应答场景：**真路径**——真 dsh 运行时 + 本机假 `/v1/messages` 上游 + 我们的应答者插件，
+ * 只把上游模型脚本化（它主动回一帧提问工具的 `tool_use`）。于是这一条证的是厂商那一侧真的跑起来了：
+ * 那一问真的进了厂商进程内的提问服务、真的沿 `user-questions/request` 派发到我们的应答者插件、
+ * 答复真的变成厂商的工具结果。「夹具扮演端口」那一档证不到这些（这一组判什么、不判什么写在判据模块头）。
+ *
+ * 两臂只差**应答面那一格**：有回调那一臂由适配器挂上应答者（插件本体 + overlay 那一行），
+ * 没有那一臂连插件文件都不落盘 ⇒ 那一问落到厂商自己那一档上（没挂应答面时等待档是定时档，
+ * 到点交回它设计好的「待答」结果）。于是两臂的产物差一截——那一截由驱动器**实测 + 逐件点名**
+ * 登记（`control.askResultTools`）。
+ */
+const ASK_TOOL_NAME = 'ask_user_question';
+const ASK_CALL_ID = 'call_ask_dsh_1';
+
+const ASK_QUESTIONS: AskUserQuestion[] = [
+  {
+    header: '选路径',
+    prompt: '用哪条路径？',
+    /**
+     * `recommended` 与 `secret` 的 `false` 是**厂商侧的事实**：这一家的提问工具 schema 里没有
+     * 「哪一项推荐」（它用「排首位 + label 带 (Recommended)」表达）、也没有「是不是密钥」。
+     * `allowOther: true` 读的是**答复**形状：厂商的答复项恒带可选 `custom`
+     * （源码逐字 `...answer.custom !== undefined ? { custom: answer.custom } : {}`，
+     * README 同义：「supplements a multi-select answer or replaces a single-select choice」）。
+     */
+    options: [
+      { label: '选项 A', description: '快一点', recommended: false },
+      { label: '选项 B', description: '慢一点但稳', recommended: false },
+    ],
+    multiSelect: false,
+    allowOther: true,
+    secret: false,
+  },
+];
+
+/** 那一帧提问工具调用的**厂商方言入参**（脚本式上游回的 `tool_use` 用它，字段名逐字是厂商 schema） */
+const ASK_FRAME_ARGS = {
+  questions: [
+    {
+      id: 'q1',
+      header: ASK_QUESTIONS[0]?.header,
+      question: ASK_QUESTIONS[0]?.prompt,
+      options: ASK_QUESTIONS[0]?.options.map((option) => ({
+        label: option.label,
+        description: option.description,
+      })),
+    },
+  ],
+};
+
+/** 弹层上写下、要一路进到厂商工具结果里的那句话（判据逐字比它） */
+const ASK_CUSTOM_ANSWER = '都不对，走第三条路';
+
+/**
+ * 这一问的答复取**多选并存**那一档（`selected` 与 `custom` 同时有值，契约口径：多选时自由输入
+ * 是补充项）。它一次钉住三件事——两个字段都不被丢掉、厂商那一侧确实把它们都念给了模型、
+ * 以及厂商的答复项装得下这两半（一个 `selected[]` 加一个自定义格，不必另造形状）。
+ * 只给选项的答复证不到后两件（`selected` 本来就到得了），故这一格刻意取并存档。
+ */
+const ASK_REPLY: AskUserReply = {
+  outcome: 'answered',
+  answers: [{ header: '选路径', selected: ['选项 A'], custom: ASK_CUSTOM_ANSWER }],
+};
+
+const ASK_FINAL_TEXT = '问完了。';
+
+/** 产品事件里那份**厂商工具表**（`vendor-system` 的 `tools` 数组）：请求侧事实在产物里的落点 */
+function vendorToolsOf(product: ConformanceProduct): string[] {
+  for (const event of product.events) {
+    if (event['type'] !== 'vendor-system') continue;
+    const tools = event['tools'];
+    if (Array.isArray(tools)) return tools.map((name) => String(name));
+  }
+  return [];
+}
+
+/** 两臂的运行结果（判据要两臂，故各跑一次；剧本同一条，只差应答面那一格） */
+async function runAskUserScenario(): Promise<{
+  product: ConformanceProduct;
+  withCallback: DshRealPathRun;
+  control: DshRealPathRun;
+}> {
+  const frame = { callId: ASK_CALL_ID, toolName: ASK_TOOL_NAME, args: ASK_FRAME_ARGS };
+  const withCallback = await runDshRealPath({ frame, finalText: ASK_FINAL_TEXT, onAskUser: async () => ASK_REPLY });
+  const control = await runDshRealPath({ frame, finalText: ASK_FINAL_TEXT, onAskUser: undefined });
+  const withTools = vendorToolsOf(withCallback.product);
+  const withoutTools = vendorToolsOf(control.product);
+  return {
+    withCallback,
+    control,
+    product: {
+      ...withCallback.product,
+      askUser: {
+        calls: withCallback.askCalls,
+        requests: withCallback.requests,
+        replies: [ASK_REPLY],
+        answerFrame: withCallback.answerBatches[0] ?? null,
+        control: {
+          calls: control.askCalls,
+          /**
+           * 对照臂没有应答面 ⇒ 骨架的提问端口**立即**给「无人应答」（不挂起、不打日志）。
+           * 真路径下没有夹具去调端口，故这一格按那条契约事实填；它由 `ask-user.test.ts` 的
+           * 「没传回调 ⇒ 立即无人应答」那条用例在包内钉住。
+           */
+          reply: { outcome: 'unavailable', answers: null },
+          digestWithCallback: askUserProductDigest(withCallback.product),
+          digestWithoutCallback: askUserProductDigest(control.product),
+          digestWithCallbackExcludingAskTool: askUserProductDigestExcludingTool(withCallback.product, ASK_TOOL_NAME),
+          digestWithoutCallbackExcludingAskTool: askUserProductDigestExcludingTool(control.product, ASK_TOOL_NAME),
+          /**
+           * 这一家的提问工具**两臂都在厂商工具表里**（工具由我们自己挂进 overlay，与应答面无关）
+           * ⇒ 差异落在**那一次调用的结果**上，登记在 `askResultTools` 而不是 `askSurfaceTools`。
+           */
+          outboundToolsWithCallback: withTools,
+          outboundToolsWithoutCallback: withoutTools,
+          askResultTools: [ASK_TOOL_NAME],
+        },
+      },
+    },
+  };
+}
+
 const products: Record<string, ConformanceProduct> = {};
 /** 每次运行交给 `run()` 的提示词（假 SDK 逐次覆盖 ⇒ 单轮场景里它就是首轮提示词） */
 const prompts: Record<string, string | null> = {};
@@ -403,12 +537,17 @@ for (const [name, scenario] of Object.entries(SCENARIOS)) {
   products[name] = run.product;
   prompts[name] = run.prompt;
 }
+const askUser = await runAskUserScenario();
+products['ask-user'] = askUser.product;
+/** 真路径那一次运行本身（请求侧与工具结果那两条判据读它，产物里读不到） */
+const askUserRun = askUser.withCallback;
 setAgentRuntimeForTesting(null);
 
 describeProviderConformance({
   kind: dshProvider.kind,
   capability: dshProvider.metadata.messageCapability,
   injection: dshProvider.metadata.injection,
+  interaction: dshProvider.metadata.interaction,
   /**
    * **真出站证据：两格都缺**（如实登记）。假件换掉了 SDK 模块，看不见真正打给模型的那份请求；
    * 这家**没有原生 schema 通道**（约束只追加进首轮提示词）⇒ 结构化输出那一格在产品上就不存在，
@@ -430,6 +569,7 @@ describeProviderConformance({
     'structured-output': () => products['structured-output']!,
     'mcp-injection': () => products['mcp-injection']!,
     'skill-injection': () => products['skill-injection']!,
+    'ask-user': () => products['ask-user']!,
   },
   /**
    * 喂了增量帧的场景必须钉住事件条数（一致性套件）：三条各自**实测**得来。
@@ -443,7 +583,11 @@ describeProviderConformance({
    * `data.usage`（真机形状），`assistant/message` 那一支把三元组无条件累进本行 ⇒ 每一次往返
    * 一条 `usage`。夹具若不给那一格用量，这一格就少了那两条，判据会把「真出站的那一份」判成错。
    */
-  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 12 },
+  /**
+   * 真路径那一格的事件条数也钉住：驱动器把「同一份累计计量快照的重复投送」折成一条之后，
+   * 这个数是确定的（见 `testing/dsh-real-path-fixture.ts` 的文件头）。
+   */
+  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 12, 'ask-user': 22 },
 });
 
 /**
@@ -462,5 +606,66 @@ describe('结构化输出探针挂载（dsh）', () => {
     expect(probe?.nativeChannel, 'dsh 没有原生 schema 通道：applied.structuredOutput 只能是 false').toBe(false);
     expect(probe?.hasOutputSchema, '把 schema 写进提示词不是「把 schema 发给厂商」').toBe(false);
     expect(probe?.finalText).toBe(JUDGE_JSON);
+  });
+});
+
+/**
+ * **真路径守卫**：这一问是**厂商自己**派发出来的、答复真的按厂商的应答形状交回去了、并且逐字进了
+ * 模型看到的那份工具结果吗。没有这几条，把 `answerFrame` 或驱动器换回夹具扮演端口只会让套件那一组
+ * 变成空转——谁都不会红。
+ */
+describe('提问真路径（dsh）', () => {
+  it('应答形状是厂商应答者那一支（答案按题目 id 配对）', () => {
+    const probe = products['ask-user']?.askUser;
+    expect(probe).toBeDefined();
+    expect(probe?.requests[0]?.toolName).toBe(ASK_TOOL_NAME);
+    // 调用 id 是厂商那一侧给的（`wait.callId`），答案按它配回那次调用
+    expect(probe?.requests[0]?.callId).toBe(ASK_CALL_ID);
+    // 进程内服务不带等待预算那一格 ⇒ 如实 null，不猜一个数
+    expect(probe?.requests[0]?.vendorBudgetMs).toBeNull();
+    /**
+     * 问答面拿到的题面就是弹层画的那一份（同一份归一产物）：这一家的答复项恒带可选 `custom`
+     * ⇒ `allowOther` 恒 true，弹层据此画出自由输入框（判据与另两处来源见 `tool-payload.ts`）。
+     */
+    expect(probe?.requests[0]?.questions[0]?.allowOther).toBe(true);
+    expect(probe?.calls).toBe(1);
+    // 多选并存：选项标签与自由输入各归各位（`custom` 为 null 时才不带那个键）
+    expect(probe?.answerFrame).toEqual({ answers: [{ id: 'q1', selected: ['选项 A'], custom: ASK_CUSTOM_ANSWER }] });
+    expect(probe?.control.calls).toBe(0);
+  });
+
+  it('应答者插件真的被厂商加载、那一问真的派发到了它手里', () => {
+    const run = askUserRun;
+    expect(run.pluginLoaded).not.toBeNull();
+    // 相对名按 `<dshHome>` 根解析（与适配器的 stream-tap 同一条基准）
+    expect(run.pluginLoaded?.url.endsWith('/aieval-ask-answerer.mjs')).toBe(true);
+    expect(run.askRecords).toHaveLength(1);
+    // 厂商的提问项形状：`id` / `question` / 选项两格；等待档这一行是本次装配自己的取值
+    const question = run.askRecords[0]?.questions[0];
+    expect(question?.id).toBe('q1');
+    expect(question?.question).toBe(ASK_QUESTIONS[0]?.prompt);
+    expect(question?.options?.map((option) => option.label)).toEqual(['选项 A', '选项 B']);
+  });
+
+  it('答复逐字进了厂商交给模型的工具结果（对照臂落厂商自己的「待答」档）', () => {
+    // 两半都逐字出现在模型看到的工具结果里（厂商把结构化答复渲染成紧凑 JSON）
+    expect(dshToolResultTextOf(askUserRun, ASK_CALL_ID))
+      .toBe(`{"answers":[{"id":"q1","selected":["选项 A"],"custom":"${ASK_CUSTOM_ANSWER}"}]}`);
+  });
+
+  it('不入应答面就不问：对照臂一次都没调用，那一问落厂商自己那一档（定时档到点交回「待答」）', () => {
+    const probe = products['ask-user']?.askUser;
+    expect(probe?.control.calls).toBe(0);
+    /**
+     * 没有应答面时那一问的收场由**厂商那一档**决定：本行 overlay 的等待档随应答面派生
+     * （没挂 ⇒ 定时档），到点交回的是厂商设计好的「待答」结果——不是夹具编的答案，也不是一次
+     * 工具失败。它就是 `askResultTools` 登记的那一截差异。
+     * 判据钉**哪一档**那两格（`pending` + `callId`）与厂商那句话的开头：
+     * 整段 `pendingNotice` 是厂商的文案，逐字抄进本仓只会在它改字时制造一条与行为无关的红。
+     */
+    expect(askUser.control.askRecords).toHaveLength(0);
+    const text = dshToolResultTextOf(askUser.control, ASK_CALL_ID) ?? '';
+    expect(JSON.parse(text)).toMatchObject({ pending: true, callId: ASK_CALL_ID });
+    expect(text).toContain('No answer batch arrived before the timeout');
   });
 });

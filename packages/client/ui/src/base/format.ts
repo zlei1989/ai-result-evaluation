@@ -35,3 +35,21 @@ export function formatDateTime(iso: string): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+/**
+ * 毫秒 → `45s` / `6m23s` / `1h05m`；负数与非有限数按 `0s` 处理（脏值不该让界面出现 NaN）。
+ *
+ * 落在本模块（而不是用到它的那个组件里）的理由：**日志行与卡片都要用同一把尺子**，
+ * 而 `log-format.ts` 那类纯函数模块不该 import 任何 `.tsx`（React 会跟着进纯逻辑的依赖图）。
+ * `metric-line.tsx` 原样再导出它，既有调用点因此不必改。
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0s';
+  const totalSeconds = Math.round(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h${String(minutes).padStart(2, '0')}m`;
+  if (minutes > 0) return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  return `${seconds}s`;
+}

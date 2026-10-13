@@ -649,3 +649,122 @@ AIEVAL_LIVE_MCP=1 pnpm vitest run packages/server/agents/src/providers/codex/liv
 **相关资料**：[Codex wraps MCP tools in type:"namespace" for custom/local providers · #23186](https://github.com/openai/codex/issues/23186)（自定义 Responses 网关解不开命名空间，工具「看不见或调不动」且双方都不报错）、[First-turn API call blocks until pending MCP tools/list times out · #19556](https://github.com/openai/codex/issues/19556)（首轮与 MCP 启动的时序关系）。探针与读数：`packages/server/agents/probe/v10/`（`codex-mcp-inject-status.mjs` 不调模型即可验注入；`codex-mcp-tools-capture.mjs` 抓请求体；`REPORT.md` 是这次的读数）。
 
 
+
+## `codex app-server --listen unix://<path>` 连得上、但一行 JSON-RPC 都不回
+
+**现象**
+
+```
+$ codex app-server --listen unix:///tmp/x/app.sock      # socket 文件建出来了
+已连上 unix socket                                        # net.connect 成功
+（写入一行 {"jsonrpc":"2.0","id":1,"method":"initialize",…} 后，4 秒内零字节回程）
+```
+
+换成 LSP 式分帧（`Content-Length: N\r\n\r\n{…}`）再等 4 s，同样**零字节**。连接不断、不报错、不返回。
+
+**日期**：2026-10-13
+
+**根因**：**未定位**。`--listen` 的帮助原文只说支持 `stdio://` / `unix://` / `unix://PATH` / `ws://IP:PORT` / `off`，没说这一路要不要别的握手；`codex app-server proxy` 的自述是「Proxy stdio bytes to the running app-server control socket」——**暗示**该 socket 是**控制通道**、与 `stdio://` 的 JSON-RPC 面不是同一套（若如此，直连它就必然静默）。下一步：读 `codex app-server daemon` 的控制通道握手，或抓一条 `proxy` 的真实转发看它前面有没有前置帧。
+
+**解决方案**：**未闭合（已绕过）**。本仓不需要它——探针要「fd 0 是真终端」时改用 pty 桥（`packages/server/agents/probe/v11/lib/pty-stdin-bridge.py`：`pty.openpty()` 给子进程 `stdin=<slave>`、stdout/stderr 仍走管道），代价是依赖 `python3` 且 `pty.openpty()` 在容器 / 受限沙箱下会 `EPERM: Operation not permitted`，故探针必须**自检**（拿哑子进程验 `os.isatty(0)`），自检不过就把那一臂标成跳过，**不静默降级**。
+
+---
+
+## `request_user_input is unavailable in Default mode`（模型调了提问工具，我们一条服务端请求都收不到）
+
+**现象**
+
+真 `codex app-server` 拉起、脚本式上游让模型去调 `request_user_input`，客户端的服务端请求列表里**零条** `item/tool/requestUserInput`；厂商自己的日志给的是：
+
+```
+ERROR codex_core::tools::router: error=request_user_input is unavailable in Default mode
+```
+
+同一份配置下模型**看得见**这件工具：`/v1/responses` 请求体的 `tools[]` 里有 `request_user_input`，系统提示逐字不变。
+
+**日期**：2026-10-13
+
+**根因**：这家的提问工具有**两格线程级开关**，缺任何一格，调用都会在**运行期**被厂商弹回（工具在表里、调用被拒）：
+
+- `tools.experimental_request_user_input.enabled`（`ToolsToml` 的成员）
+- `features.default_mode_request_user_input`（特性表里的那一格）
+
+⇒ 「工具在不在表里」与「调用收不收」是两件事：拿工具表推「这家没开提问」会得到一条静默失效的通道（不报错、不下发、不进任何事件）。
+
+**解决方案**：两格**一起**写进 `thread/start` 的线程级 `config`，且**只在本次运行挂了应答面时**开（`providers/codex/index.ts` 的 `buildCodexConfig` 收 `askUser` 这一位）——开了开关却没人答时厂商会一直等那一帧（见下一条），故这两格与应答面必须同生同灭。
+
+判据：`providers/codex/index.test.ts` 的「提问工具开关：挂了应答面才开这两格；不挂时 `tools` / `features` 逐字不变」（读假 app-server 的 `thread/start` 台账）与同名纯函数守卫；变异（把 `askUser` 这一位钉成 `true`）⇒ 该用例见红。真机那一侧由 `providers/codex/conformance.test.ts` 的真路径场景守（厂商自己下发请求、答复进工具结果）。
+
+---
+
+## 提问请求到了不回帧 ⇒ 厂商**不会**自己收场（那一轮一直挂着）
+
+**现象**
+
+真 `codex app-server` + 脚本式上游：厂商下发了 `item/tool/requestUserInput`，我们**不回帧**。厂商侧那一条请求的 `isBlocking: false`、`autoResolutionMs: null`，而它既不投下一条通知、也不投收束通知——实测 45 s 内既没有下一轮请求、也没有 `serverRequest/resolved`，整轮就停在那里（只等用例自己的 abort 收场）。
+
+**日期**：2026-10-13
+
+**根因**：`autoResolutionMs` 在 0.156.1 已标 **`@deprecated`**（原文：*Use `isBlocking` to decide whether the request should block.*），实测下发值恒为 `null`；`isBlocking: false` 也不让它自己收场——它与「这一帧要不要阻塞客户端」无关，只描述这次调用的语义。⇒ **收场只能由我们给**：没有人答、等到超时、随行终止，三种都必须回一帧，否则这一轮不会结束。
+
+**解决方案**：`providers/codex/ask-user.ts` 的应答者对**每一档收场**都回帧——`answers === null`（没人答 / 等超时 / 取消）回**空表** `{answers: {}}`，那是厂商原生的「没有答案」语义（模型据此继续按最佳判断干活）。⚠️ **由此得出一条映射边界**：spec 里「厂商到点自己收场 ⇒ 落 `auto-resolved`」在这家**不成立**——它没有「自己收场」这回事，收场方式只会是我们自己的 `timeout` / `unavailable` / `canceled`，`auto-resolved` 在这条通道上落不出来（`docs/protocols/codex.md` 与适配器交互面声明同一条口径）。
+
+判据：`providers/codex/ask-user.test.ts` 的「没人答（`unavailable`）⇒ 回的是一帧**空答案**，不是不回帧」与「等超时与随行取消同理」（假端口，逐字比帧）；真路径那一侧是 `providers/codex/conformance.test.ts`——**变异：让应答者返回 `null`（= 不回帧）⇒ 真路径整份见红**（判据拿不到应答帧，且那一轮跑不完）。
+
+---
+
+## 两臂产物指纹恒红：未识别通知只留方法名、厂商通知里又带本次运行的线程 id
+
+**现象**
+
+真路径的两臂对比（挂应答面 / 不挂）报红，而差异全落在厂商自己的通知上：
+
+```
+{"method":"warning"}                                              ← 只在一臂里，正文才是「Under-development features enabled: …」
+{"method":"serverRequest/resolved","params":{"threadId":"01a133ff-…","turnId":"…"}}   ← 两次运行线程号不同
+```
+
+**日期**：2026-10-13
+
+**根因**：两层叠加。① 本仓对**未识别通知**的投影是**故意**只留方法名（`providers/codex/events.ts` 的 `other` 分支：静默丢弃会让「上游换了方法名」表现成「什么都没发生」）⇒ 厂商通知的进出都进指纹；② 那一条日志的 `summary` 抄的是厂商原始载荷，**里面带本次运行的 `threadId` / `turnId`**（UUID，每跑一次都不同）⇒ 同一条通知在两次运行里逐字不同。两件事都真实，合起来让「两臂逐字相同」这条判据恒红。
+
+**解决方案**（判据侧，两处缺一不可）：
+
+1. `providers/conformance/ask-user.ts` 的 `askSwitchNotices` 逐条点名「厂商自己投的、与提问无关的通知」并给它一档（`switch-only` = 开关带来的差异、`volatile` = 厂商按自己节奏投的）；去掉点名的那几条之后两臂指纹仍要逐字相同。`noticeArms` 交出「各臂出现过没有」，判据据此核对档写得对不对（两臂都发却记 `switch-only` ⇒ 红）。
+2. 同一模块按**身份格**抹掉抄来载荷里的 `threadId` / `turnId`（`maskedIdentityInText`），只抹这两个键的值，别处每一个字节照旧参与比对。
+
+**未闭合的代价（同一条现象的另一半）**：产品里那条日志仍然**只有方法名**——「模型元数据缺失」这类正文读不到。要采集它得让未识别通知保留原始负载（`other` 分支改成带 `params`），那是改采集面，单独开口。用工具查证时不必改产品：真路径驱动器自己收了一份厂商原文（`CodexRealPathRun.vendorNotices`），「开关那一臂厂商自报 Under-development features enabled」这条判据读的就是它。
+
+判据：`providers/conformance/kit.test.ts` 的「厂商通知」一组（正例 + 五条反例：原始指纹相同 / 两臂都没发 / `switch-only` 两臂都发 / 归一没命中 / 归一之后仍不同）与两条指纹守卫（身份格不算行为、别处的载荷差异照旧算）。
+
+---
+
+## 执行日志里没有「向用户提问」卡片：codex 那一条只剩一句 `这一问的答案（收场方式：answered）：`
+
+**现象**
+
+同一场评测（同一用例、四家各一行，`askUser` 打开），cc / dsh / pi 三行的执行日志里都有「问题 N 个」那张卡片（题目、候选项、答案都在），**codex 那一行没有卡片**，只有一条工具结果：
+
+```text
+这一问的答案（收场方式：answered）：
+- 动物单选：兔
+- 植物多选：月季、杜鹃
+```
+
+`messages.jsonl` 里那一行逐条数块：`thinking / text / thinking / tool-result`——**一条 `tool-call` 都没有**（另三家那一轮都是 `thinking / text / tool-call / tool-result / tool-result`）。
+
+**日期**：2026-10-13
+
+**根因**：这一家的提问**不走线程条目流**。它是 server→client 的 JSON-RPC 请求 `item/tool/requestUserInput`，而厂商的条目联合 `ThreadItem`（0.156.1 共 19 个变体）**没有提问这一格** ⇒ 通知流里永远不会有它。而界面上的卡片唯一由 `tool-call` 块的 `payload.kind === 'ask-user'` 驱动（`build-model.ts` 的 `familyPayloadOf`）⇒ 账本里只有编排层写的**答复那一半**（`tool-result` + `structured: {outcome, answers}`）时，卡片没有题目可画，界面上就只剩那句答案。
+
+⚠️ 顺带排除一个容易误判的方向：**不是 id ↔ header 映射错**。`codexAnswerFrameOf`（`providers/codex/ask-user.ts`）按题序取 `questions[i].id` 回帧、按 `header` 从答复里查那一题，真机回帧 `{"answers":{"favorite_animal":{"answers":["兔"]},"favorite_plants":{"answers":["月季、杜鹃"]}}}` 与账本里的 `[{header:'动物单选',custom:'兔'},{header:'植物多选',custom:'月季、杜鹃'}]` 逐字对得上。
+
+**解决方案**：把提问那一半**由观察到请求的适配器补进账本**（provenance 仍是厂商侧）：
+
+- `turn.ts` 的 `TurnContext` 新增 `emitMessage(draft)`——内容级消息的**流外投递口**，走既有合并器（消息号 / 合并键 / 块序号仍只有一处分配），另三家不涉及；
+- `providers/codex/ask-user.ts` 新增 `onAskRequest`（只对交到提问端口的请求调用；子线程那一支照旧不问人、也不物化），`providers/codex/message.ts` 的 `askUserCallDraft` 把它物化成 assistant `tool-call`：`callId` 取厂商的 `itemId`、`family: 'ask-user'`、`payload` 由公共层从 `questions` 归一 ⇒ 与另三家 wire 上那条**逐字同形，展示侧一行未改**；
+- 审批类请求照旧只归类、不回帧、不产消息。
+
+判据：`providers/codex/index.test.ts` 的「提问请求 → 账本补出那条 assistant `tool-call`；审批类请求不产消息」（真机形状的两题请求：`callId` 与端口请求一致、题目与选项逐字）＋ `agent-log/build-model.test.ts` 的「codex 真机形状」（账本 → 卡片模型：题目逐字、答案按 `header` 逐题对上）＋ `agent-log/ask-user-card.test.tsx` 的「答案到达顺序与题目顺序不同也各归各题」。**变异三处各见一次红**：去掉 `onAskRequest` 那一行 ⇒ 第一条报 `expected [] to have a length of 1`；把卡片改成按下标取答案 ⇒ 第三条的顺序断言见红；把 `build-model.ts` 的配对键从 `callId` 改成题目文本 ⇒ 第二条报 `expected 'pending' to be 'settled'`。
+
+**相关资料**：同节的《提问与应答面》（`docs/protocols/codex.md`）写着这一家的通道、选择模式与配对键口径。

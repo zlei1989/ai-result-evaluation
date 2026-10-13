@@ -39,8 +39,27 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不�
 - **MCP 接法**（本仓已落地）：SDK 的 JSON-RPC 方法表**封闭三个**（`initialize` / `session/prompt` / `shutdown`），服务端对未知方法直接抛错 ⇒ MCP **只能走配置文件**。一台 server = 一个插件行，**落点 = per-launch overlay（`<configHome>/aieval-route.patch.yml`）的 `insert`**——新增行必须走 `insert`（顶层 `- id:` 只能改或禁既有行）；`toDshMcpPluginLines` 一处翻译，空集一行都不插。逐字形状：`- id: mcp-<name>` / `name: "@deepseek-ai/dsh-mcp-client"` / `config: { serverName: "<我们的名字>", transport: stdio|streamable-http, command, args?, env? | url, headers? }`——`transport` 是 dsh 的两档（**不是** canonical 的 `http`），回包或请求里 http 的头**仍叫 `headers`**（与 claude 同、与 codex 的 `http_headers` 不同）。传输只有 `stdio` 与 `streamable-http`；`serverName` 须匹配 `[A-Za-z0-9_-]{1,32}`、`toolCallTimeoutMs` 默认 60000、`failOnStartupError` 默认 **false**（连接失败 harness 照常启动、工具静默消失）。stdio 子进程环境先清洗（`/KEY|PASSWORD|SECRET|TOKEN/i` 命中的与所有 `DSH_*` 被删）再合并 `config.env`——宿主的 `GITHUB_TOKEN` 不会自动传进去（这条也是验收项的检查点之一）。工具名 `mcp__<serverName>__<tool>`。
   - **判据只有工具表一条**：`request/header` 的 `data.header.tools` 里有 `mcp__<serverName>__*` ⇒ 已连上；表在、里面没有它 ⇒ **行失败**（`AGENT_MCP_UNAVAILABLE`）——这一家起不来时工具**静默**消失、会话照常跑完、没有任何结构化错误（`failOnStartupError` 真假在观察面上无差异），**所以判据取不到「厂商状态」那一格，只能取工具表**。适配器据此每个 step 投一条 `vendor-system`（`mcpChannel: 'vendor-tool-table'`，只在表变了的时候发、每次交全量）。
   - 配置面与完整边界（含行内 `.npmrc` 的 registry 注入、等待预算 ≥ 20 s）见[《MCP 配置》](/features/mcp-config)。
-- **流式增量旁路**：通知层不投送逐字流（见「已知边界」），而打字机要 token 级增量 ⇒ 适配器**换一层拿**：`startDsh` 在 boot 前把一份零依赖插件写到 `<configHome>/profiles/sdk/aieval-stream-tap.mjs`（overlay `insert` 一条，`name: "./aieval-stream-tap.mjs"` 必须是**相对名**——loader 按 profile 目录解析），插件订阅 runtime 进程内的 `agent/assistant-stream`，把 `block-start` / `text-delta` / `reasoning-delta` / `block-end` 四类 chunk 帧追加写到 `<configHome>/aieval-stream-tap.jsonl`；父进程按 `DSH_STREAM_TAP_POLL_MS = 100` tail 该文件，折成 `session.event` 信封、事件类型 `aieval/delta`（`DSH_STREAM_DELTA_TYPE`）的伪通知，再由 `dshStreamDeltaDraft` 归一成 `chunk: 'delta'`、`source: 'hook'` 的内容消息。三条硬约束：① **绝不伪造 `session/event`**——runtime 对它是「先落厂商会话日志、再通知」，伪造型会混进厂商持久化日志（故走 sidecar 文件）；② 该支**只产消息、零事件草稿**（落进 `log` 兜底会把原始输出面板刷成 JSON 流水）；③ **会话门闸**——子会话的增量行可能早于 `subagent.started` 落盘，未登记的 sid 会被当主会话，故未知会话的伪通知**挂起**，等放行过 `subagent.started` 再补投。块位次按「该次尝试内首见顺序」发号（与厂商 `BlockAssembler.order` 同算法），保证增量与随后快照落进同一槽位。
+- **流式增量旁路**：通知层不投送逐字流（见「已知边界」），而打字机要 token 级增量 ⇒ 适配器**换一层拿**：`startDsh` 在 boot 前把一份零依赖插件写到 `<configHome>/aieval-stream-tap.mjs`（overlay `insert` 一条，`name: "./aieval-stream-tap.mjs"` 必须是**相对名**——运行时按 `dshHome` 解析），插件订阅 runtime 进程内的 `agent/assistant-stream`，把 `block-start` / `text-delta` / `reasoning-delta` / `block-end` 四类 chunk 帧追加写到 `<configHome>/aieval-stream-tap.jsonl`；父进程按 `DSH_STREAM_TAP_POLL_MS = 100` tail 该文件，折成 `session.event` 信封、事件类型 `aieval/delta`（`DSH_STREAM_DELTA_TYPE`）的伪通知，再由 `dshStreamDeltaDraft` 归一成 `chunk: 'delta'`、`source: 'hook'` 的内容消息。三条硬约束：① **绝不伪造 `session/event`**——runtime 对它是「先落厂商会话日志、再通知」，伪造型会混进厂商持久化日志（故走 sidecar 文件）；② 该支**只产消息、零事件草稿**（落进 `log` 兜底会把原始输出面板刷成 JSON 流水）；③ **会话门闸**——子会话的增量行可能早于 `subagent.started` 落盘，未登记的 sid 会被当主会话，故未知会话的伪通知**挂起**，等放行过 `subagent.started` 再补投。块位次按「该次尝试内首见顺序」发号（与厂商 `BlockAssembler.order` 同算法），保证增量与随后快照落进同一槽位。
 - **内置工具清单**（24 项，`request/header` 原文顺序）：`create_goal, edit, exit_plan_mode, get_goal, glob, grep, interrupt_agent, job_kill, job_list, job_output, list_agents, pwsh, read, read_image, send_message, skill, subagent, subagent_fork, todo_write, update_goal, web_fetch, web_search, workflow, write`。dsh ∩ codex = `create_goal / get_goal / update_goal / web_search`（精确同名）；claude 与另两家精确同名交集为空 ⇒ 命名不是对齐键。dsh 独有 `pwsh`（与 codex 的 `exec_command` 异名同义）。
+
+## 提问与应答面
+
+厂商自带提问工具（`ask_user_question`）：`dsh-base` 与 `dsh-sdk-app` 两个 bundle 都不装 `@deepseek-ai/dsh-tool-ask-user`（只有 Web 的 preset 装）⇒ 适配器在 overlay 的 `insert` 里补一行。工具与提示词都是**厂商的包**，本仓声明 `askUser: yes` + `askUserChannel: 'vendor-tool'`，一致性场景走**真路径**（真运行时 + 本机假上游 + 适配器的应答者插件）。
+
+| 面 | 现时做法 |
+|---|---|
+| 通道 | 厂商的提问走 runtime **进程内**的 Cordis waterfall `user-questions/request`（**return 一份 `{answers}` 即认领**、`next()` 即委派），**不投送到 SDK 约定的那条通道**（JSON-RPC 面只有三个请求、四个通知，没有「服务端问客户端」这一类）⇒ 应答者只能是一个注册在厂商进程里的**插件** |
+| 递答案 | 适配器按「这一轮挂没挂应答面」把一份零依赖插件写到 `<configHome>/aieval-ask-answerer.mjs`，并在同一份 overlay 里 `insert` 一行（`name: "./aieval-ask-answerer.mjs"` 是相对名，由运行时按 `dshHome` 解析）。答案走**文件型双向 side channel**：插件把每一问连厂商的 `wait.callId` 追加进 `aieval-ask-answerer.jsonl`，适配器的桥认领后交给提问端口、再把答复追加进 `aieval-ask-replies.jsonl`，插件按该 `key` 取**最后一条**配得上的行；厂商把它渲染成模型看到的工具结果，形如 `{"answers":[{"id":"q1","selected":["选项 A"]}]}`；用户在弹层里自己写的那句话走同一批次的 `custom`（单选取代选项、多选与选项并进同一个数组），`custom` 为 `null` 时不带这个键——厂商按 `custom !== undefined` 决定要不要交给模型 |
+| 等待预算 | 等待档**与应答面同源派生**：挂了应答面 ⇒ `mode: "timed"` + `timeout: -1`（源码在 `-1` 时回落**阻塞档**：既不设到点收场、又把 `wait.callId` 带出来，而 `mode: legacy` 那条路不带调用 id）；没挂 ⇒ `timed` + `timeout: 1`（无人值守下等人没有收益）。插件自己等答复的上限比端口的缺省预算长 120 秒——它只是「父进程那半整个失联」时的最后一道兜底，到点 `next()` 委派、由厂商以自己的收场结束那一问 |
+| 收场 | 端口交回「收场了但没有答案」那六态时，桥写的是**委派**，由厂商以它自己的收场结束那一问——**不编空答案**（编一份空 `selected` 会被厂商读成「用户跳过了这题」） |
+
+五条今天仍成立的边界：
+
+- **没挂应答面时提问工具仍然挂着**（工具由适配器挂载、与应答面无关）：那一档没人应答时到点交回的是厂商设计好的**待答**结果 `{pending: true, callId, message}`（`message` 逐字写着「继续干有用的活、这不是跳过、不要当成许可」），而不是工具错误——阻塞档下才会是错误。
+- **模型仍可自己给 `timeout: -1`**，那一支回落阻塞档、照旧报错 `no user-questions answerer accepted the request`（码 `NO_PROVIDER`）——厂商的工具描述本身就在引导它「必须有答复时才用 `-1`」，**宿主关不掉这个口子**。
+- **「这一行是哪一档」读的是装配产物**：dsh 从 `request/header` 里记下的**工具 schema**（`isTimedAskUserQuestionSchema`）判档、**不是**调用实参 ⇒ 档位只能落在装配产物上，不能靠调用时临时决定；定时档的 schema 比阻塞档**多一个模型可见参数** `timeout`。
+- **子智能体发起的提问到不了应答者**：进程内服务在进 waterfall 之前先 `assertLiveRoot`（不是活着的根就抛 `CALLER_NOT_LIVE` / `DELEGATED_CALLER`）⇒ 交给提问端口的 `subagentId` 恒 `null`，本模块不做子智能体判定。
+- **「待答」这一格契约里没有** ⇒ 它到模型眼里与**一个普通工具结果**无异（模型看到的就是那段 JSON 文本）。
 
 ## 已知边界与取舍
 
@@ -60,6 +79,9 @@ DSH（`@deepseek-ai/dsh-sdk-client`，next 线 `0.2.0-rc.2`——R33 裁决不�
 | 未跑**整轮**真实评测任务（带工具调用、多轮、大文件写入） | 未覆盖 | 如实登记证据层级：已跑的是单行真机（含技能装入与 `skill` 工具调用），整轮评测尚未跑过 |
 | 消费循环**把 `subscription.next()` 的 promise 遗弃成孤儿**（每 100 ms 的 `tapWake` 竞速输一次就留一个）⇒ SDK 按「先到先得」把后续每条通知都交给孤儿，真正在等的那一个永远拿不到 | 已修 | 症状：客户端投递并接受 **181 条**、我们只 `yield` **15 条**（全在前 50 ms），之后 137 秒静默且**零报错**；`messages.jsonl` 为 0、执行日志整段空白、行照旧判成功。修法：在飞的 promise **记忆化复用**（`pendingNext ??=`），settle 后才新建。守卫：`dsh/index.test.ts` 的「投递 150ms > 轮询拍 100ms」用例（夹具若只留一个 waiter，孤儿根本造不出来——替身比真实实现弱）。证据见 [DeepSeek Harness FAQ](/faq/deepseek-harness) 的 `原始输出 38164 行，但执行日志是空的` 条 |
 | stream-tap 插件**从未被加载**：`name: "./aieval-stream-tap.mjs"` 由运行时按 **`dshHome`** 解析，而适配器写在 `profiles/sdk/` | 已修 | stderr 每次只有 `dsh: warning: 1 entry did not activate` + `aieval-stream-tap (file:///<dshHome>/aieval-stream-tap.mjs): failed to import` ⇒ 旁路文件恒 0 字节、能力位声称 `streamingDelta: yes` 而界面一条增量都没有。改 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH = 'aieval-stream-tap.mjs'`；探针实证 stderr 干净、**旁路文件 0 → 720 字节**（`probe/v3/dsh-tap-truncation.mjs` 变体 B） |
+| `ask_user_question` 到点交回「待答」这一步 | 已证实（真运行时 + 脚本化模型） | 没人应答时那一问以厂商设计好的**待答**结果收场：判据在一致性套件的真路径驱动器上（`providers/dsh/conformance.test.ts` 的「不入应答面就不问」），从**出站请求体的 `tool_result`** 里读出 `{"pending":true,"callId":…,"message":"No answer batch arrived before the timeout. …"}`；装配产物那一侧另有 `buildDshRoutePatch` 与「装配时刻 overlay 就在」两条逐字判据 |
+| `ask_user_question` 在**模型侧**的工具表里 | 已证实 | 真路径运行里出站请求体的 `tools[]` **两臂都带**它（工具由适配器挂载，与应答面无关 ⇒ 一致性套件按 `askResultTools` 登记：两臂工具表相同、变的是那一次调用的结果）。⚠️ 会话运行期的 `request/header` 24 项清单里**没有**它，而那份清单的采集条件（平台 / 时刻）未定位 ⇒ 判「工具挂没挂上」要读运行时的工具表，别读它 |
+| 模型自己给 `timeout: -1` 时回落阻塞档 ⇒ 无人应答照样是工具错误 | 厂商设计 | 宿主关不掉：`timeout` 与它的描述都由厂商的工具定义声明，本仓只能把缺省档调到定时档 |
 
 ## 相关链接
 

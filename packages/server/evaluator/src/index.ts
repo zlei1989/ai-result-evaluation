@@ -21,6 +21,24 @@ export { publishJudgeEvent, publishRowEvent, subscribeJudgeEvents, subscribeRowE
 // 包外没有第二个合法发射方（出口它会诱人在编排层「顺手补一条」，那正是发射点分裂的开端）
 export { subscribeRunChanges } from './run-signals';
 
+// 挂起表：待答提问在进程内的唯一真相源（写侧 `resolveAskUser` 是应答面唯一写入口）。
+// 读侧三件（`listPendingAskUser` / `subscribeAskUserChanges` / `resolveAskUser`）出口给 api 的三个端点；
+// `registerAskUser` 出口给编排层登记提问（05 号那一格接线）；`publishAskUserChanged` 刻意不出口——
+// 发射点全在表内部（登记 / 答复 / 取消），出口它会诱人在编排层「顺手补一条」，那正是发射点分裂的开端
+export {
+  listPendingAskUser,
+  registerAskUser,
+  resetAskUserForTesting,
+  resolveAskUser,
+  subscribeAskUserChanges,
+  type AskUserSettled,
+  type AskUserStage,
+  type PendingAskHandle,
+  type PendingAskUserEntry,
+  type PendingAskUserRequest,
+  type RegisterAskUserInput,
+} from './ask-user';
+
 // 记录总线：消息与子任务行共用 `messages.jsonl`，落盘 + 进程内扇出。
 // `publishRowRecord` 与两个窄包装都出口：api 层的回放路由要读文件，而想按类型分流的订阅方
 // 需要拿到整个 `RowRecord`；`publishRow*` 是编排层用的写入口（跨包只需要读侧，但出口面成对更好用）。

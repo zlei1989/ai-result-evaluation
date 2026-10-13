@@ -79,6 +79,7 @@ import {
   truncateDiff,
 } from '@aieval/core';
 import { acceptsProtocol, getProvider, protocolMismatchMessage, type AgentRunResult } from '@aieval/agents';
+import { createAskUserSettlement } from './ask-user-settlement';
 import { publishJudgeEvent, publishRowEvent } from './events';
 import {
   broadcastJudgeMessage,
@@ -1522,6 +1523,16 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   const streamingDelta = { frameCount: 0, lastFrameChars: 0 };
 
   /**
+   * 本行**当前的模型往返序号**：提问的答复要落回它自己那一轮（`AgentMessage.roundTrip`）。
+   *
+   * 取「主会话消息里见过的**最大**轮号」而不是「最新一条」：子会话的 `roundTrip` 是**它自己**的
+   * 轮号（各会话各自从 1 数），拿它当行级轮号会把答复挂到别的会话那一轮上；而模型在等这一个
+   * 工具结果时不会开始下一次往返 ⇒ 最大主会话轮号就是**这一次往返**。
+   * 一条消息都没有时是 `null`（那一家不投送消息）：答复记在第 1 轮，如实标一轮而不是编一个号。
+   */
+  let latestMainRoundTrip: number | null = null;
+
+  /**
    * 本行的**厂商侧 MCP 证据**：`vendor-system` 事件里那两台事实——服务清单与工具表。
    * 取**最后一条**（后到的覆盖先到的），口径与理由的全文在下面 `onEvent` 里那一段：claude 的
    * `system/init` 一次运行只投一条，而 codex（`mcpServer/startupStatus`）与 dsh（工具表）的 MCP 事实是
@@ -1798,6 +1809,30 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     ...(skillsPlan.length === 0 ? {} : { skills: skillsPlan }),
     onEvent,
     /**
+     * **应答面闸门**（本票最重的一条边界）：**只有这一轮显式开启**（`EvalRun.askUser`）时
+     * 才把提问回调交给适配器。
+     *
+     * 不传 ⇒ 适配器一个钩子都不挂、一个开关都不开、权限档也不改（`AskUserPort.available` 是假），
+     * 四家行为与今天**逐字相同**——这条「不问就不动」的边界靠的就是**这个键在不在**，
+     * 而不是靠适配器去读某个开关。
+     *
+     * `channel` 是这一家**声明**的提问通道，只用来给行级观测事件贴标签（见
+     * `ask-user-settlement.ts` 的 `channel` 一格）：它不是「要不要传回调」的判据——
+     * 那个判据是上面这一格轮级开关，与能力表无关（包外不预读能力表那条口径照旧成立）。
+     */
+    ...(run.askUser === true
+      ? {
+        onAskUser: createAskUserSettlement({
+          runId,
+          rowId,
+          signal: controller.signal,
+          channel: agentProvider.metadata.interaction.askUserChannel,
+          roundTripHere: () => latestMainRoundTrip,
+          landingOpen: () => !settled && !isRowSettled(runId, rowId),
+        }),
+      }
+      : {}),
+    /**
      * 消息与子任务行：**与事件同一条闸门与同一条落盘路径**——「行已终态」之后
      * 适配器收尾期间吐出来的迟到消息同样不落盘（理由与事件逐字相同：它们会把已结束的对话拖长）。
      * 落盘按块形态分叉（用户口径「三家统一」）：
@@ -1808,6 +1843,10 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      */
     onMessage: (message) => {
       if (settled || isRowSettled(runId, rowId)) return;
+      // 轮号在闸门之后、分叉之前记：增量帧也带轮号，而它是「现在跑到第几轮」的实时证据
+      if (message.subagentId === null) {
+        latestMainRoundTrip = Math.max(latestMainRoundTrip ?? message.roundTrip, message.roundTrip);
+      }
       if (message.chunk === 'delta') {
         streamingDelta.frameCount += 1;
         // 末帧累积正文长度：文本与思考块都算（签名/工具入参不进这条通道，故这里只有这两种块）

@@ -174,7 +174,7 @@ export function piAssistantMessageDraft(message: unknown, roundTrip: number): Me
     if (type === 'toolCall') {
       const callId = readString(block, 'id');
       if (callId === null || callId === '') return;
-      blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.['arguments'] ?? null));
+      blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.['arguments'] ?? null, 'pi'));
     }
   });
   if (blocks.length === 0) return null;

@@ -751,7 +751,7 @@ describe('看门狗：静止判超时', () => {
       usage: null,
       blocks: [
         phase === 'call'
-          ? toolCallBlockDraft(callId, 'bash', { command: 'pnpm install' })
+          ? toolCallBlockDraft(callId, 'bash', { command: 'pnpm install' }, 'cc')
           : toolResultBlockDraft(callId, 'ok', { isError: false }),
       ],
       raw: null,

@@ -423,6 +423,215 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
   });
 
   /**
+   * **答案那一半的回填**（本仓只读卡片 `settled` 一支的产出方就在这一格）。
+   *
+   * 喂一条真实链路会产出的账本：适配器投的调用那一半（`tool-call` + `ask-user` 载荷）
+   * 与编排层在答复到手后落的**结果那一半**（`tool-result`，`structured` 是契约的
+   * `AskUserResultSchema`）。判据是**逐字回填**：收场方式、答案、以及结果块的原文都要到位。
+   *
+   * 两处刻意如此：① 结果块与调用块**不在同一条消息、也不一定在同一轮**——配对按 `callId`
+   * 跨整条账本做，卡片自己只看得到本轮；② 没有结果块时必须是 `pending`（下一条用例守着
+   * 「没有产出方时不许假装收场」）——两种情形混成一种，卡片就会把「还在等」画成「已经答了」。
+   */
+  it('`tool-result` 那一半里的答复回填成 `settled`（答案逐字、原文可查）', () => {
+    const records: RowRecord[] = [
+      message({
+        id: 'm1',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [
+          {
+            type: 'tool-call',
+            callId: 'call_ask_1',
+            family: 'ask-user',
+            name: 'ask_user_question',
+            input: { questions: [{ question: '发哪？' }] },
+            payload: {
+              kind: 'ask-user',
+              questions: [{ header: '范围', prompt: '发哪？', options: [], multiSelect: false, allowOther: true, secret: false }],
+            },
+          },
+        ],
+      }),
+      // 编排层那一条：`mergeKey` 与适配器自己的工具结果同形（同一次调用的结果只应有一条）
+      message({
+        id: 'm2',
+        mergeKey: 'main|1|tool|call_ask_1',
+        roundTrip: 1,
+        role: 'tool',
+        source: 'hook',
+        parentCallId: 'call_ask_1',
+        blocks: [
+          {
+            type: 'tool-result',
+            callId: 'call_ask_1',
+            structured: { outcome: 'answered', answers: [{ header: '范围', selected: ['预发'], custom: null }] },
+            isError: false,
+            text: '这一问的答案（收场方式：answered）：\n- 范围：预发',
+            truncation: { kind: 'none' },
+          },
+        ],
+      }),
+    ];
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('内容应就绪');
+    const block = main.content.data[0]?.blocks[0];
+    if (block?.kind !== 'tool-call' || block.tool === null || block.tool.family !== 'ask-user') {
+      throw new Error('应为 ask-user 载荷');
+    }
+    expect(block.tool.interaction).toMatchObject({
+      state: 'settled',
+      outcome: 'answered',
+      answers: [{ header: '范围', selected: ['预发'], custom: null }],
+    });
+    // 原文与截断态一起带上：卡片底部那个「原始结果」抽屉读的就是它
+    expect(block.tool.interaction.state === 'settled' ? block.tool.interaction.result : null).toEqual({
+      ok: true,
+      raw: '这一问的答案（收场方式：answered）：\n- 范围：预发',
+      truncation: { kind: 'none' },
+    });
+  });
+
+  /**
+   * **codex 那一行的账本**（真机读数逐字）：这一家的提问是 server→client 请求、**不进线程条目**
+   * （`ThreadItem` 里没有这一格），提问那一半由适配器补进账本（`askUserCallDraft`）。
+   * 补出来的形状与另三家 wire 上那条**逐字同形**，因此这一段折叠逻辑对四家是同一条——
+   * 本用例的判据就是「四家的形状在这里混不出差别」。
+   *
+   * 逐字取真机：两题（`favorite_animal` / `favorite_plants`）、每题三个候选项，答案两份都是
+   * 自由输入（`selected: []` + `custom`）——这正是 codex 只有单选、用户走「其它」通道的样子。
+   * 断言的落点是**配对**：每题的答案要落在**它自己那个 `header`** 上（契约里唯一的配对键），
+   * 配错的表现就是「题目与答案对不上」。
+   */
+  it('codex 真机形状：补出的 `tool-call` 与答复那一半折成一张卡片，题目与答案按 `header` 逐字对上', () => {
+    const questions = [
+      {
+        header: '动物单选',
+        prompt: '第 1 题（单选）：下面三种动物你最喜欢哪一种？',
+        options: [
+          { label: '猫 (Recommended)', description: '独立、安静，适合室内饲养。', recommended: false },
+          { label: '狗', description: '热情、忠诚，需要较多陪伴与运动。', recommended: false },
+          { label: '海豚', description: '聪明、社会性强的海洋哺乳动物。', recommended: false },
+        ],
+        multiSelect: false,
+        allowOther: false,
+        secret: false,
+      },
+      {
+        header: '植物多选',
+        prompt: '第 2 题（多选，可勾选多个）：下面三种植物中，你感兴趣的有哪些？',
+        options: [
+          { label: '多肉植物 (Recommended)', description: '耐旱好养，适合阳台和办公桌。', recommended: false },
+          { label: '蕨类植物', description: '喜阴喜湿，能提升室内湿度感。', recommended: false },
+          { label: '香草植物', description: '如罗勒、薄荷，可观赏也可入菜。', recommended: false },
+        ],
+        multiSelect: false,
+        allowOther: false,
+        secret: false,
+      },
+    ];
+    const records: RowRecord[] = [
+      // 适配器补出来的那一半：`callId` 取厂商的 `itemId`
+      message({
+        id: 'run-codex:426',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [
+          {
+            type: 'tool-call',
+            callId: 'call_00_jhIII03ANulkj1Hw1TVC8940',
+            family: 'ask-user',
+            name: 'request_user_input',
+            input: { questions: [{ id: 'favorite_animal' }, { id: 'favorite_plants' }] },
+            payload: { kind: 'ask-user', questions },
+          },
+        ],
+      }),
+      // 编排层落的那一半：答复与收场方式
+      message({
+        id: 'cad20840:ask-user:06c7e871',
+        mergeKey: 'main|1|tool|call_00_jhIII03ANulkj1Hw1TVC8940',
+        roundTrip: 1,
+        role: 'tool',
+        source: 'hook',
+        parentCallId: 'call_00_jhIII03ANulkj1Hw1TVC8940',
+        blocks: [
+          {
+            type: 'tool-result',
+            callId: 'call_00_jhIII03ANulkj1Hw1TVC8940',
+            structured: {
+              outcome: 'answered',
+              answers: [
+                { header: '动物单选', selected: [], custom: '兔' },
+                { header: '植物多选', selected: [], custom: '月季、杜鹃' },
+              ],
+            },
+            isError: false,
+            text: '这一问的答案（收场方式：answered）：\n- 动物单选：兔\n- 植物多选：月季、杜鹃',
+            truncation: { kind: 'none' },
+          },
+        ],
+      }),
+    ];
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('内容应就绪');
+    const block = main.content.data[0]?.blocks[0];
+    if (block?.kind !== 'tool-call' || block.tool === null || block.tool.family !== 'ask-user') {
+      throw new Error('应为 ask-user 载荷');
+    }
+    const interaction = block.tool.interaction;
+    expect(interaction.state).toBe('settled');
+    if (interaction.state !== 'settled') throw new Error('应已收场');
+    // 题目与选项逐字都在（这一格缺了就是「界面上只剩一条没有题目的答复行」）
+    expect(interaction.questions).toEqual(questions);
+    expect(interaction.outcome).toBe('answered');
+    // 逐题配对：契约里唯一的配对键是 `header`
+    const expected: Record<string, string> = { 动物单选: '兔', 植物多选: '月季、杜鹃' };
+    for (const question of interaction.questions) {
+      const answer = interaction.answers?.find((one) => one.header === question.header);
+      expect(answer?.custom).toBe(expected[question.header]);
+    }
+  });
+
+  it('没有结果那一半时保持 `pending`：别的工具的 `structured` 不许冒充答案', () => {
+    const call: RowRecord = message({
+      id: 'm1',
+      mergeKey: 'main|1|assistant|-',
+      roundTrip: 1,
+      blocks: [
+        {
+          type: 'tool-call',
+          callId: 'call_ask_1',
+          family: 'ask-user',
+          name: 'ask_user_question',
+          input: { questions: [{ question: '发哪？' }] },
+          payload: { kind: 'ask-user', questions: [{ header: '范围', prompt: '发哪？', options: [], multiSelect: false, allowOther: false, secret: false }] },
+        },
+      ],
+    });
+    const otherResult: RowRecord = message({
+      id: 'm2',
+      mergeKey: 'main|1|tool|-',
+      roundTrip: 1,
+      role: 'tool',
+      blocks: [
+        // 别的工具的结构化结果：形状对不上（缺 `answers`）⇒ 不许当成答案
+        { type: 'tool-result', callId: 'call_ask_1', structured: { outcome: 'answered' }, isError: false, text: '{}', truncation: { kind: 'unknown' } },
+      ],
+    });
+    const model = buildAgentLogModel({ records: [call, otherResult], events: [], facts: facts({ live: true, endedAt: null }), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('内容应就绪');
+    const block = main.content.data[0]?.blocks[0];
+    if (block?.kind !== 'tool-call' || block.tool === null || block.tool.family !== 'ask-user') {
+      throw new Error('应为 ask-user 载荷');
+    }
+    expect(block.tool.interaction).toMatchObject({ state: 'pending' });
+  });
+
+  /**
    * 回归守卫：「等了多久」这一格必须是**真实时刻**。
    *
    * 两处读同一个 `interaction.at`：卡片标题上的「等待答复中… 12m」与固定区那枚「等待答复」徽标

@@ -168,6 +168,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
@@ -206,6 +207,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
@@ -225,6 +227,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -249,6 +252,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -275,6 +279,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -296,12 +301,14 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     const on = createRun({
       caseId: 'c-2',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -330,6 +337,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -343,6 +351,7 @@ describe('createRun', () => {
         caseId: 'c-missing',
         executionMode: 'parallel',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -361,6 +370,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -377,6 +387,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
       });
     } catch (error) {
@@ -394,6 +405,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       });
     } catch (error) {
@@ -423,6 +435,7 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: true,
+        askUser: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/没有配置默认评分智能体/);
@@ -445,10 +458,50 @@ describe('createRun', () => {
         caseId: 'c-1',
         executionMode: 'parallel',
         useAgentJudge: true,
+        askUser: false,
         rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/Codex 只接受 OpenAI 兼容协议/);
     expect(vi.mocked(saveRun)).not.toHaveBeenCalled();
+  });
+
+  /**
+   * **应答面开关必须落进快照**（`EvalRun.askUser`）。
+   *
+   * 三个方向各有一个靶子：① 打开时快照里是 `true`——不写这一格，`EvalRunSchema` 的
+   * `.default(false)` 会在落盘时把它悄悄改成关，而那一轮的产物看起来与「从来没开过」一模一样；
+   * ② 缺省（老客户端不带这一格）落 `false`；③ **编辑时也必须回传**：编辑载荷是表单值的全量替换，
+   * 漏了这一格就等于把开着的一轮改成关。
+   */
+  it('应答面开关落进快照：创建时逐字保留、缺省为 false，编辑时不许被清掉', () => {
+    const created = createRun({
+      caseId: 'c-1',
+      executionMode: 'serial',
+      useAgentJudge: false,
+      askUser: true,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(created.askUser).toBe(true);
+
+    const defaulted = createRun({
+      caseId: 'c-1',
+      executionMode: 'serial',
+      useAgentJudge: false,
+      // 老客户端不带这一格：它必须落 `false` 而不是 `undefined`（读侧只有布尔这一档）
+      askUser: false,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(defaulted.askUser).toBe(false);
+
+    store.set(created.id, created);
+    const edited = updateRun(created.id, {
+      caseId: created.caseId,
+      executionMode: created.executionMode,
+      useAgentJudge: created.useAgentJudge,
+      askUser: true,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(edited.askUser).toBe(true);
   });
 
   it('开关关闭时不去碰评分配置：没配默认评分智能体也能创建（默认关闭是用户口径）', () => {
@@ -457,6 +510,7 @@ describe('createRun', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -583,6 +637,7 @@ describe('rescoreRow', () => {
   it('行存在则直通编排层，并把编排层给的那份快照原样返回（不另读一次磁盘）', () => {
     const run = makeRun({
       useAgentJudge: true,
+      askUser: false,
       rows: [makeRow({ id: 'r-1', status: 'judged', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
     });
     store.set('run-1', run);
@@ -860,6 +915,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         caseId: 'c-1',
         executionMode: 'serial',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'medium' }],
       });
     expect(bad).toThrow(ServiceError);
@@ -871,6 +927,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'high' }],
     });
     expect(run.rows[0]?.effort).toBe('high');
@@ -886,6 +943,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: EFFORT_OFF }],
     });
     expect(off.rows[0]?.effort).toBe(EFFORT_OFF);
@@ -894,6 +952,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm' }],
     });
     // 「没说」与「说了 high」在快照里必须分得开
@@ -917,6 +976,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         caseId: 'c-1',
         executionMode: 'serial',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'only-low' }],
       });
     expect(create).toThrow(ServiceError);
@@ -934,6 +994,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: provider.id, modelId: 'only-low' }],
     });
     expect(run.rows[0]?.effort).toBeUndefined();
@@ -1047,6 +1108,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'serial' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1099,6 +1161,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'serial' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1128,6 +1191,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
     };
 
@@ -1146,6 +1210,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
@@ -1181,6 +1246,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
@@ -1224,6 +1290,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
     });
 
@@ -1233,6 +1300,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' },
@@ -1258,6 +1326,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1272,6 +1341,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-404', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1290,6 +1360,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
@@ -1314,6 +1385,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-2',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
     const newCase: RunTargetCase = {
@@ -1345,7 +1417,7 @@ describe('planRunUpdate', () => {
   it('轮级状态收敛三条分支（没跑过 ⇒ idle / 跑过又有待跑 ⇒ partial / 全 judged ⇒ done 且保留 finishedAt）', () => {
     const pending = makeRow({ id: 'r-1', status: 'pending', baselineCommit: '', attempts: 0 });
     const untouchedRows = [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
-    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, rows: untouchedRows };
+    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, askUser: false, rows: untouchedRows };
     const resolved = resolveRunRows(input.rows, providers);
 
     const neverStarted = planRunUpdate(makeRun({ rows: [pending], status: 'idle', startedAt: null }), input, resolved, target);
@@ -1390,6 +1462,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
     };
 
@@ -1423,6 +1496,7 @@ describe('planRunUpdate', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'low' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
@@ -1505,6 +1579,7 @@ describe('updateRun', () => {
       caseId: before.caseId,
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -1523,6 +1598,7 @@ describe('updateRun', () => {
       caseId: before.caseId,
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
     });
 
@@ -1543,6 +1619,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -1563,6 +1640,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-gone', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/p-gone/);
@@ -1589,6 +1667,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: false,
+        askUser: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -1618,6 +1697,7 @@ describe('updateRun', () => {
       caseId: 'c-2',
       executionMode: 'parallel',
       useAgentJudge: false,
+      askUser: false,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -1636,6 +1716,7 @@ describe('updateRun', () => {
         caseId: before.caseId,
         executionMode: 'serial',
         useAgentJudge: true,
+        askUser: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/评分智能体|评分/);
@@ -1644,7 +1725,7 @@ describe('updateRun', () => {
 
   it('不存在的轮次 ⇒ NOT_FOUND', () => {
     expect(() =>
-      updateRun('nope', { caseId: 'c-1', executionMode: 'serial', useAgentJudge: false, rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }] }),
+      updateRun('nope', { caseId: 'c-1', executionMode: 'serial', useAgentJudge: false, askUser: false, rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }] }),
     ).toThrowError(/评测不存在/);
   });
 });

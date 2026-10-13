@@ -35,6 +35,16 @@ import { buildSubprocessEnv, ensureV1Suffix, stripV1Suffix } from '../../route';
 import { asSchemaObject, buildStructuredOutputInstruction } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult, ProtocolType } from '../../types';
+import {
+  DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH,
+  DSH_ASK_ANSWERER_PLUGIN_SOURCE,
+  DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH,
+  DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH,
+  DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS,
+  DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS,
+  startDshAskAnswerer,
+  type DshAskAnswererBridge,
+} from './ask-user';
 import { projectDshNotification } from './events';
 import { dshSilentChildSessions, dshSubagentTurns, dshSubagentUsage } from './message';
 import { DSH_STREAM_FAILURE_TYPE, DSH_SUBAGENT_FINISHED_METHOD, DSH_TURN_END_TYPE } from './protocol';
@@ -169,6 +179,12 @@ export interface DshRoutePatchInput {
    * 收的是 canonical 形状（与另两家同一份），翻译在 `toDshMcpPluginLines` 里一处完成。
    */
   mcpServers?: McpServers;
+  /**
+   * 这一轮挂没挂**应答面**（= 调用方传了 `onAskUser`，见 `ask-user.ts`）：它同时决定
+   * 「插不插应答者那一行」与「等待档取哪一档」。两处若各写一份必然漂移，而漂移的表现是
+   * 「插件在、没人认领」或「有人认领、等待档却先到点收场」——两种都只在真机上现形。
+   */
+  askUserAnswerer?: boolean;
 }
 
 /**
@@ -178,7 +194,8 @@ export interface DshRoutePatchInput {
  *   ① `- id: llm-pi-ai` 的 **id 定向覆盖**——patch 语义是「整份替换该行的 config，不是深合并」
  *      （dsh-base 的文件头逐字），所以我们只声明本次运行要用到的那一条路由与那一个模型；
  *   ② `- insert:` 把 `ask_user_question` 挂进 profile——**新增行必须走 insert**，
- *      顶层 `- id:` 只能改或禁既有行。
+ *      顶层 `- id:` 只能改或禁既有行。同一份 insert 里还有我们自己那两个插件行
+ *      （stream-tap 与提问应答者），各自的落点与相对名基准见 `stream-tap.ts` / `ask-user.ts`。
  *
  * ⚠️ 字符串一律双引号 + 转义：模型名可能含 `:`（`jd/GLM-5.3`）或 `"`，裸写会被 YAML 解析成别的结构。
  * 判据是**读回来逐字相等**，而不是「文件里出现了某个字符串」。
@@ -206,11 +223,37 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     '- insert:',
     '    - id: tool-ask-user',
     '      name: "@deepseek-ai/dsh-tool-ask-user"',
-    // stream-tap 插件（流式增量旁路，见 `stream-tap.ts`）：**相对名**按 profile 目录解析
-    //（loader 的 baseUrl 就是 <dshHome>/profiles/sdk/），插件文件由适配器在同一次启动里落盘。
+    // 等待档：**与应答面同源派生**（见 `ask-user.ts` 的两个常量各自的取值理由）——
+    // 挂了应答面走阻塞档（`-1`：既不到点收场、又带 `wait.callId`），没挂走定时档 1 秒
+    //（到点交回厂商设计好的「待答」结果，而不是让模型一问就吃一个工具错误）。
+    // ⚠️ 四处口子，改这一行之前先读：
+    //   ① `timeout: -1` **不构成**定时档——源码只在 `timeout !== -1` 时才走定时档，`-1` 回落阻塞档；
+    //      而这一格的工具描述主动鼓励模型在「不给答案就没法继续」时传 `-1` ⇒ 那一问照样拿到工具错误。
+    //   ② 定时档的 schema 比阻塞档**多一个模型可见参数** `timeout`（`TIMED_WAIT_PARAMETER`），且 dsh
+    //      判定「这一行是哪一档」读的是 `request/header` 里记下的**工具 schema**
+    //      （`isTimedAskUserQuestionSchema`）、不是调用实参 ⇒ 档位只能落在装配产物上。
+    //   ③ 守卫钉的是**配置文本**、钉不到模型实参：定时档的效果是「**默认**不报错」，不是「免疫」。
+    //   ④ 「待答」这一格契约里今天没有（本适配器不改契约）⇒ 它在模型眼里与一个普通工具结果无异；
+    //      且那句「用户还能答」只对**没挂应答面**的那一档是假的（那一档本来就没人在看界面），
+    //      模型可能在「继续干」与「再问一次」之间反复。
+    '      config:',
+    '        mode: "timed"',
+    `        timeout: ${input.askUserAnswerer === true
+      ? DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS
+      : DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS}`,
+    // stream-tap 插件（流式增量旁路，见 `stream-tap.ts`）：**相对名**按 `<dshHome>` 解析
+    //（overlay 里写 `./<文件名>`，插件文件由适配器在同一次启动里落到 `configHome` 根）。
     // 纯 node: 内建依赖 ⇒ 不需要 profile 的 pnpm 安装（与 `tool-ask-user` 不同，那个是包名）。
     '    - id: aieval-stream-tap',
     '      name: "./aieval-stream-tap.mjs"',
+    // 提问应答者（见 `ask-user.ts`）：**只在挂了应答面时**才有这一行。没挂应答面时不插、
+    // 插件文件也不落盘——厂商那个提问工具照旧 fail-closed，「不问就不动」在磁盘上就是这样。
+    ...(input.askUserAnswerer === true
+      ? [
+        '    - id: aieval-ask-answerer',
+        '      name: "./aieval-ask-answerer.mjs"',
+      ]
+      : []),
     // MCP：一台 server = 一行 `@deepseek-ai/dsh-mcp-client`，**同样走 insert**
     // （顶层 `- id:` 只能改或禁既有行）。空集时这里一行都不加——不写空壳行。
     ...toDshMcpPluginLines(input.mcpServers ?? {}),
@@ -748,6 +791,11 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    */
   const routePatchPath = join(input.configHome, DSH_ROUTE_PATCH_RELATIVE_PATH);
   /**
+   * 这一轮挂没挂**应答面**：骨架的提问端口说了算（= 调用方传了 `onAskUser`）。
+   * overlay 那一行与插件落盘都由它派生（见 `DshRoutePatchInput.askUserAnswerer`）。
+   */
+  const askAnswerer = context.askUser.available;
+  /**
    * 写盘之前**先建 `configHome`**：三家适配器都在厂商进程起来之前往行配置目录里写文件
    * （技能物化、行内 `.npmrc`、本家的 overlay 与 stream-tap），谁都不许假设父进程已经建好它。
    *
@@ -766,6 +814,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       contextWindow: input.route.contextWindow,
       maxOutputTokens: input.route.maxOutputTokens,
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+      askUserAnswerer: askAnswerer,
     }),
     { encoding: 'utf8', mode: 0o600 },
   );
@@ -796,7 +845,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   /**
    * stream-tap 的两份落盘（**与 overlay 同一个时序**：boot 在 `new DeepSeekHarness(...)` 那一步
    * 读 patch 装配清单并 import 插件，写晚了这一行照样「跑完」，只是没有任何增量）：
-   *   · 插件本体落 profile 目录（overlay 里 `./aieval-stream-tap.mjs` 的相对名按它解析）；
+   *   · 插件本体落 `configHome` 根（overlay 里 `./aieval-stream-tap.mjs` 的相对名按 `<dshHome>` 解析）；
    *   · 旁路文件**整份清零**而不是「不存在就跳过」：重跑同一行时上一轮尝试的增量行绝不能
      *     当本轮的重放——增量只广播不落盘，重放的旧行会顶掉新一轮的实时视图。
    */
@@ -805,6 +854,22 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   mkdirSync(dirname(tapPluginPath), { recursive: true });
   writeFileSync(tapPluginPath, DSH_STREAM_TAP_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
   writeFileSync(tapFilePath, '', { encoding: 'utf8' });
+  /**
+   * 提问应答者的三份落盘（**同一个时序**，理由同上：装配清单在 boot 那一步读）：插件本体落
+   * `configHome` 根（相对名按 `<dshHome>` 解析，与 stream-tap 同一条基准），两份 sidecar 整份清零
+   * ——它们是追加型的，重跑同一行时上一轮的提问与答复绝不能被当成本次那一问的。
+   *
+   * 全都在 `askAnswerer` 之下：不挂应答面 ⇒ 插件文件不落盘、两份 sidecar 也不建，
+   * 叠加配置里那一行同样没有（见 `buildDshRoutePatch`）——「不问就不动」不留痕迹。
+   */
+  const askPluginPath = join(input.configHome, DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH);
+  const askTranscriptPath = join(input.configHome, DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH);
+  const askRepliesPath = join(input.configHome, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH);
+  if (askAnswerer) {
+    writeFileSync(askPluginPath, DSH_ASK_ANSWERER_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(askTranscriptPath, '', { encoding: 'utf8' });
+    writeFileSync(askRepliesPath, '', { encoding: 'utf8' });
+  }
   const runtime: DshRuntime = new sdk.DeepSeekHarness({
     cwd: input.cwd,
     dshHome: input.configHome,
@@ -829,6 +894,28 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   // 归因要落在 `AGENT_FAILED` 上，且此时还没有「被关闭的对象」⇒ 不该有任何关闭动作。
   // `start()` 是幂等的（SDK 的 `this.initialized ??= …`），流里那次 `start()` 不会重复握手。
   await runtime.start();
+  /**
+   * 应答面的**父进程那一半**：轮询插件写的提问流水，把每一问交给提问端口，再把答复写回答复流水。
+   * 在 `runtime.start()` 之后起——起不来的运行不该留一个空转的轮询（插件也没被加载）。
+   */
+  const askBridge: DshAskAnswererBridge | null = askAnswerer
+    ? startDshAskAnswerer({
+      port: context.askUser,
+      transcriptPath: askTranscriptPath,
+      repliesPath: askRepliesPath,
+    })
+    : null;
+  /**
+   * 释放：**先停应答面的轮询，再关运行时**。
+   *
+   * 一份 disposer 跨全部活动区间（首轮与每次追问共用同一份）：运行时与应答面本来就是整 run 一份，
+   * 而骨架只释放首轮那一格（`releaseTurn` 记忆化）。`createDisposer` 幂等，超时兜底与用户终止
+   * 先后到达也只会关一次。
+   */
+  const disposeRuntime = createDisposer(async () => {
+    askBridge?.close();
+    await runtime.close();
+  });
   logger.debug('dsh 已注入路由并启动运行时', {
     model: input.route.modelId,
     // **只记名字**（条目的 env / headers 里可能有密钥，日志不该能把它带出去）；
@@ -843,6 +930,8 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     effort: input.effort,
     route: DSH_ROUTE_KEY,
     sessionId,
+    // 应答面那一格只记「这一轮挂没挂」：它是插件落盘与等待档的共同自变量
+    askUserAnswerer: askAnswerer,
   });
   /**
    * 本行的**子会话白名单**与**已收场集合**：三处共用——通知流的放行判据要在
@@ -889,7 +978,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
      * 归属与残留风险登记在《厂商进程生命周期规范》的归属表里；行产物清理不假设它一定干净
      * （core 的 `removeTreeWithRetry`）。对照：codex 由本仓自己 spawn，`close()` 必须整棵回收 + 等退出。
      */
-    dispose: createDisposer(() => runtime.close()),
+    dispose: disposeRuntime,
     /**
      * **收尾也交一次分量**。
      *
@@ -1011,6 +1100,35 @@ export const dshProvider: AgentProvider = {
       notes: [
         'MCP 的判据通道**只有** `request/header` 的 `data.header.tools`（没有服务状态那一格）：起不来时工具静默消失、会话照常跑完、不投结构化错误',
         'skill 的判据通道是 `user/message` 的 `source.kind`：值为 `skill-catalog` 时只有名字 ⇒ 来源只能记「未证实」（`unverified`）',
+      ],
+    },
+    /**
+     * 交互面：**能被问**，而模型看到的那个提问工具是**厂商自己的包**。
+     *
+     * 工具由适配器挂载（overlay 的 `insert` 一行 `@deepseek-ai/dsh-tool-ask-user`），工具名、
+     * schema、提示词与两档等待语义全归厂商；我们只在它旁边装一个应答者——厂商的进程内提问服务沿
+     * `user-questions/request` 派发到它，由它按 `<configHome>` 下的文件型 side channel 取答复
+     * （`providers/dsh/ask-user.ts`）。「通道是我们造的」不等于「工具是我们造的」⇒ 这一格是
+     * `vendor-tool` 而不是 `host-tool`。
+     *
+     * ⚠️ 没有应答面时那一问仍然会拿到厂商自己的收场：等待档随应答面派生（见 overlay 那两个常量），
+     * 没挂应答面的轮次走定时档、到点交回厂商设计好的「待答」结果。
+     */
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      /**
+       * 驱动器是真的：真运行时跑起来、厂商自己的进程内提问服务沿 `user-questions/request` 派发到
+       * 我们的应答者插件、答复被厂商折成**真的工具结果**交给下一次模型往返；两臂只差「这一轮挂没挂
+       * 应答面」那一格（`testing/dsh-real-path-fixture.ts`）。
+       */
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [
+        '厂商的提问走**进程内**服务（`user-questions/request` 这条 Cordis waterfall），不投送到 SDK 约定的那条通道 ⇒ 应答者只能是一个插件，由适配器写进行配置目录',
+        '一致性场景走真路径（真运行时 + 脚本式上游 + 适配器的应答者插件，见 `testing/dsh-real-path-fixture.ts`）：答案按题目 id 配对回给插件，厂商把它逐字折进工具结果',
+        '没有应答面的轮次里提问工具仍然挂着（工具由适配器挂载、与应答面无关）：那一档的收场归厂商的定时档（到点交回「待答」结果）',
       ],
     },
     /**

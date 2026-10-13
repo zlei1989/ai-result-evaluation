@@ -80,6 +80,29 @@ export {
  */
 export { ENV_GROUP_ORDER, buildAgentEnvironment, envItem, type BuildEnvironmentInput } from './build-environment';
 /**
+ * 应答面：待答队列（订阅 + 应答动作）与它的推进规则。
+ * 队列规则是**纯函数**（先来后到 / 收到确认才出队 / 关掉不算答），宿主只做拼装——
+ * 与上一条同一条边界：判定留在数据层，页面没有测试面。
+ */
+export {
+  ASK_USER_ANSWERS_URL,
+  ASK_USER_CHANGED_EVENT,
+  ASK_USER_STREAM_URL,
+  ASK_USER_URL,
+  postAskUserAnswers,
+  useAskUserQueue,
+  type UseAskUserQueueResult,
+} from './ask-user';
+export {
+  EMPTY_ASK_USER_QUEUE,
+  applyAskUserSnapshot,
+  confirmAskUserAnswered,
+  currentAskUser,
+  dismissAskUser,
+  reopenAskUser,
+  type AskUserQueueState,
+} from './ask-user-queue';
+/**
  * **界面模型的类型转发**。
  *
  * 定义只有一处：`@aieval/ui` 的 `src/composite/agent-log/types.ts`（那些名字是**界面词汇**——
@@ -99,6 +122,7 @@ export type {
   AgentLogModel,
   AgentLogSource,
   AgentRunStatus,
+  AskUserAnswer,
   AskUserInteraction,
   AskUserPending,
   AskUserSettled,

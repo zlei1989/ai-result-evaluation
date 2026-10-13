@@ -332,6 +332,9 @@ export function createRun(input: RunCreate): EvalRun {
     // 这一轮**怎么评分**的快照：不写这一格，`EvalRunSchema` 的 `.default(false)` 会在落盘时
     // 悄悄把它变成 false——界面显示着「使用智能体评分」，跑的却是模型评分，两端都不报错
     useAgentJudge: input.useAgentJudge,
+    // 与 useAgentJudge 逐字同一条理由：不写这一格，`EvalRunSchema` 的 `.default(false)`
+    // 会在落盘时把「界面打开了应答面」悄悄改成关，而那一轮的产物看起来与「从来没开过」一模一样
+    askUser: input.askUser,
     rows,
     workspaceBase: settings.workspaceRoot,
     createdAt: now,
@@ -648,6 +651,8 @@ export function planRunUpdate(
       : {}),
     executionMode: input.executionMode,
     useAgentJudge: input.useAgentJudge,
+    // 编辑时这一格是**全量替换表单值**：不回传就等于把「这一轮开着应答面」改成关
+    askUser: input.askUser,
     rows,
     ...settleRunAfterEdit(run, rows, now),
   };

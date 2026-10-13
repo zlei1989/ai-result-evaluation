@@ -43,13 +43,27 @@ export function writeSettings(configHome, model, contextWindow, maxTokens) {
   );
 }
 
-/** 写本行 profile patch：把 `ask_user_question` 挂进 sdk profile（新增行必须走 `insert`）。 */
-export function writeProfilePatch(configHome, withAskUser = true) {
+/**
+ * 写本行 profile patch：把 `ask_user_question` 挂进 sdk profile（新增行必须走 `insert`）。
+ *
+ * `profileRows` 给「本行还要挂别的东西」的探测用（缺省 `undefined` ⇒ 只按 `withAskUser` 出那一行，
+ * 老行为逐字不变）。一行的形状就是 loader 的行形状：`{ id, name, config? }`；
+ * `config` 是有意支持的——`@deepseek-ai/dsh-tool-ask-user` 的 `legacy` / `timed` 两档**只能从这里选**。
+ */
+export function writeProfilePatch(configHome, withAskUser = true, profileRows = undefined) {
   const file = join(configHome, 'profiles', 'sdk', 'cordis.patch.yml');
   mkdirSync(dirname(file), { recursive: true });
   const lines = ['# 由 v2 探测写入（与适配器 writeDshProfilePatch 同形）'];
-  if (withAskUser) {
-    lines.push('- insert:', '    - id: tool-ask-user', '      name: "@deepseek-ai/dsh-tool-ask-user"');
+  const rows = profileRows ?? (withAskUser ? [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }] : []);
+  if (rows.length > 0) {
+    lines.push('- insert:');
+    for (const row of rows) {
+      lines.push(`    - id: ${row.id}`, `      name: ${JSON.stringify(row.name)}`);
+      if (row.config !== undefined) {
+        lines.push('      config:');
+        for (const [key, value] of Object.entries(row.config)) lines.push(`        ${key}: ${JSON.stringify(value)}`);
+      }
+    }
   }
   writeFileSync(file, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
 }
@@ -69,6 +83,7 @@ export async function runDshProbe({
   workspace,
   configHome,
   withAskUser = true,
+  profileRows,
   reasoningEffort,
   timeoutMs = 300000,
   settleMs = 45000,
@@ -79,7 +94,7 @@ export async function runDshProbe({
   const home = configHome ?? mkdtempSync(join(tmpdir(), 'aieval-v2-dsh-'));
   const key = readDeepSeekKey();
   writeSettings(home, model, contextWindow, 8192);
-  writeProfilePatch(home, withAskUser);
+  writeProfilePatch(home, withAskUser, profileRows);
 
   const env = { ...process.env, DSH_HOME: home, DEEPSEEK_API_KEY: key };
   const notifications = [];

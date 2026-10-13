@@ -23,6 +23,7 @@ import { asSchemaObject } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult } from '../../types';
 import { addUsage } from '../../usage';
+import { ccAskUserPermission } from './ask-user';
 import { hasClaudeStructuredOutput, projectClaudeMessage, skillsDraftOf, vendorSystemDraftOf } from './events';
 import { createClaudeMessageNormalizer } from './message';
 import { loadClaudeSdk, readClaudeContextUsage, type ClaudeContextUsage, type ClaudeQuery } from './sdk';
@@ -403,6 +404,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   // 类型面也写着「Must be set to true when using …」）——那正是冒烟里 claude 全部 0 改动的形状。
   const permission = CLAUDE_PERMISSION_OPTIONS[input.permission];
   const model = modelForClaudeCode(input.route.modelId, input.route.contextWindow);
+  /**
+   * **提问应答面**：这一轮挂没挂应答面由骨架的 `askUser.available` 说了算（= 调用方传了
+   * `onAskUser`）。没挂 ⇒ 权限钩子一格都不加，厂商那一侧的行为逐字不变——CLI 在这个状态下
+   * **不把提问工具提供给模型**（「不问就不动」在这一家的落点，见 `ask-user.ts` 的文件头）。
+   */
+  const askUserPermission = context.askUser.available ? ccAskUserPermission(context.askUser) : null;
   // 收窄一次交给厂商：非对象一律按「没给」处置（见 `asSchemaObject` 的注释）
   const outputSchema = asSchemaObject(input.outputSchema);
   const query = sdk.query({
@@ -412,6 +419,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       env,
       model,
       ...permission,
+      ...(askUserPermission === null ? {} : { canUseTool: askUserPermission }),
       // 结构化输出按需带：给了 schema ⇒ 翻成 SDK 的 `outputFormat`（形状由 CLI 侧约束）。
       // 非对象（字符串 / 数组 / null）**什么都不传**——那不是一个能交给厂商的 JSON Schema，
       // 透下去只会在 CLI 侧变成一句离真因很远的错（填充层与骨架的修正轮仍然兜着）。
@@ -906,6 +914,28 @@ export const claudeCodeProvider: AgentProvider = {
       skills: { state: 'yes', reason: null },
       notes: [
         '两条通路的判据通道不同：MCP 看 `system/init` 的服务状态与工具表（工具表更硬——状态说「装上了」不等于工具可调），skill 看 `getContextUsage().skills` 的前言清单',
+      ],
+    },
+    /**
+     * 交互面：厂商自带提问工具（`AskUserQuestion`），通道与递答案机制都由真机读数定案。
+     *
+     * 定案的三条（原文与判据见 `probe/v11/REPORT.md` 的对应一节）：提问走**权限回调**（`can_use_tool`，
+     * 那条对话框回调全程 0 次）；答案随「允许并改写入参」的 `answers` 交回，**键是题目文本**，工具结果会
+     * 逐字把它念出来；**接它不需要动权限档**——全权档只遮蔽普通工具，提问工具带
+     * `requires_user_interaction`，照样进回调。
+     *
+     * 一致性场景走的是**真路径**（真 CLI + 本机假上游，只把上游模型脚本化）。
+     */
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [
+        '厂商侧有提问工具；通道（权限回调）与递答案方式（`updatedInput.answers`，键＝题目文本）都已有真机读数',
+        '挂上应答面之后厂商的工具表会多出几件（提问与几个「需要用户介入」的工具），撤掉应答面时那几件**静默消失**——对照臂的差异只在这里，其余逐字相同',
+        '子智能体发起的提问到不了宿主：厂商原生拒（`not available inside subagents`）⇒「子智能体不能向用户提问」由厂商收场，不进挂起表',
       ],
     },
     /**

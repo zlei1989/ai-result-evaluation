@@ -62,6 +62,8 @@ import type {
   AgentProviderMetadata,
   AgentRunInput,
   AgentRunResult,
+  AskUserReply,
+  AskUserRequest,
   SkillRef,
 } from '@aieval/agents';
 import type { JudgeInput } from '../judge';
@@ -239,6 +241,8 @@ export function makeRunFixture(input: {
   executionMode?: ExecutionMode;
   /** 这一轮是否由评分智能体评分；不填即 `false`（与 `RunCreate.useAgentJudge` 的缺省一致） */
   useAgentJudge?: boolean;
+  /** 这一轮是否开启应答面；不填即 `false`（与 `RunCreate.askUser` 的缺省一致） */
+  askUser?: boolean;
   rows?: EvalRow[];
   status?: EvalRun['status'];
 }): EvalRun {
@@ -254,6 +258,7 @@ export function makeRunFixture(input: {
     status: input.status ?? 'idle',
     executionMode: input.executionMode ?? 'parallel',
     useAgentJudge: input.useAgentJudge ?? false,
+    askUser: input.askUser ?? false,
     rows: input.rows ?? [makeRowFixture()],
     workspaceBase: input.workspaceRoot,
     createdAt: new Date().toISOString(),
@@ -579,6 +584,20 @@ export interface FakeAgentCall {
    * 故取值刻意保留 `undefined`，不兜成 `[]`。
    */
   skills?: SkillRef[];
+  /**
+   * 这一次运行拿到的入参上**有没有提问回调**（`input.onAskUser !== undefined`）。
+   *
+   * 为什么记「键在不在」而不是「被调用了几次」：应答面的**闸门**就是这一格——适配器按它决定
+   * 挂不挂厂商钩子、开不开开关、改不改权限档（`AskUserPort.available`），故「不开启 ⇒ 这一格缺席」
+   * 正是零回归那条判据在适配器边界上的形状。
+   */
+  askUserAttached: boolean;
+  /** 假适配器**代模型问了几次**（脚本里写了 `askUser` 就是一次，与有没有人接无关） */
+  askUserAttempts: number;
+  /** 回调真的被调用了几次（编排层那一端收到几份请求）；`attempts - calls` = 没人接的次数 */
+  askUserCalls: number;
+  /** 回调交回来的那几份答复（顺序即提问顺序）：闸门开着时用来看「答复回到了适配器手里」 */
+  askUserReplies: AskUserReply[];
   startedAt: number;
   finishedAt: number | null;
   exitReason: AgentExitReason | null;
@@ -678,6 +697,18 @@ export interface FakeAgentScript {
    * 只给身份与状态，其余格由夹具补成合法形状。
    */
   subagents?: { subagentId: string; status?: SubagentRecord['status']; name?: string | null }[];
+  /**
+   * `finish()` 之前**代模型问一次**（`input.onAskUser`）：模拟适配器把厂商的提问钩子接到骨架的
+   * 提问端口上。四家真实的问法各不相同（原生钩子 / 宿主工具 handler），但到了这一格都长成
+   * 「拿一个请求、要一个答复」——夹具扮演的是**厂商那一端**，编排层那一端由被测代码实现。
+   *
+   * **只给请求、不给答复**：答复从哪来是**被测代码那一半**（挂起表 + 应答入口或预算），
+   * 夹具替它编一份就等于把「有人答了」这条判据变成自述。它只负责问，并把交回来的那一份记下。
+   *
+   * 不填 = 这一行不问。填了而回调缺席（闸门没开）时**如实记一次 attempts、零次 calls**：
+   * 「不问就不动」与「一次都不被调用」两条判据靠这两个数分开。
+   */
+  askUser?: { request: AskUserRequest };
 }
 
 export const fakeAgents = {
@@ -796,6 +827,12 @@ const FAKE_PROVIDER_METADATA = {
       notes: [],
     },
     /**
+     * 交互面声明同真值（取值那几格；`notes` 与「凭什么是这个驱动」的散文不进逐格一致这条前提）。
+     * 编排层只读 `askUserChannel` 一格（抄进行级观测事件），抄错的表现是日志里写着「宿主工具」
+     * 而这一家实际走的是厂商自己的提问工具。
+     */
+    interaction: { askUser: 'yes', askUserChannel: 'vendor-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
+    /**
      * 耗时量级同真值（真机冒烟的等待预算按这一档派生）。编排层不读它，
      * 但「假 provider 与真注册表逐格一致」是这份夹具的前提。
      */
@@ -816,6 +853,8 @@ const FAKE_PROVIDER_METADATA = {
       skills: { state: 'yes', reason: null },
       notes: [],
     },
+    // 交互面同真值：与 cc 同一档（厂商那条通道在，我们没开工具开关、收到请求也不回帧）
+    interaction: { askUser: 'off-by-adapter', askUserChannel: null, askUserReason: 'not-observed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
     needsMessagesForReasoningEvidence: true,
@@ -830,6 +869,8 @@ const FAKE_PROVIDER_METADATA = {
       skills: { state: 'yes', reason: null },
       notes: [],
     },
+    // 交互面同真值：厂商侧有进程内提问服务，但不投送到 SDK 约定的那条通道
+    interaction: { askUser: 'not-projected-by-vendor', askUserChannel: null, askUserReason: 'not-exposed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
     needsMessagesForReasoningEvidence: false,
@@ -845,6 +886,13 @@ const FAKE_PROVIDER_METADATA = {
       skills: { state: 'yes', reason: null },
       notes: [],
     },
+    /**
+     * 交互面同真值：**宿主工具**那一档——厂商结构上没有提问工具，这一件由我们注册进会话装配面，
+     * 陈述句的证明走真路径（真包 + 可编排的假网关）。
+     * 这一格是本夹具唯一要「读」的能力格：编排层把它抄进行级观测事件（提问工具来源），
+     * 抄错的表现是日志里写着「厂商工具」而实际是我们注册的。
+     */
+    interaction: { askUser: 'yes', askUserChannel: 'host-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
     // 秒级：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
     timing: { runScale: 'seconds', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
@@ -880,6 +928,10 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         maxOutputTokens: input.route.maxOutputTokens,
         effort: input.effort,
         prompt: input.prompt,
+        askUserAttached: input.onAskUser !== undefined,
+        askUserAttempts: 0,
+        askUserCalls: 0,
+        askUserReplies: [],
         startedAt: Date.now(),
         finishedAt: null,
         exitReason: null,
@@ -1071,6 +1123,20 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         // rawEvents 原样投递（连 seq / at 都不动）：用例据此断言非 log 类型被逐字段透传、没有被加上前缀
         for (const event of script.rawEvents ?? []) input.onEvent(event);
         emitMessages(script);
+        /**
+         * 代模型问一次（见 `askUser` 那一格）。放在事件与消息之后：真实顺序里模型先产出调用
+         * 那一半、再阻塞在提问上，故这一幕落地时账本里已经有它那一轮的消息了。
+         * `attempts` 与 `calls` 分开记：「问了几次」是脚本的事，「有没有人接」是闸门的事。
+         */
+        const ask = script.askUser;
+        if (ask !== undefined) {
+          call.askUserAttempts += 1;
+          const callback = input.onAskUser;
+          if (callback !== undefined) {
+            call.askUserCalls += 1;
+            call.askUserReplies.push(await callback(ask.request));
+          }
+        }
       }
       return finish('completed', true);
     },

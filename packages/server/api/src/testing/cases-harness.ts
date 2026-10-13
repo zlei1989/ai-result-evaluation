@@ -337,6 +337,7 @@ export function makeRun(runId: string, caseId: string, caseTitle: string, repoPa
     repoBranch: null,
     rubric: FIXTURE_RUBRIC,
     includeSteps: false,
+    askUser: false,
     status: 'done',
     executionMode: 'parallel',
     useAgentJudge: false,

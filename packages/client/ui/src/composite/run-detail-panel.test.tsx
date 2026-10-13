@@ -94,6 +94,7 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     executionMode: 'parallel',
     // 评分方式快照：这一轮走纯文本评分通路
     useAgentJudge: false,
+    askUser: false,
     rows: [makeRow('w-1')],
     workspaceBase: 'D:\\runs',
     createdAt: '2026-09-22T08:00:00.000Z',

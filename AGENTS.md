@@ -109,7 +109,7 @@ core     → contracts
 - 能用现成的临时目录 API 就别手写递归删除（JS 用 `mkdtempSync`，PS 用 `New-TemporaryFile`）；也别指望 PSScriptAnalyzer 做静态门禁（本机未安装且装不上）。
 - 本仓只有两个 PS 脚本：`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`，改动靠人工审。`scripts/bench-gates.ps1:28` 用 `Invoke-Expression` 执行命令串，**调用方只能传字面量**。
 - 已审计的永久删除点，别"顺手加守卫"：`scripts/split-test-file.mjs:202` 的 `rmSync(src)` 是拆完测试文件删原文件的有意行为；`packages/server/core/src/workspace.ts:124-126` 的三个 `rmSync` 分开写是刻意的（改前先读该处注释）。
-- **网关 key 只能从环境变量读**：`packages/server/agents/probe/v2/lib/gateway.mjs:27` 仍把 key 硬编码在源码里（`codex-cli-plan.ps1` 已改成读 `AIEVAL_PROBE_GATEWAY_API_KEY`），改这里时必须改成读环境变量（该 key 需轮换）。
+- **网关 key 只能从环境变量读**：探测脚本一律读 `AIEVAL_PROBE_GATEWAY_API_KEY`（可选 `AIEVAL_PROBE_GATEWAY_KEY_FILE` 指向本机凭据文件），源码里出现明文 key 即缺陷。历史上有脚本把 key 硬编码在 `probe/v2/lib/gateway.mjs`，**明文已进过 git 历史 ⇒ 该 key 仍需轮换**（未闭合：轮换要由持有该 key 的人做）。
 
 ## 命令
 
@@ -189,6 +189,7 @@ core     → contracts
 | **不裸跑 `pnpm add`** | 镜像缺平台可选包 ⇒ `ERR_PNPM_NO_MATCHING_VERSION`；且默认重解析会把厂商 SDK 的 peer 降级（如 `zod` 从 `4.6.5` 降到 `3.25.76`，违反它声明的 `zod: ^4.0.0`）。口径：**手改 `package.json`** + 按「旧 lockfile + 新子树可达集」合并 lockfile，改完核对版本后缀并跑 `pnpm install --frozen-lockfile` |
 | 改过 `package.json` 之后跑 `pnpm <script>` | pnpm 的依赖自检会**裸跑一次 `pnpm install`**，在内网镜像下以同一个 `ERR_PNPM_NO_MATCHING_VERSION` 中断，看起来像回归。口径：那一轮先 `pnpm install --frozen-lockfile` 对齐状态；退路是直接跑 `node_modules/.bin/{tsc,vitest,eslint}` |
 | 根 `eslint .` 的边界规则必须**按目录前缀化** | 否则 core 的禁用名单会落到全部包（web-next 被误伤成「禁止 import react」）；前缀化在 `scopeToDir()`。改完做**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错 |
+| **`next dev` 在含中文的源码行上 panic ⇒ 服务直接不可用** | Next 16 的代码帧渲染器（`next-code-frame/src/highlight.rs:1011`）按**字节**偏移切它要展示的那一行，切在汉字中间就 panic（Rust 的字符串切片语义），随后那个 worker 线程死掉、日志只留 `[Error: Panic in async function] { code: 'GenericFailure' }`——**真正的诊断被吞掉**，症状是「Ready 之后服务不响应」（主检出与 worktree 上都会，已复现）。它渲染的那一行是本仓 `apps/web-next/instrumentation.ts` 里那条停机 JSDoc ⇒ **那一行的首行刻意写成 ASCII**（同一份说明的中文紧随其后）；别把它改回中文，也别把中文挪到紧邻的上一行。通用风险：**任何**会被 Next 代码帧渲染的含中文行都可能触发它；真撞上时先把那一行临时换 ASCII 看清诊断，再决定怎么改 |
 
 ## 冒烟测试
 

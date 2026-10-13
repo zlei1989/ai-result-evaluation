@@ -471,6 +471,17 @@ export const EvalRunSchema = z.object({
    * （使用者看到的是「我的评测记录凭空少了几轮」，两端都不报错）。
    */
   useAgentJudge: z.boolean().default(false),
+  /**
+   * 这一轮**有没有应答面**（模型问到人时有没有人能答）。`.default(false)` 是**载重**的：
+   * 磁盘上已有的 `run.json` 没有这一格，必填会让 `listRuns()` 静默跳过那一轮（与
+   * `useAgentJudge` 同一条理由）；`false` 也是语义正确的兜底——默认不介入。
+   *
+   * 为什么是**轮级快照**而不是一个全局设置：它是「有人介入过这一轮」这件事的唯一凭据。
+   * 开着它的一轮里适配器会**挂厂商钩子 / 注册宿主工具 / 改权限档**（「不问就不动」那条边界的另一半），
+   * 于是这些轮的产物与没开过的**不可直接比**（时长里含等人的时间，模型也可能因为问到了信息而少走弯路）。
+   * 快照落盘之后，事后复盘不必去猜「这一行为什么停了三分钟」，横向对比也能按这一格分组。
+   */
+  askUser: z.boolean().default(false),
   rows: z.array(EvalRowSchema),
   workspaceBase: z.string(),
   createdAt: z.string(),
@@ -485,6 +496,14 @@ export const RunCreateSchema = z.object({
   executionMode: ExecutionModeSchema,
   /** 这一轮是否由评分智能体评分；缺省 false（老客户端与手工 POST 不带这个字段时仍然合法） */
   useAgentJudge: z.boolean().default(false),
+  /**
+   * 这一轮是否开启**应答面**（模型提问时等人回答）；缺省 false。
+   *
+   * **必须显式声明**：zod 3 的 `z.object` 默认 strip 未知键，不声明的话表单提交的这一格会被
+   * **静默丢弃**（不是 400），服务端永远收不到它——而它的默认值恰好是「关」，
+   * 于是「界面打开了、跑起来却没应答面」是一种没有任何报错的坏形状。
+   */
+  askUser: z.boolean().default(false),
   rows: z
     .array(
       z.object({

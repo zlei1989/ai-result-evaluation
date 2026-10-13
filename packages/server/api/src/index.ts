@@ -76,3 +76,7 @@ export { streamJudgeEvents, streamRowEvents } from './run-stream';
 export { streamJudgeRecords, streamRowRecords, type RecordStreamOptions } from './messages-stream';
 // run 级信号流：跨轮次的状态翻转通道（快照变了 ⇒ 客户端重读 REST），与三条行级流并行
 export { streamRunSignals } from './run-events';
+// 应答面：待答提问的快照读侧与唯一写入口（三个端点见 web-next 的 /api/ask-user/*）
+export { answerAskUser, getPendingAskUser } from './ask-user';
+// 待答清单的信号流：只推「变了，重读」，与 run 级信号流逐字同形（无序号、不可续订、不因终态关流）
+export { streamAskUserChanges } from './ask-user-stream';

@@ -6,7 +6,7 @@
 
 ## 形态与交互
 
-**`AgentEvent` 八型**与发射方：
+**`AgentEvent` 九型**与发射方：
 
 | 事件 | 谁发 | 要点 |
 |---|---|---|
@@ -14,10 +14,10 @@
 | `log` | 适配器 | 唯一带「给人看的一句话」的类型：`text` 原文照旧逐字进原始输出面板、`summary?` 缺格＝这条没有可说的事，两格不许互相顶替 |
 | `vendor-system` | 适配器 | 七格（`tools` / `slashCommands` / `agents` / `mcpServers` / `mcpChannel` / `permissionMode` / `outputStyle`，外加**可选**的 `skills`），只在厂商真的投送了那行时才有；未识别厂商负载一律落 `log` 保留原始负载（唯一允许丢的是重复事件） |
 | `usage` | 适配器 | 见「数据与契约」 |
-| `diff-summary` / `score` / `error` | 编排层 | `score` 载 `ScoreResult`、`error` 载行级失败归因；评审者自己的流水**不进这条流**（落 `judge-events.jsonl`，见下「分流判据」） |
+| `diff-summary` / `ask-user` / `score` / `error` | 编排层 | `score` 载 `ScoreResult`、`error` 载行级失败归因；`ask-user` 是一次提问的**收场**记录（收场方式 / 等待时长 / 提问工具来源），与消息账本 answer 那一半共用 `askId` / `callId`（见[《提问与应答》](/features/ask-user-answer)）。评审者自己的流水**不进这条流**（落 `judge-events.jsonl`，见下「分流判据」） |
 | `end` | 编排层 | `exitReason` 契约是**开放字符串**（`z.string()`），现为七值两层（适配层 `completed` / `timed-out` / `canceled` / `error`，编排层 `interrupted` / `rescored` / `skipped`）⇒ 消费方按字符串原样渲染、不按四值穷举；**不在「原始输出」面板**（该面板只收 `type === 'log'`），落点是事件行与台账 |
 
-**通道拓扑共六条**：run 级信号流 `GET /api/runs/events`（SSE，`event: run-updated` + `data: {"runId":"…"}`，打开即 `: ready`，响应头 `text/event-stream` + `no-cache` + `X-Accel-Buffering: no`——只带 `runId` 不载数据，驱动列表重验）；**行级**两条：事件流 `…/stream`（`events.jsonl` 的 SSE 扇出）、消息流 `…/messages/stream`（`messages.jsonl`）；**评分**两条：`…/judge/events/stream`、`…/judge/messages/stream`。四条的响应头与心跳口径逐字相同，`runtime = 'nodejs'`（总线是进程内的）。
+**通道拓扑共六条**：run 级信号流 `GET /api/runs/events`（SSE，`event: run-updated` + `data: {"runId":"…"}`，打开即 `: ready`，响应头 `text/event-stream` + `no-cache` + `X-Accel-Buffering: no`——只带 `runId` 不载数据，驱动列表重验）；**待答清单**一条：信号流 `GET /api/ask-user/stream`（`event: ask-user-changed` + 一行**空的** `data:`，**无 `id:`**——待答内容由 `GET /api/ask-user` 快照给，`event.data` 是空串；那行 `data:` 不是可有可无的装饰：SSE 规范里没有 `data` 字段的块不派发任何事件，省掉它订阅端零交付）；**行级**两条：事件流 `…/stream`（`events.jsonl` 的 SSE 扇出）、消息流 `…/messages/stream`（`messages.jsonl`）；**评分**两条：`…/judge/events/stream`、`…/judge/messages/stream`。除待答那条外的五条响应头与心跳口径逐字相同，`runtime = 'nodejs'`（总线是进程内的）。
 
 **分流判据是「产出者」不是事件类型**：评分那次 `run()` 交出来的事件与消息（`log` / `usage` / `vendor-system` / `error` / `AgentMessage` / 子任务行）全部走 `judge-*` 两份文件；编排层自己发的行级事件（`setRowStatus`、降级留痕、终止留痕、`score`）仍走 `events.jsonl`。两条流的 `seq` **各自一套**（`appendEvent` 按文件续号）⇒ 续订游标不许跨流复用；重跑 / 重评时两份评分产物与候选那两份**同一条清空口径**（`resetEvents` + `resetRecords`）。
 

@@ -46,6 +46,7 @@ import {
   type PiSkills,
 } from './sdk';
 import { PI_MCP_STARTUP_WAIT_MS, createPiMcpLoadConfig, toPiMcpServers } from './mcp';
+import { buildPiAskUserTools, PI_ASK_USER_TOOL, type PiAskUserParams } from './ask-user';
 import { createPiObserver, piRequestSkills, piRequestToolNames, type PiRequestObserver, type PiWire } from './observer';
 import { createPiRunState, finalizePiSubagents, notePiStopRequest, projectPiEvent } from './events';
 import {
@@ -525,6 +526,44 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     });
   }
   /**
+   * **提问那一件宿主工具**（`ask_user_question`）：两个条件同时成立才造得出来。
+   *
+   *   · 有应答面（`input.onAskUser` 传了）——没有应答面时`ask` 一定回「无人应答」，
+   *     把工具装上去只会让模型对着一个永远问不出结果的出口打转。不传 ⇒ 这个数组是空的，
+   *     会话选项因此**逐字不变**（零回归判据）；
+   *   · **全权限档**：提问是「往运行外面要一次人工输入」，而只读档的整个意义是不接触外部状态
+   *     （它的工具面里连 `bash` 都不给）⇒ 只读档不装这一件。应答面存在与否不改变这条裁定。
+   *
+   * `ask` 直接把骨架的提问端口接上去：等待语义（行终止 / 预算 / 静止超时豁免 / 回调抛错）
+   * 全在端口那一层，这里只补厂商没有的那两格——`vendorBudgetMs` 恒 `null`（pi 没有厂商预算），
+   * `subagentId` 恒 `null`（这一件只装在主会话上，见 `subagents.ts` 的子会话语境）。
+   */
+  const askUserTools = buildPiAskUserTools(
+    input.onAskUser === undefined || input.permission !== 'full'
+      ? null
+      : async (params: PiAskUserParams, callId: string) =>
+        context.askUser.ask({
+          questions: params.questions,
+          toolName: PI_ASK_USER_TOOL,
+          callId,
+          vendorBudgetMs: null,
+          subagentId: null,
+        }),
+  );
+  /**
+   * 交给 `createAgentSession({ tools })` 的名单。**三件自定义工具都必须是成员**：`tools` 是成员
+   * 匹配器，名单外的工具连声明都不会发出去（`_isAllowedTool` 在注册那一步就把它删掉），
+   * 症状是「装配了工具但模型看不到」，一个字都不报。
+   */
+  const sessionTools = [
+    ...PI_PERMISSION_OPTIONS[input.permission].tools,
+    PI_MCP_TOOL_PATTERN,
+    ...structuredTools.map((tool) => tool.name),
+    ...askUserTools.map((tool) => tool.name),
+  ];
+  /** 自定义工具合并成一份：`customTools` 只有一格，两件工具共用它 */
+  const customTools = [...structuredTools, ...askUserTools];
+  /**
    * 首轮提示词：走原生通道时**一个字都不加**（那份 schema 由工具声明本身传达，再在提示词里复述一遍
    * 就是第二份可能与它漂移的副本）；降级时追加骨架的约束段（与 dsh 的填充层同一份原料）。
    */
@@ -697,10 +736,9 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     // 档位名单是**闭集**：名单外的工具这一轮不被声明（只读档的 `bash` / `edit` / `write` 由此可证不在）。
     // MCP 工具的名字连接之后才知道，故补一格 `mcp__*` 通配——它是成员而不是修饰符，
     // 名单因此仍然是闭集（修饰符形态会把白名单整个丢掉，见 `PI_MCP_TOOL_PATTERN`）。
-    // `structuredTools` 那一件也必须是成员：自定义工具不在名单里会连声明都不发出去
-    // （`_isAllowedTool` 先筛一遍），症状是模型永远走正文、上报恒 false。
-    tools: [...PI_PERMISSION_OPTIONS[input.permission].tools, PI_MCP_TOOL_PATTERN, ...structuredTools.map((tool) => tool.name)],
-    ...(structuredTools.length === 0 ? {} : { customTools: structuredTools }),
+    // 两件自定义工具（结构化输出、提问）也必须是成员，见 `sessionTools` 的注释。
+    tools: sessionTools,
+    ...(customTools.length === 0 ? {} : { customTools }),
   });
 
   /**
@@ -732,7 +770,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     api: wire,
     baseUrl,
     permission: input.permission,
-    tools: [...PI_PERMISSION_OPTIONS[input.permission].tools, PI_MCP_TOOL_PATTERN, ...structuredTools.map((tool) => tool.name)],
+    tools: sessionTools,
     skills: loader.getSkills().skills.length,
     extensions: loader.getExtensions().extensions.length,
   });
@@ -991,6 +1029,32 @@ export const piProvider: AgentProvider = {
           + '冲突**不判**「缺失」，那会让整行失败且文案说假话',
         'MCP 的 OAuth 登录不补（401 落到 `needs sign-in`，与另三家同档）：**可补、不构成未覆盖项**——'
           + '公开包 `@earendil-works/pi-mcp/oauth` 自换 token 后交给 `createMcpExtension({ credentials })`，补法已验',
+      ],
+    },
+    /**
+     * 交互面：**宿主工具**那一档——模型看到的提问工具由我们注册（`ask-user.ts` 的 `ask_user_question`），
+     * 厂商侧既没有这个工具、也不下发这一类控制请求，所以 `askUserChannel` 是 `host-tool` 而不是
+     * `vendor-tool`：两者的**提示词来源不同**（厂商给 vs 我们自己写），消费侧要能区分。
+     *
+     * 三条成立条件（都是装配面的事实，不是补充说明）：
+     *   · 只在**有应答面**时注册（不传 `onAskUser` ⇒ 这个工具不存在，会话选项逐字不变）；
+     *   · 只装在**全权限**档（只读档的工具面刻意不接触外部状态，连 `bash` 都不给）；
+     *   · 等待预算没有厂商那一格（`vendorBudgetMs` 恒 `null`），超时只由骨架的预算产生。
+     */
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'host-tool',
+      askUserReason: null,
+      /**
+       * 真路径：厂商那一侧真跑（真包 + 可编排的假网关），假网关只扮演**上游模型**，
+       * 工具是我们注册进会话装配面的那一件、答复同进程 `await` 回调。
+       */
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [
+        '宿主工具：厂商的工具面里没有提问工具、也不下发这一类控制请求，这一件由我们自己注册',
+        '只在有应答面时注册，且只装在全权限档——只读档的工具面不接触外部状态（连 bash 都不给）',
+        '没有厂商侧等待预算：超时由骨架的预算产生（工具名沿用既有 ask-user 族表已识别的那个）',
       ],
     },
     /**

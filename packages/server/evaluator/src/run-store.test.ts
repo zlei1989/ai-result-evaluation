@@ -74,6 +74,7 @@ function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): 
     status: 'idle',
     executionMode: 'parallel',
     useAgentJudge: false,
+    askUser: false,
     rows: [],
     workspaceBase: ws,
     createdAt: '2026-09-22T10:00:00.000Z',

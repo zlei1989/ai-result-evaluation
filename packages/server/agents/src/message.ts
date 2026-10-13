@@ -25,6 +25,7 @@
  * （`truncated` 是 `tool-result` 块自己的字段，文本块与消息都没有这一格）。
  */
 import type {
+  AgentKind,
   AgentMessage,
   ChunkKind,
   ContentBlock,
@@ -185,12 +186,17 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
  * `parentCallId` 参与载体：同一个 roundTrip 里，派发子任务的工具调用消息与它的结果消息各自
  * 从 0 起算块序号，只用 `role` 会把主线程消息与子智能体消息串在一起。
  *
- * **导出**：叫 codex 的适配器要在**交出去之前**按合并键比内容（运行期刷新时
- * 只交变化的那几条，见 `providers/codex/index.ts` 的 `changedMessages`）。
- * 它自己在那边拼一遍 `载体` 会造成**两套合并键**——一旦漂移，去重就会漏（表现为
- * `messages.jsonl` 里同一条逻辑消息出现两份快照），故这里只留一份实现。
+ * 入参只取**它读的那四格**：`MessageDraft`（各家交进来的归一草稿）与 `AgentMessage`（落账本的那一条）
+ * 在这四格上同形，消费方因此不必为了拼一个键先造一份完整草稿。
+ *
+ * **导出**：这条公式是本包内外唯一的真源，两处消费方都直接用它——
+ *   · 叫 codex 的适配器要在**交出去之前**按合并键比内容（运行期刷新时只交变化的那几条，
+ *     见 `providers/codex/index.ts` 的 `changedMessages`）。它自己在那边拼一遍 `载体` 会造成
+ *     **两套合并键**——一旦漂移，去重就会漏（表现为 `messages.jsonl` 里同一条逻辑消息出现两份快照）；
+ *   · 编排层要往账本里补写一条**不是适配器投递**的记录（人工应答的 tool-result），
+ *     它必须与适配器投递的那些落进同一个键空间，自己拼一遍是同一个漂移的另一半。
  */
-export function carrierKeyOf(draft: MessageDraft): string {
+export function carrierKeyOf(draft: Pick<MessageDraft, 'subagentId' | 'roundTrip' | 'role' | 'parentCallId'>): string {
   return [draft.subagentId ?? 'main', String(draft.roundTrip), draft.role, draft.parentCallId ?? '-'].join('|');
 }
 
@@ -330,8 +336,11 @@ export function thinkingBlockDraft(
  * 工具调用块草稿。
  * `input` 传厂商原文（codex 与 dsh 的 `arguments` 是 JSON 字符串，**调用方先解析成对象**再传）；
  * `family` 由 `classifyTool` 按工具名判定，判不出来就是 `null`（消费方走通用渲染）。
+ * `vendor` 是**发这条消息的那一家**（必填）：族载荷里 `allowOther` 那一格要看这一家的答案面
+ * （cc / dsh 的答复形状恒收得下用户自己写的话，见 `tool-payload.ts`），而工具名跨家同名——
+ * 按名字反推会在同名工具上静默给错那一格。非提问/清单族的块用不到它，照传即可。
  *
- * **族载荷在这一处归一**：`payload` 由 `toolPayloadOf(family, input)` 从厂商原文算出
+ * **族载荷在这一处归一**：`payload` 由 `toolPayloadOf(family, input, vendor)` 从厂商原文算出
  * （见 `tool-payload.ts`）。放在这个咽喉点而不是各家的 `message.ts` 里，是因为三家的工具调用
  * **全部**流经本函数——每家各写一遍必然漂移，而漂移的症状是「同一族的卡片在某一家上是空的」。
  *
@@ -348,6 +357,7 @@ export function toolCallBlockDraft(
   callId: string,
   name: string,
   input: unknown,
+  vendor: AgentKind,
   family: ToolFamily | null = classifyTool(name),
 ): MessageBlockDraft {
   return {
@@ -359,7 +369,7 @@ export function toolCallBlockDraft(
       family,
       name,
       input,
-      payload: toolPayloadOf(family, input),
+      payload: toolPayloadOf(family, input, vendor),
       summary: toolCallHint(name, input),
     },
   };

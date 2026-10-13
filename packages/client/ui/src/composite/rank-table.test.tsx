@@ -110,6 +110,7 @@ function makeRun(rows: Row[]): EvalRun {
     status: 'done',
     executionMode: 'parallel',
     useAgentJudge: false,
+    askUser: false,
     rows,
     workspaceBase: '/runs',
     createdAt: '2026-10-12T08:00:00.000Z',

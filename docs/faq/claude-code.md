@@ -198,3 +198,153 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 **相关资料**：
 
 - [《Claude Code 接入》](/protocols/cc) —— 供应商端点与凭据的解析口径（`providerId` → `baseUrl` / `apiKey`）
+
+---
+
+## `No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.`（没有批准面时，提问工具根本不提供给模型）
+
+**现象原文**（探针 `probe/v11/cc-ask-channel.mjs` 的 `none` 臂，脚本式上游主动回一帧
+`AskUserQuestion` 的 `tool_use`，工具结果逐字）：
+
+```
+<tool_use_error>Error: No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.</tool_use_error>
+```
+
+同一现象在**子智能体**里换一句话（`cc-ask-subagent.mjs` 的 `subagent` 臂，父会话挂着批准面、
+让子会话提问）：
+
+```
+<tool_use_error>Error: No such tool available: AskUserQuestion. AskUserQuestion is not available inside subagents. Complete the task with the tools provided and return findings to the orchestrator.</tool_use_error>
+```
+
+同桌读数（同一次运行的入站请求体 `tools[]`，也是原文）：
+
+| 装配 | 模型工具表 | 提问工具在不在 |
+|---|---|---|
+| 挂了 `canUseTool`（`bypassPermissions` 或 `default` 都一样） | 30 项 | **在** |
+| 一个回调都不挂（或 `permissionPrompts: 'none'`） | 27 项 | **不在** |
+| 子智能体的会话（父会话挂着回调） | 25 项 | **不在** |
+
+**日期**：2026-10-13
+
+**根因**：提问工具的启用闸门是 `isEnabled()`，它把「headless」与「有没有批准面」两件事**与**起来：
+
+- CLI 侧原文（`@anthropic-ai/claude-agent-sdk@0.3.281` 自带二进制 2.1.281）：
+  `function k5(){ if (ph().length > 0 && Ae()) return !1; if (Ae() && !ORn(wF())) return !1; return !0 }`，
+  其中 `Ae()` = `!isInteractive()`（`--print` / SDK 都是 headless）、
+  `wF()` = `permissionPromptToolName()`、`ORn(e)` = `e !== undefined && e !== "none"`；
+  另有 `g5t({permissionPromptTool, sdkUrl}) { return sdkUrl ? "stdio" : permissionPromptTool }`
+  ⇒ SDK 走 stdio 时那一格解析成 `stdio`，**所以「挂一个回调」等于给这个会话装上批准面**。
+- 于是：**不挂批准面 ⇒ 工具不提供给模型**（模型永远问不出来），不是「问了被拒」，也不是「问了挂住」；
+  挂上批准面之后，提问才会以 `can_use_tool` 下发给宿主（同一份探针的 `both` 臂，`requires_user_interaction: true`）。
+- 子智能体那句是**另一道独立的闸门**：父会话挂着批准面时子会话仍拿不到这个工具，
+  提示语也是分开写的（`not available inside subagents`）——即「子智能体不能向用户提问」在 cc 侧是
+  **厂商原生**行为，不需要宿主自己按子智能体身份去拒。
+
+**解决方案**：**本仓无需改代码**（这是厂商设计，不是缺陷）；要判的是「我们这一轮到底挂没挂应答面」：
+判据链 = ① 这一轮是否传了 `canUseTool`（不传就是本条现象，模型看不见工具，收场是「这家没开应答面」而**不是**「无人应答」）；
+② 传了就一定能在入站请求体的 `tools[]` 里看到 `AskUserQuestion`（本仓 `probe/v11/cc-ask-channel.mjs`
+的 `inboundFirstMain.hasAskUserQuestion` 就是这一格）。复跑：
+`node packages/server/agents/probe/v11/cc-ask-channel.mjs --arm=none --mode=default`。
+**代价**：这一格今天在界面上看不出来——模型只是「不会问」，什么都不报，所以容易把
+「我们没开应答面」误判成「模型不需要问」。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 权限档与 `canUseTool` 的装配口径
+
+---
+
+## `[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted.`（全权档并没有遮蔽提问工具）
+
+**现象原文**（SDK 打到进程 stderr 的 node 警告，逐字）：
+
+```
+(node:85537) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted. To gate every tool call, use a PreToolUse hook instead.
+```
+
+同一次运行（`probe/v11/cc-ask-channel.mjs --arm=shadow-ab --mode=bypass`）里，同一个回调记录器
+收到的**命中列表**只有提问工具：普通工具 `Read` 正常执行（工具结果就是文件内容）却**没有**过回调，
+而 `AskUserQuestion` **过了**回调，线级帧逐字：
+
+```
+{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{…},"tool_use_id":"toolu_probe_ask_1","requires_user_interaction":true}}
+```
+
+**日期**：2026-10-13
+
+**根因**：那句警告是**写给普通工具的**，它把结论说过头了。`bypassPermissions` 的自动批准短路
+（`except explicit deny rules`）只覆盖「策略层可以自己决定 allow」的工具；而提问工具的接口里
+`requiresUserInteraction()` 恒为 `true`（同一份 CLI 原文：`requiresUserInteraction(){return !0}`），
+这一类工具的批准卡**本身就是交互面**，所以策略层不替它做决定，仍把 `ask` 交给宿主 ⇒
+控制帧带 `requires_user_interaction: true`。同一条原则在 hook 那一侧也能看到：
+`if (!C.updatedInput && e.requiresUserInteraction?.()) return null;`（规则/hook 的 allow
+不带改写入参时不短路这类工具）。
+
+**解决方案**：**不要照那句警告设计权限档**。判据（可复跑）：
+
+```
+node packages/server/agents/probe/v11/cc-ask-channel.mjs --arm=shadow-ab --mode=bypass
+```
+
+看 `shadow-ab @ bypassPermissions：通道=回调命中过的工具 = ["AskUserQuestion"]；普通工具（Read）是否也过回调 = false`。
+实测结论：**接应答面不需要放弃全权档**——`permissionMode: 'bypassPermissions'` 一字不用改，
+只要在传 `canUseTool` 的同时照旧给 `allowDangerouslySkipPermissions: true`；
+普通工具照旧走自动批准、到不了回调，等于免费得到「只对提问工具走问答，其它工具一律放行」。
+（要「每个工具都过宿主」才需要换 `PreToolUse` hook——本仓不需要。）
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 权限档表与 `allowDangerouslySkipPermissions` 的成对口径
+
+---
+
+## `updatedInput.response` 一给就把选项答案整条盖掉：`The user responded: …`（自由输入该走选项值那一格）
+
+**现象原文**（探针 `probe/v11/cc-ask-answer.mjs --arm=response`，脚本式上游只回一帧
+`AskUserQuestion` 的 `tool_use`，我们返回 `allow` + `updatedInput` 里**同时**给 `answers` 与 `response`；
+模型最终看到的工具结果逐字）：
+
+```
+The user responded: 探针自由输入：先按 Alpha 走。
+```
+
+对照：同样两条工具结果来源（后续入站请求体的 `tool_result` 与 SDK 消息流）在 `--arm=answers` 下逐字是
+
+```
+Your questions have been answered: "Which approach should the probe take?"="Alpha", "Which paths may I touch?"="workspace".
+```
+
+**日期**：2026-10-13
+
+**根因**：提问工具的**结果渲染**按 `response` 优先分档——`response` 一有值，整条工具结果换成
+「用户这么说」那一种渲染，`answers` 里那些选项标签**一条都不再出现**（这一家的工具结果里没有第三格
+能同时装下两者；`annotations[<题面>].notes` 装得下补充说明，但它只在 `answers` 那一支里追加
+`notes: …`）。于是「多选 + 自由输入」这种**两者都要保留**的答案用 `response` 递出去必然丢一半：
+用户选中的标签模型再也看不到。
+
+**解决方案**：**不用 `response`**。本仓把用户写的那句话当成**选项值的另一种**递回去——值取 `custom`
+（单选）或与选项标签**并在同一个数组**里（多选），键仍是题面文本（`providers/cc/ask-user.ts` 的
+`ccAnswersOf` / `ccAnswerValueOf`）。判据（可复跑，探针的 `answer-custom` 臂就是按这份算出来的值发的）：
+
+```
+node packages/server/agents/probe/v11/cc-ask-answer.mjs --arm=answer-custom
+```
+
+实测工具结果逐字：
+
+```
+The user answered: "Which approach should the probe take?"="探针自由输入：先按 Alpha 走。", "Which paths may I touch?"="workspace,探针自由输入：再多带一个 system。".
+```
+
+即：单选与多选的自由输入**都到得了模型**，多选那一半的选项标签也没丢。套餐内的守卫是
+`providers/cc/ask-user.test.ts` 的「弹层的单选那一档」「多选那一档」两条
+（真路径那一侧由 `providers/cc/conformance.test.ts` 钉「答复真的回到了厂商」）。
+**另一处容易踩的**：这一家的提问入参 schema 里**没有**「允不允许自由输入」这一格，而它自己的
+schema 描述逐字写着「不要给 'Other' 选项，那个界面上自动提供」⇒ 题面的 `allowOther` 在这一家
+**恒 `true`**，判据读的是答案面而不是提问形状（`tool-payload.ts`）。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 《提问与应答面》一节的递答案形状
+- [《提问与应答》](/features/ask-user-answer) —— 四家自由输入的落点对照

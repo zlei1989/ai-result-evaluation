@@ -89,6 +89,11 @@ export const baseConfig: Linter.Config[] = [
       // 全是别人的模板 ⇒ 不忽略就是几千条对着别人代码发的报错。与 `probe/dumps/**` 同一条口径：
       // flat config 不读 `.gitignore`，生成物目录必须在这里再写一遍。
       '**/.scratch/**',
+      // `.worktrees/**`：`git worktree` 的工作位落在仓内（`.gitignore` 忽略）。它们是**临时的整份检出**，
+      // 不是仓的一部分：扫它们会量错东西——别人正在改的文件、以及跑过 `next dev` 之后生成的
+      // `apps/web-next/next-env.d.ts`（包级那条 `ignores: ['next-env.d.ts']` 是**相对包目录**的，
+      // 在工作位里路径变成 `.worktrees/<名>/apps/web-next/…` 就匹配不上了）。与 `.scratch/**` 同一条口径。
+      '**/.worktrees/**',
       '**/.vitepress/cache/**',
       '**/.vitepress/dist/**',
     ],

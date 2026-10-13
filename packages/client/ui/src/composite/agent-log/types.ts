@@ -346,7 +346,7 @@ export interface AskUserQuestion {
 export interface AskUserAnswer {
   header: string;
   selected: readonly string[];
-  /** 自由输入。多选时是**补充**（标签与自由输入都显示），单选时是**覆盖**（只显示自由输入） */
+  /** 自由输入。**多选 = 并存**（标签与它都算）、**单选 = 覆盖**（此时 `selected` 为空）；两格不互斥，消费方两半都要读 */
   custom: string | null;
 }
 
@@ -639,7 +639,7 @@ export const TASK_STEP_STATUS_LABELS: Record<TaskStep['status'], string> = {
   unknown: '状态未知',
 };
 
-/** 七种收场的中文与样式档。`unavailable` **不是红色错误**（本仓已知边界，不是缺陷） */
+/** 七种收场的中文与样式档。`unavailable` 是**正常收场**（与「等超时」同档），不是红色错误 */
 export const ASK_USER_OUTCOME_LABELS: Record<
   AskUserOutcome,
   { label: string; tone: 'success' | 'warning' | 'default' | 'error'; note: string | null }
@@ -651,7 +651,7 @@ export const ASK_USER_OUTCOME_LABELS: Record<
   unavailable: {
     label: '无人可应答',
     tone: 'default',
-    note: '本仓没有开应答面（approvalPolicy: never）——已知边界，不是缺陷',
+    note: '这一问没有答案：调用方没开应答面、该家没把提问投到这条通道上、通道当场出错，或同批两题共用一个标题（答案按标题配对，配不准就不问）',
   },
   rejected: { label: '被拒绝', tone: 'error', note: '子智能体不能向用户提问' },
   canceled: { label: '随轮次取消', tone: 'default', note: '轮次被中断，提问一起收场' },

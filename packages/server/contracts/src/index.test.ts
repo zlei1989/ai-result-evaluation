@@ -155,9 +155,9 @@ describe('contracts 公共出口', () => {
 
   it('导出全部常量', () => {
     expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh', 'pi']);
-    // 八个（含 `vendor-system`）：清单与联合成员的一一对应另有一条专测，
+    // 九个（含 `vendor-system` 与编排层写的那条 `ask-user`）：清单与联合成员的一一对应另有一条专测，
     // 这里只钉「包根确实把这份清单导出成了一个可枚举的值」
-    expect([...AGENT_EVENT_TYPES]).toHaveLength(8);
+    expect([...AGENT_EVENT_TYPES]).toHaveLength(9);
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
     expect(AGENT_LABELS.pi).toBe('Pi Coding Agent');
     expect(PROTOCOL_LABELS.openai).toBe('OpenAI 兼容');

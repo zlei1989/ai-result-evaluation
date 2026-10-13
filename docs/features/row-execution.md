@@ -13,7 +13,8 @@
 - **流式滚动「跟随最新」**：默认开，用户一上翻自动关，角落浮出「回到最新」；与工具条开关同一份 state。
 - **四类东西出口分立**：`log` 原文 → 「原始输出 N 条」独立二级抽屉（逐字原文、默认收起；`log` 事件不进时间轴）；无法归一载荷 → `unrecognized` 块；真实附件 → `attachment` 块；完整台账 → 仅「下载台账」（与时间轴是两条内容，不要求逐字一致）。
 - **环境抽屉**是 `agent-log` 内部件（关闭联动是结构保证）：四组（用户层 / 厂商系统层 / 运行配置 / 实测统计）；缺失项给 `MissingReason` 原因文案；「已调度的工具」与「用过的工具及次数」分列。**实测统计组里另有「流式增量」一格**：它读行快照的 `EvalRow.streamingDelta`（增量帧只广播不落盘，这是事后唯一痕迹），三态各自成句——**没观测**（格缺席）/ **观测到 0 条**（能力位声明 `yes` 的家也可能一条都不投：开关没生效、插件没挂上）/ **N 条 · 末帧累积 M 字**（正文不落盘，中断行只能回答「写到哪」）。
-- **`ask-user` 卡片**：七种收场（`answered` / `auto-resolved` / `skipped` / `timeout` / `unavailable` / `rejected` / `canceled`）+「还没收场」独立一支；本仓 `approvalPolicy: 'never'` ⇒ `unavailable` 是中性已知边界；卡片是只读复盘视图，不做应答面。
+- **`ask-user` 卡片**：七种收场（`answered` / `auto-resolved` / `skipped` / `timeout` / `unavailable` / `rejected` / `canceled`）+「还没收场」独立一支；本仓 `approvalPolicy: 'never'` ⇒ `unavailable` 是中性已知边界；卡片是只读复盘视图，应答面在弹层（三个 HTTP 端点见下一条）。
+- **应答面**（浏览器 → **运行中的**评测唯一的一条数据面通路；反向的控制面通路只有「终止」）：三个端点是 `GET /api/ask-user`（待答快照，裸数组，每条给 `askId` + 轮 / 行 / 段 + 问题 + `askedAt`）、`GET /api/ask-user/stream`（信号式 SSE，只推「变了，重读」）、`POST /api/ask-user/answers`（`{askId, answers}`，应答面的唯一写入口）。三条口径：① **快照是唯一读侧、挂起表是唯一写侧**——表是进程内的一份内存状态（`askId → {定位, 问题, 时刻, 决议函数}`），不落盘，于是**服务一重启那些提问就无从应答**（旧 `askId` 一律 404，在跑的行走既有的重启恢复）；② 应答按 `askId` 幂等——**首个生效（200）**、后到 409、未知 404，答完之后该问从快照里消失；③ 答案与问题**逐问对上**（数量与顺序都要一致），对不上是 400 且**不消耗**这一次应答机会。
 - **单行执行**：一个按钮按行态分叉「开始执行 / 重新执行」，确认框必须点名范围（首跑：「只跑这一个候选：本轮其他行（含已经执行过的行）都不会重跑。」）；**只动这一行**——其他行的状态 / 分数 / 计量 / diff / attempts / 事件日志逐字不变、串行队列不推进。重新评分：`Popconfirm`「只重跑评分步骤，候选 agent 不会再跑；现有的分数会被新的评分结果替换。」
 - **卡片底部活动行两档**（用户口径「不断打字」）：有实时正文时走**打字档**——只显示**最后一个非空段**（按 `\n` 切段：换行即清空重打，入场动画靠段号当 React `key` 重挂元素）+ 还在写时挂 `▍` 闪烁光标；没有正文时回到**静态档**（工具块 `summary` → `log.summary` → 状态回落文案，高光扫过）。数据来自 `useRunActivity`（`AgentMessage` 那条流，带 `?replay=0` 不回放历史），刷新页面后由 `log.summary` 兜底——**实时优先、历史兜底**；终态整行收起（`activityText` 对非运行态返回 `null`）。
 
@@ -38,7 +39,7 @@
 
   `preparing` 阶段失败（复制失败、commit 不存在、远端不可达、工作区不可写）仍落 `failed` 并保留错误详情，不静默跳过。可重评终态 = `judged` / `failed` / `timed-out` / `canceled`。
 
-- **八类事件**（全行级、每行带单调 `seq`）：`status` / `log`（带 `summary?`）/ `vendor-system` / `usage` / `diff-summary` / `score` / `error` / `end`。`setRowStatus` 落点唯一：改状态 + 落盘快照 + 追加 `status` 事件**成对**；`EvalRow.error.stage`（`'agent' | 'judge'`）是**自动重试的单位判据**：失败在评分段（`'judge'`）⇒ 只重跑评分、候选产出一个字不动；在候选段 ⇒ 整行重跑（见《评分》「评分段失败只重跑评分」）。
+- **九类事件**（全行级、每行带单调 `seq`）：`status` / `log`（带 `summary?`）/ `vendor-system` / `usage` / `diff-summary` / `ask-user`（一次提问的收场：收场方式 / 等待时长 / 提问工具来源，与账本那一半共用 `askId` / `callId`）/ `score` / `error` / `end`。`setRowStatus` 落点唯一：改状态 + 落盘快照 + 追加 `status` 事件**成对**；`EvalRow.error.stage`（`'agent' | 'judge'`）是**自动重试的单位判据**：失败在评分段（`'judge'`）⇒ 只重跑评分、候选产出一个字不动；在候选段 ⇒ 整行重跑（见《评分》「评分段失败只重跑评分」）。
 - **`usage.tokensBasis`**：`'reported'` 才回写 `run.json`；`'estimated'` 只走事件流；缺省按 `'estimated'` 安全侧；`turns` 与两格子智能体分量恒回写。**用量里程碑（整行只出一条）**：取候选阶段（第一条 `judging` 或终态帧为界）里最后一条**主会话**带计量的 `usage`；子会话读数一条不进；孤儿抹成 `turn: null` 按时刻归位不丢。
 - **子智能体三格**：`{0,0,0}` / `0` = 确实没有（「本次未观察到」），`null` = 没采到（**全量或 null** + 点名 WARN）；恒有 `subagentTokens ≤ tokens`（逐格）、`subagentTurns ≤ turns`。
 - **三处用量形制**：顶部事实条 = **整行累计**（正体 secondary）；轮末里程碑 = 整行一条 Tag 色块；消息页脚 = **本条消息自己那次调用**（italic，`data-usage-footer`，`usage === null` 整行不渲染、同一逻辑消息多个块只出一行）。
@@ -67,7 +68,8 @@
 
 | 边界 | 处置 |
 |---|---|
-| `AskUserInteraction` 的 `settled` 支**没有产出方**——七种收场、答案回填在真机一条走不到，夹具也喂不出 | **本设计最大一处「界面先行」**；缺契约那一格与装配层配对 |
+| `AskUserInteraction` 的 `settled` 支的产出方在**编排层**：答复落进消息账本的 `tool-result` 那一半（`structured` 是契约的 `AskUserResultSchema`），卡片的**数据层**（`build-model` 的 `settledAskUserOf`）按 `callId` 跨账本配对后回填 | 只有在**这一轮开了应答面**（`EvalRun.askUser`）时才可能有答复——没开的轮次里那一支仍然走不到（那时一个提问都没有），卡片照旧显示「还没收场」；`unavailable` 这一档对应的正是「没有应答面」 |
+| 挂起表只活在内存里：服务重启后旧 `askId` 一律应答不到（404），不是静默悬挂 | 有意如此（「待答」是只存在于内存里的一刻）；在跑的行由重启恢复路径收场 |
 | `unsettled` 任何地方赋不出来 ⇒ **被强杀的子任务会永远显示「运行中」** | 要补装配层判据：收场事件没到 + 整行已终态 ⇒ `unsettled` |
 | 真机密度与基线不一致：`/runs` 页抽屉在紧凑 `ConfigProvider` 之外（fontSize 14 / Tag 高 22），基线是紧凑数（Tag 21.4 等） | 二选一未裁决；在裁决前别拿基线数对真机截图 |
 | codex「有子线程没报用量」档代码与口径表偏差：`subagentTurns: null` 与 `turns: <全树>` 同时落盘 | 要么收判据、要么改表承认「合计全树、分量未知」 |

@@ -381,6 +381,39 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     expect(EvalRunSchema.parse({ ...run, includeSteps: true }).includeSteps).toBe(true);
   });
 
+  /**
+   * 应答面开关：与 `includeSteps` 同一条链（轮级快照 + 缺字段读成 false）。
+   *
+   * 两个方向的靶子：① 缺这一格的旧 `run.json` 必须照样解析并按「关」处置——它是默认值，
+   * 也是「不问就不动」那条边界的起点；② 创建入参里**必须显式声明**这一格（zod 3 默认 strip），
+   * 漏声明时表单打开它会被静默丢掉，而丢掉之后的表现恰好是「跑起来没有应答面」——
+   * 一个没有任何报错的坏形状。
+   */
+  it('EvalRun.askUser 缺字段读成 false；RunCreate 收得下显式的 true', () => {
+    const run = {
+      id: 'run-1',
+      caseId: 'c-1',
+      caseTitle: 'LRU 缓存',
+      repoPath: 'D:/repos/demo',
+      commitHash: null,
+      rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
+      status: 'idle' as const,
+      executionMode: 'parallel' as const,
+      rows: [row],
+      workspaceBase: 'D:/runs',
+      createdAt: '2026-09-22T10:30:00.000Z',
+      startedAt: null,
+      finishedAt: null,
+    };
+    expect(EvalRunSchema.parse({ ...run, askUser: undefined }).askUser).toBe(false);
+    expect(EvalRunSchema.parse({ ...run, askUser: true }).askUser).toBe(true);
+
+    const input = { caseId: 'c-1', executionMode: 'serial', rows: [{ agentKind: 'codex', providerId: 'p-1', modelId: 'gpt-5' }] };
+    expect(RunCreateSchema.parse({ ...input, askUser: true }).askUser).toBe(true);
+    // 老客户端（不带这一格）照样合法：缺省就是「这一轮不介入」
+    expect(RunCreateSchema.parse(input).askUser).toBe(false);
+  });
+
   it('RunCreate 至少一行候选，每行三个字段都必填', () => {
     const input = {
       caseId: 'c-1',
@@ -810,6 +843,7 @@ function runWith(status: EvalRun['status'], rowStatuses: EvalRowStatus[]): EvalR
     repoPath: 'D:/repos/demo',
     commitHash: null,
     repoBranch: null,
+    askUser: false,
     rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
     includeSteps: false,
     status,

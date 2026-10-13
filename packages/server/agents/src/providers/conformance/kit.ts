@@ -17,18 +17,22 @@
 import {
   AgentEventSchema,
   AgentMessageSchema,
+  InteractionCapabilitySchema,
   MessageCapabilitySchema,
   MessageSourceSchema,
   SubagentRecordSchema,
   matchMcpToolName,
   type AgentMessage,
   type InjectionCapability,
+  type InteractionCapability,
   type MessageCapability,
   type MissingReason,
   type SubagentRecord,
   type UsageTokens,
 } from '@aieval/contracts';
 import { describe, it } from 'vitest';
+import { carrierKeyOf } from '../../message';
+import { checkAskUserLedger, checkAskUserProbe, type AskUserProbe } from './ask-user';
 import { checkStructuredOutput, type StructuredOutputProbe } from './structured-output';
 import { checkTransportDelivery, type TransportTranscript } from './transport';
 
@@ -50,7 +54,9 @@ export type ConformanceScenarioName =
   /** 注入面：本次运行真的把 MCP server 下发给了厂商，且厂商侧收到了（服务表或工具表两台通道之一） */
   | 'mcp-injection'
   /** 注入面：本次运行真的物化了 skill 副本，且厂商侧报回了清单 */
-  | 'skill-injection';
+  | 'skill-injection'
+  /** 交互面：本次运行真的问了一次用户（回调被调用一次、答复能装进该家的应答帧、不传回调时产物逐字不变） */
+  | 'ask-user';
 
 /** 一次运行的归一产物：**这就是被测对象** */
 export interface ConformanceProduct {
@@ -91,6 +97,15 @@ export interface ConformanceProduct {
    * 给不出就不给——这一组对该家即为空转。
    */
   transport?: TransportTranscript;
+  /**
+   * **提问应答探针**：这一家的夹具在运行期真的问了一次用户，并把四格事实记下来
+   * （判据见 `./ask-user.ts`）。
+   *
+   * 与上面三处探针同一条口径：事实必须由**运行**产生，不能由夹具自述。它证的是端口那一半
+   * （回调恰好一次、入参形状、答复进得了该家的应答帧、不传回调时产物逐字不变）；适配器那一半
+   * （厂商的提问请求真的到了手里、答复真的回到厂商）由各家的接线票接上，接上之后这一格的形状不变。
+   */
+  askUser?: AskUserProbe;
 }
 
 /**
@@ -122,6 +137,14 @@ export interface ConformanceFixture {
   capability: MessageCapability;
   /** 本家的**注入面**能力声明（MCP / skills）；判据见 `checkInjectionNailing` */
   injection: InjectionCapability;
+  /**
+   * 本家的**交互面**能力声明（今天只有提问那一格）；判据见 `checkInteractionNailing`。
+   *
+   * 为什么要在这里给一份：能力声明与产物互钉这条口径对交互面同样成立——声明「能问」的家必须拿得出
+   * 一个能造出「问了一次」的场景，否则那句 `yes` 会腐烂成假话。给的是**这家 `metadata` 里那一份**，
+   * 不是另写一份（两处独立写必然漂移）。
+   */
+  interaction: InteractionCapability;
   /** 注入面两格的**证明场景**（格 → 场景名）：声明 `yes` 的格靠它证明 */
   injectionProof: Partial<Record<'mcp' | 'skills', ConformanceScenarioName>>;
   /**
@@ -179,6 +202,15 @@ export interface ConformanceFixture {
   /** 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
   observedStatusIds?: string[];
   /**
+   * **宿主注册的提问工具名**（`askUserChannel === 'host-tool'` 的家必填）。
+   *
+   * 为什么要有这一格：那一档的对照运行里那件工具**按定义不存在**（「不问就不动」的落点就是不注册
+   * 它），于是同一条剧本里的那一问必然落成一条「工具不存在」的错误结果——判据要能认出「哪一件工具
+   * 是这一格」，才谈得上把那一格归一之后比对，以及判「对照臂的出站工具表里没有它」。
+   * `vendor-tool` 档不给（厂商给的工具不是我们注册的，那一档也不许放宽）。
+   */
+  askUserHostTool?: string;
+  /**
    * 场景期望的最终答复（缺省 = 不额外比对，只查下面那三条通则）。
    * 用途：把「这一家在这条路径上到底该给出什么」钉成字面量（例如「失败场景也不许交空串」）。
    */
@@ -218,6 +250,27 @@ export function capabilityProofGroups(capability: MessageCapability): Array<read
   return groups;
 }
 
+/**
+ * 交互面的同一张表（今天只有提问那一格）：能力格 → 它需要哪个场景来证明自己真的拿得到。
+ *
+ * 与 `CAPABILITY_PROOF` **分表**是刻意的：两组声明的取值域不同（这一组多两态：`not-projected-by-vendor`
+ * / `no` 说的都是「厂商侧没有」），合成一张表会让「消息层能力」与「能不能问人」共用一套缺失原因。
+ * 语义相同的那一条照旧：**声明 `yes` 就必须拿得出一个能造出该事实的场景**。
+ */
+const INTERACTION_PROOF: ReadonlyArray<readonly [string, readonly ConformanceScenarioName[]]> = [
+  ['askUser', ['ask-user']],
+];
+
+/** 这份交互面声明里声明 `yes` 的格，各自**需要哪一组场景**来证明（组内任一即可）；口径同上一张表 */
+export function interactionProofGroups(interaction: InteractionCapability): Array<readonly ConformanceScenarioName[]> {
+  const declaration = interaction as unknown as Record<string, unknown>;
+  const groups: Array<readonly ConformanceScenarioName[]> = [];
+  for (const [cell, proofNames] of INTERACTION_PROOF) {
+    if (declaration[cell] === 'yes') groups.push(proofNames);
+  }
+  return groups;
+}
+
 /** 能力五态 → 允许的缺失原因（对应关系） */
 const REASON_BY_CAPABILITY: Record<string, readonly MissingReason[]> = {
   no: ['not-supported'],
@@ -229,12 +282,19 @@ const REASON_BY_CAPABILITY: Record<string, readonly MissingReason[]> = {
 const SCENARIO_ENTRIES = (fixture: ConformanceFixture): Array<[ConformanceScenarioName, () => ConformanceProduct]> =>
   Object.entries(fixture.scenarios) as Array<[ConformanceScenarioName, () => ConformanceProduct]>;
 
-/** 合并键公式：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>` */
+/**
+ * 合并键公式：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>`。
+ * 真源是 `message.ts` 的 `carrierKeyOf`（账本里 `mergeKey` 那一格就是它的产出），
+ * 这一格只是给跨家一致性套件一个读得通的名字——公式本身在这里不重写。
+ */
 export function mergeKeyOf(message: Pick<AgentMessage, 'subagentId' | 'roundTrip' | 'role' | 'parentCallId'>): string {
-  return [message.subagentId ?? 'main', String(message.roundTrip), message.role, message.parentCallId ?? '-'].join('|');
+  return carrierKeyOf(message);
 }
 
-/** 能力声明自身合规。zod 的 `superRefine` 已在 schema 层拦「yes 无 source / 非 yes 无 reason」 */
+/**
+ * 能力声明自身合规。zod 的 `superRefine` 已在 schema 层拦「yes 无 source / 非 yes 无 reason」
+ * 以及交互面那两条（`yes` 必须拿真路径证明、`synthetic-fixture` 必须给出原因）。
+ */
 export function checkCapabilityDeclaration(fixture: ConformanceFixture): void {
   const parsed = MessageCapabilitySchema.safeParse(fixture.capability);
   if (!parsed.success) {
@@ -952,6 +1012,71 @@ export function checkInjectionNailing(fixture: ConformanceFixture): void {
 }
 
 /**
+ * **交互面：声明与产物互钉**（今天只有「能不能问人」那一格）。
+ *
+ * 三条判据，各自的门槛刻意不同：
+ *   1. **声明 `askUser = yes` ⇒ 必须有一个能造出「问了一次」的场景**（`INTERACTION_PROOF` 的组内任一）
+ *      ——「声明过的东西必须真的拿得到」；
+ *   2. **只要注册了这个场景，它的产物就必须过 `./ask-user.ts` 那一组判据**，**不看声明**：
+ *      非 `yes` 说的是**适配器那一半还没接**（`off-by-adapter` / `not-projected-by-vendor` / `no`），
+ *      而场景证的是**骨架那一半**（端口问得对、不传回调时一个字都不动）——两者可以同时成立，
+ *      而且正是接线之前的状态。把第 2 条也挂在声明上，等于在接线之前谁都不判这一组，
+ *      那四家交上来的场景就成了没人读的摆设。
+ *   3. **问过人的那一次，提问那一半必须在账本里**（`checkAskUserLedger`，同样不看声明、不挑场景名）：
+ *      卡片唯一的驱动是账本里那条 `ask-user` 工具调用，而厂商把提问放在通知流之外时
+ *      （codex 的服务端请求），账本里那一半没有第二个来源——不物化就是「界面只剩一条没题目的答复行」，
+ *      而**所有既有判据照旧全绿**。
+ *
+ * ⚠️ 与注入面刻意不同的一格：这里**不判**「声明非 `yes` 却给了场景」。反过来（非 yes 不许有场景）
+ * 也一样不判——理由就是上面第 2 条。
+ *
+ * **对照运行那一格按通道分档**（`host-tool` 做不到指纹逐字相等，理由与替换后的两条判据写在
+ * `./ask-user.ts` 的模块头）：`host-tool` 的家因此还要在 fixture 上交出那件工具的名字
+ * （`askUserHostTool`），漏了它判据当场红——「拿不出名字」= 这一档的对照臂判据无从谈起。
+ */
+export function checkInteractionNailing(fixture: ConformanceFixture): void {
+  /**
+   * 声明自身先过一次契约 schema：两条**跨字段**的硬规则在那里（`askUser = yes` ⇒ 必须拿
+   * `real-path` 证明、`synthetic-fixture` ⇒ 必须给出原因）。放在这一组里而不是单开一条用例：
+   * 每一家都已经把 `metadata.interaction` 交给这一组，声明不合规就该在**这一家自己**的套件里当场红。
+   */
+  const parsed = InteractionCapabilitySchema.safeParse(fixture.interaction);
+  if (!parsed.success) {
+    throw new Error(`${fixture.kind} 的交互面声明不合规：${JSON.stringify(parsed.error.issues)}`);
+  }
+  /**
+   * **账本那一半**：所有场景都过一遍，不看声明、也不看这个场景是不是 `ask-user` 那一格——
+   * 判据挂在**运行事实**上（探针里端口真被问过），因此「哪一次运行问过人」就是它的覆盖面。
+   */
+  for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
+    checkAskUserLedger(`${fixture.kind}/${name}`, build());
+  }
+  for (const [cell, proofNames] of INTERACTION_PROOF) {
+    const declaredYes = (fixture.interaction as unknown as Record<string, unknown>)[cell] === 'yes';
+    const usable = SCENARIO_ENTRIES(fixture).filter(([name]) => proofNames.includes(name));
+    if (declaredYes && usable.length === 0) {
+      throw new Error(
+        `${fixture.kind}：${cell} 声明 yes，却没有任何能证明它的场景（缺 ${proofNames.join(' / ')}）`
+        + '——声明过的东西必须真的拿得到',
+      );
+    }
+    const channel = fixture.interaction.askUserChannel;
+    for (const [name, build] of usable) {
+      const probe = build().askUser;
+      if (probe === undefined) {
+        throw new Error(`${fixture.kind}/${name}：这一格是 ${cell} 的证明场景，产物里却没有提问应答探针`);
+      }
+      checkAskUserProbe(
+        `${fixture.kind}/${name}`,
+        probe,
+        channel,
+        channel === 'host-tool' ? (fixture.askUserHostTool ?? null) : null,
+      );
+    }
+  }
+}
+
+/**
  * **生命周期证据**：这一家在「跑完」与「被取消」两条出口上的行为。
  *
  * 为什么不走产物：释放与取消是**行为**，产物里没有它们的形状——它们只能在运行期观测
@@ -1021,6 +1146,7 @@ export function describeProviderConformance(fixture: ConformanceFixture): void {
     ['用量与轮次配对', () => checkUsagePairing(fixture)],
     ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
     ['注入面（MCP / skills）声明与产物互钉', () => checkInjectionNailing(fixture)],
+    ['交互面（提问）声明与产物互钉', () => checkInteractionNailing(fixture)],
     ['行级事件逐个过契约 schema', () => checkEventShapes(fixture)],
     ['最终答复口径', () => checkFinalAnswer(fixture)],
     ['结构化输出与产出可解析', () => checkStructuredOutputGroup(fixture)],

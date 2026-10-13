@@ -10,7 +10,7 @@
 
 | # | 步骤 | 判据 |
 |---|---|---|
-| 1 | 写**能力声明**：消息面五格（五态 × 五格）+ **注入面两格**（MCP / skills）+ **耗时量级**（`runScale`），`notes` 写清路由 / 模型 / 机器前提 | 契约层 schema 的 `superRefine` + 元数据回归网（`registry.test.ts`）；**每一格 `yes` 都要有产物级证明**（见「能力声明与产物互钉」） |
+| 1 | 写**能力声明**：消息面五格（五态 × 五格）+ **注入面两格**（MCP / skills）+ **交互面**（`askUser` / `askUserChannel` / `askUserReason` / `askUserProofDriver`）+ **耗时量级**（`runScale`），`notes` 写清路由 / 模型 / 机器前提 | 契约层 schema 的 `superRefine` + 元数据回归网（`registry.test.ts`）+ 套件的「交互面声明与产物互钉」；**每一格 `yes` 都要有产物级证明**（见「能力声明与产物互钉」），**交互面还要连驱动器一起声明**（见「交互面（提问）的接入要求」） |
 | 2 | 定**厂商入口的定位方式**，两条路各有各的坑：**子进程型**（spawn 厂商 CLI / app-server）必须**打包器免疫**——Next/Turbopack 会把 `import.meta.createRequire` 换成带 `[externals]` 的产物（报错原文 `The argument 'filename' must be a file URL object… Received '[externals]/@openai/codex/package.json [external]'`），做法是 `process.getBuiltinModule('module')` 取真 `createRequire` + 结果形状校验（`isAbsolute` 且不含 `[external`）；**in-process 型**（把厂商 SDK import 进本进程）另加四件：① **动态 import**——函数作用域懒加载，注册表查询不加载 SDK（`getProvider` 同步返回）；② **外部化**——包进 `next.config.ts` 的 `serverExternalPackages`，并在 `apps/web-next/package.json` 的 `dependencies` 逐字声明同一版本区间（外置包是运行期按裸说明符在产物目录逐级向上找 `node_modules` 定位的，少一处就 `MODULE_NOT_FOUND`）；③ **Node 版本闸**——厂商 `engines` 只是 npm 元数据、运行期不拦（包管理器顶多 WARN），要真拦得自己写；④ **WASM / 原生资产**——随包发的 `.wasm` / `.node` 不会因为「包被外置」就自动可用，先确认它读不读盘 | 静态层守卫（`static-assertions.test.ts`）＋真机冒烟第 ① 格 |
 | 3 | 定**凭据与 provider 的传递**。**通则：宿主 env 是禁区**——并发多行时往 `process.env` 塞凭据会互相串（静态层用 7 种写法禁掉 `process.env` 写入）。两条落地形状按形态分：**子进程型**用**替换型子进程环境**（以宿主为底、覆盖 `HOME` / `USERPROFILE` 与厂商变量后整体交给子进程）；**in-process 型**走**内存 overlay**（内存凭据存储 + `modelsPath: null` + 内存 session / settings），并且**禁用会回落 `process.env` 的插值**——厂商自己的 shell 工具会把 `process.env` 交给被测 agent，密钥会直接落进被测仓库；并发多行下**每 run 自建 runtime + 唯一 providerId**（厂商的 provider 注册表常是按 id 索引的全局表，复用常量 id 会让两行互相改掉对方的 `baseUrl` / `apiKey`）。另两件与形态无关：provider 条目名与 `model_provider` 类字段**成对**给出；base_url 归一（该补 `/v1` 就补、该剥就剥） | 真机冒烟第 ② 格 ＋ **并发隔离的运行期用例**（两行同时跑、各自打到自己那台网关、密钥不串） |
 | 4 | 写 fixture 场景，覆盖能力声明里所有 `yes` 的格；注入面的 `yes` 格给场景，**或**登记它的证明在哪一层 | 契约层「能力声明与产物互钉」+ **接入守卫**（`providers/conformance/onboarding.test.ts`，见下） |
@@ -18,7 +18,7 @@
 | 6 | 登记**缺失**：能力声明里非 `yes` 的格必须带 `MissingReason`（四句分工），不许静默空格 | 契约层两条 `superRefine`（消息能力格、注入面格） |
 | 7 | 跑**真机冒烟**，把四格证据写进当次关账记录；关键判据额外要有一条**走真包、读真实出站请求体**的用例 | 见下 |
 
-**接入守卫**（第 4 步的强制层）：套件的 12 组判据由各家自己在 `providers/<kind>/conformance.test.ts` 里
+**接入守卫**（第 4 步的强制层）：套件的各条判据由各家自己在 `providers/<kind>/conformance.test.ts` 里
 `import` 并调用，**没有总驱动**——少了守卫，「新家压根不写这个文件」不会让任何用例变红，套件再严也只是
 自愿参加。`onboarding.test.ts` 把「参加」本身变成判据，三层：
 
@@ -27,6 +27,7 @@
 | 目录与注册表 | `providers/` 下每个目录都在 `AGENT_KINDS` 里，反之亦然 | 加了目录没登记 / 登记了没目录 |
 | 交 fixture | 每家都有 `conformance.test.ts`，且真的调用套件、交了 `scenarios` | 新家整份跳过套件 |
 | 覆盖自家声明 | 能力声明里 `yes` 的格，其证明场景必须出现在 `scenarios` 块里；注入面 `yes` 的格要么给场景、要么登记 `injectionProofElsewhere`（守卫核对那份文件真的存在） | 声明与产物不符、登记造假 |
+| 交互面那一格 | 套件 `checkInteractionNailing` 逐场景过 `checkAskUserLedger` 与 `checkAskUserProbe`：**端口真被问过** ⇒ 账本里必须有一条同 id 的 `ask-user` 调用、题面与端口逐字相同、且至少一题声明了自由输入 | 「厂商把提问藏在通知流之外却忘了物化」（界面上只剩一条没有题目的答复行）、`allowOther` 恒 `false`（弹层永远没有输入框）、卡片上问的与模型问的不是同一道题 |
 
 **翻一个 `yes` 要连带三处**（能力声明与产物互钉的完整形状）：① **能力格**本身（消息面五格 /
 注入面两格，含它的 `notes`）；② **套件证明场景**（`scenarios` 块里那个能造出该块的名字，注入面走
@@ -63,6 +64,66 @@ codex 的 `mcpServer/startupStatus`；工具表：dsh 的 `request/header` 里 `
 
 **这一层拦的是「顺着写但漏了一环」，不是「成心骗」**：探针仍写在夹具里，刻意造假的接入者能把两边一起
 写对。后者只有真机冒烟拦得住。
+
+**交互面（提问）的接入要求：驱动器与声明同时交，且 `yes` 只能拿真路径证**。这一格问的是「模型问出来
+的时候有没有人能答」，它的证明有一半在**厂商那一侧**——「厂商的提问请求真的到了我们手里」与「我们的
+答复真的回到了厂商」——而这两条用夹具扮演厂商端口是证不到的（判据可以全绿，通道却可能压根没通）。
+所以声明里单列一格 `askUserProofDriver`，接入时按下面的口径做：
+
+| 取值 | 含义 | 什么时候能用 |
+|---|---|---|
+| `real-path` | 厂商真跑（真 CLI / 真 SDK / 真运行时 + 厂商自己的通道），**只把上游模型脚本化** | 目标态；声明 `askUser: 'yes'` 只能配它 |
+| `synthetic-fixture` | 夹具自己扮演厂商那一端（造出「厂商问了一次」、再把答复装成厂商形状） | **临时档**；必须给出非空原因，且与 `yes` 互斥 |
+
+三条落地要求：
+
+- **`askUser: 'yes'` 与 `synthetic-fixture` 不许同时出现**：拿不出真路径就不该声明「能被问」——那句
+  `yes` 会腐烂成假话。这一条由契约层 schema 的 `superRefine` 拦（套件把它在**每一家自己**的用例里跑一遍）。
+- **两臂只有回调那一格不同**：带回调与不传回调各真跑一次，剧本与载荷逐字相同。判据按 `askUserChannel`
+  分档——`vendor-tool` 档要求两臂产物指纹**逐字相同**，`host-tool` 档要求「对照臂的出站工具表里没有那件
+  工具」+「那一问拿到工具不存在类错误原文」+「把那一件工具归一之后两臂指纹逐字相同」。
+- **如实登记厂商那边的非对称**：有的家把「有没有应答面」与「几件需要用户介入的工具提不提供给模型」
+  绑在一起，于是两臂的厂商载荷天然差一截。这一截要在对照臂的 `askSurfaceTools` 里**点名实测到的
+  那几件**（判据核对点名之外没有别的差异），归一**只**覆盖它们——其余每一个字节照旧参与比对。
+
+**驱动器的边界写在声明或注释里，两件事都要说**：
+
+- **假的是上游模型，不是厂商**：真路径证的是「厂商的通道与工具是真的」（请求真的到了我们手里、
+  答复真的回到了厂商），**证不到**「真模型会自发提问」——后者只在真机冒烟里看。
+- **等待上限按「宁可超时也不假红」定**：真厂商件要冷启动、要拉起进程，秒级到分钟级都可能。到点用
+  中止收场，把「挂死」变成一条可读的红，而不是让整份用例挂在默认超时上、把人引去查一个不存在的回归。
+
+**接入提问这一格要逐条回答的清单**（终态口径：只写问什么、答案落在哪一格）。前六问各有机械判据，
+后四问**拦不住**，只能靠这一份清单 + 复核：
+
+| # | 要问什么 | 答案落在哪一格 | 拦不拦得住 |
+|---|---|---|---|
+| 1 | 提问走哪条通道？它**进不进通知流**？不进的话**谁**把那一问物化进账本？ | `interaction.askUserChannel`（`vendor-tool` / `host-tool`）+ 适配器里物化那一步 | **拦得住**：不让通知流自动带出提问的家，账本里那条 `tool-call` 只能由观察到请求的适配器补（codex 的 `askUserCallDraft`）。判据是套件的 `checkAskUserLedger`——端口真被问过而账本里没有 `family: 'ask-user'` 的调用即红 |
+| 2 | 自由输入在哪一侧声明（提问面 / 答复面）？**装得下「选项 + 自由输入并存」吗**？ | 提问面是 `AskUserQuestion.allowOther`，答复面是 `AskUserAnswer.custom` | **一半拦得住**：声明了自由输入就必须真有一条自由输入进得了帧（套件），「装不装得下并存」这一问只有各家的真路径守卫答得了（见第 3 条） |
+| 3 | 单选 / 多选各怎么落？多选装不下时**如实落什么**？ | 契约口径是**单选 + 自由输入 = 覆盖**（`selected` 取空数组）、**多选 + 自由输入 = 并存**（两半都在） | **只有单条判得动**：套件判「答案里的每一半都在帧里」，而「厂商那一侧到底是覆盖还是并存」只有真路径守卫逐字比得出。装不下的家（codex 把标签与自由输入收进同一个字符串数组）在适配器注释里**如实登记结构边界**，不假装判得出来 |
+| 4 | 配答案按什么键（题面 / `id` / 序号）？与契约的 `header` 怎么映射？同题撞名怎么办？ | 契约的配对键只有 `header`；厂商自己的键（dsh 的 `id`、cc 的题面文本）留在适配器里映射 | **拦得住**：`checkAskUserLedger` 比账本题面与端口那一份；映射本身由各家的真路径守卫用**两题、答复次序与题面相反**的剧本钉（按序号配对的家当场互换） |
+| 5 | 厂商没有「多选」这个概念时，`multiSelect` 落什么？ | 该家的 `codexQuestionsOf` 一类映射函数，如实落 `false` | **拦得住**：契约字段是**厂商事实**的落点，不是厂商能力的清单——套件不接受「照契约补一个厂商拿不出的形状」（`allowOther` 那一格同理：只读提问形状而不看答案面就会恒 `false`，弹层永远没有输入框） |
+| 6 | 没有应答面时厂商侧是什么行为（禁用工具 / 报错 / 另开通道）？**零回归的判据是什么**？ | `AskUserProbe.control` 那一组 + `askUserChannel` 决定的档 | **拦得住**：不传回调的对照运行必须「一次都不调用 + 立即无人应答 + 产物逐字不变」；做不到逐字相同的档要在 `askSurfaceTools` / `askResultTools` / `askSwitchNotices` 里**逐件点名实测到的差异**，点名之外每一个字节照旧参与比对 |
+| 7 | 厂商自带的等待档或收场字段是什么？**deprecated 的要点名** | `AskUserRequest.vendorBudgetMs` + 适配器注释 | **拦不住（只能登记）**：判据只判「采到了就非空、没采到就 null」，判不出「厂商到点会不会自己收场」。codex 的 `autoResolutionMs` **已 deprecated 且实测恒 null**、`isBlocking: false` 也不让它收场 ⇒ 每一帧都由我们给，没有「厂商自动决议」这条路径 |
+| 8 | 子会话 / 子智能体的提问会怎样（到不了宿主？被拒？） | 适配器里那道门禁 + `AskUserRequest.subagentId` | **拦不住（只能登记）**：codex 由厂商侧门禁（`… can only be used by the root thread`）+ 我们按 `threadId !== 主线程` 收场；别的家要在接入时指出自己那一道，判据只判「`subagentId` 是 null 或非空身份」 |
+| 9 | 权限档会不会遮蔽提问工具？ | `permission.ts` 的档位表与工具白名单 | **拦不住（只能登记）**：权限档与工具表是两处读数，「档里没给」与「厂商没给」在产物里长得一样。接入时要在权限档表上逐档核一遍提问工具在不在（pi 的 `PI_PERMISSION_OPTIONS` 就是那个落点） |
+
+**这一格最贵的三条纪律**（每一条都对应过一次「守卫全绿而真机零交付」）：
+
+- **替身必须吃「线上 / 厂商推来的原始形态」**。客户端替身若只回答「事件派发给谁」而**绕过字节**，
+  用例会全绿而真实链路零交付：SSE 帧缺 `data:` 行时浏览器一个事件都不派发，而当时恰好有一条
+  断言 `not.toContain('data:')` 的用例把缺陷钉死。**断言的对象是什么形态，驱动入口就得吃那个形态**
+  ——帧用字节喂、厂商消息用真机形状喂、出站事实读请求体而不是读我们交给 SDK 的入参。
+- **判据要挂在事实上，不挂在声明上**。曾经把判据挂在「本家 `askUser === 'yes'`」上，而当时四家
+  都不是 `yes` ⇒ 探针根本没人读；同理，「这一家会提问」不能由 `askUserProofDriver` 自述，
+  要由**这一次运行里端口真被问过**（`calls > 0`）触发。声明是**产物**的对照物，不是判据的入口。
+- **同一条缺陷要能被两条独立的路看见**。真路径场景里产品那一段被夹具**替换**掉时，产品做的那件事
+  就没人判了（codex 的 `onServerRequest` 被驱动器替换过：提问照旧往返、账本那一半却整段消失，
+  而所有断言全绿）。替身要么**包在**产品那一段外面（`wrapServerRequest` 那种形状），要么另有一条
+  按**产品装配**跑的用例——两者都没有时，那一格是空转。
+
+三条与 `docs/guard/mutation-verification.md` 同源：那里的「驱动方式必须经过被断言的那一步」就是
+第一条，`AGENTS.md` 的「新增回归守卫必须做变异验证」是三条共同的前提。
 
 **生命周期（释放 / 取消）的接入要求**：这两条出口是**行为**，产物里没有它们的形状，所以各家交一个
 **异步观测函数**（`ConformanceFixture.lifecycle`），套件在用例里 `await` 它：
@@ -222,8 +283,9 @@ describeProviderConformance({
   kind: '<kind>',
   capability: newProvider.metadata.messageCapability,   // 本家的消息能力声明
   injection: newProvider.metadata.injection,             // 本家的注入面声明（MCP / skills）
+  interaction: newProvider.metadata.interaction,         // 本家的交互面声明（提问那一格，含它的驱动器）
   injectionProof: { mcp: 'mcp-injection' },              // 声明 yes 的注入面格 → 证明场景
-  scenarios: { 'plain-reply': () => …, 'thinking-full': () => …, subagent: () => … },
+  scenarios: { 'plain-reply': () => …, 'thinking-full': () => …, subagent: () => …, 'ask-user': () => … },
 });
 ```
 
@@ -370,6 +432,48 @@ pnpm live-smoke -- --dry-run     # 只检查服务与候选、打印将执行的
   且都不留人工批准的口子」。
 - **参考实现**：`providers/pi/permission.ts` 的 `PI_PERMISSION_OPTIONS['read-only']` 只留
   `['read', 'grep', 'find', 'ls']`，派发工具只在 full 档。
+
+### 交互面 / 提问类
+
+#### 提问那一半不在账本里（界面上只剩一条没有题目的答复行）
+
+- **现象**：模型问了一次、答复也回去了，卡片却只有一条**没有题目**的答复行；产物一侧是
+  `messages.jsonl` 里 `family: 'ask-user'` 的 `tool-call` 块**一条都没有**。
+- **为什么危险**：<span style="color:#c00">**静默失败**</span>——卡片的唯一驱动是账本里那条调用
+  （`build-model.ts`），而厂商把提问放在**通知流之外**（server→client 请求）时，账本里那一半
+  没有第二个来源。链路全绿、答复照旧回到模型，用户只是永远看不到「问的是什么」。
+- **判据**：套件的 `checkAskUserLedger`（端口真被问过 ⇒ 账本里必须有一条同 id 的 `ask-user` 调用、
+  题面与端口收到的那一份逐字相同、且至少一题声明自由输入）；真路径那一侧的守卫要能读到**产品**
+  物化的那一条——驱动器若**替换**了产品的服务端请求应答者，这一格在真路径场景里就整段消失
+  （见下面那条）。
+- **参考实现**：`providers/codex/message.ts` 的 `askUserCallDraft`（观察到请求的适配器补出那一条草稿）
+  ＋ `index.ts` 的 `onAskRequest`；`testing/codex-real-path-fixture.ts` 用
+  `CodexRuntimeHooks.createClient` 的 `wrapServerRequest` **包在**产品那一个应答者外面。
+
+#### 替身替换了产品那一段 ⇒ 产品做的那件事没人判
+
+- **现象**：真路径夹具把产品的服务端请求应答者换成自己的实例之后，厂商侧照旧往返、断言照旧全绿，
+  而产品在应答者里做的那两件事（把提问那一半投进账本、子线程提问的门禁）在场景里一次都没发生。
+- **为什么危险**：<span style="color:#c00">**静默失败**</span>——替身「比真的弱」时守卫整体失去区分力
+  （先例：SSE 投递链路的客户端替身不实现 `addEventListener`，12 条 hook 用例全绿而真机零交付）。
+- **判据**：替身只许**包在**产品那一段外面（注入口给的是包装器，不是替换品），或另有一条按
+  **产品装配**跑的用例；判据本身是「这一格在真路径场景里读得到产品产出的那一条」。
+- **参考实现**：`CodexRuntimeHooks.createClient` 的 `wrapServerRequest` 与
+  `codex/conformance.test.ts` 里那条「带回调那一臂的账本里有提问那一半、对照臂没有」。
+
+#### 厂商按 schema 校验工具调用，不合格时**整条调用消失**（不报错）
+
+- **现象**：脚本式上游回了一帧提问工具的 `function_call`，而客户端**一次都没问人**：回调零次、
+  零报错、那一轮直接按纯文本收场。实测三种让它消失的入参形态：`options` 为空数组、
+  `options[].description` 为 `null`、以及把 `isOther` / `isSecret` 这类**不在厂商 schema 里**的键塞进问题项。
+- **为什么危险**：**静默失败**：产品侧与厂商侧都看不出「模型想调用但被丢了」，用户在界面上看到的是
+  「模型自己没问」——排查方向整个错。同一机制也吃 **provider（模型侧）返回的**工具调用：
+  它是不是合法的 JSON 字符串、参数能不能过厂商的 schema，决定了这一次调用存不存在。
+- **判据**：真路径场景的入参必须按**厂商 schema 的逐字形状**写（`probe/v11/REPORT.md` 的实跑读数是
+  那一份真源）；每条提问场景都要断言**端口真被问了一次**（`calls === 1`），而不是只断言答复回到了厂商
+  ——只在后一半设防时，「整条调用消失」表现为「什么都没发生」，而所有断言仍绿。
+- **参考实现**：`providers/codex/conformance.test.ts` 的 `ASK_FRAME_ARGS`（两题、各两个带 `description`
+  的候选项、`isOther` / `isSecret` 都在）。
 
 ### 隔离 / 环境类
 

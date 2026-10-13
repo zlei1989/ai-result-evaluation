@@ -20,6 +20,7 @@ import {
   type AppServerClient,
   type AppServerEnv,
   type AppServerNotification,
+  type AppServerServerRequest,
   type AppServerSpawn,
 } from './client';
 import { readNotification, type AppServerNotificationPayload } from './protocol';
@@ -56,6 +57,11 @@ export interface CodexSessionInput {
   prompt: string;
   /** 结构化输出 schema；缺省则不带该字段 */
   outputSchema?: Record<string, unknown>;
+  /**
+   * 服务端主动请求的应答者（见 `AppServerClientOptions.onServerRequest`）。
+   * **只在自建客户端时生效**：注入了 `client` 的调用方自己承担接线。
+   */
+  onServerRequest?: ((request: AppServerServerRequest) => Promise<unknown | null>) | undefined;
   /** 测试注入口：给了就不再 spawn */
   client?: AppServerClient;
   spawnFn?: AppServerSpawn;
@@ -265,6 +271,7 @@ export async function startCodexSession(input: CodexSessionInput): Promise<Codex
     createAppServerClient({
       binary: input.binary,
       env: input.env,
+      ...(input.onServerRequest === undefined ? {} : { onServerRequest: input.onServerRequest }),
       ...(input.spawnFn === undefined ? {} : { spawnFn: input.spawnFn }),
     });
 

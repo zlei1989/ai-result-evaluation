@@ -34,6 +34,15 @@ describe('@aieval/evaluator 导出面', () => {
         'subscribeJudgeEvents',
         // run 级信号总线（/api/runs/events 的订阅端）：只出口读侧，发射点在 saveRun 体内不出包
         'subscribeRunChanges',
+        // 挂起表（/api/ask-user 的三个端点）：快照、信号订阅、应答写入口。
+        // `registerAskUser` 是编排层登记提问用的（05 号那一格）；`resetAskUserForTesting` 是用例脚手架
+        // （表挂 globalThis、跨用例存活，没有它则上一条答过的 id 会让下一条同名提交变成 409）；
+        // `publishAskUserChanged` 不出包
+        'listPendingAskUser',
+        'registerAskUser',
+        'resetAskUserForTesting',
+        'resolveAskUser',
+        'subscribeAskUserChanges',
         // 记录总线：消息与子任务行共用 messages.jsonl；
         // 评分另有自己的一条（judge-messages.jsonl）
         'broadcastJudgeMessage',

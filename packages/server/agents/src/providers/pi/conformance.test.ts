@@ -45,12 +45,37 @@ import {
   type ConformanceProduct,
   type ConformanceScenarioName,
 } from '../conformance/kit';
+import { askUserProductDigest, askUserProductDigestExcludingTool } from '../conformance/ask-user';
+import type { AskUserReply, AskUserRequest } from '../../types';
 import { piProvider } from './index';
 import { piRequestToolNames } from './observer';
+import { PI_ASK_USER_TOOL } from './ask-user';
 import { PI_STRUCTURED_OUTPUT_TOOL } from './structured-output';
 
 /** 技能源目录的临时根：物化是「读源、写目标」，源在 run 之后就没用了，跑完即删 */
 const skillRoots: string[] = [];
+
+/** 一次提问的调用 id：**就是剧本里那次工具调用的 id**（答案按它回填进消息账本） */
+const ASK_USER_CALL_ID = 'toolu_ask';
+
+/** 带回调那一次收下的入参（`calls` 那一格判的正是「恰好一次」） */
+const ASK_USER_REQUESTS: AskUserRequest[] = [];
+
+/**
+ * 这一次提问的答复（回调返回的那一份 = 编排层将来扮演的那一半）。
+ *
+ * ⚠️ 这里的 `answers` 用**契约形状**（`{header, selected, custom}`），与工具**入参**里那一问的
+ * wire 形状（`question` 而不是 `prompt`）是两个域：答复那一侧从头到尾就是契约形状。
+ *
+ * 取**多选 + 自由输入并存**那一档（`selected` 与 `custom` 同时有值）：这一家把两半拼进同一段渲染
+ * 文本，故这一条同时钉住「两半都没被丢掉」与「自由输入真的进得了模型看到的那段文本」。
+ */
+const ASK_CUSTOM_ANSWER = '方向二更合适';
+
+const ASK_REPLY: AskUserReply = {
+  outcome: 'answered',
+  answers: [{ header: '选路径', selected: ['选项 A'], custom: ASK_CUSTOM_ANSWER }],
+};
 
 /**
  * 子智能体会话的落点（见文件头第 4 条）：设成临时目录，跑完删掉并还原变量。
@@ -119,6 +144,8 @@ const EXPECTED_EVENT_COUNTS = {
   'structured-output': 26,
   'mcp-injection': 15,
   'skill-injection': 15,
+  // 两轮往返 + 一次工具调用（与 `tool-shell` 同形）：这一问真的走了一件工具
+  'ask-user': 26,
 } as const;
 
 /**
@@ -223,12 +250,110 @@ const SCENARIOS = {
       anthropicText('派发完了。'),
     ],
   }),
+  /**
+   * 提问应答：模型调**我们注册的那件宿主工具**，答复经端口回到工具结果里。
+   * 两臂（带回调 / 不传回调）都由本场景与 `ASK_USER_CONTROL` 跑，见上面那两段注释。
+   */
+  'ask-user': await run({
+    script: askUserScript(),
+    onAskUser: async (request) => {
+      ASK_USER_REQUESTS.push(request);
+      return ASK_REPLY;
+    },
+  }),
 } satisfies Partial<Record<ConformanceScenarioName, PiConformanceRun>>;
 
+/**
+ * 提问应答场景：模型按剧本调**我们注册的那件宿主工具**，答复经提问端口回到工具结果里。
+ *
+ * 与另三家刻意不同的一处：这一家的 `answerFrame` **不是夹具装的**，就是那个工具 `execute` 的返回值
+ * ——`content` 是模型读的那段文本、`details` 是界面看的结构化那一份（读法见 `askUserProduct`）。
+ * 夹具扮演适配器那一格只能证「端口问得对」，而这一条连「模型真的调得到它」一起证了。
+ *
+ * ⚠️ 「那一问自己的等待预算」在这一家没有厂商侧来源（SDK 的工具面里没有任何超时），
+ * 故请求里的 `vendorBudgetMs` 如实给 `null`——端口的缺省预算兜底。
+ */
+
+/** 一次工具调用的剧本：两轮往返（工具一轮、收尾正文一轮），只有一轮测不到这条通道 */
+function askUserScript(): string[][] {
+  return [
+    anthropicToolUse(PI_ASK_USER_TOOL, {
+      questions: [{
+        header: '选路径',
+        question: '用哪条路径？',
+        options: [
+          { label: '选项 A', description: '先做小的', recommended: true },
+          { label: '选项 B', description: null, recommended: false },
+        ],
+        multiSelect: false,
+        allowOther: true,
+        secret: false,
+      }],
+    }, ASK_USER_CALL_ID),
+    anthropicText('按选项 A 继续。'),
+  ];
+}
+
+/**
+ * 对照臂（不传回调）那一次运行：同一条夹具、同一份载荷，只去掉那一格回调。
+ *
+ * 工具表从**出站请求**读（`requestTools`）——「我们没注册」与「注册了但没声明出去」在产物里长得一样，
+ * 只有请求侧分得开。这一臂里那一问会落成一条「工具不存在」的错误结果：那是 `host-tool` 档**自带**的
+ * 差异，判据按通道分档处置（见 `../conformance/ask-user.ts` 的模块头）。
+ */
+const ASK_USER_CONTROL = await run({ script: askUserScript() });
+
+/**
+ * 对照臂里那一问拿到的工具结果原文（这一档自带的差异，抄进探针供人核对）。
+ *
+ * 读的是**工具结果消息块**的 `text`：`tool_execution_end` 的 `result.content` 在厂商那一层是不透明的，
+ * 读它要重复一遍投影逻辑；而消息块正是本仓消费的那一份。工具压根没执行时给 `null`——判据据此红。
+ */
+function missingToolErrorOf(product: ConformanceProduct): string | null {
+  const block = product.messages
+    .flatMap((message) => message.blocks)
+    .find((item) => item.type === 'tool-result' && item.callId === ASK_USER_CALL_ID);
+  return block?.type === 'tool-result' ? block.text : null;
+}
+
+/**
+ * 提问应答的探针：四格事实**各自从真源读**（判据见 `../conformance/ask-user.ts`）。
+ *
+ *   · `calls` / `requests` / `replies`：端口那一侧，两臂共用一份取数（对照臂不调回调，故只有一份）；
+ *   · `answerFrame`：这一家的应答形状 = **工具结果本身**，从带回调那次的产物里按调用 id 找回来；
+ *   · `control`：对照臂的指纹两格（原始 / 归一到同一形态）、出站工具表、以及那一问拿到的错误原文。
+ */
+function askUserProduct(): ConformanceProduct {
+  const withCallback = SCENARIOS['ask-user'].product;
+  const resultBlock = withCallback.messages
+    .flatMap((message) => message.blocks)
+    .find((block) => block.type === 'tool-result' && block.callId === ASK_USER_CALL_ID);
+  return {
+    ...withCallback,
+    askUser: {
+      calls: ASK_USER_REQUESTS.length,
+      requests: [...ASK_USER_REQUESTS],
+      replies: [ASK_REPLY],
+      answerFrame: resultBlock ?? null,
+      control: {
+        calls: 0,
+        reply: { outcome: 'unavailable', answers: null },
+        digestWithCallback: askUserProductDigest(withCallback),
+        digestWithoutCallback: askUserProductDigest(ASK_USER_CONTROL.product),
+        digestWithCallbackExcludingAskTool: askUserProductDigestExcludingTool(withCallback, PI_ASK_USER_TOOL),
+        digestWithoutCallbackExcludingAskTool: askUserProductDigestExcludingTool(ASK_USER_CONTROL.product, PI_ASK_USER_TOOL),
+        missingToolError: missingToolErrorOf(ASK_USER_CONTROL.product),
+        requestTools: ASK_USER_CONTROL.requestTools,
+      },
+    },
+  };
+}
+
 /** 场景名 → 产物（套件的取值器） */
-const PRODUCTS: Partial<Record<ConformanceScenarioName, ConformanceProduct>> = Object.fromEntries(
-  Object.entries(SCENARIOS).map(([name, product]) => [name, product.product]),
-);
+const PRODUCTS: Partial<Record<ConformanceScenarioName, ConformanceProduct>> = {
+  ...Object.fromEntries(Object.entries(SCENARIOS).map(([name, product]) => [name, product.product])),
+  'ask-user': askUserProduct(),
+};
 
 /**
  * 这一家**交给厂商的服务器名**（字面量）：MCP 场景里那一台，套件的逐名绑定与下面那条用例读同一份。
@@ -242,6 +367,13 @@ describeProviderConformance({
   kind: piProvider.kind,
   capability: piProvider.metadata.messageCapability,
   injection: piProvider.metadata.injection,
+  interaction: piProvider.metadata.interaction,
+  /**
+   * **宿主注册的那件提问工具名**：`host-tool` 档的对照臂判据靠它认出「哪一件工具是这一格」。
+   * 写成字面量而不是从适配器常量现读——两边同一个来源的话，改一处两边一起变、判据照样绿；
+   * 与适配器那份对不上的表现是本文件里那条挂载守卫当场红。
+   */
+  askUserHostTool: 'ask_user_question',
   // 两格注入面都声明 `yes`：各自靠一条真场景证明（请求侧 + 厂商侧两份事实互钉）
   injectionProof: { mcp: 'mcp-injection', skills: 'skill-injection' },
   /**
@@ -284,6 +416,7 @@ describeProviderConformance({
     failure: () => PRODUCTS['failure']!,
     'mcp-injection': () => PRODUCTS['mcp-injection']!,
     'skill-injection': () => PRODUCTS['skill-injection']!,
+    'ask-user': () => PRODUCTS['ask-user']!,
     subagent: () => PRODUCTS['subagent']!,
   },
   /**
@@ -444,5 +577,32 @@ describe('失败姿态（pi）', () => {
     expect(run.outcome.ok).toBe(false);
     expect(run.outcome.finalText, '失败场景也不许交空串').toBeNull();
     expect(run.product.events.some((event) => event.type === 'error'), '失败没有任何可见归因').toBe(true);
+  });
+});
+
+/**
+ * **应答帧挂载守卫**：这一问的答复真的装进了这家应答形状的那一帧吗。
+ * 没有这条，把 `answerFrame` 那一格删掉只会让套件那一组变成空转——谁都不会红。
+ */
+describe('应答帧挂载（pi）', () => {
+  it('宿主工具的返回值带着答复（content 是模型看的、details 是界面看的）', () => {
+    const probe = PRODUCTS['ask-user']?.askUser;
+    expect(probe).toBeDefined();
+    expect(probe?.requests[0]?.toolName).toBe('ask_user_question');
+    // 这一家没有厂商侧等待预算（SDK 的工具面里没有超时）⇒ 只能是 null，端口用缺省预算兜底
+    expect(probe?.requests[0]?.vendorBudgetMs).toBeNull();
+    expect(probe?.calls).toBe(1);
+    /**
+     * 答复**逐字**进了那件工具的结果：`content` 是模型读的那段文本、`details` 是界面看的结构化那一份。
+     * 两半都要在文本里——只查选项那一半时，自由输入被丢掉也不会有任何用例红。
+     */
+    expect(probe?.answerFrame).toMatchObject({
+      text: expect.stringContaining('选项 A'),
+      structured: { outcome: 'answered', answers: ASK_REPLY.answers },
+      isError: false,
+    });
+    const rendered = (probe?.answerFrame as { text?: string } | undefined)?.text ?? '';
+    expect(rendered).toContain(ASK_CUSTOM_ANSWER);
+    expect(probe?.control.calls).toBe(0);
   });
 });

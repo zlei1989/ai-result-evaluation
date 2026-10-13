@@ -1,16 +1,18 @@
 'use client';
 
 /**
- * antd 客户端 Provider：主题（偏好 auto/light/dark）+ App 包装（message/modal 上下文）+ 紧凑密度。
+ * antd 客户端 Provider：主题（偏好 auto/light/dark）+ App 包装（message/modal 上下文）+ 紧凑密度
+ * + 全局应答宿主（智能体的提问弹层，全站可见）。
  * 主题来源 = GET /api/settings（useSettings）→ 偏好交给 ui 包的 useResolvedTheme 解析；
  * 主题口径（auto 按系统偏好解析、data-theme / data-theme-preference 写入、holderRender 注册）统一在 ui 包，
- * 本组件只负责「把偏好喂进去 + 提供 AntdApp 子树」。
+ * 本组件只负责「把偏好喂进去 + 提供 AntdApp 子树 + 挂上应答宿主」。
  */
 import { useSettings } from '@aieval/client';
 import { DensityProvider, useResolvedTheme } from '@aieval/ui';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
+import { AskUserHost } from './ask-user-host';
 
 export function Providers({ children }: { children: ReactNode }): ReactNode {
   const { settings } = useSettings();
@@ -33,7 +35,12 @@ export function Providers({ children }: { children: ReactNode }): ReactNode {
     >
       {/* 把解析后的实际明暗传给 PageShell：其紧凑密度主题需据此选底色算法 */}
       <DensityProvider mode={mode}>
-        <AntdApp>{children}</AntdApp>
+        <AntdApp>
+          {children}
+          {/* 应答宿主：与页面平级（它要全局可见，不能只活在某个页面壳里）；它在 AntdApp 子树内
+              是为了拿 `message` 上下文提示提交失败，紧凑密度则由它自己包（见该文件头） */}
+          <AskUserHost />
+        </AntdApp>
       </DensityProvider>
     </ConfigProvider>
   );

@@ -25,7 +25,7 @@ import { dirname, join } from 'node:path';
 import { AGENT_KINDS } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
 import { getProvider } from '../../registry';
-import { capabilityProofGroups } from './kit';
+import { capabilityProofGroups, interactionProofGroups } from './kit';
 
 /** `providers/` 目录：本文件住在 `providers/conformance/`，往上一层就是它 */
 const PROVIDERS_DIR = join(import.meta.dirname, '..');
@@ -168,7 +168,13 @@ describe('接入守卫：每家都交出一致性套件 fixture', () => {
     it(`${kind}：fixture 覆盖自家声明为 yes 的每一格`, () => {
       const block = scenariosBlockOf(fixtureSourceOf(kind) ?? '');
       expect(block, `${kind} 的 fixture 里找不到 scenarios 块——覆盖判据无从谈起`).not.toBe('');
-      const groups = capabilityProofGroups(getProvider(kind).metadata.messageCapability);
+      // 消息面与交互面两张表都要过：翻一个 `yes` 要连带的那三处（能力格 / 证明场景 / 计数登记）
+      // 在**声明**这一侧是同一件事——手上没有 fixture 时能判的只有「源码里点没点那个场景名」
+      const declaration = getProvider(kind).metadata;
+      const groups = [
+        ...capabilityProofGroups(declaration.messageCapability),
+        ...interactionProofGroups(declaration.interaction),
+      ];
       for (const group of groups) {
         const hit = group.some((name) => mentionsScenario(block, name));
         expect(

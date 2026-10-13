@@ -145,7 +145,7 @@ export function dshAssistantMessageDraft(
       const callId = readString(block, 'callId');
       if (callId === null) continue;
       const name = readString(block, 'name') ?? '';
-      blocks.push(toolCallBlockDraft(callId, name, parseArguments(block?.arguments)));
+      blocks.push(toolCallBlockDraft(callId, name, parseArguments(block?.arguments), 'dsh'));
     }
   }
   if (blocks.length === 0) return null;
@@ -243,7 +243,7 @@ export function dshToolCallDraft(
     chunk: 'snapshot',
     // 工具调用消息：消息级用量只可能挂在模型产出（`assistant/message`）上 ⇒ 这一格恒 null
     usage: null,
-    blocks: [toolCallBlockDraft(callId, readString(data, 'name') ?? '', parseArguments(data?.arguments))],
+    blocks: [toolCallBlockDraft(callId, readString(data, 'name') ?? '', parseArguments(data?.arguments), 'dsh')],
     raw: notification,
   };
 }

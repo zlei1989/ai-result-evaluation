@@ -22,6 +22,7 @@ import type {
   AppServerThread,
 } from './appserver/protocol';
 import type { AppServerThreadRef } from './appserver/reader';
+import { CODEX_ASK_TOOL_NAME, type CodexAskQuestion } from './ask-user';
 import { breakdownToTokens } from './events';
 import { blockIndexFor, countRoundTrips, roundTripsOf, type CodexRunState } from './run-state';
 
@@ -133,6 +134,7 @@ export function projectCodexMessages(
               planCallId(payload.threadId, payload.turnId),
               PLAN_TOOL_NAME,
               { plan: payload.steps.map((one) => ({ step: one.step, status: one.status })) },
+              'codex',
             ),
           ],
           raw: payload,
@@ -211,9 +213,12 @@ function projectItem(
           role: 'assistant',
           blockKind: 'plan',
           blocks: [
-            toolCallBlockDraft(item.id, PLAN_TOOL_NAME, {
-              plan: item.text === '' ? [] : [{ step: item.text, status: 'unknown' }],
-            }),
+            toolCallBlockDraft(
+              item.id,
+              PLAN_TOOL_NAME,
+              { plan: item.text === '' ? [] : [{ step: item.text, status: 'unknown' }] },
+              'codex',
+            ),
           ],
         }),
       ],
@@ -315,7 +320,7 @@ function commandDrafts(item: Extract<AppServerItem, { kind: 'commandExecution' }
       ...where,
       role: 'assistant',
       blockKind: 'tool-call',
-      blocks: [toolCallBlockDraft(item.id, COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }, 'run-shell')],
+      blocks: [toolCallBlockDraft(item.id, COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }, 'codex', 'run-shell')],
     }),
     draft({
       ...where,
@@ -348,7 +353,7 @@ function fileChangeDrafts(item: Extract<AppServerItem, { kind: 'fileChange' }>, 
       ...where,
       role: 'assistant',
       blockKind: 'tool-call',
-      blocks: [toolCallBlockDraft(item.id, APPLY_PATCH_TOOL_NAME, { changes }, 'edit-file')],
+      blocks: [toolCallBlockDraft(item.id, APPLY_PATCH_TOOL_NAME, { changes }, 'codex', 'edit-file')],
     }),
     draft({
       ...where,
@@ -387,7 +392,7 @@ function mcpDrafts(item: Extract<AppServerItem, { kind: 'mcpToolCall' }>, where:
       ...where,
       role: 'assistant',
       blockKind: 'tool-call',
-      blocks: [toolCallBlockDraft(item.id, name, item.arguments ?? null, null)],
+      blocks: [toolCallBlockDraft(item.id, name, item.arguments ?? null, 'codex', null)],
     }),
     draft({
       ...where,
@@ -413,7 +418,7 @@ function webSearchDrafts(item: Extract<AppServerItem, { kind: 'webSearch' }>, wh
       ...where,
       role: 'assistant',
       blockKind: 'tool-call',
-      blocks: [toolCallBlockDraft(item.id, 'web_search', { query: item.query })],
+      blocks: [toolCallBlockDraft(item.id, 'web_search', { query: item.query }, 'codex')],
     }),
     draft({
       ...where,
@@ -431,7 +436,7 @@ function webSearchDrafts(item: Extract<AppServerItem, { kind: 'webSearch' }>, wh
  */
 function dynamicCallBlock(item: Extract<AppServerItem, { kind: 'dynamicToolCall' }>): ReturnType<typeof toolCallBlockDraft> {
   const name = item.namespace === null ? item.tool : `${item.namespace}.${item.tool}`;
-  return toolCallBlockDraft(item.id, name, item.arguments ?? null, null);
+  return toolCallBlockDraft(item.id, name, item.arguments ?? null, 'codex', null);
 }
 
 /**
@@ -475,7 +480,7 @@ function projectCollab(
          * 本仓工具表里的 `spawn-agent`，而 `wait` / `close_agent` 这类协作动作名判不出来 ⇒ `null`
          * （走通用渲染）。这里**不能**显式传 `null`——那会绕开归类，把派发调用也降级成通用行。
          */
-        blocks: [toolCallBlockDraft(callId, item.tool, { prompt: item.prompt })],
+        blocks: [toolCallBlockDraft(callId, item.tool, { prompt: item.prompt }, 'codex')],
         raw,
       }),
     ],
@@ -645,6 +650,41 @@ export const APPLY_PATCH_TOOL_NAME = 'apply_patch';
 /** 计划条目的调用 id：`turn/plan/updated` 没有条目 id，用「线程 + 轮」合成一个稳定键 */
 function planCallId(threadId: string, turnId: string): string {
   return `plan:${threadId}:${turnId}`;
+}
+
+/**
+ * 一条「提问调用」的消息草稿。
+ *
+ * 为什么单列：这一家的提问走 **server→client 请求** `item/tool/requestUserInput`，而厂商的线程条目
+ * 里**没有这一格**（`ThreadItem` 的变体逐个核对过）⇒ 它永远不进通知流，账本里那**提问的一半**
+ * 只能由观察到这次请求的适配器补出来。不补的症状是界面上只剩一条没有题目的答复行。
+ *
+ * 形状与另三家 wire 上那条 assistant `tool-call` **逐字同形**：`family` 由公共层按工具名归族
+ * （`request_user_input` → `ask-user`）、`payload` 由公共层从入参归一 ⇒ 展示侧不必知道
+ * 这一家的提问不走条目流。
+ *
+ * 两格取值理由：
+ *   · `callId` 取厂商的 `itemId`——账本的另一半（编排层写的答复 `tool-result`）用的就是它，
+ *     错开就是「有卡片没答案」；
+ *   · `input` 只给**模型那一次调用**的形状（`questions`）：请求信封里的 `threadId` / `turnId` /
+ *     `isBlocking` 是厂商的管道字段，抄进工具入参会被读成模型自己写的字；信封原文留在 `raw` 里供排障。
+ */
+export function askUserCallDraft(
+  params: { itemId: string; threadId: string; questions: readonly CodexAskQuestion[] },
+  runState: CodexRunState,
+  context: CodexMessageContext,
+): MessageDraft {
+  return draft({
+    vendorId: params.itemId === '' ? null : params.itemId,
+    threadId: params.threadId,
+    context,
+    runState,
+    raw: params,
+    chunk: 'snapshot',
+    blockKind: 'ask-user-call',
+    role: 'assistant',
+    blocks: [toolCallBlockDraft(params.itemId, CODEX_ASK_TOOL_NAME, { questions: params.questions }, 'codex')],
+  });
 }
 
 /** 思考正文：`content[]`（已归一成字符串数组）拼行；空数组 ⇒ `null`（**不是空串**） */

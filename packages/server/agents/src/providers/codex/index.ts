@@ -39,6 +39,7 @@ import { addUsage, sumUsageTokens } from '../../usage';
 import { resolveCodexBinary } from './appserver/binary';
 import { createAppServerClient, type AppServerClient, type AppServerEnv } from './appserver/client';
 import type { AppServerNotificationPayload } from './appserver/protocol';
+import { createCodexAskResponder, type CodexAskResponder } from './ask-user';
 import {
   listDescendantThreads,
   listSkills,
@@ -48,7 +49,7 @@ import {
 } from './appserver/reader';
 import { startCodexSession, type CodexSession } from './appserver/session';
 import { breakdownToTokens, projectCodexEvent } from './events';
-import { noteThreadStarted, projectCodexMessages, projectSubagentRecord, projectThreadMessages, threadRoundTrips } from './message';
+import { askUserCallDraft, noteThreadStarted, projectCodexMessages, projectSubagentRecord, projectThreadMessages, threadRoundTrips } from './message';
 import { createCodexRunState, currentMcpStartup, observedTurns, type CodexRunState } from './run-state';
 
 const logger = createLogger('agents/codex');
@@ -78,6 +79,37 @@ export function codexEffortOf(effort: string): string {
 const CODEX_PROVIDER_ID = 'aieval';
 
 /**
+ * 提问工具的两格线程级开关：**两格一起**才让厂商在运行期受理那次调用。
+ *
+ * 为什么非要开：0.156.1 默认就把 `request_user_input` 列进工具表（系统提示与工具表都不随这两格变），
+ * 开关管的是**运行期收不收这次调用**——不开时厂商把调用弹回
+ * `request_user_input is unavailable in Default mode`，一条服务端请求都不下发。⇒ 不开就没有提问可言。
+ *
+ * 为什么开到 `features` 那一格：`tools.experimental_request_user_input.enabled` 只过 `ToolsToml`
+ * 的成员表，另一格在特性表里（`features.default_mode_request_user_input`）；两格都开是照探针的臂定义，
+ * 「只开一格够不够」没有读数，不猜。
+ */
+const CODEX_ASK_SWITCH_TOOLS = { experimental_request_user_input: { enabled: true } } as const;
+const CODEX_ASK_SWITCH_FEATURES = { default_mode_request_user_input: true } as const;
+
+/** `buildCodexConfig` 的可选面：每一格缺席时**整个键都不出现**（= 「我们没意见」，见各格注释） */
+export interface CodexConfigOptions {
+  /** 模型上下文窗口：CLI 内置目录里没有我们网关的模型名，这个数只能由我们告诉它 */
+  contextWindow?: number | undefined;
+  /** `model_reasoning_summary`：关闭档的第二格，见 `CODEX_OFF_REASONING_SUMMARY` */
+  reasoningSummary?: string | undefined;
+  /** MCP 条目（形状由 `toCodexMcpServers` 一处定）；空集整个键都不给 */
+  mcpServers?: Record<string, CodexMcpServer> | undefined;
+  /**
+   * 本次运行有没有应答面（`AskUserPort.available`）。`true` ⇒ 打开上面那两格提问开关。
+   *
+   * 为什么必须由调用方显式给、而不是这里自己读环境：不挂应答面时那两格**一个字都不该动**
+   * ——「默认不介入」这条边界要能被断言成「配置逐字不变」。
+   */
+  askUser?: boolean | undefined;
+}
+
+/**
  * 线程级配置：把本次运行的路由写进 app-server 的 `config`。
  *
  * 为什么整份给 `model_providers` 而不是只给一个 base URL：环境里已有的 `~/.codex` 配置会**赢过**
@@ -97,13 +129,12 @@ const CODEX_PROVIDER_ID = 'aieval';
  * 两格**只在已知时出现**（`undefined` ⇒ 键整个不存在，那才是「我们没意见」的形态）：
  *   · `model_context_window`：CLI 内置目录里没有我们网关的模型名，这个数只能由我们告诉它；
  *   · `model_reasoning_summary`：关闭档的第二格，见 `CODEX_OFF_REASONING_SUMMARY`。
+ *
+ * 提问工具那两格（`tools` / `features`）**只在挂了应答面时**并进去（见 `CodexConfigOptions.askUser`）：
+ * 开了开关却没人答，厂商会一直等那一帧（`isBlocking: false` 与 `autoResolutionMs: null` 都不让它自己收场）。
  */
-export function buildCodexConfig(
-  baseUrl: string,
-  contextWindow?: number,
-  reasoningSummary?: string,
-  mcpServers?: Record<string, CodexMcpServer>,
-): Record<string, unknown> {
+export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = {}): Record<string, unknown> {
+  const { contextWindow, reasoningSummary, mcpServers, askUser } = options;
   return {
     model_provider: CODEX_PROVIDER_ID,
     model_providers: {
@@ -115,8 +146,15 @@ export function buildCodexConfig(
         request_max_retries: 1,
       },
     },
-    tools: { web_search: false, update_plan: { enabled: true } },
-    features: { multi_agent: true },
+    tools: {
+      web_search: false,
+      update_plan: { enabled: true },
+      ...(askUser === true ? CODEX_ASK_SWITCH_TOOLS : {}),
+    },
+    features: {
+      multi_agent: true,
+      ...(askUser === true ? CODEX_ASK_SWITCH_FEATURES : {}),
+    },
     ...(contextWindow === undefined ? {} : { model_context_window: contextWindow }),
     ...(reasoningSummary === undefined ? {} : { model_reasoning_summary: reasoningSummary }),
     /**
@@ -150,8 +188,23 @@ export function buildCodexConfig(
  * 两个函数合成一个入口：`session.ts` 与 `reader.ts` 必须共用**同一个** `AppServerClient`。
  */
 export interface CodexRuntimeHooks {
-  /** 建客户端；缺省 = 真 spawn `codex app-server` */
-  createClient: (input: { binary: string; env: AppServerEnv }) => AppServerClient;
+  /**
+   * 建客户端；缺省 = 真 spawn `codex app-server`。
+   *
+   * `onServerRequest` 由适配器按本次运行的提问端口造好（见 `ask-user.ts`）：注入口必须把它传下去，
+   * 漏了的表现是**静默**的——提问请求照旧到达、厂商照旧一直等那一帧（没有报错、没有事件）。
+   *
+   * `wrapServerRequest` 是给**观察者**用的（真路径夹具要读厂商下发的原始 params、抄一份我们写回去的帧）：
+   * 它包在**产品那一个应答者外面**，包装器拿到的那一份仍是产品造的，因此产品在应答者里做的事
+   * （把提问那一半投进账本、主线程判据）照旧发生——注入方**替换**应答者时那一半会整个消失，
+   * 而症状是界面上只剩一条没有题目的答复行。
+   */
+  createClient: (input: {
+    binary: string;
+    env: AppServerEnv;
+    onServerRequest?: CodexAskResponder | undefined;
+    wrapServerRequest?: ((inner: CodexAskResponder) => CodexAskResponder) | undefined;
+  }) => AppServerClient;
   /** 解析 codex 可执行文件；缺省 = SDK 自带的平台包（`appserver/binary.ts`） */
   resolveBinary: () => string;
 }
@@ -163,7 +216,17 @@ export interface CodexRuntimeHooks {
  * ⇒ 静态导入不会把「一家故障」放大成「整包不可用」（A6），故这里不做动态 import。
  */
 export const defaultCodexRuntimeHooks: CodexRuntimeHooks = {
-  createClient: (input) => createAppServerClient({ binary: input.binary, env: input.env }),
+  createClient: (input) => {
+    const inner = input.onServerRequest;
+    const onServerRequest = inner === undefined
+      ? undefined
+      : (input.wrapServerRequest === undefined ? inner : input.wrapServerRequest(inner));
+    return createAppServerClient({
+      binary: input.binary,
+      env: input.env,
+      ...(onServerRequest === undefined ? {} : { onServerRequest }),
+    });
+  },
   resolveBinary: resolveCodexBinary,
 };
 
@@ -234,7 +297,24 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
    */
   const mcpServers = toCodexMcpServers(input.mcpServers ?? {});
   const binary = hooks.resolveBinary();
-  const client = hooks.createClient({ binary, env });
+  /**
+   * 提问应答者的落点：**与客户端同生**（服务端请求可能在 `thread/start` 一返回就下发，
+   * 那时补挂已经晚了）。主线程 id 要到 `thread/start` 才知道 ⇒ 用取值函数把那一格推后。
+   *
+   * `onAskRequest` 把**提问那一半**投进账本（见 `ask-user.ts` 的该选项）：这一家的提问不进通知流，
+   * 账本里没有第二个来源，而 `runState` 与主线程 id 都已经在手上 ⇒ 建客户端之前就能接上。
+   */
+  let mainThreadId: string | null = null;
+  const runState = createCodexRunState();
+  const askResponder = createCodexAskResponder({
+    port: context.askUser,
+    mainThreadId: () => mainThreadId,
+    onAskRequest: (params) => {
+      // 主线程 id 未落定时按应答者同一口径处置（它那一刻也把这一问按主线程接）：两个判据同源
+      context.emitMessage(askUserCallDraft(params, runState, { mainThreadId: mainThreadId ?? params.threadId }));
+    },
+  });
+  const client = hooks.createClient({ binary, env, onServerRequest: askResponder });
   /**
    * 权限档（见 `permission.ts`）：执行阶段 danger-full-access（workspace-write 默认关掉网络，
    * 装依赖 / 跑测试会因此失败），评分阶段只读；批准策略两档都是 never——评测是非交互的。
@@ -252,12 +332,16 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     ...(input.effort === undefined ? {} : { effort: codexEffortOf(input.effort) }),
     sandbox: permissionOptions.sandboxMode,
     approvalPolicy: permissionOptions.approvalPolicy,
-    config: buildCodexConfig(
-      baseUrl,
-      input.route.contextWindow,
-      input.effort === CODEX_OFF_EFFORT ? CODEX_OFF_REASONING_SUMMARY : undefined,
+    config: buildCodexConfig(baseUrl, {
+      contextWindow: input.route.contextWindow,
+      reasoningSummary: input.effort === CODEX_OFF_EFFORT ? CODEX_OFF_REASONING_SUMMARY : undefined,
       mcpServers,
-    ),
+      /**
+       * 提问工具的两格开关**只在挂了应答面时**打开（见 `CodexConfigOptions.askUser`）。
+       * 反之，开了开关却没人答时厂商会一直等那一帧——所以「不问就不动」在这里同时是**安全边界**。
+       */
+      askUser: context.askUser.available,
+    }),
     prompt: input.prompt,
     /**
      * 结构化输出按需带：给了 schema ⇒ 交给 `turn/start` 的一等字段 `outputSchema`
@@ -267,6 +351,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     ...(outputSchema === null ? {} : { outputSchema }),
     client,
   });
+  // 主线程 id 落定：应答者靠它把**子线程**发起的提问挡在人面前之外（见 `ask-user.ts`）
+  mainThreadId = session.threadId;
   logger.debug('codex 已启动 app-server 会话', {
     model: input.route.modelId,
     contextWindow: input.route.contextWindow,
@@ -283,7 +369,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
 
   const run: CodexRun = {
     client,
-    runState: createCodexRunState(),
+    runState,
     mainThreadId: session.threadId,
     lastTokens: null,
     readback: null,
@@ -731,7 +817,7 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
         '文件改动与 MCP 调用按 `apply_patch` / `<server>.<tool>` 出工具消息；MCP 不进那十族（`family:null`），界面走通用渲染',
         '命令输出是 stdout 与 stderr 的合流（`aggregatedOutput`）⇒ 归一结果里不编 `stderr`',
         '消息级用量（`AgentMessage.usage`）结构性给不出：app-server 只到线程级累计，差分无法证明归属 ⇒ 恒 `null`',
-        '审批与问用户是 server→client 请求，本仓不应答 ⇒ 不合成消息；`approvalPolicy: never` 下也不会被问到',
+        '审批与问用户都是 server→client 请求：**审批类只归类不回帧**（`approvalPolicy: never` 下也不会被问到），问答类由应答者回帧、但厂商不为此发条目通知 ⇒ 两者都不合成消息',
         '子任务终态由 `turn.status` / `turn.error` / `thread.status` 推出三档（completed / failed / stopped）；推不出来记 `unknown` + `statusMissing`',
         '子线程的实时性取决于上游是否把它的 `item/*` 推给本条连接：收尾一律用 `thread/read` 补齐，两条入口共用同一个归一函数',
       ],
@@ -746,6 +832,37 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
       notes: [
         'MCP 的判据通道是 `mcpServer/startupStatus/updated`（带厂商 `error` 原文），档位**只到「装上了」**：自建网关路由下工具调用可能被上游判 `unsupported call`',
         'skill 的判据通道是 `skills/list`（带 `scope` 与落点 `path`）——它证明厂商认出了清单，且 `enabled: false` 的条目也会列出来',
+      ],
+    },
+    /**
+     * 交互面：厂商在服务端协议里就有提问请求，本适配器**开开关 + 回帧**两件都做了。
+     *
+     * 三条口径：
+     *   · 开关**不是**「模型看不看得见那件工具」：0.156.1 默认就把 `request_user_input` 列进工具表
+     *     （`tools.experimental_request_user_input` 不开也在，系统提示逐字不变），开关管的是**运行期
+     *     收不收这次调用**——不开时厂商把调用弹回 `request_user_input is unavailable in Default mode`，
+     *     一条服务端请求都不下发。两格随应答面同生同灭（`CodexConfigOptions.askUser`）。
+     *   · **没有一档收场由厂商自己结束**：`autoResolutionMs` 已 `@deprecated` 且实测恒 `null`，
+     *     `isBlocking: false` 也不让它收场——不回帧它会一直等（实测 45 s 无下一轮、无收束通知）
+     *     ⇒ 「没人答 / 等超时 / 行终止」三条都由我们回一帧**空答案**（厂商原生的「没有答案」语义），
+     *     那一问的收场方式因此落在我们自己的预算上（`timeout`），**没有** `auto-resolved` 这条路径。
+     *   · 分界线：**审批类仍然只归类不回帧**（`approvalPolicy: never` 下也不会被问到；回帧等于替用户
+     *     批准）；子线程发起的提问厂商自己就拒（`… can only be used by the root thread`），
+     *     真到了我们手里也按「子智能体不能向用户提问」收场。
+     */
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      /**
+       * 驱动器是真的：真 `codex app-server` 跑起来、厂商自己在运行期下发
+       * `item/tool/requestUserInput`、我们的应答帧被厂商折成**真的工具结果**交给下一轮请求。
+       */
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [
+        '厂商的提问请求是 `item/tool/requestUserInput`，答案按**题目 id** 配对回帧（`{answers: {<question.id>: {answers: string[]}}}`）',
+        '一致性场景走真路径（真服务端 + 脚本式上游，开关与回帧都是产品那条链路，见 `testing/codex-real-path-fixture.ts`）',
       ],
     },
     /**

@@ -6,10 +6,13 @@
  * 本文件只钉「适配器有没有把该交的东西交到该去的地方」——协议本身的形状由 `appserver/*.test.ts` 覆盖。
  */
 import { EFFORT_OFF, type AgentEvent, type AgentMessage, type SubagentRecord } from '@aieval/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { listAgentProviders } from '../../registry';
 import { collectEvents, createRunInput, FIXTURE_CWD } from '../../testing/agent-fixtures';
-import type { AgentRunResult } from '../../types';
+import type { AgentRunResult, AskUserReply, AskUserRequest } from '../../types';
+import { createAppServerClient } from './appserver/client';
+// ⚠️ 跨文件 import 夹具：那一条是「回帧真的写进 stdin」唯一看得见的地方（见用例注释）
+import { FakeChild } from './appserver/client.test';
 import {
   agentMessageDelta,
   createFakeAppServer,
@@ -186,6 +189,295 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
     expect(server.stats.requests[1]?.params).toMatchObject({ sandbox: expected, approvalPolicy: 'never' });
   });
 
+  /**
+   * 那两格提问开关**只在挂了应答面时**并进 `thread/start` 的线程级 config。
+   *
+   * 为什么必须落到**请求侧**（而不是只测纯函数）：开关是在 `thread/start` 里交给厂商的，
+   * 而「有没有真的交出去」只有假 app-server 的 RPC 台账看得见；纯函数那条守卫管不到「调用方有没有
+   * 把那一位传对」。两件事都错了才叫漏：开关本身编码错（纯函数那条）或这一位没接上（这一条）。
+   *
+   * 不挂应答面时要求**逐字不变**：开了开关却没人答时厂商会一直等那一帧（`isBlocking: false` 与
+   * `autoResolutionMs: null` 都不让它自己收场），⇒ 「不问就不动」是安全边界。
+   */
+  it('提问工具开关：挂了应答面才开这两格；不挂时 `tools` / `features` 逐字不变', async () => {
+    const withCallback = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+    await codexProvider.run(
+      createRunInput({
+        onAskUser: async (): Promise<AskUserReply> => ({ outcome: 'answered', answers: null }),
+      }),
+    );
+    const askedConfig = (withCallback.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
+    expect(askedConfig['tools']).toEqual({
+      web_search: false,
+      update_plan: { enabled: true },
+      experimental_request_user_input: { enabled: true },
+    });
+    expect(askedConfig['features']).toEqual({ multi_agent: true, default_mode_request_user_input: true });
+
+    const control = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+    await codexProvider.run(createRunInput());
+    const bareConfig = (control.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
+    expect(bareConfig['tools']).toEqual({ web_search: false, update_plan: { enabled: true } });
+    expect(bareConfig['features']).toEqual({ multi_agent: true });
+  });
+
+  /**
+   * **回帧那条链路的接线**：厂商下发服务端请求 → 真客户端分类 → 应答者 → 真写进 stdin。
+   *
+   * 为什么这条不并进 `ask-user.test.ts`（那里有更细的形状判据）：那一条验的是应答者本身，
+   * 而「这一次运行到底有没有把应答者交给客户端」只有这里看得见——漏接的表现是**静默**的
+   * （请求照旧到达、厂商照旧一直等那一帧，不报错、不产事件）。两条用例分工：
+   * 这条判「接没接上」，那条判「接上之后回的是什么」。
+   */
+  it('厂商的服务端请求：审批类不回帧、提问类回帧并写回 stdin', async () => {
+    const child = new FakeChild();
+    const server = createFakeAppServer({
+      // 取数面的最小应答（收尾会问这三个方法）
+      respond: {
+        'thread/list': () => ({ data: [], nextCursor: null }),
+        'thread/read': () => ({ thread: { id: 'thread-main', turns: [] } }),
+        'thread/items/list': () => ({ data: [], nextCursor: null }),
+      },
+    });
+    /**
+     * 真客户端 + 假子进程：**应答者必须由注入口原样交下来**（产品那条链路上它是
+     * `defaultCodexRuntimeHooks.createClient` 收到的那个入参）。写成 `createClient: () => client`
+     * 会把这一格吃掉——那时回帧通道整条是空的，而用例只会看到「没有人被问过」。
+     */
+    codexProvider.runtimeHooks = {
+      resolveBinary: () => 'C:/fake/codex.exe',
+      createClient: (clientInput) => createAppServerClient({
+        binary: clientInput.binary,
+        env: clientInput.env,
+        spawnFn: () => child,
+        ...(clientInput.onServerRequest === undefined ? {} : { onServerRequest: clientInput.onServerRequest }),
+      }),
+    };
+    const asked: AskUserRequest[] = [];
+    const running = codexProvider.run(
+      createRunInput({
+        onAskUser: (request) => {
+          asked.push(request);
+          return Promise.resolve({ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: null }] });
+        },
+      }),
+    );
+    // 起手三步走完（订阅是在 `thread/start` / `turn/start` 之后建立的），再投两条服务端请求
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    /** 此刻已经写过几帧（`initialize` 那一条）：判据只看**这一条提问带来的**写回 */
+    const writtenBeforeAsk = child.written.length;
+    child.emit(
+      { jsonrpc: '2.0', id: 41, method: 'item/commandExecution/requestApproval', params: { threadId: server.threadId } },
+      {
+        jsonrpc: '2.0',
+        id: 42,
+        method: 'item/tool/requestUserInput',
+        params: {
+          itemId: 'call_ask_1',
+          threadId: server.threadId,
+          turnId: 'turn-1',
+          isBlocking: false,
+          autoResolutionMs: null,
+          questions: [{ id: 'q1', header: '选路径', question: '用哪条路径？' }],
+        },
+      },
+    );
+    await vi.waitFor(() => {
+      // 等到**端口被问过**：回帧比回调晚一步（应答帧要等答复），故不能拿它当「这一问到没到」的判据
+      expect(asked).toHaveLength(1);
+    });
+    await vi.waitFor(() => {
+      // 提问那一帧写回去了（审批那一帧**不写**：这一场里带 result 的服务端请求帧只有它一条）
+      expect(child.written).toHaveLength(writtenBeforeAsk + 1);
+    });
+    expect(asked[0]?.callId).toBe('call_ask_1');
+    expect(JSON.parse(child.written.at(-1) ?? '')).toEqual({
+      jsonrpc: '2.0',
+      id: 42,
+      result: { answers: { q1: { answers: ['选项 A'] } } },
+    });
+    // 收尾：投终态让这一轮结束，免得用例挂在默认超时上
+    server.emit('turn/completed', { threadId: server.threadId, turn: { id: server.turnId, items: [], status: 'completed' } });
+    await running;
+  });
+
+  /**
+   * **提问那一半进账本**：厂商的提问是 server→client 请求，而它的线程条目里**没有这一格**
+   * （`ThreadItem` 的变体逐个核对过）⇒ 账本里那条 assistant `tool-call` 没有第二个来源，
+   * 只能由观察到请求的适配器补。不补的症状是界面上只剩一条**没有题目**的答复行——
+   * `ask-user` 卡片唯一由 `payload.kind === 'ask-user'` 驱动（`build-model.ts`）。
+   *
+   * 三格判据：
+   *   · `callId` 取厂商的 `itemId`，且**与端口收到的那次请求逐字相同**——卡片靠 `callId` 跨账本配对，
+   *     编排层写的答复那一半用的也是它，错开就是「有卡片没答案」或反过来；
+   *   · 形状与另三家 wire 上那条逐字同形（`family` 按工具名归族、`payload` 由公共层归一）：
+   *     展示侧因此不必知道这一家的提问不走条目流；
+   *   · **审批类请求一条消息都不产**（它连帧都不回，见上一条用例）：同一场里两件事一起判，
+   *     否则「顺手给所有服务端请求都投一条」这种改法不会被拦住。
+   *
+   * 入参用**真机 `item/tool/requestUserInput` 的逐字形状**（10 号真机 run 的 codex 行）：
+   * 两题、各三个候选项、`isOther` / `isSecret` 都在。
+   */
+  it('提问请求 → 账本补出那条 assistant `tool-call`；审批类请求不产消息', async () => {
+    const child = new FakeChild();
+    /**
+     * 真客户端 + 假子进程这一条路上，**握手与取数面的请求要人工答**：假 app-server 只投通知，
+     * 而这条用例验的正是「服务端请求」那条只有真客户端走得通的通道 ⇒ 不能换夹具。
+     * 应答器按「还没答过的 id」逐帧答（幂等，可以在收尾期间反复调）。
+     */
+    const answered = new Set<number>();
+    const answerChild = (): void => {
+      for (const line of child.written) {
+        const frame = JSON.parse(line) as { id?: unknown; method?: unknown };
+        if (typeof frame.id !== 'number' || typeof frame.method !== 'string' || answered.has(frame.id)) continue;
+        answered.add(frame.id);
+        const byMethod: Record<string, unknown> = {
+          'thread/start': { thread: { id: MAIN } },
+          'turn/start': { turn: { id: 'turn-1', items: [], status: 'inProgress' } },
+          // 收尾取数：空线程树（内容那一格恒 `null` 不影响本用例的判据）
+          'thread/list': { data: [], nextCursor: null },
+          'thread/read': { thread: null },
+          'thread/items/list': { data: [], nextCursor: null },
+        };
+        child.emit({ jsonrpc: '2.0', id: frame.id, result: byMethod[frame.method] ?? {} });
+      }
+    };
+    const messages: AgentMessage[] = [];
+    const asked: AskUserRequest[] = [];
+    codexProvider.runtimeHooks = {
+      resolveBinary: () => 'C:/fake/codex.exe',
+      createClient: (clientInput) => createAppServerClient({
+        binary: clientInput.binary,
+        env: clientInput.env,
+        spawnFn: () => child,
+        ...(clientInput.onServerRequest === undefined ? {} : { onServerRequest: clientInput.onServerRequest }),
+      }),
+    };
+    const running = codexProvider.run(
+      createRunInput({
+        onMessage: (message) => {
+          messages.push(message);
+        },
+        onAskUser: (request) => {
+          asked.push(request);
+          return Promise.resolve({
+            outcome: 'answered',
+            answers: [
+              { header: '动物单选', selected: [], custom: '兔' },
+              { header: '植物多选', selected: [], custom: '月季、杜鹃' },
+            ],
+          });
+        },
+      }),
+    );
+    // 心跳式应答：握手 → 提问 → 终态 → 收尾取数，每一步的请求都要有人回
+    const pump = setInterval(answerChild, 5);
+    try {
+      await vi.waitFor(() => {
+        // 等到 `turn/start` 写出去：它排在 `thread/start` 的响应之后 ⇒ 主线程 id 已落定。
+        // 这一条要走的正是**正常那一支**（「请求早于 thread/start」是另一条带 WARN 的分支）
+        expect(child.written.some((line) => line.includes('"turn/start"'))).toBe(true);
+      });
+      // 审批类先来：它与提问走同一条服务端请求通道，判据是「没在账本里留下任何东西」
+      child.emit(
+        { jsonrpc: '2.0', id: 41, method: 'item/commandExecution/requestApproval', params: { threadId: MAIN } },
+        {
+          jsonrpc: '2.0',
+          id: 42,
+          method: 'item/tool/requestUserInput',
+          params: {
+            itemId: 'call_00_jhIII03ANulkj1Hw1TVC8940',
+            threadId: MAIN,
+            turnId: 'turn-1',
+            isBlocking: false,
+            autoResolutionMs: null,
+            questions: [
+              {
+                id: 'favorite_animal',
+                header: '动物单选',
+                question: '第 1 题（单选）：下面三种动物你最喜欢哪一种？',
+                options: [
+                  { label: '猫 (Recommended)', description: '独立、安静，适合室内饲养。' },
+                  { label: '狗', description: '热情、忠诚，需要较多陪伴与运动。' },
+                  { label: '海豚', description: '聪明、社会性强的海洋哺乳动物。' },
+                ],
+                isOther: false,
+                isSecret: false,
+              },
+              {
+                id: 'favorite_plants',
+                header: '植物多选',
+                question: '第 2 题（多选，可勾选多个）：下面三种植物中，你感兴趣的有哪些？',
+                options: [
+                  { label: '多肉植物 (Recommended)', description: '耐旱好养，适合阳台和办公桌。' },
+                  { label: '蕨类植物', description: '喜阴喜湿，能提升室内湿度感。' },
+                  { label: '香草植物', description: '如罗勒、薄荷，可观赏也可入菜。' },
+                ],
+                isOther: false,
+                isSecret: false,
+              },
+            ],
+          },
+        },
+      );
+      await vi.waitFor(() => {
+        expect(asked).toHaveLength(1);
+      });
+
+      const calls = messages.flatMap((message) => message.blocks.filter((block) => block.type === 'tool-call'));
+      expect(calls).toHaveLength(1);
+      const [call] = calls;
+      expect(call).toMatchObject({
+        callId: 'call_00_jhIII03ANulkj1Hw1TVC8940',
+        family: 'ask-user',
+        name: 'request_user_input',
+      });
+      // 配对键：卡片的 `callId` 必须与端口那次请求、以及编排层答复那一半用的是同一个
+      expect(call?.callId).toBe(asked[0]?.callId);
+      expect(call?.type === 'tool-call' ? call.payload : null).toEqual({
+        kind: 'ask-user',
+        questions: [
+          {
+            header: '动物单选',
+            prompt: '第 1 题（单选）：下面三种动物你最喜欢哪一种？',
+            options: [
+              { label: '猫 (Recommended)', description: '独立、安静，适合室内饲养。', recommended: false },
+              { label: '狗', description: '热情、忠诚，需要较多陪伴与运动。', recommended: false },
+              { label: '海豚', description: '聪明、社会性强的海洋哺乳动物。', recommended: false },
+            ],
+            // 厂商没有这两格 ⇒ 如实落 `false`（编个默认值会让族载荷与判据一起说谎）
+            multiSelect: false,
+            allowOther: false,
+            secret: false,
+          },
+          {
+            header: '植物多选',
+            prompt: '第 2 题（多选，可勾选多个）：下面三种植物中，你感兴趣的有哪些？',
+            options: [
+              { label: '多肉植物 (Recommended)', description: '耐旱好养，适合阳台和办公桌。', recommended: false },
+              { label: '蕨类植物', description: '喜阴喜湿，能提升室内湿度感。', recommended: false },
+              { label: '香草植物', description: '如罗勒、薄荷，可观赏也可入菜。', recommended: false },
+            ],
+            multiSelect: false,
+            allowOther: false,
+            secret: false,
+          },
+        ],
+      });
+
+      // 收尾：本轮终态由**这一条真客户端的通道**投下去（假 app-server 的 `emit` 在这条路上没有订阅者，
+      // 投给它等于没投——那样这一轮只能等客户端的 30 s 请求超时，用例白等半分钟）
+      child.emit({
+        jsonrpc: '2.0',
+        method: 'turn/completed',
+        params: { threadId: MAIN, turn: { id: 'turn-1', items: [], status: 'completed' } },
+      });
+      await running;
+    } finally {
+      clearInterval(pump);
+    }
+  });
+
   it('没给 `outputSchema` ⇒ `turn/start` 里没有这个键（显式 `null` 与「没给」同义）', async () => {
     const bare = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
     await codexProvider.run(createRunInput());
@@ -203,8 +495,7 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
     expect(server.stats.requests[2]?.params).toMatchObject({ effort: 'none' });
   });
 
-  it('其它档位与未选都不带那两格键（形态判据用 `Object.hasOwn`）', async () => {
-    const withEffort = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+  it('其它档位与未选都不带那两格键（形态判据用 `Object.hasOwn`）', async () => {    const withEffort = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
     await codexProvider.run(createRunInput({ effort: 'high' }));
     const highConfig = (withEffort.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
     expect(Object.hasOwn(highConfig, 'model_reasoning_summary')).toBe(false);
@@ -867,7 +1158,7 @@ describe('纯函数：配置构造', () => {
     const bare = buildCodexConfig('https://gw/v1');
     expect(Object.hasOwn(bare, 'model_context_window')).toBe(false);
     expect(Object.hasOwn(bare, 'model_reasoning_summary')).toBe(false);
-    const both = buildCodexConfig('https://gw/v1', 1_048_576, 'none');
+    const both = buildCodexConfig('https://gw/v1', { contextWindow: 1_048_576, reasoningSummary: 'none' });
     expect(both).toMatchObject({ model_context_window: 1_048_576, model_reasoning_summary: 'none' });
   });
 
@@ -879,15 +1170,38 @@ describe('纯函数：配置构造', () => {
    * 把任务跑完，只有「本行 MCP」那一格少一行，没有任何报错）。
    */
   it('MCP：`mcp_servers` 进线程级 config；空集**整个键都不给**（与 effort 同一条口径）', () => {
-    const empty = buildCodexConfig('https://gw/v1', undefined, undefined, {});
+    const empty = buildCodexConfig('https://gw/v1', { mcpServers: {} });
     expect(Object.hasOwn(empty, 'mcp_servers')).toBe(false);
     const bare = buildCodexConfig('https://gw/v1');
     expect(Object.hasOwn(bare, 'mcp_servers')).toBe(false);
 
-    const withMcp = buildCodexConfig('https://gw/v1', undefined, undefined, {
-      probe: { command: 'node', args: ['/x.mjs'], startup_timeout_sec: 30 },
+    const withMcp = buildCodexConfig('https://gw/v1', {
+      mcpServers: { probe: { command: 'node', args: ['/x.mjs'], startup_timeout_sec: 30 } },
     });
     expect(withMcp['mcp_servers']).toEqual({ probe: { command: 'node', args: ['/x.mjs'], startup_timeout_sec: 30 } });
+  });
+
+  /**
+   * 提问工具的两格开关与应答面**同生同灭**：`askUser` 不给（= 本次运行没有应答面）⇒ 两格逐字不变。
+   *
+   * 为什么这一条必须逐字比：开了开关却没人答时厂商会一直等那一帧（`isBlocking: false` 与
+   * `autoResolutionMs: null` 都不让它自己收场）⇒ 「不问就不动」在这里是安全边界，不是洁癖。
+   */
+  it('提问开关：`askUser` 不给 ⇒ `tools` / `features` 逐字不变；给了 ⇒ 两格都开', () => {
+    const bare = buildCodexConfig('https://gw/v1');
+    expect(bare['tools']).toEqual({ web_search: false, update_plan: { enabled: true } });
+    expect(bare['features']).toEqual({ multi_agent: true });
+    // 显式 `false` 与不给同义：两格都不动
+    const off = buildCodexConfig('https://gw/v1', { askUser: false });
+    expect(off).toEqual(bare);
+
+    const on = buildCodexConfig('https://gw/v1', { askUser: true });
+    expect(on['tools']).toEqual({
+      web_search: false,
+      update_plan: { enabled: true },
+      experimental_request_user_input: { enabled: true },
+    });
+    expect(on['features']).toEqual({ multi_agent: true, default_mode_request_user_input: true });
   });
 
 });

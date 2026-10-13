@@ -15,6 +15,9 @@ import { EvalRowStatusSchema, RowMcpChannelSchema } from './run';
 import { ScoreResultSchema } from './score';
 // `VendorSkillSchema` 给 `vendor-system.skills`（厂商当时看见了哪几条技能）
 import { VendorSkillSchema } from './skill';
+// 提问的收场方式与通道：词表与消息账本共用一份（`ask-user-vocab.ts` 不 import 任何契约模块，
+// 故这里引它不会与「`agent-message` 引本模块的 `UsageTokensSchema`」构成环）
+import { AskUserChannelSchema, AskUserOutcomeSchema } from './ask-user-vocab';
 
 /** 事件公共字段：序号（从 1 开始）与 ISO 8601 时间戳 */
 const baseFields = { seq: z.number().int().positive(), at: z.string() };
@@ -420,6 +423,40 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     deletions: z.number(),
     truncated: z.boolean(),
   }),
+  /**
+   * **一次提问的收场**（编排层写的行级观测事件）：模型问了人，这一问最后怎么结束的。
+   *
+   * 为什么必须单列一条事件、而不是让消费方去读消息账本：账本那一半（`tool-result` 块的
+   * `structured`）回答的是「答案是什么」，这一条回答的是**这一行被人介入过、代价是多少**——
+   * 收场方式（七态里到底是「有人答」还是六种「没人答」）、等待时长、提问工具来自谁。
+   * 三者都是**行级**事实（一行可以问很多次，时间轴上它们各自是一条刻度），
+   * 而账本按 `mergeKey` 折叠、按轮次分组，事后想回答「这一行一共问了几次、各等了多久」
+   * 得把消息流翻一遍再自己拼——那正是这一格要省掉的活。
+   *
+   * 与账本的**同一份事实、两处落点**（不是第二份真相）：`askId` / `callId` 是两者的连接键，
+   * 逐字相同；一条缺失时另一条仍在，读侧不许用一条去校验另一条。
+   *
+   * `toolName` 是**厂商原文**（`AskUserQuestion` / `request_user_input` / `ask_user_question`），
+   * 排障时要能报出模型实际调的是谁；`channel` 是这一家**声明**的通道（`askUserChannel`，
+   * 不是每次运行的事实——运行期只有适配器知道，`AskUserRequest` 里没有这一格）：
+   * 声明与实现不同步时为 `null`，读的人据此知道这一格不可信。
+   */
+  z.object({
+    ...baseFields,
+    type: z.literal('ask-user'),
+    /** 这一问的身份：挂起表、应答 POST（`askId`）与账本那一半共用同一个值 */
+    askId: z.string(),
+    /** 厂商那次工具调用的 id：账本里 `tool-result` 那一半按它配对 */
+    callId: z.string(),
+    /** 模型实际调用的提问工具名（厂商原文，不做归一） */
+    toolName: z.string(),
+    /** 提问工具是谁提供的；`null` = 这一家没声明（见上一段） */
+    channel: AskUserChannelSchema.nullable(),
+    /** 收场方式（七态）：与只读卡片、与账本那一半同名同义 */
+    outcome: AskUserOutcomeSchema,
+    /** 从登记进挂起表到收场的等待时长（毫秒）；同一问在应答 POST 的那两个时刻之间也算得出同一个数 */
+    waitedMs: z.number().int().nonnegative(),
+  }),
   /** 评分结果：整份 ScoreResult 随事件落盘，抽屉直接读它 */
   z.object({ ...baseFields, type: z.literal('score'), score: ScoreResultSchema }),
   /** 失败归因：message 是给用户看的中文，stack 可省 */
@@ -443,7 +480,7 @@ export type UsageTiming = NonNullable<Extract<AgentEvent, { type: 'usage' }>['ti
  */
 export type UsageTurn = NonNullable<Extract<AgentEvent, { type: 'usage' }>['turn']>;
 
-/** 八个事件类型：SSE 过滤与界面分组用；与上面联合的成员一一对应 */
+/** 九个事件类型：SSE 过滤与界面分组用；与上面联合的成员一一对应 */
 export const AGENT_EVENT_TYPES: readonly AgentEvent['type'][] = [
-  'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'score', 'error', 'end',
+  'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'score', 'error', 'end',
 ];

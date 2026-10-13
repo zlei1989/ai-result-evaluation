@@ -1,6 +1,6 @@
 /**
  * 事件 → 日志行（纯函数）。
- * 八种事件类型都要有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
+ * 九种事件类型都要有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
  * （未识别的事件必须投影成保留原始负载的日志事件，不得静默丢弃）。
  *
  * 时间断言**不写死时钟**：`formatClock` 把 ISO 串转成**本机时区**的 `HH:mm:ss`
@@ -355,6 +355,40 @@ describe('formatEventLine', () => {
     expect(line).toBe(`[${expectedClock(at)}] 评分 总分 87 · Claude Code（智能体）· claude-opus-4-6`);
   });
 
+  /**
+   * `ask-user`（编排层写的提问收场）：**收场方式、等待时长、通道三件都要读得到**。
+   * 三条靶子：① `answered` 与六种「没人答」不许糊成一句（七态词表取界面那一份，
+   * 与卡片上的标签逐字相同）；② 等待时长走 `formatDuration` 那一把尺子（不是裸毫秒）；
+   * ③ `channel === null`（这一家没声明通道）如实写「通道未知」——不许编一个来源出来。
+   */
+  it('ask-user：收场方式 + 等待时长 + 提问通道', () => {
+    const line = formatEventLine({
+      seq: 12,
+      at,
+      type: 'ask-user',
+      askId: 'ask-1',
+      callId: 'call-1',
+      toolName: 'ask_user_question',
+      channel: 'host-tool',
+      outcome: 'answered',
+      waitedMs: 383_000,
+    });
+    expect(line).toBe(`[${expectedClock(at)}] 提问 已答复 · 等待 6m23s · 宿主工具`);
+
+    const unanswered = formatEventLine({
+      seq: 13,
+      at,
+      type: 'ask-user',
+      askId: 'ask-2',
+      callId: 'call-2',
+      toolName: 'AskUserQuestion',
+      channel: null,
+      outcome: 'timeout',
+      waitedMs: 600_000,
+    });
+    expect(unanswered).toBe(`[${expectedClock(at)}] 提问 超时未答 · 等待 10m00s · 通道未知`);
+  });
+
   it('时间戳非法时原样保留，不显示 Invalid Date', () => {
     expect(formatEventLine({ seq: 9, at: '不是时间', type: 'end', exitReason: 'error' })).toBe('[不是时间] 结束 error');
   });
@@ -366,12 +400,23 @@ describe('formatEventLine', () => {
       formatEventLine({ seq: 2, at, type: 'log', stream: 'stdout', text: '' }),
       formatEventLine({ seq: 3, at, type: 'usage', tokens: { input: 0, cached: 0, output: 0 }, turns: 0 }),
       formatEventLine({ seq: 4, at, type: 'diff-summary', filesChanged: 0, insertions: 0, deletions: 0, truncated: false }),
-      formatEventLine({ seq: 5, at, type: 'score', score: scoreFixture({ totalScore: 0, verdict: '', raw: '', judgeModelId: 'm' }) }),
-      formatEventLine({ seq: 6, at, type: 'error', message: '' }),
-      formatEventLine({ seq: 7, at, type: 'end', exitReason: 'completed' }),
+      formatEventLine({
+        seq: 5,
+        at,
+        type: 'ask-user',
+        askId: 'ask-1',
+        callId: 'call-1',
+        toolName: 'AskUserQuestion',
+        channel: 'vendor-tool',
+        outcome: 'unavailable',
+        waitedMs: 0,
+      }),
+      formatEventLine({ seq: 6, at, type: 'score', score: scoreFixture({ totalScore: 0, verdict: '', raw: '', judgeModelId: 'm' }) }),
+      formatEventLine({ seq: 7, at, type: 'error', message: '' }),
+      formatEventLine({ seq: 8, at, type: 'end', exitReason: 'completed' }),
     ];
 
-    expect(lines).toHaveLength(7);
+    expect(lines).toHaveLength(8);
     // 每条都以 `[时间] ` 开头：少了这个前缀就是「有时间戳没内容」或「没时间戳」的形状
     for (const line of lines) expect(line.startsWith(`[${expectedClock(at)}] `)).toBe(true);
     // 真正的 0 照常显示 0，不是「未采集」（与 null ≠ 0 同一条口径）；单位不因 0 而省掉

@@ -1,6 +1,6 @@
 /**
  * 事件 → 日志行（纯函数，无 React 依赖，可单独测）。
- * 八种事件类型各有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
+ * 九种事件类型各有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
  * （要求未识别的事件也要保留原始负载，不得丢弃）。
  *
  * 本模块**只负责把已落盘的事件渲染成行**：它不推断行状态、不看快照、不合并轮次——
@@ -26,8 +26,18 @@
  *   · **来源必须标**：`'events'` 的时长含工具执行，与 `'vendor'` 的纯模型时间不可直接比
  * （见 `timingSourceLabel`）——tok/s 后面缀一个 `(墙钟)` 就是为了不让人把两者放进同一张表。
  */
-import { AGENT_LABELS, ROW_STATUS_LABELS, normalizeMcpServers, type AgentEvent } from '@aieval/contracts';
+import { AGENT_LABELS, ROW_STATUS_LABELS, normalizeMcpServers, type AgentEvent, type AskUserChannel } from '@aieval/contracts';
+import { formatDuration } from '../base/format';
 import { formatCacheHitRate, formatGenerationRate, formatTokens, timingSourceLabel } from '../base/usage-metrics';
+// 七种收场的中文取界面词汇那一份（`agent-log/types.ts`，只读卡片与弹层共用同一份）：各写一份必然漂成
+// 「日志里叫一个名字、卡片上叫另一个」
+import { ASK_USER_OUTCOME_LABELS } from './agent-log/types';
+
+/** 提问通道的两句人话（与能力声明那一格同一套词）：`null` 由调用方写成「通道未知」 */
+const ASK_USER_CHANNEL_LABELS: Readonly<Record<AskUserChannel, string>> = {
+  'vendor-tool': '厂商工具',
+  'host-tool': '宿主工具',
+};
 
 /** ISO 时间 → 本地 `HH:mm:ss`；非法输入原样返回 */
 function formatClock(iso: string): string {
@@ -55,6 +65,15 @@ export function formatEventLine(event: AgentEvent): string {
       return `[${time}] 改动 ${event.filesChanged} 个文件 +${event.insertions} −${event.deletions}${
         event.truncated ? '（已截断）' : ''
       }`;
+    /**
+     * 提问收场：**收场方式与等待时长都要能一眼读到**——「这一行为什么停了三分钟」的唯一答案，
+     * 而它是人介入过的证据（`answered` 与六种「没人答」在词表上就是七件不同的事）。
+     * `channel` 为 `null` = 这一家没声明提问工具的来源（见契约那一格），如实写「通道未知」。
+     */
+    case 'ask-user':
+      return `[${time}] 提问 ${ASK_USER_OUTCOME_LABELS[event.outcome].label} · 等待 ${formatDuration(
+        event.waitedMs,
+      )} · ${event.channel === null ? '通道未知' : ASK_USER_CHANNEL_LABELS[event.channel]}`;
     case 'score':
       return `[${time}] 评分 总分 ${event.score.totalScore} · ${
         event.score.judgeAgentKind === null

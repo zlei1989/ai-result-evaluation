@@ -260,6 +260,11 @@ export function seedRunnableRun(options: {
   /** 这一轮是否由评分智能体评分（`EvalRun.useAgentJudge`，第 7 步的分支） */
   useAgentJudge?: boolean;
   /**
+   * 这一轮是否开启应答面（`EvalRun.askUser`，候选阶段传不传 `onAskUser` 的那道闸门）。
+   * 不填即 false ——「不问就不动」那条边界靠它成立。
+   */
+  askUser?: boolean;
+  /**
    * 全局默认评分智能体（`settings.defaultJudgeAgent`）。
    * `undefined` = 本用例不关心（与 `null` 同路：不配）；显式 `null` 是「开关打开了但没配评分智能体」
    * 那个失败面要用到的取值。给了非 null 的 kind 时，`defaultJudge` 会自动指向一条 **anthropic**
@@ -337,6 +342,7 @@ export function seedRunnableRun(options: {
     caseId: testCase.id,
     executionMode: options.executionMode,
     useAgentJudge: options.useAgentJudge ?? false,
+    askUser: options.askUser ?? false,
     includeSteps: options.includeSteps ?? false,
     rows,
     repoPath,

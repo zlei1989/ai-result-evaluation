@@ -45,6 +45,26 @@ Claude Code 的适配器由 `@anthropic-ai/claude-agent-sdk`（进程内 SDK，s
   - **行内首次注入 playwright MCP = 17.2 s / 61 MB**（宿主 registry 是公网时）⇒ 行的 `HOME` 一换，npm 的 `userconfig` 就从 `~/.npmrc` 变成 `<行HOME>/.npmrc`（不存在），registry 从内网镜像掉回公网。缓解：把宿主 npm 配置里的 **registry 那一行**写进行 `configHome` 的 `.npmrc`（只那一行、`0600`、不碰宿主），拉回 ~4 s 级；等待预算仍按 **≥ 20 s** 留。配置面与完整边界见[《MCP 配置》](/features/mcp-config)。
 - **内置工具清单**（一次实测快照 27 项，随模型与开关浮动 23～30）：`Task, Bash, CronCreate, CronDelete, CronList, DesignSync, Edit, EnterWorktree, ExitWorktree, Glob, Grep, ListAgents, NotebookEdit, Read, ReportFindings, ScheduleWakeup, SendMessage, Skill, TaskCreate, TaskGet, TaskList, TaskStop, TaskUpdate, WebFetch, WebSearch, Workflow, Write`。`Task` 与 `Agent` 是同一工具两种叫法，族映射须归同族；精确同名交集 claude∩dsh = 空、claude∩codex = 空 ⇒ 对齐只能在语义类别层做。
 
+## 提问与应答面
+
+厂商自带提问工具（`AskUserQuestion`），本仓声明 `askUser: yes` + `askUserChannel: 'vendor-tool'`，一致性场景走**真路径**（真 CLI + 本机假上游，只把上游模型脚本化）。
+
+| 面 | 现时做法 |
+|---|---|
+| 通道 | **权限回调**（`can_use_tool`，线级帧带 `requires_user_interaction: true`）——不是对话框通道：`request_user_dialog` 那条路本仓不实现，走它的提问落「无人应答」 |
+| 递答案 | 宿主把答复装进 `updatedInput.answers` 交回，**键是题目文本**（不是 `header`、不是序号）：单选给选项标签串、多选给数组；厂商把它渲染进工具结果念给模型。自由输入单选时**取代**选项（值取 `custom`，此时答卷的 `selected` 为空）、多选时与选项标签**拼成同一个数组**（厂商那一侧只有一格可用）——两档都经这一格到模型眼里，见下面 `response` 那条边界的理由。题面认不出来就跳过该题，不猜键 |
+| 等待预算 | 厂商侧没有：`askUserQuestionTimeout` 缺省 `never`（没人答就一直挂着）⇒ 端口那一侧如实给 `vendorBudgetMs: null`，超时只由我们的预算（缺省十分钟）产生 |
+| 收场 | 没人答时交回的是**空答案表**，厂商据此渲染 `The user did not answer the questions.`；收场方式按这一问的实际结果落 `answered` / `timeout` / `canceled`，**没有**厂商自收场这一档 |
+
+四条今天仍成立的边界：
+
+- **不挂钩子 ⇒ 这个工具被禁用**：厂商在 headless 下没有批准面就不把提问工具提供给模型，脚本式调用拿到 `<tool_use_error>Error: No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.</tool_use_error>` ⇒「不问就不动」在这一家是**结构性**的，不是靠我们拦。
+- **接它不需要动权限档**：全权档只遮蔽普通工具（`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` 警告指的是那一批，普通工具根本到不了回调），提问工具带 `requires_user_interaction`，两档的控制帧逐字相同。
+- **只读档问不到人**：`dontAsk` + `permissionPrompts: 'none'` 下厂商把提问工具一并从模型工具表撤掉、控制帧一条都不发 ⇒ 那一档即使挂了应答面也落「无人应答」（评分阶段因此不会向人提问），本模块不为它写分支。
+- **子智能体发起的提问到不了宿主**：厂商自己就拒（`not available inside subagents`，子会话工具表 25 项 vs 父会话 30 项）⇒ 端口收到的 `subagentId` 恒 `null`——不是「没读到」，是这一家拿不到；`rejected` 那条收场留给厂商自己。
+
+两处跨臂差异要如实登记（它们让「有人答的轮次」与「没答的轮次」在工具面上天然不同）：**挂上应答面会让厂商工具表多出几件**（`AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode`，`Monitor` 两臂都有），命令面那一列也跟着变；一致性套件把实测到的那几件**逐件点名**归一，点名之外仍有差异即红。选项侧的 `recommended` 在这一家恒 `false`（厂商的提问工具入参里没有这一格，它用「排首位」表达）；问题侧的 `allowOther` 恒 `true`——这一格读的不是提问形状而是**答案面**：厂商的 schema 逐字写着「不要给 'Other' 选项，那个界面上自动提供」，用户写的那句话经选项值那一格进 `answers`，工具结果逐字 `The user answered: "<题面>"="<自由输入>"`（真机读数出自探针 `probe/v11/cc-ask-answer.mjs` 的 `answer-custom` 臂）。
+
 ## 已知边界与取舍
 
 | 边界 | 性质 | 处置与判据 |

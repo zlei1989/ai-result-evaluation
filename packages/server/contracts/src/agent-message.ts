@@ -17,6 +17,12 @@
  */
 import { z } from 'zod';
 import { UsageTokensSchema } from './agent-event';
+import {
+  AskUserChannelSchema,
+  AskUserOutcomeSchema,
+  type AskUserChannel,
+  type AskUserOutcome,
+} from './ask-user-vocab';
 
 /** 数据来源：决定实时性与可信度，消费方必须读 */
 export const MessageSourceSchema = z.enum(['wire', 'hook', 'session-file', 'aggregate']);
@@ -129,6 +135,53 @@ export const AskUserPayloadSchema = z.object({
 });
 
 /**
+ * **一份答案**：与 `AskUserQuestionSchema` 配对的另一半（问题在 `tool-call` 那一半，
+ * 答案在 `tool-result` 那一半）。
+ *
+ * 四条口径：
+ *   · `header` 是**唯一的配对键**，与问题侧同一个字段、同一个值域；`selected` 装的是
+ *     **选项标签**，不是 id 也不是下标——标签是问题与答案两边都逐字持有的那一份，
+ *     而 id 与下标会在下游重新编号时错位，症状是「答案配到了另一个问题上」；
+ *   · `selected` 与 `custom` 的关系**按单选 / 多选分档**（同一份答案形状表达两件事）：
+ *     **多选 = 并存**——自由输入是**补充项**，勾选的标签与那句话都在（消费方两半都要读，
+ *     少读一半就丢信息）；**单选 = 覆盖**——用户自己写的那句话就是全部答案，`selected` 取
+ *     **空数组**（留着被覆盖的选项会让答卷自相矛盾）；
+ *   · **不得假设 `selected` 与 `custom` 互斥**：多选两格同时有值是常态，而单选也可能出现
+ *     `selected` 非空且 `custom` 非空的历史记录（契约从第一天起就允许这一形状，回放要照读；
+ *     界面的产出方今天在单选上会禁用选项并交了空数组，但那是产出方的口径，不是消费方的判据）；
+ *   · `custom` 的 `null` = 没写自己的话，`''` = 写了但内容为空——两种事实不许互相顶替。
+ */
+export const AskUserAnswerSchema = z.object({
+  header: z.string(),
+  selected: z.array(z.string()),
+  custom: z.string().nullable(),
+});
+
+/**
+ * 收场方式与提问通道两份词表的**定义**在 `ask-user-vocab.ts`（消息账本与行级事件共用，见那里的头注），
+ * 这里只把它们摆在既有的导出面上：本文件的消费方（答案形状、交互面声明）与包根出口因此一个字都不用改。
+ */
+export { AskUserChannelSchema, AskUserOutcomeSchema };
+export type { AskUserChannel, AskUserOutcome };
+/**
+ * `ask-user` 族的**结果载荷**：这一问最后怎么收场、拿到的是什么答案——「答案在 `tool-result` 那一半」
+ * 的那一份（问题在 `tool-call` 那一半，见 `AskUserPayloadSchema`）。
+ *
+ * 三条口径：
+ *   · **不重复问题**：配对靠 `tool-result.callId` ↔ `tool-call.callId`，读侧从调用那一半拿问题
+ *     （卡片要一起显示「问的什么」与「答的什么」），两边各存一份只会漂；
+ *   · **两格成对**：`outcome === 'answered'` 一定有答案数组（空数组 = 答了但一个选项都没选），
+ *     其余六态 `answers` 恒 `null`（「收场了但没有答案」与「答了空」是两件事）；
+ *   · **它是 `structured` 那一格的形状，不是 `text` 的**：`text` 是给人看的措辞（各家渲染不同），
+ *     而这一份是逐字回填答案的数据面——只读卡片的回填只认它。
+ */
+export const AskUserResultSchema = z.object({
+  outcome: AskUserOutcomeSchema,
+  answers: z.array(AskUserAnswerSchema).nullable(),
+});
+export type AskUserResult = z.infer<typeof AskUserResultSchema>;
+
+/**
  * **族载荷**：只挂 `tool-call` 块，且只给「本次调用之后的归一结果」。
  *
  * 为什么要归一：`input` 是**厂商原文**，形状由厂商定（`todos` 还是 `plan`、`multiSelect`
@@ -150,6 +203,7 @@ export const ToolCallPayloadSchema = z.discriminatedUnion('kind', [
 export type ToolCallPayload = z.infer<typeof ToolCallPayloadSchema>;
 export type TaskStep = z.infer<typeof TaskStepSchema>;
 export type AskUserQuestion = z.infer<typeof AskUserQuestionSchema>;
+export type AskUserAnswer = z.infer<typeof AskUserAnswerSchema>;
 
 /** 工具调用块：`input` 是**厂商原文**（codex 与 dsh 的 `arguments` 是 JSON 字符串，落这里前解析成对象） */
 export const ToolCallBlockSchema = z.object({
@@ -394,6 +448,105 @@ export const InjectionCapabilitySchema = z.object({
   notes: z.array(z.string()),
 });
 export type InjectionCapability = z.infer<typeof InjectionCapabilitySchema>;
+
+/**
+ * **提问通道**：模型看到的那个提问工具是**谁提供的**（词表本体与两条取值的说明在 `ask-user-vocab.ts`，
+ * 这里只摆在既有的导出面上：交互面声明与包根出口因此一个字都不用改）。
+ *
+ * 为什么必须与 `askUser` 分开说：三档「能被问」的消费侧后果完全不同——答案递回去的机制不同、
+ * 厂商有没有自己的等待预算不同、「没人答时能不能用厂商原生语义收场」也不同。
+ * 把它并进 `askUser` 的取值里，等于让一个三态字段同时回答两个问题。
+ */
+
+/**
+ * **`yes` 是靠什么证出来的**：这一家的一致性场景里，厂商那一侧**真的跑起来了吗**。
+ *   · `'real-path'`——厂商真跑（真 CLI / 真 SDK / 真运行时 + 厂商自己的通道），只把**上游模型**
+ *     脚本化。于是「厂商的提问请求真的到了我们手里」与「我们的答复真的回到了厂商」两条都有原文，
+ *     而它们正是这件事的全部意义；
+ *   · `'synthetic-fixture'`——夹具自己扮演厂商那一端（造出「厂商问了一次」、再把答复装成厂商形状）。
+ *     它证得了端口那一半，证不了上面那两条。**临时档**：只允许留在「今天确实驱动不了」的家里，
+ *     且必须给出原因。
+ *
+ * 为什么与 `askUserChannel` 分开说：那一格回答「模型看到的那个提问工具是谁提供的」，
+ * 这一格回答「这句 `yes` 是怎么证出来的」。两者的取值来源、变化原因与消费方都不同——
+ * 合成一格等于让一个字段同时回答两个问题，而夹具扮演端口能让判据全绿却证不到通道。
+ */
+export const AskUserProofDriverSchema = z.enum(['real-path', 'synthetic-fixture']);
+export type AskUserProofDriver = z.infer<typeof AskUserProofDriverSchema>;
+
+/**
+ * **交互面能力声明**：这一家能不能被模型问、提问工具是谁提供的、不能时为什么。
+ *
+ * 为什么与「行级」「内容级」「下发级」三组并列而不是并进任何一组：那三组回答「跑这一行能做什么」
+ * 「拿得到哪些块」「我们下发的东西认不认」，这一组回答「模型问出来的时候有没有人能答」——
+ * 变化原因（厂商通道的有无与投送）、消费方（应答面与弹层）与判据通道都不同。
+ *
+ * 三种「没有」必须分开说（取值域与 `capability` 同一套五态词表）：
+ *   · `'no'`——这家**结构上**没有提问工具；
+ *   · `'off-by-adapter'`——厂商有那条通道，**我们没接**；
+ *   · `'not-projected-by-vendor'`——厂商侧有提问服务，但不投送到我们拿得到的通道。
+ * 混成一句「暂不支持」，排查时就会把「写代码能解决」与「厂商不给」当成同一件事。
+ *
+ * 两条字段间的对应关系由 `superRefine` 拦在解析层（不靠调用方自觉），与 `InjectionStateSchema`
+ * 同源：`yes` ⇒ 必须给出通道、且原因为 `null`；非 `yes` ⇒ 必须给出原因、且通道为 `null`。
+ *
+ * `askUserProofDriver` 与 `askUserProofDriverReason` 是**同一条口径的第二组**（原因只挂在需要解释的
+ * 那一档上：`synthetic-fixture` 必须说清为什么今天驱动不了真路径），外加一条跨字段的硬规则：
+ * **声明 `yes` 就不许用 `synthetic-fixture`**——那句 `yes` 得拿真路径来证，否则它会腐烂成假话。
+ */
+export const InteractionCapabilitySchema = z
+  .object({
+    askUser: CapabilitySchema,
+    /** 提问工具是谁提供的；`askUser` 为 `yes` 时必填，其余四态必须为 `null` */
+    askUserChannel: AskUserChannelSchema.nullable(),
+    /** 为什么问不了；非 `yes` 时必填 */
+    askUserReason: MissingReasonSchema.nullable(),
+    /** `yes` 是靠什么证出来的（见 `AskUserProofDriverSchema`）；**必填**，答不出这一格就不该声明 `yes` */
+    askUserProofDriver: AskUserProofDriverSchema,
+    /** `synthetic-fixture` 必须给出原因（非空）；`real-path` 必须为 `null` */
+    askUserProofDriverReason: z.string().nullable(),
+    /** 这一族能力成立的**前提**（工具开关 / 权限档 / 路由）；空数组 = 无条件成立 */
+    notes: z.array(z.string()),
+  })
+  .superRefine((value, ctx) => {
+    if (value.askUser === 'yes' && value.askUserChannel === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['askUserChannel'], message: 'askUser 为 yes ⇒ 必须给出提问通道' });
+    }
+    if (value.askUser !== 'yes' && value.askUserChannel !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['askUserChannel'], message: `askUser 为 ${value.askUser} ⇒ askUserChannel 必须为 null` });
+    }
+    if (value.askUser === 'yes' && value.askUserProofDriver !== 'real-path') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['askUserProofDriver'],
+        message: 'askUser 为 yes ⇒ askUserProofDriver 必须是 real-path：声明得出「能被问」就得拿真路径证明，'
+          + '夹具扮演厂商那一端证不到「请求真的到了我们手里、答复真的回到了厂商」',
+      });
+    }
+    if (value.askUser === 'yes' && value.askUserProofDriver === 'real-path' && value.askUserReason !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['askUserReason'], message: 'askUser 为 yes ⇒ askUserReason 必须为 null' });
+    }
+    if (value.askUser !== 'yes' && value.askUserReason === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['askUserReason'], message: `askUser 为 ${value.askUser} ⇒ 必须给出缺失原因` });
+    }
+    if (value.askUserProofDriver === 'synthetic-fixture') {
+      if (value.askUserProofDriverReason === null || value.askUserProofDriverReason.trim() === '') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['askUserProofDriverReason'],
+          message: 'askUserProofDriver 为 synthetic-fixture ⇒ 必须给出原因：这一档是临时档，'
+            + '「今天为什么驱动不了真路径」要能被读到，否则它会静默地长期留下来',
+        });
+      }
+    } else if (value.askUserProofDriverReason !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['askUserProofDriverReason'],
+        message: 'askUserProofDriver 为 real-path ⇒ askUserProofDriverReason 必须为 null',
+      });
+    }
+  });
+export type InteractionCapability = z.infer<typeof InteractionCapabilitySchema>;
 
 /** 子任务状态：采不到就 `'unknown'`，**不得用 `null` 表示未采集**（未采集的原因写在 `statusMissing`） */
 export const SubagentStatusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'unknown']);

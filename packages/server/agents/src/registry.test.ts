@@ -14,13 +14,31 @@ import { acceptsProtocol } from './protocol';
 import { getProvider, listAgentProviders } from './registry';
 import { setAgentRuntimeForTesting } from './runtime';
 import { createFakeDshSdk, createRecorder, createRunInput } from './testing/agent-fixtures';
-import type { AgentKind, AgentProviderMetadata } from './types';
+import type { AgentKind, AgentProviderMetadata, InteractionCapability } from './types';
 import { permissiveMessageCapability } from './types';
 
 
 afterEach(() => {
   setAgentRuntimeForTesting(null);
 });
+
+/**
+ * 交互面声明的**五格取值**（`notes` 不进比对：它是「为什么」的说明，随事实更新，与注入面的
+ * `notes` 同一条处置）。
+ *
+ * 抽成一个函数是为了让「比哪几格」在投影网与逐家断言两处只有一份写法——两处各列一遍字段，
+ * 漏一格的那种漂移看起来仍然全绿。
+ */
+function interactionCells(declaration: InteractionCapability): InteractionCapability {
+  return {
+    askUser: declaration.askUser,
+    askUserChannel: declaration.askUserChannel,
+    askUserReason: declaration.askUserReason,
+    askUserProofDriver: declaration.askUserProofDriver,
+    askUserProofDriverReason: declaration.askUserProofDriverReason,
+    notes: [],
+  };
+}
 
 /**
  * `protocolTypes` 是**集合**（DSH 两条 wire 都能收，见
@@ -35,6 +53,16 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     messageCapability: permissiveMessageCapability(),
     // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
     injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 交互面只比取值那几格（`notes` 同上不进回归网）：厂商自带提问工具，通道是权限回调
+    // （`vendor-tool`），真路径驱动器已接（真 CLI + 脚本化上游）
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [],
+    },
     // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
     timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐（assistant 文本与思考都进事件流），不需要补 messages.jsonl
@@ -51,6 +79,16 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     messageCapability: permissiveMessageCapability(),
     // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
     injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 交互面只比取值那几格：厂商自带提问通道（`vendor-tool`），产品里开关与回帧都已接上，
+    // 真路径驱动器已接（真 `codex app-server` + 脚本式上游）
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [],
+    },
     // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
     timing: { runScale: 'minutes', notes: [] },
     // 思考全文与工具结果正文结构性不进 events.jsonl，唯一落点是 messages.jsonl ⇒ 必须补
@@ -71,6 +109,16 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     messageCapability: permissiveMessageCapability(),
     // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
     injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 交互面只比取值那几格：提问工具是厂商自己的包（适配器只挂载它），应答者插件挂在旁边
+    // （`providers/dsh/ask-user.ts`）⇒ 通道是 `vendor-tool`；真路径驱动器已接
+    interaction: {
+      askUser: 'yes',
+      askUserChannel: 'vendor-tool',
+      askUserReason: null,
+      askUserProofDriver: 'real-path',
+      askUserProofDriverReason: null,
+      notes: [],
+    },
     // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
     timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
@@ -90,6 +138,9 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     messageCapability: permissiveMessageCapability(),
     // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
     injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 交互面只比取值那几格：这一家的提问工具由**我们**注册（厂商侧没有这个工具，见适配器的
+    // `ask-user.ts`）⇒ 通道是 `host-tool` 而不是 `vendor-tool`
+    interaction: { askUser: 'yes', askUserChannel: 'host-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
     // 耗时量级是**秒级**：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
     timing: { runScale: 'seconds', notes: [] },
     // 思考正文与工具结果正文都在 `session.subscribe` 的事件流里 ⇒ 不需要补 messages.jsonl。
@@ -126,15 +177,20 @@ describe('listAgentProviders', () => {
 });
 
 describe('元数据投影（回归网）', () => {
-  it('三家与表逐格一致（`messageCapability`、注入面的 `notes` 与耗时 `notes` 除外，它们各有真源）', () => {
+  it('各家与表逐格一致（`messageCapability`、注入面与交互面的 `notes`、耗时 `notes` 除外，它们各有真源）', () => {
     for (const provider of listAgentProviders()) {
       // 为什么排除 `messageCapability`：它由**各家自己**声明（三份真值在 `providers/<kind>/index.ts`），
       // 「声明过的东西真的拿得到」由 `message-conformance.test.ts` 钉住；这里再抄一份 stub 只会
       // 让同一件事有两个真源，而两份必然漂移。
-      const { messageCapability: _declared, injection, timing, ...rest } = provider.metadata;
-      const { messageCapability: _expected, injection: expectedInjection, timing: expectedTiming, ...wanted } =
-        EXPECTED_METADATA[provider.kind];
-      // 报错信息带上 kind：这一格是「哪一家错了」的定位线索（三家共用同一个断言体）
+      const { messageCapability: _declared, injection, interaction, timing, ...rest } = provider.metadata;
+      const {
+        messageCapability: _expected,
+        injection: expectedInjection,
+        interaction: expectedInteraction,
+        timing: expectedTiming,
+        ...wanted
+      } = EXPECTED_METADATA[provider.kind];
+      // 报错信息带上 kind：这一格是「哪一家错了」的定位线索（多家共用同一个断言体）
       expect(rest, `${provider.kind} 的元数据`).toEqual(wanted);
       // 注入面的两格进回归网：悄悄把 `yes` 改成 `no` 会直接改变界面上「这家不支持 MCP / skills」
       // 的结论，必须与适配器同一次提交里改掉期望。`notes` 不进——它是实测前提的说明，随真机更新。
@@ -142,8 +198,38 @@ describe('元数据投影（回归网）', () => {
         { mcp: injection.mcp, skills: injection.skills },
         `${provider.kind} 的注入面声明`,
       ).toEqual({ mcp: expectedInjection.mcp, skills: expectedInjection.skills });
+      // 交互面同理只比三格取值：改一格就改了「这家能不能被问」的结论
+      expect(
+        interactionCells(interaction),
+        `${provider.kind} 的交互面声明`,
+      ).toEqual(interactionCells(expectedInteraction));
       // 耗时量级同理：改档会改真机冒烟的等待预算，属于「必须与适配器同一次提交里改掉」的那类
       expect(timing.runScale, `${provider.kind} 的耗时量级`).toBe(expectedTiming.runScale);
+    }
+  });
+
+  /**
+   * **交互面：三种「没有」逐家说得清**（取值 + 通道 + 原因非空）。
+   *
+   * 为什么值得单独一条、而不是只靠上面的投影网：这张表存在的**全部理由**是区分三种「没有」——
+   * 结构上没有（pi）、厂商有那条通道但我们没接（cc / codex）、厂商有服务但不投送到我们拿得到的
+   * 通道（dsh）。三者互换在消费侧的结论完全不同（「白写代码」vs「写代码能解决」），
+   * 而写错之后读起来一样顺：把 dsh 写成 `no`、把 pi 写成 `off-by-adapter`，投影网那一条
+   * 只有在期望表也一起改错时才放行，故这里把「每一家各自是哪一档」独立再钉一次。
+   */
+  it('交互面：每家的档位、通道与原因逐格一致，且都写下了「为什么」', () => {
+    for (const kind of AGENT_KINDS) {
+      const { interaction } = getProvider(kind).metadata;
+      const expected = EXPECTED_METADATA[kind].interaction;
+      expect(interaction.askUser, `${kind} 的 askUser`).toBe(expected.askUser);
+      expect(interaction.askUserChannel, `${kind} 的 askUserChannel`).toBe(expected.askUserChannel);
+      expect(interaction.askUserReason, `${kind} 的 askUserReason`).toBe(expected.askUserReason);
+      // `notes` 是唯一放得下「为什么」的地方：空数组等于把这一档又收回成一句「不支持」，
+      // 而这一组声明存在的意义正是让排查的人不必去读代码猜
+      expect(
+        interaction.notes.filter((note) => note.trim() !== '').length,
+        `${kind} 的交互面 notes（要写清是「结构上没有」还是「有但没接」）`,
+      ).toBeGreaterThan(0);
     }
   });
 

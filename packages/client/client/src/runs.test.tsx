@@ -321,6 +321,7 @@ describe('四个动作', () => {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
+      askUser: false,
       rows: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm-1' }],
     };
     await act(async () => {
@@ -692,6 +693,7 @@ describe('useUpdateRun', () => {
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
+      askUser: false,
       rows: [
         {
           id: 'w-1',
@@ -738,6 +740,7 @@ describe('useUpdateRun', () => {
           caseId: 'c-1',
           executionMode: 'serial',
           useAgentJudge: false,
+          askUser: false,
           rows: [
             { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
           ],

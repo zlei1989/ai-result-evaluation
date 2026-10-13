@@ -106,6 +106,16 @@ export interface ClaudeQueryOptions {
    * 厂商声明的类型是 `string | Settings`（一个完整 settings 对象或文件路径）；这里只声明用到的那一格。
    */
   settings?: { env: Record<string, string> };
+  /**
+   * 权限钩子（`sdk.d.ts:1525` 的 `Options.canUseTool`）：CLI 遇到「需要用户介入」的工具调用时
+   * 发一帧 `can_use_tool`，由宿主回答允许 / 拒绝——提问工具走的就是这条通道
+   * （`requires_user_interaction: true`，与普通工具不同：普通工具在全权档上被预授权、不进这一格）。
+   *
+   * ⚠️ 只声明本仓用得到的两格。厂商那一侧 `PermissionResult` 还有 `updatedPermissions` /
+   * `decisionClassification` 等格，本仓不消费；`updatedInput` 是**递答案的唯一落点**
+   * （提问工具的答复经它回到厂商，见 `index.ts` 的 `askUserPermission`）。
+   */
+  canUseTool?: ClaudeCanUseTool;
   /** 硬中止入口：dispose 时 abort，SDK 据此杀掉仍在跑的子进程 */
   abortController: AbortController;
   /**
@@ -165,8 +175,32 @@ export interface ClaudeQueryOptions {
   mcpServers?: Record<string, ClaudeMcpServer>;
 }
 
-export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {
-  /** 优雅停止：结束在途 turn（不是 kill 进程） */
+/**
+ * 权限钩子的应答（`sdk.d.ts:2440` 的 `PermissionResult` 里本仓用得到的两支）。
+ *
+ * `allow` 带 `updatedInput` = 「允许执行，但把入参换成这一份」——递答案正是靠它；
+ * `deny` 要一句给模型看的 `message`（厂商把它渲染成工具结果）。返回 `null` 是 SDK 类型面允许的
+ * 第三支（已经用带外通道答过了），本仓不用：不小心返回 `null` 等于**没有 control_response**，
+ * 那一问会一直挂着。
+ */
+export type ClaudePermissionResult =
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown>; toolUseID?: string }
+  | { behavior: 'deny'; message: string; interrupt?: boolean; toolUseID?: string };
+
+/**
+ * 权限钩子：CLI 每次要宿主批准一个工具调用时调一次，`input` 是**该工具 checkPermissions 归一后的入参**
+ * （与模型给的原文可能有别，改写入参要基于这一份）。
+ *
+ * `options.toolUseID` 是这一帧的调用 id，与消息账本里的 `tool-call` 块同值——递答案时要把它带回去
+ * （`updatedInput` 那一支的 `toolUseID` 与它配对，见 `probe/v11/lib/cc-ask.mjs` 抄回的线级帧）。
+ */
+export type ClaudeCanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal; toolUseID?: string; requestId?: string },
+) => Promise<ClaudePermissionResult | null>;
+
+export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {  /** 优雅停止：结束在途 turn（不是 kill 进程） */
   interrupt?: () => unknown;
   /**
    * 上下文用量快照（SDK 的控制请求 `get_context_usage`）。

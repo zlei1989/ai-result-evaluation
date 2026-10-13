@@ -148,7 +148,7 @@ export interface PiSessionOptions {
    */
   thinkingLevel?: string;
   /**
-   * 我们自己的工具（结构化输出那一件）。形状见 `PiCustomTool`：**只声明我们真给的那几格**。
+   * 我们自己的工具（结构化输出那一件、提问那一件）。形状见 `PiCustomTool`：**只声明我们真给的那几格**。
    *
    * ⚠️ 它与 `tools`（名字白名单）是**两件事**，缺一不可：不在白名单里的自定义工具连声明都不会
    * 被声明出去（`_isAllowedTool` 先筛一遍），于是「装配了工具但模型看不到」——症状是模型永远走正文，
@@ -166,8 +166,19 @@ export interface PiSessionOptions {
  */
 export interface PiCustomTool {
   name: string;
+  /** 人读的标签（非 TUI 下不用，但**必填**——厂商的 `ToolDefinition` 就是这么声明的） */
   label: string;
   description: string;
+  /**
+   * 默认系统提示词 `## Available tools` 段的**一行**。不给 ⇒ 这个工具在该段里根本不出现
+   * （厂商按「有没有这一格」过滤，而不是按有没有这个工具）——宿主注册的工具因此要靠它才进得了那一段。
+   */
+  promptSnippet?: string;
+  /**
+   * 默认系统提示词 `## Guidelines` 段的条目（本工具激活时逐条追加）。
+   * 宿主注册的工具没有厂商给的时机提示，行为约束只能写在这里（`description` 只说能力）。
+   */
+  promptGuidelines?: string[];
   parameters: unknown;
   /**
    * 提供商侧的受约束采样声明，两档语义相反：

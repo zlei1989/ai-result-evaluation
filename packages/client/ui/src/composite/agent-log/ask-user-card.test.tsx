@@ -125,7 +125,10 @@ describe('AskUserCard：七种收场', () => {
     render(<AskUserCard interaction={settled({ outcome: 'unavailable' })} open={false} onOpenChange={vi.fn()} rawOpen={false} onRawOpenChange={vi.fn()} />);
 
     expect(screen.getByText('无人可应答')).toBeInTheDocument();
-    expect(screen.getByText(/本仓没有开应答面/)).toBeInTheDocument();
+    // 说明必须是这一态**今天**的成因（调用方没开应答面、该家没接、通道坏了、标题撞车），
+    // 不能退回「本仓没有应答面」这种一句话定死成因的旧说法
+    expect(screen.getByText(/这一问没有答案：调用方没开应答面/)).toBeInTheDocument();
+    expect(screen.queryByText(/本仓没有开应答面/)).not.toBeInTheDocument();
   });
 
   it('收场了但没有答案可回填时说「答案未采集」', () => {
@@ -209,6 +212,45 @@ describe('AskUserCard：答案回填', () => {
     expect(screen.getByText('另有 1 份答案没能回填到问题上：')).toBeInTheDocument();
     expect(screen.getByText('没问过的问题')).toBeInTheDocument();
   });
+
+  /**
+   * **逐题配对**：契约里答案与题目之间**唯一**的键是 `header`（`AskUserAnswer.header`），
+   * 而答案到达的顺序**不由题目顺序保证**（codex 那一家的答复帧按题目 `id` 索引，折进契约后
+   * 顺序可能整个倒过来）。判据因此用「答案倒着给」——按下标配对会把两份答案互换，
+   * 而界面上看起来「两题都答了」，是最难发现的一类错。
+   *
+   * 断言落在**文档顺序**上：每题自己的答案必须出现在**本题题干之后、下一题题干之前**。
+   */
+  it('答案到达顺序与题目顺序不同也各归各题（按 header 配对，不按下标）', () => {
+    render(
+      <AskUserCard
+        interaction={settled({
+          questions: [
+            question({ header: '动物单选', prompt: '你最喜欢哪种动物？', options: [] }),
+            question({ header: '植物多选', prompt: '你感兴趣哪些植物？', options: [] }),
+          ],
+          // 倒着给：植物的答案在前
+          answers: [
+            { header: '植物多选', selected: [], custom: '月季、杜鹃' },
+            { header: '动物单选', selected: [], custom: '兔' },
+          ],
+        })}
+        open
+        onOpenChange={vi.fn()} rawOpen={false} onRawOpenChange={vi.fn()}
+      />,
+    );
+
+    const follows = (first: HTMLElement, second: HTMLElement): boolean =>
+      (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const animalPrompt = screen.getByText('你最喜欢哪种动物？');
+    const plantPrompt = screen.getByText('你感兴趣哪些植物？');
+    const animalAnswer = screen.getByText('自由输入（覆盖选项）：兔');
+    const plantAnswer = screen.getByText('自由输入（覆盖选项）：月季、杜鹃');
+
+    expect(follows(animalPrompt, animalAnswer)).toBe(true);
+    expect(follows(animalAnswer, plantPrompt)).toBe(true);
+    expect(follows(plantPrompt, plantAnswer)).toBe(true);
+  });
 });
 
 describe('AskUserCard：问题与选项', () => {
@@ -258,7 +300,7 @@ describe('AskUserCard：问题与选项', () => {
 });
 
 describe('AskUserCard：只读与原文', () => {
-  it('不提供任何「回答」按钮（本仓没有应答面）', () => {
+  it('不提供任何「回答」按钮（应答面在弹层，卡片是复盘视图）', () => {
     const { container } = render(<AskUserCard interaction={pending()} open onOpenChange={vi.fn()} rawOpen={false} onRawOpenChange={vi.fn()} />);
 
     expect(container.querySelectorAll('button')).toHaveLength(0);

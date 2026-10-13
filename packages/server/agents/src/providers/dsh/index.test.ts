@@ -17,7 +17,15 @@ import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RELEASE_GRACE_MS } from '../../release';
 import { setAgentRuntimeForTesting } from '../../runtime';
-import type { AgentRunResult } from '../../types';
+import type { AgentRunResult, AskUserReply } from '../../types';
+import {
+  DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH,
+  DSH_ASK_ANSWERER_PLUGIN_SOURCE,
+  DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH,
+  DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH,
+  DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS,
+  DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS,
+} from './ask-user';
 import {
   DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH,
   DSH_STREAM_TAP_PLUGIN_SOURCE,
@@ -707,7 +715,18 @@ describe('dsh 的 ask_user_question 挂载', () => {
       expect(snapshotAtBoot).toContain(`      ${DSH_ROUTE_KEY}:`);
       expect(snapshotAtBoot).toContain('- insert:');
       expect(snapshotAtBoot).toContain('id: tool-ask-user');
-      expect(snapshotAtBoot).toContain('name: "@deepseek-ai/dsh-tool-ask-user"');
+      /**
+       * 等待档**逐字**钉住（四行必须连续、顺序不许换）：本仓没有应答面，阻塞档下模型一问就拿到
+       * `NO_PROVIDER` 工具错误，而有限 `timeout` 的定时档到点交回的是「尚未答复」这个设计好的结果。
+       * 判据取整块而不是逐行 `toContain`：逐行写的话，「配置挂到了别的插件行上」与
+       * 「`mode` 被写成阻塞档」两种坏法都能溜过去（两行各自都还在文件里）。
+       * ⚠️ `timeout` 必须是有限正整数——`-1` 会回落阻塞档，等于这条止血没做。
+       */
+      expect(snapshotAtBoot).toContain(
+        ['      name: "@deepseek-ai/dsh-tool-ask-user"', '      config:', '        mode: "timed"', '        timeout: 1'].join(
+          '\n',
+        ),
+      );
       /**
        * stream-tap 的挂载行：**相对名**（`./aieval-stream-tap.mjs`，按 profile 目录
        * 解析）+ 插件本体在装配时刻就落盘。少了 insert 行，runtime 起来后没有任何人写旁路文件
@@ -771,6 +790,79 @@ describe('dsh 的 ask_user_question 挂载', () => {
 });
 
 /**
+ * **提问应答面的装配**：这一轮挂没挂应答面（= 调用方传了 `onAskUser`）是**同一个自变量**，
+ * 它同时决定 overlay 里那一行与插件落盘（见 `ask-user.ts` 的文件头）。
+ *
+ * 判据是**磁盘上的文件**：只看适配器内部算了什么，证明不了 dsh 读得到（装配清单在 boot 那一步读，
+ * 写晚了这一行照样「跑完」，只是没人认领那一问——那是静默的空）。两条一正一反缺一不可：
+ * 只钉「挂了就有」会让「没挂也有」这种回归（插件白挂、文件白落）无人出声。
+ */
+describe('dsh 的提问应答面装配（ask-user）', () => {
+  const ROUTE = {
+    protocolType: 'anthropic' as const,
+    baseUrl: 'https://gw.example.com/anthropic',
+    apiKey: 'sk-test-key',
+    modelId: 'GLM-5.3',
+  };
+  const askUserReply = async (): Promise<AskUserReply> => ({ outcome: 'answered', answers: [] });
+  const overlayPath = (home: string): string => join(home, DSH_ROUTE_PATCH_RELATIVE_PATH);
+
+  it('挂了应答面 ⇒ 装配时刻 overlay 里就有应答者那一行，插件与两份 sidecar 都落盘（清零）', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-home-'));
+    try {
+      // 时序判据同 `tool-ask-user` 那条：快照点取 `new DeepSeekHarness(...)` 那一刻
+      let snapshotAtBoot: string | null = null;
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [],
+            onConstruct: () => {
+              snapshotAtBoot = existsSync(overlayPath(home)) ? readFileSync(overlayPath(home), 'utf8') : null;
+            },
+          }),
+        },
+      });
+
+      await dshProvider.run(createRunInput({ configHome: home, route: ROUTE, onAskUser: askUserReply }));
+
+      // ① 那一行在装配清单里（**相对名与 stream-tap 同形**：相对名按 `<dshHome>` 解析）
+      expect(snapshotAtBoot).toContain(['    - id: aieval-ask-answerer', '      name: "./aieval-ask-answerer.mjs"'].join('\n'));
+      // 等待档与应答面同源派生：有人能被问到 ⇒ 阻塞档（`-1`：既不到点收场、又带 `wait.callId`）
+      expect(snapshotAtBoot).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS}`].join('\n'));
+      // ② 插件本体在装配时刻就落盘，且逐字是那一份源码
+      expect(readFileSync(join(home, DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH), 'utf8')).toBe(DSH_ASK_ANSWERER_PLUGIN_SOURCE);
+      expect(readFileSync(join(home, DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH), 'utf8')).toContain('user-questions/request');
+      // ③ 两份 sidecar **整份清零**（追加型：重跑同一行时上一轮的提问与答复绝不能被当成本次的）
+      expect(statSync(join(home, DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH)).size).toBe(0);
+      expect(statSync(join(home, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH)).size).toBe(0);
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+
+  it('不传回调 ⇒ overlay 里没有那一行、插件与 sidecar 都不落盘（零回归）', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-home-'));
+    try {
+      setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder: createRecorder(), events: [] }) } });
+
+      await dshProvider.run(createRunInput({ configHome: home, route: ROUTE }));
+
+      const overlay = readFileSync(overlayPath(home), 'utf8');
+      expect(overlay).not.toContain('aieval-ask-answerer');
+      // 提问工具那一行照旧在（它是厂商的包，与应答面无关），等待档留在定时档那一格
+      expect(overlay).toContain('id: tool-ask-user');
+      expect(overlay).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS}`].join('\n'));
+      expect(existsSync(join(home, DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH))).toBe(false);
+      expect(existsSync(join(home, DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH))).toBe(false);
+      expect(existsSync(join(home, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH))).toBe(false);
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+});
+
+/**
  * overlay patch 生成器：**纯函数**，输入即全部事实。
  *
  * 为什么单独一组用例：这份文本是「本仓的路由事实」到「pi-ai 路由配置」的**唯一**翻译点，
@@ -785,6 +877,68 @@ describe('buildDshRoutePatch', () => {
     baseUrl: 'https://gw.example.com/anthropic',
     modelId: 'deepseek-flash',
   };
+
+  /**
+   * 整份 overlay **逐字**：窗口与上限未知（那两个键就不写）时的完整产物。
+   *
+   * 为什么要有这一条（下面那些 `toContain` 各自只证明「某一行在文件里」）：dsh 读的是**整份**装配
+   * 清单，所以「其余行没被顺手改动」本身就是要守的性质——路由块、模型、档位映射、三条插件挂载行
+   * 与它们的先后，全在这份字面量里。少了它，改动别的行（甚至删掉某一行）不会有任何用例出声；
+   * 有了它，任何一处漂移都必须显式改这份字面量，改的人躲不过去。
+   */
+  it('整份 patch 逐字：路由 / 模型 / 档位 / 三条插件挂载（提问工具在定时档）', () => {
+    expect(buildDshRoutePatch(base)).toBe(
+      [
+        '# 由 ai-result-evaluation 写入：本次运行的路由、模型与档位（overlay，叠在 profile 之上）',
+        '- id: llm-pi-ai',
+        '  config:',
+        '    providers:',
+        '      aieval-route:',
+        '        api: anthropic-messages',
+        '        baseURL: "https://gw.example.com/anthropic"',
+        '        apiKeyEnv: AIEVAL_ROUTE_API_KEY',
+        '        models:',
+        '          - id: "deepseek-flash"',
+        '            reasoningEfforts:',
+        '              off: null',
+        '              low: "low"',
+        '              high: "high"',
+        '              max: "max"',
+        '',
+        '# 新增行必须走 insert（顶层 `- id:` 只能覆盖既有行）——见 dsh-base 的文件头',
+        '- insert:',
+        '    - id: tool-ask-user',
+        '      name: "@deepseek-ai/dsh-tool-ask-user"',
+        '      config:',
+        '        mode: "timed"',
+        '        timeout: 1',
+        '    - id: aieval-stream-tap',
+        '      name: "./aieval-stream-tap.mjs"',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  /**
+   * 应答面那一格**同时**决定两件事：插不插应答者那一行、等待档取哪一档（`askUserAnswerer`）。
+   * 判据是「两份 patch 的**逐行差集**恰好是这两处」——只 `toContain` 那一行的话，
+   * 「顺手改坏了别的行」「没挂时也插了」「等待档与应答面各写一份」三种坏法都能溜过去。
+   */
+  it('挂了应答面 ⇒ 只多应答者那一块、且等待档换成阻塞档；没挂 ⇒ 定时档 1 秒且一个字都不多', () => {
+    const bare = buildDshRoutePatch(base);
+    const answered = buildDshRoutePatch({ ...base, askUserAnswerer: true });
+    const block = ['    - id: aieval-ask-answerer', '      name: "./aieval-ask-answerer.mjs"'];
+    const bareLines = bare.split('\n');
+    const lines = answered.split('\n');
+    const added = lines.filter((line) => !bareLines.includes(line)).sort();
+    const removed = bareLines.filter((line) => !lines.includes(line));
+    expect(added).toEqual([...block, `        timeout: ${DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS}`].sort());
+    expect(removed).toEqual([`        timeout: ${DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS}`]);
+    // 两档都写在同一处（`mode: timed` 之下），档位名不许漂
+    expect(answered).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS}`].join('\n'));
+    expect(bare).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS}`].join('\n'));
+    expect(bare).not.toContain('aieval-ask-answerer');
+  });
 
   it('协议 → wire：anthropic 走 anthropic-messages、openai 只走 openai-responses（D2）', () => {
     expect(buildDshRoutePatch(base)).toContain('api: anthropic-messages');

@@ -27,7 +27,8 @@ import {
   runPiConformanceRow,
 } from '../../testing/pi-conformance-fixture';
 import { runPiRow, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
-import { piRequestToolDeclaration } from './observer';
+import { piRequestToolDeclaration, piSystemText } from './observer';
+import { PI_ASK_USER_GUIDELINES, PI_ASK_USER_SNIPPET, PI_ASK_USER_TOOL } from './ask-user';
 import { PI_STRUCTURED_OUTPUT_TOOL } from './structured-output';
 import { piSubagentsExtensionPath, piSubagentsVersion } from './subagents';
 import { piSubagentTranscriptPath } from './transcript';
@@ -1054,6 +1055,58 @@ describe('pi 的出站工具表（真包 + 假网关）', () => {
       expect(readOnly.requestTools, `只读档的出站工具表里出现了 ${tool}`).not.toContain(tool);
       expect(full.requestTools, `执行档的出站工具表里缺了 ${tool}`).toContain(tool);
     }
+  }, 60_000);
+
+  /**
+   * **提问那一件**（宿主注册的自定义工具）在出站请求里的两臂：传了应答面才有它。
+   *
+   * 为什么必须从**请求体**判：白名单是成员匹配器，名字没拼进去时厂商**静默**少一件——
+   * 「我们交了一份工具定义」与「模型看得到它」是两件事，只有出站那一份请求分得开。
+   */
+  it('提问工具只随应答面出站：传了回调在 `tools[]` 里，不传则整表少它一件', async () => {
+    const withCallback = await runPiConformanceRow({
+      prompt: '按剧本收尾。',
+      script: [anthropicText('好。')],
+      onAskUser: async () => ({ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: null }] }),
+    });
+    const withoutCallback = await runPiConformanceRow({
+      prompt: '按剧本收尾。',
+      script: [anthropicText('好。')],
+    });
+
+    expect(withCallback.requestTools).toEqual([
+      'read', 'bash', 'edit', 'write', 'Agent', 'get_subagent_result', 'steer_subagent', PI_ASK_USER_TOOL,
+    ]);
+    expect(withoutCallback.requestTools).toEqual([
+      'read', 'bash', 'edit', 'write', 'Agent', 'get_subagent_result', 'steer_subagent',
+    ]);
+  }, 60_000);
+
+  /**
+   * **提示词那两格真的进了出站请求**（`promptSnippet` 进 `## Available tools` 段、
+   * `promptGuidelines` 进 `## Guidelines` 段）。
+   *
+   * 为什么必须从请求体判：这两格是**宿主工具这条通道唯一的行为提示来源**（厂商不给时机提示），
+   * 写错一个字（例如把字段名写成 `promptSnippets`）编译期不报、运行期静默无效——`PiSessionOptions`
+   * 是本仓手写的窄接口，不与厂商的选项类型对账。判据取**这两段文本出现在系统段里**，
+   * 而不是「我们把这个字符串交给了 SDK」。
+   */
+  it('提问工具的三格提示词都进了出站请求的系统段（宿主工具这条通道的时机提示只能靠它）', async () => {
+    const withCallback = await runPiConformanceRow({
+      prompt: '按剧本收尾。',
+      script: [anthropicText('好。')],
+      onAskUser: async () => ({ outcome: 'unavailable', answers: null }),
+    });
+    const system = piSystemText(withCallback.requests[0]?.body, 'anthropic-messages');
+    // 工具段那一行由厂商渲染成 `- <工具名>: <promptSnippet>`，两个都在
+    expect(system).toContain(`- ${PI_ASK_USER_TOOL}: ${PI_ASK_USER_SNIPPET}`);
+    for (const guideline of PI_ASK_USER_GUIDELINES) {
+      expect(system, `提示词里的时机约束「${guideline.slice(0, 12)}…」没进系统段`).toContain(guideline);
+    }
+    // 不传回调 ⇒ 这一件不在，那两段里也就不该有它（同一个判据的反面）
+    const withoutCallback = await runPiConformanceRow({ prompt: '按剧本收尾。', script: [anthropicText('好。')] });
+    const bare = piSystemText(withoutCallback.requests[0]?.body, 'anthropic-messages');
+    expect(bare).not.toContain(PI_ASK_USER_TOOL);
   }, 60_000);
 });
 

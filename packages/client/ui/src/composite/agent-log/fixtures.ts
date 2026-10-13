@@ -43,7 +43,14 @@ interface MessageInput {
 
 let seq = 0;
 
-/** 造一条 `messages.jsonl` 的记录（`mergeKey` 的拼法与适配器逐字相同） */
+/**
+ * 造一条 `messages.jsonl` 的记录。
+ *
+ * `mergeKey` 的拼法与适配器逐字相同——公式的真源是 `@aieval/agents` 的 `carrierKeyOf`，
+ * 而 ui 包按分层只依赖 contracts（`export type` 之外没有到 agents 的依赖边），
+ * 故这一格在本包内只能照式重写一遍。它只出现在夹具里：产品代码一个字节都不读它，
+ * 漂移的表现是夹具造出的记录不再被折叠成一条（那是这条用例自己的断言当场变红，不是静默错）。
+ */
 function message(input: MessageInput): RowRecord {
   seq += 1;
   const subagentId = input.subagentId ?? null;

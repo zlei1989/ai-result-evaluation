@@ -22,13 +22,17 @@ describe('toolPayloadOf：task 族', () => {
   /** dsh 的 `todo_write`：整表覆盖，`{todos: [{content, status}]}`（真机形状） */
   it('dsh 的 todos[] ⇒ plan：content 当 subject、状态归一', () => {
     expect(
-      toolPayloadOf('task', {
-        todos: [
-          { content: '读需求', status: 'completed' },
-          { content: '写实现', status: 'in_progress' },
-          { content: '补测试', status: 'pending' },
-        ],
-      }),
+      toolPayloadOf(
+        'task',
+        {
+          todos: [
+            { content: '读需求', status: 'completed' },
+            { content: '写实现', status: 'in_progress' },
+            { content: '补测试', status: 'pending' },
+          ],
+        },
+        'dsh',
+      ),
     ).toEqual({
       kind: 'plan',
       note: null,
@@ -43,10 +47,14 @@ describe('toolPayloadOf：task 族', () => {
   /** codex 的 `update_plan`：`{explanation?, plan: [{step, status}]}`，`step` 当 subject、`explanation` 当 note */
   it('codex 的 plan[] + explanation ⇒ plan：step 当 subject、explanation 当 note', () => {
     expect(
-      toolPayloadOf('task', {
-        explanation: '按依赖顺序排',
-        plan: [{ step: '先跑通', status: 'in_progress' }],
-      }),
+      toolPayloadOf(
+        'task',
+        {
+          explanation: '按依赖顺序排',
+          plan: [{ step: '先跑通', status: 'in_progress' }],
+        },
+        'codex',
+      ),
     ).toEqual({
       kind: 'plan',
       note: '按依赖顺序排',
@@ -59,12 +67,16 @@ describe('toolPayloadOf：task 族', () => {
    * `owner` / `blockedBy` 是 claude 独有的维度，另两家恒 `null`（对上「缺就是缺」）。
    */
   it('claude 的 todos[] 带上 owner 与依赖；状态认 completed / in_progress / pending', () => {
-    const payload = toolPayloadOf('task', {
-      todos: [
-        { content: 'A', status: 'completed', owner: 'alice', blockedBy: ['t-0'] },
-        { content: 'B', status: 'pending' },
-      ],
-    });
+    const payload = toolPayloadOf(
+      'task',
+      {
+        todos: [
+          { content: 'A', status: 'completed', owner: 'alice', blockedBy: ['t-0'] },
+          { content: 'B', status: 'pending' },
+        ],
+      },
+      'cc',
+    );
 
     expect(payload).toMatchObject({
       kind: 'plan',
@@ -82,14 +94,18 @@ describe('toolPayloadOf：task 族', () => {
    * 当 `pending` 是它明明已经被删掉了。
    */
   it('认不出的状态记 unknown（不猜成成功）；claude 独有的 deleted 也落 unknown', () => {
-    const payload = toolPayloadOf('task', {
-      todos: [
-        { content: 'x', status: 'deleted' },
-        { content: 'y', status: 'weird' },
-        { content: 'z', completed: true },
-        { content: 'w', status: 'todo' },
-      ],
-    });
+    const payload = toolPayloadOf(
+      'task',
+      {
+        todos: [
+          { content: 'x', status: 'deleted' },
+          { content: 'y', status: 'weird' },
+          { content: 'z', completed: true },
+          { content: 'w', status: 'todo' },
+        ],
+      },
+      'cc',
+    );
 
     expect(payload).toMatchObject({
       steps: [
@@ -102,23 +118,23 @@ describe('toolPayloadOf：task 族', () => {
   });
 
   it('`subject` 的三种写法都认（subject / text / content），都没有时给空串（厂商就是给了空）', () => {
-    const payload = toolPayloadOf('task', { todos: [{ text: 'T' }, { content: 'C' }, {}] });
+    const payload = toolPayloadOf('task', { todos: [{ text: 'T' }, { content: 'C' }, {}] }, 'cc');
 
     expect(payload).toMatchObject({ steps: [{ subject: 'T' }, { subject: 'C' }, { subject: '' }] });
   });
 
   it('不是清单的形状 ⇒ null（不猜：界面据此走通用工具行，调用不会消失）', () => {
-    expect(toolPayloadOf('task', { command: 'npm test' })).toBeNull();
-    expect(toolPayloadOf('task', null)).toBeNull();
+    expect(toolPayloadOf('task', { command: 'npm test' }, 'cc')).toBeNull();
+    expect(toolPayloadOf('task', null, 'cc')).toBeNull();
     // JSON 字符串也认（codex 与 dsh 的 `arguments` 在归一前是字符串）
-    expect(toolPayloadOf('task', '{"plan":[{"step":"s","status":"pending"}]}')).toMatchObject({
+    expect(toolPayloadOf('task', '{"plan":[{"step":"s","status":"pending"}]}', 'codex')).toMatchObject({
       steps: [{ subject: 's', status: 'pending' }],
     });
-    expect(toolPayloadOf('task', 'not json')).toBeNull();
+    expect(toolPayloadOf('task', 'not json', 'cc')).toBeNull();
   });
 
   it('空清单是「厂商给了空表」⇒ steps: []（与 null 是两件事）', () => {
-    expect(toolPayloadOf('task', { todos: [] })).toEqual({ kind: 'plan', note: null, steps: [] });
+    expect(toolPayloadOf('task', { todos: [] }, 'cc')).toEqual({ kind: 'plan', note: null, steps: [] });
   });
 });
 
@@ -126,20 +142,24 @@ describe('toolPayloadOf：ask-user 族', () => {
   /** claude 的 `AskUserQuestion`：`{questions: [{id, question, header, options[], multiSelect}]}` */
   it('claude 形状：question 当 prompt、header 原样、选项的 label/description 保留', () => {
     expect(
-      toolPayloadOf('ask-user', {
-        questions: [
-          {
-            id: 'q1',
-            question: '要不要继续？',
-            header: '继续',
-            multiSelect: false,
-            options: [
-              { label: '继续', description: '按原计划走' },
-              { label: '停下' },
-            ],
-          },
-        ],
-      }),
+      toolPayloadOf(
+        'ask-user',
+        {
+          questions: [
+            {
+              id: 'q1',
+              question: '要不要继续？',
+              header: '继续',
+              multiSelect: false,
+              options: [
+                { label: '继续', description: '按原计划走' },
+                { label: '停下' },
+              ],
+            },
+          ],
+        },
+        'cc',
+      ),
     ).toEqual({
       kind: 'ask-user',
       questions: [
@@ -147,7 +167,7 @@ describe('toolPayloadOf：ask-user 族', () => {
           header: '继续',
           prompt: '要不要继续？',
           multiSelect: false,
-          allowOther: false,
+          allowOther: true,
           secret: false,
           options: [
             { label: '继续', description: '按原计划走', recommended: false },
@@ -164,26 +184,32 @@ describe('toolPayloadOf：ask-user 族', () => {
    * 这条用例就是那个缺陷的回归网。
    */
   it('dsh 的 `multi_select` 与 `prompt` 写法都认（旧的 `multiSelect` 单写法会漏掉它）', () => {
-    const payload = toolPayloadOf('ask-user', {
-      questions: [{ id: 'q1', prompt: '选几个', multi_select: true, options: [{ label: 'A' }] }],
-    });
+    const payload = toolPayloadOf(
+      'ask-user',
+      { questions: [{ id: 'q1', prompt: '选几个', multi_select: true, options: [{ label: 'A' }] }] },
+      'dsh',
+    );
 
     expect(payload).toMatchObject({ questions: [{ prompt: '选几个', multiSelect: true }] });
   });
 
   it('codex 的 `isOther` / `isSecret` 与 `recommended` 一并认', () => {
-    const payload = toolPayloadOf('ask-user', {
-      questions: [
-        {
-          id: 'q1',
-          header: '确认',
-          question: '继续吗',
-          isOther: true,
-          isSecret: true,
-          options: [{ label: '是', description: '继续', recommended: true }],
-        },
-      ],
-    });
+    const payload = toolPayloadOf(
+      'ask-user',
+      {
+        questions: [
+          {
+            id: 'q1',
+            header: '确认',
+            question: '继续吗',
+            isOther: true,
+            isSecret: true,
+            options: [{ label: '是', description: '继续', recommended: true }],
+          },
+        ],
+      },
+      'codex',
+    );
 
     expect(payload).toMatchObject({
       questions: [
@@ -198,15 +224,32 @@ describe('toolPayloadOf：ask-user 族', () => {
     });
   });
 
+  /**
+   * **`allowOther` 认两处来源**，判据是这一格的两种问法：
+   *   · 厂商在**题目**上声明（codex 的 `isOther`、pi 的 `allowOther`）——schema 里有没有这一格；
+   *   · 厂商的**答案面**恒收得下用户写的话（cc 的提问入参里没有这一格、但它的 schema 写明
+   *     「'Other' 选项由界面自动提供」；dsh 的答复项恒带可选 `custom`）⇒ 这两家恒 `true`。
+   * 下半件是**不许外溢**：把同一份入参喂给另两家，这一格必须仍是 `false`——
+   * 否则「按 vendor 恒开」的写法会在 codex / pi 上把输入框也点出来，而那两家的答复形状收不下它。
+   */
+  it('答案面固有自由输入的家恒 true（cc / dsh），另两家不受影响（只有题目声明才算）', () => {
+    const frame = { questions: [{ id: 'q1', question: 'q', header: 'h', options: [{ label: 'A' }] }] };
+
+    expect(toolPayloadOf('ask-user', frame, 'cc')).toMatchObject({ questions: [{ allowOther: true }] });
+    expect(toolPayloadOf('ask-user', frame, 'dsh')).toMatchObject({ questions: [{ allowOther: true }] });
+    expect(toolPayloadOf('ask-user', frame, 'codex')).toMatchObject({ questions: [{ allowOther: false }] });
+    expect(toolPayloadOf('ask-user', frame, 'pi')).toMatchObject({ questions: [{ allowOther: false }] });
+  });
+
   it('没有 header 记空串（这一格是展示标签，契约与答案侧的配对键用同一种「没有」）', () => {
-    const payload = toolPayloadOf('ask-user', { questions: [{ question: 'q' }] });
+    const payload = toolPayloadOf('ask-user', { questions: [{ question: 'q' }] }, 'cc');
 
     expect(payload).toMatchObject({ questions: [{ header: '', prompt: 'q', options: [] }] });
   });
 
   it('没有 questions、或问题数组为空 ⇒ null / 空表（前者是「不是这一族」，后者是「厂商给了空表」）', () => {
-    expect(toolPayloadOf('ask-user', { command: 'ls' })).toBeNull();
-    expect(toolPayloadOf('ask-user', { questions: [] })).toEqual({ kind: 'ask-user', questions: [] });
+    expect(toolPayloadOf('ask-user', { command: 'ls' }, 'cc')).toBeNull();
+    expect(toolPayloadOf('ask-user', { questions: [] }, 'cc')).toEqual({ kind: 'ask-user', questions: [] });
   });
 });
 
@@ -216,16 +259,16 @@ describe('toolPayloadOf：族与形状的对应', () => {
    * 后果是工具行被一张空卡片顶掉（调用看不见了），比「没有卡片」严重得多。
    */
   it('其余族一律 null（不替它们猜载荷）', () => {
-    expect(toolPayloadOf('read-file', { file_path: '/tmp/a' })).toBeNull();
-    expect(toolPayloadOf('run-shell', { command: 'ls' })).toBeNull();
-    expect(toolPayloadOf('spawn-agent', { prompt: 'x' })).toBeNull();
+    expect(toolPayloadOf('read-file', { file_path: '/tmp/a' }, 'cc')).toBeNull();
+    expect(toolPayloadOf('run-shell', { command: 'ls' }, 'cc')).toBeNull();
+    expect(toolPayloadOf('spawn-agent', { prompt: 'x' }, 'cc')).toBeNull();
     // `family: null`（适配器不认识的工具）同样 null
-    expect(toolPayloadOf(null, { todos: [] })).toBeNull();
+    expect(toolPayloadOf(null, { todos: [] }, 'cc')).toBeNull();
   });
 
   /** 族与载荷必须**对得上**：给 `task` 喂一个问题数组不该产出 ask-user 载荷 */
   it('族与载荷不匹配 ⇒ null（`family` 是权威，不因为形状像就改判）', () => {
-    expect(toolPayloadOf('task', { questions: [{ question: 'q' }] })).toBeNull();
-    expect(toolPayloadOf('ask-user', { todos: [{ content: 'c' }] })).toBeNull();
+    expect(toolPayloadOf('task', { questions: [{ question: 'q' }] }, 'cc')).toBeNull();
+    expect(toolPayloadOf('ask-user', { todos: [{ content: 'c' }] }, 'cc')).toBeNull();
   });
 });

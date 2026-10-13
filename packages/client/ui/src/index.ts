@@ -162,6 +162,12 @@ export {
 export { DiffFileContent, DiffView, type DiffViewProps } from './composite/diff-view';
 export { formatEventLine, formatEventLog } from './composite/log-format';
 /**
+ * 应答弹层：吃 `agent-log/types` 那份问题形状（`AskUserQuestion` / `AskUserAnswer`），
+ * 纯展示、不调接口——请求与错误提示全归宿主。它摆在 `composite/` 顶层而不是 `agent-log/` 里：
+ * `agent-log` 是「复盘一个已结束的运行」的只读目录，应答面是产出方对面的一件独立东西。
+ */
+export { AskUserPanel, type AskUserPanelProps } from './composite/ask-user-panel';
+/**
  * 「执行日志」抽屉（`agent-log`）：**整个目录就是那个通用组件**——吃「一个智能体运行的过程 +
  * 它跑在什么环境里」，不认「评测行」这个业务概念。三层的分界与各自能吃什么是设计的一部分，
  * 故这里把三层各自的门面都转出来（内嵌场景用 `AgentLogLayout`，只读时间轴用 `AgentMessageTimeline`）。

@@ -8,8 +8,10 @@
  * 三条硬口径：
  *  1. **绝不悬挂**：进程退出、spawn 失败、超时、`close()` 四种收场都要让待收请求**明确 reject**
  *     （`turn.ts` 的语义是「跑不完就要有结论」，悬挂会把一行拖到整轮超时）。
- *  2. **服务端主动请求不应答**：审批类入站请求（`item/…/requestApproval`，带 `id`）单独归类、**不回帧**。
- *     本仓评测是非交互的（`approvalPolicy: never`），应答等于替用户批准；不归类则会污染响应配对。
+ *  2. **服务端主动请求分两类**：审批类（`item/…/requestApproval`，带 `id`）**只归类、不回帧**
+ *     ——本仓评测是非交互的（`approvalPolicy: never`），应答等于替用户批准；问答类
+ *     （`item/tool/requestUserInput`）**必须回帧**，不回时厂商会一直等那一帧。分界线由注入的
+ *     `onServerRequest` 决定（返回结果 = 写回一帧，返回 `null` = 本类不应答），本模块不认方法名。
  *  3. **坏帧计数不静默**：解析不了的整行进 `unparsedFrames()`，与 `transcript.ts` 的 `stats.badLines`
  *     同一理由——静默跳过会让「上游换了帧格式」表现成「子智能体突然没了子线程」。
  *
@@ -82,7 +84,10 @@ export interface AppServerClient {
   subscribe(listener: (notification: AppServerNotification) => void): () => void;
   /** 订阅终态（进程退出 / 启动失败 / 关闭）。只有一次；返回退订函数 */
   onTerminal(listener: (reason: string) => void): () => void;
-  /** 服务端主动请求（审批等）：**只归类、不应答**，见文件头第 2 条 */
+  /**
+   * 服务端主动请求（审批 / 提问）：**一律归类**（见文件头第 2 条），应答与否由
+   * `options.onServerRequest` 决定。
+   */
   serverRequests(): readonly AppServerServerRequest[];
   /** 解析不了的整行数（见文件头第 3 条） */
   unparsedFrames(): number;
@@ -102,6 +107,15 @@ export interface AppServerClientOptions {
   binary: string;
   /** 子进程环境（调用方负责展开宿主环境，如本行 `.agenthome` ⇒ `CODEX_HOME`） */
   env: AppServerEnv;
+  /**
+   * 服务端主动请求的应答者：**返回结果 ⇒ 写回一帧**（`{jsonrpc, id, result}`，id 逐字用请求那一个），
+   * 返回 `null` ⇒ 本类请求不应答（审批类走这一支，见文件头第 2 条）。抛错按「回空对象」处置：
+   * 厂商在等这一帧，让它等下去比回一帧空的更坏。
+   *
+   * 为什么挂在客户端而不是由调用方自己往 stdin 写：写帧要拿 `id` 与那条 stdin，而两者都在这里；
+   * 调用方各写一遍等于把 JSON-RPC 的分帧规则抄出第二份。
+   */
+  onServerRequest?: ((request: AppServerServerRequest) => Promise<unknown | null>) | undefined;
   /** 测试注入口；缺省 = 真 `spawn` */
   spawnFn?: AppServerSpawn;
   /** 单条请求的超时（毫秒）。默认 30s：`thread/read` 在大会话上要扫盘，给足余量 */
@@ -135,7 +149,15 @@ const defaultSpawn: AppServerSpawn = (binary, args, env) => {
 };
 
 export function createAppServerClient(options: AppServerClientOptions): AppServerClient {
-  const { binary, env, spawnFn = defaultSpawn, timeoutMs = 30_000, killTree, terminateGraceMs } = options;
+  const {
+    binary,
+    env,
+    onServerRequest,
+    spawnFn = defaultSpawn,
+    timeoutMs = 30_000,
+    killTree,
+    terminateGraceMs,
+  } = options;
 
   /** 待收请求表：id ⇒ 结算入口与超时定时器 */
   const pending = new Map<
@@ -184,6 +206,25 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
     entry.resolve(message.result);
   };
 
+  /**
+   * 应答一条服务端主动请求：应答者给结果就写回一帧，给 `null` 就当本类请求不应答（审批类）。
+   *
+   * 为什么抛错也回一帧：厂商正阻塞在这一帧上（`isBlocking` 为假也不让它自己收场）⇒ 让它继续等
+   * 比回一帧空的更坏。回的是**空结果**而不是错误帧：我们这一侧坏了，不该让厂商把整轮判成失败
+   * ——「没人答」与「行失败」是两件事（与 `ask-user.ts` 的收场口径同源）。
+   */
+  const respond = async (id: number | string, request: AppServerServerRequest): Promise<void> => {
+    let result: unknown;
+    try {
+      result = await onServerRequest?.(request);
+    } catch (error) {
+      logger.error('服务端主动请求的应答者抛错，按空结果回帧', { method: request.method, id: request.id, error });
+      result = {};
+    }
+    if (result === null) return;
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+  };
+
   const handleLine = (line: string): void => {
     let message: Record<string, unknown>;
     try {
@@ -197,9 +238,11 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
       settle(id, message);
       return;
     }
-    // 带 id 但不在待收表里 = 服务端主动请求（审批等）：归类，**应答不在本模块职责内**
+    // 带 id 但不在待收表里 = 服务端主动请求（审批 / 提问）：**先归类**，应答与否交给应答者
     if (id !== undefined && (typeof id === 'number' || typeof id === 'string')) {
-      serverRequestList.push({ id, method: String(message.method ?? ''), params: message.params });
+      const request: AppServerServerRequest = { id, method: String(message.method ?? ''), params: message.params };
+      serverRequestList.push(request);
+      if (onServerRequest !== undefined) void respond(id, request);
       return;
     }
     if (typeof message.method === 'string') {

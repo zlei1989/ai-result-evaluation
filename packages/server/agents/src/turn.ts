@@ -18,6 +18,7 @@ import {
   planStructuredOutput,
   type StructuredOutputInspection,
 } from './structured-output';
+import { createAskUserPort, type AskUserPort } from './ask-user';
 import type { AgentKind, AgentRunInput, AgentRunResult } from './types';
 
 export interface TurnContext {
@@ -25,6 +26,22 @@ export interface TurnContext {
   /** 骨架持有的中止入口：厂商 SDK 需要它硬中止（claude 的 abortController / codex 的 signal） */
   controller: AbortController;
   emitter: EventEmitter;
+  /**
+   * **提问端口**：模型问到用户时，适配器从这一格拿「问一次」（`ask`），并按 `available` 决定
+   * 挂不挂厂商钩子、开不开厂商开关（没挂应答面 ⇒ 一个都不动，既有行为逐字不变）。
+   * 等待语义（行终止 / 预算 / 静止超时豁免 / 回调抛错）全收在它里面，适配器不自己判。
+   */
+  askUser: AskUserPort;
+  /**
+   * **内容级消息的流外投递口**：厂商把「模型的一次工具调用」放在事件流之外（codex 的提问是
+   * server→client 请求，厂商的线程条目里没有这一格，见 `providers/codex/ask-user.ts`）时，
+   * 观察到它的适配器用这一格把那条消息投进账本——不投，账本里就只剩答复那一半。
+   *
+   * 为什么不让适配器自己写 `input.onMessage`：`messageId` 的 `seq`、合并键、块序号都由合并器分配，
+   * 绕开它等于在适配器里再造一遍取号，两处必然漂（表现是同一轮里块互相覆盖）。
+   * 投进来的草稿与通知流里那些走**同一条路**（合并器 → `onMessage`），消费方看不出差别。
+   */
+  emitMessage: (draft: MessageDraft) => void;
 }
 
 /** 收尾产出的两类载荷：行级事件与内容级消息（顺序即产出顺序，各自内部保序） */
@@ -435,6 +452,25 @@ const TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG: Record<AgentKind, boolean> = {
   pi: true,
 };
 
+/**
+ * 「在等用户回答」期间 ⇒ **两级**静止计时都挂起，四家一律挂起。
+ *
+ * 与上面那张表的差别是刻意的：工具在途「有没有节拍」按家不同，而**等人回答这一段时间里四家都不会
+ * 有任何厂商事件**——厂商正阻塞在同一次工具调用上，人在浏览器里答多久与厂商没有任何关系。
+ * cc 这一家是这条最直白的实例：提问落在**权限回调**上，回调不返回期间厂商在整段等待里既不下发
+ * 工具结果、也不再发后续请求；不豁免的话，每一次人工介入都会被看门狗按静止超时收掉
+ * （空闲上限是分钟级，而人答一题常常更久）。这一段的时限由**这一问自己的等待预算**给（见
+ * `ask-user.ts` 的 `DEFAULT_ASK_USER_BUDGET_MS` 与厂商自己的预算），所以挂起不等于无限等。
+ * 表仍是**穷尽**的（`Record<AgentKind, boolean>`）：新增一家时必须显式给一格，
+ * 免得「这家为什么豁免」变成没人回答得了的问题。
+ */
+const AWAITING_ANSWER_SUSPENDS_WATCHDOG: Record<AgentKind, boolean> = {
+  cc: true,
+  codex: true,
+  dsh: true,
+  pi: true,
+};
+
 /** 在册的一次在途运行：宿主停机时按它逐个发起停止、并等它们各自释放完 */
 interface LiveSession {
   kind: AgentKind;
@@ -723,6 +759,8 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   let watchdogTrip: WatchdogTrip | null = null;
   /** 在途工具（`callId`）：只有 `TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG` 里的家才让这一格参与判据 */
   const inFlightTools = new Set<string>();
+  /** 正在等用户回答的提问数：由提问端口进入 / 离开等待时登记，可重入（并发两问各记一次） */
+  let pendingAsks = 0;
   /** 已观察到的累计轮次：它**递进**才说明一次模型往返收尾、下一次起表（见「墙钟按一次往返计」） */
   let observedTurns = 0;
 
@@ -735,6 +773,40 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   /** 在途工具期间是否挂起计时（只对登记过的家生效；两级一起挂起，见那张表的注释） */
   const suspendedByTool = (): boolean =>
     TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG[hooks.kind] === true && inFlightTools.size > 0;
+  /** 在等用户回答期间是否挂起计时（两级一起挂起，见那张表的注释） */
+  const suspendedByAsk = (): boolean =>
+    AWAITING_ANSWER_SUSPENDS_WATCHDOG[hooks.kind] === true && pendingAsks > 0;
+  /** 两级静止计时是否都挂起（工具在途 / 在等用户回答，各自按家取值） */
+  const suspended = (): boolean => suspendedByTool() || suspendedByAsk();
+
+  /**
+   * 提问端口的等待登记口（见 `ask-user.ts` 的 `AskUserWaitSink`）：
+   *   · 进入：挂起两级计时（`armWatchdog` 会先清掉已排的那次判定）；
+   *   · 离开：最后一次离开时把**墙钟**按等人那一段整体往后推、按「又有输入了」重新起空闲表，再重排
+   *     判定。三件都不可省：不推墙钟 ⇒ 人答完的那一刻旧期限早已过期，行当场被判静止；不重起空闲表
+   *     ⇒ 答复这一刻不算「又动了」；不重排 ⇒ 挂起之后看门狗再也不排，此后真挂死没人发现
+   *     （在途工具那一格靠下一条事件重排，而答复回来不一定马上伴随厂商事件）。
+   */
+  let waitStartedMs = 0;
+  const askUserWait = {
+    enter: (): void => {
+      if (pendingAsks === 0) waitStartedMs = Date.now();
+      pendingAsks += 1;
+      armWatchdog();
+    },
+    leave: (): void => {
+      pendingAsks -= 1;
+      if (pendingAsks > 0) return;
+      // 墙钟量的是「一次模型往返」：等人那一段不是模型的时间，整体顺延（否则答完即超时）
+      const waited = Date.now() - waitStartedMs;
+      if (limits.wall > 0 && waited > 0) wallDeadlineMs += waited;
+      noteActivity();
+      armWatchdog();
+    },
+  };
+
+  /** 提问端口：适配器从 `TurnContext.askUser` 拿它（等待语义只在 `ask-user.ts` 写一遍） */
+  const askUser = createAskUserPort(input, { kind: hooks.kind, wait: askUserWait });
 
   const clearWatchdog = (): void => {
     if (watchdogTimer === undefined) return;
@@ -742,12 +814,15 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     watchdogTimer = undefined;
   };
 
-  /** 重排下一次判定：取两级里最近的那个；两级都被挂起时不排（工具收尾那一刻会再排一次） */
+  /**
+   * 重排下一次判定：取两级里最近的那个；两级都被挂起时不排——挂起期间是靠
+   * 「挂起结束的那一刻」再排一次（在途工具靠下一条事件、在等回答靠 `AskUserWaitSink.leave`）。
+   */
   const armWatchdog = (): void => {
     clearWatchdog();
     if (!consuming || watchdogTrip !== null) return;
     const deadlines: number[] = [];
-    if (!suspendedByTool()) {
+    if (!suspended()) {
       if (limits.idle > 0) deadlines.push(idleDeadlineMs);
       if (limits.wall > 0) deadlines.push(wallDeadlineMs);
     }
@@ -759,7 +834,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     watchdogTimer = undefined;
     if (!consuming || watchdogTrip !== null) return;
     const now = Date.now();
-    if (!suspendedByTool()) {
+    if (!suspended()) {
       if (limits.idle > 0 && now >= idleDeadlineMs) {
         tripWatchdog('idle', limits.idle);
         return;
@@ -1051,7 +1126,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     noteRoundTrip();
     noteActivity();
     armWatchdog();
-    started = await hooks.start({ input, controller, emitter });
+    started = await hooks.start({ input, controller, emitter, askUser, emitMessage });
     logger.debug('适配器已启动，开始消费事件流', {
       kind: hooks.kind,
       cwd: input.cwd,

@@ -19,13 +19,17 @@
  *     拿它当轮次号会得到「进度条 60 轮、时间轴 1 轮」的自相矛盾。
  */
 import {
+  AskUserResultSchema,
   TERMINAL_ROW_STATUSES,
   type AgentEvent,
   type AgentMessage,
+  type AskUserAnswer,
+  type AskUserOutcome,
   type ContentBlock as ContractBlock,
   type RowRecord,
   type SubagentRecord,
   type ToolCallBlock,
+  type TruncationState,
 } from '@aieval/contracts';
 import {
   type AgentLogDiagnostics,
@@ -121,14 +125,75 @@ const UNVERIFIED: MessageCapabilityMap = {
  * 那不是用户要看的思考，**没有就不显示**。放在这一层而不是某个组件里：时间轴、面包屑、
  * 以及将来任何一个消费方拿到的模型里都不该再有它（在组件里隐藏只会让别的出口漏出来）。
  */
-function blocksOf(message: AgentMessage, live: boolean, at: string): ContentBlock[] {
+function blocksOf(
+  message: AgentMessage,
+  live: boolean,
+  at: string,
+  answers: ReadonlyMap<string, SettledAskUser>,
+): ContentBlock[] {
   return message.blocks
-    .map((block, blockIndex) => toContentBlock(block, message, `${message.messageId}#${blockIndex}`, live, at))
+    .map((block, blockIndex) => toContentBlock(block, message, `${message.messageId}#${blockIndex}`, live, at, answers))
     .filter((block) => !(block.kind === 'thinking' && block.text === null));
 }
 
+/**
+ * **答案那一半**（`tool-result` 块的 `structured`，见契约的 `AskUserResultSchema`）：只读卡片
+ * 靠它把一次问答从「还在等」翻成「已收场」。
+ *
+ * 为什么在这一层收、而不是让卡片自己去找：配对要跨**整条账本**（答复那条记录的
+ * `roundTrip` 与提问那一轮可能不同，也可能与调用块不在同一条消息里），而卡片只看得见「本轮
+ * 的块」。这一层拿得到全部消息，且它是既有的那个搬运点（契约形状 → 界面模型）。
+ */
+interface SettledAskUser {
+  outcome: AskUserOutcome;
+  /** `null` = 收场了但没有答案可回填（等超时 / 无人应答 / 随行取消…） */
+  answers: readonly AskUserAnswer[] | null;
+  /** 结果块的原文与截断态（卡片底部「原始结果」那一份） */
+  text: string;
+  truncation: TruncationState;
+  /** 结果块自己报的成败（「没人答」不是错误结果，故它通常是 `true`） */
+  ok: boolean;
+}
+
+/**
+ * 扫**全部消息**（不按 `mergeKey` 折叠）收出 `callId → 答案那一半`。
+ *
+ * 三条：
+ *   · 形状认不出就**不当它是答案**（`safeParse` 失败一律跳过）：`structured` 是厂商原文那一格，
+ *     别的工具完全可能在这里放一个恰好有 `outcome` 的对象；
+ *   · **同一个 `callId` 取第一条**（记录顺序即落盘顺序）：编排层那条先落，宿主工具那一档适配器
+ *     自己还会投一条（同一次调用的结果、同样带着答复），先到的那条是权威；
+ *   · 结果块自己的 `callId` 为空时跳过：配对键缺了，答案无处可挂。
+ */
+function settledAskUserOf(messages: readonly AgentMessage[]): Map<string, SettledAskUser> {
+  const settled = new Map<string, SettledAskUser>();
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      if (block.type !== 'tool-result' || block.callId === '') continue;
+      if (settled.has(block.callId)) continue;
+      const parsed = AskUserResultSchema.safeParse(block.structured);
+      if (!parsed.success) continue;
+      settled.set(block.callId, {
+        outcome: parsed.data.outcome,
+        answers: parsed.data.answers,
+        text: block.text,
+        truncation: block.truncation,
+        ok: !block.isError,
+      });
+    }
+  }
+  return settled;
+}
+
 /** 契约块 → 界面块；不认识的那一类落到 `unrecognized`（**原文保留，不丢**） */
-function toContentBlock(block: ContractBlock, message: AgentMessage, id: string, live: boolean, at: string): ContentBlock {
+function toContentBlock(
+  block: ContractBlock,
+  message: AgentMessage,
+  id: string,
+  live: boolean,
+  at: string,
+  answers: ReadonlyMap<string, SettledAskUser>,
+): ContentBlock {
   const base = {
     id,
     // 契约的块没有自己的时刻，故整体用**派生的**基准时刻（见 `BuildAgentLogModelInput.startedAt`）
@@ -168,7 +233,7 @@ function toContentBlock(block: ContractBlock, message: AgentMessage, id: string,
         input: serializeInput(block.input),
         // 摘要主体随块从数据层下来（词表真源在 `@aieval/agents` 的 `activity.ts`）；老记录缺这一格
         summary: block.summary ?? undefined,
-        tool: familyPayloadOf(block, live, base.at),
+        tool: familyPayloadOf(block, live, base.at, answers),
       };
     }
     case 'tool-result':
@@ -234,7 +299,12 @@ function byteLength(text: string): number {
  * `null` = 本期没有为它收编专门卡片（含「适配器不认识」与「不在两族里」两种，
  * 两者靠 `family` 分开）⇒ UI 走通用工具行，**调用不会消失**。
  */
-function familyPayloadOf(block: Extract<ContractBlock, { type: 'tool-call' }>, live: boolean, at: string): ToolFamilyPayload | null {
+function familyPayloadOf(
+  block: Extract<ContractBlock, { type: 'tool-call' }>,
+  live: boolean,
+  at: string,
+  answers: ReadonlyMap<string, SettledAskUser>,
+): ToolFamilyPayload | null {
   // 「键不存在」与「显式 null」同一处置：老记录（`payload` 这一格之前落盘的）两者都有
   const payload = block.payload ?? null;
   if (payload === null) return null;
@@ -257,15 +327,26 @@ function familyPayloadOf(block: Extract<ContractBlock, { type: 'tool-call' }>, l
     };
   }
   /**
-   * 调用这一半只能给「还没收场」：答案与收场方式在**结果**那一半。
-   *
-   * ⚠️ **结果那一半目前没有人填**：`render-blocks.ts` 把这一格原样成卡，契约的 `ask-user` 载荷
-   * 也只有 `{ kind, questions }` ⇒ 七种收场与答案回填在真机上都走不到。
-   * **连夹具都喂不出来**（夹具走真实链路、绕不过这里），`settled` 那一支只有单测手搓对象才构造得出。
-   * 这里保持 `pending` 是**如实**的，不是漏了配对。
+   * 答复落到手（编排层写进 `tool-result` 那一半的那一份）⇒ **已收场**：答案与收场方式逐字回填，
+   * 卡片据此画七态里的那一档。找不到就是**还没收场**——两种情形都必须如实，不许互相顶替：
+   * 「还在等」与「等到了但没人答」在卡片上是两句话。
    */
+  const settled = answers.get(block.callId);
+  if (settled !== undefined) {
+    return {
+      family: 'ask-user',
+      interaction: {
+        state: 'settled',
+        questions: payload.questions,
+        outcome: settled.outcome,
+        answers: settled.answers,
+        at,
+        result: { ok: settled.ok, raw: settled.text, truncation: settled.truncation },
+      },
+    };
+  }
   /**
-   * 收场那一支现在没有产出方（见上），但 `at` 必须给**真实时刻**：卡片上的
+   * 还没收场：答案与收场方式都还没有。`at` 必须给**真实时刻**：卡片上的
    * 「等待答复中… 12m」与固定区那枚「等待答复」徽标**都读这一格**，空串会让
    * `Date.parse('')` 得 NaN、`formatDuration` 回落 `'0s'` ⇒ 恒显「刚问完」。
    */
@@ -374,6 +455,12 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     if (!folded.has(message.mergeKey)) order.push(message.mergeKey);
     folded.set(message.mergeKey, message);
   }
+
+  /**
+   * 答案那一半先收好（一遍扫全部消息），再摊块：摊块时每个 `tool-call` 块都要问一次
+   * 「这一问收场了没有」，逐块去扫账本会变成 O(n²)。
+   */
+  const answers = settledAskUserOf(messages);
 
   const sessions = new Map<string, SessionDraft>();
   /** 行级节点（`kind: 'row'`）：厂商只给汇总、没有逐条身份的那一档 */
@@ -514,7 +601,7 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     const sessionId = message.subagentId === null ? 'main' : sessionKeyOf(message.subagentId);
     const session = sessions.get(sessionId) ?? main;
     const at = atOfRound(message.roundTrip);
-    const blocks = blocksOf(message, input.facts.live, at);
+    const blocks = blocksOf(message, input.facts.live, at, answers);
     const bucket = session.turns.get(message.roundTrip);
     if (bucket === undefined) session.turns.set(message.roundTrip, { at, blocks: [...blocks] });
     else bucket.blocks.push(...blocks);
