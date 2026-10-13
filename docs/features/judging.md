@@ -32,15 +32,16 @@
   | `off` | `thinking: { type: 'disabled' }` | `thinking: { type: 'disabled' }` |
   | 其它档 | `reasoning_effort: '<档>'` | `output_config: { effort: '<档>' }` |
 
-  智能体侧三家各管各的：claude `off` ⇒ `thinking: { type: 'disabled' }` + env 覆盖层；codex `off` ⇒ `effort: 'none'`（裸 `off` 网关拒、重试 6 次后 exit 1 ⇒ 映射必要）**同时** `model_reasoning_summary: 'none'`（空转）；dsh overlay 档位表 `off: null`、未指定落 `high`。`judgeEffort` 落盘语义：**记「我们要求的」档位，不是「实际生效的」**。关闭档文案是「`off（要求不思考）`」——claude/codex 选 off 后并没有真的停止思考，文案若写成「不思考」就是向用户断言一件假事。
+  智能体侧四家各管各的：claude `off` ⇒ `thinking: { type: 'disabled' }` + env 覆盖层；codex `off` ⇒ `effort: 'none'`（裸 `off` 网关拒、重试 6 次后 exit 1 ⇒ 映射必要）**同时** `model_reasoning_summary: 'none'`（空转）；dsh overlay 档位表 `off: null`、未指定落 `high`；pi `off` 在 openai wire 上**不发 `reasoning_effort` 键**、在 anthropic wire 上是 `thinking: { type: 'disabled' }`（未选档位落 `medium`）。`judgeEffort` 落盘语义：**记「我们要求的」档位，不是「实际生效的」**。关闭档文案是「`off（要求不思考）`」——claude/codex 选 off 后并没有真的停止思考，文案若写成「不思考」就是向用户断言一件假事。
 
-- **结构化输出三家落点**（同一份 `JUDGE_OUTPUT_JSON_SCHEMA`，两条通道）：
+- **结构化输出四家落点**（同一份 `JUDGE_OUTPUT_JSON_SCHEMA`，三条通道）：
 
   | kind | 通道 | 落点 | 结果出口 |
   |---|---|---|---|
   | cc | 原生 | `options.outputFormat` | 收尾消息 `structured_output`；与 `result` 不一致落 WARN 且以 structured_output 为准 |
   | codex | 原生 | `turn/start` 一等字段 `outputSchema`（JSON-RPC，不落命令行） | 主会话答复文本写 `state.finalText` |
   | dsh | **填充层**（无原生通道） | 首轮把 schema 约束追加在提示词之后 + 骨架驱动的同会话修正轮（`continue`，上限 2 轮） | 答复文本写 `state.finalText`；`applied.structuredOutput` 恒 `false` |
+  | pi | **工具通道** | 自定义工具 `submit_result` + `constrainedSampling` 的 strict（**原 schema 直传**，禁止预归一化；装配期预检不过 ⇒ 降 `strict: 'prefer'` 并回填充层，点名 WARN） | 工具参数**投影回** `state.finalText`；`applied.structuredOutput` 只在答复确实来自被 strict 约束的工具参数时为真（模型改走正文时翻回 `false`） |
 
   三条硬约束：`input.outputSchema === undefined` 时一个字段都不加（**非对象**不是任何一家能用的 schema ⇒ 适配器按「没给」处置）；没有原生通道的家由填充层补齐，**交付契约相同、保证强度不同**；「这一次走没走原生通道」由**适配器**在收尾上报，编排层**拿到分之后**才据它留痕（不预读注册表）。
 
@@ -50,7 +51,7 @@
 - **`judgeStageAttempt` 四件事**：迟到事件闸门（落定后收尾事件不再落盘）；用户终止归因（`userAborted` 记账）；**污染对照**（仅智能体通路：评分前后各算一次改动摘要，不一致 ⇒ 拿到分时该行判 `failed`，拿不到分只留痕）；终止 race（`Promise.race`，终止赢 ⇒ 不改状态、在途结果只落「`[已终止的尝试]`」日志；**宽限为 0**，孤儿 promise 先挂 `.catch`）。
 - **文本通路**：评分上下文 = **意图 text 块 + 独立 text 块**。意图 text 块只含【题面 + 评分标准表】；diff 作为独立 text 块（块标题 `## candidate-diff.txt`）与意图分开输入——这对**所有文本评分生效**、与开关无关；空 diff 显式写「（无改动）」。开关开启时在 diff 块之后按序追加执行过程证据 text 块（`## candidate-events.jsonl`，codex 候选再加 `## candidate-messages.jsonl`；标题与内容照组装产物原样）。块翻译只在 `text-api.ts` 一处：attachment 块两协议统一翻成带 `## 文件名` 标题的 text 块（`{type:'text', text: '## <filename>\n\n<原文>'}`）。**为什么不是协议附件（anthropic document / openai file part）**：DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成 `[Unsupported Document]` 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在两协议三端点真机可用（判据 = 哨兵词复述）。网关将来支持协议附件后，重跑探针再议。结构检查不合格**回问**（`JUDGE_REPAIR_ROUNDS = 2`，即最多 3 次请求；修复轮全量重发同一份 diff 块与证据块，纠错文本在前；反馈点名缺项 + 引用键 / 目标 / 权重清单）；调用失败（网络 / 鉴权 / 限流）**透传原错误码**、一次都不回问；`MAX_TOKENS = 16_384`。
 - **解析唯一真源 `collectJudgeJudgments`**：剥围栏只剥整段的（中间夹散文不救）；**按引用键逐个取，缺一项即不合格**（`缺少对 <键>（<目标>）的判定：评分表里的每一项都必须恰好给出一条判定`）；多余判定忽略、重复键取第一条；`achieved` 宽容读（`"true"/"false"/"是"/"否"/"达成"/"未达成"`）；缺 verdict / reason 给占位文案（占位不是失败）。
-- **智能体通路**：`getProvider(kind).run`，`permission: 'read-only'`（提示词「只读评审」是要求、这一格是强制）、`configHome` = 独立 `.judgehome`、`outputSchema` 总是传（语义是「我想要」——走原生 schema 通道还是适配器内部的填充层，由该家自己决定）；**先判 `result.ok` 再读 `finalText`**（先读会把「没问到」当「答错了」）；`finalText === null` 与空答复两种 `JUDGE_PARSE_FAILED` 文案分开；评审者的事件与消息**原样转出、不加前缀**，落评分自己的 `judge-events.jsonl` / `judge-messages.jsonl`（与执行日志分开，靠「流的去处」分辨来源）；其用量不进行级三格，随分记 `judgeTokens` / `judgeDurationMs`。开关开启时：提示词在既有段落**之后追加**「## 候选的执行过程」段——逐项列出证据文件的**绝对路径**与它是什么，加读取指引（文件可能很大：先看结构再按需读，不要整份打印）；记录原文**不截断**，评审者直接读磁盘。记录文件落在 cwd 之外，同一条路径透传进 `run` 的 `extraReadPaths`（claude 映射 SDK `additionalDirectories` = `--add-dir`，扩进 `dontAsk` 的预授权范围；codex / dsh 不映射，只读档读本就放行）——没有这一格，claude 的 `dontAsk` 会拒读工作目录外的记录。证据为空（开关关 / 两份记录都缺失）时提示词与入参都不多这一格。
+- **智能体通路**：`getProvider(kind).run`，`permission: 'read-only'`（提示词「只读评审」是要求、这一格是强制）、`configHome` = 独立 `.judgehome`、`outputSchema` 总是传（语义是「我想要」——走原生 schema 通道还是适配器内部的填充层，由该家自己决定）；**先判 `result.ok` 再读 `finalText`**（先读会把「没问到」当「答错了」）；`finalText === null` 与空答复两种 `JUDGE_PARSE_FAILED` 文案分开；评审者的事件与消息**原样转出、不加前缀**，落评分自己的 `judge-events.jsonl` / `judge-messages.jsonl`（与执行日志分开，靠「流的去处」分辨来源）；其用量不进行级三格，随分记 `judgeTokens` / `judgeDurationMs`。开关开启时：提示词在既有段落**之后追加**「## 候选的执行过程」段——逐项列出证据文件的**绝对路径**与它是什么，加读取指引（文件可能很大：先看结构再按需读，不要整份打印）；记录原文**不截断**，评审者直接读磁盘。记录文件落在 cwd 之外，同一条路径透传进 `run` 的 `extraReadPaths`（claude 映射 SDK `additionalDirectories` = `--add-dir`，扩进 `dontAsk` 的预授权范围；codex / dsh / pi 不映射，只读档读本就放行）——没有这一格，claude 的 `dontAsk` 会拒读工作目录外的记录。证据为空（开关关 / 两份记录都缺失）时提示词与入参都不多这一格。
 - **结构化输出的留痕与处置**（拿到分之后才留痕：判据来自这一次运行的结果，跑之前无从得知）：
   - 答复**拿到了但不合格**（剥整段围栏 → `JSON.parse` → 「JSON Schema 子集 → zod」校验）⇒ 骨架在**同一会话**里追问修正，上限 **2 轮**（`STRUCTURED_OUTPUT_REPAIR_ROUNDS`），每轮落一条 `[WARN] 结构化输出未通过校验，要求模型修正（第 N/2 轮）：<首条问题>`；追问文本带上问题清单、schema 原文与它自己的原文（上限 20000 字符），并硬性要求不要重新读工作区 / 不要重新执行任务 / 不要改判定。
   - **耗尽仍不合格** ⇒ `[WARN] 结构化输出修正 2 轮后仍未通过校验：…`，`ok` / `finalText` **保持最后一轮原样**（修正流程不改写结论），评分段按「答复不可解析」报 `JUDGE_PARSE_FAILED`。适配器没有同会话追问通道（cc / codex）时**不做修正**，只剩一条 `[WARN] 答复不符合本次要求的 JSON Schema，且该适配器不支持同会话修正：…`——同样是一次如实的失败。

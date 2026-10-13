@@ -20,10 +20,14 @@ import {
   checkLifecycle,
   checkLineEventsAndSources,
   checkMergeKeys,
+  checkSubagentAttribution,
   checkSubagentBridge,
+  checkSubagentNameStability,
+  checkSubagentSingleRow,
   checkStructuredOutputGroup,
   checkTransportDeliveryGroup,
   checkUsagePairing,
+  foldSubagentDeliveries,
   mergeKeyOf,
   type ConformanceFixture,
   type ConformanceProduct,
@@ -148,6 +152,13 @@ function fixture(overrides: Partial<ConformanceFixture> = {}): ConformanceFixtur
             message({
               mergeKey: mergeKeyOf({ subagentId: null, roundTrip: 1, role: 'assistant', parentCallId: null }),
               blocks: [{ type: 'tool-call', callId: 'call_1', input: {} }] as AgentMessage['blocks'],
+            }),
+            // 子任务自己的消息：`subagentId` 是**子任务身份**，主会话那一格则是 `null`。
+            // 少了这一条，子任务节点折叠后的轮次是空的（K1 拦的正是这种「只有终局行」的产物）
+            message({
+              mergeKey: mergeKeyOf({ subagentId: 'child-1', roundTrip: 1, role: 'assistant', parentCallId: 'call_1' }),
+              subagentId: 'child-1',
+              parentCallId: 'call_1',
             }),
           ],
           subagents: [subagent({ subagentId: 'child-1', parentCallId: 'call_1' })],
@@ -279,6 +290,44 @@ describe('一致性套件：每条判据都能拦（反例）', () => {
       },
     });
     expect(() => checkUsagePairing(broken)).toThrow(/subagentTurns 大于 turns/);
+  });
+
+  it('subagentTokens 大于合计 tokens（界面按「主会话 = 合计 − 分量」推导）⇒ 红', () => {
+    const broken = fixture({
+      scenarios: {
+        'plain-reply': () =>
+          product({
+            usage: {
+              tokens: USAGE_OK,
+              turns: 1,
+              // 合计 6（1+2+3），分量 10：主会话会被算成负数
+              subagentTokens: { input: 5, cached: 0, output: 5, reasoningOutput: null, total: null },
+              subagentTurns: 1,
+            },
+          }),
+      },
+    });
+    expect(() => checkUsagePairing(broken)).toThrow(/大于合计 tokens/);
+  });
+
+  it('给了 subagentTokens 却把合计 tokens 记成 null（分量独立收得到、合计没采到）⇒ 不抛', () => {
+    const allowed = fixture({
+      scenarios: {
+        'plain-reply': () =>
+          product({ usage: { tokens: null, turns: 1, subagentTokens: USAGE_OK, subagentTurns: 1 } }),
+      },
+    });
+    expect(() => checkUsagePairing(allowed)).not.toThrow();
+  });
+
+  it('分量与合计相等（全是子会话、主会话零用量）⇒ 不抛：判据是「不大于」不是「小于」', () => {
+    const allowed = fixture({
+      scenarios: {
+        'plain-reply': () =>
+          product({ usage: { tokens: USAGE_OK, turns: 1, subagentTokens: USAGE_OK, subagentTurns: 1 } }),
+      },
+    });
+    expect(() => checkUsagePairing(allowed)).not.toThrow();
   });
 
   it('声明 thinkingText=yes 但场景里没有 thinking 块 ⇒ 红（这条堵的正是「声明与产物不符」）', () => {
@@ -447,6 +496,131 @@ describe('一致性套件：每条判据都能拦（反例）', () => {
       expectedFinalText: { 'plain-reply': '另一个答复' },
     });
     expect(() => checkFinalAnswer(broken)).toThrow(/finalText 应为/);
+  });
+});
+
+/**
+ * 子任务投递那一组（归属 / 折叠去重 / 名字稳定）。
+ *
+ * 正例刻意给**两条投递**（派发一条、收尾一条带终态与用量）：这一组的判据全部长在「多次投递」
+ * 这个形状上，只给一条的话三条判据都成了空转——而它们在真机上要拦的恰恰是两条投递之间的差。
+ */
+describe('一致性套件：子任务投递（归属 / 折叠 / 名字）', () => {
+  /** 派发那一条：状态还在跑、还没有结果与用量 */
+  const dispatched = subagent({ subagentId: 'child-1', name: '审查页面', kind: 'spawn_agent', status: 'running', parentCallId: 'call_1' });
+  /** 收尾那一条：完整快照（终态 + 结果 + 用量），名字与派发逐字相同 */
+  const settled = subagent({
+    subagentId: 'child-1',
+    name: '审查页面',
+    kind: 'spawn_agent',
+    status: 'completed',
+    outcome: '看完了',
+    usage: { input: 3, cached: 0, output: 2, reasoningOutput: null, total: null },
+    parentCallId: 'call_1',
+  });
+  /** 子任务自己的两条消息（两轮）——`subagentId` 挂的是子任务身份 */
+  const childMessages = [
+    message({
+      mergeKey: mergeKeyOf({ subagentId: 'child-1', roundTrip: 1, role: 'assistant', parentCallId: 'call_1' }),
+      subagentId: 'child-1',
+      parentCallId: 'call_1',
+    }),
+    message({
+      mergeKey: mergeKeyOf({ subagentId: 'child-1', roundTrip: 2, role: 'assistant', parentCallId: 'call_1' }),
+      subagentId: 'child-1',
+      parentCallId: 'call_1',
+      roundTrip: 2,
+    }),
+  ];
+  const withDeliveries = (records: SubagentRecord[], messages: AgentMessage[] = childMessages): ConformanceFixture =>
+    fixture({ scenarios: { subagent: () => product({ subagents: records, messages }) } });
+
+  it('两条投递（后者是完整快照）⇒ 三条判据都不抛', () => {
+    const ok = withDeliveries([dispatched, settled]);
+    expect(() => checkSubagentAttribution(ok)).not.toThrow();
+    expect(() => checkSubagentSingleRow(ok)).not.toThrow();
+    expect(() => checkSubagentNameStability(ok)).not.toThrow();
+  });
+
+  it('折叠成一行，且按首次出现顺序（后到的覆盖不挪位置）', () => {
+    // 两条身份：第二条先收尾、第一条后收尾 ⇒ 折叠输出仍按「第一次被说到」的顺序
+    const folded = foldSubagentDeliveries([
+      dispatched,
+      subagent({ subagentId: 'child-2', name: '另一个' }),
+      settled,
+    ]);
+    expect(folded.map((record) => record.subagentId)).toEqual(['child-1', 'child-2']);
+    expect(folded[0]).toMatchObject({ status: 'completed', outcome: '看完了' });
+  });
+
+  it('子任务行有、消息全挂主会话（没有一条带 subagentId）⇒ 红', () => {
+    const broken = withDeliveries([dispatched, settled], [message({ mergeKey: 'main|1|assistant|-' })]);
+    expect(() => checkSubagentAttribution(broken)).toThrow(/没有一条消息带 subagentId/);
+  });
+
+  it('归属键挂的是**派生它的调用 id**（两套 id）⇒ 仍归到同一个子任务节点，不抛', () => {
+    // 消息上写调用 id、记录上写身份：别名解析要把它们认成一回事（真机形态）
+    const aliased = [
+      message({
+        mergeKey: mergeKeyOf({ subagentId: 'call_1', roundTrip: 1, role: 'assistant', parentCallId: 'call_1' }),
+        subagentId: 'call_1',
+        parentCallId: 'call_1',
+      }),
+    ];
+    expect(() => checkSubagentAttribution(withDeliveries([dispatched, settled], aliased))).not.toThrow();
+  });
+
+  it('有带 subagentId 的消息，但一条都不落在某个子任务节点上 ⇒ 红（点名到那个子任务）', () => {
+    const broken = withDeliveries([dispatched, settled, subagent({ subagentId: 'child-2', name: '没人理它' })]);
+    expect(() => checkSubagentAttribution(broken)).toThrow(/子任务 child-2 没有一条归属它自己的消息/);
+  });
+
+  it('收尾那条比派发那条**更瘦**（覆盖会把事实抹掉）⇒ 红', () => {
+    const broken = withDeliveries([dispatched, subagent({ subagentId: 'child-1', name: '审查页面', status: 'completed' })]);
+    expect(() => checkSubagentSingleRow(broken)).toThrow(/把 kind 投成了 null/);
+  });
+
+  it('什么都不带的重发（与上一条逐格相同）⇒ 红', () => {
+    const broken = withDeliveries([dispatched, settled, { ...settled }]);
+    expect(() => checkSubagentSingleRow(broken)).toThrow(/与上一条逐格相同/);
+  });
+
+  it('补全带新事实（收尾第一次拿到终态与用量）⇒ 不抛（判据是内容，不是「发过没有」）', () => {
+    // 派发那一条已经带用量，收尾那一条把用量改大 ⇒ 有新事实，照发
+    const grew = { ...settled, usage: { input: 9, cached: 0, output: 5, reasoningOutput: null, total: null } };
+    expect(() => checkSubagentSingleRow(withDeliveries([{ ...dispatched, usage: settled.usage }, grew]))).not.toThrow();
+  });
+
+  it('派发时没有名字、收尾补上一个 ⇒ 不抛（补全不是改名）', () => {
+    const filled = { ...settled, name: '审查页面' };
+    expect(() => checkSubagentNameStability(withDeliveries([{ ...dispatched, name: null }, filled]))).not.toThrow();
+  });
+
+  it('收尾用厂商描述覆盖派发时的名字 ⇒ 红（并同时报出两个取值）', () => {
+    const broken = withDeliveries([dispatched, { ...settled, name: 'Review the page' }]);
+    expect(() => checkSubagentNameStability(broken)).toThrow(/名字被后来的投递改动/);
+  });
+
+  it('收尾把名字退回 null ⇒ 红（界面会在那一刻把标题换成 id 前 8 位）', () => {
+    const broken = withDeliveries([dispatched, { ...settled, name: null }]);
+    expect(() => checkSubagentNameStability(broken)).toThrow(/名字被后来的投递改动/);
+  });
+
+  it('派发时没名字、收尾补了两个不同的名字 ⇒ 红（补全过程中自己改了口）', () => {
+    const broken = withDeliveries([
+      { ...dispatched, name: null },
+      { ...settled, name: '甲' },
+      { ...settled, name: '乙' },
+    ]);
+    expect(() => checkSubagentNameStability(broken)).toThrow(/补全过程中出现了多个取值/);
+  });
+
+  it('没声明 subagent=yes 的家⇒ 归属判据空转（这一格不归它管）', () => {
+    const noSubagent = fixture({
+      capability: yesCapability({ subagent: 'no', subagentSource: null, subagentReason: 'not-supported' }),
+      scenarios: { subagent: () => product({ subagents: [dispatched, settled] }) },
+    });
+    expect(() => checkSubagentAttribution(noSubagent)).not.toThrow();
   });
 });
 
@@ -633,6 +807,48 @@ describe('一致性套件：注入面（MCP / skills）', () => {
   it('声明 mcp=yes 且登记了别处 ⇒ 不抛（那一层由接入守卫核对文件存在）', () => {
     const ok = fixture({ injection: mcpYes(), injectionProofElsewhere: { mcp: 'providers/cc/skills.test.ts' } });
     expect(() => checkInjectionNailing(ok)).not.toThrow();
+  });
+
+  /**
+   * **逐名绑定**（MCP 那一格的收紧）：判据不能再是「工具表里有**某个** `mcp__*`」。
+   *
+   * 三条用例各拦一类缺陷——「任一台缺席也算过」（改探针服务器名的形态）、「名单与事实不符」
+   * （夹具改名而判据没跟）、「名字形态不同就不认」（厂商把 `-` 写成 `_`）。前两条是这一格的
+   * 存在理由，第三条是共享匹配器那一半。
+   */
+  describe('MCP 逐名绑定', () => {
+    const withServers = (names: readonly string[], tools: string[], declared?: readonly string[]): ConformanceFixture =>
+      fixture({
+        injection: mcpYes(),
+        injectionProof: { mcp: 'mcp-injection' },
+        ...(declared === undefined ? {} : { injectedMcpServers: declared }),
+        scenarios: {
+          'mcp-injection': () =>
+            product({ events: [vendor({ tools })], injectionProbe: { mcpSent: sent, mcpServerNames: names } }),
+        },
+      });
+
+    it('每一台都在工具表里 ⇒ 不抛；名字被厂商 sanitize（`-` ⇒ `_`）也认', () => {
+      expect(() => checkInjectionNailing(withServers(['my-server'], ['Bash', 'mcp__my_server__echo'], ['my-server']))).not.toThrow();
+    });
+
+    it('只多出一台我们没注入的 `mcp__` 工具 ⇒ 红（「有某个 mcp__」不再算证据）', () => {
+      expect(() => checkInjectionNailing(withServers(['probe'], ['mcp__other__x'], ['probe']))).toThrow(
+        /厂商工具表里没有这几台的工具：probe/,
+      );
+    });
+
+    it('两台里只到一台 ⇒ 红（点名缺的那一台，不是笼统说「没证据」）', () => {
+      expect(() => checkInjectionNailing(withServers(['probe', 'ghost'], ['mcp__probe__echo'], ['probe', 'ghost']))).toThrow(
+        /厂商工具表里没有这几台的工具：ghost/,
+      );
+    });
+
+    it('声明的名单与请求侧探针不符 ⇒ 红（夹具改了名而判据没跟，这一格就白判了）', () => {
+      expect(() => checkInjectionNailing(withServers(['probe-x'], ['mcp__probe-x__echo'], ['probe']))).toThrow(
+        /声明的注入名单与请求侧探针不符/,
+      );
+    });
   });
 
   it('声明 mcp=no 却给了证明场景 ⇒ 红（声明不支持、却造得出事实）', () => {

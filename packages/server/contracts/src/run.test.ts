@@ -86,8 +86,8 @@ function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
 }
 
 describe('AGENT_KINDS', () => {
-  it('三家智能体与表同序同值（真源在 contracts）', () => {
-    expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh']);
+  it('全部智能体与表同序同值（真源在 contracts）', () => {
+    expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh', 'pi']);
     expect(AgentKindSchema.options).toEqual([...AGENT_KINDS]);
   });
 
@@ -95,6 +95,7 @@ describe('AGENT_KINDS', () => {
     expect(AGENT_LABELS['cc']).toBe('Claude Code');
     expect(AGENT_LABELS.codex).toBe('Codex');
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
+    expect(AGENT_LABELS.pi).toBe('Pi Coding Agent');
   });
 });
 

@@ -4,25 +4,32 @@
  * 用**合成 hooks**（不经过任何厂商消息形状）测骨架：每条断言恰好对应一条规则；厂商特有的注入与
  * 投影由各 provider 的用例覆盖。
  *
- * 两条口径（用户：「执行不限时间、评分不限轮次和时间」+「轮次按模型 API 往返算」）：
- *   · 骨架里**没有超时**——「挂住的适配器不会被任何时间流逝叫停，只有 `signal` 能停它」
- *     就是它的守卫；
+ * 三条口径（用户：「执行不限时间、评分不限轮次和时间」+「轮次按模型 API 往返算」+ 看门狗）：
+ *   · **总时长仍不限**——「一直有输出（轮次持续推进）的适配器跑一小时也不会被叫停」是它的守卫；
+ *   · 骨架判的是**静止**（没有输出 / 单轮往返不收尾），到点落 `timed-out`（见「看门狗」那一组）；
  *   · `usage` 事件的发射门槛是**轮次**（tokens 可空），不是「tokens 与 turns 同时在」。
  */
 import type { AgentEvent, AgentMessage, SubagentRecord } from '@aieval/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { logDraft } from './emit';
 import { AgentLoadError } from './errors';
+import { toolCallBlockDraft, toolResultBlockDraft, type MessageDraft } from './message';
 import { RELEASE_GRACE_MS } from './release';
 import {
   collectEvents,
   createFakeStream,
   createRecorder,
   createRunInput,
+  createTimedStream,
   settleWithFakeTimers,
+  type FakeStreamHandle,
   type FakeVendorRecorder,
 } from './testing/agent-fixtures';
-import type { MessageDraft } from './message';
+import type { AgentKind } from './types';
 import {
+  DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_TURN_WALL_CLOCK_MS,
+  disposeLiveSessions,
   runTurn,
   STRUCTURED_OUTPUT_REPAIR_ROUNDS,
   type TurnFinalize,
@@ -41,6 +48,10 @@ interface Harness {
 function createHarness(
   options: {
     events?: readonly unknown[];
+    /** 该次运行挂在哪一家名下：看门狗的「工具在途可合法静默」按家生效，故必须能换 kind */
+    kind?: AgentKind;
+    /** 自定义假流（覆盖默认的固定事件流）：时间轴形状的用例自己造流（见 `createTimedStream`） */
+    stream?: (recorder: FakeVendorRecorder) => FakeStreamHandle;
     /** 'stop'（默认，合作）| 'ignore'（忽略停止信号：dsh 与非合作 CLI 的真实形状） */
     interrupt?: 'stop' | 'ignore';
     hang?: boolean;
@@ -57,14 +68,16 @@ function createHarness(
   const recorder = createRecorder();
   const stats = { startCount: 0, disposeCount: 0, finalizeCount: 0 };
   const hooks: TurnHooks = {
-    kind: 'cc',
+    kind: options.kind ?? 'cc',
     start: async (context) => {
       stats.startCount += 1;
       if (options.startError !== undefined) throw options.startError;
-      const stream = createFakeStream(options.events ?? [], recorder, {
-        hang: options.hang === true,
-        throwAfterEvents: options.streamError,
-      });
+      const stream = options.stream === undefined
+        ? createFakeStream(options.events ?? [], recorder, {
+          hang: options.hang === true,
+          throwAfterEvents: options.streamError,
+        })
+        : options.stream(recorder);
       // 厂商 SDK 的硬中止入口（真实适配器把 controller 交给 SDK，这里用 abort 事件代表它）
       context.controller.signal.addEventListener('abort', () => stream.stop(), { once: true });
       return {
@@ -320,37 +333,6 @@ describe('runTurn', () => {
     ]);
     // 估算从来只进事件：结果里是世界给的权威值
     expect(result.tokens).toEqual({ input: 900, cached: 700, output: 60 });
-  });
-
-  /**
-   * **执行不限时间**（用户口径）：适配器挂住时，再多的时间流逝也不会让它自己结束
-   * ——没有内层超时、也没有外层兜底。唯一能停下它的是 `signal`（用户点「终止」）。
-   * 这是删掉 `AgentRunInput.timeoutMs` 之后**必须**有的守卫：少了它，「有人把超时加回来」
-   * 这件事没有任何用例会红。
-   */
-  it('挂住的适配器不会因为时间流逝被叫停（执行不限时间），只有 signal 能停它', async () => {
-    vi.useFakeTimers();
-    const controller = new AbortController();
-    const harness = createHarness({ interrupt: 'ignore', hang: true });
-    const promise = runTurn(createRunInput({ signal: controller.signal }), harness.hooks);
-    let settled = false;
-    void promise.then(() => {
-      settled = true;
-    });
-
-    // 推进 1 小时：仍然没有任何结论，也没有释放动作（原来这里到点就会 timed-out）
-    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-    expect(settled).toBe(false);
-    expect(harness.stats.disposeCount).toBe(0);
-    expect(harness.recorder.order).toEqual([]);
-
-    // 用户点「终止」：interrupt 无人响应 ⇒ 第二段在 5 秒后用 dispose 硬回收
-    controller.abort();
-    const result = await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 10 });
-    expect(result.exitReason).toBe('canceled');
-    expect(result.error?.code).toBe('AGENT_CANCELED');
-    expect(harness.recorder.order).toEqual(['interrupt', 'dispose', 'turn-end']);
-    expect(harness.stats.disposeCount).toBe(1);
   });
 
   it('适配器忽略 interrupt：5 秒后落 WARN 并强制释放，运行仍在有限时间内结束', async () => {
@@ -738,6 +720,435 @@ describe('runTurn', () => {
     };
     const result = await runTurn(createRunInput(), hooks);
     expect(result.finalText).toBeNull();
+  });
+});
+
+/**
+ * 看门狗（`AgentRunInput.watchdog`，默认常亮）：骨架判的是**这一行还在动吗**，不是工作时长。
+ *
+ * 四条口径（缺一条就会误杀或漏杀）：
+ *   ①「有输出」＝这一条投影交出了任何产品事件（行级事件 / 消息 / 子任务行 / 计量）；
+ *   ② 墙钟按**一次模型往返**计（观察到轮次推进就重新起表）——套在整行上等于把「执行不限时间」的总上限加回来；
+ *   ③ 工具在途挂起静止计时**只对能合法静默的家生效**（dsh 与 pi：工具全程可能一声不吭）；
+ *   ④ 等待审批在途也挂起——**识别机制按家不同、今天采不到 ⇒ 如实登记为「未豁免」**（见下面那条用例）。
+ *
+ * 时间全部走假定时器：两级上限是分钟级，真等就是白等。两侧都要钉——「到点之前一动不动」防早开火，
+ * 「到点之后收场」防永远不开火；只钉一侧的守卫分不出这两者。
+ */
+describe('看门狗：静止判超时', () => {
+  /** 一条「工具调用 / 工具结果」消息草稿：骨架判「在途工具」看的就是这两个块（按 `callId` 配平） */
+  function toolMessage(callId: string, phase: 'call' | 'result'): MessageDraft {
+    return {
+      vendorId: null,
+      role: 'assistant',
+      source: 'wire',
+      roundTrip: 1,
+      turn: null,
+      step: null,
+      parentCallId: null,
+      subagentId: null,
+      chunk: 'snapshot',
+      usage: null,
+      blocks: [
+        phase === 'call'
+          ? toolCallBlockDraft(callId, 'bash', { command: 'pnpm install' })
+          : toolResultBlockDraft(callId, 'ok', { isError: false }),
+      ],
+      raw: null,
+    };
+  }
+
+  /** 工具调用 / 结果的投影：两条都带行级事件（「有输出」成立），差别只在消息块上 */
+  function toolProjection(callId: string, phase: 'call' | 'result'): TurnProjection {
+    return {
+      drafts: [logDraft('stdout', `${phase} ${callId}`)],
+      tokens: null,
+      turns: null,
+      failure: null,
+      messages: [toolMessage(callId, phase)],
+    };
+  }
+
+  /** 事件流里的日志正文（摘要断言用）；非 log 事件取空串 */
+  function logText(events: readonly AgentEvent[]): string {
+    return events.map((event) => (event.type === 'log' ? event.text : '')).join('\n');
+  }
+
+  it('没有输出到空闲上限 ⇒ timed-out（释放三段式照走，结论不是 completed）', async () => {
+    expect(DEFAULT_IDLE_TIMEOUT_MS).toBe(180_000);
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    const harness = createHarness({ hang: true });
+    const promise = runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    // 上限之内一动不动：什么都不能发生（早开火会把「模型想得久」判成静止）
+    await vi.advanceTimersByTimeAsync(DEFAULT_IDLE_TIMEOUT_MS - 1_000);
+    expect(settled).toBe(false);
+    expect(harness.stats.disposeCount).toBe(0);
+
+    const result = await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 20 });
+    expect(result.ok).toBe(false);
+    expect(result.exitReason).toBe('timed-out');
+    expect(result.error?.code).toBe('AGENT_TIMED_OUT');
+    // 看门狗只是**另一个终止发起者**：走的仍是 interrupt → 终结在途 → dispose
+    expect(harness.recorder.order).toEqual(['interrupt', 'turn-end', 'dispose']);
+    expect(harness.stats.disposeCount).toBe(1);
+    expect(logText(events)).toContain('静止');
+  });
+
+  it('有输出就不算静止：每 60 秒一条事件，跑满 5 分钟也不判超时', async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({
+      // 只带行级日志、不带轮次：这一条证的只能是「有输出 ⇒ 重置空闲计时」
+      stream: (recorder) => createTimedStream(
+        [0, 60_000, 120_000, 180_000, 240_000].map((atMs) => ({ atMs, event: atMs })),
+        recorder,
+      ),
+      projection: (raw) => ({
+        drafts: [logDraft('stdout', `进度 ${String(raw)}`)],
+        tokens: null,
+        turns: null,
+        failure: null,
+      }),
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    // 5 分钟 > 空闲上限，而最后一条输出在 240 秒：计时只按「最后一次输出」算
+    await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+    await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 10 });
+    expect(settled).toBe(true);
+    expect((await promise).exitReason).toBe('completed');
+  });
+
+  /**
+   * 口径①的**完整面**：「有输出」＝这一条投影交出了任何产品事件，四种载体（行级事件 / 消息 /
+   * 子任务行 / 计量）**各自**都算数。少认一种的表现不是报错，而是那一类通道被误杀——例如只发消息、
+   * 不发任何行级事件的适配器会在空闲上限被判静止超时，而它其实一直在干活。
+   *
+   * 判据取**时间差**：输出落在 100 s（把空闲期限推到 280 s），推进到 200 s（已越过开跑后的 180 s）
+   * 仍不许收场；不认这一类载体的话，看门狗在 180 s 就开火了。反面同样要钉：四条都空的投影
+   *（纯重复事件，唯一允许丢弃的一类）**不算**输出，180 s 到点照常判静止。
+   */
+  it('「有输出」的四种载体各自都算数；四条都空则照常判静止', async () => {
+    const subagent: SubagentRecord = {
+      subagentId: 'child-1',
+      name: null,
+      kind: null,
+      source: 'wire',
+      status: 'running',
+      statusMissing: null,
+      outcome: null,
+      parentCallId: null,
+      parentSubagentId: null,
+      usage: null,
+    };
+    const message: MessageDraft = {
+      vendorId: null,
+      role: 'assistant',
+      source: 'wire',
+      roundTrip: 1,
+      turn: null,
+      step: null,
+      parentCallId: null,
+      subagentId: null,
+      chunk: 'snapshot',
+      usage: null,
+      blocks: [],
+      raw: null,
+    };
+    const cases: { name: string; projection: TurnProjection; trips: boolean }[] = [
+      {
+        name: '行级事件',
+        trips: false,
+        projection: { drafts: [logDraft('stdout', '还在跑')], tokens: null, turns: null, failure: null },
+      },
+      {
+        name: '消息',
+        trips: false,
+        projection: { drafts: [], tokens: null, turns: null, failure: null, messages: [message] },
+      },
+      {
+        name: '子任务行',
+        trips: false,
+        projection: { drafts: [], tokens: null, turns: null, failure: null, subagents: [subagent] },
+      },
+      {
+        name: '计量（轮次）',
+        trips: false,
+        projection: { drafts: [], tokens: null, turns: 1, failure: null },
+      },
+      {
+        name: '纯重复（四条都空）',
+        trips: true,
+        projection: { drafts: [], tokens: null, turns: null, failure: null },
+      },
+    ];
+
+    for (const item of cases) {
+      vi.useFakeTimers();
+      let stream: FakeStreamHandle | undefined;
+      const harness = createHarness({
+        stream: (recorder) => {
+          stream = createTimedStream([{ atMs: 100_000, event: 'tick' }], recorder, { hang: true });
+          return stream;
+        },
+        projection: () => item.projection,
+      });
+      const promise = runTurn(createRunInput({}), harness.hooks);
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      if (item.trips) {
+        expect(settled, `${item.name} 不算输出 ⇒ 到点就该判静止`).toBe(true);
+        expect((await promise).exitReason).toBe('timed-out');
+      } else {
+        expect(settled, `${item.name} 算输出 ⇒ 越过空闲上限也不许收场`).toBe(false);
+        stream?.stop();
+        await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 5 });
+        expect((await promise).exitReason).toBe('completed');
+      }
+      vi.useRealTimers();
+    }
+  });
+
+  it('墙钟按一次模型往返计：轮次持续推进 ⇒ 跑一小时也不判静止（总时长仍不限）', async () => {
+    expect(DEFAULT_TURN_WALL_CLOCK_MS).toBe(600_000);
+    vi.useFakeTimers();
+    let round = 0;
+    const harness = createHarness({
+      // 每 2 分钟收尾一次模型往返（轮次 +1），共 30 次 ⇒ 一小时的活
+      stream: (recorder) => createTimedStream(
+        Array.from({ length: 30 }, (_, index) => ({ atMs: (index + 1) * 120_000, event: index + 1 })),
+        recorder,
+      ),
+      projection: () => {
+        round += 1;
+        return {
+          drafts: [logDraft('stdout', `第 ${round} 次往返`)],
+          tokens: null,
+          turns: round,
+          failure: null,
+        };
+      },
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    // 59 分钟：远超单轮上限，但每一次往返都在上限之内收尾 ⇒ 不许判静止
+    await vi.advanceTimersByTimeAsync(59 * 60 * 1000);
+    expect(settled).toBe(false);
+    expect(harness.stats.disposeCount).toBe(0);
+
+    await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 5 });
+    expect((await promise).exitReason).toBe('completed');
+  });
+
+  it('一直有输出但一次往返都不收尾（drip）⇒ 单轮墙钟到点判 timed-out', async () => {
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    const harness = createHarness({
+      stream: (recorder) => createTimedStream(
+        Array.from({ length: 20 }, (_, index) => ({ atMs: (index + 1) * 60_000, event: index })),
+        recorder,
+        { hang: true },
+      ),
+      // 每条都有输出（空闲计时被反复重置），而轮次一直是 null：永远没有一次往返收尾
+      projection: () => ({
+        drafts: [logDraft('stdout', 'delta')],
+        tokens: null,
+        turns: null,
+        failure: null,
+      }),
+    });
+    const promise = runTurn(createRunInput({ onEvent: collectEvents(events) }), harness.hooks);
+
+    const result = await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 12 });
+    expect(result.exitReason).toBe('timed-out');
+    expect(result.error?.code).toBe('AGENT_TIMED_OUT');
+    // 摘要要说清是哪一级开火（排障时「静止」与「往返不收尾」是两件事）
+    expect(logText(events)).toContain('单次模型往返');
+  });
+
+  /**
+   * 两条豁免的家各跑一遍：判据要的是「同一形状在两家都不判静止」，而不是「dsh 恰好有一行登记」。
+   * pi 那一格与 dsh 同因：`tool_execution_update` 只在工具有输出时才发、bash 工具没有默认超时，
+   * 静默长命令是合法的（见 `turn.ts` 那张表的注释）。
+   */
+  it.each(['dsh', 'pi'] as const)('工具在途允许合法静默的家（%s）：整段无输出的工具不判静止', async (kind) => {
+    vi.useFakeTimers();
+    const harness = createHarness({
+      kind,
+      stream: (recorder) => createTimedStream(
+        [
+          { atMs: 0, event: 'call' },
+          // 400 秒的整段静默：远超空闲上限，而工具还在跑（这一家的静默长命令是合法的）
+          { atMs: 400_000, event: 'result' },
+        ],
+        recorder,
+      ),
+      projection: (raw) => (raw === 'call' ? toolProjection('call-1', 'call') : toolProjection('call-1', 'result')),
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(399_000);
+    expect(settled).toBe(false);
+    expect(harness.stats.disposeCount).toBe(0);
+
+    await settleWithFakeTimers(promise, { stepMs: 10_000, steps: 5 });
+    expect((await promise).exitReason).toBe('completed');
+  });
+
+  it('不能合法静默的家（cc）没有这条豁免：同样的工具在途形状照空闲上限判静止', async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({
+      stream: (recorder) => createTimedStream([{ atMs: 0, event: 'call' }], recorder, { hang: true }),
+      projection: () => toolProjection('call-1', 'call'),
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+
+    // cc 的工具在途有 30 秒心跳/硬夹：豁免它只会把真挂死的工具藏起来
+    const result = await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 5 });
+    expect(result.exitReason).toBe('timed-out');
+    expect(harness.stats.disposeCount).toBe(1);
+  });
+
+  it('在途工具按同一 callId 配平：别的 callId 的结果块不清它（否则挂死被当合法静默）', async () => {
+    vi.useFakeTimers();
+    let stream: FakeStreamHandle | undefined;
+    const harness = createHarness({
+      kind: 'dsh',
+      stream: (recorder) => {
+        stream = createTimedStream(
+          [
+            { atMs: 0, event: 'call' },
+            { atMs: 100_000, event: 'other-result' },
+          ],
+          recorder,
+          { hang: true },
+        );
+        return stream;
+      },
+      projection: (raw) => (raw === 'call' ? toolProjection('call-1', 'call') : toolProjection('call-2', 'result')),
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    // 别的调用收尾之后又静默 200 秒：call-1 仍在途 ⇒ 计时仍挂起（配平判错的话 180 秒就到点）
+    await vi.advanceTimersByTimeAsync(100_000 + 200_000);
+    expect(settled).toBe(false);
+    expect(harness.stats.disposeCount).toBe(0);
+
+    stream?.stop();
+    expect((await promise).exitReason).toBe('completed');
+  });
+
+  it('「等待审批」今天未豁免：dsh 停在无人应答的批准上按静止收场（识别机制未落地）', async () => {
+    // 已文档化的正确行为是：read-only 档停在无人应答的批准上、直到用户点「终止」。而识别「在等审批」
+    // 的事件按家不同，dsh 的通知流里没有这一类（只有装配期一次性的档位事实）⇒ 如实登记为**未豁免**：
+    // 这一格的现时行为就是被看门狗判成 timed-out。哪天补上识别机制，这条用例与文档要一起改
+    //（它就是这份登记的判据，不是「期望如此」）。
+    vi.useFakeTimers();
+    const harness = createHarness({ kind: 'dsh', hang: true });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+
+    const result = await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 4 });
+    expect(result.exitReason).toBe('timed-out');
+    expect(result.error?.code).toBe('AGENT_TIMED_OUT');
+  });
+
+  it('阈值可传入：显式给小值就按小值判（缺省值只是缺省）', async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ hang: true });
+    const promise = runTurn(
+      createRunInput({ watchdog: { idleTimeoutMs: 5_000, turnWallClockMs: 9_000 } }),
+      harness.hooks,
+    );
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(settled).toBe(false);
+    const result = await settleWithFakeTimers(promise, { stepMs: 1_000, steps: 10 });
+    expect(result.exitReason).toBe('timed-out');
+  });
+
+  it('显式给 0 关掉一级（逃生门）：空闲关了之后只剩单轮墙钟管它', async () => {
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    const harness = createHarness({ hang: true });
+    const promise = runTurn(
+      createRunInput({ watchdog: { idleTimeoutMs: 0 }, onEvent: collectEvents(events) }),
+      harness.hooks,
+    );
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(settled).toBe(false);
+
+    const result = await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 8 });
+    expect(result.exitReason).toBe('timed-out');
+    expect(logText(events)).toContain('单次模型往返');
+  });
+});
+
+/**
+ * 停机回收：宿主收信号时要把**本进程在册的在途会话**逐个释放（`disposeLiveSessions()`）。
+ * 为什么必须有：SDK 代 spawn 的工具子进程是 detach 的，宿主一死就成孤儿、还捏着那一行的工作区与
+ * 配置目录；而死掉的进程谁也回收不了（`SIGKILL` 不可捕获，那一格不可闭合）。
+ */
+describe('停机回收：在册会话', () => {
+  it('在途运行会进在册表：disposeLiveSessions() 停它，并等释放三段式走完', async () => {
+    const harness = createHarness({ hang: true });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+
+    await disposeLiveSessions();
+
+    // 合作的适配器：interrupt 一响，在途区间就收尾，之后才是 dispose
+    expect(harness.recorder.order).toEqual(['interrupt', 'turn-end', 'dispose']);
+    expect(harness.stats.disposeCount).toBe(1);
+    // 宿主停机是「外部要求停止」⇒ 收场是 canceled：截断的行不许报成 completed
+    expect((await promise).exitReason).toBe('canceled');
+  });
+
+  it('已收尾的运行会注销：再调 disposeLiveSessions() 不会二次释放', async () => {
+    const harness = createHarness({ events: [] });
+    const result = await runTurn(createRunInput({}), harness.hooks);
+    expect(result.exitReason).toBe('completed');
+
+    await disposeLiveSessions();
+
+    expect(harness.stats.disposeCount).toBe(1);
+    expect(harness.recorder.order.filter((entry) => entry === 'dispose')).toHaveLength(1);
+  });
+
+  it('没有在途运行时立即返回', async () => {
+    await expect(disposeLiveSessions()).resolves.toBeUndefined();
   });
 });
 

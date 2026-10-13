@@ -7,8 +7,8 @@
  */
 import { z } from 'zod';
 
-/** 三家智能体 id 的**唯一真源** */
-export const AGENT_KINDS = ['cc', 'codex', 'dsh'] as const;
+/** 全部智能体 id 的**唯一真源** */
+export const AGENT_KINDS = ['cc', 'codex', 'dsh', 'pi'] as const;
 export const AgentKindSchema = z.enum(AGENT_KINDS);
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
@@ -17,4 +17,5 @@ export const AGENT_LABELS: Record<AgentKind, string> = {
   cc: 'Claude Code',
   codex: 'Codex',
   dsh: 'DeepSeek Harness',
+  pi: 'Pi Coding Agent',
 };

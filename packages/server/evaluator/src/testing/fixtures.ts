@@ -727,34 +727,68 @@ export function releaseAllAgents(): void {
 }
 
 /**
- * 假 provider：元数据与**真实注册表**逐格一致 —— cc `['anthropic']` / codex `['openai']` /
- * dsh `['openai','anthropic']`（两条 wire 都能收）。
+ * 假 provider 的**消息能力**声明：编排层不读它（它服务内容级视图），故这里用最宽松的一份形状桩，
+ * 四家共用；各家的真值在各自的 `providers/<kind>/index.ts` 里，由 agents 包的一致性用例钉住。
+ *
+ * **为什么是逐字字面量、而不是 `permissiveMessageCapability()`**：那个函数要用就得从
+ * `@aieval/agents` **运行时** import 进来，而它正是被 `vi.mock` 的模块之一 ⇒ 夹具会被卷进
+ * 「工厂 → seams → fixtures → 在飞模块」那条环（见本文件 `:34` 那条 import 的注释）。
+ * 字面量把这条运行时边**彻底去掉**，且不需要任何运行时读——**不要**改用
+ * `vi.importActual('@aieval/agents')` 现取（那只是把边挪到执行期，风险面不明），
+ * 也**不要**在夹具里另写一个同名复制函数（那是第二份真源）。
+ * （那个函数只在 `agents` 包内测试里用，用不着再权衡。）
+ *
+ * 等价性：与 `agents/src/types.ts` 的 `permissiveMessageCapability()` 返回值**逐格等价**（17 格
+ * = 6 个能力位 + 5 对 `Source`/`Reason` + `notes`）；将来 `MessageCapability`（`contracts/src/agent-message.ts:401-463`）
+ * 新增必填格时 `tsc` 会**直接点名**，故这份字面量不会静默过期。
+ */
+const FAKE_MESSAGE_CAPABILITY: AgentProviderMetadata['messageCapability'] = {
+  thinkingText: 'yes',
+  thinkingTextKind: 'full',
+  toolInput: 'yes',
+  toolResult: 'yes',
+  subagent: 'yes',
+  streamingDelta: 'yes',
+  thinkingTextSource: 'wire',
+  thinkingTextReason: null,
+  toolInputSource: 'wire',
+  toolInputReason: null,
+  toolResultSource: 'wire',
+  toolResultReason: null,
+  subagentSource: 'wire',
+  subagentReason: null,
+  streamingDeltaSource: 'wire',
+  streamingDeltaReason: null,
+  notes: [],
+};
+
+/**
+ * 假 provider 的元数据：与**真实注册表**逐格一致（各家真值在 `providers/<kind>/index.ts`，
+ * 由 agents 包的元数据回归网钉住）。
+ *
+ * 为什么是 `Record<AgentKind, …>` 而不是一串 `kind === '…' ? … : …` 三元链：三元链漏掉一家时
+ * **照样编译、照样有默认分支**，而这个文件是 evaluator 全部编排用例的元数据来源——新家接进来时
+ * 「夹具悄悄给了它别家的协议集合」不会有任何判据发现（真值改动与夹具漂移只会在很久以后以
+ * 某条用例的怪结论显形）。穷尽映射让漏格变成 `tsc` 当场点名。
+ *
  * 为什么不能随手写个「默认值」：编排层的协议校验读的就是这份元数据
  *（`orchestrator.ts`：`acceptsProtocol(agentProvider.metadata, providerRecord.protocolType)`），
  * 夹具里写错一格，对应那几条用例的绿色就建立在**被 mock 的假元数据**上
  * （改回真值，两条 dsh 用例立刻以 `CONFLICT` 变红）。`run()` 的行为完全由脚本决定。
  */
-function makeFakeProvider(kind: AgentKind): AgentProvider {
-  const metadata: AgentProviderMetadata = {
-    protocolTypes: kind === 'dsh' ? ['openai', 'anthropic'] : kind === 'codex' ? ['openai'] : ['anthropic'],
+const FAKE_PROVIDER_METADATA = {
+  cc: {
+    protocolTypes: ['anthropic'],
     // capability 只有两格（照着真注册表）：结构化输出没有能力位——走没走原生通道由适配器按本次
     // 运行上报（`applied.structuredOutput`），框架里不留任何按家判能力的代码
-    capability: { cancelMidTurn: kind !== 'dsh', usage: true },
-    // 档位域照**真值**填（三家首项都是 `off`，claude 的关闭走
+    capability: { cancelMidTurn: true, usage: true },
+    // 档位域照**真值**填（各家首项都是 `off`，claude 的关闭走
     // `thinking: { type: 'disabled' }`、codex 的走 `none`）。编排层不读它（交集在 api 层算），
     // 但填成一份万能表会让「假 provider 与真注册表逐格一致」这条前提在审计时看不出破绽。
-    reasoningEfforts:
-      kind === 'cc'
-        ? ['off', 'low', 'medium', 'high', 'xhigh', 'max']
-        : kind === 'codex'
-          ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']
-          : ['off', 'low', 'high', 'max'],
-    // `defaultEffort` 同真值：只有 dsh 有（API 侧要用它拦「未选 + 模型不支持缺省档」）
-    ...(kind === 'dsh' ? { defaultEffort: 'high' } : {}),
+    reasoningEfforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'],
     /**
-     * 注入面声明：照**真值**填（三家 MCP 与 skill 两条下发通路都通）。编排层不读它，
+     * 注入面声明：照**真值**填（MCP 与 skill 两条下发通路都通）。编排层不读它，
      * 但「假 provider 与真注册表逐格一致」是这份夹具的前提——填一份宽松桩会让审计看不出破绽。
-     * 三家的真值在各自的 `providers/<kind>/index.ts`，由 agents 包的元数据回归网钉住。
      */
     injection: {
       mcp: { state: 'yes', reason: null },
@@ -762,49 +796,65 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
       notes: [],
     },
     /**
-     * 耗时量级同真值：三家都是分钟级（真机冒烟的等待预算按这一档派生）。编排层不读它，
+     * 耗时量级同真值（真机冒烟的等待预算按这一档派生）。编排层不读它，
      * 但「假 provider 与真注册表逐格一致」是这份夹具的前提。
      */
     timing: { runScale: 'minutes', notes: [] },
+    messageCapability: FAKE_MESSAGE_CAPABILITY,
     // 推理证据需求同真值：只有 codex 的思考全文与工具结果正文只在 messages.jsonl 里，
     // 编排层据它决定「执行过程记录」证据要不要多拼一份消息账本
-    needsMessagesForReasoningEvidence: kind === 'codex',
-    /**
-     * 消息能力声明：编排层不读它（它服务内容级视图），故这里用最宽松的一份形状桩；
-     * 三家的真值在各自的 `providers/<kind>/index.ts` 里，由 agents 包的一致性用例钉住。
-     *
-     * **为什么是逐字字面量、而不是 `permissiveMessageCapability()`**：那个函数要用就得从
-     * `@aieval/agents` **运行时** import 进来，而它正是被 `vi.mock` 的模块之一 ⇒ 夹具会被卷进
-     * 「工厂 → seams → fixtures → 在飞模块」那条环（见本文件 `:34` 那条 import 的注释）。
-     * 字面量把这条运行时边**彻底去掉**，且不需要任何运行时读——**不要**改用
-     * `vi.importActual('@aieval/agents')` 现取（那只是把边挪到执行期，风险面不明），
-     * 也**不要**在夹具里另写一个同名复制函数（那是第二份真源）。
-     * （那个函数只在 `agents` 包内测试里用，用不着再权衡。）
-     *
-     * 等价性：与 `agents/src/types.ts` 的 `permissiveMessageCapability()` 返回值**逐格等价**（17 格
-     * = 6 个能力位 + 5 对 `Source`/`Reason` + `notes`）；将来 `MessageCapability`（`contracts/src/agent-message.ts:401-463`）
-     * 新增必填格时 `tsc` 会**直接点名**，故这份字面量不会静默过期。
-     */
-    messageCapability: {
-      thinkingText: 'yes',
-      thinkingTextKind: 'full',
-      toolInput: 'yes',
-      toolResult: 'yes',
-      subagent: 'yes',
-      streamingDelta: 'yes',
-      thinkingTextSource: 'wire',
-      thinkingTextReason: null,
-      toolInputSource: 'wire',
-      toolInputReason: null,
-      toolResultSource: 'wire',
-      toolResultReason: null,
-      subagentSource: 'wire',
-      subagentReason: null,
-      streamingDeltaSource: 'wire',
-      streamingDeltaReason: null,
+    needsMessagesForReasoningEvidence: false,
+    // `defaultEffort` 同真值：只有声明了「未选时真的会落到某个档」的家才有
+    // （API 侧要用它拦「未选 + 模型不支持缺省档」）
+  },
+  codex: {
+    protocolTypes: ['openai'],
+    capability: { cancelMidTurn: true, usage: true },
+    reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'],
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
       notes: [],
     },
-  };
+    timing: { runScale: 'minutes', notes: [] },
+    messageCapability: FAKE_MESSAGE_CAPABILITY,
+    needsMessagesForReasoningEvidence: true,
+  },
+  dsh: {
+    protocolTypes: ['openai', 'anthropic'],
+    // dsh 的 SDK 没有 wire-level cancel ⇒ 这一格是 false（与真值一致）
+    capability: { cancelMidTurn: false, usage: true },
+    reasoningEfforts: ['off', 'low', 'high', 'max'],
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [],
+    },
+    timing: { runScale: 'minutes', notes: [] },
+    messageCapability: FAKE_MESSAGE_CAPABILITY,
+    needsMessagesForReasoningEvidence: false,
+    defaultEffort: 'high',
+  },
+  pi: {
+    // 两条 wire 都能收（in-process SDK 自注册 provider，协议决定 wire）
+    protocolTypes: ['openai', 'anthropic'],
+    capability: { cancelMidTurn: true, usage: true },
+    reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high'],
+    injection: {
+      mcp: { state: 'yes', reason: null },
+      skills: { state: 'yes', reason: null },
+      notes: [],
+    },
+    // 秒级：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
+    timing: { runScale: 'seconds', notes: [] },
+    messageCapability: FAKE_MESSAGE_CAPABILITY,
+    needsMessagesForReasoningEvidence: false,
+    defaultEffort: 'medium',
+  },
+} satisfies Record<AgentKind, AgentProviderMetadata>;
+
+function makeFakeProvider(kind: AgentKind): AgentProvider {
+  const metadata: AgentProviderMetadata = FAKE_PROVIDER_METADATA[kind];
   return {
     kind,
     displayName: `假 ${kind}`,
@@ -861,15 +911,18 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         const subagentTurns = script.subagentTurns === undefined ? null : script.subagentTurns;
         /**
          * `applied`（必填格）：**适配器上报的每-run 通道事实**，而假 provider 不走骨架 ⇒ 这里照真适配器
-         * 的行为现算：cc / codex 拿到 schema 就走原生通道（`true`），dsh 只有填充层（恒 `false`）。
+         * 的行为现算：原生 schema 通道只有 cc / codex 有（claude 的 `outputFormat`、codex 的
+         * `outputSchema`），dsh 与 pi 都没有 ⇒ 那一格恒 `false`。
          *
          * 为什么不写死 `false`：cc / codex 走真 `run` 时**真的**走原生通道，写死会让夹具的绿色建立在
          * 「与真行为相反」的假值上——正是本文件顶部那条「与真实注册表逐格一致」要防的事。
+         * 有通道的那几家**逐家列名**（不写 `kind !== 'dsh'` 这类「除了某家都对」）：那种写法会给新家
+         * 默认一条它可能没有的原生通道，而这一格要回答的正是「它到底有没有」。
          * `script.structuredOutput` 可以显式覆盖（要造「网关把 schema 丢了」这一类形态时用）。
          */
         const schemaWanted = input.outputSchema !== undefined && input.outputSchema !== null;
         const applied = {
-          structuredOutput: script.structuredOutput ?? (schemaWanted && kind !== 'dsh'),
+          structuredOutput: script.structuredOutput ?? (schemaWanted && (kind === 'cc' || kind === 'codex')),
         };
         return {
           ok,
@@ -991,9 +1044,9 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         );
       }
       if (script.selfTimeout === true) {
-        // 适配器**自报**超时（没有内层 `timeoutMs` 可依）：直接按 timed-out 收场。
-        // 这一档的存在意义是让 `classifyStop` 的「适配器自报 timed-out」那一支仍有生产者与守卫——
-        // 那一支现在是行状态 `timed-out` 的**唯一**来源（编排层自己的兜底超时已删除）。
+        // **上游自己报**的超时（骨架的看门狗之外的另一条来路）：直接按 timed-out 收场。
+        // 这一档让 `classifyStop` 的 timed-out 支在「不是看门狗掐的」那条路上也有守卫——
+        // 行状态 `timed-out` 的两个生产者在这一支上合流，编排层对两者一视同仁。
         return finish('timed-out', false, { code: 'AGENT_TIMED_OUT', message: '假适配器：自报超时' });
       }
       if (mode === 'gate') {

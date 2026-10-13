@@ -95,6 +95,26 @@ describe('cc：task_* 帧的形状判决', () => {
     expect(end.subagent?.status).toBe('completed');
   });
 
+  /**
+   * **收尾那条完整快照必须带上 `kind`**（`subagent_type` 只在派发帧上，真机键集见 `message.ts`）。
+   * 覆盖不许丢事实：收尾帧那一格缺席时若不回填，同一个子任务的第二条投递就把派发时采到的
+   * `general-purpose` 换成 `null`，面板上那条子任务行在收尾那一拍退回半截
+   * （同一帧上的 `name` 一直在回填，两条投递的口径必须一致）。
+   */
+  it('派发帧带 `subagent_type`、收尾帧不带 ⇒ 两条投递的 `kind` 一致且非空', () => {
+    const normalizer = createClaudeMessageNormalizer();
+    const start = normalizer.normalize(DISPATCH_START, state());
+    const end = normalizer.normalize(
+      { type: 'system', subtype: 'task_notification', task_id: 'afb636cf844060a29', tool_use_id: 'call_00_IMhfpY0slUImZQz8HdhB9708', status: 'completed', summary: '看完了' },
+      state(),
+    );
+    expect(start.subagent?.kind).toBe('general-purpose');
+    // 后到的那条不许比先到的那条更瘦：`kind` 逐字相同、且都不是 `null`
+    expect(end.subagent?.kind).toBe(start.subagent?.kind);
+    // 名字走同一条回填路（收尾帧同样没有 `description`）
+    expect(end.subagent?.name).toBe(start.subagent?.name);
+  });
+
   it('只见到收场帧（没有 start 可判形状）⇒ 照产行，但判决是 unjudged（不冒充实派发的证据）', () => {
     const output = createClaudeMessageNormalizer().normalize(
       { type: 'system', subtype: 'task_notification', task_id: 'task-x', tool_use_id: 'call_x', status: 'completed', summary: '跑完了' },

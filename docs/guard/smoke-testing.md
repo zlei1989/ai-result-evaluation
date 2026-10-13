@@ -75,7 +75,7 @@
 
 ### 网关不可达：真机冒烟的外部阻塞
 
-症状是**看起来像代码坏了**：真机 `live-mcp.test.ts` 卡满 300 s 超时、留下活着的厂商 CLI 进程（超时的用例不会自己收掉子进程，要 `pkill -9 -f "claude-agent-sdk-darwin-arm64/claude"` 与 `pkill -9 -f "aieval-live-mcp-"` 手工清理）；三家一起挂，界面侧的注入文件、事件、观测格**全都正常**。
+症状是**看起来像代码坏了**：真机 `live-mcp.test.ts` 卡满 300 s 超时、留下活着的厂商 CLI 进程（超时的用例不会自己收掉子进程，要 `pkill -9 -f "claude-agent-sdk-darwin-arm64/claude"` 与 `pkill -9 -f "aieval-live-mcp-"` 手工清理）；四家一起挂，界面侧的注入文件、事件、观测格**全都正常**。
 
 判据三步（**按这个顺序，前一步定性了就别往下跑**；真源与坑 ⑥ 同一条）：
 
@@ -88,7 +88,7 @@
 ## 相关链接
 
 - [Playwright MCP](/guard/playwright-mcp) —— `filename` 路径规则、几何断言、与冒烟的衔接（活文档）
-- [《MCP 配置》](/features/mcp-config) —— 真机冒烟的目标面：三家注入落点、失败判据与真机状态的证据链
+- [《MCP 配置》](/features/mcp-config) —— 真机冒烟的目标面：四家注入落点、失败判据与真机状态的证据链
 - [PowerShell](/guard/powershell) —— 冒烟现场涉及删除/清理时的安全底线
 - [变异验证](/guard/mutation-verification) —— 冒烟新增的守卫必须见过失败才算守卫
 - [故障索引](/faq/) —— 冒烟撞见的运行期问题按报错原文索引

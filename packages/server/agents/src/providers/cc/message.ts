@@ -124,6 +124,19 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
   const phantomIds = new Set<string>();
 
   /**
+   * **子任务 `kind` 账**（`taskId → subagent_type`，一份 run 一张）。
+   *
+   * 为什么要有它：`subagent_type` **只在派发帧上**（收场帧的键集见 `subagentRecord` 的注记），
+   * 而收尾那条投递是**完整快照**语义 ⇒ 不回填的话，同一个子任务的第二条投递会把 `kind` 覆盖成
+   * `null`，面板上那条子任务行在收尾那一拍退回半截（`name` 有回填、`kind` 没有）。
+   *
+   * 为什么跟着 run 的闭包走、不像名字表那样放模块级：名字有**两个**投影读它（审计日志在
+   * `events.ts`，那儿看不到本文件的闭包），而 `kind` 只有本文件的 `subagentRecord` 一个读者
+   * ⇒ 一份 run 一张账既够用，又不会把上一次运行（或上一个用例）的值留着。
+   */
+  const taskKinds = new Map<string, string>();
+
+  /**
    * **每条厂商 assistant 消息一本块序号账**（key = `message.id`；无 id 的畸形帧退到 `rt:<轮次>`）。
    *
    * 账里两格：`allocator` 把「厂商消息内的块序号」换算成「该载体内第几个块」，`delivered` 是
@@ -190,7 +203,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
     const taskShape = classifyTask(message, subtype === 'task_started');
     // 幻影**不产行**（面板里那条幽灵「子任务」就是它）；`'unjudged'` 照产（丢一个真派发比多一行更坏）
     if (taskShape === 'phantom') return { messages: [], subagent: null, taskShape };
-    return { messages: [], subagent: subagentRecord(message), taskShape };
+    return { messages: [], subagent: subagentRecord(message, taskKinds), taskShape };
   };
 
   /**
@@ -544,7 +557,8 @@ export function resetClaudeTaskNamesForTesting(): void {
  *   · `status`：`task_notification.status` ∈ `completed` / `failed` / `stopped`；还没收到通知
  *     （`task_started`）时记 `running`——**状态与「状态是否采到」分开记**，`statusMissing` 恒 `null`
  *     （这一家的终态是原生字段，不存在「没采到」）。
- *   · `name` ← `task_started.description`；`kind` ← `subagent_type`。
+ *   · `name` ← `task_started.description`；`kind` ← `subagent_type`。**这两格收场帧都没有**
+ *     （真机键集见上面的名字表）⇒ 都要在派发那一拍记下来、收尾回填，否则第二条投递会把它们覆盖成 `null`。
  *   · `parentCallId` ← **`tool_use_id`**（`task_started` / `task_progress` / `task_notification`
  *     都带这一格）：它是**派生这个子任务的那次工具调用 id**，与子消息上的 `parent_tool_use_id`、
  *     `Agent` 工具调用块的 `callId` 三者同值。**没有它，界面上的
@@ -555,22 +569,36 @@ export function resetClaudeTaskNamesForTesting(): void {
  *     `duration_ms`），与契约的 `UsageTokens`（input / cached / output 三格必填）不同口径 ⇒ 拿不到
  *     合法的填法就整格记 `null`（**不编三个 0**）。
  *
+ * `kindFacts` 是**一份 run 一张**的 `kind` 账（闭包里的 `taskKinds`）：`subagent_type` 只在派发帧上，
+ * 收尾这条完整快照靠它回填，否则会把采到的 `kind` 覆盖成 `null`。
+ *
  * ⚠️ **本函数不判形状**（它只回答「这一条 `task_*` 描述的子任务行长什么样」）：唯一调用方是
  * `subagentFrame`，而它已经用**形状判决**把幻影挡在外面了（`ClaudeTaskShape`）。别单独调它——
  * 那等于绕开形状判据、把 CLI 的非 Agent 任务重新收成一条子任务行。
  */
-function subagentRecord(message: Record<string, unknown> | null): SubagentRecord | null {
+function subagentRecord(
+  message: Record<string, unknown> | null,
+  kindFacts: Map<string, string>,
+): SubagentRecord | null {
   const subtype = readString(message, 'subtype');
   if (subtype !== 'task_started' && subtype !== 'task_notification') return null;
   const identity = firstNonEmpty(readString(message, 'task_id'));
   if (identity === null) return null;
   // 名字只在**派发帧**上（收场帧的键集里没有 `description`）⇒ 这一支是名字表的写入点之一
   if (subtype === 'task_started') rememberClaudeTaskName(identity, readString(message, 'description'));
+  const kind = readString(message, 'subagent_type');
+  /**
+   * `kind` 与名字同一条路：**派发帧记下来**，收尾帧那一格缺席时回填。
+   * 记的是**非 `null`** 而不是「非空串」——`''` 与形状判决里那三格的刻度同一口径（厂商在那一格上
+   * 确实给了东西，只是给的是空串），记下来才保证后到的完整快照不会把它换成 `null`。
+   */
+  if (subtype === 'task_started' && kind !== null) kindFacts.set(identity, kind);
   return {
     subagentId: identity,
     // 收场帧用名字表回填：不回填的话，子任务行与活动行在收场那一拍会同时掉名字
     name: readString(message, 'description') ?? lookupClaudeTaskName(identity),
-    kind: readString(message, 'subagent_type'),
+    // 同一个子任务的每一条投递都要带全 `kind`：收尾那条不能比派发那条更瘦
+    kind: kind ?? kindFacts.get(identity) ?? null,
     source: 'wire',
     status: subtype === 'task_started' ? 'running' : normalizeStatus(readString(message, 'status')),
     // 这一家的状态是原生字段 ⇒ 不存在「采不到」；未识别的取值归到 `unknown` 而不是留空

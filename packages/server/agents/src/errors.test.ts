@@ -51,6 +51,33 @@ describe('AgentLoadError', () => {
     expect(error.message).not.toContain('pnpm add');
   });
 
+  /**
+   * 第三种语义：包与导出面都对，是**运行时太老**。
+   * 为什么必须与 `missing` 分开：这条路径上包在、`node_modules` 完整，安装命令同样恒无效，
+   * 而补救动作（升级 Node）与另两条完全不同 ⇒ 文案要点名要求下限、本机版本，并排掉重装。
+   */
+  it('node-version：运行时低于厂商下限 —— 文案点名下限与本机版本，且不含 `pnpm add`', () => {
+    const error = new AgentLoadError('@earendil-works/pi-coding-agent', new Error('需要 Node ≥22.19.0，当前 20.11.0'), {
+      variant: 'node-version',
+      required: '≥22.19.0',
+      current: '20.11.0',
+    });
+    expect(error.code).toBe('AGENT_LOAD_FAILED');
+    expect(error.variant).toBe('node-version');
+    expect(error.message).not.toContain('pnpm add');
+    expect(error.message).toContain('@earendil-works/pi-coding-agent');
+    expect(error.message).toContain('Node ≥22.19.0'); // 要求的下限
+    expect(error.message).toContain('20.11.0'); // 本机实测版本
+    expect(error.message).toContain('升级 Node');
+  });
+
+  it('node-version 缺字段时文案有兜底措辞（不出现半截句子）', () => {
+    const error = new AgentLoadError('@x/y', new Error('版本不够'), { variant: 'node-version' });
+    expect(error.message).toContain('（未登记）');
+    expect(error.message).toContain('（读不到版本）');
+    expect(error.message).not.toContain('pnpm add');
+  });
+
   it('原因是任意值时也不抛（事件流里的 cause 可能是字符串或对象）', () => {
     expect(() => new AgentLoadError('@x/y', { weird: true })).not.toThrow();
   });

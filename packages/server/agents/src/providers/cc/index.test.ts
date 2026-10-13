@@ -1359,8 +1359,11 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
       createRunInput({ configHome, onEvent: collectEvents(events), onSubagent: (record) => records.push(record) }),
     );
 
-    // 前一句：面板照产（收场那一帧 + `finalize` 的重交各一条）
-    expect(records.map((record) => record.subagentId)).toEqual(['task-x', 'task-x']);
+    /**
+     * 前一句：面板照产**一行**（收场那一帧，就是这一档的全部事实）。
+     * 收尾那次重交与它逐字相同（这一档没有转录 ⇒ 用量仍是 `null`）⇒ 不带新事实的投递不重交。
+     */
+    expect(records.map((record) => [record.subagentId, record.status])).toEqual([['task-x', 'completed']]);
     // 中一句：不进事实核对名单 ⇒ 两格照算（这一档没有转录 ⇒ 零而不是 null），且**没有**「它读不到」那句
     expect(result.subagentTokens).toEqual({ input: 0, cached: 0, output: 0, reasoningOutput: null, total: null });
     expect(result.subagentTurns).toBe(0);

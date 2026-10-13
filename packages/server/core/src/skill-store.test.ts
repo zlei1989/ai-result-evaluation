@@ -195,6 +195,21 @@ describe('scanSkills：识别单位与准入', () => {
     expect(entryOf(scanSkills(), 'long-desc').ok).toBe(false);
   });
 
+  /**
+   * `disable-model-invocation: true` 是「装载但不进提示词」的陷阱格：厂商清单里会有它
+   * （观测格报「已装上」），模型却看不到它。本仓的停用是**文件级不放**，故这一条不收。
+   */
+  it('disable-model-invocation 藏起来的技能 ⇒ ok=false + 说明「不受支持」', () => {
+    seedSkill('hidden', { name: 'hidden', description: '想藏起来', 'disable-model-invocation': 'true' });
+    // 值写 `false` 的等于没写：那不是「藏起来」，照旧合格
+    seedSkill('shown', { name: 'shown', description: '正常', 'disable-model-invocation': 'false' });
+
+    const hidden = entryOf(scanSkills(), 'hidden');
+    expect(hidden.ok).toBe(false);
+    expect(hidden.reason).toContain('disable-model-invocation');
+    expect(entryOf(scanSkills(), 'shown').ok).toBe(true);
+  });
+
   it('没有 frontmatter 的 SKILL.md ⇒ ok=false（name 与 description 都缺）', () => {
     seedSkill('no-frontmatter', null, '# 直接就是正文\n');
 

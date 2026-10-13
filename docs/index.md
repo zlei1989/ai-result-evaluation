@@ -1,10 +1,10 @@
 # ai-result-evaluation 知识库
 
-AI 生成代码评测平台的知识库：面向人与 AI 的唯一知识真源。五域导航见下方地图；三家厂商 FAQ 与 PowerShell / Playwright MCP 是持续追加的活文档，其余文章为按主题域组织的知识文章。
+AI 生成代码评测平台的知识库：面向人与 AI 的唯一知识真源。五域导航见下方地图；四家厂商 FAQ 与 PowerShell / Playwright MCP 是持续追加的活文档，其余文章为按主题域组织的知识文章。
 
 ## 协议规范
 
-智能体适配层的一切事实：Provider 抽象与 run 入口、消息规范、事件流、进程生命周期、新增 SDK 接入流程，以及 Claude Code / Codex / DSH 三家厂商各自的技术细节与横向对比。
+智能体适配层的一切事实：Provider 抽象与 run 入口、消息规范、事件流、进程生命周期、新增 SDK 接入流程，以及 Claude Code / Codex / DSH / Pi Coding Agent 四家厂商各自的技术细节与横向对比。
 
 *文章落地中——先见 FAQ 域的厂商台账。*
 
@@ -22,11 +22,12 @@ AI 生成代码评测平台的知识库：面向人与 AI 的唯一知识真源�
 
 ## FAQ
 
-三家厂商适配的运行期问题台账——现象标题照抄报错原文，拿报错一搜即命中：
+四家厂商适配的运行期问题台账——现象标题照抄报错原文，拿报错一搜即命中：
 
 - [Codex FAQ](/faq/codex) —— `@openai/codex` / `codex app-server`
 - [Claude Code FAQ](/faq/claude-code) —— `@anthropic-ai/claude-agent-sdk`
 - [DeepSeek Harness FAQ](/faq/deepseek-harness) —— `@deepseek-ai/dsh-sdk-client`
+- [Pi Coding Agent FAQ](/faq/pi) —— `@earendil-works/pi-coding-agent`
 
 ## 规约守卫
 

@@ -142,6 +142,14 @@ export const RowMcpServerSchema = z.object({
   judgedBy: RowMcpBasisSchema,
   /** 结论（见 `RowMcpVerdictSchema`） */
   verdict: RowMcpVerdictSchema,
+  /**
+   * **如实呈现**用的一句说明（可选）。今天只有一种：两台服务器名在厂商工具表里同形
+   * （`my-server` 与 `my_server`——厂商把名字里的 `-` 写成 `_`），那一批工具**归不到**具体哪一台。
+   *
+   * 它**不改结论**：既不写成已连上、也不写成没有（那两台届时都是 `unverified`）。
+   * 可选是为了让绝大多数行与本格逐字同形——没有这句话时不写这一格。
+   */
+  note: z.string().min(1).optional(),
 });
 export type RowMcpServer = z.infer<typeof RowMcpServerSchema>;
 

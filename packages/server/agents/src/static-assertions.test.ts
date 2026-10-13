@@ -88,24 +88,45 @@ function envWriteViolations(source: string): string[] {
   return violations;
 }
 
-/** 三家厂商包：只允许出现在动态 import() 与错误文案里（与 package.json 的一致性由专条断言钉住） */
+/** 厂商包：只允许出现在动态 import() 与错误文案里（与 package.json 的一致性由专条断言钉住） */
 const VENDOR_PACKAGES = [
   '@anthropic-ai/claude-agent-sdk',
   '@openai/codex',
   '@deepseek-ai/dsh-sdk-client',
+  '@earendil-works/pi-coding-agent',
+  // pi 的**模型层**包：适配器要从它拿 `InMemoryCredentialStore`（凭据只进内存的那条通道）。
+  // 它在清单里，因此也受「只能动态 import」管——与它的兄弟包 `pi-coding-agent` 同一条纪律。
+  '@earendil-works/pi-ai',
+  // pi 的**终端 UI** 包：本仓一行都不 import 它，它进依赖清单只是为了让 pi 的兄弟包（子智能体扩展）
+  // 的 peer 落在同一份实例上。仍然登记——「反向」那条断言要求依赖清单里凡属厂商 scope 的包都在这张表里，
+  // 漏了它这条 scope 的覆盖就静默变窄。
+  '@earendil-works/pi-tui',
 ] as const;
 
 /**
- * 依赖清单里属于「厂商包」的那一类：三条厂商 scope（`@anthropic-ai/` / `@openai/` / `@deepseek-ai/`）下的依赖。
- * 为什么不用「包名以 `-sdk` 结尾」那种形状启发式：codex 走 CLI 包后名字是 `@openai/codex`、**不以 `-sdk`
- * 结尾**，形状判据会把三家之一漏掉（`VENDOR_PACKAGES` 随即静默失去覆盖）；scope 判据不依赖后缀命名，
- * 同一家旗下的新包照样落进集合。
- * **两条已知边界**：① 判据是 scope 白名单——新增一家不在这三条 scope 下的厂商包
- * （例如 `@google/genai`）时，下面的交叉断言照样通过，`VENDOR_PACKAGES` 却静默失去覆盖；
- * ② 只读 `dependencies`，不读 `devDependencies` ——把厂商包挪到 devDependencies 也同样失去覆盖。
- * 也就是说这条断言守的是「现有三家的名字与位置不漂移」，不是「任何形式的厂商依赖都被纳入」。
+ * 厂商包的 **scope**（`@anthropic-ai` / `@openai` / …）：从 `VENDOR_PACKAGES` 的包名里取出来。
+ * 为什么不用「包名以 `-sdk` 结尾」那种形状启发式：codex 走 CLI 包后名字是 `@openai/codex`、**不以
+ * `-sdk` 结尾**，形状判据会把它漏掉；scope 不依赖后缀命名。
  */
-const VENDOR_DEPENDENCY_PATTERN = /^@(?:anthropic-ai|openai|deepseek-ai)\//;
+const VENDOR_SCOPES: readonly string[] = [...new Set(VENDOR_PACKAGES.map((name) => name.split('/')[0]!))];
+
+/**
+ * 依赖清单里属于「厂商包」的那一类：`VENDOR_PACKAGES` 的 scope 之下的一切。
+ *
+ * 为什么**从 `VENDOR_PACKAGES` 派生**而不是手写一份 scope 白名单：两份清单必然漂移，而漂移是
+ * **静默**的——新家的包名进了 `VENDOR_PACKAGES`（于是「只能动态 import」这条规则开始扫它），
+ * 下面的交叉断言却仍按旧 scope 过滤，于是谁也发现不了「清单比规则窄」。派生之后，加一个包名
+ * 就等于同时扩了 scope。
+ *
+ * **三条已知边界**（如实登记）：① 粒度是 scope——同一 scope 下的**兄弟包**（例如 pi 的
+ * `@earendil-works/pi-tui`）也会落进这个集合，故正反两条交叉断言判的都是**清单里的那几个名字**
+ * 有没有对上，而不是「集合与清单全等」；② 只读 `dependencies`，不读 `devDependencies`——把厂商包挪到
+ * devDependencies 也会失去覆盖；③ 派生自包名 ⇒ scope 与包名不同源时（`@a/b` 写成了 `@c/b`）
+ * 交叉断言会把 scope 当成 `@c`，而那正是「写错一个字母」应有的表现（清单里找不到 `@a/b` ⇒ 红）。
+ */
+const VENDOR_DEPENDENCY_PATTERN: RegExp = new RegExp(
+  `^(?:${VENDOR_SCOPES.map((scope) => scope.replace(/[/@.]/g, '\\$&')).join('|')})/`,
+);
 
 /**
  * 顶层静态导入的**两条结构式**：
@@ -287,16 +308,74 @@ describe('源码级不变量', () => {
     }
   });
 
-  it('VENDOR_PACKAGES 与 package.json 的厂商依赖集合相同（同一份三元组不能有两个真源）', () => {
+  /**
+   * **清单不许窄于依赖**（本仓真发生过一次）：`VENDOR_PACKAGES` 与 `dependencies` 是两份清单，
+   * 而两者都只在**新家的包名**上才需要同步。反向缺口是静默的：往 `dependencies` 里加一个
+   * 厂商 scope 下的包（例如凭据存储所在的那个模型层包）却忘了登记进 `VENDOR_PACKAGES` 时，
+   * 「厂商包只能动态 import」这条规则对它**一个字都不扫**，而所有断言照样全绿。
+   *
+   * 判据是「`dependencies` 里凡命中派生 scope 的包，都必须出现在清单里」——
+   * 只判这个方向，不要求清单 ⊆ 依赖（那是下面那条既有断言在判），两条合起来才是双向一致。
+   */
+  it('反向：dependencies 里厂商 scope 下的包一个都不许漏出 VENDOR_PACKAGES（漏了那条规则就静默失去覆盖）', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
+    ) as { dependencies?: Record<string, string> };
+    const declaredVendorDeps = Object.keys(manifest.dependencies ?? {})
+      .filter((name) => VENDOR_DEPENDENCY_PATTERN.test(name));
+
+    for (const name of declaredVendorDeps) {
+      expect(
+        VENDOR_PACKAGES as readonly string[],
+        `${name} 是厂商依赖却没进 VENDOR_PACKAGES：「只能动态 import」这条规则对它失去覆盖`,
+      ).toContain(name);
+    }
+  });
+
+  it('VENDOR_PACKAGES 的每一家都在 package.json 的厂商依赖里（清单与依赖清单不能有两个真源）', () => {
     // 为什么必须钉：将来新增/改名一家（或调整依赖）时，断言会**静默**失去覆盖——扫描照跑，
     // 只是再也没有一个源文件可能命中它。这里读 package.json 现比，不把版本或包名抄成测试字面量。
     const manifest = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
     ) as { dependencies?: Record<string, string> };
-    const inManifest = Object.keys(manifest.dependencies ?? {})
-      .filter((name) => VENDOR_DEPENDENCY_PATTERN.test(name))
-      .sort();
-    expect(inManifest).toEqual([...VENDOR_PACKAGES].sort());
+    const inManifest = Object.keys(manifest.dependencies ?? {});
+    /**
+     * 判据是**单向包含**（清单 ⊆ 依赖），不是全等：`VENDOR_DEPENDENCY_PATTERN` 的粒度是 scope，
+     * 同一家旗下的兄弟包也会落进集合——它们是厂商 SDK 的**配套包**、不是本仓要加载的入口，
+     * 未进依赖清单的那些自然也不该列进 `VENDOR_PACKAGES`。
+     * 反向仍然钉死：**任何一个 `VENDOR_PACKAGES` 成员**（含 scope）都不在 `dependencies` 里 ⇒ 红
+     * ——那正是「改了名 / 挪到 devDependencies / 写错 scope」这三种静默失效的形状。
+     * 另一个方向由上面那条「反向」用例看管（依赖里有、清单里没有）。
+     */
+    for (const name of VENDOR_PACKAGES) {
+      expect(inManifest, `${name} 不在 agents 包的 dependencies 里：这条规则对它即失去覆盖`).toContain(name);
+    }
+    /**
+     * 顺带钉住「派生出来的 scope 真的能匹配到自家包名」：清单与正则若各写一份，漂移是静默的
+     * ——扫描照跑，只是再也没有一个源文件可能命中它。这一条只判「枚举包含了清单里的包」，
+     * 与下面那条形状样本分开（那条判的是**模式**本身的松紧）。
+     */
+    for (const name of VENDOR_PACKAGES) {
+      expect(VENDOR_DEPENDENCY_PATTERN.test(name), `${name} 没被派生出的 scope 模式匹配上`).toBe(true);
+    }
+  });
+
+  /**
+   * 派生的 scope 模式必须**认得出自家包、且放得过无关包**——样本两条一起判，缺一条就会漏掉
+   * 一整类漂移：只判「认得出」时，一个 `^@.*` 那样的宽模式照样全绿（于是「厂商包只能动态 import」
+   * 这条规则会把无关包也扫进去）；只判「放得过」时，一个空模式（谁都不匹配）也照样全绿
+   * （于是这条规则**静默失去覆盖**，正是 `VENDOR_DEPENDENCY_PATTERN` 从清单派生的理由）。
+   * 样本用真实的四家包名与三个无关包名，不另造合成名——判据要贴的正是现实里的形状。
+   */
+  it('派生的厂商 scope 模式：四家的包都命中，无关包一个都不命中', () => {
+    for (const name of VENDOR_PACKAGES) {
+      expect(VENDOR_DEPENDENCY_PATTERN.test(name), `自家包没命中：${name}`).toBe(true);
+      // 子路径形态（`@vendor/pkg/sub`）也算同一家：包名后面必须允许跟路径
+      expect(VENDOR_DEPENDENCY_PATTERN.test(`${name}/dist/index.js`), `子路径没命中：${name}`).toBe(true);
+    }
+    for (const unrelated of ['zod', '@aieval/contracts', '@types/node']) {
+      expect(VENDOR_DEPENDENCY_PATTERN.test(unrelated), `无关包被当成厂商包：${unrelated}`).toBe(false);
+    }
   });
 
   /**

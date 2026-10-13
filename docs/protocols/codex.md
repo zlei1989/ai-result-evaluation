@@ -102,7 +102,7 @@ codex **有原生 skills 机制**，落点是**文件**而不是配置键：把�
 | 消息级用量 | 结构性缺 | app-server 只到线程级 ⇒ `AgentMessage.usage` 恒 `null`，点名记录，不用近似值顶替 |
 | 计划更新的 `explanation`（模型自己写的「为什么改计划」） | **未闭合**（协议面上有、我们没采） | `TurnPlanUpdatedNotification = { threadId, turnId, explanation: string \| null, plan[] }`（本机 `codex app-server generate-ts` 生成物逐字），而 `appserver/protocol.ts` 的窄声明只读 `plan[]` ⇒ `ToolCallPayload.note` 恒 `null`。补它要动 `protocol.ts` + `message.ts` + `message-conformance.test.ts` 的 `note` 断言，属**扩展采集面**，单独开口 |
 | 命令入参里的 `justification`（模型写的审批理由） | 结构性缺 | `codex-rs` 的 `ExecCommandArgs.justification` 只服务于沙箱升级审批，而 `ThreadItem.commandExecution` 的字段里**没有它**（协议面就丢了）⇒ 本仓读不到，也不该拿审批语义当「这一步在干什么」 |
-| 工具调用的「人话描述」 | 结构性缺 | codex 全家族**没有** `description` 这一格（`command_execution` 只有 `command`/`cwd` 一族；`apply_patch` 是 FREEFORM lark 语法，补丁正文不在协议条目里）。所以摘要只能走「族拼法」：`exec_command` 给命令原文、`apply_patch` 给改动清单，见《三家横向对比》 |
+| 工具调用的「人话描述」 | 结构性缺 | codex 全家族**没有** `description` 这一格（`command_execution` 只有 `command`/`cwd` 一族；`apply_patch` 是 FREEFORM lark 语法，补丁正文不在协议条目里）。所以摘要只能走「族拼法」：`exec_command` 给命令原文、`apply_patch` 给改动清单，见《四家横向对比》 |
 | 只回密文路由的推理明文 | 结构性缺 | `content[]` 为空 ⇒ `text: null` + `'none'`，不回落 summary |
 | 审批 / 问用户 | 结构性缺 | 协议形态是 server→client 请求，本仓不应答 ⇒ `unavailable`，不合成消息 |
 | 轮次近似 | 取舍 | `Turn` ≠ 一次往返；与 `subagentTurns` 同一把尺，无答复条目时 `null` |
@@ -121,5 +121,5 @@ codex **有原生 skills 机制**，落点是**文件**而不是配置键：把�
 
 - 活文档：[Codex FAQ](/faq/codex)——加载与凭据、网关与 wire、评分通路、计量与思考、进程与收尾五组现象条目，拿报错原文一搜即命中
 - 仓库内参考：`packages/server/agents/README.md`——§4.4 能力查询的唯一入口、§5 各家差异（注入落点 / 停止与释放 / 事件流 / 轮次与计量）、§8.1 新增 SDK 接入清单
-- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/cc)、[《三家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
+- 知识文章：[《DeepSeek Harness 接入》](/protocols/dsh)、[《Claude Code 接入》](/protocols/cc)、[《四家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（四家 skills 的配置面与行级判据）、[《评分》](/features/judging)（outputSchema 的评分侧全链）、[《行执行与日志》](/features/row-execution)（用量与轮次展示口径）、[《密钥与环境变量》](/guard/secrets-and-env)（`env_key` 与子进程环境凭据规则）
 - 外部资料：[openai/codex discussions#7782](https://github.com/openai/codex/discussions/7782)（chat wire 移除）、[process.getBuiltinModule](https://nodejs.org/api/process.html#processgetbuiltinmodulemoduleid)（跨打包器取真 `createRequire`）

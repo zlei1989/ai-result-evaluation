@@ -9,7 +9,7 @@
  * 行的形状取**契约类型**（`EvalRow` 的 `Pick`）：判据读什么就声明什么，字段名写错时 `tsc`
  * 直接点名。本地影子接口配 `as T` 正是当初让①格恒绿的原因，这里不再重蹈。
  */
-import { AGENT_KINDS, type EvalRow } from '@aieval/contracts';
+import { AGENT_KINDS, type AgentKind, type EvalRow } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
 import {
   LIVE_SMOKE_COVERAGE,
@@ -157,6 +157,22 @@ describe('真机冒烟覆盖台账', () => {
       );
     }
   });
+
+  /**
+   * 台账只有两种合法形状：**跑过**（带日期、provider / 模型与墙钟）或**未跑**（逐字以「未跑」开头）。
+   *
+   * 为什么值得单钉：这一格谁也拦不住随手填一句，而它唯一的失败模式是「没跑过却写得像跑过」
+   * ——新家接入时最容易发生（适配器还没接上，台账先抄了别家那一行）。判据取**形状**而不是内容：
+   * 跑过的行必须给出日期与墙钟，未跑的行必须逐字点明「未跑」。
+   */
+  it('每条登记要么是跑过的实证（日期 + 墙钟），要么逐字写明「未跑」', () => {
+    for (const kind of AGENT_KINDS) {
+      const evidence = LIVE_SMOKE_COVERAGE[kind];
+      if (evidence.startsWith('未跑')) continue;
+      expect(evidence, `${kind} 写了跑过，却没有日期`).toMatch(/\d{4}-\d{2}-\d{2}/);
+      expect(evidence, `${kind} 写了跑过，却没有墙钟`).toMatch(/墙钟/);
+    }
+  });
 });
 
 describe('⑦ 耗时格与等待预算（声明驱动消费方）', () => {
@@ -189,8 +205,17 @@ describe('⑦ 耗时格与等待预算（声明驱动消费方）', () => {
     expect(durationCeilingFor('minutes')).toBeGreaterThan(waitBudgetFor('minutes'));
   });
 
-  it('三家的量级都解析成分钟级（真值来自注册表，不是本地常量）', () => {
-    for (const kind of AGENT_KINDS) expect(scaleOf(kind), `${kind} 的耗时量级`).toBe('minutes');
+  it('每一家的量级都解析成**它自己声明的**那一档（真值来自注册表，不是本地常量）', () => {
+    // 逐家写死而不是「全都是分钟级」：量级是**声明**，pi 的 in-process SDK 声明的就是秒级，
+    // 把它当异常改掉等于用一句旧文案覆盖掉新家的真值。等待预算按这一档派生，写错了会掐掉自己那一轮。
+    // `Record<AgentKind, …>` 而不是 `Record<string, …>`：新家接进来时这一格必须有人表态。
+    const declared: Record<AgentKind, 'seconds' | 'minutes'> = {
+      cc: 'minutes',
+      codex: 'minutes',
+      dsh: 'minutes',
+      pi: 'seconds',
+    };
+    for (const kind of AGENT_KINDS) expect(scaleOf(kind), `${kind} 的耗时量级`).toBe(declared[kind]);
   });
 
   it('没给或给了不认识的家 ⇒ 按最宽的一档，不把等待预算压到 1 分钟', () => {

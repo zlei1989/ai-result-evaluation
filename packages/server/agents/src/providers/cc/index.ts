@@ -618,19 +618,44 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   };
 
   /**
+   * **已经交出去的子任务行签名**（`身份|整条快照`）：逐字相同的重发不再交。
+   *
+   * 判据是**内容**而不是「发过没有」：同一身份的第二条要带新事实（终态 / 用量）才允许再投一次
+   * ——后台档下第一次拿到终态与用量的那一刻必须照发，那正是「后者是前者的完整快照」要的补全。
+   * 挡掉的只是**逐字相同**的重发：它一个新事实都不带，却会在 `messages.jsonl` 里多出一行、
+   * 派发面板与导出里多出一张卡片。最典型的来源是收尾那次重交——`finalSubagents` 读不出用量时
+   * 交回的就是上一拍那条（转录缺失 / 还没写完 / 只见过派发帧的子任务都会走到这一档）。
+   *
+   * 签名走完整序列化：本记录每一格都是标量、`null` 或四个数的用量，没有一格序列化不了；
+   * 字段顺序由同一个构造点固定（收尾那条是展开原记录再改 `usage` / `source`，键序不变）
+   * ⇒ 同一份内容的签名逐字相同。
+   */
+  const deliveredSubagentSignatures = new Set<string>();
+
+  /** 交一条子任务行的闸门：这条内容交过就返回 `null`（调用方不产出投递），没交过就记账并放行 */
+  const onceSubagent = (record: SubagentRecord): SubagentRecord | null => {
+    const signature = `${record.subagentId}|${JSON.stringify(record)}`;
+    if (deliveredSubagentSignatures.has(signature)) return null;
+    deliveredSubagentSignatures.add(signature);
+    return record;
+  };
+
+  /**
    * 收尾重交子任务行：**每一条都用「现在这一次读盘」的读数**。
    *
    * 那是每一个子智能体**唯一**的一次读盘，也是
    * 「每个 subagent 的最终用量」这一格的全部来源：
    *   · 名单 = 本行登记过的**全部**子任务（含只见到派发帧的——它们的终态通知没来，只登记派发帧才不会漏掉）；
-   *   · 现读失败时回落到记下的那一条（它至少是「当时」的真实读数），仍没有就交 `null`——不猜。
+   *   · 现读失败时回落到记下的那一条（它至少是「当时」的真实读数），用量仍是 `null`——不猜；
+   *   · 回落出来的那一条若与已交过的某条逐字相同，这次重交不带新事实 ⇒ 由 `onceSubagent` 拦下。
    */
   const finalSubagents = (): SubagentRecord[] =>
-    [...lastSubagentRecordById.values()].map((record) => {
+    [...lastSubagentRecordById.values()].flatMap((record) => {
       const usage = usageOfSubagent(record.subagentId);
       // 现读不出来 ⇒ 保留记下的那一条（连同它当时的 `usage` 与 `source`）
-      if (usage === null) return record;
-      return { ...record, usage, source: 'session-file' };
+      const next: SubagentRecord = usage === null ? record : { ...record, usage, source: 'session-file' };
+      const deliverable = onceSubagent(next);
+      return deliverable === null ? [] : [deliverable];
     });
 
   return {
@@ -826,10 +851,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // 只记**权威值**（非估算）：`tokensEstimated` 为真的是跑动期估算，与骨架 `tokens` 的判据同源
       if (projection.tokens !== null && projection.tokensEstimated !== true) mainTokens = projection.tokens;
       if (projection.turns !== null) mainTurns = projection.turns;
+      // 过闸只挡重发：上面两张名单与 `lastSubagentRecordById` 记的是「见过什么」，与「交过什么」无关
+      const delivery = subagent === null ? null : onceSubagent(subagent);
       return {
         ...projection,
         messages: normalized.messages,
-        subagents: subagent === null ? [] : [subagent],
+        subagents: delivery === null ? [] : [delivery],
       };
     },
   };

@@ -674,13 +674,22 @@ describe('三端一致性：无消息的条目一条都不产出（不拿审计�
 });
 
 describe('三端一致性：能力声明与实测行为对齐', () => {
-  it('三家各自声明的 `messageCapability` 与实际产出的块形态一致', () => {
+  /**
+   * 本组逐格比对的是**已接入消息投影**的那几家：它们各有一条「把厂商载荷喂进归一函数」的通路，
+   * 于是「声明的东西真的拿得到」可以被现造出来。还没接上投影的家不在这里——它的声明另有判据
+   * （一致性套件的接入守卫 + 自家 fixture），在这里硬塞一个空项只会让这一组变成空转。
+   */
+  const PROJECTED_KINDS: readonly string[] = ['cc', 'codex', 'dsh'];
+
+  it('已接入消息投影的每一家：声明的 `messageCapability` 与实际产出的块形态一致', () => {
     // 声明的真源在各自的 `providers/<kind>/index.ts`；这里断言「声明过的东西真的拿得到」
     const declared = listAgentProviders().map((provider) => ({
       kind: provider.kind,
       capability: provider.metadata.messageCapability,
     }));
-    expect(declared.map((entry) => entry.kind)).toEqual(['cc', 'codex', 'dsh']);
+    // 下标在后面被**按位**读（`declared[0]` / `[1]` / `[2]`）⇒ 顺序与取值都要逐字锚定，
+    // 顺序漂了整组断言会张冠李戴
+    expect(declared.slice(0, PROJECTED_KINDS.length).map((entry) => entry.kind)).toEqual([...PROJECTED_KINDS]);
 
     const claudeCapability = declared[0]!.capability;
     // 思考正文：声明 yes ⇒ 必须真拿得到（用例里喂了 `thinking` 块）

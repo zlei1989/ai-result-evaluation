@@ -23,7 +23,7 @@
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { EFFORT_OFF, type EvalRow, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
+import { EFFORT_OFF, type AgentKind, type EvalRow, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
 import { installResizeObserverStub } from '../testing/resize-observer';
 import {
   RunCreatePanel,
@@ -1487,7 +1487,7 @@ describe('invalidatedRows', () => {
  * 覆盖到夹具给的那两家，而「没选智能体」这一档在组件上要先造一个空智能体的行才够得着。
  */
 describe('effortPlaceholder', () => {
-  const declared: (agentKind: 'cc' | 'codex' | 'dsh') => string | undefined = (agentKind) =>
+  const declared: (agentKind: AgentKind) => string | undefined = (agentKind) =>
     agentKind === 'dsh' ? 'high' : undefined;
 
   it('这一家声明了缺省档 ⇒ 写全名与该档（**不是** kind 缩写）', () => {
@@ -1497,8 +1497,9 @@ describe('effortPlaceholder', () => {
     expect(text).not.toContain('dsh');
   });
 
-  it('这一家没声明缺省档（cc / codex）⇒ 只说「未指定」，不编一个档', () => {
+  it('这一家没声明缺省档 ⇒ 只说「未指定」，不编一个档', () => {
     // 编一个「沿用厂商默认档」是契约明禁的误读：我们没作出那个承诺
+    // （pi 声明了缺省档，故这一档由 cc / codex 两个反例代表）
     expect(effortPlaceholder('cc', declared)).toBe('未指定');
     expect(effortPlaceholder('codex', declared)).toBe('未指定');
   });

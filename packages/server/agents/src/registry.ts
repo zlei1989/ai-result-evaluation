@@ -8,10 +8,11 @@
 import { claudeCodeProvider } from './providers/cc';
 import { codexProvider } from './providers/codex';
 import { dshProvider } from './providers/dsh';
+import { piProvider } from './providers/pi';
 import type { AgentKind, AgentProvider } from './types';
 
-/** 显式静态注册表：加第四家 = 加一个 `providers/<id>/` 目录 + 这里一行 + contracts 的 `AGENT_KINDS` / `AGENT_LABELS` 各一格（id 真源在 contracts）+ `permission.ts` 里共享的三家权限表补一份 + 测试侧的 `Record<AgentKind, …>` 构造点，编排层与表单不改（A3） */
-const PROVIDERS: readonly AgentProvider[] = [claudeCodeProvider, codexProvider, dshProvider];
+/** 显式静态注册表：加一家 = 加一个 `providers/<id>/` 目录 + 这里一行 + contracts 的 `AGENT_KINDS` / `AGENT_LABELS` 各一格（id 真源在 contracts）+ `permission.ts` 里共享的权限档表补一份 + 测试侧的 `Record<AgentKind, …>` 构造点，编排层与表单不改（A3） */
+const PROVIDERS: readonly AgentProvider[] = [claudeCodeProvider, codexProvider, dshProvider, piProvider];
 
 const BY_KIND: ReadonlyMap<AgentKind, AgentProvider> = new Map(
   PROVIDERS.map((provider) => [provider.kind, provider] as const),

@@ -46,7 +46,7 @@
 | 模型清单 | 独立对话框维护：拉取是合并不是覆盖（手工条目不被冲掉），可手工增删、逐条维护上下文窗口与输出上限；窗口未知就不注入，不用兜底数字冒充已知 |
 | 评分 | 默认评分模型（两种协议都可选）+ 思考强度 + 默认评分智能体 + diff 上限（默认 256 KB = 262 144 字节）；没有「行超时」——执行与评分都不限时间 |
 | 存储目录 | 工作区根目录默认 `~/.aieval-runs`、**用例目录**默认 `~/.aieval-cases`，两格各自「校验并保存」（必须真写一次再删）；改根目录不迁移已有数据，历史评测显示自己的实际根目录。另带**用例变更时自动提交**开关（`casesRoot` 不是 git 仓库时置灰）与用例同步状态、「提交」/「拉取」两个人工动作 |
-| MCP 服务器 | 第 3 个 Tab：name-keyed map（stdio / http 判别联合）、贴入导入、启停、测试连接；候选执行时按行注入三家各自的形状，行级观测格回答「这一行装上没有」 |
+| MCP 服务器 | 第 3 个 Tab：name-keyed map（stdio / http 判别联合）、贴入导入、启停、测试连接；候选执行时按行注入四家各自的形状，行级观测格回答「这一行装上没有」 |
 | 技能 | 第 4 个 Tab（排在 MCP 之后）：`<配置目录>/skills/` 下一层目录即一条 skill（目录名与 frontmatter 的 `name` 必须逐字相同、`description` 必填），三列表格 + 逐条启停；候选执行时把启用清单整目录复制进那一行自己的配置目录，行级观测格回答「这一行厂商认了没有」 |
 | 界面主题 | 跟随系统 / 明亮 / 暗色三档；与模型供应商、存储目录同住「基础」这个 Tab |
 
@@ -73,7 +73,7 @@
 
 ## 相关链接
 
-- [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh) —— 协议规范域三家厂商文章
+- [Codex 接入](/protocols/codex)、[Claude Code 接入](/protocols/cc)、[DeepSeek Harness 接入](/protocols/dsh)、[Pi Coding Agent 接入](/protocols/pi) —— 协议规范域四家厂商文章
 - 本域已落地详情层文章：[用例管理](/features/case-management)、[创建评测](/features/run-creation)、[修改、重跑与删除评测](/features/run-edit-rerun-delete)
 - 本域详情层文章：[评测详情与候选行](/features/run-detail)、[行执行与日志](/features/row-execution)、[评分](/features/judging)、[设置](/features/settings)、[MCP 配置](/features/mcp-config)、[技能配置](/features/skills-config)、[数据与存储](/features/storage)
 - 协议层背景：[Provider 抽象与 run 入口](/protocols/provider-run)、[消息规范](/protocols/message-spec)、[事件流](/protocols/event-stream) ——本页消费的智能体协议、消息与事件口径

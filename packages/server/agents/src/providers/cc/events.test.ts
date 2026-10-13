@@ -542,6 +542,45 @@ describe('projectClaudeMessage：重复与未识别', () => {
   });
 
   /**
+   * **「还在动」的两个心跳必须交出事件**：`tool_progress`（长工具的执行进度，字段照 SDK 的
+   * `SDKToolProgressMessage`）与 `system/api_retry`（上游可重试失败后的退避重试，字段照
+   * `SDKAPIRetryMessage`）。骨架的看门狗把「这一条投影有没有交出东西」当静止判据
+   *（`turn.ts` 的 `projectionHasOutput`），而这两类都不在识别名单里 ⇒ 它们**必须**走未识别兜底、
+   * 各交出一条 log。一旦被当成「没内容的噪声」丢掉，正在重试或正在跑长工具的行就会被判成静止超时。
+   */
+  it('tool_progress 与 system/api_retry 各交出一条保留原始负载的日志（它们是「还在动」的心跳）', () => {
+    const progress = {
+      type: 'tool_progress',
+      tool_use_id: 'toolu_1',
+      tool_name: 'Bash',
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 42,
+      uuid: 'progress-1',
+      session_id: 'session-1',
+      heartbeat: true,
+    };
+    const retry = {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 3,
+      max_retries: 5,
+      retry_delay_ms: 4_000,
+      error_status: 529,
+      error: 'overloaded',
+      uuid: 'retry-1',
+      session_id: 'session-1',
+    };
+    const state = newState();
+    const first = projectClaudeMessage(progress, state, CONTEXT);
+    const second = projectClaudeMessage(retry, state, CONTEXT);
+    expect(first.drafts).toHaveLength(1);
+    expect(second.drafts).toHaveLength(1);
+    // 保留原始负载（与上面那条未识别 type 同一口径）：读的人要能从原文认出是哪一类心跳
+    expect(JSON.parse(first.drafts[0]?.type === 'log' ? first.drafts[0].text : '')).toEqual(progress);
+    expect(JSON.parse(second.drafts[0]?.type === 'log' ? second.drafts[0].text : '')).toEqual(retry);
+  });
+
+  /**
    * stream_event **不进原始日志**（用户口径，真机形状照抄）：
    * 一条增量只带一小段 delta（真机一次运行几百上千条），落进未识别兜底会把「原始输出」面板
    * 刷成 JSON 流水。它的落点只有对话视图（消息侧 `streamEvent` 折成 `chunk:'delta'`、

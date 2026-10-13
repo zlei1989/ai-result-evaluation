@@ -144,14 +144,19 @@ export function checkStructuredScoreCell(
  *
  * 为什么需要它：8 个 `live-*` 文件全部默认跳过，「某家从没跑过」在代码与产物里一个字都读不到。
  * 这一格**不是机器验证**——谁也拦不住随手填一句；它是一张**编译期强制回答的清单**：
- * 加第四家时 `Record<AgentKind, …>` 会缺格、`tsc` 直接点名，接入者必须去回答「这家跑过真机没有」。
+ * 加一家时 `Record<AgentKind, …>` 会缺格、`tsc` 直接点名，接入者必须去回答「这家跑过真机没有」。
  *
  * 值写**证据**：`pnpm live-smoke` 跑完直接给出可粘贴的行（写法、环境、结论、墙钟都在里面）。
- * 格式由 `live-smoke-checks.test.ts` 约束（必须点名 `AIEVAL_LIVE_KIND=<kind>`，复制粘贴蒙不过去）。
- * 默认档下 ⑤⑥ 不跑，故写「必跑五格通过」而不是「四格通过」——别让这一行读成「七格都验过了」。
+ * 格式由 `live-smoke-checks.test.ts` 约束：每一种取值都要点名 `AIEVAL_LIVE_KIND=<kind>`，且必须落在
+ * 两种形状之一——**跑过**（含日期、provider / 模型、墙钟）或**未跑**（逐字以「未跑」开头）。
+ * 「没跑过却写得像跑过」是这一格唯一要防的事，故未跑的家也必须把跑法写进去（下一个人照着就能跑）。
+ * 默认档下 ⑤⑥ 不跑，故写「七格全通过」的家要说明是哪七格；别让这一行读成「都验过了」。
  */
 export const LIVE_SMOKE_COVERAGE: Record<EvalRow['agentKind'], string> = {
   cc: '七格全通过（2026-10-12：AIEVAL_LIVE_KIND=cc，provider likecode-anthropic / DeepSeek-V4.1-Flash-a，墙钟 25.9s）',
   codex: '七格全通过（2026-10-12：AIEVAL_LIVE_KIND=codex，provider deepseek / GLM-5.3，墙钟 29.9s）',
   dsh: '七格全通过（2026-10-12：AIEVAL_LIVE_KIND=dsh，provider likecode-anthropic / DeepSeek-V4.1-Flash-a，墙钟 25.9s）',
+  // pi 的台账**如实写「没跑过」**：这一格回答的是「这家跑过真机没有」，而不是「这家接完了没有」。
+  // 填一句没跑过的墙钟与结论，正是这一格存在的理由（防止把「没验过」读成「验过了」）。
+  pi: '未跑（跑法：AIEVAL_LIVE_KIND=pi，供应商与模型按本机配置给；本家尚未在真机上执行过，故不填日期、provider / 模型与墙钟）',
 };

@@ -81,7 +81,7 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 - **原子写的口径与 `config.json` 其余部分完全一致**（临时文件创建即 `0600` → `renameSync` 覆盖；BOM 容忍；损坏抛含路径的中文原因），不因为多了这一格而分叉——见下节《数据与契约》。
 - **密钥落盘是明文**（与供应商同口径）：出口掩码只发生在 `GET /api/settings` 的投影上，`env` / `headers` 里的 `${VAR}` 占位**原样落盘**（真值只在注入那一刻从环境里解析，永不回写）。
 - **行内产物不在这份文件里**：注入的落点是**行私有目录**（`{workspaceRoot}/{runId}/rows/{rowId}/.agenthome/`）——claude 走 SDK 参数不落盘、codex 走线程级 `config`、dsh 落 `aieval-route.patch.yml` 的 `insert`；行内 `.npmrc` 也只写宿主 npm 配置里的 **registry 那一行**（`0600`）。宿主 `~/.aieval/config.json` 一个字节都不因注入而变。
-- **技能装入也不在这份文件里**：物化的落点是行私有目录的 `<.agenthome>/skills/<名称>/`（三家同形），源侧是 `<配置目录>/skills/`——`config.json` 里只留一份**停用名单**，技能本体按目录住。
+- **技能装入也不在这份文件里**：物化的落点是行私有目录的 `<.agenthome>/skills/<名称>/`（四家同形），源侧是 `<配置目录>/skills/`——`config.json` 里只留一份**停用名单**，技能本体按目录住。
 
 ## 技能停用名单的落盘
 

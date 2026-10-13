@@ -685,13 +685,13 @@ function SettingsPage(): React.ReactNode {
                     {/* 与仓库自带 skill 的关系：**页面层**而不是卡片内——它说的是
                         「与仓库自带的关系」，卡片是「这一份配置」的卡片；放页面层也让两张卡片
                         不会各印一份。⚠️ 不许抄 MCP 那句「同名时以设置页为准」：skills 的同名结果
-                        三家各不相同（Claude Code 以本机为准 / DeepSeek Harness 以仓库为准 /
-                        Codex 两条都会进清单），给一个统一结论就是假话 */}
+                        四家各不相同（Claude Code 以本机为准 / DeepSeek Harness 与 Pi Coding Agent
+                        以仓库为准 / Codex 两条都会进清单），给一个统一结论就是假话 */}
                     <Alert
                       type="info"
                       showIcon
                       title="与仓库自带 skill 的关系"
-                      description="这里只决定本机启用项；被测仓库自带的 skill 三家都会自动发现、不压制。同名时谁赢三家不同：Claude Code 以本机为准，DeepSeek Harness 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
+                      description="这里只决定本机启用项；被测仓库自带的 skill 四家都会自动发现、不压制。同名时谁赢四家不同：Claude Code 以本机为准，DeepSeek Harness 与 Pi Coding Agent 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
                       data-testid="skills-repo-note"
                     />
                     <SkillTable

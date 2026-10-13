@@ -12,7 +12,7 @@
 apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错误映射」
 packages/server/
   core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
-  agents/          智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）；唯一允许引厂商
+  agents/          智能体抽象层 + 四家适配器（Claude Code / Codex / DSH / Pi Coding Agent）；唯一允许引厂商
                    SDK 的包，对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；
                    **业务无关**：只认「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念
   evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
@@ -54,7 +54,7 @@ packages/client/
 
 ### 8 包为何一次建全
 
-边界规则只有在「包真实存在」时才被 ESLint 校验，后补包会一次性冲击边界；空包（`export {}`）成本近零，所以 8 个包一次建全、之后只往里填东西。agents 单列的理由：三家厂商 SDK 是重量级外部依赖，单列才不污染 core / evaluator；core 只依赖 contracts + Node 内置，可独立测试。全仓只做一个 Next.js 应用，服务端逻辑收敛进 Route Handlers（不做第二个下游应用）。
+边界规则只有在「包真实存在」时才被 ESLint 校验，后补包会一次性冲击边界；空包（`export {}`）成本近零，所以 8 个包一次建全、之后只往里填东西。agents 单列的理由：四家厂商 SDK 是重量级外部依赖，单列才不污染 core / evaluator；core 只依赖 contracts + Node 内置，可独立测试。全仓只做一个 Next.js 应用，服务端逻辑收敛进 Route Handlers（不做第二个下游应用）。
 
 ### api → agents：这条边为什么存在
 
@@ -68,7 +68,7 @@ packages/client/
 
 | 包 | 禁止 import |
 |---|---|
-| core / agents / evaluator / api / contracts | `next`、`next/*`、`react`、`react-dom`（agents 允许三家厂商 SDK 与 HTTP 客户端，但同样不许知道框架与 React 的存在） |
+| core / agents / evaluator / api / contracts | `next`、`next/*`、`react`、`react-dom`（agents 允许四家厂商 SDK 与 HTTP 客户端，但同样不许知道框架与 React 的存在） |
 | ui | 框架禁令同上，另禁 `@aieval/client`、`@aieval/api`、`@aieval/web-next` |
 | client | `@aieval/web-next` |
 | web-next | 空名单（组装层，什么都许 import） |
@@ -102,7 +102,7 @@ packages/client/
 
 ### web-next 的运行期特例：厂商 SDK 的声明口径
 
-「厂商 SDK 只在 agents 包内」是 **import 口径不是声明口径**：三家 SDK（`@anthropic-ai/claude-agent-sdk` / `@openai/codex` / `@deepseek-ai/dsh-sdk-client`）必须**同时**声明在 `apps/web-next/package.json` 的 `dependencies`（版本区间与 agents 逐字相同），还要进 `next.config.ts` 的 `serverExternalPackages`。原因：外置包是运行期按裸说明符在产物目录（`.next/server/chunks/`）逐级向上找 `node_modules` 定位的，而 pnpm 的隔离式布局只把它们链在 agents 包下——少了应用侧这条声明，运行期第一次定位就 `MODULE_NOT_FOUND`。这不是打包优化，是「能不能跑起来」的问题。判据由 `apps/web-next/src/runtime-deps.test.ts` 钉住：声明与区间两边读 JSON 现比，另做「只解析路径、不加载模块」的真解析。
+「厂商 SDK 只在 agents 包内」是 **import 口径不是声明口径**：四家 SDK（`@anthropic-ai/claude-agent-sdk` / `@openai/codex` / `@deepseek-ai/dsh-sdk-client` / `@earendil-works/pi-coding-agent`）必须**同时**声明在 `apps/web-next/package.json` 的 `dependencies`（版本区间与 agents 逐字相同），还要进 `next.config.ts` 的 `serverExternalPackages`。原因：外置包是运行期按裸说明符在产物目录（`.next/server/chunks/`）逐级向上找 `node_modules` 定位的，而 pnpm 的隔离式布局只把它们链在 agents 包下——少了应用侧这条声明，运行期第一次定位就 `MODULE_NOT_FOUND`。这不是打包优化，是「能不能跑起来」的问题。判据由 `apps/web-next/src/runtime-deps.test.ts` 钉住：声明与区间两边读 JSON 现比，另做「只解析路径、不加载模块」的真解析。
 
 ## 已知边界与取舍
 

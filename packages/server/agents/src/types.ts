@@ -39,18 +39,23 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
  * **刻意不做成配置项**：它由角色决定，用户没有可选项——「执行时给只读」不是一种用法，
  * 而是一个必须靠类型拦住的错误（该字段必填，就是为了让两处调用点各自表一次态）。
  *
- * 三家的落点（哪一档给哪个厂商选项，**真源是 `permission.ts`**——三份表放一起才能逐格对照，
- * 也才能让「三家都实现了同一份档位表」变成一条可执行的守卫）：
+ * 每一家的落点（哪一档给哪个厂商选项，**真源是 `permission.ts`**——几份表放一起才能逐格对照，
+ * 也才能让「每一家都实现了同一份档位表」变成一条可执行的守卫）：
  *
- * | permission  | cc                                                       | codex                                            | dsh                    |
- * |-------------|----------------------------------------------------------|--------------------------------------------------|------------------------|
- * | `'full'`    | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` |
- * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**，见 `codexPermissionOptions`） | `DSH_PERMISSION_MODE=read-only` |
+ * | permission  | cc                                                       | codex                                            | dsh                    | pi                              |
+ * |-------------|----------------------------------------------------------|--------------------------------------------------|------------------------|---------------------------------|
+ * | `'full'`    | `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions: true` | `sandboxMode: 'danger-full-access'` + `approvalPolicy: 'never'` | `DSH_PERMISSION_MODE=danger-full-access` | 工具白名单 = `read` / `bash` / `edit` / `write` |
+ * | `'read-only'` | `permissionMode: 'dontAsk'` + `permissionPrompts: 'none'` | `sandboxMode: 'read-only'` + `approvalPolicy: 'never'`（**Windows 上落 `danger-full-access`**，见 `codexPermissionOptions`） | `DSH_PERMISSION_MODE=read-only` | 工具白名单 = `read` / `grep` / `find` / `ls`（**不含 `bash`**） |
+ *
+ * pi 那一列是**另一条形状**：它没有权限标志位（`.d.ts` 与真机都没有这一面），写能力住在工具集里，
+ * 所以两档表达成 `createAgentSession({ tools })` 的白名单。名单里多一件写工具**什么都不会报**，
+ * 只是评审者顺手改了候选的工作区——`permission.test.ts` 因此专门钉「只读档一件写工具都不许在」。
  *
  * 这张表之外还有一条**只被 claude 消费**的读放行通道：`AgentRunInput.extraReadPaths`（可选）
  * 翻成 SDK 的 `additionalDirectories`（`--add-dir`），只扩大「哪些路径可以读」、不改变
- * 「写仍被拒」。它**刻意不进**三份权限档表（见 `permission.ts` 的文件头）——codex / dsh 的
- * 只读档本就全盘可读，把这一格塞进表里会让它们去消费一个它们不映射的选项。
+ * 「写仍被拒」。它**刻意不进**这几份权限档表（见 `permission.ts` 的文件头）——codex / dsh 的
+ * 只读档本就全盘可读、pi 的只读档由白名单决定读得到什么，把这一格塞进表里会让它们去消费一个
+ * 它们不映射的选项。
  *
  * ⚠️ 两家有**必须成对**的选项，少一个就静默失效：
  *   · claude 的 `bypassPermissions` 需要 `allowDangerouslySkipPermissions: true`——SDK 只是把两者
@@ -58,8 +63,11 @@ export type AgentExitReason = 'completed' | 'timed-out' | 'canceled' | 'error';
  *     少了后者，CLI 侧仍旧逐个工具要批准，而无人值守的评测里没有人能点这个批准；
  *   · dsh 的三档预设里 `danger-full-access` 才把 approval 一起设成 `never`（见 `dsh-base` 的
  *     `permission` 行）。`read-only` 档的 approval 仍是 `ask`——评审者越界时**不会**被自动放行，
- *     它会停在无人应答的批准上，**直到用户点「终止」**（没有兜底超时：
- *     「执行不限时间、评分不限轮次和时间」）；这是「只读」在无交互环境下的正确收场（不是缺陷）。
+ *     它会停在无人应答的批准上。这是「只读」在无交互环境下的正确收场（不是缺陷），但**它会被
+ *     看门狗按静止超时收掉**（缺省常亮，见 `AgentRunInput.watchdog`）：dsh 的 wire 上没有
+ *     「待批准」这条通知（server→client 请求通道尚未实现，`approval/policy` 只是装配期一次性的
+ *     档位事实）⇒ 识别「在等审批」的判据采不到，这一格**未豁免**。边界与代价登记在
+ *     《进程生命周期》的「静止超时」一节，豁免面登记在 `turn.ts` 的 `TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG`。
  */
 export type AgentPermission = 'full' | 'read-only';
 
@@ -71,7 +79,7 @@ export type AgentPermission = 'full' | 'read-only';
 export type AgentErrorCode =
   | 'AGENT_LOAD_FAILED' // 厂商包缺失 / 加载失败
   | 'AGENT_FAILED' // CLI 未安装、进程非零退出、模型名不存在
-  | 'AGENT_TIMED_OUT' // 适配器**自报**的超时（本层已无 `timeoutMs`；刻意与行状态 timed-out 同名）
+  | 'AGENT_TIMED_OUT' // 看门狗判定的**静止**超时（本层没有整行级时限；上游自己报的超时也归它）
   | 'AGENT_CANCELED' // 用户终止
   | 'AUTH_FAILED' // 密钥无效
   | 'RATE_LIMITED' // 限流
@@ -206,12 +214,27 @@ export interface AgentRunInput {
    */
   effort?: string;
   /**
+   * 看门狗：两级**静止**上限（毫秒）。**可选、缺省常亮**（空闲 180 s / 单轮 600 s，见 `turn.ts`）。
+   *
+   * 语义是「这一行还在动吗」，**不是**工作时长上限——「执行不限时间」这条口径不变：
+   *   · `idleTimeoutMs`：连续这段时间**没有任何产品事件**即判静止（「有输出」＝这一条投影交出了
+   *     任何东西：行级事件 / 消息 / 子任务行 / 计量；未识别的厂商负载走兜底投影，一样算）；
+   *   · `turnWallClockMs`：**一次模型往返**从起表到收尾超过这段时间即判静止。它兜的是「一直有输出、
+   *     但一次往返都不收尾」那一格；套在整行上是错的——codex 的一个厂商 `turn` 内含多次模型往返。
+   * 显式给 `0`（或负数）＝关掉那一级（逃生门：用例与调试）。
+   *
+   * 到点后走与用户点「终止」同一条释放路径（`interrupt` → 终结在途 turn → `dispose`，5 秒交卷窗口），
+   * 结论落 `exitReason: 'timed-out'` + `AGENT_TIMED_OUT` ⇒ 行状态 `timed-out`（**不进自动重试**）。
+   * 两条豁免的判据都在骨架里（见 `turn.ts` 的 `TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG`）：工具在途只对
+   * 能合法静默的家生效；「等待审批」的识别机制按家不同、**今天采不到 ⇒ 如实登记为未豁免**。
+   */
+  watchdog?: { idleTimeoutMs?: number; turnWallClockMs?: number };
+  /**
    * 事件回调：同步、不 await——事件流不能被消费者拖慢。
    *
    * 这里**没有 `timeoutMs`**（用户口径「执行不限时间、评分不限轮次和时间」）：
-   * 一次运行只会因为「跑完 / 失败 / 外部要求停止」结束，适配器自己不设内层上限。
-   * 代价照实登记：`runTurn` 本来就明写「可能无界返回」，删掉内层上限之后，
-   * 唯一能停下它的就是这把 `signal`（用户点「终止」）与上游自己收场。
+   * 一次运行只会因为「跑完 / 失败 / 外部要求停止 / 静止超时（看门狗）」结束，
+   * 适配器自己不设内层上限。总时长仍不限，唯一的时限是上面那两级**静止**上限。
    */
   onEvent: (e: AgentEvent) => void;
   /**

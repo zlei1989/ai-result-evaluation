@@ -81,17 +81,41 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 不声明）；这一格同时是 API 侧「未选也校验」的判据，值由 `DSH_DEFAULT_EFFORT` 给出
     defaultEffort: 'high',
   },
+  pi: {
+    // 两条 wire 都能收（in-process SDK 自注册 provider，协议决定 wire）：
+    // openai → openai-completions、anthropic → anthropic-messages
+    protocolTypes: ['openai', 'anthropic'],
+    // 取消走 SDK 的 `abort()`（在途轮次毫秒级终结）；用量取 `message_end.message.usage`
+    capability: { cancelMidTurn: true, usage: true },
+    messageCapability: permissiveMessageCapability(),
+    // 注入面只比 `mcp` / `skills` 两格：`notes` 是「这一族能力成立的前提」，随实测更新，不进回归网
+    injection: { mcp: { state: 'yes', reason: null }, skills: { state: 'yes', reason: null }, notes: [] },
+    // 耗时量级是**秒级**：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
+    timing: { runScale: 'seconds', notes: [] },
+    // 思考正文与工具结果正文都在 `session.subscribe` 的事件流里 ⇒ 不需要补 messages.jsonl。
+    // 这一格成立的前提写在适配器的实现义务里：原始事件必须被投影进 `log`。
+    needsMessagesForReasoningEvidence: false,
+    // 档位域来自 pi 的 `ThinkingLevel` 去掉 `xhigh`：它在 pi 那边没有内建映射，会被静默夹到
+    // `high`（有 `max` 的映射时则往上夹到 `max`）⇒ 收它就等于允许静默升降档。
+    // `max` 进档位域的前提是模型定义上有 `thinkingLevelMap: { max: 'max' }`（那一条在适配器里）。
+    // `off` 也进（本仓统一档名：未选 ≠ 关闭，关闭只能显式选）。
+    reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high', 'max'],
+    // pi 的「未选」会真的落到一个具体档（`DEFAULT_THINKING_LEVEL` = medium）⇒ 必须声明
+    defaultEffort: 'medium',
+  },
 };
 
 describe('listAgentProviders', () => {
-  it('三家齐备且与 contracts 的 AGENT_KINDS 同序', () => {
+  it('每一家齐备且与 contracts 的 AGENT_KINDS 同序', () => {
     expect(listAgentProviders().map((provider) => provider.kind)).toEqual([...AGENT_KINDS]);
   });
 
   it('返回副本：调用方改不到注册表本身', () => {
     const first = listAgentProviders();
     first.pop();
-    expect(listAgentProviders()).toHaveLength(3);
+    // 数目按真源现算（不写 3 或 4 这类字面量）：这条断言判的是「副本」，
+    // 数字写死会让加一家时它顺带变红，而那种红指向的是别的事
+    expect(listAgentProviders()).toHaveLength(AGENT_KINDS.length);
   });
 
   it('displayName 非空且互不相同（界面上要能区分）', () => {
@@ -227,7 +251,7 @@ describe('getProvider', () => {
     expect(call).toThrow(/未注册的智能体/);
     // 逐字锚定整张清单（顺序即注册表顺序）：`cc` 只有两个字符，用 `/cc/` 断言等于没断言——
     // 任何含 "cc" 的文案都能蒙混过去，而清单漏一家、串了顺序都要红
-    expect(call).toThrow(/可用清单：cc \/ codex \/ dsh/);
+    expect(call).toThrow(/可用清单：cc \/ codex \/ dsh \/ pi/);
   });
 });
 

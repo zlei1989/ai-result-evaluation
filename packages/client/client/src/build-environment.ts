@@ -467,11 +467,16 @@ function mcpObservationItem(row: EvalRow): EnvItem {
    * 逐台的「结论 Tag 行」与纯文本从**同一份** `rows` 拼出：`text` 进纯文本
    * （复制按钮与回退渲染读它），Tag 行进 `verdictLines`（渲染层把结论画成 Tag）——
    * 同一行在两种渲染里不得差一个字。
+   * 观测格自带 `note` 的那几台（今天只有「两台名字在厂商工具表里同形」这一种）紧跟在自己那行
+   * **后面**：它是注解、不是结论（`verdict: null`，照纯文本画），放到末尾会读成对整格的说明。
    */
-  const rows: EnvVerdictLine[] = observed.map((entry) => ({
-    text: `${entry.name}：来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]} · 结论 `,
-    verdict: entry.verdict,
-  }));
+  const rows: EnvVerdictLine[] = observed.flatMap((entry) => {
+    const line: EnvVerdictLine = {
+      text: `${entry.name}：来源 ${entry.source} · 判据 ${ROW_MCP_BASIS_LABELS[entry.judgedBy]} · 结论 `,
+      verdict: entry.verdict,
+    };
+    return entry.note === undefined ? [line] : [line, { text: `说明：${entry.note}`, verdict: null }];
+  });
   /**
    * **codex 的能力缺口**：它的 `connected` 只到「启动状态 ready」——
    * 工具**调不动**（上游网关拍平命名空间）。这句话必须在**看得见的地方**：不然「probe 已连上」

@@ -8,6 +8,7 @@
  *   2. **准入判据全部来自契约**（`isValidSkillName` / `isValidSkillDescription`，最严的那一条）：
  *      名字必须是目录名与 frontmatter 逐字相同、description 必填非空 ≤1024。「三家都装得上」是
  *      能被启用的前提——不合法时 claude 在启动前抛错、dsh 把整条静默丢弃；
+ *      **外加一条**：`disable-model-invocation` 不收，理由见 `DISABLE_MODEL_INVOCATION_REASON`；
  *   3. **不合格的条目照旧入列**（`ok:false` + 中文原因）：它要被显示成一行，用户才知道自己放的东西
  *      哪里不合格。丢进根级 warning 的话界面没有行可挂，用户看到的是「我放的 skill 不见了」；
  *   4. **缺目录 = 空列表 + 一条根级 warning（不是错误），读失败 = 抛含路径的中文 INTERNAL**。
@@ -41,6 +42,27 @@ const log = createLogger('skill-store');
  * 三个不合格类型（目录里没入口文件 / 裸 `.md` / 断链的软链接）在这一格上对用户是同一件事。
  */
 const MISSING_FILE_REASON = `缺 ${SKILL_FILE_NAME}（技能是一个目录，里面放 ${SKILL_FILE_NAME}；只扫这一层，不递归）`;
+
+/**
+ * `disable-model-invocation: true` 的中文原因（**不收**这一条，与上面那条同档）。
+ *
+ * 为什么它不是一条普通 frontmatter 键：它的语义是「装载进厂商的技能表、但不写进系统提示词」
+ * ——于是行级观测格会报「已装上」（厂商清单里确实有它），而模型**根本看不到它**：
+ * 一个格子里同时说着「装上了」与「用不上」两句互相拆台的话，且两句都像真的。
+ * 本仓的停用语义是**文件级不放**（`installableSkills` 剔掉），不是「藏起来但还能显式调」，
+ * 两者混在一处就无法从观测格上区分「用户停用了」与「用户写了这个键」。
+ *
+ * 值按 YAML 布尔的常见写法认（`true` / `True` / `"true"`——`splitSkillMarkdown` 已经剥掉成对引号），
+ * 其余值（`false` / 空）放行：那不是「藏起来」，写了它等于没写。
+ */
+const DISABLE_MODEL_INVOCATION_REASON =
+  'disable-model-invocation 不受支持：本仓的「停用」是不装入这一条，而不是装载后把它从提示词里藏起来';
+
+/** 这一格是不是把技能藏起来（见 `DISABLE_MODEL_INVOCATION_REASON`） */
+function hidesFromModel(fields: Record<string, string>): boolean {
+  return (fields['disable-model-invocation'] ?? '').trim().toLowerCase() === 'true';
+}
+
 
 /** 扫到的一条：与 `SkillEntry` 同形，但**没有 `disabled`** —— 那一格由 api 拿停用名单合并出来 */
 export type ScannedSkill = Omit<SkillEntry, 'disabled'>;
@@ -227,6 +249,9 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
         ? '缺 description（frontmatter 里必填，且不能只有空白）'
         : `description 超长（${description.length} 字符，上限 1024）`;
     return { ...base, ok: false, reason: reasonText, ...withSize };
+  }
+  if (hidesFromModel(fields)) {
+    return { ...base, ok: false, reason: DISABLE_MODEL_INVOCATION_REASON, ...withSize };
   }
   return { ...base, ok: true, ...withSize };
 }

@@ -95,10 +95,12 @@ export interface TurnStart {
    * （例如关闭厂商 SDK 的事件迭代）在迭代挂起时只是**排队**，要等它自己落到下一个挂起点（yield / 结束）
    * 才生效 ⇒ **`runTurn` 可能无界返回**。所以这里不再是「必须在有限时间内让迭代结束」的硬约束，
    * 而是「尽力 + 登记边界」。
-   * 「一行不会永远停在 running」这条**用户可见**的不变量**因此不再由时间保证**（用户口径「执行不限时间、评分不限轮次和时间」：编排层没有 `hardDeadline` / `timedOutRows`）。
-   * 今天能停下它的只有用户点「终止」——编排层在行落终态时唤醒行任务、并给 5 秒交卷窗口
-   * （`orchestrator.ts` 的 `terminalWaiters` / `TERMINATION_GRACE_MS`）；一个连停止信号都不理的适配器
-   * 会让那一行**一直挂着**，这是已知代价（登记在包的 README 里）。
+   * 「一行不会永远停在 running」这条**用户可见**的不变量：**静止由看门狗兜底、总时长仍不限**
+   * （用户口径「执行不限时间、评分不限轮次和时间」：编排层没有 `hardDeadline` / `timedOutRows`）。
+   * 看门狗只是**发起停止的又一个来源**（两级上限见 `AgentRunInput.watchdog`）——发起之后仍然要适配器
+   * 肯把迭代交出来，一个连停止信号都不理的适配器会让那一行**一直挂着**，这是已知代价（登记在包的
+   * README 里）。能停下它的另外两个来源是用户点「终止」与宿主停机：编排层在行落终态时唤醒行任务、
+   * 并给 5 秒交卷窗口（`orchestrator.ts` 的 `terminalWaiters` / `TERMINATION_GRACE_MS`）。
    * codex 侧的具体边界与可达的那一格见 `providers/codex/index.ts` 的 `closeRunStream`。
    * T7–T9 各自要有一条用例钉住「dispose 之后流与回收的可观测量」——不一定是「流在有限时间内结束」。
    */
@@ -377,6 +379,135 @@ export interface TurnHooks {
 export const STRUCTURED_OUTPUT_REPAIR_ROUNDS = 2;
 
 /**
+ * 空闲上限缺省值（毫秒）：连续这段时间**没有任何产品事件**就判这一行静止。
+ *
+ * 取值受三条约束，缺一条就会误杀或白等：
+ *   · **大于已知的合法静默**：厂商的自动重试退避最长可到 60 s（一轮默认重试链实测最长静默 8 s），
+ *     首字延迟也在这一档里；
+ *   · **大于宿主的等待预算**：行内首次注入的等待预算是 20 s 量级；
+ *   · **不晚于厂商自带的兜底**：几家自带的流空闲容错在 300 s 上下，等它只会更晚发现挂死。
+ */
+export const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
+
+/**
+ * 单次**模型往返**的墙钟上限缺省值（毫秒）：它只兜「一直有输出、但一次往返都不收尾」那一格，
+ * 与「一行跑多久」无关（用户口径「执行不限时间」不变；套在整行上等于把总上限加回来）。
+ * 比空闲上限宽三倍多，又与各家自带的兜底同量级但**独立**（不继承它的失效）：两级同时开着时，
+ * 先开火的总是空闲那一级，墙钟是给 drip 型挂死准备的第二道闸。
+ */
+export const DEFAULT_TURN_WALL_CLOCK_MS = 600_000;
+
+/** 看门狗开火的是哪一级：空闲（没有输出）还是单轮墙钟（一次模型往返不收尾） */
+export type WatchdogTrip = 'idle' | 'turn-wall-clock';
+
+/**
+ * 「工具在途可以合法静默」的家 ⇒ 在途工具期间**两级**静止计时都挂起。
+ *
+ * 为什么是**按家**的表而不是按事件：同一个形状（工具调用之后整段没有输出）在两家的含义相反——
+ *   · dsh：工具输出**不投**通知流（`tool/call` / `tool/result` 只有首尾两发）⇒ 一条全程无输出的长命令
+ *     与「对端挂了」在这条通道上完全同形；它的 `bash` 还允许显式 `timeoutMs`（上限 600 s）
+ *     ⇒ 不豁免就会把合法的静默长命令判成静止超时；
+ *   · pi：同理。`tool_execution_update` **只在工具有输出时**才发（bash 把子进程 stdout/stderr 的
+ *     `data` 事件接成更新回调），静默工具全程只有 `tool_execution_start` 那一发；它的 bash 工具
+ *     **没有默认超时**（`timeout` 是可选参数，不传就不设表）；事件全集里也没有心跳 / keep-alive
+ *     这类事件（`agent_start/end`、`turn_start/end`、`message_*`、`tool_execution_*`，加上会话级的
+ *     `agent_settled` / `queue_update` / `compaction_*` / `auto_retry_*` / `bash_execution_update`）
+ *     ⇒ 静默长工具与「对端挂了」在这条通道上同形，不豁免就会把 `pnpm install` 那种三分钟不吭声的
+ *     合法命令判成静止超时；
+ *   · cc / codex：工具在途自带节拍（cc 每 30 s 一件 `tool_progress`、codex 的单次 `exec_command`
+ *     静默硬夹 30 s）⇒ 豁免它们只会把真挂死的工具藏起来。
+ * 表是**穷尽**的（`Record<AgentKind, boolean>`）：每个 kind 都必须显式给一格，新增一家时漏了这格
+ * 会在编译期报错。取值口径是**默认不豁免**（比「默认豁免」严：宁可早发现挂死，要放宽必须显式登记
+ * 一行，并给出该家「工具在途确实可能合法静默」的证据）。
+ * 工具自己的预算不在骨架这一层：卡死的工具只能靠用户点「终止」，这是既有口径。
+ *
+ * ⚠️ **「等待审批在途」不在这张表里（未豁免，如实登记）**：口径要求它也挂起，但识别「在等审批」的
+ * 事件**按家不同、今天采不到**——dsh 的 `read-only` 档 approval 仍是 `ask`（越界操作停在无人应答的
+ * 批准上，见 `types.ts` 的 `AgentPermission`），而它的 wire 上没有「待批准」这条通知（server→client
+ * 请求通道尚未实现，`approval/policy` 只是装配期一次性的档位事实）⇒「在等审批」与「对端挂了」在这条
+ * 通道上同形。**不许拿事件名凑判据**：要放宽这一格，先按家拿到可证的信号再往这张表里加，并同步
+ * 《进程生命周期》的「静止超时」一节。
+ */
+const TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG: Record<AgentKind, boolean> = {
+  cc: false,
+  codex: false,
+  dsh: true,
+  pi: true,
+};
+
+/** 在册的一次在途运行：宿主停机时按它逐个发起停止、并等它们各自释放完 */
+interface LiveSession {
+  kind: AgentKind;
+  /** 发起停止（与用户点「终止」同一条路径；消费相之外是空操作——跑完了不再翻转结论） */
+  stop: () => void;
+  /** 该次运行的释放完成（含 5 秒交卷窗口；约定不 reject） */
+  released: Promise<void>;
+}
+
+/** 本进程在册的在途运行（`runTurn` 进出自动登记 / 注销）。模块级：宿主停机要能看到全部 */
+const liveSessions = new Set<LiveSession>();
+
+/**
+ * 回收本进程里所有在途运行，供宿主的停机信号处理器调用（见 `apps/web-next/instrumentation.ts`）。
+ *
+ * 两步顺序是刻意的：**先全部发起停止，再一起等各自释放**——逐个「停一个等一个」会让第 N 个会话
+ * 白等前面每一个的 5 秒交卷窗口。没有在途运行时立即 resolve。
+ * 不设上限：停机预算是**停机方**的事（那个调用点自己给），本层只保证「发起了停止、并等到各自释放」
+ *（释放本身可能无界——那正是适配器不响应停止信号、连 dispose 也叫不醒迭代器的那一格）。
+ */
+export async function disposeLiveSessions(): Promise<void> {
+  const sessions = [...liveSessions];
+  if (sessions.length === 0) return;
+  const logger = createLogger('agents/lifecycle');
+  logger.warn('宿主停机：回收在途会话', {
+    count: sessions.length,
+    kinds: sessions.map((session) => session.kind),
+  });
+  for (const session of sessions) {
+    try {
+      session.stop();
+    } catch (error) {
+      // 停止信号自身失败不得挡住其余会话的回收：与 `release.ts` 里 interrupt 的 try/catch 同一条理由
+      logger.error('发起停止失败（继续回收其余会话）', { kind: session.kind, error });
+    }
+  }
+  await Promise.all(sessions.map((session) => session.released));
+}
+
+/**
+ * 这一条投影有没有交出**任何产品事件**（看门狗的「有输出」判据）。
+ * 刻意从宽：行级事件、消息、子任务行、计量事件（`turns` 一到就发 `usage`）都算。判据窄了会把
+ * 「工具在途的一整段」读成静止——cc 的 `tool_progress` / `system/api_retry` 走的是未识别负载的
+ * 兜底投影，漏掉它们等于误杀正在干活的工具。
+ */
+function projectionHasOutput(projection: TurnProjection): boolean {
+  return (
+    projection.drafts.length > 0
+    || (projection.messages?.length ?? 0) > 0
+    || (projection.subagents?.length ?? 0) > 0
+    || projection.turns !== null
+  );
+}
+
+/**
+ * 把一条投影里的工具块折进在途集合：`tool-call` 记上、`tool-result` 按**同一个 `callId`** 销账。
+ *
+ * 为什么按块判而不是按厂商事件名：工具的在途状态是**跨家同形**的东西（调用有 id、结果配对同一个 id），
+ * 而各家的事件名互不相同；按块判等于复用消息层已经归一好的配对键。
+ * 两个方向都危险：漏记 ⇒ 静默的长工具被误杀；错销账（别的 id 的结果把它清了）⇒ 挂死的工具被当成
+ * 合法静默、再也不会被发现。
+ */
+function trackToolBlocks(projection: TurnProjection, inFlight: Set<string>): void {
+  for (const message of projection.messages ?? []) {
+    for (const draft of message.blocks) {
+      const { block } = draft;
+      if (block.type === 'tool-call') inFlight.add(block.callId);
+      else if (block.type === 'tool-result') inFlight.delete(block.callId);
+    }
+  }
+}
+
+/**
  * 问题清单的第一条 → 一行可展示的文本。
  * 日志里只放第一条：完整清单是**回灌给模型**的原料（在修正提示词里），日志的读者是人，
  * 他要的是「哪儿不对」而不是一份逐格报告。
@@ -478,7 +609,17 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   let handle: TurnStart | undefined;
   let release: Promise<{ disposeError: unknown | null }> | undefined;
   let stopRequested = false;
-  let signalCanceled = false;
+  /**
+   * 外部要求停止的来源：`'signal'`＝用户点「终止」（`input.signal`）；`'shutdown'`＝宿主停机
+   * （`disposeLiveSessions()`）。两者都落 `canceled`——都表达「外部要求停止」，也都不进自动重试。
+   */
+  let stopOrigin: 'signal' | 'shutdown' | null = null;
+  /**
+   * **消费相**：从「向适配器要运行时」到「进入释放」这一段。两个判据共用这条边界——
+   * 看门狗只在这一段计时（释放阶段静止是正常的），宿主停机的「停止」也只在这一段改结论
+   *（与 finally 里摘掉 abort 监听器同一条口径：跑完了就不再翻转结论）。
+   */
+  let consuming = true;
   let failure: AgentFailure | null = null;
   /** 权威计量（进结果、进而进快照）：只有非估算值才写这里 */
   let tokens: AgentRunResult['tokens'] = null;
@@ -556,11 +697,117 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     // 「运行期间观察到过 abort」比结论时刻再读 `signal.aborted` 更贴近「用户要求停止」的语义：
     // 释放阶段最长可等 5 秒（等 dispose），其间用户点「终止」会把一次**已经正常跑完**的运行
     // 翻转成 canceled。signal 仍只用来判 canceled，不参与其它原因的推断，口径不变。
-    signalCanceled = true;
+    //（监听器在 finally 里摘掉，所以「跑完之后再点终止」不在此列。）
+    stopOrigin = 'signal';
     requestStop();
   };
 
   input.signal.addEventListener('abort', onAbort, { once: true });
+
+  /**
+   * 看门狗：两级**静止**上限（`AgentRunInput.watchdog`，缺省常亮）。它是「另一个终止发起者」——
+   * 到点走 `requestStop()` 那条与用户点「终止」相同的释放路径，结论由 `assembleResult` 落 `timed-out`。
+   *
+   * 为什么是「单个定时器 + 每次重排」而不是轮询：两级上限都是分钟级，轮询要么粒度粗（发现延迟）
+   * 要么空转（每行一个滴答）；重排只在有事件时发生。判据只有两个时刻：
+   * `idleDeadlineMs`（最后一次输出 + 空闲上限）与 `wallDeadlineMs`（本次模型往返起表 + 单轮上限）。
+   */
+  const limits = {
+    idle: input.watchdog?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+    wall: input.watchdog?.turnWallClockMs ?? DEFAULT_TURN_WALL_CLOCK_MS,
+  };
+  let idleDeadlineMs = 0;
+  let wallDeadlineMs = 0;
+  let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 开火的那一级（null = 没开火）；一旦非空就锁住，不再重复开火 */
+  let watchdogTrip: WatchdogTrip | null = null;
+  /** 在途工具（`callId`）：只有 `TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG` 里的家才让这一格参与判据 */
+  const inFlightTools = new Set<string>();
+  /** 已观察到的累计轮次：它**递进**才说明一次模型往返收尾、下一次起表（见「墙钟按一次往返计」） */
+  let observedTurns = 0;
+
+  const noteActivity = (): void => {
+    if (limits.idle > 0) idleDeadlineMs = Date.now() + limits.idle;
+  };
+  const noteRoundTrip = (): void => {
+    if (limits.wall > 0) wallDeadlineMs = Date.now() + limits.wall;
+  };
+  /** 在途工具期间是否挂起计时（只对登记过的家生效；两级一起挂起，见那张表的注释） */
+  const suspendedByTool = (): boolean =>
+    TOOL_IN_FLIGHT_SUSPENDS_WATCHDOG[hooks.kind] === true && inFlightTools.size > 0;
+
+  const clearWatchdog = (): void => {
+    if (watchdogTimer === undefined) return;
+    clearTimeout(watchdogTimer);
+    watchdogTimer = undefined;
+  };
+
+  /** 重排下一次判定：取两级里最近的那个；两级都被挂起时不排（工具收尾那一刻会再排一次） */
+  const armWatchdog = (): void => {
+    clearWatchdog();
+    if (!consuming || watchdogTrip !== null) return;
+    const deadlines: number[] = [];
+    if (!suspendedByTool()) {
+      if (limits.idle > 0) deadlines.push(idleDeadlineMs);
+      if (limits.wall > 0) deadlines.push(wallDeadlineMs);
+    }
+    if (deadlines.length === 0) return;
+    watchdogTimer = setTimeout(onWatchdog, Math.max(Math.min(...deadlines) - Date.now(), 0));
+  };
+
+  const onWatchdog = (): void => {
+    watchdogTimer = undefined;
+    if (!consuming || watchdogTrip !== null) return;
+    const now = Date.now();
+    if (!suspendedByTool()) {
+      if (limits.idle > 0 && now >= idleDeadlineMs) {
+        tripWatchdog('idle', limits.idle);
+        return;
+      }
+      if (limits.wall > 0 && now >= wallDeadlineMs) {
+        tripWatchdog('turn-wall-clock', limits.wall);
+        return;
+      }
+    }
+    // 只是被挂起（或有更近的定时器提前到点）：换个时刻再判
+    armWatchdog();
+  };
+
+  /**
+   * 开火：留痕（服务日志 + 该行事件流）后走 `requestStop()`，到点放弃等待、结论落 `timed-out`。
+   * 留痕是硬要求——「我们把它掐了」必须与「它自己挂了」在日志里分得开。
+   */
+  const tripWatchdog = (reason: WatchdogTrip, timeoutMs: number): void => {
+    watchdogTrip = reason;
+    clearWatchdog();
+    const seconds = Math.round(timeoutMs / 1_000);
+    const text = reason === 'idle'
+      ? `[WARN] 看门狗：该行已静止 ${seconds} 秒（没有任何事件），按静止超时终止并释放运行时`
+      : `[WARN] 看门狗：单次模型往返超过 ${seconds} 秒仍未收尾，按静止超时终止并释放运行时`;
+    logger.warn('看门狗判定这一行静止超时', { kind: hooks.kind, reason, timeoutMs });
+    emit(logDraft('stderr', text));
+    requestStop();
+  };
+
+  /**
+   * 该次运行的释放完成（宿主停机据此等它；`finally` 末尾 resolve）。
+   * 登记的是**本次运行**而不是某个适配器对象：句柄要到 `consume()` 才拿到，而停机可能发生在
+   * 装配的等待里——`stop` 走 `requestStop()` 那条既定路径（句柄到了会补一次释放，见那两处注释）。
+   */
+  let settleReleased: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    settleReleased = resolve;
+  });
+  const liveSession: LiveSession = {
+    kind: hooks.kind,
+    stop: () => {
+      // 消费相之外是空操作：跑完了的结论不再翻转（与 finally 里摘掉 abort 监听器同一条口径）
+      if (!consuming) return;
+      stopOrigin ??= 'shutdown';
+      requestStop();
+    },
+    released,
+  };
 
   /**
    * `hooks.start` 的产物**提到 `try` 外面**：收尾投影在 `finally` 里跑（失败 / 终止也要收尾，
@@ -600,8 +847,25 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     handle = interval;
     // 停止请求若在区间之间到达：这一刻才拿到「被关闭的对象」，补一次释放
     if (stopRequested) requestStop();
+    // 一条活动区间就是一次模型往返：墙钟从这一刻起表（修正轮也算一次新的往返）
+    noteRoundTrip();
+    noteActivity();
+    armWatchdog();
     for await (const raw of interval.stream) {
       const projection = interval.project(raw, state);
+      /**
+       * 看门狗的三格记账（判据见 `AgentRunInput.watchdog` 与那两张表的注释）：
+       *   · 有输出 ⇒ 重置空闲计时（这是唯一能区分「模型想得久」与「对端挂了」的信号）；
+       *   · 工具块 ⇒ 在途集合按 `callId` 配平（只有能合法静默的家让这一格参与判据）；
+       *   · 轮次递进 ⇒ 一次往返收尾、重新起表（墙钟按一次模型往返计，不按厂商 turn）。
+       */
+      if (projectionHasOutput(projection)) noteActivity();
+      trackToolBlocks(projection, inFlightTools);
+      if (projection.turns !== null && projection.turns > observedTurns) {
+        observedTurns = projection.turns;
+        noteRoundTrip();
+      }
+      armWatchdog();
       for (const draft of projection.drafts) emit(draft);
       for (const message of projection.messages ?? []) emitMessage(message);
       for (const record of projection.subagents ?? []) emitSubagent(record);
@@ -782,6 +1046,11 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   }
 
   try {
+    liveSessions.add(liveSession);
+    // 从「向适配器要运行时」起表：装配与握手本身也可能挂住（首次注入的等待预算是 20 s 量级）
+    noteRoundTrip();
+    noteActivity();
+    armWatchdog();
     started = await hooks.start({ input, controller, emitter });
     logger.debug('适配器已启动，开始消费事件流', {
       kind: hooks.kind,
@@ -844,6 +1113,9 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       }
     }
   } finally {
+    // 消费相到此为止：看门狗停表（释放阶段的静止是正常的），停机也不再翻转结论
+    consuming = false;
+    clearWatchdog();
     input.signal.removeEventListener('abort', onAbort);
     /**
      * 收尾投影（可选，见 `TurnStart.finalize`）——**无论正常跑完、失败还是被终止都做**，
@@ -889,11 +1161,15 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     if (report.disposeError !== null) {
       logger.error('释放运行时失败（已忽略，避免掩盖本次运行的结论）', { error: report.disposeError });
     }
+    // 注销与「释放完成」同时发生：宿主停机等到这里才返回（登记见上面的 liveSession）
+    liveSessions.delete(liveSession);
+    settleReleased();
   }
 
   const result = assembleResult({
     startedAt,
-    canceled: signalCanceled,
+    stop: stopOrigin,
+    timedOut: watchdogTrip === null ? null : { reason: watchdogTrip, timeoutMs: watchdogTrip === 'idle' ? limits.idle : limits.wall },
     failure,
     tokens,
     subagentTokens,
@@ -1128,18 +1404,22 @@ function exitCodeOf(cause: unknown): number | null {
 }
 
 /**
- * 组装结果。判定优先级固定：signal 已中止 → canceled；其余按实际结果。
- * 为什么 canceled 排在最前：终止是唯一能表达「外部要求停止」的输入，故以它为准。
- * **`timed-out` 这一支已经不存在**：执行与评分都不限时间（用户口径），适配器没有内层上限，
- * 编排层也不再起兜底定时器 ⇒ 这一格没有生产者。`AgentExitReason` 与行状态里的 `timed-out`
- * 保留（历史 `run.json` 里还有它，读侧与重试判据都要认）。
+ * 组装结果。判定优先级固定：外部要求停止 → 看门狗判定静止超时 → 其余按实际结果。
+ * 为什么外部停止排在最前：终止是唯一能表达「外部要求停止」的输入，故以它为准；看门狗排第二，
+ * 因为「我们把它掐了」要盖过掐断过程中适配器抛出的那些次生失败（否则界面显示的是断流的症状，
+ * 而不是「静止超时」这件事本身）。
+ * 为什么 `timed-out` 在这里：它是**骨架**判定的结论（适配器内层没有上限、编排层也不起兜底定时器）；
+ * 上游自己报的超时走 `failure`（`AGENT_TIMED_OUT` 的码可以有别的来源，「谁掐的」要分得开）。
  * `exitReason` 与 `error.code` 刻意不同名：前者是给编排层的分类信号，后者是写给用户看的归因。
  * 收的是 `emit`（受保护的发射器）而不是 `EventEmitter` 本身：结论摘要与 error 事件也必须走同一个
  * try/catch，否则消费方抛错会让本函数抛，而它正是「永不抛」承诺的最后一道出口。
  */
 function assembleResult(input: {
   startedAt: number;
-  canceled: boolean;
+  /** 外部要求停止的来源（null = 没被外部停）：用户点「终止」或宿主停机 */
+  stop: 'signal' | 'shutdown' | null;
+  /** 看门狗开火的那一级与它用的上限（null = 没开火） */
+  timedOut: { reason: WatchdogTrip; timeoutMs: number } | null;
   failure: AgentFailure | null;
   tokens: AgentRunResult['tokens'];
   subagentTokens: AgentRunResult['subagentTokens'];
@@ -1151,7 +1431,7 @@ function assembleResult(input: {
   emit: (draft: AgentEventDraft) => void;
 }): AgentRunResult {
   const durationMs = Date.now() - input.startedAt;
-  // finalText 与 tokens/turns 同路：三种结论（canceled / error / completed）都要带出去，
+  // finalText 与 tokens/turns 同路：四种结论（canceled / timed-out / error / completed）都要带出去，
   // 排障时「它说了什么」是唯一能回答「跑到哪一步了」的证据
   const base = {
     tokens: input.tokens,
@@ -1162,13 +1442,25 @@ function assembleResult(input: {
     finalText: input.finalText,
     applied: input.applied,
   };
-  if (input.canceled) {
-    input.emit(logDraft('stderr', '[WARN] 该行已被终止：适配器已停止并释放运行时'));
+  if (input.stop !== null) {
+    const by = input.stop === 'signal' ? '用户终止' : '宿主停机';
+    input.emit(logDraft('stderr', `[WARN] 该行已被终止（${by}）：适配器已停止并释放运行时`));
     return {
       ok: false,
       exitReason: 'canceled',
       ...base,
-      error: { code: 'AGENT_CANCELED', message: '该行已被用户终止' },
+      error: { code: 'AGENT_CANCELED', message: `该行已被终止（${by}）` },
+    };
+  }
+  if (input.timedOut !== null) {
+    const limit = input.timedOut.reason === 'idle' ? '空闲' : '单次模型往返';
+    const seconds = Math.round(input.timedOut.timeoutMs / 1_000);
+    input.emit(logDraft('stderr', `[WARN] 该行已按看门狗判定静止超时收场（${limit}上限 ${seconds} 秒）`));
+    return {
+      ok: false,
+      exitReason: 'timed-out',
+      ...base,
+      error: { code: 'AGENT_TIMED_OUT', message: `该行静止超时（${limit}上限 ${seconds} 秒），已释放运行时` },
     };
   }
   if (input.failure !== null) {

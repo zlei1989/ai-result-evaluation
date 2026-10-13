@@ -1,6 +1,6 @@
 # 故障索引
 
-三家厂商适配 FAQ 的现象条目索引：标题照抄报错原文（含报错码与英文原句），排障时拿报错原文在本页一搜即命中，锚点直达对应 FAQ 的方案层条目。根因与解决办法在 FAQ 原文，本页只做标题与链接，不复制方案层内容——单一真源。
+四家厂商适配 FAQ 的现象条目索引：标题照抄报错原文（含报错码与英文原句），排障时拿报错原文在本页一搜即命中，锚点直达对应 FAQ 的方案层条目。根因与解决办法在 FAQ 原文，本页只做标题与链接，不复制方案层内容——单一真源。
 
 ### Codex
 
@@ -40,11 +40,21 @@
 - [`AssertionError: expected false to be true // Object.is equality`（`providers/dsh/index.test.ts` 的 overlay 绝对路径那条）＋仓库根长出 `D:\runs\run-1\rows\r-1\workspace`](/faq/deepseek-harness#assertionerror-expected-false-to-be-true-object-is-equality-providers-dsh-index-test-ts-的-overlay-绝对路径那条-仓库根长出-d-runs-run-1-rows-r-1-workspace)
 - [`原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）](/faq/deepseek-harness#原始输出-38164-行-但执行日志是空的-dsh-行-厂商会话日志-201-条事件-我们只收到前-13-条)
 
+### Pi Coding Agent
+
+- [`mcp__<服务器>__<工具>` 握手成功却不在出站请求的 `tools` 里（SDK 注释原文：`MCP tools kept registered without being named stay inactive`）](/faq/pi#mcp-服务器-工具-握手成功却不在出站请求的-tools-里-sdk-注释原文-mcp-tools-kept-registered-without-being-named-stay-inactive)
+- [`This extension ctx is stale after session replacement or reload.`（后台档子智能体活过本行时，完成回调打旧 ctx ⇒ 未处理的 Promise 拒绝）](/faq/pi#this-extension-ctx-is-stale-after-session-replacement-or-reload-后台档子智能体活过本行时-完成回调打旧-ctx-⇒-未处理的-promise-拒绝)
+- [子智能体转写固定落 `os.tmpdir()/pi-subagents-<uid>/…`（不随行隔离）](/faq/pi#子智能体转写固定落-os-tmpdir-pi-subagents-uid-不随行隔离)
+- [只跑一次 `pi --help`，真实家目录长出 `~/.pi/agent/auth.json` 与 `~/.pi/agent/models-store.json`](/faq/pi#只跑一次-pi-help-真实家目录长出-pi-agent-auth-json-与-pi-agent-models-store-json)
+- [思考正文重复 5 段（同一段推理在执行日志的思考块里出现 5 次）](/faq/pi#思考正文重复-5-段-同一段推理在执行日志的思考块里出现-5-次)
+- [`MCP「my-server」未能启动：工具表里没有它的工具（这一家起不来时不投结构化错误）`（行落 `failed` + `AGENT_MCP_UNAVAILABLE`，而那一台的工具就在出站请求里）](/faq/pi#mcp「my-server」未能启动-工具表里没有它的工具-这一家起不来时不投结构化错误-行落-failed-agent-mcp-unavailable-而那一台的工具就在出站请求里)
+- [「这个子任务没有逐条对话记录」（pi 行的子任务节点点进去是空的：子会话的步骤不在父会话的事件流里）](/faq/pi#「这个子任务没有逐条对话记录」-pi-行的子任务节点点进去是空的-子会话的步骤不在父会话的事件流里)
+
 ## 跨家与环境
 
 **不属于任何一家厂商**的条目（任何一家只要注入了会拉起浏览器的 MCP server 都成立；`unsupported call` 那种
-「某一家 × 某个环境」的组合仍归该厂商 FAQ）。落点是知识文章，不在三份 FAQ 原文里——本页只给指针。
-本节的条目**不受**上面那条「目录层与三份 FAQ 二级标题集合逐字一致」的守卫约束（那条守卫只管三个厂商分组）。
+「某一家 × 某个环境」的组合仍归该厂商 FAQ）。落点是知识文章，不在四份 FAQ 原文里——本页只给指针。
+本节的条目**不受**上面那条「目录层与四份 FAQ 二级标题集合逐字一致」的守卫约束（那条守卫只管四个厂商分组）。
 
 - [行结束后仍能 `pgrep` 到上一轮的浏览器（重跑同一行撞 `Browser is already in use for …, use --isolated …`）](/protocols/process-lifecycle#行结束后仍能-pgrep-到上一轮的浏览器-重跑同一行撞-browser-is-already-in-use-for-use-isolated)
 

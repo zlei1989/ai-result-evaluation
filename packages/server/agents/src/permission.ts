@@ -1,29 +1,33 @@
 /**
- * 权限档到**三家厂商选项**的映射表（唯一真源）。
+ * 权限档到**各家厂商选项**的映射表（唯一真源）。
  *
- * 为什么单独一个文件、而不是各自写在 provider 里：这三份表只有**放在一起**才能逐格对照，
+ * 为什么单独一个文件、而不是各自写在 provider 里：这几份表只有**放在一起**才能逐格对照，
  * 而它们必须同时正确——「两家给全权限、第三家忘给」正是冒烟实测过的缺陷形状
  *（cc 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
  * 见 `docs/protocols/provider-run.md`「权限档按阶段给」表）。放一起之后，
  * `permission.test.ts` 能把「每一档在每一家都有落点」写成一条可执行断言。
  *
- * ⚠️ 这张表里的选项**值域来自厂商包的类型面**（不是猜的），改之前先核这三处：
+ * ⚠️ 这张表里的取值**来自厂商自己的面**（类型面 / 配置面，不是猜的），改之前先核这几处：
  *   · claude：`@anthropic-ai/claude-agent-sdk/sdk.d.ts` 的 `PermissionMode` 与
  *     `allowDangerouslySkipPermissions` / `permissionPrompts` 的 JSDoc；
  *   · codex：`codex app-server` 协议的 `SandboxMode`（`thread/start` 的 `sandbox` 一等字段）与
  *     `AskForApproval`（同请求的 `approvalPolicy`）——取值域以 `providers/codex/appserver/protocol.ts`
  *     的声明与测试为准，不再经 SDK 的类型面；
  *   · dsh：`@deepseek-ai/dsh-base/cordis.patch.yml` 的 `sandbox-policy` / `approval` / `permission`
- *     三行——`DSH_PERMISSION_MODE` 同时决定沙箱档与批准策略，**无需**再传别的开关。
+ *     三行——`DSH_PERMISSION_MODE` 同时决定沙箱档与批准策略，**无需**再传别的开关；
+ *   · pi：`@earendil-works/pi-coding-agent` 的 `ToolName` 联合与 `CreateAgentSessionOptions.tools`
+ *     白名单（`createCodingTools()` / `createReadOnlyTools()` 两个工厂给出的正是默认的那两套），
+ *     见下面 `PiPermissionOptions` 的注释。
  *
  * 这里只放**权限相关**的选项；模型、cwd、env、超时等仍由各适配器自己拼。
  *
- * **`AgentRunInput.extraReadPaths` 刻意不落这三张表**：它只被 claude 消费——翻成 SDK 的
+ * **`AgentRunInput.extraReadPaths` 刻意不落这几张表**：它只被 claude 消费——翻成 SDK 的
  * `Options.additionalDirectories`（`--add-dir`），是 **query option** 而不是权限档选项
  * （转发点在 `providers/cc/index.ts`，与权限档并列地扩进 `dontAsk` 的预授权范围）。
  * codex / dsh 不映射它：codex 的 read-only 沙箱官方语义全盘可读、dsh 的 read-only 只拦写读全放行，
- * 两家的读放行不需要额外通道。把它塞进表里只会让这两家去消费一个它们不映射的格；
- * 三份表的键集合由 `permission.test.ts` 逐字钉死（守卫名：「extraReadPaths 不进三份权限档表」）。
+ * 两家的读放行不需要额外通道；pi 的读得到什么由只读档的工具白名单决定，也不需要这一格。
+ * 把它塞进表里只会让这几家去消费一个它们不映射的格；
+ * 各表的键集合由 `permission.test.ts` 逐字钉死（守卫名：「extraReadPaths 不进这几份权限档表」）。
  */
 import type { AgentPermission } from './types';
 
@@ -136,3 +140,75 @@ export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermiss
   full: { env: { DSH_PERMISSION_MODE: 'danger-full-access' } },
   'read-only': { env: { DSH_PERMISSION_MODE: 'read-only' } },
 };
+
+/**
+ * pi 的权限选项：**工具白名单**（`createAgentSession({ tools })`）。
+ *
+ * ⚠️ pi **没有权限标志位**——`.d.ts` 与真机都找不到 permission / sandbox 面（另三家的
+ * `PermissionMode` / `SandboxMode` / `DSH_PERMISSION_MODE` 在这里没有对应物）。
+ * 所以这一档**不是照抄三家的形状**，而是映射到「这一行拿得到哪些工具」：
+ * `createAgentSession({ tools })` 是 SDK 的**一等白名单**（`CreateAgentSessionOptions.tools`），
+ * 名单外的工具这一轮根本不在可用集里。
+ *
+ * 为什么不能像三家那样「只给一个权限开关、工具集不动」：pi 的写能力就住在工具集里。
+ * 评分阶段（`read-only`）若沿用默认工具集，评审者会拿到 `edit` / `write` / `bash`，
+ * 而工作区是候选的产出——它一改，抽屉里看到的 diff 就不再是候选交的那一份
+ * （编排层另有一次改动摘要对照，本档是**执行层**的那一道）。
+ *
+ * 名单取自 SDK 的 `ToolName` 联合（`read | bash | powershell | edit | write | grep | find | ls`）：
+ *   · `full` ＝ `createCodingTools()` 的默认四件（read / bash / edit / write）——评测要观察的
+ *     正是「改完自己跑不跑起来」，所以 `bash` 必须在（装依赖、跑测试都靠它）；
+ *   · `read-only` ＝ `createReadOnlyTools()` 的四件（read / grep / find / ls）——只读且能自己看改动，
+ *     刻意**不含 `bash`**：它能写盘，等于把只读档绕过去。
+ *
+ * `powershell` 两档都不给：它与 `bash` 是同一件事的另一条平台通路，给了等于在 Windows 上
+ * 多开一个与 `bash` 等价的写口子，而本仓的评测任务不区分平台 shell。
+ */
+export interface PiPermissionOptions {
+  /** 传给 `createAgentSession({ tools })` 的工具名白名单，可含 `*` 通配（`+name` / `-name` 形态不使用） */
+  tools: readonly string[];
+}
+
+/**
+ * 子智能体扩展注册的三个 LLM 可调工具（`SUBAGENT_TOOL_NAMES` 去掉工作流那一件）。
+ *
+ * ⚠️ **名字必须逐个列进白名单**：`tools` 是**成员匹配器**——名单外的工具这一轮根本不被启用，
+ * 而「没启用」与「没装上」在装配面上**一个字都不报**（真机实测：名单里只写内置四件时，
+ * 请求体的 `tools` 数组就是那四件，扩展注册的 `Agent` 静默消失）。这与 MCP 白名单那一格是同一个坑：
+ * 两者都是**成员匹配器**，名单外的工具既不报错、也不出现在请求里。
+ *
+ * ⛔ **只读档一个都不给**：`Agent` 派出的子会话能写文件（它拿的是完整工具面），
+ * 给了它等于把只读档从侧门绕过去。`get_subagent_result` / `steer_subagent` 在没有 `Agent` 的
+ * 会话里本来也无事可做，一并留在档外——**只读档的工具面里没有任何扩展工具**。
+ */
+export const PI_SUBAGENTS_TOOL_NAMES = ['Agent', 'get_subagent_result', 'steer_subagent'] as const;
+
+/**
+ * pi 两档的工具白名单（见上面的理由：这家靠**工具选择**分档，没有权限标志位）。
+ *
+ * `full` 档在默认四件之外加上扩展那三件：不然「声明 `subagent: yes`」与「实际拿得到派发工具」
+ * 就是两句话（声明归声明，工具面静默没有它）。
+ */
+export const PI_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, PiPermissionOptions>> = {
+  full: { tools: ['read', 'bash', 'edit', 'write', ...PI_SUBAGENTS_TOOL_NAMES] },
+  'read-only': { tools: ['read', 'grep', 'find', 'ls'] },
+};
+
+/**
+ * 白名单里为 MCP 工具留的那一格：`mcp__*` 通配。
+ *
+ * **为什么必须是通配**：`direct` 曝光档下厂商把一台服务器的工具命名为 `mcp__<服务器>__<工具>`
+ * （服务器名里的 `-` 换成 `_`），而工具名由 MCP 服务器自己定、连接之后才拿得到
+ * ⇒ 我们装配会话时**枚举不出来**，只能按前缀通配。
+ *
+ * ⚠️ **为什么走「成员名单 + 通配」这条通道，而不是 `+name` / `-name` 修饰符**：
+ * pi 对**纯修饰符**名单的处理是把白名单整个丢掉（`allowedToolNames = undefined`），
+ * 之后任何注册进会话的工具都会进模型可见的工具表——那是「只留这些」的反面。
+ * 本档要的是**闭集**：名单外的工具在这个会话里根本不该被声明。
+ *
+ * ⚠️ **`+name` 的语义是「加进默认集」而不是「只留这些」**：pi 的默认集固定是
+ * `read` / `bash` / `edit` / `write`，所以只读档若写成 `+read,+grep,+find,+ls` 这类加集形式，
+ * 默认集里的 `bash` / `edit` / `write` **仍然在**——那是静默的权限放宽，比「名单少了一格」更坏。
+ * 因此本模块的两档一律用成员名单：名单内的是全部，`bash` 之类**可证不在**出站请求里。
+ */
+export const PI_MCP_TOOL_PATTERN = 'mcp__*';

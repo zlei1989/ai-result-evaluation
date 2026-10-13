@@ -30,23 +30,25 @@ export const LIVING_DOCS = [
   'faq/codex.md',
   'faq/claude-code.md',
   'faq/deepseek-harness.md',
+  'faq/pi.md',
   'guard/powershell.md',
   'guard/playwright-mcp.md',
 ];
 
 /**
- * 三份厂商 FAQ——《故障索引》目录层（FAQ_INDEX）的数据源：
+ * 四份厂商 FAQ——《故障索引》目录层（FAQ_INDEX）的数据源：
  * 文件名、厂商标签、站内链接（锚点链接的前缀）。按 AGENTS.md「发现即追加」的规矩，
  * FAQ 会持续长条目；守卫按二级标题解析条目，索引不同步即红。
- * 新增第四家厂商 FAQ 时同步此清单（docs/faq/ 多出的文件若不在名单里，守卫会红）。
+ * 新增厂商 FAQ 时同步此清单（docs/faq/ 多出的文件若不在名单里，守卫会红）。
  */
 export const FAQ_DOCS = [
   { file: 'faq/codex.md', vendor: 'Codex', link: '/faq/codex' },
   { file: 'faq/claude-code.md', vendor: 'Claude Code', link: '/faq/claude-code' },
   { file: 'faq/deepseek-harness.md', vendor: 'DeepSeek Harness', link: '/faq/deepseek-harness' },
+  { file: 'faq/pi.md', vendor: 'Pi Coding Agent', link: '/faq/pi' },
 ];
 
-/** 《故障索引》目录层页：收录三份 FAQ 的全部现象条目，只做标题 + 锚点链接（方案层单一真源在 FAQ 原文） */
+/** 《故障索引》目录层页：收录四份 FAQ 的全部现象条目，只做标题 + 锚点链接（方案层单一真源在 FAQ 原文） */
 export const FAQ_INDEX = 'faq/index.md';
 
 /** 把「前缀/**」glob 编译成相对路径匹配函数；未预期形态直接抛错，不静默放过 */

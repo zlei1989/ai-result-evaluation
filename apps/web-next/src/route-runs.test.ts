@@ -414,12 +414,12 @@ describe('POST /api/runs/[runId]/rows/[rowId]/retry', () => {
 });
 
 describe('GET /api/runs/model-options', () => {
-  it('按协议过滤候选池，并带上三种智能体的能力元数据', async () => {
+  it('按协议过滤候选池，并带上各家的能力元数据', async () => {
     const res = await getModelOptions();
     const groups = (await res.json()) as Array<Record<string, unknown>>;
 
     expect(res.status).toBe(200);
-    expect(groups.map((group) => group.agentKind)).toEqual(['cc', 'codex', 'dsh']);
+    expect(groups.map((group) => group.agentKind)).toEqual(['cc', 'codex', 'dsh', 'pi']);
     // 键集合钉死：两侧（api / client）各声明过一次这个形状，谁偷偷加字段都会在这里失败。
     // `efforts`（思考强度的档位域）是有意加的第六格。
     // `messageCapability`（消息能力声明）是 ****api 加的第七格——
@@ -451,9 +451,12 @@ describe('GET /api/runs/model-options', () => {
       'protocolTypes',
       'usage',
     ]);
-    // 值是注册表真值（今天只有 DSH 声明它），且 cc 那一组**没有这一格**（不是空串 / undefined）
+    // 值是注册表真值（今天 dsh 与 pi 两家声明它），且 cc 那一组**没有这一格**（不是空串 / undefined）
     expect(dsh.defaultEffort).toBe('high');
     expect('defaultEffort' in (groups[0] ?? {})).toBe(false);
+    // pi 声明了缺省档 ⇒ 它那一组必须带这一格（界面拿它拼「未指定（Pi Coding Agent 用 medium）」）
+    const pi = groups.find((group) => group.agentKind === 'pi') as Record<string, unknown>;
+    expect(pi.defaultEffort).toBe('medium');
 
     const claude = groups.find((group) => group.agentKind === 'cc') as { options: Array<{ modelId: string }> };
     const codex = groups.find((group) => group.agentKind === 'codex') as { options: Array<{ modelId: string }> };

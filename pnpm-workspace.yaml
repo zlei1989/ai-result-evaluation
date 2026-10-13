@@ -24,3 +24,10 @@ allowBuilds:
 
 onlyBuiltDependencies:
   - esbuild
+
+# pnpm 11 默认开启「发布年龄闸」（`minimumReleaseAge`，24 小时）：命中即
+# `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`，`--frozen-lockfile` 也会拒装。
+# 子智能体扩展按批准的版本 pin 在 0.21.0，发布时间落在窗口内 ⇒ 按包名+版本豁免；
+# 豁免是逐条的，不放开整条策略。
+minimumReleaseAgeExclude:
+  - '@tintinweb/pi-subagents@0.21.0'

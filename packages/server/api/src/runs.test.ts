@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProvider } from '@aieval/agents';
 import {
+  AGENT_KINDS,
   EFFORT_OFF,
   PROTOCOL_LABELS,
   ServiceError,
@@ -697,18 +698,24 @@ describe('listModelOptions', () => {
 });
 
 describe('listAgentModelOptions', () => {
-  it('按 AGENT_KINDS 的顺序给出三个 kind 的元数据与候选池', () => {
+  it('按 AGENT_KINDS 的顺序给出每一家的元数据与候选池', () => {
     const groups = listAgentModelOptions();
 
-    expect(groups.map((group) => group.agentKind)).toEqual(['cc', 'codex', 'dsh']);
+    // 顺序与取值都按真源现比（不写死字面量清单）：加一家时这一条不该红在「清单没抄全」上，
+    // 而该红在真正的行为差异上——逐个下标断言的那些格才是判据
+    expect(groups.map((group) => group.agentKind)).toEqual([...AGENT_KINDS]);
     expect(groups[0]?.protocolTypes).toEqual(['anthropic']);
     expect(groups[1]?.protocolTypes).toEqual(['openai']);
     // dsh 两条 wire 都能收 ⇒ 集合是两个元素（双协议声明的收口）
     expect(groups[2]?.protocolTypes).toEqual(['openai', 'anthropic']);
+    // pi 也收两条 wire，且它映射到 chat-completions / messages 两条**不同**的 wire
+    // （不是 dsh 的 responses），故候选池同样是两类协议的并集
+    expect(groups[3]?.protocolTypes).toEqual(['openai', 'anthropic']);
     expect(groups[0]?.options.map((option) => option.modelId)).toEqual(['claude-opus-4-6']);
     expect(groups[1]?.options.map((option) => option.modelId)).toEqual(['gpt-5']);
     // dsh 的候选池是两类协议的**并集**（顺序 = 供应商清单顺序）
     expect(groups[2]?.options.map((option) => option.modelId)).toEqual(['gpt-5', 'claude-opus-4-6']);
+    expect(groups[3]?.options.map((option) => option.modelId)).toEqual(['gpt-5', 'claude-opus-4-6']);
   });
 
   it('把 cancelMidTurn 元数据透出来（DSH 为 false，界面文案要跟着变）', () => {
@@ -769,9 +776,10 @@ describe('listAgentModelOptions', () => {
         expect(group.defaultEffort).toBe(declared);
       }
     }
-    // 阳性面对照：今天必须有且只有 DSH 声明它（三家全不声明时上面那个循环会静默全过）
+    // 阳性面对照：今天有且只有 dsh 与 pi 声明它（全不声明时上面那个循环会静默全过）
+    // ——这两家的「未选」都会真的落到一个具体档上，另两家由厂商推断
     const withDefault = listAgentModelOptions().filter((group) => group.defaultEffort !== undefined);
-    expect(withDefault.map((group) => group.agentKind)).toEqual(['dsh']);
+    expect(withDefault.map((group) => group.agentKind)).toEqual(['dsh', 'pi']);
   });
 });
 

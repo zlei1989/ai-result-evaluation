@@ -10,8 +10,9 @@
  *   · 厂商压根没报这一台 ⇒ `unverified` + `judgedBy: 'none'`（**既不写成已连上、也不写成没有**）；
  *   · 我们因 `${ENV}` 未设置而跳过 ⇒ `skipped`（厂商事件里根本没有它，这一档只能由我们写）。
  *
- * 还有两条边界各有一条守卫：**前缀必须精确匹配**（`mcp__playwright-extra__x` 不能给 `playwright`
- * 记账），以及**仓库自带那几台也在格里**（`source: 'project'`，它们不受压制）。
+ * 还有三条边界各有一条守卫：**前缀必须精确匹配**（`mcp__playwright-extra__x` 不能给 `playwright`
+ * 记账）、**名字形态差异两种都认**（厂商把 `-` 写成 `_` 时不能判成「没起来」），以及
+ * **仓库自带那几台也在格里**（`source: 'project'`，它们不受压制）。
  */
 import { describe, expect, it } from 'vitest';
 import { deriveRowMcpServers, mcpUnavailableMessage, type RowMcpEvidence } from './row-mcp';
@@ -138,6 +139,65 @@ describe('deriveRowMcpServers', () => {
 
     // 两条相似前缀都不该给 `play` 记账（否则「隔壁那台连上了」会被读成「这一台连上了」）
     expect(rows[0]).toMatchObject({ verdict: 'unverified', judgedBy: 'vendor-status' });
+  });
+
+  /**
+   * **带连字符的名字**：厂商把名字里的 `-` 写成 `_`（pi 与 codex 都如此），工具表里因此是
+   * `mcp__my_server__echo`。用原始名拼精确前缀会判成「表里没有它」，而在 `vendor-tool-table`
+   * 通道下那就是**整行失败**——模型明明调得动，界面却说这台没起来。
+   */
+  it('厂商把 `-` 写成 `_` 时照旧认得（带连字符的名字不许判成没起来）', () => {
+    const rows = deriveRowMcpServers(
+      evidence({
+        injected: ['my-server'],
+        vendor: { servers: [], tools: ['read', 'bash', 'mcp__my_server__echo'], channel: 'vendor-tool-table' },
+      }),
+    );
+
+    expect(rows[0]).toEqual({
+      name: 'my-server',
+      source: 'unknown',
+      judgedBy: 'vendor-tool-table',
+      verdict: 'connected',
+    });
+    // 这一档下「表在、没有它」= 整行失败 ⇒ 这里必须一条失败文案都不产出
+    expect(mcpUnavailableMessage(evidence({
+      injected: ['my-server'],
+      vendor: { servers: [], tools: ['mcp__my_server__echo'], channel: 'vendor-tool-table' },
+    }))).toBeNull();
+  });
+
+  /**
+   * **撞名**：`my-server` 与 `my_server` 是两条合法配置，而厂商工具表里它们同形。
+   * 那时归一化命中归不到具体哪一台 ⇒ 只有归一化形态可认的那一台记 `unverified` + 一句说明，
+   * **不许**判成 `unavailable`（证据不足不是失败），**也不许**把另一台的精确命中记到它头上。
+   */
+  it('两台名字在工具表里同形 ⇒ 只有精确命中的那台算数，另一台记 unverified + 说明且不判失败', () => {
+    const collided: RowMcpEvidence = {
+      injected: ['my-server', 'my_server'],
+      skipped: [],
+      invalid: [],
+      vendor: { servers: [], tools: ['mcp__my_server__echo'], channel: 'vendor-tool-table' },
+    };
+    const rows = deriveRowMcpServers(collided);
+
+    expect(rows[0]).toEqual({
+      name: 'my-server',
+      source: 'unknown',
+      judgedBy: 'vendor-tool-table',
+      verdict: 'unverified',
+      note: '与「my_server」在厂商工具表里同形（厂商把名字里的 - 写成 _）：mcp__my_server__ 那一批工具归不到这一台',
+    });
+    // 精确命中的那一台不受影响：同一批工具里它就是它自己
+    expect(rows[1]).toMatchObject({ name: 'my_server', verdict: 'connected' });
+    // 「证据不足」不许升级成失败：这一条一旦非 null，整行以 `AGENT_MCP_UNAVAILABLE` 收场
+    expect(mcpUnavailableMessage(collided)).toBeNull();
+  });
+
+  it('名字不撞时不给说明（没有那句话的行与本格逐字同形）', () => {
+    const rows = deriveRowMcpServers(evidence({ injected: ['my-server'], vendor: { servers: [], tools: ['mcp__my_server__echo'] } }));
+
+    expect(rows[0]).not.toHaveProperty('note');
   });
 
   it('厂商没报名字的那一条不进行级格（这一格的主键是名字），名字为空串的注入项也不重复出现', () => {

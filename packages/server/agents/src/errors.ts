@@ -24,15 +24,17 @@ export interface AgentFailure {
 }
 
 /**
- * 加载失败的两种语义。必须分开，因为**补救动作完全相反**：
+ * 加载失败的三类语义。必须分开，因为**补救动作完全相反**：
  *  - `missing`：包没装 / 加载不起来 ⇒ 文案给安装命令（「装什么」+「怎么装」）；
  *  - `shape-mismatch`：包**已经装好**，只是导出面与适配器期望的不一致 ⇒ 安装命令是一条**恒无效**
  *    的指令（dsh 的包在 `dependencies` 里、`node_modules` 完整、镜像无关），它会把用户带向
- *    「检查网络 / 重装」这条错误方向，而真相是「适配器按探测前的假设写的」。
+ *    「检查网络 / 重装」这条错误方向，而真相是「适配器按探测前的假设写的」；
+ *  - `node-version`：包与导出面都对，是**运行时太老**（厂商的 `engines` 只是 npm 元数据，装载时
+ *    不自查）⇒ 补救动作是升级 Node，重装包同样是恒无效指令。
  */
-export type AgentLoadFailureVariant = 'missing' | 'shape-mismatch';
+export type AgentLoadFailureVariant = 'missing' | 'shape-mismatch' | 'node-version';
 
-/** `shape-mismatch` 文案需要点名的两件事：期望的入口名与实测拿到的导出面 */
+/** `shape-mismatch` 文案要点名期望入口与实测导出面；`node-version` 要点名要求下限与本机版本 */
 export interface AgentLoadErrorOptions {
   /** 省略即 `missing`（默认值保持老调用点逐字不变） */
   variant?: AgentLoadFailureVariant;
@@ -40,6 +42,10 @@ export interface AgentLoadErrorOptions {
   expected?: string;
   /** 实测导出面（`Object.keys(模块命名空间)`）；空数组表示读不到任何导出 */
   actual?: readonly string[];
+  /** `node-version`：厂商要求的 Node 下限（例：`≥22.19.0`） */
+  required?: string;
+  /** `node-version`：本机实测版本（`process.versions.node`） */
+  current?: string;
 }
 
 /**
@@ -55,16 +61,36 @@ export class AgentLoadError extends Error {
   constructor(packageName: string, cause: unknown, options: AgentLoadErrorOptions = {}) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     const variant = options.variant ?? 'missing';
-    super(
-      variant === 'shape-mismatch'
-        ? shapeMismatchMessage(packageName, reason, options)
-        : `厂商 SDK 加载失败：${packageName}（原因：${reason}）。请在 packages/server/agents 下执行 pnpm add ${packageName}；若已安装，检查网络镜像与 node_modules 完整性`,
-      { cause },
-    );
+    super(loadFailureMessage(packageName, reason, options), { cause });
     this.name = 'AgentLoadError';
     this.packageName = packageName;
     this.variant = variant;
   }
+}
+
+/**
+ * 按变体选文案：三类失败的补救动作不同，文案必须跟着换。
+ * `missing` 那条模板逐字保持原样（老调用点的用例按它断言）。
+ */
+function loadFailureMessage(packageName: string, reason: string, options: AgentLoadErrorOptions): string {
+  switch (options.variant ?? 'missing') {
+    case 'shape-mismatch':
+      return shapeMismatchMessage(packageName, reason, options);
+    case 'node-version':
+      return nodeVersionMessage(packageName, options);
+    default:
+      return `厂商 SDK 加载失败：${packageName}（原因：${reason}）。请在 packages/server/agents 下执行 pnpm add ${packageName}；若已安装，检查网络镜像与 node_modules 完整性`;
+  }
+}
+
+/**
+ * 「Node 太老」的文案：点名**要求的下限**与本机实测版本，并明确否定「重装包」这条猜想。
+ * 为什么必须与 `shape-mismatch` 分开：包在、导出面也对，用户照着安装命令做一遍不会有任何变化。
+ */
+function nodeVersionMessage(packageName: string, options: AgentLoadErrorOptions): string {
+  const required = options.required ?? '（未登记）';
+  const current = options.current ?? '（读不到版本）';
+  return `厂商 SDK 运行环境不满足：${packageName} 需要 Node ${required}，当前 ${current}（厂商的 engines 只是 npm 元数据，装载时不自查）。请在升级 Node 后重启服务；重装该包不会改变这一格`;
 }
 
 /**

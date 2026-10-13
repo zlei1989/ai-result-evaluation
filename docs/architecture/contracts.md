@@ -12,7 +12,7 @@
 |---|---|
 | `errors.ts` | 错误码表 `ERROR_CODES` + `STATUS_BY_CODE` / `httpStatusFor` + `ServiceError` |
 | `settings.ts` | 设置契约与默认值（`SETTINGS_DEFAULTS`、主题三档、评分默认） |
-| `provider.ts` | 供应商：落盘形态、下行形态（掩码）、create / patch 入参；另住**统一的关闭思考档名** `EFFORT_OFF`（`'off'`，三家各自翻成厂商词汇） |
+| `provider.ts` | 供应商：落盘形态、下行形态（掩码）、create / patch 入参；另住**统一的关闭思考档名** `EFFORT_OFF`（`'off'`，四家各自翻成厂商词汇） |
 | `case.ts` | 用例：`TestCaseSchema`、创建 / 补丁入参、`RepoInfo`、`CASE_ID_PATTERN` / `isCaseIdShapeValid`（id 文件名安全）、`CaseList`（列表 + 被跳过的坏文件原因） |
 | `case-sync.ts` | 用例同步：`CaseSyncStatus`（`GET /api/cases/sync-status` 的只读快照，含 `remoteAhead` 的「未知用 `null`」口径）、`CaseSyncAction`（人工提交 / 拉取） |
 | `run.ts` | 评测与候选行：`EvalRunSchema` / `EvalRowSchema`、行状态机、diff 响应 |
@@ -40,7 +40,7 @@
 
 ## 机制与演化
 
-- **两份契约投影同批替换**（最核心的口径，真源在 `score.ts` 文件头）：`JUDGE_OUTPUT_CONTRACT`（文本契约，进提示词）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出，经 `AgentRunInput.outputSchema` 交给三家——cc / codex 走原生通道，dsh 由适配器内部填充）是**同一条契约的两个投影**，必须**同批修改**——只动一侧会让「模型按 schema 回的」与「解析器按提示词认的」分叉，界面表现为「模型回得挺好、解析就是失败」。守卫在 `score.test.ts`：同形守卫（字段名逐项对齐）+「两份投影里都不出现 `totalScore`」+「`minItems` / `maxItems` 不存在」（项数由每张评分表决定，编译期字面量表达不了，只能由结构检查判）。schema 手写字面量，**不引 `zod-to-json-schema`、不写通用转换器**（那是第二份真源）；只用可移植子集（无 `oneOf` / `const` / `prefixItems` / `uniqueItems`）。`achieved` 请求侧取 boolean 严档、解析侧宽容读——有意登记的差异。
+- **两份契约投影同批替换**（最核心的口径，真源在 `score.ts` 文件头）：`JUDGE_OUTPUT_CONTRACT`（文本契约，进提示词）与 `JUDGE_OUTPUT_JSON_SCHEMA`（结构化输出，经 `AgentRunInput.outputSchema` 交给四家——cc / codex 走原生字段、pi 走工具通道（strict），dsh 由适配器内部填充）是**同一条契约的两个投影**，必须**同批修改**——只动一侧会让「模型按 schema 回的」与「解析器按提示词认的」分叉，界面表现为「模型回得挺好、解析就是失败」。守卫在 `score.test.ts`：同形守卫（字段名逐项对齐）+「两份投影里都不出现 `totalScore`」+「`minItems` / `maxItems` 不存在」（项数由每张评分表决定，编译期字面量表达不了，只能由结构检查判）。schema 手写字面量，**不引 `zod-to-json-schema`、不写通用转换器**（那是第二份真源）；只用可移植子集（无 `oneOf` / `const` / `prefixItems` / `uniqueItems`）。`achieved` 请求侧取 boolean 严档、解析侧宽容读——有意登记的差异。
 - **schema 分层机制**：schema 同时承担运行时校验与类型推导的单一真源。读侧容忍——`listRuns()` 对坏快照跳过并记汇总 WARN（一条坏数据不该让整个列表白屏）；写侧 `appendEvent` 也做 `safeParse`（写侧容忍的后果是静默少一条事件）。
 - **契约先行的组织方式**：全部契约一次性建好、后续只消费。跨边界可见的名字由一份「接缝契约」钉死——**为什么、怎么做、叫什么**各由一份文档回答，名字只在一处定义。
 - **类型期与运行期依赖边的区分**：`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故依赖方向表不列这条边、ui 放 `devDependencies`。**只允许 `export type`**：写成值导出就真有运行时依赖，得回来改表。
@@ -53,7 +53,7 @@
 | `AgentErrorCode` 不进 `ERROR_CODES` | 有意设计 | 它没有对应 HTTP 状态，进了 `STATUS_BY_CODE` 就得编造状态码；由 `errors.test.ts`「AgentErrorCode 不进 ERROR_CODES」钉住 |
 | 契约可选字段的兼容载荷 | 常态 | 旧记录缺格是常态，必填会让 `listRuns()` 静默跳过整轮；处置：新字段一律 `.default(...)`，跳过必须在同趟扫描记**汇总 WARN**（「列表短了」与「为什么短」在同一条日志流里挨着） |
 | dsh 是否还有第三条 wire | 未验证 | 目前真机只跑到两条；若发现第三条，单值 / 集合设计需重开（残余不确定性，如实登记） |
-| 结构化输出是**每-run 通道事实**，不是能力位 | 有意设计 | `structuredOutput` 记「这一次有没有走原生 schema 通道」，由适配器上报（cc 按收尾消息里有没有 `structured_output`、codex 按这次有没有把 schema 发进 `turn/start`、dsh 恒 `false`）；`false` **不等于答复不合格**——保证强度三家不同（原生通道 vs 适配器填充层），交付契约相同。`achieved` 请求侧 boolean 严档、解析侧宽容读（有意登记的差异：请求侧拦身份、解析侧拦形状） |
+| 结构化输出是**每-run 通道事实**，不是能力位 | 有意设计 | `structuredOutput` 记「这一次有没有走原生 schema 通道」，由适配器上报（cc 按收尾消息里有没有 `structured_output`、codex 按这次有没有把 schema 发进 `turn/start`、pi 按答复是否确实来自被 strict 约束的工具参数、dsh 恒 `false`）；`false` **不等于答复不合格**——保证强度四家不同（原生字段 / 工具通道 / 适配器填充层），交付契约相同。`achieved` 请求侧 boolean 严档、解析侧宽容读（有意登记的差异：请求侧拦身份、解析侧拦形状） |
 
 ## 相关链接
 

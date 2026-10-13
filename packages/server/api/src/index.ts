@@ -33,6 +33,10 @@ export { generateRubric, resolveJudgeRoute, type GenerateRubricResult } from './
 // （AGENTS.md），evaluator 不在其中，也没出现在 apps/web-next/package.json 的依赖里——pnpm 的严格
 // node_modules 下直连会解析失败。api → evaluator 是允许的方向，故在这里转出一次。
 export { recoverInterruptedRuns } from '@aieval/evaluator';
+// 宿主停机回收：web-next 的启动钩子在 SIGTERM / SIGINT 上要释放本进程在册的在途会话
+// （厂商 SDK 代 spawn 的工具子进程是 detach 的，宿主一死就成孤儿）。理由与上一行同源——
+// web-next 只到 api，agents 不在它的依赖里 ⇒ 在这里转出一次。
+export { disposeLiveSessions } from '@aieval/agents';
 
 // 评测域：创建 / 列表 / 详情 / 启动 / 终止 / 候选池投影。
 // 候选池与 `usage` / `cancelMidTurn` 同源（agents 注册表元数据），故一次取全。

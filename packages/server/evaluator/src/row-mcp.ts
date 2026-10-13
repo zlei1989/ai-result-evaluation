@@ -17,6 +17,9 @@
  */
 import {
   ROW_MCP_SOURCE_UNKNOWN,
+  collidingMcpServerNames,
+  matchMcpToolName,
+  normalizeMcpName,
   type McpServerEntry,
   type RowMcpChannel,
   type RowMcpServer,
@@ -63,38 +66,39 @@ export interface RowMcpEvidence {
 }
 
 /**
- * 一台服务在工具表里有没有对应工具。
- *
- * 判据是**精确前缀** `mcp__<name>__`（不是 `startsWith('mcp__' + name)`）：少了结尾那两条下划线，
- * `mcp__playwright-extra__x` 会给 `playwright` 记账——「隔壁那台连上了」被读成「这一台连上了」，
- * 而这正是这一格最要不得的假绿。工具名三家同形（`mcp__<server>__<tool>`），故这条判据是跨家的。
- */
-function toolsShowServer(serverName: string, tools: readonly string[] | null): boolean {
-  if (tools === null) return false;
-  const prefix = `mcp__${serverName}__`;
-  return tools.some((tool) => tool.startsWith(prefix));
-}
-
-/**
  * 按厂商证据给一台下结论（注入过的与仓库自带的**走同一条判据**——工具表里有没有它的工具、
  * 厂商报的状态是什么，与「谁把它装进去的」无关）。
  *
- * **通道决定读法**（三家各一格），三条分支逐条对应：
- *   1. **工具表里有它** ⇒ `connected`（`vendor-tool-table`）：这是三家里最硬的一条证据，任何通道都优先；
- *   2. **`vendor-tool-table`（dsh）**：工具表就是判据本身——表在、里面没有它 ⇒ **`unavailable`**。
+ * **通道决定读法**（四家各一格），四条分支逐条对应：
+ *   1. **工具表里有它** ⇒ `connected`（`vendor-tool-table`）：这是最硬的一条证据，任何通道都优先。
+ *      名字比对走共享匹配器（`@aieval/contracts` 的 `matchMcpToolName`）：**先精确、再认厂商 sanitize
+ *      后的形态**（`-` ⇒ `_`）——带连字符的名字在 pi 与 codex 那边出站就是下划线形态，用原始名拼
+ *      精确前缀会把「模型调得动」判成「没起来」；
+ *   2. **`ambiguous`（归一化后与别台同形）** ⇒ `unverified`：那时归一化命中归不到这一台，
+ *      而 `vendor-tool-table` 通道的「表里没有它」是**失败档**（整行 `AGENT_MCP_UNAVAILABLE`）
+ *      ⇒ 证据不足时**只能**如实记「未验证」，并附一句说明（`note`）。精确命中不受影响；
+ *   3. **`vendor-tool-table`（dsh / pi）**：工具表就是判据本身——表在、里面没有它 ⇒ **`unavailable`**。
  *      这一家的失败是静默的（工具消失、会话照常跑完、无结构化错误），除工具面之外没有第二个信号；
  *      表**没投送**（`null`）时仍然只记 `unverified`：没有证据就不编一个失败；
- *   3. **`vendor-startup-status`（codex）**：`failed` ⇒ `unavailable`；`ready` ⇒ `connected`
+ *   4. **`vendor-startup-status`（codex）**：`failed` ⇒ `unavailable`；`ready` ⇒ `connected`
  *      （只到「装上了」这一档，**不暗示工具能调**）；`starting` ⇒ `unverified`；
- *   4. **`vendor-status`（claude）**：`failed` ⇒ `unavailable`；其余有状态 ⇒ `unverified`
+ *   5. **`vendor-status`（claude）**：`failed` ⇒ `unavailable`；其余有状态 ⇒ `unverified`
  *      （`pending` / `needs-auth` 都不判失败——**不等待**，init 是一次性事件）；
- *   5. 厂商没报这一台 ⇒ `unverified` + `judgedBy: 'none'`（既不说连上、也不说没有）。
+ *   6. 厂商没报这一台 ⇒ `unverified` + `judgedBy: 'none'`（既不说连上、也不说没有）。
  */
-function classify(serverName: string, evidence: RowMcpEvidence): Pick<RowMcpServer, 'judgedBy' | 'verdict'> {
+function classify(
+  serverName: string,
+  evidence: RowMcpEvidence,
+  ambiguous: boolean,
+): Pick<RowMcpServer, 'judgedBy' | 'verdict'> {
   const vendor = evidence.vendor;
   if (vendor === null) return { judgedBy: 'none', verdict: 'unverified' };
-  if (toolsShowServer(serverName, vendor.tools)) return { judgedBy: 'vendor-tool-table', verdict: 'connected' };
   const channel = vendor.channel ?? 'vendor-status';
+  if (matchMcpToolName(serverName, vendor.tools, ambiguous) !== null) {
+    return { judgedBy: 'vendor-tool-table', verdict: 'connected' };
+  }
+  // 撞名那一支：表在也不能判它没起来（见上面第 2 条）。判据仍记通道——证据确实是这条通道给的
+  if (ambiguous && vendor.tools !== null) return { judgedBy: channel, verdict: 'unverified' };
   if (channel === 'vendor-tool-table') {
     return vendor.tools === null
       ? { judgedBy: 'none', verdict: 'unverified' }
@@ -107,6 +111,21 @@ function classify(serverName: string, evidence: RowMcpEvidence): Pick<RowMcpServ
   }
   if (entry?.status !== null && entry?.status !== undefined) return { judgedBy: channel, verdict: 'unverified' };
   return { judgedBy: 'none', verdict: 'unverified' };
+}
+
+/**
+ * 撞名那一台的**说明**（`note`）：两台服务器名归一化后同形时，工具表里那一批工具归不到具体哪一台。
+ *
+ * 为什么必须说出来而不是悄悄按某一台记账：`my-server` 与 `my_server` 在设置页里是两条合法配置
+ * （名字正则允许 `-` 与 `_` 并存），而厂商工具表里它们是**同一个名字**——不说明的话，
+ * 「未验证」会被当成「我们没配上」。
+ */
+function collisionNote(name: string, partners: ReadonlyMap<string, readonly string[]>): string | undefined {
+  const sameForm = (partners.get(normalizeMcpName(name)) ?? []).filter((other) => other !== name);
+  if (sameForm.length === 0) return undefined;
+  const quoted = sameForm.map((other) => `「${other}」`).join('、');
+  return `与${quoted}在厂商工具表里同形（厂商把名字里的 - 写成 _）：`
+    + `mcp__${normalizeMcpName(name)}__ 那一批工具归不到这一台`;
 }
 
 /**
@@ -124,16 +143,46 @@ function classify(serverName: string, evidence: RowMcpEvidence): Pick<RowMcpServ
  * **形状不对的那几条记 `unverified` 而不是失败**（「弱判据不装强结论」的反面用法）：
  * 它们压根没被投送，厂商侧没有任何证据可读，而这是**我们**的配置问题——把它记成 `unavailable`
  * 等于让一行因为「配置里有个手改坏的条目」而失败，把一件能在设置页改好的事说成「这台起不来」。
+ *
+ * **撞名**（两台归一化后同形，如 `my-server` 与 `my_server`）在这一格只作 `note`：那一批工具
+ * 归不到具体哪一台，故那几台的归一化回退**失效**（精确命中照旧），结论记 `unverified` 而**不是**
+ * `unavailable`——证据不足不能让整行失败（见 `classify` 第 2 条）。
  */
 export function deriveRowMcpServers(evidence: RowMcpEvidence): RowMcpServer[] {
   const rows: RowMcpServer[] = [];
   const seen = new Set<string>();
   const sourceOf = (name: string): string =>
     evidence.vendor?.servers?.find((item) => item.name === name)?.source ?? ROW_MCP_SOURCE_UNKNOWN;
+  /**
+   * 撞名表：把**所有会进这一格的名字**（我们注入的 + 厂商报的）按归一化形态归堆。名字集合取全量，
+   * 因为「工具表里那一批归谁」这件事与「谁把它装进去的」无关（仓库自带一台同名服务时同样归不到）。
+   *
+   * ⚠️ 下面那次 `collidingMcpServerNames([...partners.values()].flat())` **不是多余的重复分组**，
+   * 两件事各有理由：① 这里的**去重**是判定的前提——注入集与厂商报的常常是同一个名字，
+   * 不去重就会被数成「两台同形」，于是每一台都白得一个撞名说明；② 撞名**谓词**只有
+   * `collidingMcpServerNames` 一份，把那份桶扫描内联到这里就是第二份定义（两张口径迟早分家，
+   * 而分家的表现是「说明说撞名、结论却按撞名处理」这种半套行为）。服务器数量是个位数，
+   * 多走一遍不值得用一份重复的谓词去换。
+   */
+  const partners = new Map<string, string[]>();
+  for (const name of [...evidence.injected, ...(evidence.vendor?.servers ?? []).map((item) => item.name)]) {
+    if (name === null) continue;
+    const key = normalizeMcpName(name);
+    const bucket = partners.get(key) ?? [];
+    // 同名去重：注入集与厂商报的常常是**同一个名字**，那不是撞名（撞名要的是两台名字同形）
+    if (!bucket.includes(name)) bucket.push(name);
+    partners.set(key, bucket);
+  }
+  const colliding = collidingMcpServerNames([...partners.values()].flat());
+  /** 一台的行内容：结论 + 撞名时的说明（没撞名就不写这一格，老 `run.json` 与本格逐字同形） */
+  const rowOf = (name: string, source: string): RowMcpServer => {
+    const note = colliding.has(name) ? collisionNote(name, partners) : undefined;
+    return { name, source, ...classify(name, evidence, colliding.has(name)), ...(note === undefined ? {} : { note }) };
+  };
 
   for (const name of evidence.injected) {
     seen.add(name);
-    rows.push({ name, source: sourceOf(name), ...classify(name, evidence) });
+    rows.push(rowOf(name, sourceOf(name)));
   }
   for (const name of evidence.skipped) {
     // 同一条只出现一次：注入集与跳过名单理论上互斥，重名时以「我们真的投送了」为准
@@ -150,11 +199,7 @@ export function deriveRowMcpServers(evidence: RowMcpEvidence): RowMcpServer[] {
   for (const entry of evidence.vendor?.servers ?? []) {
     if (entry.name === null || seen.has(entry.name)) continue;
     seen.add(entry.name);
-    rows.push({
-      name: entry.name,
-      source: entry.source ?? ROW_MCP_SOURCE_UNKNOWN,
-      ...classify(entry.name, evidence),
-    });
+    rows.push(rowOf(entry.name, entry.source ?? ROW_MCP_SOURCE_UNKNOWN));
   }
   return rows;
 }

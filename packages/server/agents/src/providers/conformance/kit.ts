@@ -20,6 +20,7 @@ import {
   MessageCapabilitySchema,
   MessageSourceSchema,
   SubagentRecordSchema,
+  matchMcpToolName,
   type AgentMessage,
   type InjectionCapability,
   type MessageCapability,
@@ -124,6 +125,19 @@ export interface ConformanceFixture {
   /** 注入面两格的**证明场景**（格 → 场景名）：声明 `yes` 的格靠它证明 */
   injectionProof: Partial<Record<'mcp' | 'skills', ConformanceScenarioName>>;
   /**
+   * `mcp` 那格的**逐名绑定**：本次交给厂商的那几台服务器名（**字面量**，不是从夹具配置里现读的
+   * 表达式）。声明后，厂商侧事实从「工具表里有**某个** `mcp__*`」收紧成「**每一台**都在表里」
+   * （名字比对走 `@aieval/contracts` 的共享匹配器，厂商 sanitize 过的形态也认）。
+   *
+   * 为什么必须是**独立写下的字面量**：判据若与夹具配置同一个来源，给探针改个名两边一起变、
+   * 套件照样绿——那正是「名字没绑上」的形态（与「拿探针与从同一个句柄现读的表达式自比」同一条
+   * 理由）。两处独立写下，改一处就当场红。
+   *
+   * 不声明时退回「服务表非空或有 `mcp__*` 工具表」：厂商侧只投启动状态那几家（codex）没有工具面
+   * 可绑，硬声明只会逼出一个假判据。
+   */
+  injectedMcpServers?: readonly string[];
+  /**
    * 本夹具**结构上证明不了**的注入面格 → 它在哪一层被证明（**相对仓库根**的路径）。
    *
    * 为什么留这条路：消息级夹具（把协议载荷喂进归一函数那种）看不到 RPC 往返——codex 的技能清单
@@ -142,6 +156,26 @@ export interface ConformanceFixture {
   lifecycleElsewhere?: string;
   /** 场景 → 产物；可以只给一部分，套件按能力声明要求它必须有的那些 */
   scenarios: Partial<Record<ConformanceScenarioName, () => ConformanceProduct>>;
+  /**
+   * **真出站证据**：走真包（不是 `testing/*-fixture` 的假件）并从**真实请求体**取事实的用例文件
+   * （**相对仓库根**的路径）。
+   *
+   * 为什么单列一格：上面每一组判据读的都是**产物**，而产物由夹具自己交——夹具在 SDK 边界上换假件时，
+   * 「我们传了什么」看得见、「厂商拿它做了什么」看不见（白名单是成员匹配器，名字对不上就静默少一件
+   * 工具；`strict` 那一格更是只在协议序列化之后才存在）。这类缺陷在假件层**结构上不可见**，
+   * 只有真包 + 假网关那条路拦得住，故它的存在本身要成为判据。
+   *
+   * 判据由接入守卫核对（`./onboarding.test.ts`）：点名的文件必须存在、**不许**装假 SDK 模块、
+   * 且断言里真读请求体捕获对象。写一个不存在的路径比不写更糟——那是把空转伪装成有判据。
+   */
+  realOutboundEvidence?: readonly string[];
+  /**
+   * 本家**结构上观测不到**真出站请求的那一格 → 为什么，以及真机那一侧由谁守。
+   *
+   * 与 `injectionProofElsewhere` 同一条口径：登记**不是免检**，接入守卫核对点名的文件存在。
+   * 诚实登记优于硬凑一条读假件的用例——后者会让「这条通路通了」这件事永远没有人判。
+   */
+  realOutboundGaps?: Partial<Record<'mcp' | 'structured-output', string>>;
   /** 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
   observedStatusIds?: string[];
   /**
@@ -264,21 +298,254 @@ export function checkSubagentBridge(fixture: ConformanceFixture): void {
   }
 }
 
-/** 分量与合计同一把尺（「缺一格就整格 null」由 schema 保证：三个必填格是 `number`，整格才可空） */
+/**
+ * **子任务投递的折叠**：按 `subagentId` 让后到的投递整条覆盖先到的，顺序按首次出现。
+ *
+ * 为什么它必须住在套件里：契约明文允许同一身份多次投递（派发一条、收场一条，**后者是完整快照**），
+ * 于是「产物里看到两条同身份记录」本身不是缺陷；真正要判的是**折叠之后**的形状。消费方
+ * （`message-log.ts` 的 `foldSubagents`、界面 `build-model.ts` 的会话树）都是这么折的——
+ * 折叠器与判据分家时，两边会各自定义一遍「同一条子任务」，而判据那一份必然先腐烂。
+ *
+ * 与 `foldMessages` 同一条纪律：覆盖**不是追加**（投递的那一条已是完整快照），
+ * 顺序按首次出现（后续覆盖不该把这条在时间轴上的位置往后挪）。
+ */
+export function foldSubagentDeliveries(records: readonly SubagentRecord[]): SubagentRecord[] {
+  const order: string[] = [];
+  const latest = new Map<string, SubagentRecord>();
+  for (const record of records) {
+    if (!latest.has(record.subagentId)) order.push(record.subagentId);
+    latest.set(record.subagentId, record);
+  }
+  return order.map((id) => latest.get(id)!);
+}
+
+/** 产物里**同一身份**的多次投递（顺序即到达顺序）；只投递过一次的给单元素数组 */
+function deliveriesOf(product: ConformanceProduct, subagentId: string): SubagentRecord[] {
+  return product.subagents.filter((record) => record.subagentId === subagentId);
+}
+
+/**
+ * 「后到的快照不许丢事实」要比的那几格：子任务在**运行期真的会变**的那些事实。
+ *
+ * 不含 `status` / `statusMissing`：终态**就是**对 `running` 的覆盖，把它们算进来等于禁止收尾。
+ * `subagentId` 是身份（同一个身份才有这条判据，它逐字相同）。
+ */
+const PRESERVED_SUBAGENT_FIELDS = ['name', 'kind', 'outcome', 'usage', 'parentCallId', 'parentSubagentId'] as const;
+
+/** 两条投递带来的**事实**是否逐格相同（身份那一格不参与：同一个身份才走这条判据） */
+function sameFacts(left: SubagentRecord, right: SubagentRecord): boolean {
+  return PRESERVED_SUBAGENT_FIELDS.every(
+    (field) => JSON.stringify(left[field] ?? null) === JSON.stringify(right[field] ?? null),
+  );
+}
+
+/**
+ * 一条消息归哪个子任务：消息那一侧**可能挂的是「派生它的那次调用 id」**（`parentCallId`），
+ * 而记录那一侧挂的是子任务身份——两套 id 谁都不等于谁（见 `SubagentRecord.parentCallId` 的说明）。
+ * 这一层是纯搬运：拿记录自己带的 `parentCallId` 当别名，别名与真名冲突时**真名优先**
+ * （记录的身份是权威，别名只是消息那一侧的书写方式）。
+ */
+function attributedNodeOf(product: ConformanceProduct, message: AgentMessage): string {
+  if (message.subagentId === null) return 'main';
+  const direct = product.subagents.some((record) => record.subagentId === message.subagentId);
+  if (direct) return message.subagentId;
+  const owner = product.subagents.find((record) => record.parentCallId === message.subagentId);
+  return owner?.subagentId ?? message.subagentId;
+}
+
+/** 折叠后的视图：`subagentId → 该会话自己的消息`（主会话键为 `main`，与消费方同一套 id） */
+function messagesByNode(product: ConformanceProduct): Map<string, AgentMessage[]> {
+  const byNode = new Map<string, AgentMessage[]>();
+  for (const message of product.messages) {
+    const key = attributedNodeOf(product, message);
+    const bucket = byNode.get(key);
+    if (bucket === undefined) byNode.set(key, [message]);
+    else bucket.push(message);
+  }
+  return byNode;
+}
+
+/**
+ * **K1 子任务归属**：声明 `subagent: yes` 的家，其产物里子任务消息必须带 `subagentId`，
+ * 且**每个子任务节点折叠后的轮次非空**。
+ *
+ * 为什么这条是套件级而不是各家自己的用例：界面按 `subagentId` 把消息分给会话节点、再按
+ * `roundTrip` 分组成轮次（`build-model.ts` 的第一条职责）。适配器少挂一次归属键的后果不是报错，
+ * 而是**子任务点进去只有一条终局行、没有逐条对话**——消息明明躺在产物里，界面一条都认不到。
+ * 只判「有没有 `subagent` 行」的家在这里全绿，而用户看到的是空盒子。
+ *
+ * 两条判据分得开，缺一条都留一个洞：
+ *   · **带 `subagentId`**：主会话的消息那一格是 `null`，子任务的消息必须以**该子任务的 id**
+ *     或**派生它的调用 id**（别名，见 `attributedNodeOf`）落在别的节点上——一条都没有时，
+ *     折叠出来的轮次必然是空的；
+ *   · **轮次非空**：逐条对话真的落进了那个节点（不是「有归属键但全指错地方」）。
+ */
+export function checkSubagentAttribution(fixture: ConformanceFixture): void {
+  if ((fixture.capability as unknown as Record<string, unknown>)['subagent'] !== 'yes') return;
+  for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
+    const product = build();
+    if (product.subagents.length === 0) continue;
+    const attributed = product.messages.filter((message) => message.subagentId !== null);
+    if (attributed.length === 0) {
+      throw new Error(
+        `${fixture.kind}/${name}：产物里有 ${product.subagents.length} 条子任务行，但没有一条消息带 subagentId`
+        + '——子任务节点折叠后的轮次必然是空的（点进去「没有逐条对话记录」，而消息就在产物里）',
+      );
+    }
+    const byNode = messagesByNode(product);
+    for (const subagentId of foldSubagentDeliveries(product.subagents).map((record) => record.subagentId)) {
+      const own = byNode.get(subagentId) ?? [];
+      if (own.length === 0) {
+        throw new Error(
+          `${fixture.kind}/${name}：子任务 ${subagentId} 没有一条归属它自己的消息`
+          + `（产物有 ${attributed.length} 条带 subagentId 的消息，但一条都不落在它这个节点上）`
+          + '——子任务折叠后的轮次为空，界面只能给出终局行',
+        );
+      }
+    }
+  }
+}
+
+/**
+ * **K2 同一身份只出一条**：折叠之后每个 `subagentId` **恰好一行**，且**每一次投递都带来新事实**。
+ *
+ * **判据是「折叠去重」，不是「禁止重复投递」**——这一条的措辞与实现两侧都容易写反，理由在契约里：
+ * `AgentRunInput.onSubagent` 明文「一行一子任务，**同一身份会多次投递**（派发时一条、收场时一条），
+ * 后者是前者的完整快照 ⇒ 消费方按 `subagentId` 覆盖即可」（`types.ts` 与
+ * `docs/protocols/provider-run.md` 逐字同此），`message-log.ts` 的 `foldSubagents` 就是那个覆盖。
+ * 而**带新事实的补全必须照发**：后台档下第一次拿到终态与用量的那一刻只能再投一条完整快照，
+ * 挡掉它，子任务的状态与用量就永远停在派发时那份半截快照上。
+ *
+ * 于是三件事分开判：
+ *   1. **折叠成一行**：`foldSubagentDeliveries` 的输出里身份**首次出现的顺序**不得漂移——
+ *      界面按这个顺序摆卡片，后到的覆盖不该把卡片挪位；
+ *   2. **后到的是完整快照**（覆盖不许丢事实）：同一条子任务在这条投递**之前**已经出现过的
+ *      非空取值，折叠结果里必须还在。适配器若把「收尾」投成一份比派发更瘦的快照，消费方按
+ *      `subagentId` 一覆盖，磁盘上那条就**退回半截**（名字掉了、状态退回 running），而形状全合法；
+ *   3. **没有「什么都不带」的投递**：一条投递若与它折叠后停下来的那一行**逐格相同**，它带的新事实
+ *      是零——这种重发既不在折叠上留下痕迹，也不在任何形状判据里露头，唯一的表现是磁盘上多一行、
+ *      派发面板与导出里多出一张卡片。判据按**内容**比而不是「发过没有」，故它不挡第 2 条要的补全。
+ */
+export function checkSubagentSingleRow(fixture: ConformanceFixture): void {
+  for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
+    const product = build();
+    const folded = foldSubagentDeliveries(product.subagents);
+    const firstSeen = [...new Set(product.subagents.map((record) => record.subagentId))];
+    const foldedIds = folded.map((record) => record.subagentId);
+    if (foldedIds.join('|') !== firstSeen.join('|')) {
+      throw new Error(
+        `${fixture.kind}/${name}：折叠后的子任务顺序是 ${foldedIds.join('、')}，`
+        + `首次出现顺序是 ${firstSeen.join('、')}——后到的覆盖不该把这条在时间轴上的位置挪走`,
+      );
+    }
+    for (const record of folded) {
+      const deliveries = deliveriesOf(product, record.subagentId);
+      for (const [index, delivery] of deliveries.entries()) {
+        for (const field of PRESERVED_SUBAGENT_FIELDS) {
+          const before = deliveries.slice(0, index).map((one) => one[field]).find((value) => value !== null);
+          if (before != null && delivery[field] === null) {
+            throw new Error(
+              `${fixture.kind}/${name}：子任务 ${record.subagentId} 的第 ${index + 1} 条投递把 ${field} 投成了 null`
+              + `（先前已采到 ${JSON.stringify(before)}）——后到的快照必须更全，覆盖不许丢事实`,
+            );
+          }
+        }
+        const prior = deliveries.slice(0, index).at(-1);
+        if (prior !== undefined && sameFacts(delivery, prior)) {
+          throw new Error(
+            `${fixture.kind}/${name}：子任务 ${record.subagentId} 的第 ${index + 1} 条投递与上一条逐格相同`
+            + '——同一身份的重复投递只允许在**带新事实**时发生（补全终态 / 用量）；'
+            + '什么都不带的重发会在磁盘上多出一行，派发面板与导出里多出一张卡片',
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * **K3 名字稳定**：同一条子任务的 `name` 在**派发**与**收尾**两条投递上必须一致
+ * （覆盖只许**填空**，不许改名——厂商侧的 `description` 不许盖掉派发时那个名字）。
+ *
+ * 为什么这一格要专门判：`name` 的消费方是派发面板与时间轴上的子任务入口，用户按它认人；
+ * 收尾那一条若用自己的 `description` 覆盖掉名字，界面上的入口会在子任务跑完的**那一刻改名**
+ * ——同一条子任务前后是两个名字，用户以为多出来一个。而形态本身（两个字符串）过得了所有形状判据。
+ *
+ * 判据取产物**实际投递的那几条**，不是 `foldSubagentDeliveries` 之后的终态：终态只留最后一条，
+ * 覆盖这件事在折叠之后就看不到了（那正是这条判据存在的理由）。两条方向：
+ *   · 首条非空（名字在派发时就采到了）⇒ 后续每一条都必须与它逐字相同，且不许退回 `null`
+ *     （退回 = 界面在收尾那一刻把名字换成 id 前 8 位）；
+ *   · 首条为空（派发时还没采到）⇒ 后续**可以**补一个非空名字（那是补全，不是改名），
+ *     但补上的名字此后不得再变。
+ */
+export function checkSubagentNameStability(fixture: ConformanceFixture): void {
+  for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
+    const product = build();
+    for (const subagentId of foldSubagentDeliveries(product.subagents).map((record) => record.subagentId)) {
+      const deliveries = deliveriesOf(product, subagentId);
+      const first = deliveries[0]!.name;
+      if (first === null) {
+        const filled = deliveries.map((record) => record.name).filter((one): one is string => one !== null);
+        if (new Set(filled).size > 1) {
+          throw new Error(
+            `${fixture.kind}/${name}：子任务 ${subagentId} 的名字在补全过程中出现了多个取值`
+            + `（${filled.join('、')}）——派发时没采到不是改名的理由`,
+          );
+        }
+        continue;
+      }
+      const drifted = deliveries.filter((record) => record.name !== first);
+      if (drifted.length === 0) continue;
+      const shown = drifted.map((record) => JSON.stringify(record.name)).join('、');
+      throw new Error(
+        `${fixture.kind}/${name}：子任务 ${subagentId} 的名字被后来的投递改动（派发时是 ${JSON.stringify(first)}，`
+        + `之后变成 ${shown}）——收尾不许用厂商描述覆盖派发时的名字`,
+      );
+    }
+  }
+}
+
+/** 归一后的用量三元组之和：本仓可比的那把尺（厂商自报的 `total` 口径各家不同，不参与比较） */
+function tokenSum(tokens: UsageTokens): number {
+  return tokens.input + tokens.cached + tokens.output;
+}
+
+/**
+ * 分量与合计同一把尺（「缺一格就整格 null」由 schema 保证：三个必填格是 `number`，整格才可空）。
+ *
+ * 两条方向都要判，且都是**分量不可能比合计更大**：
+ *   · **轮次**：分量的轮次是从合计推出来的（claude 的 `index.ts`：
+ *     `subagentTurns = turns === null ? null : read.turns`）——合计不知道时分量必然为 `null`；
+ *     反过来不成立（分量 token 可以独立采到，合计轮次却可能采不到）。接 claude 时这条抓出过
+ *     判据写反了方向，故在此写明理由。
+ *   · **用量**：契约里两格都是**合计口径**（子会话的那一份已经并进 `tokens`），而界面按
+ *     「主会话 = 合计 − 分量」推导——分量超过合计时那个减法是负数，没有任何一层会拦。
+ *     四家的实现都是「主子 + 子分量」，故这条也是「同一把尺」的判据。
+ *
+ * **用量那一格刻意不判「合计缺席时分量必须也缺席」**（与轮次那条不对称，是有意的）：
+ * 轮次的分量是**从合计推出来的**，而用量的分量是**独立收的**——「这一行有没有派子任务」这件事
+ * 不依赖厂商报不报用量，故「零个分量 + 合计未采到」是合法形态（dsh 的用量通道不投送时正是它）。
+ * 判据只在两格都在时比大小：那时界面才会真去做那个减法。
+ */
 export function checkUsagePairing(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const { usage } = build();
-    /*
-     * 配对的方向是**单向**的：分量的「轮次」是**从合计推出来的**（claude 的 `index.ts`：
-     * `subagentTurns = turns === null ? null : read.turns`）——合计不知道时分量必然为 `null`；
-     * 反过来不成立（分量 token 可以独立采到，合计轮次却可能采不到）。
-     * 接 claude 时这条抓出过判据写反了方向，故在此写明理由。
-     */
     if (usage.subagentTurns !== null && usage.turns === null) {
       throw new Error(`${fixture.kind}/${name}：给了 subagentTurns 却把合计 turns 记成 null（分量不可能比合计更清楚）`);
     }
     if (usage.turns !== null && usage.subagentTurns !== null && usage.subagentTurns > usage.turns) {
       throw new Error(`${fixture.kind}/${name}：subagentTurns 大于 turns（分量与合计不同尺）`);
+    }
+    if (
+      usage.tokens !== null
+      && usage.subagentTokens !== null
+      && tokenSum(usage.subagentTokens) > tokenSum(usage.tokens)
+    ) {
+      throw new Error(
+        `${fixture.kind}/${name}：subagentTokens（${tokenSum(usage.subagentTokens)}）大于合计 tokens`
+        + `（${tokenSum(usage.tokens)}）——两格都是合计口径，界面按「主会话 = 合计 − 分量」推导，`
+        + '分量更大时界面会算出负的主会话用量',
+      );
     }
   }
 }
@@ -360,6 +627,14 @@ const CELL_PROOF: Readonly<Record<string, (product: ConformanceProduct) => strin
 export interface InjectionProbe {
   /** 本次运行真的交给厂商的 MCP 配置；`null` / 空对象 = 一台都没发出去 */
   mcpSent?: unknown;
+  /**
+   * 本次交给厂商的那几台服务器**名字**（逐字）：注入面**逐名绑定**要用的那一半事实。
+   *
+   * 与 `mcpSent` 分工：`mcpSent` 回答「适配器有没有把入参交给厂商」（形状各家不同），
+   * 这一格回答「交给厂商的是**哪几台**」（统一形状，判据据此逐台对厂商工具表）。
+   * 不记这一格的家照旧只判「有没有 MCP 事实」。
+   */
+  mcpServerNames?: readonly string[];
   /** 本次运行真的落盘的技能副本名（对账对象是 `AgentRunInput.skills` 给的那几个） */
   skillsInstalled?: readonly string[];
 }
@@ -564,9 +839,55 @@ function hasSkillFact(product: ConformanceProduct): boolean {
   return vendorSystemEvents(product).some((event) => Array.isArray(event['skills']) && event['skills'].length > 0);
 }
 
-const INJECTION_FACT: Readonly<Record<'mcp' | 'skills', (product: ConformanceProduct) => string | null>> = {
-  mcp: (product) =>
-    hasMcpFact(product) ? null : '没有任何 MCP 事实（`vendor-system` 的服务表与 `mcp__` 工具表都没有）',
+/**
+ * 注入面探针里的**服务器名**那一半（今天的形状：pi 的假件把交给厂商的 `mcpServers` 的键记下来）。
+ *
+ * 为什么单列而不是从 `mcpSent` 里认：`mcpSent` 各家形状不同（配置对象 / 工具名数组），
+ * 而「我们交给厂商的是哪几台」这一问必须有一个**统一答案**，才谈得上逐名绑定。
+ */
+function mcpServerNamesOf(product: ConformanceProduct): readonly string[] {
+  const names = product.injectionProbe?.mcpServerNames;
+  return Array.isArray(names) ? names : [];
+}
+
+/** 厂商侧工具表（所有 `vendor-system` 事件的 `tools` 汇总；没有工具面时为空数组） */
+function vendorToolNames(product: ConformanceProduct): readonly string[] {
+  return vendorSystemEvents(product).flatMap((event) => {
+    const tools = event['tools'];
+    return Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === 'string') : [];
+  });
+}
+
+/**
+ * MCP 那一格的**厂商侧事实**：按「我们交给厂商的那几台」逐名绑定。
+ *
+ * 与 `hasMcpFact` 的差别就是这条收紧：后者只问「工具表里有没有**某个** `mcp__*`」——
+ * 夹具把探针服务器改个名、我们注入的一台都没生效，只要表里还有别的 MCP 工具就照样绿。
+ * 这里的判据是「**每一台**都在表里」，名字形态差异（厂商把 `-` 写成 `_`）由共享匹配器吸收。
+ *
+ * 返回 `null` = 这一格通过；否则返回一句点名到台的原因。
+ */
+function mcpFactProblem(product: ConformanceProduct, declared: readonly string[] | undefined): string | null {
+  const sent = mcpServerNamesOf(product);
+  if (declared !== undefined) {
+    const missingInProbe = declared.filter((name) => !sent.includes(name));
+    const extraInProbe = sent.filter((name) => !declared.includes(name));
+    if (missingInProbe.length > 0 || extraInProbe.length > 0) {
+      return `声明的注入名单与请求侧探针不符（声明 ${declared.join('、') || '（空）'}，`
+        + `探针 ${sent.join('、') || '（空）'}）——夹具改了名而判据没跟，这一格就白判了`;
+    }
+  }
+  if (sent.length === 0) {
+    return hasMcpFact(product) ? null : '没有任何 MCP 事实（`vendor-system` 的服务表与 `mcp__` 工具表都没有）';
+  }
+  const tools = vendorToolNames(product);
+  const missing = sent.filter((name) => matchMcpToolName(name, tools) === null);
+  if (missing.length === 0) return null;
+  return `厂商工具表里没有这几台的工具：${missing.join('、')}`
+    + `（请求侧探针交出的是 ${sent.join('、')}；工具表的判据是 \`mcp__<name>__\` 前缀，两种形态都认）`;
+}
+
+const INJECTION_FACT: Readonly<Record<'skills', (product: ConformanceProduct) => string | null>> = {
   skills: (product) =>
     hasSkillFact(product) ? null : '厂商侧技能清单为空（`vendor-system.skills` 没有非空清单）',
 };
@@ -622,8 +943,8 @@ export function checkInjectionNailing(fixture: ConformanceFixture): void {
         + '——适配器可能压根没把我们给的输入交给厂商（只判厂商侧会放过这一整类缺陷）',
       );
     }
-    // ② 厂商侧：厂商真的收到了吗
-    const problem = INJECTION_FACT[cell](product);
+    // ② 厂商侧：厂商真的收到了吗（`mcp` 那一格按声明的名字逐台绑，见 `mcpFactProblem`）
+    const problem = cell === 'mcp' ? mcpFactProblem(product, fixture.injectedMcpServers) : INJECTION_FACT.skills(product);
     if (problem !== null) {
       throw new Error(`${fixture.kind}：声明 ${cell}=yes，但 ${scenarioName} 场景里${problem}`);
     }
@@ -694,6 +1015,9 @@ export function describeProviderConformance(fixture: ConformanceFixture): void {
     ['消息 / 子任务 / 环境过契约 schema', () => checkContracts(fixture)],
     ['合并键等于契约公式', () => checkMergeKeys(fixture)],
     ['子任务桥与状态口径', () => checkSubagentBridge(fixture)],
+    ['子任务归属：带 subagentId 且折叠后轮次非空', () => checkSubagentAttribution(fixture)],
+    ['子任务同一身份只出一条', () => checkSubagentSingleRow(fixture)],
+    ['子任务名字在派发与收尾之间稳定', () => checkSubagentNameStability(fixture)],
     ['用量与轮次配对', () => checkUsagePairing(fixture)],
     ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
     ['注入面（MCP / skills）声明与产物互钉', () => checkInjectionNailing(fixture)],

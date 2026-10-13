@@ -291,6 +291,17 @@ describeProviderConformance({
     'mcp-injection': () => mcpInjectionProduct,
   },
   injection: codexProvider.metadata.injection,
+  /**
+   * **真出站证据：两格都不在 CI 里**（如实登记）。C 臂那份 `startToolRecorder` 是**本地 HTTP 转发器**，
+   * 确实读得到请求体的工具表，但整份文件 `skipIf(!ENABLED)`（默认跳过、默认不进 CI），
+   * 且它只断言工具表、没有结构化输出的那一格。`turn/start` 的 `outputSchema` 是**入参**，
+   * `strict` 有没有生效只有 Responses 那份请求体知道。
+   */
+  realOutboundEvidence: [],
+  realOutboundGaps: {
+    mcp: 'packages/server/agents/src/providers/codex/live-mcp.test.ts',
+    'structured-output': 'packages/server/agents/src/providers/codex/index.test.ts',
+  },
   injectionProof: { mcp: 'mcp-injection' },
   injectionProofElsewhere: { skills: 'packages/server/agents/src/providers/codex/skills.test.ts' },
   cancelMidTurn: codexProvider.metadata.capability.cancelMidTurn,

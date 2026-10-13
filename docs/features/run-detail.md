@@ -87,7 +87,7 @@
 
 **名次判据与卡片排序是同一份**（`compareRows` + `rankOf`，见上一节「排序与名次」）：总分降序 → 耗时升序 → tok（输入 + 输出）升序，三项全同才并列（同名次、**允许跳号**，如 `第 1 名` `第 1 名` `第 3 名`）。抽屉顶部一行次要色小字逐字给出这条判据；跑动中另起一行 `warning` 提示「有 N 行正在执行，名次可能变化」（N 数的是 `isRunningRow` 的**行数**，不是 `hasLiveRows` 那个布尔——后者的轮级那一格数不出 N）。
 
-**表格形态**：`size="small"` + `pagination={false}` + 首列 `fixed: 'left'`（宽度显式给出：rc-table 的吸边偏移按实测列宽算）+ `scroll={{ x: 标签列 + 每候选一列 }}`（**数值**，给 `true` / `'max-content'` 会让固定列失效）。两个方向的滚动都归 `base/TableScrollArea`，表格自己只填满它（`RANK_TABLE_FIT`）——**高度必须有界**：只给 `scroll.x` 时 rc-table 的横向滚动容器按内容长高，评分项多时那根滚动条会落到视口下方，候选多到装不下时右侧的列一个都够不着。
+**表格形态**：`size="small"` + `pagination={false}` + 首列 `fixed: 'left'`（宽度显式给出：rc-table 的吸边偏移按实测列宽算）+ <span v-pre>`scroll={{ x: 标签列 + 每候选一列 }}`</span>（**数值**，给 `true` / `'max-content'` 会让固定列失效）。两个方向的滚动都归 `base/TableScrollArea`，表格自己只填满它（`RANK_TABLE_FIT`）——**高度必须有界**：只给 `scroll.x` 时 rc-table 的横向滚动容器按内容长高，评分项多时那根滚动条会落到视口下方，候选多到装不下时右侧的列一个都够不着。
 
 **行底色一律不自定义**：分段靠位置与字重（组名加粗、总分的值是粗体），斑马纹与行 hover 都交给 antd 自己的规则。
 

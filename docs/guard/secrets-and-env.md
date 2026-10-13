@@ -38,13 +38,14 @@ ProviderView（剥掉 apiKey，只带 apiKeyMasked：前 3 位 + *** + 后 4 位
 
 供应商密钥的契约是**落盘明文 + 出口掩码**的两面形态。落盘的 `Provider` 携带原 `apiKey`（服务端必须拿原 token 才能代调上游），对外的 `ProviderView` 用 `omit` 剥掉 `apiKey`、用 `extend` 补上 `apiKeyMasked`。这个拆分保证：HTTP 层无论如何写路由代码，都不可能把明文泄出去——出口形态本身就不含该字段。
 
-适配器运行期的注入是**替换型**：以宿主环境为底构造新对象，把该行的 `HOME` / `USERPROFILE` / 厂商配置目录全部指到行级独立目录，再叠加厂商密钥变量。构造完成后交给子进程，宿主 `process.env` 一个字节也不动。三家厂商的注入变量：
+适配器运行期的注入**按形态分**：**子进程型**是**替换型**——以宿主环境为底构造新对象，把该行的 `HOME` / `USERPROFILE` / 厂商配置目录全部指到行级独立目录，再叠加厂商密钥变量；构造完成后交给子进程，宿主 `process.env` 一个字节也不动。**in-process 型**（pi）根本没有子进程环境这一层：凭据只走内存（内存凭据存储 + `modelsPath: null` + 内存 session / settings），provider 逐行自注册、id 由行 `configHome` 派生（厂商的注册表是按 id 索引的全局表，复用常量 id 会让两行互相改掉对方的 `baseUrl` / `apiKey`）。四家的注入落点：
 
 | 厂商 | 注入的环境变量 |
 |---|---|
 | Claude Code | `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CONFIG_DIR` |
 | Codex | `OPENAI_API_KEY`（经 `env_key` 机制）、`CODEX_HOME` |
 | DSH | 路由密钥经行级独立变量注入、`DSH_HOME` |
+| Pi Coding Agent | **不进环境变量**：密钥与 provider 都在内存（每 run 一个 providerId）。SDK 的**进程级全局路径**只认 `PI_CODING_AGENT_DIR`（缺省 `~/.pi/agent`）——那一格是「本仓自己起 pi 的 CLI 或扩展」时的隔离动作（探针 / 脚本 / 测试必须先指到临时目录），**不是**行的注入面 |
 
 配置文件的写盘是**先建临时文件（创建即 `0600`）→ rename 覆盖**的两步原子操作，绝不先删目标再重命名——中间崩溃会让配置连同密钥一起彻底消失。
 
@@ -62,12 +63,13 @@ ProviderView（剥掉 apiKey，只带 apiKeyMasked：前 3 位 + *** + 后 4 位
 - **Windows 无 POSIX 权限位**：`chmod 0600` 在 NTFS 上只是近似，属主隔离依赖用户目录边界。跨平台硬隔离需要操作系统级凭据库，超出本仓范围。
 - **测试环境 ≠ 运行环境**：单测的 mock 层（jsdom、注入桩）与真机差异是假绿的温床。写用例时必须显式点名「这条断言在真机上依赖什么环境条件」，否则单测绿只是自欺。已知的具体形态：打包器对动态导入的改写、子进程环境变量继承差异。
 - **配置目录解析的两级优先**（`AIEVAL_CONFIG_DIR` > `~/.aieval`）是测试隔离的基础设施，但测试仍应显式用 `setConfigDirForTesting`——依赖优先级本身不构成隔离，显式指向临时目录才构成。
+- **in-process 家的隔离不靠环境变量**：pi 的凭据、session、settings 全在内存，行与行之间靠「每 run 自建运行时 + 唯一 providerId」隔开；判据是**运行期**用例（两行同时跑，各自打到自己那台网关、密钥不串），而不是「没写 `process.env`」这一类静态判据（静态判据拦不住模块级缓存与单例）。⚠️ 但 pi 的**子会话与扩展**走**进程级**的 `PI_CODING_AGENT_DIR` / `~/.pi/agent`（会话的 `agentDir` 管不到它们）⇒ 凡本仓自己起 pi 的 CLI 或扩展，**只设 `agentDir` 不设这个变量就是假隔离**，真实家目录会被写。
 - **「默认根在真实家目录下」的目录有两处，各自要显式覆盖**：配置目录（上面那条）与**用例目录**（`settings.casesRoot` > `AIEVAL_CASES_ROOT` > `~/.aieval-cases`，用例里用 `setCasesRootForTesting`）。`setConfigDirForTesting` **管不到**用例目录——这是最容易漏的一格：批量写用例的夹具若没被指向临时目录，`listCases` + `deleteCaseFile` 会去读写开发者的真实 `~/.aieval-cases`。故夹具各带一道安全阀：先查 `getCasesRootOverrideForTesting()`，为 null 就抛错（`evaluator/src/testing/fixtures.ts` 的 `assertCasesRootOverride`、`api/src/testing/run-fixtures.ts` 的 `seedConfig` 同形）。
 - **环境变量只做默认值、不做覆盖**（用例目录这一格）：`AIEVAL_CASES_ROOT` 在设置页填过之后就不再生效——界面可见可改的一格被看不见的环境变量压掉，用户会「改了没反应且查不出原因」。写测试时据此判「改环境变量能不能影响用例落点」。
 
 ## 相关链接
 
-- [Codex FAQ](/faq/codex)、[Claude Code FAQ](/faq/claude-code)、[DeepSeek Harness FAQ](/faq/deepseek-harness)——三家厂商适配的运行期问题台账
+- [Codex FAQ](/faq/codex)、[Claude Code FAQ](/faq/claude-code)、[DeepSeek Harness FAQ](/faq/deepseek-harness)、[Pi Coding Agent FAQ](/faq/pi)——四家厂商适配的运行期问题台账
 - [PowerShell 安全](/guard/powershell)——递归删除的断言纪律，与密钥写盘的原子性同属「不可静默失败」家族
 - [Playwright MCP](/guard/playwright-mcp)——真机冒烟的几何断言口径，密钥在真机验证中不落日志
 - [测试策略与提速](/guard/test-strategy)——测试隔离（临时配置目录、独立 `HOME`）的具体跑法与预算口径

@@ -52,7 +52,7 @@
 ```text
 取基线：待变异文件记 sha256；工作树里有未提交改动 ⇒ 先提交再跑变异矩阵
   └─ 制造变异体：编辑器改实现（中文源码禁用 PowerShell 的 Get-Content -Raw / Set-Content）
-       └─ 备份带来源前缀：三家适配器各有一份 events.ts，备份名只取 basename 会互相覆盖
+       └─ 备份带来源前缀：四家适配器各有一份 events.ts，备份名只取 basename 会互相覆盖
   └─ 跑守卫：确认红，且红在断言 / 报错原文；记录红输出与红的条数
   └─ 还原：反向 edit 逐字节写回（git checkout -- 只回 HEAD，不依赖它）
   └─ 核对：sha256 与基线逐字一致；git status 确认工作树干净
@@ -86,4 +86,4 @@
 - [密钥与环境变量](/guard/secrets-and-env) —— 同域文章
 - [《测试策略与提速》](/guard/test-strategy) —— 同域文章
 - [故障索引](/faq/) —— 变异撞见的运行期问题按报错原文索引
-- 仓库内参考：`AGENTS.md`「约束」节 —— 规则真源；`docs/features/mcp-config.md` —— 该功能对应的现时行为说明（MCP 配置：解析 / 贴入 / 三家翻译 / 出口掩码 / 播种 / 失败归因）
+- 仓库内参考：`AGENTS.md`「约束」节 —— 规则真源；`docs/features/mcp-config.md` —— 该功能对应的现时行为说明（MCP 配置：解析 / 贴入 / 四家翻译 / 出口掩码 / 播种 / 失败归因）

@@ -135,6 +135,71 @@ export function createFakeStream(
   return { iterable, stop };
 }
 
+/** 时间轴假流上的一步：`atMs`（相对开跑的毫秒）那一刻吐出 `event` */
+export interface TimedStreamStep {
+  atMs: number;
+  /** 原始事件（喂给适配器的 `project`）；缺省 = 那一刻不吐东西（只表示时间流逝） */
+  event?: unknown;
+}
+
+/**
+ * 按**时间轴**吐事件的假流：逐步等到各自的 `atMs` 再吐出事件，最后一步之后正常结束
+ *（`hang: true` 则挂住直到 `stop()`）。
+ *
+ * 与 `createFakeStream` 的分工：那一条的形状里没有时间（「一串事件之后挂住」），而看门狗的两级上限
+ * 只有在时间轴上才分得开——「一直有输出」「轮次一直不推进」「工具在途整段静默」三者的事件序列
+ * 可以逐字相同，差别全在**什么时候**有输出。故这一条把时间也变成可设计的输入。
+ * `atMs` 必须非递减：它描述的是一条有序事件流。
+ */
+export function createTimedStream(
+  steps: readonly TimedStreamStep[],
+  recorder: FakeVendorRecorder,
+  options: FakeStreamOptions = {},
+): FakeStreamHandle {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let release: (() => void) | null = null;
+  const stop = (): void => {
+    stopped = true;
+    // 早退时把等在路上的那一步叫醒并清掉定时器：否则调用方停完之后还要白等一整段虚拟时间
+    if (timer !== undefined) clearTimeout(timer);
+    release?.();
+  };
+  const iterable: AsyncIterable<unknown> = {
+    async *[Symbol.asyncIterator]() {
+      let elapsed = 0;
+      try {
+        for (const step of steps) {
+          if (stopped) return;
+          const wait = step.atMs - elapsed;
+          if (wait > 0) {
+            await new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, wait);
+              release = resolve;
+            });
+            timer = undefined;
+            release = null;
+            elapsed = step.atMs;
+          }
+          if (stopped) return;
+          yield step.event;
+        }
+        if (options.throwAfterEvents !== undefined) throw options.throwAfterEvents;
+        if (options.hang === true) {
+          if (stopped) return;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      } finally {
+        // 流结束就是「在途 turn 终结」：释放顺序断言里的中间那一段（与假流同一口径）
+        recorder.order.push('turn-end');
+      }
+    },
+  };
+  return { iterable, stop };
+}
+
 /** AgentRunInput 的默认值工厂：各用例只覆盖自己关心的字段 */
 export function createRunInput(overrides: Partial<AgentRunInput> = {}): AgentRunInput {
   return {

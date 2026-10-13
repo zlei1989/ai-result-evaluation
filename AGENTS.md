@@ -15,13 +15,14 @@
 
 ## 厂商适配 FAQ（发现即追加）
 
-三家各一份，问题按厂商归档：
+四家各一份，问题按厂商归档：
 
 | 厂商 | 文件 |
 |------|------|
 | Codex（`@openai/codex` / `codex app-server`） | `docs/faq/codex.md` |
 | Claude Code（`@anthropic-ai/claude-agent-sdk`） | `docs/faq/claude-code.md` |
 | DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`） | `docs/faq/deepseek-harness.md` |
+| Pi Coding Agent（`@earendil-works/pi-coding-agent`） | `docs/faq/pi.md` |
 
 每条四格，**缺一不可**：
 
@@ -42,10 +43,10 @@
 
 | 域 | 位置 | 收什么 |
 |----|------|--------|
-| 协议规范 | `docs/protocols/` | providers 抽象与 run 入口、消息与事件、进程生命周期、新增 SDK 接入流程、三家厂商接入与横向对比 |
+| 协议规范 | `docs/protocols/` | providers 抽象与 run 入口、消息与事件、进程生命周期、新增 SDK 接入流程、四家厂商接入与横向对比 |
 | 功能说明 | `docs/features/` | 按功能模块组织的现时行为说明；目录层《功能总览》 |
 | 架构设计 | `docs/architecture/` | 分层与依赖方向、契约体系、界面原语与主题、工具链与命令聚合 |
-| FAQ | 三份厂商 FAQ 原文 + 目录层 `docs/faq/index.md`《故障索引》 | 运行期问题按报错原文索引，可 grep |
+| FAQ | 四份厂商 FAQ 原文 + 目录层 `docs/faq/index.md`《故障索引》 | 运行期问题按报错原文索引，可 grep |
 | 规约守卫 | `docs/guard/`；另有 PowerShell / Playwright MCP 两份活文档原文编入（`docs/guard/powershell.md`、`docs/guard/playwright-mcp.md`） | 密钥与环境变量、冒烟方法论、变异验证、测试策略 |
 
 - **AI 读口径**：路径稳定、文件可 grep、本节指针可导航；`docs/public/llms.txt`（构建期由 `docs/.vitepress/build-llms.mjs` 按 `pages.mjs` 生成，全站页面清单 + 一句话摘要）是**副产品**判据，不是主判据。
@@ -55,7 +56,7 @@
   - **与「关账回写」不冲突**：ADR 0001 要回写的是**结论与判据**（这条口径是什么、判据钉在哪、边界在哪），不是「这次是怎么发现、什么时候改的」。
   - **实测数字分两种**：描述**现时约束**的留（「行内首次注入 17.2 s / 61 MB ⇒ 等待预算 ≥20 s」——数字是事实，也是设计理由）；描述**过程**的删（「某日实测发现 X，于是从 A 改成 B」）。
   - **`docs/guard/` 的方法学文章同样只写做法与判据**；针对某一次改动的「实测记录」小节不留在知识库里。
-  - **例外**：**按四格格式写的 FAQ 条目**（厂商三份在 `docs/faq/**`；跨家 / 环境类的那几条落在它们各自的主题文章里，如《进程生命周期》）——那里的「日期」格写的是「这个故障何时被观察到」，是条目身份的一部分，不受本口径影响；判据是**格式**（现象 / 日期 / 根因 / 解决方案四格齐），不是文件路径。
+  - **例外**：**按四格格式写的 FAQ 条目**（厂商四份在 `docs/faq/**`；跨家 / 环境类的那几条落在它们各自的主题文章里，如《进程生命周期》）——那里的「日期」格写的是「这个故障何时被观察到」，是条目身份的一部分，不受本口径影响；判据是**格式**（现象 / 日期 / 根因 / 解决方案四格齐），不是文件路径。
 
 ## 目录结构
 
@@ -65,7 +66,7 @@
 apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错误映射」
 packages/server/
   core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
-  agents/          智能体抽象层 + 三家适配器（Claude Code / Codex / DSH）；唯一允许引厂商 SDK 的包，
+  agents/          智能体抽象层 + 四家适配器（Claude Code / Codex / DSH / Pi Coding Agent）；唯一允许引厂商 SDK 的包，
                    对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；**业务无关**——只认
                    「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念，不知道评测领域
   evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
@@ -77,7 +78,7 @@ packages/client/
 docs/ 知识库（五域 + FAQ 与规约守卫活文档，见「知识库」节）
 docs/guard/powershell.md   PowerShell 的事实与硬规则（删除守卫、编码坑）
 docs/guard/playwright-mcp.md   Playwright MCP 的 filename 路径规则与冒烟口径
-docs/faq/  三家厂商 FAQ（发现即追加，格式见上）+ 目录层《故障索引》
+docs/faq/  四家厂商 FAQ（发现即追加，格式见上）+ 目录层《故障索引》
 eslint.shared.ts   共享规则 + 分层边界规则（withBoundary）
 ```
 
@@ -184,6 +185,9 @@ core     → contracts
 | `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style |
 | `next-env.d.ts` | 已 gitignore；忽略它只能写在 `boundaryConfigs('web-next')` 里，散写在 `apps/web-next/eslint.config.ts` 的裸条目会被根路径漏掉 |
 | PowerShell 5.1 的 `Get-Content` 读 UTF-8 文件 | 见 `docs/guard/powershell.md`「读写文件与编码」：无 BOM 时按 ANSI 解码，中文乱码且**行号少算** |
+| 本机 registry 是内网镜像的旧快照 | 部分包的新版本镜像里没有（如 `@tintinweb/pi-subagents` 的 0.20/0.21）⇒ 仓内 `.npmrc` **按 scope 路由到公网**（`@tintinweb:registry=https://registry.npmjs.org/`）；镜像里有货的 scope（如 `@earendil-works/*`）不路由。新增这类依赖时先 `pnpm view <包> versions` 问镜像，缺货再决定路由哪一格 |
+| **不裸跑 `pnpm add`** | 镜像缺平台可选包 ⇒ `ERR_PNPM_NO_MATCHING_VERSION`；且默认重解析会把厂商 SDK 的 peer 降级（如 `zod` 从 `4.6.5` 降到 `3.25.76`，违反它声明的 `zod: ^4.0.0`）。口径：**手改 `package.json`** + 按「旧 lockfile + 新子树可达集」合并 lockfile，改完核对版本后缀并跑 `pnpm install --frozen-lockfile` |
+| 改过 `package.json` 之后跑 `pnpm <script>` | pnpm 的依赖自检会**裸跑一次 `pnpm install`**，在内网镜像下以同一个 `ERR_PNPM_NO_MATCHING_VERSION` 中断，看起来像回归。口径：那一轮先 `pnpm install --frozen-lockfile` 对齐状态；退路是直接跑 `node_modules/.bin/{tsc,vitest,eslint}` |
 | 根 `eslint .` 的边界规则必须**按目录前缀化** | 否则 core 的禁用名单会落到全部包（web-next 被误伤成「禁止 import react」）；前缀化在 `scopeToDir()`。改完做**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错 |
 
 ## 冒烟测试

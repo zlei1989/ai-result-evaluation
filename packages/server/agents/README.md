@@ -6,9 +6,9 @@
 getProvider(kind).run(input): Promise<AgentRunResult>
 ```
 
-三家（Claude Code / Codex / DeepSeek Harness）的差异——厂商包入口形状、环境变量落点、权限档位、
+四家（Claude Code / Codex / DeepSeek Harness / Pi Coding Agent）的差异——厂商包入口形状、环境变量落点、权限档位、
 事件口径、释放方式——**全部挡在包内**。调用方（编排层 / 评分层）只按 `kind` 解析、只看元数据、
-只读 `AgentRunResult`，因此加第四家 = 加一个 `providers/<id>/` 目录 + 注册表一行，调用方一行不改。
+只读 `AgentRunResult`，因此接一家新厂商 = 加一个 `providers/<id>/` 目录 + 注册表一行，调用方一行不改。
 
 包的位置与定位：`packages/server/agents`，服务端五个包之一；**厂商 SDK 只允许出现在本包**
 （依赖方向与边界由 `withBoundary()` 的 eslint 规则硬约束，见根 `README.md`「代码在哪」）。
@@ -32,9 +32,9 @@ pnpm --filter @aieval/agents lint        # 本包 eslint
 
 运行侧的前置条件（缺了会在 `run()` 里折成 `AGENT_FAILED` / `AGENT_LOAD_FAILED`，而不是在装包时报错）：
 
-- 对应厂商包必须在 `node_modules` 里且导出面与适配器期望一致（三家都在本包 `dependencies` 里）；
+- 对应厂商包必须在 `node_modules` 里且导出面与适配器期望一致（四家都在本包 `dependencies` 里）；
 - 对应 CLI 必须可用：`claude` / `dsh` 走 `PATH`；**codex 不用 `PATH`**——适配器解析厂商包自带的可执行文件（`providers/codex/appserver/binary.ts`）并 spawn `codex app-server`。本包不代装、不代为登录；
-- 一行一份 `cwd` + `configHome`：适配器只负责把凭据注入**子进程环境**，不碰宿主的 `~/.claude` / `~/.codex`。
+- 一行一份 `cwd` + `configHome`：适配器只负责把凭据交给厂商运行时——**子进程型**走**替换型子进程环境**（宿主 `process.env` 一个字节也不动）、**in-process 型**（pi）只走内存（内存凭据存储 + 每 run 一个 providerId）；两者都不碰宿主的 `~/.claude` / `~/.codex`。
 
 ### 最小用法
 
@@ -80,9 +80,10 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 |---|---|---|
 | `getProvider(kind)` | 函数 | 按 `kind` 解析适配器；未注册的 kind **抛错**（信息含可用清单） |
 | `listAgentProviders()` | 函数 | 全部适配器（**返回副本**）；顺序 = 前端下拉顺序，与 `AGENT_KINDS` 同序 |
-| `AGENT_KINDS` | 值 | 三家 kind 的清单，**再导出**自 `@aieval/contracts`（真源在那里） |
+| `AGENT_KINDS` | 值 | 四家 kind 的清单，**再导出**自 `@aieval/contracts`（真源在那里） |
 | `acceptsProtocol(metadata, protocol)` | 函数 | 该家能不能收这条协议（读 `metadata.protocolTypes` 的**集合**）；表单过滤、创建校验、评分智能体校验与编排层复检四处都读它，**不许各写一份** |
 | `protocolMismatchMessage(metadata, protocol)` | 函数 | 协议不匹配时的**中文文案**（列出该家接受的**集合**而不是单值） |
+| `disposeLiveSessions()` | 函数 | 宿主停机回收：释放**本进程在册**的全部在途会话（先一起发停止，再一起等各自释放完）。供 `apps/web-next/instrumentation.ts` 的 SIGTERM / SIGINT 处理器调用——停机那一刻拿不到任何一次 `run()` 的返回值，只有在册表找得到在途会话 |
 | `ProtocolMismatchInput` | 类型 | 上面那个文案函数的入参（适配器元数据 + 目标协议） |
 | `AgentKind` | 类型 | `'cc' \| 'codex' \| 'dsh'` |
 | `AgentProvider` | 类型 | 适配器形状：`kind` / `displayName` / `metadata` / `run()` |
@@ -126,7 +127,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | **不抛** | 所有失败都折进 `result.ok === false` + `result.error`，调用方**不需要**给每一行套 try/catch（真正违约抛了的话，按「适配器违约」处置） |
 | **不改宿主环境** | 绝不写 `process.env`——凭据进的是**替换型子进程环境**（有源码级静态断言守着） |
 | **不动 git** | 工作区与分支由编排层备好；适配器只在该目录里跑 |
-| **不设内层上限** | 没有 `timeoutMs` 也没有 `maxTurns`：一次运行只会因「跑完 / 失败 / 外部要求停止」结束 |
+| **不设内层上限** | 没有 `timeoutMs` 也没有 `maxTurns`：一次运行只会因「跑完 / 失败 / 外部要求停止 / 静止超时」结束。**总时长仍不限**——唯一的时限是 `watchdog` 的两级**静止**上限（见 §5.2） |
 | **同步回调** | `onEvent` 同步调用、不 await；回调抛错会被吞掉并记 `logger.error`，**不改变**本次运行的结论 |
 
 ## 4. 属性说明
@@ -141,6 +142,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | `prompt` | `string` | ✅ | 考题 |
 | `route` | `{ protocolType, baseUrl, apiKey, modelId }` | ✅ | 只读输入。协议必须在本家 `metadata.protocolTypes` 里，否则那家 CLI 根本驱动不了它 |
 | `signal` | `AbortSignal` | ✅ | 外部要求停止（用户点「终止」）。**只**用来判 `canceled`，不用它推断其它原因；已 abort 时连进程都不起 |
+| `watchdog` | `{ idleTimeoutMs?, turnWallClockMs? }` | — | 两级**静止**上限，**缺省常亮**（空闲 180 s / 单轮 600 s，见 §5.2）。语义是「这一行还在动吗」，不是工作时长上限：连续没有产品事件到空闲上限、或**一次模型往返**超过单轮上限 ⇒ 落 `timed-out`。显式给 `0` 关掉那一级 |
 | `outputSchema` | `unknown` | — | 要求模型**按这份 JSON Schema 生成**最终答复；**语义是「我想要」**——这一格一律交给 `start`，走原生通道还是填充层由各适配器自己决定（有原生通道的家翻成 claude 的 `outputFormat` / codex 的 `outputSchema`；没有的家在适配器内部**填充**：首轮把 schema 约束追加在调用方提示词之后 + 自校验 + 同会话修正轮）。缺省 = 不约束。**非对象**（数组 / 字符串 / `null`）不是任何一家能用的 schema ⇒ 适配器按「没给」处置。结果里 `applied.structuredOutput` 记的是**这一次有没有真的走原生通道**——调用方据它记账；`capability` 里没有这一格，不要自己另查能力表 |
 | `onEvent` | `(e: AgentEvent) => void` | ✅ | 事件回调：同步、不 await。每行独立一份，`seq` 从 1 在 run 内自增，`at` 是 ISO 8601 |
 | `extraReadPaths` | `string[]` | — | read-only 档下**额外放行**的只读绝对路径（目录或文件）。只扩大「哪些路径可以读」、写仍被拒；**只被 claude 消费**——映射 SDK `additionalDirectories`（`--add-dir`，扩进 `dontAsk` 的预授权范围）；codex（read-only 沙箱全盘可读）与 dsh（只读只拦写、读直通）**不映射**。评分通路把落在 cwd 之外的执行过程记录路径透传进这一格 |
@@ -150,7 +152,7 @@ if (!result.ok) console.error(result.error?.code, result.error?.message);
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `ok` | `boolean` | 是否正常跑完（`exitReason === 'completed'` 时为 `true`） |
-| `exitReason` | `AgentExitReason` | **给编排层的分类信号**：`completed` / `canceled` / `error` / `timed-out`。判定优先级固定：`signal` 已中止 → `canceled`，其余按实际结果。`timed-out` 当前**没有生产者**（适配器没有内层上限），保留是为了读历史 `run.json` 与重试判据 |
+| `exitReason` | `AgentExitReason` | **给编排层的分类信号**：`completed` / `canceled` / `timed-out` / `error`。判定优先级固定：外部要求停止（用户点「终止」/ 宿主停机）→ 看门狗判定的静止超时 → 其余按实际结果。`timed-out` 的生产者是**骨架的看门狗**（见 §5.2），落 `error.code: 'AGENT_TIMED_OUT'` 与行状态 `timed-out`（**不进自动重试**） |
 | `tokens` | `{ input, cached, output } \| null` | **采不到就是 `null`，绝不填 0**（0 会让人得出「这家很省」的错误结论）。三项齐了才认 |
 | `turns` | `number \| null` | 轮次 = **一次模型 API 往返**（见 §5.4）；`null` = 一次都没观察到 |
 | `durationMs` | `number` | 本次运行的墙钟耗时（适配器自报） |
@@ -204,23 +206,25 @@ metadata: {
 - **`protocolTypes` 是模型候选池过滤的数据源**，不要另写一份「智能体 ↔ 协议」的对应关系表：
   填错会让表单列出**不兼容的**网关（选完到运行时才失败）。
 
-三家的实际取值（与 `registry.test.ts` 的期望表逐格一致，改动会红）：
+四家的实际取值（与 `registry.test.ts` 的期望表逐格一致，改动会红）：
 
 | kind | displayName | protocolTypes | cancelMidTurn | usage |
 |---|---|---|---|---|
 | `cc` | Claude Code | `['anthropic']` | `true` | `true` |
 | `codex` | Codex | `['openai']` | `true` | `true` |
 | `dsh` | DeepSeek Harness | `['openai','anthropic']` | `false` | `true` |
+| `pi` | Pi Coding Agent | `['openai','anthropic']` | `true` | `true` |
 
 **消息能力声明**（`metadata.messageCapability`）在同一份元数据里，逐格声明
 「思考正文 / 工具入参 / 工具结果 / 子任务 / 流式增量」能不能拿到、从哪条通道拿、拿不到时为什么，
-外加这一族能力成立的前提（`notes`）。三家的差异只有两处结构性缺口：
+外加这一族能力成立的前提（`notes`）。四家的差异只有两处结构性缺口：
 
 | kind | thinkingText | toolInput | toolResult | subagent | streamingDelta |
 |---|---|---|---|---|---|
 | `cc` | `yes`（SDK 消息流，`full`） | `yes` | `yes` | `yes` | `yes`（仅主会话） |
 | `codex` | `yes`（**app-server 通知流**，`full`） | `yes` | `yes` | `yes` | `yes` |
 | `dsh` | `yes`（会话通知流，`full`） | `yes` | `yes` | `yes` | `yes` |
+| `pi` | `yes`（会话事件流，`full`） | `yes` | `yes` | `yes` | `yes`（`wire`） |
 
 > codex 的消息由 **app-server 通知驱动**（增量与快照同源），收尾再用 `thread/read` 补齐**子线程历史**
 > ——子线程的 `item/*` 是否推给本条连接由上游决定，`reader` 是那条路上唯一的兜底。
@@ -244,15 +248,16 @@ metadata: {
 | `cc` | `yes` | `yes` | MCP：`system/init` 的服务状态 + 工具表；skill：`getContextUsage().skills` |
 | `codex` | `yes` | `yes` | MCP：`mcpServer/startupStatus`（档位只到「装上了」）；skill：`skills/list` 的响应 |
 | `dsh` | `yes` | `yes` | MCP：`request/header` 的**工具表**（这家没有服务状态那一格）；skill：`user/message` 的 `skill-catalog` |
+| `pi` | `yes` | `yes` | MCP：出站请求体的**工具表**（这家也没有服务状态那一格）；skill：出站请求 payload 的技能段（观察者按两条 wire 读） |
 
-> 「认不认」的判据都落在 `vendor-system` 事件上，但**读法要两家合读**：服务状态表（cc / codex）与
-> 工具表（dsh）是同一件事的两条通道，只认其中一条会把另一家判成「没注入」——那是判据错，不是它错。
+> 「认不认」的判据都落在 `vendor-system` 事件上，但**读法要合读**：服务状态表（cc / codex）与
+> 工具表（dsh / pi）是同一件事的两条通道，只认其中一条会把另一家判成「没注入」——那是判据错，不是它错。
 
 **耗时量级**（`metadata.timing.runScale`）声明一次运行是秒级还是分钟级，`notes` 写这一格成立的
 前提（机器 / 模型 / 路由 / 任务规模）。它是**量级**不是精确值——耗时随机器与模型变，写死数字必然
 过期或变成假话；而量级有真实消费方：**真机冒烟的等待预算按它派生**（声明小了，那一轮会被自己的
-预算掐掉、红在产物格），⑦ 格再从结果侧判一次「跑完了但远超声明」。三家都是分钟级；
-差异会在第四家出现时体现——那正是这一格存在的理由。
+预算掐掉、红在产物格），⑦ 格再从结果侧判一次「跑完了但远超声明」。前三家都是分钟级、
+**pi 是秒级**（in-process，没有子进程冷启动）——这正是这一格存在的理由。
 
 
 ---
@@ -271,7 +276,7 @@ metadata: {
 
 URL 归一只对**路径段**做，query / fragment 一个字符都不动（用户粘进来的地址可能带 `?x=1`）。
 
-### 5.2 停止与释放
+### 5.2 停止、释放与静止超时
 
 固定顺序：`interrupt()` → 等在途 turn 终结（最多 **5 秒**）→ `dispose()`。顺序不可颠倒：直接 dispose
 会与在途 turn 争抢同一批资源（子进程、临时目录）。
@@ -286,8 +291,44 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 然后强制 dispose。**非合作的适配器必须可见**，否则界面上会有一行永远停在 running 而没人知道为什么。
 
 > ⚠️ 已知能力边界：`dispose()` 只能**尽力**让事件迭代结束——迭代卡在 `await` 上时，「关闭迭代」只是排队。
-> 因此 **`run()` 可能无界返回**。「一行不会永远停在 running」这条用户可见的不变量由**编排层的兜底超时**
-> 负责，不在本包。
+> 因此 **`run()` 可能无界返回**。**静止由看门狗兜底（见下），总时长仍不限**：骨架不给一次运行设
+> 工作时长上限，用户口径「执行不限时间」不变。一个连停止信号都不理的适配器仍会让那一行挂着
+>（看门狗只是**发起**停止的又一个来源，能不能停下仍取决于适配器），这是已知代价。
+
+**看门狗（`AgentRunInput.watchdog`，缺省常亮）**：骨架判这一行**静止**超时，落 `timed-out`。
+两级上限与四条口径：
+
+| 级别 | 缺省 | 判据 |
+|---|---|---|
+| 空闲 | 180 s | 连续这段时间没有任何产品事件 |
+| 单轮墙钟 | 600 s | **一次模型往返**从起表到收尾超过这段时间（不按厂商 turn：codex 的一个 turn 内含多次往返） |
+
+1. **「有输出」＝这一条投影交出了任何产品事件**：行级事件、消息、子任务行、计量都算。判据窄了会把
+   「工具在途的一整段」读成静止——cc 的 `tool_progress` / `system/api_retry` 走未识别负载的兜底投影，
+   漏掉它们等于误杀正在干活的工具。
+2. **墙钟按一次模型往返计**：观察到轮次推进就重新起表。套在整行上等于把总时长上限加回来
+   （「一直有输出、但一次往返都不收尾」才是它要兜的那一格）。
+3. **工具在途挂起两级计时，只对能合法静默的家生效**（今天只有 dsh：它的工具输出不投通知流，
+   一条全程无输出的长命令与「对端挂了」完全同形，而 `bash` 允许显式 `timeoutMs` 到 600 s）。
+   cc / codex 刻意不豁免——它们在途自带节拍（cc 每 30 s 一件 `tool_progress`、codex 单次
+   `exec_command` 静默硬夹 30 s），豁免只会把真挂死的工具藏起来。**新家默认不豁免**，要放宽得显式登记。
+4. **等待审批在途也应当挂起**，但**识别机制按家不同、今天采不到 ⇒ 如实登记为未豁免**：dsh 的
+   `read-only` 档 approval 仍是 `ask`，而它的通知流里没有「待批准」这一类事件（SDK 客户端类型面也没有
+   approval 符号）⇒ 停在无人应答批准上的那一行会被判成 `timed-out`。cc（`dontAsk` +
+   `permissionPrompts: 'none'`）与 codex（两档都是 `approvalPolicy: 'never'`）没有批准面，这一条不适用。
+
+到点后的收尾与用户点「终止」**同一条路径**（`interrupt` → 终结在途 → `dispose`，5 秒交卷窗口），
+并在服务日志与该行事件流各留一条 `[WARN] 看门狗：…`；`timed-out` 行**不进自动重试**。
+「上游自己报的超时」不走这条路：它落 `error`（归因码可以是 `AGENT_TIMED_OUT`）——
+「我们掐的」与「它自己超时」在日志里必须分得开。
+
+**宿主停机回收（`disposeLiveSessions()`）**：`runTurn` 进出自动登记 / 注销在册会话，宿主的
+SIGTERM / SIGINT 处理器（`apps/web-next/instrumentation.ts`）收到信号就调它——**先一起发停止、
+再一起等各自释放完**（逐个等会让第 N 个会话白等前面每一个的 5 秒交卷窗口），超过停机预算后按原信号退出。
+少了这一步：SDK 代 spawn 的工具子进程是 detach 的，宿主一死它们被 reparent 到 init 继续跑，
+还捏着那一行的 `.agenthome` 与工作区。`SIGKILL` 不可捕获，那一格不可闭合；停机时那些运行的收场是
+`canceled`（截断的行不许报成 `completed`），磁盘快照仍由下一次启动的 `recoverInterruptedRuns()` 标
+`interrupted`。
 
 ### 5.3 事件流（`onEvent` 收到什么）
 
@@ -302,7 +343,7 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 ### 5.4 轮次（`turns`）与计量的口径
 
 **轮次 = 一次模型 API 往返**：一次请求带着 `role=user` 的上下文、模型回一条 `role=assistant` 的答复，算一次。
-三家各自从自己的事件流里数，**不混用「CLI 自己的 turn」**——codex 的 `turn.completed` 与 dsh 的 `turn/end`
+四家各自从自己的事件流里数，**不混用「CLI 自己的 turn」**——codex 的 `turn.completed` 与 dsh 的 `turn/end`
 都是**整段任务**一条（实测：真实 10 次模型调用只落 1 条），照它们数出来永远是 1，界面会一直停在「轮次 1」：
 
 | | 计数键 | 保真度 |
@@ -310,8 +351,9 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | cc | 主循环 `assistant.message.id`（同一响应的多个内容块共享 id，去重后计数）；`parent_tool_use_id` 非空的子智能体消息不计 | 与 SDK 自己的 `maxTurns`（API round-trips）同口径；`num_turns` 只在我们一次都没数到时兜底 |
 | codex | **模型答复条目**（app-server 的 `agentMessage`）的 `item.id`，**按线程分别去重**：主线程与子线程各数各的，收尾相加 | **近似值**：协议里没有逐次请求事件。误差方向如实登记：只发工具调用、**没有答复**的那几段**偏低**；一个答复条目都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）。主线程与子线程共用同一把尺子，故 `subagentTurns ≤ turns` 成立 |
 | dsh | `step/start`（实测序列 `turn/start → step/start → … → assistant/message → step/end → turn/end`） | 与 `assistant/message` 条数实测一致（59 = 59），而 `turn/end` 只有 1 条 |
+| pi | `turn_start`（助手 `message_end` 与它恒等，而它**先到**——按 `message_end` 数会让第 N+1 轮的增量帧落进第 N 轮那条消息里） | 与助手 `message_end` 条数恒等；一次工具调用算两轮 |
 
-计量的三条硬口径，三家和调用方都要守：
+计量的三条硬口径，四家和调用方都要守：
 
 1. **采不到就是 `null`，绝不填 0**；
 2. **估算值不进结果**（cc 的跑动期估算只走 `usage` 事件）；
@@ -319,16 +361,17 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 
 ### 5.5 结构化输出：原生通道与填充层
 
-入参 `outputSchema` 的语义只有「我想要」，各家怎么落实由**适配器**决定，交付契约三家相同（要么交出一段符合它的 JSON、要么如实失败）：
+入参 `outputSchema` 的语义只有「我想要」，各家怎么落实由**适配器**决定，交付契约四家相同（要么交出一段符合它的 JSON、要么如实失败）：
 
 | | 通道 | 厂商落点 | `applied.structuredOutput` 的判据 |
 |---|---|---|---|
 | cc | 原生 | SDK 的 `outputFormat`，收尾消息带回 `structured_output` | 按收尾消息里有没有那一格上报 |
 | codex | 原生 | `turn/start` 的一等字段 `outputSchema`，形状由 codex 侧约束 | 按这次有没有把 schema 发进 `turn/start` 上报 |
 | dsh | **填充层**（SDK 没有这一格） | 首轮把 schema 约束追加在提示词之后；不合格时由骨架驱动**同会话修正轮** | 恒 `false`（提示词级填充不是原生通道） |
+| pi | **工具通道** | 自定义工具 `submit_result` + `constrainedSampling` 的 strict（原 schema 直传；装配期预检不过 ⇒ 降 `prefer` 并回填充层） | 按**本轮答复是否确实来自被 strict 约束的工具参数**上报（模型改走正文时 `false`） |
 
 - **填充层与修正轮**：判据只有一份（`src/structured-output.ts`：剥整段围栏 → `JSON.parse` → 「JSON Schema 子集 → zod」校验），不认识的 keyword 不生成约束（fail-open，记 DEBUG），整份 schema 编不出来就退化成「只判合法 JSON」并记 WARN。修正轮由**骨架**驱动（`TurnHooks.continue`，上限 **2 轮**），只修形状——提示词明写不要重新读工作区 / 不要重新执行任务 / 不要改判定；耗尽后 `ok` / `finalText` **保持最后一轮原样**，由调用方按「答复不可解析」处置。
-- **没有 `continue` 的家不修**：cc / codex 在第一条不合格答复上落一条 WARN 就如实收场（它们有原生通道，本来就不靠这一层）。
+- **没有 `continue` 的家不修**：cc / codex / pi 在第一条不合格答复上落一条 WARN 就如实收场（它们有原生通道或工具通道，本来就不靠这一层）。
 - **修正轮的花销**：它是模型往返 ⇒ 计入 `turns` / `tokens`；只发该行日志事件，**没有新增结果字段**。
 
 ---
@@ -365,11 +408,11 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | 文件 | 职责 |
 |---|---|
 | `index.ts` | 唯一出口：注册表 + 类型 |
-| `registry.ts` | kind → provider 的显式静态注册表（加第四家只改这里 + 新目录） |
+| `registry.ts` | kind → provider 的显式静态注册表（接一家新厂商只改这里 + 新目录） |
 | `types.ts` | 对外全部类型契约的真源 |
-| `message.ts` | **三家共用的消息归一公共层**：覆盖合并（delta 追加 / snapshot 覆盖）、块序号分配、`messageId` 的 `seq`、工具归族（十个族名按工具名判）、`assembly` 收尾标记（唯一一份实现） |
-| `turn.ts` | **三家共用的运行骨架**：注入 → 消费事件流 → 释放 → 组装结果。判定优先级、轮次发射门槛、去重、消息合并器的接线都在这里，三家逐字一致（抄三遍必然漂移） |
-| `permission.ts` | 权限档 → 三家厂商选项的映射表（唯一真源） |
+| `message.ts` | **四家共用的消息归一公共层**：覆盖合并（delta 追加 / snapshot 覆盖）、块序号分配、`messageId` 的 `seq`、工具归族（十个族名按工具名判）、`assembly` 收尾标记（唯一一份实现） |
+| `turn.ts` | **四家共用的运行骨架**：注入 → 消费事件流 → 释放 → 组装结果。判定优先级、轮次发射门槛、去重、消息合并器的接线、**两级静止看门狗**与**在册会话表**（`disposeLiveSessions`）都在这里，四家逐字一致（抄几遍必然漂移） |
+| `permission.ts` | 权限档 → 四家厂商选项的映射表（唯一真源） |
 | `route.ts` | base URL 归一 + 替换型子进程环境构造 |
 | `release.ts` | 释放顺序、5 秒兜底、`createDisposer`（幂等关闭，绑定**被关闭的对象**） |
 | `emit.ts` | 事件发射（补 `seq` / `at`）、未识别负载投影、`safeStringify` |
@@ -378,9 +421,9 @@ URL 归一只对**路径段**做，query / fragment 一个字符都不动（用�
 | `load-once.ts` | 厂商 SDK 懒加载 + 只缓存成功 + 测试注入优先 |
 | `runtime.ts` | 测试注入点：`sdkModule`（包名 → 模块命名空间） |
 | `providers/<kind>/{index,sdk,events}.ts` | 一家的三件事：适配器本体 / SDK 窄结构（唯一知道厂商入口形状的地方）/ 事件投影 |
-| `providers/<kind>/message.ts` | 一家的**消息归一**：把厂商载荷折成统一的 `AgentMessage` 与子任务行。三家的形状差异由 `src/message.ts` 的公共层吸收，这里只负责取值路径 |
+| `providers/<kind>/message.ts` | 一家的**消息归一**：把厂商载荷折成统一的 `AgentMessage` 与子任务行。四家的形状差异由 `src/message.ts` 的公共层吸收，这里只负责取值路径 |
 | `testing/agent-fixtures.ts` | 假厂商件：单测「不碰真实 API、不碰真实 CLI」的全部物质基础 |
-| `probe/` | 真实事件探测的产物：`raw-events.mts` 脚本 + `dumps/*.json`（三家入口形状与事件原文）。**不在** `src/**` 的源码级断言扫描面内 |
+| `probe/` | 真实事件探测的产物：`raw-events.mts` 脚本 + `dumps/*.json`（四家入口形状与事件原文）。**不在** `src/**` 的源码级断言扫描面内 |
 
 ## 8. 测试：怎么替换掉真实厂商
 
@@ -419,7 +462,7 @@ it('注入落点与结果贯通', async () => {
 
 要点：
 
-- 三家**共用** `sdkModule` 一个字段（不另起名字），一张假模块表能同时喂饱三家；
+- 四家**共用** `sdkModule` 一个字段（不另起名字），一张假模块表能同时喂饱四家；
 - 注入值**不缓存**：测试可以在同一进程里从「坏模块」换到「好模块」，验证「一次加载失败不会毒化后续运行」；
 - 假件要**保真**（真生成器的排队语义、dsh 订阅 `close()` 会 reject 挂起的等待者）：夹具悄悄变弱时用例
   只会变成**假绿**，而不会变红——所以夹具自己也有回归网（`agent-fixtures.test.ts`）；
@@ -492,7 +535,7 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 **判据住在 `src/testing/live-smoke-checks.ts`（纯函数），不留在那个默认跳过的文件里**：跳过意味着它们
 从没有机会见红——装载那一格就因为读了行上不存在的 `errorCode`（契约里叫 `error.code`）而恒绿过。
 抽出来之后每格都有正反例（`live-smoke-checks.test.ts`），真机那一层只负责调用；
-`LIVE_SMOKE_COVERAGE`（同文件）逐家登记「怎么跑的、结论是什么」，加第四家时 `Record<AgentKind, …>`
+`LIVE_SMOKE_COVERAGE`（同文件）逐家登记「怎么跑的、结论是什么」，接一家新厂商时 `Record<AgentKind, …>`
 缺格会被 `tsc` 直接点名——它是一张**编译期强制回答的清单**，不是机器验证。
 
 **登记：本包唯一的业务耦合就是这里的产物断言**——③，以及只在 `AIEVAL_LIVE_AGENT_JUDGE=1` 时跑的 ⑤（智能体评分拿到答复并给出结论）与 ⑥（评分者产出可解析、记录里带「输出约束」那一格）。它们验证的是端到端产物，**不在导出面、也不影响依赖图**；除此之外本包对评测领域一无所知（见 §6.1）。`src/testing/` 下的测试辅助因此也受业务无关守卫管：给用户的失败原因里只写契约字段名（`score` / `judgeProviderId`），不写领域词。
@@ -507,7 +550,9 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 | 界面上的轮次停在 1 | 别用 CLI 自己的 `turn.completed` / `turn/end` 数轮次（整段任务一条）；按 §5.4 的键去数 |
 | 拉不到厂商包 / 报 `AGENT_LOAD_FAILED` | 两类语义要分开看文案：`missing`（没装，装法在文案里）与 `shape-mismatch`（装了但导出面变了 ⇒ **不要重装**，是回写问题） |
 | 点「终止」后 dsh 行晚 5 秒才变 `canceled` | 是设计：`cancelMidTurn: false`，只能走释放的第二段（等 5 秒 + 落 WARN + 强制关闭） |
-| 想让某家超时 | 本包**没有**内层超时（刻意的：执行与评分都不限时间）。超时由编排层负责，并且它无法中断一个卡住的迭代 ⇒ 该行的收敛靠兜底上限 |
+| 某行跑着跑着自己变成 `timed-out`，日志里有 `[WARN] 看门狗：…` | 骨架的看门狗判它**静止**超时（空闲 180 s 没有事件，或一次模型往返超过 600 s）。看 §5.2 看是哪一级、以及该家有没有「工具在途」豁免；要放宽就把阈值传进 `AgentRunInput.watchdog`，要关掉那一级就传 `0` |
+| 一行在等一个没人应答的批准（dsh `read-only`）也会被判 `timed-out` | **未豁免**（已如实登记）：识别「在等审批」的事件按家不同，dsh 的通知流里没有这一类。要么给它配一个不会越界的只读场景，要么由用户点「终止」 |
+| 想要「跑满 N 分钟就掐」的总时长上限 | 本包**没有**，也不该有：口径是「执行不限时间」，看门狗管的是**静止**（没有输出 / 单轮往返不收尾）。要掐整行只能由用户点「终止」 |
 | 拿 `kind` 直接调 `getProvider` 报 500 | 配置里的 kind 不是枚举值（`loadConfig` 不做 zod 校验）。调用方先判 `AGENT_KINDS`，折成可处置的错误 |
 | 评分智能体把工作区改了 | 评分阶段忘了传 `permission: 'read-only'`（或用了 claude 的 `plan`——它连 `git diff` 都跑不了） |
 
@@ -523,7 +568,7 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 | **填充层** | 没有原生 schema 通道的家为 `outputSchema` 补上的那两层：首轮在提示词里追加 schema 约束 + 同会话修正轮。它是**方法**，不是原生通道 ⇒ `applied.structuredOutput` 恒 `false`。见 §5.5 |
 | **修正轮** | 首轮答复拿到了但不合格时，骨架在同一会话里追问一轮、**只改形状**（不重跑任务、不改判定），上限 2 轮（`STRUCTURED_OUTPUT_REPAIR_ROUNDS`）；耗尽后 `ok` / `finalText` 保持最后一轮原样。见 §5.5 |
 | **替换型子进程环境** | 以宿主环境为底、覆盖 `HOME` / `USERPROFILE` 与厂商变量后**整体交给**子进程，而不是往 `process.env` 里塞。并行多行时后者会互相串凭据 |
-| **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「兜底超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |
+| **幂等关闭 / 恰好关一次** | `dispose()` 可能被「用户终止」与「看门狗判定的静止超时」先后触发，因此必须幂等；`createDisposer` 把「恰好一次」绑到**被关闭的那个对象**上（而不是运行时级闭锁，那会让新建的客户端没人关） |
 | **受保护发射** | 调 `onEvent` 一律包在 try/catch 里：那是**消费方**的代码（写盘 / 推流都会抛），而 `run()` 承诺「永不抛」 |
 | **`AGENT_*` 错误码** | 领域归因码（`AGENT_LOAD_FAILED` / `AGENT_FAILED` / `AGENT_TIMED_OUT` / `AGENT_CANCELED` / `AUTH_FAILED` / `RATE_LIMITED`）。**不是** contracts 的 `ErrorCode`：它没有 HTTP 状态，落点是该行的事件日志，不要塞进 `ERROR_CODES` |
 | **`R33` 这类裁定项编号** | `R` 是**裁定项编号**（对上游事实的裁决，例如 R33 = dsh 依赖走 `next` 线而不是 `latest`）。裁定过程与证据在 git 历史与 `docs/protocols/` 下各篇，注释里的「实测」指那里 |
@@ -533,4 +578,4 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 - 根 [`README.md`](../../../README.md)：产品口径、使用手册、数据落在哪、排障表。
 - [`AGENTS.md`](../../../AGENTS.md)：分层边界与工具链坑（改代码前先读）。
 - [`docs/`](../../../docs/)：知识库（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫五域，AGENTS.md「知识库」节）；历史设计 spec 与冒烟记录已按 ADR 0001 熔炼进知识文章
-  （三家 SDK 的入口形状、事件 dump、权限档实测都记在那里，本包注释里的「实测」指的就是它们）。
+  （四家 SDK 的入口形状、事件 dump、权限档实测都记在那里，本包注释里的「实测」指的就是它们）。

@@ -51,11 +51,27 @@ const stepStart = (sessionId: string, turn: number, step: number): unknown => ({
   params: { sessionId, event: { type: 'step/start', time: 1, data: { turn, step } } },
 });
 
-const assistant = (sessionId: string, id: string, turn: number, step: number, content: readonly unknown[]): unknown => ({
+/**
+ * 一条 `assistant/message`。`usage` 是**子任务级用量的唯一来源**（`subagent.started` /
+ * `finished` 都不带用量，适配器按 `sessionId` 把这一格累加到子任务名下）——子会话那条消息上
+ * 给不给它，决定收尾那条快照是「带新事实的补全」还是「什么都不带的重发」。
+ */
+const assistant = (
+  sessionId: string,
+  id: string,
+  turn: number,
+  step: number,
+  content: readonly unknown[],
+  usage?: Record<string, unknown>,
+): unknown => ({
   method: 'session.event',
   params: {
     sessionId,
-    event: { type: 'assistant/message', time: 1, data: { turn, step, message: { id, role: 'assistant', content } } },
+    event: {
+      type: 'assistant/message',
+      time: 1,
+      data: { turn, step, message: { id, role: 'assistant', content }, ...(usage === undefined ? {} : { usage }) },
+    },
   },
 });
 
@@ -194,7 +210,12 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       { method: 'subagent.started', params: { childSessionId: TASK_ID, subagentId: TASK_ID } },
       // 子会话自己的往返：params.sessionId 用子任务身份（与 subagentId 同值）
       stepStart(TASK_ID, 1, 1),
-      assistant(TASK_ID, 'c1', 1, 1, [{ type: 'text', text: '3 lines' }]),
+      // 子会话自己的那次往返带用量：收尾那条完整快照因此真的有新事实可补
+      assistant(TASK_ID, 'c1', 1, 1, [{ type: 'text', text: '3 lines' }], {
+        inputTokens: 12,
+        cacheReadTokens: 4,
+        outputTokens: 3,
+      }),
       // 终态两格合读：ok + completed ⇒ completed（映射表见 message.ts:305-311）
       {
         method: 'subagent.finished',
@@ -388,6 +409,16 @@ describeProviderConformance({
   kind: dshProvider.kind,
   capability: dshProvider.metadata.messageCapability,
   injection: dshProvider.metadata.injection,
+  /**
+   * **真出站证据：两格都缺**（如实登记）。假件换掉了 SDK 模块，看不见真正打给模型的那份请求；
+   * 这家**没有原生 schema 通道**（约束只追加进首轮提示词）⇒ 结构化输出那一格在产品上就不存在，
+   * 「原 schema 逐字段相等」在这家没有落点。
+   */
+  realOutboundEvidence: [],
+  realOutboundGaps: {
+    mcp: 'packages/server/agents/src/providers/dsh/live-mcp.test.ts',
+    'structured-output': 'packages/server/agents/src/providers/dsh/conformance.test.ts',
+  },
   injectionProof: { mcp: 'mcp-injection', skills: 'skill-injection' },
   cancelMidTurn: dshProvider.metadata.capability.cancelMidTurn,
   lifecycle: observeLifecycle,
@@ -405,7 +436,14 @@ describeProviderConformance({
    * `subagent` 比另两个场景大得多，因为它含子会话自己的往返与 `subagent.started` / `finished`
    * 两条投影——把 `events.ts` 的增量排除分支删回去，这三个数会当场变大（守卫因此有区分力）。
    */
-  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 14 },
+  /**
+   * 事件条数**实测**（不是估的）：把增量排除分支删回去，条数会当场变大。
+   *
+   * `subagent` 那一格的两条 `usage` 事件来自**子会话**：子会话的 `assistant/message` 带
+   * `data.usage`（真机形状），`assistant/message` 那一支把三元组无条件累进本行 ⇒ 每一次往返
+   * 一条 `usage`。夹具若不给那一格用量，这一格就少了那两条，判据会把「真出站的那一份」判成错。
+   */
+  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 12 },
 });
 
 /**

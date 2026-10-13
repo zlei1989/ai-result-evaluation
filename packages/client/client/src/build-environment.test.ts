@@ -580,6 +580,32 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
         { text: 'context7：来源 unknown · 判据 无厂商证据 · 结论 ', verdict: 'skipped' },
       ]);
     });
+
+    /**
+     * 观测格自带 `note` 的那几台（今天只有「两台名字在厂商工具表里同形」）：说明必须**看得见**
+     * ——只写「未验证」会被读成「我们没配上」，而真实原因是那一批工具归不到具体哪一台。
+     * 它紧跟在自己那行后面、不挂 Tag（注解不是结论）。
+     */
+    it('带 note 的那一台把说明画在自己那行后面（不挂 Tag、不改结论）', () => {
+      const item = itemOf(
+        envWith([
+          {
+            name: 'my-server',
+            source: 'unknown',
+            judgedBy: 'vendor-tool-table',
+            verdict: 'unverified',
+            note: '与「my_server」在厂商工具表里同形',
+          },
+        ]),
+      );
+      if (!item.present) throw new Error('这一格应当在场');
+      expect(item.verdictLines).toEqual([
+        { text: '1 台：', verdict: null },
+        { text: 'my-server：来源 unknown · 判据 厂商工具表 · 结论 ', verdict: 'unverified' },
+        { text: '说明：与「my_server」在厂商工具表里同形', verdict: null },
+      ]);
+      expect(item.text).toContain('说明：与「my_server」在厂商工具表里同形');
+    });
   });
 
   /**

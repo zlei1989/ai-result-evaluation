@@ -462,8 +462,8 @@ describe('settings 页面的技能 Tab 接线', () => {
     // 判据取**这条说明的文案本身**（Alert 的 description），而不是整个 Tab 的源码：
     // 注释里引用了那句不许抄的原文，全文比对会被自己的注释绊倒
     const description = /description="([^"]*)"/.exec(tab)?.[1] ?? '';
-    expect(description, '三家裁决那句没写全').toContain('同名时谁赢三家不同');
-    // 三家同名裁决不同（claude 以本机为准 / dsh 以仓库为准 / codex 两条都进）：
+    expect(description, '四家裁决那句没写全').toContain('同名时谁赢四家不同');
+    // 四家同名裁决不同（claude 以本机为准 / dsh 与 pi 以仓库为准 / codex 两条都进）：
     // MCP 卡片那条的结论是「同名时以设置页为准」，抄过来就是一句统一了口径的假话
     expect(description, '技能那条说明抄了 MCP 的「同名时以设置页为准」').not.toContain('同名时以设置页为准');
   });

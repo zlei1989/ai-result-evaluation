@@ -35,6 +35,13 @@ export {
   type McpSkippedServer,
 } from './mcp';
 export {
+  MCP_TOOL_NAME_PREFIX,
+  collidingMcpServerNames,
+  matchMcpToolName,
+  normalizeMcpName,
+  type McpToolMatch,
+} from './mcp-tool-name';
+export {
   MCP_PASTE_MAX_BYTES,
   MCP_PASTE_MAX_ENTRIES,
   MCP_PASTE_SHAPE_EXAMPLES,

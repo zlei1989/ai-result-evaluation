@@ -116,9 +116,9 @@ $errors.Count   # 0 = 可解析；非 0 就把 message 打出来
 ## 变异验证的备份：文件名必须带**来源前缀**
 
 「人为把缺陷造回去 ⇒ 确认守卫红 ⇒ 还原并核哈希」这条流程里，备份名若只取 basename，
-**同名文件会互相覆盖**——本仓三家适配器各有一份 `events.ts`，循环里写
+**同名文件会互相覆盖**——本仓四家适配器各有一份 `events.ts`，循环里写
 `Copy-Item $f "$backup\$(Split-Path $f -Leaf).orig"` 就会让后一份盖掉前一份，
-还原时会把**另一家的内容**写进目标文件（三家各有一份 `events.ts`，`providers/codex/events.ts` 会被 dsh 那份盖掉）。
+还原时会把**另一家的内容**写进目标文件（四家各有一份 `events.ts`，`providers/codex/events.ts` 会被 dsh 那份盖掉）。
 
 规矩：
 

@@ -34,6 +34,23 @@ describe('deriveRowSkillInstall（三态与配对规则）', () => {
     expect(isValidSkillPairing(rows[0]!)).toBe(true);
   });
 
+  /**
+   * **同名冲突的现场**：厂商清单里那一条是**胜者**（被测仓库自带的那份顶掉了我们物化的那份），
+   * 而这一格的判据是**名字**——名字在清单里 ⇒ `installed`。
+   *
+   * 为什么单列一条：这里的 `missing` 会让整行失败，且文案（`技能「alpha」未出现在…的技能清单里`）
+   * 是一句假话——同名冲突时那个名字明明在清单里。冲突本身（谁顶掉了谁）由适配器落成一条 WARN，
+   * 不改这一格的结论，也不新造判据来源。
+   */
+  it('同名冲突（清单里是胜者那一条）⇒ installed，绝不判 missing', () => {
+    const winner = vendorSkill('alpha', 'project');
+    const rows = deriveRowSkillInstall({ installed: ['alpha'], vendor: [winner] });
+
+    expect(rows).toEqual([{ name: 'alpha', source: 'project', judgedBy: 'vendor-skill-list', verdict: 'installed' }]);
+    expect(rows.some((row) => row.verdict === 'missing')).toBe(false);
+    expect(skillMissingMessage({ installed: ['alpha'], vendor: [winner] }, 'Pi Coding Agent')).toBeNull();
+  });
+
   it('清单采到了、但确实是空的（`[]`）⇒ 每一条都 missing（「厂商说一条都没有」是证据）', () => {
     const rows = deriveRowSkillInstall({ installed: ['alpha', 'beta'], vendor: [] });
 

@@ -2,15 +2,15 @@
 
 ## 定位
 
-把 cc / codex / dsh 三家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `SubagentRecord` 的统一契约，配套能力声明表达「缺了什么、为什么缺」。设计基线只有一条：**事件形状能归一，数据的来源与完备性归不了一**——所以 `source` / `MissingReason` / 能力五态是承重结构，不是可选严谨。契约名不随厂商版本漂移：厂商侧新增量进 `raw` 与映射表，不改契约面；反过来映射表可以随时改。
+把 cc / codex / dsh / pi 四家的消息、条目、块归一成 `AgentMessage` ＋ `ContentBlock` ＋ `SubagentRecord` 的统一契约，配套能力声明表达「缺了什么、为什么缺」。设计基线只有一条：**事件形状能归一，数据的来源与完备性归不了一**——所以 `source` / `MissingReason` / 能力五态是承重结构，不是可选严谨。契约名不随厂商版本漂移：厂商侧新增量进 `raw` 与映射表，不改契约面；反过来映射表可以随时改。
 
 ## 形态与交互
 
 消息怎么到达、怎么合并成最终视图：
 
-- **chunk 两形态**：`delta`（增量）与 `snapshot`（快照）。**三家都产 delta**，但通道不同：claude `stream_event`（`includePartialMessages` 常开，**仅主会话**，`source: 'wire'`）、codex `item/agentMessage/delta` + 两条推理增量通知（`source: 'wire'`）、dsh 插件旁路 sidecar 后的 `aieval/delta` 伪通知（`source: 'hook'`，见《DeepSeek Harness 接入》「流式增量旁路」）。**消费方只实现 snapshot 也能正确渲染**——增量是可选的实时增强，快照一定在块结束时到达。
+- **chunk 两形态**：`delta`（增量）与 `snapshot`（快照）。**四家都产 delta**，但通道不同：claude `stream_event`（`includePartialMessages` 常开，**仅主会话**，`source: 'wire'`）、codex `item/agentMessage/delta` + 两条推理增量通知（`source: 'wire'`）、pi `session.subscribe` 的事件里就有逐字增量（`source: 'wire'`）、dsh 插件旁路 sidecar 后的 `aieval/delta` 伪通知（`source: 'hook'`，见《DeepSeek Harness 接入》「流式增量旁路」）。**消费方只实现 snapshot 也能正确渲染**——增量是可选的实时增强，快照一定在块结束时到达。
 - **帧是累积值，不是本片**：`MessageAssembler.ingest` 每次回吐的是该逻辑消息**到现在为止的完整块列表**（`agents/src/message.ts` 的 `onMessage` JSDoc 是这条保证的落点）⇒ 消费方**按 `mergeKey` 覆盖**即可，不必自己维护累积状态。这条同时解释了两件事：① 客户端 last-wins 折叠是对的（`row-messages.ts` / `build-model.ts` 都只在 `mergeKey` 上留最后一条）；② 逐帧传输是 **O(n²) 字节**（第 k 帧重发前 k 个 token）⇒ 实时 SSE 出口按 `mergeKey` **丢中间态**（16ms 窗口，见《事件流》「消息流的出口合并」），丢掉的都是「被后一条完全覆盖」的帧，语义零变化。
-- **只广播、不落盘**：增量帧不进 `messages.jsonl`（唯一真相源由快照承担：块结束时必有快照，折叠读侧本来就会把同键的 delta 全部盖掉）。**代价如实登记**：被中断的块没有快照 ⇒ 那段半截正文刷新后不可见；行级 `EvalRow.streamingDelta` 只留「多少帧 / 末帧多少字」，正文不落任何地方。原始输出面板（只吃 `log` 事件）**三家一致地零增量**——适配器对增量帧的事件草稿数 = 0。
+- **只广播、不落盘**：增量帧不进 `messages.jsonl`（唯一真相源由快照承担：块结束时必有快照，折叠读侧本来就会把同键的 delta 全部盖掉）。**代价如实登记**：被中断的块没有快照 ⇒ 那段半截正文刷新后不可见；行级 `EvalRow.streamingDelta` 只留「多少帧 / 末帧多少字」，正文不落任何地方。原始输出面板（只吃 `log` 事件）**四家一致地零增量**——适配器对增量帧的事件草稿数 = 0。
 - **五类「非渲染增量 / 进度帧」的处置必须登记**（禁止无登记的静默丢弃）：
 
   | 类别 | 处置 | 为什么 |
@@ -32,7 +32,7 @@
 - `messageId`：`run-<kind>:<seq>`（如 `run-codex:12`），供日志与排障、客户端兜底去重；**不含真实 run id、跨运行重号**——别当全局唯一键，去重折叠按 `mergeKey`。
 - `vendorId` / `role`：厂商侧 id 与角色。
 - `source`：四值 `'wire'` / `'hook'` / `'session-file'` / `'aggregate'`；**今天真正产出的只有 `wire` 与 `session-file` 两值**。
-- `roundTrip`：正整数必填，三家都合成（方法不同 ⇒ 跨家比较前必须核对口径）。
+- `roundTrip`：正整数必填，四家都合成（方法不同 ⇒ 跨家比较前必须核对口径）。
 - `turn` / `step`：仅 dsh 有值（`data.turn` 是**用户轮号**、`data.step` 是步骤号），另两家恒 `null`。
 - `parentCallId` / `subagentId`：子会话归属；`subagentId` 是厂商原生 id（claude 任务 id / codex 线程 id / dsh 子会话 id，dsh 三级兜底 `subagentId`→`agentId`→`childSessionId`）。
 - `chunk`：`'delta'` / `'snapshot'`。
@@ -48,9 +48,9 @@
 - `thinking`：`textKind: 'full' | 'summary' | 'none'`；用、不进呈现。
 - `tool-call`：`family` 十族之一或 `null`；`payload` 族载荷只有 `task` / `ask-user` 两族；**`summary`**（可选）是适配器在**唯一构造点** `toolCallBlockDraft` 里算好的**摘要主体**——**冒号后面那一段**（`Check surefire report summaries` / `src/index.ts:10-120` / `2 步`），**不带 `调用工具 <名>：` 前缀**。前缀与整句另有出口：`toolCallSummary(name, input)` 给**活动行**（它只有一行，名字必须在句子里）、`toolCallHint(name, input)` 给**工具行**与这一格（工具行把工具名渲染成一个独立元素，带前缀就是同一件事说两遍）；`toolCallTitle` 单独给前缀。**词表真源仍是 `activity.ts`**，浏览器因此不必把「描述优先 / 每族拼法 / 截断尺子」再实现一遍（`ui` / `client` 按分层表不许 import `agents`）。它与 `log.summary` 由**同一份词表**产出（不是两份）；这一格缺席（老记录）时工具行回落 `input.description`、再回落参数原文首行。**两格都可缺**——老记录里没有它们，读侧把「键不存在」与「显式 `null`」当同一件事。
 
-  **取参口径（用户裁定：description 优先，没有就按每个簇自己拼）**，顺序不可换：① 计划类入参（`todos` / `plan` / `steps`）先说步数——它的值是一整张清单，「几步」才是使用者要的；② **`input.description` 优先**（只有这一个键名算数；`reason` / `justification` 是审批语义、`explanation` 归计划卡片那一格，都不进摘要），有目标（`command` / `file_path` / `pattern` / `url`）时拼成 `描述（目标）`——描述说明「为什么」、目标说明「哪一个」，**只留描述会让同一行里两次 `exec_command` 长得一模一样**；③ 没有描述**按族拼**（判据是族不是家：同一个工具在三家的名字不同，族才是跨家一致的那个轴）：读文件 `路径:起-止`、改文件 路径或 `changes[].path` 清单、搜内容 `模式（范围）`、列文件 `pattern`、跑命令 命令原文、联网 `query`/`url`、派子任务 `prompt`、提问 第一个问题正文；④ 只剩「本仓不认识的工具」（`family === null`）才走通用优先键 → `changes[].path` → 紧凑 JSON → 原样。守卫：`activity.test.ts`（逐族文案 + 描述优先级）、`tool-family.test.ts`（别名逐字）、`activity-conformance.test.ts`（跨家同一句）、`message.test.ts`（块上那一格 = `toolCallHint`）。
+  **取参口径（用户裁定：description 优先，没有就按每个簇自己拼）**，顺序不可换：① 计划类入参（`todos` / `plan` / `steps`）先说步数——它的值是一整张清单，「几步」才是使用者要的；② **`input.description` 优先**（只有这一个键名算数；`reason` / `justification` 是审批语义、`explanation` 归计划卡片那一格，都不进摘要），有目标（`command` / `file_path` / `pattern` / `url`）时拼成 `描述（目标）`——描述说明「为什么」、目标说明「哪一个」，**只留描述会让同一行里两次 `exec_command` 长得一模一样**；③ 没有描述**按族拼**（判据是族不是家：同一个工具在四家的名字不同，族才是跨家一致的那个轴）：读文件 `路径:起-止`、改文件 路径或 `changes[].path` 清单、搜内容 `模式（范围）`、列文件 `pattern`、跑命令 命令原文、联网 `query`/`url`、派子任务 `prompt`、提问 第一个问题正文；④ 只剩「本仓不认识的工具」（`family === null`）才走通用优先键 → `changes[].path` → 紧凑 JSON → 原样。守卫：`activity.test.ts`（逐族文案 + 描述优先级）、`tool-family.test.ts`（别名逐字）、`activity-conformance.test.ts`（跨家同一句）、`message.test.ts`（块上那一格 = `toolCallHint`）。
 - `tool-result`：`structured` 是厂商结构化结果原文透传；`truncation` 三态 `none` / `truncated` / `unknown`，正文超长按 `TOOL_RESULT_MAX_CHARS = 20_000` 截断。
-- `attachment` 与 `unrecognized`：契约保留、当前三家都无消息侧产出点。
+- `attachment` 与 `unrecognized`：契约保留、当前四家都无消息侧产出点。
 - **硬约束**：工具块只允许经适配器公共层构造器（`toolCallBlockDraft` / `toolResultBlockDraft`）产出，手搓块会静默少掉 `payload`；源码级断言已拦 `providers/**` 手搓 `tool-call` 块。
 
 **计量结构**：
@@ -68,7 +68,7 @@
 | `not-observed` | 有通道但我们没接，或本次运行没出现 |
 | `unverified` | 有通道没验证过，不敢说采到 |
 
-今天真正被声明的只有两态：`yes`（三家合计 18 格）与 `not-projected-by-vendor`（仅 dsh 的 `streamingDelta`，配 `not-exposed`）。
+今天真正被声明的只有 `yes` 一态：四家的消息面五格与注入面两格（逐家七格）**逐格都给得出来**；`no` / `unverified` / `off-by-adapter` / `not-projected-by-vendor` 四态当前没有实例——它们是承重结构，谁给不出哪一格就从这里落。
 
 **子任务行 `SubagentRecord`**：10 个顶层格全必填；`status` 五态 `running` / `completed` / `failed` / `stopped` / `unknown`，另有 `statusMissing` 分开记「状态是否采到」；`parentCallId` 是两套 id 之间的**唯一桥**——子任务记录的身份是厂商原生 id，子任务消息挂在派生它的工具调用 id 上，缺了这格子任务消息会全部落回主会话或被丢；`kind` 是厂商原文**不做归一、不得用来判派发点**。
 
@@ -76,7 +76,7 @@
 
 ## wire 形态与事件
 
-三家取数通道总表：
+四家取数通道总表：
 
 | 厂商 | 通道 | 要点 |
 |---|---|---|
@@ -133,8 +133,8 @@
 ## 相关链接
 
 - 姊妹篇：[事件流](/protocols/event-stream)——行级八型事件与双流分工；`log.summary` 词表属该篇，消息级 `usage` 属本篇
-- 活文档：`packages/server/agents/README.md`——§5.4 轮次与计量的口径（三家计数键）、§10 术语对照（「采不到就是 `null`，绝不填 0」「估算 vs 上报」「轮次」）、§4.4 `AgentProvider.metadata`（能力查询唯一入口）
+- 活文档：`packages/server/agents/README.md`——§5.4 轮次与计量的口径（四家计数键）、§10 术语对照（「采不到就是 `null`，绝不填 0」「估算 vs 上报」「轮次」）、§4.4 `AgentProvider.metadata`（能力查询唯一入口）
 - FAQ 判例（条目标题原文照抄）：
   - [DeepSeek Harness FAQ](/faq/deepseek-harness)——`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`（`not-projected-by-vendor` 的判例与探针证据）
   - [Codex FAQ](/faq/codex)——思考块恒为 `{"type":"thinking","text":null,"textKind":"none"}`（增量明明带着文本；界面显示「思考文本未采集」，修前显示「厂商有、我们还没接」）；`codex exec --json` 里一条 `item.type === 'reasoning'` 都没有（`show_raw_agent_reasoning=true` 也不管用）；子智能体用量与思考正文：responses 上真机已可得（**不必**换 `wire_api`）；`turn/completed` 只收到**子线程**那一条，主线程仍是 `"status":"inProgress","completedAt":null`
-- 知识文章：[Codex 接入](/protocols/codex)（字段级映射的厂商细节）、[《Claude Code 接入》](/protocols/cc)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《进程生命周期》](/protocols/process-lifecycle)、[《三家横向对比》](/protocols/comparison)
+- 知识文章：[Codex 接入](/protocols/codex)（字段级映射的厂商细节）、[《Claude Code 接入》](/protocols/cc)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《进程生命周期》](/protocols/process-lifecycle)、[《四家横向对比》](/protocols/comparison)

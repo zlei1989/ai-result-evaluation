@@ -1,8 +1,8 @@
 /**
  * VitePress 站点配置：知识库的导航与构建真源。
  *
- * 职责：定义五域导航（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫），把三份厂商 FAQ 与
- * PowerShell / Playwright MCP 五份活文档原文编入站点（单一真源，不复制），并把冻结档案
+ * 职责：定义五域导航（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫），把四份厂商 FAQ 与
+ * PowerShell / Playwright MCP 两份活文档原文编入站点（单一真源，不复制），并把冻结档案
  * （docs/superpowers/，见 GLOSSARY「冻结档案」与 ADR 0001）排除出构建——它们是提炼
  * 知识文章的临时原料，不生成页面、不进产物。站点口径为本地/内网：不含任何公网部署配置。
  *
@@ -44,6 +44,7 @@ export default defineConfig({
           { text: 'Codex FAQ', link: '/faq/codex' },
           { text: 'Claude Code FAQ', link: '/faq/claude-code' },
           { text: 'DeepSeek Harness FAQ', link: '/faq/deepseek-harness' },
+          { text: 'Pi Coding Agent FAQ', link: '/faq/pi' },
         ],
       },
       {
@@ -67,7 +68,8 @@ export default defineConfig({
             { text: 'Codex 接入', link: '/protocols/codex' },
             { text: 'Claude Code 接入', link: '/protocols/cc' },
             { text: 'DeepSeek Harness 接入', link: '/protocols/dsh' },
-            { text: '三家横向对比', link: '/protocols/comparison' },
+            { text: 'Pi Coding Agent 接入', link: '/protocols/pi' },
+            { text: '四家横向对比', link: '/protocols/comparison' },
           ],
         },
         {
@@ -98,11 +100,12 @@ export default defineConfig({
         {
           text: 'FAQ',
           items: [
-            // 目录层《故障索引》：三份 FAQ 的现象条目按报错原文索引（票 05）
+            // 目录层《故障索引》：四份 FAQ 的现象条目按报错原文索引
             { text: '故障索引', link: '/faq/' },
             { text: 'Codex FAQ', link: '/faq/codex' },
             { text: 'Claude Code FAQ', link: '/faq/claude-code' },
             { text: 'DeepSeek Harness FAQ', link: '/faq/deepseek-harness' },
+            { text: 'Pi Coding Agent FAQ', link: '/faq/pi' },
           ],
         },
         {

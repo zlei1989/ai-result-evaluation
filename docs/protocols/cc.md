@@ -25,10 +25,11 @@ Claude Code 的适配器由 `@anthropic-ai/claude-agent-sdk`（进程内 SDK，s
 | `result` | 终局用量与时延；一次 turn **恰好一条**，可当收轮信号；结构化输出的兜底落点（字段优先、`result` 文本兜底，不一致落 WARN） |
 
 - **覆盖合并（关键）**：同一条 `assistant.message.id` 按内容块分多条投递（每条只带一个块）⇒ 新块追加到末尾、同键覆盖，块序号按首次到达分配。⚠️ **块序号那本账必须按 `message.id` 跨投递存活**（`ordinalBooks`）：每条投递新建一本会让后投的块拿到 `i:0`、把先投的思考从槽里盖掉——真机症状是**原始输出里有思考、执行日志里没有**；工具调用块按 `c:<callId>` 分槽，撞不上 `i:0`，所以那个症状只在「两次投递都是文本 / 思考」时出现。
-- **计量**：从 `result.usage` 取 `input_tokens`（不含缓存）/ `cache_read_input_tokens` / `output_tokens` / `output_tokens_details.thinking_tokens`；三项必填格缺一 ⇒ 整格 `null` + WARN，**绝不补 0**；`total` 恒 `null`（厂商无自报总量格）。三家只有这家有 `apiMs` / `ttftMs`。
+- **计量**：从 `result.usage` 取 `input_tokens`（不含缓存）/ `cache_read_input_tokens` / `output_tokens` / `output_tokens_details.thinking_tokens`；三项必填格缺一 ⇒ 整格 `null` + WARN，**绝不补 0**；`total` 恒 `null`（厂商无自报总量格）。**四家里只有这家 `apiMs` / `ttftMs` 两格都有**（pi 有 `apiMs`、首字时延恒 `null`）。
 - **跑动期估算**：按 `assistant.message.usage` 同 `message.id` 后到覆盖求和（侧链消息与缺 id 的不算、三项全 0 的快照丢弃）⇒ `tokensBasis: 'estimated'`，只进 usage 事件、不进结果；结算值到即作废。编排层回写判据：`tokensBasis === 'reported'` 才写快照。
 - **子智能体用量**：唯一权威源是 CLI 落盘转录 `<configHome>/projects/<项目>/<sessionId>/subagents/agent-<agentId>.jsonl`。读数规则只有一条：只认 `type === 'assistant'`、按 `message.id` 去重后到覆盖（同一次往返按内容块出现多次，第一条 `output_tokens` 是 0，逐条相加会双计 input / cached）；三项缺一或无 id ⇒ 整份文件作废。「全量或 null」：`missing` 非空 ⇒ `subagentTokens` / `subagentTurns` 两格一起 `null` + 点名 WARN，读到的**不进合计**。
 - **子任务三档产行判据**（先判形状再产行，只按 `start` 帧）：`subagent_type` / `spawn_depth` / `prompt` 至少一格非 `null`（`''` 与 `0` 都算「给了」）；`'dispatch'` 产行、`'phantom'`（CLI 给非 Agent 任务也发 `task_started`）不产行、`'unjudged'`（只见到收场帧）照产行 + 「可能少算」WARN。
+- **收尾快照的字段回填与重发**：派发帧采到的 `subagent_type` 按 run 记账，收尾帧不带这一格时**沿用派发时的值**、不覆盖成 `null`——否则消费方按 `subagentId` 覆盖后那条子任务行会退回半截（`name` 与 `kind` 都要有这层兜底）。同一身份的快照再按「身份 + 整条快照」判重：**只挡逐字相同的重发**，带新事实（终态 / 用量）的补全照发。
 - **轮次归属**：主会话只数主循环 `assistant.message.id`（`parent_tool_use_id` 非空直接返回 null 不计数），`num_turns` 只作兜底；侧链消息按**每会话自己的轮次号**编号（`roundTripOfSession`）——不能按父会话轮分轮，否则子会话节点只有一行且读数漏进主会话。
 - **工具面**：`disallowedTools` 六项无条件（`CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup` / `PushNotification` / `DesignSync`）+ 非 Claude 模型（`modelId` 子串 `/claude/i` 不敏感）再追加 `WebSearch`；只禁工具不禁网络（`Bash` / `WebFetch` 照旧）。`CLAUDE_CODE_ENABLE_TODO_TOOLS=1` 常开补齐 `TaskCreate/TaskGet/TaskList/TaskUpdate`。「无条件七项」是尚未落地的裁决，现值为分档。
 
@@ -66,4 +67,4 @@ Claude Code 的适配器由 `@anthropic-ai/claude-agent-sdk`（进程内 SDK，s
 
 - 活文档：[Claude Code FAQ](/faq/claude-code)——含平台包空壳条目（报错原文可 grep）
 - 仓库内参考：`packages/server/agents/README.md`——§3.2 run、§4.3 权限档、§5 各家差异、§8.1 新增 SDK 接入清单、§10 术语对照
-- 知识文章：[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（对照面）、[《消息规范》](/protocols/message-spec)（块归一口径）、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《事件流》](/protocols/event-stream)、[《进程生命周期》](/protocols/process-lifecycle)、[《三家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（三家 skills 的配置面与行级判据）、[《评分》](/features/judging)（结构化输出 outputFormat）
+- 知识文章：[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（对照面）、[《消息规范》](/protocols/message-spec)（块归一口径）、[《Provider 抽象与 run 入口》](/protocols/provider-run)、[《事件流》](/protocols/event-stream)、[《进程生命周期》](/protocols/process-lifecycle)、[《四家横向对比》](/protocols/comparison)、[《技能配置》](/features/skills-config)（四家 skills 的配置面与行级判据）、[《评分》](/features/judging)（结构化输出 outputFormat）

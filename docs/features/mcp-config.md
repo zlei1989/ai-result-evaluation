@@ -2,7 +2,7 @@
 
 ## 定位
 
-设置页**最后那个 Tab**管**配了哪些 MCP 服务器**，候选执行时把**启用的那几台**翻译成各家的形状注入到那一行自己的配置目录里，行级观测格再回答**这一行到底装上没有**。这篇是这条链路的自含说明：配置面（怎么配、怎么贴、怎么探活）→ 注入面（三家落点与逐字形状）→ 失败判据（谁在什么通道上报）→ 已知边界。
+设置页**最后那个 Tab**管**配了哪些 MCP 服务器**，候选执行时把**启用的那几台**翻译成各家的形状注入到那一行自己的配置目录里，行级观测格再回答**这一行到底装上没有**。这篇是这条链路的自含说明：配置面（怎么配、怎么贴、怎么探活）→ 注入面（四家落点与逐字形状）→ 失败判据（谁在什么通道上报）→ 已知边界。
 
 口径一句话：**设置页只回答「我配了什么」，行级观测格只回答「这一行装上了什么」**——两处说的是两件事，不互相推断。MCP 服务器是**候选能往评测里塞工具**的一个口子（与本仓注入同名时注入赢），这一点如实写明，不藏。
 
@@ -44,17 +44,18 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 
 1. **编排层取快照**：在候选执行那一处从 `loadConfig()` 取一份 `settings.mcpServers` 快照，填进 `AgentRunInput.mcpServers`（与 provider / route 同一份快照）。评分与用例同步两处**留空**——「只候选执行阶段注入」由**类型 + 调用点**共同保证。适配器**只认入参、不读 `loadConfig()`**。
 2. **解析**（`resolveMcpServers`，纯函数，三个桶）：① **形状闸**——条目没过 `McpServerConfigSchema` ⇒ 进 `invalid` 桶，不注入、不解析；② `enabled === false` ⇒ **整条剔除**（它不是「跳过」而是「用户关了」，不进 `skipped`——混在一起用户会以为是自己漏配了环境变量）；③ **占位闸**——`command` / `url` / `args` 里出现 `${…}` ⇒ 整条进 `skipped`（这几格不支持占位）；④ `env` / `headers` 的值里 `${ENV}` 取环境里的真值，**任何一格解析不出来 ⇒ 整条跳过**并记 `skipped`（半条注入只会让厂商侧报一句离真因很远的认证失败）。解析**只发生在注入时**，密钥因此永不落盘。
-3. **翻译**（`agents/src/mcp.ts`，一处实现）：同一份 canonical → 三家形状（见下节）；翻译器对拿不到必需格的条目**跳过而不抛**（上游的形状闸已拦一道，这里是第二道）。
+3. **翻译**（`agents/src/mcp.ts`，一处实现）：同一份 canonical → 四家形状（见下节）；翻译器对拿不到必需格的条目**跳过而不抛**（上游的形状闸已拦一道，这里是第二道）。
 4. **落点**：claude 走 SDK 参数 `Options.mcpServers`（**不落** `<configHome>/.claude.json`——参数是编程入口，且不落盘就不会与宿主那份混起来）；codex 走线程级 `config.mcp_servers`（随 `thread/start` 经 app-server 协议传入），并且**等注入的每一台落到实处才起轮次**——MCP 工具要 server `ready` 之后才进 codex 的工具表，而工具表随每条模型请求重算，不等的代价是开局 1–2 轮的请求里没有 `mcp__<name>`、模型据此断言「当前会话没有暴露 MCP 工具」（上限与四条边界见[《Codex 接入》](/protocols/codex)的「MCP 接法」）；dsh 往 per-launch overlay（`<configHome>/aieval-route.patch.yml`）的 `insert` 加插件行。
 5. **行内 `.npmrc`**：把宿主 npm 配置里的 **registry 那一行**写进行 `configHome`（`0600`）。原因：行的 `HOME` 一换，npm 的 `userconfig` 就从 `~/.npmrc` 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 从内网镜像掉回公网，行内首次注入 playwright MCP 从 ~4 s 变成 **17.2 s / 61 MB**（等待预算 ≥20 s 就是被这件事撑起来的）。宿主没有 registry 配置 ⇒ **什么都不做**（凭空写一个公网 registry 比不写更糟）；**只写那一行**，宿主 `.npmrc` 里其余内容（含认证 token）一个字节都不进行内。
 
-**三家的逐字形状**（同一份 canonical：`playwright` stdio 带 `args`、`context7` http 带 `headers`）：
+**四家的逐字形状**（同一份 canonical：`playwright` stdio 带 `args`、`context7` http 带 `headers`）：
 
 | 厂商 | 通道 | 输出 |
 |---|---|---|
 | claude | `Options.mcpServers` | `{"playwright":{"type":"stdio","command":"npx","args":[…]}, "context7":{"type":"http","url":"…","headers":{…}}}`——**无 `cwd`**，可选格缺席就不写那个键 |
 | codex | 线程级 `config.mcp_servers` | `{"playwright":{"command":"npx","args":[…],"startup_timeout_sec":30}, "context7":{"url":"…","http_headers":{…},"startup_timeout_sec":30}}`——snake_case、**无 `type`**（传输靠字段推断，多一个 `type` 会让整份 config 解析失败）、http 的头叫 `http_headers` |
 | dsh | overlay 的 `insert` 插件行 | `- id: mcp-playwright` / `name: "@deepseek-ai/dsh-mcp-client"` / `config: { serverName, transport, command, args }`；http 那台 `transport: streamable-http`（**不是** canonical 的 `http`）、头仍叫 `headers` |
+| pi | 自给 `loadConfig` 的**内存对象**（**零文件**） | `{ servers: [{ name: "playwright", config: { type: "stdio", command: "npx", args: […], exposure: "direct" } }, { name: "context7", config: { type: "http", url: "…", headers: {…}, exposure: "direct" } }] }`——每台**必须**带 `exposure: "direct"`（缺省档 `codemode` 下工具只可调用、不声明，模型侧看不到）；头仍叫 `headers`，stdio **无 `cwd`**，可选格缺席就不写那个键 |
 
 行内 `<configHome>/.npmrc` 的内容**逐字只有** registry 那一行（宿主为 `registry=http://registry.m.jd.com/` 时就是它加一个换行）、权限位 `0600`。
 
@@ -67,8 +68,13 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 | claude | `system/init` 的 `mcp_servers[].status` + **工具表里的 `mcp__<name>__`** | `failed` ⇒ **行失败**；工具表里有该前缀工具 ⇒ **已连上**（比 status 更硬）；其余（`pending` / `needs-auth` / 没有这台）⇒ `unverified`，**不判失败**。不等待（init 是一次性事件） |
 | codex | `mcpServer/startupStatus/updated` | `failed` ⇒ **行失败** + `error` 原文点名到台；`ready` ⇒ 已就绪（**只到「装上了」这一档**，工具能不能调是另一回事，见「已知边界」） |
 | dsh | `request/header` 事件的 `data.header.tools` | 表里有 `mcp__<serverName>__*` ⇒ 已就绪；表在、里面没有它 ⇒ **行失败**——这一家起不来时工具**静默**消失、会话照常跑完、无结构化错误，这是唯一判据 |
+| pi | 出站请求体的 `tools`（`before_provider_request` 观察者抓下来的厂商工具表） | 表里有 `mcp__<名>__*` ⇒ 已连上；表在、里面没有它 ⇒ **行失败**——与 dsh 同档：起不来时工具**静默**消失、会话照常跑完、无结构化错误。这一家**没有**「每台一张状态表」那种东西，工具面就是最硬的证据。首次 prompt 等 `direct` 档服务器 **10 s**（不是连接超时，超时之后照常重连） |
 
 厂商事实**逐拍长**时（codex 的启动状态、dsh 的工具表每条都交全量）统一**取最后一条**：行级观测格与环境抽屉因此对同一行给同一个结论。
+
+**工具名里的服务器名不是四家一个写法**（判据取 `@aieval/contracts` 的 `matchMcpToolName`）：pi 与 codex 把名字里非 `[A-Za-z0-9_]` 的字符改写成 `_`（配置名 `my-server` 出站就是 `mcp__my_server__echo`），cc 与 dsh 原样保留（`mcp__my-server__echo`）。匹配器**先精确、再回退到归一化形态**，两种写法都判「已连上」；**前缀必须整段**（`mcp__<name>__`），`mcp__playwright-extra__x` 不给 `playwright` 记账。
+
+两台服务器名在厂商工具表里同形时（`my-server` 与 `my_server` 都是合法名字），那一批工具**归不到**具体哪一台 ⇒ 只有精确命中的那台算数，另一台记 `未验证` 并附一句说明（观测格的 `note`，抽屉里紧跟在自己那行后面）。**这不是失败**：证据不足不升级成「这台没起来」，也绝不把 A 的工具记到 B 头上。
 
 失败的行归因码是 **`AGENT_MCP_UNAVAILABLE`**（文案 `MCP「<name>」未能启动：<厂商原文首行>`，厂商原文照抄以便按报错原文 grep），并且**刻意不进 `TRANSIENT_ROW_RETRY_CODES`**：配置 / 环境类失败重试没有意义，重试一次 = 再下 61 MB、再起一遍 MCP 进程。
 
@@ -94,12 +100,12 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 | **探活绿 ≠ 配置能用**：三类查不出来 | ① stdio 的浏览器通道非法（playwright MCP 没有只读且不启浏览器的探测工具）；② 少写 `mcp.` 子域（`https://context7.com/mcp`）也是合法端点；③ 探活的环境 ≠ 候选执行的环境（宿主 `HOME` / npx 缓存 / 占位从宿主环境解析，行内是私有目录且缓存为空） |
 | 密钥落盘明文 | 与供应商同口径（`0600` + 出口掩码 + 未改动信号），不额外加密 |
 | dsh `failOnStartupError: true` 的确切语义 | **未证实** ⇒ 判据改用工具表，不依赖它 |
-| codex / dsh 的同名优先级、宿主 `~/.claude.json` 与注入同名时谁赢 | **未证实**（前两家无已知的项目级 MCP 自动发现；后者未单测）⇒ 文档里只写「推断，未实测」 |
+| codex / dsh / pi 的同名优先级、宿主 `~/.claude.json` 与注入同名时谁赢 | **未证实**（前两家无已知的项目级 MCP 自动发现；pi 的 `.pi/mcp.json` 被零文件注入直接绕开；后者未单测）⇒ 文档里只写「推断，未实测」 |
 | `streamable-http` 传输在 dsh 侧 | **未覆盖**（只验过 stdio），形状由翻译器守卫逐字钉住 |
 
 ## 相关链接
 
 - 知识文章：[《设置》](/features/settings)（供应商 / 评分配置 / 工作区与用例目录，MCP 卡片的邻居）、[《数据与存储》](/features/storage)（`config.json` 落盘、原子写与 BOM 口径）、[《行执行与日志》](/features/row-execution)（行级观测格的消费侧）、[《事件流》](/protocols/event-stream)（`vendor-system` 的投送语义）
-- 协议侧：[Claude Code 接入](/protocols/cc)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh) 各自的「MCP 接法」一节，[三家横向对比](/protocols/comparison)的 MCP 对照表
+- 协议侧：[Claude Code 接入](/protocols/cc)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh)、[Pi Coding Agent 接入](/protocols/pi) 各自的「MCP 接法」一节，[四家横向对比](/protocols/comparison)的 MCP 对照表
 - 规约与排障：[变异验证](/guard/mutation-verification)、[冒烟测试方法论](/guard/smoke-testing)、[密钥与环境变量](/guard/secrets-and-env)、[故障索引](/faq/)
-- 仓库内参考：`packages/server/contracts/src/mcp.ts`（canonical 形状与解析）、`packages/server/agents/src/mcp.ts`（三家翻译与行内 `.npmrc`）、`packages/server/evaluator/src/row-mcp.ts`（观测格结论）
+- 仓库内参考：`packages/server/contracts/src/mcp.ts`（canonical 形状与解析）、`packages/server/agents/src/mcp.ts`（四家翻译与行内 `.npmrc`）、`packages/server/evaluator/src/row-mcp.ts`（观测格结论）

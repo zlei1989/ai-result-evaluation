@@ -792,11 +792,10 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
  * 而两条通路的终态口径必须**逐字一致**——否则两条通路同一件事在界面上长得不一样。
  * 映射是**规定动作**，不是随手兜底：
  *   · `AGENT_CANCELED` → `canceled`（用户意图优先，与候选 agent 阶段同一口径）；
- *   · `AGENT_TIMED_OUT` → `timed-out`：**当前没有任何生产者**——评分阶段没有超时来源，
- *     三家适配器（`providers/<kind>/`）也都不自报这个码。留着这一支有两个理由：归因码是
- *     `JudgeAgentError` 类型的一部分（`judgeRowByAgent` 会把适配器自报的 `result.error.code` 原样转出来，
- *     将来某家真自报超时时这里就是它的落点），且磁盘上的历史行还带着 `timed-out`——删掉这一支
- *     会让历史数据的读侧缺少对应映射；
+ *   · `AGENT_TIMED_OUT` → `timed-out`：**生产者是骨架的看门狗**（两级静止上限，候选与评分两个阶段
+ *     都缺省常亮）——评分阶段同样会被它收掉；上游自己报这个码时走的也是这一支。归因码是
+ *     `JudgeAgentError` 类型的一部分（`judgeRowByAgent` 会把适配器给出的 `result.error.code`
+ *     原样转出来），且磁盘上的历史行还带着 `timed-out`——删掉这一支会让历史数据的读侧缺少对应映射；
  *   · 其余（`AGENT_FAILED` / `AGENT_LOAD_FAILED` / `AUTH_FAILED` / `RATE_LIMITED`）→ `failed`，
  *     `error.code` **原样保留 agents 的归因码**（`EvalRow.error.code` 是自由字符串，正是为它留的）。
  *
@@ -897,10 +896,20 @@ function classifyStop(input: {
     return { status: 'canceled', error: null, exitReason: 'canceled', stage: 'agent' };
   }
   if (result.exitReason === 'timed-out') {
-    // 只剩**适配器自报**这一条路（本层已无任何超时）：照它的归因落地，界面上的处置看 error.code
+    // 生产者是**骨架的看门狗**（静止超时）：照它给出的原文落地——是哪一级（空闲 / 单次模型往返）、
+    // 上限多少秒都在那句话里，本层不另编一句概括（编了就把排障线索丢了）。
+    // `error` 缺席只可能是适配器违约，那时给一句中性说明，不冒充具体原因。
+    const detail = result.error;
     return {
       status: 'timed-out',
-      error: { code: 'AGENT_TIMED_OUT', message: '适配器自报的运行超时' },
+      error:
+        detail === undefined
+          ? { code: 'AGENT_TIMED_OUT', message: '该行静止超时（未给出具体原因）' }
+          : {
+            code: detail.code,
+            message: detail.message,
+            ...(detail.stack === undefined ? {} : { stack: detail.stack }),
+          },
       exitReason: 'timed-out',
       stage: 'agent',
     };

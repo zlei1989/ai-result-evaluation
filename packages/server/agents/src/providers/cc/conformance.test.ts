@@ -205,6 +205,17 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
         spawn_depth: 1,
         prompt: 'Count the lines in notes.txt…',
       },
+      /**
+       * **子智能体自己的那条消息**：真机上它带 `parent_tool_use_id`，而那正是归属键的来源
+       * （`message.ts` 把这一格读成消息的 `subagentId`）。少了它，这个场景只能证明「有一条子任务行」，
+       * 证明不了「子任务里有逐条对话」——子任务的正文挂在哪个会话节点上才是那条判据要问的。
+       */
+      {
+        type: 'assistant',
+        uuid: 'u2b',
+        parent_tool_use_id: TASK_CALL,
+        message: { id: 'side-m-1', role: 'assistant', content: [{ type: 'text', text: '3 lines' }] },
+      },
       {
         type: 'system',
         subtype: 'task_notification',
@@ -408,6 +419,17 @@ describeProviderConformance({
   kind: claudeCodeProvider.kind,
   capability: claudeCodeProvider.metadata.messageCapability,
   injection: claudeCodeProvider.metadata.injection,
+  /**
+   * **真出站证据：两格都缺**（如实登记，不硬凑）。这一家的假件把 SDK 整段换掉，看得见我们传进去的
+   * `options`，看不见 CLI 真正发出去的那一份请求；而 `outputFormat` 是**入参**，`strict` 有没有生效
+   * 只有请求体知道。缺的那两条在真机侧由下面点名的文件守（判据强度弱一档：`live-mcp` 证的是
+   * MCP server 侧收到调用，不是请求体的工具表；结构化输出只有入参那一格）。
+   */
+  realOutboundEvidence: [],
+  realOutboundGaps: {
+    mcp: 'packages/server/agents/src/providers/cc/live-mcp.test.ts',
+    'structured-output': 'packages/server/agents/src/providers/cc/index.test.ts',
+  },
   injectionProof: { mcp: 'mcp-injection', skills: 'skill-injection' },
   cancelMidTurn: claudeCodeProvider.metadata.capability.cancelMidTurn,
   lifecycle: observeLifecycle,

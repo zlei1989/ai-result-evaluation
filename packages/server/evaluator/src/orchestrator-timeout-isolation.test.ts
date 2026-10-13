@@ -59,6 +59,9 @@ describe('超时与失败隔离', { timeout: TEST_TIMEOUT_MS }, () => {
     const saved = getRun(run.id);
     expect(saved.rows[0]?.status).toBe('timed-out');
     expect(saved.rows[0]?.error?.code).toBe('AGENT_TIMED_OUT');
+    // 原因**取交上来的原文**：是哪一级静止上限、多少秒都在那句话里，编排层不许另编一句概括
+    //（编了就把排障线索丢了——「我们掐的」与「它自己超时」是靠这句话分辨的）。
+    expect(saved.rows[0]?.error?.message).toBe('假适配器：自报超时');
     expect(saved.rows[1]?.status).toBe('judged');
     expect(saved.status).toBe('partial');
   });

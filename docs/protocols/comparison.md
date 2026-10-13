@@ -1,101 +1,104 @@
-# 三家横向对比
+# 四家横向对比
 
 ## 定位
 
-cc / codex / dsh 三家厂商智能体的逐项对照：接了三家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的对比表。命名不是对齐键——对齐只在语义类别层做。
+cc / codex / dsh / pi 四家厂商智能体的逐项对照：接了四家之后，差异吸收在各自适配器里，但选型、写跨厂商代码、排障时需要一张按维度的对比表。命名不是对齐键——对齐只在语义类别层做。
 
 ## 形态与交互
 
 **接入形状总表**：
 
-| 维度 | cc | codex | dsh |
-|---|---|---|---|
-| 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex` | `@deepseek-ai/dsh-sdk-client`（next 线，R33） |
-| 驱动形态 | 进程内 SDK，spawn 原生 CLI | `codex app-server`（JSON-RPC/stdio） | SDK spawn 运行时，通知流 |
-| `protocolTypes` | `['anthropic']` | `['openai']` | `['openai','anthropic']`（双协议一家，两条 wire 统一走 pi-ai 路由） |
-| base URL 处理 | **剥**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补** `/v1`（CLI 只走 `POST {base}/v1/responses`） | 按 wire 分叉：anthropic 剥、openai 补（pi-ai 不归一化） |
-| 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） |
-| `cancelMidTurn` | true | true | **false**（终止晚 5 秒是设计） |
-| 结构化输出通道 | **原生**：`options.outputFormat`（收尾消息回 `structured_output`） | **原生**：`turn/start` 一等字段 `outputSchema` | **无原生通道 ⇒ 适配器内部填充层**：首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮 ≤ 2 轮 |
-| `applied.structuredOutput` | 按本次收尾消息里有没有 `structured_output` 上报 | 按本次有没有把 schema 发进 `turn/start` 上报 | **恒 `false`**（填充层不是原生通道） |
-| 权限 full 档 | `bypassPermissions` + `allowDangerouslySkipPermissions: true`（必须成对） | `danger-full-access`（`workspace-write` 默认关网络） | `DSH_PERMISSION_MODE=danger-full-access` |
-| 权限 read-only 档 | `dontAsk`（刻意不是 `plan`） | `read-only`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` |
-| 流式增量 | **yes**（`includePartialMessages: true` 常开，`stream_event`；**仅主会话**） | **yes**（`item/agentMessage/delta` + 两条 reasoning delta；`plan` / `commandExecution` 两条显式丢+计数） | **yes**（`source: 'hook'`：通知层没有 delta ⇒ 插件旁路 sidecar 文件 + 100 ms tail，见《接入》「流式增量旁路」） |
-| 消息级 usage | 恒 `null`（wire 上 `output_tokens` 恒 0） | 恒 `null`（协议只到线程级） | **有**（`assistant/message` 的 `data.usage`） |
-| `reasoningTokens` | `output_tokens_details.thinking_tokens` | 按线程累计（`input − cached`） | 恒 `null`（路由 `mapUsage()` 有意不投影） |
-| `apiMs` / `ttftMs` | 有（三家唯一） | 恒 `null` | 恒 `null` |
-| effort off 落点 | `thinking:{type:'disabled'}` + env 覆盖层（两半各管一批模型） | `effort:'none'` + `model_reasoning_summary:'none'`（后者空转）；**off 关不掉思考（未闭合）** | `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`（真机 0/0 成立） |
-| 终结信号 | `result` 消息恰好一条 | 主线程那条 `turn/completed`（按 `threadId` 认） | `turn/end`（`status` + `stopReason` 两格合读） |
+| 维度 | cc | codex | dsh | pi |
+|---|---|---|---|---|
+| 厂商包 | `@anthropic-ai/claude-agent-sdk` | `@openai/codex` | `@deepseek-ai/dsh-sdk-client`（next 线，R33） | `@earendil-works/pi-coding-agent`（配套 `@earendil-works/pi-ai`） |
+| 驱动形态 | 进程内 SDK，spawn 原生 CLI | `codex app-server`（JSON-RPC/stdio） | SDK spawn 运行时，通知流 | **进程内 SDK**：一行一次 `createAgentSession`，**没有可杀的 child** |
+| `protocolTypes` | `['anthropic']` | `['openai']` | `['openai','anthropic']`（双协议一家） | `['openai','anthropic']`（协议决定 wire：`openai → openai-completions`、`anthropic → anthropic-messages`） |
+| base URL 处理 | **剥**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补** `/v1`（CLI 只走 `POST {base}/v1/responses`） | 按 wire 分叉：anthropic 剥、openai 补 | 按 wire 分叉，规则与 dsh 逐字相同（pi 不做任何归一化） |
+| 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） | 行 `configHome`（装载器的 `agentDir`）；**进程级全局路径只认 `PI_CODING_AGENT_DIR` / `~/.pi/agent`**（子会话与扩展走它，`agentDir` 管不到） |
+| `cancelMidTurn` | true | true | **false**（终止晚 5 秒是设计） | true（`session.abort()` 毫秒级终结在途轮次） |
+| 结构化输出通道 | **原生**：`options.outputFormat`（收尾消息回 `structured_output`） | **原生**：`turn/start` 一等字段 `outputSchema` | **无原生通道 ⇒ 适配器内部填充层**：首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮 | **工具通道**：自定义工具 `submit_result` 带 `constrainedSampling`（strict），形状由厂商侧强制；预检不过 ⇒ 显式降级（降 `prefer` + 填充层） |
+| `applied.structuredOutput` | 按本次收尾消息里有没有 `structured_output` 上报 | 按本次有没有把 schema 发进 `turn/start` 上报 | **恒 `false`**（填充层不是原生通道） | 按**本轮答复是否确实来自被 strict 约束的工具参数**上报（模型改走正文时翻回 `false`） |
+| 权限 full 档 | `bypassPermissions` + `allowDangerouslySkipPermissions: true`（必须成对） | `danger-full-access`（`workspace-write` 默认关网络） | `DSH_PERMISSION_MODE=danger-full-access` | **工具白名单**（pi 没有权限标志位）：`read` / `bash` / `edit` / `write` + 子智能体扩展那三件 + `mcp__*` 通配 |
+| 权限 read-only 档 | `dontAsk`（刻意不是 `plan`） | `read-only`（**Windows 上落 `danger-full-access`**） | `DSH_PERMISSION_MODE=read-only` | 工具白名单 `read` / `grep` / `find` / `ls`——**一件扩展工具都不给**（`Agent` 派出的子会话拿完整工具面、能写文件，那是权限提升） |
+| 流式增量 | **yes**（`includePartialMessages: true` 常开，`stream_event`；**仅主会话**） | **yes**（`item/agentMessage/delta` + 两条 reasoning delta；`plan` / `commandExecution` 两条显式丢+计数） | **yes**（`source: 'hook'`：通知层没有 delta ⇒ 插件旁路 sidecar 文件 + 100 ms tail） | **yes**（`source: 'wire'`：`session.subscribe` 的事件里就有逐字增量，不需要旁路） |
+| 消息级 usage | 恒 `null`（wire 上 `output_tokens` 恒 0） | 恒 `null`（协议只到线程级） | **有**（`assistant/message` 的 `data.usage`） | **有**（助手 `message_end.message.usage`，记的是那次往返的读数、不进任何合计） |
+| `reasoningTokens` | `output_tokens_details.thinking_tokens` | 按线程累计（`input − cached`） | 恒 `null`（路由 `mapUsage()` 有意不投影） | 有（`usage.reasoning`，是 `output` 的子集） |
+| `apiMs` / `ttftMs` | 两格都有（**四家唯一**） | 恒 `null` | 恒 `null` | 有 `apiMs`（厂商 `durationMs` 逐轮累加、整格记 `'vendor'`）；`ttftMs` 恒 `null`（厂商不报首字时延） |
+| effort off 落点 | `thinking:{type:'disabled'}` + env 覆盖层（两半各管一批模型） | `effort:'none'` + `model_reasoning_summary:'none'`（后者空转）；**off 关不掉思考（未闭合）** | `thinking:{type:'disabled'}` / `reasoning:{effort:'none'}`（真机 0/0 成立） | openai wire **不发 `reasoning_effort` 键**；anthropic wire 是 `thinking:{type:'disabled'}` |
+| 终结信号 | `result` 消息恰好一条 | 主线程那条 `turn/completed`（按 `threadId` 认） | `turn/end`（`status` + `stopReason` 两格合读） | `agent_settled`（`agent_end` 之后还可能有 auto-retry、compaction 与排队输入） |
 
-**结构化输出：通道不同，交付契约相同**。三家都只有两种收场——交出一段符合 `outputSchema` 的 JSON，或如实失败（不合格的答复不会被静默当成合格）。差别在**谁来保证形状**：cc / codex 由厂商按 schema 约束；dsh 靠适配器内部的填充层（首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮）兜住，**保证强度不同**（追问两轮后仍可能不合格）。`applied.structuredOutput` 是**每-run 的通道事实**、不是能力位：它回答「这一次走的是哪条路」，不回答「答复合格不合格」——走填充层也可能交出一份完全合格的 JSON 而这一格仍是 `false`。判据三家共用一份（`packages/server/agents/src/structured-output.ts`，一致性套件的 `structured-output` 组同源）。
+**结构化输出：通道不同，交付契约相同**。四家都只有两种收场——交出一段符合 `outputSchema` 的 JSON，或如实失败（不合格的答复不会被静默当成合格）。差别在**谁来保证形状**：cc / codex 由厂商按 schema 约束（原生字段）、pi 也由厂商侧强制但走**工具参数**这条通道、dsh 靠适配器内部的填充层（首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮）兜住——**保证强度不同**（dsh 追问两轮后仍可能不合格；pi 那一格还有条件性：`ToolChoice` 只有 `auto / none`，模型完全可以用一段正文回答）。`applied.structuredOutput` 是**每-run 的通道事实**、不是能力位：它回答「这一次走的是哪条路」，不回答「答复合格不合格」——走填充层也可能交出一份完全合格的 JSON 而这一格仍是 `false`。判据四家共用一份（`packages/server/agents/src/structured-output.ts`，一致性套件的 `structured-output` 组同源）。
 
-**内置工具交集**（精确同名）：dsh ∩ codex = `create_goal` / `get_goal` / `update_goal` / `web_search`；claude 与另两家**精确同名交集为空**；三家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10），能力声明必须带前提。**别名要逐个登记**：真机这批数据里 dsh 跑命令用的是 `bash` 而不是表里原有的 `pwsh`（7 次调用全是 `bash`），漏登记不会报错、只会让摘要退化成紧凑 JSON 且族标签消失 ⇒ 别名由 `tool-family.test.ts` 逐字钉住。
+**内置工具交集**（精确同名）：codex ∩ dsh = `create_goal` / `get_goal` / `update_goal` / `web_search`；**pi 的默认四件与 dsh 的同名工具重名**（`read` / `bash` 在真机与夹具里有据可查）；claude 与另三家**精确同名交集为空**，四家忽略大小写同为空 ⇒ 命名不是对齐键，族映射按语义类别做。异名同义例：codex `exec_command` ↔ dsh `pwsh`；claude `Task` ↔ pi `Agent` 是同一工具两种叫法。工具表项数随模型与开关浮动（claude 实测 23–30、dsh 24、codex 10、pi 执行档 5 件 + `mcp__*` 通配、只读档 4 件），能力声明必须带前提。**别名要逐个登记**：真机这批数据里 dsh 跑命令用的是 `bash` 而不是表里原有的 `pwsh`（7 次调用全是 `bash`），漏登记不会报错、只会让摘要退化成紧凑 JSON 且族标签消失 ⇒ 别名由 `tool-family.test.ts` 逐字钉住。
 
-**叙述性字段（「模型自己写的一句话」）三家不一致**（一手证据：官方 SDK 类型、`codex app-server generate-ts` 的生成物、DSH `tool-catalog` 与本地包 schema）：
+**叙述性字段（「模型自己写的一句话」）四家不一致**（一手证据：官方 SDK 类型、`codex app-server generate-ts` 的生成物、DSH `tool-catalog` 与本地包 schema、pi 真机出站入参）：
 
 | 家 | 有这一格的工具 | 逐字字段名 | 必填性 | 我们读得到吗 |
 |---|---|---|---|---|
 | cc | `Bash` | `description` | **可选**（CLI 侧另有 `getToolUseSummary` 兜底合成一句，但那**只在 CLI 的 UI 层、不走 wire**） | 读得到 |
 | cc | `Agent`（旧名 `Task`）/ `Monitor` / `TaskCreate` | `description` | 必填 | 读得到 |
 | dsh | `bash` / `pwsh` / `subagent` | `description` | **必填**（JSON Schema `required` + 运行期校验 `invalid description: expected a non-empty string`） | 读得到 |
+| pi | `Agent`（派发工具，由第三方扩展提供） | `description` | 入参里带它（真机实测入参 `{prompt, description, subagent_type, run_in_background}`）；**内置四件没有这一格** | 读得到 |
 | codex | `update_plan` | `explanation` | 可选 | **读不到**：`TurnPlanUpdatedNotification.explanation` 协议面上有（本机 0.156.1 生成物逐字），但本仓 `appserver/protocol.ts` 的窄声明未收 ⇒ `payload.note` 恒 `null`（未闭合，见 FAQ） |
 | codex | `exec_command` | `justification` | 可选（**审批语义**） | **读不到**：`ThreadItem.commandExecution` 的字段里没有它（协议面就丢了） |
 | codex | `command_execution` / `apply_patch` / `web_search` / `dynamicToolCall` / `collab_tool_call` | — | — | 协议里**真没有**这一格 |
 
-依据：Claude `BashInput.description` 的官方注释逐字 *"the user reads this description, often without seeing the command"*（`sdk-tools.d.ts`）；DSH 同一格的说明逐字 "…(shown in the UI)"。**所以「优先 `description`」在 claude 与 dsh 上立刻兑现，在 codex 上一笔都兑现不了**——codex 的摘要只能走「族拼法」（`exec_command` 给命令原文、`apply_patch` 给改动清单）。这不是实现偷懒，是协议与通道的差异，横向对比时会被反复问到，故记在这里。
+依据：Claude `BashInput.description` 的官方注释逐字 *"the user reads this description, often without seeing the command"*（`sdk-tools.d.ts`）；DSH 同一格的说明逐字 "…(shown in the UI)"。**所以「优先 `description`」在 claude 与 dsh 上立刻兑现，在 pi 上只有派发工具那一件兑现得了（内置四件与 codex 一样一笔都兑现不了）**——codex 与 pi 的摘要只能走「族拼法」（`exec_command` 给命令原文、`apply_patch` 给改动清单、pi 的 `bash` 给命令原文）。这不是实现偷懒，是协议与通道的差异，横向对比时会被反复问到，故记在这里。
 
-**skill 对照**（三家都无编程式注册，skill 只能以文件落盘；配置面、落点与判据的完整写法见[《技能配置》](/features/skills-config)与三家接入文章各自的「skills 接法」）：
+**skill 对照**（四家都无编程式注册，skill 只能以文件落盘；配置面、落点与判据的完整写法见[《技能配置》](/features/skills-config)与各家接入文章各自的「skills 接法」）：
 
-| 维度 | Claude Code | Codex | DeepSeek Harness |
-|---|---|---|---|
-| 落点 | `<configHome>/skills/<名称>/SKILL.md`（`configHome` = `CLAUDE_CONFIG_DIR`） | 同形（`configHome` = `CODEX_HOME`） | 同形（`configHome` = `DSH_HOME`） |
-| 落位时序 | 无更紧要求（`query()` 之前写完即可） | **必须早于 spawn app-server** | **必须早于 `new DeepSeekHarness(...)`**（boot 点，写晚了**静默无 skill 且无报错**） |
-| 发现根 | 项目 `<cwd>/.claude/skills/`、用户 `$CLAUDE_CONFIG_DIR/skills/`、插件 `plugins[]` | 六个（`$CODEX_HOME/skills` / `~/.agents/skills` / `.system` / `<repo>/.codex/skills` / 每层 `.agents/skills` / `/etc/codex/skills`），**同名不去重** | 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根自动发现），skill 根表按 rank 定胜负 |
-| 同行同名谁赢 | **本机赢**（`userSettings` > `projectSettings`） | 两条都进清单（不去重） | **仓库赢**（项目级 rank 100/200 压过我们的 400） |
-| 厂商内置 | `built-in` 一批（不压） | `.system` 下 6 条，**每行首启自动物化**，与我们的条目同住一层 | bundled 一批（不压） |
-| L3 判据通道 | `getContextUsage().skills.skillFrontmatter`（带厂商原值 `source`，无落点） | `skills/list`（带 `scope` 与落点 `path`） | `user/message` 的 `source.kind === 'skill-catalog'`（只有名字 ⇒ 来源只能记「未证实」） |
-| 行为确证长什么样 | 发 `tool_use(name='Skill')`——**本机网关下拿不到**（模型一次都不发） | **这家没有 `Skill` 工具**：认它真去读 `SKILL.md` | 真发 `skill` 工具调用 |
-| 判据弱档（拿到名字 ≠ 模型能用它） | `system/init` 的 `skills` / `tools` 两格：厂商自报的名字表，**不反映允许列表**（挡得住工具调用、挡不住 `/<name>` 提示词派发）⇒ 假阳性 | `skills/list`（app-server 的请求；`enabled: false` 的条目**也列**）+ 入站 developer 段（只证明它进了提示词，答不了「清单里还有没有别的」） | `user/message` 的 `skill-catalog`：**只有名字**（没有来源、没有落点 ⇒ 分档只能记「来源未证实」） |
+| 维度 | Claude Code | Codex | DeepSeek Harness | Pi Coding Agent |
+|---|---|---|---|---|
+| 落点 | `<configHome>/skills/<名称>/SKILL.md`（`configHome` = `CLAUDE_CONFIG_DIR`） | 同形（`configHome` = `CODEX_HOME`） | 同形（`configHome` = `DSH_HOME`） | 同形（`configHome` = 行配置目录） |
+| 落位时序 | 无更紧要求（`query()` 之前写完即可） | **必须早于 spawn app-server** | **必须早于 `new DeepSeekHarness(...)`**（boot 点） | **必须早于 `createAgentSession()`**；写晚了这几家**静默无 skill 且无报错** |
+| 发现根 | 项目 `<cwd>/.claude/skills/`、用户 `$CLAUDE_CONFIG_DIR/skills/`、插件 `plugins[]` | 六个（`$CODEX_HOME/skills` / `~/.agents/skills` / `.system` / `<repo>/.codex/skills` / 每层 `.agents/skills` / `/etc/codex/skills`），**同名不去重** | 三条加法（`$DSH_HOME/skills/` / overlay `customSkillDirs` / 项目根自动发现），skill 根表按 rank 定胜负 | 本行白名单 ∪ `cwd` 之下的项目技能（`skillsOverride` 过滤掉 HOME 锚定的发现结果） |
+| 同行同名谁赢 | **本机赢**（`userSettings` > `projectSettings`） | 两条都进清单（不去重） | **仓库赢**（项目级 rank 100/200 压过我们的 400） | **仓库赢**（项目自动发现压过我们的 `configHome`）；个人档被我们过滤掉 |
+| 厂商内置 | `built-in` 一批（不压） | `.system` 下 6 条，**每行首启自动物化**，与我们的条目同住一层 | bundled 一批（不压） | 未证实（`skillsOverride` 只留白名单 ∪ 项目技能，厂商内置若存在也被这一层过滤） |
+| L3 判据通道 | `getContextUsage().skills.skillFrontmatter`（带厂商原值 `source`，无落点） | `skills/list`（带 `scope` 与落点 `path`） | `user/message` 的 `source.kind === 'skill-catalog'`（只有名字 ⇒ 来源只能记「未证实」） | 出站请求 payload 的技能段（`before_provider_request` 观察者取证，按两条 wire 各读一次） |
+| 行为确证长什么样 | 发 `tool_use(name='Skill')`——**本机网关下拿不到**（模型一次都不发） | **这家没有 `Skill` 工具**：认它真去读 `SKILL.md` | 真发 `skill` 工具调用 | 认它真去读 `SKILL.md`（模型真读才算行为档） |
+| 判据弱档（拿到名字 ≠ 模型能用它） | `system/init` 的 `skills` / `tools` 两格：厂商自报的名字表，**不反映允许列表**（挡得住工具调用、挡不住 `/<name>` 提示词派发）⇒ 假阳性 | `skills/list`（app-server 的请求；`enabled: false` 的条目**也列**）+ 入站 developer 段（只证明它进了提示词，答不了「清单里还有没有别的」） | `user/message` 的 `skill-catalog`：**只有名字**（没有来源、没有落点 ⇒ 分档只能记「来源未证实」） | 出站请求里的技能段只证明「清单进了提示词」，答不了「模型会不会照它做」 |
 
-- 三家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用），且**同名冲突三家解法不同**——设置页那条 Alert 只写原则，点名归行详情的「本行技能」格。
-- 三家的行内装入都用**文件级不放**这一个手段表达「停用」（没有任何一家有按名字关的配置键）；行级结论三态（`installed` / `missing` / `unverified`）由同一份契约推导，`missing` ⇒ 该行失败且不自动重试。
+- 四家共同坑：**项目根自动发现是跨家口径的静默差异**（被测仓库自带的 skill 目录会被启用），且**同名冲突四家解法不同**——设置页那条 Alert 只写原则，点名归行详情的「本行技能」格。
+- 四家的行内装入都用**文件级不放**这一个手段表达「停用」（没有任何一家有按名字关的配置键）；行级结论三态（`installed` / `missing` / `unverified`）由同一份契约推导，`missing` ⇒ 该行失败且不自动重试。
 
-**MCP 接法对照**（三家注入落点与判据通道均已真机验证；配置面、逐字形状与完整边界见[《MCP 配置》](/features/mcp-config)）：
+**MCP 接法对照**（四家注入落点与判据通道均已真机验证；配置面、逐字形状与完整边界见[《MCP 配置》](/features/mcp-config)）：
 
-| 维度 | Claude Code | Codex | DeepSeek Harness |
-|---|---|---|---|
-| 注入通道 | SDK 参数 `Options.mcpServers`（不落 `<configHome>/.claude.json`） | **线程级** `config.mcp_servers`（随 `thread/start`；退路 `$CODEX_HOME/config.toml`） | per-launch overlay（`aieval-route.patch.yml`）的 `insert` 插件行 |
-| 传输名 | `stdio` / `http` | **无 `type`**（靠字段推断） | `stdio` / `streamable-http` |
-| http 的头叫 | `headers` | **`http_headers`** | `headers` |
-| stdio 的 `cwd` | **没有这个字段** | 没有（继承 app-server 的 cwd） | 没有（继承 harness 的 cwd） |
-| 额外格 | — | `startup_timeout_sec`（本仓给 30 s） | `serverName` / `toolCallTimeoutMs` / `failOnStartupError`（默认 false） |
-| 判据来源 | `system/init` 的 `mcp_servers[].status` **+ 工具表**（工具表更硬） | `mcpServer/startupStatus/updated`（带 `error` 原文） | **只有** `request/header` 的 `data.header.tools` |
-| 失败长什么样 | `status: 'failed'` | `startupStatus: 'failed'` + `error` | **静默**：工具消失、会话照常跑完、无结构化错误 |
-| 判据到什么档 | 已连上（工具表里有 `mcp__<name>__`） | **只到「装上了」**——自定义网关下有 `unsupported call` 的上游缺口 | 已连上（表里有 `mcp__<serverName>__*`） |
+| 维度 | Claude Code | Codex | DeepSeek Harness | Pi Coding Agent |
+|---|---|---|---|---|
+| 注入通道 | SDK 参数 `Options.mcpServers`（不落 `<configHome>/.claude.json`） | **线程级** `config.mcp_servers`（随 `thread/start`；退路 `$CODEX_HOME/config.toml`） | per-launch overlay（`aieval-route.patch.yml`）的 `insert` 插件行 | **零文件**：自给 `loadConfig` 的内存对象（不落任何 `mcp.json`，被测仓库的 `.pi/mcp.json` 连读都读不到） |
+| 传输名 | `stdio` / `http` | **无 `type`**（靠字段推断） | `stdio` / `streamable-http` | `stdio` / `http` |
+| http 的头叫 | `headers` | **`http_headers`** | `headers` | `headers` |
+| stdio 的 `cwd` | **没有这个字段** | 没有（继承 app-server 的 cwd） | 没有（继承 harness 的 cwd） | 没有（继承会话的 cwd） |
+| 额外格 | — | `startup_timeout_sec`（本仓给 30 s） | `serverName` / `toolCallTimeoutMs` / `failOnStartupError`（默认 false） | `exposure`（每台**显式** `'direct'`）/ 首次 prompt 启动等待 10 s |
+| 判据来源 | `system/init` 的 `mcp_servers[].status` **+ 工具表**（工具表更硬） | `mcpServer/startupStatus/updated`（带 `error` 原文） | **只有** `request/header` 的 `data.header.tools` | **只有**厂商工具表（出站 payload 的 `tools` 里出现 `mcp__<名>__*`） |
+| 失败长什么样 | `status: 'failed'` | `startupStatus: 'failed'` + `error` | **静默**：工具消失、会话照常跑完、无结构化错误 | **静默**：工具消失、会话照常跑完、无结构化错误 |
+| 判据到什么档 | 已连上（工具表里有 `mcp__<name>__`） | **只到「装上了」**——自定义网关下有 `unsupported call` 的上游缺口 | 已连上（表里有 `mcp__<serverName>__*`） | 已连上（表里有 `mcp__<名>__*`） |
 
-- 工具名三家一致：`mcp__<server>__<tool>`；**同名优先级只有 claude 实测过**（程序化注入赢、只留一条，`strictMcpConfig` 关闭 ⇒ 不压制仓库自带），codex / dsh 两家**未证实**（均无已知的项目级 MCP 自动发现）。
-- 三家都把各自的厂商信号归一成同一条 `vendor-system` 事件并用 `mcpChannel` 自报通道（`vendor-status` / `vendor-startup-status` / `vendor-tool-table`），行级观测格（`EvalRow.mcpServers`）据此给出 `connected` / `unavailable` / `unverified` / `skipped` 四档结论；**`unverified` 不许写成「已连上」，也不许写成「没有」**。
-- 三家都把行内首次下载的成本留给了行：playwright MCP 首次 **17.2 s / 61 MB**（宿主 registry 是公网时）⇒ 等待预算 ≥ 20 s，缓解手段（行内 `.npmrc` 只写宿主 registry 那一行）三家共用同一处实现。
+- 工具名四家同形（`mcp__<server>__<tool>`），但**服务器名那一段的字符处理不同**：pi 与 codex 把非 `[A-Za-z0-9_]` 的字符改写成 `_`（`my-server` ⇒ `mcp__my_server__echo`），claude 与 dsh 原样保留（`mcp__my-server__echo`）⇒ 行级判据两种形态都认（`@aieval/contracts` 的 `matchMcpToolName`，先精确、再回退）。**同名优先级只有 claude 实测过**（程序化注入赢、只留一条，`strictMcpConfig` 关闭 ⇒ 不压制仓库自带），codex / dsh / pi 三家**未证实**（pi 的 `.pi/mcp.json` 被零文件注入直接绕开，另外两家均无已知的项目级 MCP 自动发现）。
+- 四家都把各自的厂商信号归一成同一条 `vendor-system` 事件并用 `mcpChannel` 自报通道（`vendor-status` / `vendor-startup-status` / `vendor-tool-table`），行级观测格（`EvalRow.mcpServers`）据此给出 `connected` / `unavailable` / `unverified` / `skipped` 四档结论；**`unverified` 不许写成「已连上」，也不许写成「没有」**。
+- 四家都把行内首次下载的成本留给了行：playwright MCP 首次 **17.2 s / 61 MB**（宿主 registry 是公网时）⇒ 等待预算 ≥ 20 s，缓解手段（行内 `.npmrc` 只写宿主 registry 那一行）四家共用同一处实现。
+- pi 的 `exposure` 档位与判据**绑定**：缺省档 `codemode` 下工具只可调用、不声明，模型侧看不到 ⇒ 观测格那条判据永不触发，故值域在类型上收成 `'direct'`。
 
 ## 数据与契约
 
-- **用量合计口径三家不同源**：claude 从 `result.usage`（跑动期按同 `message.id` 后到覆盖求和作估算）；codex 只从 `thread/tokenUsage/updated` 通知累计（全树合计，任一子线程缺 ⇒ 两分量同时 null）；dsh 事件投影不按会话分流（用量轮次含子智能体是构造上如此，分量按行内白名单求和）。
-- **思考正文**：claude `thinking` 块（含 signature）；codex `reasoning.content[]` 快照 + `textDelta` 增量（`exec --json` 恒 0 条别再用）；dsh `assistant/message` 整块。空文本一律记 `text: null` + `textKind: 'none'`（不回落 summary）。
-- **子任务身份**：三家都是厂商原生 id（claude 任务 id / codex 线程 id / dsh 子会话 id）；`parentCallId` 是消息与子任务记录之间唯一的桥——dsh 恒 `null`（真机载荷无可对齐的调用 id，不猜）。
+- **用量合计口径四家不同源**：claude 从 `result.usage`（跑动期按同 `message.id` 后到覆盖求和作估算）；codex 只从 `thread/tokenUsage/updated` 通知累计（全树合计，任一子线程缺 ⇒ 两分量同时 null）；dsh 事件投影不按会话分流（用量轮次含子智能体是构造上如此，分量按行内白名单求和）；pi 从助手 `message_end.message.usage` 逐次往返累加，合计**含**子智能体那一份（主子自己的读数与子会话的读数覆盖面不相交，两份相加才是「这一行一共花了多少」）。
+- **思考正文**：claude `thinking` 块（含 signature）；codex `reasoning.content[]` 快照 + `textDelta` 增量（`exec --json` 恒 0 条别再用）；dsh `assistant/message` 整块；pi 助手消息的 `thinking` 块（`redacted === true` 或正文为空时不落正文）。空文本一律记 `text: null` + `textKind: 'none'`（不回落 summary）。
+- **子任务身份**：四家都是厂商原生 id（claude 任务 id / codex 线程 id / dsh 子会话 id / pi 扩展的 `agentId`）；`parentCallId` 是消息与子任务记录之间唯一的桥——**dsh 与 pi 恒 `null`**（两家载荷里都没有可对齐的调用 id，不猜）。
 
 ## 状态机与时序
 
-三家收尾取数路径：claude 读 CLI 落盘转录（子智能体用量唯一权威源，只在收尾一次）；codex 收尾 `thread/list` + 逐线程 `thread/read`（必须在 `finalize` 前落定）；dsh 无收尾取数（读数都在通知流里）。共同铁则：**「等一个终态再取数」先问这是哪条线程 / 哪个会话的终态**。
+四家收尾取数路径：claude 读 CLI 落盘转录（子智能体用量唯一权威源，只在收尾一次）；codex 收尾 `thread/list` + 逐线程 `thread/read`（必须在 `finalize` 前落定）；dsh 无收尾取数（读数都在通知流里）；pi 也无收尾取数（读数都在事件流里），收尾只把子智能体的终态快照折进合计。共同铁则：**「等一个终态再取数」先问这是哪条线程 / 哪个会话的终态**。
 
 ## 已知边界与取舍
 
 | 边界 | 处置 |
 |---|---|
 | 工具表 / 能力**随模型名与路由翻转**（`spawn_agent` 在 DeepSeek 路由跑通、内网网关 `unsupported call`） | 能力声明必须带前提；对比表数字标注「一次实测快照」 |
-| effort 档位强度的效力三家都未证实（同档抖动不小于档间差） | 只展示「我们要求的档位」 |
-| 跨家比较轮次先核对口径（`roundTrip` 三家合成方法不同） | 「同口径可比」+ `source` 标注，不是「跨三家可比」 |
+| effort 档位强度的效力四家都未证实（同档抖动不小于档间差） | 只展示「我们要求的档位」 |
+| 跨家比较轮次先核对口径（`roundTrip` 四家合成方法不同） | 「同口径可比」+ `source` 标注，不是「跨四家可比」 |
+| pi 的结构化输出走工具通道 ⇒ 这一行的工具表比另三家多一件（`submit_result`） | 跨家可比性的已知解释变量，登记而不隐藏（不启用 `codemode` / `tool_search` 是同一条口径） |
 
 ## 相关链接
 
-- 知识文章：[《Claude Code 接入》](/protocols/cc)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)（字段级细节）、[《MCP 配置》](/features/mcp-config)（三家 MCP 接法的配置面与失败判据）、[《技能配置》](/features/skills-config)（三家 skills 接法的配置面与三态判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
-- 活文档：三份厂商 FAQ（[Codex](/faq/codex) / [Claude Code](/faq/claude-code) / [DeepSeek Harness](/faq/deepseek-harness)）——按报错原文 grep
+- 知识文章：[《Claude Code 接入》](/protocols/cc)、[《Codex 接入》](/protocols/codex)、[《DeepSeek Harness 接入》](/protocols/dsh)、[《Pi Coding Agent 接入》](/protocols/pi)（字段级细节）、[《MCP 配置》](/features/mcp-config)（四家 MCP 接法的配置面与失败判据）、[《技能配置》](/features/skills-config)（四家 skills 接法的配置面与三态判据）、[《消息规范》](/protocols/message-spec)（归一契约）、[《进程生命周期》](/protocols/process-lifecycle)、[《Provider 抽象与 run 入口》](/protocols/provider-run)
+- 活文档：四份厂商 FAQ（[Codex](/faq/codex) / [Claude Code](/faq/claude-code) / [DeepSeek Harness](/faq/deepseek-harness) / [Pi Coding Agent](/faq/pi)）——按报错原文 grep
