@@ -27,10 +27,60 @@ const FORBIDDEN: Record<PackageName, string[]> = {
   evaluator: ['next', 'next/*', 'react', 'react-dom'],
   api: ['next', 'next/*', 'react', 'react-dom'],
   contracts: ['next', 'next/*', 'react', 'react-dom'],
-  ui: ['@aieval/client', '@aieval/api', '@aieval/web-next', 'next', 'next/*'],
+  // X 的两个包（`@ant-design/x` 与 `@ant-design/x-markdown`）只允许出现在 `base/` 的本仓外壳里。
+  // 深路径（App Router 不支持点号子组件，`Bubble.List` 这类只能写
+  // `@ant-design/x/es/bubble/BubbleList`）由 `toGroups` 的「名/*」组覆盖，不需要另列通配条目。
+  ui: [
+    '@aieval/client',
+    '@aieval/api',
+    '@aieval/web-next',
+    'next',
+    'next/*',
+    '@ant-design/x',
+    '@ant-design/x-markdown',
+  ],
   client: ['@aieval/web-next'],
   'web-next': [],
 };
+
+/**
+ * 包级禁用名单里**允许在指定目录破例**的条目（`dirs` 是相对**包根**的 glob）。
+ *
+ * 为什么要有这一层、而不是把破例的名字从 `FORBIDDEN` 里挪出去：破例是**按目录**的
+ * ——`base/` 能引 X、`composite/` 不能。名字留在 `FORBIDDEN` 里，下面按条目生成
+ * 「该目录内仍然禁止的名单 = 全名单减去这一条点到的名字」的配置对象，两件事因此不会漂移。
+ *
+ * 多条互不干扰：每条各自生成一个配置对象、各自只减自己点到的名字。同一个目录被两条同时点到时，
+ * 后一条整体替换前一条的规则（flat config 的一般语义）。
+ */
+const FORBIDDEN_DIR_EXEMPTIONS: Partial<Record<PackageName, Array<{ names: string[]; dirs: string[] }>>> = {
+  // X 的适配层：`base/x-markdown.tsx`、`base/x-think.tsx` 这些外壳是唯一允许引 X 的地方。
+  // 收口之后「换包 / 换深路径 / 换 `XProvider` 根」只动壳一处，X 的那几条约束
+  // （`escapeRawHtml`、`disableDefaultStyles`、点号子组件的替代写法）也不在各 composite 里各写一遍。
+  ui: [{ names: ['@ant-design/x', '@ant-design/x-markdown'], dirs: ['src/base/**'] }],
+};
+
+/**
+ * `FORBIDDEN_DIR_EXEMPTIONS` 里点到的名字**必须在 `FORBIDDEN[pkg]` 里**。
+ *
+ * 不然那条破例是**空转**：`boundaryConfigs` 只会为破例目录另生成一条规则，而那个名字本来就没被
+ * 整包那条禁过——于是「破例」什么也没破，**且不报错**。这是守卫自己的守卫：本仓对静默失败的
+ * 容忍度是零，而这一格恰恰能一声不响地失效。
+ */
+for (const [pkg, exemptions] of Object.entries(FORBIDDEN_DIR_EXEMPTIONS) as Array<
+  [PackageName, Array<{ names: string[]; dirs: string[] }>]
+>) {
+  const forbidden = new Set<string>(FORBIDDEN[pkg]);
+  for (const { names } of exemptions) {
+    for (const name of names) {
+      if (!forbidden.has(name)) {
+        throw new Error(
+          `FORBIDDEN_DIR_EXEMPTIONS.${pkg} 为 "${name}" 开了破例，但 FORBIDDEN.${pkg} 里没有它：这条破例是空转，请删掉或补进 FORBIDDEN`,
+        );
+      }
+    }
+  }
+}
 
 /** 各包在仓库中的目录（相对仓库根，用 `/` 分隔）：根配置据此把包级 glob 限定到对应目录 */
 const PACKAGE_DIRS: Record<PackageName, string> = {
@@ -208,6 +258,9 @@ function scopeToDir(dir: string, configs: Linter.Config[]): Linter.Config[] {
 /**
  * 包级边界配置（不含 baseConfig）。glob 相对包根，故既能被包内 `eslint.config.ts`
  * 直接导出，也能被 `workspaceConfig` 前缀化后复用。
+ *
+ * 输出 1–2 个配置对象：整包一条；`FORBIDDEN_DIR_EXEMPTIONS` 里有条目时，每个条目再加一条
+ * （见那段 JSDoc）。两条都走 `restrictionRules`，说明符因而不会只在一边变小。
  */
 function boundaryConfigs(pkg: PackageName): Linter.Config[] {
   const names = FORBIDDEN[pkg];
@@ -219,6 +272,37 @@ function boundaryConfigs(pkg: PackageName): Linter.Config[] {
     ...(pkg === 'web-next' ? [{ ignores: ['next-env.d.ts'] }] : []),
   ];
   if (names.length === 0) return configs;
+  const exemptions = FORBIDDEN_DIR_EXEMPTIONS[pkg] ?? [];
+  /** 全部破例目录：整包那条规则要把它们排除掉，改由下面按条目生成的规则接管 */
+  const exemptDirs = [...new Set(exemptions.flatMap(({ dirs }) => dirs))];
+
+  return [
+    ...configs,
+    {
+      files: ['**/*.{ts,tsx}'],
+      // 有破例目录时，整包这条规则先让开它们：**必须另给一条规则**（下面按条目生成），
+      // 不能只在 `ignores` 里豁免——那样会把这批文件上的全部分层规则连同 X 禁令一起关掉。
+      ...(exemptDirs.length > 0 ? { ignores: exemptDirs } : {}),
+      rules: restrictionRules(pkg, names),
+    },
+    // 破例条目：目录内仍然禁止「全名单减去这一条点到的名字」，故 base/ 只是不引 X，
+    // `@aieval/client` 那一类边界照旧生效。
+    ...exemptions.map(({ names: exempted, dirs }) => ({
+      files: dirs,
+      rules: restrictionRules(pkg, names.filter((name) => !exempted.includes(name))),
+    })),
+  ];
+}
+
+/**
+ * 一组禁止名单对应的**两条**规则：静态 import（`no-restricted-imports`）+ 动态 `import()` /
+ * `require()`（`no-restricted-syntax`）。
+ *
+ * **两条必须由同一个函数产出**：flat config 对同一条规则是**整体替换**而不是选项合并，
+ * 任何一处只改一半的写法都会把另一处（或 `baseConfig` 里那份）整条盖掉。
+ * 破例目录上的规则也走这里，故「名单变小」时两条规则里的说明符必然同步变小。
+ */
+function restrictionRules(pkg: PackageName, names: string[]): Linter.RulesRecord {
   // 说明符必须整串等于某个禁止名，或等于「禁止名 + / 至少一个字符」（子路径）。
   // `^…$` 锚定是必要的：没有它 `react` 会顺带匹配 `react-dom`。
   const forbiddenSpecifier = `^(${names
@@ -226,47 +310,41 @@ function boundaryConfigs(pkg: PackageName): Linter.Config[] {
     .map((name) => escapeRegExp(name.replace(/\/\*$/, '')))
     .join('|')})(\\/.+)?$`;
 
-  return [
-    ...configs,
-    {
-      files: ['**/*.{ts,tsx}'],
-      rules: {
-        'no-restricted-imports': [
-          'error',
-          {
-            patterns: toGroups(pkg, names).map(({ group, message }) => ({ group: [group], message })),
-          },
-        ],
-        // no-restricted-imports 的访问器只覆盖静态 import / export 语句（ImportDeclaration、
-        // ExportNamedDeclaration、ExportAllDeclaration、TSImportEqualsDeclaration），
-        // **不看动态 import，也不看 require** —— 实测 `() => import('react')` 与
-        // `require('react-dom')` 在 core 里都能以退出码 0 通过 lint。
-        // 故这里显式补上这两种绕过路径；漏了它，边界就只是「对老实人有效」。
-        //
-        // 选择器必须按**说明符**过滤，不能用裸的 `ImportExpression` /
-        // `CallExpression[callee.name='require']`：那样会连同包自己的 `import('./x')`、
-        // `require('./m')` 一起禁掉，既挡住 ui/client 之后要做的 React.lazy 代码分割，
-        // 又给出与包名无关的误导文案。
-        'no-restricted-syntax': [
-          'error',
-          // 这一条在 baseConfig 里已经有了，这里**必须再放一遍**：flat config 对同一条规则是
-          // 整体替换而非选项合并，本对象排在 baseConfig 之后且匹配同一批文件，只用边界那两条
-          // 会把 baseConfig 里的 ESM 禁 require 整条盖掉。实测（core/src/index.ts 里写
-          // `require('react-dom')`）：不重复这一条时只剩边界规则的 1 条报告，而
-          // `require('node:os')` 这类非禁止模块会**一条都不报**——正是这条规则要堵的盲区。
-          esmOnlyRequire,
-          {
-            selector: `ImportExpression[source.value=/${forbiddenSpecifier}/]`,
-            message: `[分层边界] ${pkg} 禁止动态 import 该模块（${names.join(' / ')}）`,
-          },
-          {
-            selector: `CallExpression[callee.name="require"] > Literal.arguments:first-child[value=/${forbiddenSpecifier}/]`,
-            message: `[分层边界] ${pkg} 禁止 require 该模块（${names.join(' / ')}）——require 不受 import 规则约束`,
-          },
-        ],
+  return {
+    'no-restricted-imports': [
+      'error',
+      {
+        patterns: toGroups(pkg, names).map(({ group, message }) => ({ group: [group], message })),
       },
-    },
-  ];
+    ],
+    // no-restricted-imports 的访问器只覆盖静态 import / export 语句（ImportDeclaration、
+    // ExportNamedDeclaration、ExportAllDeclaration、TSImportEqualsDeclaration），
+    // **不看动态 import，也不看 require** —— 实测 `() => import('react')` 与
+    // `require('react-dom')` 在 core 里都能以退出码 0 通过 lint。
+    // 故这里显式补上这两种绕过路径；漏了它，边界就只是「对老实人有效」。
+    //
+    // 选择器必须按**说明符**过滤，不能用裸的 `ImportExpression` /
+    // `CallExpression[callee.name='require']`：那样会连同包自己的 `import('./x')`、
+    // `require('./m')` 一起禁掉，既挡住 ui/client 之后要做的 React.lazy 代码分割，
+    // 又给出与包名无关的误导文案。
+    'no-restricted-syntax': [
+      'error',
+      // 这一条在 baseConfig 里已经有了，这里**必须再放一遍**：flat config 对同一条规则是
+      // 整体替换而非选项合并，本对象排在 baseConfig 之后且匹配同一批文件，只用边界那两条
+      // 会把 baseConfig 里的 ESM 禁 require 整条盖掉。实测（core/src/index.ts 里写
+      // `require('react-dom')`）：不重复这一条时只剩边界规则的 1 条报告，而
+      // `require('node:os')` 这类非禁止模块会**一条都不报**——正是这条规则要堵的盲区。
+      esmOnlyRequire,
+      {
+        selector: `ImportExpression[source.value=/${forbiddenSpecifier}/]`,
+        message: `[分层边界] ${pkg} 禁止动态 import 该模块（${names.join(' / ')}）`,
+      },
+      {
+        selector: `CallExpression[callee.name="require"] > Literal.arguments:first-child[value=/${forbiddenSpecifier}/]`,
+        message: `[分层边界] ${pkg} 禁止 require 该模块（${names.join(' / ')}）——require 不受 import 规则约束`,
+      },
+    ],
+  };
 }
 
 /** 转义正则元字符：禁止名单里的 `@aieval/client`、`next/*` 都要按字面匹配 */

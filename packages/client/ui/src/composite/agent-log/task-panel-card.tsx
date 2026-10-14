@@ -19,7 +19,7 @@
  *   · **「本轮另有 N 次更新」是一行静态说明，不是折叠项**：本件没有第二份开合态可用
  *     （L0 一律不得自己持态），画一个点不开的箭头比写清楚这件事更糟。
  */
-import { Collapse, Flex, Table, Tag, Typography } from 'antd';
+import { Collapse, Flex, Table, Tag, Typography, theme } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { ReactNode } from 'react';
 import { AgentRunStateTag } from './agent-run-state-tag';
@@ -134,6 +134,7 @@ export function TaskPanelCard({
   onRequestDiagnostics,
   missingReason = null,
 }: TaskPanelCardProps): ReactNode {
+  const { token } = theme.useToken();
   const { counts } = panel;
   // 分母含 `unknown`：含未知项的清单少了它，分母必然偏小
   const total = counts.pending + counts.inProgress + counts.completed + counts.unknown;
@@ -161,6 +162,13 @@ export function TaskPanelCard({
   return (
     <Collapse
       destroyOnHidden
+      /**
+       * **紧凑档**：外层这一格就是「卡片」本身（问答卡片那边是 `Card size="small"`），
+       * 而 antd 中档折叠面板的标题上下各 12、正文上 16——比问答卡片的卡头（8）与卡体（12）松一档，
+       * 两张卡并排时标题的呼吸感明显不同。`size="small"` 把标题收到上下 8、正文收到 12，
+       * 与问答卡片同档（值由 antd 给，本件不覆盖任何内边距）。
+       */
+      size="small"
       activeKey={open ? [PANEL_KEY] : []}
       onChange={(keys) => onOpenChange(keys.length > 0)}
       items={[
@@ -194,8 +202,11 @@ export function TaskPanelCard({
               )}
               {/* 归一化是视图，原文才是事实；结果没到手时连入口都不画（标题已写过「结果未采集」） */}
               {panel.result !== null && (
-                // 入口不自带容器（`raw-output-panel.tsx` 口径 7）：横排与间距由这一层给
-                <Flex align="center" gap={8} wrap>
+                // 入口不自带容器（`raw-output-panel.tsx` 口径 7）：横排与间距由这一层给。
+                // **上边距单独给**：外面那一列 `gap={4}` 是「清单内部」的紧凑间距（表格与说明文字之间），
+                // 而这一格是「清单之后的一个动作」——按 4px 排会紧贴表格底边。
+                // 取 `marginXS`(8)：加上那个 4px 共 12，与问答卡片 footer 那一圈留白齐平
+                <Flex align="center" gap={8} wrap style={{ marginBlockStart: token.marginXS }}>
                   <RawOutputPanel
                     source={{ kind: 'single', result: panel.result }}
                     open={rawOpen}

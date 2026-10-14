@@ -144,3 +144,37 @@ describe('globals.css 里的活动行打字态', () => {
     expect(guard ?? '', '兜底里没有关掉动画').toContain('animation: none');
   });
 });
+
+/**
+ * 虚拟列表自绘滚动条的拇指。
+ *
+ * 缺口长什么样：拇指背景由底层 `rc-virtual-list` 内联成
+ * `var(--rc-virtual-list-scrollbar-bg, rgba(0, 0, 0, 0.5))`，那个默认值是纯黑半透明 ⇒
+ * **暗色主题下滚动条看不见**（antd 的 `List` / `Tree` / `Table` 都补了这个变量，只有 `Listy` 漏了）。
+ * 类名与 CSS 对不上时浏览器保持静默：不报错，只是又变回那条看不见的黑条。
+ */
+describe('globals.css 里的虚拟列表滚动条', () => {
+  /** 从组件源码里抠出类名；抠不到直接抛（与上面 `sweepClass` 同一口径） */
+  function virtualListClass(): string {
+    const source = readFileSync(
+      join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src', 'base', 'virtual-list.tsx'),
+      'utf8',
+    );
+    const matched = /export const VIRTUAL_LIST_CLASS = '([^']+)'/.exec(source);
+    const value = matched?.[1];
+    if (value === undefined) {
+      throw new Error('virtual-list.tsx 里找不到 VIRTUAL_LIST_CLASS 的字面量定义，本守卫无法核对');
+    }
+    return value;
+  }
+
+  it('定义了组件带上的那个类名，并且真的把 rc-virtual-list 的变量接过去', () => {
+    const css = readFileSync(cssPath, 'utf8');
+    const cls = virtualListClass();
+    expect(css, `globals.css 里没有 .${cls}`).toContain(`.${cls} {`);
+    // 光有类名没用：没把 `--rc-virtual-list-scrollbar-bg` 指到本仓变量上，拇指照旧是那条黑条
+    const rule = css.slice(css.indexOf(`.${cls} {`), css.indexOf('}', css.indexOf(`.${cls} {`)));
+    expect(rule, '规则里没有接 `--rc-virtual-list-scrollbar-bg`').toContain('--rc-virtual-list-scrollbar-bg');
+    expect(rule, '拇指颜色没有取本仓的分主题变量').toContain('var(--app-');
+  });
+});

@@ -73,6 +73,22 @@ describe('ToolItemDetail', () => {
     expect(body).toContain('Bash');
   });
 
+  /**
+   * 折叠标题那一格**必须可收缩**：摘要行是 `nowrap` 的长命令，而 antd 的 `.ant-collapse-title`
+   * 默认 `min-width: auto` ⇒ 最小宽度按内容算，标题把整行顶宽、外层时间轴冒出横向滚动条，
+   * 而省略号永远轮不到（`EllipsisText` 的 `max-width: 100%` 分母就是那个被顶宽的容器）。
+   *
+   * jsdom 没有布局，这里只能钉住「那一格语义样式在位」；几何判据（标题宽度收到可用宽度、
+   * 列表 `scrollWidth === clientWidth`）在真实服务上读 `getBoundingClientRect`。
+   */
+  it('折叠标题可收缩（`minWidth: 0`）：长摘要不会把整行顶宽成横向滚动条', () => {
+    const { container } = render(
+      <ToolItemDetail entry={callItem()} open={false} onOpenChange={vi.fn()} missingReason={null} />,
+    );
+
+    expect(container.querySelector<HTMLElement>('.ant-collapse-title')?.style.minWidth).toBe('0');
+  });
+
   it('没有族映射（`family === null`）时行首回落工具名——且正文不再重复一遍', () => {
     const { container } = render(
       <ToolItemDetail entry={callItem({ family: null })} open onOpenChange={vi.fn()} missingReason={null} />,

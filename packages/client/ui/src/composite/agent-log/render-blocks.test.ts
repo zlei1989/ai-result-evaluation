@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildRenderBlocks, nodeIndex, type ToolItem } from './render-blocks';
-import type { ContentBlock, LogNode, RowNode, SessionNode, ToolFamilyPayload } from './types';
+import type { ContentBlock, LogNode, RowNode, SessionNode, ToolCardResult, ToolFamilyPayload } from './types';
 
 /** 块信封的公共部分（用例只关心差异的那几格） */
 function base(id: string, at = '2026-10-02T10:44:31.000Z') {
@@ -85,6 +85,20 @@ function askCall(id: string, callId: string): ContentBlock {
   };
   return { ...call(id, callId, 'ask_user_question', 'ask-user'), tool: payload } as ContentBlock;
 }
+
+/**
+ * **已收场**的 `ask-user` 调用：卡片有答案与结果可显示（`AskUserSettled` 那一支）。
+ * `result` 可以给 `null`——契约允许「收场了但原文没采到」，那时卡片没有结果可显示。
+ */
+function settledAskCall(id: string, callId: string, result: ToolCardResult | null = settledResult): ContentBlock {
+  const payload: ToolFamilyPayload = {
+    family: 'ask-user',
+    interaction: { state: 'settled', questions: [], outcome: 'answered', answers: null, at: '', result },
+  };
+  return { ...call(id, callId, 'ask_user_question', 'ask-user'), tool: payload } as ContentBlock;
+}
+
+const settledResult: ToolCardResult = { ok: true, raw: '这一问的答案（收场方式：answered）', truncation: { kind: 'none' } };
 
 function sessionNode(id: string, spawnedBy: SessionNode['spawnedBy']): SessionNode {
   return {
@@ -258,6 +272,55 @@ describe('buildRenderBlocks：两族卡片', () => {
     if (group?.kind !== 'tool-group') throw new Error('应为工具组');
     // `family` 非空但 `tool` 为 null ⇒ 通用工具行（与「适配器不认识」不是一回事）
     expect(group.entries[0]?.kind === 'call' ? group.entries[0].family : null).toBe('task');
+  });
+});
+
+/**
+ * 被提成卡片的调用**仍然拥有自己的结果**：`callId` 就是配对键，卡片只是那次调用的显示位。
+ *
+ * 不登记它们的话，同轮后到的结果在配对照里找不到主人，会落成 `orphan-result`——
+ * 界面上是一组没有调用的「工具调用 × 0」展开成「孤立结果（配不上调用）」，
+ * 而那条结果的主人恰恰就在它上面一张卡片里。判据是「卡片有没有把结果画出来」：
+ * 画了就别再重复一行；没画（还没收场 / 收场了但原文没采到）**不许丢**，照旧独立成条。
+ */
+describe('buildRenderBlocks：卡片接管的调用，结果归卡片', () => {
+  it('已收场的 `ask-user` 卡片：同轮的结果由卡片显示，**不再另起孤立结果**', () => {
+    // 同一次调用两条结果（编排层的结算 + 厂商回显）是真实形状：两条都归卡片
+    const blocks = buildRenderBlocks(
+      [settledAskCall('c1', 'call_1'), result('r1', 'call_1'), result('r2', 'call_1')],
+      nodeIndex([]),
+      TURN,
+    );
+    expect(blocks.map((block) => block.kind)).toEqual(['ask-user-card']);
+  });
+
+  it('`task` 面板：同轮的结果由面板显示（`panel.result`），**不再另起孤立结果**', () => {
+    const blocks = buildRenderBlocks([taskCall('c1', 'call_1'), result('r1', 'call_1')], nodeIndex([]), TURN);
+    expect(blocks.map((block) => block.kind)).toEqual(['task-panel']);
+    const [panel] = blocks;
+    if (panel?.kind !== 'task-panel') throw new Error('应为清单面板');
+    expect(panel.panel.result?.raw).toBe('out-r1');
+  });
+
+  it('卡片**没有**结果可显示时（还没收场），结果仍然留在时间轴上', () => {
+    const blocks = buildRenderBlocks([askCall('c1', 'call_1'), result('r1', 'call_1')], nodeIndex([]), TURN);
+    expect(blocks.map((block) => block.kind)).toEqual(['ask-user-card', 'tool-group']);
+    const group = blocks[1];
+    if (group?.kind !== 'tool-group') throw new Error('应为工具组');
+    expect(group.entries[0]?.kind === 'orphan-result' ? group.entries[0].output.text : null).toBe('out-r1');
+  });
+
+  it('**收场了但原文没采到**（`result: null`）时同样不吞掉结果', () => {
+    const blocks = buildRenderBlocks([settledAskCall('c1', 'call_1', null), result('r1', 'call_1')], nodeIndex([]), TURN);
+    expect(blocks.map((block) => block.kind)).toEqual(['ask-user-card', 'tool-group']);
+  });
+
+  it('卡片**只接管自己那次调用**：别人的结果照旧独立成条', () => {
+    const blocks = buildRenderBlocks([settledAskCall('c1', 'call_1'), result('r1', 'call_9')], nodeIndex([]), TURN);
+    expect(blocks.map((block) => block.kind)).toEqual(['ask-user-card', 'tool-group']);
+    const group = blocks[1];
+    if (group?.kind !== 'tool-group') throw new Error('应为工具组');
+    expect(group.entries[0]?.kind).toBe('orphan-result');
   });
 });
 

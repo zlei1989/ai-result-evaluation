@@ -30,7 +30,6 @@ const SKILLS: SkillEntry[] = [
     description: '第一件技能',
     ok: true,
     disabled: false,
-    sizeBytes: 2048,
   },
   {
     name: 'broken-skill',

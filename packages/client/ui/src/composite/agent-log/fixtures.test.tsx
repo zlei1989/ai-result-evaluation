@@ -185,3 +185,60 @@ describe('夹具自身的三条口径', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * 夹具里那一块**流式的正文**（半截围栏）走真实链路渲染出来的样子。
+ *
+ * 为什么单列一组：`base/x-markdown.test.tsx` 钉的是外壳对半截围栏的行为，这里钉的是
+ * 「日志这条链路上真的有一块半截围栏的正文」——中间那两格（`buildAgentLogModel` 的
+ * `assembly` 转发、注册表选到 `TextBlockView`）断了的话，外壳那组用例照旧全绿，
+ * 而界面上是「流式正文里没有围栏这一档」。缩进 2 空格的围栏是 X 2.9.0 最容易漏的一档。
+ */
+describe('夹具：流式正文块的半截围栏', () => {
+  const RENDERER_OPTIONS = { open: true, onOpenChange: () => undefined, rawOpen: false, onRawOpenChange: () => undefined };
+
+  /** 取 dsh 夹具里唯一那块 `assembly === 'open'` 的正文块 */
+  function openTextBlock(): RenderBlock {
+    const fixture = dshFixture();
+    const nodes = nodeIndex(fixture.model.nodes);
+    for (const node of fixture.model.nodes) {
+      if (node.content.status !== 'ready') continue;
+      for (const [turnIndex, turn] of node.content.data.entries()) {
+        for (const block of buildRenderBlocks(turn.blocks, nodes, {
+          at: turn.at,
+          running: turn.running,
+          messageId: null,
+          nodeId: node.id,
+          firstTurn: turnIndex === 0,
+        })) {
+          if (block.kind === 'text' && block.block.assembly === 'open') return block;
+        }
+      }
+    }
+    throw new Error('夹具里应有一块流式的正文（半截围栏的载体）');
+  }
+
+  it('半截围栏进 loading 档、内容不被吞、围栏标记不漏进正文', () => {
+    const block = openTextBlock();
+    const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
+    const view = render(createElement('div', null, renderBlock(block, RENDERER_OPTIONS)));
+
+    const code = view.container.querySelector('code');
+    expect(code?.getAttribute('data-state'), '流式那块正文的围栏没有被标成「还没收尾」').toBe('loading');
+    // 围栏标记（```）是 markdown 语法，不该出现在正文里；它与正文一起被吞掉就是「内容没了」的形态
+    const codeText = code?.textContent ?? '';
+    expect(codeText, '围栏里的内容被吞了').toContain('POST /api/open/query-file-change-log');
+    expect(codeText, '缩进围栏的代码行没保住（对齐骨架散了）').toContain('queryFileChangeLogs   (lc-web:45)');
+    expect(codeText, '围栏标记漏进了正文').not.toContain('```');
+    view.unmount();
+  });
+
+  it('同一块上「正在思考」那一行在场（动效判据仍是 `assembly === \'open\'`）', () => {
+    const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
+    const view = render(createElement('div', null, renderBlock(openTextBlock(), RENDERER_OPTIONS)));
+
+    expect(view.container.textContent).toContain('正在思考');
+    expect(view.container.querySelector('.ant-spin')).not.toBeNull();
+    view.unmount();
+  });
+});

@@ -120,7 +120,7 @@
 
 ### 提示词渲染
 
-详情面板**只有考题提示词走 markdown**（`MarkdownText`，`react-markdown@10.1.0` + `remark-gfm@4.0.1`）：h1 → antd `Title` 4 级、h2–h6 → `Title` 5 级、链接新标签打开并带 `rel=noreferrer`、`pre` 保留 `white-space: pre` 并横向滚动；`code` / `strong` / `del` / `ul` / `ol` / `blockquote` / `table` 全部交给 antd 排版样式。带 `remark-gfm` 是因为题面里会出现大段 GFM 表格（不带插件那些行退化成一堆竖线文本）；不带 `rehype-raw` 是因为提示词是外部输入（模型 / 外部系统产生），默认转义成文本即可看见内容，又不引入 XSS 面。详情面板不渲染「评分维度」行与「评分提示词」卡片（契约里没有 `judgePrompt` 这个字段）——渲染一个不存在的字段等于给用户看假话。
+详情面板**只有考题提示词走 markdown**（`XMarkdownText`，`@ant-design/x-markdown` 的本仓外壳）：h1 → antd `Title` 4 级、h2–h6 → `Title` 5 级、外链新标签打开并挡掉 `window.opener`（走 X 的 `openLinksInNewTab`）、`pre` 与围栏里的 `code` 都保留 `white-space: pre` 并横向滚动（只盖 `pre` 不够——块级 `code` 是 `display: block`，它在自己那一层就折了，`pre` 永远滚不出来）；题面里的调用链路图靠前导空格对齐，宁可让用户横向滚也不撕开树形结构。`strong` / `del` / `ul` / `ol` / `blockquote` / `table` 的排版归 X 的主题 CSS，GFM 表格是 X 解析器内建的能力，本仓不挂插件。原始 HTML **一律转义成文本**（外壳把 `escapeRawHtml` 恒开、不做成 prop）：提示词是外部输入（模型 / 外部系统产生），转义后照样看得见内容，又不引入 XSS 面；做成 prop 就会有人为了「让某个标签生效」把它关掉。详情面板不渲染「评分维度」行与「评分提示词」卡片（契约里没有 `judgePrompt` 这个字段）——渲染一个不存在的字段等于给用户看假话。
 
 ### 删除
 

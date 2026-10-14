@@ -36,6 +36,7 @@ import {
   useSettings,
   useSkillFile,
   useSkills,
+  useSkillTree,
   useUpdateProvider,
 } from '@aieval/client';
 import type {
@@ -174,8 +175,23 @@ function SettingsPage(): React.ReactNode {
   const [skillName, setSkillName] = useState<string | null>(null);
   // 清单是实时扫描的快照：`refresh` = 重新扫一遍（卡片上的「重新扫描」）
   const { list: skillList, error: skillsError, isLoading: skillsLoading, refresh: refreshSkills } = useSkills();
-  // 正文按名字单独取（清单里没有正文）：没选中时 name 为 null，一个请求都不发
-  const { file: skillFile, error: skillFileError, isLoading: skillFileLoading } = useSkillFile(skillName);
+  // 目录树按名字单独取（清单里没有树）：它要递归整目录，只在点开某一行之后才需要
+  const {
+    tree: skillTree,
+    error: skillTreeError,
+    isLoading: skillTreeLoading,
+    refresh: refreshSkillTree,
+  } = useSkillTree(skillName);
+  /**
+   * 选中的**技能内路径**（完整 slash 路径，如 `poetry/SKILL.md`）。
+   * 换一条技能时必须清空——不清的话会拿上一条技能的路径去请求新技能里的同名文件。
+   */
+  const [skillPath, setSkillPath] = useState<string | null>(null);
+  // 正文按「技能名 + 技能内路径」取：没点任何文件时 path 为 null，一个请求都不发
+  const { file: skillFile, error: skillFileError, isLoading: skillFileLoading } = useSkillFile(
+    skillName,
+    skillPath,
+  );
   // 被打开的那条从当前清单里现取：清单刷新后事实跟着走，目标消失时为 null
   const selectedSkill: SkillEntry | null = skillList?.skills.find((skill) => skill.name === skillName) ?? null;
 
@@ -699,19 +715,29 @@ function SettingsPage(): React.ReactNode {
                       skillWarnings={skillList.skillWarnings}
                       root={skillList.root}
                       loading={skillsLoading}
-                      onOpen={(skill) => setSkillName(skill.name)}
+                      // 换一条技能要连**选中的文件**一起清：否则会拿上一条技能的路径去请求新技能
+                      onOpen={(skill) => {
+                        setSkillName(skill.name);
+                        setSkillPath(null);
+                      }}
                       onToggle={toggleSkill}
                       onRescan={refreshSkills}
                     />
-                    {/* 预览抽屉：正文（`SKILL.md` 的 frontmatter + markdown）由 `useSkillFile` 取，
+                    {/* 预览抽屉：左树右预览。目录树与正文分别由 `useSkillTree` / `useSkillFile` 取，
                         组件只负责渲染。`open` 读**现取到的那条**：清单刷新后目标没了就自动收起，
                         不留一个空壳 */}
                     <SkillDetailDrawer
                       open={selectedSkill !== null}
                       skill={selectedSkill}
+                      tree={skillTree}
+                      treeError={skillTreeError}
+                      treeLoading={skillTreeLoading}
+                      onRetryTree={refreshSkillTree}
+                      selectedPath={skillPath}
+                      onSelectPath={setSkillPath}
                       file={skillFile}
-                      error={skillFileError}
-                      loading={skillFileLoading}
+                      fileError={skillFileError}
+                      fileLoading={skillFileLoading}
                       onClose={() => setSkillName(null)}
                     />
                   </Flex>

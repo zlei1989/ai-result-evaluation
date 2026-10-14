@@ -11,12 +11,12 @@
  *   · `source !== 'wire'` 给块角标（`session-file` → 「补录」、`aggregate` → 「汇总」，
  *     `hook` / `wire` 的文案是 `null` ⇒ 不标）。
  *
- * `assembly === 'open'` 时挂**流式光标类名**——它是动效的**唯一**判据（模型里没有任何流式布尔）。
- * 光标本身是 CSS 伪元素（`apps/web-next/app/globals.css`），`ui` 包只带类名：本文件一行渲染细节都不改。
+ * `assembly === 'open'` 时在正文下方给一行**「转圈 + 正在思考」**——它仍是动效的**唯一**判据
+ * （模型里没有任何流式布尔）。
  */
-import { Flex, Tag, theme, Typography } from 'antd';
+import { Flex, Spin, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
-import { MarkdownText } from '../../base/markdown-text';
+import { XMarkdownText } from '../../base/x-markdown';
 import { STREAM_CURSOR_CLASS } from '../../base/stream-cursor';
 import type { TextBlock } from './types';
 import { MESSAGE_SOURCE_LABELS } from './types';
@@ -28,39 +28,43 @@ import { MESSAGE_SOURCE_LABELS } from './types';
 export { STREAM_CURSOR_CLASS };
 
 export function TextBlockView({ block }: { block: TextBlock }): ReactNode {
-  const { token } = theme.useToken();
   const sourceLabel = MESSAGE_SOURCE_LABELS[block.source];
-  const isUser = block.role === 'user';
   const isSystem = block.role === 'system';
-  const hasMarks = isUser || isSystem || sourceLabel !== null;
 
   return (
-    <Flex
-      vertical
-      gap={4}
-      className={block.assembly === 'open' ? STREAM_CURSOR_CLASS : undefined}
-      style={
-        // 用户消息的左侧竖线：只给结构性的边框，宽度与颜色都取 token（不写像素、不手调字号）
-        isUser
-          ? { borderInlineStart: `${token.lineWidth}px solid ${token.colorBorder}`, paddingInlineStart: token.paddingSM }
-          : undefined
-      }
-    >
-      {hasMarks && (
+    // 最原始的形态：**没有左侧竖线、没有内边距、没有角色标签**——
+    // 这一块的样式全部归 XMarkdown 自己，本仓只保留两样非样式的东西：
+    // 一是「不是智能体自己说的」那两档角标，二是「还没写完」那一行。
+    <Flex vertical gap={4}>
+      {isSystem || sourceLabel !== null ? (
         <Flex align="center" gap={4}>
-          {isUser && <Tag>用户</Tag>}
           {isSystem && <Tag>系统</Tag>}
           {sourceLabel !== null && <Tag>{sourceLabel}</Tag>}
         </Flex>
-      )}
-      {isSystem ? (
-        // 整块降一档：厂商 system 文本与智能体的结论必须看得出不是一回事
-        <Typography.Paragraph type="secondary">
-          <MarkdownText text={block.text} />
-        </Typography.Paragraph>
-      ) : (
-        <MarkdownText text={block.text} />
-      )}
+      ) : null}
+      {/*
+        正文**直接交给 `XMarkdown`**：字符串进、它自己渲染，本仓不套任何排版容器。
+        此前 system 那一档外面包了 `Typography.Paragraph type="secondary"`——那是**我们在覆盖它**：
+        antd 的排版规则会盖掉 X 自己的 `table` / `code` / 段落样式，于是同一段 markdown
+        在 system 与非 system 两档长得不一样。要弱化就弱化整块，不要动它的内部排版。
+      */}
+      <XMarkdownText text={block.text} open={block.assembly === 'open'} />
+      {/*
+        还在写：正文下方一行「转圈 + 正在思考」。
+        **不再是容器上的闪烁光标**——那一格是纯 CSS 伪元素，读者只能看出「有东西在闪」，
+        说不出在做什么；这一行有字，且用的是 antd 的 `Spin`（与 X 的 `loadingRender` 同一种表达）。
+      */}
+      {block.assembly === 'open' && <WorkingRow />}
+    </Flex>
+  );
+}
+
+/** 「这一条还在写」那一行。留成独立组件，是为了让上面那棵树各分支的职责一眼可分 */
+function WorkingRow(): ReactNode {
+  return (
+    <Flex align="center" gap="middle">
+      <Spin size="small" />
+      <Typography.Text>正在思考</Typography.Text>
     </Flex>
   );
 }

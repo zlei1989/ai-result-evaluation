@@ -11,7 +11,7 @@
  *
  * | 族 | cc | dsh | codex |
  * |---|---|---|---|
- * | `task` | `TodoWrite` 的 `{todos: [{content, status}]}`（`Task*` 是逐条 patch 的注册表，**不在这里合成整表**） | `todo_write` 的 `{todos: [{content, status}]}`（整表覆盖） | `update_plan` 的 `{explanation?, plan: [{step, status}]}` |
+ * | `task` | `TodoWrite` 的 `{todos: [{content, status}]}`；`Task*` 那套工作项注册表是**逐条 patch**，整表在 `providers/cc/task-registry.ts` 里按 run 累积（本模块只吃单次入参，看不到历史） | `todo_write` 的 `{todos: [{content, status}]}`（整表覆盖） | `update_plan` 的 `{explanation?, plan: [{step, status}]}` |
  * | `ask-user` | `AskUserQuestion` 的 `{questions: [{id, question, header, options[], multiSelect}]}` | `ask_user_question` 的 `{questions: [{id, question, header?, options[]?, multi_select?}]}` | `request_user_input` 的 `{questions: [{id, header, question, options[]}]}` + 答案侧的 `isOther` / `isSecret` |
  *
  * 四条取值口径（每一条都对应一次真实的误读）：
@@ -20,7 +20,9 @@
  *   2. **族是权威**：`family === 'task'` 时只找清单形状，喂进来一个问题数组记 `null`——
  *      不因为「形状像另一族」就改判（改判等于让适配器的归族白做）；
  *   3. **`unknown` 是独立的一档**：认不出的状态落 `unknown`（既不是待办也不是完成）；
- *      claude 独有的 `deleted` 也落它——当 `completed` 是撒谎，当 `pending` 是它明明已被删除；
+ *      claude 独有的 `deleted` 也落它——当 `completed` 是撒谎，当 `pending` 是它明明已被删除。
+ *      （`deleted` 在**整表**形状里落 `unknown`：它还在这张表里；在 cc 那套**逐条 patch** 的台账里
+ *      按**移除**处置——那正是这个指令的语义，见 `providers/cc/task-registry.ts`。两处都未在真机观测到。）
  *   4. **缺的格记 `null`，不编 0 / 空串**。唯一的例外是 `subject` 与 `header`：它们在三家
  *      都可能**本身就是空串**（厂商给了空），那时保留空串而不是改写成 `null`。
  *
@@ -72,15 +74,27 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 /**
  * 厂商的状态取值 → 契约四态（**三家的并集**）：
- * `completed` / `in_progress` / `inProgress` / `pending` / `todo`，外加 claude 的 `completed: true` 写法。
+ * `completed` / `in_progress` / `inProgress` / `pending` / `todo`。
  * 其余一律 `unknown`——**不猜成成功**（把 `deleted` 读成「完成」会让一张已经撤销的清单显示成做完）。
+ *
+ * **这是族里唯一一处状态映射**：整表形状（`todos` / `plan` / `steps`）与 claude 那套
+ * **逐条 patch** 的 `Task*` 注册表（见 `providers/cc/task-registry.ts`）都读它——
+ * 两处各写一份必然漂，漂的表现是「同一个状态串在某一家显示成进行中、在另一家显示成未知」。
  */
-function stepStatusOf(item: Record<string, unknown>): TaskStep['status'] {
-  const status = asString(item.status);
-  if (status === 'completed' || item.completed === true) return 'completed';
+export function taskStepStatusOf(status: string | null): TaskStep['status'] {
+  if (status === 'completed') return 'completed';
   if (status === 'in_progress' || status === 'inProgress') return 'inProgress';
   if (status === 'pending' || status === 'todo') return 'pending';
   return 'unknown';
+}
+
+/**
+ * 清单一项的状态：除了上面那四个字面量，还认 claude 的 `completed: true` 写法
+ * （`TodoWrite` 的历史形状）。
+ */
+function stepStatusOf(item: Record<string, unknown>): TaskStep['status'] {
+  if (item.completed === true) return 'completed';
+  return taskStepStatusOf(asString(item.status));
 }
 
 /**

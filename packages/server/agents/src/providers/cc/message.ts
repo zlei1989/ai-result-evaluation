@@ -41,7 +41,7 @@
  * 执行日志里没有**。第 1 轮之所以看不出：那条消息第二次投的是 `tool_use`，它按 `c:<callId>` 分槽，
  * 撞不上 `i:0`。
  */
-import type { SubagentRecord } from '@aieval/contracts';
+import type { SubagentRecord, ToolCallPayload } from '@aieval/contracts';
 import { asRecord, readNumber, readString } from '../../json';
 import {
   createBlockIndexAllocator,
@@ -55,6 +55,7 @@ import {
   type MessageDraft,
 } from '../../message';
 import type { TurnState } from '../../turn';
+import { createClaudeTaskRegistry, type ClaudeTaskCall, type ClaudeTaskRegistry } from './task-registry';
 
 /** 子智能体消息的标记字段：非空即「主循环之外」（归属键与 `task_started.tool_use_id` 同值） */
 const SIDE_CHAIN_FIELD = 'parent_tool_use_id';
@@ -135,6 +136,16 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
    * ⇒ 一份 run 一张账既够用，又不会把上一次运行（或上一个用例）的值留着。
    */
   const taskKinds = new Map<string, string>();
+
+  /**
+   * **任务台账**（工作项注册表）。
+   *
+   * 为什么归一器要持它：claude 的 `TaskCreate` / `TaskUpdate` 是**逐条 patch**（另两家的
+   * `update_plan` / `todo_write` 入参本来就是整表），整表只能由**多次调用按到达顺序**累积出来；
+   * 而 `task` 族的载荷是**单次调用**就能算的东西（`tool-payload.ts` 那一层看不到历史）。
+   * 台账因此跟 run 的闭包走，与 `dispatchIds` / `taskKinds` 同一档。
+   */
+  const tasks = createClaudeTaskRegistry();
 
   /**
    * **每条厂商 assistant 消息一本块序号账**（key = `message.id`；无 id 的畸形帧退到 `rt:<轮次>`）。
@@ -327,7 +338,15 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       if (type === 'tool_use') {
         const callId = readString(block, 'id');
         if (callId === null || callId === '') return;
-        blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.input ?? null, 'cc', undefined));
+        const name = readString(block, 'name') ?? '';
+        const input = block?.input ?? null;
+        /**
+         * `Task*`（工作项注册表）的整表**只能由台账累积**：单次入参里根本没有那张表
+         * （`TaskCreate` 建一项、`TaskUpdate` 改一项的某个字段）⇒ 载荷由台账给，
+         * 其余工具照旧按族载荷归一算（`payload` 传 `undefined`）。
+         */
+        const plan = tasks.onCall({ callId, name, input, envelope: { roundTrip, parentCallId, subagentId, vendorId } });
+        blocks.push(toolCallBlockDraft(callId, name, input, 'cc', undefined, plan ?? undefined));
       }
     });
     // 已投递数**按厂商 `content` 数组长度**推进（不是「产了几块」）：序号空间属于厂商那条消息，
@@ -371,7 +390,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       }
       const type = readString(message, 'type');
       if (type === 'assistant') return assistant(raw, message, state);
-      if (type === 'user') return user(raw, message, state, sessionRoundIds);
+      if (type === 'user') return user(raw, message, state, sessionRoundIds, tasks);
       if (type === 'stream_event') return { messages: streamEvent(message, state), subagent: null, taskShape: null };
       // `task_*` 帧要走形状判决（幻影不产行），其余 `system` 帧与子任务无关
       if (type === 'system') return subagentFrame(message);
@@ -418,12 +437,17 @@ function deltaMessage(
  *
  * `sessionRoundIds` 是归一器那份**每会话轮次号账**（本函数在工厂之外，只能显式传进来）：
  * 工具结果的轮次号要按**它所属的那个会话**取（见下面那一格）。
+ *
+ * `tasks` 是归一器那份**任务台账**：结果里才有工具自己发的 id（`TaskCreate`）与权威的新状态
+ * （`TaskUpdate` 的 `statusChange.to`）⇒ 结果入账之后要把**那条调用**所在的逻辑消息
+ * **重投一次**（多回一条 `assistant` 角色的快照草稿），否则界面上那张「计划清单」停在调用当时。
  */
 function user(
   raw: unknown,
   message: Record<string, unknown> | null,
   state: TurnState,
   sessionRoundIds: SessionRoundIds,
+  tasks: ClaudeTaskRegistry,
 ): ClaudeMessageOutput {
   const payload = asRecord(message?.message);
   const content = payload?.content;
@@ -431,17 +455,23 @@ function user(
   const parentCallId = readString(message, SIDE_CHAIN_FIELD);
   const subagentId = parentCallId === null || parentCallId === '' ? null : parentCallId;
   const blocks: MessageBlockDraft[] = [];
+  /** 结果改了台账的那些调用：各回一条重投快照（见函数头） */
+  const refreshes: MessageDraft[] = [];
   for (const rawBlock of content) {
     const block = asRecord(rawBlock);
     if (readString(block, 'type') !== 'tool_result') continue;
     const callId = readString(block, 'tool_use_id');
     if (callId === null || callId === '') continue;
+    const structured = message?.tool_use_result ?? null;
     blocks.push(
       toolResultBlockDraft(callId, resultText(block?.content), {
-        structured: message?.tool_use_result ?? null,
+        structured,
         isError: block?.is_error === true,
       }),
     );
+    if (!tasks.onResult(callId, structured)) continue;
+    const call = tasks.callFor(callId);
+    if (call !== null) refreshes.push(taskRefreshDraft(call, tasks.payload()));
   }
   if (blocks.length === 0) return EMPTY;
   return {
@@ -468,9 +498,40 @@ function user(
         blocks,
         raw,
       },
+      ...refreshes,
     ],
     subagent: null,
     taskShape: null,
+  };
+}
+
+/**
+ * 结果入账后要把**那条调用**所在的逻辑消息重投一份快照（台账刷新后的整表载荷挂回同一个块）。
+ *
+ * 为什么必须是「同载体重投」而不是新开一条消息：界面按 `mergeKey`
+ * （`<会话>|<轮次>|<角色>|<派生调用>`）**last-wins 折叠**，新键会让同一条逻辑消息在时间轴上
+ * 变成两条并列的载体；而同键重投正是 `message.ts` 里那条既有规则
+ * （「已 seal 的槽位被新快照更新」，cc 的完整 assistant 消息与 dsh 的 `block-end` 都靠它）。
+ *
+ * 信封逐格沿用**那次调用**的（轮次、派生调用、会话），只有 `blocks` 换成刷新后的那一个块：
+ * 合并器按块标识（`callId`）归位，故这条草稿只带自己那一块就够（其余块仍留在载体里）。
+ * `raw` 给 `null`：这是**合成帧**，触发它的那条 `user` 帧自己会落进工具结果消息，没有第二份原文。
+ */
+function taskRefreshDraft(call: ClaudeTaskCall, payload: ToolCallPayload): MessageDraft {
+  return {
+    vendorId: call.envelope.vendorId,
+    role: 'assistant',
+    source: 'wire',
+    roundTrip: call.envelope.roundTrip,
+    turn: null,
+    step: null,
+    parentCallId: call.envelope.parentCallId,
+    subagentId: call.envelope.subagentId,
+    chunk: 'snapshot',
+    // 这一格是「这次模型往返的用量」：合成帧没有自己的模型调用 ⇒ `null`（载体现有的值也不会被抹掉）
+    usage: null,
+    blocks: [toolCallBlockDraft(call.callId, call.name, call.input, 'cc', undefined, payload)],
+    raw: null,
   };
 }
 

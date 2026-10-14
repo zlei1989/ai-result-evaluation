@@ -1,11 +1,13 @@
 // @vitest-environment node
 /**
- * 技能扫描器守卫：识别单位（只认 `<根>/<名称>/SKILL.md`、不递归）、四条准入判据、
- * 「缺目录不是错误 / 读失败是错误」这对分界、坏条目**入列**、以及按名字码位升序。
+ * 技能扫描器守卫：识别单位（只认 `<根>/<名称>/SKILL.md`、不递归、第一层只有目录与软链是候选）、
+ * 四条准入判据、「缺目录不是错误 / 读失败是错误」这对分界、坏条目**入列**、以及按名字码位升序。
  *
  * 为什么这几条各自要一条守卫：
  *   · 识别单位错了 ⇒ 用户放在第二层的 skill 永远扫不到，而界面上只是「少了一条」，没有任何报错；
  *   · 坏条目被静默丢掉 ⇒ 用户看到的是「我放的 skill 不见了」，而不是「它哪里不合格」；
+ *   · 第一层的普通文件被当成技能 ⇒ `.DS_Store` / `README.md` / 扁平 `.md` 各占一行「缺 SKILL.md」，
+ *     看起来像「我放的技能坏了」；但**软链不能跟着一起滤掉**——技能目录常常整条是软链；
  *   · 「缺目录」被当成错误 ⇒ 首次使用的用户一进设置页就是一片红（那不是故障，是还没放东西）；
  *     反过来「读失败」被当成空列表更坏——把一次权限故障说成「你还没放 skill」；
  *   · 排序：名字域是 `[a-z0-9-]`，码位序确定、不随 locale / ICU 变。用 `localeCompare` 时
@@ -14,16 +16,17 @@
  * 全程只碰 `mkdtempSync` 出来的临时配置目录：`setConfigDirForTesting` 一并搬走技能根，
  * 真实 `~/.aieval` 一次都不会被读到。
  */
-import { mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ServiceError } from '@aieval/contracts';
+import { ServiceError, SKILL_PREVIEW_MAX_BYTES } from '@aieval/contracts';
 import { getConfigDir, setConfigDirForTesting } from './config-store';
 import {
   compareSkillNames,
   getSkillsRoot,
-  readSkillFile,
+  readSkillFileText,
+  readSkillTree,
   scanSkills,
   type ScannedSkill,
   type SkillScan,
@@ -104,7 +107,7 @@ describe('scanSkills：缺目录 vs 读失败', () => {
 });
 
 describe('scanSkills：识别单位与准入', () => {
-  it('合法条目：ok=true、description 来自 frontmatter、sizeBytes 是这一条的体积', () => {
+  it('合法条目：ok=true、description 来自 frontmatter', () => {
     seedSkill('tang-poem-meal', { name: 'tang-poem-meal', description: '推荐唐诗' });
 
     const entry = entryOf(scanSkills(), 'tang-poem-meal');
@@ -113,18 +116,6 @@ describe('scanSkills：识别单位与准入', () => {
     expect(entry.reason).toBeUndefined();
     expect(entry.description).toBe('推荐唐诗');
     expect(entry.dir).toBe(join(root, 'tang-poem-meal'));
-    // 体积是整条目录的字节数（SKILL.md 自己至少算进去）
-    expect(entry.sizeBytes).toBe(statSync(join(root, 'tang-poem-meal', 'SKILL.md')).size);
-  });
-
-  it('附属文件也算进体积（装入是整目录复制，只报入口文件会低报）', () => {
-    seedSkill('with-refs', { name: 'with-refs', description: '带附属文件' });
-    mkdirSync(join(root, 'with-refs', 'references'), { recursive: true });
-    writeFileSync(join(root, 'with-refs', 'references', 'x.md'), 'x'.repeat(100), 'utf8');
-
-    const entry = entryOf(scanSkills(), 'with-refs');
-
-    expect(entry.sizeBytes).toBe(statSync(join(root, 'with-refs', 'SKILL.md')).size + 100);
   });
 
   it('不递归：第二层的 SKILL.md 扫不到，装它的那一层照旧是一行「缺 SKILL.md」', () => {
@@ -147,11 +138,36 @@ describe('scanSkills：识别单位与准入', () => {
     expect(entry.description).toBe('');
   });
 
-  it('裸 .md 文件 ⇒ 一行「缺 SKILL.md」（扁平形态不是识别单位）', () => {
+  it('第一层的普通文件不是技能：.DS_Store / README / 扁平 .md 一律不入列', () => {
     mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, '.DS_Store'), '', 'utf8');
+    writeFileSync(join(root, 'README.md'), '# 这里放技能目录\n', 'utf8');
+    // 扁平形态（`<根>/<名称>.md`）同样是文件：它不是识别单位，也不再占一行「缺 SKILL.md」
     writeFileSync(join(root, 'flat.md'), '---\nname: flat\ndescription: 扁平的\n---\n正文', 'utf8');
+    seedSkill('real-skill', { name: 'real-skill', description: '真技能' });
 
-    const entry = entryOf(scanSkills(), 'flat.md');
+    expect(scanSkills().skills.map((skill) => skill.name)).toEqual(['real-skill']);
+  });
+
+  it('软链形态的技能照旧入列（过滤只挡普通文件，不许把软链一起滤掉）', () => {
+    // 技能常住在仓库里、在技能根挂一条软链：`isDirectory()` 对软链恒为 false，判据漏了它就整条不见
+    const source = join(configDir, 'skill-source');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: linked-skill\ndescription: 软链进来的\n---\n正文\n', 'utf8');
+    mkdirSync(root, { recursive: true });
+    symlinkSync(source, join(root, 'linked-skill'));
+
+    const entry = entryOf(scanSkills(), 'linked-skill');
+
+    expect(entry.ok).toBe(true);
+    expect(entry.dir).toBe(join(root, 'linked-skill'));
+  });
+
+  it('断链的软链照旧入列一行「缺 SKILL.md」（链接坏了要看得出来，不是静默消失）', () => {
+    mkdirSync(root, { recursive: true });
+    symlinkSync(join(configDir, 'not-there'), join(root, 'broken-link'));
+
+    const entry = entryOf(scanSkills(), 'broken-link');
 
     expect(entry.ok).toBe(false);
     expect(entry.reason).toContain('缺 SKILL.md');
@@ -219,13 +235,12 @@ describe('scanSkills：识别单位与准入', () => {
     expect(entry.reason).toContain('名称不合法');
   });
 
-  it('坏条目一律带上绝对路径与体积能算就算（坏条目也要能点开抽屉看路径）', () => {
+  it('坏条目一律带上绝对路径（坏条目也要能点开抽屉看路径）', () => {
     seedSkill('bad-name-2', { name: 'Bad', description: '名字不合法' });
 
     const entry = entryOf(scanSkills(), 'bad-name-2');
 
     expect(entry.dir).toBe(join(root, 'bad-name-2'));
-    expect(entry.sizeBytes).toBe(statSync(join(root, 'bad-name-2', 'SKILL.md')).size);
   });
 });
 
@@ -270,44 +285,192 @@ describe('scanSkills：按 name 码位升序', () => {
   });
 });
 
-describe('readSkillFile：抽屉要的那一份', () => {
-  it('返回逐字的 frontmatter 与正文原文', () => {
-    seedSkill('tang-poem-meal', { name: 'tang-poem-meal', description: '推荐唐诗' }, '# 规则\n\n只推荐一首。\n');
+describe('readSkillTree：左树那一栏', () => {
+  it('根是技能名，递归列到附属文件；path 是叶子名、children 恒为数组', () => {
+    seedSkill('with-refs', { name: 'with-refs', description: '带附属文件' }, '# 规则\n');
+    mkdirSync(join(root, 'with-refs', 'reference'), { recursive: true });
+    writeFileSync(join(root, 'with-refs', 'reference', 'API.md'), '# API\n', 'utf8');
 
-    const file = readSkillFile('tang-poem-meal');
+    const tree = readSkillTree('with-refs');
 
-    expect(file.frontmatter).toBe(['---', 'name: tang-poem-meal', 'description: 推荐唐诗', '---'].join('\n'));
-    expect(file.body).toBe('# 规则\n\n只推荐一首。\n');
+    expect(tree.name).toBe('with-refs');
+    expect(tree.dir).toBe(join(root, 'with-refs'));
+    expect(tree.truncated).toBe(false);
+    expect(tree.root.path).toBe('with-refs');
+    expect(tree.root.isDirectory).toBe(true);
+    expect(tree.root.children.map((node) => node.path)).toEqual(['reference', 'SKILL.md']);
+    // 目录的体积是 `null`、文件是真实字节数（`null ≠ 0`：目录体积要递归求和，是另一件事）
+    expect(tree.root.children[0]?.sizeBytes).toBeNull();
+    expect(tree.root.children[1]?.sizeBytes).toBe(statSync(join(root, 'with-refs', 'SKILL.md')).size);
   });
 
-  it('名字不合法 ⇒ INVALID_QUERY（这是防路径穿越的那一道门）', () => {
-    expect(() => readSkillFile('../../etc/passwd')).toThrowError(ServiceError);
-    expect(() => readSkillFile('..')).toThrowError(ServiceError);
+  it('目录在前、同类按名字码位升序（界面不再排）', () => {
+    seedSkill('order', { name: 'order', description: '排序' });
+    mkdirSync(join(root, 'order', 'zzz'), { recursive: true });
+    mkdirSync(join(root, 'order', 'aaa'), { recursive: true });
+    writeFileSync(join(root, 'order', 'b.txt'), 'b', 'utf8');
+    writeFileSync(join(root, 'order', 'a.txt'), 'a', 'utf8');
+
+    // 两个目录在前（码位升序），随后是文件：`SKILL.md`（`S` = 0x53）排在 `a.txt` / `b.txt` 之前
+    expect(readSkillTree('order').root.children.map((node) => node.path)).toEqual([
+      'aaa',
+      'zzz',
+      'SKILL.md',
+      'a.txt',
+      'b.txt',
+    ]);
+  });
+
+  it('点文件也列出来（藏起来会让人以为「我放的文件不见了」）', () => {
+    seedSkill('dotted', { name: 'dotted', description: '点文件' });
+    writeFileSync(join(root, 'dotted', '.hidden'), 'x', 'utf8');
+
+    expect(readSkillTree('dotted').root.children.map((node) => node.path)).toContain('.hidden');
+  });
+
+  it('名字不合法 ⇒ INVALID_QUERY（防路径穿越的那一道门）', () => {
+    expect(() => readSkillTree('../../etc')).toThrowError(ServiceError);
+  });
+
+  it('技能不在磁盘上 ⇒ NOT_FOUND + 含路径的中文原因', () => {
     try {
-      readSkillFile('../outside');
+      readSkillTree('not-there');
+      throw new Error('本该抛 NOT_FOUND');
+    } catch (error) {
+      expect((error as ServiceError).code).toBe('NOT_FOUND');
+      expect((error as ServiceError).message).toContain(join(root, 'not-there'));
+    }
+  });
+
+  it('符号链接指向技能目录**之内** ⇒ 跟（技能目录常常整条是软链）', () => {
+    seedSkill('inner', { name: 'inner', description: '内部软链' });
+    mkdirSync(join(root, 'inner', 'real'), { recursive: true });
+    writeFileSync(join(root, 'inner', 'real', 'x.md'), '# x\n', 'utf8');
+    symlinkSync(join(root, 'inner', 'real'), join(root, 'inner', 'alias'));
+
+    const tree = readSkillTree('inner');
+    const alias = tree.root.children.find((node) => node.path === 'alias');
+
+    expect(alias?.isDirectory).toBe(true);
+    expect(alias?.children.map((node) => node.path)).toEqual(['x.md']);
+    expect(tree.truncated).toBe(false);
+  });
+
+  it('符号链接指向技能目录**之外** ⇒ 不跟，并如实说「没列全」', () => {
+    seedSkill('linked', { name: 'linked', description: '外部软链' });
+    const outside = join(configDir, 'outside-secret.md');
+    writeFileSync(outside, '# 外面\n', 'utf8');
+    symlinkSync(outside, join(root, 'linked', 'escape.md'));
+
+    const tree = readSkillTree('linked');
+
+    expect(tree.root.children.map((node) => node.path)).not.toContain('escape.md');
+    expect(tree.truncated).toBe(true);
+  });
+
+  it('深度到上限 ⇒ 截断并如实说「没列全」（不静默少列）', () => {
+    seedSkill('deep', { name: 'deep', description: '深目录' });
+    // 造一条比深度上限更深的链
+    mkdirSync(join(root, 'deep', 'a', 'b', 'c', 'd', 'e', 'f', 'g'), { recursive: true });
+
+    expect(readSkillTree('deep').truncated).toBe(true);
+  });
+});
+
+describe('readSkillFileText：预览那一栏', () => {
+  it('返回技能内路径与整份原文（不切 frontmatter）', () => {
+    seedSkill('tang-poem-meal', { name: 'tang-poem-meal', description: '推荐唐诗' }, '# 规则\n');
+
+    const file = readSkillFileText('tang-poem-meal', 'SKILL.md');
+
+    expect(file.path).toBe('SKILL.md');
+    // 围栏也在原文里（界面按 markdown 渲染整份文件）
+    expect(file.text).toContain('name: tang-poem-meal');
+    expect(file.text).toContain('# 规则');
+  });
+
+  it('附属文件也读得出来（树上有它就要能看）', () => {
+    seedSkill('with-refs', { name: 'with-refs', description: '带附属文件' });
+    mkdirSync(join(root, 'with-refs', 'reference'), { recursive: true });
+    writeFileSync(join(root, 'with-refs', 'reference', 'API.md'), '# API\n', 'utf8');
+
+    expect(readSkillFileText('with-refs', 'reference/API.md').text).toBe('# API\n');
+  });
+
+  it('名字不合法 / 路径穿越 / 绝对路径 / 空段 ⇒ INVALID_QUERY（两道门各自成立）', () => {
+    seedSkill('ok-skill', { name: 'ok-skill', description: '正常' });
+
+    expect(() => readSkillFileText('../../etc', 'SKILL.md')).toThrowError(ServiceError);
+    for (const path of ['../config.json', '/etc/passwd', 'a//b', 'a/./b']) {
+      expect(() => readSkillFileText('ok-skill', path), `${path} 应被拒`).toThrowError(ServiceError);
+    }
+    try {
+      readSkillFileText('ok-skill', '../config.json');
+      throw new Error('本该抛 INVALID_QUERY');
     } catch (error) {
       expect((error as ServiceError).code).toBe('INVALID_QUERY');
     }
   });
 
-  it('目录在但 SKILL.md 不在 ⇒ NOT_FOUND + 含路径的中文原因', () => {
-    mkdirSync(join(root, 'no-file'), { recursive: true });
+  it('软链指到技能目录之外 ⇒ INVALID_QUERY（`realpath` 复核那一层）', () => {
+    seedSkill('linked', { name: 'linked', description: '外部软链' });
+    const outside = join(configDir, 'outside.md');
+    writeFileSync(outside, '秘密', 'utf8');
+    symlinkSync(outside, join(root, 'linked', 'escape.md'));
 
     try {
-      readSkillFile('no-file');
-      throw new Error('本该抛 NOT_FOUND');
+      readSkillFileText('linked', 'escape.md');
+      throw new Error('本该抛 INVALID_QUERY');
     } catch (error) {
-      expect((error as ServiceError).code).toBe('NOT_FOUND');
-      expect((error as ServiceError).message).toContain(join(root, 'no-file'));
+      expect((error as ServiceError).code).toBe('INVALID_QUERY');
+      expect((error as ServiceError).message).toContain('越出');
     }
   });
 
-  it('技能根整个不存在 ⇒ NOT_FOUND，不是 INTERNAL（「还没放 skill」不是故障）', () => {
+  it('文件不在 ⇒ NOT_FOUND；是目录 ⇒ INVALID_QUERY + 中文原因（两句话分开）', () => {
+    seedSkill('dir-skill', { name: 'dir-skill', description: '有子目录' });
+    mkdirSync(join(root, 'dir-skill', 'sub'), { recursive: true });
+
     try {
-      readSkillFile('whatever');
+      readSkillFileText('dir-skill', 'nope.md');
       throw new Error('本该抛 NOT_FOUND');
     } catch (error) {
       expect((error as ServiceError).code).toBe('NOT_FOUND');
+    }
+    try {
+      readSkillFileText('dir-skill', 'sub');
+      throw new Error('本该抛 INVALID_QUERY');
+    } catch (error) {
+      expect((error as ServiceError).code).toBe('INVALID_QUERY');
+      expect((error as ServiceError).message).toContain('目录');
+    }
+  });
+
+  it('二进制 ⇒ INVALID_QUERY +「不预览」+ 字节数（不给乱码正文）', () => {
+    seedSkill('bin-skill', { name: 'bin-skill', description: '有二进制' });
+    // 非法 UTF-8 字节：解码后会出现替换字符 U+FFFD，那一格就是「这不是文本」的判据
+    writeFileSync(join(root, 'bin-skill', 'blob.bin'), Buffer.from([0x80, 0x81]));
+
+    try {
+      readSkillFileText('bin-skill', 'blob.bin');
+      throw new Error('本该抛 INVALID_QUERY');
+    } catch (error) {
+      expect((error as ServiceError).code).toBe('INVALID_QUERY');
+      expect((error as ServiceError).message).toContain('不预览');
+      expect((error as ServiceError).message).toContain('2 B');
+    }
+  });
+
+  it('超过预览上限 ⇒ INVALID_QUERY +「超过预览上限」（与「装得上」那条上限不是一回事）', () => {
+    seedSkill('big-skill', { name: 'big-skill', description: '有大文件' });
+    writeFileSync(join(root, 'big-skill', 'big.md'), 'x'.repeat(SKILL_PREVIEW_MAX_BYTES + 1), 'utf8');
+
+    try {
+      readSkillFileText('big-skill', 'big.md');
+      throw new Error('本该抛 INVALID_QUERY');
+    } catch (error) {
+      expect((error as ServiceError).code).toBe('INVALID_QUERY');
+      expect((error as ServiceError).message).toContain('超过预览上限');
     }
   });
 });

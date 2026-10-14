@@ -59,7 +59,10 @@ import {
   SkillDisabledPatchSchema,
   SkillDisabledSchema,
   SkillEntrySchema,
-  SkillFileSchema,
+  SkillFilePathSchema,
+  SkillFileTextSchema,
+  SkillTreeNodeSchema,
+  SkillTreeSchema,
   SkillListSchema,
   SkillNameSchema,
   SkillWarningSchema,
@@ -118,10 +121,13 @@ import {
   type McpServerConfig,
   type McpServers,
   type SkillEntry,
-  type SkillFile,
+  type SkillFilePath,
+  type SkillFileText,
   type SkillList,
   type SkillMarkdown,
   type SkillName,
+  type SkillTree,
+  type SkillTreeNode,
   type SkillWarning,
   type SkillsPatch,
   type SkillsSettings,
@@ -147,7 +153,8 @@ describe('contracts 公共出口', () => {
       SettingsSchema, SettingsPatchSchema, SettingsViewSchema, ThemeModeSchema,
       McpServerConfigSchema, McpServersSchema,
       SkillNameSchema, SkillDisabledSchema, SkillDisabledPatchSchema, SkillsSettingsSchema, SkillsPatchSchema,
-      SkillEntrySchema, SkillWarningSchema, SkillListSchema, SkillFileSchema,
+      SkillEntrySchema, SkillWarningSchema, SkillListSchema,
+      SkillFilePathSchema, SkillFileTextSchema, SkillTreeNodeSchema, SkillTreeSchema,
     ]) {
       expect(typeof schema.safeParse).toBe('function');
     }
@@ -279,7 +286,10 @@ describe('contracts 公共出口', () => {
     const skillEntry: SkillEntry | null = null;
     const skillWarning: SkillWarning | null = null;
     const skillList: SkillList | null = null;
-    const skillFile: SkillFile | null = null;
+    const skillFile: SkillFileText | null = null;
+    const skillFilePath: SkillFilePath | null = null;
+    const skillTree: SkillTree | null = null;
+    const skillTreeNode: SkillTreeNode | null = null;
     const skillMarkdown: SkillMarkdown | null = null;
     const skillName: SkillName | null = null;
     const skillsSettings: SkillsSettings | null = null;
@@ -293,8 +303,9 @@ describe('contracts 公共出口', () => {
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
       generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
       score, rubricGroup, event,
-      skillEntry, skillWarning, skillList, skillFile, skillMarkdown, skillName, skillsSettings, skillsPatch,
-    ]).toHaveLength(42);
+      skillEntry, skillWarning, skillList, skillFile, skillFilePath, skillTree, skillTreeNode,
+      skillMarkdown, skillName, skillsSettings, skillsPatch,
+    ]).toHaveLength(45);
   });
 
   /**

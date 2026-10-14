@@ -348,3 +348,46 @@ schema 描述逐字写着「不要给 'Other' 选项，那个界面上自动提�
 
 - [《Claude Code 接入》](/protocols/cc) —— 《提问与应答面》一节的递答案形状
 - [《提问与应答》](/features/ask-user-answer) —— 四家自由输入的落点对照
+
+---
+
+## 执行日志里任务工具没有「计划清单」卡片：一行一个「计划清单」标签 + 参数原文（`{"taskId":"1","status":"in_progress"}`），而 codex 同题是一整张表
+
+**现象原文**（run `f4e3f5c1-9a43-49ce-9a3a-75a74ed4ace0` 的 claude 行 `9e2b9cc0`，「执行日志」抽屉里
+`TaskCreate` / `TaskUpdate` 的五行工具行；同 run 的 codex 行 `1a1e1a09` 那一处是带 `0/2 完成` 与
+状态列的卡片）：
+
+```
+工具调用 × 2  TaskCreate
+  计划清单  使用 AskUserQuestion 工具询问用户的工作岗位，作为后续 AI 场景分析的基础信息。
+  计划清单  基于采集到的工作岗位信息，分析该岗位/行业中能够与 AI 契合、可被 AI 增强或自动化的具体场景。
+工具调用 × 1  TaskUpdate
+  计划清单  {"taskId":"1","status":"in_progress"}
+```
+
+（`messages.jsonl` 里对应的六条 `tool-call` 块逐字是 `"payload": null`：`TaskCreate` × 3 与
+`TaskUpdate` × 5 全都拿不到族载荷。）
+
+**日期**：2026-10-14
+
+**根因**：机制层——**这一家的任务工具是工作项注册表，整表只能由多次调用累积出来，而我们的族载荷只从单次入参算**。
+
+- **厂商形状**：自 SDK 0.3.142 / CC 2.1.142 起任务工具从 `TodoWrite` 换成 `Task*`。`TaskCreateInput` = `{subject, description, activeForm?}`、`TaskUpdateInput` = `{taskId, status? | subject? | owner? | addBlockedBy? …}`；输出 `TaskCreateOutput` = `{task: {id, subject}}`、`TaskUpdateOutput` = `{success, taskId, updatedFields, statusChange}`——**入参与结果两头都没有整表**；整表只有 `TaskListOutput.tasks` 有（真机那一行一次都没调 `TaskList`）。id 也**只有结果才有**（工具自己发号）。
+- **我们的缺陷**：`tool-payload.ts` 的 `toolPayloadOf` 是**单次入参**的函数，`task` 族只认 `todos` / `plan` / `steps` 三个键 ⇒ `Task*` 恒 `payload: null`，界面按契约走通用工具行（`familyPayloadOf` 只在 `payload.kind === 'plan'` 时出「计划清单」卡片）。
+- **空摘要那一半是同一个成因**：`TaskUpdate` 的入参只有 `{taskId, status}`，`activity.ts` 的 `detailOf` 三级（计划类键 → `description` → 族提示）都没有落脚点 ⇒ 摘要为空串，界面回落成参数原文首行那一串 JSON。
+- **为什么另两家没有这个问题**：codex 的 `update_plan`（`{plan: [{step, status}]}`）与 dsh 的 `todo_write`（`{todos: […]}`）**入参本来就是整表**，一次调用就能算出「本次调用之后的整张清单」。
+
+**解决方案**：把「整表」这一层从单次入参挪到**适配器内的 run 级台账**。
+
+- `packages/server/agents/src/providers/cc/task-registry.ts`（新增）：`TaskCreate` / `TaskUpdate` 的入参入账（建项、改状态、`owner` / `addBlockedBy` 读到的就投），两者的**结果**补它权威的那一半（创建结果回填 id / subject；更新结果的 `statusChange.to` 落状态）。三条口径写在该文件头：「刚建、还没更新过」记 `pending`（依据是真机 `statusChange.from` 逐字 `"pending"`；`TaskCreateOutput` 本身没有状态格）、`deleted` 按**移除**处置（面板画的是清单当前状态）、没见过的 id 只记补丁账**不凭空造行**。
+- `packages/server/agents/src/message.ts`：`toolCallBlockDraft` 加一个**可选**载荷入参（只给逐条 patch 的族用；不给就照旧按族归一算），仍是工具块的唯一构造点。
+- `packages/server/agents/src/providers/cc/message.ts`：`assistant()` 把台账算出的载荷挂上块；`user()` 在结果入账后**用同载体重投一份快照**（`taskRefreshDraft`：轮次 / 派生调用 / 会话逐格沿用那次调用的）把刷新后的整表挂回同一个块——走的正是 `message.ts` 已登记的「已 seal 的槽位被新快照更新」，界面按 `mergeKey` last-wins 折叠即得，**不需要新通道、界面一个字节都不用改**。id 必须这样学：轮 2 的 `TaskUpdate{taskId:'1'}` 要能对上轮 1 那两条创建结果里发下来的号。
+- `packages/server/agents/src/tool-payload.ts`：状态映射抽成 `taskStepStatusOf` 一处（整表形状与这套注册表共用，避免同一个状态串在两处读成两档）。
+- 守卫：`providers/cc/task-registry.test.ts` 九条——真机那七条帧走「归一器 → 合并器 → 按 `mergeKey` 折叠」的端到端四条（每个 `Task*` 块都有整表载荷、id 由结果回填、轮 2/轮 5 的状态、刷新不新增合并键），台账边界五条。**变异验证**：把载荷接线摘掉 ⇒ 3 红；结果不刷新 ⇒ 2 红；`in_progress` 读成 `pending` ⇒ 2 红；新建立项 `pending` 改成 `unknown` ⇒ 3 红；四次还原后 `message.ts` / `task-registry.ts` / `tool-payload.ts` 哈希逐字一致。
+- **残留**：已写进 `messages.jsonl` 的历史行**不会自愈**（读侧不重算）——要让某一行补上「计划清单」卡片，得**重跑那一行**。
+- **未投的两维**：`owner` / 依赖在真机入参里一次都没出现，故入参没给过的行拿契约的「有这个概念、当前无人认领 / 没有依赖」（`''` / `[]`），不拿 `null` 冒充「这家没有这个概念」；`addBlocks`（反向边）本期不投。`TaskList` / `TaskGet` 的结果形状真机未观测，不入账。
+
+**相关资料**：
+
+- [《消息规范》](/protocols/message-spec) —— `tool-call` 的 `payload` 与「帧是累积值」
+- [《Claude Code 接入》](/protocols/cc) —— 《数据与契约》一节的任务台账

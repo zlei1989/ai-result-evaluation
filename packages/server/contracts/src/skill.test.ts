@@ -19,7 +19,8 @@ import {
   SKILL_FILE_NAME,
   SKILL_NAME_MAX_LENGTH,
   SkillEntrySchema,
-  SkillFileSchema,
+  SkillFilePathSchema,
+  SkillFileTextSchema,
   SkillListSchema,
   SkillNameSchema,
   SkillsPatchSchema,
@@ -142,7 +143,7 @@ describe('SkillsPatchSchema：补丁收的是期望状态', () => {
   });
 });
 
-describe('SkillListSchema：坏条目在列表里、sizeBytes 可缺席', () => {
+describe('SkillListSchema：坏条目在列表里', () => {
   const ROOT = '/home/u/.aieval/skills';
 
   it('接受一条 ok:false 带中文原因的条目', () => {
@@ -155,14 +156,16 @@ describe('SkillListSchema：坏条目在列表里、sizeBytes 可缺席', () => 
     expect(parsed.skills[0]?.reason).toBe('缺 SKILL.md');
   });
 
-  it('sizeBytes 可缺席，也可给出非负整数', () => {
+  /**
+   * 体积这一格**不在契约里**（见 `SkillEntrySchema` 的注释）：那个键现在要被剥掉，
+   * 而不是被当成一个「多出来的无害字段」收下——strip 之后它还在的话，说明有消费方
+   * 悄悄读着一个已经退场的字段。
+   */
+  it('体积不是这一格的字段：多余键被剥掉', () => {
     const base = { name: 'a', dir: '/x/a', description: 'd', ok: true, disabled: true };
 
     expect(SkillEntrySchema.safeParse(base).success).toBe(true);
-    expect(SkillEntrySchema.parse({ ...base, sizeBytes: 0 }).sizeBytes).toBe(0);
-    // 负数 / 小数都不是体积：`null ≠ 0` 同纪律——算不出就缺席，不许拿破数顶替
-    expect(SkillEntrySchema.safeParse({ ...base, sizeBytes: -1 }).success).toBe(false);
-    expect(SkillEntrySchema.safeParse({ ...base, sizeBytes: 1.5 }).success).toBe(false);
+    expect(SkillEntrySchema.parse({ ...base, sizeBytes: 2048 })).not.toHaveProperty('sizeBytes');
   });
 
   it('三格都必填：root（界面要显示它）+ 两个数组（`skills: []` 表示「扫过且没有」，不许缺席冒充）', () => {
@@ -177,9 +180,29 @@ describe('SkillListSchema：坏条目在列表里、sizeBytes 可缺席', () => 
   });
 });
 
-describe('SkillFileSchema：抽屉要的两半', () => {
-  it('frontmatter 可以是 null（文件没有 frontmatter），body 恒为字符串', () => {
-    expect(SkillFileSchema.parse({ frontmatter: null, body: '# 正文\n' })).toEqual({ frontmatter: null, body: '# 正文\n' });
+describe('SkillFilePathSchema：技能内相对路径的第一道门', () => {
+  it('收正常相对路径（含子目录），原样返回', () => {
+    expect(SkillFilePathSchema.parse('SKILL.md')).toBe('SKILL.md');
+    expect(SkillFilePathSchema.parse('reference/API.md')).toBe('reference/API.md');
+  });
+
+  it('绝对路径 / `..` / `.` / 空段 / 太深一律拒（这些都要在进文件系统之前被拦下）', () => {
+    const rejected = ['/etc/passwd', '../config.json', 'a/../b', './a', 'a//b', 'a/b/c/d/e/f/g/h'];
+
+    for (const bad of rejected) {
+      expect(SkillFilePathSchema.safeParse(bad).success, `${bad} 应被拒`).toBe(false);
+    }
+  });
+});
+
+describe('SkillFileTextSchema：读到的那个文件', () => {
+  it('path 与 text 都在，且 path 也要过同一道门', () => {
+    expect(SkillFileTextSchema.parse({ path: 'SKILL.md', text: '# 正文\n' })).toEqual({
+      path: 'SKILL.md',
+      text: '# 正文\n',
+    });
+    // 路径那格不是自由字符串：`../x` 连解析都不该过
+    expect(SkillFileTextSchema.safeParse({ path: '../x', text: '' }).success).toBe(false);
   });
 });
 

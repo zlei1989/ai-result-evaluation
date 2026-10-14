@@ -91,14 +91,15 @@ describe('ThinkingBlockView', () => {
     expect(screen.queryByText('思考中…')).toBeNull();
   });
 
-  it('展开后正文是等宽 + 斜体 + 左侧竖线', () => {
+  it('展开后正文**原样**交给 Think：不带本仓自己的排印（无斜体、无左侧竖线）', () => {
     const { container } = render(<ThinkingBlockView block={thinkingBlock()} open onOpenChange={vi.fn()} />);
 
     expect(screen.getByText('先看测试，再改实现')).toBeInTheDocument();
-    // antd 的 `italic` 不是类名，而是把内容包进 `<i>`（`Typography/Base/index.js` 的 `wrap('i', italic)`）
-    expect(container.querySelector('i')).not.toBeNull();
-    // 竖线挂在正文那一段上（标题里的 `Typography.Text` 没有 style，故选整段 HTML 断言）
-    expect(container.innerHTML).toContain('border-inline-start');
+    // 本仓不再自带样式：`italic` 会渲染成 `<i>`、竖线会写成 `border-inline-start`，两者都不该出现
+    expect(container.querySelector('i')).toBeNull();
+    expect(container.innerHTML).not.toContain('border-inline-start');
+    // 正文要落在 `Think` 自己的正文槽里，而不是裸挂在根节点上
+    expect(container.querySelector('[class*="think-content"]')).not.toBeNull();
   });
 
   it('非 wire 的来源出角标', () => {

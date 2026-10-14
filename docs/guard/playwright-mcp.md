@@ -19,7 +19,7 @@
 读回：read_image               file_path: "<允许根>\.playwright-mcp\<名字>.png"
 ```
 
-- **相对路径的解析基准是 MCP 服务进程的 cwd，不是会话工作目录**：传 `"./x.png"` 会回显成功却落在别处，于是按工作目录拼出的路径必然 `not found`。
+- **相对路径不按会话工作目录解析，也不落进 `.playwright-mcp/`**：传 `"./x.png"` 会回显成功却落在别处（实测落在**允许根**那一层，即 profile 根目录下），于是按工作目录或 `.playwright-mcp/` 拼出的路径必然 `not found`。别猜它落在哪——传绝对路径，或者落盘后 `find` 一次确认实际位置。
 - **允许根只有两个，且不在会话工作目录内**。传根外的绝对路径会被明确拒绝，**报错原文里就列着当时的两个允许根**——照抄它，不要凭记忆或旧笔记填（允许根随 profile 变）。
 - 截图默认落点是允许根里的 `.playwright-mcp` 目录，优先用它。
 - 同一规则适用于所有带 `filename` 的浏览器工具：`browser_take_screenshot`、`browser_snapshot`、`browser_console_messages`、`browser_network_requests`、`browser_evaluate`、`browser_find`。

@@ -14,8 +14,8 @@
  * 5. **跟随最新只有一份 state**：工具条开关、角落浮出按钮、`scrollToBottom` 都读 `viewState.follow`；
  * 6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设（变异体 (p) 的守卫）。
  */
-import { Alert, Badge, Button, Flex, InputNumber, Skeleton, Switch, Tooltip, Typography, theme } from 'antd';
-import { ArrowDownOutlined } from '@ant-design/icons';
+import { Alert, Badge, Button, Flex, FloatButton, InputNumber, Skeleton, Switch, Tooltip, Typography, theme } from 'antd';
+import { VerticalAlignBottomOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   AgentLogDiagnostics,
@@ -717,16 +717,18 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
         {timelineArea}
       </Flex>
 
-      {/* ③ 浮动件：未读时右下角「↓ 回到最新（N 轮未读）」。显隐与工具条开关**是同一份 state** */}
+      {/* ③ 浮动件：未读时右下角「回到最新」。显隐与工具条开关**是同一份 state**。
+          未读数是 `badge`（0 时 Badge 自己不出标），无障碍名走 `aria-label`——
+          `FloatButton` 的可视内容只有图标，没有 `aria-label` 读屏就只剩一个无名按钮 */}
       {!viewState.follow && (
-        <Button
-          size="small"
-          icon={<ArrowDownOutlined aria-hidden />}
+        <FloatButton
+          icon={<VerticalAlignBottomOutlined aria-hidden />}
+          badge={{ count: unread }}
+          aria-label={`回到最新（${unread} 轮未读）`}
+          tooltip={`回到最新（${unread} 轮未读）`}
           onClick={backToLatest}
           style={{ position: 'absolute', right: token.paddingMD, bottom: token.paddingMD }}
-        >
-          回到最新（{unread} 轮未读）
-        </Button>
+        />
       )}
 
       {/* 环境抽屉：**内部件**（不是并列组件）——主抽屉一卸载它跟着没，调用方不必接线 */}

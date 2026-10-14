@@ -61,6 +61,12 @@ const RENDER_FILES = readdirSync(dir)
  * `Table` 也在面上（计划清单是两列 small Table）：依据同样是实测
  * ——`antd/es/table/InternalTable.d.ts:52` 写 `size?: SizeType`。本目录里只有计划清单那一处
  * `<Table>`，故这一格是真的有靶子，不是凑数。
+ *
+ * **X 的组件（`Bubble` / `Sender` / `ThoughtChain` / `FileCard` …）不在这张表里**：它们没有
+ * `size` 能力（`SenderProps` 连 `size` 都没有，官方 FAQ 的 `<Sender size="small" />` 是文档错误），
+ * 写上去就是一个在本仓查不到东西的靶子。X 那一路的尺寸纪律换成了另一条判据——静态扫壳
+ * （`base/x-shell-size-discipline.test.ts`：壳里不手写字号 / 行高 / 内边距），
+ * 而**量出来的那一半在真机冒烟里**（jsdom 没有 CSS 级联，量不到字号，与 `MonoText` 等宽字体同一条边界）。
  */
 const SIZED_COMPONENTS = ['Badge', 'Button', 'Card', 'Descriptions', 'InputNumber', 'Switch', 'Table'] as const;
 
@@ -175,11 +181,18 @@ function sizedHits(): { file: string; name: string; hit: Hit }[] {
 }
 
 describe('执行日志的 size 口径：带 size 的组件一律 small', () => {
-  it('扫描面非空（RENDER_FILES 与 SIZED_COMPONENTS 都真的命中）', () => {
+  it('扫描面非空：目录里有渲染件，且表里每个组件名都真的查得到靶子', () => {
     // 没有这一条时，把 RENDER_FILES 的筛选条件写错（例如扩展名写错）会让下面两条**全绿地空转**
     expect(RENDER_FILES.length).toBeGreaterThan(10);
     expect(RENDER_FILES).toContain('agent-log-layout.tsx');
-    expect(sizedHits().length).toBeGreaterThan(8);
+    // 判据按**组件名逐个**给，不给一个命中总数。总数是副产物，它区分不开「扫描面整体塌了」
+    // 与「某一格在改造里消失了」：写成 `> N` 这类下限时，后者会被前者掩盖（剩下的组件凑够数就绿，
+    // 少掉的那一格没人提），而把总数写死又会让每一次合法新增都红、红了只能抬数字 ⇒ 判据退化成橡皮图章。
+    // 「每个名字至少一处命中」两头都拦：筛选条件写错、或某一格在本目录不再出现，都会红并点名。
+    // 后者是**该回来删表**的信号，不是该抬阈值——本文件开头那条口径：宁可少扫，
+    // 也不要写一个在本仓根本查不到东西的靶子。
+    const hitNames = new Set(sizedHits().map(({ name }) => name));
+    expect(SIZED_COMPONENTS.filter((name) => !hitNames.has(name))).toEqual([]);
   });
 
   it('每个带 size 的组件开标签都写着 size="small"', () => {

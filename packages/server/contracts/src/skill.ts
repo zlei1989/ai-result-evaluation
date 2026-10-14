@@ -1,5 +1,6 @@
 /**
- * 技能（skill）契约：名字准入、落盘形状、列表与正文的出口形状，以及 `SKILL.md` 的 frontmatter 切分。
+ * 技能（skill）契约：名字准入、落盘形状、列表 / 目录树 / 单个文件的出口形状，
+ * 以及 `SKILL.md` 的 frontmatter 切分。
  *
  * 三块职责各自的理由：
  *   1. **名字与 description 的准入是最严的那一条**（小写字母数字 + 单连字符、≤64；description 必填
@@ -28,6 +29,50 @@ export const SKILL_NAME_MAX_LENGTH = 64;
 
 /** description 长度上限（规范层数字） */
 export const SKILL_DESCRIPTION_MAX_LENGTH = 1024;
+
+/**
+ * 目录树的递归深度上限。一条真实技能是「一个 `SKILL.md` + 几个附属目录」，两级就够；
+ * 给到 6 是留足余量，又不至于让一次误放的深目录树把整份响应撑爆。
+ * 到达上限时树头带 `truncated` 置真——**不静默截断**，界面上要能说出「没列全」。
+ */
+export const SKILL_TREE_MAX_DEPTH = 6;
+
+/** 一棵树列出的节点总数上限（同上，超限即停并置 `truncated`） */
+export const SKILL_TREE_MAX_NODES = 2000;
+
+/** 技能内部相对路径的字符长度上限 */
+export const SKILL_FILE_PATH_MAX_LENGTH = 512;
+
+/**
+ * 单个文件的预览上限：超过它就**不给正文**，只给一句「N MB，超过预览上限」。
+ * 依据是「文本到这个体量已经极长」——256 KB 的 markdown 约十万汉字，再大浏览器渲染会明显卡，
+ * 而技能正文的用途是**看**、不是下载。
+ * 这一格与「装入是整目录复制、不设体积上限」不是一回事，别混成一句话：
+ * 那条管的是**装得上**，这条管的是**看得见**。
+ */
+export const SKILL_PREVIEW_MAX_BYTES = 256 * 1024;
+
+/**
+ * 技能内部的相对路径（`SKILL.md`、`reference/API.md`）。
+ *
+ * 它是**路径穿越的第一道门**（第二道在 core 的 `realpath` 复核）：绝对路径、空段、`.`、`..`
+ * 一律在契约层就拒掉——「拼绝对路径」是 core 的事，调用方只许给相对路径。
+ * 只在「读技能里某个文件」这一条路上用；列表与目录树都用不着调用方给路径。
+ */
+export const SkillFilePathSchema = z
+  .string()
+  .min(1)
+  .max(SKILL_FILE_PATH_MAX_LENGTH)
+  .refine((value) => !value.startsWith('/'), '技能内路径必须是相对路径（不许以 / 开头）')
+  .refine(
+    (value) => value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..'),
+    '技能内路径不许出现空段、`.` 或 `..`（那是往技能目录外走）',
+  )
+  .refine(
+    (value) => value.split('/').length <= SKILL_TREE_MAX_DEPTH,
+    `技能内路径的层数上限是 ${SKILL_TREE_MAX_DEPTH}`,
+  );
+export type SkillFilePath = z.infer<typeof SkillFilePathSchema>;
 
 /**
  * 名字是否满足准入。
@@ -105,6 +150,11 @@ export type SkillsPatch = z.infer<typeof SkillsPatchSchema>;
  *
  * `name` 走宽松的字符串而**不是** `SkillNameSchema`：这一格是**目录名**，而目录名不合法正是
  * 要被展示出来的那类坏条目（走了最严规则的话它们连列表都进不来，等于静默丢弃）。
+ *
+ * **没有体积这一格**，这是刻意的：整目录字节数要递归遍历 + 逐文件 `stat`，而列表是每次进设置页
+ * 都要扫一遍的热路径；一个没人读的派生量不值得挂在每一行上。真要看占用就 `du -sh`——
+ * 那也不经过契约，没有第二个真源。
+ * **也不留一个恒缺席的可选字段**：算不出来时它只能缺席，于是「没采集」与「真的是 0」分不开。
  */
 export const SkillEntrySchema = z.object({
   /** = 目录名 = 装入落点的目录名（与 frontmatter 的 `name` 不一致时该条 `ok:false`） */
@@ -119,8 +169,6 @@ export const SkillEntrySchema = z.object({
   reason: z.string().min(1).optional(),
   /** 恒给布尔：服务端算好「缺省 = 开启」，界面不做「缺省 = 开启」的推理 */
   disabled: z.boolean(),
-  /** best-effort 的体积（字节）；算不出就**缺席**（`null ≠ 0` 同纪律，不许拿破数顶替） */
-  sizeBytes: z.number().int().nonnegative().optional(),
 });
 export type SkillEntry = z.infer<typeof SkillEntrySchema>;
 
@@ -146,6 +194,53 @@ export const SkillListSchema = z.object({
   skillWarnings: z.array(SkillWarningSchema),
 });
 export type SkillList = z.infer<typeof SkillListSchema>;
+
+/**
+ * 目录树上的一个节点（左树那一栏）。
+ *
+ * `path` 是**叶子名**（`SKILL.md`、`reference`、`API.md`），全路径由组件遍历拼出——
+ * 这与 `@ant-design/x` 的 `Folder` 官方 demo 同形，界面上不出现第二套路径表达。
+ *
+ * `sizeBytes` 是**单个文件的字节数**；目录为 `null`（目录体积要递归求和，那是另一件事，
+ * 而且列树时不该做）。读不出大小（权限 / 坏链）同样是 `null`——
+ * `null ≠ 0` 同纪律，不拿 0 顶替。
+ *
+ * `children` **恒为数组**：叶子是 `[]` 而不是 `undefined`，这样界面判「是不是目录」只看
+ * `isDirectory` 一个字段，不必同时判 `children` 在不在。
+ */
+export interface SkillTreeNode {
+  title: string;
+  path: string;
+  isDirectory: boolean;
+  children: SkillTreeNode[];
+  sizeBytes: number | null;
+}
+
+/** 递归 schema；显式标注 `ZodType<SkillTreeNode>` 是让 TS 接受自引用 */
+export const SkillTreeNodeSchema: z.ZodType<SkillTreeNode> = z.lazy(() =>
+  z.object({
+    title: z.string().min(1),
+    path: z.string().min(1),
+    isDirectory: z.boolean(),
+    children: z.array(SkillTreeNodeSchema),
+    sizeBytes: z.number().int().nonnegative().nullable(),
+  }),
+);
+
+/**
+ * `GET /api/skills/<name>/tree` 的出口形状：一条技能的目录树。
+ *
+ * `name` / `dir` 与列表里那条同义（`dir` 是绝对路径，抽屉顶部要显示它）。
+ * `truncated` 是**如实交代**：深度或节点数到达上限时为真，界面据此说「没列全」——
+ * 静默少列几行会让人把「树里没有」当成「磁盘上没有」。
+ */
+export const SkillTreeSchema = z.object({
+  name: z.string().min(1),
+  dir: z.string().min(1),
+  root: SkillTreeNodeSchema,
+  truncated: z.boolean(),
+});
+export type SkillTree = z.infer<typeof SkillTreeSchema>;
 
 /**
  * 一条 skill **从哪来**（本机启用项 / 厂商内置 / 被测仓库自带 / 来源未证实）。
@@ -313,15 +408,21 @@ export function namedVendorSkill(name: string): VendorSkill {
 }
 
 /**
- * 一条 skill 的正文：抽屉要的两半。
- * `frontmatter` 是**逐字**的（含首尾两条 `---` 围栏），**不解析成字段**——
- * 界面上摆一份解析结果、文件里写着另一份，就是第二真相；`null` = 文件没有 frontmatter。
+ * 读到的**一个**技能文件：技能内相对路径 + **原文**。
+ *
+ * 只给原文、不给「frontmatter / body 两半」：树上的预览是**整份文件按 markdown 渲染**
+ * （`SKILL.md` 的 frontmatter 段由界面先包成 yaml 围栏代码块——不收这一层的话，收尾那条 `---`
+ * 会按 CommonMark 的 setext 规则把 `name:` / `description:` 吃成一个标题），切分只发生在服务端的
+ * 准入判定里（`splitSkillMarkdown` 仍在 `core` 服务扫描器）。界面上摆一份解析结果、文件里写着
+ * 另一份，就是第二真相；要看字段就整个文件一起看。
+ *
+ * `path` 原样回传请求里那一格，调用方据此确认「拿到的是我点的那一个」（异步取数会乱序）。
  */
-export const SkillFileSchema = z.object({
-  frontmatter: z.string().nullable(),
-  body: z.string(),
+export const SkillFileTextSchema = z.object({
+  path: SkillFilePathSchema,
+  text: z.string(),
 });
-export type SkillFile = z.infer<typeof SkillFileSchema>;
+export type SkillFileText = z.infer<typeof SkillFileTextSchema>;
 
 /** frontmatter 的切分结果：逐字原文 + 正文原文 + 顶层字段（判准入用） */
 export interface SkillMarkdown {

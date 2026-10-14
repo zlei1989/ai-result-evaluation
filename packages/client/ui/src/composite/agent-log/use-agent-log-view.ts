@@ -13,10 +13,12 @@
  *      不必继承 `AgentLogLayout` 的内部实现。
  *
  * 折叠键的生成函数（`renderBlockKey` 在 L1 的 `agent-message-timeline`，行键 `toolEntryKey` 在 L0 的
- * `tool-item-detail`）：**依赖只准向下**，L1 不许 import L2，而 L2 可以 import L1。
+ * `tool-item-detail`，问题键 `questionPanelKey` 在 L0 的 `ask-user-card`）：**依赖只准向下**，
+ * L1 不许 import L2，而 L2 可以 import L1。
  * 两处各写一份必然漂移，漂移的表现是「我展开的那条自己合上了」。
  *
- * 本文件**只算块级键**（行键由 L0 的 `ToolGroupPanel` 直接消费，并由 L1 的 `renderBlockKey` 从**首条行键**派生出组键。
+ * 本文件**只算块级键**：行键由 L0 的 `ToolGroupPanel` 直接消费，问题键由 L0 的 `AskUserCard`
+ * 直接消费，组键由 L1 的 `renderBlockKey` 从**首条行键**派生。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentLogModel, LogNodeIndex, LogTurn } from './types';
@@ -84,8 +86,9 @@ export function defaultActiveNodeId(model: AgentLogModel): string {
  * （`ToolGroupPanel`），证据要用户自己点开；
  *   · 思考块 / `unrecognized` 块**不加键**（默认收起）；
  *   · 计划清单：首次（`change === null`）、进行中、或结果未采集时展开，其余收起；
- *   · 问答卡片：`pending && running` 展开（等待态是「卡住了」的唯一信号）；
- *     `timeout` / `unavailable` / `rejected` 展开（没能问成人也不该藏起来），其余收场收起。
+ *   · **问答卡片不加键**：卡片本身不折叠（`Card` 外壳），它里面**一问一格**面板
+ *     全部默认收起——「还在等」由卡面那枚「等待答复中… 12m」承担（见 `ask-user-card.tsx` 口径 1–2），
+ *     不必靠展开哪一个问题才看得见。
  *
  * 正文 / 附件 / 子任务占位条 / 行级汇总**不折叠**，故也不在这里加键。
  * 本函数是纯函数：默认态与折叠历史无关，同一份输入永远给同一份键集合（这就是它不放进 hook 的理由）。
@@ -122,20 +125,8 @@ export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex
         case 'task-panel':
           if (block.panel.change === null || block.panel.running || block.panel.result === null) keys.add(key);
           break;
-        case 'ask-user-card': {
-          const interaction = block.interaction;
-          if (interaction.state === 'pending') {
-            if (interaction.running) keys.add(key);
-          } else if (
-            interaction.outcome === 'timeout' ||
-            interaction.outcome === 'unavailable' ||
-            interaction.outcome === 'rejected'
-          ) {
-            keys.add(key);
-          }
-          break;
-        }
-        // 思考块与 `unrecognized` 块默认收起：不加键就是收起（`openKeys.has(key) === false`）
+        // 问答卡片**不加键**：卡片是 `Card` 外壳、不折叠；里面的问题面板全部默认收起
+        // （见本函数注释里那一条，以及 `ask-user-card.tsx` 的 `questionPanelKey`）
         default:
           break;
       }

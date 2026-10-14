@@ -16,12 +16,12 @@
   "dependencies": {
     "@aieval/contracts": "workspace:*",
     "@ant-design/icons": "^6.3.2",
+    "@ant-design/x": "^2.9.0",
+    "@ant-design/x-markdown": "^2.9.0",
     "antd": "^6.6.3",
     "react": "19.2.7",
     "react-diff-viewer-continued": "4.4.0",
-    "react-dom": "19.2.7",
-    "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

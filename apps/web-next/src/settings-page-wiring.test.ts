@@ -353,31 +353,28 @@ describe('settings 页面的粘贴 JSON 导入接线', () => {
 /**
  * Tab「技能」的接线。
  *
- * 卡片与抽屉自己的行为由 `ui` 包那两组用例钉（三列 / 固定列 / 空态 / frontmatter 逐字 / markdown 渲染），
+ * 卡片与抽屉自己的行为由 `ui` 包那两组用例钉（三列 / 固定列 / 空态 / frontmatter 包成 yaml 代码块 / markdown 渲染），
  * 页面这一层红不出来的是三类**静默错线**：
  *   · 清单或正文的 hook 没接（`skillList` 永远 undefined ⇒ 只剩骨架屏，或抽屉永远没有正文）；
  *   · 卡片吃到的东西接错（喂了 `settings.providers` 这类别的集合：界面看起来照常，只是永远空着）；
  *   · 页面层那条静态说明漏了 / 文案抄了 MCP 那句。
  *
- * 「抽屉走 `MarkdownText`」这一条**跨包**：判据在 `ui` 的抽屉源码里（页面只是把它挂上去），
- * 故这里一并读那份源码钉住渲染器与「不引 `rehype-raw`」这两条**选型**——行为断言（粗体成 `strong`、
- * GFM 表格成表、原始 HTML 只当文本）在 `skill-detail-drawer.test.tsx` 里，两处合起来才是完整证据。
+ * 「抽屉走 `XMarkdownText`」这一条**跨包**：判据在 `ui` 的抽屉源码里（页面只是把它挂上去），
+ * 故这里一并读那份源码钉住渲染器**选型**；「原始 HTML 一律转义」那条口径落在壳里
+ * （`base/x-markdown.tsx` 的 `escapeRawHtml` 恒开），所以第三份源码就是那个壳——
+ * 行为断言（粗体成 `strong`、GFM 表格成表、原始 HTML 只当文本）在 `skill-detail-drawer.test.tsx` 里，
+ * 两处合起来才是完整证据。
  */
 describe('settings 页面的技能 Tab 接线', () => {
   /** 抽屉源码：判据与 `page.tsx` 同源（都用文件自身位置推导，不依赖 `process.cwd()`） */
-  const drawerPath = join(
-    import.meta.dirname,
-    '..',
-    '..',
-    '..',
-    'packages',
-    'client',
-    'ui',
-    'src',
-    'composite',
-    'skill-detail-drawer.tsx',
-  );
+  const uiSrcDir = join(import.meta.dirname, '..', '..', '..', 'packages', 'client', 'ui', 'src');
+  const drawerPath = join(uiSrcDir, 'composite', 'skill-detail-drawer.tsx');
   const drawerSource = readFileSync(drawerPath, 'utf8');
+  /**
+   * markdown 外壳源码。判据取**外壳**而不是抽屉，是因为「转义成文本」是壳的一档恒开行为：
+   * 抽屉只是消费方，壳里那条一旦被做成 prop（或被人翻成 `false`），两个按需面会同时失守。
+   */
+  const shellSource = readFileSync(join(uiSrcDir, 'base', 'x-markdown.tsx'), 'utf8');
 
   it('Tab 的 key 是 skills、label 是「技能」，且排在 mcp 之后', () => {
     expect(source, 'Tab 的 key 不是 skills').toContain('key: \'skills\'');
@@ -387,8 +384,9 @@ describe('settings 页面的技能 Tab 接线', () => {
     expect(source.indexOf('key: \'mcp\''), '技能必须排在 MCP 之后').toBeLessThan(source.indexOf('key: \'skills\''));
   });
 
-  it('接上清单与正文两个 hook——漏了任一，页面只剩骨架屏或抽屉永远没有正文', () => {
+  it('接上清单、目录树、正文三个 hook——漏了任一，页面只剩骨架屏或抽屉永远没有内容', () => {
     expect(source, '页面没有调用 useSkills()').toContain('useSkills()');
+    expect(source, '页面没有调用 useSkillTree()').toContain('useSkillTree(');
     expect(source, '页面没有调用 useSkillFile()').toContain('useSkillFile(');
   });
 
@@ -422,17 +420,34 @@ describe('settings 页面的技能 Tab 接线', () => {
     expect(body, '写成功后没有重新取清单，开关会停在旧值上').toContain('refreshSkills');
   });
 
-  it('点一行开抽屉：回调体把名字交给 useSkillFile（记名字不记对象，刷新后事实跟着走）', () => {
-    expect(openingTag('SkillTable'), '行点击没有落到 setSkillName').toContain('setSkillName(skill.name)');
+  it('点一行开抽屉：回调体把名字交出去，并清掉上一条的选中文件', () => {
+    const table = openingTag('SkillTable');
+
+    expect(table, '行点击没有落到 setSkillName').toContain('setSkillName(skill.name)');
+    // 不清路径的话，换一条技能后会拿**上一条技能的路径**去请求新技能里的同名文件
+    expect(table, '换一条技能没有清掉选中的文件').toContain('setSkillPath(null)');
     expect(source, '被打开的那条不是从当前清单里现取的').toContain(
       'skillList?.skills.find((skill) => skill.name === skillName)',
     );
   });
 
-  it('抽屉吃到正文与三态，且 open 读现取到的那条（目标消失就收起，不留空壳）', () => {
+  it('抽屉吃到树与正文两组状态，且 open 读现取到的那条（目标消失就收起，不留空壳）', () => {
     const tag = openingTag('SkillDetailDrawer');
 
-    for (const prop of ['skill=', 'file=', 'error=', 'loading=', 'onClose=']) {
+    const props = [
+      'skill=',
+      'tree=',
+      'treeError=',
+      'treeLoading=',
+      'onRetryTree=',
+      'selectedPath=',
+      'onSelectPath=',
+      'file=',
+      'fileError=',
+      'fileLoading=',
+      'onClose=',
+    ];
+    for (const prop of props) {
       expect(tag, `少了 ${prop}`).toContain(prop);
     }
     expect(tag, 'open 没有读现取到的那条').toContain('open={selectedSkill !== null}');
@@ -447,11 +462,29 @@ describe('settings 页面的技能 Tab 接线', () => {
     expect(occurrences, '技能清单读失败只在其中一支里说了').toBe(2);
   });
 
-  it('抽屉走 MarkdownText，且不引 rehype-raw（SKILL.md 是外部输入，原始 HTML 必须转义）', () => {
-    expect(drawerSource, '抽屉没有用 MarkdownText').toContain('<MarkdownText');
-    // 判据取 **import 语句**而不是全文：文件头那句「不引 `rehype-raw`」是说明，不是引入
-    expect(drawerSource, '抽屉引入了 rehype-raw——SKILL.md 的原始 HTML 会变成活元素').not.toMatch(
-      /from\s+'rehype-raw'/,
+  it('抽屉走 XMarkdownText，且渲染器把原始 HTML 转义成文本（SKILL.md 是外部输入）', () => {
+    expect(drawerSource, '抽屉没有用 XMarkdownText').toContain('<XMarkdownText');
+    // 「转义」这一条的真源在**外壳**里：裸写 `escapeRawHtml`（布尔简写）就是恒开。
+    // 写成 prop 形式就等于把这条口径交给调用方——迟早有人为了「让某个标签生效」把它关掉，
+    // 而 SKILL.md 与考题提示词都是外部输入，两处会同时变成活元素。
+    expect(shellSource, '外壳没把 escapeRawHtml 打开').toMatch(/^\s*escapeRawHtml$/m);
+    expect(shellSource, '转义被做成了可关闭的 prop').not.toMatch(/escapeRawHtml\s*=/);
+  });
+
+  it('Folder 紧贴内容区：内容那层不带内边距（边距只由不该贴边的那几块自己留）', () => {
+    // 为什么用源码判据：jsdom 没有布局引擎，量不到「Folder 与抽屉 body 差多少」——
+    // 真机那一条读数在冒烟里（`.ant-folder` 与 `.ant-drawer-body` 的 rect 完全相同）。
+    // 判据取「那层内容容器的 style 里不许出现 padding」：它一旦带上 `paddingMD`，
+    // Folder 四周就空出一圈，而界面上只是「看起来有点空」，不报错。
+    const anchor = drawerSource.indexOf('data-testid="skill-detail-drawer"');
+    expect(anchor, '抽屉里找不到那层内容容器').toBeGreaterThan(-1);
+
+    const styleStart = drawerSource.lastIndexOf('style={{', anchor);
+    expect(styleStart, '内容容器没有 style').toBeGreaterThan(-1);
+    const styleEnd = drawerSource.indexOf('}}', styleStart);
+
+    expect(drawerSource.slice(styleStart, styleEnd), '内容那层带了内边距：Folder 会被推开').not.toContain(
+      'padding',
     );
   });
 

@@ -30,6 +30,18 @@ export interface VirtualListHandle {
   scrollToKey(key: string, align?: 'top' | 'bottom'): void;
 }
 
+/**
+ * 自绘滚动条拇指的类名（样式只写在 `apps/web-next/app/globals.css`，与 `.aieval-activity-sweep`
+ * 那一族同一个形状：**组件只带类名，样式集中在一处**）。
+ *
+ * 为什么需要它：`Listy` 的滚动条是底层 `rc-virtual-list` 自绘的，拇指背景写死成
+ * `var(--rc-virtual-list-scrollbar-bg, rgba(0, 0, 0, 0.5))`——那个默认值是**纯黑半透明**，
+ * 在暗色底上比背景还暗 ⇒ 滚动条看不见。antd 自己在 `List` / `Tree` / `Table` 里都补了这个变量
+ * （见 `es/list/style`、`es/tree/style`、`es/table/style`，两处都挂着 issue #46177），
+ * **唯独 `Listy` 没补**。这里补的就是它，用的是本仓既有的分主题变量，不是另写一套颜色。
+ */
+export const VIRTUAL_LIST_CLASS = 'aieval-virtual-list';
+
 export interface VirtualListProps<T> {
   /** 只读数组（契约里的数据是 `readonly …[]`）；内部摊平一次给 `Listy`（它要可变数组） */
   items: readonly T[];
@@ -119,6 +131,7 @@ export function VirtualList<T>({
       <Flex vertical ref={hostRef} flex={1} style={{ minHeight: 0 }}>
         <Listy
           ref={listyRef}
+          className={VIRTUAL_LIST_CLASS}
           virtual
           // 不传 `itemHeight`（本仓口径，见文件头）；`height` 量得到才给 ⇒ 量不到就全量渲染
           {...(height === undefined ? {} : { height })}

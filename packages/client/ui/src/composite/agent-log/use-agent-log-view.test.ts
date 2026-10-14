@@ -1,6 +1,6 @@
 /**
  * `useAgentLogView` 与 `defaultOpenKeysOf` 的守卫。四组： * 1. **默认展开态**（表格 + 例外）：进行中的组展开、**失败的组与失败的行都收起**、
- * 思考收起、首次计划清单展开、`pending + running` 与异常收场的问答展开；
+ * 思考收起、首次计划清单展开、**问答卡片一格都不加**（卡片不折叠，里面的问题面板默认全收起）；
  *   2. **折叠态是「默认 ∪ 手动开 ∖ 手动关」**：用户关得掉一个默认展开的块（否则那个开关是假的）；
  *   3. **节点回落**：模型换了、选中的节点没了 ⇒ 回到默认节点；
  *   4. **过滤两格的 AND 叠加**（判据见 `turnMatchesFilters`）。
@@ -250,33 +250,28 @@ describe('defaultOpenKeysOf（内置默认展开态）', () => {
     expect(noResult.has('card-4')).toBe(true);
   });
 
-  it('问答卡片：pending + running 展开；timeout / unavailable / rejected 展开；其余收起', () => {
-    const pendingRunning = defaultOpenKeysOf(
-      [turn({ blocks: [toolCall('ask-1', 'call_a', askPayload({ state: 'pending', questions: [], at: AT, running: true }))] })],
-      nodes,
-    );
-    expect(pendingRunning.has('ask-1')).toBe(true);
+  /**
+   * 问答卡片**一格默认展开键都不加**：卡片是 `Card` 外壳、本身不折叠，
+   * 里面一问一格面板全部默认收起（等待态由卡面那枚「等待答复中… 12m」承担）。
+   *
+   * 靶子是「按收场态决定展开」那套旧口径：收场方式与「要不要展开」无关了，
+   * 任何一态都不得给卡片加键——加了就会让某一类收场的面板自己弹开，而卡片外观一致、看不出区别。
+   */
+  it('问答卡片不加默认键：任何收场态（含等待中）都不展开', () => {
+    const states: AskUserInteraction[] = [
+      { state: 'pending', questions: [], at: AT, running: true },
+      { state: 'pending', questions: [], at: AT, running: false },
+      ...(['answered', 'auto-resolved', 'skipped', 'timeout', 'unavailable', 'rejected', 'canceled'] as const).map(
+        (outcome): AskUserInteraction => ({ state: 'settled', questions: [], outcome, answers: null, at: AT, result: null }),
+      ),
+    ];
 
-    const pendingNoResult = defaultOpenKeysOf(
-      [turn({ blocks: [toolCall('ask-2', 'call_a2', askPayload({ state: 'pending', questions: [], at: AT, running: false }))] })],
-      nodes,
-    );
-    expect(pendingNoResult.has('ask-2')).toBe(false);
-
-    for (const outcome of ['timeout', 'unavailable', 'rejected'] as const) {
-      const keys = defaultOpenKeysOf(
-        [turn({ blocks: [toolCall(`ask-${outcome}`, 'call_a3', askPayload({ state: 'settled', questions: [], outcome, answers: null, at: AT, result: null }))] })],
-        nodes,
-      );
-      expect(keys.has(`ask-${outcome}`)).toBe(true);
-    }
-
-    for (const outcome of ['answered', 'skipped', 'canceled', 'auto-resolved'] as const) {
-      const keys = defaultOpenKeysOf(
-        [turn({ blocks: [toolCall(`ask-${outcome}`, 'call_a4', askPayload({ state: 'settled', questions: [], outcome, answers: null, at: AT, result: null }))] })],
-        nodes,
-      );
-      expect(keys.has(`ask-${outcome}`)).toBe(false);
+    for (const [index, interaction] of states.entries()) {
+      const cardId = `ask-${index}`;
+      const keys = defaultOpenKeysOf([turn({ blocks: [toolCall(cardId, `call_a${index}`, askPayload(interaction))] })], nodes);
+      expect(keys.has(cardId), `${cardId} 不该有默认展开键`).toBe(false);
+      // 问题面板的键（`<卡片 id>|q<序号>`）同样一个都不加
+      expect([...keys].some((key) => key.startsWith(`${cardId}|`)), `${cardId} 的问题面板不该预展开`).toBe(false);
     }
   });
 });

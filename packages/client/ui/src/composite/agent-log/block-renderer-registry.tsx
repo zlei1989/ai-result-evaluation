@@ -131,9 +131,12 @@ export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
   ),
   'ask-user-card': (block, ctx) => (
     <AskUserCard
+      // 卡片 id 是问题折叠键的一半（`questionPanelKey`）：同一轮里两张卡片不能撞键
+      cardId={block.cardId}
       interaction={block.interaction}
-      open={ctx.open}
-      onOpenChange={ctx.onOpenChange}
+      // 一问一格键：与工具组同一份折叠态、同一套入口（L0 只读集合、只转发变化的那一问）
+      openQuestions={ctx.openKeys ?? EMPTY_KEYS}
+      onQuestionOpenChange={ctx.onEntryOpenChange ?? (() => undefined)}
       rawOpen={ctx.rawOpen}
       onRawOpenChange={ctx.onRawOpenChange}
       onRequestDiagnostics={ctx.onRequestDiagnostics}

@@ -54,6 +54,22 @@ body {
 }
 
 /*
+ * 虚拟列表自绘滚动条的拇指（类名由 ui 包的 `VirtualList` 带上，样式只在这里定义）。
+ *
+ * 为什么必须补：`Listy` 的滚动条来自底层 `rc-virtual-list`，拇指背景写死成
+ * `var(--rc-virtual-list-scrollbar-bg, rgba(0, 0, 0, 0.5))`。那个默认值是**纯黑半透明**——
+ * 压在浅色底上正好（合成后 ≈ #808080），压在暗色底上比背景还暗 ⇒ 滚动条看不见。
+ * `antd` 自己在 `List` / `Tree` / `Table` 里都设了这个变量，**只有 `Listy` 漏了**。
+ *
+ * 颜色用**既有的** `--app-muted` 而不是新加一个：它是中性灰，在两种主题下都读得出，
+ * 而 `rgba(0, 0, 0, 0.5)` 的问题恰恰是「只在一种主题下成立」。色值不在这里再抄一份
+ * （抄一份就是第二份真源，改主题时必漂移）。
+ */
+.aieval-virtual-list {
+  --rc-virtual-list-scrollbar-bg: var(--app-muted);
+}
+
+/*
  * 候选卡片底部的**活动行**高光扫过（类名由 ui 包的 `AgentActivityLine` 带上，样式只在这里定义）。
  * 做法与节奏照 DSH 的 `.turnStatus`（`ui-chat/src/client/chat/ChatView.module.css`：
  * 1.8s linear infinite、background-size 250%、`background-clip: text` 的渐变位移）——

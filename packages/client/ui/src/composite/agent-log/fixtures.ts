@@ -470,7 +470,24 @@ export function dshFixture(): AgentLogFixture {
             ],
           },
         },
-        { type: 'text', text: '在等你选发布环境——**这一步在无人值守的运行里会一直等到轮次被取消**。' },
+        /**
+         * 流式档（`assembly: 'open'`）的正文：**半截围栏**——围栏开了、闭围栏还没到，
+         * X 用 `code[data-state="loading"]` 表达「这一块还没收尾」。
+         *
+         * 刻意缩进 2 空格：带上缩进的围栏是 X 2.9.0 流式走线最容易漏的一档
+         * （它逐字符判围栏，见 `base/x-markdown.test.tsx` 的缩进矩阵），夹具不覆盖它
+         * 就等于「缩进围栏 + 流式」这一格在画廊与单测里都没有真实形状。
+         */
+        {
+          type: 'text',
+          text: [
+            '在等你选发布环境——**这一步在无人值守的运行里会一直等到轮次被取消**。',
+            '',
+            '  ```text',
+            '  POST /api/open/query-file-change-log',
+            '    OpenController.queryFileChangeLogs   (lc-web:45)',
+          ].join('\n'),
+        },
       ],
     }),
 

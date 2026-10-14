@@ -41,6 +41,7 @@
 - [`No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.`（没有批准面时，提问工具根本不提供给模型）](/faq/claude-code#no-such-tool-available-askuserquestion-askuserquestion-is-disabled-for-this-session-in-subagents-as-well-as-here-没有批准面时-提问工具根本不提供给模型)
 - [`[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted.`（全权档并没有遮蔽提问工具）](/faq/claude-code#claude-sdk-can-use-tool-shadowed-warning-canusetool-will-not-be-invoked-permissionmode-bypasspermissions-auto-approves-every-tool-call-except-explicit-deny-rules-before-the-callback-is-consulted-全权档并没有遮蔽提问工具)
 - [`updatedInput.response` 一给就把选项答案整条盖掉：`The user responded: …`（自由输入该走选项值那一格）](/faq/claude-code#updatedinput-response-一给就把选项答案整条盖掉-the-user-responded-自由输入该走选项值那一格)
+- [执行日志里任务工具没有「计划清单」卡片：一行一个「计划清单」标签 + 参数原文（`{"taskId":"1","status":"in_progress"}`），而 codex 同题是一整张表](/faq/claude-code#执行日志里任务工具没有「计划清单」卡片-一行一个「计划清单」标签-参数原文-taskid-1-status-in-progress-而-codex-同题是一整张表)
 
 ### DeepSeek Harness
 

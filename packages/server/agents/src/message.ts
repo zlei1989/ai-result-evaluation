@@ -31,6 +31,7 @@ import type {
   ContentBlock,
   MessageRole,
   MessageSource,
+  ToolCallPayload,
   ToolFamily,
   TruncationState,
   UsageTokens,
@@ -344,6 +345,10 @@ export function thinkingBlockDraft(
  * （见 `tool-payload.ts`）。放在这个咽喉点而不是各家的 `message.ts` 里，是因为三家的工具调用
  * **全部**流经本函数——每家各写一遍必然漂移，而漂移的症状是「同一族的卡片在某一家上是空的」。
  *
+ * **例外只有一格**：`payload` 入参（可选）留给**逐条 patch 的族**——claude 的 `Task*` 是工作项
+ * 注册表，整表只能由**多次调用累积**出来（`providers/cc/task-registry.ts`），而单次入参里
+ * 根本没有那张表。给了这一格就用它（`null` 也算「算过了：没有载荷」），不给才按上面的归一算。
+ *
  * **摘要也在这一处生成**：`summary` 取 `toolCallHint(name, input)`——
  * **只有冒号后面那一段**（`Check surefire report summaries`），不带 `调用工具 <名>：` 前缀。
  * 为什么去掉前缀（用户口径）：这一格有**两个消费方**，而它们对前缀的需求相反——
@@ -359,6 +364,7 @@ export function toolCallBlockDraft(
   input: unknown,
   vendor: AgentKind,
   family: ToolFamily | null = classifyTool(name),
+  payload?: ToolCallPayload | null,
 ): MessageBlockDraft {
   return {
     phase: 'snapshot',
@@ -369,7 +375,7 @@ export function toolCallBlockDraft(
       family,
       name,
       input,
-      payload: toolPayloadOf(family, input, vendor),
+      payload: payload === undefined ? toolPayloadOf(family, input, vendor) : payload,
       summary: toolCallHint(name, input),
     },
   };

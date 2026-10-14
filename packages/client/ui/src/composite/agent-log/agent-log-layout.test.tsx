@@ -494,7 +494,10 @@ describe('AgentLogLayout', () => {
 
     expect(screen.getByRole('switch', { name: '跟随最新' })).not.toBeChecked();
     const backButton = screen.getByRole('button', { name: /回到最新/ });
-    expect(backButton).toHaveTextContent('回到最新（0 轮未读）');
+    // 未读数从**文案**变成 **`badge`**：按钮的可视内容只剩一个图标，
+    // 所以「回到最新（N 轮未读）」这句只能由 `aria-label` 承载（否则读屏只剩一个无名按钮）
+    expect(backButton).toHaveAttribute('aria-label', '回到最新（0 轮未读）');
+    expect(container.querySelector('.ant-float-btn')).not.toBeNull();
 
     // 同一个 `follow`：点浮出按钮就把开关也打开
     fireEvent.click(backButton);

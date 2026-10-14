@@ -4,7 +4,9 @@
  * 识别单位与四条口径：
  *   1. **一条 skill = `<根>/<名称>/SKILL.md`**，只扫第一层、不递归（与 dsh 的第一层扫描同口径）。
  *      不递归不是偷懒：目录树里任何一层都可能是另一条 skill 的附属文件，递归会把 `references/`
- *      当成技能列出来；
+ *      当成技能列出来。**候选单位是目录**（软链也算：跟随后看它指向什么——技能目录常常整条是软链）；
+ *      第一层的**普通文件一概不列**：`.DS_Store`、`README.md`、扁平的 `<名称>.md` 都不是技能，
+ *      给它们各占一行「缺 SKILL.md」只会让人以为「我放的技能坏了」，而噪声其实是文件本身；
  *   2. **准入判据全部来自契约**（`isValidSkillName` / `isValidSkillDescription`，最严的那一条）：
  *      名字必须是目录名与 frontmatter 逐字相同、description 必填非空 ≤1024。「三家都装得上」是
  *      能被启用的前提——不合法时 claude 在启动前抛错、dsh 把整条静默丢弃；
@@ -18,18 +20,24 @@
  * 只读：本模块不建目录、不写文件、不删任何东西。技能根跟着配置目录走
  * （`getConfigDir()` + `/skills`），故 `setConfigDirForTesting` 一并把它搬进临时目录。
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync, realpathSync, statSync, type Dirent } from 'node:fs';
+import { join, sep } from 'node:path';
 import {
   ServiceError,
   SKILL_FILE_NAME,
+  SKILL_PREVIEW_MAX_BYTES,
+  SKILL_TREE_MAX_DEPTH,
+  SKILL_TREE_MAX_NODES,
+  SkillFilePathSchema,
   SkillNameSchema,
   isValidSkillDescription,
   isValidSkillName,
   splitSkillMarkdown,
   type SkillEntry,
-  type SkillFile,
+  type SkillFileText,
   type SkillsSettings,
+  type SkillTree,
+  type SkillTreeNode,
   type SkillWarning,
 } from '@aieval/contracts';
 import { getConfigDir } from './config-store';
@@ -39,7 +47,8 @@ const log = createLogger('skill-store');
 
 /**
  * 「缺 SKILL.md」的中文原因（一处定义、两处用：没有这个文件，与这个路径压根不是目录）。
- * 三个不合格类型（目录里没入口文件 / 裸 `.md` / 断链的软链接）在这一格上对用户是同一件事。
+ * 两个不合格类型（目录里没入口文件 / 断链的软链接）在这一格上对用户是同一件事；
+ * **普通文件不走这一格**——它们不是候选，压根不入列（见文件头第 1 条）。
  */
 const MISSING_FILE_REASON = `缺 ${SKILL_FILE_NAME}（技能是一个目录，里面放 ${SKILL_FILE_NAME}；只扫这一层，不递归）`;
 
@@ -136,40 +145,6 @@ function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * 一条 skill 的字节数：**整目录**（装入是整目录复制，只报入口文件会低报）。
- * 两条边界都是刻意的：
- *   · **不跟随符号链接**（既避免环，也不把技能目录外的文件算进来）；
- *   · **算不出就返回 undefined**（`null ≠ 0` 同纪律）——半个和是个错数字，比缺席更坏。
- * 它就是「不设体积上限」那条决定的缓解手段：上限会造出「装了一半」的第三种状态，界面改为显示体积。
- */
-function skillSize(dir: string): number | undefined {
-  let total = 0;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return undefined;
-  }
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    try {
-      if (entry.isDirectory()) {
-        const nested = skillSize(path);
-        if (nested === undefined) return undefined;
-        total += nested;
-        continue;
-      }
-      // 符号链接与其它特殊文件不参与统计（跟随它会读到技能目录之外，也成不了环）
-      if (!entry.isFile()) continue;
-      total += statSync(path).size;
-    } catch {
-      return undefined;
-    }
-  }
-  return total;
-}
-
 /** 一个路径是不是目录（**跟随符号链接**：技能目录常常是软链，不跟随会把它误判成「缺 SKILL.md」） */
 function isDirectory(path: string, fromDirent: boolean): boolean {
   if (fromDirent) return true;
@@ -189,8 +164,6 @@ function isDirectory(path: string, fromDirent: boolean): boolean {
  */
 function scanEntry(root: string, name: string, directory: boolean): ScannedSkill {
   const path = join(root, name);
-  const size = directory ? skillSize(path) : statSync(path, { throwIfNoEntry: false })?.size;
-  const withSize = size === undefined ? {} : { sizeBytes: size };
 
   if (!isDirectory(path, directory)) {
     return {
@@ -199,7 +172,6 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
       description: '',
       ok: false,
       reason: MISSING_FILE_REASON,
-      ...withSize,
     };
   }
 
@@ -215,7 +187,6 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
       description: '',
       ok: false,
       reason: missing ? MISSING_FILE_REASON : `读不出 ${SKILL_FILE_NAME}：${file}（${reason(error)}）`,
-      ...withSize,
     };
   }
 
@@ -225,14 +196,13 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
   const base = { name, dir: path, description };
 
   if (declared === '') {
-    return { ...base, ok: false, reason: '名称不合法：frontmatter 里没有 name', ...withSize };
+    return { ...base, ok: false, reason: '名称不合法：frontmatter 里没有 name' };
   }
   if (!isValidSkillName(declared)) {
     return {
       ...base,
       ok: false,
       reason: `名称不合法：${declared}（只允许小写字母、数字与单个连字符，最长 64）`,
-      ...withSize,
     };
   }
   if (declared !== name) {
@@ -240,7 +210,6 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
       ...base,
       ok: false,
       reason: `目录名 ${name} 与 frontmatter 的 name ${declared} 不一致`,
-      ...withSize,
     };
   }
   if (!isValidSkillDescription(description)) {
@@ -248,16 +217,19 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
       description.trim() === ''
         ? '缺 description（frontmatter 里必填，且不能只有空白）'
         : `description 超长（${description.length} 字符，上限 1024）`;
-    return { ...base, ok: false, reason: reasonText, ...withSize };
+    return { ...base, ok: false, reason: reasonText };
   }
   if (hidesFromModel(fields)) {
-    return { ...base, ok: false, reason: DISABLE_MODEL_INVOCATION_REASON, ...withSize };
+    return { ...base, ok: false, reason: DISABLE_MODEL_INVOCATION_REASON };
   }
-  return { ...base, ok: true, ...withSize };
+  return { ...base, ok: true };
 }
 
 /**
  * 扫技能根：缺目录 ⇒ 空列表 + 一条根级 warning；读失败 ⇒ 抛 INTERNAL。
+ *
+ * 第一层只留**目录与软链**（软链跟随后按它的目标判定，技能目录常常整条是软链）；
+ * 普通文件（`.DS_Store` / `README.md` / 扁平的 `.md`）与其余特殊类型不是技能，忽略并留一条 DEBUG。
  * 输出按 `name` 码位升序（见 `compareSkillNames`）；**不建目录、不删文件**。
  */
 export function scanSkills(): SkillScan {
@@ -277,31 +249,247 @@ export function scanSkills(): SkillScan {
     });
   }
 
-  const skills = dirents
+  // `isSymbolicLink()` 是给软链留的门：`isDirectory()` 对软链恒为 false，用它过滤会把整条软链形态的技能滤掉
+  const candidates: Dirent[] = [];
+  const ignored: string[] = [];
+  for (const dirent of dirents) {
+    if (dirent.isDirectory() || dirent.isSymbolicLink()) candidates.push(dirent);
+    else ignored.push(dirent.name);
+  }
+  if (ignored.length > 0) {
+    log.debug('技能根下的文件不是技能，已忽略', { root, ignored });
+  }
+
+  const skills = candidates
     .map((dirent) => scanEntry(root, dirent.name, dirent.isDirectory()))
     .sort((left, right) => compareSkillNames(left.name, right.name));
   return { skills, skillWarnings: [] };
 }
 
-/**
- * 读一条 skill 的正文（界面抽屉用）：`frontmatter` 逐字、`body` 原文。
- * 名字先过 `assertSkillName`（路径穿越的唯一一道门）；文件不在 ⇒ `NOT_FOUND`（不是 INTERNAL：
- * 「这条技能没有 SKILL.md」是一个可解释的状态，与「读盘坏了」不同）。
- */
-export function readSkillFile(name: string): SkillFile {
-  const file = join(getSkillsRoot(), assertSkillName(name), SKILL_FILE_NAME);
-  let raw: string;
+/** 走过一棵树时的共享状态：节点计数与「这棵树没列全」标记 */
+interface TreeWalkState {
+  count: number;
+  truncated: boolean;
+}
+
+/** `target` 是不是在 `root` 之下（两侧都必须是 `realpath` 解析过的真实路径） */
+function isInside(root: string, target: string): boolean {
+  if (target === root) return true;
+  return target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+}
+
+/** 单个文件的字节数；读不出（权限 / 坏链）返回 `null`——`null ≠ 0` 同纪律，不拿 0 顶替 */
+function fileSize(path: string): number | null {
   try {
-    raw = readFileSync(file, 'utf8');
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
+/** 人类可读的字节数，只在错误文案里用（core 不引界面的格式化工具，那是另一个包的事） */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb < 1024 ? `${kb.toFixed(1)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * 列一层目录，产出按「目录在前、同类按名字码位升序」排好的节点。
+ *
+ * `realRoot` 是**已解析**的技能目录真实路径，专门用来复核符号链接不越界（见 `readSkillTree`）。
+ * 三条不静默的处置：这一层读不出来、深度到上限、节点数到上限——任一发生都把 `truncated` 置真，
+ * 让界面说出「没列全」，而不是让人把「树里没有」当成「磁盘上没有」。
+ */
+function walkDirectory(
+  realRoot: string,
+  currentDir: string,
+  depth: number,
+  state: TreeWalkState,
+): SkillTreeNode[] {
+  if (depth > SKILL_TREE_MAX_DEPTH) {
+    state.truncated = true;
+    return [];
+  }
+
+  let dirents: Dirent[];
+  try {
+    dirents = readdirSync(currentDir, { withFileTypes: true });
   } catch (error) {
-    if (isMissingPath(error)) {
-      throw new ServiceError('NOT_FOUND', `这条技能里没有 ${SKILL_FILE_NAME}：${file}`, { context: { file, name } });
+    // 不抛：树的其他分支还有内容。但也不能装作这一层是空目录，所以只置 truncated
+    state.truncated = true;
+    log.warn('技能目录里有一层读不出来', { dir: currentDir, reason: reason(error) });
+    return [];
+  }
+
+  const nodes: SkillTreeNode[] = [];
+  for (const dirent of dirents) {
+    if (state.count >= SKILL_TREE_MAX_NODES) {
+      state.truncated = true;
+      break;
     }
-    throw new ServiceError('INTERNAL', `读不出 ${SKILL_FILE_NAME}：${file}（${reason(error)}）`, {
-      cause: error,
-      context: { file, name },
+    const fullPath = join(currentDir, dirent.name);
+    let isDirectory = dirent.isDirectory();
+    let isFile = dirent.isFile();
+
+    if (dirent.isSymbolicLink()) {
+      let realEntry: string;
+      try {
+        realEntry = realpathSync(fullPath);
+      } catch {
+        // 断链：它是磁盘上的一个名字，但我们跟不到任何东西 ⇒ 照列、不给大小（`null`）
+        state.count += 1;
+        nodes.push({ title: dirent.name, path: dirent.name, isDirectory: false, children: [], sizeBytes: null });
+        continue;
+      }
+      if (!isInside(realRoot, realEntry)) {
+        // 指向技能目录之外：不跟。跟了就是把别处的内容当成本技能的一部分
+        state.truncated = true;
+        continue;
+      }
+      const resolved = statSync(realEntry, { throwIfNoEntry: false });
+      isDirectory = resolved?.isDirectory() ?? false;
+      isFile = resolved?.isFile() ?? false;
+      if (!isDirectory && !isFile) continue;
+    }
+
+    state.count += 1;
+    nodes.push({
+      title: dirent.name,
+      path: dirent.name,
+      isDirectory,
+      children: isDirectory ? walkDirectory(realRoot, fullPath, depth + 1, state) : [],
+      sizeBytes: isFile ? fileSize(fullPath) : null,
     });
   }
-  const { frontmatter, body } = splitSkillMarkdown(raw);
-  return { frontmatter, body };
+
+  // 目录在前、同类按名字码位升序（`<` / `>` 而不是 `localeCompare`：顺序不随 locale / ICU 变）
+  return nodes.sort((left, right) => {
+    if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+    return left.title < right.title ? -1 : left.title > right.title ? 1 : 0;
+  });
+}
+
+/**
+ * 列一条技能的**目录树**（左树那一栏）：`<技能根>/<名称>` 之下递归全列。
+ *
+ * 与列表那条「只扫第一层、不递归」不是一回事，别互相套用：列表回答的是「哪几条技能」，
+ * 树回答的是「这一条技能里有什么」——`references/` 在列表里是附属文件、在树里正是要展开的东西。
+ *
+ * 名字先过 `assertSkillName`（路径穿越的第一道门，与读文件同一道）；目录不在 ⇒ `NOT_FOUND`。
+ */
+export function readSkillTree(name: string): SkillTree {
+  const dir = join(getSkillsRoot(), assertSkillName(name));
+  let realDir: string;
+  try {
+    realDir = realpathSync(dir);
+  } catch (error) {
+    if (isMissingPath(error)) {
+      throw new ServiceError('NOT_FOUND', `这条技能不在磁盘上：${dir}`, { context: { dir, name } });
+    }
+    throw new ServiceError('INTERNAL', `读不出技能目录：${dir}（${reason(error)}）`, {
+      cause: error,
+      context: { dir, name },
+    });
+  }
+
+  const state: TreeWalkState = { count: 0, truncated: false };
+  const children = walkDirectory(realDir, realDir, 1, state);
+  return {
+    name,
+    dir,
+    root: { title: name, path: name, isDirectory: true, children, sizeBytes: null },
+    truncated: state.truncated,
+  };
+}
+
+/**
+ * `readFileSync(..., 'utf8')` 之后出现替换字符 `\uFFFD` ⇒ 这不是 UTF-8 文本。
+ * Node 的解码器把非法字节序列换成它，所以它的出现**就是**「二进制」的痕迹。
+ * 已知边界：一份合法文本里本来也可能有人写了 U+FFFD，那一档会被误判成二进制——
+ * 代价是一句「不预览」，比把乱码铺满界面好。
+ */
+function looksBinary(text: string): boolean {
+  return text.includes('\uFFFD');
+}
+
+/**
+ * 读技能里任意一个文件（预览那一栏）：技能内相对路径 + **原文**。
+ *
+ * 四道处置，逐一对应一种「读不出来」：
+ *   · 路径本身不合法（绝对 / `..` / 空段 / 太深）⇒ `INVALID_QUERY`，在契约层就挡下；
+ *   · 拼出来的真实路径越出技能目录（软链指到外面）⇒ `INVALID_QUERY`（`realpath` 复核，第二道门）；
+ *   · 文件不在 ⇒ `NOT_FOUND`；是目录或不是普通文件 ⇒ `INVALID_QUERY`；
+ *   · 二进制、或超过预览上限 ⇒ `INVALID_QUERY` + 中文原因，**不给半个正文**：
+ *     乱码铺满界面比一句「这一类不预览」坏得多。
+ */
+export function readSkillFileText(name: string, path: string): SkillFileText {
+  const parsed = SkillFilePathSchema.safeParse(path);
+  if (!parsed.success) {
+    throw new ServiceError('INVALID_QUERY', `技能内路径不合法：${path}`, { context: { name, path } });
+  }
+  const relative = parsed.data;
+  const dir = join(getSkillsRoot(), assertSkillName(name));
+  const target = join(dir, relative);
+
+  let realDir: string;
+  let realTarget: string;
+  try {
+    realDir = realpathSync(dir);
+    realTarget = realpathSync(target);
+  } catch (error) {
+    if (isMissingPath(error)) {
+      throw new ServiceError('NOT_FOUND', `这条技能里没有这个文件：${target}`, { context: { name, path: relative } });
+    }
+    throw new ServiceError('INTERNAL', `读不出这个文件：${target}（${reason(error)}）`, {
+      cause: error,
+      context: { name, path: relative },
+    });
+  }
+
+  if (!isInside(realDir, realTarget)) {
+    throw new ServiceError('INVALID_QUERY', `技能内路径越出了技能目录：${relative}`, {
+      context: { name, path: relative, dir: realDir },
+    });
+  }
+
+  const status = statSync(realTarget, { throwIfNoEntry: false });
+  if (status === undefined) {
+    throw new ServiceError('NOT_FOUND', `这条技能里没有这个文件：${target}`, { context: { name, path: relative } });
+  }
+  if (status.isDirectory()) {
+    throw new ServiceError('INVALID_QUERY', `这是一个目录，不是文件：${relative}`, {
+      context: { name, path: relative },
+    });
+  }
+  if (!status.isFile()) {
+    throw new ServiceError('INVALID_QUERY', `这不是一个普通文件：${relative}`, {
+      context: { name, path: relative },
+    });
+  }
+  if (status.size > SKILL_PREVIEW_MAX_BYTES) {
+    throw new ServiceError(
+      'INVALID_QUERY',
+      `这个文件 ${formatSize(status.size)}，超过预览上限 ${formatSize(SKILL_PREVIEW_MAX_BYTES)}：${relative}`,
+      { context: { name, path: relative, bytes: status.size } },
+    );
+  }
+
+  let text: string;
+  try {
+    text = readFileSync(realTarget, 'utf8');
+  } catch (error) {
+    throw new ServiceError('INTERNAL', `读不出这个文件：${target}（${reason(error)}）`, {
+      cause: error,
+      context: { name, path: relative },
+    });
+  }
+  if (looksBinary(text)) {
+    throw new ServiceError(
+      'INVALID_QUERY',
+      `这一类文件不预览（二进制 / 非 UTF-8，${formatSize(status.size)}）：${relative}`,
+      { context: { name, path: relative, bytes: status.size } },
+    );
+  }
+  return { path: relative, text };
 }

@@ -35,8 +35,9 @@ export function UnrecognizedBlockView({ block, open, onOpenChange }: Unrecognize
   );
 
   return (
+    // **不用 `ghost`**：`ghost` 的定义是「去描边 + 背景透明」，而这里是嵌在日志里的一块内容，
+    // 与 antd 默认折叠面板同形（`colorBgContainer` 底色 + 描边）——底色与描边都由 antd 给，本件不覆盖
     <Collapse
-      ghost
       destroyOnHidden
       activeKey={open ? [PANEL_KEY] : []}
       onChange={(keys) => onOpenChange(keys.length > 0)}

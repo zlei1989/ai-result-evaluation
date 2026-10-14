@@ -247,6 +247,23 @@ describe('TaskPanelCard', () => {
     expect(screen.getByText('结果未采集')).toBeInTheDocument();
   });
 
+  it('「原始结果」入口的上下留白与问答卡片 footer 齐平（各 12）', () => {
+    const { container } = render(<TaskPanelCard {...props} panel={panel()} />);
+
+    const bar = screen.getByText('原始结果').closest('.ant-flex');
+    expect(bar, '入口那一层容器不在').not.toBeNull();
+    // jsdom 没有布局引擎，量不到「表格底到按钮顶几像素」——真机读数在冒烟里。
+    // 判据落在两个取值上：外面那一列是 `gap={4}`（清单内部：表格与说明文字之间），
+    // 这一格再加 `marginXS`(8) 才够「清单之后的一个动作」（合计 12，与问答卡片 footer 齐平）；
+    // 面板体的内边距则整档交给 antd 的 `size="small"`（正文 12、标题上下 8，与问答卡片的
+    // 卡体 12 / 卡头 8 同档）——本件一个内边距都不覆盖，故判据只能钉那一档的类名。
+    expect((bar as HTMLElement).style.getPropertyValue('margin-block-start')).toBe('8px');
+
+    const collapse = container.querySelector<HTMLElement>('.ant-collapse');
+    expect(collapse, '外层折叠面板不在').not.toBeNull();
+    expect(collapse?.className, '折叠面板退回中档 ⇒ 标题上下多 4px、正文顶多 4px').toContain('ant-collapse-small');
+  });
+
   /**
    * `rawOpen` 的**透传**：卡片自己不持态（L0 纪律），开合完全听调用方——
    * 这条钉住「卡片的 `rawOpen` 真的喂进了 `RawOutputPanel`」：漏了/写死 `false` 时，

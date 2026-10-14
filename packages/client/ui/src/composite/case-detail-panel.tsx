@@ -14,14 +14,14 @@
  *      展示（组 → 评分项：ID / 目标 / 权重），增删改只在使用例表单那一侧；
  *      旧的「评分维度」行与「评分提示词」卡片已随本次重构删除（`judgePrompt` 连契约字段一起没了）
  *      ——照旧渲染它们等于给用户看一个不存在字段；
- *   5. **只有考题提示词走 markdown 渲染**（`MarkdownText`，理由见那张卡片的注释）。
+ *   5. **只有考题提示词走 markdown 渲染**（`XMarkdownText`，理由见那张卡片的注释）。
  */
 import { isNoneSource, type TestCase } from '@aieval/contracts';
 import { Button, Card, Descriptions, Flex, Popconfirm, Tooltip, Typography } from 'antd';
 import type { DescriptionsProps } from 'antd';
 import type { ReactNode } from 'react';
 import { formatDateTime } from '../base/format';
-import { MarkdownText } from '../base/markdown-text';
+import { XMarkdownText } from '../base/x-markdown';
 import { RubricTable } from './rubric-table';
 
 export interface CaseDetailPanelProps {
@@ -126,9 +126,9 @@ export function CaseDetailPanel({ testCase, referencedRuns, onEdit, onDelete, de
 
       <Card size="small" title="考题提示词">
         {/* 考题提示词是**模型/外部系统写的 markdown**（真实用例里带 14 个标题、23 行表格、6 个围栏
-            代码块），所以走 `MarkdownText` 渲染。**卡片的 title / 边框属于卡片本身**，
-            这一改只换卡片里的孩子。 */}
-        <MarkdownText text={testCase.taskPrompt} />
+            代码块），所以走 `XMarkdownText` 渲染；卡片只管 title / 边框，正文排版归 X。
+            它是**已经收尾**的静态文本，故 `open={false}`。 */}
+        <XMarkdownText text={testCase.taskPrompt} open={false} />
       </Card>
 
       {/* 评分标准项（只读）：这一轮拿什么打分，在详情里要能逐项核对（组名 / 目标 / 权重 + 表尾满分）。

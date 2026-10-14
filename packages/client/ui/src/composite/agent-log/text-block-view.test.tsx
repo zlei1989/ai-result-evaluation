@@ -41,19 +41,25 @@ describe('TextBlockView', () => {
     expect(screen.queryByText('汇总')).toBeNull();
   });
 
-  it('user 出「用户」标，并给左侧竖线', () => {
+  it('user 与其余角色**同形**：无标签、无竖线、无内边距，样式全归 XMarkdown', () => {
     const { container } = render(<TextBlockView block={textBlock({ role: 'user' })} />);
 
-    expect(screen.getByText('用户')).toBeInTheDocument();
-    // 竖线是结构性样式（用户消息与智能体输出必须一眼分得开）
-    expect(container.firstElementChild?.getAttribute('style')).toContain('border-inline-start');
+    expect(screen.queryByText('用户')).toBeNull();
+    // 不再有左侧竖线，也没有我们加的内边距：本仓在这一块不提供任何样式
+    const style = container.firstElementChild?.getAttribute('style') ?? '';
+    expect(style).not.toContain('border-inline-start');
+    expect(style).not.toContain('padding');
+    // 正文确实由 XMarkdown 渲染（本仓不套排版容器）
+    expect(container.querySelector('.x-markdown')).not.toBeNull();
   });
 
-  it('system 出「系统」标，且整块降一档（secondary）', () => {
+  it('system 出「系统」标，但**不套本仓自己的排版容器**（正文样式归 XMarkdown）', () => {
     const { container } = render(<TextBlockView block={textBlock({ role: 'system' })} />);
 
     expect(screen.getByText('系统')).toBeInTheDocument();
-    expect(container.querySelector('.ant-typography-secondary')).not.toBeNull();
+    // 此前这里断言 `ant-typography-secondary`：那一层 `Typography.Paragraph` 会盖掉 X 自己的
+    // `table` / `code` / 段落规则 ⇒ 同一段 markdown 在两档里长得不一样。现在不套了。
+    expect(container.querySelector('.ant-typography-secondary')).toBeNull();
   });
 
   it('非 wire 的来源出角标：session-file → 补录、aggregate → 汇总、wire 不出', () => {
@@ -70,12 +76,17 @@ describe('TextBlockView', () => {
     expect(screen.queryByText('汇总')).toBeNull();
   });
 
-  it('assembly 为 open 时挂流式光标类名，snapshot 时不挂', () => {
+  it('assembly 为 open 时给「正在思考」那一行，snapshot 时不给', () => {
     const { container, unmount } = render(<TextBlockView block={textBlock({ assembly: 'open' })} />);
-    expect(container.querySelector(`.${STREAM_CURSOR_CLASS}`)).not.toBeNull();
+    expect(screen.getByText('正在思考')).toBeInTheDocument();
+    // 有字才说得清在做什么：那一行必须带转圈（`Spin` 的 DOM），不是一句干文案
+    expect(container.querySelector('.ant-spin')).not.toBeNull();
     unmount();
 
     const { container: snapshot } = render(<TextBlockView block={textBlock({ assembly: 'snapshot' })} />);
+    expect(screen.queryByText('正在思考')).toBeNull();
+    expect(snapshot.querySelector('.ant-spin')).toBeNull();
+    // 旧的闪烁光标**不再挂在正文块上**（那一格留给了评测列表的活动行）
     expect(snapshot.querySelector(`.${STREAM_CURSOR_CLASS}`)).toBeNull();
   });
 

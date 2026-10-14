@@ -4,6 +4,8 @@
  * 四条规整（每一条都对应一次真实的误读）：
  *   1. 按 `callId` 配对 `tool-call` 与 `tool-result`；**缺 `callId` 或配不上 ⇒ 降级成独立条目，不编造关联**
  *      （按出现顺序两两配对会把 A 的结果挂到 B 的调用上，而界面上看起来完全正常）；
+ *      **被提成卡片的调用同样在配对里**（卡片就是那次调用的显示位）：卡片画了结果 ⇒ 结果归卡片、
+ *      不再另起一条「配不上调用」的孤立结果；卡片没画 ⇒ 结果照旧独立成条，**不许吞**；
  *   2. **相邻**的工具条目合并成一个工具组，中间夹了别的东西就断开；
  *   3. **派发点**出 `subagent-bar`（导航），**不进工具组**——「多了一个可进去看的东西」与「调用了什么」
  *      是两件事，同一轮会同时出现。命不中时挂在轮末，**不隐藏**（藏起来等于「这一轮没派子任务」）；
@@ -271,6 +273,18 @@ export function buildRenderBlocks(
   const byCallId = new Map<string, ToolItem>();
 
   /**
+   * 被提成卡片的调用：`callId` 一旦在集合里，这次调用的结果就**由卡片显示**、不再重复成行。
+   *
+   * 为什么卡片也要进配对：配对键是 `callId`，而卡片就是那次调用的显示位——不登记的话，
+   * 同轮后到的结果在 `byCallId` 里找不到主人，会落成 `orphan-result`（界面上是「工具调用 × 0」
+   * 展开出一条「配不上调用」的结果，而它的主人就在上面那张卡片里）。
+   *
+   * **只登记卡片真的画了结果的那一次**：没画（还没收场 / 收场了但原文没采到）时结果照旧独立成条——
+   * 卡片没画就等于没有出口，吞掉它才是真的丢事实。
+   */
+  const cardOwned = new Set<string>();
+
+  /**
    * 规则 4 的「同一轮只画最后一次」：先算出**最后一次**带载荷的 `task` 调用是哪一条，
    * 更早的那些在遍历到它们时只记数、不出面板。
    * 判据是 `id` 而不是下标：`id` 由数据层给，是稳定键。
@@ -315,10 +329,12 @@ export function buildRenderBlocks(
         out.push({ kind: 'unrecognized', block });
         break;
       case 'tool-result': {
-        // 配得上就并入那条条目；配不上就独立成条——**绝不丢弃**
+        // 配得上就并入那条条目；配不上就独立成条——**绝不丢弃**。
+        // 主人是卡片时它已经在卡片里画过了（`cardOwned`），再落一条就是把同一次结果说两遍
         const owner = block.callId === null ? undefined : byCallId.get(block.callId);
+        const takenOver = block.callId !== null && cardOwned.has(block.callId);
         if (owner !== undefined) owner.output = outputOf(block);
-        else group.push({ kind: 'orphan-result', callId: block.callId, blockId: block.id, at: block.at, output: outputOf(block) });
+        else if (!takenOver) group.push({ kind: 'orphan-result', callId: block.callId, blockId: block.id, at: block.at, output: outputOf(block) });
         break;
       }
       case 'tool-call': {
@@ -333,6 +349,8 @@ export function buildRenderBlocks(
               result: resultFor(blocks, block.callId),
             });
             if (panel !== null) {
+              // 面板底部会画出这次调用的结果（`taskPanelOf` 已把同轮的结果并进 `panel.result`）⇒ 接管
+              if (block.callId !== null && panel.result !== null) cardOwned.add(block.callId);
               out.push({ kind: 'task-panel', panel, earlierCount: earlierTaskCount, cardId: block.id });
               break;
             }
@@ -348,6 +366,13 @@ export function buildRenderBlocks(
            */
           const interaction =
             payload.interaction.at === '' ? { ...payload.interaction, at: block.at } : payload.interaction;
+          /**
+           * 已收场**且原文到手**才接管这次调用的结果（卡片底部那一份「原始结果」就是它）；
+           * 两种「没有结果」——还没收场、收场了但原文没采到——都不接管，结果照旧独立成条。
+           */
+          if (block.callId !== null && interaction.state === 'settled' && interaction.result !== null) {
+            cardOwned.add(block.callId);
+          }
           out.push({ kind: 'ask-user-card', interaction, cardId: block.id });
           break;
         }

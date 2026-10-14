@@ -1,15 +1,19 @@
 'use client';
 
 /**
- * antd 客户端 Provider：主题（偏好 auto/light/dark）+ App 包装（message/modal 上下文）+ 紧凑密度
+ * 根客户端 Provider：主题（偏好 auto/light/dark）+ App 包装（message/modal 上下文）+ 紧凑密度
  * + 全局应答宿主（智能体的提问弹层，全站可见）。
  * 主题来源 = GET /api/settings（useSettings）→ 偏好交给 ui 包的 useResolvedTheme 解析；
  * 主题口径（auto 按系统偏好解析、data-theme / data-theme-preference 写入、holderRender 注册）统一在 ui 包，
  * 本组件只负责「把偏好喂进去 + 提供 AntdApp 子树 + 挂上应答宿主」。
+ *
+ * 根 Provider 是 `@aieval/ui` 的 `XAppProvider`（X 的 `XProvider` + 本仓口径的壳），不是裸的
+ * `ConfigProvider`：X 组件的文案与阴影各有自己的坑，都收在那个壳里（见其文件头）。本文件
+ * **不 import `@ant-design/x`**——`ui` 包直出源码、X 是它的依赖，装配侧只给 antd 的 locale。
  */
 import { useSettings } from '@aieval/client';
-import { DensityProvider, useResolvedTheme } from '@aieval/ui';
-import { App as AntdApp, ConfigProvider } from 'antd';
+import { DensityProvider, useResolvedTheme, XAppProvider } from '@aieval/ui';
+import { App as AntdApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
 import { AskUserHost } from './ask-user-host';
@@ -19,12 +23,15 @@ export function Providers({ children }: { children: ReactNode }): ReactNode {
   // 设置未就绪时 useResolvedTheme 内部按暗色兜底（SSR 期不闪白）
   const { mode, themeConfig } = useResolvedTheme({ preference: settings?.theme });
   return (
-    <ConfigProvider
+    <XAppProvider
       theme={themeConfig}
-      // 应用级 antd locale：不配的话 antd 的内置文案全是英文
-      // （Empty 空图的 SVG `<title>No data</title>`、Modal 关闭按钮的 `aria-label="Close"`、
-      // Select 的 `No data`、校验规则模板……）。否则只能在每个浮层上逐个显式补中文，
-      // 漏一个就漏一个英文；在根上配一次即可一次性关掉这一整类。
+      // 应用级 locale：不配的话内置文案全是英文
+      // （antd 侧：Empty 空图的 SVG `<title>No data</title>`、Modal 关闭按钮的 `aria-label="Close"`、
+      // Select 的 `No data`、校验规则模板……；X 侧：Conversations / Sender / Actions / Bubble /
+      // Mermaid / Folder 六组）。否则只能在每个浮层上逐个显式补中文，漏一个就漏一个英文；
+      // 在根上配一次即可一次性关掉这两类。
+      // 这里只给 antd 的那份：X 的 `zh_CN` 由 `XAppProvider` 合并进去（X 的 locale 是独立 context，
+      // antd 的传不进去，且漏合时 X 文案掉英文而 `localeCode` 仍报 `zh-cn`——不能靠调用方记得）。
       // 已有的显式中文文案不受影响：显式值优先于 locale 提供的默认值。
       locale={zhCN}
       // 全局关掉「两个汉字之间插空格」：antd 默认把 `编辑` / `保存` 渲染成 `编 辑`，
@@ -42,6 +49,6 @@ export function Providers({ children }: { children: ReactNode }): ReactNode {
           <AskUserHost />
         </AntdApp>
       </DensityProvider>
-    </ConfigProvider>
+    </XAppProvider>
   );
 }

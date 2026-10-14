@@ -24,6 +24,7 @@ import type { ReactNode } from 'react';
 import { EllipsisText } from '../../base/ellipsis-text';
 import { JsonText } from '../../base/json-text';
 import { MonoText } from '../../base/mono-text';
+import { SHRINKABLE_TITLE_STYLE } from '../../base/shrinkable-collapse-title';
 import { AgentRunStateTag } from './agent-run-state-tag';
 import type { ToolGroupEntry, ToolItem, ToolOutput } from './render-blocks';
 import { MISSING_REASON_LABELS, TOOL_FAMILY_LABELS, truncationNote } from './types';
@@ -101,6 +102,8 @@ export function ToolItemDetail({ entry, open, onOpenChange, missingReason }: Too
       destroyOnHidden
       activeKey={open ? [PANEL_KEY] : []}
       onChange={(keys) => onOpenChange(keys.length > 0)}
+      // 摘要行是 `nowrap` 的长命令：标题不给收缩，它会把整行顶宽 ⇒ 时间轴冒出横向滚动条（见常量处）
+      styles={SHRINKABLE_TITLE_STYLE}
       items={[{ key: PANEL_KEY, label, children }]}
     />
   );
@@ -119,11 +122,19 @@ function CallSummary({ item, missingReason }: { item: ToolItem; missingReason: s
   return (
     <Flex align="center" gap={4} wrap>
       <IdentityLabel item={item} />
-      {summary.missing ? (
-        <Typography.Text type="secondary">{summary.text}</Typography.Text>
-      ) : (
-        <EllipsisText text={summary.text} />
-      )}
+      {/*
+        摘要那一格**必须自己可收缩**（`minWidth: 0` + `flex: 1`）——
+        `EllipsisText` 的 `max-width: 100%` 分母是**整个容器**，不是「扣掉牌子与状态标签之后的剩余宽度」。
+        不套这一层的话，长摘要会吃满一整行、把状态标签挤到第二行，而它自己到容器宽度才截断：
+        症状就是「一行装不下也不省略，而是换行」。
+      */}
+      <Flex style={{ minWidth: 0, flex: 1 }}>
+        {summary.missing ? (
+          <Typography.Text type="secondary">{summary.text}</Typography.Text>
+        ) : (
+          <EllipsisText text={summary.text} />
+        )}
+      </Flex>
       {/* 失败的结果要看得见：`AgentRunStateTag` 在结果到手时不表态，这一格不能也沉默 */}
       {item.output !== null && item.output.status === 'error' && <Tag color="error">失败</Tag>}
       <AgentRunStateTag

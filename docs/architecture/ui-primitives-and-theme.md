@@ -19,7 +19,7 @@
 - **EmptyState / Toolbar / EllipsisText**：纯 props 展示。**format.ts**：`formatBytes`（1024 进制、非有限数按 0）/ `formatDateTime`（ISO → `YYYY-MM-DD HH:mm`，非法输入原样返回）/ `shortHash`；原则是任何非法输入都要有可读兜底，绝不让 `NaN` / `Invalid Date` 上界面。
 - **testing/resize-observer.ts**：jsdom 无 `ResizeObserver`，antd Splitter 直接 `new` 全局构造器会 `ReferenceError`；桩**刻意不进共享 setup**（否则「无 ResizeObserver 也报初值」兜底分支永远测不到）；`installResizeObserverStub()` **顺带**装 matchMedia 桩（antd Table 两个 api 都要用，分两个入口必漏装一个）；替身只记账、从不调回调。
 - **globals.css**（应用侧）：主题底色变量（`--app-bg/-fg/-border/-muted/-selected`）+ 盒模型复位；字号间距一律 antd token。`.ant-app` 高度链必须内联到位（`height:100%` + 纵向 flex，断链则整页被内容撑长、滚动条不出现）。两组动效类（`aieval-activity-sweep` / `aieval-stream-cursor`）类名由 ui 包带上、样式只在此一处定义，只用既有主题变量（不构成第三处真源）；`prefers-reduced-motion` 兜底（动效静止成动态文本且颜色一起还原；光标保留只是不闪）。
-- **providers.tsx**（应用侧根 ConfigProvider 两项应用级配置）：`locale={zhCN}`（不配则 antd 内置文案全英文——`No data`、`aria-label="Close"` 一整类问题一次性关掉）；`button` 组件配 `autoInsertSpace: false`（否则「编辑」渲染成「编 辑」，可访问名 ≠ 可见文案，按名定位失配）。
+- **providers.tsx**（应用侧根装配，根 Provider 是 `XAppProvider`）：`XAppProvider` 是 X 的 `XProvider` 加本仓外壳，X 的 locale 合并与 `boxShadow*` 覆盖都收在壳里（见 `base/x-provider.tsx`），故本文件**不 import `@ant-design/x`**（装配侧解析不到它，也没必要）。本文件只给两项应用级配置：`locale={zhCN}`（antd 那份；不配则 antd 内置文案全英文——`No data`、`aria-label="Close"` 一整类问题一次性关掉）；`button` 组件配 `autoInsertSpace: false`（否则「编辑」渲染成「编 辑」，可访问名 ≠ 可见文案，按名定位失配）。**边界**：X 组件的文案只认壳里合并的那份 X locale（X 的 locale 是独立 context，antd 的传不进去）——合并在壳里而不是本文件，是为了让调用方没有「忘了合并」这个选项：漏合时 X 六组文案掉英文而 `localeCode` 仍报 `zh-cn`，症状到不了台面上。
 
 ## 数据与契约
 

@@ -3,6 +3,8 @@ export { DensityProvider, useDensityMode } from './base/density-context';
 export { COMPACT_FONT_TOKENS, compactTheme, type DensityMode } from './base/density';
 export { SYSTEM_DARK_QUERY, readSystemDark, resolveThemeMode, type ThemePreference } from './base/theme-resolve';
 export { useAppliedThemeMode, useResolvedTheme, type ResolvedTheme, type UseResolvedThemeOptions } from './base/app-theme';
+// 根 Provider 的壳：X 的 locale 合并与暗色阴影覆盖都收在壳里，装配侧（`apps/web-next`）不碰 `@ant-design/x`
+export { XAppProvider, type XAppProviderProps } from './base/x-provider';
 export { PageShell, type PageShellProps } from './base/page-shell';
 export { readStoredPreference, useStoredWidth } from './base/stored-preference';
 export { SplitPane, type SplitPaneProps } from './base/split-pane';
@@ -35,7 +37,6 @@ export {
 } from './base/table-scroll-area';
 export { formatBytes, formatDateTime, shortHash } from './base/format';
 export { MonoText, type MonoTextProps } from './base/mono-text';
-export { MarkdownText, type MarkdownTextProps } from './base/markdown-text';
 export { RubricSummaryText, RubricTable, type RubricTableProps } from './composite/rubric-table';
 export { RubricAdjustModal, type RubricAdjustModalProps } from './composite/rubric-adjust-modal';
 export {

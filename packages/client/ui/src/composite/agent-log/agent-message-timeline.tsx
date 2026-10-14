@@ -32,7 +32,7 @@ import {
   type BlockRenderContext,
   type BlockRenderer,
 } from './block-renderer-registry';
-import { MarkdownText } from '../../base/markdown-text';
+import { XMarkdownText } from '../../base/x-markdown';
 import { formatUsageTriple } from '../../base/usage-metrics';
 
 /**
@@ -317,14 +317,19 @@ function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
 export function UserPromptBlock({ userPrompt }: { userPrompt: NonNullable<SessionNode['userPrompt']> }): ReactNode {
   const { token } = theme.useToken();
   return (
-    <Card size="small" data-testid="agent-log-user-prompt">
-      <Flex vertical gap={token.marginXXS}>
+    <Card
+      size="small"
+      data-testid="agent-log-user-prompt"
+      // 标题走 **Card 的插槽**（不再是正文里的第一行）：它归卡片头，有卡片自己的分隔与排版，
+      // 也不会被正文那套 markdown 排版带着走
+      title={
         <Flex align="center" gap={token.marginXS}>
           <Typography.Text strong>用户提示词</Typography.Text>
           <Typography.Text type="secondary">{formatClock(userPrompt.at)}</Typography.Text>
         </Flex>
-        <MarkdownText text={userPrompt.text} />
-      </Flex>
+      }
+    >
+      <XMarkdownText text={userPrompt.text} open={false} />
     </Card>
   );
 }
