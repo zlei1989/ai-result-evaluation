@@ -457,12 +457,13 @@ describe('vendor-system 的 mcpServers', () => {
 });
 
 describe('AGENT_EVENT_TYPES', () => {
-  it('九个类型、顺序即书写顺序（`vendor-system` 紧随 `log`）', () => {
+  it('十个类型、顺序即书写顺序（`vendor-system` 紧随 `log`）', () => {
     // `vendor-system` 挨着 `log` 排：两者都是**厂商侧投送的事实**（原文 / 归一之后的形状）；
-    // `usage` 之后那一串则是本仓自己发的过程事件（计量 / 改动 / 提问收场 / 评分 / 失败 / 结束），
-    // 其中 `diff-summary` 与 `ask-user` 相邻——两条都是编排层自己算出来的行级观测
+    // `usage` 之后那一串则是本仓自己发的过程事件（计量 / 改动 / 提问收场 / 人工消息落点 / 评分 /
+    // 失败 / 结束），其中 `diff-summary` / `ask-user` / `inject-message` 相邻——三条都是编排层
+    // 自己算出来的行级观测（后两条成对：一条是「模型问人」，一条是「人喂模型」）
     expect([...AGENT_EVENT_TYPES]).toEqual([
-      'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'score', 'error', 'end',
+      'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'inject-message', 'score', 'error', 'end',
     ]);
   });
 

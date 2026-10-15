@@ -13,20 +13,21 @@
 - 标题列 `fixed: 'left'` 左悬浮 + 数值型表格挂横向滚动（`scroll.x = RUNS_TABLE_MIN_WIDTH`）：最小宽度具名常量求和 **96+80+96+150+240 = 662**，求和式里没有裸数字。
 - 宽栏（右栏关）：表格铺满 **1384 / 1384**、无横向滚动；窄栏（视口 800 + 点行打开右栏）：容器 **364 / 662** 可滚 298，标题列 `td`/`th` 恒 **8–248** 不动、状态列 **248 → -50**——左栏窄到装不下五列时标题钉在左边，其余列滑走。
 - 表头用 `sticky` 吸顶（禁 `scroll.y`，防常驻空滚动条）；表头与表体横向同步（滚到底 `th.left === td.left`）；五列 `th` 高 29、不折行。
+- 「标题」格显示 `runListTitle` 的拼法（`apps/web-next/src/runs-view.ts`）：备注非空时是「用例标题 · 备注」，否则只有用例标题；长文本仍走 `EllipsisText` 单行省略 + Tooltip 显全量。
 
 **列表排序**（用户口径：默认「创建时间」倒序，标题 / 状态 / 创建时间三列可排；候选数、执行模式不参与）：
 
 - 默认与服务端同向：`api/runs.ts` 的 `listRunsView` 本就按 `createdAt` 降序，故首屏顺序与「取消排序」后的顺序长得一样（**只看顺序分辨不出这两态，要看表头有没有箭头**）。
-- 「标题」列排的是 `EvalRun.caseTitle`——**创建那一轮时的用例标题快照**（run 上没有自己的标题字段）：用例改名不改写历史轮次，所以排的是历史标题；同一用例的多轮标题必然相同，它们的相对位置由稳定排序决定（见下）。
+- 「标题」列排的是**显示文本本身**（`runListTitle`，与 render 共用同一份拼法）：备注为空时就是 `EvalRun.caseTitle`——**创建那一轮时的用例标题快照**，用例改名不改写历史轮次；备注非空时是「用例标题 · 备注」，同一用例的多轮因此可以不同名（正是备注的用途），同值时相对位置由稳定排序决定（见下）。
 - 「状态」列按**业务生命周期** `idle → running → partial → done`（`RUN_STATUS_RANK`，写成 `Record<EvalRun['status'], number>` 让契约新增状态时 tsc 直接报错）。不按枚举名、也不按中文标签拼音排——那会把「部分完成」插在「未开始」前面。枚举外的状态进不了这张表（`run.json` 不合枚举会被 run-store 的 `safeParse` 跳过，只留 WARN）。
 - 文本 / 时间 / 空值 / 稳定排序口径与用例页逐字相同（`compareSortText` / `compareSortTime` 是**就地两份实现**之一，改一处必须同时改另一处）：中文拼音序 + 数字按数值、空值与坏值当最小值、同值行保持服务端 `createdAt` 降序、比较器只写升序语义（方向由 antd 取反）。
 - 三态与默认列行为同用例页：默认列「创建时间」进入即降序 → 点 1 次升序 → 点 2 次取消 → 点 3 次回降序；其余列升序 → 降序 → 取消；`defaultSortOrder` 只在**页面初始**生效，点过别的列之后该列的首次方向回到 `sortDirections` 首项（时间列显式写了 `['descend','ascend']`，所以首次点击即降序）。
 
-**守卫缺口**：与用例页同一处的**零自动化守卫**（排序口径不抽模块、不加单测），判据只有本节这几条口径，改这两张表的列时照本节逐条核对。
+**守卫缺口**：排序**交互**本身仍与用例页同一处的零自动化守卫（比较器就地两份、不抽模块），判据只有本节这几条口径，改这两张表的列时照本节逐条核对；「标题」列的**显示文本**有 `runListTitle` 的纯函数用例与页面接线守卫（`apps/web-next/src/runs-view.test.ts` / `runs-page-wiring.test.ts`）。
 
 ### 详情页（右栏 detail）
 
-- **顶部信息行**：用例标题 · 代码仓库 · 分支（`repoBranch !== null` 的远端轮次才有这一格）· commit（**全量 40 位**，不截短、不挂 Tooltip）· 工作基目录；`extra` 放「编辑 / 删除」（判据与作废口径见《修改、重跑与删除评测》）。
+- **顶部信息行**：用例标题 · 备注（`note` 非空时才有这一格，排**第一行**）· 代码仓库 · 分支（`repoBranch !== null` 的远端轮次才有这一格）· commit（**全量 40 位**，不截短、不挂 Tooltip）· 工作基目录；`extra` 放「编辑 / 删除」（判据与作废口径见《修改、重跑与删除评测》）。备注为空时不摆一行「备注：—」（与「分支只在远端出现」同一条口径）。
 - **串行进度**：`3/6 已完成`（`completionPercent(done, total)`，`total <= 0` 返回 0，绝不让除零的 NaN 流进界面）。
 - **候选卡片列表**，每行一张 Card；卡片底部一行**活动行**只在运行态显示「此刻在做什么」，文案由适配器按同一份词表发下来。
 - **排序与名次**：出分后按 总分降序 → 耗时升序（null 当最差）→ tok（输入+输出）升序（`compareRows`）；**名次 = 1 + 严格优于它的行数**，三项全同的行并列同名次，`rank <= 3` 带排名徽标（并列时挂徽标的行可以多于三行）。tok / 轮次两格在**真有子智能体分量**时多一行 Tooltip（缓存命中是派生值、不挂浮层）。
@@ -60,12 +61,12 @@
 
 「变更详情」「评分详情」「执行日志」「排名」四个右侧主抽屉共用**同一份**几何，字面量唯一落点是 `packages/client/ui/src/base/drawer-geometry.ts`：
 
-- `WIDE_DRAWER_SIZE = 'max(50vw, 800px)'`（CSS `max()`，不在 JS 里量窗口）；`WIDE_DRAWER_STYLES` = `wrapper.maxWidth: '100vw'` + `body.padding: 0`。实测：视口 1920 → **960**（50vw 生效）、1432 → **800**（下限生效）、700 → **700**（`maxWidth` 兜底、`x=0`，不撑出屏幕）。
+- `WIDE_DRAWER_SIZE = 'max(61vw, 800px)'`（CSS `max()`，不在 JS 里量窗口）；`DRAWER_SEMANTIC_STYLES` = `wrapper.maxWidth: '100vw'` + `wrapper.maxHeight: '100vh'` + `body.padding: 0`。实测：视口 1920 → **1171**（61vw 生效）、1300 → **800**（下限生效，接管点在 1312 附近）、700 → **700**（`maxWidth` 兜底、`x=0`，不撑出屏幕）。
 - **高度自适应不写死**：`.ant-drawer-body` 自带 `flex:1; min-height:0; overflow:auto`，内容用 `minHeight: '100%'`（不是 `height`）；**抽屉内唯一滚动容器就是 `.ant-drawer-body`**。
 - `body.padding: 0` ⇒ 内边距由每个抽屉的内容自己给：变更详情的汇总条 / 搜索框 / 文件标题条各自带横向 padding（吸顶底色铺满整宽 ⇒ padding 加在标题条自身）、diff 正文不加；执行日志在滚动区 Flex 加；评分详情在最外层加。
 - **排名抽屉比另三个更吃宽度**（列随候选数增长），但它不改这一份：宽度够不够由表格自己横向滚（见下），不另立一档。
 - **执行日志抽屉是例外**：虚拟列表自持滚动容器（虚拟化需要确定高度的视口，body 的高度靠 flex 取、给不到那个数）——最外层 `height: '100%'`、固定区占自然高度、列表用 flex 取剩余高度；宽度与 `padding: 0` 两条照旧。
-- **环境抽屉有意不统一**：`min(42vw, 640px)`——它是主抽屉内部的第二层抽屉，比主抽屉窄是设计口径。
+- **环境抽屉走二级那一档**：宽度 `NESTED_DRAWER_SIZE = 'min(60vw, 900px)'`（实测视口 1920 下 900px）与语义槽样式 `DRAWER_SEMANTIC_STYLES` 都取自同一份几何常量——它本来就是主抽屉内部的第二层抽屉，比主抽屉窄是设计口径。
 - 不给抽屉加 `resizable`：宽度口径是确定的，再加可拖拽会让「宽度是多少」出现两个答案。
 
 ### 排名抽屉
@@ -95,6 +96,19 @@
 
 **标签列宽 200px 且允许折行**（不截断）：目标原文是判断「达成与否」的前提；列宽不够时折行，多行只会让那一行变高、各候选列跟着对齐。
 
+#### 产物总览（从排名抽屉推出来的第二层）
+
+候选的**交付物**（工作区根下的 `RESULT.md` / `RESULT.html` / `RESULT.svg`）不并进排名表：表里放的是事实读数，交付物的正文要逐份摊开看。入口是排名抽屉 `footer` 上的「产物总览」按钮，点开在二级抽屉里按名次自上而下逐份展示。
+
+- **按钮的可见性判据是「扫到至少一份产物」**（不是「跑完没有」）：`useRunArtifacts` 只在**排名抽屉打开时**扫盘（`enabled = drawer?.kind === 'rank'`），一次扫描 = 每个候选工作区一次 `readdir`。`total > 0` 才画按钮；**读不到清单时画一个置灰的按钮 + Tooltip 挂中文原因**（会自己冒出来的按钮，最怕「没反应」与「压根不在」两种状态分不清）；读取中与「确实没有产物」都不画 `footer`。
+- **一份产物一张卡**，`Card size="small"`；标题四段 `第 N 名 · 智能体 · 模型 · 思考强度`（未出分的候选首段写行状态、强度缺省写「未指定」，与排名表第一格同源），卡头右侧另给文件名（一个候选可能有多份，四段标题里不掺文件名）。
+- **顺序与名次只有一份判据**（`orderForDisplay` + `rankOf`）：卡片顺序 = 排名表的列序；本件不自己排、不自己算名次。
+- **没有产物的候选也占一张卡**：正文是 `EmptyState`（「这一行没有产物 / 执行目录里没有 RESULT.md / RESULT.html / RESULT.svg」）。跳过它等于把「没产出」说成「这一行不存在」——横向比较时那一格正是信息。
+- **渲染分档 = 产物后缀**（`ArtifactKind` 与白名单同源）：`md` 走本仓的 markdown 外壳（`XMarkdownText`，原始 HTML 转义、标题降级、外链新窗口）；`html` / `svg` 走 **`sandbox=""` 的 iframe**——它们是独立文档，内联渲染会把它自己的 CSS 铺到抽屉上、脚本还会拿到宿主上下文。脚本因此不执行（浏览器控制台会留一句 `Blocked script execution in 'about:srcdoc' …`），代价是跨源、读不到 `contentDocument` ⇒ **不量内容高度**，固定 `ARTIFACT_FRAME_HEIGHT`（420px）+ 内部滚动。SVG 另加一层最小 HTML 壳（`html,body{height:100%}` + `svg{width:100%;height:auto;max-height:100%}`）：直接 srcdoc 原始 SVG 会落在 300×150 的默认尺寸上，正方形图形还会溢出框高。
+- **三态都有可读文案**：加载中 `Skeleton`、读失败 `Alert`、正文被截断一行 `warning`（「超过 N 字符，只显示前一部分」）。截断是**可见的降级**——只给半份正文而不说，会让人以为它就写了这么多。
+- **取数不在 `ui` 包**：每份正文由页面传 `renderBody({ rowId, name })` 进来，每份一个组件实例（`ArtifactFileBody`，hook 不能按「行 × 文件名」循环调）。于是**一份读不出来只坏那一张卡**，其余照常渲染。
+- 二级抽屉的几何与推动量沿用同一条口径（`NESTED_DRAWER_SIZE` / `MAIN_DRAWER_PUSH`）：宽屏下主抽屉被推开 **360px**、二级恒窄于主；`Esc` 只关最上层那一层。
+
 ### 变更详情抽屉
 
 形态是**逐文件**的「文件名 + diff 正文」一个可滚动列表，滚动时当前文件标题吸顶，正文进视口才加载：
@@ -112,8 +126,8 @@
 
 大段原文（模型原始返回、逐行执行原文、评分会话的逐行原文）**不占主抽屉正文高度**：入口是按钮，点开在二级抽屉里展示。
 
-- 几何：`NESTED_DRAWER_SIZE = 'min(60vw, 900px)'`（实测 859px = 60vw）；语义槽样式与主抽屉共用一份（`DRAWER_SEMANTIC_STYLES`，只有宽度分档）；`destroyOnHidden` + `mask.closable`。
-- **主抽屉被推开 360px**：`MAIN_DRAWER_PUSH = { distance: 360 }`，实测主抽屉 `x` 从 632 → 272。**push 的位移量归属「被推开的那一方」**：rc-drawer 的 `pushDistance = push?.distance ?? parentPushDistance ?? 180`，子抽屉 `open` 时调的是 `parentContext.push()` ⇒ 把 `push` 写在**二级抽屉**上是空转（只挪默认的 180；写主抽屉才是 -360）。`NestedDrawer` 因此**不写** `push`，并由守卫钉住「二级抽屉那一侧不许再写」。
+- 几何：`NESTED_DRAWER_SIZE = 'min(60vw, 900px)'`（实测：视口 1920 → 900，上限生效；1432 → 859 = 60vw）；**二级恒窄于主抽屉**（两档各按自己的 vw 项走时 61vw > `min(60vw, 900px)`；视口窄到 61vw < 800px——约 1312px 以下——主抽屉改走 800px 下限，而二级最多 60vw < 800px）；语义槽样式与主抽屉共用一份（`DRAWER_SEMANTIC_STYLES`，只有宽度分档）；`destroyOnHidden` + `mask.closable`。
+- **主抽屉被推开 360px**：`MAIN_DRAWER_PUSH = { distance: 360 }`，实测（视口 1920、主抽屉 1171px）主抽屉 `x` 从 749 → 389。**push 的位移量归属「被推开的那一方」**：rc-drawer 的 `pushDistance = push?.distance ?? parentPushDistance ?? 180`，子抽屉 `open` 时调的是 `parentContext.push()` ⇒ 把 `push` 写在**二级抽屉**上是空转（只挪默认的 180；写主抽屉才是 -360）。`NestedDrawer` 因此**不写** `push`，并由守卫钉住「二级抽屉那一侧不许再写」。
 - 四个入口同模式：「原始输出 N 条」（执行日志抽屉固定区，**就地**成行、不折叠，旁有「重新读取」）、「查看原始返回」（评分详情 footer 按钮，旁边并排「原始输出 N 条」——评分那条流的同形入口，judging 期间实时盯评审）、卡片底部的「原始结果」（task / ask-user 卡片，同一个件的另一变体）、评分详情 footer 的「原始输出 N 条」（评审会话的 `log` 原文，行渲染与执行日志那份**共用一个实现**）。
 - **虚拟滚动只有一个实现**（`base/virtual-list.tsx`：`Listy` + 高度测量 + 退化兜底 + `scrollToKey`），轮次时间轴与逐行原文共用；守卫钉「只许出现在原语里，且两处内容都必须走它」。虚拟化生效：50 行原文只挂载 **9** 个可见节点（宿主 `clientHeight 664` / `scrollHeight 8950`），滚到底降到 2；抽屉正文**没有第二条滚动条**。
 - 「下载台账」按钮在原文行上（`ToolbarAction` 的 `placement: 'raw'`，预设里只有它标这一格）；整行渲不渲染由 `rawRowVisible` 判（有原文入口或有要渲的动作才画）。真机原文行 = `原始输出 50 条 · 重新读取 · 下载台账`。
@@ -131,6 +145,14 @@
 - 预算口径：`truncateDiff(text, settings.diffBudgetBytes)` 默认 **262144 字节 = 256 KB**，按 `diff --git` 整段保留到预算为止，超出部分只留文件名（丢弃的逐个点名写进截断说明）；**单文件正文不做二次截断**。
 - `extractDiffFile`（按路径取某文件那段 diff 原文）：**必须复用** `splitDiffFiles` 的切分逻辑（两份切分器漂移的表现是「索引里有的文件，正文永远取不到」）；切出的路径**必须套一次 `rewriteRenamePath`** 再比对（索引路径来自 `--numstat` 且已归一，正文段路径是 `diff --git` 原样的，花括号重命名 `packages/{old => new}/x.ts` 会让两个键不相等；该函数对已归一路径幂等）；同名文件在「已提交」与「未提交」两段都出现时取**未提交**段（倒序扫描）。
 - `dark` 由调用方传入 `useAppliedThemeMode()`（即 `themeMode === 'dark'`），**不要**就地再调 `useResolvedTheme()`——它的偏好缺省是 `'dark'`，SSR 兜底那一拍会拿到暗色，diff 按暗色渲染而 `ConfigProvider` 是明亮主题 ⇒ 半亮主题。
+- **候选产物**（`contracts/src/artifact.ts`）：`ARTIFACT_EXTENSIONS = ['md','html','svg']` 是**唯一一份白名单**，数组顺序就是同一候选内多份产物的读取顺序；`artifactKindOf(name)` 大小写不敏感、只认**一层文件名**（`RESULT.md.bak` / `sub/RESULT.md` / `RESULT.md/../x` 都不成立，这条是读盘那一路路径穿越的第一道门），识别、排序、渲染分档、占位文案（`ARTIFACT_FILE_HINT`）全部从它派生。两个上限：`ARTIFACT_READ_MAX_BYTES = 8 MB`（超过**拒绝**，连读都不读）、`ARTIFACT_TEXT_MAX_CHARS = 100 000`（超过**截断** + `truncated`，界面如实说明）。
+- `RunArtifactIndexSchema`（轮级）：`rows[]`（`rowId` + `files[]` 的 `name` / `kind` / `bytes`）+ `total`。**每个候选一行，没有产物的行照样进来**（`files: []`）；行的顺序 = 快照顺序，**服务端不排名**。
+- `RowArtifactFileSchema`（行级）：`name` / `kind` / `text` / `bytes`（盘上完整字节数，不是 `text` 长度）/ `truncated`。
+- 路由：`GET /api/runs/[runId]/artifacts` → 索引；`GET /api/runs/[runId]/rows/[rowId]/artifacts?name=` → 单份正文（`name` 缺失 ⇒ 400 `INVALID_QUERY`；`searchParams.get` 已解过码，**不再二次 `decodeURIComponent`**，同 diff 路由那条坑）。
+- 读取的四类拒绝各说各话：名字不合法 / 越出工作区 ⇒ `INVALID_QUERY`；文件不在 ⇒ `NOT_FOUND`；同名是目录 / 不是普通文件 / 超过读取上限 / 非 UTF-8 文本 ⇒ `INVALID_QUERY` + 中文原因（**不给半个正文**）；工作区还没建 ⇒ `CONFLICT`（与该行的 diff 索引同档同语气）。
+- **索引逐行降级**：某一行扫不动（权限 / 坏目录）只把那一行记成 `files: []` + 一条 WARN，不把整张总览打挂；工作区不存在**不是错误**（没跑过就是没有产物）。
+- hook：`useRunArtifacts(runId, enabled)`（`revalidateOnFocus: false`，与 diff 索引同口径）与 `useRowArtifactFile(runId, rowId, name)`（`name === undefined` 时 key 传 `null`，不另造 `enabled` 布尔）；正文路径走 `encodeURIComponent`。
+- **没有缓存**：一次扫描 = 每行一次 `readdir` + 每份一次 `stat`，比现场算 diff 便宜几个数量级；缓存会让「候选刚写完的那一份」迟到半分钟才出现。打开期间不自动重扫——关掉排名抽屉再打开即重扫。
 
 ## 状态机与时序
 
@@ -146,12 +168,13 @@
 - **transform 会静默杀死 sticky 吸顶**：静止态、无二级抽屉打开时已核实 body 没有任何 `transform` 祖先（`.ant-drawer` 是 `position: fixed`）；但 antd 开关动画在 wrapper 上写过 `transform`（整段移动过程都有包含块），二级抽屉打开期间被推开的主抽屉也被写常驻内联 `transform: translateX(-360px)`——这两处的吸顶是否失效**都没有实测，如实登记**；若再给抽屉加常驻 `transform`，吸顶会静默失效，这一条是护栏。
 - **已加载页不回收、列表无虚拟化**：一路滚下去 DOM 会线性涨到「已加载的全部条目」——刻意换来的「不重排」。
 - **虚拟化要求宿主高度有界**：量不到高度时 `VirtualList` 退化为全量渲染，症状是**不报错、只是又变慢**（已写进原语文件头；jsdom 靠这条才能数到全部内容）。
-- 环境抽屉里那一行 `push` 仍写在二级抽屉上、属空转（机制见上）；效果已由主抽屉那份覆盖。
 - **明暗逐态观感未复核**：已量的是几何（与主题无关）；深色下三个图标与置灰态的对比度未实测截图。
 - **窄屏（≤700）二级抽屉宽度**只按 `min(60vw, 900px)` 推算，未实测；二级抽屉里超长行有没有横向滚动也未量。
-- **排名表的横向滚动与左锁列**在真机上量过两个端点：3 候选（表格最小宽 600px，装得进 800px 抽屉 ⇒ 无横滚）与 16 候选（2680px ⇒ 必横滚，滚到底时首列恒 216–336px 不动）。中间档与 ≤700 窄屏未逐一实测。
+- **排名表的横向滚动与左锁列**在真机上量过两个端点：3 候选（表格最小宽 600px < 抽屉宽度下限 800px ⇒ 无横滚）与 16 候选（2680px ⇒ 必横滚，滚到底时首列恒 216–336px 不动）。中间档与 ≤700 窄屏未逐一实测。
 - **排名表里超长目标**（18 字以上）会折成两行；折行后的行高与各候选列对齐未在真机量过（夹具与真机的目标都短）。
 - **深色主题下排名表**的组名浅底与名次金 Tag 的对比度未截图复核。
+- **产物总览的三条边界**：① `html` / `svg` 在 `sandbox=""` 的 iframe 里渲染——脚本不执行、表单 / 弹窗 / 顶层跳转全挡，代价是跨源读不到 `contentDocument`，故**不量内容高度**（固定 420px + 内部滚动；白底是刻意的，产物是独立文档）；② 只认工作区**根目录第一层**的白名单后缀，软链与同名目录都不算；③ **presence-based**：用例仓库本来就有同名文件时也会被当成该候选的产物（不按 git 状态过滤），运行中打开可能读到正在写的半成品。
+- **产物总览的观感未复核**：深色主题下的卡片与白底 iframe 的对比、候选多（≥16）时一列长滚动的观感、超过 10 万字符时那行截断提示的真机呈现，都没有截图。
 - **两页标题列下限（240）是两份独立常量**：数值相同是「两页标题列同形」的结果，不是共享真源；漂移的代价只是两页最小宽度不同，不是缺陷。
 - `scroll.x` + `sticky` 的组合结论只在本机 chromium 量过（rc-table 把 `scrollXStyle` 落 `.ant-table-body`、表头另拆 `.ant-table-sticky-holder`实现细节）；升 rc-table 大版本时要重测这一格。
 - 列表页纵向吸顶只各滚了 14 / 16px（两页真机各只有 1 条数据）；「长列表滚很深时表头是否一直吸住」未在真机走到，由 `sticky` 语义与既有用例兜着。

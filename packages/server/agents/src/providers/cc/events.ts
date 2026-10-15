@@ -6,10 +6,11 @@
  *     工具 / 推理块那一条（`[{type:'tool_use',…}]`）**额外带一句人话摘要**
  *     （`log.summary`，用户口径：卡片底部的活动行要显示具体的消息，不能是 JSON）——
  *     原始负载仍然逐字在 `text` 里，抽屉的证据一个字没少；
- *     **唯一一类例外是「流式 / 进度帧」**：`stream_event` 与
- *     `system/thinking_tokens` 逐 token 各一条，落进这条兜底就是「抽屉刷成 JSON 流水 + 单行产物涨到
- *     MB 级」（真机 11,629 条，见那一支的注释）。它们**显式丢弃**（不是默默丢弃）：登记点是这条规则
- *     + 知识库《消息规范》的「非渲染增量」表——「不许静默丢弃」对它们依然成立，只是处置写的是「丢」；
+ *     **例外有三类**：`stream_event` 与 `system/thinking_tokens` 逐 token 各一条，落进这条兜底就是
+ *     「抽屉刷成 JSON 流水 + 单行产物涨到 MB 级」（真机 11,629 条，见那一支的注释）；
+ *     **历史重放帧**（`isReplay`，续接时 CLI 把已发生过的用户消息再投一遍）则是「这份内容本行已有」。
+ *     三类都**显式丢弃**（不是默默丢弃）：登记点是这条规则 + 知识库《消息规范》的「非渲染增量」表
+ *     ——「不许静默丢弃」依然成立，只是处置写的是「丢」；
  *  3. 计量只在 `result` 消息上取：`usage.input_tokens` /
  *     `usage.cache_read_input_tokens` / `usage.output_tokens` **三项齐了才有值**；缺一项就是
  *     「没采到」→ null 并落一条 WARN，绝不填 0（0 会让人得出「这家很省」的错误结论）；
@@ -27,7 +28,7 @@
  * （`result_index` 的注释：*Distinct from num_turns, which counts model round-trips within one turn*）。
  * 为什么不用 `num_turns` 当唯一口径：它只在收尾那一条消息上，跑动期界面只能干等（实测那一轮
  * 60 次往返、整轮只发得出一条 `usage`，界面停在「轮次 1」）；我们的计数每条 assistant 消息都在涨。
- * `num_turns` 降级为**兜底**：一条 `message.id` 都没看到时用它，两者不一致时落一条 WARN（不静默）。
+ * `num_turns` 降级为**兜底**：一条 `message.id` 都没看到时用它；**两者不一致就落一条 WARN**（多报与少报的文案各说各的下一步：多报那一档还可能是我们按 `message.id` 去重少算）。
  * 注意：`parent_tool_use_id` 非空的 assistant 消息来自 Task 子智能体，不在主循环的往返计数里
  * （与 `result.usage` 排除侧链的口径一致）。
  */
@@ -37,23 +38,67 @@ import {
   subagentDispatchSummary,
   subagentSettledSummary,
   toolCallSummary,
+  toolDeniedSummary,
   toolErrorSummary,
 } from '../../activity';
 import { logDraft, safeStringify, unknownEventDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
-import { classifyAgentMessage, type FailureContext } from '../../errors';
+import { classifyAgentMessage, type AgentFailure, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
 import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
-import { lookupClaudeTaskName, rememberClaudeTaskName } from './message';
+import type { AgentErrorCode } from '../../types';
+import { isDispatchShaped, lookupClaudeTaskName, rememberClaudeTaskName } from './message';
 import type { ClaudeContextUsage } from './sdk';
 
 /** 子智能体消息的标记字段：非空即「主循环之外」，不参与轮次计数 */
 const SIDE_CHAIN_FIELD = 'parent_tool_use_id';
+
+/**
+ * 这条帧的侧链归属：**空串按「不属于任何侧链」处置**（返回 `null`）。
+ *
+ * 为什么空串也要认成主会话：`message.ts` 那三处（快照 / 增量 / 工具结果）用的逐字是同一条口径
+ * （`parentCallId === null || parentCallId === '' ? null : parentCallId`）。两处不一致的后果很具体：
+ * 事件侧把它当侧链 ⇒ 那一帧**不进 `turnKeys`**（轮次永不推进），而消息侧仍按主会话取号
+ * ⇒ 此后每一条同类消息都拿到**同一个轮次号**、挤进同一个载体、按 `i:<index>` 互相覆盖。
+ * 厂商今天不发空串（真机帧里要么缺席、要么是 tool_use id），故这一格是**防御**而不是现网缺陷。
+ */
+function sideChainCallIdOf(message: Record<string, unknown> | null): string | null {
+  const value = readString(message, SIDE_CHAIN_FIELD);
+  return value === null || value === '' ? null : value;
+}
 
 /** SDK 原生的子任务生命周期消息。**默认就发**，不需要任何 SDK 选项 */
 const TASK_STARTED = 'task_started';
 const TASK_NOTIFICATION = 'task_notification';
 /** `system` 下承载「厂商系统层事实」的那一个 subtype（真机 2.1.281 实测） */
 const INIT_SUBTYPE = 'init';
+/**
+ * `system` 下那个**工具调用被当场拒**的 subtype（`SDKPermissionDeniedMessage`）。
+ * 它在**评分档是常态**：那一段没有批准面（`dontAsk` + `permissionPrompts: 'none'`），
+ * 厂商据此把该拒的当场拒掉并发这一帧。
+ */
+const PERMISSION_DENIED_SUBTYPE = 'permission_denied';
+/**
+ * `system` 下那条**上游重试**的 subtype（`SDKAPIRetryMessage`）。
+ *
+ * 真机形状逐字：`{subtype:'api_retry', attempt:1, max_retries:10, retry_delay_ms:529, error_status:500,
+ * error:'server_error'}`。它承载的正是「这一行现在为什么不动」——上游连续 500 时真机跑出过
+ * **10 次重试、墙钟约 3 分钟**的一串帧，而在此之前它们只落原始 JSON：活动行一个字都不说，
+ * 界面看起来像卡死。厂商在这几格里已经说清了「第几次、等多久、什么错」⇒ 给一句摘要，
+ * 原始负载照旧整条落盘（排障要的是那份原文）。
+ */
+const API_RETRY_SUBTYPE = 'api_retry';
+/**
+ * `system` 下那条**会话状态**的 subtype（`SDKStatusMessage`，值域 `'compacting' | 'requesting' | null`）。
+ *
+ * 三档的实际含义（真机读数 + SDK 类型面逐字）：
+ *   · `status: 'requesting'`：**每轮模型请求前一条**，是心跳、零信息量（实测 25 轮的运行里 25 条）
+ *     ⇒ 维持原样只落原始负载（它还是「这一轮什么时候开始」的时间戳证据，量级也小）；
+ *   · `status: 'compacting'`：自动压缩**开始**；
+ *   · `status: null` + `compact_result: 'success' | 'failed'`（+ `compact_error`）：压缩**结束**。
+ * 后两档是长过程里唯一的行级出口——压缩失败（真机：`too_few_groups`，压不动）此前只躺在原始 JSON 里，
+ * 界面既不知道它在压缩、也不知道它压失败了。
+ */
+const STATUS_SUBTYPE = 'status';
 /**
  * `system` 下那个**逐 token 的思考进度** subtype。
  *
@@ -146,6 +191,37 @@ export function skillsDraftOf(
   });
 }
 
+/**
+ * `system/init` 自带的技能名单 → `vendor-system.skills` 那一格的**回落来源**。
+ *
+ * 为什么要它：`getContextUsage()` 那条探针**只在「这一行配了技能」时才跑**（编排层按「空集不给键」
+ * 的口径不下发 `skills`）⇒ 没配技能的行上，收尾那条事件本来一个 `skills` 格都不带，而下游把
+ * 「没有这一格」读成**厂商没投送**——可厂商在 `system/init` 里明明投了（真机 19 条，含本次注入的
+ * 那一条）。这一格是**免费的**：init 帧本来就在手上。
+ *
+ * 两条来源的分工：探针给的 `skillFrontmatter` **带来源** ⇒ 探针优先；本函数只在它没采到时接管。
+ * 只有名字就没有来源 ⇒ `source` / `path` 都记 `null`、`origin` 走 `classifySkillOrigin` 在无来源
+ * 信息时的那一档（`'unverified'`）——**不猜**「这条是厂商自带还是我们装的」。
+ *
+ * 形状口径：`skills` 不是数组 ⇒ `undefined`（不认识 ⇒ 不带这一格，与「采不到」同形）；
+ * 是数组（含空数组）就照映射——`[]` 的语义是「厂商投送了、一条都没有」，与「没有这一格」是两句话。
+ */
+export function skillsFromInitFrame(
+  initRecord: Record<string, unknown> | null,
+  layout: { configHome: string; cwd: string },
+): VendorSkill[] | undefined {
+  const raw = initRecord?.['skills'];
+  if (!Array.isArray(raw)) return undefined;
+  return raw
+    .filter((one): one is string => typeof one === 'string' && one !== '')
+    .map((name) => ({
+      name,
+      source: null,
+      path: null,
+      origin: classifySkillOrigin({ source: null, path: null, configHome: layout.configHome, cwd: layout.cwd }),
+    }));
+}
+
 export function projectClaudeMessage(raw: unknown, state: TurnState, context: FailureContext): TurnProjection {
   const message = asRecord(raw);
   const uuid = readString(message, 'uuid');
@@ -154,12 +230,30 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
     if (state.seen.has(uuid)) return emptyProjection();
     state.seen.add(uuid);
   }
+  /**
+   * **历史重放帧**（`SDKUserMessageReplay.isReplay`）：续接（`resume`）时 CLI 会把这条会话
+   * **已经发生过**的用户侧消息重新投一遍。
+   *
+   * 为什么不能按新内容收下：重放帧带的是**自己的** `uuid`（与原帧不同）⇒ 上面那张去重表挡不住
+   * 它；而追问这一段是**追加到同一行**上的（工作区与产物都不重置，见编排层 `followUpRow` 的
+   * 「计量是这一行的累计产出」），那些内容早就在本行的 `events.jsonl` / `messages.jsonl` 里
+   * ⇒ 收下就是把上一轮的工具结果连同证据再写一遍（消息侧还会把任务台账的 patch 再放一遍）。
+   *
+   * 这是本文件**第三类**显式登记的丢弃（前两类是 `stream_event` 与 `system/thinking_tokens`，
+   * 见文件头规则 2）：「不许静默丢弃」对它依然成立——处置写的是「丢」，依据是「这份内容本行已有」。
+   */
+  if (message?.isReplay === true) return emptyProjection();
   const type = readString(message, 'type') ?? 'unknown';
   if (type === 'result') return projectResult(message, state, context);
   if (type === 'assistant') {
     const drafts = assistantDrafts(message, raw);
     // 轮次先记（与 token 估算无关：采不到用量也照样是一次模型往返）
     const turns = countModelRoundTrip(message, state);
+    /**
+     * 这一帧自带的**上游错误**与**被截断**两格（厂商在合成的 API-error 消息上写它们）：
+     * 落一条点名日志，终局错误另折成 `failure`（判据见 `assistantFailure`）。
+     */
+    const failure = assistantFailure(message, drafts);
     // 跑动期的用量估算：**只进事件**（`tokensEstimated`），绝不进结果（见 estimateTokens）
     return {
       drafts,
@@ -174,16 +268,69 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
        * 没有归属就是 `null`，读的人不必再问「缺省与 `null` 在这里有没有别」）。
        */
       turn: turns === null ? null : { subagentId: null, round: turns },
-      failure: null,
+      failure,
     };
   }
   // 子智能体生命周期：`system` 下只有这两个 subtype 有语义（其余仍走下面的兜底）
   if (type === 'system') {
     const subagent = subagentDraft(message);
     if (subagent !== null) return { drafts: [subagent], tokens: null, turns: null, failure: null };
+    /**
+     * **工具调用被当场拒**（`system/permission_denied`）：给一条带人话摘要的日志。
+     *
+     * 为什么这一帧必须有摘要、不能只落原始 JSON：它是**评分档的常态**——那一段走的是
+     * `dontAsk` + `permissionPrompts: 'none'`（本进程没有批准面），厂商 JSDoc 逐字说明
+     * 「dontAsk 模式、headless auto-deny、deny rule 都走这条」。而它是「模型想写盘但被拒」的
+     * **唯一行级出口**（`decision_reason` 与 `message` 是那句给模型看的原因）⇒ 原来只落一坨 JSON 时，
+     * 活动行一个字都不说，排障只能逐笔翻原始负载。
+     *
+     * **原始负载照发**（与 `init` 那一支同形）：摘要之外仍要留证，消费者按 `tool_name` / `agent_id`
+     * 自行配对。刻意**不**折成 failure：被拒一次不是这一行失败了——模型会看到工具结果并换一条路。
+     *
+     * ⚠️ **只发一条**（不是「摘要一条 + 原始负载一条」）：那两条的 `text` 逐字相同
+     * （`unknownEventDraft(raw)` 就是 `logDraft('stdout', safeStringify(raw))`）⇒ 落两条等于
+     * 同一坨 JSON 在「原始输出」抽屉里出现两遍、日志条数翻倍，而**一个事实都没有多**。
+     * 这里带上摘要的那一条本身就含完整原文，两条信息一格不丢。
+     */
+    if (readString(message, 'subtype') === PERMISSION_DENIED_SUBTYPE) {
+      return {
+        drafts: [logDraft('stdout', safeStringify(raw), permissionDeniedSummary(message))],
+        tokens: null,
+        turns: null,
+        failure: null,
+      };
+    }
     // 厂商系统层事实：`init` 那一行的六格归一成一条独立事件（**原始负载那条 log 照发**）
     if (readString(message, 'subtype') === INIT_SUBTYPE) {
       return { drafts: [vendorSystemDraftOf(message), unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
+    }
+    /**
+     * **上游重试**（`api_retry`）：给活动行一句「第几次、等多久、什么错」，原始负载照发。
+     *
+     * 为什么它值得独占一支：这一帧是**长退避期间唯一的行级出口**（真机 500 臂：10 次重试、
+     * 墙钟约 3 分钟，期间没有任何 assistant / result）。不给摘要就等于让界面在那三分钟里
+     * 一个字都不说——读者分不清「在重试」与「卡死了」。
+     */
+    if (readString(message, 'subtype') === API_RETRY_SUBTYPE) {
+      return {
+        drafts: [logDraft('stdout', safeStringify(raw), retrySummary(message))],
+        tokens: null,
+        turns: null,
+        failure: null,
+      };
+    }
+    /**
+     * **会话状态**：只有压缩那两档给摘要（`requesting` 是每轮一条的心跳，照旧只落原始负载）。
+     * 判据与三档的含义见 `STATUS_SUBTYPE` 的注记——压缩是长过程，而它此前在活动行上完全不可见。
+     */
+    if (readString(message, 'subtype') === STATUS_SUBTYPE) {
+      const summary = compactStatusSummary(message);
+      return {
+        drafts: [summary === undefined ? unknownEventDraft(raw) : logDraft('stdout', safeStringify(raw), summary)],
+        tokens: null,
+        turns: null,
+        failure: null,
+      };
     }
   }
   /**
@@ -223,6 +370,137 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
 }
 
 /**
+ * **终局的上游错误档**（`SDKAssistantMessageError` 里重试多少次都是同一个结果的那些）→ 归因码 + 中文原因。
+ *
+ * 为什么必须分档、不能一律判失败：`api_retry` 帧用的是**同一个**错误枚举
+ * （`sdk.d.ts` 的 `SDKAPIRetryMessage.error`）⇒ `overloaded` / `rate_limit` / `server_error`
+ * 这些是「失败了一次、马上自己退避重试」，重试成功后这一行是好的；而 `max_output_tokens` 另有
+ * 自愈通道（`resumed_from_incomplete_thinking`：下一轮接着上一轮的思考块跑完）。
+ * 骨架那一侧的 `failure` 是**最后写入者赢且不会被清除**（`turn.ts` 的消费循环）⇒ 把可重试档
+ * 写进去，就等于让一次自己恢复了的运行永远判失败。
+ *
+ * 表里这几条反过来：重试不会让它们变好，而 CLI **不一定**会为它们写 `result.is_error`
+ * （进程被杀、流被掐断时根本到不了那一帧）⇒ 这一格是它们唯一的行级出口。
+ *
+ * ⚠️ **为什么不走 `classifyAgentMessage`**：那一份归因表的入口是 **HTTP 状态**
+ * （`errors.ts` 的 `statusOf`：读 `status` / `statusCode`，或从文案里抓 `401` 这样的数字），
+ * 而厂商在这一格**只给枚举名、不给状态**。把 `authentication_failed` 硬凑成 `401` 才能命中那张表，
+ * 等于**编造一个上游从未发过的状态**（「不编造」那条硬口径），且会在文案里写出「HTTP 401」这种假事实。
+ * 故这里自带一张**枚举名 → 归因码**的表：它与 `errors.ts` 那张是**两个不同的定义域**
+ * （枚举名 vs 状态码），不是同一份映射抄两遍。
+ */
+const CLAUDE_TERMINAL_ERRORS: Readonly<Record<string, { code: AgentErrorCode; reason: string }>> = {
+  authentication_failed: { code: 'AUTH_FAILED', reason: '密钥无效或无权访问：请核对该供应商的密钥后重试' },
+  oauth_org_not_allowed: { code: 'AUTH_FAILED', reason: '该组织不允许这次调用：请换一个被授权的账号或供应商' },
+  account_on_hold: { code: 'AUTH_FAILED', reason: '上游账号被暂停：请先处理账号状态' },
+  verification_required: { code: 'AUTH_FAILED', reason: '上游账号需要先完成验证' },
+  cloud_credential_error: { code: 'AUTH_FAILED', reason: '云厂商凭据无效（Bedrock / Vertex 档）' },
+  billing_error: { code: 'AGENT_FAILED', reason: '上游账务问题（余额 / 套餐）：请先处理账单' },
+  invalid_request: { code: 'AGENT_FAILED', reason: '请求被上游判为非法：多为参数或模型配置不被该网关支持' },
+  model_not_found: { code: 'AGENT_FAILED', reason: '模型名在上游不存在：请核对供应商清单里的模型名' },
+};
+
+/**
+ * 一条 `assistant` 帧自带的 `error` / `aborted` 两格 → 点名日志 +（终局档才有的）失败归因。
+ *
+ * 三条口径：
+ *   · **两格都落日志**：`error` 是上游这一次的失败原文（厂商合成的 API-error 消息就靠它说话），
+ *     `aborted` 是「这条被 interrupt/abort 截断，内容可能断在词中间」——不落的话，一次认证失败
+ *     在事件流里看起来与一条普通答复**逐字相同**（「失败被记成成功」就是这么来的）；
+ *   · **只有终局档折成 `failure`**（表见 `CLAUDE_TERMINAL_ERRORS`）：可重试档只留 WARN，
+ *     理由是骨架的 `failure` 不可撤回，而那几档厂商自己会重试（与 `api_retry` 当心跳的既有处置同源）；
+ *   · **文案只说技术事实**，并带上**厂商原值**（排障时搜的就是它）；「去哪儿改」由编排层按归因码补
+ *     （`errors.ts` 文件头的分工）。
+ *
+ * ⚠️ `aborted` **不判失败**：被终止的行由骨架的 `canceled` 通路给结论（判定优先级在 `turn.ts`），
+ * 这里抢着判会把一次用户主动终止说成 `AGENT_FAILED`。
+ */
+function assistantFailure(
+  message: Record<string, unknown> | null,
+  drafts: AgentEventDraft[],
+): AgentFailure | null {
+  if (message?.aborted === true) {
+    drafts.push(
+      logDraft(
+        'stderr',
+        '[WARN] cc 这一条 assistant 消息被中断截断（厂商 `aborted`）：正文可能断在词中间，不据此判失败',
+      ),
+    );
+  }
+  const error = readString(message, 'error');
+  if (error === null || error === '') return null;
+  const terminal = CLAUDE_TERMINAL_ERRORS[error];
+  drafts.push(
+    logDraft(
+      'stderr',
+      terminal === undefined
+        ? `[WARN] cc 的上游这一次报 ${error}（可重试档，厂商会自己退避重试）：不据此判失败，最终结论看收尾那条 result`
+        : `[WARN] cc 的上游以 ${error} 收场（终局错误，重试不会改变结果）：本行按失败处置`,
+    ),
+  );
+  // 可重试档只留痕：厂商重试成功后这一行是好的，而骨架的 failure 一旦写入就再也清不掉
+  if (terminal === undefined) return null;
+  return { code: terminal.code, message: `cc 的上游报告 ${error}——${terminal.reason}` };
+}
+
+/**
+ * `system/permission_denied` → 活动行那一句（`工具被拒 <名>：<原因>`）。
+ *
+ * 原因取值**按信息量排序**取第一个非空：`decision_reason`（判定组件给的人话）→
+ * `message`（回给模型的那句拒绝词）→ `decision_reason_type`（判别式，如 `mode` / `rule`）。
+ * 三格都可能缺（厂商 JSDoc 把前两格标成可选）⇒ 都没有就只留前半句，**不编原因**。
+ */
+function permissionDeniedSummary(message: Record<string, unknown> | null): string {
+  const reason =
+    firstNonEmptyText(readString(message, 'decision_reason'))
+    ?? firstNonEmptyText(readString(message, 'message'))
+    ?? firstNonEmptyText(readString(message, 'decision_reason_type'));
+  return toolDeniedSummary(readString(message, 'tool_name'), reason);
+}
+
+/** 非空文本才算「给了」：空串与缺席同处置（`null`），与全仓「`''` 不算采到」同一条口径 */
+function firstNonEmptyText(value: string | null): string | null {
+  return value === null || value.trim() === '' ? null : value;
+}
+
+/**
+ * `system/api_retry` 的活动行摘要：`<上游什么错>，第 N/M 次重试，约 X s 后`。
+ *
+ * 三格各自可能缺席（真机两种外形都出现过：带 `error_status` 的 HTTP 错、只有 `error` 名的连接错）
+ * ⇒ 缺哪格就不说哪格，不编默认值（与全仓「`null` 不是 0」同一条口径）。
+ */
+function retrySummary(message: Record<string, unknown> | null): string {
+  const status = readNumber(message, 'error_status');
+  const kind = firstNonEmptyText(readString(message, 'error'));
+  const attempt = readNumber(message, 'attempt');
+  const max = readNumber(message, 'max_retries');
+  const delay = readNumber(message, 'retry_delay_ms');
+  const head = status !== null ? `上游 ${status}` : kind === null ? '上游错误' : `上游 ${kind}`;
+  const tries = attempt === null ? '' : `，第 ${attempt}${max === null ? '' : `/${max}`} 次重试`;
+  const wait = delay === null ? '' : `，约 ${(delay / 1000).toFixed(1)} s 后`;
+  return `${head}${tries}${wait}`;
+}
+
+/**
+ * `system/status` 的活动行摘要：**只覆盖压缩那两档**，其余（`requesting` 心跳）返回 `undefined`
+ * ⇒ 调用方照旧只落原始负载。
+ *
+ * 真机两档逐字：`{status:'compacting', compact_output_chars:0}` 与
+ * `{status:null, compact_result:'failed', compact_error:'too_few_groups'}`。
+ * 判据按 `compact_result` 优先于 `status`：结束那一帧的 `status` 是 `null`，只有结果格说得清成没成。
+ */
+function compactStatusSummary(message: Record<string, unknown> | null): string | undefined {
+  const result = readString(message, 'compact_result');
+  if (result === 'success') return '上下文压缩完成（会话历史已被摘要替换）';
+  if (result === 'failed') {
+    const reason = firstNonEmptyText(readString(message, 'compact_error'));
+    return `上下文压缩失败${reason === null ? '' : `：${reason}`}（上下文没被压小，后续请求可能顶到窗口上限）`;
+  }
+  if (readString(message, 'status') === 'compacting') return '开始压缩上下文（会话历史即将被摘要替换）';
+  return undefined;
+}
+
+/**
  * `user` 消息里的**工具报错**摘要；没有任何 `is_error` 的 `tool_result` 时返回 `null`
  * （此时调用方照旧只落原始负载）。
  *
@@ -259,6 +537,16 @@ function toolResultText(content: unknown): string {
 }
 
 /**
+ * **幻影 `task_*` 帧的 id 账**（非 Agent 的后台任务：`task_started` 的形状判据说它不像一次派发）。
+ *
+ * 与 `message.ts` 的 `phantomIds` 同一条口径、同一份判据（`isDispatchShaped`），只是落点不同：
+ * 这一侧只用它决定「要不要给活动行播那句话」，那边决定「产不产子任务行」。
+ * 模块级而不是 run 级：与 `taskNames` 同一条处置（一张只增不清的小表；`task_id` 是每 run 新铸的 id，
+ * 跨 run 不会互相命中）。
+ */
+const phantomTaskIds = new Set<string>();
+
+/**
  * 子智能体生命周期 → 一条**可解析**的日志。
  *
  * 为什么以日志承载而不是新事件类型：`AgentEvent` 今天仍是**八型封闭联合**，其中**没有** subagent 事件；
@@ -275,10 +563,19 @@ function toolResultText(content: unknown): string {
  * 取第三条——发事件、身份为 null，让下游**显式**看到"这一条没有身份可用"（「缺就是缺」）。
  * 真机两次运行 `task_id` 都非空 ⇒ 这条防御路径大概率不可达，它保的是平台/版本差异。
  *
- * ⚠️ **这里刻意不按形状过滤**：CLI 也给**非 Agent 的后台任务**发
- * `task_*`（真机：子智能体自己那条带 `description` 的 Bash），本条日志因此对**每一条** `task_*` 帧都发
- * ——它是**原始证据**，不是派发面板的数据源（面板与 `messages.jsonl` 走 `message.ts` 的 `SubagentRecord`，
- * 那里按 `ClaudeTaskShape` 把幻影挡在外面）。要收窄这一侧，先裁定「审计日志该不该只留真派发」。
+ * ⚠️ **「不像派发的 `task_*` 帧」在这一侧同样被挡住**（非 Agent 的后台任务），判据与消息侧**同源**
+ * （`message.ts` 的 `isDispatchShaped`：`subagent_type` / `spawn_depth` / `prompt` 至少一格非 `null`）。
+ * 为什么这一侧也要挡：活动行显示的就是这一条日志的 `summary`
+ * ⇒ 不挡就会对着一条**后台 Bash 命令**播「已派发子任务：sleep 5 && echo ok」，
+ * 而面板与 `messages.jsonl` 那边按同一条判据**一行都不产**（两个面互相打脸）。
+ *
+ * **「厂商标了 `ambient` / `skip_transcript`」不在这条判据里**：那一类同样拿不到活动行摘要
+ * （见下面的 `quiet`），但**载荷照发**——厂商说的是「别当活动展示」，不是「这条不存在」，
+ * 丢掉它会把一条 watcher 从审计流里整个抹掉。故这里只挡「三格形状全缺**且**没有任何显式标记」
+ * 那一档（真机形态 = 后台 Bash 命令）。
+ *
+ * 收场帧按 id 追随派发帧的判决（`phantomTaskIds`），与消息侧「收场帧不承载形状证据」同一条处置
+ * ——逐帧重判会把每个真派发的收场帧判成幻影。
  */
 function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft | null {
   const subtype = readString(message, 'subtype');
@@ -287,6 +584,18 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
   const identity = subagentId === null || subagentId === '' ? null : subagentId;
 
   const isStart = subtype === TASK_STARTED;
+  /**
+   * **形状判决**：只在派发帧上判，收场帧按同一 id 追随。
+   * 判据本身住在 `message.ts`（消息侧要按它决定产不产子任务行）⇒ 这里 import 那一个函数，
+   * 不抄第二遍：两处判据漂移的表现正是「活动行播着一条面板上没有的子任务」。
+   */
+  const marked = message?.ambient === true || message?.skip_transcript === true;
+  if (isStart && !marked && !isDispatchShaped(message)) {
+    if (identity !== null) phantomTaskIds.add(identity);
+    return null;
+  }
+  if (!isStart && identity !== null && phantomTaskIds.has(identity)) return null;
+
   /**
    * 名字：派发帧自带 `description`；**收场帧没有这一格**（真机键集见 `message.ts` 顶部的名字表），
    * 于是回落到同一 `task_id` 在派发时记下的那个名字——不回填就会产出「已派发子任务：X」紧跟
@@ -345,13 +654,18 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
   }
 
   const text = JSON.stringify(payload);
-  return logDraft(
-    'stdout',
-    text,
-    isStart
-      ? subagentDispatchSummary(name)
-      : subagentSettledSummary(name, readString(message, 'status')),
-  );
+  /**
+   * **活动行那一句**：厂商标了「这不是活动」（`ambient` / `skip_transcript`）时**不给摘要**。
+   *
+   * 厂商 JSDoc 逐字要求 *"hosts should exclude them from activity indicators"*，而活动行正是那个
+   * indicator ⇒ 给了摘要就会把一条 live-update watcher 播成「已派发子任务」。
+   * **原始负载照发**（`text` 一个字不少）：这一条仍是原始证据，收窄的只有「要不要占活动行」。
+   */
+  const quiet = message?.ambient === true || message?.skip_transcript === true;
+  const summary = isStart
+    ? subagentDispatchSummary(name)
+    : subagentSettledSummary(name, readString(message, 'status'));
+  return logDraft('stdout', text, quiet ? undefined : summary);
 }
 
 /**
@@ -361,7 +675,7 @@ function subagentDraft(message: Record<string, unknown> | null): AgentEventDraft
  */
 function countModelRoundTrip(message: Record<string, unknown> | null, state: TurnState): number | null {
   // 子智能体（Task 工具）发起的调用不在主循环往返里：与 `result.usage` 排除侧链同口径
-  if (readString(message, SIDE_CHAIN_FIELD) !== null) return null;
+  if (sideChainCallIdOf(message) !== null) return null;
   const messageId = readString(asRecord(message?.message), 'id');
   // 缺 message.id 就没有归并键：重复快照会被重复计数，出的是偏大的假数 ⇒ 宁可不出数
   if (messageId === null) return null;
@@ -434,15 +748,65 @@ function projectResult(
   } else if (text !== null && text !== '') {
     state.finalText = text; // 既有路径，一个字不改
   }
-  const tokens = readTokens(message?.usage, drafts);
+  const tokens = readTokens(message?.usage, drafts, readNumber(message, 'num_turns'), message?.is_error === true);
+  /**
+   * **这一轮的估算表到此为止**（`result` = 本轮的权威结算值已经到手）。
+   *
+   * 为什么必须清：`result` 在 streaming input 下是**每一轮一条**，而估算表
+   * （`state.usageByMessageId`）原来整行只增不清 ⇒ 权威值到手之后，**下一条 assistant 消息**
+   * 又会把全表和当成「到目前为止」交出去，骨架的 `liveTokens = estimatedTokens ?? tokens`
+   * 于是从权威值**退回**估算（界面上 tok 往回跳，`tokensBasis` 也翻回 `estimated`）。
+   * 清掉之后这张表的语义收窄成「**还没结算的那一轮**」，由 `index.ts` 的 `project` 把它加在
+   * 已结算的累计上（那里才是本行唯一的累计点）。
+   *
+   * ⚠️ **只在真读到权威值时才清**（`tokens !== null`）：`result.usage` 缺项那一档虽然罕见，
+   * 但无条件清会把「还没结算那一轮」的估算也丢掉、又没有任何权威值顶上来 ⇒ 下一条 usage 事件的
+   * 读数**比上一条小**，与「本行到目前为止的累计、单调不减」这条口径直接冲突（见 `index.ts`）。
+   * 读了零个字节就不算结算，那一轮的估算留着才对。
+   */
+  if (tokens !== null) state.usageByMessageId.clear();
   const timing = resultTiming(message);
   const reported = readNumber(message, 'num_turns');
-  if (reported !== null && state.turns > 0 && reported !== state.turns) {
+  /**
+   * 这条核对**只对第一条 `result` 做**：streaming input 下 `result` 是**每一轮一条**，而
+   * `num_turns` 数的是「这一轮里的模型往返」（厂商 JSDoc 逐字：*"counts model round-trips within
+   * one turn"*），`state.turns` 数的是**整条查询**的累计 ⇒ 从第 2 轮起两边是两种刻度，
+   * 一比就假报（一轮一次，界面上看起来像「厂商和我们对不上账」）。
+   *
+   * 「这是第几条 `result`」由厂商自己给：`result_index`（JSDoc 逐字：*"how many results the run
+   * numbered before this one, starting at 0"*）。
+   *
+   * ⚠️ **这一格缺席时整条核对不发**（不是「按 0 处置」）：老生产方没有这一格，而 in-process 那一面
+   * 「does not number yet」⇒ 拿 0 当默认值等于把**每一条** `result` 都当成第一条，第 2 轮起
+   * `num_turns`（本轮往返数）与 `state.turns`（整条查询累计）两种刻度一比就**假报**。
+   * 更糟的是另一头：厂商把「写入失败的那一条也算一个号」⇒ 第一条的编号可能不是 0，
+   * 而按 0 判会让这条核对**永远不跑**。两种失灵都来自同一个默认值，故这里只在厂商真给了 0 时才核对
+   * ——没给就不谈（少一条日志，不是丢一个判据：那条 WARN 只是提示，读数以数出来的为准）。
+   */
+  const resultIndex = readNumber(message, 'result_index');
+  /**
+   * **两个方向都喊，但方向不同、说的下一步也不同**。读数仍以数出来的为准（两边同源）。
+   *
+   * **多报**这一档混着两种成因，**不能一概当成刻度差异**（真机读数各一例）：
+   *   · 厂商把**同一次往返的多次投递**按多次计（真机三档四量并排：并行两工具 assistant 帧 3 /
+   *     去重 id 2 / `message_start` 2 / `num_turns` 3；结构化输出 1 / 1 / 1 / 2）——这一种是刻度；
+   *   · **我们按 `message.id` 去重少算**：两条**不同**的往返撞同一个 id 时只算一轮（网关/代理复用
+   *     id 属真实可能，而本层的去重键没有兜底）⇒ 那时 `turns` 偏小、`num_turns` 是对的。
+   * 两种在多报这一档里**从读数上分不开**（这正是它必须说话的原因），故文案点出后一种可能、
+   * 让人去查上游是否复用 id。
+   *
+   * **少报**那一档在真机上一次都没出现过 ⇒ 只管读数口径。
+   */
+  if (resultIndex === 0 && reported !== null && state.turns > 0 && reported !== state.turns) {
     drafts.push(
       logDraft(
         'stderr',
-        `[WARN] cc 自报的 num_turns=${reported} 与本轮按 assistant 消息数出的轮次=${state.turns} 不一致；` +
-          '界面与本行快照以数出来的为准（一次模型 API 往返算一次）',
+        reported > state.turns
+          ? `[WARN] cc 自报的 num_turns=${reported} 多于本轮按 assistant 消息数出的轮次=${state.turns}；` +
+            '已知一种成因是厂商把同一次往返的多次投递按多次计（刻度差异），但**也可能是我们少算**' +
+            '——本层按 `message.id` 去重，两条不同往返撞同一个 id 时只算一轮 ⇒ 请查上游是否复用 message.id'
+          : `[WARN] cc 自报的 num_turns=${reported} 少于本轮按 assistant 消息数出的轮次=${state.turns}；` +
+            '界面与本行快照以数出来的为准（一次模型 API 往返算一次）',
       ),
     );
   }
@@ -497,11 +861,43 @@ function projectResult(
     };
   }
   // 空串也算「没有答复」：`''` 既落不成日志（见上），也不该做成一条空文案的失败
+  const subtypeName = readString(message, 'subtype') ?? 'unknown';
+  /**
+   * 失败原因的**第二来源**：`result.result` 为空时（`error_during_execution` 一类），厂商仍在
+   * `terminal_reason` 上写了为什么——`prompt_too_long` / `image_error` / `malformed_tool_use_exhausted` /
+   * `max_turns` / `budget_exhausted` / `api_error` 这些比 subtype 具体得多 ⇒ 拼进文案，
+   * 别让使用者只看到一个内部代号。
+   */
+  const terminalReason = readString(message, 'terminal_reason');
   const failureText =
     text !== null && text !== ''
       ? text
-      : `cc 返回失败结果（subtype: ${readString(message, 'subtype') ?? 'unknown'}）`;
+      : `cc 返回失败结果（subtype: ${subtypeName}${terminalReason === null ? '' : `, terminal_reason: ${terminalReason}`}）`;
   drafts.push({ type: 'error', message: failureText });
+  /**
+   * `errors[]`（CLI 自己的诊断文本）**必须显式落一条日志**。
+   *
+   * 为什么：这一帧的 `type` 被识别 ⇒ **不走未识别兜底**，凡是没有被显式读出来的格**一个字节都不剩**
+   * ——`errors` / `safety_stops` / `subagent_stats` 都在此列。
+   *
+   * ⚠️ **这个形状来自「被外部终止」，不是「上游 5xx」**（36 条真机臂的差分读数）：
+   *   · `subtype: 'error_during_execution'` + `terminal_reason: 'aborted_streaming'` + `errors[]`
+   *     （逐字 `[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null`）
+   *     ＝ **我们 abort**（用户取消 3 臂 + 看门狗 1 臂，逐字同形）；此时 `result` 缺失、
+   *     `errors` 是唯一说明「为什么这一轮没有答复」的文本；
+   *   · 而 5xx 那一族（500 / 503 / 500+空体 / 200+空体 / 连接 reset）给的是
+   *     `result/success` + `is_error: true` + `terminal_reason: 'api_error'` + **`api_error_status`**
+   *     （HTTP 状态），正文通常已含状态（`API Error: 500 status code (no body)…`）。
+   * ⇒ 两族都要能读：`terminal_reason` 与 `errors` 在本支落地，`api_error_status` 走的是
+   * 上面那条 `result.result` 非空的普通失败文案（正文自带状态）。
+   */
+  const rawErrors = message?.['errors'];
+  const vendorErrors = Array.isArray(rawErrors)
+    ? rawErrors.filter((one): one is string => typeof one === 'string' && one !== '')
+    : [];
+  if (vendorErrors.length > 0) {
+    drafts.push(logDraft('stderr', `[WARN] cc 自报的收尾错误：${vendorErrors.join(' / ')}`));
+  }
   return {
     drafts,
     tokens,
@@ -599,7 +995,7 @@ type TokenTrio = UsageTokens;
  */
 function estimateTokens(message: Record<string, unknown> | null, state: TurnState): TokenTrio | null {
   // 子智能体的消息（主循环之外）：它的用量不在 result 的合计口径里
-  if (readString(message, SIDE_CHAIN_FIELD) !== null) return null;
+  if (sideChainCallIdOf(message) !== null) return null;
   const payload = asRecord(message?.message);
   const messageId = readString(payload, 'id');
   if (messageId === null) return null;
@@ -614,7 +1010,7 @@ function estimateTokens(message: Record<string, unknown> | null, state: TurnStat
    * `result` 上（那一轮 17 次往返的结算值是 `输入 65,063 / 缓存 407,808 / 输出 5,940`）。
    * 不过滤的话，界面会在整轮里显示「tok 0」（与「采集中」含义相反，正是本仓最忌讳的那种
    * 假数），而它一次都不该出现——`result` 一到就会覆盖成真值。
-   * 只影响**估算**：结算值那条路径（`readTokens`）不经过这里，真出现 0 也照样如实落盘。
+   * 估算与结算对全 0 取**同一条口径**（见 `readTokens`），差别只在结算那条要不要落 WARN。
    */
   if (tokens.input === 0 && tokens.cached === 0 && tokens.output === 0) return null;
   state.usageByMessageId.set(messageId, tokens);
@@ -740,12 +1136,47 @@ function resultTiming(message: Record<string, unknown> | null): TimingSpan | und
  * `readNumber(null, …)` 天然返回 null，故不需要那条提前 return —— 有它的话，
  * `usage: 5` / `usage: 'x'` 这类形状会**静默**变成「没计量」，只剩逐笔翻原始日志才能发现。
  */
-function readTokens(usage: unknown, drafts: AgentEventDraft[]): TokenTrio | null {
+function readTokens(usage: unknown, drafts: AgentEventDraft[], numTurns: number | null, isError: boolean): TokenTrio | null {
   const tokens = readUsageTrio(usage);
   if (tokens === null) {
     drafts.push(
       logDraft('stderr', `[WARN] 用量负载不完整，本次运行按「未采集计量」处理（不填 0）：${safeStringify(usage)}`),
     );
+    return null;
+  }
+  /**
+   * **全 0 的结算值 = 「厂商没给真数」，不是「采到了 0」**。
+   *
+   * 厂商 JSDoc 逐字：*Crash/startup-error results may carry zeroed values*——真机形状是
+   * 上游 400 之后那条 `result/success` + `is_error: true`：`usage` 三项**齐全但全 0**。
+   * 按结构判据它「齐了」，按值判据它什么都没说 ⇒ 与估算路径（`estimateTokens` 里那条
+   * 「全 0 的快照 = 这一条还没填好」）取同一条口径：判成**没采到**，
+   * 于是计量两格照旧 `null`、`metered` 不置真——仓内那条「计量绝不填 0」的硬口径在这里落地。
+   *
+   * ⚠️ **零值有两种，只有一种是异常**（真机：一次 `ok: true` 的嵌套派发运行里，三条 `result`
+   * 中间那条就是全 0 ——它的 `num_turns` 是 **0**，即「这一次收尾本来就没有模型往返」，
+   * 零是**事实**；而崩溃 / 启动错误那一档是「明明跑过却把用量写成零」）。判据落在 `num_turns`：
+   * `0` ⇒ 静默判 null；缺席或非 0 ⇒ 喊 WARN（不知道就暴露，不静默）。
+   * 两档**都**判 null（都不该填 0 进计量），差别只在要不要人来看一眼。
+   *
+   * 为什么文案与上面那条分开：那条说「负载不完整」（形状问题），这条说「值全零」（厂商占位），
+   * 排障时是两种完全不同的下一步。
+   */
+  if (tokens.input === 0 && tokens.cached === 0 && tokens.output === 0) {
+    /**
+     * 静默的**只有**「成功收尾 + `num_turns: 0`」那一档（真机嵌套派发的收场帧就是它：`success` /
+     * `is_error: false` / 全 0）。失败帧即便 `num_turns` 是 0 也要说话——崩溃与启动错误恰好是最可能
+     * `num_turns: 0` 的一档，把它们一起静默掉就把这条 WARN 的靶子打掉了。
+     */
+    if (numTurns !== 0 || isError) {
+      drafts.push(
+        logDraft(
+          'stderr',
+          `[WARN] 厂商把本次用量报成全 0，按「未采集计量」处理（真机观测到的这一族来自上游失败与限额收场，厂商文档另点名崩溃与启动错误）：${safeStringify(usage)}`,
+        ),
+      );
+    }
+    return null;
   }
   return tokens;
 }

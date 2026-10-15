@@ -169,6 +169,7 @@ describe('createRun', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
@@ -208,6 +209,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
@@ -228,6 +230,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -253,6 +256,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -280,6 +284,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -302,6 +307,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     const on = createRun({
@@ -309,6 +315,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -316,6 +323,37 @@ describe('createRun', () => {
     expect(on.includeSteps).toBe(true);
     // 落盘的那一份也要有：编排层读的是磁盘上的快照，不是当前配置里的用例
     expect(vi.mocked(saveRun).mock.calls[1]?.[0]?.includeSteps).toBe(true);
+  });
+
+  /**
+   * 备注落进快照：显式值 trim 后逐字保留、缺省落空串。
+   * 缺省这一档钉的是「老客户端 / 手工 POST 不带这一格」——`RunCreateSchema.note` 是 optional，
+   * 不在这里收敛成 `''` 的话，磁盘上会写出 `undefined`，而 `EvalRunSchema` 的 `z.string()` 会让
+   * 那一轮下次读盘时整轮被跳过（列表静默少一轮）。
+   */
+  it('备注落进快照：显式值 trim 后保留，缺省为空串', () => {
+    const explicit = createRun({
+      caseId: 'c-1',
+      executionMode: 'parallel',
+      useAgentJudge: false,
+      askUser: false,
+      injectMessages: false,
+      note: '  对比模型不同版本间的差异  ',
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(explicit.note).toBe('对比模型不同版本间的差异');
+
+    const defaulted = createRun({
+      caseId: 'c-1',
+      executionMode: 'parallel',
+      useAgentJudge: false,
+      askUser: false,
+      injectMessages: false,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(defaulted.note).toBe('');
+    // 落盘的是收敛后的值（不是 undefined）
+    expect(vi.mocked(saveRun).mock.calls[1]?.[0]?.note).toBe('');
   });
 
   /**
@@ -338,6 +376,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -352,6 +391,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -371,6 +411,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -388,6 +429,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
       });
     } catch (error) {
@@ -406,6 +448,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       });
     } catch (error) {
@@ -436,6 +479,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: true,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/没有配置默认评分智能体/);
@@ -459,6 +503,7 @@ describe('createRun', () => {
         executionMode: 'parallel',
         useAgentJudge: true,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/Codex 只接受 OpenAI 兼容协议/);
@@ -479,6 +524,7 @@ describe('createRun', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: true,
+      injectMessages: true,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(created.askUser).toBe(true);
@@ -489,6 +535,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       // 老客户端不带这一格：它必须落 `false` 而不是 `undefined`（读侧只有布尔这一档）
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(defaulted.askUser).toBe(false);
@@ -499,9 +546,60 @@ describe('createRun', () => {
       executionMode: created.executionMode,
       useAgentJudge: created.useAgentJudge,
       askUser: true,
+      injectMessages: true,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(edited.askUser).toBe(true);
+  });
+
+  /**
+   * 「允许我向智能体补充消息」开关（输入区的**开启闸门**）：三条口径与上面那条逐字同源
+   * （创建时逐字保留 / 老客户端缺省落 false / 编辑时不许被清掉）。
+   * 它的后果与应答面同一档：开着的一轮会被人工介入，产物与没插过话的轮次不可直接比。
+   */
+  it('输入区开关落进快照：创建时逐字保留、缺省为 false，编辑时不许被清掉', () => {
+    const created = createRun({
+      caseId: 'c-1',
+      executionMode: 'serial',
+      useAgentJudge: false,
+      askUser: false,
+      injectMessages: true,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(created.injectMessages).toBe(true);
+
+    const defaulted = createRun({
+      caseId: 'c-1',
+      executionMode: 'serial',
+      useAgentJudge: false,
+      askUser: false,
+      // 老客户端不带这一格：它必须落 `false` 而不是 `undefined`（读侧只有布尔这一档）
+      injectMessages: false,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(defaulted.injectMessages).toBe(false);
+
+    store.set(created.id, created);
+    const edited = updateRun(created.id, {
+      caseId: created.caseId,
+      executionMode: created.executionMode,
+      useAgentJudge: created.useAgentJudge,
+      askUser: false,
+      injectMessages: true,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(edited.injectMessages).toBe(true);
+
+    // 编辑成关：必须真的关掉（编辑载荷是全量替换，漏了这一格 = 静默把开着的一轮改成关）
+    const off = updateRun(created.id, {
+      caseId: created.caseId,
+      executionMode: created.executionMode,
+      useAgentJudge: created.useAgentJudge,
+      askUser: false,
+      injectMessages: false,
+      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    });
+    expect(off.injectMessages).toBe(false);
   });
 
   it('开关关闭时不去碰评分配置：没配默认评分智能体也能创建（默认关闭是用户口径）', () => {
@@ -511,6 +609,7 @@ describe('createRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -638,6 +737,7 @@ describe('rescoreRow', () => {
     const run = makeRun({
       useAgentJudge: true,
       askUser: false,
+      injectMessages: false,
       rows: [makeRow({ id: 'r-1', status: 'judged', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
     });
     store.set('run-1', run);
@@ -804,6 +904,15 @@ describe('listAgentModelOptions', () => {
        * 而真相是「codex 的思考正文只在会话文件里」这种**具体**原因。
        */
       expect(group.messageCapability).toEqual(metadata.messageCapability);
+      /**
+       * **注入面声明同样要逐格透传**（`turnInjection`）。
+       *
+       * 输入区的可用性、两颗操作按钮的禁用与 tooltip 文案全靠它，且它唯一的长处是**如实**：
+       * 「这家结构上没有」与「厂商有、我们还没接」是两句不同的话。api 裁一格（或整组不漏）
+       * 就等于让界面一律读成「不知道」——那会把真机已证可用的那一家也一起置灰。
+       * 这一组是**可选**的：没接这一面的家缺席即 `undefined`，`toEqual` 对两种形态同判。
+       */
+      expect(group.turnInjection).toEqual(metadata.turnInjection);
     }
   });
 
@@ -916,6 +1025,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         executionMode: 'serial',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'medium' }],
       });
     expect(bad).toThrow(ServiceError);
@@ -928,6 +1038,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'high' }],
     });
     expect(run.rows[0]?.effort).toBe('high');
@@ -944,6 +1055,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: EFFORT_OFF }],
     });
     expect(off.rows[0]?.effort).toBe(EFFORT_OFF);
@@ -953,6 +1065,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm' }],
     });
     // 「没说」与「说了 high」在快照里必须分得开
@@ -977,6 +1090,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         executionMode: 'serial',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'only-low' }],
       });
     expect(create).toThrow(ServiceError);
@@ -995,6 +1109,7 @@ describe('思考强度：候选池交集与创建校验', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: provider.id, modelId: 'only-low' }],
     });
     expect(run.rows[0]?.effort).toBeUndefined();
@@ -1109,6 +1224,7 @@ describe('planRunUpdate', () => {
       executionMode: 'serial' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1118,6 +1234,33 @@ describe('planRunUpdate', () => {
     expect(next.rows).toEqual([row]);
     // 轮级状态跟着行集合收敛：全 judged ⇒ done
     expect(next.status).toBe('done');
+  });
+
+  /**
+   * 备注只改自己那一格：显式值 trim 后写进新快照，缺席按空串（编辑载荷是全量替换）。
+   * 两件事都不能交给 `{ ...run }` 兜：忘了写这一格 ⇒ 界面上改备注、保存后一点变化都没有；
+   * 顺手把它塞进行的判据 ⇒ 一次什么都没改的「只改备注」也会把跑过的行重置掉（分数与产物消失）。
+   */
+  it('只改备注：note 更新（trim）、所有行逐字不变；缺席按空串', () => {
+    const row = judgedRow('r-1');
+    const run = makeRun({ rows: [row], note: '旧备注' });
+    const input = {
+      caseId: 'c-1',
+      executionMode: run.executionMode,
+      useAgentJudge: run.useAgentJudge,
+      askUser: run.askUser,
+      injectMessages: run.injectMessages,
+      note: '  对比模型不同版本间的差异  ',
+      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+    };
+
+    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+
+    expect(next.note).toBe('对比模型不同版本间的差异');
+    expect(next.rows).toEqual([row]);
+
+    const cleared = planRunUpdate(run, { ...input, note: undefined }, resolveRunRows(input.rows, providers), target);
+    expect(cleared.note).toBe('');
   });
 
   /**
@@ -1162,6 +1305,7 @@ describe('planRunUpdate', () => {
       executionMode: 'serial' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1192,6 +1336,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
     };
 
@@ -1199,6 +1344,35 @@ describe('planRunUpdate', () => {
 
     expect(next.rows[0]?.error).toBeNull();
     // 归因只是「那一笔失败的事实」，重置后这一行连状态都换了
+    expect(next.rows[0]?.status).toBe('pending');
+  });
+
+  /**
+   * 重置也必须把「**候选未作答**」清掉 —— 它和 `error` 是同一族：**都是上一趟的观测结果**。
+   *
+   * 为什么值得单独一条（与上面那条 `error` 逐字同理）：夹具里的行**初始不带这一格**
+   * （`makeRow` 的初值里没有它），于是「漏清」在别的用例眼里等于「本来就没有」——
+   * 把 `resetRow` 里那句 `delete next.emptyAnswer;` 删掉，既有用例**一条都不红**。
+   * 症状：换了模型 / 换了用例的行回到「待开始」，候选卡片却还挂着**上一趟**的「候选未作答」。
+   *
+   * 判据刻意写成 **`in`**（键缺席）而不是 `toBeNull()`：这一格的「未记录」约定就是**键不在**，
+   * 写成 `null` 会让「没记录」与「记录为 null」看起来一样 —— 而那正是这一格要区分的事。
+   */
+  it('重置清掉「候选未作答」：换了模型的行不再挂着上一趟的断言', () => {
+    const answered = judgedRow('r-1', { emptyAnswer: true });
+    const run = ranRun({ rows: [answered] });
+    const input = {
+      caseId: 'c-1',
+      executionMode: 'parallel' as const,
+      useAgentJudge: false,
+      askUser: false,
+      injectMessages: false,
+      rows: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
+    };
+
+    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+
+    expect('emptyAnswer' in (next.rows[0] ?? {}), '重置后这一格必须**键缺席**').toBe(false);
     expect(next.rows[0]?.status).toBe('pending');
   });
 
@@ -1211,6 +1385,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
@@ -1247,6 +1422,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
@@ -1291,6 +1467,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
     });
 
@@ -1301,6 +1478,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' },
@@ -1327,6 +1505,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1342,6 +1521,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-404', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
@@ -1361,6 +1541,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
@@ -1386,6 +1567,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
     const newCase: RunTargetCase = {
@@ -1417,7 +1599,7 @@ describe('planRunUpdate', () => {
   it('轮级状态收敛三条分支（没跑过 ⇒ idle / 跑过又有待跑 ⇒ partial / 全 judged ⇒ done 且保留 finishedAt）', () => {
     const pending = makeRow({ id: 'r-1', status: 'pending', baselineCommit: '', attempts: 0 });
     const untouchedRows = [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
-    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, askUser: false, rows: untouchedRows };
+    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, askUser: false, injectMessages: false, rows: untouchedRows };
     const resolved = resolveRunRows(input.rows, providers);
 
     const neverStarted = planRunUpdate(makeRun({ rows: [pending], status: 'idle', startedAt: null }), input, resolved, target);
@@ -1463,6 +1645,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
     };
 
@@ -1497,6 +1680,7 @@ describe('planRunUpdate', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'low' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
@@ -1580,6 +1764,7 @@ describe('updateRun', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -1599,6 +1784,7 @@ describe('updateRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
     });
 
@@ -1620,6 +1806,7 @@ describe('updateRun', () => {
         executionMode: 'serial',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -1641,6 +1828,7 @@ describe('updateRun', () => {
         executionMode: 'serial',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-gone', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/p-gone/);
@@ -1668,6 +1856,7 @@ describe('updateRun', () => {
         executionMode: 'serial',
         useAgentJudge: false,
         askUser: false,
+        injectMessages: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
@@ -1698,6 +1887,7 @@ describe('updateRun', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
@@ -1717,6 +1907,7 @@ describe('updateRun', () => {
         executionMode: 'serial',
         useAgentJudge: true,
         askUser: false,
+        injectMessages: false,
         rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/评分智能体|评分/);
@@ -1725,7 +1916,14 @@ describe('updateRun', () => {
 
   it('不存在的轮次 ⇒ NOT_FOUND', () => {
     expect(() =>
-      updateRun('nope', { caseId: 'c-1', executionMode: 'serial', useAgentJudge: false, askUser: false, rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }] }),
+      updateRun('nope', {
+        caseId: 'c-1',
+        executionMode: 'serial',
+        useAgentJudge: false,
+        askUser: false,
+        injectMessages: false,
+        rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
+      }),
     ).toThrowError(/评测不存在/);
   });
 });

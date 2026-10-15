@@ -68,9 +68,12 @@
 import { readdirSync, statSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
 import type { UsageTokens } from '@aieval/contracts';
+import { createLogger } from '@aieval/core';
 import { asRecord, readNumber, readString } from '../../json';
 import { readLines } from '../../read-lines';
 import { sumUsageTokens } from '../../usage';
+
+const logger = createLogger('agents/cc');
 
 export interface ClaudeSubagentUsageRead {
   /** 子智能体那一份；`null` = 有子智能体但读不全 */
@@ -166,7 +169,10 @@ export function createClaudeSubagentUsageCache(): ClaudeSubagentUsageCache {
  *      「可能少算它（无法判定它是不是子智能体）」的 WARN。⚠️ 反向也不许：**不能**要求它必须有转录
  *      （那是把一条判不了的条目当成「没采到」，会让一条幻影把卡片第二行整行拿走——正是用户报的症状）；
  *   ⑥ **读取集 = 目录里的转录 ∪ `subagentIds`**（= #19 ⑥）：盘上有就必须读（哪怕它的 id 没进过名单——
- *      转录是更硬的事实：`task_started` 没被投送时，盘上那一份就是唯一事实），名单里有就必须读得动（⑦）；
+ *      转录是更硬的事实：`task_started` 没被投送时，盘上那一份就是唯一事实），名单里有就必须读得动（⑦）。
+ *      ⚠️ **减去 `skip`（续接时上一段留下的那些）**：会话目录按 `configHome` + `sessionId` 定位，
+ *      而续接用的就是同一个目录——不减就等于把上一段的子智能体用量在本段再加一遍
+ *      （判据与快照时刻见 `skip` 那一格）；
  *   ⑦ **名单里每一个形状合格的派发都必须有一份读得动的转录**（= #19 ⑦）：
  *      目录里没有它的文件 ⇒ 与「读不动」**同一档**（整格 `null` + 点名**那个 id**）。
  *      ⚠️ 这一条正是那个**已知价码**的关闭口：在此之前，一个真派发的转录缺失、而另一个转录在盘上时，
@@ -196,6 +202,18 @@ export function readClaudeSubagentUsage(input: {
    */
   unjudgedIds?: readonly string[];
   /**
+   * **本段开跑之前就已经在那个会话目录里的**转录 id（`listClaudeSubagentIds` 在 `query()` 之前取的
+   * 那一份快照）。**续接（`resume`）时它们是上一段的子智能体**：会话目录按 `configHome` + `sessionId`
+   * 定位，而续接用的是同一个会话、同一个目录、CLI 只往原转录后面追加 ⇒ 不排除它们，第二段就会把
+   * 上一段的用量**再加一遍**（真机：第二段一次派发都没有，`subagentTokens` 仍是上一段那一份
+   * `{10,0,5}`、`subagentTurns` 仍是 1，而行级计量是**累加**的 ⇒ 追问一次就把那份算两遍）。
+   *
+   * 判定是「**快照里有它、且这一段的派发名单里没有它**」才排除：被续跑的（后台）子智能体会沿用
+   * 原 `task_id` 往原文件继续追加，而事件流会点名它 ⇒ 名单里有它就必须照读（规则⑥的并集语义不变）。
+   * 缺省即空（不续接的段没有「上一段」；老调用方/老用例也不必感知这一格）。
+   */
+  skip?: readonly string[];
+  /**
    * **run 作用域**的解析缓存（`createClaudeSubagentUsageCache()`；缺省 = 不缓存，每次都真读）。
    * 与 `readClaudeSubagentFile` 传**同一个**对象时，两个入口共用一次解析（见 `ClaudeSubagentUsageCache`）。
    */
@@ -206,7 +224,9 @@ export function readClaudeSubagentUsage(input: {
   // 「没有目录」与「目录里没有转录」走**同一个出口**：事件流没报过 ⇒ {0,0,0}，报过 ⇒ null + 点名
   // （所以「采不到 session_id ⇒ 不猜目录」**不等于**「一律 null」——它仍受规则③分流）
   if (dir === null) return readNothing(input.subagentIds, unjudgedIds);
-  const files = listSubagentFiles(dir);
+  const requested = new Set(input.subagentIds);
+  const skipped = new Set(input.skip ?? []);
+  const files = listSubagentFiles(dir).filter((id) => !skipped.has(id) || requested.has(id));
   if (files.length === 0) return readNothing(input.subagentIds, unjudgedIds);
   const parts: UsageTokens[] = [];
   const missing: string[] = [];
@@ -236,6 +256,24 @@ export function readClaudeSubagentUsage(input: {
     return { usage: null, turns: null, missing: [...new Set(missing)], unjudged: [...new Set(unjudged)] };
   }
   return { usage: sumUsageTokens(parts), turns, missing: [], unjudged: [...new Set(unjudged)] };
+}
+
+/**
+ * **这个会话目录里此刻有哪些子智能体转录**（id 表）。
+ *
+ * 唯一用途：续接（`resume`）的那一段在 `query()` **之前**取一份快照，交给
+ * `readClaudeSubagentUsage` 的 `skip`——快照里那些是**上一段的**子智能体，本段不能再算一遍。
+ * 取快照的时刻就是判据的一部分：必须在 `query()` 之前（本段自己派发的转录还没有产生）。
+ *
+ * 目录不存在（新会话 / 还没写第一份转录）⇒ 空表：那不是「读不到」，而是「此刻确实没有」。
+ */
+export function listClaudeSubagentIds(input: {
+  configHome: string;
+  sessionId: string | null;
+  cache?: ClaudeSubagentUsageCache;
+}): string[] {
+  const dir = resolveSubagentsDir(input.configHome, input.sessionId, input.cache);
+  return dir === null ? [] : listSubagentFiles(dir);
 }
 
 /**
@@ -442,13 +480,28 @@ function streamUsage(file: string): ClaudeSubagentFileUsage | null {
   return { usage: sumUsageTokens([...byMessageId.values()]), turns: byMessageId.size };
 }
 
-/** 三项齐了才认（缺项即整格不认，绝不填 0——与适配器主路径同一条硬口径） */
+/**
+ * 三项齐了才认（缺项即整格不认，绝不填 0——与适配器主路径同一条硬口径）。
+ *
+ * 思考 token 与主会话**读同一个字段**（`usage.output_tokens_details.thinking_tokens`）：
+ * 子智能体转录里的 `message.usage` 与主会话同形（真机读数逐字
+ * `"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":700,…}`）⇒
+ * 不读它就等于把「子智能体也想、也花了思考 token」这一格标成「未采集」，
+ * 而主会话同一格有数（界面上主会话有「思考 N」、子智能体永远没有）。
+ * 缺这一格时返回 `null`（不是 0）：与 `events.ts` 的 `readThinkingTokens` 同一条口径。
+ */
 function readTrio(usage: Record<string, unknown> | null): UsageTokens | null {
   const input = readNumber(usage, 'input_tokens');
   const cached = readNumber(usage, 'cache_read_input_tokens');
   const output = readNumber(usage, 'output_tokens');
   if (input === null || cached === null || output === null) return null;
-  return { input, cached, output, reasoningOutput: null, total: null };
+  return {
+    input,
+    cached,
+    output,
+    reasoningOutput: readNumber(asRecord(usage?.['output_tokens_details']), 'thinking_tokens'),
+    total: null,
+  };
 }
 
 /**
@@ -474,16 +527,34 @@ function findSubagentsDir(configHome: string, sessionId: string | null): string 
   } catch {
     return null;
   }
+  const candidates: string[] = [];
   for (const project of projectDirs) {
     const candidate = join(projects, project, sessionId, 'subagents');
     try {
       // 判据是「这个目录读得动」——`readdirSync` 不抛就成立（原来写成 `.length >= 0` 是恒真式）
       readdirSync(candidate);
-      return candidate;
+      candidates.push(candidate);
     } catch {
       continue;
     }
   }
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  /**
+   * **同一个 `sessionId` 落在两个项目目录里 ⇒ 一个都不读**。
+   *
+   * 为什么会撞上：项目目录名是 CLI 按 `cwd` 拼的（真机形态 `-private-var-folders-…-workspace`），
+   * 而会话身份只由 `CLAUDE_CONFIG_DIR` 定位 ⇒ 同一个 configHome 下换一个 `cwd` 跑同一行
+   * （重跑 / 追加）就可能让同一个会话目录出现在两个项目目录下。
+   *
+   * 为什么不许「取第一个读得动的」：`readdirSync` 的返回顺序**没有任何保证**（不是字典序），
+   * 取第一个等于把「这一行的子智能体用量」交给一次不确定的枚举 —— 读到另一份是真数、但**不是这一行的**，
+   * 而它在界面上与正确读数长得一模一样（最坏的一类错）。返回 `null` 让上层按「全量或 null」
+   * 落点名 WARN，把不确定性显式说出来。
+   */
+  logger.warn('同一会话在两个项目目录下都有子智能体转录，无法判定属于哪一行 ⇒ 本次整份不读（不猜）', {
+    sessionId,
+    candidates: candidates.length,
+  });
   return null;
 }
 

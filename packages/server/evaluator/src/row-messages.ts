@@ -11,6 +11,11 @@
  *   2. **发布端不分配任何号**：`messageId` / `mergeKey` / `subagentId` 都由适配器算好
  *      ，这里若重新发号，消费方就会拿两套号对不上。
  *
+ * 扇出是**双层**的（与事件总线逐字同一条口径）：一次 publish 既投给订阅了**这一行**的订阅者，
+ * 也投给订阅了**这一轮所有行**的订阅者（后者多一个 `rowId` 实参）。两套键分属两张表，
+ * 不变量见 `RowMessageBus`。`broadcastRowMessage` / `broadcastJudgeMessage` 走同一个 `fanOut`，
+ * 故「只广播、不落盘」的增量同样双层投递——聚合通道漏掉它，卡片上的正文就只在块结束时跳一下。
+ *
  * 总线同样挂在 `globalThis` 上（理由与事件总线逐字相同：Next dev 的 HMR 会重建模块，
  * 放模块作用域会让「编排层 publish 到旧 Map、SSE 订阅新 Map」静默失效）。
  */
@@ -22,20 +27,46 @@ import { getRunForWrite } from './run-store';
 
 const log = createLogger('row-messages');
 
+/** 行级订阅者：只认记录本身（订阅的是「某一行」的流） */
 type RowRecordListener = (record: RowRecord) => void;
 
+/** run 级订阅者：比行级多一个 `rowId`——它订阅的是「一轮下所有行」，得自己把帧归到行上 */
+type RunRecordListener = (rowId: string, record: RowRecord) => void;
+
+/** 订阅者抛错时的日志措辞：哪一层的订阅者抛的（两层各自计数，见 `logListenerError`） */
+type ListenerLevel = '行级' | 'run 级';
+
+/**
+ * 总线（挂 `globalThis`，见文件头）里的**两张订阅表**：
+ *
+ * | 表 | 订阅的是 | 键（候选 / 评分） |
+ * |---|---|---|
+ * | `subscribers` | 某一行的一条流 | `runId:rowId` / `runId:rowId:judge` |
+ * | `runSubscribers` | 一轮下所有行的同一条流 | `runId` / `runId:judge` |
+ *
+ * **键空间不变量**：两套键各自成表，任何一张表里的键都不拿到另一张表里解释（`fanOut`
+ * 双层投递时正是这么查的：行键只查 `subscribers`、run 键只查 `runSubscribers`）。
+ * 为什么不共用一张表：两套键在**字符串层面**可能逐字相同——`runId:judge` 既是「这一轮的评分通道」
+ * （run 级键），又是「这一轮里 id 恰好叫 `judge` 的那一行的候选通道」（行级键）。共用一张表就会
+ * 互相误投，而 id 是 UUID 只是把冲突推到看不见，不是让它不可能。
+ */
 interface RowMessageBus {
   /** `runId:rowId` → messages.jsonl 绝对路径（纯缓存，裂脑只让它多解析几次） */
   paths: Map<string, string>;
-  /** `runId:rowId` → 该行的订阅者集合 */
+  /** 行级：`runId:rowId[:judge]` → 该行该流的订阅者集合 */
   subscribers: Map<string, Set<RowRecordListener>>;
+  /** run 级：`runId[:judge]` → 该轮该流的订阅者集合（见下方为何可选） */
+  runSubscribers?: Map<string, Set<RunRecordListener>>;
 }
 
 const BUS_KEY = '__aievalRowMessageBus';
 type GlobalWithBus = typeof globalThis & { [BUS_KEY]?: RowMessageBus };
 const globalWithBus = globalThis as GlobalWithBus;
-globalWithBus[BUS_KEY] ??= { paths: new Map(), subscribers: new Map() };
+globalWithBus[BUS_KEY] ??= { paths: new Map(), subscribers: new Map(), runSubscribers: new Map() };
 const bus: RowMessageBus = globalWithBus[BUS_KEY];
+// run 级表**按需补齐**：总线对象可能由更早的模块实例建出来（HMR 重建模块，而对象留在 `globalThis` 上），
+// 那种对象上没有这一格——直接读会拿到 `undefined`，并在下一次 publish 时抛。
+const runSubscribers = (bus.runSubscribers ??= new Map());
 
 function cacheKey(runId: string, rowId: string): string {
   return `${runId}:${rowId}`;
@@ -47,6 +78,15 @@ function cacheKey(runId: string, rowId: string): string {
  * （而两者恰恰是用户要求分开的两件事）。
  */
 const JUDGE_CHANNEL = ':judge';
+
+/**
+ * run 级订阅键：`runId`（候选）/ `runId:judge`（评分）——与行级键**分属两张表**（不变量见 `RowMessageBus`）。
+ * 复用同一个 `JUDGE_CHANNEL` 后缀：两条评分通道指的是同一个概念，后缀一旦漂开，症状是
+ * 「订阅了评分却收到候选」这种不报错的错投。
+ */
+function runChannelKey(runId: string, judge: boolean): string {
+  return judge ? `${runId}${JUDGE_CHANNEL}` : runId;
+}
 
 /**
  * 取一条记录流的落点：优先用缓存，未命中时从**这一轮自己的根**推出来（与事件侧同一个解析）。
@@ -62,22 +102,53 @@ function channelOf(runId: string, rowId: string, judge: boolean): { key: string;
   return { key, file };
 }
 
-/** 扇出给一条流的订阅者；`scope` 只用于出错时的日志措辞（候选 / 评分 / delta 广播） */
-function fanOut(input: { key: string; runId: string; rowId: string; record: RowRecord; scope: string }): void {
-  const listeners = bus.subscribers.get(input.key);
+/**
+ * 投一层订阅者：**先复制再遍历**（订阅者在回调里退订是合法用法，遍历原集合会漏掉后续订阅者），
+ * 坏订阅者只记日志——落盘、同层其余订阅者与另一层都不受影响。
+ */
+function deliver<L>(listeners: Set<L> | undefined, call: (listener: L) => void, onError: (error: unknown) => void): void {
   if (listeners === undefined) return;
-  // 先复制一份再遍历：订阅者在回调里取消订阅是合法用法
   for (const listener of [...listeners]) {
     try {
-      listener(input.record);
+      call(listener);
     } catch (error) {
-      log.error(`${input.scope}订阅者抛错（落盘与其它订阅者不受影响）`, {
-        runId: input.runId,
-        rowId: input.rowId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+      onError(error);
     }
   }
+}
+
+/** 记一条订阅者抛错（`level` 区分是哪一层），上下文与其它总线同一形状 */
+function logListenerError(input: { scope: string; runId: string; rowId: string }, level: ListenerLevel, error: unknown): void {
+  log.error(`${input.scope}${level}订阅者抛错（落盘与其它订阅者不受影响）`, {
+    runId: input.runId,
+    rowId: input.rowId,
+    reason: error instanceof Error ? error.message : String(error),
+  });
+}
+
+/**
+ * 扇出给一条流的**两层**订阅者：先行键（既有通道，只拿记录）、后 run 键（聚合通道，多拿一个
+ * `rowId`）；两层递的是**同一条记录**（不复制、不改写）。`judge` 决定 run 键是候选还是评分那条
+ * （`scope` 只用于出错时的日志措辞：候选 / 评分 / delta 广播）。
+ */
+function fanOut(input: {
+  key: string;
+  runId: string;
+  rowId: string;
+  judge: boolean;
+  record: RowRecord;
+  scope: string;
+}): void {
+  deliver<RowRecordListener>(
+    bus.subscribers.get(input.key),
+    (listener) => listener(input.record),
+    (error) => logListenerError(input, '行级', error),
+  );
+  deliver<RunRecordListener>(
+    runSubscribers.get(runChannelKey(input.runId, input.judge)),
+    (listener) => listener(input.rowId, input.record),
+    (error) => logListenerError(input, 'run 级', error),
+  );
 }
 
 /**
@@ -89,7 +160,7 @@ function publishRecord(runId: string, rowId: string, record: RowRecord, judge: b
   const { key, file } = channelOf(runId, rowId, judge);
   mkdirSync(dirname(file), { recursive: true });
   const written = appendRecord(file, record);
-  fanOut({ key, runId, rowId, record: written, scope: judge ? '评分记录' : '记录' });
+  fanOut({ key, runId, rowId, judge, record: written, scope: judge ? '评分记录' : '记录' });
 }
 
 /** 发布一条候选记录（消息或子任务行） */
@@ -135,7 +206,7 @@ export function broadcastRowMessage(
   rowId: string,
   message: Extract<RowRecord, { type: 'message' }>['message'],
 ): void {
-  fanOut({ key: cacheKey(runId, rowId), runId, rowId, record: { type: 'message', message }, scope: 'delta 广播的' });
+  fanOut({ key: cacheKey(runId, rowId), runId, rowId, judge: false, record: { type: 'message', message }, scope: 'delta 广播的' });
 }
 
 /**
@@ -151,6 +222,7 @@ export function broadcastJudgeMessage(
     key: `${cacheKey(runId, rowId)}${JUDGE_CHANNEL}`,
     runId,
     rowId,
+    judge: true,
     record: { type: 'message', message },
     scope: '评分 delta 广播的',
   });
@@ -206,4 +278,41 @@ export function subscribeRowRecords(runId: string, rowId: string, listener: RowR
 /** 订阅**评分**那条记录流：与执行日志分开的第二条流 */
 export function subscribeJudgeRecords(runId: string, rowId: string, listener: RowRecordListener): () => void {
   return subscribeRecords(runId, rowId, listener, true);
+}
+
+/**
+ * 订阅**一个 run 下所有行**的某一条流，返回取消订阅函数（可重复调用）。
+ * 与行级同一条 live-only 口径（见 `subscribeRecords`），差别只在键与集合：这里按 run 级键分组。
+ */
+function subscribeRunStream(runId: string, listener: RunRecordListener, judge: boolean): () => void {
+  const key = runChannelKey(runId, judge);
+  let listeners = runSubscribers.get(key);
+  if (listeners === undefined) {
+    listeners = new Set();
+    runSubscribers.set(key, listeners);
+  }
+  listeners.add(listener);
+
+  return () => {
+    const current = runSubscribers.get(key);
+    if (current === undefined) return;
+    current.delete(listener);
+    // 空集合立刻回收：长驻服务里跑几百行，不回收就是一条缓慢的内存泄漏
+    if (current.size === 0) runSubscribers.delete(key);
+  };
+}
+
+/**
+ * 订阅**一个 run 下所有行**的候选记录流（聚合流用），返回取消订阅函数（可重复调用）。
+ * 与 `subscribeRowRecords` 的两处差别：`listener` 多一个 `rowId` 实参——它只有这一条流，
+ * 得自己把帧归到行上；键是 run 级键，同一条记录由 publish 与 delta 广播**双层投递**给两层。
+ * 不回放历史：要历史就自己读文件（按 `mergeKey` / `subagentId` 折叠），与行级一致。
+ */
+export function subscribeRunRecords(runId: string, listener: RunRecordListener): () => void {
+  return subscribeRunStream(runId, listener, false);
+}
+
+/** 订阅**一个 run 下所有行**的评分记录流（与候选那条分开，见 `JUDGE_CHANNEL`） */
+export function subscribeRunJudgeRecords(runId: string, listener: RunRecordListener): () => void {
+  return subscribeRunStream(runId, listener, true);
 }

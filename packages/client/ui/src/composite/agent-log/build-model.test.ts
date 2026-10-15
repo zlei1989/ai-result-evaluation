@@ -22,6 +22,10 @@ function message(input: {
   roundTrip: number;
   role?: AgentMessage['role'];
   source?: AgentMessage['source'];
+  /** 谁带进来的；缺省与契约缺省一致（题面那一档）。人在半路插的那句要显式给 `'human'` */
+  origin?: AgentMessage['origin'];
+  /** 第几段；缺省缺席 = 第一次跑那一段（契约里那一格是可选的） */
+  segment?: number;
   assembly?: AgentMessage['assembly'];
   subagentId?: string | null;
   parentCallId?: string | null;
@@ -35,6 +39,8 @@ function message(input: {
       vendorId: null,
       role: input.role ?? 'assistant',
       source: input.source ?? 'wire',
+      origin: input.origin ?? ('case-prompt' as const),
+      ...(input.segment === undefined ? {} : { segment: input.segment }),
       roundTrip: input.roundTrip,
       turn: null,
       step: null,
@@ -1041,6 +1047,51 @@ describe('用量里程碑：整行一条', () => {
   });
 
   /**
+   * **多段（追问）之后：里程碑必须取最后那一段的读数**。
+   *
+   * 一次追问是又开一次 `run()`：那一段先 `preparing` / `running`，跑完再 `judging` / `judged`。
+   * 「候选阶段」这道闸门若只认**第一条** `judging` 就一关到底，那一段的读数（以及它自己那条终态帧）
+   * 全被当成「评审者的用量」丢掉 ⇒ 里程碑冻在首段的最后一条读数上：数字是旧的，位置也落在中间那一轮
+   * （真机 `ce008414` 的行 `673cd5f8`：里程碑停在段 1 的轮次 2，而最后一条消息是段 1 的轮次 3）。
+   *
+   * 判据：**新的候选阶段会重新开始**（`preparing` / `running` 把闸门打开），`judging` / 终态帧关上。
+   */
+  it('追问那一段的读数照样算数：里程碑落在**最后一个**读数上（不被第一次 judging 锁死）', () => {
+    const rows = rowEventsOf(
+      [
+        status(1, 'running'),
+        usage(2, { input: 100, cached: 10 }, { turn: { subagentId: null, round: 1 } }),
+        usage(3, { input: 200, cached: 20, output: 5 }, { turn: { subagentId: null, round: 2 } }),
+        status(4, 'judging'),
+        status(5, 'judged'),
+        // —— 追问那一段：候选阶段重新开始 ——
+        status(6, 'running'),
+        usage(7, { input: 30, cached: 4 }, { turn: { subagentId: null, round: 1 } }),
+        usage(8, { input: 40, cached: 6, output: 9 }, { turn: { subagentId: null, round: 3 } }),
+        status(9, 'judging'),
+        status(10, 'judged'),
+      ],
+      new Set(['main#1', 'main#2', 'main#3']),
+    );
+
+    expect(rows.map((row) => row.text)).toEqual(['用量 输入 40 tok · 缓存 6 tok · 输出 9 tok · 轮次 3']);
+    expect(rows[0]?.turn).toEqual({ subagentId: null, round: 3 });
+  });
+
+  it('多段之后仍不吃评审者的读数：最后一段跑完的那条 `judging` 之后关闸', () => {
+    const rows = rowEventsOf(
+      [
+        status(1, 'running'),
+        usage(2, { input: 40, cached: 6, output: 9 }, { turn: { subagentId: null, round: 3 } }),
+        status(3, 'judging'),
+        usage(4, { input: 1280, cached: 7424, output: 125 }, { turn: { subagentId: null, round: 1 } }),
+      ],
+      new Set(['main#1', 'main#3']),
+    );
+    expect(rows.map((row) => row.text)).toEqual(['用量 输入 40 tok · 缓存 6 tok · 输出 9 tok · 轮次 3']);
+  });
+
+  /**
    * **老日志照样出一条**（这里刻意连状态帧都不给：历史行可能既没有归属格、也没有终态帧）。
    *
    * 递增进、与上一条相等、比上一条低——三种形状现在**都无所谓**（水位判据已退役），取的是最后那一条；
@@ -1192,9 +1243,14 @@ describe('消息级用量与逻辑消息身份摊到块上', () => {
  * 把「这一轮没采到」说成「我们没做」是最忌讳的那类误读。
  */
 describe('没有正文的思考块整块隐藏', () => {
-  function blocksOfFirstMessage(blocks: AgentMessage['blocks'], capability?: MessageCapabilityMap) {
+  function blocksOfFirstMessage(
+    blocks: AgentMessage['blocks'],
+    capability?: MessageCapabilityMap,
+    /** 信封上的收尾态：`open` = 还在流（块的 `assembly` 跟着信封走） */
+    assembly?: AgentMessage['assembly'],
+  ) {
     const model = buildAgentLogModel({
-      records: [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks })],
+      records: [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks, ...(assembly === undefined ? {} : { assembly }) })],
       events: [],
       facts: facts(),
       ...(capability === undefined ? {} : { capability }),
@@ -1226,6 +1282,32 @@ describe('没有正文的思考块整块隐藏', () => {
     ]);
     expect(blocks.map((block) => block.kind)).toEqual(['thinking', 'thinking']);
     for (const block of blocks) expect(block.kind === 'thinking' ? block.textMissing : 'n/a').toBeNull();
+  });
+
+  /**
+   * **空白正文与没有正文是同一档**：`text: ''`（或只有空白）的思考块在界面上只能画出一个**空面板**
+   * ——标题「思考」/「思考中…」带着一片空白，看起来像「思考了但什么也没想」。
+   *
+   * 它从哪来：codex 与 pi 的**思考增量帧**不过滤空 delta（cc 与 dsh 都有 `if (text === '') return`），
+   * 于是「这一段思考刚开始、正文还没到」那一拍会投出一条 `text: ''` 的思考块。用户口径：
+   * **等第一条有正文的思考流消息到了再画那一个面板**，在此之前连标题都不出现。
+   */
+  it('空白正文（`text: \'\'` / 只有空白）同样整块隐藏——空面板会画出一行空白', () => {
+    const blocks = blocksOfFirstMessage([
+      { type: 'thinking', text: '', textKind: 'full', signature: null },
+      { type: 'thinking', text: '   \n\t ', textKind: 'summary', signature: null },
+      { type: 'text', text: '正文' },
+    ]);
+    expect(blocks.map((block) => block.kind)).toEqual(['text']);
+  });
+
+  it('空白正文的思考块在**流式中**（信封 `assembly: open`）也不出现：第一条有正文的增量到了才画', () => {
+    const blocks = blocksOfFirstMessage(
+      [{ type: 'thinking', text: '', textKind: 'full', signature: null }],
+      undefined,
+      'open',
+    );
+    expect(blocks).toEqual([]);
   });
 });
 
@@ -1318,5 +1400,243 @@ describe('工具入参：原文与 `description`', () => {
 
   it('入参整个没采到：四格一起是 `null`（不是空串、不是 0）', () => {
     expect(inputOf(null)).toEqual({ value: null, text: null, bytes: null, description: null });
+  });
+});
+
+/**
+ * **题面与段**：人给智能体说的话在执行日志里怎么落位。
+ *
+ * 两件事各有各的坑：
+ *   · 题面（`origin: 'case-prompt'` 的 user 消息）**只由首条卡片呈现**——它也进轮次的话，
+ *     同一句话在同一个抽屉里画两遍；
+ *   · 一次追问是又开一次 `run()`，那一段的厂商轮次从 1 重新数 ⇒ 两段的 `mergeKey` 逐字相同。
+ *     折叠键不带段号会让后一段把前一段**整条吃掉**（真机症状：追问之后首段的工具调用凭空消失）。
+ */
+describe('题面：首条卡片与轮次里的「不重复画」', () => {
+  /** 题面那条消息（编排层在把 `run()` 交出去之前落的账） */
+  function casePrompt(text: string): RowRecord {
+    return message({
+      id: 'case-prompt:row-1',
+      mergeKey: 'main|1|user|-|case-prompt',
+      roundTrip: 1,
+      role: 'user',
+      origin: 'case-prompt',
+      source: 'hook',
+      blocks: [{ type: 'text', text }],
+    });
+  }
+
+  it('账本里那一条推成首条卡片的两格（正文逐字、时刻取派生的基准）', () => {
+    const model = buildAgentLogModel({
+      records: [casePrompt('把 README 的标题改成中文')],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    expect(main?.kind === 'main' ? main.userPrompt : null).toEqual({
+      text: '把 README 的标题改成中文',
+      at: '2026-10-02T10:00:00.000Z',
+    });
+  });
+
+  it('它**不进轮次**（同一句话只画一遍：首条卡片那一处）', () => {
+    const model = buildAgentLogModel({
+      records: [casePrompt('把 README 的标题改成中文'), message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '好的' }] })],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const texts = main.content.data.flatMap((turn) => turn.blocks).map((block) => (block.kind === 'text' ? block.text : ''));
+    expect(texts).toEqual(['好的']);
+  });
+
+  /**
+   * 一行跑了却一条内容都没产出：界面上仍该说出「它被要求做什么」。
+   * `empty` 判的是「**有没有得画**」——题面那张卡片也是要画的东西。
+   */
+  it('只有题面一条时不是空态（`empty === false`），轮次里一条内容都没有', () => {
+    const model = buildAgentLogModel({
+      records: [casePrompt('把 README 的标题改成中文')],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    expect(model.empty).toBe(false);
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    expect(main.content.data).toEqual([]);
+  });
+
+  it('旧运行（账本里没有题面那条）⇒ 首条不渲染、且仍是空态（不编一句题面）', () => {
+    const model = buildAgentLogModel({
+      records: [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '好的' }] })],
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    expect(main?.kind === 'main' ? main.userPrompt : 'unexpected').toBeNull();
+    expect(model.empty).toBe(false);
+  });
+
+  it('调用方显式给的 `userPrompt` 覆盖推导（夹具与非评测场景的逃生口）', () => {
+    const model = buildAgentLogModel({
+      records: [],
+      events: [],
+      facts: facts(),
+      userPrompt: { text: '外部给的题面', at: '2026-10-02T09:00:00.000Z' },
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    expect(main?.kind === 'main' ? main.userPrompt?.text : null).toBe('外部给的题面');
+  });
+});
+
+describe('段：追问那一段与首段各归各的', () => {
+  /** 适配器投的一条消息（段号只在追问那一段给）；`id` 不给则由段号与正文派生一个稳定值 */
+  function adapter(segment: number | undefined, text: string, id?: string): RowRecord {
+    return message({
+      id: id ?? `m-${segment ?? 0}-${text}`,
+      mergeKey: 'main|1|assistant|-',
+      roundTrip: 1,
+      ...(segment === undefined ? {} : { segment }),
+      blocks: [{ type: 'text', text }],
+    });
+  }
+
+  const records: RowRecord[] = [
+    adapter(undefined, '首段的第 1 轮'),
+    message({ id: 'f1', mergeKey: 'main|1|user|-|followup:f1', roundTrip: 1, role: 'user', origin: 'human', source: 'hook', segment: 1, blocks: [{ type: 'text', text: '再说一句' }] }),
+    adapter(1, '追问那一段的第 1 轮'),
+  ];
+
+  it('两段同号同键的消息**都在**，顺序按段（不让后一段把前一段吃掉）', () => {
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const texts = main.content.data.flatMap((turn) => turn.blocks).map((block) => (block.kind === 'text' ? block.text : ''));
+    // 段 1 的那句人话**不在轮次的展示块里**——它由那一段的标题呈现（见下面那条用例）
+    expect(texts).toEqual(['首段的第 1 轮', '追问那一段的第 1 轮']);
+    expect(main.content.data.map((turn) => [turn.segment, turn.round])).toEqual([[0, 1], [1, 1]]);
+    // 两段的顺序按段号：段标题读 `model.segments`，它也必须按段号升序
+    expect(model.segments.map((one) => [one.segment, one.text])).toEqual([[1, '再说一句']]);
+  });
+
+  it('轮次的键带段号（两个「轮次 1」不能是同一个 key）', () => {
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const blocks = main.content.data.flatMap((turn) => turn.blocks);
+    // 块 id 是 React key：段不同 ⇒ 即使载体键与块下标都一样也不能撞
+    expect(new Set(blocks.map((block) => block.id)).size).toBe(blocks.length);
+    expect(blocks.map((block) => block.segment)).toEqual([0, 1]);
+  });
+
+  it('追问那句落在**它自己那一段**（段标题里），不在首段、也不在轮次的展示块里', () => {
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const second = main.content.data.filter((turn) => turn.segment === 1);
+    // 段首那一轮的块只剩模型答的话（那句人话整组进了段标题）
+    expect(second.map((turn) => turn.blocks.map((block) => block.role))).toEqual([['assistant']]);
+    expect(model.segments).toEqual([{ segment: 1, at: '', text: '再说一句' }]);
+  });
+
+  it('首段不进段标题（它的分界是题面那张卡片）：`segments` 里没有段 0', () => {
+    const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
+    expect(model.segments.map((one) => one.segment)).toEqual([1]);
+  });
+
+  /**
+   * **真机的投递顺序**：一次追问是又开一次 `run()`，而发起它的那一段代码先让出事件循环、再等
+   * `run()` 收尾 ⇒ 那一段的**第一条适配器消息可以在那句追问自己落账本之前就落地**。
+   * 于是同一轮桶里助手块按投递顺序排在用户块前面，界面上「我追问的那句话」被画到了这一段的**末尾**
+   * （它该是这一段的标题）。本组钉的就是「那句人话不看投递顺序，只看段号」。
+   */
+  describe('轮内顺序：人说的话排在模型答复之前（投递顺序不保证这一点）', () => {
+    it('追问那句后到 ⇒ 它照样是这一段的标题（真机 run 4812ed11 的形状）', () => {
+      const model = buildAgentLogModel({
+        records: [
+          // 首段：题面那一轮
+          adapter(undefined, '首段的第 1 轮'),
+          // 追问那一段：**答复先落账本，那句人话后到**（真机就是这个先后）
+          adapter(1, '追问那一段的答复', 'a1'),
+          message({ id: 'f1', mergeKey: 'main|1|user|-|followup:f1', roundTrip: 1, role: 'user', origin: 'human', source: 'hook', segment: 1, blocks: [{ type: 'text', text: '逐句用普通话解释诗意' }] }),
+        ],
+        events: [],
+        facts: facts(),
+        startedAt: null,
+      });
+      const main = model.nodes.find((node) => node.kind === 'main');
+      if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+
+      // 那句人话是这一段的**标题**：它进 `segments`，不进轮次的展示块（同一句话不许画两遍）
+      expect(model.segments).toEqual([{ segment: 1, at: '', text: '逐句用普通话解释诗意' }]);
+      const second = main.content.data.find((turn) => turn.segment === 1);
+      expect(second?.blocks.map((block) => (block.kind === 'text' ? block.text : ''))).toEqual(['追问那一段的答复']);
+      // 换序**不改变轮次归属**：那两条仍是同一个 `(段 1, 轮次 1)`，不多出一个轮次
+      expect(main.content.data.filter((turn) => turn.segment === 1).map((turn) => [turn.segment, turn.round])).toEqual([[1, 1]]);
+      /**
+       * 兜底定位键跟着**投递顺序**走：这一段投递的第一条是那句答复（`id: 'a1'`），
+       * 它才是 `buildRenderBlocks` 规则 3 该拿到的 `messageId`——若把这一格改读展示块的第一条，
+       * 值会落到别处，派发点的兜底判据从此认错消息。
+       */
+      expect(second?.fallbackMessageId).toBe('a1');
+    });
+
+    it('同一段里的两句人话：凑成一个段标题，且保持投递顺序', () => {
+      const human = (id: string, text: string, segment?: number): RowRecord =>
+        message({ id, mergeKey: `main|1|user|-|inject:${id}`, roundTrip: 1, role: 'user', origin: 'human', source: 'hook', ...(segment === undefined ? {} : { segment }), blocks: [{ type: 'text', text }] });
+      const model = buildAgentLogModel({
+        records: [
+          adapter(undefined, '首段的答复'),
+          // 首段里运行中插进去的一句（段 0）：它不属于任何段标题，照旧留在轮次里
+          human('h0', '首段里插的一句话'),
+          human('h1', '第一句追问里的话', 1),
+          human('h2', '第二句话', 1),
+        ],
+        events: [],
+        facts: facts(),
+        startedAt: null,
+      });
+      const main = model.nodes.find((node) => node.kind === 'main');
+      if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+
+      // 段 0 的注入话在轮次里、且排在答复之前
+      expect(main.content.data[0]?.blocks.map((block) => (block.kind === 'text' ? block.text : ''))).toEqual([
+        '首段里插的一句话',
+        '首段的答复',
+      ]);
+      // 段 1 的两句话合成一个段标题，顺序按投递（写反了就是「我说的话顺序变了」）
+      expect(model.segments.map((one) => one.text)).toEqual(['第一句追问里的话\n第二句话']);
+    });
+
+    it('同一轮两条人话：都排在全部助手块之前，且两条人话之间保持投递顺序', () => {
+      const human = (id: string, text: string): RowRecord =>
+        message({ id, mergeKey: `main|1|user|-|inject:${id}`, roundTrip: 1, role: 'user', origin: 'human', source: 'hook', blocks: [{ type: 'text', text }] });
+      const model = buildAgentLogModel({
+        records: [
+          adapter(undefined, '答复'),
+          human('h1', '第一句人话'),
+          human('h2', '第二句人话'),
+        ],
+        events: [],
+        facts: facts(),
+        startedAt: null,
+      });
+      const main = model.nodes.find((node) => node.kind === 'main');
+      if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+
+      // 稳定分区：人话在前、人话之间不重排（写反了就是「我说的话顺序变了」）
+      expect(main.content.data[0]?.blocks.map((block) => (block.kind === 'text' ? block.text : ''))).toEqual([
+        '第一句人话',
+        '第二句人话',
+        '答复',
+      ]);
+      // 段 0 的一句人话**不进段标题**（首段的分界是题面那张卡片）
+      expect(model.segments).toEqual([]);
+    });
   });
 });

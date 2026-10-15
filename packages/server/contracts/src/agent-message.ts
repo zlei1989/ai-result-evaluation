@@ -23,6 +23,7 @@ import {
   type AskUserChannel,
   type AskUserOutcome,
 } from './ask-user-vocab';
+import { InjectionBoundarySchema, type InjectionBoundary } from './inject-vocab';
 
 /** 数据来源：决定实时性与可信度，消费方必须读 */
 export const MessageSourceSchema = z.enum(['wire', 'hook', 'session-file', 'aggregate']);
@@ -54,6 +55,17 @@ export type ToolFamily = z.infer<typeof ToolFamilySchema>;
 /** 说话者：codex 的 `role` 由条目类型派生（事件流没有 role 概念） */
 export const MessageRoleSchema = z.enum(['assistant', 'user', 'tool', 'system']);
 export type MessageRole = z.infer<typeof MessageRoleSchema>;
+
+/**
+ * 一条消息是**谁带进来的**：`'case-prompt'` = 题面那一档（这一轮的输入本来就是它），
+ * `'human'` = 人在这一轮**已经开始之后**插进来的那句。
+ *
+ * 为什么账本必须有这一格：两者在形状上完全同形（都是 `role: 'user'` 的文本），
+ * 复盘时唯一能分开它们的就是这一格——而「这一轮被人插过话」正是「还能不能与别的轮次比」的线索。
+ * 带默认值（默认 = 题面那一档）⇒ 旧账本照读；只有真的由人插进来的那一条才写 `'human'`。
+ */
+export const MessageOriginSchema = z.enum(['case-prompt', 'human']);
+export type MessageOrigin = z.infer<typeof MessageOriginSchema>;
 
 /** 思考文本属于哪一档：完整推理 / 厂商摘要 / 有思考但无文本。**它不是能力位** */
 export const ThinkingTextKindSchema = z.enum(['full', 'summary', 'none']);
@@ -215,6 +227,19 @@ export const ToolCallBlockSchema = z.object({
   name: z.string(),
   input: z.unknown(),
   /**
+   * **参数解析失败时厂商给的原文**（`null` / 缺省 = 这一次调用没这个问题）。
+   *
+   * 为什么要有这一格：pi 的 `ToolCall.argumentsError`（厂商原文 *Set when the model's complete
+   * arguments text was not a valid JSON object. `arguments` is then `{}`*）与「模型真的传了空对象」
+   * 在 `input` 上**逐字同形**——两者都是 `{}`。不给它一个落点，界面上只能显示一个空对象，
+   * 而事实是「参数不是合法 JSON（原文在这一格）」。真机读数见
+   * `.scratch/pi-audit3/messages/report.md` 的 P3。
+   *
+   * **可缺**（与 `payload` 同一条理由）：磁盘上已有的 `messages.jsonl` 没有这一格，写成必填会让
+   * 老记录在回放 / SSE 续订时成片解析失败；读侧把「键不存在」与显式 `null` 当同一件事（`?? null`）。
+   */
+  inputError: z.string().nullable().optional(),
+  /**
    * 归一后的族载荷；`null` = 本期没有为它收编卡片（见 `ToolCallPayloadSchema`）。
    *
    * **可缺**（与 `usage.timing` 同一条理由）：磁盘上已有的 `messages.jsonl`
@@ -271,6 +296,15 @@ export const ToolResultBlockSchema = z.object({
 });
 
 /**
+ * 附件的两档：图片与文件。单独一格是因为**两个地方都要用**——账本里的附件块（厂商回灌的或我们
+ * 落账本的）与人工消息的附件清单（上传那一刻按 `File.type` 分档）。两处各写一遍
+ * `z.enum(['image', 'file'])` 的话，将来加第三档（如音频）时必有一处漏改，
+ * 而症状是「同一份附件在队列表里是 `file`、在账本里是 `image`」这种静默的分类漂移。
+ */
+export const AttachmentKindSchema = z.enum(['image', 'file']);
+export type AttachmentKind = z.infer<typeof AttachmentKindSchema>;
+
+/**
  * 附件块：`path` 与 `mimeType` 都拿不到时为 `null`（dsh 的内容块里各带一个 attachment 引用）。
  * 它指的是**认识的真实附件**（图片 / 文件），与「不认识的厂商载荷」语义正交——
  * 后者走 `UnrecognizedPayloadBlock`。两者同名会让下一个人把两条路当成一条，
@@ -278,10 +312,21 @@ export const ToolResultBlockSchema = z.object({
  */
 export const AttachmentBlockSchema = z.object({
   type: z.literal('attachment'),
-  kind: z.enum(['image', 'file']),
+  kind: AttachmentKindSchema,
   path: z.string().nullable(),
   mimeType: z.string().nullable(),
 });
+
+/**
+ * 一条人工消息的**附件上限**（前后端从同一处读）。
+ *
+ * 为什么服务端也要拦：界面上的拦截只为体验，绕过界面直接 POST 一样进得来。
+ * 为什么按大小与条数拦、**不设类型白名单**：文件不直接交给智能体，它自己去读——拦类型等于替它
+ * 决定「哪些文件有用」，而它读不了的时候会自己说。
+ * 超限的中文原因要**点名是哪一条限制**，否则用户不知道该删文件还是换小文件。
+ */
+export const ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const ATTACHMENT_MAX_PER_MESSAGE = 10;
 
 /**
  * **不认识的厂商载荷**：无法归一的原样保留（规范把它放在 `AttachmentBlock` 之外是合理的）。
@@ -332,6 +377,26 @@ export const AgentMessageSchema = z.object({
   vendorId: z.string().nullable(),
   role: MessageRoleSchema,
   source: MessageSourceSchema,
+  /**
+   * 这一条由谁带进来（见 `MessageOriginSchema`）。**带默认值**：旧账本没有这一格，
+   * 写成必填会让回放 / SSE 续订成片解析失败；缺省即「题面那一档」，与旧数据的事实一致。
+   */
+  origin: MessageOriginSchema.default('case-prompt'),
+  /**
+   * **这一行被分成几段执行，这一条属于第几段**：缺省（= 0）= 第一次跑那一段，`n ≥ 1` = 第 n 次追问那一段。
+   *
+   * 为什么账本必须有这一格：一次追问是**又开一次 `run()`**，厂商那一侧的轮次从 1 重新数 ⇒ 两段的
+   * `roundTrip` 撞号、`mergeKey` 逐字相同（`main|1|assistant|-`）。按 `mergeKey` 覆盖累积的读侧于是
+   * 让后一段把前一段的同号消息**整条吃掉**（症状：追问之后首段的思考与工具调用凭空消失、
+   * 追问那句落在首段的轮次里）。带上段号，折叠键与轮次分组键才有区分两段的能力。
+   *
+   * 三条口径：
+   *   · **只有追问那一侧写它**，第一次跑那一段与旧账本一样**整格缺席** ⇒ 旧数据照读、旧行为逐字不变
+   *     （写 `0` 与缺席同义，故不为了「显式」把 0 落到每一条上）；
+   *   · 段号与行快照的 `followUpRounds` 同源（都是「第几次追问」），故界面上那一行段标题与卡片计数对得上；
+   *   · 它是**归属**不是序号——同段内所有消息（含适配器投的、人工插的、提问结算的）共用一个值。
+   */
+  segment: z.number().int().min(0).optional(),
   /** 模型往返序号，从 1 递增；三家均为合成值 */
   roundTrip: z.number().int().positive(),
   /**
@@ -361,7 +426,8 @@ export const AgentMessageSchema = z.object({
   /**
    * **覆盖合并键**（「载体」）：`<subagentId ?? 'main'>|<roundTrip>|<role>|<parentCallId ?? '-'>`。
    *
-   * 消费方按它覆盖式累积（后到的同名键**整条替换**），键内再按**块序号**（= `blocks` 数组下标，
+   * ⚠️ **它只在同一段内唯一**：追问那一段的轮次从 1 重新数 ⇒ 两段的键会逐字相同。消费方按
+   * **`(segment, mergeKey)`** 覆盖累积（见 `segment` 那一格），键内再按**块序号**（= `blocks` 数组下标，
    * 首次到达顺序，一经分配不再变化）或块的 `callId` 合并到块一级。三件事因此不必让每个消费方
    * 自己反推：① 哪些消息属于同一条逻辑消息；② 增量与快照怎么配对（合并键**不含 `messageId`**，
    * 同一个块的 delta 与 snapshot 是两条消息）；③ 覆盖的边界在哪。
@@ -387,6 +453,19 @@ export const AgentMessageSchema = z.object({
   raw: z.unknown(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
+
+/**
+ * 消息账本的**折叠键**：段号 + 载体键（`<segment ?? 0>:<mergeKey>`）。
+ *
+ * 为什么是一格独立函数而不是各处现拼：账本的折叠有**三处**——服务端落盘前（`@aieval/core` 的
+ * `foldMessages`）、浏览器手里的这一份（`@aieval/client` 的 `foldRowRecords`：打开抽屉先拉一次
+ * `/messages`、随后按同一把键叠加 SSE 增量）、界面装配（`@aieval/ui` 的 `buildAgentLogModel`）。
+ * 三处分居三个包、都够不着对方的实现，判据一旦漂开，症状是「一处认段、一处不认」——
+ * 看起来像内容丢失，而不是合并错（真机：关掉再打开执行日志，首段的消息整段不见了）。
+ */
+export function messageFoldKey(message: Pick<AgentMessage, 'segment' | 'mergeKey'>): string {
+  return `${message.segment ?? 0}:${message.mergeKey}`;
+}
 
 /** 能力取值五态 */
 export const CapabilitySchema = z.enum([
@@ -459,20 +538,30 @@ export type InjectionCapability = z.infer<typeof InjectionCapabilitySchema>;
  */
 
 /**
- * **`yes` 是靠什么证出来的**：这一家的一致性场景里，厂商那一侧**真的跑起来了吗**。
+ * **`yes` 是靠什么证出来的**：这一格的一致性场景里，厂商那一侧**真的跑起来了吗**。
  *   · `'real-path'`——厂商真跑（真 CLI / 真 SDK / 真运行时 + 厂商自己的通道），只把**上游模型**
- *     脚本化。于是「厂商的提问请求真的到了我们手里」与「我们的答复真的回到了厂商」两条都有原文，
+ *     脚本化。于是「厂商的那条通道真的到了我们手里」与「我们的动作真的回到了厂商」两条都有原文，
  *     而它们正是这件事的全部意义；
  *   · `'synthetic-fixture'`——夹具自己扮演厂商那一端（造出「厂商问了一次」、再把答复装成厂商形状）。
  *     它证得了端口那一半，证不了上面那两条。**临时档**：只允许留在「今天确实驱动不了」的家里，
  *     且必须给出原因。
  *
+ * 两处消费方共用这一套词表：交互面的 `askUserProofDriver`（那一问能不能被问）与人工消息面的
+ * `TurnInjectionCell.proofDriver`（这一格做不做得到）。同一个问题（这句 `yes` 是真路径证出来的、
+ * 还是夹具代跑的）在两处问的是同一件事，各写一份必然漂。
+ */
+export const ProofDriverSchema = z.enum(['real-path', 'synthetic-fixture']);
+export type ProofDriver = z.infer<typeof ProofDriverSchema>;
+
+/**
+ * **`yes` 是靠什么证出来的**（提问应答面那一格的名字，词表与硬规则见 `ProofDriverSchema`）。
+ *
  * 为什么与 `askUserChannel` 分开说：那一格回答「模型看到的那个提问工具是谁提供的」，
  * 这一格回答「这句 `yes` 是怎么证出来的」。两者的取值来源、变化原因与消费方都不同——
  * 合成一格等于让一个字段同时回答两个问题，而夹具扮演端口能让判据全绿却证不到通道。
  */
-export const AskUserProofDriverSchema = z.enum(['real-path', 'synthetic-fixture']);
-export type AskUserProofDriver = z.infer<typeof AskUserProofDriverSchema>;
+export const AskUserProofDriverSchema = ProofDriverSchema;
+export type AskUserProofDriver = ProofDriver;
 
 /**
  * **交互面能力声明**：这一家能不能被模型问、提问工具是谁提供的、不能时为什么。
@@ -547,6 +636,159 @@ export const InteractionCapabilitySchema = z
     }
   });
 export type InteractionCapability = z.infer<typeof InteractionCapabilitySchema>;
+
+/**
+ * 注入边界的**定义**在 `inject-vocab.ts`（消息账本、行级事件与队列快照共用那份词表，见那里的头注），
+ * 这里只把它摆在既有的导出面上：本文件的消费方（端口、声明组）与包根出口因此一个字都不用改。
+ */
+export { InjectionBoundarySchema };
+export type { InjectionBoundary };
+
+/**
+ * **撤回结果**：编排层发起撤回后，适配器如实交回的一件事。
+ *
+ * 形状是四值而不是布尔：`unsupported`（这一家这一档根本没有撤回面）与 `unknown`（撤不到、也说不出
+ * 为什么）在只回布尔时**分不开**，而界面要说的话完全不同；`already-consumed` 是竞态里厂商赢的那一支
+ * （消息已经交给模型了）——它不是失败，是**如实**，界面据此把那一条移出队列并说明撤不回来。
+ */
+export const RETRACT_OUTCOMES = ['retracted', 'already-consumed', 'unsupported', 'unknown'] as const;
+export const RetractOutcomeSchema = z.enum(RETRACT_OUTCOMES);
+export type RetractOutcome = z.infer<typeof RetractOutcomeSchema>;
+
+/**
+ * **投递通道**：这一格的消息从哪条路进厂商。要这一格是因为**代价不同**——同一条消息走 wire 上现成的
+ * 方法、走进程内 SDK、与为了它常驻一支插件 + side channel，是三件成本完全不同的事。
+ */
+export const TurnInjectionChannelSchema = z.enum(['wire', 'in-process-plugin', 'in-process-sdk']);
+export type TurnInjectionChannel = z.infer<typeof TurnInjectionChannelSchema>;
+
+/**
+ * **能力格**：`turnInjection` 里的一格——某一个边界上这一家收不收得到人话，
+ * 或者**能不能续接到一条已有会话**（投递两档与续接共用这一个形状，字段逐格同义）。
+ *
+ * 五态词表与 `InjectionStateSchema` 逐字同源（`yes` / `no` / `unverified` / `off-by-adapter` /
+ * `not-projected-by-vendor`），落在这里的是那一套 + 三格这个矩阵独有的代价事实：
+ *   · `channel`——厂商侧那条通道（续接那一格是「从哪条路接回去」）；`yes` 必须给出
+ *     （能做到就得说清怎么做，否则界面只能编一个代价）；
+ *   · `gate`——版本门（`{version}` 或 `null`）。结构化一格而不是塞进 `notes`：某些方法自某个版本起
+ *     才存在、或某个参数**必填**，那是接这一格的前置条件，不是一句备注；
+ *   · `experimental`——「wire 上有」≠「官方承诺稳定」；
+ *   · `proofDriver`——**这一格的证据是哪一档驱动器**（词表与硬规则见 `ProofDriverSchema`）。
+ *     它与 `state` 是两个问题：「做不做得到」与「这句结论是怎么证出来的」。缺了它，「声明 `yes`
+ *     必须配真路径驱动器」只能靠约定，而约定会在下一个人手里腐烂成假话。
+ */
+export const TurnInjectionCellSchema = z
+  .object({
+    state: CapabilitySchema,
+    /** 为什么做不到；`state` 为 `yes` 时必须为 `null` */
+    reason: MissingReasonSchema.nullable(),
+    /** 厂商侧那条通道；`yes` 时必须给出 */
+    channel: TurnInjectionChannelSchema.nullable(),
+    /** 版本门；`null` = 没有版本门 */
+    gate: z.object({ version: z.string().min(1) }).nullable(),
+    experimental: z.boolean(),
+    /**
+     * 这一格的证据是哪一档驱动器；**必填**——答不出这一格就不该声明 `yes`。
+     * 非 `yes` 的格同样要填（真路径上**观察到做不到**也是一种证据，与「没验过」必须分得开）。
+     */
+    proofDriver: ProofDriverSchema,
+    /** `synthetic-fixture` 必须给出原因（非空）；`real-path` 必须为 `null` */
+    proofDriverReason: z.string().nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.state === 'yes' && value.reason !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'state 为 yes ⇒ reason 必须为 null' });
+    }
+    if (value.state !== 'yes' && value.reason === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: `state 为 ${value.state} ⇒ 必须给出缺失原因` });
+    }
+    if (value.state === 'yes' && value.channel === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['channel'], message: 'state 为 yes ⇒ 必须给出通道' });
+    }
+    if (value.state === 'yes' && value.proofDriver !== 'real-path') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['proofDriver'],
+        message: 'state 为 yes ⇒ proofDriver 必须是 real-path：声明得出「这一格做得到」就得拿真路径证明，'
+          + '夹具扮演厂商那一端证不到「厂商真的收下了、模型真的看到了」',
+      });
+    }
+    if (value.proofDriver === 'synthetic-fixture') {
+      if (value.proofDriverReason === null || value.proofDriverReason.trim() === '') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['proofDriverReason'],
+          message: 'proofDriver 为 synthetic-fixture ⇒ 必须给出原因：这一档是临时档，'
+            + '「今天为什么驱动不了真路径」要能被读到，否则它会静默地长期留下来',
+        });
+      }
+    } else if (value.proofDriverReason !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['proofDriverReason'],
+        message: 'proofDriver 为 real-path ⇒ proofDriverReason 必须为 null',
+      });
+    }
+  });
+export type TurnInjectionCell = z.infer<typeof TurnInjectionCellSchema>;
+
+/**
+ * **撤回能力四档**（与投递**分开**声明：「能收但不能撤」是合法的一家）：
+ * `by-id`（按身份可撤）/ `flush-only`（只能整条队列全清）/ `none` / `unverified`。
+ *
+ * 为什么必须有 `flush-only` 这一档：只有「整条清空」的家如果被写成一格「支持撤回」，
+ * 界面就会写出「撤回这一条」的文案——而那一档要重排其余条目，清与重排之间的窗口会让同一条消息
+ * **第二次**进模型。四档是**如实**的表达方式。
+ */
+export const RETRACT_ABILITIES = ['by-id', 'flush-only', 'none', 'unverified'] as const;
+export const RetractAbilitySchema = z.enum(RETRACT_ABILITIES);
+export type RetractAbility = z.infer<typeof RetractAbilitySchema>;
+
+/**
+ * **撤回格**：某一个边界上，已经交给厂商的那一条还能不能要回来。
+ *
+ * `reason` 必填且**要把判据写进去**（按什么认人 / 是不是整条清）：界面要说得出「撤回可能撤掉哪一条」，
+ * 而 `by-id` 在三家认的是三个不同的身份（我们自铸的 uuid / 我们自己发的 messageId / 厂商的提交 id）。
+ */
+export const TurnInjectionRetractSchema = z.object({
+  state: RetractAbilitySchema,
+  reason: z.string().min(1),
+});
+export type TurnInjectionRetract = z.infer<typeof TurnInjectionRetractSchema>;
+
+/**
+ * **注入面能力声明（第五组）**：人往运行中的一轮送话、以及**接着一条已有会话再跑一段**，
+ * 这一家各能做什么。
+ *
+ * 独立成组、不复用 `injection`（那个名字已指「把 MCP / skills 配置下发给智能体」，两者不相干）。
+ * 判据与既有各组同源——**消费方不同**：这一组界面（输入区可用性与 tooltip、追问入口）与编排层
+ * （投递路径、要不要续接）两边都要读，形状也是**家 × 两档 × 两件事（投递 / 撤回）+ 续接一格**的矩阵。
+ *
+ * 四条口径：
+ *   · 投递与撤回分开声明（`TurnInjectionRetractSchema`：能收但不能撤是合法的一家）；
+ *   · `resume` 是**单格**、不按边界分两档——续接不是「哪一档」的问题，它是「从哪条会话接着跑」；
+ *     续接之后的追问天然落在 `'idle'` 档，而 `'round'` 只活在「同一条命」里；
+ *   · `notes` 记这一族能力成立的前提（路由 / 开关 / 版本），空数组 = 无条件成立；
+ *   · **缺席按「不知道」处置，不编一份都支持的**：猜错会让界面说谎（说「能投」而实际投不进去），
+ *     而说谎的形态是「按钮可点、消息静默消失」。
+ *
+ * 声明与产物**互钉**：把哪一格改成 `yes` 就要同时给出该格的真实场景（含驱动器的真伪核对），
+ * 非 `yes` 的 `reason` 必须在词表白名单里。
+ */
+export const TurnInjectionCapabilitySchema = z.object({
+  delivery: z.object({ round: TurnInjectionCellSchema, idle: TurnInjectionCellSchema }),
+  retract: z.object({ round: TurnInjectionRetractSchema, idle: TurnInjectionRetractSchema }),
+  /**
+   * **续接**：这一家能不能接着一条已有会话再跑一段（`AgentRunInput.resume` 那一格的能力面）。
+   *
+   * 只有一格，因为「不支持续接的家收到 `resume` 必须抛错」这条约定需要一个**可查的能力位**
+   * ——没有它，适配器只能自己猜，而猜错的表现是「用户以为在追问、智能体其实什么都不记得」。
+   * `gate` 在这一格是主力：有的家是「版本到了才有那条 wire 方法」。
+   */
+  resume: TurnInjectionCellSchema,
+  notes: z.array(z.string()),
+});
+export type TurnInjectionCapability = z.infer<typeof TurnInjectionCapabilitySchema>;
 
 /** 子任务状态：采不到就 `'unknown'`，**不得用 `null` 表示未采集**（未采集的原因写在 `statusMissing`） */
 export const SubagentStatusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'unknown']);

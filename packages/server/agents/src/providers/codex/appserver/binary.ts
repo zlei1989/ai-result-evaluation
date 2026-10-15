@@ -10,11 +10,24 @@
  *   `<平台包>/package.json`（以 CLI 包为基准）→ 同级 `vendor/` 即二进制根
  *   `<vendor>/<triple>/bin/codex(.exe)`
  *
- * **打包器免疫（两条，缺一不可）**：Next 的服务端构建会把 `node:module` 的 `createRequire` 换成自己的
- * `require`，其 `resolve()` 返回**打包器的模块 id**（形如 `[externals]/@openai/codex/package.json …`）
- * 而不是文件路径；它还会重写 `import.meta.url`。⇒ ① 用 `process.getBuiltinModule('module')` 向 Node
- * 取真的 `createRequire`；② 解析基准按列表逐个试、且**校验结果是不是文件路径**，不是就换下一个基准。
- * 缺任一条的表现都是「纯 Node 下正常、打包后 `AGENT_LOAD_FAILED`」。
+ * **打包器免疫两条（当前构建里是保险，不是载荷路径）**：① 用
+ * `process.getBuiltinModule('module')` 向 Node 取真的 `createRequire`；② 解析基准按列表逐个试、
+ * 且**校验结果是不是文件路径**，不是就换下一个基准。
+ *
+ * ⚠️ **别把「为什么需要它们」写成一句已证实的现场事实**：那两条防的是「打包器把 `createRequire`
+ * 换成自己的 `require`、`resolve()` 返回模块 id（形如 `[externals]/@openai/codex/package.json …`）、
+ * 并把 `import.meta.url` 重写掉」那一类构建——真机读数（生产产物 + 生产进程 spy）显示**当前默认的
+ * Turbopack 生产构建并不这样**：`node:module` 编译成 `e.x("node:module", () => require("node:module"))`
+ * 就是真 Node 模块，`resolve()` 返回真文件路径，`isFilesystemPath` 的 `[external` 那一支一次没走过。
+ * 留着这两条是因为**别的打包器/构建配置**下它们才有意义，而那条路今天没有产物读数。
+ *
+ * 同一份读数还给出两条与「跑不跑得起来」直接相关的现时约束（都不由这里决定）：
+ *   · **`@openai/codex` 不进任何产物**——没有 externals chunk、没有 `.next/node_modules/<包名>-<哈希>`
+ *     软链、`*.nft.json` 里也没有它（codex 从不由打包器 import，只由本函数在运行期按 node_modules
+ *     布局解析）⇒ `serverExternalPackages` 里那一格对它**是空转**；
+ *   · **第一跳基准在生产产物里是「构建机仓根的源码绝对路径」**（本模块被内联进 server chunk，
+ *     `import.meta.url` 在构建期就被定死成那个绝对路径）⇒ 本机能过只因为源码树还在原处；
+ *     换成「只发 `.next` + app 的 node_modules」的部署形态，这一跳恒失败、只剩 `process.cwd()` 那一跳。
  *
  * 为什么解析子路径而不是裸说明符：`@openai/codex` **没有 `exports` 字段**（`type: module`，入口只有
  * `bin/codex.js`，既无 `main` 也无 `index.js`）⇒ 裸说明符在两条解析器下都无物可落，能解析的只有
@@ -136,6 +149,9 @@ export function resolvePackageFile(
 export function resolveCodexBinary(): string {
   const triple = platformTargetTriple();
   const steps: string[] = [`平台=${process.platform}/${process.arch}`];
+  /** 断在哪一级：都解析不到 ⇒ 可能是没装；解析到 package.json 但缺二进制 ⇒ 装了但不全；否则基准无效 */
+  let resolvedPackageJson = false;
+  let resolvedBinary = false;
   try {
     if (triple === null) throw new Error('该平台没有对应的 codex 平台包');
     steps.push(`三元组=${triple}`);
@@ -149,16 +165,29 @@ export function resolveCodexBinary(): string {
     const platformPackageJson = resolvePackageFile(`${platformPackage}/package.json`, [codexPackageJson]);
     steps.push(`平台包=${platformPackageJson}`);
 
+    resolvedPackageJson = true;
     const binary = vendorBinaryPath(join(dirname(platformPackageJson), 'vendor'), triple);
     steps.push(`二进制=${binary}`);
     if (!existsSync(binary)) throw new Error('解析出的路径下没有该文件');
+    resolvedBinary = true;
 
     return binary;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    /**
+     * **补救层次按断在哪一级分**（三档的判定见下）：厂商包或平台包**根本没解析到**才可能是「没装」；
+     * 解析到了 `package.json` 却缺 `vendor/` 下的二进制，是**包装了但不全**，装一次不会有任何变化；
+     * 两条基准都试过、包也在，那就是**基准在当前环境无效**（换机器 / cwd 不对）。
+     */
+    const remedy = resolvedPackageJson === false
+      ? 'install'
+      : resolvedBinary === false
+        ? 'repair-package'
+        : 'fix-anchor';
     throw new AgentLoadError(
       CODEX_PACKAGE_NAME,
       new Error(`找不到 codex 可执行文件：${reason}（${steps.join(' → ')}）`),
+      { remedy },
     );
   }
 }

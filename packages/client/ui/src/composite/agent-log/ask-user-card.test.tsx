@@ -1,8 +1,9 @@
 /**
  * AskUserCard：时间轴上唯一「会等人」的东西。
  *
- * 十一条守卫：
+ * 十二条守卫：
  * · **外壳是 `Card`**：卡面标题只写「问题 N 个」+ 收场态，**问题类型一个字都不进卡面**；
+ * · **问题面板不带自己那层边框**（`bordered={false}`）：框由 `Card` 出，面板再画一圈就是框里套框；
  * · **一问一格折叠面板、默认全部收起**（等待中也不例外），面板标题 = 问题类型 + 题目 + 「可多选」；
  * · **一问一格键**（`questionPanelKey`）：展开一问答面板不影响另一问；
  * · **原文入口在卡面 footer**（收场且有原文才有）；
@@ -162,6 +163,22 @@ describe('AskUserCard：卡片结构', () => {
     expect(onQuestionOpenChange).toHaveBeenCalledWith(questionPanelKey(CARD_ID, 0), true);
     // 第二问的键一个都没被报（点一问答面板不会顺手带上另一问）
     expect(onQuestionOpenChange).not.toHaveBeenCalledWith(questionPanelKey(CARD_ID, 1), expect.anything());
+  });
+
+  it('问题面板不带自己那层边框（`bordered={false}`）：框由卡片出，面板再画一圈就是框里套框', () => {
+    const { container } = renderCard(
+      settled({
+        questions: [question({ secret: true })],
+        answers: [{ header: '选路径', selected: ['选项 A'], custom: null }],
+      }),
+    );
+
+    // 框的那一层在这里：`.ant-card-bordered` 是 `Card` 画的，卡片里的面板不该再画一圈
+    expect(container.querySelector('.ant-card-bordered')).not.toBeNull();
+    // antd 把 `bordered={false}` 落在根上的 `.ant-collapse-borderless`
+    expect(container.querySelector('.ant-collapse')?.className).toContain('ant-collapse-borderless');
+    // 只有问题面板这一格是无框的：遮罩那一格走 `ghost`（另一档，背景也透明），两档不许混成一个
+    expect(container.querySelectorAll('.ant-collapse-borderless')).toHaveLength(1);
   });
 
   it('题目标题那一格可收缩（`minWidth: 0`）：长题目不会把卡片顶宽成横向滚动条', () => {

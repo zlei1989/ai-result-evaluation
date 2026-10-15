@@ -29,7 +29,8 @@ import {
   useCaseSyncStatus,
   useCreateProvider,
   useDeleteProvider,
-  useFetchProviderModels,
+  useImportProviderModels,
+  usePreviewProviderModels,
   useProviderModels,
   useProviders,
   useRunModelOptions,
@@ -45,6 +46,7 @@ import type {
   McpServerConfig,
   McpServers,
   ProviderModelCapability,
+  ProviderModelPreview,
   ProviderPatch,
   ProviderView,
   SettingsPatch,
@@ -121,7 +123,10 @@ function SettingsPage(): React.ReactNode {
   // useUpdateProvider 的 update 在这里改名：settings 的 update 才是本页的主角，两个都叫 update 会撞名
   const { update: saveProvider, isUpdating: isSavingProvider } = useUpdateProvider();
   const { remove: removeProvider, isDeleting } = useDeleteProvider();
-  const { fetchModels, isFetching } = useFetchProviderModels();
+  // 拉取分两步：预览（只读，回来进 fetchedCandidates）与挑选导入（落盘）；loading 分别喂给
+  // 「拉取模型」按钮与挑选框的「加入清单」
+  const { preview, isPreviewing } = usePreviewProviderModels();
+  const { importModels, isImporting } = useImportProviderModels();
   // 不取 isMutating：模型清单的增删没有对应的「卡片级」加载态，弹窗里按按钮粒度给反馈即可
   const { add: addModel, remove: removeModel, setContext: setModelContext } = useProviderModels();
   // 评分卡要拿「智能体 → 协议」这张表来禁用协议不匹配的智能体。表只有服务端的注册表有真源，
@@ -151,6 +156,15 @@ function SettingsPage(): React.ReactNode {
   // 口径与同一条理由：增删模型 / 拉取之后列表会重取，对话框必须跟着刷新，而目标消失时要能看出来。
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsId, setModelsId] = useState<string | null>(null);
+  /**
+   * 拉取到的候选（预览结果），与**发起拉取的那家**绑在一起存：慢请求期间用户关掉重开另一家，
+   * 过期候选若弹在新目标上，确定就把 A 家的模型写进 B 家的清单 —— 派生的 `modelCandidates`
+   * 只在「存的 providerId 仍是当前目标」时才交给弹窗，过期的连显示都不会显示。
+   */
+  const [fetchedCandidates, setFetchedCandidates] = useState<{
+    providerId: string;
+    models: ProviderModelPreview[];
+  } | null>(null);
   const [validation, setValidation] = useState<RootValidation | null>(null);
   // 用例目录那一格的校验结果**独立一格**：两格共用一份会让「刚校验过工作区」把用例目录的结果顶掉
   const [casesValidation, setCasesValidation] = useState<RootValidation | null>(null);
@@ -251,12 +265,15 @@ function SettingsPage(): React.ReactNode {
   /** 「模型」按钮：打开清单对话框，并把编辑弹窗收起来 —— 两个弹窗叠着开只会互相挡 */
   const openModels = (provider: ProviderView): void => {
     closeModal();
+    // 上一家的挑选候选必须一并清掉：它属于上一家，留着会在新目标上弹出来
+    setFetchedCandidates(null);
     setModelsId(provider.id);
     setModelsOpen(true);
   };
   const closeModels = (): void => {
     setModelsOpen(false);
     setModelsId(null);
+    setFetchedCandidates(null);
   };
 
   /**
@@ -300,13 +317,36 @@ function SettingsPage(): React.ReactNode {
     void removeProvider(provider.id).catch(onError);
   };
 
-  // 模型清单的四个动作（它们今天只从模型对话框发起；目标消失时不静默 return）
+  // 模型清单的动作（它们今天只从模型对话框发起；目标消失时不静默 return）
+  /**
+   * 拉取第一步：预览上游候选（只读）。候选回来进 state、由内层挑选框接手；
+   * 失败走统一 onError（服务端已给含 host 的中文原因）。
+   */
   const fetchProviderModels = (): void => {
     if (modelsTarget === null) {
       reportTargetGone();
       return;
     }
-    void fetchModels(modelsTarget.id).catch(onError);
+    const targetId = modelsTarget.id;
+    void preview(targetId).then(
+      (models) => setFetchedCandidates({ providerId: targetId, models }),
+      onError,
+    );
+  };
+  /** 拉取第二步：挑选框「加入清单」—— 把勾选的候选交给服务端合并落盘，成功后收起挑选框 */
+  const importProviderModels = (models: ProviderModelPreview[]): void => {
+    if (modelsTarget === null) {
+      reportTargetGone();
+      return;
+    }
+    void importModels(modelsTarget.id, models).then(
+      () => setFetchedCandidates(null),
+      onError,
+    );
+  };
+  /** 挑选框「取消」：丢掉候选（预览本来就是只读的，没有要回滚的东西） */
+  const cancelModelImport = (): void => {
+    setFetchedCandidates(null);
   };
   const addProviderModel = (modelId: string): void => {
     if (modelsTarget === null) {
@@ -544,9 +584,18 @@ function SettingsPage(): React.ReactNode {
                   <ProviderModelsModal
                     open={modelsOpen}
                     provider={modelsTarget}
-                    fetchingModels={isFetching}
+                    fetchingModels={isPreviewing}
+                    // 过期候选（发起那家已不是当前目标）在这里就折成 null，挑选框不会弹出来
+                    modelCandidates={
+                      fetchedCandidates !== null && fetchedCandidates.providerId === modelsId
+                        ? fetchedCandidates.models
+                        : null
+                    }
+                    importingModels={isImporting}
                     onClose={closeModels}
                     onFetchModels={fetchProviderModels}
+                    onImportModels={importProviderModels}
+                    onCancelImport={cancelModelImport}
                     onAddModel={addProviderModel}
                     onRemoveModel={removeProviderModel}
                     onSetModelContext={setProviderModelContext}

@@ -7,17 +7,17 @@
  * 「在途通知消费被终结」这一格在 dsh 上是**可达且可钉**的：真实 `NotificationSubscription.close()`
  * 会 reject 挂起的等待者（见夹具 `createFakeDshSdk` 的 JSDoc），所以这里连 `recorder.order` 一起钉住，
  * 而不是像 codex 那样只登记能力边界。
- * 事件构造数据一律照 `probe/dumps/dsh.json` 的真实外形：`{ method:'session.event', params:{ event } }`。
+ * 事件构造数据一律照真机读数（`probe/dumps/v3/`）的外形：`{ method:'session.event', params:{ event } }`。
  * 收尾轮（去重缺陷）：**一轮恰好一条 `usage`**，以及「两轮各一条、tokens 是当轮的量」。
  */
 import { EFFORT_OFF, type AgentEvent } from '@aieval/contracts';
-import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RELEASE_GRACE_MS } from '../../release';
 import { setAgentRuntimeForTesting } from '../../runtime';
-import type { AgentRunResult, AskUserReply } from '../../types';
+import type { AgentRunInput, AgentRunResult, AskUserReply, InjectionPort } from '../../types';
 import {
   DSH_ASK_ANSWERER_PLUGIN_RELATIVE_PATH,
   DSH_ASK_ANSWERER_PLUGIN_SOURCE,
@@ -26,6 +26,11 @@ import {
   DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS,
   DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS,
 } from './ask-user';
+import {
+  DSH_INJECT_PLUGIN_RELATIVE_PATH,
+  DSH_INJECT_QUEUE_RELATIVE_PATH,
+  DSH_INJECT_RECEIPTS_RELATIVE_PATH,
+} from './inject';
 import {
   DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH,
   DSH_STREAM_TAP_PLUGIN_SOURCE,
@@ -58,11 +63,12 @@ import {
   DSH_ROUTE_KEY,
   DSH_ROUTE_PATCH_RELATIVE_PATH,
   acceptsRunNotification,
+  noteChildSession,
   buildDshRoutePatch,
   diagnoseStreamEnd,
   dshProvider,
 } from './index';
-import { resetDshMessageStateForTesting } from './message';
+import { dshTurnAttribution, resetDshMessageStateForTesting, seedDshSessionRoundHighWater } from './message';
 import { DSH_PACKAGE_NAME } from './sdk';
 import { removeTreeWithRetry } from '../../testing/cleanup';
 
@@ -99,12 +105,54 @@ describe('dsh 通知流的放行判据（会话树）', () => {
 
   it('不带会话归属的顶层通知（`subagent.started` / `finished`）一律放行——它是子会话 id 的唯一来源', () => {
     const children = new Set<string>();
+    // 真机载荷：`{parentSessionId, childSessionId}`（`finished` 另有同值的 `agentId`）
     expect(
-      acceptsRunNotification({ method: 'subagent.started', params: { subagentId: CHILD, parentSessionId: OWN } }, OWN, children),
+      acceptsRunNotification({ method: 'subagent.started', params: { parentSessionId: OWN, childSessionId: CHILD } }, OWN, children),
     ).toBe(true);
     expect(
-      acceptsRunNotification({ method: 'subagent.finished', params: { subagentId: CHILD, parentSessionId: OWN } }, OWN, children),
+      acceptsRunNotification(
+        { method: 'subagent.finished', params: { parentSessionId: OWN, childSessionId: CHILD, agentId: CHILD } },
+        OWN,
+        children,
+      ),
     ).toBe(true);
+  });
+
+  it('更早版本 / 其它载体的 `params.subagentId` 一并容忍（多认一个键，漏认的代价是子会话整段消失）', () => {
+    const children = new Set<string>();
+    noteChildSession({ method: 'subagent.started', params: { subagentId: CHILD, parentSessionId: OWN } } as never, OWN, children);
+    expect(children.has(CHILD)).toBe(true);
+  });
+
+  /**
+   * **身份来源的第四格：信封 `params.sessionId`**（真机 `subagent` 工具派发的那一档）。
+   *
+   * 真机读数：派发时只投一条 `subagent/descriptor`（子会话自己的 `seq: 6`，`data` 里没有 `childId`），
+   * **没有** `subagent.started`；子会话的 `assistant/message` 与 `step/start` 照常投送，
+   * 而它们的 `sessionId` 是子会话 id ⇒ 放行判据的 ③ 只认登记过的 id。
+   * 少了信封那一格：子会话的事件被挡掉（子智能体的话一个字都不剩），它的 tok 也不算进
+   * 「子智能体那一份」（真机那一轮主会话 54249 / 分量 27560 就是这么来的）。
+   */
+  it('subagent/descriptor 的信封 sessionId 被登记成子会话（真机没有 subagent.started 的那一档）', () => {
+    const children = new Set<string>();
+    noteChildSession(
+      {
+        method: 'session.event',
+        params: {
+          sessionId: CHILD,
+          event: { type: 'subagent/descriptor', seq: 6, time: 1, data: { mode: 'one-shot', provider: 'spawn' } },
+        },
+      },
+      OWN,
+      children,
+    );
+    expect([...children]).toEqual([CHILD]);
+    // 登记之后，这条子会话的事件才放得进来
+    expect(acceptsRunNotification({ method: 'session.event', params: { sessionId: CHILD } }, OWN, children)).toBe(true);
+    // 而本会话自己的信封不算子会话（`session.event` 一律带它）
+    const selfOnly = new Set<string>();
+    noteChildSession({ method: 'session.event', params: { sessionId: OWN, event: { type: 'tool/call' } } }, OWN, selfOnly);
+    expect([...selfOnly]).toEqual([]);
   });
 });
 
@@ -737,6 +785,11 @@ describe('dsh 的 ask_user_question 挂载', () => {
       expect(readFileSync(join(home, DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH), 'utf8')).toBe(DSH_STREAM_TAP_PLUGIN_SOURCE);
       // 旁路文件装配时刻**清零**（重跑同一行绝不能重放上一轮尝试的增量行）
       expect(statSync(join(home, DSH_STREAM_TAP_RELATIVE_PATH)).size).toBe(0);
+      /**
+       * 权限：旁路文件里是**模型输出的逐字转录**，必须在**这里**就是 0600——插件那边的
+       * `appendFileSync(..., { mode: 0o600 })` 对已存在的文件不改权限（真机实测过 0644）。
+       */
+      expect(statSync(join(home, DSH_STREAM_TAP_RELATIVE_PATH)).mode & 0o777).toBe(0o600);
       // ② 运行结束后仍在
       expect(readFileSync(overlayPath(home), 'utf8')).toContain('tool-ask-user');
       expect(readFileSync(overlayPath(home), 'utf8')).toContain('aieval-stream-tap');
@@ -836,6 +889,9 @@ describe('dsh 的提问应答面装配（ask-user）', () => {
       // ③ 两份 sidecar **整份清零**（追加型：重跑同一行时上一轮的提问与答复绝不能被当成本次的）
       expect(statSync(join(home, DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH)).size).toBe(0);
       expect(statSync(join(home, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH)).size).toBe(0);
+      // ④ 权限 0600（提问正文与人的答复；`appendFileSync` 的 mode 对已存在文件是空操作，只能在这里给）
+      expect(statSync(join(home, DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH)).mode & 0o777).toBe(0o600);
+      expect(statSync(join(home, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH)).mode & 0o777).toBe(0o600);
     } finally {
       removeTreeWithRetry(home);
     }
@@ -1056,19 +1112,32 @@ async function runDshResultWith(notifications: readonly unknown[]): Promise<Agen
 
 /**
  * 子智能体的两条通知是**顶层**的（`{ method, params }`，**不套** `session.event`，见 `protocol.ts`）：
- * 身份就在 `params.subagentId` 上，而它与随后子会话事件里的 `params.sessionId` 同值（真机核过）
+ * 身份就在 `params.childSessionId` 上（真机那一对是 `{parentSessionId, childSessionId}`），
+ * 而它与随后子会话事件里的 `params.sessionId` 同值（真机核过）
  * ⇒ 用例里的 `sessionEvent(..., 'child-1')` 才认得出「这一条属于 child-1」。
  * `parentSessionId` 写占位 id（真机这里是主会话 id；夹具只改写 `params.sessionId` 那一格）。
  */
-function subagentStarted(subagentId: string): unknown {
-  return { method: DSH_SUBAGENT_STARTED_METHOD, params: { subagentId, parentSessionId: DSH_SESSION_PLACEHOLDER } };
+function subagentStarted(childSessionId: string): unknown {
+  return {
+    method: DSH_SUBAGENT_STARTED_METHOD,
+    params: { childSessionId, parentSessionId: DSH_SESSION_PLACEHOLDER },
+  };
 }
 
 /** 收场那一条（真机 `status` 只有 `ok` / `error`，`stopReason` 五档，见 `message.ts` 的映射表） */
-function subagentFinished(subagentId: string): unknown {
+function subagentFinished(childSessionId: string): unknown {
   return {
     method: DSH_SUBAGENT_FINISHED_METHOD,
-    params: { subagentId, status: 'ok', stopReason: 'completed' },
+    // 真机另有这三格（`provider` / `parentSessionId` / `lastAssistantMessage`），R8-A 的原始捕获逐字如此
+    params: {
+      provider: 'spawn',
+      agentId: childSessionId,
+      parentSessionId: DSH_SESSION_PLACEHOLDER,
+      childSessionId,
+      status: 'ok',
+      stopReason: 'completed',
+      lastAssistantMessage: [{ type: 'text', text: '子任务完成。' }],
+    },
   };
 }
 
@@ -1209,6 +1278,233 @@ describe('子智能体那一份用量', () => {
    * 「读不到子智能体 …」，用例 `cc/index.test.ts` 那条）都落了这条 WARN，
    * 而 dsh 原来在 `finalize` 里给的是 `drafts: []` ⇒ 一格 `null` 悄无声息。
    */
+  /**
+   * **技能面的「装了却没观测到目录」**：厂商首次发布且这次会话里零条技能时根本不投
+   * `skill-catalog`（`dsh-tool-skill` 的 `if (!history.published && skills.length === 0) return;`），
+   * 于是「我们装进去的技能被厂商**全丢了**」与「厂商就是没投」在 wire 上是同一格 `null` ⇒
+   * 观测格读成「未能核验」、**行照跑照出分**。收尾必须有人说话（真机：10 条臂里 7 条一次 `[]`
+   * 都没读到，其中 3 条磁盘上确实有物化好的技能、厂商一条都没认领）。
+   */
+  it('装了技能却整轮没观测到技能目录 ⇒ 一条点名 WARN；装了没观测到不是这一档就不出声', async () => {
+    const skillRoot = mkdtempSync(join(tmpdir(), 'dsh-skill-warn-'));
+    const sourceDir = join(skillRoot, 'probe-alpha');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'SKILL.md'), '---\nname: probe-alpha\ndescription: probe skill\n---\n\n正文\n', 'utf8');
+    const skill = { name: 'probe-alpha', sourceDir };
+    const noCatalog: AgentEvent[] = [];
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+    });
+    await dshProvider.run(
+      createRunInput({ skills: [skill], onEvent: collectEvents(noCatalog) }),
+    );
+    const warns = noCatalog
+      .filter((event) => event.type === 'log' && event.stream === 'stderr' && event.text.startsWith('[WARN] 本次运行装了'))
+      .map((event) => (event.type === 'log' ? event.text : ''));
+    expect(warns).toHaveLength(1);
+    // 点名到**条数**与机制（否则读的人不知道该不该去查）
+    expect(warns[0]).toContain('1 条技能');
+    expect(warns[0]).toContain('未能核验');
+
+    // 观测到目录 ⇒ 不出声（这一档是「核验过了」）
+    const withCatalog: AgentEvent[] = [];
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          events: [
+            STEP_START_EVENT,
+            MAIN_USAGE,
+            sessionEvent('user/message', {
+              source: { kind: 'skill-catalog' },
+              content: [{ type: 'text', text: 'A skill is a reusable set of task-specific instructions.\n\n<available_skills>\n- `probe-alpha`: probe skill\n</available_skills>' }],
+            }),
+          ],
+        }),
+      },
+    });
+    await dshProvider.run(createRunInput({ skills: [skill], onEvent: collectEvents(withCatalog) }));
+    expect(
+      withCatalog.filter((event) => event.type === 'log' && event.text.startsWith('[WARN] 本次运行装了')),
+    ).toHaveLength(0);
+
+    /**
+     * **续接 / 追问段不报**（R5-B 的真机读数）：厂商的 `agent/pre-step` 先扫会话历史里那条
+     * `skill-catalog`，摘要没变就直接 return（不重发）⇒「这一段没看到目录」在那里是**设计**。
+     * 不排除这一档，每一段追问都会误报一条「未能核验」。
+     */
+    const resumed: AgentEvent[] = [];
+    const first = await dshProvider.run(
+      createRunInput({ skills: [skill], onEvent: collectEvents([]) }),
+    );
+    setAgentRuntimeForTesting({
+      sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+    });
+    await dshProvider.run(
+      createRunInput({
+        ...(first.sessionId === null ? {} : { resume: { sessionId: first.sessionId } }),
+        skills: [skill],
+        onEvent: collectEvents(resumed),
+      }),
+    );
+    expect(
+      resumed.filter((event) => event.type === 'log' && event.text.startsWith('[WARN] 本次运行装了')),
+    ).toHaveLength(0);
+
+    // 一条技能都没装 ⇒ 厂商不投是设计，不许刷噪声
+    const noSkills: AgentEvent[] = [];
+    setAgentRuntimeForTesting({
+      sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+    });
+    await dshProvider.run(createRunInput({ onEvent: collectEvents(noSkills) }));
+    expect(
+      noSkills.filter((event) => event.type === 'log' && event.text.startsWith('[WARN] 本次运行装了')),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * **释放前等子智能体收场**：`run()` 在**根**会话 idle 时就落定（厂商门面如此），而后台派出去的
+   * 子智能体可能还在跑（真机实测落定后子会话又跑了 8.6 s）。此时释放运行时等于把它们连根拔掉：
+   * `subagent.finished` 永远不来、子智能体那一份用量与轮次只到一半。`session/wait` 正是补这条缺口
+   * 的原语（等整棵子树收场），门面没包、只能走 `client.request`。
+   *
+   * 四档：还有子会话在跑 ⇒ 恰好调一次且带本行 sessionId；全部收场 ⇒ 一次都不调（零开销）；
+   * 已终止 ⇒ 不等（停机不能被一分钟的等待拖住）；请求失败 ⇒ 吞掉且不改结论。
+   */
+  describe('释放前等子智能体收场（session/wait）', () => {
+    it('还有子会话在跑 ⇒ 恰好一次 `session/wait`；全部收场 ⇒ 一次都不调', async () => {
+      const live = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: live,
+            events: [STEP_START_EVENT, MAIN_USAGE, subagentStarted('child-live'), assistantReply('收尾。')],
+          }),
+        },
+      });
+      const result = await dshProvider.run(createRunInput());
+      expect(result.ok).toBe(true);
+      expect(live.requestCalls).toHaveLength(1);
+      expect(live.requestCalls[0]?.method).toBe('session/wait');
+      expect(live.requestCalls[0]?.params).toEqual({ sessionId: result.sessionId });
+
+      const done = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: done,
+            events: [
+              STEP_START_EVENT,
+              MAIN_USAGE,
+              subagentStarted('child-done'),
+              subagentFinished('child-done'),
+              assistantReply('收尾。'),
+            ],
+          }),
+        },
+      });
+      await dshProvider.run(createRunInput());
+      expect(done.requestCalls).toEqual([]);
+    });
+
+    /**
+     * **等不到就把话说明白**：`session/wait` 失败（子会话永远不收场 / 到点 / 被外部 dispose）时，
+     * 白名单里那些还没收场的子会话马上会被掐死 —— 「还在跑、以后会报」是假话。分量必须按
+     * 「事实缺失」交 `null` 并点名，不能按 0 计入（真机形状：被杀的子任务交 `{0,0,0}` + `turns 1`，
+     * 而它永远不会再报）。
+     */
+    /**
+     * **终止要能打断等待**（R5-A 的真机读数：6.059 s 按停止，那一次 `session/wait` 照旧跑满
+     * 60 003 ms，`run.json` 最后还给 `completed`）。等待发生在收流之前 ⇒ 骨架的 `requestStop()`
+     * 此刻正好能把它打断。判据是**墙钟**：挂住的请求 + 中途 abort ⇒ 收尾立刻继续。
+     */
+    /**
+     * **插件加载了但拿不到 `agents` 服务**（R5-A 的漏报面）：加载收据里的 `hasAgents: false` 此前
+     * 只落一条 debug ⇒ 「投递恒 `agent-not-found`」在收尾零留痕。加载收据在（不是「没加载」）
+     * 但拿不到服务 ⇒ 单独一条 WARN（与「没等到收据」那条分开说）。
+     */
+    it('等待当中被终止 ⇒ 不跑满上限，立即收场（结论不变）', async () => {
+      const events: AgentEvent[] = [];
+      const controller = new AbortController();
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [STEP_START_EVENT, MAIN_USAGE, subagentStarted('child-hang'), assistantReply('收尾。')],
+            requestHangs: true,
+          }),
+        },
+      });
+      // 收流落定后 30ms 按停止：这一拍必定落在 drain 的等待里（挂住的请求不会自己结束）
+      setTimeout(() => controller.abort(), 30);
+      const startedAt = Date.now();
+      const result = await dshProvider.run(createRunInput({ signal: controller.signal, onEvent: collectEvents(events) }));
+      const elapsed = Date.now() - startedAt;
+      expect(recorder.requestCalls).toHaveLength(1);
+      // 远小于 `DSH_SUBAGENT_DRAIN_MS`（60 s）：被终止打断，不是跑到上限
+      expect(elapsed).toBeLessThan(5_000);
+      // 结论按「被终止」那一档收（`ok` 与退出原因由骨架定，这一格的判据是**墙钟**）
+      expect(result.exitReason).toBe('canceled');
+    });
+
+    it('等不到子会话收场 ⇒ 分量交 null 且点名（不按 0 计）', async () => {
+      const events: AgentEvent[] = [];
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [STEP_START_EVENT, MAIN_USAGE, subagentStarted('child-never'), assistantReply('收尾。')],
+            requestError: new Error('session agent was disposed outside the server'),
+          }),
+        },
+      });
+      const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+      // 分量两格都是 null（不是 0、也不是半份读数）
+      expect(result.subagentTokens).toBeNull();
+      expect(result.subagentTurns).toBeNull();
+      const warns = events
+        .filter((event) => event.type === 'log' && event.stream === 'stderr' && event.text.startsWith('[WARN] 释放运行时之前没能等到子会话'))
+        .map((event) => (event.type === 'log' ? event.text : ''));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('child-never');
+      // 结论不变：运行本身照旧成功
+      expect(result.ok).toBe(true);
+    });
+
+    it('已终止 ⇒ 不等；请求失败 ⇒ 吞掉、结论不变', async () => {
+      const aborted = createRecorder();
+      const controller = new AbortController();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: aborted,
+            events: [STEP_START_EVENT, MAIN_USAGE, subagentStarted('child-abort'), assistantReply('收尾。')],
+          }),
+        },
+      });
+      controller.abort();
+      await dshProvider.run(createRunInput({ signal: controller.signal }));
+      expect(aborted.requestCalls).toEqual([]);
+
+      const failing = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: failing,
+            events: [STEP_START_EVENT, MAIN_USAGE, subagentStarted('child-fail'), assistantReply('收尾。')],
+            requestError: new Error('session agent was disposed outside the server'),
+          }),
+        },
+      });
+      const result = await dshProvider.run(createRunInput());
+      expect(result.ok).toBe(true);
+      expect(failing.requestCalls).toHaveLength(1);
+    });
+  });
+
   it('子会话收场却无用量 ⇒ 一条**点名**的 WARN（null 那一格不能是静默的）', async () => {
     const events: AgentEvent[] = [];
     const recorder = createRecorder();
@@ -1258,11 +1554,12 @@ describe('子智能体那一份用量', () => {
   });
 
   /**
-   * 两把尺子不互相顶替（守卫 4 / 5）：`usage.turn` 是**每会话自己的** `step`
-   * （这条读数属于哪个会话的第几次模型往返），而 `turns` 仍是**全树合计**（`step/start` 一个都不落）。
+   * 两把尺子不互相顶替（守卫 4 / 5）：`usage.turn` 是**该会话自己的往返号**
+   * （这条读数属于哪个会话的第几次模型往返，按会话单调编号、与别的会话无关），
+   * 而 `turns` 仍是**全树合计**（`step/start` 一个都不落）。
    * 把 `turns` 改成每会话 ⇒ 这里读到的合计会掉回 2（主会话自己的步数）。
    */
-  it('归属按每会话自己的 step 走，而 `turns` 仍是全树合计（两把尺子不互相顶替）', async () => {
+  it('归属按该会话自己的往返号走，而 `turns` 仍是全树合计（两把尺子不互相顶替）', async () => {
     const events = await runDshWith([
       STEP_START_EVENT, // 主会话 step 1
       subagentStarted('child-1'),
@@ -1328,6 +1625,64 @@ describe('子智能体那一份轮次', () => {
     const last = usageEvents(events).at(-1);
     expect(last?.subagentTurns).toBe(3);
     expect(last?.turns).toBe(4);
+  });
+
+  /**
+   * **跨 run 不累积**（真机形状：追问 / 续接的第二个 run 会**重新登记**同一个子会话 id）。
+   *
+   * `sessionUsage` 与按会话的往返计数都是**模块级、跨 run 不清**的（同一个 Node 进程里还跑着别的行），
+   * 而「子智能体那一份」问的是**本 run** 的增量 ⇒ 少了基线，第二个 run 的分量会把前一个 run 一起算上：
+   * 真机形状是行快照上出现「合计 60 / 子分量 2010」。基线在 `noteChildSession` 首次登记时记下。
+   */
+  it('同一个子会话 id 在第二个 run 里再登记 ⇒ 分量只算本 run 那一段', async () => {
+    const recorder = createRecorder();
+    const childUsage = (input: number): unknown =>
+      sessionEvent(
+        DSH_ASSISTANT_MESSAGE_TYPE,
+        { turn: 1, step: 1, usage: { inputTokens: input, cacheReadTokens: 0, outputTokens: 1 } },
+        'child-1',
+      );
+    // 第一个 run：子会话跑两步、报了 2000
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          events: [
+            STEP_START_EVENT,
+            subagentStarted('child-1'),
+            sessionEvent('step/start', { turn: 1, step: 1 }, 'child-1'),
+            sessionEvent('step/start', { turn: 1, step: 2 }, 'child-1'),
+            childUsage(2000),
+          ],
+        }),
+      },
+    });
+    const first = await dshProvider.run(createRunInput());
+    expect(first.subagentTokens?.input).toBe(2000);
+    expect(first.subagentTurns).toBe(2);
+
+    // 第二个 run：**同一个子会话 id 又说话**（追问 / 续接），本轮只有 10 / 一步
+    const sessionId = first.sessionId;
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          events: [
+            sessionEvent('step/start', { turn: 2, step: 1 }),
+            subagentStarted('child-1'),
+            sessionEvent('step/start', { turn: 2, step: 1 }, 'child-1'),
+            childUsage(10),
+          ],
+        }),
+      },
+    });
+    const second = await dshProvider.run(
+      createRunInput(sessionId === null ? {} : { resume: { sessionId } }),
+    );
+
+    // 分量只算本 run：10 / 1（不是 2010 / 3）
+    expect(second.subagentTokens?.input).toBe(10);
+    expect(second.subagentTurns).toBe(1);
   });
 
   it('没有子会话 ⇒ 分量是 0（「确实没有」，不是 null）', async () => {
@@ -1731,17 +2086,155 @@ describe('dsh 通知订阅中途失败：如实报出、不忙循环', () => {
 });
 
 /**
- * **循环退出时的四种收场**（纯函数 `diagnoseStreamEnd`）：这是「执行日志为什么是空的」唯一答案来源。
+ * **收尾竞速**：一批通知与 `run()` 落定撞进同一拍时，批头那条已经被 SDK 交给**在飞的** `next()`
+ * （`push()` 是「有等待者就 resolve 它、没有才入队」），而竞速里 `runPromise.then(…)` 比
+ * `pendingNext` 的三段链少两跳 ⇒ 判 run 赢；循环回到开头发现 `tryNext()` 是空的、`settled` 又是真，
+ * 如果就此 break，那条值再没人读。
+ *
+ * 真机读数（约 160 次运行命中 1 次）：`deliveredNotifications: 25, receivedNotifications: 24,
+ * sawTurnEnd: false`，同一轮照旧 `exitReason: 'completed'`。
+ * **最坏形状就是下面这一条**：丢的那条正好是 `turn/end(kind:'error')` ⇒ 一次失败的运行被判成功
+ * （`ok: true` / `exitReason: 'completed'`），而界面上只有一条服务端 WARN。
+ */
+/**
+ * 有效 cwd 那一格只喂 DEBUG 日志（`resumedWorkingDirectory`），它背后是一次真实 wire 往返
+ * （`session/working-directory/get`，runtime 已收场 / 超时都会拒）。写成不可失败的表达式时，
+ * 一次纯读数的失败会把整轮折成 `AGENT_FAILED` —— 观测手段没有资格制造失败。
+ */
+describe('续接的 cwd 读数：读不到只记 null，不影响这一轮', () => {
+  it('getWorkingDirectory 抛错 ⇒ 这一轮照常完成（不许折成 AGENT_FAILED）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'aieval-dsh-cwd-'));
+    try {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+            resumeWorkingDirectoryError: new Error('session/working-directory/get timed out'),
+          }),
+        },
+      });
+
+      const result = await dshProvider.run(
+        createRunInput({ configHome, resume: { sessionId: 'session-cwd-读数失败' } }),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(recorder.resumedSessions).toEqual(['session-cwd-读数失败']);
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+});
+
+describe('dsh 收尾竞速：同拍批头那条通知不许被丢', () => {
+  const ERROR_TURN_END = sessionEvent(DSH_TURN_END_TYPE, {
+    turn: 1,
+    reason: { kind: 'error', error: { message: 'terminated', code: 'TRANSPORT' } },
+  });
+
+  it('批头是 turn/end(kind:error) ⇒ 失败必须落到结论上（不许判 completed）', async () => {
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          // 先一步一条吐 `step/start`，收尾那两条（错误的 turn/end + idle）与 run 落定同拍
+          events: [STEP_START_EVENT, ERROR_TURN_END],
+          emitAsync: true,
+          settleBatch: 2,
+        }),
+      },
+    });
+
+    const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+    expect(result.ok).toBe(false);
+    expect(result.exitReason).toBe('error');
+    // 厂商原文（更有归因价值的那一份）也要进事件流
+    expect(events.some((event) => event.type === 'error' && event.message.includes('TRANSPORT'))).toBe(true);
+  });
+
+  it('批头是普通通知（非失败）⇒ 它照常进事件流（丢了就是静默少一条）', async () => {
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          events: [STEP_START_EVENT, USAGE_EVENT, TURN_END_EVENT],
+          emitAsync: true,
+          settleBatch: 2,
+        }),
+      },
+    });
+
+    const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+    expect(result.ok).toBe(true);
+    // 用量是那条同拍通知带出来的：丢了它，这一轮的 tokens 就是 null
+    expect(result.tokens?.input).toBe(218);
+    expect(result.turns).toBe(1);
+  });
+
+  it('run() 以拒绝收场时先把队列排空：已在队列里的那批通知照常进事件流，之后才抛真因', async () => {
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    const boom = new Error('transport closed while settling');
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder,
+          /**
+           * 形状要**逼真**：`step/start` 先一条一拍地到（消费循环正等在 `next()` 上），
+           * 收尾那批（错误的 `turn/end` + `idle`）与 `run()` 的拒绝同拍——
+           * 于是拒绝发生时队列里确实压着厂商原文，而它会不会被读，取决于竞速那一臂怎么处置拒绝。
+           */
+          events: [STEP_START_EVENT, ERROR_TURN_END, USAGE_EVENT],
+          emitAsync: true,
+          settleBatch: 2,
+          throwAfterEvents: boom,
+        }),
+      },
+    });
+
+    const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+    // 队列里那两条（错误的 turn/end + idle）在抛出之前就被投影：**厂商原文**留在证据里
+    // （判据用 `terminated` 而不是 TRANSPORT：后者也会出现在 run 拒绝那条错误事件上，会假绿）
+    expect(events.some((event) => event.type === 'error' && event.message.includes('terminated'))).toBe(true);
+    // 真因仍然是 run() 的拒绝（SDK 异常），不是被吞掉
+    expect(result.ok).toBe(false);
+    expect(result.error?.message ?? '').toContain('transport closed');
+  });
+});
+
+/**
+ * **循环退出时的五种收场**（纯函数 `diagnoseStreamEnd`）：这是「执行日志为什么是空的」唯一答案来源。
  *
  * 为什么值得单独钉：真机上出现过**两种**互不相同的形状——
  *   ① 订阅被 SDK `fail()` 判死（过滤器抛错 / 传输死）⇒ 有报错可抓；
  *   ② **什么都没报，投送就是停了**（第二次重跑：厂商会话日志 245 KB 内容齐全，我们 13 条之后再无音信）。
  * 只做 ① 的话，② 依旧是一句无法解释的空白。而「没见过 turn/end」这一条判据必须**配一个静默时长**
  * 才敢下结论，否则夹具那种「事件吐完就落定」的形状会被误报成故障。
+ * 第三档 `closed` 是**我们自己发起的关闭**：终止 / 看门狗 / 停机之后流断在这里是预期收场，
+ * 一个字都不该报（否则每一次终止都会说「执行日志因此不完整」，而其实一条都没丢）。
  */
-describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点在哪一侧）', () => {
+describe('diagnoseStreamEnd：投送为什么停（五态各自可辨 + 断点在哪一侧）', () => {
   it('见过 turn/end ⇒ ok（正常的收尾就是它）', () => {
-    expect(diagnoseStreamEnd({ failure: null, delivered: 20, received: 20, sawTurnEnd: true, silentMs: 0 })).toEqual({ kind: 'ok' });
+    expect(
+      diagnoseStreamEnd({ failure: null, delivered: 20, received: 20, sawTurnEnd: true, silentMs: 0, closing: false }),
+    ).toEqual({ kind: 'ok' });
+  });
+
+  it('我们自己关的（closing）⇒ closed，**无论**有没有见过 turn/end、静默了多久', () => {
+    // 终止路径的真实形状：关闭同步终结订阅、run 的 promise 随后才落定 ⇒ 没有 turn/end、
+    // 静默时长恰好跨过 5 秒宽限（那是 release 的第一段等待，不是投送停滞）
+    expect(
+      diagnoseStreamEnd({ failure: null, delivered: 4, received: 4, sawTurnEnd: false, silentMs: 5_100, closing: true }),
+    ).toEqual({ kind: 'closed' });
   });
 
   it('订阅被 fail() ⇒ failed，原因带 name: message（原文照抄给排障）', () => {
@@ -1751,9 +2244,22 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
       received: 13,
       sawTurnEnd: false,
       silentMs: 120_000,
+      closing: false,
     });
     expect(verdict.kind).toBe('failed');
     expect(verdict.kind === 'failed' ? verdict.reason : '').toBe('TypeError: x is not a function');
+  });
+
+  it('投送真的死过一次 ⇒ 即使随后走到终止也照报 failed（那次丢的是真内容）', () => {
+    const verdict = diagnoseStreamEnd({
+      failure: new Error('transport died'),
+      delivered: 13,
+      received: 13,
+      sawTurnEnd: false,
+      silentMs: 5_100,
+      closing: true,
+    });
+    expect(verdict.kind).toBe('failed');
   });
 
   /**
@@ -1762,7 +2268,7 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
    * 孤儿）。这条用例钉的是「原因里必须能读出这个差额」——只报「我们收到 15 条」会把矛头指向厂商。
    */
   it('投递 181 / 消费 15 ⇒ stalled 且原因点明「断点在我们这一侧的消费循环」', () => {
-    const verdict = diagnoseStreamEnd({ failure: null, delivered: 181, received: 15, sawTurnEnd: false, silentMs: 138_000 });
+    const verdict = diagnoseStreamEnd({ failure: null, delivered: 181, received: 15, sawTurnEnd: false, silentMs: 138_000, closing: false });
     expect(verdict.kind).toBe('stalled');
     const reason = verdict.kind === 'stalled' ? verdict.reason : '';
     expect(reason).toContain('未收到 turn/end');
@@ -1772,7 +2278,7 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
   });
 
   it('投递与消费相等 ⇒ 原因说「客户端也只投递了 N 条」，指向投送侧', () => {
-    const verdict = diagnoseStreamEnd({ failure: null, delivered: 13, received: 13, sawTurnEnd: false, silentMs: 138_000 });
+    const verdict = diagnoseStreamEnd({ failure: null, delivered: 13, received: 13, sawTurnEnd: false, silentMs: 138_000, closing: false });
     expect(verdict.kind).toBe('stalled');
     const reason = verdict.kind === 'stalled' ? verdict.reason : '';
     expect(reason).toContain('客户端也只投递了 13 条');
@@ -1780,7 +2286,9 @@ describe('diagnoseStreamEnd：投送为什么停（四态各自可辨 + 断点�
   });
 
   it('静默没超过阈值 ⇒ unknown 且**不报**（夹具那种「吐完就落定」不许被误报成故障）', () => {
-    expect(diagnoseStreamEnd({ failure: null, delivered: 3, received: 3, sawTurnEnd: false, silentMs: 40 })).toEqual({ kind: 'unknown' });
+    expect(
+      diagnoseStreamEnd({ failure: null, delivered: 3, received: 3, sawTurnEnd: false, silentMs: 40, closing: false }),
+    ).toEqual({ kind: 'unknown' });
   });
 });
 
@@ -1980,16 +2488,24 @@ interface DshRunCall {
  * 判据正是「第一次收到了什么、第二次又收到了什么、两次的会话归属是否逐字相同」。
  * 时序上安全：夹具的 `run()` 在**调用期同步**读那张表，故换台词必须发生在 `super.run()` 之前。
  */
-function createRoundDshSdk(options: { rounds: readonly (readonly unknown[])[] }): {
-  sdkModule: unknown;
-  recorder: ReturnType<typeof createRecorder>;
-  calls: DshRunCall[];
-} {
+function createRoundDshSdk(options: {
+  rounds: readonly (readonly unknown[])[];
+  /** stream-tap 旁路行：夹具在**每一轮** `run()` 落笔（真机时序：增量长在文件里、通知流静默） */
+  tapLines?: readonly unknown[];
+}): {
+    sdkModule: unknown;
+    recorder: ReturnType<typeof createRecorder>;
+    calls: DshRunCall[];
+  } {
   const events: unknown[] = [];
   const recorder = createRecorder();
   const calls: DshRunCall[] = [];
   // 夹具的返回值是 `unknown`，这里收窄到「构造一个带 run 的 harness」——适配器用的其余成员照旧存在
-  const base = createFakeDshSdk({ recorder, events }) as {
+  const base = createFakeDshSdk({
+    recorder,
+    events,
+    ...(options.tapLines === undefined ? {} : { tapLines: options.tapLines }),
+  }) as {
     DeepSeekHarness: new (clientOptions: Record<string, unknown>) => {
       run(prompt: string, runOptions?: { sessionId?: string }): Promise<unknown>;
     };
@@ -2166,5 +2682,615 @@ describe('填充层：提示词注入与同会话修正', () => {
     expect(result.applied, 'dsh 没有原生 schema 通道：填充层做没做事，这一格都只能是 false').toEqual({
       structuredOutput: false,
     });
+  });
+});
+
+/**
+ * **人工消息面（投递两档 + 续接）在适配器这一层的接线判据**。
+ *
+ * 真机那一半（插件真的被加载、`agent.steer` 真的把话送进下一次模型请求、`inbox.remove` 真的撤回）
+ * 在 `injection-real-path.test.ts` 里；这一组判的是**装与不装的边界**与**版本门**——两处错了
+ * 都不会被那一半发现：
+ *   · 没挂端口却落了插件文件 / 插了 overlay 那一行（「不进人工消息就一处都不动」不成立）；
+ *   · 声明 `off-by-adapter` 的续接被实现成「静默开一条新会话」（用户以为在追问、模型什么都不记得）。
+ */
+describe('人工消息面：装与不装的边界 + 续接的版本门', () => {
+  const PLUGIN_FILE = DSH_INJECT_PLUGIN_RELATIVE_PATH;
+  const QUEUE_FILE = DSH_INJECT_QUEUE_RELATIVE_PATH;
+  const RECEIPTS_FILE = DSH_INJECT_RECEIPTS_RELATIVE_PATH;
+
+  /** 一次运行之后，行配置目录里有哪些跟人工消息面有关的落点 */
+  function injectionArtifacts(configHome: string): Record<string, boolean> {
+    return {
+      plugin: existsSync(join(configHome, PLUGIN_FILE)),
+      queue: existsSync(join(configHome, QUEUE_FILE)),
+      receipts: existsSync(join(configHome, RECEIPTS_FILE)),
+      overlayLine: readFileSync(join(configHome, DSH_ROUTE_PATCH_RELATIVE_PATH), 'utf8').includes('aieval-inject'),
+    };
+  }
+
+  /** 假端口：`available` 由用例给，三个动作都不抛（契约如此） */
+  function portWith(available: boolean): InjectionPort {
+    return {
+      available,
+      drain: () => [],
+      markDelivered: () => {},
+      retract: async () => 'unsupported',
+    };
+  }
+
+  async function runOnce(configHome: string, overrides: Partial<AgentRunInput> = {}): Promise<AgentRunResult> {
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [DSH_PACKAGE_NAME]: createFakeDshSdk({
+          recorder: createRecorder(),
+          events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+        }),
+      },
+    });
+    return dshProvider.run(createRunInput({ configHome, ...overrides }));
+  }
+
+  it('没传注入端口 ⇒ 插件、两份流水、overlay 那一行一个都不落（零回归）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-inject-off-'));
+    try {
+      const result = await runOnce(configHome);
+      expect(result.ok).toBe(true);
+      expect(injectionArtifacts(configHome)).toEqual({
+        plugin: false,
+        queue: false,
+        receipts: false,
+        overlayLine: false,
+      });
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  /**
+   * **插件没被加载 ⇒ 收尾点名 WARN**（人工消息面 / 应答面各一条）。
+   *
+   * 插件没被厂商加载或激活时，这一侧所有出口都是静默的：投递流水写了没人读、提问流水永远是空的
+   * ——而「功能没了」与「这一轮没人发消息」在界面上长得一模一样。厂商那边只留一行
+   * `did not activate`（适配器不读它的 stderr）。三条口径：只说话不改结论、两座桥各说各的、
+   * 有加载收据时一条都不落。
+   */
+  /**
+   * **权限档的会话属性**（R4-A 的 F1）：厂商把权限档当**会话属性**——`permission/preset` 只在
+   * 会话起手投一条，续接段不重投，而实际生效的是首次创建那条会话时的档。真机反例：首段 `full`
+   * 建会话、第二段 `read-only` + 续接，写文件**照样成功**（对照臂新会话被拒）。
+   *
+   * 三条口径：**续接 + 非 full + 观测不到档位 ⇒ 点名 WARN**（只读档静默拿到写权限是评分阶段最不能
+   * 接受的那一类）；**本次要的档与厂商报的档不一致 ⇒ WARN**（抽屉上「显示哪一档」与「实际哪一档」
+   * 冲突时留痕）；`full` 与「观测到了且一致」两档都不出声。
+   */
+  describe('权限档与会话属性的不一致', () => {
+    it('续接 + read-only + 观测不到档位 ⇒ 一条点名 WARN；full 或观测到了则不出声', async () => {
+      const collectPermissionWarns = (events: AgentEvent[]): string[] =>
+        events
+          .filter(
+            (event) =>
+              event.type === 'log'
+              && event.stream === 'stderr'
+              && typeof event.text === 'string'
+              && event.text.includes('权限档'),
+          )
+          .map((event) => (event.type === 'log' ? event.text : ''));
+
+      // 续接 + read-only：厂商不重投权限档 ⇒ WARN
+      const resumedEvents: AgentEvent[] = [];
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+      });
+      const first = await dshProvider.run(createRunInput());
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+      });
+      await dshProvider.run(
+        createRunInput({
+          ...(first.sessionId === null ? {} : { resume: { sessionId: first.sessionId } }),
+          permission: 'read-only',
+          onEvent: collectEvents(resumedEvents),
+        }),
+      );
+      const warns = collectPermissionWarns(resumedEvents);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('read-only');
+      expect(warns[0]).toContain('续接');
+
+      // 续接 + full：风险方向相反（工具报错可见），不出声
+      const fullEvents: AgentEvent[] = [];
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+      });
+      await dshProvider.run(
+        createRunInput({
+          ...(first.sessionId === null ? {} : { resume: { sessionId: first.sessionId } }),
+          onEvent: collectEvents(fullEvents),
+        }),
+      );
+      expect(collectPermissionWarns(fullEvents)).toHaveLength(0);
+    });
+
+    /**
+     * **两个方向都要报**：要 `full` 却拿到 `read-only` 是功能面（写工具莫名失败），要 `read-only`
+     * 却拿到 `full` 是安全面。续接段厂商**不重投**权限档，所以只有「本进程里知道这条会话的档位」
+     * 这一支能发现差异；而本段观测到了就交给 `events.ts` 那一支（避免同一件事说两遍）。
+     */
+    it('续接段要求的档与会话已知档不一致（反方向）⇒ 也报一条', async () => {
+      const events: AgentEvent[] = [];
+      const recorder = createRecorder();
+      // 首段：新会话、read-only，厂商投了 preset
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [sessionEvent('permission/preset', { preset: 'read-only' }), STEP_START_EVENT, MAIN_USAGE],
+          }),
+        },
+      });
+      const first = await dshProvider.run(createRunInput({ permission: 'read-only' }));
+      // 续接段：要求 full，但厂商不重投 ⇒ 会话记忆说 read-only
+      setAgentRuntimeForTesting({
+        sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [STEP_START_EVENT, MAIN_USAGE] }) },
+      });
+      await dshProvider.run(
+        createRunInput({
+          ...(first.sessionId === null ? {} : { resume: { sessionId: first.sessionId } }),
+          permission: 'full',
+          onEvent: collectEvents(events),
+        }),
+      );
+      const warns = events.filter(
+        (event) =>
+          event.type === 'log'
+          && event.stream === 'stderr'
+          && typeof event.text === 'string'
+          && event.text.includes('这条会话的档位是'),
+      );
+      expect(warns).toHaveLength(1);
+    });
+
+    it('厂商报的档与本次要求不一致 ⇒ WARN（新会话也报）', async () => {
+      const events: AgentEvent[] = [];
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [
+              sessionEvent('permission/preset', { preset: 'danger-full-access' }),
+              STEP_START_EVENT,
+              MAIN_USAGE,
+            ],
+          }),
+        },
+      });
+      await dshProvider.run(createRunInput({ permission: 'read-only', onEvent: collectEvents(events) }));
+      const warns = events.filter(
+        (event) =>
+          event.type === 'log'
+          && event.stream === 'stderr'
+          && typeof event.text === 'string'
+          && event.text.includes('本次运行要求权限档'),
+      );
+      expect(warns).toHaveLength(1);
+    });
+  });
+
+  /**
+   * **跨进程播种**（`session-log.ts` + `seedDshSessionRoundHighWater`）：续接时按厂商会话日志里
+   * `step/start` 的条数抬高发号表 ⇒ 新进程的号从 `n+1` 起，而不是从 1 起（不播种就会与上一段的
+   * `mergeKey` 逐个撞车）。读不到日志 ⇒ 不播种（退回今天的行为，不引入新的失败面）。
+   */
+  describe('跨进程续接的往返号播种', () => {
+    it('日志里有 N 条 step/start ⇒ 续接段的号从 N+1 起（读不到就不播种）', () => {
+      resetDshMessageStateForTesting();
+      const sessionId = 'session-seed-1';
+      // 不播种：第一次分配拿 1
+      expect(dshTurnAttribution(sessionId, { turn: 1, step: 1 })?.round).toBe(1);
+      resetDshMessageStateForTesting();
+      // 播种 9 ⇒ 下一个新组合拿 10（与 phase1 的 1..9 零交集）
+      seedDshSessionRoundHighWater(sessionId, 9);
+      expect(dshTurnAttribution(sessionId, { turn: 2, step: 1 })?.round).toBe(10);
+      // 幂等：重复播种取较大值，不会把号推回去
+      seedDshSessionRoundHighWater(sessionId, 3);
+      expect(dshTurnAttribution(sessionId, { turn: 2, step: 2 })?.round).toBe(11);
+      // 播种 0 / null（读不到日志）⇒ 与不播种同形
+      resetDshMessageStateForTesting();
+      seedDshSessionRoundHighWater(sessionId, null);
+      seedDshSessionRoundHighWater(sessionId, 0);
+      expect(dshTurnAttribution(sessionId, { turn: 1, step: 1 })?.round).toBe(1);
+    });
+  });
+
+  it('配了插件却整轮没有加载收据 ⇒ 人工消息面一条点名 WARN；有收据则一条都不落', async () => {
+    const silentHome = mkdtempSync(join(tmpdir(), 'dsh-plugin-silent-'));
+    try {
+      const events: AgentEvent[] = [];
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+          }),
+        },
+      });
+      // 假 SDK 不会真的加载插件 ⇒ 收据流水里没有 `plugin-loaded` 那一行
+      await dshProvider.run(createRunInput({ configHome: silentHome, inject: portWith(true), onEvent: collectEvents(events) }));
+      const warns = events
+        .filter((event) => event.type === 'log' && event.stream === 'stderr' && event.text.startsWith('[WARN] 人工消息面配了插件'))
+        .map((event) => (event.type === 'log' ? event.text : ''));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('did not activate');
+    } finally {
+      removeTreeWithRetry(silentHome);
+    }
+
+    // 有加载收据（真插件的形状）⇒ 一条都不落
+    const loadedHome = mkdtempSync(join(tmpdir(), 'dsh-plugin-loaded-'));
+    try {
+      const events: AgentEvent[] = [];
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+          }),
+        },
+      });
+      let atConstruct: (() => void) | null = null;
+      atConstruct = () => {
+        appendFileSync(
+          join(loadedHome, RECEIPTS_FILE),
+          `${JSON.stringify({ phase: 'plugin-loaded', at: Date.now(), url: `file://${loadedHome}/aieval-inject.mjs`, pid: process.pid, serviceAtLoad: true })}\n`,
+        );
+      };
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+            onConstruct: atConstruct,
+          }),
+        },
+      });
+      await dshProvider.run(createRunInput({ configHome: loadedHome, inject: portWith(true), onEvent: collectEvents(events) }));
+      expect(
+        events.filter((event) => event.type === 'log' && event.text.startsWith('[WARN] 人工消息面配了插件')),
+      ).toHaveLength(0);
+    } finally {
+      removeTreeWithRetry(loadedHome);
+    }
+  });
+
+  it('端口在但 available === false ⇒ 与「没传端口」逐字同形（一格都不挂）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-inject-closed-'));
+    try {
+      await runOnce(configHome, { inject: portWith(false) });
+      expect(injectionArtifacts(configHome)).toEqual({
+        plugin: false,
+        queue: false,
+        receipts: false,
+        overlayLine: false,
+      });
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  it('端口开着 ⇒ 插件与两份流水在 boot 之前落盘、overlay 里那一行也在', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-inject-on-'));
+    try {
+      // 装配时刻的快照点：读盘时 boot（`new DeepSeekHarness`）已经在那一刻发生
+      let atConstruct: Record<string, boolean> | null = null;
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+            onConstruct: () => {
+              atConstruct = injectionArtifacts(configHome);
+            },
+          }),
+        },
+      });
+      await dshProvider.run(createRunInput({ configHome, inject: portWith(true) }));
+      // 写盘晚了的表现是「插件从来没被加载过」——放在 boot 之后写就会被这一条抓住
+      expect(atConstruct).toEqual({ plugin: true, queue: true, receipts: true, overlayLine: true });
+      // 两份流水是追加型的：重跑同一行必须从空开始
+      expect(readFileSync(join(configHome, QUEUE_FILE), 'utf8')).toBe('');
+      expect(readFileSync(join(configHome, RECEIPTS_FILE), 'utf8')).toBe('');
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  it('会话身份如实上报（跨进程续接的唯一键）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-session-id-'));
+    try {
+      const result = await runOnce(configHome);
+      expect(result.sessionId).toMatch(/^session-[0-9a-f]{32}$/);
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  it('客户端没有 resumeSession 这一格（更旧的 wire）⇒ 收到 resume 如实抛中文错，绝不静默开一条新会话', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-resume-gated-'));
+    const recorder = createRecorder();
+    try {
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+            resumeSession: 'absent',
+          }),
+        },
+      });
+      const result = await dshProvider.run(
+        createRunInput({ configHome, resume: { sessionId: 'session-已存在的会话' } }),
+      );
+      expect(result.ok, '没有这一格的客户端收到 resume 必须失败，不许静默从头跑').toBe(false);
+      expect(result.error?.message).toContain('session/resume');
+      // **没有**开一条新会话：一次模型往返都没有发生过
+      expect(recorder.prompt, '收到 resume 却照旧跑了提示词 = 静默开了一条新会话').toBeNull();
+      expect(result.sessionId).toBeNull();
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  it('客户端缺这一格时换 id 也一样拦（不是靠某个特定 id 的特例）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-resume-gated2-'));
+    try {
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder: createRecorder(),
+            events: [sessionEvent('step/start', { turn: 1, step: 1 }), assistantReply('收尾。')],
+            resumeSession: 'absent',
+          }),
+        },
+      });
+      const result = await dshProvider.run(
+        createRunInput({ configHome, resume: { sessionId: 'session-2' } }),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error?.code).toBe('AGENT_FAILED');
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+
+  it('客户端有 resumeSession ⇒ 走 adopt：新会话那条入口一次都不碰', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'dsh-resume-adopt-'));
+    const recorder = createRecorder();
+    try {
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({
+            recorder,
+            events: [
+              sessionEvent('step/start', { turn: 1, step: 1 }),
+              assistantReply('接着上次的收尾。'),
+            ],
+          }),
+        },
+      });
+      const result = await dshProvider.run(
+        createRunInput({ configHome, resume: { sessionId: 'session-已存在的会话' } }),
+      );
+      expect(result.ok, '这一版有 session/resume，收到 resume 不该失败').toBe(true);
+      expect(recorder.resumedSessions, 'adopt 的入参必须是我们传的那个 id').toEqual([
+        'session-已存在的会话',
+      ]);
+      expect(
+        recorder.freshRunCalls,
+        'adopt 之后又走 harness.run() = 身份没定死（那条 wire 会撞 already exists）',
+      ).toBe(0);
+      expect(recorder.prompt, 'adopt 出来的句柄也要收到提示词').not.toBeNull();
+      expect(result.sessionId, '续接之后上报的身份必须是 adopt 的那一条').toBe('session-已存在的会话');
+    } finally {
+      removeTreeWithRetry(configHome);
+    }
+  });
+});
+
+/**
+ * 收尾与回收的两条硬口径（都在 `startDsh` 的运行时生命周期上）：
+ *
+ *  1. **`resume` 被厂商拒之后不许留下孤儿运行时**。`runtime.start()` 已经 spawn 了子进程，
+ *     而骨架此刻还没有 `TurnStart`（`started === undefined`）⇒ 它的 `finally` 碰不到任何可关闭
+ *     对象。disposer 因此建在 `start()` **之前**，并由这一段自己兜住抛错路径。
+ *     症状（缺这一格时）：每次失败的追问都在机器上留一个常驻 `dsh` 进程捏着该行 `.agenthome`。
+ *  2. **我们自己发起的关闭不算「通知流中断」**。关闭运行时会同步终结订阅，而消费循环此刻还挂在
+ *     `next()` 上、`settled` 仍是 `false` ⇒ 只看 `settled` 的判据会把每一次用户终止都报成
+ *     「内容丢了」（真机上那一行会多一条 stderr 事件说「执行日志因此不完整」）。
+ */
+describe('dsh 运行时生命周期：失败回收与「自己关的不算断流」', () => {
+  /** 只补夹具缺的那一格（`resumeSession`）与本用例要断言的关闭计数 */
+  function fakeSdkWithResume(resume: () => Promise<never>): { recorder: ReturnType<typeof createRecorder>; module: unknown } {
+    const recorder = createRecorder();
+    const idleSubscription = (): unknown => ({
+      next: (): Promise<never> => new Promise<never>(() => {}),
+      tryNext: (): undefined => undefined,
+      close: (): void => {},
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<never> {
+        for (;;) yield await new Promise<never>(() => {});
+      },
+    });
+    class FakeHarness {
+      readonly client = {
+        subscribe: () => idleSubscription(),
+        subscribeSessionTree: () => idleSubscription(),
+        prompt: async (): Promise<string> => 'message-1',
+        close: async (): Promise<void> => {},
+      };
+      async start(): Promise<void> {
+        recorder.order.push('start');
+      }
+      async run(): Promise<unknown> {
+        throw new Error('不该走到 run：adopt 失败应当停在续接那一步');
+      }
+      async resumeSession(): Promise<never> {
+        return resume();
+      }
+      async close(): Promise<void> {
+        recorder.closeCount += 1;
+        recorder.order.push('dispose');
+      }
+    }
+    return { recorder, module: { DeepSeekHarness: FakeHarness } };
+  }
+
+  it('续接被厂商拒（not found）⇒ 行失败，且已起来的运行时**恰好被回收一次**', async () => {
+    const { recorder, module } = fakeSdkWithResume(async () => {
+      throw new Error('session "session-x" not found');
+    });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: module } });
+    const result = await dshProvider.run(createRunInput({ resume: { sessionId: 'session-x' } }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('AGENT_FAILED');
+    expect(recorder.order).toContain('start');
+    expect(recorder.closeCount, '续接失败后运行时没人关 = 孤儿 dsh 子进程').toBe(1);
+  });
+
+  it('用户终止：事件流里**不许**出现「通知流中断」这条假诊断', async () => {
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [], hang: true }) },
+    });
+    const controller = new AbortController();
+    const promise = dshProvider.run(createRunInput({ signal: controller.signal, onEvent: collectEvents(events) }));
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    const result = await settleWithFakeTimers(promise, {
+      stepMs: 1_000,
+      steps: 10 * (RELEASE_GRACE_MS / 1_000 + 2),
+    });
+
+    expect(result.exitReason).toBe('canceled');
+    // 先钉「释放确实走了第二段」（否则这条用例可能因为压根没关运行时而假绿）
+    expect(recorder.closeCount).toBe(1);
+    const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
+    expect(logs.filter((text) => text.includes('通知流中断'))).toEqual([]);
+  });
+});
+
+/**
+ * 追问区间（第二条活动区间）里，**上一轮登记过的子会话**仍要放行它的增量。
+ *
+ * stream-tap 的门闸按「会话已知表」放行伪通知，而那张表**每条活动区间重建一份**。
+ * 只放自己的会话 id 会让上一轮登记过的子会话在追问区间里重新变成「未知」：
+ * 那些增量行被挂住，最后随 `tap.close()` 一起丢掉——子智能体的话缺一段，零报错。
+ * 播种因此取 `runState.childSessions`（与放行判据同一份事实，过滤器在收到
+ * `subagent.started` 时写入）。
+ *
+ * 判据取**事件与消息的同一条时间线**：修正轮的那条 WARN 之后必须还能看到子会话的增量
+ * （首轮那一份在 `subagent.started` 投影之后就放行了，不算数）。
+ */
+describe('stream-tap 门闸：追问区间仍认上一轮登记的子会话', () => {
+  const CHILD = 'f3a1c2d4-5b6e-4f70-8a91-2c3d4e5f6071';
+  const SCHEMA = { type: 'object', properties: { achieved: { type: 'boolean' } }, required: ['achieved'] };
+  const INVALID_REPLY = '{"achieved":"yes"}';
+  const VALID_REPLY = '{"achieved":true}';
+  /** 真机 tap 行形状：`{ sid, frame }`，帧里带 `chunk`（`stream-tap.ts` 的读取口径） */
+  const childDelta = (text: string): unknown => ({
+    sid: CHILD,
+    frame: {
+      type: 'chunk',
+      attemptId: 'att-1',
+      revision: 1,
+      index: 0,
+      time: 1,
+      turn: 1,
+      step: 1,
+      chunk: { type: 'text-delta', index: 0, text },
+    },
+  });
+
+  it('修正轮里子会话的增量照旧出消息（子任务身份没被区间边界忘掉）', async () => {
+    /** 事件与消息的同一条时间线（两者在投影循环里同步产出）；`chunk` 用来把增量与收口快照分开 */
+    const timeline: Array<{ kind: 'log' | 'message'; text: string; subagentId: string | null; chunk: string | null }> = [];
+    const { sdkModule } = createRoundDshSdk({
+      rounds: [
+        [
+          { method: DSH_SUBAGENT_STARTED_METHOD, params: { parentSessionId: 'session-1', childSessionId: CHILD } },
+          assistantReply(INVALID_REPLY),
+        ],
+        [assistantReply(VALID_REPLY)],
+      ],
+      tapLines: [childDelta('子会话还在说话')],
+    });
+    setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: sdkModule } });
+
+    await dshProvider.run(
+      createRunInput({
+        prompt: '数出工作区里 .ts 文件的个数。',
+        outputSchema: SCHEMA,
+        onEvent: (event) => {
+          if (event.type === 'log') timeline.push({ kind: 'log', text: event.text, subagentId: null, chunk: null });
+        },
+        onMessage: (message) => {
+          timeline.push({
+            kind: 'message',
+            text: message.blocks.map((block) => (block.type === 'text' ? block.text : '')).join(''),
+            subagentId: message.subagentId,
+            chunk: message.chunk,
+          });
+        },
+      }),
+    );
+
+    const repairAt = timeline.findIndex((one) => one.kind === 'log' && one.text.includes('结构化输出未通过校验'));
+    expect(repairAt, '这一组的前提是首轮答复不合格、真的进了修正轮').toBeGreaterThanOrEqual(0);
+    /**
+     * 只数**增量**（`chunk: 'delta'`）：`runTurn` 收尾的 `sealOpen` 会把没等到快照的载体按累积值
+     * 再发一条，而那条是 `chunk: 'snapshot'`——把两者混在一起数，首轮那一份会把这条判据盖成假绿。
+     */
+    const childDeltasAfterRepair = timeline
+      .slice(repairAt)
+      .filter((one) => one.kind === 'message' && one.subagentId === CHILD && one.chunk === 'delta');
+    expect(
+      childDeltasAfterRepair.length,
+      '追问区间里子会话的增量一条都没出 = 门闸把上一轮登记过的会话忘了（那些行随 tap.close() 丢掉）',
+    ).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * 整轮**没见过 `turn/end`** 时：界面一个字都不报（`unknown` 是刻意的——没有证据就别编一个故障），
+ * 但服务端必须留一条 WARN。
+ *
+ * 为什么值得钉：失败通道只有 `turn/end` 一条，而「收尾那条通知已经被 `shift()` 出来、却在竞速里
+ * 没人读它的值」这条路径会把整条丢掉（FAQ 的 `24 / 24 / 25 / 25` 条）——那时这一行照旧判成功，
+ * **任何日志、任何事件都没有**，排障只能去翻厂商会话日志。这条 WARN 是那种形状的唯一线索。
+ */
+describe('收尾留痕：没见过 turn/end', () => {
+  it('界面不报、结论不改写，但服务端有一条带两个计数的 WARN', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const events: AgentEvent[] = [];
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [sessionEvent('session/title', { title: '跑完了' })] }),
+        },
+      });
+      const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
+
+      expect(result.ok, '留痕不改结论：这一行照旧按已产出的内容判').toBe(true);
+      expect(events.some((event) => event.type === 'error')).toBe(false);
+      const texts = warn.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(texts.some((text) => text.includes('没收到 turn/end'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

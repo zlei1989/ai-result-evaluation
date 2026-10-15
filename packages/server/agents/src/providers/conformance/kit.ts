@@ -21,6 +21,7 @@ import {
   MessageCapabilitySchema,
   MessageSourceSchema,
   SubagentRecordSchema,
+  TurnInjectionCapabilitySchema,
   matchMcpToolName,
   type AgentMessage,
   type InjectionCapability,
@@ -28,6 +29,7 @@ import {
   type MessageCapability,
   type MissingReason,
   type SubagentRecord,
+  type TurnInjectionCapability,
   type UsageTokens,
 } from '@aieval/contracts';
 import { describe, it } from 'vitest';
@@ -106,6 +108,53 @@ export interface ConformanceProduct {
    * （厂商的提问请求真的到了手里、答复真的回到厂商）由各家的接线票接上，接上之后这一格的形状不变。
    */
   askUser?: AskUserProbe;
+  /**
+   * **人工消息面（第五组）的声明与证明**：`capability` 是这家 `metadata.turnInjection` 那一份
+   * （不是另写一份），`proofs` 是每一格的证明安排；判据见 `checkTurnInjectionNailing`。
+   */
+  turnInjection?: TurnInjectionEvidence;
+}
+
+/**
+ * 人工消息面的**一格**（投递两档 + 续接共用一个形状：三处都是「这一格做不做得到」）。
+ *
+ * 撤回那两格**不在**这里：`TurnInjectionRetractSchema` 只有 `{state, reason}`，它声明的是
+ * 「按什么认人」这一条事实，没有可造的场景（`Inbox.remove` 这类面在假件那一层造出来也是自述）。
+ */
+export type TurnInjectionCellName = 'delivery.round' | 'delivery.idle' | 'resume';
+
+/**
+ * 一格的**证明安排**。
+ *
+ * `driver` 的真伪是这个形状存在的理由：先例（提问应答面的 `askUserProofDriver`）只核声明自身的
+ * schema 合规性，**没有任何判据核对「这家提交的驱动器真的是 `real-path`」**——照搬那个带洞的先例
+ * 等于把洞也照搬。这里把它写成**可核对的事实**，两处判据共用这一格：
+ *   · 运行期（`checkTurnInjectionNailing`）：`driver` 必须与**声明里那一格**逐字相同
+ *     （`TurnInjectionCell.proofDriver`）——否则「声明说真路径、夹具拿假件」会各说各话；
+ *   · 静态（`./onboarding.test.ts`）：`evidence` 点名的文件必须真的在盘上，`real-path` 的那一份
+ *     还要过假厂商记号与「真的走了产品那条造客户端的路」两条核对。
+ *
+ * `observed` 是**这一格的事实**：`yes` 的格必须被观察到成立，非 `yes` 的格必须被观察到**不成立**
+ * （反断言——跳过会让「没接」与「接坏了」看起来一模一样）。
+ */
+export interface TurnInjectionProof {
+  /** 证明从哪来：真路径（真厂商运行时 / 真 wire）还是假件（假件只许给非 `yes` 的格做反断言） */
+  driver: 'real-path' | 'synthetic-fixture';
+  /** 这一格的事实**是否被观察到**（`yes` ⇒ true；非 `yes` ⇒ false） */
+  observed: boolean;
+  /**
+   * 判据落在哪（**相对仓库根**的路径）。
+   *
+   * `real-path` 的格点名的是**驱动器**（真厂商件 + 脚本式上游那一份，不是用例文件本身）——
+   * 静态判据要读它的源码；`synthetic-fixture` 的格点名的是那条反断言的落点。
+   */
+  evidence: string;
+}
+
+export interface TurnInjectionEvidence {
+  capability: TurnInjectionCapability;
+  /** 三格各自的证明安排；**缺一格就是缺陷**（声明与夹具同一次提交落地） */
+  proofs: Partial<Record<TurnInjectionCellName, TurnInjectionProof>>;
 }
 
 /**
@@ -220,6 +269,11 @@ export interface ConformanceFixture {
    * 这一格是「增量不产事件」这条口径的全部判据：没有它，把 `events.ts` 的分支删回去也不会红。
    */
   expectedEventCounts?: Partial<Record<ConformanceScenarioName, number>>;
+  /**
+   * **人工消息面（第五组）的声明与证明**：`capability` 是这家 `metadata.turnInjection` 那一份
+   * （不是另写一份），`proofs` 是每一格的证明安排；判据见 `checkTurnInjectionNailing`。
+   */
+  turnInjection?: TurnInjectionEvidence;
 }
 
 /** 顺序固定的一对：能力格 → 它需要哪个场景来证明自己真的拿得到 */
@@ -1133,6 +1187,96 @@ export async function checkLifecycle(fixture: ConformanceFixture): Promise<void>
   }
 }
 
+/**
+ * **人工消息面：声明与夹具互钉**（第五组）。
+ *
+ * 判据四层，逐层收窄：
+ *   1. **声明自身过契约 schema**：非 `yes` 必须给 `reason`（且落在五态那张白名单里）、
+ *      `yes` 必须给 `channel`——形状错了就什么都谈不上；
+ *   2. **三格都要有证明安排**（`delivery.round` / `delivery.idle` / `resume`）：声明不许先于夹具。
+ *      这一条对**非 `yes` 的格同样成立**——它们要的是**反断言**（「确实做不到」），
+ *      跳过会让「没接」与「接坏了」看起来一模一样；
+ *   3. **`yes` 的格必须是真路径 + 观察到成立**：假件扮演厂商那一端时，「我们传了什么」看得见、
+ *      「厂商拿它做了什么」看不见——声明 `yes` 却拿假件证明，等于把无区分力的假判据当判据
+ *      （先例的洞正在这里：`askUserProofDriver` 从来没人核过真伪）；
+ *   4. **夹具登记的 `driver` 必须与声明里那一格逐字相同**（`TurnInjectionCell.proofDriver`）：
+ *      「这一格的证据是哪一档」只能有一个答案，两处各写一份时消费方读到的是声明那一份；
+ *   5. **非 `yes` 的格必须是反断言**：`observed === true` 而声明做不到 = 自相矛盾。
+ *
+ * **已知边界**：`observed` 仍是夹具自报的一格，这一层拦的是「顺着写但漏了一环」与
+ * 「拿假件冒充真路径」这两类；`driver` 那一格**是不是真的真路径**由接入守卫静态核对
+ * （`./onboarding.test.ts`：登记的驱动器在盘上、没有假厂商记号、真的走了产品那条造客户端的路）。
+ * 成心把三处一起写对只有真机冒烟拦得住（与注入面那条边界同源）。
+ */
+export function checkTurnInjectionNailing(fixture: ConformanceFixture): void {
+  const evidence = fixture.turnInjection;
+  /**
+   * **整组缺席 = 这家还没声明这一组**（`AgentProviderMetadata.turnInjection` 是可选组：缺席的语义
+   * 是「不知道」，消费方按不编一份都支持的处置）。这一格不在这里判——「声明了整组却没有夹具」
+   * 由接入守卫按 `metadata` 与 fixture 的配对判（`./onboarding.test.ts`）。
+   */
+  if (evidence === undefined) return;
+  const parsed = TurnInjectionCapabilitySchema.safeParse(evidence.capability);
+  if (!parsed.success) {
+    throw new Error(`${fixture.kind}：人工消息面声明不合规：${JSON.stringify(parsed.error.issues)}`);
+  }
+  const cells: ReadonlyArray<readonly [TurnInjectionCellName, TurnInjectionCapability['resume']]> = [
+    ['delivery.round', evidence.capability.delivery.round],
+    ['delivery.idle', evidence.capability.delivery.idle],
+    ['resume', evidence.capability.resume],
+  ];
+  for (const [cell, declaration] of cells) {
+    // 五态 → 允许的缺失原因：与消息面共用同一张表（同一个词表不该有两份判据）
+    if (declaration.state !== 'yes') {
+      const allowed = REASON_BY_CAPABILITY[declaration.state];
+      if (allowed === undefined || declaration.reason === null || !allowed.includes(declaration.reason)) {
+        throw new Error(
+          `${fixture.kind}：${cell} 声明 ${declaration.state}，但原因 ${String(declaration.reason)}`
+            + ` 不在允许的取值里（${(allowed ?? []).join(' / ') || '不是契约五态之一'}）`,
+        );
+      }
+    }
+    const proof = evidence.proofs[cell];
+    if (proof === undefined) {
+      throw new Error(
+        `${fixture.kind}：${cell} 没有证明安排——声明与夹具必须同一次提交落地`
+          + '（非 yes 的格要的是**反断言**：确实做不到，不许跳过——跳过会让「没接」与「接坏了」长得一样）',
+      );
+    }
+    if (proof.evidence.trim() === '') {
+      throw new Error(`${fixture.kind}：${cell} 的证明没有点名判据落在哪个文件（空转不许静默）`);
+    }
+    /**
+     * **声明与夹具互钉**：证据档位只有一处真相——声明里那一格。
+     * 两处各写一份时，「声明说真路径、夹具拿假件」会在两侧各自看起来自洽，
+     * 而消费方读到的是声明那一份。
+     */
+    if (declaration.proofDriver !== proof.driver) {
+      throw new Error(
+        `${fixture.kind}：${cell} 声明 proofDriver=${declaration.proofDriver}，夹具登记的驱动器却是 ${proof.driver}`
+          + '——「这一格的证据是哪一档」只能有一个答案',
+      );
+    }
+    if (declaration.state === 'yes') {
+      if (proof.driver !== 'real-path') {
+        throw new Error(
+          `${fixture.kind}：${cell} 声明 yes，却拿 ${proof.driver} 作证明——假件扮演厂商那一端时`
+            + '「我们传了什么」看得见、「厂商拿它做了什么」看不见（声明 yes 的家必须拿真路径证明）',
+        );
+      }
+      if (!proof.observed) {
+        throw new Error(`${fixture.kind}：${cell} 声明 yes，但证明里这一格**没有被观察到成立**——声明与产物不符`);
+      }
+      continue;
+    }
+    if (proof.observed) {
+      throw new Error(
+        `${fixture.kind}：${cell} 声明 ${declaration.state}，证明里却观察到它成立——声明与产物自相矛盾`,
+      );
+    }
+  }
+}
+
 /** 把全部判据注册成一家的用例；红的时候组名直接指向被违反的那条契约 */
 export function describeProviderConformance(fixture: ConformanceFixture): void {
   const cases: ReadonlyArray<readonly [string, () => void | Promise<void>]> = [
@@ -1147,6 +1291,7 @@ export function describeProviderConformance(fixture: ConformanceFixture): void {
     ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
     ['注入面（MCP / skills）声明与产物互钉', () => checkInjectionNailing(fixture)],
     ['交互面（提问）声明与产物互钉', () => checkInteractionNailing(fixture)],
+    ['人工消息面（投递两档 + 续接）声明与夹具互钉', () => checkTurnInjectionNailing(fixture)],
     ['行级事件逐个过契约 schema', () => checkEventShapes(fixture)],
     ['最终答复口径', () => checkFinalAnswer(fixture)],
     ['结构化输出与产出可解析', () => checkStructuredOutputGroup(fixture)],

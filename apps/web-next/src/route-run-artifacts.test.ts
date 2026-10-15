@@ -21,6 +21,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
 import { appendEvent, loadConfig, rowEventsFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
 import { POST as postRun } from '@/app/api/runs/route';
+import { GET as getArtifactIndex } from '@/app/api/runs/[runId]/artifacts/route';
+import { GET as getRowArtifact } from '@/app/api/runs/[runId]/rows/[rowId]/artifacts/route';
 import { GET as getDiff } from '@/app/api/runs/[runId]/rows/[rowId]/diff/route';
 import { GET as getLog } from '@/app/api/runs/[runId]/rows/[rowId]/log/route';
 // 段配置（Next 的 route segment config）也要有守卫：它没有任何运行时症状，
@@ -47,9 +49,11 @@ const evaluator = vi.hoisted(() => ({
   subscribeJudgeRecords: vi.fn(() => () => {}),
   // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
   subscribeRowRecords: vi.fn(() => () => {}),
-  // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
-  // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
+  // 全局流的三条信号总线（`/api/runs/stream`）：api 的 index 转出 `streamGlobalSignals`，
+  // run-events.ts 在模块求值期读这三个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
   subscribeRunChanges: vi.fn(() => () => {}),
+  subscribeAskUserChanges: vi.fn(() => () => {}),
+  subscribeInjectChanges: vi.fn(() => () => {}),
   resolveJudgeRoute: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
 }));
@@ -389,5 +393,126 @@ describe('GET .../rows/[rowId]/stream', () => {
     expect(res.status).toBe(404);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect((await res.json()).error.message).toContain('没有这一行');
+  });
+});
+
+/**
+ * 「产物总览」两条路由：索引（轮级）与单份正文（行级）。
+ *
+ * 与上面三条同一条口径：**工作区真的建在临时目录里、产物真的写盘**——这条路的价值就在于
+ * 「真的能扫到、真的能读出正文」，把它 mock 掉等于把最容易错的地方（哪一层目录、白名单、两道门）
+ * 从测试里删掉。
+ */
+describe('GET /api/runs/[runId]/artifacts', () => {
+  /** 建一轮 + 在那一行的工作区根写两份产物（另放一份不认的与一个子目录） */
+  async function seedArtifacts(): Promise<{ runId: string; rowId: string; workspacePath: string }> {
+    const run = await createRun();
+    const row = run.rows[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    mkdirSync(join(row.workspacePath, 'sub'), { recursive: true });
+    writeFileSync(join(row.workspacePath, 'RESULT.md'), '# 交付说明\n', 'utf8');
+    writeFileSync(join(row.workspacePath, 'RESULT.html'), '<p>正文</p>', 'utf8');
+    writeFileSync(join(row.workspacePath, 'notes.txt'), '不认的', 'utf8');
+    writeFileSync(join(row.workspacePath, 'sub', 'RESULT.svg'), '<svg/>', 'utf8');
+    return { runId: run.id, rowId: row.id, workspacePath: row.workspacePath };
+  }
+
+  it('索引：每个候选一行、只列白名单里的产物（子目录与其它后缀都不算）', async () => {
+    const { runId, rowId } = await seedArtifacts();
+
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId }));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.total).toBe(2);
+    expect(body.rows).toEqual([
+      {
+        rowId,
+        files: [
+          { name: 'RESULT.md', kind: 'md', bytes: Buffer.byteLength('# 交付说明\n', 'utf8') },
+          { name: 'RESULT.html', kind: 'html', bytes: Buffer.byteLength('<p>正文</p>', 'utf8') },
+        ],
+      },
+    ]);
+  });
+
+  it('索引：行还没开始跑（工作区不存在）⇒ 那一行是空清单，不是错误', async () => {
+    const run = await createRun();
+    const row = run.rows[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选行');
+
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId: run.id }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).rows).toEqual([{ rowId: row.id, files: [] }]);
+  });
+
+  it('轮不存在 ⇒ 404（不是空清单：那是「这一轮没有产物」的误读）', async () => {
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId: 'nope' }));
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error.message).toContain('评测不存在');
+  });
+
+  it('单份正文：?name= 取到那一份，形状带 kind / bytes / truncated', async () => {
+    const { runId, rowId } = await seedArtifacts();
+
+    const res = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId, rowId }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: 'RESULT.md',
+      kind: 'md',
+      text: '# 交付说明\n',
+      bytes: Buffer.byteLength('# 交付说明\n', 'utf8'),
+      truncated: false,
+    });
+  });
+
+  it('单份正文：缺 name / 空 name ⇒ 400（与「名字不合法」分开说）', async () => {
+    const { runId, rowId } = await seedArtifacts();
+
+    const missing = await getRowArtifact(new Request('http://localhost/api/artifacts'), rowContext({ runId, rowId }));
+    const empty = await getRowArtifact(new Request('http://localhost/api/artifacts?name='), rowContext({ runId, rowId }));
+
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toMatchObject({ code: 'INVALID_QUERY' });
+    expect(empty.status).toBe(400);
+  });
+
+  it('单份正文：白名单外的名字 ⇒ 400 INVALID_QUERY（连拼路径的机会都不给）', async () => {
+    const { runId, rowId } = await seedArtifacts();
+
+    for (const name of ['notes.txt', '../RESULT.md', 'sub/RESULT.svg', 'RESULT.md.bak']) {
+      const res = await getRowArtifact(
+        new Request(`http://localhost/api/artifacts?name=${encodeURIComponent(name)}`),
+        rowContext({ runId, rowId }),
+      );
+      expect(res.status, name).toBe(400);
+      expect((await res.json()).error.code, name).toBe('INVALID_QUERY');
+    }
+  });
+
+  it('单份正文：白名单内的名字但盘上没有 ⇒ 404；行不存在 ⇒ 404', async () => {
+    const { runId, rowId } = await seedArtifacts();
+
+    const absent = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.svg'), rowContext({ runId, rowId }));
+    const unknownRow = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId, rowId: 'w-x' }));
+
+    expect(absent.status).toBe(404);
+    expect((await absent.json()).error.message).toContain('没有这份产物');
+    expect(unknownRow.status).toBe(404);
+    expect((await unknownRow.json()).error.message).toContain('没有这一行');
+  });
+
+  it('单份正文：工作区还没建 ⇒ 409 中文原因（不是英文 errno）', async () => {
+    const run = await createRun();
+    const row = run.rows[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选行');
+
+    const res = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId: run.id, rowId: row.id }));
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.message).toContain('还没有工作区');
   });
 });

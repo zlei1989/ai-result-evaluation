@@ -35,6 +35,13 @@
  * · 两个汉字的按钮一律 `autoInsertSpace={false}`（antd 默认会在中间插一个空格，
  * 可访问名会变成「终 止」，用例与屏幕阅读器都会撞上；见 provider-table.tsx 的文件头）；
  * · 状态文案取自 contracts 的 `ROW_STATUS_LABELS`，这里不抄第二份。
+ * **追问**（第二期）是这一组里唯一**不自己算判据**的按钮：它能不能按由服务端的可用性读侧给
+ * （`followUpVerdict`）——七档拒绝里有一半的事实（工作区还在不在 / 用例还在不在 / 这一家的声明）
+ * 在盘上与厂商声明上，浏览器一格都看不到。禁用时的 Tooltip 文案**直接用服务端那一句**
+ * （`verdict.reason`，与真追问抛的 409 逐字相同），界面一个字都不自己编。
+ * 判据还没读到（`undefined`）时**置灰并说清「读不到判据」**：猜「能追问」会让用户点下去才拿到 409，
+ * 而那正是本仓反复要避免的那种漂移（同 `inject-vocab` 把声明缺席读作「不知道」的口径）。
+ *
  * 第三条是 jsdom 提醒不了的那类缺口：
  * · **禁用控件的原因一律走 `Tooltip`，且 `Tooltip` 只能包在一个真实 DOM 元素上**。
  * 它的直接子节点若是 `Popconfirm` 这类组件，悬浮事件会被那一条链吃掉——真实浏览器里鼠标悬浮
@@ -49,6 +56,7 @@ import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
   EFFORT_OFF,
+  type FollowUpVerdict,
   canRescoreRow,
   canRetryRow,
   canRunRow,
@@ -102,6 +110,20 @@ export interface EvalRowCardProps {
    */
   onRetry: () => void;
   retryPending?: boolean;
+  /**
+   * 追问（第二期）：接着这一行原来那段会话再补一句话。
+   * **不传即不渲染这个按钮**（没有回调的按钮是一个点了没反应的按钮，比没有更糟）。
+   * 它只负责**打开输入区**（真正的承诺在那一次发送上），故不需要 `Popconfirm`。
+   */
+  onFollowUp?: () => void;
+  /** 追问请求在途：按钮转圈并禁用（避免连点两次） */
+  followUpPending?: boolean;
+  /**
+   * 这一行此刻能不能追问（服务端的可用性读侧给的那一条结论）。
+   * `undefined` = **还没有这一行的判据**（未加载 / 读失败）⇒ 按钮置灰并如实说明；
+   * 判据本身与文案都在契约的 `canFollowUpRow` 里，这里一个条件都不复算。
+   */
+  followUpVerdict?: FollowUpVerdict;
 }
 
 /** 缺省能力：按「都支持」处理——多给一个终止按钮，比无端禁用安全 */
@@ -155,6 +177,9 @@ export function EvalRowCard({
   rescorePending = false,
   onRetry,
   retryPending = false,
+  onFollowUp,
+  followUpPending = false,
+  followUpVerdict,
 }: EvalRowCardProps): ReactNode {
   const running = isRunningRow(row.status);
   // `row.diff === null` = 这一行还没有产出：点开只会拿到一个 CONFLICT，
@@ -174,6 +199,17 @@ export function EvalRowCard({
    *     也该显示「重新执行」（它确实已经跑起来了），显示「开始执行」会让人以为还没开始。
    * 文案与确认框措辞都从这里派生：两处各写一份判据，必然出现「按钮写重新执行、确认框说首跑」这种漂移。
    */
+  /**
+   * 追问这一格的三态：`ok`（能按）/ 不可行（原因来自服务端）/ **没有判据**（还没读到）。
+   * 「没有判据」与「不可行」分开说：前者要用户刷新，后者要用户换一件事做（排队 / 重新执行）。
+   */
+  const followUpOk = followUpVerdict?.ok === true;
+  const followUpHint = followUpVerdict === undefined
+    ? '读不到这一行的追问判据（服务端没给出）：请刷新后重试'
+    : followUpVerdict.ok
+      ? undefined
+      : followUpVerdict.reason;
+
   const runnable = canRunRow(row);
   const rerun = canRetryRow(row) || isRunningRow(row.status);
   const runLabel = rerun ? '重新执行' : '开始执行';
@@ -185,6 +221,15 @@ export function EvalRowCard({
       title={
         <Flex align="center" gap={8} wrap>
           {rank === undefined ? null : <Tag color="gold">第 {rank} 名</Tag>}
+          {/**
+            * **候选没答**：这一格与状态 Tag 并列显示，因为两者说的是**两件事** ——
+            * `judged` 说的是「这一行评过分了」，而这一格说的是「那次评分评的是一个**没答**的候选」。
+            * 只显示前者，会把一次空答复显示得和正常一样（这正是这一格存在的理由）。
+            *
+            * 判据用 `=== true` 而不是真值判断：三态里**键缺席与 `null` 都是「未记录」**，
+            * 它们不该显示成任何一个结论（旧数据属于这一档）。
+            */}
+          {row.emptyAnswer === true ? <Tag color="red">候选未作答</Tag> : null}
           <Typography.Text strong>{AGENT_LABELS[row.agentKind]}</Typography.Text>
           <Typography.Text type="secondary">·</Typography.Text>
           {/* 模型名 + 供应商浮层（2026-10-07 用户口径）：供应商信息挂在这一格上、鼠标移入才浮出，
@@ -214,6 +259,18 @@ export function EvalRowCard({
           {/* 「重试过」必须可见（2026-09-27）：瞬时失败是**自动重试**的，不标出来的话
               「试了三次才成功」与「一次就成功」在卡片上长得一模一样 */}
           {row.attempts > 1 ? <Tag color="blue">已重试 {row.attempts - 1} 次</Tag> : null}
+          {/* 「被人插过话」必须可见：判分照旧把那些消息当证据，而它与没插过话的轮次**不可直接比**。
+              计数读的是**行快照** `followUps`（不走事件流：列表视图的成本会随轮次数涨），而它由编排层在
+              落账本那一段同时加一 ⇒ N 与账本对齐（队列表里那些还没投递的不算）。
+              **文案是「人工消息」不是「追问」**：这一格数的是**总数**——运行中插进去的话与跑完之后
+              的追问都算（可比性要传达的是「这一行被人工干预过几次」）。「追问」在术语里只指跑完之后
+              另起一段那一支，写成「人工追问 ×N」会把 2 条注入 + 1 次追问读成被追问了 3 次；
+              行日志里那句 `[人工追问 ×N]` 读的是**轮次**（`followUpRounds`），两者不是同一个数。 */}
+          {row.followUps > 0 ? (
+            <Tooltip title="这一轮被人工干预过：判分证据里含这几条人写的消息（运行中插的话与跑完之后的追问都算），产物与没有人工消息的轮次不可直接比">
+              <Tag color="cyan">人工消息 ×{row.followUps}</Tag>
+            </Tooltip>
+          ) : null}
           {row.diff?.truncated === true ? <Tag color="warning">diff 已截断</Tag> : null}
           <RowStatusTag status={row.status} />
         </Flex>
@@ -318,6 +375,29 @@ export function EvalRowCard({
                 </Popconfirm>
               </span>
             </Tooltip>
+            {/**
+             * 追问（第二期）：排在两个「重跑」之后——它既不是重跑整行、也不是重算分，
+             * 而是「接着原来那段会话再跑一段」，故自成一格。
+             * **没有 `Popconfirm`**：这一键只打开输入区，真正的承诺在那一句话发出去的时候
+             * （输入框下面那行提示写明了代价）。给它加一道确认框只会让「打开输入区」也变成两步。
+             * 没有 `onFollowUp` 就不渲染（同 `agent-log-layout` 的「不给 `retryNode` 就不渲染重试键」）。
+             * ⚠️ Tooltip 同样必须挂在外层 span 上（禁用按钮不触发鼠标事件，见上面「重新评分」那段）。
+             */}
+            {onFollowUp === undefined ? null : (
+              <Tooltip title={followUpHint}>
+                <span data-testid="follow-up-wrapper">
+                  <Button
+                    size="small"
+                    autoInsertSpace={false}
+                    disabled={!followUpOk}
+                    loading={followUpPending}
+                    onClick={onFollowUp}
+                  >
+                    追问
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </Flex>
           {running && (
             // 「终止」杀的是 agent 子进程、不可撤销 ⇒ 与吸底栏的整轮终止**同一套语义**：

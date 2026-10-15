@@ -82,13 +82,47 @@ function drawerOpenTags(text: string): string[] {
   return tags;
 }
 
+/**
+ * 取几何常量里的字面量（`export const NAME = '…';`）。抠不到直接抛：常量改名 / 改了形状时，
+ * 下面那条不变量必须**当场失效**，而不是拿一个 `undefined` 去比大小后静默放过。
+ */
+function geometryLiteral(name: string): string {
+  const match = new RegExp(`export const ${name} = '([^']+)';`).exec(geometry);
+  const value = match?.[1];
+  if (value === undefined) throw new Error(`drawer-geometry.ts 里抠不到 ${name}（判据失效了）`);
+  return value;
+}
+
+/**
+ * 把宽度表达式算成某个视口下的实测宽度（px）。
+ *
+ * 为什么要自己算：jsdom 没有布局引擎，「主抽屉比二级抽屉宽」这件事在用例里看不见
+ * （两档只是拿到的 inline style 不同，渲染结果都是 0×0）。表达式形状只有 `fn(a vw, b px)` 一种
+ * （见 `drawer-geometry.ts`），故按这个形状解析；解析不动就抛，见上。
+ * `maxWidth: 100vw` 那道兜底也要算进去：窄屏上两档都被视口宽度削平，不削平会高估差值。
+ */
+function widthAt(expression: string, viewport: number): number {
+  const match = /^(max|min)\((\d+(?:\.\d+)?)vw,\s*(\d+(?:\.\d+)?)px\)$/.exec(expression);
+  const fn = match?.[1];
+  const vw = match?.[2];
+  const px = match?.[3];
+  if (fn === undefined || vw === undefined || px === undefined) {
+    throw new Error(`几何常量的形状变了，求值器失效：${expression}`);
+  }
+  const value = (Number(vw) * viewport) / 100;
+  return Math.min(fn === 'max' ? Math.max(value, Number(px)) : Math.min(value, Number(px)), viewport);
+}
+
 describe('抽屉几何', () => {
   it('宽度只有一处字面量：ui 的几何常量（两个包都不许再各写一份）', () => {
     // 常量本身：逐字钉住，防「顺手调成别的数」
-    expect(geometry).toMatch(/export const WIDE_DRAWER_SIZE = 'max\(50vw, 800px\)';/);
-    // 消费者只许引用常量：写回字面量 = 又会出现「改了一处、另一处没改」的静默漂移
-    expect(logDrawer, '执行日志抽屉又自己写了一份宽度').not.toContain('max(50vw');
-    expect(source, '评测页又自己写了一份宽度').not.toContain('max(50vw');
+    expect(geometry).toMatch(/export const WIDE_DRAWER_SIZE = 'max\(61vw, 800px\)';/);
+    // 消费者只许引用常量：写回字面量 = 又会出现「改了一处、另一处没改」的静默漂移。
+    // 判据取「任何一个 `max|min(<数>vw…` 表达式」而不是某一个具体值：只钉当前值时，
+    // 有人把**别的档位的宽度**（如 `max(50vw, 800px)`）写回消费方，这一条照样绿——而症状
+    // 正是它要拦的那个（一个抽屉掉回别的宽度）。`maxWidth: '100vw'` 这类兜底不会被误伤。
+    expect(logDrawer, '执行日志抽屉又自己写了一份宽度').not.toMatch(/(?:max|min)\(\d+vw/);
+    expect(source, '评测页又自己写了一份宽度').not.toMatch(/(?:max|min)\(\d+vw/);
   });
 
   it('三个抽屉都从同一份常量取宽度（这就是「统一」的可执行形式）', () => {
@@ -102,6 +136,28 @@ describe('抽屉几何', () => {
     // 判据取「至少三处」而不是「正好三处」：**漏一处才是缺陷**（那条由下一条用例按标签逐个拦），
     // 而将来多一个抽屉、多摊开一处是合法的——守卫误伤会让人绕过它。
     expect((source.match(/\.\.\.DRAWER_GEOMETRY/g) ?? []).length, '摊开点少于三处').toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * 主抽屉必须**恒宽于**二级抽屉（「比主抽屉窄一档」是两档并存的意义）。
+   *
+   * 为什么要单独钉一条：两档各按自己的 vw 数走（主 61vw / 二级 60vw），谁动了这两个数之一
+   * ——想给「原文」多要一点宽度的人顺手把二级调到 62vw，或者在宽屏上嫌抽屉太宽而把主抽屉那一档
+   * 降成 50vw（那个值在视口 1334–1799px 之间会让二级反而更宽）——「从主抽屉里推出来的那一层反而
+   * 更宽」就静默发生了：抽屉照样弹出来，jsdom 又测不出布局，没有任何别的用例会红。上面那条逐字
+   * 钉住值的断言只管「值有没有被改」，管不了「两档还算不算一档比一档窄」，故这一条按**视口扫描**
+   * 断言关系。
+   */
+  it('主抽屉恒宽于二级抽屉（两档只差一个 vw 数，反序是静默的）', () => {
+    const main = geometryLiteral('WIDE_DRAWER_SIZE');
+    const nested = geometryLiteral('NESTED_DRAWER_SIZE');
+    // 端点取在关系最容易翻转的地方：下限刚接管的两侧（1311 / 1312）、以及两档各自吃满的宽屏
+    for (const viewport of [700, 800, 1024, 1311, 1312, 1440, 1920, 2560]) {
+      expect(
+        widthAt(main, viewport),
+        `视口 ${viewport} 上主抽屉不宽于二级抽屉（档位反序：推出来的那层更宽了）`,
+      ).toBeGreaterThan(widthAt(nested, viewport));
+    }
   });
 
   it('页面上每个 <Drawer> 都摊开了这份几何（少一个 = 那个抽屉静默掉回 378px）', () => {
@@ -177,7 +233,7 @@ describe('抽屉几何', () => {
       expect(sizeAttrs.length, `${file} 里的 <Drawer> 没有解析到 size（判据失效了）`).toBeGreaterThan(0);
       expect(sizeAttrs, `${file} 又用回了 size="large"`).not.toContain('large');
       // `Drawer` 的 `size` 只收 'default' | 'large' | number | string（antd 6.6.5 的 `Drawer.d.ts`）：
-      // `size="small"` 既不是有效值、也压不出更小的抽屉——宽度口径是共享常量 `max(50vw, 800px)`
+      // `size="small"` 既不是有效值、也压不出更小的抽屉——宽度口径是共享常量 `max(61vw, 800px)`
       // 与环境抽屉的 `min(60vw, 900px)`
       expect(sizeAttrs, `${file} 给 Drawer 写了一个不存在的预设`).not.toContain('small');
     }

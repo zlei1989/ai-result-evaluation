@@ -61,6 +61,19 @@ describe('待答快照', () => {
   it('没人提问时给空数组（不是 null：客户端一个 for-of 就能跑）', () => {
     expect(getPendingAskUser()).toEqual([]);
   });
+
+  it('按 runId 过滤：只给该轮的条目；不传（或空串）时给全部', () => {
+    table.pending = [PENDING, { ...PENDING, askId: 'ask-2', runId: 'run-2', rowId: null }];
+
+    // 归属过滤走的是**条目自己那一格 runId**（信号帧不带归属，读侧才是权威）
+    expect(getPendingAskUser('run-1').map((item) => item.askId)).toEqual(['ask-1']);
+    expect(getPendingAskUser('run-2').map((item) => item.askId)).toEqual(['ask-2']);
+    // 没有这一轮的提问时给空数组（客户端不必区分「没问过」与「过滤掉了」）
+    expect(getPendingAskUser('run-没有这一轮')).toEqual([]);
+    expect(getPendingAskUser()).toHaveLength(2);
+    // 空串 = 没给过滤（runId 不可能是空串，见 api 的说明）
+    expect(getPendingAskUser('')).toHaveLength(2);
+  });
 });
 
 describe('应答受理', () => {

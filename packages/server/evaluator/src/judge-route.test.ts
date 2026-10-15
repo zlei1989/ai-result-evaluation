@@ -357,7 +357,7 @@ describe('resolveJudgeEffort / requireJudgeEffort', () => {
  * 为什么补：现成的 `provider()` 夹具把 protocolType 写死成 'openai'，于是
  * `return { protocolType: 'openai', … }` 这种「常量实现」能让上面六条用例全绿——
  * 而真值来自供应商记录：Anthropic 供应商被判成 openai 时，评分会拿着 Bearer 去打
- * `/chat/completions`，症状是 401（或 404），且只在 anthropic 供应商上出现。
+ * `/v1/responses`，症状是 401（或 404），且只在 anthropic 供应商上出现。
  * 归属不变：`protocolType` 的映射是本模块的职责（`TextRoute`），不是调用方的。
  */
 describe('resolveJudgeRoute —— 补充守卫（夹具只有 openai 供应商）', () => {

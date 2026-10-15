@@ -55,8 +55,9 @@ describe('resolveCodexBinary —— 真机解析链', () => {
     ]);
     expect(existsSync(binary)).toBe(true);
     /**
-     * 覆盖边界（如实登记）：测试进程里裸说明符的解析由运行器接管（vite-node/vitest 的解析器，
-     * 带 pnpm store 感知），比生产 Node 的 `createRequire` 宽松 ⇒ 本用例只钉**解析结果的形状**，
+     * 覆盖边界（如实登记）：走 `node_modules/.bin/vitest` 时，pnpm 的 bin shim 会注入
+     * `NODE_PATH=<仓>/.pnpm/node_modules`（`codex` 与 `codex-darwin-arm64` 两条软链都在那里），
+     * 于是**裸说明符对默认基准也解析得到**，比纯 Node 的 `createRequire` 宽松 ⇒ 本用例只钉**解析结果的形状**，
      * 对「第二跳的基准写成 `import.meta.url`」那一类缺陷是盲的。第二跳的基准由 `binary.ts` 的
      * `resolvePackageFile(…, [codexPackageJson])` 承担：平台包是 CLI 包的 optionalDependency，
      * 只链在 CLI 包自己的 `node_modules` 下。

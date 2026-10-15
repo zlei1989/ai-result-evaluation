@@ -22,10 +22,10 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { AGENT_KINDS } from '@aieval/contracts';
+import { AGENT_KINDS, type AgentKind, type TurnInjectionCapability } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
 import { getProvider } from '../../registry';
-import { capabilityProofGroups, interactionProofGroups } from './kit';
+import { capabilityProofGroups, interactionProofGroups, type TurnInjectionCellName } from './kit';
 
 /** `providers/` 目录：本文件住在 `providers/conformance/`，往上一层就是它 */
 const PROVIDERS_DIR = join(import.meta.dirname, '..');
@@ -217,6 +217,15 @@ describe('接入守卫：注入面（MCP / skills）的声明必须有证明安�
 const FAKE_SDK_MARKER = 'setAgentRuntimeForTesting';
 
 /**
+ * 「装没装假件」按**调用形状**判，不按名字出现过判：
+ *   · 真路径的驱动器与自检断言里都会**写出**这个名字——`expect(source).not.toContain('setAgentRuntimeForTesting')`
+ *     是自检，不是在装假件；
+ *   · `setAgentRuntimeForTesting(null)` 是**清掉**假件（真路径驱动器起手就做），同样不算违规。
+ * 按裸名字判会把上面两种写法读成违规，判据把实情读反。
+ */
+const INJECTS_FAKE_SDK = /setAgentRuntimeForTesting\s*\(\s*\{/;
+
+/**
  * 出站事实的两格 → 在证据文件里该看到的断言记号。
  *
  * 判据是**记号**而不是「断言写对了」：RHS 的正确性由各家自己的用例保证（那才是判据本体），
@@ -382,6 +391,169 @@ describe('接入守卫：生命周期（释放 / 取消）必须有观测或登�
       if (elsewhere === null) return;
       // 登记不是免检（与注入面的登记同一条口径）：点名的文件必须真的在
       expect(existsSync(join(repoRoot(), elsewhere)), `${kind}：生命周期登记的证明位置不存在：${elsewhere}`).toBe(true);
+    });
+  }
+});
+
+/**
+ * **人工消息面（第五组）的证明安排与驱动器真伪**：三格各自要点名证明落在哪，
+ * 且声明里那一格 `proofDriver` 要真的立得住。
+ *
+ * 为什么单开这一层：先例（提问应答面的 `askUserProofDriver`）只核声明自身的 schema 合规性，
+ * **没有任何判据核对「这家提交的驱动器真的是 `real-path`」**——照搬那个带洞的先例等于把洞也照搬。
+ * 这一层把「驱动器真伪」从各家本地（`providers/codex/turn-injection-resume.test.ts` 里那一组）
+ * 提升到套件级：留在各家本地的话，新家不写就没有任何用例管。
+ *
+ * 判据三层，逐层收窄。**为什么读源码而不是读对象**：四家的 fixture 都在模块加载期注入各自的假件
+ * （`sdkModule` / `runtimeHooks` 是模块级的），把四家 import 进同一个文件会让注入互相覆盖 ⇒
+ * 这里读的是各家 `conformance.test.ts` 里**登记**的那一格（运行期那一条由套件的
+ * `checkTurnInjectionNailing` 判，两处判的不是同一类错）：
+ *   ① **登记的驱动器真的在盘上**：自 `import.meta.dirname` 往上找到带 `pnpm-workspace.yaml`
+ *      的那一级定仓库根（**不数层级**，挪包也不会失效）——写一个不存在的路径比不写更糟，
+ *      那是把空转伪装成「有判据」；
+ *   ② **假厂商那一侧的记号按调用形状判**（`INJECTS_FAKE_SDK`）：`real-path` 的驱动器里出现这一格，
+ *      这一格的前提当场作废。⚠️ 这一条判的是**形状**不是语义：把**真** SDK 模块经同一格装回去
+ *      （`testing/cc-real-path-fixture.ts` 就是那样：真 CLI + 脚本式上游，注入的是真模块本身）
+ *      同样命中。它对这一组成立，是因为登记在这三格上的驱动器一个都不用那一格；换一组登记时
+ *      要重新核这件事，别把它读成「出现即造假」；
+ *   ③ **反向判据**（防「把驱动器换成什么都不做的空壳也能过」）：源码里必须真的出现产品那条
+ *      造客户端的路（`REAL_PATH_CLIENT_PATH`）。
+ *
+ * ⚠️ **已知边界（未覆盖，不许当成已覆盖）**：「专文形状」做不到不误判的**文件级**真伪判据。
+ * 专文是**正常产品用例**——`cc/inject.test.ts` 里 `setAgentRuntimeForTesting` 出现 12 次，
+ * 同一支文件里既有假件驱动的投递用例、又写了续接证据的**诚实写法**；按文件级扫「有没有装假件」
+ * 会把这种诚实写法判红。⇒ **逐格真伪只能靠声明里那一格 `proofDriver`**，文件级扫描只判
+ * 「这一格的驱动器在盘上、且是照着真路径写的」。RHS 的正确性（断言写对了没有）仍归各家自己的用例。
+ */
+const TURN_INJECTION_CELLS = ['delivery.round', 'delivery.idle', 'resume'] as const;
+
+/**
+ * **产品那条造客户端的路**：`real-path` 的驱动器必须真的走它（反向判据），命中**任一**记号即可。
+ *
+ * 记号逐家登记，因为各家的入口名不同。pi 那一格记的是 `runPiRowIn`：那家的客户端构造在下一层的
+ * `testing/pi-gateway-fixture.ts`（`piProvider.run` 就在里面），续接驱动器经它才走得到产品那条路
+ * ——只认 `piProvider.run` 会把这份驱动器判成空壳。
+ */
+const REAL_PATH_CLIENT_PATH: Record<AgentKind, readonly string[]> = {
+  cc: ['claudeCodeProvider.run'],
+  codex: ['codexProvider.run', 'defaultCodexRuntimeHooks'],
+  dsh: ['dshProvider.run'],
+  pi: ['runPiRowIn'],
+};
+
+/**
+ * **声明 `real-path` 但仓库内没有产品路径驱动器的格**：如实登记这一格的观测落在哪
+ * （登记不是免检：点名的文件必须真的在盘上）。
+ *
+ * `cc` 的续接就是这一格：真机两进程 + 阴性对照证过（那一格写 `yes` 有据），但那条观测是
+ * **真机探针**自己拼 SDK 入参跑出来的，不经过产品适配器；仓库内今天没有「走 `claudeCodeProvider.run`
+ * 且真的续接」的驱动器 ⇒ ③ 这一条对它无从判起。缺的是那份驱动器
+ * （形状照 `testing/cc-real-path-fixture.ts` 加一格 `resume`），不是证据本身。
+ */
+const REAL_PATH_WITHOUT_PRODUCT_DRIVER: Partial<Record<AgentKind, Partial<Record<TurnInjectionCellName, string>>>> = {
+  cc: { resume: 'packages/server/agents/probe/v11/cc-session-resume.mjs' },
+};
+
+/** 取 `turnInjection: { … }` 那一段（花括号配对截取），没有就给空串 */
+function turnInjectionBlockOf(source: string): string {
+  const at = /\bturnInjection\s*:/.exec(source)?.index ?? -1;
+  if (at === -1) return '';
+  const open = source.indexOf('{', at);
+  if (open === -1) return '';
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, index + 1);
+    }
+  }
+  return '';
+}
+
+/**
+ * 一格的证明安排（从源码里读：`driver` 与 `evidence` 两个字符串字面量）。
+ * 键认「带引号」与「裸标识符」两种写法（`delivery.round` 必须带引号、`resume` 可以裸写）——
+ * 只认一种时那一格会被静默读成「没有安排」，判据把实情读反。
+ */
+function proofOf(block: string, cell: TurnInjectionCellName): { driver: string | null; evidence: string | null } {
+  const escaped = cell.replace('.', '\\.');
+  const at = block.search(new RegExp(`'${escaped}'|\\b${escaped}\\s*:`));
+  if (at === -1) return { driver: null, evidence: null };
+  const next = TURN_INJECTION_CELLS
+    .map((name) => {
+      const other = name.replace('.', '\\.');
+      return block.search(new RegExp(`'${other}'|\\b${other}\\s*:`, 'g'));
+    })
+    .filter((index) => index !== -1 && index > at)
+    .sort((a, b) => a - b)[0] ?? block.length;
+  const slice = block.slice(at, next);
+  return {
+    driver: /driver\s*:\s*'([^']+)'/.exec(slice)?.[1] ?? null,
+    evidence: /evidence\s*:\s*'([^']+)'/.exec(slice)?.[1] ?? null,
+  };
+}
+
+/** 声明里那一格（三格名 → 声明对象） */
+function declaredCellOf(
+  declaration: TurnInjectionCapability,
+  cell: TurnInjectionCellName,
+): TurnInjectionCapability['resume'] {
+  if (cell === 'delivery.round') return declaration.delivery.round;
+  if (cell === 'delivery.idle') return declaration.delivery.idle;
+  return declaration.resume;
+}
+
+describe('接入守卫：人工消息面的证明安排与 real-path 的真伪', () => {
+  for (const kind of AGENT_KINDS) {
+    it(`${kind}：三格都登记了证明，且 real-path 的那一份真的走产品那条造客户端的路`, () => {
+      const declaration = getProvider(kind).metadata.turnInjection;
+      // 整组缺席不算缺陷（那一组是可选的：「不知道」与「声明了不支持」是两件事）
+      if (declaration === undefined) return;
+      const block = turnInjectionBlockOf(fixtureSourceOf(kind) ?? '');
+      expect(
+        block,
+        `${kind}：交了 turnInjection 声明，但 providers/${kind}/conformance.test.ts 里读不到那一组`
+          + '——声明与证明安排必须同一处登记（写进各自专文的那种形状读不出一格一格的真伪）',
+      ).not.toBe('');
+      for (const cell of TURN_INJECTION_CELLS) {
+        const proof = proofOf(block, cell);
+        expect(proof.driver, `${kind}：${cell} 没有证明安排（driver）——声明与夹具必须同一次提交落地`).not.toBeNull();
+        expect(proof.evidence, `${kind}：${cell} 没有点名判据落在哪个文件`).not.toBeNull();
+        /**
+         * 声明那一格与夹具登记的必须同一件事。运行期那一条（`checkTurnInjectionNailing`）再判一次：
+         * 两处判的不是同一类错——那里读的是交上来的对象，这里读的是源码，
+         * 而「声明改了、专文里的登记没跟」这种漂移只有源码这一侧看得见。
+         */
+        expect(proof.driver, `${kind}：${cell} 的证明档位与声明里那一格不一致`).toBe(declaredCellOf(declaration, cell).proofDriver);
+        const file = join(repoRoot(), proof.evidence ?? '');
+        // 登记不是免检：点名的文件必须真的在（写一个不存在的路径比不写更糟）
+        expect(existsSync(file), `${kind}：${cell} 登记的证明文件不存在：${String(proof.evidence)}`).toBe(true);
+        // 非 real-path 的格到此为止：反断言的落点归各家自己的用例
+        if (proof.driver !== 'real-path') continue;
+        const outside = REAL_PATH_WITHOUT_PRODUCT_DRIVER[kind]?.[cell];
+        if (outside !== undefined) {
+          expect(
+            existsSync(join(repoRoot(), outside)),
+            `${kind}：${cell} 登记的观测位置不存在：${outside}`,
+          ).toBe(true);
+          continue;
+        }
+        const source = readFileSync(file, 'utf8');
+        // **真伪核对**：真路径不许在厂商边界上换假件（判据取调用形状，不是裸名字）
+        expect(
+          INJECTS_FAKE_SDK.test(source),
+          `${kind}：${cell} 声称 real-path，但 ${String(proof.evidence)} 里装了假件——`
+            + '假件只看得见我们传进去的参数，看不见厂商拿它做了什么',
+        ).toBe(false);
+        // **反向判据**：驱动器必须真的走产品那条造客户端的路，而不是自己返回一个替身
+        expect(
+          REAL_PATH_CLIENT_PATH[kind].some((marker) => source.includes(marker)),
+          `${kind}：${cell} 声称 real-path，但 ${String(proof.evidence)} 里没有任何一处产品那条造客户端的路`
+            + `（记号：${REAL_PATH_CLIENT_PATH[kind].join(' / ')}）——把驱动器换成什么都不做的空壳也能过`,
+        ).toBe(true);
+      }
     });
   }
 });

@@ -38,6 +38,10 @@ const row: EvalRow = {
   error: null,
   // 这一行走过几次尝试（契约里的可选格）：1 = 没重试过（不显示「已重试」徽标）
   attempts: 1,
+  // 会话与追问计数：这一份夹具两格都取「没有」那一档（旧产物的形状）
+  sessionId: null,
+  followUps: 0,
+  followUpRounds: 0,
 };
 
 const handlers = {
@@ -117,6 +121,21 @@ describe('EvalRowCard', () => {
 
     render(<EvalRowCard row={row} {...handlers} />);
     expect(screen.queryByText(/第 \d+ 名/)).toBeNull();
+  });
+
+  it('「候选未作答」只在**真的没答**时出现 —— 键缺席（未记录）不画', () => {
+    /**
+     * 两个方向都要钉，理由与这条格本身一样：
+     *   · `true` ⇒ 必须出现 —— 否则「空答复却照旧拿分」在界面上继续显示成正常；
+     *   · **键缺席 ⇒ 必须不出现** —— 旧数据没有这一格，把它画成「已作答」或「未作答」都是编事实。
+     * 判据是 `=== true` 而不是真值判断，正是为了这一半。
+     */
+    const { unmount } = render(<EvalRowCard row={{ ...row, emptyAnswer: true }} {...handlers} />);
+    expect(screen.getByText('候选未作答')).toBeInTheDocument();
+    unmount();
+
+    render(<EvalRowCard row={{ ...row, emptyAnswer: false }} {...handlers} />);
+    expect(screen.queryByText('候选未作答')).toBeNull();
   });
 
   it('串行排队中给出「为什么在等」', () => {
@@ -666,6 +685,36 @@ describe('EvalRowCard', () => {
   });
 
   /**
+   * 「人工消息 ×N」：这一轮被人动过时必须可见——判分照旧把那些人写的消息当证据，
+   * 而它与没动过的轮次**不可直接比**；不标出来的话，横向对比会把两种口径的产物并排展示。
+   * 计数读**行快照** `followUps`（不走事件流），由编排层在落账本那一段同时加一 ⇒ 与账本对齐。
+   *
+   * ⚠️ **读的是总数，不是追问轮次**：两格在这种场景里取值不同——先往运行中的一轮送进去 2 条、
+   * 跑完再追问 1 次 ⇒ `followUps = 3`（账本里 3 条人话）而 `followUpRounds = 1`。
+   * 卡片要的是**总数**（可比性问的是「这一行被人工干预过几次」，注入与追问都算）；
+   * 「追问轮次」是行日志里那句 `[人工追问 ×N]` 的读数，归 `@aieval/evaluator` 的用例钉
+   * （`orchestrator-follow-up.test.ts` 的「两个读数各归各的」那条，同一组 3 / 1）。
+   */
+  it('★ 卡片显示的是**人工消息总数**（3），不是追问轮次（1）——同一场景两个读数取值不同', () => {
+    render(<EvalRowCard row={{ ...row, followUps: 3, followUpRounds: 1 }} {...handlers} />);
+    expect(screen.getByText('人工消息 ×3')).toBeInTheDocument();
+    // 读错格（改读 `followUpRounds`）当场红：卡片上不会出现 1
+    expect(screen.queryByText(/×1/)).toBeNull();
+    // 文案也不许写回「追问」：这一格含运行中插进去的话，不全是追问
+    expect(screen.queryByText(/追问/)).toBeNull();
+  });
+
+  it('有人插过话的行带「人工消息 ×N」；没插过的不带', () => {
+    render(<EvalRowCard row={{ ...row, followUps: 2 }} {...handlers} />);
+    expect(screen.getByText('人工消息 ×2')).toBeInTheDocument();
+  });
+
+  it('阴性面：followUps = 0 时不出现那个徽标（「没插过话」不许被标成插过）', () => {
+    render(<EvalRowCard row={{ ...row, followUps: 0 }} {...handlers} />);
+    expect(screen.queryByText(/人工消息|人工追问/)).toBeNull();
+  });
+
+  /**
    * 思考强度的可视化（/  第 4 条）：有意选了档的行必须看得出来。
    * 没有这一格，横向对比就会把「跑 max 的行」与「跑默认档的行」并排展示而**不加区分**——
    * 那正是「分高的那一行可能是模型更强，也可能只是它跑了更高档」这件事在界面上消失的地方。
@@ -871,5 +920,85 @@ describe('EvalRowCard：子智能体的轮次透传到 Tooltip', () => {
 
     expect(screen.getByText('轮次 20')).toBeInTheDocument();
     expect(screen.queryByText(/主会话/)).toBeNull();
+  });
+});
+
+/**
+ * 追问（第二期）的入口：**判据与文案都来自服务端**，界面一个条件都不复算。
+ *
+ * 四条各钉一个面：
+ *   1. **没给回调就不渲染**（同 `agent-log-layout` 的「不给 `retryNode` 就不渲染重试键」）：
+ *      一个点了没反应的按钮比没有按钮更糟；
+ *   2. 判据说可行 ⇒ 可点，且点击把这一行交出去；
+ *   3. 判据说不可行 ⇒ 禁用，**浮层里逐字是服务端那一句**（这一条就是「界面不许自己编原因」的守卫：
+ *      把 `followUpHint` 换成界面自己写的一句话，它当场红）；
+ *   4. **还没有判据**（可用性读侧没读到）⇒ 禁用，并说清「读不到判据」而不是猜「能追问」。
+ */
+describe('EvalRowCard：追问入口', () => {
+  it('没有 onFollowUp 就一个按钮都不渲染（没有回调的按钮比没有更糟）', () => {
+    render(<EvalRowCard row={{ ...row, sessionId: 'sess-1' }} {...handlers} />);
+    expect(screen.queryByRole('button', { name: '追问' })).toBeNull();
+  });
+
+  it('判据说可行 ⇒ 可点，点击把这一行交出去', () => {
+    const onFollowUp = vi.fn();
+    render(
+      <EvalRowCard
+        row={{ ...row, sessionId: 'sess-1' }}
+        {...handlers}
+        onFollowUp={onFollowUp}
+        followUpVerdict={{ ok: true }}
+      />,
+    );
+
+    const button = screen.getByRole('button', { name: '追问' });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onFollowUp).toHaveBeenCalledTimes(1);
+  });
+
+  it('判据说不可行 ⇒ 禁用，浮层逐字给出服务端那一句原因', async () => {
+    const reason = '这一行的工作区已被删除（/runs/run-1/rows/w-1/workspace）：追问要在原工作区上继续，'
+      + '这里不会从头重跑该行——要重跑请点「重新执行」';
+    render(
+      <EvalRowCard
+        row={{ ...row, sessionId: 'sess-1' }}
+        {...handlers}
+        onFollowUp={vi.fn()}
+        followUpVerdict={{ ok: false, reason }}
+      />,
+    );
+
+    const button = screen.getByRole('button', { name: '追问' });
+    expect(button).toBeDisabled();
+    fireEvent.mouseEnter(button);
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+  });
+
+  it('还没有判据 ⇒ 禁用并说清「读不到判据」（猜「能追问」会让用户点下去才拿到 409）', async () => {
+    render(<EvalRowCard row={{ ...row, sessionId: 'sess-1' }} {...handlers} onFollowUp={vi.fn()} />);
+
+    const button = screen.getByRole('button', { name: '追问' });
+    expect(button).toBeDisabled();
+    fireEvent.mouseEnter(button);
+    expect(await screen.findByText('读不到这一行的追问判据（服务端没给出）：请刷新后重试')).toBeInTheDocument();
+  });
+
+  it('按钮顺序：追问排在「重新评分」之后（它是这一组里唯一「接着跑一段」的动作）', () => {
+    render(
+      <EvalRowCard
+        row={{ ...row, sessionId: 'sess-1' }}
+        {...handlers}
+        onFollowUp={vi.fn()}
+        followUpVerdict={{ ok: true }}
+      />,
+    );
+
+    const ordered = ['执行日志', '变更详情', '开始执行', '评分详情', '重新评分', '追问'];
+    const labels = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent ?? '')
+      .filter((text) => ordered.includes(text));
+    expect(labels).toEqual(['执行日志', '变更详情', '评分详情', '重新评分', '追问']);
   });
 });

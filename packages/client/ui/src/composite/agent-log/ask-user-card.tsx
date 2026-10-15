@@ -9,6 +9,7 @@
  *   1. **外壳是 `Card`、不是一格折叠面板**：卡面标题只写「问题 N 个」+ 收场态。
  *      **问题类型一个字都不进卡面标题**——`header` 是某一问的事，写在这里会让整张卡片
  *      看起来都属于那一问（两问的卡片上只显示第一问的名字，读者会以为第二问不存在）；
+ *      问题面板自己**不带边框**（`bordered={false}`）——框由 `Card` 出，面板再画一圈就是框里套框；
  *   2. **每个问题各占一格折叠面板，默认全部收起**（等待中也不例外）：等待态由卡面那枚
  *      「等待答复中… 12m」承担，不必靠展开；面板标题是**问题类型 + 题目**（`header` Tag +
  *      「可多选」+ 单行省略的 `prompt`），面板体里是**选项与作答**；
@@ -44,7 +45,8 @@ import { ASK_USER_OUTCOME_LABELS } from './types';
 
 export interface AskUserCardProps {
   /**
-   * 这一块的稳定 id（数据层给的 `messageId#块下标`）。
+   * 这一块的稳定 id（数据层给的 `mergeKey#块下标`，跨流式帧稳定——`messageId` 每次投递都换新，
+   * 不能当身份）。
    * 卡片要拿到它是因为**一问一格折叠键**：键必须跨轮唯一，而同一张卡片里的两问也不能撞
    * （`header` 可以重复、也可以为空）——卡片 id 加序号才构成身份。
    */
@@ -364,6 +366,13 @@ export function AskUserCard({
       actions={footer}
     >
       <Collapse
+        /*
+          **不带面板自己那层边框**：框由 `Card` 出（卡面与卡体都是它的），面板再画一圈就是
+          「框里套框」——收起态看起来像卡片里嵌了两个小盒子，而每一问本来就只是卡片里的一行。
+          `bordered={false}` 只去掉这一层框与圆角，`items` 之间那条分隔线、标题与正文的留白仍由
+          antd 给（本件不手写内边距）。
+        */
+        bordered={false}
         destroyOnHidden
         /* 面板键是序号（稳定、不随 `header` 重复而漂）；折叠态那一格用 `questionPanelKey` */
         activeKey={questions.flatMap((_, index) => (openQuestions.has(questionPanelKey(cardId, index)) ? [String(index)] : []))}

@@ -12,10 +12,10 @@
  * `events.jsonl` 是本阶段的唯一真相源，写进去一条不符合契约的事件（agents / 编排层的形状漂移、NaN 之类
  * JSON.stringify 会改写成 null 的载荷），读侧会**静默丢掉那一行**：抽屉、`/log` 与 SSE 回放里
  * 这条事件凭空消失，而磁盘上却有它。故写入点直接抛中文 `ServiceError`，让坏数据在这里就暴露。
- * 与计划里的实现块有一处**有意**不同：发号用的最大 seq 取自 `maxSeqInFile`（「能解析出数字
+ * 与计划里的实现块有一处**有意**不同：发号用的最大 seq 取自 `maxEventSeq`（「能解析出数字
  * `seq` 的行」），不是 `readEvents` 的返回值。理由是口径 3 与口径 1 在这里会打架——
  * 「合法 JSON 但不符合 schema」的行同样占着一个 seq 号，拿合格事件的最大 seq 发号就会与它重号。
- * 详见 maxSeqInFile 的注释。
+ * 详见 maxEventSeq 的注释。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -42,7 +42,7 @@ export type PendingAgentEvent = DistributiveOmit<AgentEvent, 'seq' | 'at'> & { a
  * `readEvents` 按契约把「合法 JSON 但不符合 schema」的行丢掉，可那一行**已经占着它的 seq 号**——
  * 按「合格事件的最大 seq」发号，新事件就与磁盘上已有的一个 seq 重号；客户端拿着 `Last-Event-ID: 3`
  * 重连时，重复的那条会被前端去重悄悄丢掉（要求「每行一个带单调序号的事件」，按 `seq`
- * 续订）。故发号只看「这一行能不能解析出数字 `seq`」（`maxSeqInFile`，且不 WARN），与读取侧的
+ * 续订）。故发号只看「这一行能不能解析出数字 `seq`」（`maxEventSeq`，且不 WARN），与读取侧的
  * schema 过滤是两件事：前者问的是「这个号被占用过没有」，后者问的是「这条事件能不能用」。
  * 每次追加都要读一遍已有文件来定 seq：这是 O(n)/条的，但换来的是「进程重启后继续追加不重号」这个必要性质——
  * 内存里缓存计数器会让重启后的第一条重号。
@@ -51,7 +51,7 @@ export type PendingAgentEvent = DistributiveOmit<AgentEvent, 'seq' | 'at'> & { a
  * 又不牺牲正确性；本阶段先保正确，因为一轮评测的事件量还在几百量级。
  */
 export function appendEvent(file: string, event: PendingAgentEvent): AgentEvent {
-  const full: unknown = { ...event, seq: maxSeqInFile(file) + 1, at: event.at ?? new Date().toISOString() };
+  const full: unknown = { ...event, seq: maxEventSeq(file) + 1, at: event.at ?? new Date().toISOString() };
 
   // 写侧校验（文件头「读写两侧的校验都要有，且职责不同」）：唯一真相源不能写坏数据——
   // 坏数据的表现不是「报错」而是「静默消失」，即读侧的 schema 过滤把它丢掉
@@ -125,6 +125,9 @@ function parseLines(file: string, afterSeq: number): AgentEvent[] {
 
 /**
  * 文件里**已用过**的最大 seq：逐行 `JSON.parse`，只认数字型 `seq`，解析不出来的行静默跳过。
+ * 两个消费方：`appendEvent` 拿它发号（+1），SSE 拿它判「客户端带来的续订游标是不是上一代的」——
+ * 重跑同一行时本文件被 `resetEvents` 删掉、seq 从 1 重新发号，于是
+ * `afterSeq > maxEventSeq(file)` 就等价于「这个游标属于被删掉的那一代」。
  * 为什么不能复用 `readEvents` 来发号（计划里的实现块就是这么写的，实测过不了它自己的用例）：
  * `readEvents` 会把「合法 JSON 但不符合事件 schema」的行丢掉，可那样的行（手工改坏的旧事件、
  * 缺字段的历史事件）**已经占着一个 seq 号**——按「合格事件的最大 seq」发号，新事件就与它重号，
@@ -133,7 +136,7 @@ function parseLines(file: string, afterSeq: number): AgentEvent[] {
  * 为什么坏行在这里**静默**：坏行由读取侧报一次就够；追加路径也 WARN 的话，每写一条事件都会把
  * 整段历史里的坏行重报一遍——用例据此断言「读一次日志恰好 2 条 WARN」。
  */
-function maxSeqInFile(file: string): number {
+export function maxEventSeq(file: string): number {
   if (!existsSync(file)) return 0;
   // BOM 与空行的处理必须与 parseLines 一致，否则同一个文件在两处会被切成不同的行
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');

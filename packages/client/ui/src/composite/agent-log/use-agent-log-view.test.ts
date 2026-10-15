@@ -37,6 +37,7 @@ function textBlock(id: string): TextBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text: `正文 ${id}`,
   };
@@ -53,6 +54,7 @@ function thinkingBlock(id: string): ThinkingBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text: '想了想',
     textMissing: null,
@@ -71,6 +73,7 @@ function toolCall(id: string, callId: string, tool: ToolCallBlock['tool'] = null
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     callId,
     name: 'pwsh',
@@ -92,6 +95,7 @@ function toolResult(id: string, callId: string, status: 'ok' | 'error' = 'ok'): 
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     callId,
     text: '结果',
@@ -124,7 +128,9 @@ function askPayload(interaction: AskUserInteraction): ToolCallBlock['tool'] {
 }
 
 function turn(overrides: Partial<LogTurn> & { blocks: ContentBlock[] }): LogTurn {
-  return { round: 1, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides };
+  // 兜底定位键的夹具口径：**投递顺序上第一条块**的 `messageId`（用例可以用 overrides 覆写它）
+  const fallbackMessageId = overrides.fallbackMessageId ?? overrides.blocks[0]?.messageId ?? null;
+  return { round: 1, segment: 0, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides, fallbackMessageId };
 }
 
 function sessionNode(overrides: Partial<SessionNode> & { id: string }): SessionNode {
@@ -170,6 +176,8 @@ function model(nodes: LogNode[], activeNodeId: string): AgentLogModel {
     nodes,
     activeNodeId,
     rowEvents: [],
+    // 段这一层的事实：本夹具没有追问，故一个段标题都不画
+    segments: [],
     empty: false,
   };
 }

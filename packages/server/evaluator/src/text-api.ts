@@ -3,11 +3,11 @@
  * 为什么要共用一个外壳：两处都是「非流式文本 API + 双协议路由」，
  * 写两份必然漂移——而漂移的表现是「生成能跑、评分 401」这类只在某一条路径上出现的故障。
  * 三个必须成立的口径：
- *   1. 双协议的接线不同，必须各自正确：OpenAI 打 `/chat/completions` 用 `Authorization: Bearer`、
- *      取 `choices[0].message.content`；Anthropic 打 `/v1/messages` 用 `x-api-key` + `anthropic-version`、
- *      system 走顶层字段、取 `content[]` 里的 text 块并拼接；
- *   2. baseUrl 的拼法要容忍用户手填的各种形态（尾斜杠、Anthropic 侧多写一个 `/v1`），
- *      见 `endpoint()`；
+ *   1. 双协议的接线不同，必须各自正确：OpenAI 打 **Responses** `/v1/responses` 用 `Authorization: Bearer`、
+ *      取 `output[]` 里 `type: 'message'` 项的 `output_text` 块并拼接；Anthropic 打 `/v1/messages`
+ *      用 `x-api-key` + `anthropic-version`、system 走顶层字段、取 `content[]` 里的 text 块并拼接；
+ *   2. baseUrl 的拼法要容忍用户手填的各种形态（站点根、尾斜杠、Anthropic 侧多写一个 `/v1`）：
+ *      OpenAI 侧补 `/v1` 的规则与智能体侧同一把尺（`ensureV1Suffix`），见 `endpoint()`；
  *   3. 失败一律折成带中文原因的 `ServiceError`：401 → `AUTH_FAILED`（带 host，指向设置页）、
  *      429 → `RATE_LIMITED`（建议改用串行）、其余 → `INTERNAL`。绝不放任 `TypeError: fetch failed`
  *      冒到路由层——那对用户等于没有解释。
@@ -31,10 +31,11 @@
  *  8. **思考强度只有一张协议表**：`reasoningFields` 是文本侧**唯一**的落点，
  *      且 `buildBody` 的两个分支都要展开它；未指定 = 不下发任何强度键（听网关的缺省，**不是**关闭，
  *      也**不等强**于智能体侧 `EvalRow.effort` 的「走适配器缺省」），关闭档 `EFFORT_OFF` =
- *      两协议同一个 `thinking: { type: 'disabled' }`。
+ *      Responses 的 `reasoning: { effort: 'none' }` / Messages 的 `thinking: { type: 'disabled' }`。
  */
 import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
 import { createLogger } from '@aieval/core';
+import { ensureV1Suffix } from '@aieval/agents';
 
 /**
  * 一次文本调用的路由：三种协议的必填项完全一致（模型 id 与凭据都在这里）。
@@ -63,16 +64,16 @@ export interface TextRoute {
  * （唯一构造点口径不变，翻译表也只有那一张）。
  */
 export type TextContentBlock =
-  /** 意图文本块：两协议都翻成 `{type:'text', text}` */
+  /** 意图文本块：Messages 翻成 `{type:'text', text}`、Responses 翻成 `{type:'input_text', text}` */
   | { type: 'text'; text: string }
-  /** 文本附件块：两协议都翻成带文件名标题的独立 text 块（`## filename` + 空行 + 原文） */
+  /** 文本附件块：两协议都翻成带文件名标题的独立文本块（`## filename` + 空行 + 原文） */
   | { type: 'attachment'; text: string; filename: string };
 
 /**
- * 对话里的一条消息：两种协议的 `role` 取值完全一致（`system` 只有 OpenAI 侧走消息数组）。
+ * 对话里的一条消息：两种协议的 `role` 取值完全一致（system 都走顶层字段，不进这个数组）。
  * `content` 有两种形态：
  *   · **字符串** = 纯文本消息（向后兼容形态：「AI 生成/识别/调整」三按钮与既有调用全走它）；
- *   · **块数组** = 意图文本块 + 文本附件块（评分通路把 diff 与执行过程证据作为独立 text 块
+ *   · **块数组** = 意图文本块 + 文本附件块（评分通路把 diff 与执行过程证据作为独立文本块
  *     与意图分开输入，wire 上见 `wireContent`）。
  * 只有 user 消息会拿到块数组：assistant 消息恒为模型原文（字符串）。
  */
@@ -133,7 +134,7 @@ const log = createLogger('evaluator/text-api');
 /** Anthropic 必须带版本头，缺它上游直接 400 */
 const ANTHROPIC_VERSION = '2023-06-01';
 /**
- * 非流式调用的输出上限。
+ * Messages 通路的非流式输出上限（Responses 侧不下发这一格，见 `buildBody` 的注释）。
  *
  * 取 16384：「智能调整」要求模型**回显整张评分表**，一张 14 项、目标各几十字的表在 GLM-5.3
  * （anthropic 协议、`max` 档思考）上实测会被 4096 截断——回显的 JSON 中途断掉，
@@ -173,17 +174,35 @@ const RETRYABLE_CODES: readonly string[] = ['RATE_LIMITED', 'INTERNAL'];
 
 /**
  * 拼请求地址。
- * openai：`{base}/chat/completions`——用户在设置页填的就是含 `/v1` 的 baseURL（例子），
- *   所以这里**不再补** `/v1`，只去掉末尾多余的斜杠。
+ * openai：`{base}/v1/responses`——**站点根也要能用**（`https://api.deepseek.com` ⇒
+ *   `https://api.deepseek.com/v1/responses`），故先过一把 `ensureV1Suffix`（与智能体侧同一把尺）；
+ *   已经带 `/v1` 的地址原样保留，不会被叠成 `/v1/v1`。
  * anthropic：`{base}/v1/messages`——但用户很可能把 baseURL 填成已经带 `/v1` 的形式，
  *   这时再拼一次会得到 `/v1/v1/messages`（上游 404）。故先把结尾的 `/v1` 剥掉再拼。
+ * 两处都只改**路径段**：query / fragment 一个字符不动（`withPath` 与 `route.ts` 同一口径）。
  */
 function endpoint(route: TextRoute): string {
-  const base = route.baseUrl.replace(/\/+$/, '');
-  if (route.protocolType === 'anthropic') {
-    return `${base.replace(/\/v1$/, '')}/v1/messages`;
+  return route.protocolType === 'anthropic'
+    ? withPath(route.baseUrl, (path) => `${path.replace(/\/v1$/, '')}/v1/messages`)
+    : withPath(ensureV1Suffix(route.baseUrl), (path) => `${path}/responses`);
+}
+
+/**
+ * 把 `build(路径)` 的结果写回 URL 的路径段，query / fragment 原样保留。
+ * 为什么不能拿字符串直接拼后缀：`https://gw/openai?x=1` 会变成 `…?x=1/responses`——
+ * 后缀进了 query 值，请求打到旧路径上，而两边都不报错。
+ * 路径里的重复斜杠顺带收敛（`new URL` 只规范化空路径，`/a//b` 会原样留着）。
+ */
+function withPath(baseUrl: string, build: (path: string) => string): string {
+  const normalize = (path: string): string => build(path.replace(/\/+$/, '')).replace(/\/{2,}/g, '/');
+  try {
+    const url = new URL(baseUrl);
+    url.pathname = normalize(url.pathname) || '/';
+    return url.toString();
+  } catch {
+    // 不是绝对 URL（畸形粘贴）：退回纯字符串处理，绝不因为「归一化失败」而抛
+    return normalize(baseUrl);
   }
-  return `${base}/chat/completions`;
 }
 
 /** 从 URL 里取 host（错误文案与 context 都要它：用户要据此判断是哪个供应商的问题） */
@@ -198,56 +217,64 @@ function hostOf(url: string): string {
 /**
  * 思考强度的**唯一落点**（文本通路）：按协议翻成厂商字段。
  *
- * 依据是 DeepSeek 官方文档：OpenAI 格式的开关是
- * `thinking.type`、强度是 `reasoning_effort`（[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)）；
- * Anthropic 格式的强度是 `output_config.effort`
- * （[使用 Anthropic API](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)，`thinking.budget_tokens` 被上游忽略）。
- * **未指定 = 不下发任何强度键**（把决定权交给网关的缺省，不是关闭）；关闭档要我们自己说，
- * 走的是 `thinking: { type: 'disabled' }`（两协议同一个形状）。
+ * 两条通路的落点不同（都是厂商文档里的**顶层**参数）：
+ *   · OpenAI Responses：强度走 `reasoning.effort`，关闭档是显式 `reasoning: { effort: 'none' }`
+ *     （`thinking: { type: 'disabled' }` 是 Messages 的写法，Responses 不认）；
+ *   · Anthropic Messages：强度走 `output_config.effort`，关闭档 `thinking: { type: 'disabled' }`
+ *     （[使用 Anthropic API](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)，
+ *     `thinking.budget_tokens` 被上游忽略）。
+ * **未指定 = 不下发任何强度键**（把决定权交给网关的缺省，不是关闭）；关闭档要我们自己说。
  * ⚠️ 这与 `EvalRow.effort`（智能体侧）的口径**不等强，不要互相引用**：那边「未选」= 走该家适配器
  * 自己的缺省（dsh 会落到 `high`，见 `contracts/src/run.ts` 的 `EvalRow.effort`），是**我们这一侧**
  * 做的决定；这边是**不下发**、由网关定。同一个「未指定」在两条通路上可以不落到同一个强度。
  * ⚠️ 另一条边界（**原样下发，不做本地归一**）：普通档照发——`minimal` / `xhigh` / `ultra` 这些非规范档名照发，
- * 由网关按它自己的映射表折（文档给的是 `minimal→low`、`medium→high`、`xhigh→high`、`ultra→max`）。
- * 本地归一要么把档位信息丢掉、要么把网关的映射表抄第二份（抄第二份必然漂移）。
+ * 由网关按它自己的映射表折。本地归一要么把档位信息丢掉、要么把网关的映射表抄第二份（抄第二份必然漂移）。
  *
  * ⚠️ 换到非 DeepSeek 网关时这两个字段名未经实测（边界只覆盖本机探针）——
  * 其它网关可能忽略它们、也可能直接 400；这一条如实登记为未验证。
  */
 function reasoningFields(protocolType: ProtocolType, effort: string | undefined): Record<string, unknown> {
   if (effort === undefined) return {};
-  if (effort === EFFORT_OFF) return { thinking: { type: 'disabled' } };
-  return protocolType === 'anthropic' ? { output_config: { effort } } : { reasoning_effort: effort };
+  if (protocolType === 'anthropic') {
+    return effort === EFFORT_OFF ? { thinking: { type: 'disabled' } } : { output_config: { effort } };
+  }
+  return { reasoning: { effort: effort === EFFORT_OFF ? 'none' : effort } };
 }
 
 /**
  * 把一条消息的 content 翻成 wire 形状（**附件块的唯一翻译点**）：
- * 字符串原样透传（向后兼容形态）；块数组里两种块**两协议同形**——
- *   · text 块 → `{type:'text', text}`；
- *   · attachment 块 → `{type:'text', text: '## <filename>\n\n<原文>'}`：标题行用文件名，
+ * 字符串原样透传（向后兼容形态）；块数组里两种块同形，只有块的 type 名随协议变：
+ *   · Responses 的输入内容块叫 `input_text`，Messages 叫 `text`；
+ *   · text 块 → `{type:'<part>', text}`；
+ *   · attachment 块 → `{type:'<part>', text: '## <filename>\n\n<原文>'}`：标题行用文件名，
  *     让模型与网关日志都能定位这一块是哪个文件。
- * 为什么两协议统一翻成 text 块、而不是各家自己的协议附件（anthropic `document` /
- * openai `file` part）：DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成
- * `[Unsupported Document]` 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在
- * 两协议三端点真机可用（哨兵词复述判据）。附件块不做 cache_control：那是缓存成本优化，
- * 不是正确性问题。
+ * 为什么两协议都翻成纯文本块、而不是各家自己的协议附件（anthropic `document` /
+ * openai `input_file`）：DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成
+ * `[Unsupported Document]` 占位、对文件块回 400，网关还会静默丢弃；独立文本块在两协议三端点
+ * 真机可用（哨兵词复述判据）。附件块不做 cache_control：那是缓存成本优化，不是正确性问题。
  */
-function wireContent(content: string | readonly TextContentBlock[]): unknown {
+function wireContent(content: string | readonly TextContentBlock[], partType: 'text' | 'input_text'): unknown {
   if (typeof content === 'string') return content;
-  return content.map((block) => {
-    if (block.type === 'text') return { type: 'text', text: block.text };
-    return { type: 'text', text: `## ${block.filename}\n\n${block.text}` };
-  });
+  return content.map((block) => ({
+    type: partType,
+    text: block.type === 'text' ? block.text : `## ${block.filename}\n\n${block.text}`,
+  }));
 }
 
 /**
  * 请求体构造（**唯一一处**，单轮与多轮共用）。
- * 两个协议的形状差异只有两处：system 是顶层字段还是消息数组的第一条、
- * 以及 OpenAI 侧要显式 `stream: false`。这两处写两份必然在某一处漂移，而漂移的表现是
- * 「单轮能跑、多轮 400」（或者反过来的 401）——只在多轮那条路径上出现，最难查。
- * content 的块翻译（`wireContent`）两协议同形，故不在差异清单里。
+ * 两个协议的形状差异有三处：system 挂在哪、消息数组键名叫什么、以及块类型名。
+ *   · Messages：system 是**顶层字段**、消息键叫 `messages`、块类型 `text`；
+ *   · Responses：system 是 `input[]` 的第一条消息、消息键叫 `input`、块类型 `input_text`。
+ * Responses 侧**刻意不用顶层 `instructions`**：本仓要打的是自建 Responses 网关，而最小实现可能
+ * 只转发 `input`、把 `instructions` 静默丢掉——那会让系统提示词（评分口径 / 「只输出 JSON」）
+ * 整段消失且没有任何报错。走 `input` 里的 system 消息是所有 Responses 实现都认得的那一种。
+ * 这三处写两份必然在某一处漂移，而漂移的表现是「单轮能跑、多轮 400」（或者反过来的 401）——
+ * 只在多轮那条路径上出现，最难查。
  * 思考强度（`reasoningFields`）两个分支都要展开：它在两种协议里都是**顶层**字段，
  * 漏掉任一分支就是「某个协议的评分悄悄按厂商默认强度跑」；未指定时它展开成 `{}`（一个键都不加）。
+ * Responses 侧**不设 `max_output_tokens`**：与本案改动前的 OpenAI 通路一样不下发上限
+ * （`MAX_TOKENS` 只给 Messages——那个协议必填这一格）。
  */
 function buildBody(route: TextRoute, input: TextConversationInput): unknown {
   return route.protocolType === 'anthropic'
@@ -258,15 +285,18 @@ function buildBody(route: TextRoute, input: TextConversationInput): unknown {
       ...reasoningFields('anthropic', input.effort),
       // Anthropic 的 system 是**顶层字段**，放进 messages 会被当成普通用户消息
       ...(input.system === undefined ? {} : { system: input.system }),
-      messages: input.messages.map((message) => ({ role: message.role, content: wireContent(message.content) })),
+      messages: input.messages.map((message) => ({ role: message.role, content: wireContent(message.content, 'text') })),
     }
     : {
       model: route.modelId,
       stream: false,
       ...reasoningFields('openai', input.effort),
-      messages: [
+      input: [
         ...(input.system === undefined ? [] : [{ role: 'system', content: input.system }]),
-        ...input.messages.map((message) => ({ role: message.role, content: wireContent(message.content) })),
+        ...input.messages.map((message) => ({
+          role: message.role,
+          content: wireContent(message.content, 'input_text'),
+        })),
       ],
     };
 }
@@ -416,7 +446,7 @@ export async function callTextApiConversation(
   input: TextConversationInput,
 ): Promise<TextCallResult> {
   if (input.messages.length === 0) {
-    // 空对话会让两种协议都返回 400（上游不认空 messages），在本地拦下并给出可读原因
+    // 空对话会让两种协议都返回 400（上游不认空输入），在本地拦下并给出可读原因
     throw new ServiceError('INTERNAL', `调用文本 API 失败（${hostOf(endpoint(route))}，模型 ${route.modelId}）：对话里一条消息都没有`);
   }
   return callWithRetry(route, input);
@@ -491,22 +521,20 @@ function readNumber(source: Record<string, unknown> | null, key: string): number
 }
 
 /**
- * OpenAI 兼容响应里的用量 → 本仓三元组。**必须做减法**：OpenAI 的 `prompt_tokens` 是
- * prompt 总量（命中 + 未命中），而本仓的 `input` 是**未命中那一部分**（见 `UsageTokensSchema`）。
- * 缓存字段名两套都要认（只认一个，另一家就永远报 0 缓存）：
- *   · `prompt_tokens_details.cached_tokens`（OpenAI 官方格式）；
- *   · `prompt_cache_hit_tokens`（DeepSeek 自家原文，本机实测走的就是它）。
- * 命中数大于 prompt 总量 ⇒ 上游自相矛盾，减出来是负数 ⇒ **整格交 null**（与「没采到」同一处置）：
+ * OpenAI **Responses** 响应里的用量 → 本仓三元组。**必须做减法**：Responses 的 `input_tokens` 是
+ * 输入总量（命中 + 未命中），而本仓的 `input` 是**未命中那一部分**（见 `UsageTokensSchema`）；
+ * 命中数单列在 `input_tokens_details.cached_tokens` 里。
+ * 命中数大于输入总量 ⇒ 上游自相矛盾，减出来是负数 ⇒ **整格交 null**（与「没采到」同一处置）：
  * 界面上出现 `输入 -30 tok` 比不显示更坏，而三种取值的正确性都无从保证。
  */
 function usageFromOpenAI(usage: Record<string, unknown> | null, host: string, modelId: string): TextUsage | null {
   if (usage === null) return null;
-  const total = readNumber(usage, 'prompt_tokens');
-  const output = readNumber(usage, 'completion_tokens');
+  const total = readNumber(usage, 'input_tokens');
+  const output = readNumber(usage, 'output_tokens');
   if (total === null || output === null) return null;
-  const cached = readNumber(asRecord(usage['prompt_tokens_details']), 'cached_tokens') ?? readNumber(usage, 'prompt_cache_hit_tokens') ?? 0;
+  const cached = readNumber(asRecord(usage['input_tokens_details']), 'cached_tokens') ?? 0;
   if (cached > total) {
-    log.warn('上游用量自相矛盾，按未采集处置', { host, modelId, promptTokens: total, cachedTokens: cached });
+    log.warn('上游用量自相矛盾，按未采集处置', { host, modelId, inputTokens: total, cachedTokens: cached });
     return null;
   }
   return { input: total - cached, cached, output };
@@ -525,7 +553,12 @@ function usageFromAnthropic(usage: Record<string, unknown> | null): TextUsage | 
   return { input, cached: readNumber(usage, 'cache_read_input_tokens') ?? 0, output };
 }
 
-/** 解析 OpenAI 兼容响应：`choices[0].message.content` + `usage` */
+/**
+ * 解析 OpenAI **Responses** 响应：拼接 `output[]` 里 `type: 'message'` 项的所有 `output_text` 块。
+ * 为什么按 `type` 过滤而不是取 `output[0]`：推理模型的 `output` 头部可能是 `reasoning` 项
+ * （只有摘要/密文、没有正文），按位置取会把推理摘要当成答复；只认 `message` + `output_text`
+ * 与 Responses 的语义一致。正文全空同样按失败处置——空串会被当成一次成功的评分。
+ */
 function parseOpenAI(raw: string, host: string, modelId: string): TextCallResult {
   let parsed: unknown;
   try {
@@ -536,13 +569,24 @@ function parseOpenAI(raw: string, host: string, modelId: string): TextCallResult
       context: { host, modelId, body: raw.slice(0, 300) },
     });
   }
-  const content = (parsed as { choices?: { message?: { content?: unknown } }[] }).choices?.[0]?.message?.content;
-  if (typeof content !== 'string') {
-    throw new ServiceError('INTERNAL', `文本 API 未返回文本内容（${host}，模型 ${modelId}）：响应里没有 choices[0].message.content`, {
+  const output = (parsed as { output?: unknown }).output;
+  const text = (Array.isArray(output) ? output : [])
+    .filter((item) => asRecord(item)?.['type'] === 'message')
+    .flatMap((item) => {
+      const content = asRecord(item)?.['content'];
+      return Array.isArray(content) ? content : [];
+    })
+    .flatMap((part) => {
+      const record = asRecord(part);
+      return record?.['type'] === 'output_text' && typeof record['text'] === 'string' ? [record['text']] : [];
+    })
+    .join('');
+  if (text === '') {
+    throw new ServiceError('INTERNAL', `文本 API 未返回文本内容（${host}，模型 ${modelId}）：响应里没有 output[].content[].output_text`, {
       context: { host, modelId, body: raw.slice(0, 300) },
     });
   }
-  return { text: content, usage: usageFromOpenAI(asRecord((parsed as { usage?: unknown }).usage), host, modelId) };
+  return { text, usage: usageFromOpenAI(asRecord((parsed as { usage?: unknown }).usage), host, modelId) };
 }
 
 /** 解析 Anthropic 响应：拼接 `content[]` 里所有 `type: 'text'` 块 + `usage` */

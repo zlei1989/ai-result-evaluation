@@ -107,15 +107,23 @@ const QUESTION: AskUserQuestion = {
 /** 一份与 `QUESTION` 对上的答案 */
 const ANSWER: AskUserAnswer = { header: '选路径', selected: ['原地改'], custom: null };
 
-/** 往假表里登记一条提问（路由层只读 askId 与快照那几格） */
-function register(askId = 'ask-1', rowId: string | null = 'row-1'): void {
+/** 往假表里登记一条提问（路由层只读 askId 与快照那几格；`runId` 是快照过滤的判据） */
+function register(askId = 'ask-1', rowId: string | null = 'row-1', runId = 'run-1'): void {
   evaluator.registerAskUser({
     askId,
-    runId: 'run-1',
+    runId,
     rowId,
     stage: 'agent',
     request: { questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call-1', vendorBudgetMs: null, subagentId: null },
   });
+}
+
+/**
+ * 快照请求：与 Next 交给路由的入参同形（`query` 就是 `?runId=` 那一格）。
+ * 走真的 `URL` 解析而不是把 runId 直接塞给 api：路由层要断的正是「查询串怎么变成过滤条件」。
+ */
+function snapshotRequest(query = ''): Request {
+  return new Request(`http://localhost/api/ask-user${query}`);
 }
 
 /** 用真实的 Request 全局构造请求，和 Next 交给路由的入参同形 */
@@ -143,7 +151,7 @@ describe('GET /api/ask-user（待答快照）', () => {
     register('ask-1');
     register('ask-2', null);
 
-    const response = await getSnapshot();
+    const response = await getSnapshot(snapshotRequest());
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as Array<Record<string, unknown>>;
@@ -158,14 +166,25 @@ describe('GET /api/ask-user（待答快照）', () => {
     register('ask-1');
     await postAnswer(jsonRequest({ askId: 'ask-1', answers: [ANSWER] }));
 
-    expect(await (await getSnapshot()).json()).toEqual([]);
+    expect(await (await getSnapshot(snapshotRequest())).json()).toEqual([]);
   });
 
   it('没人提问时给空数组（不是 204、也不是 null）', async () => {
-    const response = await getSnapshot();
+    const response = await getSnapshot(snapshotRequest());
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual([]);
+  });
+
+  it('`?runId=` 只返回该轮的条目；不带参数时返回全部（一条用例钉住两个方向）', async () => {
+    register('ask-1', 'row-1', 'run-1');
+    register('ask-2', null, 'run-2');
+
+    const filtered = await getSnapshot(snapshotRequest('?runId=run-2'));
+    expect(((await filtered.json()) as Array<{ askId: string }>).map((entry) => entry.askId)).toEqual(['ask-2']);
+
+    const all = await getSnapshot(snapshotRequest());
+    expect(((await all.json()) as Array<{ askId: string }>).map((entry) => entry.askId)).toEqual(['ask-1', 'ask-2']);
   });
 });
 
@@ -232,7 +251,7 @@ describe('POST /api/ask-user/answers（应答）', () => {
     }
 
     // 一份都没被受理（走的是 zod 那一关，连 api 层都没进）：那一问还在待答清单里
-    expect((await (await getSnapshot()).json()) as unknown[]).toHaveLength(1);
+    expect((await (await getSnapshot(snapshotRequest())).json()) as unknown[]).toHaveLength(1);
   });
 
   it('不是合法 JSON：400，且文案说的是请求体而不是查询参数', async () => {

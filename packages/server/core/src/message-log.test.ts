@@ -1,14 +1,15 @@
 // @vitest-environment node
 /**
- * 记录日志（`messages.jsonl`）：追加（一行一条记录）、全量读、按 `mergeKey` / `subagentId`
+ * 记录日志（`messages.jsonl`）：追加（一行一条记录）、全量读、按 `(segment, mergeKey)` / `subagentId`
  * 覆盖累积、清空，以及坏行的容忍。
  *
  * 六条关键守卫：
- *   ① **一条记录一行**、逐字读回（`messageId` / `mergeKey` / `blocks` 都不能被改写）——
+ *   ① **一条记录一行**、逐字读回（`messageId` / `mergeKey` / `segment` / `blocks` 都不能被改写）——
  *      覆盖累积全靠这两把键，写入时丢一格就等于把合并算法废掉；
  *   ② **两种记录共用一个文件**（`message` / `subagent`），读取时按 `type` 分流；
- *   ③ **`foldMessages` 是覆盖而非追加**：同一 `mergeKey` 的多条只留最后一条（它的 `blocks` 已是全量），
- *      且顺序按**首次出现**（打字过程中的覆盖不该让这条消息跳到列表末尾）；
+ *   ③ **`foldMessages` 是覆盖而非追加**：同一 `(segment, mergeKey)` 的多条只留最后一条（它的
+ *      `blocks` 已是全量），且顺序按**首次出现**（打字过程中的覆盖不该让这条消息跳到列表末尾）；
+ *      段号不同 ⇒ 两条不同的逻辑消息，**都留**（追问段与首段的轮次会同号）；
  *   ④ 坏行（写一半被杀、手工编辑、空行）只跳过该行并 WARN，其余记录必须全部读出来；
  *   ⑤ **写**进去的记录必须符合契约：读侧容忍（④）是为了「一行坏不牵连别人」，写侧容忍的后果是
  *      唯一真相源静默少记录（写成功、读时被 schema 丢掉）；
@@ -51,6 +52,7 @@ function message(overrides: Partial<AgentMessage> = {}): AgentMessage {
     vendorId: 'msg_1',
     role: 'assistant',
     source: 'wire',
+    origin: 'case-prompt',
     roundTrip: 1,
     turn: null,
     step: null,
@@ -175,7 +177,7 @@ describe('readRowRecords / readRecords', () => {
   });
 });
 
-describe('foldMessages：按 `mergeKey` 覆盖累积', () => {
+describe('foldMessages：按 `(segment, mergeKey)` 覆盖累积', () => {
   it('同一 `mergeKey` 的多条只留最后一条（它的 blocks 已是全量），顺序按首次出现', () => {
     const folded = foldMessages([
       message({ messageId: 'run-1:1', chunk: 'delta', assembly: 'open', blocks: [{ type: 'text', text: '我先看' }] }),
@@ -194,6 +196,38 @@ describe('foldMessages：按 `mergeKey` 覆盖累积', () => {
       '我先看一下配置文件，然后动手。',
       '第二步',
     ]);
+  });
+
+  /**
+   * 追问是**又开一次 `run()`**：厂商轮次从 1 重新数 ⇒ 两段的 `mergeKey` 逐字相同
+   * （`main|1|assistant|-`）。只按 `mergeKey` 折叠会让追问段第 1 轮的 assistant 把首段第 1 轮的
+   * 思考与工具调用**整条吃掉**（真机症状：追问之后首段那一轮的「工具调用 × 0」）。
+   */
+  it('两段的 `mergeKey` 逐字相同时**两条都在**（段号不同 ⇒ 不是同一条逻辑消息）', () => {
+    const first = message({
+      messageId: 'run-codex:15',
+      segment: 0,
+      blocks: [{ type: 'text', text: '首段的第 1 轮' }],
+    });
+    const second = message({
+      messageId: 'run-codex:108',
+      segment: 1,
+      blocks: [{ type: 'text', text: '追问那一段的第 1 轮' }],
+    });
+    expect(first.mergeKey).toBe(second.mergeKey);
+
+    const folded = foldMessages([first, second]);
+    expect(folded.map((entry) => entry.messageId)).toEqual(['run-codex:15', 'run-codex:108']);
+    expect(folded.map((entry) => entry.segment)).toEqual([0, 1]);
+  });
+
+  it('旧账本没有 `segment` 这一格 ⇒ 折叠键按 0 算，与写明 0 的那条同一条逻辑消息', () => {
+    const older = { ...message({ messageId: 'run-1:1' }) } as Record<string, unknown>;
+    delete older['segment'];
+    const parsed = RowRecordSchema.parse({ type: 'message', message: older });
+    const withZero = message({ messageId: 'run-1:2', segment: 0, blocks: [{ type: 'text', text: '后来的快照' }] });
+    if (parsed.type !== 'message') throw new Error('夹具坏了：这不是一条消息记录');
+    expect(foldMessages([parsed.message, withZero]).map((entry) => entry.messageId)).toEqual(['run-1:2']);
   });
 
   it('折叠出来的每一条都仍是合法消息（消费方拿到的就是契约形状）', () => {

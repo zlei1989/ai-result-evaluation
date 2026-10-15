@@ -26,6 +26,7 @@ import type { AskUserRequest } from '@aieval/agents';
 import { readEvents, rowEventsFile } from '@aieval/core';
 import { listPendingAskUser, listPendingAskUserEntries, resetAskUserForTesting, resolveAskUser } from './ask-user';
 import {
+  adapterMessagesOf,
   drainRunningTasks,
   fakeAgents,
   getRun,
@@ -203,8 +204,9 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
     expect(call?.askUserCalls).toBe(0);
     expect(call?.askUserReplies).toEqual([]);
 
-    // 产物与今天逐字相同：账本里只有适配器自己投的那一条消息，事件里没有一条提问事件
-    const { messages } = rowRecordsOf(run.id, rowId);
+    // 产物与今天逐字相同：适配器自己只投了那一条消息（题面那条记账消息不算它的产出），
+    // 事件里没有一条提问事件
+    const messages = adapterMessagesOf(run.id, rowId);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.blocks).toEqual([{ type: 'text', text: '先问一句再动手。' }]);
     expect(askEventsOf(run.id, rowId)).toEqual([]);

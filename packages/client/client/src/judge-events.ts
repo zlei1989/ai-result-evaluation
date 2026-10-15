@@ -1,16 +1,22 @@
 /**
- * 一行**评分阶段**的事件流：`/judge/events` 补历史 +（评分进行中）`/judge/events/stream` 按 seq 续订。
+ * 一行**评分阶段**的事件流：`/judge/events` 补历史 +（评分进行中）抽屉流的 judge channel 按 seq 续订。
  *
- * 与候选那条（`row-stream.ts`）消费的是同一份 SSE 帧协议——`parseFrame`、具名事件订阅、
- * `error` 按帧形状分流三件全部复用它那份实现——差异全部来自「这条流没有终态」：
+ * 帧从抽屉 hub（`drawer-stream-hub.ts`）来：judge 那个 channel 的完整流水里也带着评分侧的
+ * 消息与子任务行，本 hook 只挑行级事件那一族（`isAgentEventFrame`）。具名事件订阅、
+ * `error` 按帧形状分流、无名帧兜底、引用计数归零关连接四件通用知识都在 `sse-keyed-hub.ts`。
+ *
+ * 与候选那条（`row-stream.ts`）消费的是同一份 SSE 帧协议——差异全部来自「这条流没有终态」：
  *
  * 1. **服务端不会自己关流**：`judge-events.jsonl` 只收评审者自己的事件（`log` / `usage` /
  *    `vendor-system` / `error`），终态落行级那条流 ⇒ SSE 挂着靠心跳吊命，直到客户端关。
  *    故连接生命周期完全等于本 hook 的 effect 生命周期，且**只在 `live`（行状态 judging）时
  *    才接**——已拿分的行历史拉完即止，不给浏览器留一条只发心跳的空连接（空闲零连接口径）；
- * 2. **不做「新一代」检测**：候选那条要它，是因为抽屉开着时重跑同一行不会换 effect 依赖。
- *    评分这条不会——清空 `judge-events.jsonl` 的两个入口（重跑 / 重评）都会**同步**把行落成
- *    running / judging 并清掉 `score`，于是 `enabled` / `live` 必有一个翻转、effect 必然重挂重拉。
+ * 2. **不做「新一代」检测**：序号侧的换代判据（`row-stream.ts` 的 `restarts`）在这条流上没有落点。
+ *    清空 `judge-events.jsonl` 的两个入口（重跑 / 重评）都会**同步**把行落成 running / judging 并
+ *    清掉 `score`，于是 `live` 必然翻转、effect 必然重挂重拉——候选那条达到同一效果靠的是调用方
+ *    传进来的「这一次尝试」标识（见 `useRowStream` 的口径 5）。
+ *    ⚠️ 两条流的换代都**不能**只靠「看到 seq 回到 1」：SSE 续订的游标停在上一代，
+ *    新一代的头几条根本发不出服务端那道去重闸门，那个信号不可达。
  *    按 seq 去重仍保留：历史与 SSE 在边界上的重复投递是常态（浏览器重连带 `Last-Event-ID`、
  *    服务端回放边界帧），不去重日志里就有两遍同一行；
  * 3. **judging → 终态的翻转重拉一次全量**：`live` 进依赖，翻 false 时 effect 重挂、历史重新读盘
@@ -20,10 +26,10 @@
  *    （`status === 'error'` + `error`）；`retry` 是重拉历史的显式入口（把 effect 重挂一次）。
  */
 import { useEffect, useRef, useState } from 'react';
-import { AGENT_EVENT_TYPES, type AgentEvent } from '@aieval/contracts';
+import type { AgentEvent } from '@aieval/contracts';
+import { eventOf, isAgentEventFrame, subscribeDrawerStream } from './drawer-stream-hub';
 import { getJson } from './http';
 import { runRowUrl } from './runs';
-import { parseFrame } from './row-stream';
 
 export interface UseRowJudgeEventsInput {
   runId: string;
@@ -64,9 +70,8 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
     if (!enabled || runId === '' || rowId === '') return;
 
     let cancelled = false;
-    let source: EventSource | null = null;
-    /** 本次连接挂上去的具名监听器：`stop()` 要按同一对 (类型, 函数) 摘掉它们 */
-    const namedListeners: Array<{ type: string; listener: (event: MessageEvent) => void }> = [];
+    /** 本次订阅的退订函数（hub 里引用计数归零即关连接）；没订阅上时为 null */
+    let unsubscribe: (() => void) | null = null;
     // 换行 / 翻转 live / 重试都从这里重开：上一段的去重记录与已交付事件一并丢掉
     seenRef.current = new Set();
     lastSeqRef.current = 0;
@@ -90,14 +95,10 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
       setEvents((prev) => [...prev, ...fresh].sort((a, b) => a.seq - b.seq));
     };
 
+    /** 停掉本 hook 的订阅：judge 那个 channel 上只有它一个 sink，退订即关连接（空闲零连接口径） */
     const stop = (): void => {
-      if (source === null) return;
-      // 先摘监听器再关连接：顺序反过来也不出错，但「连接已关、监听器还挂着」在
-      // 真实浏览器里会保留整条闭包链（含 merge），是纯泄漏
-      for (const { type, listener } of namedListeners) source.removeEventListener(type, listener);
-      namedListeners.length = 0;
-      source.close();
-      source = null;
+      unsubscribe?.();
+      unsubscribe = null;
     };
 
     const connect = (afterSeq: number): void => {
@@ -106,40 +107,25 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
         setLiveError('当前环境不支持 EventSource：只能查看已落盘的输出，无法实时追加');
         return;
       }
-      const next = new EventSource(`${runRowUrl(runId, rowId, 'judge/events/stream')}?afterSeq=${afterSeq}`);
-      source = next;
-
-      /** 一帧的处理：具名 / 无名两种订阅路径共用（协议同 row-stream.ts，口径见它文件头） */
-      const handleFrame = (event: MessageEvent): void => {
-        if (cancelled) return;
-        const parsed = parseFrame(String(event.data));
-        if (parsed === null) {
-          setLiveError('收到无法解析的事件帧，已跳过');
-          return;
-        }
-        merge([parsed]);
-      };
-
-      // `error` 有两个来源（服务端具名帧 vs 连接故障），按帧形状分流——判据与理由同 row-stream.ts
-      next.onerror = (event: Event) => {
-        const data = (event as MessageEvent).data;
-        if (typeof data === 'string') {
-          handleFrame(event as MessageEvent);
-          return;
-        }
-        // 浏览器会自动重连（带 Last-Event-ID），这里如实反映状态即可
-        setLiveError('实时连接中断：浏览器会自动重连，已收到的输出不受影响');
-      };
-      next.onopen = () => setLiveError(null);
-
-      // 具名事件按事件名订阅（`onmessage` 只收无名帧）：清单取 contracts，`error` 走 onerror
-      for (const type of AGENT_EVENT_TYPES) {
-        if (type === 'error') continue;
-        namedListeners.push({ type, listener: handleFrame });
-        next.addEventListener(type, handleFrame);
-      }
-      // 无名帧的兜底：服务端哪天不发 `event:` 行了也照样能收
-      next.onmessage = handleFrame;
+      unsubscribe = subscribeDrawerStream(
+        runId,
+        rowId,
+        'judge',
+        {
+          // 同一个 channel 的完整流水里也带着评分侧的消息与子任务行，本 hook 只认行级事件那一族
+          onFrame: (frame) => {
+            if (cancelled) return;
+            if (!isAgentEventFrame(frame)) return;
+            merge([eventOf(frame)]);
+          },
+          onOpen: () => setLiveError(null),
+          // 连接故障（浏览器会自动重连，带 Last-Event-ID）：如实反映状态即可
+          onError: (message) => setLiveError(message),
+          // 坏帧只跳过它自己，绝不打断整条流（判据在 hub 的 `parse` 里）
+          onInvalidFrame: () => setLiveError('收到无法解析的事件帧，已跳过'),
+        },
+        afterSeq,
+      );
     };
 
     void (async () => {

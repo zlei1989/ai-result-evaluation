@@ -25,6 +25,7 @@ function base(id: string, at = '2026-10-02T10:44:31.000Z') {
     assembly: 'snapshot' as const,
     // 逻辑消息身份与消息级用量：这一族用例不关心它们（页脚那一组显式给）
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
   };
 }
@@ -40,6 +41,15 @@ function call(id: string, callId: string | null, name: string, family: ToolItem[
     input: { value: '{"a":1}', text: '{"a":1}', bytes: 7, description: null },
     tool: null,
   };
+}
+
+/**
+ * 带「参数解析失败原文」的工具块（契约 `tool-call.inputError`）：界面上必须能把它带出去，
+ * 否则坏参数与「模型真传了空对象」在摘要行/详情里逐字同形。
+ */
+function callWithInputError(id: string, callId: string, error: string): ContentBlock {
+  const block = call(id, callId, 'read') as Extract<ContentBlock, { kind: 'tool-call' }>;
+  return { ...block, input: { value: null, text: null, bytes: null, description: null }, inputError: error };
 }
 
 function result(id: string, callId: string | null, status: 'ok' | 'error' | 'unknown' = 'ok'): ContentBlock {
@@ -372,5 +382,31 @@ describe('buildRenderBlocks：只转发、不推断', () => {
     // 有调用、没有结果、且轮次已结束 ⇒ **不是** 进行中（要显示「结果未采集」）
     expect(group.entries[0].running).toBe(false);
     expect(group.entries[0].output).toBeNull();
+  });
+});
+
+
+/**
+ * `inputError` 的透传（界面侧的唯一来源）：块上有它 ⇒ `ToolItem` 带出来；老账本没有这一格 ⇒ `null`。
+ *
+ * 变异体：把 `render-blocks.ts` 里 `inputError: block.inputError ?? null` 那一行删掉 ⇒ 第一条红。
+ */
+describe('工具块的 `inputError` 透传', () => {
+  it('块带 inputError ⇒ ToolItem 逐字带出；不带 ⇒ null（不是空串）', () => {
+    const withError = buildRenderBlocks(
+      [callWithInputError('c1', 'toolu_bad', 'Unexpected token: not valid JSON')],
+      nodeIndex([]),
+      TURN,
+    );
+    const item = withError
+      .flatMap((group) => (group.kind === 'tool-group' ? group.entries : []))
+      .find((one): one is ToolItem => one.kind === 'call');
+    expect(item?.inputError).toBe('Unexpected token: not valid JSON');
+
+    const without = buildRenderBlocks([call('c2', 'toolu_ok', 'read')], nodeIndex([]), TURN);
+    const plain = without
+      .flatMap((group) => (group.kind === 'tool-group' ? group.entries : []))
+      .find((one): one is ToolItem => one.kind === 'call');
+    expect(plain?.inputError, '老账本/正常参数 ⇒ null，界面据此不显示任何提示').toBeNull();
   });
 });

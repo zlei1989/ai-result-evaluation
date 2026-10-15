@@ -183,7 +183,22 @@ describe('子任务：派发与收场三家逐字同形（且不留占位名）'
 
   it('同一个任务名 ⇒ 同一句话（有名字 / 没名字两档都对得上）', () => {
     const name = 'Review Vue 3 page';
-    const claudeNamed = summaryOf(claudeDrafts({ type: 'system', subtype: 'task_started', uuid: 's1', task_id: 't-1', description: name }));
+    /**
+     * ⚠️ **夹具必须带派遣形状的格**（`task_type: 'local_agent'` + `subagent_type`）：claude 侧有一条
+     * 形状判据——CLI 给**非 Agent 的后台任务**也发 `task_started`（真机：后台 Bash 三格全缺、
+     * `task_type: 'local_bash'`），那一条**不许**播成「已派发子任务」。只写 `task_id` + `description`
+     * 的帧会被判成幻影、整条投影零摘要 ⇒ 这条用例会红，而红的原因在夹具、不在被测的那句话。
+     */
+    const claudeDispatch = (uuid: string): Record<string, unknown> => ({
+      type: 'system',
+      subtype: 'task_started',
+      uuid,
+      task_id: 't-1',
+      description: name,
+      task_type: 'local_agent',
+      subagent_type: 'general-purpose',
+    });
+    const claudeNamed = summaryOf(claudeDrafts(claudeDispatch('s1')));
     // dsh：`subagent.started` **不带名字**（名字随后由 catalog 补）⇒ 无名那一档正是它最常见的形态
     const dshAnonymous = summaryOf(dshDrafts({ method: 'subagent.started', params: { parentSessionId: 'session-1', childSessionId: 'child-1' } }));
     const codexRunState = createCodexRunState();
@@ -242,7 +257,7 @@ describe('子任务：派发与收场三家逐字同形（且不留占位名）'
     expect(dshSettled).toBe(`子任务已完成：${name}`);
 
     // claude 的同一档：**两条帧**（派发带名字 → 收场帧按真机形状**不带** `description`，名字靠回填）
-    claudeDrafts({ type: 'system', subtype: 'task_started', uuid: 's2', task_id: 't-1', description: name });
+    claudeDrafts(claudeDispatch('s2'));
     const claudeSettled = summaryOf(
       claudeDrafts({ type: 'system', subtype: 'task_notification', uuid: 's3', task_id: 't-1', status: 'completed', summary: 'done' }),
     );
@@ -332,10 +347,16 @@ describe('该沉默的场合：三家一致（推理 / 轮次播报不占活动�
     expect(logDrafts(codexDrafts(codexItem({ kind: 'reasoning', id: 'r2', summary: [], content: ['先看看工作区'] }, true)))).toEqual([]);
   });
 
-  it('轮次播报不占活动行：dsh 的 `turn/start` 只落证据，codex 的 `turn/started` 连证据都不落', () => {
+  /**
+   * 轮次播报不占活动行——三家一致，而**证据形态各家自定**：
+   * dsh 的 `turn/start` 与 codex 的 `turnStarted` 都不给摘要，dsh 侧零草稿
+   * （轮次的落点是卡片上那一格 `usage.turns`，真机每轮投一条 `turn/start`，
+   * 落成原始 JSON 只会把「原始输出」面板刷成流水），codex 侧同样零草稿。
+   */
+  it('轮次播报不占活动行：dsh 的 `turn/start` 与 codex 的 `turnStarted` 都是零草稿', () => {
     const dsh = dshDrafts(dshSessionEvent('turn/start', { turn: 2 }));
     expect(summaryOf(dsh)).toBeNull();
-    expect(logDrafts(dsh).length).toBeGreaterThan(0);
+    expect(logDrafts(dsh)).toEqual([]);
 
     const codex = codexDrafts({ kind: 'turnStarted', threadId: 'thread-main', turnId: 'turn-1' });
     expect(summaryOf(codex)).toBeNull();

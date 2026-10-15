@@ -8,9 +8,10 @@
  *
  * 三条边界，都是**刻意**的：
  *   1. **按组件名逐个查开标签**，不是「整份文件里有 `size="small"` 就算过」——后者只被一个按钮满足， * 剩下九处全漏（这类断言没有区分力）；
- *   2. **查的是「开标签里的 `size`」**，所以抽屉几何那两处（`size="max(50vw, 800px)"` /
- *      `size={NESTED_DRAWER_SIZE}`）不是靶子：它们给的是**宽度**，不在 `SIZED_COMPONENTS` 里，
- *      且 `Drawer` 的 `size` 类型是 `'default' | 'large' | number | string`——收不到 `'small'`；
+ *   2. **查的是「开标签里的 `size`」**，所以抽屉几何那两处（主抽屉 `size={WIDE_DRAWER_SIZE}`，
+ *      值 `max(61vw, 800px)`；二级抽屉 `size={NESTED_DRAWER_SIZE}`）不是靶子：它们给的是**宽度**，
+ *      不在 `SIZED_COMPONENTS` 里，且 `Drawer` 的 `size` 类型是 `'default' | 'large' | number | string`
+ *      ——收不到 `'small'`；
  *   3. **`Tag` / `Listy` 不在扫描面上**：antd 6.6.5 实测 `TagProps` 与 `ListyProps` 都没有 `size`，
  *      写上去只会多一个读的人以为生效的属性。**最后两条用例**把这条依据钉住，
  *      antd 升版后不至于靠记忆（升版真加了 `size` 时这两条会红，那就是该回来扩扫描面的信号）。

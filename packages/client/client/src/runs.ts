@@ -4,7 +4,7 @@
  * 1. **加键在这里，不在页面里**：`/api/runs` 与 `/api/runs/{id}` 被本文件的取数 hook 与
  * `row-stream.ts` 共用（终态后要 mutate 的就是这两个键），字面量散落必然漂移；
  * 2. **实时性由 run 信号驱动，轮询只剩慢兜底**：
- * `useRunEvents`（`run-events.ts`）订阅 `/api/runs/events`，服务端每落盘一次快照
+ * `useRunEvents`（`run-events.ts`）订阅全局流 `/api/runs/stream`，服务端每落盘一次快照
  * 就推一条 `run-updated`，客户端收到即重验列表与详情——状态翻转是毫秒级的
  * 「变了才读」，而不再是每 3 秒问一次。慢兜底只在「还有活在跑」时
  * 开着，给「信号通道万一断了」兜底；`refreshInterval` 传**数字**而不是函数的
@@ -27,10 +27,13 @@ import {
   type MessageCapability,
   type ProtocolType,
   type ProviderModel,
+  type RowArtifactFile,
   type RowDiffFile,
   type RowDiffIndex,
+  type RunArtifactIndex,
   type RunCreate,
   type RunUpdate,
+  type TurnInjectionCapability,
   type AgentEvent,
 } from '@aieval/contracts';
 import { useRunEvents } from './run-events';
@@ -49,10 +52,19 @@ export { RUNS_KEY, runKey };
 export function runRowUrl(
   runId: string,
   rowId: string,
-  artifact: 'diff' | 'log' | 'stream' | 'messages' | 'messages/stream' | 'judge/events' | 'judge/events/stream',
+  artifact: 'diff' | 'artifacts' | 'log' | 'stream' | 'messages' | 'messages/stream' | 'judge/events' | 'judge/events/stream',
   query = '',
 ): string {
   return `${runKey(runId)}/rows/${rowId}/${artifact}${query}`;
+}
+
+/**
+ * 一轮的**候选产物清单**端点（`/api/runs/{id}/artifacts`）：轮级而不是行级——
+ * 它一次给的是「这一轮每个候选各自有哪些 `RESULT.*`」，界面拿它决定「产物总览」按钮出不出现。
+ * 单独一个构造函数而不复用 `runRowUrl`：那一个的前缀是 `/rows/<rowId>`，这一条不属于任何一行。
+ */
+export function runArtifactsUrl(runId: string): string {
+  return `${runKey(runId)}/artifacts`;
 }
 
 /**
@@ -67,18 +79,32 @@ export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
 
 /**
  * 一行的**候选活动流**端点：`/messages/stream?replay=0` = **不回放历史**。
- * 给卡片底部那一行的实时打字用——它只要「此刻在打字的那一句」，而历史里没有增量，
- * 回放只会把整份 `messages.jsonl`读出来、推过 socket 再丢掉。
- * 刷新之后的静态内容由 `log.summary` 那一路兜底，两层合起来才是「实时优先、历史兜底」。
+ * 卡片底部那一行的实时打字现在走整轮共享的聚合流（见 `run-stream-hub.ts`）：它只要「此刻在打字的
+ * 那一句」，而历史里没有增量，回放只会把整份 `messages.jsonl` 读出来、推过 socket 再丢掉。
+ * 这个构造器仍留在出口面上——行级端点本身照旧服务，直连它的消费方按这里的形状拼 URL。
  */
 export function runRowActivityStreamUrl(runId: string, rowId: string): string {
   return runRowUrl(runId, rowId, 'messages/stream', '?replay=0');
 }
 
 /**
+ * 一轮的**聚合流**端点：一轮下所有行的实时数据走这一条。
+ *
+ * `after` 是一张**逐行游标表**（`rowId:seq` 逗号分隔），不是单一 seq——每行的 `seq` 按各自文件发号，
+ * 跨行没有可比性。空表（`cursors` 为空）时不带这个参数：**不回放历史、只推实时帧**。
+ * 行 id 逐个编码：它来自 URL 那一侧，`encodeURIComponent` 是唯一能保证 `,` / `:` / 空格
+ * 不会被当成分隔符的那一步（拼错的症状是「某一行的历史静默不回放」）。
+ */
+export function runAggregateStreamUrl(runId: string, cursors: ReadonlyMap<string, number>): string {
+  const table = [...cursors].map(([rowId, seq]) => `${encodeURIComponent(rowId)}:${seq}`).join(',');
+  return `${runKey(runId)}/stream${table === '' ? '' : `?after=${table}`}`;
+}
+
+/**
  * 一行的**评分活动流**端点：`/judge/messages/stream?replay=0`。
  * 评审者是**另一个会话**，它的消息落在自己的文件里（`judge-messages.jsonl`）——活动行在评分阶段
- * 看的是这一条，不是候选那条（两条同时订阅会让那一行被候选的残留内容占住）。
+ * 看的是这一条，不是候选那条（两条同时订阅会让那一行被候选的残留内容占住）；聚合流上这两条
+ * channel 是同一帧族，靠 `rowChannel` 分。
  */
 export function runRowJudgeActivityStreamUrl(runId: string, rowId: string): string {
   return `${runKey(runId)}/rows/${rowId}/judge/messages/stream?replay=0`;
@@ -125,7 +151,7 @@ function useFallbackRun<T>(
 
 export function useRuns(): { runs: EvalRun[] | undefined; error: unknown; isLoading: boolean; refresh: () => void } {
   // 列表的重验也由信号驱动（`currentRunId` 缺省 = 只重验列表键）：连接是模块级单例，
-  // 与下面 useRun 的订阅共用同一条——页面上无论挂几个 hook，`/api/runs/events` 只有一条
+  // 与下面 useRun 的订阅共用同一条——页面上无论挂几个 hook，全局流只有一条
   const { data, error, isLoading, mutate } = useFallbackRun<EvalRun[]>(RUNS_KEY, (runs) => runs.some(isLiveRun));
   useRunEvents({});
   return { runs: data, error, isLoading, refresh: () => void mutate() };
@@ -221,6 +247,14 @@ export interface AgentOptionGroup {
    * **不是**一份编出来的「都支持」——具体理由见那个投影的注释。
    */
   messageCapability: MessageCapability;
+  /**
+   * 注入面声明（`turnInjection`）：送话的两档边界、已交给厂商那一条能不能按条撤回、以及续接。
+   *
+   * **可选**：还没接这一面的家整组不交（服务端按「有意义才出现」投影 ⇒ 缺席时这一格不存在）。
+   * 取不到时 `turnInjectionOf` 给 `null`，**不是**一份编出来的「都支持」：猜错会让界面说谎
+   * （说「能投」而实际投不进去），而说谎的形态是「按钮可点、消息静默消失」。
+   */
+  turnInjection?: TurnInjectionCapability;
   options: AgentModelOption[];
 }
 
@@ -502,6 +536,48 @@ export function useRowDiffFile(
 }
 
 /**
+ * 「产物总览」的清单（这一轮每个候选工作区根下的 `RESULT.*`）。
+ *
+ * 与 `useRowDiffIndex` 同一条「只读的展示快照」口径（`revalidateOnFocus: false`）：
+ * 一次扫描 = 每行一次 `readdir`，切回窗口就重扫没有意义。
+ * **打开期间不自动重扫**：关掉排名抽屉再打开（`enabled` 由 false 翻回 true）即重扫一次——
+ * 候选还在跑时想看到最新产物，走这条路。
+ */
+export function useRunArtifacts(
+  runId: string,
+  enabled: boolean,
+): { index: RunArtifactIndex | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<RunArtifactIndex>(
+    enabled && runId !== '' ? runArtifactsUrl(runId) : null,
+    getJson,
+    { revalidateOnFocus: false },
+  );
+  return { index: data, error, isLoading };
+}
+
+/**
+ * 单个候选的**一份**产物正文。
+ *
+ * **`name === undefined` 就是「这一份还没取」**，此时 SWR key 传 `null`、一个请求都不发
+ * （与 `useRowDiffFile` 同一条口径：不另造一个 `enabled` 布尔，两个开关必然漂移）。
+ * 文件名虽然只可能是 `RESULT.md` 这类白名单里的值，仍照常编码：拼 URL 的那一步不该假设取值面。
+ */
+export function useRowArtifactFile(
+  runId: string,
+  rowId: string,
+  name: string | undefined,
+): { file: RowArtifactFile | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<RowArtifactFile>(
+    name !== undefined && runId !== '' && rowId !== ''
+      ? runRowUrl(runId, rowId, 'artifacts', `?name=${encodeURIComponent(name)}`)
+      : null,
+    getJson,
+    { revalidateOnFocus: false },
+  );
+  return { file: data, error, isLoading };
+}
+
+/**
  * 执行日志全量：抽屉首帧与「下载台账」共用（下载要的是完整落盘内容，不依赖长连接是否活着）。
  *
  * 这里**不关**焦点重验（与 `useRowDiffIndex` 相反，是有意的）：读一个 jsonl 文件比现场算 diff 便宜
@@ -543,6 +619,7 @@ export function useRunModelOptions(): {
   capabilityOf: (agentKind: AgentKind) => { usage: boolean; cancelMidTurn: boolean };
   defaultEffortOf: (agentKind: AgentKind) => string | undefined;
   messageCapabilityOf: (agentKind: AgentKind) => MessageCapability | null;
+  turnInjectionOf: (agentKind: AgentKind) => TurnInjectionCapability | null;
   isLoading: boolean;
   error: unknown;
 } {
@@ -579,6 +656,17 @@ export function useRunModelOptions(): {
   );
 
   /**
+   * 注入面声明；`null` = 不知道（这一家整组没交，或元数据还没到）。
+   *
+   * 与 `messageCapabilityOf` 同一条口径：**不编一份「都支持」**。界面拿它决定输入区能不能用、
+   * 两颗操作按钮禁不禁用，猜错的形态是「按钮可点、消息静默消失」——没有报错，只有人以为自己发了。
+   */
+  const turnInjectionOf = useCallback(
+    (agentKind: AgentKind): TurnInjectionCapability | null => byKind.get(agentKind)?.turnInjection ?? null,
+    [byKind],
+  );
+
+  /**
    * 「未选档位」时该家实际会用的档；`undefined` = 这家不声明（由厂商推断）或元数据还没到。
    *
    * 与 `capabilityOf` 的乐观默认值**刻意相反**：那两格猜错只是多给一个按钮，而这一格是
@@ -590,5 +678,5 @@ export function useRunModelOptions(): {
     [byKind],
   );
 
-  return { options: data, optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, isLoading, error };
+  return { options: data, optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, turnInjectionOf, isLoading, error };
 }

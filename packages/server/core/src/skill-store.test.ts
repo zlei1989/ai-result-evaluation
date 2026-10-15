@@ -226,6 +226,26 @@ describe('scanSkills：识别单位与准入', () => {
     expect(entryOf(scanSkills(), 'shown').ok).toBe(true);
   });
 
+  /**
+   * 厂商**硬拒收**的三个旧写法键（`rejectLegacyInvocationKey`：命中即抛、那一份技能被静默丢弃）。
+   * 我们的判据比它宽时就是假绿：界面「合格」+ 文件物化到位，而厂商一条都不认领。
+   */
+  it('旧写法键（userInvocable / modelInvocable / disableModelInvocation）⇒ ok=false + 点名正名', () => {
+    seedSkill('legacy-user', { name: 'legacy-user', description: '旧写法', userInvocable: 'true' });
+    seedSkill('legacy-model', { name: 'legacy-model', description: '旧写法', modelInvocable: 'false' });
+    seedSkill('legacy-disable', { name: 'legacy-disable', description: '旧写法', disableModelInvocation: 'true' });
+    // 正名照旧合格（厂商支持 `user-invocable` 与 `disable-model-invocation`）
+    seedSkill('canonical', { name: 'canonical', description: '正名', 'user-invocable': 'true' });
+
+    const scan = scanSkills();
+    expect(entryOf(scan, 'legacy-user').ok).toBe(false);
+    expect(entryOf(scan, 'legacy-user').reason).toContain('user-invocable');
+    expect(entryOf(scan, 'legacy-model').ok).toBe(false);
+    expect(entryOf(scan, 'legacy-model').reason).toContain('disable-model-invocation');
+    expect(entryOf(scan, 'legacy-disable').ok).toBe(false);
+    expect(entryOf(scan, 'canonical').ok).toBe(true);
+  });
+
   it('没有 frontmatter 的 SKILL.md ⇒ ok=false（name 与 description 都缺）', () => {
     seedSkill('no-frontmatter', null, '# 直接就是正文\n');
 

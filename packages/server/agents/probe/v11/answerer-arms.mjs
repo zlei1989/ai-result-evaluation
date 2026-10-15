@@ -4,7 +4,7 @@
  * 两个脚本共用它，是为了让「真机跑的」与「离线干跑的」用的是**同一份行定义**——
  * 抄两份的话，离线检查绿了而真机跑的是另一份形状，那种假绿比没有检查更坏。
  *
- * 落点：本目录与另两张票共用，文件名一律带 `answerer-` 前缀，避免撞名。
+ * 落点：本目录与另几支探针共用，文件名一律带 `answerer-` 前缀，避免撞名。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

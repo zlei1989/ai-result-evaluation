@@ -27,7 +27,7 @@ const PACKAGE_ROOT = join(HERE, '..', '..', '..');
 /** dump 根：`probe/dumps/v11/`（已 gitignore）。 */
 export const DUMP_DIR = join(PACKAGE_ROOT, 'probe', 'dumps', 'v11');
 
-/** 统一进度前缀（三张探针票共用 v11 目录，前缀里带 cc 便于分辨）。 */
+/** 统一进度前缀（几支探针共用 v11 目录，前缀里带 cc 便于分辨）。 */
 export function note(...parts) {
   console.log('[v11/cc]', ...parts);
 }
@@ -190,21 +190,45 @@ export async function startUpstream({ decide }) {
         else state.mainSeen += 1;
       }
       const decision = decide(record, state) ?? { kind: 'text', text: 'ok' };
-      if (body?.stream === true) {
+      record.holdMs = Number(decision.holdMs ?? 0);
+      /** 响应正文的收尾：普通档立即回；`holdMs > 0` 的档延后回。 */
+      const respond = () => {
+        record.respondedAt = Date.now();
+        if (body?.stream === true) {
+          const payload = decision.kind === 'tool'
+            ? toolReply(record.model ?? 'probe', decision)
+            : textReply(record.model ?? 'probe', decision.text ?? 'ok');
+          record.reply = { kind: decision.kind, content: payload.content };
+          response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+          response.end(payload.sse);
+          return;
+        }
         const payload = decision.kind === 'tool'
-          ? toolReply(record.model ?? 'probe', decision)
-          : textReply(record.model ?? 'probe', decision.text ?? 'ok');
+          ? { id: `msg_${decision.id}`, type: 'message', role: 'assistant', model: record.model ?? 'probe', content: [{ type: 'tool_use', id: decision.id, name: decision.name, input: decision.input }], stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
+          : { id: 'msg_p', type: 'message', role: 'assistant', model: record.model ?? 'probe', content: [{ type: 'text', text: decision.text ?? 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
         record.reply = { kind: decision.kind, content: payload.content };
-        response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-        response.end(payload.sse);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(payload));
+      };
+      /**
+       * **客户端在响应写完之前就断开** = 这一条在途请求被它自己撤了（`priority: 'now'` 的一格要读它）。
+       * 判据放在 `respondedAt` 上而不是监听 `request.aborted`：后者在 node 的新版本里已废弃，
+       * 且连接正常收尾时也会触发一次。
+       */
+      response.on('close', () => {
+        if (record.respondedAt === undefined) {
+          record.aborted = true;
+          record.abortedAt = Date.now();
+        }
+      });
+      if (record.holdMs > 0) {
+        const timer = setTimeout(respond, record.holdMs);
+        response.on('close', () => {
+          if (record.respondedAt === undefined) clearTimeout(timer);
+        });
         return;
       }
-      const payload = decision.kind === 'tool'
-        ? { id: `msg_${decision.id}`, type: 'message', role: 'assistant', model: record.model ?? 'probe', content: [{ type: 'tool_use', id: decision.id, name: decision.name, input: decision.input }], stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }
-        : { id: 'msg_p', type: 'message', role: 'assistant', model: record.model ?? 'probe', content: [{ type: 'text', text: decision.text ?? 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
-      record.reply = { kind: decision.kind, content: payload.content };
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify(payload));
+      respond();
     });
   });
   const url = await new Promise((resolve) => {
@@ -496,7 +520,7 @@ export function toolResultsFromMessages(messages) {
   return [...found.values()];
 }
 
-/** 回调收到了什么：**字段名与值全部**打出来（票里 Q3 的判据就是这一格）。 */
+/** 回调收到了什么：**字段名与值全部**打出来（Q3 的判据就是这一格）。 */
 export function reportCallback(label, toolName, input, options) {
   const optionFields = {};
   for (const [key, value] of Object.entries(options ?? {})) {

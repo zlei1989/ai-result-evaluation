@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import type { PendingAskUser } from '@aieval/contracts';
 import {
   EMPTY_ASK_USER_QUEUE,
+  answerableAskUser,
   applyAskUserSnapshot,
   confirmAskUserAnswered,
   currentAskUser,
@@ -28,6 +29,11 @@ function pending(askId: string, askedAt = '2026-10-13T10:00:00.000Z'): PendingAs
     questions: [{ header: askId, prompt: '这次改哪条路径？', options: [], multiSelect: false, allowOther: true, secret: false }],
     askedAt,
   };
+}
+
+/** 另一轮的提问：焦点过滤的判据是每一条自己的 `runId` */
+function pendingIn(runId: string, askId: string): PendingAskUser {
+  return { ...pending(askId), runId };
 }
 
 /** 一份快照落到空队列上 */
@@ -116,5 +122,47 @@ describe('关掉不是回答', () => {
 
     expect(confirmed.dismissedAskId).toBeNull();
     expect(currentAskUser(confirmed)?.askId).toBe('b');
+  });
+});
+
+describe('焦点过滤（暂缓）', () => {
+  /** 三条提问分属两轮，且**交错**排队（run-1 的 a、run-2 的 c、run-1 的 b） */
+  function twoRuns(): AskUserQueueState {
+    return applyAskUserSnapshot(EMPTY_ASK_USER_QUEUE, [pending('a'), pendingIn('run-2', 'c'), pending('b')]);
+  }
+
+  it('焦点是某一轮时只弹该轮的提问：别的轮次的连队首都当不上', () => {
+    const state = twoRuns();
+
+    expect(currentAskUser(state, 'run-2')?.askId).toBe('c');
+    // 队列本体一条不少（暂缓不是取消，也不是出队）
+    expect(state.pending.map((item) => item.askId)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('焦点为 null（没在看某一轮）时全部可弹：暂缓不是丢弃', () => {
+    const state = twoRuns();
+
+    expect(currentAskUser(state, null)?.askId).toBe('a');
+    // 缺省与显式 null 同义：老调用方（不关心焦点）的语义一个字不改
+    expect(currentAskUser(state)?.askId).toBe('a');
+    expect(answerableAskUser(state, null)).toHaveLength(3);
+  });
+
+  it('焦点轮没有待答提问时 current 是 null，其余轮的仍留在队列里', () => {
+    const state = twoRuns();
+
+    expect(currentAskUser(state, 'run-没有这一轮')).toBeNull();
+    expect(answerableAskUser(state, 'run-没有这一轮')).toHaveLength(0);
+    expect(state.pending).toHaveLength(3);
+  });
+
+  it('关掉的记号只作用于有资格弹的那一份：别的轮的暂缓提问不许顶上来', () => {
+    const state = dismissAskUser(twoRuns(), 'c');
+
+    // 焦点在 run-2：被关掉的 c 仍是它的队首 ⇒ 不弹（回到「关掉」的既有语义）
+    expect(currentAskUser(state, 'run-2')).toBeNull();
+    expect(answerableAskUser(state, 'run-2')).toHaveLength(1);
+    // 焦点放开：别的轮的提问照旧弹，不被 run-2 那个记号挡住
+    expect(currentAskUser(state, null)?.askId).toBe('a');
   });
 });

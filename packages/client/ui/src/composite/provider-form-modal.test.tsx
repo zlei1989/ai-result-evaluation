@@ -44,8 +44,24 @@ describe('ProviderFormModal：新建态', () => {
     expect(screen.queryByRole('button', { name: '拉取模型' })).toBeNull();
   });
 
-  it('必填项为空时点「保存」不提交，并给出中文错误', async () => {
-    const onSubmit = vi.fn();
+  /**
+   * 提示与占位符的守卫：两条协议分别叫 **OpenAI Responses API** / **Anthropic Messages API**，
+   * 且地址只要求填到站点根——提示里**不出现带 `/v1` 的端点链接**，否则用户会以为路径要自己拼。
+   * 文案错了不会被任何行为用例拦住：用户按提示拼路径，拼错后的症状是上游 404，离这张表单很远。
+   */
+  it('API 地址的提示写明两条 API 与「填站点即可」，且不给带 /v1 的端点链接', () => {
+    renderModal();
+
+    const hint = screen.getByText(/OpenAI Responses API/);
+    expect(hint.textContent).toContain('Anthropic Messages API');
+    expect(hint.textContent).toContain('不用带 /v1');
+    expect(hint.textContent).toContain('自动补全');
+    expect(hint.textContent).not.toContain('/v1/responses');
+    expect(hint.textContent).not.toContain('/v1/messages');
+    expect(screen.getByLabelText('API 地址')).toHaveAttribute('placeholder', 'https://api.deepseek.com');
+  });
+
+  it('必填项为空时点「保存」不提交，并给出中文错误', async () => {    const onSubmit = vi.fn();
     renderModal({ onSubmit });
 
     fireEvent.click(screen.getByRole('button', { name: '保存' }));

@@ -21,7 +21,8 @@ import { loadConfig, saveConfig, setConfigDirForTesting } from '@aieval/core';
 import { GET as listRoute, POST as createRoute } from '@/app/api/providers/route';
 import { DELETE as deleteRoute, PUT as updateRoute } from '@/app/api/providers/[providerId]/route';
 import { DELETE as removeModelRoute, POST as addModelRoute, PUT as setModelContextRoute } from '@/app/api/providers/[providerId]/models/route';
-import { POST as fetchModelsRoute } from '@/app/api/providers/[providerId]/models/fetch/route';
+import { POST as importModelsRoute } from '@/app/api/providers/[providerId]/models/import/route';
+import { POST as previewModelsRoute } from '@/app/api/providers/[providerId]/models/preview/route';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 let dir: string;
@@ -363,26 +364,21 @@ describe('DELETE /api/providers/[providerId]/models', () => {
   });
 });
 
-describe('POST /api/providers/[providerId]/models/fetch', () => {
-  it('openai 协议：按 Authorization: Bearer 发给 {baseUrl}/models，并把结果合并进清单', async () => {
+describe('POST /api/providers/[providerId]/models/preview', () => {
+  it('openai 协议：按 Authorization: Bearer 发给 {baseUrl}/models，返回候选数组且不落盘', async () => {
     seedProvider();
     const fetchMock = stubUpstream({ data: [{ id: 'fetched-a' }, { id: 'manual-model' }] });
 
-    const res = await fetchModelsRoute(jsonRequest('/api/providers/p-1/models/fetch', 'POST', {}), ctxOf('p-1'));
+    const res = await previewModelsRoute(jsonRequest('/api/providers/p-1/models/preview', 'POST', {}), ctxOf('p-1'));
 
     expect(res.status).toBe(200);
-    // 拉取同样回 ProviderView（客户端 fetchModels 把它当 ProviderView 返回给调用方）
-    const body = await res.json();
-    expect(body.id).toBe('p-1');
-    expect(body.apiKeyMasked).toBe(maskApiKey('sk-original-key'));
-    expect(body.models).toEqual([
-      { id: 'manual-model', source: 'manual' },
-      { id: 'fetched-a', source: 'fetched' },
-    ]);
-    expect(stored('p-1')?.models).toEqual([
-      { id: 'manual-model', source: 'manual' },
-      { id: 'fetched-a', source: 'fetched' },
-    ]);
+    // 响应体是 { models }（契约 ProviderModelPreviewListSchema）：候选还没有 source —— 进不进清单
+    // 由用户挑选后决定，这一步只是「上游说了什么」
+    expect(await res.json()).toEqual({
+      models: [{ id: 'fetched-a' }, { id: 'manual-model' }],
+    });
+    // 预览只读不写：磁盘上还是拉取前的清单
+    expect(stored('p-1')?.models).toEqual([{ id: 'manual-model', source: 'manual' }]);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.deepseek.com/v1/models');
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer sk-original-key');
@@ -390,7 +386,7 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
 
   // 修订：协议不再阻止拉取（原的服务端 400 已删除），改由地址形态兜底 ——
   // 路由层要钉的是「anthropic 供应商也能拉到」，以及回退确实发生在服务端这一层。
-  it('anthropic 协议：地址缺 /v1 时回退 /v1/models，返回 200 并合并进清单', async () => {
+  it('anthropic 协议：地址缺 /v1 时回退 /v1/models，返回 200', async () => {
     seedProvider({ protocolType: 'anthropic', baseUrl: 'https://gw.example.com' });
     const fetchMock = stubUpstreamByUrl({
       'https://gw.example.com/models': [404, 'not found'],
@@ -398,18 +394,11 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const res = await fetchModelsRoute(jsonRequest('/api/providers/p-1/models/fetch', 'POST', {}), ctxOf('p-1'));
+    const res = await previewModelsRoute(jsonRequest('/api/providers/p-1/models/preview', 'POST', {}), ctxOf('p-1'));
 
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.models).toEqual([
-      { id: 'manual-model', source: 'manual' },
-      { id: 'fetched-a', source: 'fetched' },
-    ]);
-    expect(stored('p-1')?.models).toEqual([
-      { id: 'manual-model', source: 'manual' },
-      { id: 'fetched-a', source: 'fetched' },
-    ]);
+    expect(await res.json()).toEqual({ models: [{ id: 'fetched-a' }] });
+    expect(stored('p-1')?.models).toEqual([{ id: 'manual-model', source: 'manual' }]);
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://gw.example.com/models',
       'https://gw.example.com/v1/models',
@@ -418,7 +407,7 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
 
   // 修订：地址填的是 Messages 根（`/anthropic`）时清单接口仍在站点根上 ——
   // 路由层要钉的是「子路径两条都 404 后确实又打了根的两条」，不是只把第一条的 404 报回去。
-  it('anthropic 协议：地址带子路径时回退到站点根，返回 200 并合并进清单', async () => {
+  it('anthropic 协议：地址带子路径时回退到站点根，返回 200', async () => {
     seedProvider({ protocolType: 'anthropic', baseUrl: 'https://gw.example.com/anthropic' });
     const fetchMock = stubUpstreamByUrl({
       'https://gw.example.com/anthropic/models': [404, 'not found'],
@@ -428,14 +417,10 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const res = await fetchModelsRoute(jsonRequest('/api/providers/p-1/models/fetch', 'POST', {}), ctxOf('p-1'));
+    const res = await previewModelsRoute(jsonRequest('/api/providers/p-1/models/preview', 'POST', {}), ctxOf('p-1'));
 
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.models).toEqual([
-      { id: 'manual-model', source: 'manual' },
-      { id: 'fetched-a', source: 'fetched' },
-    ]);
+    expect(await res.json()).toEqual({ models: [{ id: 'fetched-a' }] });
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://gw.example.com/anthropic/models',
       'https://gw.example.com/anthropic/v1/models',
@@ -448,13 +433,95 @@ describe('POST /api/providers/[providerId]/models/fetch', () => {
     seedProvider();
     stubUpstream({ error: 'bad key' }, 401);
 
-    const res = await fetchModelsRoute(jsonRequest('/api/providers/p-1/models/fetch', 'POST', {}), ctxOf('p-1'));
+    const res = await previewModelsRoute(jsonRequest('/api/providers/p-1/models/preview', 'POST', {}), ctxOf('p-1'));
 
     expect(res.status).toBe(401);
     const body = await res.json();
     expect(body.error.code).toBe('AUTH_FAILED');
     expect(body.error.context).toEqual({ host: 'api.deepseek.com' });
     expect(stored('p-1')?.models).toEqual([{ id: 'manual-model', source: 'manual' }]);
+  });
+});
+
+describe('POST /api/providers/[providerId]/models/import', () => {
+  it('把提交的候选合并进清单：手工条目保留、新 id 追加为 fetched、未提交的不动', async () => {
+    seedProvider({
+      models: [
+        { id: 'manual-model', source: 'manual' },
+        { id: 'old-fetched', source: 'fetched' },
+      ],
+    });
+
+    const res = await importModelsRoute(
+      jsonRequest('/api/providers/p-1/models/import', 'POST', {
+        models: [{ id: 'fetched-a' }, { id: 'old-fetched', contextWindow: 128_000 }],
+      }),
+      ctxOf('p-1'),
+    );
+
+    expect(res.status).toBe(200);
+    // 响应体是 ProviderView（客户端 importModels 把它当 ProviderView 解析）
+    const body = await res.json();
+    expect(body.id).toBe('p-1');
+    expect(body.apiKeyMasked).toBe(maskApiKey('sk-original-key'));
+    expect(body.models).toEqual([
+      { id: 'manual-model', source: 'manual' },
+      { id: 'old-fetched', source: 'fetched', contextWindow: 128_000 },
+      { id: 'fetched-a', source: 'fetched' },
+    ]);
+    expect(stored('p-1')?.models).toEqual(body.models);
+  });
+
+  it('条目上的 source 被 strip（落盘来源由服务端定，不认前端声明）', async () => {
+    seedProvider();
+
+    const res = await importModelsRoute(
+      jsonRequest('/api/providers/p-1/models/import', 'POST', {
+        models: [{ id: 'sneaky', source: 'manual' }],
+      }),
+      ctxOf('p-1'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(stored('p-1')?.models).toEqual([
+      { id: 'manual-model', source: 'manual' },
+      { id: 'sneaky', source: 'fetched' },
+    ]);
+  });
+
+  it('空提交 400 INVALID_QUERY（zod min(1)），不落盘', async () => {
+    seedProvider();
+
+    const res = await importModelsRoute(
+      jsonRequest('/api/providers/p-1/models/import', 'POST', { models: [] }),
+      ctxOf('p-1'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(stored('p-1')?.models).toEqual([{ id: 'manual-model', source: 'manual' }]);
+  });
+
+  it('非法窗口值 400，不落盘（脏数据在契约层就挡下）', async () => {
+    seedProvider();
+
+    const res = await importModelsRoute(
+      jsonRequest('/api/providers/p-1/models/import', 'POST', {
+        models: [{ id: 'm', contextWindow: 0 }],
+      }),
+      ctxOf('p-1'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(stored('p-1')?.models).toEqual([{ id: 'manual-model', source: 'manual' }]);
+  });
+
+  it('供应商不存在 404，一次都不写盘', async () => {
+    const res = await importModelsRoute(
+      jsonRequest('/api/providers/nope/models/import', 'POST', { models: [{ id: 'm' }] }),
+      ctxOf('nope'),
+    );
+
+    expect(res.status).toBe(404);
   });
 });
 

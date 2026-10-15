@@ -11,6 +11,12 @@ import { SkillMaterializeError } from '@aieval/core';
 import { asRecord, readNumber, readString } from './json';
 import type { AgentErrorCode, AgentKind } from './types';
 
+/**
+ * 厂商的**凭证类**结构化失败码（加方括号的形态是我们自己带进归因文案的前缀，见 `classifyAgentFailure`）。
+ * dsh 的两个码都是「这一家的密钥要人去核对」，与 HTTP 401 同一处置。
+ */
+const VENDOR_CREDENTIAL_CODES = /\[(MISSING_CREDENTIAL|INVALID_CREDENTIAL)\]/;
+
 export interface FailureContext {
   kind: AgentKind;
   /** 出错那次运行用的网关地址：AUTH_FAILED / RATE_LIMITED 的文案要带 host */
@@ -38,6 +44,16 @@ export type AgentLoadFailureVariant = 'missing' | 'shape-mismatch' | 'node-versi
 export interface AgentLoadErrorOptions {
   /** 省略即 `missing`（默认值保持老调用点逐字不变） */
   variant?: AgentLoadFailureVariant;
+  /**
+   * `missing` 那一档的**补救层次**：同一种「加载失败」成因不同、该做的事也不同。
+   *   · `install`（缺省）：包没装 ⇒ 装它；
+   *   · `repair-package`：包在、但里面缺东西（如平台包的 `vendor/` 不全）⇒ **装一次不会有任何变化**，
+   *     要重装或修那个包；
+   *   · `fix-anchor`：包在、东西也全，只是**解析基准在当前环境无效**（换了机器 / cwd 不对）⇒ 改环境。
+   * 为什么不做成第四个 `variant`：枚举是**下游与用例键**，加值会动它们的形状；
+   * 而这三条只影响**同一档里的那一句补救动作**。
+   */
+  remedy?: 'install' | 'repair-package' | 'fix-anchor';
   /** 适配器期望的导出名（例：`createRuntime`） */
   expected?: string;
   /** 实测导出面（`Object.keys(模块命名空间)`）；空数组表示读不到任何导出 */
@@ -46,6 +62,27 @@ export interface AgentLoadErrorOptions {
   required?: string;
   /** `node-version`：本机实测版本（`process.versions.node`） */
   current?: string;
+  /**
+   * 这一类失败**在同一个进程里重试不会变好**（`missing` 文案据此追加「需要重启服务」）。
+   *
+   * 判据来自 Node 的模块表：解析类失败（`ERR_MODULE_NOT_FOUND` 等）修好文件后重试就能成功；
+   * 而**求值 / 编译期抛错**的模块会被记成 errored 永久缓存，同一个模块 URL 再 import 还是那个错
+   * ——把包修好、把依赖补上都不会让当前进程恢复（受控探针逐档核过）。默认 `false`，保持老调用点逐字不变。
+   */
+  pinned?: boolean;
+}
+
+/**
+ * 实测导出面（`Object.keys`），只喂 `shape-mismatch` 文案里那句「实测有 …」。
+ *
+ * 为什么住在这一层：三家懒加载的厂商 SDK **各写过一份**（dsh / pi），第三份（cc）就差一次复制
+ * ——而它的用途与 `AgentLoadError` 的变体文案是同一条口径（「导出面不匹配」那句话要一份可读的实测清单），
+ * 抄三遍必然漂（一处改了排序、另一处忘了防 `null`）。
+ *
+ * 先做形状检查：读导出面的动作本身不能成为新的崩溃点（`Object.keys(null)` 会抛）。
+ */
+export function exportedNames(raw: unknown): string[] {
+  return typeof raw === 'object' && raw !== null ? Object.keys(raw).sort() : [];
 }
 
 /**
@@ -78,8 +115,20 @@ function loadFailureMessage(packageName: string, reason: string, options: AgentL
       return shapeMismatchMessage(packageName, reason, options);
     case 'node-version':
       return nodeVersionMessage(packageName, options);
-    default:
-      return `厂商 SDK 加载失败：${packageName}（原因：${reason}）。请在 packages/server/agents 下执行 pnpm add ${packageName}；若已安装，检查网络镜像与 node_modules 完整性`;
+    default: {
+      const hint = options.pinned === true
+        ? '。⚠️ 这一档是**模块求值 / 编译期抛错**：Node 的模块表会把它记成 errored 永久缓存，'
+          + '修好文件或补上依赖之后**需要重启服务**才能在同一个进程里生效'
+        : '';
+      const act = options.remedy === 'repair-package'
+        ? '包已经装上了，但里面缺东西 ⇒ **装一次不会有任何变化**：请重装该包（或修好平台包），'
+          + `再确认 ${packageName} 的目录完整`
+        : options.remedy === 'fix-anchor'
+          ? '包与文件都在，是**解析基准在当前环境无效**（换了机器或工作目录）⇒ 请在原构建路径下运行，'
+            + '或从应用目录启动（详见《Codex 接入》的《部署约束》）'
+          : `请在 packages/server/agents 下执行 pnpm add ${packageName}；若已安装，检查网络镜像与 node_modules 完整性`;
+      return `厂商 SDK 加载失败：${packageName}（原因：${reason}）。${act}${hint}`;
+    }
   }
 }
 
@@ -102,7 +151,7 @@ function shapeMismatchMessage(packageName: string, reason: string, options: Agen
   const expected = options.expected ?? '（未登记）';
   const actual =
     options.actual === undefined || options.actual.length === 0 ? '（读不到任何导出）' : options.actual.join(' / ');
-  return `厂商 SDK 导出面不匹配：${packageName} 已安装，但导出面与适配器期望的不一致（期望 ${expected}；实测有 ${actual}；原因：${reason}）。这是适配器版本/回写问题，不是安装问题——不要重装该包，请更新本应用或把本行日志反馈给维护者`;
+  return `厂商 SDK 导出面不匹配：${packageName} 已安装，但导出面与适配器期望的不一致（期望 ${expected}；实测有 ${actual}；原因：${reason}）。这是适配器版本/回写问题，不是安装问题——不要重装该包，请更新本应用或把本行日志反馈给维护者；**换版本后需要重启服务**（模块实例已被进程内的模块表记住）`;
 }
 
 /** 从错误对象归因（事件流里通常给的是 Error 实例） */
@@ -123,6 +172,41 @@ export function classifyAgentFailure(error: unknown, context: FailureContext): A
   const status = statusOf(error);
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : undefined;
+
+  /**
+   * **厂商的结构化失败码**（dsh 的 `LlmFailure.code`，由适配器以 `[CODE] 原文` 前缀带进这一格）。
+   *
+   * 为什么必须在这里认：缺省那条路把这些失败一并归成 `AGENT_FAILED`，而它在
+   * `TRANSIENT_ROW_RETRY_CODES` 里 ⇒ 一类**确定性**的失败会被自动重跑两遍（每次再等 3 秒 + 一整轮
+   * 模型时间），而界面上的原因还指向「CLI 起不来 / 进程非零退出」这条错方向。真机读数（同一份
+   * 探针，`.scratch` 里的 `ctrl-cred-classify.mts`）：
+   *   · 空 key ⇒ 厂商 `MISSING_CREDENTIAL`、带换行的 key ⇒ `INVALID_CREDENTIAL` —— 两者都是配置
+   *     错误，补救动作是「去核对这一家的密钥」，与 HTTP 401 同一码（`AUTH_FAILED`，**不在**重试表里）；
+   *   · `contextWindow` 给小 + 长提示词 ⇒ `CONTEXT_WINDOW_EXCEEDED` —— 同一份输入再发一次还是超，
+   *     归 `AGENT_CONTEXT_OVERFLOW`（**不在**重试表里）。
+   * 只认**我们自己加的那个方括号前缀**与厂商原文里那两句特征串，且**只对这一家**（`context.kind`）：
+   * 这四句特征串全部来自 dsh 侧（`dsh-llm` / `dsh-llm-pi-ai`），但归因函数是四家共用的入口——
+   * 不加家别闸，别家的普通错误里只要恰好出现这几个字样就会被顶成「密钥无效 / 超出上下文窗口」，
+   * 而这两档**刻意不在重试表里** ⇒ 错误方向的补救建议 + 真因被顶掉。
+   */
+  const dshVendorCodes = context.kind === 'dsh';
+  if (
+    dshVendorCodes
+    && (VENDOR_CREDENTIAL_CODES.test(message) || /no credential for provider route|contains characters no HTTP header can carry/.test(message))
+  ) {
+    return {
+      code: 'AUTH_FAILED',
+      message: `密钥无效或无权访问（${host}）：请核对该供应商的密钥后重试`,
+      stack,
+    };
+  }
+  if (dshVendorCodes && (/\[CONTEXT_WINDOW_EXCEEDED\]/.test(message) || /detected context overflow/.test(message))) {
+    return {
+      code: 'AGENT_CONTEXT_OVERFLOW',
+      message: `本次请求超出模型上下文窗口（${host}）：缩短提示词或减少随附内容后重试，或换用窗口更大的模型；重试同一份请求不会成功`,
+      stack,
+    };
+  }
 
   if (status === 401 || status === 403) {
     return {

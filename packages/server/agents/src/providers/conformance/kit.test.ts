@@ -1491,10 +1491,18 @@ describe('一致性套件：交互面（提问应答）', () => {
    * `vendorNoticeMethodOf` 与 `askUserProductDigestExcludingNotices` 各自的守卫：
    * 前者只认**严格形状**（放宽判据的地方认错了比不认更坏），后者只丢点名的那几条、并按剩下的重编 `seq`。
    */
-  it('厂商通知的正身判据只认「正文是一个只有 method 的 JSON 对象」这一种形状', () => {
+  it('厂商通知的正身判据只认「正文是一个 `{method}` 或 `{method, params}` 的 JSON 对象」这一种形状', () => {
     expect(vendorNoticeMethodOf({ type: 'log', text: '{"method":"warning"}' })).toBe('warning');
-    // 带别的键、不是对象、方法名为空、根本不是 JSON —— 一律不认
-    expect(vendorNoticeMethodOf({ text: '{"method":"warning","params":{"a":1}}' })).toBeNull();
+    /**
+     * **带 `params` 的那一形也要认**：各家的 `other` 分支把厂商原载荷一起抄下来（丢了它就分不清
+     * 「上游换了载荷结构」与「上游没发」）⇒ 只认 `{method}` 会让这一格在带载荷的家上整个失效，
+     * 表现是两臂指纹永远不相同（误红）。
+     */
+    expect(vendorNoticeMethodOf({ text: '{"method":"warning","params":{"a":1}}' })).toBe('warning');
+    expect(vendorNoticeMethodOf({ text: '{"params":{"a":1},"method":"model/rerouted"}' })).toBe('model/rerouted');
+    // 多出第三个键、没有 method、不是对象、方法名为空、根本不是 JSON —— 一律不认
+    expect(vendorNoticeMethodOf({ text: '{"method":"warning","params":{},"extra":1}' })).toBeNull();
+    expect(vendorNoticeMethodOf({ text: '{"params":{"a":1}}' })).toBeNull();
     expect(vendorNoticeMethodOf({ text: '["warning"]' })).toBeNull();
     expect(vendorNoticeMethodOf({ text: '{"method":""}' })).toBeNull();
     expect(vendorNoticeMethodOf({ text: '警告：Under-development features enabled' })).toBeNull();

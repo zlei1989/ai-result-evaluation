@@ -98,9 +98,10 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
         lineNumber: { fontFamily: token.fontFamilyCode },
         /**
          * **避免横向滚动**：组件给表格的默认样式里带
-         * `minWidth: '1000px'` 与 `overflowX: 'auto'`，而抽屉只有 800px —— 于是必然出现横向滚动条。
-         * 这里把最小宽度放开、改成按容器宽度排版；正文本身已是 `pre-wrap` + `lineBreak: anywhere`，
-         * 长行会在单元格内折行，所以不需要靠横向滚动来看全。
+         * `minWidth: '1000px'` 与 `overflowX: 'auto'`，而抽屉宽度可能是 800px（`WIDE_DRAWER_SIZE`
+         * 的下限）——窄屏上它比这个最小宽还窄，横向滚动条就是必然的；宽屏上也不该由组件的默认
+         * 最小宽替我们定死排版宽度。这里把最小宽度放开、改成按容器宽度排版；正文本身已是
+         * `pre-wrap` + `lineBreak: anywhere`，长行会在单元格内折行，所以不需要靠横向滚动来看全。
          */
         diffContainer: { minWidth: 0, width: '100%', tableLayout: 'fixed', overflowX: 'auto' },
       }}
@@ -184,8 +185,8 @@ function DiffFileSection({
 
       {/*
         正文区**不额外加横向内边距**：diff 表格自带 `minWidth: 1000px` 与 `overflow-x: auto`，
-        抽屉只有 800px，外面再套一层 padding 只会把可用的横向空间再削掉一截、让那条横向滚动条更早出现。
-        上下留白仍由这里的 padding 提供。
+        抽屉宽度的下限是 800px（`WIDE_DRAWER_SIZE`），外面再套一层 padding 只会把可用的横向空间
+        再削掉一截、让那条横向滚动条更早出现。上下留白仍由这里的 padding 提供。
       */}
       <div style={{ padding: '8px 0' }}>
         {!hasBody ? (

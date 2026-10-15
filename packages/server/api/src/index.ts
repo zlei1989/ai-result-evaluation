@@ -9,9 +9,10 @@ export {
   addProviderModel,
   createProvider,
   deleteProvider,
-  fetchProviderModels,
+  importProviderModels,
   listAllModelOptions,
   listProviders,
+  previewProviderModels,
   removeProviderModel,
   setProviderModelContext,
   updateProvider,
@@ -59,24 +60,51 @@ export {
   type AgentModelOption,
   type AgentOptionGroup,
 } from './runs';
+// 人工追问（第二期）：对已经跑过的行接着同一段上下文再跑一段。
+// 存在性检查与请求上限在本层，可用性判据与拒绝原因在 evaluator（界面按 409 的中文原因给 Tooltip）。
+export { followUpRow, getFollowUpAvailability, type FollowUpRequest } from './follow-up';
 export {
   assertRowExists,
+  getRowArtifactFile,
   getRowDiffFile,
   getRowDiffIndex,
   getRowJudgeLog,
   getRowJudgeRecords,
   getRowLog,
   getRowRecords,
+  getRunArtifactIndex,
   resetRowDiffCache,
 } from './run-artifacts';
 // 两条事件流：行级（候选 + 编排层留痕）与评分（`judge-events.jsonl`，与行级分开）
 export { streamJudgeEvents, streamRowEvents } from './run-stream';
+// 聚合流：一轮下所有行的实时数据收进**一条**连接（逐行游标 `?after=w-1:12,w-2:5`：
+// 候选事件按各自 seq 续订、两 channel 的消息恒为实时增量）。旧的行级流仍在服役，两者并存
+export { streamRunAggregate, type RowCursors } from './run-aggregate-stream';
 // 消息流：内容级通道，与上面的事件流并行——两条流的去重键与生命周期都不同。
 // 记录流同样有两条：候选（`messages.jsonl`）与评分（`judge-messages.jsonl`）
 export { streamJudgeRecords, streamRowRecords, type RecordStreamOptions } from './messages-stream';
-// run 级信号流：跨轮次的状态翻转通道（快照变了 ⇒ 客户端重读 REST），与三条行级流并行
-export { streamRunSignals } from './run-events';
+// 抽屉流：单行单 channel 的**完整流水**（该族事件按 seq 续订 + 该族消息全量回放），
+// 两个抽屉各开自己 channel 的那一条。上面四条行级流本票仍在服役，收缩归后续
+export { streamDrawer } from './drawer-stream';
+// 全局流：三条全局总线（run 信号 / 待答挂起表 / 人工消息队列）收进**一条**页面级长连接，
+// 帧是信封里的那三种信号（无载荷、无 id、不因终态关流）。下面两条单信号流仍在服役，收缩归后续
+export { streamGlobalSignals } from './run-events';
 // 应答面：待答提问的快照读侧与唯一写入口（三个端点见 web-next 的 /api/ask-user/*）
 export { answerAskUser, getPendingAskUser } from './ask-user';
-// 待答清单的信号流：只推「变了，重读」，与 run 级信号流逐字同形（无序号、不可续订、不因终态关流）
+// 待答清单的单信号流：只推「变了，重读」（无序号、不可续订、不因终态关流）。
+// 客户端已改从全局流收这一族信号，这条端点本身没有消费方了，收缩归后续
 export { streamAskUserChanges } from './ask-user-stream';
+// 人工消息面（五个端点见 web-next 的 /api/inject-messages/*）：快照、发送、改期、撤回、附件落盘。
+// 真相源是 evaluator 的队列表，本层只做「校验行存在 + 折成 HTTP 结局 + 附件落盘」。
+export {
+  assertUploadContentLength,
+  getInjectMessages,
+  promoteInjectMessage,
+  retractHttpResult,
+  retractInjectMessage,
+  saveInjectAttachment,
+  sendInjectMessage,
+  type SaveInjectAttachmentInput,
+} from './inject-messages';
+// 人工消息队列的单信号流：与待答清单那条同形（只推「变了，重读」，客户端已改从全局流收）
+export { streamInjectMessages } from './inject-messages-stream';

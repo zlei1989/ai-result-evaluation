@@ -18,8 +18,10 @@ import {
   type AgentMessage,
   type EvalRow,
   type EvalRun,
+  type RowArtifactFile,
   type RowDiffFile,
   type RowDiffIndex,
+  type RunArtifactIndex,
   type SubagentRecord,
 } from '@aieval/contracts';
 import {
@@ -28,13 +30,16 @@ import {
   extractDiffFile,
   foldMessages,
   foldSubagents,
+  maxEventSeq,
   readEvents,
   readEventsAfter,
   readRowRecords,
+  readWorkspaceArtifact,
   rowEventsFile,
   rowJudgeEventsFile,
   rowJudgeMessagesFile,
   rowMessagesFile,
+  scanWorkspaceArtifacts,
   truncateDiff,
 } from '@aieval/core';
 import { getRunView } from './runs';
@@ -248,6 +253,58 @@ export function getRowDiffFile(runId: string, rowId: string, path: string): RowD
 }
 
 /**
+ * 「产物总览」的索引：这一轮**每个候选**在它自己的工作区根下写下的 `RESULT.*`。
+ *
+ * 三条口径：
+ *   1. **每个候选一行，没有产物的行照样进来**（`files: []`）：「这一行没有产出」是要显示出来的事实，
+ *      而不是「这一行不存在」。工作区还没建的行同样如此（没跑过 ≠ 读不出来）；
+ *   2. **逐行降级**：某一行扫不动（权限、坏目录）只把那一行的 `files` 记成空 + 一条 WARN，
+ *      不把整张总览打挂——但降级要留痕，不许静默；
+ *   3. **服务端不排名**：行的顺序就是快照顺序，名次在界面那一侧由 `rankOf` 算（名次只有一个判据）。
+ *
+ * 没有缓存：一次扫描 = 每行一次 `readdir` + 每份一次 `stat`，比现场算 diff 便宜几个数量级，
+ * 而缓存会让「候选刚写完的那一份」在抽屉里迟到半分钟才出现。
+ */
+export function getRunArtifactIndex(runId: string): RunArtifactIndex {
+  const run = getRunView(runId);
+  const rows = run.rows.map((row) => {
+    try {
+      return {
+        rowId: row.id,
+        files: row.workspacePath === '' ? [] : scanWorkspaceArtifacts(row.workspacePath),
+      };
+    } catch (error) {
+      log.warn('扫描候选产物失败（该行按没有产物处理）', {
+        runId,
+        rowId: row.id,
+        workspacePath: row.workspacePath,
+        error,
+      });
+      return { rowId: row.id, files: [] };
+    }
+  });
+
+  return { rows, total: rows.reduce((sum, row) => sum + row.files.length, 0) };
+}
+
+/**
+ * 读某个候选的某一份产物正文。
+ *
+ * 工作区还没建起来（这一行没开始跑、或准备阶段就失败了）⇒ `CONFLICT` + 中文原因，
+ * 与 `getRowDiffIndex` 那条「还没有工作区」同一档同一语气：「还没有产出」与「读产物出错」是两回事。
+ * 名字、越界、体积、二进制这些拒绝由 core 的 `readWorkspaceArtifact` 给（各自的中文原因）。
+ */
+export function getRowArtifactFile(runId: string, rowId: string, name: string): RowArtifactFile {
+  const run = getRunView(runId);
+  const row = findRow(run, rowId);
+
+  if (row.workspacePath === '' || !existsSync(row.workspacePath)) {
+    throw new ServiceError('CONFLICT', `这一行还没有工作区（${row.workspacePath}），没有可看的产物`);
+  }
+  return readWorkspaceArtifact(row.workspacePath, name);
+}
+
+/**
  * 该行的**消息与子任务行**（折叠后的最终视图）。
  *
  * 与 `getRowLog` 同一处置、**不排序**：`readRowRecords` 逐行读的是一个只追加的文件，
@@ -302,11 +359,29 @@ export function getRowLog(runId: string, rowId: string, afterSeq?: number): Agen
 }
 
 /**
+ * 该行事件日志的 **seq 水位**（文件里已用过的最大 seq，文件不存在为 0）。
+ *
+ * 给 SSE 的续订入口用：客户端带来的 `afterSeq` / `Last-Event-ID` 是**它上一次见过的最大 seq**，
+ * 而重跑同一行会 `resetEvents` 删文件、seq 从 1 重新发号 ⇒ 游标大于水位就说明它属于**被删掉的那一代**，
+ * 拿着它回放只会得到空历史（症状是「重跑后执行日志一直停在上一轮」）。
+ * 口径与 `readEvents` 一致地容忍坏行：占过号的行也算水位（见 `core.maxEventSeq`）。
+ */
+export function getRowLogMaxSeq(runId: string, rowId: string): number {
+  const run = getRunView(runId);
+  const row = findRow(run, rowId);
+  return maxEventSeq(rowEventsFile(run.workspaceBase, run.id, row.id));
+}
+
+/**
  * 只做**行存在性校验**、不读任何日志。
  *
  * 给「不回放历史」的那条 SSE 用（卡片活动行）：它只要「此刻之后」的记录，而把校验一起省掉，
  * 客户端拿到的就不是带原因的 404，而是一条「开了即静默」的连接——那种失败在界面上表现为
  * 「活动行一直不动」，与「这一行真的没在输出」完全同形。
+ *
+ * 它同时是**那句「这一轮里没有这一行」的 404 唯一一处**：人工消息的四个动作、追问、日志流都
+ * 从这里过。逐处手写 `rows.some` 的代价不是多几行，而是同一格在两条路上给出两句不同的话
+ * ——客户端按文案分支时就成了两个行为。
  */
 export function assertRowExists(runId: string, rowId: string): void {
   const run = getRunView(runId);
@@ -357,4 +432,15 @@ export function getRowJudgeLog(runId: string, rowId: string, afterSeq?: number):
       { cause: error },
     );
   }
+}
+
+/**
+ * 该行**评分那条流**的 seq 水位：与 `getRowLogMaxSeq` 逐字同口径，只是读 `judge-events.jsonl`。
+ * 两条流各有自己一套从 1 起的号（`appendEvent` 按各自文件续号）⇒ 水位也必须各算各的，
+ * 拿行级那条的水位去判评分那条的游标会把正常的续订误判成换代。
+ */
+export function getRowJudgeLogMaxSeq(runId: string, rowId: string): number {
+  const run = getRunView(runId);
+  const row = findRow(run, rowId);
+  return maxEventSeq(rowJudgeEventsFile(run.workspaceBase, run.id, row.id));
 }

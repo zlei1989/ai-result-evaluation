@@ -14,6 +14,9 @@
  * 还列着已经答完的一问（服务端算它时这一问还在表里），不记名它就会再弹一次。从快照里消失的条目
  * 同样记名——服务端说它不在待答里了，那么无论它是被谁答的、被取消的还是超时的，都不该再弹。
  * 代价如实登记：该集合随页面会话单调增长，每条一个 UUID、一次作答一条。
+ *
+ * 另一层是**哪些轮次有资格弹**（`answerableAskUser`）：焦点之外的那几轮处于**暂缓**态——
+ * 不弹、不取消、仍在挂起表计时。它只影响「弹谁」，不改本文件任何一条队列语义。
  */
 import type { PendingAskUser } from '@aieval/contracts';
 
@@ -71,9 +74,24 @@ export function reopenAskUser(state: AskUserQueueState): AskUserQueueState {
   return { ...state, dismissedAskId: null };
 }
 
-/** 此刻该弹出的那一问：队首，且没有被用户关掉。`null` = 没有要答的，或队首刚被关掉 */
-export function currentAskUser(state: AskUserQueueState): PendingAskUser | null {
-  const head = state.pending[0];
+/**
+ * 此刻有资格弹的提问：焦点为 `null`（没在看某一轮：列表页、别的页面）⇒ 全部；否则只留该轮的。
+ *
+ * 过滤只落在「弹不弹」这一层，**队列本体的一个字都不动**：切走的那一轮的提问仍留在 `pending` 里
+ * （挂起表那边照旧在计时），切回来或离开详情页就当即可弹——这就是**暂缓**（不是取消、不是出队）。
+ * 归属以每一条自己的 `runId` 为准（信号帧不带归属，读侧才是权威）。
+ */
+export function answerableAskUser(state: AskUserQueueState, focusedRunId: string | null = null): readonly PendingAskUser[] {
+  if (focusedRunId === null) return state.pending;
+  return state.pending.filter((item) => item.runId === focusedRunId);
+}
+
+/**
+ * 此刻该弹出的那一问：**有资格弹的**队首，且没有被用户关掉。
+ * `null` = 没有要答的、队首刚被关掉、或焦点那一轮没有待答提问（其余轮的仍暂缓在队列里）。
+ */
+export function currentAskUser(state: AskUserQueueState, focusedRunId: string | null = null): PendingAskUser | null {
+  const head = answerableAskUser(state, focusedRunId)[0];
   if (head === undefined) return null;
   return head.askId === state.dismissedAskId ? null : head;
 }

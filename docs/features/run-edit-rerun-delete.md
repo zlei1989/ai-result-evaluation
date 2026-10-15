@@ -11,9 +11,9 @@
 ### 编辑
 
 - **入口**：评测详情卡顶部信息行的 `extra`「编辑 / 删除」（与用例详情逐字同形；两个汉字的按钮一律 `autoInsertSpace={false}`）。`hasLiveRows` 为真（轮级 `running` 或任一行 `preparing` / `running` / `judging`）时两个入口都 `disabled`；**原因只在「编辑」那一格有 `Tooltip`**——「有候选行正在运行：先终止，再编辑 / 删除」（「删除」被 `Popconfirm` 的 `disabled` 一并挡住，禁用态没有任何解释）；服务端同一判据抛 409，两层都有。
-- **编辑表单复用创建表单**（`mode: 'new' | 'edit'`）：修改范围 = 用例 + 执行模式 + 使用智能体评分 + 候选行，与创建完全对齐；候选行可以带 `id`（表单必须能说清「这一行还是原来那一行」），`new` **显式剥掉 id** 再交给 `create`（新建对象、不动表单内部持有的行值），`edit` 原样交给 `update`；`mode` 与 `initial` 变更靠 `key` 重挂载（`initialValues` 只在挂载时读一次）；**整张表单取自 `initial`、尤其是执行模式**——少了它就会被表单缺省的「串行」盖掉，用户只改了个模型、执行模式却被悄悄改成串行。
+- **编辑表单复用创建表单**（`mode: 'new' | 'edit'`）：修改范围 = 用例 + 备注 + 执行模式 + 使用智能体评分 + 候选行，与创建完全对齐；候选行可以带 `id`（表单必须能说清「这一行还是原来那一行」），`new` **显式剥掉 id** 再交给 `create`（新建对象、不动表单内部持有的行值），`edit` 原样交给 `update`；`mode` 与 `initial` 变更靠 `key` 重挂载（`initialValues` 只在挂载时读一次）；**整张表单取自 `initial`、尤其是执行模式**——少了它就会被表单缺省的「串行」盖掉，用户只改了个模型、执行模式却被悄悄改成串行。
 - **右栏三态**：`?panel=detail|new|edit&id=…`（`parseRunsPanel` 认 `edit` 且必须带非空 id，缺 id 回落「不显示右栏」；未知 `panel` 仍按「有 id 就是 detail」兜底）；列表选中高亮放宽到 `detail | edit`；编辑成功 ⇒ `message.success('评测已保存')` + 回 `?panel=detail&id=`。
-- **保存前的确认框**：用 `isSameRowTarget`、`caseId` 与被从表单里删掉的行三条判据算出会作废的行（只算「跑过」的：`attempts > 0` 或已处终态），**非空时** `Modal.confirm`（标题「保存后会作废这些行的已有结果？」，正文「保存后它们会回到「待开始」，已有的分数与产物不再显示：」后逐行列出 `agentKind · modelId · 原状态`）后才发 `PUT`；**只改执行模式 / 只改评分方式时什么都不作废、不弹**（无事发生却弹窗 = 噪音，弹多了用户就会闭眼点确定）。
+- **保存前的确认框**：用 `isSameRowTarget`、`caseId` 与被从表单里删掉的行三条判据算出会作废的行（只算「跑过」的：`attempts > 0` 或已处终态），**非空时** `Modal.confirm`（标题「保存后会作废这些行的已有结果？」，正文「保存后它们会回到「待开始」，已有的分数与产物不再显示：」后逐行列出 `agentKind · modelId · 原状态`）后才发 `PUT`；**只改执行模式 / 只改评分方式 / 只改备注时什么都不作废、不弹**（无事发生却弹窗 = 噪音，弹多了用户就会闭眼点确定）。备注不属于任何一行的「同一件事」判据。
 - **原用例已删除**：「用例」下拉显示禁用占位项（「原用例已删除，请重新选择」），保存被服务端以 404 `NOT_FOUND`「用例不存在：`<caseId>`」拒绝，磁盘一字不改（与「开始」对同类轮次的处置一致：用例已删 ⇒ 只能看不能跑）。
 
 ### 重跑出口一：单行执行（连候选 agent 带评分整段重跑，只跑这一行）
@@ -50,7 +50,7 @@
 
 | 编辑动作 | 行快照 | 该行的磁盘产物 |
 |---|---|---|
-| 只改执行模式 / 只改「使用智能体评分」 | **一行都不动** | 不动 |
+| 只改执行模式 / 只改「使用智能体评分」/ 只改备注 | **一行都不动** | 不动 |
 | 改某行的 agent / 模型 / 强度 | 该行**原地重置**：`status → 'pending'`、`baselineCommit → ''`、`tokens / turns / durationMs / diff / score / error → null`、`attempts → 0`、`effort` 按新值重建（缺省即不写键——界面从此显示「默认」档） | 不动（重跑时既有机制清：`prepareRowWorkspace` 清 `workspace/`、`.agenthome/`、`.judgehome/`） |
 | 新增一行 | 新 `rowId`（`randomUUID`）+ `branch = test/{rowId}` + `workspacePath` 按 `run.workspaceBase` 现算；`providerName` / `baseUrl` 由服务端快照 | 无（首次 prepare 时建） |
 | 删掉一行 | 从快照移除 | **不动**（孤儿目录留给整轮删除时回收） |
@@ -59,7 +59,7 @@
   新增行的 `workspacePath` 按 **`run.workspaceBase`** 现算，**不用当前 `settings.workspaceRoot`**——一轮的产物必须与它的快照同根。
 - **`attempts` 在重置时清零（与 `retryRow` 刻意不清零相反）**：重试重跑的是同一件事，编辑换掉的是**被评对象**——留着「尝试 3 次」等于让新模型凭空背上旧模型的账。
 - **轮级状态收敛一次**（在同一个 `saveRun` 里落地）：全行 `judged` ⇒ `done`（`finishedAt` 已非 null 保留原值，否则填当前时刻）、`startedAt === null` ⇒ `idle`（`finishedAt = null`）、否则 ⇒ `partial`（`finishedAt = null`）——用新口径而不是现成的 `finalizeRun`（后者对「全行 pending」会落 `partial`）。
-- `EvalRun` **不加字段**（列表的「创建时间」是复现条件之一，编辑不该让它变）。
+- `EvalRun` **编辑不改 `createdAt`**（列表的「创建时间」是复现条件之一，编辑不该让它变）；唯一随编辑改写的注解字段是 `note`（备注）：显式给值才改，缺席按空串（`PUT` 是全量替换）——它不参与任何行的「同一件事」判定。
 - **「改了才重置」按值判**：表单交回来的永远是全量行集合，按「字段出现没有」判会把每次保存都变成全行清空重来。
 - **校验链与创建共用一份，先全校验、再一次性落盘**（顺序逐字沿用 `createRun`；编辑不为已存在的行生成新 id；任何一步抛 ⇒ **一个字节都不写**）。
 - **数据层**：`useUpdateRun()`（`PUT` → `mutate(runKey(id), updated, { revalidate: false })` + `await mutate(RUNS_KEY)`）、`useDeleteRun()`（`DELETE` → `mutate(runKey(id), undefined, …)`）；两个都**不用** `useSWRMutation`——写操作的响应要同时写进**详情**与**列表**两个键，而 `useSWRMutation` 只绑定一个键；顺带的好处：写操作没进 SWR 的 fetcher ⇒「窗口重新获得焦点重发一次写请求」这条坑在形状上不存在。

@@ -14,7 +14,12 @@ import { acceptsProtocol } from './protocol';
 import { getProvider, listAgentProviders } from './registry';
 import { setAgentRuntimeForTesting } from './runtime';
 import { createFakeDshSdk, createRecorder, createRunInput } from './testing/agent-fixtures';
-import type { AgentKind, AgentProviderMetadata, InteractionCapability } from './types';
+import type {
+  AgentKind,
+  AgentProviderMetadata,
+  InteractionCapability,
+  TurnInjectionCapability,
+} from './types';
 import { permissiveMessageCapability } from './types';
 
 
@@ -40,11 +45,65 @@ function interactionCells(declaration: InteractionCapability): InteractionCapabi
   };
 }
 
+/** 声明侧与期望表共同满足的结构：两边都按同一份投影被读 */
+type TurnInjectionDeclarationShape = {
+  delivery: Record<'round' | 'idle', TurnInjectionCellValues>;
+  retract: Record<'round' | 'idle', TurnInjectionCapability['retract']['round']>;
+  resume: TurnInjectionCellValues;
+};
+
+/**
+ * 注入面（第五组）声明的**取值格**，`notes`、撤回的 `reason` 与 `proofDriverReason` 不进比对：
+ * 前者是「这一族能力成立的前提」、后两者是判据的散文（「按什么认人 / 是不是整条清」、
+ * 「今天为什么不是真路径」），三者都随实测更新，逐字进回归网只会逼两处同改
+ * （与另两组的 `notes` 同一条处置）。撤回的**四档取值**与每格的 `proofDriver` 仍逐格比
+ * ——前者是界面「能不能按条撤」的唯一判据，后者是「这句结论是拿真路径证的还是夹具代跑的」的唯一判据。
+ *
+ * 缺席照原样返回 `undefined`：没声明这一组的家与期望表逐格相等（都是 `undefined`），
+ * 不会因为「没声明」被误判成「声明错了」；而**悄悄把整组声明删掉**也会红——
+ * 一边有、一边没有即不同，不与「还没接」混成同一种绿。
+ */
+function turnInjectionCells(declaration: TurnInjectionDeclarationShape | undefined): unknown {
+  if (declaration === undefined) return undefined;
+  /** 一格的取值：散文那一格（`proofDriverReason`）留在原地，其余逐格进回归网 */
+  const cellOf = (cell: TurnInjectionCellValues): unknown => ({
+    state: cell.state,
+    reason: cell.reason,
+    channel: cell.channel,
+    gate: cell.gate,
+    experimental: cell.experimental,
+    proofDriver: cell.proofDriver,
+  });
+  return {
+    delivery: { round: cellOf(declaration.delivery.round), idle: cellOf(declaration.delivery.idle) },
+    retract: { round: declaration.retract.round.state, idle: declaration.retract.idle.state },
+    resume: cellOf(declaration.resume),
+  };
+}
+
+/** 注入面里**进回归网**的一格取值（`proofDriverReason` 是散文，声明与期望表都不带它） */
+type TurnInjectionCellValues = Omit<TurnInjectionCapability['resume'], 'proofDriverReason'>;
+
+/**
+ * 注入面在期望表里的形状：与 `turnInjectionCells()` 的投影**逐格同形**
+ * （`proofDriverReason` 与 `notes` 是散文，两边都不进——各写一份「比哪几格」的话，
+ * 漏一格的那种漂移看起来仍然全绿）。
+ */
+type TurnInjectionCellsShape = TurnInjectionDeclarationShape & {
+  /** 这一格是散文、不进比对（原文在 `providers/<kind>/index.ts` 的声明里） */
+  notes: string[];
+};
+
+/** 期望表：除注入面之外逐格就是 `AgentProviderMetadata`，注入面按投影后的取值格写 */
+type ExpectedMetadata = Omit<AgentProviderMetadata, 'turnInjection'> & {
+  turnInjection?: TurnInjectionCellsShape;
+};
+
 /**
  * `protocolTypes` 是**集合**（DSH 两条 wire 都能收，见
  * "docs/protocols/dsh.md"）。本步只搬形状，三家都还是单元素。
  */
-const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
+const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
   'cc': {
     protocolTypes: ['anthropic'],
     capability: { cancelMidTurn: true, usage: true },
@@ -72,6 +131,31 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 「关闭」只能由显式选 `off` 触发，而 claude 的 SDK 档位域里没有 `off` ⇒ 适配器把它翻成
     // `thinking: { type: 'disabled' }`（另一个字段），档名仍进档位域供界面选择。
     reasoningEfforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'],
+    /**
+     * 注入面（第五组）：投递两档 `unverified`（接线与生产调用方都已落地，缺的是厂商侧投递点的
+     * 端到端真路径观测），撤回两档 `by-id`，续接 `yes`。逐格理由写在 `providers/cc/index.ts`
+     * 那一份里；这里进回归网的是**取值**——改一格就改了界面上「这家收不收人话」的结论。
+     */
+    turnInjection: {
+      delivery: {
+        round: { state: 'unverified', reason: 'unverified', channel: 'wire', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
+        idle: { state: 'unverified', reason: 'unverified', channel: 'wire', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
+      },
+      retract: {
+        round: {
+          state: 'by-id',
+          reason: '按我们自铸的 uuid 撤这一条（控制请求 `cancel_async_message`）；它不在 SDK 公开面'
+            + '（`Query` 接口与 `.d.ts` 都没有）⇒ 运行时探测，缺席时如实回 unsupported',
+        },
+        idle: {
+          state: 'by-id',
+          reason: '按我们自铸的 uuid 撤这一条（控制请求 `cancel_async_message`）；它不在 SDK 公开面'
+            + '（`Query` 接口与 `.d.ts` 都没有）⇒ 运行时探测，缺席时如实回 unsupported',
+        },
+      },
+      resume: { state: 'yes', reason: null, channel: 'wire', gate: null, experimental: false, proofDriver: 'real-path' },
+      notes: [],
+    },
   },
   codex: {
     protocolTypes: ['openai'],
@@ -87,6 +171,26 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
       askUserReason: null,
       askUserProofDriver: 'real-path',
       askUserProofDriverReason: null,
+      notes: [],
+    },
+    /**
+     * 注入面（第五组）：**两档的证据强度不同**——`'idle'` 档有真路径读数（那句话进厂商出站请求体、
+     * 那一轮跑完、答复成为本行 `finalText`）⇒ `yes` + `real-path`，且 `thread/queue/*` 要
+     * `experimentalApi`（`experimental: true`）；`'round'` 档仍 `unverified`（**投递点**没验），
+     * 带真版本门（`expectedTurnId` 自 0.156.1 起必填）、在非实验面上就有。
+     * 撤回按档分开：在途那一档**没有**撤回面（`none`）、耐久队列那一档按身份可撤（`by-id`）；
+     * 续接是 `yes`（真机两条独立判据都过），键只有 `threadId`。
+     */
+    turnInjection: {
+      delivery: {
+        round: { state: 'unverified', reason: 'unverified', channel: 'wire', gate: { version: '0.156.1' }, experimental: false, proofDriver: 'synthetic-fixture' },
+        idle: { state: 'yes', reason: null, channel: 'wire', gate: null, experimental: true, proofDriver: 'real-path' },
+      },
+      retract: {
+        round: { state: 'none', reason: '在途注入没有按身份收回的面（`turn/interrupt` 是无身份的全清）' },
+        idle: { state: 'by-id', reason: '按厂商的 `queuedSubmissionId` 撤（`thread/queue/delete`）' },
+      },
+      resume: { state: 'yes', reason: null, channel: 'wire', gate: null, experimental: false, proofDriver: 'real-path' },
       notes: [],
     },
     // 耗时量级同理只比 `runScale`：`notes` 是实测前提的说明，随真机更新
@@ -123,6 +227,27 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,
+    // 人工消息面：两档各走一条路（`'idle'` 是 wire、`'round'` 是进程内插件）；
+    // 续接走官方 wire 的 `session/resume`，正向证据是真路径驱动器
+    turnInjection: {
+      delivery: {
+        round: { state: 'yes', reason: null, channel: 'in-process-plugin', gate: null, experimental: false, proofDriver: 'real-path' },
+        idle: { state: 'yes', reason: null, channel: 'wire', gate: null, experimental: false, proofDriver: 'real-path' },
+      },
+      retract: {
+        round: { state: 'by-id', reason: '' },
+        idle: { state: 'by-id', reason: '' },
+      },
+      resume: {
+        state: 'yes',
+        reason: null,
+        channel: 'wire',
+        gate: null,
+        experimental: false,
+        proofDriver: 'real-path',
+      },
+      notes: [],
+    },
     // 档位域来自 llm-deepseek 的 `reasoningEffort` schema（只有四档：没有 medium / xhigh）
     reasoningEfforts: ['off', 'low', 'high', 'max'],
     // dsh 的「未选」会真的落到一个具体档上 ⇒ 它必须声明 `defaultEffort`（另两家由厂商推断，
@@ -131,7 +256,7 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
   },
   pi: {
     // 两条 wire 都能收（in-process SDK 自注册 provider，协议决定 wire）：
-    // openai → openai-completions、anthropic → anthropic-messages
+    // openai → openai-responses、anthropic → anthropic-messages
     protocolTypes: ['openai', 'anthropic'],
     // 取消走 SDK 的 `abort()`（在途轮次毫秒级终结）；用量取 `message_end.message.usage`
     capability: { cancelMidTurn: true, usage: true },
@@ -141,6 +266,23 @@ const EXPECTED_METADATA: Record<AgentKind, AgentProviderMetadata> = {
     // 交互面只比取值那几格：这一家的提问工具由**我们**注册（厂商侧没有这个工具，见适配器的
     // `ask-user.ts`）⇒ 通道是 `host-tool` 而不是 `vendor-tool`
     interaction: { askUser: 'yes', askUserChannel: 'host-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
+    /**
+     * 注入面（第五组）：投递两档今天**还没接**（窄壳按 1.1.0 的实际面声明了 `steer` / `followUp`，
+     * 但适配器一格都不挂端口）；撤回只有 `clearQueue()` 那一条整条清空的路；续接走进程内 SDK 的
+     * `SessionManager.open(会话文件)`，真机同形夹具在 `providers/pi/session-resume.test.ts`。
+     */
+    turnInjection: {
+      delivery: {
+        round: { state: 'off-by-adapter', reason: 'not-observed', channel: 'in-process-sdk', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
+        idle: { state: 'off-by-adapter', reason: 'not-observed', channel: 'in-process-sdk', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
+      },
+      retract: {
+        round: { state: 'flush-only', reason: '只有 clearQueue()，两档一起清' },
+        idle: { state: 'flush-only', reason: '只有 clearQueue()，两档一起清' },
+      },
+      resume: { state: 'yes', reason: null, channel: 'in-process-sdk', gate: null, experimental: false, proofDriver: 'real-path' },
+      notes: [],
+    },
     // 耗时量级是**秒级**：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
     timing: { runScale: 'seconds', notes: [] },
     // 思考正文与工具结果正文都在 `session.subscribe` 的事件流里 ⇒ 不需要补 messages.jsonl。
@@ -177,17 +319,18 @@ describe('listAgentProviders', () => {
 });
 
 describe('元数据投影（回归网）', () => {
-  it('各家与表逐格一致（`messageCapability`、注入面与交互面的 `notes`、耗时 `notes` 除外，它们各有真源）', () => {
+  it('各家与表逐格一致（`messageCapability` 与三组 `notes` 除外，它们各有真源）', () => {
     for (const provider of listAgentProviders()) {
       // 为什么排除 `messageCapability`：它由**各家自己**声明（三份真值在 `providers/<kind>/index.ts`），
       // 「声明过的东西真的拿得到」由 `message-conformance.test.ts` 钉住；这里再抄一份 stub 只会
       // 让同一件事有两个真源，而两份必然漂移。
-      const { messageCapability: _declared, injection, interaction, timing, ...rest } = provider.metadata;
+      const { messageCapability: _declared, injection, interaction, timing, turnInjection, ...rest } = provider.metadata;
       const {
         messageCapability: _expected,
         injection: expectedInjection,
         interaction: expectedInteraction,
         timing: expectedTiming,
+        turnInjection: expectedTurnInjection,
         ...wanted
       } = EXPECTED_METADATA[provider.kind];
       // 报错信息带上 kind：这一格是「哪一家错了」的定位线索（多家共用同一个断言体）
@@ -203,6 +346,16 @@ describe('元数据投影（回归网）', () => {
         interactionCells(interaction),
         `${provider.kind} 的交互面声明`,
       ).toEqual(interactionCells(expectedInteraction));
+      /**
+       * 注入面（第五组）同理：取值那几格进回归网，`notes` 不进。
+       * **未声明**也是一条要被钉住的事实（缺席按「不知道」处置，界面不许编一份都支持的）
+       * ⇒ 两边都缺席才算一致，一边有、一边没有即红。
+       * 两档的档位、通道、版本门与撤回档都是界面文案与编排路径的输入，改一格就改结论。
+       */
+      expect(
+        turnInjectionCells(turnInjection),
+        `${provider.kind} 的注入面（第五组）声明`,
+      ).toEqual(turnInjectionCells(expectedTurnInjection));
       // 耗时量级同理：改档会改真机冒烟的等待预算，属于「必须与适配器同一次提交里改掉」的那类
       expect(timing.runScale, `${provider.kind} 的耗时量级`).toBe(expectedTiming.runScale);
     }

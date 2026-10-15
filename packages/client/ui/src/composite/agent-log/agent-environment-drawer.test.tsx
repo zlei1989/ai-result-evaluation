@@ -282,12 +282,13 @@ describe('AgentEnvironmentDrawer', () => {
 });
 
 /**
- * **静态扫描**（jsdom 看不见的那一半）：宽度只许来自 `base/drawer-geometry.ts`。
+ * **静态扫描**（jsdom 看不见的那一半）：宽度与语义槽样式都只许来自 `base/drawer-geometry.ts`。
  *
- * 为什么值得单独钉：jsdom 没有布局引擎，「这个抽屉多宽」测不出来；而宽度写错了是**静默**的——
- * 抽屉照样弹出来，只是宽窄不对，别的用例一条都不会红。「宽一些」时改的正是
- * 这一格（旧值 `min(42vw, 640px)` 在 1432px 视口上只有 601px，比它推开的那个主抽屉还窄），
- * 改法是**接上共享常量**（`NESTED_DRAWER_SIZE`）而不是换一个新字面量：自持一份 = 与几何常量漂移。
+ * 为什么值得单独钉：jsdom 没有布局引擎，「这个抽屉多宽 / 内边距多少」测不出来；而写错了是**静默**的——
+ * 抽屉照样弹出来，只是宽窄或内边距不对，别的用例一条都不会红。「宽一些」时改的正是
+ * 这一格（更窄的字面量在 1432px 视口上只有 601px，比它推开的那个主抽屉还窄），
+ * 改法是**接上共享常量**（`NESTED_DRAWER_SIZE` / `DRAWER_SEMANTIC_STYLES`）而不是换一个新字面量：
+ * 自持一份 = 与几何常量漂移。两个槽分开钉——只钉宽度时，语义槽样式内联一份仍然全绿。
  */
 describe('AgentEnvironmentDrawer（几何，静态）', () => {
   const raw = readFileSync(join(import.meta.dirname, 'agent-environment-drawer.tsx'), 'utf8');
@@ -310,5 +311,14 @@ describe('AgentEnvironmentDrawer（几何，静态）', () => {
       sizeProps.filter((value) => /\d(vw|px)/.test(value ?? '')),
       '环境抽屉又自己写了一份宽度字面量',
     ).toEqual([]);
+  });
+
+  it('语义槽样式也走共享常量（内联一份 = 与几何常量静默漂移）', () => {
+    // 正向：`styles` 那一格必须引用共享常量。
+    // 负向：判据取「内联兜底里的那个 `maxWidth` 字面量」而不是 `styles={{`——后者会把本件里
+    // 别的组件（`Button` / `Collapse`）将来合法的内联样式一起误伤，而守卫误伤会教人删守卫；
+    // 这一格是**语义槽**，本件再出现 `maxWidth: '100vw'` 只可能是又内联了一份。
+    expect(source, '环境抽屉的语义槽样式没有走共享常量').toContain('styles={DRAWER_SEMANTIC_STYLES}');
+    expect(source, '环境抽屉又自己内联了一份语义槽样式').not.toMatch(/maxWidth: '100vw'/);
   });
 });

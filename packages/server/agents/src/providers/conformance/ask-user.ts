@@ -137,9 +137,13 @@ export interface AskUserProbe {
 /**
  * 某条行级事件是不是「厂商投了一条本仓没有专门投影的通知」那一格，是的话给出方法名。
  *
- * 判据是**严格形状**：事件正文是一个 JSON 对象、且**只有** `method` 这一个字符串键（各家对未识别
- * 通知的落点都是这个形状，见 `providers/<家>/events.ts` 的 `other` 分支）。只认字符串包含会让别处的
- * 文案冒充厂商通知——而这一格是用来**放宽**判据的，放宽错地方比不放宽更坏。
+ * 判据是**严格形状**：事件正文是一个 JSON 对象、键集**只能是** `method`（必填，字符串）与
+ * `params`（可选，厂商原载荷）——各家对未识别通知的落点就是这个形状（见
+ * `providers/<家>/events.ts` 的 `other` 分支：方法名必留，`params` 原样抄过来，不抄就分不清
+ * 「上游换了载荷结构」与「上游没发」）。
+ *
+ * 为什么不放宽到「只认字符串包含 method」：这一格是用来**放宽**两臂指纹判据的，放宽错地方比
+ * 不放宽更坏——别处的文案一旦能冒充厂商通知，就能把「产品少发了一条事件」盖过去。
  */
 export function vendorNoticeMethodOf(event: unknown): string | null {
   if (typeof event !== 'object' || event === null) return null;
@@ -153,7 +157,8 @@ export function vendorNoticeMethodOf(event: unknown): string | null {
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   const keys = Object.keys(parsed);
-  if (keys.length !== 1 || keys[0] !== 'method') return null;
+  if (keys.length === 0 || keys.some((key) => key !== 'method' && key !== 'params')) return null;
+  if (!keys.includes('method')) return null;
   const method = (parsed as { method?: unknown }).method;
   return typeof method === 'string' && method !== '' ? method : null;
 }

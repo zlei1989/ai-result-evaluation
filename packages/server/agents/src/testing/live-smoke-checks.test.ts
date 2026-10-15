@@ -23,6 +23,7 @@ import {
   scaleOf,
   waitBudgetFor,
 } from './live-smoke-checks';
+import { DEFAULT_TURN_WALL_CLOCK_MS } from '../turn';
 
 /** 判据读的那几格（不伪造整行：读什么给什么） */
 interface JudgedRow {
@@ -195,9 +196,15 @@ describe('⑦ 耗时格与等待预算（声明驱动消费方）', () => {
     expect(checkDurationCell(null, 'seconds')).toBeNull();
   });
 
-  it('等待预算按声明的量级派生：秒级 1 分钟、分钟级 10 分钟', () => {
+  it('等待预算按声明的量级派生：秒级 1 分钟、分钟级 11 分钟', () => {
     expect(waitBudgetFor('seconds')).toBe(60_000);
-    expect(waitBudgetFor('minutes')).toBe(600_000);
+    expect(waitBudgetFor('minutes')).toBe(660_000);
+  });
+
+  it('分钟级的等待预算**严宽于**骨架的单轮墙钟看门狗上限——不然那一档必抖', () => {
+    // 「上游整机不可达」会正好走到看门狗上限才收场（真机：600.103 s）⇒ 预算若与之相等
+    // （曾经就是 600_000 == 600_000），收场比预算晚约 100 ms 就成假红。
+    expect(waitBudgetFor('minutes')).toBeGreaterThan(DEFAULT_TURN_WALL_CLOCK_MS);
   });
 
   it('实测上限比等待预算宽一档——判的是「不符」而不是「卡点」', () => {

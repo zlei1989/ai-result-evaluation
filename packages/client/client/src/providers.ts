@@ -1,5 +1,5 @@
 /**
- * 供应商数据层：列表 + 增删改 + 模型清单增删 + /models 拉取。
+ * 供应商数据层：列表 + 增删改 + 模型清单增删 + /models 拉取（预览与挑选导入两步）。
  *
  * 回写约定与 settings.ts 同源，但有一处**刻意不同**：
  *   - 这些 mutation 一律**不开 `populateCache`**。后端返回的是**单个**`ProviderView`，而 mutation 的
@@ -10,7 +10,14 @@
  */
 import useSWR, { useSWRConfig } from 'swr';
 import useSWRMutation from 'swr/mutation';
-import type { ProviderCreate, ProviderModelCapability, ProviderPatch, ProviderView } from '@aieval/contracts';
+import type {
+  ProviderCreate,
+  ProviderModelCapability,
+  ProviderModelPreview,
+  ProviderModelPreviewList,
+  ProviderPatch,
+  ProviderView,
+} from '@aieval/contracts';
 import { delJson, getJson, postJson, putJson } from './http';
 
 const LIST_KEY = '/api/providers';
@@ -99,23 +106,46 @@ export function useDeleteProvider(): { remove: (id: string) => Promise<void>; is
   return { remove, isDeleting: isMutating };
 }
 
-export function useFetchProviderModels(): {
-  fetchModels: (id: string) => Promise<ProviderView>;
-  isFetching: boolean;
+/**
+ * 拉取模型清单的第一步：预览候选（只读不写）。
+ * 响应体是 `{ models }`，这里解出数组交给调用方 —— 页面把它存进 state、
+ * 由 `ProviderModelsModal` 弹出挑选对话框；用户确定后走 `useImportProviderModels`。
+ */
+export function usePreviewProviderModels(): {
+  preview: (id: string) => Promise<ProviderModelPreview[]>;
+  isPreviewing: boolean;
+} {
+  const { trigger, isMutating } = useSWRMutation(
+    LIST_KEY,
+    (key: string, { arg }: { arg: string }) =>
+      postJson<ProviderModelPreviewList>(`${key}/${encodeURIComponent(arg)}/models/preview`, {}),
+    { revalidate: false },
+  );
+  return { preview: async (id: string) => (await trigger(id)).models, isPreviewing: isMutating };
+}
+
+/**
+ * 拉取模型清单的第二步：把挑选后的候选合并进清单。
+ * 提交的条目与预览响应同形（勾选哪几条、带哪些能力格，都在 `ProviderModelImportModal` 里定好），
+ * 成功后与其它 mutation 一样显式 `mutate(LIST_KEY)` 刷新列表。
+ */
+export function useImportProviderModels(): {
+  importModels: (id: string, models: ProviderModelPreview[]) => Promise<ProviderView>;
+  isImporting: boolean;
 } {
   const { mutate } = useSWRConfig();
   const { trigger, isMutating } = useSWRMutation(
     LIST_KEY,
-    (key: string, { arg }: { arg: string }) =>
-      postJson<ProviderView>(`${key}/${encodeURIComponent(arg)}/models/fetch`, {}),
+    (key: string, { arg }: { arg: { id: string; models: ProviderModelPreview[] } }) =>
+      postJson<ProviderView>(`${key}/${encodeURIComponent(arg.id)}/models/import`, { models: arg.models }),
     { revalidate: false },
   );
-  const fetchModels = async (id: string): Promise<ProviderView> => {
-    const view = await trigger(id);
+  const importModels = async (id: string, models: ProviderModelPreview[]): Promise<ProviderView> => {
+    const view = await trigger({ id, models });
     await mutate(LIST_KEY);
     return view;
   };
-  return { fetchModels, isFetching: isMutating };
+  return { importModels, isImporting: isMutating };
 }
 
 export function useProviderModels(): {

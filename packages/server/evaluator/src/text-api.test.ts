@@ -33,6 +33,14 @@ function stubFetch(response: Response): ReturnType<typeof vi.fn> {
   return fetchMock;
 }
 
+/** Responses 的正文形状：`output[]` 里一条 message 项、content 里一块 `output_text` */
+function responsesText(text: string, usage?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    output: [{ type: 'message', content: [{ type: 'output_text', text }] }],
+    ...(usage === undefined ? {} : { usage }),
+  };
+}
+
 const route = (protocolType: ProtocolType): TextRoute => ({
   protocolType,
   baseUrl: protocolType === 'openai' ? 'https://api.deepseek.com/v1' : 'https://api.deepseek.com/anthropic',
@@ -59,13 +67,13 @@ afterEach(() => {
   TEXT_API_RETRY.backoffMs = PRODUCTION_BACKOFF_MS;
 });
 
-describe('callTextApi —— OpenAI 兼容协议', () => {
-  it('打 {baseUrl}/chat/completions，带 Bearer 与 model，取 choices[0].message.content', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '生成结果' } }] }));
+describe('callTextApi —— OpenAI Responses 协议', () => {
+  it('打 {baseUrl}/v1/responses，带 Bearer 与 model，取 output[].content[].output_text', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('生成结果')));
     const text = await callTextApi(route('openai'), { prompt: '写个 LRU' });
 
     const { url, init } = callArgs(fetchMock);
-    expect(url).toBe('https://api.deepseek.com/v1/chat/completions');
+    expect(url).toBe('https://api.deepseek.com/v1/responses');
     expect(init.method).toBe('POST');
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer sk-test-key');
@@ -73,24 +81,40 @@ describe('callTextApi —— OpenAI 兼容协议', () => {
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body.model).toBe('deepseek-chat');
     expect(body.stream).toBe(false);
-    expect(body.messages).toEqual([{ role: 'user', content: '写个 LRU' }]);
+    expect(body.input).toEqual([{ role: 'user', content: '写个 LRU' }]);
+    // Chat Completions 的键一个都不许在：混着发不会报错，但网关会按其中一套解析
+    expect(body).not.toHaveProperty('messages');
     expect(text).toBe('生成结果');
   });
 
-  it('给了 system 时放在 messages 的第一条', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+  it('给了 system 时放在 input 的第一条（不走顶层 instructions）', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('ok')));
     await callTextApi(route('openai'), { system: '你是评分员', prompt: '打分' });
-    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[] };
-    expect(body.messages).toEqual([
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { instructions?: string; input: unknown[] };
+    expect(body.input).toEqual([
       { role: 'system', content: '你是评分员' },
       { role: 'user', content: '打分' },
     ]);
+    expect(body).not.toHaveProperty('instructions');
   });
 
   it('baseUrl 带尾斜杠时不产生双斜杠（用户手填的地址形态很多）', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const fetchMock = stubFetch(jsonResponse(responsesText('ok')));
     await callTextApi({ ...route('openai'), baseUrl: 'https://api.deepseek.com/v1/' }, { prompt: 'x' });
-    expect(callArgs(fetchMock).url).toBe('https://api.deepseek.com/v1/chat/completions');
+    expect(callArgs(fetchMock).url).toBe('https://api.deepseek.com/v1/responses');
+  });
+
+  /** 表单的占位符只写站点根：归一化必须在请求侧真的补上 `/v1`，否则「填根也行」是一句假话 */
+  it('baseUrl 只有站点根时自动补 /v1（与智能体侧同一把尺）', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('ok')));
+    await callTextApi({ ...route('openai'), baseUrl: 'https://api.deepseek.com' }, { prompt: 'x' });
+    expect(callArgs(fetchMock).url).toBe('https://api.deepseek.com/v1/responses');
+  });
+
+  it('query / fragment 原样保留，路径后缀不会掉进 query 里', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('ok')));
+    await callTextApi({ ...route('openai'), baseUrl: 'https://gw.example.com/openai?x=1' }, { prompt: 'x' });
+    expect(callArgs(fetchMock).url).toBe('https://gw.example.com/openai/v1/responses?x=1');
   });
 });
 
@@ -169,9 +193,27 @@ describe('callTextApi —— 错误映射', () => {
     expect((caught as Error).message).toContain('api.deepseek.com');
   });
 
-  it('响应缺 choices[0].message.content 时抛 INTERNAL（不返回空串——空串会被当成一次成功的评分）', async () => {
-    stubFetch(jsonResponse({ choices: [] }));
+  it('响应缺 output[].content[].output_text 时抛 INTERNAL（不返回空串——空串会被当成一次成功的评分）', async () => {
+    stubFetch(jsonResponse({ output: [] }));
     await expect(callTextApi(route('openai'), { prompt: 'x' })).rejects.toThrow(/未返回文本内容/);
+  });
+
+  /** 推理模型的 `output[]` 头部可能是 reasoning 项：按位置取会把推理摘要当成答复 */
+  it('只认 message 项的 output_text（reasoning 项与其它块一个都不混进正文）', async () => {
+    stubFetch(jsonResponse({
+      output: [
+        { type: 'reasoning', content: [{ type: 'reasoning_text', text: '（这是推理，不是答复）' }] },
+        {
+          type: 'message',
+          content: [
+            { type: 'output_text', text: '前半段' },
+            { type: 'refusal', refusal: '拒绝' },
+            { type: 'output_text', text: '后半段' },
+          ],
+        },
+      ],
+    }));
+    await expect(callTextApi(route('openai'), { prompt: 'x' })).resolves.toBe('前半段后半段');
   });
 
   it('网络层抛错时折成 ServiceError 而不是把 fetch 的 TypeError 冒出去（且 message 里不留英文原文）', async () => {
@@ -417,8 +459,8 @@ describe('callTextApi —— 上游正文只进 context 与服务端日志，绝
  *      只钉多轮的话，「单轮的 prompt 被丢掉」这种漂移无人发现。
  */
 describe('callTextApiConversation —— 多轮对话', () => {
-  it('OpenAI：对话按顺序进 messages，system 仍在最前', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '修好了' } }] }));
+  it('OpenAI：对话按顺序进 input，system 是第一条', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('修好了')));
     // 多轮入口交出的是 `{ text, usage }`：这一条只看正文，用量另有专门一组用例
     const { text } = await callTextApiConversation(route('openai'), {
       system: '只输出 JSON',
@@ -429,8 +471,9 @@ describe('callTextApiConversation —— 多轮对话', () => {
       ],
     });
 
-    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[]; stream: boolean };
-    expect(body.messages).toEqual([
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { instructions?: string; input: unknown[]; stream: boolean };
+    expect(body).not.toHaveProperty('instructions');
+    expect(body.input).toEqual([
       { role: 'system', content: '只输出 JSON' },
       { role: 'user', content: '给个分' },
       { role: 'assistant', content: '{"dimensions":[]}' },
@@ -461,7 +504,7 @@ describe('callTextApiConversation —— 多轮对话', () => {
   });
 
   it('空对话在本地就被拦下（不把一次必然 400 的请求发出去）', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [] }));
+    const fetchMock = stubFetch(jsonResponse({ output: [] }));
     await expect(callTextApiConversation(route('openai'), { messages: [] })).rejects.toThrow(/一条消息都没有/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -470,11 +513,11 @@ describe('callTextApiConversation —— 多轮对话', () => {
 /**
  * 内容块数组（意图 + 附件）：评分通路把 diff 作为**独立 text 块**与意图消息分开输入，
  * 网关不会再把长 diff 当正文去「读」，模型拿到的是带文件名标题的独立段落。
- * 两条协议的 wire 形状**同形**：attachment 块一律翻成
- * `{type:'text', text: '## <filename>\n\n<原文>'}`（标题行用 filename）。
- * 为什么不是各家自己的协议附件（anthropic `document` / openai `file` part）：
+ * 两条协议的 wire 形状只差块的 type 名：Messages 是 `text`、Responses 是 `input_text`；
+ * attachment 块一律翻成带标题的独立文本块（`## <filename>\n\n<原文>`，标题行用 filename）。
+ * 为什么不是各家自己的协议附件（anthropic `document` / openai `input_file`）：
  * DeepSeek 系端点不实现这两种附件——官方端点把 document 块替换成 `[Unsupported Document]`
- * 占位、对 file part 回 400，网关还会静默丢弃；独立 text 块在两协议三端点真机可用
+ * 占位、对文件块回 400，网关还会静默丢弃；独立文本块在两协议三端点真机可用
  * （判据 = 哨兵词复述）。
  * 字符串形态向后兼容由上面的既有用例钉住（三按钮与生成/识别通路不走附件）。
  */
@@ -504,8 +547,8 @@ describe('callTextApiConversation —— 内容块数组（意图 + 附件）', 
     ]);
   });
 
-  it('openai：附件同样翻成带标题的 text part（与 anthropic 同形，无 file/file_data）', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '修好了' } }] }));
+  it('openai：附件翻成带标题的 input_text 块（无 input_file/input_image）', async () => {
+    const fetchMock = stubFetch(jsonResponse(responsesText('修好了')));
     const messages: ChatMessage[] = [
       {
         role: 'user',
@@ -517,13 +560,13 @@ describe('callTextApiConversation —— 内容块数组（意图 + 附件）', 
     ];
     await callTextApiConversation(route('openai'), { messages });
 
-    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { messages: unknown[] };
-    expect(body.messages).toEqual([
+    const body = JSON.parse(String(callArgs(fetchMock).init.body)) as { input: unknown[] };
+    expect(body.input).toEqual([
       {
         role: 'user',
         content: [
-          { type: 'text', text: '按下面的评分表给改动打分' },
-          { type: 'text', text: '## candidate-diff.txt\n\n+ 中文标题\n' },
+          { type: 'input_text', text: '按下面的评分表给改动打分' },
+          { type: 'input_text', text: '## candidate-diff.txt\n\n+ 中文标题\n' },
         ],
       },
     ]);
@@ -577,39 +620,27 @@ describe('callTextApiConversation —— 内容块数组（意图 + 附件）', 
  *
  * 四类判据缺一不可：
  *   ① **归一**：本仓的三元组里 `input` 是「非缓存输入」（与 `UsageTokensSchema` 同一条口径），
- *      而 OpenAI 的 `prompt_tokens` 是**总量**（含命中）⇒ 必须减掉 `cached`；Anthropic 的
- *      `input_tokens` 本来就不含缓存读 ⇒ **不许**减（两边各减一次就是把 Anthropic 的数算小）；
- *   ② **两种缓存字段名都要认**：OpenAI 格式在 DeepSeek 上是 `prompt_cache_hit_tokens`，
- *      在官方 OpenAI 上是 `prompt_tokens_details.cached_tokens`——只认一个，另一家就永远报 0 缓存；
+ *      而 Responses 的 `input_tokens` 是**总量**（含命中，命中单列在
+ *      `input_tokens_details.cached_tokens`）⇒ 必须减掉 `cached`；Anthropic 的 `input_tokens`
+ *      本来就不含缓存读 ⇒ **不许**减（两边各减一次就是把 Anthropic 的数算小）；
+ *   ② **缓存读按各自的字段读**：Responses 只有 `input_tokens_details.cached_tokens`；
  *   ③ **没采到 = `null`，绝不填 0**（`tokens: {0,0,0}` 会被读成「这一分一个 token 都没花」）；
  *   ④ 单轮入口的形状不变（仍是正文一个字符串）：「生成 / 识别」那条通路不记账。
  */
 describe('callTextApiConversation —— 用量随结果一起交出来', () => {
-  it('OpenAI：prompt_tokens 减掉命中，cached 取 prompt_tokens_details.cached_tokens', async () => {
+  it('OpenAI：input_tokens 减掉命中，cached 取 input_tokens_details.cached_tokens', async () => {
     stubFetch(
-      jsonResponse({
-        choices: [{ message: { content: '答案' } }],
-        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40 } },
-      }),
+      jsonResponse(responsesText('答案', {
+        input_tokens: 100,
+        output_tokens: 20,
+        input_tokens_details: { cached_tokens: 40 },
+      })),
     );
 
     const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
 
     expect(result.text).toBe('答案');
     expect(result.usage).toEqual({ input: 60, cached: 40, output: 20 });
-  });
-
-  it('OpenAI：认 DeepSeek 原文的 prompt_cache_hit_tokens（另一种缓存字段名）', async () => {
-    stubFetch(
-      jsonResponse({
-        choices: [{ message: { content: '答案' } }],
-        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_cache_hit_tokens: 70 },
-      }),
-    );
-
-    const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
-
-    expect(result.usage).toEqual({ input: 30, cached: 70, output: 20 });
   });
 
   it('Anthropic：input_tokens 不减（它本来就不含缓存读）', async () => {
@@ -626,7 +657,7 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
   });
 
   it('没报缓存读时记 0（那是「这次没命中」，不是「这家不报用量」）', async () => {
-    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }], usage: { prompt_tokens: 9, completion_tokens: 3 } }));
+    stubFetch(jsonResponse(responsesText('答案', { input_tokens: 9, output_tokens: 3 })));
 
     const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
 
@@ -634,21 +665,22 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
   });
 
   it('响应里没有 usage / 缺必填格 ⇒ usage 为 null（绝不填 0）', async () => {
-    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }] }));
+    stubFetch(jsonResponse(responsesText('答案')));
     const missing = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
     expect(missing.usage).toBeNull();
 
-    stubFetch(jsonResponse({ choices: [{ message: { content: '答案' } }], usage: { prompt_tokens: 9 } }));
+    stubFetch(jsonResponse(responsesText('答案', { input_tokens: 9 })));
     const partial = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
     expect(partial.usage).toBeNull();
   });
 
-  it('上游自相矛盾（命中数大于 prompt 总量）⇒ 整格 null，不减出一个负数输入', async () => {
+  it('上游自相矛盾（命中数大于输入总量）⇒ 整格 null，不减出一个负数输入', async () => {
     stubFetch(
-      jsonResponse({
-        choices: [{ message: { content: '答案' } }],
-        usage: { prompt_tokens: 10, completion_tokens: 2, prompt_cache_hit_tokens: 40 },
-      }),
+      jsonResponse(responsesText('答案', {
+        input_tokens: 10,
+        output_tokens: 2,
+        input_tokens_details: { cached_tokens: 40 },
+      })),
     );
 
     const result = await callTextApiConversation(route('openai'), { messages: [{ role: 'user', content: '打分' }] });
@@ -658,7 +690,8 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
     expect(result.usage).toBeNull();
   });
 
-  it('单轮入口的形状不变（生成 / 识别仍只拿正文）', async () => {    stubFetch(jsonResponse({ choices: [{ message: { content: '生成结果' } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }));
+  it('单轮入口的形状不变（生成 / 识别仍只拿正文）', async () => {
+    stubFetch(jsonResponse(responsesText('生成结果', { input_tokens: 5, output_tokens: 2 })));
 
     await expect(callTextApi(route('openai'), { prompt: '写个 LRU' })).resolves.toBe('生成结果');
   });
@@ -672,8 +705,9 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
  *     `EvalRow.effort` 的「未选」**不等强、不要互相引用**：那边是走该家适配器自己的缺省
  *     （dsh 会落到 `high`），是**我们这一侧**做的决定，而这里是不下发、由网关定
  *     （口径见 `contracts/src/run.ts` 的 `EvalRow.effort` 与 `text-api.ts` 的 `reasoningFields`）；
- *   · `off` = 显式关闭（两协议都是 `thinking: { type: 'disabled' }`）；
- *   · 其它档 = 按协议翻成 `reasoning_effort`（openai）/ `output_config.effort`（anthropic）。
+ *   · `off` = 显式关闭（openai 是 `reasoning: { effort: 'none' }`、anthropic 是
+ *     `thinking: { type: 'disabled' }`）；
+ *   · 其它档 = 按协议翻成 `reasoning.effort`（openai Responses）/ `output_config.effort`（anthropic）。
  *
  * 断言一律读**真实请求体**（`callArgs` + `JSON.parse(init.body)`），而不是「我们调了哪个助手」——
  * 强度是 wire 上的字段，请求体就是唯一的事实来源。前六条走单轮入口（`callTextApi` 会把
@@ -681,14 +715,14 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
  * 下面两个工厂只是 `jsonResponse` 的夹具（沿用文件既有手法），不含任何断言逻辑。
  */
 describe('思考强度落进请求体（唯一一份协议表）', () => {
-  const okOpenAI = (): Response => jsonResponse({ choices: [{ message: { content: 'ok' } }] });
+  const okOpenAI = (): Response => jsonResponse(responsesText('ok'));
   const okAnthropic = (): Response => jsonResponse({ content: [{ type: 'text', text: 'ok' }] });
 
-  it('openai：未指定（整格不传）⇒ 既没有 reasoning_effort 也没有 thinking', async () => {
+  it('openai：未指定（整格不传）⇒ 既没有 reasoning 也没有 thinking', async () => {
     const fetchMock = stubFetch(okOpenAI());
     await callTextApi(route('openai'), { prompt: 'x' });
     const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
-    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).not.toHaveProperty('reasoning');
     expect(body).not.toHaveProperty('thinking');
   });
 
@@ -700,20 +734,20 @@ describe('思考强度落进请求体（唯一一份协议表）', () => {
     expect(body).not.toHaveProperty('thinking');
   });
 
-  it('openai：普通档走 reasoning_effort（不带 thinking）', async () => {
+  it('openai：普通档走 reasoning.effort（不带 thinking）', async () => {
     const fetchMock = stubFetch(okOpenAI());
     await callTextApi(route('openai'), { prompt: 'x', effort: 'max' });
     const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ reasoning_effort: 'max' });
+    expect(body).toMatchObject({ reasoning: { effort: 'max' } });
     expect(body).not.toHaveProperty('thinking');
   });
 
-  it('openai：off 走 thinking.disabled（**不是** reasoning_effort: off）', async () => {
+  it('openai：off 走 reasoning.effort: none（**不是** thinking.disabled）', async () => {
     const fetchMock = stubFetch(okOpenAI());
     await callTextApi(route('openai'), { prompt: 'x', effort: EFFORT_OFF });
     const body = JSON.parse(String(callArgs(fetchMock).init.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ thinking: { type: 'disabled' } });
-    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).toMatchObject({ reasoning: { effort: 'none' } });
+    expect(body).not.toHaveProperty('thinking');
   });
 
   it('anthropic：普通档走 output_config.effort（不带 thinking）', async () => {
@@ -765,7 +799,7 @@ describe('文本 API 的瞬时失败重试', () => {
       call += 1;
       return call === 1
         ? jsonResponse({ type: 'error', error: { message: '服务维护中，请稍后重试' } }, 500)
-        : jsonResponse({ choices: [{ message: { content: '第二次成功' } }] });
+        : jsonResponse(responsesText('第二次成功'));
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -790,7 +824,7 @@ describe('文本 API 的瞬时失败重试', () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       call += 1;
       if (call === 1) throw new TypeError('fetch failed');
-      return jsonResponse({ choices: [{ message: { content: 'ok' } }] });
+      return jsonResponse(responsesText('ok'));
     }));
 
     await expect(callTextApi(route('openai'), { prompt: 'x' })).resolves.toBe('ok');

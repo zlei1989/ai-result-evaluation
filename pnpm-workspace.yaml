@@ -31,3 +31,14 @@ onlyBuiltDependencies:
 # 豁免是逐条的，不放开整条策略。
 minimumReleaseAgeExclude:
   - '@tintinweb/pi-subagents@0.21.0'
+  # pi 1.3.0 族与 codex 0.163.0 的发布时间落在 24 h 窗口内，`pnpm install` 命中该闸并把条目
+  # 写在这里 ⇒ 逐条豁免。codex 那条是六个平台包与 CLI 包的 or 表达式：平台包是 CLI 包的
+  # npm 别名，版本必须同进同退，只豁免其中一个会让原生二进制与启动器版本错位。
+  - '@earendil-works/pi-agent-core@1.3.0'
+  - '@earendil-works/pi-ai@1.3.0'
+  - '@earendil-works/pi-codemode@1.3.0'
+  - '@earendil-works/pi-coding-agent@1.3.0'
+  - '@earendil-works/pi-mcp@1.3.0'
+  - '@earendil-works/pi-telemetry@1.3.0'
+  - '@earendil-works/pi-tui@1.3.0'
+  - '@openai/codex@0.163.0-darwin-arm64 || 0.163.0-darwin-x64 || 0.163.0-linux-arm64 || 0.163.0-linux-x64 || 0.163.0-win32-arm64 || 0.163.0-win32-x64 || 0.163.0'

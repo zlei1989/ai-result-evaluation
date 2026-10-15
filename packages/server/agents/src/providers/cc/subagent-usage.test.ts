@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createClaudeSubagentUsageCache,
+  listClaudeSubagentIds,
   readClaudeSubagentFile,
   readClaudeSubagentUsage,
 } from './subagent-usage';
@@ -111,6 +112,47 @@ describe('readClaudeSubagentUsage', () => {
     expect(read.missing).toEqual([]);
   });
 
+  /**
+   * 续接（`resume`）那一段的 `skip`：**上一段留下的转录不算进这一段**。
+   *
+   * 判据三条：① 快照里那份被排除之后，本段交的是「确实没有子智能体」（`{0,0,0}` + 0 轮）；
+   * ② 本段**自己派发**的 id 即使在快照里也必须照读（被续跑的后台子智能体会沿用原 id 追加原文件）；
+   * ③ 快照里没有的（本段新产生的）照读——`skip` 只减掉「上一段那些」，不动并集规则。
+   */
+  it('skip 排除上一段的转录，但名单里点名的（本段续跑的）照读', () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-skip-'));
+    // ① 只留上一段那一份的会话目录：排除之后本段「确实没有子智能体」
+    writeAgentFile(configHome, 's-skip-only', 'task-old', [assistant('m-old', { input_tokens: 40, cache_read_input_tokens: 0, output_tokens: 20 })]);
+    // ②③ 上一段 + 本段各一份的同一个目录
+    writeAgentFile(configHome, 's-skip', 'task-old', [assistant('m-old', { input_tokens: 40, cache_read_input_tokens: 0, output_tokens: 20 })]);
+    writeAgentFile(configHome, 's-skip', 'task-new', [assistant('m-new', { input_tokens: 5, cache_read_input_tokens: 0, output_tokens: 6 })]);
+
+    const none = readClaudeSubagentUsage({ configHome, sessionId: 's-skip-only', subagentIds: [], skip: ['task-old'] });
+    expect(none.usage).toEqual({ input: 0, cached: 0, output: 0, reasoningOutput: null, total: null });
+    expect(none.turns).toBe(0);
+    expect(none.missing).toEqual([]);
+
+    // ②③ 名单点名的（含快照里那个）照读；本段新产生的照读
+    const read = readClaudeSubagentUsage({
+      configHome,
+      sessionId: 's-skip',
+      subagentIds: ['task-old', 'task-new'],
+      skip: ['task-old'],
+    });
+    expect(read.usage).toMatchObject({ input: 45, output: 26 });
+    expect(read.turns).toBe(2);
+  });
+
+  it('listClaudeSubagentIds 给出目录里此刻的 id 表（目录不存在 ⇒ 空表）', () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-list-'));
+    writeAgentFile(configHome, 's-list', 'task-b', [assistant('m-1', { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 })]);
+    writeAgentFile(configHome, 's-list', 'task-a', [assistant('m-1', { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 })]);
+    // 排过序 ⇒ 快照与点名文案的顺序确定（与 `listSubagentFiles` 同一条口径）
+    expect(listClaudeSubagentIds({ configHome, sessionId: 's-list' })).toEqual(['task-a', 'task-b']);
+    expect(listClaudeSubagentIds({ configHome, sessionId: 's-absent' })).toEqual([]);
+    expect(listClaudeSubagentIds({ configHome, sessionId: null })).toEqual([]);
+  });
+
   it('多个子智能体各自去重后再相加', () => {
     const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-'));
     writeAgentFile(configHome, 's-2', 'task-1', [assistant('m-1', { input_tokens: 10, cache_read_input_tokens: 1, output_tokens: 2 })]);
@@ -118,6 +160,33 @@ describe('readClaudeSubagentUsage', () => {
     const read = readClaudeSubagentUsage({ configHome, sessionId: 's-2', subagentIds: ['task-1', 'task-2'] });
     expect(read.usage).toMatchObject({ input: 13, cached: 1, output: 6 });
     expect(read.turns).toBe(2);
+  });
+
+  /**
+   * **子智能体的思考 token 与主会话读同一个字段**。
+   *
+   * 为什么这一条承重：主会话的 `reasoningOutput` 读 `usage.output_tokens_details.thinking_tokens`
+   * （`events.ts` 的 `readThinkingTokens`），而子智能体那一份早先**硬编码 `null`**
+   * ⇒ 主会话界面上有「思考 N」、同一个 run 的子智能体永远「未采集」，而真机转录里那一格就在。
+   * 缺这一格时仍是 `null`（不是 0）——两条都钉在这里。
+   */
+  it('思考 token 读 output_tokens_details.thinking_tokens；缺这一格才是 null（不是 0）', () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-'));
+    writeAgentFile(configHome, 's-think', 'task-1', [
+      {
+        type: 'assistant',
+        isSidechain: true,
+        uuid: 't-1',
+        message: {
+          id: 'm-1',
+          usage: { input_tokens: 700, cache_read_input_tokens: 100, output_tokens: 40, output_tokens_details: { thinking_tokens: 37 } },
+        },
+      },
+      assistant('m-2', { input_tokens: 10, cache_read_input_tokens: 0, output_tokens: 5 }),
+    ]);
+    const read = readClaudeSubagentUsage({ configHome, sessionId: 's-think', subagentIds: ['task-1'] });
+
+    expect(read.usage).toMatchObject({ input: 710, cached: 100, output: 45, reasoningOutput: 37 });
   });
 
   it('没有子智能体 ⇒ {0,0,0} 与 turns 0（确实没有，不是 null）', () => {

@@ -12,7 +12,7 @@
  * `export … from '@pkg'` 与 `export const X = '@pkg'`（行首 export + 引号包名即命中），
  * 直接 export 字符串常量会被误判成静态导入。
  */
-import { AgentLoadError } from '../../errors';
+import { AgentLoadError, exportedNames } from '../../errors';
 import { createSdkLoader } from '../../load-once';
 
 const PI_PACKAGE_NAME_LITERAL = '@earendil-works/pi-coding-agent';
@@ -81,7 +81,27 @@ function toNumber(part: string): number {
 export interface PiSdkModule {
   createAgentSession: (options: PiSessionOptions) => Promise<{ session: PiSession }>;
   DefaultResourceLoader: new (options: PiLoaderOptions) => PiResourceLoader;
-  SessionManager: { inMemory: () => unknown };
+  /**
+   * 会话管理器工厂（三条构造路径，形状照厂商 `session-manager.d.ts`）。
+   *
+   *   · `create(cwd, sessionDir)`：开一条**新**会话，落点由 `sessionDir` 显式钉住。不给它时走厂商的
+   *     默认落点，而那个落点是 `agentDir` × `cwd` **两轴**的函数（`<agentDir>/sessions/--<编码后的
+   *     cwd>--`）⇒ 本仓必须显式给，否则「这一行的会话落在哪」由两个会漂的量共同决定；
+   *   · `open(path)`：打开一条**指定**会话文件的会话（续接的唯一正确入口）。文件不存在时它**不抛**
+   *     ——当场在同名路径上造一条新的，故「文件在不在」由适配器自己先判（见 `index.ts` 的续接段）；
+   *   · `continueRecent(cwd, sessionDir)`：取该目录里 **mtime 最新**的那条。本仓**刻意不用**它——
+   *     行内重跑（`retryRow` 重建工作区）会在同一目录里留下上一次尝试的会话，取最近一条接的是
+   *     **上一次尝试**，不是这一行该续的那条。它仍进声明：一是把这一格的取舍写在类型上，
+   *     二是给用例一根可以做成会抛的桩——适配器改回 `continueRecent` 时守卫当场见红。
+   *
+   * 管理器本身**不透明**（返回值收成 `unknown`）：适配器只把它交给 `createAgentSession`，从不读它的
+   * 成员——要落的会话文件路径读的是**会话**上的那一格（见 `PiSession.sessionFile`）。
+   */
+  SessionManager: {
+    create: (cwd: string, sessionDir?: string) => unknown;
+    open: (path: string, sessionDir?: string, cwdOverride?: string) => unknown;
+    continueRecent: (cwd: string, sessionDir?: string) => unknown;
+  };
   SettingsManager: { inMemory: (settings?: unknown) => unknown };
   ModelRuntime: { create: (options: PiModelRuntimeOptions) => Promise<PiModelRuntime> };
   /**
@@ -131,7 +151,12 @@ export interface PiResourceLoader {
   reload: (options?: { resolveProjectTrust?: (input: unknown) => Promise<boolean> }) => Promise<void>;
 }
 
-/** `createAgentSession` 的选项（同上：只有我们真给的那几格） */
+/**
+ * `createAgentSession` 的选项（同上：只有我们真给的那几格）。
+ *
+ * `sessionManager` 收成 `unknown`：那一格是**不透明**的构造产物（`SessionManager.create` / `open`
+ * 的返回值），适配器只转交、不读它的成员——会话文件路径读的是会话上的 `sessionFile`。
+ */
 export interface PiSessionOptions {
   cwd: string;
   agentDir: string;
@@ -237,7 +262,7 @@ export interface PiProviderModel {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   reasoning: boolean;
   /**
-   * 档位映射：本仓档名 → **厂商要看到的那一个字面串**（值原样进 `reasoning_effort`）。
+   * 档位映射：本仓档名 → **厂商要看到的那一个字面串**（值原样进 `reasoning.effort`）。
    *
    * 值域刻意只有字符串：厂商用 `null` 标「这一档不支持」，而对 `off` 这么标是**地雷**
    * （pi 会把关闭的请求夹到最小档 ⇒ 静默打开）——窄类型让那个写法在我们这里根本写不出来。
@@ -264,16 +289,60 @@ export interface PiSession {
    * 为什么要收这一格：派发扩展把每个子智能体的转写写到
    * `<tmpdir>/pi-subagents-<uid>/<cwd 编码>/<会话 id>/tasks/<子任务 id>.output`，
    * 而那一格取的正是**父会话**的这个 id ⇒ 本仓要读转写就得有它。
-   * 会话管理器是本仓建的（`SessionManager.inMemory()`），故 id 由厂商当场生成、不落盘。
+   * 它**不是**续接要落的键（那一格是 `sessionFile`）：这个 id 是厂商当场生成的 uuid，
+   * 而会话文件名是 `<ISO 时间戳>_<id>.jsonl`——时间戳不可预知，id 拼不回路径。
    */
   sessionId: string;
+  /**
+   * 本会话落盘的**绝对路径**（厂商 `AgentSession.sessionFile`）；`undefined` = 这条会话不落盘。
+   *
+   * 为什么续接落的键是它而不是 `sessionId`：文件名里嵌着不可预知的时间戳，拿 id 反查要么拼路径
+   * （拼不出）、要么扫目录（还得知道会话目录，而那正是另一格）。落路径之后，续接只要
+   * `SessionManager.open(这个路径)`，与「这一行的会话目录在哪」解耦。
+   */
+  sessionFile: string | undefined;
   subscribe: (listener: (event: unknown) => void) => () => void;
   prompt: (text: string) => Promise<void>;
+  /**
+   * **投递档**：把一条消息排到「当前这一轮的工具都跑完、下一次模型往返之前」（= 本仓的 `'round'`）。
+   *
+   * 返回值是厂商的 `QueuedInputDisposition`（两值：`'handled' | 'queued'`）：
+   * `'handled'` 表示这句话被某个扩展**当场吃掉**（本仓装着的 `@tintinweb/pi-subagents` 命中
+   * `@名字 …` 时会 `return { action: 'handled' }`）⇒ 它**没有**进队列，消费方不得当成已投递。
+   * 空闲 / 已收工时调用**不抛、不丢、也不起一轮**（只推队列），故投递方不能靠异常判成败。
+   */
+  steer: (text: string) => Promise<'handled' | 'queued'>;
+  /**
+   * **排队档**：排到「这一次 run 没活可干了」（= 本仓的 `'idle'`）。与 `steer` 同一条返回语义
+   * （含 `'handled'` 那一档）；它唤不醒已经收工的会话——真正的收场由编排层的等待预算兜底。
+   */
+  followUp: (text: string) => Promise<'handled' | 'queued'>;
   abort: () => Promise<void>;
   waitForIdle: () => Promise<void>;
   dispose: () => void;
   bindExtensions: (bindings: { mode: 'rpc'; onError?: (error: unknown) => void }) => Promise<void>;
   getLastAssistantText: () => string | undefined;
+  /**
+   * **扩展运行器**（厂商 `AgentSession.extensionRunner` 的公开 getter）——只用两格公开方法。
+   *
+   * 为什么释放序列要碰它：厂商把「扩展自己的关闭钩子」挂在 `session_shutdown` 事件上
+   * （MCP 扩展的连接清理正是它：`pi.on("session_shutdown", …) → session.abort() → servers = []`），
+   * 而 `AgentSession.dispose()` **不 emit** 这个事件——只有 `AgentSessionRuntime.dispose()` 与
+   * `AgentSession.reload()` 会（前者的实体就是「emit(session_shutdown, reason: 'quit') → session.dispose()」）。
+   * 窄壳只走 `createAgentSession()`，所以这一发由**我们按厂商同一条顺序补上**：
+   * 不碰任何私有字段，也不为了这一格换掉整条 runtime。
+   *
+   * 收成**可选**：假件与将来的版本都可能没有它，缺了就跳过（与「拿不到会话句柄」同一条降级姿态）。
+   */
+  extensionRunner?: PiExtensionRunner;
+}
+
+/** 扩展运行器里我们用到的那两格（见 `PiSession.extensionRunner`） */
+export interface PiExtensionRunner {
+  /** 有没有扩展监听这个事件（没有就不发，免得白走一趟 emit） */
+  hasHandlers: (eventType: string) => boolean;
+  /** 投递一个扩展事件（厂商 `ExtensionRunner.emit` 的公开方法） */
+  emit: (event: unknown) => Promise<unknown>;
 }
 
 /**
@@ -332,26 +401,115 @@ const loadRaw = createSdkLoader<unknown>(
 );
 
 /**
- * 懒加载 + 形状校验：先过版本闸（不合格不必付出一次 import 的代价），再确认入口是函数。
+ * 某个值是不是「对象**或类**，且这几格都是函数」——形状校验的共用判据（缺一格就点名那一格）。
+ *
+ * 类也算：厂商这几格有的是类（`ModelRuntime.create` 是**静态**方法，`typeof` 是 `'function'`），
+ * 有的是普通对象（`SessionManager`）——成员取值方式一样，判据不该把它们分成两档。
+ */
+function hasFunctions(value: unknown, names: readonly string[]): boolean {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return names.every((name) => typeof record[name] === 'function');
+}
+
+/**
+ * 装配序列**恒要**的模块面：`loadPiSdk` 逐格判「在不在、能不能用」，缺哪一格就点名哪一格。
+ *
+ * 为什么要逐格判而不是只判入口：这些格子都是**构造期**就要用的（`new DefaultResourceLoader(...)`、
+ * `SettingsManager.inMemory(...)`、`ModelRuntime.create(...)`），缺了它们的爆点分别是
+ * `sdk.DefaultResourceLoader is not a constructor` / `Cannot read properties of undefined (reading
+ * 'inMemory')` 这类**离真因很远**的裸 TypeError，而且会被归成 `AGENT_FAILED`——那一格在编排层的
+ * 自动重试表里 ⇒ 一次形状漂移白跑两遍，日志里还没有一句「是哪个导出没了」。
+ *
+ * `createMcpExtension` **不在这一张表里**：只有配了 MCP 的行才用它，缺了它不该让不配 MCP 的行失败
+ * ——那一格在使用点判（见 `assertPiMcpExtension`）。
+ */
+const PI_SDK_REQUIRED_CELLS: ReadonlyArray<{
+  entry: keyof PiSdkModule & string;
+  shape: string;
+  usable: (module: Record<string, unknown>) => boolean;
+}> = [
+  { entry: 'createAgentSession', shape: '函数', usable: (module) => typeof module['createAgentSession'] === 'function' },
+  {
+    entry: 'DefaultResourceLoader',
+    shape: '可 `new` 的构造器',
+    usable: (module) => typeof module['DefaultResourceLoader'] === 'function',
+  },
+  {
+    entry: 'SessionManager',
+    shape: '对象或类，且 `create` / `open` / `continueRecent` 都是函数',
+    usable: (module) => hasFunctions(module['SessionManager'], ['create', 'open', 'continueRecent']),
+  },
+  {
+    entry: 'SettingsManager',
+    shape: '对象或类，且 `inMemory` 是函数',
+    usable: (module) => hasFunctions(module['SettingsManager'], ['inMemory']),
+  },
+  {
+    entry: 'ModelRuntime',
+    shape: '对象或类，且 `create` 是函数',
+    usable: (module) => hasFunctions(module['ModelRuntime'], ['create']),
+  },
+];
+
+/**
+ * 懒加载 + 形状校验：先过版本闸（不合格不必付出一次 import 的代价），再逐格确认装配面要用的导出。
  * 形状不对与「包没装」都归 `AGENT_LOAD_FAILED`，但文案必须分开：前者重装恒无效，
  * 要拿的是「适配器期望的入口 vs 实测导出面」。
  */
 export async function loadPiSdk(): Promise<PiSdkModule> {
   assertPiNodeVersion();
   const raw = await loadRaw();
-  if (typeof (raw as { createAgentSession?: unknown } | null)?.createAgentSession !== 'function') {
-    throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error('模块缺少 createAgentSession 导出'), {
+  const module = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const missing = PI_SDK_REQUIRED_CELLS.find((cell) => !cell.usable(module));
+  if (missing !== undefined) {
+    throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error(`模块的 ${missing.entry} 形状不对（期望：${missing.shape}）`), {
       variant: 'shape-mismatch',
-      expected: 'createAgentSession',
+      expected: `${missing.entry}（${missing.shape}）`,
       actual: exportedNames(raw),
     });
   }
   return raw as PiSdkModule;
 }
 
-/** 实测导出面（`Object.keys`），只用于 shape-mismatch 文案里的「实测有 …」；读导出面本身不得成为新的崩溃点 */
-function exportedNames(raw: unknown): string[] {
-  return typeof raw === 'object' && raw !== null ? Object.keys(raw).sort() : [];
+/** MCP 扩展工厂的**使用点**校验：只有配了 MCP 的行走这一格（不配的行不该因为它缺席而失败） */
+export function assertPiMcpExtension(sdk: PiSdkModule): void {
+  if (typeof sdk.createMcpExtension === 'function') return;
+  throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error('模块缺少 createMcpExtension 导出（本行配了 MCP，装配面要用它）'), {
+    variant: 'shape-mismatch',
+    expected: 'createMcpExtension（函数）',
+    actual: exportedNames(sdk),
+  });
+}
+
+/**
+ * 会话面的**装配断言**：拿到会话之后逐格确认「本层一定会用到的那几格」在场。
+ *
+ * 为什么装载期的模块校验拦不住这一档：它们是**实例方法**与**实例字段**，只有真建出会话才看得到。
+ * 现实里的漂移形态是「某一格改了名」——`sessionFile` 被改名时续接能力会**静默消失**
+ * （适配器读 `session.sessionFile ?? null` ⇒ 行照旧 `ok:true`、`sessionId` 记 `null`，
+ * 用户看到的是「这一行不能续接」却没有任何报错）。所以这里判的是**键在不在**，
+ * 不是值真不真：`sessionFile` 的值合法地可以是 `null`（不落盘的会话）。
+ */
+const PI_SESSION_REQUIRED: ReadonlyArray<{ entry: string; usable: (session: Record<string, unknown>) => boolean }> = [
+  { entry: 'subscribe', usable: (session) => typeof session['subscribe'] === 'function' },
+  { entry: 'prompt', usable: (session) => typeof session['prompt'] === 'function' },
+  { entry: 'abort', usable: (session) => typeof session['abort'] === 'function' },
+  { entry: 'waitForIdle', usable: (session) => typeof session['waitForIdle'] === 'function' },
+  { entry: 'dispose', usable: (session) => typeof session['dispose'] === 'function' },
+  { entry: 'bindExtensions', usable: (session) => typeof session['bindExtensions'] === 'function' },
+  { entry: 'sessionFile', usable: (session) => 'sessionFile' in session },
+];
+
+export function assertPiSessionShape(session: PiSession): void {
+  const record = session as unknown as Record<string, unknown>;
+  const missing = PI_SESSION_REQUIRED.find((cell) => !cell.usable(record));
+  if (missing === undefined) return;
+  throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error(`createAgentSession 返回的会话缺少 ${missing.entry} 这一格`), {
+    variant: 'shape-mismatch',
+    expected: `会话面的 ${missing.entry}`,
+    actual: Object.keys(record).sort(),
+  });
 }
 
 /**

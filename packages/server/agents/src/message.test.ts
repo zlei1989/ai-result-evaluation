@@ -20,6 +20,8 @@ import {
   thinkingBlockDraft,
   toolCallBlockDraft,
   toolResultBlockDraft,
+  truncate,
+  TOOL_RESULT_MAX_CHARS,
   type MessageDraft,
 } from './message';
 
@@ -213,6 +215,91 @@ describe('messageAssembler：收尾标记', () => {
   });
 });
 
+describe('messageAssembler：收口（sealOpen）', () => {
+  /** 跑一遍投递，**最后收口**（与 `turn.ts` 会话收尾那一步同形） */
+  function runSealed(drafts: readonly MessageDraft[]): AgentMessage[] {
+    const assembler = createMessageAssembler({ runId: 'run-1' });
+    const out: AgentMessage[] = [];
+    const sink = (message: AgentMessage): void => void out.push(message);
+    for (const item of drafts) assembler.ingest(item, sink);
+    assembler.sealOpen(sink);
+    return out;
+  }
+
+  it('停在增量上的槽按**累积值**封口，补发的那条是 `snapshot`', () => {
+    const messages = runSealed([draft({ chunk: 'delta', blocks: [textBlockDraft('半截话', 'delta')] })]);
+    expect(messages.map((message) => message.assembly)).toEqual(['open', 'snapshot']);
+    expect((messages.at(-1)?.blocks[0] as { text: string }).text).toBe('半截话');
+  });
+
+  /**
+   * `chunk` 这一格不能沿用载体的最后一封（那多半是增量）：编排层按 `chunk === 'delta'`
+   * 决定「只广播、不落盘」——沿用增量会让收口的内容留在内存里、刷新后消失，
+   * 而它带着 `assembly: 'snapshot'` 又自称是收尾，两格自相矛盾。
+   */
+  it('收口产出的那条 `chunk` 恒为 `snapshot`（不沿用载体的最后一封增量）', () => {
+    const messages = runSealed([draft({ chunk: 'delta', blocks: [textBlockDraft('半截话', 'delta')] })]);
+    expect(messages.at(-1)?.chunk).toBe('snapshot');
+  });
+
+  it('全都收过尾的载体不再补发（同一份内容不说两遍）', () => {
+    const assembler = createMessageAssembler({ runId: 'run-1' });
+    const out: AgentMessage[] = [];
+    const sink = (message: AgentMessage): void => void out.push(message);
+    assembler.ingest(draft({ blocks: [textBlockDraft('写完这句', 'snapshot')] }), sink);
+    const before = out.length;
+    expect(assembler.sealOpen(sink)).toBe(0);
+    expect(out.length).toBe(before);
+  });
+
+  /**
+   * 靶子（cc 真机形态，见 `docs/faq/claude-code.md`）：**厂商不保证为每个块投递完整快照**——
+   * 有些轮次只投 `tool_use` 的完整消息，正文只以流式增量到达。那个正文槽永远等不到自己的快照，
+   * 载体就停在 `open`，界面据此显示「正在思考」，而整行早已结束。
+   */
+  it('正文只以增量到达、同轮只投了工具快照 ⇒ 收口把它封上（否则永远「正在思考」）', () => {
+    const messages = runSealed([
+      draft({ chunk: 'delta', blocks: [textBlockDraft('我来看一下。', 'delta')] }),
+      draft({ chunk: 'snapshot', blocks: [toolCallBlockDraft('call_1', 'Bash', { command: 'ls' }, 'cc')] }),
+    ]);
+    // 工具快照到达时正文槽仍未收尾（这一条就是真机上「正在思考」的来源）
+    expect(messages.at(-2)?.assembly).toBe('open');
+    // 收口之后整条载体翻成 snapshot，且正文按累积值保留
+    expect(messages.at(-1)?.assembly).toBe('snapshot');
+    expect(messages.at(-1)?.blocks.map((block) => block.type)).toEqual(['text', 'tool-call']);
+  });
+
+  /**
+   * 收口**只动 `sealed` 标志**，不碰块的类型与内容——思考块收口后仍是思考块。
+   * 这一条是给「收口会不会把思考内容当成正文展示」这个疑问的判据：
+   * 块的 `type` 由进槽的那条草稿决定（`applyBlock`），收口路径一个字都不改它。
+   */
+  it('收口对思考块同样成立：类型与内容都原样保留（思考不会被当成正文）', () => {
+    const messages = runSealed([
+      draft({
+        chunk: 'delta',
+        blocks: [thinkingBlockDraft('我先想想。', 'full', 'delta', null, { kind: 'index', index: 0 })],
+      }),
+      draft({ chunk: 'delta', blocks: [textBlockDraft('想好了。', 'delta', { kind: 'index', index: 1 })] }),
+    ]);
+    const last = messages.at(-1);
+    expect(last?.assembly).toBe('snapshot');
+    expect(last?.blocks.map((block) => block.type)).toEqual(['thinking', 'text']);
+    expect((last?.blocks[0] as { text: string }).text).toBe('我先想想。');
+    expect((last?.blocks[1] as { text: string }).text).toBe('想好了。');
+  });
+
+  it('收口就是封口：之后同键的增量不再追加（补写会把已结束的那段说长）', () => {
+    const assembler = createMessageAssembler({ runId: 'run-1' });
+    const out: AgentMessage[] = [];
+    const sink = (message: AgentMessage): void => void out.push(message);
+    assembler.ingest(draft({ chunk: 'delta', blocks: [textBlockDraft('结尾', 'delta')] }), sink);
+    assembler.sealOpen(sink);
+    assembler.ingest(draft({ chunk: 'delta', blocks: [textBlockDraft('补充', 'delta')] }), sink);
+    expect((out.at(-1)?.blocks[0] as { text: string }).text).toBe('结尾');
+  });
+});
+
 describe('blockIndexAllocator：块序号只能追加、不能重排', () => {
   it('`forSource` 对同一个厂商序号只分配一次（增量与它的快照落进同一槽位）', () => {
     const allocator = createBlockIndexAllocator();
@@ -280,5 +367,37 @@ describe('消息级 usage 的合并', () => {
   it('从没带过 ⇒ 是 null（草稿层的 null 原样进信封，不是 undefined）', () => {
     const messages = run([draft({ usage: null, blocks: [textBlockDraft('正文', 'snapshot')] })]);
     expect(messages.at(-1)?.usage).toBeNull();
+  });
+});
+
+/**
+ * **截断的两条硬口径**（真机读数各一条）：
+ *   ① 切点回退到**码点边界**——`slice` 按 UTF-16 码元切，切在代理对中间会留下孤立代理
+ *      （真机：19 999 个 `A` + 😀 + 1 000 个 `B` ⇒ 切完末尾码元是 `0xD83D`）；JSON 里那是非法
+ *      序列、界面渲染成 `�`，而同一份内容在 `structured` 那一格里还是完整的；
+ *   ② 「截过」这件事只由 `truncate` 的返回值表达——调用方**不许先截一次再把文本交下来**
+ *      （那样下游的 `truncated` 恒 `false`，`truncation` 那格会说「没截过」）。
+ */
+describe('truncate：码点边界与截断标志', () => {
+  it('切点落在代理对中间 ⇒ 少切一个码元，不留孤立代理', () => {
+    const text = 'A'.repeat(19_999) + '😀' + 'B'.repeat(1_000);
+    const clipped = truncate(text, 20_000);
+    expect(clipped.truncated).toBe(true);
+    expect(clipped.text).toBe('A'.repeat(19_999));
+    const last = clipped.text.charCodeAt(clipped.text.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff, '末位是孤立高位代理').toBe(false);
+  });
+
+  it('切点不在代理对上 ⇒ 就切在上限处（不为「可能劈开」白丢一个字符）', () => {
+    const text = 'L'.repeat(25_000);
+    expect(truncate(text, 20_000).text).toBe('L'.repeat(20_000));
+  });
+
+  it('没超上限 ⇒ 原样返回且 `truncated` 为假', () => {
+    expect(truncate('short', 20_000)).toEqual({ text: 'short', truncated: false });
+  });
+
+  it('上限常量与判据同源（改动上限时这条会提醒你把真机读数一起更新）', () => {
+    expect(TOOL_RESULT_MAX_CHARS).toBe(20_000);
   });
 });

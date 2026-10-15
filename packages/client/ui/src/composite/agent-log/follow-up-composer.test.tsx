@@ -1,0 +1,199 @@
+/**
+ * 追问的输入区（L2）：跑完的那一行底下那一行输入框。
+ *
+ * 六条靶子（每一条坏掉都没有运行时症状——界面照旧画得出来，只是说的不是真的）：
+ *   1. **空输入不许发**：一句话都没有、附件也没有的追问交给模型只会得到一句「你发了什么」；
+ *   2. 发送把「这一句话 + 附件清单 + 这条草稿的 id」一起交出去（`messageId` 同时是附件目录名）；
+ *   3. **附件先落盘、再允许发送**：选一份文件走 multipart 回调拿回路径，名字出现在框上方那一行；
+ *   4. 附件 `kind` 按 MIME 分档（一律给 `file` 会让一张图在日志里被画成一个文件）；
+ *   5. 发送失败时框里的内容**一个字不动**（用户不必重打），原因交回调用方；超限的那一份
+ *      **不进清单**（判据与第一期、与服务端同一份常量）——两条输入区吃同一个共用件，故这一条
+ *      在两边同时成立；
+ *   6. **形态复用第一期那一套**（静态判据）：走共用的 `CompactComposerArea`，
+ *      自己不 import X 的任何一个件——「另造一套」在这条上当场红。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ATTACHMENT_MAX_FILE_BYTES, ServiceError, type InjectAttachment } from '@aieval/contracts';
+import { FollowUpComposer, type FollowUpSendInput, type FollowUpUploadInput } from './follow-up-composer';
+import { installMatchMediaStub } from '../../testing/match-media';
+import { installResizeObserverStub } from '../../testing/resize-observer';
+
+beforeEach(() => {
+  installResizeObserverStub();
+  installMatchMediaStub();
+});
+
+const ATTACHMENT: InjectAttachment = { kind: 'file', path: '/tmp/row/attachments/m-1/a.md', mimeType: 'text/markdown' };
+
+/** 渲染这个件；每个回调默认给一个 resolved 的实现（用例只覆盖自己要考的那一个） */
+function renderComposer(options: {
+  busy?: boolean;
+  onSend?: (input: FollowUpSendInput) => Promise<void>;
+  onUploadAttachment?: (input: FollowUpUploadInput) => Promise<InjectAttachment>;
+  onError?: (cause: unknown) => void;
+} = {}) {
+  return render(
+    <FollowUpComposer
+      busy={options.busy ?? false}
+      onSend={options.onSend ?? (() => Promise.resolve())}
+      onUploadAttachment={options.onUploadAttachment ?? (() => Promise.resolve(ATTACHMENT))}
+      onError={options.onError ?? vi.fn()}
+    />,
+  );
+}
+
+/** 输入框（X 的 `Sender` 内部那个 textarea） */
+function textarea(): HTMLTextAreaElement {
+  return screen.getByRole('textbox') as HTMLTextAreaElement;
+}
+
+/** 发送键：X 自带那颗圆形上箭头（按图标认，别按位置认——与第一期那套是同一颗键） */
+function sendButton(): HTMLButtonElement {
+  const found = [...document.querySelectorAll('.ant-sender button')].find(
+    (button) => button.querySelector('[aria-label="arrow-up"]') !== null,
+  );
+  if (found === undefined) throw new Error('输入区里没有那颗圆形上箭头（发送键的形态变了）');
+  return found as HTMLButtonElement;
+}
+
+describe('FollowUpComposer：发送', () => {
+  it('空输入 ⇒ 发送键禁用；打字之后才可点，并把这句话与草稿 id 一起交出去', async () => {
+    const onSend = vi.fn((_input: FollowUpSendInput) => Promise.resolve());
+    renderComposer({ onSend });
+
+    expect(sendButton()).toBeDisabled();
+    fireEvent.change(textarea(), { target: { value: '接着把测试补上' } });
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+    fireEvent.click(sendButton());
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    const call = onSend.mock.calls[0]?.[0] as FollowUpSendInput;
+    expect(call.text).toBe('接着把测试补上');
+    expect(call.attachments).toEqual([]);
+    // 这条草稿的 id 同时是附件目录名与账本钥匙（客户端铸，服务端按它对齐两处）
+    expect(call.messageId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+  });
+
+  it('受理之后清空输入框（下一条追问从空白开始）', async () => {
+    renderComposer();
+    fireEvent.change(textarea(), { target: { value: '第一句' } });
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(textarea().value).toBe(''));
+  });
+
+  it('发送失败 ⇒ 框里的内容一个字不动，原因交回调用方（那句话多半要改一改再发）', async () => {
+    const onError = vi.fn();
+    renderComposer({ onSend: () => Promise.reject(new Error('这一行没有可续接的会话')), onError });
+
+    fireEvent.change(textarea(), { target: { value: '在吗' } });
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+    fireEvent.click(sendButton());
+
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(textarea().value).toBe('在吗');
+  });
+
+  it('常驻提示说清发出去之后会发生什么（不是只说「能发」）', () => {
+    renderComposer();
+    expect(screen.getByTestId('follow-up-hint').textContent).toContain('接着这一行原来那段会话');
+    expect(screen.getByTestId('follow-up-hint').textContent).toContain('自动重新评分');
+  });
+
+  it('有写动作在途 ⇒ 输入框禁用（连点两次会变成两段上下文）', () => {
+    renderComposer({ busy: true });
+    expect(textarea()).toBeDisabled();
+  });
+});
+
+describe('FollowUpComposer：附件', () => {
+  it('选一份文件 ⇒ 走 multipart 回调（`beforeUpload: () => false`，文件不往别处传）⇒ 名字进框上方那一行', async () => {
+    const onUploadAttachment = vi.fn((_input: FollowUpUploadInput) => Promise.resolve(ATTACHMENT));
+    const { container } = renderComposer({ onUploadAttachment });
+
+    const input = container.querySelector('input[type="file"]');
+    expect(input).not.toBeNull();
+    const file = new File(['hello'], 'a.md', { type: 'text/markdown' });
+    Object.defineProperty(input, 'files', { value: [file] });
+    fireEvent.change(input as Element);
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(1));
+    expect((onUploadAttachment.mock.calls[0]?.[0] as FollowUpUploadInput).file).toBe(file);
+    const chips = await screen.findByTestId('follow-up-attachments');
+    expect(chips.textContent).toContain('a.md');
+  });
+
+  /**
+   * 前置拦**在追问这一边同样生效**：两条输入区吃同一个共用件（`composer-input.tsx`），
+   * 所以这一条不是「又实现了一遍」，而是钉住「追问那一支真的接的是那一份共用件」。
+   */
+  it('★ 超 20 MB 的那一份不进清单，原因走 `onError`（共用件的前置拦两条输入区都吃）', async () => {
+    const onUploadAttachment = vi.fn((_input: FollowUpUploadInput) => Promise.resolve(ATTACHMENT));
+    const onError = vi.fn();
+    const { container } = renderComposer({ onUploadAttachment, onError });
+
+    const input = container.querySelector('input[type="file"]');
+    Object.defineProperty(input, 'files', {
+      value: [new File([new ArrayBuffer(ATTACHMENT_MAX_FILE_BYTES + 1)], 'big.bin')],
+    });
+    fireEvent.change(input as Element);
+
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onUploadAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('follow-up-attachments')).toBeNull();
+    const cause = onError.mock.calls[0]?.[0] as ServiceError;
+    expect(cause).toBeInstanceOf(ServiceError);
+    expect(cause.message).toContain('20.0 MB');
+    expect(cause.message).toContain('big.bin');
+  });
+
+  it('附件 `kind` 按 MIME 分档（图片给 `image`——一律给 `file` 会让一张图在日志里被画成文件）', async () => {
+    const onSend = vi.fn((_input: FollowUpSendInput) => Promise.resolve());
+    // 落盘那一份的 MIME 才是判据（`File.type` 由浏览器给，路径回读时只剩它）
+    const image: InjectAttachment = { kind: 'image', path: '/tmp/row/attachments/m-1/shot.png', mimeType: 'image/png' };
+    const { container } = renderComposer({ onSend, onUploadAttachment: () => Promise.resolve(image) });
+
+    const input = container.querySelector('input[type="file"]');
+    const file = new File(['png'], 'shot.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', { value: [file] });
+    fireEvent.change(input as Element);
+    // 等「那一份已经落盘」：X 的清单对图片渲的是缩略图（正文里没有文件名），故判据只能是
+    // 「清单位置出现了」——名字那一档由上面那条 md 的用例钉
+    await waitFor(() => expect(screen.getByTestId('follow-up-attachments')).toBeInTheDocument());
+
+    fireEvent.change(textarea(), { target: { value: '看这张图' } });
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+    fireEvent.click(sendButton());
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect((onSend.mock.calls[0]?.[0] as FollowUpSendInput).attachments).toEqual([
+      { kind: 'image', path: image.path, mimeType: 'image/png' },
+    ]);
+  });
+
+  it('只有附件、没有正文也能发（那份清单本身就是内容）', async () => {
+    const onSend = vi.fn((_input: FollowUpSendInput) => Promise.resolve());
+    const { container } = renderComposer({ onSend });
+    const input = container.querySelector('input[type="file"]');
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'a.md', { type: 'text/markdown' })] });
+    fireEvent.change(input as Element);
+
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect((onSend.mock.calls[0]?.[0] as FollowUpSendInput).attachments).toHaveLength(1);
+  });
+});
+
+describe('FollowUpComposer：形态复用第一期那一套（静态判据）', () => {
+  it('走共用的 `CompactComposerArea`，自己不 import X 的任何一个件', () => {
+    const source = readFileSync(join(import.meta.dirname, 'follow-up-composer.tsx'), 'utf8');
+    // 「另造一套」的两种形态：自己拼 X 的 Sender / 自己再套一层密度
+    expect(source).not.toContain('@ant-design/x');
+    expect(source).not.toContain('ConfigProvider');
+    expect(source).toContain('CompactComposerArea');
+  });
+});

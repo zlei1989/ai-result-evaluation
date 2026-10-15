@@ -36,6 +36,8 @@ import {
   ROW_SKILL_BASIS_LABELS,
   ROW_SKILL_VERDICT_LABELS,
   ROW_SKILL_VERDICTS,
+  FollowUpAvailabilitySchema,
+  FollowUpVerdictSchema,
   RowDiffFileSchema,
   RowDiffIndexSchema,
   RowMcpBasisSchema,
@@ -43,6 +45,7 @@ import {
   RunCreateSchema,
   RunUpdateSchema,
   TERMINAL_ROW_STATUSES,
+  canFollowUpRow,
   canRescoreRow,
   canRetryRow,
   canRunRow,
@@ -54,6 +57,7 @@ import {
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
+  type FollowUpFacts,
   type RowMcpServer,
   type RowSkillBasis,
   type RowSkillInstall,
@@ -81,9 +85,53 @@ function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     error: null,
     // 这一行走过几次尝试：这一份是「已评分的行」，故是 1 次
     attempts: 1,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
+
+/**
+ * 类型面判据（**真判据是 `tsc` 见红**，不是下面那条运行时影子断言）：`emptyAnswer` 不许退化成必填键。
+ *
+ * 为什么载重：「这一格可以缺席」是旧 `run.json` 还能被读出来的前提。改成 `z.boolean()`、加
+ * `.default(false)`、或去掉 `.optional()` 之后，旧轮次的每一行都会卡在解析上，而运行期的表现只是
+ * **「旧轮次从列表里消失」**（`listRuns()` 静默跳过解析失败的那一轮）——一个不报错、只少东西的故障，
+ * 测试里也几乎看不见。这条断言把它变成一次编译失败。手法同 `inject-message.test.ts` 那四个格。
+ */
+type RequiredCell<T, K extends keyof T> = undefined extends T[K] ? false : true;
+const emptyAnswerIsOptional: RequiredCell<EvalRow, 'emptyAnswer'> = false;
+
+
+describe('`EvalRow.emptyAnswer` 是**三态**，旧数据缺席即「未记录」', () => {
+  /**
+   * 要拦的缺陷：把「缺席」读成 `false`。对**旧的** `run.json` 我们并不知道当时有没有答，
+   * `false` 是**断言「它答了」**——而 `false` 恰好是要防的误读方向（真出了空答复却照旧
+   * 拿分的行，回看时反而显示正常）。判据因此是「**缺席不等于 `false`**」。
+   */
+  it('旧数据缺这一格 ⇒ 解析通过，且**不是** `false`（是未记录）', () => {
+    const legacy = makeRow() as Record<string, unknown>;
+    delete legacy['emptyAnswer'];
+    const parsed = EvalRowSchema.parse(legacy);
+    expect(parsed.emptyAnswer, '缺席必须读成「未记录」，不能当成「答了」').not.toBe(false);
+    expect(parsed.emptyAnswer ?? null).toBeNull();
+  });
+
+  it('三态各自解析得出来，且互不相同', () => {
+    expect(EvalRowSchema.parse(makeRow({ emptyAnswer: true })).emptyAnswer).toBe(true);
+    expect(EvalRowSchema.parse(makeRow({ emptyAnswer: false })).emptyAnswer).toBe(false);
+    expect(EvalRowSchema.parse(makeRow({ emptyAnswer: null })).emptyAnswer).toBeNull();
+  });
+
+  /**
+   * 上面那条 `RequiredCell` 的**运行时影子**：类型断言在 `tsc` 里见红，而这条让它在 `vitest` 的
+   * 用例列表里也占一格（否则「有这条判据」只活在一个没人跑得到的 const 上）。
+   */
+  it('这一格不是必填键（`tsc` 见红的那条判据的运行时影子）', () => {
+    expect(emptyAnswerIsOptional).toBe(false);
+  });
+});
 
 describe('AGENT_KINDS', () => {
   it('全部智能体与表同序同值（真源在 contracts）', () => {
@@ -379,6 +427,46 @@ describe('EvalRowSchema / EvalRunSchema / RunCreateSchema', () => {
     const parsed = EvalRunSchema.parse({ ...run, includeSteps: undefined });
     expect(parsed.includeSteps).toBe(false);
     expect(EvalRunSchema.parse({ ...run, includeSteps: true }).includeSteps).toBe(true);
+  });
+
+  /**
+   * 轮级备注（`EvalRun.note`）：名字补这一格的**载重**与 `includeSteps` 逐字同源——
+   * 磁盘上已有的 `run.json` 没有它，必填会让 `listRuns()` 静默跳过那一轮；空串是语义正确的兜底。
+   * 另一面钉的是 `RunCreate.note` **必须显式声明**（zod 3 默认 strip 未知键），否则表单提交的备注
+   * 会在解析层被静默丢掉，而 POST 仍然 201。
+   */
+  const noteIsRequired: RequiredCell<EvalRun, 'note'> = true;
+
+  it('EvalRun.note 缺字段读成空串（旧 run.json 没有这一格），显式值逐字保留', () => {
+    const run = {
+      id: 'run-1',
+      caseId: 'c-1',
+      caseTitle: 'LRU 缓存',
+      repoPath: 'D:/repos/demo',
+      commitHash: null,
+      rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
+      status: 'idle' as const,
+      executionMode: 'parallel' as const,
+      rows: [row],
+      workspaceBase: 'D:/runs',
+      createdAt: '2026-09-22T10:30:00.000Z',
+      startedAt: null,
+      finishedAt: null,
+    };
+    expect(EvalRunSchema.parse({ ...run, note: undefined }).note).toBe('');
+    expect(EvalRunSchema.parse({ ...run, note: '对比模型不同版本间的差异' }).note).toBe('对比模型不同版本间的差异');
+    // 这一格不许退化成可选键：界面按下标读它时 `undefined` 会在排序/渲染里炸
+    expect(noteIsRequired).toBe(true);
+  });
+
+  it('RunCreate.note 收得下显式备注（不被 zod strip），缺省解析为 undefined（由 api 收敛成空串）', () => {
+    const input = {
+      caseId: 'c-1',
+      executionMode: 'serial' as const,
+      rows: [{ agentKind: 'codex' as const, providerId: 'p-1', modelId: 'gpt-5' }],
+    };
+    expect(RunCreateSchema.parse({ ...input, note: '对比模型不同版本间的差异' }).note).toBe('对比模型不同版本间的差异');
+    expect(RunCreateSchema.parse(input).note).toBeUndefined();
   });
 
   /**
@@ -840,10 +928,12 @@ function runWith(status: EvalRun['status'], rowStatuses: EvalRowStatus[]): EvalR
     id: 'run-1',
     caseId: 'c-1',
     caseTitle: '用例',
+    note: '',
     repoPath: 'D:/repos/demo',
     commitHash: null,
     repoBranch: null,
     askUser: false,
+    injectMessages: false,
     rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
     includeSteps: false,
     status,
@@ -1021,5 +1111,174 @@ describe('EvalRow.skillInstall（本行技能观测格）', () => {
     expect(sentence('vendor-skill-list', 'installed')).toBe('已装上 · 判据 厂商清单');
     expect(sentence('local-materialized', 'unverified')).toBe('未验证 · 判据 仅落盘');
     expect(sentence('vendor-skill-list', 'missing')).toBe('缺失 · 判据 厂商清单');
+  });
+});
+
+/**
+ * `canFollowUpRow`（第二期：对已经跑过的行补一句话、接着同一段会话再跑一段）的真值表。
+ *
+ * 七档拒绝**逐条各钉一次**，因为它们的处置互不相同：前两档是「此刻不是时机」（该去排队 / 该等），
+ * 后五档是「这一行接不上」（该重新上传 / 该重新执行 / 这一家结构上没有）。
+ * 判据放 contracts 的理由与 `canRescoreRow` 逐字相同——界面靠它给按钮 `disabled` 与 Tooltip 文案、
+ * 服务端拿同一份抛 `CONFLICT`；两处各写一份必然漂移，漂移的表现是「按钮可点、点下去 409」。
+ *
+ * 事实格（`FollowUpFacts`）由调用方量好递进来：契约层读不了盘、也认不出厂商（它的依赖里只有 zod），
+ * 而「工作区还在不在 / 用例还在不在 / 附件有没有丢 / 这一家声明的续接那一格」四件事都在那一侧。
+ */
+describe('canFollowUpRow', () => {
+  /** 一份「此刻能追问」的事实：盘上都在、用例在、这一家声明续接为 `yes` */
+  const READY: FollowUpFacts = {
+    settling: false,
+    workspaceExists: true,
+    case: { state: 'present' },
+    attachments: null,
+    resume: {
+      state: 'yes',
+      reason: null,
+      channel: 'wire',
+      gate: null,
+      experimental: false,
+      proofDriver: 'real-path',
+      proofDriverReason: null,
+    },
+  };
+  const facts = (overrides: Partial<FollowUpFacts> = {}): FollowUpFacts => ({ ...READY, ...overrides });
+  /** 一份「跑过」的行：终态 + 有可续接的会话 */
+  const ran = (overrides: Partial<EvalRow> = {}): EvalRow => makeRow({ sessionId: 'sess-1', ...overrides });
+  /** 不可行的原因（可行时返回 `null`，用例据此把「可行」与「不可行」写成同一个断言形状） */
+  const reasonOf = (row: EvalRow, f: FollowUpFacts = facts()): string | null => {
+    const verdict = canFollowUpRow(row, f);
+    return verdict.ok ? null : verdict.reason;
+  };
+
+  it('跑过、且盘上与声明都在 ⇒ 可行', () => {
+    expect(canFollowUpRow(ran(), facts())).toEqual({ ok: true });
+    // 面比「已出分」宽：失败 / 超时 / 终止 / 跳过 / 中断同样是「跑过」
+    for (const status of ['failed', 'timed-out', 'canceled', 'skipped', 'interrupted'] as const) {
+      expect(canFollowUpRow(ran({ status }), facts()).ok).toBe(true);
+    }
+  });
+
+  it('① 正在跑的行属于「此刻不是时机」：指向输入区排队，并点名当前状态', () => {
+    for (const status of ['preparing', 'running', 'judging'] as const) {
+      const reason = reasonOf(ran({ status }));
+      expect(reason).toContain('正在运行中');
+      expect(reason).toContain(ROW_STATUS_LABELS[status]);
+      expect(reason).toContain('排队');
+    }
+  });
+
+  /**
+   * **`pending` 与在跑的行同一档**（spec：所有跑过的行态都能追问；`pending` 与在跑的行走**排队**
+   * 那条路）。它落到第 ③ 档是这个判据最容易犯的错：那一句的结尾是「要重跑请点『重新执行』」，
+   * 而用户想要的只是「我先把话排上队」——照它做会把这一行从头重跑一遍（追问的全部价值都反了）。
+   */
+  it('①-b `pending` 的行不是「接不上」而是「此刻不是时机」：指向输入区排队，不许引向「重新执行」', () => {
+    // `pending` 的行现实中也没有会话（连 prepare 都还没跑）——判据顺序对了才轮不到第 ③ 档
+    const reason = reasonOf(ran({ status: 'pending', sessionId: null }));
+    expect(reason).toContain(ROW_STATUS_LABELS.pending);
+    expect(reason).toContain('排队');
+    expect(reason).not.toContain('没有可续接的会话');
+    expect(reason).not.toContain('重新执行');
+  });
+
+  it('② 上一次运行还没收尾 ⇒ 同样不是时机，且与「正在跑」分开说（处置相反）', () => {
+    expect(reasonOf(ran(), facts({ settling: true }))).toContain('还没收尾');
+    // 顺序：正在跑的行即使 `settling` 也为真，拿到的必须是「正在运行中」（该去按终止，不是干等）
+    expect(reasonOf(ran({ status: 'running' }), facts({ settling: true }))).toContain('正在运行中');
+  });
+
+  it('③ 没有可续接的会话（旧产物 / 没采到 id）⇒ 拒绝，且明说不会从头重跑', () => {
+    const reason = reasonOf(ran({ sessionId: null }));
+    expect(reason).toContain('没有可续接的会话');
+    expect(reason).toContain('重新执行');
+  });
+
+  it('④ 工作区已被删除 ⇒ 拒绝并点名那一条路径；路径为空时说出「没有记录过」', () => {
+    expect(reasonOf(ran(), facts({ workspaceExists: false }))).toContain(ran().workspacePath);
+    const noPath = reasonOf(ran({ workspacePath: '' }), facts({ workspaceExists: false }));
+    expect(noPath).toContain('工作区已被删除');
+    expect(noPath).toContain('没有记录过工作区路径');
+  });
+
+  it('⑤ 附件：根没了与某一份没了各说一句（前者整棵被清理、后者要重新上传那一份）', () => {
+    const root = reasonOf(ran(), facts({ attachments: { state: 'root-missing', root: '/runs/att' } }));
+    expect(root).toContain('附件根不存在');
+    expect(root).toContain('/runs/att');
+    const missing = reasonOf(ran(), facts({ attachments: { state: 'missing', paths: ['/a.png', '/b.txt'] } }));
+    expect(missing).toContain('附件不存在');
+    expect(missing).toContain('/a.png');
+    expect(missing).toContain('/b.txt');
+    // 都在盘上就不拦（这一格是「这次带的那几份」，不是「这个目录非空不可」）
+    expect(reasonOf(ran(), facts({ attachments: { state: 'present' } }))).toBeNull();
+  });
+
+  it('⑥ 用例已删除 ⇒ 拒绝，点名是哪一个用例（id 在轮上、故从事实那一侧进来），并说清历史仍能看', () => {
+    const reason = reasonOf(ran(), facts({ case: { state: 'deleted', caseId: 'case-42' } }));
+    expect(reason).toContain('用例已删除');
+    expect(reason).toContain('case-42');
+    expect(reason).toContain('历史记录仍可查看');
+  });
+
+  it('⑦ 这一家接不上会话 ⇒ 三种「没有」必须分开说（缺席 / 厂商侧有但我们没接 / 没验过 / 结构上没有）', () => {
+    expect(reasonOf(ran(), facts({ resume: undefined }))).toContain('没有声明');
+    expect(
+      reasonOf(ran(), facts({ resume: { ...READY.resume!, state: 'unverified', reason: 'unverified', channel: null } })),
+    ).toContain('还没验证过');
+    expect(
+      reasonOf(ran(), facts({ resume: { ...READY.resume!, state: 'no', reason: 'not-supported', channel: null } })),
+    ).toContain('结构上没有续接会话的落点');
+    // 版本门：off-by-adapter 带 `gate` 时把那一个版本号说出来（说不出就没法照着做决定）
+    const gated = reasonOf(
+      ran(),
+      facts({
+        resume: {
+          ...READY.resume!,
+          state: 'off-by-adapter',
+          reason: 'not-exposed',
+          channel: null,
+          gate: { version: '9.9.9' },
+        },
+      }),
+    );
+    expect(gated).toContain('9.9.9');
+    // 没有版本门的那一档是另一句话：厂商侧有那条路、我们这一侧没接（两者处置不同：一个等版本，一个等接线）
+    expect(
+      reasonOf(ran(), facts({ resume: { ...READY.resume!, state: 'off-by-adapter', reason: 'not-exposed', channel: null } })),
+    ).toContain('我们这一侧没接');
+  });
+
+  it('判据不判厂商：同样的行与事实换一家给同一句话（厂商名只来自行的 `agentKind`）', () => {
+    const dsh = reasonOf(ran({ agentKind: 'dsh' }), facts({ resume: undefined }));
+    const cc = reasonOf(ran({ agentKind: 'cc' }), facts({ resume: undefined }));
+    expect(dsh).toContain(AGENT_LABELS.dsh);
+    expect(cc).toContain(AGENT_LABELS.cc);
+    expect(dsh?.replace(AGENT_LABELS.dsh, 'X')).toBe(cc?.replace(AGENT_LABELS.cc, 'X'));
+  });
+
+  it('判据的返回形状就是线上那一份：`FollowUpVerdictSchema` 收得下它（两份形状不许各说各话）', () => {
+    expect(FollowUpVerdictSchema.parse(canFollowUpRow(ran(), facts()))).toEqual({ ok: true });
+    const refused = canFollowUpRow(ran({ sessionId: null }), facts());
+    expect(FollowUpVerdictSchema.parse(refused)).toEqual(refused);
+    // 「不可行却没原因」在线上被拦下（判别联合的第二种只认非空原因）——
+    // 界面要拿这一格直接说一句人话，空串会让它显示一个没有内容的 Tooltip
+    expect(FollowUpVerdictSchema.safeParse({ ok: false, reason: '' }).success).toBe(false);
+    expect(FollowUpVerdictSchema.safeParse({ ok: false }).success).toBe(false);
+    expect(FollowUpAvailabilitySchema.safeParse({ rows: [{ rowId: 'r-1', verdict: refused }] }).success).toBe(true);
+  });
+
+  it('判据 `ok` 为真时没有原因，为假时原因非空（界面据此说一句人话，不留半句）', () => {
+    const samples: FollowUpFacts[] = [
+      facts(),
+      facts({ settling: true }),
+      facts({ workspaceExists: false }),
+      facts({ case: { state: 'deleted', caseId: 'case-42' } }),
+      facts({ resume: undefined }),
+    ];
+    for (const sample of samples) {
+      const verdict = canFollowUpRow(ran(), sample);
+      if (verdict.ok) continue;
+      expect(verdict.reason.trim()).not.toBe('');
+    }
   });
 });

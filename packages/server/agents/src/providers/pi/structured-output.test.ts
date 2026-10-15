@@ -13,11 +13,24 @@
  * 变异体：把某条规则从预检里删掉 ⇒ 对应那一格变成「通过」，当场红。
  */
 import { describe, expect, it } from 'vitest';
+import { foldMessages } from '@aieval/core';
+import {
+  anthropicBlockStart,
+  anthropicBlockStop,
+  anthropicDelta,
+  anthropicEnd,
+  anthropicStart,
+  anthropicText,
+  anthropicToolUse,
+  runPiConformanceRow,
+} from '../../testing/pi-conformance-fixture';
+import { PI_STRUCTURED_REJECTION_BUDGET } from './events';
 import {
   adoptStructuredOutput,
   adoptStructuredArguments,
   createStructuredOutputProjection,
   noteTextReply,
+  PI_STRUCTURED_OUTPUT_TOOL,
   preflightStructuredOutput,
   structuredOutputApplied,
 } from './structured-output';
@@ -250,11 +263,86 @@ describe('pi 的结构化输出采纳结论', () => {
     expect(adoption.fallback?.instruction).toContain('"anyOf"');
   });
 
-  it('预检不过且那份 schema 根本不是 JSON 对象 ⇒ 没有可声明的工具，只剩提示词那一档', () => {
+  /**
+   * 非对象 schema（数组 / 标量）按**「没给」**处置：既不声明工具，**也不追加提示词**。
+   * 判据是「四家拿到的题目必须逐字相同」——另三家同样只在 schema 可用时才落提示词；
+   * 而骨架对这份 schema 只判「合法 JSON」，追加一段「必须符合这份数组 schema」的约束会让
+   * 题面比判据严、且与它自相矛盾。
+   */
+  it('预检不过且那份 schema 根本不是 JSON 对象 ⇒ 按「没给」处置，工具与提示词都不落', () => {
     const adoption = adoptStructuredOutput(['not', 'an', 'object'], 'openai');
     expect(adoption.tool).toBeNull();
-    expect(adoption.fallback?.instruction).toContain('输出约束');
+    expect(adoption.fallback).toBeNull();
     expect(adoption.preflightReason).toContain('不是一个 JSON 对象');
+  });
+
+  /**
+   * **`required` 的判据必须与厂商同源**（自有键，不走原型链）。
+   *
+   * 厂商那一侧取的是 `Object.keys(properties)` 的集合（`makeJsonSchemaNodeStrict` 的
+   * `propertyNames.includes(key)`），而 `'toString' in {}` / `'constructor' in {}` 全为真
+   * ⇒ 用 `in` 判会**放行**这份 schema，采纳 `strict: 'require'`，厂商在建请求那一刻抛
+   * （零出站请求 + `stopReason: 'error'` 的 43 毫秒收场）——正是预检存在的理由。
+   */
+  it('`required` 点名了一个 Object.prototype 成员 ⇒ 预检必须与厂商同判（拦下，不是放行）', () => {
+    for (const key of ['toString', 'constructor', 'valueOf', '__proto__']) {
+      const preflight = preflightStructuredOutput(
+        { type: 'object', properties: {}, required: [key], additionalProperties: false },
+        'openai',
+      );
+      expect(preflight.parameters, key).toBeNull();
+      expect(preflight.reason, key).toContain('properties 里没有的属性');
+    }
+    // 自有键（真的在 properties 里）照旧放行——这条判据不能把正常 schema 一起拦掉
+    expect(preflightStructuredOutput(
+      { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'], additionalProperties: false },
+      'openai',
+    ).parameters).not.toBeNull();
+  });
+
+  /**
+   * **`required` 的判据要收「自有且可枚举」**，不是「自有」。
+   *
+   * 厂商那一侧取 `Object.keys(properties)`（可枚举），而 `Object.hasOwn` 收全部自有键
+   * ——`Object.defineProperty` 造出来的**非枚举**键会让预检放行、厂商在建请求那一刻抛
+   * （`required contains an unknown property`：零出站请求 + `stopReason: 'error'`），
+   * 也就是同一类假放行的另一个入口。判据与厂商同源之后两边同判。
+   */
+  it('`required` 点名了一个**非枚举**自有属性 ⇒ 与厂商同判（拦下，`Object.hasOwn` 会放行它）', () => {
+    const properties: Record<string, unknown> = {};
+    Object.defineProperty(properties, 'hidden', {
+      value: { type: 'string' },
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    // 前置：这一格确实是「自有但不可枚举」，否则这条判据测的不是它想测的东西
+    expect(Object.hasOwn(properties, 'hidden')).toBe(true);
+    expect(Object.keys(properties)).toEqual([]);
+
+    const preflight = preflightStructuredOutput(
+      { type: 'object', properties, required: ['hidden'], additionalProperties: false },
+      'openai',
+    );
+    expect(preflight.parameters, '非枚举自有键被当成了可声明的属性 ⇒ 厂商会拒、我们放行').toBeNull();
+    expect(preflight.reason).toContain('properties 里没有的属性');
+  });
+
+  /**
+   * **根是 JSON 对象、但根 `type` 不是 `object` 的那一支：工具照旧声明（降级档）**。
+   *
+   * 与「根本不是 JSON 对象 ⇒ 两样都不落」是**两档**，判据是结构而不是「根 type 是什么」：
+   * 这一份有可声明的参数（`prefer` 档把原 schema 交出去），而 pi 的 `input_schema` 在非 strict
+   * 档只取根节点的 `type/properties/required` ⇒ 出站那一份会退化成空对象形态。
+   * 这是 schema 形态的已知代价，**如实交付**而不是静默丢掉工具（丢掉的话模型连出口都没有）。
+   */
+  it('根 `type: "array"` ⇒ 降级档仍然交付工具与填充层（与「不是 JSON 对象」分档）', () => {
+    const arrayRoot = { type: 'array', items: { type: 'string' } };
+    const adoption = adoptStructuredOutput(arrayRoot, 'anthropic');
+    expect(adoption.tool?.strict).toBe('prefer');
+    expect(adoption.tool?.parameters).toBe(arrayRoot);
+    expect(adoption.fallback?.instruction).toContain('输出约束');
+    expect(adoption.preflightReason).toContain('root schema must have type object');
   });
 });
 
@@ -308,3 +396,119 @@ describe('pi 的结构化输出投影记账（上报口径的唯一依据）', (
     expect(state.finalText).toBe('[object Object]');
   });
 });
+
+/**
+ * 结构化输出的**文本投影落进哪一格**（真跑一行 + 服务端折叠）。
+ *
+ * 为什么必须走整条运行 + `foldMessages`：「同一轮的两条投递谁顶掉谁」只在合并器 + 折叠器上现形，
+ * 纯函数层看不到。判据是**折叠后**那条助手消息的块序列——界面与 `/messages` 读的就是它。
+ *
+ * 变异体：把 `piStructuredResultDraft` 的块标识改回缺省 `index: 0`（或去掉 `structured:` 前缀）
+ * ⇒ 模型正文块（或工具调用块）被那段 JSON 顶掉，本用例当场红。
+ */
+describe('pi 的结构化输出文本投影（同一轮消息里的落槽）', () => {
+  /** 一条助手消息 = 正文块 + `submit_result` 工具块（真机模型给结构化结果时的自然形态） */
+  function textThenSubmit(text: string, args: Record<string, unknown>): string[] {
+    return [
+      anthropicStart(),
+      anthropicBlockStart(0, { type: 'text', text: '' }),
+      anthropicDelta(0, { type: 'text_delta', text }),
+      anthropicBlockStop(0),
+      ...anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, args, 'toolu_submit').slice(1),
+    ];
+  }
+
+  const schema = {
+    type: 'object',
+    properties: { verdict: { type: 'string' } },
+    required: ['verdict'],
+    additionalProperties: false,
+  };
+
+  it('同轮已有正文块：JSON 追加成独立块，模型正文与工具块都不被顶掉', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '按 schema 作答。',
+      outputSchema: schema,
+      script: [textThenSubmit('这是结论：', { verdict: 'ok' })],
+    });
+    const folded = foldMessages(run.product.messages).filter((message) => message.role === 'assistant');
+    const blocks = folded.flatMap((message) => message.blocks);
+    const kinds = blocks.map((block) => (block.type === 'text' ? `text=${block.text}` : block.type));
+    expect(kinds, `折叠后的块序列不对：${JSON.stringify(kinds)}`).toContain('text=这是结论：');
+    expect(kinds).toContain('tool-call');
+    // 那段 JSON 是这一档的交付面（评分通路读的 `finalText` 就是它），必须同时在场
+    expect(kinds.some((kind) => kind.startsWith('text={'))).toBe(true);
+  });
+
+  /**
+   * **持续交越界参数必须有上限**：厂商在参数校验失败时返回**不带 `terminate`** 的错误结果
+   * （校验发生在 `terminate` 之前），模型每交一次就换来一条错误结果、再交一次——两侧都没有轮数上限。
+   * 真机读数（脚本式上游，永久回同一段越界调用）：15 秒 **1337 次**出站请求，不挂看门狗直接 OOM。
+   *
+   * 两件事一起判：① 出站请求数被预算掐住（不是无界）；② 结论是**可读的失败**而不是 canceled
+   * （预算中止会 `abort()`，不记那一笔停止来源时 `readAssistantFailure` 会另给一条原因盖掉它）。
+   *
+   * 变异体：去掉投影层那条 `failure`（或去掉 `index.ts` 里的 `session.abort()`）⇒ 本用例挂死在
+   * 无限往返上（超时红）；只去掉停止来源那一笔记账 ⇒ 错误文案变成厂商那条 aborted 原因。
+   */
+  /**
+   * 坏参数的工具调用必须在块层留下**可读的原因**：厂商只给 `arguments: {}` + `argumentsError`
+   * （原文含 `is not valid JSON`），不给这一格的话块里就是一个空对象，与「模型真传了空对象」
+   * 逐字同形。判据取真路径产物里的块（真包 + 脚本式上游），不是我们传了什么参数。
+   *
+   * 变异体：把 `readString(block, 'argumentsError')` 那一格去掉 ⇒ 本用例当场红。
+   */
+  it('参数不是合法 JSON ⇒ 工具块带上厂商的 `inputError`（不是只有一个空对象）', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '读一个文件。',
+      // 厂商对「参数不是合法 JSON」的处置：`arguments` 记 `{}`、原文进 `argumentsError`
+      // 第二段是收口：坏参数那一轮之后模型「答一句」，避免网关复用最后一段把这一次探针拖成无限重试
+      script: [anthropicRawToolArguments('read', 'this is not json', 'toolu_bad_args'), anthropicText('结束。')],
+    });
+    /** 块的联合类型要显式收窄（`filter` 谓词不会自动窄化） */
+    type BadCall = { type: 'tool-call'; callId: string; input: unknown; inputError?: string | null };
+    const calls = run.product.messages
+      .flatMap((message) => message.blocks)
+      .filter((block): block is BadCall & typeof block => block.type === 'tool-call' && block.callId === 'toolu_bad_args');
+    expect(calls.length, '没读到那次工具调用的块，这一条的结论不成立').toBeGreaterThan(0);
+    const inputError = calls[0]?.inputError ?? null;
+    expect(inputError, '块里必须带厂商那句原文').toContain('not valid JSON');
+    // 这一档的 `input` 就是空对象——所以必须有 `inputError` 才分得清「解析失败」与「真传了空对象」
+    expect(calls[0]?.input).toEqual({});
+  });
+
+  it('模型持续交越界参数 ⇒ 有上限地收手（不是无界往返）', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '按 schema 作答。',
+      outputSchema: schema,
+      // 参数不是 schema 的形状 ⇒ 厂商校验失败；剧本越界后复用最后一段 ⇒ 模型「再交一次」
+      script: [anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, { wrong: true }, 'toolu_bad')],
+    });
+    expect(run.outcome.ok).toBe(false);
+    expect(run.outcome.error?.message ?? '').toContain('结构化输出参数连续');
+    expect(run.requests.length, '出站请求数必须被预算掐住').toBeLessThanOrEqual(PI_STRUCTURED_REJECTION_BUDGET + 3);
+  }, 60_000);
+
+  it('阴性对照：模型只调工具、不写正文时工具块与 JSON 块都在（顺序为追加）', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '按 schema 作答。',
+      outputSchema: schema,
+      script: [anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, { verdict: 'ok' }, 'toolu_submit')],
+    });
+    const blocks = foldMessages(run.product.messages)
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.blocks);
+    expect(blocks.map((block) => block.type)).toEqual(['tool-call', 'text']);
+  });
+});
+
+/** 一次工具调用，但**入参不是合法 JSON**（厂商会记 `arguments: {}` + `argumentsError` 原文） */
+function anthropicRawToolArguments(name: string, raw: string, callId: string): string[] {
+  return [
+    anthropicStart(),
+    anthropicBlockStart(0, { type: 'tool_use', id: callId, name, input: {} }),
+    anthropicDelta(0, { type: 'input_json_delta', partial_json: raw }),
+    anthropicBlockStop(0),
+    anthropicEnd('tool_use'),
+  ];
+}

@@ -42,9 +42,12 @@
  * 模型与网关/密钥**继承父会话**（`dist/agent-runner.js` 的 `resolveDefaultModel(ctx.model, …)`
  * 与 `parentModelRuntime`）⇒ 本仓每 run 自注册的 provider 会原样进子会话，子智能体打的是同一台网关，
  * 不需要 `auth.json` / 宿主 CLI。**唯一不继承的是 `agentDir`**：它硬编码走 SDK 的 `getAgentDir()`
- * （只认进程级 `PI_CODING_AGENT_DIR` / `~/.pi/agent`），而本适配器的硬不变量是绝不写 `process.env`
- * ⇒ 子会话的转写与 settings/memory 落**真实 `~/.pi`**，并发 pi 行共享这一部分。这是采纳该扩展时
- * 明确接受的代价，登记在 `docs/protocols/pi.md` 的已知边界里。
+ * （只认进程级 `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` 与 `~/.pi/agent`），而本适配器的
+ * 硬不变量是绝不写 `process.env` ⇒ 子会话的**会话文件**与 settings/memory 落真实 `~/.pi`，
+ * 并发 pi 行共享这一部分；**家目录不可写时整次派发以
+ * `EPERM: operation not permitted, mkdir '<home>/.pi/agent/sessions/…'` 失败**（子任务行记 `failed`，
+ * 不是「没跑到」）。**转写正文不在这里**——它落 `os.tmpdir()/pi-subagents-<uid>/…`（见 `transcript.ts`）。
+ * 这是采纳该扩展时明确接受的代价，登记在 `docs/protocols/pi.md` 的已知边界里。
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -157,6 +160,15 @@ export interface PiSubagentRecorder {
   /** 已经收到**终态**事件的那些身份（顺序即到达顺序）；收尾据此补最后一次完整快照 */
   settledIds: () => string[];
   /**
+   * 收到过 `subagents:started` 的那些身份（顺序即到达顺序）。
+   *
+   * 为什么要这一格：这一家的子任务行有**三条**投递通路，其中最要紧的是**派发那一刻**那条
+   * （`Agent` 前台档是阻塞工具，只靠工具收尾那条通路的话整段运行期界面上没有卡片也没有入口）。
+   * 总线载荷只有 `{id, type, description}` ⇒ 投影层拿它去与在飞的派发调用对账（见 `events.ts`
+   * 的 `deliverStartedSubagents`）。
+   */
+  startedIds: () => string[];
+  /**
    * 投递一条子任务行：**同一身份、同一内容只发一次**，重复的投递返回空数组。
    *
    * 为什么要在这里挡：同一个子智能体有**两条**投递通路——`Agent` 工具的收尾
@@ -169,20 +181,35 @@ export interface PiSubagentRecorder {
    * 挡掉的只是**逐字相同**的重发，于是两条通路各自到达都不会在产物里留下重复行。
    */
   deliver: (record: SubagentRecord) => SubagentRecord[];
+  /**
+   * 已经投出过子任务行（无论哪条通路、哪份快照）的那些身份。
+   *
+   * 为什么要这一格：跑动期的转写增量以它为闸——消息必须晚于**它自己的子任务行**进账
+   * （turn.ts 的骨架在同一批投影里先发消息、后发子任务行，同批混发会让这批消息在
+   * 行到达之前被客户端归进主会话）。收数器是投递的唯一闸口，「谁已经出去过」只有它知道。
+   */
+  deliveredIds(): string[];
 }
 
 /**
  * 造一个收数器。**每行一份**：收的是这一行那次会话的扩展事件，跨行共享等于让两行并发的子任务
  * 互相串（与 `PiRunState` / 请求侧观察者同一条处置）。
  *
- * 回调里只做两件事——收窄载荷、写表。**不发射器、不抛**：那个时刻不在骨架的 try/catch 里，
- * 一次抛错就能带走整行（一次运行的价值远大于一条子任务行的即时性）。
+ * 回调里只做两件事——收窄载荷、写表（外加 `hooks` 的纯通知）。**不发射器、不抛**：那个时刻不在
+ * 骨架的 try/catch 里，一次抛错就能带走整行（一次运行的价值远大于一条子任务行的即时性）。
+ * `hooks`（可选）是总线事件的**旁听钩子**：`started` / 终态各报一次身份，不改收数器自己的账——
+ * wire 通道（`subagent-wire.ts`）靠它启停订阅；挂在构造参数而不是接口成员上，因为它是一次性的
+ * 接线输入，不是收数器运行期对外提供的能力。
  */
-export function createPiSubagentRecorder(): PiSubagentRecorder {
+export function createPiSubagentRecorder(hooks?: { onStarted?: (agentId: string) => void; onSettled?: (agentId: string) => void }): PiSubagentRecorder {
   const byId = new Map<string, PiSubagentEvent>();
   const settled: string[] = [];
+  /** 报过「开始」的那些身份（顺序即到达顺序；见 `startedIds`） */
+  const started: string[] = [];
   /** 已经投递出去的那些行，按「身份 + 内容」记（见 `deliver` 的判据） */
   const delivered = new Set<string>();
+  /** 已经投出过**任意一份**快照的身份（见 `deliveredIds`：跑动期转写增量的闸门） */
+  const deliveredAgents = new Set<string>();
   const absorb = (data: unknown, isSettled: boolean): void => {
     const record = asRecord(data);
     const id = readString(record, 'id');
@@ -198,6 +225,10 @@ export function createPiSubagentRecorder(): PiSubagentRecorder {
     };
     byId.set(id, event);
     if (isSettled && !settled.includes(id)) settled.push(id);
+    if (!isSettled && !started.includes(id)) started.push(id);
+    // 钩子在收账**之后**纯通知：wire 通道据此启停，看到的已是登记完的事实
+    if (isSettled) hooks?.onSettled?.(id);
+    else hooks?.onStarted?.(id);
   };
   return {
     factory: (pi) => {
@@ -210,6 +241,7 @@ export function createPiSubagentRecorder(): PiSubagentRecorder {
     },
     latest: (agentId) => byId.get(agentId) ?? null,
     settledIds: () => [...settled],
+    startedIds: () => [...started],
     deliver: (record) => {
       /**
        * 签名走完整序列化：这一行的每一格都是标量或 `null`（`usage` 是四个数），
@@ -218,8 +250,10 @@ export function createPiSubagentRecorder(): PiSubagentRecorder {
       const signature = `${record.subagentId}|${JSON.stringify(record)}`;
       if (delivered.has(signature)) return [];
       delivered.add(signature);
+      deliveredAgents.add(record.subagentId);
       return [record];
     },
+    deliveredIds: () => [...deliveredAgents],
   };
 }
 

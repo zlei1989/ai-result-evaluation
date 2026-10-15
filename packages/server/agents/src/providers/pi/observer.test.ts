@@ -35,15 +35,15 @@ function skillsSection(entries: Array<{ name: string; description?: string; loca
   return lines.join('\n');
 }
 
-/** openai wire 的请求体：系统段是 `messages[]` 里的一条 `system` 消息 */
+/** openai（Responses）wire 的请求体：系统段是 `input[]` 里的一条 `system` 消息 */
 function openaiPayload(system: string, tools: string[]): unknown {
   return {
     model: 'probe',
-    messages: [
+    input: [
       { role: 'system', content: system },
-      { role: 'user', content: '跑一下' },
+      { role: 'user', content: [{ type: 'input_text', text: '跑一下' }] },
     ],
-    tools: tools.map((name) => ({ type: 'function', function: { name, description: 'x', parameters: {} } })),
+    tools: tools.map((name) => ({ type: 'function', name, description: 'x', parameters: {} })),
   };
 }
 
@@ -83,10 +83,10 @@ describe('pi 的请求侧观察者', () => {
 });
 
 describe('技能装载档：按 wire 取系统段（只实现一条会让另一条恒空）', () => {
-  it('openai wire：系统段在 messages[] 的 system 角色里', () => {
+  it('openai wire：系统段在 input[] 的 system 角色里', () => {
     const payload = openaiPayload(skillsSection([ROW_SKILL]), ['read']);
-    expect(piSystemText(payload, 'openai-completions')).toContain('<available_skills>');
-    expect(piRequestSkills(payload, 'openai-completions')).toEqual([ROW_SKILL]);
+    expect(piSystemText(payload, 'openai-responses')).toContain('<available_skills>');
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([ROW_SKILL]);
   });
 
   it('anthropic wire：系统段在顶层 system，逐名仍然读得出来', () => {
@@ -96,23 +96,23 @@ describe('技能装载档：按 wire 取系统段（只实现一条会让另一�
 
   it('两条 wire 各读自己那一处：把系统段放错位置时该 wire 读不到（判据不是「段在不在」）', () => {
     const section = skillsSection([ROW_SKILL]);
-    // openai 的判据不认顶层 system，anthropic 的判据不认 messages[]——互相顶替会让「没装」读成「装了」
-    expect(piRequestSkills(anthropicPayload(section, ['read']), 'openai-completions')).toEqual([]);
+    // openai 的判据不认顶层 system，anthropic 的判据不认 input[]——互相顶替会让「没装」读成「装了」
+    expect(piRequestSkills(anthropicPayload(section, ['read']), 'openai-responses')).toEqual([]);
     expect(piRequestSkills(openaiPayload(section, ['read']), 'anthropic-messages')).toEqual([]);
   });
 
   it('openai wire 认 developer 角色（同一段系统文本的另一种挂法）', () => {
     const payload = {
-      messages: [{ role: 'developer', content: skillsSection([ROW_SKILL]) }],
+      input: [{ role: 'developer', content: skillsSection([ROW_SKILL]) }],
       tools: [],
     };
-    expect(piRequestSkills(payload, 'openai-completions')).toEqual([ROW_SKILL]);
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([ROW_SKILL]);
   });
 
   it('逐条解析：段在、里面没有那一条 ⇒ 读不到它（同名冲突与「藏起来」都长这样）', () => {
     const other = { name: 'beta', location: '/repo/.pi/skills/alpha/SKILL.md' };
     const payload = openaiPayload(skillsSection([other]), ['read']);
-    const names = piRequestSkills(payload, 'openai-completions').map((skill) => skill.name);
+    const names = piRequestSkills(payload, 'openai-responses').map((skill) => skill.name);
     expect(names).toEqual(['beta']);
     expect(names).not.toContain(ROW_SKILL.name);
   });
@@ -124,16 +124,37 @@ describe('技能装载档：按 wire 取系统段（只实现一条会让另一�
       ['read'],
     );
     // description 那串被转义的原文不在判据里；落点按厂商转义还原，才配得上「逐字相等」
-    expect(piRequestSkills(payload, 'openai-completions')).toEqual([{ name: 'alpha', location }]);
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([{ name: 'alpha', location }]);
+  });
+
+  /**
+   * **单引号那一格厂商写的是 `&apos;`**（`skills.js` 的 `escapeXml`：`'` → `&apos;`），
+   * 不是 HTML 里同样合法的 `&#39;`。只认后者会让含单引号的落点（macOS 用户名 `o'brien` 那一类）
+   * 还原不出来，而 `location` 是 `piSkillReadSatisfied` 的「与实际路径逐字相等」判据 ⇒ 该技能恒判
+   * 「没读过」。两种形态都要还原，将来厂商换写法不再踩一次。
+   */
+  it('落点里的单引号：厂商转义成 `&apos;`（也容忍 `&#39;`），两者都要还原回单引号', () => {
+    const alpha = '/Users/o\'brien/ws/row-1/.agenthome/skills/alpha/SKILL.md';
+    const payload = openaiPayload(
+      skillsSection([
+        { name: 'alpha', location: '/Users/o&apos;brien/ws/row-1/.agenthome/skills/alpha/SKILL.md' },
+        { name: 'beta', location: '/Users/o&#39;brien/ws/row-1/.agenthome/skills/beta/SKILL.md' },
+      ]),
+      ['read'],
+    );
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([
+      { name: 'alpha', location: alpha },
+      { name: 'beta', location: alpha.replace('/alpha/', '/beta/') },
+    ]);
   });
 
   it('没有技能段 ⇒ 空数组（不是「装上了但没读到」）', () => {
-    expect(piRequestSkills(openaiPayload('光秃秃的系统提示词', ['read']), 'openai-completions')).toEqual([]);
+    expect(piRequestSkills(openaiPayload('光秃秃的系统提示词', ['read']), 'openai-responses')).toEqual([]);
   });
 });
 
 describe('工具表：两条 wire 的名字位置不同，一次读法同时认两处', () => {
-  it('openai 走 tools[].function.name', () => {
+  it('openai 走 tools[].name', () => {
     expect(piRequestToolNames(openaiPayload('x', ['read', 'mcp__probe__echo']))).toEqual(['read', 'mcp__probe__echo']);
   });
 

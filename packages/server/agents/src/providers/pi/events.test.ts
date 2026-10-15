@@ -11,13 +11,16 @@
  *   · **增量帧零行级事件**（一旦掉进兜底，原始输出面板会被刷成 JSON 流水，上面那条证据也就没人看得见）；
  *   · **`reasoning` 不并进 `output`**（并了就是双计，症状是「这家 tok 偏大」而且看不出来）。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, afterEach, expect, it } from 'vitest';
 import { SubagentRecordSchema } from '@aieval/contracts';
 import { createTurnState } from '../../testing/agent-fixtures';
+import { createFakePiChildSession } from '../../testing/pi-sdk-fixture';
 import type { MessageDraft } from '../../message';
 import { mergeTiming, type TimingSpan, type TurnProjection, type TurnState } from '../../turn';
 import { createPiRunState, finalizePiSubagents, notePiStopRequest, projectPiEvent, type PiRunState } from './events';
 import { PI_SUBAGENT_DISPATCH_TOOL, createPiSubagentRecorder, type PiSubagentRecorder } from './subagents';
+import { PI_SUBAGENTS_MANAGER_KEY, PI_SUBAGENT_WIRE_TICK_TYPE, createPiSubagentWire, resetPiSubagentWireForTesting, type PiSubagentWire } from './subagent-wire';
+import type { PiSubagentTranscript } from './transcript';
 
 const CONTEXT = { kind: 'pi', baseUrl: 'https://gw.example.com/v1' } as const;
 
@@ -46,7 +49,7 @@ function assistantMessage(overrides: Record<string, unknown> = {}): Record<strin
   return {
     role: 'assistant',
     content: [{ type: 'text', text: '好的' }],
-    api: 'openai-completions',
+    api: 'openai-responses',
     provider: 'aieval-pi-test',
     model: 'GLM-5.3',
     usage: {
@@ -255,6 +258,36 @@ describe('pi 的计量与轮次', () => {
     expect(logTexts(projection).some((text) => text.includes('[WARN]'))).toBe(true);
   });
 
+  /**
+   * **厂商的「冻结全 0」= 没采到，不是「0 用量」**。
+   *
+   * pi-ai 构造助手消息时把 `usage` 初始化成全 0，而请求失败、被中止、网关没回 usage 块这三条路
+   * 都会把这份全 0 原样留在最终消息上 ⇒ 照「键在场」读会把一次失败记成「采到了：0 token」，
+   * 契约（`tokens` 采不到就是 `null`）与界面读法（0 会让人得出「这家很省」）双双被违反。
+   */
+  it('厂商的冻结全 0 用量 ⇒ 既不给 tokens 也不给 total，并落那条「没有可读的用量」WARN', () => {
+    const projection = project(messageEnd(assistantMessage({
+      stopReason: 'error',
+      errorMessage: 'Connection error.',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    })));
+    expect(projection.tokens, '冻结全 0 被读成了「采到了 0 token」').toBeNull();
+    expect(logTexts(projection).some((text) => text.includes('没有可读的用量'))).toBe(true);
+  });
+
+  /**
+   * **openai 那条 wire 把缺失的推理明细补成 0**（`output_tokens_details?.reasoning_tokens || 0`），
+   * anthropic 那条只在真有思考 token 时才写 ⇒ 同一份 `reasoning: 0` 在两条 wire 上是两句不同的话。
+   * 判成真值会让人得出「这家不做推理」。
+   */
+  it('openai wire 的 reasoning=0 算「没报」；anthropic wire 的 0 照原样交', () => {
+    const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 15 };
+    const openai = project(messageEnd(assistantMessage({ api: 'openai-responses', usage })));
+    expect(openai.tokens?.reasoningOutput).toBeNull();
+    const anthropic = project(messageEnd(assistantMessage({ api: 'anthropic-messages', usage })));
+    expect(anthropic.tokens?.reasoningOutput).toBe(0);
+  });
+
   it('轮次按一次模型往返计：一次工具调用算两轮，且第二轮起手时轮次已经推进', () => {
     const state = createTurnState();
     project(turnStart(), state);
@@ -322,10 +355,14 @@ describe('pi 的时长（只用厂商那一把尺子）', () => {
   });
 
   /**
-   * 跨轮：`apiMs` 是「本行到目前为止厂商自报的模型往返时间」——与 claude 的 `duration_api_ms`
-   * 同一格，口径必须是累计而不是最后一轮（只交最后一轮会让跨家对比变成两种口径）。
+   * 跨轮：投影交的是**当轮那一份** `apiMs`（厂商对「一次响应」的定义），累计由骨架的
+   * `mergeTiming` 相加得出——那一层的约定就是「每条投影交增量」。
+   *
+   * 为什么这一条要钉死：自己在这一层累加会与骨架的相加叠成平方级偏大。真机读数（三轮各约 160 ms
+   * 的网关延迟）：行级 `apiMs` 读到 966 ms，而整行跨度 `totalMs` 只有 483 ms——比它自己装着的
+   * 那段时间还长。两个断言合起来才拦得住：单条是增量、合并后是总和。
    */
-  it('`apiMs` 逐轮累加（本行到目前为止），端点仍由骨架保留首末两点', () => {
+  it('`apiMs` 逐条交当轮那一份（增量），累计由骨架 `mergeTiming` 相加', () => {
     const state = createTurnState();
     const runState = createPiRunState();
     project(turnStart(), state, runState);
@@ -334,8 +371,9 @@ describe('pi 的时长（只用厂商那一把尺子）', () => {
 
     project(turnStart(), state, runState);
     const second = project(messageEnd(assistantMessage({ timestamp: 5_000, durationMs: 25 })), state, runState);
-    expect(second.timing).toEqual({ firstMs: 5_000, lastMs: 5_025, apiMs: 65, ttftMs: null, source: 'vendor' });
-    // 骨架按「首见即起点、再见即终点」合并 ⇒ 整行的跨度是 1_000 → 5_025，apiMs 是 65
+    // 单条交 25（当轮），不是 65（累计）——累计由下面那次合并给出
+    expect(second.timing).toEqual({ firstMs: 5_000, lastMs: 5_025, apiMs: 25, ttftMs: null, source: 'vendor' });
+    // 骨架按「首见即起点、再见即终点」合并 ⇒ 整行的跨度是 1_000 → 5_025，apiMs 是 40 + 25
     const merged = mergeTiming(first.timing as TimingSpan, second.timing as TimingSpan);
     expect(merged).toEqual({ firstMs: 1_000, lastMs: 5_025, apiMs: 65, ttftMs: null, source: 'vendor' });
   });
@@ -374,6 +412,28 @@ describe('pi 的增量帧', () => {
       expect(projection.messages, JSON.stringify(frame)).toBeUndefined();
     }
   });
+
+  /**
+   * **增量帧的 `raw` 只留这一帧的增量**，不复制厂商帧里的 `partial`。
+   *
+   * 判据为什么必须有：`partial` 是「到目前为止的整条助手消息」（厂商 `.d.ts` 原文 *the shared live
+   * response-so-far helper*）⇒ 逐帧深拷贝它，一条几千 token 的答复就是几千次 O(长度) 拷贝，
+   * 而增量消息还会被扇出到 SSE（不落盘、不参与判据）⇒ 浏览器为了拿几个字符要收整段正文。
+   * 「当场快照」这条纪律由新建一个只带标量的对象满足，与「不复制 partial」不冲突。
+   */
+  it('增量帧不把整条 partial 复制进 raw（逐字流量的成本不许与答复长度成平方）', () => {
+    const longPartial = { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(4096) }] };
+    const projection = project(
+      {
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '好', partial: longPartial },
+      },
+      createTurnState({ turns: 1 }),
+    );
+    const raw = projection.messages?.[0]?.raw;
+    expect(JSON.stringify(raw)).not.toContain('xxxx');
+    expect(raw).toEqual({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '好' } });
+  });
 });
 
 describe('pi 的失败归因', () => {
@@ -385,7 +445,13 @@ describe('pi 的失败归因', () => {
     ];
     for (const [original, expected] of cases) {
       const projection = project(messageEnd(assistantMessage({ stopReason: 'error', errorMessage: original })));
-      expect(projection.failure?.code, original).toBe('AGENT_FAILED');
+      /**
+       * **自报超时必须归 `AGENT_TIMED_OUT`**（`types.ts`：「上游自己报的超时也归它」）：
+       * `AGENT_FAILED` 在自动重试表里，而重试改变不了上游超时 ⇒ 那一档会被白跑两遍。
+       * 另两句（连接错误 / 响应中断）仍是 `AGENT_FAILED`——它们是可重试的瞬时故障。
+       */
+      expect(projection.failure?.code, original)
+        .toBe(original === 'Request timed out.' ? 'AGENT_TIMED_OUT' : 'AGENT_FAILED');
       expect(projection.failure?.message, original).toContain(expected);
       // host 与厂商原文都要在文案里（前者是路由事实，后者是排障要搜的那一句）
       expect(projection.failure?.message, original).toContain('gw.example.com');
@@ -443,14 +509,19 @@ describe('pi 的失败归因', () => {
   it('停止请求的记账：用户那一档靠 signal 翻转区分，另两档一律记成非用户发起', () => {
     const userStop = createPiRunState();
     notePiStopRequest(userStop, true);
-    // 逐字段比整份状态：新加的格（派发记账、时长累计）必须显式出现在这里，不能悄悄长出来
+    // 逐字段比整份状态：新加的格（派发记账、转写增量记账、wire 载体去重）必须显式出现在这里，不能悄悄长出来
     expect(userStop).toEqual({
       stopRequested: true,
+      structuredRejections: 0,
+      selfAborted: false,
       watchdogFired: false,
-      apiMsTotal: 0,
       dispatched: false,
-      dispatchNames: new Map(),
+      dispatchStarts: new Map(),
+      unclaimedWarned: new Set(),
       dispatches: new Map(),
+      transcriptEmitted: new Map(),
+      transcriptReadAt: new Map(),
+      subagentCarriers: new Set(),
     });
 
     const watchdogStop = createPiRunState();
@@ -487,6 +558,20 @@ describe('pi 的结束信号与兜底', () => {
     expect(logTexts(projection).join('')).toContain('queue_update');
     expect(projection.tokens).toBeNull();
     expect(projection.turns).toBeNull();
+  });
+
+  /**
+   * 合成帧（`subagent-wire.ts` 的泵塞进事件流的那一帧）是**我们自己造的**，不是厂商事件：
+   * 它一个字的正文都没有，存在的全部意义是换一次排空。漏判它就会掉进上一条的兜底分支，
+   * 把「未识别的厂商载荷」按子会话的事件密度刷满原始输出面板。
+   */
+  it('wire 的合成帧投影成空：不落日志、不动计量，更不当成未识别载荷', () => {
+    const projection = project({ type: PI_SUBAGENT_WIRE_TICK_TYPE });
+    expect(logTexts(projection).join('')).toBe('');
+    expect(projection.drafts).toEqual([]);
+    expect(projection.tokens).toBeNull();
+    expect(projection.turns).toBeNull();
+    expect(projection.failure).toBeNull();
   });
 
   it('非助手的 message_end（system / user / toolResult）只留原始负载，不重复投影工具结果', () => {
@@ -550,13 +635,46 @@ describe('pi 的子任务投影', () => {
     };
   }
 
-  function dispatchStart(args: Record<string, unknown> = {}): unknown {
+  function dispatchStart(args: Record<string, unknown> = {}, toolCallId = 'call_1'): unknown {
     return {
       type: 'tool_execution_start',
       toolName: PI_SUBAGENT_DISPATCH_TOOL,
-      toolCallId: 'call_1',
+      toolCallId,
       args: { prompt: '回一句话', description: 'probe one', subagent_type: 'general-purpose', ...args },
     };
+  }
+
+  /**
+   * 真机形状的扩展总线载荷（`subagents:started`）：扩展只发这三格（`src/index.ts` 的 onStart 分支），
+   * **没有工具调用 id** —— 派发行与那次调用对账靠的就是这里的 `description`。
+   */
+  function startedPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { id: 'agent-1', type: 'general-purpose', description: 'probe one', ...overrides };
+  }
+
+  /**
+   * 可**后置触发**的假总线：真机里总线事件与父会话事件流没有先后保证，而「注册即触发」的假件
+   * 造不出「先派发、后收场」的时序（现有用例里那几种形状也都要它）。
+   */
+  function bus(): { recorder: PiSubagentRecorder; emit: (channel: string, payload: unknown) => void } {
+    const handlers = new Map<string, Array<(payload: unknown) => void>>();
+    const recorder = createPiSubagentRecorder();
+    recorder.factory({
+      events: {
+        on: (channel, handler) => handlers.set(channel, [...(handlers.get(channel) ?? []), handler]),
+      },
+    });
+    return {
+      recorder,
+      emit: (channel, payload) => {
+        for (const handler of handlers.get(channel) ?? []) handler(payload);
+      },
+    };
+  }
+
+  /** 一条与工具调用无关的会话事件（派发的挂靠点就是「任意下一个事件」，用它来推一拍） */
+  function unrelatedEvent(): unknown {
+    return { type: 'tool_execution_update', toolCallId: 'call_other', toolName: 'read_file', partialResult: {} };
   }
 
   /** 跑一轮「派发 → 收场」，返回最终状态（连续场景用） */
@@ -651,6 +769,120 @@ describe('pi 的子任务投影', () => {
   it('派发工具的收尾给活动行一句摘要（「子任务已结束：<名字>」）', () => {
     const projection = project(dispatchEnd(), createTurnState(), createPiRunState(), createPiSubagentRecorder());
     expect(summaries(projection).join('')).toContain('子任务');
+  });
+
+  /**
+   * **派发那一刻的子任务行**。
+   *
+   * 为什么这条是这一组里最要紧的：这一家前台档的 `Agent` 是**阻塞工具**（子智能体跑完才返回），
+   * 只靠工具收尾那条通路的话，派发到收场之间界面上**没有节点、没有卡片、也没有「进入」入口**
+   * ——而另三家都在派发时投一条 `running` 行。判据取的是那份产物形状，不是「调了哪个函数」。
+   */
+  it('派发那一刻就投一条 `running` 行：身份取总线、派发点取那次工具调用、用量与结果记未采集', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(turnStart(), state, runState, recorder);
+    project(dispatchStart({ name: 'pong-agent' }), state, runState, recorder);
+    // 真机时序：总线那条晚于工具调用开始 ⇒ 由**下一个**事件把派发行带出去
+    emit('subagents:started', startedPayload());
+    const during = project(unrelatedEvent(), state, runState, recorder);
+
+    expect(during.subagents).toHaveLength(1);
+    expect(during.subagents?.[0]).toMatchObject({
+      subagentId: 'agent-1',
+      // 名字取入参的 `name`（与收尾那条同一条回落链，界面不会在收尾那一刻换标题）
+      name: 'pong-agent',
+      kind: PI_SUBAGENT_DISPATCH_TOOL,
+      source: 'wire',
+      status: 'running',
+      statusMissing: null,
+      outcome: null,
+      parentCallId: 'call_1',
+      parentSubagentId: null,
+      usage: null,
+    });
+    // 这一条必须能过契约：界面按它建节点、按 `parentCallId` 定位派发点
+    expect(SubagentRecordSchema.safeParse(during.subagents?.[0]).success).toBe(true);
+  });
+
+  it('同一次派发只出一条 `running` 行（派发挂在每个事件上，逐字相同的重发由收数器挡掉）', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(dispatchStart(), state, runState, recorder);
+    emit('subagents:started', startedPayload());
+    expect(project(unrelatedEvent(), state, runState, recorder).subagents).toHaveLength(1);
+    expect(project(unrelatedEvent(), state, runState, recorder).subagents ?? []).toEqual([]);
+    expect(project(unrelatedEvent(), state, runState, recorder).subagents ?? []).toEqual([]);
+  });
+
+  it('描述撞名（两条在飞的派发同名）时**不认领、不投**，落一条点名的 WARN 且只落一次', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(dispatchStart({}, 'call_a'), state, runState, recorder);
+    project(dispatchStart({}, 'call_b'), state, runState, recorder);
+    emit('subagents:started', startedPayload());
+    const first = project(unrelatedEvent(), state, runState, recorder);
+
+    expect(first.subagents ?? []).toEqual([]);
+    expect(logTexts(first).join('')).toContain('[WARN]');
+    expect(logTexts(first).join('')).toContain('派发时刻');
+    // 挂靠点在每个事件上：同一条 WARN 不许跟着刷
+    expect(logTexts(project(unrelatedEvent(), state, runState, recorder)).join('')).toBe('');
+  });
+
+  it('总线已报终态的身份不投 `running` 行（那会让状态从终态退回运行中）', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(dispatchStart(), state, runState, recorder);
+    emit('subagents:started', startedPayload());
+    emit('subagents:completed', completedPayload());
+
+    expect(project(unrelatedEvent(), state, runState, recorder).subagents ?? []).toEqual([]);
+    // 终态那条照旧由工具收尾交出去（完整快照）
+    expect(project(dispatchEnd(), state, runState, recorder).subagents?.[0]).toMatchObject({ status: 'completed' });
+  });
+
+  /**
+   * **同一批次里的顺序与「不补多余行」**。
+   *
+   * 两个同时在飞的派发：一个收尾、另一个刚报「开始」——同一批产物里必须**先派发行、后收尾行**
+   * （反过来的话，界面按身份覆盖会先把状态推到终态、再退回运行中）。
+   * 另一半判据是**同身份的收尾那条在场时不再补派发行**：那一条本身就是完整快照。
+   *
+   * 这一档的时序不是假想的：总线的 `completed` 与工具收尾是两条通路，两者之间没有先后保证。
+   */
+  it('同一批次里派发行排在收尾行之前；同身份已经收尾时不再补派发行', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(dispatchStart({}, 'call_1'), state, runState, recorder);
+    project(dispatchStart({ description: 'probe two' }, 'call_2'), state, runState, recorder);
+    // 第二个派发刚报「开始」；第一个的收尾与它落在同一个投影里
+    emit('subagents:started', startedPayload({ id: 'agent-2', description: 'probe two' }));
+
+    const batch = project(dispatchEnd(), state, runState, recorder);
+    expect(batch.subagents?.map((record) => [record.subagentId, record.status])).toEqual([
+      ['agent-2', 'running'],
+      ['agent-1', 'completed'],
+    ]);
+
+    // 同身份那一条收尾在场时，派发行不补：单独跑一遍，产物里只有收尾那条
+    const { recorder: solo, emit: emitSolo } = bus();
+    const soloRun = createPiRunState();
+    project(dispatchStart({ name: 'pong-agent' }), state, soloRun, solo);
+    emitSolo('subagents:started', startedPayload());
+    const atEnd = project(dispatchEnd(), state, soloRun, solo);
+    expect(atEnd.subagents?.map((record) => record.status)).toEqual(['completed']);
+    expect(atEnd.subagents?.[0]).toMatchObject({
+      subagentId: 'agent-1',
+      // 名字与派发行同一条回落链：界面不会在收尾那一刻换标题
+      name: 'pong-agent',
+      parentCallId: 'call_1',
+    });
   });
 
   it('跑动期的分量：没派发过是 `{0,0,0}` / `0`（确实没有），派发过是 `null`（有但还没采到）', () => {
@@ -749,7 +981,7 @@ describe('pi 的子任务投影', () => {
     expect(final.turns! - final.subagentTurns!).toBe(state.turns);
   });
 
-  it('子智能体没收到场（后台档活过本行）⇒ 分量整格 null + 点名 WARN，合计退回主会话口径', () => {
+  it('子智能体没收到场（本行收尾时它还没跑完）⇒ 两格都 null + 逐格点名 WARN，合计退回主会话口径', () => {
     const recorder = createPiSubagentRecorder();
     const runState = createPiRunState();
     const state = createTurnState();
@@ -762,10 +994,96 @@ describe('pi 的子任务投影', () => {
     // 合计那一格**不交**（缺省 = 保持骨架里的主子口径），绝不能交出「主子 + 半个分量」
     expect(final.tokens).toBeUndefined();
     expect(final.turns).toBeUndefined();
-    expect(final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('')).toContain('分量给不出');
+    const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
+    // 逐格点名：哪一格缺（用量 / 轮次）与为什么缺（本行的释放序列终结了它）都要读得出来
+    expect(logs).toContain('子智能体用量给不出');
+    expect(logs).toContain('子智能体轮次给不出');
+    expect(logs).toContain('本行的释放序列会连同它一起终结');
   });
 
-  it('收场了但读不出轮次（`details` 里没有 `turnCount`）⇒ 分量同样整格 null，不拿 `toolUses` 顶替', () => {
+  /**
+   * **派发记录缺失时按格处置，并按总线身份补终态行**。
+   *
+   * `runState.dispatches` 只在 `Agent` 工具的收尾结果带得出 `details.agentId` 时才登记，而
+   * `runState.dispatched` 在 `tool_execution_start` 上就置真：工具收尾交的是**厂商自己合成的裸错误**
+   * （`Operation aborted` / 工具不存在那一档，没有 `details`）时两者就分家。对账集合取
+   * 「派发记录 ∪ 总线身份」——**用量**那一格来自总线终态载荷，照旧交得出；**轮次**只在
+   * `details.turnCount` 里，这一档没有来源 ⇒ 记 `null` 并点名。绝不能整个集合求和成
+   * `{0,0,0}` / `0`（＝「确实没有子智能体」，与事实相反）。
+   */
+  it('派发记录缺失（工具结果里没有身份）⇒ 用量照交、轮次 null + 点名 WARN，并给总线报过终态的身份补一条终态行', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(turnStart(), state, runState, recorder);
+    project(messageEnd(assistantMessage({ usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110 } })), state, runState, recorder);
+    project(dispatchStart({ name: 'pong-agent' }), state, runState, recorder);
+    // 总线报「开始」与终态，但工具收尾的结果里**没有 `details`**
+    emit('subagents:started', startedPayload());
+    emit('subagents:completed', completedPayload());
+    project(
+      {
+        type: 'tool_execution_end',
+        toolName: PI_SUBAGENT_DISPATCH_TOOL,
+        toolCallId: 'call_1',
+        isError: true,
+        result: { content: [{ type: 'text', text: 'Operation aborted' }] },
+      },
+      state,
+      runState,
+      recorder,
+    );
+    expect(runState.dispatches.size, '这一档本来就不该登记派发记录').toBe(0);
+
+    const final = finalizePiSubagents(state, runState, recorder);
+    // 用量那一格：总线终态载荷里有它 ⇒ 交出来（不是 {0,0,0}，也不是 null）
+    expect(final.subagentTokens).toEqual({ input: 3052, cached: 2048, output: 3, reasoningOutput: null, total: null });
+    expect(final.subagentTurns).toBeNull();
+    const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
+    expect(logs, '承诺的点名 WARN 缺席').toContain('子智能体轮次给不出');
+    expect(logs, 'WARN 要点名是哪个身份缺记录').toContain('agent-1');
+    // 总线报过终态的身份要拿到它那条终态行：否则界面上的卡片永远停在「运行中」
+    expect(final.subagents?.map((record) => [record.subagentId, record.status])).toEqual([['agent-1', 'completed']]);
+  });
+
+  /**
+   * **后台档的结构性缺口**（真机形状：真网关派一个 `run_in_background: true` 的子智能体，它在本行
+   * 收尾前就 `completed`、终态行的 `usage` 读得到，而 `Agent` 工具的收尾快照里没有轮次）。
+   *
+   * 两件事要同时成立：① 用量那一格**不能**跟着轮次一起作废（那是「给不出」，而它确实花掉了一整轮
+   * 输入）；② 文案不能指向另一件事（它已收场，说「活过了本行」会让排障的人去查一个不存在的问题）。
+   */
+  it('后台档收场了但拿不到轮次：用量照交、轮次 null，点名文案不许说「活过了本行」', () => {
+    const recorder = createPiSubagentRecorder();
+    const state = createTurnState();
+    const runState = createPiRunState();
+    project(turnStart(), state, runState, recorder);
+    project(messageEnd(assistantMessage({ usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110 } })), state, runState, recorder);
+    project(dispatchStart(), state, runState, recorder);
+    // 后台档：工具派发那一刻状态是 background ⇒ 收尾记录刻意把轮次记 null（半截的数不是读数）
+    project(dispatchEnd({ details: { status: 'background', turnCount: null } }), state, runState, recorder);
+    // 子智能体随后收场：总线终态带上用量（与真机读数同形）
+    recorder.factory({ events: { on: (_channel, handler) => handler(completedPayload()) } });
+
+    const final = finalizePiSubagents(state, runState, recorder);
+    expect(final.subagentTokens, '用量读得到就必须交出来，不许被轮次那一格连坐').toEqual({
+      input: 3052,
+      cached: 2048,
+      output: 3,
+      reasoningOutput: null,
+      total: null,
+    });
+    expect(final.subagentTurns).toBeNull();
+    // 合计带上分量（`subagentTokens ≤ tokens` 的前提），轮次那一格仍不交（保持主会话口径）
+    expect(final.tokens).toEqual({ input: 3152, cached: 2048, output: 13, reasoningOutput: null, total: null });
+    expect(final.turns).toBeUndefined();
+    const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
+    expect(logs).toContain('后台档');
+    expect(logs, '它已经收场了，说「活过了本行」会把排障指向错误的方向').not.toContain('活过了本行');
+    expect(logs, '用量那一格交得出，就不该有为它而落的那条 WARN').not.toContain('子智能体用量给不出');
+  });
+
+  it('收场了但读不出轮次：轮次记 null、用量照交，不拿 `toolUses` 或 0 顶替', () => {
     const recorder = createPiSubagentRecorder();
     recorder.factory({ events: { on: (_channel, handler) => handler(completedPayload()) } });
     const runState = createPiRunState();
@@ -777,8 +1095,10 @@ describe('pi 的子任务投影', () => {
     project(dispatchEnd({ details: { turnCount: undefined } }), state, runState, recorder);
 
     const final = finalizePiSubagents(state, runState, recorder);
+    // 拿 0 / `toolUses` 顶替会让「没采到」变成「确实是 0 轮」——两句话含义相反
     expect(final.subagentTurns).toBeNull();
-    expect(final.subagentTokens).toBeNull();
+    // 用量那一格与轮次无关：总线终态载荷里读得到就交得出
+    expect(final.subagentTokens).not.toBeNull();
   });
 
   it('没有派发过就不动任何计量：收尾原样返回空（一个字段都不改）', () => {
@@ -787,6 +1107,60 @@ describe('pi 的子任务投影', () => {
     project(turnStart(), state, createPiRunState(), recorder);
     const final = finalizePiSubagents(state, createPiRunState(), recorder);
     expect(final).toEqual({ drafts: [] });
+  });
+
+  /**
+   * **收尾那一份快照不许把状态从「运行中」改写成「未知」**（后台档的形状）。
+   *
+   * 后台派发（`run_in_background` 缺省 `true`）下总线只报得起 `subagents:started`
+   * （它**没有** `status` 字段），而收尾对账读的正是 `latest()` 那一条 ⇒ 只读总线的实现会把
+   * 派发时已经投出去的 `running` 行覆盖成 `unknown`。那是与「从终态退回运行中」同类的**倒退**，
+   * 只是方向相反：把「已知在跑」说成「不知道」，界面上子任务卡片的那一格凭空变灰。
+   *
+   * 修法不是「有总线就不看派发」，而是**沿用在飞派发已经记下的状态**：`Agent` 工具的收尾快照里
+   * 写着 `background` ⇒ `piSubagentStatus` 映成 `running`，收尾快照沿用它。
+   */
+  it('后台档（总线只报 started）⇒ 收尾快照如实记「已停止」（被本行释放序列终结），不降级成 unknown', () => {
+    const { recorder, emit } = bus();
+    const runState = createPiRunState();
+    const state = createTurnState();
+    project(turnStart(), state, runState, recorder);
+    project(messageEnd(assistantMessage()), state, runState, recorder);
+    // 模型省略 run_in_background ⇒ 扩展的缺省是「派发即分离」，工具的收尾快照状态是 background
+    project(dispatchStart({ description: 'probe one' }), state, runState, recorder);
+    const atDispatch = project(
+      // `agentId` 必须在（派发记录按它登记）；只把状态与轮次换成后台档的形状
+      dispatchEnd({ details: { agentId: 'agent-1', status: 'background', turnCount: undefined } }),
+      state,
+      runState,
+      recorder,
+    );
+    // 派发那一刻投出去的那条行就是 `running`（工具收尾通路，见 `projectDispatchEnd`）
+    expect(atDispatch.subagents?.map((record) => record.status), '派发那一刻就该是运行中').toEqual(['running']);
+    // 总线晚一步报「开始」，此后**没有**终态事件（本行收尾会终结这个子会话）
+    emit('subagents:started', startedPayload());
+
+    const final = finalizePiSubagents(state, runState, recorder);
+    /**
+     * 收尾这一份快照**必须**与派发那一份不同：它把「运行中」如实改成**已停止**——本行的释放序列
+     * 会连同这个子会话一起终结（真机 `dispose-only` 一臂即足以让它一个模型往返都跑不起来）。
+     * 变异体：把状态改回沿用派发的 `background` ⇒ 这里又变回空数组（界面永远停在「运行中」），
+     * 或者改成 `unknown` ⇒ 那是从「已知在跑」退回「不知道」的倒退，同样当场红。
+     */
+    expect(final.subagents?.map((record) => [record.subagentId, record.status])).toEqual([['agent-1', 'stopped']]);
+    // 分量与轮次仍然只能记 null（它没跑完，读数本来就不存在），但「为什么」必须点出来
+    expect(final.subagentTokens).toBeNull();
+    expect(final.subagentTurns).toBeNull();
+    const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
+    /**
+     * 文案的判据是**机制**：本行的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话
+     * 一起终结——真机五档对照里 `dispose-only` 那一臂就足以让它一个模型往返都跑不起来。
+     * 写成「活过了本行」会把排障指向「它还在后台跑」，而事实是它已经死了。
+     */
+    expect(logs, 'WARN 要说清是本行的释放序列终结了它，不是一句「活过了本行」')
+      .toContain('本行的释放序列会连同它一起终结');
+    expect(logs).not.toContain('活过了本行');
+    expect(logs).toContain('background');
   });
 
   it('子任务行过契约 schema（形状不对时在读侧就是一条解析失败）', () => {
@@ -874,6 +1248,355 @@ describe('pi 的子任务投影', () => {
     expect(onToolEnd.subagents?.[0]?.subagentId).toBe('agent-1');
     expect(final.subagentTokens).not.toBeNull();
     expect(logTexts({ drafts: final.drafts } as TurnProjection).some((text) => text.includes('逐步骤正文没取全'))).toBe(true);
+  });
+
+  describe('跑动期增量：转写在执行中逐轮跟出（不再等收尾一次性涌出）', () => {
+    /** 带读口的投影（`project` 那一件不收读口；这里直接走全参入口） */
+    const projectWith = (
+      raw: unknown,
+      agent: { state: TurnState; runState: PiRunState; recorder: PiSubagentRecorder },
+      readTranscript?: (agentId: string) => PiSubagentTranscript,
+    ): TurnProjection =>
+      projectPiEvent(raw, agent.state, CONTEXT, agent.runState, agent.recorder, undefined, readTranscript);
+
+    /**
+     * 跑到「总线已报 started、派发已登记、子任务行还没落账」的那一刻——
+     * 下一批事件就是行落账的那一批（增量从这里开始才有资格跟出）。
+     */
+    function armedAgent(): {
+      state: TurnState;
+      runState: PiRunState;
+      recorder: PiSubagentRecorder;
+      emit: (channel: string, payload: unknown) => void;
+    } {
+      const harness = bus();
+      const state = createTurnState();
+      const runState = createPiRunState();
+      project(turnStart(), state, runState, harness.recorder);
+      project(dispatchStart(), state, runState, harness.recorder);
+      harness.emit('subagents:started', startedPayload());
+      return { state, runState, recorder: harness.recorder, emit: harness.emit };
+    }
+
+    /** 可增长的假转写：`content` 是当前已 flush 的消息（只增不改，与真文件同纪律），`calls` 记读盘次数 */
+    function fakeTranscript(initial: MessageDraft[]): {
+      read: (agentId: string) => PiSubagentTranscript;
+      content: MessageDraft[];
+      calls: () => number;
+    } {
+      let calls = 0;
+      const content = [...initial];
+      const read = (): PiSubagentTranscript => {
+        calls += 1;
+        return { messages: content, warning: null };
+      };
+      return { content, calls: () => calls, read };
+    }
+
+    /** 把节流拨回「可以再读」：不引 fake timers，直接把上次读盘时刻拨出窗外 */
+    const rewindThrottle = (runState: PiRunState): void => {
+      runState.transcriptReadAt.set('agent-1', Date.now() - 60_000);
+    };
+
+    it('子任务行落账的那一批不带增量，下一批才跟出（骨架先发消息后发行，同批混发会让消息先于行进账、掉进主会话）', () => {
+      const agent = armedAgent();
+      const fake = fakeTranscript([messageDraftForTranscript(1)]);
+      const rowBatch = projectWith(unrelatedEvent(), agent, fake.read);
+      // 行在这一批投出（running）；闸门按「更早一批」判 ⇒ 这一批连读都没读
+      expect(rowBatch.subagents?.map((row) => row.status)).toEqual(['running']);
+      expect(rowBatch.messages ?? []).toHaveLength(0);
+      expect(fake.calls()).toBe(0);
+      const next = projectWith(unrelatedEvent(), agent, fake.read);
+      expect(next.messages?.map((message) => [message.subagentId, message.roundTrip])).toEqual([['agent-1', 1]]);
+      expect(fake.calls()).toBe(1);
+    });
+
+    it('只投新增的那一段：转写长出来一轮投一轮，已投过的不再投', () => {
+      const agent = armedAgent();
+      projectWith(unrelatedEvent(), agent); // 行落账（这一批不需要读口）
+      const fake = fakeTranscript([messageDraftForTranscript(1), messageDraftForTranscript(2)]);
+      const first = projectWith(unrelatedEvent(), agent, fake.read);
+      expect(first.messages?.map((message) => message.roundTrip)).toEqual([1, 2]);
+      // 转写又 flush 了一轮：前两轮逐字不变、第三轮是新的 ⇒ 只投第三轮
+      fake.content.push(messageDraftForTranscript(3));
+      rewindThrottle(agent.runState);
+      const second = projectWith(unrelatedEvent(), agent, fake.read);
+      expect(second.messages?.map((message) => message.roundTrip)).toEqual([3]);
+    });
+
+    it('读盘按身份节流：间隔内的下一批事件不再读（flush 粒度本来就是秒级的 turn_end）', () => {
+      const agent = armedAgent();
+      projectWith(unrelatedEvent(), agent); // 行落账
+      const fake = fakeTranscript([messageDraftForTranscript(1)]);
+      projectWith(unrelatedEvent(), agent, fake.read); // 读 1 次、投 1 条
+      const within = projectWith(unrelatedEvent(), agent, fake.read);
+      expect(fake.calls()).toBe(1);
+      expect(within.messages ?? []).toHaveLength(0);
+    });
+
+    it('总线已报终态的身份不再增量（尾巴归收尾对账补）：读口一次都不叫', () => {
+      const agent = armedAgent();
+      projectWith(unrelatedEvent(), agent); // 行落账
+      agent.emit('subagents:completed', completedPayload());
+      const fake = fakeTranscript([messageDraftForTranscript(1)]);
+      const batch = projectWith(unrelatedEvent(), agent, fake.read);
+      expect(fake.calls()).toBe(0);
+      expect(batch.messages ?? []).toHaveLength(0);
+    });
+
+    it('没有子任务行的身份不读也不投：认领不上时宁可晚一批，也不让消息先于行进账', () => {
+      const harness = bus();
+      const state = createTurnState();
+      const runState = createPiRunState();
+      project(dispatchStart(), state, runState, harness.recorder);
+      // 描述与在飞的派发对不上 ⇒ 认领失败 ⇒ 没有行（这一档由工具收尾那条通路兜底）
+      harness.emit('subagents:started', startedPayload({ description: '与在飞派发对不上的描述' }));
+      const fake = fakeTranscript([messageDraftForTranscript(1)]);
+      const batch = projectWith(unrelatedEvent(), { state, runState, recorder: harness.recorder }, fake.read);
+      expect(fake.calls()).toBe(0);
+      expect(batch.messages ?? []).toHaveLength(0);
+    });
+
+    it('收尾对账只补差量：跑动期投过的不再投，收场后 flush 的尾巴在这里落地', () => {
+      const agent = armedAgent();
+      projectWith(unrelatedEvent(), agent); // 行落账
+      const fake = fakeTranscript([messageDraftForTranscript(1), messageDraftForTranscript(2)]);
+      projectWith(unrelatedEvent(), agent, fake.read); // 增量投了 1、2 两轮
+      agent.emit('subagents:completed', completedPayload());
+      projectWith(dispatchEnd(), agent, fake.read); // 工具收尾：dispatches 记账、completed 行落账
+      // 收场之后转写又 flush 了一轮 ⇒ 收尾只补第 3 轮（1、2 已在账上）
+      fake.content.push(messageDraftForTranscript(3));
+      const final = finalizePiSubagents(agent.state, agent.runState, agent.recorder, fake.read);
+      expect(final.messages?.map((message) => message.roundTrip)).toEqual([3]);
+    });
+  });
+
+  describe('wire 通道：子会话事件不经转写文件直接跟出（source: wire，无补录角标）', () => {
+    /** 假子会话与键常量取共享夹具（`pi-sdk-fixture.ts` 的 `createFakePiChildSession`） */
+    const fakeChildSession = createFakePiChildSession;
+
+    /** 子会话的助手收尾（最小形状：内容块进消息，用量可缺） */
+    const childAssistantEnd = (text: string): unknown => ({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+
+    /** 真机形状的子会话**逐字增量**帧（与主会话 `message_update` 同构） */
+    const childTextDelta = (delta: string, contentIndex = 0): unknown => ({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', contentIndex, delta },
+    });
+
+    /** 固定内容的假转写（本组只关心「同一条消息到没到」，读盘计数那套在上一组） */
+    const transcriptReader = (messages: MessageDraft[]): ((agentId: string) => PiSubagentTranscript) => {
+      const content = [...messages];
+      return () => ({ messages: content, warning: null });
+    };
+
+    /**
+     * **产品形态的接线**：收数器的 started / 终态钩子直连 wire（`index.ts` 同一条线），
+     * registry 条目在「reload」里挂上（真实 claim 点）。返回的 `emit` 是扩展总线。
+     */
+    async function wiredBus(session: unknown, messages: unknown[] = []): Promise<{
+      state: TurnState;
+      runState: PiRunState;
+      recorder: PiSubagentRecorder;
+      wire: PiSubagentWire;
+      emit: (channel: string, payload: unknown) => void;
+    }> {
+      const handlers = new Map<string, Array<(payload: unknown) => void>>();
+      const wire = createPiSubagentWire();
+      const recorder = createPiSubagentRecorder({
+        onStarted: (agentId) => wire.onStarted(agentId),
+        onSettled: (agentId) => wire.onSettled(agentId),
+      });
+      recorder.factory({
+        events: {
+          on: (channel, handler) => handlers.set(channel, [...(handlers.get(channel) ?? []), handler]),
+        },
+      });
+      const child = session ?? fakeChildSession([], messages);
+      await wire.reload(async () => {
+        (globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY] = {
+          getRecord: (id: string) => (id === 'agent-1' ? { session: child } : undefined),
+        };
+      });
+      const state = createTurnState();
+      const runState = createPiRunState();
+      project(turnStart(), state, runState, recorder);
+      project(dispatchStart(), state, runState, recorder);
+      const emit = (channel: string, payload: unknown): void => {
+        for (const handler of handlers.get(channel) ?? []) handler(payload);
+      };
+      return { state, runState, recorder, wire, emit };
+    }
+
+    /** 带 wire 的投影（第 8 参；转写读口与 wire 可同批共存） */
+    const projectWire = (
+      raw: unknown,
+      agent: { state: TurnState; runState: PiRunState; recorder: PiSubagentRecorder },
+      wire: PiSubagentWire,
+    ): TurnProjection =>
+      projectPiEvent(raw, agent.state, CONTEXT, agent.runState, agent.recorder, undefined, undefined, wire);
+
+    afterEach(() => {
+      resetPiSubagentWireForTesting();
+    });
+
+    it('总线报 started 即订阅：子会话事件折成 wire 消息（盖 subagentId、来源 wire、轮次自 1 起）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('子任务第一步'));
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账的那一批（闸门按「更早一批」判）
+      const next = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(next.messages?.map((message) => [message.subagentId, message.source, message.roundTrip]))
+        .toEqual([['agent-1', 'wire', 1]]);
+    });
+
+    it('行落账的那一批不带 wire 消息（骨架先发消息后发行，同批混发会把消息先于行记进主会话）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('子任务第一步'));
+      const rowBatch = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(rowBatch.subagents?.map((row) => row.status)).toEqual(['running']);
+      expect(rowBatch.messages ?? []).toHaveLength(0);
+    });
+
+    it('行还没落账的身份：事件留在缓冲等下一批（wire 是一次性的，不像转写可以重读——不丢是硬要求）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('还在等行落账'));
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      const next = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(next.messages?.map((message) => message.roundTrip)).toEqual([1]);
+      // 再排是空的：缓冲已消费，不重放
+      expect(projectWire(unrelatedEvent(), agent, agent.wire).messages ?? []).toHaveLength(0);
+    });
+
+    it('载体去重（wire 先到）：转写随后给出同一条消息时整条滤掉，账本不留双份', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('同一条消息'));
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      projectWire(unrelatedEvent(), agent, agent.wire); // wire 投出 agent-1|1|assistant|-
+      // 转写此时才 flush 同一条（轮次同源 ⇒ 载体键相同）
+      const read = transcriptReader([messageDraftForTranscript(1)]);
+      const viaTranscript = projectPiEvent(
+        unrelatedEvent(), agent.state, CONTEXT, agent.runState, agent.recorder, undefined, read, agent.wire,
+      );
+      expect(viaTranscript.messages ?? []).toHaveLength(0);
+    });
+
+    it('载体去重（转写先到）：wire 随后给出同一条消息时同样滤掉（先到者胜出是对称的）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      const read = transcriptReader([messageDraftForTranscript(1)]);
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      // 转写先投（wire 还没产过事件）
+      const viaTranscript = projectPiEvent(
+        unrelatedEvent(), agent.state, CONTEXT, agent.runState, agent.recorder, undefined, read, agent.wire,
+      );
+      expect(viaTranscript.messages?.map((message) => message.source)).toEqual(['session-file']);
+      session.emit(childAssistantEnd('转写已经投过的同一条'));
+      const viaWire = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(viaWire.messages ?? []).toHaveLength(0);
+    });
+
+    /**
+     * **逐字增量**那一组：子会话的 delta 帧要能一路到消息流，且**不与它自己的收尾快照互相吃掉**。
+     *
+     * 这是去重键那一格的靶子：载体键只有「身份 + 轮次 + role + parentCallId」四格，
+     * delta 与随后的 snapshot **键相同** ⇒ 按载体去重会让先到的 delta 占死键、真正的收尾快照
+     * 被整条丢掉（消息永远停在半截）。判据取产物：两种 chunk 都要出得来，顺序是 delta 在前。
+     */
+    it('子会话的 delta 帧照常投出，且不挡住它自己的收尾快照（去重按载体 + 快照语义，不是按载体）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      session.emit(childTextDelta('第一'));
+      session.emit(childTextDelta('步'));
+      const deltas = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(deltas.messages?.map((message) => [message.chunk, message.source, message.subagentId, message.roundTrip]))
+        .toEqual([
+          ['delta', 'wire', 'agent-1', 1],
+          ['delta', 'wire', 'agent-1', 1],
+        ]);
+      // 同一轮的收尾快照**必须照样出得来**（它与上面两条 delta 的载体键逐字相同）
+      session.emit(childAssistantEnd('第一步'));
+      const snapshot = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(snapshot.messages?.map((message) => [message.chunk, message.roundTrip])).toEqual([['snapshot', 1]]);
+    });
+
+    it('delta 不占死载体：转写随后给出同一轮的快照时照样放行（兜底通道不被 delta 挡掉）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      session.emit(childTextDelta('半截'));
+      expect(projectWire(unrelatedEvent(), agent, agent.wire).messages).toHaveLength(1);
+      // wire 只给过 delta（没给快照）⇒ 转写那条快照是这一轮**唯一**的收尾，必须放行
+      const read = transcriptReader([messageDraftForTranscript(1)]);
+      const viaTranscript = projectPiEvent(
+        unrelatedEvent(), agent.state, CONTEXT, agent.runState, agent.recorder, undefined, read, agent.wire,
+      );
+      expect(viaTranscript.messages?.map((message) => [message.chunk, message.source])).toEqual([['snapshot', 'session-file']]);
+    });
+
+    it('快照之间仍然互斥：wire 的快照先到，转写同一轮的快照整条滤掉（去重没有被放开）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      session.emit(childTextDelta('逐字'));
+      session.emit(childAssistantEnd('逐字出来的那条'));
+      projectWire(unrelatedEvent(), agent, agent.wire);
+      const read = transcriptReader([messageDraftForTranscript(1)]);
+      const viaTranscript = projectPiEvent(
+        unrelatedEvent(), agent.state, CONTEXT, agent.runState, agent.recorder, undefined, read, agent.wire,
+      );
+      expect(viaTranscript.messages ?? []).toHaveLength(0);
+    });
+
+    it('终态之后缓冲里的尾巴照常排（wire 无重读竞态，不需要转写那条「终态即停」的闸）', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('收场前的第一步'));
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      projectWire(unrelatedEvent(), agent, agent.wire); // 第一步已投
+      session.emit(childAssistantEnd('最后一批父事件之后的尾巴'));
+      agent.emit('subagents:completed', completedPayload());
+      project(dispatchEnd(), agent.state, agent.runState, agent.recorder);
+      const final = finalizePiSubagents(agent.state, agent.runState, agent.recorder, undefined, agent.wire);
+      expect(final.messages?.map((message) => message.roundTrip)).toEqual([2]);
+    });
+
+    it('收尾排空 wire 尾巴之后再读转写差量：同键的滤掉、wire 没覆盖到的照投', async () => {
+      const session = fakeChildSession();
+      const agent = await wiredBus(session);
+      agent.emit('subagents:started', startedPayload());
+      session.emit(childAssistantEnd('第 1 轮'));
+      projectWire(unrelatedEvent(), agent, agent.wire); // 行落账
+      projectWire(unrelatedEvent(), agent, agent.wire); // wire 投出第 1 轮
+      session.emit(childAssistantEnd('收尾才排的尾巴')); // 第 2 轮：只进缓冲，没有父事件再排它
+      agent.emit('subagents:completed', completedPayload());
+      project(dispatchEnd(), agent.state, agent.runState, agent.recorder);
+      // 转写整份都在（没跑过增量 ⇒ emitted = 0）：第 1、2 轮与 wire 同键，第 3 轮只有转写有
+      const read = transcriptReader([
+        messageDraftForTranscript(1),
+        messageDraftForTranscript(2),
+        messageDraftForTranscript(3),
+      ]);
+      const final = finalizePiSubagents(agent.state, agent.runState, agent.recorder, read, agent.wire);
+      expect(final.messages?.map((message) => [message.roundTrip, message.source]))
+        .toEqual([[2, 'wire'], [3, 'session-file']]);
+    });
   });
 });
 

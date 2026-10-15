@@ -47,3 +47,14 @@ export function putJson<T>(url: string, body: unknown): Promise<T> {
 export function delJson<T>(url: string): Promise<T> {
   return request<T>(url, { method: 'DELETE' });
 }
+
+/**
+ * `multipart/form-data` POST（附件上传）。
+ *
+ * **绝不自己写 `content-type`**：边界串（boundary）由运行时在序列化 `FormData` 时拼出来，
+ * 手写一个不带 boundary 的头会让服务端的 `formData()` 解析出**零个字段**——那是一种静默失败
+ * （服务端只会说「没有这个字段」），故这一格交给 `fetch` 自己填。
+ */
+export function postForm<T>(url: string, form: FormData): Promise<T> {
+  return request<T>(url, { method: 'POST', body: form });
+}

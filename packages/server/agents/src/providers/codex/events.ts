@@ -25,11 +25,11 @@ import {
   toolErrorSummary,
 } from '../../activity';
 import { logDraft, safeStringify, unknownEventDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
-import { classifyAgentMessage, type FailureContext } from '../../errors';
+import { classifyAgentMessage, type AgentFailure, type FailureContext } from '../../errors';
 import { usageTokens } from '../../message';
 import type { TimingSpan, TurnProjection, TurnState } from '../../turn';
 import type { AppServerItem, AppServerNotificationPayload, AppServerTurn } from './appserver/protocol';
-import { APPLY_PATCH_TOOL_NAME, COMMAND_TOOL_NAME, collabStatusOf, subAgentActivityStatus } from './message';
+import { APPLY_PATCH_TOOL_NAME, COMMAND_TOOL_NAME, collabStatusOf, isDispatchTool, subAgentActivityStatus } from './message';
 import { countRoundTrips, normalizedInput, noteMcpStartup, observedTurns, type CodexRunState } from './run-state';
 
 /** 一轮已交出的权威读数（收尾要与它比「是否真的更新」） */
@@ -61,6 +61,17 @@ export function projectCodexEvent(
     tokens: null,
   });
 
+  if (payload.kind === 'turnStarted') {
+    /**
+     * 厂商起了一轮 ⇒ 声明「一次新的模型往返开始」，让骨架的墙钟按**一次往返**重新起表
+     * （见 `TurnProjection.roundTripStarted`）。
+     *
+     * 只认主线程：子线程的轮次是它自己那一幕，与这一行的墙钟不是同一把尺。
+     * 本条**不产事件**（与过去逐字相同：这一格从来只是记账，`activity-conformance` 钉着它）。
+     */
+    return payload.threadId === context.mainThreadId ? { projection: { ...idle().projection, roundTripStarted: true }, tokens: null } : idle();
+  }
+
   if (payload.kind === 'itemStarted' || payload.kind === 'itemCompleted') {
     // 条目自身的归一在 `message.ts`（那时才知道块与族）；这里出**活动行那一句**，并推进轮次计数
     const drafts = activityDrafts(payload.item, payload.kind === 'itemCompleted', runState);
@@ -91,16 +102,20 @@ export function projectCodexEvent(
      * 归属：与 `turns` 同一个号（本条通知来自主线程）⇒ 界面能把这条读数放回它自己那一轮。
      * 子线程的条目**刻意不给归属**：本行的事件流只有主线程的进度语义，把子线程的号贴上来
      * 会让界面按 `turns` 反推出的会话关系全错。
+     *
+     * **用量也在这一支交**（`runningTokens`）：发射门槛是轮次，而用量通知本身不带轮次
+     * ⇒ 不在这里把已记账的累计值带出去，整轮事件流的 tok 就全是 `null`。
      */
+    const running = runningTokens(runState, context.mainThreadId);
     return {
       projection: {
         drafts,
-        tokens: null,
+        tokens: running,
         turns,
         turn: { subagentId: null, round: turns },
         failure: null,
       },
-      tokens: null,
+      tokens: running,
     };
   }
 
@@ -167,6 +182,24 @@ export function projectCodexEvent(
     ]);
   }
 
+  if (payload.kind === 'sessionFailed') {
+    /**
+     * **进程死在在途**（适配器合成的载荷，不是厂商方法）：这一条是结论，不是过路消息
+     * ⇒ 与 `turn/completed{failed}` 同一个出口（error draft + `failure`），归因走文案。
+     * 没有它，崩溃的行会被判成功（真机复现）。
+     */
+    return {
+      projection: {
+        drafts: [{ type: 'error', message: payload.error }],
+        tokens: null,
+        turns: null,
+        turn: null,
+        failure: codexFailureOf(null, null, payload.error, context),
+      },
+      tokens: null,
+    };
+  }
+
   if (payload.kind === 'turnPlanUpdated') {
     // 计划面板由 `message.ts` 出块；这里只留一行摘要（原始负载在块的 `raw` 里）。文案与另两家的清单工具同形。
     return idle([logDraft('stdout', safeStringify(payload), planSummary(payload.steps.length))]);
@@ -176,8 +209,12 @@ export function projectCodexEvent(
    * 其余通知**一条事件都不发**：增量的落点是内容块（`message.ts`），落到行级日志里只会把抽屉灌满
    * （一次答复几十条片段）。未识别的通知（`other`）照旧保留原始负载——静默丢弃会让
    * 「上游换了方法名」表现为「什么都没发生」。
+   *
+   * **`params` 一起带上**（与 dsh / pi 同口径）：兜底这一支常走（schema 里 84 个通知方法，
+   * 这一层只归一了十几个），而只留方法名会把带正文的那些整格丢掉——`model/rerouted` 的改路由
+   * 事实、`warning` / `deprecationNotice` 的正文、`serverRequest/resolved` 的回执都在 `params` 里。
    */
-  if (payload.kind === 'other') return idle([unknownEventDraft({ method: payload.method })]);
+  if (payload.kind === 'other') return idle([unknownEventDraft({ method: payload.method, params: payload.params })]);
   return idle();
 }
 
@@ -289,7 +326,7 @@ function collabDrafts(
 ): AgentEventDraft[] {
   const receivers = item.receiverThreadIds.filter((threadId) => threadId !== '');
   /** 工具名以 `spawn` 开头才算派发：真机见到的是 `spawnAgent`（`run-state.ts` 的注释里另记过 `spawn_agent`） */
-  const isDispatch = item.tool.toLowerCase().startsWith('spawn');
+  const isDispatch = isDispatchTool(item.tool);
   if (!completed) {
     // 派发那一刻还没有 receiver id（见上）⇒ 开始这一支不给 spawn 出句子；`wait` / `closeAgent` 走通用工具句
     if (isDispatch) return [];
@@ -444,6 +481,20 @@ function projectTurnCompleted(
   const turns = observedTurns(runState, threadId);
   const turnRef = turns === null ? null : { subagentId: null, round: turns };
   const drafts: AgentEventDraft[] = [];
+  /**
+   * 计量与时长**两档收场共用**（`failed` 与 `completed` / `interrupted` 都要带）。
+   *
+   * 为什么不能在失败那一支提前 return：厂商就在同一条 `turn/completed` 上给了 `startedAt` /
+   * `completedAt` 与累计用量，而失败是**结论**不是「提前退出」——早返回会让一次 401 / 429 /
+   * 上游 5xx 的行在界面上时长永久为空、计量为 `null`，而 `interrupted` 那一档却有。
+   */
+  const tokens = usageOfTurn(turn, runState, context.mainThreadId);
+  const timing = turnTimingOf(turn);
+  /**
+   * 时间只在**算得出**时才带（`turnTimingOf` 对拿不到的情形回 `null` ⇒ 整格不发）：
+   * `TurnProjection.timing` 的缺省语义是「这一条没带时间」，不是「把已采到的时间清掉」。
+   */
+  const timingCell = timing === null ? {} : { timing };
 
   if (turn.status === 'failed') {
     const message = turn.error ?? 'codex 报告本轮失败（未给出原因）';
@@ -451,16 +502,13 @@ function projectTurnCompleted(
     return {
       projection: {
         drafts,
-        tokens: null,
+        tokens,
         turns,
         turn: turnRef,
-        /**
-         * 归因取**厂商原文**：`TurnError` 这一侧只声明了 `message`（`codexErrorInfo` 那个结构化枚举
-         * 不在窄声明里），而 401 / 429 这类状态就写在文案里 ⇒ 交给共用的 `classifyAgentMessage`。
-         */
-        failure: classifyAgentMessage(message, failureContext(context)),
+        ...timingCell,
+        failure: codexFailureOf(turn.errorCode, turn.errorStatusCode, message, context),
       },
-      tokens: null,
+      tokens,
     };
   }
   if (turn.status === 'interrupted') {
@@ -468,24 +516,68 @@ function projectTurnCompleted(
     drafts.push(logDraft('stderr', '[WARN] codex 本轮被中止（用户终止或上游打断）'));
   }
 
-  const tokens = usageOfTurn(turn, runState, context.mainThreadId);
-  /**
-   * 时间只在**两点都给得出**时才有意义：`resolveTiming` 对缺一端的情形返回 `null`（整格不发）
-   * ⇒ 这里照原样交出两个可空时刻，不在这里拼一个 `totalMs` 出来；两点缺一时**整格不带**
-   * （`TurnProjection.timing` 的缺省语义是「这一条没带时间」，不是「把已采到的时间清掉」）。
-   */
-  const timing = turnTimingOf(turn);
   return {
     projection: {
       drafts,
       tokens,
       turns,
       turn: turnRef,
-      ...(timing === null ? {} : { timing }),
+      ...timingCell,
       failure: null,
     },
     tokens,
   };
+}
+
+/**
+ * 跑动期该交出的用量：该线程**到此刻**的厂商自报累计（`thread/tokenUsage/updated` 的快照）。
+ * 采不到就是 `null`（**不填 0**）。与收尾那一处同一个取数来源 ⇒ 两处不会给出不同的数。
+ */
+function runningTokens(runState: CodexRunState, threadId: string): UsageTokens | null {
+  return breakdownToTokens(runState.usageByThread.get(threadId)?.total);
+}
+
+/**
+ * 本轮失败的归因：**先认厂商的机器可读分类，拿不到才读文案**。
+ *
+ * 为什么不能只读文案：`classifyAgentMessage` 走的是「从文案里正则提 HTTP 状态」那条路，
+ * 而厂商改一句措辞就会错档（归成 `AGENT_FAILED` ⇒ 进自动重试表 ⇒ 一个 401 被重跑两遍、
+ * 每次再等 3 秒，而它重试多少次都是同一个失败）。`codexErrorInfo` 是**结构化字段**而不是散文——但它是 `oneOf`，**两种形状都要认**：字符串枚举（`unauthorized` / `rateLimitExceeded` …），或**带 `httpStatusCode` 的对象变体**（`responseStreamDisconnected` / `httpConnectionFailed`）。上游 HTTP 失败走的正是后一种，而变体名只有传输层含义（401 与 500 同形）⇒ **HTTP 状态要从 `errorStatusCode` 那一格取，不能只比枚举名**。
+ *
+ * 只映三档——与本仓归因码的粒度对齐（`AUTH_FAILED` / `RATE_LIMITED` / 其余）：
+ *   · `unauthorized` / HTTP `401` ⇒ 鉴权；
+ *   · `rateLimitExceeded` / `usageLimitExceeded` / `sessionBudgetExceeded` / `serverOverloaded`
+ *     / HTTP `429` ⇒ 「稍后重试」那一档（配额与过载在处置上同形：降并发、等一会儿）；
+ *   · 其余（`contextWindowExceeded` / `sandboxError` / `badRequest` / `responseStreamDisconnected` …）
+ *     **不强行归档**：它们各自的处置不同，而本仓今天没有对应的码 ⇒ 交回文案那条路，
+ *     由它按原文归因（不会比现在更差），分类名照旧进文案供排障。
+ *
+ * ⚠️ **HTTP 失败必须走 `httpStatusCode`，不能只比分类名**：上游 401 / 500 在真机上报的都是
+ * **对象变体** `{"responseStreamDisconnected":{"httpStatusCode":401}}`（500 同形、状态码为 `null`），
+ * 而变体名说的是传输层、分不出鉴权与过载 ⇒ 只比名字时这两档恒落到「其余」，401 只能靠
+ * `additionalDetails` 里那个「401」被正则认出来——厂商换一句文案就错档，正是这一格要避免的事。
+ */
+function codexFailureOf(
+  errorCode: string | null,
+  errorStatusCode: number | null,
+  message: string,
+  context: CodexEventContext,
+): AgentFailure {
+  const host = failureContext(context);
+  if (errorCode === 'unauthorized' || errorStatusCode === 401) {
+    return classifyAgentMessage(`unexpected status 401: ${message}`, host);
+  }
+  if (
+    errorCode === 'rateLimitExceeded' ||
+    errorCode === 'usageLimitExceeded' ||
+    errorCode === 'sessionBudgetExceeded' ||
+    errorCode === 'serverOverloaded' ||
+    errorStatusCode === 429
+  ) {
+    return classifyAgentMessage(`unexpected status 429: ${message}`, host);
+  }
+  // 分类名带进文案：归不了档也要让排障看得见厂商怎么说的
+  return classifyAgentMessage(errorCode === null ? message : `${message}（codexErrorInfo: ${errorCode}）`, host);
 }
 
 /**
@@ -539,10 +631,17 @@ function readCount(record: Record<string, unknown>, key: string): number | null 
  *
  * `startedAt` / `completedAt` 的单位是**秒**（app-server 的 `Turn` 逐字如此），而骨架的 `TimingSpan`
  * 是**毫秒**（与 `Date.now()` 同尺）⇒ 乘法只在这一处做，别在调用方再乘一次。
+ *
+ * 两点缺一时**回落 `durationMs`**：厂商在同一个 `Turn` 上给了这一格，而 `TimingSpan` 只要求两端
+ * 之差有意义（不要求是绝对时刻）⇒ 以 0 为基准给出同样长的跨度，比整格不发更接近事实。
+ * cc 侧的同名回落是同一条口径。三格都拿不到才是 `null`（**不编一个 0 长度**）。
  */
 export function turnTimingOf(turn: AppServerTurn): TimingSpan | null {
-  if (turn.startedAt === null || turn.completedAt === null) return null;
-  return { firstMs: turn.startedAt * 1000, lastMs: turn.completedAt * 1000, source: 'events' };
+  if (turn.startedAt !== null && turn.completedAt !== null) {
+    return { firstMs: turn.startedAt * 1000, lastMs: turn.completedAt * 1000, source: 'events' };
+  }
+  if (turn.durationMs !== null) return { firstMs: 0, lastMs: turn.durationMs, source: 'events' };
+  return null;
 }
 
 function failureContext(context: CodexEventContext): FailureContext {

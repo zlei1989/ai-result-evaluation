@@ -39,6 +39,7 @@ import type {
 import { toolPayloadOf } from './tool-payload';
 import { toolCallHint } from './activity';
 import { classifyTool } from './tool-family';
+import { safeStringify } from './emit';
 
 /** 工具结果的文本上限：超出即截断，`truncation` 记 `{ kind: 'truncated' }`（结果正文与工具族统计都只看这一段） */
 export const TOOL_RESULT_MAX_CHARS = 20_000;
@@ -102,6 +103,11 @@ interface Carrier {
   nextIndex: number;
   /** 这条逻辑消息到目前为止采到的用量（带值覆盖、缺省保留，见 `ingest`） */
   usage: UsageTokens | null;
+  /**
+   * 最后一次投递的信封（角色 / 轮次 / 会话 / 原文那些格）。
+   * `sealOpen` 收口时没有 draft 可依，补发的那条消息只能用这一份——故它跟着**每次投递**更新。
+   */
+  envelope: MessageDraft | null;
 }
 
 export interface MessageAssemblerOptions {
@@ -126,6 +132,17 @@ export interface MessageAssembler {
    * 这条契约保证就落在这里。
    */
   ingest: (draft: MessageDraft, onMessage: (message: AgentMessage) => void) => void;
+  /**
+   * **收口**：把还没等到块结束快照的槽按**当前累积值**封口，每个这样的载体补发一条快照
+   * （`assembly` 因此从 `'open'` 翻成 `'snapshot'`）。返回被收口的载体数。
+   *
+   * 为什么需要它：厂商的块结束快照**不保证覆盖每一个槽**——cc 真机实测有轮次只投递
+   * `tool_use` 的完整消息，正文只以流式增量到达 ⇒ 那个正文槽永远等不到自己的快照，
+   * 载体的 `assembly` 停在 `'open'`，界面据此显示「正在思考」，而整行早已结束。
+   * 会话收尾时调用一次，让「这一段说完了」成为事实。补发的快照照常落盘，
+   * 于是 `delta` 不落盘那条口径留下的「刷新后半截正文不可见」也被一并补上。
+   */
+  sealOpen: (onMessage: (message: AgentMessage) => void) => number;
   /** 已产出的消息条数（诊断用，也是 `seq` 的当前值） */
   readonly emitted: number;
 }
@@ -133,6 +150,53 @@ export interface MessageAssembler {
 export function createMessageAssembler(options: MessageAssemblerOptions): MessageAssembler {
   const carriers = new Map<string, Carrier>();
   let seq = 0;
+
+  /**
+   * 把载体的**当前状态**交出去（`ingest` 与 `sealOpen` 共用一份构造：
+   * 两条出口的消息形状必须逐字相同，抄第二遍就会漂移）。
+   *
+   * `chunk` 由调用方给：`ingest` 用草稿自己的那一格（`'delta'` / `'snapshot'`），
+   * 而**收口产出的永远是 `'snapshot'`**——它按定义就是一份收尾快照。这一格不能偷懒沿用
+   * 载体的最后一封（那多半是增量）：编排层按 `chunk === 'delta'` 决定「只广播、不落盘」，
+   * 沿用增量会让收口的内容留在内存里、刷新后消失（真机形态：收口那条带着 `chunk: 'delta'`
+   * 与 `assembly: 'snapshot'` 一起出现，自相矛盾）。
+   */
+  const publish = (
+    carrier: Carrier,
+    onMessage: (message: AgentMessage) => void,
+    chunk: MessageDraft['chunk'],
+  ): void => {
+    // 没有过任何投递的载体不存在（`Carrier` 只在 `ingest` 里建），这一格只是把类型收窄
+    const envelope = carrier.envelope;
+    if (envelope === null) return;
+    seq += 1;
+    const slots = [...carrier.slots.values()];
+    onMessage({
+      messageId: `${options.runId}:${seq}`,
+      vendorId: envelope.vendorId,
+      role: envelope.role,
+      source: envelope.source,
+      /**
+       * 归一出来的消息**一律是题面那一档**：走这一条路的都是模型自己的产出与工具往返，
+       * 没有一条是人在半路插的（人工消息由编排层在投递那一刻直接构造并落账本，不经合并器）。
+       */
+      origin: 'case-prompt',
+      roundTrip: envelope.roundTrip,
+      turn: envelope.turn,
+      step: envelope.step,
+      parentCallId: envelope.parentCallId,
+      subagentId: envelope.subagentId,
+      chunk,
+      // 每一块都收到过快照才算收尾（只要有块停在增量累积值上，这条消息就是「未收尾」）
+      assembly: slots.every((slot) => slot.sealed) ? 'snapshot' : 'open',
+      // 合并键随信封一起带走：消费方不必自己反推「哪些消息属于同一条逻辑消息」
+      mergeKey: carrier.key,
+      blocks: slots.map((slot) => slot.block),
+      // 这条逻辑消息到目前为止采到的用量（带值覆盖、缺省保留，见下面那一支）
+      usage: carrier.usage,
+      raw: envelope.raw,
+    });
+  };
 
   return {
     get emitted(): number {
@@ -143,7 +207,7 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
       const carrierKey = carrierKeyOf(draft);
       let carrier = carriers.get(carrierKey);
       if (carrier === undefined) {
-        carrier = { key: carrierKey, slots: new Map(), nextIndex: 0, usage: null };
+        carrier = { key: carrierKey, slots: new Map(), nextIndex: 0, usage: null, envelope: null };
         carriers.set(carrierKey, carrier);
       }
       /**
@@ -153,31 +217,25 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
        * 也不累加：它是「这一次调用」的值，累加是行级 `tokens` 那一格的事。
        */
       if (draft.usage !== null) carrier.usage = draft.usage;
+      // 信封跟着最后一次投递走：收口时没有 draft，补发的那条消息只能用这一份信封
+      carrier.envelope = draft;
       for (const blockDraft of draft.blocks) {
         applyBlock(carrier, blockDraft);
       }
-      seq += 1;
-      const slots = [...carrier.slots.values()];
-      onMessage({
-        messageId: `${options.runId}:${seq}`,
-        vendorId: draft.vendorId,
-        role: draft.role,
-        source: draft.source,
-        roundTrip: draft.roundTrip,
-        turn: draft.turn,
-        step: draft.step,
-        parentCallId: draft.parentCallId,
-        subagentId: draft.subagentId,
-        chunk: draft.chunk,
-        // 每一块都收到过快照才算收尾（只要有块停在增量累积值上，这条消息就是「未收尾」）
-        assembly: slots.every((slot) => slot.sealed) ? 'snapshot' : 'open',
-        // 合并键随信封一起带走：消费方不必自己反推「哪些消息属于同一条逻辑消息」
-        mergeKey: carrier.key,
-        blocks: slots.map((slot) => slot.block),
-        // 这条逻辑消息到目前为止采到的用量（带值覆盖、缺省保留，见上面那一支）
-        usage: carrier.usage,
-        raw: draft.raw,
-      });
+      publish(carrier, onMessage, draft.chunk);
+    },
+    sealOpen(onMessage) {
+      let sealedCarriers = 0;
+      for (const carrier of carriers.values()) {
+        const slots = [...carrier.slots.values()];
+        // 全都收过尾的载体不必再发一条（那只是同一份内容说两遍）
+        if (slots.every((slot) => slot.sealed)) continue;
+        for (const slot of slots) slot.sealed = true;
+        // 收口产出的**恒是快照**：它按定义就是这一段的收尾（`chunk` 不能沿用载体的最后一封增量）
+        publish(carrier, onMessage, 'snapshot');
+        sealedCarriers += 1;
+      }
+      return sealedCarriers;
     },
   };
 }
@@ -334,6 +392,29 @@ export function thinkingBlockDraft(
 }
 
 /**
+ * 未识别载荷块草稿：厂商发了东西、我们归不了它时，**原样留档**的那一格。
+ *
+ * 为什么必须有它：适配器只归一厂商条目类型的一个子集，剩下的若既不产块也不产事件，
+ * 「厂商没发」与「厂商发了、我们没接」在产物里就长得一模一样 —— 那是排障时最贵的一类假相等。
+ * 契约里这一格是一等成员（`UnrecognizedPayloadBlockSchema`），界面有独立渲染路径（默认收起）。
+ *
+ * 两条取值口径：
+ *   · `reason` 由调用方按**它自己判到了哪一步**给：类型本身不认识用 `'unrecognized'`，
+ *     类型认识但形状对不上用 `'unmapped-shape'`；
+ *   · `raw` 走 `safeStringify`（与 `unknownEventDraft` 同一条口径）：循环引用 / BigInt 不抛，
+ *     代价是走到兜底那一步时它只保证可读、不保证 `JSON.parse` 成功。
+ */
+export function unrecognizedBlockDraft(
+  vendorType: string | null,
+  raw: unknown,
+  reason: 'unrecognized' | 'unmapped-shape' = 'unrecognized',
+  phase: ChunkKind = 'snapshot',
+  identity: BlockIdentity = { kind: 'index', index: 0 },
+): MessageBlockDraft {
+  return { phase, identity, block: { type: 'unrecognized', reason, vendorType, raw: safeStringify(raw) } };
+}
+
+/**
  * 工具调用块草稿。
  * `input` 传厂商原文（codex 与 dsh 的 `arguments` 是 JSON 字符串，**调用方先解析成对象**再传）；
  * `family` 由 `classifyTool` 按工具名判定，判不出来就是 `null`（消费方走通用渲染）。
@@ -365,6 +446,11 @@ export function toolCallBlockDraft(
   vendor: AgentKind,
   family: ToolFamily | null = classifyTool(name),
   payload?: ToolCallPayload | null,
+  /**
+   * 厂商报的**参数解析失败原文**（缺省 = 没有这个问题）。只有 pi 今天给得出它
+   * （`ToolCall.argumentsError`）——不给这一格时 `input` 是 `{}`，与「模型真传了空对象」同形。
+   */
+  inputError?: string | null,
 ): MessageBlockDraft {
   return {
     phase: 'snapshot',
@@ -375,6 +461,7 @@ export function toolCallBlockDraft(
       family,
       name,
       input,
+      ...(inputError === undefined || inputError === null ? {} : { inputError }),
       payload: payload === undefined ? toolPayloadOf(family, input, vendor) : payload,
       summary: toolCallHint(name, input),
     },
@@ -419,7 +506,16 @@ export function attachmentBlockDraft(
 
 /** 超过上限就截断，并把「截过」这件事显式带出来（消费方要能区分「原文就这么长」与「我们截了」） */
 export function truncate(text: string, max = TOOL_RESULT_MAX_CHARS): { text: string; truncated: boolean } {
-  return text.length <= max ? { text, truncated: false } : { text: text.slice(0, max), truncated: true };
+  if (text.length <= max) return { text, truncated: false };
+  /**
+   * 切点回退到**码点边界**：`slice` 按 UTF-16 码元切，切在代理对中间会留下一个**孤立代理**
+   * （真机：19 999 个 `A` + 😀 + 1 000 个 `B` ⇒ 切完末尾那个码元是孤立的高位代理 `0xD83D`）
+   * ——JSON 里那是非法序列、界面渲染成 `�`，而同一份内容在 `structured` 那一格里还是完整的。
+   * 判据只看**末位是不是高位代理**：是就少切一个码元（少一个字符好过留半个）。
+   */
+  const last = text.charCodeAt(max - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+  return { text: text.slice(0, end), truncated: true };
 }
 
 /**

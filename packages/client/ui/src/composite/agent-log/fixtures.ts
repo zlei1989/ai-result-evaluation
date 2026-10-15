@@ -33,12 +33,22 @@ interface MessageInput {
   roundTrip: number;
   role: AgentMessage['role'];
   source?: AgentMessage['source'];
+  /** 谁带进来的；缺省 = 题面那一档（与契约缺省一致）。人工消息与追问那句要显式给 */
+  origin?: AgentMessage['origin'];
+  /** 第几段；缺省缺席 = 第一次跑那一段（只有追问那一段写它） */
+  segment?: number;
   assembly?: AgentMessage['assembly'];
   subagentId?: string | null;
   parentCallId?: string | null;
   blocks: AgentMessage['blocks'];
   /** 同一条逻辑消息的后续投递（块追加 / 快照覆盖）：`mergeKey` 相同、`messageId` 不同 */
   update?: boolean;
+  /**
+   * 载体键的**身份后缀**（`|case-prompt` / `|followup:<id>` / `|inject:<id>`）。
+   * 同一轮里可能出现两条 `user` 消息（题面 + 人工插话）⇒ 按原式算出的键会完全相同，
+   * 读侧按它覆盖累积时后一条会把前一条盖掉。产品侧的三种写法见编排层与 `inject-port`。
+   */
+  mergeSuffix?: string;
 }
 
 let seq = 0;
@@ -55,7 +65,7 @@ function message(input: MessageInput): RowRecord {
   seq += 1;
   const subagentId = input.subagentId ?? null;
   const parentCallId = input.parentCallId ?? null;
-  const mergeKey = `${subagentId ?? 'main'}|${input.roundTrip}|${input.role}|${parentCallId ?? '-'}`;
+  const mergeKey = `${subagentId ?? 'main'}|${input.roundTrip}|${input.role}|${parentCallId ?? '-'}${input.mergeSuffix ?? ''}`;
   return {
     type: 'message',
     message: {
@@ -63,6 +73,8 @@ function message(input: MessageInput): RowRecord {
       vendorId: null,
       role: input.role,
       source: input.source ?? 'wire',
+      origin: input.origin ?? 'case-prompt',
+      ...(input.segment === undefined ? {} : { segment: input.segment }),
       roundTrip: input.roundTrip,
       turn: null,
       step: null,
@@ -562,8 +574,8 @@ export function dshFixture(): AgentLogFixture {
 }
 
 /**
- * `codex`：**补录与摘要**那一档——思考正文来自会话文件（运行结束后才有），
- * 事件流那一格只有「推理摘要」。界面上两者必须长得不一样（「补录」角标 + 「摘要」标签）。
+ * `codex`：**补录**那一档——思考正文来自会话文件（运行结束后才有），
+ * 事件流那一格只有「推理摘要」（正文按厂商事实落 `textKind: 'summary'`，档位不进呈现）。
  */
 export function codexFixture(): AgentLogFixture {
   seq = 0;
@@ -574,6 +586,18 @@ export function codexFixture(): AgentLogFixture {
       source: 'session-file',
       blocks: [
         { type: 'thinking', text: '先复现一次，再看命令输出的最后 20 行。', textKind: 'summary', signature: null },
+        /**
+         * 参数解析失败的调用（厂商只给 `{}` + `inputError` 原文）：放在**可选的 codex 夹具**里，
+         * `/dev/agent-log` 才能在真实浏览器里核对那句提示的几何（jsdom 验不了脱层几何）。
+         */
+        {
+          type: 'tool-call',
+          callId: 'cc_bad_args',
+          family: null,
+          name: 'read',
+          input: {},
+          inputError: 'Unexpected token \'h\', "this is not json" is not valid JSON',
+        },
         { type: 'tool-call', callId: 'cc_1', family: 'run-shell', name: 'shell', input: { command: '["bash","-lc","pnpm test"]' } },
         { type: 'tool-result', callId: 'cc_1', structured: null, isError: false, text: 'Tests  12 passed (12)', truncation: { kind: 'none' } },
       ],
@@ -598,7 +622,7 @@ export function codexFixture(): AgentLogFixture {
 
   return {
     name: 'codex',
-    proves: '「补录」角标 + 「摘要」标签 + 只用汇总计数的那一档（`kind: \'row\'` 的说明行）',
+    proves: '「补录」角标 + 只用汇总计数的那一档（`kind: \'row\'` 的说明行）',
     events,
     capability: capability({
       thinkingText: { level: 'not-projected-by-vendor', source: null, reason: 'not-exposed' },
@@ -674,7 +698,148 @@ export function claudeFixture(): AgentLogFixture {
   };
 }
 
-/** 三份夹具（冒烟页与单测共用同一份清单） */
+/**
+ * **追问那一段**：一行跑完之后人对它追问了一次，于是又开一次 `run()`。
+ *
+ * 这一份夹具要证明的是「两段各归各的」：
+ *   · 首条卡片是**账本里那条题面**（不是调用方塞的 `userPrompt`——真实链路就是它）；
+ *   · 追问那句是 `origin: 'human'`、`segment: 1` 的 user 消息，落在**段 1 的轮次 1**，且是
+ *     该轮的**第一条块**（排在该轮答复之前——投递顺序不保证这一点，见下一条）；
+ *   · 两段的轮次号都从 1 开始（厂商口径），靠段号与「追问 ×1」那一行分隔才不混。
+ *
+ * 第二段的载体键与第一段**逐字相同**（`main|1|assistant|-`）：这正是折叠键必须带段号的理由，
+ * 少了它这一段里的第 1 轮会把首段第 1 轮整条盖掉。
+ *
+ * ⚠️ **段 1 的投递顺序刻意与阅读顺序相反**（回答先落账本、那句人话后到）：真实链路就是它——
+ * 发起追问的那段代码先让出事件循环、再等 `run()` 收尾。夹具若把两句按阅读顺序排好，
+ * 「轮内块按阅读顺序排」这条规则在预览页上就永远显示不出差别。
+ */
+export function followUpFixture(): AgentLogFixture {
+  seq = 0;
+  const records: RowRecord[] = [
+    // 题面（编排层在把这一轮交出去之前落的账）
+    message({
+      roundTrip: 1,
+      role: 'user',
+      source: 'hook',
+      mergeSuffix: '|case-prompt',
+      blocks: [{ type: 'text', text: '把 `build` 脚本修好，然后跑一遍测试。' }],
+    }),
+    message({
+      roundTrip: 1,
+      role: 'assistant',
+      blocks: [
+        { type: 'thinking', text: '先复现一次，再看命令输出的最后 20 行。', textKind: 'summary', signature: null },
+        { type: 'tool-call', callId: 'fu_1', family: 'run-shell', name: 'shell', input: { command: '["bash","-lc","pnpm test"]' } },
+        { type: 'tool-result', callId: 'fu_1', structured: null, isError: false, text: 'Tests  12 passed (12)', truncation: { kind: 'none' } },
+      ],
+    }),
+    message({ roundTrip: 1, role: 'assistant', update: true, blocks: [{ type: 'text', text: '12 条用例全绿。' }] }),
+    // —— 追问那一段：这一段自己的第 1 轮（答复先到）+ 人在界面上补的那一句（后到） ——
+    message({
+      roundTrip: 1,
+      role: 'assistant',
+      segment: 1,
+      blocks: [
+        { type: 'thinking', text: '看看现有的 changelog 怎么组织的。', textKind: 'summary', signature: null },
+        { type: 'tool-call', callId: 'fu_2', family: 'read-file', name: 'Read', input: { file_path: 'CHANGELOG.md' } },
+        { type: 'tool-result', callId: 'fu_2', structured: null, isError: false, text: '# 变更记录\n\n## 0.1.0', truncation: { kind: 'none' } },
+      ],
+    }),
+    message({
+      roundTrip: 1,
+      role: 'user',
+      source: 'hook',
+      origin: 'human',
+      segment: 1,
+      mergeSuffix: '|followup:fixture-1',
+      blocks: [{ type: 'text', text: '顺便把 changelog 补上，只写这一版的用户可见变更。' }],
+    }),
+    message({ roundTrip: 2, role: 'assistant', segment: 1, blocks: [{ type: 'text', text: '补好了，只写了这一版的用户可见变更。' }] }),
+  ];
+
+  const events: AgentEvent[] = [
+    statusEvent(0, 'running'),
+    usageEvent(30, 90, 0, 240, 1),
+    usageEvent(60, 120, 0, 260, 2),
+    statusEvent(90, 'judged'),
+  ];
+
+  return {
+    name: '追问段',
+    proves: '题面那张首条卡片 + 「追问 ×1」段分隔 + 两段各自的轮次 1（同号同键不互相覆盖）',
+    events,
+    capability: capability(),
+    capabilityNotes: [],
+    environment: environmentFixture('Codex', 'gpt-5-codex'),
+    model: buildAgentLogModel({
+      records,
+      events,
+      facts: facts({ turns: { current: 2, total: 2 } }),
+      startedAt: at(0),
+      capability: capability(),
+      capabilityNotes: [],
+    }),
+  };
+}
+
+/**
+ * **空白思考**：思考增量到了、正文还没到那一拍（`text: ''`）。
+ *
+ * 为什么要有这一份：那一拍的思考块在界面上只能画出一个**空面板**（标题「思考中…」+ 一片空白），
+ * 用户口径是**等第一条有正文的思考流消息到了再画**。它只出现在**流式增量**里——账本只落快照，
+ * 而 cc 与 dsh 的增量出口挡掉了空 delta、codex 与 pi 没有 ⇒ 历史数据里看不到这一档，
+ * 只有这份夹具能把它按真实形状摆出来（同一轮里还有一条正文，用来证明「少的是那一块、不是整轮」）。
+ */
+export function blankThinkingFixture(): AgentLogFixture {
+  seq = 0;
+  const records: RowRecord[] = [
+    message({
+      roundTrip: 1,
+      role: 'user',
+      source: 'hook',
+      mergeSuffix: '|case-prompt',
+      blocks: [{ type: 'text', text: '把构建脚本修好。' }],
+    }),
+    // 思考增量第一拍：正文还没到（`text: ''`）、块还在流（信封 `assembly: 'open'`）
+    message({
+      roundTrip: 1,
+      role: 'assistant',
+      assembly: 'open',
+      blocks: [{ type: 'thinking', text: '', textKind: 'full', signature: null }],
+    }),
+    // 同一轮里已经有正文（思考正文仍没到）⇒ 界面上该看到正文，**不该看到那一个空面板**
+    message({
+      roundTrip: 1,
+      role: 'assistant',
+      assembly: 'open',
+      update: true,
+      blocks: [{ type: 'text', text: '我先看一眼构建脚本，再动手改。' }],
+    }),
+  ];
+
+  const events: AgentEvent[] = [statusEvent(0, 'running'), statusEvent(30, 'running')];
+
+  return {
+    name: '空思考',
+    proves: '空白正文的思考块整块不渲染（不出空面板、也不出「思考中…」标题），同轮的正文照常显示',
+    events,
+    capability: capability(),
+    capabilityNotes: [],
+    environment: environmentFixture('Codex', 'gpt-5-codex'),
+    model: buildAgentLogModel({
+      records,
+      events,
+      // 行还在跑：这一档就是「思考刚开始」那一拍
+      facts: facts({ status: { tone: 'running', label: '执行中' }, turns: { current: 1, total: 1 }, live: true }),
+      startedAt: at(0),
+      capability: capability(),
+      capabilityNotes: [],
+    }),
+  };
+}
+
+/** 五份夹具（冒烟页与单测共用同一份清单） */
 export function allFixtures(): AgentLogFixture[] {
-  return [dshFixture(), codexFixture(), claudeFixture()];
+  return [dshFixture(), codexFixture(), claudeFixture(), followUpFixture(), blankThinkingFixture()];
 }

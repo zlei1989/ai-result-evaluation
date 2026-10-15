@@ -1,30 +1,43 @@
 /**
  * dsh 的通知投影：按真实探测到的厂商事件形态投影。
- * 口径（`probe/dumps/dsh.json` 的实测）：
+ * 口径（真机逐条核过；探针产物在 `probe/dumps/v3/` 与 `probe/dumps/v11/`）：
  *  - 通知外形是 `{ method, params }`，method 只有四种；**事件全在 `session.event` 里**，
  *    真正的判别字段是 `params.event.type`（`agent/inbox/spliced`、`turn/start`、`step/start`、
  *    `system/message`、`user/message`、`request/header`、`request/context`、`session/title`、
  *    `session-log-…`、`assistant/message`、`step/end`、`turn/end`）；
- *  - **用量在 `assistant/message` 上**：`params.event.data.usage = { inputTokens, outputTokens,
- *    cacheReadTokens?, cacheWriteTokens?, totalTokens? }`（`TokenUsage` 的计数**互斥**：
+ *  - **用量在两处**：正常收尾的那次尝试在 `assistant/message` 的 `params.event.data.usage = { inputTokens,
+ *    outputTokens, cacheReadTokens?, cacheWriteTokens?, totalTokens? }`（`TokenUsage` 的计数**互斥**：
  *    `inputTokens` 只算未命中缓存的输入，缓存读单独在 `cacheReadTokens` ⇒ 映射到本仓三元组不会双计）；
+ *    而**没有落成 `assistant/message` 的那次尝试**（`assistant/attempt`）把用量放在
+ *    `data.stream[]` 的最后一条 `{type:'chunk',chunk:{type:'usage'}}` 上——两支都要累计，
+ *    漏掉后者就是静默少算（厂商自己的 token meter 两支都算）；
  *  - **轮次结束是 `turn/end`**：`params.event.data = { turn, reason: { kind } }`，`kind` 取值实测
- *    `completed` / `error`（类型面另有 `aborted` / `blocked` / `max-tokens` / `interrupted` / `forked`）；
- *  - **一次模型 API 往返 = 一个 step**（用户口径）：事件序列是
+ *    `completed` / `error` / `aborted`（子会话收尾 `{kind:'aborted', reason:{kind:'parent'}}`；
+ *    类型面另有 `blocked` / `max-tokens` / `interrupted` / `forked`）；
+ *  - **一个 step = 厂商的一次模型调用**（不是「一次 HTTP 往返」）：事件序列是
  *    `turn/start` → `step/start` → `request/header` → `request/context` → `assistant/message`
  *    → `step/end`（→ 下一个 `step/start` …）→ `turn/end`，`assistant/message` 上带着 `{turn, step}`。
  *    所以**轮次从 `step/start` 数**：它是「这一次请求已经发出去了」的落点，而不是等整段任务收尾。
  *    实测那一轮（`ae798e52` 的 dsh 行）`step/start` = 59、`assistant/message` = 59，而 `turn/end` 只有
  *    **1** 条 —— 原来按 `turn/end` 数，界面上永远是「轮次 1」。
+ *    ⚠️ 重试不新开 step：一次尝试失败后 `llm/retry-started` 把**同一个 step** 重新打开，
+ *    于是 4 次真实往返可以只有 3 个 step（本仓口径与厂商 `turn-usage.js` 一致）。
  *  - **失败通道就是 `turn/end` 的 `reason.kind === 'error'`**：`reason.error` 实测有两种形状——
  *    结构化 `{ message, code:"TRANSPORT" }`（传输失败）与**纯字符串** `"…"`（SDK 把非结构化异常
  *    折成 `{ message: errorChain(error), code: 'UNKNOWN' }`，而 `errorChain` 对普通 Error 返回 string）。
  *    两种都要认，否则一次失败的运行会被投影成普通日志、骨架返回 `ok: true, completed`
  *    （「界面显示成功、实际没干活」）。
- * 其余口径不变：未识别一律 `unknownEventDraft(payload)` 保留原始负载；计量三项齐了才认，缺项 → null + WARN。
- * **时长（2026-10-XX 新增）**：dsh 的用量载荷里**没有任何时间字段**，时间只在会话事件自己身上
+ * 其余口径不变：未识别一律 `unknownEventDraft(payload)` 保留原始负载；用量读数只有
+ * `protocol.ts` 的 `readUsageTokens` 一份实现——`inputTokens` / `outputTokens` 两格必在
+ * （读不到才整条按未采到处置），缓存读 / 缓存写两格「大于 0 才写」⇒ 缺席就是 **0**
+ * （见该函数的 JSDoc 与 `readTokens`）。
+ * **时长**：dsh 的用量载荷里**没有任何时间字段**，时间只在会话事件自己身上
  * （`params.event.time`，epoch 毫秒，每条事件都有）⇒ 本行的 `timing` 一律 `source: 'events'`
  * （含工具执行的墙钟），起止取**识别到的那几条事件**的首末 `time`（见 `noteEventTime`）。
+ * ⚠️ **它不含第一次模型往返**（`request/header` → 首条 `assistant/message`，量级 1.6~2.5 s）
+ * 与冷启动 / 收尾（`run()` 的墙钟比它多 0.7 s 上下）：短一轮的运行里那一跳占比可达三成，
+ * 拿 `totalMs` 算 tok/s 会偏高。这是**现时约束**——端点是「我们识别到的会话事件」，
+ * 不是进程生命周期（`durationMs` 才是墙钟）。
  * `ttftMs` 永远是 `null`（dsh 不上报首 token 时延），`apiMs` 同样（它只有 claude 有）。
  * ⚠️ **量本身是累计的、不清零**（见 `assistant/message` 那一支），所以`timing` 也是「到目前为止」的
  * 口径：起点一次定下、右端点每条带时间的消息往后推——这与 `tokens` 的覆盖语义同源。
@@ -79,7 +92,7 @@
  * 这一行）。它随 `runState` 走：`projectDshNotification` 的第 4 个参数，**可选**（缺省 = 空集合，
  * 既有直调用例不必改）。
  */
-import { namedVendorSkill, type UsageTokens, type VendorSkill } from '@aieval/contracts';
+import { namedVendorSkill, type SubagentRecord, type UsageTokens, type VendorSkill } from '@aieval/contracts';
 import {
   subagentDispatchSummary,
   subagentSettledSummary,
@@ -95,7 +108,12 @@ import {
   dshAssistantMessageDraft,
   dshSessionIdOf,
   dshStreamDeltaDraft,
+  dshSessionPermissionOf,
+  noteDshSessionPermission,
+  dshSubagentIdOf,
+  dshSubagentIdentity,
   dshSubagentRecord,
+  dshSubagentStartRecord,
   dshSubagentTurns,
   dshSubagentUsage,
   dshToolCallDraft,
@@ -104,25 +122,35 @@ import {
   lookupDshSubagentCatalog,
   noteDshSessionTurn,
   noteDshSessionUsage,
+  parseDshToolArguments,
   rememberDshSubagentCatalog,
 } from './message';
 import {
+  DSH_ASSISTANT_ATTEMPT_TYPE,
   DSH_ASSISTANT_MESSAGE_TYPE,
+  DSH_JOB_SETTLED_TYPE,
+  DSH_LLM_RETRY_TYPE,
+  DSH_QUIET_EVENT_TYPES,
   DSH_REQUEST_HEADER_TYPE,
+  DSH_PERMISSION_PRESET_TYPE,
   DSH_SESSION_EVENT_METHOD,
+  DSH_SESSION_STATUS_METHOD,
+  DSH_SESSION_TITLE_TYPE,
   DSH_SKILL_CATALOG_KIND,
   DSH_STEP_START_TYPE,
   DSH_STREAM_DELTA_TYPE,
   DSH_STREAM_FAILURE_TYPE,
   DSH_SUBAGENT_CATALOG_TYPE,
+  DSH_SUBAGENT_DESCRIPTOR_TYPE,
   DSH_SUBAGENT_FINISHED_METHOD,
   DSH_SUBAGENT_STARTED_METHOD,
+  DSH_SUBAGENT_TOOL_NAMES,
   DSH_TOOL_CALL_TYPE,
   DSH_TOOL_RESULT_TYPE,
   DSH_TURN_END_TYPE,
-  DSH_TURN_START_TYPE,
   DSH_USER_MESSAGE_TYPE,
   // 读数规则与字段名只有 `protocol.ts` 一份（见那边的文件头）
+  readAttemptUsage,
   readHeaderTools,
   readSkillCatalog,
   readUsageTokens,
@@ -162,6 +190,74 @@ export { DSH_USAGE_FIELDS } from './protocol';
  */
 export const DSH_EVENT_TIME_FIELD = 'time';
 
+/**
+ * 投影的**取数面**（本行自己的状态，不塞进骨架的 `TurnState`）。
+ *
+ * 七格分三类：子会话白名单 / 已收场集合（归属与计量）、两条「只在变了时才发」的清单缓存、
+ * 以及**派发记账**三格——厂商的 `subagent.*` 通知里没有派发调用 id、任务名又从另一条消息到，
+ * 于是「这次派发在飞」「认领给了谁」「投过哪一条运行行」必须跨消息记住，
+ * 否则子任务运行行落不进界面的任何一轮（见 `noteDshDispatchStart` / `claimDshDispatch`）。
+ */
+export interface DshProjectionRunState {
+  childSessions: ReadonlySet<string>;
+  finishedSessions: ReadonlySet<string>;
+  /** 上一条 `request/header` 的工具表（见 `request/header` 那一支：只在**变了**的时候发事件） */
+  headerTools?: string[] | null;
+  /** 上一条技能目录（同上：只在**变了**的时候发事件。两条通道各自发出时都要带上对方那一格） */
+  skillCatalog?: string[] | null;
+  /**
+   * 本 run 的**子会话分量基线**：登记某个子会话时它已经有的累计用量 / 往返数。
+   * 分量 = 当前累计 − 基线（`message.ts` 的 `dshSubagentUsage` / `dshSubagentTurns`）——
+   * `sessionUsage` 与往返计数都是**模块级、跨 run 不清**的，少了基线，追问/续接的第二个 run
+   * 会把前一个 run 一起算进「子智能体那一份」（合计不受影响，于是行快照上会出现「合计 60 / 子分量 2010」）。
+   * 基线在 `index.ts` 的 `noteChildSession` 里**首次登记**时记下（同一个 id 只记一次）。
+   */
+  childUsageBaseline?: Map<string, UsageTokens>;
+  childTurnsBaseline?: Map<string, number>;
+  /**
+   * 释放前那次 `session/wait` **没能确认整棵子树收场**（到点 / 失败 / 终止），而白名单里还有
+   * 子会话没收场 ⇒ 它们马上会被 `runtime.close()` 掐死，**「还在跑、以后会报」是假话**：
+   * 分量必须按「事实缺失」交 `null` 并点名，不能按 0 计入（真机形状：被杀的子任务交
+   * `subagentTokens {0,0,0}` + `subagentTurns 1`，而它永远不会再报）。
+   */
+  subagentsUnsettled?: boolean;
+  /**
+   * 工具作业的**失败判据**（`job/settled` 的 `data.detail`，键是 `data.toolCall.callId`）。
+   *
+   * 两种收场（厂商 `dsh-tool-bash` 的 `processOutcome`）：`exit code: N`（`status: completed`，
+   * 失败当且仅当 N ≠ 0）与 `signal: <SIG>` / `killed before exit`（`status: killed` ⇒ 一律失败）。
+   * 工具结果投影时按 `message.toolCallId` 取它判 `isError`（真机顺序保证它在结果之前到）；
+   * 取不到就是 `null`（不猜、也不退回按文本解析）。
+   */
+  jobFailures?: Map<string, boolean>;
+  /**
+   * 已经投影过的工具结果草稿（按 `callId`）：`job/settled` **晚于** `tool/result` 到达时
+   * （真机：被 `job_kill` / 超时杀掉的命令就是这个顺序），用它把同一条结果**重投**一次并带上
+   * `isError`。合并按消息身份走（`vendorId` / 块的 `callId`）⇒ 重投是同一条覆盖，不是新增一条。
+   */
+  projectedToolResults?: Map<string, unknown>;
+  /**
+   * 本次运行**要求**的权限档（`DSH_PERMISSION_OPTIONS[input.permission]` 的字符串，如
+   * `danger-full-access` / `read-only`）。用来与厂商实际报的 `permission/preset` 对照——
+   * 厂商把权限档当**会话属性**，续接段既不重投也不改（见 FAQ 的对应条目）。
+   */
+  permissionDesired?: string | null;
+  /**
+   * 厂商报的权限预设（`permission/preset.preset`）——真机**每会话一条**（会话起手 seq 0），
+   * 追问 / 续接段不重投（厂商把它当会话属性）⇒ 本段拿不到时用会话级记忆兜底，见 `dshSessionPermissionOf`。
+   * 它是 `vendor-system.permissionMode` 的唯一来源——两条 `vendor-system` 出口都从这一格取，
+   * 于是「工具表变了」与「技能目录变了」哪一条最后发出，那一格都带着同一个值。
+   * `null` = 还没采到（不发明一个档位）。
+   */
+  permissionPreset?: string | null;
+  /** 在飞的 `subagent` 派发（`callId` → 入参里的任务描述与认领者）——目录项到时按它认领派发点 */
+  dispatchStarts?: Map<string, DshDispatchStart>;
+  /** 已认领出来的派发点（`子任务身份` → `callId`）：同一身份的**每一条**投递都要带上同一格 */
+  claimedDispatches?: Map<string, string>;
+  /** 已投递过的运行行内容签名（`子任务身份` → 签名）：目录项晚到时靠它判「要不要再投一条」 */
+  deliveredStarts?: Map<string, string>;
+}
+
 export function projectDshNotification(
   raw: unknown,
   state: TurnState,
@@ -171,14 +267,7 @@ export function projectDshNotification(
    * 为什么走参数而不是塞进 `TurnState`：那是**骨架**的状态形状（三家共用），
     * 而这两个集合是 dsh 自己的取数面。
    */
-  runState: {
-    childSessions: ReadonlySet<string>;
-    finishedSessions: ReadonlySet<string>;
-    /** 上一条 `request/header` 的工具表（见下面 `request/header` 那一支：只在**变了**的时候发事件） */
-    headerTools?: string[] | null;
-    /** 上一条技能目录（同上：只在**变了**的时候发事件。两条通道各自发出时都要带上对方那一格） */
-    skillCatalog?: string[] | null;
-  } = {
+  runState: DshProjectionRunState = {
     childSessions: new Set(),
     finishedSessions: new Set(),
   },
@@ -188,9 +277,18 @@ export function projectDshNotification(
   // 子智能体的两条**顶层通知**（不是 session.event 包一层）——实测的通道
   if (method === DSH_SUBAGENT_STARTED_METHOD || method === DSH_SUBAGENT_FINISHED_METHOD) {
     // 事件那条是给人看的摘要（含原始载荷），子任务行才是有类型的契约形状
-    const record = dshSubagentRecord(notification);
+    const identity = dshSubagentIdentity(notification);
+    const claim = claimDshDispatch(runState, identity);
+    const record = dshSubagentRecord(notification, claim);
+    if (record !== null && method === DSH_SUBAGENT_STARTED_METHOD) {
+      /**
+       * 记住这条运行行的内容：**目录项（任务名）晚到**时还要按同一身份再投一条更完整的
+       * （见 `catalog` 那一支）。不记的话「投过没有」无从判断，就会在每条目录项上重发。
+       */
+      runState.deliveredStarts?.set(record.subagentId, JSON.stringify(record));
+    }
     return {
-      drafts: [subagentDraft(notification)],
+      drafts: [subagentDraft(notification, claim)],
       tokens: null,
       /**
         * ⚠️ 这一支**不交**「子智能体那一份」：带分量的出口是**三条**——
@@ -207,6 +305,14 @@ export function projectDshNotification(
       subagents: record === null ? [] : [record],
     };
   }
+  /**
+   * `session.status`：**已识别且有意不投影**（真机每行两条：`running` / `idle`）⇒ 零草稿。
+   * 放在这里而不是走下面的兜底，是因为兜底的语义是「不认识的载荷」——把这两条混进去，
+   * 原始输出面板就多两条与内容、失败都无关的 JSON。
+   */
+  if (method === DSH_SESSION_STATUS_METHOD) {
+    return { drafts: [], tokens: null, turns: null, failure: null };
+  }
   // 只认一种通知外形：`{ method, params }`。其余（含未来新增方法）保留原始负载
   if (method !== DSH_SESSION_EVENT_METHOD) {
     return unknown(raw);
@@ -219,15 +325,82 @@ export function projectDshNotification(
   const sessionId = dshSessionIdOf(notification);
 
   /**
-   * 子任务目录项：**只登记、不产出事件**。
+   * **已识别但无用的那批**（真机每行必现，见 `DSH_QUIET_EVENT_TYPES`）：零草稿。
+   * 它们既不带轮次也不带用量或失败；继续走 `unknown` 兜底会把原始输出面板刷成 JSON 流水，
+   * 而「未识别的厂商载荷」那一栏也就失去了诊断价值（真正未知的类型混在几十条噪声里）。
+   * ⚠️ 顺序：`subagent/descriptor` 在这批里，而它的信封身份已经在**过滤器**里登记过
+   * （`noteChildSession`），投影这一层确实什么都不用做。
+   */
+  if (type !== null && (DSH_QUIET_EVENT_TYPES.has(type) || type === DSH_SUBAGENT_DESCRIPTOR_TYPE)) {
+    return { drafts: [], tokens: null, turns: null, failure: null };
+  }
+
+  /**
+   * 权限预设：**只登记、不产草稿**。厂商在会话起手投一条（seq 0），
+   * 它是本行 `vendor-system.permissionMode` 的唯一来源（见 `DshProjectionRunState.permissionPreset`）——
+   * 不登记的表现是环境抽屉上「权限档」恒为空，连评分阶段被限成 `read-only` 都看不出来。
+   * 事件本身由随后的 `vendor-system` 出口带出去（工具表在每个运行里至少变一次 ⇒ 必然发一条）。
+   */
+  if (type === DSH_PERMISSION_PRESET_TYPE) {
+    const drafts: AgentEventDraft[] = [];
+    /**
+     * **本次要的档 ≠ 厂商这一会话的档** ⇒ 落一条 WARN：厂商的档是**会话属性**，本段改不了它
+     * （真机：`read-only` + 续接照样写得进文件，而新会话同一动作被拒）。只观测、不改写结论——
+     * 「这一行的环境抽屉显示哪一档」与「实际生效哪一档」必须是同一句话，冲突时留痕。
+     */
+    const presetValue = readString(data, 'preset');
+    const desired = runState.permissionDesired ?? null;
+    if (presetValue !== null && desired !== null && presetValue !== desired) {
+      drafts.push(
+        logDraft(
+          'stderr',
+          `[WARN] 本次运行要求权限档 ${desired}，但厂商这一会话的档位是 ${presetValue}`
+            + '（厂商把它当会话属性：续接 / 追问都不会改）——本段实际按厂商那一档跑',
+        ),
+      );
+    }
+    if (presetValue !== null && presetValue !== '') {
+      runState.permissionPreset = presetValue;
+      // 会话级也记一份：追问 / 续接段厂商不重投，那一段的 `vendor-system` 靠它才不交 null
+      noteDshSessionPermission(sessionId, presetValue);
+    }
+    return { drafts, tokens: null, turns: null, failure: null };
+  }
+
+  /**
+   * `session/title`：厂商给会话起的标题（真机 `data.title`，`source.kind === 'fallback'`）。
+   * 它与上面那批的区别是**有信息量**（一条人话，排障时一眼看出这一轮在干什么）
+   * ⇒ 落一条日志；写成品名而不是原始 JSON。
+   */
+  if (type === DSH_SESSION_TITLE_TYPE) {
+    const title = readString(data, 'title');
+    return {
+      drafts: title === null ? [] : [logDraft('stdout', title)],
+      tokens: null,
+      turns: null,
+      failure: null,
+    };
+  }
+
+  /**
+   * 子任务目录项：**补名 + 补派发点**——只在**这一条**里到达的 `label`（任务名）与 `mode`（类型）
+   * 是派发行能否落进某一轮的判据：`subagent.started` 早于目录项到达时，那条运行行既没有名字、
+   * 也没有派发调用 id ⇒ 界面上它落不进任何一轮（没有卡片、也没有「进入」入口），整段运行期
+   * 这个子任务都不可达。所以：**投过运行行、而这次目录项让它变完整了 ⇒ 再投一条**
+   * （同一身份覆盖累积，界面只留最后一条）。
    *
-   * 为什么必须记：`label`（任务名）与 `mode` **只在这一条消息里**，而 `subagent.started` 只带
-   * 两个 sessionId ⇒ 不跨消息记住的话，start/finish 两条都拿不到名字。
-   * 为什么自己不产出事件：它是**身份补充**，不是进度——落成日志只会给抽屉添噪声。
+   * 为什么自己不产出 `log`：它是**身份补充**，不是进度——落成日志只会给抽屉添噪声。
    */
   if (type === DSH_SUBAGENT_CATALOG_TYPE) {
     rememberDshSubagentCatalog(data);
-    return { drafts: [], tokens: null, turns: null, failure: null };
+    const childId = readString(data, 'childId');
+    return {
+      drafts: [],
+      tokens: null,
+      turns: null,
+      failure: null,
+      subagents: childId === null ? [] : redeliverStartedSubagent(runState, childId),
+    };
   }
 
   if (type === DSH_STREAM_DELTA_TYPE) {
@@ -246,8 +419,7 @@ export function projectDshNotification(
     };
   }
 
-  if (type === DSH_STREAM_FAILURE_TYPE) {
-    /**
+  if (type === DSH_STREAM_FAILURE_TYPE) {    /**
      * **通知流中断**伪事件（见 `protocol.ts`）：只产**一条** stderr 的 `log`——它存在的唯一理由
      * 就是让「执行日志为什么是空的」在界面上有答案（真机事故里那句话一个字都没有）。
      * 为什么不做成 `error` 事件的归因：那一格会把这行判成失败，而这一轮的产物（diff 与评分）
@@ -273,7 +445,15 @@ export function projectDshNotification(
      * 而 `dshSubagentRecord` 只按**子任务身份**取值 ⇒ 主会话那一条永远不会被读到。
      */
     noteDshSessionUsage(sessionId, asRecord(data)?.usage);
-    const tokens = readTokens(asRecord(data)?.usage, drafts);
+    /**
+     * ⚠️ **`usage` 键缺席是厂商允许的形状**（真机：被 `interrupt_agent` 打断在流中间的那条
+     * `assistant/message` 只有 `{interrupted:true, message}`，没有 `usage`）⇒ 这一档**不读**、
+     * 也不落 WARN。无条件读会把「厂商没报」说成「我们读不动」，文案里还带着字面量 `undefined`，
+     * 读起来像解析崩了（`assistant/attempt` 那一支本来就有这道闸，这里是漏的）。
+     * 键在而形状不对（缺 `inputTokens` / `outputTokens`）才是真问题 ⇒ 那一条照旧 WARN。
+     */
+    const rawUsage = asRecord(data)?.usage;
+    const tokens = rawUsage === undefined ? null : readTokens(rawUsage, drafts);
     if (tokens !== null) {
       // 记进**本行累计**：`step/start` / `turn/end` 两条出口都从这里取「到目前为止」的值。
       // 刻意**不清零**（原来在 `turn/end` 上取走并归零）：现在的口径是「累计快照」，
@@ -282,23 +462,40 @@ export function projectDshNotification(
       state.usageCached = (state.usageCached ?? 0) + tokens.cached;
       state.usageOutput = (state.usageOutput ?? 0) + tokens.output;
       /**
-       * 思考 token 与厂商自报总量（2026-10-XX 新增）。两格的累加口径**刻意不同**：
-       *   · `reasoningTokens` 与上面三格同族 ⇒ **相加**（每个 step 的思考量各自独立）；
-       *   · `totalTokens` 是厂商给的**累计快照** ⇒ 只**覆盖**、不相加（相加会把总量算成好几倍）。
+       * 思考 token 与厂商自报总量。两格都与上面三格**同族**（都是「这一条读数自己」的量）
+       * ⇒ 一律**相加**：`reasoningTokens` 是这一个 step 的思考量，`totalTokens` 是**这一条
+       * assistant 消息自己的合计**（厂商源码里 `mapUsage` 直传 pi-ai 的 `usage.totalTokens`，
+       * 而那一格来自该次响应）——它不是累计快照，只覆盖会把它记成「最后一步的量」，
+       * 与同一个对象里求和出来的三格口径打架（真机读数：`total` 会小于 `cached`）。
        * 两格都只在读到时更新：`null`（这一条没带）**不把已采到的值抹掉**——与
        * 「路径上后到的消息可能更简略」这条既有事实同源（`cumulativeTokens` 每次交的都是全量）。
        */
       if (tokens.reasoningOutput != null) {
         state.usageReasoningOutput = (state.usageReasoningOutput ?? 0) + tokens.reasoningOutput;
       }
-      if (tokens.total != null) state.usageTotal = tokens.total;
+      if (tokens.total != null) {
+        state.usageTotal = (state.usageTotal ?? 0) + tokens.total;
+      }
     }
-    // 最终答复：只取 `type === 'text'` 的非空块。实测（probe/dumps/dsh.json 的 assistant/message）：
+    // 最终答复：只取 `type === 'text'` 的非空块。实测（`probe/dumps/v3/dsh-adapter-*-events.jsonl`）：
     // 同一个 content 数组里同时有 `{type:'reasoning', text:…}` 与 `{type:'text', text:'好'}`，
     // 而 reasoning 块**也带 text 字段** —— 按 text 取值会把推理内容混进答复。
     const reply = readAssistantText(data);
+    /**
+     * ⚠️ **只有主会话的正文才算本行答复**（`dshSubagentIdOf` 是归属判据的唯一实现）。
+     * 子会话的事件与主会话走**同一条通知流**且明确放行（见 `index.ts` 的放行规则），
+     * 少了这道过滤，最后一次主会话答复之后子智能体再说话就会把 `state.finalText` 顶掉——
+     * 而评分通路只读最终答复（`AgentRunResult.finalText`），于是拿子智能体那句话（或它吐的 JSON）
+     * 去评分，`ok` 仍然是 true、一条 WARN 都没有。
+     * 对照：codex 用 `threadId === mainThreadId`、claude 只在主循环的 `result` 上写、
+     * pi 只认父会话的 `message_end`；一致性套件里也有对应通则
+     * （`finalText` 必须是产物里某一条**主会话**答复正文）。
+     *
+     * 日志那一支**不分会话**：行级事件流本来就是多会话的（子会话的工具调用与结果同样落在这里），
+     * 把子智能体说过的话从这里拿掉等于丢证据——它的落点是对话视图里那条带 `subagentId` 的消息。
+     */
     if (reply !== '') {
-      state.finalText = reply;
+      if (dshSubagentIdOf(sessionId) === null) state.finalText = reply;
       /**
         * 模型说的话**落一条日志**（用户口径：活动行要滚动智能体实时的 event message
        * ——「评分的消息也在这里滚动展示」）。这一格过去只进 `finalText`，整轮都不出现在任何地方，
@@ -382,7 +579,9 @@ export function projectDshNotification(
           // 这一家没有「每台 MCP 一张状态表」那种东西：只有工具面这一格
           mcpServers: null,
           mcpChannel: 'vendor-tool-table',
-          permissionMode: null,
+          // 权限档来自 `permission/preset`（每会话一条；本段拿不到时会话级记忆兜底）：
+          // 写死 null 会让环境抽屉上那一格恒为空，连只读档也看不出来
+          permissionMode: runState.permissionPreset ?? dshSessionPermissionOf(sessionId),
           outputStyle: null,
           /**
            * 技能目录那一格**一起带上**（哪怕这一次是工具表变了才发的）：消费方（行级 MCP 证据、
@@ -417,7 +616,11 @@ export function projectDshNotification(
      */
     const source = asRecord(data?.['source']);
     if (source?.['kind'] !== DSH_SKILL_CATALOG_KIND) return unknown(raw);
-    const catalog = readSkillCatalog(data);
+    /**
+     * ⚠️ **只认主会话的目录**：子会话也会收到它自己的 `<available_skills>`（同一条通知流的另一条
+     * 会话），认了它就会让「本行的技能格」显示子会话的清单——那不是这一行配的技能。
+     */
+    const catalog = dshSubagentIdOf(sessionId) === null ? readSkillCatalog(data) : null;
     // 读不动（`null`）⇒ **不发**：`[]` 的定义是「投送了、确实一条都没有」，
     // 而「读不动」与「确实没有」是两件事——混起来会把每一条都判成「厂商没认」
     if (catalog === null || sameTools(catalog, runState.skillCatalog ?? null)) {
@@ -432,7 +635,9 @@ export function projectDshNotification(
           agents: null,
           mcpServers: null,
           mcpChannel: 'vendor-tool-table',
-          permissionMode: null,
+          // 权限档来自 `permission/preset`（每会话一条；本段拿不到时会话级记忆兜底）：
+          // 写死 null 会让环境抽屉上那一格恒为空，连只读档也看不出来
+          permissionMode: runState.permissionPreset ?? dshSessionPermissionOf(sessionId),
           outputStyle: null,
           skills: namedSkillsOf(catalog),
         }),
@@ -451,11 +656,11 @@ export function projectDshNotification(
      * `state.turns` 是全树累加，减不出某一家。两行必须在**同一个分支**上，
      * 否则会出现分量 > 合计（`subagentTurns ≤ turns` 是硬口径）。
      */
-    noteDshSessionTurn(sessionId);
+    noteDshSessionTurn(sessionId, data);
     return {
       drafts: [],
       tokens: cumulativeTokens(state),
-      // 归属：`noteDshSessionTurn` 刚跑过，`data.step` 在真机上一定在（缺了也会退回该会话的上一个 step）
+      // 归属：`noteDshSessionTurn` 刚跑过（同一份 `(turn, step)` 幂等），所以这一格与本会话的最后一步同号
       turn: dshTurnAttribution(sessionId, data),
       turns: state.turns,
       /**
@@ -482,17 +687,166 @@ export function projectDshNotification(
     };
   }
 
-  if (type === DSH_TURN_START_TYPE) {
+  if (type === DSH_JOB_SETTLED_TYPE) {
     /**
-      * 轮次边界：只**补一条原始负载**，不给摘要（统一口径）。
-      * 写「第 N 轮开始」是纯播报，会把活动行从「在做什么」挤成「跑到第几轮」；
-     * 轮次的落点是卡片上的「轮次」那一格，不是这一行。时间照旧在这里记一笔（见下）。
+     * **只登记退出码，不改投影**：这一条照旧走未识别兜底（原始 JSON 落日志），
+     * 因为 `job/*` 的处置口径还没定（见 `protocol.ts` 的 `DSH_JOB_SETTLED_TYPE`）。
+     * 登记下来的那个数由 `tool/result` 那条用来判 `isError`——真机顺序是
+     * `job/registered → job/settled → tool/result`，所以投影结果时它一定已经在手。
      */
+    const callId = readString(asRecord(asRecord(data)?.['toolCall']), 'callId');
+    const detail = readString(data, 'detail');
+    if (callId !== null && callId !== '') {
+      /**
+       * **两种收场都要认**（厂商 `processOutcome` 的两个分支）：
+       *   · `exit code: N`：`N !== 0` 才算失败（`exit code: 0` 是正常收场）；
+       *   · `signal: <SIG>` / `killed before exit`：被信号杀掉（超时、`job_kill`、运行时收工）
+       *     ——**一律失败**，而正文里那条 `[killed by signal: …]` / `[timed out after …]` 是文本、
+       *     不是结构化字段。
+       * 只认 `exit code` 会让被杀掉的命令在界面上显示成成功（那正是这一格要消灭的形状）。
+       */
+      /**
+       * **判据是结构化的 `(status, cause, detail)` 三元，不是只看 detail 文本**。
+       *
+       * 为什么必须读 `status`：`detail` 只是**部分**收场的说明。真机反例（R6-A 的 `workflow` 档）：
+       * `run_in_background` 起的 workflow 被 `job_kill` 杀掉、而调用方**没传 `reason`**（那是可选参数）
+       * ⇒ 厂商注册表只在 `killReason !== undefined` 时才补 `detail` ⇒ 事件是
+       * `{"status":"killed","cause":"kill","producerReported":true}`，**整个 `detail` 键缺席**。
+       * 只按「detail 非空才算失败」判，这条被杀的作业在界面上就画成 **ok**。
+       */
+      const status = readString(data, 'status');
+      /**
+       * 判据（R6-B 的 J 组 19 档 + R6-A 的 20 档一起核过）：
+       *   ① `status ∈ {killed, failed}` ⇒ 失败（**这两档厂商都可能不带 `detail`**：真机 `workflow` 被
+       *      `job_kill` 且调用方没传 `reason` 时，事件就是 `{status:'killed', cause:'kill'}`、没有 detail 键）；
+       *   ② 否则看 `detail` 文本：`exit code: N` ⇒ 失败当且仅当 N ≠ 0；其余非空（`signal: …` /
+       *      `killed …` / 带 sandbox 后缀的退出码）⇒ 失败；空/缺席 ⇒ 不失败。
+       *
+       * ⚠️ **不读 `cause`**：它与 `status` **不同源**（`killJob` / `cancelForTeardown` 先设 `settleCause`
+       * 再等生产方 outcome，中间还夹着 `await job.pump.done`）——那条窄竞态里事件会是
+       * `{status:'completed', detail:'exit code: 0', cause:'kill'}`，读 `cause` 会把**一次正常退出的命令
+       * 画成失败**（R6-A 受控 20 档证实）。
+       * ⚠️ **也不给 `status: 'completed'` 加短路**：`completed` + `signal: …` 是自相矛盾的形状，那一档要按
+       * 「有失败证据」判失败（旧实现正是如此）；短路会把这类形状判成成功，方向错得危险。
+       */
+      const exitCode = /^exit code: (-?\d+)$/.exec(detail?.trim() ?? '')?.[1];
+      /**
+       * **未观测的 status 词 + 没有 detail** ⇒ 判不了失败，但**不能一声不吭**（R6-B 的 F9 残留）：
+       * 今天厂商只产出 `completed` / `killed`（+ `cause: 'producer'` 一类），所以这条 WARN 只在
+       * **形状漂移**时出现；没有它，`terminated` / 大写 `KILLED` 这类词会让一条失败的作业静默画成 ok。
+       */
+      if (status !== null && status !== 'completed' && status !== 'killed' && status !== 'failed'
+        && (detail === null || detail.trim() === '')) {
+        return {
+          drafts: [
+            logDraft(
+              'stderr',
+              `[WARN] 厂商报的 job/settled 收场状态是未观测的词（${status}）且没有 detail：`
+                + '本次按「不判失败」处置，结果块可能显示成 ok——请核对该 job 的真实收场；'
+                + `原始负载：${safeStringify(raw)}`,
+            ),
+          ],
+          tokens: null,
+          turns: null,
+          failure: null,
+        };
+      }
+      const failed = status === 'killed' || status === 'failed'
+        ? true
+        : exitCode !== undefined
+          ? Number(exitCode) !== 0
+          : detail !== null && detail.trim() !== '';
+      runState.jobFailures ??= new Map<string, boolean>();
+      runState.jobFailures.set(callId, failed);
+      /**
+       * **结果已经投影过了 ⇒ 重投一次**（同一条消息覆盖）：被信号杀掉的命令，厂商的
+       * `job/settled` 会晚于 `tool/result` 到（真机 `detail: "signal: SIGTERM; …"`），
+       * 那时按登记值改判就改不到已经交出去的那一条了。只有「这一条是失败」才重投
+       * （成功收场不必多一条）。
+       */
+      const projected = runState.projectedToolResults?.get(callId);
+      if (failed && projected !== undefined) {
+        return {
+          drafts: [logDraft('stdout', safeStringify(raw))],
+          tokens: null,
+          turns: null,
+          failure: null,
+          messages: optionalMessage(retagToolResultError(projected)),
+        };
+      }
+    }
+    return unknown(raw);
+  }
+
+  if (type === DSH_ASSISTANT_ATTEMPT_TYPE) {
+    /**
+     * **一次没落成 `assistant/message` 的尝试**：它**只有用量**值得投影，没有内容快照
+     * （正文的落点是同一条通知流上的 stream-tap 增量，部分块本就没有快照）。
+     *
+     * 为什么必须累计它：厂商对一次尝试**只写两者之一**（`dsh-agent-loop`：`error` / `aborted`
+     * 走 `assistant/attempt`，正常收尾走 `assistant/message`）⇒ 两处相加不会双计；漏掉它则是
+     * **静默少算**——真机反代造出的一次重试里，失败尝试带的
+     * `{inputTokens:374, outputTokens:102, cacheReadTokens:5888}` 与厂商 token meter 的差额
+     * 逐格相等（1014−640 / 267−165 / 24320−18432），而界面上一条 WARN 都没有。
+     *
+     * 用量在 `data.stream[]` 的**最后一条** `usage` chunk 上（读法与厂商
+     * `turn-usage.js` 的 `streamUsage` 同源，见 `protocol.ts` 的 `readAttemptUsage`）；
+     * 读不到就什么都不记（不把一次尝试当成 0 记进去）——坏 key 的首条尝试正是这个形状
+     * （`{inputTokens:0, outputTokens:0, totalTokens:0}` 是真的 0，也照记不误）。
+     */
+    const drafts: AgentEventDraft[] = [];
     noteEventTime(state, eventRecord);
+    const attemptUsage = readAttemptUsage(data);
+    if (attemptUsage !== null) {
+      noteDshSessionUsage(sessionId, attemptUsage);
+      const attemptTokens = readTokens(attemptUsage, drafts);
+      if (attemptTokens !== null) {
+        // 与 `assistant/message` 同一段累计口径（两处必须同源：漏一处就是「某条路径上不计」）
+        state.usageInput = (state.usageInput ?? 0) + attemptTokens.input;
+        state.usageCached = (state.usageCached ?? 0) + attemptTokens.cached;
+        state.usageOutput = (state.usageOutput ?? 0) + attemptTokens.output;
+        if (attemptTokens.reasoningOutput != null) {
+          state.usageReasoningOutput = (state.usageReasoningOutput ?? 0) + attemptTokens.reasoningOutput;
+        }
+        if (attemptTokens.total != null) {
+          state.usageTotal = (state.usageTotal ?? 0) + attemptTokens.total;
+        }
+      }
+    }
     return {
-      drafts: [logDraft('stdout', safeStringify(raw))],
-      tokens: null,
+      drafts,
+      tokens: cumulativeTokens(state),
+      subagentTokens: dshSubagentUsage(runState),
+      subagentTurns: dshSubagentTurns(runState),
       timing: state.timing ?? undefined,
+      turn: dshTurnAttribution(sessionId, data),
+      turns: state.turns > 0 ? state.turns : null,
+      failure: null,
+    };
+  }
+
+  if (type === DSH_LLM_RETRY_TYPE) {
+    /**
+     * **被重试掉的那次尝试**：厂商报的 `failure` 原文 + 第几次 / 上限 / 等待多久。
+     *
+     * 落 WARN 而不是零草稿（它过去整条进未识别兜底，一条原始 JSON）：重试是「这一步为什么慢」
+     * 的唯一解释，而 `turn/end` 只报**最终**结局——重试后成功的运行在别处看不出任何痕迹。
+     * 结论不改写（重试成功仍是成功），这一条只是把过程如实留下。
+     */
+    const failure = asRecord(asRecord(data)?.['failure']);
+    const reason = readString(failure, 'message') ?? '厂商未给原因';
+    const code = readString(failure, 'code');
+    const retry = readNumber(asRecord(data), 'retry');
+    const maxRetries = readNumber(asRecord(data), 'maxRetries');
+    const delayMs = readNumber(asRecord(data), 'delayMs');
+    const parts = [
+      retry === null ? '第 ? 次' : `第 ${retry}${maxRetries === null ? '' : `/${maxRetries}`} 次`,
+      code === null ? reason : `[${code}] ${reason}`,
+      delayMs === null ? null : `${Math.round(delayMs)} ms 后重发`,
+    ].filter((part): part is string => part !== null);
+    return {
+      drafts: [logDraft('stderr', `[WARN] 厂商重试（${parts.join('，')}）`)],
+      tokens: null,
       turns: null,
       failure: null,
     };
@@ -522,6 +876,42 @@ export function projectDshNotification(
      * 成功与失败两个分支都要带这一格——失败那一支也是一次真实的读数，漏了它就会按时刻乱归位。
      */
     if (failureText === null) {
+      /**
+       * **非 `completed` 的收场必须留痕**。失败通道只有 `reason.kind === 'error'` 一条
+       * （见文件头），其余几档（`aborted` / `blocked` / `max-tokens` / `interrupted` / `forked`）
+       * 今天既不改写 `ok`、也没有任何出口——厂商明确报了的收场原因会**一个字都不剩**，
+       * 排障时只能去翻厂商会话日志。
+       *
+       * 两条口径：
+       *   · **不改写结论**：与另三家同尺（claude 的 `aborted`、codex 的 `interrupted`、
+       *     pi 的 `length` 都只落 WARN）——截断/中止不等于本次运行白跑，`ok` / `finalText`
+       *     按已产出的内容判定，改写结论是产品口径的事；
+       *   · **照抄厂商原文**：一条 `stderr` 的 WARN，带 `kind` 与 `data.reason` 原文
+       *     （载荷形状可能变，只有原文能回答「到底为什么结束」）。
+       */
+      const kind = readTurnEndKind(data);
+      if (kind !== null && kind !== 'completed') {
+        drafts.push(
+          logDraft(
+            'stderr',
+            `[WARN] 厂商报本轮以 ${kind} 收场（不是 completed）：${safeStringify(asRecord(data)?.reason)}`
+              + '——本次运行的结论不改写，按已产出的内容判定',
+          ),
+        );
+      } else if (kind === null && asRecord(data)?.reason !== undefined) {
+        /**
+         * **`reason` 在场却读不出 `kind`**（形状漂移：`reason` 是字符串 / 缺 `kind` / 类型不对）⇒
+         * 也要留痕。不留的话这一档与「正常 completed」在投影里**不可分**：零草稿、零 WARN、行判成功
+         * （R6-B 的 F6）。照旧不改写结论，只把「我们没读懂厂商的收场」说出来。
+         */
+        drafts.push(
+          logDraft(
+            'stderr',
+            '[WARN] 厂商报的 turn/end 收场原因读不出（`reason.kind` 缺失或类型不对）：'
+              + `${safeStringify(asRecord(data)?.reason)}——本次运行按已产出的内容判定`,
+          ),
+        );
+      }
       return {
         drafts,
         tokens,
@@ -535,6 +925,19 @@ export function projectDshNotification(
     }
     // 失败进该行的事件日志（骨架的 error 出口还会再发一条带 stack 的，两条都留：这条保留厂商原文）
     drafts.push({ type: 'error', message: failureText });
+    /**
+     * ⚠️ **只有主会话的失败才是本行的失败**（与 `finalText` 那道会话闸同一条口径）。
+     *
+     * 子会话的 `turn/end(kind:'error')` 在同一条通知流里、同样带 `reason.error`，而**父会话可能
+     * 一切正常**（真机读数：父会话正常答完、`finalText` 164 字、父会话的 `turn/end` 是
+     * `completed`，整行却 `ok:false / exitReason:'error'`，错误文案与 stack 全是**子会话**那一句）。
+     * 触发条件很常见：子智能体限流 / 超窗 / 鉴权失败。少了这道闸，一次成功的运行会被判失败
+     * （不评分、还可能被自动重试），而界面上看到的错误与父会话的产出毫无关系。
+     *
+     * 子会话那一笔**照旧留证据**：`error` 草稿进事件日志，子任务行的终态由
+     * `subagent.finished{status,stopReason}` 那条通道给（不靠这一格）。
+     */
+    const subagentId = dshSubagentIdOf(sessionId);
     return {
       drafts,
       tokens,
@@ -543,7 +946,7 @@ export function projectDshNotification(
       timing,
       turn: dshTurnAttribution(sessionId, data),
       turns: state.turns > 0 ? state.turns : null,
-      failure: classifyAgentMessage(failureText, context),
+      failure: subagentId === null ? classifyAgentMessage(failureText, context) : null,
     };
   }
 
@@ -551,6 +954,7 @@ export function projectDshNotification(
   // （见文件头），消息那条是内容级记录（工具族统计与对话视图读的就是它）。
   // `text` 还是那条原始 JSON：抽屉照旧逐字显示证据，卡片上的活动行显示的是 summary。
   if (type === DSH_TOOL_CALL_TYPE) {
+    noteDshDispatchStart(runState, sessionId, data);
     return {
       drafts: [logDraft('stdout', safeStringify(raw), toolCallSummary(readString(data, 'name'), readString(data, 'arguments')))],
       tokens: null,
@@ -567,12 +971,26 @@ export function projectDshNotification(
      * 报错必须播：那是「这一行出事了」，而它没有别的行级出口。
      */
     const error = asRecord(data?.message)?.isError === true;
+    /**
+     * 结构化失败判据（`job/settled` 登记的那一格，键与该次结果的 `message.toolCallId` 同值）：
+     * 非零退出**或**被信号杀掉 ⇒ 这条结果**按失败记**（见 `message.ts` 的 `dshToolResultDraft`）。
+     * 活动行**不加摘要**（与 codex 同尺：非零退出里多数是探测类命令的正常返回）。
+     */
+    const callId = readString(asRecord(data?.message), 'toolCallId');
+    const jobFailed = callId === null ? null : runState.jobFailures?.get(callId) ?? null;
+    if (callId !== null && callId !== '') {
+      const draft = dshToolResultDraft(notification, sessionId, roundOf(sessionId, data), jobFailed);
+      if (draft !== null) {
+        runState.projectedToolResults ??= new Map<string, unknown>();
+        runState.projectedToolResults.set(callId, draft);
+      }
+    }
     return {
       drafts: [logDraft('stdout', safeStringify(raw), error ? toolErrorSummary(readContentText(asRecord(data?.message)?.content)) : undefined)],
       tokens: null,
       turns: null,
       failure: null,
-      messages: optionalMessage(dshToolResultDraft(notification, sessionId, roundOf(sessionId, data))),
+      messages: optionalMessage(dshToolResultDraft(notification, sessionId, roundOf(sessionId, data), jobFailed)),
     };
   }
 
@@ -594,16 +1012,29 @@ function optionalMessage(draft: MessageDraft | null): MessageDraft[] {
 }
 
 /**
- * 本行累计的计量（三项齐了才认；缺一项就是 null，不发明 0）。
+ * 把一条已投影的工具结果**改判成失败**（`job/settled` 晚到时重投用）。
+ *
+ * 只动块上的 `isError`：其余字段（`callId` / 结构化结果 / 文本 / 身份）逐字保留 ⇒ 合并时落到
+ * 同一条消息上（身份与块键都没变），是覆盖而不是新增。判据是内容签名，逐字相同不重发。
+ */
+function retagToolResultError(projected: unknown): MessageDraft {
+  const draft = projected as MessageDraft;
+  return {
+    ...draft,
+    blocks: draft.blocks.map((block) => ({ ...block, block: { ...block.block, isError: true } })),
+  };
+}
+
+/**
+ * 本行累计的计量。三项齐了才认；缺一项就是 null，不发明 0。
  * 与旧 `takeTurnTokens` 的唯一区别是**不取走、不清零**：现在的口径是「到目前为止的累计」，
  * 事件本身也是覆盖语义（`row-live.ts` 直接覆盖），清零只会让跨 step 的相加变成特判。
  *
- * 两项可选格（2026-10-XX 新增，`reasoningTokens` / `totalTokens`）同样是**累计/覆盖**口径：
- * 每见到一条更完整的用量就跟着更新，采不到就是 `null`（**不填 0**）。
+ * 两项可选格（`reasoningTokens` / `totalTokens`）与三格**同一口径**（都是「这一条自己」的量）：
+ * 每见到一条更完整的用量就累加进去，采不到就是 `null`（**不填 0**）。
  * 为什么它们也放在 `state` 上：dsh 的用量是**逐 step 累加**出来的（见 `assistant/message` 那一支），
- * 另两格也必须跟着同一份累计走，否则会出现「input 是三条之和、reasoning 只有最后一条」这种
- * 自相矛盾的一行。`total` 只取**最后见到的那一个**（厂商自报的累计值本来就是全量，不该相加——
- * 相加会把总量算成好几倍）。
+ * 另两格也必须跟着同一份累计走，否则会出现「input 是三条之和、total 只有最后一条」这种
+ * 自相矛盾的一行（真机上表现为 `total` 小于同一个对象里的 `cached`）。
  */
 function cumulativeTokens(state: TurnState): UsageTokens | null {
   const input = state.usageInput;
@@ -629,8 +1060,10 @@ function cumulativeTokens(state: TurnState): UsageTokens | null {
  * 三条取舍：
  *   · **`time` 不是数字就整条跳过**（不落 WARN）：会话事件里没有时间的那几条是常态缺陷，
  *     为它们刷 WARN 会把真正要看的 WARN 淹掉；跨度缺端点时 `timing` 自然会缺，那是可见的；
- *   · **不认识的事件类型不记**（本函数只在 `turn/start` / `assistant/message` / `turn/end`
- *     三处调用）：取全过程首末会让跨度把与模型无关的杂事（标题生成、inbox 拼接）算进来；
+ *   · **不认识的事件类型不记**（本函数只在四类事件上调用：`request/header` 定起点，
+ *     `assistant/message` / `assistant/attempt` / `turn/end` 推右端点；`turn/start` 与
+ *     `step/start` **都不推时间**）：取全过程首末会让跨度把与模型无关的杂事
+ *     （标题生成、inbox 拼接）算进来；
  *   · `source: 'events'` 是**硬编码**的：dsh 报不出厂商时间，这一点没有第二种可能，
  *     写成参数只会给人「某天它可能变成 vendor」的错觉。
  */
@@ -712,7 +1145,11 @@ function catalogOf(identity: string | null): { label: string | null; mode: strin
  *     只映射**实测见过**的取值；其余原样透出 `vendorStatus`/`stopReason` 且 `status: null`
  *     + `statusMissing: 'unverified'`——**不假装映射成 `failed`**（那会把"没见过"写成"失败"）。
  */
-function subagentDraft(notification: Record<string, unknown> | null): AgentEventDraft {
+function subagentDraft(
+  notification: Record<string, unknown> | null,
+  /** 对账出来的派发调用 id（见 `claimDshDispatch`）；对账不出就是 `null` */
+  parentCallId: string | null = null,
+): AgentEventDraft {
   const isStart = readString(notification, 'method') === DSH_SUBAGENT_STARTED_METHOD;
   const params = asRecord(notification?.params);
   const childSessionId = readString(params, 'childSessionId');
@@ -742,9 +1179,12 @@ function subagentDraft(notification: Record<string, unknown> | null): AgentEvent
 
   if (isStart) {
     payload.subagentKind = catalog?.mode ?? null;
-    // dsh 的通知里**没有**归属键（真机：无 tool_use_id）⇒ parentToolUseId 恒 null。
-    // 与 claude 的真实差异：那边三者同值可精确归属，这边只能靠 sessionId。
-    payload.parentToolUseId = null;
+    /**
+     * 厂商的通知里**没有**这一格（真机：只有两个 sessionId；SDK 的 `recordSessionRelationship`
+     * 也只读 sessionId）⇒ 这里给的是**我们对账出来的**派发调用 id（`catalog.label` ↔ 在飞派发的
+     * `description` 唯一命中）。认不出就是 `null`，不猜。
+     */
+    payload.parentToolUseId = parentCallId;
   } else {
     payload.subagentKind = catalog?.mode ?? null;
     payload.provider = readString(params, 'provider');
@@ -777,6 +1217,107 @@ function subagentDraft(notification: Record<string, unknown> | null): AgentEvent
  */
 function mappedStatusOf(status: string | null): string | null {
   return status === 'completed' || status === 'failed' || status === 'stopped' ? status : null;
+}
+
+/**
+ * 一次 `subagent` 派发在**发起那一刻**留下的那一格（见 `projectDshNotification` 的 `dispatchStarts`）。
+ */
+export interface DshDispatchStart {
+  /** 入参里的任务描述（与目录项的 `label` 同源）；没采到记 `null` */
+  description: string | null;
+  /** 这一格是被哪个子任务身份认领的（`null` = 还没被认领） */
+  claimedBy: string | null;
+}
+
+/**
+ * 父会话的 `tool/call` ⇒ 记一笔「这次派发在飞」。
+ *
+ * 为什么必须在**这里**记：厂商的 `subagent.started` / `subagent.finished` 里**没有派发调用 id**
+ * （真机两个 sessionId，SDK 的 `recordSessionRelationship` 也只读 sessionId），而子任务行要落进
+ * 界面上的某一轮就必须有它（或一个有区分力的名字）。父会话的 `tool/call` 是唯一一处能同时拿到
+ * 「调用 id」与「任务描述」的地方。
+ *
+ * 只认派发工具名，其余工具调用一律不记：这张表的唯一用途是给子任务目录项认领派发点。
+ */
+function noteDshDispatchStart(
+  runState: DshProjectionRunState,
+  sessionId: string | null,
+  data: Record<string, unknown> | null,
+): void {
+  if (runState.dispatchStarts === undefined) return;
+  const toolName = readString(data, 'name');
+  // 派发工具是**枚举**的两个名字（`subagent` / `subagent_fork`，同一插件的两次挂载）：
+  // 只认前者会让 fork 那条路的派发行永远拿不到派发点（真机两臂对照见 `protocol.ts`）
+  if (toolName === null || !DSH_SUBAGENT_TOOL_NAMES.has(toolName)) return;
+  // 子会话自己也可能派子智能体（嵌套派发）：那些不进本行的子任务面，记了只会让认领撞名
+  if (sessionId !== null && runState.childSessions.has(sessionId)) return;
+  const callId = readString(data, 'callId');
+  if (callId === null || callId === '') return;
+  const args = asRecord(parseDshToolArguments(data?.['arguments']));
+  runState.dispatchStarts.set(callId, { description: readString(args, 'description'), claimedBy: null });
+}
+
+/**
+ * 认领一次在飞的派发：目录项的 `label`（任务名）与某次派发的入参 `description` **逐字相同且唯一**
+ * 时才认。认领结果同时写进 `claimedDispatches`（同一身份的**每一条**投递都要带上同一格，
+ * 否则后到的那条覆盖会把派发点抹掉）。
+ *
+ * 三条姿态：
+ *   · 已经认领过的身份**原样返回**（本函数会被 started / catalog / finished 各调一次，
+ *     「已认领」不许被读成「认不出来」）；
+ *   · 零条或多条命中 ⇒ 返回 `null`，**不猜**（界面那时退回「任务名逐字相同」那条判据，
+ *     与这一格缺席的历史行为同形）；
+ *   · 目录项缺席（老版本 / 别的通道）⇒ 名字与派发点都拿不到，同样返回 `null`。
+ */
+function claimDshDispatch(
+  runState: DshProjectionRunState,
+  childId: string | null,
+): string | null {
+  if (childId === null || childId === '') return null;
+  const claimed = runState.claimedDispatches?.get(childId);
+  if (claimed !== undefined) return claimed;
+  const label = catalogOf(childId)?.label ?? null;
+  if (label === null || label === '' || runState.dispatchStarts === undefined) return null;
+  const matches: string[] = [];
+  for (const [callId, start] of runState.dispatchStarts) {
+    if (start.claimedBy !== null) continue;
+    if (start.description !== label) continue;
+    matches.push(callId);
+  }
+  const hit = matches.length === 1 ? matches[0] : undefined;
+  if (hit === undefined) return null;
+  const start = runState.dispatchStarts.get(hit);
+  if (start !== undefined) start.claimedBy = childId;
+  runState.claimedDispatches?.set(childId, hit);
+  return hit;
+}
+
+/**
+ * **目录项晚到时把运行行补完整**：投过运行行、而这次目录项让它多出了名字或派发点 ⇒ 再投一条。
+ *
+ * 判据是**内容**：与上一条逐字相同就不投（目录项可能因 `version` 递增而重发，
+ * 逐字相同的重发既不带新事实，也只会往产物里多写一行）。真机顺序上这条在收尾行之前
+ * （目录项早于 `subagent.finished`），后到的那条仍是完整快照。
+ *
+ * ⚠️ **已收场的子任务不再补投**：补投的是一条 `status: 'running'`、`usage: null` 的运行行
+ * （`dshSubagentStartRecord`），而读侧按 `subagentId` **覆盖累积、最后一条赢** ⇒ 目录项若晚于
+ * 收尾到达，卡片会被从「已完成 + 有用量」打回「运行中 + 用量空」。顺序假设由 `finishedSessions`
+ * 这条**事实**兜底（登记来源与放行判据同源），不靠「厂商一定按这个顺序发」。
+ */
+function redeliverStartedSubagent(
+  runState: DshProjectionRunState,
+  childId: string,
+): SubagentRecord[] {
+  const previous = runState.deliveredStarts?.get(childId);
+  // 没投过运行行（目录项先到）：`subagent.started` 那条自己就会带上名字与派发点
+  if (previous === undefined) return [];
+  // 已经收场：终态记录是后到的真相，运行行不许再盖回去
+  if (runState.finishedSessions?.has(childId) === true) return [];
+  const record = dshSubagentStartRecord(childId, claimDshDispatch(runState, childId));
+  const signature = JSON.stringify(record);
+  if (signature === previous) return [];
+  runState.deliveredStarts?.set(childId, signature);
+  return [record];
 }
 
 /**
@@ -817,6 +1358,15 @@ function firstNonEmpty(...values: (string | null)[]): string | null {
 }
 
 /**
+ * `turn/end` 的 `reason.kind`（厂商口径：`completed` / `error` / `aborted` / `blocked` /
+ * `max-tokens` / `interrupted` / `forked`…）；形状不对给 `null`（**不编一个档位**）。
+ * 与 `readTurnFailure` 分开：那个只回答「失败文案是什么」，这一格回答「厂商说这一轮怎么结束的」。
+ */
+function readTurnEndKind(data: Record<string, unknown> | null): string | null {
+  return readString(asRecord(data?.reason), 'kind');
+}
+
+/**
  * 取 `turn/end` 的失败文案；成功返回 null。
  * 为什么两处都试：`reason.error` 实测既可能是对象（`{message, code}`）也可能是**纯字符串**
  * ——SDK 的 `TurnEndReasonMap.error` 声明是 `LlmFailure`，但 `errorChain(error)` 对普通 Error
@@ -827,33 +1377,79 @@ function readTurnFailure(data: Record<string, unknown> | null): string | null {
   if (reason === null) return null;
   if (readString(reason, 'kind') !== 'error') return null;
   const error = reason.error;
-  const text = readString(asRecord(error), 'message') ?? readString(reason, 'error');
-  return text ?? safeStringify(error);
+  const structured = asRecord(error);
+  const text = readString(structured, 'message') ?? readString(reason, 'error');
+  /**
+   * **`error` 整格缺席时不许把 `safeStringify(undefined)` 当原因交出去**：那会得到字面量
+   * `"undefined"`（`null` 那档得到 `"null"`），界面上就成了一句「原因：undefined」——厂商只是
+   * **没带原因**，不是原因叫 undefined。判据与同一文件 usage 分支同款（缺席 ⇒ 说清缺席）。
+   * 受控读数（R6-B 的 F1）：`turn/end{reason:{kind:'error'}}` ⇒ 旧实现 `failure.message === "undefined"`。
+   */
+  const message = text
+    ?? (error === undefined || error === null
+      ? '厂商报 turn/end 以 error 收场，但没带原因（error 格缺席）'
+      : safeStringify(error));
+  /**
+   * **厂商的结构化失败码一起带上**（`LlmFailure.code`：实测 `TRANSPORT` / `UNKNOWN`）。
+   *
+   * 归因那一层（`classifyAgentMessage`）只能从**文案**里正则抓状态码（`errors.ts`），
+   * 而这一格是厂商唯一的机器可读档位——丢了它，一个不带状态码原文的鉴权 / 配额失败会被折成
+   * 笼统的 `AGENT_FAILED`（那一条**在自动重试表里** ⇒ 一个恒失败的配置被白跑两遍）。
+   * 带上它不改变归因结果（前缀不参与正则），只是把档位留在证据里，别再丢一格事实。
+   */
+  const code = readString(structured, 'code');
+  return code === null ? message : `[${code}] ${message}`;
 }
 
 /**
- * 三项齐了才认；缺项时落一条 WARN 并保留原始负载——「没采到」与「0」必须能区分。
- * `cacheReadTokens` / `cacheWriteTokens` 在类型上是可选的 ⇒ 字段缺席按**未采到**处理（不填 0）。
- * 形状异常（`usage` 根本不是对象、整段缺失）与缺项**合流到同一条 WARN**。
+ * 读一次模型调用的用量：**两格必在、两格可缺**，判据是厂商自己的写入口径（见
+ * `protocol.ts` 的 `readUsageTokens`）——
+ *   · `inputTokens` / `outputTokens` 无条件写 ⇒ 读不到就整条按未采到处置（WARN + 跳过该条）；
+ *   · `cacheReadTokens` 大于 0 才写 ⇒ 缺席就是 **0**（冷缓存的首条请求正是这个形状），
+ *     按 0 计而不是把同一条里的 input / output 一起作废；
+ *   · `reasoningTokens` / `totalTokens` 是可选的证据格，读不到是 `null`（不填 0）。
  *
- * **`input` 不做减法**（2026-10-XX 补注）：dsh 的 `TokenUsage` 三格**互斥**，本机恒等式判定逐字验过
+ * 另有一条**恒等式校验**：厂商自报总量与分量之和不一致时把 `total` 置 `null` 并落 WARN
+ * （分量含缓存写那一格）——宁可说不出总量，也不给一个自己都解释不了的数。
+ *
+ * **`input` 不做减法**：dsh 的 `TokenUsage` 三格**互斥**，恒等式判定逐字验过
  * （`{inputTokens:1219, cacheReadTokens:7040, cacheWriteTokens:0, outputTokens:1, totalTokens:8260}`，
  * `1219 + 7040 + 0 + 1 = 8260`）⇒ `inputTokens` 天生就是**非缓存输入**，与本仓契约同口径。
  * 这与 codex 正好相反（那边 `cached_input_tokens` 是 `input_tokens` 的**明细**，必须减）——
  * 两家读法的差别就是本仓「归一放在适配器里」那条口径存在的全部理由。
- *
- * 另两格（`reasoningTokens` / `totalTokens`）是**可选格**：读不到就是 `null`，**绝不填 0**
- * （`reasoningOutput: 0` 会让人得出「这家不做推理」，而事实是「这一格没有」）。
  */
 function readTokens(usage: unknown, drafts: AgentEventDraft[]): UsageTokens | null {
-  const tokens = readUsageTokens(usage);
-  if (tokens === null) {
+  const reading = readUsageTokens(usage);
+  if (reading === null) {
     // 落 WARN 留在这一层（消息归一那一层没有 drafts 收集器）；读数规则与字段名只有 `protocol.ts` 一份
     drafts.push(
-      logDraft('stderr', `[WARN] 用量负载不完整，本次运行按「未采集计量」处理（不填 0）：${safeStringify(usage)}`),
+      logDraft('stderr', `[WARN] 用量负载读不动（缺 inputTokens / outputTokens），这一条按未采到处置、不计入合计：${safeStringify(usage)}`),
+    );
+    return null;
+  }
+  /**
+   * **在场却读不动的可选格 ⇒ 落一条 WARN**（R6-B 的 F3）：这一条仍然按采到的部分累计（缓存那几格
+   * 按 0 计入是厂商写入口径），但「读不动」与「确实是 0」必须分得开——否则缓存命中率静默少算。
+   */
+  if (reading.unreadableOptional.length > 0) {
+    drafts.push(
+      logDraft(
+        'stderr',
+        `[WARN] 用量负载里这几格在场但读不动（按 0 计入本条的累计）：${reading.unreadableOptional.join(' / ')}`
+          + `——原始负载：${safeStringify(usage)}`,
+      ),
     );
   }
-  return tokens;
+  if (!reading.identityHolds) {
+    drafts.push(
+      logDraft(
+        'stderr',
+        `[WARN] 厂商自报总量与分量之和不一致，这一条的总量按「没采到」处置（分量照常累计）：${safeStringify(usage)}`,
+      ),
+    );
+    return { ...reading.tokens, total: null };
+  }
+  return reading.tokens;
 }
 
 /**

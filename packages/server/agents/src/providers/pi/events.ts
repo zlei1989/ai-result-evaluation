@@ -22,12 +22,15 @@
  * （`steer` / `followUp`）。本文件的 `agent_end` 走通用兜底（只落一条原始负载），
  * 真正收尾的是 `agent_settled`。SDK 侧与之配套：`prompt()` 也是在 settled 时才 resolve。
  *
- * ## 失败：只能从 `stopReason` / `errorMessage` 读
+ * ## 失败：运行期从 `stopReason` / `errorMessage` 读，起请求前会抛
  *
- * `prompt()` **永不抛**（传输失败、被中止、自带超时全是 resolve），所以失败姿态只有一条通道：
- * 助手 `message_end` 的 `stopReason` 与 `errorMessage`。厂商给的是**裸英文短句**
+ * `prompt()` 对**运行期失败永不抛**（传输失败、被中止、自带超时全是 resolve），所以那一路的失败姿态
+ * 只有一条通道：助手 `message_end` 的 `stopReason` 与 `errorMessage`。厂商给的是**裸英文短句**
  * （`Connection error.` / `Request timed out.` / `terminated`），不带 host、不带状态码，
  * 共用的归因层够不着 ⇒ 本文件先把它们翻成带 host 的中文原因，再交给 `classifyAgentMessage`。
+ * ⚠️ **起请求之前**它是会抛的（没有可用凭据 / 模型未选 / 压缩中 / 已有在跑的轮次）——那一路必须
+ * 抛给骨架（见 `index.ts` 的 `sessionEventStream`），否则一次「凭据缺失」会被读成
+ * 「这一行成功了、只是没说话」。
  *
  * ## 停止的三种来源与 `watchdogFired`
  *
@@ -66,7 +69,7 @@ import { subagentSettledSummary, toolCallSummary, toolErrorSummary } from '../..
 import { logDraft, safeStringify, unknownEventDraft, type AgentEventDraft } from '../../emit';
 import { classifyAgentMessage, type AgentFailure, type FailureContext } from '../../errors';
 import { asRecord, readNumber, readString } from '../../json';
-import { usageTokens, type MessageDraft } from '../../message';
+import { carrierKeyOf, usageTokens, type MessageDraft } from '../../message';
 import type { TimingSpan, TurnFinalize, TurnProjection, TurnState } from '../../turn';
 import { addUsage, sumUsageTokens } from '../../usage';
 import {
@@ -78,6 +81,7 @@ import {
   piToolResultText,
   readPiUsageTokens,
 } from './message';
+import { PI_SUBAGENT_WIRE_TICK_TYPE, type PiSubagentWire } from './subagent-wire';
 import {
   PI_SUBAGENT_DISPATCH_TOOL,
   piSubagentRecord,
@@ -89,7 +93,6 @@ import type { PiSubagentTranscript } from './transcript';
 import {
   PI_STRUCTURED_OUTPUT_TOOL,
   adoptStructuredArguments,
-  isStructuredResultMessage,
   noteTextReply,
   type StructuredOutputProjection,
 } from './structured-output';
@@ -98,9 +101,32 @@ import {
  * 一次运行的投影状态：骨架的 `TurnState` 是三家共用的形状，这里只放 pi 自己的两格
  * （与 dsh 的子会话白名单同一条处置：另起一个对象随闭包走，不污染共用形状）。
  */
+/**
+ * 结构化输出的参数**连续**被厂商拒几次就收手。
+ *
+ * 为什么必须有上限：`submit_result` 靠工具结果上的 `terminate: true` 收尾，而厂商在参数**校验失败**时
+ * 返回的是 `createErrorToolResult`——**不带 terminate**（校验发生在 terminate 之前，见
+ * `pi-agent-core` 的 `executeToolCalls*`：`preparation.kind === 'immediate'` 之后照样
+ * `emitToolExecutionEnd`）。于是模型每交一次越界参数就换来一条错误结果、再交一次，两侧都没有轮数上限：
+ * 真机读数（脚本式上游，永久回同一段越界调用）**15 秒 1337 次出站请求**，不挂看门狗直接 OOM。
+ * 三次足够覆盖「模型自己改对」的正常修正（骨架的修正轮另有 2 轮上限），再多就是上面那个环。
+ */
+export const PI_STRUCTURED_REJECTION_BUDGET = 3;
+
 export interface PiRunState {
   /** 收到过停止请求（用户终止 / 看门狗 / 宿主停机都从骨架的 `interrupt()` 进来） */
   stopRequested: boolean;
+  /** 结构化输出的参数被厂商**连续**拒了几次（只增不清：成功收尾时这一轮已经结束） */
+  structuredRejections: number;
+  /**
+   * **本层自己**因为上面那条预算而中止了这一轮（不是用户终止、也不是厂商自己中止）。
+   *
+   * 为什么要单独一格：厂商把这次中止报成 `stopReason: 'error'` + `errorMessage: 'This operation
+   * was aborted'`，而归因层对 `error` 无条件给一条失败 ⇒ 它会**盖掉**投影层已经记下的那条点名原因
+   * （真机：最终 `error.message` 变成厂商那句「厂商原文「This operation was aborted」」，
+   * 用户看不出是「参数连续越界」）。有这一格，归因层就知道这条 error 是本层自找的，让位给点名原因。
+   */
+  selfAborted: boolean;
   /**
    * 停止请求**不是用户点的**（看门狗开火或宿主停机）。
    *
@@ -110,14 +136,6 @@ export interface PiRunState {
    */
   watchdogFired: boolean;
   /**
-   * 本行到目前为止**厂商自报**的模型往返时间合计（毫秒）：每条助手消息的 `durationMs` 逐轮相加。
-   *
-   * 为什么要自己累加而不是只交当轮那一个数：`usage.timing.apiMs` 与 claude 的 `duration_api_ms`
-   * 是同一格，口径必须是「这一行花在模型往返上的总时间」——只交最后一轮会让跨家对比变成两种口径。
-   * 与 tokens 同一条处置：交给骨架的永远是「到目前为止」。
-   */
-  apiMsTotal: number;
-  /**
    * 这一行**派发过**子智能体（见过一次 `Agent` 工具调用）。
    *
    * 为什么不是「有没有子任务行」：行只在收场那一刻才造得出来，而子智能体可能在整行跑完时还在跑。
@@ -126,11 +144,24 @@ export interface PiRunState {
    */
   dispatched: boolean;
   /**
-   * 派发工具调用的入参（`toolCallId` → `Agent` 的 `name` 参数）。
+   * 派发工具调用的入参（`toolCallId` → 这一次派发的名字与任务描述）。
+   *
    * 为什么要留：`tool_execution_end` 的事件里**没有 `args`**（只有 `toolCallId` / `toolName` /
    * `result` / `isError` / `durationMs`），而「这一次派发的名字」只出现在入参里。
+   *
+   * 为什么还要 `description` 与 `claimedBy`：派发那一刻的**子任务行**要在总线报「开始」时投出去
+   * （见 `deliverStartedSubagents`），而扩展的总线载荷只有身份 + 描述、**没有工具调用 id**
+   * ⇒ 认领靠「描述逐字相同且唯一」这一条判据，认领结果记在 `claimedBy` 上（同一个身份只认一次，
+   * 免得两条同描述的派发指向同一次调用）。
    */
-  dispatchNames: Map<string, string | null>;
+  dispatchStarts: Map<string, PiDispatchStart>;
+  /**
+   * 已经落过「派发行认不出对应调用」那条 WARN 的身份。
+   *
+   * 为什么要单独记：补发挂在**每个**事件上，而认不出的那条会一直留在收数器里
+   * ⇒ 不挡的话同一句话会把原始输出面板刷满。
+   */
+  unclaimedWarned: Set<string>;
   /**
    * 已收场的派发记录（`agentId` → 这一行的收尾快照），键是**子智能体身份**。
    *
@@ -138,9 +169,55 @@ export interface PiRunState {
    * 而 `turnCount` 只出现在 `Agent` 工具结果的 `details` 里。两边的唯一公共键就是身份。
    */
   dispatches: Map<string, PiDispatch>;
+  /**
+   * 跑动期已经投出的**转写消息条数**（`agentId` → 条数）。
+   *
+   * 为什么要这一格：收尾对账只补**差量**——跑动期增量投过的那一段不重发（重发会在
+   * `messages.jsonl` 留下同内容的重复行）。条数按投影顺序切片：转写文件 append-only、
+   * 行一旦 flush 即不可变 ⇒ 同一身份的下标稳定。
+   */
+  transcriptEmitted: Map<string, number>;
+  /**
+   * 上一次**读盘**的时刻（`agentId` → epoch 毫秒）。spinner 帧逐条触发投影，不节流的话
+   * 一个话痨子任务每秒会带来几十次全量读盘（见 `deliverTranscriptIncrements`）。
+   */
+  transcriptReadAt: Map<string, number>;
+  /**
+   * 子会话消息**已经投出快照的载体键**（`carrierKeyOf`，wire 与转写两条通路共用一份）。
+   *
+   * 为什么要这一格：同一个子会话正文有两条来源（wire 事件流 / 转写文件），同一条消息在
+   * 两条路上给出**同一个载体键**（wire 的轮次基数取自 `session.messages`，与转写的助手行序
+   * 对齐，见 `subagent-wire.ts`）⇒ 按「第一条到达者胜出」过滤，后到的重复快照整条丢掉——
+   * 不然 `messages.jsonl` 会留同内容的双份行（客户端按 `mergeKey` 折叠会收敛，但账本不该虚胖）。
+   *
+   * **只记快照、也只挡快照**（判据是 `chunk`，不是「这个载体出现过没有」）：同一轮的
+   * 逐字增量与它的收尾快照**载体键逐字相同**，按载体挡会让先到的 delta 占死键、真正的
+   * 收尾快照被整条丢掉，消息永远停在半截。两条通路里只有 wire 会产 delta（转写文件读的是
+   * 已完成消息数组，天然只有快照）⇒ 放行 delta 不会放进来任何重复内容。
+   *
+   * **只对子会话载体生效**（`subagentId !== null`）：主会话的同一载体合法地收增量 + 快照
+   * 多次投递，过滤它会把快照挡掉、消息永远停在「未收尾」。
+   */
+  subagentCarriers: Set<string>;
 }
 
-/** 一次派发在收尾那一刻留下的三格事实（见 `PiRunState.dispatches`） */
+/** 一次派发在**发起那一刻**留下的三格事实（见 `PiRunState.dispatchStarts`） */
+export interface PiDispatchStart {
+  /** 入参的 `name`（模型给这一行起的名字）；没给记 `null` */
+  name: string | null;
+  /** 入参的 `description`（任务描述）。认领判据与派发行的名字兜底都用它（与总线载荷同源） */
+  description: string | null;
+  /**
+   * 这一次调用已经被哪个子任务身份认领（`null` = 还没被认领）。
+   *
+   * 为什么要记：同一条子任务上只会来一条 `subagents:started`，而描述撞名的另一条派发
+   * **也**满足「描述逐字相同」⇒ 不记认领者的话，同一个 `toolCallId` 会被两条身份各认领一次，
+   * 两条子任务行指向同一个派发点。认领者由 `deliverStartedSubagents` 写。
+   */
+  claimedBy: string | null;
+}
+
+/** 一次派发在收尾那一刻留下的几格事实（见 `PiRunState.dispatches`） */
 export interface PiDispatch {
   /** 派发它的那次 `Agent` 工具调用 id（子任务行的 `parentCallId`） */
   toolCallId: string | null;
@@ -152,6 +229,15 @@ export interface PiDispatch {
    * ⇒ 非终态时记 `null`（「没采到」），绝不拿半截数当收尾值。
    */
   turnCount: number | null;
+  /**
+   * 收尾那一刻**已知的厂商状态原文**（`details.status`，如后台档的 `background`）。
+   *
+   * 为什么必须留这一格：后台档下总线只会来一条 `subagents:started`（没有 `status` 字段），
+   * 于是收尾对账时 `latest()` 给出的是一条**没有状态**的记录。只读它会让已经投出去的
+   * `running` 行被覆盖成 `unknown`——那是与「从终态退回运行中」同类的**倒退**，只是方向相反
+   * （把「已知在跑」说成「不知道」）。有这一格，收尾就能沿用它。
+   */
+  rawStatus: string | null;
 }
 
 
@@ -159,11 +245,16 @@ export interface PiDispatch {
 export function createPiRunState(): PiRunState {
   return {
     stopRequested: false,
+    structuredRejections: 0,
+    selfAborted: false,
     watchdogFired: false,
-    apiMsTotal: 0,
     dispatched: false,
-    dispatchNames: new Map(),
+    dispatchStarts: new Map(),
+    unclaimedWarned: new Set(),
     dispatches: new Map(),
+    transcriptEmitted: new Map(),
+    transcriptReadAt: new Map(),
+    subagentCarriers: new Set(),
   };
 }
 
@@ -213,7 +304,74 @@ function roundTripFields(
   };
 }
 
+/**
+ * 投影的唯一入口：**先算这一个事件自身的投影，再补发两样「挂在每个事件上」的东西**——
+ * 「已经在跑、但我们还没投过行」的子任务（`deliverStartedSubagents`）与在飞子智能体
+ * 已经 flush 的转写增量（`deliverTranscriptIncrements`）。
+ *
+ * 为什么补发挂在**每个**事件上而不是某个具体事件上：扩展报「子智能体开始」的那条总线事件
+ * 与父会话的事件流没有先后保证，而它在**前台档**（`Agent` 工具阻塞到子智能体收场）里是
+ * 派发到收场之间**唯一**能让我们知道「它已经跑起来了」的时刻。父会话在这段时间里**自己一个
+ * 事件很稀**：真机原始帧计数（`pi 1.3.0`，脚本式上游，派发一轮）——派发到收场之间父会话发
+ * **4 帧 `tool_execution_update` + 1 帧 `entry_appended`**（含正文的帧一帧都没有；厂商在更早的
+ * 版本上不发这几帧）⇒ 心跳仍由 wire 通道自己造的合成帧提供（`subagent-wire.ts` 的泵，
+ * 见那一处的取舍），
+ * 补发因此挂在「任何一次投影」上：厂商事件与合成帧都算，派发行在几十毫秒内出去。
+ *
+ * 兜底姿态：一个中间事件都没有时，派发行退到 `tool_execution_end` 那条完整快照
+ * （与「不在派发时刻投递」同形）——**退化成旧行为，不会更坏**；转写增量同理，没有合成帧
+ * 就没有增量，收尾对账补齐差量。
+ *
+ * **顺序**：补发的派发行排在本次事件自己产出的行**之前**——同一批次里「派发行 → 收尾行」
+ * 不许反过来（后到的那条是完整快照，反过来会让状态从终态退回运行中）。
+ *
+ * **同一批次里已经有一条更完整的行时不再补**：这一次事件若正好把某个身份收尾了，它交出的那条
+ * 本身就是完整快照（派发行注定被它覆盖 ⇒ 补发只是往产物里多写一行）。
+ *
+ * **转写增量只认「更早一批」的子任务行**：身份快照在投影**之前**取（`deliveredEarlier`）——
+ * 骨架在同一批投影里先发消息、后发子任务行，同批混发会让这批消息在行到达之前掉进主会话。
+ */
 export function projectPiEvent(
+  raw: unknown,
+  state: TurnState,
+  context: FailureContext,
+  runState: PiRunState,
+  subagents?: PiSubagentRecorder,
+  structured?: StructuredOutputProjection,
+  readTranscript?: (agentId: string) => PiSubagentTranscript,
+  wire?: PiSubagentWire,
+): TurnProjection {
+  const deliveredEarlier = new Set(subagents?.deliveredIds() ?? []);
+  const projection = projectEvent(raw, state, context, runState, subagents, structured);
+  const settledNow = new Set((projection.subagents ?? []).map((record) => record.subagentId));
+  const started = deliverStartedSubagents(runState, subagents, settledNow);
+  /**
+   * wire 排空在转写读盘**之前**：wire 的事件先到（消息级 vs 轮级），先排先占载体键，
+   * 转写随后只补 wire 没覆盖到的那些（订阅前的缺口 / wire 不可用的整行）。
+   */
+  const wireDrafts = wire === undefined || subagents === undefined
+    ? { messages: [] as MessageDraft[], warnings: [] as string[] }
+    : deliverWireIncrements(runState, subagents, wire, deliveredEarlier);
+  const increments = subagents === undefined || readTranscript === undefined
+    ? []
+    : deliverTranscriptIncrements(runState, subagents, readTranscript, deliveredEarlier);
+  const wireWarnDrafts = wireDrafts.warnings.map((warning) => logDraft('stderr', `[WARN] ${warning}`));
+  if (
+    started.subagents.length === 0 && started.drafts.length === 0 && increments.length === 0
+    && wireDrafts.messages.length === 0 && wireWarnDrafts.length === 0
+  ) return projection;
+  return {
+    ...projection,
+    drafts: [...started.drafts, ...wireWarnDrafts, ...projection.drafts],
+    subagents: [...started.subagents, ...(projection.subagents ?? [])],
+    ...(wireDrafts.messages.length === 0 && increments.length === 0
+      ? {}
+      : { messages: [...(projection.messages ?? []), ...wireDrafts.messages, ...increments] }),
+  };
+}
+
+/** 单个事件的投影（派发记账在这一步登记，故补发必须排在它之后，见 `projectPiEvent`） */
+function projectEvent(
   raw: unknown,
   state: TurnState,
   context: FailureContext,
@@ -223,6 +381,12 @@ export function projectPiEvent(
 ): TurnProjection {
   const event = asRecord(raw);
   const type = readString(event, 'type');
+  /**
+   * **本层自己造的合成帧**（`subagent-wire.ts` 的泵）：它不是厂商事件，一个字的正文都没有，
+   * 存在的全部意义是「换一次 `projectPiEvent` 的排空」。故这里**最先判、返回空投影**——
+   * 漏判它会走到末尾的兜底分支，把「未识别的厂商载荷」刷满原始输出面板。
+   */
+  if (type === PI_SUBAGENT_WIRE_TICK_TYPE) return { drafts: [], tokens: null, turns: null, failure: null };
   if (type === 'turn_start') return projectTurnStart(raw, state, runState);
   if (type === 'message_update') return projectMessageUpdate(event, state);
   if (type === 'message_end') return projectMessageEnd(raw, event, state, context, runState, structured);
@@ -241,8 +405,8 @@ export function projectPiEvent(
 }
 
 /**
- * `tool_execution_start`：派发类工具（`Agent`）要**留下入参里的名字**——`tool_execution_end`
- * 的事件里没有 `args`，而「这一次派发的名字」只在入参里（见 `PiRunState.dispatchNames`）。
+ * `tool_execution_start`：派发类工具（`Agent`）要**留下入参**——`tool_execution_end`
+ * 的事件里没有 `args`，而「这一次派发的名字」只在入参里（见 `PiRunState.dispatchStarts`）。
  *
  * 同时把「本行派发过子智能体」记成事实：计量那一组的三档由它分叉（见 `roundTripFields`）。
  *
@@ -265,13 +429,19 @@ function projectToolExecutionStart(
     const text = adoptStructuredArguments(event?.['args'], state, structured);
     // 人话日志与对话视图各一条：前者进原始输出面板，后者是「这段 JSON 就是本轮的答复」的载体
     drafts.push(logDraft('stdout', text));
-    messages = [piStructuredResultDraft(event?.['args'], text, roundOf(state))];
+    messages = [piStructuredResultDraft(event?.['args'], text, roundOf(state), readString(event, 'toolCallId'))];
   }
   if (toolName === PI_SUBAGENT_DISPATCH_TOOL) {
     runState.dispatched = true;
     const toolCallId = readString(event, 'toolCallId');
     if (toolCallId !== null) {
-      runState.dispatchNames.set(toolCallId, readString(asRecord(event?.['args']), 'name'));
+      const args = asRecord(event?.['args']);
+      runState.dispatchStarts.set(toolCallId, {
+        name: readString(args, 'name'),
+        // 与总线载荷的 `description` 同源（扩展把同一个 `params.description` 写进两处），认领判据就是它
+        description: readString(args, 'description'),
+        claimedBy: null,
+      });
     }
   }
   return { drafts, tokens: null, turns: null, failure: null, ...(messages === undefined ? {} : { messages }) };
@@ -319,18 +489,6 @@ function projectMessageEnd(
   structured?: StructuredOutputProjection,
 ): TurnProjection {
   const message = asRecord(event?.['message']);
-  /**
-   * **结构化产出的那条快照走短路**：它也是我们造的（见 `piStructuredResultDraft`），
-   * 常规通路会在它身上重复落正文与用量两件事——正文已经写过了，用量它压根没有。
-   */
-  if (isStructuredResultMessage(message)) {
-    return {
-      drafts: [logDraft('stdout', safeStringify(raw))],
-      tokens: cumulativeTokens(state),
-      ...roundTripFields(state, runState),
-      failure: null,
-    };
-  }
   if (readString(message, 'role') !== 'assistant') {
     return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
   }
@@ -339,7 +497,11 @@ function projectMessageEnd(
    * 它是 `needsMessagesForReasoningEvidence: false` 的依据，**不许**在这里做取舍（见文件头）。
    */
   const drafts: AgentEventDraft[] = [logDraft('stdout', safeStringify(raw))];
-  const usage = readPiUsageTokens(message?.['usage']);
+  const usage = readPiUsageTokens(message?.['usage'], {
+    // OpenAI 那两条 wire 把缺失的推理明细补成 0（见 `readPiUsageTokens`），别读成「这家不做推理」
+    reasoningZeroIsMissing: readString(message, 'api') === 'openai-responses'
+      || readString(message, 'api') === 'openai-completions',
+  });
   if (usage === null) {
     // 形状异常与「这一条没带用量」合流到同一条 WARN：不填 0 是硬口径，采不到必须看得见
     drafts.push(logDraft('stderr', `[WARN] pi 这一条助手消息没有可读的用量，本行按「未采集计量」处理（不填 0）：${safeStringify(message?.['usage'])}`));
@@ -360,7 +522,7 @@ function projectMessageEnd(
     drafts.push(logDraft('stdout', reply));
   }
   const draft = piAssistantMessageDraft(message, roundOf(state));
-  const timing = piTimingSpan(message, runState);
+  const timing = piTimingSpan(message);
   return {
     drafts,
     tokens: cumulativeTokens(state),
@@ -380,6 +542,11 @@ function projectMessageEnd(
  * （两端 + `apiMs`）出自同一把尺子，`source` 才能记 `'vendor'`；跨轮时 `mergeTiming` 保留最早
  * 的起点与最新的终点，这一段含工具执行时间（与 claude 的 `duration_ms` 同口径）。
  *
+ * `apiMs` 交的是**当轮那一份 `durationMs`**（厂商对「一次响应」的定义，逐轮各报一次），
+ * 由骨架的 `mergeTiming` 相加成「本行到目前为止」——它那一层的约定就是「每条投影交增量」。
+ * 自己在这里累加会与骨架的相加叠成平方级的偏大（三轮各 160 ms 时行级 `apiMs` 读到 966 ms，
+ * 而整行跨度只有 483 ms：比它自己装着的那段时间还长）。
+ *
  * `ttftMs` **恒 `null`**：厂商不报首字时延，唯一测法是盯我们自己的第一帧——那是另一把尺子
  * （我们的墙钟 vs 厂商的单调钟），而 `mergeTiming` 对来源不一致的处置是整格作废：
  * 混进去的代价不是「这一格不准」，而是**整条时长消失**。
@@ -387,15 +554,14 @@ function projectMessageEnd(
  * `durationMs` 缺席（历史消息、延迟取回的结果）时返回 `undefined`：只有一个端点算不出跨度，
  * 而「算不出来」必须说成没采到——**不拿 0、也不拿别处的时刻冒充**。
  */
-function piTimingSpan(message: Record<string, unknown> | null, runState: PiRunState): TimingSpan | undefined {
+function piTimingSpan(message: Record<string, unknown> | null): TimingSpan | undefined {
   const startedMs = readNumber(message, 'timestamp');
   const durationMs = readNumber(message, 'durationMs');
   if (startedMs === null || durationMs === null) return undefined;
-  runState.apiMsTotal += durationMs;
   return {
     firstMs: startedMs,
     lastMs: startedMs + durationMs,
-    apiMs: runState.apiMsTotal,
+    apiMs: durationMs,
     ttftMs: null,
     source: 'vendor',
   };
@@ -418,10 +584,29 @@ function projectToolExecutionEnd(
   subagents?: PiSubagentRecorder,
 ): TurnProjection {
   const isError = event?.['isError'] === true;
+  const toolName = readString(event, 'toolName');
   const draft = piToolResultMessageDraft(event, roundOf(state));
-  const dispatch = readString(event, 'toolName') === PI_SUBAGENT_DISPATCH_TOOL
+  const dispatch = toolName === PI_SUBAGENT_DISPATCH_TOOL
     ? projectDispatchEnd(event, runState, subagents)
     : null;
+  /**
+   * 结构化输出的参数被厂商拒 ⇒ 记一次；连续越界超过预算就**交出失败**（无界往返的机制见
+   * `PI_STRUCTURED_REJECTION_BUDGET`）。⚠️ 光交 `failure` **停不下厂商的 agent loop**——
+   * 骨架只把它记下来、消费循环继续跑到流结束；真正让往返停下的是装配面在同一个判据上
+   * `session.abort()`（见 `index.ts` 的 `projectRow`）。
+   */
+  let rejectionFailure: TurnProjection['failure'] = null;
+  if (toolName === PI_STRUCTURED_OUTPUT_TOOL && isError) {
+    runState.structuredRejections += 1;
+    if (runState.structuredRejections > PI_STRUCTURED_REJECTION_BUDGET) {
+      rejectionFailure = {
+        code: 'AGENT_FAILED',
+        message: `pi 的结构化输出参数连续 ${runState.structuredRejections} 次被厂商拒（参数不合法）：`
+          + `超过 ${PI_STRUCTURED_REJECTION_BUDGET} 次的上限后中止这一轮，避免无界的模型往返。`
+          + `厂商原文：${(piToolResultText(event) ?? '').slice(0, 500)}`,
+      };
+    }
+  }
   return {
     drafts: [
       logDraft('stdout', safeStringify(raw), isError
@@ -431,13 +616,240 @@ function projectToolExecutionEnd(
     ],
     tokens: null,
     turns: null,
-    failure: null,
+    failure: rejectionFailure,
     messages: draft === null ? [] : [draft],
     // 投递判据在收数器里（同一身份、同一内容只发一次）：这条通路与收尾对账那条都会到达
     subagents: dispatch?.record === undefined
       ? []
       : (subagents === undefined ? [dispatch.record] : subagents.deliver(dispatch.record)),
   };
+}
+
+/**
+ * 两次投递共用的名字解析：**入参的 `name` 优先，没有才退回任务描述**。
+ *
+ * 为什么必须是共用的一份：派发行与收尾行是同一个身份的两次投递，界面按后者覆盖前者
+ * ⇒ 两处各算一遍必然漂移，而漂移的表现是「卡片标题在收尾那一刻换了一个」。
+ * 描述那一端优先取**入参**（派发那一刻就定了，与总线载荷同源），`details.description` 只作兜底
+ * （`tool_execution_end` 的结果里那一格与入参同值，保留它只为「入参没采到」这一档）。
+ */
+function resolveDispatchName(
+  toolCallId: string | null,
+  detailsDescription: string | null,
+  runState: PiRunState,
+): string | null {
+  const start = toolCallId === null ? undefined : runState.dispatchStarts.get(toolCallId);
+  return start?.name ?? start?.description ?? detailsDescription;
+}
+
+/**
+ * **派发那一刻的子任务行**：扩展刚报「开始」的那些身份，与还在飞的那次 `Agent` 调用对上就投一条
+ * `running` 行——界面的子任务卡片与「进入 ▸」入口由此在派发瞬间就位，不必等子智能体收场。
+ *
+ * 为什么需要它：契约明文要求「同一身份多次投递（**派发时一条**、收场时一条）」，
+ * 而这一家前台档的 `Agent` 是**阻塞工具**（子智能体跑完才返回）⇒ 只靠 `tool_execution_end`
+ * 那条通路的话，整段运行期界面上没有节点、没有卡片、也没有入口（另三家都在派发时投）。
+ *
+ * 四条判据：
+ *   1. **总线已报终态的身份不投**（`settledIds`）：那会让状态从终态退回运行中，
+ *      而其后到达的收尾行必须带**新**事实（一致性套件的 K2）；
+ *   2. **认领靠描述**：总线载荷只有 `{id, type, description}`，**没有工具调用 id**
+ *      ⇒ 在还在飞的派发里找「尚未被认领 且 `description` 逐字相同」的那一条；
+ *      恰好一条才认领，零条或多条**一律不认领、不投**（`claimedBy` 挡住重复认领）
+ *      ——宁可晚一条，也不把卡片挂到别人的派发点上；
+ *   3. **身份用总线的那个 id**：与收尾行（`details.agentId`）、与子会话正文（转写文件）同一套身份；
+ *   4. **逐字相同的重发由 `deliver` 挡掉**：本函数挂在每个事件上，同一次派发只会出一条 running 行。
+ *
+ * 未认领时**什么都不投**、只落一条点名 WARN（每个身份一条）：那一档退化成「收尾才出行」，
+ * 与修之前同形。
+ */
+function deliverStartedSubagents(
+  runState: PiRunState,
+  subagents?: PiSubagentRecorder,
+  /** 本次事件自己已经交出的身份：它们那条是完整快照，派发行让位（见 `projectPiEvent`） */
+  settledNow: ReadonlySet<string> = new Set(),
+): { subagents: SubagentRecord[]; drafts: AgentEventDraft[] } {
+  const delivered: SubagentRecord[] = [];
+  const drafts: AgentEventDraft[] = [];
+  if (subagents === undefined) return { subagents: delivered, drafts };
+  const settled = new Set(subagents.settledIds());
+  for (const agentId of subagents.startedIds()) {
+    if (settled.has(agentId) || settledNow.has(agentId)) continue;
+    const started = subagents.latest(agentId);
+    if (started === null) continue;
+    const claim = claimDispatch(runState, started.description, agentId);
+    if (claim === null) {
+      // 只落一次：本函数挂在每个事件上，不加这道闸就会把同一句话刷满原始输出面板
+      if (!runState.unclaimedWarned.has(agentId)) {
+        runState.unclaimedWarned.add(agentId);
+        drafts.push(logDraft('stderr', '[WARN] 这次子智能体派发没能与它的工具调用对上'
+          + `（身份 ${agentId}、任务描述 ${started.description ?? '未采集'}）：`
+          + '描述与在飞的派发对不上或不唯一，本行**不在派发时刻**投它的子任务行'
+          + '——卡片要等这次工具收尾才出现（那是完整快照），不猜一个派发点'));
+      }
+      continue;
+    }
+    const name = resolveDispatchName(claim, null, runState);
+    delivered.push(...subagents.deliver(piSubagentRecord({
+      agentId,
+      name,
+      rawStatus: 'running',
+      outcome: null,
+      parentCallId: claim,
+      usage: null,
+    })));
+  }
+  return { subagents: delivered, drafts };
+}
+
+/**
+ * 认领一次还在飞的派发（描述逐字相同且唯一）。命中即把认领者记到那一格上，
+ * 于是同一个 `toolCallId` 不会再被第二条同描述的身份认领。
+ *
+ * **同一个身份再来一次不算「认不出来」**：本函数挂在每个事件上，第二次之后的调用原样返回
+ * 第一次认领的那一格，重发的那条行由 `deliver` 按内容挡掉——否则「已认领」会被读成
+ * 「对不上」，于是每个事件都落一条 WARN。
+ */
+function claimDispatch(runState: PiRunState, description: string | null, agentId: string): string | null {
+  for (const [toolCallId, start] of runState.dispatchStarts) {
+    if (start.claimedBy === agentId) return toolCallId;
+  }
+  if (description === null || description === '') return null;
+  const matches: string[] = [];
+  for (const [toolCallId, start] of runState.dispatchStarts) {
+    if (start.claimedBy !== null) continue;
+    if (start.description !== description) continue;
+    matches.push(toolCallId);
+  }
+  const claimed = matches.length === 1 ? matches[0] : undefined;
+  if (claimed === undefined) return null;
+  const start = runState.dispatchStarts.get(claimed);
+  if (start !== undefined) start.claimedBy = agentId;
+  return claimed;
+}
+
+/**
+ * 跑动期转写读盘的最小间隔（毫秒）。投影由两类输入驱动——厂商事件与 wire 的合成帧
+ * （`subagent-wire.ts` 的泵把「缓冲进账」换成一次投影），后者按 25 ms 节拍走；转写的 flush
+ * 粒度是 `turn_end` ⇒ 250 ms 的节流只削读盘次数，不削「一轮一现」的及时性。
+ */
+const PI_SUBAGENT_TRANSCRIPT_POLL_MS = 250;
+
+/**
+ * **跑动期的转写增量**：把在飞子智能体已经 flush 的转写行折成消息，只投**新增的那一段**。
+ *
+ * ## 为什么要挂在这里（每个事件的投影之后）
+ *
+ * 子会话的正文只在扩展写的转写文件里（`transcript.ts` 的文件头），flush 粒度是 `turn_end`。
+ * 前台档（`Agent` 阻塞）里父会话的帧很稀（真机：派发到收场之间 4 帧 `tool_execution_update`，
+ * 没有一帧带正文）⇒ 投影主要靠 wire 的**合成帧**换来（后台档里父会话自己的事件也走同一挂载点）。
+ * 投影与 flush 天然对齐：子会话收一轮、我们读一次。
+ *
+ * ## 四条闸门（一条不满足就跳过这个身份，一个字不投）
+ *
+ * 1. **总线已报终态的不读**（`settledIds`）：收场身份的尾巴归收尾对账补（`finalizePiSubagents`），
+ *    跑动期再读只会与它赛跑；
+ * 2. **子任务行必须已在更早一批投影里落账**（`deliveredEarlier`）：骨架在同一批投影里
+ *    **先发消息、后发子任务行**（turn.ts 的发射顺序），行本批才落、消息本批就跟的话，
+ *    消息会先于行进账——客户端 `build-model` 只认记录里的身份，会把这批消息归进主会话。
+ *    晚一批事件（毫秒级）再投，落点就是对的；
+ * 3. **读盘按身份节流**（`transcriptReadAt`）：投影逐条到达，不节流的话一个话痨子任务
+ *    每秒带来几十次全量读盘；
+ * 4. **只投差量**（`transcriptEmitted` 按投影条数切片）：转写文件 append-only、行一旦
+ *    flush 即不可变 ⇒ 切片下标稳定；重发已投过的那一段只会在 `messages.jsonl` 留下
+ *    同内容的重复行（客户端按 `mergeKey` 覆盖会收敛，但账本不该虚胖）。
+ *
+ * ## 读不到是跑动期的常态，不是错误
+ *
+ * 在飞的子会话可能还没 flush 过任何一行（文件尚未创建）——这一档**静默跳过、不落 WARN**：
+ * 「还没有正文」是正常形状。转写读不到的**权威** WARN 在收尾对账那一条（收场了还读不到
+ * 才是「步骤不在产物里」）。
+ *
+ * ## 与骨架的两处交互（有意为之）
+ *
+ * · 这批消息让 `projectionHasOutput` 为真 ⇒ 看门狗的空闲计时随之重置——子智能体在干活
+ *   就是这一行在干活（与 `deliverStartedSubagents` 的子任务行算「有输出」同一条先例）；
+ * · 消息里的工具块会进 `trackToolBlocks` 的在途集合：子会话命名空间的 callId 与其结果
+ *   自配平（add 后随差量 delete），跨会话撞名才会错销账，pi 的调用 id 带随机后缀，实践上不撞。
+ */
+function deliverTranscriptIncrements(
+  runState: PiRunState,
+  subagents: PiSubagentRecorder,
+  readTranscript: (agentId: string) => PiSubagentTranscript,
+  /** 子任务行已经在**更早一批**投影里落账的身份（本批新落的行在本批消息之后才发射） */
+  deliveredEarlier: ReadonlySet<string>,
+): MessageDraft[] {
+  const messages: MessageDraft[] = [];
+  const settled = new Set(subagents.settledIds());
+  const now = Date.now();
+  for (const agentId of subagents.startedIds()) {
+    if (settled.has(agentId)) continue;
+    if (!deliveredEarlier.has(agentId)) continue;
+    const last = runState.transcriptReadAt.get(agentId);
+    if (last !== undefined && now - last < PI_SUBAGENT_TRANSCRIPT_POLL_MS) continue;
+    runState.transcriptReadAt.set(agentId, now);
+    const transcript = readTranscript(agentId);
+    const emitted = runState.transcriptEmitted.get(agentId) ?? 0;
+    const fresh = transcript.messages.slice(emitted);
+    if (fresh.length === 0) continue;
+    runState.transcriptEmitted.set(agentId, emitted + fresh.length);
+    messages.push(...fresh);
+  }
+  // 同一条消息可能已被 wire 通路投出（载体键相同）⇒ 只留 wire 没覆盖到的（见 emitSubagentDrafts）
+  return emitSubagentDrafts(runState, messages);
+}
+
+/**
+ * **跑动期的 wire 增量**：把子会话事件缓冲折成消息，只投**行已落账**的那部分身份。
+ *
+ * 与转写增量同一条闸门（`deliveredEarlier`）与同一个原因：骨架在同一批投影里先发消息、
+ * 后发子任务行。差别在**排空是选择性的**——`wire.drain(身份集合)` 只取走已放行的身份，
+ * 还没放行的留在缓冲里等下一批（wire 事件是一次性的，排空即消费，不像转写可以重读）。
+ *
+ * 不设「已收场不排」的闸（转写增量有）：wire 缓冲是唯一正源、无重读竞态，收场身份的
+ * 尾巴在随后的父事件上照常排空，收尾 `finalizePiSubagents` 再兜一次底。
+ */
+function deliverWireIncrements(
+  runState: PiRunState,
+  subagents: PiSubagentRecorder,
+  wire: PiSubagentWire,
+  /** 子任务行已经在**更早一批**投影里落账的身份 */
+  deliveredEarlier: ReadonlySet<string>,
+): { messages: MessageDraft[]; warnings: string[] } {
+  const drained = wire.drain(deliveredEarlier);
+  return { messages: emitSubagentDrafts(runState, drained.messages), warnings: drained.warnings };
+}
+
+/**
+ * 子会话消息的**载体去重**：同一条逻辑消息在 wire 与转写两条通路上给出同一个载体键
+ * （轮次对齐的口径见 `subagent-wire.ts` 的文件头），**第一条到达者胜出**，后到的整条丢掉。
+ *
+ * 判据是**快照**，不是「这个载体出现过没有」：同一轮的逐字增量与它的收尾快照载体键逐字相同，
+ * 按载体挡会让先到的 delta 占死键、收尾快照被整条丢掉（消息永远停在半截）。
+ * 于是 delta 一律放行（只有 wire 产 delta，转写天然只有快照 ⇒ 放行不会引入重复内容），
+ * 只有快照之间互斥。
+ *
+ * 只对 `subagentId !== null` 的草稿生效：主会话的同一载体合法地收「增量 + 快照」多次投递
+ * （合并器靠它拼出完整块），把主会话草稿也过一遍会把快照挡掉、消息永远停在「未收尾」。
+ */
+function emitSubagentDrafts(runState: PiRunState, drafts: MessageDraft[]): MessageDraft[] {
+  const fresh: MessageDraft[] = [];
+  for (const draft of drafts) {
+    if (draft.subagentId === null) {
+      fresh.push(draft);
+      continue;
+    }
+    // 增量不参与互斥：它与同轮快照同键，记账会把快照挡掉（见本函数的判据那一段）
+    if (draft.chunk === 'delta') {
+      fresh.push(draft);
+      continue;
+    }
+    const key = carrierKeyOf(draft);
+    if (runState.subagentCarriers.has(key)) continue;
+    runState.subagentCarriers.add(key);
+    fresh.push(draft);
+  }
+  return fresh;
 }
 
 /**
@@ -454,8 +866,9 @@ function projectToolExecutionEnd(
  *   · 用量：总线的 `usage`（与主子**同一把尺**，走同一个 `readPiUsageTokens`）。
  *     后台档下发出去时子智能体还没收场 ⇒ 这一格是 `null`（「没采到」），收尾会补一条完整快照。
  *
- * ⚠️ **名字取入参里的 `name`，没有就退回 `details.description`**：`details.displayName` 是
- * agent **类型**的展示名（真机上是常量 `Agent`），拿它当名字等于每一行都叫同一个名字。
+ * ⚠️ **名字取入参里的 `name`，没有才退回任务描述**（两条通路共用 `resolveDispatchName`，
+ * 见那一格的说明）：`details.displayName` 是 agent **类型**的展示名（真机上是常量 `Agent`），
+ * 拿它当名字等于每一行都叫同一个名字。
  */
 function projectDispatchEnd(
   event: Record<string, unknown> | null,
@@ -473,7 +886,11 @@ function projectDispatchEnd(
     };
   }
   const bus = subagents?.latest(details.agentId) ?? null;
-  const name = (toolCallId === null ? null : runState.dispatchNames.get(toolCallId) ?? null) ?? details.description;
+  /**
+   * **名字与派发行逐字相同**（`resolveDispatchName` 是两条通路共用的那一份）：
+   * 派发那一刻已经定下的名字，收尾不许换——界面会在收尾那一刻把卡片标题改掉。
+   */
+  const name = resolveDispatchName(toolCallId, details.description, runState);
   const rawStatus = bus?.rawStatus ?? details.rawStatus;
   const record = piSubagentRecord({
     agentId: details.agentId,
@@ -497,6 +914,8 @@ function projectDispatchEnd(
     toolCallId,
     name,
     turnCount: record.status === 'running' ? null : details.turnCount,
+    // 收尾那一刻的厂商状态原文（收尾对账在「总线只报了 started」时沿用它，见 `PiDispatch.rawStatus`）
+    rawStatus,
   });
   return { record, drafts: [], summary: subagentSettledSummary(record.name, record.status) };
 }
@@ -545,6 +964,11 @@ function readAssistantFailure(
   runState: PiRunState,
 ): AgentFailure | null {
   const stopReason = readString(message, 'stopReason');
+  /**
+   * 本层自己中止的那一轮（结构化输出预算）：厂商把它报成 `error` + `This operation was aborted`，
+   * 而那一条失败会盖掉投影层记下的点名原因 ⇒ 这里让位（原因已经由 `projectToolExecutionEnd` 交出）。
+   */
+  if (runState.selfAborted) return null;
   if (stopReason === 'aborted') {
     if (runState.stopRequested) {
       // 这里不落事件：停止来源已经由 `agent_settled` 那条 WARN 记下（同一次停止只记一处）
@@ -556,8 +980,26 @@ function readAssistantFailure(
     );
   }
   if (stopReason !== 'error') return null;
-  return classifyAgentMessage(piFailureText(readString(message, 'errorMessage'), context.baseUrl), context);
+  const errorMessage = readString(message, 'errorMessage');
+  const text = piFailureText(errorMessage, context.baseUrl);
+  /**
+   * 上游**自己报的超时**按契约归 `AGENT_TIMED_OUT`（`types.ts`：「上游自己报的超时也归它」）。
+   * 为什么不能交给 `classifyAgentMessage`：它只认 HTTP 状态（`status` / 文案里的状态码），
+   * 而厂商原文是一句不带状态码的裸英文短句 ⇒ 会被归成 `AGENT_FAILED`，那一格在自动重试表里
+   * （`orchestrator.ts` 的 `TRANSIENT_ROW_RETRY_CODES`）⇒ 一次上游超时被白跑两遍还各等一次退避，
+   * 而重试改变不了它。
+   */
+  if (errorMessage !== null && PI_TIMEOUT_TEXT.test(errorMessage)) {
+    return { code: 'AGENT_TIMED_OUT', message: text };
+  }
+  return classifyAgentMessage(text, context);
 }
+
+/**
+ * 厂商**自报超时**的原文指纹（`piFailureText` 与失败归因两处共用一份，避免两处各写一条正则）。
+ * 它是厂商 SDK 自己的请求时限（`Request timed out.`），不是我们的看门狗。
+ */
+const PI_TIMEOUT_TEXT = /request timed out/i;
 
 /**
  * 厂商短句 → 带 host 的中文原因。
@@ -575,7 +1017,7 @@ function piFailureText(errorMessage: string | null, baseUrl: string): string {
   if (/connection error/i.test(original)) {
     return `无法连接上游（${host}）：连接被拒绝或中途断开（厂商原文「${original}」）`;
   }
-  if (/request timed out/i.test(original)) {
+  if (PI_TIMEOUT_TEXT.test(original)) {
     return `上游请求超时（${host}）：厂商 SDK 自带的请求时限内没有拿到响应（厂商原文「${original}」）`;
   }
   if (/^terminated$/i.test(original)) {
@@ -670,11 +1112,19 @@ function roundOf(state: TurnState): number {
  * **不相加**——两个会话各自自报的总量相加得到的是我们的算术，契约里那一格的语义是「厂商原文」，
  * 只有**单会话**那一份（子任务行自己的 `usage`、无子智能体时的合计）才留着它。
  *
- * ## 「全量或 null」
+ * ## 两格分量**各自**判「全量或 null」
  *
  * 任何一次**已派发**的子智能体拿不到终态（还在跑、或这一行的结论先落了），或拿到了终态却没有可读的
- * 用量 / 轮次 ⇒ 分量**整格 `null`**、合计退回主会话口径，并落一条**点名** WARN——绝不把部分和
+ * 用量 / 轮次 ⇒ **那一格**记 `null`、对应的合计退回主会话口径，并落一条**点名** WARN——绝不把部分和
  * 冒充总数（部分和与全部读完在界面上长得一模一样）。与 codex / claude 那两条 reads 同一条口径。
+ *
+ * **两格不互相作废**（这一条与「一项不完整就整组作废」的旧口径相反，理由是厂商面本身不对称）：
+ * 用量那一格来自总线终态载荷（`subagents:completed` / `failed` 的 `usage`，与 pi-ai 的 `Usage` 同形），
+ * 而轮次那一格**只在 `Agent` 工具结果的 `details.turnCount` 里**——后台档（`run_in_background`）
+ * 下工具派发即返回、那一刻子智能体还没跑，而厂商的总线终态载荷里**没有** `turnCount` 这一格。
+ * 于是后台档**结构上**永远拿不到轮次；把两格绑在一起，会让一份**真读到了**的用量跟着作废
+ * （症状是「给不出」，而子智能体确实花掉了一整轮输入）。契约与一致性套件都允许「用量在、轮次 null」
+ * （`checkUsagePairing` 只判 `subagentTurns` 不许比 `turns` 更清楚，不要求两格同时在场）。
  *
  * ## 没有派发时一个字都不改
  *
@@ -687,12 +1137,19 @@ export function finalizePiSubagents(
   /**
    * 取某个子智能体的**转写正文**（子会话的逐步骤消息）。缺省 = 不取正文。
    *
-   * 为什么必须在这一层取而不是投影里：子会话的事件**不在父会话的流里**，唯一带正文的通道是
-   * 扩展写的转写文件（见 `transcript.ts`）。它是**旁路文件**，与流没有先后保证 ——
-   * 与骨架给 codex 会话文件留的那一格同一条处置：**收尾读一次**，不假装流里有。
-   * 读不到**不影响结论**（子任务正文是补充信息），只是界面上那个节点会空着。
+   * 为什么必须有这一格：子会话的事件**不在父会话的流里**，唯一带正文的通道是扩展写的
+   * 转写文件（见 `transcript.ts`）。它是**旁路文件**，与流没有先后保证——跑动期已按
+   * 事件心跳增量投过一部分（`deliverTranscriptIncrements`），这一层补**收尾差量**：
+   * 已收场身份在「最后一次增量读」与「收场」之间 flush 的那几行只有这里能拿到。
+   * 读不到**不影响结论**（子任务正文是补充信息），只是界面上那个节点停在增量那一段。
    */
   readTranscript?: (agentId: string) => PiSubagentTranscript,
+  /**
+   * wire 通道（缺省 = 这一行没有 wire）。收尾排空它**尚未消费的尾巴**：终态事件的到达
+   * 与最后几条子会话事件之间没有先后保证，最后一次父事件排空可能差那几条；
+   * 转写差量随后只补 wire 没覆盖到的载体（`emitSubagentDrafts`，两条通路同一把尺）。
+   */
+  wire?: PiSubagentWire,
 ): TurnFinalize {
   if (!runState.dispatched) return { drafts: [] };
 
@@ -703,58 +1160,161 @@ export function finalizePiSubagents(
     if (event !== null) settled.set(agentId, event);
   }
 
-  /** 逐个对账：派发过、但没拿到完整终态的那些**必须点名**（静默按已收到的求和会得到一个看着正常的数） */
-  const incomplete: string[] = [];
+  /**
+   * **对账集合 = 派发记录 ∪ 总线身份**。
+   *
+   * 为什么不能只遍历 `runState.dispatches`：那一格只在 `Agent` 工具的收尾事件里带得出
+   * `details.agentId` 时才登记（见 `projectDispatchEnd`），而「这一行有哪些子智能体」的权威面是
+   * 扩展总线。两者分家时（工具结果是厂商自己合成的裸错误、或那次收尾压根没到），一个**真跑过**
+   * 的子智能体会既拿不到终态行（卡片永远停在「运行中」）也不进用量——而这里正是它唯一的补账点。
+   */
+  const accounted = new Set<string>([
+    ...runState.dispatches.keys(),
+    ...subagents.startedIds(),
+    ...subagents.settledIds(),
+  ]);
+
+  /**
+   * **要投终态行的那些身份** = 派发记录 ∪ **总线已报终态**的身份。
+   *
+   * 只加「已报终态」那一半：总线只报了 `started` 的身份现在有一条 `running` 行在账上，
+   * 而这一层给不出它的 `rawStatus`（总线载荷没有状态时就该判 `unknown`）⇒ 在这里补一条
+   * 会把状态从「运行中」改成「未知」，那是倒退。它若在派发收尾时留下了状态，
+   * 走 `dispatch?.rawStatus` 那一支沿用（见下面 `piSubagentRecord` 的调用点）。
+   */
+  const rowIds = [...new Set([...runState.dispatches.keys(), ...settled.keys()])];
+
+  /**
+   * 逐个对账：派发过、但没拿到完整读数的那些**必须点名**（静默按已收到的求和会得到一个看着正常的数）。
+   *
+   * 两格各记一份：**用量**（总线终态载荷里的那一份）与**轮次**（`Agent` 工具结果里的 `turnCount`）
+   * 各有各的来源与失败形态，合成一句会让「哪一格缺、为什么缺」都读不出来。
+   */
+  const usageGaps: string[] = [];
+  const turnGaps: string[] = [];
   const usage: UsageTokens[] = [];
   let turns = 0;
-  for (const [agentId, dispatch] of runState.dispatches) {
+  if (accounted.size === 0) {
+    // 派发过（`dispatched` 为真）却连一条身份都没拿到：两格都没有可求和的读数，不能报零
+    usageGaps.push('本行派发过子智能体，但一条身份都没拿到（工具结果里没有身份，总线也没报过）');
+  }
+  for (const agentId of accounted) {
+    const dispatch = runState.dispatches.get(agentId) ?? null;
     const event = settled.get(agentId) ?? null;
     if (event === null) {
-      incomplete.push(`${agentId}（还没收场）`);
+      /**
+       * 没有终态事件 = 本行收尾那一刻它还没收场。**这不是「它活过了本行」**：子会话与父会话共用
+       * 同一个扩展运行器，本行的释放序列（`session.dispose()` 里的 `_extensionRunner.invalidate`）
+       * 会把它一起终结——真机五档释放对照里 `dispose-only` 那一臂就足以让子会话一个模型往返都
+       * 跑不起来（子会话出站 0 次、转写只剩 user 行），而只 abort / 不释放两臂照常跑完。
+       * **两格都拿不到**：用量只在终态载荷里，而轮次那一刻本来就是半截的。文案要把机制说出来
+       * （并附上收尾那一刻的厂商状态原文），否则读起来像「它还在后台跑」。
+       */
+      const unsettled = dispatch?.rawStatus === null || dispatch?.rawStatus === undefined
+        ? `${agentId}（本行收尾那一刻它还没收场：本行的释放序列会连同它一起终结）`
+        : `${agentId}（本行收尾那一刻它还没收场（厂商记的状态是 ${dispatch.rawStatus}）：`
+          + '子会话挂在父会话的扩展运行器上，本行的释放序列会连同它一起终结）';
+      usageGaps.push(unsettled);
+      turnGaps.push(unsettled);
       continue;
     }
-    if (event.usage === null) incomplete.push(`${agentId}（没有可读的用量）`);
+    if (event.usage === null) usageGaps.push(`${agentId}（终态到了，但那一份载荷里没有可读的用量）`);
     else usage.push(event.usage);
-    if (dispatch.turnCount === null) incomplete.push(`${agentId}（没有可读的轮次）`);
-    else turns += dispatch.turnCount;
+    if (dispatch === null) {
+      // 派发记录缺席 ⇒ 轮次也没有来源（那一格只从 `Agent` 工具结果的 `details` 里来）
+      turnGaps.push(`${agentId}（终态到了，但没有派发记录：轮次只在 Agent 工具结果的 details 里，总线载荷不带这一格）`);
+    } else if (dispatch.turnCount === null) {
+      /**
+       * 后台档的结构性缺口：`projectDispatchEnd` 在工具收尾那一刻状态还是「运行中」时**刻意**
+       * 把 `turnCount` 记 `null`（半截的轮次数不是读数），而厂商的总线终态载荷里没有这一格
+       * ⇒ 它此后**再没有第二个到达点**。文案必须把这条机制写出来，否则读起来像一次读失败。
+       */
+      turnGaps.push(`${agentId}（后台档：Agent 工具派发即返回，那一刻子智能体还没跑过一轮；`
+        + '厂商的总线终态载荷里不带 turnCount）');
+    } else turns += dispatch.turnCount;
   }
 
   /**
-   * 主会话那一份拿不出（一条助手用量都没读到）或一次往返都没数到时**整组不交**：
+   * 两格**各自**判完整性（见函数头的「两格分量各自判」）：用量齐了就交 `subagentTokens`，
+   * 轮次缺只让 `subagentTurns` 记 `null`。
+   *
+   * 两格都还要过「合计那一侧拿不拿得出」这一关：主会话一条助手用量都没读到、或一次往返都没数到时，
    * 分量比合计更清楚是自相矛盾的读数（一致性套件的用量配对判据会当场红）。
    */
-  const total = incomplete.length > 0 || mainTokens === null || state.turns <= 0
+  const mainGap = mainTokens === null
+    ? (state.turns <= 0 ? '主会话一条助手用量都没读到、一次往返也没数到' : '主会话一条助手用量都没读到')
+    : (state.turns <= 0 ? '主会话一次往返都没数到' : null);
+  const usageTotal = accounted.size === 0 || usageGaps.length > 0 || mainGap !== null
     ? null
     : sumUsageTokens(usage);
+  const turnsTotal = accounted.size === 0 || turnGaps.length > 0 || state.turns <= 0
+    ? null
+    : turns;
 
   /**
-   * 子会话正文：**逐身份各读一次**，顺带把「为什么读不到」落成点名 WARN。
-   * 只给**已经收场**的那些读——还在跑的子会话转写只落了一半，投影出来会让人以为它就说这么多。
+   * 子会话正文：**wire 尾巴先排**（`deliverWireIncrements` 同一把载体尺，先到先占），
+   * **转写逐身份各读一次**补差量，顺带把「为什么读不到」落成点名 WARN。
+   * 只给**已经收场**的那些补转写差量——还在跑的子会话增量那一段已经在账本里，而它在本行
+   * 收尾之后还会继续写、追不到底；已收场身份「最后一次增量读」之后的尾巴只有这里能拿到。
    */
   const messages: MessageDraft[] = [];
+  const drafts: AgentEventDraft[] = [];
+  if (wire !== undefined) {
+    // 收尾是独立的一批（晚于最后一条父事件），行落账的时序闸在此不再适用
+    const tail = wire.drain(subagents.deliveredIds());
+    messages.push(...emitSubagentDrafts(runState, tail.messages));
+    drafts.push(...tail.warnings.map((warning) => logDraft('stderr', `[WARN] ${warning}`)));
+  }
   const transcriptNotes: string[] = [];
   if (readTranscript !== undefined) {
-    for (const agentId of runState.dispatches.keys()) {
+    /**
+     * 逐身份补差量的集合 = 「要投终态行的那些」（见 `rowIds`）——总线报了终态但没有派发记录的
+     * 身份同样要读：那正是它的步骤唯一的来源。
+     */
+    for (const agentId of rowIds) {
       if (!settled.has(agentId)) continue;
       const transcript = readTranscript(agentId);
-      messages.push(...transcript.messages);
+      /**
+       * 只补**差量**：跑动期增量投过的那一段不重发（重发只会在 `messages.jsonl` 留下
+       * 同内容的重复行）。没跑过增量的身份这一格是 0 ⇒ 整份照投，与只有收尾一条
+       * 通路时的旧形状逐字一致。wire 已投过的载体由 `emitSubagentDrafts` 挡掉。
+       */
+      const emitted = runState.transcriptEmitted.get(agentId) ?? 0;
+      messages.push(...emitSubagentDrafts(runState, transcript.messages.slice(emitted)));
       if (transcript.warning !== null) transcriptNotes.push(transcript.warning);
     }
   }
 
-  const drafts: AgentEventDraft[] = [
-    ...(incomplete.length > 0
-      ? [logDraft('stderr', `[WARN] 这一行的子智能体分量给不出（记 null，不编造、不填 0）：${incomplete.join('、')}`)]
-      : []),
-    ...(incomplete.length === 0 && total === null
-      ? [logDraft('stderr', '[WARN] 这一行的主子用量或轮次拿不出来，子智能体分量随之记 null（分量不可能比合计更清楚）')]
-      : []),
+  /**
+   * 分量的两条点名 WARN：**逐格**说清是哪一格、为什么。三档优先级：
+   *   ① 有缺口名单 ⇒ 照名单点名（缺口是更具体的原因）；
+   *   ② 名单为空而这一格仍然交不出 ⇒ 原因在合计那一侧（`mainGap`）；
+   *   ③ 交得出 ⇒ 一条都不落。
+   */
+  const usageWarn = usageTotal !== null
+    ? null
+    : usageGaps.length > 0
+      ? `[WARN] 这一行的子智能体用量给不出（记 null，不编造、不填 0）：${usageGaps.join('、')}`
+      : mainGap === null
+        ? null
+        : `[WARN] 这一行的主子用量拿不出来（${mainGap}），子智能体用量随之记 null（分量不可能比合计更清楚）`;
+  const turnsWarn = turnsTotal !== null
+    ? null
+    : turnGaps.length > 0
+      ? `[WARN] 这一行的子智能体轮次给不出（记 null，不编造、不填 0）：${turnGaps.join('、')}`
+      : mainGap === null
+        ? null
+        : `[WARN] 这一行的主子轮次拿不出来（${mainGap}），子智能体轮次随之记 null（分量不可能比合计更清楚）`;
+  drafts.push(
+    ...(usageWarn === null ? [] : [logDraft('stderr', usageWarn)]),
+    ...(turnsWarn === null ? [] : [logDraft('stderr', turnsWarn)]),
     ...(transcriptNotes.length > 0
       ? [logDraft('stderr', `[WARN] 子任务的逐步骤正文没取全：${transcriptNotes.join('、')}`)]
       : []),
-  ];
+  );
 
-  const rows = [...runState.dispatches].map(([agentId, dispatch]) => {
+  const rows = rowIds.map((agentId) => {
+    const dispatch = runState.dispatches.get(agentId) ?? null;
     const event = settled.get(agentId) ?? null;
     return piSubagentRecord({
       agentId,
@@ -767,27 +1327,41 @@ export function finalizePiSubagents(
        * （真机形状：模型叫它 `pong-agent`，收尾把标题改回任务描述）。同一个身份在两份快照里
        * 逐字相同，也正是收数器 `deliver` 那条「同内容只发一次」判据成立的前提。
        */
-      name: dispatch.name ?? event?.description ?? null,
-      rawStatus: event?.rawStatus ?? null,
+      name: dispatch?.name ?? event?.description ?? null,
+      /**
+       * 状态**不许倒退**，且**收尾时如实记「已停止」**：
+       *   · 总线报了终态 ⇒ 用它（它是子会话收场那一刻的记录）；
+       *   · 总线只报了 `started`（后台档的常态）⇒ **不再沿用派发那一刻的 `background`**：
+       *     本行的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话一起终结，
+       *     真机五档对照里 `dispose-only` 一臂就足以让它一个模型往返都跑不起来 ⇒ 收尾这一份
+       *     快照记 `stopped`（`piSubagentStatus('stopped')`），界面上从「运行中」翻成「已停止」，
+       *     而不是永远转圈。理由与点名 WARN 一致（见 `usageGaps` / `turnGaps` 里那条
+       *     「本行收尾那一刻它还没收场……本行的释放序列会连同它一起终结」）。
+       *   · 两处都没有（连派发记录也没有）才是真的没采到 ⇒ `unknown` + `not-observed`。
+       */
+      rawStatus: event?.rawStatus ?? (dispatch === null ? null : 'stopped'),
       outcome: event?.outcome ?? null,
-      parentCallId: dispatch.toolCallId,
+      parentCallId: dispatch?.toolCallId ?? null,
       usage: event?.usage ?? null,
     });
   });
   // 收尾这一份是**完整快照**；与工具收尾那条逐字相同的话由收数器挡掉（见 `deliver`）
   const delivered = rows.flatMap((row) => subagents.deliver(row));
 
-  if (total === null || mainTokens === null) {
-    return { drafts, messages, subagents: delivered, subagentTokens: null, subagentTurns: null };
-  }
+  /**
+   * 四格各按各的完整性交：`subagentTokens` / `subagentTurns` 的 `null` 是**明确没采到**（覆盖掉旧值），
+   * 而 `tokens` / `turns` 的缺省是「本条不带这一格」（骨架保持主会话口径的原值）。
+   *
+   * 合计与它的分量**同刻**交出（分量能交时合计一定带上它）：只给分量不给合计会让界面按
+   * 「主会话 = 合计 − 分量」算出负数；只给合计不给分量则是那句「确实没有子智能体」的假话。
+   */
   return {
     drafts,
     messages,
     subagents: delivered,
-    // 合计与分量**同刻**交出：只给一个会让界面按「主会话 = 合计 − 分量」算出负数
-    tokens: addUsage(mainTokens, total),
-    turns: state.turns + turns,
-    subagentTokens: total,
-    subagentTurns: turns,
+    ...(usageTotal === null || mainTokens === null ? {} : { tokens: addUsage(mainTokens, usageTotal) }),
+    ...(turnsTotal === null ? {} : { turns: state.turns + turnsTotal }),
+    subagentTokens: usageTotal,
+    subagentTurns: turnsTotal,
   };
 }

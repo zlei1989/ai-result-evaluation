@@ -19,7 +19,10 @@
  * 三条跨进程边界（`signal` / `agent` / `next` 过不去，只有数据过得去）：
  *   · **`key` 取厂商那一侧的 `wait.callId`**——答案要按它配回那次调用，父进程不许自己编一个；
  *     厂商没给（`mode: legacy` 那条路）时才退化成进程内自增的匿名键，且父进程一律交「委派」；
- *   · **等待窗口归厂商的等待档**（见 `index.ts` 的 overlay）：本模块不设到点收场，只认领并交答案；
+ *   · **等待窗口归厂商的等待档**（见 `index.ts` 的 overlay）：本模块不自己设到点收场，但**认厂商的
+ *     `request.signal`**——模型自己给正数 `timeout` 时，厂商到点会 `abort` 这个 signal，那一刻必须
+ *     立刻委派（`next()`），让厂商走它自己的 `{pending:true}` 收场；不读 signal 的话那一档永远走不到
+ *     （真机：模型要 5 s、人的答复 8 s 才到，工具调用到结果拖了 8031 ms 且交回的是答案而不是 pending）；
  *   · **子智能体发起的提问到不了这里**——厂商的进程内服务在进 waterfall 之前先 `assertLiveRoot`
  *     （不是活着的根就抛 `CALLER_NOT_LIVE` / `DELEGATED_CALLER`，源码逐字：「an owned child has no
  *     human answerer and would block forever」）⇒ 交给提问端口的 `subagentId` 恒 `null`，
@@ -148,6 +151,11 @@ export default function aievalAskAnswerer(ctx) {
         wait: wait ?? null,
         hasSignal: request !== null && typeof request === 'object' && request.signal !== undefined
       });
+      // 厂商的等待档到点时会 abort 它（TimedQuestionWait，随 request 一起进 waterfall）。
+      // ⚠️ **必须每拍检查**：本模块同步认领、同步阻塞，信号发出后没人读它的话，
+      // 那一问会一直挂在插件的返回上 ⇒ 厂商那条 {pending:true} 收场永远走不到
+      // （真机：模型要 5 s、人 8 s 才答，工具结果拖到 8031 ms 且交回的是答案）。
+      const signal = request !== null && typeof request === 'object' ? request.signal : null;
       const deadline = Date.now() + ${DSH_ASK_ANSWERER_WAIT_MS};
       for (;;) {
         const reply = replyFor(key);
@@ -162,6 +170,10 @@ export default function aievalAskAnswerer(ctx) {
             at: Date.now(),
             reason: typeof reply.reason === 'string' ? reply.reason : 'unanswered'
           });
+          return next();
+        }
+        if (signal !== null && typeof signal === 'object' && signal.aborted === true) {
+          record({ phase: 'delegate', key, at: Date.now(), reason: 'vendor-signal-aborted' });
           return next();
         }
         if (Date.now() >= deadline) {
@@ -254,6 +266,14 @@ export interface DshAskAnswererBridge {
    * 人工等待的时长上（十分钟级）。
    */
   close(): void;
+  /**
+   * 插件**有没有加载收据**（它 `ctx.on` 之前写的第一行）：`null` = 整轮没等到。
+   *
+   * 为什么要这个读数：插件没被厂商加载/激活时，这一侧的**所有**出口都是静默的——提问流水
+   * 永远是空的（模型的问题落回厂商自己的等待档），而厂商那边只会在它的 stderr 留一行
+   * `N entries did not activate`（适配器不读它的 stderr）。收尾据此落一条点名 WARN。
+   */
+  pluginLoaded(): { url: string } | null;
 }
 
 export interface DshAskAnswererOptions {
@@ -371,6 +391,18 @@ export function startDshAskAnswerer(options: DshAskAnswererOptions): DshAskAnswe
   });
 
   return {
+    /**
+     * 判据是**流水里那一行**（不是内存标志）：插件的加载收据是它自己写的第一行，父进程只读流水
+     * ⇒ 插件从未加载与「加载了但一行都没写」这两种形状不会混。读盘失败按「没等到」处置。
+     */
+    pluginLoaded(): { url: string } | null {
+      for (const row of readRows(options.transcriptPath)) {
+        if (row['phase'] !== 'plugin-loaded') continue;
+        const url = readString(row, 'url');
+        return { url: url ?? '' };
+      }
+      return null;
+    },
     close(): void {
       if (closed) return;
       closed = true;

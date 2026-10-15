@@ -142,6 +142,9 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     error: null,
     // 默认一行「还没跑过」：0 次尝试（与 contracts 里这一格的缺省值一致）
     attempts: 0,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
@@ -158,6 +161,8 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     id: 'run-1',
     caseId: 'c-1',
     caseTitle: '为多协议入站补齐 Anthropic 到 Chat 的转换',
+    // 用户备注：默认空串（与 `EvalRunSchema.note` 的缺省一致）；用例要备注时用 `overrides` 给
+    note: '',
     repoPath: 'D:\\projects\\gateway',
     commitHash: null,
     repoBranch: null,
@@ -167,6 +172,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     executionMode: 'parallel',
     useAgentJudge: false,
     askUser: false,
+    injectMessages: false,
     rows: [makeRow()],
     workspaceBase: FIXTURE_WORKSPACE_ROOT,
     createdAt: '2026-09-22T08:00:00.000Z',

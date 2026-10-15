@@ -30,7 +30,7 @@ import { MISSING_REASON_LABELS } from './types';
 import { CapabilityNotes } from './capability-notes';
 import { MonoText } from '../../base/mono-text';
 import { formatBytes } from '../../base/format';
-import { NESTED_DRAWER_SIZE } from '../../base/drawer-geometry';
+import { DRAWER_SEMANTIC_STYLES, NESTED_DRAWER_SIZE } from '../../base/drawer-geometry';
 
 export interface AgentEnvironmentDrawerProps {
   open: boolean;
@@ -196,7 +196,8 @@ export function AgentEnvironmentDrawer({
       destroyOnHidden
       // `maskClosable` 已废弃：点遮罩关闭走 `mask.closable`
       mask={{ enabled: true, closable: true }}
-      styles={{ wrapper: { maxWidth: '100vw' }, body: { padding: 0 } }}
+      // 语义槽样式与二级抽屉共用同一份（`DRAWER_SEMANTIC_STYLES`）：窄屏兜底 + 内容区自管内边距
+      styles={DRAWER_SEMANTIC_STYLES}
     >
       <Flex vertical gap={token.paddingMD} style={{ padding: token.paddingMD }} data-testid="agent-environment-drawer">
         {/**

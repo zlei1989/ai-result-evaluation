@@ -463,34 +463,33 @@ describe('源码级不变量', () => {
   });
 
   /**
-   * dsh 依赖走 **`next` 线**，不是 `latest`。
+   * dsh 依赖**不落 `latest` 线**。
    *
-   * 理由是 `latest`（0.0.1-rc.1）把那几个包声明成 peerDependencies，pnpm 自动装 peer 时
+   * 理由是 `latest`（0.0.1-rc.*）把那几个包声明成 peerDependencies，pnpm 自动装 peer 时
    * `dsh-session` 又 peer 到 `@deepseek-ai/dsh-type-meta`，而该包在三家公开源**全 404**
    * ⇒ 按 `latest` 装在本机**不可能完成**。
    *
    * 原有的依赖守卫（`:271` 的 VENDOR_PACKAGES 断言）只比**名字集合**、不碰版本区间，
    * 于是「把版本写成 `latest`」不会有任何测试变红 —— 而那会让 `pnpm install` 直接失败。
    * 这里补的判据刻意与应用侧的依赖守卫**同口径**：版本区间不抄成测试字面量，
-   * 读 `package.json` 现比「它是 next 线上的预发布版本」这一件事。
+   * 读 `package.json` 现比「它是一个精确的预发布版本、且不在 latest 线上」这一件事。
    *
-   * 版本取 **0.2.0-rc.2**（用户口径「选择刚发的稳定版」：该包**从未发过非预发布版本**，
-   * 最新非 alpha 即 next 线的 0.2.0-rc.2）。形状断言刻意是
-   * 「任意 minor 的精确 rc 版本 + 不是 latest 线的 0.0.1-rc.1」——next 线会继续往前走，
-   * 把 minor 钉死在 0.1 会让每次正常升级都要回来改守卫，而守卫真正要拦的只有
+   * 形状断言刻意是「任意 minor 的精确预发布版本（`x.y.z-<tag>.N`）+ 不是 latest 线的 `0.0.1-rc.*`」：
+   * 该包的正式线在 `next`（`-rc.N`）与 `alpha`（`-alpha.N`）两个 tag 之间来回走，
+   * 把 minor 或预发布标签钉死会让每次正常升级都要回来改守卫，而守卫真正要拦的只有
    * 「退回 latest 线（装不上）」与「写成带前缀的区间（预发布区间会静默漂移）」两件事。
    */
-  it('dsh SDK 走 next 线：package.json 里是精确的 x.y.z-rc.N 版本，不是 latest 线', () => {
+  it('dsh SDK 不落 latest 线：package.json 里是精确的预发布版本 x.y.z-<tag>.N', () => {
     const manifest = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'),
     ) as { dependencies?: Record<string, string> };
     const declared = manifest.dependencies?.['@deepseek-ai/dsh-sdk-client'];
 
     expect(declared, 'dsh SDK 必须声明在 agents 包的 dependencies 里').toBeTypeOf('string');
-    // `latest` 线的形态是 `0.0.1-rc.1`，而 next 线是精确的 `x.y.z-rc.N` 预发布值
+    // `latest` 线的形态是 `0.0.1-rc.N`，而 next / alpha 线是精确的 `x.y.z-<tag>.N` 预发布值
     // （pnpm 对预发布不写前缀，这也是「实测写入 0.1.7-rc.1」的由来）
-    expect(declared).toMatch(/^\d+\.\d+\.\d+-rc\.\d+$/);
-    expect(declared).not.toBe('0.0.1-rc.1');
+    expect(declared).toMatch(/^\d+\.\d+\.\d+-[a-z]+\.\d+$/);
+    expect(declared, '0.0.1-rc.* 是 latest 线，按它装在本机完不成').not.toMatch(/^0\.0\.1-/);
     expect(declared).not.toContain('latest');
     expect(declared).not.toMatch(/^[\^~]/);
   });
@@ -502,7 +501,9 @@ describe('源码级不变量', () => {
  * 故障形态：厂商可执行文件的定位链在**纯 Node 下正常、在 Next 的服务端构建里必挂**——打包器
  * （Turbopack / webpack）把 `node:module` 的 `createRequire` 换成了自己的 `require`，其 `resolve()`
  * 返回**模块 id**（`[externals]/@openai/codex/package.json [external] (…)`）而不是文件路径；
- * `import.meta.url` 同时会被重写。
+ * `import.meta.url` 同时会被重写。⚠️ 真机读数（生产产物 + 生产进程 spy）显示**当前默认的 Turbopack
+ * 生产构建并不这样**（`node:module` 就是真模块、`resolve()` 返回真文件路径）⇒ 这三条判据今天守的是
+ * **别的打包器/构建配置**那一档，不是现网正在发生的事；判据本身照旧要留（换构建器时它是唯一的门禁）。
  *
  * 为什么只能写成静态断言：这类缺陷在单测里**原理上不可复现**——单测跑在纯 Node，解析器比打包产物宽松，
  * 夹具用假目录「怎么搭怎么解析」。所以判据落在**源码形状**上，三条缺一不可：
@@ -533,10 +534,87 @@ function bundlerImmunityViolations(source: string): string[] {
   return violations;
 }
 
+/**
+ * **第二跳（平台包）的解析基准必须显式钉住**——它只能钉在 CLI 包自己的 `package.json` 上。
+ *
+ * 为什么写成静态断言：`@openai/codex-darwin-arm64/package.json` 这个说明符在**纯 Node** 下对默认的
+ * 两条基准（`import.meta.url` / `process.cwd()`）**全部 MODULE_NOT_FOUND**（平台包是 CLI 包的
+ * optionalDependency，只链在 CLI 包自己的 `node_modules` 下），所以删掉
+ * `resolvePackageFile(…, [codexPackageJson])` 的第二个实参本该当场红。
+ *
+ * ⚠️ **「本该红」在门禁里却恒绿，元凶是 `NODE_PATH`，不是 vitest**：`node_modules/.bin/vitest`
+ * 是 pnpm 的 bin shim，它在启动时注入 `NODE_PATH=<仓>/.pnpm/node_modules`，那里 `codex` 与
+ * `codex-darwin-arm64` 两条软链都在 ⇒ 两条默认基准**都能解析到**。分水岭是**启动形态**：
+ * 同一份探针换成裸 `node node_modules/vitest/vitest.mjs`（摘掉 `NODE_PATH`）跑，同一条变异
+ * **立刻红**、与纯 Node 逐格一致。
+ * ⇒ 这条判据今天仍守着门禁（要更硬的判据，就把 vitest 用裸 node 启动、或把 `NODE_PATH` 摘掉再跑）。
+ *
+ * 判据是**调用形态**：那一次 `resolvePackageFile(` 必须带第二个实参。
+ */
+function secondHopAnchorViolations(source: string): string[] {
+  const text = stripComments(source);
+  const violations: string[] = [];
+  // 第二跳那一句的说明符由 `PLATFORM_PACKAGE_BY_TRIPLE` 的值拼出（`${platformPackage}/package.json`）
+  const line = text.split('\n').find((one) => one.includes('${platformPackage}/package.json'));
+  if (line === undefined) {
+    violations.push('找不到第二跳（平台包 `package.json`）的 `resolvePackageFile` 调用：判据本身失效了');
+    return violations;
+  }
+  if (!/,\s*\[/.test(line)) {
+    violations.push('第二跳没有显式基准（`resolvePackageFile(…, [codexPackageJson])` 的第二个实参被删了）：真 Node 下两条默认基准都解析不到平台包');
+  }
+  return violations;
+}
+
+/**
+ * **`thread/turns/list` 必须显式要 `itemsView: 'full'`**——厂商默认 `summary`。
+ *
+ * 要拦的缺陷：不传这一格 ⇒ 厂商回 `summary`（`items` 只剩摘要，真机实测 10 条条目只回 2 条），
+ * 于是 `reader.ts` 里「turns 全是 `full` 就直接用、不必再跑 `thread/items/list` 分页」那条快路径
+ * **永远不可达**，每条线程白付一次分页请求。改回去**单测不会红**（两种取法拿到的条目逐条相等，
+ * 真机量过：`onlyA` / `onlyC` 皆空），所以判据只能落在**源码形状**上。
+ *
+ * 行为侧另有一条真机守卫（`turns-order-live.test.ts` 走真 app-server 读回内容），
+ * 它保证这条路径**跑得通**；本判据保证**参数还在**。两者缺一，改回默认值就没人拦。
+ */
+function turnsItemsViewViolations(source: string): string[] {
+  const text = stripComments(source);
+  if (!text.includes('\'thread/turns/list\'')) return ['找不到 `thread/turns/list` 调用：判据本身失效了'];
+  return text.includes('itemsView: \'full\'')
+    ? []
+    : ['`thread/turns/list` 没有显式要 `itemsView: \'full\'`：厂商默认 `summary`，条目只剩摘要，快路径不可达'];
+}
+
+describe('收尾取数：turns 的 itemsView', () => {
+  it('`thread/turns/list` 显式要 `full`（不传就白付一次分页）', () => {
+    const text = readFileSync(join(import.meta.dirname, 'providers/codex/appserver/reader.ts'), 'utf8');
+    expect(turnsItemsViewViolations(text)).toEqual([]);
+  });
+
+  it('判据有区分力：删掉那一格就命中', () => {
+    expect(turnsItemsViewViolations('client.request(\'thread/turns/list\', { threadId })')).not.toEqual([]);
+    expect(turnsItemsViewViolations('client.request(\'thread/turns/list\', { threadId, itemsView: \'full\' })')).toEqual([]);
+  });
+});
+
 describe('打包器免疫：厂商入口的解析器', () => {
   it('codex 的可执行文件解析器满足三条免疫要求', () => {
     const text = readFileSync(join(import.meta.dirname, 'providers/codex/appserver/binary.ts'), 'utf8');
     expect(bundlerImmunityViolations(text)).toEqual([]);
+  });
+
+  it('第二跳的基准显式钉在 CLI 包的 `package.json` 上（删掉它 ⇒ 真 Node 解析不到平台包，而单测仍绿）', () => {
+    const text = readFileSync(join(import.meta.dirname, 'providers/codex/appserver/binary.ts'), 'utf8');
+    expect(secondHopAnchorViolations(text)).toEqual([]);
+  });
+
+  it('第二跳那一条判据有区分力：删掉第二个实参就命中，留着就放行', () => {
+    const withAnchor = 'const p = resolvePackageFile(`${platformPackage}/package.json`, [codexPackageJson]);';
+    const withoutAnchor = 'const p = resolvePackageFile(`${platformPackage}/package.json`);';
+    expect(secondHopAnchorViolations(withAnchor)).toEqual([]);
+    expect(secondHopAnchorViolations(withoutAnchor)).not.toEqual([]);
+    // 注释里写着「基准」不算数：判据按去注释后的文本判
+    expect(secondHopAnchorViolations('// resolvePackageFile(`x/package.json`, [a])\nresolvePackageFile(`${p}/package.json`);')).not.toEqual([]);
   });
 
   it('判据拦住四种回归形态，放行合规形态（没见过失败的判据不算判据）', () => {

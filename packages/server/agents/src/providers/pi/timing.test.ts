@@ -18,7 +18,7 @@ import { lastPiUsage, runPiRow, startPiGateway, type CapturedPiRequest } from '.
 describe('pi 的时长上报（真机往返的 usage 事件）', () => {
   /**
    * 两条 wire 各跑一次真往返：`source` 是 `'vendor'`、`ttftMs` 为空、单轮里 `totalMs` 与 `apiMs`
-   * 逐字相等（`apiMs` 是「本行到目前为止」的累计口径，这一行只有一轮往返）。
+   * 逐字相等（`apiMs` 交的是当轮那一份，这一行只有一轮往返 ⇒ 合并后的行级值与它同值）。
    */
   for (const protocolType of ['openai', 'anthropic'] as const) {
     it(`${protocolType} wire：两个端点与 apiMs 同源、ttftMs 为空`, async () => {

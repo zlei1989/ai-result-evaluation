@@ -87,12 +87,15 @@ function skillsSection(entries: Array<{ name: string; location: string }>): stri
   ].join('\n');
 }
 
-/** openai wire 的请求体（系统段在 `messages[]`，工具名在 `tools[].function.name`） */
+/** openai（Responses）wire 的请求体（系统段在 `input[]`，工具名在 `tools[].name`） */
 function openaiPayload(system: string, tools: string[]): unknown {
   return {
     model: 'test-model',
-    messages: [{ role: 'system', content: system }, { role: 'user', content: '跑一下' }],
-    tools: tools.map((name) => ({ type: 'function', function: { name } })),
+    input: [
+      { role: 'system', content: system },
+      { role: 'user', content: [{ type: 'input_text', text: '跑一下' }] },
+    ],
+    tools: tools.map((name) => ({ type: 'function', name })),
   };
 }
 
@@ -219,6 +222,95 @@ describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', (
     const entry = first.servers[0];
     if (entry !== undefined) entry.config.command = '被改掉了';
     expect(load().servers[0]?.config.command).toBe('node');
+  });
+
+  /**
+   * **用户关掉的那台即便形状也不全，也不进「被摘掉」名单**。
+   *
+   * 形状判据若排在 `enabled === false` 前面，一台「关了且缺 command」的服务器会以
+   * 「stdio 条目缺 command」进 `dropped`，被日志与厂商的启动报告点名——而那台是用户自己关的，
+   * 提示会把人引去查一个不存在的配置问题（与编排层 `resolveMcpServers` 的三个桶同口径）。
+   */
+  it('停用先判：关了的那台形状再坏也不进错误名单', () => {
+    const plan = toPiMcpServers({
+      offBroken: { transport: 'stdio', enabled: false, command: '' },
+    } as unknown as McpServers);
+    expect(plan.entries).toEqual([]);
+    expect(plan.dropped, '关了的那台被当成了「有问题」').toEqual([]);
+  });
+
+  /**
+   * **容器格也要现造一份**：`args` / `env` / `headers` 若与 `plan` 共享引用，厂商侧一次原地改写
+   * （补默认参数、写解析后的 env）就会留在我们这份 plan 上，并被**下一次** `loadConfig()` 带出去
+   * ——那正是「每次调用现造一份返回值」这条口径要防的事，只做顶层展开防不住它。
+   */
+  it('loadConfig 连容器格也现造：args / env / headers 跨调用不共享、也改不到 plan', () => {
+    const plan = toPiMcpServers({
+      probe: { transport: 'stdio', enabled: true, command: 'node', args: ['a.js'], env: { TOKEN: 'sk-1' } },
+      web: { transport: 'http', enabled: true, url: 'https://x.test/mcp', headers: { 'X-A': 'v' } },
+    } as unknown as McpServers);
+    const load = createPiMcpLoadConfig(plan);
+    const first = load();
+    const stdio = first.servers.find((server) => server.name === 'probe');
+    const http = first.servers.find((server) => server.name === 'web');
+    stdio?.config.args?.push('被 push 的');
+    if (stdio?.config.env !== undefined) stdio.config.env['TOKEN'] = '被改掉的';
+    if (http?.config.headers !== undefined) http.config.headers['X-A'] = '被改掉的';
+
+    const second = load();
+    expect(second.servers.find((server) => server.name === 'probe')?.config.args).toEqual(['a.js']);
+    expect(second.servers.find((server) => server.name === 'probe')?.config.env).toEqual({ TOKEN: 'sk-1' });
+    expect(second.servers.find((server) => server.name === 'web')?.config.headers).toEqual({ 'X-A': 'v' });
+    // 也不能改到 plan 自己那一份（下一次 reload 的 claim 仍读它）
+    expect(plan.entries.find((entry) => entry.name === 'probe')?.config.args).toEqual(['a.js']);
+    expect(plan.entries.find((entry) => entry.name === 'probe')?.config.env).toEqual({ TOKEN: 'sk-1' });
+  });
+
+  /**
+   * **容器格不是数组时摘掉，绝不抛**。
+   *
+   * 手改 `config.json` 能把 `args` 写成字符串 / 对象（编排层那条 zod 闸只管正常路径，
+   * 这一层是第二道防线）。判据是「这一层承诺的是**跳过 + 行照跑**」：抛出去的表现是整行
+   * 以一句与真因无关的 `TypeError: …findIndex is not a function` 收场、**零出站请求**，
+   * 而调用方从产物里看不出是 `args` 写错了。
+   */
+  it('args 不是数组 ⇒ 摘掉并点名，不抛（第二道防线不许把「跳过」做成「整行炸」）', () => {
+    const plan = toPiMcpServers({
+      good: { transport: 'stdio', enabled: true, command: 'node' },
+      argsString: { transport: 'stdio', enabled: true, command: 'node', args: 'a.js' },
+      argsObject: { transport: 'stdio', enabled: true, command: 'node', args: { 0: 'a.js' } },
+    } as unknown as McpServers);
+
+    expect(plan.entries.map((entry) => entry.name)).toEqual(['good']);
+    expect(plan.dropped.map((item) => item.name)).toEqual(['argsString', 'argsObject']);
+    for (const item of plan.dropped) expect(item.reason).toContain('args 不是数组');
+  });
+
+  /**
+   * **被摘掉的条目要落一条可见的 `log`**（不只是服务端进程日志）。
+   *
+   * 为什么必须有：编排层的注入集里这一台仍算 `injectable`（契约放行），而 pi 的行级观测格把
+   * 「工具表里没有它」读成失败 ⇒ 整行 `AGENT_MCP_UNAVAILABLE`，文案说「未能启动」——它根本没起过。
+   * 厂商那边的启动报告走 `ctx.ui.notify`，SDK 装配下那是 no-op ⇒ 事件里这一条 `log`
+   * 是整条链上唯一说得出真因的地方。
+   */
+  it('被摘掉的条目落一条点名 log（真因不能只活在进程日志里）', async () => {
+    const row = freshRow();
+    const recorder = createFakePiRecorder();
+    recorder.events.push(SETTLED);
+    const events: AgentEvent[] = [];
+    const input: AgentRunInput = {
+      ...createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
+      mcpServers: { broken: { transport: 'stdio', enabled: true, command: 'node', args: 'a.js' } } as unknown as McpServers,
+    };
+    await runRow(recorder, input, { requestPayloads: [anthropicPayload('', ['read'])] });
+
+    const texts = logTexts(events);
+    const warning = texts.find((text) => text.includes('MCP 条目「broken」未注入')) ?? '';
+    expect(warning, `事件里没有那条点名 log：${texts.join(' | ')}`).not.toBe('');
+    expect(warning).toContain('args 不是数组');
+    // 一条就够：第二条投影不许再播一次（同一份事实逐条抄进 events.jsonl 只是噪声）
+    expect(texts.filter((text) => text.includes('MCP 条目「broken」')).length).toBe(1);
   });
 });
 

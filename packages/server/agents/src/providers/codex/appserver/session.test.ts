@@ -13,6 +13,16 @@ class FakeClient implements AppServerClient {
   closed = false;
   /** 让某一条请求失败（用来钉「起手失败要回收」那条路） */
   failOn: string | null = null;
+  /** `thread/resume` 响应里的 `thread.id`；`null` = 响应里没有这一格（形状不认识那条路） */
+  resumedThreadId: string | null = 'thread-resumed';
+  /** `thread/queue/add` 响应里的 `queuedSubmission.id`；`null` = 响应里没有这一格 */
+  queuedSubmissionId: string | null = 'qs-1';
+  /** `thread/queue/delete` 的 `{deleted}` */
+  queueDeleteResult = false;
+  /** `thread/queue/list` 回读到的提交 id */
+  queueListIds: string[] = [];
+  /** 每页给几条（`null` = 一次给完）：翻页判据要靠它造出真的多页应答 */
+  queueListPageSize: number | null = null;
   /** 终结原因（`die()` 之后非 null）：此后所有请求被拒，与真客户端同语义 */
   private terminalReason: string | null = null;
   private readonly notificationListeners = new Set<(notification: AppServerNotification) => void>();
@@ -35,7 +45,31 @@ class FakeClient implements AppServerClient {
     if (this.terminalReason !== null) return Promise.reject(new Error(this.terminalReason));
     if (this.failOn === method) return Promise.reject(new Error(`${method} 失败（30s 超时）`));
     if (method === 'thread/start') return Promise.resolve({ thread: { id: 'thread-1' } } as T);
+    if (method === 'thread/resume') {
+      return Promise.resolve((this.resumedThreadId === null ? {} : { thread: { id: this.resumedThreadId } }) as T);
+    }
     if (method === 'turn/start') return Promise.resolve({ turn: { id: 'turn-1' } } as T);
+    if (method === 'thread/queue/add') {
+      return Promise.resolve(
+        (this.queuedSubmissionId === null ? {} : { queuedSubmission: { id: this.queuedSubmissionId } }) as T,
+      );
+    }
+    if (method === 'thread/queue/delete') return Promise.resolve({ deleted: this.queueDeleteResult } as T);
+    if (method === 'thread/queue/list') {
+      /**
+       * **按页交付**（`queueListPageSize` 为 `null` 时一次给完，与过去同形）：翻页判据只能用
+       * 真的分成多页的应答来钉——一次给完的假件下，「读不读 `nextCursor`」两种实现都是绿的。
+       */
+      const size = this.queueListPageSize;
+      if (size === null) return Promise.resolve({ data: this.queueListIds.map((id) => ({ id })), nextCursor: null } as T);
+      const offset = Number((params as { cursor?: string } | undefined)?.cursor ?? '0');
+      const page = this.queueListIds.slice(offset, offset + size);
+      const next = offset + size;
+      return Promise.resolve({
+        data: page.map((id) => ({ id })),
+        nextCursor: next < this.queueListIds.length ? String(next) : null,
+      } as T);
+    }
     return Promise.resolve({} as T);
   }
 
@@ -292,11 +326,19 @@ describe('startCodexSession —— 终结边界', () => {
 });
 
 describe('startCodexSession —— 中断、终止与关闭', () => {
-  it('interrupt 发 turn/interrupt 并带本轮坐标', async () => {
+  it('interrupt 发 turn/interrupt 并带**调用方给的那一轮**坐标', async () => {
     const client = new FakeClient();
     const session = await start(client);
-    await session.interrupt();
-    expect(client.requests[3]).toEqual({ method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } });
+    // 在途轮号由调用方给：续跑之后，建会话时捕获的首轮早就收场了（见 CodexSession.interrupt）
+    await session.interrupt('turn-2');
+    expect(client.requests[3]).toEqual({ method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-2' } });
+  });
+
+  it('没有在途轮时不发 turn/interrupt（发一个已收场的 id 必被厂商拒）', async () => {
+    const client = new FakeClient();
+    const session = await start(client);
+    await session.interrupt(null);
+    expect(client.requests.some((one) => one.method === 'turn/interrupt')).toBe(false);
   });
 
   it('进程提前终止 ⇒ 本轮以 failed + 原因结算，流结束', async () => {
@@ -376,4 +418,151 @@ describe('startCodexSession —— settled 闸门', () => {
     await iterator.return?.(undefined);
     await expect(session.settled).resolves.toBeUndefined();
   }, 3000);
+});
+
+/**
+ * **续接**（`thread/resume`）：新进程接上一条已有线程。
+ *
+ * 判据取**帧序**（`thread/start` 一条都不许出现）与**id 的来源**（响应里的 `thread.id`）两件事：
+ * 前者守「不许静默开新会话」（那是最坏的一种——用户以为在追问、智能体其实什么都不记得），
+ * 后者守「落盘的键与真正在跑的线程同值」。
+ */
+describe('startCodexSession —— 续接（thread/resume）', () => {
+  it('给了 resumeThreadId ⇒ 只发 thread/resume，id 取自响应的 thread.id', async () => {
+    const client = new FakeClient();
+    client.resumedThreadId = 'thread-old';
+    const session = await start(client, { resumeThreadId: 'thread-old' });
+    // `thread/start` 一条都不许出现：它意味着「开了新会话」，而那与用户在追问的预期相反
+    expect(client.requests.map((one) => one.method)).toEqual(['initialize', 'thread/resume', 'turn/start']);
+    expect(client.requests[1]?.params).toMatchObject({
+      threadId: 'thread-old',
+      model: 'deepseek-chat',
+      cwd: 'D:/w',
+    });
+    expect(session.threadId).toBe('thread-old');
+  });
+
+  it('响应里的 thread.id 才是权威（与请求里那个不同时以响应为准）', async () => {
+    const client = new FakeClient();
+    client.resumedThreadId = 'thread-canonical';
+    const session = await start(client, { resumeThreadId: 'thread-alias' });
+    expect(session.threadId).toBe('thread-canonical');
+    // 终结判据挂在主线程 id 上 ⇒ 用响应那个 id 投终态必须能结算本轮
+    client.emit('turn/completed', {
+      threadId: 'thread-canonical',
+      turn: { id: 'turn-1', items: [], status: 'completed' },
+    });
+    await expect(session.outcome).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('thread/resume 不返回 thread.id ⇒ 报错点名（不拿请求里那个冒充）', async () => {
+    const client = new FakeClient();
+    client.resumedThreadId = null;
+    await expect(start(client, { resumeThreadId: 'thread-old' })).rejects.toThrow(/thread\/resume/);
+  });
+
+  it('thread/resume 报错 ⇒ 原样抛且**不回落** thread/start，已 spawn 的客户端被回收', async () => {
+    const client = new FakeClient();
+    client.failOn = 'thread/resume';
+    await expect(start(client, { resumeThreadId: 'thread-old' })).rejects.toThrow(/thread\/resume 失败/);
+    expect(client.requests.some((one) => one.method === 'thread/start')).toBe(false);
+    expect(client.closed).toBe(true);
+  });
+});
+
+/**
+ * **两档注入的 wire 面**：`turn/steer`（在途）与 `thread/queue/*`（耐久队列）。
+ *
+ * 入参形状照本机 0.156.1 的生成物：`TurnSteerParams.required = ['expectedTurnId','input','threadId']`
+ * （`clientUserMessageId` 可选）、`ThreadQueueAddParams.required =
+ * ['clientUserMessageId','input','threadId']`（**必填**，由我们铸）、
+ * `ThreadQueueDeleteParams.required = ['queuedSubmissionId','threadId']` → `{deleted}`。
+ */
+describe('startCodexSession —— 注入的 wire 面（steer / queue）', () => {
+  it('steer：expectedTurnId 是本轮 id，clientUserMessageId 是编排层那一条的身份', async () => {
+    const client = new FakeClient();
+    const session = await start(client);
+    await session.steer({ text: '顺便把 changelog 补上', messageId: 'msg-1', expectedTurnId: 'turn-1' });
+    expect(client.requests[3]).toEqual({
+      method: 'turn/steer',
+      params: {
+        threadId: 'thread-1',
+        expectedTurnId: 'turn-1',
+        clientUserMessageId: 'msg-1',
+        input: [{ type: 'text', text: '顺便把 changelog 补上', text_elements: [] }],
+      },
+    });
+  });
+
+  it('steer 被厂商拒（没有在途轮）⇒ 错误原文照抛，由端口那一层决定怎么处置', async () => {
+    const client = new FakeClient();
+    client.failOn = 'turn/steer';
+    const session = await start(client);
+    await expect(session.steer({ text: '喂', messageId: 'm', expectedTurnId: 'turn-1' })).rejects.toThrow(/turn\/steer 失败/);
+  });
+
+  it('queueAdd：clientUserMessageId 必填，交回厂商的 queuedSubmission.id', async () => {
+    const client = new FakeClient();
+    client.queuedSubmissionId = 'qs-9';
+    const session = await start(client);
+    await expect(session.queueAdd({ text: '等这轮跑完再说', messageId: 'msg-2' })).resolves.toBe('qs-9');
+    expect(client.requests[3]).toEqual({
+      method: 'thread/queue/add',
+      params: {
+        threadId: 'thread-1',
+        clientUserMessageId: 'msg-2',
+        input: [{ type: 'text', text: '等这轮跑完再说', text_elements: [] }],
+      },
+    });
+  });
+
+  it('queueAdd 的响应形状不认识 ⇒ 点名报错（拿不到 id 就没法按身份撤回）', async () => {
+    const client = new FakeClient();
+    client.queuedSubmissionId = null;
+    const session = await start(client);
+    await expect(session.queueAdd({ text: '喂', messageId: 'm' })).rejects.toThrow(/queuedSubmission\.id/);
+  });
+
+  it('queueDelete：按 queuedSubmissionId，`{deleted}` 如实回', async () => {
+    const client = new FakeClient();
+    client.queueDeleteResult = true;
+    const session = await start(client);
+    await expect(session.queueDelete('qs-9')).resolves.toBe(true);
+    expect(client.requests[3]).toEqual({
+      method: 'thread/queue/delete',
+      params: { threadId: 'thread-1', queuedSubmissionId: 'qs-9' },
+    });
+    client.queueDeleteResult = false;
+    await expect(session.queueDelete('qs-9')).resolves.toBe(false);
+  });
+
+  it('queueList：读回队列里的提交 id（撤回那一刻判「还在不在队列里」）', async () => {
+    const client = new FakeClient();
+    client.queueListIds = ['qs-1', 'qs-2'];
+    const session = await start(client);
+    await expect(session.queueList()).resolves.toEqual(['qs-1', 'qs-2']);
+    expect(client.requests[3]).toEqual({ method: 'thread/queue/list', params: { threadId: 'thread-1' } });
+  });
+
+  /**
+   * **翻完页才算读全**。
+   *
+   * 要拦的缺陷：只读第一页、丢掉 `nextCursor`。这份读数的唯一消费方是撤回那条路
+   * （`thread/queue/delete` 只回 `{deleted:false}`，「已消费 / 已删过 / id 不对」分不开，
+   * 要靠「这条还在不在队列里」才分得开）⇒ 排在后面几页的那条会被读成「已经不在队列里了」，
+   * 撤回于是给出**相反**的结论（答 `already-consumed`，而它其实还在队里等着投给模型）。
+   */
+  it('queueList：跟着 `nextCursor` 翻完（只读第一页会让撤回给出相反的结论）', async () => {
+    const client = new FakeClient();
+    client.queueListIds = ['qs-1', 'qs-2', 'qs-3', 'qs-4', 'qs-5'];
+    client.queueListPageSize = 2;
+    const session = await start(client);
+    await expect(session.queueList()).resolves.toEqual(['qs-1', 'qs-2', 'qs-3', 'qs-4', 'qs-5']);
+    const listCalls = client.requests.filter((one) => one.method === 'thread/queue/list');
+    expect(listCalls).toHaveLength(3);
+    // 第一页不带 cursor（那一格缺席才是「从头读」），后续页逐页带上它
+    expect(listCalls[0]?.params).toEqual({ threadId: 'thread-1' });
+    expect(listCalls[1]?.params).toEqual({ threadId: 'thread-1', cursor: '2' });
+    expect(listCalls[2]?.params).toEqual({ threadId: 'thread-1', cursor: '4' });
+  });
 });

@@ -449,9 +449,9 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
   it('拆分出的文件条数与登记一致（新增文件必须回到这里更新清单）', () => {
     // 这是一条**绊线**：它不校验什么业务规则，只保证「有人新增一个拆分文件」时这里先红一次，
     // 逼作者回来看一眼（新增的那个文件有没有照抄三条 `vi.mock`）。
-    // 22 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
+    // 24 = 当前拆分文件的条数，**不含 `orchestrator-live.test.ts`**（它是另一个文件，见上面的过滤器）。
     // 新增一个拆分文件就要把这个数加一——下一条用例会检查它有没有照抄三条 `vi.mock`。
-    expect(splitFiles).toHaveLength(22);
+    expect(splitFiles).toHaveLength(24);
   });
 
   it('每个文件都自己注册了三条 mock', () => {
@@ -1011,11 +1011,30 @@ describe('技能装入的单一消费点', () => {
     }
   });
 
-  it('行级观测格只由编排层推导一次：`deriveRowSkillInstall` 的调用点只有一处', () => {
+  it('行级观测格只由编排层推导一次：`deriveRowSkillInstall` 的调用点只在候选执行那两条路里', () => {
     // 定义在 `row-skill.ts`，`skillMissingMessage` 内部复用同一份推导（那是**刻意**的第二读点：
-    // 两处各拼一份的表现是「快照里记着厂商没认、行却照常出了分」）。编排层那一处是唯一的落盘推导点。
+    // 两处各拼一份的表现是「快照里记着厂商没认、行却照常出了分」）。
+    // 编排层里的落盘推导点有**两处**——候选执行有两条路（完整跑一行 `runRowAttempt` 与追问
+    // `followUpAttempt`），每一次执行都要按**这一次**的厂商证据下结论。判据因此从「只有一处」
+    // 收紧成「只允许在这两个函数体里」，第三处（评分、用例同步、别处顺手推导）照旧红。
     const hits = sourceHits(/deriveRowSkillInstall\(/g);
-    expect(filesOf(hits).filter((file) => file === ORCHESTRATOR), '编排层里的推导点不止一处').toHaveLength(1);
+    const orchestratorHits = hits.filter((hit) => hit.startsWith(`${ORCHESTRATOR}:`));
+    expect(orchestratorHits, '编排层里的推导点不在候选执行那两条路里').toHaveLength(2);
+    const candidateSource = stripComments(readSource(ORCHESTRATOR));
+    const candidatePaths = [
+      functionRange(candidateSource, 'runRowAttempt'),
+      functionRange(candidateSource, 'followUpAttempt'),
+    ];
+    // `sourceHits` 给的是行号（1 起），换算成下标才能问「它在不在那个函数体里」
+    const lineStarts = [0];
+    for (const line of candidateSource.split('\n')) lineStarts.push((lineStarts.at(-1) ?? 0) + line.length + 1);
+    for (const hit of orchestratorHits) {
+      const index = lineStarts[Number(hit.slice(hit.indexOf(':') + 1)) - 1] ?? 0;
+      expect(
+        candidatePaths.some(([start, end]) => index >= start && index <= end),
+        `推导点 ${hit} 不在候选执行的两条路里`,
+      ).toBe(true);
+    }
     expect(new Set(filesOf(hits)), '推导跑到了第三个文件里——它只该出现在定义处与编排层').toEqual(
       new Set([ORCHESTRATOR, 'row-skill.ts']),
     );
@@ -1023,5 +1042,41 @@ describe('技能装入的单一消费点', () => {
     const orchestrator = stripComments(readSource(ORCHESTRATOR));
     expect(orchestrator).toContain('skillInstall: deriveRowSkillInstall(skillEvidence)');
     expect(orchestrator).toContain('skillMissingMessage(skillEvidence');
+  });
+});
+
+/**
+ * 追问**不许走「重新执行」那条路**（静态护栏，行为面的那一条在 `orchestrator-follow-up.test.ts`
+ * 的哨兵文件用例里）。
+ *
+ * 为什么需要结构面这一条：`runRow` 的第一件重活是 `prepareRowWorkspace`
+ * （`resetRowDir → clearRowArtifacts` 整删 `workspace/` + `.agenthome/` + `.judgehome/`），
+ * 而 `.agenthome` 正是 cc 的 `CLAUDE_CONFIG_DIR`、codex 的 `CODEX_HOME`、pi 的会话落点
+ * ⇒ 追问接到那条路上等于**把要续接的会话删掉**。而症状是**静默**的：行照跑、分照出，
+ * 只是「智能体什么都不记得了」——看起来像模型变笨，没有任何一处报错。
+ *
+ * 判据是「`followUp*` 的函数体里不出现 `runRow` / `retryRow` 的调用」（`retryRow` 是同一跳的
+ * 另一种写法：它内部就是 `runRow`）。扫函数体而不是扫整节：这样将来在那一节里新增辅助函数
+ * 也一并被罩住，而不再扩大范围到整份 orchestrator（那里有合法的调用点）。
+ */
+describe('追问不走「重新执行」那条路（静态护栏）', () => {
+  it('`followUp*` 的函数体里不出现 runRow / retryRow 的调用', () => {
+    const text = stripComments(readSource(ORCHESTRATOR));
+    const names = [...text.matchAll(/\bfunction\s+(followUp\w*)\s*\(/g)].map((match) => String(match[1]));
+    // 判据的前提必须显式成立：函数被改名 / 搬走时这一条要红，而不是悄悄扫了个空集
+    expect(names, '追问的两个函数必须都还在（判据靠它们的函数体）').toContain('followUpRow');
+    expect(names, '追问的两个函数必须都还在（判据靠它们的函数体）').toContain('followUpAttempt');
+
+    const violations: string[] = [];
+    for (const name of names) {
+      const [start, end] = functionRange(text, name);
+      const body = text.slice(start, end);
+      for (const call of [/(?<![\w.])runRow\s*\(/g, /(?<![\w.])retryRow\s*\(/g]) {
+        for (const index of occurrences(body, call)) {
+          violations.push(`${name} 第 ${lineOf(text, start + index)} 行：${call.source}`);
+        }
+      }
+    }
+    expect(violations, '追问那一节里出现了 runRow / retryRow：那会重建工作区并删掉要续接的会话').toEqual([]);
   });
 });

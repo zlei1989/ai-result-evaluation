@@ -323,6 +323,24 @@ describe('buildAgentEnvironment：厂商系统层', () => {
     expect(slash.text).toContain('子智能体定义（2）');
   });
 
+  /**
+   * **权限档是会话属性**：厂商只在会话起手那条 `vendor-system` 上带它，追问 / 续接段（含跨进程）
+   * 那一条不带 ⇒ 「取最后一条」会把上一段已经读到过的档位擦成 `not-exposed`，而实际档位没变。
+   * 真机形状（dsh：同进程追问与跨进程续接各复现一次）：
+   * `[{permissionMode:'danger-full-access'}, {permissionMode:null}]`。
+   */
+  it('后到的 vendor-system 不带权限档 ⇒ 保留前一条读到的档位（不被擦成 not-exposed）', () => {
+    const events = [
+      vendorSystemEvent({ permissionMode: 'danger-full-access' }, 1),
+      vendorSystemEvent({ permissionMode: null, tools: ['read'] }, 2),
+    ];
+    const project = groupOf(build(events).groups, 'project');
+    const permission = project.items.find((item) => item.id === 'project-permission');
+    expect(permission?.present).toBe(true);
+    if (permission?.present !== true) throw new Error('权限档应当在场');
+    expect(permission.text).toBe('danger-full-access');
+  });
+
   it('没有归一事件（codex / dsh 真机如此）⇒ `not-exposed`，不是 `not-observed`', () => {
     const vendor = groupOf(build([logEvent('{"type":"thread.started","thread_id":"t-1"}')]).groups, 'vendor');
     // 「厂商有、没投送到我们能读的通道」——写成 `not-observed` 会把责任记到本仓头上，

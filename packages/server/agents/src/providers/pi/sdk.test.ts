@@ -13,10 +13,44 @@ import {
   PI_AI_PACKAGE_NAME,
   PI_MIN_NODE_VERSION,
   PI_PACKAGE_NAME,
+  type PiSdkModule,
+  type PiSession,
   assertPiNodeVersion,
   loadPiAi,
   loadPiSdk,
 } from './sdk';
+
+/**
+ * **自声明与厂商 `.d.ts` 逐格对齐**（判据在 `tsc` 上，`typeof import(...)` 只在类型位置求值、
+ * 不产生任何运行期 import——厂商包只能动态 import）。
+ *
+ * 为什么需要这条守卫：窄壳的声明是「我们以为厂商有什么」的全部记录，而它写错的两种形态都不会在
+ * 本层当场报错——名字拼错（`followUp` 写成 `followup`）要等到真机那一轮才以
+ * `… is not a function` 出现；**签名收窄错**（`followUp` 声明成同步）则永远不会报，
+ * 直到我们真去 `await` 一个 undefined。
+ *
+ * 方向定成「厂商那一格**收得下**我们的声明」（`Vendor extends Ours`），不取反向：反向会逼我们
+ * 把厂商的每一格都抄进来，而抄一份就随升级漂移。这个方向下，「我们发明了厂商没有的方法」会让
+ * `Vendor...['那一格']` 取不到 ⇒ `tsc` 当场报错。
+ */
+type VendorPiModule = typeof import('@earendil-works/pi-coding-agent');
+type VendorPiSession = InstanceType<VendorPiModule['AgentSession']>;
+type AssertAssignable<From, To> = From extends To ? true : false;
+
+/** 会话面：只列本仓声明了的那几格（没声明的格子不在这张表里，故不构成漂移判据） */
+const declaredSessionCells: [
+  AssertAssignable<VendorPiSession['sessionId'], PiSession['sessionId']>,
+  AssertAssignable<VendorPiSession['sessionFile'], PiSession['sessionFile']>,
+  AssertAssignable<VendorPiSession['steer'], PiSession['steer']>,
+  AssertAssignable<VendorPiSession['followUp'], PiSession['followUp']>,
+] = [true, true, true, true];
+
+/** 会话管理器静态面：三条构造路径（`continueRecent` 也进表：本仓刻意不用它，故它的形状也得是真的） */
+const declaredSessionManagerCells: [
+  AssertAssignable<VendorPiModule['SessionManager']['create'], PiSdkModule['SessionManager']['create']>,
+  AssertAssignable<VendorPiModule['SessionManager']['open'], PiSdkModule['SessionManager']['open']>,
+  AssertAssignable<VendorPiModule['SessionManager']['continueRecent'], PiSdkModule['SessionManager']['continueRecent']>,
+] = [true, true, true];
 
 /**
  * 伪造 `process.versions.node`：它是只读数据属性（`writable: false`），只能整条替换后再还原。
@@ -99,11 +133,49 @@ describe('pi 的装载路径', () => {
     });
   });
 
-  it('版本合格 + 入口是函数 ⇒ 交出注入的模块', async () => {
-    const fake = { createAgentSession: async () => ({ session: 'fake' }) };
+  /**
+   * 五格**全在**才交出模块：这一格是「装配序列恒要的那几格齐了」的正面判据。
+   * 少任何一格都由下面两条负向用例逐个点名（不是只判入口那一个名字）。
+   */
+  it('版本合格 + 装配面五格齐 ⇒ 交出注入的模块', async () => {
+    const fake = {
+      createAgentSession: async () => ({ session: 'fake' }),
+      DefaultResourceLoader: class {},
+      SessionManager: { create: () => ({}), open: () => ({}), continueRecent: () => ({}) },
+      SettingsManager: { inMemory: () => ({}) },
+      ModelRuntime: class {
+        static create = async () => ({});
+      },
+    };
     setAgentRuntimeForTesting({ sdkModule: { [PI_PACKAGE_NAME]: fake } });
     await withFakeNodeVersion('22.19.0', async () => {
       await expect(loadPiSdk()).resolves.toBe(fake);
+    });
+  });
+
+  /**
+   * 逐格点名：缺的那一格必须出现在文案里（旧实现只判 `createAgentSession`，其余四格缺席会变成
+   * 装配期的裸 TypeError，还被归成在重试表里的 `AGENT_FAILED`）。
+   */
+  it.each([
+    ['DefaultResourceLoader', { DefaultResourceLoader: undefined }],
+    ['SessionManager', { SessionManager: { create: () => ({}) } }],
+    ['SettingsManager', { SettingsManager: {} }],
+    ['ModelRuntime', { ModelRuntime: undefined }],
+  ])('缺 %s 即 shape-mismatch，且文案点名那一格', async (entry, patch) => {
+    const fake = {
+      createAgentSession: async () => ({ session: 'fake' }),
+      DefaultResourceLoader: class {},
+      SessionManager: { create: () => ({}), open: () => ({}), continueRecent: () => ({}) },
+      SettingsManager: { inMemory: () => ({}) },
+      ModelRuntime: class {
+        static create = async () => ({});
+      },
+      ...patch,
+    };
+    setAgentRuntimeForTesting({ sdkModule: { [PI_PACKAGE_NAME]: fake } });
+    await withFakeNodeVersion('22.19.0', async () => {
+      await expect(loadPiSdk()).rejects.toThrow(new RegExp(entry));
     });
   });
 
@@ -177,5 +249,16 @@ describe('pi-ai 的凭据存储装载', () => {
   it('模块不是对象（厂商包形态变了）也只归加载失败，不让读导出面成为新的崩溃点', async () => {
     setAgentRuntimeForTesting({ sdkModule: { [PI_AI_PACKAGE_NAME]: null } });
     await expect(loadPiAi()).rejects.toThrow(/（读不到任何导出）/);
+  });
+});
+
+/**
+ * 上面那两条 `AssertAssignable` 表的**运行期影子**：真判据是类型断言（`tsc` 见红即守卫生效），
+ * 这一条只保证这张表真的被求值过一次（否则「表在文件里但没人读」与「表不存在」在 `vitest` 上同形）。
+ */
+describe('自声明与厂商 .d.ts 的对齐表', () => {
+  it('会话面与会话管理器面逐格对齐（不发明厂商没有的成员）', () => {
+    expect(declaredSessionCells).toEqual([true, true, true, true]);
+    expect(declaredSessionManagerCells).toEqual([true, true, true]);
   });
 });

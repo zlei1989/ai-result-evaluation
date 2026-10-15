@@ -18,6 +18,7 @@ import {
   retryRow,
   runRow,
   getRun,
+  saveRun,
   fakeAgents,
   releaseAllAgents,
   seedConfig,
@@ -113,5 +114,39 @@ describe('retryRow：单个评测项的重新执行（手动出口，界面文�
       () => rowSettled(run.id, run.rows[0]?.id ?? ''),
     );
     expect(getRun(run.id).rows[0]?.status).toBe('judged');
+  });
+
+  /**
+   * **重新执行 = 另一次尝试**：账本（`messages.jsonl`）与事件日志都在这一趟里被清空
+   * ⇒ 两格「人工消息 / 追问轮次」的计数必须跟着归零。留着旧数的症状有两处：
+   *   · 候选卡片上的「人工消息 ×N」说的是上一次尝试里的话，而账本里一条都没有（两处对不上）；
+   *   · 下一次追问的段号 = `followUpRounds + 1` ⇒ 新账本里第一个段标题写着「追问 ×4」，
+   *     而 1/2/3 段根本不存在。
+   * `attempts` 是**累计事实**，与它们刻意不同（「试了三次才成功」不能被清零）。
+   */
+  it('重新执行把「人工消息 / 追问轮次」两格清零，`attempts` 照旧累加', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'ok' });
+    await runRow(run.id, rowId);
+    await until(() => getRun(run.id).rows[0]?.status === 'judged', '首跑落终态', TEST_TIMEOUT_MS, () => rowSettled(run.id, rowId));
+
+    // 这一行「被追问过 2 次、收到 3 条人话」（追问入口就是往快照里这么写的）
+    const before = getRun(run.id);
+    saveRun({
+      ...before,
+      rows: before.rows.map((row) => (row.id === rowId ? { ...row, followUpRounds: 2, followUps: 3 } : row)),
+    });
+    expect(getRun(run.id).rows[0]?.attempts).toBe(1);
+
+    retryRow(run.id, rowId);
+    await drainRunningTasks();
+    await until(() => getRun(run.id).rows[0]?.status === 'judged', '重跑落终态', TEST_TIMEOUT_MS, () => rowSettled(run.id, rowId));
+
+    const after = getRun(run.id).rows.find((row) => row.id === rowId);
+    expect(after?.followUpRounds).toBe(0);
+    expect(after?.followUps).toBe(0);
+    // 尝试次数是累计事实：重跑之后必须是 2（清零会让「试了三次才成功」看起来像一次就成功）
+    expect(after?.attempts).toBe(2);
   });
 });

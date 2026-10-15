@@ -17,11 +17,19 @@ import { listPendingAskUser, resolveAskUser } from '@aieval/evaluator';
 
 const log = createLogger('ask-user');
 
-/** 当前待答清单（全部轮次）：快照路由的产出 */
-export function getPendingAskUser(): PendingAskUser[] {
+/**
+ * 当前待答清单（全部轮次，或只给某一轮）：快照路由的产出。
+ *
+ * `runId` 是**可选过滤**（不拆端点）：焦点那一轮之外还有多少提问在等，是列表页与详情页都要看的
+ * 事实，而弹层只需要焦点那一轮的——两者读同一份清单，多一个端点就是多一份会漂移的排序。
+ * **空串按「没给」处理**：`?runId=` 在 `URLSearchParams` 里拿到的是空串，而 runId 不可能是空串，
+ * 把它当成一次过滤会静默返回空清单（症状是「提问登记了但界面一直说没有」）。
+ */
+export function getPendingAskUser(runId?: string): PendingAskUser[] {
   const pending = listPendingAskUser();
-  log.debug('读待答快照', { count: pending.length });
-  return pending;
+  const filtered = runId === undefined || runId === '' ? pending : pending.filter((item) => item.runId === runId);
+  log.debug('读待答快照', { count: filtered.length, runId: runId ?? null });
+  return filtered;
 }
 
 /**

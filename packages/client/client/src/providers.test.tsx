@@ -1,5 +1,6 @@
 /**
- * 供应商 hooks：列表读取与 refresh、增删改、模型清单增删、拉取，以及**mutation 后列表刷新**。
+ * 供应商 hooks：列表读取与 refresh、增删改、模型清单增删、拉取（预览 / 导入两步），
+ * 以及**mutation 后列表刷新**。
  *
  * 每个用例挂一份全新的 SWR 缓存：默认 cache 是模块级单例，沿用同一份会让第二个用例挂载时
  * 直接命中上一个用例的数据与在飞去重项，一次 GET 都不发（理由同 settings.test.tsx）。
@@ -12,7 +13,8 @@ import type { ProviderView } from '@aieval/contracts';
 import {
   useCreateProvider,
   useDeleteProvider,
-  useFetchProviderModels,
+  useImportProviderModels,
+  usePreviewProviderModels,
   useProviderModels,
   useProviders,
   useUpdateProvider,
@@ -48,8 +50,8 @@ const CREATE_INPUT = {
 const json = (body: unknown): Response =>
   new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 
-/** 造一个按方法分派的 fetch 桩，并记录每一次调用 */
-function stubFetch(handlers: { list?: ProviderView[]; mutation?: ProviderView } = {}): ReturnType<typeof vi.fn> {
+/** 造一个按方法分派的 fetch 桩，并记录每一次调用（mutation 的响应体形状因接口而异，故收 unknown） */
+function stubFetch(handlers: { list?: ProviderView[]; mutation?: unknown } = {}): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
     if ((init?.method ?? 'GET') === 'GET') return json(handlers.list ?? [VIEW]);
     return json(handlers.mutation ?? VIEW);
@@ -181,27 +183,58 @@ describe('useUpdateProvider / useDeleteProvider', () => {
   });
 });
 
-describe('useFetchProviderModels', () => {
-  it('fetchModels 发 POST /api/providers/{id}/models/fetch', async () => {
-    const fetchMock = stubFetch({ mutation: VIEW });
-    const { result } = renderHook(() => useFetchProviderModels(), { wrapper });
+describe('usePreviewProviderModels', () => {
+  it('preview 发 POST /api/providers/{id}/models/preview，把 { models } 解成数组', async () => {
+    const candidates = [{ id: 'deepseek-reasoner' }, { id: 'jd/glm-5.3', contextWindow: 128_000 }];
+    const fetchMock = stubFetch({ mutation: { models: candidates } });
+    const { result } = renderHook(() => usePreviewProviderModels(), { wrapper });
 
-    const view = await result.current.fetchModels('p-1');
+    const preview = await result.current.preview('p-1');
 
-    expect(view.models).toEqual(VIEW.models);
+    expect(preview).toEqual(candidates);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/providers/p-1/models/fetch');
+    expect(url).toBe('/api/providers/p-1/models/preview');
     expect(init.method).toBe('POST');
   });
 
-  // 拉取的合并结果落在列表里，弹窗里的模型清单跟着刷新（清单就是按列表props渲染的）。
-  it('fetchModels 成功后列表刷新成新清单', async () => {
-    const fetched = { ...VIEW, models: [{ id: 'deepseek-reasoner', source: 'fetched' as const }] };
-    stubListAfterMutation([fetched], fetched);
-    const { result } = renderHook(() => ({ list: useProviders(), fetch: useFetchProviderModels() }), { wrapper });
+  // 预览是只读的：拿不到 ProviderView、也不刷新列表（落盘是 import 那一步的事）。
+  // 桩按方法分派，preview 的 POST 若被当成 GET 打到列表上，解出的形状就错了 —— 用例当场红。
+  it('预览之后列表不发第二次 GET（只读不写）', async () => {
+    const fetchMock = stubFetch({ mutation: { models: [{ id: 'm' }] } });
+    const { result } = renderHook(() => ({ list: useProviders(), preview: usePreviewProviderModels() }), { wrapper });
+    await waitFor(() => expect(result.current.list.providers).toBeDefined());
+
+    await result.current.preview.preview('p-1');
+
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === undefined)).toHaveLength(1);
+  });
+});
+
+describe('useImportProviderModels', () => {
+  it('importModels 发 POST /api/providers/{id}/models/import，体里是挑选后的候选', async () => {
+    const fetchMock = stubFetch({ mutation: VIEW });
+    const { result } = renderHook(() => useImportProviderModels(), { wrapper });
+
+    const view = await result.current.importModels('p-1', [{ id: 'deepseek-reasoner' }, { id: 'm2', contextWindow: 1 }]);
+
+    expect(view.models).toEqual(VIEW.models);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/providers/p-1/models/import');
+    expect(init.method).toBe('POST');
+    // 提交的是候选原形（不带 source —— 落盘来源由服务端定）
+    expect(JSON.parse(String(init.body))).toEqual({
+      models: [{ id: 'deepseek-reasoner' }, { id: 'm2', contextWindow: 1 }],
+    });
+  });
+
+  // 导入的合并结果落在列表里，弹窗里的模型清单跟着刷新（清单就是按列表 props 渲染的）。
+  it('importModels 成功后列表刷新成新清单', async () => {
+    const imported = { ...VIEW, models: [{ id: 'deepseek-reasoner', source: 'fetched' as const }] };
+    stubListAfterMutation([imported], imported);
+    const { result } = renderHook(() => ({ list: useProviders(), importModels: useImportProviderModels() }), { wrapper });
     await waitFor(() => expect(result.current.list.providers?.[0]?.models).toEqual(VIEW.models));
 
-    await result.current.fetch.fetchModels('p-1');
+    await result.current.importModels.importModels('p-1', [{ id: 'deepseek-reasoner' }]);
 
     await waitFor(() =>
       expect(result.current.list.providers?.[0]?.models).toEqual([{ id: 'deepseek-reasoner', source: 'fetched' }]),

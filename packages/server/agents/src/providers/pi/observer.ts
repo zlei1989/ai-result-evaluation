@@ -10,15 +10,15 @@
  *     扩展回调里调用发射器——那个时刻不在骨架的 try/catch 里，一次抛错就能带走整行；
  *   · **纯函数读法**：抓到的 payload 是 `unknown`，两条判据（技能装载档、工具表）各是一个纯函数，
  *     可以脱开 SDK 逐字断言；
- *   · **按 wire 分两条**：系统段的位置由协议决定——`openai-completions` 把它当一条 `system`
- *     消息放进 `messages[]`（`instructionRole`，模型开推理且 compat 允许时是 `developer`），
+ *   · **按 wire 分两条**：系统段的位置由协议决定——`openai-responses` 把它当一条 `system` /
+ *     `developer` 消息放进顶层 `input[]`（`instructionRole`，模型开推理且 compat 允许时是 `developer`），
  *     `anthropic-messages` 放在顶层 `params.system`（文本块数组）。只写一条会让另一条 wire 必然假红。
  */
 /**
  * 本行实际用的 wire（= pi 的 provider `api` 字段，取值见 `wireForProtocol`）。
  * 不引 `index.ts` 的类型是为了让本模块保持零依赖：装配面与取证面各自独立演进。
  */
-export type PiWire = 'openai-completions' | 'anthropic-messages';
+export type PiWire = 'openai-responses' | 'anthropic-messages';
 
 /** pi 扩展的注册面：只声明我们用到的那一格（收窄到用到的形状，别抄厂商的 `.d.ts`） */
 export interface PiExtensionApi {
@@ -68,11 +68,11 @@ export function piSystemText(payload: unknown, wire: PiWire): string {
   if (record === null) return '';
   if (wire === 'anthropic-messages') return textOf(record['system']);
   /**
-   * openai 那条：系统段是 `messages[]` 里 **`system` / `developer`** 两条角色之一。
+   * OpenAI Responses 那条：系统段是顶层 `input[]` 里 **`system` / `developer`** 两条角色之一。
    * `developer` 不是别的什么东西——pi 在「模型开推理 + compat 允许」时就是把同一段文本挂在这个角色上
    * （`instructionRole`），漏掉它等于在自建网关上偶然读不到技能段。
    */
-  const messages = record['messages'];
+  const messages = record['input'];
   if (!Array.isArray(messages)) return '';
   return messages
     .filter((message) => {
@@ -85,9 +85,8 @@ export function piSystemText(payload: unknown, wire: PiWire): string {
 }
 
 /**
- * 请求里声明的**工具名**（两条 wire 的名字位置不同：openai 在 `tools[].function.name`、
- * anthropic 在 `tools[].name`）。一次遍历同时认两处：调用方不必先知道 wire——工具表的读法
- * 与系统段相反，它**不随 wire 分叉**，多写一份只会多一处漂移。
+ * 请求里声明的**工具名**（两条 wire 的名字位置不同：Responses 与 Messages 都是在 `tools[]` 的顶层
+ * `name`；Chat Completions 那层 `function.name` 的嵌套也一并认，读取侧不依赖 wire）。
  */
 export function piRequestToolNames(payload: unknown): string[] {
   const tools = asRecord(payload)?.['tools'];
@@ -140,7 +139,8 @@ export function piRequestToolDeclaration(payload: unknown, name: string): PiRequ
   for (const tool of tools) {
     const record = asRecord(tool);
     if (record === null) continue;
-    // openai：`{type:'function', function:{name, strict, parameters}}`；anthropic：`{name, input_schema, strict}`
+    // Responses / Messages 都是平铺 `{type:'function', name, strict, parameters}`；
+    // Chat Completions 的 `{type:'function', function:{…}}` 也一并认，读取侧不依赖 wire。
     const fn = asRecord(record['function']);
     const toolName = typeof fn?.['name'] === 'string' ? fn['name'] : record['name'];
     if (toolName !== name) continue;
@@ -186,7 +186,13 @@ export function piRequestSkills(payload: unknown, wire: PiWire): PiRequestSkill[
  * 行为档**只作冒烟与抽查**：模型这一轮没想用这条技能是正常的，不构成任何失败。
  *
  * 判据两格缺一不可（照真机读数）：`read` 的实参 `path` 与 `<location>` **逐字相等**，
- * 且这次 `tool_result` 的正文**含** `SKILL.md` 的原文（工具结果可能被厂商截断，故用包含而不是相等）。
+ * 且这次 `tool_result` 的正文**含** `SKILL.md` 的原文（工具结果可能被截断，故用包含而不是相等）。
+ *
+ * ⚠️ **今天没有产品调用点**：它只被 `observer.test.ts` 用着（知识库《四家横向对比》里
+ * 「认它真去读 `SKILL.md`」那一格说的是**判据长什么样**，不是「运行期会算出这一格」）。
+ * 要接上得先定口径——在哪一步算、算出来落在哪一格产物、拿它做什么（现在的答案都是「没有」），
+ * 那是新功能不是修缺陷。在那之前**别把它当成已经在跑的判据**：产物里没有任何一格回答
+ * 「模型是否读了这条技能的正文」。
  */
 export function piSkillReadSatisfied(
   calls: readonly PiSkillReadCall[],
@@ -238,12 +244,20 @@ function tagText(body: string, tag: string): string | null {
   return matched === null ? null : unescapeXml(matched[1] ?? '');
 }
 
-/** 厂商 `escapeXml` 的五种实体（`&` 必须最后还原，否则 `&amp;lt;` 会被还原两次） */
+/**
+ * 厂商 `escapeXml` 的五种实体（`&` 必须最后还原，否则 `&amp;lt;` 会被还原两次）。
+ *
+ * ⚠️ 单引号那一格厂商写的是 `&apos;`（`skills.js` 的 `escapeXml`：`'` → `&apos;`），
+ * 不是 HTML 里同样合法的 `&#39;`——只认后者会让**含单引号的落点**（macOS 用户名 `o'brien` 那一类）
+ * 反转义不出来，而这正是 `piSkillReadSatisfied` 的「与实际路径逐字相等」判据 ⇒ 该技能恒判「没读过」。
+ * 两种形态都还原，免得将来厂商换写法再踩一次。
+ */
 function unescapeXml(value: string): string {
   return value
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, '\'')
     .replace(/&#39;/g, '\'')
     .replace(/&amp;/g, '&');
 }

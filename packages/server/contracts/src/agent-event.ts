@@ -18,6 +18,9 @@ import { VendorSkillSchema } from './skill';
 // 提问的收场方式与通道：词表与消息账本共用一份（`ask-user-vocab.ts` 不 import 任何契约模块，
 // 故这里引它不会与「`agent-message` 引本模块的 `UsageTokensSchema`」构成环）
 import { AskUserChannelSchema, AskUserOutcomeSchema } from './ask-user-vocab';
+// 人工消息的收场词表与它落在哪一档：与队列表、消息账本共用一份（`inject-vocab.ts` 同样不 import
+// 任何契约模块，理由与上一条逐字相同）
+import { InjectMessageOutcomeSchema, InjectionBoundarySchema } from './inject-vocab';
 
 /** 事件公共字段：序号（从 1 开始）与 ISO 8601 时间戳 */
 const baseFields = { seq: z.number().int().positive(), at: z.string() };
@@ -457,6 +460,36 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     /** 从登记进挂起表到收场的等待时长（毫秒）；同一问在应答 POST 的那两个时刻之间也算得出同一个数 */
     waitedMs: z.number().int().nonnegative(),
   }),
+  /**
+   * **一条人工消息的落点**（编排层写的行级观测事件）：人往运行中的一轮送的那句话，最后去了哪里。
+   *
+   * 为什么必须单列一条事件、而不是只落消息账本：账本那一半（`origin: 'human'` 的 `user` 消息）
+   * 只在**真的交给厂商那一刻**才写，而「投不进去被丢弃」「等太久按预算收场」「撤回来了」三件事
+   * **一条账本记录都不会产生**——那三条恰恰是使用者最需要知道的（模型到底看没看到这句话）。
+   * 于是账本回答「模型收到了什么」，这一条回答「没收到的那几条去哪了」。
+   *
+   * 与账本的**同一份事实、两处落点**（不是第二份真相）：`messageId` 是两者的连接键，逐字相同
+   * （它就是客户端为这一条生成的那个 id，同时是登记时的幂等键）；一条缺失时另一条仍在，
+   * 读侧不许用一条去校验另一条。
+   *
+   * `reason` 与 `outcome` **成对**：`delivered` / `retracted` 两态是「事情按预期发生了」，
+   * 没有原因可写（`null`）；另外三态（已被模型吃掉 / 行收场时丢弃 / 等太久丢弃）必须给一句
+   * **可直接展示的中文**——`discarded` 与 `timed-out` 在界面上是两句不同的话，靠 `outcome` 分开、
+   * 靠 `reason` 说细。这条配对不写进 schema：加了 `superRefine` 的成员不能再进 `discriminatedUnion`
+   * （见 `ToolCallPayloadSchema` 的头注），故由产出方的类型联合保证（见 `evaluator` 的落盘端）。
+   */
+  z.object({
+    ...baseFields,
+    type: z.literal('inject-message'),
+    /** 这一条的身份：队列表的条目、幂等键、账本那条消息共用同一个值 */
+    messageId: z.string(),
+    /** 登记时要求的边界（「立即发送」是 `'round'`、「排队」是 `'idle'`）——复盘要看它有没有降档 */
+    requires: InjectionBoundarySchema,
+    /** 这一条最后怎么了（见上面那段配对口径） */
+    outcome: InjectMessageOutcomeSchema,
+    /** 为什么落到这一态；`delivered` / `retracted` 恒为 `null` */
+    reason: z.string().nullable(),
+  }),
   /** 评分结果：整份 ScoreResult 随事件落盘，抽屉直接读它 */
   z.object({ ...baseFields, type: z.literal('score'), score: ScoreResultSchema }),
   /** 失败归因：message 是给用户看的中文，stack 可省 */
@@ -482,5 +515,5 @@ export type UsageTurn = NonNullable<Extract<AgentEvent, { type: 'usage' }>['turn
 
 /** 九个事件类型：SSE 过滤与界面分组用；与上面联合的成员一一对应 */
 export const AGENT_EVENT_TYPES: readonly AgentEvent['type'][] = [
-  'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'score', 'error', 'end',
+  'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'inject-message', 'score', 'error', 'end',
 ];

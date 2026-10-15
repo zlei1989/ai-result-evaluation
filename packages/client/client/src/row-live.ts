@@ -1,18 +1,19 @@
 /**
  * 跑动期的**实时叠加层**：tok / 轮次 / 行开始时刻 + 智能体最近一条输出。
  *
- * 为什么单独一条流（而不是复用 `useRowStream`）：抽屉那条流要的是**全量事件**（几千条，供日志视图
- * 逐行渲染与下载），而这里要的只是几个字段。把两者分成两个 hook 之后：
- * · 指标这条只保留**折叠结果**，详情页同时开着 6 个候选也不会把事件堆在内存里；
+ * 为什么与 `useRowStream` 分开（而不是复用它）：抽屉那条流要的是**全量事件**（几千条，供日志视图
+ * 逐行渲染与下载），而这里要的只是几个字段。把两者分成两个消费方之后：
+ * · 指标这一路只保留**折叠结果**，详情页同时开着 6 个候选也不会把事件堆在内存里；
  * · 抽屉关着的时候不必为了几个数字把全量日志拉进浏览器。
+ * 两条流的**传输**是分开的：这一路（与活动行一起）走整轮共享的**聚合流**，抽屉走单行单 channel 的抽屉流。
  *
  * 五条口径：
  * 1. **值来自事件流、终态交回快照**：跑动期的 tok/轮次是适配器上报值或实时估算（每一条事件自带
  * `tokensBasis`，见 contracts 的 `agent-event.ts`——A2 起口径挂在事件上，不再挂在适配器的
- * 能力声明上），行一进终态就关掉这一行的连接并 mutate 一次快照——界面随后显示的是快照里的
+ * 能力声明上），行一进终态就不再折它的帧并 mutate 一次快照——界面随后显示的是快照里的
  * 权威值，这里不再自作主张；
  * 2. **只订阅在跑的行的**（调用方传 `rowIds`）：详情页一屏最多几行，而列表页有几十轮——
- * 那条「几十条长连接」的约束就是靠调用方把集合收窄来满足的；
+ * 那一行的帧会到达**整轮共享**的那条连接，但只有 `rowIds` 里的行会被折进状态（见函数里的 `matches`）；
  * 3. **seq 回到 1 = 新一代**：同一行重跑时编排层会删掉事件日志、seq 从 1 重新发号，
  * 旧一轮的指标与文本必须清掉（判据与 `row-stream.ts` 的口径 5 同源，只是这里只关心折叠结果）；
  * 4. **活动消息是「人话」，且按固定节奏采样发布**：卡片底部那一行显示的是
@@ -43,9 +44,10 @@
  */
 import { useEffect, useState } from 'react';
 import { useSWRConfig } from 'swr';
-import { AGENT_EVENT_TYPES, TERMINAL_ROW_STATUSES, type AgentEvent } from '@aieval/contracts';
+import { TERMINAL_ROW_STATUSES, type AgentEvent, type RunStreamFrame } from '@aieval/contracts';
 import { getJson } from './http';
-import { isTerminalEvent, parseFrame } from './row-stream';
+import { isTerminalEvent } from './row-stream';
+import { isAgentEventFrame, subscribeRunStream } from './run-stream-hub';
 import { RUNS_KEY, runKey, runRowUrl } from './runs';
 
 /** 界面要的字段（ui 只依赖它们，不依赖下面的游标） */
@@ -293,16 +295,22 @@ function toMetrics(state: RowLiveState): RowLiveMetrics {
 
 /**
  * 订阅若干行的实时叠加层，返回 `行 id → 字段`。
- * 只订阅传进来的行（调用方按快照里的在跑状态算），且每一行都是**一条独立连接**：
- *   首帧先拉该行的 `/log`（历史里已经有开始时刻、用量与最后一条输出），再按 `afterSeq=该行最后一条的 seq` 续订。
+ *
+ * 只订阅传进来的行（调用方按快照里的在跑状态算）：**首帧先逐行拉 `/log`**（折叠本就需要每行的历史，
+ * 它同时给出各自的续订位置），折完之后向**聚合流 hub** 注册一个 sink——一轮下所有行共用**一条**
+ * 连接（`?after=` 是各行的游标表），行与行之间靠帧里的 `rowId` 分流。
  * 读不到历史的那一行静默不订阅：界面退回快照值（缺的是「实时」，不是数据本身，不值得弹错）。
+ *
+ * 游标为什么必须来自**折叠结果**（而不是交给服务端回放）：这一路的折叠从 `LIVE_STATE_INIT` 起算，
+ * 它带进 URL 的 seq 只用来堵「快照读到订阅建立」之间那条缝——晚到（连接已经开着）时 hub 会带这张表
+ * 重连一次，否则那一段的帧既不在快照里、也不在回放里。
  *
  * 发布分两路（文件头口径 4）：那几个字段**变了就发**（它们是这一路的正事），
  * `latestText` 走 `LIVE_TEXT_SAMPLE` 的定时器采样发布——帧率再高，重渲染也只是每秒一次。
  */
 export function useRunLiveMetrics(input: { runId: string; rowIds: readonly string[] }): Record<string, RowLiveMetrics> {
   const { runId } = input;
-  // 数组每帧都是新引用，不能直接进依赖：拼成稳定的键，行集合不变就不重挂连接
+  // 数组每帧都是新引用，不能直接进依赖：拼成稳定的键，行集合不变就不重挂订阅
   const rowKey = input.rowIds.join(',');
   const { mutate } = useSWRConfig();
   const [metrics, setMetrics] = useState<Record<string, RowLiveMetrics>>({});
@@ -314,8 +322,16 @@ export function useRunLiveMetrics(input: { runId: string; rowIds: readonly strin
     }
     const rowIds = rowKey.split(',');
     let cancelled = false;
+    /** 读数表：只有**读到过历史**的行才在里面，也只有它们会进订阅 */
     const states = new Map<string, RowLiveState>();
-    const sources = new Map<string, EventSource>();
+    /**
+     * 已经跑完的行：不再折它的任何帧。
+     * 旧形状里这一格是「关掉这一行那条连接」——现在连接是整轮共享的，关不得（别行还在跑），
+     * 于是「这一行到此为止」只能由状态表达。
+     */
+    const finished = new Set<string>();
+    /** 还没注册上 hub（异步读快照期间）：卸载时别去退订一个不存在的订阅 */
+    let unsubscribe: (() => void) | null = null;
     /**
      * 上一次**发布出去**的文本（行 id → 文本）：采样定时器据此判断有没有新东西。
      * 放在 effect 里而**不进 state**——它只服务于发布判定，界面不该看见第二份真相。
@@ -374,7 +390,7 @@ export function useRunLiveMetrics(input: { runId: string; rowIds: readonly strin
     };
 
     /**
-     * 一帧的处理：折叠 → （那几个字段变了才）发布 → 终态则关这一行的连接并刷一次快照。
+     * 一帧的处理：折叠 → （那几个字段变了才）发布 → 终态则刷一次快照并给这一行画上句号。
      *
      * **只有那几个字段变了才立刻 setState**：真实一行会推来几千条 `log` / `diff-summary` 帧，
      * 逐帧发布等于每秒几十次整页重渲染（而它们一个字段都没改）——实测一条 4 分钟的 cc 行
@@ -382,39 +398,23 @@ export function useRunLiveMetrics(input: { runId: string; rowIds: readonly strin
      * **文本这一路不在这里发布**：它由下面的采样定时器按固定节奏推出（文件头口径 4）。
      */
     const ingest = (rowId: string, event: AgentEvent): void => {
+      if (finished.has(rowId)) return;
       const previous = states.get(rowId) ?? LIVE_STATE_INIT;
       const next = stepLiveState(previous, event);
       states.set(rowId, next);
       if (!sameMetrics(previous, next)) publish();
       if (!isTerminalEvent(event)) return;
-      sources.get(rowId)?.close();
-      sources.delete(rowId);
+      finished.add(rowId);
       void mutate(runKey(runId));
       void mutate(RUNS_KEY);
     };
 
-    const connect = (rowId: string, afterSeq: number): void => {
-      // 环境没有 EventSource（老浏览器 / 测试替身缺失）时不能抛：指标退回快照值即可
-      if (typeof EventSource === 'undefined') return;
-      const source = new EventSource(`${runRowUrl(runId, rowId, 'stream')}?afterSeq=${afterSeq}`);
-      sources.set(rowId, source);
-      const handleFrame = (event: MessageEvent): void => {
-        const parsed = parseFrame(String(event.data));
-        if (parsed !== null) ingest(rowId, parsed);
-      };
-      // api 发的是具名事件（`event: <type>`），必须按事件名订阅；无名帧留 onmessage 兜底。
-      // `error` 与 useRowStream 同口径：它的 onerror 属性已经被占用，不进这张表（否则同一帧投递两次）
-      for (const type of AGENT_EVENT_TYPES) {
-        if (type === 'error') continue;
-        source.addEventListener(type, handleFrame);
-      }
-      source.onmessage = handleFrame;
-      // 服务端发的具名 error 帧走 onerror（带 data）；连接故障没有 data，两种形状分开处置
-      source.onerror = (event: Event) => {
-        const data = (event as MessageEvent).data;
-        if (typeof data === 'string') handleFrame(event as MessageEvent);
-      };
-    };
+    /**
+     * 这一帧要不要交给本 sink：候选事件的帧、且落在**读过历史**的那些行上、且那一行还没跑完。
+     * 评分事件不在这条流上（走抽屉流），消息帧与信号帧不归这一路。
+     */
+    const matches = (frame: RunStreamFrame): boolean =>
+      isAgentEventFrame(frame) && frame.rowChannel === 'candidate' && states.has(frame.rowId) && !finished.has(frame.rowId);
 
     /**
      * 文本采样：帧只折进 `states`，**发布交给这里**（文件头口径 4）。
@@ -428,26 +428,40 @@ export function useRunLiveMetrics(input: { runId: string; rowIds: readonly strin
     }, LIVE_TEXT_SAMPLE.intervalMs);
 
     void (async () => {
+      // 逐行拉快照：折叠本就需要每行的历史，它同时给出各行的续订位置（`lastSeq`）
       for (const rowId of rowIds) {
         if (rowId === '') continue;
         try {
           const history = await getJson<AgentEvent[]>(runRowUrl(runId, rowId, 'log'));
           if (cancelled) return;
-          const state = foldLiveMetrics(history);
-          states.set(rowId, state);
+          states.set(rowId, foldLiveMetrics(history));
           publish();
-          connect(rowId, state.lastSeq);
         } catch {
           // 这一行读不到历史：不订阅它（见函数头）。别行的订阅照常进行
         }
       }
+      if (cancelled) return;
+      // 一行都没读到（整个快照端点都不可用）就不必开连接：聚合流只推实时增量，而这一路要的是折叠
+      if (states.size === 0) return;
+      unsubscribe = subscribeRunStream({
+        runId,
+        sink: {
+          match: matches,
+          onFrame: (frame) => {
+            if (cancelled || !isAgentEventFrame(frame)) return;
+            ingest(frame.rowId, frame);
+          },
+          // 各行的快照位置：晚到（连接已经开着）时 hub 会带这张表重连一次，补上那一段缝
+          cursors: new Map([...states].map(([rowId, state]) => [rowId, state.lastSeq])),
+        },
+      });
     })();
 
     return () => {
       cancelled = true;
       clearInterval(sampler);
-      for (const source of sources.values()) source.close();
-      sources.clear();
+      unsubscribe?.();
+      unsubscribe = null;
     };
   }, [rowKey, runId, mutate]);
 

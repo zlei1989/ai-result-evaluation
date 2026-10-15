@@ -9,13 +9,33 @@ import {
   AGENT_EVENT_TYPES,
   AGENT_KINDS,
   AGENT_LABELS,
+  ARTIFACT_EXTENSIONS,
+  ARTIFACT_FILE_HINT,
+  ARTIFACT_READ_MAX_BYTES,
+  ARTIFACT_TEXT_MAX_CHARS,
+  ATTACHMENT_MAX_FILE_BYTES,
+  ATTACHMENT_MAX_PER_MESSAGE,
+  ArtifactKindSchema,
   AgentEventSchema,
+  AgentMessageSchema,
+  AskUserChangedFrameSchema,
+  MessageOriginSchema,
   AgentKindSchema,
   CaseCreateSchema,
   CasePatchSchema,
   CommitCandidateSchema,
+  DRAWER_CHANNELS,
+  DrawerChannelSchema,
   ERROR_CODES,
   EvalRowSchema,
+  InjectionBoundarySchema,
+  InjectMessagesChangedFrameSchema,
+  RetractAbilitySchema,
+  RetractOutcomeSchema,
+  TurnInjectionCapabilitySchema,
+  TurnInjectionChannelSchema,
+  TurnInjectionCellSchema,
+  TurnInjectionRetractSchema,
   EvalRowStatusSchema,
   EvalRunSchema,
   ExecutionModeSchema,
@@ -30,7 +50,10 @@ import {
   PROTOCOL_LABELS,
   ProviderCreateSchema,
   ProviderModelInputSchema,
+  ProviderModelPreviewListSchema,
+  ProviderModelPreviewSchema,
   ProviderModelSchema,
+  ProviderModelsImportSchema,
   ProviderPatchSchema,
   ProviderSchema,
   ProviderViewSchema,
@@ -43,6 +66,10 @@ import {
   RepoValidateInputSchema,
   RowDiffFileSchema,
   RowDiffIndexSchema,
+  RowArtifactFileSchema,
+  RunArtifactIndexSchema,
+  RunSignalFrameSchema,
+  RunStreamFrameSchema,
   RubricGroupSchema,
   RubricItemSchema,
   RunCreateSchema,
@@ -90,8 +117,11 @@ import {
   preserveUnchangedSecrets,
   repoNameFromSource,
   rubricEntries,
+  artifactKindOf,
   type AgentKind,
+  type ArtifactKind,
   type AgentEvent,
+  type DrawerChannel,
   type RubricItem,
   type RubricEntry,
   type EvalRow,
@@ -104,14 +134,20 @@ import {
   type ProviderCreate,
   type ProviderModel,
   type ProviderModelInput,
+  type ProviderModelPreview,
+  type ProviderModelPreviewList,
+  type ProviderModelsImport,
   type ProviderPatch,
   type ProviderView,
   type RepoCommitsInput,
   type RepoInfo,
   type RepoValidateInput,
+  type RowArtifactFile,
   type RowDiffFile,
   type RowDiffIndex,
+  type RunArtifactIndex,
   type RunCreate,
+  type RunStreamFrame,
   type ScoreResult,
   type TestCase,
   type CaseCreate,
@@ -143,18 +179,27 @@ describe('contracts 公共出口', () => {
     for (const schema of [
       ProtocolTypeSchema, ProviderModelSchema, ProviderSchema, ProviderViewSchema,
       ProviderCreateSchema, ProviderPatchSchema, ProviderModelInputSchema,
+      ProviderModelPreviewSchema, ProviderModelPreviewListSchema, ProviderModelsImportSchema,
       TestCaseSchema, CaseCreateSchema, CasePatchSchema, RepoInfoSchema, CommitCandidateSchema,
       RepoPathInputSchema, GenerateRubricSchema, RepoValidateInputSchema, RepoCommitsInputSchema,
       RepoSourceStringSchema,
       AgentKindSchema, ExecutionModeSchema, EvalRowStatusSchema, EvalRowSchema, EvalRunSchema,
       RunCreateSchema, RowDiffIndexSchema, RowDiffFileSchema,
+      RunArtifactIndexSchema, RowArtifactFileSchema, ArtifactKindSchema,
+      DrawerChannelSchema, RunSignalFrameSchema, RunStreamFrameSchema,
+      AskUserChangedFrameSchema, InjectMessagesChangedFrameSchema,
       RubricGroupSchema, RubricItemSchema, ScoreResultSchema,
       AgentEventSchema,
+      AgentMessageSchema,
+      MessageOriginSchema,
       SettingsSchema, SettingsPatchSchema, SettingsViewSchema, ThemeModeSchema,
       McpServerConfigSchema, McpServersSchema,
       SkillNameSchema, SkillDisabledSchema, SkillDisabledPatchSchema, SkillsSettingsSchema, SkillsPatchSchema,
       SkillEntrySchema, SkillWarningSchema, SkillListSchema,
       SkillFilePathSchema, SkillFileTextSchema, SkillTreeNodeSchema, SkillTreeSchema,
+      InjectionBoundarySchema, RetractOutcomeSchema, RetractAbilitySchema,
+      TurnInjectionChannelSchema, TurnInjectionCellSchema, TurnInjectionRetractSchema,
+      TurnInjectionCapabilitySchema,
     ]) {
       expect(typeof schema.safeParse).toBe('function');
     }
@@ -162,14 +207,16 @@ describe('contracts 公共出口', () => {
 
   it('导出全部常量', () => {
     expect([...AGENT_KINDS]).toEqual(['cc', 'codex', 'dsh', 'pi']);
-    // 九个（含 `vendor-system` 与编排层写的那条 `ask-user`）：清单与联合成员的一一对应另有一条专测，
-    // 这里只钉「包根确实把这份清单导出成了一个可枚举的值」
-    expect([...AGENT_EVENT_TYPES]).toHaveLength(9);
+    // 十个（含 `vendor-system` 与编排层写的那两条 `ask-user` / `inject-message`）：清单与联合成员的
+    // 一一对应另有一条专测，这里只钉「包根确实把这份清单导出成了一个可枚举的值」
+    expect([...AGENT_EVENT_TYPES]).toHaveLength(10);
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
     expect(AGENT_LABELS.pi).toBe('Pi Coding Agent');
     expect(PROTOCOL_LABELS.openai).toBe('OpenAI 兼容');
     expect(ROW_STATUS_LABELS['timed-out']).toBe('已超时');
     expect(TERMINAL_ROW_STATUSES).toContain('judged');
+    // 抽屉通道值域：抽屉流的 URL 参数、服务端的白名单校验、客户端的抽屉键都从这一份派生
+    expect([...DRAWER_CHANNELS]).toEqual(['candidate', 'judge']);
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
     expect(MAX_ITEM_WEIGHT).toBe(10_000);
     // 两份投影（文本 / 结构化）都必须从**包根**可用：适配器只 import '@aieval/contracts'
@@ -202,6 +249,15 @@ describe('contracts 公共出口', () => {
     expect(SKILL_DESCRIPTION_MAX_LENGTH).toBe(1024);
     // 停用名单必须进默认值：不进的话 `normalizeSettings` 认不出这个键，落盘的名单读盘即丢
     expect(SETTINGS_DEFAULTS.skills).toEqual({ entries: {} });
+    // 人工消息的附件上限同源：服务端（拦截）与界面（先拦只为体验）必须读同一份数字
+    expect(ATTACHMENT_MAX_FILE_BYTES).toBe(20 * 1024 * 1024);
+    expect(ATTACHMENT_MAX_PER_MESSAGE).toBe(10);
+    // 候选产物的白名单与两个上限同源：core 的扫描/读取与界面的渲染分档、占位文案都从这一份派生。
+    // 顺序本身就是口径（同一候选内多份产物的读取顺序），故这里逐字钉住
+    expect([...ARTIFACT_EXTENSIONS]).toEqual(['md', 'html', 'svg']);
+    expect(ARTIFACT_FILE_HINT).toBe('RESULT.md / RESULT.html / RESULT.svg');
+    expect(ARTIFACT_TEXT_MAX_CHARS).toBe(100_000);
+    expect(ARTIFACT_READ_MAX_BYTES).toBe(8 * 1024 * 1024);
   });
 
   it('导出全部函数，且函数在包根上可用（不只是名字存在）', () => {
@@ -245,6 +301,12 @@ describe('contracts 公共出口', () => {
     expect(rubricEntries(rubric)).toEqual([
       { key: 'A', item: { id: 'A', goal: 'g', weight: 100 }, groupName: 'g', groupIndex: 0 },
     ]);
+    // 产物的识别（后缀白名单 + 大小写不敏感）必须从包根可用：core 用它扫盘与读盘、
+    // 界面用它分渲染档，取不到就会各抄一份正则
+    expect(artifactKindOf('RESULT.md')).toBe('md');
+    expect(artifactKindOf('result.SVG')).toBe('svg');
+    expect(artifactKindOf('RESULT.txt')).toBeNull();
+    expect(artifactKindOf('RESULT.md.bak')).toBeNull();
   });
 
   it('类型出口存在（编译期守卫：这里只做一次赋值，真正的检查是 typecheck）', () => {
@@ -265,6 +327,9 @@ describe('contracts 公共出口', () => {
     const view: ProviderView | null = null;
     const model: ProviderModel | null = null;
     const modelInput: ProviderModelInput | null = null;
+    const modelPreview: ProviderModelPreview | null = null;
+    const modelPreviewList: ProviderModelPreviewList | null = null;
+    const modelsImport: ProviderModelsImport | null = null;
     const providerCreate: ProviderCreate | null = null;
     const providerPatch: ProviderPatch | null = null;
     const testCase: TestCase | null = null;
@@ -280,9 +345,14 @@ describe('contracts 公共出口', () => {
     const runCreate: RunCreate | null = null;
     const rowDiffIndex: RowDiffIndex | null = null;
     const rowDiffFile: RowDiffFile | null = null;
+    const artifactKind: ArtifactKind | null = null;
+    const artifactIndex: RunArtifactIndex | null = null;
+    const artifactFile: RowArtifactFile | null = null;
     const score: ScoreResult | null = null;
     const rubricGroup: RubricGroup | null = null;
     const event: AgentEvent | null = null;
+    const drawerChannel: DrawerChannel | null = null;
+    const frame: RunStreamFrame | null = null;
     const skillEntry: SkillEntry | null = null;
     const skillWarning: SkillWarning | null = null;
     const skillList: SkillList | null = null;
@@ -299,13 +369,15 @@ describe('contracts 公共出口', () => {
 
     expect([
       protocol, agent, mode, status, rubricItem, rubricEntry, theme, code, settings, settingsView, patch, servers,
-      provider, view, model, modelInput, providerCreate, providerPatch,
+      provider, view, model, modelInput, modelPreview, modelPreviewList, modelsImport, providerCreate, providerPatch,
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
       generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
+      artifactKind, artifactIndex, artifactFile,
       score, rubricGroup, event,
+      drawerChannel, frame,
       skillEntry, skillWarning, skillList, skillFile, skillFilePath, skillTree, skillTreeNode,
       skillMarkdown, skillName, skillsSettings, skillsPatch,
-    ]).toHaveLength(45);
+    ]).toHaveLength(53);
   });
 
   /**
@@ -334,6 +406,9 @@ describe('contracts 公共出口', () => {
       score: null,
       error: null,
       attempts: 1,
+      sessionId: null,
+      followUps: 0,
+      followUpRounds: 0,
       ...overrides,
     };
   }

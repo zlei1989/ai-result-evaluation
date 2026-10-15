@@ -150,10 +150,8 @@ for (const vendor of VENDORS) {
       /**
        * 评分走**文本通路**，与候选行用哪一家、哪种协议无关 ⇒ 固定挑宿主那条 `anthropic` 记录。
        *
-       * 为什么不拿候选那一行的供应商兼作评分：宿主那份配置里 `openai` 记录的 baseURL **不带 `/v1`**，
-       * 而文本通路的 openai 端点按约定**不再补** `/v1`（`endpoint()` 的注释：用户填的就是含 `/v1` 的
-       * baseURL）⇒ 请求打在 `/chat/completions` 上收 404，行以 `INTERNAL` 收场。那是评分通路的环境面，
-       * 与「技能装没装上」无关；混在一起会把一个环境问题写进本探针的判据。
+       * 为什么不让候选那一行的供应商兼作评分：本探针只回答「技能装没装上」，评分模型跟着候选走会让
+       * 每一轮的评分端点随宿主配置漂移；固定一条记录，判据才与「这次用了哪家」解耦。
        */
       const judge = hostProvider('anthropic') ?? live;
       const judgeProvider = makeProviderFixture({

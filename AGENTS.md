@@ -180,6 +180,7 @@ core     → contracts
 | 边界规则管不到的三种写法 | `no-restricted-imports` 管不到动态 `import()` / `require()`，要另配 `no-restricted-syntax` 且选择器按说明符过滤（裸 `ImportExpression` 会禁掉合法的代码分割）；`import-x/no-relative-packages` 要补 `settings['import-x/resolver'].node.extensions`，否则 `resolve()` 失败时静默 return；`escapeRegExp` 必须转义 `/`，漏了 ESLint 直接以退出码 2 崩溃 |
 | 紧凑密度**不显式写 `fontSize`** | `compactAlgorithm` 会覆盖并反向推导，实效字号掉到 10px；只给 `fontSizeSM: 11`（产出 12 / 11 / 14） |
 | antd 6 `Button` 的 `variant` **单给不生效** | 须与 `color` 成对给（`color="default" variant="dashed"`）或改用 `type` 语法糖；单给 `variant="dashed"` 会**静默**渲染成实线 |
+| antd 6 的**废弃 props 只告警、行为不变**（`Alert.message` → `title`、`Alert` 的关闭面收进 `closable.*`…） | 唯一信号是开发构建里那句 `Warning: [antd: Alert] \`message\` is deprecated. Please use \`title\` instead.`（生产静默），而**告警里的组件栈指向调用方父组件**——真机报在 `app/runs/page.tsx`，那一处其实在 ui 包的 `run-detail-panel.tsx`，照着栈找会找错文件。判据是仓库级静态守卫 `apps/web-next/src/antd-deprecations.test.ts`（按组件名查废弃 props 表，命中即红并直接写出新名） |
 | 主题必须**三处同步** | `ConfigProvider theme` + `html[data-theme]` + `ConfigProvider.config({ holderRender })`，缺一处就是半亮主题 |
 | `Splitter` 的尺寸用受控 `size` | 不用 `defaultSize`；受控下拖拽必须把 `onResize` 回写进 `size`，否则松手弹回；弹性列不给 `size`。唯 `SplitPane` 原语用 `defaultSize`（它不支持刷新后还原拖过的宽度） |
 | `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style |

@@ -3,7 +3,7 @@
  * 只造数据，不做断言；runs.test.tsx 与 row-stream.test.tsx 共用。
  * 注意：本文件不是 *.test.tsx，vitest 不会把它当用例收集。
  */
-import type { AgentEvent, EvalRun, EvalRow, Rubric } from '@aieval/contracts';
+import type { AgentEvent, AgentMessage, EvalRun, EvalRow, Rubric } from '@aieval/contracts';
 
 /**
  * 这一轮用的评分表**快照**（`EvalRun.rubric` 是必填格，与 `getRun` 的读盘口径同一条）。
@@ -35,6 +35,9 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     error: null,
     // 默认一行「一次就跑到位的行」：attempts = 1（界面据此判断「要不要显示重试过的提示」）
     attempts: 1,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
@@ -45,6 +48,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     id: 'run-1',
     caseId: 'c-1',
     caseTitle: '为多协议入站补齐 Anthropic 到 Chat 的转换',
+    note: '',
     repoPath: 'D:\\projects\\gateway',
     commitHash: null,
     repoBranch: null,
@@ -54,11 +58,37 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     executionMode: 'parallel',
     useAgentJudge: false,
     askUser: false,
+    injectMessages: false,
     rows: [makeRow()],
     workspaceBase: 'D:\\runs',
     createdAt: '2026-09-22T08:00:00.000Z',
     startedAt: '2026-09-22T08:01:00.000Z',
     finishedAt: '2026-09-22T08:10:00.000Z',
+    ...overrides,
+  };
+}
+
+/**
+ * 造一条最小合法消息：信封里**消息帧**的载荷（`{ type: 'message', message }`）。
+ * 用例只覆盖自己关心的格；`mergeKey` 是折叠键，需要多条独立消息时逐条给不同的值。
+ */
+export function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
+  return {
+    messageId: 'run-1:1',
+    vendorId: null,
+    role: 'assistant',
+    source: 'wire',
+    origin: 'case-prompt',
+    roundTrip: 1,
+    turn: null,
+    step: null,
+    parentCallId: null,
+    subagentId: null,
+    chunk: 'snapshot',
+    assembly: 'snapshot',
+    mergeKey: 'main|1|assistant|-',
+    blocks: [{ type: 'text', text: '答复' }],
+    raw: null,
     ...overrides,
   };
 }

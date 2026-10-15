@@ -239,7 +239,7 @@ metadata: {
 | `dsh` | `yes`（会话通知流，`full`） | `yes` | `yes` | `yes` | `yes` |
 | `pi` | `yes`（会话事件流，`full`） | `yes` | `yes` | `yes` | `yes`（`wire`） |
 
-> codex 的消息由 **app-server 通知驱动**（增量与快照同源），收尾再用 `thread/read` 补齐**子线程历史**
+> codex 的消息由 **app-server 通知驱动**（增量与快照同源），收尾再用 `thread/list{ancestorThreadId}` + `thread/read`（不带 `includeTurns`）/`thread/turns/list` 补齐**子线程历史**
 > ——子线程的 `item/*` 是否推给本条连接由上游决定，`reader` 是那条路上唯一的兜底。
 > 两条入口共用同一个归一函数，同一条消息不会落两次。
 
@@ -287,7 +287,7 @@ metadata: {
 | base URL 处理 | **去掉**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补上** `/v1`（CLI 只走 `POST {base}/v1/responses`） | **保留**尾部 `/v1`（其 adapter 自己补 `/messages`） |
 | 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） |
 | 凭据 | `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN`（部分网关只认后者） | `apiKey` 进子进程环境（`OPENAI_API_KEY`）+ 该 provider 的 `env_key: OPENAI_API_KEY`（**Bearer 由 `env_key` 指定**；换成 `requires_openai_auth: true` 会走 ChatGPT 登录态、一个头都不附 ⇒ 全 401） | `DEEPSEEK_API_KEY`（空 `configHome` 下**只有这个变量能救**） |
-| 其它 | `settingSources: ['user','project','local']`（读得到被测仓库的 `CLAUDE.md`；`user` 档落在本行 `CLAUDE_CONFIG_DIR`，不是宿主 `~/.claude`）+ `settings.env` 把本次路由钉在 flag 档（否则仓库自带的 `.claude/settings.json` 会盖掉路由——三档对照实测过）；cwd 走 `realpathSync.native` 归一（Windows 8.3 短名会被 CLI 的安全门拦下、导致 0 改动）；`disallowedTools` 禁掉定时任务/推送等旁路工具（`WebSearch` 只在非 `claude` 模型上禁） | 注入完整 `model_providers` 条目 + `tools.web_search=false` + `features.multi_agent=true`（**显式打开**：子智能体是评测面之一，与 claude / dsh 两家口径一致；关掉只会让 `spawn_agent` 变成一次失败的工具调用、子任务面板恒空）；每次运行独占临时目录 | 通知流**先订阅再交提示词**（顺序错了会丢掉开头那批事件）；`start()` 先握手，失败归 `AGENT_FAILED` |
+| 其它 | `settingSources: ['user','project','local']`（读得到被测仓库的 `CLAUDE.md`；`user` 档落在本行 `CLAUDE_CONFIG_DIR`，不是宿主 `~/.claude`）+ `settings.env` 把本次路由钉在 flag 档（否则仓库自带的 `.claude/settings.json` 会盖掉路由——三档对照实测过）；cwd 走 `realpathSync.native` 归一（Windows 8.3 短名会被 CLI 的安全门拦下、导致 0 改动）；`disallowedTools` 禁掉定时任务/推送等旁路工具（`WebSearch` 只在非 `claude` 模型上禁） | 注入完整 `model_providers` 条目 + **顶层 `web_search='disabled'`**（内置 hosted 联网工具的**唯一**开关：`tools.web_search` 是参数容器、关不掉它）+ `features.multi_agent=true`（**显式打开**：子智能体是评测面之一，与 claude / dsh 两家口径一致；关掉只会让 `spawn_agent` 变成一次失败的工具调用、子任务面板恒空）；每次运行独占临时目录 | 通知流**先订阅再交提示词**（顺序错了会丢掉开头那批事件）；`start()` 先握手，失败归 `AGENT_FAILED` |
 
 URL 归一只对**路径段**做，query / fragment 一个字符都不动（用户粘进来的地址可能带 `?x=1`）。
 
@@ -375,7 +375,7 @@ SIGTERM / SIGINT 处理器（`apps/web-next/instrumentation.ts`）收到信号�
 | | 计数键 | 保真度 |
 |---|---|---|
 | cc | 主循环 `assistant.message.id`（同一响应的多个内容块共享 id，去重后计数）；`parent_tool_use_id` 非空的子智能体消息不计 | 与 SDK 自己的 `maxTurns`（API round-trips）同口径；`num_turns` 只在我们一次都没数到时兜底 |
-| codex | **模型答复条目**（app-server 的 `agentMessage`）的 `item.id`，**按线程分别去重**：主线程与子线程各数各的，收尾相加 | **近似值**：协议里没有逐次请求事件。误差方向如实登记：只发工具调用、**没有答复**的那几段**偏低**；一个答复条目都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）。主线程与子线程共用同一把尺子，故 `subagentTurns ≤ turns` 成立 |
+| codex | **模型往返身份** = 模型产出条目（`reasoning` / `agentMessage`）id 的后缀（厂商的响应 id，同一次响应的推理与答复共享它），**按线程分别去重**：主线程与子线程各数各的，收尾相加 | 与契约的「模型往返」同义。⚠️ 不能数答复条目：一个 turn 里只有收尾那次发 `agentMessage`，**按它去重会让整个 turn 共用一个号**（合并键里只有 `roundTrip` 能区分同角色的消息 ⇒ 整轮折叠成一条）。id 里没有分隔符时退回结构判据（上一次产出之后跑过工具才算新的一次），此时「答复之后直接下一次往返」的那一轮会并号——这一档真机未出现。一次产出都没有时轮次是 `null`（界面显示「未采集」，**不编 0**）。主线程与子线程共用同一把尺子，故 `subagentTurns ≤ turns` 成立 |
 | dsh | `step/start`（实测序列 `turn/start → step/start → … → assistant/message → step/end → turn/end`） | 与 `assistant/message` 条数实测一致（59 = 59），而 `turn/end` 只有 1 条 |
 | pi | `turn_start`（助手 `message_end` 与它恒等，而它**先到**——按 `message_end` 数会让第 N+1 轮的增量帧落进第 N 轮那条消息里） | 与助手 `message_end` 条数恒等；一次工具调用算两轮 |
 

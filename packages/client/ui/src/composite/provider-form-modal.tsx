@@ -4,7 +4,7 @@
  * 供应商新增 / 编辑弹窗：**只有四个字段** —— 名称 + 协议 Radio + API 地址 + 密钥 Password。
  * 纯展示：不调接口，所有动作走回调；异步与错误提示留在调用方（本组件不认识 message）。
  *
- * 五个刻意的取舍（每条都对应一个真实会伤到用户的情形）：
+ * 六个刻意的取舍（每条都对应一个真实会伤到用户的情形）：
  *   1. **模型清单不在这里**：它已单独提成 `provider-models-modal.tsx`，
  *      入口是列表每行的「模型」按钮。理由是两者的使用频率差一个量级 —— 清单维护是高频动作，
  *      而接线字段很少改；挤在一起的结果是「改个模型名要先把整张表单拉出来」。
@@ -21,7 +21,10 @@
  *      「anthropic 一律禁用」的依据是「该协议没有 /models 接口」，而多数自建网关在版本段上
  *      同时提供 OpenAI 风格的清单接口 —— 服务端已按地址形态兜底（`{地址}/models` 404 再依次回退
  *      `{地址}/v1/models` 与站点根的两条）。这条判据现在住在模型对话框里，那里也没有禁用：
- *      将来若真出现禁用，原因要写成**可见文本**而不是只挂在 Tooltip 上（触屏与键盘用户看不到 hover 浮层）。
+ *      将来若真出现禁用，原因要写成**可见文本**而不是只挂在 Tooltip 上（触屏与键盘用户看不到 hover 浮层）；
+ *   6. **地址只要求填站点根**：`openai` 打 Responses（`{地址}/v1/responses`）、`anthropic` 打
+ *      Messages（`{地址}/v1/messages`）；缺 `/v1` 由服务端自动补、多写也不会叠。占位符刻意只写
+ *      站点根——写成 `…/v1` 会让人以为路径要自己拼对，拼错只报上游 404，而这里一个字都不会提示。
  */
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
@@ -45,7 +48,7 @@ export interface ProviderFormModalProps {
   onCancel: () => void;
 }
 
-/** 新建态的空白初值：协议默认 openai（多数网关是 OpenAI 兼容） */
+/** 新建态的空白初值：协议默认 openai（本仓的 openai 是 Responses 接口） */
 const EMPTY: ProviderFormValues = { name: '', protocolType: 'openai', baseUrl: '', apiKey: '' };
 
 /** 弹窗宽度：四个字段一列排下来，560 就够（模型清单那张表已搬走） */
@@ -107,9 +110,9 @@ export function ProviderFormModal(props: ProviderFormModalProps): ReactNode {
           name="baseUrl"
           label="API 地址"
           rules={[{ required: true, message: '请填写 API 地址' }]}
-          extra="OpenAI 兼容填到 /v1，Anthropic 兼容填到 /anthropic"
+          extra="OpenAI Responses API / Anthropic Messages API。地址填到站点即可，不用带 /v1，请求路径由程序自动补全"
         >
-          <Input placeholder="https://api.deepseek.com/v1" />
+          <Input placeholder="https://api.deepseek.com" />
         </Form.Item>
 
         <Form.Item

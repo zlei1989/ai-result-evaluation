@@ -11,8 +11,8 @@
  *      而工具那两组判据照样过（它们不看消息）⇒ 红在「思考块不存在」，看着像能力声明写错。
  *   2. **子任务事件是顶层 `method`**（`subagent.started` / `subagent.finished`），
  *      **不是** `session.event` 里的 `event.type`——`dshSubagentRecord` 读的是
- *      `readString(notification,'method')`（`message.ts:313-316`），身份取 `params.subagentId`
- *      （三级兜底 `subagentId` → `agentId` → `childSessionId`）。
+ *      `readString(notification,'method')`（`message.ts:313-316`），身份取 `params.childSessionId`
+ *      （真机那一对是 `{parentSessionId, childSessionId}`，兜底 `agentId` / `subagentId`）。
  *
  * 本夹具**造正文/思考增量**（stream-tap 起）：`streamingDelta` 记 `'yes'`（source
  * `'hook'`）——增量经旁路文件进适配器（夹具的 `tapLines` 落到同一文件、同一时序），
@@ -96,15 +96,18 @@ const sessionEvent = (type: string, data: Record<string, unknown>): unknown => (
  * 造一条 stream-tap 旁路行（`{ sid, frame }`，frame 是 `AssistantStreamFrame` 的 chunk 形状；
  * sid 用占位 id，夹具在 `run()` 落笔时改写成真实会话 id——与通知的 `tagSession` 同一理由）。
  */
+/**
+ * 一条旁路行，**形状与真机逐字一致**：厂商的 `AssistantStreamFrame` 只有 `chunk` 变体没有
+ * `turn` / `step`（`start` 变体才有），所以这里也不给——夹具若替厂商补上这两格，
+ * 就会把「增量帧拿不到轮次号」这条事实掩盖掉，而它正是下游按会话步数回落的前提。
+ */
 const tapChunk = (
   chunk: Record<string, unknown>,
   sid: string = MAIN,
   attemptId = 'att-1',
-  turn = 1,
-  step = 1,
 ): unknown => ({
   sid,
-  frame: { type: 'chunk', attemptId, revision: 1, index: 0, time: 1, turn, step, chunk },
+  frame: { type: 'chunk', attemptId, revision: 1, index: 0, time: 1, chunk },
 });
 
 /**
@@ -196,9 +199,9 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       tapChunk({ type: 'block-start', index: 0, blockType: 'reasoning' }),
       tapChunk({ type: 'reasoning-delta', index: 0, text: '先看配置，' }),
       tapChunk({ type: 'reasoning-delta', index: 0, text: '再看入口。' }),
-      tapChunk({ type: 'block-start', index: 0, blockType: 'text' }, MAIN, 'att-2', 1, 2),
-      tapChunk({ type: 'text-delta', index: 0, text: '看完' }, MAIN, 'att-2', 1, 2),
-      tapChunk({ type: 'text-delta', index: 0, text: '了。' }, MAIN, 'att-2', 1, 2),
+      tapChunk({ type: 'block-start', index: 0, blockType: 'text' }, MAIN, 'att-2'),
+      tapChunk({ type: 'text-delta', index: 0, text: '看完' }, MAIN, 'att-2'),
+      tapChunk({ type: 'text-delta', index: 0, text: '了。' }, MAIN, 'att-2'),
     ],
   },
   'tool-shell': {
@@ -218,9 +221,9 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
     events: [
       stepStart(MAIN, 1, 1),
       sessionEvent('tool/call', { callId: TASK_CALL, name: 'subagent', arguments: '{"task":"count lines"}' }),
-      // 顶层 method（不是 session.event）：身份在 params.subagentId
-      { method: 'subagent.started', params: { childSessionId: TASK_ID, subagentId: TASK_ID } },
-      // 子会话自己的往返：params.sessionId 用子任务身份（与 subagentId 同值）
+      // 顶层 method（不是 session.event）：真机身份格是 params.childSessionId
+      { method: 'subagent.started', params: { parentSessionId: MAIN, childSessionId: TASK_ID } },
+      // 子会话自己的往返：params.sessionId 用子任务身份（与 childSessionId 同值）
       stepStart(TASK_ID, 1, 1),
       // 子会话自己的那次往返带用量：收尾那条完整快照因此真的有新事实可补
       assistant(TASK_ID, 'c1', 1, 1, [{ type: 'text', text: '3 lines' }], {
@@ -231,13 +234,13 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       // 终态两格合读：ok + completed ⇒ completed（映射表见 message.ts:305-311）
       {
         method: 'subagent.finished',
-        params: { childSessionId: TASK_ID, subagentId: TASK_ID, status: 'ok', stopReason: 'completed' },
+        params: { parentSessionId: MAIN, childSessionId: TASK_ID, agentId: TASK_ID, status: 'ok', stopReason: 'completed' },
       },
       stepStart(MAIN, 1, 2),
       assistant(MAIN, 'm2', 1, 2, [{ type: 'text', text: '数完了。' }]),
     ],
     // 子会话增量：sid 直接写子任务身份（非占位）——门闸必须等 subagent.started 投影之后才放行，
-    // 放早了 `sessionIdProfileSubagent` 不认它 ⇒ 会挤进主会话载体（守卫见 index.test.ts）
+    // 放早了 `dshSubagentIdOf` 不认它 ⇒ 会挤进主会话载体（守卫见 index.test.ts）
     tapLines: [tapChunk({ type: 'text-delta', index: 0, text: '3 ' }, TASK_ID), tapChunk({ type: 'text-delta', index: 0, text: 'lines' }, TASK_ID)],
   },
   /**
@@ -319,9 +322,10 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
        */
       events: agentEvents,
       usage: {
-        // 计量那一格留空：`assistant/message.data.usage` 的字段名未实测核对，
-        // 按「没采到记 null」处理，**不拿猜出来的数**填（计量配对判据因此在这一家部分空转）
-        tokens: null,
+        // 计量那一格照实交：这三格来自 `assistant/message.data.usage`
+        // （字段名与读法见 `dsh/protocol.ts` 的 `DSH_USAGE_FIELDS` 与 `docs/protocols/dsh.md` 的真机读数）。
+        // 交 `null` 会让套件的「分量 ≤ 合计」配对判据在这一家**空转**——那条判据是四家同一把尺。
+        tokens: outcome.tokens ?? null,
         turns: outcome.turns ?? null,
         subagentTokens: outcome.subagentTokens ?? null,
         subagentTurns: outcome.subagentTurns ?? null,
@@ -549,6 +553,33 @@ describeProviderConformance({
   injection: dshProvider.metadata.injection,
   interaction: dshProvider.metadata.interaction,
   /**
+   * **人工消息面的声明与证明**（第五组）。三格各走**真路径**，各自点名判据落在哪：
+   *   · 投递两档与撤回在 `injection-real-path.test.ts`（真运行时 + 假上游 + 产品的插件，
+   *     判据是入站请求体里哨兵词出现的次序 + 撤回那一条一次都没出现）；
+   *   · 续接在 `resume-real-path.test.ts`（真运行时 + 假上游，跨三个独立运行：写 / adopt /
+   *     阴性对照）——判据是 adopt 落在同一条会话上、且第一轮的暗号出现在第二轮的入站请求体里。
+   */
+  turnInjection: {
+    capability: dshProvider.metadata.turnInjection!,
+    proofs: {
+      'delivery.round': {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/dsh-real-path-fixture.ts',
+      },
+      'delivery.idle': {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/dsh-real-path-fixture.ts',
+      },
+      resume: {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/dsh-real-path-fixture.ts',
+      },
+    },
+  },
+  /**
    * **真出站证据：两格都缺**（如实登记）。假件换掉了 SDK 模块，看不见真正打给模型的那份请求；
    * 这家**没有原生 schema 通道**（约束只追加进首轮提示词）⇒ 结构化输出那一格在产品上就不存在，
    * 「原 schema 逐字段相等」在这家没有落点。
@@ -586,8 +617,19 @@ describeProviderConformance({
   /**
    * 真路径那一格的事件条数也钉住：驱动器把「同一份累计计量快照的重复投送」折成一条之后，
    * 这个数是确定的（见 `testing/dsh-real-path-fixture.ts` 的文件头）。
+   *
+   * `session.status`（真机每行两条：`running` / `idle`）**不再投影**（它与轮次、内容、失败都无关，
+   * 落成原始 JSON 只是噪声）⇒ 每个场景都比旧读数少两条。
    */
-  expectedEventCounts: { 'plain-reply': 6, 'thinking-full': 9, subagent: 12, 'ask-user': 22 },
+  /**
+   * ⚠️ 三个数比上一版各少 1~2：少掉的是「`assistant/message` 缺 `usage`」的那条 `WARN`。
+   * 厂商**允许**这一格缺席（真机：被 `interrupt_agent` 打断在流中间的那条 `assistant/message`
+   * 只有 `{interrupted:true, message}`），所以「厂商没报」不再被说成「我们读不动」
+   * （旧文案里还带着字面量 `undefined`，读起来像解析崩了）——事件因此少一条。
+   * 本驱动器里那些消息的 `data` 键是 `["turn","step","message"]`（脚本式上游这一臂没带 `usage`），
+   * 所以这三个数是**实测**出来的，不是漏采；夹具这一臂的保真度另立一条待办。
+   */
+  expectedEventCounts: { 'plain-reply': 3, 'thinking-full': 5, subagent: 9, 'ask-user': 11 },
 });
 
 /**

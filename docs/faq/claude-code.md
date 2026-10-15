@@ -391,3 +391,167 @@ schema 描述逐字写着「不要给 'Other' 选项，那个界面上自动提�
 
 - [《消息规范》](/protocols/message-spec) —— `tool-call` 的 `payload` 与「帧是累积值」
 - [《Claude Code 接入》](/protocols/cc) —— 《数据与契约》一节的任务台账
+
+---
+
+## 回了 tool_use 却没跑工具、SDK 时间线里直接 `result/success`（CLI 在真正的第一轮之前还会打 `messages: []` 的探路请求与 `<session>…</session>` 包裹的辅助请求）
+
+**日期**：2026-10-14
+
+**根因**：机制层——用**脚本式假上游**驱动 SDK 时，把 `tool_use` 帧回给了**辅助请求**，于是它被静默丢弃。CLI 在真正的第一轮之前会打若干条辅助入站请求，实测见到两种形状：① `path` 是 **`/api/hello` 的握手请求**——`messages: []`、`system` 为空、不带工具表，它根本不是 `/v1/messages` 上的模型请求；② **会话标题生成**那条——`path` 是 `/v1/messages?beta=true`、`messages` 只有一条、`tools: []`（不带工具表），user 文本是把原话包进 `<session>…</session>` 再缀一句 `Write the title in the predominant language of the session …`，**每条用户消息各触发一条**。辅助请求一件工具都不带，把工具帧回给它必然是丢弃。**主轮请求的判据取硬的：`tools.length > 0`**（主轮带整套工具表，实测 27 件）；`<system-reminder>` 那一组块（环境、模型名、代理类型、技能清单、日期、署名）是被 CLI 拼进同一个 user 消息里的，可作旁证但不能当判据。按**序号**（`record.index === 0`，或"第一条被 decide 的请求"）去判"该给工具帧的那一轮"必然打偏——序号里混着 `count_tokens` 与这些辅助请求——症状是**静默的**：不报错、不执行，时间线里直接 `result/success`，看起来像"工具没被调用 / 模型不愿用工具"。
+
+同批观测到的第二条相关事实：长命令（`sleep 4`）不是一次阻塞的工具调用，而是以 **`system/task_started` → `system/task_notification` → `user`(tool_result)** 的**后台 task** 形态跑完的——判"工具在途"的窗口要看这两条，不是看 `assistant` 里有没有 `tool_use`。
+
+**解决方案**：探针 `packages/server/agents/probe/v11/cc-stream-input.mjs` 的 `decide` 改成**按内容**判主轮（该请求的 `messages` 里带首句、且序列化后不含 `<session>` 包裹，更稳的是直接看 `tools.length > 0`），不再按序号。判据：慢工具真的跑起来——时间线里出现 `system/task_started` → `system/task_notification` → `user`，且那一轮的 `result` 比注入时刻晚一个 `sleep` 的量级。产物（`probe/dumps/v11/cc-stream-input-*.json`）的 `readings[].preview` 会把每条入站请求的 `messages[]` 逐条打出，辅助请求与主轮一眼可分。
+
+---
+
+## 探针读数 `insertedSeenInRequests: []`：「注入的那句话没进任何模型请求」
+
+**日期**：2026-10-14
+
+**根因**：机制层——**观测口径漏了一类落点**，不是注入没到。cc 在**工具在途**时收到的用户消息，缺省档（不写 `priority`）会把它折进**下一条工具结果的正文**：后续那条带 `tool_result` 的主轮请求里，`tool_result` 块的 `content` 变成
+
+```text
+probe-tool-done
+
+<system-reminder>
+The user sent a new message while you were working:
+PROBE-INJECTED-next-…
+
+This is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.
+</system-reminder>
+```
+
+只扫 `text` 块（`block.text`）的读数读不到 `tool_result` 的正文（`block.content`，字符串或块数组两种形状都出现过）⇒ 读成"这句话没进主轮"，进而误判成"注入被那条 `<session>…</session>` 辅助请求吃掉了"。同一段原文也把这一档的语义写明了：**折进正在跑的这一轮、通常伴随下一条工具结果**，而不是另起一轮；机制层的车道名就在 CLI 原生二进制里——折进那一段取的是 `getCommandsByMaxPriority("next")` 并用 `registerFoldInFlight` / `unregisterFoldInFlight` 括住，队列头分派处写成 `ee.priority === "later" ? "later" : "next"`（**不写 `priority` 的缺省档就是 `"next"` 这条 mid-turn fold 车道**，`"later"` 是另一条）。辅助请求并不消费用户消息——同一次运行的 9 条臂里，凡是标题生成请求带上这句话的，主轮请求**随后照样带上它**；"只有辅助看到、主轮没看到"的一格**一条都没有**。
+
+**解决方案**：判据改成**三类落点全扫**（`text` / `thinking` / `tool_result.content`，后者含字符串与块数组），再用整份请求体做一次 `JSON.stringify(body).includes(needle)` 的**口径自检**——「结构命中为空而请求体里有这句话」的条数必须为 0；命中项的 `where` 直接写出落点形状。判据落在 `packages/server/agents/probe/v11/cc-stream-input.mjs` 的 `blockTexts()` / `findInserted()` 与 `readings[].insertedRawInBody` 上（全臂跑完自检漏=0、误报=0）。**消费方同样要读 `tool_result` 的 `content`**：工具结果本体（命令输出、文件内容）就在那一格，只认 `text` 块会把工具结果读成空。
+
+⚠️ **本条只说明「折入那条车道存在、落点在 `tool_result.content`」**：那条探针是**工具在途**时 push 的，折入窗口只在那一刻开。生产路径的两个取件点都比它晚 ⇒ 从适配器推出去的消息**读不到这个落点**，症状见下一节。
+
+---
+
+## `result` 已经到了、这一行却永远不收场：`query({ prompt: AsyncIterable })` 下输入流不 `end()`，查询不会自己结束
+
+**日期**：2026-10-15
+
+**根因**：机制层——**`prompt` 的两种形状在厂商侧不是同一件事**。传字符串时 CLI 判定 `isSingleUserTurn`：那一轮的首条 `result` 一到就 `endInput()` 关掉自己的 stdin，`query` 的迭代器随之结束（既有行为）。换成 `AsyncIterable<SDKUserMessage>`（streaming input，运行中注入要的那一支）之后 stdin **一直留着**：`result` 变成**每一轮一条**的整轮收尾，迭代器要等到输入流 `end()`（或 `interrupt()` / `abortController`）才结束。于是「首条 `result` = 运行结束」这条旧口径在**读侧**仍然成立（`result` 照样到、事件照样投影），但**这一行不会收场**——界面上的样子是「一直停在 running」，没有任何报错、也没有任何一帧说不收场。判据：`packages/server/agents/probe/v11/cc-stream-input.mjs` 各臂跑完必须显式 `stream.end()`，不 `end()` 时那一刻的读数就是「迭代器挂着」。
+
+**解决方案**：**收场由适配器驱动**（`providers/cc/index.ts`）：`'idle'` 档一条都没取到就 `inputStream.end()`，流循环的 `finally` 里再收一次（正常收尾、消费者提前退出、abort / 终止四档都走得到）。判据是 `providers/cc/inject.test.ts` 的两条：①「队列里没有待投递的消息 ⇒ 本轮收场就收流」——夹具那条假流在收到 `end()` 之前一直挂着，适配器不收流时用例红在「运行未在预算内落定」那句人话上（而不是把整个文件挂到超时）；②边界序列（工具结果取 `round`、`result` 收场取 `idle`）。
+
+---
+
+## 执行日志「只有全部完成才显示」：第 2 轮起没有打字机效果（正文等到该轮跑完才整段出现，`messages.jsonl` 与快照齐全、无任何报错）
+
+**日期**：2026-10-15
+
+**根因**：机制层——**流式增量的轮次号在计数点落后一轮**。cc 主会话的增量（`stream_event` 的 `content_block_delta`）取号走 `roundTripOf(state)`，那读的是 `state.turns`＝events 侧 `countModelRoundTrip` 数到的**完整 assistant 消息**条数；而完整消息是该轮**结束时**才到的 ⇒ 增量到达时它还是上一轮的数。合并键是 `subagentId|roundTrip|role|parentCallId`，轮次号一错，增量就落进**上一轮的载体**；那个载体的文本槽已被它自己的快照 `sealed` ⇒ 按 `MessageAssembler` 的「已 seal + 增量 ⇒ 丢弃」被**静默吃掉**（无日志、无报错）。第二档后果：上一轮只产出工具调用时（文本槽没被占，走的是 `c:<callId>` 槽），增量会写进去看着在长，却**挂在前一轮的轮次位置上**。第 1 轮恰好正确（`state.turns` 为 0 时兜底给 1），所以只在**多轮**任务上现形。
+
+真机读数（cc 行 5 轮，`run 5051403b`）的 delta 落键：`main|1:9 / main|2:1 / main|3:1 / main|4:69 / main|5:0`——每轮都堆在前一轮，最后那 69 条其实是第 5 轮的（第 5 轮是最后的长回复）。另外三家不适用：它们的计数点在**该轮开始时**（pi 的 `turn_start`、codex 的「先计入再取号」、dsh 直接带厂商 `step` 号）。
+
+**测试环境 ≠ 运行环境**：夹具只跑单轮、或只在第一轮观察时，增量与快照恰好同键，`pnpm test` 全绿。既有的 `message-session-rounds.test.ts` ④ 甚至把这个错值写成了「既成事实的前提钉」（断言主会话增量拿「已数到的 2」），**守卫反过来固化了缺陷**——这不是环境差异，是**用例只覆盖了恰好正确的那一轮**。
+
+**解决方案**：`packages/server/agents/src/providers/cc/message.ts` 新增 `mainRoundTrip(state, messageId)`，主会话的号改按 `message.id` 在 `state.turnKeys`（events 侧按到达顺序记的完整 assistant 消息 id）里的**位次**取：id 已在账里（完整消息已到）⇒ 位次 +1；id 还没进账（**增量先到**）⇒ 占「账里条数 +1」，正是它稍后进账时会占的那个号。`roundTripOfSession` 的主会话分支改调它（侧链与「拿不到 id」两档不动）。守卫：新增 `providers/cc/stream-alignment.test.ts` 4 条（第 1 轮对齐 / 第 2 轮不落上一轮且增量当场写进载体 / 多轮不串联 / 同一条消息分块多次投递号稳定），并把 `message-session-rounds.test.ts` ④ 的错值断言翻成新口径 + 补「与快照同键」。**变异验证**：主会话分支改回 `roundTripOf(state)` ⇒ 新守卫红 3 条（第 1 轮那条仍绿属预期）⇒ 还原后 `message.ts` 哈希 `4c64c9e1…` 逐字一致、复绿。真机复核（同一用例）：delta 落键变成 `main|1`（14 条，末条 96 = 该轮快照 96）与 `main|2`（49 条，末条 164 = 快照 164），页面采样第 2 轮正文 126→321 分 10 步增长。
+
+---
+
+## 运行中投出去的那句话**另起了一轮**：多一次模型往返，而 `tool_result.content` 里没有 `<system-reminder>The user sent a new message while you were working: …</system-reminder>`
+
+**现象原文**（真机探针：两条只差**上游响应延迟**的臂，判据是出站请求体的逐字内容）：
+
+```text
+臂 round-response-immediate ：注入的那句话落在**第 5 条请求的独立 user 消息**里
+臂 round-response-delayed-4s：同上（上游把带 tool_result 的那条请求拖了 4 秒也照样）
+两臂的 drains 都是 ['round','idle',…] ⇒ 取件**真的**发生在 'round' 边界
+含厂商折入文案的请求 = 0 条
+注入之后 CLI 另起一轮：上游多收到一条引擎请求，finalText 换成新那轮的答复
+```
+
+**日期**：2026-10-16
+
+**根因**：机制层——**折入窗口开在「厂商构造那条请求」之前，而契约两档的取件点都在构造之后**。厂商的折入发生在它把「用户中途发来的消息」并进某次请求体那一刻（取 `getCommandsByMaxPriority("next")` 那条 mid-turn fold 车道），而适配器的两个取件点读的都是**已经到达我们这一侧**的事件：`'round'` 读「工具结果帧到达」、`'idle'` 读「`result` 帧到达」。工具结果帧到达意味着厂商**已经拿到工具结果、正在构造下一条请求** ⇒ 此刻推出去的那条只能作为一条新的用户消息入队，厂商据此开新的一轮。上游快慢不影响这一点（拖 4 秒的臂同样没折入）——差异不在时间窗口，在**取件点晚于构造点**这个次序。取证要点：可复核的判据是「折入文案在请求体里出现 0 次」与「`drains` 里有 `round`」这对读数同时成立（后者证明取件真的发生过，否则读数只是「没取件」）。
+
+**解决方案**：**未闭合**（不修代码：契约 `InjectionBoundary` 只有 `round` / `idle` 两档，两档的语义都是「我们已经看得见某个事件」——要真折入必须多一条**早于工具结果**的边界，那属契约变更）。当下已做的两件事：① **声明与文档改说真话**——能力面两档仍记 `unverified`（它指的是「折进本轮」那句口径，不是「投不投得出去」；「消息被厂商收下并另起一轮」这一半已真机证到），`docs/protocols/cc.md` 的《注入与续接》把两档写成「落点实测一致：都另起一轮」并删掉「缺省车道的落点在 `tool_result.content`」那句；② 契约词表（`contracts/src/inject-vocab.ts`）补一句「这两档说的是我们什么时候交出去，不是厂商一定怎么处置」。**代价**：每次注入多一轮模型往返（真实计费与墙钟都增加），两档在效果上**同值**——界面若按「立即发送会折进本轮」写动效就是假的。判据留档：探针两条臂 + 阴性对照（不挂端口时暗号一次都不出现）。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 《注入与续接》两条边界的现时口径
+- [《Provider 抽象与 run 入口》](/protocols/provider-run) —— 注入面的两档边界与端口契约
+
+---
+
+## 为 `claude-sonnet-4-5` 选 `high` 档，出站请求体里整格没有 `output_config`（同一档换 `opus-4-5` / 非 Claude 名就有）
+
+**现象**：思考档位选 `high`，看出站 `/v1/messages` 请求体——`claude-sonnet-4-5` 那条**整格没有** `output_config`；同样的档位换 `opus-4-5` 或非 Claude 模型名（`deepseek-flash`）就是 `{"effort":"high"}`。产物、日志、事件流里**一个字都没提**，界面看起来像「这行选的档位没生效」——因为它确实没生效，而且没有任何提示。
+
+**日期**：2026-10-17
+
+**根因**：CLI 侧有一份**模型目录**。适配器传的 `options.effort` 一定被 SDK 拼成 `--effort <值>` 交给 CLI（`sdk.mjs` 的 argv 拼装：`if(this.options.effort) G.push(Be("--effort", …))`），但**是否写进请求体由 CLI 按模型条目决定**——目录里没有该模型的 effort 条目时**静默忽略**。两版 CLI（2.1.281 / 2.1.301）逐字同形 ⇒ 既有行为，不是升级回归。
+
+`system/init` 的 `per_turn_effort_active` **不能**当判据：四条臂（含明确落地了 `output_config.effort` 的 opus 与非 Claude 臂）里它**恒为 `false`**，无反例。适配器与 SDK 两层都没有观测点——body 在 CLI 里，初始化帧那个布尔位又不反映它。
+
+**解决方案**：**代码不修**（改了也验不了：没有观测点，写了就是猜）。口径写进[《Claude Code 接入》](/protocols/cc)的《effort 的落地由 CLI 的模型目录决定》：`reasoningEfforts` 声明的是**值域**，支持面按模型名而变。判据是**出站请求体的差分**（对照臂不传 `effort`，另跑 `claude-sonnet-4-5` / `opus-4-5` / 非 Claude 名三条，逐条读 `output_config` 在不在）。要证「网关真的按它算」只能抓**真网关**请求体 —— 本机假上游只能证明我们发出去的是什么。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 《effort 的落地由 CLI 的模型目录决定》（登记点）
+
+---
+
+## `num_turns` 与本轮数出的轮次对不上（并行工具档 `3` vs `2`、结构化输出档 `2` vs `1`）
+
+**现象**：`[WARN] cc 自报的 num_turns=3 与本轮按 assistant 消息数出的轮次=2 不一致；界面与本行快照以数出来的为准（一次模型 API 往返算一次）`——纯文本与单工具两档不亮，**并行工具**与**结构化输出**两档必亮。
+
+**日期**：2026-10-17
+
+**根因**：两把尺子不同刻度。我们数的是**去重后的 `assistant.message.id` 数**（一次模型往返一个 id，多次投递按同一个 id 去重）；厂商的 `num_turns` 至少混了两种成分。真机三档把四个量并排（CLI 2.1.301）：
+
+| 臂 | assistant 帧数 | 去重 `message.id` | `message_start` 数 | `num_turns` |
+|---|---|---|---|---|
+| 纯文本 | 1 | 1 | 1 | 1 |
+| 并行两工具 | **3** | 2 | 2 | **3** |
+| 结构化输出 | 1 | 1 | 1 | **2** |
+
+⇒ 并行档 `num_turns` **正好等于投递次数**（同一条 id 被投递两次也各算一次）；结构化输出档多出的那一次**仍未归因**（该档 `message_start` 只有 1 次，第二次模型往返根本没发生，厂商仍报 2）。
+
+**多报那一档还有第二种成因**（真机臂：上游真收到 2 次请求、两条 `assistant` 帧的 `message.id` **相同**，产品侧 `turns = 1`）：本层按 `message.id` 去重计数，**两条不同往返撞同一个 id 时只算一轮**——网关 / 代理复用 id 属真实可能，而本层的去重键没有兜底。两种成因（厂商刻度 / 我们少算）从读数上分不开。
+
+**解决方案**：判据取 **`reported !== state.turns`**（**两个方向都喊**，且只在第一条 `result` 上核对——`result` 在流式输入下是每一轮一条，从第 2 轮起两种刻度不可比）。多报那一档的文案点名第二种成因（「也可能是我们少算，请查上游是否复用 `message.id`」），少报那一档只管读数口径。读数仍以数出来的为准（两边同源）。守卫：`events.test.ts` 两条（少报 / 多报各一条，多报那条断言文案点名去重），变异验证把判据改成恒假即见红。
+
+**相关资料**：
+
+- [《Claude Code 接入》](/protocols/cc) —— 《数据与契约》的「轮次归属」那条
+
+---
+
+## `Permission to use Read has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools …`（评分阶段读 cwd 之外的执行过程记录时一次都没成功过）
+
+**现象**：`read-only` 档（= `dontAsk` + `permissionPrompts: 'none'`）下，评审者按提示词去读「候选的执行过程」那两份绝对路径（`events.jsonl` / `messages.jsonl`，都落在行工作区之外），工具结果是**拒绝**：
+```
+Permission to use Read has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. …
+```
+`Bash{cat <同一个路径>}` 同样被拒。链路全绿（行照跑、照出分、零报错、零 WARN），丢的是**证据**：提示词要求「结合这些记录判定」，而记录一份都读不到。
+
+**日期**：2026-10-17
+
+**根因**：`Options.additionalDirectories`（CLI 的 `--add-dir`）**只接受目录**，而调用方（`judge-agent.ts`）把**文件路径**透传进 `extraReadPaths` ⇒ 适配器原样放进这一格，CLI 侧不产生任何可读范围。六臂差分（真 CLI 2.1.301 + 真 `provider.run`，同一份 cwd 之外的文件）：
+
+| `extraReadPaths` 里放什么 | `Read <那份文件>` | `Bash{cat <那份文件>}` |
+|---|---|---|
+| （不给） | 拒绝 | 拒绝 |
+| 文件路径 | **拒绝** | **拒绝** |
+| 文件路径的 `realpath` | **拒绝** | — |
+| **该文件的父目录** | **读到内容** | **读到内容** |
+| 父目录的 `realpath` | 读到内容 | — |
+| cwd 之内的文件（阳性对照） | 读到内容 | — |
+
+⇒ 差异只在「目录 vs 文件」，与符号链接形态（macOS 的 `/var → /private/var`）无关。`sdk.d.ts` 的 JSDoc 逐字也是 *"Additional directories Claude can access beyond the current working directory"*。
+**测试环境 ≠ 运行环境**：`index.test.ts` 原先钉的判据是「`extraReadPaths` 原样转发成 `additionalDirectories`」——转发这一半是真的，**生效**那一半只有真 CLI 会回答；假 SDK 只记录入参，于是这一格从未生效这件事在单测里完全看不见。
+
+**解决方案**：`packages/server/agents/src/providers/cc/index.ts` 新增 `additionalDirectoriesFor(paths)`（目录项原样、文件项取 `dirname`、去重保序；`statSync` 取不到按文件项处置），`additionalDirectories` 那一格改用它，换算发生过就落一条 DEBUG（放行面比调用方写的宽一个目录，这件事不该只活在注释里）。守卫：`index.test.ts` 三条原判据改成父目录断言 + 新增换算单测（去重 / 目录原样 / 路径不存在）；**真机复采**：同一个探针（`.scratch/cc-audit3/probe/p5-extra-read-paths.test.ts`）修前那三条读不到（不给放行 + 两条文件项）、修后全部读到哨兵（这就是变异验证的另一半——探针在修前见过红）。精确到单个文件的另一条通道也已真机验过（`settings.permissions.allow: ["Read(//<绝对路径>)"]`，双斜杠前缀才认），但那档只覆盖 `Read` 工具、`Bash{cat}` 仍被拒，故本仓取换算父目录这条。
+
+**相关资料**：
+
+- [Configure permissions — Claude Code Docs](https://code.claude.com/docs/en/permissions)（权限规则与「额外目录」的官方口径）
+- `sdk.d.ts` 的 `Options.additionalDirectories` JSDoc（安装态：`node_modules/.pnpm/@anthropic-ai+claude-agent-sdk@0.3.301_*/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`）
+- [《评分》](/features/judging) —— 智能体通路的「候选的执行过程」那一段

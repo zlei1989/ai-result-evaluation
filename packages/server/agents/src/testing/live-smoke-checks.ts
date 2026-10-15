@@ -64,7 +64,15 @@ export function checkProductCell(row: Pick<EvalRow, 'status' | 'error'> & { scor
  * 而不是红在一句没人看的注释里。
  */
 export function waitBudgetFor(scale: ProviderTiming['runScale']): number {
-  return scale === 'seconds' ? 60_000 : 600_000;
+  /**
+   * 分钟级给 **11 分钟**（而不是 10 分钟）：**必须比骨架的单轮墙钟看门狗上限宽出一段**。
+   *
+   * 看门狗 `DEFAULT_TURN_WALL_CLOCK_MS` 是 600_000，而「上游整机不可达」那一档会**正好走到那个上限**
+   * 才收场（真机读数：600.103 s 落 `timed-out`）。若预算也取 600_000，两者**逐毫秒相等**
+   * ⇒ 冒烟判据在那一档必抖（收场比预算晚约 100 ms 就成了假红）。
+   * 多的那一分钟是给「600 s 收场 + 交卷 + 余量」的。
+   */
+  return scale === 'seconds' ? 60_000 : 660_000;
 }
 
 /**

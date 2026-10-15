@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 模型清单对话框：拉取 / 手工增删 / 逐条设置窗口与输出上限。
+ * 模型清单对话框：拉取（预览 + 挑选导入两步）/ 手工增删 / 逐条设置窗口与输出上限。
  *
  * 它是从「编辑供应商」里**单独提出来**的：模型清单与供应商的字段
  * （名称 / 协议 / 地址 / 密钥）是两件事 —— 前者是**高频的清单维护**，后者是**低频的接线改动**，
@@ -9,13 +9,18 @@
  *   · 列表每行的操作列多一个「模型」按钮，落在「编辑」之前（模型清单比改接线常用得多）；
  *   · 编辑弹窗只留四个字段 + 一条指向本对话框的提示（那个入口必须**可见**，不能靠用户自己发现）。
  *
- * 纯展示：不调接口、不认识 message；五个动作全部以回调交给调用方（页面负责接 hooks 与报错）。
+ * 纯展示：不调接口、不认识 message；动作全部以回调交给调用方（页面负责接 hooks 与报错）。
  *
- * 七个必须守住的点：
+ * 拉取是两步：本对话框的「拉取模型」只发起**预览**（onFetchModels），候选回到页面后经
+ * `modelCandidates` 传进来，由内层的 `ProviderModelImportModal`（挑选对话框）接手 ——
+ * 勾选、全选 / 反选都在那里，确定才经 onImportModels 落盘。
+ *
+ * 八个必须守住的点：
  *   1. **目标供应商由 props 现给**（页面按 id 从列表里查），所以拉取 / 增删之后列表一重取，
  *      这里的清单跟着刷新 —— 对话框自己不再存一份清单（两份必然漂移）。
  *   2. **目标消失要说出来**：供应商在对话框开着时被别的标签页删掉，`provider` 变成 null，
  *      此时渲染一条可见原因，而不是一片空白或一个还能点但注定 404 的按钮。
+ *      挑选对话框也随之不渲染（目标没了，确定请求注定 404）。
  *   3. **草稿（窗口 / 输出上限）按 `open` 与目标 id 重置**：换了一个供应商还留着上一条的输入，
  *      保存下去就是改错了对象 —— 与 `provider-form-modal` 的表单重灌同一条口径。
  *   4. 两格能力的**输入草稿**要能把「用户清空了输入框」与「用户没碰过」分开：前者回调 `null`
@@ -25,22 +30,38 @@
  *   6. 中文文案**全部显式给出**：应用没有配 antd 的 locale（见 apps/web-next/app/providers.tsx），
  *      漏给一处就是中英混杂；按钮一律 `autoInsertSpace={false}`（antd 默认会在两个汉字中间插空格，
  *      可访问名随之不再等于文案）。
- *   7. **没有「确定 / 取消」**：这个对话框不做提交 —— 每一次增删与拉取都是**立即生效**的独立请求，
+ *   7. **本对话框没有「确定 / 取消」**：它不做提交 —— 每一次增删与拉取都是**立即生效**的独立请求，
  *      页脚只留一个「关闭」。给它一个「确定」会让人以为不点就不保存。
+ *      内层的挑选对话框**有**确定 / 取消：它表达的是「这一批要不要进清单」的一次性表态，
+ *      与外层「每一行独立生效」的口径不冲突。
+ *   8. **拉取中按钮转圈**（loading 来自页面 props）：预览是一次真实网络请求，
+ *      无反馈的等待会让人连点几次（每次都发起一次请求）。
  */
 import { DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Alert, Button, Flex, Input, InputNumber, Modal, Table, Tag, Tooltip, Typography } from 'antd';
-import type { ProviderModelCapability, ProviderView } from '@aieval/contracts';
+import type { ProviderModelCapability, ProviderModelPreview, ProviderView } from '@aieval/contracts';
+import { ProviderModelImportModal } from './provider-model-import-modal';
 
 export interface ProviderModelsModalProps {
   open: boolean;
   /** 目标供应商；null = 它已不在列表里（对话框给可见原因，不渲染任何操作） */
   provider: ProviderView | null;
   fetchingModels: boolean;
+  /**
+   * 拉取到的候选（预览结果）：非 null 时内层挑选对话框打开。**引用必须稳定**
+   * （页面存在 state 里）—— 挑选框的勾选集合随它重置，每次 render 传新数组会「勾不住」。
+   */
+  modelCandidates: ProviderModelPreview[] | null;
+  /** 挑选后的确定请求进行中（内层对话框的「加入清单」转圈） */
+  importingModels: boolean;
   onClose: () => void;
   onFetchModels: () => void;
+  /** 挑选对话框「确定」：回传勾选的候选（原样，含能力格） */
+  onImportModels: (models: ProviderModelPreview[]) => void;
+  /** 挑选对话框「取消」/ 关闭 */
+  onCancelImport: () => void;
   onAddModel: (modelId: string) => void;
   onRemoveModel: (modelId: string) => void;
   /**
@@ -66,6 +87,14 @@ export const MODEL_COLUMN_WIDTH = { source: 88, capability: 116, actions: 72 } a
 /** 弹窗宽度：560 放不下「模型名 + 两个输入 + 两个图标按钮」，模型列会被挤到 140px 只剩省略号 */
 export const MODELS_MODAL_WIDTH = 720;
 
+/**
+ * 候选缺席时的占位数组：**模块级常量**（引用稳定）。挑选框的勾选集合随 `models` 引用重置，
+ * 这里若写 `?? []`，每次 render 都是一个新数组 —— open=false 期间无所谓，但任何一次
+ * 「父组件重渲染时 modelCandidates 仍为 null」都会让 effect 重跑一遍（空操作，无碍），
+ * 真正要防的是把这种「引用不稳定」的写法习惯带到 open=true 的路径上去。
+ */
+const NO_CANDIDATES: ProviderModelPreview[] = [];
+
 /** 模型来源的中文标签：拉取来的与手工补的必须一眼可分（下一次拉取只会覆盖 fetched 那一批） */
 const SOURCE_LABELS: Record<ProviderView['models'][number]['source'], string> = {
   fetched: '自动拉取',
@@ -81,8 +110,20 @@ const SOURCE_COLORS: Record<ProviderView['models'][number]['source'], string> = 
 type CapabilityField = 'contextWindow' | 'maxOutputTokens';
 
 export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode {
-  const { open, provider, fetchingModels, onClose, onFetchModels, onAddModel, onRemoveModel, onSetModelContext } =
-    props;
+  const {
+    open,
+    provider,
+    fetchingModels,
+    modelCandidates,
+    importingModels,
+    onClose,
+    onFetchModels,
+    onImportModels,
+    onCancelImport,
+    onAddModel,
+    onRemoveModel,
+    onSetModelContext,
+  } = props;
   const [modelInput, setModelInput] = useState('');
   /** 两格能力的输入草稿（按模型 id、按字段），见文件头第 4 点 */
   const [drafts, setDrafts] = useState<Record<string, Partial<Record<CapabilityField, number | null>>>>({});
@@ -159,7 +200,7 @@ export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode 
             >
               拉取模型
             </Button>
-            <Typography.Text type="secondary">拉取只增补，不冲掉手工维护的条目</Typography.Text>
+            <Typography.Text type="secondary">拉取后先挑选要加入的模型；手工维护的条目不会被冲掉</Typography.Text>
           </Flex>
 
           {provider.models.length === 0 ? (
@@ -289,6 +330,19 @@ export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode 
               添加
             </Button>
           </Flex>
+
+          {/**
+           * 挑选对话框（拉取第二步）：只在目标还在、且页面手里有候选时出现。
+           * 「已在清单」的标注由当前清单现算 —— 候选与清单都在 props 里，两份事实都是最新的。
+           */}
+          <ProviderModelImportModal
+            open={modelCandidates !== null}
+            models={modelCandidates ?? NO_CANDIDATES}
+            existingIds={new Set(provider.models.map((model) => model.id))}
+            importing={importingModels}
+            onImport={onImportModels}
+            onCancel={onCancelImport}
+          />
         </Flex>
       )}
     </Modal>

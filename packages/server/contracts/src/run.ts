@@ -19,10 +19,13 @@
  *      「误点会白烧一次」这件事改由界面的 `Popconfirm` 二次确认承担。
  */
 import { z } from 'zod';
-// 本文件自己也要用 AgentKindSchema（EvalRow.agentKind 与创建入参的候选行）与 AgentKind
-// （`isSameRowTarget` 的入参类型），而 `export … from` 只把名字转出去、不引入本地作用域——
-// 故这里另有一行 import（不是重复）。
-import { AgentKindSchema, type AgentKind } from './agent';
+// 本文件自己也要用 AgentKindSchema（EvalRow.agentKind 与创建入参的候选行）、AgentKind
+// （`isSameRowTarget` 的入参类型）与 AGENT_LABELS（追问那一族的原因里要写「哪一家」），
+// 而 `export … from` 只把名字转出去、不引入本地作用域——故这里另有一行 import（不是重复）。
+import { AGENT_LABELS, AgentKindSchema, type AgentKind } from './agent';
+// 追问判据要读「这一家声明的续接那一格」（`turnInjection.resume`）：类型从 agent-message 借，
+// 判据本身留在本文件——它是行级动作判据那一族的一员（与 `canRescoreRow` / `canRetryRow` 同住）。
+import type { TurnInjectionCell } from './agent-message';
 import { RubricSchema } from './rubric';
 import { ScoreResultSchema } from './score';
 
@@ -304,6 +307,22 @@ export const EvalRowSchema = z.object({
    */
   subagentTurns: z.number().nullable().optional(),
   /**
+   * **候选侧「没答」**（三态）——评分通路读的 `finalText` 区分不了两种「空」，
+   * 而适配器这一侧其实分得开（`providers/codex/events.ts` 的空正文**显式排除**：
+   * 它刻意不让空块把「没采到」伪装成「答复了空串」），丢的是**行/上报这一层**没有字段记下来。
+   *
+   *   · `true` —— 候选侧**没答**（运行成功、但适配器没交出任何正文）；
+   *   · `false` —— 候选侧答了；
+   *   · **缺席 / `null` —— 未记录**：旧 `run.json` 没这一格，或本次运行本身失败
+   *     （此时契约明说 `finalText` 不保证是模型答复，**不能拿它判「没答」**）。
+   *
+   * 为什么是三态而不是「缺席即 `false`」：对**旧的** `run.json` 我们并不知道当时有没有答，
+   * 读成 `false` 等于**断言「它答了」**——而 `false` 恰好是要防的那个误读方向（真出了空答复
+   * 却照旧拿分的行，回看时反而显示正常）。同 `subagentTurns` 那条「缺席 = 未采集、不与 0 混同」
+   * 的惯例（对比 `tokens` / `turns`：`.nullable()` 但不 `.optional()`，旧文件必须有）。
+   */
+  emptyAnswer: z.boolean().nullable().optional(),
+  /**
    * **候选 agent 那一段的耗时**（有适配器结果时取适配器自报值，否则取编排层的掐表），
    * 不含评分阶段——开「使用智能体评分」的轮次里评分自己也要跑一次 CLI（分钟级），
    * 那一截不在这个数里；重新评分也不改它（它只跑评分那一步）。
@@ -434,6 +453,45 @@ export const EvalRowSchema = z.object({
    * 不存在「第三方没投送」这回事）。
    */
   skillInstall: z.array(RowSkillInstallSchema).nullable().optional(),
+  /**
+   * 这一行跑在哪条**会话**上（`null` = 没有可续接的会话）。
+   *
+   * 为什么落进行快照：续接（第二期）复用工作区与会话再跑一段，而厂商侧的会话数据本来就落在行工作区里、
+   * 跑完不清——唯一要落的就是这个 id 本身。**不冗余 `agentKind`**：行上本来就有，续接时拿它校验
+   * id 没串家即可（同一形状的字段出现两处，下一个人必然要问哪个是真的）。
+   *
+   * `.default(null)` 是**载重**的（与 `attempts` / `useAgentJudge` 同一条理由）：老 `run.json` 里
+   * 没有这一格，必填会让 `listRuns()` 静默跳过那一轮。缺格读成 `null` 也是语义正确的兜底——
+   * **旧产物就是不能续接**，界面要给中文原因，**不许静默从头跑一遍**。
+   */
+  sessionId: z.string().min(1).nullable().default(null),
+  /**
+   * 这一行**已经送达的人工消息条数**（一条都没有为 0）：卡片上的「人工追问 ×N」读它，
+   * **与消息账本对齐**（账本里 `origin: 'human'` 的条数）、不与队列表对齐——队列表里还有
+   * 没投出去与已经消失的，那些模型一个字都没看到。
+   *
+   * 为什么落快照而不是让界面去数账本：列表视图的成本会随轮次数涨，而这一格是**一行一个数**。
+   * 代价是「账本与计数」两份数据必须一致 ⇒ 计数递增与那一条落账本**必须在同一段代码里发生**。
+   *
+   * 它数的**不是追问轮次**（那是 `followUpRounds`）：人往运行中的一轮送的话与追问各算各的，
+   * 一格兼两义的结果是「先送进去 2 条、再追问 1 次」被读成「追问了 3 次」。
+   *
+   * `.default(0)` 与 `attempts` 同一条理由（老 `run.json` 没有这一格）；非负整数是因为
+   * 计数只增不减——负数与小数都不是「几条人话」。
+   */
+  followUps: z.number().int().min(0).default(0),
+  /**
+   * 这一行走过的**人工追问轮次**（没追问过为 0）：行日志里那句「第几次追问」读它。
+   *
+   * 与 `followUps` 分开的理由就是「一格不许兼两义」：追问一次会同时推进两个读数（它自己也是
+   * 一条已送达的人话），运行中送进去的人话只推进 `followUps`。合成一格之后，
+   * 「先有 2 条注入、再追问 1 次」的日志会写成 `[人工追问 ×3]`——用户读到的是三次追问，
+   * 其中两次根本不存在。追问的序号（`[人工追问 ×N]` 里的 N）**必须**读这一格。
+   *
+   * `.default(0)` 与 `followUps` 同一条理由：老 `run.json` 没有这一格，必填会让 `listRuns()`
+   * 静默跳过那一轮；缺格读成 0 也是语义正确的兜底（那一轮确实没追问过）。
+   */
+  followUpRounds: z.number().int().min(0).default(0),
 });
 export type EvalRow = z.infer<typeof EvalRowSchema>;
 
@@ -445,6 +503,18 @@ export const EvalRunSchema = z.object({
   caseId: z.string().min(1),
   /** 冗余快照：用例被删除后仍能追溯这一轮测的是什么 */
   caseTitle: z.string(),
+  /**
+   * 这一轮的**用户备注**（自由文本，空串 = 没写）：创建 / 编辑表单里的「备注」，用来记录
+   * 这一次测试的目的（如「对比模型不同版本间的差异」）。评测列表的「标题」列把它接在用例标题后面，
+   * 评测详情顶部也显示一行。
+   *
+   * 它不是用例快照：换用例不会重取它，只在编辑表单里改。
+   *
+   * `.default('')` 是**载重**的：磁盘上已有的 `run.json` 没有这一格，必填会让 `listRuns()`
+   * **静默跳过那一轮**（与 `includeSteps` / `askUser` 同一条理由）；空串也是语义正确的兜底——
+   * 老轮次本来就没有备注。
+   */
+  note: z.string().default(''),
   repoPath: z.string(),
   commitHash: z.string().nullable(),
   /** 冗余快照：用例被改分支或删除后，这一轮从哪个分支起跑仍可追溯（与 repoPath 同口径） */
@@ -482,6 +552,16 @@ export const EvalRunSchema = z.object({
    * 快照落盘之后，事后复盘不必去猜「这一行为什么停了三分钟」，横向对比也能按这一格分组。
    */
   askUser: z.boolean().default(false),
+  /**
+   * 这一轮**允不允许人往运行中的智能体发消息**（输入区闸门）。`.default(false)` 与 `askUser` 逐字
+   * 同一条理由：磁盘上已有的 `run.json` 没有这一格，必填会让 `listRuns()` 静默跳过那一轮；
+   * `false` 也是语义正确的兜底——**关着的时候适配器一格都不挂**，既有行为因此逐字不变。
+   *
+   * 为什么是**轮级快照**：开着它的一轮里产物与没插过话的**不可直接比**（人可能改变了任务走向），
+   * 复盘时它是「这一轮被人介入过」的唯一凭据。`available === false` ⇒ 适配器一格都不挂，
+   * 这就是「零回归」的判据。
+   */
+  injectMessages: z.boolean().default(false),
   rows: z.array(EvalRowSchema),
   workspaceBase: z.string(),
   createdAt: z.string(),
@@ -493,6 +573,16 @@ export type EvalRun = z.infer<typeof EvalRunSchema>;
 /** 创建评测：每候选行给智能体 + 供应商 + 模型；供应商名与 baseUrl 由服务端快照进行 */
 export const RunCreateSchema = z.object({
   caseId: z.string().min(1),
+  /**
+   * 这一轮的备注（可选；缺省 = 没写，由 api 层收敛成 `EvalRun.note` 的空串）。
+   *
+   * **必须显式声明**：zod 3 的 `z.object` 默认 strip 未知键，不声明的话表单提交的备注会被
+   * **静默丢弃**（不是 400），服务端永远收不到它。与 `askUser` / `injectMessages` 同一条理由。
+   *
+   * 用 `.optional()` 而不是 `.default('')`：这是**用户写的注解**，入参不必让每个调用方都补一份
+   * 空串；磁盘上的形状（`EvalRunSchema.note`）才是永远有这一格的字符串。
+   */
+  note: z.string().optional(),
   executionMode: ExecutionModeSchema,
   /** 这一轮是否由评分智能体评分；缺省 false（老客户端与手工 POST 不带这个字段时仍然合法） */
   useAgentJudge: z.boolean().default(false),
@@ -504,6 +594,14 @@ export const RunCreateSchema = z.object({
    * 于是「界面打开了、跑起来却没应答面」是一种没有任何报错的坏形状。
    */
   askUser: z.boolean().default(false),
+  /**
+   * 这一轮是否**允许人往运行中的智能体发消息**（输入区闸门）；缺省 false。
+   *
+   * **必须显式声明**（与 `askUser` 逐字同一条理由）：zod 3 的 `z.object` 默认 strip 未知键，
+   * 不声明的话表单提交的这一格会被**静默丢弃**（不是 400），服务端永远收不到它——
+   * 而它的缺省恰好是「关」，于是「界面打开了输入区、跑起来却一格都不挂」是一种没有任何报错的坏形状。
+   */
+  injectMessages: z.boolean().default(false),
   rows: z
     .array(
       z.object({
@@ -738,3 +836,160 @@ export function canRetryRow(row: EvalRow): boolean {
 export function canRunRow(row: EvalRow): boolean {
   return !isRunningRow(row.status);
 }
+
+/**
+ * 「这次追问带的附件还在不在」的**事实**（`FollowUpFacts.attachments`）。
+ *
+ * 分三态而不是一个布尔：两种「没了」的处置不同——整棵附件根被清理过（`prepareRowWorkspace` /
+ * `deleteRun` 干的）要把这一批重新上传一遍，而某一份文件被手工删掉只要补那一份。合成一句
+ * 「附件没了」会把读者引向错的动作。`present` 也在值域里：这一格是「查过了、都在」，
+ * 与「这次没带附件」（`null`）必须分得开。
+ */
+export type FollowUpAttachmentFact =
+  | { state: 'root-missing'; root: string }
+  | { state: 'missing'; paths: readonly string[] }
+  | { state: 'present' };
+
+/**
+ * 追问判据要的**外部事实**：契约层读不了盘、也认不出厂商（它的依赖里只有 zod），
+ * 故这几格由调用方量好递进来。
+ *
+ * 两个消费方量的是同一份东西、时机不同：编排层在**真追问**那一刻量（附件那一格来自请求体），
+ * 服务端的可用性读侧在**渲染入口之前**量（那时还没有草稿，附件那一格恒为 `null`）。
+ * 判据与文案因此只有这一份——两处各写一遍必然漂移，而漂移的表现正是「按钮写着能追问、点下去 409」。
+ */
+export interface FollowUpFacts {
+  /**
+   * 上一次运行**收了尾没有**（行已落终态，而 `rowAborts` / 在途追问任务里还有这一行）。
+   * 这一格只有编排层量得到：那一刻放行会与迟到的旧任务抢状态（同 `rescoreRefusal` 的 `settling`）。
+   */
+  settling: boolean;
+  /** 这一行的工作区目录此刻还在不在盘上（`workspacePath` 为空一律算不在） */
+  workspaceExists: boolean;
+  /**
+   * 这一行的用例：`deleted` 带上 id——原因里要点名是哪一个用例没了（`run.caseId` 在轮上、
+   * 不在行上，故它只能从事实这一侧进来）。
+   */
+  case: { state: 'present' } | { state: 'deleted'; caseId: string };
+  /** 这次追问带的附件查下来是什么结果；`null` = 这次没带附件（无需查） */
+  attachments: FollowUpAttachmentFact | null;
+  /** 这一家声明的续接那一格（`turnInjection.resume`）；`undefined` = 能力表里没这一组 */
+  resume: TurnInjectionCell | undefined;
+}
+
+/**
+ * 追问判据的答复：**可行 + 不可行的中文原因**。
+ *
+ * 做成判别联合而不是 `{ ok: boolean; reason: string | null }`：后者允许「不可行却没原因」与
+ * 「可行却带原因」两种说不通的组合存在，而界面要靠这一格直接说一句人话（不留半句）。
+ * 形状与 `validateRubric` 同源（契约里既有的那条「结论 + 原因」）。
+ */
+export type FollowUpVerdict = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 「这一家为什么接不上会话」的一句实话。
+ *
+ * 四种「没有」必须分开说（结构上没有 / 厂商有但我们没接 / 版本没到 / 没验过 / 连声明都没读到）：
+ * 合成一句会把排查引向错的动作——`turnInjection` 那五态词表就是为这件事存在的。
+ * 能接（`yes`）时返回 `null`：这一格只回答「为什么不行」，不问「为什么行」。
+ */
+function resumeRefusalReason(agentKind: AgentKind, resume: TurnInjectionCell | undefined): string | null {
+  const label = AGENT_LABELS[agentKind];
+  if (resume === undefined) return `${label}没有声明「能不能续接会话」（能力表缺席按不知道处置）`;
+  if (resume.state === 'yes') return null;
+  if (resume.state === 'off-by-adapter') {
+    return resume.gate === null
+      ? `${label}的续接还没接上（厂商侧有那条路，我们这一侧没接）`
+      : `${label}的续接要 ${resume.gate.version} 及以上才够得到（本仓 pin 的那一版没有）`;
+  }
+  if (resume.state === 'unverified') return `${label}的续接还没验证过`;
+  return `${label}这一家结构上没有续接会话的落点`;
+}
+
+/**
+ * 该行此刻能否**追问**：人补一句话，让它接着同一段会话再跑一段（不重建工作区、不重置计量、
+ * 跑完自动重评）。
+ *
+ * 七档拒绝，顺序即**处置的紧急程度**；前两档与后五档分开——它们不是「这一行不能追问」，
+ * 而是「此刻不是追问的时机」：
+ *   ① 正在跑（`preparing` / `running` / `judging`）**或还没开始跑**（`pending`）：那句话该发进
+ *      输入区**排队**，等这一轮跑完再追问。`pending` 与在跑的行同一档处置：它连会话都还没有，
+ *      但它不是「这一行接不上」——把它读成后者会把人引向「重新执行」，而用户要的只是先把话排上队；
+ *   ② 上一次运行还没收尾：该等（这一格只有编排层量得到，见 `FollowUpFacts.settling`）；
+ *   ③ `sessionId === null`：还没跑过 / 没有这一格的旧产物 / 上一次没采到会话 id；
+ *   ④ 工作区已被删除（`deleteRun` 删过、手工清过，或这一行从没准备成功过）；
+ *   ⑤ 追问带的附件没了（整棵根没了 / 某一份没了）；
+ *   ⑥ 用例已删除；
+ *   ⑦ 这一家接不上会话（声明不是 `yes`，原因逐档分开说）。
+ *
+ * **为什么判据放 contracts**：界面靠它决定「追问」按钮的 `disabled` 与 Tooltip 文案、服务端拿
+ * 同一份抛 `CONFLICT`——与 `canRescoreRow` / `canRetryRow` / `canRunRow` 同一个落点、同一条理由。
+ * ⑦ 那一档的判据与文案**也在这里**（从事实里的声明读，不认厂商）：界面若自己编一句
+ * 「这一家不支持续接」，那与厂商声明就是两份说法。
+ *
+ * ⚠️ **绝不静默从头跑一遍**是这一族判据存在的根：`runRow` 的第一步是 `prepareRowWorkspace`
+ * （整删 `workspace/` + `.agenthome/`，后者正是要续接的会话的落点）。放行一条接不上的追问，
+ * 用户看到的是「智能体什么都不记得了」，而界面上一切正常——那是这一面最坏的一种失败。
+ */
+export function canFollowUpRow(row: EvalRow, facts: FollowUpFacts): FollowUpVerdict {
+  const refuse = (reason: string): FollowUpVerdict => ({ ok: false, reason });
+
+  if (isRunningRow(row.status) || row.status === 'pending') {
+    // 「正在跑」与「还没开始跑」是两句话（用户看到的那一刻状态不同），但处置**完全相同**：
+    // 那句话发进输入区排队等这一轮跑完。它**不是**「这一行接不上」——落到第 ③ 档会把人引向
+    // 「重新执行」，而那与用户想做的事（先把话排上队）正好相反
+    const state = row.status === 'pending' ? '还没开始跑' : '正在运行中';
+    return refuse(
+      `该行${state}（${ROW_STATUS_LABELS[row.status]}）：请把这句话发进输入区排队，等这一轮跑完；`
+        + '追问只对已经跑过的行有效',
+    );
+  }
+  if (facts.settling) {
+    return refuse('该行上一次的运行还没收尾，请稍候再试');
+  }
+  if (row.sessionId === null) {
+    return refuse(
+      '这一行没有可续接的会话（还没跑过，或是没有这一格的旧产物）：追问接不上原来那段上下文，'
+        + '这里不会从头重跑该行——要重跑请点「重新执行」',
+    );
+  }
+  if (row.workspacePath === '' || !facts.workspaceExists) {
+    const where = row.workspacePath === '' ? '没有记录过工作区路径' : row.workspacePath;
+    return refuse(
+      `这一行的工作区已被删除（${where}）：追问要在原工作区上继续，这里不会从头重跑该行——`
+        + '要重跑请点「重新执行」',
+    );
+  }
+  if (facts.attachments !== null && facts.attachments.state !== 'present') {
+    const because = facts.attachments.state === 'root-missing'
+      ? `追问带的附件根不存在（${facts.attachments.root}）：附件随该行的工作区一起被清理过，请重新上传再追问。`
+      : `追问带的附件不存在（${facts.attachments.paths.join('、')}）：请重新上传再追问。`;
+    return refuse(`${because}这里不会从头重跑该行——要重跑请点「重新执行」`);
+  }
+  if (facts.case.state === 'deleted') {
+    return refuse(`用例已删除（${facts.case.caseId}），无法追问；历史记录仍可查看`);
+  }
+  const resumeReason = resumeRefusalReason(row.agentKind, facts.resume);
+  if (resumeReason !== null) {
+    return refuse(`${resumeReason}：追问接不上原来那段上下文，这里不会从头重跑该行——要重跑请点「重新执行」`);
+  }
+  return { ok: true };
+}
+
+/**
+ * 追问可用性的**线形状**（服务端的读侧 → 界面）：一行一句结论。
+ *
+ * 为什么是一条读侧而不是让界面对着行快照自己算：七档里有四档的事实（工作区 / 用例 / 附件 /
+ * 这一家的声明）在盘上与厂商声明上，浏览器一格都看不到。界面自己编一句「这一家不支持续接」
+ * 就是第二份说法——而那正是本仓反复禁止的那种漂移。
+ */
+export const FollowUpVerdictSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string().min(1) }),
+]);
+
+/** 一轮里每一行的追问可用性（顺序即 `run.rows` 的顺序） */
+export const FollowUpAvailabilitySchema = z.object({
+  rows: z.array(z.object({ rowId: z.string().min(1), verdict: FollowUpVerdictSchema })),
+});
+export type FollowUpAvailability = z.infer<typeof FollowUpAvailabilitySchema>;

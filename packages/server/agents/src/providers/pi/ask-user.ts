@@ -63,6 +63,13 @@ export const PI_ASK_USER_PARAMETERS = {
   properties: {
     questions: {
       type: 'array',
+      /**
+       * 至少一问：空数组过得了「有 `questions` 这一格」的校验，于是**人会被问一道空题**
+       * （端口拿到空列表、模型读到一句没有任何内容的「用户已答复」），而那是一次纯噪声的往返。
+       * 判据是厂商自己的参数校验器（真机：空数组从前一版装配起被拒在 `execute` 之前，
+       * 端口一次都不被调）——这一格是那条判据的声明面。
+       */
+      minItems: 1,
       items: {
         type: 'object',
         properties: {

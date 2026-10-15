@@ -12,13 +12,15 @@
  *     `result = {content,details,structuredContent}`（后两个是厂商自定义载荷）。
  *     `turn_end.toolResults[]` 是同一件事的另一份陈述（会话记录里的 `ToolResultMessage`）——
  *     本文件**只取执行事件那一条**：两条都投影会在同一个合并键上投两次快照。
- *   · **子智能体**：本家没有这一面（`messageCapability.subagent` 声明 `no` / `not-supported`）
- *     ⇒ 本文件不产出 `SubagentRecord`，也不给任何消息挂 `subagentId`。
+ *   · **子智能体**：这一面来自扩展（`subagent: yes` / `subagentSource: 'wire'`），归一函数被
+ *     两条通路复用——wire 通道（子会话事件订阅）与转写文件兜底（`transcript.ts`），
+ *     后者的消息盖 `subagentId` 与 `source: 'session-file'`。
  *
  * 三条硬口径：
  *   · **`raw` 必须是当场快照**：`partial` 会被后续帧原地改写，存引用会让已经交出去的消息
  *     在消费方手里变样（合并器按到达顺序读，读到的是「后来的内容」）；
- *   · **`source` 一律 `'wire'`**：数据全部来自进程内的厂商事件流，没有旁路通道；
+ *   · **`source` 由调用方给**：wire 通路记 `'wire'`，转写兜底记 `'session-file'`——两档都是
+ *     厂商原始数据，区别只在**从哪条通道拿到的**；
  *   · **块序号取厂商的 `contentIndex`**：增量帧与快照必须落进同一个槽位，
  *     而厂商给增量的位次就是它在 `content[]` 里的下标（自己按到达顺序重新发号会让两者错位）。
  */
@@ -31,6 +33,7 @@ import {
   toolCallBlockDraft,
   toolResultBlockDraft,
   usageTokens,
+  type BlockIdentity,
   type MessageBlockDraft,
   type MessageDraft,
 } from '../../message';
@@ -69,20 +72,54 @@ export function snapshotPiPayload(value: unknown): unknown {
  *
  * 三格（`input` / `cacheRead` / `output`）缺任何一项就是 `null`（**不填 0**）：
  * 「没采到」与「确实是 0」在界面上是两句不同的话。两个可选格读不到同样是 `null`。
+ *
+ * ⚠️ **「三个键在场」不等于「厂商报过用量」**：pi-ai 构造助手消息时把 `usage` 初始化成**全 0**
+ * （OpenAI 两侧的 usage 组装都用 `… || 0` 那一族，见 `openai-responses-shared.js` /
+ * `openai-completions.js`），而请求失败、
+ * 被中止、网关没回 usage 块这三条路都会把这份**冻结的全 0** 原样留在最终消息上 ⇒ 照「键在场」
+ * 读会把「没采到」记成「采到了 0 token」（契约：`tokens` 采不到就是 `null`，0 会让人得出
+ * 「这家很省」的错误结论）。判据取**四项同时为 0**——一次真实往返不可能输入、缓存、输出与
+ * 厂商自报总量全是 0。
  */
-export function readPiUsageTokens(usage: unknown): UsageTokens | null {
+export function readPiUsageTokens(
+  usage: unknown,
+  options?: {
+    /**
+     * `reasoning: 0` 算不算「没报」。OpenAI 那两条 wire 都是 `…reasoning_tokens || 0`
+     * （`openai-responses-shared.js` / `openai-completions.js`）⇒ 网关不给推理明细时它写 0，而
+     * anthropic 那条只在真有思考 token 时才写 ⇒ 同一份读数在两类 wire 上含义不同，
+     * 由调用方按消息的 `api` 决定。`0` 被读成真值会让人得出「这家不做推理」（见 `events.ts` 的计量注释）。
+     */
+    reasoningZeroIsMissing?: boolean;
+  },
+): UsageTokens | null {
   const record = asRecord(usage);
   const input = readNumber(record, 'input');
   const cached = readNumber(record, 'cacheRead');
   const output = readNumber(record, 'output');
   if (input === null || cached === null || output === null) return null;
+  const total = readNumber(record, 'totalTokens');
+  if (input === 0 && cached === 0 && output === 0 && (total ?? 0) === 0) return null;
+  const reasoning = readNumber(record, 'reasoning');
   return usageTokens({
     input,
     cached,
     output,
-    reasoningOutput: readNumber(record, 'reasoning'),
-    total: readNumber(record, 'totalTokens'),
+    reasoningOutput: options?.reasoningZeroIsMissing === true && reasoning === 0 ? null : reasoning,
+    total,
   });
+}
+
+/**
+ * 这条消息走的是不是「会把缺失的推理明细补成 0」的那类 wire（OpenAI 的 Responses / Completions）。
+ *
+ * 判据取消息自带的 `api`（厂商 `.d.ts` 的 `AssistantMessage.api`，与 `wireForProtocol` 同值域）：
+ * 只有 OpenAI 那两条 wire 用 `|| 0` 兜底（见 `readPiUsageTokens` 的 `reasoningZeroIsMissing`），
+ * 于是同一份 `reasoning: 0` 在 OpenAI 与 Anthropic 上是两句不同的话。
+ */
+function openAiReasoningCoalesced(message: Record<string, unknown> | null): boolean {
+  const api = readString(message, 'api');
+  return api === 'openai-responses' || api === 'openai-completions';
 }
 
 /**
@@ -110,7 +147,13 @@ export function piAssistantReply(message: unknown): string {
  * `chunk` 记 `'snapshot'`（它一次性到位，没有增量形态），`usage` 记 `null`
  * （它不是一次独立的模型往返，没有属于它自己的用量）。
  */
-export function piStructuredResultDraft(args: unknown, text: string, roundTrip: number): MessageDraft {
+export function piStructuredResultDraft(
+  args: unknown,
+  text: string,
+  roundTrip: number,
+  /** 那次 `submit_result` 调用的 id；厂商没给时为 `null` */
+  toolCallId: string | null,
+): MessageDraft {
   return {
     vendorId: null,
     role: 'assistant',
@@ -122,10 +165,26 @@ export function piStructuredResultDraft(args: unknown, text: string, roundTrip: 
     parentCallId: null,
     subagentId: null,
     chunk: 'snapshot',
-    blocks: [textBlockDraft(text, 'snapshot')],
+    blocks: [textBlockDraft(text, 'snapshot', structuredResultSlot(toolCallId))],
     usage: null,
     raw: { type: PI_STRUCTURED_RESULT_PAYLOAD_TYPE, arguments: args },
   };
+}
+
+/**
+ * 结构化结果文本块在**本层合并器**里的槽位标识。
+ *
+ * 为什么不给缺省的 `index: 0`：这条草稿与同一轮的助手消息**共用一个 `mergeKey`**，而那一轮的第 0 块
+ * 通常已经有人（模型的思考块或正文块）——`snapshot` 的语义是**覆盖** ⇒ 那段 JSON 会把模型自己写的
+ * 内容顶掉。真机（一条助手消息里 `[text, toolCall(submit_result)]`）：投递序列
+ * `[text="这是结论：", tool-call]` → `[text="{\"verdict\":\"ok\"}", tool-call]`，折叠后正文块消失。
+ *
+ * 为什么带前缀：槽位键在本层按 `i:<index>` / `c:<callId>` 编号，那次调用的**工具调用块**已经占了
+ * `c:<callId>` 那一格 ⇒ 直接复用它会把工具块顶掉。这个标识只在本层当合并键，**不进契约、不进消息**
+ * （`publish` 只带走 `slot.block`）。
+ */
+function structuredResultSlot(toolCallId: string | null): BlockIdentity {
+  return { kind: 'call', callId: `${PI_STRUCTURED_RESULT_PAYLOAD_TYPE}:${toolCallId ?? 'anonymous'}` };
 }
 
 /**
@@ -174,7 +233,19 @@ export function piAssistantMessageDraft(message: unknown, roundTrip: number): Me
     if (type === 'toolCall') {
       const callId = readString(block, 'id');
       if (callId === null || callId === '') return;
-      blocks.push(toolCallBlockDraft(callId, readString(block, 'name') ?? '', block?.['arguments'] ?? null, 'pi'));
+      blocks.push(
+        toolCallBlockDraft(
+          callId,
+          readString(block, 'name') ?? '',
+          block?.['arguments'] ?? null,
+          'pi',
+          undefined,
+          undefined,
+          // 厂商只在参数不是合法 JSON 时给这一格（`arguments` 于是是 `{}`）：带上它，
+          // 块层才分得清「解析失败」与「模型真传了空对象」
+          readString(block, 'argumentsError'),
+        ),
+      );
     }
   });
   if (blocks.length === 0) return null;
@@ -193,7 +264,7 @@ export function piAssistantMessageDraft(message: unknown, roundTrip: number): Me
      * 这条消息**自己那一次往返**的用量（不是累计、不进任何合计）。骨架的合并器对它是
      * 「带值覆盖、缺省保留」：增量帧不带它，快照那一次带。
      */
-    usage: readPiUsageTokens(record?.usage),
+    usage: readPiUsageTokens(record?.usage, { reasoningZeroIsMissing: openAiReasoningCoalesced(record) }),
     blocks,
     raw: snapshotPiPayload({ type: 'message_end', message: record }),
   };
@@ -210,6 +281,12 @@ export function piAssistantMessageDraft(message: unknown, roundTrip: number): Me
  *
  * ⚠️ 本函数**只产消息、不产行级事件**：一条增量一行 `log` 会把「原始输出」面板刷成 JSON 流水，
  * 而那正是「未识别负载落兜底」那条路最贵的一种回归。
+ *
+ * ⚠️ `raw` **只留这一帧的增量**，不复制厂商帧里的 `partial`：`partial` 是「到目前为止的整条助手
+ * 消息」（厂商 `.d.ts` 原文 *the shared live response-so-far helper*），逐帧快照它等于每帧
+ * 深拷贝一次整段正文——一条几千 token 的答复就是几千次 O(长度) 拷贝，而增量消息还会被扇出到
+ * SSE（不落盘、不参与任何判据）⇒ 浏览器为了拿几个字符要收整段正文。「当场快照」这条纪律
+ * （`partial` 被原地 mutate）由**新建一个只带标量的对象**满足，不必复制 `partial`。
  */
 export function piDeltaMessageDraft(frame: unknown, roundTrip: number): MessageDraft | null {
   const record = asRecord(frame);
@@ -237,7 +314,7 @@ export function piDeltaMessageDraft(frame: unknown, roundTrip: number): MessageD
         ? thinkingBlockDraft(delta, 'full', 'delta', null, identity)
         : textBlockDraft(delta, 'delta', identity),
     ],
-    raw: snapshotPiPayload({ type: 'message_update', assistantMessageEvent: record }),
+    raw: { type: 'message_update', assistantMessageEvent: { type, contentIndex, delta } },
   };
 }
 

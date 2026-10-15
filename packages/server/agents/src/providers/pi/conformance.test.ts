@@ -36,6 +36,7 @@ import {
   piMcpProbeServers,
   observePiCancelAt,
   observePiLifecycle,
+  observePiRepairDisposal,
   runPiConformanceRow,
   writeSkillSource,
   type PiConformanceRun,
@@ -369,6 +370,34 @@ describeProviderConformance({
   injection: piProvider.metadata.injection,
   interaction: piProvider.metadata.interaction,
   /**
+   * **人工消息面（第五组）的证明安排**（判据见 `../conformance/kit.ts` 的 `checkTurnInjectionNailing`
+   * 与 `./onboarding.test.ts` 的驱动器真伪核对）。
+   *
+   * 投递两档的证据是**假 SDK 夹具**（`providers/pi/injection.test.ts`）：适配器一格端口都没挂，
+   * 厂商侧的投递没被真机验过。续接是真路径（`testing/pi-session-fixture.ts`：真包装配 + 真会话管理器
+   * + 真 JSONL 落盘，假网关只扮演上游模型）。
+   */
+  turnInjection: {
+    capability: piProvider.metadata.turnInjection!,
+    proofs: {
+      'delivery.round': {
+        driver: 'synthetic-fixture',
+        observed: false,
+        evidence: 'packages/server/agents/src/providers/pi/index.test.ts',
+      },
+      'delivery.idle': {
+        driver: 'synthetic-fixture',
+        observed: false,
+        evidence: 'packages/server/agents/src/providers/pi/index.test.ts',
+      },
+      resume: {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/pi-session-fixture.ts',
+      },
+    },
+  },
+  /**
    * **宿主注册的那件提问工具名**：`host-tool` 档的对照臂判据靠它认出「哪一件工具是这一格」。
    * 写成字面量而不是从适配器常量现读——两边同一个来源的话，改一处两边一起变、判据照样绿；
    * 与适配器那份对不上的表现是本文件里那条挂载守卫当场红。
@@ -605,4 +634,114 @@ describe('应答帧挂载（pi）', () => {
     expect(rendered).toContain(ASK_CUSTOM_ANSWER);
     expect(probe?.control.calls).toBe(0);
   });
+});
+
+describe('子任务正文（pi）', () => {
+  /**
+   * **真链路守卫**：真 SDK + 真扩展，子会话正文经 wire 通道进消息流——真扩展在 reload 里
+   * claim `pi-subagents:manager` 注册表，适配器快照本行的条目、`subagents:started` 后订阅
+   * **真子会话**的事件流（`subagent-wire.ts`）。`events.test.ts` 那一组钉的是投影逻辑
+   * （读口是假的），这一条钉的是**两端真源对得上**——注册表挂载、`getRecord` 的 record
+   * 形状、子会话 `subscribe` 的 this 绑定任何一侧漂移，这里当场红，症状是「子任务正文
+   * 整行退回 session-file 来源」（wire 静默降级）或「子任务节点没有逐条对话记录」。
+   * 转写文件（兜底通道）的路径公式由 `transcript.test.ts` 钉住；本场景 wire 生效时不读它。
+   */
+  it('subagent 场景的产物里有子任务自己的消息：带身份、wire 来源、自己的轮次、它自己说的正文', () => {
+    const run = SCENARIOS.subagent;
+    const rows = run.product.subagents;
+    expect(rows.length, '子任务行一条都没投出来——先看派发那一刻那条通路').toBeGreaterThan(0);
+    const agentId = rows[0]?.subagentId ?? '';
+    const own = run.product.messages.filter((message) => message.subagentId === agentId);
+    expect(
+      own.length,
+      '子任务自己的消息一条都没读到——wire 链路断了（注册表快照、订阅或排空任何一格），'
+        + `子任务行有 ${rows.length} 条、身份 ${agentId}`,
+    ).toBeGreaterThan(0);
+    for (const message of own) {
+      expect(message.source, '子任务正文必须标流式来源 wire（wire 不可用才退 session-file 补录）').toBe('wire');
+      expect(message.roundTrip, '轮次必须是该子会话自己的往返序（从 1 起）').toBeGreaterThanOrEqual(1);
+    }
+    // 正文必须真是**它自己说的**那一段（剧本第 ② 段是子会话的答复），不是父会话内容的错挂
+    const texts = own.flatMap((message) =>
+      message.blocks.filter((block) => block.type === 'text').map((block) => (block as { text: string }).text));
+    expect(texts.join('\n'), '子任务正文里找不到子会话的答复——读到的不是它自己说的').toContain('子任务完成');
+  });
+
+  /**
+   * **子任务的逐字增量**（真链路）：子会话与主会话同构，`message_update` 的 `text_delta`
+   * 经 wire 通道一路到消息流 ⇒ 子任务节点边产边长字，而不是整条憋到收尾才出现。
+   *
+   * 三条判据缺一不可，第三条是这条守卫的**要害**：
+   *   · 真有 `chunk === 'delta'` 的子任务消息（通道通了）；
+   *   · 增量与收尾快照落在**同一个载体**上（轮次归属对了，合并器才能把片段拼成完整块）；
+   *   · **收尾快照带用量**——这一格才分得出「权威快照真到了」与「合并器收口凑的那条」。
+   *     用量只在子会话的 `message_end` 上（增量一律 `usage: null`）⇒ 去重若退回「按载体」，
+   *     先到的 delta 会占死键、权威快照被整条丢掉，而合并器的 `sealOpen` 仍会按累积值
+   *     补发一条 `chunk: 'snapshot'`——**chunk 与 mergeKey 都长得一样，只有用量是空的**。
+   *     只看 chunk 的守卫会在那一档静默放过（实测过：变异后本条的前两格全绿）。
+   */
+  it('子任务正文带逐字增量，且带用量的权威收尾快照没有被增量挡掉', () => {
+    const run = SCENARIOS.subagent;
+    const agentId = run.product.subagents[0]?.subagentId ?? '';
+    const own = run.product.messages.filter((message) => message.subagentId === agentId);
+    const deltas = own.filter((message) => message.chunk === 'delta');
+    const snapshots = own.filter((message) => message.chunk === 'snapshot');
+    expect(deltas.length, '子任务一条逐字增量都没有——wire 的 message_update 那一支没进缓冲').toBeGreaterThan(0);
+    expect(snapshots.length, '子任务没有收尾快照').toBeGreaterThan(0);
+    // 增量与快照落在**同一个载体**上：合并器靠它把逐字片段拼成完整块
+    const deltaKeys = new Set(deltas.map((message) => message.mergeKey));
+    expect(
+      snapshots.some((message) => deltaKeys.has(message.mergeKey)),
+      '增量与收尾快照不在同一个载体上——轮次归属算错了（增量该归「还没收尾的那一轮」）',
+    ).toBe(true);
+    /**
+     * 权威那一条必须在：带用量的快照只可能来自子会话的 `message_end`。
+     * 全是 `usage: null` 的快照 ⇒ 权威快照被去重吃掉了，账本里只剩合并器收口凑的那条。
+     */
+    expect(
+      snapshots.some((message) => message.usage !== null),
+      '子任务的收尾快照全都不带用量——权威快照被增量挡掉了（去重判据退回「按载体」），'
+        + '账本里这条是合并器 sealOpen 按增量累积值补发的',
+    ).toBe(true);
+  });
+});
+
+/**
+ * **修正轮的两条硬事实**（真包 + 假网关，产物与请求两侧同时取证）。
+ *
+ * 为什么单列一组而不是并进共享套件：pi 是四家里**唯一实现 `continue` 的 in-process 家**
+ * （cc / codex 没有这一格、dsh 的每个区间共用同一份释放），这两条缺口只有它会踩到。
+ */
+describe('修正轮的预算与释放（pi）', () => {
+  /**
+   * 首答不合格 ⇒ 修正轮必须**跑满预算**。骨灰度修正循环每一轮都读**当前**活动区间的 `continue`
+   * （`turn.ts` 的 `askAgain = handle?.continue`），而追问区间若不给自己这一格，预算会从 2 轮静默
+   * 缩到 1 轮、并落一条「该适配器不支持同会话修正」——与事实相反（本家实现了它）。
+   *
+   * 判据取出站请求条数：1（首轮）+ 2（两轮修正）= 3。网关对越界请求复用最后一段剧本，
+   * 所以三轮都拿到同一段非 JSON 正文。
+   */
+  it('首答不合格 ⇒ 修正轮跑满 2 轮（1 + 2 = 3 次出站请求），且不落「不支持同会话修正」', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '按剧本收尾。',
+      script: [anthropicText('这不是 JSON。')],
+      outputSchema: STRUCTURED_SCHEMA,
+    });
+    expect(run.requests, '修正预算被静默缩水（1 + 1 = 2 次）').toHaveLength(3);
+    const stderr = run.product.events
+      .flatMap((event) => (event.type === 'log' && event.stream === 'stderr' ? [event.text] : []))
+      .join('\n');
+    expect(stderr, '修正轮真的跑不起来时才该出现这条').not.toContain('不支持同会话修正');
+  }, 120_000);
+
+  /**
+   * **走过一次修正轮之后，会话仍恰好释放一次**。
+   *
+   * 骨架的释放闭包读的是「当时的活动区间」（`handle?.dispose()`），而修正轮是一次新的区间
+   * ⇒ 追问区间若不共用首轮的释放入口，`session.dispose()` / `waitForIdle()` /
+   * `subagentWire.dispose()` / provider 注销**一次都不会执行**（且不会有任何报错）。
+   */
+  it('走过一次修正轮之后，会话仍恰好释放一次', async () => {
+    expect(await observePiRepairDisposal(), '修正轮之后整条释放链被跳过').toBe(1);
+  }, 120_000);
 });

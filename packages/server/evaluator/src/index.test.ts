@@ -27,11 +27,14 @@ describe('@aieval/evaluator 导出面', () => {
         'listRuns',
         'listRunsForCase',
         'saveRun',
-        // 事件总线；两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）
+        // 事件总线；两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）。
+        // 另有 run 级的一套（一轮下所有行的同一条流）：聚合流按它订阅，listener 多一个 rowId 实参
         'publishRowEvent',
         'publishJudgeEvent',
         'subscribeRowEvents',
         'subscribeJudgeEvents',
+        'subscribeRunEvents',
+        'subscribeRunJudgeEvents',
         // run 级信号总线（/api/runs/events 的订阅端）：只出口读侧，发射点在 saveRun 体内不出包
         'subscribeRunChanges',
         // 挂起表（/api/ask-user 的三个端点）：快照、信号订阅、应答写入口。
@@ -43,8 +46,18 @@ describe('@aieval/evaluator 导出面', () => {
         'resetAskUserForTesting',
         'resolveAskUser',
         'subscribeAskUserChanges',
+        // 人工消息面（/api/inject-messages 三条端点 + 撤回）：快照、登记、改期、撤回、信号订阅，
+        // 外加用例脚手架（表挂在 globalThis 的那份总线上，跨用例存活）。
+        // `createInjectionPort` / `waitForInjectQueue` 不出包：只由本包编排层调用
+        'listInjectMessages',
+        'promoteInjectMessage',
+        'registerInjectMessage',
+        'resetInjectQueueForTesting',
+        'retractInjectMessage',
+        'subscribeInjectChanges',
         // 记录总线：消息与子任务行共用 messages.jsonl；
-        // 评分另有自己的一条（judge-messages.jsonl）
+        // 评分另有自己的一条（judge-messages.jsonl）。
+        // 与事件总线同形：行级一套 + run 级一套（聚合流按 run 级订阅）
         'broadcastJudgeMessage',
         'broadcastRowMessage',
         'publishJudgeMessage',
@@ -55,6 +68,8 @@ describe('@aieval/evaluator 导出面', () => {
         'publishSubagentRecord',
         'subscribeJudgeRecords',
         'subscribeRowRecords',
+        'subscribeRunRecords',
+        'subscribeRunJudgeRecords',
         // 评分器
         'judgeRow',
         'parseJudgeResponse',
@@ -65,6 +80,11 @@ describe('@aieval/evaluator 导出面', () => {
         'assertRunMutable',
         'deleteRun',
         'drainRunningTasks',
+        // 人工追问（第二期）的**读写两侧**：写侧是 api 层的追问入口（同步返回「已经在准备中」
+        // 的快照），读侧是界面入口的判据来源（哪一行能追问、不能的那一行为什么）——
+        // 两者必须同源，故一起出口
+        'followUpAvailability',
+        'followUpRow',
         'recoverInterruptedRuns',
         'rescoreRow',
         // 单行重新执行（内部名 retry，界面文案「重新执行」）：web-next 的 retry 路由从 api 包根取它，api 再从本包取

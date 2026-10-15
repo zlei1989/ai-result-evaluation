@@ -31,7 +31,7 @@ import { formatDuration } from '../base/format';
 import { formatCacheHitRate, formatGenerationRate, formatTokens, timingSourceLabel } from '../base/usage-metrics';
 // 七种收场的中文取界面词汇那一份（`agent-log/types.ts`，只读卡片与弹层共用同一份）：各写一份必然漂成
 // 「日志里叫一个名字、卡片上叫另一个」
-import { ASK_USER_OUTCOME_LABELS } from './agent-log/types';
+import { ASK_USER_OUTCOME_LABELS, INJECT_OUTCOME_LABELS } from './agent-log/types';
 
 /** 提问通道的两句人话（与能力声明那一格同一套词）：`null` 由调用方写成「通道未知」 */
 const ASK_USER_CHANNEL_LABELS: Readonly<Record<AskUserChannel, string>> = {
@@ -74,6 +74,14 @@ export function formatEventLine(event: AgentEvent): string {
       return `[${time}] 提问 ${ASK_USER_OUTCOME_LABELS[event.outcome].label} · 等待 ${formatDuration(
         event.waitedMs,
       )} · ${event.channel === null ? '通道未知' : ASK_USER_CHANNEL_LABELS[event.channel]}`;
+    /**
+     * 一条人工消息的落点：**「没送到」的那三种必须能被读到**——它们一条账本记录都不会产生
+     * （账本只在真的交出去那一刻才写），这一行日志是它们在界面上唯一的身影。
+     */
+    case 'inject-message':
+      return `[${time}] 人工消息 ${INJECT_OUTCOME_LABELS[event.outcome].label}${
+        event.reason === null ? '' : ` · ${event.reason}`
+      }`;
     case 'score':
       return `[${time}] 评分 总分 ${event.score.totalScore} · ${
         event.score.judgeAgentKind === null

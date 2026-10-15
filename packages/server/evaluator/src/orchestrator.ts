@@ -26,7 +26,8 @@
  * 远端来源（`repoPath` 是 git 地址）在交给 core 之前先被物化成「本地镜像路径 + 具体 40 位 hash」
  * core 那条接缝只认本地路径，不需要知道 URL 的存在。
  */
-import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AGENT_LABELS,
@@ -34,6 +35,7 @@ import {
   ROW_STATUS_LABELS,
   ServiceError,
   TERMINAL_ROW_STATUSES,
+  canFollowUpRow,
   canRescoreRow,
   canRetryRow,
   canRunRow,
@@ -49,9 +51,15 @@ import {
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
+  type FollowUpAttachmentFact,
+  type FollowUpAvailability,
+  type FollowUpFacts,
+  type InjectAttachment,
   type Provider,
   type RowFailureStage,
+  type RowRecord,
   type ScoreResult,
+  type Settings,
   type SubagentRecord,
   type TestCase,
 } from '@aieval/contracts';
@@ -70,6 +78,8 @@ import {
   resetEvents,
   resetRecords,
   resolveRemoteRef,
+  rowAgentHomeDir,
+  rowAttachmentsDir,
   rowEventsFile,
   rowJudgeEventsFile,
   rowJudgeMessagesFile,
@@ -78,8 +88,24 @@ import {
   runSnapshotFile,
   truncateDiff,
 } from '@aieval/core';
-import { acceptsProtocol, getProvider, protocolMismatchMessage, type AgentRunResult } from '@aieval/agents';
+import {
+  acceptsProtocol,
+  carrierKeyOf,
+  getProvider,
+  protocolMismatchMessage,
+  type AgentRunInput,
+  type AgentRunResult,
+} from '@aieval/agents';
 import { createAskUserSettlement } from './ask-user-settlement';
+import {
+  createInjectionPort,
+  hasPendingInjectMessages,
+  readAttachmentSize,
+  resolveIdleWithPending,
+  settleInjectQueueOnRowEnd,
+  waitForInjectQueue,
+} from './inject-port';
+import { composeInjectedText } from './inject-queue';
 import { publishJudgeEvent, publishRowEvent } from './events';
 import {
   broadcastJudgeMessage,
@@ -145,6 +171,9 @@ export const ROW_RETRY = {
  * 不是瞬时故障：重试只会把同一个失败延后 `3s × N`，而它**必须**重跑的那一步是「回设置页把源目录修好」。
  * 同一个字符串在编排层还有第二个来源（`missing`：厂商清单采到了、里面没有它），那条同样不进这张表——
  * 理由逐字相同，且它与 `AGENT_MCP_UNAVAILABLE` 一样属于**编排层的判定**，不由厂商归因。
+ * 同一条口径的还有 `SESSION_ID_SHARED`（行间会话隔离漏了）：那不是瞬时故障，重跑也接不上，
+ * 而它刻意**不搭** `INTERNAL` 的车——`INTERNAL` 在这张表里，借它的码等于把「重跑也不会好」
+ * 的失败变成自动重跑。
  */
 const TRANSIENT_ROW_RETRY_CODES: readonly string[] = [
   'AGENT_FAILED',
@@ -224,7 +253,16 @@ const terminalWaiters = new Map<string, () => void>();
  *
  * 结论：终止是**同步**动作，撤心跳也必须同步——不能把它挂在「适配器什么时候愿意交卷」上。
  */
-const rowHeartbeats = new Map<string, { timer: ReturnType<typeof setInterval>; startedAt: number }>();
+/**
+ * 心跳那一格的形状：`baseMs` 是**这一行在这一次运行之前已经累计的耗时**。
+ *
+ * 为什么它是心跳的一部分：落终态时 `setRowStatus` 会把耗时**冻结**成 `此刻 − startedAt`，
+ * 而追问的耗时口径是**累加**（`runRow` 那五格是「本次尝试的产出」、追问是「这一行的累计产出」）
+ * ⇒ 不带基数的话，用户终止一次追问会把这一行之前那几十分钟的耗时一起抹掉
+ * （`0 + 本段` 覆盖掉累计值），而那个数正是「这一行花了多久」的答案。
+ * 完整跑一行时基数是 0（它是第一次尝试），行为逐字不变。
+ */
+const rowHeartbeats = new Map<string, { timer: ReturnType<typeof setInterval>; startedAt: number; baseMs: number }>();
 
 /**
  * 拆掉这一行的心跳（**幂等**），返回它登记的起点（没登记过 ⇒ `null`）。
@@ -299,7 +337,7 @@ function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch
      */
     const frozen =
       heartbeat !== undefined && TERMINAL_ROW_STATUSES.includes(status) && isCandidatePhase(row.status)
-        ? { durationMs: Date.now() - heartbeat.startedAt }
+        ? { durationMs: heartbeat.baseMs + (Date.now() - heartbeat.startedAt) }
         : {};
     Object.assign(row, patch ?? {}, frozen, { status });
   });
@@ -315,8 +353,51 @@ function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch
     settledRows.delete(key);
   }
   publishRowEvent(runId, rowId, { type: 'status', status });
+  /**
+   * **行终止 ⇒ 人工消息面一起收场**：还没投递的条目落 `gone`（原因「这一行已经结束」）+
+   * 各一条行级事件，并清表。挂在**状态收口**这一处而不是某一条终止路径上：终止有用户终止 /
+   * 看门狗 / 失败 / 正常收尾好几条，漏掉任何一条都会让一条投不出去的消息在界面上永远「排队中」。
+   *
+   * 包一层 try/catch：状态那一次写入才是权威，一条观测事件写不进去不该把它顶掉
+   * （`settleInjectQueueOnRowEnd` 内部也逐条兜了，这里是最后一道）。
+   */
+  if (TERMINAL_ROW_STATUSES.includes(status)) {
+    try {
+      settleInjectQueueOnRowEnd(runId, rowId);
+    } catch (error) {
+      log.error('行收场时人工消息面没能一起收场（该行状态已落定）', {
+        runId,
+        rowId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   // 回读也走 in-flight 的入口：否则改过根目录之后，这一次状态变更写进了旧根、这里却在新根读不到
   return getRunForWrite(runId);
+}
+
+/**
+ * **跨行串味的那条断言**：同一轮里同一个会话 id 不许出现在两行上（在写进行快照**之前**查）。
+ *
+ * 为什么值得单列一条：这一格的隔离一旦漏，症状不是报错而是**静默的行为污染**——
+ * 两行接着同一条会话跑，看起来只是「这一轮模型变笨了」，而两行的分数都不再可信。
+ *
+ * 命中即 `SESSION_ID_SHARED`（我们自己的隔离漏了，不是用户输入的问题）。**为什么单起一个码**：
+ * 「值不值得自动重跑」按码判（`TRANSIENT_ROW_RETRY_CODES`），而 `INTERNAL` 在那张表里
+ * （文本评分通路的网络与 5xx 都折成它）；隔离漏了**重跑也不会好**，沿用 `INTERNAL` 会让这种行
+ * 被自动重跑——把同一个失败延后 `3s × N`，还多跑一轮可能同样被污染的运行。
+ * 也不把 `INTERNAL` 从那张表里摘掉：那会波及所有内生失败。
+ */
+function assertSessionIdNotShared(runId: string, rowId: string, sessionId: string): void {
+  const { run } = requireRow(runId, rowId);
+  const other = run.rows.find((row) => row.id !== rowId && row.sessionId === sessionId);
+  if (other === undefined) return;
+  throw new ServiceError(
+    'SESSION_ID_SHARED',
+    `同一轮的候选行 ${rowId} 与 ${other.id} 跑在了同一条厂商会话上（${sessionId}）：`
+      + '「每行一份配置目录 / 一份工作区」这条隔离漏了，这一轮的分数不可信',
+    { context: { runId, rowId, otherRowId: other.id, sessionId } },
+  );
 }
 
 /** 只补字段、不动状态：计量 / diff 摘要在跑的过程中逐步落库，状态由 setRowStatus 管 */
@@ -1402,6 +1483,71 @@ function contextOf(provider: Provider, modelId: string): { contextWindow?: numbe
   };
 }
 
+/**
+ * 候选执行阶段的**环境两格**（`AgentRunInput.mcpServers` / `.skills`）与它们的证据两半。
+ *
+ * 为什么收成一个函数：这两格只有**候选执行**这一个场景（`runRowAttempt` 与 `followUpRow` 都是它，
+ * 评分与用例同步两处根本没有这两格），而两处各读一遍配置的代价是「两次读盘各拿一份快照」——
+ * 并发改配置时才会现形，且现形在别人的机器上。
+ *
+ * 三条口径（与上面那两段注释逐字同源）：
+ *   · **空集不给键**：给了空对象等于向适配器声明「本行显式要零台 / 零条」，而「没配」与「配了零」
+ *     在那几家厂商侧未必是同一件事；
+ *   · **跳过的与形状不对的分开报**（`skipped` / `invalid`）：两者在观测格上同档，但日志里的
+ *     处置动作相反（去设环境变量 vs 去设置页改配置），合成一个数组这一层就再也分不出来了；
+ *   · **行照跑**：一条手改坏的配置或一个没设的变量不该让整行失败——它们是 WARN，不是错误。
+ *
+ * 环境变量取 `process.env`（= **宿主**环境）：行的子进程环境是适配器现拼的，而 `${ENV}` 的语义是
+ * 「宿主设过这个变量」——宿主的密钥不该从别处冒出来。
+ */
+/** `planCandidateEnvironment` 的返回值：要下发的两格 + 证据的静态两半 */
+interface CandidateEnvironment {
+  /** 要交给适配器的那两格（空集不给键，见上） */
+  input: Pick<AgentRunInput, 'mcpServers' | 'skills'>;
+  /** MCP 证据的静态两半（`vendor` 那一半在跑动期由事件补齐） */
+  mcp: Omit<RowMcpEvidence, 'vendor'>;
+  /** 技能证据的静态一半（`vendor` 同上） */
+  skills: Omit<RowSkillEvidence, 'vendor'>;
+}
+
+function planCandidateEnvironment(settings: Settings, runId: string, rowId: string): CandidateEnvironment {
+  const mcpPlan = resolveMcpServers(settings.mcpServers, process.env);
+  const skillsPlan = installableSkills(settings.skills?.entries);
+  // 被跳过的条目**必须说出来**（行照跑）：不说的话，用户只会看到「我配的那台怎么没生效」，
+  // 而这条线索（哪个键的哪个变量没设）只存在于这一刻
+  for (const item of mcpPlan.skipped) {
+    log.warn('MCP 条目未注入：环境变量没有解析出来，本次跳过这一台（行照跑）', {
+      runId,
+      rowId,
+      name: item.name,
+      reason: item.reason,
+    });
+  }
+  // 形状不对的条目同样要 WARN：`loadConfig` 不做 schema 校验，手改 `config.json` 写进去的畸形条目
+  // （缺 `transport` / 缺 `url` / 跨传输）在契约层就被摘出来了——不说的话，这台的去向只剩观测格里的
+  // 一个 `unverified`，而那句话在界面上与「厂商没报它」长得一样
+  for (const item of mcpPlan.invalid) {
+    log.warn('MCP 条目形状不对：本次不注入这一台（去设置页改这一条，行照跑）', {
+      runId,
+      rowId,
+      name: item.name,
+      reason: item.reason,
+    });
+  }
+  return {
+    input: {
+      ...(Object.keys(mcpPlan.injectable).length === 0 ? {} : { mcpServers: mcpPlan.injectable }),
+      ...(skillsPlan.length === 0 ? {} : { skills: skillsPlan }),
+    },
+    mcp: {
+      injected: Object.keys(mcpPlan.injectable),
+      skipped: mcpPlan.skipped.map((item) => item.name),
+      invalid: mcpPlan.invalid.map((item) => item.name),
+    },
+    skills: { installed: skillsPlan.map((skill) => skill.name) },
+  };
+}
+
 async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome | null> {
   const { run, row } = requireRow(runId, rowId);
   // **`preparing` 也算「可执行」**：
@@ -1417,55 +1563,10 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   const config = loadConfig();
   const settings = config.settings;
   /**
-   * **MCP 的注入集与跳过名单**：读的是**同一份** `loadConfig()`
-   * 快照（与下面那条 supplier 记录同源），解析 `${ENV}` 与剔除停用条目都在 `resolveMcpServers` 里。
-   *
-   * 为什么在**这里**解析而不是让适配器自己去读配置（控制权在编排层）：
-   *   · 「只在候选执行阶段注入」这条口径要由类型 + 调用点保证——评分与用例同步两处根本没有这一格；
-   *   · 跳过的条目要**进行级观测格**（`skipped`），而观测格是这一层写的；适配器读不到那一格，
-   *     也就没法把它交回来。
-   *
-   * 环境变量取 `process.env`（= **宿主**环境）：行的子进程环境是在适配器里由 `buildSubprocessEnv`
-   * 现拼的，而 `${ENV}` 的语义是「宿主设过这个变量」——宿主的密钥不该从别处冒出来。
+   * 本行要下发的**环境两格**（MCP 与技能）与它们的证据：读的是**同一份** `loadConfig()` 快照
+   * （与上面那条 supplier 记录同源），解析 `${ENV}` / 剔除停用条目 / 两条 WARN 都在那个函数里。
    */
-  const mcpPlan = resolveMcpServers(settings.mcpServers, process.env);
-  /**
-   * **本行要装入的 skill 清单**：扫技能根（`<配置目录>/skills/`）→ 只留合格条目 →
-   * 剔掉停用名单里的名字。与上面那条 supplier / MCP 读的是**同一份** `settings` 快照
-   * （`loadConfig()` 的返回值），故三者在同一次执行里看到的是同一份配置。
-   *
-   * 为什么在**这里**扫而不是让适配器自己去读（控制权在编排层）：与 MCP 逐字同源——
-   *   · 「只在候选执行阶段装入」要由类型 + 调用点保证（评分与用例同步两处根本没有这一格）；
-   *   · 判定要用扫描结果（准入门 + 停用名单），而适配器只该收到「已解析的清单」：
-   *     技能根跟着配置目录走，让每家适配器自己去扫就等于让厂商知识碰配置层。
-   */
-  const skillsPlan = installableSkills(settings.skills?.entries);
-  /**
-   * 被跳过的条目**必须说出来**（跳过 + WARN，行照跑）：不说的话，用户只会看到
-   * 「我配的那台怎么没生效」，而这条线索（哪个键的哪个变量没设）只存在于这一刻。
-   */
-  for (const item of mcpPlan.skipped) {
-    log.warn('MCP 条目未注入：环境变量没有解析出来，本次跳过这一台（行照跑）', {
-      runId,
-      rowId,
-      name: item.name,
-      reason: item.reason,
-    });
-  }
-  /**
-   * **形状不对的条目同样要 WARN**：`loadConfig` 不做 schema 校验，
-   * 手改 `config.json` 写进去的畸形条目（缺 `transport` / 缺 `url` / 跨传输）在契约层就被摘出来了。
-   * 不说的话，这台的去向只剩观测格里的一个 `unverified`——而那句话在界面上与「厂商没报它」长得一样，
-   * 用户没有任何线索知道要回设置页改哪一条。**行照跑**：一条手改坏的配置不该让整行失败。
-   */
-  for (const item of mcpPlan.invalid) {
-    log.warn('MCP 条目形状不对：本次不注入这一台（去设置页改这一条，行照跑）', {
-      runId,
-      rowId,
-      name: item.name,
-      reason: item.reason,
-    });
-  }
+  const environment = planCandidateEnvironment(settings, runId, rowId);
   const testCase = readCase(run.caseId);
   if (testCase === null) {
     // 删用例后评测仍可读，但「跑」必须有题面——题面**没有**快照进 run.json
@@ -1563,6 +1664,11 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   // （含自动重试与用户点的「重新执行」），而每次进入本函数恰好就是一次尝试。
   // 与其它几格（分数 / 计量 / diff）刻意不同：那些是「本次尝试的产出」，必须清零；
   // 尝试次数是**累计事实**，清零会让「试了三次才成功」重新看起来像「一次就成功」。
+  //
+  // **两格人工干预的计数同样清零**（与上面那批同一条理由）：它们记的是「**本次尝试**里人说了几句话
+  // / 追问过几次」——本函数稍后会 `resetRecords` 把消息账本清空（那是新的对话），而这两格的口径
+  // 正是「与账本对齐」。留着旧数的症状有两处：候选卡片上的「人工消息 ×N」与空账本对不上；
+  // 下一次追问的段号 = `followUpRounds + 1`，于是新账本里第一个段标题写着「追问 ×4」而前三段不存在。
   setRowStatus(runId, rowId, 'preparing', {
     error: null,
     tokens: null,
@@ -1571,6 +1677,8 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     diff: null,
     score: null,
     attempts: row.attempts + 1,
+    followUps: 0,
+    followUpRounds: 0,
   });
   await yieldToEventLoop();
 
@@ -1671,6 +1779,19 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     return null;
   }
   setRowStatus(runId, rowId, 'running');
+  /**
+   * **题面落账本**：这一条是「这一刻交给智能体的题面」，与那次 `run()` 在同一拍。
+   *
+   * 为什么记在账本而不是让界面去读用例：题面**没有**快照进 `run.json`，而用例可以被编辑、被删除
+   * ——现读用例会把「后来改过的题面」说成「当时交出去的那句」，而执行日志要回答的是后者。
+   *
+   * 落盘失败只留 ERROR：交出去的那一份（下面 `run()` 的 `prompt`）不受影响，与追问那句同一条处置。
+   */
+  try {
+    publishRowMessage(runId, rowId, casePromptMessage({ rowId, prompt: testCase.taskPrompt }));
+  } catch (error) {
+    log.error('题面没能落进消息账本（它照常会交给厂商，结论不受影响）', { runId, rowId, error });
+  }
   // 跑动期的耗时心跳（见 ROW_HEARTBEAT_MS 的注释）：只写 durationMs 一项，终态那一次写入会覆盖它。
   // 它是**进度**、不是上限：执行不限时间，心跳照走，界面上的秒表才不会看起来卡住。
   const heartbeat = setInterval(() => {
@@ -1699,7 +1820,7 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   // （见 `rowHeartbeats` 的注释）。先拆一次旧的：一次尝试只有一个心跳，真出现重入时留着旧的，
   // 它会在本次尝试期间继续写这一行的耗时——数字往后跳，而没有任何报错。
   stopRowHeartbeat(key);
-  rowHeartbeats.set(key, { timer: heartbeat, startedAt });
+  rowHeartbeats.set(key, { timer: heartbeat, startedAt, baseMs: 0 });
 
   // 行判定终态之后，适配器收尾期间吐出来的迟到事件不再落盘（它们会把「已结束」的日志拖长）
   let settled = false;
@@ -1800,13 +1921,8 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      * 空集**不给键**（与 effort 同一条口径）：给了空对象等于向适配器声明「本行显式要零台」，
      * 而「没配」与「配了零台」在那几家厂商侧未必是同一件事。
      */
-    ...(Object.keys(mcpPlan.injectable).length === 0 ? {} : { mcpServers: mcpPlan.injectable }),
-    /**
-     * 技能清单：**只有这一个调用点填它**（评分与用例同步两处留空，见 `AgentRunInput` 那一格）。
-     * 空集**不给键**（与 MCP 同一条口径）：给了空数组等于向适配器声明「本行显式要零条」，
-     * 而「一条都没启用」与「本次没有程序化装入」在落盘侧是两件事（后者一个文件都不写）。
-     */
-    ...(skillsPlan.length === 0 ? {} : { skills: skillsPlan }),
+    // 环境两格（MCP 与技能）：**只有候选执行**这两条路（完整跑一行 / 追问）填它，见那个函数的注释
+    ...environment.input,
     onEvent,
     /**
      * **应答面闸门**（本票最重的一条边界）：**只有这一轮显式开启**（`EvalRun.askUser`）时
@@ -1820,6 +1936,30 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
      * `ask-user-settlement.ts` 的 `channel` 一格）：它不是「要不要传回调」的判据——
      * 那个判据是上面这一格轮级开关，与能力表无关（包外不预读能力表那条口径照旧成立）。
      */
+    /**
+     * **人工消息闸门**（`EvalRun.injectMessages`）：只有这一轮显式开启时才把端口交给适配器。
+     * 不传 ⇒ 适配器一格都不挂（`available` 读作假）、既有行为逐字不变——这就是零回归的判据。
+     *
+     * 端口由**编排层**实现（它才拿得到行身份），落盘口径与「等太久」的收场都在它那一侧：
+     *   · `landingOpen` 与提问面同一道闸门（行已落终态 ⇒ 收尾期吐的一律不落）；
+     *   · `roundTripHere` 让这条人话落回它自己那一轮（与账本里那些消息同一个时间轴）；
+     *   · `noteDelivered` 把行快照的**已送达人话条数**（`followUps`，卡片那个读数）加上去
+     *     ——**与账本落盘同段代码**，两处因此不会漂。追问轮次是另一格（`followUpRounds`）。
+     */
+    ...(run.injectMessages === true
+      ? {
+        inject: createInjectionPort({
+          runId,
+          rowId,
+          landingOpen: () => !settled && !isRowSettled(runId, rowId),
+          roundTripHere: () => latestMainRoundTrip,
+          noteDelivered: (count) => {
+            const { row: current } = requireRow(runId, rowId);
+            patchRow(runId, rowId, { followUps: current.followUps + count });
+          },
+        }),
+      }
+      : {}),
     ...(run.askUser === true
       ? {
         onAskUser: createAskUserSettlement({
@@ -1905,6 +2045,16 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   const elapsedMs = Date.now() - startedAt;
 
   // 第 5 步：收集计量。采集不到就是 null，**绝不填 0**（0 token 与「没采到」含义相反）
+  /**
+   * **会话 id 先断言、再落库**：同一轮里同一个 id 不能出现在两行上。
+   * 它挡的是**静默**的行为污染——两行接着同一条会话跑，看起来只是「这一轮模型变笨了」，
+   * 而分数的可信度已经没了；命中即 `SESSION_ID_SHARED`（我们自己的隔离漏了，不是用户输入的问题，
+   * 也不是瞬时故障 ⇒ 不进重试表）。
+   * 断言在写入**之前**：先写再查等于把污染留在了盘上。
+   */
+  const sessionId = result?.sessionId ?? null;
+  if (sessionId !== null) assertSessionIdNotShared(runId, rowId, sessionId);
+
   const measured = {
     tokens: result?.tokens ?? null,
     turns: result?.turns ?? null,
@@ -1914,6 +2064,37 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
     // 轮次那一格的分量同理：codex 的子线程轮次只在收尾并进合计，
     // 只在事件里给数的话这一格会被这一次写入盖掉（真值在 `result.subagentTurns` 上）
     subagentTurns: result?.subagentTurns ?? null,
+    /**
+     * **候选侧「没答」**（三态）：`true` 没答 / `false` 答了 / **`null` 未记录**。
+     *
+     *   · 没有结果（这一行没跑到那一步，或本身失败）⇒ `null`；
+     *   · 跑成功且适配器**没交出任何正文** ⇒ `true`；
+     *   · 跑成功且有正文 ⇒ `false`；
+     *   · **跑失败 ⇒ `null`** —— 契约明说 `ok:false` 时 `finalText` **不保证是模型答复**
+     *     （它可能装的是厂商的错误文案），拿它判「没答」会把一次失败读成一次空答复。
+     *
+     * 为什么不是两态：对**旧的**行我们并不知道当时有没有答，读成 `false` 等于断言「它答了」，
+     * 而那恰好是要防的误读方向（空答复却照旧拿分的行，回看时反而显示正常）。
+     * 判据细节见 `contracts/src/run.ts` 上这一格的注释。
+    /**
+     * **键缺席 = 未记录**（照 `subagentTokens` / `subagentTurns` 那两条的既有写法：条件展开，
+     * 不把「没采到」写成一个值）。两种「不写」：**没有结果**（`:2025` 那条 5 秒终止宽限 race 可达，
+     * 注释明写「等不到就按『未采集』收尾」）、以及**运行失败**（契约明说此时 `finalText` 不保证是模型答复，
+     * 拿它判「没答」会把一次失败读成一次空答复）。
+     *
+     * 判据「有没有正文」用 `=== null || trim() === ''`：**不依赖上游那条「空正文不进 `finalText`」的守卫**
+     * （它由一致性套件拦）——夹具能造出空串与纯空白，判据就不该假定它们不会出现。
+     */
+    ...(result?.ok !== true
+      ? {}
+      : { emptyAnswer: !hasReplyBody(result.finalText) }),
+    /**
+     * **这一行跑在哪条会话上**：消费方是第二期的追问（`resume` 要按它接回去），
+     * 而「旧产物没有这一格」读出来是 `null`（契约的 `.default(null)`）⇒ 界面如实拒绝追问。
+     * 与同段那三格同一条口径：适配器没采到就写 `null`，**绝不猜一个 id 出来**
+     * （猜错的症状是「用户以为在追问、模型什么都不记得」）。
+     */
+    sessionId,
   };
   // 为什么失败 / 被终止的行也测耗时：它是客观事实，且正是排查要看的东西（「它跑了多久」）；
   // token 与轮次只有适配器能给，故那两项在没结果时保持 null
@@ -1947,21 +2128,13 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
    * `injected` 取的是**真的投送出去**的那一份（占位已解析、停用已剔除），`skipped` 是主动没投送的，
    * `invalid` 是**形状不对、连解析都没进**的（手改 `config.json` 那条路，见上面那两条 WARN）。
    */
-  const mcpEvidence = {
-    injected: Object.keys(mcpPlan.injectable),
-    skipped: mcpPlan.skipped.map((item) => item.name),
-    invalid: mcpPlan.invalid.map((item) => item.name),
-    vendor: mcpVendor,
-  } satisfies RowMcpEvidence;
+  const mcpEvidence = { ...environment.mcp, vendor: mcpVendor } satisfies RowMcpEvidence;
   /**
    * 技能的两半证据**同样只构造一次**（观测格与「行该不该失败」读同一份，理由与 MCP 逐字相同）。
    * `installed` 取的是**真的装进去**的那一份：`skillsPlan` 已经过准入门与停用名单，
    * 而适配器侧落盘失败会让这一行走另一条失败路径（`AGENT_SKILLS_UNAVAILABLE`，见适配器）。
    */
-  const skillEvidence = {
-    installed: skillsPlan.map((skill) => skill.name),
-    vendor: skillVendor,
-  } satisfies RowSkillEvidence;
+  const skillEvidence = { ...environment.skills, vendor: skillVendor } satisfies RowSkillEvidence;
 
   // 第 6 步：算 diff（三样合并），并按 diffBudgetBytes 裁剪
   const collected = collectDiff(prepared.workspacePath, prepared.baselineCommit);
@@ -2090,6 +2263,38 @@ async function runRowAttempt(runId: string, rowId: string): Promise<RowOutcome |
   // 必定返回非 null（违约分支排在 `result === null` 之前），那一行是**不可达**的——留着会让人以为
   // 违约不存在第二条兜底路径：违约的归因与 error 事件都在 classifyStop → settleStopped 这一条路上。
 
+  /**
+   * **队列非空 ⇒ 这一行先不收场**（在评分之前，因为候选那一段还没结束）。
+   *
+   * 判据是「还没投递的人工消息」而不是「表里有条目」：已经交出去的那些不归我们管了
+   * （厂商会不会在下一轮交给模型是它的事），而一条**投不出去**的消息必须给一个收场时刻。
+   *
+   * **分派按能力档**（`resolveIdleWithPending`）：声明了「已收工的一轮还能被唤起来接着投」
+   * **且**我们接了那条唤醒路径 ⇒ 起新一轮；否则等这一批的预算。今天没有一家接了唤醒路径
+   * ⇒ 四家一律走预算。**绝不假装投递成功**：没接通的路径不会让条目悄悄变成「已送达」。
+   *
+   * 起算点就是**这一刻**（适配器刚刚收工、只剩队列），不是条目自己的 `createdAt`——
+   * 那会把一轮跑 30 分钟时的一条正常排队项误杀。
+   *
+   * **与提问应答面不互斥**：两格可以同时开着——这一刻这一行在等两样东西（模型弹层里等人答一句、
+   * 队列里还有人话没投出去）。两条通道各行其是，收场时**一起收**：挂起表由它自己的行终止订阅收
+   * （`ask-user.ts`），队列由 `setRowStatus` 落终态那一支收（见那里的注释）。
+   */
+  if (run.injectMessages === true && hasPendingInjectMessages(runId, rowId)) {
+    const dispatch = resolveIdleWithPending({
+      declaration: agentProvider.metadata.turnInjection,
+      // 第二期的 `followUpRow` 从这里接进来；没有它时任何一家都不许走唤醒那一支
+      wake: null,
+    });
+    if (dispatch === 'wake') {
+      log.info('这一行还有人话没投出去，且这一家能唤醒已收工的一轮：交回调用方起新一轮', { runId, rowId });
+      return null;
+    }
+    const waiting = await waitForInjectQueue({ runId, rowId, signal: controller.signal });
+    log.info('人工消息等待窗口落定', { runId, rowId, outcome: waiting });
+    if (waiting === 'canceled') return null;
+  }
+
   // 第 7 步：评分。通路的选择、尺子的解析、配置快照的取法全部收在 runJudgeStage 里——
   // 完整跑一行与「重新评分」共用它，两处各写一遍必然漂移。
   // `setRowStatus(…, 'judging')` 只在 runJudgeStage 里：留在这里会变成第二处状态写入点
@@ -2163,7 +2368,7 @@ const retryTasks = new Map<string, Promise<void>>();
 function hasUnsettledWork(runId: string): boolean {
   if (runTasks.has(runId)) return true;
   const prefix = `${runId}:`;
-  for (const key of [...retryTasks.keys(), ...rescoreTasks.keys(), ...rowAborts.keys()]) {
+  for (const key of [...retryTasks.keys(), ...rescoreTasks.keys(), ...followUpTasks.keys(), ...rowAborts.keys()]) {
     if (key.startsWith(prefix)) return true;
   }
   return false;
@@ -2589,6 +2794,782 @@ async function rescoreAttempt(input: {
 }
 
 /* ===================================================================================================
+ * 人工追问（对**已经跑过**的行：接着同一段上下文再跑一段）
+ *
+ * 与 `runRow` 的关系是**同一面镜子的反向**，四条不许互换：
+ *
+ *   ① **不 prepare**：`runRowAttempt` 的第一件重活是 `prepareRowWorkspace`
+ *      （`resetRowDir → clearRowArtifacts` 整删 `workspace/` + `.agenthome/` + `.judgehome/`），
+ *      而 `.agenthome` 正是 cc 的 `CLAUDE_CONFIG_DIR`、codex 的 `CODEX_HOME`、pi 的会话落点
+ *      ⇒ 走那条路等于**把要续接的会话删掉**（症状是「追问之后智能体什么都不记得了」，静默且像模型变笨）。
+ *      追问复用 `row.workspacePath` 与既有的 `.agenthome`（两者跑完都还在盘上），会话从
+ *      `row.sessionId` 填进 `AgentRunInput.resume`。
+ *   ② **计量是「这一行的累计产出」**（与 `runRow` 的「本次尝试的产出」相反、**不可互换**）：
+ *      `tokens` / `turns` / `durationMs` **累加**；`diff` 天然相对 `baselineCommit` 累计（工作区没重置，
+ *      不需要额外动作）；`score` 由收尾那次自动重评**覆盖**；**`attempts` 不变**——它答的是
+ *      「这一行走过几次尝试」，而追问没有「从头」。
+ *   ③ **状态照样走 `preparing`**：不是为了好看，而是要复用那一段已经验证过的竞态处置
+ *      （落状态 → 让出事件循环 → **复检终止**）：不复检的话，让出期间到达的 `abort` 会漏掉，
+ *      之后无条件落 `running` 会把行从 `canceled` **复活**并写出第二条 `end`。
+ *   ④ **收尾无条件重评**：不改成「只在 diff 有变化时重评」——那会让「这一次为什么没重评」变成
+ *      一个需要解释的分支，而评分通路本来就有「没拿到分则只留痕、真因优先」的兜底。
+ *
+ * 两处**如实登记的边界**：
+ *   · **提问应答面（`run.askUser`）在追问这一段不开**：模型这一轮问不出「等人答一句」那个工具。
+ *     它是另一条独立的面（挂起表 + 三个端点），与「追问」不是同一件事，要开得单独定口径；
+ *   · **注入面（`run.injectMessages`）照开**：追问这一段行在跑，人就能往这一轮送话（契约里
+ *     续接与注入正交）。开闸时适配器照常拿到端口，队列照常在候选段收尾时等这一批的预算。
+ *
+ * 拒绝面（`followUpRefusal`）各给一句可直接展示的中文原因，**都不许静默从头跑**：
+ * 没有可续接的会话 / 工作区已被删除 / 用例已删除 / 追问带的附件不存在 / 这一家不支持续接；
+ * 另有两档互斥：正在运行中的行走「输入区排队」那条路，上一次运行还没收尾的行走「稍候再试」。
+ *
+ * ⚠️ **静态护栏**（`static-assertions.test.ts`）：这一节里不许出现对 `runRow` / `retryRow` 的调用
+ * （`retryRow` 是同一条歧路的一跳之隔：它内部就是 `runRow`，同样会重建工作区）。
+ * =================================================================================================== */
+
+/** 追问入参：人写的那句话 + 随它一起发的附件清单（提示词与账本都由本层拼） */
+export interface FollowUpInput {
+  text: string;
+  attachments?: readonly InjectAttachment[] | undefined;
+  /**
+   * 这条草稿的 id（客户端生成）：与附件的落点目录、消息账本、行级事件共用同一把钥匙。
+   * 缺席就现铸一个——**它不承担幂等**：重复提交会撞上「该行正在运行中」而拒绝，
+   * 那正是这里想要的结局（两次追问 = 两段上下文，不是同一条消息的重发）。
+   */
+  messageId?: string | undefined;
+}
+
+/** 一次追问的规划：入口区同步算好，异步任务只读它（两处各算一份必然漂） */
+interface FollowUpPlan {
+  text: string;
+  attachments: readonly InjectAttachment[];
+  /** 拼给厂商的正文（人话 + 附件清单） */
+  prompt: string;
+  /** 账本与行级事件共用的钥匙（这次追问的身份） */
+  messageId: string;
+  /** 这一次追问的序号（`followUpRounds` 累加后的值，日志里用它标「第几次」） */
+  ordinal: number;
+}
+
+/** 在途的追问任务（键 `runId:rowId`）：`drainRunningTasks` 与 `hasUnsettledWork` 都要看它 */
+const followUpTasks = new Map<string, Promise<void>>();
+
+/**
+ * 追问带的附件查下来是什么结果（`null` = 这次没带附件，无需查）。
+ *
+ * **先看附件根**再看每一份文件：根不存在说明整棵 `attachments/` 被清理过
+ * （`prepareRowWorkspace` 或 `deleteRun`），那时逐份文件都读不到、却只能报出「第一份不见了」——
+ * 而用户要做的事是「重新上传」，理由是「整棵根都没了」还是「某一个文件被手工删了」并不改变这一步。
+ * 判据与文案在契约的 `canFollowUpRow`，这里只**量事实**（两种「没了」在三态里分得开）。
+ */
+function followUpAttachmentFact(
+  attachments: readonly InjectAttachment[],
+  run: EvalRun,
+  row: EvalRow,
+): FollowUpAttachmentFact | null {
+  if (attachments.length === 0) return null;
+  const root = rowAttachmentsDir(run.workspaceBase, run.id, row.id);
+  if (!existsSync(root)) return { state: 'root-missing', root };
+  const gone = attachments
+    .map((attachment) => attachment.path)
+    .filter((path): path is string => path !== null && !existsSync(path));
+  if (gone.length > 0) return { state: 'missing', paths: gone };
+  return { state: 'present' };
+}
+
+/**
+ * 追问判据要的那几格**外部事实**（契约层读不了盘、也认不出厂商）。
+ *
+ * `settling` 是**编排层独有的一个面**（`rowAborts` / 在途追问任务里还有这一行）：
+ * 那一刻放行会与迟到的旧任务抢状态。它也在事实里——服务端的可用性读侧因此与真追问拿到的
+ * 是同一份判据、同一句原因（界面不必自己猜这一格）。
+ */
+function followUpFactsOf(run: EvalRun, row: EvalRow, attachments: readonly InjectAttachment[]): FollowUpFacts {
+  const key = rowKey(run.id, row.id);
+  return {
+    settling: rowAborts.has(key) || followUpTasks.has(key),
+    workspaceExists: row.workspacePath !== '' && existsSync(row.workspacePath),
+    case: readCase(run.caseId) === null ? { state: 'deleted', caseId: run.caseId } : { state: 'present' },
+    attachments: followUpAttachmentFact(attachments, run, row),
+    resume: getProvider(row.agentKind).metadata.turnInjection?.resume,
+  };
+}
+
+/**
+ * 不可追问的**具体**原因（`null` = 可以追问）。
+ *
+ * **判据与七档文案只有一份**：契约的 `canFollowUpRow`（界面拿的是同一句）。本函数只负责把
+ * 「这一行 + 此刻盘上的事实」拼起来递进去——顺序、分档、措辞全在那一侧，这里一句都不重写。
+ * 这样「界面写着能追问、点下去 409」在结构上不可能发生。
+ */
+function followUpRefusal(run: EvalRun, row: EvalRow, input: FollowUpInput): string | null {
+  const verdict = canFollowUpRow(row, followUpFactsOf(run, row, input.attachments ?? []));
+  return verdict.ok ? null : verdict.reason;
+}
+
+/**
+ * 一轮里每一行的**追问可用性**（界面入口的读侧）。
+ *
+ * 为什么要有这一条读侧：七档拒绝里有一半的事实（工作区还在不在 / 用例还在不在 / 这一家的声明）
+ * 在盘上与厂商声明上，浏览器一格都看不到。界面自己编一句「这一家不支持续接」就是第二份说法。
+ * 读到的判据与 `followUpRow` 那份**逐字相同**（同一个函数、同一批事实），附件那一格因为在
+ * 渲染入口时还没有草稿而恒为「这次没带附件」——带附件那一档由真追问那一次（或 409）回答。
+ *
+ * `settling` 会随行的收尾变化，故界面需要在行状态变化时重读；读侧本身很便宜
+ * （每行一次 `existsSync` + 一次用例读盘）。
+ */
+export function followUpAvailability(runId: string): FollowUpAvailability {
+  // 与 `followUpRow` 走同一个入口（`getRunForWrite`）：读侧与写侧必须看到**同一份**快照，
+  // 否则「读侧说能追问、写侧找不到这一轮」会变成一条只有换了工作区根才出现的假话
+  const run = getRunForWrite(runId);
+  return {
+    rows: run.rows.map((row) => ({
+      rowId: row.id,
+      verdict: canFollowUpRow(row, followUpFactsOf(run, row, [])),
+    })),
+  };
+}
+
+/**
+ * 追问那一句在**消息账本**（`messages.jsonl`）里的那一半。
+ *
+ * 形状与 `inject-port.deliveredMessage` 逐格同源（只有 `mergeKey` 那一段不同：追问不在队列里，
+ * 它的身份是自己那一个 id），三条口径照旧：
+ *   · `role: 'user'` + `origin: 'human'`：复盘时「哪句是出题人写的、哪句是人在半路补的」只能靠它分开；
+ *   · `source: 'hook'`：数据来自我们自己的宿主通道（人从界面上发的话），不是厂商 wire 投送的；
+ *   · **`segment` = 这一次追问的序号**（`plan.ordinal`，与 `followUpRounds` 同源）：追问是又开一次
+ *     `run()`，厂商轮次从 1 重新数 ⇒ 两段的 `mergeKey` 会逐字相同（`main|1|assistant|-`），
+ *     读侧折叠按 `(segment, mergeKey)` 走才不会让后一段把前一段吃掉。它同时是界面上这一段的界碑
+ *     （段标题读它、段内消息按它归组）。
+ * 正文只放**人写的那句话**，附件另成块：提示词里那份带路径与大小的清单是给模型的，账本要的是「人发了什么」。
+ */
+function followUpMessage(plan: FollowUpPlan): Extract<RowRecord, { type: 'message' }>['message'] {
+  return {
+    messageId: plan.messageId,
+    vendorId: null,
+    role: 'user',
+    source: 'hook',
+    origin: 'human',
+    segment: plan.ordinal,
+    roundTrip: 1,
+    turn: null,
+    step: null,
+    parentCallId: null,
+    subagentId: null,
+    chunk: 'snapshot',
+    assembly: 'snapshot',
+    mergeKey: `${carrierKeyOf({ subagentId: null, roundTrip: 1, role: 'user', parentCallId: null })}|followup:${plan.messageId}`,
+    blocks: [
+      { type: 'text', text: plan.text },
+      ...plan.attachments.map((attachment) => ({
+        type: 'attachment' as const,
+        kind: attachment.kind,
+        path: attachment.path,
+        mimeType: attachment.mimeType,
+      })),
+    ],
+    usage: null,
+    raw: { author: 'follow-up', attachments: plan.attachments },
+  };
+}
+
+/**
+ * **题面那一句**在消息账本里的那一半。
+ *
+ * 与 `followUpMessage` 逐格同源（`role: 'user'` + 一格 `origin` 说清是谁带进来的），三处不同：
+ *   · `origin: 'case-prompt'`——这一轮的输入本来就是它（与人在半路插的那句同形，只有这一格分得开）；
+ *   · `messageId` 用**固定值**而不是 UUID：一行只有一条题面消息，固定 id 让「这一条是不是题面」
+ *     在原文里一眼可辨；
+ *   · `mergeKey` 补 `|case-prompt` 后缀：第 1 轮里可能还有一条人工消息（`|inject:<id>`），
+ *     载体键相同的话两条会互相覆盖。
+ *
+ * **它只进账本、不投给厂商**：交给厂商的题面走 `run({ prompt })`，与这一条是两个出口。
+ * 落账本的理由是执行日志与复盘要看得见「这一刻交出去的是什么」——用例后来被改被删，
+ * 账本里那一句仍是当时那句（题面**没有**快照进 `run.json`，这是它唯一的落点）。
+ */
+function casePromptMessage(input: { rowId: string; prompt: string }): Extract<RowRecord, { type: 'message' }>['message'] {
+  return {
+    messageId: `case-prompt:${input.rowId}`,
+    vendorId: null,
+    role: 'user',
+    source: 'hook',
+    origin: 'case-prompt',
+    roundTrip: 1,
+    turn: null,
+    step: null,
+    parentCallId: null,
+    subagentId: null,
+    chunk: 'snapshot',
+    assembly: 'snapshot',
+    mergeKey: `${carrierKeyOf({ subagentId: null, roundTrip: 1, role: 'user', parentCallId: null })}|case-prompt`,
+    blocks: [{ type: 'text', text: input.prompt }],
+    usage: null,
+    raw: { author: 'case-prompt' },
+  };
+}
+
+/** 追问那一条行级事件的正文（起手 / 收尾两处共用一份措辞） */
+function followUpLogText(plan: FollowUpPlan, sessionId: string): string {
+  const attachmentLines =
+    plan.attachments.length === 0
+      ? ''
+      : `\n[附件]\n${plan.attachments.map((attachment) => `- ${attachment.path ?? '（没有路径的附件）'}`).join('\n')}`;
+  return `[人工追问 ×${plan.ordinal}] 接着同一段上下文再跑一段（复用本行工作区与会话 ${sessionId}；`
+    + `本次不重跑候选、不重建工作区）\n${plan.text}${attachmentLines}`;
+}
+
+/** 计量的**累加**（`null` = 没采到：两侧都没有就是没采到；只有一侧有就取有值的那一侧，绝不填 0） */
+function addTokens(base: EvalRow['tokens'], add: EvalRow['tokens']): EvalRow['tokens'] {
+  if (add === null) return base;
+  if (base === null) return add;
+  return { input: base.input + add.input, cached: base.cached + add.cached, output: base.output + add.output };
+}
+
+/** 计数那一格（`turns` / `subagentTurns`）的累加：与 `addTokens` 同一条 `null` 口径 */
+function addCount(base: number | null | undefined, add: number | null | undefined): number | null {
+  if (add === null || add === undefined) return base ?? null;
+  if (base === null || base === undefined) return add;
+  return base + add;
+}
+
+/**
+ * 对一行**已经跑过**的行追问：接着同一段上下文再跑一段，跑完自动重评。
+ *
+ * 「同步落状态、异步跑任务」（与 `retryRow` / `rescoreRow` / `startRun` 同一形状）：HTTP 立刻拿到
+ * 「已经在准备中」的快照，界面靠 SSE 与轮询追进度。入口区（登记控制器 → 落状态与计数 → 记那条追问事件）
+ * **必须能整体回退**：`rowAborts` 里的条目是「不可并发」的判据，中间任何一步抛都会把这一行留成
+ * 「终态 + 一个活着的条目」⇒ 此后它再也追问不了（同 `rescoreRow` 的入口区）。
+ *
+ * 返回值是**重新读过的快照**（不是上面那一份）：调用方拿到的是「已经在准备中」的状态。
+ */
+export function followUpRow(runId: string, rowId: string, input: FollowUpInput): EvalRun {
+  const { run, row } = requireRow(runId, rowId);
+  const refusal = followUpRefusal(run, row, input);
+  if (refusal !== null) throw new ServiceError('CONFLICT', refusal);
+
+  const attachments = input.attachments ?? [];
+  const plan: FollowUpPlan = {
+    text: input.text,
+    attachments,
+    // 提示词由**编排层**拼（适配器只认入参、不自己决定语义）：人话 + 空行 + `[附件]` 清单，
+    // 清单给绝对路径与大小（模型据此判断值不值得去读）
+    prompt: composeInjectedText(input.text, attachments, readAttachmentSize),
+    messageId: input.messageId ?? randomUUID(),
+    ordinal: row.followUpRounds + 1,
+  };
+  const key = rowKey(runId, rowId);
+  const controller = new AbortController();
+  try {
+    // 控制器**先登记**（那一刻起「终止」就能送到这一行），再落状态：取消窗口的形状与 `rescoreRow` 一致
+    rowAborts.set(key, controller);
+    /**
+     * 状态与**轮次计数**同一笔写下去，紧跟那条追问事件——口径是「计数递增与行级事件必须在同一段代码里发生」
+     * （日志里那句 `[人工追问 ×N]` 读的就是 `followUpRounds`，它与这一条事件对不上就是它在漂）。
+     * 这一笔**不碰 `followUps`**：那一格数的是已送达的人话，由这一句追问自己落账本时推进
+     * （`noteDelivered`）——两格各记各的，合成一格就会把「送进去几条」读成「追问了几次」。
+     * `attempts` 刻意**不在**这里：追问不是一次新尝试（见本节第 ② 条）。
+     */
+    setRowStatus(runId, rowId, 'preparing', { error: null, followUpRounds: plan.ordinal });
+    publishRowEvent(runId, rowId, {
+      type: 'log',
+      stream: 'stdout',
+      text: followUpLogText(plan, row.sessionId ?? ''),
+    });
+  } catch (error) {
+    clearRowRuntime(runId, rowId);
+    throw error;
+  }
+  log.info('人工追问：接着同一段上下文再跑一段', {
+    runId,
+    rowId,
+    agentKind: row.agentKind,
+    sessionId: row.sessionId,
+    attachmentCount: attachments.length,
+    ordinal: plan.ordinal,
+  });
+
+  const task = followUpAttempt({ runId, rowId, controller, plan })
+    .catch((error: unknown) => {
+      /**
+       * **失败隔离在行这一级落地**（与 `runRow` 同一条口径）：`followUpAttempt` 抛出来的每一笔
+       * （用例 / 供应商被删、协议不匹配、评分配置缺失与解析失败）都在这里折成该行的终态，
+       * 绝不让一行的问题冒到轮级。阶段判据与 `runRow` 逐字同源：「此刻的状态是不是 `judging`」——
+       * 抛异常那条路上阶段信息已经丢了，读不到快照时归到**不给重新评分**那一侧。
+       * ⚠️ 追问**不自动重试**：`ROW_RETRY` 那本账记的是「这一行走过几次尝试」，而追问不是一次尝试；
+       * 一次追问失败之后该由人决定「再追问一次」还是「点重新执行」。
+       */
+      const serviceError = toServiceError(error);
+      const stage: RowFailureStage = rowStatus(runId, rowId) === 'judging' ? 'judge' : 'agent';
+      log.error('追问执行失败', { runId, rowId, code: serviceError.code, message: serviceError.message, stage });
+      try {
+        settleFailed(runId, rowId, serviceError, null, stage);
+      } catch (secondary) {
+        log.error('追问落 failed 也失败（该行可能停在非终态）', {
+          runId,
+          rowId,
+          reason: toServiceError(secondary).message,
+        });
+      }
+    })
+    .finally(() => {
+      clearRowRuntime(runId, rowId);
+      followUpTasks.delete(key);
+      // 补一次轮收尾：追问成功之后 `partial` 该翻回 `done`（`finalizeRun` 自带「还有行在跑就什么都不做」的守卫）
+      try {
+        finalizeRun(runId);
+      } catch (error) {
+        log.error('追问后的轮收尾失败（该轮可能停在 partial）', {
+          runId,
+          reason: toServiceError(error).message,
+        });
+      }
+    });
+  followUpTasks.set(key, task);
+
+  return getRunForWrite(runId);
+}
+
+/**
+ * 一次追问的执行体要的那几格（**独立成接口**而不是内联对象类型）：
+ * 源码守卫按花括号配平取函数体（`functionRange`），而参数位置的内联对象类型会让它把**参数表**
+ * 当成函数体——那会让「追问那一节里不许出现 `runRow`」这条判据静默扫错地方。
+ */
+interface FollowUpAttemptInput {
+  runId: string;
+  rowId: string;
+  controller: AbortController;
+  plan: FollowUpPlan;
+}
+
+/** 一次追问的执行体：候选阶段（复用工作区与会话）+ 收尾自动重评 */
+async function followUpAttempt(input: FollowUpAttemptInput): Promise<void> {
+  const { runId, rowId, controller, plan } = input;
+  const key = rowKey(runId, rowId);
+  /**
+   * 「这一行落终态」的**唤醒器**（同 `terminalWaiters` 的语义：不是时间上限，是用户动作的送达）。
+   * 注册必须在**本函数第一个 `await` 之前**：`followUpRow` 刚把行落成 `preparing`，那一拍与这里是
+   * 同一个同步片段，中间插不进「用户终止」——注册晚一步就会漏掉那次唤醒（与 `rescoreAttempt` 同一条理由）。
+   * 两个消费者：候选阶段的 `runPromise` 与评分阶段的 `input.attempt`（经 `JudgeStageContext` 传下去）。
+   */
+  let wakeOnTerminal: (() => void) | undefined;
+  const terminalReached = new Promise<'terminal'>((resolve) => {
+    wakeOnTerminal = () => resolve('terminal');
+  });
+  terminalWaiters.set(key, () => wakeOnTerminal?.());
+  /**
+   * **让出一次事件循环再复检终止**（本节第 ③ 条）：`preparing` 在 `isRunningRow` 眼里就是在途，
+   * 用户在这个窗口里按终止是合法且同步的（`abortRun` / `abortRow` 会当场把行落成 `canceled`）。
+   * 不复检就会继续走完这一趟、无条件落 `running`，把行从 `canceled` **复活**并写出第二条 `end`。
+   * 命中终态就直接返回：不改状态、不发事件。
+   */
+  await yieldToEventLoop();
+  const { row: afterYield } = requireRow(runId, rowId);
+  if (TERMINAL_ROW_STATUSES.includes(afterYield.status)) {
+    log.debug('行已在追问的准备阶段被终止，不再执行', { runId, rowId, status: afterYield.status });
+    return;
+  }
+
+  const { run, row } = requireRow(runId, rowId);
+  const config = loadConfig();
+  const settings = config.settings;
+  const testCase = readCase(run.caseId);
+  if (testCase === null) {
+    // 入口区判过一次，但读快照与这里之间隔着让出事件循环：用例可能刚被删（与 runRowAttempt 同一处置）
+    throw new ServiceError('CONFLICT', `用例已删除（${run.caseId}），无法追问；历史记录仍可查看`);
+  }
+  const providerRecord = config.providers.find((item) => item.id === row.providerId);
+  if (providerRecord === undefined) {
+    throw new ServiceError('CONFLICT', `供应商已删除（${row.providerId}），该行无法追问；请重建供应商后新建评测`);
+  }
+  const agentProvider = getProvider(row.agentKind);
+  if (!acceptsProtocol(agentProvider.metadata, providerRecord.protocolType)) {
+    throw new ServiceError(
+      'CONFLICT',
+      protocolMismatchMessage({
+        agentLabel: AGENT_LABELS[row.agentKind],
+        accepted: agentProvider.metadata.protocolTypes,
+        subject: `供应商「${providerRecord.name}」的模型`,
+        actual: providerRecord.protocolType,
+      }),
+    );
+  }
+  /**
+   * **MCP 与技能要重新下发一遍**：续接只带回*上下文*，不带厂商那一侧的工具面
+   * （cc 的 MCP 走 SDK 参数、codex 的只写在线程级 config 里、dsh 写自己的 settings.yaml、
+   * pi 在每个会话装配时注册扩展）⇒ 少传一次工具就在追问这一段里**静默消失**
+   * （模型只能另找路子），而界面上一切正常。读的还是同一份 `loadConfig()` 快照。
+   */
+  const environment = planCandidateEnvironment(settings, runId, rowId);
+
+  /**
+   * **会话 id 不许兜底**：入口区的拒绝面保证它非 null，这里再判一次是因为下面那一格直接决定
+   * 「接回原来的上下文」还是「悄悄开一条新会话」——兜一个空串就是**静默从头开始**，
+   * 而那正是这一整节要防的事（用户以为在追问、智能体什么都不记得，而界面上一切正常）。
+   */
+  const sessionId = row.sessionId;
+  if (sessionId === null) {
+    throw new ServiceError('INTERNAL', '追问读到的这一行没有会话 id（入口区判过一次）：不许静默开新会话');
+  }
+  /** 追问前那一份累计读数：下面每一处写回都在这上面**加**（见本节第 ② 条） */
+  const base = {
+    tokens: row.tokens,
+    turns: row.turns,
+    subagentTokens: row.subagentTokens ?? null,
+    subagentTurns: row.subagentTurns ?? null,
+    durationMs: row.durationMs,
+  };
+  const startedAt = Date.now();
+  const streamingDelta = { frameCount: 0, lastFrameChars: 0 };
+  let latestMainRoundTrip: number | null = null;
+  let mcpVendor: RowMcpEvidence['vendor'] = null;
+  let skillVendor: RowSkillEvidence['vendor'] = null;
+
+  /**
+   * 账本落在**这一拍**：下面那次 `run()` 就是「把这句话交给厂商」，与
+   * 「账本记的是模型真收到了什么」同口径。落盘失败只留 ERROR，不改写交给厂商的那一份。
+   */
+  try {
+    publishRowMessage(runId, rowId, followUpMessage(plan));
+  } catch (error) {
+    log.error('人工追问没能落进消息账本（它照常会交给厂商，结论不受影响）', {
+      runId,
+      rowId,
+      messageId: plan.messageId,
+      error,
+    });
+  }
+  /**
+   * 这一句追问自己**也是一条已送达的人话**（账本里 `origin: 'human'`），故它与那条账本
+   * **同一段代码**里把 `followUps` 加一——那一格的口径是「与账本对齐」，两处分开写迟早
+   * 一处改了另一处没改，而症状是卡片上的数与账本对不上。
+   * 轮次那一格（`followUpRounds`）**不在这里**：它数的是「第几次追问」，随入口区那条日志一起落。
+   * 单独兜一层：计数没跟上与「这一句没落账本」是两件事——账本才是主事实。
+   */
+  try {
+    const { row: current } = requireRow(runId, rowId);
+    patchRow(runId, rowId, { followUps: current.followUps + 1 });
+  } catch (error) {
+    log.error('人工追问已落账本，但行快照的计数没能加上去（账本是主事实）', {
+      runId,
+      rowId,
+      messageId: plan.messageId,
+      error,
+    });
+  }
+
+  // 状态 → running；心跳把「上一段累计的耗时」当基数，于是界面上的秒表接着涨、而不是从 0 重来
+  setRowStatus(runId, rowId, 'running');
+  const heartbeat = setInterval(() => {
+    try {
+      patchRow(runId, rowId, { durationMs: (base.durationMs ?? 0) + (Date.now() - startedAt) });
+    } catch (error) {
+      // 与 runRowAttempt 同一处置：心跳是锦上添花，抛在定时器回调里没有任何调用方能接住
+      stopRowHeartbeat(key);
+      log.debug('追问的耗时心跳写入失败，已停止这一行的心跳（终态写入与失败归因不受影响）', {
+        runId,
+        rowId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, ROW_HEARTBEAT_MS);
+  stopRowHeartbeat(key);
+  rowHeartbeats.set(key, { timer: heartbeat, startedAt, baseMs: base.durationMs ?? 0 });
+
+  let settled = false;
+  const onEvent = (event: AgentEvent): void => {
+    if (settled || isRowSettled(runId, rowId)) return;
+    publishRowEvent(runId, rowId, event);
+    if (event.type === 'vendor-system') {
+      mcpVendor = { servers: event.mcpServers, tools: event.tools, channel: event.mcpChannel ?? 'vendor-status' };
+      if (event.skills !== undefined) skillVendor = event.skills;
+    }
+    if (event.type !== 'usage') return;
+    // 跑动期的读数同样**累加**：拿厂商这一次的读数直接覆盖会把这一行之前的用量抹掉
+    patchRow(runId, rowId, {
+      turns: addCount(base.turns, event.turns),
+      ...(event.subagentTokens === undefined ? {} : { subagentTokens: addTokens(base.subagentTokens, event.subagentTokens) }),
+      ...(event.subagentTurns === undefined ? {} : { subagentTurns: addCount(base.subagentTurns, event.subagentTurns) }),
+      ...(event.tokens !== null && event.tokensBasis === 'reported' ? { tokens: addTokens(base.tokens, event.tokens) } : {}),
+    });
+  };
+
+  let result: AgentRunResult | null = null;
+  let agentError: ServiceError | null = null;
+  // 与 runRowAttempt 同形：先挂一个 catch，免得「已经不再等它」之后才 reject 的孤儿 promise 打崩进程
+  const runPromise = agentProvider.run({
+    // 复用行自己的工作区与配置目录（**不 prepare**，见本节第 ① 条）
+    cwd: row.workspacePath,
+    configHome: rowAgentHomeDir(run.workspaceBase, runId, rowId),
+    permission: 'full',
+    // 追问的正文由编排层拼好（人话 + 附件清单）——适配器只认文本
+    prompt: plan.prompt,
+    ...(row.effort === undefined ? {} : { effort: row.effort }),
+    route: {
+      protocolType: providerRecord.protocolType,
+      baseUrl: providerRecord.baseUrl,
+      apiKey: providerRecord.apiKey,
+      modelId: row.modelId,
+      ...contextOf(providerRecord, row.modelId),
+    },
+    signal: controller.signal,
+    /** **续接**：行快照里那条会话（拒绝面已保证它非 null）。不传 = 又开一条新会话 = 智能体什么都不记得 */
+    resume: { sessionId },
+    // 环境两格（MCP 与技能）：与完整跑一行同一份规划（理由见 `planCandidateEnvironment`）
+    ...environment.input,
+    /**
+     * **人工消息闸门同样照开**：追问这一段也是一次「候选执行」，行在跑，人就能往这一轮送话
+     * （续接与注入是契约的两格、正交：`resume` 说从哪来，这一格说运行中收不收人话）。
+     * 不传 ⇒ 适配器一格都不挂（`available` 读作假），与完整跑一行同一条零回归判据。
+     *
+     * 三格接线逐字同源（`landingOpen` 同一道终态闸门、`roundTripHere` 让这条人话落回它自己那一轮、
+     * `noteDelivered` 把**已送达的人话条数**加上去且与账本同一段代码，追问轮次另由 `followUpRounds`
+     * 记）——差别只有行的身份来自这一次追问。
+     */
+    ...(run.injectMessages === true
+      ? {
+        inject: createInjectionPort({
+          runId,
+          rowId,
+          // 这一段自己的序号：人在追问段里插的话要落回**这一段**的轮次（不然会掉进首段同号那一轮）
+          segment: plan.ordinal,
+          landingOpen: () => !settled && !isRowSettled(runId, rowId),
+          roundTripHere: () => latestMainRoundTrip,
+          noteDelivered: (count) => {
+            const { row: current } = requireRow(runId, rowId);
+            patchRow(runId, rowId, { followUps: current.followUps + count });
+          },
+        }),
+      }
+      : {}),
+    onEvent,
+    onMessage: (message) => {
+      if (settled || isRowSettled(runId, rowId)) return;
+      // 轮号在闸门之后、分叉之前记（与 runRowAttempt 同一口径：增量帧也带轮号）
+      if (message.subagentId === null) {
+        latestMainRoundTrip = Math.max(latestMainRoundTrip ?? message.roundTrip, message.roundTrip);
+      }
+      /**
+       * **这一段自己的序号盖在每一条消息上**（快照与增量两条出口都要）：
+       * 追问那一段的厂商轮次从 1 重新数 ⇒ 两段的 `mergeKey` 逐字相同，读侧折叠按
+       * `(segment, mergeKey)` 走。漏掉任一条出口的症状都是「首段同号那一轮被这一段盖掉」
+       * 或「实时视图与刷新后的视图对不上」。
+       */
+      const segmentTagged = { ...message, segment: plan.ordinal };
+      if (message.chunk === 'delta') {
+        streamingDelta.frameCount += 1;
+        streamingDelta.lastFrameChars = message.blocks.reduce(
+          (total, block) => total + (block.type === 'text' || block.type === 'thinking' ? (block.text ?? '').length : 0),
+          0,
+        );
+        broadcastRowMessage(runId, rowId, segmentTagged);
+        return;
+      }
+      publishRowMessage(runId, rowId, segmentTagged);
+    },
+    onSubagent: (record) => {
+      if (settled || isRowSettled(runId, rowId)) return;
+      publishSubagentRecord(runId, rowId, record);
+    },
+  });
+  runPromise.catch(() => {});
+  try {
+    /**
+     * 与 `runRowAttempt` 同一形状：等适配器，同时也等「这一行落终态」。用户终止之后只给适配器一个
+     * **有限的交卷窗口**（`TERMINATION_GRACE_MS`）——直接放弃就拿不到它已经算出来的计量，
+     * 无限等下去则会让这一个行任务永远收不了尾（轮级状态跟着挂在 `running`）。
+     */
+    const outcome = await Promise.race([runPromise, terminalReached]);
+    result =
+      outcome === 'terminal'
+        ? await Promise.race([
+          runPromise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), TERMINATION_GRACE_MS)),
+        ])
+        : outcome;
+  } catch (error) {
+    // 契约说 run() 返回 ok:false（不抛），但实现可能违例；违例也必须落成可读的 failed
+    agentError = toServiceError(error);
+  } finally {
+    stopRowHeartbeat(key);
+  }
+  settled = true;
+  const elapsedMs = Date.now() - startedAt;
+
+  if (result !== null && result.sessionId !== null) {
+    /**
+     * **续接之后不许换会话**：追问必须还跑在原来那条会话上。
+     * 换了 id 说明厂商那一侧开了新的（或适配器把 `resume` 丢了），此后这一行的上下文是断的，
+     * 而界面上一切正常——故命中即行失败（`SESSION_ID_SHARED` 那条断言管的是「与他人串味」，
+     * 这一条管的是「自己接了半截」，两件事）。
+     */
+    if (result.sessionId !== sessionId) {
+      assertSessionIdNotShared(runId, rowId, result.sessionId);
+      log.warn('追问之后厂商交回的是另一条会话 id（这一行的上下文可能已经断了）', {
+        runId,
+        rowId,
+        expected: sessionId,
+        actual: result.sessionId,
+      });
+      settleFailed(
+        runId,
+        rowId,
+        new ServiceError('CONFLICT', `追问之后交回的会话 id 与这一行原有的对不上（${sessionId} → ${result.sessionId}）：`
+          + '这一段上下文可能没接上，故不把它当作这一行的继续'),
+        null,
+        'agent',
+      );
+      return;
+    }
+  }
+
+  /**
+   * 两半证据**只构造一次**（与 `runRowAttempt` 同一条口径）：观测格与「这一行该不该失败」
+   * 读的必须是同一份——两处各拼一份，漂移的表现是「快照里记着 probe 没起来、行却照常出了分」。
+   */
+  const mcpEvidence = { ...environment.mcp, vendor: mcpVendor } satisfies RowMcpEvidence;
+  const skillEvidence = { ...environment.skills, vendor: skillVendor } satisfies RowSkillEvidence;
+  // diff 与计量一起写回：diff 天然相对 `baselineCommit` 累计（工作区没重置，见本节第 ② 条）
+  const collected = collectDiff(row.workspacePath, row.baselineCommit);
+  const clipped = truncateDiff(collected.text, settings.diffBudgetBytes);
+  const { row: settledRow } = requireRow(runId, rowId);
+  const durationMs =
+    (TERMINAL_ROW_STATUSES.includes(settledRow.status) ? settledRow.durationMs : null) ??
+    ((base.durationMs ?? 0) + (result?.durationMs ?? elapsedMs));
+  patchRow(runId, rowId, {
+    tokens: addTokens(base.tokens, result?.tokens ?? null),
+    turns: addCount(base.turns, result?.turns ?? null),
+    subagentTokens: addTokens(base.subagentTokens, result?.subagentTokens ?? null),
+    subagentTurns: addCount(base.subagentTurns, result?.subagentTurns ?? null),
+    durationMs,
+    streamingDelta,
+    mcpServers: deriveRowMcpServers(mcpEvidence),
+    skillInstall: deriveRowSkillInstall(skillEvidence),
+    diff: {
+      filesChanged: collected.filesChanged,
+      insertions: collected.insertions,
+      deletions: collected.deletions,
+      truncated: clipped.truncated,
+    },
+  });
+  publishRowEvent(runId, rowId, {
+    type: 'diff-summary',
+    filesChanged: collected.filesChanged,
+    insertions: collected.insertions,
+    deletions: collected.deletions,
+    truncated: clipped.truncated,
+  });
+
+  // 终止类结果优先判定（用户终止 > 适配器违约 > 适配器自报），与 runRowAttempt 同一份分档
+  const stop = classifyStop({ userAborted: userAborted.has(key), result, agentError });
+  if (stop !== null) {
+    settleStopped(runId, rowId, stop);
+    return;
+  }
+  const mcpFailure = mcpUnavailableMessage(mcpEvidence);
+  if (mcpFailure !== null) {
+    log.warn('追问这一段有 MCP 未能启动，按行失败收口', { runId, rowId, message: mcpFailure });
+    settleStopped(runId, rowId, {
+      status: 'failed',
+      error: { code: AGENT_MCP_UNAVAILABLE, message: mcpFailure },
+      exitReason: 'error',
+      stage: 'agent',
+    });
+    return;
+  }
+  const skillFailure = skillMissingMessage(skillEvidence, AGENT_LABELS[row.agentKind]);
+  if (skillFailure !== null) {
+    log.warn('追问这一段有技能未被厂商认下，按行失败收口', { runId, rowId, message: skillFailure });
+    settleStopped(runId, rowId, {
+      status: 'failed',
+      error: { code: AGENT_SKILLS_UNAVAILABLE, message: skillFailure },
+      exitReason: 'error',
+      stage: 'agent',
+    });
+    return;
+  }
+
+  /**
+   * **队列非空 ⇒ 追问这一段先不收场**（与完整跑一行同一处置，放在重评之前：候选那一段还没结束）。
+   * 判据是「还没投递的人工消息」，不是「表里有条目」——已经交出去的不归我们管了，
+   * 而一条**投不出去**的消息必须给一个收场时刻。
+   * `wake: null` 与完整跑一行同源：没有一家接了「已收工的一轮还能被唤起来接着投」那条路
+   * ⇒ 四家一律等这一批的预算（`waitForInjectQueue`）。**绝不假装投递成功**。
+   */
+  if (run.injectMessages === true && hasPendingInjectMessages(runId, rowId)) {
+    const dispatch = resolveIdleWithPending({
+      declaration: agentProvider.metadata.turnInjection,
+      wake: null,
+    });
+    if (dispatch === 'wake') {
+      log.info('追问这一段还有人话没投出去，且这一家能唤醒已收工的一轮：交回调用方起新一轮', { runId, rowId });
+      return;
+    }
+    const waiting = await waitForInjectQueue({ runId, rowId, signal: controller.signal });
+    log.info('追问这一段的人工消息等待窗口落定', { runId, rowId, outcome: waiting });
+    if (waiting === 'canceled') return;
+  }
+
+  const { row: beforeJudging } = requireRow(runId, rowId);
+  if (TERMINAL_ROW_STATUSES.includes(beforeJudging.status)) {
+    log.debug('行已被同步终止，追问这一段跳过重评', { runId, rowId, status: beforeJudging.status });
+    return;
+  }
+
+  /**
+   * **收尾无条件重评**（本节第 ④ 条）：分、diff 与计量读的都是同一份工作区，评委看的必须是
+   * 追问之后的那一份。评分通路自己带「没拿到分则只留痕、真因优先」的兜底，故这里不再加分支。
+   * 评分阶段的记账与候选阶段共用同一把控制器与同一个唤醒器（`terminalWaiters` 在入口区已登记）。
+   */
+  let score: ScoreResult;
+  try {
+    score = await runJudgeStage({
+      runId,
+      rowId,
+      run,
+      testCase,
+      workspacePath: row.workspacePath,
+      baselineCommit: row.baselineCommit,
+      agentKind: row.agentKind,
+      diffText: clipped.text,
+      diffSummary: {
+        filesChanged: collected.filesChanged,
+        insertions: collected.insertions,
+        deletions: collected.deletions,
+        truncated: clipped.truncated,
+      },
+      controller,
+      terminalReached,
+    });
+  } catch (error) {
+    if (error instanceof JudgeAgentError) {
+      // 评审者自身的终止 / 失败：AGENT_* 不是契约的 ErrorCode，走那条专用映射（与完整跑一行同一个出口）
+      settleAgentJudgeStop(runId, rowId, error);
+      return;
+    }
+    // 配置缺失（未配评分模型 / 未配评分智能体 / 协议不兼容）与解析失败：交给本函数的兜底落 failed
+    throw error;
+  }
+  const { row: afterJudging } = requireRow(runId, rowId);
+  if (TERMINAL_ROW_STATUSES.includes(afterJudging.status)) {
+    // 评分是在用户终止之后才返回的：状态保持 canceled（用户意图优先），分数只记进日志
+    publishRowEvent(runId, rowId, { type: 'score', score });
+    log.warn('行已被终止，追问这一段的评分结果只记入事件日志', { runId, rowId, status: afterJudging.status });
+    return;
+  }
+  patchRow(runId, rowId, { score });
+  publishRowEvent(runId, rowId, { type: 'score', score });
+  publishRowEvent(runId, rowId, {
+    type: 'log',
+    stream: 'stdout',
+    text: `[人工追问 ×${plan.ordinal}] 已收场：本段耗时 ${Math.round(elapsedMs / 1000)} s，`
+      + `本行累计耗时 ${Math.round(durationMs / 1000)} s；分数已按追问后的工作区重评`,
+  });
+  setRowStatus(runId, rowId, 'judged');
+  publishRowEvent(runId, rowId, { type: 'end', exitReason: 'completed' });
+}
+
+/* ===================================================================================================
  * 轮级状态机
  *
  * 一轮的产出有三样：run.json 的 status、每行的终态、每行的事件日志。三样必须互相对得上——
@@ -2813,8 +3794,13 @@ export function abortRow(runId: string, rowId: string): EvalRun {
  * 用 while 而不是一次性 `allSettled`：等待期间可能又有新的轮开始，一次等干净更符合「关停」的语义。
  */
 export async function drainRunningTasks(): Promise<void> {
-  while (runTasks.size > 0 || rescoreTasks.size > 0 || retryTasks.size > 0) {
-    await Promise.allSettled([...runTasks.values(), ...rescoreTasks.values(), ...retryTasks.values()]);
+  while (runTasks.size > 0 || rescoreTasks.size > 0 || retryTasks.size > 0 || followUpTasks.size > 0) {
+    await Promise.allSettled([
+      ...runTasks.values(),
+      ...rescoreTasks.values(),
+      ...retryTasks.values(),
+      ...followUpTasks.values(),
+    ]);
   }
 }
 
@@ -2904,4 +3890,18 @@ export function recoverInterruptedRuns(): { recovered: number } {
 
   if (recovered > 0) log.warn('服务重启：已把中断的行标记为 interrupted', { rows: recovered, runs: touchedRuns });
   return { recovered };
+}
+
+/**
+ * 适配器交出来的正文**里有没有东西**（`EvalRow.emptyAnswer` 的判据）。
+ *
+ * 三档都算「没有正文」：`null` / **`undefined`** / 纯空白。`undefined` 这一档不是理论情形 ——
+ * 行还在跑时 `result` 可能只带部分字段，此时 `.trim()` 会抛，而抛在行写入路径上会让
+ * **整次 patchRow 失败**（症状是「跑动期的读数一直不出现」，看起来像厂商没报，实际是我们自己炸了）。
+ *
+ * 只在这里做判定、不往上游加守卫：适配器侧的「空正文不进 `finalText`」是另一层的事
+ * （由一致性套件拦），判据不该依赖它 —— 夹具能造出空串与纯空白，两样都要算「没答」。
+ */
+function hasReplyBody(text: unknown): boolean {
+  return typeof text === 'string' && text.trim() !== '';
 }

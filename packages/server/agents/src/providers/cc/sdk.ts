@@ -5,7 +5,7 @@
  * 注意：`import()` 必须是动态的——顶层静态导入会把「一家 SDK 故障」放大成「整包不可用」（A6）；
  * 字段名以真实事件探测的 dump 为准。
  */
-import { AgentLoadError } from '../../errors';
+import { AgentLoadError, exportedNames } from '../../errors';
 import { createSdkLoader } from '../../load-once';
 import type { ClaudeMcpServer } from '../../mcp';
 import type { ClaudePermissionMode } from '../../permission';
@@ -26,6 +26,18 @@ export interface ClaudeQueryOptions {
   cwd: string;
   env: Record<string, string>;
   model: string;
+  /**
+   * 接着一条**已有会话**再跑一段（厂商同名字段 `Options.resume`，SDK 把它拼成 CLI 的 `--resume`）。
+   *
+   * 会话身份由 **`CLAUDE_CONFIG_DIR`** 定位，**cwd 不是隔离键**：同一个 configDir 之下，换一个
+   * cwd 照样按 `session_id` 接上（返回的 id 不变、原转录被继续追加），换 configDir 才被拒。
+   * 故按行隔离只有「每行一个 `CLAUDE_CONFIG_DIR`」这一条路（本仓正是每行一个行私有配置目录）。
+   *
+   * ⚠️ **只声明 `resume`，刻意不声明厂商那个 `continue`**：`continue` 取的是「当前目录最近的一条」，
+   * 而重跑复用同一个 cwd ⇒ 它会**静默续上一次尝试**（用户以为在追问，智能体答的是上一轮的上下文）。
+   * 外壳比厂商窄在这里是**有意的**：那条路没有一句能表达「接哪一条」的话，放开它等于把误续放进来。
+   */
+  resume?: string;
   /**
    * 权限档的落点（由 `permission.ts` 的 `CLAUDE_PERMISSION_OPTIONS` 决定）。
    * 值域逐字取自安装态 SDK 的类型面：`sdk.d.ts:2417` 的
@@ -200,8 +212,53 @@ export type ClaudeCanUseTool = (
   options: { signal: AbortSignal; toolUseID?: string; requestId?: string },
 ) => Promise<ClaudePermissionResult | null>;
 
-export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {  /** 优雅停止：结束在途 turn（不是 kill 进程） */
+/** 车道（厂商 `SDKUserMessage.priority`）；**不写这一格就是缺省档**（CLI 侧按 `'next'` 处理） */
+export type ClaudeUserMessagePriority = 'now' | 'next' | 'later';
+
+/**
+ * 我们能**往流里塞**的一条用户消息：厂商 `SDKUserMessage` 里本仓用得到的那几格。
+ *
+ * 为什么只声明这几格：它是「比厂商窄的外壳」里**入站**（我们→厂商）的那一侧，窄是对的——
+ * 我们只造得出这几种形状，写多了等于把没验证过的字段也当成我们的能力。三条承重的边界：
+ *   · `content` 只用**字符串**这一支（附件清单是编排层拼进正文的文本，不走厂商的块数组）；
+ *   · `uuid` 由**我们自己铸**（厂商侧可选，而撤回正是按它认人——不铸就没有身份可撤）；
+ *   · `priority` **缺省 = `'next'`**，那正是契约里 `'round'` 档的落点（真机读数：不写 `priority` 时
+ *     注入的话被 CLI 折进**本轮**那条带 `tool_result` 的请求，落点在该块的 `content` 里）。
+ */
+export interface ClaudeUserMessage {
+  type: 'user';
+  message: { role: 'user'; content: string };
+  parent_tool_use_id: string | null;
+  /** 这一条的身份（我们自铸；撤回按它认人） */
+  uuid?: string;
+  /** 车道；**缺席 = `'next'`**（不是「没有优先级」） */
+  priority?: ClaudeUserMessagePriority;
+}
+
+/**
+ * 查询句柄（SDK 的 `Query`），只声明本仓消费得到的那几格。
+ *
+ * 每一格都是**可选**，这是刻意的：它们在厂商版本之间并不是一直都有，而「有没有」必须能被适配器看见
+ * ——那正是「如实说做不到」与「静默失败」的分界（`no` / `unverified` 那两档声明的落点）。
+ *
+ * ⚠️ **按需声明，不穷举厂商面**：厂商的 `Query` 上还有一堆方法（多轮入口 `streamInput`、会话改名、
+ * MCP 重连…），**没人用的不进这个接口**——声明与产物互钉，留一个「声明了却没人用」的方法，
+ * 就是给下一个读者一句「我们用它」的假话（进这一格的判据是**本仓有调用方**，不是厂商有没有）。
+ */
+export interface ClaudeQuery extends AsyncIterable<ClaudeMessage> {
+  /** 优雅停止：结束在途 turn（不是 kill 进程） */
   interrupt?: () => unknown;
+  /**
+   * 按身份撤回一条**还挂在命令队列里**的异步用户消息（厂商的控制请求 `cancel_async_message`）。
+   *
+   * ⚠️ **它不在 SDK 的公开面**：`sdk.mjs` 里已实现（方法名 `cancelAsyncMessage`，入参是 uuid 字符串，
+   * 返回 `response.cancelled`），控制请求联合里也有这条 subtype，但 `Query` 接口与 `.d.ts` **都没有它**
+   * ⇒ 只能按**可选**声明 + 运行时 `typeof` 探测；缺席时如实回「这一家/这一版撤不了」，
+   * 不许写成「支持撤回」再在运行时静默失败。
+   *
+   * 返回 `unknown`：形状由 `readClaudeCancelResult` 收窄成我们那两档（与 `getContextUsage` 同一处置）。
+   */
+  cancelAsyncMessage?: (uuid: string) => Promise<unknown>;
   /**
    * 上下文用量快照（SDK 的控制请求 `get_context_usage`）。
    *
@@ -242,23 +299,26 @@ function readCount(value: unknown): number | null {
 /**
  * 把厂商的上下文用量**收窄成我们那几格**。
  *
- * 三条处置：
- *   · 整格 `skills` 缺席（厂商口径：没有任何 skill 占用上下文时它省略）⇒ `skills: null`
- *     ——那是**采不到**，与「投送了、确实是空的」（`includedSkills: 0` + 空数组）不是一回事；
+ * 三条处置（**「厂商没投送」与「我们读不出」必须落在两个不同的返回值上**）：
+ *   · 整格 `skills` 缺席（厂商口径：没有任何 skill 占用上下文时它省略）⇒ `{ skills: null }`
+ *     ——那是**采到了「厂商没投送这一格」**，与「投送了、确实是空的」（`includedSkills: 0` + 空数组）
+ *     仍然不是一回事，故保留 `null` 而不是退成空清单；
  *   · `skillFrontmatter` 里名字读不出来的条目**整条丢掉**：这一格的主键是名字，
  *     没名字就没法与我们的清单配对，留着只会在界面上多一行空白（来源读不出记空串）；
- *   · 形状不对（整格不是对象、两个计数格读不出）⇒ 返回 `null`，调用方据此记一条点名的 WARN、
- *     判据降级成 `unverified`。
+ *   · 形状不对（整份不是对象、`skills` 不是对象、两个计数格读不出）⇒ 返回 `null`，
+ *     调用方据此记一条点名的 WARN、判据降级成 `unverified`。
+ *     ⚠️ 这一档**不许**与第一档共用返回值：共用了就等于「厂商改了个字段名」与「厂商没投送」
+ *     在日志与产物里完全同形，那条 WARN 永远不响（判据静默降级）。
  */
 export function readClaudeContextUsage(raw: unknown): ClaudeContextUsage | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const skills = (raw as { skills?: unknown }).skills;
   if (skills === undefined || skills === null) return { skills: null };
-  if (typeof skills !== 'object') return { skills: null };
+  if (typeof skills !== 'object') return null;
   const record = skills as { totalSkills?: unknown; includedSkills?: unknown; skillFrontmatter?: unknown };
   const total = readCount(record.totalSkills);
   const included = readCount(record.includedSkills);
-  if (total === null || included === null) return { skills: null };
+  if (total === null || included === null) return null;
   const rows = Array.isArray(record.skillFrontmatter) ? record.skillFrontmatter : [];
   const skillFrontmatter: { name: string; source: string }[] = [];
   for (const row of rows) {
@@ -275,8 +335,38 @@ export interface ClaudeMessage {
   [key: string]: unknown;
 }
 
+/**
+ * 把 `cancelAsyncMessage` 的返回值收窄成我们那两档：`true`（还在队列里、撤掉了）/
+ * `false`（已经不在队列里 ⇒ **已被取走**，厂商赢）/ `null`（形状不认识 ⇒ 采不到）。
+ *
+ * 两种形状都认：`sdk.mjs` 的方法体直接交回 `response.cancelled`（**裸布尔**），而控制响应本体是
+ * `{ cancelled }`——两条路都读过（安装态 0.3.281 是前者），认两种比认一种更抗厂商改写；
+ * 不认识的形状一律 `null`（采不到 ≠ 猜一个）。
+ *
+ * 为什么 `false` 不能读成「撤失败」：厂商那句原文（`sdk.d.ts:3726`）是
+ * *"Drops a pending async user message from the command queue by uuid. No-op if already dequeued
+ * for execution."*，且 interrupt 的 JSDoc 明写「once a batch is dequeued and coalesced into one
+ * turn … the cancel response reports cancelled:false because the message was no longer in the queue」
+ * ⇒ `false` 是**竞态里厂商赢**那一支，界面要说的是「已经交给智能体了，撤不回来」，
+ * 而不是「撤回失败」。
+ */
+export function readClaudeCancelResult(raw: unknown): boolean | null {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const cancelled = (raw as { cancelled?: unknown }).cancelled;
+  return typeof cancelled === 'boolean' ? cancelled : null;
+}
+
 export interface ClaudeSdkModule {
-  query: (params: { prompt: string; options: ClaudeQueryOptions }) => ClaudeQuery;
+  /**
+   * 起一次查询。`prompt` 两支：
+   *   · **字符串** = 一次性题面：CLI 判定 `isSingleUserTurn`，首条 `result` 一到就 `endInput()`
+   *     关掉 stdin（既有行为，逐字不变）；
+   *   · **异步可迭代** = streaming input：stdin 一直留着，中途还能再推用户消息（`'round'` 档的落点）
+   *     ——代价是**输入流不收，查询不会自己结束** ⇒ 收场必须由我们驱动（`end()` / `interrupt()` /
+   *     `abortController`）。
+   */
+  query: (params: { prompt: string | AsyncIterable<ClaudeUserMessage>; options: ClaudeQueryOptions }) => ClaudeQuery;
 }
 
 const loadRaw = createSdkLoader<unknown>(
@@ -284,11 +374,21 @@ const loadRaw = createSdkLoader<unknown>(
   CLAUDE_PACKAGE_NAME,
 );
 
-/** 懒加载 + 形状校验：形状不对与「包没装」归为同一类（AGENT_LOAD_FAILED），文案点名包名 */
+/**
+ * 懒加载 + 形状校验。
+ *
+ * 形状不对**不是**「包没装」：包在、装好了，只是导出面与适配器期望的不一致（升 SDK 后最常见）。
+ * 两者共用 `AGENT_LOAD_FAILED` 这个归因码，但文案必须分开——`missing` 那条模板给的是安装命令，
+ * 而对着一个装好的包执行安装命令不会有任何变化（`errors.ts` 的 `AgentLoadErrorOptions.variant`）。
+ */
 export async function loadClaudeSdk(): Promise<ClaudeSdkModule> {
   const raw = await loadRaw();
   if (typeof (raw as { query?: unknown }).query !== 'function') {
-    throw new AgentLoadError(CLAUDE_PACKAGE_NAME, new Error('模块缺少 query 导出'));
+    throw new AgentLoadError(CLAUDE_PACKAGE_NAME, new Error('模块缺少 query 导出'), {
+      variant: 'shape-mismatch',
+      expected: 'query',
+      actual: exportedNames(raw),
+    });
   }
   return raw as ClaudeSdkModule;
 }

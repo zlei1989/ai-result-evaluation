@@ -34,6 +34,7 @@ function call(overrides: Partial<ToolItem> = {}): ToolItem {
     blockId: 'm1#0',
     name: 'Read',
     nameMissing: null,
+    inputError: null,
     family: 'read-file',
     input: { value: '{"path":"a.ts"}', text: '{"path":"a.ts"}', bytes: 14, description: null },
     output: { text: '结果原文', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'none' } },

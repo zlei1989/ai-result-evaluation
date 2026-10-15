@@ -3,6 +3,11 @@
  * 框架层按 httpStatusFor 把 code 映射为 HTTP 状态码，服务端与客户端共用同一张表。
  * 注意：错误码集合定义在脚手架阶段一次定稿——后续功能阶段只增不改，
  * 避免「同一种失败在两个域里叫不同名字」。
+ *
+ * `SESSION_ID_SHARED` 与 `INTERNAL` 分开**不是为了文案**：编排层那张「值不值得自动重跑」的表
+ * 按码判定，而 `INTERNAL` 在表里（文本评分通路的网络与 5xx 都折成它）。行间会话隔离漏了
+ * **重跑也不会好**，沿用 `INTERNAL` 会让它被自动重跑；把 `INTERNAL` 从那张表里摘掉又会波及
+ * 所有内生失败 ⇒ 单起一个码。
  */
 export const ERROR_CODES = [
   'NOT_FOUND',          // 404  实体不存在
@@ -15,6 +20,7 @@ export const ERROR_CODES = [
   'AUTH_FAILED',        // 401  上游凭据无效（context 带 host）
   'RATE_LIMITED',       // 429  上游限流
   'JUDGE_PARSE_FAILED', // 500  评分模型返回不可解析 / 维度缺失（context 带 raw 原文）
+  'SESSION_ID_SHARED',  // 500  同一轮的候选行跑在了同一条厂商会话上（行间隔离漏了）
   'INTERNAL',           // 500  其它内部错误
 ] as const;
 
@@ -45,6 +51,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   AUTH_FAILED: 401,
   RATE_LIMITED: 429,
   JUDGE_PARSE_FAILED: 500,
+  SESSION_ID_SHARED: 500,
   INTERNAL: 500,
 };
 

@@ -1,6 +1,6 @@
 /**
  * 一行的实时事件流：`/log` 补历史 + `/stream` 按 seq 续订。
- * 四条口径（SSE 订阅行为要求）：
+ * 五条口径（SSE 订阅行为要求）：
  * 1. **首帧先拉 `/log`**：抽屉一打开就要有完整历史，不必等 SSE 从 seq 0 重放一遍；
  * 2. 用 `afterSeq=lastSeq` 接 `/stream`：服务端只推新的；断线重连由浏览器自带，
  * 它会带上 `Last-Event-ID`，服务端优先用它（见路由）；
@@ -10,35 +10,35 @@
  * 与「SSE 回放的」天然重叠——两条来源重叠是**有意**的，去重是客户端的职责；
  * 4. 行进入终态就关连接并 **mutate 一次快照**（SSE 行为要求）：卡片上的分数/耗时/diff 摘要
  * 都来自快照，不刷新就只能等下一次轮询，界面会「明明跑完了还显示执行中」；
- * 5. **同一行重跑 = 新一代**：「重跑」前编排层会 `resetEvents` 删掉
+ * 5. **同一行重跑 = 新一代，靠「这一次尝试」重挂订阅**：「重跑」前编排层会 `resetEvents` 删掉
  * `events.jsonl`（core/event-log.ts 的口径：删文件而不是写空串，下一次 `appendEvent`
- * 的 seq 自然从 1 开始），而抽屉一直开着时本 hook 的 effect 依赖
- * `[enabled, runId, rowId, mutate]` 一个都没变 ⇒ **连接不会重挂**，新一轮的事件仍从
- * 同一条 SSE 推来。此时上一轮的 `seenRef`会把新一轮的头几条当成重复
- * **静默丢弃**——用户看到「日志缺头」。所以 seq 回到 1（或整批都比已见的最小 seq 还小）
- * 时按**新一代**处理：清空去重记录与已交付事件，后续事件正常交付。
+ * 的 seq 自然从 1 开始）。所以调用方必须把**这一次尝试的标识**（`attemptKey`，取行快照的
+ * `attempts`）传进来并进 effect 依赖：不传的话 effect 在重跑时一个依赖都没变 ⇒ 连接不重挂，
+ * 而连接要么已被终态关掉（`stop()` 之后不会自己回来），要么虽然活着、其续订游标却停在上一代
+ * 的水位上——**两种形状都是「重跑之后执行日志一条都不动」**，且连接徽标照旧显示「实时连接中」。
+ * 依赖变化会连同 `seenRef` / `minSeqRef` / `lastSeqRef` 一起重置（见 effect 开头），
+ * 于是新一轮从 `/log` 全量重放。
+ * 序号侧的换代判据（`merge` 里的 `restarts`）仍然保留：浏览器自动重连时用的是
+ * `Last-Event-ID`，那条路不经过 effect，重连后可能拿到比已见最小值更小的 seq——
+ * 那正是这套判据的另一半。两条判据的分工是「谁负责发现换代」：依赖变化负责重挂，
+ * seq 判据负责在同一条连接内识别。
  * 为什么不选「由 UI 在开始/重跑后强制重挂抽屉」：那要把正确性押在「调用方记得重挂」上，
  * 而**任何别的截断路径**（后端清日志、重连后拿到更小的 seq）仍会静默丢事件——
  * 数据层自己该扛住这件事。
  *
- * 实现约定（* ① 的投递契约**， 的根因）：
- * · `onopen` 用属性赋值；
- * · **事件帧一律按事件名订阅**：api 的 `toFrame` 发的是 SSE **具名**事件
- * （`packages/server/api/src/run-stream.ts` 的 `event: <type>`），而规范规定
- * `EventSource.onmessage` **只收默认事件**⇒ 只绑 `onmessage` 等于**零交付**
- * （八种事件在真实浏览器里一个接收者都没有；历史靠 `/log`、终态靠轮询兜底，
- * 症状只表现为「实时通道没有」，因此曾长期不被发现）。
- * 类型清单取 contracts 的 `AGENT_EVENT_TYPES`，逐个 `addEventListener`；
- * `onmessage` 保留为无名帧的兜底（服务端若不发 `event:` 行也照样能用）；
- * · **`error` 是唯一的例外，但它不再是「不交付」**：这个类型名在 `EventSource` 上
- * 既是内置的连接失败事件、又是 `AgentEvent` 的合法类型，两个来源都落在 `error` 监听位上。
- * 故它不进 `addEventListener` 表，而是由 `onerror` 按帧形状分流——**带 `data` 的是服务端帧、
- * 走正常解析与 merge；不带 `data` 的才是连接故障**。详见 `connect` 里 `onerror` 的注释。
- * · `stop` 里**移除**监听器：终态关流与卸载都要摘干净，否则替身/浏览器上都留着悬挂引用。
+ * 实现约定（① 的投递契约在这一层**看不到**了：它整体搬进了抽屉 hub）：
+ * · **帧从哪来**：订阅走 `drawer-stream-hub.ts`——一行一个 channel 一条连接，
+ *   与 `useRowMessages` 共用（两族帧混在同一条连接上，本 hook 只挑自己那一族）。
+ *   原先那四件通用知识（自己 `new EventSource`、逐个 `addEventListener`、按帧形状分流 `error`、
+ *   `stop` 里摘监听器）现在只有一份，在 `sse-keyed-hub.ts` 的键控原语里
+ *   ——具名事件不进 `onmessage`、`error` 的两个来源、无名帧兜底、引用计数归零关连接。
+ * · 本 hook 这一层只剩三件：**筛掉消息 / 子任务行那两族**、**终态后停订阅并刷一次快照**、
+ *   以及**换代时重挂订阅**（口径 5：判据仍在 `merge` 的 `restarts` 与 effect 依赖里）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSWRConfig } from 'swr';
-import { AGENT_EVENT_TYPES, AgentEventSchema, TERMINAL_ROW_STATUSES, type AgentEvent } from '@aieval/contracts';
+import { AgentEventSchema, TERMINAL_ROW_STATUSES, type AgentEvent } from '@aieval/contracts';
+import { eventOf, isAgentEventFrame, subscribeDrawerStream } from './drawer-stream-hub';
 import { getJson } from './http';
 import { RUNS_KEY, runKey, runRowUrl } from './runs';
 
@@ -67,13 +67,30 @@ export function parseFrame(data: string): AgentEvent | null {
   return parsed.success ? parsed.data : null;
 }
 
-export function useRowStream(input: { runId: string; rowId: string; enabled: boolean }): {
+/**
+ * `attemptKey` = 「这一行的这一次尝试」（取行快照的 `attempts`）：同一行重跑时它会变，
+ * 依赖跟着变才谈得上重挂订阅（口径 5）。一轮之内它恒定——这正是它比 `status` 合适的地方，
+ * 后者会在 preparing / running / judging 之间抖几次，每抖一次都要重放一遍历史。
+ */
+/**
+ * 一条事件的**指纹**：换代判据只看「这一批里的 `seq 1` 是不是手上那条」（见 `merge`）。
+ *
+ * 只取 `at` + `type` 两格，**不逐字序列化整条事件**：同一条事件有两个来源——`GET /log` 那一份
+ * （只有事件自己的格）与 SSE 帧那一份（信封上多挂 `rowId` / `rowChannel` 两格，见 hub 的
+ * `eventOf`）——整条序列化会把「同一件事的两种写法」判成两条不同的事件。
+ * 换代时 `at` 必然不同（两代之间隔着一整轮的时长），而 `seq 1` 在一代里只有一条。
+ */
+function fingerprintOf(event: AgentEvent): string {
+  return `${event.at}|${event.type}`;
+}
+
+export function useRowStream(input: { runId: string; rowId: string; enabled: boolean; attemptKey: string }): {
   events: AgentEvent[];
   lastSeq: number;
   connected: boolean;
   error: unknown;
 } {
-  const { runId, rowId, enabled } = input;
+  const { runId, rowId, enabled, attemptKey } = input;
   const { mutate } = useSWRConfig();
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -85,18 +102,23 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
   // 单独存一份而不从 events 里现算：events 是 state，SSE 回调读到的会是闭包里的旧值。
   const minSeqRef = useRef<number | null>(null);
   const lastSeqRef = useRef(0);
+  /**
+   * 当前这一代 `seq === 1` 那条事件的**指纹**（换代判据的锚点，见 `merge`）。
+   * `null` = 还没收到过 `seq 1`（例如从中间续订）。
+   */
+  const generationRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled || runId === '' || rowId === '') return;
 
     let cancelled = false;
-    let source: EventSource | null = null;
-    /** 本次连接挂上去的具名监听器：`stop()` 要按同一对 (类型, 函数) 摘掉它们 */
-    const namedListeners: Array<{ type: string; listener: (event: MessageEvent) => void }> = [];
+    /** 本次订阅的退订函数（hub 里引用计数归零即关连接）；没订阅上时为 null */
+    let unsubscribe: (() => void) | null = null;
     // 换到另一行时必须丢掉上一行的事件与去重记录，否则新行的 seq 会被当成重复而全部丢弃
     seenRef.current = new Set();
     minSeqRef.current = null;
     lastSeqRef.current = 0;
+    generationRef.current = null;
     setEvents([]);
     setConnected(false);
     setError(null);
@@ -105,18 +127,21 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
      * 合并一批事件：按 seq 去重 + 保持升序；**遇到「新一代」就整体重置**（文件头口径 5）。
      *
      * 新一代的判据（两条，取并集——判据要从宽，漏判的代价是静默丢事件）：
-     *   ① 这一批里出现 seq === 1：seq 由 core 的 `appendEvent` 从 1 开始分配，只有清空过日志
-     *      才会再出现 1；它出现时**整批**都属于新一轮（新一轮的 1..k 与上一轮的 1..k 同号，
-     *      逐条比对 seenRef 会把它们全部误判成重复——所以判据必须在去重**之前**看）。
+     *   ① 这一批里的 `seq === 1` 是**另一条事件**（内容与手上那条逐字不同）：seq 由 core 的
+     *      `appendEvent` 从 1 开始分配，只有清空过日志才会再出现 1；它出现时**整批**都属于新一轮
+     *      （新一轮的 1..k 与上一轮的 1..k 同号，逐条比对 seenRef 会把它们全部误判成重复——
+     *      所以判据必须在去重**之前**看）。
      *   ② 这一批里还有没见过的、且全部比「已见过的最小 seq」还小：日志被截断后重新发号
      *      （重连后拿到更小的 seq）。
      * 为什么**不**把「任何非单调回退」当判据：重复投递本来就是常态（重连、代理重放、/log 与 SSE
-     * 在边界重叠，见口径 3），而重连后服务端可能把边界那条**再推一遍**——seq 等于上界是重复，
-     * 不是新轮；只有「严格小于已见最小值」才是真的换了一轮。乱序到达（{3} 之后来 {2}）同理：
-     * 2 落在 [min,max] 内，既不触发重置也不被丢弃，照常按 seq 归位。
-     * 副作用（如实登记）：若**同一轮内**真的重复投递了 `seq === 1`，会多走一次重置——
-     * 代价是 events 被清成那一批。这种投递在服务端「按 seq 去重、不主动制造重复帧」的口径下
-     * 不会发生（而每行一轮只会有一条 seq===1），可接受。
+     * 在边界重叠，见口径 3）。最常走的那一条路是**打开抽屉**：先 `GET /log` 拿全量（里面有 `seq 1`），
+     * 随后 SSE 从游标 0 逐帧回放**同一份历史**——第一帧又是 `seq 1`，而它与手上那条**逐字相同**，
+     * 是重复投递、不是换代。按「只要出现 1 就换代」判，这一帧会把刚拿到的全量整批清掉，
+     * 之后只能靠回放一条条重新攒；服务端一旦在历史里遇到终态就关流（追问那一段的事件到不了），
+     * 界面就永久停在**截断的历史**上（真机症状：会话总用量停在首段最后那条读数上）。
+     * 故 ① 的判据是**内容**（`at` 等逐字相同 ⇒ 同一条事件）：两代之间隔着一整轮的时长，
+     * 新一轮的 `seq 1` 不可能与上一代的 `seq 1` 逐字相同。
+     * 乱序到达（{3} 之后来 {2}）不触发重置也不被丢弃，照常按 seq 归位。
      */
     const merge = (incoming: AgentEvent[]): void => {
       if (cancelled) return;
@@ -125,9 +150,14 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
       // 判据必须在 unseen 之前算：新一轮的 1..k 与上一轮同号，stale 过滤会把它们全吃掉，
       // 于是「出现了 1」这个信号永远看不见（这正是本轮要修的那个静默丢弃）
       const previousMin = minSeqRef.current;
+      const head = incoming.find((event) => event.seq === 1);
+      const generationChanged =
+        head !== undefined && generationRef.current !== null && fingerprintOf(head) !== generationRef.current;
       const restarts =
-        incoming.some((event) => event.seq === 1) ||
+        generationChanged ||
         (previousMin !== null && unseen.length > 0 && unseen.every((event) => event.seq < previousMin));
+      // 换代的锚点跟着**新**那一代走；同一代的重复帧只是把它写回原值
+      if (head !== undefined) generationRef.current = fingerprintOf(head);
 
       if (restarts) {
         // 新一代：上一轮的事件已经不在磁盘上了（resetEvents 删了文件），留着会与新一轮交错
@@ -160,15 +190,25 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
       await mutate(RUNS_KEY);
     };
 
+    /**
+     * 停掉本 hook 的订阅。**只退自己这一个 sink**：同一条连接上还挂着消息那一条
+     * （`useRowMessages` 与它共用「一行一个 channel」的抽屉流），引用计数没归零就不该关连接
+     * ——消息那一条本来就比事件多活一会儿（终态之后对话历史仍要能看）。
+     */
     const stop = (): void => {
-      if (source === null) return;
-      // 先摘监听器再关连接：顺序反过来也不出错，但「连接已关、监听器还挂着」在
-      // 真实浏览器里会保留整条闭包链（含 merge/refreshSnapshot），是纯泄漏
-      for (const { type, listener } of namedListeners) source.removeEventListener(type, listener);
-      namedListeners.length = 0;
-      source.close();
-      source = null;
+      unsubscribe?.();
+      unsubscribe = null;
       setConnected(false);
+    };
+
+    /** 一条事件的处理：折叠进 `merge`，终态则停订阅并刷一次快照（口径 4） */
+    const handleEvent = (event: AgentEvent): void => {
+      if (cancelled) return;
+      merge([event]);
+      if (isTerminalEvent(event)) {
+        stop();
+        void refreshSnapshot();
+      }
     };
 
     const connect = (afterSeq: number): void => {
@@ -177,66 +217,30 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
         setError(new Error('当前环境不支持 EventSource：只能查看已落盘的日志，无法实时追加'));
         return;
       }
-      const next = new EventSource(`${runRowUrl(runId, rowId, 'stream')}?afterSeq=${afterSeq}`);
-      source = next;
-      next.onopen = () => {
-        setConnected(true);
-        setError(null);
-      };
-
-      /** 一帧的处理：与「具名」还是「无名」无关，两种订阅路径共用（口径写在文件头） */
-      const handleFrame = (event: MessageEvent): void => {
-        if (cancelled) return;
-        const parsed = parseFrame(String(event.data));
-        if (parsed === null) {
-          setError(new Error('收到无法解析的事件帧，已跳过'));
-          return;
-        }
-        merge([parsed]);
-        if (isTerminalEvent(parsed)) {
-          stop();
-          void refreshSnapshot();
-        }
-      };
-
-      /**
-       * `error` 这个类型名在 `EventSource` 上有**两个来源**，必须按帧的形状分开处置
-       * （：原先无条件当连接故障，服务端发的具名 `error` 事件被整个丢掉，
-       * 而真实浏览器里每个失败行还会多显示一句假的中断提示）：
-       *
-       * - **服务端发的具名 `error` 帧**（`event: error` + `data: {...}`）：api 的 `toFrame`
-       * （`packages/server/api/src/run-stream.ts`）对事件类型**没有任何过滤**，而
-       * `type: 'error'` 的 `AgentEvent` 确实会被发布（编排层的 `settleStopped`/`settleFailed`、
-       * agents 侧 `turn.ts` via `emit.ts`） ⇒ **必然成帧**。它按 SSE 规范派发到 `EventSource`
-       * 的 `error` 监听位，而 `onerror` **就是**`error` 的 event handler ⇒ 走到这里。
-       * 判据用 `typeof data === 'string'`：只有带 `data` 的 `MessageEvent` 才是帧
-       * （`FakeMessageEvent.data` 与真实 `MessageEvent.data` 都是字符串）。
-       * - **连接故障**：浏览器派发的是**没有 `data`**的普通 `Event` ⇒ 才按「会自动重连」处置。
-       * 这一支保留原因为什么重要：把它换成「收到无法解析的事件帧」会让真正的原因消失。
-       */
-      next.onerror = (event: Event) => {
-        const data = (event as MessageEvent).data;
-        if (typeof data === 'string') {
-          handleFrame(event as MessageEvent);
-          return;
-        }
-        // 浏览器会自动重连（带 Last-Event-ID），这里如实反映状态即可
-        setConnected(false);
-        setError(new Error('实时日志连接中断：浏览器会自动重连，已收到的日志不受影响'));
-      };
-
-      //  ①：api 发的是具名事件（`event: <type>`），必须按事件名订阅。
-      // 类型清单取 contracts，不抄第二份——加一种事件类型时这里自动跟随。
-      // **`error` 仍不进这张表**：它的 `onerror` 属性已经被上面那个「按帧形状分流」的处理器占用，
-      // 再 `addEventListener('error')` 会因为替身/浏览器把两条路都触发而**双投一帧**；
-      // 而服务端发的具名 `error` 帧本来就走到 `onerror` 里，交付不会因此缺失（见上面的分流注释）。
-      for (const type of AGENT_EVENT_TYPES) {
-        if (type === 'error') continue;
-        namedListeners.push({ type, listener: handleFrame });
-        next.addEventListener(type, handleFrame);
-      }
-      // 无名帧的兜底：服务端哪天不发 `event:` 行了也照样能收（规范里 `onmessage` 只收这种）
-      next.onmessage = handleFrame;
+      unsubscribe = subscribeDrawerStream(
+        runId,
+        rowId,
+        'candidate',
+        {
+          // 同一条连接上两族混着来：消息与子任务行那两族归 `useRowMessages`（同一行同一 channel）
+          onFrame: (frame) => {
+            if (!isAgentEventFrame(frame)) return;
+            handleEvent(eventOf(frame));
+          },
+          onOpen: () => {
+            setConnected(true);
+            setError(null);
+          },
+          // 连接故障（浏览器会自动重连，带 Last-Event-ID）：如实反映状态即可
+          onError: (message) => {
+            setConnected(false);
+            setError(new Error(message));
+          },
+          // 坏帧只跳过它自己，绝不打断整条流（判据在 hub 的 `parse` 里）
+          onInvalidFrame: () => setError(new Error('收到无法解析的事件帧，已跳过')),
+        },
+        afterSeq,
+      );
     };
 
     void (async () => {
@@ -259,7 +263,7 @@ export function useRowStream(input: { runId: string; rowId: string; enabled: boo
       cancelled = true;
       stop();
     };
-  }, [enabled, runId, rowId, mutate]);
+  }, [enabled, runId, rowId, attemptKey, mutate]);
 
   const lastSeq = useMemo(() => events.reduce((max, event) => Math.max(max, event.seq), 0), [events]);
 

@@ -9,8 +9,10 @@ import { z } from 'zod';
 
 /**
  * 协议类型：openai 兼容 / anthropic 兼容。
- * 它只决定**文本调用怎么接线**（`/chat/completions` vs `/v1/messages`，见 evaluator 的 `text-api`），
- * **不决定能不能拉模型清单**：清单按地址形态兜底（`{地址}/models` → 404 再依次回退 `{地址}/v1/models`、
+ * 它决定**文本调用怎么接线**：`openai` 走 **Responses**（`POST {地址}/v1/responses`）、
+ * `anthropic` 走 **Messages**（`POST {地址}/v1/messages`）——智能体驱动与 evaluator 的 `text-api`
+ * 两条通路读同一个判据，故同一个供应商地址在两侧落到同一族端点上（`/v1` 的归一化也同一把尺）。
+ * 它**不决定能不能拉模型清单**：清单按地址形态兜底（`{地址}/models` → 404 再依次回退 `{地址}/v1/models`、
  * 站点根的 `/models` 与 `/v1/models`，见 api 的 `modelListCandidates`）。「Anthropic 没有 /models 接口，
  * 模型名只能手工维护」那条只对 api.anthropic.com 成立，自建网关普遍在版本段上提供 OpenAI 风格的清单接口
  * 只是历史上的说法；而 `/anthropic` 一类 Messages 根、`/api/v1` 一类带前缀的地址，清单接口往往挂在站点根上
@@ -133,3 +135,35 @@ export const ProviderModelContextSchema = ProviderModelCapabilitySchema.extend({
   maxOutputTokens: z.number().int().positive().nullable().optional(),
 });
 export type ProviderModelContextInput = z.infer<typeof ProviderModelContextSchema>;
+
+/**
+ * 上游 /models 拉取到的**候选**模型（预览形态）。与清单条目（`ProviderModel`）的差别：
+ * 没有 `source` —— 要不要进清单由用户在预览对话框里挑选后才定，这里只忠实转述「上游说了什么」。
+ * 四格能力与 `ProviderModel` 同名同约束：预览展示与提交入参共用同一份形状，
+ * 界面上看到的数就是提交后落盘的数（所见即所得，不引入第二套字段名）。
+ */
+export const ProviderModelPreviewSchema = z.object({
+  id: z.string().min(1),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  supportedEfforts: z.array(z.string().min(1)).optional(),
+  recommendedEffort: z.string().min(1).optional(),
+});
+export type ProviderModelPreview = z.infer<typeof ProviderModelPreviewSchema>;
+
+/** 拉取预览的响应体：`{ models: [...] }`（对象包一层，给后续追加分页 / 来源统计留位） */
+export const ProviderModelPreviewListSchema = z.object({
+  models: z.array(ProviderModelPreviewSchema),
+});
+export type ProviderModelPreviewList = z.infer<typeof ProviderModelPreviewListSchema>;
+
+/**
+ * 挑选后的提交入参（`models/import` 路由）：条目形状与预览一致（前端把勾选的候选原样回传）。
+ * **至少一条**：空提交没有语义，界面上「加入清单」在零勾选时本就不可点。
+ * `source` 不在入参里：提交进来的条目一律按 `fetched` 合并 —— `manual` 的唯一入口
+ * 是手工增删（与 `manualModels` 同一条口径，不许前端自己声明来源）。
+ */
+export const ProviderModelsImportSchema = z.object({
+  models: z.array(ProviderModelPreviewSchema).min(1),
+});
+export type ProviderModelsImport = z.infer<typeof ProviderModelsImportSchema>;

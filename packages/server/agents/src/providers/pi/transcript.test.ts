@@ -87,6 +87,24 @@ describe('转写路径：由本行的 cwd 与会话 id 拼出来', () => {
     expect(piSubagentTranscriptPath({ cwd: CWD, sessionId: SESSION_ID, agentId: '../../etc/passwd' })).toBeNull();
     expect(piSubagentTranscriptPath({ cwd: CWD, sessionId: '../..', agentId: AGENT_ID })).toBeNull();
   });
+
+  /**
+   * **会话 id 的判据跟厂商自己的 `assertValidSessionId` 同宽**（首尾字母数字，中间允许 `.`）。
+   *
+   * 收得比厂商更严的代价已经量到过：厂商允许 `.`，而 `sessionId` 是**它**生成的
+   * （`uuidv7()` 今天不带点，`SessionManager.create(..., { id })` 与导入的会话可以带）
+   * ⇒ 白名单收紧了，这一格的转写路径恒为 `null`、兜底通道**静默**读不到
+   * （跑动期增量那条路连 WARN 都没有），症状与「子任务本来就没说话」一模一样。
+   * `..` 这种唯一有路径含义的写法仍被「首尾必须是字母数字」挡住——上面那条用例钉的就是它。
+   */
+  it('会话 id 里的 `.` 照样拼得出路径（与厂商的 id 语法同宽），但首尾不能是点', () => {
+    const dotted = piSubagentTranscriptPath({ cwd: CWD, sessionId: '01a1.4f-506b.7514', agentId: AGENT_ID });
+    expect(dotted, '带点的会话 id 被我们自己的白名单挡掉了 ⇒ 兜底通道静默失效').toContain('01a1.4f-506b.7514');
+    expect(dotted).toContain(`${AGENT_ID}.output`);
+    for (const sessionId of ['.hidden', 'x.', '..', '.', 'a..b/../c']) {
+      expect(piSubagentTranscriptPath({ cwd: CWD, sessionId, agentId: AGENT_ID }), sessionId).toBeNull();
+    }
+  });
 });
 
 describe('转写投影：每一条都盖上子会话的信封', () => {
@@ -181,8 +199,12 @@ describe('转写读取：宽容解析', () => {
     const { messages, dropped } = projectTranscriptLines(`${lines.join('\n')}\n`, AGENT_ID, SESSION_ID);
     expect(dropped).toBe(7);
     expect(messages).toHaveLength(PI_SUBAGENT_TRANSCRIPT_MAX_LINES);
-    // 留下的是**最后**一段：轮次号从丢完之后接着数
-    expect(messages[0]?.roundTrip).toBe(1);
+    /**
+     * 留下的是**最后**一段，但轮次号必须是**该子会话的绝对序**（丢掉 7 条助手行 ⇒ 首条保留行是
+     * 第 8 轮）：wire 那条通道取的是绝对基数，两条通道按载体键（含轮次）去重 ⇒ 从 1 重排会让
+     * 保留段在两条通道上键不相等、被投两遍（界面上表现为重复轮次）。
+     */
+    expect(messages[0]?.roundTrip).toBe(8);
   });
 });
 

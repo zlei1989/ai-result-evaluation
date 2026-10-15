@@ -86,6 +86,11 @@ export {
   type ProviderModelsModalProps,
 } from './composite/provider-models-modal';
 export {
+  MODEL_IMPORT_MODAL_WIDTH,
+  ProviderModelImportModal,
+  type ProviderModelImportModalProps,
+} from './composite/provider-model-import-modal';
+export {
   McpServerTable,
   endpointText,
   hasConfiguredSecret,
@@ -161,6 +166,18 @@ export {
   type RankTableProps,
 } from './composite/rank-table';
 export { DiffFileContent, DiffView, type DiffViewProps } from './composite/diff-view';
+export {
+  // 产物总览（二级抽屉）：按名次逐份摆候选工作区根下的 `RESULT.*`。
+  // 文案常量与高度常量一并转出：页面那个入口按钮与抽屉标题必须同文（两处字面量必然漂移），
+  // 高度那一格由静态守卫钉住（它是 iframe 的唯一尺寸来源）
+  ARTIFACT_FRAME_HEIGHT,
+  ARTIFACT_OVERVIEW_LABEL,
+  ArtifactFileContent,
+  ArtifactOverview,
+  artifactCardTitle,
+  type ArtifactFileContentProps,
+  type ArtifactOverviewProps,
+} from './composite/artifact-overview';
 export { formatEventLine, formatEventLog } from './composite/log-format';
 /**
  * 应答弹层：吃 `agent-log/types` 那份问题形状（`AskUserQuestion` / `AskUserAnswer`），
@@ -182,6 +199,42 @@ export {
   type AgentLogLayoutProps,
   type TimelineSlotProps,
 } from './composite/agent-log/agent-log-layout';
+/**
+ * 人工消息的**输入区与排队区**：装配侧把它塞进 `AgentLogLayout` 的 `footer` 槽
+ * （只有「这一行允许人送话」时才渲染它）。它自带排队区，故调用方不必自己拼两段。
+ */
+export {
+  InjectComposer,
+  type InjectComposerProps,
+  type InjectSendInput,
+  type InjectUploadInput,
+} from './composite/agent-log/inject-composer';
+/**
+ * 追问的**输入区**（第二期）：同一个 `footer` 槽的另一支（跑完之后那一行补一句话）。
+ * 与上面那一支共用同一条草稿状态机与同一块输入区（`composer-input.tsx`）⇒ 形态逐像素相同。
+ */
+export {
+  FollowUpComposer,
+  FOLLOW_UP_HINT,
+  type FollowUpComposerProps,
+  type FollowUpSendInput,
+  type FollowUpUploadInput,
+} from './composite/agent-log/follow-up-composer';
+/* 输入区的两个 X 壳：装配侧（`apps/web-next`）要自己拼这一块，故必须能从包外拿到。
+   与 `XThink` / `XFolder` 那几支不同——那几支只在包内被 composite 消费，不必出口。 */
+export {
+  XSender,
+  XSenderHeader,
+  type XSenderProps,
+  type XSenderHeaderProps,
+} from './base/x-sender';
+export {
+  XAttachments,
+  type XAttachmentItem,
+  type XAttachmentsHandle,
+  type XAttachmentsProps,
+} from './base/x-attachments';
+export { VirtualTurnList, type VirtualTurnListProps } from './composite/agent-log/virtual-turn-list';
 export {
   AgentMessageTimeline,
   renderTurn,
@@ -214,9 +267,15 @@ export {
   buildAgentLogModel,
   diagnosticsOf,
   rowEventsOf,
+  userPromptOf,
   type AgentLogFactsInput,
   type BuildAgentLogModelInput,
 } from './composite/agent-log/build-model';
+/**
+ * 段分隔（时间轴上那一行「追问 ×N」）：由数据层定的段号驱动，虚拟列表按段首插入。
+ * 单独转出是因为「一行一段」这件事在别的消费场景（比如将来的只读导出）也要用同一件。
+ */
+export { SegmentDivider, type SegmentDividerProps } from './composite/agent-log/segment-divider';
 export {
   useAgentLogView,
   type AgentLogViewState,

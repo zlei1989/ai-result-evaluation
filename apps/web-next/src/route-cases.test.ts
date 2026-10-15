@@ -313,7 +313,7 @@ describe('/api/cases/generate-judge-prompt', () => {
 
   /**
    * 配置一个全局默认评分模型。
-   * 假响应按 OpenAI Chat Completions 的形状给（`choices[0].message.content`），正文是**评分表**的 JSON
+   * 假响应按 OpenAI Responses 的形状给（`output[].content[].output_text`），正文是**评分表**的 JSON
    * ——若 callTextApi 取的是别的字段，要改的是**这里的假响应**，不是被测行为。
    */
   function configureJudge(): void {
@@ -328,13 +328,17 @@ describe('/api/cases/generate-judge-prompt', () => {
       vi.fn(async () =>
         new Response(
           JSON.stringify({
-            choices: [
+            output: [
               {
-                message: {
-                  content: JSON.stringify({
-                    groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '让 agent 进入对外契约', weight: 18 }] }],
-                  }),
-                },
+                type: 'message',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: JSON.stringify({
+                      groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '让 agent 进入对外契约', weight: 18 }] }],
+                    }),
+                  },
+                ],
               },
             ],
           }),
@@ -389,7 +393,9 @@ describe('/api/cases/generate-judge-prompt', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        new Response(JSON.stringify({ choices: [{ message: { content: '这段代码写得不错。' } }] }), {
+        new Response(JSON.stringify({
+          output: [{ type: 'message', content: [{ type: 'output_text', text: '这段代码写得不错。' }] }],
+        }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),

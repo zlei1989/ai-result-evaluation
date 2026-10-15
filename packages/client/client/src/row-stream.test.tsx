@@ -1,5 +1,8 @@
 /**
  * useRowStream：抽屉一打开就要有完整历史，然后按 seq 增量续订，终端态关连接并刷一次快照。
+ * 帧从**抽屉流**来（`/api/runs/[runId]/drawer/stream?rowId=&rowChannel=`，与 `useRowMessages`
+ * 共用同一条连接）：本文件投的都是带归属两格（`rowId` / `rowChannel`）的信封帧，
+ * 与 api 侧的组帧逐字同形——投裸 `AgentEvent` 的话帧根本过不了解析（那不是线上会出现的形状）。
  *
  * 六个用例是本组件的全部风险面：
  * 1. 顺序必须是「先 /log 再 /stream」，且 /stream 的 afterSeq 等于 /log 的最大 seq；
@@ -25,10 +28,12 @@ import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { AGENT_EVENT_TYPES, type AgentEvent } from '@aieval/contracts';
+import { resetDrawerStreamHubForTesting } from './drawer-stream-hub';
 import { useRowStream } from './row-stream';
+import { useRowMessages } from './row-messages';
 import { useRun, useRuns } from './runs';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
-import { makeEvent, makeRun } from './testing/run-fixtures';
+import { makeEvent, makeMessage, makeRun } from './testing/run-fixtures';
 
 /** fetch 替身的签名：显式写出来，`vi.fn(async () => …)` 会被推成零参函数，`mock.calls[0][0]` 直接报 TS2493 */
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
@@ -50,19 +55,29 @@ function stubFetch(history: unknown[]): FetchMock {
   return fetchMock;
 }
 
-/** 挂上一条流（之后的断言都从「已有一条连接」出发） */
-function mountStream() {
-  return renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }), { wrapper });
+/**
+ * 挂上一条流（之后的断言都从「已有一条连接」出发）。
+ * `attemptKey` 走 props 而不写死：同一行重跑时它变化，用例要能 `rerender` 出那一刻。
+ * ⚠️ prop 名不能叫 `key`——React 会把它当元素 key 吃掉，函数里根本读不到。
+ */
+function mountStream(attempt = '1') {
+  return renderHook(
+    ({ attempt: current }: { attempt: string }) =>
+      useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true, attemptKey: current }),
+    { wrapper, initialProps: { attempt } },
+  );
 }
 
-/** SSE 的 `data:` 行内容就是一条事件的 JSON（与 api 的 `toFrame` 逐字同形） */
+/** SSE 的 `data:` 行内容 = 信封里的那一帧（与 api 的 `toFrame` 逐字同形：业务载荷 + 归属两格） */
 function frame(event: AgentEvent): string {
-  return JSON.stringify(event);
+  return JSON.stringify({ ...event, rowId: 'w-1', rowChannel: 'candidate' });
 }
 
 beforeEach(() => {
   FakeEventSource.reset();
   installEventSourceStub();
+  // 抽屉 hub 是模块级单例：不复位的话上一条用例的 hook（本仓没开自动 cleanup）会把连接留给下一条
+  resetDrawerStreamHubForTesting();
 });
 
 afterEach(() => {
@@ -77,7 +92,7 @@ describe('useRowStream', () => {
 
     await waitFor(() => expect(result.current.events).toHaveLength(3));
     expect(FakeEventSource.instances).toHaveLength(1);
-    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/rows/w-1/stream?afterSeq=3');
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=3');
     expect(result.current.lastSeq).toBe(3);
 
     await act(async () => {
@@ -164,15 +179,20 @@ describe('useRowStream', () => {
     expect(result.current.events.map((event) => event.seq)).toEqual([1, 2, 3]);
   });
 
-  it('同一行重跑（seq 从 1 重新开始）时按新一代重置去重，新的 1 与 2 都要交付', async () => {
-    // 场景（客户端缺口）：抽屉一直开着，用户在卡片上点了「重跑」。编排层会先
-    // `resetEvents` 删掉 events.jsonl（core/event-log.ts 注释：「下一次 appendEvent 会重新建，
-    // seq 自然从 1 开始」），于是**同一条已经建立的 SSE 连接**上会推来 seq=1、2……
-    // 而抽屉的 effect 依赖是 [enabled, runId, rowId, mutate]，三者都没变 ⇒ effect 不重跑
-    // ⇒ seenRef 里还留着上一轮的 {1,2,3}：新一轮的头三条会被当成重复**静默丢弃**，
-    // 用户看到的是「日志缺头」（第一轮的内容还在，新的头几条没了）。
-    // 判据取「seq === 1」：seq 由 core 的 appendEvent 从 1 开始分配（文件头口径 1），
-    // 只有清空过日志才会再出现 1——它是「新一轮」在本协议里唯一可靠的开端标记。
+  /**
+   * **同一代的 `seq === 1` 是重复投递，不是换代**。
+   *
+   * 线上真实顺序：抽屉打开先 `GET /log` 拿全量（历史里就有 `seq 1`），随后接 SSE——
+   * 服务端从游标 0 逐帧回放同一份历史，**第一帧又是 `seq 1`**。按「只要出现 1 就换代」判，
+   * 这一帧会把刚拿到的全量**整批清掉**（真机实测：`merge {incoming: 50, restarts: true}` 之后
+   * 紧跟 `merge {incoming: 1, first: 1, unseen: 0, restarts: true}`，events 从 50 条掉回 1 条），
+   * 之后只能靠回放一条条重新攒——而服务端在历史里遇到第一个终态事件就关流（追问那一段的
+   * 事件因此永远回放不到），界面最终停在**截断的历史**上：
+   * 「会话总用量没落在最后一条消息上」就是它（里程碑取的是首段最后那条读数）。
+   *
+   * 判据因此必须看**内容**：同一代的那一条 `seq 1` 与已收到的逐字相同 ⇒ 不换代、不清空。
+   */
+  it('SSE 回放的第一帧是同一条 `seq 1`（与 /log 重叠）⇒ 不换代、不清空已收到的历史', async () => {
     stubFetch([makeEvent({ seq: 1 }), makeEvent({ seq: 2 }), makeEvent({ seq: 3 })]);
 
     const { result } = mountStream();
@@ -180,9 +200,36 @@ describe('useRowStream', () => {
 
     const source = FakeEventSource.instances[0];
     await act(async () => {
-      // 第二轮：服务端清过日志，从头开始推
-      const first = makeEvent({ seq: 1, text: '第二轮第一行' });
-      const second = makeEvent({ seq: 2, text: '第二轮第二行' });
+      // 服务端回放逐帧重投同一份历史；这里只投第一帧（真实链路里它在终态那一帧之后就被关掉了）
+      source?.emitNamed('log', frame(makeEvent({ seq: 1 })));
+    });
+
+    // 已收到的三条必须原样都在（清空过的话这里只剩 1 条，而后面再也不会有东西补回来）
+    expect(result.current.events.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(result.current.lastSeq).toBe(3);
+  });
+
+  it('同一行重跑（seq 从 1 重新开始）时按新一代重置去重，新的 1 与 2 都要交付', async () => {
+    // 场景（客户端缺口）：抽屉一直开着，用户在卡片上点了「重跑」。编排层会先
+    // `resetEvents` 删掉 events.jsonl（core/event-log.ts 注释：「下一次 appendEvent 会重新建，
+    // seq 自然从 1 开始」），于是**同一条已经建立的 SSE 连接**上会推来 seq=1、2……
+    // 而抽屉的 effect 依赖是 [enabled, runId, rowId, mutate]，三者都没变 ⇒ effect 不重跑
+    // ⇒ seenRef 里还留着上一轮的 {1,2,3}：新一轮的头三条会被当成重复**静默丢弃**，
+    // 用户看到的是「日志缺头」（第一轮的内容还在，新的头几条没了）。
+    //
+    // **换代的判据是内容，不是「出现了 1」**（见上一条用例：同一代的 `seq 1` 会被 SSE 回放重投
+    // 一次，那不是换代）：`at` 逐字相同 ⇒ 同一条事件 = 重复投递；`at` 变了 ⇒ 新一轮。
+    // 现实中两代之间隔着一整轮的时长，`at` 不可能相同。
+    stubFetch([makeEvent({ seq: 1 }), makeEvent({ seq: 2 }), makeEvent({ seq: 3 })]);
+
+    const { result } = mountStream();
+    await waitFor(() => expect(result.current.events).toHaveLength(3));
+
+    const source = FakeEventSource.instances[0];
+    await act(async () => {
+      // 第二轮：服务端清过日志，从头开始推（时刻比上一代晚）
+      const first = makeEvent({ seq: 1, at: '2026-09-22T09:30:00.000Z', text: '第二轮第一行' });
+      const second = makeEvent({ seq: 2, at: '2026-09-22T09:30:01.000Z', text: '第二轮第二行' });
       source?.emitNamed(first.type, frame(first));
       source?.emitNamed(second.type, frame(second));
     });
@@ -247,14 +294,15 @@ describe('useRowStream', () => {
       () => ({
         runs: useRuns(),
         detail: useRun('run-1'),
-        stream: useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }),
+        stream: useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true, attemptKey: '1' }),
       }),
       { wrapper },
     );
     // 行级流的连接按 **URL** 取，不按序号：本用例挂了 useRuns/useRun（给 mutate 找消费者），
-    // 它们现在会合法地开一条 run 级信号连接（/api/runs/events），实例池里多出的那一条与本用例无关
+    // 它们现在会合法地开一条全局流连接（/api/runs/stream），实例池里多出的那一条与本用例无关
+    // （抽屉流的 URL 里带 rowId 与 rowChannel，撞不上）
     const rowSource = () =>
-      FakeEventSource.instances.find((source) => source.url.startsWith('/api/runs/run-1/rows/w-1/stream'));
+      FakeEventSource.instances.find((source) => source.url.startsWith('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate'));
     await waitFor(() => expect(rowSource()).toBeDefined());
     const before = fetchMock.mock.calls.length;
 
@@ -374,7 +422,7 @@ describe('useRowStream', () => {
   it('enabled=false 时既不发请求也不建连接', async () => {
     const fetchMock = stubFetch([makeEvent({ seq: 1 })]);
 
-    renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: false }), { wrapper });
+    renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: false, attemptKey: '1' }), { wrapper });
     await act(async () => {
       await Promise.resolve();
     });
@@ -387,7 +435,7 @@ describe('useRowStream', () => {
     stubFetch([makeEvent({ seq: 1 })]);
 
     const { result, rerender } = renderHook(
-      ({ rowId }: { rowId: string }) => useRowStream({ runId: 'run-1', rowId, enabled: true }),
+      ({ rowId }: { rowId: string }) => useRowStream({ runId: 'run-1', rowId, enabled: true, attemptKey: '1' }),
       { wrapper, initialProps: { rowId: 'w-1' } },
     );
     await waitFor(() => expect(result.current.events).toHaveLength(1));
@@ -396,7 +444,69 @@ describe('useRowStream', () => {
 
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
     expect(FakeEventSource.instances[0]?.closeCount).toBe(1);
-    expect(FakeEventSource.instances[1]?.url).toContain('/rows/w-2/stream');
+    // 新连接是 w-2 的（`afterSeq` 由它自己那份 /log 决定，本用例的替身两个行返回同一份历史）
+    expect(FakeEventSource.instances[1]?.url).toContain('/drawer/stream?rowId=w-2&rowChannel=candidate');
+  });
+
+  it('同一行重跑（attemptKey 变化）时重挂订阅：重拉 /log、从新一代的 seq 接着订', async () => {
+    // 重跑会 resetEvents 删掉 events.jsonl、seq 从 1 重新发号。不重挂的话这一行就一直是
+    // 上一轮的内容：连接要么已被终态关掉，要么还活着而游标停在上一代的水位上
+    // ——两种形状在界面上都只是「执行日志一条都不动」，连接徽标照旧是「实时连接中」。
+    stubFetch([makeEvent({ seq: 1 }), makeEvent({ seq: 2 })]);
+
+    const { result, rerender } = mountStream('1');
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=2');
+
+    // 新一代：日志被清空重建，这里只有一条 seq=1
+    stubFetch([makeEvent({ seq: 1 })]);
+    rerender({ attempt: '2' });
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    expect(FakeEventSource.instances[0]?.closeCount).toBe(1);
+    expect(FakeEventSource.instances[1]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=1');
+    // 上一代的 2 条必须清掉：两代的事件留在同一份 events 里会交错（seq 还会重号）
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+  });
+
+  it('与 useRowMessages 共用同一条连接，两族帧各归各的（消息帧不进执行日志）', async () => {
+    // 抽屉一打开两条 hook 同时挂上：执行日志要事件、时间轴要记录，而线上只有**一条**连接。
+    // 这一条同时钉两件事：连接是共享的（实例数 1）、两族帧不串（各自只折叠自己那一族）。
+    const fetchMock = vi.fn<FetchHandler>(async (url: string) => {
+      const target = String(url);
+      if (target.endsWith('/log')) return new Response(JSON.stringify([makeEvent({ seq: 1 })]), { status: 200 });
+      if (target.endsWith('/messages')) return new Response(JSON.stringify({ messages: [], subagents: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: '没有这个路由' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(
+      () => ({
+        stream: useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true, attemptKey: '1' }),
+        messages: useRowMessages({ runId: 'run-1', rowId: 'w-1', enabled: true }),
+      }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.stream.events).toHaveLength(1));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    // 谁先订上由两份 REST 的往返决定，URL 里的 afterSeq 因此可能是 1（事件先）或 0（消息先）；
+    // 端点与归属那两格是确定的
+    const source = FakeEventSource.instances[0];
+    expect(source?.url).toContain('/drawer/stream?rowId=w-1&rowChannel=candidate');
+
+    await act(async () => {
+      const log = makeEvent({ seq: 2, text: '事件那一族' });
+      source?.emitNamed('log', frame(log));
+      source?.emitNamed('message', JSON.stringify({ type: 'message', rowId: 'w-1', rowChannel: 'candidate', message: makeMessage({ blocks: [{ type: 'text', text: '消息那一族' }] }) }));
+    });
+
+    expect(result.current.stream.events.map((event) => event.seq)).toEqual([1, 2]);
+    // 消息帧只进时间轴那一侧（事件那条 hook 把它筛掉了），事件帧也不进时间轴。
+    // 消息侧按动画帧合并提交（`useRowMessages` 的 `schedule`），故这里等一拍
+    await waitFor(() => expect(result.current.messages.records).toHaveLength(1));
+    expect(result.current.messages.records[0]).toMatchObject({ type: 'message', message: { messageId: 'run-1:1' } });
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
   it('卸载时关掉连接（抽屉关掉不该留一条长连接）', async () => {

@@ -265,6 +265,11 @@ export function seedRunnableRun(options: {
    */
   askUser?: boolean;
   /**
+   * 这一轮是否**允许人往运行中的智能体发消息**（`EvalRun.injectMessages`，候选阶段传不传
+   * `inject` 端口的那道闸门）。不填即 false ——「没开闸门 ⇒ 适配器一格都不挂」靠它成立。
+   */
+  injectMessages?: boolean;
+  /**
    * 全局默认评分智能体（`settings.defaultJudgeAgent`）。
    * `undefined` = 本用例不关心（与 `null` 同路：不配）；显式 `null` 是「开关打开了但没配评分智能体」
    * 那个失败面要用到的取值。给了非 null 的 kind 时，`defaultJudge` 会自动指向一条 **anthropic**
@@ -343,6 +348,7 @@ export function seedRunnableRun(options: {
     executionMode: options.executionMode,
     useAgentJudge: options.useAgentJudge ?? false,
     askUser: options.askUser ?? false,
+    injectMessages: options.injectMessages ?? false,
     includeSteps: options.includeSteps ?? false,
     rows,
     repoPath,
@@ -428,10 +434,34 @@ export function recordsFileOf(runId: string, rowId: string): string {
   return rowMessagesFile(home.workspaceRoot, runId, rowId);
 }
 
-/** 该行的**最终视图**：消息按 `mergeKey`、子任务行按 `subagentId` 覆盖累积之后的那一份 */
+/** 该行的**最终视图**：消息按 `(segment, mergeKey)`、子任务行按 `subagentId` 覆盖累积之后的那一份 */
 export function rowRecordsOf(runId: string, rowId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
   const { messages, subagents } = readRowRecords(recordsFileOf(runId, rowId));
   return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
+}
+
+/**
+ * 我们自己落的**记账消息**的 `raw.author`（题面 / 追问 / 人工消息 / 提问结算）。
+ *
+ * 为什么判据是这一格而不是 `source: 'hook'`：那个取值分不开——dsh 的插件旁路（stream-tap）
+ * 投送的消息也是它，而那一条是**适配器产出的内容**。`raw.author` 只被我们自己构造的那四种消息写。
+ */
+const OWN_LEDGER_AUTHORS = new Set(['case-prompt', 'follow-up', 'inject-port', 'ask-user-settlement']);
+
+/** 这一条是不是我们自己落的记账消息（不是适配器交出来的内容） */
+export function isOwnLedgerMessage(message: AgentMessage): boolean {
+  const raw = message.raw;
+  if (raw === null || typeof raw !== 'object') return false;
+  const author = (raw as { author?: unknown }).author;
+  return typeof author === 'string' && OWN_LEDGER_AUTHORS.has(author);
+}
+
+/**
+ * 账本里**适配器产出的**那些消息：断言「候选/评审者说了什么」用它。
+ * 不剔除记账消息时，题面那条会永远排在首位，让 `messages[0]` 这类断言读到的不是适配器的内容。
+ */
+export function adapterMessagesOf(runId: string, rowId: string): AgentMessage[] {
+  return rowRecordsOf(runId, rowId).messages.filter((message) => !isOwnLedgerMessage(message));
 }
 
 
@@ -505,12 +535,12 @@ export const REMOTE_FIXTURE_TIMEOUT_MS = 300_000;
 
 export { execFileSync } from 'node:child_process';
 export { randomUUID } from 'node:crypto';
-export { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+export { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 export { join } from 'node:path';
 export type { AgentKind, EvalRun, Provider } from '@aieval/contracts';
 export { ServiceError, canRescoreRow, canRetryRow, canRunRow } from '@aieval/contracts';
 export { loadConfig, mirrorDir, readEvents, rowAttemptsFile, rowEventsFile, runSnapshotFile, saveConfig } from '@aieval/core';
-export { abortRow, abortRun, drainRunningTasks, recoverInterruptedRuns, rescoreRow, retryRow, ROW_RETRY, runRow, startRun } from '../orchestrator';
+export { abortRow, abortRun, drainRunningTasks, followUpAvailability, followUpRow, recoverInterruptedRuns, rescoreRow, retryRow, ROW_RETRY, runRow, startRun } from '../orchestrator';
 export { getRun, listRuns, saveRun } from '../run-store';
 export type { TextRoute } from '../text-api';
 export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, fakeJudgeAgent, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';

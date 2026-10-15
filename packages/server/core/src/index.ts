@@ -98,6 +98,8 @@ export {
   prepareEmptyRowWorkspace,
   prepareRowWorkspace,
   rowAgentHomeDir,
+  rowAttachmentDir,
+  rowAttachmentsDir,
   rowAttemptsFile,
   rowDir,
   rowEventsFile,
@@ -109,7 +111,23 @@ export {
   runDir,
   runSnapshotFile,
 } from './workspace';
-export { appendEvent, readEvents, readEventsAfter, resetEvents, type PendingAgentEvent } from './event-log';
+// 人工消息附件的落盘原语（id 形状闸门、文件名净化、重名排序、原子写、清点）：
+// 机制进 core，上限与拒绝文案在 api 层（它才知道「这一次上传算第几个」）
+export {
+  assertInjectMessageId,
+  listAttachmentFileNames,
+  sanitizeAttachmentName,
+  writeAttachmentFile,
+  type WrittenAttachment,
+} from './attachment-store';
+// 候选产物（`RESULT.*`）的扫盘与读取：识别口径全部来自 contracts 的白名单，
+// 本模块只管「工作区根第一层、普通文件、两道门、两个上限」
+export {
+  readWorkspaceArtifact,
+  scanWorkspaceArtifacts,
+  type WorkspaceArtifactEntry,
+} from './artifact-store';
+export { appendEvent, maxEventSeq, readEvents, readEventsAfter, resetEvents, type PendingAgentEvent } from './event-log';
 // MCP stdio 探活原语：机制进 core（与 git-exec.ts 同一类「非智能体子进程原语」），
 // 策略（失败分档与文案）在 api/src/mcp.ts。⚠️ 探活不是跑智能体，不受 agentProvider.run 唯一入口约束。
 export {

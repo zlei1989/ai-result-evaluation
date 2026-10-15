@@ -5,9 +5,40 @@
  * 「模型名拼错」——这两件事给用户的下一步动作完全不同。
  */
 import { describe, expect, it } from 'vitest';
+import type { FailureContext } from './errors';
 import { AgentLoadError, classifyAgentFailure, classifyAgentMessage } from './errors';
 
+/** 家别是 dsh 的那一份（上面两条厂商码判据只对这一家成立） */
+const DSH_CONTEXT: FailureContext = { kind: 'dsh', baseUrl: 'https://gw.example.com/v1' };
+
 const CONTEXT = { kind: 'codex', baseUrl: 'https://gw.example.com/openai/v1' } as const;
+
+describe('`missing` 那一档的补救动作按**层次**分', () => {
+  /**
+   * 要拦的缺陷：三种成因（没装 / 装了但不全 / 基准无效）在**补救动作上恰好相反**，
+   * 却都拿到同一句「`pnpm add`」——包已经在的那两种照做一遍不会有任何变化。
+   * 判据是**文案里有没有那句会白做的事**，所以逐档断言关键句，而不是断言三条互不相等。
+   */
+  const at = (remedy: 'install' | 'repair-package' | 'fix-anchor'): string =>
+    new AgentLoadError('@openai/codex', new Error('解析不到'), { remedy }).message;
+
+  it('缺省（没装）⇒ 给安装命令', () => {
+    expect(at('install')).toContain('pnpm add @openai/codex');
+  });
+
+  it('装了但不全 ⇒ 明说「装一次不会有任何变化」', () => {
+    const message = at('repair-package');
+    expect(message).toContain('装一次不会有任何变化');
+    expect(message).not.toContain('pnpm add @openai/codex');
+  });
+
+  it('包与文件都在、基准无效 ⇒ 指向环境而不是重装', () => {
+    const message = at('fix-anchor');
+    expect(message).toContain('解析基准在当前环境无效');
+    expect(message).not.toContain('pnpm add @openai/codex');
+    expect(message).not.toContain('装一次不会有任何变化');
+  });
+});
 
 describe('AgentLoadError', () => {
   it('点名包名 + 安装方式，并保留原始原因', () => {
@@ -180,5 +211,56 @@ describe('classifyAgentMessage', () => {
   it('从厂商给的纯文本归因（事件流里没有 Error 对象）', () => {
     expect(classifyAgentMessage('HTTP 401 unauthorized', CONTEXT).code).toBe('AUTH_FAILED');
     expect(classifyAgentMessage('everything is fine', CONTEXT).code).toBe('AGENT_FAILED');
+  });
+
+  /**
+   * **厂商的结构化失败码**（真机原文逐字取自 dsh 的 `turn/end(kind:'error')`，探针
+   * 真机探针三档：空 key / key 带换行 / `contextWindow` 给小 + 长提示词）。缺省那条路会把它们一并归成 `AGENT_FAILED`，
+   * 而它在 `TRANSIENT_ROW_RETRY_CODES` 里 ⇒ 一个**确定性**的失败被自动重跑两遍
+   * （每次 3 秒 + 一整轮模型时间），而原因还指向「CLI 起不来 / 进程非零退出」这条错方向。
+   */
+  it('厂商凭证码（空 key / key 带换行）⇒ AUTH_FAILED，而不是可重试的 AGENT_FAILED', () => {
+    const missing = classifyAgentMessage(
+      '[MISSING_CREDENTIAL] llm-pi-ai: no credential for provider route "aieval-route"; its profile resolves AIEVAL_ROUTE_API_KEY, which is not set — store AIEVAL_ROUTE_API_KEY through the credentials service (the web Models page writes it) or export it',
+      DSH_CONTEXT,
+    );
+    expect(missing.code).toBe('AUTH_FAILED');
+    expect(missing.message).toContain('gw.example.com');
+
+    const invalid = classifyAgentMessage(
+      '[INVALID_CREDENTIAL] llm-pi-ai: the API key resolved from AIEVAL_ROUTE_API_KEY contains characters no HTTP header can carry; set AIEVAL_ROUTE_API_KEY to the raw key alone (the web Models page writes it)',
+      DSH_CONTEXT,
+    );
+    expect(invalid.code).toBe('AUTH_FAILED');
+  });
+
+  it('厂商的上下文超窗码 ⇒ AGENT_CONTEXT_OVERFLOW（确定性失败，同样不可重试）', () => {
+    const overflow = classifyAgentMessage(
+      '[CONTEXT_WINDOW_EXCEEDED] pi-ai detected context overflow for model "jd/deepseek-v4-flash-0731"',
+      DSH_CONTEXT,
+    );
+    expect(overflow.code).toBe('AGENT_CONTEXT_OVERFLOW');
+    expect(overflow.message).toContain('gw.example.com');
+    expect(overflow.message).toContain('缩短提示词');
+  });
+
+  /**
+   * ⚠️ **这四句特征串只对 dsh 成立**：归因函数是四家共用的入口，而这些串全部来自 dsh 侧
+   * （`dsh-llm` / `dsh-llm-pi-ai`）。不加家别闸的话，别家普通错误里恰好出现这几个字样就会被顶成
+   * 「密钥无效 / 超出上下文窗口」——而这两档**刻意不在重试表里**（错方向的补救建议 + 真因被顶掉）。
+   */
+  it('这几句特征串只对 dsh 生效：别家的同文案不被顶成 AUTH_FAILED / 超窗', () => {
+    for (const kind of ['cc', 'codex', 'pi'] as const) {
+      const context = { ...CONTEXT, kind };
+      expect(
+        classifyAgentMessage('the [MISSING_CREDENTIAL] setting is missing in the tool output', context).code,
+      ).toBe('AGENT_FAILED');
+      expect(classifyAgentMessage('detected context overflow in the fixture text', context).code).toBe('AGENT_FAILED');
+    }
+  });
+
+  it('没带厂商码时不误判：普通 401 文案仍走状态码那一支，普通错误仍走 AGENT_FAILED', () => {
+    expect(classifyAgentMessage('HTTP 401 unauthorized', CONTEXT).code).toBe('AUTH_FAILED');
+    expect(classifyAgentMessage('pi-ai: model not found', CONTEXT).code).toBe('AGENT_FAILED');
   });
 });

@@ -18,6 +18,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { setAgentRuntimeForTesting } from '../../runtime';
 import { createRunInput } from '../../testing/agent-fixtures';
+import {
+  anthropicText,
+  anthropicToolUse,
+  runPiConformanceRow,
+} from '../../testing/pi-conformance-fixture';
 import { createFakePiRecorder, createFakePiSdk } from '../../testing/pi-sdk-fixture';
 import { classifyTool } from '../../tool-family';
 import { toolPayloadOf } from '../../tool-payload';
@@ -109,7 +114,8 @@ describe('pi 的宿主提问工具：注册面', () => {
     });
 
     const { names, custom } = sessionToolsOf(recorder.sessionOptions);
-    expect(names).toEqual(['read', 'grep', 'find', 'ls', 'mcp__*']);
+    // 只读档的名单里**没有** `mcp__*`：那一个通配只进全权限档（见 `allowlist.test.ts` 的只读档用例）
+    expect(names).toEqual(['read', 'grep', 'find', 'ls']);
     expect(custom).toEqual([]);
   });
 
@@ -186,6 +192,7 @@ describe('pi 的宿主提问工具：契约面', () => {
       properties: {
         questions: {
           type: 'array',
+          minItems: 1,
           items: {
             type: 'object',
             properties: {
@@ -216,6 +223,36 @@ describe('pi 的宿主提问工具：契约面', () => {
       required: ['questions'],
       additionalProperties: false,
     });
+  });
+
+  /**
+   * **空 `questions` 数组必须被厂商的参数校验拒掉**（真跑一行，判两件事：端口一次都不被调 +
+   * 模型拿到的是一个错误结果）。
+   *
+   * 为什么必须真跑：`minItems` 是**厂商的校验器**在执行前读的，纯函数层只判得到「schema 里写了它」；
+   * 而这一格写漏的后果是一次纯噪声往返（人被问一道空题、模型读到一句空的「用户已答复」）。
+   * 变异体：把 `minItems` 去掉 ⇒ 端口被调一次（本用例当场红）。
+   */
+  it('模型给空 `questions: []` ⇒ 厂商拒在 `execute` 之前（端口零调用）', async () => {
+    let portCalls = 0;
+    const run = await runPiConformanceRow({
+      prompt: '问用户一件事。',
+      script: [
+        anthropicToolUse(PI_ASK_USER_TOOL, { questions: [] }, 'toolu_ask'),
+        anthropicText('按答复继续。'),
+      ],
+      onAskUser: async () => {
+        portCalls += 1;
+        return { outcome: 'answered', answers: null };
+      },
+    });
+    expect(portCalls, '空数组不该问到人（端口被调用了）').toBe(0);
+    const toolResults = run.product.messages
+      .filter((message) => message.role === 'tool')
+      .flatMap((message) => message.blocks)
+      .map((block) => (block.type === 'tool-result' ? block.text : ''))
+      .join('\n');
+    expect(toolResults.length, '模型必须拿到一段可读的拒绝原因，而不是一个静默的成功').toBeGreaterThan(0);
   });
 
   it('提示词三格都给（这家没有厂商给的时机提示，「什么时候该问」只能自己写）', () => {
