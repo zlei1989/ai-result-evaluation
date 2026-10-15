@@ -115,19 +115,30 @@ describe('terminateProcessTree —— 整棵回收', () => {
     expect(outcome.error).toContain('taskkill 不在 PATH 上');
   });
 
-  it('已经退出的子进程直接短路：不杀、不等、立即回 exited:true', async () => {
+  /**
+   * 已退出的直接子进程：**仍然要杀树**（孙进程可能还活着），只是不必等宽限期。
+   *
+   * 要拦的缺陷：把「直接子进程已退出」当成「树已经回收干净」而整条短路掉——组长先死时
+   * （用户 / 看门狗 `SIGKILL`、OOM、宿主停机、起手失败那条 `close()`）`kill(-pid)` 根本不发，
+   * 同进程组的孙进程全部留下来。真机读数（真进程组，`pgrep -g`）：组长先 `SIGKILL` ⇒
+   * `{via:'direct', exited:true, waitedMs:0}` 而组内 2 个成员仍活；对照臂（组长活着）⇒
+   * `via:'tree'`、组内清零。
+   */
+  it('已经退出的子进程：仍然杀树（组里可能还有孙进程），只是不等宽限期', async () => {
     const child = new FakeProcess(104, 0);
-    let treeCalled = false;
+    const killed: number[] = [];
     const outcome = await terminateProcessTree(child, {
-      killTree: () => {
-        treeCalled = true;
+      killTree: (pid) => {
+        killed.push(pid);
         return Promise.resolve();
       },
       graceMs: 5_000,
     });
-    expect(treeCalled).toBe(false);
-    expect(child.killed).toBe(false);
-    expect(outcome).toMatchObject({ exited: true, waitedMs: 0 });
+    expect(killed, '已退出也要发那一发整树杀（少了它孙进程会留下）').toEqual([104]);
+    expect(child.killed, '已经退出的那个不必再直接 kill').toBe(false);
+    expect(outcome).toMatchObject({ via: 'tree', exited: true });
+    // 不等宽限期：整树杀的目标正是「别为一个不可能到来的 exit 白等」
+    expect(outcome.waitedMs).toBeLessThan(1_000);
   });
 });
 

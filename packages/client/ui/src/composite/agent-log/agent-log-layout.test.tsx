@@ -9,6 +9,8 @@
  * 7. 「这一类内容没被转发」如实说明（三条判据各一句）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type {
   AgentLogFacts,
@@ -48,6 +50,7 @@ function textBlock(id: string, text: string, at = AT): TextBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text,
   };
@@ -64,6 +67,7 @@ function toolCall(id: string, callId: string, at = AT): ToolCallBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     callId,
     name: 'pwsh',
@@ -75,7 +79,9 @@ function toolCall(id: string, callId: string, at = AT): ToolCallBlock {
 }
 
 function turn(overrides: Partial<LogTurn> & { blocks: ContentBlock[] }): LogTurn {
-  return { round: 1, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides };
+  // 兜底定位键的夹具口径：**投递顺序上第一条块**的 `messageId`（用例可以用 overrides 覆写它）
+  const fallbackMessageId = overrides.fallbackMessageId ?? overrides.blocks[0]?.messageId ?? null;
+  return { round: 1, segment: 0, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides, fallbackMessageId };
 }
 
 function sessionNode(overrides: Partial<SessionNode> & { id: string }): SessionNode {
@@ -124,6 +130,8 @@ function modelOf(node: LogNode, overrides: Partial<AgentLogModel> = {}): AgentLo
     nodes: [node],
     activeNodeId: node.id,
     rowEvents: [],
+    // 段这一层的事实：缺省没有追问；要考段标题的用例用 `overrides` 给
+    segments: [],
     empty: false,
     ...overrides,
   };
@@ -187,6 +195,8 @@ describe('AgentLogLayout', () => {
       kind: 'subagent',
       parentId: 'main',
       name: '整理变更清单',
+      // 终态：正文确实不会再来（这一档才是「没有对话记录」）
+      status: 'completed',
       content: { status: 'ready', data: [] },
     });
     // 整行只有主会话的内容 ⇒ `model.empty` 与「本节点无内容」同时成立，正是真机的形状
@@ -197,6 +207,29 @@ describe('AgentLogLayout', () => {
       screen.queryByText('这一行还没开始执行，或执行尚未产生输出'),
       '子任务节点上出现了行级文案（会被读成「界面坏了」）',
     ).toBeNull();
+  });
+
+  /**
+   * **还在跑的子任务节点**：正文只是还没到，不是「没有」。
+   *
+   * 派发那一刻就有一条子任务行（卡片与入口当场可点），而这一家的逐步骤正文可能要到收尾才交出来
+   * ⇒ 这一档是**正常的中途态**。说成「没有对话记录」会被读成「这家不投送」，
+   * 而读者要做的事完全不同：一个是再等等，一个是别等了。
+   */
+  it('子任务还在跑且没有内容 ⇒ 说「还在跑 / 正文还没到」，不说「没有对话记录」', () => {
+    const node = sessionNode({
+      id: 'sub-live',
+      kind: 'subagent',
+      parentId: 'main',
+      name: '检查 hello world',
+      status: 'running',
+      content: { status: 'ready', data: [] },
+    });
+    render(<AgentLogLayout model={modelOf(node, { empty: true })} actions={[]} />);
+
+    expect(screen.getByText('这个子任务还在跑')).toBeInTheDocument();
+    expect(screen.queryByText('这个子任务没有对话记录')).toBeNull();
+    expect(screen.queryByText('这个子任务没有逐条对话记录')).toBeNull();
   });
 
   /**
@@ -690,5 +723,34 @@ describe('AgentLogLayout', () => {
 
     expect(screen.getByTestId('agent-log-facts-bar')).toBeInTheDocument();
     expect(screen.queryByTestId('agent-log-domain-facts')).toBeNull();
+  });
+});
+
+/**
+ * **浮动件与底部槽的几何关系**（静态判据，真机读数在冒烟里）。
+ *
+ * 浮动件（「回到最新」）必须以**滚动区**为定位基准，不能挂在根节点上：挂在根节点时它的
+ * `position: absolute` 量的是整个布局，量到的「距底 `paddingMD`」会正好落在底部槽里 ——
+ * 压住输入区的发送键，表现是**那颗键点不动**（`elementFromPoint` 命中的是浮出按钮）。
+ *
+ * 住在滚动区里就没有这个错位：滚动区的高度已经扣掉了底部槽（flex 的既有行为），所以有没有
+ * footer 都不必算高度差。jsdom 没有布局（`getBoundingClientRect` 恒 0）⇒ 这里只能钉住那一处
+ * **结构**：滚动区带 `position: relative`、且浮动件出现在它内部。
+ */
+describe('浮动件住在滚动区里（不压底部槽的输入区）', () => {
+  it('滚动区是定位基准，浮动件在它里面', () => {
+    const source = readFileSync(join(import.meta.dirname, 'agent-log-layout.tsx'), 'utf8');
+    const scrollAt = source.indexOf('ref={scrollAreaRef}');
+    const floatAt = source.indexOf('<FloatButton');
+    const footerAt = source.indexOf('data-testid="agent-log-footer"');
+    expect(scrollAt).toBeGreaterThan(-1);
+    expect(floatAt).toBeGreaterThan(-1);
+    // 浮动件在滚动区之后、底部槽之前（底部槽那一格排在滚动区之后）
+    expect(floatAt).toBeGreaterThan(scrollAt);
+    expect(floatAt).toBeLessThan(footerAt);
+    // 滚动区带 `position: 'relative'`（浮出按钮的 `position: absolute` 量的是它的底边）
+    const scrollBlock = source.slice(scrollAt, floatAt);
+    // 用正则而不是字符串字面量：被断言的那一段源码里本身带引号，而本仓的引号规则不许转义
+    expect(scrollBlock).toMatch(/position:\s*'relative'/);
   });
 });

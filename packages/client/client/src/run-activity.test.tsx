@@ -3,15 +3,16 @@
  *
  * 四组判据，每一组都有独立的靶子：
  * ① `activityOfMessage` ——从消息里挑哪个块当活动文案（正文优先、工具给摘要、其余不给）；
- * ② `parseActivityFrame` ——坏帧不打断整条流（与服务端同一口径：一条畸形帧只丢它自己）；
- * ③ 订阅哪条流 ——评分阶段看评审者那条，终态一条都不开；
- * ④ 不回放历史 ——两条流的 URL 都带 `?replay=0`（实测某行 `messages.jsonl` 4 MB，
- * 为一句文案把它搬过 socket 是纯浪费；这条只能靠 URL 钉住，拼错了浏览器不报错）。
+ * ② `activityOfFrame` ——坏帧 / 非消息帧不当活动（坏帧由 `sse-keyed-hub` 的 `parse` 丢，见 `run-stream-hub.test.ts`）；
+ * ③ **看哪个 channel 的帧** ——评分阶段看评审者那条，终态一条都不订；
+ * ④ **不回放历史** ——活动行只贡献实时帧（注册时不带游标 ⇒ URL 上没有 `?after=`；
+ * 实测某行 `messages.jsonl` 4 MB，为一句文案把它搬过 socket 是纯浪费）。
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentMessage } from '@aieval/contracts';
-import { EMPTY_ACTIVITY, activityOfMessage, parseActivityFrame, useRunActivity } from './run-activity';
+import { EMPTY_ACTIVITY, activityOfFrame, activityOfMessage, useRunActivity } from './run-activity';
+import { resetRunStreamHubForTesting } from './run-stream-hub';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 
 /** 一条消息：用例只覆盖自己关心的格，其余按契约的「没有」填 */
@@ -21,6 +22,7 @@ function message(overrides: Partial<AgentMessage>): AgentMessage {
     vendorId: null,
     role: 'assistant',
     source: 'wire',
+    origin: 'case-prompt',
     roundTrip: 1,
     turn: null,
     step: null,
@@ -33,6 +35,11 @@ function message(overrides: Partial<AgentMessage>): AgentMessage {
     raw: null,
     ...overrides,
   };
+}
+
+/** 聚合流的一帧：消息载荷 + 信封归属格（与 api 的 `toMessageFrame` 逐字同形，无名事件） */
+function frame(rowId: string, rowChannel: 'candidate' | 'judge', message: AgentMessage): string {
+  return JSON.stringify({ type: 'message', rowId, rowChannel, message });
 }
 
 describe('activityOfMessage（这一条消息里显示什么）', () => {
@@ -124,19 +131,31 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
   });
 });
 
-describe('parseActivityFrame（一帧的解析）', () => {
-  it('正常帧取出 `message`；子任务帧与非 JSON 一律返回 null', () => {
+describe('activityOfFrame（这一帧算不算活动内容）', () => {
+  it('消息帧取出内容；子任务帧与事件帧一律返回 null（它们不占卡片底部那一行）', () => {
     const one = message({ blocks: [{ type: 'text', text: '在写' }] });
-    expect(parseActivityFrame(JSON.stringify({ type: 'message', message: one }))?.blocks).toHaveLength(1);
-    expect(parseActivityFrame(JSON.stringify({ type: 'subagent', subagent: {} }))).toBeNull();
-    expect(parseActivityFrame('这不是 JSON')).toBeNull();
-    expect(parseActivityFrame('null')).toBeNull();
+    const activity = activityOfFrame({ type: 'message', rowId: 'w-1', rowChannel: 'candidate', message: one });
+    expect(activity).toEqual({ text: '在写', streaming: true, toolSummary: null });
+
+    // 子任务行是派发视图的原料，不是「此刻在做什么」的那句话
+    expect(
+      activityOfFrame({
+        type: 'subagent',
+        rowId: 'w-1',
+        rowChannel: 'candidate',
+        subagent: { subagentId: 's-1', description: '查一下', status: 'running' },
+      } as never),
+    ).toBeNull();
+    expect(
+      activityOfFrame({ type: 'log', seq: 1, at: '2026-09-22T08:00:00.000Z', stream: 'stdout', text: '一行日志', rowId: 'w-1', rowChannel: 'candidate' }),
+    ).toBeNull();
   });
 });
 
-describe('useRunActivity（按阶段择一条流、不回放历史）', () => {
+describe('useRunActivity（走聚合流、按阶段挑 channel、不回放历史）', () => {
   beforeEach(() => {
     FakeEventSource.reset();
+    resetRunStreamHubForTesting();
     installEventSourceStub();
   });
 
@@ -145,30 +164,46 @@ describe('useRunActivity（按阶段择一条流、不回放历史）', () => {
     vi.unstubAllGlobals();
   });
 
-  it('跑动期订阅候选那条、评分期订阅评分那条，URL 都带 `?replay=0`', () => {
-    renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
-    expect(FakeEventSource.instances.map((source) => source.url)).toEqual([
-      '/api/runs/run-1/rows/w-1/messages/stream?replay=0',
-    ]);
+  it('两路活动行共用**一条**聚合流连接；活动的行集合不贡献游标（URL 上没有 `?after=`）', async () => {
+    const running = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
+    const judging = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-2', status: 'judging' }] }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/stream');
 
-    renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'judging' }] }));
-    expect(FakeEventSource.instances.map((source) => source.url)).toContain(
-      '/api/runs/run-1/rows/w-1/judge/messages/stream?replay=0',
-    );
+    // 阶段决定「关心哪个 channel 的帧」：候选那条只喂给跑动行，评分那条只喂给评分行
+    const source = FakeEventSource.instances[0];
+    await act(async () => {
+      source?.emit(frame('w-1', 'candidate', message({ blocks: [{ type: 'text', text: '候选在写' }] })));
+      source?.emit(frame('w-2', 'judge', message({ blocks: [{ type: 'text', text: '评审在看' }] })));
+    });
+    await waitFor(() => expect(running.result.current['w-1']?.text).toBe('候选在写'));
+    await waitFor(() => expect(judging.result.current['w-2']?.text).toBe('评审在看'));
+    // 串行检查：对方的 channel 一帧都没折进来
+    expect(running.result.current['w-2']).toBeUndefined();
+    expect(judging.result.current['w-1']).toBeUndefined();
+
+    // 候选 channel 的帧到达评分行所在的 hook：不折（阶段已经切到评审者）
+    await act(async () => {
+      source?.emit(frame('w-2', 'candidate', message({ blocks: [{ type: 'text', text: '候选的残留' }] })));
+    });
+    expect(judging.result.current['w-2']?.text).toBe('评审在看');
   });
 
-  it('终态的行一条连接都不开（这一行已经收起）', () => {
+  it('终态的行一条连接都不开（这一行已经收起）', async () => {
     renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'judged' }] }));
+    // 订阅是晚一拍开的：等过微任务再断言「真的没有连接」（否则这条用例在「压根还没开」时也会绿）
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   it('delta 帧把正文折进活动（换行原样保留，切段在 ui 那一层做）', async () => {
     const { result } = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const source = FakeEventSource.instances[0];
     expect(source).toBeDefined();
 
     act(() => {
-      source?.emitNamed('message', JSON.stringify({ type: 'message', message: message({ blocks: [{ type: 'text', text: '第一段\n第二段' }] }) }));
+      source?.emit(frame('w-1', 'candidate', message({ blocks: [{ type: 'text', text: '第一段\n第二段' }] })));
     });
 
     await waitFor(() => expect(result.current['w-1']?.text).toBe('第一段\n第二段'));

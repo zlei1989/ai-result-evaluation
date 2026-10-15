@@ -13,8 +13,8 @@
  *   4. **消息级用量恒 `null`**：app-server 只到线程级（`ThreadTokenUsage{total,last}`），对 `total`
  *      差分在并发子线程与 turn/item 边界不一致时无法证明归属 ⇒ 不拿线程级读数冒充单条消息。
  */
-import type { SubagentRecord, UsageTokens } from '@aieval/contracts';
-import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, type MessageDraft } from '../../message';
+import { MCP_TOOL_NAME_PREFIX, type SubagentRecord, type UsageTokens } from '@aieval/contracts';
+import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, unrecognizedBlockDraft, type MessageDraft } from '../../message';
 import type {
   AppServerItem,
   AppServerItemEntry,
@@ -24,7 +24,7 @@ import type {
 import type { AppServerThreadRef } from './appserver/reader';
 import { CODEX_ASK_TOOL_NAME, type CodexAskQuestion } from './ask-user';
 import { breakdownToTokens } from './events';
-import { blockIndexFor, countRoundTrips, roundTripsOf, type CodexRunState } from './run-state';
+import { blockIndexFor, countRoundTrips, noteDeltaRoundTrip, rememberSubagentFacts, roundTripForItem, roundTripsOf, type CodexRunState } from './run-state';
 
 /** 归一产物：消息草稿与子任务行（同一身份多次投递，后者是完整快照） */
 export interface CodexMessageProjection {
@@ -40,9 +40,10 @@ export interface CodexMessageContext {
 /**
  * 归一一条通知。
  *
- * `roundTrip` 取该线程**当前**已数到的答复条目数（下限 1）：契约要求它从 1 递增，而一条通知
- * 到达时它的条目可能还没被计入（`item/started` 的答复条目就是这样）⇒ 先计入再取号，
- * 于是同一条逻辑消息的增量与快照落在**同一个载体**里。
+ * `roundTrip` 取该线程**当前**已开到的往返号（下限 1）：契约要求它从 1 递增，而一条通知到达时
+ * 它所属的那次往返可能还没被开号 ⇒ **先开号再取号**（条目与增量都在本文件这一层开，
+ * 见 `countRoundTrips` 与 `noteDeltaRoundTrip`），于是同一次往返的思考、正文与工具调用落在
+ * **同一个载体**里，不同往返的产出各占一条消息（号源与两条判据见 `run-state.ts`）。
  */
 export function projectCodexMessages(
   payload: AppServerNotificationPayload,
@@ -52,6 +53,11 @@ export function projectCodexMessages(
   const empty: CodexMessageProjection = { drafts: [], subagents: [] };
 
   if (payload.kind === 'agentMessageDelta') {
+    /**
+     * 增量也要在**开号那一处**过一道：`item/started` 与增量谁先到不由本层定，
+     * 增量先到时不开号，这一段文本会落进上一次往返的载体（见 `noteDeltaRoundTrip`）。
+     */
+    noteDeltaRoundTrip(payload.threadId, 'agentMessage', payload.itemId, runState);
     return {
       drafts: [
         draft({
@@ -81,6 +87,8 @@ export function projectCodexMessages(
      * 只回密文的路由上全文永远不写在 `content[]` 里，那块就只剩增量这一条命。
      */
     const full = payload.kind === 'reasoningTextDelta';
+    // 同上：推理增量与它的 `item/started` / `item/completed` 必须落在同一个号上
+    noteDeltaRoundTrip(payload.threadId, 'reasoning', payload.itemId, runState);
     const key = deltaKey(payload.threadId, payload.itemId);
     const entry = runState.reasoningDeltas.get(key) ?? {};
     if (full) entry.full = `${entry.full ?? ''}${payload.delta}`;
@@ -108,7 +116,12 @@ export function projectCodexMessages(
     /**
      * 两条通知走同一个归一函数，**但推理条目必须分开**：`item/started` 的推理条目两格都是空数组
      * （实测），那是「开始推理了」的占位，不是「这一轮没有文本」的结论（见 `projectItem`）。
+     *
+     * **开号也在这一处**，不假定行级投影（`events.ts`）已经跑过：生产接线里那边确实先跑、
+     * 这里的调用是幂等的空转（同一身份只开一次），但消息的合并键**不能**依赖另一层的执行顺序
+     * ——只走内容级的消费方（收尾回读、单测）若漏了那一层，整批条目会共用一个号、被折叠成一条。
      */
+    countRoundTrips(payload.item, payload.threadId, runState);
     return projectItem(payload.item, payload.threadId, payload, runState, context, payload.kind === 'itemStarted');
   }
 
@@ -197,7 +210,7 @@ function projectItem(
     return { drafts: reasoningDrafts(item, where, runState), subagents: [] };
   }
   if (item.kind === 'commandExecution') {
-    return { drafts: commandDrafts(item, where), subagents: [] };
+    return { drafts: commandDrafts(item, where, started), subagents: [] };
   }
   if (item.kind === 'fileChange') {
     return { drafts: fileChangeDrafts(item, where), subagents: [] };
@@ -235,16 +248,37 @@ function projectItem(
     };
   }
   if (item.kind === 'collabToolCall') {
-    return projectCollab(item, threadId, raw, runState, context);
+    return projectCollab(item, threadId, raw, runState, context, started);
   }
   if (item.kind === 'subAgentActivity') {
     return { drafts: [], subagents: [subAgentActivityRecord(item, threadId, runState, context)] };
   }
+  if (item.kind === 'other') {
+    /**
+     * **未识别的条目类型**：产一条 `unrecognized` 块把厂商原文留下。
+     *
+     * 为什么不能什么都不产：未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前
+     * 两处投影（本函数与 `events.ts` 的 `activityDrafts`）都没有分支，也没有 `usage` / 轮次留痕
+     * ⇒ 厂商真投了、我们一个字都不留。真机读数（真 `codex app-server` + 脚本式上游让模型调
+     * `view_image`，`imageView` 帧两投）：事件流与消息账本对它的命中数都是 **0**，而同一次运行里
+     * 已归一的 `commandExecution` 留了痕——「厂商没发」与「厂商发了、我们没接」因此在产物里长得
+     * 一模一样，正是排障最贵的那类假相等。
+     *
+     * 只在 `item/completed` 产（`item/started` 那一刻内容还没定，与 `fileChange` / `agentMessage`
+     * 同一条口径）；代价是半途被中断的那一条只剩 `started`，此时不留痕——与其余块种一致。
+     * 块的 `vendorType` 取厂商的 `type` 原文，`raw` 是条目对象原文（见 `AppServerItem` 的 `other` 支）。
+     */
+    if (started) return { drafts: [], subagents: [] };
+    return {
+      drafts: [draft({ ...where, role: 'assistant', blockKind: 'item', blocks: [unrecognizedBlockDraft(item.type, item.raw)] })],
+      subagents: [],
+    };
+  }
   /**
-   * `userMessage`（喂进去的输入，不是模型产出）、`toolOutput`（`functionCallOutput`：它是工具输出的
-   * 旁路副本，而命令执行与 MCP 两条路已经各自带回了结果）、`other`（上游新增条目）**都不产出消息**；
-   * 它们也不是「丢弃」：条目原文仍在同一份通知的 `raw` 里。把输入当产出会让对话视图把
-   * 「我们说的话」混进「模型说的话」。
+   * `userMessage`（喂进去的输入，不是模型产出）与 `toolOutput`（`functionCallOutput`：它是工具输出的
+   * 旁路副本，而命令执行与 MCP 两条路已经各自带回了结果）**都不产出消息**，也不是丢弃
+   * ——两者的原文各有归属：题面由编排层写进账本，工具结果由 `commandExecution` / `mcpToolCall` 带回。
+   * 这一支今天不可达（上面两个 `other` 之外的类型都归一过了），留作类型收窄的兜底。
    */
   return { drafts: [], subagents: [] };
 }
@@ -308,20 +342,32 @@ function reasoningDrafts(
  * `command` 是字符串，`cwd` 是执行目录；两者都是这次调用的事实）。
  *
  * 结果块：`structured = { exitCode, durationMs }`（**取不到就整格 `null`，不是 `{}`**），
- * `isError` 只在**退出码非零**时为真——运行中拿不到退出码时不许断言「成功」。输出是
- * `aggregatedOutput`（stdout 与 stderr **合流**，拆不开 ⇒ 归一结果里不编 `stderr`）。
+ * `isError` 只在**退出码非零**时为真。输出是 `aggregatedOutput`（stdout 与 stderr **合流**，
+ * 拆不开 ⇒ 归一结果里不编 `stderr`）。
+ *
+ * ⚠️ **`item/started` 只出调用块，不出结果块**：那一刻退出码与输出都还没有，而这一家的结果块在
+ * 那个状态下**不携带任何「还在跑」的信息**——`structured` 两格皆空 ⇒ 整格 `null`、`output` 是空串、
+ * `isError` 是 `false`（契约里 `tool-result` 没有第三态，`false` 就是「没出错」这条断言）。
+ * 代价有两层：跑动期界面显示「工具已返回空结果」；而块一旦以 snapshot 落进槽位就 **seal**，
+ * 进程在命令中途被杀时，这条「成功、空输出」就是账本里的终态。结果等 `item/completed` 再出。
  */
-function commandDrafts(item: Extract<AppServerItem, { kind: 'commandExecution' }>, where: DraftEnvelope): MessageDraft[] {
+function commandDrafts(
+  item: Extract<AppServerItem, { kind: 'commandExecution' }>,
+  where: DraftEnvelope,
+  started: boolean,
+): MessageDraft[] {
   if (item.id === '') return [];
   const output = item.output ?? '';
   const { truncated } = truncate(output);
+  const call = draft({
+    ...where,
+    role: 'assistant',
+    blockKind: 'tool-call',
+    blocks: [toolCallBlockDraft(item.id, COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }, 'codex', 'run-shell')],
+  });
+  if (started) return [call];
   return [
-    draft({
-      ...where,
-      role: 'assistant',
-      blockKind: 'tool-call',
-      blocks: [toolCallBlockDraft(item.id, COMMAND_TOOL_NAME, { command: item.command, cwd: item.cwd }, 'codex', 'run-shell')],
-    }),
+    call,
     draft({
       ...where,
       role: 'tool',
@@ -373,7 +419,9 @@ function fileChangeDrafts(item: Extract<AppServerItem, { kind: 'fileChange' }>, 
  * `mcpToolCall` → 调用 + 结果两条消息（**新增能力**）。
  *
  * 三条判据：
- *   · `name = '<server>.<tool>'`——MCP 工具**不进那十族**（它承载任意工具，猜一个族等于编一个事实）
+ *   · `name = 'mcp__<server>__<tool>'`——与共享约定（`contracts` 的 `MCP_TOOL_NAME_PREFIX`）
+ *     以及另几家**同形**；厂商给的就是 `namespace: 'mcp__<server>'` + `name: '<tool>'` 这一对，
+ *     拼成扁平串时那个前缀属于原名的一部分，不能丢。MCP 工具**不进那十族**（它承载任意工具，猜一个族等于编一个事实）
  *     ⇒ `family` 显式记 `null`，界面走通用渲染并保留原名；
  *   · `isError = error != null`（协议给的是**错误对象**，不是布尔）：未完成时 `result` / `error`
  *     都是 `null` ⇒ 不判错、也不断言成功；
@@ -382,7 +430,7 @@ function fileChangeDrafts(item: Extract<AppServerItem, { kind: 'fileChange' }>, 
  */
 function mcpDrafts(item: Extract<AppServerItem, { kind: 'mcpToolCall' }>, where: DraftEnvelope): MessageDraft[] {
   if (item.id === '') return [];
-  const name = `${item.server}.${item.tool}`;
+  const name = `${MCP_TOOL_NAME_PREFIX}${item.server}__${item.tool}`;
   const error = item.error as Record<string, unknown> | null;
   const errorMessage = typeof error?.message === 'string' ? error.message : null;
   const text = contentText((item.result as { content?: unknown } | null)?.content) ?? errorMessage ?? '';
@@ -453,15 +501,33 @@ function projectCollab(
   raw: unknown,
   runState: CodexRunState,
   context: CodexMessageContext,
+  /** 这一帧来自 `item/started`（内容还没到） */
+  started: boolean,
 ): CodexMessageProjection {
   const callId = item.id === '' ? null : item.id;
   const subagents: SubagentRecord[] = [];
   for (const receiver of item.receiverThreadIds) {
     if (receiver === '') continue;
-    // 派发台账：收尾时给子线程补行要用同一份（身份 + 派发方式 + 父线程）
-    if (callId !== null) {
+    /**
+     * 派发台账：收尾时给子线程补行要用同一份（身份 + 派发方式 + 父线程）。
+     *
+     * **只有派发动作能写这一格，而且先到的赢**：`wait` / `closeAgent` 与 `spawnAgent` 共享
+     * `receiverThreadIds`，而真机顺序是派发在后（receiver id 要到 `item/completed` 才出现，
+     * `wait` 在 `item/started` 就带着它）⇒ 无条件覆盖必然让台账停在**等待**那次调用上，
+     * 于是子任务行的 `kind` 变成 `wait`、`parentCallId` 指向等待调用，界面按它去时间轴找
+     * 「进入子任务」的入口就落到了错的卡片上。判据与 `events.ts` 的 `isDispatch` 同源（名字以
+     * `spawn` 开头），两处各写一遍必然漂移。
+     */
+    if (callId !== null && isDispatchTool(item.tool) && !runState.dispatches.has(receiver)) {
       runState.dispatches.set(receiver, { tool: item.tool, callId, parentThreadId: threadId });
     }
+    /**
+     * **这一帧对这条子线程什么也没说时不产记录**（真机读数：`wait` / `closeAgent` 的 `item/started`
+     * 带 `agentsStates: {}`，而折叠是整条覆盖 ⇒ 它会把已经采到的 `completed` / `outcome` 打回
+     * `unknown/unverified` + `null`，且那一帧恰好排在 `completed` **之后**）。
+     * 判据是「这一帧有没有这条子线程的状态格」——将来某一版在 started 就带上状态时，它照旧出记录。
+     */
+    if (started && !item.agentsStates.some((one) => one.threadId === receiver)) continue;
     subagents.push(dispatchRecord(receiver, threadId, item.agentsStates, runState, context));
   }
   if (callId === null) return { drafts: [], subagents };
@@ -506,18 +572,35 @@ function dispatchRecord(
   const state = states.find((one) => one.threadId === threadId) ?? null;
   const { status, statusMissing } = collabStatusOf(state?.status ?? null);
   const dispatch = runState.dispatches.get(threadId) ?? null;
-  return {
-    subagentId: threadId,
-    name: runState.nicknames.get(threadId) ?? null,
+  const facts = rememberSubagentFacts(runState, threadId, {
     kind: dispatch?.tool ?? null,
-    source: 'wire',
-    status,
-    statusMissing,
     outcome: state?.message ?? null,
     parentCallId: dispatch?.callId ?? null,
     parentSubagentId: nestedParentOf(senderThreadId, runState, context),
+  });
+  return {
+    subagentId: threadId,
+    name: runState.nicknames.get(threadId) ?? null,
+    kind: facts.kind,
+    source: 'wire',
+    status,
+    statusMissing,
+    outcome: facts.outcome,
+    parentCallId: facts.parentCallId,
+    parentSubagentId: facts.parentSubagentId,
     usage: null,
   };
+}
+
+/**
+ * 这次协作调用是不是**派发**（而不是 `wait` / `closeAgent` 这类对已有子线程的操作）。
+ *
+ * 判据是「名字以 `spawn` 开头」而不是一张精确名表：真机见到的是 camelCase 的 `spawnAgent`，
+ * 而协议把这一族的名字留成自由字符串 ⇒ 精确匹配会在厂商换个拼法时**静默**失效。
+ * 导出是为了让 `events.ts`（活动行那一句）与本文件（派发台账）共用同一把判据——各写一遍必然漂移。
+ */
+export function isDispatchTool(tool: string): boolean {
+  return tool.toLowerCase().startsWith('spawn');
 }
 
 /** `CollabAgentStatus` → 契约五态；推不出来的一律 `unknown` + `unverified` */
@@ -542,16 +625,23 @@ function subAgentActivityRecord(
   const threadId = item.agentThreadId;
   const status = subAgentActivityStatus(item.activity);
   const dispatch = runState.dispatches.get(threadId) ?? null;
-  return {
-    subagentId: threadId,
-    name: runState.nicknames.get(threadId) ?? null,
+  const facts = rememberSubagentFacts(runState, threadId, {
     kind: dispatch?.tool ?? null,
-    source: 'wire',
-    status,
-    statusMissing: status === 'unknown' ? 'unverified' : null,
+    // 活动条目本身不带结论 ⇒ 不覆盖已经采到的那一份（非 null 才覆盖，见 rememberSubagentFacts）
     outcome: null,
     parentCallId: dispatch?.callId ?? null,
     parentSubagentId: nestedParentOf(senderThreadId, runState, context),
+  });
+  return {
+    subagentId: threadId,
+    name: runState.nicknames.get(threadId) ?? null,
+    kind: facts.kind,
+    source: 'wire',
+    status,
+    statusMissing: status === 'unknown' ? 'unverified' : null,
+    outcome: facts.outcome,
+    parentCallId: facts.parentCallId,
+    parentSubagentId: facts.parentSubagentId,
     usage: null,
   };
 }
@@ -608,17 +698,23 @@ function draft(envelope: DraftEnvelope & { role: MessageDraft['role']; blocks: M
   const { threadId, context, runState } = envelope;
   const subagentId = threadId === context.mainThreadId ? null : threadId;
   /**
+   * 轮次号取**这条条目自己那一次往返**（`roundTripForItem`，第一次问就钉住），
+   * 不是「该线程此刻累计几轮」——后者会让收尾全量回读的那一批条目整批落到最终号上，
+   * 与运行期算出的号对不上，于是同一条条目出两份（机制见 `run-state.ts` 的 `itemRoundTrip`）。
+   */
+  const roundTrip = roundTripForItem(runState, threadId, envelope.vendorId ?? '');
+  /**
    * 载体键 = `subagentId` + 轮次 + `role`——与 `message.ts`（公共层）的 `carrierKeyOf` 同口径，
    * 只是不含 `parentCallId`（codex 的消息这一格恒 `null`）。**必须带 `role`**：同一个轮次里
    * 「调用」与「结果」是两条消息、各自的块序号从 0 起算，不带 `role` 会让结果块覆盖调用块。
    */
-  const carrier = [subagentId ?? 'main', String(Math.max(roundTripsOf(runState, threadId), 1)), envelope.role].join('|');
+  const carrier = [subagentId ?? 'main', String(roundTrip), envelope.role].join('|');
   const index = blockIndexFor(runState, carrier, envelope.vendorId ?? '', envelope.blockKind);
   return {
     vendorId: envelope.vendorId,
     role: envelope.role,
     source: 'wire',
-    roundTrip: Math.max(roundTripsOf(runState, threadId), 1),
+    roundTrip,
     // 厂商轮号是 `Turn.id`（标识，不是序号）⇒ 不冒充数字；这一家没有「一轮内第几次调用」
     turn: null,
     step: null,
@@ -731,6 +827,13 @@ export function projectThreadMessages(
 ): MessageDraft[] {
   const drafts: MessageDraft[] = [];
   for (const entry of items) {
+    /**
+     * **先开号、再归一**：这一条要按它自己所属的那次往返取号，而收尾读回的这一批条目
+     * 很可能一条运行期通知都没走过（子线程的 `item/*` 推不推给本连接由上游决定）
+     * ⇒ 号必须在这里补上，否则整批条目都停在 0（全部挤进同一条消息）。
+     * 补齐是幂等的：运行期已经数过的条目在这里按身份去重、返回 `null`，不重复开号。
+     */
+    countRoundTrips(entry.item, threadId, runState);
     const projected = projectItem(entry.item, threadId, entry, runState, context, false);
     drafts.push(...projected.drafts);
   }
@@ -753,20 +856,26 @@ export function projectSubagentRecord(
   context: CodexMessageContext,
 ): SubagentRecord {
   const dispatch = runState.dispatches.get(ref.threadId) ?? null;
-  const outcome = lastAgentText(thread);
   const derived = terminalStatusOf(ref, thread);
+  const facts = rememberSubagentFacts(runState, ref.threadId, {
+    kind: dispatch?.tool ?? null,
+    // 读回那一份是权威的：拿得到就用它；拿不到（`idle` / 只有 tool 条目的线程）保留先采到的那一份
+    outcome: outcomeOf(thread, derived.status),
+    parentCallId: dispatch?.callId ?? null,
+    parentSubagentId: nestedParentOf(ref.parentThreadId ?? '', runState, context),
+  });
   return {
     subagentId: ref.threadId,
     // 昵称以 `reader` 给的那份为准（`Thread.agentNickname` / `thread_spawn.agent_nickname`），
     // 运行期从 `thread/started` 拿到的那份只作兜底
     name: ref.nickname ?? runState.nicknames.get(ref.threadId) ?? null,
-    kind: dispatch?.tool ?? null,
+    kind: facts.kind,
     source: 'wire',
     status: derived.status,
     statusMissing: derived.statusMissing,
-    outcome,
-    parentCallId: dispatch?.callId ?? null,
-    parentSubagentId: nestedParentOf(ref.parentThreadId ?? '', runState, context),
+    outcome: facts.outcome,
+    parentCallId: facts.parentCallId,
+    parentSubagentId: facts.parentSubagentId,
     /**
      * 子任务级用量：**只从运行期的 `thread/tokenUsage/updated` 取**（协议没有按线程读用量的请求）。
      * 这里不给近似值——`null` = 没采到；「全量或 null」的合成在 `index.ts` 收尾那一处做。
@@ -795,8 +904,14 @@ export function terminalStatusOf(
     if (lastTurn.status === 'completed') return { status: 'completed', statusMissing: null };
     if (lastTurn.status === 'failed') return { status: 'failed', statusMissing: null };
     if (lastTurn.status === 'interrupted') return { status: 'stopped', statusMissing: null };
-    // `inProgress`：线程还在跑它那一轮
-    return { status: 'running', statusMissing: null };
+    if (lastTurn.status === 'inProgress') return { status: 'running', statusMissing: null };
+    /**
+     * **认不出的取值不读作「还在跑」**：`TurnStatus` 是开放枚举，而归一化层在这一格缺席时
+     * 填的就是字符串 `'unknown'`（见 `protocol.ts` 的 `readTurn`）⇒ 把它说成 running 等于
+     * 替厂商宣布一件我们并不知道的事，而 `statusMissing: null` 又断言「这一格我们采到了」。
+     * 与同文件 `collabStatusOf` 的未知档同口径：记 `unknown` + `unverified`。
+     */
+    return { status: 'unknown', statusMissing: 'unverified' };
   }
   if (ref.status.type === 'systemError') return { status: 'failed', statusMissing: null };
   if (ref.status.type === 'active') return { status: 'running', statusMissing: null };
@@ -805,6 +920,19 @@ export function terminalStatusOf(
    * 拿它当 `completed` 会让一次失败的子任务显示成做完了）。记 `unknown` + 点名原因。
    */
   return { status: 'unknown', statusMissing: 'not-observed' };
+}
+
+/**
+ * 子任务行的 `outcome`（那一行上「它最后交代了什么」）。
+ *
+ * **失败那一档优先给厂商的失败原因**：`turn.error` 是这条子线程为什么没跑成的唯一出处，
+ * 而最后一条答复正文多半是它失败**之前**说的话——拿后者顶替会让行上写着一句听起来正常的
+ * 结论，而真正的原因（鉴权、超限、沙箱）一个字都看不到。拿不到原因时才退回最后一条答复。
+ */
+function outcomeOf(thread: AppServerThread | null, status: SubagentRecord['status']): string | null {
+  const lastTurn = thread?.turns.at(-1) ?? null;
+  if (status === 'failed' && lastTurn?.error != null && lastTurn.error !== '') return lastTurn.error;
+  return lastAgentText(thread);
 }
 
 /** 子线程最后一条答复正文（`outcome` 只放文本，拿不到就是 `null`） */

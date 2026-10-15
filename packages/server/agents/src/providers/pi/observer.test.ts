@@ -127,6 +127,27 @@ describe('技能装载档：按 wire 取系统段（只实现一条会让另一�
     expect(piRequestSkills(payload, 'openai-completions')).toEqual([{ name: 'alpha', location }]);
   });
 
+  /**
+   * **单引号那一格厂商写的是 `&apos;`**（`skills.js` 的 `escapeXml`：`'` → `&apos;`），
+   * 不是 HTML 里同样合法的 `&#39;`。只认后者会让含单引号的落点（macOS 用户名 `o'brien` 那一类）
+   * 还原不出来，而 `location` 是 `piSkillReadSatisfied` 的「与实际路径逐字相等」判据 ⇒ 该技能恒判
+   * 「没读过」。两种形态都要还原，将来厂商换写法不再踩一次。
+   */
+  it('落点里的单引号：厂商转义成 `&apos;`（也容忍 `&#39;`），两者都要还原回单引号', () => {
+    const alpha = '/Users/o\'brien/ws/row-1/.agenthome/skills/alpha/SKILL.md';
+    const payload = openaiPayload(
+      skillsSection([
+        { name: 'alpha', location: '/Users/o&apos;brien/ws/row-1/.agenthome/skills/alpha/SKILL.md' },
+        { name: 'beta', location: '/Users/o&#39;brien/ws/row-1/.agenthome/skills/beta/SKILL.md' },
+      ]),
+      ['read'],
+    );
+    expect(piRequestSkills(payload, 'openai-completions')).toEqual([
+      { name: 'alpha', location: alpha },
+      { name: 'beta', location: alpha.replace('/alpha/', '/beta/') },
+    ]);
+  });
+
   it('没有技能段 ⇒ 空数组（不是「装上了但没读到」）', () => {
     expect(piRequestSkills(openaiPayload('光秃秃的系统提示词', ['read']), 'openai-completions')).toEqual([]);
   });

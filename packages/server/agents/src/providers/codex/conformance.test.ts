@@ -495,15 +495,51 @@ describeProviderConformance({
   injection: codexProvider.metadata.injection,
   interaction: codexProvider.metadata.interaction,
   /**
-   * **真出站证据：两格都不在 CI 里**（如实登记）。C 臂那份 `startToolRecorder` 是**本地 HTTP 转发器**，
-   * 确实读得到请求体的工具表，但整份文件 `skipIf(!ENABLED)`（默认跳过、默认不进 CI），
-   * 且它只断言工具表、没有结构化输出的那一格。`turn/start` 的 `outputSchema` 是**入参**，
-   * `strict` 有没有生效只有 Responses 那份请求体知道。
+   * **人工消息面（第五组）的证明安排**（判据见 `../conformance/kit.ts` 的 `checkTurnInjectionNailing`
+   * 与 `./onboarding.test.ts` 的驱动器真伪核对）。
+   *
+   * 投递两档的证据是**假 wire 夹具**（`providers/codex/turn-injection.test.ts`：假端口 + 假 wire，
+   * 不 spawn 厂商）：真机读数只证到 wire 上存在这些方法，我们这条投递路径没被验过。
+   * 续接是真路径（`testing/codex-resume-fixture.ts`：真二进制 → 真 app-server + 脚本式上游）。
    */
-  realOutboundEvidence: [],
+  turnInjection: {
+    capability: codexProvider.metadata.turnInjection!,
+    proofs: {
+      'delivery.round': {
+        driver: 'synthetic-fixture',
+        observed: false,
+        evidence: 'packages/server/agents/src/providers/codex/turn-injection.test.ts',
+      },
+      /**
+       * `'idle'` 档走**真路径**：真 `codex app-server` 下厂商自己把条目撒成新一轮，
+       * 哨兵文本进的是**厂商出站请求体**、那一轮跑完、它的答复成为本行 `finalText`
+       * （驱动器 `testing/codex-injection-fixture.ts`，用例 `turn-injection-delivery.test.ts`；
+       * 阴性对照是不挂注入面的同一套剧本）。
+       */
+      'delivery.idle': {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/codex-injection-fixture.ts',
+      },
+      resume: {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/src/testing/codex-resume-fixture.ts',
+      },
+    },
+  },
+  /**
+   * **真出站证据**：结构化输出那一格由 `structured-output-live.test.ts` 守（真二进制 + 本机假网关，
+   * 读**出站请求体**的 `text.format`，含「不给 schema 就没有这个键」的阴性对照，进 CI）。
+   */
+  realOutboundEvidence: ['packages/server/agents/src/providers/codex/structured-output-live.test.ts'],
+  /**
+   * **工具面那一格的缺口如实登记**：`live-mcp.test.ts` 的本地转发器确实读得到请求体的工具表，
+   * 但整份文件 `skipIf(!ENABLED)`（默认跳过、默认不进 CI）⇒ 它不算 CI 判据。
+   * 结构化输出不再登记缺口（见上一条）。
+   */
   realOutboundGaps: {
     mcp: 'packages/server/agents/src/providers/codex/live-mcp.test.ts',
-    'structured-output': 'packages/server/agents/src/providers/codex/index.test.ts',
   },
   injectionProof: { mcp: 'mcp-injection' },
   injectionProofElsewhere: { skills: 'packages/server/agents/src/providers/codex/skills.test.ts' },

@@ -88,6 +88,9 @@ function makeRow(id: string, overrides: Partial<Row> = {}): Row {
     score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]),
     error: null,
     attempts: 1,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
@@ -97,6 +100,7 @@ function makeRun(rows: Row[]): EvalRun {
     id: 'run-1',
     caseId: 'c-1',
     caseTitle: '02 使用 Skill',
+    note: '',
     repoPath: 'none://',
     commitHash: '',
     repoBranch: null,
@@ -112,6 +116,7 @@ function makeRun(rows: Row[]): EvalRun {
     useAgentJudge: false,
     askUser: false,
     rows,
+    injectMessages: false,
     workspaceBase: '/runs',
     createdAt: '2026-10-12T08:00:00.000Z',
     startedAt: '2026-10-12T08:00:01.000Z',
@@ -120,6 +125,34 @@ function makeRun(rows: Row[]): EvalRun {
 }
 
 describe('RankTable 名次', () => {
+  it('「候选未作答」只在**真的没答**时挂出来 —— 键缺席（未记录）不画', () => {
+    /**
+     * 两个方向都要钉：`true` ⇒ 必须出现（否则横向对比会把空答复排得和正常一样）；
+     * **键缺席 ⇒ 必须不出现** —— 旧数据没有这一格，画成任一结论都是编事实。
+     * 后一半同时保证既有用例断言的 `textContent` 不被多出来的 Tag 污染。
+     */
+    const { unmount } = render(
+      <RankTable
+        run={makeRun([
+          makeRow('blank', { score: score(60, [{ id: 'T1', achieved: true }]), emptyAnswer: true }),
+          makeRow('ok', { score: score(100, [{ id: 'T1', achieved: true }]) }),
+        ])}
+      />,
+    );
+    expect(screen.getAllByText('候选未作答')).toHaveLength(1);
+    unmount();
+
+    render(
+      <RankTable
+        run={makeRun([
+          makeRow('a', { score: score(60, [{ id: 'T1', achieved: true }]) }),
+          makeRow('b', { score: score(100, [{ id: 'T1', achieved: true }]) }),
+        ])}
+      />,
+    );
+    expect(screen.queryByText('候选未作答')).toBeNull();
+  });
+
   it('名次落在第一行（标签留空、金色 Tag），列序即名次序；列头不写名次', () => {
     render(
       <RankTable

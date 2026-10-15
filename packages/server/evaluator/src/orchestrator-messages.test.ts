@@ -13,9 +13,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import type { AgentMessage, RowRecord } from '@aieval/contracts';
-import { readRowRecords } from '@aieval/core';
+import { readCase, readRowRecords } from '@aieval/core';
 import { broadcastJudgeMessage, publishJudgeMessage, subscribeJudgeRecords, subscribeRowRecords } from './row-messages';
 import {
+  adapterMessagesOf,
   drainRunningTasks,
   existsSync,
   fakeAgents,
@@ -51,7 +52,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
     await drainRunningTasks();
 
     expect(existsSync(recordsFileOf(run.id, rowId))).toBe(true);
-    const { messages } = rowRecordsOf(run.id, rowId);
+    const messages = adapterMessagesOf(run.id, rowId);
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       role: 'assistant',
@@ -80,7 +81,7 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
     startRun(run.id);
     await drainRunningTasks();
 
-    const { messages } = rowRecordsOf(run.id, rowId);
+    const messages = adapterMessagesOf(run.id, rowId);
     expect(messages.map((message) => (message.blocks[0] as { text: string }).text)).toEqual([
       '我先看一下配置文件。',
       '然后动手。',
@@ -102,7 +103,8 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
     startRun(run.id);
     await drainRunningTasks();
 
-    const { messages, subagents } = rowRecordsOf(run.id, rowId);
+    const { subagents } = rowRecordsOf(run.id, rowId);
+    const messages = adapterMessagesOf(run.id, rowId);
     // 子智能体自己的消息带身份（归属靠 `subagentId`，不是靠猜测）
     expect(messages.map((message) => message.subagentId)).toEqual([null, 'call_Task']);
     // 两行记录（派发 + 收场）折叠成一行，且留的是**收场**那条（完整快照）
@@ -110,15 +112,36 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
     expect(subagents[0]).toMatchObject({ subagentId: 'call_Task', name: '查配置', status: 'completed' });
   });
 
-  it('适配器一条都不给时不产生文件（读侧因此不必区分「空」与「没有」）', async () => {
+  /**
+   * 题面那一条是**我们自己落的记账消息**（适配器一条内容都不给时，它是文件里唯一的一条）：
+   * 执行日志的时间轴首条读它，用例后来被改被删也不影响它——题面没有快照进 `run.json`，
+   * 落账本是它唯一能被事后读到的落点。
+   */
+  it('题面落账本：适配器一条内容都不给时，账本里仍有那一条（它必须留痕）', async () => {
     const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial' });
     const rowId = getRun(run.id).rows[0]!.id;
     // 默认脚本没有任何 messages / subagents
     startRun(run.id);
     await drainRunningTasks();
 
-    expect(existsSync(recordsFileOf(run.id, rowId))).toBe(false);
-    expect(rowRecordsOf(run.id, rowId)).toEqual({ messages: [], subagents: [] });
+    expect(existsSync(recordsFileOf(run.id, rowId))).toBe(true);
+    expect(adapterMessagesOf(run.id, rowId)).toEqual([]);
+    const { messages } = rowRecordsOf(run.id, rowId);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: 'user',
+      origin: 'case-prompt',
+      source: 'hook',
+      roundTrip: 1,
+      chunk: 'snapshot',
+      assembly: 'snapshot',
+      mergeKey: 'main|1|user|-|case-prompt',
+      messageId: `case-prompt:${rowId}`,
+      // 正文与用例里那句**逐字相同**（读盘取真源，不抄夹具里的字面量）
+      blocks: [{ type: 'text', text: readCase(run.caseId)?.taskPrompt }],
+    });
+    // 段号缺席 = 第一次跑那一段（追问那一段才写它）
+    expect(messages[0]?.segment).toBeUndefined();
   });
 
   it('delta 只广播不落盘：文件里只有快照，实时订阅者两条都收到（三家统一口径）', async () => {
@@ -143,14 +166,17 @@ describe('消息落盘：适配器交出的内容进 messages.jsonl', { timeout:
       unsubscribe();
     }
 
-    // 落盘侧：delta 一条都不进 `messages.jsonl`，文件里只有那条快照
-    const { messages } = rowRecordsOf(run.id, rowId);
+    // 落盘侧：delta 一条都不进 `messages.jsonl`，适配器那一路只剩那条快照
+    const messages = adapterMessagesOf(run.id, rowId);
     expect(messages.map((message) => (message.blocks[0] as { text: string }).text)).toEqual(['我先看一下配置文件。']);
     expect(messages.every((message) => message.chunk === 'snapshot')).toBe(true);
-    // 实时侧：三条全到（两条 delta + 一条快照）——打字机效果靠的就是这一路
+    /**
+     * 实时侧四条全到：**题面那条快照**（我们自己落的记账消息，与适配器走同一条扇出）+
+     * 两条 delta + 一条快照——打字机效果靠的就是这一路。
+     */
     expect(
       broadcast.filter((record) => record.type === 'message').map((record) => record.message.chunk),
-    ).toEqual(['delta', 'snapshot', 'delta']);
+    ).toEqual(['snapshot', 'delta', 'snapshot', 'delta']);
     /**
      * 观测格：增量帧不落盘 ⇒ 「这次到底有没有收到逐字流」事后只剩这一格。
      * 两帧、末帧是那条**中断的** delta（`然后动手。` = 5 字）——它正是「刷新后看不到半截正文、
@@ -180,6 +206,7 @@ describe('评分产物走独立文件', { timeout: TEST_TIMEOUT_MS }, () => {
     vendorId: null,
     role: 'assistant',
     source: 'wire',
+    origin: 'case-prompt',
     roundTrip: 1,
     turn: null,
     step: null,
@@ -209,10 +236,10 @@ describe('评分产物走独立文件', { timeout: TEST_TIMEOUT_MS }, () => {
     startRun(run.id);
     await drainRunningTasks();
 
-    // 候选那条：只有候选的内容
-    const candidate = rowRecordsOf(run.id, rowId);
-    expect(candidate.messages).toHaveLength(1);
-    expect(candidate.messages[0]?.blocks[0]).toEqual({ type: 'text', text: '候选说的话' });
+    // 候选那条：只有候选的内容（题面那条记账消息不算适配器的产出）
+    const candidate = adapterMessagesOf(run.id, rowId);
+    expect(candidate).toHaveLength(1);
+    expect(candidate[0]?.blocks[0]).toEqual({ type: 'text', text: '候选说的话' });
     // 评分那条：落在自己的文件里，内容是**评审者**的
     const judgeFile = judgeRecordsFileOf(run.id, rowId);
     expect(existsSync(judgeFile)).toBe(true);

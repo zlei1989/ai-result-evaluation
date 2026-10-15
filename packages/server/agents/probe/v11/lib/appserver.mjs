@@ -5,7 +5,7 @@
  * `turn/completed` **不结算**客户端），只多一件事——**能回帧**。
  *
  * 为什么要多这一件事：v5 那份客户端把 `stdin` 封在闭包里，服务端主动请求**只记录不应答**
- * （生产 `appserver/client.ts` 当时的口径）。而本票要问的恰恰是「回一帧之后模型怎么走」
+ * （生产 `appserver/client.ts` 的口径）。而这里要问的恰恰是「回一帧之后模型怎么走」
  * ⇒ 必须能写回一帧。复制一份而不是改 v5：那份实现撑着 v5/v6/v10 三批已归档读数，
  * 探针之间不共享可变文件。
  *
@@ -98,7 +98,7 @@ export function startAppServer(input) {
     /**
      * 带 id 但不在待收表里 = **服务端主动请求**（审批 / 提问）。
      * 本探针在这里只归类；回帧与否由调用方按 method 决定——审批类必须继续不回帧，
-     * 这是生产 `appserver/client.ts` 的既有口径，本票不动它。
+     * 这是生产 `appserver/client.ts` 的既有口径，本探针不动它。
      */
     if (id !== undefined && (typeof id === 'number' || typeof id === 'string')) {
       const record = { id, method: String(message.method ?? ''), params: message.params ?? null };

@@ -615,6 +615,35 @@ describeProviderConformance({
   injection: claudeCodeProvider.metadata.injection,
   interaction: claudeCodeProvider.metadata.interaction,
   /**
+   * **人工消息面（第五组）的证明安排**（判据见 `../conformance/kit.ts` 的 `checkTurnInjectionNailing`
+   * 与 `./onboarding.test.ts` 的驱动器真伪核对）。
+   *
+   * 投递两档的证据是**假 SDK 夹具**（`providers/cc/inject.test.ts`）：适配器接线归接线，
+   * 厂商侧那个投递点（折进 `tool_result.content` 的那一刻）没有真路径驱动器观测过。
+   * 续接那一格的真路径观测落在**真机探针**上（两进程 + 阴性对照的暗号回读），
+   * 仓库内的产品路径驱动器缺一份 ⇒ 套件级守卫把它登记为「real-path 但无产品路径驱动器」。
+   */
+  turnInjection: {
+    capability: claudeCodeProvider.metadata.turnInjection!,
+    proofs: {
+      'delivery.round': {
+        driver: 'synthetic-fixture',
+        observed: false,
+        evidence: 'packages/server/agents/src/providers/cc/inject.test.ts',
+      },
+      'delivery.idle': {
+        driver: 'synthetic-fixture',
+        observed: false,
+        evidence: 'packages/server/agents/src/providers/cc/inject.test.ts',
+      },
+      resume: {
+        driver: 'real-path',
+        observed: true,
+        evidence: 'packages/server/agents/probe/v11/cc-session-resume.mjs',
+      },
+    },
+  },
+  /**
    * **真出站证据：两格都缺**（如实登记，不硬凑）。这一家的假件把 SDK 整段换掉，看得见我们传进去的
    * `options`，看不见 CLI 真正发出去的那一份请求；而 `outputFormat` 是**入参**，`strict` 有没有生效
    * 只有请求体知道。缺的那两条在真机侧由下面点名的文件守（判据强度弱一档：`live-mcp` 证的是
@@ -641,9 +670,13 @@ describeProviderConformance({
   /**
    * `ask-user` 也有一格增量：真路径那一跑开着 `includePartialMessages`，上游那一段收尾正文会以
    * `stream_event` 到（产物里就是那条 `chunk: 'delta'` 的消息），而它**只该走内容通道**——
-   * 实测 11 条事件，多出来的极可能就是增量掉回了 `log` 兜底。
+   * 实测 12 条事件，多出来的极可能就是增量掉回了 `log` 兜底。
+   *
+   * 那 12 条里有一条是**技能面兜底**：真路径的 `system/init` 自带技能名单（真 CLI 的 init 帧有这一格），
+   * 本场景没配技能 ⇒ 探针不跑 ⇒ 由 `skillsFromInitFrame` 交出那一格。去掉兜底这个数就回 11，
+   * 而下游会把「没有 skills 格」读成「厂商没投送」——那是关于厂商的假话。
    */
-  expectedEventCounts: { 'plain-reply': 2, 'ask-user': 11 },
+  expectedEventCounts: { 'plain-reply': 2, 'ask-user': 13 },
 });
 
 /**

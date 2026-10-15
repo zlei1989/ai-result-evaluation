@@ -190,10 +190,10 @@ export function createExplodingChild(): AppServerChild {
     throw new Error('假子进程不该被使用：适配器必须走注入的客户端');
   };
   return {
-    stdin: { write: boom },
-    stdout: { on: boom },
-    stderr: { on: boom },
-    // `on` 在 `AppServerChild` 上是两个重载，单个「碰一下就炸」的实现满足不了重载签名 ⇒ 断言一次。
+    stdin: { write: boom, on: boom },
+    stdout: { on: boom, setEncoding: boom },
+    stderr: { on: boom, setEncoding: boom },
+    // `on` 在 `AppServerChild` 上是三个重载，单个「碰一下就炸」的实现满足不了重载签名 ⇒ 断言一次。
     // 断言而不是补一个空实现：空实现会让「适配器绕开注入口去 spawn」这件事静默地看不出来。
     on: boom as unknown as AppServerChild['on'],
     kill: boom,
@@ -350,6 +350,14 @@ export function threadRead(
 ): (params: Record<string, unknown>) => unknown {
   return (params) => (params.threadId === thread.id ? { thread } : { thread: null });
 }
+
+/**
+ * `thread/turns/list` 的一页应答（`{ data, nextCursor }`）。
+ *
+ * 形状与 `thread/list` 同族（消费方只认 `data` / `nextCursor`）⇒ 复用同一个分页实现，
+ * 两处各写一遍迟早出现「一处翻页、一处不翻」。真机那一份还多回 `backwardsCursor`，夹具照给。
+ */
+export const threadTurnsPages = threadListPages;
 
 /** `thread/items/list` 的一页应答（`{ data, nextCursor }`） */
 export function threadItemsPages(

@@ -2,8 +2,9 @@
 /**
  * cc 的**每会话自己的轮次号**（`message.ts` 的 `roundTripOfSession`）。
  *
- * 它回答的是「进子会话节点之后时间轴按什么分轮」：主会话仍用 `state.turns` 那一套
- * （`events.ts` 的 `countModelRoundTrip` 只数主循环），而 `parent_tool_use_id` 非空的侧链消息
+ * 它回答的是「进子会话节点之后时间轴按什么分轮」：主会话锚在**主循环那本账**上
+ * （`events.ts` 的 `countModelRoundTrip` 按到达顺序记完整 assistant 消息 id，取号见 `mainRoundTrip`
+ * ——增量先到时占「下一个号」，于是它与随后的快照同键），而 `parent_tool_use_id` 非空的侧链消息
  * 按**该子会话自己的** 1..N 编号 ⇒ 子会话节点的消息按它自己的轮次分行，而不是全挤在
  * 父会话派发的那一轮里。与 codex 的 `threadMessages`（一线程一套号）同形。
  *
@@ -12,7 +13,7 @@
  * 逐个 `message.id` 对齐」那条跨模块对照（③）。
  *
  * ⚠️ **两条不许被下面这几条用例误伤的既有口径**（它们各有自己的守卫，这里只声明）：
- *   · 主会话的号仍是 `state.turns` 那一套（`events.ts` 的 `countModelRoundTrip` 只在主循环上加），
+ *   · 主会话的号仍由**主循环计数**维护（`events.ts` 的 `countModelRoundTrip` 只在主循环上加），
  *     侧链消息**不进**那个计数 ⇒ 行级轮次仍是「主 + 子」；
  *   · `turn` / `step` 仍恒 `null`（这家没有这两格）。
  */
@@ -175,10 +176,14 @@ describe('cc：侧链消息按「每会话自己的」轮次号编号（与读�
     expect(delta.map(carrierKeyOf)).toEqual(snapshot.map(carrierKeyOf));
 
     /**
-     * **主会话那一档与改前逐字相同**：增量带的仍是 `state.turns` 的**当前值**（这里是 2 = 已经完整
-     * 到达的两轮），推进它的是 `events.ts` 的 `countModelRoundTrip`（只认**完整** assistant 消息）。
-     * 这一条是**既成事实的前提钉**（不是本次新写的口径）：本次只修侧链，主会话的号一个字节都不动
-     * ——把它钉住，将来谁"顺手"给增量 +1 时会在这里看见自己动了主会话的号。
+     * **主会话那一档**：增量占的是「主会话账里的**下一个号**」（`mainRoundTrip`：id 不在账里 ⇒
+     * `turnKeys.size + 1`），不是「已经数到几条」。两者的差在多轮时才现形，而后果很硬：
+     * 已经数到的那个号属于**上一轮**，而上一轮的文本槽已被它自己的快照 `sealed` ⇒
+     * 增量按「已 seal + 增量 ⇒ 丢弃」被静默吃掉，界面直到快照到达才整段出现。
+     *
+     * 本条覆盖的是其中一种形状：这条主会话增量**没有**自己的 `message_start`
+     * （`streamingMessageId` 还停在上面那条侧链消息上）⇒ 它查不到主会话账 ⇒ 占「账里条数 + 1」。
+     * 带自己 `message_start` 的常规形状由 `stream-alignment.test.ts` 钉住。
      */
     const mainDelta = feed(
       normalizer,
@@ -190,7 +195,13 @@ describe('cc：侧链消息按「每会话自己的」轮次号编号（与读�
         event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '主会话的半句' } },
       },
     );
-    expect(mainDelta.map(pairOf)).toEqual([[null, 2]]);
+    // 主会话已经完整到达两轮 ⇒ 这条增量属于**第 3 轮**（拿 2 就会落进已 seal 的第 2 轮载体）
+    expect(mainDelta.map(pairOf)).toEqual([[null, 3]]);
+
+    // 载体同一性（与 ② 同一条判据）：它随后的快照必须落在同一个载体上，否则这份增量永远收不了尾
+    const mainSnapshot = feed(normalizer, state, mainAssistant('u-m4', 'main-m-3'));
+    expect(mainSnapshot.map(pairOf)).toEqual([[null, 3]]);
+    expect(mainDelta.map(carrierKeyOf)).toEqual(mainSnapshot.map(carrierKeyOf));
   });
 });
 

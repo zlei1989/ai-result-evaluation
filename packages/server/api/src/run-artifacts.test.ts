@@ -17,9 +17,9 @@ import { ServiceError, type EvalRun } from '@aieval/contracts';
 // `collectDiff` / `truncateDiff` / `readEvents` 取自被 mock 之后的那一份：
 // `vi.mock` 会被提升到所有 import 之前（无论 import 写在文件哪一行），故与其余导出同一条语句引入——
 // 分两条 import 同一模块会撞仓库的 `import-x/no-duplicates`（error 级）。
-import { appendEvent, collectDiff, readEvents, setCasesRootForTesting, setConfigDirForTesting, truncateDiff } from '@aieval/core';
+import { appendEvent, collectDiff, readEvents, scanWorkspaceArtifacts, setCasesRootForTesting, setConfigDirForTesting, truncateDiff } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
-import { getRowDiffFile, getRowDiffIndex, getRowLog, resetRowDiffCache } from './run-artifacts';
+import { getRowArtifactFile, getRowDiffFile, getRowDiffIndex, getRowLog, getRunArtifactIndex, resetRowDiffCache } from './run-artifacts';
 import { updateSettings } from './settings';
 import { makeAnthropicProvider, makeCase, makeRow, makeRun, seedConfig } from './testing/run-fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
@@ -40,6 +40,9 @@ vi.mock('@aieval/core', async (importOriginal) => {
     collectDiff: vi.fn(actual.collectDiff),
     truncateDiff: vi.fn(actual.truncateDiff),
     readEvents: vi.fn(actual.readEvents),
+    // 扫盘单独包一层：唯一能造出「某一行扫不动」的手法（真造一个读不动的目录要么靠权限、
+    // 要么靠平台差异，都不该进单测）。需要抛错的用例用 `mockImplementationOnce`。
+    scanWorkspaceArtifacts: vi.fn(actual.scanWorkspaceArtifacts),
   };
 });
 
@@ -74,6 +77,7 @@ beforeEach(() => {
   vi.mocked(collectDiff).mockClear();
   vi.mocked(truncateDiff).mockClear();
   vi.mocked(readEvents).mockClear();
+  vi.mocked(scanWorkspaceArtifacts).mockClear();
   // 上面三个 mock 都是 `vi.fn(真实实现)`，而本仓没开 `clearMocks`、`mockClear` 又**不还原实现**：
   // 不装默认值的话，「裁剪预算」「按 workspaceBase 找产物」这两条只关心别的断言的用例，
   // 会因为前面某条用例（或缺失的前置用例）留下的实现而红——单独跑 `-t` 时就是这种红。
@@ -404,5 +408,119 @@ describe('getRowLog', () => {
     seedRun(makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
 
     expect(() => getRowLog('run-1', 'r-x')).toThrowError(/没有这一行/);
+  });
+});
+
+describe('getRunArtifactIndex / getRowArtifactFile', () => {
+  /** 三行：一行有两份产物、一行没有产物、一行的 workspacePath 是空串（还没准备） */
+  function seedThreeRows(): EvalRun {
+    const withFiles = makeRow({ id: 'r-1', workspacePath: join(workspaceRoot, 'run-1', 'rows', 'r-1', 'workspace') });
+    const empty = makeRow({ id: 'r-2', workspacePath: join(workspaceRoot, 'run-1', 'rows', 'r-2', 'workspace') });
+    const unprepared = makeRow({ id: 'r-3', workspacePath: '' });
+    // 工作区目录自己建：`seedRun` 的 `createWorkspace` 会对每一行 mkdir，
+    // 而空 workspacePath（没准备的那一行）是它造不出来的形状
+    for (const path of [withFiles.workspacePath, empty.workspacePath]) mkdirSync(path, { recursive: true });
+    seedRun(makeRun({ id: 'run-1', rows: [withFiles, empty, unprepared] }));
+    writeFileSync(join(withFiles.workspacePath, 'RESULT.md'), '# 交付说明\n', 'utf8');
+    writeFileSync(join(withFiles.workspacePath, 'RESULT.svg'), '<svg/>', 'utf8');
+    // 不认的文件与子目录都在场：它们一份都不该进清单
+    writeFileSync(join(withFiles.workspacePath, 'notes.txt'), 'x', 'utf8');
+    mkdirSync(join(withFiles.workspacePath, 'sub'));
+    writeFileSync(join(withFiles.workspacePath, 'sub', 'RESULT.html'), '<p>x</p>', 'utf8');
+    return makeRun({ id: 'run-1', rows: [withFiles, empty, unprepared] });
+  }
+
+  it('索引：每个候选一行（没有产物的、没准备的都在），total 只数文件', () => {
+    seedThreeRows();
+
+    const index = getRunArtifactIndex('run-1');
+
+    expect(index.rows.map((row) => row.rowId)).toEqual(['r-1', 'r-2', 'r-3']);
+    expect(index.rows[0]?.files.map((file) => file.name)).toEqual(['RESULT.md', 'RESULT.svg']);
+    expect(index.rows[1]?.files).toEqual([]);
+    expect(index.rows[2]?.files).toEqual([]);
+    expect(index.total).toBe(2);
+  });
+
+  it('索引：按该轮快照里的 workspacePath 找产物，而不是当前设置里的根目录', () => {
+    const oldRoot = join(dir, 'old-ws');
+    const row = makeRow({ id: 'r-1', workspacePath: join(oldRoot, 'run-1', 'rows', 'r-1', 'workspace') });
+    seedRun(makeRun({ id: 'run-1', workspaceBase: oldRoot, rows: [row] }));
+    mkdirSync(row.workspacePath, { recursive: true });
+    writeFileSync(join(row.workspacePath, 'RESULT.html'), '<p>旧根</p>', 'utf8');
+    updateSettings({ workspaceRoot: join(dir, 'new-ws') });
+
+    expect(getRunArtifactIndex('run-1').rows[0]?.files.map((file) => file.name)).toEqual(['RESULT.html']);
+  });
+
+  it('索引：某一行扫不动 ⇒ 只把那一行记成空 + WARN，别的行照常（不把整张总览打挂，也不静默）', () => {
+    // 两行都真有产物：第一行扫的时候抛（权限 / 坏目录那类），第二行走真实实现
+    const broken = makeRow({ id: 'r-1', workspacePath: join(workspaceRoot, 'degrade', 'broken') });
+    const fine = makeRow({ id: 'r-2', workspacePath: join(workspaceRoot, 'degrade', 'fine') });
+    for (const path of [broken.workspacePath, fine.workspacePath]) mkdirSync(path, { recursive: true });
+    seedRun(makeRun({ id: 'run-1', rows: [broken, fine] }));
+    writeFileSync(join(broken.workspacePath, 'RESULT.md'), '# 打不开的那一份\n', 'utf8');
+    writeFileSync(join(fine.workspacePath, 'RESULT.md'), '# 完好那一行\n', 'utf8');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.mocked(scanWorkspaceArtifacts).mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    try {
+      const index = getRunArtifactIndex('run-1');
+
+      expect(index.rows[0]?.files).toEqual([]);
+      expect(index.rows[1]?.files.map((file) => file.name)).toEqual(['RESULT.md']);
+      expect(index.total).toBe(1);
+      expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain('扫描候选产物失败');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('正文：读回四种形状字段，且 `bytes` 是盘上那一份的完整字节数', () => {
+    seedThreeRows();
+
+    const file = getRowArtifactFile('run-1', 'r-1', 'RESULT.md');
+
+    // `bytes` 取盘上那一份的字节数（不是 `text.length`）：中文正文的字节数是字符数的 3 倍，
+    // 两者在断言里必须能分开，否则「按字符数报体积」这种缺陷照样绿
+    expect(file).toEqual({
+      name: 'RESULT.md',
+      kind: 'md',
+      text: '# 交付说明\n',
+      bytes: Buffer.byteLength('# 交付说明\n', 'utf8'),
+      truncated: false,
+    });
+  });
+
+  it('正文：名字不是本仓认的产物 ⇒ INVALID_QUERY（与「文件不在」分开）', () => {
+    seedThreeRows();
+
+    expect(() => getRowArtifactFile('run-1', 'r-1', 'notes.txt')).toThrowError(/这不是本仓认的产物文件/);
+    expect(() => getRowArtifactFile('run-1', 'r-1', 'RESULT.html')).toThrowError(/没有这份产物/);
+  });
+
+  it('正文：工作区还没建 ⇒ CONFLICT 中文原因（不是英文 errno）', () => {
+    // 路径取一个**本文件从没建过**的位置：夹具根是按文件共享的，
+    // 用 `makeRow` 的默认 workspacePath 会撞上别的用例建过的那棵树
+    const row = makeRow({ id: 'r-1', workspacePath: join(dir, 'never-prepared', 'workspace') });
+    seedRun(makeRun({ id: 'run-1', rows: [row] }));
+
+    let caught: unknown;
+    try {
+      getRowArtifactFile('run-1', 'r-1', 'RESULT.md');
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as ServiceError).code).toBe('CONFLICT');
+    expect((caught as ServiceError).message).toContain('还没有工作区');
+  });
+
+  it('正文：行 id 不存在 ⇒ NOT_FOUND；轮不存在 ⇒ NOT_FOUND', () => {
+    seedThreeRows();
+
+    expect(() => getRowArtifactFile('run-1', 'r-x', 'RESULT.md')).toThrowError(/没有这一行/);
+    expect(() => getRunArtifactIndex('run-x')).toThrowError(/评测不存在/);
   });
 });

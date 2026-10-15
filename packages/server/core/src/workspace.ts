@@ -7,11 +7,15 @@
  *   {workspaceRoot}/{runId}/rows/{rowId}/.agenthome  该行独立配置目录（CLAUDE_CONFIG_DIR 等）
  *   {workspaceRoot}/{runId}/rows/{rowId}/.judgehome  该行**评分智能体**的独立配置目录（智能体评分通路）
  *   {workspaceRoot}/{runId}/rows/{rowId}/events.jsonl 该行事件日志（唯一真相源）
+ *   {workspaceRoot}/{runId}/rows/{rowId}/attachments/{messageId}/  人随人工消息上传的附件
  * 三个必须成立的口径：
  *   1. 事件日志与 `run.json` **不在** workspace 里：agent 可以在 workspace 内随意建删文件，
- *      把证据放进去等于把证据交给被测对象；
- *   2. 重跑同一行必须**先清掉上一轮的工作副本与两个独立配置目录**（workspace + .agenthome + .judgehome）：
+ *      把证据放进去等于把证据交给被测对象；附件同理在 workspace **之外**——它不参与 `git diff`
+ *      与评分面，也与仓库来源（local / remote / 无来源）无关；
+ *   2. 重跑同一行必须**先清掉上一轮的工作副本、两个独立配置目录与附件根**
+ *      （workspace + .agenthome + .judgehome + attachments）：
  *      留下上一轮的工作区，第二个候选就是在第一个候选的改动之上继续写，分数无意义；
+ *      留下上一轮的附件，模型会读到这一轮根本没人上传过的材料；
  *   3. 但**绝不能连 `events.jsonl` 一起清**：清空日志的唯一所有者是 `resetEvents`
  *      ，而编排层的顺序是「先 `resetEvents` → 发 `preparing`（seq 1，这一步就建出了行目录）
  *      → 再 `prepareRowWorkspace`」。这里整目录删掉，刚写下的 `preparing` 就没了，
@@ -21,6 +25,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ServiceError } from '@aieval/contracts';
+import { assertInjectMessageId } from './attachment-store';
 import { assertCaseId } from './case-store';
 import { createLogger } from './logger';
 import { removeTreeWithRetry } from './remove-tree';
@@ -97,6 +102,27 @@ export function rowMessagesFile(workspaceRoot: string, runId: string, rowId: str
 }
 
 /**
+ * 该行**人工消息附件的根目录**（人随消息上传的文件都在这下面，一 `<messageId>` 一个子目录）。
+ *
+ * 为什么挂在行目录而不是工作区里：附件是**人给的证据**，不是被测对象的产出——放进 workspace
+ * 会污染 `git diff` 与评分面（模型改过的文件与它读过的文件混在一起，diff 里多出一堆没意义的新文件），
+ * 而且 workspace 会被重跑重建、被 `git checkout` 打断。挂在这里还顺带解决一件事：
+ * 它在 `runDir` 之内 ⇒ 随 `deleteRun` 的整目录删除一次清干净，不必再有一条清理路径。
+ */
+export function rowAttachmentsDir(workspaceRoot: string, runId: string, rowId: string): string {
+  return join(rowDir(workspaceRoot, runId, rowId), 'attachments');
+}
+
+/**
+ * 某一条人工消息的附件目录（`attachments/<messageId>/`）。
+ * **拼路径前先过 id 形状校验**：这个名字来自客户端，而 `join` 不拦 `..`——一个越界的 id 会让
+ * 紧接着的写入跑到行目录之外（与 `caseCacheDir` 的处置同源）。
+ */
+export function rowAttachmentDir(workspaceRoot: string, runId: string, rowId: string, messageId: string): string {
+  return join(rowAttachmentsDir(workspaceRoot, runId, rowId), assertInjectMessageId(messageId));
+}
+
+/**
  * 该行**评分阶段的事件日志**（JSONL）。
  *
  * 为什么与 `events.jsonl` 分开：行级事件日志回答的是「**这一行**跑成什么样」（状态、计量、失败、结束），
@@ -142,13 +168,18 @@ export function runSnapshotFile(workspaceRoot: string, runId: string): string {
 }
 
 /**
- * 清掉该行**属于本模块的**三份产物：`workspace/`（上一轮 agent 的工作副本）、`.agenthome/`
- * （上一轮被测智能体的会话与配置）与 `.judgehome/`（上一轮**评分**智能体的会话与配置）。
+ * 清掉该行**属于本模块的**四份产物：`workspace/`（上一轮 agent 的工作副本）、`.agenthome/`
+ * （上一轮被测智能体的会话与配置）、`.judgehome/`（上一轮**评分**智能体的会话与配置）与
+ * `attachments/`（上一轮人上传的附件）。
  * 为什么 `.judgehome` 也要清：留着它，下一轮的评审者会带着上一轮的会话与配置跑——
  * 配置可能指向另一家 CLI（评分智能体换了），而 CLI 对读不懂的配置是**静默忽略**的。
+ * 为什么 `attachments/` 也要清：重跑是**另一次尝试**，上一轮人拖进来的材料与这一轮无关；
+ * 留着它，模型会读到几份这一轮根本没人上传过的文件，而账本里那条消息**不在**（账本每次尝试清空）
+ * ⇒ 现场看起来像「模型凭空读了一个文件」。注意**追问（复用工作区那条路）不走这里**：
+ * 追问要的就是「附件还在」。
  * 为什么不整目录删：行目录里还住着 `events.jsonl`——唯一真相源，且它的清空归
  * `resetEvents` 独占。整目录删会把「重跑」这个动作变成对事件日志的隐式清空（见文件头口径 3）。
- * 三个名字逐个列出而不是删一个白名单之外的全清：将来行目录里再落新东西时，
+ * 四个名字逐个列出而不是删一个白名单之外的全清：将来行目录里再落新东西时，
  * 这条口径是「不被顺手删掉」，而不是「默认删掉」。
  *
  * 第四条：**每一次删除都走有界重试**（`removeTreeWithRetry`）。成因是实测出来的
@@ -160,6 +191,7 @@ function clearRowArtifacts(dir: string): void {
   removeOrThrow(join(dir, 'workspace'));
   removeOrThrow(join(dir, '.agenthome'));
   removeOrThrow(join(dir, '.judgehome'));
+  removeOrThrow(join(dir, 'attachments'));
 }
 
 /** 删一棵子树（带重试）；仍删不掉就把**原始错误**抛出去，由调用方折成中文原因 */
@@ -170,7 +202,8 @@ function removeOrThrow(target: string): void {
 }
 
 /**
- * 清上一轮的行产物（workspace + 两个配置目录，**不含** events.jsonl，见文件头口径 3）；目录不存在则跳过。
+ * 清上一轮的行产物（workspace + 两个配置目录 + 附件根，**不含** events.jsonl，见文件头口径 3）；
+ * 目录不存在则跳过。
  * 删除失败（Windows 上上一轮 agent 进程还没退干净、句柄没释放 → EPERM/EBUSY）必须折成中文原因：
  * 裸抛 errno 英文原文会一路冒到界面（禁止），与 git.ts 的 executeOrFail 同一口径；
  * 原文放 message 里供排查，调用方拿到的是可处置的 INTERNAL。文案里点出**常见成因**：
@@ -178,7 +211,7 @@ function removeOrThrow(target: string): void {
  */
 function resetRowDir(dir: string): void {
   if (!existsSync(dir)) return;
-  log.info('清理上一轮的行产物（workspace、.agenthome、.judgehome）', { dir });
+  log.info('清理上一轮的行产物（workspace、.agenthome、.judgehome、attachments）', { dir });
   try {
     clearRowArtifacts(dir);
   } catch (error) {

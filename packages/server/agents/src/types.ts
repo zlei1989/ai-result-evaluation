@@ -15,17 +15,27 @@ import {
   type AskUserAnswer,
   type AskUserOutcome,
   type AskUserQuestion,
+  type InjectionBoundary,
   type InjectionCapability,
   type InteractionCapability,
   type McpServers,
   type MessageCapability,
+  type RetractOutcome,
   type SubagentRecord,
+  type TurnInjectionCapability,
 } from '@aieval/contracts';
 
 export { AGENT_KINDS };
 export type { AgentKind };
+/**
+ * 注入面的两份**词表**（形状真源在 contracts，与 `AskUserChannel` 同一条处置）：
+ * 本包内的适配器与端口只认这两个名字，指回 contracts 的那一份不许各写一遍。
+ */
+export type { InjectionBoundary, RetractOutcome };
 /** 交互面声明（形状真源在 contracts）在本包内也要能被引用：`AgentProviderMetadata.interaction` 就是它 */
 export type { InteractionCapability };
+/** 注入面声明的形状真源在 contracts（与 `InteractionCapability` 同一条处置） */
+export type { TurnInjectionCapability };
 
 /** 与路由的 ProtocolType 同义；此处重复声明避免为两个字符串引入依赖 */
 export type ProtocolType = 'openai' | 'anthropic';
@@ -97,7 +107,15 @@ export type AgentErrorCode =
    * 「厂商没认那一条」（`missing`：厂商清单采到了、里面没有它）走**同一个字符串**，但判定在编排层
    * （厂商证据只有它拿得到）⇒ 那条路不经过这个码表，直接写行失败的 `code`。
    */
-  | 'AGENT_SKILLS_UNAVAILABLE';
+  | 'AGENT_SKILLS_UNAVAILABLE'
+  /**
+   * 这一轮的请求**超出模型的上下文窗口**（厂商自己的判定，如 dsh 的 `CONTEXT_WINDOW_EXCEEDED`）。
+   *
+   * ⚠️ **同样刻意不进 `TRANSIENT_ROW_RETRY_CODES`**：超窗是**确定性**的——同一份提示词与同一份
+   * 随附内容再发一次还是超，重试只会白跑 `3s × N` 与一整轮模型时间。补救动作是「缩短提示词 /
+   * 减少随附文件 / 换窗口更大的模型」，那是配置层的动作，不是重试。
+   */
+  | 'AGENT_CONTEXT_OVERFLOW';
 
 /**
  * 一条要装入的 skill：名字 + **源目录绝对路径**。
@@ -111,6 +129,52 @@ export interface SkillRef {
   name: string;
   /** 源目录绝对路径（`<技能根>/<名称>`）；物化整目录复制它 */
   sourceDir: string;
+}
+
+/**
+ * **端口交出来的一条人工消息**：骨架只认这两格。
+ *
+ * 为什么 `text` 是**编排层拼好的**：适配器只认入参、不自己决定语义——附件清单（绝对路径 + 大小）
+ * 由编排层拼进这段文本，适配器原样交给厂商即可；两边各拼一次必然漂，而漂的表现是
+ * 「模型看到的清单与账本里记的不是同一份」。
+ * `id` 与队列条目的 `messageId` 同值：`markDelivered` / `retract` 按它认人。
+ */
+export interface UserMessage {
+  /** 这一条的身份（由调用方生成，端口只搬运） */
+  id: string;
+  /** 交给厂商的正文（附件清单已在里面） */
+  text: string;
+}
+
+/**
+ * **注入端口**：这一轮运行中收不收人话、在哪个边界取件、以及怎么把它要回来。
+ *
+ * 由**编排层实现、经入参传入**（`AgentRunInput.inject`），本包只定义接口、只消费——
+ * 与既有 `onAskUser` 同一形状（那边是一个函数，这边是一个对象，因为还要登记反向路径）。
+ * 为什么不能由骨架自己造：端口的实现要找到「哪一行」的那份状态，而 `AgentRunInput` 里
+ * **没有任何身份格**（只有路径）；把 `runId` / 行 id 加进来等于让这个包知道评测领域，
+ * 拿路径当键则是「断的时候没有编译错」的隐式耦合。
+ *
+ * 四条口径：
+ *   · `available === false`（调用方没开闸门）⇒ 适配器**一格都不挂**：这就是「零回归」的判据。
+ *     调用方**没传端口**时，替代物是「关闭档」：`available: false`、`drain()` 恒回 `[]`、
+ *     `retract()` 恒回 `'unsupported'`（没接端口就是「做不到撤回」，**不是** `'unknown'`——
+ *     后者读起来像「我们再查查」）；
+ *   · `drain(boundary)` 的取件规则是契约的一部分：`'round'` **只**取要求 `'round'` 的条目，
+ *     `'idle'` 取**全部**且要求 `'round'` 的排在前面（它等得更久）；**不抛**；
+ *   · `markDelivered` 在**适配器把消息真交给厂商之后**调：拉出去的同时把「怎么要回来」登记回来
+ *     （与 `drain` 对称，厂商差异全留在那个闭包里）；
+ *   · `retract(id)` **不抛**，结果如实返回（`RetractOutcome` 四值里没有「抛错」这一档）。
+ */
+export interface InjectionPort {
+  /** 这一轮到底开不开（= 调用方开了闸门）。false ⇒ 适配器一格都不挂 */
+  readonly available: boolean;
+  /** 在某个边界上取走可以投的条目；不抛 */
+  drain(boundary: InjectionBoundary): UserMessage[];
+  /** 适配器把消息交给厂商之后，把「怎么把它要回来」登记回来 */
+  markDelivered(ids: string[], retract: (id: string) => Promise<RetractOutcome>): void;
+  /** 编排层发起撤回；不抛，结果如实返回 */
+  retract(id: string): Promise<RetractOutcome>;
 }
 
 /** 一次运行的全部输入。内部无厂商分支，**不写** `process.env`（宿主环境只读展开，用于补 `PATH` / `HOME`） */
@@ -278,6 +342,25 @@ export interface AgentRunInput {
    * 权限档也不改（「默认不介入」这条边界靠它成立，既有行为因此逐字不变）。
    */
   onAskUser?: (request: AskUserRequest) => Promise<AskUserReply>;
+  /**
+   * **注入端口**：这一轮运行中收不收人话（见 `InjectionPort`）。
+   *
+   * **可选**：缺席 = 这一轮不进人工消息——适配器一格都不挂、一个开关都不开，
+   * 既有行为因此逐字不变（这就是「零回归」的判据）；给了就由适配器按两档边界取件。
+   *
+   * ⚠️ 与 `resume` **正交**：这一格回答「这一轮运行中收不收人话」，
+   * `resume` 回答「从哪条会话接着跑」。两格是两件事，不是「一个功能的两半」。
+   */
+  inject?: InjectionPort;
+  /**
+   * 续接到哪条会话。**可选**：缺席 = 开新会话——这就是「没有可续接的会话」的表达，
+   * 不需要第二个字段，也刻意**不**引入 `{ mode: 'new' | 'resume' }` 那种判别联合
+   * （多出来的那一档没人填，却会逼每一处构造入参的地方写 `mode`）。
+   *
+   * ⚠️ 不支持续接的家收到它**必须抛错**（中文原因），**不许静默开新会话**：
+   * 那是最坏的一种——用户以为在追问、智能体其实什么都不记得，而界面上一切正常。
+   */
+  resume?: { sessionId: string };
 }
 
 /**
@@ -353,6 +436,16 @@ export interface AgentRunResult {
    */
   turns: number | null;
   durationMs: number;
+  /**
+   * 这次跑在哪条**会话**上；`null` = 这次没拿到。
+   *
+   * **恒有这一格**，与 `tokens` / `subagentTokens` / `subagentTurns` 同形（本包结果里那几个
+   * 「可能采不到」的格子全是 `| null`、没有一个是可选键）。
+   * 「这家有没有会话这个概念」由**能力声明**回答，不进结果 ⇒「没采到」（值得 WARN）与
+   * 「这家没这个概念」（什么也不用说）在消费方分得开。
+   * 消费方是行快照的 `sessionId`：它落盘之后，跨进程续接才有键可指。
+   */
+  sessionId: string | null;
   error?: { code: AgentErrorCode; message: string; stack?: string };
   /**
    * 智能体的最终答复文本；null = 未采到。
@@ -461,6 +554,20 @@ export interface AgentProviderMetadata {
    * 声明与产物**互钉**：把哪一格改成 `yes` 就要同时给出对应的一致性场景（否则接入守卫红）。
    */
   interaction: InteractionCapability;
+  /**
+   * **注入面能力声明（第五组）**：人往运行中的一轮送话时，这一家在**两档边界**上各能做什么
+   * ——投递与撤回**分开**声明，每格带通道 / 版本门 / 实验性（形状真源在 contracts 的
+   * `TurnInjectionCapabilitySchema`）。
+   *
+   * 为什么单列一组：前面几组回答「跑这一行能做什么」「拿得到哪些块」「我们下发的东西认不认」
+   * 「模型问出来有没有人能答」；这一组回答「**人说话它收不收**」——消费方（界面与编排层两边都要读）
+   * 与形状（家 × 档(2) × 两件事的矩阵）都不同。
+   *
+   * **可选**：缺席 = 这家还没声明。消费方按「不知道」处置，**不编一份都支持的**——
+   * 猜错会让界面说谎（说「能投」而实际投不进去）。声明与夹具**同一次提交**落地：
+   * 把哪一格改成 `yes` 就要同时给出该格的真实场景。
+   */
+  turnInjection?: TurnInjectionCapability;
   /**
    * **耗时量级**：真机冒烟的等待预算按它派生，实测超出这一档的上限即判声明与事实不符。
    * 见 `ProviderTiming`。

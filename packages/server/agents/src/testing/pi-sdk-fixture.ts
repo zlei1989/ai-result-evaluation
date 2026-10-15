@@ -3,8 +3,8 @@
  *
  * 四条保真要求（比真实实现弱的地方就是守卫假绿的地方）：
  *  1. **方法名与选项名逐字对齐**厂商的 `.d.ts`（`DefaultResourceLoader` / `createAgentSession` /
- *     `SessionManager.inMemory` / `SettingsManager.inMemory` / `ModelRuntime`）：假件用错名字时，
- *     适配器那边的拼写错误就再也测不出来；
+ *     `SessionManager.{create,open,continueRecent}` / `SettingsManager.inMemory` / `ModelRuntime`）：
+ *     假件用错名字时，适配器那边的拼写错误就再也测不出来；
  *  2. **`prompt()` 永不抛**（真实 pi 的失败只体现在 `stopReason` / `errorMessage` 上）；
  *  3. **订阅的取消函数真的断开投递**（真实 `subscribe` 返回的就是取消函数）——收尾有没有注销监听
  *     全靠这一格才可观测；
@@ -14,8 +14,47 @@
  * 而真正的出站隔离由 `index.test.ts` 的并发用例拿**真包 + 本地假网关**证明
  * （假件证明不了「请求打到哪台」，那是夹具的性质而不是产品代码的性质）。
  */
+import { join } from 'node:path';
 import type { PiSkills } from '../providers/pi/sdk';
 import { piSubagentsExtensionPath } from '../providers/pi/subagents';
+import { PI_SUBAGENTS_MANAGER_KEY } from '../providers/pi/subagent-wire';
+
+/**
+ * 可推送事件的**假子会话**（`subagent-wire` 通道与子任务投影的用例共用）。
+ *
+ * 三条保真要求——比真实 `AgentSession` 弱的地方就是守卫假绿的地方：
+ *  1. `subscribe` **真用 `this`**（监听者收在实例字段上，与 `_eventListeners` 同构）：
+ *     调用方若把方法摘进新对象再调，`this` 丢失当场炸——不碰 `this` 的假件对这一类
+ *     绑定缺陷永远绿；
+ *  2. 订阅那一刻**同步吐出** `preloaded` 里排下的事件（与真实「提示词前已有排队的帧」同时序）；
+ *  3. 退订函数**真的断开**投递（终态 / 收尾有没有注销监听靠它才可观测）。
+ */
+export function createFakePiChildSession(preloaded: unknown[] = [], messages: unknown[] = []) {
+  const session = {
+    /** 轮次基数：订阅时已完成的助手消息数（真实形态是 `session.messages` getter） */
+    messages,
+    subscribe(
+      this: { listeners: Array<(event: unknown) => void>; queued: unknown[] },
+      listener: (event: unknown) => void,
+    ): () => void {
+      this.listeners.push(listener);
+      for (const event of this.queued) listener(event);
+      return () => {
+        const index = this.listeners.indexOf(listener);
+        if (index >= 0) this.listeners.splice(index, 1);
+      };
+    },
+    listeners: [] as Array<(event: unknown) => void>,
+    queued: preloaded,
+    emit(event: unknown): void {
+      for (const listener of [...this.listeners]) listener(event);
+    },
+    get listenerCount(): number {
+      return session.listeners.length;
+    },
+  };
+  return session;
+}
 
 export interface FakePiRecorder {
   /** 装配顺序：`resource-loader` → `reload` → `runtime` → `create-session` → `bind-extensions` */
@@ -75,6 +114,37 @@ export interface FakePiRecorder {
    * 用例要能把它指到一份自己造的转写上，才验得了「收尾读转写」这条路。
    */
   sessionId: string;
+  /**
+   * 本会话的落盘路径（厂商 `AgentSession.sessionFile`）；`undefined` = 这条会话不落盘。
+   *
+   * 由会话管理器的两条构造路径按厂商的命名规则写：`create` 在给定目录下现拼一个
+   * `<ISO 时间戳>_<会话 id>.jsonl`（时间戳固定成一个定值，好让用例拿它当**独立字面量**判据），
+   * `open` 原样记下传进来的路径。可写：用例要造「会话文件不存在」的姿态。
+   */
+  sessionFile: string | undefined;
+  /**
+   * 会话管理器的构造调用，顺序即调用顺序（`{kind:'create'|'open'|'continueRecent', …}`）。
+   * 判据取它：**续接必须走 `open(会话文件)`，不许走 `continueRecent`**（后者取目录里 mtime 最新）。
+   */
+  sessionManagerCalls: Array<Record<string, string | undefined>>;
+  /** 真被投出去的两档（`steer` = `'round'`、`followUp` = `'idle'`）；空数组 = 一次都没投 */
+  steering: string[];
+  followUps: string[];
+  /**
+   * 假件往 `globalThis[Symbol.for("pi-subagents:manager")]` 挂注册表条目的次数。
+   *
+   * 真实 pi 在 `loader.reload()` 里执行扩展工厂（claim 点就在那里）；假件在同一位置挂
+   * **可配置的**假条目（`FakePiSdkOptions.registryEntryFactory`），产品侧的
+   * 「reload 后快照 + 删槽」由此可在假件上观测。
+   */
+  registryClaims: number;
+  /**
+   * 释放序列里**扩展侧**收到过什么（本行装了会听 `session_shutdown` 的扩展时才有内容）：
+   * 元素形如 `session_shutdown:quit`。与 `releaseOrder` 一起用，才判得出「发在 dispose 之前」。
+   */
+  extensionShutdowns: string[];
+  /** 释放序列的到达序（`session_shutdown:…` / `dispose`），判「按厂商那条顺序」 */
+  releaseOrder: string[];
 }
 
 export function createFakePiRecorder(): FakePiRecorder {
@@ -104,11 +174,28 @@ export function createFakePiRecorder(): FakePiRecorder {
     mcpExtensionOptions: null,
     mcpExtensionInstalled: false,
     sessionId: 'fake-pi-session',
+    sessionFile: undefined,
+    sessionManagerCalls: [],
+    steering: [],
+    followUps: [],
+    registryClaims: 0,
+    extensionShutdowns: [],
+    releaseOrder: [],
   };
 }
 
 export interface FakePiSdkOptions {
   recorder: FakePiRecorder;
+  /**
+   * 每次 `reload` 往 `globalThis[Symbol.for("pi-subagents:manager")]` 挂的**假注册表条目**。
+   *
+   * 真实 pi 在 reload 里执行子智能体扩展的工厂（claim 点），假件在同一位置挂这一份——
+   * 缺省 `{ getRecord: () => undefined }`（扩展在表里、但没有任何子会话记录，绝大多数用例
+   * 的姿态）；给 `null` 模拟「claim 没发生」（快照落空 ⇒ wire 通道降级那一条通路）。
+   * **每次 reload 现造一份**：真机上每次工厂执行都 `new AgentManager`，并发两行的隔离判据
+   * （两行各自快照到不同的条目）靠这一份新实例成立。
+   */
+  registryEntryFactory?: (() => unknown) | null;
   /**
    * `reload` 之后装载器报告的扩展（**运行期断言的输入**），**含我们白名单的那一条**。
    *
@@ -130,6 +217,13 @@ export interface FakePiSdkOptions {
   createError?: unknown;
   /** `prompt()` 之后挂住不 resolve（测取消与看门狗） */
   hangPrompt?: boolean;
+  /**
+   * 模拟「本行装了会听 `session_shutdown` 的扩展」——生产中就是 MCP 扩展那一档
+   * （它把连接清理挂在那个事件上）。开了之后假件的 `hasHandlers('session_shutdown')` 为真、
+   * `emit` 会把事件派给这个处理器并记进 `releaseOrder`：释放序列有没有按厂商顺序补上那一发，
+   * 因此是一条可断言的事实而不是注释里的承诺。
+   */
+  shutdownListener?: boolean;
   /**
    * 一次模型往返发出去**之前**，`before_provider_request` 依次拿到的 payload。
    * 真实 pi 在这一刻调扩展（观察者的取证点就是它）；不给 = 这个钩子一次都不发。
@@ -197,6 +291,19 @@ export function createFakePiSdk(options: FakePiSdkOptions): Record<string, unkno
       recorder.extensions = options.extensionsAfterReload?.[reloadCount]
         ?? [{ path: piSubagentsExtensionPath() }];
       reloadCount += 1;
+      /**
+       * 厂商侧的 claim：真实 pi 的扩展工厂在 reload 里执行并按「槽为空才写」挂 manager 注册表
+       * （先到先得）。假件照抄这条语义——产品侧若忘了「快照后删槽」，第二行的 claim 就会
+       * 落空、整行退回转写通道，`index.test.ts` 的按 run 划界用例当场红。
+       */
+      if (options.registryEntryFactory !== null) {
+        const slot = (globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY];
+        if (slot === undefined) {
+          recorder.registryClaims += 1;
+          (globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY] =
+            (options.registryEntryFactory ?? (() => ({ getRecord: () => undefined })))();
+        }
+      }
     }
   }
 
@@ -268,6 +375,20 @@ export function createFakePiSdk(options: FakePiSdkOptions): Record<string, unkno
     },
     dispose: (): void => {
       recorder.disposeCount += 1;
+      recorder.releaseOrder.push('dispose');
+    },
+    /**
+     * 厂商 `AgentSession.extensionRunner` 的公开面（只有我们用到的那两格）。
+     * `hasHandlers` 读的是**真注册过**的那些（与真件同义）；`emit` 把事件派给它们。
+     */
+    extensionRunner: {
+      hasHandlers: (eventType: string): boolean => (recorder.extensionHandlers[eventType]?.length ?? 0) > 0,
+      emit: async (event: unknown): Promise<unknown> => {
+        for (const handler of recorder.extensionHandlers[(event as { type?: string } | null)?.type ?? ''] ?? []) {
+          handler(event);
+        }
+        return undefined;
+      },
     },
     bindExtensions: async (bindings: Record<string, unknown>): Promise<void> => {
       recorder.bindings = bindings;
@@ -290,11 +411,35 @@ export function createFakePiSdk(options: FakePiSdkOptions): Record<string, unkno
         },
       };
       for (const factory of factories) factory(pi);
+      if (options.shutdownListener === true) {
+        pi.on('session_shutdown', (event: unknown) => {
+          const reason = (event as { reason?: unknown } | null)?.reason;
+          recorder.extensionShutdowns.push(`session_shutdown:${typeof reason === 'string' ? reason : 'unknown'}`);
+          recorder.releaseOrder.push(`session_shutdown:${typeof reason === 'string' ? reason : 'unknown'}`);
+        });
+      }
     },
     getLastAssistantText: (): string | undefined => 'fake-final-text',
     // 取值走 getter：用例改了 `recorder.sessionId` 之后，适配器下一次读到的是新值
     get sessionId(): string {
       return recorder.sessionId;
+    },
+    /** 落盘路径同一条处置：管理器那两条构造路径写它，适配器收尾读它 */
+    get sessionFile(): string | undefined {
+      return recorder.sessionFile;
+    },
+    /**
+     * 投递的两档：假件只记「谁在什么时候说了什么」，返回值照厂商的三态给 `'queued'`。
+     * 真实实现的语义（`'handled'` = 被扩展当场吃掉、空闲时也照收不误）见 `PiSession.steer` 的注释；
+     * 本仓今天还没接投递面，故这一格只用来钉「声明里那两件真的在会话上」。
+     */
+    steer: async (text: string): Promise<'handled' | 'queued'> => {
+      recorder.steering.push(text);
+      return 'queued';
+    },
+    followUp: async (text: string): Promise<'handled' | 'queued'> => {
+      recorder.followUps.push(text);
+      return 'queued';
     },
   };
 
@@ -302,7 +447,30 @@ export function createFakePiSdk(options: FakePiSdkOptions): Record<string, unkno
     '@earendil-works/pi-coding-agent': {
       DefaultResourceLoader: FakeResourceLoader,
       ModelRuntime: FakeModelRuntime,
-      SessionManager: { inMemory: () => ({ kind: 'memory-session' }) },
+      /**
+       * 文件型会话管理器的三条构造路径（`inMemory` **刻意不给**：适配器已经不用它了，
+       * 假件留着它等于给「悄悄退回内存」留一条永远绿的路）。
+       *
+       * `create` 按厂商的命名规则现拼一个落盘路径（时间戳固定成定值 ⇒ 用例可以拿一个字面量判据），
+       * `open` 原样记下路径；`continueRecent` 在**调用时**就往 recorder 里记一笔，
+       * 于是「适配器改回 continueRecent」是一条可断言的事实，而不是一段注释里的承诺。
+       */
+      SessionManager: {
+        create: (cwd: string, sessionDir?: string): Record<string, unknown> => {
+          recorder.sessionManagerCalls.push({ kind: 'create', cwd, sessionDir });
+          recorder.sessionFile = join(sessionDir ?? cwd, `2000-01-01T00-00-00-000Z_${recorder.sessionId}.jsonl`);
+          return { kind: 'file-session', cwd, sessionDir };
+        },
+        open: (path: string): Record<string, unknown> => {
+          recorder.sessionManagerCalls.push({ kind: 'open', path });
+          recorder.sessionFile = path;
+          return { kind: 'file-session', path };
+        },
+        continueRecent: (cwd: string, sessionDir?: string): Record<string, unknown> => {
+          recorder.sessionManagerCalls.push({ kind: 'continueRecent', cwd, sessionDir });
+          return { kind: 'file-session', cwd, sessionDir };
+        },
+      },
       SettingsManager: { inMemory: (settings?: unknown) => ({ kind: 'memory-settings', settings }) },
       /**
        * MCP 扩展工厂：真实实现返回 `(pi) => void`（在 `bindExtensions` 时被调）。

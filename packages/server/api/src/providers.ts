@@ -5,8 +5,9 @@
  * 三条不可动摇的口径：
  *   1. **明文密钥只进不出**：落盘的 `Provider.apiKey` 是明文（服务端必须拿原 token 才能代调上游），
  *      但任何对外返回值一律是 `ProviderView` —— 只有 `apiKeyMasked`，没有 `apiKey` 字段；
- *   2. **模型清单的来源只有两个**：手工增删（`source: 'manual'`）与拉取（`source: 'fetched'`），
- *      拉取的合并规则见 `fetchProviderModels`（不冲掉手工条目）；
+ *   2. **模型清单的来源只有两个**：手工增删（`source: 'manual'`）与拉取导入（`source: 'fetched'`）。
+ *      拉取分两步走 —— 先 `previewProviderModels` 拉候选（不落盘），用户在预览对话框里挑选后
+ *      再 `importProviderModels` 合并落盘（合并规则：不冲掉手工条目、不动未挑选的既有条目）；
  *   3. **删除供应商不级联改写 `settings.defaultJudge` 与用例的评分模型**：那会把「删一个供应商」
  *      变成一次跨域事务；悬空引用由设置页显式提示、由评分路由解析时报错兜底。
  *
@@ -23,6 +24,8 @@ import {
   type ProviderCreate,
   type ProviderModel,
   type ProviderModelContextInput,
+  type ProviderModelPreview,
+  type ProviderModelsImport,
   type ProviderPatch,
   type ProviderView,
   type ProtocolType,
@@ -669,29 +672,26 @@ function pickEfforts(
 }
 
 /**
- * 拉取供应商的模型清单并**合并**进现有清单。
+ * 拉取上游 /models 的**候选**清单：只读不写。
  *
- * 合并规则（三条，缺一条都会丢用户的数据）：
- *   - `source: 'manual'` 的条目**原样保留**（位置在前、来源不变），拉取结果里同 id 的条目不会顶掉它；
- *   - 上一轮 `fetched` 的条目这次没再返回，视为上游已下架，清掉 —— 这才是「刷新」的语义；
- *   - 其余新 id 追加为 `fetched`。
+ * 返回的是「上游这次说了什么」的忠实转述（含窗口 / 档位等能力格），**绝不落盘** ——
+ * 要不要进清单、进哪几条，由用户在预览对话框里挑选后经 `importProviderModels` 提交。
+ * 把「拉到」直接当「加进」会一次灌进几十条（embedding / 图像 / 已弃用型号都在内），
+ * 清单反而没法用了；预览这一步就是给「挑选」留的。
  *
- * 返回 `Promise<ProviderView>`：按契约本函数是同步返回，但它必须发一次 HTTP 请求，
- * 只能是异步（客户端的 `fetchModels` 也返回 Promise）。不改名、不改参数，只把返回值包成 Promise。
- *
- * 协议**不参与**本函数的判定，地址形态由 `modelListCandidates` 兜底：
+ * 协议**不参与**判定，地址形态由 `modelListCandidates` 兜底：
  * 「Anthropic 协议不能拉清单」只对 api.anthropic.com 成立，而多数自建网关在版本段上
  * 同时提供 OpenAI 风格的清单接口 —— 把协议当判据，等于替这类用户少拉一次清单。
  * 同理，地址填成 Messages 根（`/anthropic`）或带网关前缀（`/api/v1`）时清单接口仍在站点根上，
  * 故候选里也含根的 `/models` 与 `/v1/models`。
  */
-export async function fetchProviderModels(providerId: string): Promise<ProviderView> {
+export async function previewProviderModels(providerId: string): Promise<ProviderModelPreview[]> {
   const config = loadConfig();
   const provider = requireProvider(config, providerId);
 
   const candidates = modelListCandidates(provider.baseUrl);
   // 只记地址，不记密钥
-  log.debug('拉取模型清单', { providerId, candidates });
+  log.debug('拉取模型清单候选', { providerId, candidates });
 
   // 超时保护罩住**整段上游等待**（fetch 与读正文），不只是拿到响应头那一刻：
   // 拿到头之后挂住正文的网关同样会让拉取永远转下去。计时器在 finally 里清掉，不留悬挂定时器。
@@ -722,56 +722,93 @@ export async function fetchProviderModels(providerId: string): Promise<ProviderV
   }
 
   if (extracted.length === 0) {
-    // 一条都认不出时**不落盘**：把空清单写回去会静默清掉用户手工维护的模型，
-    // 而「上游这次返回了空」与「我们没看懂它的响应」在界面上完全无法区分。
+    // 一条都认不出时直接报错：预览虽然不落盘，但把「空清单」当成功返回会让对话框
+    // 弹出一个空列表，用户无从判断是网关挂了还是真的一条模型都没有。
     throw new ServiceError(
       'INTERNAL',
       `拉取模型失败：${hostOf(candidates[0])} 的响应里没有可识别的模型（data 字段缺失或为空）`,
     );
   }
 
-  // 写回用的是**重新读到的最新配置**，不是上面那份 await 之前的快照：本函数跨了两次 await
-  //（fetch 与读正文），窗口期内任何落盘改动都可能发生 —— 另一个请求手工加模型、设置页保存、
-  // 另一个客户端/标签页。拿快照整份写回会把这些改动静默回滚，症状正是本函数要防的那类
-  // 「用户的数据被冲掉」，只不过丢的是**别的**改动（lost update）。所以只有目标供应商的
-  // models / updatedAt 被替换，最新配置里的其余部分原样保留。
-  //
-  // 已知取舍：窗口期内**同一个供应商**模型清单的并发修改仍会被本次合并结果覆盖 ——
-  // 没有锁就不可避免，接受它；跨供应商与跨域（settings/cases）的改动必须存活。
-  // 供应商若已在窗口期内被删掉，这里按 NOT_FOUND 失败（而不是复活一个已被删除的条目）。
-  const fresh = loadConfig();
-  const current = requireProvider(fresh, providerId);
-  const manual = current.models.filter((model) => model.source === 'manual');
-  const manualIds = new Set(manual.map((model) => model.id));
-  const byId = new Map(extracted.map((model) => [model.id, model]));
-  const previousById = new Map(current.models.map((model) => [model.id, model]));
-  const fetchedIds = [...byId.keys()].filter((id) => !manualIds.has(id));
+  log.info('模型清单候选已拉取', {
+    providerId,
+    count: extracted.length,
+    withWindow: extracted.filter((model) => model.contextWindow !== undefined).length,
+  });
+  return extracted;
+}
+
+/**
+ * 把挑选后的候选条目**合并**进清单（拉取的第二步）。
+ *
+ * 提交集合是用户在预览对话框里勾选的那一批，合并规则三条：
+ *   - `source: 'manual'` 的条目**原样保留**，提交结果里同 id 的条目不会顶掉它；
+ *   - 提交的 id 若已在清单里（fetched）→ **原位更新**：窗口三格看「用户手工改过没有」
+ *     （改过就保留用户的），档位永远以上游为准；不在清单里 → 追加为 `fetched`；
+ *   - **未提交的既有条目一律不动**：挑选的语义是「把勾选的加进来」，不是「用勾选集合
+ *     替换整个 fetched 部分」—— 用户只勾一条新模型时，已有的条目被悄悄删掉一批，
+ *     那正是本仓最忌讳的静默丢数据。上游已下架的模型靠手工「移除」清出。
+ *
+ * 本函数是**同步**的（loadConfig → 内存合并 → 落盘，没有 await 窗口），
+ * 不存在「跨网络窗口期的并发落盘」问题；跨供应商 / 跨域的改动天然存活。
+ * 供应商若已不存在，按 NOT_FOUND 失败（而不是复活一个已被删除的条目）。
+ */
+export function importProviderModels(providerId: string, input: ProviderModelsImport): ProviderView {
+  // 归一提交条目：trim + 按首次出现去重。路由层已用 zod 校验过形状（至少一条、能力格为正整数），
+  // 这里的归一是防「id 带首尾空白与清单里同 id 并存」—— 与 manualModels 同一条口径。
+  const submittedById = new Map<string, ProviderModelPreview>();
+  for (const model of input.models) {
+    const id = model.id.trim();
+    if (id === '' || submittedById.has(id)) continue;
+    submittedById.set(id, { ...model, id });
+  }
+  if (submittedById.size === 0) {
+    throw new ServiceError('INVALID_QUERY', '提交的模型列表为空（没有可加入的条目）');
+  }
+
+  const config = loadConfig();
+  const provider = requireProvider(config, providerId);
+
+  // 已有条目原位处理：manual 不动；fetched 且被提交 → 更新；fetched 未被提交 → 原样保留
+  const merged = provider.models.map((model): ProviderModel => {
+    if (model.source === 'manual') return model;
+    const submitted = submittedById.get(model.id);
+    if (submitted === undefined) return model;
+    // 「用户改过（或清空过）这一格就别动它」：没有这条，用户修好的窗口会在一次导入时
+    // **静默打回**上游的旧值，而他以为改生效了 —— 本仓最忌讳的静默丢用户数据。
+    // ⚠️ 只保护**窗口**：档位（`pickEfforts`）永远以上游为准 —— 它是上游声明的**能力**，
+    // 用户手工留住一个上游已经取消的档位，只会让创建评测时选出一个跑不通的组合。
+    const keep = model.contextWindowSource === 'manual';
+    return {
+      id: model.id,
+      source: 'fetched' as const,
+      ...pickWindow(keep ? model : submitted),
+      ...pickEfforts(submitted),
+    };
+  });
+
+  // 新条目追加在尾部（与清单里的既有条目并存，不重排既有顺序）
+  const existingIds = new Set(provider.models.map((model) => model.id));
+  const appended: ProviderModel[] = [...submittedById.values()]
+    .filter((model) => !existingIds.has(model.id))
+    .map((model) => ({
+      id: model.id,
+      source: 'fetched' as const,
+      ...pickWindow(model),
+      ...pickEfforts(model),
+    }));
+
   const next: Provider = {
-    ...current,
-    models: [
-      ...manual,
-      ...fetchedIds.map((id) => {
-        const previous = previousById.get(id);
-        // 「用户改过（或清空过）这一格就别动它」：没有这条，用户修好的窗口会在下一次拉取时**静默打回**，
-        // 而他以为改生效了 —— 本仓最忌讳的静默丢用户数据（与 manualModels 的注释同一条口径）。
-        // ⚠️ 只保护**窗口**：档位（`pickEfforts`）永远以上游为准 —— 它是上游声明的**能力**，
-        // 用户手工留住一个上游已经取消的档位，只会让创建评测时选出一个跑不通的组合。
-        const keep = previous?.contextWindowSource === 'manual';
-        return {
-          id,
-          source: 'fetched' as const,
-          ...pickWindow(keep ? previous : byId.get(id)),
-          ...pickEfforts(byId.get(id)),
-        };
-      }),
-    ],
+    ...provider,
+    models: [...merged, ...appended],
     updatedAt: new Date().toISOString(),
   };
-  replaceProvider(fresh, next);
-  log.info('模型清单已更新', {
+  replaceProvider(config, next);
+  log.info('模型清单已导入', {
     providerId,
-    manual: manual.length,
-    fetched: fetchedIds.length,
+    submitted: submittedById.size,
+    added: appended.length,
+    updated: merged.length - provider.models.filter((model) => model.source === 'manual').length,
     // 「这次补齐了多少条窗口」在服务端要可观测：用户报「窗口还是未知」时第一个要看的数就是它
     withWindow: next.models.filter((model) => model.contextWindow !== undefined).length,
   });

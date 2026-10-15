@@ -29,6 +29,8 @@
  *      `CANDIDATE_TABLE_MIN_WIDTH`（表格最小宽度，见该常量的注释：它就是「装得下」的分界）。
  *      三处**必须同时在场**，少一处就静默退回「溢出到容器外面、够不到」的老样子：
  *      ① `scroll={{ x: 数值 }}`、② 首列 `fixed: 'left'`、③ 操作列 `fixed: 'right'`。
+ *   9. **备注**（「用例」下方那一格）是可选用户注解，空串 = 没写；它只影响列表「标题」列与
+ *      详情顶部信息卡的展示，**不参与任何行的「同一件事」判定**——只改备注保存不会作废任何行。
  */
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Flex, Form, Input, Modal, Radio, Select, Switch, Table, Tag, Tooltip, Typography } from 'antd';
@@ -126,10 +128,17 @@ export type RunCreatePanelProps = RunCreatePanelBaseProps &
 /** 提交给调用方的形状：与 contracts 的 `RunUpdate` 逐字段一致（`id` 只在编辑时有） */
 export interface RunFormValues {
   caseId: string;
+  /**
+   * 这一轮的用户备注（空串 = 没写）。表单总是显式交出这一格：编辑载荷是**全量替换**，
+   * 漏掉它就会把已有备注清空（创建时则是让人填的备注被静默丢弃）。
+   */
+  note: string;
   executionMode: ExecutionMode;
   useAgentJudge: boolean;
   /** 这一轮开不开应答面（`RunCreate.askUser`）：模型提问时等人回答 */
   askUser: boolean;
+  /** 这一轮允不允许人往运行中的智能体发消息（`RunCreate.injectMessages`）：输入区闸门 */
+  injectMessages: boolean;
   /**
    * 候选行。`effort` 必须**原样回传**（编辑时）：编辑载荷是行集合的**全量替换**，而
    * contracts 的 `isSameRowTarget` 把 effort 一起比（一侧没给就算改了档位）——
@@ -150,9 +159,11 @@ interface RowFormValue {
 
 interface FormValues {
   caseId?: string;
+  note?: string;
   executionMode?: 'parallel' | 'serial';
   useAgentJudge?: boolean;
   askUser?: boolean;
+  injectMessages?: boolean;
   rows?: RowFormValue[];
 }
 
@@ -414,10 +425,13 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
     if (values.caseId === undefined || rows.length === 0) return;
     const submit: RunFormValues = {
       caseId: values.caseId,
+      // 备注是可选注解：纯空白按「没写」处置（列表标题列不能出现一个尾随的「 ·  」）
+      note: (values.note ?? '').trim(),
       executionMode: values.executionMode ?? 'serial',
       // 缺省 false：开关没被碰过时 antd 给的是 `initialValues` 那一份，这里兜的是「值确实缺失」的极端情况
       useAgentJudge: values.useAgentJudge ?? false,
       askUser: values.askUser ?? false,
+      injectMessages: values.injectMessages ?? false,
       rows,
     };
 
@@ -464,12 +478,15 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       // 用户只改了个模型、执行模式却被悄悄改成串行）；新建：只给两个缺省值，行由 Form.List 自带
       initialValues={
         editingRun === undefined
-          ? { executionMode: 'serial', useAgentJudge: false, askUser: false }
+          ? { note: '', executionMode: 'serial', useAgentJudge: false, askUser: false, injectMessages: false }
           : {
             caseId: editingRun.caseId,
+            // 备注是可选注解：旧轮次由契约默认成空串，这里原样回填（改与不改都由表单显式交出）
+            note: editingRun.note,
             executionMode: editingRun.executionMode,
             useAgentJudge: editingRun.useAgentJudge,
             askUser: editingRun.askUser,
+            injectMessages: editingRun.injectMessages,
             rows: editingRun.rows.map((row) => ({
               // id 与 effort 都原样进表单值：前者是「哪一行」，后者是「这一行怎么跑的」，
               // 少任何一格都会让一次无改动的保存被服务端判成「改了」（见 RunFormValues 的注释）
@@ -500,6 +517,17 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         />
       </Form.Item>
 
+      {/* 备注紧跟在「用例」下面（用户口径）：它回答的是「这一轮为什么这么测」，
+          与用例标题一起构成列表「标题」列的显示文本。说明写在 extra 里：跟着这一格走，
+          说清它会出现在哪、不填会怎样 */}
+      <Form.Item
+        name="note"
+        label="备注"
+        extra="记录这一次测试的目的，会显示在评测列表的标题列与评测详情顶部；不填时列表只显示用例标题。"
+      >
+        <Input data-testid="run-note" placeholder="例如：对比模型不同版本间的差异" />
+      </Form.Item>
+
       <Form.Item name="executionMode" label="执行模式" rules={[{ required: true, message: '请选择执行模式' }]}>
         {/* 顺序与默认值是版面口径的一部分：串行在前、并行在后，且默认选中串行。
             默认串行而不是并行，是因为并行不设并发上限——多候选一起开跑时最先撞上的通常是供应商限流。 */}
@@ -528,6 +556,18 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         valuePropName="checked"
         // 说明同样写在 extra 里（跟着这一格走）：它要说清代价——这一轮会被人工介入，产物与没开过的不可直接比
         extra="模型中途拿不准时会向你提问，你在弹出的问答卡片里回答，它拿到答复再继续。代价如实说：这一轮会为等人停下来，一问最多等十分钟，产物与没开过的轮次不可直接比。默认关闭。"
+        style={{ marginBottom: 8 }}
+      >
+        <Switch />
+      </Form.Item>
+
+      {/* 与「允许智能体向我提问」同源句式（两格说的是同一件事的两个方向：模型问人 / 人喂模型）：
+          代价都必须当场说清——这一轮被人插过话之后，它的产物与没插过话的轮次**不可直接比**。 */}
+      <Form.Item
+        name="injectMessages"
+        label="允许我向智能体补充消息"
+        valuePropName="checked"
+        extra="运行中可以往输入框里发一句话：它先排队，智能体在下一次可投递的时机拿到（有的家要等本轮收场）。消息只在你按下发送且智能体真的收到时才进执行日志；等太久没投出去的会如实标成「未送达」。代价如实说：这一轮会被人工介入，产物与没插过话的轮次不可直接比。默认关闭。"
         style={{ marginBottom: 8 }}
       >
         <Switch />

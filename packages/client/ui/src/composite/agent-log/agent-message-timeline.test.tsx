@@ -14,6 +14,7 @@ import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
 import type {
   ContentBlock,
   LogTurn,
+  RowEvent,
   SessionNode,
   TextBlock,
   ThinkingBlock,
@@ -22,7 +23,7 @@ import type {
 } from './types';
 import { buildAgentLogModel } from './build-model';
 import { nodeIndex, type RenderBlock } from './render-blocks';
-import { AgentMessageTimeline } from './agent-message-timeline';
+import { AgentMessageTimeline, rowEventsOfTurn } from './agent-message-timeline';
 import type { BlockRenderContext } from './block-renderer-registry';
 import { defaultOpenKeysOf } from './use-agent-log-view';
 import { installResizeObserverStub } from '../../testing/resize-observer';
@@ -51,6 +52,7 @@ function textBlock(id: string, text: string): TextBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text,
   };
@@ -67,6 +69,7 @@ function thinkingBlock(id: string, text: string): ThinkingBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text,
     textMissing: null,
@@ -85,6 +88,7 @@ function toolCall(id: string, callId: string, name: string): ToolCallBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     callId,
     name,
@@ -106,6 +110,7 @@ function toolResult(id: string, callId: string, text: string, status: 'ok' | 'er
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     callId,
     text,
@@ -118,7 +123,9 @@ function toolResult(id: string, callId: string, text: string, status: 'ok' | 'er
 }
 
 function turn(overrides: Partial<LogTurn> & { blocks: ContentBlock[] }): LogTurn {
-  return { round: 1, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides };
+  // 兜底定位键的夹具口径：**投递顺序上第一条块**的 `messageId`（用例可以用 overrides 覆写它）
+  const fallbackMessageId = overrides.fallbackMessageId ?? overrides.blocks[0]?.messageId ?? null;
+  return { round: 1, segment: 0, at: AT, subagentId: null, tokens: null, durationMs: null, running: false, ...overrides, fallbackMessageId };
 }
 
 /** 会话节点：只为「派发点出占位条」这一条用例造一个（其余格按「都没有」补齐） */
@@ -156,7 +163,13 @@ function sessionNode(overrides: Partial<SessionNode> & { id: string }): SessionN
  * （`build-model.test.ts`「不可达的子会话节点…」那条），这两条用例考的就不是水位了。
  * 主会话第 1 轮那条消息**就是**派发调用（与既有「整条链」用例同一手法），于是每条消息各占一个轮次。
  */
-function sessionChainModel(input: { mainRounds: number; childRounds: number; events: AgentEvent[] }) {
+function sessionChainModel(input: {
+  mainRounds: number;
+  childRounds: number;
+  events: AgentEvent[];
+  /** 子任务行覆盖：默认是「已收场」那一档，实时形状（派发时只有一条 `running`）用它改 */
+  subagent?: Partial<Extract<RowRecord, { type: 'subagent' }>['subagent']>;
+}) {
   const record = (id: string, mergeKey: string, roundTrip: number, subagentId: string | null, blocks: AgentMessage['blocks']): RowRecord => ({
     type: 'message',
     message: {
@@ -164,6 +177,7 @@ function sessionChainModel(input: { mainRounds: number; childRounds: number; eve
       vendorId: null,
       role: 'assistant',
       source: 'wire',
+      origin: 'case-prompt',
       roundTrip,
       turn: null,
       step: null,
@@ -203,6 +217,7 @@ function sessionChainModel(input: { mainRounds: number; childRounds: number; eve
           parentCallId: 'call_sub',
           parentSubagentId: null,
           usage: null,
+          ...input.subagent,
         },
       },
     ],
@@ -381,7 +396,7 @@ describe('AgentMessageTimeline', () => {
     expect(screen.getByTestId('probe').textContent).not.toBe('true|true');
   });
 
-  it('用户提示词摆最前、不折叠；notices 紧随其后', () => {
+  it('考题提示词摆最前、不折叠；notices 紧随其后', () => {
     const turns = [turn({ blocks: [textBlock('t1', '正文内容')] })];
 
     render(
@@ -394,7 +409,7 @@ describe('AgentMessageTimeline', () => {
     );
 
     const prompt = screen.getByTestId('agent-log-user-prompt');
-    expect(prompt).toHaveTextContent('用户提示词');
+    expect(prompt).toHaveTextContent('考题提示词');
     expect(prompt).toHaveTextContent('帮我把 build 脚本修好');
     // 顺序：提示词 → 补充提示 → 轮次
     const notice = screen.getByText('该子任务的对话未转发（只投送了工具调用）');
@@ -493,7 +508,7 @@ describe('AgentMessageTimeline', () => {
     const rows = [...document.querySelectorAll('[data-turn-row]')];
     expect(rows).toHaveLength(1);
     // 行键就是「哪一轮」：它必须出现在 round-1 那一行里，而不是挂在别的行上或整条消失
-    expect(rows[0]!.getAttribute('data-turn-row')).toBe('round-1');
+    expect(rows[0]!.getAttribute('data-turn-row')).toBe('seg-0-round-1');
     expect(rows[0]!.textContent ?? '').toContain('子会话自己的用量');
   });
 
@@ -515,6 +530,7 @@ describe('AgentMessageTimeline', () => {
         vendorId: null,
         role: 'assistant',
         source: 'wire',
+        origin: 'case-prompt',
         roundTrip: 1,
         turn: null,
         step: null,
@@ -595,7 +611,7 @@ describe('AgentMessageTimeline', () => {
     // 落点：那一条用量必须渲染在主会话 `round-1` 的那一行里（数据层给的归属键一路兑现到 DOM）
     const rows = [...mainView.container.querySelectorAll('[data-turn-row]')];
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.getAttribute('data-turn-row')).toBe('round-1');
+    expect(rows[0]!.getAttribute('data-turn-row')).toBe('seg-0-round-1');
     expect(rows[0]!.textContent ?? '').toContain('用量 输入 10 tok');
     mainView.unmount();
 
@@ -695,6 +711,41 @@ describe('AgentMessageTimeline', () => {
     fireEvent.click(enter);
     expect(onEnterNode).toHaveBeenCalledWith('sub-1');
   });
+
+  /**
+   * **派发那一刻的子任务行**（数据层到渲染层的整条链）。
+   *
+   * 形状就是「子智能体刚被派出去、正在跑」：一条 `running` 子任务记录 + **零条**归属它的消息，
+   * 派发点是主会话那一轮里的 `Agent` 调用。界面上必须当场有卡片与入口——按子任务身份可达，
+   * 而不是等它收场（这一档若不出条，正在跑的子任务在整个运行期都不可达）。
+   *
+   * 守的是「出条与否按**子任务身份**判、不按轮次数判」：节点零轮次也要出条，否则正在跑的子任务
+   * 在整个运行期都不可达。
+   */
+  it('只有派发行、子任务零正文时，派发点照样出卡片与入口（运行中）', () => {
+    const model = sessionChainModel({
+      mainRounds: 1,
+      childRounds: 0,
+      events: [],
+      // 派发时那一条：身份已定、状态运行中，结果与用量都还没采到
+      subagent: { name: null, status: 'running', outcome: null },
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main === undefined || main.content.status !== 'ready') throw new Error('夹具没造出主会话');
+    const onEnterNode = vi.fn();
+
+    render(<AgentMessageTimeline turns={main.content.data} nodes={nodeIndex(model.nodes)} onEnterNode={onEnterNode} />);
+
+    // 身份与状态都上屏了：名字没给时用身份前 8 位兜底（不显示空白）
+    expect(screen.getByText('子任务')).toBeInTheDocument();
+    expect(screen.getByText('子任务 sub-1')).toBeInTheDocument();
+    expect(screen.getByText('运行中')).toBeInTheDocument();
+
+    const enter = screen.getByRole('button', { name: /进入/ });
+    expect(enter).toBeEnabled();
+    fireEvent.click(enter);
+    expect(onEnterNode).toHaveBeenCalledWith('subagent:sub-1');
+  });
 });
 
 /**
@@ -769,5 +820,33 @@ describe('消息级用量页脚', () => {
     // 两个锚点互不嵌套：页脚不在里程碑里、里程碑也不在页脚里
     expect(container.querySelector('[data-usage-footer] [data-row-event]')).toBeNull();
     expect(container.querySelector('[data-row-event] [data-usage-footer]')).toBeNull();
+  });
+});
+
+/**
+ * **行级事件在多段下的归属**：行级事件带的是厂商口径的 `(subagentId, round)`，**里面没有段**，
+ * 而追问那一段的轮次号从 1 重新数 ⇒ 同一个号在两段里各有一轮。归属判据是「归**段号最大**的那一轮」
+ * （段号单调递增，那一条读数必然属于最后发生的那一段）。
+ *
+ * 少了这条判据的症状：追问之后的那条用量里程碑落在**首段**的同号轮次上——数字是对的、
+ * 位置是错的，而位置错了就等于把两段的计量混在一起读。
+ */
+describe('行级事件在多段下的归属', () => {
+  const turns = [turn({ round: 1, segment: 0, blocks: [textBlock('b1', '首段')] }), turn({ round: 1, segment: 1, blocks: [textBlock('b2', '追问段')] })];
+  const milestone: RowEvent = {
+    at: AT,
+    level: 'milestone',
+    text: '用量 输入 10 tok · 轮次 1',
+    turn: { subagentId: null, round: 1 },
+  };
+
+  it('同一号在两段里出现时，只归段号最大的那一轮', () => {
+    expect(rowEventsOfTurn(turns, [milestone], 0)).toEqual([]);
+    expect(rowEventsOfTurn(turns, [milestone], 1)).toEqual([milestone]);
+  });
+
+  it('只有一段时照旧归那一轮（老行为逐字不变）', () => {
+    const single = [turn({ round: 1, segment: 0, blocks: [textBlock('b1', '首段')] })];
+    expect(rowEventsOfTurn(single, [milestone], 0)).toEqual([milestone]);
   });
 });

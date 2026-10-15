@@ -12,7 +12,7 @@
  * ① **旧帧不回退**：重连时服务端会把边界那条再推一遍，它不能把新的数改回旧的；
  * ② **seq 回到 1 = 新一代**：同一行重跑（编排层会先删掉事件日志，seq 重新从 1 发号）时，
  * 上一轮的指标必须清掉——否则界面会拿旧一轮的 tok 冒充新一轮的起手值；
- * ③ 终态帧之后**这一行的连接要关掉**，且不能牵连别行的连接；
+ * ③ 终态帧之后**这一行的帧不再折**（实时数据走一条共享的聚合流连接，不因某一行跑完而关）；
  * ④ **进评分即冻结**：`status: judging` 之后的 `usage` 报的是**评审者**的用量
  * （评分事件落 `judge-events.jsonl`，与行级流分开；历史 `events.jsonl` 回放时仍会
  * 出现这种形状——评分事件曾与候选同一条流的时期落盘），一律不再折进候选的 tok / 轮次。
@@ -23,7 +23,9 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentEvent } from '@aieval/contracts';
 import { LIVE_TEXT_SAMPLE, foldLiveMetrics, useRunLiveMetrics } from './row-live';
+import { resetRunStreamHubForTesting } from './run-stream-hub';
 import { useRun, useRuns } from './runs';
+import { useRunActivity } from './run-activity';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 import { makeEvent, makeRun } from './testing/run-fixtures';
 
@@ -33,9 +35,12 @@ type FetchMock = Mock<FetchHandler>;
 const wrapper = ({ children }: { children: ReactNode }) =>
   createElement(SWRConfig, { value: { provider: () => new Map() } }, children);
 
-/** SSE 的 `data:` 行内容就是一条事件的 JSON（与 api 的 toFrame 逐字同形） */
-function frame(event: AgentEvent): string {
-  return JSON.stringify(event);
+/**
+ * 聚合流的 `data:` 行内容：事件载荷 + 信封的两个归属格（与 api 的 `toEventFrame` 逐字同形）。
+ * 帧是**无名事件**（没有 `event:` 行）：判别靠信封顶层的 `type`，hub 只绑 `onmessage`。
+ */
+function frame(rowId: string, event: AgentEvent): string {
+  return JSON.stringify({ ...event, rowId, rowChannel: 'candidate' });
 }
 
 /** 三行事件：准备中 → 跑起来（带 at）→ 一条用量 */
@@ -71,6 +76,7 @@ function mountLive(rowIds: string[] = ['w-1', 'w-2']) {
 
 beforeEach(() => {
   FakeEventSource.reset();
+  resetRunStreamHubForTesting();
   installEventSourceStub();
 });
 
@@ -647,7 +653,7 @@ describe('foldLiveMetrics：会话尺度读数不是行级读数', () => {
 });
 
 describe('useRunLiveMetrics', () => {
-  it('为每一行各开一条连接，afterSeq 取该行历史的最后 seq', async () => {
+  it('两行共用**一条**聚合流连接，URL 的 `?after=` 是逐行游标表（各行的最后 seq）', async () => {
     stubFetch({
       'w-1': historyFor('w-1'),
       'w-2': [makeEvent({ seq: 1, type: 'status', status: 'preparing' })],
@@ -655,32 +661,43 @@ describe('useRunLiveMetrics', () => {
 
     const { result } = mountLive();
 
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
-    const urls = FakeEventSource.instances.map((source) => source.url).sort();
-    expect(urls).toEqual([
-      '/api/runs/run-1/rows/w-1/stream?afterSeq=3',
-      '/api/runs/run-1/rows/w-2/stream?afterSeq=1',
-    ]);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/stream?after=w-1:3,w-2:1');
     // 历史里的值已经在界面上了（不必等第一帧推送）
     await waitFor(() => expect(result.current['w-1']?.turns).toBe(1));
     expect(result.current['w-1']?.startedAtMs).toBe(Date.parse(START_AT));
     expect(result.current['w-2']?.startedAtMs).toBeNull();
   });
 
-  it('具名事件到达时只更新**那一行**（多行共用一份 state 时最容易串行）', async () => {
+  it('晚到的那一路触发一次带合并游标的重连（活动行先连上、指标读完快照才注册）', async () => {
+    // 这一格是本票最容易写错的地方：活动行不需要历史 ⇒ 连接先以空游标表打开；
+    // 指标那一路要等逐行 /log 快照读完才知道各行的位置 ⇒ 它晚到，且它的行不在当前表里。
+    // 不重连的话，那一段「快照之后、订阅之前」的事件既不在快照里、也不在服务端回放里。
+    stubFetch({ 'w-1': historyFor('w-1') });
+    renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/stream');
+
+    mountLive(['w-1']);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+
+    expect(FakeEventSource.instances[0]?.closeCount).toBe(1);
+    expect(FakeEventSource.instances[1]?.url).toBe('/api/runs/run-1/stream?after=w-1:3');
+  });
+
+  it('帧带 rowId 时只更新**那一行**（一条连接上多行的帧最容易串行）', async () => {
     stubFetch({
       'w-1': historyFor('w-1'),
       'w-2': [makeEvent({ seq: 1, type: 'status', status: 'running', at: START_AT })],
     });
 
     const { result } = mountLive();
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
-    const byRow = new Map(FakeEventSource.instances.map((source) => [source.url, source]));
-    const w2 = byRow.get('/api/runs/run-1/rows/w-2/stream?afterSeq=1');
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0];
 
     await act(async () => {
       const usage = makeEvent({ seq: 2, type: 'usage', tokens: { input: 7, cached: 1, output: 2 }, turns: 4 });
-      w2?.emitNamed(usage.type, frame(usage));
+      source?.emit(frame('w-2', usage));
     });
 
     expect(result.current['w-2']?.turns).toBe(4);
@@ -689,7 +706,9 @@ describe('useRunLiveMetrics', () => {
     expect(result.current['w-1']?.turns).toBe(1);
   });
 
-  it('终态帧到达：关掉**这一行**的连接并刷一次快照，别行的连接不受影响', async () => {
+  it('终态帧到达：刷一次快照、**不关**共享连接（别行还在跑），且这一行不再折帧', async () => {
+    // 采样节奏在建定时器**之前**调小：这一条要观测的是「折没折」，而文本只在采样点发布
+    LIVE_TEXT_SAMPLE.intervalMs = 10;
     const fetchMock = stubFetch({
       'w-1': historyFor('w-1'),
       'w-2': [makeEvent({ seq: 1, type: 'status', status: 'running', at: START_AT })],
@@ -704,25 +723,30 @@ describe('useRunLiveMetrics', () => {
       }),
       { wrapper },
     );
-    // 行级流的连接按 **URL** 过滤，不数实例池：本用例挂了 useRuns/useRun（给终态刷新找消费者），
-    // 它们现在会合法地开一条 run 级信号连接（/api/runs/events）——按总数断言会把那条也算进来
-    const rowSources = () => FakeEventSource.instances.filter((source) => source.url.includes('/rows/'));
-    await waitFor(() => expect(rowSources()).toHaveLength(2));
-    const byRow = new Map(rowSources().map((source) => [source.url, source]));
-    const w1 = byRow.get('/api/runs/run-1/rows/w-1/stream?afterSeq=3');
-    const w2 = byRow.get('/api/runs/run-1/rows/w-2/stream?afterSeq=1');
+    // 聚合流的连接按 URL 过滤，不数实例池：本用例挂了 useRuns/useRun（给终态刷新找消费者），
+    // 它们会合法地开一条全局流连接（/api/runs/stream）——按总数断言会把那条也算进来
+    const aggregateSources = () => FakeEventSource.instances.filter((source) => source.url.startsWith('/api/runs/run-1/stream'));
+    await waitFor(() => expect(aggregateSources()).toHaveLength(1));
+    const source = aggregateSources()[0];
     const before = fetchMock.mock.calls.length;
 
     await act(async () => {
       const end = makeEvent({ seq: 4, type: 'end', exitReason: 'completed' });
-      w1?.emitNamed('end', frame(end));
+      source?.emit(frame('w-1', end));
     });
 
-    expect(w1?.closeCount).toBe(1);
-    expect(w2?.closeCount).toBe(0);
+    // 一条连接承载整轮：某一行跑完不能把别行正在收的实时帧一起带走
+    expect(source?.closeCount).toBe(0);
     // mutate 详情 + 列表各一次（终态之后界面显示的是快照里的权威值）
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(before + 2));
     expect(result.current.live['w-1']?.turns).toBe(1);
+
+    // 终态之后这一行的帧不再折（旧形状里这是靠「关掉这一行那条连接」实现的，现在只能靠状态）
+    await act(async () => {
+      source?.emit(frame('w-1', makeEvent({ seq: 5, type: 'log', stream: 'stdout', text: '跑完之后的日志' })));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(result.current.live['w-1']?.latestText).toBeNull();
   });
 
   it('日志帧到达时**不逐帧**重渲染（一两千条日志逐帧 setState = 每秒几十次整页渲染）', async () => {
@@ -738,7 +762,7 @@ describe('useRunLiveMetrics', () => {
     await act(async () => {
       // 一行日志：它改的是活动文本（见下面那一小节），而那三个数与它无关 ⇒ 这一刻不该有任何状态更新
       const log = makeEvent({ seq: 4, type: 'log', stream: 'stdout', text: '改了一个文件' });
-      source?.emitNamed(log.type, frame(log));
+      source?.emit(frame('w-1', log));
     });
 
     // 同一份引用 = 没有 setState。文字改由**采样定时器**按固定节奏推送（下一条用例），
@@ -773,7 +797,7 @@ describe('useRunLiveMetrics', () => {
 
     await act(async () => {
       const log = makeEvent({ seq: 4, type: 'log', stream: 'stdout', text: '正在改 lib/http.js' });
-      source?.emitNamed(log.type, frame(log));
+      source?.emit(frame('w-1', log));
     });
 
     await waitFor(() => expect(result.current['w-1']?.latestText).toBe('正在改 lib/http.js'));
@@ -844,7 +868,7 @@ describe('useRunLiveMetrics', () => {
         subagentTokens: { input: 7, cached: 2, output: 3 },
         turns: 1,
       });
-      source?.emitNamed(usage.type, frame(usage));
+      source?.emit(frame('w-1', usage));
     });
 
     expect(result.current['w-1']?.subagentTokens).toEqual({ input: 7, cached: 2, output: 3 });
@@ -871,7 +895,7 @@ describe('useRunLiveMetrics', () => {
     await act(async () => {
       // tok（10 / 0 / 2）与轮次合计（5）与上一帧**逐字相同**，只有子轮次变了
       const usage = makeEvent({ seq: 2, type: 'usage', tokens: { input: 10, cached: 0, output: 2 }, subagentTurns: 3, turns: 5 });
-      source?.emitNamed(usage.type, frame(usage));
+      source?.emit(frame('w-1', usage));
     });
 
     expect(result.current['w-1']?.subagentTurns).toBe(3);

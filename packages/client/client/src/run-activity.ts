@@ -2,28 +2,35 @@
  * 卡片底部那一行的**实时打字内容**：订阅 AgentMessage 的内容流，折叠成
  * 「这一刻该显示什么」。
  *
- * 为什么单独一条流（而不是复用 `useRowMessages`）：抽屉那条要的是**全量对话**（几百条记录、
- * 每次连接回放全量），而这里只要「最新一条消息里最后那个可显示的块」。一屏 6 个候选各开一条
- * 抽屉级连接，等于为一句文案把几十 MB 搬进浏览器。
+ * 为什么与 `useRowMessages` 分开（而不是复用它）：抽屉那条要的是**全量对话**（几百条记录、
+ * 每次连接回放全量），而这里只要「最新一条消息里最后那个可显示的块」。
+ * 两条流的**传输**也是分开的：这一路走整轮共享的**聚合流**（与实时指标那一路同一条连接），
+ * 抽屉走单行单 channel 的抽屉流——一屏 6 个候选各开一条抽屉级连接，等于为一句文案把几十 MB
+ * 搬进浏览器。
  *
  * 四条口径：
- * 1. **不回放历史**（`?replay=0`）：历史里没有增量，而活动行要的正是「此刻」。
- * 刷新之后的静态内容由既有那一路 `log.summary` 兜底——两层合起来才是
- * 「实时优先、历史兜底」，而不是「实时没有就空着」。
- * 2. **按行状态择一条流**：`judging` 看**评分**那条，其余看候选那条。
- * 两条同时订阅会让活动行在评分阶段被候选的残留内容占住。
- * 3. **终态即断开**（与 `useRunLiveMetrics` 同口径）：行跑完了这一行就收起，连接留着只是浪费。
+ * 1. **不回放历史**：历史里没有增量，而活动行要的正是「此刻」——所以这一路注册时不带游标
+ * （URL 上没有 `?after=`），服务端只推实时增量。刷新之后的静态内容由既有那一路
+ * `log.summary` 兜底——两层合起来才是「实时优先、历史兜底」，而不是「实时没有就空着」。
+ * 2. **按行状态挑 channel**：`judging` 看**评分**那条，其余看候选那条（两条都收会让活动行
+ * 在评分阶段被候选的残留内容占住）。挑的是**帧**：两条 channel 的消息都在同一条连接上。
+ * 3. **终态即不订**（与 `useRunLiveMetrics` 同口径）：行跑完了这一路就收起，不必再折它的帧。
  * 4. **合并到一帧发布一次**：delta 帧服务端已按 16ms 合并，但 6 行同时打字仍会是每帧多次 setState；
  * 这里把一帧内所有行的变化攒到一次提交（与 `useRowMessages` 同一条理由与写法）。
  *
- * 与 `useRunLiveMetrics` 的分工：那边折的是**事件**（tok / 轮次 / log 摘要），这边折的是**消息**
- *。活动行把两者叠起来用：消息流有内容就以它为准，
- * 没有就回落到事件流折出来的 `log.summary`。
+ * 与 `useRunLiveMetrics` 的分工：那边折的是**事件**（tok / 轮次 / log 摘要），这边折的是**消息**。
+ * 活动行把两者叠起来用：消息流有内容就以它为准，没有就回落到事件流折出来的 `log.summary`。
  */
 import { useEffect, useState } from 'react';
-import { TERMINAL_ROW_STATUSES, type AgentMessage, type EvalRowStatus } from '@aieval/contracts';
+import {
+  TERMINAL_ROW_STATUSES,
+  type AgentMessage,
+  type EvalRowStatus,
+  type RowChannelMessageFrame,
+  type RunStreamFrame,
+} from '@aieval/contracts';
 import { looksLikeMachinePayload } from './row-live';
-import { runRowActivityStreamUrl, runRowJudgeActivityStreamUrl } from './runs';
+import { isRowRecordFrame, subscribeRunStream } from './run-stream-hub';
 
 /**
  * 活动行此刻该显示什么。
@@ -83,27 +90,22 @@ function toolSummaryOf(block: Extract<AgentMessage['blocks'][number], { type: 't
   return name === '' ? '调用工具' : `调用工具 ${name}`;
 }
 
-/** 一行订阅哪条流：评分阶段看评审者那条；终态**不订阅**（这一行已经收起） */
+/** 一行订阅哪个 channel：评分阶段看评审者那条；终态**不订阅**（这一行已经收起） */
 function channelOf(status: EvalRowStatus): 'candidate' | 'judge' | null {
   if (status === 'judging') return 'judge';
   if (TERMINAL_ROW_STATUSES.includes(status)) return null;
   return 'candidate';
 }
 
-/** 一帧的解析：坏帧返回 `null`（调用方跳过它），绝不让一个畸形帧把整条流打断（与 `useRowMessages` 同口径） */
-export function parseActivityFrame(data: string): AgentMessage | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return null;
-  }
-  if (typeof raw !== 'object' || raw === null) return null;
-  const record = raw as { type?: unknown; message?: unknown };
-  if (record.type !== 'message') return null;
-  const message = record.message;
-  if (typeof message !== 'object' || message === null) return null;
-  return message as AgentMessage;
+/**
+ * 一帧算不算活动内容：消息帧（`subagent` 行是派发视图的原料，不占卡片底部那一行）折出
+ * 「这一刻该显示什么」，其余帧一律 `null`。
+ * **信封解析与坏帧丢弃在 hub 那一层**（`run-stream-hub.ts` 的 `parse`）：一条畸形帧
+ * 在那里就被丢掉了，到不了这里——本函数只管「这一帧属于活动行吗」。
+ */
+export function activityOfFrame(frame: RunStreamFrame): RowActivity | null {
+  if (!isRowRecordFrame(frame) || frame.type !== 'message') return null;
+  return activityOfMessage(frame.message);
 }
 
 /** 界面要的一行输入（调用方给快照里的行状态，本 hook 据此选流） */
@@ -114,12 +116,13 @@ export interface ActivityRowInput {
 
 /**
  * 订阅若干行的实时活动内容，返回 `行 id → 活动`。
- * 只订阅在跑的行（终态由 `channelOf` 挡掉），且每一行都是**一条独立连接**——与 `useRunLiveMetrics`
- * 同口径：详情页一屏最多几行，而列表页有几十轮。
+ * 只订阅在跑的行（终态由 `channelOf` 挡掉），且向**整轮共享**的聚合流注册一个 sink：
+ * 多条行的消息在同一条连接上，靠帧里的 `rowId` / `rowChannel` 分流（与 `useRunLiveMetrics`
+ * 同口径：详情页一屏最多几行，而列表页有几十轮）。
  */
 export function useRunActivity(input: { runId: string; rows: readonly ActivityRowInput[] }): Record<string, RowActivity> {
   const { runId } = input;
-  // 行的集合与**阶段**都要进依赖：阶段一变（running → judging）就得换一条流订阅，
+  // 行的集合与**阶段**都要进依赖：阶段一变（running → judging）就得换一批帧来折，
   // 数组每帧都是新引用 ⇒ 拼成稳定的键（与 `useRunLiveMetrics` 的 rowKey 同一条理由）
   const rowKey = input.rows.map((row) => `${row.id}:${channelOf(row.status) ?? 'none'}`).join(',');
   const [activities, setActivities] = useState<Record<string, RowActivity>>({});
@@ -142,7 +145,8 @@ export function useRunActivity(input: { runId: string; rows: readonly ActivityRo
     }
 
     let cancelled = false;
-    const sources = new Map<string, EventSource>();
+    /** 行 → 这一阶段该折的 channel（`judging` 的行只收评审者那条） */
+    const channelByRow = new Map(targets.map((target) => [target.id, target.channel]));
     /** 一帧内各行的最新活动：攒到下一次提交一起写进 state（口径 4） */
     const pending = new Map<string, RowActivity>();
     /** 上一次**发布出去**的活动（行 id → 活动）：只用来压掉「内容没变」的帧 */
@@ -180,38 +184,30 @@ export function useRunActivity(input: { runId: string; rows: readonly ActivityRo
     const same = (left: RowActivity | undefined, right: RowActivity): boolean =>
       left !== undefined && left.text === right.text && left.streaming === right.streaming && left.toolSummary === right.toolSummary;
 
-    for (const target of targets) {
-      // 环境没有 EventSource（老浏览器 / 测试替身缺失）时不抛：活动行回落到 log 摘要即可
-      if (typeof EventSource === 'undefined') break;
-      const url =
-        target.channel === 'judge'
-          ? runRowJudgeActivityStreamUrl(runId, target.id)
-          : runRowActivityStreamUrl(runId, target.id);
-      const source = new EventSource(url);
-      sources.set(target.id, source);
-      const handleFrame = (event: MessageEvent): void => {
-        if (cancelled) return;
-        const message = parseActivityFrame(String(event.data));
-        if (message === null) return;
-        const next = activityOfMessage(message);
-        if (same(published.get(target.id) ?? pending.get(target.id), next)) return;
-        pending.set(target.id, next);
-        schedule();
-      };
-      // api 发的是具名事件（`event: message` / `event: subagent`），只绑 onmessage 等于零交付
-      source.addEventListener('message', handleFrame);
-      source.onmessage = handleFrame;
-    }
+    /** 这一帧归不归本 sink：消息帧、行在订阅集合里、且 channel 与那一行当前阶段对得上 */
+    const matches = (candidate: RunStreamFrame): candidate is RowChannelMessageFrame =>
+      isRowRecordFrame(candidate) && channelByRow.get(candidate.rowId) === candidate.rowChannel;
+
+    const handleFrame = (candidate: RunStreamFrame): void => {
+      if (cancelled || !matches(candidate)) return;
+      const next = activityOfFrame(candidate);
+      if (next === null) return;
+      const rowId = candidate.rowId;
+      if (same(published.get(rowId) ?? pending.get(rowId), next)) return;
+      pending.set(rowId, next);
+      schedule();
+    };
+
+    const unsubscribe = subscribeRunStream({ runId, sink: { match: matches, onFrame: handleFrame } });
 
     return () => {
       cancelled = true;
+      unsubscribe();
       if (frame !== null) {
         if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
         else clearTimeout(frame);
         frame = null;
       }
-      for (const source of sources.values()) source.close();
-      sources.clear();
     };
   }, [rowKey, runId]);
 

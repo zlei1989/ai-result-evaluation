@@ -35,6 +35,7 @@ function callItem(overrides: Partial<ToolItem> = {}): ToolItem {
     nameMissing: null,
     family: 'run-shell',
     input: { value: '{"command":"npm test"}', text: '{"command":"npm test"}', bytes: 22, description: null },
+    inputError: null,
     output: null,
     at: AT,
     running: false,
@@ -326,5 +327,23 @@ describe('ToolItemDetail', () => {
       orphanResult({ callId: null, blockId: 'm2#5' }),
     ];
     expect(new Set(sameRound.map((entry) => toolEntryKey(entry))).size).toBe(2);
+  });
+
+  /**
+   * 参数解析失败那一行必须真的画出来：`input` 是空对象，与「模型真传了空对象」同形，
+   * 只有 `inputError` 能说出真相。这里钉**文本**；`/dev/agent-log` 的冒烟钉几何。
+   *
+   * 变异体：把 `tool-item-detail.tsx` 里那条 `hasText(item.inputError) && <Alert …>` 删掉 ⇒ 本用例红。
+   */
+  it('带 inputError 的调用画出一句可读提示（含厂商原文）；没有则不画', () => {
+    const view = render(
+      <ToolItemDetail entry={callItem({ inputError: 'Unexpected token: not valid JSON' })} open onOpenChange={vi.fn()} missingReason={null} />,
+    );
+    expect(view.getByText(/参数不是合法 JSON/)).toBeTruthy();
+    expect(view.getByText(/not valid JSON/)).toBeTruthy();
+    view.unmount();
+
+    const without = render(<ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />);
+    expect(without.queryByText(/参数不是合法 JSON/)).toBeNull();
   });
 });

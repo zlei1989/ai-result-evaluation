@@ -12,7 +12,7 @@
  *      界面不得用「有没有结果」「是不是最后一块」推出来（推断一次，被中断的块就会永远转圈）；
  *   3. **不判厂商**：本目录不出现 `agentKind` 分支，族名与组名一律按收到的值渲染。
  */
-import type { AgentMessage, Capability, MessageCapability, MessageSource, MissingReason, SubagentRecord, ThinkingTextKind, ToolFamily } from '@aieval/contracts';
+import type { AgentMessage, Capability, InjectMessageOutcome, MessageCapability, MessageSource, MissingReason, SubagentRecord, ThinkingTextKind, ToolFamily } from '@aieval/contracts';
 
 /**
  * **环境信息模型从 contracts 转出**。
@@ -166,8 +166,16 @@ export interface ContentBlockBase {
    * 这条块所属的**逻辑消息**身份（= 契约的 `mergeKey`）。
    * 时间轴按它把「同一条消息的多个块」归成一条，**不得**改用 `messageId`：
    * 那是**每次投递**新分配的（同一条逻辑消息的 delta 与 snapshot 是两个不同 id）。
+   *
+   * ⚠️ **它只在同一段内唯一**：追问那一段的厂商轮次从 1 重新数 ⇒ 两段的键会逐字相同。
+   * 段是块的另一个身份维度，见 `segment`。
    */
   mergeKey: string;
+  /**
+   * 这一条属于**哪一段**（`0` = 第一次跑那一段，`n ≥ 1` = 第 n 次追问那一段）。
+   * 块 id 与时间轴的轮次分组都带上它，否则两段的同号轮次会撞成一条（后一段把前一段盖掉）。
+   */
+  segment: number;
   /** 这条消息自己那一次调用的用量；`null` = 没有这一格（页脚不渲染） */
   usage: AgentTokens | null;
 }
@@ -227,6 +235,11 @@ export interface ToolCallBlock extends ContentBlockBase {
   /** 归一后的族名；`null` = 适配器不认识这个工具 */
   family: ToolFamily | null;
   input: ToolInput;
+  /**
+   * 厂商报的**参数解析失败原文**（`tool-call.inputError`）：`null` / 缺省 = 这一次调用没这个问题。
+   * 坏参数在 `input` 上是一个空对象，与「模型真的传了空对象」同形 ⇒ 只有这一格能说出真相。
+   */
+  inputError?: string | null;
   /**
    * **摘要主体**（`tool-call.summary`，由适配器算好）：`Check surefire report summaries`、
    * `src/index.ts:10-120`、`2 步`——冒号后面那一段，**不含 `调用工具 <名>：` 前缀**
@@ -421,12 +434,30 @@ export interface RowEvent {
 
 /** 一个轮次。**只做轻量分组，不建渲染块**——几百轮时先全建 `RenderBlock`，虚拟滚动就只省了 DOM */
 export interface LogTurn {
-  /** 统一轮次号 =「模型一次 API 往返」；`null` = 不属于任何轮次的内容（集中成顶部的「未归属」段） */
+  /**
+   * 统一轮次号 =「模型一次 API 往返」；`null` = 不属于任何轮次的内容（集中成顶部的「未归属」段）。
+   *
+   * ⚠️ 它**只在同一段内**递增：追问那一段的厂商轮次从 1 重新数 ⇒ 两段各有一个「轮次 1」。
+   * 轮次的完整身份是 `(segment, round)`。
+   */
   round: number | null;
+  /**
+   * 这一轮属于**哪一段**（`0` = 第一次跑那一段，`n ≥ 1` = 第 n 次追问那一段）。
+   * 时间轴按它分段（段首一行「追问 ×N」），虚拟列表的键也带上它。
+   */
+  segment: number;
   at: string;
   subagentId: string | null;
-  /** **已成形的内容块**（增量累积与快照覆盖都在数据层做完了） */
+  /** **已成形的内容块**（增量累积与快照覆盖都在数据层做完了）；顺序是**阅读顺序**：人说的话在前、模型答的话在后 */
   blocks: readonly ContentBlock[];
+  /**
+   * 这一轮**投递顺序上第一条块**的消息 id：`buildRenderBlocks` 规则 3 的兜底定位键
+   * （`callId` 为 `null` 那一档按 `messageId` 认派发点）。
+   *
+   * **不要用 `blocks[0]` 代替它**：块按阅读顺序排过（见 `build-model.ts` 的 `questionFirst`），
+   * 段首那句人话会占住第一位，而它未必属于派发那条消息——兜底判据会静默认错。
+   */
+  fallbackMessageId: string | null;
   tokens: AgentTokens | null;
   /** 该轮的**已结算**时长（毫秒）；`null` = 拿不到 */
   durationMs: number | null;
@@ -507,8 +538,32 @@ export interface AgentLogModel {
   /** 当前视图（面包屑选中的节点） */
   activeNodeId: string;
   rowEvents: readonly RowEvent[];
+  /**
+   * 追问那几段（`segment ≥ 1`，按段号升序）。**首段不在里面**——首段的分界就是题面那张卡片。
+   *
+   * 它只讲**段这一层**的事实（第几次追问、那句追问是什么、什么时候问的），
+   * 与某一个轮次无关：段首那句人话已从轮次的块里提出来（见 `LogTurn.blocks`），
+   * 于是「那句话画在段标题里」这件事不可能出现两份。
+   */
+  segments: readonly LogSegment[];
   /** 全无内容（还没跑过）：决定显示空态，而不是空时间轴 */
   empty: boolean;
+}
+
+/**
+ * 一次追问带来的那一段（段标题的全部内容）。
+ *
+ * 为什么它不放在轮次上：段是**消息级**的概念（那一段的段号、那句人话），而轮次是模型往返的分组；
+ * 放在轮次上会让「这一段的标题」随轮次分组细节漂（段首那一轮被合并、被过滤、或干脆还没有轮次时，
+ * 标题会跟着一起消失）。
+ */
+export interface LogSegment {
+  /** 段号（≥ 1）：与行快照的 `followUpRounds` 同源 = 第几次追问 */
+  segment: number;
+  /** 这一段的开始时刻（ISO）；空串 = 拿不到 */
+  at: string;
+  /** 那次追问的正文（人写的那句话）；`null` = 账本里没有这一条（旧运行） */
+  text: string | null;
 }
 
 /** 一行的**原始输出**（`log` 事件的原文）。它是**原文，不是事件**：没有 `seq`、没有事件类型 */
@@ -655,6 +710,37 @@ export const ASK_USER_OUTCOME_LABELS: Record<
   },
   rejected: { label: '被拒绝', tone: 'error', note: '子智能体不能向用户提问' },
   canceled: { label: '随轮次取消', tone: 'default', note: '轮次被中断，提问一起收场' },
+};
+
+/**
+ * 一条人工消息（人往运行中的智能体送的话）的**五种落点**：两句「按预期发生了」+ 三个「没到」的原因。
+ *
+ * 与 `ASK_USER_OUTCOME_LABELS` 同形（同一套 tone 档），因为它们是同一件事的两个方向：
+ * 那边是「模型问人」，这边是「人喂模型」，界面上要能并排读出「这一行被人介入过几次、各去了哪」。
+ * `delivered` 是唯一「模型真收到了」的那一档——**投递失败的三种必须各有各的说法**，
+ * 合成一句「发送失败」会让人分不清「等太久了」与「这一行早就结束了」。
+ */
+export const INJECT_OUTCOME_LABELS: Record<
+  InjectMessageOutcome,
+  { label: string; tone: 'success' | 'warning' | 'default' | 'error'; note: string | null }
+> = {
+  delivered: { label: '已送达', tone: 'success', note: null },
+  retracted: { label: '已撤回', tone: 'default', note: '这一条在你看到它被模型读走之前撤了回来' },
+  'already-consumed': {
+    label: '已被读到',
+    tone: 'warning',
+    note: '撤回时厂商说它已经交给模型了——撤不回来，如实告诉你',
+  },
+  discarded: {
+    label: '未送达（行已结束）',
+    tone: 'warning',
+    note: '这一行在投递之前就收场了，这条消息没有进过模型的上下文',
+  },
+  'timed-out': {
+    label: '未送达（等超时）',
+    tone: 'warning',
+    note: '等了十分钟仍没能交给厂商，按等待预算丢弃',
+  },
 };
 
 /** 截断三态的一句话。**`unknown` 不写「完整」**——那正是「用负信号断言正事实」 */

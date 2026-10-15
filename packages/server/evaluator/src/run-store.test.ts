@@ -66,6 +66,7 @@ afterEach(() => {
 function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): EvalRun {
   return {
     caseTitle: '示例用例',
+    note: '',
     repoPath: 'D:\\projects\\gateway',
     commitHash: null,
     repoBranch: null,
@@ -75,6 +76,7 @@ function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): 
     executionMode: 'parallel',
     useAgentJudge: false,
     askUser: false,
+    injectMessages: false,
     rows: [],
     workspaceBase: ws,
     createdAt: '2026-09-22T10:00:00.000Z',
@@ -304,6 +306,31 @@ describe('run-store', () => {
     const loaded = getRun(run.id);
 
     expect(loaded.rows[0]?.score?.structuredOutput).toBe(false);
+  });
+
+  /**
+   * 老快照读盘：磁盘上已有的 `run.json` 里**没有** `note` 这一格（备注是后加的）。
+   *
+   * 这条钉的是「缺这一格不会让轮次从列表里消失」：`EvalRunSchema.note` 一旦写成必填，
+   * `readSnapshot` 的 `safeParse` 会失败、只留一条 WARN，`listRuns()` 静默少一轮——
+   * 症状是「评测记录凭空少了几轮」，两端都不报错。走**直接写盘**（绕过 `saveRun`）才是真的老文件：
+   * `saveRun` 的写侧自检会把默认值补齐，用它永远造不出「缺这一格」的快照。
+   */
+  it('磁盘上已有的 run.json（没有 note）读盘后是空串，且仍出现在 listRuns 里', () => {
+    const run = makeRun({ id: 'run-legacy-note', caseId: 'case-1' });
+    const runDir = join(run.workspaceBase, run.id);
+    mkdirSync(runDir, { recursive: true });
+    // 用字典视图删字段：直接 `delete` 一个有类型声明的必填键会被 tsc 拦下（那正是「必填」的意思）
+    const legacy = structuredClone(run) as unknown as Record<string, unknown>;
+    delete legacy['note'];
+    const file = join(runDir, 'run.json');
+    writeFileSync(file, JSON.stringify(legacy), 'utf8');
+    // 前置条件自证：写下去的字节里真的没有这一格（删字段写错时不会绿在夹具自带的空串上）
+    expect(readFileSync(file, 'utf8')).not.toContain('"note"');
+
+    expect(getRun(run.id).note).toBe('');
+    // 读盘失败时 listRuns 会静默跳过这一轮——这条断言才是「列表不会凭空少东西」的判据
+    expect(listRuns().map((candidate) => candidate.id)).toContain(run.id);
   });
 });
 

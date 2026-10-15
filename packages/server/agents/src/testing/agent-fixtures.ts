@@ -54,6 +54,16 @@ export interface FakeVendorRecorder {
   options: Record<string, unknown> | null;
   /** 送进去的提示词 */
   prompt: string | null;
+  /**
+   * claude 夹具：`prompt` 是不是**异步可迭代**（= streaming input 那一档）。
+   * 与 `prompt` 成对读：一次性题面下 `prompt` 是字符串、这一格为 `false`；流式下相反。
+   * 「端口缺席 / `available: false` ⇒ 一格都不挂」这条零回归判据就靠这两格。
+   */
+  promptIsStream: boolean;
+  /** claude 夹具：适配器**推进输入流**的那些消息（顺序即投递顺序） */
+  pushed: unknown[];
+  /** claude 夹具：`cancelAsyncMessage` 收到的 uuid（撤回判据：认的是不是我们自铸的那个身份） */
+  cancelCalls: string[];
   /** 运行时关闭次数（dispose 幂等的断言对象） */
   closeCount: number;
   /** dsh 夹具：挂住的 `run()` 的释放函数（由 `close()` 触发，模拟「关掉 runtime ⇒ run 结束」） */
@@ -71,6 +81,19 @@ export interface FakeVendorRecorder {
    * （每次迭代秒回）。真机那次事故里我们无从观察这点，故把它钉成可观测量。
    */
   subscriptionNextCalls: number;
+  /**
+   * dsh 夹具：`resumeSession(id)` 收到的那些 id，即**这一轮 adopt 了哪条会话**。
+   * 与 `freshRunCalls` 成对读：「收到 resume 却静默开一条新会话」的表现正是
+   * `resumedSessions` 为空而 `freshRunCalls` 不为零。
+   */
+  resumedSessions: string[];
+  /**
+   * dsh 夹具：`harness.run()`（**新**会话那条入口）被调了几次。
+   * adopt 出来的会话走的是 `HarnessSession.run()`，它**不该**再落回这一格。
+   */
+  freshRunCalls: number;
+  /** dsh 夹具：`client.request` 的每次调用（产品侧只用它调 `session/wait` 等子智能体收场） */
+  requestCalls: Array<{ method: string; params: Record<string, unknown> }>;
 }
 
 export function createRecorder(): FakeVendorRecorder {
@@ -79,10 +102,16 @@ export function createRecorder(): FakeVendorRecorder {
     env: null,
     options: null,
     prompt: null,
+    promptIsStream: false,
+    pushed: [],
+    cancelCalls: [],
     closeCount: 0,
+    requestCalls: [],
     hangRelease: null,
     interruptThenCalls: null,
     subscriptionNextCalls: 0,
+    resumedSessions: [],
+    freshRunCalls: 0,
   };
 }
 
@@ -308,21 +337,133 @@ export interface FakeClaudeSdkOptions {
   contextUsage?: unknown | 'reject';
   /** `getContextUsage()` 被调了几次（判据：**一行只采一次**） */
   contextUsageCalls?: { count: number };
+  /**
+   * **流式输入那一档**（`prompt` 是异步可迭代时用）：每一轮要吐的消息，一轮一项。
+   *
+   * 每轮**最后一条应当是 `result`**（那是适配器唯一会「继续 / 收场」的地方）：一轮吐完之后，
+   * 夹具向输入流要下一条——拿到适配器新推的一条就进下一轮脚本，拿到 `done`（适配器收了流）就收场。
+   * ⇒ 这一格同时是「**收场由适配器驱动**」的判据：适配器不收流，这条假流会一直挂着，用例会红。
+   */
+  streamRounds?: readonly (readonly unknown[])[];
+  /**
+   * 假 SDK 有没有 `cancelAsyncMessage`（**不在公开面**的那条控制请求）：
+   *   · 不设 / `'ok'`——有，且按契约回 `{ cancelled: true }`；
+   *   · `'absent'`——这一版没有它（适配器必须如实回 `unsupported`）；
+   *   · `'false'`——回 `{ cancelled: false }`（竞态里厂商赢：已经不在队列里）；
+   *   · `'garbage'`——回一个形状不认识的东西（适配器必须回 `unknown`，不许猜）；
+   *   · `'reject'`——请求抛错（同上）。
+   */
+  cancelResult?: 'ok' | 'absent' | 'false' | 'garbage' | 'reject';
+  /**
+   * **被中断那一轮仍然吐出来的那几条**（只在流式输入那一档有意义）。
+   *
+   * 真机形状：`interrupt()` 之后厂商并不当场闭嘴——它会把被中断那一轮的收尾（典型是一条
+   * `result`）照样送上来。缺了这一格，假流在 `stop()` 之后一条都不再 yield，于是
+   * **「停止之后适配器还会不会再投一条」这件事在用例里根本不可达**：守卫看着是绿的，
+   * 而它绿在「那一帧从来没到过」上，不是绿在行为对（变异验证会当场暴露这种假绿）。
+   *
+   * 不设这一项 = 停止即闭嘴（既有用例的语义逐字不变）。
+   */
+  afterStop?: readonly unknown[];
+}
+
+/**
+ * **流式输入那一档**的假流（`prompt` 是异步可迭代时用它）。
+ *
+ * 与 `createFakeStream` 的分工：那一条是「一次性题面 + 一串事件」，这一条多了**输入流这一侧**——
+ * 先取第一条（适配器推的初始题面），每吐完一轮再向输入流要下一条：
+ *   · 拿到一条 ⇒ 记进 `recorder.pushed` 并进下一轮脚本（= CLI 另起一轮）；
+ *   · 拿到 `done` ⇒ 收场（= 适配器收了流）。
+ * 于是「**收场由适配器驱动**」这条判据不需要额外观测点：适配器不收流，这条假流就永远挂着。
+ *
+ * `stop()`（interrupt / dispose 走它）会把「等输入流」那一步一起叫醒，否则释放路径会卡在
+ * 那条永远不会兑现的 `next()` 上，用例只能靠兜底超时收场。
+ *
+ * `afterStop` 给了的话，`stop()` 之后**还会把那几条吐完**（真机：被中断那一轮仍有自己的 `result`）
+ * ——那是「停止之后适配器还会不会再投一条」唯一可达的形状，见该选项的注释。
+ */
+export function createStreamingFakeStream(
+  prompt: AsyncIterable<unknown>,
+  rounds: readonly (readonly unknown[])[],
+  recorder: FakeVendorRecorder,
+  afterStop: readonly unknown[] = [],
+): FakeStreamHandle {
+  const iterator = prompt[Symbol.asyncIterator]();
+  /** 「被停掉了」的可等待形状：与输入流的 `next()` 赛跑，好让停在 pull 上的那一趟醒过来 */
+  let releaseStop: (() => void) | null = null;
+  let stopped = false;
+  const stop = (): void => {
+    stopped = true;
+    releaseStop?.();
+  };
+  /** 要下一条：输入流给了就给，被停掉就给一个 `done`（收场） */
+  const pull = async (): Promise<IteratorResult<unknown>> => {
+    if (stopped) return { value: undefined, done: true };
+    const halted = new Promise<IteratorResult<unknown>>((resolve) => {
+      releaseStop = () => resolve({ value: undefined, done: true });
+    });
+    return Promise.race([iterator.next(), halted]);
+  };
+  const iterable: AsyncIterable<unknown> = {
+    async *[Symbol.asyncIterator]() {
+      try {
+        const first = await pull();
+        if (first.done) return;
+        recorder.pushed.push(first.value);
+        for (const round of rounds) {
+          for (const event of round) {
+            if (stopped) {
+              // 被中断那一轮的收尾照样送上来（`afterStop`）；没给就是「停止即闭嘴」
+              for (const trailing of afterStop) yield trailing;
+              return;
+            }
+            yield event;
+          }
+          if (stopped) {
+            // 与上面那一支同一条处置：被中断那一轮的收尾照样送上来
+            for (const trailing of afterStop) yield trailing;
+            return;
+          }
+          // 本轮收场：等适配器表态（推新的一条 ⇒ 下一轮；收流 ⇒ 收场）
+          const next = await pull();
+          if (next.done) return;
+          recorder.pushed.push(next.value);
+        }
+      } finally {
+        // 流结束就是「在途 turn 终结」：释放顺序断言里的中间那一段（与假流同一口径）
+        recorder.order.push('turn-end');
+      }
+    },
+  };
+  return { iterable, stop };
 }
 
 /** 假的 `@anthropic-ai/claude-agent-sdk`：形状与 sdk.ts 的自声明窄结构一致 */
 export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
   const { recorder } = options;
   return {
-    query: (params: { prompt: string; options: Record<string, unknown> }): unknown => {
-      recorder.prompt = params.prompt;
+    query: (params: { prompt: string | AsyncIterable<unknown>; options: Record<string, unknown> }): unknown => {
+      const isStream = typeof params.prompt !== 'string';
+      recorder.promptIsStream = isStream;
+      if (isStream) {
+        recorder.prompt = null;
+      } else {
+        recorder.prompt = params.prompt as string;
+      }
       recorder.options = params.options;
       recorder.env = params.options.env as Record<string, string>;
       const controller = params.options.abortController as AbortController;
-      const stream = createFakeStream(options.events, recorder, {
-        hang: options.hang === true,
-        throwAfterEvents: options.throwAfterEvents,
-      });
+      const stream = isStream
+        ? createStreamingFakeStream(
+          params.prompt as AsyncIterable<unknown>,
+          options.streamRounds ?? [options.events],
+          recorder,
+          options.afterStop ?? [],
+        )
+        : createFakeStream(options.events, recorder, {
+          hang: options.hang === true,
+          throwAfterEvents: options.throwAfterEvents,
+        });
       // 真实适配器用 controller.abort() 做 dispose，故 abort 就是「硬回收已经发生」的可观测量
       controller.signal.addEventListener(
         'abort',
@@ -374,6 +515,20 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): unknown {
           return Promise.resolve(options.contextUsage);
         };
       }
+      /**
+       * 撤回面（`cancelAsyncMessage`）：**不在公开面**的那条控制请求，只在用例要求时挂上去。
+       * 三种回执形状各给一格，判据是适配器**如实**把它们翻成 `retracted` / `already-consumed` /
+       * `unsupported` / `unknown` 四值里的哪一个（猜错的表现是界面上说反话）。
+       */
+      const cancelResult = options.cancelResult ?? 'ok';
+      if (cancelResult !== 'absent') {
+        query['cancelAsyncMessage'] = (uuid: string): Promise<unknown> => {
+          recorder.cancelCalls.push(uuid);
+          if (cancelResult === 'reject') return Promise.reject(new Error('撤回控制请求失败（假夹具）'));
+          if (cancelResult === 'garbage') return Promise.resolve({ cancelled: 'yes' });
+          return Promise.resolve({ cancelled: cancelResult === 'ok' });
+        };
+      }
       return query;
     },
   };
@@ -389,6 +544,16 @@ export interface FakeDshSdkOptions {
   throwAfterEvents?: unknown;
   /** `new DeepSeekHarness(...)` 之前抛出（模拟运行时起不来） */
   createError?: unknown;
+  /**
+   * `client.request(...)` 抛这个错（模拟 `session/wait` 失败：子智能体永远不收场、会话被外部
+   * dispose…）。产品侧对它是「吞掉 + WARN + 按现状收场」，故此档用来钉那条边界。
+   */
+  requestError?: unknown;
+  /**
+   * `client.request(...)` 挂住不 resolve（模拟 `session/wait` 长时间等不到子智能体收场）。
+   * 用来钉「终止要能打断等待」：挂住的请求 + `signal.abort()` ⇒ 收尾必须立刻继续。
+   */
+  requestHangs?: boolean;
   /** `start()` 抛出（模拟握手失败） */
   startError?: unknown;
   /**
@@ -431,12 +596,42 @@ export interface FakeDshSdkOptions {
    * 于是「通知全丢、执行日志空白」的缺陷在夹具层完全隐形。回归守卫必须把间隔调到 > 100 ms。
    */
   emitIntervalMs?: number;
+  /**
+   * **收尾那一批**（默认 0）：`emitAsync` 模式下最后这么多条事件与 `idle`、`run()` 落定
+   * 放在**同一个宏任务**里投送。
+   *
+   * 为什么这个旋钮是承重的：真机上「一批通知」与 `run()` 落定会撞进同一拍，而 SDK 的
+   * `push()` 是「有等待者就 resolve 它、没有才入队」——批头那条被交给**在飞的** `next()`，
+   * 其余进队列；此时消费循环若判 `run()` 赢，那条被交出去的值就再没人读
+   * （真机读数：`delivered=25 / received=24`、`sawTurnEnd=false`，而这一轮照旧判成功）。
+   * 同步吐完的默认形状永远踩不到这条路（循环一进循环 `settled` 就是真）。
+   */
+  settleBatch?: number;
+  /**
+   * 续接面（`DeepSeekHarness.resumeSession(id)` → `HarnessSession`）—— 真实入口从
+   * `@deepseek-ai/dsh-sdk-jsonrpc-server@0.2.1-alpha.3` 起就有这一格，故夹具**默认挂上**
+   * （不挂就等于「夹具比真实实现弱」，那条守卫会假绿）。三档：
+   *   · `'supported'`（默认）：挂上，`resumeSession` 把 id 记进 `recorder.resumedSessions`，
+   *     返回的句柄 `run()` 复用同一份剧本（`recorder.prompt` 一样被记）；
+   *   · `'absent'`：**不挂**这一格（真实 `0.2.0-rc.2` 的形状）⇒ 适配器收到 resume 必须如实抛错，
+   *     绝不退化成新会话；
+   *   · `{ error }`：挂上但 resume 抛错——真实的两种失败形状是未知 id 的 `not found` 与
+   *     重复 adopt 的 `already open or opening`。
+   */
+  resumeSession?: 'supported' | 'absent' | { error: unknown };
+  /**
+   * 续接句柄的 `getWorkingDirectory()` 抛错（默认不抛）。
+   * 真机形状：它是一次真实 wire 往返（`session/working-directory/get`），runtime 已收场 / 超时
+   * 都会拒。适配器只把它用在 DEBUG 日志那一格 ⇒ 读失败**不许**影响这一轮的结论
+   * （观测手段没有资格制造失败）。
+   */
+  resumeWorkingDirectoryError?: unknown;
 }
 
 /**
  * dsh 的假通知订阅：**与真实 `NotificationSubscription` 同形**（按真实入口重写）。
  * 为什么专门写一份、不复用 `createFakeStream`：真实订阅的终止通道就是 `close()` —— 已安装的
- * `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2`（`lib/index.js:243-318`）里，
+ * `@deepseek-ai/dsh-sdk-client@0.2.1-alpha.3`（`lib/index.js:243` 的 `NotificationSubscriptionImpl`）里，
  * `NotificationSubscriptionImpl.close()` 会**丢弃队列并 reject 所有挂起的等待者**
  * （`fail(new TransportClosedError('notification subscription closed'))`），而它的
  * `[Symbol.asyncIterator]()` 是 `for (;;) yield await this.next()` 形状的 async generator。
@@ -574,6 +769,12 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
     readonly client: {
       subscribe: (filter?: (notification: { method: string; params: Record<string, unknown> }) => boolean) => unknown;
       subscribeSessionTree: (sessionId: string) => unknown;
+      /**
+       * 任意 JSON-RPC：产品侧只用它调 `session/wait`（释放前等子智能体收场）。
+       * 夹具记下每次调用（方法 + 参数），并把 `requestError` 那一档按拒绝处置，
+       * 让「等不到就按现状收场」这条边界可测。
+       */
+      request: (method: string, params?: object, timeoutMs?: number) => Promise<unknown>;
       close: () => Promise<void>;
     };
 
@@ -610,6 +811,12 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
           this.subscriptions.push(handle);
           return handle.subscription;
         },
+        request: async (method: string, params?: object): Promise<unknown> => {
+          recorder.requestCalls.push({ method, params: (params ?? {}) as Record<string, unknown> });
+          if (options.requestError !== undefined) throw options.requestError;
+          if (options.requestHangs === true) return new Promise<never>(() => {});
+          return {};
+        },
         close: async (): Promise<void> => {
           for (const handle of this.subscriptions) handle.subscription.close();
         },
@@ -618,6 +825,31 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
       this.emit = (notification: unknown): void => {
         for (const handle of this.subscriptions) handle.push(notification);
       };
+      /**
+       * 续接面：**按档决定这一格存不存在**。`'absent'` 档刻意不挂——适配器的判据是
+       * `runtime.resumeSession === undefined`，挂一个「存在但抛错」的方法会让那条版本门
+       * 永远走不到，守卫就成了假绿。
+       */
+      const resumeSpec = options.resumeSession ?? 'supported';
+      if (resumeSpec !== 'absent') {
+        (this as unknown as { resumeSession: (id: string) => Promise<unknown> }).resumeSession =
+          async (sessionId: string): Promise<unknown> => {
+            if (typeof resumeSpec === 'object') throw resumeSpec.error;
+            recorder.resumedSessions.push(sessionId);
+            const self = this;
+            return {
+              run: async (input: string): Promise<unknown> => {
+                recorder.prompt = input;
+                return self.playScript(sessionId);
+              },
+              getWorkingDirectory: async (): Promise<string> => {
+                if (options.resumeWorkingDirectoryError !== undefined) throw options.resumeWorkingDirectoryError;
+                const cwd = self.clientOptions.cwd;
+                return typeof cwd === 'string' ? cwd : '';
+              },
+            };
+          };
+      }
     }
 
     private readonly emit: (notification: unknown) => void;
@@ -630,8 +862,17 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
 
     async run(prompt: string, runOptions?: { sessionId?: string }): Promise<unknown> {
       if (options.createError !== undefined) throw options.createError;
+      recorder.freshRunCalls += 1;
       recorder.prompt = prompt;
-      const sessionId = runOptions?.sessionId ?? DSH_SESSION_PLACEHOLDER;
+      return this.playScript(runOptions?.sessionId ?? DSH_SESSION_PLACEHOLDER);
+    }
+
+    /**
+     * 一次运行的剧本：吐事件、收尾 `idle`。**`run()` 与 adopt 出来的 `session.run()` 共用**它——
+     * 两条入口的差别只在「会话是谁定的」，通知形状与收尾时序必须逐字一致，否则拿它们互相
+     * 印证的那几条判据就失去意义。
+     */
+    private async playScript(sessionId: string): Promise<unknown> {
       // stream-tap 旁路行先落盘（真实时序：流式期间增量长在旁路文件里、通知流静默）
       this.writeTapLines(sessionId);
       // 提示词先入会话（真实实现：prompt 之后才有事件）——形状照 dump 的第一条
@@ -657,12 +898,26 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
          * 于是消费循环会真的走到「等 `next()`」那条路径（订阅中途失败就发生在那里）。
          */
         const interval = options.emitIntervalMs ?? 2;
-        for (const event of options.events) {
+        const batchSize = Math.max(0, options.settleBatch ?? 0);
+        const headCount = Math.max(0, options.events.length - batchSize);
+        for (const event of options.events.slice(0, headCount)) {
           await new Promise((resolve) => setTimeout(resolve, interval));
           this.emit(this.tagSession(event, sessionId));
         }
+        if (batchSize > 0) {
+          /**
+           * 收尾那一批：**同拍**投完 tail、`idle`，然后 `run()` 落定（见 `settleBatch` 的注释）。
+           * 拒绝收场（`throwAfterEvents`）也落在这一拍之后：真实形状是「通知先到齐、传输随后断」，
+           * 而那条路径上队列里可能还压着 `turn/end` 的原文。
+           */
+          for (const event of options.events.slice(headCount)) this.emit(this.tagSession(event, sessionId));
+          this.emit({ method: 'session.status', params: { sessionId, status: 'idle' } });
+          if (options.throwAfterEvents !== undefined) throw options.throwAfterEvents;
+          return { sessionId, finalResponse: '', events: [], notifications: [] };
+        }
         await new Promise((resolve) => setTimeout(resolve, interval));
         this.emit({ method: 'session.status', params: { sessionId, status: 'idle' } });
+        if (options.throwAfterEvents !== undefined) throw options.throwAfterEvents;
         return { sessionId, finalResponse: '', events: [], notifications: [] };
       }
       for (const event of options.events) this.emit(this.tagSession(event, sessionId));

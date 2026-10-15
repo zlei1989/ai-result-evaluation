@@ -131,6 +131,13 @@ export async function startCodexScriptedUpstream(options: {
   args: unknown;
   /** 收尾那几轮的正文（`finalText` 的来源） */
   finalText: string;
+  /**
+   * **按入站请求体现算**收尾正文的剧本（给了就以它为准）。
+   *
+   * 为什么要这一格：脚本式上游扮演的是「模型」——只有让它读一眼请求体，那一条「上下文真的走到了
+   * 模型面前」的判据才谈得上（否则答复与请求体无关，读回暗号只是自说自话）。
+   */
+  finalTextOf?: (body: Record<string, unknown>) => string;
 }): Promise<CodexScriptedUpstream> {
   const records: Record<string, unknown>[] = [];
   let asked = false;
@@ -149,8 +156,9 @@ export async function startCodexScriptedUpstream(options: {
       const tools = Array.isArray(body['tools']) ? (body['tools'] as Array<{ name?: unknown }>) : [];
       const shouldAsk = !asked && tools.some((tool) => tool?.name === options.toolName);
       if (shouldAsk) asked = true;
+      const finalText = options.finalTextOf?.(body) ?? options.finalText;
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-      response.end(shouldAsk ? toolTurn(options.callId, options.toolName, options.args) : textTurn(options.finalText));
+      response.end(shouldAsk ? toolTurn(options.callId, options.toolName, options.args) : textTurn(finalText));
     });
   });
   server.unref();

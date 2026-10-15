@@ -28,6 +28,7 @@ import {
   type Rubric,
   type RunCreate,
   type RunUpdate,
+  type TurnInjectionCapability,
 } from '@aieval/contracts';
 import { createLogger, rowWorkspaceDir } from '@aieval/core';
 import { acceptsProtocol, getProvider, protocolMismatchMessage } from '@aieval/agents';
@@ -111,6 +112,19 @@ export interface AgentOptionGroup {
    * （把「没投送」说成「没验证过」正是契约反复禁的那类误读）。
    */
   messageCapability: MessageCapability;
+  /**
+   * **注入面声明**（`turnInjection`）：人往运行中的一轮送话（两档边界各一格）、已经交给厂商的
+   * 那一条能不能按条撤回（两档各一格），以及能不能接着一条已有会话再跑一段。
+   *
+   * 为什么必须在这里透出来：输入区的可用性、两颗操作按钮的禁用与 tooltip 文案全靠它，
+   * 而它唯一的长处就是**如实**——「这家结构上没有」与「厂商有、我们还没接」是两句不同的话，
+   * 下一步动作也不同（别指望了 vs 等接线）。出口少这一格时整条链路在 api 处静默断掉：
+   * 界面一律读到「不知道」⇒ 连真机已证可用的那一家也一起置灰。
+   *
+   * **可选**：还没接这一面的家整组不交（缺席读作「不知道」，不读作「支持」）。投影按
+   * 「有意义才出现」写，故缺席时这一格**不存在**，界面拿 `?? null` 处置。
+   */
+  turnInjection?: TurnInjectionCapability;
   options: AgentModelOption[];
 }
 
@@ -270,6 +284,9 @@ function buildRow(input: {
     error: null,
     // 还没跑过 ⇒ 0 次尝试（契约里这一格的缺省值也是 0，显式写出来是为了让落盘物自解释）
     attempts: 0,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
   };
 }
 
@@ -317,6 +334,9 @@ export function createRun(input: RunCreate): EvalRun {
     id: runId,
     caseId: testCase.id,
     caseTitle: testCase.title,
+    // 备注是这一轮自己的用户注解（不是用例快照）：缺省（老客户端 / 手工 POST 不带）落空串。
+    // trim 在落盘边界做：列表标题列把它接在用例标题后面，首尾空白会变成肉眼可见的「 ·  」。
+    note: (input.note ?? '').trim(),
     repoPath: testCase.repoPath,
     commitHash: testCase.commitHash,
     // 与 caseTitle / commitHash 同为一轮评测的冗余快照；旧配置里的用例没有这一列，故 ?? null 兜住 undefined
@@ -335,6 +355,10 @@ export function createRun(input: RunCreate): EvalRun {
     // 与 useAgentJudge 逐字同一条理由：不写这一格，`EvalRunSchema` 的 `.default(false)`
     // 会在落盘时把「界面打开了应答面」悄悄改成关，而那一轮的产物看起来与「从来没开过」一模一样
     askUser: input.askUser,
+    // 与 askUser 逐字同一条理由：不写这一格，`.default(false)` 会在落盘时把「界面打开了输入区」
+    // 悄悄改成关，而那一轮的产物看起来与「从来没开过」一模一样。关着时适配器一格都不挂，
+    // 既有行为逐字不变。
+    injectMessages: input.injectMessages,
     rows,
     workspaceBase: settings.workspaceRoot,
     createdAt: now,
@@ -469,6 +493,9 @@ export function listAgentModelOptions(): AgentOptionGroup[] {
       // 能力声明**逐格原样透出**（含每格自己的 source / reason 与 notes）：api 不做任何裁剪，
       // 裁一格就等于替厂商重写一句「为什么没有」（见 `AgentOptionGroup.messageCapability`）
       messageCapability: metadata.messageCapability,
+      // 注入面声明同样**逐格原样透出**（含四档撤回能力与各自的 reason）：api 一格都不裁。
+      // 这一组是可选的 ⇒ 按「有意义才出现」投影，缺席时这一格不存在（界面据此读到「不知道」）
+      ...(metadata.turnInjection === undefined ? {} : { turnInjection: metadata.turnInjection }),
       options: listModelOptions(agentKind),
     };
   });
@@ -527,6 +554,13 @@ function resetRow(current: EvalRow, row: ResolvedRunRow): EvalRow {
   // 故按 resolved 的那一格重建，与 `createRun` 同为「缺省不写这个键」。
   delete next.effort;
   if (row.effort !== undefined) next.effort = row.effort;
+  /**
+   * 「候选未作答」是同一种「**上一趟**的观测结果」：重置后这一行还没跑，
+   * 留着它会让候选卡片一直挂着上一趟的断言（换模型 / 换用例后尤其刺眼 —— 界面显示
+   * 「候选未作答」，而这一趟根本还没开始）。与落盘那侧同口径：**「未记录」是键缺席**，
+   * 不是 `null`，所以用 `delete` 而不是赋 `null`（照上面 `effort` 的写法）。
+   */
+  delete next.emptyAnswer;
   return next;
 }
 
@@ -651,8 +685,13 @@ export function planRunUpdate(
       : {}),
     executionMode: input.executionMode,
     useAgentJudge: input.useAgentJudge,
-    // 编辑时这一格是**全量替换表单值**：不回传就等于把「这一轮开着应答面」改成关
+    // 备注是**这一轮自己的注解**，不随用例快照走：显式给值就改（trim 后落盘），缺席按空串处置
+    // ——编辑载荷是全量替换语义，表单两条路径都显式给 `note`，界面上「清空备注再保存」照常生效。
+    // 它不参与任何行的「同一件事」判定：只改备注时下面那一段一行都不会重置。
+    note: (input.note ?? '').trim(),
+    // 编辑时这两格是**全量替换表单值**：不回传就等于把「这一轮开着应答面 / 输入区」改成关
     askUser: input.askUser,
+    injectMessages: input.injectMessages,
     rows,
     ...settleRunAfterEdit(run, rows, now),
   };

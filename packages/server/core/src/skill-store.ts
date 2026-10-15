@@ -21,7 +21,7 @@
  * （`getConfigDir()` + `/skills`），故 `setConfigDirForTesting` 一并把它搬进临时目录。
  */
 import { readdirSync, readFileSync, realpathSync, statSync, type Dirent } from 'node:fs';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import {
   ServiceError,
   SKILL_FILE_NAME,
@@ -42,6 +42,7 @@ import {
 } from '@aieval/contracts';
 import { getConfigDir } from './config-store';
 import { createLogger } from './logger';
+import { isInside } from './path-inside';
 
 const log = createLogger('skill-store');
 
@@ -70,6 +71,34 @@ const DISABLE_MODEL_INVOCATION_REASON =
 /** 这一格是不是把技能藏起来（见 `DISABLE_MODEL_INVOCATION_REASON`） */
 function hidesFromModel(fields: Record<string, string>): boolean {
   return (fields['disable-model-invocation'] ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * 厂商**硬拒收**的三个旧写法键（`dsh-skill-filesystem` 的 `rejectLegacyInvocationKey`：命中即
+ * `throw new Error('frontmatter field "<旧名>" is unsupported; use "<正名>"')`，那一份技能文件随后被
+ * **静默丢弃**——厂商自己的 `skill file … ignored` 没有任何出口）。
+ *
+ * 为什么本仓也要拦：判据比厂商宽的下场是假绿——界面上这条技能「合格」、文件也物化到了
+ * `<DSH_HOME>/skills/`，而厂商一条都不认领（`vendor-system.skills` 采不到 ⇒ 观测格读成
+ * 「未能核验」）。拦在这里，用户看到的是「不合格 + 该用哪个键」，与厂商自己的报错同源。
+ *
+ * 正名与厂商逐字相同（旧名 → 正名）：`disableModelInvocation` / `modelInvocable` →
+ * `disable-model-invocation`；`userInvocable` → `user-invocable`。
+ */
+const LEGACY_INVOCATION_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ['disableModelInvocation', 'disable-model-invocation'],
+  ['modelInvocable', 'disable-model-invocation'],
+  ['userInvocable', 'user-invocable'],
+];
+
+/** 命中旧写法键就给出中文原因（含正名）；都没有给 `null` */
+function legacyInvocationReason(fields: Record<string, string>): string | null {
+  for (const [legacy, canonical] of LEGACY_INVOCATION_KEYS) {
+    if (Object.hasOwn(fields, legacy)) {
+      return `${legacy} 不受支持（厂商会直接丢弃这份技能）：请改用 ${canonical}`;
+    }
+  }
+  return null;
 }
 
 
@@ -222,6 +251,10 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
   if (hidesFromModel(fields)) {
     return { ...base, ok: false, reason: DISABLE_MODEL_INVOCATION_REASON };
   }
+  const legacy = legacyInvocationReason(fields);
+  if (legacy !== null) {
+    return { ...base, ok: false, reason: legacy };
+  }
   return { ...base, ok: true };
 }
 
@@ -272,14 +305,7 @@ interface TreeWalkState {
   truncated: boolean;
 }
 
-/** `target` 是不是在 `root` 之下（两侧都必须是 `realpath` 解析过的真实路径） */
-function isInside(root: string, target: string): boolean {
-  if (target === root) return true;
-  return target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-}
-
-/** 单个文件的字节数；读不出（权限 / 坏链）返回 `null`——`null ≠ 0` 同纪律，不拿 0 顶替 */
-function fileSize(path: string): number | null {
+/** 单个文件的字节数；读不出（权限 / 坏链）返回 `null`——`null ≠ 0` 同纪律，不拿 0 顶替 */function fileSize(path: string): number | null {
   try {
     return statSync(path).size;
   } catch {

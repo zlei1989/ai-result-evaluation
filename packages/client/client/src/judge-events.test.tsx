@@ -22,9 +22,10 @@ import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentEvent } from '@aieval/contracts';
+import { resetDrawerStreamHubForTesting } from './drawer-stream-hub';
 import { useRowJudgeEvents } from './judge-events';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
-import { makeEvent } from './testing/run-fixtures';
+import { makeEvent, makeMessage } from './testing/run-fixtures';
 
 /** fetch 替身的签名：显式写出来，`vi.fn(async () => …)` 会被推成零参函数，`mock.calls[0][0]` 直接报 TS2493 */
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
@@ -51,14 +52,16 @@ function stubJudgeFetch(history: unknown[], secondRead: unknown[] = history): Fe
   return fetchMock;
 }
 
-/** SSE 的 `data:` 行内容就是一条事件的 JSON（与 api 的 `toFrame` 逐字同形） */
+/** SSE 的 `data:` 行内容 = 信封里的那一帧（与 api 的组帧逐字同形：业务载荷 + 归属两格） */
 function frame(event: AgentEvent): string {
-  return JSON.stringify(event);
+  return JSON.stringify({ ...event, rowId: 'w-1', rowChannel: 'judge' });
 }
 
 beforeEach(() => {
   FakeEventSource.reset();
   installEventSourceStub();
+  // 抽屉 hub 是模块级单例：不复位的话上一条用例的 hook（本仓没开自动 cleanup）会把连接留给下一条
+  resetDrawerStreamHubForTesting();
 });
 
 afterEach(() => {
@@ -89,7 +92,7 @@ describe('useRowJudgeEvents', () => {
     });
 
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/rows/w-1/judge/events/stream?afterSeq=2');
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=judge&afterSeq=2');
 
     const source = FakeEventSource.instances[0];
     await act(async () => {
@@ -103,6 +106,30 @@ describe('useRowJudgeEvents', () => {
 
     expect(result.current.events.map((event) => event.seq)).toEqual([1, 2, 3]);
     expect(result.current.events.at(-1)).toMatchObject({ seq: 3, stream: 'stderr', text: '评审者的实时输出' });
+  });
+
+  it('评分侧的消息帧不进事件列表（judge 那个 channel 也带消息族）', async () => {
+    // 抽屉流是「一个 channel 的完整流水」：judge 那条也带着评分侧的消息与子任务行，
+    // 本 hook 只认行级事件那一族——不筛的话时间轴的内容会混进「原始输出」面板
+    stubJudgeFetch([makeEvent({ seq: 1 })]);
+
+    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: true }), {
+      wrapper,
+    });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0];
+
+    await act(async () => {
+      source?.emitNamed(
+        'message',
+        JSON.stringify({ type: 'message', rowId: 'w-1', rowChannel: 'judge', message: makeMessage({ mergeKey: 'judge|-' }) }),
+      );
+      const fresh = makeEvent({ seq: 2, type: 'log', stream: 'stderr', text: '评审者的实时输出' });
+      source?.emitNamed('log', frame(fresh));
+    });
+
+    expect(result.current.events.map((event) => event.seq)).toEqual([1, 2]);
+    expect(result.current.liveError).toBeNull();
   });
 
   it('live 翻 false（judging → 终态）：连接关掉、历史重读成终值（SSE 尾部丢了这一步兜住）', async () => {

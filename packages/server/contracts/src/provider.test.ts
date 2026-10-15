@@ -8,7 +8,10 @@ import {
   PROTOCOL_LABELS,
   ProviderCreateSchema,
   ProviderModelInputSchema,
+  ProviderModelPreviewListSchema,
+  ProviderModelPreviewSchema,
   ProviderModelSchema,
+  ProviderModelsImportSchema,
   ProviderPatchSchema,
   ProviderSchema,
   ProviderViewSchema,
@@ -97,6 +100,31 @@ describe('Provider schema', () => {
   it('ProviderModelInputSchema 就是 ProviderModelSchema（增删单条模型共用一份口径）', () => {
     expect(ProviderModelInputSchema.safeParse({ id: 'gpt-4o', source: 'manual' }).success).toBe(true);
     expect(ProviderModelInputSchema.safeParse({ id: '', source: 'manual' }).success).toBe(false);
+  });
+});
+
+/**
+ * 拉取预览与挑选导入的一对 schema：预览（/models/preview 的响应）与导入
+ * （/models/import 的请求体）共用 `ProviderModelPreviewSchema` 的条目形状 ——
+ * 前端把勾选的候选原样回传，两侧字段名有差就会在界面上「看到的数」与「落盘的数」之间引入一道翻译。
+ */
+describe('ProviderModelPreviewSchema / ProviderModelsImportSchema', () => {
+  it('候选条目只要 id；能力四格可选，约束与清单条目一致（拒绝 0 / 负数 / 小数窗口）', () => {
+    expect(ProviderModelPreviewSchema.safeParse({ id: 'm' }).success).toBe(true);
+    expect(ProviderModelPreviewSchema.safeParse({ id: 'm', contextWindow: 128_000 }).success).toBe(true);
+    expect(ProviderModelPreviewSchema.safeParse({ id: '', contextWindow: 1 }).success).toBe(false);
+    expect(ProviderModelPreviewSchema.safeParse({ id: 'm', contextWindow: 0 }).success).toBe(false);
+    // 条目上没有 source 这一格：多余键被 strip，塞了也不进结果 —— 来源由服务端按合并规则定，
+    // 不许前端借候选条目自己声明「这条是 manual」
+    expect(ProviderModelPreviewSchema.parse({ id: 'm', source: 'fetched' })).toEqual({ id: 'm' });
+  });
+
+  it('导入至少一条（空提交没有语义）；响应体是 { models } 一层包装', () => {
+    const one = [{ id: 'm', contextWindow: 1 }];
+    expect(ProviderModelsImportSchema.safeParse({ models: one }).success).toBe(true);
+    expect(ProviderModelsImportSchema.safeParse({ models: [] }).success).toBe(false);
+    expect(ProviderModelPreviewListSchema.parse({ models: one })).toEqual({ models: one });
+    expect(ProviderModelPreviewListSchema.safeParse(one).success).toBe(false);
   });
 });
 

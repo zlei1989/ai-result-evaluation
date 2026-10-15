@@ -12,87 +12,21 @@
  * 不是本仓那个替身；
  * · 断言 `useRowStream` 真的把具名事件交付进了 `events`。
  *
- * 实现说明（两点，都是实测踩出来的）：
- * 1. 真实的 `EventSource` 实现从**仓库已安装的**`eventsource` 包解析（它是某条依赖链的传递依赖，
- * `pnpm-lock.yaml` 里有、不能直接裸 import）——用 `createRequire` 定位它的**实际路径**再动态
- * import，并在路径里核对版本号：升级/消失时会以「找不到」红，而不是静默跳过（若将来 Node 自带
- * `EventSource`，把这里换成全局实现即可，断言不用动）。传递依赖在 pnpm 下的真实落点是
- * **隐藏提升目录**（谁都没把它声明成直接依赖 ⇒ 不会链进本包），解析要试两处，
- * 见 `realEventSourcePath` 的 JSDoc。
+ * 实现说明：
+ * 1. 真实的 `EventSource` 实现由 `testing/real-event-source.ts` 定位（传递依赖的解析口径与版本核对
+ * 都在那里，两个 e2e 守卫共用）；本文件只负责把它装成全局并把相对 URL 补成测试服务器的绝对地址。
  * 2. 服务器**绝不结束响应**：真实 `EventSource` 在流结束时会按 `retry` 自动重连，
  * 测试若让它乱重连，「不重不漏」这条断言就失去意义。
  */
 import { createServer, type Server } from 'node:http';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 import { createElement, type ReactNode } from 'react';
 import { SWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentEvent } from '@aieval/contracts';
+import { resetDrawerStreamHubForTesting } from './drawer-stream-hub';
 import { useRowStream } from './row-stream';
-
-/** 真实 `EventSource` 实现的最小形状（只用本文件需要的部分） */
-interface RealEventSource {
-  close: () => void;
-}
-type RealEventSourceCtor = new (url: string, options?: { fetch?: unknown }) => RealEventSource;
-
-/**
- * `eventsource` 包在本仓的实际入口（传递依赖，路径里带版本号）。
- *
- * 三条实测口径：
- * 1. **一句 `require.resolve('eventsource')` 解析不到**：它是 `@modelcontextprotocol/sdk` 的传递依赖，
- * 而那个 sdk 是 `@anthropic-ai/claude-agent-sdk` 的 **peer**（由 pnpm 的 `auto-install-peers` 装上），
- * **没有任何包把它声明成直接依赖** ⇒ pnpm 的严格链接不会把它链进本包，本包自己解析必然
- * `MODULE_NOT_FOUND`；它真实落在 pnpm 的**隐藏提升目录**`node_modules/.pnpm/node_modules/` 里
- * （`.pnpm` 内部的包解析得到，工作区源码解析不到）。故从本文件所在目录**逐级向上**找，每一级试两处：
- * `<该级>/node_modules`（将来把它声明成依赖时的落点，`packages/client/client/node_modules` 也在这条线上）
- * 与 `<该级>/node_modules/.pnpm`。将来真声明成 devDependency，命中的就是前者，本函数不用改。
- * 2. **路径基准必须用 `import.meta.dirname`，不能用 `new URL(相对路径, import.meta.url)`**：
- * jsdom 环境下全局 `URL` 是 jsdom 的实现，它构造出的 URL 对象过不了 Node 的 `fileURLToPath`
- * （实测抛 `The URL must be of scheme file`，而同一时刻 `import.meta.url` 明明是 `file:///` 开头）。
- * `import.meta.dirname` 在两个环境下实测都是**真实绝对路径**（本仓 `apps/web-next/src/*.test.ts` 多处同法）。
- * 3. 找不到就**抛错**，绝不静默跳过——守卫消失比守卫变红更坏。
- */
-function realEventSourcePath(): string {
-  const require = createRequire(join(import.meta.dirname, 'noop.js'));
-  let entry: string | null = null;
-  for (let dir = import.meta.dirname, level = 0; level < 6 && entry === null; level += 1) {
-    // `paths` 给的是「从哪个目录开始找 node_modules」⇒ 两处分别对应
-    // `<base>/node_modules/eventsource` 与 `<base>/node_modules/.pnpm/node_modules/eventsource`
-    for (const base of [dir, join(dir, 'node_modules', '.pnpm')]) {
-      entry = tryResolve(() => require.resolve('eventsource', { paths: [base] }));
-      if (entry !== null) break;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (entry === null) {
-    throw new Error(
-      '找不到 eventsource 的真实实现（本仓里它是传递依赖：@modelcontextprotocol/sdk ← ' +
-        '@anthropic-ai/claude-agent-sdk 的 peer）。修法：把它声明成 @aieval/client 的 devDependency 后重装。' +
-        '**不要为了让这条变绿而跳过守护**：R38 ③ 存在的理由正是「两侧单测可以同时全绿而真实链路全死」。',
-    );
-  }
-  if (!/eventsource@3\./.test(entry)) {
-    throw new Error(
-      `期望 eventsource@3.x 的真实实现，实际解析到：${entry}。` +
-        '依赖升级后请复核它的 SSE 语义（具名事件是否派发给 addEventListener）再改这条断言。',
-    );
-  }
-  return entry;
-}
-
-/** 解析不到返回 `null`：失败面（要不要抛、抛什么）由调用方一处给，解析策略自己不带第二套判据 */
-function tryResolve(resolve: () => string): string | null {
-  try {
-    return resolve();
-  } catch {
-    return null;
-  }
-}
+import { realEventSourcePath, type RealEventSource, type RealEventSourceCtor } from './testing/real-event-source';
 
 /** 一次真实 HTTP 请求的记录：`/stream` 收到 `Last-Event-ID` 时重连就真的带了它 */
 interface Hit {
@@ -101,9 +35,9 @@ interface Hit {
   afterSeq: string | null;
 }
 
-/** 按 api 的 `toFrame` 逐字成帧 */
+/** 按 api 的 `toFrame` 逐字成帧：事件帧 = `id:` + 具名 `event:` + 信封载荷（业务载荷 + 归属两格） */
 function frame(event: AgentEvent): string {
-  return `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+  return `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify({ ...event, rowId: 'w-1', rowChannel: 'candidate' })}\n\n`;
 }
 
 function logEvent(seq: number, text: string): AgentEvent {
@@ -197,6 +131,9 @@ let harness: Awaited<ReturnType<typeof startStreamServer>>;
 let RealEventSource: RealEventSourceCtor;
 
 beforeEach(async () => {
+  // 抽屉 hub 是模块级单例：不复位的话上一条用例的 hook（本仓没开自动 cleanup）会把连接留给下一条，
+  // 而它指向的是已经被 `harness.close()` 关掉的那台服务器
+  resetDrawerStreamHubForTesting();
   const module = (await import(realEventSourcePath())) as { EventSource: RealEventSourceCtor };
   RealEventSource = module.EventSource;
   harness = await startStreamServer();
@@ -209,13 +146,14 @@ afterEach(async () => {
 
 describe('useRowStream × 真实 EventSource × 真实 HTTP（③）', () => {
   it('订阅之后发布的事件真的到达消费方（api 那侧的具名帧被浏览器语义交付）', async () => {
-    const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }), {
+    const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true, attemptKey: '1' }), {
       wrapper,
     });
 
     // 先等订阅真的建立（服务器收到了 `/stream`）
     await waitFor(() => expect(harness.hits).toHaveLength(1));
-    expect(harness.hits[0]?.afterSeq).toBe('0');
+    // 端点形状也要对：单行单 channel 的抽屉流（缺 rowChannel 会被真实路由 400，而这里只断言 URL）
+    expect(harness.hits[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=0');
 
     // 编排层推两条：这正是 `POST /start` 之后会发生的事
     await act(async () => {
@@ -231,7 +169,7 @@ describe('useRowStream × 真实 EventSource × 真实 HTTP（③）', () => {
   });
 
   it('断线后浏览器带 `Last-Event-ID` 自动重连，且不重不漏', async () => {
-    const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true }), {
+    const { result } = renderHook(() => useRowStream({ runId: 'run-1', rowId: 'w-1', enabled: true, attemptKey: '1' }), {
       wrapper,
     });
     await waitFor(() => expect(harness.hits).toHaveLength(1));

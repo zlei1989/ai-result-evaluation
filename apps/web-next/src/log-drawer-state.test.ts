@@ -167,6 +167,9 @@ function row(overrides: Partial<EvalRow> = {}): EvalRow {
     score: null,
     error: null,
     attempts: 1,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }

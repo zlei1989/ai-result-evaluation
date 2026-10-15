@@ -49,10 +49,51 @@ import {
 } from './appserver/reader';
 import { startCodexSession, type CodexSession } from './appserver/session';
 import { breakdownToTokens, projectCodexEvent } from './events';
+import { createCodexInjection } from './turn-injection';
 import { askUserCallDraft, noteThreadStarted, projectCodexMessages, projectSubagentRecord, projectThreadMessages, threadRoundTrips } from './message';
 import { createCodexRunState, currentMcpStartup, observedTurns, type CodexRunState } from './run-state';
 
 const logger = createLogger('agents/codex');
+
+/**
+ * 一次运行里「人话续跑」最多起几轮。
+ *
+ * 为什么必须有上限：人一直发消息就能一直续跑，而这一行**永远不收场**——编排层的等待预算只在
+ * 适配器返回之后才开窗口，靠它兜不住这里。上限到点就当没有更多话，按正常收场走。
+ * 写成可变对象是给用例压小用的（`beforeEach` 读产品默认值再改、`afterEach` 还原）。
+ */
+export const CODEX_IDLE_CONTINUATION = { rounds: 3 };
+
+/**
+ * 等「厂商自己投递起的那一轮」出现 `turn/started` 的预算（毫秒）。
+ *
+ * 为什么要等：那一种起轮不是我们发起的（`thread/queue/add` 落在空闲线程上时厂商当场就投），
+ * 于是没有 `thread/queue/start` 的返回值可拿 turd id；而**绝不能当场收场**——收场即 `dispose` 杀进程，
+ * 那一轮连同人话一起没（真机复现）。
+ *
+ * 为什么要有界：厂商若因为任何原因没把这一轮跑起来（例如投递失败、线程又忙了），
+ * 没有这一格这一行会一直挂在流上（看门狗只在适配器返回之后才由编排层兜）。读数取 5 秒：
+ * 真机上 `turn/started` 与 `queue/add` 在同一拍内到达（毫秒级），5 秒是两个数量级的余量。
+ * 写成可变对象是给用例压小用的（口径同 `CODEX_IDLE_CONTINUATION`）。
+ */
+export const CODEX_VENDOR_TURN_WAIT = { waitMs: 5_000 };
+
+/**
+ * 「等后代线程静下来」的预算（毫秒）与轮询间隔。
+ *
+ * 为什么需要这一段：本轮结算的闸门是**主线程的 `turn/completed`**，而模型派出去的子智能体往往
+ * 还在跑。那一刻收尾取数会把子线程读成半截（真机读数：`thread/read{child}` 的
+ * `status = {"type":"active"}`、`items` 只有 1 条 `userMessage`）、子任务行记成
+ * `status:"running"/outcome:null`、它的用量通知也没人投影，随后 `dispose` 把那一轮掐掉
+ * （那一轮的花费白付）。这里给一个**有界**的静默窗口：窗口内继续消化通知，树静了就收尾。
+ *
+ * 三条口径：
+ *   · **没有后代线程时不花任何时间**：第一次枚举回空表就直接放行（绝大多数行走这一档）；
+ *   · **有界**：到点按现状收尾，由既有的 WARN 如实点名「不是全量」，不把一行永久挂住；
+ *   · **取消那一档不等**：用户点了终止就立刻放行（那条通路本来就不取数）。
+ * 写成可变对象是给用例压小用的（口径同 `CODEX_IDLE_CONTINUATION`）。
+ */
+export const CODEX_DESCENDANT_QUIET_WAIT = { waitMs: 10_000, pollMs: 250 };
 
 /** 本仓统一的关闭档名（契约与界面都用它；这一家要翻成 CLI 的 `none`） */
 const CODEX_OFF_EFFORT = EFFORT_OFF;
@@ -79,6 +120,19 @@ export function codexEffortOf(effort: string): string {
 const CODEX_PROVIDER_ID = 'aieval';
 
 /**
+ * 关掉内置 hosted 联网工具的**唯一生效开关**：顶层 `web_search`。
+ *
+ * ⚠️ **不是** `tools.web_search`：那一格只是 web search 的**参数容器**（filters / user_location /
+ * context size），真机 A/B 两臂里给不给它，出站请求体的工具表**逐字相同**（`web_search` 一直在），
+ * 而 `web_search: 'disabled'` 一给，`type:"web_search"` 那一项当场消失（C 臂，含正对照）。
+ * 默认值是 `Cached`（= 会带上这件工具）⇒ 不显式关掉就等于一直开着。
+ *
+ * 为什么要关：本仓的评测面要求四家的工具表尽量可比（claude 只在非 claude 模型上禁 `WebSearch`、
+ * dsh 那一侧是凭据缺失挂着），而 hosted 工具由厂商服务端执行、自定义网关上并不保证兑现。
+ */
+const CODEX_WEB_SEARCH_OFF = 'disabled';
+
+/**
  * 提问工具的两格线程级开关：**两格一起**才让厂商在运行期受理那次调用。
  *
  * 为什么非要开：0.156.1 默认就把 `request_user_input` 列进工具表（系统提示与工具表都不随这两格变），
@@ -98,6 +152,16 @@ export interface CodexConfigOptions {
   contextWindow?: number | undefined;
   /** `model_reasoning_summary`：关闭档的第二格，见 `CODEX_OFF_REASONING_SUMMARY` */
   reasoningSummary?: string | undefined;
+  /**
+   * 线程级的推理档位（`model_reasoning_effort`）。
+   *
+   * 为什么**同时**写进 config：`turn/start` 那一格只管它起的那一轮，而人话续跑起的那一轮走
+   * `thread/queue/start`——那个请求的参数**只有** `threadId` 与 `queuedSubmissionId`（探针 dump
+   * `v2/ThreadQueueStartParams.json` 的 `required`），带不了档位 ⇒ 只能靠线程级这一格兜住。
+   * 不给的话，续跑那一轮会按线程默认档跑，而行快照上写着用户选的那一档（一句半真话）。
+   * 同一个值写两处不是重复：一处管本轮、一处管线程默认，取值同源（都来自 `input.effort`）。
+   */
+  reasoningEffort?: string | undefined;
   /** MCP 条目（形状由 `toCodexMcpServers` 一处定）；空集整个键都不给 */
   mcpServers?: Record<string, CodexMcpServer> | undefined;
   /**
@@ -134,7 +198,7 @@ export interface CodexConfigOptions {
  * 开了开关却没人答，厂商会一直等那一帧（`isBlocking: false` 与 `autoResolutionMs: null` 都不让它自己收场）。
  */
 export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = {}): Record<string, unknown> {
-  const { contextWindow, reasoningSummary, mcpServers, askUser } = options;
+  const { contextWindow, reasoningSummary, reasoningEffort, mcpServers, askUser } = options;
   return {
     model_provider: CODEX_PROVIDER_ID,
     model_providers: {
@@ -146,8 +210,9 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
         request_max_retries: 1,
       },
     },
+    // 内置联网工具：开关在**顶层**（见 `CODEX_WEB_SEARCH_OFF`），`tools` 那一格管不到它
+    web_search: CODEX_WEB_SEARCH_OFF,
     tools: {
-      web_search: false,
       update_plan: { enabled: true },
       ...(askUser === true ? CODEX_ASK_SWITCH_TOOLS : {}),
     },
@@ -157,6 +222,7 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
     },
     ...(contextWindow === undefined ? {} : { model_context_window: contextWindow }),
     ...(reasoningSummary === undefined ? {} : { model_reasoning_summary: reasoningSummary }),
+    ...(reasoningEffort === undefined ? {} : { model_reasoning_effort: reasoningEffort }),
     /**
       * MCP 条目：形状由 `toCodexMcpServers` 一处定（snake_case、无 `type`），
      * 这里只决定「放不放进去」。**空集整个键都不给**（与 effort 同一条口径）：给了空表等于向
@@ -236,10 +302,15 @@ interface CodexRun {
   runState: CodexRunState;
   /** 主线程 id：`thread/list{ancestorThreadId}` 的锚点，也是「会话身份」的判据 */
   mainThreadId: string;
-  /** 本行已交出的权威读数（主线程没有用量通知时的兜底，也是收尾判「要不要再发一条」的依据） */
+  /** 本行已交出的权威读数（主线程没采到用量时的兜底，也是收尾判「要不要再发一条」的依据） */
   lastTokens: UsageTokens | null;
   /** 收尾取数的结果（由 `startFinalizeReader` 在后台填；`null` = 还没落定） */
   readback: CodexReadback | null;
+  /**
+   * 流内投影**已经折过失败**没有（`turn/completed{failed}` 那条路）。
+   * 收尾那条兜底失败（`sessionFailed`）要靠它去重：同一件事不许落两条。
+   */
+  sawTerminalFailure: boolean;
 }
 
 /** 收尾取数的落点：要么是一份**全量**，要么是「这一份不是全量」 */
@@ -335,6 +406,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     config: buildCodexConfig(baseUrl, {
       contextWindow: input.route.contextWindow,
       reasoningSummary: input.effort === CODEX_OFF_EFFORT ? CODEX_OFF_REASONING_SUMMARY : undefined,
+      // 线程级也写一份：人话续跑起的那一轮走 `thread/queue/start`，那个请求带不了档位（见该格注释）
+      reasoningEffort: input.effort === undefined ? undefined : codexEffortOf(input.effort),
       mcpServers,
       /**
        * 提问工具的两格开关**只在挂了应答面时**打开（见 `CodexConfigOptions.askUser`）。
@@ -343,6 +416,14 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
       askUser: context.askUser.available,
     }),
     prompt: input.prompt,
+    /**
+     * **续接**：`AgentRunInput.resume.sessionId` 就是上一次运行交回来的 `threadId`。
+     * 给了就走 `thread/resume{threadId}`——键只有它（与 cwd 无关），且**绝不回落 `thread/start`**
+     * （静默开新会话会让「追问」变成「智能体什么都不记得」，而界面上一切正常）。
+     * 接上之后**照旧发一次 `turn/start`** ⇒ 续接轮同样有在途轮，人话两档都可用
+     * （`'round'` 的有效范围见 `turn-injection.ts` 的第 1 条）。
+     */
+    ...(input.resume === undefined ? {} : { resumeThreadId: input.resume.sessionId }),
     /**
      * 结构化输出按需带：给了 schema ⇒ 交给 `turn/start` 的一等字段 `outputSchema`
      * （形状由 codex 侧约束）。非对象（字符串 / 数组 / null）**什么都不传**——那不是一个能交给
@@ -373,7 +454,69 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     mainThreadId: session.threadId,
     lastTokens: null,
     readback: null,
+    sawTerminalFailure: false,
   };
+  /**
+   * **注入接线**：两档各自的落点见 `turn-injection.ts`。三件事在这里定：
+   *   · 端口读**骨架包装过的那一份**（`context.inject`）：缺席与关闭已由骨架归一成同一个关闭档，
+   *     等待登记（「在等人工消息」那一格）也在包装层——适配器只剩 `available` 一个判据要读，
+   *     而这条判据只在 `createCodexInjection` 内部读一次（`available === false` ⇒ 接线是空实现，
+   *     这一轮一格都不挂，「零回归」的判据）；
+   *   · `activeTurnId` 由**流那一侧**维护：`turn/steer` 的 `expectedTurnId` 必须是当前在途那一轮，
+   *     而「本轮收场了」这件事我们比端口更早看到（终态通知）；
+   *   · 收场投递要在流结束**之前**落定：`dispose` 一关客户端，那条消息就再也交不出去。
+   */
+  let activeTurnId: string | null = session.turnId;
+  /**
+   * 「在等厂商**自己**投递起的那一轮」：`deliverIdle` 的 `vendorDispatched` 分支把它置真。
+   *
+   * 为什么需要这一格：那种起轮不是我们发起的（没有 `thread/queue/start` 的返回值），它的 turn id
+   * 只能从 `turn/started` 进流那一刻拿到——而那一帧排在我们当前这一拍**之后**（我们正站在
+   * `turn/completed` 的处理里）。所以这里只记「在等」，等到了就补在途轮号；
+   * 等不到就用一个**有界**的预算收场（见 `CODEX_VENDOR_TURN_WAIT`），不把一行永久挂住。
+   */
+  let awaitingVendorTurn = false;
+  let vendorTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearVendorTurnWait = (): void => {
+    awaitingVendorTurn = false;
+    if (vendorTurnTimer !== null) {
+      clearTimeout(vendorTurnTimer);
+      vendorTurnTimer = null;
+    }
+  };
+  const injection = createCodexInjection({
+    port: context.inject,
+    activeTurnId: () => activeTurnId,
+    steer: (one) => session.steer(one),
+    queueAdd: (one) => session.queueAdd(one),
+    queueDelete: (id) => session.queueDelete(id),
+    queueList: () => session.queueList(),
+    queueStart: (id) => session.queueStart(id),
+  });
+  /**
+   * **续跑闸门**：这一行的**收场时机**由它决定。
+   *
+   * 为什么需要它：`'idle'` 档的人话只能靠「厂商起一轮」进模型上下文，而那一轮必须有人接着消费
+   * 事件流——流若在第一轮收场时就结束，`dispose` 随即杀掉 app-server，那条消息就白投了
+   * （那正是这一档过去的缺陷）。闸门让主线程一轮收场时**先别结算**，等这一拍把端口里的人话
+   * 交出去、起了新的一轮再继续。
+   *
+   * 三条边界，每条挡一种错法：
+   *   · **只在挂了注入面时装**（`context.inject.available`）：不挂时一格都不碰 ⇒ 帧序与过去逐字相同
+   *     （「不挂应答面就不动」的零回归判据）；
+   *   · **失败与取消都不续跑**：一轮已经失败（401 / 429 / 上游 5xx）或用户点了终止时再起一轮没有
+   *     意义，而厂商在中断之后本来就把队列置为暂停；
+   *   · **有上限**：人一直发就能一直续跑的话，这一行永远不收场，而编排层的等待预算根本不会被触发
+   *     （它只在适配器返回之后才开窗口）⇒ 上限到了就当没有更多话，正常收场。
+   */
+  const continuation = { used: 0 };
+  if (context.inject.available) {
+    session.installTurnGate((outcome) => {
+      if (outcome.status === 'failed') return false;
+      if (input.signal.aborted) return false;
+      return continuation.used < CODEX_IDLE_CONTINUATION.rounds;
+    });
+  }
   /**
    * 技能面：**起会话之后立刻取一次**（app-server 已就绪、`thread/start` 已回来 ⇒ 连接可用）。
    * **只在本行真的装了技能时取**（`input.skills` 给过）：评分与用例同步那两处不传这一格，
@@ -387,8 +530,16 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   if (input.skills !== undefined) {
     run.runState.skillProbe = await probeCodexSkills(client, { configHome: input.configHome, cwd: input.cwd });
   }
-  // 收尾取数：以「本轮结算」为闸门在后台跑，`finalize` 只读已经落定的结果（见文件头第 4 条）
-  const readback = startFinalizeReader(run, session);
+  /**
+   * 「后代线程静下来」这道闸门的放行口：`asRawStream` 的静默窗口结束时放行（取消那一档也放行）。
+   * 收尾取数等它——否则取数会赶在子线程收场之前把树读成半截。
+   */
+  let releaseQuiet: () => void = () => undefined;
+  const quiet = new Promise<void>((resolve) => {
+    releaseQuiet = resolve;
+  });
+  // 收尾取数：以「本轮结算 + 树静」为闸门在后台跑，`finalize` 只读已经落定的结果（见文件头第 4 条）
+  const readback = startFinalizeReader(run, session, quiet);
 
   return {
     /**
@@ -397,18 +548,141 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
      *
      * `readback` 是汇合点：收尾取数必须在流**结束之前**落定，`finalize` 才能读到它（见 `asRawStream`）。
      */
-    stream: asRawStream(session.notifications, readback, input.signal),
+    stream: asRawStream(session.notifications, readback, input.signal, {
+      /**
+       * 有界静默窗口：每一拍把**流停之后入队的**通知取出来交给调用方投影（用量只从通知来），
+       * 同时问一次「后代线程还活着吗」。三条出口——树静了 / 没有后代 / 预算到点。
+       * 取消那一档在外层判掉（`asRawStream` 不会走这一支），这里不再看信号。
+       */
+      settleDescendants: async function* (): AsyncGenerator<AppServerNotificationPayload> {
+        const deadline = Date.now() + CODEX_DESCENDANT_QUIET_WAIT.waitMs;
+        for (;;) {
+          for (const leftover of session.drainPending()) yield leftover;
+          let busy: boolean;
+          try {
+            const refs = await listDescendantThreads(run.client, run.mainThreadId);
+            busy = refs.some((one) => one.status.type === 'active');
+          } catch (error) {
+            // 枚举失败：不再等（收尾取数那一侧会把「不是全量」如实点名）
+            logger.warn('codex 等后代线程静默时枚举失败（不再等，按现状收尾）', { error });
+            return;
+          }
+          if (!busy) return;
+          if (Date.now() >= deadline) {
+            logger.warn('codex 后代线程在预算内没有收场（按现状收尾：内容与用量可能只拿到一部分）', {
+              waitMs: CODEX_DESCENDANT_QUIET_WAIT.waitMs,
+            });
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, CODEX_DESCENDANT_QUIET_WAIT.pollMs));
+        }
+      },
+      releaseQuiet: () => releaseQuiet(),
+      onPayload: async (payload) => {
+        /**
+         * **在途轮号由流维护**：`turn/steer` 的 `expectedTurnId` 与 `turn/interrupt` 的 `turnId`
+         * 都必须是**当前在途那一轮**（厂商按在途轮校验，真机读数：拿已收场的 id 发会被拒）。
+         * 起轮有两条路，都落在这里：我们起的（`thread/queue/start` ⇒ 下面 `continueWith` 那一支
+         * 直接赋值）与**厂商自己投递起的**（`vendorDispatched` ⇒ 只能在这里补）。
+         */
+        if (payload.kind === 'turnStarted' && payload.threadId === run.mainThreadId) {
+          activeTurnId = payload.turnId;
+          clearVendorTurnWait();
+        }
+        if (payload.kind === 'turnCompleted' && payload.threadId === run.mainThreadId) {
+          /**
+           * 本轮收场：先断掉在途那一档（这一刻起 steer 必被厂商拒），再看这一拍要不要续跑。
+           *
+           * 四条分支各有依据：
+           *   · **没被闸门拦下**（不挂注入面 / 失败 / 取消 / 上限到）⇒ 什么都不投，直接让它收场
+           *     ——起不动的那一批留在端口里，由编排层的等待窗口按预算如实收落 `gone`，不假装已交付；
+           *   · **我们起轮成功**：把这一批人话交出去 ⇒ 更新在途轮号并让流继续消费。
+           *     判据里那次「回的轮号必须**不是**刚收场那一轮」是必需的：线程忙时厂商回什么没有读数，
+           *     保守地按「同一个 id ⇒ 没起成」处置，否则我们会去等一轮永远不会再收场的终态；
+           *   · **厂商自己投递起了一轮**（`vendorDispatched`，真机形状：`thread/queue/add` 落在空闲
+           *     线程上时厂商当场就把条目撒出去了）⇒ **绝不能收场**：收场即 `dispose` 杀进程，
+           *     那一轮连同那句话一起没（真机复现过）。**暂存的结局照旧留着**（不 `continueWith`）：
+           *     那一轮真收场时它会替换掉这一份，于是这一行的结论取最后一轮；
+           *   · 否则收场。
+           */
+          const settledTurnId = activeTurnId;
+          activeTurnId = null;
+          if (!session.heldTurn()) return;
+          const { continuedTurnId, vendorDispatched } = await injection.onTurnSettled();
+          if (continuedTurnId !== null && continuedTurnId !== settledTurnId) {
+            continuation.used += 1;
+            activeTurnId = continuedTurnId;
+            session.continueWith(continuedTurnId);
+            return;
+          }
+          if (vendorDispatched === true && !input.signal.aborted) {
+            continuation.used += 1;
+            /**
+             * **重新起表之前先撤掉上一只表**：厂商那一轮的 `turn/started` 可能在本拍**之前**就到了
+             * （`queue/add` 落在空闲线程上时它在 add 那一拍就投，而我们正站在 `turn/completed` 的
+             * 处理里）⇒ 上一只表的「等到了」永远不会再触发，它到点就会把这一行收场——那一轮连同
+             * 还在厂商队列里的那些话一起没。每一拍都以自己那一刻起表。
+             */
+            clearVendorTurnWait();
+            awaitingVendorTurn = true;
+            vendorTurnTimer = setTimeout(() => {
+              vendorTurnTimer = null;
+              if (!awaitingVendorTurn) return;
+              clearVendorTurnWait();
+              logger.warn('厂商投递起的那一轮在预算内没有出现 turn/started，按正常收场', {
+                waitMs: CODEX_VENDOR_TURN_WAIT.waitMs,
+              });
+              session.endPending();
+            }, CODEX_VENDOR_TURN_WAIT.waitMs);
+            return;
+          }
+          session.endPending();
+          return;
+        }
+        injection.onNotification();
+      },
+      /**
+       * 流**正常产完**之后的兜底：进程死在在途这一条路上，通知流里一条终态都没有
+       * （`core.end` 只结算 `session.outcome`），而 `project` 只认流里的载荷 ⇒ 不补这一条，
+       * 崩溃的行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`、
+       * `finalText/tokens/turns` 全空、只在日志里留一条"子线程树不是全量"）。
+       *
+       * 三条排除：**已取消**（结论归 canceled 那条通路）、**不是 failed**（正常收场）、
+       * **流内已经折过失败**（`turn/completed{failed}` 那条路，别落两条）。
+       */
+      onStreamEnd: async () => {
+        if (input.signal.aborted) return null;
+        const outcome = await session.outcome;
+        if (outcome.status !== 'failed' || run.sawTerminalFailure) return null;
+        return { kind: 'sessionFailed', error: outcome.error ?? 'codex app-server 在途失败（未给出原因）' };
+      },
+    }),
     interrupt: () => {
-      // 中止就是给上游发 `turn/interrupt`：codex 的中途取消是协议能力（`cancelMidTurn: true`）
-      void session.interrupt().catch((error: unknown) => {
+      /**
+       * 中止就是给上游发 `turn/interrupt`（codex 的中途取消是协议能力，`cancelMidTurn: true`）。
+       * **带的是当前在途轮号**：厂商按「当前在途轮」校验，建会话时那一个（首轮）在续跑之后早就收场了
+       * ⇒ 拿它发必被拒（**自然收场**的轮回 `-32600 no active turn to interrupt`；**被我们中断过**的轮再发一次则**一帧都不回**，客户端要白等一个超时），中途取消会退化成杀进程树。
+       */
+      void session.interrupt(activeTurnId).catch((error: unknown) => {
         logger.warn('codex 中止请求失败（该行仍会按终止收场）', { error });
       });
     },
-    dispose: createDisposer(() => session.close()),
+    // 收工顺序：先把在飞的投递等回来，再关客户端（关早了那次投递只会拿到「客户端已关闭」）
+    dispose: createDisposer(async () => {
+      clearVendorTurnWait();
+      await injection.settle();
+      await session.close();
+    }),
     finalize: () => ({
-      ...finalizeCodex(run),
+      // 「这一轮是不是被终止」决定分量缺失那条 WARN 的措辞（见 `usageOfRun`）
+      ...finalizeCodex(run, { canceled: input.signal.aborted }),
       // 通道事实（每-run）：这一次真的把 schema 发进了 `turn/start` 吗（不是「这家有没有这个字段」）
       applied: { structuredOutput: outputSchema !== null },
+      /**
+       * **会话身份**：codex 的续接键就是 `threadId` 本身（`thread/resume` 的必填入参只有它一格）。
+       * 落盘之后，第二期的追问才有键可指；这里如实交回。
+       */
+      sessionId: run.mainThreadId,
     }),
     project: (raw, state) => projectNotification(run, input, raw, state),
   };
@@ -471,6 +745,29 @@ async function* asRawStream(
   payloads: AsyncIterable<AppServerNotificationPayload>,
   readback: Promise<void>,
   signal: AbortSignal,
+  hooks: {
+    /**
+     * 上游正常产完之后问一次「后代线程静下来了没有」，并把这一窗里到达的通知交出来投影。
+     * 实现见 `waitForDescendantQuiet`；**没有后代线程时立刻回空**，不给普通行加任何延迟。
+     */
+    settleDescendants: () => AsyncGenerator<AppServerNotificationPayload>;
+    /** 静默窗口结束（或根本不必等）时放行收尾取数；**幂等**，取消那一档也会走到 */
+    releaseQuiet: () => void;
+    /**
+     * 每推进一格问一次（**要 await**）：在途那一档的取件挂在通知边界上，而本轮的终态那一格
+     * 还要把剩下的交给耐久队列——那件事必须在流结束之前落定，否则 `dispose` 关掉客户端，
+     * 投递再没有出口。
+     */
+    onPayload: (payload: AppServerNotificationPayload) => Promise<void>;
+    /**
+     * 上游**正常产完**之后问一次：这一行有没有一个「流内投影表达不出来」的失败要补一条载荷。
+     * 返回 `null` = 没有（正常收场）；返回一条载荷 = 交给 `onPayload` 投影（本函数负责 yield）。
+     *
+     * 为什么这个口必须在流的终点：真机形状是「app-server 进程死在在途」——通知流被 `core.end`
+     * 唤醒后正常产完，流里一条终态都没有，而失败事实只落在 `session.outcome` 上。
+     */
+    onStreamEnd: () => Promise<AppServerNotificationPayload | null>;
+  },
 ): AsyncGenerator<unknown> {
   /** 只作「取消 ⇒ 不必再等」的信号，不承载取消本身（那是骨架与 `session.interrupt` 的职责） */
   let onCancel: (() => void) | null = null;
@@ -486,12 +783,34 @@ async function* asRawStream(
     while (true) {
       // 取消与「下一条通知」赛跑：取消赢 ⇒ 立刻跳出，不等上游那一轮
       const outcome = await Promise.race([step, canceled]);
+      // 取消赢 ⇒ 立刻跳出（结论归 canceled 那条通路，不必再问收尾）
       if (outcome === null) break;
-      if (outcome.done === true) break;
+      if (outcome.done === true) {
+        // 上游产完了：问一次有没有「流内表达不出来」的失败要补（见 `onStreamEnd`）
+        const terminal = await hooks.onStreamEnd();
+        if (terminal !== null) {
+          await hooks.onPayload(terminal);
+          yield terminal as unknown;
+        }
+        /**
+         * **后代线程可能还在跑**：主线程的 `turn/completed` 一到，本轮的结算闸门就放行了，
+         * 而模型派出去的子智能体往往还没收场。这里用一个**有界**的静默窗口把这一窗里到达的通知
+         * 继续投影掉（用量只从通知来），窗口结束才让流收尾 ⇒ 收尾取数读到的树才是静的。
+         * 没有后代线程时这一支立刻结束，普通行一格延迟都不加。
+         */
+        for await (const extra of hooks.settleDescendants()) {
+          await hooks.onPayload(extra);
+          yield extra as unknown;
+        }
+        break;
+      }
+      await hooks.onPayload(outcome.value as AppServerNotificationPayload);
       yield outcome.value as unknown;
       step = iterator.next();
     }
   } finally {
+    // 放行收尾取数（幂等）：取消 / 提前 return 那两条路也要放行，否则取数会等一个永不放行的闸门
+    hooks.releaseQuiet();
     /**
      * 消费者提前 `return`（`dispose` 那条停止消费的路径）时也要汇合：`session.notifications` 的
      * 收尾会因此落定 `settled`、放行收尾取数，否则这里的等待会一直等一个还没被触发的任务。
@@ -524,6 +843,8 @@ function projectNotification(
     mainThreadId: run.mainThreadId,
   });
   if (event.tokens !== null) run.lastTokens = event.tokens;
+  // 流内已经折过失败没有：收尾那条兜底失败（`sessionFailed`）靠它去重（同一件事不许落两条）
+  if (event.projection.failure !== null) run.sawTerminalFailure = true;
   const messages = projectCodexMessages(payload, run.runState, { mainThreadId: run.mainThreadId });
   return {
     ...event.projection,
@@ -545,10 +866,16 @@ function projectNotification(
  *   · **`finalize` 不等待**：它只读这里已经填好的结果；还没落定时按「不是全量」处置（保守方向）。
  *     返回的 promise 是给**流**用的汇合点（见 `asRawStream`）：流等它落定，`finalize` 就必然读得到。
  */
-function startFinalizeReader(run: CodexRun, session: CodexSession): Promise<void> {
+function startFinalizeReader(run: CodexRun, session: CodexSession, quiet: Promise<void>): Promise<void> {
   return (async (): Promise<void> => {
     try {
       await session.settled;
+      /**
+       * **再等一次「后代线程静下来」**：`settled` 只说通知流停了，而子线程往往还在跑
+       * （真机读数：`thread/read{child}` 那一刻 `status = {"type":"active"}`）。
+       * 不等它，子线程的内容只会读回半截（1 条 `userMessage`）、子任务行记成 `running`。
+       */
+      await quiet;
       let refs: AppServerThreadRef[];
       try {
         refs = await listDescendantThreads(run.client, run.mainThreadId);
@@ -587,7 +914,7 @@ function startFinalizeReader(run: CodexRun, session: CodexSession): Promise<void
  *      分子 = 各子线程之和 ⇒ `subagentTurns ≤ turns` 是构造上的性质；
  *   5. **收尾不改结论**：读不到子线程只是少几行内容与一格分量，不影响本次运行的成功与失败。
  */
-function finalizeCodex(run: CodexRun): {
+function finalizeCodex(run: CodexRun, options: { canceled: boolean }): {
   drafts: AgentEventDraft[];
   messages: MessageDraft[];
   subagents: SubagentRecord[];
@@ -632,7 +959,7 @@ function finalizeCodex(run: CodexRun): {
   const subagentTurns = threads === null ? null : threads.reduce((sum, one) => sum + threadRoundTrips(one.content, one.ref.threadId, run.runState), 0);
   const finalTurns = mainTurns === null || subagentTurns === null ? null : mainTurns + subagentTurns;
 
-  const usage = usageOfRun(run, threads);
+  const usage = usageOfRun(run, threads, options);
   if (usage.warn !== null) drafts.push(logDraft('stderr', usage.warn));
 
   /**
@@ -740,33 +1067,74 @@ function finalizeCodex(run: CodexRun): {
 function usageOfRun(
   run: CodexRun,
   threads: CodexReadback['threads'],
+  options: { canceled: boolean },
 ): { total: UsageTokens | null; subagent: UsageTokens | null; warn: string | null } {
   const mainTokens = tokensOfThread(run, run.mainThreadId) ?? run.lastTokens;
   if (threads === null) {
+    /**
+     * 「不是全量」有三**因**，处置相同、文案必须分开——后两条都不该说成「枚举失败」，
+     * 那会把「我们主动不采 / 客户端已关」读成「厂商枚举坏了」，方向正好相反：
+     *   · 这一轮被**终止**：取消那一轮按口径不等取数（`asRawStream` 的取消分支），而取数若赶在
+     *     释放之后跑，`thread/list` 只会拿到「客户端已关闭」——归因要落在「终止」上；
+     *   · 取数**没落定**（`readback === null`，同样是终止那一档的形态）；
+     *   · 落定了、也不是终止 ⇒ 才是**枚举失败**（`startFinalizeReader` 的 catch 已点过名）。
+     */
+    const why = options.canceled
+      ? '[WARN] codex 收尾取数在终止之后没有拿到全量（这一轮被终止）'
+      : run.readback === null
+        ? '[WARN] codex 收尾取数没有落定（这一轮被终止）'
+        : '[WARN] codex 子线程树不是全量（枚举失败）';
     return {
       total: null,
       subagent: null,
-      warn: '[WARN] codex 子线程树不是全量（枚举失败）：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径',
+      warn: `${why}：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
     };
   }
   if (threads.length === 0) {
     // 确实没有子智能体：分量是 `{0,0,0}`（与「没采到」是两件事）
-    return { total: mainTokens, subagent: sumUsageTokens([]), warn: null };
+    return {
+      total: mainTokens,
+      subagent: sumUsageTokens([]),
+      /**
+       * 主线程那一份也可能缺（一条用量通知都没来过）。这一档**合计给不出**，而「没有子智能体」
+       * 这件事是真的 ⇒ 分量照旧 `{0,0,0}`，只把缺失点名出来：不点名的话界面上只是「计量空着」，
+       * 排障时分不清「这一家不报用量」与「这一次没采到」。
+       */
+      warn:
+        mainTokens === null
+          ? '[WARN] codex 主线程的用量本行没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：这一行的**合计计量**给不出（记 null，不编造、不填 0）'
+          : null,
+    };
   }
-  const missing = threads.filter((one) => !run.runState.usageByThread.has(one.ref.threadId)).map((one) => one.ref.threadId);
+  /**
+   * 分量「**全量或 null**」的判据：每一条子线程都要能给出一份**读得出来的**用量。
+   *
+   * 判据与求和走**同一个函数**（`tokensOfThread`），而不是拿 `usageByThread.has()` 当判据、
+   * 再用 `breakdownToTokens` 求和。两者今天**等价**——归一化层的 `readTokenUsage` 要求六项齐全，
+   * 残缺载荷整条落 `other`、压根进不了 `usageByThread` ⇒ 「有这一条」与「读得出来」同真同假。
+   * 同源因此是**结构性防御**而非修一个现存的洞：它让这一处不依赖上游那一层的严格度，
+   * 归一化哪天放宽成「三项齐就认」，这里也不会出现「既不进缺失名单、又不进和里」的线程
+   * （那种漏法的症状是分量静默少算一个线程，却照旧交出一个名义上是全量的非 null 数）。
+   */
+  const resolved = threads.map((one) => ({ threadId: one.ref.threadId, tokens: tokensOfThread(run, one.ref.threadId) }));
+  const missing = resolved.filter((one) => one.tokens === null).map((one) => one.threadId);
   if (missing.length > 0) {
+    /**
+     * 文案只说**我们这一侧**的事实（「本行没采到」），**不替厂商下结论**。
+     *
+     * 为什么不能写「没有用量通知」：用量只从运行期的 `thread/tokenUsage/updated` 通知累计，而通知
+     * 是在**流那一侧**投影进 `runState` 的——流在本轮结算那一刻就停（`iterate()` 排空队列后
+     * `return`），此后到达的通知仍会进队列却**没人再投影**。真机读数（子线程用量通知 @158、
+     * 收尾取数 @161）：通知明明到了，落盘的却是「没有用量通知」⇒ 排查的人会朝厂商的方向找，
+     * 而真因在本仓的收尾时序上。二者在读数上分不开，就不该在文案里选一个说。
+     */
     return {
       total: null,
       subagent: null,
-      warn: `[WARN] codex 子线程 ${missing.join('、')} 没有用量通知（协议只按线程报累计用量）：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
+      warn: `[WARN] codex 子线程 ${missing.join('、')} 的用量本行没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
     };
   }
-  const subagent = sumUsageTokens(
-    threads.flatMap((one) => {
-      const tokens = tokensOfThread(run, one.ref.threadId);
-      return tokens === null ? [] : [tokens];
-    }),
-  );
+  const subagent = sumUsageTokens(resolved.flatMap((one) => (one.tokens === null ? [] : [one.tokens])));
   return { total: addUsage(mainTokens, subagent), subagent, warn: null };
 }
 
@@ -797,7 +1165,7 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
      */
     messageCapability: {
       thinkingText: 'yes',
-      thinkingTextKind: 'full',
+      thinkingTextKind: 'summary',
       toolInput: 'yes',
       toolResult: 'yes',
       subagent: 'yes',
@@ -813,7 +1181,8 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
       streamingDeltaSource: 'wire',
       streamingDeltaReason: null,
       notes: [
-        '思考全文取 `reasoning.content[]`；上游只回密文时该格为空 ⇒ `text:null` + `textKind:none`（不回落 summary 冒充全文），摘要另有一块走 `reasoning.summary[]`',
+        '思考正文的两格是**分开**的：全文取 `reasoning.content[]`、摘要取 `reasoning.summary[]`；`content[]` 为空时**不回落 summary 冒充全文**（那一格给 `text:null` + `textKind:none`）。⚠️ 真机常见形状是**「`content[]` 全空 + `summary[]` 有」**（真网关 × 多模型上 7 次推理条目全是这一形状，到的是 `item/reasoning/summaryTextDelta`、`textDelta` 一次未到）⇒ 那种情况下产出的是 `textKind:summary` 的块、**没有 `none` 块**，所以「`none`」描述的是 `summary[]` 也空的那一档，不是「上游只回密文」的同义语',
+        '`thinkingTextKind` 报 `summary`：这一格描述的是**实测拿得到哪一档**，不是协议层「能不能」。协议上全文那条路确实存在（脚本式上游投 `reasoning_text` 时厂商会把全文落在 `content[]`），但真网关 2 路由 × 103 个路由-模型 × 153 格往返里 `content[]` **非空 0 格**、`summary[]` 非空 40 格 ⇒ 本仓实际只能拿到摘要',
         '文件改动与 MCP 调用按 `apply_patch` / `<server>.<tool>` 出工具消息；MCP 不进那十族（`family:null`），界面走通用渲染',
         '命令输出是 stdout 与 stderr 的合流（`aggregatedOutput`）⇒ 归一结果里不编 `stderr`',
         '消息级用量（`AgentMessage.usage`）结构性给不出：app-server 只到线程级累计，差分无法证明归属 ⇒ 恒 `null`',
@@ -866,12 +1235,111 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
       ],
     },
     /**
-     * 耗时量级：一次运行在**分钟级**（含 `codex app-server` 的启动到收尾）。
+     * **注入面能力（第五组）**：人往运行中的一轮送话、以及接着一条已有会话再跑一段，这一家各能做什么。
+     *
+     * 取值来源逐格可查：两档的**方法名与前置条件**来自本机 0.156.1 的 wire 表与生成物
+     * （`turn/steer` 的 `expectedTurnId` 是必填的「当前在途轮」前置；`thread/queue/{add,update,list,delete,reorder,start}`
+     * 六个都在 wire 上，且都要 `experimentalApi`——逐方法标注见上游 `common.rs`，本机两档读数见
+     * `probe` 那一批臂）。`'idle'` 档走的是**真路径**（`testing` 那套装配 + `probes/inject-idle-live.test.ts`），
+     * `'round'` 档仍只有 wire 形状与假件 ⇒ 两档的证据强度不同，声明也照实分开。
+     */
+    turnInjection: {
+      delivery: {
+        round: {
+          state: 'unverified',
+          reason: 'unverified',
+          channel: 'wire',
+          // 真版本门：`expectedTurnId` 自 0.156.1 起必填（本机那一版的生成物里它在 `required` 里）
+          gate: { version: '0.156.1' },
+          experimental: false,
+          // 真机读数只证到 wire 上**存在**这些方法：我们这条投递路径没被观测过
+          proofDriver: 'synthetic-fixture',
+          proofDriverReason: '真机读数只证到 wire 上存在 `turn/steer`；我们这条投递路径'
+            + '（steer 落在哪一次模型往返之前）没被验过 ⇒ 今天的证据来自假 wire 夹具',
+        },
+        idle: {
+          /**
+           * **`yes`（真路径）**：真 `codex app-server` 下，人话在收场那一刻交出去之后**真的进到了模型面前**，
+           * 而且那一轮的答复成了本行的结论——三件事都在产品路径上发生，只把上游模型换成脚本式：
+           *   · 交付**登记**了（`markDelivered` 收到那个 id）；
+           *   · 那句话出现在**厂商出站请求体**里（判据是 `/v1/responses` 的原文，不经过我们任何投影）；
+           *   · 厂商起的那一轮**跑完**（`turn/started` 与 `turn/completed` 同数，没被 `dispose` 杀掉），
+           *     且它的答复就是本行 `finalText`。
+           * 起轮的形状与上游语义一致：条目录在**空闲**线程上时厂商在 `thread/queue/add` 那一刻自己就投，
+           * 我们的 `thread/queue/start` 因此常拿到 `queue is empty`——按「条目已被消费」判交付（见 `deliverIdle`）。
+           */
+          state: 'yes',
+          reason: null,
+          channel: 'wire',
+          gate: null,
+          // `thread/queue/*` 逐方法带 `#[experimental(...)]`：不开实验能力，这几个方法一律被拒
+          experimental: true,
+          proofDriver: 'real-path',
+          proofDriverReason: null,
+        },
+      },
+      retract: {
+        round: {
+          state: 'none',
+          reason: '在途注入没有按身份收回的面：`turn/steer` 交出去之后没有对应的撤回方法，'
+            + '`turn/interrupt` 是无身份的全清（它终结整轮，不是撤回这一条）',
+        },
+        idle: {
+          state: 'by-id',
+          reason: '按厂商的 `queuedSubmissionId` 撤（`thread/queue/delete`）；它只回 `{deleted}`，'
+            + '「已消费 / 已删过 / id 不对」三种失败**逐字相同**。删不到时读一次 `thread/queue/list` 分两桶：'
+            + 'id **还在**表里 ⇒ 身份对不上（`unknown`）；id **不在**表里 ⇒ 只证「它已经不在队列里了」，'
+            + '两件事都能造成这个结果，故取「已消费」是**基于本行自己销账的推断**（本行是唯一的删除方，'
+            + '撤回路径上我们没有删过它），不是厂商告诉我们的',
+        },
+      },
+      /**
+       * **续接**：`thread/resume{threadId}`——必填入参只有 `threadId` 一格（与 cwd 无关，
+       * cwd 只是可选覆盖），转录落在该行自己的 `$CODEX_HOME` 下。
+       * 真路径驱动器在 `testing/codex-resume-fixture.ts`（真二进制 → 真 app-server + 脚本式上游）。
+       */
+      resume: {
+        state: 'yes',
+        reason: null,
+        channel: 'wire',
+        gate: null,
+        experimental: false,
+        proofDriver: 'real-path',
+        proofDriverReason: null,
+      },
+      notes: [
+        '`\'idle\'` 档走真路径（真二进制 + 脚本式上游，见 `probes/inject-idle-live.test.ts`）⇒ 记 `yes`；'
+        + '`\'round\'` 档的**投递点**仍未验（steer 落在哪一次模型往返之前）⇒ 仍记 `unverified`',
+        '**接不回的是「上一个进程」那一轮**：它早已收场，拿它的 turn id 去 steer 会被厂商拒（`-32600 no active turn to steer`）⇒ `\'round\'` 的有效范围是本进程内 `turn/start` 已起、未收场的那一轮。续接**不**落在这条约束外：`thread/resume` 之后照旧发一次 `turn/start` ⇒ 续接轮同样有在途轮、两档都可用',
+        '`thread/queue/*` 的方法在 wire 上一直都在，但它们各自带 `#[experimental]` 闸门 ⇒ 要靠握手的 `experimentalApi: true`（本仓已开，见 `appserver/client.ts` 的 `initialize`）；`--experimental` 改的只是 schema 产物',
+        '`\'idle\'` 档的交付判据是「**这一轮真的跑起来了**」：先 `thread/queue/add{clientUserMessageId}` 登记（保住按身份撤），再 `thread/queue/start`；'
+        + '起轮成不成看**条目还在不在可见队列里**——厂商在空闲线程上会在 `add` 那一刻自己把它撒成一轮（上游 README 的 "dispatches … once the thread is idle"），'
+        + '此时 `queue/start` 回 `queue is empty`，那**不是失败**：按交付登记并让流继续消费厂商起的那一轮（`vendorDispatched`）；条目还留在队列里才是真没投成（回滚 + 不登记）',
+        '`\'idle\'` 档起的那一轮**带不了档位**（`thread/queue/start` 的参数只有 `threadId` 与可空的 `queuedSubmissionId`）⇒ 档位同时写进线程级 `config.model_reasoning_effort`，续跑那一轮由它兜住（同一个值写两处：一处管本轮、一处管线程默认）',
+        '`\'idle\'` 档续跑**有上限**（`CODEX_IDLE_CONTINUATION.rounds`）：没有它，人一直发就能一直续跑、这一行永远不收场，而编排层的等待预算只在适配器返回之后才开窗口，兜不住这里',
+        '跨轮的运行靠 `turnStarted` 重置墙钟（`TurnProjection.roundTripStarted`）：否则上一轮耗掉的预算会算进新起的那一轮里',
+        '`thread/resume` 不发 `thread/started` 通知帧 ⇒ 线程 id 只从响应的 `thread.id` 取，续接后的终态判据也挂在那个 id 上',
+        '**不用「cwd + 最近一条」找会话**：本行的 MCP / 路由只写在**线程级 config** 里、从不落 `$CODEX_HOME/config.toml`，`thread/list{cwd}` 因此列不到这一行的线程（真机读数）⇒ 会话身份只能由我们自己落盘',
+      ],
+    },
+    /**
+     * 耗时量级：一次运行在**分钟级**——但**分钟来自模型与工具的实际工作，不来自进程启动**。
      * 真机冒烟的默认等待预算按这一档派生——声明小了，那一轮会被自己的预算掐掉。
+     *
+     * ⚠️ **「分钟级」的原因不是启动开销**（那是最容易顺手写下的错归因）：
+     * 本机五轮实测（中位数）：`codex --version` 起进程 **7 ms**；`codex app-server`
+     * **冷启 57 ms**（51–61）/ **热启 21 ms**（20–25）；`thread/start` 10 ms；
+     * `turn/start` 到首轮 **54 ms** ⇒ 一次**脚本式**往返的整条链路约 **64 ms**。
+     * 也就是说：进程与握手是**毫秒级**的固定开销（三个数量级以下的误差都盖得住），
+     * 一分钟以上的墙钟一律来自模型推理与工具执行 ⇒ 排障时按「模型/工具慢」查，
+     * 别去查 app-server 启动。
      */
     timing: {
       runScale: 'minutes',
-      notes: ['本机实测：一次运行的墙钟在分钟级；app-server 启动是其中的固定开销'],
+      notes: [
+        '本机实测：一次运行（真模型、真工具）的墙钟在分钟级，而进程与握手是毫秒级——'
+        + '`app-server` 冷启中位 57 ms / 热启 21 ms、`thread/start` 10 ms、`turn/start` 到首轮 54 ms',
+      ],
     },
     /**
      * 推理证据必须补 messages.jsonl：思考全文与工具结果正文**结构性不进** events.jsonl
@@ -879,7 +1347,23 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
      * messages.jsonl 证据，而不是把厂商名硬编码进编排层。
      */
     needsMessagesForReasoningEvidence: true,
-    // 档位域 = app-server 的 `ReasoningEffort` **加上**本仓统一的关闭档 `off`（它翻成 CLI 的 `none`）
+    /**
+     * 档位域 = app-server 的 `ReasoningEffort` **加上**本仓统一的关闭档 `off`（它翻成 CLI 的 `none`）。
+     *
+     * ⚠️ **真机读数：九个值里有两个被厂商自己改写，界面上那两格因此名不副实**（每档一条新线程、
+     * 只发 `turn/start{effort}`，读的是**出站请求体**里的 `reasoning.effort`，各 3 次）：
+     *   · `'ultra'` ⇒ 被**降到该模型支持的最高档**，而降到哪一档**随模型变**：
+     *     已知模型 `gpt-6.1-sol` 上降到 **`xhigh`**、未知模型（脚本式上游那个名字）上降到 **`medium`**；
+     *   · `'persistent'` ⇒ **两个模型上都变成 `disabled`**（名字最「持久」，实际把推理**关掉**）。
+     * 对照臂说明这不是「什么都不校验」：`'bogus'` 与 `'HIGH'` **原样透传**，空串与数字被拒
+     * （`-32600 Invalid request: reasoning_effort must not be empty` / `invalid type: integer \`42\``）。
+     * ⚠️ 同一次读数里 `reasoning` 那一格的**形状也随模型变**：已知模型带 `context: "all_turns"`，
+     * 未知模型只有 `summary: "auto"` ⇒「codex 怎么翻译档位」依赖它认不认这个模型，
+     * 单模型读数**不足以**给这一格下结论：`ultra` 写成「固定映射到 `medium`」就是只测了一个模型
+     * 得出的错结论。
+     * ⇒ 这两格的取舍**已定：保留这两个值，由本条注释承担说明**（去掉会丢掉「厂商将来真支持时」的入口）。
+     * 于是界面仍会提供这两格，读了本条就别再把「选了 persistent」当成「推理拉满」。
+     */
     reasoningEfforts: [EFFORT_OFF, 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'],
   },
   run: (input: AgentRunInput): Promise<AgentRunResult> =>

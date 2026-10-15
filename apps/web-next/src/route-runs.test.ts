@@ -40,10 +40,10 @@ import { loadConfig, saveConfig, setCasesRootForTesting, setConfigDirForTesting,
 import { GET as getRuns, POST as postRun } from '@/app/api/runs/route';
 import { GET as getModelOptions } from '@/app/api/runs/model-options/route';
 import {
-  GET as getRunEvents,
-  dynamic as runEventsDynamic,
-  runtime as runEventsRuntime,
-} from '@/app/api/runs/events/route';
+  GET as getGlobalStream,
+  dynamic as globalStreamDynamic,
+  runtime as globalStreamRuntime,
+} from '@/app/api/runs/stream/route';
 import { GET as getRun, DELETE as deleteRunRoute, PUT as putRun } from '@/app/api/runs/[runId]/route';
 import { POST as postStart } from '@/app/api/runs/[runId]/start/route';
 import { POST as postAbortRun } from '@/app/api/runs/[runId]/abort/route';
@@ -83,14 +83,16 @@ const evaluator = vi.hoisted(() => ({
   subscribeJudgeRecords: vi.fn(() => () => {}),
   // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
   subscribeRowRecords: vi.fn(() => () => {}),
-  // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，而 run-events.ts
-  // 在模块求值期就读这个键——缺了它，**任何**经 `@aieval/api` index 的 import 都当场抛
-  // 「No "subscribeRunChanges" export is defined on the mock」（比 rescoreRow 那类访问时才抛更早）。
+  // 全局流的三条信号总线（`/api/runs/stream`）：api 的 index 转出 `streamGlobalSignals`，
+  // 而 run-events.ts 在模块求值期就读这三个键——缺一个，**任何**经 `@aieval/api` index 的 import
+  // 都当场抛「No "…" export is defined on the mock」（比 rescoreRow 那类访问时才抛更早）。
   // 签名显式写 listener 参数：下面那条接驳用例要 mockImplementation，零参推断会与之不兼容
   subscribeRunChanges: vi.fn((listener: (runId: string) => void) => {
     void listener;
     return () => {};
   }),
+  subscribeAskUserChanges: vi.fn(() => () => {}),
+  subscribeInjectChanges: vi.fn(() => () => {}),
   resolveJudgeRoute: vi.fn(),
   requireJudgeAgent: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
@@ -266,6 +268,27 @@ describe('POST /api/runs', () => {
     expect(created.useAgentJudge).toBe(true);
   });
 
+  /**
+   * POST 路由把 `note` 真的交给了服务端（与 `useAgentJudge` 同一条「zod strip」缺陷）。
+   * 丢掉的表现是 201 照旧、表单里填了备注、磁盘上却没有——列表标题列永远只显示用例标题。
+   * 顺带钉住 trim 落在 api 边界（不是只靠表单）。
+   */
+  it('POST /api/runs 把 note 真的交给了服务端（并 trim 后落库）', async () => {
+    const response = await postRun(
+      jsonRequest({
+        caseId: testCase.id,
+        executionMode: 'parallel',
+        note: '  对比模型不同版本间的差异  ',
+        rows: [{ agentKind: 'codex', providerId: openaiProvider.id, modelId: 'gpt-5' }],
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as EvalRun;
+    expect(created.note).toBe('对比模型不同版本间的差异');
+    expect((store.get(created.id) as EvalRun | undefined)?.note).toBe('对比模型不同版本间的差异');
+  });
+
   it('请求体缺字段时 400，且 context 是真 zod 的 issues', async () => {
     const res = await postRun(jsonRequest({ caseId: 'c-1' }));
 
@@ -431,6 +454,10 @@ describe('GET /api/runs/model-options', () => {
     // 只钉 DSH 一侧的话，把投影改成「恒写这一格（不声明时写 undefined）」照样绿——而那一改会让
     // claude / codex 的响应里多出一个恒为 `undefined` 的键，且 `JSON.stringify` 又会把它丢掉，
     // 于是「有没有声明」这件事在两条通道上长得不一样。
+    //
+    // `turnInjection`（注入面声明：两档送话 + 四档撤回 + 续接）是新增的一格，与 `messageCapability`
+    // 并列：输入区能不能用、两颗操作按钮禁不禁用全靠它，而 api 一格都不许裁。它同样是**可选**的一组
+    // ⇒ 两侧都钉（缺席时这一格的键不存在）。
     expect(Object.keys(groups[0] ?? {}).sort()).toEqual([
       'agentKind',
       'cancelMidTurn',
@@ -438,6 +465,7 @@ describe('GET /api/runs/model-options', () => {
       'messageCapability',
       'options',
       'protocolTypes',
+      'turnInjection',
       'usage',
     ]);
     const dsh = groups.find((group) => group.agentKind === 'dsh') as Record<string, unknown>;
@@ -449,6 +477,7 @@ describe('GET /api/runs/model-options', () => {
       'messageCapability',
       'options',
       'protocolTypes',
+      'turnInjection',
       'usage',
     ]);
     // 值是注册表真值（今天 dsh 与 pi 两家声明它），且 cc 那一组**没有这一格**（不是空串 / undefined）
@@ -564,6 +593,32 @@ describe('PUT /api/runs/[runId]', () => {
     expect(store.get(run.id)?.executionMode).toBe('serial');
   });
 
+  /**
+   * PUT 的备注也是**全量替换**：显式给值就改（trim 后落盘），缺席按空串清空。
+   * 表单两条路径都显式交出 `note`，所以「清空备注再保存」在界面上照常生效；
+   * 这里钉的是传输链没有在 zod 解析那一层把它丢掉。
+   */
+  it('PUT /api/runs/[runId] 把 note 交给服务端；缺席按空串（全量替换）', async () => {
+    const run = await createRealRun();
+    const rowId = run.rows[0]?.id ?? '';
+    const rows = [{ id: rowId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
+    store.set(run.id, run);
+
+    const withNote = await putRun(
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', note: '  对比差异  ', rows }),
+      { params: Promise.resolve({ runId: run.id }) },
+    );
+    expect(withNote.status).toBe(200);
+    expect(((await withNote.json()) as EvalRun).note).toBe('对比差异');
+
+    const withoutNote = await putRun(
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows }),
+      { params: Promise.resolve({ runId: run.id }) },
+    );
+    expect(withoutNote.status).toBe(200);
+    expect(((await withoutNote.json()) as EvalRun).note).toBe('');
+  });
+
   it('rows 为空的请求体 → 400（RunUpdateSchema 的 min(1)）', async () => {
     const run = await createRealRun();
     const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [] }), {
@@ -624,17 +679,17 @@ describe('DELETE /api/runs/[runId]', () => {
   });
 });
 
-describe('GET /api/runs/events（run 级信号 SSE）', () => {
+describe('GET /api/runs/stream（全局信号 SSE）', () => {
   // 本文件不读完整响应体之外的东西：帧内容与心跳由 api 包的 run-events.test.ts 钉死，
   // 这里只钉**路由层**的三件事——段配置、响应头、以及「mock 的总线推一条 ⇒ 流里出一帧」的接驳。
 
   it('段配置：runtime = nodejs（进程内信号总线）+ force-dynamic（长连接不当静态资源）', () => {
-    expect(runEventsRuntime).toBe('nodejs');
-    expect(runEventsDynamic).toBe('force-dynamic');
+    expect(globalStreamRuntime).toBe('nodejs');
+    expect(globalStreamDynamic).toBe('force-dynamic');
   });
 
   it('响应头是 SSE 的全套（含给反代的 X-Accel-Buffering: no）', async () => {
-    const res = await getRunEvents();
+    const res = await getGlobalStream();
     // 读完就关：这条流没有「自然结束」（不因终态关流），挂着不取消会把心跳定时器漏给后面的用例
     await res.body?.cancel();
 
@@ -653,7 +708,7 @@ describe('GET /api/runs/events（run 级信号 SSE）', () => {
       return () => {};
     });
 
-    const res = await getRunEvents();
+    const res = await getGlobalStream();
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
 
@@ -661,7 +716,8 @@ describe('GET /api/runs/events（run 级信号 SSE）', () => {
     expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
 
     handlers[0]?.('run-1');
-    expect(decoder.decode((await reader.read()).value)).toBe('event: run-updated\ndata: {"runId":"run-1"}\n\n');
+    // 全局流的帧是**无名**的（判别键是信封顶层的 type）：多一个 event: 行就会让只绑 onmessage 的客户端零交付
+    expect(decoder.decode((await reader.read()).value)).toBe('data: {"type":"run-updated","runId":"run-1"}\n\n');
 
     await reader.cancel();
   });

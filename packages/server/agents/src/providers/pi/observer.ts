@@ -186,7 +186,13 @@ export function piRequestSkills(payload: unknown, wire: PiWire): PiRequestSkill[
  * 行为档**只作冒烟与抽查**：模型这一轮没想用这条技能是正常的，不构成任何失败。
  *
  * 判据两格缺一不可（照真机读数）：`read` 的实参 `path` 与 `<location>` **逐字相等**，
- * 且这次 `tool_result` 的正文**含** `SKILL.md` 的原文（工具结果可能被厂商截断，故用包含而不是相等）。
+ * 且这次 `tool_result` 的正文**含** `SKILL.md` 的原文（工具结果可能被截断，故用包含而不是相等）。
+ *
+ * ⚠️ **今天没有产品调用点**：它只被 `observer.test.ts` 用着（知识库《四家横向对比》里
+ * 「认它真去读 `SKILL.md`」那一格说的是**判据长什么样**，不是「运行期会算出这一格」）。
+ * 要接上得先定口径——在哪一步算、算出来落在哪一格产物、拿它做什么（现在的答案都是「没有」），
+ * 那是新功能不是修缺陷。在那之前**别把它当成已经在跑的判据**：产物里没有任何一格回答
+ * 「模型是否读了这条技能的正文」。
  */
 export function piSkillReadSatisfied(
   calls: readonly PiSkillReadCall[],
@@ -238,12 +244,20 @@ function tagText(body: string, tag: string): string | null {
   return matched === null ? null : unescapeXml(matched[1] ?? '');
 }
 
-/** 厂商 `escapeXml` 的五种实体（`&` 必须最后还原，否则 `&amp;lt;` 会被还原两次） */
+/**
+ * 厂商 `escapeXml` 的五种实体（`&` 必须最后还原，否则 `&amp;lt;` 会被还原两次）。
+ *
+ * ⚠️ 单引号那一格厂商写的是 `&apos;`（`skills.js` 的 `escapeXml`：`'` → `&apos;`），
+ * 不是 HTML 里同样合法的 `&#39;`——只认后者会让**含单引号的落点**（macOS 用户名 `o'brien` 那一类）
+ * 反转义不出来，而这正是 `piSkillReadSatisfied` 的「与实际路径逐字相等」判据 ⇒ 该技能恒判「没读过」。
+ * 两种形态都还原，免得将来厂商换写法再踩一次。
+ */
 function unescapeXml(value: string): string {
   return value
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, '\'')
     .replace(/&#39;/g, '\'')
     .replace(/&amp;/g, '&');
 }

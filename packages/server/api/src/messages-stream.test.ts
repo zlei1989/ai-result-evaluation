@@ -81,6 +81,7 @@ function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
     vendorId: null,
     role: 'assistant',
     source: 'wire',
+    origin: 'case-prompt',
     roundTrip: 1,
     turn: null,
     step: null,

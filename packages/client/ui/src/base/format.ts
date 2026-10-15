@@ -32,6 +32,11 @@ export function formatDateTime(iso: string): string {
   if (iso === '') return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
+  return formatLocalTime(date);
+}
+
+/** 本地 YYYY-MM-DD HH:mm（时刻格式化的唯一一处形状定义） */
+function formatLocalTime(date: Date): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

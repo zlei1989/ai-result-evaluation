@@ -19,6 +19,13 @@ export { getProvider, listAgentProviders } from './registry';
 export { acceptsProtocol, protocolMismatchMessage, type ProtocolMismatchInput } from './protocol';
 export { disposeLiveSessions } from './turn';
 export { DEFAULT_ASK_USER_BUDGET_MS } from './ask-user';
+/**
+ * 人工消息那一面的**等待判据**：缺省预算（`DEFAULT_INJECT_WAIT_BUDGET_MS`）与等待登记口的形状
+ * （`InjectionWaitSink`，骨架提供、端口那一侧登记）。与提问哪一条同一条理由必须从包出口走：
+ * 编排层要比它**早一秒**把表里等太久的那条收掉（表在编排层），两处各写一个数必然漂。
+ */
+export { DEFAULT_INJECT_WAIT_BUDGET_MS } from './inject';
+export type { InjectionWaitSink } from './inject';
 export { carrierKeyOf } from './message';
 export {
   AGENT_KINDS,
@@ -32,6 +39,10 @@ export {
   type AgentRunResult,
   type AskUserReply,
   type AskUserRequest,
+  /** 注入面：端口由**编排层实现**、经入参传进来，故它的形状必须出得来（见 `InjectionPort` 的注释） */
+  type InjectionPort,
   type ProtocolType,
   type SkillRef,
+  /** 端口交出来的那一条消息：实现端口的调用方要按这个形状造它 */
+  type UserMessage,
 } from './types';

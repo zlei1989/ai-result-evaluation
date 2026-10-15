@@ -56,7 +56,13 @@ export type AppServerSourceKind =
   | 'subAgentOther'
   | 'unknown';
 
-/** 文件改动的一项 */
+/**
+ * 文件改动的一项。
+ *
+ * `kind` 是厂商 `PatchChangeKind` 的**标签本身**（`add` / `delete` / `update`）——厂商线上它是一个
+ * **带标签的对象**（`{"type":"add"}`，`update` 还带 `move_path`），照字符串读会恒得 `null`。
+ * 判据是厂商自己的生成物：`FileUpdateChange.required = ['diff','kind','path']`、`kind: PatchChangeKind`。
+ */
 export interface AppServerFileChange {
   path: string;
   kind: string | null;
@@ -117,7 +123,12 @@ export type AppServerItem =
   | { kind: 'subAgentActivity'; id: string; activity: string; agentThreadId: string; agentPath: string }
   | { kind: 'plan'; id: string; text: string }
   | { kind: 'webSearch'; id: string; query: string }
-  | { kind: 'other'; id: string | null; type: string };
+  /**
+   * 这一层没归一的条目类型。**`raw` 必须原样带上**（与未识别**方法**那一支同一条口径）：
+   * 归一化把没声明的字段整批丢掉，只留 `type` 的话，这一格在产物里就只剩一个类型名
+   * ——而消费方要的是「厂商到底发了什么」。`type` 单独留一份是为了让调用方不改形状就能读它。
+   */
+  | { kind: 'other'; id: string | null; type: string; raw: unknown };
 
 /** 一轮 */
 export interface AppServerTurn {
@@ -126,6 +137,23 @@ export interface AppServerTurn {
   itemsView: 'notLoaded' | 'summary' | 'full';
   status: string;
   error: string | null;
+  /**
+   * 厂商的**机器可读失败分类**（`TurnError.codexErrorInfo`；只在 `status: 'failed'` 时有值）。
+   * 归因优先读它——拿 `error` 文案做正则匹配时，厂商改一句话就会错档。
+   */
+  errorCode: string | null;
+  /**
+   * 对象变体里那个 **HTTP 状态码**（`{responseStreamDisconnected:{httpStatusCode}}` /
+   * `{httpConnectionFailed:{httpStatusCode}}`）；字符串枚举与取不到时都是 `null`。
+   *
+   * 为什么必须单独留一格：上游 HTTP 失败在真机上**只以对象变体出现**（401 与 500 同形），
+   * 变体名（`responseStreamDisconnected`）说的是**传输层**、分不出鉴权与过载 ⇒ 只看名字时那几条
+   * 「机器可读分类」分支对 HTTP 失败**恒不命中**，归因只能退回拿文案里的「401」做正则——正是这一格
+   * 存在的理由要避免的事。真机原文：
+   * `{"responseStreamDisconnected":{"httpStatusCode":401}}` + `additionalDetails: "unexpected status 401 …"`；
+   * 500 那一档同形、`httpStatusCode` 为 `null`、文案是 codex 自己的「high demand」。
+   */
+  errorStatusCode: number | null;
   startedAt: number | null;
   completedAt: number | null;
   durationMs: number | null;
@@ -181,7 +209,25 @@ export type AppServerNotificationPayload =
    */
   | { kind: 'mcpStartupStatus'; threadId: string | null; name: string; status: string; error: string | null }
   | { kind: 'error'; threadId: string | null; message: string }
-  | { kind: 'other'; method: string };
+  /**
+   * 这一层没归一的通知（schema 里 84 个方法，归一的只是其中常走的那十几个）。
+   *
+   * **`params` 必须原样带上**：兜底这一支常走，而只留方法名会把带正文的那些整格丢掉
+   * （`model/rerouted` 的改路由事实、`warning` / `deprecationNotice` 的正文、
+   * `thread/compacted`、`serverRequest/resolved` 的回执…），于是「上游换了方法名」与
+   * 「上游没发」在产物里长得一样。
+   */
+  | { kind: 'other'; method: string; params: unknown }
+  /**
+   * **流内投影表达不出来的失败**——由适配器自己合成，不对应任何厂商方法。
+   *
+   * 为什么需要它：`app-server` 进程死在**在途**时，`client.onTerminal` 会把 `session.outcome`
+   * 结算成 `failed`，但通知流里既没有 `turn/completed{failed}` 也没有别的终态 ⇒ 只按流内载荷投影，
+   * 崩溃的行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`，
+   * `finalText` / `tokens` / `turns` 全空，只在日志里留一条「子线程树不是全量」）。
+   * 合成点在 `index.ts` 的 `asRawStream`（流正常产完那一刻问一次 `session.outcome`）。
+   */
+  | { kind: 'sessionFailed'; error: string };
 
 /** 读字符串数组；非数组或含非字符串项时返回 `null`（不静默丢弃元素） */
 function readStringArray(source: Record<string, unknown> | null, key: string): string[] | null {
@@ -390,7 +436,9 @@ export function readItem(value: unknown): AppServerItem | null {
       status: readString(record, 'status') ?? 'unknown',
       changes: readObjectArray(record, 'changes').map((one) => ({
         path: readString(one, 'path') ?? '',
-        kind: readString(one, 'kind'),
+        // 厂商的 `kind` 是**带标签的对象**（`{type:'add'|'delete'|'update'}`）⇒ 读里面那个标签，
+        // 照字符串读会恒得 `null`（真机读数：`{"path":"…","kind":{"type":"add"},"diff":"hello\n"}`）
+        kind: readString(asRecord(one.kind), 'type'),
       })),
     };
   }
@@ -464,7 +512,43 @@ export function readItem(value: unknown): AppServerItem | null {
   }
   if (type === 'plan') return { kind: 'plan', id, text: readString(record, 'text') ?? '' };
   if (type === 'webSearch') return { kind: 'webSearch', id, query: readString(record, 'query') ?? '' };
-  return { kind: 'other', id: id.length > 0 ? id : null, type };
+  return { kind: 'other', id: id.length > 0 ? id : null, type, raw: record };
+}
+
+/**
+ * `TurnError.codexErrorInfo` → 一个可比较的分类名。
+ *
+ * 厂商那一格是 `oneOf`，**两种形状都要认**（schema 原文 `CodexErrorInfo`）：
+ *   · **字符串枚举**：`unauthorized` / `rateLimitExceeded` / `usageLimitExceeded` /
+ *     `contextWindowExceeded` / `serverOverloaded` / `sandboxError` / `badRequest` / `other` …；
+ *   · **对象变体**：`{httpConnectionFailed:{httpStatusCode}}` / `{responseStreamConnectionFailed:{…}}`
+ *     ——变体名就是**那个对象唯一的键**（不是什么 `type` 字段）。
+ *
+ * 取不到就是 `null`（归因退回文案）。**状态码另走 `readCodexErrorStatusCode` 一格**：
+ * 对象变体的名字只有传输层含义（`responseStreamDisconnected` 对 401 与 500 同形），
+ * 只取名字就等于放弃这一格，归因退回正则匹配文案。
+ */
+function readCodexErrorCode(value: unknown): string | null {
+  if (typeof value === 'string' && value.length > 0) return value;
+  const record = asRecord(value);
+  if (record === null) return null;
+  const [variant] = Object.keys(record);
+  return variant === undefined || variant.length === 0 ? null : variant;
+}
+
+/**
+ * 对象变体里那个 HTTP 状态码（取不到就是 `null`）。
+ * 变体名只有传输层的含义（`responseStreamDisconnected`），**状态码才是归因的判据**——
+ * 见 `AppServerTurn.errorStatusCode` 的注释。
+ */
+function readCodexErrorStatusCode(value: unknown): number | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  for (const variant of Object.keys(record)) {
+    const status = readNumber(asRecord(record[variant]), 'httpStatusCode');
+    if (status !== null) return status;
+  }
+  return null;
 }
 
 /** 归一化一轮；`items` 里解析不出来的条目直接丢弃（不造空壳） */
@@ -483,9 +567,23 @@ export function readTurn(value: unknown): AppServerTurn | null {
   return {
     id,
     items,
-    itemsView: itemsView === 'notLoaded' || itemsView === 'summary' || itemsView === 'full' ? itemsView : 'full',
+    /**
+     * **不认识的取值归 `notLoaded`（保守方向）**，不是 `full`。
+     *
+     * 消费方（`reader.ts`）拿 `turns.every(t => t.itemsView === 'full')` 决定要不要走分页补齐
+     * ⇒ 倒向 `full` 是 fail-open：上游新增一档（或改默认）时回退不触发，**摘要被当全量用**，
+     * 而那恰恰是「摘要不是全量」这条口径要防的事。倒向 `notLoaded` 最坏只是多跑一次分页。
+     */
+    itemsView: itemsView === 'notLoaded' || itemsView === 'summary' || itemsView === 'full' ? itemsView : 'notLoaded',
     status: readString(record, 'status') ?? 'unknown',
     error: readString(error, 'message'),
+    /**
+     * 机器可读的失败分类（`unauthorized` / `rateLimitExceeded` / `contextWindowExceeded` /
+     * `sandboxError` …）。**必须单独留一格**：只拿 `message` 的话归因就只能靠正则匹配英文文案，
+     * 厂商改一句话就错档。消费方优先读它、文案兜底。
+     */
+    errorCode: readCodexErrorCode(error?.codexErrorInfo),
+    errorStatusCode: readCodexErrorStatusCode(error?.codexErrorInfo),
     startedAt: readNumber(record, 'startedAt'),
     completedAt: readNumber(record, 'completedAt'),
     durationMs: readNumber(record, 'durationMs'),
@@ -593,5 +691,15 @@ export function readNotification(method: string, params: unknown): AppServerNoti
     const error = asRecord(record?.error);
     return { kind: 'error', threadId, message: readString(error, 'message') ?? '未知错误' };
   }
-  return { kind: 'other', method };
+  /**
+   * 未识别的通知**带上原始载荷**。
+   *
+   * schema 里有 84 个通知方法，这一层只归一了十几个 ⇒ 兜底这一支是常走的路，而只留方法名
+   * 会把带正文的那些整格丢掉。**真机实测落进这一支的方法**（122 份逐帧台账的直方图，按次数）：
+   * `account/rateLimits/updated`、`warning`、`thread/readState/changed`、`remoteControl/status/changed`、
+   * **`thread/goal/updated`**、`serverRequest/resolved`、`thread/queue/changed`、`deprecationNotice`、
+   * `item/reasoning/summaryPartAdded`、**`turn/diff/updated`**、`thread/goal/cleared`…
+   * 另两家（dsh / pi）的同一支传的都是 raw，消费方（`unknownEventDraft`）也早就收这一格。
+   */
+  return { kind: 'other', method, params };
 }

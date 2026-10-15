@@ -144,6 +144,27 @@ describe('resolveMcpServers', () => {
     expect(plan.skipped.map((item) => item.name)).toEqual(['s']);
   });
 
+  /**
+   * **厂商自己会解析的另两种写法同样按「跳过 + 点名」处置**（裸 `$NAME` 与 `!cmd`）。
+   *
+   * 为什么必须判死而不是放行：厂商的取值语法是三种并列，而我们只实现 `${NAME}`。裸 `$NAME` 取的是
+   * **宿主进程的环境变量**（设了就把它静默发到远端端点 / 塞进子进程，没设则整台起不来且零归因）；
+   * `!cmd` 会被厂商**当命令执行**。真机读数见 `.scratch/pi-audit3/structured-mcp/report.md` 的 P4。
+   *
+   * 变异体：把 `MCP_UNRESOLVED_PLACEHOLDER` 改回 `/\$\{/` ⇒ 本用例两条都红（它们会进 injectable）。
+   */
+  it('裸 `$NAME` 与 `!cmd` 同样判「不解析」：整条跳过 + 如实记 skipped（不许把宿主 env 的口子放过去）', () => {
+    const plan = resolveMcpServers({
+      dollar: { transport: 'stdio', enabled: true, command: 'npx', args: [], env: { TOKEN: '$HOST_TOKEN' } },
+      bang: { transport: 'http', enabled: true, url: 'https://example.test/mcp', headers: { Authorization: '!cat /etc/hosts' } },
+      // 阳性对照：这三种写法之外的值照旧进注入集
+      plain: { transport: 'stdio', enabled: true, command: 'npx', args: [], env: { TOKEN: 'literal-value' } },
+    }, {});
+    expect(Object.keys(plan.injectable)).toEqual(['plain']);
+    expect(plan.skipped.map((item) => item.name).sort()).toEqual(['bang', 'dollar']);
+    for (const item of plan.skipped) expect(item.reason).toContain('占位');
+  });
+
   it('没有占位符的条目原样进注入集（`env` / `headers` 缺席时也不凭空补一个空对象）', () => {
     const plan = resolveMcpServers(
       {
@@ -247,6 +268,33 @@ describe('resolveMcpServers 的形状闸（畸形条目不注入、进 invalid �
     expect(Object.keys(plan.injectable)).toEqual(['good']);
     expect(plan.invalid.map((item) => item.name)).toEqual(['bad']);
   });
+
+  /**
+   * **发不出去的 header 键必须在这一层就落 `invalid`**，不能留给下游某一层静默摘掉。
+   *
+   * 判据不是「更严谨」而是已经量到过的后果：契约放行、pi 适配器自己摘 ⇒ 编排层仍按
+   * `injectable` 记账，而行级观测格在 `vendor-tool-table` 通道上把「工具表里没有它」读成
+   * **失败**（`AGENT_MCP_UNAVAILABLE`，文案是「未能启动」）⇒ 整行失败，且指向一台从没起过的
+   * 服务器；真因只活在服务端进程日志里。落这里之后它走 `invalid` 桶：行照跑、记 `unverified`、
+   * 日志点名到格。
+   */
+  it('headers 键按 HTTP field-name 收：空白的 / 冒号的 / 空的都进 invalid（它们发不出去）', () => {
+    const plan = resolveMcpServers(
+      {
+        good: { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp', headers: { 'X-Api-Key': 'v' } },
+        space: { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp', headers: { 'X Y': 'v' } },
+        colon: { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp', headers: { 'X:Y': 'v' } },
+        empty: { transport: 'http', enabled: true, url: 'https://mcp.invalid/mcp', headers: { '': 'v' } },
+      } as unknown as McpServers,
+      {},
+    );
+
+    expect(Object.keys(plan.injectable), '只有合法的那个键该进注入集').toEqual(['good']);
+    expect(plan.invalid.map((item) => item.name)).toEqual(['space', 'colon', 'empty']);
+    for (const item of plan.invalid) {
+      expect(item.reason, item.name).toContain('headers');
+    }
+  });
 });
 
 /**
@@ -302,14 +350,22 @@ describe('resolveMcpServers 的占位闸（command / url / args 里不许有 ${�
     expect(plan.skipped.map((item) => item.name)).toEqual(['s']);
   });
 
-  it('`$HOME` 这种不带花括号的写法不算占位（它不是本仓的语法，本来就按字面透传）', () => {
+  /**
+   * **`$HOME` 这种不带花括号的写法也必须判死**——旧注释写的「按字面透传」与厂商事实相反：
+   * 厂商的取值语法是三种并列（`${NAME}` / 裸 `$NAME` / `!cmd`），裸 `$NAME` 取的是**宿主进程的
+   * `process.env`**，不是本仓设置页那份映射。放行的两条下场（真机读数见
+   * `.scratch/pi-audit3/structured-mcp/report.md` 的 P4）：宿主设过 ⇒ 值被静默发到远端端点 /
+   * 塞进 stdio 子进程；没设 ⇒ 整台服务器起不来且零归因。
+   */
+  it('`$HOME` 这种不带花括号的写法同属「不解析」：整条跳过（厂商会拿宿主 env 去填它）', () => {
     const plan = resolveMcpServers(
       { s: { transport: 'stdio', enabled: true, command: 'node', args: ['--root=$HOME/x'] } },
       {},
     );
 
-    expect(Object.keys(plan.injectable)).toEqual(['s']);
-    expect(plan.skipped).toEqual([]);
+    expect(plan.injectable).toEqual({});
+    expect(plan.skipped.map((item) => item.name)).toEqual(['s']);
+    expect(plan.skipped[0]?.reason).toContain('占位');
   });
 });
 

@@ -1,5 +1,5 @@
 /** client 公共出口：数据获取 hooks 与 HTTP 原语。类型全部来自 contracts。 */
-export { delJson, getJson, postJson, putJson } from './http';
+export { delJson, getJson, postForm, postJson, putJson } from './http';
 export { useSettings } from './settings';
 // 技能清单 / 目录树 / 单个文件原文：清单 key 恒定（刷新 = 重新扫盘），树与文件的 key 带名字
 // （未选中时不发请求），文件的 key 还带技能内路径
@@ -23,7 +23,8 @@ export {
 export {
   useCreateProvider,
   useDeleteProvider,
-  useFetchProviderModels,
+  useImportProviderModels,
+  usePreviewProviderModels,
   useProviderModels,
   useProviders,
   useUpdateProvider,
@@ -32,16 +33,19 @@ export {
   AGENT_OPTIONS_KEY,
   RUNS_KEY,
   runKey,
+  runArtifactsUrl,
   runRowMessagesStreamUrl,
   runRowUrl,
   useAbortRow,
   useAbortRun,
   useCreateRun,
   useDeleteRun,
+  useRowArtifactFile,
   useRowDiffFile,
   useRowDiffIndex,
   useRowLog,
   useRun,
+  useRunArtifacts,
   useRunModelOptions,
   useRuns,
   useRescoreRow,
@@ -52,6 +56,16 @@ export {
   type AgentOptionGroup,
 } from './runs';
 export { useRowStream } from './row-stream';
+export {
+  FOLLOW_UP_AVAILABILITY_URL,
+  FOLLOW_UP_URL,
+  followUpAvailabilityUrl,
+  postFollowUp,
+  useFollowUpAvailability,
+  useFollowUpRow,
+  type UseFollowUpAvailabilityInput,
+  type UseFollowUpAvailabilityResult,
+} from './follow-up';
 /** 评分那条事件流（评审者自己的流水）：与行级流分开的读数与续订（口径见该文件头） */
 export { useRowJudgeEvents, type UseRowJudgeEventsInput, type UseRowJudgeEventsResult } from './judge-events';
 export {
@@ -64,13 +78,14 @@ export {
 } from './row-messages';
 export { useRunLiveMetrics, type RowLiveMetrics } from './row-live';
 /**
- * 活动行的**实时打字内容**：折 AgentMessage 的内容流，
+ * 活动行的**实时打字内容**：折 AgentMessage 的内容流（整轮共享的聚合流上的一条 sink），
  * 与 `useRunLiveMetrics` 折事件流是同一层的两条路——活动行把两者叠起来用。
+ * `activityOfFrame` 是「这一帧算不算活动内容」的判据（信封的解析与坏帧丢弃在 `sse-keyed-hub` 那一层）。
  */
 export {
   EMPTY_ACTIVITY,
+  activityOfFrame,
   activityOfMessage,
-  parseActivityFrame,
   useRunActivity,
   type ActivityRowInput,
   type RowActivity,
@@ -82,20 +97,20 @@ export {
 export { ENV_GROUP_ORDER, buildAgentEnvironment, envItem, type BuildEnvironmentInput } from './build-environment';
 /**
  * 应答面：待答队列（订阅 + 应答动作）与它的推进规则。
- * 队列规则是**纯函数**（先来后到 / 收到确认才出队 / 关掉不算答），宿主只做拼装——
- * 与上一条同一条边界：判定留在数据层，页面没有测试面。
+ * 队列规则是**纯函数**（先来后到 / 收到确认才出队 / 关掉不算答 / 焦点之外**暂缓**），
+ * 宿主只做拼装——与上一条同一条边界：判定留在数据层，页面没有测试面。
  */
 export {
   ASK_USER_ANSWERS_URL,
-  ASK_USER_CHANGED_EVENT,
-  ASK_USER_STREAM_URL,
   ASK_USER_URL,
   postAskUserAnswers,
   useAskUserQueue,
+  type UseAskUserQueueInput,
   type UseAskUserQueueResult,
 } from './ask-user';
 export {
   EMPTY_ASK_USER_QUEUE,
+  answerableAskUser,
   applyAskUserSnapshot,
   confirmAskUserAnswered,
   currentAskUser,
@@ -103,6 +118,30 @@ export {
   reopenAskUser,
   type AskUserQueueState,
 } from './ask-user-queue';
+/**
+ * run 焦点：此刻用户在看着哪一轮。**模块级单例**（不依赖 React 的 `setFocusedRun`），
+ * `/runs` 页在右栏选中某一轮时写它、离开时复位，全局提问浮层订阅式读它——
+ * 「切走的 run 的未答提问」因此可以**暂缓**（不弹、不取消、仍在挂起表计时）。
+ */
+export { setFocusedRun, useFocusedRun } from './run-focus';
+/**
+ * 人工消息面（人往运行中的智能体送话）：一行的队列快照 + 信号流 + 四个写动作。
+ * 与应答面同一条切法——通道与动作在数据层（有测试面），判定与文案在 `@aieval/ui`。
+ */
+export {
+  INJECT_MESSAGES_ATTACHMENTS_URL,
+  INJECT_MESSAGES_PROMOTE_URL,
+  INJECT_MESSAGES_RETRACT_URL,
+  INJECT_MESSAGES_URL,
+  injectMessagesUrl,
+  postInjectAttachment,
+  postInjectMessage,
+  postInjectMessagePromote,
+  postInjectMessageRetract,
+  useInjectMessages,
+  type UseInjectMessagesInput,
+  type UseInjectMessagesResult,
+} from './inject-messages';
 /**
  * **界面模型的类型转发**。
  *

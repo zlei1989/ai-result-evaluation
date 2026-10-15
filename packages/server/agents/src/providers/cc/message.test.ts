@@ -16,7 +16,7 @@
  * 抽屉那一格用量永远「未采集」）——所以判决按 **id 记账**，收场帧追随同一个 id 的 `start` 帧。
  */
 import { describe, expect, it } from 'vitest';
-import { createMessageAssembler } from '../../message';
+import { TOOL_RESULT_MAX_CHARS, createMessageAssembler } from '../../message';
 import { createClaudeMessageNormalizer } from './message';
 import type { TurnState } from '../../turn';
 
@@ -115,6 +115,44 @@ describe('cc：task_* 帧的形状判决', () => {
     expect(end.subagent?.name).toBe(start.subagent?.name);
   });
 
+  /**
+   * **嵌套派发的层级**（`parent_task_id`）：真机读数（CLI 2.1.301，子智能体再派一个子智能体）——
+   * 内层那条 `task_started` 带 `parent_task_id`（值 = 外层那条的 `task_id`）、`spawn_depth: 2`，
+   * 而**收场帧不带**这一格 ⇒ 与 `kind` 同一处置：派发帧记账、收尾按同一 id 回填。
+   *
+   * 这一格决定界面上的**层级**（`packages/client/ui` 的 `build-model.ts` 按它把子任务挂到
+   * `subagent:<父 id>` 下）⇒ 恒填 `null` 会让嵌套子任务全部平铺在主会话那一条下面。
+   */
+  it('嵌套派发：内层带 `parent_task_id` ⇒ 两条投递都指向外层（收场帧靠账回填）', () => {
+    const normalizer = createClaudeMessageNormalizer();
+    const outer = normalizer.normalize({ ...DISPATCH_START, task_id: 'a35e01a6937e02049' }, state());
+    const innerStart = normalizer.normalize(
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'a44df30fc84460765',
+        tool_use_id: 'toolu_inner',
+        description: '内层数行数',
+        subagent_type: 'Explore',
+        spawn_depth: 2,
+        parent_task_id: 'a35e01a6937e02049',
+        task_type: 'local_agent',
+        prompt: '数行数',
+      },
+      state(),
+    );
+    const innerEnd = normalizer.normalize(
+      { type: 'system', subtype: 'task_notification', task_id: 'a44df30fc84460765', tool_use_id: 'toolu_inner', status: 'completed', summary: '数完了' },
+      state(),
+    );
+
+    // 顶层派发本来就没有这一格 ⇒ `null` 是「没有父」，不是「没采到」
+    expect(outer.subagent?.parentSubagentId).toBeNull();
+    expect(innerStart.subagent?.parentSubagentId).toBe('a35e01a6937e02049');
+    // 收场帧不带这一格：不回填的话，层级在收尾那一拍整棵挂回主会话
+    expect(innerEnd.subagent?.parentSubagentId).toBe('a35e01a6937e02049');
+  });
+
   it('只见到收场帧（没有 start 可判形状）⇒ 照产行，但判决是 unjudged（不冒充实派发的证据）', () => {
     const output = createClaudeMessageNormalizer().normalize(
       { type: 'system', subtype: 'task_notification', task_id: 'task-x', tool_use_id: 'call_x', status: 'completed', summary: '跑完了' },
@@ -148,6 +186,114 @@ describe('cc：task_* 帧的形状判决', () => {
     );
     expect(zeroDepth.taskShape).toBe('dispatch');
     expect(zeroDepth.subagent?.subagentId).toBe('task-zero-depth');
+  });
+});
+
+/**
+ * **厂商标了「这不是活动」的 task 帧**（`ambient` / `skip_transcript`）。
+ *
+ * 厂商 JSDoc 逐字：*"True for tasks that are not activity (every skip_transcript task, plus every
+ * live-update watcher, requested or auto-started); **hosts should exclude them from activity
+ * indicators**."* 这正是三格形状判据想推断的同一件事，而厂商已经直接给了答案
+ * ⇒ **显式标记优先于形状推断**。没有这一条，一个三格齐全的 live-update watcher 会被判成真派发，
+ * 在派发面板里多出一行（而它压根不是一次子智能体派发）。
+ */
+describe('cc：厂商标了 ambient 的 task 帧不产子任务行', () => {
+  for (const flag of ['ambient', 'skip_transcript'] as const) {
+    it(`${flag} 为真 ⇒ 判 phantom、不产行（哪怕三格形状全齐）`, () => {
+      const output = createClaudeMessageNormalizer().normalize({ ...DISPATCH_START, [flag]: true }, state());
+
+      expect(output.taskShape).toBe('phantom');
+      expect(output.subagent).toBeNull();
+    });
+  }
+
+  /** 反向判据：没标这两格的真派发照旧产行（修正不许把真派发一起挡掉） */
+  it('没有这两格的真派发照旧判 dispatch 并产行', () => {
+    const output = createClaudeMessageNormalizer().normalize(DISPATCH_START, state());
+
+    expect(output.taskShape).toBe('dispatch');
+    expect(output.subagent?.subagentId).toBe('afb636cf844060a29');
+  });
+});
+
+/**
+ * **历史重放帧**（`SDKUserMessageReplay.isReplay`）在消息侧的处置。
+ *
+ * 续接（`resume`）时 CLI 把这条会话**已经发生过**的用户侧消息再投一遍，而重放帧带的是**自己的**
+ * `uuid` ⇒ 本侧那张去重表挡不住它。收下的代价有两层：`messages.jsonl` 里多出一份上一轮的工具结果
+ * （追问是**追加到同一行**上的，那些内容本行已经有了），以及**任务台账的 patch 被再放一遍**
+ * ——后者会让计划清单按历史又走一遍状态机。
+ */
+describe('cc：续接时的历史重放帧（消息侧）', () => {
+  const REPLAYED_RESULT = {
+    type: 'user',
+    uuid: 'replay-1',
+    isReplay: true,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: '上一轮的结果' }] },
+  };
+
+  it('重放的工具结果不产消息（不把上一轮的内容在本行再写一遍）', () => {
+    expect(createClaudeMessageNormalizer().normalize(REPLAYED_RESULT, state()).messages).toEqual([]);
+  });
+
+  /**
+   * **台账不被重放的结果推一遍**：这是本条守卫的要害。
+   * 先建一项任务（`TaskCreate` 的结果给 id），再喂一条**重放的** `TaskUpdate` 结果——
+   * 它若被收下，台账会按历史把那一项推成 `completed`，面板上的计划清单当场倒带。
+   */
+  it('重放的工具结果不推任务台账（计划清单不按历史倒带）', () => {
+    const normalizer = createClaudeMessageNormalizer();
+    const turn = state();
+    normalizer.normalize(
+      {
+        type: 'assistant',
+        uuid: 'u-1',
+        message: { id: 'msg_1', role: 'assistant', content: [{ type: 'tool_use', id: 'call_c1', name: 'TaskCreate', input: { subject: '甲' } }] },
+      },
+      turn,
+    );
+    normalizer.normalize(
+      {
+        type: 'user',
+        uuid: 'u-2',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_c1', content: 'created' }] },
+        tool_use_result: { task: { id: '1', subject: '甲' } },
+      },
+      turn,
+    );
+    normalizer.normalize(
+      {
+        type: 'assistant',
+        uuid: 'u-3',
+        message: { id: 'msg_2', role: 'assistant', content: [{ type: 'tool_use', id: 'call_u1', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } }] },
+      },
+      turn,
+    );
+
+    // 一条**重放的** TaskUpdate 结果（上一轮那次把它推到了 completed）
+    const replayed = normalizer.normalize(
+      {
+        type: 'user',
+        uuid: 'replay-2',
+        isReplay: true,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_u1', content: 'updated' }] },
+        tool_use_result: { success: true, taskId: '1', statusChange: { from: 'in_progress', to: 'completed' } },
+      },
+      turn,
+    );
+
+    // 被丢弃 ⇒ 既不产消息，也不产「台账刷新」那条重投快照
+    expect(replayed.messages).toEqual([]);
+  });
+
+  /** 反向判据：不带这一格的同形帧照旧产消息 */
+  it('不带 isReplay 的同形工具结果照旧产消息', () => {
+    const { isReplay: _dropped, ...live } = REPLAYED_RESULT;
+    const output = createClaudeMessageNormalizer().normalize({ ...live, uuid: 'live-1' }, state());
+
+    expect(output.messages).toHaveLength(1);
+    expect(output.messages[0]?.role).toBe('tool');
   });
 });
 
@@ -199,5 +345,41 @@ describe('cc：同一条消息的多次投递（覆盖合并）', () => {
       { type: 'assistant', uuid: 'u-tool3', message: { id: 'msg_C', content: [{ type: 'tool_use', id: 'call_1', name: 'Skill', input: {} }] } },
     ]);
     expect(final?.blocks.map((block) => block.type)).toEqual(['thinking', 'tool-call']);
+  });
+});
+
+/**
+ * **超长工具结果的截断标志**（真机：22 001 字符的结果被切成 20 000）。
+ *
+ * 这一家的坑很具体：`resultText()` 曾经**先截一次**再把文本交给 `toolResultBlockDraft`，
+ * 于是下游那句 `clipped.truncated` 恒 `false` ⇒ `truncation.kind` 恒 `unknown`——**截了也不说**，
+ * 界面永远不显示「输出已被截断」，而 codex / dsh / pi 三家都说得出来。
+ * 判据落在 `truncation` 那一格上：超限必须是 `truncated`，没超限才是 `unknown`（厂商没给标记）。
+ */
+describe('cc：超长工具结果的截断标志', () => {
+  function toolResult(content: string): Record<string, unknown> {
+    return {
+      type: 'user',
+      uuid: `u-${content.length}`,
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-long', content, is_error: false }] },
+    };
+  }
+
+  function truncationOf(frame: Record<string, unknown>): unknown {
+    const output = createClaudeMessageNormalizer().normalize(frame, state());
+    const draft = output.messages.flatMap((message) => message.blocks).find((one) => one.block.type === 'tool-result');
+    return draft?.block.type === 'tool-result' ? draft.block.truncation : null;
+  }
+
+  it('超过上限 ⇒ `truncated`（标志不许被预截断吃掉）', () => {
+    expect(truncationOf(toolResult('A'.repeat(TOOL_RESULT_MAX_CHARS + 1)))).toEqual({
+      kind: 'truncated',
+      reason: `超过 ${TOOL_RESULT_MAX_CHARS} 字符`,
+    });
+  });
+
+  it('没超上限 ⇒ `unknown`（厂商没给标记时不许写成「确认完整」）', () => {
+    expect(truncationOf(toolResult('短结果'))).toEqual({ kind: 'unknown' });
   });
 });

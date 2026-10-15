@@ -10,7 +10,7 @@
  * 写错这一格的表现是「A 行的请求带着 B 行的密钥打到 B 行的网关」，只在并发时出现，
  * 而且每一格的日志都正常。所以它必须拿真实现跑一次真请求。
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -19,8 +19,9 @@ import { EFFORT_OFF, type AgentEvent, type AgentMessage } from '@aieval/contract
 import { AgentLoadError } from '../../errors';
 import { setAgentRuntimeForTesting } from '../../runtime';
 import { createRunInput } from '../../testing/agent-fixtures';
-import { createFakePiRecorder, createFakePiSdk } from '../../testing/pi-sdk-fixture';
+import { createFakePiChildSession, createFakePiRecorder, createFakePiSdk } from '../../testing/pi-sdk-fixture';
 import { PI_SUBAGENTS_TOOL_NAMES } from '../../permission';
+import { PI_SUBAGENTS_MANAGER_KEY } from './subagent-wire';
 import {
   anthropicText,
   anthropicToolUse,
@@ -40,6 +41,7 @@ import {
   keepRowAndProjectSkills,
   piProvider,
   piProviderId,
+  piSessionDir,
   piThinkingLevel,
   rowSkillsPath,
   wireForProtocol,
@@ -201,6 +203,44 @@ describe('pi 的装配序列与隔离序列', () => {
     expect(existsSync(rowSkillsPath(input.configHome))).toBe(false);
   });
 
+  /**
+   * **`bindExtensions` 抛错时这一行仍然收干净**：释放入口必须建在绑定点之前。
+   *
+   * 为什么：骨架手里的 `started` 要等 `start()` 返回才有值，而 `bindExtensions` 正是在 `start()`
+   * 里面——它抛错时骨架的释放兜底**落空**（真机读数：dispose / abort / waitForIdle /
+   * session_shutdown / provider 注销全 0），而 MCP 的 stdio 子进程清理挂在 `session_shutdown` 上
+   * ⇒ 那一档会留下一个关不掉的子进程。变异体：把释放入口挪回 `bindExtensions` 之后（或去掉
+   * try/catch）⇒ 本用例的 `disposed` 为 0，当场红。
+   */
+  it('`bindExtensions` 抛错 ⇒ 仍走完整条释放链，再把错误抛给骨架归因', async () => {
+    const recorder = createFakePiRecorder();
+    const fake = createFakePiSdk({ recorder }) as Record<string, Record<string, unknown>>;
+    const pkg = fake['@earendil-works/pi-coding-agent']!;
+    const original = pkg['createAgentSession'] as (options: unknown) => Promise<{ session: Record<string, unknown> }>;
+    let disposed = 0;
+    pkg['createAgentSession'] = async (options: unknown) => {
+      const { session } = await original(options);
+      return {
+        session: {
+          ...session,
+          bindExtensions: async () => {
+            throw new Error('扩展绑定点炸了');
+          },
+          dispose: () => {
+            disposed += 1;
+            (session['dispose'] as () => void)();
+          },
+        },
+      };
+    };
+    setAgentRuntimeForTesting({ sdkModule: fake });
+
+    const result = await piProvider.run({ ...freshRow(), onEvent: () => {} });
+    expect(result.ok).toBe(false);
+    expect(result.error?.message ?? '').toContain('扩展绑定点炸了');
+    expect(disposed, '释放链一次都没跑：MCP 的 stdio 清理会留在那边').toBe(1);
+  });
+
   it('隔离序列逐条：绝对技能路径 / noExtensions / 不设 noSkills 与 noContextFiles', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
@@ -229,7 +269,6 @@ describe('pi 的装配序列与隔离序列', () => {
       allowModelNetwork: false,
       refreshOnCreate: false,
     });
-    expect(recorder.sessionOptions?.['sessionManager']).toEqual({ kind: 'memory-session' });
     expect(recorder.sessionOptions?.['settingsManager']).toMatchObject({
       kind: 'memory-settings',
       // 关掉 pi 自带重试（连接类失败默认 3 次会把墙钟放大到十几秒）
@@ -237,6 +276,151 @@ describe('pi 的装配序列与隔离序列', () => {
     });
     // 扩展装配的 mode 必须写死 rpc（缺省 print 会让按 rpc 写的扩展判定配置错误）
     expect(recorder.bindings?.['mode']).toBe('rpc');
+  });
+
+  /**
+   * **会话落盘**：管理器换成文件型、落点显式钉在行配置目录里，且**首跑与续接走两条不同的构造路径**。
+   *
+   * 为什么这三格都必须钉住：
+   *   · 退回 `inMemory()` ⇒ 会话不落盘，续接无从谈起（而这一家在能力声明里写的是 `resume: yes`）；
+   *   · 不给 `sessionDir` ⇒ 落点由「`agentDir` × `cwd`」两轴共同决定（厂商默认值就是那个形状），
+   *     而行工作区会被重建、配置目录也会变 ⇒ 「这一行的会话在哪」变成算不出来的东西；
+   *   · 续接用 `continueRecent` ⇒ 它取目录里 **mtime 最新**的一条，而行内重跑会在同一目录里留下
+   *     上一次尝试的会话 ⇒ 接回来的是**上一次尝试**，用户以为在追问、模型答的是别人的上下文。
+   *     故这里不只断言 `open` 被调用，还断言 `continueRecent` **一次都没被调用**。
+   */
+  it('首跑 create 到行内的显式会话目录（不是内存、不是厂商默认落点）', async () => {
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const input = freshRow();
+    await piProvider.run({ ...input, onEvent: () => {} });
+
+    expect(recorder.sessionManagerCalls).toEqual([
+      { kind: 'create', cwd: input.cwd, sessionDir: piSessionDir(input.configHome) },
+    ]);
+    // 落点在行配置目录之内：换行即换目录，不需要第二个隔离机制
+    expect(piSessionDir(input.configHome).startsWith(input.configHome)).toBe(true);
+    expect(piSessionDir(input.configHome)).not.toContain(input.cwd);
+    // 会话管理器是文件型的那一份（假件的三条构造路径各自记一笔，`inMemory` 已不在声明里）
+    expect(recorder.sessionOptions?.['sessionManager']).toEqual({
+      kind: 'file-session',
+      cwd: input.cwd,
+      sessionDir: piSessionDir(input.configHome),
+    });
+  });
+
+  it('续接 open(会话文件)——不是 continueRecent（后者取 mtime 最新，行内重跑会接到上一次尝试）', async () => {
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const input = freshRow();
+    // 续接要打开的会话文件必须真的在盘上（适配器先判存在性，见下一条用例）
+    const sessionFile = join(piSessionDir(input.configHome), '2026-01-02T03-04-05-000Z_session-under-test.jsonl');
+    mkdirSync(piSessionDir(input.configHome), { recursive: true });
+    writeFileSync(sessionFile, '{"type":"session","version":3,"id":"session-under-test"}\n', 'utf8');
+
+    await piProvider.run({ ...input, resume: { sessionId: sessionFile }, onEvent: () => {} });
+
+    expect(recorder.sessionManagerCalls).toEqual([{ kind: 'open', path: sessionFile }]);
+  });
+
+  /**
+   * 续接指到一条**不存在**的会话文件 ⇒ 抛中文原因，**绝不静默开新会话**。
+   *
+   * 为什么必须由适配器自己判：厂商的 `SessionManager.open(path)` 在文件不存在时**不抛**
+   * ——它当场在同名路径上造一条新的。于是「文件没了」与「接上了」在调用点完全同形，
+   * 表现是用户以为在追问、模型什么都不记得，而界面上一切正常（本仓最不接受的那类失败）。
+   */
+  it('续接的会话文件不存在 ⇒ 该行失败并点名路径（不静默开新会话）', async () => {
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const input = freshRow();
+    const missing = join(piSessionDir(input.configHome), '2000-01-01T00-00-00-000Z_gone.jsonl');
+
+    const result = await piProvider.run({ ...input, resume: { sessionId: missing }, onEvent: () => {} });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain(missing);
+    expect(result.error?.message).toContain('不静默');
+    // 一条会话都没建：失败发生在装配的会话构造那一步之前
+    expect(recorder.sessionManagerCalls).toEqual([]);
+  });
+
+  /**
+   * **0 字节的会话文件与「不存在」同档**：文件在场、一行内容都没有（写到一半被中断 /
+   * 被截断）时厂商的 `open()` 照样成功，开出来的是一条**没有历史**的会话
+   * ⇒ 「用户以为在追问、模型什么都不记得」在产物上长得与成功续接逐字一样。
+   * 判据取盘上的字节数（半截 JSON 由厂商自己拒，零行不会）。
+   *
+   * 变异体：去掉 `statSync(...).size === 0` 这一支 ⇒ 本用例转成 `ok:true` + 一次 `open`，当场红。
+   */
+  it('续接的会话文件是 0 字节 ⇒ 该行失败并说明「里面没有上下文」（不静默开新会话）', async () => {
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const input = freshRow();
+    const empty = join(piSessionDir(input.configHome), '2000-01-01T00-00-00-000Z_empty.jsonl');
+    mkdirSync(piSessionDir(input.configHome), { recursive: true });
+    writeFileSync(empty, '');
+
+    const result = await piProvider.run({ ...input, resume: { sessionId: empty }, onEvent: () => {} });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain(empty);
+    expect(result.error?.message).toContain('0 字节');
+    expect(recorder.sessionManagerCalls, '不许真的 open 那条空会话').toEqual([]);
+  });
+
+  /**
+   * 收尾落的是**会话文件路径**（`result.sessionId`），不是厂商那个会话 id。
+   *
+   * 判据取「假件按厂商命名规则现拼的那个路径」——用例自己算一遍，而不是读 `recorder.sessionFile`
+   * （读它等于把断言写成同义反复）。文件名里嵌着时间戳 ⇒ id 拼不回路径，故落路径是唯一可行的那一格。
+   */
+  it('收尾落会话文件路径（不是会话 id）', async () => {
+    const recorder = createFakePiRecorder();
+    recorder.sessionId = 'session-under-test';
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const input = freshRow();
+
+    const result = await piProvider.run({ ...input, onEvent: () => {} });
+
+    expect(result.sessionId).toBe(
+      join(piSessionDir(input.configHome), '2000-01-01T00-00-00-000Z_session-under-test.jsonl'),
+    );
+    expect(result.sessionId).not.toBe(recorder.sessionId);
+  });
+
+  /**
+   * **投递面的反面**：声明写的是 `off-by-adapter`（厂商有这两档、窄壳也声明了，但适配器**还没接**）
+   * ⇒ 事实必须是「端口挂着也一条都不投、连取件都不取」。
+   *
+   * 为什么反面就够（第一期四家全是「做不到」）：声明说「没接」而实际上接了，界面会把消息投进去
+   * 却不显示排队状态；声明说「能投」而实际投不进去，则是「按钮可点、消息静默消失」。
+   * 这一条钉住的是前者——把适配器悄悄接上投递面（却不改声明）会在这一格见红。
+   */
+  it('端口挂着也不投：适配器今天一格都不挂投递（`off-by-adapter` 的事实面）', async () => {
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    const drained: string[] = [];
+    const input = freshRow();
+
+    const result = await piProvider.run({
+      ...input,
+      inject: {
+        available: true,
+        drain: (boundary) => {
+          drained.push(boundary);
+          return [{ id: 'm-1', text: '顺手把 changelog 补上' }];
+        },
+        markDelivered: () => {},
+        retract: async () => 'unsupported',
+      },
+      onEvent: () => {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(recorder.steering).toEqual([]);
+    expect(recorder.followUps).toEqual([]);
+    expect(drained).toEqual([]);
   });
 
   /**
@@ -324,7 +508,8 @@ describe('pi 的装配序列与隔离序列', () => {
     await piProvider.run({ ...createRunInput({ permission: 'read-only' }), onEvent: () => {} });
     // 档位名单原样交给会话，末尾那一格是 MCP 派生名的通配（工具名连接之后才知道，枚举不出来）；
     // 它必须是**成员**：修饰符形态会被厂商判成「改默认集」，白名单随之整个失效
-    expect(recorder.sessionOptions?.['tools']).toEqual(['read', 'grep', 'find', 'ls', 'mcp__*']);
+    // 只读档不给 `mcp__*` 通配（它会把服务器自带写工具一并授权），见 `allowlist.test.ts` 的只读档用例
+    expect(recorder.sessionOptions?.['tools']).toEqual(['read', 'grep', 'find', 'ls']);
     // 只读档刻意不含 bash：它能写盘，等于把只读档绕过去
     expect(recorder.sessionOptions?.['tools']).not.toContain('bash');
   });
@@ -597,6 +782,425 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
+   * **子会话正文的 wire 通道**（全链路：假件在 reload 时挂注册表 ⇒ 产品侧快照 + 删槽 ⇒
+   * 总线报 started ⇒ 订阅子会话 ⇒ 事件缓冲在投影里排空）。
+   *
+   * 判据全是产物级：子会话消息的来源是 `wire`（不再带「补录」角标）、轮次从 1 起、
+   * 全局槽在运行结束后被删（下一行的 claim 不会被挡）。
+   */
+  it('子会话正文走 wire：订阅子会话事件流，消息带 wire 来源与正确轮次', async () => {
+    const input = freshRow();
+    const recorder = createFakePiRecorder();
+    recorder.sessionId = 'session-wire';
+    // 子会话假件（共享夹具）：订阅那一刻同步吐两条助手收尾（与主会话夹具同一时序）
+    const childEvents = [
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '子任务第一步' }] } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '子任务第二步' }] } },
+    ];
+    const childSession = createFakePiChildSession(childEvents);
+    for (const event of fullRoundTripEvents()) recorder.events.push(event);
+    recorder.events.push({ type: 'turn_start' });
+    recorder.events.push({
+      type: 'tool_execution_start',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      args: { prompt: '核对页面', description: '核对页面' },
+    });
+    recorder.events.push({
+      type: 'tool_execution_end',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      isError: false,
+      durationMs: 12,
+      result: {
+        content: [{ type: 'text', text: 'Agent completed in 0.1s (1 tool use, 1.0k token).\n\n核对完毕' }],
+        details: { description: '核对页面', status: 'completed', turnCount: 2, agentId: 'agent-sub' },
+      },
+    });
+    recorder.events.push({ type: 'agent_settled', aborted: false });
+
+    setAgentRuntimeForTesting({
+      sdkModule: createFakePiSdk({
+        recorder,
+        registryEntryFactory: () => ({
+          getRecord: (id: string) => (id === 'agent-sub' ? { session: childSession } : undefined),
+        }),
+      }),
+    });
+    const messages: AgentMessage[] = [];
+    let busFired = false;
+    await piProvider.run({
+      ...input,
+      onEvent: () => {
+        if (busFired) return;
+        busFired = true;
+        // started 与 completed 一起到：订阅建立后立刻收场——缓冲里的正文照样要在后续投影里排空
+        for (const handler of recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面' });
+        }
+        for (const handler of recorder.extensionHandlers['subagents:completed'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面', result: '核对完毕', status: 'completed', usage: { input: 100, output: 5, cacheRead: 0, totalTokens: 105 } });
+        }
+      },
+      onMessage: (message) => messages.push(message),
+    });
+
+    const child = messages.filter((message) => message.subagentId === 'agent-sub');
+    expect(child.map((message) => [message.roundTrip, message.source, message.role])).toEqual([
+      [1, 'wire', 'assistant'],
+      [2, 'wire', 'assistant'],
+    ]);
+    expect(child[0]?.blocks[0]).toMatchObject({ type: 'text', text: '子任务第一步' });
+    // 全局槽被删、claim 恰好一次：下一行的注册表快照不会被这一行挡住
+    expect((globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY]).toBeUndefined();
+    expect(recorder.registryClaims).toBe(1);
+  });
+
+  /**
+   * **派发期的实时性**（这一条是 wire 通道「实时」二字的唯一端到端判据）。
+   *
+   * 真机形状（`pi 1.3.0` 的原始帧计数）：`Agent` 是**阻塞工具**，派发到收场之间父会话只发
+   * **4 帧 `tool_execution_update` + 1 帧 `entry_appended`**，没有一帧带子任务正文。而 wire 缓冲的
+   * 排空挂在父事件的投影上 ⇒ 只靠那几帧，子任务正文会按它们的节奏一小段一小段地漏、或整段攒到
+   * 工具收尾才一次性涌出；合成帧泵把「进账即排空」补上，界面才能边产边长。
+   *
+   * ⚠️ 本夹具把父会话造成**彻底静默**（`hangPrompt` 之后一帧都不发），因此它证明的是
+   * 「完全没有父事件时泵仍然把正文送出去」这一档，**证不了**「有那 4 帧时泵是否还必要」——
+   * 后者要两臂同时测时延（接泵 / 不接泵），见 `.scratch/pi-audit3/LEDGER.md` 的交接速查 C-1。
+   *
+   * 夹具按这个形状搭：父会话交完派发的 `tool_execution_start` 就**停住不产事件**
+   * （`hangPrompt`），子会话随后才产正文；判据是「子任务的消息在父会话还没有下一个事件时
+   * 就已经到了 `onMessage`」。摘掉泵（或摘掉 `drain` 后的续泵）这里当场挂住到超时。
+   */
+  it('派发期父会话静默时子任务正文照样实时到达：不等 Agent 工具收尾', async () => {
+    const input = freshRow();
+    const recorder = createFakePiRecorder();
+    recorder.sessionId = 'session-pump';
+    /** 子会话假件：**订阅时不吐**，正文由用例在「父会话已静默」之后手动 emit */
+    const childSession = createFakePiChildSession();
+    for (const event of fullRoundTripEvents()) recorder.events.push(event);
+    recorder.events.push({ type: 'turn_start' });
+    recorder.events.push({
+      type: 'tool_execution_start',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      args: { prompt: '核对页面', description: '核对页面' },
+    });
+    // 刻意**不**排 tool_execution_end / agent_settled：派发期的父会话就是这个形状（静默）
+
+    setAgentRuntimeForTesting({
+      sdkModule: createFakePiSdk({
+        recorder,
+        // 提示词挂住 ⇒ 父会话事件流在排完上面那几条之后彻底安静（真机派发期同形）
+        hangPrompt: true,
+        registryEntryFactory: () => ({
+          getRecord: (id: string) => (id === 'agent-sub' ? { session: childSession } : undefined),
+        }),
+      }),
+    });
+    const messages: AgentMessage[] = [];
+    let busFired = false;
+    const running = piProvider.run({
+      ...input,
+      // 两级看门狗都关掉：这一条只问「正文有没有实时到」，不许被静止超时抢答
+      watchdog: { idleTimeoutMs: 0, turnWallClockMs: 0 },
+      onEvent: () => {
+        if (busFired) return;
+        busFired = true;
+        // 只报 started（**不报终态**）：派发还在飞，正是界面该看到正文的那段时间
+        for (const handler of recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面' });
+        }
+      },
+      onMessage: (message) => messages.push(message),
+    });
+
+    // 等派发的 tool_execution_start 投影完（子任务行落账、wire 订阅建立），此后父会话不再产事件
+    await vi.waitFor(() => {
+      expect(recorder.prompts).toHaveLength(1);
+      expect(childSession.listenerCount).toBe(1);
+    });
+    const parentEventsSoFar = messages.length;
+    childSession.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '子任务第一步' }] } });
+
+    /**
+     * 判据：父会话一个新事件都没有，这条正文却已经到了消费方。
+     * 它只能来自 wire 自己推的那一帧（泵），所以这一等也是泵的唯一证明。
+     */
+    await vi.waitFor(() => {
+      const child = messages.filter((message) => message.subagentId === 'agent-sub');
+      expect(child.map((message) => [message.roundTrip, message.source, message.role])).toEqual([
+        [1, 'wire', 'assistant'],
+      ]);
+    });
+    // 父会话确实没产新事件：到的这条是子会话的，不是「父会话又说话了顺带捎出来的」
+    expect(recorder.events).toHaveLength(0);
+    expect(messages.filter((message) => message.subagentId === null)).toHaveLength(parentEventsSoFar);
+
+    // 第二条照样实时跟出（泵不是只能用一次）
+    childSession.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '子任务第二步' }] } });
+    await vi.waitFor(() => {
+      expect(messages.filter((message) => message.subagentId === 'agent-sub')).toHaveLength(2);
+    });
+
+    recorder.releaseStream?.();
+    await running;
+  });
+
+  /**
+   * **派发期的逐字流式**（本条是「消减等待焦虑」那个目标的端到端判据）。
+   *
+   * 与上一条的区别在**「逐字」而不是「逐条」**：上一条判「整条消息在派发期就到」，
+   * 这一条判「同一轮的正文**分批**长出来」——子会话一轮产 N 帧增量，消费方要在收尾
+   * **之前**就陆续收到，而不是攒到 `message_end` 一次性给。
+   *
+   * 为什么必须单独钉：`drain` 的批处理性质（一拍之内整批取走）保证了「不丢帧」，
+   * 但它同时意味着**如果只在收尾前泵一次，界面上就还是整条跳出**——那正是这个目标要消掉的东西。
+   * 判据取「收尾之前收到的条数 ≥ 2 且逐步递增」，纯整条投递的实现在这里当场红。
+   */
+  it('派发期逐字流式：同一轮的增量分批到达消费方，不是攒到收尾才一次性给', async () => {
+    const input = freshRow();
+    const recorder = createFakePiRecorder();
+    recorder.sessionId = 'session-delta';
+    const childSession = createFakePiChildSession();
+    for (const event of fullRoundTripEvents()) recorder.events.push(event);
+    recorder.events.push({ type: 'turn_start' });
+    recorder.events.push({
+      type: 'tool_execution_start',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      args: { prompt: '核对页面', description: '核对页面' },
+    });
+
+    setAgentRuntimeForTesting({
+      sdkModule: createFakePiSdk({
+        recorder,
+        hangPrompt: true,
+        registryEntryFactory: () => ({
+          getRecord: (id: string) => (id === 'agent-sub' ? { session: childSession } : undefined),
+        }),
+      }),
+    });
+    const messages: AgentMessage[] = [];
+    let busFired = false;
+    const running = piProvider.run({
+      ...input,
+      watchdog: { idleTimeoutMs: 0, turnWallClockMs: 0 },
+      onEvent: () => {
+        if (busFired) return;
+        busFired = true;
+        for (const handler of recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面' });
+        }
+      },
+      onMessage: (message) => messages.push(message),
+    });
+    const childDeltas = (): AgentMessage[] =>
+      messages.filter((message) => message.subagentId === 'agent-sub' && message.chunk === 'delta');
+
+    await vi.waitFor(() => {
+      expect(recorder.prompts).toHaveLength(1);
+      expect(childSession.listenerCount).toBe(1);
+    });
+
+    /** 逐帧 emit，且**每一帧都等到消费方收到**——这才叫「分批到达」而不是「攒一批」 */
+    for (const piece of ['逐', '字', '出', '来']) {
+      const before = childDeltas().length;
+      childSession.emit({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: piece },
+      });
+      await vi.waitFor(() => {
+        expect(childDeltas().length, `片段「${piece}」没有在收尾之前到达消费方`).toBeGreaterThan(before);
+      });
+    }
+    // 收尾还没发生（父会话静默、没有 message_end）就有 4 条增量到了 ⇒ 逐字流式成立
+    expect(childDeltas()).toHaveLength(4);
+    expect(recorder.events).toHaveLength(0);
+
+    // 收尾那一刻交出权威快照，且它与那 4 条增量同载体（合并器据此把逐字拼成完整块）
+    childSession.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '逐字出来' }] } });
+    await vi.waitFor(() => {
+      const own = messages.filter((message) => message.subagentId === 'agent-sub');
+      expect(own.some((message) => message.chunk === 'snapshot')).toBe(true);
+    });
+    const own = messages.filter((message) => message.subagentId === 'agent-sub');
+    const deltaKeys = new Set(own.filter((message) => message.chunk === 'delta').map((message) => message.mergeKey));
+    expect(own.some((message) => message.chunk === 'snapshot' && deltaKeys.has(message.mergeKey))).toBe(true);
+
+    recorder.releaseStream?.();
+    await running;
+  });
+
+  /**
+   * **wire 通道按 run 划界**（snapshot-then-delete 的隔离判据）：每行 reload 后快照到
+   * **自己那份**注册表条目。假件的 claim 是先到先得（与真实工厂同语义）⇒ 若产品侧忘了
+   * 「快照后删槽」，第二行的 claim 会落空、它的 `getRecord` 拿到的是第一行的条目（永远
+   * 查不到自己的子会话）⇒ 它的子任务正文整行退回转写通道（来源变 `session-file`），当场红。
+   * 「两行 reload 交叠时互斥串行」那条竞态由 `subagent-wire.test.ts` 的并发用例单独钉住
+   * （本用例的两行按 `waitFor` 先后装配，reload 本就不交叠）。
+   */
+  it('wire 通道按 run 划界：并发两行各自拿到自己的子会话事件流，正文互不串', async () => {
+    const makeRow = (agentId: string, task: string): {
+      recorder: ReturnType<typeof createFakePiRecorder>;
+      input: ReturnType<typeof createRunInput>;
+      session: { messages: unknown[]; subscribe: (listener: (event: unknown) => void) => () => void };
+    } => {
+      const root = mkdtempSync(join(tmpdir(), 'pi-row-wire-'));
+      const cwd = join(root, 'workspace');
+      const configHome = join(root, '.agenthome');
+      mkdirSync(cwd, { recursive: true });
+      const recorder = createFakePiRecorder();
+      const childEvents = [
+        { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${agentId} 的第一步` }] } },
+      ];
+      const session = createFakePiChildSession(childEvents);
+      for (const event of fullRoundTripEvents()) recorder.events.push(event);
+      recorder.events.push({ type: 'turn_start' });
+      recorder.events.push({
+        type: 'tool_execution_start',
+        toolName: 'Agent',
+        toolCallId: 'call_sub',
+        args: { prompt: task, description: task },
+      });
+      recorder.events.push({
+        type: 'tool_execution_end',
+        toolName: 'Agent',
+        toolCallId: 'call_sub',
+        isError: false,
+        durationMs: 9,
+        result: {
+          content: [{ type: 'text', text: 'Agent completed.' }],
+          details: { description: task, status: 'completed', turnCount: 1, agentId },
+        },
+      });
+      recorder.events.push({ type: 'agent_settled', aborted: false });
+      return { recorder, input: createRunInput({ cwd, configHome }), session };
+    };
+    const first = makeRow('agent-first', '第一行任务');
+    const second = makeRow('agent-second', '第二行任务');
+
+    // 两行交叠着跑（与「注册面按 run 划界」同一条时序：交叠正是互斥要挡的窗口）
+    setAgentRuntimeForTesting({
+      sdkModule: createFakePiSdk({
+        recorder: first.recorder,
+        registryEntryFactory: () => ({
+          getRecord: (id: string) => (id === 'agent-first' ? { session: first.session } : undefined),
+        }),
+      }),
+    });
+    const messagesFirst: AgentMessage[] = [];
+    const runFirst = piProvider.run({
+      ...first.input,
+      onEvent: () => {
+        for (const handler of first.recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-first', type: 'general-purpose', description: '第一行任务' });
+        }
+        for (const handler of first.recorder.extensionHandlers['subagents:completed'] ?? []) {
+          handler({ id: 'agent-first', type: 'general-purpose', description: '第一行任务', result: '完成', status: 'completed', usage: { input: 10, output: 1, cacheRead: 0, totalTokens: 11 } });
+        }
+      },
+      onMessage: (message) => messagesFirst.push(message),
+    });
+    await vi.waitFor(() => {
+      expect(first.recorder.assemblyOrder).toContain('create-session');
+    });
+    setAgentRuntimeForTesting({
+      sdkModule: createFakePiSdk({
+        recorder: second.recorder,
+        registryEntryFactory: () => ({
+          getRecord: (id: string) => (id === 'agent-second' ? { session: second.session } : undefined),
+        }),
+      }),
+    });
+    const messagesSecond: AgentMessage[] = [];
+    const runSecond = piProvider.run({
+      ...second.input,
+      onEvent: () => {
+        for (const handler of second.recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-second', type: 'general-purpose', description: '第二行任务' });
+        }
+        for (const handler of second.recorder.extensionHandlers['subagents:completed'] ?? []) {
+          handler({ id: 'agent-second', type: 'general-purpose', description: '第二行任务', result: '完成', status: 'completed', usage: { input: 10, output: 1, cacheRead: 0, totalTokens: 11 } });
+        }
+      },
+      onMessage: (message) => messagesSecond.push(message),
+    });
+    await Promise.all([runFirst, runSecond]);
+
+    // 各行只看得到自己那份子会话正文（来源 wire），另一行的身份一个字都不进本行
+    expect(messagesFirst.filter((message) => message.subagentId !== null).map((message) => [message.subagentId, message.source]))
+      .toEqual([['agent-first', 'wire']]);
+    expect(messagesSecond.filter((message) => message.subagentId !== null).map((message) => [message.subagentId, message.source]))
+      .toEqual([['agent-second', 'wire']]);
+    expect((globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY]).toBeUndefined();
+  });
+
+  /**
+   * **wire 通道快照落空的降级姿态**（claim 没发生那档）：子任务正文整行退回转写文件通道，
+   * 来源照旧 `session-file`（「补录」角标如实标注），结论与子任务行不受影响。
+   */
+  it('wire 快照落空：子任务正文退回转写文件通道（来源 session-file），结论不受影响', async () => {
+    const input = freshRow();
+    const recorder = createFakePiRecorder();
+    recorder.sessionId = 'session-degraded';
+    for (const event of fullRoundTripEvents()) recorder.events.push(event);
+    recorder.events.push({ type: 'turn_start' });
+    recorder.events.push({
+      type: 'tool_execution_start',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      args: { prompt: '核对页面', description: '核对页面' },
+    });
+    recorder.events.push({
+      type: 'tool_execution_end',
+      toolName: 'Agent',
+      toolCallId: 'call_sub',
+      isError: false,
+      durationMs: 12,
+      result: {
+        content: [{ type: 'text', text: 'Agent completed.' }],
+        details: { description: '核对页面', status: 'completed', turnCount: 1, agentId: 'agent-sub' },
+      },
+    });
+    recorder.events.push({ type: 'agent_settled', aborted: false });
+
+    const transcript = piSubagentTranscriptPath({ cwd: input.cwd, sessionId: recorder.sessionId, agentId: 'agent-sub' });
+    if (transcript === null) throw new Error('夹具算不出转写路径');
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, `${JSON.stringify({
+      isSidechain: true,
+      agentId: 'agent-sub',
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: '兑底的正文' }], usage: { input: 10, output: 2, cacheRead: 0, totalTokens: 12 }, stopReason: 'stop' },
+      timestamp: '2026-10-15T23:44:02.773Z',
+      cwd: input.cwd,
+    })}\n`, 'utf8');
+
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder, registryEntryFactory: null }) });
+    const messages: AgentMessage[] = [];
+    let busFired = false;
+    const result = await piProvider.run({
+      ...input,
+      onEvent: () => {
+        if (busFired) return;
+        busFired = true;
+        for (const handler of recorder.extensionHandlers['subagents:started'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面' });
+        }
+        for (const handler of recorder.extensionHandlers['subagents:completed'] ?? []) {
+          handler({ id: 'agent-sub', type: 'general-purpose', description: '核对页面', result: '核对完毕', status: 'completed', usage: { input: 100, output: 5, cacheRead: 0, totalTokens: 105 } });
+        }
+      },
+      onMessage: (message) => messages.push(message),
+    });
+    const child = messages.filter((message) => message.subagentId === 'agent-sub');
+    expect(child.map((message) => [message.source, message.role])).toEqual([['session-file', 'assistant']]);
+    expect(child[0]?.blocks[0]).toMatchObject({ type: 'text', text: '兑底的正文' });
+    expect(result.subagentTokens).not.toBeNull();
+  });
+
+  /**
    * **增量通道隔离**（按一致性套件的同一条口径）：喂了增量帧的场景必须钉住**事件条数**。
    *
    * 判据有两半，缺一不可：
@@ -677,6 +1281,68 @@ describe('pi 的装配序列与隔离序列', () => {
     expect(result.exitReason).toBe('canceled');
     expect(result.error?.code).toBe('AGENT_CANCELED');
     expect(recorder.disposeCount).toBe(1);
+  });
+
+  /**
+   * **起请求之前的抛错必须折成失败**。
+   *
+   * 厂商的 `prompt()` 在凭据缺失 / 模型未选 / 正在压缩 / 已有在跑的轮次时会**直接抛**（`.d.ts`
+   * 的 `@throws` 一族），它不是「运行期失败」那条 `stopReason` 通道。把拒绝与落定归成同一个信号
+   * ⇒ 一次「凭据缺失」被读成 `ok:true / completed / finalText:null`（「成功了、只是没说话」），
+   * 而骨架的 catch 与归因层都看不到它（真机形状：路由不给 apiKey ⇒ **零出站请求**却报成功；
+   * 候选行因此被记成 completed、评分行报「适配器未回传最终消息」，两处都指向错误的方向）。
+   */
+  it('prompt() 在建请求前抛错 ⇒ 折成失败（不许静默成功），且释放照旧', async () => {
+    const recorder = createFakePiRecorder();
+    const sdk = createFakePiSdk({ recorder }) as Record<string, Record<string, unknown>>;
+    const piSdk = sdk['@earendil-works/pi-coding-agent'] as Record<string, unknown>;
+    const createSession = piSdk['createAgentSession'] as (options: unknown) => Promise<{ session: { prompt: unknown } }>;
+    piSdk['createAgentSession'] = async (options: unknown) => {
+      const created = await createSession(options);
+      created.session.prompt = async () => {
+        throw new Error('Authentication failed for "aieval-pi-test". Use /login or set an API key.');
+      };
+      return created;
+    };
+    setAgentRuntimeForTesting({ sdkModule: sdk });
+    const result = await piProvider.run({
+      ...createRunInput(),
+      watchdog: { idleTimeoutMs: 0, turnWallClockMs: 0 },
+    });
+
+    expect(result.ok, 'prompt 的拒绝被吞成了成功').toBe(false);
+    expect(result.exitReason).toBe('error');
+    expect(result.error?.code).toBe('AGENT_FAILED');
+    expect(result.error?.message).toContain('Authentication failed');
+    // 失败路径同样要收干净（释放不是成功路径的特权）
+    expect(recorder.disposeCount).toBe(1);
+  });
+
+  /**
+   * **释放序列要给扩展发一次 `session_shutdown`（reason: `quit`），且发在 `dispose()` 之前**。
+   *
+   * 厂商把扩展自己的关闭钩子挂在这个事件上（MCP 扩展的连接清理——进而 stdio 子进程的回收——
+   * 就是它），而 `AgentSession.dispose()` **不 emit** 它：只有 `AgentSessionRuntime.dispose()`
+   * 与 `reload()` 会。窄壳走 `createAgentSession()`，所以这一发由适配器按厂商同一条顺序补上
+   * （`AgentSessionRuntime.dispose()` 的实体就是 `emit(session_shutdown{reason:'quit'})` → `session.dispose()`）。
+   *
+   * 判据取**两条**：装了监听者的行里那一发有且只有一次、且排在 `dispose` 之前；
+   * 没有监听者的行里**一次都不发**（`hasHandlers` 那一格不是装饰）。
+   */
+  it('释放时给扩展发一次 session_shutdown(quit)，且排在 dispose 之前；没人听就不发', async () => {
+    const withListener = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: withListener, shutdownListener: true }) });
+    const first = await piProvider.run({ ...createRunInput(), watchdog: { idleTimeoutMs: 0, turnWallClockMs: 0 } });
+    expect(first.ok).toBe(true);
+    expect(withListener.extensionShutdowns).toEqual(['session_shutdown:quit']);
+    expect(withListener.releaseOrder).toEqual(['session_shutdown:quit', 'dispose']);
+
+    const withoutListener = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: withoutListener }) });
+    const second = await piProvider.run({ ...createRunInput(), watchdog: { idleTimeoutMs: 0, turnWallClockMs: 0 } });
+    expect(second.ok).toBe(true);
+    expect(withoutListener.extensionShutdowns, '没有监听者时不许白走一趟 emit').toEqual([]);
+    expect(withoutListener.disposeCount).toBe(1);
   });
 });
 
@@ -984,11 +1650,15 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
   }, 60_000);
 
   /**
-   * **凭据不落盘**：跑完行目录里只有我们物化的 skills——没有 `auth.json`、没有 `models.json`、
-   * 没有 `sessions/`。默认的 `DefaultAuthStorage` 会在**读一下**的时候就建出一个空壳 `auth.json`，
-   * 这条用例是那条通道的唯一网。
+   * **凭据不落盘**：跑完行配置目录里只有**会话落点**那一层——没有 `auth.json`、没有 `models.json`、
+   * 没有 `models-store.json`。默认的 `DefaultAuthStorage` 会在**读一下**的时候就建出一个空壳
+   * `auth.json`，这条用例是那条通道的唯一网。
+   *
+   * 为什么这里现在会看到 `sessions/`：会话是文件型的（续接靠它），落点就是 `<configHome>/sessions`。
+   * 这一格是**该有的产物**，与「凭据 / 模型目录泄漏」是两件事——故用**正列举**而不是「目录为空」，
+   * 既有那几条泄漏断言逐条保留。
    */
-  it('跑完行目录里只有物化的 skills（凭据与模型目录都不落盘）', async () => {
+  it('跑完行目录里只有会话落点（凭据与模型目录都不落盘）', async () => {
     const seen: Array<{ url: string; auth: string | undefined }> = [];
     const gateway = await startGateway(seen, { wait: async () => {}, opened: true });
     try {
@@ -1007,11 +1677,15 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
         onEvent: () => {},
       });
       /**
-       * 行目录里**一个文件都没有**（本次没传 skills ⇒ 连技能根都不建）。
+       * 行配置目录里只有会话落点那一层（本次没传 skills ⇒ 连技能根都不建）。
        * 默认的 `DefaultAuthStorage` 会在**读一下**的时候就建出 2 字节的空壳 `auth.json`，
        * `modelsPath` 不设 `null` 时会建出 `models.json` / `models-store.json`——三者逐个点名。
        */
-      expect(readdirSync(configHome)).toEqual([]);
+      expect(readdirSync(configHome)).toEqual(['sessions']);
+      // 会话真的落在那里面（一条 `.jsonl`，且路径就是收尾要报的那一格）
+      const sessionFiles = readdirSync(piSessionDir(configHome));
+      expect(sessionFiles).toHaveLength(1);
+      expect(sessionFiles[0]?.endsWith('.jsonl')).toBe(true);
       for (const leaked of ['auth.json', 'models.json', 'models-store.json', 'settings.json']) {
         expect(existsSync(join(configHome, leaked)), leaked).toBe(false);
       }
@@ -1257,3 +1931,134 @@ describe('pi 的 strict 工具声明在两条 wire 上的出站位置', () => {
     }
   }, 60_000);
 });
+
+/**
+ * **失败读数的两条真机形状**（真包 + 假网关）：一条是「起请求之前就抛」，一条是「请求发出去了、
+ * 厂商把用量留在冻结全 0 上」。两条都必须在**结果**这一侧留下正确的事实——假 SDK 那条守卫
+ * （把 `prompt` 换成 reject）证不了厂商真的会抛，而全 0 用量是完全真实的厂商行为。
+ */
+describe('pi 的失败读数（真包 + 假网关）', () => {
+  it('路由不给 apiKey ⇒ 零出站请求、结论是失败（不是静默成功）', async () => {
+    const run = await runPiConformanceRow({
+      prompt: '随便问一句。',
+      script: [anthropicText('答复。')],
+      apiKey: '',
+    });
+    expect(run.requests, '厂商在起请求之前就该抛，一次出站都不该有').toHaveLength(0);
+    expect(run.outcome.ok, '一次凭据缺失被读成了成功').toBe(false);
+    expect(run.outcome.exitReason).toBe('error');
+    expect(run.outcome.error?.message).toContain('No API key found');
+    expect(run.outcome.finalText).toBeNull();
+  }, 60_000);
+
+  it('上游回 500（失败的一轮）⇒ tokens 是 null，不是「采到了 0 token」', async () => {
+    const run = await runPiConformanceRow({ prompt: '随便问一句。', script: [], status: 500 });
+    expect(run.outcome.ok).toBe(false);
+    /**
+     * 契约：`tokens` 采不到就是 `null`（0 会让人得出「这家很省」的错误结论）。厂商那一侧
+     * 把失败消息的 `usage` 留在冻结全 0 上 ⇒ 这一格只有「拒掉全 0 指纹」才拿得到 `null`。
+     */
+    expect(run.outcome.tokens, '失败的一轮被记成了 0 token').toBeNull();
+    const usageWarns = run.product.events.filter(
+      (event) => event.type === 'log' && typeof event.text === 'string' && event.text.includes('没有可读的用量'),
+    );
+    expect(usageWarns.length, '「未采集计量」这条 WARN 该出现').toBeGreaterThan(0);
+  }, 60_000);
+});
+
+
+/**
+ * **MCP stdio 子进程要随这一行一起收掉**（真包 + 真 MCP 服务器 + 假网关）。
+ *
+ * 这是 §2.6 那条的**验收判据**：厂商把 MCP 连接的清理挂在扩展事件 `session_shutdown` 上，
+ * 而 `AgentSession.dispose()` 不 emit 它 ⇒ 适配器必须在释放序列里自己补那一发（见
+ * `createSessionDisposer`）。判据是**进程事实**：被测服务器把自己的 pid 写盘，`run()` 返回后
+ * 那个 pid 必须已经不存在——不是「我们发过事件」，而是「子进程真的没了」。
+ */
+const PID_MCP_SERVER = `
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+
+const logPath = process.argv[2];
+const pidPath = process.argv[3];
+writeFileSync(pidPath, String(process.pid), 'utf8');
+const mark = (line) => { try { appendFileSync(logPath, line + '\\n'); } catch {} };
+const send = (message) => { process.stdout.write(JSON.stringify(message) + '\\n'); };
+const TOOLS = [{ name: 'echo', description: 'echo', inputSchema: { type: 'object', properties: {} } }];
+
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const text = line.trim();
+  if (text === '') return;
+  let message;
+  try { message = JSON.parse(text); } catch { return; }
+  if (message.method === 'initialize') {
+    mark('initialize');
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'probe', version: '1.0.0' } } });
+    return;
+  }
+  if (message.method === 'notifications/initialized') { mark('initialized'); return; }
+  if (message.method === 'tools/list') { mark('tools/list'); send({ jsonrpc: '2.0', id: message.id, result: { tools: TOOLS } }); return; }
+  if (message.id !== undefined) send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'method not found' } });
+});
+`;
+
+describe('pi 的 MCP 子进程回收（真包 + 真 stdio 服务器）', () => {
+  it('run() 返回之后，这一行为之拉起的 MCP 服务器已经退出', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pi-mcp-reap-'));
+    const cwd = join(root, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const serverPath = join(root, 'probe-mcp-server.mjs');
+    const handshakePath = join(root, 'handshake.log');
+    const pidPath = join(root, 'mcp.pid');
+    writeFileSync(serverPath, PID_MCP_SERVER, 'utf8');
+    writeFileSync(handshakePath, '', 'utf8');
+    const seen: CapturedPiRequest[] = [];
+    const { server, port } = await startPiGateway(seen);
+    let pid: number | null = null;
+    try {
+      const result = await piProvider.run({
+        ...createRunInput({ cwd, configHome: join(root, '.agenthome') }),
+        prompt: 'say done',
+        route: {
+          protocolType: 'openai',
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          apiKey: 'sk-gateway',
+          modelId: 'm1',
+          contextWindow: 100_000,
+          maxOutputTokens: 32_768,
+        },
+        mcpServers: {
+          probe: { transport: 'stdio', enabled: true, command: process.execPath, args: [serverPath, handshakePath, pidPath] },
+        },
+        onEvent: () => {},
+      });
+      expect(result.ok, result.error?.message).toBe(true);
+      expect(existsSync(pidPath), 'MCP 服务器没起来，这一条的结论不成立').toBe(true);
+      pid = Number(readFileSync(pidPath, 'utf8').trim());
+      // 退出是异步的（扩展的处理器被 await 过，但进程自己还要收尾）
+      await vi.waitFor(() => {
+        expect(mcpChildAlive(pid as number), `MCP 子进程 pid=${pid} 在 run() 返回后仍然活着`).toBe(false);
+      }, { timeout: 5_000 });
+    } finally {
+      server.close();
+      // 清场：这一条自己拉起的子进程由自己收掉（不许留孤儿）
+      if (pid !== null && mcpChildAlive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // 已经退出
+        }
+      }
+    }
+  }, 60_000);
+});
+
+/** 子进程还活着吗（`kill(pid, 0)` 不真发信号） */
+function mcpChildAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

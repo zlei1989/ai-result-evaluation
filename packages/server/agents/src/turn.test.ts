@@ -42,6 +42,8 @@ interface Harness {
   hooks: TurnHooks;
   recorder: FakeVendorRecorder;
   stats: { startCount: number; disposeCount: number; finalizeCount: number };
+  /** 放开 `startHang` 的闸门（见 `options.startHang`）：用例断言完「卡住时不会落定」之后必须调用它收尾 */
+  releaseStart: () => void;
 }
 
 /** 造一套合成 hooks：事件流可挂住、interrupt 可合作也可忽略、start 可直接抛 */
@@ -55,6 +57,12 @@ function createHarness(
     /** 'stop'（默认，合作）| 'ignore'（忽略停止信号：dsh 与非合作 CLI 的真实形状） */
     interrupt?: 'stop' | 'ignore';
     hang?: boolean;
+    /**
+     * `hooks.start()` **永不返回**（装配段卡住）：用来钉「看门狗只能点名、没有句柄可释放，
+     * 这一行不会落定」这条能力边界（真机读数见 `.scratch/pi-audit3/lifecycle/05-event-stream.test.ts`
+     * 的 D 臂）。
+     */
+    startHang?: boolean;
     streamError?: unknown;
     startError?: unknown;
     /** 固定投影，或**按事件**给投影（后者用来造「流内失败」：见下面那两条退出错误取舍的用例） */
@@ -67,11 +75,21 @@ function createHarness(
 ): Harness {
   const recorder = createRecorder();
   const stats = { startCount: 0, disposeCount: 0, finalizeCount: 0 };
+  /**
+   * `startHang` 的闸门：不是「永不返回」，而是「调用方说放才放」——用例断言完「卡住时不会落定」
+   * 之后必须把闸门放开并等它落定，否则会留下一个永不落定的 run 污染同文件后续用例
+   * （停机回收那一组会被它带红）。
+   */
+  let releaseStartGate: (() => void) | null = null;
+  const startGate = new Promise<void>((resolve) => {
+    releaseStartGate = resolve;
+  });
   const hooks: TurnHooks = {
     kind: options.kind ?? 'cc',
     start: async (context) => {
       stats.startCount += 1;
       if (options.startError !== undefined) throw options.startError;
+      if (options.startHang === true) await startGate;
       const stream = options.stream === undefined
         ? createFakeStream(options.events ?? [], recorder, {
           hang: options.hang === true,
@@ -112,7 +130,7 @@ function createHarness(
       };
     },
   };
-  return { hooks, recorder, stats };
+  return { hooks, recorder, stats, releaseStart: () => releaseStartGate?.() };
 }
 
 /** 收集 logger 的 error 级输出：事件回调抛错后必须仍然可见 */
@@ -551,7 +569,9 @@ describe('runTurn', () => {
       .filter((event) => event.type === 'log')
       .map((event) => (event.type === 'log' ? event.text : ''))
       .join('\n');
-    expect(logged).toContain('CLI 退出详情');
+    // 前缀只说「哪一侧的哪一种可能」，不断言来源：这条 cause 也可能是适配器自己抛的错
+    // （真机：`.npmrc` 的 EACCES、厂商包导出面不匹配、技能物化失败三条都不是 CLI 的错）
+    expect(logged).toContain('失败详情（CLI 退出 / 适配器自身错误都在这一档）');
     expect(logged).toContain('502 Bad Gateway');
   });
 
@@ -774,6 +794,41 @@ describe('看门狗：静止判超时', () => {
     return events.map((event) => (event.type === 'log' ? event.text : '')).join('\n');
   }
 
+  /**
+   * **装配段卡住时看门狗只能点名，不能收场**（能力边界）：`hooks.start()` 没返回 ⇒ 骨架手里
+   * `handle === undefined`、没有句柄可释放 ⇒ 释放路径走不进去、行也不会落定。判据是**两件事一起**：
+   * 告警文本点名「卡在装配段」+ 窗口内 `settled === false` 且 `disposeCount === 0`。
+   *
+   * 变异体：把 `tripWatchdog` 里那段 `handle === undefined` 的点名删掉 ⇒ 头一条断言当场红。
+   */
+  it('装配段卡住 ⇒ 看门狗点名「卡在装配段」，且这一行不落定（没有句柄可释放）', async () => {
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    const harness = createHarness({ startHang: true });
+    const promise = runTurn(
+      createRunInput({ watchdog: { idleTimeoutMs: 400 }, onEvent: collectEvents(events) }),
+      harness.hooks,
+    );
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const text = logText(events);
+    expect(text, '告警要点名卡在装配段').toContain('卡在装配段');
+    expect(text, '并说清没有句柄可释放').toContain('没有句柄可释放');
+    expect(text, '亚秒预算印毫秒原文，不说成「静止 0 秒」').toContain('400 毫秒');
+    expect(settled, '这一档本来就不会落定（能力边界）').toBe(false);
+    expect(harness.stats.disposeCount, '没有句柄 ⇒ 释放路径进不去').toBe(0);
+
+    // 放闸收尾：这一档不能留在「永不落定」上，否则同文件后续用例会被它污染
+    harness.releaseStart();
+    const result = await settleWithFakeTimers(promise, { stepMs: 100, steps: 20 });
+    expect(result.exitReason, '看门狗已经开过火 ⇒ 放闸后按 timed-out 收场').toBe('timed-out');
+    vi.useRealTimers();
+  });
+
   it('没有输出到空闲上限 ⇒ timed-out（释放三段式照走，结论不是 completed）', async () => {
     expect(DEFAULT_IDLE_TIMEOUT_MS).toBe(180_000);
     vi.useFakeTimers();
@@ -950,6 +1005,53 @@ describe('看门狗：静止判超时', () => {
 
     // 59 分钟：远超单轮上限，但每一次往返都在上限之内收尾 ⇒ 不许判静止
     await vi.advanceTimersByTimeAsync(59 * 60 * 1000);
+    expect(settled).toBe(false);
+    expect(harness.stats.disposeCount).toBe(0);
+
+    await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 5 });
+    expect((await promise).exitReason).toBe('completed');
+  });
+
+  /**
+   * **厂商起一轮 ⇒ 重新起表**（`TurnProjection.roundTripStarted`）。
+   *
+   * 要拦的缺陷：跨轮的运行（人话在收场后被续跑成一幕新的 turn）里，重置点只有「区间起点」
+   * 与「`turns` 递进」两处，而两轮之间有一段既没有新区间、也没有轮次递进的空档 ⇒ 上一轮耗掉的
+   * 墙钟一直算进新的一轮里，上一轮接近预算时新起的那一轮会被自己的看门狗掐掉。
+   *
+   * 装配：每 60 秒一帧（**小于 180s 的空闲上限** ⇒ 空闲那一级不会先开火），第 9 帧（540 秒处）
+   * 声明「起了一轮」。单轮墙钟是 600 秒 ⇒ 没有这一格的话它在 600 秒处就判静止收场；
+   * 有了它，新的表从 540 秒起算，1080 秒之前都不该收场。
+   */
+  it('厂商新起一轮（`roundTripStarted`）就重新起表：跨轮的运行不把上一轮的墙钟算进下一轮', async () => {
+    vi.useFakeTimers();
+    let frame = 0;
+    const harness = createHarness({
+      stream: (recorder) => createTimedStream(
+        // 18 帧 ⇒ 流在 1080 秒处结束，**早于**新的那一轮期限（540 + 600 = 1140 秒）⇒ 正常收场
+        Array.from({ length: 18 }, (_, index) => ({ atMs: (index + 1) * 60_000, event: index + 1 })),
+        recorder,
+      ),
+      projection: () => {
+        frame += 1;
+        // 只有第 9 帧（540 秒）声明「起了一轮」；其余帧既不带轮次、也不带这一格
+        return {
+          drafts: [logDraft('stdout', `第 ${frame} 帧`)],
+          tokens: null,
+          turns: null,
+          failure: null,
+          ...(frame === 9 ? { roundTripStarted: true } : {}),
+        };
+      },
+    });
+    const promise = runTurn(createRunInput({}), harness.hooks);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+
+    // 1020 秒处：没有那一格的话，原来的表早在 600 秒就判了静止
+    await vi.advanceTimersByTimeAsync(17 * 60_000);
     expect(settled).toBe(false);
     expect(harness.stats.disposeCount).toBe(0);
 
@@ -1230,6 +1332,45 @@ describe('runTurn：收尾投影的调用时机', () => {
     expect(harness.stats.finalizeCount).toBe(1);
     expect(textsOf(messages)).toEqual(['我从会话文件里读出来的答复']);
     expect(subagents.map((record) => record.subagentId)).toEqual(['child-1']);
+  });
+
+  /**
+   * 靶子（cc 真机形态）：**厂商不保证为每个块投递完整快照**——有些轮次只投 `tool_use` 的完整消息，
+   * 正文只以流式增量到达。那个正文槽永远等不到自己的快照 ⇒ 载体的 `assembly` 停在 `'open'`，
+   * 界面据此显示「正在思考」，而整行早已结束。会话收尾时必须把它按累积值封口。
+   */
+  it('会话收尾把没等到快照的槽收口：只以增量到达的正文，交出来那条是 `snapshot`', async () => {
+    const messages: AgentMessage[] = [];
+    const deltaDraft: MessageDraft = {
+      vendorId: 'msg_A',
+      role: 'assistant',
+      source: 'wire',
+      roundTrip: 1,
+      turn: null,
+      step: null,
+      parentCallId: null,
+      subagentId: null,
+      chunk: 'delta',
+      usage: null,
+      // 一个**没有快照**的正文块：只有增量来过
+      blocks: [{ phase: 'delta', identity: { kind: 'index', index: 0 }, block: { type: 'text', text: '只以增量到达的半句' } }],
+      raw: null,
+    };
+    const harness = createHarness({
+      events: [{ kind: 'message' }],
+      projection: { drafts: [], tokens: null, turns: null, failure: null, messages: [deltaDraft] },
+    });
+
+    const result = await runTurn(
+      createRunInput({ onEvent: collectEvents([]), onMessage: (message) => messages.push(message) }),
+      harness.hooks,
+    );
+
+    expect(result.exitReason).toBe('completed');
+    // 增量那条自己带着 `open`（那一段还没收尾）；收口之后必须再交一条 `snapshot`——
+    // 少了它，界面就永远停在这一轮的「正在思考」上
+    expect(messages.map((message) => message.assembly)).toEqual(['open', 'snapshot']);
+    expect(textsOf(messages).at(-1)).toBe('只以增量到达的半句');
   });
 
   it('**流内失败**（`turn.failed` 落进 failure）时照样收尾：内容补上，结论与归因一个字都不变', async () => {

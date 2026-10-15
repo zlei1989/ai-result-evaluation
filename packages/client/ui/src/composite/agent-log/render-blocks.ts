@@ -78,7 +78,8 @@ export interface ToolItem {
   kind: 'call';
   callId: string | null;
   /**
-   * 源块自己的稳定 id（数据层给：`messageId#块下标`）。
+   * 源块自己的稳定 id（数据层给：`mergeKey#块下标`——挂 `mergeKey` 而不是 `messageId`，
+   * 后者每次投递都换新，见 `build-model.ts` 的 `blocksOf`）。
    *
    * 为什么必须带上它：行键（`toolEntryKey`）在 `callId` 拿不到时得有一个**唯一**的身份，
    * 而 `at` 是**轮次派生**的时刻（同一轮的每个块逐字相同）——拿它当身份，一轮里两条
@@ -90,6 +91,14 @@ export interface ToolItem {
   /** 归一后的族名；`null` = 适配器不认识（与「族认得但卡片没收录」不是一回事，后者 `family` 非空） */
   family: ToolCallBlock['family'];
   input: ToolCallBlock['input'];
+  /**
+   * 厂商报的**参数解析失败原文**（`null` / 缺省 = 这一次调用没这个问题）。
+   *
+   * 为什么界面必须拿到它：坏参数在 `input` 上是一个空对象，与「模型真的传了空对象」**逐字同形**
+   * ——只有这一格能说出「参数不是合法 JSON（原文在这里）」。来源是契约 `tool-call.inputError`
+   * （可缺格，老账本没有它 ⇒ 读侧 `?? null`）。
+   */
+  inputError: string | null;
   /**
    * **摘要主体**（数据层算好的一句话，不含 `调用工具 <名>：` 前缀）。
    * **可缺**（与契约同一条理由）：老记录的 `messages.jsonl` 里没有这一格 ⇒ 读侧 `?? null`，
@@ -385,6 +394,8 @@ export function buildRenderBlocks(
           nameMissing: block.nameMissing,
           family: block.family,
           input: block.input,
+          // 可缺格：老账本的 `messages.jsonl` 里没有这一格 ⇒ `?? null`（与 `summary` 同一条处置）
+          inputError: block.inputError ?? null,
           summary: block.summary,
           output: null,
           at: block.at,

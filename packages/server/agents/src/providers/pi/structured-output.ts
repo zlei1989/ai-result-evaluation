@@ -236,8 +236,22 @@ function preflightNode(node: unknown, path: string, protocolType: ProtocolType):
     return `${path}.required 不是字符串数组`;
   }
   const requiredNames = new Set(Array.isArray(required) ? (required as string[]) : []);
+  /**
+   * 判据必须与厂商**同源**：厂商那一侧取的是 `Object.keys(properties)`——**自有且可枚举**的键，
+   * 而 `required` 里点到的名字要在这个集合里（`makeJsonSchemaNodeStrict` 的
+   * `propertyNames.includes(key)`）。
+   *
+   * 两个都像、但都不等价的写法各自对应一类静默失败：
+   *   · `key in propertyMap` 会走原型链——`'toString' / 'constructor' / 'valueOf' / '__proto__' in {}`
+   *     全为真 ⇒ 预检放行、厂商在建请求那一刻抛（零出站请求 + `stopReason: 'error'` 的 43 毫秒收场，
+   *     正是本模块文件头要防的那种失败）；
+   *   · `Object.hasOwn` 收**全部**自有键（含 `Object.defineProperty` 造出来的非枚举键）⇒ 同一形状的
+   *     假放行，只是入口换成了 JS 构造的 schema。
+   * `Object.keys(...).includes(key)` 与厂商那一句逐字等价。
+   */
+  const propertyNames = Object.keys(propertyMap);
   for (const key of requiredNames) {
-    if (!(key in propertyMap)) return `${path}.required 点名了 properties 里没有的属性 ${key}`;
+    if (!propertyNames.includes(key)) return `${path}.required 点名了 properties 里没有的属性 ${key}`;
   }
   for (const [key, value] of Object.entries(propertyMap)) {
     const nested = preflightNode(value, `${path}.properties.${key}`, protocolType);
@@ -305,16 +319,24 @@ export function adoptStructuredOutput(outputSchema: unknown, protocolType: Proto
   /**
    * 降级那一段用的是骨架的**同一份原料**（`buildStructuredOutputInstruction`，dsh 的填充层也是它）：
    * 两家走填充层时给模型的交代逐字相同，跨家对比才不比出一段我们自己写的措辞差异。
-   * 传进去的是 `asSchemaObject` 的收窄结果——提示词要渲染它，非对象得先挡掉。
    *
-   * 工具通道那一格以**同一份收窄结果**为门槛：调用方给的不是 JSON 对象（数组 / 标量 / 字符串）
-   * 时没有可声明的 `parameters`，这一档就只剩提示词（声明一件「参数随便什么都行」的工具
-   * 比不声明更坏——模型会以为形状有保证，而那一档本来就没有）。
+   * 交付面按**结构**分三档（`asSchemaObject` 判的是「它是不是一个 JSON 对象」，不是「根节点是不是
+   * `type: 'object'`」）：
+   *   · **压根不是 JSON 对象**（数组 / 标量 / 字符串 / `null`）⇒ **什么都不交付**：没有参数可声明的
+   *     工具，也没有可渲染的 schema ⇒ 只剩骨架的修正轮兜底。收窄成别的形状再交付更坏——骨架对这份
+   *     schema 只判「合法 JSON」，而提示词会要求模型符合一份数组 schema，题面比判据严且自相矛盾；
+   *   · **是 JSON 对象、但根不是 `type: 'object'`**（如 `{type:'array', items:…}`）⇒ 走降级档：
+   *     工具照旧声明、填充层照旧追加。这一档**只能**降级，不能走原生通道——`ToolChoice` 只有
+   *     `auto | none`，而 pi 的 `input_schema` 只取根节点的 `type/properties/required`
+   *     （`convertTools` 的 `legacyInputSchema`），根是数组时那一份会退化成空对象形态，
+   *     模型看到的出口与题面不是同一个形状。这是 schema 形态的已知代价，
+   *     交付面（`tool` / `fallback` 两格）如实反映它。
+   *   · 其余（根是 `object`）⇒ 预检能过就走原生通道，过不了就走降级档，两支都由下面返回。
    */
   const renderable = asSchemaObject(outputSchema);
   return {
     tool: renderable === null ? null : { parameters: renderable, strict: 'prefer' },
-    fallback: { instruction: buildStructuredOutputInstruction(renderable ?? outputSchema) },
+    fallback: renderable === null ? null : { instruction: buildStructuredOutputInstruction(renderable) },
     preflightReason: preflight.reason ?? '这份 schema 不在 strict 子集内',
   };
 }
@@ -387,16 +409,13 @@ export function adoptStructuredArguments(
 }
 
 /**
- * 这条厂商载荷是不是**我们自己造的结构化产出快照**（`piStructuredResultDraft` 的 `raw`）。
+ * `piStructuredResultDraft` 造出来的那条草稿的 `raw.type`。
  *
- * 为什么要认它：它是唯一一条「不是从模型答复来的」助手消息，常规归一通路会在它身上重复落正文
- * （已经写过了）与用量（它压根没有）——`message_end` 那一侧据此短路。
+ * ⚠️ 它是**消息草稿**的载荷标记（随 `MessageDraft` 进 `AgentMessage.raw`，供消费方辨认
+ * 「这份答复是工具参数投影出来的」），**不是厂商事件类型**：厂商包里没有这个字符串，
+ * 草稿也从不回流到事件投影（投影的入参只有厂商帧与 wire 的合成帧）⇒ 事件投影一侧不需要、
+ * 也不该有一条按它判别的分支。
  */
-export function isStructuredResultMessage(message: Record<string, unknown> | null): boolean {
-  return message?.['type'] === PI_STRUCTURED_RESULT_PAYLOAD_TYPE;
-}
-
-/** `piStructuredResultDraft` 造出来的那条草稿的判别键（两处共用，避免各写一个字面串） */
 export const PI_STRUCTURED_RESULT_PAYLOAD_TYPE = 'structured_output';
 
 /** 助手正文写进最终答复时同步翻牌（`projectMessageEnd` 的那一处调用它） */

@@ -13,9 +13,10 @@ import {
   addProviderModel,
   createProvider,
   deleteProvider,
-  fetchProviderModels,
+  importProviderModels,
   listAllModelOptions,
   listProviders,
+  previewProviderModels,
   removeProviderModel,
   setProviderModelContext,
   updateProvider,
@@ -450,27 +451,31 @@ function calledUrls(fetchMock: ReturnType<typeof vi.fn>): string[] {
   return fetchMock.mock.calls.map((call) => String(call[0]));
 }
 
-describe('fetchProviderModels：请求形状', () => {
-  it('请求照 Authorization: Bearer <key> 发，URL 是 {baseUrl}/models（尾斜杠不重复）', async () => {
+describe('previewProviderModels：请求形状', () => {
+  it('请求照 Authorization: Bearer <key> 发，URL 是 {baseUrl}/models（尾斜杠不重复）；拉到的只是候选，不落盘', async () => {
     const created = createProvider({ ...CREATE, baseUrl: 'https://api.deepseek.com/v1/' });
+    addProviderModel(created.id, 'manual-keep');
     const fetchMock = stubUpstream({ data: [{ id: 'm1' }] });
 
-    await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     const [url, init] = firstCall(fetchMock);
     expect(url).toBe('https://api.deepseek.com/v1/models');
     expect(new Headers(init.headers).get('authorization')).toBe(`Bearer ${CREATE.apiKey}`);
+    // 预览只读不写：清单仍是拉取前的样子（挑选落盘是 import 那一步的事）
+    expect(preview).toEqual([{ id: 'm1' }]);
+    expect(stored(created.id)?.models).toEqual([{ id: 'manual-keep', source: 'manual' }]);
   });
 
   it('供应商不存在抛 NOT_FOUND，且一次请求都不发', async () => {
     const fetchMock = stubUpstream({ data: [] });
 
-    await expect(fetchProviderModels('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(previewProviderModels('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
-describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）', () => {
+describe('previewProviderModels：地址容错回退（协议不再阻止拉取）', () => {
   // 「Anthropic 协议没有 /models 接口」只对 api.anthropic.com 成立，把它当成「能不能拉清单」的判据
   // 会误伤多数自建网关 —— 它们在版本段上同时提供 OpenAI 风格的清单接口
   //（likecode 网关：`/models` 404、`/v1/models` 200，Anthropic Messages 在 `/v1/messages`）。
@@ -485,13 +490,13 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
     });
     const fetchMock = stubUpstream({ data: [{ id: 'claude-opus-4-6' }] });
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
-    expect(next.models).toEqual([{ id: 'claude-opus-4-6', source: 'fetched' }]);
+    expect(preview).toEqual([{ id: 'claude-opus-4-6' }]);
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/v1/models']);
   });
 
-  it('地址缺 /v1 时：第一条 404 → 回退 /v1/models 并合并进清单', async () => {
+  it('地址缺 /v1 时：第一条 404 → 回退 /v1/models 拿到候选', async () => {
     const created = createProvider({
       ...CREATE,
       protocolType: 'anthropic',
@@ -505,15 +510,12 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
     // 第一条的 404 会落一条 WARN（服务端诊断用，正文只进日志）：静音以保持用例输出干净
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/models', 'https://gw.example.com/v1/models']);
-    // 合并语义不变：手工条目留在前，回退拿到的 id 追加为 fetched
-    expect(next.models).toEqual([
-      { id: 'manual-keep', source: 'manual' },
-      { id: 'm1', source: 'fetched' },
-    ]);
-    expect(stored(created.id)?.models).toEqual(next.models);
+    expect(preview).toEqual([{ id: 'm1' }]);
+    // 预览不落盘：清单保持拉取前的样子
+    expect(stored(created.id)?.models).toEqual([{ id: 'manual-keep', source: 'manual' }]);
   });
 
   it('两条候选都 404：文案点名两条实际路径，清单不动', async () => {
@@ -527,7 +529,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -548,7 +550,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
     const created = createProvider({ ...CREATE, baseUrl: 'https://gw.example.com/' });
     const fetchMock = stubUpstreamByUrl({ 'https://gw.example.com/models': [401, { error: 'bad key' }] });
 
-    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
+    await expect(previewProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/models']);
   });
 
@@ -557,7 +559,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
     const fetchMock = stubUpstreamByUrl({ 'https://gw.example.com/models': [503, 'maintenance'] });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'INTERNAL' });
+    await expect(previewProviderModels(created.id)).rejects.toMatchObject({ code: 'INTERNAL' });
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/models']);
   });
 
@@ -567,7 +569,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
       'https://gw.example.com/v1/models': [200, { data: [{ id: 'm1' }] }],
     });
 
-    await fetchProviderModels(created.id);
+    await previewProviderModels(created.id);
 
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/v1/models']);
   });
@@ -578,7 +580,7 @@ describe('fetchProviderModels：地址容错回退（协议不再阻止拉取）
  * 或网关自己的前缀（`/api/v1`）时，清单接口往往仍挂在站点根上 —— 只按配置地址拼会一路 404，
  * 而用户的地址、密钥都没错。故候选补上根的 `/models` 与 `/v1/models`，顺序在配置地址之后。
  */
-describe('fetchProviderModels：站点根回退', () => {
+describe('previewProviderModels：站点根回退', () => {
   it('地址带子路径（/anthropic）：子路径两条 404 后回退到根的 /models', async () => {
     const created = createProvider({
       ...CREATE,
@@ -594,7 +596,7 @@ describe('fetchProviderModels：站点根回退', () => {
     // 两条 404 各落一条 WARN（服务端诊断用，正文只进日志）：静音以保持用例输出干净
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     // 顺序即口径：配置地址的两条排在根的两条之前（命中时不该多绕一次根）
     expect(calledUrls(fetchMock)).toEqual([
@@ -602,10 +604,8 @@ describe('fetchProviderModels：站点根回退', () => {
       'https://gw.example.com/anthropic/v1/models',
       'https://gw.example.com/models',
     ]);
-    expect(next.models).toEqual([
-      { id: 'manual-keep', source: 'manual' },
-      { id: 'root-m', source: 'fetched' },
-    ]);
+    expect(preview).toEqual([{ id: 'root-m' }]);
+    expect(stored(created.id)?.models).toEqual([{ id: 'manual-keep', source: 'manual' }]);
   });
 
   it('地址带子路径（/api/v1）：只补一次 /v1，再回退到根的 /v1/models', async () => {
@@ -617,7 +617,7 @@ describe('fetchProviderModels：站点根回退', () => {
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     // 已以 /v1 结尾 ⇒ 配置地址只有一条（不叠 /api/v1/v1/models）；根的两条按 /models → /v1/models 试
     expect(calledUrls(fetchMock)).toEqual([
@@ -625,7 +625,7 @@ describe('fetchProviderModels：站点根回退', () => {
       'https://gw.example.com/models',
       'https://gw.example.com/v1/models',
     ]);
-    expect(next.models).toEqual([{ id: 'root-m', source: 'fetched' }]);
+    expect(preview).toEqual([{ id: 'root-m' }]);
   });
 
   it('地址已带 /v1 时根兜底仍然生效（/v1/models 404 → 根的 /models）', async () => {
@@ -637,10 +637,10 @@ describe('fetchProviderModels：站点根回退', () => {
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/v1/models', 'https://gw.example.com/models']);
-    expect(next.models).toEqual([{ id: 'root-m', source: 'fetched' }]);
+    expect(preview).toEqual([{ id: 'root-m' }]);
   });
 
   it('配置地址与站点根都 404：文案点名全部四条路径，清单不动', async () => {
@@ -656,7 +656,7 @@ describe('fetchProviderModels：站点根回退', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -679,28 +679,21 @@ describe('fetchProviderModels：站点根回退', () => {
       'https://gw.example.com/anthropic/models': [401, { error: 'bad key' }],
     });
 
-    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
+    await expect(previewProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
     expect(calledUrls(fetchMock)).toEqual(['https://gw.example.com/anthropic/models']);
   });
 });
 
-/** 跑一次拉取并丢弃结果：用于把上一轮的 fetched 条目铺进清单 */
-async function fetchProviderModelsWith(providerId: string, data: unknown[]): Promise<void> {
-  stubUpstream({ data });
-  await fetchProviderModels(providerId);
-  vi.unstubAllGlobals();
-}
-
-describe('fetchProviderModels：合并而非覆盖', () => {
-  // 两个实现要点之一，也是最重要的回归守卫：手工补的模型每次拉取都丢，
-  // 用户会以为是「界面没保存」，而实际上是被 fetched 结果整体冲掉了。
-  it('手工条目原样保留（顺序在前、source 不变），新 id 追加为 fetched', async () => {
+/** 拉取的第一步只读不写；这一段钉的是第二步 —— 用户勾选后的合并落盘。 */
+describe('importProviderModels：合并规则', () => {
+  // 最重要的回归守卫：手工补的模型在一次导入后丢掉，用户会以为是「界面没保存」，
+  // 而实际上是被提交结果整体冲掉了。
+  it('手工条目原样保留（位置与 source 不变），提交的新 id 追加为 fetched', () => {
     const created = createProvider(CREATE);
     addProviderModel(created.id, 'm1');
     addProviderModel(created.id, 'm2');
-    stubUpstream({ data: [{ id: 'm1' }, { id: 'm3' }] });
 
-    const next = await fetchProviderModels(created.id);
+    const next = importProviderModels(created.id, { models: [{ id: 'm1' }, { id: 'm3' }] });
 
     expect(next.models).toEqual([
       { id: 'm1', source: 'manual' },
@@ -710,49 +703,56 @@ describe('fetchProviderModels：合并而非覆盖', () => {
     expect(stored(created.id)?.models).toEqual(next.models);
   });
 
-  it('上一轮 fetched 的条目这次没再返回时被清掉，手工条目照旧留下', async () => {
+  /**
+   * 挑选语义的核心：提交集合是「这次要加进来的那批」，不是「清单的最终形态」——
+   * 用户只勾一条新模型时，清单里已有的条目被悄悄删掉一批，等于借一次「加入」执行了一次
+   * 「替换」。要清掉上游已下架的模型，用清单里逐条的「移除」。
+   */
+  it('未提交的既有条目一律不动（挑选是加入，不是替换）', () => {
     const created = createProvider(CREATE);
     addProviderModel(created.id, 'manual-keep');
-    await fetchProviderModelsWith(created.id, [{ id: 'stale' }, { id: 'keep' }]);
-    stubUpstream({ data: [{ id: 'keep' }] });
+    importProviderModels(created.id, { models: [{ id: 'stale' }, { id: 'keep' }] });
 
-    const next = await fetchProviderModels(created.id);
+    const next = importProviderModels(created.id, { models: [{ id: 'new-comer' }] });
 
     expect(next.models).toEqual([
       { id: 'manual-keep', source: 'manual' },
+      { id: 'stale', source: 'fetched' },
       { id: 'keep', source: 'fetched' },
+      { id: 'new-comer', source: 'fetched' },
     ]);
   });
 
-  it('拉取结果里与手工条目同 id 的条目不会把它顶掉、也不会出现两条', async () => {
+  it('提交里与手工条目同 id 的条目不会把它顶掉、也不会出现两条', () => {
     const created = createProvider(CREATE);
     addProviderModel(created.id, 'm1');
-    stubUpstream({ data: [{ id: 'm1' }] });
 
-    const next = await fetchProviderModels(created.id);
+    const next = importProviderModels(created.id, { models: [{ id: 'm1' }] });
 
     expect(next.models).toEqual([{ id: 'm1', source: 'manual' }]);
   });
 
-  it('重复 id 在 fetched 集合里去重', async () => {
+  it('重复 id 在提交集合里去重（按首次出现，能力字段不合并）', () => {
     const created = createProvider(CREATE);
-    stubUpstream({ data: [{ id: 'm1' }, { id: 'm1' }, { id: 'm1' }] });
 
-    const next = await fetchProviderModels(created.id);
+    const next = importProviderModels(created.id, {
+      models: [{ id: 'm1' }, { id: 'm1', contextWindow: 1 }, { id: 'm1' }],
+    });
 
     expect(next.models).toEqual([{ id: 'm1', source: 'fetched' }]);
   });
 
-  // 上游 id 与清单的另外三个入口（新建/补丁的 manualModels、手工添加、按名删除）同一口径：
+  // 提交 id 与清单的另外三个入口（新建/补丁的 manualModels、手工添加、按名删除）同一口径：
   // 都按 trim 后的形态比对。存原串会让上游的 `' m1 '` 与手工的 `'m1'` 并存成两条，
   // 而按 `' m1 '` 删除时比对的是 `'m1'` —— 删掉的正是**手工那条**，清单里留下一条用户从没手工加过、
-  // 又删不掉的带空白条目（下一次拉取还会把它原样带回来）。
-  it('上游返回的 id 去掉首尾空白：不与同 id 手工条目并存，删除也不会删错那条', async () => {
+  // 又删不掉的带空白条目。
+  it('提交的 id 去掉首尾空白：不与同 id 手工条目并存，删除也不会删错那条', () => {
     const created = createProvider(CREATE);
     addProviderModel(created.id, 'm1');
-    stubUpstream({ data: [{ id: ' m1 ' }, '  m2  ', 'm2'] });
 
-    const next = await fetchProviderModels(created.id);
+    const next = importProviderModels(created.id, {
+      models: [{ id: ' m1 ' }, { id: '  m2  ' }, { id: '' }],
+    });
 
     expect(next.models).toEqual([
       { id: 'm1', source: 'manual' },
@@ -762,20 +762,37 @@ describe('fetchProviderModels：合并而非覆盖', () => {
     // 按带空白的 id 删除，删掉的必须是同一条（否则删掉的是手工条目、且留下的条目再也删不掉）
     expect(removeProviderModel(created.id, ' m1 ').models).toEqual([{ id: 'm2', source: 'fetched' }]);
   });
+
+  it('供应商不存在抛 NOT_FOUND（不静默复活一个已被删除的条目）', () => {
+    expect(() => importProviderModels('nope', { models: [{ id: 'm1' }] })).toThrow(/nope/);
+  });
+
+  // 路由层已用 ProviderModelsImportSchema（min(1)）挡住空提交；这里是服务层的防御位 ——
+  // 任何绕过路由的调用方（脚本 / 别的服务）拿到的是显式错误，而不是一次「看起来成功」的空操作。
+  it('归一后一条都不剩（全空白 id）抛 INVALID_QUERY，且不落盘', () => {
+    const created = createProvider(CREATE);
+
+    let caught: unknown;
+    try {
+      importProviderModels(created.id, { models: [{ id: '   ' }] });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((caught as ServiceError).code).toBe('INVALID_QUERY');
+    expect(stored(created.id)?.models).toEqual([]);
+  });
 });
 
-describe('fetchProviderModels：响应解析容错', () => {
+describe('previewProviderModels：响应解析容错', () => {
   it('同时容忍 data[].id 与 data 为字符串数组两种形态', async () => {
     const created = createProvider(CREATE);
     stubUpstream({ data: [{ id: 'obj-form' }, 'str-form', { id: '' }, null, 42, {}] });
 
-    const next = await fetchProviderModels(created.id);
+    const preview = await previewProviderModels(created.id);
 
     // 认不出的元素被跳过，**不能**兜底成 String(entry)：那会把 'null' / '[object Object]' 当模型名存进去
-    expect(next.models).toEqual([
-      { id: 'obj-form', source: 'fetched' },
-      { id: 'str-form', source: 'fetched' },
-    ]);
+    expect(preview).toEqual([{ id: 'obj-form' }, { id: 'str-form' }]);
   });
 
   it('data 缺失或不是数组时一条都认不出：报含 host 的中文原因，且不落盘', async () => {
@@ -785,7 +802,7 @@ describe('fetchProviderModels：响应解析容错', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -804,7 +821,7 @@ describe('fetchProviderModels：响应解析容错', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -815,14 +832,14 @@ describe('fetchProviderModels：响应解析容错', () => {
   });
 });
 
-describe('fetchProviderModels：上游错误码映射', () => {
+describe('previewProviderModels：上游错误码映射', () => {
   it('401 映射 AUTH_FAILED 且 context 带 host（界面据此指向设置页）', async () => {
     const created = createProvider(CREATE);
     stubUpstream({ error: 'bad key' }, 401);
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -836,7 +853,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
     const created = createProvider(CREATE);
     stubUpstream({ error: 'slow down' }, 429);
 
-    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    await expect(previewProviderModels(created.id)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
   /**
@@ -848,7 +865,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
     const created = createProvider(CREATE);
     stubUpstream({ error: 'forbidden' }, 403);
 
-    await expect(fetchProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
+    await expect(previewProviderModels(created.id)).rejects.toMatchObject({ code: 'AUTH_FAILED' });
   });
 
   it('其余状态码映射 INTERNAL 并带上状态码与 host', async () => {
@@ -859,7 +876,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -880,7 +897,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -912,7 +929,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
 
     let caught: unknown;
     try {
-      await fetchProviderModels(created.id);
+      await previewProviderModels(created.id);
     } catch (error) {
       caught = error;
     }
@@ -922,7 +939,7 @@ describe('fetchProviderModels：上游错误码映射', () => {
   });
 });
 
-describe('fetchProviderModels：上游挂死的超时', () => {
+describe('previewProviderModels：上游挂死的超时', () => {
   // 「只挂不断」的网关是最常见的失败形态：没有上限的 fetch 会让拉取永远不返回 ——
   // 界面既不报错也不结束（按钮一直转），用户只能刷新页面重来。
   // 这里的假上游**永不主动 resolve**，只在收到 abort 信号时才拒绝：于是这条用例同时证明了
@@ -938,7 +955,7 @@ describe('fetchProviderModels：上游挂死的超时', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const settled = fetchProviderModels(created.id).then(
+    const settled = previewProviderModels(created.id).then(
       () => 'resolved' as const,
       (error: unknown) => error,
     );
@@ -963,52 +980,14 @@ describe('fetchProviderModels：上游挂死的超时', () => {
   });
 });
 
-describe('fetchProviderModels：拉取窗口期的并发落盘', () => {
-  // 本函数是「读配置 → await 网络 → 写回整份配置」，await 期间任何落盘改动都可能发生：
-  // 另一个请求手工加模型、设置页保存、另一个客户端/另一个标签页。用 await **之前**读到的
-  // config 整份写回，会把这些改动静默回滚 —— 症状正是「合并而非覆盖」要防的那类数据丢失，
-  // 只不过丢的是**别的**改动。所以写回必须基于重新读到的配置。
-  //
-  // 窗口由假上游制造：fetch 桩在返回 /models 响应**之前**真的往磁盘上写两处改动。
-  it('窗口期内的并发改动不被回写覆盖，本次拉取的合并结果照常生效', async () => {
-    const created = createProvider(CREATE);
-    addProviderModel(created.id, 'manual-keep');
-    const fetchMock = vi.fn(async () => {
-      // 并发写入 ①：另一个供应商（跨供应商的改动）
-      createProvider({ ...CREATE, name: '窗口期新增的供应商', baseUrl: 'https://api.other.com/v1' });
-      // 并发写入 ②：另一块配置（设置页保存）
-      updateSettings({ theme: 'dark' });
-      return new Response(JSON.stringify({ data: [{ id: 'fetched-1' }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const next = await fetchProviderModels(created.id);
-
-    // ① 本次拉取的语义不变：手工条目保留在前、新 id 追加为 fetched
-    expect(next.models).toEqual([
-      { id: 'manual-keep', source: 'manual' },
-      { id: 'fetched-1', source: 'fetched' },
-    ]);
-    // ② 窗口期内的改动必须存活（stale 快照写回会把它们整段抹掉）
-    const after = loadConfig();
-    expect(after.providers.map((item) => item.name)).toEqual([CREATE.name, '窗口期新增的供应商']);
-    expect(after.settings.theme).toBe('dark');
-    // ③ 并且目标供应商的清单确实落到了盘上
-    expect(after.providers.find((item) => item.id === created.id)?.models).toEqual(next.models);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
 /**
- * 窗口的取数与落盘。
+ * 窗口的取数（拉取这一步）。
  * 上游字段名并不统一：实测 likecode 一个响应里同时给了六种同义字段，而别的网关可能一个都不给 ——
  * 所以这里既盯「优先级取对了」，也盯「取不到就是未知，不许编一个数」。
+ * 拉到的窗口先停在候选里；落盘后怎么与既有条目合并，见下一段「导入时窗口的合并规则」。
  */
 describe('拉取时解析上下文窗口', () => {
-  it('按字段优先级取第一个正整数，并落盘到对应模型条目', async () => {
+  it('按字段优先级取第一个正整数，进候选条目；预览不落盘', async () => {
     const provider = makeProvider({ models: [] });
     seedConfig({ providers: [provider] });
     stubUpstream({
@@ -1021,16 +1000,16 @@ describe('拉取时解析上下文窗口', () => {
       ],
     });
 
-    const stored = await fetchProviderModels(provider.id);
-    const byId = new Map(stored.models.map((model) => [model.id, model]));
+    const preview = await previewProviderModels(provider.id);
+    const byId = new Map(preview.map((model) => [model.id, model]));
     expect(byId.get('low')).toMatchObject({ contextWindow: 1000, maxOutputTokens: 7 });
     expect(byId.get('mid')).toMatchObject({ contextWindow: 2_000_000, maxOutputTokens: 64 });
     expect(byId.get('nested')).toMatchObject({ contextWindow: 3_000_000, maxOutputTokens: 128 });
     expect(byId.get('caps')).toMatchObject({ contextWindow: 4_000_000 });
     expect(byId.get('str')).toMatchObject({ contextWindow: 5_000_000 });
 
-    // 落盘事实（不只是内存返回值）
-    expect(loadConfig().providers[0]?.models.find((model) => model.id === 'nested')?.contextWindow).toBe(3_000_000);
+    // 预览只读不写：清单仍是拉取前的空（落盘是用户挑选后 import 那一步的事）
+    expect(loadConfig().providers[0]?.models).toEqual([]);
   });
 
   it('脏值一律跳过并继续看下一个候选字段；全都取不到就是未知（不写 0、不猜）', async () => {
@@ -1045,46 +1024,47 @@ describe('拉取时解析上下文窗口', () => {
       ],
     });
 
-    const stored = await fetchProviderModels(provider.id);
-    for (const id of ['dirty', 'nullish', 'unknown-field']) {
-      const model = stored.models.find((item) => item.id === id);
-      expect(model?.contextWindow, id).toBeUndefined();
-      expect(model?.maxOutputTokens, id).toBeUndefined();
+    const preview = await previewProviderModels(provider.id);
+    for (const model of preview) {
+      expect(model.contextWindow, model.id).toBeUndefined();
+      expect(model.maxOutputTokens, model.id).toBeUndefined();
     }
+    expect(preview.map((model) => model.id)).toEqual(['dirty', 'nullish', 'unknown-field']);
   });
 
-  it('脏条目跳过、空清单不落盘（既有口径的回归）', async () => {
+  it('脏条目跳过：候选里只留认得出的，盘上既有条目不动', async () => {
     const provider = makeProvider({ models: [{ id: 'keep', source: 'manual' }] });
     seedConfig({ providers: [provider] });
     stubUpstream({ data: [null, 42, { id: '' }, { id: 'ok', max_input_tokens: 8192 }] });
 
-    const stored = await fetchProviderModels(provider.id);
-    expect(stored.models.map((model) => model.id)).toEqual(['keep', 'ok']);
-    expect(stored.models.find((model) => model.id === 'ok')?.contextWindow).toBe(8192);
+    const preview = await previewProviderModels(provider.id);
+    expect(preview).toEqual([{ id: 'ok', contextWindow: 8192 }]);
+    expect(loadConfig().providers[0]?.models).toEqual([{ id: 'keep', source: 'manual' }]);
   });
 });
 
 /**
- * 窗口的合并规则。
- * 三条里最要紧的是第一条：用户把网关填错的窗口改成真值之后，下一次拉取**不许**把它打回 ——
+ * 窗口的合并规则（导入这一步）。
+ * 三条里最要紧的是第一条：用户把网关填错的窗口改成真值之后，一次导入**不许**把它打回 ——
  * 打回是静默的（界面上看不出发生过什么），而用户以为自己的修改生效了。
  */
-describe('窗口的合并规则', () => {
-  it('用户手工改过的窗口不被拉取打回（逐字段来源 = manual）', async () => {
+describe('导入时窗口的合并规则', () => {
+  it('用户手工改过的窗口不被导入打回（逐字段来源 = manual）', () => {
     const provider = makeProvider({
       models: [{ id: 'm', source: 'fetched', contextWindow: 123_456, contextWindowSource: 'manual' }],
     });
     seedConfig({ providers: [provider] });
-    stubUpstream({ data: [{ id: 'm', max_input_tokens: 1_000_000 }] });
 
-    const stored = await fetchProviderModels(provider.id);
+    const stored = importProviderModels(provider.id, {
+      models: [{ id: 'm', contextWindow: 1_000_000 }],
+    });
     const model = stored.models.find((item) => item.id === 'm');
     // 上游说 1M、用户说 123456 ⇒ 听用户的
     expect(model?.contextWindow).toBe(123_456);
     expect(model?.contextWindowSource).toBe('manual');
   });
 
-  it('上游这次没给窗口 ⇒ 窗口三格一起清掉（不保留上一轮的旧值）；manual 条目始终原样保留', async () => {
+  it('提交的条目没带窗口 ⇒ 窗口三格一起清掉（不保留上一轮的旧值）；manual 条目始终原样保留', () => {
     const provider = makeProvider({
       models: [
         { id: 'stale', source: 'fetched', contextWindow: 999, contextWindowSource: 'fetched' },
@@ -1092,21 +1072,21 @@ describe('窗口的合并规则', () => {
       ],
     });
     seedConfig({ providers: [provider] });
-    stubUpstream({ data: [{ id: 'stale' }] });
 
-    const stored = await fetchProviderModels(provider.id);
+    const stored = importProviderModels(provider.id, { models: [{ id: 'stale' }] });
     expect(stored.models.find((item) => item.id === 'stale')?.contextWindow).toBeUndefined();
     expect(stored.models.find((item) => item.id === 'hand')?.contextWindow).toBe(2048);
   });
 
-  it('用户清空过窗口（manual 且没有值）⇒ 拉取也不会把它填回来', async () => {
+  it('用户清空过窗口（manual 且没有值）⇒ 导入也不会把它填回来', () => {
     const provider = makeProvider({
       models: [{ id: 'm', source: 'fetched', contextWindowSource: 'manual' }],
     });
     seedConfig({ providers: [provider] });
-    stubUpstream({ data: [{ id: 'm', max_input_tokens: 1_000_000 }] });
 
-    const stored = await fetchProviderModels(provider.id);
+    const stored = importProviderModels(provider.id, {
+      models: [{ id: 'm', contextWindow: 1_000_000 }],
+    });
     expect(stored.models.find((item) => item.id === 'm')?.contextWindow).toBeUndefined();
   });
 });
@@ -1167,8 +1147,8 @@ describe('拉取时解析思考强度', () => {
       ],
     });
 
-    const stored = await fetchProviderModels(provider.id);
-    const byId = new Map(stored.models.map((model) => [model.id, model]));
+    const preview = await previewProviderModels(provider.id);
+    const byId = new Map(preview.map((model) => [model.id, model]));
     expect(byId.get('a')).toMatchObject({ supportedEfforts: ['low', 'high', 'max'], recommendedEffort: 'high' });
     expect(byId.get('b')).toMatchObject({ supportedEfforts: ['high', 'max'], recommendedEffort: 'max' });
     // 逐档对象形态：取值为对象且 supported === true 的键，保持上游顺序；recommend 标记者即推荐档
@@ -1186,12 +1166,12 @@ describe('拉取时解析思考强度', () => {
       ],
     });
 
-    const stored = await fetchProviderModels(provider.id);
-    for (const id of ['mismatch', 'none', 'silent']) {
-      const model = stored.models.find((item) => item.id === id);
-      expect(model?.supportedEfforts, id).toBeUndefined();
-      expect(model?.recommendedEffort, id).toBeUndefined();
+    const preview = await previewProviderModels(provider.id);
+    for (const model of preview) {
+      expect(model.supportedEfforts, model.id).toBeUndefined();
+      expect(model.recommendedEffort, model.id).toBeUndefined();
     }
+    expect(preview.map((model) => model.id)).toEqual(['mismatch', 'none', 'silent']);
   });
 
   /**
@@ -1257,8 +1237,8 @@ describe('拉取时解析思考强度', () => {
       ],
     });
 
-    const stored = await fetchProviderModels(provider.id);
-    const byId = new Map(stored.models.map((model) => [model.id, model]));
+    const preview = await previewProviderModels(provider.id);
+    const byId = new Map(preview.map((model) => [model.id, model]));
     expect(byId.get('jd/glm-5.2')).toMatchObject({
       contextWindow: 1_048_576,
       maxOutputTokens: 131_072,

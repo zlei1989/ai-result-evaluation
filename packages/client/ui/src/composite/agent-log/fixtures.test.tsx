@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
-import { allFixtures, claudeFixture, codexFixture, dshFixture } from './fixtures';
+import { allFixtures, blankThinkingFixture, claudeFixture, codexFixture, dshFixture, followUpFixture } from './fixtures';
 import { buildRenderBlocks, nodeIndex, type RenderBlock } from './render-blocks';
 import { blockRendererOf, DEFAULT_BLOCK_RENDERERS } from './block-renderer-registry';
 import { installResizeObserverStub } from '../../testing/resize-observer';
@@ -35,7 +35,7 @@ function armsOf(fixture: ReturnType<typeof dshFixture>): Set<RenderBlock['kind']
       for (const block of buildRenderBlocks(turn.blocks, nodes, {
         at: turn.at,
         running: turn.running,
-        messageId: turn.blocks[0]?.messageId ?? null,
+        messageId: turn.fallbackMessageId,
         nodeId: node.id,
         firstTurn: turnIndex === 0,
       })) {
@@ -47,7 +47,7 @@ function armsOf(fixture: ReturnType<typeof dshFixture>): Set<RenderBlock['kind']
 }
 
 describe('夹具覆盖：每一类消息都真的画得出来', () => {
-  it('三份夹具合起来覆盖 `RenderBlock` 的**全部九条 arm**', () => {
+  it('四份夹具合起来覆盖 `RenderBlock` 的**全部九条 arm**', () => {
     const arms = new Set<RenderBlock['kind']>();
     for (const fixture of allFixtures()) for (const arm of armsOf(fixture)) arms.add(arm);
 
@@ -79,7 +79,7 @@ describe('夹具覆盖：每一类消息都真的画得出来', () => {
           for (const block of buildRenderBlocks(turn.blocks, nodes, {
             at: turn.at,
             running: turn.running,
-            messageId: turn.blocks[0]?.messageId ?? null,
+            messageId: turn.fallbackMessageId,
             nodeId: node.id,
             firstTurn: turnIndex === 0,
           })) {
@@ -184,6 +184,66 @@ describe('夹具自身的三条口径', () => {
       '夹具里应有一条「还没收到快照」的块（动效判据的载体）',
     ).toBe(true);
   });
+
+  /**
+   * 追问那一份夹具的**段标题**（端到端：夹具 → `buildAgentLogModel`）。
+   *
+   * 夹具的段 1 刻意按**投递顺序**写（答复先落账本、那句人话后到——真机就是它），
+   * 而模型里那句人话必须是**段标题**（`model.segments`），且不再出现在轮次的展示块里。
+   * 少了这条，那份夹具的「真机顺序」就只是摆设：把提取规则摘掉，`fixtures.test.tsx` 照旧全绿，
+   * 而预览页上那句人话又跑回这一段的正文里。
+   */
+  it('追问段的标题读得出那句人话（且轮次的展示块里只剩答复），兜底定位键仍取投递第一条', () => {
+    const fixture = followUpFixture();
+    const main = fixture.model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    // 时刻取这一段**最早的那一条消息**（段首那一轮的派生时刻）
+    expect(fixture.model.segments).toEqual([
+      { segment: 1, at: '2026-10-02T10:44:32.000Z', text: '顺便把 changelog 补上，只写这一版的用户可见变更。' },
+    ]);
+    const asked = main.content.data.find((turn) => turn.segment === 1 && turn.round === 1);
+    // 段首那一轮的展示块只剩模型答的那三条（思考 / 工具调用 / 工具结果）
+    expect(asked?.blocks.map((block) => block.role)).toEqual(['assistant', 'assistant', 'assistant']);
+    expect(asked?.blocks.some((block) => block.role === 'user')).toBe(false);
+    // 「投递第一条」是那句答复（夹具里 `fixture:m4`）：提取不影响这一格
+    expect(asked?.fallbackMessageId).toBe('fixture:m4');
+  });
+
+  /**
+   * **空白思考那一拍整块不出现**（用户口径：等第一条有正文的思考流消息到了再画）。
+   *
+   * 走真实链路：夹具（`text: ''` + 信封 `assembly: 'open'`）→ `buildAgentLogModel` → 注册表 → DOM。
+   * 只钉模型层的话，「模型里没有它」与「界面上没有它」之间那一格（注册表选到 `ThinkingBlockView`
+   * 之后又画出一个空面板）就没人管——而那正是用户看到的那一行空白。
+   */
+  it('空白思考夹具：模型里没有那一块，渲染出来也不出「思考」/「思考中…」，同轮的正文照常', () => {
+    const fixture = blankThinkingFixture();
+    const main = fixture.model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    // 那一轮里只剩正文块（空白思考块在模型层就被丢掉了）
+    expect(main.content.data.flatMap((turn) => turn.blocks).map((block) => block.kind)).toEqual(['text']);
+
+    // 再走一遍真实链路的后半段：内容块 → 渲染块 → 默认注册表 → DOM
+    const nodes = nodeIndex(fixture.model.nodes);
+    const rendered = main.content.data.flatMap((turn, index) =>
+      buildRenderBlocks(turn.blocks, nodes, {
+        at: turn.at,
+        running: turn.running,
+        messageId: turn.fallbackMessageId,
+        nodeId: 'main',
+        firstTurn: index === 0,
+      }),
+    );
+    const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
+    const options = { open: true, onOpenChange: () => undefined, rawOpen: false, onRawOpenChange: () => undefined };
+    const { container } = render(createElement('div', null, ...rendered.map((block) => renderBlock(block, options))));
+    // 正文在，思考那一块**连标题都没有**。⚠️ 判据是 `.ant-think` 与「思考中…」这两样，
+    // **不是「文本里没有『思考』」**：正文块在流式时新片段会自己淡入，字面上也会有别的「思考」字样
+    // ——按字面判会把正常信号误判成缺陷。
+    expect(container.textContent).toContain('我先看一眼构建脚本，再动手改。');
+    expect(container.querySelector('.ant-think')).toBeNull();
+    expect(container.textContent).not.toContain('思考中…');
+  });
 });
 
 /**
@@ -233,12 +293,19 @@ describe('夹具：流式正文块的半截围栏', () => {
     view.unmount();
   });
 
-  it('同一块上「正在思考」那一行在场（动效判据仍是 `assembly === \'open\'`）', () => {
+  /**
+   * **末行不再有「正在写」那一行**（用户口径：删掉那个持续动效）。
+   *
+   * 判据取「那一行与它的转圈都不在」：它与正文无关，在一段已经读得通的正文底下只会被读成空白。
+   * `assembly === 'open'` 仍是动效的唯一判据，但它只驱动 `XMarkdownText` 的新片段淡入
+   * （上面那条半截围栏的用例已经钉住 `data-state="loading"`，那是判据仍在起作用的证据）。
+   */
+  it('流式那一块底下不再有「正在思考」那一行（也没有 Spin）', () => {
     const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
     const view = render(createElement('div', null, renderBlock(openTextBlock(), RENDERER_OPTIONS)));
 
-    expect(view.container.textContent).toContain('正在思考');
-    expect(view.container.querySelector('.ant-spin')).not.toBeNull();
+    expect(view.container.textContent).not.toContain('正在思考');
+    expect(view.container.querySelector('.ant-spin')).toBeNull();
     view.unmount();
   });
 });

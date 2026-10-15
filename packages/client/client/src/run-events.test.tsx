@@ -1,12 +1,14 @@
 /**
- * useRunEvents（run 级信号流的客户端）：共享连接、节流重验、首连不补刀、重连补一次。
+ * useRunEvents（全局流 → SWR 重验那一层）：共享连接、节流重验、首连不补刀、重连补一次、
+ * 以及「哪两族帧要重验」。
  *
  * 这里的每条用例都对着 run-events.ts 文件头的一条口径；「环境没有 EventSource 的降级」
  * 由 runs.test.tsx 的常规用例隐式覆盖（那个文件不装替身，全部轮询用例照样过）。
  *
  * 替身（FakeEventSource）只装在用到它的用例里：jsdom 没有原生 EventSource，
  * 不装 = 走「静默降级」分支，装了 = 测信号链路——两条路各有各的用例，互不冒充。
- * 模块级单例在每个用例前 `resetRunEventsForTesting()`（连接、订阅计数、重验回调全部归零）。
+ * 每个用例前把两层单例都复位（连接归 `resetGlobalStreamHubForTesting`，节流与声明归
+ * `resetRunEventsForTesting`）。
  */
 import { createElement, type ReactNode } from 'react';
 import { SWRConfig } from 'swr';
@@ -14,9 +16,15 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { act, renderHook } from '@testing-library/react';
 import { useRun, useRuns } from './runs';
 import { RUN_SIGNAL_DEBOUNCE, resetRunEventsForTesting } from './run-events';
+import { GLOBAL_STREAM_URL, resetGlobalStreamHubForTesting } from './global-stream-hub';
 import { RUNS_KEY } from './run-keys';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 import { makeRun } from './testing/run-fixtures';
+
+/** 服务端帧的原文（api 的 `toFrame` 逐字同形：无名事件、无 `id:` 行） */
+const RUN_UPDATED_FRAME = 'data: {"type":"run-updated","runId":"run-1"}\n\n';
+const ASK_USER_CHANGED_FRAME = 'data: {"type":"ask-user-changed"}\n\n';
+const INJECT_CHANGED_FRAME = 'data: {"type":"inject-messages-changed"}\n\n';
 
 /** fetch 替身的签名：显式写出来，`vi.fn(async () => …)` 会被推成零参函数 */
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
@@ -61,6 +69,7 @@ function countGets(fetchMock: FetchMock, url: string): number {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
   FakeEventSource.reset();
+  resetGlobalStreamHubForTesting();
   resetRunEventsForTesting();
 });
 
@@ -76,7 +85,7 @@ describe('useRunEvents', () => {
     expect(RUN_SIGNAL_DEBOUNCE.debounceMs).toBe(300);
   });
 
-  it('列表与详情两个 hook 共享同一条连接（页面级长连接全页恰好一条）', async () => {
+  it('列表与详情两个 hook 共享同一条连接（页面级长连接全页恰好一条，且是全局流那条）', async () => {
     installEventSourceStub();
     const fetchMock = stubRunRoutes();
 
@@ -84,7 +93,7 @@ describe('useRunEvents', () => {
     await flushMount();
 
     expect(FakeEventSource.instances).toHaveLength(1);
-    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/events');
+    expect(FakeEventSource.instances[0]?.url).toBe(GLOBAL_STREAM_URL);
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -114,7 +123,7 @@ describe('useRunEvents', () => {
 
     const source = FakeEventSource.instances[0];
     await act(async () => {
-      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
+      source?.feed(RUN_UPDATED_FRAME);
     });
     await flushSignal();
 
@@ -136,12 +145,36 @@ describe('useRunEvents', () => {
 
     const source = FakeEventSource.instances[0];
     await act(async () => {
-      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
-      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
-      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
+      source?.feed(RUN_UPDATED_FRAME);
+      source?.feed(RUN_UPDATED_FRAME);
+      source?.feed(RUN_UPDATED_FRAME);
     });
     await flushSignal();
 
+    expect(countGets(fetchMock, RUNS_KEY)).toBe(2);
+  });
+
+  it('ask-user-changed 也重验列表（列表与详情的待答数读同一份快照）；inject-messages-changed 不重验', async () => {
+    installEventSourceStub();
+    const fetchMock = stubRunRoutes();
+
+    renderHook(() => useRuns(), { wrapper });
+    await flushMount();
+    expect(countGets(fetchMock, RUNS_KEY)).toBe(1);
+
+    const source = FakeEventSource.instances[0];
+    // 人工消息队列的变更与 run 视图无关：重验一次就是白读一次列表
+    await act(async () => {
+      source?.feed(INJECT_CHANGED_FRAME);
+    });
+    await flushSignal();
+    expect(countGets(fetchMock, RUNS_KEY)).toBe(1);
+
+    // 挂起表变了 ⇒ 列表上的「待答」徽标要跟着变
+    await act(async () => {
+      source?.feed(ASK_USER_CHANGED_FRAME);
+    });
+    await flushSignal();
     expect(countGets(fetchMock, RUNS_KEY)).toBe(2);
   });
 
@@ -192,7 +225,7 @@ describe('useRunEvents', () => {
     const before = countGets(fetchMock, RUNS_KEY);
 
     await act(async () => {
-      FakeEventSource.instances[0]?.emitNamed('run-updated', '不是 JSON');
+      FakeEventSource.instances[0]?.feed('data: 不是 JSON\n\n');
     });
     await flushSignal();
 

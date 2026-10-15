@@ -20,7 +20,7 @@
  */
 import { Card, Flex, Tag, theme, Typography } from 'antd';
 import { Fragment, useMemo, type ReactNode } from 'react';
-import type { RowEvent, LogNodeIndex, LogTurn, MessageCapabilityMap, SessionNode, AgentTokens } from './types';
+import type { RowEvent, LogNodeIndex, LogTurn, MessageCapabilityMap, SessionNode, AgentTokens, TurnRef } from './types';
 import { buildRenderBlocks, type RenderBlock } from './render-blocks';
 // 行键只有一处真源：L0 的 `tool-item-detail`（`ToolGroupPanel` 的 React key 与受控行键都用它）。
 // 本文件不另写一份公式——两处各写一遍必然漂，漂了的表现是「失败的行走不到默认展开」。
@@ -70,9 +70,14 @@ export function renderBlockKey(block: RenderBlock, index: number, turnAt: string
 /**
  * 轮次的稳定键：`round` 是「模型一次 API 往返」的编号，`null` = 不属于任何轮次的内容。
  * 虚拟列表的 `rowKey`、React key、跳轮次都挂在它上面。**不用数组下标**：轮次会随流式追加而增删。
+ *
+ * 键里带**段号**：追问那一段的轮次号从 1 重新数 ⇒ 两段各有一个 `round-1`，
+ * 不带段号时虚拟列表会拿到两个相同的 `rowKey`（滚动位置错乱、项被复用成同一条）。
  */
 export function turnKey(turn: LogTurn, index: number): string {
-  return turn.round !== null ? `round-${turn.round}` : `unassigned-${turn.at}-${index}`;
+  return turn.round !== null
+    ? `seg-${turn.segment}-round-${turn.round}`
+    : `seg-${turn.segment}-unassigned-${turn.at}-${index}`;
 }
 
 /**
@@ -84,6 +89,10 @@ export function turnKey(turn: LogTurn, index: number): string {
  *      `at` 晚于事件」是因为列表按项渲染时只看得到相邻两项；早于**所有**轮次的事件挂到第一轮
  * （不丢），最后一轮兜住它之后的全部事件。
  * 比较用字符串字面序（两侧都是数据层给的 ISO 串，字面序即时间序；不解析成 `Date` 也就没有 NaN 这类分支）。
+ *
+ * ⚠️ 归属键里**没有段**（行级事件是厂商口径的 `(subagentId, round)`）：同一号在多段出现时
+ * 归**段号最大**的那一轮（见 `turnSegmentHomes`）。少这一条时「追问之后的那条用量里程碑」
+ * 会落在首段的同号轮次上。
  */
 export function rowEventsOfTurn(
   turns: readonly LogTurn[],
@@ -93,12 +102,31 @@ export function rowEventsOfTurn(
   const turn = turns[index];
   if (turn === undefined) return [];
   const next = turns[index + 1];
+  const homes = turnSegmentHomes(turns);
   return events.filter((event) => {
     if (event.turn !== null) {
-      return event.turn.subagentId === turn.subagentId && event.turn.round === turn.round;
+      if (event.turn.subagentId !== turn.subagentId || event.turn.round !== turn.round) return false;
+      return homes.get(homeKeyOf(event.turn)) === turn.segment;
     }
     return (index === 0 || turn.at <= event.at) && (next === undefined || next.at > event.at);
   });
+}
+
+/** 归属键（`main#3`）：写法与数据层的 `turnHomeKey` 一致（两个包各一份，这里要的只是同一个字符串） */
+function homeKeyOf(turn: TurnRef): string {
+  return `${turn.subagentId ?? 'main'}#${turn.round}`;
+}
+
+/** `(会话, 轮次号)` → **段号最大**的那一段。同一号只在一段里出现时就是那一段。 */
+function turnSegmentHomes(turns: readonly LogTurn[]): ReadonlyMap<string, number> {
+  const homes = new Map<string, number>();
+  for (const turn of turns) {
+    if (turn.round === null) continue;
+    const key = homeKeyOf({ subagentId: turn.subagentId, round: turn.round });
+    const seen = homes.get(key);
+    if (seen === undefined || turn.segment > seen) homes.set(key, turn.segment);
+  }
+  return homes;
 }
 
 /** 行级事件 → 标签色档：`milestone` 中性、`warning` 警告色、`error` 错误色（三档不许合并） */
@@ -223,8 +251,10 @@ function TurnRow({
   const { nodes, activeNodeId = '', openKeys, onOpenChange, renderBlock, onEnterNode, onRetryNode, onRequestDiagnostics, capability } = props;
   const dispatch = renderBlock ?? DEFAULT_RENDERER;
 
-  // 本轮第一条块的 `messageId`：规则 3 在 `callId` 为 null 时用它兜底定位派发点（本轮没有块时给 null）
-  const messageId = turn.blocks[0]?.messageId ?? null;
+  // 规则 3 在 `callId` 为 null 时用它兜底定位派发点。
+  // **读数据层给的那一格，不读 `blocks[0]`**：块按阅读顺序排过（人说的话在前），
+  // 首块可能是段首那句人话，而兜底要的是**投递顺序**上第一条块的身份（见 `LogTurn.fallbackMessageId`）
+  const messageId = turn.fallbackMessageId;
   const blocks = buildRenderBlocks(turn.blocks, nodes, {
     at: turn.at,
     running: turn.running,
@@ -308,7 +338,7 @@ function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
 }
 
 /**
- * 首条消息：用户提示词。**不折叠**——它是「这个节点被要求做什么」的唯一说明。
+ * 首条消息：**考题提示词**。**不折叠**——它是「这个节点被要求做什么」的唯一说明。
  * `userPrompt === null` 时整块不渲染（不给空卡片：「没采到」与「没有提示词」是两件事）。
  *
  * 具名导出是因为虚拟列表也要用它（L2 可以 import L1）：提示词在抽屉里同样是**首条消息**，
@@ -321,10 +351,11 @@ export function UserPromptBlock({ userPrompt }: { userPrompt: NonNullable<Sessio
       size="small"
       data-testid="agent-log-user-prompt"
       // 标题走 **Card 的插槽**（不再是正文里的第一行）：它归卡片头，有卡片自己的分隔与排版，
-      // 也不会被正文那套 markdown 排版带着走
+      // 也不会被正文那套 markdown 排版带着走。
+      // 文案与用例表单里那一格同词（「考题提示词」）：同一件事在两个页面上必须是同一句话
       title={
         <Flex align="center" gap={token.marginXS}>
-          <Typography.Text strong>用户提示词</Typography.Text>
+          <Typography.Text strong>考题提示词</Typography.Text>
           <Typography.Text type="secondary">{formatClock(userPrompt.at)}</Typography.Text>
         </Flex>
       }

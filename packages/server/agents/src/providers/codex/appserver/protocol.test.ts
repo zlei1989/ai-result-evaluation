@@ -105,8 +105,20 @@ describe('readItem —— 条目归一化', () => {
     ).toEqual({ kind: 'subAgentActivity', id: 'a1', activity: 'interrupted', agentThreadId: 'child', agentPath: '/root/w' });
   });
 
-  it('未识别的类型归 other 并保留类型名（不丢，便于发现上游新增）', () => {
-    expect(readItem({ type: 'sleep', id: 's1' })).toEqual({ kind: 'other', id: 's1', type: 'sleep' });
+  /**
+   * 未识别的类型归 `other`，**类型名与条目原文都要留下**。
+   *
+   * 要拦的缺陷：只留类型名。归一化把没声明的字段整批丢掉 ⇒ 只留 `type` 的话，消费方拿不到
+   * 「厂商到底发了什么」（`imageView` 的 `path`、`sleep` 的 `durationMs`…全在这一层没了），
+   * 于是「上游换了载荷结构」与「上游没发」分不开。
+   */
+  it('未识别的类型归 other 并保留类型名与条目原文', () => {
+    expect(readItem({ type: 'sleep', id: 's1', durationMs: 1200 })).toEqual({
+      kind: 'other',
+      id: 's1',
+      type: 'sleep',
+      raw: { type: 'sleep', id: 's1', durationMs: 1200 },
+    });
   });
 
   it('mcpToolCall：参数 / 结果 / 错误原样带出（构造调用块与结果块要用）', () => {
@@ -359,8 +371,24 @@ describe('readNotification —— 通知归一化', () => {
     });
   });
 
-  it('未识别的方法归 other 并保留方法名', () => {
-    expect(readNotification('thread/realtime/started', {})).toEqual({ kind: 'other', method: 'thread/realtime/started' });
+  /**
+   * 未识别的方法归 `other`，**方法名与原载荷都要留下**。
+   *
+   * 要拦的缺陷：只留方法名。schema 里有 84 个通知方法而这一层只归一了十几个 ⇒ 这一支常走，
+   * 而正文全在 `params` 里（`model/rerouted` 的改路由事实、`warning` / `deprecationNotice` 的原文、
+   * `serverRequest/resolved` 的回执…）⇒ 丢掉它就分不清「上游换了载荷结构」与「上游没发」。
+   */
+  it('未识别的方法归 other 并保留方法名与原载荷', () => {
+    expect(readNotification('thread/realtime/started', {})).toEqual({
+      kind: 'other',
+      method: 'thread/realtime/started',
+      params: {},
+    });
+    expect(readNotification('model/rerouted', { from: 'a', to: 'b' })).toEqual({
+      kind: 'other',
+      method: 'model/rerouted',
+      params: { from: 'a', to: 'b' },
+    });
   });
 });
 

@@ -38,6 +38,15 @@ export interface ClaudeTaskEnvelope {
   parentCallId: string | null;
   subagentId: string | null;
   vendorId: string | null;
+  /**
+   * 那一帧的**厂商原文**（未归类的字段原样保留）。
+   *
+   * 为什么台账要带着它：结果入账后要把那条调用所在的逻辑消息**重投一份快照**，而重投的合成帧
+   * 没有自己的原文 ⇒ 若那一格写 `null`，`messages.jsonl` 里同一 `mergeKey` 的**最后一条**就成了
+   * 「没有厂商原文」的那一份（读侧按 last-wins 折叠，于是整帧信封——model / usage / stop_reason ——
+   * 在折叠视图里丢掉）。带着它重投，折叠后仍是真原文。
+   */
+  raw: unknown;
 }
 
 /** 一次本族的工具调用（入参是厂商原文；`envelope` 供结果到达后重投那份快照用） */
@@ -98,9 +107,13 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
   /** 把一次改动落到一行上（`deleted` 是移除，不是改状态） */
   const applyPatch = (entry: Entry, patch: TaskPatch): void => {
     if (patch.deleted) {
-      entries.splice(entries.indexOf(entry), 1);
+      // `indexOf === -1` 时 `splice(-1, 1)` 删的是**最后一行**（错删别人而不是删不掉它）——先判再删
+      const at = entries.indexOf(entry);
+      if (at !== -1) entries.splice(at, 1);
       return;
     }
+    // 空串与 `null` 同档（「这次没谈这一格」）：它不该覆盖已经落地的真标题
+    //（`mergePending` 里那条同源规则是「空串不算谈过」，两处判据必须一致）
     if (patch.subject !== null && patch.subject !== '') entry.subject = patch.subject;
     if (patch.status !== null) entry.status = patch.status;
     if (patch.owner !== null) entry.owner = patch.owner;
@@ -109,7 +122,13 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
     }
   };
 
-  /** 合进补丁账：同一 id 的多次未见过的改动按到达顺序合并（后到的非 `null` 格覆盖先到的） */
+  /**
+   * 合进补丁账：同一 id 的多次未见过的改动按到达顺序合并。
+   *
+   * ⚠️ **空串与 `null` 在这里也是同一档**（`||` 而不是 `??`）：`TaskUpdate{subject: ''}` 是
+   * 「这次没谈标题」，若用 `??` 它会把先到的那条真标题**吃掉**，而落地口（`applyPatch`）
+   * 又不认空串 ⇒ 结果是「先到的真标题丢了、新的也没落地」。两处判据必须同源。
+   */
   const mergePending = (id: string, patch: TaskPatch): void => {
     const existing = pendingById.get(id);
     pendingById.set(
@@ -117,7 +136,7 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
       existing === undefined
         ? patch
         : {
-          subject: patch.subject ?? existing.subject,
+          subject: patch.subject || existing.subject,
           status: patch.status ?? existing.status,
           // 只要有一处说要删，就按删（再说它是「待办」是自相矛盾）
           deleted: existing.deleted || patch.deleted,
@@ -131,12 +150,22 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
   const stringListOf = (value: unknown): readonly string[] =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '') : [];
 
-  /** `TaskUpdate` 的入参 → 一次改动（`deleted` 走移除那一支，状态那一格不再参与） */
+  /**
+   * `TaskUpdate` 的入参 → 一次改动（`deleted` 走移除那一支，状态那一格不再参与）。
+   *
+   * ⚠️ **「这次没谈状态」必须与「谈了但认不出」分开**：`taskStepStatusOf` 的契约是
+   * 「认不出一律 `'unknown'`」（它为「厂商给了一个我们不认识的串」而设）⇒ 把 `null` 直接喂给它，
+   * 得到的永远是 `'unknown'`、永远不是 `null`，而 `applyPatch` 只在 `status !== null` 时才落值
+   * ⇒ 一次**只改 `owner` / `addBlockedBy` / `subject`** 的调用会把那一行从 `inProgress`
+   * 打回 `unknown`（面板上那条任务「做着做着变成未知」）。`TaskPatch.status` 的 `null`
+   * 语义就是「这次调用没谈到这一格」，这里必须先判缺席再翻译。
+   */
   const patchOf = (input: Record<string, unknown> | null): TaskPatch => {
     const status = readString(input, 'status');
     return {
       subject: readString(input, 'subject'),
-      status: taskStepStatusOf(status),
+      // 缺席 ⇒ `null`（不碰已有状态）；给了 ⇒ 按族里唯一那份映射翻译（认不出才是 `'unknown'`）
+      status: status === null ? null : taskStepStatusOf(status),
       deleted: status === 'deleted',
       owner: readString(input, 'owner'),
       addBlockedBy: stringListOf(input?.addBlockedBy),
@@ -152,6 +181,19 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
     blockedBy: [],
     createdBy: callId,
   });
+
+  /**
+   * 这条 `TaskCreate` 的入参**够不够建一行**：`subject` 或 `description` 至少有一个非空串。
+   *
+   * 为什么不够就**不建行**（文件头那条「认不出的形状一个字节都不动」的落点）：一次 schema 非法的
+   * `TaskCreate`（`input` 是 `null` / 数组 / 缺 `subject`）在厂商那一侧会回一条工具错误，**没有**
+   * `task.id` 可认领 ⇒ 建出来的那一行标题永远空着、`createdBy` 永远配不上结果，而它此后会出现在
+   * **每一个** `Task*` 块的整表载荷里（面板上多一条没人能删的空任务）。
+   * 与 `TaskUpdate` 那一支同一条处置：**没见过的 id 只记补丁账、不凭空造行**；
+   * 这一支是「造不出有内容的一行就不造」。
+   */
+  const inputCreatesRow = (input: Record<string, unknown> | null): boolean =>
+    (readString(input, 'subject') ?? '') !== '' || (readString(input, 'description') ?? '') !== '';
 
   /** 此刻的整张清单（没有任何一行时给空表——「清单为空」是事实，不是「没有」） */
   const payloadOf = (): ToolCallPayload => ({
@@ -169,7 +211,9 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
   return {
     onCall(call) {
       if (call.name === CREATE_TOOL) {
-        entries.push(entryOf(call.callId, asRecord(call.input)));
+        const input = asRecord(call.input);
+        // 入参认不出（连标题都读不出）⇒ 不建行，但仍记下这次调用：它的结果到达时才知道真标题
+        if (inputCreatesRow(input)) entries.push(entryOf(call.callId, input));
         calls.set(call.callId, { call, kind: 'create' });
         return payloadOf();
       }
@@ -196,12 +240,25 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
       if (tracked.kind === 'create') {
         const task = asRecord(record.task);
         const id = readString(task, 'id');
-        const entry = entries.find((row) => row.createdBy === callId);
+        if (id === null || id === '') return false;
+        const subject = readString(task, 'subject');
+        const entry = entries.find((row) => row.createdBy === callId)
+          /**
+           * 入参那一侧没建行（认不出标题）而**结果这一侧有真标题** ⇒ 现在补建。
+           * 为什么值得这一支：结果里的 `{task:{id, subject}}` 是**权威**的（入参只是模型写的），
+           * 不补建就等于「模型第一次写坏了标题，这一项此后在整表里根本不存在」。
+           */
+          ?? (subject !== null && subject !== ''
+            ? (() => {
+              const created = entryOf(callId, { subject });
+              entries.push(created);
+              return created;
+            })()
+            : undefined);
         // 认不出、或这一行已经认过 id、或这个 id 已被别的行占了 ⇒ 不动（宁可停在入参那一步）
-        if (id === null || id === '' || entry === undefined || entry.id !== null) return false;
+        if (entry === undefined || entry.id !== null) return false;
         if (findById(id) !== undefined) return false;
         entry.id = id;
-        const subject = readString(task, 'subject');
         if (subject !== null && subject !== '') entry.subject = subject;
         const pending = pendingById.get(id);
         if (pending !== undefined) {

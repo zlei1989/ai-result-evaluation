@@ -31,13 +31,25 @@ function textBlock(id: string, text: string): TextBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text,
   };
 }
 
 const TURNS: LogTurn[] = [
-  { round: 1, at: AT, subagentId: null, blocks: [textBlock('b1', '抽屉里的正文')], tokens: null, durationMs: null, running: false },
+  {
+    round: 1,
+    segment: 0,
+    at: AT,
+    subagentId: null,
+    blocks: [textBlock('b1', '抽屉里的正文')],
+    // 兜底定位键（规则 3）：夹具里就是首块的消息 id
+    fallbackMessageId: 'm1',
+    tokens: null,
+    durationMs: null,
+    running: false,
+  },
 ];
 
 function model(): AgentLogModel {
@@ -80,6 +92,8 @@ function model(): AgentLogModel {
     nodes: [node],
     activeNodeId: 'main',
     rowEvents: [],
+    // 段这一层的事实：本夹具没有追问，故一个段标题都不画
+    segments: [],
     empty: false,
   };
 }

@@ -405,7 +405,8 @@ pnpm live-smoke -- --dry-run     # 只检查服务与候选、打印将执行的
 - **为什么危险**：<span style="color:#c00">**静默失败**</span>——「注册成功」与「被声明给模型」是两件事，
   中间那段落差没有任何报错，会话照常跑完，而 MCP 一台都没装上。
 - **判据**：`providers/pi/allowlist.test.ts` 的两条用例（full 档：默认四件 + MCP 工具都在请求里；
-  read-only 档：四件只读工具 + MCP 工具在，写能力**可证不在**），判的是**出站请求体**而不是我们传了什么参数。
+  read-only 档：四件只读工具在，**内置**写能力（`bash` / `edit` / `write`）与 `mcp__*` 通配
+  **都可证不在**），判的是**出站请求体**而不是我们传了什么参数。
 - **参考实现**：`providers/pi/permission.ts`（两档白名单 + `PI_MCP_TOOL_PATTERN = 'mcp__*'`
   作**成员**拼进 `createAgentSession({ tools })`，不走 `+name` / `-name` 修饰符——修饰符形态会让白名单整个失效）。
 

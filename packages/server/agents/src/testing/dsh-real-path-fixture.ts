@@ -36,13 +36,14 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent, AgentMessage } from '@aieval/contracts';
+import type { AgentEvent, AgentMessage, InjectionBoundary, RetractOutcome } from '@aieval/contracts';
 import { setAgentRuntimeForTesting } from '../runtime';
-import type { AskUserReply, AskUserRequest } from '../types';
+import type { AskUserReply, AskUserRequest, InjectionPort, UserMessage } from '../types';
 import {
   DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH,
   DSH_ASK_ANSWERER_TRANSCRIPT_RELATIVE_PATH,
 } from '../providers/dsh/ask-user';
+import { DSH_INJECT_RECEIPTS_RELATIVE_PATH } from '../providers/dsh/inject';
 import { dshProvider } from '../providers/dsh';
 import type { ConformanceProduct } from '../providers/conformance/kit';
 import { collectEvents, createRunInput } from './agent-fixtures';
@@ -120,6 +121,14 @@ export async function startDshScriptedUpstream(options: {
   args: unknown;
   /** 收尾那几轮的正文（`finalText` 的来源） */
   finalText: string;
+  /**
+   * 第一条带工具表的请求**压住多久再回**（毫秒）。
+   *
+   * 为什么需要这一格：人工消息要投进「一轮在途」里才有判据——压住这一条就给出一个确定的窗口
+   * （`'round'` 档的 steer 落在下一次 step 边界、`'idle'` 档的 followup 落在下一轮）。
+   * 缺省 0 = 立刻回（既有那一臂的行为逐字不变）。
+   */
+  holdMs?: number;
 }): Promise<DshScriptedUpstream> {
   const records: Record<string, unknown>[] = [];
   let asked = false;
@@ -138,8 +147,13 @@ export async function startDshScriptedUpstream(options: {
       const tools = Array.isArray(body['tools']) ? (body['tools'] as Array<{ name?: unknown }>) : [];
       const shouldAsk = !asked && tools.some((tool) => tool?.name === options.toolName);
       if (shouldAsk) asked = true;
-      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-      response.end(shouldAsk ? toolTurn(options.callId, options.toolName, options.args) : textTurn(options.finalText));
+      const reply = (): void => {
+        response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        response.end(shouldAsk ? toolTurn(options.callId, options.toolName, options.args) : textTurn(options.finalText));
+      };
+      const hold = shouldAsk ? options.holdMs ?? 0 : 0;
+      if (hold > 0) setTimeout(reply, hold);
+      else reply();
     });
   });
   server.unref();
@@ -408,4 +422,344 @@ export function dshToolResultTextOf(run: DshRealPathRun, callId: string): string
     }
   }
   return null;
+}
+
+/**
+ * **人工消息面的真路径驱动器**：真运行时 + 脚本式上游 + 产品的插件与桥，判据是**模型看到的请求体**。
+ *
+ * 为什么非它不可（与「假 SDK」那一档的根本差别）：`'round'` 档与撤回都在 runtime 进程内
+ * （`agent.steer` / `inbox.remove`），假件那一档把 SDK 换掉之后，看得见的只有「我们写了什么文件」，
+ * 看不见「插件拿它做了什么」。这里厂商那一侧全是真的：插件真的被 overlay 加载、真的从
+ * `ctx.agents` 拿到那条 `Agent`、真的把话投进待处理队列，而**判据落在下一次入站请求体里**——
+ * 模型到底看没看到那句话，只有那一份说了算。
+ *
+ * 三条口径：
+ *   · **端口由驱动器扮演**（它就是编排层将来那一半：一张表 + `drain` / `markDelivered` / `retract`），
+ *     产品那一侧一格都不替；
+ *   · **注入发生在「一轮在途」的窗口里**：上游把第一条带工具表的请求压住 `holdMs`，驱动器在这个
+ *     窗口内把条目放进端口——这正是人工消息的真实时刻（人是在跑着的时候说话的）；
+ *   · **墙钟上限按「宁可超时也不假红」定**（`DSH_REAL_PATH_TIMEOUT_MS`）：到点按失败收场，
+ *     把「挂死」变成一条可读的红。
+ */
+export interface DshInjectionRealPathRun {
+  upstream: DshScriptedUpstream;
+  /** 这一轮交付出去的**厂商身份**，按档分开记（`'round'` 档就是我们铸的那个 id） */
+  delivered: { round: string[]; idle: string[] };
+  /** 端口那次撤回的结果（没发就是 `null`） */
+  retractOutcome: RetractOutcome | null;
+  /**
+   * 某条哨兵词出现在**第几条入站请求**里（每条请求给一份「含它的消息下标」）；
+   * 空数组 = 这一条请求没带它。判据读它，不读我们交给厂商的入参。
+   */
+  sentinelInRequests: (sentinel: string) => number[][];
+  /** 插件自报的加载事实（`serviceAtLoad` 是**加载那一刻**的读数，不是判据——见收据那一侧） */
+  pluginLoaded: { url: string; serviceAtLoad: boolean } | null;
+  /**
+   * 插件的**动作收据**（`steered` / `removed` 那些行）：`hasAgents` 是**动手那一刻**重新探到的
+   * 读数 ⇒ 它才是「这一档在 sdk profile 下拿不拿得到 Agent」的判据（加载顺序不保证顺序）。
+   */
+  actionReceipts: Array<Record<string, unknown>>;
+  product: ConformanceProduct;
+  elapsedMs: number;
+}
+
+/**
+ * 驱动器扮演的端口：一张表 + 三个动作。`available: true` 是这一档的前提
+ * （产品只在挂了开着的端口时才插件、才取件）。
+ */
+function createDriverPort(): {
+  port: InjectionPort;
+  push: (text: string, requires: InjectionBoundary) => string;
+  delivered: { round: string[]; idle: string[] };
+} {
+  const entries: Array<UserMessage & { requires: InjectionBoundary }> = [];
+  const delivered = { round: [] as string[], idle: [] as string[] };
+  /** 我们铸的那些身份（`'round'` 档的身份由我们铸 ⇒ 它就是端口那一条的 id） */
+  const roundIds = new Set<string>();
+  const retracts = new Map<string, (id: string) => Promise<RetractOutcome>>();
+  let seq = 0;
+  const port: InjectionPort = {
+    available: true,
+    drain: (boundary) => {
+      // 契约：`'round'` 只取要求 `'round'` 的条目、`'idle'` 取全部（`'round'` 在前）
+      const taken = entries.filter((entry) => (boundary === 'round' ? entry.requires === 'round' : true));
+      for (const entry of taken) entries.splice(entries.indexOf(entry), 1);
+      return taken.map(({ id, text }) => ({ id, text }));
+    },
+    markDelivered: (ids, retract) => {
+      for (const id of ids) {
+        retracts.set(id, retract);
+        // 两档登记回来的**都是我们自己的 id**（驱动器的表按它取撤回句柄）；
+        // 这里按「是不是 `'round'` 档铸的那个」分成两摞，只为了用例能分别看两档的投递
+        (roundIds.has(id) ? delivered.round : delivered.idle).push(id);
+      }
+    },
+    retract: async (id) => {
+      const one = retracts.get(id);
+      return one === undefined ? 'unsupported' : one(id);
+    },
+  };
+  return {
+    port,
+    delivered,
+    push: (text, requires) => {
+      seq += 1;
+      const id = `driver-entry-${String(seq)}`;
+      if (requires === 'round') roundIds.add(id);
+      entries.push({ id, text, requires });
+      return id;
+    },
+  };
+}
+
+/** 一次入站请求体里含某个哨兵词的消息下标（`messages[].content[]` 的文本块） */
+function sentinelMessagesIn(body: unknown, sentinel: string): number[] {
+  const messages = (body as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(messages)) return [];
+  const hits: number[] = [];
+  messages.forEach((message, index) => {
+    const content = (message as { content?: unknown }).content;
+    const blocks = Array.isArray(content) ? content : [];
+    const text = blocks
+      .map((block) => {
+        const item = block as { type?: unknown; text?: unknown; content?: unknown };
+        if (item.type === 'text' && typeof item.text === 'string') return item.text;
+        return JSON.stringify(item.content ?? '');
+      })
+      .join('\n');
+    if (text.includes(sentinel)) hits.push(index);
+  });
+  return hits;
+}
+
+/** 一条人工消息的哨兵词与被压住的窗口（毫秒） */
+export interface DshInjectionArm {
+  /** 这一轮要投的哨兵词：`'round'` 档一条、`'idle'` 档两条（第二条投出去后立刻撤回） */
+  sentinels: { round: string; idle: string; retracted: string };
+  /** 上游压住第一条带工具表的请求多久（毫秒） */
+  holdMs: number;
+}
+
+/**
+ * 跑一次真路径人工消息：**一轮在途时先投三条**（`'round'` 一条、`'idle'` 两条），
+ * 然后把第二条 `'idle'` 撤回来。判据由调用方从 `sentinelInRequests` 上取。
+ */
+export async function runDshRealPathInjection(arm: DshInjectionArm): Promise<DshInjectionRealPathRun> {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-inject-real-path-'));
+  const cwd = join(root, 'workspace');
+  const configHome = join(root, '.dshhome');
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(configHome, { recursive: true });
+  const upstream = await startDshScriptedUpstream({
+    callId: 'call_inject_hold',
+    toolName: 'ask_user_question',
+    args: {
+      questions: [
+        {
+          id: 'q-hold',
+          header: '占位',
+          question: '在跑的时候人说话了，先回一句？',
+          options: [{ label: '好' }],
+        },
+      ],
+    },
+    finalText: '收尾。',
+    holdMs: arm.holdMs,
+  });
+  const messages: AgentMessage[] = [];
+  const events: AgentEvent[] = [];
+  const driver = createDriverPort();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DSH_REAL_PATH_TIMEOUT_MS);
+  const started = Date.now();
+  setAgentRuntimeForTesting(null);
+  const input = createRunInput({
+    cwd,
+    configHome,
+    permission: 'full',
+    prompt: '先问我一句，然后收尾。',
+    route: {
+      protocolType: 'anthropic',
+      baseUrl: upstream.url,
+      apiKey: PLACEHOLDER_KEY,
+      modelId: DSH_REAL_PATH_MODEL,
+    },
+    signal: controller.signal,
+    inject: driver.port,
+    onEvent: collectEvents(events),
+    /**
+     * 应答面：**只为压住那个窗口**——被压住的那 2 秒里驱动器投三条，正是「一轮在途」的窗口。
+     * 答复按厂商的问题 id 配对（少一题会被厂商拒），选项取第一条。
+     */
+    onAskUser: async (request: AskUserRequest): Promise<AskUserReply> => {
+      await new Promise((resolve) => setTimeout(resolve, Math.round(arm.holdMs / 2)));
+      return {
+        outcome: 'answered',
+        answers: request.questions.map((question) => ({
+          header: question.header,
+          selected: question.options.slice(0, 1).map((option) => option.label),
+          custom: null,
+        })),
+      };
+    },
+  });
+  const waitFor = async (what: string, check: () => boolean): Promise<void> => {
+    const deadline = Date.now() + DSH_REAL_PATH_TIMEOUT_MS;
+    for (;;) {
+      if (check()) return;
+      if (Date.now() >= deadline) throw new Error(`等待超时：${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  const running = dshProvider.run({ ...input, onMessage: (message) => messages.push(message) });
+  try {
+    // 窗口：第一条带工具表的请求到了（= 一轮在途），此时人说话
+    await waitFor('第一条带工具表的请求到达', () =>
+      upstream.records.some((record) =>
+        Array.isArray((record['body'] as { tools?: unknown } | null)?.tools)));
+    driver.push(arm.sentinels.round, 'round');
+    driver.push(arm.sentinels.idle, 'idle');
+    driver.push(arm.sentinels.retracted, 'idle');
+    // 三条都交付出去（两条走 wire 的 prompt、一条写投递流水），再撤回最后那一条
+    await waitFor('两条 idle 档被交付', () => driver.delivered.idle.length >= 2);
+    const retractTarget = driver.delivered.idle[driver.delivered.idle.length - 1];
+    const retractOutcome = retractTarget === undefined ? null : await driver.port.retract(retractTarget);
+    const outcome = await running;
+    const receipts = readTranscript(join(configHome, DSH_INJECT_RECEIPTS_RELATIVE_PATH));
+    return {
+      upstream,
+      delivered: driver.delivered,
+      retractOutcome,
+      sentinelInRequests: (sentinel: string) =>
+        upstream.records.map((record) => sentinelMessagesIn(record['body'], sentinel)),
+      pluginLoaded: (() => {
+        const row = receipts.find((one) => one['phase'] === 'plugin-loaded');
+        if (row === undefined) return null;
+        return { url: String(row['url'] ?? ''), serviceAtLoad: row['serviceAtLoad'] === true };
+      })(),
+      actionReceipts: receipts.filter((one) => one['phase'] === 'steered' || one['phase'] === 'removed'),
+      elapsedMs: Date.now() - started,
+      product: {
+        messages,
+        subagents: [],
+        events: foldRepeatedUsage(events) as unknown as Array<Record<string, unknown>>,
+        usage: {
+          // 与另一个驱动器同形：这一格交真读数，配对判据（分量 ≤ 合计）才有东西可比
+          tokens: outcome.tokens === null
+            ? null
+            : {
+              input: outcome.tokens.input,
+              cached: outcome.tokens.cached,
+              output: outcome.tokens.output,
+              reasoningOutput: null,
+              total: null,
+            },
+          turns: outcome.turns,
+          subagentTokens: outcome.subagentTokens ?? null,
+          subagentTurns: outcome.subagentTurns ?? null,
+        },
+        result: { ok: outcome.ok, finalText: outcome.finalText },
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+    setAgentRuntimeForTesting(null);
+    upstream.close();
+    removeTreeWithRetry(root);
+  }
+}
+
+/** 续接真路径的产物：判据读**入站请求体**，不读通知流（那一条不回放历史） */
+export interface DshResumeRealPathRun {
+  /** 第一轮（新会话）铸出来的会话 id；第二轮 adopt 用的就是它 */
+  sessionId: string | null;
+  /** adopt 那一轮自己的会话身份（必须与第一轮同值，否则续接没落到同一条上） */
+  resumedSessionId: string | null;
+  /** 阴性对照（不 resume）铸出来的身份（必须与第一轮**不同**） */
+  controlSessionId: string | null;
+  /** 第一轮（写）发出的入站请求条数 */
+  writeRequests: number;
+  /** 第二轮（adopt）发出的入站请求条数 */
+  resumeRequests: number;
+  /** 暗号在**第二轮**请求体里出现的次数（> 0 = 前一轮的历史真的被带回来了） */
+  nonceInResumeRequests: number;
+  /** 暗号在**阴性对照**那一轮里出现的次数（必须为 0） */
+  nonceInControlRequests: number;
+  elapsedMs: number;
+}
+
+/**
+ * 跑一条**跨运行**的续接真路径：新会话写暗号 → 另起一次运行用官方的 `session/resume` adopt 它
+ * → 再跑一次**不** resume 的阴性对照。三次共用同一个 `DSH_HOME`（resume 读的就是它）。
+ *
+ * 判据为什么落在**入站请求体**上：这一家 resume 之后通知流**不回放历史**（见
+ * `docs/faq/deepseek-harness.md`），所以「模型还记不记得」在通知流里看不见；看得见的是
+ * 我们发给上游的那份请求体里有没有前一轮的对话。假上游记录的正是它。
+ * 少了阴性对照，「请求体里有暗号」可能只是工作区或别处泄漏——那一条判据会假绿。
+ */
+export async function runDshRealPathResume(nonce: string): Promise<DshResumeRealPathRun> {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-resume-real-path-'));
+  const cwd = join(root, 'workspace');
+  const configHome = join(root, '.dshhome');
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(configHome, { recursive: true });
+  // 工具名给一个永远不会出现在工具表里的字面量 ⇒ 每一轮都回纯文本收尾（这一档不用工具调用）
+  const upstream = await startDshScriptedUpstream({
+    callId: 'call_resume_unused',
+    toolName: 'aieval-resume-never-matches',
+    args: {},
+    finalText: '好。',
+  });
+  const started = Date.now();
+  setAgentRuntimeForTesting(null);
+  const runOnce = async (prompt: string, resumeSessionId?: string): Promise<string | null> => {
+    const result = await dshProvider.run(createRunInput({
+      cwd,
+      configHome,
+      permission: 'full',
+      prompt,
+      route: {
+        protocolType: 'anthropic',
+        baseUrl: upstream.url,
+        apiKey: PLACEHOLDER_KEY,
+        modelId: DSH_REAL_PATH_MODEL,
+      },
+      ...(resumeSessionId === undefined ? {} : { resume: { sessionId: resumeSessionId } }),
+    }));
+    return result.sessionId ?? null;
+  };
+  try {
+    // ① 写：新会话，让模型记住暗号
+    let mark = upstream.records.length;
+    const sessionId = await runOnce(`请原样复述这个暗号，不要做别的事：${nonce}`);
+    const writeRequests = upstream.records.length - mark;
+    if (sessionId === null) throw new Error('第一轮没拿到会话 id ⇒ 无从续接');
+
+    // ② adopt：新的运行时进程、同一个 DSH_HOME
+    mark = upstream.records.length;
+    const resumedSessionId = await runOnce('我刚才让你复述的暗号是什么？', sessionId);
+    const resumeRequests = upstream.records.length - mark;
+    const resumeBody = JSON.stringify(upstream.records.slice(mark).map((one) => one['body']));
+
+    // ③ 阴性对照：同 DSH_HOME、同 cwd，但**不** resume（全新会话）
+    mark = upstream.records.length;
+    const controlSessionId = await runOnce('我刚才让你复述的暗号是什么？');
+    const controlBody = JSON.stringify(upstream.records.slice(mark).map((one) => one['body']));
+
+    const occurrences = (text: string): number => text.split(nonce).length - 1;
+    return {
+      sessionId,
+      resumedSessionId,
+      controlSessionId,
+      writeRequests,
+      resumeRequests,
+      nonceInResumeRequests: occurrences(resumeBody),
+      nonceInControlRequests: occurrences(controlBody),
+      elapsedMs: Date.now() - started,
+    };
+  } finally {
+    setAgentRuntimeForTesting(null);
+    upstream.close();
+    removeTreeWithRetry(root);
+  }
 }

@@ -1,12 +1,15 @@
 /**
- * ThinkingBlockView：折叠面板 + 「思考中…」扫光。
+ * ThinkingBlockView：折叠面板 + 状态文字标题。
  *
- * 四条守卫：
+ * 守卫：
  *   · **没有正文就什么都不渲染**（`text === null` ⇒ 整块隐藏）：不给占位文案、也不给空面板——
  *     空面板会被读成「思考了但什么也没想」，占位文案则会把「这一轮没采到」当成内容显示出来；
- *   · `textKind === 'summary'` 出「摘要」标——不标注就是假称全文；
- *   · `assembly === 'open'` 且**收起**时标题挂扫光类名；展开态不挂（正文在流，标题不必也表态）；
- *   · 展开后正文是等宽 + 斜体 + 左侧竖线。
+ *   · `textKind` 不进呈现：`summary` 那一档（只有 codex 会落）照常显示正文、**不出「摘要」标**——
+ *     单一厂商的正文形态差异不升为界面标注；
+ *   · 标题是**状态文字 + 转圈图标**：`assembly === 'open'` ⇒ 「思考中…」+ `loading`（收起与展开同款），
+ *     否则「思考」+ 默认图标；自造扫光类不再挂载（排版与动效交给 `Think` 的 title 槽位）；
+ *   · 非 wire 来源出角标（「补录」/「汇总」），与状态文字并排；
+ *   · 展开后正文原样交给 `Think`：不带本仓自己的排印（无斜体、无左侧竖线）。
  */
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -25,6 +28,7 @@ function thinkingBlock(overrides: Partial<ThinkingBlock> = {}): ThinkingBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text: '先看测试，再改实现',
     textMissing: null,
@@ -61,34 +65,71 @@ describe('ThinkingBlockView', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('textKind 为 summary 时出「摘要」标', () => {
-    render(<ThinkingBlockView block={thinkingBlock({ textKind: 'summary' })} open onOpenChange={vi.fn()} />);
+  /**
+   * **空白正文与没有正文是同一档**（用户口径）：`text: ''` 时若照常渲染，出来的是「思考」标题
+   * 带一片空白——那一行空白既不是内容也不是状态。它真在流里出现过：codex / pi 的思考增量帧
+   * 不过滤空 delta ⇒ 「思考刚开始、正文还没到」那一拍就是一条 `text: ''`。
+   * 这一条是本件的第二道（第一道在 `build-model` 的块过滤里）。
+   */
+  it('空白正文（`text: \'\'` / 只有空白）同样整块隐藏，也不出「思考中…」标题', () => {
+    const { container, unmount } = render(
+      <ThinkingBlockView block={thinkingBlock({ text: '', textKind: 'full' })} open onOpenChange={vi.fn()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText('思考')).toBeNull();
+    unmount();
 
-    expect(screen.getByText('摘要')).toBeInTheDocument();
+    const blank = render(
+      <ThinkingBlockView block={thinkingBlock({ text: '  \n ', assembly: 'open' })} open={false} onOpenChange={vi.fn()} />,
+    );
+    expect(blank.container).toBeEmptyDOMElement();
+    expect(screen.queryByText('思考中…')).toBeNull();
   });
 
-  it('流式中且收起时标题挂扫光；展开态不挂', () => {
-    const { container, unmount } = render(
+  it('textKind 为 summary 时正文照常显示，且**不出「摘要」标**（`textKind` 不进呈现）', () => {
+    render(<ThinkingBlockView block={thinkingBlock({ textKind: 'summary' })} open onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText('先看测试，再改实现')).toBeInTheDocument();
+    expect(screen.queryByText('摘要')).toBeNull();
+  });
+
+  it('还在流（assembly=open）时标题一律是「思考中…」——收起与展开同款', () => {
+    const { unmount } = render(
       <ThinkingBlockView block={thinkingBlock({ assembly: 'open' })} open={false} onOpenChange={vi.fn()} />,
     );
-    expect(container.querySelector(`.${ACTIVITY_SWEEP_CLASS}`)).not.toBeNull();
     expect(screen.getByText('思考中…')).toBeInTheDocument();
     unmount();
 
-    const { container: expanded } = render(
-      <ThinkingBlockView block={thinkingBlock({ assembly: 'open' })} open onOpenChange={vi.fn()} />,
-    );
-    // 展开态：正文自己就是「还在流」的证据，标题不再挂动效
-    expect(expanded.querySelector(`.${ACTIVITY_SWEEP_CLASS}`)).toBeNull();
+    render(<ThinkingBlockView block={thinkingBlock({ assembly: 'open' })} open onOpenChange={vi.fn()} />);
+    expect(screen.getByText('思考中…')).toBeInTheDocument();
   });
 
-  it('块已结束（snapshot）时收起态也不挂扫光', () => {
+  it('块已结束（snapshot）时标题回落「思考」，不残留进行中信号', () => {
+    render(<ThinkingBlockView block={thinkingBlock({ assembly: 'snapshot' })} open={false} onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText('思考')).toBeInTheDocument();
+    expect(screen.queryByText('思考中…')).toBeNull();
+  });
+
+  it('标题不挂自造扫光类（进行中的排版与动效交给 `Think` 的 title 槽位）', () => {
     const { container } = render(
-      <ThinkingBlockView block={thinkingBlock({ assembly: 'snapshot' })} open={false} onOpenChange={vi.fn()} />,
+      <ThinkingBlockView block={thinkingBlock({ assembly: 'open' })} open={false} onOpenChange={vi.fn()} />,
     );
 
     expect(container.querySelector(`.${ACTIVITY_SWEEP_CLASS}`)).toBeNull();
-    expect(screen.queryByText('思考中…')).toBeNull();
+  });
+
+  it('还在流时状态图标是转圈（`loading`），结束后回到默认思考图标', () => {
+    const { container, unmount } = render(
+      <ThinkingBlockView block={thinkingBlock({ assembly: 'open' })} open={false} onOpenChange={vi.fn()} />,
+    );
+    expect(container.querySelector('.anticon-loading')).not.toBeNull();
+    unmount();
+
+    const { container: done } = render(
+      <ThinkingBlockView block={thinkingBlock({ assembly: 'snapshot' })} open={false} onOpenChange={vi.fn()} />,
+    );
+    expect(done.querySelector('.anticon-loading')).toBeNull();
   });
 
   it('展开后正文**原样**交给 Think：不带本仓自己的排印（无斜体、无左侧竖线）', () => {

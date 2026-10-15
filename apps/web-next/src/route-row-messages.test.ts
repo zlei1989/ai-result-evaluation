@@ -49,9 +49,11 @@ const evaluator = vi.hoisted(() => ({
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
   subscribeRowRecords: vi.fn(() => () => {}),
-  // run 级信号总线（`/api/runs/events`）：api 的 index 转出 `streamRunSignals`，run-events.ts
-  // 在模块求值期读这个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
+  // 全局流的三条信号总线（`/api/runs/stream`）：api 的 index 转出 `streamGlobalSignals`，
+  // run-events.ts 在模块求值期读这三个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
   subscribeRunChanges: vi.fn(() => () => {}),
+  subscribeAskUserChanges: vi.fn(() => () => {}),
+  subscribeInjectChanges: vi.fn(() => () => {}),
   resolveJudgeRoute: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
 }));
@@ -164,6 +166,7 @@ describe('GET .../rows/[rowId]/messages', () => {
       vendorId: null,
       role: 'assistant' as const,
       source: 'wire' as const,
+      origin: 'case-prompt' as const,
       roundTrip: 1,
       turn: null,
       step: null,

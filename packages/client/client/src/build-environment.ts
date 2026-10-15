@@ -28,8 +28,9 @@
  *   · 摘要七格 —— `EvalRow` / `EvalRun` 的快照字段，服务端已经存了，**不读事件流**；
  *   · 厂商系统层 —— `vendor-system` **事件**（由适配器归一；本层若自己 `JSON.parse` 并逐字认
  *     `subtype === 'init'` / `slash_commands` / `permissionMode`，那是把厂商适配搬进了浏览器）。
- *     真机：只有 claude 投送这一行（`tools` 21 项、`slash_commands` 47 项、`agents` 5 项…），
- *     **codex 与 dsh 没有**⇒ 那一组整组走 `not-exposed`；
+ *     真机：claude 投送 `tools` 21 项 / `slash_commands` 47 项 / `agents` 5 项；dsh 也投送
+ *     （工具表与 `permissionMode`、技能目录，真机逐格读到）；**codex 没有**这一行 ⇒ 只有它整组走
+ *     `not-exposed`；
  *   · 实测统计 —— 内容记录（`messages.jsonl`）里的 `tool-call` 块按 `name` 计数。
  *     它不从事件流数：事件流的工具名字在 codex 上是 `exec_command` 这类**入口名**，
  *     与会话文件里的真名不是一回事。
@@ -208,15 +209,37 @@ function parseVendorInit(events: readonly AgentEvent[]): VendorInit | null {
    * 其余六格仍是「取最后一条」（与行级观测格同口径：后到的覆盖先到的）。
    */
   let latestSkills: VendorInit['skills'] = null;
+  /**
+   * 权限档：**读到过非空值就一直留着**（与 `skills` 的「只在本条带了它时才覆盖」精神相同，
+   * 但判据更窄——只认非空字符串）。
+   *
+   * 为什么不能「取最后一条」：厂商把权限档当**会话属性**，只在会话起手那条 `vendor-system` 上带
+   * 它；追问 / 续接段（含**跨进程**续接）那一条不带 ⇒ 「整条覆盖」会把上一段已经读到过的档位
+   * 擦成 `not-exposed`，而实际档位没变。真机复现过两次（dsh：同进程追问、跨进程续接）。
+   *
+   * ⚠️ **本条的显式 `null` 与「没带这一格」在这里同义**（都保持前值）——适配器采不到档位时
+   * **写的就是显式 `null`**（`permissionPreset ?? dshSessionPermissionOf` 两者都空时），所以
+   * 「显式 null 只可能来自历史事件」这句不成立；把两种形态分开会把这条修复退回去，
+   * 守卫 `build-environment.test.ts` 的「后到的 vendor-system 不带权限档 ⇒ 保留前一条读到的档位」
+   * 钉的正是这一格。从未采到过值时两者都读作「采不到」（`not-exposed`）。
+   */
+  let latestPermission: VendorInit['permissionMode'] = null;
+  let sawPermission = false;
   let latest: VendorInit | null = null;
   for (const event of events) {
     if (event.type !== 'vendor-system') continue;
     if (event.skills !== undefined) latestSkills = event.skills;
+    if (event.permissionMode !== undefined && event.permissionMode !== null) {
+      latestPermission = event.permissionMode;
+      sawPermission = true;
+    }
     latest = {
       tools: event.tools,
       slashCommands: event.slashCommands,
       agents: event.agents,
-      permissionMode: event.permissionMode,
+      // `sawPermission` 为假 ⇒ 交 `null`（**不是** `event.permissionMode`）：后者在首条就是显式 null 时
+      // 会是 `undefined`，而这一格的声明是 `string | null`（R6-A 指出的类型洞）
+      permissionMode: sawPermission ? latestPermission : null,
       outputStyle: event.outputStyle,
       // 读侧兼容归一（`null` = 没投送、`[]` = 投送了确实是空的，两态各自保留）
       mcpServers: normalizeMcpServers(event.mcpServers),

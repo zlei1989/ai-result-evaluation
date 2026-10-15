@@ -133,3 +133,35 @@ export const ProviderModelContextSchema = ProviderModelCapabilitySchema.extend({
   maxOutputTokens: z.number().int().positive().nullable().optional(),
 });
 export type ProviderModelContextInput = z.infer<typeof ProviderModelContextSchema>;
+
+/**
+ * 上游 /models 拉取到的**候选**模型（预览形态）。与清单条目（`ProviderModel`）的差别：
+ * 没有 `source` —— 要不要进清单由用户在预览对话框里挑选后才定，这里只忠实转述「上游说了什么」。
+ * 四格能力与 `ProviderModel` 同名同约束：预览展示与提交入参共用同一份形状，
+ * 界面上看到的数就是提交后落盘的数（所见即所得，不引入第二套字段名）。
+ */
+export const ProviderModelPreviewSchema = z.object({
+  id: z.string().min(1),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  supportedEfforts: z.array(z.string().min(1)).optional(),
+  recommendedEffort: z.string().min(1).optional(),
+});
+export type ProviderModelPreview = z.infer<typeof ProviderModelPreviewSchema>;
+
+/** 拉取预览的响应体：`{ models: [...] }`（对象包一层，给后续追加分页 / 来源统计留位） */
+export const ProviderModelPreviewListSchema = z.object({
+  models: z.array(ProviderModelPreviewSchema),
+});
+export type ProviderModelPreviewList = z.infer<typeof ProviderModelPreviewListSchema>;
+
+/**
+ * 挑选后的提交入参（`models/import` 路由）：条目形状与预览一致（前端把勾选的候选原样回传）。
+ * **至少一条**：空提交没有语义，界面上「加入清单」在零勾选时本就不可点。
+ * `source` 不在入参里：提交进来的条目一律按 `fetched` 合并 —— `manual` 的唯一入口
+ * 是手工增删（与 `manualModels` 同一条口径，不许前端自己声明来源）。
+ */
+export const ProviderModelsImportSchema = z.object({
+  models: z.array(ProviderModelPreviewSchema).min(1),
+});
+export type ProviderModelsImport = z.infer<typeof ProviderModelsImportSchema>;

@@ -1,5 +1,5 @@
 /**
- * v11 探针 ②（06 号票 Q2）：**答案能不能随 `canUseTool` 的「允许并改写入参」递回去**。
+ * v11 探针 ②（Q2）：**答案能不能随 `canUseTool` 的「允许并改写入参」递回去**。
  *
  * 这是 cc 那一家的成败点：权限应答的类型面上只有「允许 + `updatedInput`」与「拒绝 + `message`」，
  * 没有结果字段。于是唯一可能的递法就是往 `updatedInput` 里塞答案——**但厂商认不认这一格，必须真跑**。
@@ -261,8 +261,8 @@ const file = writeDump('cc-ask-answer-summary', {
 note('──────────────── 读数汇总 ────────────────');
 for (const one of summary) note(`${one.arm}：${one.verdict}`);
 note('判据：');
-note('  · 工具结果里**逐字**出现我们给的答案串 ⇒ 权限通道能递答案（10 号票走 α）。');
-note('  · 工具结果是我们给的答案之外的收场（例如「The user did not answer the questions.」）⇒ 递不回去（走 β），把原文抄进票里。');
+note('  · 工具结果里**逐字**出现我们给的答案串 ⇒ 权限通道能递答案（走 α）。');
+note('  · 工具结果是我们给的答案之外的收场（例如「The user did not answer the questions.」）⇒ 递不回去（走 β），把原文抄进报告里。');
 note('  · `invalid` 臂：改写入参违反 schema 时厂商是拒、是忽略、还是原样收下——决定我们能不能往入参里加字段。');
 note('  · `late` 臂：挂住之后再答能不能被接受；这才是「人在几十秒后才点完成」的真机路径。');
 note('落盘：', file);

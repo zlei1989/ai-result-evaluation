@@ -69,6 +69,16 @@ export const TERMINATE_GRACE_MS = 5_000;
  *
  * 顺序是承重的：**先杀树、再等退出**。反过来（先 `kill()` 父进程再找孙进程）会丢掉树的结构——
  * Windows 上孙进程的 `ParentProcessId` 会指向一个已死的父进程，`taskkill /T` 再也走不到它们。
+ *
+ * ⚠️ **「直接子进程已退出」不等于「树已经回收干净」**——这一格是本函数最容易被写错的地方。
+ * 组长先死（用户 / 看门狗 `SIGKILL`、OOM、宿主停机、`startCodexSession` 里起手失败那条
+ * `close()`）而它的**进程组里还有活的孙进程**时，`kill(-pid)` 仍然必须发：组的身份就是组长的 pid，
+ * 组长没了组还在。少了这一发，codex 那条 `codex → git → git → git-remote-https` 的插件同步链
+ * 会整条留下来（真机读数：组长先 `SIGKILL` 再调本函数 ⇒ `{via:'direct', exited:true, waitedMs:0}`
+ * 而同组 2 个成员仍活；对照臂（组长活着）⇒ `via:'tree'`、组内清零；事后手工 `kill(-pid)` 也能清零
+ * ⇒ 原因唯一地是这条短路，不是杀树手段不行）。
+ *
+ * 所以短路只保**等待**那一半：已经退出就不该为一个不可能到来的 `exit` 白等一个宽限期。
  */
 export async function terminateProcessTree(
   child: ProcessTreeChild,
@@ -79,9 +89,7 @@ export async function terminateProcessTree(
   const platform = options.platform ?? process.platform;
   const killTree = options.killTree ?? defaultKillTree(platform);
 
-  // 已经死透了：没有可回收的东西，也就不该为一个不可能到来的 `exit` 白等一个宽限期
-  if (hasExited(child)) return { via: 'direct', exited: true, waitedMs: 0, error: null };
-
+  const alreadyExited = hasExited(child);
   let error: string | null = null;
   let via: TerminateOutcome['via'] = 'direct';
   const pid = child.pid;
@@ -92,13 +100,14 @@ export async function terminateProcessTree(
     } catch (cause) {
       // 杀树失败（taskkill 不在、权限不足、进程已退出）：退回直接 kill，并把原因交出去
       error = cause instanceof Error ? cause.message : String(cause);
-      killChildDirectly(child);
+      // 已经退出的那个没什么可再杀的：退回动作只对活着的直接子进程有意义
+      if (!alreadyExited) killChildDirectly(child);
     }
-  } else {
+  } else if (!alreadyExited) {
     killChildDirectly(child);
   }
 
-  const exited = await waitForExit(child, graceMs);
+  const exited = alreadyExited ? true : await waitForExit(child, graceMs);
   return { via, exited, waitedMs: Date.now() - startedAt, error };
 }
 
@@ -150,7 +159,18 @@ export function defaultKillTree(
       process.kill(-pid, 'SIGKILL');
     } catch {
       // 退回直接杀；这一次再失败就把错误交给调用方（它会把 via 记成 'direct'）
-      process.kill(pid, 'SIGKILL');
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (cause) {
+        /**
+         * **`ESRCH` 也是成功语义**：这里要的是「它没了」，不是「信号发过了」——组与 pid 都不在，
+         * 正是回收想要的结果。与 Windows 那一支同口径（`taskkill` 的「进程不存在」也算成功）。
+         * 组长先死、组也早就散了的常见情形走的正是这一格；不吞它，回收路径会凭空记一条
+         * `error`，而调用方只会照着 WARN 去查一个并不存在的问题。
+         * ⚠️ 只吞 `ESRCH`：`EPERM` 之类是**真的没杀掉**，必须交出去。
+         */
+        if ((cause as NodeJS.ErrnoException | null)?.code !== 'ESRCH') throw cause;
+      }
     }
   };
 }

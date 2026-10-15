@@ -42,13 +42,20 @@ const TOOL_FAMILY_BY_NAME: Record<string, ToolFamily> = {
   write_stdin: 'run-shell',
   web_search: 'web-search',
   spawn_agent: 'spawn-agent',
+  /**
+   * **camelCase 的那个拼法是真机名**（`spawnAgent` / `closeAgent`）：协议把协作动作名留成
+   * 自由字符串，而本机 0.156.1 实测下发的就是 camelCase。只登记 snake_case 的话派发块的族是
+   * `null`（界面丢「派子任务」标签、族维度统计漏算），而用例若按 snake_case 写就恒绿、看不出来。
+   */
+  spawnAgent: 'spawn-agent',
+  closeAgent: 'spawn-agent',
   collab_tool_call: 'spawn-agent',
   update_plan: 'task',
   request_user_input: 'ask-user',
   // dsh
-  // `bash` 与 `pwsh` 是**同一件事的两个名字**（0.2.0-rc.2 里 `pwsh` 与 `bash` 都是 DSH 自带的
-  // 命令工具，真机这批数据里出现的全是 `bash`）⇒ 两个名字都要登记，只留一个会让另一家的
-  // 调用落进「不认识的工具」那一档（摘要退化成紧凑 JSON、族标签也不显示）。
+  // `bash` 与 `pwsh` 是**同一件事的两个名字**（这一家自带两条命令工具，真机这批数据里出现的
+  // 全是 `bash`）⇒ 两个名字都要登记，只留一个会让另一家的调用落进「不认识的工具」那一档
+  // （摘要退化成紧凑 JSON、族标签也不显示）。
   read: 'read-file',
   write: 'write-file',
   edit: 'edit-file',

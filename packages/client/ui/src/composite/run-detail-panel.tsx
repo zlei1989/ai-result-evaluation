@@ -4,8 +4,9 @@
  * 评测详情面板：顶部信息卡（串行进度在卡内底部）+ 候选卡片列表 + 吸底操作栏。
  *
  * 顶部信息**与用例详情同构**：`Card` 标题 = 用例标题，正文是
- * `Descriptions` 的「标签 : 值」。值一律给**全量**——详情栏是核对「这一轮跑的到底是哪份代码」
- * 的地方，短哈希 / 省略号在这里就等于没地方能看全（与 `case-detail-panel.tsx` 的口径 1 同源）。
+ * `Descriptions` 的「标签 : 值」；备注非空时多一行「备注」（唯一一格用户注解，形态见 `headerFields`）。
+ * 值一律给**全量**——详情栏是核对「这一轮跑的到底是哪份代码」的地方，短哈希 / 省略号在这里就等于没地方能看全
+ * （与 `case-detail-panel.tsx` 的口径 1 同源）。
  *
  * 四条口径：
  *   1. 「开始」必须先 `Modal.confirm` 列出本次将执行的候选清单——
@@ -32,12 +33,13 @@
  * 本仓约定：两个汉字的按钮一律 `autoInsertSpace={false}`（provider-table.tsx 的文件头），
  * 否则可访问名会变成「开 始」/「确 定」，用例与屏幕阅读器都会撞上。
  */
-import { Badge, Button, Card, Descriptions, Flex, Layout, Modal, Popconfirm, Progress, Tooltip, Typography, theme } from 'antd';
+import { Alert, Badge, Button, Card, Descriptions, Flex, Layout, Modal, Popconfirm, Progress, Tooltip, Typography, theme } from 'antd';
 import type { DescriptionsProps } from 'antd';
 import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
   TERMINAL_ROW_STATUSES,
+  type FollowUpVerdict,
   hasLiveRows,
   isNoneSource,
   isRunnableRow,
@@ -78,6 +80,16 @@ export interface RunDetailPanelProps {
   onRetryRow: (rowId: string) => void;
   /** 单行执行请求在途：同上，只用于转圈与禁用 */
   retrying: boolean;
+  /**
+   * 这一行此刻能不能**追问**（第二期：接着原来那段会话再补一句话）。
+   * 由调用方（页面）从服务端的可用性读侧取——判据里有一半的事实在盘上与厂商声明上，
+   * 浏览器一格都看不到，故 ui 层不复算也不编文案。**不传即不渲染那个按钮**。
+   */
+  onFollowUpRow?: (rowId: string) => void;
+  /** 追问判据：按行取；`undefined` = 还没有这一行的结论（未加载 / 读失败） */
+  followUpOf?: (rowId: string) => FollowUpVerdict | undefined;
+  /** 追问请求在途：透给卡片做转圈与禁用 */
+  followingUp?: boolean;
   onOpenLog: (rowId: string) => void;
   onOpenDiff: (rowId: string) => void;
   onOpenScore: (rowId: string) => void;
@@ -204,6 +216,9 @@ export function RunDetailPanel({
   rescoring,
   onRetryRow,
   retrying,
+  onFollowUpRow,
+  followUpOf,
+  followingUp = false,
   onOpenLog,
   onOpenDiff,
   onOpenScore,
@@ -276,6 +291,9 @@ export function RunDetailPanel({
 
   /**
    * 顶部信息卡的字段表（与 `case-detail-panel.tsx` 的 `fields` 同构，只有字段集不同）：
+   *   · **备注只在非空时出现**，且排第一行：它回答「这一轮为什么这么测」，紧跟卡片标题读起来
+   *     才像一句副题；空备注摆一行「备注：—」等于凭空多一个让人去猜「为什么是空的」的字段
+   *     （与「分支只在远端轮次出现」同一条口径）；
    *   · **分支只在远端轮次出现**（`repoBranch !== null`）。本地轮次 / 旧数据渲染出的字段与新增这一行
    *     之前逐字相同——摆一行「分支：—」等于凭空多一个让人去猜「为什么是空的」的字段；
    *   · commit 给**全量** 40 位（不再截成短哈希 + Tooltip）：右栏是核对「这一轮测的到底是哪个提交」
@@ -283,6 +301,15 @@ export function RunDetailPanel({
    *   · 仓库路径与工作基目录同样给全量，靠换行而不是省略（右栏可能只有 320px）。
    */
   const headerFields: NonNullable<DescriptionsProps['items']> = [
+    ...(run.note.trim() === ''
+      ? []
+      : [
+        {
+          key: 'note',
+          label: '备注',
+          children: <Typography.Text>{run.note.trim()}</Typography.Text>,
+        },
+      ]),
     {
       key: 'repoPath',
       label: '代码仓库',
@@ -323,7 +350,7 @@ export function RunDetailPanel({
 
   return (
     <Flex vertical gap={8} style={{ height: '100%', minHeight: 0 }}>
-      {/* 顶部信息卡：用例标题 + 代码仓库 /（远端才有）分支 / commit / 工作基目录 */}
+      {/* 顶部信息卡：用例标题 +（备注非空才有）备注 / 代码仓库 /（远端才有）分支 / commit / 工作基目录 */}
       <Card
         size="small"
         title={run.caseTitle}
@@ -373,6 +400,22 @@ export function RunDetailPanel({
       >
         {/* antd 6 的 Descriptions 推荐 items（子节点写法已弃用）；列数固定 1 列：右栏窄，多的列只会挤到换行 */}
         <Descriptions size="small" column={1} items={headerFields} />
+        {/**
+         * **可比性提示**（与开关那一格同源）：开着输入区的一轮里，人在半路补的话**照旧进评分证据**
+         * ⇒ 它的产物与没插过话的轮次不可直接比。提示放在这里而不是只放卡片上：
+         * 评分的证据面在轮次这一层，而候选卡片可能不在视野里（列表要滚动）——
+         * 不提示就等于让分数静默地换了口径。`askUser` 那一格同理，但它今天没有这条提示面。
+         */}
+        {run.injectMessages ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 8 }}
+            // antd 6 把 `Alert.message` 换成了 `title`（旧名只是废弃、运行期仍回落，但控制台会告警）
+            title="这一轮允许人工补充消息"
+            description="人在运行中补的话会进智能体的上下文、也照旧进评分证据。代价如实说：这一轮被人介入过，产物与没插过话的轮次不可直接比；候选卡片上的「人工消息 ×N」是实际送达的条数（运行中插的话与跑完之后的追问都算）。"
+          />
+        ) : null}
         {/* 串行进度钉在信息卡**内部底部**：它读的是「整轮跑完了几行」，
             与上面这组「这一轮跑的到底是哪份代码」属于同一块元信息；浮在卡片外面时，
             它悬在卡片与候选列表之间，看着像下面那串候选卡片的表头。
@@ -404,6 +447,10 @@ export function RunDetailPanel({
               rescorePending={rescoring}
               onRetry={() => onRetryRow(row.id)}
               retryPending={retrying}
+              // 没有回调就不传（卡片据此不渲染那个按钮）：一个点了没反应的按钮比没有按钮更糟
+              {...(onFollowUpRow === undefined ? {} : { onFollowUp: () => onFollowUpRow(row.id) })}
+              {...(followUpOf === undefined ? {} : { followUpVerdict: followUpOf(row.id) })}
+              followUpPending={followingUp}
               onOpenLog={() => onOpenLog(row.id)}
               onOpenDiff={() => onOpenDiff(row.id)}
               onOpenScore={() => onOpenScore(row.id)}

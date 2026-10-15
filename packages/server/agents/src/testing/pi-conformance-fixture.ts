@@ -298,6 +298,12 @@ export interface PiConformanceOptions {
   /** 权限档（缺省 `full`，与 `createRunInput` 一致）。只读档的用例用它判出站工具表 */
   permission?: AgentPermission;
   /**
+   * 路由的 API key（缺省 `'sk-conformance'`）。给空串即造「网关条目没有凭据」那一档：
+   * 厂商在**发出任何请求之前**就抛（`No API key found for …`），判据因此能同时读
+   * 「零出站请求」与「结论是失败」两份事实。
+   */
+  apiKey?: string;
+  /**
    * 提问回调：给不给它决定这一轮有没有应答面（不给 ⇒ 适配器一个钩子都不挂、一个工具都不注册）。
    * 提问应答场景要拿同一行跑两次（带 / 不带），差别只在这一格。
    *
@@ -329,7 +335,7 @@ export async function runPiConformanceRow(options: PiConformanceOptions): Promis
       route: {
         protocolType: 'anthropic',
         baseUrl: `http://127.0.0.1:${gateway.port}/v1`,
-        apiKey: 'sk-conformance',
+        apiKey: options.apiKey ?? 'sk-conformance',
         modelId: 'm1',
         contextWindow: 100_000,
         maxOutputTokens: 32_768,
@@ -407,6 +413,15 @@ export async function runPiConformanceRow(options: PiConformanceOptions): Promis
 export interface PiLifecycleObservation {
   disposeAfterRun: number;
   disposeAfterCancel: number;
+  /**
+   * **走过一次结构化输出修正轮之后**会话被释放了几次（同一口径：必须恰好一次）。
+   *
+   * 为什么单列一格：修正轮是一次**新的活动区间**，而骨架的释放闭包读的是「当时的那一个」
+   * ⇒ 追问区间若不共用首轮的释放入口，整条释放链（`session.dispose()` / `waitForIdle()` /
+   * `subagentWire.dispose()` / provider 注销）一次都不会执行。不带 `outputSchema` 的剧本
+   * 结构上踩不到这一格。
+   */
+  disposeAfterRepair: number;
   canceledMidTurn: boolean;
   /** 取消到运行落定的墙钟（判「abort 真的终结了在途轮次」还是「走了 5 秒兜底」） */
   cancelSettleMs: number;
@@ -453,7 +468,7 @@ async function installDisposalCounter(): Promise<DisposalCounter> {
           const created = await real.createAgentSession(
             sessionOptions as Parameters<typeof real.createAgentSession>[0],
           );
-          // 逐方法转发（展开一个类实例会丢原型上的方法）：形状就是 `PiSession` 用到的那七格
+          // 逐方法转发（展开一个类实例会丢原型上的方法）：形状就是 `PiSession` 用到的那几格
           const session = created.session;
           return {
             session: {
@@ -468,6 +483,23 @@ async function installDisposalCounter(): Promise<DisposalCounter> {
               bindExtensions: (bindings: { mode: 'rpc'; onError?: (error: unknown) => void }) =>
                 session.bindExtensions(bindings),
               getLastAssistantText: () => session.getLastAssistantText(),
+              /**
+               * `sessionId` / `sessionFile` **必须转发**：它们是子智能体转写路径的键（缺了记 `null`，
+               * 转写通道静默失效）与续接那一格；会话面的装配断言（`assertPiSessionShape`）也会拦它。
+               *
+               * `extensionRunner` **刻意不转发**：转发之后释放链里补发的那一发 `session_shutdown`
+               * 会真的执行，而扩展是**进程级单例**——同一个文件里先跑过一条走释放的行之后，
+               * 后续行的子任务正文通道就退化成转写补录（实测：`子任务正文` 那两条用例由 `wire`
+               * 变成 `session-file`、逐字增量归零）。那是一个**待定位的真问题**（跨行的扩展单例被
+               * 上一行的释放带走？），不该由夹具顺手掩盖：这里保持缺席，让「补发那一发」的验收留在
+               * 能观测它的探针里，而不是让整套一致性套件的读数被它改写。
+               */
+              get sessionId() {
+                return session.sessionId;
+              },
+              get sessionFile() {
+                return session.sessionFile;
+              },
             },
           };
         },
@@ -476,6 +508,43 @@ async function installDisposalCounter(): Promise<DisposalCounter> {
     },
   });
   return { disposes: () => count, reset: () => { count = 0; } };
+}
+
+/**
+ * 修正轮那一条腿：真跑一行「首答不合格 ⇒ 追问」，交回这一段里的释放次数（跑完清零）。
+ *
+ * 剧本每轮都回一段非 JSON 的正文 ⇒ 首答必然不合格、必然追问；网关对越界请求复用最后一段剧本，
+ * 所以追问也拿到同一段（追问**几次**由骨架的修正预算决定，与这一格无关——这一格只问
+ * 「释放有没有发生」）。
+ */
+async function runRepairLeg(counter: DisposalCounter): Promise<number> {
+  const gateway = await startPiScriptedGateway([anthropicText('不是 JSON 的正文。')]);
+  try {
+    await runWithGateway(gateway, {
+      outputSchema: {
+        type: 'object',
+        properties: { verdict: { type: 'string' } },
+        required: ['verdict'],
+        additionalProperties: false,
+      },
+    });
+  } finally {
+    gateway.close();
+  }
+  const disposes = counter.disposes();
+  counter.reset();
+  return disposes;
+}
+
+/** 只要「修正轮之后释放了几次」这一格的窄入口（守卫不必跑另外两条腿） */
+export async function observePiRepairDisposal(): Promise<number> {
+  const counter = await installDisposalCounter();
+  try {
+    return await runRepairLeg(counter);
+  } finally {
+    const { setAgentRuntimeForTesting } = await import('../runtime');
+    setAgentRuntimeForTesting(null);
+  }
 }
 
 /**
@@ -534,9 +603,11 @@ export async function observePiLifecycle(): Promise<PiLifecycleObservation> {
     }
     const disposeAfterRun = counter.disposes();
     counter.reset();
+    const disposeAfterRepair = await runRepairLeg(counter);
     const canceled = await observeCancelAt(counter, 'mid-stream');
     return {
       disposeAfterRun,
+      disposeAfterRepair,
       disposeAfterCancel: canceled.disposes,
       canceledMidTurn: canceled.canceledMidTurn,
       cancelSettleMs: canceled.settleMs,
@@ -566,7 +637,7 @@ export async function observePiCancelAt(hang: PiGatewayHang): Promise<PiCancelOb
 /** 生命周期观测里跑一次真运行（不建产物，只要出口上的行为） */
 async function runWithGateway(
   gateway: PiScriptedGateway,
-  options: { signal?: AbortSignal },
+  options: { signal?: AbortSignal; outputSchema?: unknown },
 ): Promise<AgentRunResult> {
   const layout = createPiRowLayout('pi-lifecycle-');
   try {
@@ -582,6 +653,7 @@ async function runWithGateway(
         maxOutputTokens: 32_768,
       },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
     });
   } finally {
     removeTreeWithRetry(layout.root);

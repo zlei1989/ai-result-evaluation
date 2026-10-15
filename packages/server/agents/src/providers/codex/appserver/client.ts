@@ -12,12 +12,23 @@
  *     ——本仓评测是非交互的（`approvalPolicy: never`），应答等于替用户批准；问答类
  *     （`item/tool/requestUserInput`）**必须回帧**，不回时厂商会一直等那一帧。分界线由注入的
  *     `onServerRequest` 决定（返回结果 = 写回一帧，返回 `null` = 本类不应答），本模块不认方法名。
- *  3. **坏帧计数不静默**：解析不了的整行进 `unparsedFrames()`，与 `transcript.ts` 的 `stats.badLines`
- *     同一理由——静默跳过会让「上游换了帧格式」表现成「子智能体突然没了子线程」。
+ *  3. **坏帧计数不静默**：解析不了的整行进 `unparsedFrames()` **并落一条 WARN**，与 `transcript.ts`
+ *     的 `stats.badLines` 同一理由——静默跳过会让「上游换了帧格式」表现成「子智能体突然没了子线程」。
  *
  * 第四条：**`close()` 回收整棵进程树并等确认**（`process-tree.ts`）。
  * codex 会在 `thread/start` 期间 spawn `git` 链去同步插件目录，只杀直接子进程会把它们留成孤儿，
  * 而它们持着本行的 `$CODEX_HOME`——下一轮的行产物清理就此 `EPERM`。
+ *
+ * 第五条：**管道两端的三个不变量**（都只在真机现形，单测拿假子进程看不见，故写在接口上由类型强制）：
+ *   · 读侧 `setEncoding('utf8')`——不设编码时跨 chunk 的汉字会被切成替换字符，而坏字落在 JSON
+ *     字符串内部时 `JSON.parse` 照样成功 ⇒ 中文**静默**乱码；
+ *   · 写侧 `stdin.on('error')`——`ChildProcess.on('error')` 不接管 stdin 流的错误，没有监听者的
+ *     `EPIPE` 是未捕获异常，会带走宿主进程；
+ *   · 结算挂 `close` 而非 `exit`——`exit` 不保证 stdout 已读完。
+ *   逐条的机制与症状见 `AppServerChild` 各成员的注释。
+ *
+ * 第六条：**报文方向只看有没有 `method`**（不是「id 在不在待收表里」）。JSON-RPC 的两个方向各有
+ * 独立的 id 空间，拿 id 反推方向会让服务端请求与迟到的响应互相冒充（见 `handleLine`）。
  */
 import { spawn } from 'node:child_process';
 import { createLogger } from '@aieval/core';
@@ -45,10 +56,35 @@ export interface AppServerServerRequest {
  * 要按 pid 杀**整棵树**、并按退出码判断「是不是已经死透了」，只声明 `kill()` 是不够的。
  */
 export interface AppServerChild extends ProcessTreeChild {
-  readonly stdin: { write(chunk: string): unknown };
-  readonly stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown };
-  readonly stderr: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown };
+  /**
+   * 写帧的出口。**`on('error')` 是必填的**：这根管子是 Socket，对端（子进程）已死之后写入会
+   * 异步 emit `EPIPE` / `ERR_STREAM_DESTROYED`，而 `ChildProcess.on('error')` **不接管 stdin 流上的
+   * 错误** ⇒ 没有监听者的 `'error'` 在 Node 里就是未捕获异常，会带走整个宿主进程（本仓是 Next 服务）。
+   */
+  readonly stdin: {
+    write(chunk: string): unknown;
+    on(event: 'error', listener: (error: Error) => void): unknown;
+  };
+  /**
+   * 读帧的入口。**`setEncoding` 是必填的**：不设编码时 `data` 给的是 Buffer，而一个多字节字符
+   * （汉字 3 字节）完全可能跨两个 chunk——逐块 `toString()` 会把它切成替换字符，且坏字落在 JSON
+   * 字符串**内部**时 `JSON.parse` 照样成功 ⇒ 中文正文静默乱码、坏帧计数不增、日志不响。
+   * 交给 Node 的 `StringDecoder`（`setEncoding('utf8')`）才是正解，它跨 chunk 保留不完整字节。
+   */
+  readonly stdout: {
+    on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
+    setEncoding(encoding: 'utf8'): unknown;
+  };
+  readonly stderr: {
+    on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
+    setEncoding(encoding: 'utf8'): unknown;
+  };
   on(event: 'exit', listener: (code: number | null, signal: string | null) => void): unknown;
+  /**
+   * `close` = 全部 stdio 都已 EOF。**结算待收请求只能挂在它上面**：`exit` 只说进程没了，
+   * **不保证 stdout 已读完** ⇒ 挂在 `exit` 上会把「写完响应就退出」的那次成功请求拒成「进程已退出」。
+   */
+  on(event: 'close', listener: (code: number | null, signal: string | null) => void): unknown;
   on(event: 'error', listener: (error: Error) => void): unknown;
   kill(): unknown;
 }
@@ -132,6 +168,9 @@ const CLIENT_INFO = { name: 'aieval-codex-reader', title: 'aieval codex reader',
 /** stderr 只留尾部这么多字符：报错时够定位，又不至于把整段日志搬进错误消息 */
 const STDERR_TAIL_LIMIT = 2_000;
 
+/** 坏帧 / stderr 进日志时的截断长度：一行可能是几十 KB 的命令输出，日志不该被它灌满 */
+const BAD_FRAME_LOG_LIMIT = 500;
+
 const defaultSpawn: AppServerSpawn = (binary, args, env) => {
   // `env` 是仓内自己的键值对视图，而 `spawn` 要的是**全局**的 `NodeJS.ProcessEnv`
   // （下游应用可以给它补必填成员，见 `AppServerEnv`）⇒ 只能在这里断言一次。
@@ -207,11 +246,38 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
   };
 
   /**
+   * 写一帧到 stdin（**唯一写出口**）。
+   *
+   * 两道保护，各挡一种崩法：
+   *   · **已终态就不写**：进程已退出 / 已关闭之后那根管子早没了，写它只会换来一个
+   *     `EPIPE`；返回 `false` 让调用方按「这帧没发出去」处置；
+   *   · **同步抛也要吞**：`ERR_STREAM_DESTROYED` 可能同步抛，而两个调用方
+   *     （回帧、发请求）都不在能处理它的位置上——回帧那一侧是 fire-and-forget，
+   *     抛出去就是未捕获的 rejection。异步那一半由 `stdin.on('error')` 兜（见 `AppServerChild`）。
+   */
+  const writeFrame = (frame: Record<string, unknown>, where: string): boolean => {
+    if (closed || terminal !== null) {
+      logger.warn('codex app-server 已终态，这一帧不再写出', { where, reason: terminal ?? '客户端已关闭' });
+      return false;
+    }
+    try {
+      child.stdin.write(`${JSON.stringify(frame)}\n`);
+      return true;
+    } catch (error) {
+      logger.warn('codex app-server 写帧失败（这一帧没发出去）', { where, error });
+      return false;
+    }
+  };
+
+  /**
    * 应答一条服务端主动请求：应答者给结果就写回一帧，给 `null` 就当本类请求不应答（审批类）。
    *
    * 为什么抛错也回一帧：厂商正阻塞在这一帧上（`isBlocking` 为假也不让它自己收场）⇒ 让它继续等
    * 比回一帧空的更坏。回的是**空结果**而不是错误帧：我们这一侧坏了，不该让厂商把整轮判成失败
    * ——「没人答」与「行失败」是两件事（与 `ask-user.ts` 的收场口径同源）。
+   *
+   * **审批类不回帧也要留痕**：`null` 同时表达「本类不应答」与「什么都不记」会让一次
+   * 「厂商阻塞在审批帧上 ⇒ 行静止到看门狗」在日志里一个字都没有。
    */
   const respond = async (id: number | string, request: AppServerServerRequest): Promise<void> => {
     let result: unknown;
@@ -221,39 +287,90 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
       logger.error('服务端主动请求的应答者抛错，按空结果回帧', { method: request.method, id: request.id, error });
       result = {};
     }
-    if (result === null) return;
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+    if (result === null) {
+      logger.warn('这一类服务端主动请求本仓不应答（厂商会一直等这一帧）', { method: request.method, id: request.id });
+      return;
+    }
+    writeFrame({ jsonrpc: '2.0', id, result }, `回帧 ${request.method}`);
   };
 
   const handleLine = (line: string): void => {
     let message: Record<string, unknown>;
     try {
-      message = JSON.parse(line) as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(line);
+      /**
+       * **先挡住「不是对象」的那些**——这一格是崩溃与不崩溃的分界，不是洁癖。
+       *
+       * `JSON.parse('null')` 是**合法 JSON**，而 `null.id` 会抛
+       * `TypeError: Cannot read properties of null (reading 'id')`；这一行是从 socket 的 `data`
+       * 处理器里跑出来的，抛出去就是**未捕获异常**，带走整个宿主 Node 进程（本仓是 Next 服务）
+       * ——真机复现：在真管道上注入一行 `null`，装着本客户端的 Node 子进程退出码 1。
+       * 数字 / 字符串同样是合法 JSON 也不是帧（属性访问得 `undefined`，不抛，但会一路滑到
+       * 「认不出归属」那一支，于是 `unparsedFrames()` 少算它们）⇒ 与解析失败同一档处置。
+       */
+      if (parsed === null || typeof parsed !== 'object') {
+        unparsed += 1;
+        logger.warn('codex app-server 的这一行不是 JSON-RPC 帧（已计入坏帧）', {
+          count: unparsed,
+          head: line.slice(0, BAD_FRAME_LOG_LIMIT),
+          length: line.length,
+        });
+        return;
+      }
+      message = parsed as Record<string, unknown>;
     } catch {
       unparsed += 1;
+      /**
+       * 坏帧**不静默**（文件头第 3 条）：只加计数而不打日志的话，非 JSON 的 stdout 行
+       * （启动横幅、Rust panic 文本）就此消失，症状会表现成「子线程突然没了」而无任何线索。
+       * 原文截断后入日志——整行可能是一条几十 KB 的输出。
+       */
+      logger.warn('codex app-server 的这一行解析不了（已计入坏帧）', {
+        count: unparsed,
+        head: line.slice(0, BAD_FRAME_LOG_LIMIT),
+        length: line.length,
+      });
       return;
     }
     const id = message.id;
+    /**
+     * **方向只看有没有 `method`**。
+     *
+     * JSON-RPC 里「客户端请求的 id」与「服务端请求的 id」是**两个独立空间**：响应必有
+     * `result` 或 `error`、请求必有 `method`。拿「id 在不在待收表里」反推方向会在两个方向上错位：
+     *   · 服务端请求的 id 撞上我们在飞的 id ⇒ 被当成响应吃掉，那条审批 / 提问**既不归类也不回帧**，
+     *     厂商一直等那一帧（`isBlocking` 时整行挂死到轮次超时）；
+     *   · 超时后迟到的响应（待收表里已经删了）⇒ 被当成服务端请求，污染审批 / 提问的归类面。
+     */
+    if (typeof message.method === 'string') {
+      // 带 id 的请求 = 服务端主动请求（审批 / 提问）：**先归类**，应答与否交给应答者
+      if (typeof id === 'number' || typeof id === 'string') {
+        const request: AppServerServerRequest = { id, method: message.method, params: message.params };
+        serverRequestList.push(request);
+        if (onServerRequest !== undefined) void respond(id, request);
+        return;
+      }
+      // 不带 id = 通知
+      const notification: AppServerNotification = { method: message.method, params: message.params };
+      notificationList.push(notification);
+      for (const listener of listeners) listener(notification);
+      return;
+    }
+    // 没有 `method` ⇒ 这是一条响应：按 id 找待收请求
     if (typeof id === 'number' && pending.has(id)) {
       settle(id, message);
       return;
     }
-    // 带 id 但不在待收表里 = 服务端主动请求（审批 / 提问）：**先归类**，应答与否交给应答者
-    if (id !== undefined && (typeof id === 'number' || typeof id === 'string')) {
-      const request: AppServerServerRequest = { id, method: String(message.method ?? ''), params: message.params };
-      serverRequestList.push(request);
-      if (onServerRequest !== undefined) void respond(id, request);
-      return;
-    }
-    if (typeof message.method === 'string') {
-      const notification: AppServerNotification = { method: message.method, params: message.params };
-      notificationList.push(notification);
-      for (const listener of listeners) listener(notification);
-    }
+    /**
+     * 认不出归属的响应（超时后迟到、重复响应、id 不是我们发过的号）：**不当成服务端请求**
+     * ——那会让它进归类面、还可能被应答者写回一帧。只记一条。
+     */
+    logger.warn('收到一条认不出归属的响应（已忽略）', { id: typeof id === 'object' ? null : id });
   };
 
+  child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
-    buffer += chunk.toString();
+    buffer += typeof chunk === 'string' ? chunk : chunk.toString();
     let index = buffer.indexOf('\n');
     while (index >= 0) {
       const line = buffer.slice(0, index).trim();
@@ -262,15 +379,49 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
       index = buffer.indexOf('\n');
     }
   });
+  child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => {
-    stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT);
+    const text = typeof chunk === 'string' ? chunk : chunk.toString();
+    stderrTail = (stderrTail + text).slice(-STDERR_TAIL_LIMIT);
+    /**
+     * stderr **按行落日志**：只攒尾巴的话，一次成功运行里 codex 写到 stderr 的告警
+     * （配置废弃、插件同步失败）一个字都不会出现——它们只在进程退出时才拼进错误消息。
+     * 尾巴仍然留着，那是收场时的上下文。
+     */
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length > 0) logger.debug('codex app-server stderr', { line: trimmed.slice(0, BAD_FRAME_LOG_LIMIT) });
+    }
   });
+  /**
+   * **结算挂在 `close` 上，不是 `exit` 上**（见 `AppServerChild.on('close')`）：`exit` 不保证
+   * stdout 已读完，挂在它上面会把「写完响应立刻退出」的那次成功请求拒成「进程已退出」。
+   * `exit` 这一支只记退出码，留给 `close` 组装原因。
+   */
+  let exitCode: number | null = null;
   child.on('exit', (code) => {
+    exitCode = code;
+    logger.debug('codex app-server 进程已退出，等 stdio 收口', { code });
+  });
+  child.on('close', (code) => {
+    // 残留的最后一行（上游没有以换行收尾时）也要过一遍：它可能正是那条响应
+    const rest = buffer.trim();
+    buffer = '';
+    if (rest.length > 0) handleLine(rest);
     const tail = stderrTail.trim();
-    rejectAll(`codex app-server 进程已退出（code=${String(code)}）${tail.length > 0 ? ` stderr: ${tail}` : ''}`);
+    const finalCode = code ?? exitCode;
+    rejectAll(`codex app-server 进程已退出（code=${String(finalCode)}）${tail.length > 0 ? ` stderr: ${tail}` : ''}`);
   });
   child.on('error', (error) => {
     rejectAll(`codex app-server 启动失败：${error.message}`);
+  });
+  /**
+   * stdin 的异步错误（`EPIPE` / `ERR_STREAM_DESTROYED`）：**必须有监听者**，否则就是未捕获异常
+   * ⇒ 带走宿主进程（见 `AppServerChild.stdin`）。这里只记日志、**不** `rejectAll`：
+   * 进程真的退出有它自己的通路（`close`），而一次写失败不该替它宣布死亡。
+   */
+  child.stdin.on('error', (error) => {
+    logger.warn('codex app-server 的 stdin 报错（这一帧没写出去；进程退出由 close 那一支结算）', { error });
   });
 
   const request = <T,>(method: string, params?: unknown): Promise<T> => {
@@ -283,7 +434,12 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
         if (pending.delete(id)) reject(new Error(`codex app-server 请求超时：${method}（${timeoutMs}ms）`));
       }, timeoutMs);
       pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject, timer });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? {} })}\n`);
+      // 写不出去就**立刻**结算这一条：留在待收表里只会白等一个 30 秒的超时
+      if (!writeFrame({ jsonrpc: '2.0', id, method, params: params ?? {} }, method)) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(new Error(`codex app-server 请求没能写出去：${method}`));
+      }
     });
   };
 

@@ -35,10 +35,12 @@ import {
   useAbortRun,
   useCreateRun,
   useDeleteRun,
+  useRowArtifactFile,
   useRowDiffFile,
   useRowDiffIndex,
   useRowLog,
   useRun,
+  useRunArtifacts,
   useRunModelOptions,
   useRuns,
   useStartRun,
@@ -234,9 +236,9 @@ describe('useRuns', () => {
     // 服务端落了一次盘：SSE 推一条 run-updated ⇒ 客户端立刻重读列表。
     // 推进一个节流窗口（300ms 是产品默认值），mutate 的 promise 链随之冲出来
     const source = FakeEventSource.instances[0];
-    expect(source?.url).toBe('/api/runs/events');
+    expect(source?.url).toBe('/api/runs/stream');
     await act(async () => {
-      source?.emitNamed('run-updated', JSON.stringify({ runId: 'run-1' }));
+      source?.feed('data: {"type":"run-updated","runId":"run-1"}\n\n');
       await vi.advanceTimersByTimeAsync(300);
     });
     await act(async () => {
@@ -322,6 +324,7 @@ describe('四个动作', () => {
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm-1' }],
     };
     await act(async () => {
@@ -447,6 +450,38 @@ describe('产物读取', () => {
     expect(urls).toContain('/api/runs/run-1/rows/w-1/diff?offset=30&limit=30');
     expect(urls).toContain('/api/runs/run-1/rows/w-1/diff?file=src%2Fa%20b.ts');
     expect(urls).toContain('/api/runs/run-1/rows/w-1/log');
+  });
+
+  it('useRunArtifacts 在 enabled=false 时一个请求都不发（没打开排名抽屉就不扫盘）', async () => {
+    const fetchMock = stubRunRoutes();
+
+    renderHook(() => useRunArtifacts('run-1', false), { wrapper });
+    await flushMount();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('useRowArtifactFile 的 name 为 undefined 时一个请求都不发（「这一份还没取」的开关）', async () => {
+    const fetchMock = stubRunRoutes();
+
+    renderHook(() => useRowArtifactFile('run-1', 'w-1', undefined), { wrapper });
+    await flushMount();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('两个产物 hook 的键就是真实端点（清单在轮级、正文在行级且 name 走编码）', async () => {
+    const fetchMock = stubRunRoutes();
+
+    renderHook(() => useRunArtifacts('run-1', true), { wrapper });
+    await flushMount();
+    renderHook(() => useRowArtifactFile('run-1', 'w-1', 'RE SULT.md'), { wrapper });
+    await flushMount();
+
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls).toContain('/api/runs/run-1/artifacts');
+    // 带空格的 name 必须编码：不编码时服务端解出来是截断的（白名单会再挡一次，但拼 URL 这一步不该假设取值面）
+    expect(urls).toContain('/api/runs/run-1/rows/w-1/artifacts?name=RE%20SULT.md');
   });
 });
 
@@ -694,6 +729,7 @@ describe('useUpdateRun', () => {
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
       rows: [
         {
           id: 'w-1',
@@ -741,6 +777,7 @@ describe('useUpdateRun', () => {
           executionMode: 'serial',
           useAgentJudge: false,
           askUser: false,
+          injectMessages: false,
           rows: [
             { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
           ],

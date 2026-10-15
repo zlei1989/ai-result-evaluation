@@ -75,7 +75,37 @@ const DESCRIPTION_KEY = 'description';
  * 顺序沿用既有口径：`command` 仍排在 `file_path` / `path` 之前（一个陌生工具若同时给了命令与路径，
  * 命令才是它在干什么）。`description` **不在这张表里**——它在两条路之前单独判，见 `DESCRIPTION_KEY`。
  */
-const PREFERRED_ARGUMENT_KEYS = ['command', 'file_path', 'path', 'job_id', 'query', 'pattern', 'url', 'prompt'] as const;
+const PREFERRED_ARGUMENT_KEYS = ['command', 'file_path', 'path', 'job_id', 'query', 'pattern', 'url', 'prompt', 'message'] as const;
+
+/**
+ * 通用兜底里「短到可以当一句话」的 JSON 上限。
+ *
+ * 超了就不给摘要（活动行只留 `调用工具 <名>`）——把一坨结构塞进一行等于把机器负载当人话：
+ * 真机上 `send_message` 的入参有 121 字符，截断后那半截 JSON 既读不懂、也没法解析，
+ * 而**它是唯一上屏的那一句**。宁可少说一句，也不要说一句假的「人话」。
+ */
+const GENERIC_JSON_MAX_LENGTH = 40;
+
+/**
+ * 「名字类」的键：单键对象命中它时给值本身（例如 `skill` 的 `{name:'poetry'}` ⇒ `poetry`）。
+ * 只认这三个：换成 `{"a":1}` 那种，键本身是有信息的，去掉键反而更难读。
+ */
+const LONE_SCALAR_KEYS = new Set(['name', 'title', 'label']);
+
+/**
+ * 单键对象且键是名字类、值是短标量 ⇒ 给那个值本身。
+ * 判据从严：只有一个键、值是字符串/数字、单行且 ≤32 字符——多键或长值都不猜。
+ */
+function loneScalarOf(record: Record<string, unknown> | null): string | null {
+  if (record === null) return null;
+  const keys = Object.keys(record);
+  if (keys.length !== 1 || !LONE_SCALAR_KEYS.has(keys[0] as string)) return null;
+  const value = record[keys[0] as string];
+  const text = typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
+  if (text === null) return null;
+  const line = oneLine(text);
+  return line === '' || line.length > 32 ? null : line;
+}
 
 /** 计划类入参的键名：命中**任意一个**数组就按「更新计划：N 步」说（claude 的 `todos` / dsh 的 `steps` / codex 的 `plan`） */
 const PLAN_ARGUMENT_KEYS = ['todos', 'plan', 'steps'] as const;
@@ -349,8 +379,13 @@ function genericHint(record: Record<string, unknown> | null): string | null {
   }
   const paths = changedPathsOf(record);
   if (paths.length > 0) return clipSummary(pathsOf(paths));
+  const lone = loneScalarOf(record);
+  if (lone !== null) return clipSummary(lone);
   const json = safeStringify(record);
-  return json === '' ? null : clipSummary(oneLine(json));
+  if (json === '') return null;
+  const line = oneLine(json);
+  // 长 JSON 不当人话（见 `GENERIC_JSON_MAX_LENGTH`）：返回 null ⇒ 活动行只剩「调用工具 <名>」
+  return line.length > GENERIC_JSON_MAX_LENGTH ? null : clipSummary(line);
 }
 
 /**
@@ -371,6 +406,20 @@ function rawHint(input: unknown): string | null {
 export function toolErrorSummary(text: string | null): string {
   const detail = text === null ? '' : clipSummary(oneLine(text));
   return detail === '' ? '工具报错' : `工具报错：${detail}`;
+}
+
+/**
+ * **工具调用被权限档当场拒**的一句话：`工具被拒 <名>：<原因>`。
+ *
+ * 与 `toolErrorSummary` 刻意分成两句：工具**自己跑失败**（命令返回非零）与**压根没被允许跑**
+ * 是两件事，排障的下一步完全不同（前者看命令，后者看权限档与放行范围）。
+ * 名字或原因只有一个时句子照样成立（同 `toolCallSummary` 的处置）：不编名字、也不留空冒号。
+ */
+export function toolDeniedSummary(name: string | null, reason: string | null): string {
+  const trimmed = name === null ? '' : name.trim();
+  const title = trimmed === '' ? '工具被拒' : `工具被拒 ${trimmed}`;
+  const detail = reason === null ? '' : clipSummary(oneLine(reason));
+  return detail === '' ? title : `${title}：${detail}`;
 }
 
 /** 计划更新的一句话：`更新计划：N 步`（codex 的原生 `turn/plan/updated` 与另两家的清单工具同形） */

@@ -258,6 +258,7 @@ function settlementMessage(
     vendorId: null,
     role: 'tool',
     source: 'hook',
+    origin: 'case-prompt',
     roundTrip,
     turn: null,
     step: null,

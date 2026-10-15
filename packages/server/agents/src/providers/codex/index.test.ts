@@ -22,6 +22,7 @@ import {
   reasoningTextDelta,
   threadItemsPages,
   threadListPages,
+  threadTurnsPages,
   threadStarted,
   tokenUsageUpdated,
   turnCompleted,
@@ -59,9 +60,14 @@ function wire(scenario: Scenario = {}): FakeAppServer {
     hangUntilTerminal: scenario.hang === true,
     respond: {
       'thread/list': threadListPages(scenario.threads ?? [], 100),
+      // 元数据（不带 includeTurns）与轮次分两次取：轮次走 `thread/turns/list`（见 reader.ts）
       'thread/read': (params) => {
         const content = scenario.contents?.[String(params.threadId)];
-        return content === undefined ? { thread: null } : { thread: content.thread };
+        return content === undefined ? { thread: null } : { thread: { ...content.thread, turns: undefined } };
+      },
+      'thread/turns/list': (params) => {
+        const content = scenario.contents?.[String(params.threadId)];
+        return threadTurnsPages(content?.thread.turns ?? [], 100)(params);
       },
       'thread/items/list': (params) => {
         const content = scenario.contents?.[String(params.threadId)];
@@ -158,7 +164,13 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
       model_provider: 'aieval',
       model_providers: { aieval: { base_url: 'https://gw.example.com/openai/v1', wire_api: 'responses', env_key: 'OPENAI_API_KEY' } },
       model_context_window: 1_048_576,
-      tools: { web_search: false, update_plan: { enabled: true } },
+      /**
+       * 内置联网工具的开关在**顶层** `web_search`：真机五臂（`arms/arm-websearch.mjs`）里
+       * `tools.web_search=false` 那一格给不给，出站请求体的工具表**逐字相同**（`type:"web_search"` 一直在），
+       * 而 `web_search:"disabled"` 一给就消失。故这一格钉在顶层，`tools` 只管参数容器与计划工具。
+       */
+      web_search: 'disabled',
+      tools: { update_plan: { enabled: true } },
       features: { multi_agent: true },
     });
     expect(threadParams).not.toHaveProperty('effort');
@@ -207,8 +219,8 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
       }),
     );
     const askedConfig = (withCallback.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
+    expect(askedConfig['web_search']).toBe('disabled');
     expect(askedConfig['tools']).toEqual({
-      web_search: false,
       update_plan: { enabled: true },
       experimental_request_user_input: { enabled: true },
     });
@@ -217,7 +229,8 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
     const control = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
     await codexProvider.run(createRunInput());
     const bareConfig = (control.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
-    expect(bareConfig['tools']).toEqual({ web_search: false, update_plan: { enabled: true } });
+    expect(bareConfig['web_search']).toBe('disabled');
+    expect(bareConfig['tools']).toEqual({ update_plan: { enabled: true } });
     expect(bareConfig['features']).toEqual({ multi_agent: true });
   });
 
@@ -495,6 +508,31 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
     expect(server.stats.requests[2]?.params).toMatchObject({ effort: 'none' });
   });
 
+  /**
+   * **档位同时写进线程级 config**（`model_reasoning_effort`）。
+   *
+   * 要拦的缺陷：只把档位给 `turn/start`。那一格只管它起的那一轮，而人话续跑起的那一轮走
+   * `thread/queue/start`——那个请求的参数**只有** `threadId` 与 `queuedSubmissionId`（探针 dump
+   * `v2/ThreadQueueStartParams.json` 的 `required`），带不了档位 ⇒ 不给线程级这一格，续跑那一轮
+   * 会按线程默认档跑，而行快照上写着用户选的那一档（一句半真话）。
+   */
+  it('档位同时进线程级 `config.model_reasoning_effort`（续跑那一轮带不了 effort 参数，只能靠它）', async () => {
+    const server = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+    await codexProvider.run(createRunInput({ effort: 'high' }));
+    expect(server.stats.requests[1]?.params).toMatchObject({ config: { model_reasoning_effort: 'high' } });
+
+    // 关闭档同样要翻名：契约/界面用 `off`，CLI 那一侧只认 `none`
+    const off = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+    await codexProvider.run(createRunInput({ effort: EFFORT_OFF }));
+    expect(off.stats.requests[1]?.params).toMatchObject({ config: { model_reasoning_effort: 'none' } });
+
+    // 未选档 ⇒ 整个键都不给（「我们没意见」的形态，与另外两格同一条口径）
+    const bare = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
+    await codexProvider.run(createRunInput());
+    const bareConfig = (bare.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
+    expect(Object.hasOwn(bareConfig, 'model_reasoning_effort')).toBe(false);
+  });
+
   it('其它档位与未选都不带那两格键（形态判据用 `Object.hasOwn`）', async () => {    const withEffort = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
     await codexProvider.run(createRunInput({ effort: 'high' }));
     const highConfig = (withEffort.stats.requests[1]?.params as { config: Record<string, unknown> }).config;
@@ -633,10 +671,15 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
   });
 
   it('`fileChange` ⇒ `apply_patch` 调用 + 结构化结果（这一格此前在消息面上没有）', async () => {
+    /**
+     * ⚠️ 这一格喂的是**厂商线面的形状**（它要过 `readItem`）：`changes[].kind` 是**带标签的对象**
+     * `{type:'update'}`，不是字符串。写成字符串这一条会**假绿**——`readString` 恰好在那个形状上读得出值，
+     * 而真机上厂商给的是对象 ⇒ 真机 `kind` 恒 `null`（真机判据见 `file-change-live.test.ts`）。
+     */
     const { messages } = await collect({
       notifications: [
         itemCompleted(
-          { type: 'fileChange', id: 'f1', status: 'completed', changes: [{ path: 'src/a.ts', kind: 'update', diff: '+' }] },
+          { type: 'fileChange', id: 'f1', status: 'completed', changes: [{ path: 'src/a.ts', kind: { type: 'update' }, diff: '+' }] },
           { threadId: MAIN, turnId: 'turn-1' },
         ),
         turnCompleted({ id: 'turn-1', items: [] }, { threadId: MAIN }),
@@ -648,7 +691,7 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
     ]);
   });
 
-  it('`mcpToolCall` ⇒ 「服务名.工具名」+ `family: null` + `isError`（看错误对象）', async () => {
+  it('`mcpToolCall` ⇒ 「`mcp__服务名__工具名`」+ `family: null` + `isError`（看错误对象）', async () => {
     const { messages } = await collect({
       notifications: [
         itemCompleted(
@@ -659,7 +702,7 @@ describe('通知贯通：内容、流式增量与工具四族', () => {
       ],
     });
     expect(messages.filter((one) => one.subagentId === null).flatMap((one) => one.blocks)).toMatchObject([
-      { type: 'tool-call', family: null, name: 'fs.read', input: { path: 'a' } },
+      { type: 'tool-call', family: null, name: 'mcp__fs__read', input: { path: 'a' } },
       { type: 'tool-result', isError: true, text: '拒绝访问', structured: null },
     ]);
   });
@@ -899,7 +942,15 @@ describe('收尾：子线程内容、终态与用量', () => {
     });
     await codexProvider.run(createRunInput());
     expect(server.stats.requests.find((one) => one.method === 'thread/list')?.params).toMatchObject({ ancestorThreadId: MAIN });
-    expect(server.stats.requests.find((one) => one.method === 'thread/read')?.params).toMatchObject({ threadId: CHILD, includeTurns: true });
+    /**
+     * 收尾取数**两步走**：元数据 `thread/read`（**不带** `includeTurns`——带着它就是厂商已弃用的
+     * 全量水合，真机会投 `deprecationNotice`），轮次 `thread/turns/list`。
+     * 两处都用**同一个客户端**（线程树是那个进程的内存态，换个客户端读不到）。
+     */
+    const readParams = server.stats.requests.find((one) => one.method === 'thread/read')?.params as Record<string, unknown>;
+    expect(readParams).toMatchObject({ threadId: CHILD });
+    expect(readParams).not.toHaveProperty('includeTurns');
+    expect(server.stats.requests.find((one) => one.method === 'thread/turns/list')?.params).toMatchObject({ threadId: CHILD });
   });
 
   it('子线程的条目进消息流（带 `subagentId`），终态由 `turn.status` 推出（`failed` 那一档）', async () => {
@@ -910,7 +961,7 @@ describe('收尾：子线程内容、终态与用量', () => {
         [CHILD]: {
           thread: {
             id: CHILD,
-            turns: [{ id: 'ct1', items: [answer('cm1', '子线程答复')], itemsView: 'full', status: 'failed', error: '子线程炸了', startedAt: null, completedAt: null, durationMs: null }],
+            turns: [{ id: 'ct1', items: [answer('cm1', '子线程答复')], itemsView: 'full', status: 'failed', error: { message: '子线程炸了' }, startedAt: null, completedAt: null, durationMs: null }],
           },
           items: [{ turnId: 'ct1', item: answer('cm1', '子线程答复') }],
         },
@@ -918,7 +969,58 @@ describe('收尾：子线程内容、终态与用量', () => {
     });
     const child = messages.filter((one) => one.subagentId === CHILD);
     expect(child.flatMap((one) => one.blocks)).toEqual([{ type: 'text', text: '子线程答复' }]);
-    expect(subagents.find((one) => one.subagentId === CHILD)).toMatchObject({ status: 'failed', outcome: '子线程答复', name: '检查' });
+    expect(subagents.find((one) => one.subagentId === CHILD)).toMatchObject({ status: 'failed', outcome: '子线程炸了', name: '检查' });
+  });
+
+  /**
+   * **两条入口的同一条条目必须落在同一个载体上**（混合通道：上游把子线程的 `item/*` 推给了本连接，
+   * 收尾又把同一批条目全量回读一遍）。
+   *
+   * 要拦的缺陷：载体键里的轮次号按「该线程此刻累计几轮」现算。运行期是逐条推进的（当下值恰好是
+   * 本条的号），而收尾那一批**已经数过**（`countRoundTrips` 按身份去重、不再推进）⇒ 整批读到
+   * **最终号**，于是第 1 轮那条条目在收尾拿到第 N 轮的载体键 ⇒ 同一句话出两份、且补齐的那份
+   * 按到达顺序追加在最后一轮的块之后（第 1 轮的内容排在第 N 轮后面）。按 `mergeKey` 折叠**去不掉**
+   * ——键本身就是被打破的那一格。
+   *
+   * 判据取「每条正文在折叠后的账本里恰好出现一次」，而不是消息条数：同一个载体收到两次投递
+   * （运行期 + 收尾）是合法的幂等重发，合并器按键归位即可；不合法的是**键不同**。
+   */
+  it('混合通道：子线程条目既走运行期通知、又被收尾回读 ⇒ 每条正文只出一份，且各归自己那一轮', async () => {
+    const childItems = [
+      { turnId: 'ct1', item: answer('msg_aaa', '子答复甲') },
+      { turnId: 'ct1', item: answer('msg_bbb', '子答复乙') },
+    ];
+    const { messages } = await collect({
+      notifications: [
+        // 真机形状：子线程的条目**推不推给本连接由上游决定**，这里是「推了」的那一档
+        itemCompleted(answer('msg_aaa', '子答复甲'), { threadId: CHILD, turnId: 'ct1' }),
+        itemCompleted(answer('msg_bbb', '子答复乙'), { threadId: CHILD, turnId: 'ct1' }),
+        turnCompleted({ id: 'turn-1', items: [answer('msg_main', '主答复')] }, { threadId: MAIN }),
+      ],
+      threads: [{ id: CHILD, parentThreadId: MAIN, status: { type: 'idle' } }],
+      contents: {
+        [CHILD]: {
+          thread: {
+            id: CHILD,
+            turns: [{ id: 'ct1', items: childItems.map((one) => one.item), itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null }],
+          },
+          items: childItems,
+        },
+      },
+    });
+
+    const child = messages.filter((one) => one.subagentId === CHILD);
+    // 按载体键折叠（后到的覆盖先到的）＝ 账本里那条逻辑消息的最终形态
+    const folded = new Map<string, AgentMessage>();
+    for (const one of child) folded.set(one.mergeKey, one);
+    const texts = [...folded.values()].flatMap((one) => one.blocks).map((one) => (one.type === 'text' ? one.text : null));
+    expect(texts.filter((one) => one === '子答复甲')).toHaveLength(1);
+    expect(texts.filter((one) => one === '子答复乙')).toHaveLength(1);
+    // 两条各归自己那一轮（甲在第 1 轮、乙在第 2 轮）——不是两条都挤在最终号上
+    expect([...folded.values()].map((one) => ({ round: one.roundTrip, text: one.blocks[0]?.type === 'text' ? one.blocks[0].text : null }))).toEqual([
+      { round: 1, text: '子答复甲' },
+      { round: 2, text: '子答复乙' },
+    ]);
   });
 
   it('子线程树枚举失败 ⇒ 分量与轮次分量**同时** `null`，并落一条点名 WARN', async () => {
@@ -956,7 +1058,40 @@ describe('收尾：子线程内容、终态与用量', () => {
     expect(result.subagentTokens).toBeNull();
     expect(result.subagentTurns).toBeNull();
     const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
-    expect(logs.some((text) => text.includes(CHILD) && text.includes('没有用量通知'))).toBe(true);
+    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量本行没有采到'))).toBe(true);
+  });
+
+  /**
+   * 用量通知**形状不全就整条不算**（归一化层的判据：六项齐全才认，见 `readTokenUsage`）。
+   *
+   * 这一条钉的是**两层判据的接缝**：归一化层挡掉残缺载荷 ⇒ `usageByThread` 里压根不会有它
+   * ⇒ 收尾那一处「这条线程有没有用量」的判断与「求和时读不读出来」必然同向。接缝一旦松动
+   * （归一化层将来放宽成「三项齐就认」），`usageOfRun` 里判据与求和同源这件事就是最后一道闸。
+   */
+  it('用量通知缺字段 ⇒ 整条不算，分量两格 `null` 并点名那条线程', async () => {
+    const { result, events } = await collect({
+      notifications: [
+        /**
+         * 缺 `outputTokens` 等格：`readTokenUsage` 要求六项齐全 ⇒ 这条通知整条落 `other`。
+         * 刻意不用 `tokenUsageUpdated` 夹具：它总会把六项填齐，造不出这个形状。
+         */
+        {
+          method: 'thread/tokenUsage/updated',
+          params: {
+            threadId: CHILD,
+            turnId: 'ct1',
+            tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 1 }, last: null, modelContextWindow: null },
+          },
+        },
+        turnCompleted({ id: 'turn-1', items: [answer('m1', '答复')] }, { threadId: MAIN }),
+      ],
+      threads: [{ id: CHILD, parentThreadId: MAIN, status: { type: 'idle' } }],
+      contents: { [CHILD]: { thread: { id: CHILD, turns: [] }, items: [] } },
+    });
+    expect(result.subagentTokens).toBeNull();
+    expect(result.subagentTurns).toBeNull();
+    const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
+    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量本行没有采到'))).toBe(true);
   });
 
   it('用量「全量或 null」：任一子线程缺用量 ⇒ 分量整格 `null`（不拿部分和冒充总数）', async () => {
@@ -983,8 +1118,8 @@ describe('收尾：子线程内容、终态与用量', () => {
     const notifications: FakeNotification[] = [
       tokenUsageUpdated({ inputTokens: 1000, cachedInputTokens: 900, outputTokens: 50 }, { threadId: MAIN }),
       tokenUsageUpdated({ inputTokens: 30, cachedInputTokens: 10, outputTokens: 5 }, { threadId: CHILD }),
-      itemCompleted(answer('m1', '主线程答复'), { threadId: MAIN, turnId: 'turn-1' }),
-      turnCompleted({ id: 'turn-1', items: [answer('m1', '主线程答复')] }, { threadId: MAIN }),
+      itemCompleted(answer('msg_0a1b2c3d', '主线程答复'), { threadId: MAIN, turnId: 'turn-1' }),
+      turnCompleted({ id: 'turn-1', items: [answer('msg_0a1b2c3d', '主线程答复')] }, { threadId: MAIN }),
     ];
     const { result, events } = await collect({
       notifications,
@@ -993,8 +1128,8 @@ describe('收尾：子线程内容、终态与用量', () => {
         [CHILD]: {
           thread: { id: CHILD, turns: [] },
           items: [
-            { turnId: 'ct1', item: answer('cm1', '子线程第一轮') },
-            { turnId: 'ct2', item: answer('cm2', '子线程第二轮') },
+            { turnId: 'ct1', item: answer('msg_c11a22b3', '子线程第一轮') },
+            { turnId: 'ct2', item: answer('msg_d44e55f6', '子线程第二轮') },
           ],
         },
       },
@@ -1108,6 +1243,29 @@ describe('收尾：子线程内容、终态与用量', () => {
     // 取数没落定**不是**失败：终止给的归因是 `AGENT_CANCELED`，不是取数缺失造出来的错
     expect(result.error?.code).toBe('AGENT_CANCELED');
   });
+
+  /**
+   * 取消那一轮**压根没做收尾取数**（见上一条：不等取数），所以分量缺失的归因必须说「没落定」，
+   * 不许说「枚举失败」——后者会把「我们主动不采」读成「厂商枚举坏了」，方向正好相反。
+   * 两条文案各有各的落点：枚举失败那一条由「子线程树枚举失败」那组用例钉住。
+   */
+  it('取消那一轮的缺失归因说「收尾取数没有落定」，不冒称「枚举失败」', async () => {
+    const controller = new AbortController();
+    const server = wire({ hang: true });
+    const events: AgentEvent[] = [];
+    const running = codexProvider.run(createRunInput({ signal: controller.signal, onEvent: (event) => events.push(event) }));
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    controller.abort();
+    await running;
+    const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
+    expect(logs.some((text) => text.includes('收尾取数在终止之后没有拿到全量（这一轮被终止）'))).toBe(true);
+    expect(logs.some((text) => text.includes('枚举失败'))).toBe(false);
+    /**
+     * 收尾取数**仍会尝试**枚举（它是后台任务，闸门是「流停下来」而不是「这一轮成功」），
+     * 只是取消之后那一次多半拿到「客户端已关闭」⇒ 归因必须落在「终止」上——这正是上面两条钉的事。
+     * 这一格不假设它跑没跑（跑与不跑都合法），只要求措辞不甩锅给厂商。
+     */
+  });
 });
 
 describe('能力声明与 dsh 的逐格对齐', () => {
@@ -1126,9 +1284,20 @@ describe('能力声明与 dsh 的逐格对齐', () => {
      *     `docs/faq/deepseek-harness.md`）⇒ 记 `yes` + `hook`。
      *   任一侧被改都会让这条红——要改就连同依据一起改。
      */
-    for (const cell of ['thinkingText', 'thinkingTextKind', 'toolInput', 'toolResult', 'subagent'] as const) {
+    for (const cell of ['thinkingText', 'toolInput', 'toolResult', 'subagent'] as const) {
       expect(codex?.[cell], `能力格 ${cell} 与 dsh 不一致`).toEqual(dsh?.[cell]);
     }
+    /**
+     * **`thinkingTextKind` 是第二格「已知不同」**（按上面那条规矩：改它要连同依据一起改）。
+     *
+     * codex 这一格报 `summary` 是**按实测**：真网关 2 条路由 × 103 个路由-模型 × **153 格**往返里
+     * `content[]` **非空 0 格**、`summary[]` 非空 40 格；协议上全文那条路确实存在（脚本式上游投
+     * `reasoning_text` 时厂商会落在 `content[]`），但本仓拿不到 ⇒ 这一格描述的是「实测拿得到哪一档」。
+     * dsh 仍报 `full`，**它没有做同类读数** —— 所以这是「一侧已按实测改正、另一侧未核」的差异，
+     * 不是两家能力面天生不同。dsh 何时做同样的读数，就把这一格收回严格循环。
+     */
+    expect(codex?.thinkingTextKind, 'codex 按实测报 summary').toBe('summary');
+    expect(dsh?.thinkingTextKind, 'dsh 未核，仍报 full').toBe('full');
     for (const cell of ['thinkingTextSource', 'toolInputSource', 'toolResultSource', 'subagentSource'] as const) {
       expect(codex?.[cell], `取数通道 ${cell} 与 dsh 不一致`).toEqual(dsh?.[cell]);
     }
@@ -1189,15 +1358,16 @@ describe('纯函数：配置构造', () => {
    */
   it('提问开关：`askUser` 不给 ⇒ `tools` / `features` 逐字不变；给了 ⇒ 两格都开', () => {
     const bare = buildCodexConfig('https://gw/v1');
-    expect(bare['tools']).toEqual({ web_search: false, update_plan: { enabled: true } });
+    expect(bare['web_search']).toBe('disabled');
+    expect(bare['tools']).toEqual({ update_plan: { enabled: true } });
     expect(bare['features']).toEqual({ multi_agent: true });
     // 显式 `false` 与不给同义：两格都不动
     const off = buildCodexConfig('https://gw/v1', { askUser: false });
     expect(off).toEqual(bare);
 
     const on = buildCodexConfig('https://gw/v1', { askUser: true });
+    expect(on['web_search']).toBe('disabled');
     expect(on['tools']).toEqual({
-      web_search: false,
       update_plan: { enabled: true },
       experimental_request_user_input: { enabled: true },
     });

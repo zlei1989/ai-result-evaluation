@@ -28,6 +28,7 @@ function unrecognized(overrides: Partial<UnrecognizedPayloadBlock> = {}): Unreco
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     reason: 'unrecognized',
     vendorType: 'todo_list',

@@ -19,7 +19,23 @@ import {
   type StructuredOutputInspection,
 } from './structured-output';
 import { createAskUserPort, type AskUserPort } from './ask-user';
-import type { AgentKind, AgentRunInput, AgentRunResult } from './types';
+import { withInjectionWait } from './inject';
+import type { AgentKind, AgentRunInput, AgentRunResult, InjectionPort } from './types';
+
+/**
+ * **没开闸门时的注入端口**（调用方没传 `input.inject`）：与「调用方传了一个 `available: false`
+ * 的端口」逐格同形，适配器因此只判 `available` 一格。
+ *
+ * 为什么 `retract` 回 `'unsupported'` 而不是 `'unknown'`：没接端口就是**做不到撤回**
+ * （能力面上那一格是 `none` / `off-by-adapter`），而 `'unknown'` 读起来像「我们再查查」——
+ * 界面据此说的话完全不同。
+ */
+const CLOSED_INJECTION_PORT: InjectionPort = {
+  available: false,
+  drain: () => [],
+  markDelivered: () => {},
+  retract: async () => 'unsupported',
+};
 
 export interface TurnContext {
   input: AgentRunInput;
@@ -32,6 +48,16 @@ export interface TurnContext {
    * 等待语义（行终止 / 预算 / 静止超时豁免 / 回调抛错）全收在它里面，适配器不自己判。
    */
   askUser: AskUserPort;
+  /**
+   * **注入端口**：人往运行中的这一轮送话时，适配器从这一格取件（`drain`）、把「怎么要回来」
+   * 登记回去（`markDelivered`）、并按 `available` 决定挂不挂厂商那一侧的投递形状
+   * （没开闸门 ⇒ 一格都不挂，既有行为逐字不变——这就是零回归的判据）。
+   *
+   * 为什么由骨架备好而不是让适配器自己读 `input.inject`：缺席时要有一个**关闭档**替代物
+   * （`available: false`、`drain` 恒空、`retract` 恒 `unsupported`），四处各写一遍必然漂；
+   * 这与 `askUser` 由骨架备好是同一处置（那边还多一层等待语义，注入的等待语义在编排层那一侧）。
+   */
+  inject: InjectionPort;
   /**
    * **内容级消息的流外投递口**：厂商把「模型的一次工具调用」放在事件流之外（codex 的提问是
    * server→client 请求，厂商的线程条目里没有这一格，见 `providers/codex/ask-user.ts`）时，
@@ -83,6 +109,12 @@ export interface TurnFinalize {
    * `structured_output`、codex 有没有把 schema 发进 `turn/start`）。骨架**不再**读任何能力位。
    */
   applied?: { structuredOutput: boolean };
+  /**
+   * 这次跑在哪条**会话**上（可选上报）：`null` 与缺席都表示「本条不带这一格、保持原值」——
+   * 骨架只搬运、不猜：这一格只有适配器拿得到（各家的会话 id / 会话文件各不相同），
+   * 读不到就如实不报（结果那一格照旧是 `null`）。
+   */
+  sessionId?: string | null;
 }
 
 /** 一次运行的消费句柄：各家 start() 造出来，骨架负责按固定顺序使用并保证一定会释放 */
@@ -370,6 +402,16 @@ export interface TurnProjection {
   /** 本条消息是否表示失败 */
   failure: AgentFailure | null;
   /**
+   * 本条消息表示**一次新的模型往返已经开始**（厂商起了一轮）。
+   *
+   * 为什么需要这一格：墙钟看门狗的口径是「一次模型往返」而不是「厂商的一轮」（见下面 `consume` 的
+   * 记账注释），而它的重置点只有两处——区间起点、以及 `turns` 递进。一次运行**跨多轮**时
+   * （人话在收场后被续跑成一幕新的 turn），两轮之间有一段既没有新区间、也没有轮次递进的空档，
+   * 上一轮耗掉的墙钟会一直算进新的一轮里 ⇒ 上一轮接近预算时，新起的那一轮会被自己的看门狗掐掉。
+   * 厂商在轮次起点发的通知就是这一格的落点（缺省 = 本条不声明）。
+   */
+  roundTripStarted?: boolean;
+  /**
    * 本条消息归一出来的**消息草稿**（`AgentMessage`，缺省 = 本条不产出消息）。
    * 合并、块序号分配与 `messageId` 由骨架的合并器统一做（`message.ts`），各家只填信封字段与块。
    * 与 `drafts`（行级事件）**并行**输出：事件是行级审计与 SSE 的载体，消息是内容级视图的载体。
@@ -470,6 +512,42 @@ const AWAITING_ANSWER_SUSPENDS_WATCHDOG: Record<AgentKind, boolean> = {
   dsh: true,
   pi: true,
 };
+
+/**
+ * 「在等人工消息」期间（适配器已收工、只剩队列）⇒ 两级静止计时都挂起。
+ *
+ * 判据由**端口那一侧**给（`inject.ts` 的 `InjectionWaitSink`）：适配器在 `'idle'` 边界空手而归，
+ * 说明它这一整轮没活可干了，此刻唯一还可能让它继续跑的就是队列里再来一条人话。
+ * 窗口因此**很窄**——适配器还在跑时事件照来，那一段不豁免；宽了就会把真挂死藏起来。
+ *
+ * **取值口径 = 默认不豁免**（与「工具在途」那张表同源，见上面那段注释）：逐家打开要给出
+ * 「该家在这一段确实可能合法静默」的证据。四家今天全 `false`——「收工之后继续等队列」那条行为
+ * （`followUp` 那样的唤醒面）还没有一家接线，打开它只会让真正的挂死在界面上看不出来。
+ * 表是**穷尽**的（`Record<AgentKind, boolean>`）：新增一家漏了这格会在编译期报错。
+ */
+const INJECTION_WAIT_SUSPENDS_WATCHDOG: Record<AgentKind, boolean> = {
+  cc: false,
+  codex: false,
+  dsh: false,
+  pi: false,
+};
+
+/**
+ * **仅供用例**：把某一家的上面那一格临时改成 `true`（`null` = 还原）。
+ *
+ * 为什么需要它：产品侧四家全 `false`（要证据才打开），而这段接线本身必须能被断言——
+ * 「窗口开着时看门狗不排、窗口合上后它重新排」这条不变量，只有在某一格能临时打开时才看得见。
+ * 与 `setAgentRuntimeForTesting` 同一条处置：非测试环境调用直接抛错，免得有人把它当产品开关用。
+ */
+export function setInjectionWaitSuspendsForTesting(kind: AgentKind, value: boolean | null): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('setInjectionWaitSuspendsForTesting 只能用在用例里（产品侧的取值必须来自证据）');
+  }
+  if (value === null) delete injectionWaitOverrides[kind];
+  else injectionWaitOverrides[kind] = value;
+}
+
+const injectionWaitOverrides: Partial<Record<AgentKind, boolean>> = {};
 
 /** 在册的一次在途运行：宿主停机时按它逐个发起停止、并等它们各自释放完 */
 interface LiveSession {
@@ -624,6 +702,8 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       finalText: null,
       // 一行都没跑 ⇒ schema 一次都没下发（与「要求了但被降级」在结果上同值，见 applied 的 JSDoc）
       applied: { structuredOutput: false },
+      // 同理：一行都没跑 ⇒ 没有会话可指（`null` = 不能续接，与「采不到」同一处置）
+      sessionId: null,
       error: { code: 'AGENT_CANCELED', message: '该行在启动前已被终止' },
     };
   }
@@ -670,6 +750,11 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    * 初值 `false` = 没走原生 schema 通道——「没上报」与「没走」在消费侧是同一件事。
    */
   let appliedStructuredOutput = false;
+  /**
+   * 这次运行跑在哪条会话上：由适配器在收尾投影里上报，骨架只搬运。
+   * 初值 `null` = 没有可续接的会话（或这一家没上报）——两者在消费侧的处置相同（不能续接）。
+   */
+  let sessionId: AgentRunResult['sessionId'] = null;
   /** 估算计量（cc 的跑动期估算）：只进事件，绝不进结果 */
   let estimatedTokens: AgentRunResult['tokens'] = null;
   let turns: number | null = null;
@@ -701,7 +786,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
 
   // 第二段兜底的可见信号：既要进服务日志，也要进该行事件日志（界面上的日志抽屉看得到）
   const onGraceExceeded = (): void => {
-    const text = `[WARN] ${hooks.kind} 在 ${RELEASE_GRACE_MS / 1000} 秒内未结束在途 turn，已强制释放运行时（该适配器不响应停止信号，属已知能力差异）`;
+    const text = `[WARN] ${hooks.kind} 在 ${RELEASE_GRACE_MS / 1000} 秒内未结束在途 turn，已强制释放运行时（可能是适配器不响应停止信号，也可能是它正卡在一次长采集里——这条日志区分不了这两种成因，别照着它断言能力差异）`;
     logger.warn(text, { kind: hooks.kind });
     emit(logDraft('stderr', text));
   };
@@ -761,6 +846,8 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   const inFlightTools = new Set<string>();
   /** 正在等用户回答的提问数：由提问端口进入 / 离开等待时登记，可重入（并发两问各记一次） */
   let pendingAsks = 0;
+  /** 在等人工消息的窗口数：由注入端口那一侧的包装层登记（至多一次在飞，仍按可重入写） */
+  let pendingInjects = 0;
   /** 已观察到的累计轮次：它**递进**才说明一次模型往返收尾、下一次起表（见「墙钟按一次往返计」） */
   let observedTurns = 0;
 
@@ -776,37 +863,77 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   /** 在等用户回答期间是否挂起计时（两级一起挂起，见那张表的注释） */
   const suspendedByAsk = (): boolean =>
     AWAITING_ANSWER_SUSPENDS_WATCHDOG[hooks.kind] === true && pendingAsks > 0;
-  /** 两级静止计时是否都挂起（工具在途 / 在等用户回答，各自按家取值） */
-  const suspended = (): boolean => suspendedByTool() || suspendedByAsk();
+  /**
+   * 在等人工消息期间是否挂起计时（判据口见 `inject.ts` 的 `InjectionWaitSink`）。
+   * 取值先看用例覆盖、再看那张穷尽表——覆盖只活在测试期（见 `setInjectionWaitSuspendsForTesting`）。
+   */
+  const suspendedByInject = (): boolean =>
+    (injectionWaitOverrides[hooks.kind] ?? INJECTION_WAIT_SUSPENDS_WATCHDOG[hooks.kind]) === true && pendingInjects > 0;
+  /** 两级静止计时是否都挂起（工具在途 / 在等用户回答 / 在等人工消息，各自按家取值） */
+  const suspended = (): boolean => suspendedByTool() || suspendedByAsk() || suspendedByInject();
 
   /**
-   * 提问端口的等待登记口（见 `ask-user.ts` 的 `AskUserWaitSink`）：
-   *   · 进入：挂起两级计时（`armWatchdog` 会先清掉已排的那次判定）；
-   *   · 离开：最后一次离开时把**墙钟**按等人那一段整体往后推、按「又有输入了」重新起空闲表，再重排
-   *     判定。三件都不可省：不推墙钟 ⇒ 人答完的那一刻旧期限早已过期，行当场被判静止；不重起空闲表
-   *     ⇒ 答复这一刻不算「又动了」；不重排 ⇒ 挂起之后看门狗再也不排，此后真挂死没人发现
-   *     （在途工具那一格靠下一条事件重排，而答复回来不一定马上伴随厂商事件）。
+   * 两个「人在这一侧」的等待面（在等人回答 / 在等人工消息）**共用一份墙钟记账**：
+   * 两级静止计时挂起期间厂商一个事件都不会产出，而那一段不是模型的时间——两处各记一份会让
+   * 两段重叠时把同一段时间推两次（墙钟被推得比真实等待还长，真挂死更难被发现）。
+   * 计数按「谁先进入谁起表、最后一个离开才推表」算：重叠只算一次、先后两段各算各的。
    */
   let waitStartedMs = 0;
+  let pendingHumanWaits = 0;
+  const enterHumanWait = (): void => {
+    if (pendingHumanWaits === 0) waitStartedMs = Date.now();
+    pendingHumanWaits += 1;
+    armWatchdog();
+  };
+  const leaveHumanWait = (): void => {
+    pendingHumanWaits -= 1;
+    if (pendingHumanWaits > 0) return;
+    // 墙钟量的是「一次模型往返」：等人那一段不是模型的时间，整体顺延（否则答完即超时）
+    const waited = Date.now() - waitStartedMs;
+    if (limits.wall > 0 && waited > 0) wallDeadlineMs += waited;
+    noteActivity();
+    armWatchdog();
+  };
+
   const askUserWait = {
     enter: (): void => {
-      if (pendingAsks === 0) waitStartedMs = Date.now();
       pendingAsks += 1;
-      armWatchdog();
+      enterHumanWait();
     },
     leave: (): void => {
       pendingAsks -= 1;
-      if (pendingAsks > 0) return;
-      // 墙钟量的是「一次模型往返」：等人那一段不是模型的时间，整体顺延（否则答完即超时）
-      const waited = Date.now() - waitStartedMs;
-      if (limits.wall > 0 && waited > 0) wallDeadlineMs += waited;
-      noteActivity();
-      armWatchdog();
+      leaveHumanWait();
+    },
+  };
+
+  /**
+   * 注入端口的等待登记口（见 `inject.ts` 的 `InjectionWaitSink`）：与提问那一格**逐条同源**
+   * ——进入挂起两级计时，离开时推墙钟 + 重起空闲表 + 重排看门狗（三件都不可省）。
+   * 唯一不同的是判据源：这一格由端口那一侧的包装层登记（取件空手而归 = 适配器已收工）。
+   */
+  const injectionWait = {
+    enter: (): void => {
+      pendingInjects += 1;
+      enterHumanWait();
+    },
+    leave: (): void => {
+      pendingInjects -= 1;
+      leaveHumanWait();
     },
   };
 
   /** 提问端口：适配器从 `TurnContext.askUser` 拿它（等待语义只在 `ask-user.ts` 写一遍） */
   const askUser = createAskUserPort(input, { kind: hooks.kind, wait: askUserWait });
+
+  /**
+   * 注入端口：调用方传了就**包一层**再透给适配器（包装层只登记「现在在等」这一格，
+   * 见 `inject.ts`），没传就是**关闭档**（`available: false`、取件恒空、撤回恒 `unsupported`）。
+   * 两条口径都在这一处落地，适配器因此只有一个判据要读（`available`）：
+   * 「调用方没传端口」与「调用方传了一个关着的端口」在适配器那一侧**必须同形**，
+   * 否则「没开闸门 ⇒ 一格都不挂」这条零回归判据会有两个形状。
+   */
+  const injectWait = withInjectionWait(input.inject ?? CLOSED_INJECTION_PORT, injectionWait);
+  const inject = injectWait.port;
 
   const clearWatchdog = (): void => {
     if (watchdogTimer === undefined) return;
@@ -855,11 +982,25 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   const tripWatchdog = (reason: WatchdogTrip, timeoutMs: number): void => {
     watchdogTrip = reason;
     clearWatchdog();
+    /**
+     * 亚秒预算（探针/测试）下 `Math.round` 会把秒数说成 0——那不是「没等」，
+     * 文案里带上毫秒原文，读的人不必去猜预算。
+     */
     const seconds = Math.round(timeoutMs / 1_000);
+    const budget = seconds >= 1 ? `${seconds} 秒` : `${timeoutMs} 毫秒`;
+    /**
+     * **卡在哪一段要说得出来**：`handle === undefined` 表示这一行还停在 `hooks.start()` 里
+     * （装配 / 建会话 / 投首轮提示词），此刻**没有句柄可释放** ⇒ 释放路径会走到「没有句柄」那一支，
+     * 行也不会因为这次看门狗就落定（能力边界，见「进程生命周期」的已知边界表）。
+     * 文案不点名这一段的话，用户只看到一句「静止 N 秒」，分不出是模型没响应还是装配没回来。
+     */
+    const phase = handle === undefined
+      ? '（卡在装配段：`start()` 还没返回，本层没有句柄可释放——这一行不会因这次看门狗而落定）'
+      : '（适配器已启动，按释放路径收场）';
     const text = reason === 'idle'
-      ? `[WARN] 看门狗：该行已静止 ${seconds} 秒（没有任何事件），按静止超时终止并释放运行时`
-      : `[WARN] 看门狗：单次模型往返超过 ${seconds} 秒仍未收尾，按静止超时终止并释放运行时`;
-    logger.warn('看门狗判定这一行静止超时', { kind: hooks.kind, reason, timeoutMs });
+      ? `[WARN] 看门狗：该行已静止 ${budget}（没有任何事件），按静止超时终止并释放运行时${phase}`
+      : `[WARN] 看门狗：单次模型往返超过 ${budget} 仍未收尾，按静止超时终止并释放运行时${phase}`;
+    logger.warn('看门狗判定这一行静止超时', { kind: hooks.kind, reason, timeoutMs, started: handle !== undefined });
     emit(logDraft('stderr', text));
     requestStop();
   };
@@ -940,6 +1081,11 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         observedTurns = projection.turns;
         noteRoundTrip();
       }
+      /**
+       * **厂商起了一轮 ⇒ 重新起表**（见 `TurnProjection.roundTripStarted`）：跨轮的运行里，
+       * 上一轮耗掉的墙钟不该算进新起的那一轮。
+       */
+      if (projection.roundTripStarted === true) noteRoundTrip();
       armWatchdog();
       for (const draft of projection.drafts) emit(draft);
       for (const message of projection.messages ?? []) emitMessage(message);
@@ -1126,7 +1272,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     noteRoundTrip();
     noteActivity();
     armWatchdog();
-    started = await hooks.start({ input, controller, emitter, askUser, emitMessage });
+    started = await hooks.start({ input, controller, emitter, askUser, inject, emitMessage });
     logger.debug('适配器已启动，开始消费事件流', {
       kind: hooks.kind,
       cwd: input.cwd,
@@ -1182,15 +1328,27 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
        * stderr 是**证据**，不是结论：按 log 事件落盘、不冒充 `error` 事件的文案，内容原样保留
        * （只经 `stripCliBoilerplate` 剔除已知样板，而当前样板集合为空）。
        */
+      /**
+       * ⚠️ **前缀不许断言来源**：这条 `cause` 在三条路上都走到这里——厂商 CLI 的退出 / stderr、
+       * `AgentLoadError`（我们加载厂商包失败）、以及适配器自己抛的任何错。真机读数（三条臂逐字）：
+       * 行配置目录不可写时那条裸 `EACCES: permission denied, open '<configHome>/.npmrc'`、
+       * 厂商包导出面不匹配、技能物化失败——**三条都不是 CLI 的错**，却都被旧文案标成
+       * 「CLI 退出详情（stderr）」，读的人会去查 CLI。故这里只说「哪一侧的哪一种可能」，
+       * 由 `message` 自己说话。
+       */
       const cliDetail = stripCliBoilerplate(cause instanceof Error ? cause.message : String(cause));
       if (cliDetail !== '') {
-        emit(logDraft('stderr', `[${hooks.kind}] CLI 退出详情（stderr）：${cliDetail}`));
+        emit(logDraft('stderr', `[${hooks.kind}] 失败详情（CLI 退出 / 适配器自身错误都在这一档）：${cliDetail}`));
       }
     }
   } finally {
     // 消费相到此为止：看门狗停表（释放阶段的静止是正常的），停机也不再翻转结论
     consuming = false;
     clearWatchdog();
+    // 「在等人工消息」那一格**必须随这一轮一起闭合**：它的窗口只在适配器跑动期间有意义，
+    // 留着会让下一轮（或释放阶段）的判据带着上一轮的挂起状态（`clearWatchdog` 已停表，
+    // 这里清的是计数与墙钟记账，见 `leaveHumanWait`）
+    injectWait.close();
     input.signal.removeEventListener('abort', onAbort);
     /**
      * 收尾投影（可选，见 `TurnStart.finalize`）——**无论正常跑完、失败还是被终止都做**，
@@ -1226,8 +1384,30 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
         // 通道事实（谁走哪条只有适配器知道）：与上面几格不同，`false` 与「没上报」同义，
         // 故只在上报为 `true` 时覆盖——缺省保持 false
         if (finalized.applied?.structuredOutput === true) appliedStructuredOutput = true;
+        // 会话 id（与 `tokens` 同一条「带值覆盖、缺省保留」）：读不到会话的家/次一律不报，
+        // 报了就覆盖——它回答的是「这一整次运行跑在哪条会话上」，不存在「本条不谈它」的中间态
+        if (finalized.sessionId != null) sessionId = finalized.sessionId;
       } catch (error) {
         logger.error('收尾投影失败（已忽略，不影响本次运行的结论）', { kind: hooks.kind, error });
+      }
+    }
+    /**
+     * **未收尾的槽在这里收口**（见 `MessageAssembler.sealOpen`）：厂商的块结束快照**不保证**
+     * 覆盖每一个槽——cc 真机实测有轮次只投递 `tool_use` 的完整消息，正文只以流式增量到达
+     * ⇒ 那个正文槽永远等不到自己的快照，载体停在 `assembly: 'open'`，界面据此显示「正在思考」，
+     * 而整行早已结束。会话收尾时按**当前累积值**封口，让「这一段说完了」成为事实。
+     *
+     * 位置在 `finalize` **之后**：codex 的最后一批消息正是从那一步交出来的，它们同样要进装配器。
+     * 失败只记日志：收口是内容视图的收尾，不改写本次运行的结论（与上面两条同一条处置）。
+     */
+    if (input.onMessage !== undefined) {
+      try {
+        const sealedCarriers = assembler.sealOpen(input.onMessage);
+        if (sealedCarriers > 0) {
+          logger.debug('收口未等到块结束快照的载体', { kind: hooks.kind, sealedCarriers });
+        }
+      } catch (error) {
+        logger.error('收口未完成的消息载体失败（不影响本次运行的结论）', { error });
       }
     }
     // 「终结在途 turn」：释放序列的第二段落在这里（适配器自己的 finally 清理完成）
@@ -1252,6 +1432,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     turns,
     finalText: state.finalText,
     applied: { structuredOutput: appliedStructuredOutput },
+    sessionId,
     emit,
   });
   logger.info('适配器运行结束', {
@@ -1272,7 +1453,14 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
  *      取最小值是**错的**（本函数刻意不做）：`events` 来源下首末两点来自有序的事件流，
  *      取最小值只会把时钟回拨那种脏数据算进来，得出一个比真实值更长的跨度；
  *   ② **`lastMs` 每次都覆盖**（只要这一条给了）：它才是「跑到现在」的右端点，必须往后走；
- *   ③ **来源不一致 ⇒ 整格作废**（`null`）：`'vendor'` 的纯模型时间与 `'events'` 的墙钟**不可相减**
+ *   ③ **`apiMs` / `ttftMs` 相加**：它们是各家**每一条**投影自报的**增量**（claude 的两格来自厂商
+ *      每轮的 `duration_api_ms` / `ttft_ms`），而 `tokens` 那一格是**累计**的 ⇒ 不相加就会出现
+ *      「同一条 `usage` 事件里 tokens 是全行、api 只是最后一轮」，消费方按
+ *      `output / (apiMs − ttftMs)` 算出的速率被放大到「轮数倍」（真机多轮读数：tokens 3000/80
+ *      而 apiMs 只有最后一轮的 55）。
+ *      两条边界：某一条不带这两格（`undefined` / `null`）就**不加**它（不是加 0）；
+ *      一条都没带过时整格保持 `null`（`null` 与 `undefined` 都当「没带」，只有数字才算数）；
+ *   ④ **来源不一致 ⇒ 整格作废**（`null`）：`'vendor'` 的纯模型时间与 `'events'` 的墙钟**不可相减**
  *      （减出来是一个既不是模型时间、也不是墙钟的第三样东西）。它今天不可达（一家只有一种来源，
  *      落点见三家各次的 `timing` 构造），留着是因为将来若某家同时给出两者，静默相减会得出一个
  *      「看起来正常」的错数——那正是本仓最不接受的一类失败。
@@ -1286,13 +1474,30 @@ export function mergeTiming(
   return {
     firstMs: previous.firstMs ?? next.firstMs,
     lastMs: next.lastMs ?? previous.lastMs,
-    // `apiMs` / `ttftMs` 同样是「先到的那一份说了算」：它们是**同一次往返**的三个侧面，
-    // 后到的消息若不带这两格（`undefined`），不该把已经采到的值抹掉；
-    // 带了就以新的为准（同一个值，只有厂商刷新时才变）。
-    ...(next.apiMs === undefined || next.apiMs === null ? { apiMs: previous.apiMs } : { apiMs: next.apiMs }),
-    ...(next.ttftMs === undefined || next.ttftMs === null ? { ttftMs: previous.ttftMs } : { ttftMs: next.ttftMs }),
+    ...sumSpanField('apiMs', previous.apiMs, next.apiMs),
+    ...sumSpanField('ttftMs', previous.ttftMs, next.ttftMs),
     source: next.source,
   };
+}
+
+/**
+ * 一格时长增量的合并：**两边都有数字就相加**，只有一边有就取那一边，都没有就是 `null`。
+ *
+ * 为什么把 `null` 与 `undefined` 归成同一档（「没带」）：这一层拿不到「厂商说了它是 null」
+ * 与「厂商没说」的区别（草稿层刻意不区分，见 `TimingSpan.apiMs` 的注释），
+ * 而两种情形在这一格上的处置本来就相同——都表示这一条没有可加的增量。
+ */
+function sumSpanField(
+  key: 'apiMs' | 'ttftMs',
+  previous: number | null | undefined,
+  next: number | null | undefined,
+): { apiMs?: number | null; ttftMs?: number | null } {
+  const hasPrevious = typeof previous === 'number';
+  const hasNext = typeof next === 'number';
+  if (hasPrevious && hasNext) return { [key]: previous + next };
+  if (hasNext) return { [key]: next };
+  if (hasPrevious) return { [key]: previous };
+  return { [key]: null };
 }
 
 /**
@@ -1503,6 +1708,8 @@ function assembleResult(input: {
   finalText: AgentRunResult['finalText'];
   /** 本次 schema 有没有真的下发（A1）：三种结论都要带出去，它不属于任何一种收场方式 */
   applied: AgentRunResult['applied'];
+  /** 这次运行跑在哪条会话上（各适配器上报的那一格，见 `TurnFinalize.sessionId`） */
+  sessionId: AgentRunResult['sessionId'];
   emit: (draft: AgentEventDraft) => void;
 }): AgentRunResult {
   const durationMs = Date.now() - input.startedAt;
@@ -1516,6 +1723,7 @@ function assembleResult(input: {
     durationMs,
     finalText: input.finalText,
     applied: input.applied,
+    sessionId: input.sessionId,
   };
   if (input.stop !== null) {
     const by = input.stop === 'signal' ? '用户终止' : '宿主停机';

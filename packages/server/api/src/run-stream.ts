@@ -1,15 +1,20 @@
 /**
  * 行级 SSE 产出：把 `events.jsonl`（或评分那条 `judge-events.jsonl`）的历史回放 + 进程内事件总线
- * 扇出成 SSE 帧。三条口径：
+ * 扇出成 SSE 帧。四条口径：
  *   1. **只用 Web 标准类型**（`ReadableStream` / `Uint8Array` / `TextEncoder`）——api 禁框架，
  *      这里连 `Response` 都不组装，响应头由路由层负责；
  *   2. 帧格式写死为 `id: <seq>` + `event: <type>` + `data: <JSON>` + 空行：`id` 是浏览器
  *      `Last-Event-ID` 的唯一来源，缺了它断线重连只能从头再来；
  *   3. 回放里出现终态就**立即关流**：已经跑完的行不该让浏览器挂着一条永不结束的连接。
+ *   4. **游标只在同一世代内有意义**：同一行重跑会 `resetEvents` 删文件、`seq` 从 1 重新发号，
+ *      于是「不是回放全量」与「按 seq 去重」这两条各自都要认一次换代，判据是同一条——
+ *      **游标超过当前水位即上一代**：续订入口据此改为从头回放，实时帧据此把去重闸门重新起算。
+ *      少了前者，重连拿不到新一代的历史；少了后者，一直开着的那条连接会把新一代的 `1..k`
+ *      整段吃掉（连接活着、心跳照发，客户端因此看不出任何异常，界面上只是「执行日志一条都不动」）。
  *
  * **两条流共用这一份实现**：候选那条（`streamRowEvents`）与评分那条
- * （`streamJudgeEvents`）只差「读历史的函数」与「订阅的函数」两处，所以它们收在一个 `EventChannel`
- * 里。两份实现并排写的话，去重、`: ready` 首字节、终态关流、心跳这四条里漏改一条就是
+ * （`streamJudgeEvents`）只差「读历史的函数」「读水位的函数」与「订阅的函数」三处，所以它们收在一个
+ * `EventChannel` 里。两份实现并排写的话，去重、`: ready` 首字节、终态关流、心跳、换代这五条里漏改一条就是
  * 「某一条流的浏览器契约悄悄不一样」——而那种差异在界面上表现为「某条流就是不刷新」。
  *
  * 回放归本函数（而不是留给浏览器）：`subscribeRowEvents` 只承诺「订阅**之后**发布的每一条都推给你」
@@ -27,17 +32,19 @@
 import { TERMINAL_ROW_STATUSES, type AgentEvent } from '@aieval/contracts';
 import { createLogger } from '@aieval/core';
 import { subscribeJudgeEvents, subscribeRowEvents } from '@aieval/evaluator';
-import { getRowJudgeLog, getRowLog } from './run-artifacts';
+import { getRowJudgeLog, getRowJudgeLogMaxSeq, getRowLog, getRowLogMaxSeq } from './run-artifacts';
 
 const log = createLogger('runs');
 
 /** 保活间隔：反向代理与浏览器都会掐掉长时间静默的连接 */
 const HEARTBEAT_MS = 15_000;
 
-/** 一条事件流的两个接口点（其余全在本文件的公共实现里） */
+/** 一条事件流的三个接口点（其余全在本文件的公共实现里） */
 interface EventChannel {
   /** 读历史（`afterSeq` 语义由被调方保证）；同时承担「行存在性校验」的**同步**抛错 */
   history: (runId: string, rowId: string, afterSeq: number) => AgentEvent[];
+  /** 这条流当前落盘事件的 **seq 水位**（文件里已用过的最大 seq）：续订入口据此判「游标是不是上一代的」 */
+  maxSeq: (runId: string, rowId: string) => number;
   /** 订阅**后续**事件，返回退订函数 */
   subscribe: (runId: string, rowId: string, listener: (event: AgentEvent) => void) => () => void;
   /** 日志里点名这是哪条流（两条流同时开着时，日志得能分开） */
@@ -45,10 +52,20 @@ interface EventChannel {
 }
 
 /** 候选那条：行级 `events.jsonl`（状态、计量、候选的 log 与编排层留痕） */
-const ROW_EVENT_CHANNEL: EventChannel = { history: getRowLog, subscribe: subscribeRowEvents, label: '行级' };
+const ROW_EVENT_CHANNEL: EventChannel = {
+  history: getRowLog,
+  maxSeq: getRowLogMaxSeq,
+  subscribe: subscribeRowEvents,
+  label: '行级',
+};
 
 /** 评分那条：`judge-events.jsonl`（评审者自己的流水，与行级分开） */
-const JUDGE_EVENT_CHANNEL: EventChannel = { history: getRowJudgeLog, subscribe: subscribeJudgeEvents, label: '评分' };
+const JUDGE_EVENT_CHANNEL: EventChannel = {
+  history: getRowJudgeLog,
+  maxSeq: getRowJudgeLogMaxSeq,
+  subscribe: subscribeJudgeEvents,
+  label: '评分',
+};
 
 /** 一条事件是不是「这一行已经结束」：`end` 事件与终态 `status` 事件都算 */
 function isTerminalEvent(event: AgentEvent): boolean {
@@ -77,7 +94,17 @@ function toFrame(event: AgentEvent): string {
  * 要避免的形状（两份判据会漂移，而漂移时先抛的那一份说了算）。
  */
 function streamEvents(channel: EventChannel, runId: string, rowId: string, afterSeq: number): ReadableStream<Uint8Array> {
-  const history = channel.history(runId, rowId, afterSeq);
+  /**
+   * 续订游标**只在同一世代内有意义**：同一行重跑会 `resetEvents` 删掉文件、seq 从 1 重新发号，
+   * 而客户端手里的 `afterSeq` / `Last-Event-ID` 是它见过的最大 seq——那个号在新一代里根本不存在。
+   * 判据是「游标超过当前水位」，超了就说明它属于被删掉的那一代，按从头回放处理；
+   * 否则这条连接会拿着旧游标去回放新一代的日志，回放结果恒为空（症状是「重连之后执行日志一直是空的」）。
+   *
+   * 水位这一侧同样会 `findRow`（与 `history` 同一份校验，不另写一份）：行不存在时仍然在这里
+   * **同步**抛出，路由层因此照旧给得出带原因的 404 JSON。
+   */
+  const cursor = afterSeq > channel.maxSeq(runId, rowId) ? 0 : afterSeq;
+  const history = channel.history(runId, rowId, cursor);
   const encoder = new TextEncoder();
 
   // 这几个状态放流外：`cancel` 与 `start` 都要能碰到同一份，否则客户端断开时定时器与订阅会漏
@@ -97,8 +124,8 @@ function streamEvents(channel: EventChannel, runId: string, rowId: string, after
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      /** 已发出帧的最大 seq：历史与实时都过这一道闸，于是接缝处不会出现重号帧 */
-      let lastSeq = afterSeq;
+      /** 已发出帧的最大 seq：历史与实时都过这一道闸，于是接缝处不会出现重号帧。起点取 `cursor` 而不是调用方给的游标 */
+      let lastSeq = cursor;
 
       const close = (): void => {
         if (closed) return;
@@ -107,14 +134,37 @@ function streamEvents(channel: EventChannel, runId: string, rowId: string, after
         controller.close();
       };
 
-      const push = (event: AgentEvent): void => {
+      const push = (event: AgentEvent, mode: 'replay' | 'live' = 'live'): void => {
         if (closed) return;
-        // 去重按 seq（派发稿 §T3-2）：服务侧不主动制造重复——重号会让浏览器按 Last-Event-ID
-        // 续订时把「已经在手上的那条」当成重复丢掉，而它其实可能是新事件
-        if (event.seq <= lastSeq) return;
+        /**
+         * 去重按 seq（派发稿 §T3-2）：服务侧不主动制造重复——重号会让浏览器按 Last-Event-ID
+         * 续订时把「已经在手上的那条」当成重复丢掉，而它其实可能是新事件。
+         *
+         * **唯一的口子是「换代」**：同一行重跑时 `resetEvents` 删掉文件、seq 从 1 重新发号，
+         * 而这条连接已经带着上一代的游标跑了很久（`lastSeq` 停在上一代的水位）。不放行的话，
+         * 新一代的 `1..k` 会整段落进这道闸门里，界面上表现为「重跑之后执行日志一条都不动」——
+         * 连接是活的、心跳照发，所以从客户端看不出任何异常，而谁也不会去重连。
+         *
+         * 判据是「游标**超过**当前水位」而不是「seq 回到 1」：后者会把同一世代里重复推来的
+         * 第一条（`seq === 1` 的回放边界重叠）也当成换代，凭空多发一帧、还会让客户端把已收内容
+         * 整批清掉。水位这一读只在真的走到这一步时才发生（`seq !== 1` 与「没超水位」都短路掉），
+         * 所以常态下没有额外的读盘开销。
+         */
+        if (event.seq <= lastSeq) {
+          if (event.seq !== 1 || lastSeq <= channel.maxSeq(runId, rowId)) return;
+          lastSeq = 0;
+          log.debug('事件日志已换代（同一行重跑），续订游标重新起算', { runId, rowId, channel: channel.label });
+        }
         lastSeq = event.seq;
         controller.enqueue(encoder.encode(toFrame(event)));
-        if (isTerminalEvent(event)) close();
+        /**
+         * **关流只认「此刻正在推的这条就是终态」**，而回放那一段不走这一步：
+         * 历史里夹着的终态事件（追问、重评、重跑都会让同一份 `events.jsonl` 里出现多个终态）
+         * 不是「这一行结束了」，遇到它就关会把**它之后的历史整段扣下**——真机症状是
+         * 「追问那一段的事件永远不到、会话总用量停在首段最后那条读数上」。
+         * 回放末尾那条终态由调用方在回放**全部发完之后**关一次（见下面）。
+         */
+        if (mode === 'live' && isTerminalEvent(event)) close();
       };
 
       // **第一件事就是吐一个字节**（一条注释帧，客户端按 SSE 规范忽略它）：响应头要等第一次
@@ -125,21 +175,28 @@ function streamEvents(channel: EventChannel, runId: string, rowId: string, after
       // 没有任何让出点（`start()` 是同步执行的，见文件头），所以不会插队也不会漏事件。
       controller.enqueue(encoder.encode(': ready\n\n'));
 
-      for (const event of history) {
-        push(event);
-        if (closed) break;
+      for (const event of history) push(event, 'replay');
+      /**
+       * 历史**末尾**是终态 ⇒ 这一行确实已经结束：回放完就关流，不订阅、不起心跳
+       * （否则浏览器会一直挂着这条连接，`connected` 徽标也永远显示「已连接」）。
+       * 末尾不是终态时才挂总线：这条行还在跑。
+       */
+      const last = history.at(-1);
+      if (last !== undefined && isTerminalEvent(last)) {
+        close();
+        return;
       }
-      // 历史里已经有终态：不订阅、不起心跳（否则浏览器会一直挂着这条连接）
-      if (closed) return;
 
-      unsubscribe = channel.subscribe(runId, rowId, push);
+      unsubscribe = channel.subscribe(runId, rowId, (event) => {
+        push(event);
+      });
 
       heartbeat = setInterval(() => {
         if (closed) return;
         // 注释帧（以 `:` 开头）按 SSE 规范被客户端忽略，只用来占住连接
         controller.enqueue(encoder.encode(': keep-alive\n\n'));
       }, HEARTBEAT_MS);
-      log.debug('SSE 开始推送', { runId, rowId, channel: channel.label, afterSeq, replayed: history.length });
+      log.debug('SSE 开始推送', { runId, rowId, channel: channel.label, afterSeq, cursor, replayed: history.length });
     },
     cancel() {
       // 客户端断开（关闭抽屉 / 切行）：必须退订并清定时器。

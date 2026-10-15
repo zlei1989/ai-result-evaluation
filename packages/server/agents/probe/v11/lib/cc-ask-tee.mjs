@@ -3,7 +3,7 @@
  * stdin / stdout 各落一份原始 NDJSON，于是能看到 `control_request` 的**线级原文**。
  *
  * 为什么需要它：回调只能证明「我被调用了」，证明不了「厂商发的是哪种控制请求」——
- * 而票里的第一问恰恰是后者。`supportedDialogKinds` 未声明的 dialog kind **根本不下发**，
+ * 而第一问恰恰是后者。`supportedDialogKinds` 未声明的 dialog kind **根本不下发**，
  * 所以「dialog 回调没被调用」这件事单独看是**不可证伪**的；有了线级帧才谈得上判据。
  *
  * 怎么接：SDK 的 `pathToClaudeCodeExecutable` 指向本文件（`.mjs` ⇒ SDK 用 `node <本文件> <CLI 参数>`

@@ -101,7 +101,7 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 - **用例一文件一落**：`<casesRoot>/<用例 id>.json`，裸 `TestCase` JSON、文件名即身份、写盘原子且 `0600`、读时容忍 BOM、坏文件跳过并进 `warnings`——完整口径（含手工迁移与 git 自动同步）见上节《用例目录》。
 - **`run.json`**（行快照）：`EvalRow` 含状态、分数（`ScoreResult` 12 格，记账格全 `.default(...)`——`safeParse` 读盘的硬理由）、diff、计量。旧 `run.json`（带 `dimensions`）`safeParse` 失败 ⇒ `listRuns` **跳过并落汇总 WARN**（不炸整页）。快照与事件同源：`setRowStatus` 改状态 + 落盘 + 追加 `status` 事件**成对**。
 - **`events.jsonl`**（行级事件，执行的唯一真相源）：追加写、`seq` 单调递增、按 `seq` 去重续订（`Last-Event-ID`）。**读侧容忍坏行**：写一半的 JSON、空行只跳过该行并 WARN，其余按原序全量读出（可用性优先于完备性）。只有候选新尝试的 `resetEvents` 清空。
-- **`messages.jsonl`**（内容通道）：按 `mergeKey` / `subagentId` 覆盖累积；四格计量**不在这份文件里**（走 `usage` 事件与 `EvalRow`）；一行都不产出时不建文件。
+- **`messages.jsonl`**（内容通道）：按 **`(段号, mergeKey)`**（契约的 `messageFoldKey`）/ `subagentId` 覆盖累积——段号必须进键，追问那一段的载体键与首段逐字相同；四格计量**不在这份文件里**（走 `usage` 事件与 `EvalRow`）；一行都不产出时不建文件。**重新执行会清空它**（`resetRecords`，下一次尝试是新的对话）⇒ 行快照上与之对齐的两格（`followUps` / `followUpRounds`）同时归零。
 - **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖。**不要先删目标再 rename**——中间崩溃会让配置彻底消失，而 `loadConfig()` 会静默回落默认值。
 - **rename 的 `EPERM` 有两种成因、处置相反**：目标是只读文件（只能先删）与杀软瞬时占用（重试即可）。判据 `statSync(file).mode & 0o200`，别无脑先删。
 - **读盘必须容忍 UTF-8 BOM**（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，`JSON.parse` 遇到就抛）；自己落盘不要产 BOM。

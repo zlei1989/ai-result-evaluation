@@ -6,6 +6,9 @@
  * 为什么只做进程内：单个 Next 服务进程，跨进程要额外消息层而收益为零；
  * 「刷新页面不丢事件」由消费方「重读文件 + 按 seq 续订」实现。
  *
+ * 扇出是**双层**的：一次 publish 既投给订阅了**这一行**的订阅者，也投给订阅了**这一轮所有行**的
+ * 订阅者（后者多一个 `rowId` 实参）。两套键分属两张表，不变量见 `RowEventBus`。
+ *
  * 注意：
  *   1. `seq` / `at` 的归属（core 的 `event-log.ts` 是唯一分配者）：
  *      · `seq` **恒由写入器分配**——调用方传进来的会被覆盖（按文件里已用的最大 seq 续号）；
@@ -31,12 +34,36 @@ const log = createLogger('events');
  *  它就是 core 的 `PendingAgentEvent`（**同一个类型，不另立一份**）——别名只为让本包读起来是「行事件」。 */
 export type PendingRowEvent = PendingAgentEvent;
 
-/** 见下方 `bus` 的注释：总线必须挂在 `globalThis` 上，不能放模块作用域 */
+/** 行级订阅者：只认事件本身（订阅的是「某一行」的流） */
+type RowEventListener = (event: AgentEvent) => void;
+
+/** run 级订阅者：比行级多一个 `rowId`——它订阅的是「一轮下所有行」，得自己把帧归到行上 */
+type RunEventListener = (rowId: string, event: AgentEvent) => void;
+
+/** 订阅者抛错时的日志措辞：哪一层的订阅者抛的（两层各自计数，见 `logListenerError`） */
+type ListenerLevel = '行级' | 'run 级';
+
+/**
+ * 总线（挂 `globalThis`，见下方 `BUS_KEY` 的注释）里的**两张订阅表**：
+ *
+ * | 表 | 订阅的是 | 键（候选 / 评分） |
+ * |---|---|---|
+ * | `subscribers` | 某一行的一条流 | `runId:rowId` / `runId:rowId:judge` |
+ * | `runSubscribers` | 一轮下所有行的同一条流 | `runId` / `runId:judge` |
+ *
+ * **键空间不变量**：两套键各自成表，任何一张表里的键都不拿到另一张表里解释（`fanOutEvent`
+ * 双层投递时正是这么查的：行键只查 `subscribers`、run 键只查 `runSubscribers`）。
+ * 为什么不共用一张表：两套键在**字符串层面**可能逐字相同——`runId:judge` 既是「这一轮的评分通道」
+ * （run 级键），又是「这一轮里 id 恰好叫 `judge` 的那一行的候选通道」（行级键）。共用一张表就会
+ * 互相误投，而 id 是 UUID 只是把冲突推到看不见，不是让它不可能。
+ */
 interface RowEventBus {
   /** `runId:rowId` → events.jsonl 绝对路径（纯缓存，裂脑只让它多解析几次） */
   paths: Map<string, string>;
-  /** `runId:rowId` → 该行的订阅者集合 */
-  subscribers: Map<string, Set<(event: AgentEvent) => void>>;
+  /** 行级：`runId:rowId[:judge]` → 该行该流的订阅者集合 */
+  subscribers: Map<string, Set<RowEventListener>>;
+  /** run 级：`runId[:judge]` → 该轮该流的订阅者集合（见下方为何可选） */
+  runSubscribers?: Map<string, Set<RunEventListener>>;
 }
 
 /**
@@ -58,12 +85,15 @@ interface RowEventBus {
 const BUS_KEY = '__aievalRowEventBus';
 type GlobalWithBus = typeof globalThis & { [BUS_KEY]?: RowEventBus };
 const globalWithBus = globalThis as GlobalWithBus;
-globalWithBus[BUS_KEY] ??= { paths: new Map(), subscribers: new Map() };
+globalWithBus[BUS_KEY] ??= { paths: new Map(), subscribers: new Map(), runSubscribers: new Map() };
 const bus: RowEventBus = globalWithBus[BUS_KEY];
+// run 级表**按需补齐**：总线对象可能由更早的模块实例建出来（HMR 重建模块，而对象留在 `globalThis` 上），
+// 那种对象上没有这一格——直接读会拿到 `undefined`，并在下一次 publish 时抛。
+const runSubscribers = (bus.runSubscribers ??= new Map());
 
 /** `runId:rowId` → events.jsonl 绝对路径。每条事件都读一次 run.json 会让写日志退化成 O(n) 次磁盘解析 */
 const eventsPaths = bus.paths;
-/** `runId:rowId` → 该行的订阅者集合 */
+/** 行级：`runId:rowId[:judge]` → 该行该流的订阅者集合 */
 const subscribers = bus.subscribers;
 
 /**
@@ -87,6 +117,15 @@ function cacheKey(runId: string, rowId: string): string {
 }
 
 /**
+ * run 级订阅键：`runId`（候选）/ `runId:judge`（评分）——与行级键**分属两张表**（不变量见 `RowEventBus`）。
+ * 复用同一个 `JUDGE_CHANNEL` 后缀：两条评分通道指的是同一个概念，后缀一旦漂开，症状是
+ * 「订阅了评分却收到候选」这种不报错的错投。
+ */
+function runChannelKey(runId: string, judge: boolean): string {
+  return judge ? `${runId}${JUDGE_CHANNEL}` : runId;
+}
+
+/**
  * 取一条事件流的落点：优先用缓存，未命中时从**这一轮自己的根**推出来（见 `resolveRunRoot`）。
  * `judge` = 评分阶段那条流（`judge-events.jsonl`）——`seq` 由 `appendEvent` 按**文件里已用的最大号**续，
  * 所以它自带一套从 1 起的号，评分重新开始时不会把行级那条流的续订游标带偏。
@@ -101,22 +140,52 @@ function channelOf(runId: string, rowId: string, judge: boolean): { key: string;
   return { key, file };
 }
 
-/** 扇出给一条流的订阅者；`scope` 只用于出错时的日志措辞（事件 / 评分事件） */
-function fanOutEvent(input: { key: string; runId: string; rowId: string; event: AgentEvent; scope: string }): void {
-  const listeners = subscribers.get(input.key);
+/**
+ * 投一层订阅者：**先复制再遍历**（订阅者在回调里取消订阅是合法用法，直接遍历原集合会漏掉后续
+ * 订阅者），坏订阅者只记日志——落盘、同层其余订阅者与另一层都不受影响。
+ */
+function deliver<L>(listeners: Set<L> | undefined, call: (listener: L) => void, onError: (error: unknown) => void): void {
   if (listeners === undefined) return;
-  // 先复制一份再遍历：订阅者在回调里取消订阅是合法用法，直接遍历原集合会漏掉后续订阅者
   for (const listener of [...listeners]) {
     try {
-      listener(input.event);
+      call(listener);
     } catch (error) {
-      log.error(`${input.scope}订阅者抛错（落盘与其它订阅者不受影响）`, {
-        runId: input.runId,
-        rowId: input.rowId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+      onError(error);
     }
   }
+}
+
+/** 记一条订阅者抛错（`level` 区分是哪一层），上下文与其它总线同一形状 */
+function logListenerError(input: { scope: string; runId: string; rowId: string }, level: ListenerLevel, error: unknown): void {
+  log.error(`${input.scope}${level}订阅者抛错（落盘与其它订阅者不受影响）`, {
+    runId: input.runId,
+    rowId: input.rowId,
+    reason: error instanceof Error ? error.message : String(error),
+  });
+}
+
+/**
+ * 扇出给一条流的**两层**订阅者：先行键（既有通道，只拿事件）、后 run 键（聚合通道，多拿一个
+ * `rowId`）；两层递的是**同一帧**（不复制、不改写）。`scope` 只用于出错时的日志措辞（事件 / 评分事件）。
+ */
+function fanOutEvent(input: {
+  key: string;
+  runId: string;
+  rowId: string;
+  judge: boolean;
+  event: AgentEvent;
+  scope: string;
+}): void {
+  deliver<RowEventListener>(
+    subscribers.get(input.key),
+    (listener) => listener(input.event),
+    (error) => logListenerError(input, '行级', error),
+  );
+  deliver<RunEventListener>(
+    runSubscribers.get(runChannelKey(input.runId, input.judge)),
+    (listener) => listener(input.rowId, input.event),
+    (error) => logListenerError(input, 'run 级', error),
+  );
 }
 
 /**
@@ -130,7 +199,14 @@ function publishEvent(input: { runId: string; rowId: string; event: AgentEvent |
   // 行目录可能还没建起来（「准备中」这条状态事件先于 prepareRowWorkspace 的目录复制）——补一次 mkdir
   mkdirSync(dirname(file), { recursive: true });
   const written = appendEvent(file, input.event);
-  fanOutEvent({ key, runId: input.runId, rowId: input.rowId, event: written, scope: input.judge ? '评分事件' : '事件' });
+  fanOutEvent({
+    key,
+    runId: input.runId,
+    rowId: input.rowId,
+    judge: input.judge,
+    event: written,
+    scope: input.judge ? '评分事件' : '事件',
+  });
 }
 
 /** 发布一条**行级**事件（状态、计量、失败、结束，以及编排层自己的留痕） */
@@ -153,7 +229,7 @@ export function publishJudgeEvent(runId: string, rowId: string, event: AgentEven
  * 不在这里回放历史：回放要读文件、要定 afterSeq、要去重，那是消费方（SSE）按 seq 处理的活；
  * 本函数只保证「订阅之后发布的每一条都推给你」。
  */
-function subscribeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void, judge: boolean): () => void {
+function subscribeEvents(runId: string, rowId: string, listener: RowEventListener, judge: boolean): () => void {
   const key = judge ? `${cacheKey(runId, rowId)}${JUDGE_CHANNEL}` : cacheKey(runId, rowId);
   let listeners = subscribers.get(key);
   if (listeners === undefined) {
@@ -172,11 +248,48 @@ function subscribeEvents(runId: string, rowId: string, listener: (event: AgentEv
 }
 
 /** 订阅候选那条事件流（行级 SSE） */
-export function subscribeRowEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
+export function subscribeRowEvents(runId: string, rowId: string, listener: RowEventListener): () => void {
   return subscribeEvents(runId, rowId, listener, false);
 }
 
 /** 订阅**评分**那条事件流：与执行日志分开的第二条流 */
-export function subscribeJudgeEvents(runId: string, rowId: string, listener: (event: AgentEvent) => void): () => void {
+export function subscribeJudgeEvents(runId: string, rowId: string, listener: RowEventListener): () => void {
   return subscribeEvents(runId, rowId, listener, true);
+}
+
+/**
+ * 订阅**一个 run 下所有行**的某一条流，返回取消订阅函数（可重复调用）。
+ * 与行级同一条 live-only 口径（见 `subscribeEvents`），差别只在键与集合：这里按 run 级键分组。
+ */
+function subscribeRunStream(runId: string, listener: RunEventListener, judge: boolean): () => void {
+  const key = runChannelKey(runId, judge);
+  let listeners = runSubscribers.get(key);
+  if (listeners === undefined) {
+    listeners = new Set();
+    runSubscribers.set(key, listeners);
+  }
+  listeners.add(listener);
+
+  return () => {
+    const current = runSubscribers.get(key);
+    if (current === undefined) return;
+    current.delete(listener);
+    // 空集合立刻回收：长驻服务里跑几百行，不回收就是一条缓慢的内存泄漏
+    if (current.size === 0) runSubscribers.delete(key);
+  };
+}
+
+/**
+ * 订阅**一个 run 下所有行**的候选事件流（聚合流用），返回取消订阅函数（可重复调用）。
+ * 与 `subscribeRowEvents` 的两处差别：`listener` 多一个 `rowId` 实参——它只有这一条流，
+ * 得自己把帧归到行上；键是 run 级键，同一帧由 `publishRowEvent` **双层投递**同时给到行级与 run 级。
+ * 不回放历史：要历史就自己读文件（先订阅、再读文件、按 seq 去重），与行级一致。
+ */
+export function subscribeRunEvents(runId: string, listener: RunEventListener): () => void {
+  return subscribeRunStream(runId, listener, false);
+}
+
+/** 订阅**一个 run 下所有行**的评分事件流（与候选那条分开，见 `JUDGE_CHANNEL`） */
+export function subscribeRunJudgeEvents(runId: string, listener: RunEventListener): () => void {
+  return subscribeRunStream(runId, listener, true);
 }

@@ -22,6 +22,7 @@ function attachment(overrides: Partial<AttachmentBlock> = {}): AttachmentBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     attachmentKind: 'image',
     path: 'D:\\runs\\shot.png',

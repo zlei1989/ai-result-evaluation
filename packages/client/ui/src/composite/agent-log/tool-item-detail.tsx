@@ -19,7 +19,7 @@
  *   · **结果不截断**：超长时自己截一段会与 `MonoText` 的滚动打架，也会让「原文可查」变成
  *     「原文查不全」；整段交给 `MonoText`（`maxHeight` + 滚动），一字不少。
  */
-import { Collapse, Flex, Tag, Typography } from 'antd';
+import { Alert, Collapse, Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import { EllipsisText } from '../../base/ellipsis-text';
 import { JsonText } from '../../base/json-text';
@@ -61,7 +61,7 @@ function hasText(value: string | null): value is string {
  * 配不上调用的结果时，两条都落到 `<at>|orphan`，React 直接报
  * 「Encountered two children with the same key, `…|orphan`」；更早的 `at|name` 写法在同一轮
  * 两次同名、都缺 `callId` 的调用上撞的是同一堵墙。
- * 所以兜底用**源块自己的 id**（数据层给 `messageId#块下标`，同轮唯一）。
+ * 所以兜底用**源块自己的 id**（数据层给 `mergeKey#块下标`，同轮唯一且跨流式帧稳定）。
  *
  * 孤立结果**也照用它的 `callId`**：配不上调用（本轮没有那次调用）不等于它没有身份，
  * 丢掉它正是上面那次撞键的直接原因。
@@ -187,6 +187,13 @@ function CallBody({ item, missingReason }: { item: ToolItem; missingReason: stri
       )}
       {item.input.bytes !== null && (
         <Typography.Text type="secondary">{`参数原文 ${item.input.bytes} 字节`}</Typography.Text>
+      )}
+      {/*
+        参数解析失败：厂商那句话放在参数正文下面。此刻 `input` 是个空对象，与「模型真传了空对象」
+        同形——只有这一格能说出真相。语义色与图标都走 antd，不手写字号与颜色。
+      */}
+      {hasText(item.inputError) && (
+        <Alert type="warning" showIcon title={`参数不是合法 JSON：${item.inputError}`} />
       )}
       {item.output === null ? (
         <Typography.Text type="secondary">

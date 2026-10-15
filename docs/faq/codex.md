@@ -22,6 +22,22 @@ Codex（`@openai/codex` CLI / `codex app-server`）在**真实运行环境**里�
 
 ---
 
+
+**现时补充（生产产物 + 生产进程 spy 的真机读数）**：上面那条「Next 把 `createRequire` 换成自己的
+`require`、`resolve()` 返回模块 id」的机制，在**当前默认的 Turbopack 生产构建里复现不出来**——
+`node:module` 编译成 `e.x("node:module", () => require("node:module"))`，就是真 Node 模块；
+`resolve()` 返回真文件路径；`isFilesystemPath` 的 `[external` 那一支一次没走过。⇒ `binary.ts` 那两条
+免疫今天是**保险**（守别的打包器/构建配置），不是正在生效的载荷路径；判据照旧要留。
+
+同一份读数还给出两条与「跑不跑得起来」直接相关的现时约束：
+
+- **`@openai/codex` 不进任何产物**（没有 externals chunk、没有 `.next/node_modules/<包名>-<哈希>` 软链、
+  `*.nft.json` 里也没有），它只由 `createRequire(anchor).resolve(...)` 在运行期按 node_modules 布局解析
+  ⇒ `serverExternalPackages` 里那一格对它是**空转**；
+- **第一跳基准在生产产物里是「构建机仓根的源码绝对路径」**（该模块被内联进 server chunk，`import.meta.url`
+  在构建期就定死）⇒ 本机能过只因为源码树还在原处；「只发 `.next` + app 的 node_modules」的部署形态下
+  这一跳恒失败、只剩 `process.cwd()` 那一跳。**未闭合**：改成什么基准要产品决策。
+
 ## `http 401`，但密钥明明就在子进程环境里（`auth.header_attached=false`）
 
 **日期**：2026-10-07
@@ -380,7 +396,7 @@ in `model_providers.aieval.wire_api`
 
 - 快照：`item/completed` 的 `ThreadItem.reasoning.content[]`（字符串数组，一项即全文：4 case 实测 117 / 227 / 151 / 278 字）；`item/started` 那一帧两格**都是空数组**（别在 started 就取值）。
 - 增量：`item/reasoning/textDelta`（带 `contentIndex`，本路由恒 `0`）——**逐字拼接后与 `content[0]` 完全相等**（4/4；39 / 54 / 49 / 72 条）。增量是**子词级**的（逐字样本：`"The"` / `" r"` / `" conclusion"`），且**条数恰好等于 `reasoningOutputTokens`**（1 delta ≈ 1 token）⇒ 这一格可以当「思考增量真在跑」的旁证。
-- `item/reasoning/summaryTextDelta` 与 `item/reasoning/summaryPartAdded` 在本路由上**恒 0 条**（是**上游不给摘要**，不是我们没接；`summaryIndex` 因此**无样本**，不是恒 0）⇒ 摘要那一块在 DeepSeek 上结构性拿不到，`thinkingTextKind: 'full'` 的声明与实际相符。
+- ⚠️ **本条原来写的「`summaryTextDelta` / `summaryPartAdded` 恒 0 条 ⇒ 摘要在 DeepSeek 上结构性拿不到」已被后续读数推翻**：在 3 条路由 × 2 个模型上跑 10 次往返，**摘要恰恰是实际拿得到的那一档**（`item/reasoning/summaryTextDelta` 会到、7 次推理条目的 `summary[]` 全非空），而 `textDelta`（全文）**一次未到**、`content[]` 恒为 `[]`。⇒ 由此得出的「`thinkingTextKind: 'full'` 与实际相符」也**不成立**；该报哪一档**未闭合**（要先有一条稳定产出 `content[]` 的路由读数，才能定这是「能力档」还是「本路由档」）。`summaryIndex` 有样本，不是「无样本」。
 - 配置面**没有开关可拧**（三条通知在 app-server 里无条件下发）。唯一要守的一条：`model_reasoning_summary` **不设或写 `auto`**——写 `'none'` 时 codex 会**整个省略**该键（`summary != None` 才 `then_some` + `skip_serializing_if`，所以它自身安全），但**手写**请求带 `"summary":"none"` 会被该网关 422 拒：``unknown variant `none`, expected one of `auto`, `concise`, `detailed` ``。
 - ⚠️ **本仓那一格是空转**：`providers/codex/index.ts:49` 的 `CODEX_OFF_REASONING_SUMMARY = 'none'`（`effort === 'off'` 时注入）在真机上**既不报错、也不影响推理照常产出**——`off-both` case（`effort:none` ∧ `summary:none`）照样拿到 1 段 278 字明文 ⇒ 「两格一起才生效」在**观测面上不成立**：`none` 只是被 codex 消化掉（**丢弃还是翻译成别的值，未验证**）。文案仍按「已按要求下发」说，但不要指望它关掉任何东西。
 
@@ -768,3 +784,752 @@ ERROR codex_core::tools::router: error=request_user_input is unavailable in Defa
 判据：`providers/codex/index.test.ts` 的「提问请求 → 账本补出那条 assistant `tool-call`；审批类请求不产消息」（真机形状的两题请求：`callId` 与端口请求一致、题目与选项逐字）＋ `agent-log/build-model.test.ts` 的「codex 真机形状」（账本 → 卡片模型：题目逐字、答案按 `header` 逐题对上）＋ `agent-log/ask-user-card.test.tsx` 的「答案到达顺序与题目顺序不同也各归各题」。**变异三处各见一次红**：去掉 `onAskRequest` 那一行 ⇒ 第一条报 `expected [] to have a length of 1`；把卡片改成按下标取答案 ⇒ 第三条的顺序断言见红；把 `build-model.ts` 的配对键从 `callId` 改成题目文本 ⇒ 第二条报 `expected 'pending' to be 'settled'`。
 
 **相关资料**：同节的《提问与应答面》（`docs/protocols/codex.md`）写着这一家的通道、选择模式与配对键口径。
+
+---
+
+## `thread/list` 回 `"data":[]`／`count: 0` + `containsTarget: false`（同一 `$CODEX_HOME` 下 rollout 在场、`thread/read{includeTurns:true}` 与 `thread/resume` 都正常，靠 cwd 反查 id 却永远是空表）
+
+**现象**：同一台 `$CODEX_HOME` 里那条线程，rollout 就在盘上、`thread/read{includeTurns:true}` 读得回历史、`thread/resume{threadId}` 接得上，但**换一个进程**发 `thread/list` 拿到的是一份空表：
+
+```json
+{"data":[]}
+```
+
+同一份读数在探针里长这样（`thread/list{cwd, limit:10}`，`probe/v11/codex-session-resume.mjs` 的 `inspect` 档；`listError` 是 null——**不是报错，是回空**）：
+
+```text
+list: {count: 0, ids: [], containsTarget: false, previews: [], cwds: []}
+read: {turns: 1, turnStatuses: ["completed"], turnItemsView: ["full"],
+       path: "…/sessions/2026/10/14/rollout-2026-10-14T23-12-53-<threadId>.jsonl"}   nonceFoundInTurns: true
+```
+
+两行是**同刻两次请求**、同一条线程：`thread/list` 那一行回空，`thread/read` 那一行连盘上那份 `rollout-*.jsonl` 的路径都报得出来。
+
+`state_5.sqlite` 的 `threads` 表里那一行**是在的**（`id` / `rollout_path` / `cwd` / `model_provider` 逐格对得上）。过滤器怎么换都一样——`{cwd}` / 不带 cwd / `sourceKinds:['appServer']` / `sourceKinds:['cli','vscode']` / `useStateDbOnly:true`，**五档全 0 条**。
+
+**日期**：2026-10-14
+
+**根因**：`thread/list` 只列**进程级配置（`$CODEX_HOME/config.toml`）里认得**的 model provider 名下的线程。本仓那条 provider（`aieval`）是**线程级**给的（`thread/start` 的 `config.model_providers`），进程级配置里没有它 ⇒ 换个进程来查，那条线程被整条筛掉。
+
+判据是**同一台 home 只动一格自变量**：往里补一份 `config.toml` 逐字声明同一个 provider（`model_provider` + `[model_providers.aieval]` 的 `base_url` / `wire_api` / `env_key`），同一个进程、同一份 `thread/list{cwd}` 立刻从 0 条变 1 条命中，另外四档过滤器读数不变。
+
+⚠️ 另一件**不要混进来**的事：`thread/start` 之后**一个 turn 都没跑**的线程，`threads` 表里压根没有那一行——两臂都查不到，那是「没进索引」，与上面的「进了索引但被 provider 筛掉」不是同一条。
+
+**解决方案**：**这条登记为「兜底路不成立」，不改产品行为**——我们要落的键是 `threadId`，它取自 `thread/start` 的响应（`result.thread.id`）或同刻的 `thread/started` 通知（`params.thread.id`），**不依赖 `list`**（两格都在，见 `probe/v11/codex-session-resume.mjs` 的 `write` 档）；判据就是上面那一对真机读数（`thread/list{cwd}` 回空 vs 同刻 `thread/read{includeTurns:true}` 正常）。凡「靠 `thread/list` 反查 id」的写法都不必再试。「cwd + 最近一条」这条查找路在「provider 写在线程级 config」的形状下**不可用**（除非往行 home 里再落一份 `config.toml`，那是另一套落盘口径）⇒ 会话 id 只能**自己落盘**、续接只走 `thread/resume{threadId}`。
+
+判据：`probe/v11/codex-thread-lookup.mjs` 的 ②（只有线程级 config）与 ③（补 `config.toml`）两臂，读数落 `probe/dumps/v11/codex-thread-lookup.json`（整个 `dumps/` 已 gitignore）。**未闭合**：筛的是哪一列（provider 名表还是别的）没到源码级，只有「补 `config.toml` ⇒ 可见」这一条真机判据。下一步就是查这一列——`ancestorThreadId` 那一支**不解释这份读数**（同一个 `{cwd, limit:10}` 请求只补一份 `config.toml` 就从 0 条变命中，自变量是 provider 名表，不是线程树）。
+
+---
+
+## 执行日志里整个 turn 挤成一条消息（`messages.jsonl` 里 5 条 assistant 投递全是 `"mergeKey":"main|1|assistant|-"`，`usage` 事件报 `turns=1`）
+
+**现象**
+
+一次「用 skill 写首诗」的运行，界面上那一轮只剩**一张卡片**，里面「思考 → 工具调用 → 思考 → 正文」挤在一起；面板顶部显示 `已渲染 1 / 共 1 轮`，而这次运行实际发生了 **2 次模型往返**（先想 + 调工具，再想 + 答复）。
+
+落盘逐条数：`messages.jsonl` 里 7 条投递只有两个合并键，其中 5 条是同一个：
+
+```text
+run-codex:16 | mk: main|1|assistant|- | rt: 1 | vid: rs_23452b0748824e1db984a3ccc73337b9  (reasoning)
+run-codex:17 | mk: main|1|assistant|- | rt: 1 | vid: call_34490b509fdb4e7495168d86        (commandExecution)
+run-codex:19 | mk: main|1|assistant|- | rt: 1 | vid: call_34490b509fdb4e7495168d86        (commandExecution)
+run-codex:64 | mk: main|1|assistant|- | rt: 1 | vid: rs_b959754e5ed84827ad41bf7eb79d8e3d  (reasoning)
+run-codex:85 | mk: main|1|assistant|- | rt: 1 | vid: msg_b959754e5ed84827ad41bf7eb79d8e3d (agentMessage)
+```
+
+`events.jsonl` 的 `usage` 事件同样报 `{"turns":1}`（真实是 2）。客户端按设计「同 `mergeKey` 覆盖留最后一条」（`build-model.ts` 的折叠），于是那 5 条被折叠成一条。
+
+**日期**：2026-10-15
+
+**根因**：`roundTrip` 的号源与契约语义不符。契约（`docs/protocols/message-spec.md`）里它是**模型往返序号**，而 `run-state.ts` 的 `countRoundTrips` 只在 `item.kind === 'agentMessage'` 时按条目 id 去重开号 —— 数的是「答复条目」而不是「往返」。codex 的结构是**一个 turn 里跑多次往返，只有收尾那次发 `agentMessage`**：中间那些「想 + 调工具」的往返只有 `reasoning` 与工具条目，一条答复都没有。于是整个 turn 期间号恒为 0，所有条目取号时都落到 `Math.max(0, 1) = 1`。
+
+合并键是 `subagentId|roundTrip|role|parentCallId`（`carrierKeyOf`），codex 的消息 `parentCallId` 恒 `null`、主会话 `subagentId` 恒 `null` ⇒ **只有 `roundTrip` 能区分同角色的消息**。号不前进，同角色的全部消息就是同一个载体，合并器按设计把块累积进它（块序号靠 `blockIndexFor` 区分，所以内容没丢，只是**都挤在一条里**）。
+
+同一把尺子还管着轮次统计（`observedTurns` / `subagentTurns`），所以 `turns` 也被系统性低估。
+
+**解决方案**：号源改成**厂商的响应身份**（`run-state.ts` 的 `countRoundTrips`）：
+
+- **主判据 = id 后缀**。模型产出条目（`reasoning` / `agentMessage`）的 id 后缀就是厂商的响应 id，**同一次响应的推理与答复共享它**（`rs_<响应 id>` / `msg_<响应 id>`）——真机三种 id 格式（`rs_<hex32>`、`rs_<uuid>`、`rs_<时刻+随机>`）与 34 个响应组逐组核对过，同后缀里从不出现两个同类条目。取「第一个 `_` 之后的全部」，一次响应恰好开一个号。
+- **两条兜底**：`item.id` 里没有分隔符时退回结构判据（上一次产出之后跑过工具才算新的一次往返）；工具条目在一次产出都没见过时**补记一票**（工具执行蕴含它前面必有一次往返，真机形状：turn 的第一条通知就是命令执行）。
+- 增量（`agentMessageDelta` / `reasoningTextDelta`）也过这把尺子（`noteDeltaRoundTrip`）：`item/started` 与增量谁先到不由本层定；载荷的 `itemId` 与条目 id 逐字相同（抓包逐帧核对：`item/agentMessage/delta` 的 `itemId` 就是 `item/completed` 的 `item.id`）。
+- 收尾回读（`projectThreadMessages`）**自带开号**：那条路上一条运行期通知都没走过，号必须在那里补。
+- **内容级归一不再依赖行级投影先跑**（`projectCodexMessages` 自己也数一遍，幂等）：合并键不该取决于另一层的执行顺序——这正是本缺陷的土壤。
+
+判据：`providers/codex/message.test.ts` 的「往返号源：一次模型往返一条消息」五条（真机形状：想→调工具→想→答复、同响应共享号、提问那一轮、工具打头、增量先到）＋「收尾回读的一批条目自带开号」＋`providers/codex/events.test.ts` 的「推理条目推进往返」与「turn 的第一条通知就是工具执行」。
+
+**变异验证**（两处，各见一次红，之后逐字还原并核对 sha256）：
+- 号源退回「只数 `agentMessage` + 身份取整串 + 取消工具补票」⇒ 真机形状那条报 `expected ['main|1|assistant|-', …(1)] to deeply equal […(2)]`（收到 2 个键、正是上报症状）；
+- 身份取整串（不做后缀归一）⇒「同一次往返的推理与答复共享一个号」见红。
+
+真机复核：修复后同一用例重跑，`messages.jsonl` 里 `msg`/`rs` 同后缀的两次往返分成 `main|1|…` / `main|2|…`，界面显示 `已渲染 2 / 共 2 轮`，工具调用归它自己那次往返（`轮次 1`）。
+
+**已知边界**：id 里没有 `_` 分隔符时只剩结构判据，此时「答复之后直接下一次往返、中间没有工具条目」的那一轮（提问应答）会并号——真机三种格式都有分隔符，这一档未在真机出现。
+
+---
+
+## 界面显示人工消息「已送达」，但模型从头到尾没看到那句话（`'idle'` 档只 `thread/queue/add`、不起轮）
+
+**日期**：2026-10-16
+
+**现象**：`run.injectMessages` 开启的那一行，人在运行中发一条「顺便把 changelog 也补上」并选择排队。界面与账本三处一致地说它已送达：
+
+- `inject-message` 事件落 `outcome: 'delivered'`；
+- 消息账本多一条 `role: 'user'` / `origin: 'human'` 的记录；
+- 行快照的 `followUps` 计数 +1。
+
+而模型那一侧的上下文里**一个字都没有**——后续答复完全不提这件事，`events.jsonl` 里也找不到任何异常。
+
+**根因**（机制层）：厂商的自动投递**不是**只挂在「一轮收场那一刻」。真机读数（`arms/arm-queue-race.mjs` 三臂一致）：
+条目录在一个**空闲**线程上时，厂商在 `thread/queue/add` 那一刻就自己把它撒成了新一轮——通知序列是
+`thread/queue/changed`（入队）→ `thread/queue/changed`（被消费）→ `thread/status/changed(active)` → `turn/started`，
+而紧接着的 `thread/queue/start` 拿到 `-32600 queue is empty`。上游源码里这也是主路径之一
+（`ext/queue/src/service.rs` 的 `enqueue → wake_if_loaded → dispatch_if_idle`；PR #38456 原文：
+*"Automatically dispatch queued submissions in FIFO order after completed or failed turns, while leaving the queue paused after interruption."*）。
+
+⇒ 这一条的**两条历史结论都要改**：
+① 「只 add 不 start 会一直躺在队列里没人消费」——真机不成立（厂商自己会投）；
+② 真正会坏事的是**反向**：把 `queue is empty` 当成「起轮失败」⇒ 不登记交付、当场收场、`dispose` 杀掉厂商刚起的那一轮（真机复现：`turn/started` 2 条 / `turn/completed` 1 条、哨兵 0 次进请求体）。
+
+**解决方案**（`providers/codex/turn-injection.ts` 的 `deliverIdle` + `index.ts` 的收场接线）：
+交付判据从「我们起轮成功」改成「**这一轮真的跑起来了**」，两档按**条目还在不在可见队列里**分：
+
+1. `thread/queue/add{clientUserMessageId}` 登记（拿到提交 id，保住按身份撤）；
+2. `thread/queue/start` 起轮：成功 ⇒ 交付登记 + 流继续消费那一轮（原路）；
+3. `queue/start` 失败时**读一次 `thread/queue/list`**：
+   - 条目**不在**表里 ⇒ 厂商已消费 ⇒ **按交付登记**，并让流继续消费厂商起的那一轮
+     （`vendorDispatched`；在途轮号由 `turn/started` 补——中止请求要的正是它）。收场那一拍**不结算**，
+     那一轮真收场时它的结局替换掉暂存的，于是这一行的结论取最后一轮；等不到 `turn/started` 时按
+     `CODEX_VENDOR_TURN_WAIT`（5 s）有界收场；
+   - 条目**还在**表里 ⇒ 见下一条：**没被消费 ≠ 失败**（厂商会在当前轮收场后自己把它撒出去），
+     一次交多条时尤其不能整批处置。
+
+判据：`providers/codex/turn-injection.test.ts` 的两条（消费 ⇒ 交付 + `vendorDispatched`；还在 ⇒ 不交付 + 回滚）
++ **真机守卫** `providers/codex/turn-injection-delivery.test.ts`（驱动器 `testing/codex-injection-fixture.ts`：
+真二进制 + 脚本式上游，四条判据＝登记交付 / 哨兵进**出站请求体** / 那一轮跑完 / 答复成为 `finalText`；
+阴性对照不挂注入面 ⇒ 哨兵 0 次）。**变异验证**：让「消费」那一档恒回空 ⇒ 见红；还原后 sha256 一致。
+
+**未闭合**：无（这一格已按真路径证据升为 `yes` + `real-path`，见 `docs/protocols/codex.md` 的《注入与续接》）。
+
+---
+
+## 中文正文里凭空出现 `\uFFFD`（`中���内容ok`）：命令输出与答复正文**静默**损坏
+
+**日期**：2026-10-16
+
+**现象**：单条通知超过管道一次读上限（64 KB）时，正文里的多字节字符被切成替换字符。同一帧在夹具里完好、真机上偶发；`JSON.parse` **照样成功**、坏帧计数不增、日志不响 —— 表现是「上游改了什么」还是「我们读错了」完全分不出来。
+
+纯 Node 复现（把一帧按字节切成两半，切点落在汉字中间）：
+
+```
+原文   : "中文内容ok"
+naive  : "中���内容ok"   ← chunk.toString()
+setEnc : "中文内容ok"    ← setEncoding('utf8')
+```
+
+**根因**：`appserver/client.ts` 的 stdout 读侧写的是 `buffer += chunk.toString()`，而 `spawn` 用的是 `stdio: ['pipe','pipe','pipe']`——**没有 `setEncoding('utf8')`，也没有 `StringDecoder`**。管道单次读上限 64 KB，而一个汉字 3 字节完全可能跨两个 chunk；`Buffer#toString()` 对半个字符产出 `\uFFFD`，而坏字落在 JSON 字符串**内部**时 `JSON.parse` 依然成功。
+
+为什么守卫没拦住：假子进程的 `emitRaw(text: string)` 投的是**字符串**，分包用例只能覆盖「半行」，覆盖不到「半个字符」——**测试环境不是运行环境**。
+
+**解决方案**：读侧 `child.stdout.setEncoding('utf8')`（交给 Node 的 `StringDecoder`，它跨 chunk 保留不完整字节），`stderr` 同样；并把这两格提成 `AppServerChild` 接口的**必填成员**，让类型系统挡住下一个实现者。
+
+判据：`appserver/client.test.ts` 的「跨 chunk 的多字节字符不被切坏」——那条用例**不用假件模拟**，而是拿真实 `PassThrough` 当 stdout（`setEncoding` 在它上面的行为就是生产行为），按字节切帧后断言正文逐字相同；「读侧与错误侧都接上了」按 `setEncoding` 的**设值**与 stdin `error` 监听者的**个数**立判据（空表遍历同样不抛，拿 `not.toThrow()` 立判据等于没立）。**变异验证**：去掉 `stdout.setEncoding` ⇒ 2 条见红；还原后 sha256 一致。
+
+---
+
+## `Error: write EPIPE` 打崩 Web 服务进程：往已死的 app-server 写一帧
+
+**日期**：2026-10-16
+
+**现象**：提问在等人回答期间用户点了「终止」，或那一行被看门狗收掉 —— 随后宿主进程（Next 服务）直接消失，日志里顶多留一句 `Error: write EPIPE`，没有业务上下文。
+
+**根因**：`client.ts` 有**两处**裸写 stdin（回帧、发请求），而全仓没有任何 `child.stdin.on('error', …)`。`child.stdin` 是 Socket，对端已死之后写入会异步 emit `EPIPE` / `ERR_STREAM_DESTROYED`；而 `ChildProcess.on('error')` **不接管 stdin 流上的错误** —— 没有监听者的 `'error'` 事件在 Node 里就是未捕获异常，直接带走宿主。
+
+触发路径是常态而非边角：`port.ask` 有自己的等待预算，取消路径上 `dispose → close → kill` 必然先完成，答案回来时那根管子已经没了。
+
+**解决方案**：三处一起做，缺一个就换一种崩法——
+
+1. `child.stdin.on('error', …)` 挂一个只记日志的监听（**不** `rejectAll`：进程真的退出有 `close` 那条通路，一次写失败不该替它宣布死亡）；
+2. 写帧收成**唯一出口** `writeFrame`：已终态就不写（返回 `false`）、同步抛也吞掉（回帧那一侧是 fire-and-forget，抛出去就是未捕获 rejection）；
+3. 发请求那一侧拿到 `false` 立刻结算那条 promise（不白等 30 秒的超时）。
+
+判据：`client.test.ts` 的「读侧与错误侧都接上了」（按监听者个数）、「写帧失败（对端已死）⇒ 该请求立刻拒绝，不白等一个超时」。**变异验证**：去掉 stdin 监听 ⇒ 1 条见红；去掉立即结算 ⇒ 1 条见红。
+
+---
+
+## 子线程的正文出现两份、且顺序颠倒（第 1 轮的内容排在第 2 轮之后）
+
+**日期**：2026-10-16
+
+**现象**：上游把子线程的 `item/*` 推给了本连接、收尾又 `thread/read` 全量回读一遍时，同一个载体的条目落进**两个不同的合并键**，按 `mergeKey` 折叠**去不掉**：
+
+```
+thread-child|1|assistant|-  roundTrip 1  ["子答复甲"]
+thread-child|2|assistant|-  roundTrip 2  ["子答复乙", "子答复甲"]   ← 甲重复，且排在乙之后
+```
+
+**根因**：载体键里的轮次号按「该线程**此刻**累计几轮」现算（`roundTripsOf`）。运行期是逐条推进的，当下值恰好等于本条自己的号；而收尾那一批条目的号**已经数过**（`countRoundTrips` 按身份去重、不再推进）⇒ 整批都读到**最终号**。键不同 ⇒ 合并器各占一条逻辑消息（内容重复），且补齐的那份按到达顺序追加在最后一轮之后（块序颠倒）。
+
+按 `mergeKey` 折叠是消费方唯一的去重手段（`build-model.ts` / `row-messages.ts` 同口径「留最后一条」），而这里被打破的正是键本身。
+
+**解决方案**：把「这条条目属于哪一次往返」变成**一经登记不再变的事实**——`run-state.ts` 新增 `itemRoundTrip` 台账与 `roundTripForItem(state, threadId, itemId)`，`message.ts` 的 `draft()` 用它取号（第一次问就钉住）。调用方必须先计入本条再取号（顺序反了会钉在上一轮）。号源仍是同一把尺子 ⇒ 运行期与收尾两条入口拿到的号逐字相同，合并器折得拢。
+
+判据：`index.test.ts` 的「混合通道：子线程条目既走运行期通知、又被收尾回读 ⇒ 每条正文只出一份，且各归自己那一轮」（按载体键折叠后数正文出现次数 + 断言各归各轮）。**变异验证**：取号改回「线程当前累计」⇒ 该条见红（`expected 2 to be 1`）；还原后 sha256 一致。
+
+**已知边界**：收尾那一批条目里**从未在运行期出现过**的那些（上游不推子线程条目的常规情形）本来就没有号，由收尾自己按身份补齐——那条路不受本缺陷影响（既有用例「收尾回读的一批条目自带开号」覆盖）。
+
+---
+
+## `turn/started` 两条、`turn/completed` 一条，而这一行按 `ok: true` 落盘（`finalText` / `tokens` / `turns` 全空）
+
+**日期**：2026-10-17
+
+**现象**：app-server 进程死在**在途**（Rust panic / OOM / 被外部杀掉）时，界面上这一行是**跑完了**：
+
+```
+result: { ok: true, exitReason: 'completed', error: null, finalText: null, tokens: null, turns: null }
+事件流里唯一相关的一条: [WARN] codex 子线程树不是全量（枚举失败）：…（stderr）
+服务端日志: [ERROR] [agents/codex] codex 子线程枚举失败（本行的子智能体分量按「未采集」处理）
+            error: Error: codex app-server 进程已退出（code=null）
+```
+
+**根因**：进程终态那一拍确实算了失败——`appserver/session.ts` 的 `client.onTerminal` 把 `core.end({status:'failed'})` 落定，
+但 `session.outcome` **没有任何消费方**：`providers/codex/index.ts` 交出的 `TurnStart` 只接
+`stream` / `interrupt` / `dispose` / `finalize` / `project`。而失败归因只有流内投影一条路
+（`turn/completed.status === 'failed'`），进程死亡**不产生任何通知**（`core.end` 只结算 outcome、不产载荷）
+⇒ 流正常产完、`consume` 正常返回、`failure` 保持 `null`，落 `ok: true`。消费方按 `ok` / `exitReason` 判失败
+（`orchestrator.ts`），于是崩溃的行不进重试、不留失败徽标；评分通路只能退化成
+`JUDGE_PARSE_FAILED：评分智能体没有给出可读的最终答复（该适配器未回传最终消息）`——归因指向我们而不是厂商进程死了。
+
+真机读数（`providers/codex/death-live.test.ts`，两臂只差「杀不杀」）：对照臂 `ok: true` / 被测臂**同样** `ok: true`，
+`upstreamRequests` 两臂都是 1（都在 `turn/start` 受理之后）。
+
+**解决方案**：给流加一个**收尾问一次**的出口（`index.ts` 的 `asRawStream` 新增 `onStreamEnd`）：
+上游正常产完那一刻问一次 `session.outcome`，`status === 'failed'` 且这一轮没被取消、流内也没折过失败时，
+合成一条载荷 `{kind: 'sessionFailed', error}` 交给同一个投影出口（`events.ts` 折 error 事件 + `failure`），
+骨架据此落 `ok: false / exitReason: 'error'`，原因就是厂商那句「进程已退出」。
+三条排除写在同一处：已取消（结论归 canceled 那条通路）、不是 failed（正常收场）、流内已折过失败（`turn/completed{failed}`，别落两条）。
+
+判据：`providers/codex/death-live.test.ts`（真二进制 + 上游挂着 + 从探针侧 `SIGKILL`；对照臂不杀 ⇒ 成功）。
+**变异验证**：把 `onStreamEnd` 改成恒回 `null` ⇒ 该条见红（`expected true to be false`）；还原后 sha256 一致。
+
+---
+
+## `no active turn to interrupt`（续跑之后点「终止」：取消退化成杀进程树）
+
+**日期**：2026-10-17
+
+**现象**：`'idle'` 档送过一次人话（厂商因此起过新一轮）之后再点「终止」或看门狗开火，日志里出现
+
+```
+[WARN] [agents/codex] codex 中止请求失败（该行仍会按终止收场）
+  error: Error: app-server 返回错误（-32600）：no active turn to interrupt
+```
+
+那一轮不会被优雅中止：`releaseTurn` 白等 5 秒宽限期，然后 `dispose` **杀掉整棵进程树**；
+`cancelMidTurn: true` 与「interrupt 是协议能力、不 kill 进程」在这条路上不成立。
+
+**根因**：厂商按「**当前在途轮**」校验 `turn/interrupt`（真机裸臂：拿一个已收场的 turn id 与一个伪造的 uuid 去发，
+回的是同一条 `-32600 no active turn to interrupt`；上游 `turn_processor.rs` 的同名分支就是这条文案），
+而适配器建会话时只拿得到**首轮** id——`appserver/session.ts` 的 `interrupt` 闭包捕获的就是它，
+`continueWith(_turnId)` 又把新轮号丢掉了。人话续跑起的那一轮（我们起的、或厂商自己投递起的）只有**流那一侧**知道。
+
+**解决方案**：在途轮号收归**流那一侧**维护（`index.ts` 的 `activeTurnId`，`turn/started` 进流时更新，
+起轮成功那一支直接赋值），`CodexSession.interrupt(turnId)` 改成收调用方给的轮号；
+`null`（轮与轮之间）**不发这一帧**——发一个已收场的 id 必被拒，只会白留一条 WARN。
+
+判据：`appserver/session.test.ts` 两条（带调用方给的轮号 / 无在途轮不发）+ `injection.test.ts` 的
+「起轮回 `queue is empty` 但条目已被消费 ⇒ 登记交付，且中止带的是厂商起的那一轮」。
+**变异验证**：把 `interrupt` 的参数改回 `session.turnId` ⇒ 见红；还原后 sha256 一致。
+
+---
+
+
+**同一个「带错轮号」还有另外两种形状**（真机逐格读数，同一台 0.163.0；这一格值得单独记住，因为
+三种下场的**代价**差得远，按一种写文档会误导下一个人）：
+
+| 形状 | 厂商回什么 | 代价 |
+|---|---|---|
+| **自然收场**的轮（`turn/completed` 已到） | `-32600 no active turn to interrupt` | 1 ms，立刻知道 |
+| **被我们中断过**的轮，再发一次同一个 id | **一帧都不回** | 客户端的请求超时白等（默认 30 s） |
+| 空闲线程 + 伪造 / 陈旧的 id | `-32600 expected active turn id X but found Y`（把**当前在途轮号**写在原文里） | 1 ms，而且能自愈 |
+
+⇒ 适配器那两条保护都是必需的：**没在途轮就不发**（`session.interrupt(null)`），以及**一轮只发一次**
+（骨架的 `triggerRelease` 记忆化 ⇒ 第二种形状在本仓不可达）。判据：真机裸臂
+四种形状一次跑齐（自然收场后 / 在途发一次再补发 / 在途 / 空闲线程 + 伪造 id）。
+
+
+**同一个「带错轮号」还有另外两种形状**（真机四种形状逐格读数，同一台 0.163.0）。这一格值得单独记住：
+三种下场的**代价**差得远，只按一种写文档会误导下一个人。
+
+| 形状 | 厂商回什么 | 代价 |
+|---|---|---|
+| **自然收场**的轮（`turn/completed` 已到） | `-32600 no active turn to interrupt` | 1 ms，立刻知道 |
+| **被我们中断过**的轮，再发一次同一个 id | **一帧都不回** | 客户端的请求超时白等（默认 30 s） |
+| 空闲线程 + 伪造 / 陈旧的 id | `-32600 expected active turn id X but found Y`（把**当前在途轮号**写在原文里） | 1 ms，而且能自愈 |
+
+⇒ 适配器那两条保护都是必需的：**没在途轮就不发**（`session.interrupt(null)`），
+以及**一轮只发一次**（骨架的 `triggerRelease` 记忆化 ⇒ 第二种形状在本仓不可达）。
+
+## 子任务行的状态与结论被打回 `unknown` / `null`（`closeAgent` 的 `item/started` 排在收场之后）
+
+**日期**：2026-10-17
+
+**现象**：一次真模型运行里，同一条子任务的投递序列（`live/live-gateway-subagent.json`）是
+
+```
+running → unknown/unverified(outcome=null) → completed(outcome="0")
+        → unknown/unverified(outcome=null)   ← ★ 这一帧在 completed 之后
+        → completed(outcome="0")
+```
+
+界面上子任务行的「结果摘要」会短暂（或永久，若最后一拍恰是 started）消失、状态掉回「未知 / 未验证」。
+
+**根因**：`wait` / `closeAgent` 的 `item/started` 带的是 `agentsStates: {}`（真机原文），
+而 `message.ts` 的 `projectCollab` **不看 `started`**、对每个 receiver 都产一条记录，
+`agentsStates` 为空时 `collabStatusOf(null)` 归成 `unknown` + `unverified`、`outcome` 写 `null`；
+子任务行的折叠是**整条覆盖**（`core/message-log.ts` 的 `latest.set`）⇒ 那一帧把已经采到的
+`completed` 与结论一起抹掉。本仓一致性套件的 `PRESERVED_SUBAGENT_FIELDS` 明写「覆盖不许丢事实」，
+但 codex 的子智能体夹具里没有 `wait` / `closeAgent`（真机每个模型都会调）⇒ 罩不到。
+
+**解决方案**：两处一起收：① `item/started` 的协作帧**这一帧对这条子线程什么也没说时不产记录**
+（判据：`agentsStates` 有没有这条子线程的状态格——将来某一版在 started 就带状态时照旧出记录）；
+② 子任务行新增 `subagentFacts` 台账（`run-state.ts`），`kind` / `outcome` / `parentCallId` / `parentSubagentId`
+**非 `null` 才覆盖**，产记录前先合并——「不许丢事实」这件事只能在产记录之前做，交给消费方已经太晚。
+
+判据：`message.test.ts` 两条（started 不产记录 + 活动条目不抹结论；真机序列回放）+
+真机读数 `probes/live-gateway-subagent.test.ts` 的「事实不许回退」断言（按投递顺序查 outcome 被抹与终态被打回）。
+**变异验证**：把合并改回「后到覆盖」⇒ 见红；还原后 sha256 一致。
+
+---
+
+## `thread/queue/list requires experimentalApi capability`（投递与子线程枚举一起静默失效）
+
+**日期**：2026-10-17
+
+**现象**：拿掉 `initialize` 的 `capabilities.experimentalApi` 之后，同一份剧本下：
+
+```
+thread/queue/list  → -32600 thread/queue/list requires experimentalApi capability
+thread/queue/add   → -32600 thread/queue/add requires experimentalApi capability
+thread/queue/start → -32600 thread/queue/start requires experimentalApi capability
+thread/list{ancestorThreadId} → -32600 thread/list.ancestorThreadId requires experimentalApi capability
+```
+
+**根因**：`thread/queue/*` 六个方法逐条带 `#[experimental("…")]` 标注（上游 `common.rs`），
+`thread/list` 的 `ancestorThreadId` 是**字段级**标注，检查点只有一处（`message_processor.rs`），
+`reason` 就是报错前缀。拿掉能力位之后：`'idle'` 档投递走 `retractorFor` 的 catch 只记一条 WARN、
+收尾枚举失败变成一条「子线程树不是全量」的 WARN——两处都**不响亮**。
+
+**解决方案**：`appserver/client.ts` 的 `initialize` 始终声明 `experimentalApi: true`（新增落点时也照此），
+并把 `turnInjection.delivery.idle` 那一格的 `experimental` 声明改成 `true`（原来写 `false`，与真机相反）；
+`docs/protocols/codex.md` 的措辞同批改正。判据：`turn-injection-resume.test.ts` 的声明互钉用例
+（`idle.experimental === true`）+ 修改声明即红。
+
+---
+
+## `tools.web_search: false` 关不掉内置联网工具（模型一直带着 `type: "web_search"`）
+
+**日期**：2026-10-17
+
+**现象**：线程级 config 里给了 `tools: { web_search: false }`，而出站 `/v1/responses` 请求体的工具表**逐字不变**——
+`type: "web_search"` 那一项一直在：
+
+```
+A 基线（不给开关）              tools[]: … update_goal, web_search:
+B 适配器现状 tools.web_search=false  tools[]: 与 A **逐字相同**
+C 顶层 web_search="disabled"        tools[]: 与 A 相同但 **web_search 消失**
+D tools.update_plan.enabled=true    tools[]: A + function:update_plan
+```
+
+**根因**：`tools.web_search` 是 web search 的**参数容器**（filters / user_location / context size），不决定开关；
+真正的开关是**顶层** `web_search`（`WebSearchMode`），默认值 `Cached`（= 会带上这件 hosted 工具）。
+适配器把「参数容器」当成了开关 ⇒ 一行意图为「关掉联网」的配置**空转**，而且不报错。
+
+**解决方案**：`buildCodexConfig` 改成顶层 `web_search: 'disabled'`（常量 `CODEX_WEB_SEARCH_OFF` 一处定义），
+`tools` 里只留 `update_plan` 与提问那两格开关；`docs/protocols/codex.md` 的注入落点同批改正。
+判据：`index.test.ts` 的配置形状三条 + 真机守卫 `turn-injection-delivery.test.ts` 的
+「出站请求体的工具表里没有 `web_search`、有 `update_plan`」。**变异验证**：改回 `tools.web_search: false` ⇒ 4 条见红；还原后 sha256 一致。
+
+---
+
+## `Full-history hydration is deprecated for paginated threads`（收尾取数走了已弃用的全量水合）
+
+**日期**：2026-10-17
+
+**现象**：真机上每次收尾（有子线程时）都会收到厂商的弃用通知：
+
+```
+{"method":"deprecationNotice","params":{"summary":"Full-history hydration is deprecated for paginated threads;
+ omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.","details":null}}
+```
+
+而本行的线程对象上写着 `"historyMode":"paginated"`。
+
+**根因**：`appserver/reader.ts` 的收尾取数用 `thread/read{includeTurns:true}` 做全量水合，
+而 paginated 线程上这条路已被厂商弃用（上游 `thread_processor.rs` 的两条 `PAGINATED_*_DEPRECATION_SUMMARY` 就是这条文案）。
+功能没坏，所以不报错；弃用信号落在未识别通知里（归 `other` 并保留原文——归得对，但没有人读它）。
+
+**解决方案**：收尾改成**两步取数**：`thread/read{threadId}`（**不带** `includeTurns`，只取元数据）
++ `thread/turns/list{threadId}` 分页取轮次（真机读数：每一项带 `status` / `startedAt` / `completedAt` /
+`durationMs` / `itemsView` / `items`）。条目仍按 `itemsView` 判全量：轮次那一份未必是全量
+（真机实测该接口回的常是 `summary`）⇒ 不信它，改走文档化的全量来源 `thread/items/list`。
+
+判据：`appserver/reader.test.ts` 五条（两步取数且**不带** `includeTurns` / 轮次分页 / 非 full 回退 / 未知 `itemsView` / 空轮次）+
+真机读数 `probes/live-gateway-subagent.test.ts` 的「不许再出现 `deprecationNotice`」断言。
+**变异验证**：把 `thread/read` 改回带 `includeTurns: true` ⇒ 见红；还原后 sha256 一致。
+
+
+---
+
+## 模型看了一张图（`view_image`），而执行日志里什么都不显示：厂商投了 `item/completed{type:"imageView"}`，账本与事件流零命中
+
+**日期**：2026-10-17
+
+**现象**：模型调用 `view_image`（这件工具**就在本行的工具表里**）之后，
+厂商连投两帧、条目的 `type` 是 `imageView`：
+
+```
+{"method":"item/started",  "params":{"item":{"type":"imageView","id":"call_img_0"},"threadId":"…","turnId":"…","startedAtMs":…}}
+{"method":"item/completed","params":{"item":{"type":"imageView","id":"call_img_0"},"threadId":"…","turnId":"…","completedAtMs":…}}
+```
+
+而同一次运行里，本行的消息账本与事件流对它的命中数是 **0**——界面上既没有工具调用行、
+也没有结果行、也没有「这里有一条我们没看懂的东西」。对照：同一轮里 `exec_command` 产出的
+`commandExecution` 条目照旧成块（工具调用 + 结果两条），证明不是「这一整套投影本来就不产东西」。
+
+**根因**：**未识别的「条目类型」没有兜底出口**。一条链上三个分支叠出来的：
+① `appserver/protocol.ts` 的 `readItem` 只归一 `ThreadItem` 19 个变体里的 12 个，剩下 7 个
+（`hookPrompt` / `imageView` / `sleep` / `imageGeneration` / `enteredReviewMode` /
+`exitedReviewMode` / `contextCompaction`）落进兜底 `{kind:'other'}`；
+② `message.ts` 的 `projectItem` 与 `events.ts` 的 `activityDrafts` **都没有 `other` 分支**，
+一路落到「什么都不产」；③ `run-state.ts` 的 `roundTripRoleOf('other')` 是「透明」⇒ 连轮次计数都不留痕。
+未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前没有对应物——这个不对称就是缺陷本身。
+⚠️ 改之前 `message.ts` 的兜底注释写着「它们也不是『丢弃』：条目原文仍在同一份通知的 `raw` 里」——
+**那句话是假的**：`raw` 的唯一载体就是产出的那条消息的 `raw` 字段，不产消息就没有载体（真机读数正面否证）。
+
+**解决方案**：`readItem` 的 `other` 支带上条目原文（`raw`），`projectItem` 对 `kind:'other'` 产一条
+**`unrecognized` 块**（契约的 `UnrecognizedPayloadBlockSchema` 是一等成员，界面有独立渲染路径），
+只在 `item/completed` 产（与 `fileChange` / `agentMessage` 同口径）。新增共享构造器
+`unrecognizedBlockDraft`（`packages/server/agents/src/message.ts`）。
+判据：真机守卫 `packages/server/agents/src/providers/codex/unrecognized-item-live.test.ts`
+（真二进制 + 脚本式上游让模型调 `view_image`；断言「厂商必须真投过 `imageView`」+「对照臂
+`exec_command` 成块」+「`unrecognized` 块的 `vendorType` 是 `imageView`、`raw` 里带那个路径」）+
+单测 `message.test.ts` 两条 / `protocol.test.ts` 一条。
+**变异验证**：把 `projectItem` 的 `other` 支改回「什么都不产」⇒ 2 条见红（真机臂 + 单测），
+其余 44 条照绿；还原后 sha256 一致。
+
+---
+
+## 文件改动清单的 `kind` 恒为 `null`（补丁的新增/删除/改写分不出来）
+
+**日期**：2026-10-17
+
+**现象**：`fileChange` 条目里厂商给的是**带标签的对象**：
+
+```
+{"item":{"type":"fileChange","id":"call_u2","status":"inProgress",
+         "changes":[{"path":"…/arm-u2.txt","kind":{"type":"add"},"diff":"hello\n"}]},…}
+```
+
+而账本上那条 `apply_patch` 调用块的入参只剩路径：`{"changes":[{"path":"…/arm-u2.txt","kind":null}]}`。
+
+**根因**：`readItem` 用 `readString(one, 'kind')` 读这一格，而 `readString` 只接受**字符串**——
+厂商的 `FileUpdateChange.kind` 是 `PatchChangeKind`（生成物 `required = ['diff','kind','path']`，
+`kind` 是 `{"type":"add"|"delete"|"update"}` 的**内部标签枚举**，`update` 还带 `move_path`）
+⇒ 每次都读出 `null`。既有的单测把**归一之后的条目**喂给投影（`changes: [{path, kind: 'update'}]`），
+根本不经过 `readItem`，所以「读错形状」这件事在单测里完全隐形。
+
+**解决方案**：改成读标签本身——`kind: readString(asRecord(one.kind), 'type')`。
+判据：真机守卫 `packages/server/agents/src/providers/codex/file-change-live.test.ts`
+（真二进制 + 脚本式上游发一帧 `custom_tool_call`（`apply_patch` 的入参是 lark 补丁文本，走
+`custom_tool_call` 而不是 `function_call`），厂商自己执行并投 `fileChange`；断言账本里那条
+`apply_patch` 的 `changes[0].kind === 'add'`）。⚠️ 这一臂的模型名要用 codex 认得的那个
+（未知模型名下厂商不会挂 `apply_patch`，条目根本不出现 ⇒ 假红）。
+**变异验证**：把这一格改回 `readString(one, 'kind')` ⇒ 见红（`expected null to be 'add'`）；
+还原后 sha256 一致。
+**未闭合**：`diff`（补丁正文）与 `kind.move_path` 仍未采集——那是**扩展采集面**，要动契约的
+`changes` 形状与界面，单独开口。
+
+---
+
+## 多轮子线程的状态与结论交回的是**第一轮**（`thread/turns/list` 默认降序）
+
+**日期**：2026-10-17
+
+**现象**：真机同一条子线程上跑两轮，子任务行上的 `outcome` 交回的是**第一轮**的答复
+（`CHILD_ANSWER_TURN1`），而最后跑完的是第二轮（`CHILD_ANSWER_TURN2`）。
+
+**根因**：`thread/turns/list` 的 `sortDirection` 是**可选格**，厂商生成物的原文是
+*"Optional turn pagination direction; defaults to descending."* —— 不传就是**最新一轮在前**。
+真机两种姿势各读一次，同一条线程：
+
+```
+不传（适配器现状） ⇒ ["turn#2","turn#1"]   at(-1) = TURN_ANSWER_0   ← 第一轮
+asc               ⇒ ["turn#1","turn#2"]   at(-1) = TURN_ANSWER_1   ← 第二轮
+```
+
+而 `message.ts` 的 `terminalStatusOf` / `outcomeOf` / `lastAgentText` 一律按 `turns.at(-1)` 读
+「最后一轮」⇒ 多轮子线程的**终态、失败原因、结论正文**三格全部取自第一轮。
+
+**解决方案**：`appserver/reader.ts` 的 `listThreadTurns` 显式传 `sortDirection: 'asc'`。
+判据：真机守卫 `packages/server/agents/src/providers/codex/appserver/turns-order-live.test.ts`
+（真二进制 + 脚本式上游，同一条线程跑两轮，走**适配器自己的取数面** `readThreadContent`；
+断言轮次顺序等于发起顺序、且 `turns.at(-1)` 的答复是第二轮那一句）。
+**变异验证**：删掉那一格 ⇒ 见红（`轮次必须由旧到新`）；还原后 sha256 一致。
+
+---
+
+## 一批人话只投出第 1 条（`deliveredIds` 只有第一条，第 2 条的哨兵 **0** 次进出站请求体，默认日志一条 WARN 都不打）
+
+**日期**：2026-10-17
+
+**现象**：一次 `drain('idle')` 交出**两条**人话时（端口的 `selectForDrain('idle')` 返回**全部**可取条目，
+所以这是合法形状），真机读数三条臂全同：
+
+```
+deliveredIds        = ['…msg-1']                 ← 第 2 条没登记交付
+sentinel2InOutbound = 0                          ← 第 2 条那句话从没进过厂商出站请求体
+turnStarted = 2 = turnCompleted                  ← 只跑了首轮 + 厂商投递起的那一轮
+finalText           = 「…收到第 1 条。」          ← 结论取第 1 条那一轮
+queueOpsOnWire      = [add, add, start, list]     ← 没有 delete（没回滚），也没有第二次投递
+```
+
+**根因**（机制层）：条目录在**空闲**线程上时，厂商在 `thread/queue/add` 那一刻就把**第 1 条**撒成了
+新一轮 ⇒ 第 2 条 add 撞在忙线程上只入队，紧接着的 `thread/queue/start` 回
+`-32600 thread already has an active or pending turn`。而 `deliverIdle` 把这一批当**整体**处置：
+`idsConsumedByVendor` 只要发现「**有任意一条**被消费」就走「厂商自己投递」那一支并 `return`——
+注册了被消费的那条，剩下的既不登记、也不回滚、也没人等它，随本行 `dispose` 一起没。
+那一支还只走 `logger.debug` ⇒ **默认日志级别一条都不打**。
+
+⚠️ 与之配套的一条真机事实（决定修法）：**厂商会自己在当前轮收场后把队列里剩下那条撒出去**——
+裸臂读数：空闲线程连加两条、之后**什么都不做** ⇒ `turnStarted=3=turnCompleted=3`、两条哨兵都进了
+出站请求体。⇒ 正确处置是「别收场、等它」，不是回滚、更不是谎报已交付。
+
+**解决方案**（`providers/codex/turn-injection.ts` 的 `deliverIdle` + `index.ts` 的收场接线）：
+把「一批」拆成**逐条对账**，没有「整批算成功 / 整批算失败」这一档：
+
+1. `pendingQueued` 跨收场边界记住「已 `queueAdd`、还没被取走」的那些；
+2. 每一拍先 `reconcilePending()` 与 `thread/queue/list` 对一次账：**不在表里 ⇒ 厂商取走了**，
+   此刻才登记交付；还在表里 ⇒ 留到下一拍；
+3. `queueStart` 失败时按**本拍有没有被消费**分档：有 ⇒ `vendorDispatched: true`（那一轮在跑，
+   队列里的其余条目会被它在收场时撒出去，**这一行不许收场**）；一条都没有 ⇒ 与过去逐字相同，
+   不登记并回滚；
+4. `index.ts` 那一侧补一处：重新起「等 `turn/started`」的表之前先撤掉上一只——厂商那一轮的
+   `turn/started` 可能在本拍**之前**就到了（`queue/add` 落在空闲线程上时它在 add 那一拍就投），
+   那只旧表到点会把这一行收场。
+
+判据：**真机守卫** `providers/codex/inject-idle-batch-live.test.ts`（真二进制 + 脚本式上游，
+四条判据＝两条都登记交付 / 两条哨兵都进出站请求体 / 起过的轮次全部跑完 / 结论取两句都收到那一轮；
+**两个对照臂**＝单条那一档逐字不变、不挂注入面时哨兵零出现）。
+**变异验证**：把「还在队里」的那些丢掉（= 旧行为）⇒ 见红（`两条人话都必须登记交付`）；还原后 sha256 一致。
+既有单测 `turn-injection.test.ts` 的两条（没被消费 ⇒ 不登记 + 回滚 / 读不回来 ⇒ 保守不交付）逐字不变。
+
+---
+
+## `TypeError: Cannot read properties of null (reading 'id')`（app-server 的一行 `null` 打崩宿主 Node 进程）
+
+**日期**：2026-10-17
+
+**现象**（探针读数，真管道 + 真客户端，装着客户端的 Node 进程退出码 1）：
+
+```
+❯ handleLine src/providers/codex/appserver/client.ts:335:24
+TypeError: Cannot read properties of null (reading 'id')
+```
+
+同一批读数里另外几种「合法 JSON 但不是帧」的行**不崩**：`123` / `"x"` / `[1,2,3]` 只落一条
+「认不出归属的响应」WARN，后面的请求照常配对。
+
+**根因**：`JSON.parse('null')` 返回 `null` 是**合法 JSON**，而 `handleLine` 拿到它之后直接读
+`message.id` ⇒ 抛 `TypeError`。这一行是从 socket 的 `data` 处理器里跑出来的，抛出去就是
+**未捕获异常**——Node 的默认处置是打印后 `process.exit(1)`，于是**整个宿主进程（本仓是 Next 服务）
+被一行坏帧带走**。数字 / 字符串那一档不抛（原始值属性访问得 `undefined`），但它们同样不是帧，
+会一路滑到「认不出归属」那一支 ⇒ `unparsedFrames()` 把这三类都漏掉，计数不再是「坏帧数」。
+
+**触发条件未观测到**：真 codex 上百帧一次没发过 `null` 行。但**判据在我们这一侧**——
+「喂进去会不会崩」与「厂商发不发得出来」是两个问题，前者必须为否。
+
+**解决方案**：`handleLine` 在 `JSON.parse` 之后先挡一道「**不是对象**」（`null` 与原始值）：
+计入坏帧 + 落 WARN + `return`，不碰任何属性。判据：`appserver/client.test.ts`
+「合法 JSON 但不是对象的行（null / 数字 / 字符串）⇒ 不抛、计数、后面的帧照常」——三行都喂进去，
+断言**未捕获异常为空集**、`unparsedFrames() === 3`、且随后一条真请求照常配对。
+**变异验证**：把那道闸去掉 ⇒ 见红，报错原文与上面逐字相同（`Cannot read properties of null`）；
+还原后 sha256 一致。
+
+---
+
+## 组长先死之后，`codex` 那条插件同步 git 链整条留下来（同进程组的孙进程全活）
+
+**日期**：2026-10-17
+
+**现象**：真进程组逐格对照（`sh -c 'sleep 120 & sleep 120 & wait'` + `detached: true`，读数组内成员用 `pgrep -g`）：
+
+```
+E1 先 SIGKILL 组长，再调 terminateProcessTree
+   before = [leader, c1, c2]   outcome = {via:'direct', exited:true, waitedMs:0, error:null}
+   after  = [c1, c2]           ← 2 个孙进程仍活
+E2 不先杀组长（对照）
+   before = [leader, c1, c2]   outcome = {via:'tree',   exited:true, waitedMs:0, error:null}
+   after  = []                 ← 清零
+E1′ 事后手工 kill(-pgid)
+   after  = []                 ← 只要发那一发就能清干净
+```
+
+**根因**：`terminateProcessTree` 把「直接子进程已退出」当成「树已经回收干净」而**整条短路**
+（`if (hasExited(child)) return { via: 'direct', … }`）——而 `hasExited` 只看直接子进程的
+`exitCode` / `signalCode`，那条 `kill(-pid, SIGKILL)` 根本不发。组的身份就是**组长**的 pid：
+组长没了、组还在，孙进程因此原样存活。codex 的插件同步链正是这个形状
+（`codex → git → git → git-remote-https`）。可达路径是「厂商进程先死」的每一条：用户 / 看门狗
+`SIGKILL`、OOM、宿主停机、以及 `startCodexSession` 里起手失败那条 `close()`；在 Windows 上
+后果就是仓库自己记录过的 `EPERM`（`$CODEX_HOME` 被孤儿句柄锁住）。
+
+**解决方案**：短路只保**等待**那一半——`alreadyExited` 仍照发整树杀，只是不再为一次不可能到来的
+`exit` 白等宽限期；`defaultKillTree` 的 POSIX 分支把两次 kill 都回 `ESRCH` 记成「它没了」
+（与 Windows 分支「进程不存在也算成功」同口径），只有 `EPERM` 之类才交出去。
+判据：真机守卫 `packages/server/agents/src/process-tree-orphan.test.ts`（真进程组 + `pgrep -g`，
+两臂唯一自变量是**组长死没死**，判据是调完之后组内还剩几个成员；`pgrep` 不可用时整条跳过——
+不把「没有观测手段」读成「清空了」）+ 单测 `process-tree.test.ts` 那一条（已改成断言
+「已退出也要发整树杀」）。**变异验证**：把旧的整条短路加回去 ⇒ 真机臂见红
+（`expected 2 to be +0`）、单测那条见红；还原后 sha256 一致。
+
+---
+
+## 落盘写着「子线程 … 没有用量通知」，而通知其实到了（子智能体分量与轮次分量一起记 `null`）
+
+**日期**：2026-10-17
+
+**现象**：行跑完（真二进制 + 脚本式上游造的真子智能体），落盘一条点名 WARN：
+
+```
+[WARN] codex 子线程 01a145… 没有用量通知（协议只按线程报累计用量）：
+这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径
+```
+
+而同一轮的探针读数里，那条通知**明明到了**：子线程 `thread/tokenUsage/updated` 落在 t=158、
+收尾取数落在 t=161。同一个剧本连跑 4 次，**2 次拿到子线程用量、2 次丢**（1–4 ms 的竞态）。
+
+**根因**（机制层，两处叠加）：① 用量只从运行期的 `thread/tokenUsage/updated` 通知累计，而通知是在
+**流那一侧**投影进 `runState` 的；`session.ts` 的 `iterate()` 在「队列已排空 ∧ 本轮已结算」时
+`return`，此后入队的通知**再没有人投影**。② 本轮结算的闸门是**主线程的 `turn/completed`**，
+子线程往往还在跑 ⇒ 结算与收尾取数都可能抢在那条用量通知之前。于是「通知到了但没被投影」与
+「厂商压根没发」在读数上长得一模一样——而旧文案选了一个说，把排查方向指到厂商那边去。
+
+**解决方案**：**文案先说我们这一侧的事实**——`index.ts` 的两条 WARN（主线程 / 子线程）改成
+「用量**本行没有采到**（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）」，
+不再替厂商下结论。判据：`index.test.ts` 的两条断言同步改成新措辞。
+
+**根因已闭合**（同批）：`asRawStream` 在上游产完之后走一段**有界**的静默窗口
+（`CODEX_DESCENDANT_QUIET_WAIT = { waitMs: 10_000, pollMs: 250 }`）——每一拍把**流停之后入队**的
+那些通知取出来投影（`CodexSession.drainPending()`；游标必须与迭代器**共用一处**，各记一份会把整段
+历史重发一遍 ⇒ 消息成对重复），并问一次「后代线程还活着吗」；窗口结束才让流收尾，收尾取数等这道
+闸门放行之后才读树。三条边界：**没有后代线程时不花任何时间**（第一次枚举回空表就放行）；
+**预算到点按现状收尾**（落一条点名 WARN，不把一行永久挂住）；取消那一档立刻放行。
+
+真机读数（同一剧本、子线程那一趟拖 8 s）：
+
+```
+修复前  turns=2 subagentTurns=null subagentTokens=null  子任务行 status:"running"/outcome:null
+        thread/read{child}.status={"type":"active"}      items 只有 1 条 userMessage
+修复后  turns=3 subagentTurns=1 subagentTokens={input:78,cached:33,output:11}
+        子线程答复进账本（`<childId>|1|assistant|-`）     子任务行 status:"completed" 且带 outcome
+```
+
+判据：真机守卫 `providers/codex/descendant-quiet-live.test.ts`——脚本式上游发一帧
+`function_call{name:'spawn_agent', namespace:'multi_agent_v1'}`（它在真机工具表里是 namespace 工具）
+派真子智能体，子线程那一趟延迟 1.5 s 才回；**四格一起判**（内容 / 用量 / 轮次 / 终态），
+只判一格会让「这一格恰好赶上了」蒙混过关。**变异验证**：把静默窗口整段去掉 ⇒ 见红
+（`子线程用量必须采到: expected null not to be null`）；还原后 sha256 一致。
+
+---
+
+## 上游 401 归成了 `AUTH_FAILED`，但那是靠文案里的「401」蒙对的（机器可读分类对 HTTP 失败恒不命中）
+
+**日期**：2026-10-17
+
+**现象**：本地脚本式上游回 401，codex 投的行级失败通知逐字是：
+
+```json
+{"method":"error","error":{"message":"Reconnecting... 1/5",
+  "codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":401}},
+  "additionalDetails":"unexpected status 401 Unauthorized: …"}}
+```
+
+500 那一档同形：`{"responseStreamDisconnected":{"httpStatusCode":null}}`，而 `additionalDetails`
+是 codex 自己的话——*"We're currently experiencing high demand, which may cause temporary errors."*
+⇒ 行被归成 `AGENT_FAILED`（在自动重试表里，重试 3 次），失败文案指向 OpenAI 的「高需求」而不是
+本地上游的 500。
+
+**根因**：`readCodexErrorCode` 只取对象变体的**名字**，而这一格的名字说的是**传输层**
+（`responseStreamDisconnected` 对 401 与 500 **同形**）⇒ `codexFailureOf` 那四条「机器可读分类」
+分支（比的是 `unauthorized` / `rateLimitExceeded` / `usageLimitExceeded` / `serverOverloaded`
+这些**字符串枚举**）对 HTTP 失败**一次都不命中**，401 只能靠 `additionalDetails` 里那个「401」
+被正则认出来——而那个函数自己的注释写着「厂商改一句文案就错档」。`httpStatusCode` 此前被
+**主动丢掉**（旧注释：「只取名字、不取 `httpStatusCode`」）。
+
+**解决方案**：`AppServerTurn` 新增一格 `errorStatusCode`（读对象变体里那个 `httpStatusCode`，
+取不到就是 `null`），`codexFailureOf` 把 `401` / `429` 与字符串枚举**并列**成判据。
+判据：`providers/codex/events.test.ts` 新增一条——文案**刻意不含状态码**，只有对象变体说得出真相
+（`401` ⇒ `AUTH_FAILED`、`429` ⇒ `RATE_LIMITED`、`httpStatusCode: null` ⇒ 不强行归档且分类名进文案）。
+**变异验证**：把状态码那两条判据去掉（回到只比枚举）⇒ 见红
+（`expected 'AGENT_FAILED' to be 'AUTH_FAILED'`）；还原后 sha256 一致。
+
+**未闭合**：`sandboxError` / `contextWindowExceeded` 两档仍未观测到（触发条件未知）；
+连接被拒那一档（`httpStatusCode: null`）**会自行收场，用的正是产品自己的预算**：厂商持续回 `error`/重连（21 帧里 13 帧是 `error`），定案的是**单轮墙钟那条**看门狗，落在 **600.1 s** —— 逐条读数依次是「看门狗：单次模型往返超过 600 秒仍未收尾」→「codex 本轮被中止」→「用量本行没有采到」→「该行已按看门狗判定静止超时收场」。原先这里记的「600 s 内不自行收场」是**取样点压在边界上**（恰在 600 s 那一刻去看）造成；**关掉那条看门狗再测一次**（`turnWallClockMs: 0`）⇒ **到 700 s 仍不收场**（690 s / 695 s 两档都是「本轮尚未结算」，全程只有 17 条事件、约 40 s 一次 `error`），最后是**测量臂自己的上限**把它终止的。⇒ **厂商不会自己收场，是产品那条单轮墙钟看门狗把这一行救回来的** ——它不是「避免了一个 bug」，而是**这一档上的载荷路径**
+（看门狗是静止超时，而重连本身在产事件），归因与预算都还没有读数。
+
+---
+
+## 思考块整段没有：`item/*` 里一条 `reasoning` 都没有（不是我们没投影，是这条路由上游不给明文）
+
+**日期**：2026-10-17
+
+**现象**：真机跑完一整轮（真 `codex 0.163.0` + 内网网关 + 真模型），把厂商发过的 `item/*` 通知按
+类型数一遍：
+
+```
+item/completed:agentMessage 9    item/started:agentMessage 9
+item/completed:collabAgentToolCall 6 / item/started:… 6
+item/completed:commandExecution 2 / item/started:… 2
+item/completed:userMessage 3     item/started:userMessage 3
+reasoning 相关的帧：0
+```
+
+`item/reasoning/textDelta` 与 `item/reasoning/summaryTextDelta` 同样 **0 条**。
+
+**把全部审计臂的原始帧一起数一遍**（122 份 `.jsonl`，覆盖升级面 / 事件面 / 注入面 / 收尾面 / 生命周期面），
+更能说清这一格**到底哪一条通道亮**：
+
+```
+item/started:reasoning ×6    —— 全部是 content=0 / summary=0 的**空占位**
+item/completed:reasoning ×0  —— 带正文的快照**一次都没出现过**
+item/reasoning/textDelta ×6 / summaryTextDelta ×7 / summaryPartAdded ×5   —— 增量三条都在
+```
+
+⇒ 结论要分开说：**空占位那条判据的触发形状是真的**（`item/started` 的两格都是空数组，所以
+「`started` 不产块」不是防御性代码）；**带正文的快照通道在本轮全部读数里没有出现过**，
+而增量三条都亮。`message.ts` 的 `reasoningDrafts` 承担两件事——① 给增量封口（今天真正在用的那一半），
+② 从 `item/completed` 的快照取值（今天没有读数）。别把这两半一起说成「死代码」。
+
+**⚠️ 本条的结论已在后续读数里收窄——先看这一段再看下面**：同一个网关、同一个模型
+（`jd/deepseek-v4-flash-0731`）在**给了 `effort`** 的臂上是**有**推理条目的：
+
+| 给的 `effort` | 出站 `reasoning.effort` | 真机产出的推理条目数 |
+|---|---|---|
+| `medium` | `medium` | **1** |
+| `ultra` | `medium`（被降档） | **1** |
+| `persistent` | `disabled` | **0** |
+
+⇒ 正确的说法是「**没给档位时这条路由不投推理正文**」，而不是「这条路由不给明文」；而
+`persistent` 那一行的 **0** 更是一条端到端确证：它不只是把请求字段改成 `disabled`，而是
+**真的让厂商一个推理条目都不产**（详见 `reasoningEfforts` 那条条目）。下面那段「根因」描述的
+是**没给档位**那一档的形状，别当成恒定行为读。
+
+**根因**：这家在**密文路由 + 未指定档位**时不投推理正文——与知识库那条「`content[]` 为空 ⇒ `text: null` + `'none'`，
+不回落 summary」是同一件事的两面。⇒ 界面上没有思考块**不是**投影丢了；`message.ts` 的
+`reasoningDrafts`（`item/completed` 的快照封口）在今天的路由上**不亮**，它是按协议写好、
+**等上游给明文时才生效**的那一支。别照「怎么没有思考块」去查适配器。
+
+**判据／复采**：真二进制 + 脚本式上游（零凭据）把每次请求的响应与厂商通知原文落盘，再按
+`item/*` 的 `item.type` 计数——`reasoning` 计数的**对照臂**是「上游确实喂了 `reasoning` 输出条目」，
+那时快照与增量两条通道才会亮。**别拿「这一档没有」证明「这一家没有」**：换路由（尤其换成会回明文
+推理的网关）之前，这一格只能记「本路由未观测到」。

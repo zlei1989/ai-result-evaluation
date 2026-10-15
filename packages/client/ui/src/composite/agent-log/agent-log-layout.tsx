@@ -4,7 +4,7 @@
  * 抽屉正文的一体化布局（L2）：固定区 + 滚动区 + 浮动件。**不套 `Drawer`**——
  * 内嵌只读视图（S1）直接用这个件，几何口径不变，只是参照物从 `body` 换成宿主容器。
  *
- * 六条口径：
+ * 八条口径：
  * 1. **最外层取满父容器的全部高度**（`height: '100%'`，不是 `minHeight`）：虚拟列表要有确定高度的视口
  * 才能算出「渲染哪几项」；滚动容器不是 `.ant-drawer-body`；
  * 2. **根节点显式声明 `color` / `background`**（硬要求）：宿主 `.ant-app` 带外层主题类名时，
@@ -12,7 +12,15 @@
  * 3. **节点内容四态作用于时间轴区，不是整个抽屉**：固定区（进度条 / 面包屑 / 工具条）在任何一态下都在；
  * 4. **过滤在轮次级生效**（两个开关 AND），过滤不改面包屑与提示条的可见性（它们是导航，不是内容）；
  * 5. **跟随最新只有一份 state**：工具条开关、角落浮出按钮、`scrollToBottom` 都读 `viewState.follow`；
- * 6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设（变异体 (p) 的守卫）。
+ * 6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设
+ *    （这条守卫拦的是「预设盖掉调用方传进来的动作」：传了还读预设，工具条上会出现调用方没要的按钮）；
+ * 7. **底部槽（`footer`）是第三段固定区**：它排在滚动区**之后**，故滚动区按它的高度**自动缩水**
+ *    （`flex: 1` + `minHeight: 0` 已经保证了这一条，不需要额外改高度算术）。槽里**不加内边距**：
+ *    占用它的件（消息输入区）自己那一层各段的内缩不同（排队行贴边、输入框内缩），
+ *    在这里统一加一层 padding 会让它没法贴边。
+ * 8. **浮动件（「回到最新」）住在滚动区里面**（不是根节点上）：定位基准因此是滚动区，而滚动区的
+ *    高度已经扣掉了底部固定区 ⇒ 有没有 footer 都不必算高度差；它也不会压在 footer 里的输入区上
+ *    （压在发送键上时点击会被它拦掉：症状是「那颗键点不动」）。
  */
 import { Alert, Badge, Button, Flex, FloatButton, InputNumber, Skeleton, Switch, Tooltip, Typography, theme } from 'antd';
 import { VerticalAlignBottomOutlined } from '@ant-design/icons';
@@ -25,6 +33,7 @@ import type {
   Loadable,
   LogNode,
   LogNodeIndex,
+  LogSegment,
   LogTurn,
   MessageCapabilityMap,
   RowEvent,
@@ -62,6 +71,13 @@ export interface TimelineSlotProps {
   onOpenChange(key: string, open: boolean): void;
   rowEvents: readonly RowEvent[];
   userPrompt: SessionNode['userPrompt'];
+  /** 段分隔（「追问 ×N」）画不画；由本件按 `node.kind` 定（见 `VirtualTurnListProps.segmentDividers`） */
+  segmentDividers: boolean;
+  /**
+   * 段这一层的事实（`AgentLogModel.segments`）：段标题里的那句追问与这一段的时刻。
+   * 只在主会话节点给——子会话节点不画段标题（见 `segmentDividers`）。
+   */
+  segments?: readonly LogSegment[];
   /**
    * 下面几格与 `MessageTimelineProps` 同源（补的是设计文档的 props 清单里没有、
    * 但 `BlockRenderContext` 明确要的几处）。全可选 ⇒ 只用文档里那几个字段的消费方照样可用。
@@ -102,6 +118,11 @@ export interface AgentLogLayoutProps {
    * 那一格落在**原文行**的最左侧（与「原始输出 N 条」合并成一行省空间）。
    */
   connected?: boolean;
+  /**
+   * 底部槽：排在滚动区之后的第三段固定区（本仓放消息输入区）。
+   * 不给就**一个节点都不渲染**（不留空位、不动高度）——那是「这一行不收人工消息」的如实表达。
+   */
+  footer?: ReactNode;
 }
 
 /** 当前视图的节点：找不到（模型换了）时回落到主会话，再回落到第一个节点 */
@@ -193,11 +214,13 @@ export function notForwardedNotice(node: LogNode, turns: readonly LogTurn[]): Re
  * **可能已经跑完**（真机实测：主会话 7 轮、子任务记录齐备、`outcome` 非空），
  * 那句话会被读成「界面坏了」。这里说的是这个子任务自己的事实。
  *
- * 两句**互不替代**，按「手上到底有没有东西」分：
+ * 三句**互不替代**，按「这个子任务现在是什么状态」分：
  *   · 有 `outcome` ⇒ 内容**在**，只是不在轨迹里（它是另一条通道：适配器从子任务收场载荷里取）
  * ⇒ 文案直接指向那条占位条，别让读者以为「什么都没采到」；
- *   · 没有 `outcome` ⇒ 连结果摘要都没有，这时才说「轨迹不可用」并带上能力声明里的原因
- * （四句原因互不相同，见；`level === 'yes'` 时原因那格没意义，只陈述事实）。
+ *   · **运行中**（且连结果摘要都还没有）⇒ 它还在跑，正文只是还没到
+ * ——说成「没有对话记录」会被读成「这家不投送」，而事实是「再等等」；
+ *   · 其余（终态且没有 `outcome`）⇒ 连结果摘要都没有，这时才说「轨迹不可用」并带上能力声明里的
+ * 原因（四句原因互不相同，见；`level === 'yes'` 时原因那格没意义，只陈述事实）。
  */
 function subagentEmptyState(node: SessionNode): ReactNode {
   const name = nodeDisplayName(node);
@@ -208,6 +231,14 @@ function subagentEmptyState(node: SessionNode): ReactNode {
       <EmptyState
         title="这个子任务没有逐条对话记录"
         description={`${name} 的轨迹为空：这一家没有把它自己的往返投送到我们能读的通道。它的结果摘要与用量在上面那条子任务占位条里。`}
+      />
+    );
+  }
+  if (node.status === 'running') {
+    return (
+      <EmptyState
+        title="这个子任务还在跑"
+        description={`${name} 的逐步骤正文还没到：这一家可能在收尾时才把它交出来。卡片上那一格的身份、状态与用量不受影响。`}
       />
     );
   }
@@ -362,7 +393,7 @@ function ToolbarActions({
 
 export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   const { token } = theme.useToken();
-  const { model, environment, diagnostics, source, onDownload, actions, timeline, notice, liveError, connected } = props;
+  const { model, environment, diagnostics, source, onDownload, actions, timeline, notice, liveError, connected, footer } = props;
 
   const nodes = useMemo(() => nodeIndex(model.nodes), [model.nodes]);
   // 视图态：不传就内部持一份。**hook 无条件调用**（不能在条件分支里少调一个 hook），
@@ -385,6 +416,13 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   const registry = useBlockRenderers();
   const defaultRenderer = useMemo(() => blockRendererOf(registry), [registry]);
   const controllerRef = useRef<ListController | null>(null);
+
+  /**
+   * 「已渲染 N / 共 M 轮」：**由 `VirtualTurnList` 报上来**（那里才数得到），
+   * 渲在**固定区原文行的「下载台账」后面**（用户口径）。`null` = 还没有时间轴（或时间轴是调用方自带的），
+   * 那时这一格不出现——数的东西都不在，就不该有读数。
+   */
+  const [renderedTurns, setRenderedTurns] = useState<{ shown: number; total: number } | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
   /** 「跳到轮次」的输入草稿：非空表示用户正在输入，提交后回落到动作数据里的回显值 */
   const [numberDraft, setNumberDraft] = useState<number | null>(null);
@@ -493,6 +531,8 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
    */
   const rawRowVisible =
     connected !== undefined ||
+    // 有读数就画：虚拟列表报了数却因为「三样都没有」把整行收掉，那一格读数就永远看不见
+    renderedTurns !== null ||
     rawRowActions.some((action) => action.visible !== false) ||
     (diagnostics !== undefined &&
       diagnostics.status === 'ready' &&
@@ -518,6 +558,11 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
     [source],
   );
 
+  /**
+   * 首条那张卡片的两格（题面）。**先取进常量**：时间轴槽位的 props 与空态判据都用它，
+   * 两边各调一次 `userPromptOf` 会在源码里读成「两个来源」。
+   */
+  const userPrompt = userPromptOf(node);
   const timelineProps: TimelineSlotProps = {
     turns: filtered,
     nodes,
@@ -525,8 +570,14 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
     openKeys: viewState.openKeys,
     onOpenChange: viewState.onOpenChange,
     rowEvents: model.rowEvents,
-    userPrompt: userPromptOf(node),
+    userPrompt,
     notices: notForwarded === null ? undefined : [notForwarded],
+    // 段分隔（「追问 ×N」）只在主会话节点画：子会话节点里的轮次属于那个子任务自己，
+    // 没有人对它追问过——在那里画一行是把父会话的动作安到它头上
+    segmentDividers: node === undefined || node.kind === 'main',
+    // 段标题的内容（那句追问 + 这一段的时刻）来自**段这一层**的数据，与「画不画」分开：
+    // 子会话节点不画标题，故也不必把它带下去
+    ...(node === undefined || node.kind === 'main' ? { segments: model.segments } : {}),
     onEnterNode: viewState.setActiveNodeId,
     onRetryNode: source?.retryNode === undefined ? undefined : (nodeId: string) => source.retryNode?.(nodeId),
     onRequestDiagnostics: source?.requestDiagnostics === undefined ? undefined : () => source.requestDiagnostics?.(),
@@ -581,15 +632,27 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
         </Flex>
       );
     }
-    if (turns.length === 0) {
+    /**
+     * 主会话**只有题面、还没有任何轮次**时**不是空态**：首条那张「考题提示词」卡片就是要画的东西。
+     * 判据取「有没有题面」而不是「有没有轮次」——题面是资料、轮次是产出，一行刚发起时前者已经有了。
+     * 少了这半条，一行刚点完「开始」打开抽屉会看到「还没有日志 · 这一行还没开始执行」，
+     * 而它明明已经在跑、题面也已经交出去了。
+     */
+    if (turns.length === 0 && userPrompt === null) {
       return <EmptyState title="还没有日志" description="这一行还没开始执行，或执行尚未产生输出" />;
     }
-    if (filtersActive && filtered.length === 0) {
+    if (filtersActive && filtered.length === 0 && turns.length > 0) {
       return <Typography.Text type="secondary">没有命中过滤的轮次</Typography.Text>;
     }
     if (typeof timeline === 'function') return timeline(timelineProps);
     if (timeline !== undefined) return timeline;
-    return <VirtualTurnList {...timelineProps} controllerRef={controllerRef} />;
+    return (
+      <VirtualTurnList
+        {...timelineProps}
+        controllerRef={controllerRef}
+        onRenderedChange={(shown, total) => setRenderedTurns({ shown, total })}
+      />
+    );
   })();
 
   return (
@@ -708,27 +771,61 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
               onNumberDraft={setNumberDraft}
               onNumberCommit={commitNumber}
             />
+            {/* 虚拟列表的读数：住「下载台账」**后面**（用户口径）——它是同一个问题的另一半：
+                「原文在哪儿下载」与「这一屏画了几轮」一起构成这一行的自检信息 */}
+            {renderedTurns !== null && (
+              <Typography.Text type="secondary">
+                已渲染 {renderedTurns.shown} / 共 {renderedTurns.total} 轮
+              </Typography.Text>
+            )}
           </Flex>
         )}
       </Flex>
 
       {/* ② 滚动区：`flex: 1` + `minHeight: 0` 取满剩余高度；滚动容器是时间轴自己（不是抽屉 body） */}
-      <Flex vertical ref={scrollAreaRef} flex={1} style={{ minHeight: 0, padding: token.paddingMD }}>
+      <Flex
+        vertical
+        ref={scrollAreaRef}
+        flex={1}
+        /*
+         * **滚动区不给自己留内边距**（用户口径）：日志正文贴到抽屉左右边缘，
+         * 横向空间全给内容（长命令行 / diff 少一层内缩）。行与行之间的呼吸由轮次行自己带。
+         *
+         * `position: relative` 是给**浮动件**（「回到最新」）当定位基准的：它住在这块滚动区里
+         * ⇒「距底 `paddingMD`」量到的是**滚动区的底边**，而滚动区的高度已经扣掉了底部固定区
+         * （footer 在它后面、被 flex 拿去自己的高度）。footer 存在与否都不必算高度差，
+         * 浮动件也不会压在输入区那颗发送键上（压在它上面时点击会被拦截，症状是「发送键点不动」）。
+         */
+        style={{ minHeight: 0, padding: 0, position: 'relative' }}
+      >
         {timelineArea}
+
+        {/* 浮动件：未读时右下角「回到最新」。显隐与工具条开关**是同一份 state**。
+            未读数是 `badge`（0 时 Badge 自己不出标），无障碍名走 `aria-label`——
+            `FloatButton` 的可视内容只有图标，没有 `aria-label` 读屏就只剩一个无名按钮 */}
+        {!viewState.follow && (
+          <FloatButton
+            icon={<VerticalAlignBottomOutlined aria-hidden />}
+            badge={{ count: unread }}
+            aria-label={`回到最新（${unread} 轮未读）`}
+            tooltip={`回到最新（${unread} 轮未读）`}
+            onClick={backToLatest}
+            style={{ position: 'absolute', right: token.paddingMD, bottom: token.paddingMD }}
+          />
+        )}
       </Flex>
 
-      {/* ③ 浮动件：未读时右下角「回到最新」。显隐与工具条开关**是同一份 state**。
-          未读数是 `badge`（0 时 Badge 自己不出标），无障碍名走 `aria-label`——
-          `FloatButton` 的可视内容只有图标，没有 `aria-label` 读屏就只剩一个无名按钮 */}
-      {!viewState.follow && (
-        <FloatButton
-          icon={<VerticalAlignBottomOutlined aria-hidden />}
-          badge={{ count: unread }}
-          aria-label={`回到最新（${unread} 轮未读）`}
-          tooltip={`回到最新（${unread} 轮未读）`}
-          onClick={backToLatest}
-          style={{ position: 'absolute', right: token.paddingMD, bottom: token.paddingMD }}
-        />
+      {/* ③ 底部固定区：排队区 + 输入区住这里（**不传就一个节点都不渲染**）。
+          它排在滚动区之后 ⇒ 滚动区按它的实际高度自动缩水，这是 flex 的既有行为，
+          不需要（也不该）在这里算高度差：算出来的数会在字体加载 / 换密度时过期 */}
+      {footer !== undefined && (
+        <Flex
+          vertical
+          data-testid="agent-log-footer"
+          style={{ borderTop: `1px solid ${token.colorBorderSecondary}` }}
+        >
+          {footer}
+        </Flex>
       )}
 
       {/* 环境抽屉：**内部件**（不是并列组件）——主抽屉一卸载它跟着没，调用方不必接线 */}

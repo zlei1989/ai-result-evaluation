@@ -25,6 +25,7 @@ function textBlock(overrides: Partial<TextBlock> = {}): TextBlock {
     source: 'wire',
     assembly: 'snapshot',
     mergeKey: 'main|1|assistant|-',
+    segment: 0,
     usage: null,
     text: '正文',
     ...overrides,
@@ -76,11 +77,19 @@ describe('TextBlockView', () => {
     expect(screen.queryByText('汇总')).toBeNull();
   });
 
-  it('assembly 为 open 时给「正在思考」那一行，snapshot 时不给', () => {
+  /**
+   * **块里不再有「正在写」那一行**（用户口径：删掉那个持续动效）。
+   *
+   * 判据两档都要看：`open`（还在流）时也不许出现——那一行是一段与正文无关的持续动效，
+   * 在一段已经读得通的正文底下只会被读成空白；「还在写」的信号改为**新片段自己在淡入**
+   * （`XMarkdownText` 的 `open`，判据仍是 `assembly`）。顺带钉住：闪烁光标与 `Spin`
+   * 都不许再出现在正文块上。
+   */
+  it('不该有「正在思考」那一行（open / snapshot 两档都不出现，也没有 Spin / 光标）', () => {
     const { container, unmount } = render(<TextBlockView block={textBlock({ assembly: 'open' })} />);
-    expect(screen.getByText('正在思考')).toBeInTheDocument();
-    // 有字才说得清在做什么：那一行必须带转圈（`Spin` 的 DOM），不是一句干文案
-    expect(container.querySelector('.ant-spin')).not.toBeNull();
+    expect(screen.queryByText('正在思考')).toBeNull();
+    expect(container.querySelector('.ant-spin')).toBeNull();
+    expect(container.querySelector(`.${STREAM_CURSOR_CLASS}`)).toBeNull();
     unmount();
 
     const { container: snapshot } = render(<TextBlockView block={textBlock({ assembly: 'snapshot' })} />);
@@ -88,6 +97,14 @@ describe('TextBlockView', () => {
     expect(snapshot.querySelector('.ant-spin')).toBeNull();
     // 旧的闪烁光标**不再挂在正文块上**（那一格留给了评测列表的活动行）
     expect(snapshot.querySelector(`.${STREAM_CURSOR_CLASS}`)).toBeNull();
+  });
+
+  it('流式状态照旧只由 `assembly` 表达：`open` 交给 XMarkdown（新片段淡入），块自己不另加行', () => {
+    const { container } = render(<TextBlockView block={textBlock({ assembly: 'open', text: '**粗体**' })} />);
+
+    // 正文照常渲染（markdown 生效），且整块只有正文这一处内容（末尾换行由 XMarkdown 自己的段落决定）
+    expect(container.querySelector('strong')).not.toBeNull();
+    expect(container.textContent?.trim()).toBe('粗体');
   });
 
   it('正文走 markdown', () => {

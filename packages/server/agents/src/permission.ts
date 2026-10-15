@@ -135,6 +135,12 @@ export function codexPermissionOptions(
  *
  * 注入通道是适配器已有的 `buildSubprocessEnv`（SDK 的 `env` 是**替换型**语义），
  * 落在**子进程环境**而不是 `process.env`——静态断言（`static-assertions.test.ts`）仍然成立。
+ *
+ * ⚠️ **非 `danger-full-access` 的档位落到 `approval: ask`，而本仓没有批准面**（SDK 的 wire 上只有
+ * 七个请求、四个通知，没有「服务端问客户端」那一类）。这一格**不会挂起**：厂商自己的 runtime-context
+ * 消息里逐字写着「without an available answerer, the request fails closed」，真机复核
+ * （`read-only` 档 + 模型写工作区内文件）也是当场被拒、墙钟 827 ms、文件没有长出来。
+ * 也就是说「没有批准面」等价于「越界操作立即被拒」，不会把该行拖到静止超时。
  */
 export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermissionOptions>> = {
   full: { env: { DSH_PERMISSION_MODE: 'danger-full-access' } },

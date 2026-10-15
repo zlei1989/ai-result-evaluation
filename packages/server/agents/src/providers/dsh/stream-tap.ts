@@ -4,7 +4,7 @@
  * 为什么需要它：厂商的逐字流只存在于 runtime 进程内的 `agent/assistant-stream` 事件里
  * （`AssistantStreamFrame`，携带 `text-delta` / `reasoning-delta` / `block-start` / `block-end`
  * 的原始 `StreamChunk`），而 **stdio 通知流不投送它**——jsonrpc-server 任何版本都只订阅
- * `session/event` / `agent/status` / `session/created` / `subagent/end` 四个进程内事件
+ * `session/event` / `agent/status` / `session/created` / `subagent/end` / `agent/error` 五个进程内事件
  * （源码与真机双重证据，见 `docs/faq/deepseek-harness.md`）。执行日志的打字机效果需要
  * token 级增量 ⇒ 适配器把一个**插件**写进每行的 profile 目录（overlay `insert`，相对名按
  * **`<dshHome>`** 解析——见 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH`），由它把 chunk 帧
@@ -25,6 +25,12 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { asRecord, readNumber, readString } from '../../json';
 import type { DshNotification } from './sdk';
 import { DSH_STREAM_DELTA_TYPE } from './protocol';
+
+/**
+ * 重写检测的探测窗长度：只看**读游标之前**的这么多个字节，判「已经读过的内容是否还在原位」。
+ * 32 字节足够区分一次重写（内容不同）与一次正常追加（前缀逐字相同），代价可忽略。
+ */
+const PREFIX_PROBE_BYTES = 32;
 
 /** 旁路文件相对 `configHome` 的落点（插件写、本文件读，两边逐字一致） */
 export const DSH_STREAM_TAP_RELATIVE_PATH = 'aieval-stream-tap.jsonl';
@@ -66,11 +72,16 @@ export default function aievalStreamTap(ctx) {
   const home = process.env.DSH_HOME;
   if (typeof home !== 'string' || home === '') return;
   const file = join(home, 'aieval-stream-tap.jsonl');
-  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+  // ⚠️ 载荷**在 try 里面**才解构：写在参数位（\`({ agent, frame }) => …\`）时，一次 null / 非对象的
+  // 派发就在处理器外面抛出去——那是厂商读循环的监听器，抛错没有任何东西接着。
+  // 插件的契约是「任何失败都吞掉」，载荷形状的防御因此不能留在参数位。
+  ctx.on('agent/assistant-stream', (payload) => {
     try {
+      const frame = payload !== null && typeof payload === 'object' ? payload.frame : null;
       if (frame === null || typeof frame !== 'object' || frame.type !== 'chunk') return;
       const chunk = frame.chunk;
       if (chunk === null || typeof chunk !== 'object' || !TAP_TYPES.has(chunk.type)) return;
+      const agent = payload.agent;
       const session = agent !== null && typeof agent === 'object' ? agent.session : null;
       const sid = session !== null && typeof session === 'object' ? session.id : null;
       if (typeof sid !== 'string' || sid === '') return;
@@ -98,7 +109,7 @@ export interface DshStreamTapGate {
  * tail 旁路文件并把行折成 `aieval/delta` 伪通知，按**会话已知**放行。
  *
  * 为什么要门闸（而不是读出来就放）：子会话的增量行可能在 `subagent.started` **投影之前**落盘
- * （写入方在厂商进程里，与我们的消费节奏无关）。`sessionIdProfileSubagent` 的判据是
+ * （写入方在厂商进程里，与我们的消费节奏无关）。`dshSubagentIdOf` 的判据是
  * 「登记过的才是子会话」——没登记的 sid 会被当成**主会话**，子智能体的话就挤进主会话
  * 同 step 号的载体里。门闸把这类行**挂起**，等调用方（`notificationStream`）放行过
  * `subagent.started`、把子会话 id 记进 `knownSessions` 之后再放行。
@@ -107,6 +118,14 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
   let fd: number | null = null;
   let offset = 0;
   let pendingLine = '';
+  /** 上一次看到的文件长度与修改时刻：重写检测的输入（见 `readNewLines`） */
+  let lastSize = 0;
+  let lastMtimeMs = 0;
+  /**
+   * 已读位置之前**最后 32 字节**的副本：加长重写检测的输入（见 `readNewLines` 的判据③）。
+   * 用它而不是 mtime：同一次读循环里写完就重写、或时间戳粒度不够时，mtime 看不出区别。
+   */
+  let prefixProbe = Buffer.alloc(0);
   /** 未达会话判据的伪通知（挂起等待下次 drain） */
   let held: DshNotification[] = [];
   /** 块位次表：attemptId →（流序号 → 该次尝试内的块位次）。挂在 gate 上（每 run 一个实例，无模块态） */
@@ -163,8 +182,17 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
           type: DSH_STREAM_DELTA_TYPE,
           time: readNumber(data, 'time') ?? Date.now(),
           data: {
-            turn: readNumber(data, 'turn'),
-            step: readNumber(data, 'step'),
+            /**
+             * ⚠️ **chunk 帧上结构上就没有 `turn` / `step` 这两格**（厂商类型面
+             * `AssistantStreamFrame`：只有 `type:'start'` 那一支带它们，
+             * `type:'chunk'` 只带 `attemptId` / `revision` / `index` / `time` / `chunk`）
+             * ⇒ 这里读到的恒为 `null`。轮次归属由下游的
+             * `dshTurnAttribution`（`message.ts`）按**该会话已观察到的 step 数**回落给出，
+             * 它对增量与快照给的是同一个数 ⇒ 两条落进同一个载体。
+             * 别在这里「从别处凑一个 step 出来」：凑错的表现是增量与快照分裂成两条消息。
+             */
+            turn: null,
+            step: null,
             delta: {
               kind: chunkType === 'reasoning-delta' ? 'reasoning' : 'text',
               text,
@@ -178,18 +206,51 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
 
   const readNewLines = (): DshNotification[] => {
     const out: DshNotification[] = [];
-    let size: number;
+    let stats;
     try {
-      size = statSync(file).size;
+      stats = statSync(file);
     } catch {
       // 文件还没被插件建出来：就是「还没有增量」
       return out;
     }
-    if (size < offset) {
-      // 文件比上次读的还短（被截断/替换）：从头跟，宁可重放几条也不静默丢一段
+    /**
+     * **重写的判据不止「变短」**：等长替换与加长重写同样满足 `size >= offset`，
+     * 只看长度会把新内容**整段静默吞掉**（症状是「旁路文件在长、界面一条增量都没有」，零日志线索）。
+     *
+     * 三条判据按代价从低到高，任一成立即从头跟：
+     *   ① 比上次短 ⇒ 被截断；
+     *   ② 长度没长而 `mtimeMs` 变了 ⇒ 等长替换（正常追加必然让长度增加）；
+     *   ③ 已读过的**游标前那一段**变了 ⇒ 加长重写（前两条都看不出来）。
+     * 判据③ 只读 32 字节（`offset > 0` 时才有意义），代价可以忽略。
+     */
+    let rewritten = stats.size < offset || (stats.size <= lastSize && stats.mtimeMs !== lastMtimeMs);
+    if (!rewritten && offset > 0) {
+      const probeLength = Math.min(PREFIX_PROBE_BYTES, offset);
+      const probe = Buffer.alloc(probeLength);
+      let probeFd = fd;
+      let ownsFd = false;
+      if (probeFd === null) {
+        try {
+          probeFd = openSync(file, 'r');
+          ownsFd = true;
+        } catch {
+          probeFd = null;
+        }
+      }
+      if (probeFd !== null) {
+        const read = readSync(probeFd, probe, 0, probeLength, offset - probeLength);
+        if (ownsFd) closeSync(probeFd);
+        rewritten = read !== probeLength || !probe.equals(prefixProbe);
+      }
+    }
+    if (rewritten) {
+      // 重写：读位置与半截行一起作废，从文件头重新跟
       offset = 0;
       pendingLine = '';
     }
+    lastSize = stats.size;
+    lastMtimeMs = stats.mtimeMs;
+    const size = stats.size;
     if (size === offset) return out;
     if (fd === null) {
       try {
@@ -202,6 +263,9 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
     const buffer = Buffer.alloc(length);
     const read = readSync(fd, buffer, 0, length, offset);
     offset += read;
+    prefixProbe = read === 0
+      ? Buffer.alloc(0)
+      : Buffer.from(buffer.subarray(Math.max(0, read - PREFIX_PROBE_BYTES), read));
     // 半截行留到下次（最后一段可能没写完）
     pendingLine += buffer.toString('utf8', 0, read);
     const lines = pendingLine.split('\n');
@@ -220,6 +284,15 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
       held = held.filter((one) => !knownSessions.has(tapSessionId(one)));
       return ready;
     },
+    /**
+     * 释放文件句柄 + 丢弃**挂起**的行（幂等）。
+     *
+     * ⚠️ **不是**「关掉这条通道」：这份门闸是**跨活动区间复用**的（首轮与每一次追问共用同一个实例，
+     * 见 `index.ts` 的 `tap` 注释），而每个区间的流收尾都会调它一次 ⇒ 若在这里立一个「已关闭」标志，
+     * 追问区间的增量就会一条都读不出来（子智能体在修正轮里继续说话时整段消失，零报错）。
+     * 语义因此是「**松开句柄、忘掉没放行的行**」：下次 `drain()` 重新打开文件、从记录的偏移接着读
+     * （偏移与块位次表都不重置，那正是跨区间不重放上一轮增量的原因）。
+     */
     close(): void {
       if (fd !== null) {
         closeSync(fd);

@@ -40,6 +40,8 @@ function turn(overrides: Record<string, unknown> = {}): AppServerNotificationPay
       itemsView: 'full',
       status: 'completed',
       error: null,
+      errorCode: null,
+      errorStatusCode: null,
       startedAt: null,
       completedAt: null,
       durationMs: null,
@@ -49,8 +51,40 @@ function turn(overrides: Record<string, unknown> = {}): AppServerNotificationPay
 }
 
 describe('增量与条目：只推进轮次，不产日志垃圾', () => {
-  it('答复增量不发事件、也不给轮次（轮次按条目 id 去重后才算一票）', () => {
-    const outcome = project({ kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'm1', delta: '你' });
+  /**
+   * **跑动期的用量必须随条目一起交出去**。
+   *
+   * 要拦的缺陷：用量通知只记账（它自己不带轮次、不发事件），而条目这一支把 `tokens` 写死 `null`
+   * ⇒ 两件事被拆进互不相交的分支，整轮事件流的 tok 全是 `null`。评测一行通常只有一个 turn，
+   * 于是界面**全程**停在「采集中」，跑到收尾才第一次出数。另两家都在跑动期交累计值。
+   */
+  it('已记账的线程累计用量随主线程条目交出（不必等 `turn/completed`）', () => {
+    const state = createTurnState();
+    const runState = createCodexRunState();
+    project(
+      {
+        kind: 'tokenUsage',
+        threadId: MAIN,
+        usage: { total: { inputTokens: 120, cachedInputTokens: 20, outputTokens: 7 }, last: null } as never,
+      },
+      { state, runState },
+    );
+    const outcome = project(
+      { kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('msg_aaa111'), completedAtMs: null },
+      { state, runState },
+    );
+    // `input` 是**非缓存输入**（120 − 20），与契约口径一致
+    expect(outcome.projection.tokens).toMatchObject({ input: 100, cached: 20, output: 7 });
+    expect(outcome.tokens).toMatchObject({ input: 100, cached: 20, output: 7 });
+  });
+
+  it('一个用量通知都没来过 ⇒ 条目这一支的 tokens 仍是 null（不填 0）', () => {
+    const outcome = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('msg_aaa111'), completedAtMs: null });
+    expect(outcome.projection.tokens).toBeNull();
+  });
+
+  it('答复增量不发事件、也不给轮次（开号在内容级那一处，事件流的发射门槛仍是模型产出条目）', () => {
+    const outcome = project({ kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'msg_aaa111', delta: '你' });
     expect(outcome.projection).toMatchObject({ drafts: [], tokens: null, turns: null, failure: null });
   });
 
@@ -59,28 +93,47 @@ describe('增量与条目：只推进轮次，不产日志垃圾', () => {
     expect(outcome.projection.drafts).toEqual([]);
   });
 
-  it('主线程的答复条目：一次新 id 一票，并给出归属（`subagentId: null` + 该轮号）', () => {
+  it('主线程的答复条目：一次新**响应**一票，并给出归属（`subagentId: null` + 该轮号）', () => {
     const state = createTurnState();
     const runState = createCodexRunState();
-    const first = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m1'), completedAtMs: null }, { state, runState });
+    const first = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('msg_aaa111'), completedAtMs: null }, { state, runState });
     expect(first.projection.turns).toBe(1);
     expect(first.projection.turn).toEqual({ subagentId: null, round: 1 });
 
     // 同一条目的后续快照（`item/started` + `item/completed`）不重复计数
-    const repeat = project({ kind: 'itemStarted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m1') }, { state, runState });
+    const repeat = project({ kind: 'itemStarted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('msg_aaa111') }, { state, runState });
     expect(repeat.projection.turns).toBeNull();
 
-    const second = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('m2'), completedAtMs: null }, { state, runState });
+    // 换一个**响应 id** 才是新的一次往返（号源是 id 后缀，不是「见过几个条目」）
+    const second = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: agentMessage('msg_bbb222'), completedAtMs: null }, { state, runState });
     expect(second.projection.turns).toBe(2);
+
+    // 同一次响应里的推理条目与答复条目**共享**那个后缀 ⇒ 不另开一票
+    const sameResponse = project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: { kind: 'reasoning', id: 'rs_bbb222', summary: [], content: [] }, completedAtMs: null }, { state, runState });
+    expect(sameResponse.projection.turns).toBeNull();
   });
 
-  it('推理与工具条目对轮次这把尺子透明（不推高轮次）', () => {
+  it('推理条目**推进**往返（它就是「这次往返开始了」的那一条），工具条目对这把尺子透明', () => {
     const runState = createCodexRunState();
     const state = createTurnState();
-    const reasoning: AppServerItem = { kind: 'reasoning', id: 'r1', summary: [], content: [] };
-    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: reasoning, completedAtMs: null }, { state, runState }).projection.turns).toBeNull();
-    const command: AppServerItem = { kind: 'commandExecution', id: 'c1', command: 'ls', cwd: null, status: 'completed', output: null, exitCode: 0, durationMs: 1 };
+    const reasoning: AppServerItem = { kind: 'reasoning', id: 'rs_aaa111', summary: [], content: [] };
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: reasoning, completedAtMs: null }, { state, runState }).projection.turns).toBe(1);
+    // 工具调用归**当前**这次往返：它不开新号、也不返回号（返回值是 usage 事件的发射门槛）
+    const command: AppServerItem = { kind: 'commandExecution', id: 'call_x1', command: 'ls', cwd: null, status: 'completed', output: null, exitCode: 0, durationMs: 1 };
     expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: command, completedAtMs: null }, { state, runState }).projection.turns).toBeNull();
+    // 它后面那次模型产出才是新的一次往返
+    const next: AppServerItem = { kind: 'reasoning', id: 'rs_bbb222', summary: [], content: [] };
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: next, completedAtMs: null }, { state, runState }).projection.turns).toBe(2);
+  });
+
+  it('turn 的第一条通知就是工具执行 ⇒ 补记那一票（这次调用不占用后面那次答复的号）', () => {
+    const runState = createCodexRunState();
+    const state = createTurnState();
+    const command: AppServerItem = { kind: 'commandExecution', id: 'call_x1', command: 'ls', cwd: null, status: 'completed', output: null, exitCode: 0, durationMs: 1 };
+    // 工具本身不给轮次（发射门槛仍是「模型产出」），但它把这一次往返记下了
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: command, completedAtMs: null }, { state, runState }).projection.turns).toBeNull();
+    const answer: AppServerItem = { kind: 'agentMessage', id: 'msg_bbb222', text: '好', phase: null };
+    expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: answer, completedAtMs: null }, { state, runState }).projection.turns).toBe(2);
   });
 
   it('子线程的答复条目**不**推高本行的轮次（本行的事件流只有主线程的进度语义）', () => {
@@ -149,9 +202,26 @@ describe('turn/completed：计量、时长、归属', () => {
     expect(breakdownToTokens({ inputTokens: 10, cachedInputTokens: 1, outputTokens: 2 })).not.toBeNull();
   });
 
-  it('时刻缺一端 ⇒ **不带** timing（差值算不出来就是算不出来，不拿 0 冒充）', () => {
-    expect(turnTimingOf({ startedAt: 1, completedAt: null, durationMs: 500 } as never)).toBeNull();
+  /**
+   * 时刻缺一端时的两臂。
+   *
+   * 要拦的缺陷：时间被建模成「必须两点」，于是厂商在**同一个 `Turn`** 上给出的 `durationMs`
+   * 被整格丢掉 ⇒ 行上的时长永久为空。而 `TimingSpan` 只要求两端之差有意义（不要求绝对时刻），
+   * 以 0 为基准给出同样长的跨度是事实而非「拿 0 冒充」——真正不许编的是**三格全缺**那一档。
+   */
+  it('时刻缺一端但有 `durationMs` ⇒ 回落成同样长的跨度（厂商给的时长不丢）', () => {
+    expect(turnTimingOf({ startedAt: 1, completedAt: null, durationMs: 500 } as never)).toEqual({
+      firstMs: 0,
+      lastMs: 500,
+      source: 'events',
+    });
     const outcome = project(turn({ startedAt: 1_700_000_000, completedAt: null, durationMs: 5 }));
+    expect(outcome.projection.timing).toEqual({ firstMs: 0, lastMs: 5, source: 'events' });
+  });
+
+  it('三格全缺 ⇒ **不带** timing（算不出来就是算不出来，不编一个 0 长度）', () => {
+    expect(turnTimingOf({ startedAt: null, completedAt: null, durationMs: null } as never)).toBeNull();
+    const outcome = project(turn({ startedAt: null, completedAt: null, durationMs: null }));
     expect(outcome.projection.timing).toBeUndefined();
   });
 
@@ -178,6 +248,89 @@ describe('turn/completed：计量、时长、归属', () => {
     expect(outcome.tokens).toBeNull();
   });
 
+  /**
+   * **失败是结论，不是提前退出**。
+   *
+   * 要拦的缺陷：失败那一支在算计量与时长**之前**就 return，而厂商就在同一条 `turn/completed` 上
+   * 给了这两格 ⇒ 一次 401 / 429 / 上游 5xx 的行时长永久为空、计量为 `null`，偏偏 `interrupted`
+   * 那一档有（两档不对称本身就说明是漏写）。既有用例只断言 `failure`，拿不给用量的夹具一跑就恒绿。
+   */
+  it('`status: failed` 仍要带上这一轮的计量与时长（与 completed / interrupted 同待遇）', () => {
+    const runState = createCodexRunState();
+    project(
+      {
+        kind: 'tokenUsage',
+        threadId: MAIN,
+        usage: { total: { inputTokens: 50, cachedInputTokens: 10, outputTokens: 4 }, last: null } as never,
+      },
+      { runState },
+    );
+    const outcome = project(
+      turn({ status: 'failed', error: 'unexpected status 429: 太快了', startedAt: 1_700_000_000, completedAt: 1_700_000_012 }),
+      { runState },
+    );
+    expect(outcome.projection.failure?.code).toBe('RATE_LIMITED');
+    expect(outcome.projection.tokens).toMatchObject({ input: 40, cached: 10, output: 4 });
+    expect(outcome.projection.timing).toEqual({ firstMs: 1_700_000_000_000, lastMs: 1_700_000_012_000, source: 'events' });
+  });
+
+  /**
+   * **归因优先认厂商的机器可读分类**（`TurnError.codexErrorInfo`）。
+   *
+   * 要拦的缺陷：只读 `message` 文案。那条路是「从文案里正则提 HTTP 状态」，厂商改一句措辞就错档
+   * ——归成 `AGENT_FAILED` 之后它还在自动重试表里，于是一个 401 会被重跑两遍、每次再等 3 秒，
+   * 而它重试多少次都是同一个失败。这里的文案**刻意不含任何状态码**，只有枚举说得出真相。
+   */
+  it('`codexErrorInfo` 说了算：文案里没有状态码也能归对档', () => {
+    const unauthorized = project(turn({ status: 'failed', error: '这次没成', errorCode: 'unauthorized' }));
+    expect(unauthorized.projection.failure?.code).toBe('AUTH_FAILED');
+
+    const limited = project(turn({ status: 'failed', error: '这次没成', errorCode: 'usageLimitExceeded' }));
+    expect(limited.projection.failure?.code).toBe('RATE_LIMITED');
+
+    // 归不了档的分类**不强行映射**，但要把厂商怎么说的带进文案（排障看得见）
+    const other = project(turn({ status: 'failed', error: '这次没成', errorCode: 'sandboxError' }));
+    expect(other.projection.failure?.code).toBe('AGENT_FAILED');
+    expect(other.projection.failure?.message).toContain('sandboxError');
+  });
+
+  /**
+   * **上游 HTTP 失败：判据是对象变体里的 `httpStatusCode`，不是变体名**。
+   *
+   * 要拦的缺陷：只比字符串枚举。真机对上游 401 报的是
+   * `{"responseStreamDisconnected":{"httpStatusCode":401}}`（500 同形、状态码为 `null`）——
+   * 变体名 `responseStreamDisconnected` 说的是**传输层**、分不出鉴权与过载 ⇒ 只比名字时四条
+   * 机器可读分支**恒不命中**，401 只能靠 `additionalDetails` 里那个「401」被正则认出来
+   * （厂商换一句文案就错档）。这里的文案刻意**不含 401**，只有状态码说得出真相。
+   */
+  it('对象变体的 `httpStatusCode` 说了算：文案里没有状态码也能归对档', () => {
+    const unauthorized = project(turn({
+      status: 'failed',
+      error: '请求中断了',
+      errorCode: 'responseStreamDisconnected',
+      errorStatusCode: 401,
+    }));
+    expect(unauthorized.projection.failure?.code).toBe('AUTH_FAILED');
+
+    const limited = project(turn({
+      status: 'failed',
+      error: '请求中断了',
+      errorCode: 'responseStreamDisconnected',
+      errorStatusCode: 429,
+    }));
+    expect(limited.projection.failure?.code).toBe('RATE_LIMITED');
+
+    // 状态码为 null（连接被拒那一档）：不强行归档，交回文案那条路，分类名照旧进文案
+    const unknown = project(turn({
+      status: 'failed',
+      error: 'We\'re currently experiencing high demand, which may cause temporary errors.',
+      errorCode: 'responseStreamDisconnected',
+      errorStatusCode: null,
+    }));
+    expect(unknown.projection.failure?.code).toBe('AGENT_FAILED');
+    expect(unknown.projection.failure?.message).toContain('responseStreamDisconnected');
+  });
+
   it('`status: interrupted` **不是**失败：只落一条 WARN，`failure` 保持 null', () => {
     const outcome = project(turn({ status: 'interrupted' }));
     expect(outcome.projection.failure).toBeNull();
@@ -192,7 +345,8 @@ describe('turn/completed：计量、时长、归属', () => {
       {
         kind: 'turnCompleted',
         threadId: 'thread-child',
-        turn: { id: 'ct', items: [agentMessage('m1')], itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null },
+        turn: { id: 'ct', items: [agentMessage('m1')], itemsView: 'full', status: 'completed', error: null, errorCode: null,
+          errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null },
       },
       { runState },
     );
@@ -229,10 +383,26 @@ describe('按线程用量与未识别通知', () => {
     expect(outcome.projection.drafts[0]).toMatchObject({ type: 'log', stream: 'stdout', summary: '更新计划：1 步' });
   });
 
-  it('未识别的通知**保留原始负载**（上游加了方法名不该表现为「什么都没发生」）', () => {
-    const outcome = project({ kind: 'other', method: 'thread/goal/updated' });
+  /**
+   * **未识别的通知要连 `params` 一起留下**。
+   *
+   * 要拦的缺陷：兜底只留方法名。schema 里有 84 个通知方法而这一层只归一了十几个 ⇒ 这一支常走，
+   * 而正文全在 `params` 里：`model/rerouted`（模型被**静默**改路由，这是必须看见的事实）、
+   * `warning` / `deprecationNotice` 的原文、`serverRequest/resolved` 的回执…… 只留方法名时，
+   * 「上游换了载荷结构」与「上游什么都没发」在产物里长得一样。
+   */
+  it('未识别的通知**保留原始负载**（连 params 一起，上游加了方法名不该表现为「什么都没发生」）', () => {
+    const outcome = project({
+      kind: 'other',
+      method: 'model/rerouted',
+      params: { threadId: MAIN, from: 'gpt-5.1-codex', to: 'gpt-5.1-codex-mini' },
+    });
     expect(outcome.projection.drafts).toEqual([
-      { type: 'log', stream: 'stdout', text: '{"method":"thread/goal/updated"}' },
+      {
+        type: 'log',
+        stream: 'stdout',
+        text: '{"method":"model/rerouted","params":{"threadId":"thread-main","from":"gpt-5.1-codex","to":"gpt-5.1-codex-mini"}}',
+      },
     ]);
   });
 });
@@ -613,7 +783,8 @@ describe('活动行：子任务的派发与收场', () => {
     const childTurn = (status: string): AppServerNotificationPayload => ({
       kind: 'turnCompleted',
       threadId: 'child-1',
-      turn: { id: 'ct', items: [], itemsView: 'full', status, error: null, startedAt: null, completedAt: null, durationMs: null },
+      turn: { id: 'ct', items: [], itemsView: 'full', status, error: null, errorCode: null,
+        errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null },
     });
     const first = project(childTurn('completed'), { runState });
     expect(first.projection.drafts[0]).toMatchObject({ summary: '子任务已完成' });

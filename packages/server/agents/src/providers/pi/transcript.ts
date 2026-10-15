@@ -58,8 +58,23 @@ import { piAssistantMessageDraft, piToolResultMessageDraft } from './message';
 /** 转写根的前缀（扩展在 `os.tmpdir()` 下按 uid 分目录，见其 `output-file.ts` 的 `sessionTaskDir`） */
 const TRANSCRIPT_ROOT_PREFIX = 'pi-subagents-';
 
-/** 子任务身份与会话 id 的合法字符：两者都要拼进路径，故**只收**这一套（挡 `..` 与分隔符） */
-const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+/**
+ * 子任务身份（`agentId`）的合法字符：**只收这一套**（挡 `..` 与分隔符）。
+ * 厂商那一侧它来自 `randomUUID().slice(0, 17)` ⇒ 恒是这个形状，收紧不留代价。
+ */
+const SAFE_AGENT_ID = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * 会话 id 的合法字符：**跟厂商自己的 `assertValidSessionId` 同宽**——
+ * `/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/`（首尾必须是字母数字，中间允许 `.`）。
+ *
+ * 为什么两格不共用一个更严的模式：`sessionId` 由**厂商**生成（今天走 `uuidv7()`，将来
+ * `SessionManager.create(..., { id })` 或导入的会话都可能带点）。比厂商更严的白名单会让
+ * 「带点的会话」这一格的转写路径恒为 `null` ⇒ 兜底通道**静默**读不到（跑动期增量那条路连 WARN
+ * 都没有），而症状与「子任务本来就没说话」长得一样。收成厂商的语法之后，`.` 不再制造这种缺口，
+ * `..`（唯一有路径含义的写法）仍被首尾必须是字母数字这一条挡在外面。
+ */
+const SAFE_SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 /**
  * 单个子会话最多投影多少行。真机一次派发是几十行（29 行 / 49 KB），
@@ -96,8 +111,11 @@ function transcriptRoot(): string {
 }
 
 /**
- * 某个子智能体的转写文件**绝对路径**；身份或会话 id 含路径分隔符时返回 `null`
+ * 某个子智能体的转写文件**绝对路径**；身份或会话 id 不合各自那一套语法时返回 `null`
  * （拿不到就不读：宁可登记成边界，也不去碰一个拼出来的、可能指到别处的路径）。
+ *
+ * 两格的判据**不同宽**：`sessionId` 跟厂商的 `assertValidSessionId` 同宽（允许 `.`，
+ * 见 `SAFE_SESSION_ID`），`agentId` 只收 uuid 那一套（见 `SAFE_AGENT_ID`）。
  */
 export function piSubagentTranscriptPath(params: {
   cwd: string;
@@ -105,7 +123,7 @@ export function piSubagentTranscriptPath(params: {
   agentId: string;
 }): string | null {
   const { cwd, sessionId, agentId } = params;
-  if (!SAFE_PATH_SEGMENT.test(sessionId) || !SAFE_PATH_SEGMENT.test(agentId)) return null;
+  if (!SAFE_SESSION_ID.test(sessionId) || !SAFE_AGENT_ID.test(agentId)) return null;
   return join(transcriptRoot(), encodeCwd(cwd), sessionId, 'tasks', `${agentId}.output`);
 }
 
@@ -169,6 +187,14 @@ export function projectTranscriptLines(
   const messages: MessageDraft[] = [];
   /** 该子会话自己的模型往返序：每条助手行 +1，工具结果沿用当前号（与 claude 逐字同一条口径） */
   let round = 0;
+  /**
+   * **轮次必须取「该子会话的绝对序」**，不能从保留段从 1 重排：wire 那条通道取的是绝对基数
+   * （`subagent-wire.ts` 用 `session.messages` 里已有的助手条数起算），两条通道按**载体键**
+   * （`subagentId + 轮次 + 角色 + parentCallId`）去重 ⇒ 截断后若重新编号，同一条消息在两条通道上
+   * 的键不再相等，「先到者胜出」失效，保留段会被投两遍（界面表现为重复轮次）。
+   * 丢掉的那一段是极长会话（上限是典型派发的 170 倍），为它多解析一次前缀是可接受的代价。
+   */
+  if (dropped > 0) round = countAssistantLines(lines.slice(0, dropped), agentId);
   for (const line of kept) {
     let parsed: unknown;
     try {
@@ -211,6 +237,29 @@ export function projectTranscriptLines(
     // `user`（首行是派发提示词，主会话时间轴里已有）与 `system` 不投影
   }
   return { messages, dropped };
+}
+
+/**
+ * 一段被截断掉的前缀里有几条**助手行**（= 该子会话已经走过的模型往返数）。
+ *
+ * 只用来给保留段定轮次基数（见 `projectTranscriptLines`）：解析坏行与别人的行一律跳过，
+ * 判据与保留段的循环**同一套**（`agentId` 对得上 + `type === 'assistant'`），否则两条通道的
+ * 轮次会从那一条坏行开始错位。
+ */
+function countAssistantLines(lines: readonly string[], agentId: string): number {
+  let count = 0;
+  for (const line of lines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      continue;
+    }
+    const entry = asRecord(parsed);
+    if (readString(entry, 'agentId') !== agentId) continue;
+    if (readString(entry, 'type') === 'assistant') count += 1;
+  }
+  return count;
 }
 
 /**

@@ -62,6 +62,7 @@
 | 满载假红判据 | 已登记 | 红不红看**隔离复跑**：满载的 `Test timed out` 是已知噪声，零断言失败 + 隔离全过 ⇒ 不是回归；机器带负载时 `pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000` |
 | 根 `pnpm test` 的形态误判 | 已登记 | 它是根上单跑（projects 收齐 8 包），**不是**每包一行输出；不能用「输出里有没有 8 段包级汇总」判断跑全了；`.next/types` 陈旧会让 typecheck 假红（删过源码先重建产物） |
 | ESLint flat config **不读 `.gitignore`** | 已登记 | `.gitignore` 以「生成物」为由忽略的目录，只要可能落 `.js` / `.ts`，就得在 `eslint.shared.ts` 的仓库级 `ignores` 里再写一遍——两边的忽略集合本来就不一致。两类已知后果：真机探针把第三方模板的 `.ts` 克隆进 `probe/dumps/**` 时，`pnpm lint` 的报错会涨到上万条；VitePress 把依赖预打包的第三方 `.js` 放进 `docs/.vitepress/cache/deps/` 时，其中一条 `es5/no-es6-methods` 会以 `Definition for rule 'es5/no-es6-methods' was not found` 让 `pnpm lint` 退出码 1（故 `**/.vitepress/cache/**` 与 `**/.vitepress/dist/**` 必须在 ignores 里） |
+| 改过 `package.json` 之后跑 `pnpm <script>`：pnpm 的依赖自检会**裸跑一次 `pnpm install`** | 已登记 | 它不只是「看起来像回归」——**它会真的改写 `pnpm-lock.yaml` 与 `node_modules`**。判据：把某个依赖的版本改成一条装不上的线（`latest`）时，自检当场以 `ERR_PNPM_FETCH_404` 失败，而失败的 install 已经把 lockfile 重写成了它自己解析出来的那一版 ⇒ 刚做完精细合并的 lockfile 与已对齐的 `node_modules` **双双回到污染态**，后续真机用例会以「装的还是旧版本」假红。因此**凡是要改 `package.json` 的验证（依赖层面的变异验证就是）一律走 `node_modules/.bin/{vitest,tsc,eslint}`** 绕开自检，跑完再核对 `pnpm-lock.yaml` 的哈希 |
 
 ## 相关链接
 

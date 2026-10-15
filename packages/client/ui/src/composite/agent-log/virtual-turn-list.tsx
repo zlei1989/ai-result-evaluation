@@ -15,11 +15,12 @@
  * `userPrompt` 与 `notices` 是**列表里的头几行**（不是列表外的固定条）：它们在时间轴上就是首条消息，
  * 钉在顶上会让长提示词永久占掉一屏高度。
  */
-import { Flex, theme, Typography } from 'antd';
+import { Flex } from 'antd';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { VirtualList, type VirtualListHandle } from '../../base/virtual-list';
-import type { LogNodeIndex, LogTurn, MessageCapabilityMap, RowEvent, SessionNode } from './types';
+import type { LogNodeIndex, LogSegment, LogTurn, MessageCapabilityMap, RowEvent, SessionNode } from './types';
 import { UserPromptBlock, renderTurn, turnKey, type TurnRenderContext } from './agent-message-timeline';
+import { SegmentDivider } from './segment-divider';
 import { blockRendererOf, useBlockRenderers, type BlockRenderer } from './block-renderer-registry';
 
 /** 「已渲染 N」的锚点属性：由 L1 的轮次行标注（`data-turn-row`） */
@@ -43,6 +44,17 @@ export interface VirtualTurnListProps {
   notices?: readonly ReactNode[];
   activeNodeId?: string;
   /**
+   * 要不要在段首画「追问 ×N」分隔行。
+   * **只有主会话节点为真**（调用方按 `node.kind` 给）：子会话节点里的轮次属于那个子任务自己，
+   * 它没有被人追问过——在那里画一行「追问 ×1」是把父会话的动作安到它头上。
+   */
+  segmentDividers?: boolean;
+  /**
+   * 段这一层的事实（`AgentLogModel.segments`）：第几次追问、那句追问是什么、什么时候问的。
+   * 只在 `segmentDividers` 为真时被用；缺失 = 一个段标题都不画（**不编一行只有号没有正文的标题**）。
+   */
+  segments?: readonly LogSegment[];
+  /**
    * 子任务占位条上的「进入 ▸」（`BlockRenderContext` 的三个出口之一）。
    *
    * ⚠️ **必须在这里显式接上**：`TurnRenderContext` 与
@@ -64,12 +76,16 @@ export interface VirtualTurnListProps {
   capability?: MessageCapabilityMap;
   /** 由 `AgentLogLayout` 持有的命令式句柄（跳轮次 / 回到最新） */
   controllerRef?: Ref<ListController>;
-  /** 「已渲染 N / 共 M 轮」的第一个数：**L2 的护栏**，L1 不渲染它 */
-  onRenderedChange?(rendered: number): void;
+  /**
+   * 「已渲染 N / 共 M 轮」的两个数**往上报**（本件不再自己渲染那一行）：
+   * 它现在住在固定区的原文行、紧挨着「下载台账」后面（用户口径）。
+   * 报的是 `(已渲染, 总轮次)`：两者一个是实测值、一个是数据的长度，凑齐才念得成一句话。
+   */
+  onRenderedChange?(rendered: number, total: number): void;
 }
 
 /**
- * 列表的一项：用户提示词 / 补充提示是**头几行**，其余是轮次。
+ * 列表的一项：用户提示词 / 补充提示 / **段分隔**是头几行与插行，其余是轮次。
  * 这样提示词跟着列表一起滚（而不是钉在顶上），虚拟化也照常只挂载可见项。
  */
 type TurnListRow =
@@ -77,10 +93,9 @@ type TurnListRow =
   | { kind: 'turn'; key: string; turn: LogTurn; index: number };
 
 export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
-  const { token } = theme.useToken();
   const registry = useBlockRenderers();
   const dispatch = props.renderBlock ?? blockRendererOf(registry);
-  const { turns, userPrompt, notices, activeNodeId, nodes, rowEvents, openKeys, onOpenChange, controllerRef } = props;
+  const { turns, userPrompt, notices, activeNodeId, nodes, rowEvents, openKeys, onOpenChange, controllerRef, segmentDividers, segments } = props;
 
   /** 列表宿主的容器：这里只用来**数已渲染行数**（高度测量在 `VirtualList` 里） */
   const listHostRef = useRef<HTMLElement | null>(null);
@@ -103,10 +118,17 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
     listHostRef.current = host;
     const count = host.querySelectorAll(`[${TURN_ROW_ATTR}]`).length;
     setRendered(count);
-    onRenderedChangeRef.current?.(count);
+    // 报数不在这里：这一次回调只拿得到「已渲染」，总量在 `turns` 上，
+    // 而这个 `useCallback` 的依赖是空的（测量回调必须身份稳定）⇒ 在这里读 `turns` 会读到首帧的量。
+    // 统一由下面那个 effect 报（它两个数都拿得到，且 `setRendered` 会把测量结果带过去）。
   }, []);
 
-  /** 列表数据：提示词与补充提示在前，轮次在后 */
+  /**
+   * 列表数据：提示词与补充提示在前，随后是轮次；**每换一段插一行分隔**（「追问 ×N」）。
+   *
+   * 段分隔只在主会话节点画（`segmentDividers`）：子会话节点里的那些轮次是某个子任务自己的，
+   * 那个子任务里没有人追问过——在那里画「追问 ×1」是把父会话的动作安到子任务头上。
+   */
   const rows = useMemo<TurnListRow[]>(() => {
     const head: TurnListRow[] = [];
     if (userPrompt !== undefined && userPrompt !== null) {
@@ -115,11 +137,31 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
     (notices ?? []).forEach((notice, index) => {
       head.push({ kind: 'head', key: `notice-${index}`, node: notice });
     });
-    return [
-      ...head,
-      ...turns.map((turn, index) => ({ kind: 'turn' as const, key: turnKey(turn, index), turn, index })),
-    ];
-  }, [turns, userPrompt, notices]);
+    const body: TurnListRow[] = [];
+    turns.forEach((turn, index) => {
+      const previous = turns[index - 1];
+      /**
+       * 段标题**整段块之一**（分隔线 + 「追问 ×N」+ 时刻 + 那句追问），插在该段**第一个轮次之前**。
+       * 判据与既有实现逐字相同（「换段了」），只是标题的内容来源换成了**段这一层的数据**
+       * （`AgentLogModel.segments`）：那句人话已由数据层从轮次的展示块里提出来 ⇒ 标题就是它唯一的出口。
+       *
+       * 数据层没给这一段的结论（老调用方 / 段事实缺失）时**不编一行**：只有「追问 ×N」而没有
+       * 正文的标题会把读者引向「他追问了什么」而答不出来——宁可不画。
+       */
+      if (segmentDividers === true && turn.segment > 0 && previous?.segment !== turn.segment) {
+        const fact = segments?.find((one) => one.segment === turn.segment);
+        if (fact !== undefined) {
+          body.push({
+            kind: 'head',
+            key: `segment-${turn.segment}`,
+            node: <SegmentDivider segment={fact.segment} at={fact.at} text={fact.text} />,
+          });
+        }
+      }
+      body.push({ kind: 'turn', key: turnKey(turn, index), turn, index });
+    });
+    return [...head, ...body];
+  }, [turns, userPrompt, notices, segmentDividers, segments]);
 
   /** 单轮渲染的上下文：与 L1 的 props 同形，外加整份轮次（行级事件要靠邻轮判归属） */
   const turnContext = useMemo<TurnRenderContext>(
@@ -176,6 +218,11 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
    */
   const shownRendered = rendered ?? turns.length;
 
+  useEffect(() => {
+    // 走 ref 而不是直接依赖 prop：调用方每次渲染新建箭头函数，进依赖会让本件每帧重跑一次
+    onRenderedChangeRef.current?.(shownRendered, turns.length);
+  }, [shownRendered, turns.length]);
+
   useImperativeHandle(
     controllerRef,
     () => ({ scrollToTurn, scrollToBottom, renderedCount: shownRendered }),
@@ -193,12 +240,6 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
         onMeasured={countRendered}
         controllerRef={listRef}
       />
-      {/* 列表尾部一行：既是调试指标也是性能护栏（N 失控增长时立刻看得见） */}
-      <Flex justify="flex-end" style={{ paddingTop: token.marginXXS }}>
-        <Typography.Text type="secondary">
-          已渲染 {shownRendered} / 共 {turns.length} 轮
-        </Typography.Text>
-      </Flex>
     </Flex>
   );
 }

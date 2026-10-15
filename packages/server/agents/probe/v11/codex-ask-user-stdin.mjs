@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * v11 探针（票 07）：**codex 在管道 stdin（非 TTY）下会不会下发提问请求？**
+ * v11 探针：**codex 在管道 stdin（非 TTY）下会不会下发提问请求？**
  *
  * 厂商二进制里有一句 `request_user_input requires an interactive stdin terminal`。本仓拉起
  * codex 服务端时 fd 0 一律是管道（JSON-RPC 要双向读写）⇒ 要回答的是：**这句话拦不拦？**
  *
- * 探针只记录、不做产品判断；结论与原文由人回填票的 `## Comments`。
+ * 探针只记录、不做产品判断；结论与原文由人回填报告。
  *
- * ── 判据（逐条对应票里的四条，全部落在产物里，不靠眼睛）─────────────────────────
+ * ── 判据（四条，全部落在产物里，不靠眼睛）─────────────────────────
  *
  *   ① 请求到不到：`serverRequests` 里 `method === 'item/tool/requestUserInput'` 的**条数**。
- *      到了 ⇒ 「管道 stdin 不拦」，这是本票的主判据。
+ *      到了 ⇒ 「管道 stdin 不拦」，这是本探针的主判据。
  *   ② 到了：该请求的 `params` **逐字**落盘（`askRequests[].paramsRaw`）——`isBlocking` /
- *      `autoResolutionMs` 与问题项、选项的确切字段名都在里面，09 号票照抄它写映射。
+ *      `autoResolutionMs` 与问题项、选项的确切字段名都在里面，映射照抄它来写。
  *   ③ 没到：分成两种，**必须分开**（处置不同）：
  *        · 「工具没被提供给模型」⇒ relay 抓到的模型请求体里 `tools[]` 没有 `request_user_input`；
  *        · 「提供了但调用被拒」⇒ `tools[]` 里有它，而条目流里出现带 error 的调用条目。
@@ -35,7 +35,7 @@
  *   `tools-only` 与 `on` 的差 = `features.default_mode_request_user_input` 这一格到底管什么；
  *   `pty` 与 `on` 的差 = **app-server 自己的 fd 0 是不是终端**。两支读数一致 ⇒ 这一格不是自变量，
  *   厂商那句「需要交互式 stdin 终端」作用在**客户端**（回帧那一侧），不在服务端发不发。
- *   `noreply` 是 09 号票要对的现状读数（「只归类不回帧」会怎样）；`refuse` 复刻客户端说
+ *   `noreply` 是要对的现状读数（「只归类不回帧」会怎样）；`refuse` 复刻客户端说
  *   「我这里没有交互式终端」那条路；`subagent` 验「只有根线程能用」那条门禁。
  *
  *   ⚠️ **别拿臂的配置当结论**：0.156.1 即使一格开关都不开，也已经把 `request_user_input` 列进
@@ -43,7 +43,7 @@
  *   ⇒ 「请求没到」的两种成因（工具没提供 / 提供了但调用被拒）只能靠 `toolTable` 与
  *   `itemSummary[].error` 读出来。
  *
- * ⚠️ 审批类服务端请求**一律不回帧**（本仓既有口径，本票不动）：只有
+ * ⚠️ 审批类服务端请求**一律不回帧**（本仓既有口径，本探针不动）：只有
  *    `item/tool/requestUserInput` 会按 `--answer` 回。
  *
  * ── 用法 ──────────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ const ASK_PROMPT =
     '最后用一句话汇报：你有没有发起提问、有没有拿到答复、有没有创建 result.txt。',
   ].join('\n');
 
-/** 子智能体臂：让**子线程**去提问，验厂商那条「只有根线程能用」（09 号票的边界） */
+/** 子智能体臂：让**子线程**去提问，验厂商那条「只有根线程能用」（那一档的边界） */
 const SUBAGENT_PROMPT =
   ARGS['subagent-prompt'] ??
   [
@@ -139,7 +139,7 @@ function threadConfig(baseUrl, switches) {
         request_max_retries: 1,
       },
     },
-    // 与 `buildCodexConfig` 逐字一致的两格；`experimental_request_user_input` 是本票的自变量
+    // 与 `buildCodexConfig` 逐字一致的两格；`experimental_request_user_input` 是本探针的自变量
     tools: {
       web_search: false,
       update_plan: { enabled: true },
@@ -155,7 +155,7 @@ function threadConfig(baseUrl, switches) {
 const ARMS = {
   off: { tty: false, switches: { tools: false, feature: false }, answer: 'n/a', note: '对照：与适配器逐字一致（不开任何提问开关；工具仍在表里，见头注）' },
   'tools-only': { tty: false, switches: { tools: true, feature: false }, answer: ANSWER, note: '只开 tools.experimental_request_user_input' },
-  on: { tty: false, switches: { tools: true, feature: true }, answer: ANSWER, note: '两格都开（本票主臂）' },
+  on: { tty: false, switches: { tools: true, feature: true }, answer: ANSWER, note: '两格都开（主臂）' },
   pty: { tty: true, switches: { tools: true, feature: true }, answer: ANSWER, note: '两格都开 + app-server 的 fd 0 是真 TTY' },
   noreply: { tty: false, switches: { tools: true, feature: true }, answer: 'none', note: '两格都开但**不回帧**（= 今天的现状）' },
   refuse: { tty: false, switches: { tools: true, feature: true }, answer: 'refuse', note: '两格都开 + 回一帧「我这里没有交互式终端」的 JSON-RPC 错误' },
@@ -306,7 +306,7 @@ function startRelay() {
   });
 }
 
-/** 按策略造一帧应答；返回 `{kind, frame}`，`frame` 逐字落盘（09 号票要照抄） */
+/** 按策略造一帧应答；返回 `{kind, frame}`，`frame` 逐字落盘（映射照抄这一格） */
 function buildReply(policy, params) {
   const questions = Array.isArray(params?.questions) ? params.questions : [];
   if (policy === 'refuse') {
@@ -322,7 +322,7 @@ function buildReply(policy, params) {
     return { kind: 'result', frame: { answers: {} } };
   }
   if (policy === 'blank') {
-    // 另一种「空」：每个问题各回一个空数组（与 `empty` 的差正是 09 号票要裁的那一格）
+    // 另一种「空」：每个问题各回一个空数组（与 `empty` 的差正是要裁的那一格）
     const answers = {};
     for (const question of questions) answers[String(question?.id ?? '')] = { answers: [] };
     return { kind: 'result', frame: { answers } };
@@ -500,7 +500,7 @@ async function runArm(name) {
     error,
     /** 判据 ①：服务端主动请求里那条提问请求到了几条 */
     askRequestCount: askRequests.length,
-    /** 判据 ②：params **逐字**（09 号票照抄这一格） */
+    /** 判据 ②：params **逐字**（映射照抄这一格） */
     askRequests: askRequests.map((one) => ({
       id: one.id,
       atMs: one.atMs,
@@ -604,4 +604,4 @@ for (const name of wanted) {
 const file = join(DUMP, 'codex-ask-user-stdin.json');
 writeFileSync(file, `${redact(JSON.stringify(summary, null, 2))}\n`, 'utf8');
 console.log('\n[v11] 汇总：', file);
-console.log('[v11] 结论请由人回填票的 ## Comments：判据见本脚本头注与同目录 README.md');
+console.log('[v11] 结论请由人回填报告：判据见本脚本头注与同目录 README.md');

@@ -172,6 +172,26 @@ describe('工具行的摘要主体（`toolCallHint`）：不带 `调用工具 <�
 });
 
 describe('不认识的工具（`family: null`）：既不假装认识形状，也不假装没有参数', () => {
+  /**
+   * 通用兜底**不许把机器负载当人话**（真机：dsh 的 `send_message` 入参 121 字符，
+   * 截断后的半截 JSON 既读不懂也解析不动，而它是活动行唯一上屏的那一句）。
+   * 三条口径：名字类的单键给值本身；带 `message` 这类人话键用那句话；其余长 JSON 直接不给摘要。
+   */
+  it('族认不出时的通用兜底：名字类单键给值、人话键用句子、长 JSON 不给摘要', () => {
+    // ① `skill` 的真机形状：`{name:'poetry'}` ⇒ 值本身（不是 `{"name":"poetry"}`）
+    expect(toolCallSummary('skill', { name: 'poetry' })).toBe('调用工具 skill：poetry');
+    // ② `send_message` 的真机形状：人话键优先于整坨 JSON
+    expect(toolCallSummary('send_message', { agent_id: 'session-abc', message: '把三句诗的出处查一下' })).toBe(
+      '调用工具 send_message：把三句诗的出处查一下',
+    );
+    // ③ 长 JSON（>40 字符）⇒ 只留工具名，不把结构塞进一行
+    const longJson = toolCallSummary('weird_tool', { alpha: 'x'.repeat(80), beta: [1, 2, 3] });
+    expect(longJson).toBe('调用工具 weird_tool');
+    expect(longJson).not.toContain('{');
+    // ④ 短 JSON 照旧给（信息量够、一眼能读完）
+    expect(toolCallSummary('mcp__x__y', { a: 1 })).toBe('调用工具 mcp__x__y：{"a":1}');
+  });
+
   it('优先键里一个都没有 ⇒ 紧凑 JSON；不是 JSON 时原样用', () => {
     expect(toolCallSummary('mcp__x__y', { a: 1 })).toBe('调用工具 mcp__x__y：{"a":1}');
     expect(toolCallSummary('pwsh', 'Get-ChildItem env:')).toBe('调用工具 pwsh：Get-ChildItem env:');

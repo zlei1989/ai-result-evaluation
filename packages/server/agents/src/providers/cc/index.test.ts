@@ -23,6 +23,7 @@ import {
 } from '../../testing/agent-fixtures';
 import type { AgentRunResult } from '../../types';
 import {
+  additionalDirectoriesFor,
   CLAUDE_CODE_EXTRA_BODY,
   CLAUDE_OFF_DISABLED_WARNING_TEXT,
   claudeCodeProvider,
@@ -274,11 +275,12 @@ describe('claudeCodeProvider', () => {
     expect(recorder.options?.allowDangerouslySkipPermissions).toBeUndefined();
   });
 
-  it('extraReadPaths 原样转发成 additionalDirectories，与 read-only 档共存（dontAsk 只预授权工作目录内的读）', async () => {
+  it('extraReadPaths 的文件项换算成父目录后交给 additionalDirectories，与 read-only 档共存（dontAsk 只预授权工作目录内的读）', async () => {
     // 为什么必须同时钉这三格：`dontAsk` 的语义是「未预授权的一律拒」，而它只预授权**工作目录内**的读；
-    // 执行过程记录（events.jsonl / messages.jsonl）落在 cwd 之外，不扩 `--add-dir` 评审者读不到，
-    // 且 SDK 不报错——只是每一次 Read 都被拒。这一格与权限档是**两条正交的通道**：
-    // 它只扩大「哪些路径可以读」，不改变「写仍被拒」。
+    // 执行过程记录（events.jsonl / messages.jsonl）落在 cwd 之外，不扩 `--add-dir` 评审者读不到。
+    // 为什么判据是**父目录**而不是原样透传：`--add-dir` 只认目录（真机四臂差分：传文件路径时
+    // `Read` 与 `Bash{cat}` 都被拒、传目录时两条路都通）⇒ 原样透传等于这一格从未生效。
+    // 这一格与权限档是**两条正交的通道**：它只扩大「哪些路径可以读」，不改变「写仍被拒」。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
     await claudeCodeProvider.run(
@@ -287,7 +289,8 @@ describe('claudeCodeProvider', () => {
         extraReadPaths: ['/data/events.jsonl', '/data/messages.jsonl'],
       }),
     );
-    expect(recorder.options?.additionalDirectories).toEqual(['/data/events.jsonl', '/data/messages.jsonl']);
+    // 两份记录同目录 ⇒ 去重成一条（逐条加只会让 argv 变长）
+    expect(recorder.options?.additionalDirectories).toEqual(['/data']);
     // 共存：additionalDirectories 只扩读范围，只读档的落点逐字不变
     expect(recorder.options?.permissionMode).toBe('dontAsk');
     expect(recorder.options?.permissionPrompts).toBe('none');
@@ -302,7 +305,7 @@ describe('claudeCodeProvider', () => {
     expect(recorder.options?.additionalDirectories).toEqual([]);
   });
 
-  it('extraReadPaths 与权限档无关：full 档同样原样转发（这一格是读路径，不是只读档的专用开关）', async () => {
+  it('extraReadPaths 与权限档无关：full 档同样换算后转发（这一格是读路径，不是只读档的专用开关）', async () => {
     // 为什么 full 档也钉一条：把转发条件写成「只 read-only 才传」时上一条仍然全绿，
     // 而执行阶段（full）也会收到 extraReadPaths 的调用方（形状上它是纯可选格，与档位无关）
     // ——静默少传等于替调用方丢了参数。
@@ -310,7 +313,7 @@ describe('claudeCodeProvider', () => {
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
     await claudeCodeProvider.run(createRunInput({ permission: 'full', extraReadPaths: ['/data/events.jsonl'] }));
     expect(recorder.options?.permissionMode).toBe('bypassPermissions');
-    expect(recorder.options?.additionalDirectories).toEqual(['/data/events.jsonl']);
+    expect(recorder.options?.additionalDirectories).toEqual(['/data']);
   });
 
   it('不给 SDK 传 maxTurns（执行段完全不限轮次，用户口径）', async () => {
@@ -440,7 +443,18 @@ describe('claudeCodeProvider', () => {
       tokens: { input: 100, cached: 10, output: 20 },
       turns: 2,
     });
-    expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
+    /**
+     * **两条 `usage` 事件**：跑动期那条是主会话口径，收尾**补发**的那条才是全树
+     * （子智能体那一份只有收尾读转录才拿得到）。判据取**最后一条**并与结果逐字比——
+     * 那正是"事件流读侧与 `run.json` 同值"这条口径的守卫。
+     */
+    const usages = events.filter((event) => event.type === 'usage');
+    expect(usages.length).toBeGreaterThanOrEqual(1);
+    const last = usages.at(-1);
+    expect(last?.type === 'usage' ? { tokens: last.tokens, turns: last.turns } : null).toEqual({
+      tokens: { input: 100, cached: 10, output: 20, reasoningOutput: null, total: null },
+      turns: 2,
+    });
     expect(events.some((event) => event.type === 'log' && event.text.includes('改好了'))).toBe(true);
     expect(events[0]?.seq).toBe(1); // run 内 seq 从 1 开始
   });
@@ -460,13 +474,20 @@ describe('claudeCodeProvider', () => {
     expect(recorder.order).toEqual(['interrupt', 'turn-end', 'dispose']);
   });
 
-  it('厂商包缺失或形状不对：AGENT_LOAD_FAILED 且文案含包名与安装方式；同一进程内后续一轮可重试成功', async () => {
+  it('厂商包形状不对：AGENT_LOAD_FAILED 用「导出面不匹配」文案（不许把人指向重装包）；同一进程内后续一轮可重试成功', async () => {
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: {} } });
     const first = await claudeCodeProvider.run(createRunInput());
     expect(first).toMatchObject({ ok: false, exitReason: 'error' });
     expect(first.error?.code).toBe('AGENT_LOAD_FAILED');
     expect(first.error?.message).toContain(CLAUDE_PACKAGE_NAME);
-    expect(first.error?.message).toContain('pnpm add');
+    /**
+     * **判据是「别误导」而不是某一句文案**：包在、只是导出面与适配器期望的不一致
+     * ⇒ 文案必须点名这一点并**明确否定安装**（对着一个装好的包执行 `pnpm add` 恒无效）。
+     * 反向那一半同样钉住：这里**不许**出现 `pnpm add`（只有 `missing` 那一档才给安装命令）。
+     */
+    expect(first.error?.message).toContain('导出面不匹配');
+    expect(first.error?.message).toContain('不要重装该包');
+    expect(first.error?.message).not.toContain('pnpm add');
 
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
@@ -583,7 +604,10 @@ describe('claudeCodeProvider', () => {
     const result = await claudeCodeProvider.run(createRunInput({ onEvent: collectEvents(events) }));
     expect(result.tokens).toEqual({ input: 5, cached: 1, output: 2, reasoningOutput: null, total: null });
     expect(result.turns).toBe(3);
-    expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
+    // 收尾另补一条全树口径的（见上面那条用例的注记）；这里只钉"至少有一条、且末条与结果同值"
+    const finalUsages = events.filter((event) => event.type === 'usage');
+    expect(finalUsages.length).toBeGreaterThanOrEqual(1);
+    expect(finalUsages.at(-1)?.type === 'usage' ? finalUsages.at(-1)!.tokens : null).toEqual(result.tokens);
   });
 
   it('轮次与计量分两条消息给 ⇒ 结果值仍然对，且轮次一到那条把**已经采到的**计量一起发出去', async () => {
@@ -612,11 +636,16 @@ describe('claudeCodeProvider', () => {
     expect(result.tokens).toEqual({ input: 5, cached: 1, output: 2, reasoningOutput: null, total: null });
     expect(result.turns).toBe(3);
     const usages = events.filter((event) => event.type === 'usage');
-    expect(usages).toHaveLength(1);
+    /**
+     * 跑动期那条（轮次一到就发）与收尾补发的那条（全树）**都在**：
+     * 前者是「轮次与计量分两条消息给」这条口径的判据，后者是「事件流与 `run.json` 同值」的判据。
+     */
+    expect(usages.length).toBeGreaterThanOrEqual(1);
     expect(usages[0]?.type === 'usage' ? [usages[0].turns, usages[0].tokens] : null).toEqual([
       3,
       { input: 5, cached: 1, output: 2, reasoningOutput: null, total: null },
     ]);
+    expect(usages.at(-1)?.type === 'usage' ? usages.at(-1)!.tokens : null).toEqual(result.tokens);
   });
 
   /**
@@ -671,6 +700,42 @@ describe('claudeCodeProvider', () => {
     const options = recorder.options;
     expect(recorder.options).not.toBeNull();
     expect(options !== null && 'outputFormat' in options).toBe(false);
+  });
+});
+
+/**
+ * `extraReadPaths` → `--add-dir` 的换算。真机四臂差分（CLI 2.1.301，`dontAsk`）：
+ * 传**文件路径**时 `Read` 与 `Bash{cat}` 都被拒（换 realpath 形态也一样），传**目录**时两条路都通
+ * ⇒ 文件项必须换算成父目录，否则这一格对文件项从未生效。
+ */
+describe('cc 的读放行列表（extraReadPaths → --add-dir）', () => {
+  it('文件项换算成父目录，目录项原样保留，同目录去重且保序', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-add-dir-'));
+    const dir = join(root, 'evidence');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'events.jsonl'), '{}\n', 'utf8');
+    writeFileSync(join(dir, 'messages.jsonl'), '{}\n', 'utf8');
+    const otherDir = join(root, 'other');
+    mkdirSync(otherDir, { recursive: true });
+
+    expect(
+      additionalDirectoriesFor([
+        join(dir, 'events.jsonl'),
+        join(dir, 'messages.jsonl'),
+        otherDir,
+      ]),
+    ).toEqual([dir, otherDir]);
+  });
+
+  it('路径不存在时按「文件项」处置（取父目录）：文件以后写进去也读得到', () => {
+    // 为什么不是「丢掉这一项」：调用方给的是一份**将要读**的路径，父目录存在就够了；
+    // 判成目录在本机也无从谈起，而丢掉它等于静默少放行一处。
+    expect(additionalDirectoriesFor(['/data/not-there-yet/events.jsonl'])).toEqual(['/data/not-there-yet']);
+  });
+
+  it('空串被跳过、空输入给空数组（SDK 对空数组不追加任何 argv）', () => {
+    expect(additionalDirectoriesFor([])).toEqual([]);
+    expect(additionalDirectoriesFor([''])).toEqual([]);
   });
 });
 
@@ -1158,6 +1223,43 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
     expect(result.subagentTokens).toEqual({ input: 4, cached: 0, output: 2, reasoningOutput: null, total: null });
     expect(result.tokens).toEqual({ input: 104, cached: 0, output: 12, reasoningOutput: null, total: null });
     expect(result.turns).toBe(2); // 主 1 轮 + 子 1 轮
+  });
+
+  /**
+   * **续接段不许把上一段的子智能体再算一遍**（真机复现：同一个 configHome + `resume` 的第二段
+   * 一次派发都没有，`subagentTokens` 仍是上一段那一份、`subagentTurns` 仍是 1）。
+   *
+   * 机制：转录目录按 `configHome` + `sessionId` 定位，续接用同一个会话、同一个目录，CLI 只往原文件
+   * 追加 ⇒ 「枚举目录」那条路会把上一段的转录读进来；而行级计量是**累加**的，追问一次就算两遍。
+   * 判据：第二段的 `subagentTokens` 是 `{0,0,0}`（「这一段确实没有子智能体」），`turns` 只算主会话。
+   */
+  it('续接段排除上一段留下的子智能体转录（不然追问一次就把那份用量算两遍）', async () => {
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-resume-'));
+    // 上一段留下的那一份（同一个会话目录、同一个 configHome）
+    writeAgentFile(configHome, 's-resume', 'task-old', [
+      assistant('m-old', { input_tokens: 40, cache_read_input_tokens: 0, output_tokens: 20 }),
+    ]);
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({
+      sdkModule: {
+        [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({
+          recorder,
+          events: [
+            { type: 'system', subtype: 'init', session_id: 's-resume' },
+            // 本段一次派发都没有，只有主会话一轮
+            mainAssistant('a-resume', 'main-m-resume'),
+            { type: 'result', subtype: 'success', usage: { input_tokens: 7, cache_read_input_tokens: 0, output_tokens: 3 } },
+          ],
+        }),
+      },
+    });
+    const result = await claudeCodeProvider.run(
+      createRunInput({ configHome, resume: { sessionId: 's-resume' } }),
+    );
+    expect(result.subagentTokens).toEqual({ input: 0, cached: 0, output: 0, reasoningOutput: null, total: null });
+    expect(result.subagentTurns).toBe(0);
+    expect(result.tokens).toEqual({ input: 7, cached: 0, output: 3, reasoningOutput: null, total: null });
+    expect(result.turns).toBe(1);
   });
 
   /**
@@ -1764,15 +1866,25 @@ describe('cc 的子智能体轮次（轮次那一格的 claude 段）', () => {
      */
     // 不能是空数组：下面那个循环为空时恒真（那正是「没接线」与「接对了」同形的地方）
     expect(usage.length).toBeGreaterThan(0);
-    for (const event of usage) {
+    /**
+     * **两段分开判**：收尾那条是**全树**（合计 + 两格分量一起换成权威值），它前面的每一条才是
+     * 跑动期口径（只有主会话合计、两格分量 `null`——子智能体的轮次要到收尾读盘才知道）。
+     * 判据一律与 `result` 逐字比（不写死数字）：这样"收尾那条被删掉"与"两处判据漂移"都会红。
+     */
+    const live = usage.slice(0, -1);
+    const finalUsage = usage.at(-1);
+    for (const event of live) {
       // 没有任何读数带会话身份（逐轮读数那条路不存在）
       expect(event.turn?.subagentId ?? null).toBeNull();
-      // 跑动期的合计只有主会话那一份（子智能体的轮次要到收尾读盘才知道）
+      // 跑动期的合计只有主会话那一份
       expect(event.turns).toBe(1);
       // 每一帧的这一格都是 null ⇒ 界面只画一行（与 `subagentTokens` 在 claude 上今天的行为同形）
       expect(event.subagentTurns).toBeNull();
       expect(event.subagentTokens).toBeNull();
     }
+    expect(finalUsage?.type === 'usage' ? finalUsage.turns : null).toBe(result.turns);
+    expect(finalUsage?.type === 'usage' ? finalUsage.subagentTurns : null).toBe(result.subagentTurns);
+    expect(finalUsage?.type === 'usage' ? finalUsage.subagentTokens : null).toEqual(result.subagentTokens ?? null);
     // 终态：合计 1 + 2 = 3，分量 2（≤ 合计 ⇒ 界面画「主会话 1 轮 / 子智能体 2 轮」）
     expect(result.turns).toBe(3);
     expect(result.subagentTurns).toBe(2);

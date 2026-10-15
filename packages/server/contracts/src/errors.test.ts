@@ -16,6 +16,7 @@ describe('ERROR_CODES', () => {
       'AUTH_FAILED',
       'RATE_LIMITED',
       'JUDGE_PARSE_FAILED',
+      'SESSION_ID_SHARED',
       'INTERNAL',
     ]);
   });
@@ -60,6 +61,7 @@ describe('httpStatusFor', () => {
     expect(httpStatusFor('AUTH_FAILED')).toBe(401);
     expect(httpStatusFor('RATE_LIMITED')).toBe(429);
     expect(httpStatusFor('JUDGE_PARSE_FAILED')).toBe(500);
+    expect(httpStatusFor('SESSION_ID_SHARED')).toBe(500);
     expect(httpStatusFor('INTERNAL')).toBe(500);
   });
 

@@ -72,6 +72,9 @@ function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): 
     error: null,
     // 这一行走过几次尝试：默认 1 次（「没重试过」那一档）
     attempts: 1,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
@@ -81,6 +84,8 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     id: 'run-1',
     caseId: 'c-1',
     caseTitle: '多协议入站转换',
+    // 默认没有备注：顶部信息卡的「五项都在」守卫要的是「不写备注时字段数与今天一致」
+    note: '',
     repoPath: 'D:\\projects\\gateway',
     commitHash: '71e628091bf7134a6e677a58cc1e0f29b9302e6f',
     repoBranch: null,
@@ -96,6 +101,7 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     useAgentJudge: false,
     askUser: false,
     rows: [makeRow('w-1')],
+    injectMessages: false,
     workspaceBase: 'D:\\runs',
     createdAt: '2026-09-22T08:00:00.000Z',
     startedAt: '2026-09-22T08:01:00.000Z',
@@ -141,6 +147,25 @@ describe('RunDetailPanel 顶部信息卡', () => {
     expect(header.getByText('71e628091bf7134a6e677a58cc1e0f29b9302e6f')).toBeInTheDocument();
     expect(header.queryByText('71e6280')).toBeNull();
     expect(header.getByText('D:\\runs')).toBeInTheDocument();
+    // 没写备注 ⇒ 不留一个空行（摆一行「备注：—」等于凭空多一个让人去猜「为什么是空的」的字段）
+    expect(header.queryByText('备注')).toBeNull();
+  });
+
+  /**
+   * 备注非空 ⇒ 顶部信息卡多一行「备注」，位置在**第一行**（紧跟在用例标题下面，读作这一轮的副题）。
+   * 值给原文（不做省略、不挂 Tooltip）：详情栏是核对的地方，`EllipsisText` 那套只属于列表窄格。
+   */
+  it('备注非空 ⇒ 第一行是「备注」与全文', () => {
+    renderPanel(makeRun({ note: '对比模型不同版本间的差异' }));
+
+    const header = within(screen.getByTestId('run-header'));
+    expect(header.getByText('备注')).toBeInTheDocument();
+    expect(header.getByText('对比模型不同版本间的差异')).toBeInTheDocument();
+    // 位置：第一行就是备注（在「代码仓库」之前）
+    const labels = Array.from(
+      screen.getByTestId('run-header').querySelectorAll('.ant-descriptions-item-label'),
+    ).map((node) => node.textContent ?? '');
+    expect(labels[0]).toBe('备注');
   });
 
   it('用例没指定 commit 时显示「默认分支 HEAD」', () => {
@@ -690,6 +715,22 @@ describe('RunDetailPanel 的编辑 / 删除入口', () => {
     // 禁用不是「静默」：原因必须说得出「先终止」。Tooltip 的触发点在禁用按钮外面那层 span 上
     fireEvent.mouseEnter(screen.getByTestId('run-detail-edit').parentElement ?? document.body);
     await waitFor(() => expect(screen.getByText(/先终止/)).toBeDefined());
+  });
+
+  /**
+   * **可比性提示**：开着输入区的一轮里，人在半路补的话照旧进评分证据 ⇒ 它的产物与
+   * 没插过话的轮次不可直接比。提示必须在**这一层**（轮次详情顶部）出现：
+   * 候选卡片可能不在视野里，而只在卡片上提示就等于让分数静默地换了口径。
+   */
+  it('允许人工补充消息的轮次，详情顶部有可比性提示；没开的不出现', () => {
+    renderPanel(makeRun({ injectMessages: true }));
+    expect(screen.getByText('这一轮允许人工补充消息')).toBeInTheDocument();
+    expect(screen.getByText(/不可直接比/)).toBeInTheDocument();
+  });
+
+  it('阴性面：`injectMessages === false` 时没有那条提示（没插过话的轮次不许被标成插过）', () => {
+    renderPanel(makeRun({ injectMessages: false }));
+    expect(screen.queryByText('这一轮允许人工补充消息')).toBeNull();
   });
 
   it('删除走 Popconfirm，确认后把在途 promise 交给它（否则确认框会提前关闭）', async () => {

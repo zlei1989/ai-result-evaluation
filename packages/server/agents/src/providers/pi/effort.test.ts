@@ -9,9 +9,56 @@
  *
  * 时长上报（同一台假网关）在 `timing.test.ts`：两件事的变异体与判据各不相同，分成两份文件。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runPiRow, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
-import { PI_DEFAULT_EFFORT, piProvider } from './index';
+import { PI_DEFAULT_EFFORT, PI_REASONING_EFFORTS, piProvider, piThinkingLevel } from './index';
+
+describe('pi 的档位域与域外值', () => {
+  /**
+   * 域外值落到缺省档，**不交给厂商去夹**。
+   *
+   * 变异判据（真机读数，见下面那条请求侧用例）：把这一层改回「直传」⇒ openai wire 上 `xhigh`
+   * 变成 `reasoning_effort: "max"`（升档），anthropic wire 上认不出的串变成
+   * `thinking: { type: "disabled" }`（**关闭**）——两个方向都不是调用方给的那一档。
+   */
+  it('域外值（xhigh / 认不出的串）⇒ 缺省档；域内值逐字直传', () => {
+    expect(piThinkingLevel('xhigh')).toBe(PI_DEFAULT_EFFORT);
+    expect(piThinkingLevel('bogus')).toBe(PI_DEFAULT_EFFORT);
+    expect(piThinkingLevel('')).toBe(PI_DEFAULT_EFFORT);
+    expect(piThinkingLevel(undefined)).toBe(PI_DEFAULT_EFFORT);
+    for (const effort of PI_REASONING_EFFORTS) expect(piThinkingLevel(effort)).toBe(effort);
+    // metadata 那一格与这里的判据同源（两处各写一份就是「声明收、实际不收」的缺口）
+    expect(piProvider.metadata.reasoningEfforts).toEqual(PI_REASONING_EFFORTS);
+  });
+
+  /** 域外值在**两条 wire** 的出站请求里都必须落成缺省档的形态，且落一条点名 WARN */
+  it('域外值出站形态 = 缺省档（openai 的 reasoning_effort / anthropic 的预算），并点名', async () => {
+    const seen: CapturedPiRequest[] = [];
+    const gateway = await startPiGateway(seen);
+    // 点名走 `logger.warn`（`console.warn`）：装配期的事实没有事件流出口，它是唯一留痕点
+    const warns: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warns.push(args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' '));
+    });
+    try {
+      const openai = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort: 'xhigh' });
+      expect(openai.body['reasoning_effort'], '域外值不许被厂商静默升成 max').toBe(PI_DEFAULT_EFFORT);
+      const bogus = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort: 'bogus' });
+      expect(bogus.body['reasoning_effort'], '域外值不许让「思考」静默关掉').toBe(PI_DEFAULT_EFFORT);
+
+      const anthropic = await runPiRow(seen, gateway.port, { protocolType: 'anthropic', effort: 'bogus' });
+      expect(anthropic.body['thinking']).toEqual({ type: 'enabled', budget_tokens: 8192, display: 'summarized' });
+
+      const logged = warns.join('\n');
+      expect(logged, '域外档位必须点名（否则一次传错档名只剩「好像没思考」这一句症状）').toContain('域外的思考档位');
+      expect(logged).toContain('bogus');
+      expect(logged).toContain(PI_DEFAULT_EFFORT);
+    } finally {
+      spy.mockRestore();
+      gateway.server.close();
+    }
+  }, 180_000);
+});
 
 describe('pi 的档位映射（openai wire 的请求体）', () => {
   /**

@@ -11,6 +11,7 @@
 | 字段 | 控件与行为 |
 |---|---|
 | 用例 | `Select`，选项显示「标题 · 仓库名 · commit 短哈希」（仓库名走 `displayRepoName`）；必填。编辑态原用例被删掉时补一个**禁用占位项**（否则下拉空白，用户只改执行模式、一保存就换了个用例） |
+| 备注 | 可选单行 `Input`，紧跟在「用例」下方。记录这一次测试的目的（如「对比模型不同版本间的差异」）；它会接在评测列表「标题」列的用例标题后面，并在评测详情顶部信息卡里显示一行。空串 / 纯空白 = 没写：列表只显示用例标题、详情不出现「备注」行。**它不是用例快照**：换用例不会重取，只在编辑表单里改 |
 | 执行模式 | `Radio.Group`：串行（默认）/ 并行；串行在前、并行在后。默认串行是因为并行不设并发上限——多候选一起开跑时最先撞上的通常是供应商限流 |
 | 候选行 | `Form.List` 动态增减，每行三个选择：智能体（Claude Code / Codex / DeepSeek Harness / Pi Coding Agent）+ 模型 + **思考强度** |
 | 使用智能体评分 | `Switch`，默认关。打开而未配置默认评分智能体时给内联 `Alert` 指向设置页并说清「这一轮会创建失败（服务端当场拒绝）」；「或新建评测时关闭『使用智能体评分』」那条出路只出现在**服务端**的拒绝文案里。值随创建一并落库 |
@@ -43,21 +44,23 @@
 | 智能体 | `reasoningEfforts` | `defaultEffort` |
 |---|---|---|
 | cc | `['off', 'low', 'medium', 'high', 'xhigh', 'max']` | ——（未选由厂商推断） |
-| codex | `['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']` | —— |
+| codex | `['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']` | ⚠️ `ultra` / `persistent` 被**厂商改写**：分别落到「该模型最高档」与 `disabled`（关掉推理） |
 | dsh | `['off', 'low', 'high', 'max']` | `'high'` |
 
 - **创建与编辑都按同一份候选校验，未选也要校验**（`declared = row.effort ?? metadata.defaultEffort`，`declared` 不在候选里就建行即拒；没声明 `defaultEffort` 的家未选不校验）——这一道拦的是**绕过表单直接打接口**：命中即抛 `INVALID_QUERY`，中文原因**同时点名两个值域**与最终候选（「{智能体} 不能按 {档} 跑 {模型}：该模型支持的档位是 …，{智能体} 能收的是 …，可选的是 …」），未选档位触发时还要说明「未选档位时 {智能体} 会用 {档}」。
 
 ### 提交与落库
 
-提交校验：至少一行；每行三个选择均已确认（强度可留「未指定」）；执行模式已选。创建后即落库（状态 `idle`），不自动开跑。
+提交校验：至少一行；每行三个选择均已确认（强度可留「未指定」）；执行模式已选。备注可空，提交前 `trim()`（纯空白按没写处置）。创建后即落库（状态 `idle`），不自动开跑。
 
 ## 数据与契约
 
 - `RunCreateSchema.rows[]` 每行 `agentKind` / `providerId` / `modelId` / `effort`：`effort` **逐行且必须显式声明**——zod 3 的 `z.object` 默认 strip 未知键，不声明的话表单提交的强度会被**静默丢弃**（不是 400）。`useAgentJudge` 同理，payload 显式补 `useAgentJudge: values.useAgentJudge ?? false`，不显式声明就会被静默丢掉。
+- `RunCreateSchema.note` 是**可选**字符串（缺省由 api 收敛成空串），同样**必须显式声明**（zod strip 的坑同上）：表单两条路径都交 `note: values.note`，`createRun` / `planRunUpdate` 落盘前 `trim()`。落盘形状是 `EvalRun.note`（`.default('')`，旧 `run.json` 缺这一格照读成空串）——入参可选、快照必有，两者形态不同是刻意的。
 - **服务端创建时再拦一次**（`createRun`）：`useAgentJudge === true` 时校验 `defaultJudgeAgent` 非空、且**设置页全局默认评分模型**所属供应商的协议能被该智能体接受（用例上不再有评分模型覆盖）；三处都抛 `CONFLICT` + 可直接展示的中文原因（未配置 / 枚举之外的值 / 协议不接受，`requireJudgeAgent`）。
 - **强度进行快照**（`rows[].effort`），**窗口不进**：窗口是模型属性（与 `baseUrl` 同口径，运行时现读），强度是这一行的配置（与 `modelId` 同级，必须跟着行一起被重跑、被展示、被比较）。记的是**我们要求的**档位，不是实际生效的档位。
 - `EvalRun` 冗余快照：`caseId` + `caseTitle` / `repoPath` / `repoBranch` / `commitHash` / `rubric` / `includeSteps` 七格——用例改分支 / 删除后，这一轮从哪个分支的哪个 commit、用哪把尺子、开没开「包含步骤」起跑仍读得出来；分支 tip 每次评测重新解析（跟随语义），`commitHash` 钉死（优先于分支）。
+- 备注（`EvalRun.note`）是**这一轮自己的用户注解**，不在这七格快照链里：换用例不重取它，列表标题列 / 详情顶部显示时也不从用例回查（用例改名 / 删除都不影响）。
 - `AgentModelOption`：`contextWindow?`、`efforts?`（已按规则算过）、`recommendedEffort?`（必须落在 `efforts` 里才有值）；`AgentOptionGroup`：`efforts`（该家完整取值域，**唯一消费方是设置页的评分配置卡片**——候选行表单不读它，行内强度选项来自模型条目自己的 `efforts`）、`defaultEffort`、`messageCapability`。
 
 ## 状态机与时序

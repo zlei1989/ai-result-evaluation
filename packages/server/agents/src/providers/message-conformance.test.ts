@@ -614,7 +614,7 @@ describe('三端一致性：工具族按**名字**判，不按家判', () => {
         error: null,
       }),
     ]);
-    expect(mcp[0]?.blocks[0]).toMatchObject({ family: null, name: 'github.list_issues' });
+    expect(mcp[0]?.blocks[0]).toMatchObject({ family: null, name: 'mcp__github__list_issues' });
   });
 
   it('计划清单在三家都落 `task` 族（codex 的 `plan` 条目是调用，不是审计行）', () => {

@@ -117,6 +117,8 @@ const editRun: EvalRun = {
   id: 'run-1',
   caseId: 'c-1',
   caseTitle: '多协议入站转换',
+  // 有值：编辑态的预填守卫要能看出「这一格来自 initial，不是空白」
+  note: '对比模型不同版本间的差异',
   repoPath: 'D:\\projects\\gateway',
   commitHash: '71e628091bf7134a6e677a58cc1e0f29b9302e6f',
   repoBranch: null,
@@ -128,6 +130,7 @@ const editRun: EvalRun = {
   executionMode: 'parallel',
   useAgentJudge: false,
   askUser: false,
+  injectMessages: false,
   rows: [
     {
       id: 'r-1',
@@ -147,6 +150,9 @@ const editRun: EvalRun = {
       score: null,
       error: null,
       attempts: 1,
+      sessionId: null,
+      followUps: 0,
+      followUpRounds: 0,
     },
   ],
   workspaceBase: 'D:\\runs',
@@ -457,8 +463,53 @@ describe('RunCreatePanel', () => {
       // 少了哪一格都说明提交出去的东西与这张表单显示的不是一回事
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
+      // 备注是可选注解，但创建路径必须**显式**交出这一格（空串），否则「填了备注」在那里丢失
+      note: '',
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
+  });
+
+  /**
+   * 备注：位于「用例」正下方、可选、初值空串；填了之后 trim 进 payload。
+   *
+   * 三条分开断言各有靶子：① 位置的判据是 DOM 里两个标签的先后（不在「用例」下面就不符合需求）；
+   * ② 初值必须是空串而不是 `undefined`（后者会让 antd 的 Input 变成非受控、编辑态预填也只能靠巧合）；
+   * ③ trim 是「纯空白按没写处置」的唯一一道（列表标题列不能出现尾随的「 ·  」）。
+   */
+  it('备注：在「用例」下方、初值空串，提交时 trim', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ onSubmit });
+
+    const caseLabel = screen.getByText('用例', { selector: '.ant-form-item-label label' });
+    const noteLabel = screen.getByText('备注', { selector: '.ant-form-item-label label' });
+    // 位置判据：用例那一行在备注之前（`compareDocumentPosition` 的 FOLLOWING 位）
+    expect(caseLabel.compareDocumentPosition(noteLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const noteInput = screen.getByLabelText('备注') as HTMLInputElement;
+    expect(noteInput.value).toBe('');
+    expect(noteInput.getAttribute('placeholder')).toBe('例如：对比模型不同版本间的差异');
+
+    pickOption('用例', '多协议入站转换 · gateway · 71e6280');
+    pickOption('模型', /claude-opus-4-6/);
+    fireEvent.change(noteInput, { target: { value: '  对比模型不同版本间的差异  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ note: '对比模型不同版本间的差异' });
+  });
+
+  it('备注只有空白 ⇒ 提交空串（不让人工肉眼可见的多余分隔符落进快照）', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ onSubmit });
+
+    pickOption('用例', '多协议入站转换 · gateway · 71e6280');
+    pickOption('模型', /claude-opus-4-6/);
+    fireEvent.change(screen.getByLabelText('备注'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ note: '' });
   });
 
   it('选了「并行」后提交出去的 payload 里 executionMode 是 parallel', async () => {
@@ -479,6 +530,8 @@ describe('RunCreatePanel', () => {
       executionMode: 'parallel',
       useAgentJudge: false,
       askUser: false,
+      injectMessages: false,
+      note: '',
       rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
@@ -887,6 +940,28 @@ describe('RunCreatePanel', () => {
   });
 
   /**
+   * 「允许我向智能体补充消息」开关（输入区的开启闸门）：与上一条逐字同源的两条口径。
+   * 少一次提交它就等于「界面上开着、服务端收到缺省 false，跑起来一格都不挂」——
+   * 而那件事**没有任何报错**（与 `askUser` 那条同一个坑）。
+   */
+  it('「允许我向智能体补充消息」默认关闭，提交时进 payload', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ onSubmit });
+
+    expect(screen.getByRole('switch', { name: '允许我向智能体补充消息' })).not.toBeChecked();
+
+    pickOption('用例', '多协议入站转换 · gateway · 71e6280');
+    pickOption('模型', /claude-opus-4-6/);
+    fireEvent.click(screen.getByRole('switch', { name: '允许我向智能体补充消息' }));
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalled();
+    });
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ injectMessages: true });
+  });
+
+  /**
    * 开关打开而设置页没配默认评分智能体 = 必然在评分阶段失败（候选 agent 已经白跑几分钟）。
    * 与「模型池为空」同一条口径：当场说出来，不要等人选完到运行时才炸。
    * `judgeAgentConfigured === undefined`（未知）时**不提示**——未知不等于没配。
@@ -1240,6 +1315,38 @@ describe('RunCreatePanel（编辑模式）', () => {
     });
   });
 
+  /**
+   * 备注的编辑态：预填来自 `initial`，原样保存回传同一份；清空后提交空串。
+   *
+   * 三重靶子：① 不预填 ⇒ 用户看不到已有备注、一保存就被清空（静默丢内容）；
+   * ② 不回传 ⇒ 编辑载荷是全量替换，等于把备注清掉；③ 清空不回传空串 ⇒ 备注永远删不掉。
+   */
+  it('编辑态备注：预填 initial 的值、原样保存回传、清空后提交空串', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ mode: 'edit', initial: editRun, onSubmit, modelOptionsFor: poolFor });
+
+    const noteInput = screen.getByLabelText('备注') as HTMLInputElement;
+    expect(noteInput.value).toBe('对比模型不同版本间的差异');
+
+    // 只改备注：不作废任何行 ⇒ 不弹确认框，直接提交
+    fireEvent.change(noteInput, { target: { value: '新的测试目的' } });
+    submitForm();
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/作废/)).toBeNull();
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ note: '新的测试目的' });
+  });
+
+  it('编辑态清空备注 ⇒ 提交空串（备注必须真的能删掉）', async () => {
+    const onSubmit = vi.fn();
+    renderPanel({ mode: 'edit', initial: editRun, onSubmit, modelOptionsFor: poolFor });
+
+    fireEvent.change(screen.getByLabelText('备注'), { target: { value: '' } });
+    submitForm();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ note: '' });
+  });
+
   it('只改执行模式 ⇒ 不弹确认框（什么都不作废，弹窗就是噪音）', async () => {
     const onSubmit = vi.fn();
     renderPanel({ mode: 'edit', initial: editRun, onSubmit, modelOptionsFor: poolFor });
@@ -1441,6 +1548,9 @@ describe('invalidatedRows', () => {
       error: null,
       attempts: 1,
       ...overrides,
+      sessionId: null,
+      followUps: 0,
+      followUpRounds: 0,
     };
   }
 
@@ -1454,9 +1564,11 @@ describe('invalidatedRows', () => {
   function submitOf(rows: EvalRow[], overrides: Partial<RunFormValues> = {}): RunFormValues {
     return {
       caseId: run.caseId,
+      note: run.note,
       executionMode: run.executionMode,
       useAgentJudge: run.useAgentJudge,
       askUser: run.askUser,
+      injectMessages: run.injectMessages,
       rows: rows.map((row) => ({ id: row.id, agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId })),
       ...overrides,
     };
@@ -1464,6 +1576,15 @@ describe('invalidatedRows', () => {
 
   it('只改执行模式 ⇒ 空数组（不弹）', () => {
     expect(invalidatedRows(run, submitOf([judged, neverRan]))).toEqual([]);
+  });
+
+  /**
+   * 备注不是行的「同一件事」判据：只改备注保存**一行都不作废**。
+   * 反例是把 note 塞进 `isSameRowTarget`（或另加一条「note 变了就重置」）——那会让一次纯注解
+   * 修改把跑过的行全部打回待开始，分数与产物当场消失。
+   */
+  it('只改备注 ⇒ 空数组（注解修改不该重置任何行）', () => {
+    expect(invalidatedRows(run, submitOf([judged, neverRan], { note: '换一个测试目的' }))).toEqual([]);
   });
 
   it('改模型 ⇒ 只有那一行，且**没跑过的行不算**（它没有东西可丢）', () => {
@@ -1495,9 +1616,11 @@ describe('invalidatedRows', () => {
     const runWithHigh = { ...editRun, rows: [high] };
     const keep = (effort: string | undefined): RunFormValues => ({
       caseId: runWithHigh.caseId,
+      note: runWithHigh.note,
       executionMode: runWithHigh.executionMode,
       useAgentJudge: runWithHigh.useAgentJudge,
       askUser: runWithHigh.askUser,
+      injectMessages: runWithHigh.injectMessages,
       rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
     });
 

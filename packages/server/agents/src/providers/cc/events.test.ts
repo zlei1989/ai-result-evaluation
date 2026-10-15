@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { TurnState } from '../../turn';
-import { projectClaudeMessage } from './events';
+import { projectClaudeMessage, skillsFromInitFrame } from './events';
 import { resetClaudeTaskNamesForTesting } from './message';
 
 /**
@@ -165,28 +165,86 @@ describe('projectClaudeMessage：result 与计量', () => {
   /**
    * 终态轮次的口径：**以我们数出来的为准**（跑动期界面看的就是它，两边必须同源），
    * `num_turns` 只在一次都没数到时兜底；两者不一致要落 WARN——「厂商报 60、我们数出 58」这种事
-   * 绝不静默。下面三条分别钉这三件事。
+   * 绝不静默。下面各条分别钉这几件事。
    */
-  it('我们自己数到的轮次优先于 num_turns，两者不一致时落一条 WARN', () => {
+  it('我们自己数到的轮次优先于 num_turns；厂商**少报**时落一条 WARN', () => {
     const state = newState();
-    // 先喂一条 assistant（数到 1 次往返），再给一条自报 3 的 result
+    // 先喂三条不同 id 的 assistant（数到 3 次往返），再给一条自报 1 的 result
+    for (const id of ['m1', 'm2', 'm3']) {
+      projectClaudeMessage(
+        { type: 'assistant', uuid: `a-${id}`, message: { id, content: [{ type: 'text', text: '改好了' }] } },
+        state,
+        CONTEXT,
+      );
+    }
+    const projection = projectClaudeMessage(
+      // `result_index: 0` = 厂商明说「这是第一条 result」⇒ 只有这一条才做刻度核对（见下一条用例）
+      { type: 'result', subtype: 'success', uuid: 'r-mismatch', result: '完成', num_turns: 1, result_index: 0 },
+      state,
+      CONTEXT,
+    );
+
+    expect(projection.turns).toBe(3);
+    const warn = projection.drafts.find(
+      (draft) => draft.type === 'log' && draft.stream === 'stderr' && draft.text.includes('num_turns'),
+    );
+    expect(warn?.type === 'log' ? warn.text : '').toContain('num_turns=1');
+    expect(warn?.type === 'log' ? warn.text : '').toContain('轮次=3');
+  });
+
+  /**
+   * **厂商多报也要喊，但文案要说清"也可能是我们少算"**。
+   *
+   * 上一版按方向静默了多报（理由：多报的已知成因是厂商把同一次往返的多次投递按多次计）。
+   * 那条理由**不成立**：多报这一档里混着第二种成因——本层按 `message.id` 去重，**两条不同往返
+   * 撞同一个 id 时只算一轮**（网关/代理复用 id 属真实可能），那时 `turns` 偏小、厂商才是对的。
+   * 两种成因从读数上分不开 ⇒ 这一档必须说话，让人去查上游是否复用 id。
+   */
+  it('厂商**多报**落 WARN，且文案点名「也可能是我们按 id 去重少算」', () => {
+    const state = newState();
     projectClaudeMessage(
       { type: 'assistant', uuid: 'a1', message: { id: 'm1', content: [{ type: 'text', text: '改好了' }] } },
       state,
       CONTEXT,
     );
     const projection = projectClaudeMessage(
-      { type: 'result', subtype: 'success', uuid: 'r-mismatch', result: '完成', num_turns: 3 },
+      { type: 'result', subtype: 'success', uuid: 'r-over', result: '完成', num_turns: 3, result_index: 0 },
       state,
       CONTEXT,
     );
-
     expect(projection.turns).toBe(1);
     const warn = projection.drafts.find(
       (draft) => draft.type === 'log' && draft.stream === 'stderr' && draft.text.includes('num_turns'),
     );
     expect(warn?.type === 'log' ? warn.text : '').toContain('num_turns=3');
-    expect(warn?.type === 'log' ? warn.text : '').toContain('轮次=1');
+    expect(warn?.type === 'log' ? warn.text : '').toContain('也可能是我们少算');
+    expect(warn?.type === 'log' ? warn.text : '').toContain('message.id');
+  });
+
+  /**
+   * `result_index` **缺席**的那一档：整条刻度核对不发。
+   *
+   * 为什么不许退回「按 0 处置」：老生产方没有这一格、in-process 那一面「does not number yet」
+   * ⇒ 按 0 就等于把**每一条** `result` 都当第一条，第 2 轮起「本轮往返数」与「整条查询累计」
+   * 两种刻度一比就**假报**；另一头（第一条的编号因写入失败被消费掉）还会让核对**永远不跑**。
+   * 少一条提示日志、换掉两种失灵，判据就是下面两行。
+   */
+  it('result_index 缺席 ⇒ 不发刻度核对（不按 0 冒充第一条）', () => {
+    const state = newState();
+    projectClaudeMessage(
+      { type: 'assistant', uuid: 'a3', message: { id: 'm1', content: [{ type: 'text', text: '改好了' }] } },
+      state,
+      CONTEXT,
+    );
+    const projection = projectClaudeMessage(
+      { type: 'result', subtype: 'success', uuid: 'r-noindex', result: '完成', num_turns: 9 },
+      state,
+      CONTEXT,
+    );
+
+    // 轮次仍以数出来的为准（核对只是提示，读数口径不受它影响）
+    expect(projection.turns).toBe(1);
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('num_turns'))).toBe(false);
   });
 
   it('两者一致时不落 WARN（不制造噪声）', () => {
@@ -365,6 +423,37 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
     expect(state.usageByMessageId.size).toBe(0);
     // 轮次与它无关：照样 +1（这正是「轮次不被 token 拖住」那条口径的一半）
     expect(projection.turns).toBe(1);
+  });
+
+  /**
+   * **估算表只在「真读到权威值」时才清**（结算与否看的是那一格有没有数，不是这一帧是不是 `result`）。
+   *
+   * 为什么这一条承重：`result.usage` 缺项那一档虽然罕见（代码自己为它写了 WARN），但无条件清
+   * 会把「还没结算那一轮」的估算也丢掉、又没有任何权威值顶上来 ⇒ 下一条 usage 事件的读数
+   * **比上一条小**，而「本行到目前为止的累计、单调不减」是这条通道自己声明的口径。
+   * 两个方向都钉：有权威值 ⇒ 清；缺项 ⇒ 留着那笔账（下一轮继续算）。
+   */
+  it('result 的 usage 缺项 ⇒ 不清估算表（结了零个字节就不算结算）', () => {
+    const state = newState();
+    projectClaudeMessage(assistantMessage({ uuid: 'u-est', messageId: 'm-est', usage: TRIO }), state, CONTEXT);
+    expect(state.usageByMessageId.size).toBe(1);
+
+    // 缺 `cache_read_input_tokens`：三项不齐 ⇒ 权威值没到手
+    const partial = projectClaudeMessage(
+      { type: 'result', subtype: 'success', uuid: 'r-partial', result: '完成', usage: { input_tokens: 5, output_tokens: 1 } },
+      state,
+      CONTEXT,
+    );
+    expect(partial.tokens).toBeNull();
+    expect(state.usageByMessageId.size, '缺项那一帧不许把还没结算的估算丢掉').toBe(1);
+
+    // 权威值齐了 ⇒ 清（这才是「这一轮已结算」）
+    projectClaudeMessage(
+      { type: 'result', subtype: 'success', uuid: 'r-full', result: '完成', usage: TRIO },
+      state,
+      CONTEXT,
+    );
+    expect(state.usageByMessageId.size).toBe(0);
   });
 
   // 这一组是**新口径**的核心：轮次与用量各自独立。
@@ -974,6 +1063,115 @@ describe('projectClaudeMessage：结构化输出重试用尽的归因', () => {
 });
 
 /**
+ * **`assistant` 帧自带的 `error` / `aborted` 两格**（厂商在合成的 API-error 消息上写它们）。
+ *
+ * 为什么这一组守卫承重：这两格过去**一格都不读** ⇒ 一次 401 / 429 只在 assistant 帧上报错、
+ * 没走到 `result` 的运行，在事件流里与一条普通答复**逐字相同**，整行被记成成功。
+ * 而分档是另一半判据：`api_retry` 用的是**同一个**错误枚举（`sdk.d.ts` 的
+ * `SDKAPIRetryMessage.error`）⇒ 可重试档一律判失败会把「厂商自己重试成功」的行判死，
+ * 而骨架的 `failure` 一旦写入就再也清不掉（`turn.ts` 的消费循环是最后写入者赢）。
+ */
+describe('projectClaudeMessage：assistant 帧的上游错误与截断', () => {
+  /** 一条带 `error` 的合成 API-error 消息（真机形状：正文为空、错误在信封上） */
+  function errorFrame(error: string, uuid: string): Record<string, unknown> {
+    return {
+      type: 'assistant',
+      uuid,
+      session_id: 's1',
+      parent_tool_use_id: null,
+      error,
+      message: { id: `msg_${uuid}`, role: 'assistant', content: [] },
+    };
+  }
+
+  /** 取这一条投影里所有 stderr 日志的正文（WARN 的落点） */
+  function stderrTexts(projection: ReturnType<typeof projectClaudeMessage>): string[] {
+    return projection.drafts.flatMap((draft) =>
+      draft.type === 'log' && draft.stream === 'stderr' ? [draft.text] : [],
+    );
+  }
+
+  it('终局错误（authentication_failed）⇒ 归成 AUTH_FAILED，不是 AGENT_FAILED', () => {
+    const projection = projectClaudeMessage(errorFrame('authentication_failed', 'e1'), newState(), CONTEXT);
+
+    // 归因走 errors.ts 的那份映射（这里再抄一遍必然漂）：密钥不对就该落 AUTH_FAILED
+    expect(projection.failure?.code).toBe('AUTH_FAILED');
+    // 点名厂商原值：排障时搜的就是它
+    expect(stderrTexts(projection).join('\n')).toContain('authentication_failed');
+  });
+
+  it('model_not_found / invalid_request / billing_error 都是终局档（重试不会变好）', () => {
+    for (const [index, error] of ['model_not_found', 'invalid_request', 'billing_error'].entries()) {
+      const projection = projectClaudeMessage(errorFrame(error, `t${index}`), newState(), CONTEXT);
+      expect(projection.failure, error).not.toBeNull();
+    }
+  });
+
+  /**
+   * 这一条是分档的**反向判据**：可重试档只留痕、不判失败。
+   * 没有它，一次 `overloaded`（厂商退避重试后成功）会让整行永远判失败。
+   */
+  it('可重试档（overloaded / rate_limit / server_error）只落 WARN，不判失败', () => {
+    for (const [index, error] of ['overloaded', 'rate_limit', 'server_error'].entries()) {
+      const projection = projectClaudeMessage(errorFrame(error, `r${index}`), newState(), CONTEXT);
+
+      expect(projection.failure, error).toBeNull();
+      // 但必须留痕：静默丢掉等于让「上游抖过一次」这件事从证据里消失
+      expect(stderrTexts(projection).join('\n'), error).toContain(error);
+    }
+  });
+
+  /** `max_output_tokens` 另有自愈通道（`resumed_from_incomplete_thinking`）⇒ 同属可重试档 */
+  it('max_output_tokens 不判失败（下一轮接着上一轮的思考块跑完）', () => {
+    const projection = projectClaudeMessage(errorFrame('max_output_tokens', 'm1'), newState(), CONTEXT);
+
+    expect(projection.failure).toBeNull();
+  });
+
+  it('aborted ⇒ 落一条「正文可能断在词中间」的 WARN，但不判失败（终止由骨架的 canceled 通路定）', () => {
+    const projection = projectClaudeMessage(
+      {
+        type: 'assistant',
+        uuid: 'a1',
+        parent_tool_use_id: null,
+        aborted: true,
+        message: { id: 'msg_a1', role: 'assistant', content: [{ type: 'text', text: '写到一半就被' }] },
+      },
+      newState(),
+      CONTEXT,
+    );
+
+    expect(projection.failure).toBeNull();
+    expect(stderrTexts(projection).join('\n')).toContain('截断');
+    // 正文照旧交出去（截断的半句仍是证据，只是旁边多一句提醒）
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('写到一半就被'))).toBe(true);
+  });
+
+  it('没有这两格的普通 assistant 帧：一条 WARN 都不多（其余档位逐字不变）', () => {
+    const projection = projectClaudeMessage(
+      {
+        type: 'assistant',
+        uuid: 'ok1',
+        parent_tool_use_id: null,
+        message: { id: 'msg_ok1', role: 'assistant', content: [{ type: 'text', text: '正常答复' }] },
+      },
+      newState(),
+      CONTEXT,
+    );
+
+    expect(projection.failure).toBeNull();
+    expect(stderrTexts(projection)).toEqual([]);
+  });
+
+  /** 轮次与用量估算照旧：错误帧也是一次真实的模型往返（少数一轮会让后面每一轮都差一） */
+  it('错误帧照样计一次模型往返', () => {
+    const projection = projectClaudeMessage(errorFrame('overloaded', 'c1'), newState(), CONTEXT);
+
+    expect(projection.turns).toBe(1);
+  });
+});
+
+/**
  * 子智能体生命周期：claude 侧走 SDK **原生 `system/task_*` 消息**。
  *
  * 为什么这些守卫值得存在：`system` 类型过去**一律**落成 `unknownEventDraft`
@@ -1291,5 +1489,598 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
 
     expect(projection.drafts.some((draft) => draft.type === 'vendor-system')).toBe(false);
     expect(projection.drafts[0]?.type).toBe('log');
+  });
+});
+
+/**
+ * **历史重放帧**（`SDKUserMessageReplay.isReplay`）：续接（`resume`）时 CLI 把这条会话
+ * **已经发生过**的用户侧消息再投一遍。
+ *
+ * 为什么这一条守卫承重：重放帧带的是**自己的** `uuid`（与原帧不同）⇒ 既有那张去重表挡不住它；
+ * 而追问是**追加到同一行**上的（工作区与产物都不重置）⇒ 收下就是把上一轮的工具结果连同证据
+ * 再写一遍。症状不是报错，而是「追问之后抽屉里多出一份上一轮的记录」。
+ */
+describe('projectClaudeMessage：续接时的历史重放帧', () => {
+  /** 一条被重放的工具结果（真机形状：与原帧几乎相同，只多 `isReplay` 且 `uuid` 是新的） */
+  const REPLAYED = {
+    type: 'user',
+    uuid: 'replay-1',
+    session_id: 's1',
+    isReplay: true,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_old', content: '上一轮的工具结果' }] },
+  };
+
+  it('重放帧零事件产出（不把上一轮的证据再写一遍）', () => {
+    expect(projectClaudeMessage(REPLAYED, newState(), CONTEXT).drafts).toEqual([]);
+  });
+
+  it('重放的**报错**工具结果同样不产出（否则上一轮的失败会在本行再播一次）', () => {
+    const projection = projectClaudeMessage(
+      {
+        ...REPLAYED,
+        uuid: 'replay-2',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_old', content: '炸了', is_error: true }] },
+      },
+      newState(),
+      CONTEXT,
+    );
+
+    expect(projection.drafts).toEqual([]);
+  });
+
+  /** 反向判据：没有这一格的普通工具结果照旧落原始负载（修正不许把正常路径一起吞掉） */
+  it('不带 isReplay 的同形帧照旧落原始负载', () => {
+    const { isReplay: _dropped, ...live } = REPLAYED;
+    const projection = projectClaudeMessage({ ...live, uuid: 'live-1' }, newState(), CONTEXT);
+
+    expect(projection.drafts).toHaveLength(1);
+    expect(projection.drafts[0]?.type).toBe('log');
+  });
+});
+
+/**
+ * **工具调用被当场拒**（`system/permission_denied`）。
+ *
+ * 为什么必须有人话摘要：它是**评分档的常态**——那一段走 `dontAsk` + `permissionPrompts: 'none'`
+ * （本进程没有批准面），厂商据此把该拒的当场拒掉并发这一帧。它又是「模型想写盘但被拒」的
+ * **唯一行级出口** ⇒ 只落原始 JSON 时活动行一个字都不说，排障只能逐笔翻原始负载。
+ */
+describe('projectClaudeMessage：工具调用被权限档当场拒', () => {
+  function denied(extra: Record<string, unknown>): Record<string, unknown> {
+    return {
+      type: 'system',
+      subtype: 'permission_denied',
+      uuid: `pd-${JSON.stringify(extra).length}`,
+      session_id: 's1',
+      tool_name: 'Write',
+      tool_use_id: 'toolu_w1',
+      message: 'Write is not allowed in read-only mode',
+      ...extra,
+    };
+  }
+
+  it('给一条带人话摘要的日志，原文在同一条的 text 里（不重复落第二遍）', () => {
+    const projection = projectClaudeMessage(denied({ decision_reason: '只读档不允许写盘' }), newState(), CONTEXT);
+
+    /**
+     * **一条，不是两条**：摘要之外仍要留证，而这一条的 `text` 就是完整的原始负载
+     * ⇒ 再落一条逐字相同的 `unknownEventDraft` 只是把同一坨 JSON 在抽屉里显示两遍。
+     */
+    const logs = projection.drafts.filter((draft) => draft.type === 'log');
+    expect(logs).toHaveLength(1);
+    const summary = logs[0];
+    // 摘要点名工具与原因；`工具被拒` 与 `工具报错` 刻意是两句话（排障下一步不同）
+    expect(summary?.type === 'log' ? summary.summary : '').toBe('工具被拒 Write：只读档不允许写盘');
+    // 原始负载逐字在同一条 log 的 text 里（证据不少一个字）
+    expect(summary?.type === 'log' ? summary.text : '').toContain('toolu_w1');
+  });
+
+  it('原因按信息量取第一个非空：decision_reason → message → decision_reason_type', () => {
+    const viaMessage = projectClaudeMessage(denied({}), newState(), CONTEXT);
+    expect(summaryOf(viaMessage)).toBe('工具被拒 Write：Write is not allowed in read-only mode');
+
+    const viaType = projectClaudeMessage(
+      denied({ message: '', decision_reason_type: 'mode' }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(viaType)).toBe('工具被拒 Write：mode');
+  });
+
+  it('三格原因都没有 ⇒ 只留前半句（不编原因、不留空冒号）', () => {
+    const projection = projectClaudeMessage(denied({ message: '' }), newState(), CONTEXT);
+    expect(summaryOf(projection)).toBe('工具被拒 Write');
+  });
+
+  /** **不判失败**：被拒一次不是这一行失败了——模型会看到工具结果并换一条路 */
+  it('不折成 failure（被拒不等于这一行失败）', () => {
+    expect(projectClaudeMessage(denied({}), newState(), CONTEXT).failure).toBeNull();
+  });
+});
+
+/**
+ * **非 Agent 的后台任务帧不许播「已派发子任务」**。
+ *
+ * 真机形态（CLI 2.1.281）：模型把一条 `sleep 5 && echo ok` 放进后台（`Bash` 的
+ * `run_in_background: true`）时，CLI 发一条 `task_started`，其 `subagent_type` / `spawn_depth` /
+ * `prompt` **三格全缺**、且**没有** `ambient` / `skip_transcript`（它不是「非活动」的 watcher，
+ * 就是一条普通后台命令）。活动行显示的是这条日志的 `summary` ⇒ 不挡就会播
+ * 「已派发子任务：sleep 5 && echo ok」，而面板与 `messages.jsonl` 那边按同一条判据一行都不产
+ * （两个面互相打脸）。判据与消息侧同源（`isDispatchShaped`），收场帧按 id 追随。
+ */
+describe('projectClaudeMessage：非 Agent 的后台任务不占活动行', () => {
+  /** 真机那一帧的逐字键集（只有 task_id / tool_use_id / description / is_backgrounded / task_type） */
+  function backgroundBash(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'system',
+      subtype: 'task_started',
+      uuid: 'ts-bash',
+      session_id: 's1',
+      task_id: 'bwudyo91e',
+      tool_use_id: 'toolu_bash_1',
+      description: 'sleep 5 && echo ok',
+      is_backgrounded: true,
+      task_type: 'local_bash',
+      ...extra,
+    };
+  }
+
+  it('三格形状全缺的后台命令 ⇒ 不产 subagent 载荷，退回未识别兜底（证据一个字节不少）', () => {
+    const state = newState();
+    const start = projectClaudeMessage(backgroundBash(), state, CONTEXT);
+    // 不产 `kind: 'subagent'`（活动行就是读它的 `summary`），退回落原始负载的那条兜底
+    expect(start.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"kind":"subagent"'))).toBe(false);
+    expect(start.drafts.some((draft) => draft.type === 'log' && draft.text.includes('sleep 5 && echo ok'))).toBe(true);
+    expect(summaryOf(start)).toBe('');
+
+    // 收场帧按 id 追随（逐帧重判会把真派发的收场帧判成幻影）
+    const end = projectClaudeMessage(
+      { type: 'system', subtype: 'task_notification', uuid: 'tn-bash', session_id: 's1', task_id: 'bwudyo91e', status: 'completed', summary: 'Background command completed' },
+      state,
+      CONTEXT,
+    );
+    expect(end.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"kind":"subagent"'))).toBe(false);
+    expect(summaryOf(end)).toBe('');
+  });
+
+  /** **反向判据**：真派发照旧播那句话——判据不是恒假的（真机形状：`task_type` 也是 `local_agent`） */
+  it('三格齐的真派发照旧产日志（判据不是恒假）', () => {
+    const projection = projectClaudeMessage(
+      backgroundBash({ task_id: 'real-agent-1', task_type: 'local_agent', subagent_type: 'general-purpose', spawn_depth: 1, prompt: '数一下行数' }),
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.drafts).toHaveLength(1);
+    expect(summaryOf(projection)).toContain('已派发子任务');
+  });
+
+  /**
+   * **厂商显式说了是什么，就不再按形状猜**：`task_type` 与三格形状冲突时以 `task_type` 为准。
+   *
+   * 这一档在真机上不出现（厂商不会给后台 Bash 任务填 `subagent_type`），钉的是**优先级**：
+   * 判据若反过来（形状压过显式字段），`Workflow` 那一档就会重新漏出去——它的 `prompt` 非空。
+   */
+  it('task_type 说不是派发时，三格齐也判幻影', () => {
+    const projection = projectClaudeMessage(
+      backgroundBash({ task_id: 'conflict-1', subagent_type: 'general-purpose', spawn_depth: 1, prompt: '算 1+1' }),
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"kind":"subagent"'))).toBe(false);
+    expect(summaryOf(projection)).toBe('');
+  });
+});
+
+/**
+ * **`Workflow` 后台任务不许播「已派发子任务」**。
+ *
+ * 真机形态（CLI 2.1.301）：模型调用 `Workflow` 工具启动本地工作流时，CLI 发的 `task_started` 是
+ * `task_type: 'local_workflow'`、`workflow_name: '<脚本 meta.name>'`，而 `subagent_type` 与
+ * `spawn_depth` **都缺**、`prompt` **非空**（内容是**整份工作流脚本源码**）⇒ 只看三格形状会把它
+ * 当成一次派发：活动行播「已派发子任务：<工作流描述>」，收尾再喊一句「读不到子智能体 <task_id>」
+ * （它本来就没有子智能体转录）。厂商在这一格上直接给了答案，判据按它走。
+ */
+describe('projectClaudeMessage：Workflow 后台任务不占活动行', () => {
+  /** 真机那一帧的逐字键集与取值（`deep-research` 工作流，只截断过长的 description / prompt） */
+  function workflowStarted(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'system',
+      subtype: 'task_started',
+      uuid: 'ts-workflow',
+      session_id: 's1',
+      task_id: 'w6v9zbi71',
+      run_id: '0mvb8c39o-02e33eef',
+      tool_use_id: 'toolu_wf_1',
+      description: 'Deep research harness — fan-out web searches, fetch sources',
+      task_type: 'local_workflow',
+      workflow_name: 'deep-research',
+      prompt: 'export const meta = { name: \'deep-research\', description: \'Deep research harness\' }',
+      ...extra,
+    };
+  }
+
+  it('task_type=local_workflow ⇒ 不产 subagent 载荷，退回未识别兜底（证据一个字节不少）', () => {
+    const state = newState();
+    const start = projectClaudeMessage(workflowStarted(), state, CONTEXT);
+    expect(start.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"kind":"subagent"'))).toBe(false);
+    // 原始帧照旧留证（未识别兜底那条）
+    expect(start.drafts.some((draft) => draft.type === 'log' && draft.text.includes('local_workflow'))).toBe(true);
+    expect(summaryOf(start)).toBe('');
+
+    // 收场帧按 id 追随（`task_notification` 上不带 `task_type`，逐帧重判会把它当成真收场）
+    const end = projectClaudeMessage(
+      { type: 'system', subtype: 'task_notification', uuid: 'tn-wf', session_id: 's1', task_id: 'w6v9zbi71', status: 'completed', summary: 'workflow completed' },
+      state,
+      CONTEXT,
+    );
+    expect(end.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"kind":"subagent"'))).toBe(false);
+    expect(summaryOf(end)).toBe('');
+  });
+
+  /** **反向判据**：`local_agent` 即便三格全缺也照旧播——厂商说它是 agent 任务，不需要形状佐证 */
+  it('task_type=local_agent 且三格全缺 ⇒ 照旧派发', () => {
+    const projection = projectClaudeMessage(
+      workflowStarted({ task_id: 'agent-no-shape', task_type: 'local_agent', workflow_name: undefined, prompt: undefined }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(projection)).toContain('已派发子任务');
+  });
+
+  /** **回落那一级照旧**：`task_type` 缺席时按形状判（`prompt` 非空 ⇒ 派发）——老生产方的形状不变 */
+  it('task_type 缺席 ⇒ 回落形状判据', () => {
+    const projection = projectClaudeMessage(
+      workflowStarted({ task_id: 'legacy-1', task_type: undefined }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(projection)).toContain('已派发子任务');
+  });
+
+  /** **未知取值也回落形状**（不是白名单）：厂商将来新增一种真是派发的类型时不许把它判成幻影 */
+  it('没见过的 task_type ⇒ 回落形状判据', () => {
+    const projection = projectClaudeMessage(
+      workflowStarted({ task_id: 'future-1', task_type: 'some_future_kind' }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(projection)).toContain('已派发子任务');
+  });
+});
+
+/** 取这条投影里那条带摘要的日志的摘要正文 */
+function summaryOf(projection: ReturnType<typeof projectClaudeMessage>): string {
+  const draft = projection.drafts.find((one) => one.type === 'log' && one.summary !== undefined);
+  return draft?.type === 'log' ? (draft.summary ?? '') : '';
+}
+
+/**
+ * **厂商标了「这不是活动」的 task 帧**（`ambient` / `skip_transcript`）。
+ *
+ * 厂商 JSDoc 逐字 *"hosts should exclude them from activity indicators"*，而活动行正是那个
+ * indicator ⇒ 给摘要就会把一条 live-update watcher 播成「已派发子任务」。
+ */
+describe('projectClaudeMessage：ambient 的 task 帧不占活动行', () => {
+  function started(extra: Record<string, unknown>): Record<string, unknown> {
+    return {
+      type: 'system',
+      subtype: 'task_started',
+      uuid: `ts-${JSON.stringify(extra).length}`,
+      session_id: 's1',
+      task_id: 'task-amb',
+      tool_use_id: 'toolu_a1',
+      description: '看着文件变化',
+      subagent_type: 'general-purpose',
+      spawn_depth: 1,
+      ...extra,
+    };
+  }
+
+  for (const flag of ['ambient', 'skip_transcript'] as const) {
+    it(`${flag} 为真 ⇒ 不给活动行摘要，但原始负载照发（证据不少一个字）`, () => {
+      const projection = projectClaudeMessage(started({ [flag]: true }), newState(), CONTEXT);
+
+      const draft = projection.drafts[0];
+      expect(draft?.type).toBe('log');
+      expect(draft?.type === 'log' ? draft.summary : 'x').toBeUndefined();
+      // 载荷仍然是那条可解析的 subagent JSON
+      expect(draft?.type === 'log' ? draft.text : '').toContain('"kind":"subagent"');
+    });
+  }
+
+  /** 反向判据：没标这两格的真派发照旧播「已派发子任务」 */
+  it('没有这两格的真派发照旧给活动行摘要', () => {
+    const projection = projectClaudeMessage(started({}), newState(), CONTEXT);
+    const draft = projection.drafts[0];
+    expect(draft?.type === 'log' ? draft.summary : '').toContain('子任务');
+  });
+});
+
+/**
+ * **上游错误那一档的用量是「全 0 占位」，不是「采到了 0」**。
+ *
+ * 厂商 JSDoc 逐字：*Crash/startup-error results may carry zeroed values*。真机形状（上游 400）：
+ * `subtype: 'success'` + `is_error: true`，而 `usage` 三项**齐全但全 0** ⇒ 按结构判据它「齐了」，
+ * 按值判据它什么都没说。仓内硬口径是「计量绝不填 0」（`: 0` 会让人得出「这家很省」的错误结论），
+ * 故按**没采到**处置，与估算路径里那条「全 0 的快照 = 这一条还没填好」同一条口径。
+ */
+describe('projectClaudeMessage：全 0 的结算值按「未采集」处理', () => {
+  function upstreamErrorResult(usage: Record<string, unknown>): Record<string, unknown> {
+    return {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      uuid: 'r-zero',
+      session_id: 's1',
+      num_turns: 1,
+      result_index: 0,
+      result: 'API Error: 400 probe 造的 400',
+      usage,
+    };
+  }
+
+  it('三项齐全但全 0 ⇒ 两格都是 `null`，且落一条点名「全 0」的 WARN', () => {
+    const projection = projectClaudeMessage(
+      upstreamErrorResult({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 }),
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.tokens).toBeNull();
+    const warn = projection.drafts.find((draft) => draft.type === 'log' && draft.stream === 'stderr');
+    expect(warn?.type === 'log' ? warn.text : '').toContain('全 0');
+  });
+
+  /** 反向判据：只要有一项非 0 就照常采到（判据不是「凡上游错误一律 null」） */
+  it('任意一项非 0 ⇒ 照常采到（判据不是恒 null）', () => {
+    const projection = projectClaudeMessage(
+      upstreamErrorResult({ input_tokens: 7, cache_read_input_tokens: 0, output_tokens: 0 }),
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.tokens).toEqual({ input: 7, cached: 0, output: 0, reasoningOutput: null, total: null });
+  });
+
+  /**
+   * **零值有两种，只有一种是异常**：`num_turns: 0` 的全 0 是「这次收尾本来就没有模型往返」
+   * （真机：一次 `ok: true` 的嵌套派发运行里，中间那条 `result` 就是它），零是**事实**
+   * ⇒ 仍判「没采到」（不许填 0 进计量），但**不该喊 WARN**（那不是要人看的异常）。
+   */
+  /**
+   * **静默的只有「成功收尾 + `num_turns: 0`」那一档**（真机嵌套派发的收场帧就是它：`success` /
+   * `is_error: false` / 全 0）。失败帧即便 `num_turns` 是 0 也要说话——崩溃与启动错误恰好是最可能
+   * `num_turns: 0` 的一档，把它们一起静默掉就等于把这条 WARN 的靶子打掉。两条用例分钉两个方向。
+   */
+  it('成功收尾 + `num_turns: 0` 的全 0 ⇒ 判「未采集」且不落 WARN', () => {
+    const projection = projectClaudeMessage(
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'r-zero-ok',
+        session_id: 's1',
+        // 帧**顶层**的 `num_turns`（不是 usage 里的那一格）：判据读的是它
+        num_turns: 0,
+        result_index: 1,
+        result: '嵌套子智能体的收场帧',
+        usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      },
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.tokens).toBeNull();
+    const stderrLines = projection.drafts
+      .filter((draft) => draft.type === 'log' && draft.stream === 'stderr')
+      .map((draft) => (draft.type === 'log' ? draft.text : ''));
+    expect(stderrLines).toEqual([]);
+  });
+
+  it('**失败**收尾 + `num_turns: 0` 的全 0 ⇒ 照旧落 WARN（崩溃/启动错误正是这一档）', () => {
+    const projection = projectClaudeMessage(
+      {
+        ...upstreamErrorResult({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 }),
+        num_turns: 0,
+      },
+      newState(),
+      CONTEXT,
+    );
+    expect(projection.tokens).toBeNull();
+    const stderrLines = projection.drafts
+      .filter((draft) => draft.type === 'log' && draft.stream === 'stderr')
+      .map((draft) => (draft.type === 'log' ? draft.text : ''));
+    expect(stderrLines.some((line) => line.includes('全 0'))).toBe(true);
+  });
+});
+
+/**
+ * **上下文压缩那一档要占活动行**（`system/status`）。
+ *
+ * 真机两帧逐字：`{status:'compacting', compact_output_chars:0}` 与
+ * `{status:null, compact_result:'failed', compact_error:'too_few_groups'}`（单个大文件顶过阈值、
+ * 但可压的分组太少）。压缩是长过程——它此前只躺在原始 JSON 里，界面既不知道在压缩、
+ * 也不知道压失败了。**同一 subtype 的 `requesting` 是每轮一条的心跳**（25 轮的运行里 25 条）
+ * ⇒ 它不给摘要，照旧只落原始负载（反向判据在下）。
+ */
+describe('projectClaudeMessage：上下文压缩帧占活动行', () => {
+  function statusFrame(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { type: 'system', subtype: 'status', uuid: 'st-1', session_id: 's1', ...extra };
+  }
+
+  it('`compacting` ⇒ 摘要说「开始压缩」，原始负载照发', () => {
+    const projection = projectClaudeMessage(statusFrame({ status: 'compacting', compact_output_chars: 0 }), newState(), CONTEXT);
+    expect(summaryOf(projection)).toContain('压缩');
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"subtype":"status"'))).toBe(true);
+  });
+
+  it('压缩失败 ⇒ 摘要带上厂商给的原因（`compact_error`）', () => {
+    const projection = projectClaudeMessage(
+      statusFrame({ status: null, compact_result: 'failed', compact_error: 'too_few_groups' }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(projection)).toContain('压缩失败');
+    expect(summaryOf(projection)).toContain('too_few_groups');
+  });
+
+  it('压缩成功 ⇒ 摘要说完成（`status` 是 `null` 时靠 `compact_result` 判）', () => {
+    const projection = projectClaudeMessage(statusFrame({ status: null, compact_result: 'success' }), newState(), CONTEXT);
+    expect(summaryOf(projection)).toContain('压缩完成');
+  });
+
+  /** 反向判据：心跳帧**不占活动行**（否则 25 轮的运行会多出 25 条「正在请求」噪声） */
+  it('`requesting` ⇒ 不给摘要，但原始负载照发', () => {
+    const projection = projectClaudeMessage(statusFrame({ status: 'requesting' }), newState(), CONTEXT);
+    expect(summaryOf(projection)).toBe('');
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"status":"requesting"'))).toBe(true);
+  });
+});
+
+/**
+ * **`system/init` 自带的技能名单是 `skills` 那一格的回落来源**。
+ *
+ * 为什么必须有这条回落：`getContextUsage()` 那条探针**只在「这一行配了技能」时才跑**
+ * （编排层按「空集不给键」的口径不下发 `skills`）⇒ 没配技能的行上收尾那条事件本来一个
+ * `skills` 格都不带，而下游把「没有这一格」读成**厂商没投送**——可厂商在 `system/init` 里
+ * 明明投了（真机 19 条）。这一格是免费的：init 帧本来就在手上。
+ *
+ * 三条刻度：只有名字 ⇒ `source` / `path` 记 `null`、`origin` 落 `'unverified'`（**不猜**来源）；
+ * 空数组 ⇒ `[]`（「投送了、一条都没有」与「没有这一格」是两句话）；形状不认识 ⇒ `undefined`。
+ */
+describe('cc：init 帧自带的技能名单', () => {
+  const LAYOUT = { configHome: '/tmp/cc-probe-home', cwd: '/tmp/cc-probe-cwd' };
+
+  it('名字数组 ⇒ 逐条给出行，来源未知（不猜厂商自带还是本行装的）', () => {
+    const rows = skillsFromInitFrame({ skills: ['probe-skill', 'deep-research'] }, LAYOUT);
+    expect(rows).toEqual([
+      { name: 'probe-skill', source: null, path: null, origin: 'unverified' },
+      { name: 'deep-research', source: null, path: null, origin: 'unverified' },
+    ]);
+  });
+
+  it('空数组 ⇒ `[]`（投送了、一条都没有），不是 `undefined`', () => {
+    expect(skillsFromInitFrame({ skills: [] }, LAYOUT)).toEqual([]);
+  });
+
+  it('没有这一格 / 形状不认识 ⇒ `undefined`（与「采不到」同形，不编一个空清单）', () => {
+    expect(skillsFromInitFrame({}, LAYOUT)).toBeUndefined();
+    expect(skillsFromInitFrame({ skills: 'probe-skill' }, LAYOUT)).toBeUndefined();
+    expect(skillsFromInitFrame(null, LAYOUT)).toBeUndefined();
+  });
+});
+
+/**
+ * **上游重试帧占活动行**（`system/api_retry`）。
+ *
+ * 真机读数（上游连续 500、429、断流三臂）：一帧一次重试，最多 10 次、墙钟最长约 3 分钟，
+ * 期间**没有任何 assistant / result** ⇒ 这一帧是长退避期间唯一的行级出口。
+ * 原先它只落原始 JSON（`summary: null`），界面在那三分钟里一个字都不说，读者分不清
+ * 「在重试」与「卡死了」。原始负载照旧整条落盘。
+ */
+describe('projectClaudeMessage：上游重试帧占活动行', () => {
+  /** 真机那一帧的逐字键集与取值 */
+  function retryFrame(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'system',
+      subtype: 'api_retry',
+      uuid: 'retry-1',
+      session_id: 's1',
+      attempt: 3,
+      max_retries: 10,
+      retry_delay_ms: 2039,
+      error_status: 500,
+      error: 'server_error',
+      ...extra,
+    };
+  }
+
+  it('摘要含「第几次 / 上限 / 等多久 / 状态码」，且原始负载照发', () => {
+    const projection = projectClaudeMessage(retryFrame(), newState(), CONTEXT);
+    expect(summaryOf(projection)).toContain('500');
+    expect(summaryOf(projection)).toContain('3/10');
+    expect(summaryOf(projection)).toContain('2.0 s');
+    // 原始负载一整条都在（排障读的就是它）
+    expect(projection.drafts.some((draft) => draft.type === 'log' && draft.text.includes('"subtype":"api_retry"'))).toBe(true);
+  });
+
+  /** 连接错那一档没有 `error_status`（真机 `error: 'no_response'` 一类）⇒ 用 `error` 名，不编状态码 */
+  it('缺 `error_status` ⇒ 摘要用 `error` 名，不编一个状态码', () => {
+    const projection = projectClaudeMessage(retryFrame({ error_status: undefined, error: 'no_response' }), newState(), CONTEXT);
+    expect(summaryOf(projection)).toContain('no_response');
+    expect(summaryOf(projection)).not.toContain('上游 5');
+  });
+
+  /** 三格都缺席时摘要仍要成句（不吐 `undefined` / 空串） */
+  it('三格全缺 ⇒ 仍是一句可读摘要', () => {
+    const projection = projectClaudeMessage(
+      retryFrame({ error_status: undefined, error: undefined, attempt: undefined, max_retries: undefined, retry_delay_ms: undefined }),
+      newState(),
+      CONTEXT,
+    );
+    expect(summaryOf(projection)).toBe('上游错误');
+  });
+});
+
+/**
+ * **失败收尾时厂商自己写的诊断不许丢**。
+ *
+ * `result` 帧的 `type` 被识别 ⇒ **不走未识别兜底**，凡是没有被显式读出来的格一个字节都不剩。
+ * 真机读数（上游连续 500、重试 10 次耗尽）：`subtype: 'error_during_execution'`、`result` 缺失、
+ * `terminal_reason: 'aborted_streaming'`、`errors: ['[ede_diagnostic] result_type=user
+ * last_content_type=n/a stop_reason=null']`——`errors` 是唯一说明「为什么这一轮没有答复」的文本。
+ */
+describe('projectClaudeMessage：失败收尾的厂商诊断', () => {
+  /** 真机那条失败收尾帧的键集（`result` 缺席，只留下诊断格） */
+  function failureResult(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      uuid: 'res-fail-1',
+      session_id: 's1',
+      duration_ms: 1,
+      duration_api_ms: 0,
+      num_turns: 1,
+      result_index: 0,
+      total_cost_usd: 0,
+      // 用量四项齐（缺项会另落一条「用量负载不完整」的 WARN，把这条用例的判据搅浑）
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens_details: { thinking_tokens: 0 },
+      },
+      ...extra,
+    };
+  }
+
+  it('`result` 为空时把 `terminal_reason` 拼进失败文案（比 subtype 具体）', () => {
+    const projection = projectClaudeMessage(failureResult({ terminal_reason: 'prompt_too_long' }), newState(), CONTEXT);
+    expect(projection.failure?.message).toContain('error_during_execution');
+    expect(projection.failure?.message).toContain('prompt_too_long');
+  });
+
+  it('`terminal_reason` 缺席 ⇒ 文案里不出现那一格（不编一个空值）', () => {
+    const projection = projectClaudeMessage(failureResult(), newState(), CONTEXT);
+    expect(projection.failure?.message).toContain('error_during_execution');
+    expect(projection.failure?.message).not.toContain('terminal_reason');
+  });
+
+  it('`errors[]` 落一条 stderr 日志（不读的格一个字节都不剩）', () => {
+    const projection = projectClaudeMessage(
+      failureResult({ errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'] }),
+      newState(),
+      CONTEXT,
+    );
+    const line = projection.drafts.find((draft) => draft.type === 'log' && draft.stream === 'stderr' && draft.text.includes('收尾错误'));
+    expect(line?.type === 'log' ? line.text : '').toContain('ede_diagnostic');
+  });
+
+  /** 反向判据：`errors` 缺席或空数组时**不落**那条日志（否则每一行失败都多一条空噪声） */
+  it('`errors` 缺席 / 空数组 ⇒ 不落那条日志', () => {
+    for (const extra of [{}, { errors: [] }, { errors: [''] }]) {
+      const projection = projectClaudeMessage(failureResult(extra), newState(), CONTEXT);
+      const line = projection.drafts.find((draft) => draft.type === 'log' && draft.stream === 'stderr' && draft.text.includes('收尾错误'));
+      expect(line).toBeUndefined();
+    }
   });
 });

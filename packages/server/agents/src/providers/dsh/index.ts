@@ -5,7 +5,8 @@
  *    所以 `interrupt()` 是**刻意**的空实现，停止只能靠关闭运行时 ⇒ 终止与超时一定走释放兜底的第二段
  *    （等 5 秒、落一条 WARN、再强制关闭，界面上会看到这行晚 5 秒变 canceled）；
  *  - 通知流必须**先订阅再交提示词**：唯一的事件通道是客户端订阅，而
- *    `harness.run(prompt, { sessionId })` 在**下一次 idle** 才落定（`lib/index.js:740-772`）。
+ *    `harness.run(prompt, { sessionId })` 在**下一次 idle** 才落定（`lib/index.js` 的
+ *    `HarnessSession.run`，0.2.1-alpha.3 在 800-839 行）。
  *    顺序错了会丢掉开头那批事件（含 `turn/start`），所以订阅由**流自己**建立，`start()` 里不碰它。
  *
  * **注入模型**（判据与探测结论见 `docs/protocols/dsh.md` 的「pi-ai 路由与两条 wire」）：
@@ -26,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createLogger, materializeSkills } from '@aieval/core';
-import type { McpServers } from '@aieval/contracts';
+import type { McpServers, UsageTokens } from '@aieval/contracts';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeRowNpmrc } from '../../mcp';
 import { DSH_PERMISSION_OPTIONS } from '../../permission';
@@ -45,10 +46,39 @@ import {
   startDshAskAnswerer,
   type DshAskAnswererBridge,
 } from './ask-user';
-import { projectDshNotification } from './events';
-import { dshSilentChildSessions, dshSubagentTurns, dshSubagentUsage } from './message';
-import { DSH_STREAM_FAILURE_TYPE, DSH_SUBAGENT_FINISHED_METHOD, DSH_TURN_END_TYPE } from './protocol';
-import { loadDshSdk, type DshHarness, type DshNotification, type DshRuntime } from './sdk';
+import { projectDshNotification, type DshDispatchStart, type DshProjectionRunState } from './events';
+import {
+  DSH_INJECT_PLUGIN_RELATIVE_PATH,
+  DSH_INJECT_PLUGIN_SOURCE,
+  DSH_INJECT_QUEUE_RELATIVE_PATH,
+  DSH_INJECT_RECEIPTS_RELATIVE_PATH,
+  startDshInjection,
+  type DshInjectionDriver,
+} from './inject';
+import { countSessionSteps } from './session-log';
+import {
+  dshSessionPermissionOf,
+  seedDshSessionRoundHighWater,
+  dshSessionRoundOf,
+  dshSessionUsageOf,
+  dshSilentChildSessions,
+  dshSubagentTurns,
+  dshSubagentUsage,
+} from './message';
+import {
+  DSH_STREAM_FAILURE_TYPE,
+  DSH_SUBAGENT_FINISHED_METHOD,
+  DSH_TURN_END_TYPE,
+  dshChildSessionIdentities,
+} from './protocol';
+import {
+  DSH_PACKAGE_NAME,
+  loadDshSdk,
+  type DshHarness,
+  type DshNotification,
+  type DshRuntime,
+  type DshSessionHandle,
+} from './sdk';
 import {
   createDshStreamTapGate,
   DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH,
@@ -63,6 +93,24 @@ const logger = createLogger('agents/dsh');
 /** 与 SDK 内部 `session()` 的生成口径逐字一致（`session-` + 去掉连字符的 uuid），便于与 dump 对照。 */
 function mintSessionId(): string {
   return `session-${randomUUID().replaceAll('-', '')}`;
+}
+
+/**
+ * 读 adopt 出来的会话的有效 cwd，**失败给 `null`**（只用于 DEBUG 日志那一格）。
+ *
+ * 为什么吞错：这一格是**观测**，不是运行前提。`session/working-directory/get` 是一次真实 wire
+ * 往返（runtime 已收场、超时、连接断了都会拒），写成不可失败的表达式就等于让「读一个排障读数」
+ * 拥有把整轮折成 `AGENT_FAILED` 的权力——观测手段没有资格制造失败。
+ * 读不到与「没有这一格」在日志里都是 `null`，这是可接受的降级（真值仍在会话自己的 cwd 里）。
+ */
+async function readWorkingDirectoryOrNull(
+  session: { getWorkingDirectory?: () => Promise<string> },
+): Promise<string | null> {
+  try {
+    return (await session.getWorkingDirectory?.()) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -185,6 +233,12 @@ export interface DshRoutePatchInput {
    * 「插件在、没人认领」或「有人认领、等待档却先到点收场」——两种都只在真机上现形。
    */
   askUserAnswerer?: boolean;
+  /**
+   * 这一轮挂没挂**人工消息面**（= 调用方传了开着的 `inject` 端口，见 `inject.ts`）：
+   * `'round'` 档与撤回都只能走进程内插件 ⇒ 这一格决定插不插那一行。
+   * 没挂 ⇒ 一行都不插、插件也不落盘（「不进人工消息就一处都不动」在磁盘上就是这样）。
+   */
+  injectMessages?: boolean;
 }
 
 /**
@@ -254,6 +308,14 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
         '      name: "./aieval-ask-answerer.mjs"',
       ]
       : []),
+    // 人工消息面（见 `inject.ts`）：契约的 `'round'` 档与「撤回已投递」在 wire 上都没有落点，
+    // 只能由这一行插件在 runtime 进程内接出来。**只在挂了注入端口时**才有这一行。
+    ...(input.injectMessages === true
+      ? [
+        '    - id: aieval-inject',
+        '      name: "./aieval-inject.mjs"',
+      ]
+      : []),
     // MCP：一台 server = 一行 `@deepseek-ai/dsh-mcp-client`，**同样走 insert**
     // （顶层 `- id:` 只能改或禁既有行）。空集时这里一行都不加——不写空壳行。
     ...toDshMcpPluginLines(input.mcpServers ?? {}),
@@ -268,7 +330,7 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
  * 白名单算「子智能体那一份」用量，而投影在流的外面（骨架逐条调用 `project`）——
  * 流里那个 `const childSessions` 投影根本看不见。
  */
-export interface DshRunState {
+export interface DshRunState extends DshProjectionRunState {
   /** 本行的**子会话白名单**：只在这里面的会话才计入「子智能体那一份」 */
   childSessions: Set<string>;
   /** 已收场的子会话（`subagent.finished`）：投影据此把「收场了却没报用量」判成事实缺失（null） */
@@ -285,6 +347,15 @@ export interface DshRunState {
    * `null` = 还没采到（不是「清单是空的」）。
    */
   skillCatalog: string[] | null;
+  /**
+   * 派发记账三格（见 `DshProjectionRunState` 的说明）：厂商的 `subagent.*` 通知里没有派发调用 id，
+   * 而子任务行要落进界面上的某一轮就必须有它（或一个有区分力的名字）⇒ 投影在父会话的 `tool/call`
+   * 上记一笔、目录项到时认领一次，收尾那条再带上同一格。三格都**必需**（不是可选）：
+   * 少传一格就是「派发行永远落不进任何一轮」这种静默故障。
+   */
+  dispatchStarts: Map<string, DshDispatchStart>;
+  claimedDispatches: Map<string, string>;
+  deliveredStarts: Map<string, string>;
 }
 
 /**
@@ -307,10 +378,11 @@ export interface DshRunState {
  *      （没有 `params.sessionId`），它们正是「谁是子会话」的唯一来源，丢了就再也认不出来；
  *   2. **本会话（`sessionId` 参数那个 id）的事件一律放行**；
  *   3. **已发现的子会话的事件放行**。子会话靠 `subagent.started` 载荷里的身份认出来
- *      （真机：`subagentId` 就是子会话 id）；第一条子会话事件没有义务带这个身份
- *      （实测它带 `sessionId` 但**不带** `subagentId`）⇒ 那一条可能被挡掉，
- *      从第二条起就通了。挡掉的只是「子会话的第一个事件」，状态与后续消息照常到达
- *      （读侧按 `subagentId` 覆盖累积，对缺开头本来就宽容）。
+ *      （真机那一对是 `{parentSessionId, childSessionId}`——身份格是 `childSessionId`，
+ *      见 `protocol.ts` 的 `dshChildSessionIdentities`）；子会话的**第一条**事件有没有义务带身份
+ *      取决于厂商是哪一档派发，缺开头时那一条可能被挡掉，从第二条起就通了。
+ *      挡掉的只是「子会话的第一个事件」，状态与后续消息照常到达
+ *      （读侧按会话 id 覆盖累积，对缺开头本来就宽容）。
  *
  * 为什么不干脆「凡带 sessionId 的都放行」：同一个 harness 实例在多行之间共享，
  * 放行全部会话等于把**别的行**的事件混进这一行的落盘文件——那比丢几条更难查。
@@ -321,9 +393,30 @@ function notificationStream(
   prompt: string,
   runState: DshRunState,
   tap: DshStreamTapGate,
+  runPrompt: (prompt: string) => Promise<unknown>,
+  /** 「我们自己已经发起关闭了」的读法（见 `disposeRuntime` 那一格的注释） */
+  isClosing: () => boolean,
+  /**
+   * **收流前**的等待钩子（`settled` 之后、`break` 之前调一次）：返回 `true` 表示「真等过」，
+   * 循环要回到顶部把这段时间里到达的通知消费掉。`null` = 不等。
+   *
+   * 为什么由外面传进来：本函数是模块级的，看不到 `startDsh` 里的 `runState` / `sessionId` /
+   * 运行时句柄；而「等子会话收场」要读这三样。
+   */
+  beforeSettle: (() => Promise<boolean>) | null,
 ): AsyncIterable<unknown> {
   return {
     async *[Symbol.asyncIterator]() {
+      /**
+       * **投送计数**：过滤器对每条被投送的通知调用一次，与 `received` 的差额是
+       * 「断在消费侧还是投送侧」的唯一判据（排障的关键一格）。
+       *
+       * ⚠️ 声明在 `subscribe()` **之前**：过滤器可能被同步调用，而闭包里的 `let` 那时还没初始化
+       * （TDZ 抛错会被 SDK 判成「过滤器抛错」⇒ 这条订阅当场 detach，整段对话静默消失）。
+       */
+      let deliveredNotifications = 0;
+      /** 收流前那次等待只做一次（等完要回到循环顶部消费通知，不能每圈都等） */
+      let settleWaited = false;
       const subscription = harness.client.subscribe((notification: DshNotification) => {
         deliveredNotifications += 1;
         /**
@@ -339,8 +432,16 @@ function notificationStream(
          * 「这一轮的内容全不要了」。
          */
         try {
-          noteChildSession(notification, sessionId, runState.childSessions);
-          noteFinishedChildSession(notification, runState.finishedSessions);
+          noteChildSession(notification, sessionId, runState.childSessions, runState);
+          /**
+           * 这两笔登记发生在**过滤器**里（投送时），而投影在消费时读它们 ⇒ 投影可能提前看到
+           * 「一条之后才轮到的事实」（已收场集合里先有了下一个子会话）。后果只有一种、
+           * 且是安全方向：`subagentTokens` / `subagentTurns` 可能**早一条**变成 `null`
+           * （「没采到」），而那个事实本身是真的——下一批带轮次的出口会把同一个结论再交一次。
+           * 反过来把登记挪到消费侧则不安全：子会话的**第一条**事件会在它的 `subagent.started`
+           * 还没被消费时到达过滤器，那时白名单里没有它 ⇒ 整条子会话的内容被挡掉。
+           */
+          noteFinishedChildSession(notification, sessionId, runState.finishedSessions);
           return acceptsRunNotification(notification, sessionId, runState.childSessions);
         } catch (error) {
           logger.error('dsh 通知过滤器抛错（已 fail-open 放行该条；订阅若被 SDK 判死会另记 ERROR）', {
@@ -353,25 +454,25 @@ function notificationStream(
       });
       /**
        * **会话已知表**（stream-tap 的放行判据，见 `stream-tap.ts` 的门闸注释）：
-       * 自己的会话先入；每放行一条真通知，把它带出的会话身份（`params.sessionId` 与
-       * `subagent.*` 通知的子会话三级兜底）记进来。子会话的增量行必须等 `subagent.started`
-       * **投影之后**才放——`sessionIdProfileSubagent` 只认登记过的 id，早放会把子智能体的话
-       * 挤进主会话同 step 号的载体。
+       * 自己的会话 + **本行已登记的子会话**先入（`runState.childSessions` 与放行判据同一份事实，
+       * 由过滤器在收到 `subagent.started` 时写入）；每放行一条真通知，再把它带出的会话身份
+       * （`params.sessionId` 与 `subagent.*` 通知的子会话三级兜底）记进来。子会话的增量行必须等
+       * `subagent.started` **投影之后**才放——`dshSubagentIdOf` 只认登记过的 id，
+       * 早放会把子智能体的话挤进主会话同 step 号的载体。
+       *
+       * ⚠️ 播种必须带 `runState.childSessions`：这张表是**每条活动区间一份**（追问会再造一条），
+       * 只放自己的会话 id 会让上一轮登记过的子会话在追问区间里重新变成「未知」——
+       * 那些增量行被门闸挂住，最后随 `tap.close()` 一起丢掉（子智能体的话缺一段，零报错）。
        */
-      const knownSessions = new Set<string>([sessionId]);
+      const knownSessions = new Set<string>([sessionId, ...runState.childSessions]);
       const noteKnown = (notification: DshNotification): void => {
         const sid = readSessionId(notification);
         if (sid !== null) knownSessions.add(sid);
-        for (const identity of childSessionIdentities(notification)) knownSessions.add(identity);
+        for (const identity of childSessionIdentities(notification, sessionId)) knownSessions.add(identity);
       };
       let settled = false;
       /** 已放行的通知条数（失败上报时用它说明「断在哪」：收到 N 条之后就再没有了） */
       let received = 0;
-      /**
-       * **客户端投递**给我们的通知条数（SDK 对每条通知都会调用一次过滤器 ⇒ 这里就是投送总量）。
-       * 它与 `received` 的差额是「断在消费侧还是投送侧」的唯一判据（排障的关键一格）。
-       */
-      let deliveredNotifications = 0;
       /** 最后一次收到通知的时刻（停滞判据的输入） */
       let lastNotificationAt = Date.now();
       /** 这一轮有没有见过终态信号 `turn/end`（dsh 的终结信号，见《进程生命周期》） */
@@ -389,7 +490,7 @@ function notificationStream(
       let streamFailure: unknown = null;
       let runPromise: Promise<unknown>;
       try {
-        runPromise = harness.run(prompt, { sessionId });
+        runPromise = runPrompt(prompt);
       } catch (error) {
         subscription.close();
         tap.close();
@@ -422,9 +523,34 @@ function notificationStream(
        * 判据：把在飞的 promise 记住并复用（`pendingNext`），它 settle 之后才允许再建一个。
        */
       let pendingNext: Promise<{ notification: DshNotification | null }> | null = null;
+      /**
+       * **等待者已经交出来的那条通知**（跨迭代保留）。
+       *
+       * 为什么必须单独存一份：竞速有三条路（`next()` / run 落定 / tap 拍），而 `next()` 的等待者
+       * 一旦被 `push()` resolve，那条通知就**离开了 SDK 的队列**（`tryNext()` 再也看不到它）。
+       * 竞速若判另外两条路赢，这条值就只存在于一个没人持有的已 settle promise 里 ⇒ 静默丢掉。
+       * 所以 `nextOrSettled()` 在 resolve 的那一刻把它记进这里，消费侧每次迭代先看这一格。
+       */
+      let inHand: { notification: DshNotification | null } | null = null;
+      /**
+       * 取出「等待者已经交出来的那条」并**立刻从 `inHand` 摘掉**（取到即消费，避免同一条放行两次）。
+       *
+       * 为什么写成函数而不是内联判断：那两处判断之间隔着一次 `await`（收尾栅栏的 0 ms 拍子），
+       * 而等待者的 `.then` 正是在那段时间里把值写进 `inHand` 的。内联判断会让 TS 的控制流分析
+       * 认定「前面查过了、这里必然是 null」，把分支收成 `never`（编译期红）——函数调用会重置这条推断。
+       */
+      const takeInHand = (): DshNotification | null => {
+        const held = inHand;
+        if (held === null || held.notification === null) return null;
+        inHand = null;
+        return held.notification;
+      };
       const nextOrSettled = (): Promise<{ notification: DshNotification | null }> =>
         (pendingNext ??= subscription.next().then(
-          (notification) => ({ notification }),
+          (notification) => {
+            inHand = { notification };
+            return inHand;
+          },
           /**
            * 订阅 reject 有**两种**截然不同的含义，而原实现把它们当成同一件事（静默返回 `null`）：
            *   · **`close()`**（我们自己收尾调用的）⇒ 正常结束，流就该结束；
@@ -437,12 +563,18 @@ function notificationStream(
            */
           (error: unknown) => {
             /**
-             * 只有**run 还没落定**时的拒绝才算「投送中途死掉」：`finally` 里我们自己的
-             * `close()` 同样会 reject 挂起的等待者（真实语义），那属于正常收尾——
-             * 不加这一条，每次用户终止都会平白多一条「通知流中断」。
+             * 只有**run 还没落定、而且不是我们自己发起的关闭**时，这个拒绝才算「投送中途死掉」。
+             * `finally` 里的 `close()` 与 `disposeRuntime` 走的 `runtime.close()` 同样会 reject
+             * 挂起的等待者（真实语义），那属于预期收场。
+             *
+             * 两个条件缺一不可：`!settled` 单看是不够的——关闭运行时是**同步**终结订阅的
+             * （SDK 的 `failSubscriptions` 遍历订阅表，我们这条建得比它内部那条早 ⇒ 先被拒），
+             * 而 `run()` 的 promise 要到下一个微任务才落定 ⇒ 每次终止都恰好落在 `settled` 还是
+             * `false` 的那一刻，于是平白多一条「通知流中断…执行日志因此不完整」。
              */
-            if (!settled) streamFailure ??= error;
-            return { notification: null };
+            if (!settled && !isClosing()) streamFailure ??= error;
+            inHand = { notification: null };
+            return inHand;
           },
         ).finally(() => {
           // 这一份已经 settle ⇒ 允许下一次迭代再建一个（复用而不是遗弃，孤儿因此不可能出现）
@@ -465,7 +597,71 @@ function notificationStream(
             yield* tap.drain(knownSessions);
             continue;
           }
-          if (settled) break;
+          /**
+           * **等待者已经交出来的那条**：竞速可能判「没有通知」那一路赢（run 落定 / tap 拍），
+           * 而它已经在 `push()` 的那一刻离开了 SDK 的队列 ⇒ 只能从这里取。
+           */
+          const handed = takeInHand();
+          if (handed !== null) {
+            received += 1;
+            lastNotificationAt = Date.now();
+            if (notificationEventType(handed) === DSH_TURN_END_TYPE) sawTurnEnd = true;
+            yield handed;
+            noteKnown(handed);
+            yield* tap.drain(knownSessions);
+            continue;
+          }
+          /**
+           * **收尾栅栏**：`settled` 只说明「不会再新建等待者」，不等于「在飞的那一个没有值」。
+           *
+           * 竞速会把已经交给等待者的那条通知丢掉：SDK 的 `push()` 是「有等待者就 resolve 它、
+           * 没有才入队」，而 `pendingNext` 是 `next().then(…).finally(…)` 三段链，
+           * 比 `runPromise.then(…)` 多两跳——一批通知与 run 落定撞进同一个宏任务时，
+           * 批头那条已经被交给等待者、竞速却判 run 赢，循环回到这里时 `tryNext()` 是空的、
+           * `settled` 又是真 ⇒ 直接 break，那条值再没人读。
+           * 真机读数（约 160 次运行命中 1 次）：`deliveredNotifications: 25, receivedNotifications: 24,
+           * sawTurnEnd: false`，同一轮照旧 `exitReason: 'completed'`。最坏形状是丢掉的那条正好是
+           * `turn/end(kind:'error')` ⇒ **失败的运行被判成功**。
+           *
+           * 判据是**零墙钟**的：`pendingNext` 若已经 settle，它的微任务在下面这个 0 ms 宏任务
+           * 之前就跑完了（那条通知会被取出来交给投影）；真没有值时才由 0 ms 那一档放行退出——
+           * 不给正常收尾塞进任何与内容无关的等待预算。
+           */
+          if (settled) {
+            /**
+             * 判据是**零墙钟**的：一个 0 ms 宏任务拍子足以让已经 settle 的等待者把值写进
+             * `inHand`（它的微任务先于宏任务跑完）；真没有值时才放行退出——
+             * 不给正常收尾塞进任何与内容无关的等待预算。
+             */
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 0);
+              // 只等一个宏任务拍子，且不让它把进程留活（Node 的 Timeout 带 unref）
+              (timer as { unref?: () => void }).unref?.();
+            });
+            const tail = takeInHand();
+            if (tail !== null) {
+              received += 1;
+              lastNotificationAt = Date.now();
+              if (notificationEventType(tail) === DSH_TURN_END_TYPE) sawTurnEnd = true;
+              yield tail;
+              noteKnown(tail);
+              yield* tap.drain(knownSessions);
+              continue;
+            }
+            /**
+             * **根会话已经 idle，但白名单里还有子会话没收场** ⇒ 先把它们等出来再收流。
+             *
+             * 为什么必须在这里等而不是在释放时等：分量（`subagentTokens` / `subagentTurns`）与子任务
+             * 终态是**收流之后 `finalize` 现算**的，等在释放那一步就改不了任何结果；而此刻子会话的
+             * `turn/end` / `subagent.finished` 与它的用量读数还有机会被投影。
+             * 只做一次；等完回到循环顶部把这段时间里到达的通知消费掉。
+             */
+            if (!settleWaited && beforeSettle !== null) {
+              settleWaited = true;
+              if (await beforeSettle()) continue;
+            }
+            break;
+          }
           /**
            * **tap 轮询拍**（stream-tap 的关键一环）：流式期间厂商通知流是**静默**的——
            * 一个 step 内没有任何 session 事件，增量只在旁路文件里长。没有这一拍，
@@ -482,11 +678,20 @@ function notificationStream(
            */
           const { notification } = await Promise.race([
             ...(streamFailure === null ? [nextOrSettled()] : []),
-            runPromise.then(() => ({ notification: null })),
+            /**
+             * `run()` 的落定与**拒绝**都只是「不会再有新的通知了」：拒绝的原因已经由上面那条
+             * `runPromise.then(…, …)` 记进 `runError`，在这里再把它抛出去会**跳过收尾排空**——
+             * 队列里可能正躺着 `turn/end(kind:'error')`（厂商原文，比 SDK 的异常信息更有归因价值），
+             * 而循环的 `finally` 会连同订阅一起把它丢掉。故两条路径都收成同一个 `null`：
+             * 先把队列读完，出循环之后再抛 `runError`。
+             */
+            runPromise.then(() => ({ notification: null }), () => ({ notification: null })),
             tapWake,
           ]);
           if (tapTimer !== undefined) clearTimeout(tapTimer);
           if (notification !== null) {
+            // 这一条是竞速从等待者手里拿到的 ⇒ 把 `inHand` 里的同一份清掉，别在下一次迭代再放一遍
+            inHand = null;
             received += 1;
             lastNotificationAt = Date.now();
             if (notificationEventType(notification) === DSH_TURN_END_TYPE) sawTurnEnd = true;
@@ -507,6 +712,7 @@ function notificationStream(
           received,
           sawTurnEnd,
           silentMs: Date.now() - lastNotificationAt,
+          closing: isClosing(),
         });
         if (end.kind === 'failed' || end.kind === 'stalled') {
           logger.error(
@@ -523,6 +729,21 @@ function notificationStream(
             },
           );
           yield streamFailureNotification(sessionId, end.reason, received);
+        } else if (end.kind === 'unknown') {
+          /**
+           * **没见过 `turn/end`、静默也没超过阈值**：界面上一律不报（没有证据就别编一个故障），
+           * 但**服务端要留一条痕**——失败通道只有 `turn/end` 一条，而「收尾那条通知已经被
+           * `shift()` 出来、却在竞速里没人读它的值」这条路径会把它整条丢掉（见 FAQ 的
+           * `24 / 24 / 25 / 25` 条）：那时这一行照旧判成功，且**任何日志、任何事件都没有**，
+           * 排障只能去翻厂商会话日志。这一条 WARN 就是那种形状的唯一线索。
+           */
+          logger.warn('dsh 通知流结束但整轮没收到 turn/end（结论不改写：界面不报，这里留痕）', {
+            sessionId,
+            deliveredNotifications,
+            receivedNotifications: received,
+            silentMs: Date.now() - lastNotificationAt,
+            sawTurnEnd,
+          });
         }
         // 队列已空、run 也已落定：若它是**拒绝**收场的，把原因抛出去。
         // 注意顺序——先 drain 再抛：`turn/end(kind:'error')` 那条通知可能已经在队列里，
@@ -549,16 +770,24 @@ function notificationStream(
 export const DSH_SILENT_STALL_MS = 5_000;
 
 /**
- * 循环退出时的**四种收场**（纯函数，故可单独钉住——这是「执行日志为什么是空的」的唯一答案来源）：
- *   · `ok`      —— 正常：见过 `turn/end`，或本来就是 `runError` 收场（失败归因另有出口）；
- *   · `failed`  —— 订阅被 SDK 判死（`fail(error)`：过滤器抛错 / 传输读循环死）；
- *   · `stalled` —— **没有报错，但投送就是停了**：没见过 `turn/end` 且静默超过阈值。
+ * 循环退出时的**五种收场**（纯函数，故可单独钉住——这是「执行日志为什么是空的」的唯一答案来源）：
+ *   · `ok`      —— 正常：见过 `turn/end`（`runError` 收场不走这一档：它在流末尾直接抛出去，
+ *     归因交给骨架——见 `notificationStream` 收尾那一段）；
+ *   · `failed`  —— 订阅被 SDK 判死（`fail(error)`：过滤器抛错 / 传输读循环死）。
+ *     ⚠️ 这一档**先于**「我们自己关的」判：投送真的死过一次的运行，即使随后又走到终止，
+ *     也必须如实说「内容不全」——那一次是真的丢了；
+ *   · `closed`  —— **我们自己发起的关闭**（用户终止 / 看门狗 / 停机 / 收尾）之后流断了。
+ *     流断在这里是**预期收场**：关闭运行时会同步终结订阅、之后也不会再有通知，
+ *     「没收到 `turn/end`」与「静默超过阈值」都只是这个事实的另一面。**不报**——
+ *     否则每一次终止都会往该行事件流里落一句「执行日志因此不完整」，而其实一条都没丢；
+ *   · `stalled` —— **没有报错、也不是我们关的，但投送就是停了**：没见过 `turn/end` 且静默超过阈值。
  *     真机第二次重跑（attempt 2）就是这一种：厂商会话日志 245 KB 内容齐全，我们 13 条之后再无音信。
  *   · `unknown` —— 没见过 `turn/end`，但静默没超过阈值（多半是夹具那种「事件吐完就落定」的形状）
  *     ⇒ **不报**：没有证据就不要编一个故障。
  */
 export type DshStreamEnd =
   | { kind: 'ok' }
+  | { kind: 'closed' }
   | { kind: 'failed'; reason: string }
   | { kind: 'stalled'; reason: string }
   | { kind: 'unknown' };
@@ -571,11 +800,14 @@ export function diagnoseStreamEnd(input: {
   received: number;
   sawTurnEnd: boolean;
   silentMs: number;
+  /** 这个拒绝 / 这段静默是不是发生在**我们自己发起的关闭**之后（见上面 `closed` 那一档） */
+  closing: boolean;
 }): DshStreamEnd {
   if (input.failure !== null && input.failure !== undefined) {
     const reason = input.failure instanceof Error ? `${input.failure.name}: ${input.failure.message}` : String(input.failure);
     return { kind: 'failed', reason };
   }
+  if (input.closing) return { kind: 'closed' };
   if (input.sawTurnEnd) return { kind: 'ok' };
   if (input.silentMs < DSH_SILENT_STALL_MS) return { kind: 'unknown' };
   return {
@@ -653,44 +885,67 @@ export function acceptsRunNotification(
 /**
  * 认出「这一条通知说的是一个子会话」并把它的 id 记下来（放行规则 ③ 的唯一依据）。
  *
- * 两个来源，缺一不可：
- *   · **顶层通知** `subagent.started` / `subagent.finished`：身份在 `params.subagentId`
- *     （它就是子会话 id，与随后子会话事件里的 `params.sessionId` 同值）；
- *   · **子会话事件自带 `subagentId`**：某些事件（如 `subagent/catalog` 或带身份的会话事件）
- *     会带上它，此时不必等顶层通知。
+ * 三个来源（取值规则住在 `protocol.ts` 的 `dshChildSessionIdentities`，缺一不可）：
+ *   · **顶层通知** `subagent.started` / `subagent.finished`：身份在 `params.childSessionId`
+ *     （与随后子会话事件里的 `params.sessionId` 同值；`subagent.finished` 另有同值的 `agentId`）；
+ *   · **子会话事件自带身份格**：某些事件（如 `subagent/catalog`）会带上它，此时不必等顶层通知；
+ *   · **信封 `params.sessionId`（`subagent/descriptor` 那一档）**：身份就在信封里 ⇒
+ *     少了它，子会话的事件被挡掉、它的 tok 也不算进「子智能体那一份」。
  *
- * `ownSessionId` 用来排除「主会话自己带了 subagentId」的误判（今天没有这种样本，
- * 但把主会话登记成子会话会让它的事件被重复放行，代价是重复内容而不是报错——预防比排查便宜）。
+ * `ownSessionId` 用来排除「主会话自己的信封 id」与信封那一格的自我登记
+ * （把主会话登记成子会话会让它的事件被重复放行，代价是重复内容而不是报错——预防比排查便宜）。
+ *
+ * 导出是为了让「信封那一格也算身份」这条判据可被单独钉住：它的失效形状是
+ * 「子智能体的话与它的 tok 一起消失」，在整链用例里很容易被别的断言盖过去。
  */
-function noteChildSession(
+export function noteChildSession(
   notification: DshNotification,
   ownSessionId: string,
   childSessions: Set<string>,
+  /**
+   * 本行的取数面：给了就顺手记下「这个子会话**在本次 run 登记它时**已有的累计量」。
+   *
+   * 为什么必须有这一格：`sessionUsage` 与按会话的往返计数都是**模块级、跨 run 不清**的
+   * （同一个子会话 id 在追问 / 续接的下一个 run 里会被重新登记），而「子智能体那一份」问的是
+   * **本 run** 的增量 ⇒ 没有基线，第二个 run 的分量会把前一个 run 一起算上
+   * （真机形状：行快照上出现「合计 60 / 子分量 2010」）。基线只记一次：同一个 id 在本 run 内
+   * 再登记也不覆盖。
+   */
+  runState?: {
+    childUsageBaseline?: Map<string, UsageTokens>;
+    childTurnsBaseline?: Map<string, number>;
+  },
 ): void {
-  for (const identity of childSessionIdentities(notification)) {
+  for (const identity of childSessionIdentities(notification, ownSessionId)) {
     if (identity === ownSessionId) continue;
+    if (childSessions.has(identity)) continue;
     childSessions.add(identity);
+    if (runState === undefined) continue;
+    runState.childUsageBaseline ??= new Map<string, UsageTokens>();
+    runState.childTurnsBaseline ??= new Map<string, number>();
+    if (!runState.childUsageBaseline.has(identity)) {
+      const snapshot = dshSessionUsageOf(identity);
+      if (snapshot !== null) runState.childUsageBaseline.set(identity, snapshot);
+      else runState.childUsageBaseline.set(identity, { input: 0, cached: 0, output: 0, reasoningOutput: null, total: null });
+    }
+    if (!runState.childTurnsBaseline.has(identity)) {
+      runState.childTurnsBaseline.set(identity, dshSessionRoundOf(identity) ?? 0);
+    }
   }
 }
 
 /**
- * 一条通知里可能出现的**子会话身份**（三级兜底，真机逐条核过）：
- *   · 本机形状给 **`subagentId`**（与随后子会话事件里的 `params.sessionId` 同值）；
- *   · 规范描述的另一种形状给 `agentId`（与 `childSessionId` 同值）；
- *   · 再兜 `childSessionId`。
- * 三个名字指的是**同一个东西**，哪一格有值随版本/通道而变 ⇒ 全认；登记多一个不存在的 id 是无害的
- * （没有任何事件会带它），漏登记才有害。
+ * 一条通知里的子会话身份：**取值规则住在 `protocol.ts`**（`dshChildSessionIdentities`，
+ * 白名单登记与收场登记共用同一份，两处各写一遍必然漂移）。
  *
- * ⚠️ 必须是**唯一一份**：白名单登记（`noteChildSession`）与收场登记（`noteFinishedChildSession`）
- * 各写一遍的话，形状一变就会出现「白名单认得出、收场认不出」——症状正是 `null` 静默降级成
- * `{0,0,0}`（把「没采到」说成「确实没有」）。
+ * ⚠️ 唯一一条本地的补充是**信封排除**：信封 `params.sessionId` 等于本会话 id 时不算子会话
+ * （投影的 `session.event` 一律带它，会把本会话登记成自己的子会话）。
+ * `subagent/descriptor` 那一档靠的就是信封那一格——真机上 `subagent` 工具派发只投它。
  */
-function childSessionIdentities(notification: DshNotification): string[] {
+function childSessionIdentities(notification: DshNotification, ownSessionId: string): string[] {
   const params = notification.params;
   if (params === undefined) return [];
-  return [params.subagentId, params.childSessionId, params.agentId].filter(
-    (candidate): candidate is string => typeof candidate === 'string' && candidate !== '',
-  );
+  return dshChildSessionIdentities(params).filter((identity) => identity !== ownSessionId);
 }
 
 /**
@@ -701,9 +956,13 @@ function childSessionIdentities(notification: DshNotification): string[] {
  * 而它们的唯一来源就是这条通知流（同一条通知先进这里、再决定放不放行）。
  * 身份取值与白名单**同源**（`childSessionIdentities`）。
  */
-function noteFinishedChildSession(notification: DshNotification, finished: Set<string>): void {
+function noteFinishedChildSession(
+  notification: DshNotification,
+  ownSessionId: string,
+  finished: Set<string>,
+): void {
   if (notification.method !== DSH_SUBAGENT_FINISHED_METHOD) return;
-  for (const identity of childSessionIdentities(notification)) finished.add(identity);
+  for (const identity of childSessionIdentities(notification, ownSessionId)) finished.add(identity);
 }
 
 /**
@@ -722,6 +981,18 @@ function noteFinishedChildSession(notification: DshNotification, finished: Set<s
  *   · 没有 id 时**一条都不发**：判据是 `dshSilentChildSessions`（与 `dshSubagentUsage` 的 `null` 档
  *     同源），空列表说明两处漂移了，此时宁可不出声也不要落一条没有名字的 WARN。
  */
+function unsettledSubagentWarns(runState: DshRunState): AgentEventDraft[] {
+  const pending = [...runState.childSessions].filter((id) => !runState.finishedSessions.has(id));
+  if (pending.length === 0) return [];
+  return [
+    logDraft(
+      'stderr',
+      `[WARN] 释放运行时之前没能等到子会话 ${pending.join('、')} 收场：它们的用量与轮次分量给不出`
+        + '（按「事实缺失」交 null，不按 0 计——运行一释放它们就被掐死，不会再有读数）',
+    ),
+  ];
+}
+
 function silentSubagentWarns(runState: DshRunState): AgentEventDraft[] {
   const silent = dshSilentChildSessions(runState);
   if (silent.length === 0) return [];
@@ -736,6 +1007,140 @@ function silentSubagentWarns(runState: DshRunState): AgentEventDraft[] {
 }
 
 /**
+ * 插件面的**点名 WARN**：这一轮配了人工消息面 / 应答面，但**整轮没有等到插件的加载收据**。
+ *
+ * 为什么必须有它：插件没被厂商加载或激活时，这一侧**所有**出口都是静默的——
+ *   · 人工消息面：投递流水写了没人读（`steered` 收据永远不来）、撤回拿不到结果，
+ *     最坏是人工消息永远不投、一直等到编排层的超时；
+ *   · 应答面：提问流水永远是空的（模型的问题落回厂商自己的等待档或超时）。
+ * 而厂商那边只会在它的 stderr 留一行 `N entries did not activate`（加上一条详情）——
+ * **适配器不读它的 stderr**（正常收场时 SDK 的 `stderrTail` 也是 0 行）。于是「功能没了」与
+ * 「这一轮没人发消息」在界面上长得一模一样。真机形状（受控实验：让插件在加载期抛错）：
+ * 进程照旧存活、运行照旧成功，只是那两座桥从此哑掉。
+ *
+ * 口径与前几条 WARN 同尺：**只说话、不改结论、不改观测格**（这一轮的投递/提问事实本来就是空的，
+ * 补一个假事实比不出声更坏）；两座桥**各说各的**（配了哪一个就只报哪一个）。
+ */
+function pluginWarns(input: {
+  injectBridge: DshInjectionDriver | null;
+  askBridge: DshAskAnswererBridge | null;
+}): AgentEventDraft[] {
+  const drafts: AgentEventDraft[] = [];
+  const injectLoaded = input.injectBridge?.pluginLoaded() ?? null;
+  /**
+   * ⚠️ **不按「加载那一刻的 `hasAgents`」报警**：插件自己写明加载那刻多半取不到服务（服务由另一行
+   * 插件 provide，加载顺序不保证），投递时才是现取的；真机复跑证实「加载行 false、同一轮的 `steered`
+   * 行 true」。真正失败的形状（投递回 `agent-not-found`）由 `handleReceipt` 的失败分支点名。
+   */
+  if (input.injectBridge !== null && injectLoaded === null) {
+    drafts.push(
+      logDraft(
+        'stderr',
+        '[WARN] 人工消息面配了插件，但整轮没等到它的加载收据：这一轮的人工消息**投不进模型**、'
+          + '撤回也拿不到结果（界面上与「没人发消息」长得一样）。厂商侧只会留一行 '
+          + '`did not activate`（适配器不读它的 stderr）——请查 <DSH_HOME> 下那份插件文件与厂商启动日志',
+      ),
+    );
+  }
+  if (input.askBridge !== null && input.askBridge.pluginLoaded() === null) {
+    drafts.push(
+      logDraft(
+        'stderr',
+        '[WARN] 提问应答面配了插件，但整轮没等到它的加载收据：模型提的问题不会到达提问端口'
+          + '（落回厂商自己的等待档），人的答复也交不回模型。厂商侧只会留一行 `did not activate`'
+          + '——请查 <DSH_HOME> 下那份插件文件与厂商启动日志',
+      ),
+    );
+  }
+  return drafts;
+}
+
+/**
+ * 技能面的**点名 WARN**：这一轮装了 N 条技能，却一次都没观测到厂商的技能目录。
+ *
+ * 为什么必须有它：厂商**首次发布且这次会话里零条技能**时根本不投 `skill-catalog` 那条消息
+ * （`dsh-tool-skill` 的 `if (!history.published && skills.length === 0) return;`）⇒ 观测格
+ * `vendor-system.skills` 给不出数，而「我们装进去的技能被厂商**全丢了**」（frontmatter 不合它的
+ * YAML 判据、键名被它拒收…）与「厂商就是没投」在 wire 上是**同一格 `null`**——`deriveRowSkillInstall`
+ * 因此读成 `unverified`，界面显示「未能核验」，**行照跑照出分**。真机读数：10 条臂里 7 条一次
+ * `[]` 都没读到，其中 3 条磁盘上确实物化好了技能、厂商一条都没认领 ⇒ 这一格必须有人说话。
+ *
+ * 三条口径：
+ *   · **只在「装了 ≥1 条」且「一次都没观测到目录」时发**：装了 0 条时厂商不投是设计（真机 `[]`
+ *     与 `null` 的差别本来就在这里），没装却报警会把常态刷成噪声；
+ *   · **不改结论、不改观测格**：这一格仍然是 `null`（采不到），WARN 只是把「说不清」说出来——
+ *     把 `null` 补成 `[]` 会把另两种厂商不投的情况（发现不完整 / `skill` 工具没挂）误判成失败；
+ *   · **点名到条数**：文案要说清「装了几条」与「厂商一条都没认领」，否则读的人无法判断该不该查。
+ */
+/**
+ * **续接段要了非 full 档，而厂商这一会话的档位观测不到** ⇒ 点名 WARN。
+ *
+ * 厂商把权限档当**会话属性**：`permission/preset` 只在会话起手投一条（续接段不重投，真机
+ * `vendor-system.permissionMode` 在续接段恒 `null`），而实际生效的是**首次创建那条会话时的档**
+ * ——本段拿不到这个读数。真机反例（R4-A 的 F1）：首段 `full` 建会话、第二段 `read-only` + 续接，
+ * 写文件**照样成功**（对照臂：新会话 read-only 同一动作被拒）。
+ *
+ * 为什么只报非 full：`full` 那一档即使实际被降级，表现是工具报错（可见），风险方向相反；
+ * 而在只读档下静默拿到写权限是**评分阶段最不能接受**的那一类（评审者一改工作区，抽屉里的 diff
+ * 就不再是候选交的那一份）。修在编排层（对「会话起手档 vs 本次 permission」加断言）之前，
+ * 至少要让这件事有出口。
+ */
+function permissionMismatchWarns(runState: DshRunState, resumed: boolean, sessionId: string): AgentEventDraft[] {
+  const desired = runState.permissionDesired ?? null;
+  if (desired === null) return [];
+  /**
+   * **本进程里知道这条会话的档位**（早先那段观测到过，会话级记忆）⇒ 与本次要求直接对照，
+   * **两个方向都要报**：要 `full` 却拿到 `read-only` 是功能面（写工具会莫名失败），
+   * 要 `read-only` 却拿到 `full` 是安全面（评分阶段最不能接受的那一类）。
+   * 这一支与厂商重投那条（`events.ts` 的 `permission/preset`）互补：续接段厂商不重投，
+   * 只有这条能发现差异。
+   */
+  // 只在本段**没观测到**厂商重投时用会话记忆（厂商重投了的话，`events.ts` 那一支已经报过一条，
+  // 两个出口同时说话就是同一件事说两遍）
+  const known = (runState.permissionPreset ?? null) === null ? dshSessionPermissionOf(sessionId) : null;
+  if (known !== null && known !== desired) {
+    return [
+      logDraft(
+        'stderr',
+        `[WARN] 本次运行要求权限档 ${desired}，但这条会话的档位是 ${known}`
+          + '（厂商把它当会话属性：续接 / 追问都不会改）——本段实际按后者的档跑',
+      ),
+    ];
+  }
+  if (!resumed || desired === 'danger-full-access') return [];
+  // `undefined`（这一轮压根没观测到）与 `null`（显式没采到）同义：都当「观测不到档位」
+  if ((runState.permissionPreset ?? null) !== null) return [];
+  return [
+    logDraft(
+      'stderr',
+      `[WARN] 本次运行要求权限档 ${desired}，但这一轮是**续接**同一条会话：厂商把权限档当会话属性，`
+        + '本段既不重投也不改（实测 read-only + 续接照样写得进文件），实际生效的是那条会话**首次创建**时的档，'
+        + '而本段观测不到它。要在只读档下跑就别续接这条会话（新建一条）',
+    ),
+  ];
+}
+
+function skillCatalogWarns(runState: DshRunState, injectedSkillCount: number, resumed: boolean): AgentEventDraft[] {
+  if (injectedSkillCount === 0) return [];
+  if ((runState.skillCatalog ?? null) !== null && (runState.skillCatalog ?? []).length > 0) return [];
+  /**
+   * ⚠️ **续接 / 追问段不报**：厂商的 `agent/pre-step` 先扫会话历史里那条 `skill-catalog`，摘要没变
+   * 就直接 return（不重发）——「这一段没看到目录」在那里是**设计**，不是「被丢弃」。判据只能是
+   * 「会话起手那一段装了技能却没看到目录」（真机：那一段厂商必投）。
+   */
+  if (resumed) return [];
+  return [
+    logDraft(
+      'stderr',
+      `[WARN] 本次运行装了 ${injectedSkillCount} 条技能，但整轮都没观测到厂商的技能目录`
+        + '（`<available_skills>` 那条消息）：无法区分「厂商把这几条都丢了」与「厂商根本没投」——'
+        + '技能面的观测格因此是「未能核验」，这一行不会因此失败；要收口请看磁盘上 `<DSH_HOME>/skills/` 的落点'
+        + '与每条的 frontmatter（厂商用严格 YAML 解析，解析不了的文件它静默丢弃）',
+    ),
+  ];
+}
+
+/**
  * dsh 自己的持久化层文件（`profiles/sdk/cordis.patch.yml`）——适配器**不写它**。
  *
  * 留着这条常量只为让「不写它」这件事可断言：`ask_user_question` 的 `insert` 住在 per-launch overlay
@@ -745,6 +1150,20 @@ function silentSubagentWarns(runState: DshRunState): AgentEventDraft[] {
  */
 export const DSH_LEGACY_PROFILE_PATCH_RELATIVE_PATH = 'profiles/sdk/cordis.patch.yml';
 
+/**
+ * 释放运行时之前，为「还在跑的子会话」留的等待上限。
+ *
+ * 为什么需要等：`run()` 在**根**会话 idle 时就落定（厂商门面如此），而后台派出去的子智能体可能
+ * 还在跑（真机实测落定后子会话又跑了 8.6 s）。此时释放运行时会**连根拔掉**它们：
+ * `subagent.finished` 永远不来、子智能体那一份用量与轮次只到一半、子任务行没有终态。
+ * `session/wait` 正是补这条缺口的原语（等整棵子树收场），门面没包、只能走 `client.request`。
+ *
+ * 取值口径：**上限不是预算**——正常子任务以秒计，60 s 覆盖常见形状；到点就按现状收场并留一条 WARN
+ * （那说明这个子任务本身该被设计成后台作业，而不是让整行陪它等）。**终止路径不等**：
+ * 用户在等的是停机（`cancelMidTurn: false` 的代价已经登记在别处），多等一分钟是错的。
+ */
+export const DSH_SUBAGENT_DRAIN_MS = 60_000;
+
 async function startDsh(context: TurnContext): Promise<TurnStart> {
   const { input } = context;
   // **不要**在这里加「收到 `outputSchema` 就报错」的守卫：支持与否由 `run` 转发的
@@ -752,6 +1171,30 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   // 它必定不存在，再判一次是死代码。代价已登记：绕过 `run` 构造 `AgentRunInput`
   // 的旁路不报错、改为静默降级——这是「降级口径只该有一处」换来的。
   const sdk = await loadDshSdk();
+  /**
+   * **会话 id 在这里铸**（不是等运行时起来之后）：
+   *   · 续接（`input.resume`）时它就是**要 adopt 的那条**——新会话才现场铸一个；
+   *   · 人工消息面的插件要按它在 runtime 进程里找那条 `Agent`（投递流水里带的就是它），
+   *     而插件文件与 overlay 都在 `new sdk.DeepSeekHarness(...)` **之前**落盘 ⇒ 铸造必须更早。
+   * 取值口径与 SDK 内部 `session()` 逐字一致（`session-` + 去掉连字符的 uuid）。
+   */
+  const sessionId = input.resume?.sessionId ?? mintSessionId();
+  /**
+   * **续接时播种往返号**（见 `session-log.ts`）：厂商的 `turn` 跨段持久，而我们的发号表是进程局部的
+   * ⇒ 不播种的话第二段又从 1 起、与第一段 `mergeKey` 逐个撞车。读不到日志就不播种（退回今天的行为）。
+   */
+  if (input.resume !== undefined) {
+    seedDshSessionRoundHighWater(
+      sessionId,
+      countSessionSteps({ configHome: input.configHome, cwd: input.cwd, sessionId }),
+    );
+  }
+  /**
+   * 这一轮的**人工消息端口**：读**骨架包装过的那一份**（`context.inject`，恒有：缺席已由骨架
+   * 归一成关闭档，等待登记也在包装层）——适配器只剩 `available` 一个判据要读，关着 ⇒ 一格都不挂
+   * ——不插 overlay 那行、不落插件、不起桥，既有行为因此逐字不变（「零回归」的判据）。
+   */
+  const injectionPort = context.inject.available ? context.inject : null;
   // 权限档（见 `permission.ts`）：dsh 的档位**烘在启动 profile 里**（「改了必须重建运行时」），
   // 所以它不是 SDK 的一个选项，而是子进程环境里的 `DSH_PERMISSION_MODE`——`dsh-base` 的
   // `sandbox-policy` 与 `approval` 两行都读它，不设时 dsh 自己回落到 `workspace-write`。
@@ -815,6 +1258,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       maxOutputTokens: input.route.maxOutputTokens,
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
       askUserAnswerer: askAnswerer,
+      injectMessages: injectionPort !== null,
     }),
     { encoding: 'utf8', mode: 0o600 },
   );
@@ -828,6 +1272,8 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
    * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
    */
+  /** 本轮**实际装进去**的技能条数（技能面「装了却没观测到目录」那条 WARN 的判据） */
+  const injectedSkillCount = input.skills?.length ?? 0;
   if (input.skills !== undefined) {
     materializeSkills({ configHome: input.configHome, skills: input.skills });
   }
@@ -853,7 +1299,8 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const tapFilePath = join(input.configHome, DSH_STREAM_TAP_RELATIVE_PATH);
   mkdirSync(dirname(tapPluginPath), { recursive: true });
   writeFileSync(tapPluginPath, DSH_STREAM_TAP_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
-  writeFileSync(tapFilePath, '', { encoding: 'utf8' });
+  // 旁路文件里是**模型输出的逐字转录**：这里先建空文件时就要 0600（插件那边的 append 对已存在文件不改权限）
+  writeFileSync(tapFilePath, '', { encoding: 'utf8', mode: 0o600 });
   /**
    * 提问应答者的三份落盘（**同一个时序**，理由同上：装配清单在 boot 那一步读）：插件本体落
    * `configHome` 根（相对名按 `<dshHome>` 解析，与 stream-tap 同一条基准），两份 sidecar 整份清零
@@ -867,8 +1314,30 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const askRepliesPath = join(input.configHome, DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH);
   if (askAnswerer) {
     writeFileSync(askPluginPath, DSH_ASK_ANSWERER_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
-    writeFileSync(askTranscriptPath, '', { encoding: 'utf8' });
-    writeFileSync(askRepliesPath, '', { encoding: 'utf8' });
+    /**
+     * ⚠️ 两份流水的权限必须**在这里**就给 0600：它们先由本函数建成空文件，插件那边
+     * `appendFileSync(..., { mode: 0o600 })` 对**已存在**的文件是空操作（真机实测 0644）——
+     * 「提问正文 + 人的答复」对同机其他用户可读，而代码里那句 `0o600` 会让人以为已经收紧了。
+     */
+    writeFileSync(askTranscriptPath, '', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(askRepliesPath, '', { encoding: 'utf8', mode: 0o600 });
+  }
+  /**
+   * 人工消息面的三份落盘（**同一个时序**，理由同上：装配清单在 boot 那一步读）：插件本体落
+   * `configHome` 根，两份流水整份清零——投递流水是我们的追加出口（重跑同一行时上一轮的条目
+   * 绝不能被再投一次），收据流水是插件的回执（上一轮的回执同样会污染本轮的判据）。
+   *
+   * 全都在 `injectionPort` 之下：没挂端口 ⇒ 插件文件不落盘、两份流水也不建，叠加配置里那一行
+   * 同样没有（见 `buildDshRoutePatch`）。
+   */
+  const injectPluginPath = join(input.configHome, DSH_INJECT_PLUGIN_RELATIVE_PATH);
+  const injectQueuePath = join(input.configHome, DSH_INJECT_QUEUE_RELATIVE_PATH);
+  const injectReceiptsPath = join(input.configHome, DSH_INJECT_RECEIPTS_RELATIVE_PATH);
+  if (injectionPort !== null) {
+    writeFileSync(injectPluginPath, DSH_INJECT_PLUGIN_SOURCE, { encoding: 'utf8', mode: 0o600 });
+    // 同上：权限只能在这里给——插件那边的 `mode` 对已存在的文件不生效，人工消息正文会留在 0644 上
+    writeFileSync(injectQueuePath, '', { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(injectReceiptsPath, '', { encoding: 'utf8', mode: 0o600 });
   }
   const runtime: DshRuntime = new sdk.DeepSeekHarness({
     cwd: input.cwd,
@@ -889,33 +1358,217 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     reasoningEffort: input.effort ?? DSH_DEFAULT_EFFORT,
     env,
   });
-  const sessionId = mintSessionId();
-  // 在这里就把握手做完（而不是等流的第一次 `next()`）：启动失败属于「本次运行起不来」，
-  // 归因要落在 `AGENT_FAILED` 上，且此时还没有「被关闭的对象」⇒ 不该有任何关闭动作。
-  // `start()` 是幂等的（SDK 的 `this.initialized ??= …`），流里那次 `start()` 不会重复握手。
-  await runtime.start();
   /**
-   * 应答面的**父进程那一半**：轮询插件写的提问流水，把每一问交给提问端口，再把答复写回答复流水。
-   * 在 `runtime.start()` 之后起——起不来的运行不该留一个空转的轮询（插件也没被加载）。
-   */
-  const askBridge: DshAskAnswererBridge | null = askAnswerer
-    ? startDshAskAnswerer({
-      port: context.askUser,
-      transcriptPath: askTranscriptPath,
-      repliesPath: askRepliesPath,
-    })
-    : null;
-  /**
-   * 释放：**先停应答面的轮询，再关运行时**。
+   * **释放：先停两座桥，再关运行时**。这一份 disposer 跨全部活动区间（首轮与每次追问共用同一份）：
+   * 运行时与两座桥本来就是整 run 一份，而骨架只释放首轮那一格（`releaseTurn` 记忆化）。
+   * `createDisposer` 幂等，超时兜底与用户终止先后到达也只会关一次。
    *
-   * 一份 disposer 跨全部活动区间（首轮与每次追问共用同一份）：运行时与应答面本来就是整 run 一份，
-   * 而骨架只释放首轮那一格（`releaseTurn` 记忆化）。`createDisposer` 幂等，超时兜底与用户终止
-   * 先后到达也只会关一次。
+   * ⚠️ **它必须建在 `runtime.start()` 之前**（两座桥的引用先声明、后面再赋值，闭包在关闭时才读它们）：
+   * `start()` 是 spawn 子进程那一步，从它返回到「骨架拿到 `TurnStart`」之间还有几步会抛
+   * （`resumeSession` 的 adopt、两座桥的构造）——那时 `runTurn` 手里的 `started` 还是 `undefined`，
+   * 它的 `finally` 碰不到任何可关闭对象 ⇒ 谁都不关运行时，一个 dsh 子进程就留在盘上捏着该行的
+   * `.agenthome`（Windows 上还会让下一轮的行产物清理 `EPERM`）。把 disposer 提前 + 出错时关一次，
+   * 这条路径就没有孤儿。
    */
+  /**
+   * 本行的**子会话白名单**与**已收场集合**：三处共用——通知流的放行判据要在
+   * 收到 `subagent.started` 时登记，投影要按同一份白名单算「子智能体那一份」用量，
+   * 收尾（`finalize`）要用同一份取数面把结论折进结果；**释放前那条 drain 也读它**
+   * （还有子会话在跑就先等它们，见 `DSH_SUBAGENT_DRAIN_MS`）。
+   *
+   * ⚠️ 声明位置必须在 `disposeRuntime` **之前**：析构体在失败路径上会被立刻调用
+   * （`resumeSession` 抛错那条），而那时若 `runState` 还没初始化，读它就是 TDZ 抛错
+   * ——回收本身失败会把本次运行的真因掩盖掉。
+   */
+  const childSessions = new Set<string>();
+  const finishedSessions = new Set<string>();
+  const runState: DshRunState = {
+    childSessions,
+    finishedSessions,
+    headerTools: null,
+    skillCatalog: null,
+    jobFailures: new Map<string, boolean>(),
+    childUsageBaseline: new Map<string, UsageTokens>(),
+    childTurnsBaseline: new Map<string, number>(),
+    // 本次运行要求的档（与厂商实际报的 `permission/preset` 对照，见 events.ts 那一支）
+    permissionDesired: permissionEnv.DSH_PERMISSION_MODE,
+    // 派发记账：**每行一份**（与 childSessions 同一条理由——两行并发时不许互相认领对方的派发）
+    dispatchStarts: new Map(),
+    claimedDispatches: new Map(),
+    deliveredStarts: new Map(),
+  };
+  let askBridge: DshAskAnswererBridge | null = null;
+  let injectBridge: DshInjectionDriver | null = null;
+  /**
+   * **我们自己发起了关闭**（用户终止 / 看门狗 / 停机 / 正常收尾都会走到 `disposeRuntime`）。
+   *
+   * 为什么必须有这一格：关闭运行时会**同步终结订阅**（SDK 的 `failSubscriptions`），
+   * 而通知流的消费循环此刻还挂在 `next()` 上——它拿到的拒绝与「传输中途死掉」是**同一个形状**
+   * （`TransportClosedError`）。两者的区别只有我们自己知道：`dispose` 一旦开始，
+   * 流里的失败就是**预期收场**，不是「内容丢了」。少了这一格，每一次终止都会往该行事件流里
+   * 落一条「通知流中断…执行日志因此不完整」——把排障引向「我们丢内容了」，而其实一条都没丢。
+   */
+  let closing = false;
+  /**
+   * 还有子会话在跑就先等它们收场（见 `DSH_SUBAGENT_DRAIN_MS`）。
+   *
+   * 三条边界：**没有在跑的子会话 ⇒ 一次都不调**（绝大多数运行走这一支，零开销）；
+   * **已经终止（`signal.aborted`）⇒ 不等**；**请求失败 / 到点 ⇒ 吞掉并留痕**——
+   * 观测与收尾的手段没有资格把一次已完成的运行变成失败。
+   */
+  /** 收流前那次「等子会话收场」只做一次（等完要回到循环顶部消费通知，不能每圈都等） */
+  let drainAttempted = false;
+  const drainLiveSubagents = async (): Promise<boolean> => {
+    const pending = [...runState.childSessions].filter((id) => !runState.finishedSessions.has(id));
+    if (pending.length === 0) return false;
+    /**
+     * **已终止 ⇒ 不等**（停机不能被一分钟的等待拖住），但**必须记下「这些子会话不会再有读数」**：
+     * 不记的话收尾会让分量按「还在跑、以后会报」交 `{0,0,0}` + `turns`，而运行马上释放、它们再也不会报
+     * ——正是那个字段注释里说「不能这样交」的形状（真机：终止先于进入那一支零 WARN）。
+     */
+    if (input.signal.aborted) {
+      runState.subagentsUnsettled = true;
+      logger.debug('运行已终止：不再等子智能体收场，分量按「事实缺失」交', { sessionId, pending });
+      return false;
+    }
+    const wait = runtime.client.request('session/wait', { sessionId }, DSH_SUBAGENT_DRAIN_MS);
+    /**
+     * **终止要能打断等待**：用户按停止之后还让 `session/wait` 跑满 60 s 是错的（真机形状：
+     * 6.059 s 按的停止、那一次请求照旧跑满 60 003 ms，`run.json` 最后还给 `completed`）。
+     * 等待发生在**收流之前** ⇒ `requestStop()` 此刻正好能把它打断（骨架在 finally 里摘 `onAbort`）。
+     */
+    const aborted = new Promise<never>((_, reject) => {
+      const fail = (): void => reject(new Error('aborted while waiting for subagents'));
+      if (input.signal.aborted) {
+        fail();
+        return;
+      }
+      input.signal.addEventListener('abort', fail, { once: true });
+      // 请求先结束就摘掉监听器（别把闭包留在信号上）
+      void wait.then(
+        () => input.signal.removeEventListener('abort', fail),
+        () => input.signal.removeEventListener('abort', fail),
+      );
+    });
+    // 竞速输的那一条仍会 settle：吞掉它的拒绝，别变成 unhandled rejection
+    void wait.catch(() => {});
+    try {
+      await Promise.race([wait, aborted]);
+      logger.debug('释放前等到了子智能体收场', { sessionId, waited: pending.length });
+      return true;
+    } catch (error) {
+      /**
+       * 等不到就**如实记下来**：`pending` 里那些子会话马上会被 `runtime.close()` 掐死，
+       * 「还在跑、以后会报」是假话 ⇒ 分量按「事实缺失」交 `null` 并点名（见 `subagentsUnsettled`）。
+       */
+      runState.subagentsUnsettled = true;
+      logger.warn('释放前等待子智能体收场没成功：这些子任务不会再有读数，分量按「缺失」交 null', {
+        sessionId,
+        pending,
+        error,
+      });
+      return true;
+    }
+  };
   const disposeRuntime = createDisposer(async () => {
+    closing = true;
     askBridge?.close();
+    injectBridge?.close();
+    // ⚠️ 这里**不等**子智能体：`finalize` 在释放之前就算完了分量，等在这之后改不了任何结果。
+    // 「等」发生在通知流里（`settled` 之后、`break` 之前）——那时子会话的终态与用量还能被投影。
     await runtime.close();
   });
+  /** adopt 出来的那条会话（`null` = 这一轮是新会话）；它决定每一轮从哪个入口跑 */
+  let adopted: DshSessionHandle | null = null;
+  /** 握手有没有成功过（决定出错时该不该由我们回收：见 `catch` 里的两条分支） */
+  let runtimeStarted = false;
+  /** 这一轮要 adopt 的那条会话（`null` = 新会话）；取值只依赖入参，抛错面在下面的 `try` 里 */
+  const resumedSessionId = input.resume?.sessionId ?? null;
+  try {
+    /**
+     * **续接的 adopt**（`input.resume`）：必须在该 id 的第一条 `prompt` **之前**做完
+     * ——对已 open 的 id 再 resume 会被厂商拒（`already open or opening`）。
+     *
+     * 两条口径：
+     *   · **客户端没有这一格就如实抛错**（装到比 `0.2.1-alpha.3` 更旧的
+     *     `dsh-sdk-jsonrpc-server` 就是这一档：那条 wire 上的 `session/resume` 自它起才有）。
+     *     绝不退化成「开一条新会话」——那会让用户以为在追问、而智能体什么都不记得，
+     *     界面上一切正常。抛在 `start()` 之前：连冷启动都不必花。
+     *   · **adopt 出来的会话句柄是这一轮唯一的跑法**：`session.run()` 与 `harness.run()` 同形，
+     *     但身份已经定死；对它再用 `harness.run(text, { sessionId })` 会撞 `already exists`
+     *     （那条 wire 永远 create-or-fail，见 `docs/faq/deepseek-harness.md`）。
+     */
+    if (resumedSessionId !== null && runtime.resumeSession === undefined) {
+      throw new Error(
+        `这一行要续接到会话 ${resumedSessionId}，但当前安装的 ${DSH_PACKAGE_NAME} 没有 session/resume`
+          + '（该 wire 方法自 @deepseek-ai/dsh-sdk-jsonrpc-server@0.2.1-alpha.3 起才有）'
+          + '⇒ 不静默开一条新会话',
+      );
+    }
+    // 在这里就把握手做完（而不是等流的第一次 `next()`）：启动失败属于「本次运行起不来」，
+    // 归因要落在 `AGENT_FAILED` 上。`start()` 是幂等的（SDK 的 `this.initialized ??= …`），
+    // 流里那次 `start()` 不会重复握手。
+    await runtime.start();
+    runtimeStarted = true;
+    /** adopt 出来的那条会话（`null` = 这一轮是新会话）；它决定每一轮从哪个入口跑 */
+    adopted = resumedSessionId === null ? null : await runtime.resumeSession?.(resumedSessionId) ?? null;
+    /**
+     * 应答面的**父进程那一半**：轮询插件写的提问流水，把每一问交给提问端口，再把答复写回答复流水。
+     * 在 `runtime.start()` 之后起——起不来的运行不该留一个空转的轮询（插件也没被加载）。
+     */
+    askBridge = askAnswerer
+      ? startDshAskAnswerer({
+        port: context.askUser,
+        transcriptPath: askTranscriptPath,
+        repliesPath: askRepliesPath,
+      })
+      : null;
+    /**
+     * 人工消息面的**父进程那一半**：取件（两档各走各的路）、写投递流水、读收据。
+     * 与应答面同一条时序理由：插件是 boot 那一步加载的，桥要在运行时起来之后才谈得上取件。
+     *
+     * `'idle'` 档的出口是 wire 的 `session/prompt`（它落 `next-turn`）；`'round'` 档写投递流水，
+     * 由插件在 runtime 进程内 `agent.steer`（落 `next-step`）。两条都返回厂商那条消息的身份，
+     * 撤回按它配对。
+     */
+    injectBridge = injectionPort === null
+      ? null
+      : startDshInjection({
+        port: injectionPort,
+        sessionId,
+        queuePath: injectQueuePath,
+        receiptsPath: injectReceiptsPath,
+        // `client.prompt` 交回的就是那条消息的身份（wire 的 `{messageId}` 已被客户端解开）
+        prompt: (text: string) => runtime.client.prompt(sessionId, [{ type: 'text', text }]),
+      });
+  } catch (error) {
+    /**
+     * 回收分两支，判据是「握手成功过没有」：
+     *   · **`start()` 自己抛**（包没装、握手超时、进程起不来）⇒ 不去关：那是 SDK 拥有的回收点，
+     *     它的实现里失败即清理（关掉客户端、换一个新的实例再抛）。此时我们手里也确实没有一个
+     *     「已经起来的运行时」——多关一次只会把一个未启动的客户端标成永久关闭。
+     *   · **握手之后的任何一步抛**（`resumeSession` 的 adopt、两座桥的构造）⇒ 运行时已经在跑，
+     *     而骨架此刻手上还没有 `TurnStart` ⇒ 它没有可释放的对象。这里是唯一能回收的落点：
+     *     关一次（幂等），再抛出原始错误——关闭失败只记日志，不许顶替本次运行的真因。
+     */
+    if (runtimeStarted) {
+      try {
+        await disposeRuntime();
+      } catch (closeError) {
+        logger.error('运行时回收失败（已忽略，避免掩盖本次运行的真因）', { sessionId, error: closeError });
+      }
+    }
+    throw error;
+  }
+  /**
+   * 一轮的跑法：新会话走 `harness.run(text, { sessionId })`，续接走 adopt 出来的会话句柄
+   * （`adopt` 的围栏见上面那段注释）。写成 `const` 是为了让 `intervalFor` 的闭包拿到一个
+   * 不再变化的入口——adopt 的成败在 `try` 里已经定死。
+   */
+  const adoptedSession = adopted;
+  const runPrompt: (prompt: string) => Promise<unknown> = adoptedSession === null
+    ? (text: string) => runtime.run(text, { sessionId })
+    : (text: string) => adoptedSession.run(text);
   logger.debug('dsh 已注入路由并启动运行时', {
     model: input.route.modelId,
     // **只记名字**（条目的 env / headers 里可能有密钥，日志不该能把它带出去）；
@@ -930,18 +1583,19 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     effort: input.effort,
     route: DSH_ROUTE_KEY,
     sessionId,
+    // 续接那一格只记「这一轮是不是 adopte 的」（id 已经在上面那一格）与 adopt 之后的有效 cwd
+    resumed: resumedSessionId !== null,
+    /**
+     * 有效 cwd 只作**排障读数**，故它**失败即 `null`**（`readWorkingDirectoryOrNull`）：
+     * 写成不可失败的表达式时，一次纯读数的失败（runtime 已收场 / 超时）会把整轮折成
+     * `AGENT_FAILED`——观测手段没有资格制造失败。
+     */
+    resumedWorkingDirectory: adopted === null ? null : await readWorkingDirectoryOrNull(adopted),
     // 应答面那一格只记「这一轮挂没挂」：它是插件落盘与等待档的共同自变量
     askUserAnswerer: askAnswerer,
+    // 人工消息面同理（它是插件落盘与 overlay 那一行的共同自变量）
+    injectMessages: injectionPort !== null,
   });
-  /**
-   * 本行的**子会话白名单**与**已收场集合**：三处共用——通知流的放行判据要在
-   * 收到 `subagent.started` 时登记，投影要按同一份白名单算「子智能体那一份」用量，
-   * 收尾（`finalize`）要用同一份取数面把结论折进结果。
-   * 提到 run 作用域之前它是一个藏在 `notificationStream` 里的局部变量，投影看不到它。
-   */
-  const childSessions = new Set<string>();
-  const finishedSessions = new Set<string>();
-  const runState: DshRunState = { childSessions, finishedSessions, headerTools: null, skillCatalog: null };
   /**
    * **填充层**：dsh 的 SDK 没有 schema 入参（`DeepSeekHarnessOptions` 只有 cwd / provider /
    * model / reasoningEffort / maxTokens，argv 只有 `--profile` / `--patch`）⇒ 原生通道不存在。
@@ -964,7 +1618,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const tap = createDshStreamTapGate(tapFilePath);
   /** 造一条活动区间（首轮与每次追问同形）：同一运行时、同一会话、同一份 runState 与门闸 */
   const intervalFor = (prompt: string): TurnStart => ({
-    stream: notificationStream(runtime, sessionId, prompt, runState, tap),
+    stream: notificationStream(runtime, sessionId, prompt, runState, tap, runPrompt, () => closing, () => drainLiveSubagents()),
     // 刻意空实现：dsh 不支持中途取消（元数据 cancelMidTurn: false），
     // 停止请求会由第二段兜底成「关闭运行时」
     interrupt: () => {
@@ -997,6 +1651,15 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
      * （**三处都同时带两格**，见 `events.ts` 的注记）。
      */
     finalize: () => {
+      /**
+       * **终止路径也要如实标记「不会再有读数」**：终止时通知流可能**根本没走到** drain（骨架直接收流），
+       * 那一条早退分支就不会执行 ⇒ 分量会按「还在跑、以后会报」交 `{0,0,0}` + `turns`，而运行马上释放、
+       * 那些子会话再也不会报（真机：这一支零 WARN，与该字段注释自相矛盾）。判据放在收尾这一处，
+       * 无论有没有进过 drain 都成立。
+       */
+      if (input.signal.aborted && [...runState.childSessions].some((id) => !runState.finishedSessions.has(id))) {
+        runState.subagentsUnsettled = true;
+      }
       const subagentTokens = dshSubagentUsage(runState);
       /**
        * 轮次那一格的分量走**同一个**判据（`dshSilentChildSessions`），且与用量那一格在**同一次
@@ -1007,10 +1670,35 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
        */
       const subagentTurns = dshSubagentTurns(runState);
       return {
+        /**
+         * ⚠️ 这两格走**结果**（`TurnFinalize.subagentTokens` / `subagentTurns`，骨架折进
+         * `AgentRunResult` 与行快照），**不另发 `usage` 事件**：事件流最后一次读数停在最后一个
+         * 带轮次的投影上，而收尾算出的更准的值要到行落终态、界面重新读快照时才显示。
+         * 代价登记：极窄的窗口里（「子会话收场却没报用量」且此后没有任何带轮次的通知）
+         * 界面上的分量可能比 `run.json` 慢一拍——补一条 `usage` 事件能消掉它，
+         * 但那要动三家共用的发射口径，不在本适配器单方面决定。
+         */
         // 只有「事实缺失」那一档才落 WARN：`{0,0,0}` / `0`（确实没有）不该刷噪声
-        drafts: subagentTokens === null ? silentSubagentWarns(runState) : [],
+        drafts: [
+          // 「等不到子会话收场」这一档**独立于分量是不是 null**：它说的是「不会再有读数」这件事，
+          // 而分量在那一档也可能已经有部分读数（真机：被杀的子任务交 `{0,0,0}`）
+          ...(runState.subagentsUnsettled === true
+            ? unsettledSubagentWarns(runState)
+            : subagentTokens === null
+              ? silentSubagentWarns(runState)
+              : []),
+          // 技能面「装了却没观测到目录」与插件面「配了却没等到加载收据」：同一处收尾各求值一次
+          ...skillCatalogWarns(runState, injectedSkillCount, resumedSessionId !== null),
+          ...permissionMismatchWarns(runState, resumedSessionId !== null, sessionId),
+          ...pluginWarns({ injectBridge, askBridge }),
+        ],
         subagentTokens,
         subagentTurns,
+        /**
+         * **会话身份如实上报**：它就是本行会话的快照键——落了盘之后，跨进程续接才有键可指。
+         * 取值恒有（新会话是自己铸的那个、续接是 adopt 的那一个）⇒ 这一格不会走 `null` 档。
+         */
+        sessionId,
         // 通道事实：dsh 没有原生 schema 通道 ⇒ 恒 false（填充层不算原生，见上面那段注释）
         applied: { structuredOutput: false },
       };
@@ -1019,8 +1707,9 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       projectDshNotification(raw, state, { kind: 'dsh', baseUrl: input.route.baseUrl }, runState),
     /**
      * 同会话追问：同一个 `runtime` + 同一个 `sessionId` 再跑一条 prompt。
-     * SDK 的 `run(input, { sessionId })` 对已存在的 id 就是「在这条会话上再跑一轮」
-     * （`lib/types/api.d.ts`：「Run one prompt on a fresh (or named) session」），
+     * 新会话那一档走 SDK 的 `run(input, { sessionId })`——对已存在的 id 就是「在这条会话上
+     * 再跑一轮」（`lib/types/api.d.ts`：「Run one prompt on a fresh (or named) session」）；
+     * 续接那一档走 adopt 出来的句柄（`session.run`），两条路都由 `runPrompt` 统一。
      * 会话历史留在厂商进程里 ⇒ 模型看得见自己上一轮的答复与全部工具结果。
      */
     continue: async (nextPrompt: string) => intervalFor(nextPrompt),
@@ -1129,6 +1818,79 @@ export const dshProvider: AgentProvider = {
         '厂商的提问走**进程内**服务（`user-questions/request` 这条 Cordis waterfall），不投送到 SDK 约定的那条通道 ⇒ 应答者只能是一个插件，由适配器写进行配置目录',
         '一致性场景走真路径（真运行时 + 脚本式上游 + 适配器的应答者插件，见 `testing/dsh-real-path-fixture.ts`）：答案按题目 id 配对回给插件，厂商把它逐字折进工具结果',
         '没有应答面的轮次里提问工具仍然挂着（工具由适配器挂载、与应答面无关）：那一档的收场归厂商的定时档（到点交回「待答」结果）',
+      ],
+    },
+    /**
+     * **人工消息面（第五组）**：人往运行中的一轮送话、以及接着一条已有会话再跑一段。
+     *
+     * 两档各走一条路（判据是真机读数，机制见 `inject.ts`）：
+     *   · `'idle'`（排队）走 **wire** 的 `client.prompt`（`session/prompt` → `followup` → `next-turn`）；
+     *   · `'round'`（立即发送）走**进程内插件**的 `agent.steer`（→ `next-step`，比 wire 早一档）
+     *     ——wire 上**没有**这条落点，只能照 stream-tap / 提问应答者那套成法写一支插件。
+     * 两条都由**同一个身份**认人（我们铸的 `messageId` / wire 回执的那个 id）⇒ 撤回按 id，
+     * 同文本两条不会误伤（与 pi 的「按文本相等」相反）。
+     *
+     * 续接那一格走官方 wire 的 `session/resume`：`input.resume` 走
+     * `harness.resumeSession(id)` → adopt 出来的 `session.run(text)`（`harness.run` 一次都不碰）。
+     * 正向判据是真路径（`resume-real-path.test.ts`：真运行时 + 脚本式上游，跨三个独立运行）；
+     * 装到**更旧**的客户端（没有这一格）时如实抛错，不许静默开一条新会话。
+     */
+    turnInjection: {
+      delivery: {
+        round: {
+          state: 'yes',
+          reason: null,
+          channel: 'in-process-plugin',
+          gate: null,
+          experimental: false,
+          // 真路径：`injection-real-path.test.ts` 走真运行时 + 真插件 + 脚本式上游，判据是
+          // 「哨兵进没进模型看到的那份请求体」——假件把 SDK 换掉之后这件事根本看不见
+          proofDriver: 'real-path',
+          proofDriverReason: null,
+        },
+        idle: {
+          state: 'yes',
+          reason: null,
+          channel: 'wire',
+          gate: null,
+          experimental: false,
+          proofDriver: 'real-path',
+          proofDriverReason: null,
+        },
+      },
+      retract: {
+        round: {
+          state: 'by-id',
+          reason: '按我们铸的 messageId（投递时就是厂商那条消息的 id）经进程内插件 inbox.remove 撤；'
+            + '返回值只有 boolean，回 false 读作「已被模型吃掉」（竞态里厂商赢），超时读作「说不出为什么」',
+        },
+        idle: {
+          state: 'by-id',
+          reason: '按 wire 回执的 messageId 经同一支插件 inbox.remove 撤'
+            + '（wire 入队的消息同样落在厂商的待处理队列里）',
+        },
+      },
+      resume: {
+        state: 'yes',
+        reason: null,
+        channel: 'wire',
+        gate: null,
+        experimental: false,
+        // 正向判据是真路径：真运行时 + 脚本式上游，跨三个独立运行（写 / adopt / 阴性对照）
+        proofDriver: 'real-path',
+        proofDriverReason: null,
+      },
+      notes: [
+        '两档的分工来自真机读数：wire 上唯一可入队的 session/prompt 落 next-turn（= 排队档），'
+          + '而 agent.steer 落 next-step（= 立即发送档）',
+        '立即发送档要一支常驻插件：插件落 <DSH_HOME> 根、overlay 里以相对名 insert，'
+          + '投递与撤回都经文件型 side channel（与 stream-tap / 提问应答者同一种成法）',
+        '插件里的 agent 服务必须**每次用时现取**：它由另一行插件 provide，插件加载那一刻多半还没就位',
+        '续接走官方 wire 的 session/resume：顺序是 initialize → session/resume → session/prompt，'
+          + 'adopt 必须在该 id 的第一条 prompt 之前（对已 open 的 id 再 resume 会被拒）',
+        'resume 之后通知流不回放历史 ⇒ 恢复判据只能是入站请求体或磁盘转录，不能拿通知流当证据',
+        '那条 wire 永远 create-or-fail：对已存在的 id 直接 session/prompt 会撞 already exists'
+          + ' ⇒ 续接必须先 resume 认领',
       ],
     },
     /**

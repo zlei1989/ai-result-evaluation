@@ -1,5 +1,5 @@
 /**
- * v11 探针 ①（06 号票 Q1）：**`AskUserQuestion` 经哪条控制请求到达宿主**。
+ * v11 探针 ①（Q1）：**`AskUserQuestion` 经哪条控制请求到达宿主**。
  *
  * 三条臂，每条都在「脚本式上游」下跑（本机假 `/v1/messages` 主动回一帧 `AskUserQuestion`
  * 的 `tool_use`，所以「模型愿不愿意问」不是自变量）：

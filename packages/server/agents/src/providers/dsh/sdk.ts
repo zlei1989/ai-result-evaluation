@@ -1,18 +1,19 @@
 /**
  * dsh 的厂商 SDK 懒加载外壳：**按真实探测回写后的入口形态**。
- * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.2.0-rc.2` 的
+ * 这份窄结构不再是「探测前的假设」——它逐条对应安装态 `@deepseek-ai/dsh-sdk-client@0.2.1-alpha.3` 的
  * `lib/types/{index,api,client,types,launch}.d.ts` 与 `lib/index.js`，实测记录见
  * "docs/protocols/dsh.md"（DSH 接入）与探测 dump。
- * 版本是 **0.2.0-rc.2**（next 线最新非 alpha；该包从未发过非预发布版本）：
- * 客户端 `lib/` 两版**逐字节相同**（md5 一致，仅锁定的 runtime `@deepseek-ai/dsh` 0.1.7→0.2.0），
- * 真机双协议探针（`probe/v3/dsh-pi-ai-both.mjs`）升级后跑通含计量——本文件的窄结构无需任何改动：
+ * 版本是 **0.2.1-alpha.3**（该包从未发过非预发布版本，「稳定版」即 tag 线上最新的那一个预发布）：
+ * 它相对 `0.2.0-rc.2` 是**只加不改**（`types.d.ts` 与 `launch.d.ts` 零 diff，构造选项与默认值逐字未变），
+ * 新增的 `resumeSession` / `getWorkingDirectory` / `validatedSessionEvent` 都不影响本文件的窄结构：
  *
- *  - **值出口是 7 个**（`Object.keys` 排序后逐字）：
+ *  - **值出口是 8 个**（`Object.keys` 排序后逐字）：
  *    `DeepSeekHarness` / `HarnessClient` / `HarnessSession` / `JsonRpcResponseError` /
- *    `RequestTimeoutError` / `SdkProtocolError` / `TransportClosedError` —— **没有 `createRuntime`**；
+ *    `RequestTimeoutError` / `SdkProtocolError` / `TransportClosedError` / `validatedSessionEvent`
+ *    —— **没有 `createRuntime`**；
  *  - 真实入口是 `new DeepSeekHarness(options)` → `start()`（幂等的 spawn + initialize 握手）→
  *    `client.subscribeSessionTree(sessionId)` 拿通知流 → `run(prompt, { sessionId })` 交提示词，
- *    它在**下一次 idle** 落定（`lib/index.js:740-772`）；
+ *    它在**下一次 idle** 时落定（`lib/index.js` 的 `HarnessSession.run`，0.2.1-alpha.3 在 800-839 行）；
  *  - 通知的外形是 `{ method, params }`（**不是** `{ type, message }`），method 只有四种：
  *    `session.event` / `session.status` / `subagent.started` / `subagent.finished`；
  *  - 停止只能靠 `harness.close()`（`HarnessClient.close()` 的 JSDoc 逐字：「There is no wire-level
@@ -27,7 +28,7 @@
  *    `dshHome` 指向空目录且环境里没有这个变量时，运行必然以 `turn/end(kind:'error')` 收场
  *    （`llm-deepseek: no API key for provider route "deepseek-official"`）；补上变量即可跑通。
  */
-import { AgentLoadError } from '../../errors';
+import { AgentLoadError, exportedNames } from '../../errors';
 import { createSdkLoader } from '../../load-once';
 
 // 包名字面量不直接 export：静态导入断言区分不出 `export const X = '@pkg'`（字符串常量）与
@@ -56,10 +57,27 @@ export interface DshNotificationSubscription extends AsyncIterable<DshNotificati
   close(): void;
 }
 
-/** 低层 JSON-RPC 客户端：只要我们要用的两格（订阅与关闭）。 */
+/** 低层 JSON-RPC 客户端：只要我们要用的那几格（入队、订阅与关闭）。 */
 export interface DshClient {
   subscribeSessionTree(sessionId: string): DshNotificationSubscription;
   subscribe(filter?: DshNotificationFilter): DshNotificationSubscription;
+  /**
+   * `session/prompt`：**入队并返回那条消息的身份**（wire 结果是 `{messageId}`，客户端把它解成
+   * 一个字符串交出来）。身份就是撤回时要的句柄——`inbox.remove(messageId)` 按它配对。
+   * 未知 id 会新建一条会话（`client.d.ts` 逐字「an unknown id creates it」），而在本仓的用法里
+   * 会话必然已由首轮建好：这一格只用于 `'idle'` 档的**在途投递**。
+   */
+  prompt(sessionId: string, contentBlocks: readonly unknown[]): Promise<string>;
+  /**
+   * 任意 JSON-RPC 请求（门面没包的那些方法）。本仓只用它调 **`session/wait`**：等**整棵子树**
+   * 收场——厂商实现是「先等这条会话 idle，再 `subagents.waitForChildren`，两者都干净才返回」
+   * （`dsh-sdk-jsonrpc-server` 的 `wait()` 逐行），未知会话 id 报 `unknown SDK session`。
+   *
+   * 为什么不能省：根会话 idle 时 `run()` 就落定了，而后台子智能体可能还在跑——那时我们释放运行时
+   * 等于把它们**连根拔掉**（`subagent.finished` 永远不来、子智能体分量只到一半）。
+   * `timeoutMs` 是每调一次的覆盖（门面默认值见厂商的 `HarnessClientOptions`）。
+   */
+  request(method: string, params?: object, timeoutMs?: number): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -72,14 +90,47 @@ export interface DshRunResult {
 }
 
 /**
+ * **一条已 adopt 的会话**（`session/resume` 的产物）：续接之后由它跑后续的每一轮。
+ * 与 `DshHarness.run` 逐格同形（同样的 `RunResult`），只是不再带 `sessionId` 选项——
+ * 身份在 adopt 那一刻就定了。
+ */
+export interface DshSessionHandle {
+  run(input: string): Promise<DshRunResult>;
+  /** 这条会话**记录里的** cwd（`session/resume` 不带 `meta.cwd` ⇒ 启动参数那一格不参与，见 FAQ） */
+  getWorkingDirectory?(): Promise<string>;
+}
+
+/**
  * 高层入口 `DeepSeekHarness` 的窄结构（只声明用到的方法与字段；厂商类型面一律不 import）。
  * `start()` 的幂等性来自实现（`this.initialized ??= …`），适配器因此可以在 `run()` 之前先把
  * 通知订阅挂上——否则「订阅之前到达的通知」会丢，而 `session.event` 是唯一的事件通道。
+ * ⚠️ 那个前提只对**握手成功过**的 client 成立：失败的 `start()` 会换一个新实例（见 `client` 那格）。
  */
 export interface DshHarness {
+  /**
+   * 当前持有运行时子进程的客户端。**取用点现读**，不要缓存到局部变量里跨 `start()` 复用：
+   * 真件是访问器，而 `start()` **失败**时会先清理、再换上一个新实例（旧的那个 `close()` 过后永久失效）
+   * ⇒ 缓存值可能是已经关掉的旧实例，用它 `subscribe` 只会拿到一个「出生即失败」的订阅。
+   * 适配器的顺序因此是「先 `await start()`，再建通知流，`prompt` 现读 `client`」。
+   */
   readonly client: DshClient;
   start(): Promise<void>;
   run(input: string, options?: { sessionId?: string }): Promise<DshRunResult>;
+  /**
+   * `session/resume`：**adopt 一条已持久化的会话**（`dsh-sdk-jsonrpc-server@0.2.1-alpha.3`
+   * 起才有这条 wire 方法与这个门面；装到更旧的客户端就没有这一格）。
+   *
+   * 三条已实测的围栏（见 `docs/faq/deepseek-harness.md`）：
+   *   · 未知 id ⇒ 报 `not found`（**不是**静默新建一条空会话）；
+   *   · 同进程重复 resume / 对已 open 的 id resume ⇒ `already open or opening`
+   *     ⇒ **adopt 必须在该 id 的第一条 `prompt` 之前**；
+   *   · 这条 wire 上**没有 cwd 闸**：换 cwd 不报错，会话用记录里的 cwd。
+   *   · resume 之后通知流**不回放历史** ⇒ 恢复判据只能是暗号回读 + 磁盘转录。
+   *
+   * **可选**：缺这一格 = 当前安装的客户端没有这条能力 ⇒ 收到 `resume` 的适配器如实抛错，
+   * 绝不换代成「开一条新会话」（那会让用户以为在追问、而智能体什么都不记得）。
+   */
+  resumeSession?: (sessionId: string) => Promise<DshSessionHandle>;
   close(): Promise<void>;
 }
 
@@ -164,12 +215,4 @@ export async function loadDshSdk(): Promise<DshSdkModule> {
     });
   }
   return raw as DshSdkModule;
-}
-
-/**
- * 实测导出面（`Object.keys`），只用于 shape-mismatch 文案里的「实测有 …」。
- * 为什么先做形状检查：读导出面的动作本身不能成为新的崩溃点（`Object.keys(null)` 会抛）。
- */
-function exportedNames(raw: unknown): string[] {
-  return typeof raw === 'object' && raw !== null ? Object.keys(raw).sort() : [];
 }

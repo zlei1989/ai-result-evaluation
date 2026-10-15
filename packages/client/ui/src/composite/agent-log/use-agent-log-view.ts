@@ -99,7 +99,9 @@ export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex
   for (const [turnIndex, turn] of turns.entries()) {
     // `nodeId` 只参与 `buildRenderBlocks` 的轮上下文：本函数拿不到 `activeNodeId`（纯函数），
     // 而规则 3 的定位只用 `messageId` / `callId`，该字段在当前实现里不参与任何分支。
-    const messageId = turn.blocks[0]?.messageId ?? null;
+    // 兜底定位键**与时间轴读同一格**（`LogTurn.fallbackMessageId`，不是 `blocks[0]`——块按阅读顺序排过）：
+    // 两处若各读一样，同一份输入会算出两份不同的默认展开键 ⇒ 我展开的组自己合上
+    const messageId = turn.fallbackMessageId;
     const blocks = buildRenderBlocks(turn.blocks, nodes, {
       at: turn.at,
       running: turn.running,

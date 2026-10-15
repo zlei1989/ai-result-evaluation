@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
-import { appendEvent, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
+import { appendEvent, resetEvents, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { streamRowEvents } from './run-stream';
 import { updateSettings } from './settings';
@@ -147,6 +147,37 @@ describe('streamRowEvents', () => {
     expect(text.endsWith('\n\n')).toBe(true);
   });
 
+  /**
+   * **历史里夹着的终态事件不许截断回放**：一次追问会先跑完一段（`judging` → `judged`）、
+   * 再在同一份 `events.jsonl` 里接着写第二段（`preparing` → `running` → … → `end`）。
+   * 关流的判据只能是「**历史末尾**是不是终态」，不是「回放路上遇到终态就停」——
+   * 后者会把追问那一段（以及它那条用量读数）整段扣在服务端，界面上表现为
+   * 「里程碑停在首段的最后一条读数上、最后一条消息上没有用量」（真机 `ce008414`）。
+   */
+  it('历史中段的终态不关流：追问那一段的读数与最后的 end 都要回放出来', async () => {
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
+    append('run-1', 'r-1', { type: 'status', status: 'running' });
+    const firstUsage = append('run-1', 'r-1', { type: 'usage', tokens: { input: 100, cached: 0, output: 5, reasoningOutput: null, total: null }, tokensBasis: 'reported', subagentTokens: null, subagentTurns: null, turn: { subagentId: null, round: 2 }, timing: null, turns: 2 });
+    append('run-1', 'r-1', { type: 'status', status: 'judging' });
+    append('run-1', 'r-1', { type: 'status', status: 'judged' });
+    // —— 追问那一段 ——
+    append('run-1', 'r-1', { type: 'status', status: 'preparing' });
+    append('run-1', 'r-1', { type: 'status', status: 'running' });
+    const followUpUsage = append('run-1', 'r-1', { type: 'usage', tokens: { input: 200, cached: 0, output: 9, reasoningOutput: null, total: null }, tokensBasis: 'reported', subagentTokens: null, subagentTurns: null, turn: { subagentId: null, round: 3 }, timing: null, turns: 3 });
+    append('run-1', 'r-1', { type: 'status', status: 'judging' });
+    append('run-1', 'r-1', { type: 'status', status: 'judged' });
+    const end = append('run-1', 'r-1', { type: 'end', exitReason: 'completed' });
+
+    const text = await readAll(streamRowEvents('run-1', 'r-1', 0));
+
+    expect(text).toContain(`id: ${firstUsage.seq}`);
+    expect(text).toContain(`data: ${JSON.stringify(followUpUsage)}`);
+    expect(text).toContain(`id: ${end.seq}`);
+    // 历史末尾是终态 ⇒ 回放完仍然关流（不挂一条没人退订的连接、也不起心跳）
+    expect(text.endsWith('\n\n')).toBe(true);
+    expect(listeners.get('run-1/r-1')).toBeUndefined();
+  });
+
   it('afterSeq 只回放 seq 更大的部分', async () => {
     store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
     append('run-1', 'r-1', { type: 'log', stream: 'stdout', text: '旧' });
@@ -209,6 +240,44 @@ describe('streamRowEvents', () => {
     await reader.cancel();
   });
 
+  it('续订游标来自上一代（超过文件水位）时从头回放：重跑删过日志，旧游标在新一代里没有对应的号', async () => {
+    // 重跑同一行会 resetEvents 删掉 events.jsonl、seq 从 1 重新发号，而客户端手里的
+    // afterSeq / Last-Event-ID 是上一代的最大 seq。不回退游标的话这条连接回放恒为空，
+    // 症状是「重连之后执行日志一直是空的」——而磁盘上明明有内容。
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
+    append('run-1', 'r-1', { type: 'status', status: 'running' });
+    append('run-1', 'r-1', { type: 'log', stream: 'stdout', text: '上一代' });
+    const previous = append('run-1', 'r-1', { type: 'status', status: 'judged' });
+
+    resetEvents(join(workspaceRoot, 'run-1', 'rows', 'r-1', 'events.jsonl'));
+    const fresh = append('run-1', 'r-1', { type: 'status', status: 'running' });
+
+    const reader = streamRowEvents('run-1', 'r-1', previous.seq).getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
+    expect(decoder.decode((await reader.read()).value)).toBe(`id: ${fresh.seq}\nevent: status\ndata: ${JSON.stringify(fresh)}\n\n`);
+    await reader.cancel();
+  });
+
+  it('连接活着时日志被重置：新一代的 seq 回到 1 照样成帧（判据是游标超过水位，不是「看到 1」）', async () => {
+    // 抽屉一直开着的那种形状：连接是活的、心跳照发，谁也不会去重连 ⇒ 这一条闸门若不放行换代，
+    // 新一代的 1..k 会被上一代的游标整段吃掉，界面上只是「执行日志一条都不动」。
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
+    append('run-1', 'r-1', { type: 'status', status: 'running' });
+    const previous = append('run-1', 'r-1', { type: 'log', stream: 'stdout', text: '上一代' });
+
+    const reader = streamRowEvents('run-1', 'r-1', previous.seq).getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
+
+    resetEvents(join(workspaceRoot, 'run-1', 'rows', 'r-1', 'events.jsonl'));
+    const fresh = append('run-1', 'r-1', { type: 'status', status: 'running' });
+    for (const listener of listeners.get('run-1/r-1') ?? []) listener(fresh);
+
+    expect(decoder.decode((await reader.read()).value)).toBe(`id: ${fresh.seq}\nevent: status\ndata: ${JSON.stringify(fresh)}\n\n`);
+    await reader.cancel();
+  });
+
   it('客户端取消时退订总线（否则事件会一直往没人读的流里塞）', async () => {
     store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
     append('run-1', 'r-1', { type: 'status', status: 'running' });
@@ -229,7 +298,8 @@ describe('streamRowEvents', () => {
     store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
     append('run-1', 'r-1', { type: 'status', status: 'running' });
 
-    const stream = streamRowEvents('run-1', 'r-1', 5);
+    // 游标取**文件水位**（客户端游标的来源就是它见过的最大 seq）：这样「无历史」是真的接在末尾
+    const stream = streamRowEvents('run-1', 'r-1', 1);
     const reader = stream.getReader();
     const decoder = new TextDecoder();
 
@@ -252,7 +322,7 @@ describe('streamRowEvents', () => {
     store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'r-1' })] }));
     append('run-1', 'r-1', { type: 'status', status: 'running' });
 
-    const stream = streamRowEvents('run-1', 'r-1', 5);
+    const stream = streamRowEvents('run-1', 'r-1', 1);
     const reader = stream.getReader();
     const decoder = new TextDecoder();
 

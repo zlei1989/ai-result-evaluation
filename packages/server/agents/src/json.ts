@@ -36,7 +36,7 @@ export function readNumber(source: Record<string, unknown> | null, key: string):
 }
 
 /** 取字段值；getter / Proxy 抛错时当作「没有这个字段」（返回 undefined），不抛 */
-function readField(source: Record<string, unknown> | null, key: string): unknown {
+export function readField(source: Record<string, unknown> | null, key: string): unknown {
   try {
     return source?.[key];
   } catch {

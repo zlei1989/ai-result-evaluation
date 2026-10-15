@@ -7,7 +7,7 @@
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
 import { vi, describe, expect, it } from 'vitest';
-import { registerOrchestratorHooks, TEST_TIMEOUT_MS, home, seedRunnableRun, existsSync, readFileSync, join, loadConfig, readEvents, rowEventsFile, saveConfig, saveRun, runRow, getRun, fakeAgents, type EvalRun } from './testing/orchestrator-harness';
+import { registerOrchestratorHooks, TEST_TIMEOUT_MS, home, seedRunnableRun, existsSync, readFileSync, join, loadConfig, readEvents, rowEventsFile, saveConfig, saveRun, runRow, getRun, fakeAgents, abortRow, startedCwds, until, type EvalRun } from './testing/orchestrator-harness';
 
 vi.mock('@aieval/agents', async () => (await import('./testing/orchestrator-seams')).agentsMock());
 vi.mock('./judge', async (importOriginal) => {
@@ -214,5 +214,165 @@ describe('runRow：改工作区根目录后仍在途收尾（快照侧）', { ti
     ]);
     // 新根下不许出现这一轮的任何产物（兜底不是「顺手在新根里再建一份」）
     expect(existsSync(join(otherRoot, run.id))).toBe(false);
+  });
+});
+
+
+/**
+ * `EvalRow.emptyAnswer`：候选侧「没答」观测格的**落盘判据**（三态：`true` 没答 / `false` 答了 /
+ * 键**缺席**= 未记录）。
+ *
+ * 为什么这一格载重：真出了空答复的行，历史上照旧拿得到分（评分通路读的 `finalText` 区分不了
+ * 「没答」与「答了空串」），回看时也看不出异常——所以判据不只要写对值，还要与**行状态**一起钉住
+ * 「没答照旧拿分」这个事实本身。
+ *
+ * 三种「不写这一格」（**缺席**，不是写一个 `null`）：没有结果、运行失败、结果不带 `ok`。
+ * 缺席与 `null` 在契约上同读作「未记录」，但**写侧只留一种形态**才让消费侧「这一格到底是谁写的」
+ * 可判——见下面失败臂为什么非断言「键不在」不可。
+ *
+ * 为什么空白与空串也算没答、且判据必须自己判：适配器那一层确实有「空正文不进 `finalText`」的守卫
+ * （由一致性套件拦），但本层的判据**不许依赖另一层的守卫**——夹具能造出空串与纯空白，
+ * 判据一旦假定它们不会出现，跨过那一层之后就会把一次空答复写成 `false`（= 断言「它答了」）。
+ */
+describe('runRow：候选侧「没答」观测格 emptyAnswer', { timeout: TEST_TIMEOUT_MS }, () => {
+  /**
+   * 动机那一格：候选**正常收尾但一行正文都没交** ⇒ `true`。
+   * 后两条断言不是陪衬——它们把「没答照旧拿分」的事实钉进守卫：只钉 `emptyAnswer === true` 的话，
+   * 将来有人顺手让空答复的行不评分（或落成别的状态），这条守卫会全绿而它要守的动机已经消失。
+   */
+  it('候选正常收尾但没交正文 ⇒ true，且这一行照旧 judged、照旧有分', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: null });
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.emptyAnswer).toBe(true);
+    expect(row?.status).toBe('judged');
+    expect(row?.score).not.toBeNull();
+  });
+
+  it('候选交了纯空白正文 ⇒ 仍是「没答」（true）', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: '  \n' });
+
+    await runRow(run.id, rowId);
+
+    expect(getRun(run.id).rows[0]?.emptyAnswer).toBe(true);
+  });
+
+  it('候选交了空串 ⇒ 与「没交正文」同判（true）', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: '' });
+
+    await runRow(run.id, rowId);
+
+    expect(getRun(run.id).rows[0]?.emptyAnswer).toBe(true);
+  });
+
+  /** 对照臂：缺了它这一组没有区分力——一个恒 `true` 的实现能过上面全部用例 */
+  it('候选交了正文 ⇒ false（对照臂）', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'ok', finalText: '好。' });
+
+    await runRow(run.id, rowId);
+
+    expect(getRun(run.id).rows[0]?.emptyAnswer).toBe(false);
+  });
+
+  /**
+   * **失败时这一格必须缺席**（不是 `true`、也不是 `false`）——本组最重要的一条。
+   *
+   * 要拦的缺陷：把判据写成两态（例如「`finalText === null` 就是没答」，或无条件写一个布尔值）。
+   * 适配器契约明说 `ok:false` 时 `finalText` **不保证是模型答复**（cc 会把厂商的错误文本写进它），
+   * 于是「一次失败」会被读成「一次空答复」——而这一格是界面与统计读「候选没答」的唯一依据。
+   * 这一档刻意**给了**一段正文（`'上游 502'`，正是厂商错误文本的形状）：只看 `finalText` 的实现在这里
+   * 写 `false`（把失败读成「答了」），漏判 `ok` 的无条件实现在这里写 `true`（把失败读成「没答」）
+   * ——两种误读方向都被这条断言挡下。
+   */
+  it('候选失败（适配器交回 ok:false）⇒ 这一格缺席，失败不被读成空答复', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'error', finalText: '上游 502' });
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('failed');
+    expect(row !== undefined && 'emptyAnswer' in row).toBe(false);
+    // 值也一并钉住：写 `null` 同样是「多写了一个值」，失败信息里直接看得到差异
+    expect(row?.emptyAnswer).toBeUndefined();
+  });
+
+  /**
+   * 同一档的**另一半**：`ok:false` 且适配器**连答复都没交**（`finalText` 是 `null`）。
+   *
+   * 这一条拦的是「图省事把判据写成 `finalText === null` 就算没答」那种两态实现——它会把这次
+   * **失败**写成 `true`（空答复）。与上一条（失败带错误文案 ⇒ 会被写成 `false`）合起来，
+   * 「失败」被误读的两个方向各有一条断言钉住。
+   */
+  it('候选失败且没带答复（ok:false、finalText 为 null）⇒ 仍是缺席，失败不被读成「没答」', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'error' });
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('failed');
+    expect(row !== undefined && 'emptyAnswer' in row).toBe(false);
+    expect(row?.emptyAnswer).toBeUndefined();
+  });
+
+  /**
+   * 适配器**违约**（`run()` 直接抛）这一档：连结果都没有 ⇒ 同样缺席。
+   * 它与上面两条分属条件展开的不同分支（`result === undefined` 与 `!result.ok`）——漏掉任何一个，
+   * 同一个缺陷都会从另一扇门进来。
+   */
+  it('适配器违约（run() 直接抛）⇒ 同样缺席', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'throw' });
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('failed');
+    expect(row !== undefined && 'emptyAnswer' in row).toBe(false);
+  });
+
+  /**
+   * 终止类终态两档（用户终止 / 适配器自报超时）：候选根本没跑完，这一格同样**不写**——
+   * 写成 `true` 等于把「没跑完」混进「跑了但没答」，而这个读数的全部价值就在于两者分得开。
+   */
+  it('用户终止 ⇒ 缺席（终止不是「没答」）', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { mode: 'gate' });
+    const task = runRow(run.id, rowId);
+    await until(() => startedCwds().length === 1, '该行进入假适配器', 30_000);
+
+    abortRow(run.id, rowId);
+    await task;
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('canceled');
+    expect(row !== undefined && 'emptyAnswer' in row).toBe(false);
+  });
+
+  it('适配器自报超时 ⇒ 缺席（超时不是「没答」）', async () => {
+    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'parallel' });
+    const rowId = run.rows[0]?.id ?? '';
+    fakeAgents.scripts.set('codex', { selfTimeout: true });
+
+    await runRow(run.id, rowId);
+
+    const row = getRun(run.id).rows[0];
+    expect(row?.status).toBe('timed-out');
+    expect(row !== undefined && 'emptyAnswer' in row).toBe(false);
   });
 });

@@ -6,8 +6,9 @@
  * 这里只放**事实与计数**，不放任何展示口径。
  *
  * 三条约定：
- *   1. **轮次按线程分别去重**：`roundTripKeys` 的键是线程 id，值是那一线程见过的
- *      **模型答复条目 id** 集合。一次模型往返算一票 ⇒ `size` 就是该线程的轮次数。
+ *   1. **轮次按线程分别开号**：`roundTripKeys` 的键是线程 id，值是那一线程见过的
+ *      **模型往返身份**集合（身份 = 模型产出条目 id 的后缀，同一次响应的推理与答复共享它，
+ *      取法与两条判据见 `countRoundTrips`）。一次模型往返算一票 ⇒ `size` 就是该线程的往返数。
  *      主线程与子线程各数各的，谁都不借用谁的号。
  *   2. **用量按线程记累计快照**：`usageByThread` 的值是厂商自报的 `ThreadTokenUsage`
  *      （`total` 累计 + `last` 最近一轮），**只从运行期的 `thread/tokenUsage/updated` 来**
@@ -28,13 +29,66 @@ export interface CodexDispatch {
   parentThreadId: string | null;
 }
 
+/**
+ * 子任务行上**不许被后来的帧抹掉**的那几格（口径与套件的 `PRESERVED_SUBAGENT_FIELDS` 同源：
+ * `name` 走昵称表、`usage` 走用量表，各自另有真源，这里只收另外四格）。
+ */
+export interface CodexSubagentFacts {
+  kind: string | null;
+  outcome: string | null;
+  parentCallId: string | null;
+  parentSubagentId: string | null;
+}
+
 export interface CodexRunState {
-  /** `线程 id → 见过的模型答复条目 id`（一票一轮） */
+  /**
+   * `线程 id → 见过的模型往返身份`（一票一轮，`size` 就是往返数）。
+   *
+   * ⚠️ 身份**不是**答复条目 id：一次模型往返里只有收尾那次会发 `agentMessage`，中间那些
+   * 「想 + 调工具」的往返一条答复都没有。按答复条目去重的话，整个 turn 的条目都会落在同一个号上，
+   * 而合并键（`subagentId|roundTrip|role|parentCallId`）里只有 `roundTrip` 能区分同角色的消息
+   * ⇒ 整轮的思考、工具调用与最终答复被合并成一条。身份的取法与两条判据见 `countRoundTrips`。
+   */
   roundTripKeys: Map<string, Set<string>>;
-  /** `线程 id → 厂商自报的累计用量`（只来自 `thread/tokenUsage/updated`） */
+  /**
+   * `线程 id → 最近一次模型产出之后有没有工具活动`。
+   *
+   * 只在**拿不到往返身份**（条目 id 里没有分隔符）时兜底判「这是不是新的一次往返」；
+   * 身份拿得到时它不参与判号。工具活动条目自己照旧不给轮次（`countRoundTrips` 返回 `null`）。
+   */
+  toolActivitySinceOutput: Map<string, boolean>;
+  /**
+   * `线程 id|条目 id → 这条条目所属那次模型往返的号`（**一经登记不再变**）。
+   *
+   * 为什么必须有这一格：消息的载体键里带轮次号，而同一条条目有**两条入口**——运行期的
+   * `item/*` 通知与收尾 `thread/read` 的全量回读。号若按「该线程当前累计值」现算，两条入口
+   * 会算出不同的号：运行期是逐条推进的（当下值恰好是本条的号），而收尾那一批条目**已经数过**
+   * （`countRoundTrips` 按身份去重、不再推进）⇒ 整批都读到**最终号**。
+   *
+   * 后果是重复而不是覆盖：载体键不同 ⇒ 合并器按键归位时各占一条逻辑消息，同一句话在界面上
+   * 出现两次，且补齐的那份按到达顺序追加在最后一轮之后（第 1 轮的内容排在第 N 轮后面）。
+   * 按键折叠去不掉它——键本身就是被打破的那一格。
+   *
+   * 登记时机是「这条条目第一次产块」，取号口径见 `roundTripForItem`。
+   */
+  itemRoundTrip: Map<string, number>;
+  /**
+   * `线程 id → 厂商自报的累计用量`（只来自 `thread/tokenUsage/updated`）
+   */
   usageByThread: Map<string, AppServerThreadUsage>;
   /** `子线程 id → 派发台账` */
   dispatches: Map<string, CodexDispatch>;
+  /**
+   * `子线程 id → 已经交出去过的**不可丢事实**`（`kind` / `outcome` / `parentCallId` / `parentSubagentId`）。
+   *
+   * 为什么必须有这一格：同一条子线程会由**多帧**投递（派发、`wait` / `closeAgent`、活动条目、
+   * 收尾读回），而折叠是**整条覆盖**（`core/message-log.ts` 的 `latest.set`）⇒ 后一帧里为空的那些格
+   * 会把先采到的事实抹掉。真机读数（真模型臂，12 条投递序列）：`closeAgent` 的 `item/started`
+   * 在 `completed` **之后**到达，那一帧 `agentsStates` 是 `{}` ⇒ 记录里 `outcome` 被抹成 `null`、
+   * 状态从 `completed` 掉回 `unknown/unverified`。本仓一致性套件的 `PRESERVED_SUBAGENT_FIELDS`
+   * 明写「覆盖不许丢事实」，但 codex 的套件夹具里没有 `wait`/`closeAgent`（真机每个模型都会调）。
+   */
+  subagentFacts: Map<string, CodexSubagentFacts>;
   /** `子线程 id → 昵称`（`thread/started` 的 `Thread.agentNickname`；收尾时可被 reader 覆盖） */
   nicknames: Map<string, string>;
   /**
@@ -96,8 +150,11 @@ export interface CodexRunState {
 export function createCodexRunState(): CodexRunState {
   return {
     roundTripKeys: new Map(),
+    toolActivitySinceOutput: new Map(),
+    itemRoundTrip: new Map(),
     usageByThread: new Map(),
     dispatches: new Map(),
+    subagentFacts: new Map(),
     nicknames: new Map(),
     subagentStatus: new Map(),
     reasoningDeltas: new Map(),
@@ -152,33 +209,152 @@ export function blockIndexFor(state: CodexRunState, carrier: string, itemId: str
 }
 
 /**
- * 记一个模型答复条目并返回到目前为止的轮次数。
+ * 记一次模型往返并返回到目前为止的往返数（`null` = 本条通知没有推进往返）。
  *
- * 判据是**条目 id 去重**：`item/started` / `item/completed` 与增量通知共享同一个 id，
- * 每见一个新 id 才算一次往返。非答复条目（推理、工具、计划）对这把尺子**透明**——
- * 它们不推高轮次，也不返回号。
+ * **号源是厂商的响应身份，不是答复条目数**。codex 的模型产出条目 id 形如 `rs_<响应 id>` /
+ * `msg_<响应 id>`：同一次响应里，推理条目与答复条目**共享同一个 id 后缀**（真机三种 id 格式
+ * 都如此：`rs_<hex32>`、`rs_<uuid>`、`rs_<时刻+随机>`），换一次响应就换一个后缀。
+ * 拿它当身份，一次响应恰好开一个号——包括那些**一条 `agentMessage` 都没发的往返**
+ * （模型只想了一下就调工具），它们同样是模型往返，也该各占一条消息。
  *
- * ⚠️ **返回 `null` 而不是当前值**：本条通知没有给出新的轮次信息时，发一条内容相同的 usage
- * 只是噪声（`runTurn` 的发射门槛就是轮次）。
+ * 两条判据按序用：
+ *   ① **身份**（主判据）：后缀没见过 ⇒ 开新号；见过 ⇒ 归它那一次（`item/started` 与
+ *      `item/completed`、增量与快照都共享同一个 id，天然去重）；
+ *   ② **结构**（拿不到身份时的兜底）：`item.id` 里没有分隔符时只能看有没有工具活动
+ *      ——上一次模型产出之后跑过工具才算新的一次往返。⚠️ 这条判据单独用是不够的：
+ *      用户提问那一轮（`askUser`）里，模型答复之后直接就是下一次往返，中间没有任何工具条目
+ *      （提问走 server→client 请求，不进条目流）⇒ 只靠结构会把两次往返并成一个号。
+ *
+ * **工具活动条目不开号**：它记一笔「有工具活动」（兜底判据要用），并在一次产出都没见过时
+ * **补记一票**——工具执行蕴含它前面必有一次模型往返，不补这一票，那次调用会与它后面那次答复
+ * 共用一个号（真机形状：turn 的第一条通知就是命令执行，模型这一次没发推理）。
+ *
+ * ⚠️ **返回 `null` 而不是当前值**：本条通知没有推进往返时，发一条内容相同的 usage 只是噪声
+ * （`runTurn` 的发射门槛就是轮次）。
  */
 export function countRoundTrips(item: AppServerItem, threadId: string, state: CodexRunState): number | null {
-  if (item.kind !== 'agentMessage') return null;
-  const keys = state.roundTripKeys.get(threadId) ?? new Set<string>();
-  const before = keys.size;
-  keys.add(item.id);
-  state.roundTripKeys.set(threadId, keys);
-  return keys.size === before ? null : keys.size;
+  // `other` 变体的 id 可为 `null`；它在 `roundTripRoleOf` 里已是「透明」，这里只是把类型收窄
+  return noteRoundTrip(threadId, item.kind, item.id ?? '', state);
 }
 
-/** 一个线程的轮次数；`null` = 一票都没数到（**绝不编 0**——那是「确实零轮」） */
+/**
+ * 增量通知那一侧的同一把尺子：那里没有条目对象，只有 `itemId` 与通道名。
+ *
+ * 为什么增量也要过这一处：`item/started` 与增量**不保证谁先到**（子线程的条目推不推给本连接
+ * 由上游决定），增量先到时若不在这里开号，这一段的文本会落进**上一次往返**的载体里，
+ * 后面到达的快照再另开一条 ⇒ 同一段答复被拆成两条、其中一条还停在没有收尾的状态。
+ * 载荷里的 `itemId` 与条目 id 逐字相同（`item/agentMessage/delta` 的 `itemId` 就是
+ * `item/completed` 的 `item.id`），故两支共用同一个函数。
+ */
+export function noteDeltaRoundTrip(
+  threadId: string,
+  kind: 'reasoning' | 'agentMessage',
+  itemId: string,
+  state: CodexRunState,
+): number | null {
+  return noteRoundTrip(threadId, kind, itemId, state);
+}
+
+function noteRoundTrip(
+  threadId: string,
+  kind: AppServerItem['kind'],
+  itemId: string,
+  state: CodexRunState,
+): number | null {
+  const role = roundTripRoleOf(kind);
+  if (role === 'other') return null;
+
+  const keys = state.roundTripKeys.get(threadId) ?? new Set<string>();
+  if (role === 'tool-activity') {
+    state.toolActivitySinceOutput.set(threadId, true);
+    // 产出条目一票都没数到 ⇒ 补记这一次：工具执行蕴含它前面必有一次模型往返
+    if (keys.size === 0) {
+      keys.add(IMPLICIT_ROUND_TRIP_KEY);
+      state.roundTripKeys.set(threadId, keys);
+    }
+    return null;
+  }
+
+  const identity = roundTripIdentityOf(itemId);
+  if (identity === null) {
+    // 兜底：没有身份可认时，只有「上一次产出之后跑过工具」才算新的一次往返
+    if (keys.size > 0 && state.toolActivitySinceOutput.get(threadId) !== true) return null;
+    keys.add(`unidentified:${keys.size}`);
+  } else {
+    if (keys.has(identity)) return null;
+    keys.add(identity);
+  }
+  state.roundTripKeys.set(threadId, keys);
+  state.toolActivitySinceOutput.set(threadId, false);
+  return keys.size;
+}
+
+/** 条目种类在本模块里的角色：模型产出（开号）、工具活动（证明前面有一次往返）、其余（透明） */
+function roundTripRoleOf(kind: AppServerItem['kind']): 'model-output' | 'tool-activity' | 'other' {
+  if (kind === 'reasoning' || kind === 'agentMessage') return 'model-output';
+  if (
+    kind === 'commandExecution' ||
+    kind === 'fileChange' ||
+    kind === 'mcpToolCall' ||
+    kind === 'webSearch' ||
+    kind === 'dynamicToolCall' ||
+    kind === 'collabToolCall' ||
+    kind === 'plan'
+  ) {
+    return 'tool-activity';
+  }
+  /**
+   * `userMessage`（喂进去的输入）与 `toolOutput`（工具输出的旁路副本）在这里**透明**：
+   * 它们是输入与回声，不是模型这一次往返的产出，拿它们开号会把往返数虚报上去。
+   */
+  return 'other';
+}
+
+/**
+ * 条目 id → 它所属那次模型往返的身份（= 第一个分隔符之后的全部内容）。
+ *
+ * 拿不到分隔符（或分隔符在首尾）时返回 `null`，交给结构兜底判据 —— **不编一个身份**：
+ * 编出来的身份会让同一次响应的两个条目各开一个号（真机上表现为「思考」与「正文」被拆成两张卡片）。
+ */
+function roundTripIdentityOf(itemId: string): string | null {
+  const at = itemId.indexOf('_');
+  if (at <= 0 || at === itemId.length - 1) return null;
+  return itemId.slice(at + 1);
+}
+
+/** 工具条目补记那一票的占位身份（真机身份是 hex / uuid / 时刻串，撞不上） */
+const IMPLICIT_ROUND_TRIP_KEY = 'implicit-tool-round-trip';
+
+/** 一个线程的往返数；`null` = 一票都没数到（**绝不编 0**——那是「确实零轮」） */
 export function observedTurns(state: CodexRunState, threadId: string): number | null {
   const size = state.roundTripKeys.get(threadId)?.size ?? 0;
   return size > 0 ? size : null;
 }
 
-/** 一个线程的轮次数，**没有就是 0**（收尾求和用：每个线程各数各的答复条目） */
+/** 一个线程的往返数，**没有就是 0**（收尾求和用：每个线程各数各的往返） */
 export function roundTripsOf(state: CodexRunState, threadId: string): number {
   return state.roundTripKeys.get(threadId)?.size ?? 0;
+}
+
+/**
+ * 这条条目所属那次模型往返的号（**第一次问就定下来，以后每次问都是同一个数**）。
+ *
+ * 为什么不能现算「该线程当前有几轮」：同一条条目有两条入口（运行期通知 / 收尾全量回读），
+ * 而收尾那一批条目的号**已经数过**（`countRoundTrips` 按身份去重、不再推进）⇒ 现算会让整批
+ * 条目读到最终号，与运行期算出的号不同 ⇒ 载体键被打破、同一条条目出两份（见
+ * `CodexRunState.itemRoundTrip`）。登记下来之后，两条入口拿到的号逐字相同，合并器才折得拢。
+ *
+ * 号源仍是 `roundTripKeys`（本函数不开号，只是把「问的那一刻的号」钉住）：调用方必须**先**
+ * 把本条计入（`countRoundTrips` / `noteDeltaRoundTrip`）再来取号，顺序反了会把这条钉在上一轮。
+ * 下限 1：一票都没数到时（纯工具条目开局）也得有个能用的号，`0` 不是轮次的合法取值。
+ */
+export function roundTripForItem(state: CodexRunState, threadId: string, itemId: string): number {
+  const key = `${threadId}|${itemId}`;
+  const existing = state.itemRoundTrip.get(key);
+  if (existing !== undefined) return existing;
+  const round = Math.max(roundTripsOf(state, threadId), 1);
+  state.itemRoundTrip.set(key, round);
+  return round;
 }
 
 /**
@@ -193,4 +369,32 @@ export function roundTripsOf(state: CodexRunState, threadId: string): number {
  */
 export function normalizedInput(input: number, cached: number): number {
   return Math.max(0, input - cached);
+}
+
+/** 该子线程已经交出去过的那几格（没有就是四个 `null`） */
+export function subagentFactsOf(state: CodexRunState, subagentId: string): CodexSubagentFacts {
+  return state.subagentFacts.get(subagentId) ?? { kind: null, outcome: null, parentCallId: null, parentSubagentId: null };
+}
+
+/**
+ * 记下这一帧**新采到**的那几格，并交回合并后的全量。
+ *
+ * 合并规则只有一条：**非 `null` 才覆盖**（后到的帧里为空的格说明「这一帧没说」，不是「事实没了」）。
+ * 折叠是整条覆盖，所以「不许丢事实」这件事只能在**产记录之前**做——交给消费方去合并已经太晚
+ * （它只看到最后那一条）。
+ */
+export function rememberSubagentFacts(
+  state: CodexRunState,
+  subagentId: string,
+  incoming: CodexSubagentFacts,
+): CodexSubagentFacts {
+  const before = subagentFactsOf(state, subagentId);
+  const merged: CodexSubagentFacts = {
+    kind: incoming.kind ?? before.kind,
+    outcome: incoming.outcome ?? before.outcome,
+    parentCallId: incoming.parentCallId ?? before.parentCallId,
+    parentSubagentId: incoming.parentSubagentId ?? before.parentSubagentId,
+  };
+  state.subagentFacts.set(subagentId, merged);
+  return merged;
 }

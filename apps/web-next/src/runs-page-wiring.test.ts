@@ -72,6 +72,11 @@ describe('runs 页面的执行日志接线', () => {
     expect(text, '内容记录的订阅没有跟着抽屉开关（关着抽屉也开长连接）').toContain('rowId: logRowId ?? \'\', enabled: logRowId !== null');
     // 事件那条仍在（固定事实条与「原始输出」的来源），两条互不替代
     expect(text).toContain('useRowStream({');
+    // 事件流的订阅必须带「这一次尝试」：不带的话重跑同一行时 effect 一个依赖都没变，
+    // 抽屉会一直显示上一轮的原始输出，而连接徽标照旧是「实时连接中」
+    expect(text, '事件流的订阅没有带 attemptKey——重跑同一行时原始输出不会刷新').toContain(
+      'attemptKey: String(logRow?.attempts ?? 0)',
+    );
   });
 
   it('模型由 `buildAgentLogModel` 现算（页面不自己拼界面形状）', () => {
@@ -377,6 +382,43 @@ describe('runs 页面的编辑 / 删除接线', () => {
 });
 
 /**
+ * 备注的**接线**守卫：两处缺口都在页面这一层，面板与纯函数各自的用例看不见。
+ *
+ * ① 创建路径：`RunCreate.note` 是**可选键**，`handleCreate` 漏写它时 `tsc` 一声不响，
+ *    而症状是「表单里填了备注、落库却没有」——列表与详情永远只显示用例标题。
+ * ② 标题列：`runListTitle` 的纯函数用例再全，也拦不住页面把 render / sorter 换回 `caseTitle`；
+ *    两个消费点必须共用同一份拼法，「看到的」与「排的」才不会分叉。
+ */
+describe('runs 页面的备注接线', () => {
+  const source = (): string => readFileSync(pagePath, 'utf8');
+
+  /**
+   * 抠出 `handleCreate` 的函数体（从它的声明到 `handleUpdate` 之前）。
+   * 抠不到直接抛，避免守卫退化成「拿整份文件 toContain」的空断言。
+   */
+  function handleCreateBody(): string {
+    const text = source();
+    const start = text.indexOf('const handleCreate = async');
+    if (start < 0) throw new Error('app/runs/page.tsx 里找不到 `const handleCreate = async`');
+    const end = text.indexOf('const handleUpdate = async', start);
+    if (end < 0) throw new Error('handleCreate 的函数体没有在预期处结束（找不到 handleUpdate）');
+    return text.slice(start, end);
+  }
+
+  it('创建路径把备注交给服务端（可选键不会被类型提醒，漏了就是静默丢弃）', () => {
+    expect(handleCreateBody(), '创建载荷里没有 note：表单填的备注永远不会落库').toContain('note: values.note');
+  });
+
+  it('标题列的显示与排序都走 runListTitle（看到的与排的同一份拼法）', () => {
+    const text = source();
+    expect(text, '标题列没有走 runListTitle：备注不会出现在列表里').toContain('runListTitle(record)');
+    expect(text, '标题列排序没有走 runListTitle：看到的与排的不是一回事').toContain(
+      'compareSortText(runListTitle(a), runListTitle(b))',
+    );
+  });
+});
+
+/**
  * 「模型原始返回」与「原始输出 N 条」两个入口的**接线**守卫（用户：删掉正文里的
  * 「模型原始返回」标题、只留「查看原始返回」按钮，按钮插进评分详情抽屉的 `footer`；
  * 「原始输出 N 条」并排新增，正文 = 评审会话的 log 原文）。
@@ -511,5 +553,87 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     expect(block, '评分详情抽屉没有把评分表快照传下去（逐项判定会对不上任何一张表）').toContain(
       'rubric={scoreDetail.rubric}',
     );
+  });
+});
+
+/**
+ * **追问（第二期）的接线**守卫。
+ *
+ * 与本文件里前几组同一类缺口：契约的真值表在 `@aieval/contracts`、编排层的同源在
+ * `@aieval/evaluator`、入口按钮在 `@aieval/ui`、可用性读侧在 `@aieval/client`——**每一环都有自己的
+ * 用例**，而「页面有没有把它们接上」谁都不看。漏接的症状是三种静默：
+ *   · `onFollowUpRow` 没接 ⇒ 点「追问」什么都不发生；
+ *   · `followUpOf` 没接 ⇒ 按钮永远停在「读不到判据」的禁用态（看起来像「这一行不能追问」）；
+ *   · footer 那一支没接 ⇒ 抽屉打开了、底下没有输入框。
+ * `apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 硬约束），故这里按源码文本钉住。
+ */
+describe('runs 页面的追问接线', () => {
+  const source = (): string => readFileSync(pagePath, 'utf8');
+
+  it('可用性判据从数据层读，且跟着行状态与会话变化重读', () => {
+    const text = source();
+
+    expect(text, '页面没有订阅追问可用性：按钮没有判据').toContain('useFollowUpAvailability({');
+    // 判据随行状态翻转（正在跑 / 上一次没收尾），而这条读侧没有信号流 ⇒ 必须有 revision
+    expect(text, 'revision 没有带上行的状态与会话 id：行跑完之后按钮还是灰的').toContain('row.sessionId === null');
+    expect(text, '判据没有喂给详情面板（每一张卡片都拿不到结论）').toContain('followUpOf={followUps.verdictOf}');
+  });
+
+  it('「追问」打开的是这一行的日志抽屉（输入区在 footer 上），并把在途态透下去', () => {
+    const text = source();
+
+    expect(text, '「追问」没有打开日志抽屉：点了什么都不发生').toContain(
+      'onFollowUpRow={(rowId) => setDrawer({ kind: \'log\', rowId, followUp: true })}',
+    );
+    expect(text, '没有透在途态：追问按钮不会转圈，连点两次就是两段上下文').toContain('followingUp={isFollowingUp}');
+  });
+
+  it('底部槽的追问输入区接上了写动作与附件上传（缺一个就是「点了没反应」或「附件发不出去」）', () => {
+    const text = source();
+
+    expect(text, '页面没有渲染追问输入区').toContain('<FollowUpComposer');
+    expect(text, '追问输入区没有接写动作').toContain('await followUpRow({');
+    // 附件走**同一条 multipart 端点**（落点是同一个 rowDir/attachments/<messageId>/）
+    expect(text, '追问的附件没有落在与人工消息同一条上传通路上').toContain('onUploadAttachment={async (input) => postInjectAttachment(');
+    // 失败原因交回调用方提示（这一层是页面上唯一的提示出口）
+    expect(text, '追问的失败原因没有交回页面提示').toContain('onError={(cause) => void message.error(describeError(cause))}');
+    // 两支 footer 互斥且都在：跑动中那一支不能被这一支顶掉
+    expect(text, '底部槽没有把两支输入区合起来判空').toContain('const logFooter = followUpFooter ?? injectFooter;');
+    expect(text, '底部槽没有真的接上（`footer` 一个节点都不渲染）').toContain('{ footer: logFooter }');
+  });
+
+  it('追问输入区只在「这一行不在跑」时渲染（在跑的那条走排队输入区）', () => {
+    const text = source();
+    // jsx 里的换行与缩进不该打红这条判据：归一化空白之后再找那一段
+    const compact = text.replace(/\s+/g, ' ');
+    expect(compact, '追问输入区没有跟着「不在跑」判：在跑的行会长出一个点了会被 409 拒的输入框').toContain(
+      'drawer?.kind === \'log\' && drawer.followUp === true && logRow !== undefined && !isRunningRow(logRow.status)',
+    );
+  });
+});
+
+/**
+ * **run 焦点的接线**守卫（本页是焦点的唯一写入方）。
+ *
+ * 与上面同一类缺口：`@aieval/client` 有焦点单例的用例、待答队列有「暂缓」的用例，
+ * 而「页面有没有在选中某一轮时写焦点」两边都看不见——漏写的症状是**暂缓在生产里不存在**
+ * （切走的那一轮的提问照旧弹出来），而客户端那几条暂缓用例全绿（它们直接把焦点喂给 hook）。
+ */
+describe('runs 页面的 run 焦点接线', () => {
+  /** 归一化空白之后再断言：换行与缩进不该打红这两条判据 */
+  const compactSource = (): string => readFileSync(pagePath, 'utf8').replace(/\s+/g, ' ');
+
+  it('右栏选中哪一轮就把焦点设成那一轮（跟着 `selectedId` 走）', () => {
+    const text = compactSource();
+
+    expect(text, '页面没有设 run 焦点——暂缓在生产里不存在').toContain(
+      'useEffect(() => { setFocusedRun(selectedId); }, [selectedId])',
+    );
+  });
+
+  it('离开本页即复位（不复位 = 焦点一直挂在上一轮上，别的页面的提问再也不弹）', () => {
+    const text = compactSource();
+
+    expect(text, '页面卸载时没有复位焦点').toContain('useEffect(() => () => setFocusedRun(null), [])');
   });
 });

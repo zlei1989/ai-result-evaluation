@@ -47,6 +47,20 @@ export const MCP_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 export const MCP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * `headers` 的键名模式：**HTTP field-name 的 token 语法**（RFC 9110 的 `tchar` 那一段）。
+ *
+ * 为什么要有它：一个含空白或冒号的键**发不出去**——HTTP 头名里两者都是分隔符，
+ * 拼进请求就是一句畸形的头。这一格必须在**契约层**拦住，理由不是「更严谨」，而是两层口径
+ * 分家的后果已经量到过：契约放行、适配器自己摘掉 ⇒ 编排层把它算进 `injected`，而行级观测格在
+ * `vendor-tool-table` 通道上把「表里没有它」读成「厂商没起来」⇒ **整行 `AGENT_MCP_UNAVAILABLE`**，
+ * 文案还指着一台从没起过的服务器。落在契约层之后，这个条目走 `invalid` 桶：行照跑、
+ * 记 `unverified`、日志里直接点名是哪一条的哪个键。
+ *
+ * 键名是**证据**（要发给上游），故只收 token：字母数字与 ``!#$%&'*+-.^_`|~``。
+ */
+export const MCP_HEADER_KEY_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
  * 一条 MCP 服务器。公共两格：
  *   - `transport`：`stdio`（本地命令）| `http`（远端端点）；
  *   - `enabled`：**缺省 true**（`.default(true)`），但落盘时显式写出——不让「没写」与「写了 false」
@@ -66,7 +80,11 @@ export const McpServerConfigSchema = z.discriminatedUnion('transport', [
     transport: z.literal('http'),
     enabled: z.boolean().default(true),
     url: z.string().min(1),
-    headers: z.record(z.string().min(1), z.string()).optional(),
+    /**
+     * 请求头。键按 HTTP field-name 的 token 语法收（见 `MCP_HEADER_KEY_PATTERN`）——
+     * 含空白或冒号的键发不出去，早报比让下游某一层静默摘掉好。
+     */
+    headers: z.record(z.string().regex(MCP_HEADER_KEY_PATTERN, 'headers 的键只能是 HTTP 头名允许的字符（不能含空白或冒号）'), z.string()).optional(),
   }),
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
@@ -93,11 +111,18 @@ export type McpServers = z.infer<typeof McpServersSchema>;
 export const MCP_PLACEHOLDER_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /**
- * **注入侧**的残留判据：任何还留着的 `${` 都算「没解析出来」（未设置的变量与不支持的写法最终都落在它上面）。
+ * **注入侧**的残留判据：厂商**自己会去解析**的三种取值写法都算「没解析出来」——`${NAME}`、
+ * **裸 `$NAME`**、**`!cmd`**（厂商 `resolve-config-value` 的三种并列语法），外加任何没闭合的 `${`。
+ *
+ * 后两种为什么必须一并判死（本仓一个都没实现，而它们的两条下场都是坏的）：
+ *   · 裸 `$NAME`：厂商的取值来源是**宿主进程自己的 `process.env`**（不是设置页那份映射）——
+ *     宿主设过就把它**静默发到远端 MCP 端点 / 塞进 stdio 子进程**，没设则让**整台服务器起不来**
+ *     且没有任何归因（行级观测格只会读成「厂商没起来」）；
+ *   · `!cmd`：厂商把那段文本**当命令执行**（`stdio` 的 `env` / `http` 的 `headers` 都走这条取值）。
  * 比探活那条**更宽**——`${` 之后就算没闭合也一律按「不解析」处置：这一份要交给厂商，
- * 宁可少注入一台，也不许把一串来路不明的 `${…` 送过去。
+ * 宁可少注入一台，也不许把一串来路不明的写法送过去。
  */
-export const MCP_UNRESOLVED_PLACEHOLDER = /\$\{/;
+export const MCP_UNRESOLVED_PLACEHOLDER = /(\$\{|\$[A-Za-z_]|^!)/;
 
 /**
  * **探活侧**的残留判据：一个**闭合**的 `${…}`（`${VAR:-default}` 这类 shell 写法）。

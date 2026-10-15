@@ -164,7 +164,16 @@ describe('工具白名单：MCP 派生名进请求，且名单外的工具可证
     expect(row.tools, '通配是选择器，不是可声明的工具').not.toContain('mcp__*');
   });
 
-  it('read-only 档：四件只读工具 + MCP 工具在，写能力可证不在', async () => {
+  /**
+   * read-only 档：只读四件 + **一件 MCP 工具都不给**。
+   *
+   * 为什么 MCP 那一格也要判：`mcp__*` 通配是「服务器自带什么工具就放什么」——真机读数里
+   * read-only 出站表出现过 `mcp__ws__write_file` 并且模型**真写成功**（`interaction/report.md` P1）。
+   * 这一档的整个意义是不接触外部状态（连 `bash` 与提问工具都不给），所以通配只进全权限档。
+   * 变异体：把通配加回只读档（`...(input.permission === 'full' ? [PI_MCP_TOOL_PATTERN] : [PI_MCP_TOOL_PATTERN])`
+   * 之类）⇒ `mcp__probe__echo` 出现在请求里，本用例当场红。
+   */
+  it('read-only 档：四件只读工具在、MCP 工具与写能力都不在', async () => {
     const row = await runProbeRow('read-only');
     expect(row.handshake, 'probe 服务器没被连上或没列工具，这一条的结论不成立').toContain('tools/list');
     for (const name of ['read', 'grep', 'find', 'ls']) {
@@ -175,7 +184,8 @@ describe('工具白名单：MCP 派生名进请求，且名单外的工具可证
     for (const name of ['bash', 'edit', 'write']) {
       expect(row.tools, `${name} 是写能力，只读档不得出现在请求里`).not.toContain(name);
     }
-    expect(row.tools).toContain('mcp__probe__echo');
+    // MCP 工具：这一档一台都不给（服务器自带写工具时通配等于把写能力一并授权）
+    expect(row.tools, '只读档不给 MCP 工具（通配只进 full 档）').not.toContain('mcp__probe__echo');
     expect(row.tools, '通配是选择器，不是可声明的工具').not.toContain('mcp__*');
   });
 });

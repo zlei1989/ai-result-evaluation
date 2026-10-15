@@ -33,13 +33,18 @@ import { describe, expect, it } from 'vitest';
 
 const dir = import.meta.dirname;
 
-/** L2 场景预设：**唯一可以持有虚拟滚动与视图态的一层** */
+/** L2 场景预设：**唯一可以持有虚拟滚动与视图态的一层**（输入区的草稿与清单也归这一层） */
 const L2_FILES = [
   'agent-log-drawer.tsx',
   'agent-log-layout.tsx',
   'virtual-turn-list.tsx',
   'agent-log-toolbar-preset.ts',
   'use-agent-log-view.ts',
+  // 两个输入入口共用同一条草稿状态机与同一块输入区（`composer-input.tsx`）：
+  // 形态各写一份的结果是同一种控件在两个入口长得不一样，而那种漂移没人会当场发现
+  'inject-composer.tsx',
+  'follow-up-composer.tsx',
+  'composer-input.tsx',
 ] as const;
 
 /** L1 受控组合件：吃「一轮」或一份派生数据，吐界面；不虚拟化、不持态 */
@@ -48,6 +53,9 @@ const L1_FILES = [
   'log-node-breadcrumb.tsx',
   'agent-log-facts-bar.tsx',
   'agent-log-domain-facts.tsx',
+  'inject-queue-panel.tsx',
+  // ⚠️ 原型件（一次性）：它渲染、不虚拟化、不持态（附件句柄走 `useRef` 而非 `useState`），
+  // 按 L1 的判据归这一层。收敛之后这一行与那个文件一起删。
 ] as const;
 
 /** L0 纯渲染件：吃「一个块 / 一个节点 / 一份声明」，一律受控 */
@@ -68,6 +76,9 @@ const L0_FILES = [
   'agent-environment-drawer.tsx',
   'block-renderer-registry.tsx',
   'render-blocks.ts',
+  'inject-message-row.tsx',
+  // 段分隔（「追问 ×N」）：吃段号 + 一个时刻，纯展示、受控
+  'segment-divider.tsx',
 ] as const;
 
 /** 文件 → 层（找不到的文件视为「不在三层清单里」，不参与扫描） */
@@ -88,10 +99,17 @@ const LAYER_OF = new Map<string, 'L0' | 'L1' | 'L2'>([
  * 那些嗅探已经下沉到 agents 的 `tool-payload.ts`，本条把这个文件纳入 (e) 的扫描面，
  * 让「把嗅探搬回来」这种回归当场变红。
  */
-const NON_RENDER_SCANNED_FILES = ['build-model.ts'] as const;
+const NON_RENDER_SCANNED_FILES = ['build-model.ts', 'inject-vocab.ts'] as const;
 
-/** (e) 的扫描面：三层里的文件 + 上面那几个不在层里但要扫的文件 */
-const VENDOR_SCANNED_FILES: readonly string[] = [...L0_FILES, ...L1_FILES, ...NON_RENDER_SCANNED_FILES];
+/**
+ * (e) 的扫描面：**三层全部渲染件 + 上面那几个不在层里但要扫的文件**。
+ *
+ * L2 也在面上：早先它只扫 L0/L1，理由是「视图态那一层不决定画什么卡片」——而输入区把
+ * 「哪一家能做到哪一档」的判定放在自己这一层（`inject-vocab.ts` 是纯函数、L2 那个件只是接线），
+ * 于是「按厂商分支」这种回归能藏在 L2 里不被 (e) 看到。三层一起扫之后，任何一层写
+ * `agentKind === 'cc'` 或 `['pi']` 之类的字面量都会当场红。
+ */
+const VENDOR_SCANNED_FILES: readonly string[] = [...L0_FILES, ...L1_FILES, ...L2_FILES, ...NON_RENDER_SCANNED_FILES];
 
 /** 每层的「上面那几层」：往上看就是违规 */
 const UPPER_LAYERS: Record<'L0' | 'L1' | 'L2', readonly ('L0' | 'L1' | 'L2')[]> = {
@@ -197,7 +215,7 @@ const VENDOR_BRANCH_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
   { name: 'agentKind !==', pattern: /agentKind\s*!==/ },
   { name: 'switch (…agentKind)', pattern: /switch\s*\(\s*\w*agentKind/ },
   { name: 'agentKind 索引查表', pattern: /agentKind\]/ },
-  { name: '厂商字面量', pattern: /['"](dsh|codex|cc)['"]/ },
+  { name: '厂商字面量', pattern: /['"](dsh|codex|cc|pi)['"]/ },
   { name: '数据层的厂商文案表', pattern: /AGENT_LABELS\s*\[/ },
 ];
 

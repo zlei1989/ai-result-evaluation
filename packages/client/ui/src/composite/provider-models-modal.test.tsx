@@ -1,14 +1,14 @@
 /**
  * ProviderModelsModal：模型清单对话框（从「编辑供应商」里独立出来的那个）。
- * 覆盖：标题带供应商名、拉取、手工增删、逐条能力两格、目标消失的可见原因、
- * 以及列宽/省略号两条形态守卫（它们随组件一起挂在这里）。
+ * 覆盖：标题带供应商名、拉取（预览发起 + 候选到达后内层挑选框的接线）、手工增删、
+ * 逐条能力两格、目标消失的可见原因、以及列宽/省略号两条形态守卫（它们随组件一起挂在这里）。
  *
  * 判据落在**回调收到的值**上：`null`（清空）与「没改」（回落到清单里的值）是两件事，
  * 而服务端对它们的处置相反 —— 清空会记住「这是用户的手工表态」，没改则什么都不做。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { ProviderView } from '@aieval/contracts';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ProviderModelPreview, ProviderView } from '@aieval/contracts';
 import { ProviderModelsModal, MODEL_COLUMN_WIDTH, MODELS_MODAL_WIDTH } from './provider-models-modal';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
@@ -30,6 +30,12 @@ const PROVIDER: ProviderView = {
   updatedAt: '2026-09-22T10:00:00.000Z',
 };
 
+/** 一份预览候选（拉取第一步的产物）：新模型一条、已在清单的一条带窗口 */
+const CANDIDATES: ProviderModelPreview[] = [
+  { id: 'jd/glm-5.3', contextWindow: 128_000 },
+  { id: 'deepseek-chat', contextWindow: 64_000 },
+];
+
 const noop = (): void => {};
 
 /** 一套默认 props：每个用例只覆盖自己关心的那几个 */
@@ -39,8 +45,12 @@ function renderModal(overrides: Partial<Parameters<typeof ProviderModelsModal>[0
       open
       provider={PROVIDER}
       fetchingModels={false}
+      modelCandidates={null}
+      importingModels={false}
       onClose={noop}
       onFetchModels={noop}
+      onImportModels={noop}
+      onCancelImport={noop}
       onAddModel={noop}
       onRemoveModel={noop}
       onSetModelContext={noop}
@@ -98,6 +108,8 @@ describe('ProviderModelsModal：外框', () => {
     expect(document.querySelector('.ant-table')).toBeNull();
   });
 
+  // 「拉取模型」发起的是**预览**（拉取第一步）：loading 由页面 props 给，
+  // 候选回来后走 modelCandidates → 内层挑选框，见下一条用例。
   it('「拉取模型」回传；拉取中按钮转圈（loading 来自 props）', () => {
     const onFetchModels = vi.fn();
     const { rerender } = renderModal({ onFetchModels });
@@ -111,14 +123,61 @@ describe('ProviderModelsModal：外框', () => {
         open
         provider={PROVIDER}
         fetchingModels
+        modelCandidates={null}
+        importingModels={false}
         onClose={noop}
         onFetchModels={onFetchModels}
+        onImportModels={noop}
+        onCancelImport={noop}
         onAddModel={noop}
         onRemoveModel={noop}
         onSetModelContext={noop}
       />,
     );
     expect(screen.getByRole('button', { name: '拉取模型' }).className).toMatch(/loading/);
+  });
+
+  /**
+   * 拉取第二步的接线：候选（modelCandidates）一到，内层挑选对话框打开；
+   * 「已在清单」的标注按**当前清单**现算（清单与候选都是 props，两份事实都新鲜）。
+   * 挑选框内部行为（勾选 / 全选 / 反选 / 确定）在 provider-model-import-modal.test.tsx。
+   */
+  it('候选到达 ⇒ 挑选对话框打开，按当前清单标注「已在清单」；候选清空后挑选框关闭', async () => {
+    const { rerender } = renderModal({ modelCandidates: CANDIDATES });
+
+    expect(screen.getByText('拉取到 2 个模型')).toBeInTheDocument();
+    // deepseek-chat 在清单里（标「已在清单」），jd/glm-5.3 不在（标「新」）
+    expect(screen.getByText('已在清单')).toBeInTheDocument();
+    expect(screen.getAllByText('新')).toHaveLength(1);
+
+    rerender(
+      <ProviderModelsModal
+        open
+        provider={PROVIDER}
+        fetchingModels={false}
+        modelCandidates={null}
+        importingModels={false}
+        onClose={noop}
+        onFetchModels={noop}
+        onImportModels={noop}
+        onCancelImport={noop}
+        onAddModel={noop}
+        onRemoveModel={noop}
+        onSetModelContext={noop}
+      />,
+    );
+
+    // 关闭后 antd 仍把内容留到收尾动画结束（DOM 不立即卸载），判据用「加入清单不可访问」
+    //（queryByRole 默认排除 display:none 子树里的元素）而不是「文本消失」
+    await waitFor(() => expect(screen.queryByRole('button', { name: '加入清单' })).toBeNull());
+  });
+
+  // 目标在拉取窗口期被别的标签页删掉：挑选框必须跟着关（确定请求注定 404，留着它只会误导）。
+  it('目标消失时不渲染挑选对话框（外框给可见原因，内层入口一并撤掉）', () => {
+    renderModal({ provider: null, modelCandidates: CANDIDATES });
+
+    expect(screen.getByText('这条供应商已不在列表里')).toBeInTheDocument();
+    expect(screen.queryByText('拉取到 2 个模型')).toBeNull();
   });
 
   // 清单**不在这里存一份**（两份必然漂移）：列表一重取，props 换了新对象，表格就得跟着变。
@@ -131,8 +190,12 @@ describe('ProviderModelsModal：外框', () => {
         open
         provider={{ ...PROVIDER, models: [...PROVIDER.models, { id: 'brand-new', source: 'manual' }] }}
         fetchingModels={false}
+        modelCandidates={null}
+        importingModels={false}
         onClose={noop}
         onFetchModels={noop}
+        onImportModels={noop}
+        onCancelImport={noop}
         onAddModel={noop}
         onRemoveModel={noop}
         onSetModelContext={noop}
@@ -194,8 +257,12 @@ describe('ProviderModelsModal：外框', () => {
         open
         provider={other}
         fetchingModels={false}
+        modelCandidates={null}
+        importingModels={false}
         onClose={noop}
         onFetchModels={noop}
+        onImportModels={noop}
+        onCancelImport={noop}
         onAddModel={noop}
         onRemoveModel={noop}
         onSetModelContext={noop}

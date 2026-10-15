@@ -138,8 +138,21 @@ function identityRows(rows: EvalRow[]): RankTableRow[] {
           // 未出分：写的是行状态而不是名次——它是「这行为什么没分」的第一句话（口径 3）
           <Tag>{ROW_STATUS_LABELS[row.status]}</Tag>
         ) : (
-          // 金色，与候选卡片上的名次徽标同色同字（口径 1）
-          <Tag color="gold">第 {rankOf(rows, row)} 名</Tag>
+          /**
+           * 金色名次 Tag（与候选卡片上的徽标同色同字，口径 1）；**真的没答时**再挂一个红 Tag。
+           *
+           * 为什么与名次并列而不是替换：两者是两件事 —— 名次说的是「它排第几」，
+           * 这一格说的是「那次评分评的是一个**没答**的候选」。只显示名次，
+           * 横向对比里就会把一次空答复排得和正常一样（与候选卡片同一口径）。
+           *
+           * 判据 `=== true`：三态里**键缺席与 `null` 都是「未记录」**，不该显示成任何一个结论
+           * （旧数据属于这一档）。⇒ 既有用例的行没有这一格 ⇒ 多出来的 Tag **不会出现**，
+           * 因此不改变它们断言的 `textContent`。
+           */
+          <>
+            <Tag color="gold">第 {rankOf(rows, row)} 名</Tag>
+            {row.emptyAnswer === true ? <Tag color="red">候选未作答</Tag> : null}
+          </>
         ),
     },
     { key: 'agent', label: '智能体', render: (row) => <Typography.Text>{AGENT_LABELS[row.agentKind]}</Typography.Text> },

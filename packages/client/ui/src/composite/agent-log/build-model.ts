@@ -21,6 +21,7 @@
 import {
   AskUserResultSchema,
   TERMINAL_ROW_STATUSES,
+  messageFoldKey,
   type AgentEvent,
   type AgentMessage,
   type AskUserAnswer,
@@ -39,6 +40,7 @@ import {
   type ContentBlock,
   type LogNode,
   type LogNodeStatus,
+  type LogSegment,
   type LogTurn,
   type MessageCapabilityMap,
   type RowEvent,
@@ -49,6 +51,63 @@ import {
   type TurnRef,
 } from './types';
 import { formatUsageTriple } from '../../base/usage-metrics';
+
+// ───────────────────────── 段（第几次跑） ─────────────────────────
+
+/**
+ * 这一条属于**哪一段**：契约里那一格是可选的（缺席 = 第一次跑那一段），界面统一成数字，
+ * 免得每个消费方各自写一次 `?? 0`。
+ *
+ * 段是什么：一行候选被跑过一次之后，人还可以对**已经跑完的**它追问，于是**又开一次 `run()`**。
+ * 那一次运行就是新的一段——它自己的厂商轮次从 1 重新数，与上一段撞号、撞载体键，
+ * 读侧全靠段号把两段分开（折叠键 = 段号 + 载体键，见 `messageFoldKey`）。
+ */
+function segmentOf(message: Pick<AgentMessage, 'segment'>): number {
+  return message.segment ?? 0;
+}
+
+/**
+ * 时间轴首条那一句**题面**：账本里 `role: 'user'` + `origin: 'case-prompt'` 的第一条
+ * （第一次跑那一段，主会话）。
+ *
+ * 为什么读账本而不是读用例：账本记的是「那一刻真正交出去的那句」，用例后来被编辑、被删除都不影响它；
+ * 现读用例会把「现在这份题面」说成「当时那一次评测用的题面」。
+ *
+ * 只认**第一次跑那一段**（`segment === 0`）：追问那句是 `origin: 'human'`，与题面各有各的落点。
+ * 找不到（旧运行、还没跑过的行）给 `null` ⇒ 那一块整块不渲染——**不拿别的东西凑**。
+ */
+export function casePromptOf(messages: readonly AgentMessage[]): AgentMessage | null {
+  for (const message of messages) {
+    if (message.role !== 'user' || message.origin !== 'case-prompt') continue;
+    if (segmentOf(message) !== 0 || message.subagentId !== null) continue;
+    if (!message.blocks.some((block) => block.type === 'text')) continue;
+    return message;
+  }
+  return null;
+}
+
+/**
+ * 首条卡片要的两格：正文 + 时刻。
+ *
+ * 三条边界：
+ *   · **只有正文这一格**（附件不属于题面：题面就是一句话）；
+ *   · **时刻取派生的基准**（`startedAt`）：账本里的消息没有自己的时刻（见 `BuildAgentLogModelInput.startedAt`），
+ *     拿这个字段顶上比编一个时刻诚实；
+ *   · 没有题面那条给 `null`（与 `casePromptOf` 同一条判据，两处不会漂）。
+ */
+export function userPromptOf(
+  messages: readonly AgentMessage[],
+  startedAt: string | null,
+): { text: string; at: string } | null {
+  return promptOfMessage(casePromptOf(messages), startedAt);
+}
+
+/** 题面那条消息 → 首条卡片的两格（正文取第一条 `text` 块；没有正文 = 没有可展示的题面） */
+function promptOfMessage(message: AgentMessage | null, startedAt: string | null): { text: string; at: string } | null {
+  if (message === null) return null;
+  const text = message.blocks.find((block) => block.type === 'text');
+  return text === undefined ? null : { text: text.text, at: startedAt ?? '' };
+}
 
 // ───────────────────────── 行级事实的输入（界面侧的口径） ─────────────────────────
 
@@ -116,14 +175,64 @@ const UNVERIFIED: MessageCapabilityMap = {
 // ───────────────────────── 轮次分组 ─────────────────────────
 
 /**
+ * 一轮之内块的**阅读顺序**：人说的话在前，模型答的话在后。
+ *
+ * 为什么需要它：块的顺序按账本的**投递顺序**攒起来，而投递顺序不保证问答顺序——一次追问是又开一次
+ * `run()`，那一段的第一条适配器消息可以在**那句追问自己落账本之前**就落地（发起追问的那一段代码
+ * 先让出事件循环、再等 `run()` 收尾），于是同一轮桶里助手块排在用户块前面，界面上「我追问的那句话」
+ * 被画到了这一段的末尾（它该是这一段的**标题**）。
+ *
+ * 稳定分区：**只把 `role === 'user'` 的块提到前面**，其余（助手的正文 / 思考 / 工具调用与结果、
+ * `system`）保持投递顺序；两组内部各自保持原相对顺序。同一条消息的 `text` 与 `attachment`
+ * 因此一起前置、附件清单顺序不变。
+ *
+ * 轮到**段首那一轮**时，前面这一组会被整组提到段标题里（见 `isSegmentHead`）⇒ 那一轮的
+ * 展示块只剩模型答的那一组，而那句人话在段标题里画一次。
+ */
+function askedFirst(blocks: readonly ContentBlock[]): ContentBlock[] {
+  const asked: ContentBlock[] = [];
+  const replied: ContentBlock[] = [];
+  for (const block of blocks) (block.role === 'user' ? asked : replied).push(block);
+  return [...asked, ...replied];
+}
+
+/**
+ * 段首那一轮里那句人话：`role === 'user'` 的文本块，按出现顺序拼起来（多个块之间换行）。
+ * 没有正文给 `null`——**不拿别的东西凑**：段标题里那句「追问 ×N」是账本事实，凑一句假的就把它变成了装饰。
+ */
+function userTextOf(asked: readonly ContentBlock[]): string | null {
+  const texts = asked
+    .filter((block): block is Extract<ContentBlock, { kind: 'text' }> => block.role === 'user' && block.kind === 'text')
+    .map((block) => block.text.trim())
+    .filter((text) => text !== '');
+  return texts.length === 0 ? null : texts.join('\n');
+}
+
+/**
+ * 这一轮是不是**某一段的段首**（厂商口径的第一次往返那一轮）。
+ *
+ * 为什么是「段首那一轮」而不是「这一段里的第一条 user 消息」：追问那句是**这一段的段首**，
+ * 而它 `roundTrip` 恒为 1（编排层落账本时就写死这一格，`followUpMessage`）⇒ 它必然落在
+ * 段首那一轮的桶里，与那一段的第一条适配器消息同桶。
+ *
+ * 首段（`segment === 0`）不算：它的分界就是题面那张卡片，而题面在更上面就已被摘出去了。
+ */
+function isSegmentHead(bucket: { segment: number; round: number | null }): boolean {
+  return bucket.segment >= 1 && bucket.round === 1;
+}
+
+/**
  * 一条消息 → 若干内容块（摊平信封）。
  * `role` / `source` / `assembly` 三格**跟着块走**：它们是块自己的事实，
  * 界面不该再看信封（同一个块不可能同时来自 assistant 正文与工具结果）。
  *
- * **无正文的思考块在这一层整块过滤掉**：数据层如实记着「有思考、无文本」
- * 这条事实（`text: null` + `textKind: 'none'`），而它在界面上只能变成一句占位文案——
- * 那不是用户要看的思考，**没有就不显示**。放在这一层而不是某个组件里：时间轴、面包屑、
- * 以及将来任何一个消费方拿到的模型里都不该再有它（在组件里隐藏只会让别的出口漏出来）。
+ * **没有正文的思考块在这一层整块过滤掉**：两种形状都算「没有正文」——
+ * `text: null`（数据层如实记着「有思考、无文本」：`textKind: 'none'`）与 **`text` 是空白**
+ * （`''` / 只有空白：思考**刚开始、正文还没到**那一拍的增量帧就是这个形状，codex 与 pi 的
+ * 增量出口不过滤空 delta）。两者在界面上都只能画出一个空面板或一句占位文案，
+ * 那不是用户要看的思考——**没有就不显示**（用户口径：等第一条有正文的思考流消息到了再画）。
+ * 放在这一层而不是某个组件里：时间轴、面包屑、以及将来任何一个消费方拿到的模型里都不该再有它
+ * （在组件里隐藏只会让别的出口漏出来）。
  */
 function blocksOf(
   message: AgentMessage,
@@ -132,8 +241,16 @@ function blocksOf(
   answers: ReadonlyMap<string, SettledAskUser>,
 ): ContentBlock[] {
   return message.blocks
-    .map((block, blockIndex) => toContentBlock(block, message, `${message.messageId}#${blockIndex}`, live, at, answers))
-    .filter((block) => !(block.kind === 'thinking' && block.text === null));
+    /**
+     * 块 id 挂在 `mergeKey` 而不是 `messageId` 上：装配器对同一条逻辑消息**每次投递都发新的
+     * `messageId`**（全局 `seq + 1`，`mergeKey` 才恒定），而 id 是界面块的 React key——挂
+     * `messageId` 上时流式每帧 key 全变 ⇒ 正文块整棵重挂 ⇒ 淡入动画整段从头重放
+     * （页面上就是「一直在闪烁」）。守卫：`text-block-streaming-stability.test.tsx`。
+     */
+    .map((block, blockIndex) => toContentBlock(block, message, `${segmentOf(message)}:${message.mergeKey}#${blockIndex}`, live, at, answers))
+    // 「没有正文」与「正文只有空白」是同一档（见本节开头）：`text: ''` 的思考块在界面上只能画出一个
+    // 空面板（标题 + 一片空白），而它真会出现——codex / pi 的思考增量帧不过滤空 delta
+    .filter((block) => !(block.kind === 'thinking' && (block.text === null || block.text.trim() === '')));
 }
 
 /**
@@ -203,8 +320,9 @@ function toContentBlock(
     role: message.role,
     source: message.source,
     assembly: message.assembly,
-    // 逻辑消息身份与消息级用量都跟着块走：块是时间轴唯一拿得到的东西（页脚按 mergeKey 去重、按 usage 取值）
+    // 逻辑消息身份与消息级用量都跟着块走：块是时间轴唯一拿得到的东西（页脚按身份去重、按 usage 取值）
     mergeKey: message.mergeKey,
+    segment: segmentOf(message),
     // 契约那一格是可选的（老日志没有）；UI 侧统一成 `null`，页脚只认「非 null」这一档
     usage:
       message.usage === undefined || message.usage === null
@@ -233,6 +351,8 @@ function toContentBlock(
         input: serializeInput(block.input),
         // 摘要主体随块从数据层下来（词表真源在 `@aieval/agents` 的 `activity.ts`）；老记录缺这一格
         summary: block.summary ?? undefined,
+        // 可缺格：老账本没有它 ⇒ `?? null`（与 `summary` 同一条处置）
+        inputError: block.inputError ?? null,
         tool: familyPayloadOf(block, live, base.at, answers),
       };
     }
@@ -419,8 +539,38 @@ function asString(value: unknown): string | null {
 /** 会话节点的可变累积态（组装期中间量，不对外） */
 interface SessionDraft {
   node: Omit<SessionNode, 'content'>;
-  /** 轮次号 → 该轮的块。`Map` 的插入顺序就是首次出现顺序，排序在最后一步做 */
-  turns: Map<number | null, { at: string; blocks: ContentBlock[] }>;
+  /**
+   * 轮次身份（`<段号>:<轮次号>`）→ 那一轮的块。`Map` 的插入顺序就是首次出现顺序，排序在最后一步做。
+   *
+   * 键为什么不是裸轮次号：追问那一段的厂商轮次从 1 重新数，两段的「轮次 1」是**两个**轮次。
+   */
+  turns: Map<
+    string,
+    {
+      segment: number;
+      round: number | null;
+      at: string;
+      /**
+       * 这一轮里**人说的话**（`role === 'user'` 的块），按投递顺序。
+       *
+       * 它们与 `replied` 分开存、不合成一份数组：段首那一轮的这一组要整组提到**段标题**里
+       * （见 `LogSegment`），两处消费同一份数组——合成一份再各自按 `role` 过滤，
+       * 就是同一条判据写两遍（漂了的表现是那句话在两处都出现、或两处都不出现）。
+       */
+      asked: ContentBlock[];
+      /** 这一轮里**模型答的话**（含思考、工具调用与结果、`system`），按投递顺序 */
+      replied: ContentBlock[];
+      /**
+       * 这一轮**投递顺序上第一条块**的消息 id：`buildRenderBlocks` 规则 3 的兜底定位键
+       * （`callId` 为 `null` 那一档按 `messageId` 认派发点）。
+       *
+       * 为什么不能直接用展示块的第一条：展示块的顺序是按阅读顺序排的（人说的话在前），
+       * 那一格会落到段首那句人话上——同一轮里若有别的消息派发过子任务，兜底判据就会静默认错
+       * （或多认一条导航）。这一格在桶创建时定下、此后不再变。
+       */
+      fallbackMessageId: string | null;
+    }
+  >;
 }
 
 function nodeStatusOf(status: SubagentRecord['status']): LogNodeStatus {
@@ -448,12 +598,17 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   const messages = input.records.filter((r): r is Extract<RowRecord, { type: 'message' }> => r.type === 'message').map((r) => r.message);
   const subagents = input.records.filter((r): r is Extract<RowRecord, { type: 'subagent' }> => r.type === 'subagent').map((r) => r.subagent);
 
-  /** `mergeKey` 覆盖累积：**留最后一条**（它的 `blocks` 已是全量），顺序按首次出现 */
+  /**
+   * **`(段号, mergeKey)`** 覆盖累积：**留最后一条**（它的 `blocks` 已是全量），顺序按首次出现。
+   * 键里必须带段号——追问那一段的厂商轮次从 1 重新数，两段的载体键会逐字相同（`main|1|assistant|-`），
+   * 只按载体键折叠会让后一段把前一段整条吃掉。
+   */
   const folded = new Map<string, AgentMessage>();
   const order: string[] = [];
   for (const message of messages) {
-    if (!folded.has(message.mergeKey)) order.push(message.mergeKey);
-    folded.set(message.mergeKey, message);
+    const key = messageFoldKey(message);
+    if (!folded.has(key)) order.push(key);
+    folded.set(key, message);
   }
 
   /**
@@ -461,6 +616,13 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
    * 「这一问收场了没有」，逐块去扫账本会变成 O(n²)。
    */
   const answers = settledAskUserOf(messages);
+
+  /**
+   * **题面那条单独摘出来**：它由时间轴首条那张卡片呈现，**不再作为轮次里的一个「用户」块**
+   * （同一句话在同一个抽屉里画两遍）。摘出来之后它在 `turns` 里消失，而卡片在列表头几行。
+   */
+  const prompt = casePromptOf(messages);
+  const promptKey = prompt === null ? null : messageFoldKey(prompt);
 
   const sessions = new Map<string, SessionDraft>();
   /** 行级节点（`kind: 'row'`）：厂商只给汇总、没有逐条身份的那一档 */
@@ -484,7 +646,12 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
       dispatchKind: null,
       name: null,
       nameMissing: null,
-      userPrompt: input.userPrompt ?? null,
+      /**
+       * 时间轴首条：**题面**。缺省由账本里那一条推（见 `userPromptOf`），
+       * 调用方显式给值时以它为准（`null` 也走推导——「显式声明没有题面」与「没给」在这里是同一件事：
+       * 账本里那一条是唯一真源）。
+       */
+      userPrompt: input.userPrompt ?? promptOfMessage(prompt, input.startedAt ?? input.facts.startedAt),
       usage: null,
       outcome: null,
       // 主会话节点的 `sessionFacts` **为 `null`**：行级事实一律读 `AgentLogModel.facts`，不存第二份真值
@@ -594,17 +761,50 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   /** 消息里的 `subagentId` → 会话树上的那个身份（别名先解析；解析不到就按原值） */
   const sessionKeyOf = (subagentId: string): string => aliasOf.get(subagentId) ?? subagentId;
 
+  /** 主会话每一段最早的那一条时刻（段号 → ISO）：段标题的时刻读它（见下 `segments`） */
+  const segmentTimes = new Map<number, string>();
+
   for (const key of order) {
     const message = folded.get(key);
     if (message === undefined) continue;
+    // 题面那条已由首条卡片呈现（见 `promptKey`）：再进轮次就是同一句话画两遍
+    if (key === promptKey) continue;
     // 消息那一侧用的是**派生它的调用 id**，会话树的键是子任务的**身份** ⇒ 过一层别名解析
     const sessionId = message.subagentId === null ? 'main' : sessionKeyOf(message.subagentId);
     const session = sessions.get(sessionId) ?? main;
     const at = atOfRound(message.roundTrip);
+    /**
+     * 主会话上**每一段最早的那一条时刻**：段标题的时刻读它（见下 `segments`）。
+     * 只收主会话：子会话节点里的轮次不是「这一行的第几段」那件事。
+     */
+    if (message.subagentId === null && segmentOf(message) >= 1 && at !== '') {
+      const seen = segmentTimes.get(segmentOf(message));
+      if (seen === undefined || at < seen) segmentTimes.set(segmentOf(message), at);
+    }
     const blocks = blocksOf(message, input.facts.live, at, answers);
-    const bucket = session.turns.get(message.roundTrip);
-    if (bucket === undefined) session.turns.set(message.roundTrip, { at, blocks: [...blocks] });
-    else bucket.blocks.push(...blocks);
+    /**
+     * **轮次的完整身份是 `(段号, 轮次号)`**：追问那一段的厂商轮次从 1 重新数，只按轮次号分桶会让
+     * 两段的同号轮次挤成一条（时间轴上表现为「追问的回复出现在首段的第 1 轮里」）。
+     */
+    const turnKey = `${segmentOf(message)}:${message.roundTrip ?? 'none'}`;
+    const bucket = session.turns.get(turnKey);
+    if (bucket === undefined) {
+      const ordered = askedFirst(blocks);
+      session.turns.set(turnKey, {
+        segment: segmentOf(message),
+        round: message.roundTrip,
+        at,
+        // 分成「人说的话」与「模型答的话」两组存：段首那一轮的前一组要整组进段标题（见 `LogSegment`）
+        asked: ordered.filter((block) => block.role === 'user'),
+        replied: ordered.filter((block) => block.role !== 'user'),
+        // 兜底定位键取**投递顺序**的第一条（不是排完序的第一条）：换序不该改变派发点的认领结果
+        fallbackMessageId: message.messageId,
+      });
+    } else {
+      const ordered = askedFirst([...bucket.asked, ...bucket.replied, ...blocks]);
+      bucket.asked = ordered.filter((block) => block.role === 'user');
+      bucket.replied = ordered.filter((block) => block.role !== 'user');
+    }
   }
 
   /**
@@ -728,18 +928,37 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   }
 
   const nodes: LogNode[] = [...sessions.values()].map((session) => {
-    const turns: LogTurn[] = [...session.turns.entries()]
-      .sort((left, right) => (left[0] ?? 0) - (right[0] ?? 0))
-      .map(([round, bucket], index, all) => ({
-        round,
-        at: bucket.at,
-        subagentId: session.node.kind === 'main' ? null : session.node.subagentId,
-        blocks: bucket.blocks,
-        tokens: null,
-        durationMs: null,
-        // **只有最后一轮**可能是「还没结束」的那一轮：中断的块全靠它才不闪光标
-        running: input.facts.live && index === all.length - 1,
-      }));
+    /**
+     * 排序键 = `(段号, 轮次号)`：段号先、轮次号后——追问那一段的轮次号从 1 重新数，
+     * 只按轮次号排会把追问那一段整段插回首段中间（真机症状：追问的回复出现在第 1 轮里）。
+     * `round === null`（不属于任何轮次的内容）排在该段的最前。
+     */
+    const turns: LogTurn[] = [...session.turns.values()]
+      .sort((left, right) => left.segment - right.segment || (left.round ?? 0) - (right.round ?? 0))
+      .map((bucket, index, all): LogTurn => {
+        /**
+         * **段首那句人话整组提到段标题里**（见 `LogSegment`）：提出来之后它由那一段的分割线
+         * 呈现（「追问 ×N + 时刻 + 那句追问」），轮次里只剩模型答的话——同一句话在同一个抽屉里
+         * 画两遍是把「段标题」与「第一条消息」混成一处。
+         */
+        const head = isSegmentHead(bucket);
+        return {
+          round: bucket.round,
+          segment: bucket.segment,
+          at: bucket.at,
+          subagentId: session.node.kind === 'main' ? null : session.node.subagentId,
+          // 段首那一轮只留模型答的话；其余轮次照旧是「人说的话 → 模型答的话」
+          // （运行中插进去的话就在这一组里，它不属于段标题）
+          blocks: head ? [...bucket.replied] : askedFirst([...bucket.asked, ...bucket.replied]),
+          // 规则 3 的兜底定位键**不读展示块的第一条**：块按阅读顺序排过（人说的话在前），
+          // 而这一格要的是投递顺序上第一条块的身份（见 `SessionDraft.turns`）
+          fallbackMessageId: bucket.fallbackMessageId,
+          tokens: null,
+          durationMs: null,
+          // **只有最后一轮**可能是「还没结束」的那一轮：中断的块全靠它才不闪光标
+          running: input.facts.live && index === all.length - 1,
+        };
+      });
     // 能力声明是**每次运行**的一份（不是每个节点各一份）：同一行的所有会话节点共用它
     return { ...session.node, capability: input.capability ?? UNVERIFIED, capabilityNotes: input.capabilityNotes ?? [], content: { status: 'ready', data: turns } } satisfies SessionNode;
   });
@@ -749,6 +968,23 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   const activeNodeId = nodes.find((node) => node.kind === 'main')?.id ?? nodes[0]?.id ?? 'main';
   const active = nodes.find((node) => node.id === activeNodeId);
   const turnCount = active?.content.status === 'ready' ? active.content.data.length : 0;
+
+  /**
+   * 段这一层的事实（主会话，按段号升序）：**每一次追问一条**，含那句追问的正文与这一段的开始时刻。
+   *
+   * 四条：
+   *   · **只在主会话收**：子会话节点里的轮次属于那个子任务自己，没有人对它追问过——
+   *     在那里画一行「追问 ×N」是把父会话的动作安到它头上（与 `segmentDividers` 同一条判据）；
+   *   · **首段不收**（`segment === 0`）：它的分界就是题面那张卡片；
+   *   · **时刻取这一段最早的那一条消息**（`segmentTimes` 在消息循环里攒），不是段首那一轮的轮次号
+   *     ——厂商轮号与真实先后不保证一致；
+   *   · **正文取桶里的 `asked`**（`userTextOf`，与「把它从轮次的展示块里提出来」同一份数据）：
+   *     两者若各写一份，漂了的表现是那句话在段标题与轮次里各出现一次、或两处都不出现。
+   */
+  const segments: LogSegment[] = [...main.turns.values()]
+    .filter(isSegmentHead)
+    .map((bucket) => ({ segment: bucket.segment, at: segmentTimes.get(bucket.segment) ?? '', text: userTextOf(bucket.asked) }))
+    .sort((left, right) => left.segment - right.segment);
 
   return {
     specVersion: 1,
@@ -768,11 +1004,17 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     activeNodeId,
     // `allNodes` 已经建好（含每个会话节点的轮次）⇒ 归属的「有没有那一轮」在这一刻就能判
     rowEvents: rowEventsOf(input.events, turnHomesOf(allNodes)),
+    segments,
     /**
-     * 「还没跑过」的判据是**所有会话节点都没有轮次**（行级节点不算：它是厂商只给汇总的那一档，
+     * 「什么都没得画」的判据：**所有会话节点都没有轮次**（行级节点不算：它是厂商只给汇总的那一档，
      * 与「这一行有没有跑过」无关）。
+     *
+     * 题面那条不算「有内容」：它从轮次里剔出去了（由首条卡片呈现），**但它自己要摆在列表里**——
+     * 一行跑了却一条内容都没产出的场合，界面上至少该说出「它被要求做什么」，而不是
+     * 「还没有日志 · 这一行还没开始执行」。这一格因此与「有没有题面」取或。
      */
-    empty: nodes.every((node) => node.content.status === 'ready' && node.content.data.length === 0),
+    empty:
+      prompt === null && nodes.every((node) => node.content.status === 'ready' && node.content.data.length === 0),
   };
 }
 
@@ -833,10 +1075,11 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
  *   · 其余（`status` / `diff-summary` / `score` / `end`）只在终点有意义，留在 `facts` 里。
  *
  * 三条边界：
- *   · **候选阶段的边界**认第一条 `judging` 或终态状态帧——与 `@aieval/client` 的 `row-live.ts` 口径 5
- *     是**同一条判据**（评审者的用量落 `judge-events.jsonl`，与行级流分开；这条判据的输入源是
- *     历史数据回放——评分事件曾与候选同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，
- *     那些读数不属于这一行）；
+ *   · **候选阶段的边界是「一开一关」**：`judging` 或终态状态帧**关**（他们之后的读数是评审者的用量，
+ *     落 `judge-events.jsonl`，与行级流分开；这条判据的输入源是历史数据回放——评分事件曾与候选
+ *     同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，那些读数不属于这一行），
+ *     `preparing` / `running` **重新开**（一次追问或一次重跑就是又开一个候选阶段）。只关不开的话，
+ *     追问那一段的读数全被当成评审者的丢掉；
  *   · **子会话的读数一条都不出**：`turn.subagentId` 非空的那一类是**那个子会话自己**的累计，它只在
  *     派发点那张子任务卡片里展示（`SessionNode.usage`，数据来自 `SubagentRecord.usage`，与本函数无关）；
  *   · **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
@@ -849,14 +1092,22 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
   const rows: { index: number; row: RowEvent }[] = [];
   /** 候选阶段里最后一条**主会话**带计量的读数（整行唯一那条里程碑的候选；计量一并记下，取用时不重判） */
   let lastCandidateUsage: { index: number; event: UsageEvent; tokens: NonNullable<UsageEvent['tokens']> } | null = null;
-  /** 候选阶段是否已经结束（第一条 `judging` / 终态帧之后，行级流里再出现的 `usage` 是评审者的——历史数据形态） */
-  let candidateEnded = false;
+  /**
+   * 候选阶段的闸门：开着时收读数。`judging` / 终态帧把它**关上**（之后报的读数是评审者的——历史数据形态），
+   * 而 `preparing` / `running` 把它**重新打开**：一次追问（或一次重跑）就是又开一个候选阶段。
+   *
+   * 少了「重新打开」这一半的症状：追问那一段的读数被当成评审者的用量丢掉，里程碑冻在首段的最后一条读数上
+   * ——数字是旧的，位置也落在中间那一轮（真机 `ce008414` 的行 `673cd5f8`：最后一条消息是段 1 的轮次 3，
+   * 里程碑却停在段 1 的轮次 2）。`重新评分` 只落 `judging`、不落 `preparing`，故它不会误开这道闸门。
+   */
+  let candidatePhase = true;
 
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     if (event === undefined) continue;
     if (event.type === 'status') {
-      if (event.status === 'judging' || TERMINAL_ROW_STATUSES.includes(event.status)) candidateEnded = true;
+      if (event.status === 'judging' || TERMINAL_ROW_STATUSES.includes(event.status)) candidatePhase = false;
+      else if (event.status === 'preparing' || event.status === 'running') candidatePhase = true;
       continue;
     }
     if (event.type === 'error') {
@@ -864,7 +1115,7 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
       continue;
     }
     if (event.type !== 'usage' || event.tokens === null) continue;
-    if (candidateEnded) continue;
+    if (!candidatePhase) continue;
     // 子会话自己的累计读数不算这一行（它在那张子任务卡片里）
     if ((event.turn?.subagentId ?? null) !== null) continue;
     lastCandidateUsage = { index, event, tokens: event.tokens };

@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent, ScoreResult } from '@aieval/contracts';
+import { INJECT_OUTCOME_LABELS } from './agent-log/types';
 import { formatEventLine, formatEventLog } from './log-format';
 
 const at = '2026-09-22T08:03:04.000Z';
@@ -389,6 +390,24 @@ describe('formatEventLine', () => {
     expect(unanswered).toBe(`[${expectedClock(at)}] 提问 超时未答 · 等待 10m00s · 通道未知`);
   });
 
+  /**
+   * `inject-message`（人喂模型那一条的落点）：**「没送到」的三种必须能被读到**。
+   * 它们一条账本记录都不会产生（账本只在真的交出去那一刻才写），这一行日志是它们在界面上唯一的身影。
+   * 三条靶子：① 投递成功不带原因（`null` 不许渲染成「null」）；② 丢弃与超时各带那句人话；
+   * ③ 五个取值都取界面那一份词表（与队列区、卡片上的标签逐字相同）。
+   */
+  it('inject-message：落点 + 原因（没送到的三种各说各的）', () => {
+    expect(formatEventLine({ seq: 20, at, type: 'inject-message', messageId: 'm-1', requires: 'idle', outcome: 'delivered', reason: null }))
+      .toBe(`[${expectedClock(at)}] 人工消息 已送达`);
+    expect(formatEventLine({ seq: 21, at, type: 'inject-message', messageId: 'm-2', requires: 'idle', outcome: 'timed-out', reason: '等太久了，这一条没能交给智能体' }))
+      .toBe(`[${expectedClock(at)}] 人工消息 未送达（等超时） · 等太久了，这一条没能交给智能体`);
+    expect(formatEventLine({ seq: 22, at, type: 'inject-message', messageId: 'm-3', requires: 'round', outcome: 'discarded', reason: '这一行已经结束，这条消息没能交给智能体' }))
+      .toBe(`[${expectedClock(at)}] 人工消息 未送达（行已结束） · 这一行已经结束，这条消息没能交给智能体`);
+    // 五态五种说法：合成一句「发送失败」会让使用者分不清「等太久了」与「这一行早就结束了」
+    const labels = Object.values(INJECT_OUTCOME_LABELS).map((item) => item.label);
+    expect(new Set(labels).size).toBe(5);
+  });
+
   it('时间戳非法时原样保留，不显示 Invalid Date', () => {
     expect(formatEventLine({ seq: 9, at: '不是时间', type: 'end', exitReason: 'error' })).toBe('[不是时间] 结束 error');
   });
@@ -411,12 +430,13 @@ describe('formatEventLine', () => {
         outcome: 'unavailable',
         waitedMs: 0,
       }),
+      formatEventLine({ seq: 5.5, at, type: 'inject-message', messageId: 'm-1', requires: 'idle', outcome: 'already-consumed', reason: '这一条已经交给智能体了，撤不回来' }),
       formatEventLine({ seq: 6, at, type: 'score', score: scoreFixture({ totalScore: 0, verdict: '', raw: '', judgeModelId: 'm' }) }),
       formatEventLine({ seq: 7, at, type: 'error', message: '' }),
       formatEventLine({ seq: 8, at, type: 'end', exitReason: 'completed' }),
     ];
 
-    expect(lines).toHaveLength(8);
+    expect(lines).toHaveLength(9);
     // 每条都以 `[时间] ` 开头：少了这个前缀就是「有时间戳没内容」或「没时间戳」的形状
     for (const line of lines) expect(line.startsWith(`[${expectedClock(at)}] `)).toBe(true);
     // 真正的 0 照常显示 0，不是「未采集」（与 null ≠ 0 同一条口径）；单位不因 0 而省掉

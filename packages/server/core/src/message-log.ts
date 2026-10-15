@@ -8,21 +8,22 @@
  *
  * 与 `event-log.ts` 的分工（两者刻意不合并）：
  *   · 事件日志按 `seq` 去重与续订（行级：状态、日志、计量、失败、结束）；
- *   · 本模块按 `mergeKey` **覆盖累积**（内容级）。
+ *   · 本模块按 **`(segment, mergeKey)`** **覆盖累积**（内容级）——段号是「第几次追问那一段」，
+ *     没有它时两段的同号轮次会互相覆盖（见 `foldMessages`）。
  *
  * 四条口径：
- *   1. **`messageId` / `mergeKey` / `subagentId` 都由适配器分配**，本模块不重新发号：
- *      消费方按 `messageId` 去重、按 `mergeKey` 合并、按 `subagentId` 归组，缺一个就会出现
+ *   1. **`messageId` / `mergeKey` / `subagentId` / `segment` 都由生产方分配**，本模块不重新发号：
+ *      消费方按 `messageId` 去重、按 `(segment, mergeKey)` 合并、按 `subagentId` 归组，缺一个就会出现
  *      「快照把旧块覆盖掉」或「同一条消息重复渲染」。
  *   2. 追加用 `appendFileSync`（O_APPEND 语义）：同一进程里的并发调用天然串行；不跨进程写。
  *   3. **一条记录一行**（不是「一条增量一行」）：适配器交出的每条消息都带该 `mergeKey` 到目前为止的
- *      完整块列表，所以文件本身就是一串可覆盖的快照——重放时按 `mergeKey` 取最后一条即得终态。
+ *      完整块列表，所以文件本身就是一串可覆盖的快照——重放时按 `(segment, mergeKey)` 取最后一条即得终态。
  *   4. 读侧容忍坏行（跳过后 WARN）、写侧拒绝坏数据（抛中文 `ServiceError`）：与事件日志同一条
  *      「唯一真相源不写坏数据」的理由——坏数据的表现不是报错，而是读取侧**静默丢弃**。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { RowRecordSchema, ServiceError, type AgentMessage, type RowRecord, type SubagentRecord } from '@aieval/contracts';
+import { messageFoldKey, RowRecordSchema, ServiceError, type AgentMessage, type RowRecord, type SubagentRecord } from '@aieval/contracts';
 import { createLogger } from './logger';
 
 const log = createLogger('message-log');
@@ -96,10 +97,15 @@ export function readRecords(file: string): RowRecord[] {
 }
 
 /**
- * 按 `mergeKey` 覆盖累积成**最终视图**：每个合并键保留最后一条（它的 `blocks` 已是全量），
+ * 按 **`(segment, mergeKey)`** 覆盖累积成**最终视图**：每个键保留最后一条（它的 `blocks` 已是全量），
  * 再按**首次出现顺序**返回。这就是消费方（对话视图 / 导出）要渲染的那一份。
  *
- * 为什么排序按首次出现而不是 `messageId` 的序号：`mergeKey` 的首次出现顺序就是这条逻辑消息
+ * 为什么键里必须有 `segment`：追问是**又开一次 `run()`**，厂商那一侧的轮次从 1 重新数 ⇒ 两段的
+ * `mergeKey` 逐字相同（`main|1|assistant|-`）。只按 `mergeKey` 折叠会让追问段第 1 轮的 assistant
+ * 把首段第 1 轮的思考与工具调用**整条吃掉**（界面上那一轮的「工具调用 × 0」就是这么来的）。
+ * 段号缺省 0 ⇒ 旧账本（没有这一格）折叠结果逐字不变。
+ *
+ * 为什么排序按首次出现而不是 `messageId` 的序号：键的首次出现顺序就是这条逻辑消息
  * 「第一次被说到」的顺序，而后续覆盖（快照、块追加）不该把它的位置往后挪——否则界面上一条消息
  * 会在打字过程中不停跳到列表末尾。
  */
@@ -107,8 +113,9 @@ export function foldMessages(messages: readonly AgentMessage[]): AgentMessage[] 
   const order: string[] = [];
   const latest = new Map<string, AgentMessage>();
   for (const message of messages) {
-    if (!latest.has(message.mergeKey)) order.push(message.mergeKey);
-    latest.set(message.mergeKey, message);
+    const key = messageFoldKey(message);
+    if (!latest.has(key)) order.push(key);
+    latest.set(key, message);
   }
   return order.map((key) => latest.get(key)!);
 }

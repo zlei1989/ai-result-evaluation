@@ -30,6 +30,8 @@ import {
   type Settings,
   type SubagentRecord,
   type TestCase,
+  type TurnInjectionCapability,
+  type TurnInjectionCell,
 } from '@aieval/contracts';
 import {
   deleteCaseFile,
@@ -215,6 +217,9 @@ export function makeRowFixture(overrides: Partial<EvalRow> = {}): EvalRow {
     error: null,
     // 缺省「还没跑过」= 0 次尝试（与契约里这一格的缺省值一致）
     attempts: 0,
+    sessionId: null,
+    followUps: 0,
+    followUpRounds: 0,
     ...overrides,
   };
 }
@@ -243,6 +248,10 @@ export function makeRunFixture(input: {
   useAgentJudge?: boolean;
   /** 这一轮是否开启应答面；不填即 `false`（与 `RunCreate.askUser` 的缺省一致） */
   askUser?: boolean;
+  /** 这一轮是否允许人往运行中的智能体发消息；不填即 `false`（与 `RunCreate.injectMessages` 的缺省一致） */
+  injectMessages?: boolean;
+  /** 这一轮的用户备注；不填即空串（与 `EvalRunSchema.note` 的缺省一致） */
+  note?: string;
   rows?: EvalRow[];
   status?: EvalRun['status'];
 }): EvalRun {
@@ -250,6 +259,7 @@ export function makeRunFixture(input: {
     id: input.id ?? randomUUID(),
     caseId: input.caseId ?? randomUUID(),
     caseTitle: input.caseTitle ?? '测试用例',
+    note: input.note ?? '',
     repoPath: input.repoPath ?? join(tmpdir(), 'aieval-not-a-real-repo'),
     commitHash: input.commitHash ?? null,
     repoBranch: input.repoBranch ?? null,
@@ -259,6 +269,7 @@ export function makeRunFixture(input: {
     executionMode: input.executionMode ?? 'parallel',
     useAgentJudge: input.useAgentJudge ?? false,
     askUser: input.askUser ?? false,
+    injectMessages: input.injectMessages ?? false,
     rows: input.rows ?? [makeRowFixture()],
     workspaceBase: input.workspaceRoot,
     createdAt: new Date().toISOString(),
@@ -598,6 +609,23 @@ export interface FakeAgentCall {
   askUserCalls: number;
   /** 回调交回来的那几份答复（顺序即提问顺序）：闸门开着时用来看「答复回到了适配器手里」 */
   askUserReplies: AskUserReply[];
+  /**
+   * 这一次运行拿到的入参上**有没有注入端口**（`input.inject !== undefined`），以及它开着没有。
+   * 与 `askUserAttached` 同一用途：人工消息面的闸门就是这一格——
+   * 「没开 ⇒ 适配器一格都不挂」这条零回归判据在适配器边界上的形状。
+   */
+  injectAttached: boolean;
+  injectAvailable: boolean;
+  /** 脚本让它取件之后交回来的那些 `messageId`（见 `FakeAgentScript.injectDrain`） */
+  injectDelivered: string[];
+  /**
+   * 这一次运行拿到的**续接会话 id**（`input.resume?.sessionId`；`undefined` = 这一格根本没传）。
+   *
+   * 为什么必须记录：追问的全部价值就在这一格上——不传 / 传成另一行的 id / 传成 `null` 时，
+   * 行照样跑完、分数照样出得来（厂商那边只是开了一条空的新会话），而界面上一切正常。
+   * 取值刻意保留 `undefined`（不兜成 `null`）：「没传这一格」正是「又从头开了一段」的判据。
+   */
+  resumeSessionId?: string;
   startedAt: number;
   finishedAt: number | null;
   exitReason: AgentExitReason | null;
@@ -660,6 +688,12 @@ export interface FakeAgentScript {
   subagentTurns?: number | null;
   turns?: number | null;
   /**
+   * 适配器自报的会话 id（`AgentRunResult.sessionId` 必填）。
+   * 不填即 `null`（= 这次没拿到）——夹具不替适配器编一条会话出来；要造「落盘后能续接」
+   * 那种形态时显式给一个 id。
+   */
+  sessionId?: string | null;
+  /**
    * `applied.structuredOutput`（适配器上报的**每-run**通道事实）。不写就按真适配器的行为现算：
    * cc / codex 拿到 schema 时报 `true`（原生通道），dsh 恒 `false`（只有填充层）。
    * 为什么留这一格旋钮：要造「厂商这一轮没照做」（网关把 schema 丢了）这种形态时，
@@ -709,6 +743,16 @@ export interface FakeAgentScript {
    * 「不问就不动」与「一次都不被调用」两条判据靠这两个数分开。
    */
   askUser?: { request: AskUserRequest };
+  /**
+   * 在 `finish()` 之前**像真适配器那样取一次件并交出去**：`drain(boundary)` →
+   * 逐条 `markDelivered(ids, retract)`。取到的 `messageId` 记在 `call.injectDelivered` 上。
+   *
+   * 为什么需要这一格：编排层那一侧的接缝（闸门 → 端口 → 账本 → 行快照的计数）只有把
+   * 「适配器真的取走并确认交付」这一步走一遍才连得起来。夹具扮演的是**适配器那一端**
+   * （取件归它认边界），编排层那一端由被测代码实现。
+   * 不填 = 这一行不取件（一条消息就留在队列里，等编排层的等待预算收场）。
+   */
+  injectDrain?: 'round' | 'idle';
 }
 
 export const fakeAgents = {
@@ -794,6 +838,77 @@ const FAKE_MESSAGE_CAPABILITY: AgentProviderMetadata['messageCapability'] = {
 };
 
 /**
+ * 假 provider 的**注入面声明**（第五组）：只逐字照抄各家真值里**编排层会读的那一格**——
+ * `resume`（追问那一格判据：`state !== 'yes'` ⇒ 拒绝追问）。
+ *
+ * 为什么投递 / 撤回那几格是同一份显式占位而不是各家真值：它们**没有一个消费方在本包内**
+ * （投递由适配器按端口取件、撤回在 api 的端点上），抄一遍等于把四家各 30 行的代价事实
+ * 复制到第二个文件里，而两份必然漂移；占位值把这件事写在脸上（`unverified` + 说出原因），
+ * 真值仍只有各家 `providers/<kind>/index.ts` 那一份。
+ * `resume` 那一格必须照抄：追问的可用性与拒绝原因读的就是它，填错了整组用例都在测一个假前提。
+ */
+function fakeTurnInjection(resume: TurnInjectionCapability['resume']): TurnInjectionCapability {
+  const placeholder: TurnInjectionCell = {
+    state: 'unverified',
+    reason: 'unverified',
+    channel: 'wire',
+    gate: null,
+    experimental: false,
+    proofDriver: 'synthetic-fixture',
+    proofDriverReason: 'evaluator 夹具不模拟投递面（这一格在本包内没有消费方）：真值在各家 providers/<kind>/index.ts',
+  };
+  return {
+    delivery: { round: placeholder, idle: placeholder },
+    retract: {
+      round: { state: 'unverified', reason: 'evaluator 夹具不模拟撤回面' },
+      idle: { state: 'unverified', reason: 'evaluator 夹具不模拟撤回面' },
+    },
+    resume,
+    notes: [],
+  };
+}
+
+/** 续接那一格的真值（`channel` / `gate` / `proofDriver` 逐格照抄），四家各一条 */
+const FAKE_RESUME_CELLS = {
+  cc: {
+    state: 'yes',
+    reason: null,
+    channel: 'wire',
+    gate: null,
+    experimental: false,
+    proofDriver: 'real-path',
+    proofDriverReason: null,
+  },
+  codex: {
+    state: 'yes',
+    reason: null,
+    channel: 'wire',
+    gate: null,
+    experimental: false,
+    proofDriver: 'real-path',
+    proofDriverReason: null,
+  },
+  pi: {
+    state: 'yes',
+    reason: null,
+    channel: 'in-process-sdk',
+    gate: null,
+    experimental: false,
+    proofDriver: 'real-path',
+    proofDriverReason: null,
+  },
+  dsh: {
+    state: 'yes',
+    reason: null,
+    channel: 'wire',
+    gate: null,
+    experimental: false,
+    proofDriver: 'real-path',
+    proofDriverReason: null,
+  },
+} satisfies Record<AgentKind, TurnInjectionCapability['resume']>;
+
+/**
  * 假 provider 的元数据：与**真实注册表**逐格一致（各家真值在 `providers/<kind>/index.ts`，
  * 由 agents 包的元数据回归网钉住）。
  *
@@ -838,6 +953,7 @@ const FAKE_PROVIDER_METADATA = {
      */
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.cc),
     // 推理证据需求同真值：只有 codex 的思考全文与工具结果正文只在 messages.jsonl 里，
     // 编排层据它决定「执行过程记录」证据要不要多拼一份消息账本
     needsMessagesForReasoningEvidence: false,
@@ -857,6 +973,7 @@ const FAKE_PROVIDER_METADATA = {
     interaction: { askUser: 'off-by-adapter', askUserChannel: null, askUserReason: 'not-observed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.codex),
     needsMessagesForReasoningEvidence: true,
   },
   dsh: {
@@ -873,6 +990,7 @@ const FAKE_PROVIDER_METADATA = {
     interaction: { askUser: 'not-projected-by-vendor', askUserChannel: null, askUserReason: 'not-exposed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.dsh),
     needsMessagesForReasoningEvidence: false,
     defaultEffort: 'high',
   },
@@ -896,6 +1014,7 @@ const FAKE_PROVIDER_METADATA = {
     // 秒级：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
     timing: { runScale: 'seconds', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.pi),
     needsMessagesForReasoningEvidence: false,
     defaultEffort: 'medium',
   },
@@ -932,6 +1051,10 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         askUserAttempts: 0,
         askUserCalls: 0,
         askUserReplies: [],
+        injectAttached: input.inject !== undefined,
+        injectAvailable: input.inject?.available ?? false,
+        injectDelivered: [],
+        resumeSessionId: input.resume?.sessionId,
         startedAt: Date.now(),
         finishedAt: null,
         exitReason: null,
@@ -990,6 +1113,8 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           // 与上面 tokens/turns 的写法同一格口径（那是算子的规范语义，不是环境退化）。
           finalText: script.finalText === undefined ? null : script.finalText,
           applied,
+          // 会话 id：脚本没写就是「没采到」（`null`）——夹具不替适配器编一条会话出来
+          sessionId: script.sessionId ?? null,
           ...(error === undefined ? {} : { error }),
         };
       };
@@ -1017,6 +1142,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
               vendorId: null,
               role: 'assistant',
               source: 'wire',
+              origin: 'case-prompt',
               roundTrip,
               turn: null,
               step: null,
@@ -1135,6 +1261,19 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
           if (callback !== undefined) {
             call.askUserCalls += 1;
             call.askUserReplies.push(await callback(ask.request));
+          }
+        }
+        /**
+         * 取件并交付（见 `injectDrain` 那一格）：与真适配器同形——先把这一档的条目取走，
+         * 再逐条确认「厂商收下了」。撤回句柄给一个恒 `unsupported` 的桩：
+         * 夹具扮演的适配器没有厂商队列可撤，这与「这一家撤不了」在端口那四值上是同一档。
+         */
+        const boundary = script.injectDrain;
+        if (boundary !== undefined && input.inject !== undefined) {
+          const drained = input.inject.drain(boundary);
+          if (drained.length > 0) {
+            call.injectDelivered.push(...drained.map((message) => message.id));
+            input.inject.markDelivered(drained.map((message) => message.id), async () => 'unsupported');
           }
         }
       }

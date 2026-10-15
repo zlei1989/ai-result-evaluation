@@ -38,6 +38,23 @@ function lastMessage(drafts: readonly MessageDraft[]): AgentMessage {
   return message;
 }
 
+/**
+ * 消费方的折叠口径（与 `build-model.ts` / `row-messages.ts` 逐字相同）：**同 `mergeKey` 留最后一条**，
+ * 顺序按首次出现。界面上「几条消息」判的就是它——合并器每次投递都发一条，那不是条数。
+ */
+function fold(messages: readonly AgentMessage[]): AgentMessage[] {
+  const byKey = new Map<string, AgentMessage>();
+  for (const message of messages) byKey.set(message.mergeKey, message);
+  return [...byKey.values()];
+}
+
+/** 把一串通知走一遍本层的归一，再按消费方口径折叠（断言「界面上看到几条」用这个） */
+function renderedOf(payloads: readonly AppServerNotificationPayload[], runState: CodexRunState): AgentMessage[] {
+  const drafts: MessageDraft[] = [];
+  for (const payload of payloads) drafts.push(...project(payload, runState).drafts);
+  return fold(assemble(drafts));
+}
+
 function completed(item: AppServerItem, where: { threadId?: string; turnId?: string } = {}): AppServerNotificationPayload {
   return {
     kind: 'itemCompleted',
@@ -99,6 +116,109 @@ describe('答复：增量先到、完成通知封口', () => {
       { type: 'thinking', text: '先看配置', textKind: 'full', signature: null },
       { type: 'text', text: '改完了' },
     ]);
+  });
+});
+
+/**
+ * 往返号源（回归守卫）。
+ *
+ * 要拦的缺陷：号源按「**答复条目数**」去重时，一次 turn 里所有条目共用一个合并键——因为一次
+ * 模型往返里只有收尾那次会发 `agentMessage`，中间那些「想 + 调工具」的往返一条答复都没有
+ * ⇒ 整轮的思考、工具调用与最终答复被折叠成一条消息（界面上只剩最后那一条）。
+ *
+ * 形状全部取自真机：条目的 id 与顺序照抄 `53fa183a` 的 codex 行落盘、探针抓包
+ * （`probe/dumps/v11/codex-*-live.jsonl`）与 `f4e3f5c1`（提问那一轮）。
+ */
+describe('往返号源：一次模型往返一条消息', () => {
+  it('「想 → 调工具 → 想 → 答复」⇒ 三条消息，工具调用归**它自己那次**往返', () => {
+    const runState = createCodexRunState();
+    const rendered = renderedOf(
+      [
+        completed({ kind: 'reasoning', id: 'rs_23452b0748824e1db984a3ccc73337b9', summary: ['先读技能文件'], content: [] }),
+        started({ kind: 'commandExecution', id: 'call_34490b509fdb4e7495168d86', command: 'cat SKILL.md', cwd: null, status: 'inProgress', output: null, exitCode: null, durationMs: null }),
+        completed({ kind: 'commandExecution', id: 'call_34490b509fdb4e7495168d86', command: 'cat SKILL.md', cwd: null, status: 'completed', output: 'name: poetry', exitCode: 0, durationMs: 12 }),
+        completed({ kind: 'reasoning', id: 'rs_b959754e5ed84827ad41bf7eb79d8e3d', summary: ['挑一首与吃饭相关的唐诗'], content: [] }),
+        completed({ kind: 'agentMessage', id: 'msg_b959754e5ed84827ad41bf7eb79d8e3d', text: '《过故人庄》：故人具鸡黍…您吃了吗？', phase: null }),
+      ],
+      runState,
+    );
+    // 三条逻辑消息：第一次往返（思考 + 调用）、它的结果、第二次往返（思考 + 正文）
+    expect(rendered.map((one) => one.mergeKey)).toEqual(['main|1|assistant|-', 'main|1|tool|-', 'main|2|assistant|-']);
+    expect(rendered[0]?.blocks.map((one) => one.type)).toEqual(['thinking', 'tool-call']);
+    expect(rendered[1]?.blocks.map((one) => one.type)).toEqual(['tool-result']);
+    // 正文与**它自己那次**往返的思考同一条消息（不是与第一条挤在一起）
+    expect(rendered[2]?.blocks.map((one) => one.type)).toEqual(['thinking', 'text']);
+    expect(rendered.map((one) => one.roundTrip)).toEqual([1, 1, 2]);
+  });
+
+  it('同一次往返的推理与答复**共享一个号**（响应 id 相同 ⇒ 不拆成两条）', () => {
+    const runState = createCodexRunState();
+    const rendered = renderedOf(
+      [
+        started({ kind: 'reasoning', id: 'rs_afc045d551954c08aec2314b82e669f5', summary: [], content: [] }),
+        completed({ kind: 'reasoning', id: 'rs_afc045d551954c08aec2314b82e669f5', summary: ['只回 ok'], content: [] }),
+        started({ kind: 'agentMessage', id: 'msg_afc045d551954c08aec2314b82e669f5', text: '', phase: null }),
+        completed({ kind: 'agentMessage', id: 'msg_afc045d551954c08aec2314b82e669f5', text: 'ok', phase: null }),
+      ],
+      runState,
+    );
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]?.roundTrip).toBe(1);
+    expect(rendered[0]?.blocks.map((one) => one.type)).toEqual(['thinking', 'text']);
+  });
+
+  it('提问那一轮：答复之间没有工具条目，也要各占一个号（结构判据单独用会漏）', () => {
+    const runState = createCodexRunState();
+    const rendered = renderedOf(
+      [
+        completed({ kind: 'reasoning', id: 'rs_554fcac0-144e-4daf-9b30-f8c1b55788ea', summary: [], content: ['先登记计划'] }),
+        completed({ kind: 'agentMessage', id: 'msg_554fcac0-144e-4daf-9b30-f8c1b55788ea', text: '我先登记计划，然后向你询问岗位。', phase: null }),
+        completed({ kind: 'reasoning', id: 'rs_46616bbb-93cc-416e-a0e4-1d4988f0a9c6', summary: [], content: ['这一轮想想怎么问'] }),
+        completed({ kind: 'reasoning', id: 'rs_11b53827-e9c3-4fc9-a946-417447825cee', summary: [], content: ['收到岗位'] }),
+        completed({ kind: 'agentMessage', id: 'msg_11b53827-e9c3-4fc9-a946-417447825cee', text: '收到，岗位是软件研发。', phase: null }),
+        completed({ kind: 'agentMessage', id: 'msg_c111735e-1417-4378-b8ef-7deee0528a7e', text: '任务已完成。', phase: null }),
+      ],
+      runState,
+    );
+    expect(rendered.map((one) => one.mergeKey)).toEqual(['main|1|assistant|-', 'main|2|assistant|-', 'main|3|assistant|-', 'main|4|assistant|-']);
+    expect(rendered.map((one) => one.roundTrip)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('turn 第一条通知就是命令执行（模型这一次没发推理）⇒ 调用占第 1 次往返，答复是第 2 次', () => {
+    const runState = createCodexRunState();
+    const rendered = renderedOf(
+      [
+        completed({ kind: 'commandExecution', id: 'call_2b7d9bd28604424aa791281e', command: 'cat SKILL.md', cwd: null, status: 'completed', output: 'name: poetry', exitCode: 0, durationMs: 9 }),
+        completed({ kind: 'reasoning', id: 'rs_001fdfe1f7f84075bd0a1e3d8d4f082a', summary: [], content: ['挑一首'] }),
+        completed({ kind: 'agentMessage', id: 'msg_001fdfe1f7f84075bd0a1e3d8d4f082a', text: '为您挑选《过故人庄》。', phase: null }),
+      ],
+      runState,
+    );
+    expect(rendered.map((one) => one.mergeKey)).toEqual(['main|1|assistant|-', 'main|1|tool|-', 'main|2|assistant|-']);
+    expect(rendered[0]?.blocks.map((one) => one.type)).toEqual(['tool-call']);
+    expect(rendered[2]?.blocks.map((one) => one.type)).toEqual(['thinking', 'text']);
+  });
+
+  it('增量先到（`item/started` 还没来）也落在它自己那次往返里，快照随后封同一个槽', () => {
+    /** 第二次往返的三条通知（增量先到、`item/started` 缺席、快照最后到） */
+    const secondTrip = [
+      { kind: 'agentMessageDelta', threadId: MAIN, turnId: 'turn-1', itemId: 'msg_bbb222', delta: '半' },
+      completed({ kind: 'agentMessage', id: 'msg_bbb222', text: '半截就够了', phase: null }),
+    ] as const;
+    const before = [
+      completed({ kind: 'agentMessage', id: 'msg_aaa111', text: '第一段答复', phase: null }),
+      completed({ kind: 'commandExecution', id: 'call_x1', command: 'ls', cwd: null, status: 'completed', output: '', exitCode: 0, durationMs: 1 }),
+    ] as const;
+
+    // 增量单独先到：它已经把号开出来（不会被塞进第一次往返的载体）
+    const partial = renderedOf([...before, secondTrip[0]], createCodexRunState());
+    expect(partial.at(-1)?.mergeKey).toBe('main|2|assistant|-');
+
+    // 快照随后到达：落在**同一个键**上（增量与快照不会各开一条消息）
+    const settled = renderedOf([...before, ...secondTrip], createCodexRunState());
+    expect(settled.map((one) => one.mergeKey)).toEqual(['main|1|assistant|-', 'main|1|tool|-', 'main|2|assistant|-']);
+    expect(settled.at(-1)?.blocks).toEqual([{ type: 'text', text: '半截就够了' }]);
+    expect(settled.at(-1)?.assembly).toBe('snapshot');
   });
 });
 
@@ -188,6 +308,31 @@ describe('思考：全文与摘要分档，密文不回落', () => {
 });
 
 describe('工具：命令、文件改动、MCP、计划', () => {
+  /**
+   * **`item/started` 的命令执行只出调用块**。
+   *
+   * 要拦的缺陷：那一刻就把结果块也发出去。这一家的结果块在 `started` 状态下**不携带任何
+   * 「还在跑」的信息**——`exitCode` 与 `durationMs` 都是 `null` ⇒ `structured` 整格 `null`、
+   * `output` 是空串、`isError` 是 `false`（契约里 `tool-result` 没有第三态，`false` 就是
+   * 「没出错」这条断言）。代价有两层：跑动期界面显示「工具已返回空结果」；而块一旦以 snapshot
+   * 落进槽位就 seal，进程在命令中途被杀时，这条「成功、空输出」就是账本里的终态。
+   */
+  it('`item/started` 的命令执行**只出调用块**（结果要等 completed，不许先发一条「成功、空输出」）', () => {
+    const runState = createCodexRunState();
+    const inFlight = project(
+      started({ kind: 'commandExecution', id: 'c9', command: 'pnpm test', cwd: null, status: 'inProgress', output: null, exitCode: null, durationMs: null }),
+      runState,
+    );
+    expect(inFlight.drafts.map((one) => one.role)).toEqual(['assistant']);
+
+    // 完成那一拍才出结果，并且与调用块落在同一个载体上（增量与快照同槽的那条口径）
+    const done = project(
+      completed({ kind: 'commandExecution', id: 'c9', command: 'pnpm test', cwd: null, status: 'completed', output: 'ok', exitCode: 0, durationMs: 7 }),
+      runState,
+    );
+    expect(done.drafts.map((one) => one.role)).toEqual(['assistant', 'tool']);
+  });
+
   it('`commandExecution` ⇒ 调用 + 结果两条：命令 / 输出 / 退出码 / 耗时', () => {
     const { drafts } = project(
       completed({
@@ -264,7 +409,7 @@ describe('工具：命令、文件改动、MCP、计划', () => {
     expect(declined[1]?.blocks[0]).toMatchObject({ block: { isError: true } });
   });
 
-  it('`mcpToolCall` ⇒ 名字是「服务名.工具名」、`family: null`、`isError = error != null`', () => {
+  it('`mcpToolCall` ⇒ 名字是「`mcp__服务名__工具名`」（与共享约定、另几家同形）、`family: null`、`isError = error != null`', () => {
     const ok = project(
       completed({
         kind: 'mcpToolCall',
@@ -279,7 +424,7 @@ describe('工具：命令、文件改动、MCP、计划', () => {
       }),
     );
     expect(ok.drafts[0]?.blocks[0]).toMatchObject({
-      block: { type: 'tool-call', callId: 'x1', family: null, name: 'github.list_issues', input: { repo: 'a/b' } },
+      block: { type: 'tool-call', callId: 'x1', family: null, name: 'mcp__github__list_issues', input: { repo: 'a/b' } },
     });
     expect(ok.drafts[1]?.blocks[0]).toMatchObject({ block: { type: 'tool-result', isError: false, text: '3 个 issue' } });
 
@@ -338,10 +483,36 @@ describe('工具：命令、文件改动、MCP、计划', () => {
     expect(drafts[1]?.blocks[0]).toMatchObject({ block: { type: 'tool-result', structured: null, isError: false } });
   });
 
-  it('`userMessage` / `toolOutput` / 未知条目都不产消息（输入不是产出、旁路副本不重复）', () => {
+  it('`userMessage` / `toolOutput` 不产消息（输入不是产出、旁路副本不重复）', () => {
     expect(project(completed({ kind: 'userMessage', id: 'u1', text: '把标题改掉' })).drafts).toEqual([]);
     expect(project(completed({ kind: 'toolOutput', id: 'o1', name: 'exec_command', namespace: null, output: 'x' })).drafts).toEqual([]);
-    expect(project(completed({ kind: 'other', id: 'z1', type: 'enteredReviewMode' })).drafts).toEqual([]);
+  });
+
+  /**
+   * 未识别的条目类型**必须留痕**（一条 `unrecognized` 块，厂商原文进 `raw`）。
+   *
+   * 要拦的缺陷：什么都不产。未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前
+   * 两处投影（本文件的 `projectItem` 与 `events.ts` 的 `activityDrafts`）都没有分支，也没有轮次
+   * 留痕 ⇒ 厂商真投了、我们一个字都不留：「厂商没发」与「厂商发了、我们没接」在产物里长得
+   * 一模一样。真机读数（`unrecognized-item-live.test.ts`）：`imageView` 两帧，命中数 0。
+   */
+  it('未识别的条目类型 ⇒ 一条 `unrecognized` 块，`vendorType` 与 `raw` 都留原文', () => {
+    const { drafts } = project(completed({
+      kind: 'other',
+      id: 'z1',
+      type: 'imageView',
+      raw: { type: 'imageView', id: 'z1', path: '/w/pixel.png' },
+    }));
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.vendorId).toBe('z1');
+    expect(drafts[0]?.blocks[0]).toMatchObject({
+      phase: 'snapshot',
+      block: { type: 'unrecognized', reason: 'unrecognized', vendorType: 'imageView', raw: '{"type":"imageView","id":"z1","path":"/w/pixel.png"}' },
+    });
+  });
+
+  it('未识别的条目在 `item/started` 上不产块（那一刻内容还没定，与 fileChange / agentMessage 同口径）', () => {
+    expect(project(started({ kind: 'other', id: 'z1', type: 'imageView', raw: { type: 'imageView', id: 'z1' } })).drafts).toEqual([]);
   });
 });
 
@@ -377,6 +548,108 @@ describe('协作条目：子任务行、身份与父链', () => {
         usage: null,
       },
     ]);
+  });
+
+  /**
+   * **派发台账只能由派发动作写，而且先到的赢**。
+   *
+   * 要拦的缺陷：对每条 `collabToolCall` 无条件覆盖同一个 receiver 的台账。`wait` / `closeAgent`
+   * 与 `spawnAgent` **共享 `receiverThreadIds`**，而真机顺序是派发在后（receiver id 要到
+   * `item/completed` 才出现，`wait` 在 `item/started` 就带着它）⇒ 覆盖必然让台账停在**等待**
+   * 那次调用上，于是子任务行的 `kind` 变成 `wait`、`parentCallId` 指向等待调用，界面按它去
+   * 时间轴找「进入子任务」的入口就落到了错的卡片上，收尾 `projectSubagentRecord` 还会把它落盘。
+   */
+  it('`wait` / `closeAgent` 不许改写派发台账（行上的 `kind` 与 `parentCallId` 仍指向派发那一次）', () => {
+    const runState = createCodexRunState();
+    const collab = (id: string, tool: string) =>
+      completed({
+        kind: 'collabToolCall',
+        id,
+        tool,
+        status: 'completed',
+        senderThreadId: MAIN,
+        receiverThreadIds: [CHILD],
+        prompt: null,
+        agentsStates: [{ threadId: CHILD, status: 'running', message: null }],
+      });
+
+    project(collab('item_dispatch', 'spawnAgent'), runState);
+    // 随后对同一个子线程发起等待（真机的常规形态：派发完就 wait）
+    const waited = project(collab('item_wait', 'wait'), runState);
+
+    expect(waited.subagents[0]).toMatchObject({ subagentId: CHILD, kind: 'spawnAgent', parentCallId: 'item_dispatch' });
+    expect(runState.dispatches.get(CHILD)).toEqual({ tool: 'spawnAgent', callId: 'item_dispatch', parentThreadId: MAIN });
+  });
+
+  /**
+   * **真机序列回放**（真模型臂 12 条投递序列）：`wait` / `closeAgent` 的 `item/started` 带
+   * `agentsStates: {}`，而它排在**收场之后**到达；折叠是整条覆盖 ⇒ 那一帧会把已经采到的
+   * `completed` + `outcome` 打回 `unknown/unverified` + `null`。
+   *
+   * 两条判据：① 什么也没说的 started 帧**不产记录**；② 已采到的事实不许被后来的帧抹掉
+   * （口径与套件 `PRESERVED_SUBAGENT_FIELDS` 同源）。
+   */
+  it('`wait` / `closeAgent` 的 started（`agentsStates` 为空）不产记录，也不许抹掉已采到的结论', () => {
+    const runState = createCodexRunState();
+    const collab = (id: string, tool: string, states: Array<{ threadId: string; status: string; message: string | null }>) => ({
+      kind: 'collabToolCall' as const,
+      id,
+      tool,
+      status: 'completed',
+      senderThreadId: MAIN,
+      receiverThreadIds: [CHILD],
+      prompt: null,
+      agentsStates: states,
+    });
+
+    // 1) 派发（completed）：收件线程那一刻才出现 ⇒ 行上有 kind / parentCallId
+    const dispatched = project(completed(collab('item_dispatch', 'spawnAgent', [{ threadId: CHILD, status: 'running', message: null }])), runState);
+    expect(dispatched.subagents[0]).toMatchObject({ status: 'running', outcome: null });
+    // 2) wait 的 completed：带上子线程的结论
+    const settled = project(completed(collab('item_wait', 'wait', [{ threadId: CHILD, status: 'completed', message: '三个文件' }])), runState);
+    expect(settled.subagents[0]).toMatchObject({ status: 'completed', outcome: '三个文件' });
+    // 3) closeAgent 的 **started**：真机上 `agentsStates` 是空的 ⇒ 一个记录都不该产
+    const closing = project(started(collab('item_close', 'closeAgent', [])), runState);
+    expect(closing.subagents).toEqual([]);
+    // 4) closeAgent 的 completed 仍照旧出记录，且结论还在
+    const closed = project(completed(collab('item_close', 'closeAgent', [{ threadId: CHILD, status: 'completed', message: '三个文件' }])), runState);
+    expect(closed.subagents[0]).toMatchObject({ status: 'completed', outcome: '三个文件', kind: 'spawnAgent', parentCallId: 'item_dispatch' });
+  });
+
+  it('活动条目（`subAgentActivity`）不带结论 ⇒ 保留已采到的那一份（不许抹成 null）', () => {
+    const runState = createCodexRunState();
+    project(completed({
+      kind: 'collabToolCall',
+      id: 'item_dispatch',
+      tool: 'spawnAgent',
+      status: 'completed',
+      senderThreadId: MAIN,
+      receiverThreadIds: [CHILD],
+      prompt: null,
+      agentsStates: [{ threadId: CHILD, status: 'completed', message: '三个文件' }],
+    }), runState);
+    const activity = project(completed({ kind: 'subAgentActivity', id: 'a1', activity: 'interacted', agentThreadId: CHILD, agentPath: '/root' }), runState);
+    expect(activity.subagents[0]).toMatchObject({ status: 'running', outcome: '三个文件' });
+  });
+
+  /**
+   * 真机派发名是 **camelCase**（`spawnAgent`）。族表只登记 snake_case 的话派发块的族是 `null`
+   * ——界面丢「派子任务」标签、族维度统计漏算；而用例若按 snake_case 写就恒绿、看不出来。
+   */
+  it('真机的 camelCase 派发名也归 `spawn-agent` 族', () => {
+    const { drafts } = project(
+      completed({
+        kind: 'collabToolCall',
+        id: 'item_c',
+        tool: 'spawnAgent',
+        status: 'completed',
+        senderThreadId: MAIN,
+        receiverThreadIds: [CHILD],
+        prompt: '去查一下',
+        agentsStates: [],
+      }),
+    );
+    expect(drafts[0]?.blocks[0]).toMatchObject({ block: { type: 'tool-call', name: 'spawnAgent', family: 'spawn-agent' } });
   });
 
   it('`agentsStates` 的四档状态逐档映射（`errored` → failed、`interrupted` → stopped、未知档记 unverified）', () => {
@@ -508,12 +781,33 @@ describe('收尾读回：子线程消息与三档终态', () => {
     expect(threadRoundTrips({ items: entries }, CHILD, runState)).toBe(1);
   });
 
+  it('收尾回读的一批条目**自带开号**：多条往返各成一条消息（这条路上一条运行期通知都没走过）', () => {
+    const runState = createCodexRunState();
+    // 真机形状：子线程第一轮（想 + 调工具）→ 工具执行 → 第二轮（想 + 答复）
+    const entries: AppServerItemEntry[] = [
+      { turnId: 'ct1', item: { kind: 'reasoning', id: 'rs_8ebd9f8f-89d3-438d-93d4-c9c1e23211e3', summary: [], content: ['先读文件'] } },
+      { turnId: 'ct1', item: { kind: 'agentMessage', id: 'msg_8ebd9f8f-89d3-438d-93d4-c9c1e23211e3', text: '我来看一下这个文件。', phase: null } },
+      { turnId: 'ct1', item: { kind: 'commandExecution', id: 'call_00_7RR1CVUye1qqxJCPbnNL2426', command: 'cat index.html', cwd: null, status: 'completed', output: '<html>', exitCode: 0, durationMs: 8 } },
+      { turnId: 'ct1', item: { kind: 'reasoning', id: 'rs_49abb8b9-3c1f-4bc9-82eb-f8d72991f9db', summary: [], content: ['结构没问题'] } },
+      { turnId: 'ct1', item: { kind: 'agentMessage', id: 'msg_49abb8b9-3c1f-4bc9-82eb-f8d72991f9db', text: '结构完整，可以收尾。', phase: null } },
+    ];
+    const rendered = fold(assemble(projectThreadMessages(CHILD, entries, runState, CONTEXT)));
+    expect(rendered.map((one) => one.mergeKey)).toEqual([`${CHILD}|1|assistant|-`, `${CHILD}|1|tool|-`, `${CHILD}|2|assistant|-`]);
+    expect(rendered[0]?.blocks.map((one) => one.type)).toEqual(['thinking', 'text', 'tool-call']);
+    expect(rendered[2]?.blocks.map((one) => one.type)).toEqual(['thinking', 'text']);
+    // 与收尾求和读的是同一把尺子（`threadRoundTrips` 会把同一批再数一遍，幂等）
+    expect(threadRoundTrips({ items: entries }, CHILD, runState)).toBe(2);
+  });
+
   it('终态三档：`completed` / `failed` / `interrupted`（由 `turn.status` 推出）', () => {
-    const completedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null }] });
+    const completedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'completed', error: null, errorCode: null,
+      errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null }] });
     expect(terminalStatusOf(ref(), completedTurn)).toEqual({ status: 'completed', statusMissing: null });
-    const failedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'failed', error: '炸了', startedAt: null, completedAt: null, durationMs: null }] });
+    const failedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'failed', error: '炸了', errorCode: null,
+      errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null }] });
     expect(terminalStatusOf(ref(), failedTurn)).toEqual({ status: 'failed', statusMissing: null });
-    const stoppedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'interrupted', error: null, startedAt: null, completedAt: null, durationMs: null }] });
+    const stoppedTurn = thread({ turns: [{ id: 'ct', items: [], itemsView: 'full', status: 'interrupted', error: null, errorCode: null,
+      errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null }] });
     expect(terminalStatusOf(ref(), stoppedTurn)).toEqual({ status: 'stopped', statusMissing: null });
   });
 
@@ -528,8 +822,10 @@ describe('收尾读回：子线程消息与三档终态', () => {
     const runState = createCodexRunState();
     const content = thread({
       turns: [
-        { id: 'ct1', items: [{ kind: 'agentMessage', id: 'cm1', text: '前面的答复', phase: null }], itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null },
-        { id: 'ct2', items: [{ kind: 'agentMessage', id: 'cm2', text: '最终答复', phase: null }], itemsView: 'full', status: 'completed', error: null, startedAt: null, completedAt: null, durationMs: null },
+        { id: 'ct1', items: [{ kind: 'agentMessage', id: 'cm1', text: '前面的答复', phase: null }], itemsView: 'full', status: 'completed', error: null, errorCode: null,
+          errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null },
+        { id: 'ct2', items: [{ kind: 'agentMessage', id: 'cm2', text: '最终答复', phase: null }], itemsView: 'full', status: 'completed', error: null, errorCode: null,
+          errorStatusCode: null, startedAt: null, completedAt: null, durationMs: null },
       ],
     });
     const record = projectSubagentRecord(ref(), content, runState, CONTEXT);

@@ -49,7 +49,6 @@ import {
   thinkingBlockDraft,
   toolCallBlockDraft,
   toolResultBlockDraft,
-  truncate,
   type BlockIndexAllocator,
   type MessageBlockDraft,
   type MessageDraft,
@@ -138,6 +137,15 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
   const taskKinds = new Map<string, string>();
 
   /**
+   * **父任务账**（`task_id → parent_task_id`）。
+   *
+   * 与 `taskKinds` 同一条理由与同一档：`parent_task_id` **只在派发帧上**（收场帧的键集里没有它），
+   * 而收尾那条投递是**完整快照**语义 ⇒ 不记账的话，同一个子任务的第二条投递会把层级覆盖成 `null`，
+   * 界面上那棵子树在收尾那一拍整棵挂回主会话。
+   */
+  const taskParents = new Map<string, string>();
+
+  /**
    * **任务台账**（工作项注册表）。
    *
    * 为什么归一器要持它：claude 的 `TaskCreate` / `TaskUpdate` 是**逐条 patch**（另两家的
@@ -201,7 +209,6 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
     if (phantomIds.has(taskId)) return 'phantom';
     return dispatchIds.has(taskId) ? 'dispatch' : 'unjudged';
   };
-
   /**
    * `system` 帧里与子任务有关的两类（`task_started` / `task_notification`）→ 0..1 条子任务行 + 形状判决。
    * 其余 `system` 帧（`init` 等）在这一层不产任何东西（`taskShape` 为 `null`，与「不是 task 帧」同义）。
@@ -214,7 +221,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
     const taskShape = classifyTask(message, subtype === 'task_started');
     // 幻影**不产行**（面板里那条幽灵「子任务」就是它）；`'unjudged'` 照产（丢一个真派发比多一行更坏）
     if (taskShape === 'phantom') return { messages: [], subagent: null, taskShape };
-    return { messages: [], subagent: subagentRecord(message, taskKinds), taskShape };
+    return { messages: [], subagent: subagentRecord(message, taskKinds, taskParents), taskShape };
   };
 
   /**
@@ -241,6 +248,20 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       if (streamingMessageId !== null) ordinalBookOf(streamingMessageId, true);
       return [];
     }
+    if (kind === 'message_delta' || kind === 'message_stop') {
+      /**
+       * **这条流到此为止 ⇒ 把「当前在流的那条消息 id」清掉**。
+       *
+       * 为什么必须清：不清就会一直留着**上一条消息**的 id，而
+       * `content_block_delta` 的取号与账簿都读这一格（见下面 `ordinalBookOf(streamingMessageId)`）
+       * ⇒ 一条**没有 `message_start` 的畸形流**（重试续流 / 厂商漏帧）会顶着上一条消息的身份落进
+       * 上一轮的载体，而那个载体的文本槽多半已 `sealed` ⇒ 按「已 seal + 增量 ⇒ 丢弃」被**静默吃掉**
+       * （无日志、无报错，界面直到快照到达才整段出现）。清掉之后那一档退回「本帧现开一本」，
+       * 与注释承诺的形状一致。
+       */
+      streamingMessageId = null;
+      return [];
+    }
     if (kind !== 'content_block_delta') return [];
     const sourceIndex = readNumber(event, 'index');
     if (sourceIndex === null) return [];
@@ -251,11 +272,11 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
      * 这一格拿得到就照实归位，拿不到就是主会话那一档——**不许让它无条件掉进主会话的号里**
      * （合并键 `subagentId | roundTrip | role | parentCallId` 里这两格都在：一条侧链增量若顶着
      * 主会话的号、身份又是 `null`，就会与主会话同一轮的块挤进同一个载体）。
-     * 侧链那一档的号取自 `message_start` 记下的那个 `message.id` ⇒ 它的增量与随后的**完整快照**
-     * 落在同一个号上（合并键里的轮次号必须稳定，否则一条逻辑消息会被劈成两条、增量永远收不了尾）。
-     * ⚠️ **主会话那一档与改前逐字相同**（仍是 `state.turns` 的**当前值**，这里不 +1）：推进主循环
-     * 计数的是 `events.ts` 的 `countModelRoundTrip`，它只认**完整** assistant 消息 ⇒ 主会话增量的号是
-     * 「上一条完整消息那一轮」。这是**既有口径、本次不动**（动它就改了主会话的号，而本次只修侧链）。
+     * **两档都拿 `message_start` 记下的那个 `message.id` 取号** ⇒ 增量与随后的**完整快照**落在同一个号上。
+     * 这条稳定性是硬的：号一漂，增量就落进别的载体，而那个载体的文本槽多半已被快照 `sealed`
+     * ⇒ 增量按「已 seal + 增量 ⇒ 丢弃」被静默吃掉，界面直到快照到达才整段出现。
+     * 两档的账不同源：主会话用 `state.turnKeys`（见 `mainRoundTrip`），侧链用按会话的那本（见
+     * `roundTripOfSession`）——侧链不参与主循环计数，故不能共用一本。
      */
     const parentCallId = readString(message, SIDE_CHAIN_FIELD);
     const subagentId = parentCallId === null || parentCallId === '' ? null : parentCallId;
@@ -310,6 +331,16 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
      * `delivered` 是这条消息**此前已投递过的块数**，故第二次投递的块接在第一次之后，
      * 不会回到 0 把前一块盖掉（见 `ordinalBooks` 的注释）。
      */
+    /**
+     * ⚠️ **缺 `message.id` 那一档（形状异常）已知未闭合**：同一轮里若来**两条**都没有 id 的
+     * `assistant` 帧，后到的那条会盖掉前一条。成因**不在块序号账簿**（试过用帧 `uuid` 分账：
+     * 两本账各自从 `i:0` 起号，而 `mergeKey` 是 `<会话>|<轮次>|assistant|-`——两条帧算出来**逐字相同**
+     * ⇒ 装配器按**载体**折叠，同一载体里同一个 `i:0` 槽被后到的**快照**覆盖，换账簿救不了）。
+     * 真要分开只能让两条帧落在**不同载体**上（即改轮次号语义：给「无 id 帧」编一个不与已数到的轮次
+     * 冲突的号），而那条路会动到「轮次 = 一次模型往返」这条契约口径 —— 收益（一种真机 6 份 dump
+     * 里从未出现过的形状）远小于风险，故**不按猜测改**，如实登记：
+     * 拿到一条缺 id 的真机帧之后再决定（`docs/protocols/cc.md` 的《已知边界与取舍》同此口径）。
+     */
     const vendorId = readString(payload, 'id');
     const book = ordinalBookOf(vendorId ?? `rt:${roundTrip}`);
     const blocks: MessageBlockDraft[] = [];
@@ -317,6 +348,21 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       const block = asRecord(rawBlock);
       const type = readString(block, 'type');
       const identity = { kind: 'index' as const, index: book.allocator.forSource(book.delivered + position) };
+      /**
+       * **只认三型**（`text` / `thinking` / `tool_use`），其余块在这里没有消息槽位。
+       *
+       * 真机读数（CLI 2.1.301，假上游直发厂商块）：`redacted_thinking` / `image` /
+       * `server_tool_use` **都会真的到达**（`assistant.message.content` 里逐字在场），而本函数
+       * 不认它们 ⇒ 消息账里那次往返只剩 `text`。**这不是静默丢弃**：事件侧 `assistantDrafts`
+       * 把非文本块整段 `safeStringify` 落一条 `log`（原始输出抽屉里能看到全文）。
+       *
+       * ⚠️ 契约与界面都有 `attachment` 块（`attachmentBlockDraft` + `AttachmentBlockView`），
+       * 而**四家适配器都没有调用它**（另一处生产点在评测编排的注入面，`type: 'attachment'`
+       * 只出现在 ui 的 fixtures 里）⇒ 「工具结果里的图片」今天在对话视图里没有出口（`Read` 一张
+       * PNG 时 `tool_result.content` 是 `[{type:'image',…}]`，`resultText` 只 join `text` 块
+       * ⇒ 那块的正文是空串）。要不要接属**产品裁决**：接了就得决定内联 base64 是否落进
+       * `messages.jsonl`（截图动辄 MB 级）。
+       */
       if (type === 'text') {
         const text = readString(block, 'text');
         if (text !== null && text !== '') blocks.push(textBlockDraft(text, 'snapshot', identity));
@@ -345,7 +391,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
          * （`TaskCreate` 建一项、`TaskUpdate` 改一项的某个字段）⇒ 载荷由台账给，
          * 其余工具照旧按族载荷归一算（`payload` 传 `undefined`）。
          */
-        const plan = tasks.onCall({ callId, name, input, envelope: { roundTrip, parentCallId, subagentId, vendorId } });
+        const plan = tasks.onCall({ callId, name, input, envelope: { roundTrip, parentCallId, subagentId, vendorId, raw } });
         blocks.push(toolCallBlockDraft(callId, name, input, 'cc', undefined, plan ?? undefined));
       }
     });
@@ -388,6 +434,15 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
         if (seen.has(uuid)) return EMPTY;
         seen.add(uuid);
       }
+      /**
+       * **历史重放帧**（`SDKUserMessageReplay.isReplay`）：续接时 CLI 把这条会话**已经发生过**的
+       * 用户侧消息再投一遍，而重放帧带的是**自己的** `uuid` ⇒ 上面那张表挡不住它。
+       *
+       * 收下的代价有两层：`messages.jsonl` 里多出一份上一轮的工具结果（追问是**追加到同一行**上的，
+       * 那些内容本行已经有了），以及**任务台账的 patch 被再放一遍**（`user()` 里的 `tasks.onResult`）
+       * ——后者会让计划清单按历史又走一遍状态机。故这一类在两侧都显式丢弃（事件侧同处置）。
+       */
+      if (message?.isReplay === true) return EMPTY;
       const type = readString(message, 'type');
       if (type === 'assistant') return assistant(raw, message, state);
       if (type === 'user') return user(raw, message, state, sessionRoundIds, tasks);
@@ -515,7 +570,11 @@ function user(
  *
  * 信封逐格沿用**那次调用**的（轮次、派生调用、会话），只有 `blocks` 换成刷新后的那一个块：
  * 合并器按块标识（`callId`）归位，故这条草稿只带自己那一块就够（其余块仍留在载体里）。
- * `raw` 给 `null`：这是**合成帧**，触发它的那条 `user` 帧自己会落进工具结果消息，没有第二份原文。
+ *
+ * `raw` **沿用那次调用的厂商原文**（`call.envelope.raw`），不是 `null`：读侧按 `mergeKey`
+ * last-wins 折叠，这一条是该键的**最后一条** ⇒ 写 `null` 就等于把整帧信封（model / usage /
+ * stop_reason / request_id）从折叠视图里抹掉，而它明明是这一条消息的原文。
+ * 触发它的那条 `user` 帧另有自己的落点（工具结果消息），不存在「一份原文用两次」的问题。
  */
 function taskRefreshDraft(call: ClaudeTaskCall, payload: ToolCallPayload): MessageDraft {
   return {
@@ -531,27 +590,71 @@ function taskRefreshDraft(call: ClaudeTaskCall, payload: ToolCallPayload): Messa
     // 这一格是「这次模型往返的用量」：合成帧没有自己的模型调用 ⇒ `null`（载体现有的值也不会被抹掉）
     usage: null,
     blocks: [toolCallBlockDraft(call.callId, call.name, call.input, 'cc', undefined, payload)],
-    raw: null,
+    raw: call.envelope.raw,
   };
 }
 
 /**
- * **「形状像一次派发」的判据**：`subagent_type` / `spawn_depth` / `prompt`
- * **至少一格非 `null`**（**不是**「非空串 / 非零」：`''` 与 `0` 都算「给了」——刻度由 `message.test.ts`
- * 的「刻度」那条用例钉住；判严了会把一个真派发判成幻影，那比幽灵行更坏）。
+ * `task_started.task_type` 上**已证实不是子智能体派发**的取值。
  *
- * 实测（三个 claude 真机产物，`D:\.tmp\aieval\runs\…`）：真派发那条 `task_started` **三格齐**
- * （`general-purpose` / `1` / 783 字的 prompt），而 CLI 给非 Agent 任务发的条目**三格全缺**
- * （它 wire 上的「名字」就是那条 Bash 的 `description`）⇒ 这条判据把两者分得干净。
+ * 真机逐字（CLI 2.1.301，同一套剧本的三条臂，`Agent` / `Workflow` / 后台 `Bash`）：
+ * ```
+ * Agent     task_type='local_agent'     subagent_type='general-purpose'  spawn_depth=1  prompt='算 1+1'
+ * Workflow  task_type='local_workflow'  三格只有 prompt 非空（内容是整份工作流脚本源码）
+ * Bash 后台 task_type='local_bash'      三格全缺
+ * ```
+ * ⇒ 只按三格形状判会**放行 workflow**：它的 `prompt` 是脚本源码（非空），而它既不是子智能体、
+ * 盘上也没有它的转录 ⇒ 活动行播「已派发子任务」、收尾再喊一句「读不到子智能体」。
+ * `mcp_task` 由 SDK JSDoc 点名（后台 MCP 任务），同属这一类。
+ */
+const NON_AGENT_TASK_TYPES: readonly string[] = ['local_bash', 'local_workflow', 'mcp_task'];
+
+/**
+ * **「形状像一次派发」的判据**，两级：
+ *   1. **厂商显式标记优先**：`task_type` 说得出「这条任务是什么」时按它判（`local_agent` = 派发，
+ *      `NON_AGENT_TASK_TYPES` 里的取值 = 幻影）；
+ *   2. 说不出来（这一格缺席、或厂商新增了没见过的取值）才回落到形状：
+ *      `subagent_type` / `spawn_depth` / `prompt` **至少一格非 `null`**
+ *      （**不是**「非空串 / 非零」：`''` 与 `0` 都算「给了」——刻度由 `message.test.ts`
+ *      的「刻度」那条用例钉住；判严了会把一个真派发判成幻影，那比幽灵行更坏）。
  *
+ * 真机读数（CLI 2.1.301，三条臂的逐字取值见 `NON_AGENT_TASK_TYPES`）：真派发那条 `task_started`
+ * **三格齐**，而 CLI 给非 Agent 任务发的条目里，后台 Bash **三格全缺**、workflow **只有 `prompt`**
+ * （工作流脚本源码）⇒ 单靠形状分不干净，`task_type` 才是那个判得干净的格。
+ *
+ * ⚠️ **回落那一级不改成白名单**（「凡非 `local_agent` 即幻影」）：这一格是开放字符串，厂商将来新增
+ * 一种**真是派发**的类型时，白名单会把一个真派发判成幻影——同一条取舍见 `ClaudeTaskShape` 的
+ * `'unjudged'`（丢一个真派发比多一条幽灵行更坏）。
  * ⚠️ **只对 `task_started` 用**（`classifyTask` 是唯一的调用方）：**收场帧不承载形状证据**——
- * 审计投影只在 `start` 相位写那三格，CLI 的会话转录里又没有 `task_*` 帧可查 ⇒ 厂商的收场帧长什么样
+ * 审计投影只在 `start` 相位写那几格，CLI 的会话转录里又没有 `task_*` 帧可查 ⇒ 厂商的收场帧长什么样
  * **我们从未观测到**（未知 ≠ 缺失）。逐帧判 = 拿一个不承载证据的帧去判，会把每个真派发的收场帧判成幻影。
  * ⚠️ **字符串按「非 `null`」判**（不是「非空串」）：这是裁定逐字的口径，而它偏向**保**——
  * 一个只带 `''` 的真派发会因此留住自己的行（多一行面板，可形状判据的代价）；反过来判会**丢一个真派发**，
- * 那比多一条幽灵行更坏（同一条取舍见 `ClaudeTaskShape` 的 `'unjudged'`）。
+ * 那比多一条幽灵行更坏。
+ *
+ * 已知边界：`local_agent` 里还有「主会话被转到后台」那一档（`subagent_type: 'main-session'`，
+ * SDK JSDoc 逐字），本适配器不发 `background_tasks` 控制请求 ⇒ 评测路径上不可达；未观测到它的帧，
+ * 故不为它单加判据（真出现时会照派发处置，代价是多一条子任务行）。
  */
-function isDispatchShaped(message: Record<string, unknown> | null): boolean {
+export function isDispatchShaped(message: Record<string, unknown> | null): boolean {
+  /**
+   * **厂商自己说了「这不是活动」就信它**（`ambient` / `skip_transcript`）。
+   *
+   * 厂商 JSDoc 逐字：*"True for tasks that are not activity (every skip_transcript task, plus every
+   * live-update watcher, requested or auto-started); **hosts should exclude them from activity
+   * indicators**."* 这正是下面那两级判据想推断的同一件事，而厂商已经直接给了答案
+   * ⇒ **显式标记优先于形状推断**：标了就是幻影（不产子任务行、不进事实核对名单），
+   * 不必再去猜它像不像一次派发。
+   *
+   * ⚠️ 它**不影响用量**：合计读走的是「枚举会话目录」那条路（`subagent-usage.ts` 的规则⑥），
+   * 盘上有转录就照读照算——这一格只决定「面板上要不要有它这一行」。
+   */
+  if (message?.ambient === true || message?.skip_transcript === true) return false;
+  /** 第一级：厂商显式说了这条任务是什么（`local_workflow` 那一档就是靠它挡住的，形状挡不住） */
+  const taskType = readString(message, 'task_type');
+  if (taskType === 'local_agent') return true;
+  if (taskType !== null && NON_AGENT_TASK_TYPES.includes(taskType)) return false;
+  /** 第二级：这一格说不出话时的形状推断（既有口径，逐字未变） */
   return (
     readString(message, 'subagent_type') !== null
     || readNumber(message, 'spawn_depth') !== null
@@ -563,15 +666,23 @@ function isDispatchShaped(message: Record<string, unknown> | null): boolean {
  * `tool_result.content` → 结果文本：字符串直接用，数组取其中的 `text` 块（图片等非文本块不进文本）。
  * 超过上限由 `toolResultBlockDraft` 截断并置 `truncated`（结果正文与工具族统计都只看这一段）。
  */
+/**
+ * `tool_result.content` → 结果文本：字符串直接用，数组把其中的 `text` 块按序拼起来
+ * （图片等非文本块不进文本）。
+ *
+ * ⚠️ **这里刻意不截断**：截断只由 `toolResultBlockDraft` **一处**承担——只有它能把「截过」
+ * 写进 `truncation` 那一格。本函数先截一次会把标志吃掉（下游那句 `clipped.truncated` 于是恒
+ * `false`），后果是 cc 的 `truncation.kind` **恒 `unknown`**：真机 22 001 字符的结果被切成
+ * 20 000，而标记说「没截过」——界面因此永远不显示「输出已被截断」，与 codex / dsh / pi 三家
+ * 都不同（它们要么不预截断、要么显式传标记）。
+ */
 function resultText(content: unknown): string {
-  if (typeof content === 'string') return truncate(content).text;
+  if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return truncate(
-    content
-      .map((entry) => readString(asRecord(entry), 'text') ?? '')
-      .filter((text) => text !== '')
-      .join('\n'),
-  ).text;
+  return content
+    .map((entry) => readString(asRecord(entry), 'text') ?? '')
+    .filter((text) => text !== '')
+    .join('\n');
 }
 
 /**
@@ -587,7 +698,10 @@ function resultText(content: unknown): string {
  *
  * 为什么放模块级而不是 `TurnState`：那是**三家共用的骨架形状**，往里塞一家专有的名字表会让另两家
  * 读到一个永远为空的格子（与 dsh 的 catalog 同一处置，见 `providers/dsh/message.ts` 的注记）。
- * 串行风险同源：`task_id` 是每个 run 新生成的 UUID ⇒ 同一进程里并行的两轮不会互相命中。
+ * ⚠️ **键是厂商给的短 id，不是 UUID**（真机 `task_id` 形如 `b0tx64ho4`，9 位 base36）⇒ 两个 run
+ * 用同一个键在理论上可能，那时这里会把 A 的名字写给 B。真机未观测到（并发两 run 的读数里 id 不撞），
+ * 而收窄它要把这张表按 run 隔开、即换掉上面那条「不进 `TurnState`」的处置 ⇒ 已知代价：
+ * 撞键时一条名字错位，不影响身份、状态、用量那几格。
  */
 const taskNames = new Map<string, string>();
 
@@ -624,8 +738,12 @@ export function resetClaudeTaskNamesForTesting(): void {
  *     都带这一格）：它是**派生这个子任务的那次工具调用 id**，与子消息上的 `parent_tool_use_id`、
  *     `Agent` 工具调用块的 `callId` 三者同值。**没有它，界面上的
  *     「进入子任务」入口只能靠任务名去猜**，而猜不中时整棵子任务在时间轴上不可达。
- *   · `parentSubagentId` 恒 `null`：载荷里**没有父 id**（只有 `spawn_depth`）⇒ 层级只能用深度表达，
- *     **不推测**父节点。
+ *   · `parentSubagentId` ← **`parent_task_id`**（真机：嵌套派发时内层那条 **`task_started`** 带这一格，
+ *     值与**外层**那条的 `task_id` 逐字相同，`spawn_depth` 同时进 2；**收场帧的键集里没有它**
+ *     ⇒ 按同一 `task_id` 从台账回填，见本文件 `taskParents` 的注记）。
+ *     它决定界面上的**层级**（`packages/client/ui` 的 `build-model.ts` 按它把子任务挂到
+ *     `subagent:<父 id>` 下）⇒ 恒填 `null` 会让嵌套子智能体全部平铺在主会话那一条下面：
+ *     那不是「没采到」，是把厂商给了的一份事实丢掉。只有顶层派发（本来就带不到父 id）才是 `null`。
  *   · 子任务级用量：`task_notification.usage` 是**另一种形状**（`total_tokens` / `tool_uses` /
  *     `duration_ms`），与契约的 `UsageTokens`（input / cached / output 三格必填）不同口径 ⇒ 拿不到
  *     合法的填法就整格记 `null`（**不编三个 0**）。
@@ -640,6 +758,7 @@ export function resetClaudeTaskNamesForTesting(): void {
 function subagentRecord(
   message: Record<string, unknown> | null,
   kindFacts: Map<string, string>,
+  parentFacts: Map<string, string>,
 ): SubagentRecord | null {
   const subtype = readString(message, 'subtype');
   if (subtype !== 'task_started' && subtype !== 'task_notification') return null;
@@ -654,6 +773,9 @@ function subagentRecord(
    * 确实给了东西，只是给的是空串），记下来才保证后到的完整快照不会把它换成 `null`。
    */
   if (subtype === 'task_started' && kind !== null) kindFacts.set(identity, kind);
+  /** 父任务 id 与 `kind` 同一条路（只在派发帧上、收尾帧缺席时回填） */
+  const parentId = firstNonEmpty(readString(message, 'parent_task_id'));
+  if (subtype === 'task_started' && parentId !== null) parentFacts.set(identity, parentId);
   return {
     subagentId: identity,
     // 收场帧用名字表回填：不回填的话，子任务行与活动行在收场那一拍会同时掉名字
@@ -668,7 +790,8 @@ function subagentRecord(
     outcome: subtype === 'task_started' ? null : readString(message, 'summary'),
     // 派生它的那次工具调用 id：`task_notification` 上实测也有这一格，取不到就 `null`（不猜）
     parentCallId: firstNonEmpty(readString(message, 'tool_use_id')),
-    parentSubagentId: null,
+    // 父任务 id 只在派发帧上 ⇒ 收尾那条按同一 id 回填（见 `taskParents` 的注记）
+    parentSubagentId: parentId ?? parentFacts.get(identity) ?? null,
     usage: null,
   };
 }
@@ -679,9 +802,38 @@ function normalizeStatus(status: string | null): SubagentRecord['status'] {
   return 'unknown';
 }
 
-/** 还没数到往返时给 1：信封这一格是必填正整数（与 dsh 侧同一条处置） */
+/**
+ * 「当前数到第几轮」：还没数到时给 1（信封这一格是必填正整数，与 dsh 侧同一条处置）。
+ * 它只服务**没有归并键**的那些消息（工具结果、缺 `message.id` 的畸形帧）——有 id 的两档各按自己的账取号。
+ */
 function roundTripOf(state: TurnState): number {
   return state.turns > 0 ? state.turns : 1;
+}
+
+/**
+ * 主会话的轮次号：按 `message.id` 在**权威账**（`state.turnKeys`）里的位次取号。
+ *
+ * `state.turnKeys` 是 events 侧按到达顺序记的**完整 assistant 消息 id**（`countModelRoundTrip`），
+ * `state.turns` 只是它的条数。增量到达时那条完整消息**还没到**（完整消息是该轮结束时才到的），
+ * 所以**不能**拿 `state.turns` 当号：那是「已经数到几条」，增量先到时它还是上一轮的数——
+ * 号因此落后一轮、落进上一轮的载体，而那个载体的文本槽已被快照 `sealed` ⇒
+ * 增量按「已 seal + 增量 ⇒ 丢弃」被静默吃掉，界面直到快照才整段出现。
+ * 按 id 取号让增量与快照两条出口同源：
+ *   · id 已在账里（完整消息已到，含同一条消息的第 2 次投递）⇒ 它在账里的位次 + 1；
+ *   · id 还没进账（增量先到）⇒ 它是下一条，占「账里条数 + 1」——正是它稍后进账时会占的那个号。
+ * 拿不到 id（畸形帧）时回落到 `roundTripOf`：没有归并键就没有「这是第几轮」可言。
+ *
+ * 遍历是 O(轮次数)——一次运行几十轮、增量几百条，代价可忽略。刻意**不另建一本账**：
+ * 多一本就多一处可能与 `turnKeys` 漂移的真源，而漂移的表现正是这个函数要防的「号串轮」。
+ */
+function mainRoundTrip(state: TurnState, messageId: string | null): number {
+  if (messageId === null) return roundTripOf(state);
+  let position = 0;
+  for (const known of state.turnKeys) {
+    if (known === messageId) return position + 1;
+    position += 1;
+  }
+  return state.turnKeys.size + 1;
 }
 
 /** **每会话自己的轮次号账**：`会话身份（= 子消息上的 parent_tool_use_id） → (message.id → 轮次号)`（主会话不进这张账） */
@@ -707,7 +859,9 @@ function currentRoundOf(rounds: ReadonlyMap<string, number>): number {
  * 判据：按 `parent_tool_use_id` 分组，每组数**去重后的 `assistant.message.id` 个数**，首次出现顺序 = 1..N。
  *
  * 三档：
- *   · **主会话**（`subagentId === null`）：`roundTripOf(state)`，**原样**不动；
+ *   · **主会话**（`subagentId === null`）：按 `message.id` 在 `state.turnKeys` 里的位次取号
+ *     （见 `mainRoundTrip`——增量先到时占「下一个号」，与它稍后进账时的号一致）；
+ *     `messageId === null` 时回落到 `roundTripOf(state)`；
  *   · **侧链**：该会话自己的 1..N（不同子会话各自从 1 起、互不干扰，也不吃主会话的号）；
  *   · **`messageId === null`**（形状异常，没有归并键）：**不新开一轮**，如实回落到**该会话当前**
  *     的号（= 已经数到的个数，一个都没数到时给 1，与主会话那条 `roundTripOf` 同一条处置）。
@@ -728,7 +882,7 @@ function roundTripOfSession(
   subagentId: string | null,
   messageId: string | null,
 ): number {
-  if (subagentId === null) return roundTripOf(state);
+  if (subagentId === null) return mainRoundTrip(state, messageId);
   let rounds = sessionRoundIds.get(subagentId);
   if (rounds === undefined) {
     rounds = new Map();

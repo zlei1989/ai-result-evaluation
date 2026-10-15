@@ -1,13 +1,14 @@
 // @vitest-environment node
 /**
- * 评测页的 URL 状态解析（纯函数）。
+ * 评测页的 URL 状态解析与「标题」列拼法（纯函数）。
  * URL 是右栏状态的唯一真源（刷新与分享都能回到同一屏），所以「脏 URL 怎么办」必须在这里定死：
  * 未知 `panel`、空 `id`、`panel=detail` / `edit` 但没有 id —— 一律回落到「不显示右栏」，
  * 绝不抛错、也绝不半开半合地渲染一条空右栏（那正是 ListDetailLayout 文件头警告的形态）。
+ * 标题列的拼法同理：页面不能写 `.tsx` 测试，显示口径只能钉在这个纯函数上。
  */
 import { describe, expect, it } from 'vitest';
 import { ServiceError } from '@aieval/contracts';
-import { describeError, parseRunsPanel, runsPanelHref } from './runs-view';
+import { describeError, parseRunsPanel, runListTitle, runsPanelHref } from './runs-view';
 
 describe('parseRunsPanel', () => {
   it.each([
@@ -51,6 +52,25 @@ describe('runsPanelHref', () => {
 
   it('id 会被转义（不假设 id 永远只有 UUID 字符）', () => {
     expect(runsPanelHref('detail', 'a b&c')).toBe('/runs?panel=detail&id=a%20b%26c');
+  });
+});
+
+describe('runListTitle', () => {
+  it.each([
+    // 无备注：与今天的标题列逐字相同，不留尾随分隔符
+    [{ caseTitle: '06 鹈鹕骑车', note: '' }, '06 鹈鹕骑车'],
+    [{ caseTitle: '06 鹈鹕骑车', note: '   ' }, '06 鹈鹕骑车'],
+    // 有备注：用例标题在前，备注在后，分隔符是「 · 」
+    [{ caseTitle: '06 鹈鹕骑车', note: '对比模型不同版本间的差异' }, '06 鹈鹕骑车 · 对比模型不同版本间的差异'],
+    // 备注首尾空白在显示层再 trim 一次（旧数据不保证经过写侧归一）
+    [{ caseTitle: '06 鹈鹕骑车', note: '  对比差异  ' }, '06 鹈鹕骑车 · 对比差异'],
+    // 手改过的 run.json：用例标题为空时不显示成「 · 备注」
+    [{ caseTitle: '', note: '对比差异' }, '对比差异'],
+    [{ caseTitle: '   ', note: '对比差异' }, '对比差异'],
+    // 两格都空 ⇒ 空串（排序比较器按空值当最小值处置）
+    [{ caseTitle: '', note: '' }, ''],
+  ])('%o → %j', (run, expected) => {
+    expect(runListTitle(run)).toBe(expected);
   });
 });
 
