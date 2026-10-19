@@ -10,21 +10,21 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { BreadcrumbProps } from 'antd';
 import type { LogNode, RowNode, SessionNode } from './types';
-import { LogNodeBreadcrumb, breadcrumbItems, nodeChain, nodeDisplayName } from './log-node-breadcrumb';
+import {
+  LogNodeBreadcrumb,
+  breadcrumbItems,
+  nodeChain,
+  nodeDisplayName,
+  type BreadcrumbSegment,
+} from './log-node-breadcrumb';
 
-/**
- * 菜单项的 `key` / `disabled`。
- * antd 的 `menu.items` 是**联合类型**（普通项 / 分组项 / 分隔线），`disabled` 只在其中一支上，
- * 直接读会编译不过 ⇒ 收到一个只含本用例关心的两格的形状里。
- */
-function menuOf(items: BreadcrumbProps['items'], index: number): { key: string; disabled: boolean }[] {
-  const raw = items?.[index]?.menu?.items ?? [];
-  return raw.map((entry) => {
-    const item = entry as { key?: unknown; disabled?: boolean };
-    return { key: String(item.key ?? ''), disabled: item.disabled === true };
-  });
+/** 下拉项只有两格值得断言：这一项是谁、它是不是当前段（禁用）。 */
+function menuOf(items: readonly BreadcrumbSegment[], index: number): { key: string; disabled: boolean }[] {
+  return (items[index]?.siblings ?? []).map((sibling) => ({
+    key: sibling.key,
+    disabled: sibling.disabled,
+  }));
 }
 
 /** 会话节点：只给本用例关心的几格，其余按「都没有」补齐 */
@@ -80,6 +80,8 @@ function rowNode(id: string, parentId: string | null = null): RowNode {
       thinking: null,
       domain: [],
       error: null,
+      contextUsed: null,
+      contextWindow: null,
     },
   };
 }
@@ -103,17 +105,16 @@ describe('LogNodeBreadcrumb', () => {
     render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={vi.fn()} />);
 
     const host = screen.getByTestId('log-node-breadcrumb');
-    const labels = [...host.querySelectorAll('.ant-breadcrumb-item')].map((li) => li.textContent);
+    const labels = [...host.querySelectorAll('[data-segment]')].map((segment) => segment.textContent);
     expect(labels).toEqual(['主会话', '整理变更清单', '跑全量测试']);
 
-    // `strong` 会把文字包进 `<strong>`，故 `aria-current` 挂在它的祖先 `Typography.Text` 上
+    // 当前段是带 `aria-current` 的纯文本，不可点、也不带下拉
     const current = screen.getByText('跑全量测试');
     const marked = current.closest('[aria-current="page"]');
     expect(marked).not.toBeNull();
     expect(marked).toHaveTextContent('跑全量测试');
-    expect(current.closest('.ant-typography')).not.toBeNull();
-    // 当前段不可点：它没有下拉（只有带 `menu` 的段才会被套上 overlay-link）
-    expect(current.closest('.ant-breadcrumb-overlay-link')).toBeNull();
+    expect(current.closest('[data-slot="dropdown-menu-trigger"]')).toBeNull();
+    expect(current.tagName).not.toBe('BUTTON');
   });
 
   it('换 activeNodeId 即换链（同一份 nodes，不存第二份真值）', () => {
@@ -143,7 +144,8 @@ describe('LogNodeBreadcrumb', () => {
     // 主会话那一段必须是**可交互的**：要么整段可点（同层只有一个），要么下拉里有可用项。
     // 修复前它必然落到「下拉里只有一个 disabled 的自己」⇒ 抽屉上根本没有回退入口。
     const mainSegment = screen.getByText('主会话');
-    const clickable = mainSegment.closest('.ant-dropdown-trigger') !== null || mainSegment.getAttribute('role') === 'link';
+    const clickable =
+      mainSegment.tagName === 'BUTTON' || mainSegment.closest('[data-slot="dropdown-menu-trigger"]') !== null;
     expect(clickable, '主会话那一段既没有下拉也没有点击入口（回不去主会话）').toBe(true);
 
     // 直接点它：必须把 `main` 交回去
@@ -158,15 +160,15 @@ describe('LogNodeBreadcrumb', () => {
     expect(items).toHaveLength(3);
     expect(menuOf(items, 0)).toEqual([]); // main：同层只有它自己 ⇒ 整段可点
     expect(menuOf(items, 1)).toHaveLength(2); // sub-a：有兄弟 ⇒ 下拉
-    expect(items[2]?.menu).toBeUndefined(); // 当前段：不给菜单
+    expect(items[2]?.siblings).toBeUndefined(); // 当前段：不给菜单
   });
 
   it('点下拉项把节点 id 交回去', () => {
     const onSelect = vi.fn();
     const items = breadcrumbItems(NODES, 'sub-a1', onSelect) ?? [];
-    const onClick = items[1]?.menu?.onClick as ((info: { key: string }) => void) | undefined;
+    const target = items[1]?.siblings?.find((sibling) => sibling.key === 'sub-b');
 
-    onClick?.({ key: 'sub-b' });
+    target?.onSelect();
 
     expect(onSelect).toHaveBeenCalledWith('sub-b');
   });

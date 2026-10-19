@@ -139,14 +139,15 @@ describe('AskUserCard：卡片结构', () => {
     expect(screen.queryByText('选项 A')).toBeNull();
   });
 
-  it('`header` 为空的问题不画一个空 Tag（标题只剩题目）', () => {
-    const { container } = renderCard(
-      pending({ questions: [question({ header: '', prompt: '粘贴发布用的 token' })] }),
-      { open: [] },
-    );
+  it('`header` 为空的问题不画一个空徽标（标题只剩题目）', () => {
+    renderCard(pending({ questions: [question({ header: '', prompt: '粘贴发布用的 token' })] }), { open: [] });
 
     expect(screen.getByText('粘贴发布用的 token')).toBeInTheDocument();
-    expect(container.querySelector('.ant-collapse-header .ant-tag')).toBeNull();
+    // 标题那一行是 `data-testid="question-title"`：`header` 空 ⇒ 它里面一个 `Badge` 都不该有
+    // （`multiSelect` 为 false 时「可多选」那一枚也不出）。空徽标只是一个没有字的框，会占掉行首。
+    const title = screen.getByTestId('question-title');
+    expect(title).toHaveTextContent('粘贴发布用的 token');
+    expect(title.querySelectorAll('[data-slot="badge"]')).toHaveLength(0);
   });
 
   it('**一问一格键**：展开哪一问只看那一问的键，点了报出去的也是它', () => {
@@ -165,7 +166,7 @@ describe('AskUserCard：卡片结构', () => {
     expect(onQuestionOpenChange).not.toHaveBeenCalledWith(questionPanelKey(CARD_ID, 1), expect.anything());
   });
 
-  it('问题面板不带自己那层边框（`bordered={false}`）：框由卡片出，面板再画一圈就是框里套框', () => {
+  it('问题面板不带自己那层边框：框由卡片出，面板再画一圈就是框里套框', () => {
     const { container } = renderCard(
       settled({
         questions: [question({ secret: true })],
@@ -173,12 +174,13 @@ describe('AskUserCard：卡片结构', () => {
       }),
     );
 
-    // 框的那一层在这里：`.ant-card-bordered` 是 `Card` 画的，卡片里的面板不该再画一圈
-    expect(container.querySelector('.ant-card-bordered')).not.toBeNull();
-    // antd 把 `bordered={false}` 落在根上的 `.ant-collapse-borderless`
-    expect(container.querySelector('.ant-collapse')?.className).toContain('ant-collapse-borderless');
-    // 只有问题面板这一格是无框的：遮罩那一格走 `ghost`（另一档，背景也透明），两档不许混成一个
-    expect(container.querySelectorAll('.ant-collapse-borderless')).toHaveLength(1);
+    // 框只有一层：整张卡片（遮罩那一格是折叠面板、不是卡片，不额外画框）
+    expect(container.querySelectorAll('[data-slot="card"]')).toHaveLength(1);
+    const panel = container.querySelector('[data-question-panel]')?.closest('[data-slot="collapsible"]');
+    expect(panel).not.toBeNull();
+    // 面板自己的容器只留「两问之间的一条分隔线」，没有四边的边框与圆角
+    expect(panel?.className ?? '').not.toMatch(/(?:^|\s)rounded-/);
+    expect(panel?.className ?? '').not.toMatch(/(?:^|\s)border(?:\s|$)/);
   });
 
   it('题目标题那一格可收缩（`minWidth: 0`）：长题目不会把卡片顶宽成横向滚动条', () => {
@@ -186,7 +188,7 @@ describe('AskUserCard：卡片结构', () => {
       open: [],
     });
 
-    expect(container.querySelector<HTMLElement>('.ant-collapse-title')?.style.minWidth).toBe('0');
+    expect(screen.getByTestId('question-title').classList.contains('min-w-0')).toBe(true);
   });
 
   it('footer 放原文入口：收场且有原文时「原始结果」+「重新读取」都在卡面 footer 里', () => {
@@ -194,8 +196,8 @@ describe('AskUserCard：卡片结构', () => {
     renderCard(settled({ result }), { onRequestDiagnostics: vi.fn() });
 
     const open = screen.getByTestId('raw-output-open');
-    // 位置就是 footer（antd 的 `actions` 那一行）：不是面板体里、也不是卡面标题里
-    expect(open.closest('.ant-card-actions')).not.toBeNull();
+    // 位置就是 footer：不是面板体里、也不是卡面标题里
+    expect(open.closest('[data-slot="card-footer"]')).not.toBeNull();
     expect(screen.getByText('重新读取')).toBeInTheDocument();
   });
 
@@ -203,19 +205,19 @@ describe('AskUserCard：卡片结构', () => {
     const { container } = renderCard(pending());
 
     expect(screen.queryByText('原始结果')).toBeNull();
-    expect(container.querySelector('.ant-card-actions')).toBeNull();
+    expect(container.querySelector('[data-slot="card-footer"]')).toBeNull();
   });
 
   it('footer 的按钮组带左内边距：与卡面标题、正文的左缘对齐', () => {
     const result = { ok: true, raw: '{"questions":[]}', truncation: { kind: 'none' } as const };
     const { container } = renderCard(settled({ result }), {});
 
-    const bar = container.querySelector<HTMLElement>('.ant-card-actions .ant-flex');
+    const bar = container.querySelector<HTMLElement>('[data-slot="card-footer"] > div');
     expect(bar, 'footer 的按钮组不在').not.toBeNull();
-    // jsdom 没有布局引擎，量不到「差几像素」——真机那一条读数在冒烟里（三处左缘都是 Card.left + 13）。
-    // 判据落在**这一格有没有带左内边距**：antd 的 `.ant-card-actions` 与它的 `li` 左右 padding 都是 0，
-    // 不补这一格按钮组就贴到卡片边框上，而卡面标题与正文都在 `paddingSM` 处。
-    expect((bar as HTMLElement).style.getPropertyValue('padding-inline-start')).toBe('12px');
+    // jsdom 没有布局引擎，量不到「差几像素」——真机那一条读数在冒烟里。
+    // 判据落在**这一格有没有带左内边距**：不补这一格按钮组就贴到卡片边框上；
+    // 值取密度间距档（类名），不写内联像素。
+    expect((bar as HTMLElement).classList.contains('ps-sm')).toBe(true);
   });
 });
 
@@ -226,7 +228,7 @@ describe('AskUserCard：还没收场', () => {
       renderCard(pending(), { open: [] });
 
       expect(screen.getByText('等待答复中… 2m03s')).toBeInTheDocument();
-      expect(document.querySelector('.ant-badge-status-processing')).not.toBeNull();
+      expect(document.querySelector('[data-status="running"]')).not.toBeNull();
       // 无人值守：这一句必须写出来（它解释「为什么可能一直等」）
       expect(screen.getByText('无人值守的运行里，这一步会一直等到轮次被取消')).toBeInTheDocument();
 
@@ -246,7 +248,7 @@ describe('AskUserCard：还没收场', () => {
     const { container } = renderCard(pending({ running: false }), { open: [] });
 
     expect(screen.getByText('结果未采集')).toBeInTheDocument();
-    expect(container.querySelector('.ant-badge-status-processing')).toBeNull();
+    expect(container.querySelector('[data-status="running"]')).toBeNull();
     expect(screen.queryByText(/等待答复中/)).toBeNull();
     // 轮次已经结束，「会一直等到轮次被取消」当场就是假的
     expect(screen.queryByText('无人值守的运行里，这一步会一直等到轮次被取消')).toBeNull();
@@ -258,13 +260,13 @@ describe('AskUserCard：七种收场', () => {
     for (const outcome of Object.keys(ASK_USER_OUTCOME_LABELS) as Array<keyof typeof ASK_USER_OUTCOME_LABELS>) {
       const { unmount } = renderCard(settled({ outcome }), { open: [] });
 
-      const tag = screen.getByText(ASK_USER_OUTCOME_LABELS[outcome].label).closest('.ant-tag');
+      const tag = screen.getByText(ASK_USER_OUTCOME_LABELS[outcome].label).closest('[data-slot="badge"]');
       expect(tag).not.toBeNull();
       if (outcome === 'unavailable' || outcome === 'skipped' || outcome === 'canceled') {
-        expect(tag?.className).not.toContain('error');
+        expect(tag).toHaveAttribute('data-tone', 'default');
       }
       if (outcome === 'rejected') {
-        expect(tag?.className).toContain('error');
+        expect(tag).toHaveAttribute('data-tone', 'error');
       }
       unmount();
     }
@@ -431,7 +433,7 @@ describe('AskUserCard：自由输入那一格', () => {
   it('写了自由输入 ⇒ 卡片在，且那句话就在卡片体里', () => {
     renderCard(withOther([{ header: '选路径', selected: ['选项 A'], custom: '走第三条路' }]));
 
-    const card = screen.getByText('其它（自由输入）').closest('.ant-card');
+    const card = screen.getByText('其它（自由输入）').closest('[data-slot="card"]');
     expect(card).not.toBeNull();
     expect(card).toHaveTextContent('自由输入（覆盖选项）：走第三条路');
   });
@@ -459,10 +461,13 @@ describe('AskUserCard：自由输入那一格', () => {
 });
 
 describe('AskUserCard：只读与原文', () => {
-  it('不提供任何「回答」按钮（应答面在弹层，卡片是复盘视图）', () => {
+  it('不提供任何作答入口（应答面在弹层，卡片是复盘视图）', () => {
     const { container } = renderCard(pending());
 
-    expect(container.querySelectorAll('button')).toHaveLength(0);
+    // 面板的展开键是按钮，那是「读」不是「答」；真正的作答入口是输入框与带语义的按钮
+    expect(container.querySelectorAll('textarea, input, [contenteditable="true"]')).toHaveLength(0);
+    const labels = [...container.querySelectorAll('button')].map((button) => button.textContent ?? '');
+    expect(labels.filter((label) => /回答|提交|发送|确认/.test(label))).toEqual([]);
   });
 
   it('secret 的答案默认遮罩，展开才显示；选项上也不留「已选」的痕迹', () => {

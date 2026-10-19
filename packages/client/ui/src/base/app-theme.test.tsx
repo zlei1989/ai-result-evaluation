@@ -1,15 +1,10 @@
 /**
- * 主题 hook：三处消费点同步 + 文档根属性口径。
- * 这是**防回归**用例：「组件亮了、底色还是暗的」这类半亮主题，
- * 根因就是三个消费点有一个没同步（ConfigProvider / html[data-theme] / ConfigProvider.config）。
+ * 主题 hook：文档根属性口径（唯一真源）。
+ * 这是**防回归**用例：「组件亮了、底色还是暗的」这类半亮主题，根因是主题有第二条落点；
+ * 现在 `html[data-theme]` 是唯一落点，本文件钉住它写的是**解析后**的明暗、偏好原值单独保留。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
-// 第三消费点的读回器必须从 **lib** 子路径取：antd 没有 exports map，但 `antd` 的 main 是
-// `lib/index.js`，而 Vitest 下 `antd/es/config-provider` 是**另一个模块实例**，
-// 用 es/ 读 globalConfig() 恒为 undefined，看起来像「没写入」。
-import { globalConfig } from 'antd/lib/config-provider';
 import { useResolvedTheme } from './app-theme';
 import { SYSTEM_DARK_QUERY, type ThemePreference } from './theme-resolve';
 
@@ -41,7 +36,7 @@ describe('useResolvedTheme', () => {
     expect(document.documentElement.dataset.themePreference).toBe('dark');
   });
 
-  it('apply=false 时不写文档根属性（供只需要配置的场景）', () => {
+  it('apply=false 时不写文档根属性（供只需要解析结果的场景）', () => {
     renderHook(() => useResolvedTheme({ preference: 'light', apply: false }));
     expect(document.documentElement.dataset.theme).toBeUndefined();
   });
@@ -55,34 +50,6 @@ describe('useResolvedTheme', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
     rerender({ preference: 'light' as const });
     expect(document.documentElement.dataset.theme).toBe('light');
-  });
-
-  it('消费点③：把 themeConfig 与 holderRender 真正写进 antd 全局配置', () => {
-    // globalConfig 是模块级单例，先读前值以便用例结束后复原
-    const previous = globalConfig();
-    const previousTheme = previous.getTheme();
-    const previousHolder = previous.holderRender;
-    try {
-      const { result } = renderHook(() => useResolvedTheme({ preference: 'light' }));
-      // 同一引用：静态 message/Modal 拿到的正是这个 hook 的 themeConfig
-      expect(globalConfig().holderRender).toBe(result.current.holderRender);
-      expect(globalConfig().getTheme()).toBe(result.current.themeConfig);
-    } finally {
-      // holderRender 总能复原；theme 只在先前有值时可复原——antd 的 setGlobalConfig 里是
-      // `if (theme)`，传 undefined 不写入，没有 unset API。残留值不影响本文件任何断言：
-      // 下面 apply=false 用例比对的是它**紧邻之前**读到的值，与用例执行顺序无关。
-      if (previousTheme !== undefined) ConfigProvider.config({ theme: previousTheme });
-      ConfigProvider.config({ holderRender: previousHolder });
-    }
-  });
-
-  it('apply=false 时连全局配置也不写（两个消费点一起跳过）', () => {
-    const before = globalConfig();
-    const beforeTheme = before.getTheme();
-    const beforeHolder = before.holderRender;
-    renderHook(() => useResolvedTheme({ preference: 'light', apply: false }));
-    expect(globalConfig().getTheme()).toBe(beforeTheme);
-    expect(globalConfig().holderRender).toBe(beforeHolder);
   });
 
   it('订阅 prefers-color-scheme 并在卸载时清理（jsdom 不提供 matchMedia，不打桩则订阅分支不可达）', () => {

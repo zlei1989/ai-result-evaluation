@@ -10,6 +10,17 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MetricLine, formatCacheHitRate, formatDuration } from './metric-line';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
+/**
+ * 悬浮到 `Hint` 的**触发元素**上：Base UI 的悬浮监听挂在触发元素的**原生** `mouseenter` 上
+ * （不冒泡），直接派发到内层文字上不会触发浮层。真实浏览器里鼠标移入子元素会同时给祖先
+ * 派发 `mouseenter`，jsdom 的合成事件不会。
+ */
+function hover(element: HTMLElement): void {
+  const trigger = element.closest('[data-slot="tooltip-trigger"]');
+  fireEvent.mouseEnter(trigger ?? element);
+}
+
+
 /** 最小可用的 ScoreResult：只用到 totalScore（逐项判定与满分是必填，故各给一个空表 / 上界） */
 const score = {
   judgments: [],
@@ -403,7 +414,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
   /**
    * 桩必须**用完就撤**（本仓约一半调用点是这个成对写法，见 `run-detail-panel.test.tsx:31`）：
    * `vi.stubGlobal` 改的是**整个文件**的全局，撤不干净的话，本段之后**追加**的 describe 会白捡一个
-   * `ResizeObserver`，于是 `resizable-columns.tsx` 那类「无 ResizeObserver 也要报一次初值」的兜底分支
+   * `ResizeObserver`，于是 `list-detail-layout.tsx` 那类「无 ResizeObserver 也要读一次容器宽」的兜底分支
    * 在测试里永远不可达（那正是 `resize-observer.ts` 文件头不肯把它放进共享 setup 的理由）。
    */
   afterEach(() => {
@@ -421,7 +432,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     // 60 = 100 − 40、10 = 20 − 10、25 = 30 − 5：两行都只由**这一对**算出来
     expect(await screen.findByText('主会话 输入 60 tok · 缓存 10 tok · 输出 25 tok')).toBeInTheDocument();
     expect(await screen.findByText('子智能体 输入 40 tok · 缓存 10 tok · 输出 5 tok')).toBeInTheDocument();
@@ -438,15 +449,15 @@ describe('MetricLine：子智能体那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     expect(await screen.findByText('输入 100 tok · 缓存 20 tok · 输出 30 tok')).toBeInTheDocument();
     /**
      * 下面这条阴性断言的前提是**浮层真的开了**：浮层没渲染时 `queryByText` 同样是 null，
      * 那这条用例就退化成「什么都没验证」（`eval-row-card.test.tsx` 里那条「可重评的行不给
      * Tooltip」的用例栽过的同一个坑）。上面那句 `findByText` 已经证明浮层开了——这句话只可能
-     * 出现在浮层里；`.ant-tooltip` 那一句是本仓既有的第二重保险。
+     * 出现在浮层里；`[data-slot="tooltip-content"]` 那一句是本仓既有的第二重保险。
      */
-    expect(document.querySelector('.ant-tooltip')).not.toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull();
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
 
@@ -461,7 +472,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     expect(await screen.findByText('输入 100 tok · 缓存 20 tok · 输出 30 tok')).toBeInTheDocument();
     expect(screen.queryByText(/主会话/)).toBeNull();
 
@@ -469,9 +480,9 @@ describe('MetricLine：子智能体那一份拆两行', () => {
     // 先卸载上一棵树：浮层是挂在 body 上的 portal，不卸载的话同一句文案会命中两个元素。
     unmount();
     render(<MetricLine tokens={{ input: 100, cached: 20, output: 30 }} turns={3} durationMs={1000} score={null} />);
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     expect(await screen.findByText('输入 100 tok · 缓存 20 tok · 输出 30 tok')).toBeInTheDocument();
-    expect(document.querySelector('.ant-tooltip')).not.toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull();
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
 
@@ -486,10 +497,10 @@ describe('MetricLine：子智能体那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     // 10 − 40 = −30：这一行绝不能出现
     expect(await screen.findByText('输入 10 tok · 缓存 0 tok · 输出 1 tok')).toBeInTheDocument();
-    expect(document.querySelector('.ant-tooltip')).not.toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).not.toBeNull();
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
 
@@ -516,7 +527,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
     expect(await screen.findByText('子智能体 输入 40 tok · 缓存 10 tok · 输出 5 tok')).toBeInTheDocument();
     // 主会话那一行同样只可能来自叠加层那一对（60 / 10 / 25，见本段第一条用例）
     expect(await screen.findByText('主会话 输入 60 tok · 缓存 10 tok · 输出 25 tok')).toBeInTheDocument();
@@ -533,7 +544,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
  * 缺陷以「那两行自己都不自洽」（主会话算出负数）的形式出现在用户面前——那种画面看起来完全正常。
  *
  * 阴性断言（「只有一行」）为什么可信：`title` 为 `undefined` 时 antd **不渲染浮层**；但「悬浮完立刻
- * 查 `.ant-tooltip`」这种写法**没有分辨力**（浮层有 0.1s 的出场延迟，同步断言在任何实现下都为真），
+ * 查 `[data-slot="tooltip-content"]`」这种写法**没有分辨力**（浮层有 0.1s 的出场延迟，同步断言在任何实现下都为真），
  * 所以这几条一律走 `expectNoTooltip`——**等满一个延迟窗口**再判，
  * 而本段第一条用例已经证明同一个环境里悬浮是打得出浮层的（`ResizeObserver` 桩装好了）。
  */
@@ -551,16 +562,16 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
    * 悬浮之后**给浮层一个出场的机会**，再判「确实没有浮层」。
    *
    * 为什么不能悬浮完就立刻判 `null`：antd 的 `Tooltip` 有 `mouseEnterDelay`（默认 0.1s），**同步**那句
-   * `querySelector('.ant-tooltip')` 在任何实现下都为真。把「`> 0`」那一条判据去掉，浮层会画出
+   * `querySelector('[data-slot="tooltip-content"]')` 在任何实现下都为真。把「`> 0`」那一条判据去掉，浮层会画出
    * 「主会话 9 轮 / 子智能体 0 轮」，而同步断言仍然是绿的——**没有分辨力**
-   * 的断言等于没写（本仓 `ellipsis-text.test.tsx` 也登记过「`.ant-tooltip` 单独不构成守卫」）。
+   * 的断言等于没写（本仓 `ellipsis-text.test.tsx` 也登记过「`[data-slot="tooltip-content"]` 单独不构成守卫」）。
    * 等满一个延迟窗口再判，缺陷才抓得住。
    */
   const expectNoTooltip = async (): Promise<void> => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
     });
-    expect(document.querySelector('.ant-tooltip')).toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
   };
 
   it('有子智能体轮次时两行：主会话是 turns − subagentTurns 算出来的', async () => {
@@ -569,7 +580,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
     // 正文那一格一个字不改：合计仍是 9（拆分不改它的口径）
     expect(screen.getByText('轮次 9')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     // 6 = 9 − 3：两行都只由**这一对**算出来
     expect(await screen.findByText('主会话 6 轮')).toBeInTheDocument();
     expect(await screen.findByText('子智能体 3 轮')).toBeInTheDocument();
@@ -578,7 +589,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
   it('没有子智能体（0）时只有一行，逐字与改动前相同', async () => {
     render(<MetricLine tokens={null} turns={9} subagentTurns={0} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     await expectNoTooltip();
 
     expect(screen.getByText('轮次 9')).toBeInTheDocument();
@@ -589,7 +600,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
   it('没采到（null）与缺这一格（老调用方）都只有一行', async () => {
     const { unmount } = render(<MetricLine tokens={null} turns={9} subagentTurns={null} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     await expectNoTooltip();
     expect(screen.queryByText(/子智能体/)).toBeNull();
 
@@ -597,7 +608,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
     // 先卸载上一棵树：不卸载的话同一句文案会命中两个元素（浮层挂在 body 上）。
     unmount();
     render(<MetricLine tokens={null} turns={9} durationMs={1000} score={null} />);
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     await expectNoTooltip();
     expect(screen.queryByText(/子智能体/)).toBeNull();
   });
@@ -605,7 +616,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
   it('分量比合计大（主会话算出负数）时不画拆分——宁可少一行，也不显示 -3 轮', async () => {
     render(<MetricLine tokens={null} turns={1} subagentTurns={4} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     await expectNoTooltip();
 
     // 1 − 4 = −3：这一行绝不能出现
@@ -636,7 +647,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     expect(await screen.findByText('子智能体 5 轮')).toBeInTheDocument();
     // 3 = 8 − 5：主会话那一行同样只可能来自叠加层那一对
     expect(await screen.findByText('主会话 3 轮')).toBeInTheDocument();

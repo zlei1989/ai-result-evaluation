@@ -128,8 +128,8 @@ describe('McpServerTable', () => {
     // 落点：卡片**里**（页面层那份与卡片是兄弟节点，`closest` 当场分得开）
     expect(note.closest('[data-testid="mcp-server-table-card"]')).not.toBeNull();
     // 正文样式而不是告警：antd 的次级文本类名 + 不在任何一个 Alert 容器里
-    expect(note.className).toContain('ant-typography-secondary');
-    expect(note.closest('.ant-alert')).toBeNull();
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.closest('[data-slot="alert"]')).toBeNull();
     // 表格**上方**：DOM 顺序上说明先于表格（`FOLLOWING` = 表格在它之后）
     const table = screen.getByRole('table');
     expect(note.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -162,29 +162,29 @@ describe('McpServerTable', () => {
 
     const rows = screen.getAllByRole('row');
     /**
- * 第 `index` 列里那个 antd Typography 元素：次级色是挂在它身上的类
- * （`getByText` 会命中它内部的 `<strong>`，那个内层元素上没有类，拿它断言等于永远为真）。
- */
-    const typographyIn = (row: HTMLElement, index: number): Element | null =>
-      row.querySelectorAll('td')[index]?.querySelector('.ant-typography') ?? null;
+     * 第 `index` 列里那个省略文本元素（`data-ellipsis`）：次级色是挂在它身上的类。
+     * 用 `data-ellipsis` 而不是某个组件库的类名：它是本屏自己的稳定信号。
+     */
+    const ellipsisIn = (row: HTMLElement, index: number): Element | null =>
+      row.querySelectorAll('td')[index]?.querySelector('[data-ellipsis]') ?? null;
 
-    const disabledName = typographyIn(rows[2] as HTMLElement, 0);
-    const enabledName = typographyIn(rows[1] as HTMLElement, 0);
-    expect(disabledName, '名称格里没有 Typography 元素（列形态变了？）').not.toBeNull();
-    expect(enabledName, '名称格里没有 Typography 元素（列形态变了？）').not.toBeNull();
+    const disabledName = ellipsisIn(rows[2] as HTMLElement, 0);
+    const enabledName = ellipsisIn(rows[1] as HTMLElement, 0);
+    expect(disabledName, '名称格里没有省略文本元素（列形态变了？）').not.toBeNull();
+    expect(enabledName, '名称格里没有省略文本元素（列形态变了？）').not.toBeNull();
 
     expect(disabledName?.className, '停用行没有弱化信号（名称格不是次级色）').toContain(
-      'ant-typography-secondary',
+      'text-muted-foreground',
     );
     // 反向判据：启用的那行**不许**跟着变淡（否则「弱化」就成了一句永远为真的话）
-    expect(enabledName?.className, '启用行也被涂淡了').not.toContain('ant-typography-secondary');
+    expect(enabledName?.className, '启用行也被涂淡了').not.toContain('text-muted-foreground');
 
-    const endpoint = typographyIn(rows[2] as HTMLElement, 2);
+    const endpoint = ellipsisIn(rows[2] as HTMLElement, 2);
     expect(endpoint?.textContent, '停用行的端点或命令不见了——那是排障时要读的字').toBe(
       'npx -y @playwright/mcp@latest --browser=chrome --isolated',
     );
     expect(endpoint?.className, '端点或命令跟着变淡了——那是排障时要读的字').not.toContain(
-      'ant-typography-secondary',
+      'text-muted-foreground',
     );
   });
 
@@ -206,7 +206,7 @@ describe('McpServerTable', () => {
     expect(onDelete).not.toHaveBeenCalled();
     expect(await screen.findByText('删除后这些工具在候选执行时就没了。')).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除这台服务器' }));
 
     expect(onDelete).toHaveBeenCalledWith({ name: 'context7', config: servers.context7 });
   });
@@ -344,46 +344,44 @@ describe('McpServerTable', () => {
   });
 
   /**
- * 形态守卫（五列 + 两处固定，与供应商表 `P-COLUMN-FIXED` 同款）：
- * 三处必须同时在场，少一处就静默退回「被压扁 / 滚出去够不到」的老样子。
- * 钉的到类名、内联样式与 `colgroup` 宽度为止 —— 真实几何只有真机量得出来（见文件头）。
- */
+   * 形态守卫（五列 + 两处固定，与供应商表 `P-COLUMN-FIXED` 同款）：
+   * 列固定由套件的 `columnPinning` 表达，偏移来自列定义里声明的 `size`。
+   * 钉子到内联样式与 `colgroup` 宽度为止 —— 真实几何只有真机量得出来（见文件头）。
+   */
   it('卡片装不下时横向滚动，且名称列钉左、操作列钉右（MCP-COLUMN-FIXED）', () => {
     const { container } = render(
       <McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} />,
     );
 
-    const content = container.querySelector('.ant-table-content');
+    const content = container.querySelector('[data-testid="mcp-server-table-scroll"]');
     expect(content).not.toBeNull();
-    // 有横向滚动才谈得上固定列：给 `scroll.x` 之前这里一个内联样式都没有
-    expect(content).toHaveStyle({ overflowX: 'auto' });
+    const scroll = content?.querySelector('[data-testid="data-table-scroll"]') as HTMLElement | null;
+    expect(scroll?.style.overflow).toBe('auto');
     const table = content?.querySelector('table');
-    // 最小宽度必须真的落到**表格自己**的宽度上：`min-width: 100%` 保证卡片够宽时铺满、不给滚动条
-    expect(table).toHaveStyle({ width: '910px', minWidth: '100%', tableLayout: 'fixed' });
+    // 190 + 110 + 320 + 90 + 200：表格宽度就是各列声明宽度之和
+    expect(table).toHaveStyle({ width: '910px', tableLayout: 'fixed' });
 
-    const headers = content?.querySelectorAll('thead th');
+    const headers = Array.from(content?.querySelectorAll('thead th') ?? []) as HTMLElement[];
     expect(headers).toHaveLength(5);
-    // 刚需的两条粘性类（`-fix-start` / `-fix-end` 就是 `position: sticky` 的来源）
-    expect(headers?.[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(headers?.[4]?.className).toContain('ant-table-cell-fix-end');
+    expect(headers[0]?.style.position).toBe('sticky');
+    expect(headers[0]?.style.left).toBe('0px');
+    expect(headers[4]?.style.position).toBe('sticky');
+    expect(headers[4]?.style.right).toBe('0px');
     // 中间三列**不许**粘：把端点列也钉住的话，可滚动区域就只剩传输与状态两列
     for (const index of [1, 2, 3]) {
-      expect(headers?.[index]?.className).not.toContain('ant-table-cell-fix');
+      expect(headers[index]?.style.position).not.toBe('sticky');
     }
     // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去，滚动时表头与数据行错位）
-    const bodyCells = content?.querySelector('tbody tr.ant-table-row')?.querySelectorAll('td');
-    expect(bodyCells?.[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(bodyCells?.[4]?.className).toContain('ant-table-cell-fix-end');
+    const bodyCells = Array.from(content?.querySelectorAll('tbody tr')?.[0]?.querySelectorAll('td') ?? []) as HTMLElement[];
+    expect(bodyCells[0]?.style.left).toBe('0px');
+    expect(bodyCells[4]?.style.right).toBe('0px');
 
-    // 四列把宽度交出去，剩下的才归「端点或命令」（它**刻意不给宽度**，是唯一吃剩余宽度的列）。
-    // jsdom 量不出真实宽度（rc-table 的 MeasureCell 靠 ResizeObserver 回调，而替身从不回调），
-    // 故这里只钉得住「四列各自申报的宽度」与「端点列一列都没申报」。
+    // 每一列都申报了宽度：固定列的偏移输入就是这些声明值之和。
+    // 名称列 190（不是 150）：那格里住着名称与「已配置密钥」小标两样东西。
     const widths = Array.from(content?.querySelectorAll('colgroup col') ?? []).map(
       (cell) => (cell as HTMLElement).style.width,
     );
-    // 名称列 190（不是 150）：那格里住着名称与「已配置密钥」小标两样东西，150 会把主标识挤成
-    // `conte…`（见 `MCP_COLUMN_WIDTH` 的注释）
-    expect(widths).toEqual(['190px', '110px', '', '90px', '200px']);
+    expect(widths).toEqual(['190px', '110px', '320px', '90px', '200px']);
   });
 
   /**
@@ -419,7 +417,7 @@ describe('McpServerTable', () => {
       <McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} onPasteJson={noop} />,
     );
 
-    const extra = container.querySelector('.ant-card-extra');
+    const extra = container.querySelector('[data-slot="card-action"]');
     expect(extra).not.toBeNull();
     expect(Array.from(extra?.querySelectorAll('button') ?? []).map((button) => button.textContent)).toEqual([
       '添加',
@@ -433,8 +431,8 @@ describe('McpServerTable', () => {
 
     for (const name of ['添加', '添加第一台']) {
       const button = screen.getByRole('button', { name });
-      expect(button.className).toContain('ant-btn-variant-dashed');
-      expect(button.querySelector('.anticon-plus')).toHaveAttribute('aria-hidden', 'true');
+      expect(button.className).toContain('border-dashed');
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     }
   });
 });
@@ -482,11 +480,18 @@ describe('测试连接：行内结果区', () => {
     const testing = rowOf('context7');
     expect(within(testing).getByRole('button', { name: '编辑' })).toBeDisabled();
     expect(within(testing).getByRole('button', { name: '删除' })).toBeDisabled();
-    expect(within(testing).getByRole('switch', { name: '启用 context7' })).toBeDisabled();
-    // 正在测的那个按钮不是靠 `disabled` 属性拦的（antd 的 loading 走 `ant-btn-loading` +
-    // `pointer-events: none`），故这里钉的是那个类 —— 钉 `toBeDisabled()` 会红，而红的原因是
-    // 「我们钉错了属性」，不是「按钮真能被点第二次」
-    expect(within(testing).getByRole('button', { name: /测试连接$/ }).className).toContain('ant-btn-loading');
+    // 新栈的 Switch 是 span 语义（`aria-disabled`，不是原生 `disabled`）：
+    // `toBeDisabled()` 只认表单元素，故这一格按它真正暴露给读屏器的属性断言
+    expect(within(testing).getByRole('switch', { name: '启用 context7' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    // 正在测的那个按钮：转圈图标 + `data-loading`，并**同时**禁用（新栈没有 antd 的
+    // `ant-btn-loading` 类；可访问名固定为「测试连接」，转圈图标不污染它）
+    const testingButton = within(testing).getByRole('button', { name: '测试连接' });
+    expect(testingButton).toHaveAttribute('data-loading', 'true');
+    expect(testingButton).toBeDisabled();
+    expect(testingButton.querySelector('svg.animate-spin')).not.toBeNull();
 
     // 第 1 行（playwright）不受影响：停用条目**仍可测**
     const other = rowOf('@playwright/mcp');

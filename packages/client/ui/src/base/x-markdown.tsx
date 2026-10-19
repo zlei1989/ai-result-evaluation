@@ -1,78 +1,133 @@
 'use client';
 
 /**
- * `XMarkdown` 的本仓外壳（`@ant-design/x-markdown` 的导入只允许出现在 `base/`）。
+ * 共用 markdown 正文渲染器的本仓外壳（`streamdown` + `Code Block` + `Typeset`）。
  *
- * 三件事，每一件都是本仓的口径而不是 X 的默认值：
+ * 四个消费面（考题提示词、技能正文、日志正文、用户提示词）都只递 `text` 与 `open`，
+ * 所以口径只能钉在这里——钉在消费方就会「换一个消费面少一份证据」。四条口径：
  *
- *   1. **`escapeRawHtml` 恒开、不做成 prop**。X 的默认是 `false`——原始 HTML 会渲染成**真实 DOM**
- *      （DOMPurify 无条件消毒，但挡不住 `style` 属性整屏覆盖、远程图信标、任意外链、假凭据表单）。
- *      正文是外部输入（厂商输出、随被测仓库克隆进来的 `SKILL.md`），故本仓一律转义成文本。
- *      做成 prop 就会有人为了「让某个标签生效」把它关掉，那不是调用方该有的自由。
- *   2. **`hasNextChunk` 由调用方给，且只认 `block.assembly === 'open'`**。本仓「这一块说完了没有」
- *      只有一个判据（`assembly`），这里不再自造第二个流式布尔。
- *   3. **明暗主题靠类名切换**：X 的主题是两份全局 CSS（`themes/light.css` / `themes/dark.css`），
- *      由 `.x-markdown-light` / `.x-markdown-dark` 二选一。类名读 `useAppliedThemeMode()`
- *      （即 `html[data-theme]` 这个**已经解析好**的明暗），不自己再判一次主题。
+ *   1. **原始 HTML 一律转义成文本，且不交给调用方决定**。`streamdown` 默认带 `rehype-raw`，
+ *      原始 HTML 会进 DOM 树；本仓只挂 `sanitize` + `harden` 两个插件（不传 `raw`），于是
+ *      标签被转义成**看得见的字面量**。正文是外部输入（厂商输出、随被测仓库克隆进来的
+ *      `SKILL.md`），做成 prop 就会有人为了「让某个标签生效」把 raw 放回来。
+ *      **不用 `skipHtml`**：它删节点，HTML 直接消失；本仓要的是字面量。
+ *   2. **`open` 是「这一块还没收尾」的唯一判据**。本仓的规范词来自契约的 `assembly === 'open'`；
+ *      翻成 `streamdown` 的 `isAnimating` 只发生在这里一行（该 prop 还兼管「围栏还没闭合」的
+ *      识别与复制按钮的禁用，属于同一件事的两面）。**刻意必填、不给默认值**：给了默认值，
+ *      日后新增消费方会静默拿到 `false`，「这一段其实还没收尾」不会有任何提示。
+ *   3. **围栏代码块不折行**。`CodeBlockContent` 的 `wrap` 默认是 `false`（`data-wrap` 不写，
+ *      `whitespace-pre-wrap` 那条变体不生效），内层 `<code>` 是 `min-w-max` 撑到内容宽、
+ *      横向滚动由 `overflow-auto` 给 ⇒ 本仓**不打开 `wrap`**。提示词里的调用链路图靠前导空格
+ *      对齐，宁可让用户横向滚也不撕开树形结构。
+ *   4. **标题降两级**：`h1` 渲成 `<h4>`、`h2`–`h6` 渲成 `<h5>`。右栏只有 320–640px，照原级渲染
+ *      会长出页面级巨标题、还会把整页标题大纲带偏。层级重映射归 `components`（`typeset` 是纯
+ *      CSS、按元素名选中，不做重映射），字号 / 行高 / 间距归 `typeset` 的排版层
+ *      （标题档与块间距由 `globals.css` 的「排版尺度（typeset）」块覆盖，见该块文件头）。
  *
- *      **不能拿 `theme.useToken().theme.id` 判明暗**：那个 `id` 是 `@ant-design/cssinjs` 的
- *      **Theme 实例计数器**（`Theme` 构造里 `this.id = uuid++`），不是算法编号——antd 的三个
- *      算法函数都没有 `id`。它只在「单给 `defaultAlgorithm`」这一条链上等于 0（命中 antd 模块级
- *      `defaultTheme` 那个缓存实例），而 `[底色算法, compactAlgorithm]`（`PageShell` 的紧凑密度
- *      作用域）与 `[darkAlgorithm, …]` 都是新实例、`id ≥ 1`。用它判明暗的后果是**紧凑作用域里
- *      恒判为暗**：亮色主题下正文挂 `x-markdown-dark`，白底白字读不出来。
+ * **SSR 首帧就有正文**：消毒是纯 JS 的 `rehype-sanitize` + `rehype-harden`，渲染路径不碰 DOM，
+ * 服务端能出完整 HTML；后到的只有代码着色（`useHighlightedCode` 先渲染原文、hydrate 后换成
+ * 着色结果，字符与行数不变）。
  *
- *      那两份 CSS 由**应用**引（`apps/web-next` 的根布局）：`ui` 包直出 TS 源码、不是 Next 应用，
- *      全局 CSS 只能由应用侧引。
- *
- *   4. **三处排版口径钉在这里**（`PROSE_COMPONENTS`）：消费方只递 `text` 与 `open`，所以
- *      「一处改、两处同时生效」。壳**不套**外层 `Typography` 包裹：版面归 X，否则同一段 markdown
- *      在详情面与日志面会长得不一样。
- *
- * **已知边界**：SSR 下 X 的渲染器拿不到 DOMPurify 的 `sanitize`，服务端只出一个空的
- * `.x-markdown` div ⇒ 正文是「服务端空、客户端 hydrate 后才有字」。首屏面用它要按验收判据量化。
+ * 围栏代码块由 `Code Block` 接管（`components.code` + `data-block` 判别），行内代码保持行内：
+ * 复制按钮、语言标签、逐行渲染都在那一层。`controls={false}` 关掉 streamdown 自带的表格 /
+ * 图片工具条——版面 chrome 由本仓的组件决定，不要两套按钮。
  */
-import XMarkdown, { type XMarkdownProps } from '@ant-design/x-markdown';
-import { Typography } from 'antd';
+import { Streamdown, defaultRehypePlugins, useIsCodeFenceIncomplete, type Components, type ExtraProps } from 'streamdown';
 import type { ReactNode } from 'react';
-import { useAppliedThemeMode } from './app-theme';
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockContent,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+  CodeBlockLine,
+  CodeBlockTitle,
+} from '../components/ui/code-block';
+import { useHighlightedCode } from '../hooks/use-highlighted-code';
+
+/** 围栏的语言标记：`language-ts` → `ts`；没有标记时是空串（表头回落成 `text`） */
+const LANGUAGE_PATTERN = /language-(\S+)/;
 
 /**
- * 三处必须由本壳覆盖的排版口径，每一处都是「X 的默认值与本仓口径不一致」的落点：
+ * 围栏代码块：语言标签 + 复制按钮 + 逐行内容。
  *
- *   1. **`pre` 与围栏里的 `code` 都不折行**：X 的默认样式给**两个标签**都写了 `white-space: pre-wrap`
- *      （`.x-markdown pre, .x-markdown code`），`disableDefaultStyles` 关不掉它，只能内联 style 覆盖。
- *      **只盖 `pre` 不够**：块级 `code` 是 `display: block`，文字在它自己那一层就折了，
- *      `pre` 永远滚不出来（真机量到 8 行逻辑文本被折成 16 行视觉行、`scrollWidth` 等于 `clientWidth`）。
- *      提示词里的调用链路图靠前导空格对齐，折行会把树形结构撕成几段读不出来——宁可让用户横向滚。
- *      X 自己产出的这两个标签不带布局类属性（见它的 code renderer），故只透传 X 塞进来的属性。
- *      行内代码（`block === false`）不动：那一段本来就该跟着段落折行。
- *   2. **标题降两级**：`h1` → 4 级、`h2` 及以下 → 5 级。右栏只有 320–640px，照原级渲染会得到
- *      页面级巨标题，还会把整页的标题大纲带偏（详情页不该长出 `h1`）；antd 的 `Title` 只到 5 级。
- *   3. **外链新标签打开**：X 默认不给 `a` 加 `target` / `rel`，故开它自己的 `openLinksInNewTab`
- *      （顺带带上 `rel="noopener noreferrer"`，比只给 `noreferrer` 更严）。正文是外部输入，
- *      不挡 `window.opener` 等于把详情页交出去。这一条走 X 的 prop，**不在这张表里**——
- *      放进表里会把 `a` 变成自定义组件，未闭合链接的流式档位就得由本仓自己维护。
- *
- * 映射表照旧只覆盖这几类：段落 / 列表 / 表格 / 行内代码的样式归 X 自己的主题 CSS。
+ * `useIsCodeFenceIncomplete()` 只在 `isAnimating` 开着时有效（外壳把 `open` 翻成它），
+ * 返回 `true` 表示闭围栏还没到——这一档的可见产物就是**复制按钮禁用**：半截代码复制走没有意义。
  */
-const PROSE_COMPONENTS: NonNullable<XMarkdownProps['components']> = {
-  h1: ({ children }) => <Typography.Title level={4}>{children}</Typography.Title>,
-  h2: ({ children }) => <Typography.Title level={5}>{children}</Typography.Title>,
-  h3: ({ children }) => <Typography.Title level={5}>{children}</Typography.Title>,
-  h4: ({ children }) => <Typography.Title level={5}>{children}</Typography.Title>,
-  h5: ({ children }) => <Typography.Title level={5}>{children}</Typography.Title>,
-  h6: ({ children }) => <Typography.Title level={5}>{children}</Typography.Title>,
-  pre: ({ children }) => <pre style={{ overflowX: 'auto', whiteSpace: 'pre' }}>{children}</pre>,
-  // `domNode` / `streamStatus` / `lang` 是 X 塞进来的内部 prop（`streamStatus` 与 `data-state` 同义），
-  // 落到 DOM 上就是非法属性；`data-block` / `data-state` 走 rest 原样保留。
-  // `class` 也必须摘掉：X 把语言类名并进了 `className`，却把原始的 `class` 留在属性里，
-  // 直接透传会触发 React 的「Invalid DOM property `class`」警告。
-  code: ({ block, children, domNode: _domNode, streamStatus: _streamStatus, lang: _lang, class: _class, ...attrs }) => (
-    <code {...attrs} style={block ? { whiteSpace: 'pre' } : undefined}>
+function FencedCodeBlock({ code, language }: { code: string; language: string }): ReactNode {
+  const incomplete = useIsCodeFenceIncomplete();
+  const lines = useHighlightedCode(code, language);
+
+  return (
+    <CodeBlock>
+      <CodeBlockHeader>
+        <CodeBlockTitle>{language || 'text'}</CodeBlockTitle>
+        <CodeBlockActions>
+          <CodeBlockCopyButton value={code} disabled={incomplete} />
+        </CodeBlockActions>
+      </CodeBlockHeader>
+      <CodeBlockContent>
+        {lines.map((line, index) => (
+          <CodeBlockLine key={index}>{line}</CodeBlockLine>
+        ))}
+      </CodeBlockContent>
+    </CodeBlock>
+  );
+}
+
+/**
+ * `code` 的总入口：围栏代码走 `Code Block`，行内代码原样出 `<code>`。
+ *
+ * `streamdown` 只给围栏代码挂 `data-block`（`pre` 的默认渲染把该属性塞给它的 `code` 子节点），
+ * 因此「围栏 vs 行内」有现成判据，不需要自己数反引号。
+ */
+function MarkdownCode({
+  children,
+  className,
+  ...rest
+}: React.ComponentProps<'code'> & ExtraProps): ReactNode {
+  if (!('data-block' in rest)) {
+    return (
+      <code className={className} {...rest}>
+        {children}
+      </code>
+    );
+  }
+
+  return (
+    <FencedCodeBlock
+      code={typeof children === 'string' ? children : ''}
+      language={LANGUAGE_PATTERN.exec(className ?? '')?.[1] ?? ''}
+    />
+  );
+}
+
+/**
+ * 本仓口径的排版表：标题降两级 + 外链新标签打开 + 围栏交给 `Code Block`。
+ *
+ * 其余元素（段落 / 列表 / 表格 / 引用）交给 `typeset` 的排版层与 `streamdown` 的默认渲染器：
+ * 壳不套额外的排版容器，否则同一段 markdown 在详情面与日志面会长得不一样。
+ */
+const PROSE_COMPONENTS: Components = {
+  h1: ({ children }) => <h4>{children}</h4>,
+  h2: ({ children }) => <h5>{children}</h5>,
+  h3: ({ children }) => <h5>{children}</h5>,
+  h4: ({ children }) => <h5>{children}</h5>,
+  h5: ({ children }) => <h5>{children}</h5>,
+  h6: ({ children }) => <h5>{children}</h5>,
+  // 外链一律新标签打开并挡掉 `window.opener`：正文是外部输入，不挡等于把详情页交出去。
+  // 同时关掉 `streamdown` 的外链确认层（`linkSafety`）——目标与 rel 已在下面这一行钉死，
+  // 再叠一层「点了先弹确认」只会让每次点击多一步。
+  a: ({ children, ...rest }) => (
+    <a {...rest} target="_blank" rel="noopener noreferrer">
       {children}
-    </code>
+    </a>
   ),
+  code: MarkdownCode,
+  // 粗体仍然出原生 `<strong>`：streamdown 的默认实现把它渲成 `<span data-streamdown="strong">`
+  // （只有 `font-semibold` 的观感，没有语义）。正文要被读屏、复制、被 `strong` 选择器选中，
+  // 语义标签不能降级成 span。
+  strong: ({ children }) => <strong>{children}</strong>,
 };
 
 export interface XMarkdownTextProps {
@@ -90,25 +145,31 @@ export interface XMarkdownTextProps {
 }
 
 export function XMarkdownText({ text, open }: XMarkdownTextProps): ReactNode {
-  // 明暗取**已解析**的那个真源（`html[data-theme]`）：与根节点底色、`color-scheme` 同一处取值，
-  // 不会出现「组件按暗色渲染、页面底色是亮的」那种半亮（判据说明见文件头第 3 条）
-  const mode = useAppliedThemeMode();
   return (
-    <XMarkdown
-      className={mode === 'light' ? 'x-markdown-light' : 'x-markdown-dark'}
-      escapeRawHtml
-      // 外链一律新标签打开 + 挡掉 `window.opener`（本仓口径，见上面的第 3 条）
-      openLinksInNewTab
-      components={PROSE_COMPONENTS}
-      streaming={{
-        // 新到的片段淡入：这就是「打字」的观感来源，**不是** `Bubble.typing`
-        // （那一格要求内容是字符串，用它正文的 markdown 会整块丢掉）
-        enableAnimation: true,
-        hasNextChunk: open,
-        tail: false,
-      }}
-    >
-      {text}
-    </XMarkdown>
+    <div data-slot="markdown" className="typeset typeset-chat">
+      {/*
+        `Streamdown` 自己的根节点写死了 `space-y-4`（utilities 层），块间距的差异化归
+        `globals.css` 的「排版尺度（typeset）」块（层外，压过 utilities）。故这里**不挂**
+        任何 `space-y-*` / `mt-*`：再挂一个只会和那一块抢同一件事，两层不同的间距真源
+        在标题与段落上会表现为「谁在某一次构建里恰好被产出」。
+      */}
+      <Streamdown
+        // 不传 `raw`：原始 HTML 被转义成文本（口径 ①）。`defaultRehypePlugins` 是
+        // `Record<string, Pluggable>`，`noUncheckedIndexedAccess` 下取出来是可选，故滤掉 undefined
+        rehypePlugins={[defaultRehypePlugins.sanitize, defaultRehypePlugins.harden].filter(
+          (plugin) => plugin !== undefined,
+        )}
+        components={PROSE_COMPONENTS}
+        // 「这一块说完了没有」翻成 streamdown 的流式开关（口径 ②）：未闭合围栏的识别与
+        // 复制按钮的禁用它都认这一个开关
+        isAnimating={open}
+        // 版面 chrome 归本仓的组件：关掉自带表格 / 图片工具条，避免两套按钮
+        controls={false}
+        // 外链的 target / rel 在 `PROSE_COMPONENTS.a` 里钉死，外链确认层因此关掉（见该处注释）
+        linkSafety={{ enabled: false }}
+      >
+        {text}
+      </Streamdown>
+    </div>
   );
 }

@@ -1,11 +1,227 @@
 /*
- * 全局样式：主题底色变量 + 盒模型复位。
- * 只放这一层壳所需的复位与变量——字号与间距一律由 antd 主题 token 与紧凑密度供给，不在此手调。
- * 主题变量口径（供 ui 包内联样式的 var() 消费）：
- *   --app-bg 页面底色 / --app-fg 正文色 / --app-border 分隔线 / --app-muted 次要文本 / --app-selected 选中行底色
+ * 全局样式：主题与密度的**唯一定义点** + 盒模型复位。
+ *
+ * 真源只有两处，都在本文件里：
+ *   · 明暗：`html[data-theme]` 属性（`useResolvedTheme` 写，SSR 由 `<html data-theme="dark">` 兜底）；
+ *   · 密度：`[data-density]` 作用域（`PageShell` 写，缺省 compact、设置页豁免 default）。
+ * 组件层只消费由此派生的 `--color-*` / `--text-*` / `--spacing-*`（见 `@theme inline`）与
+ * `--app-*` 别名，不自己算主题。
  */
+
+/* ───────────────────────── Tailwind v4 管线 ─────────────────────────
+ *
+ * **刻意不引 preflight**：`@import "tailwindcss"` 会展开成
+ * `theme` + `preflight` + `utilities` 三层，而 preflight 的全局复位（`*` 的
+ * `margin` / `padding` / `border`、标题与表单控件的字号继承）会连带改掉原生元素与
+ * vendored 原语的默认度量——本仓的版面按「浏览器默认 + 工具类」搭，多这一层等于全局换一次基准。
+ * 所以这里只引 theme 与 utilities。
+ *
+ * 代价是 preflight 提供的几条基础复位要自己补，本文件里只有两处：
+ * `* { box-sizing: border-box }` 与 `[hidden]`（见下方「隐藏非活动页签」）。
+ *
+ * **`@source` 是跨包扫描的必需项**：`packages/client/ui` 直出 TS 源码、不在 app 目录下，
+ * 而 Tailwind 只扫 CSS 文件所在的工程。少了这一行，ui 包里的类名会被当成未使用而 purge。
+ * 相对本文件（`apps/web-next/app/globals.css`）算：`../../../` 才是仓库根。
+ */
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import 'tw-animate-css';
+@import './shadcn-tailwind.css';
+/* 正文排版层（vendor 副本，见该文件头）：`.typeset` / `.typeset-chat` 的选择器都在 components 层，
+ * 元素选择器走 `:where()` 零特异性 ⇒ 同元素上的工具类直接赢。 */
+@import './typeset.css';
+
+@source '../../../packages/client/ui/src';
+
+/* 明暗变体认**属性**不认类：本仓的真源是 `html[data-theme]`（暗色兜底、SSR 不闪白）。
+ * 两支都要——只写后代会漏掉 `<html>` 自己；`:where` 零特异性，方便组件覆盖。 */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* 把语义变量挂成 Tailwind 的 `--color-*`：于是 `bg-background` / `text-muted-foreground`
+ * 这类类名可用。**这一层是 `inline` 的**——工具类落地成 `var(--background)`，
+ * 而手写 CSS 读 `var(--color-background)`，两处都要改才算改完。 */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  /* shadcn 基线没有「成功 / 警告 / 信息 / 三级文本」四格语义，本仓自加（明暗各一套，见下方 :root） */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-faint-foreground: var(--faint-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* 密度别名：`inline` 是关键——不写 inline 会在构建期烤成字面量，`[data-density='default']` 就切不动它。
+   * **名字不能叫 `xs` / `sm` / `md` 这类尺寸词**：Tailwind 的 `max-w-<name>` 优先吃同名间距键，
+   * `max-w-sm` 会编译成 `max-width: var(--density-space-sm)`（8px），浮层与空态全部塌成竖缝。
+   * 见下方 `--container-*` 与 `apps/web-next/src/size-token-conflict.test.ts`。 */
+  --text-body: var(--density-text-body);
+  --text-sub: var(--density-text-sub);
+  --text-title: var(--density-text-title);
+  --leading-body: var(--density-leading);
+  --leading-sub: var(--density-leading-sub);
+  --spacing-hair: var(--density-space-2xs);
+  --spacing-tight: var(--density-space-xs);
+  --spacing-snug: var(--density-space-sm);
+  --spacing-roomy: var(--density-space-md);
+  --spacing-page: var(--density-space);
+}
+
+/* 命名尺寸（`max-w-*` 的取值来源）。
+ *
+ * 这是**第二处必须存在的东西**：密度间距已经改成了 `hair / tight / snug / roomy`，不再与尺寸词撞名；
+ * 这里再按 Tailwind 默认尺度补回容器命名，`max-w-sm` 一类才有 24rem 这个值可解析
+ * （缺了它，`max-w-<name>` 无处可落，编译产物里就没有 max-width 声明）。
+ * 改密度档只动 `--density-*`，不要动这一块。守卫：`apps/web-next/src/size-token-conflict.test.ts`。 */
+@theme {
+  --container-xs: 20rem;
+  --container-sm: 24rem;
+  --container-md: 28rem;
+  --container-lg: 32rem;
+  --container-xl: 36rem;
+  --container-2xl: 42rem;
+}
+
+/* 语义色（官方 Theming 脚手架逐字）。中性色阶是基底；品牌色不另立一份——
+ * 需要强调时用 `primary` / `destructive` / `accent` 三族语义色，不再回到某个 hex。 */
+:root {
+  --radius: 0.625rem;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  /* 没有品牌色：主色就是墨黑本身。层级靠字号 / 字重 / 间距与发丝边框建立；
+   * success / warning / info / destructive 只标状态，不做装饰。 */
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  /* 浅色下这几格都是**正文级**文本色：白底 ≥4.5:1 是硬线。muted-foreground 0.556 恰好
+   * 4.7:1，是这条线附近的最低档；再浅一档（faint 曾用 0.708 → 2.59:1）就只配做分隔符。 */
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  /* 本仓自加的四格语义色：与 `--destructive` 同族的亮度，正文级对比度（不借内置调色板） */
+  --success: oklch(0.627 0.17 149.2);
+  --warning: oklch(0.57 0.15 60);
+  --info: oklch(0.623 0.188 255.5);
+  --faint-foreground: oklch(0.556 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  /* 图表用同一支中性阶：分数对比不需要另一个色相，深浅就够读。 */
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* 暗色是同名覆盖：切主题只改变量值，组件类名一个都不变。
+ * 选择器用属性而不是 `.dark` 类——与 `@custom-variant` 那一行同源。
+ * 半径不随明暗变，故这一块里没有 `--radius`。 */
+html[data-theme='dark'] {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  /* 暗色：faint 曾用 0.556 → 在 `--card` 上只有 3.79:1（11px 的 JSON 标点与面包屑分隔符读不清）。
+   * 0.62 给到 4.9:1；它仍比 muted（0.708）暗一档，层级不变。 */
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.723 0.17 149.2);
+  --warning: oklch(0.828 0.16 84.4);
+  --info: oklch(0.744 0.14 248.2);
+  --faint-foreground: oklch(0.62 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.922 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+/* ─────────────────────── Tailwind v4 管线（结尾） ─────────────────────── */
+
 * {
   box-sizing: border-box;
+}
+
+/*
+ * **跳过 preflight 的补偿**：浏览器默认样式对 `[hidden]` 只给一条 UA 级的 `display: none`，
+ * 作者样式里任何 `display`（本仓大量元素带 `flex` / `grid` 类）都会盖掉它 ⇒ 写了 `hidden`
+ * 仍然显示。preflight 的写法是 `!important`，本仓没引 preflight，故在这里补同一条。
+ * Base UI 的页签面板靠这个属性隐藏非活动页签（`Tabs.Panel keepMounted`），
+ * 缺了它三个面板会同时铺开。
+ */
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -15,106 +231,149 @@ body {
   height: 100%;
 }
 
-/* 暗色（默认，等价 antd darkAlgorithm 的容器底色观感） */
-:root,
-html[data-theme='dark'] {
-  --app-bg: #141414;
-  --app-fg: rgba(255, 255, 255, 0.85);
-  --app-border: #303030;
-  --app-muted: #888;
-  --app-selected: #111a2c;
-  color-scheme: dark;
-}
-
-/* 明亮主题：与 antd defaultAlgorithm 的容器底色一致 */
-html[data-theme='light'] {
-  --app-bg: #ffffff;
-  --app-fg: rgba(0, 0, 0, 0.88);
-  --app-border: #f0f0f0;
-  --app-muted: #888;
-  --app-selected: #e6f4ff;
-  color-scheme: light;
-}
-
-html,
+/* 应用外壳的高度链：`body` 是纵向 flex，顶栏 56px（shadcn 的 h-14），页面壳（`PageShell` 的 `flex-1`）吃剩余高度。
+ * 只给 `height: 100%` 时「顶栏 56 + 页面壳 100%」= 视口 + 56px：每页多一条常驻滚动条、顶栏被滚走，
+ * 详情页底栏（开始 / 终止 / 排名）被顶到视口外，只能靠那条溢出「够」到。 */
 body {
-  background: var(--app-bg);
-  color: var(--app-fg);
-}
-
-/*
- * antd App 包装层承接 body 高度：页面根（height:100%）与内容区（flex:1 + minHeight:0）的高度链不能断。
- * 这个节点默认既不是 flex 容器也没有高度，链一断页面根就退化成内容高度、所有内部滚动随之失效
- *（表现为整页被内容撑长、该出现的滚动条不出现）。
- */
-.ant-app {
-  height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-/*
- * 虚拟列表自绘滚动条的拇指（类名由 ui 包的 `VirtualList` 带上，样式只在这里定义）。
- *
- * 为什么必须补：`Listy` 的滚动条来自底层 `rc-virtual-list`，拇指背景写死成
- * `var(--rc-virtual-list-scrollbar-bg, rgba(0, 0, 0, 0.5))`。那个默认值是**纯黑半透明**——
- * 压在浅色底上正好（合成后 ≈ #808080），压在暗色底上比背景还暗 ⇒ 滚动条看不见。
- * `antd` 自己在 `List` / `Tree` / `Table` 里都设了这个变量，**只有 `Listy` 漏了**。
- *
- * 颜色用**既有的** `--app-muted` 而不是新加一个：它是中性灰，在两种主题下都读得出，
- * 而 `rgba(0, 0, 0, 0.5)` 的问题恰恰是「只在一种主题下成立」。色值不在这里再抄一份
- * （抄一份就是第二份真源，改主题时必漂移）。
- */
-.aieval-virtual-list {
-  --rc-virtual-list-scrollbar-bg: var(--app-muted);
+/* 未水合兜底条：SSR 直出，8 秒后才浮出；`Providers` 挂载后立刻把它摘掉。
+ * 触发场景：用 127.0.0.1 / 局域网 IP 打开 dev server，`/_next` 被跨源策略挡住 ⇒ 页面停在未水合的
+ * SSR 空壳：骨架永远转、页签点不动、列表空着，而界面上原本一点提示都没有。 */
+#hydrate-fallback {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--density-space-xs);
+  padding: var(--density-space-sm) var(--density-space-md);
+  font-size: var(--density-text-sub);
+  line-height: var(--density-leading-sub);
+  color: var(--foreground);
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  opacity: 0;
+  pointer-events: none;
+  animation: hydrate-fallback-reveal 0s linear 8s forwards;
 }
 
-/*
- * 候选卡片底部的**活动行**高光扫过（类名由 ui 包的 `AgentActivityLine` 带上，样式只在这里定义）。
- * 做法与节奏照 DSH 的 `.turnStatus`（`ui-chat/src/client/chat/ChatView.module.css`：
- * 1.8s linear infinite、background-size 250%、`background-clip: text` 的渐变位移）——
- * 那是它「正在思考」那一行的观感，也是本仓「执行中」要的观感。
- * 颜色只用 `--app-muted` / `--app-fg` 两个**既有**主题变量：antd 主色由 ConfigProvider 在运行时给，
- * 在这里再抄一份就成了第二份真源，改主题时必漂移。
- */
-.aieval-activity-sweep {
-  background-image: linear-gradient(
-    90deg,
-    var(--app-muted) 0%,
-    var(--app-muted) 40%,
-    var(--app-fg) 50%,
-    var(--app-muted) 60%,
-    var(--app-muted) 100%
-  );
-  background-size: 250% 100%;
-  background-position: 100% 0;
-  background-clip: text;
-  color: transparent;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: aieval-activity-sweep 1.8s linear infinite;
-}
-
-/* 扫到 0 = 高光从右往左走完一遍；起点由上面那条 `background-position: 100% 0` 承担（同 DSH） */
-@keyframes aieval-activity-sweep {
+@keyframes hydrate-fallback-reveal {
   to {
-    background-position: 0 0;
+    opacity: 1;
   }
 }
 
+/* 原生控件（日期弹层、滚动条、表单控件）跟随明暗。SSR 兜底是暗色，与 `<html data-theme="dark">` 同一口径 */
+:root {
+  color-scheme: dark;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+/* 旧 `--app-*` 名字保留为**别名**（组件内联 style 与动画类还在用这几个名字）：
+ * 值一律指回语义色，不再各抄一份 hex——两份真源改一处漏一处的症状是「同一屏两套灰」。 */
+:root,
+[data-theme='dark'] {
+  --app-bg: var(--card);
+  --app-fg: var(--foreground);
+  --app-border: var(--border);
+  --app-muted: var(--muted-foreground);
+  --app-selected: var(--accent);
+}
+
 /*
- * 系统「减少动态效果」下静止成一行动态文本：动效是装饰，不该对抗无障碍偏好
- * （DSH 对 `.turnStatus` 有同一条兜底）。**颜色必须一起还原**：上面的 `color: transparent` 是
- * 给渐变当画布用的，只关动画的话这一行会整行消失——比没有动效严重得多。
+ * 抽屉的两档宽度与嵌套让位量——**这是唯一的数值真源**。
+ * 组件只引用 `var(--drawer-main-width)` / `var(--drawer-nested-width)`（常量在
+ * `packages/client/ui/src/base/drawer-geometry.ts`），值只写在这里；
+ * 档位关系与嵌套让位由 `apps/web-next/src/drawer-geometry.test.ts` 对拍。
+ *
+ * 主抽屉 `max(61vw, 800px)` 恒宽于二级抽屉 `min(60vw, 900px)`：
+ * 视口收窄到 1312px 以下主抽屉吃 800px 下限，而二级最大 60vw，仍比它窄。
+ * `--drawer-nested-give-way` 是「二级层打开时主抽屉左移多少」：Base UI 每开一层二级对话框，
+ * `--nested-dialogs` 加一，主抽屉就左移这一份，二级层不再靠写死的像素距离让位。
  */
-@media (prefers-reduced-motion: reduce) {
-  .aieval-activity-sweep {
-    animation: none;
-    background-image: none;
-    background-clip: border-box;
-    color: var(--app-muted);
-    -webkit-text-fill-color: var(--app-muted);
-  }
+:root {
+  --drawer-main-width: max(61vw, 800px);
+  --drawer-nested-width: min(60vw, 900px);
+  --drawer-nested-give-way: 20vw;
+}
+
+/*
+ * 主抽屉的嵌套让位：位移量由组件写进内联 `--drawer-nested-shift`
+ * （= `--nested-dialogs` × `--drawer-nested-give-way`），Base UI 在二级层打开时
+ * 自动维护 `--nested-dialogs`。主抽屉固定贴右，`margin-right` 因此等价于整体左移。
+ */
+[data-drawer='main'] {
+  margin-right: var(--drawer-nested-shift, 0px);
+  transition: margin-right 150ms ease-out;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* ───────────────────────── 密度作用域变量 ─────────────────────────
+ *
+ * **必须写在层外**（本文件的顶层，不在任何 `@layer` 里）。Tailwind 把默认主题变量
+ * 输出在 `@layer theme`；`@layer base` 排在 `theme` 之后也**打不过**，因为它本身仍是一个层，
+ * 而层内的声明永远输给层外的声明——尺寸会变回 Tailwind 默认值且浏览器不报错，密度静默失效。
+ * 唯一可靠的位置是顶层。
+ *
+ * 两档都写全，不能只写 default：只写 default 时，default 子树里嵌套的 compact 壳会**继承**
+ * 外层的宽松值；两档齐全才是「最近一层赢」的再入语义。
+ *
+ * 紧凑档：正文 13 / 次级 12 / 标题 14；间距 4/8/16。豁免档：14 / 13 / 16；间距 4/8/12/20。
+ * **紧凑档的下限是 13px**：11–12px 的中文在普通屏上笔画粘连，而这一档是高频页（列表、日志、抽屉）。
+ * 紧凑下 `hair` 与 `tight` 同值 4px（两档间距阶梯在紧凑下收敛），豁免档才分得开。
+ * 键名刻意避开 `xs` / `sm` / `md`：那三个词在 Tailwind 里属于尺寸命名空间，会劫持 `max-w-*`。
+ */
+:root,
+[data-density='compact'] {
+  --density-text-body: 0.8125rem;
+  --density-text-sub: 0.75rem;
+  --density-text-title: 0.875rem;
+  --density-leading: 1.6667;
+  --density-leading-sub: 1.6667;
+  --density-space-2xs: 0.25rem;
+  --density-space-xs: 0.25rem;
+  --density-space-sm: 0.5rem;
+  --density-space-md: 1rem;
+  --density-space: 0.5rem;
+}
+
+/* 全站唯一豁免：设置页（宽松档） */
+[data-density='default'] {
+  --density-text-body: 0.875rem;
+  --density-text-sub: 0.8125rem;
+  --density-text-title: 1rem;
+  --density-leading: 1.5714;
+  --density-leading-sub: 1.6667;
+  --density-space-2xs: 0.25rem;
+  --density-space-xs: 0.5rem;
+  --density-space-sm: 0.75rem;
+  --density-space-md: 1.25rem;
+  --density-space: 1rem;
+}
+
+/*
+ * 日志滚动区在「首次定位」完成前不可见（标记由 ui 包的 `Message Scroller` 带上）。
+ *
+ * 为什么需要：打开日志时要先滚到最新（或最后一条锚点），这一步发生在挂载后的布局阶段；
+ * 先把内容按顶部画出来再跳，用户会看到一次从顶到底的闪动。库在定位期间给 Root 与 Viewport
+ * 标 `data-pending-scroll`，定位完成后撤掉——在它撤掉之前藏起来，比闪一下更接近「打开就在最新」。
+ *
+ * 只藏 `visibility` 不藏 `display`：元素仍参与布局，库量到的滚动几何才不是 0。
+ */
+[data-slot='message-scroller'][data-pending-scroll] {
+  visibility: hidden;
 }
 
 /*
@@ -147,7 +406,7 @@ body {
  * 判据是「最后一段变了」：ui 用 `key={段号}` 重挂那个 `span`，于是每换一段这条动画重放一次——
  * 观感就是「上一段被清掉、新一段从头写出来」，而不是整行文字被替换一下。
  * **逐字增长本身不需要动画**（delta 帧就是逐字来的），这里只负责换段那一下；
- * 位移用 `em`（相对字号）而不是像素：字号归紧凑密度与 antd 主题，动效不该钉死一个像素值。
+ * 位移用 `em`（相对字号）而不是像素：字号归密度作用域，动效不该钉死一个像素值。
  */
 .aieval-activity-typing > span {
   display: inline-block;
@@ -170,4 +429,132 @@ body {
   .aieval-activity-typing > span {
     animation: none;
   }
+}
+
+/* ── 排版尺度（typeset）────────────────────────────────────────────────
+ *
+ * markdown 正文的标题档与块间距**唯一真源**。`app/typeset.css` 是官方构建产物（vendor 副本，
+ * 不改）：它的标题档按相对字号收缩（`h5` 是 `.875em` ⇒ 14px 正文下只剩 12.25px，**比正文还小**），
+ * 块间距 `--typeset-flow` 又用 `em` 计——`em` 在哪个元素上被消费就按哪个元素的字号结算，
+ * 于是 `h5` 的 `calc(flow / .875)` 与 `p` 的 `flow` 恰好算成同一个绝对值，段前距等于没有差异化。
+ *
+ * 这一块把两件事分开：
+ *   · 标题字号改成**绝对档**（rem，以 14px 正文为基准反推）：`h1`..`h6` 逐级递减，
+ *     且每一级都严格大于正文；段前距各给一档，级别越高越松（都大于段落的 flow）；
+ *   · `--typeset-flow` 改成 rem（20px）：段 / 列表 / 引用这些同类块的间距不再随字号漂移。
+ *
+ * **必须写在层外**（不放进任何 `@layer`）：层外声明压过 `@layer components`（typeset 自己）与
+ * `@layer utilities`。这一条不是洁癖：`Streamdown` 根节点自带 `space-y-4`，而这个工具类由
+ * Tailwind 对**全仓源文件**的内容扫描决定是否产出——任何一处（哪怕注释）写出这个名字，
+ * 它就会落地成 utilities 层的规则：每个子块的 `margin-block-start` 归零、`margin-block-end`
+ * 统一成 1rem。所以段 / 列表 / 引用 / 表 / 代码块的**两侧**间距都在下面由本块给全，
+ * 不留给 utilities 或 typeset 的层内规则。
+ *
+ * 同一个理由下，typeset 里「首个块段前距为 0」「列表 / 引用 / 表格里的首块不收段前距」
+ * 与「标题后的第一块紧跟标题」三条也要在这里重写一遍——层外规则同样压过它们，
+ * 不重写就会让首块凭空多出一段距离。
+ */
+.typeset {
+  /* 字族跟随正文：官方默认取 `--font-heading`，本仓没有这一族变量 */
+  --typeset-font-heading: inherit;
+  /* 块间距：20px（14px 正文下的一档留白）。用 rem 而不是 em，见文件头那一段 */
+  --typeset-flow: 1.25rem;
+  /* 标题字号档：h1 24 / h2 21 / h3 19 / h4 18 / h5 16 / h6 15（px） */
+  --typeset-heading-1: 1.5rem;
+  --typeset-heading-2: 1.3125rem;
+  --typeset-heading-3: 1.1875rem;
+  --typeset-heading-4: 1.125rem;
+  --typeset-heading-5: 1rem;
+  --typeset-heading-6: 0.9375rem;
+  /* 标题段前距：h1 44 / h2 40 / h3 36 / h4 32 / h5 28 / h6 26（px），均大于段落的 20 */
+  --typeset-heading-gap-1: 2.75rem;
+  --typeset-heading-gap-2: 2.5rem;
+  --typeset-heading-gap-3: 2.25rem;
+  --typeset-heading-gap-4: 2rem;
+  --typeset-heading-gap-5: 1.75rem;
+  --typeset-heading-gap-6: 1.625rem;
+}
+
+/* 一级一条规则：字号与段前距成套出现，改档时不会只改到一半 */
+.typeset :where(h1) {
+  font-size: var(--typeset-heading-1);
+  margin-block-start: var(--typeset-heading-gap-1);
+  margin-block-end: 0;
+}
+
+.typeset :where(h2) {
+  font-size: var(--typeset-heading-2);
+  margin-block-start: var(--typeset-heading-gap-2);
+  margin-block-end: 0;
+}
+
+.typeset :where(h3) {
+  font-size: var(--typeset-heading-3);
+  margin-block-start: var(--typeset-heading-gap-3);
+  margin-block-end: 0;
+}
+
+.typeset :where(h4) {
+  font-size: var(--typeset-heading-4);
+  margin-block-start: var(--typeset-heading-gap-4);
+  margin-block-end: 0;
+}
+
+.typeset :where(h5) {
+  font-size: var(--typeset-heading-5);
+  margin-block-start: var(--typeset-heading-gap-5);
+  margin-block-end: 0;
+}
+
+.typeset :where(h6) {
+  font-size: var(--typeset-heading-6);
+  margin-block-start: var(--typeset-heading-gap-6);
+  margin-block-end: 0;
+}
+
+/*
+ * 块间距：段前 = flow、段后 = 0（与 typeset 同口径）。两侧都写死，`space-y-*` 一类的
+ * utilities 规则就再也改不动它——原因见文件头。
+ */
+.typeset :where(p, ul, ol, dl, details, blockquote, table, figure, pre) {
+  margin-block-start: var(--typeset-flow);
+  margin-block-end: 0;
+}
+
+/* 围栏代码块与「独立成块的行内元素」在 typeset 里比段落略松（`flow / .875`） */
+.typeset :where(pre) {
+  margin-block-start: calc(var(--typeset-flow) / 0.875);
+}
+
+/* 分隔线按 typeset 的 2.4 倍，其余块不收段后距 */
+.typeset :where(hr) {
+  margin-block-start: calc(var(--typeset-flow) * 2.4);
+  margin-block-end: 0;
+}
+
+/* 代码块是根节点的直接子元素（本仓用 `data-slot` 标记），间距与段落同档 */
+.typeset > :where([data-slot]) {
+  margin-block-start: var(--typeset-flow);
+}
+
+/* 列表 / 引用 / 表格内部的首块收紧到 typeset 的既有阶梯 */
+.typeset :where(li > p, li > ul, li > ol, li > blockquote, li > table, li > figure) {
+  margin-block-start: 0.5em;
+}
+
+.typeset :where(li > pre) {
+  margin-block-start: 0.571429em;
+}
+
+/* 标题后的第一块紧跟标题（typeset 的 `h+*` 口径）：比段落的段前距更紧 */
+.typeset :where(h1, h2, h3, h4, h5, h6) + * {
+  margin-block-start: 1em;
+}
+
+/* 首块不收段前距（与 typeset 同口径，层外重写一遍见文件头） */
+.typeset > :where(:first-child),
+.typeset > :where(:first-child) > :where(:first-child),
+.typeset :where(li, blockquote, td, th, dd, figure) > :where(:first-child),
+.typeset :where(figure) > :where(picture) > :where(img) {
+  margin-block-start: 0;
 }

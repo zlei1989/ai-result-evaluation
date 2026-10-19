@@ -78,21 +78,15 @@ function renderCard(overrides: Partial<ComponentProps<typeof JudgeSettingsCard>>
 }
 
 /**
- * **某一个**下拉（按它的 `aria-label` 认）当前可见的选项文本，按渲染顺序。
- * 抄自 `run-create-panel.test.tsx` 的同名助手（那边有完整来由），这里只留结论：
- * 按 `aria-controls` / `aria-owns` 认浮层，**不按 DOM 顺序猜第几个**——antd 换开另一个下拉时
- * 上一个浮层仍在文档里且不带 `hidden` 类，全局查询会把两格的选项混在一起；
- * 更不能用 `props.options` 顶替（那测的是传参，不是渲染）。
+ * **某一个**下拉（按它的 `aria-label` 认）当前可选的档位文本，按渲染顺序。
+ * 空值那一项（「未指定」占位）不计入：它表达的是「没有这一档」，不是候选。
+ * 原生 `<select>` 的选项全在文档里，故这里读的就是「用户展开后能看到的那些」。
  */
 function visibleOptionTextsOf(labelText: string): string[] {
-  const input = screen.getAllByLabelText(labelText)[0] as HTMLElement;
-  const listId = input.getAttribute('aria-controls') ?? input.getAttribute('aria-owns');
-  if (listId === null) throw new Error(`「${labelText}」的输入框上没有指到浮层的 id`);
-  const dropdown = document.getElementById(listId)?.closest('.ant-select-dropdown');
-  if (dropdown === null || dropdown === undefined) throw new Error(`「${labelText}」下拉的浮层不在文档里`);
-  return Array.from(dropdown.querySelectorAll<HTMLElement>('.ant-select-item-option')).map(
-    (row) => row.textContent ?? '',
-  );
+  const select = screen.getAllByLabelText(labelText)[0] as HTMLSelectElement;
+  return Array.from(select.options)
+    .filter((option) => option.value !== '')
+    .map((option) => option.textContent ?? '');
 }
 
 describe('JudgeSettingsCard', () => {
@@ -111,10 +105,8 @@ describe('JudgeSettingsCard', () => {
       <JudgeSettingsCard settings={settings()} providers={[openai, anthropic]} onChange={onChange} saving={false} />,
     );
 
-    // 卡片里有**两个** Select（默认评分模型 / 默认评分智能体），`getByRole('combobox')` 会因
-    // 匹配到多个而抛错，故按可访问名定位到这一个
-    fireEvent.mouseDown(screen.getByLabelText('默认评分模型'));
-    fireEvent.click(await screen.findByText('claude-sonnet-5'));
+    // 按可访问名定位到这一个（卡片里有三个下拉，`getByRole('combobox')` 会因匹配到多个而抛错）
+    fireEvent.change(screen.getByLabelText('默认评分模型'), { target: { value: 'p-2::claude-sonnet-5' } });
 
     expect(onChange).toHaveBeenCalledWith({ defaultJudge: { providerId: 'p-2', modelId: 'claude-sonnet-5' } });
   });
@@ -130,7 +122,8 @@ describe('JudgeSettingsCard', () => {
     );
 
     expect(screen.queryByText('未配置默认评分模型')).toBeNull();
-    expect(screen.getByText('deepseek-chat')).toBeInTheDocument();
+    // 原生 select 的「回显」就是它的 value（全部 option 文本都在 DOM 里，按文本找证明不了选中）
+    expect(screen.getByLabelText('默认评分模型')).toHaveValue('p-1::deepseek-chat');
   });
 
   // 首次使用最可能停住的状态：供应商建好了、模型还没拉取也还没手工加（新建供应商时还没有 id，
@@ -146,11 +139,8 @@ describe('JudgeSettingsCard', () => {
       />,
     );
 
-    fireEvent.mouseDown(screen.getByLabelText('默认评分模型'));
-
-    expect(await screen.findByText('暂无模型：请先在「模型供应商」里拉取或手工添加')).toBeInTheDocument();
-    // antd 的内置空态会渲染两处英文 "No data"（`.ant-empty-description` 与空图 SVG 的 <title>），
-    // 故用 queryAllByText：queryByText 在多处匹配时抛错，抛错虽也算失败，但读起来像断言写坏了。
+    expect(screen.getByText('暂无模型：请先在「模型供应商」里拉取或手工添加')).toBeInTheDocument();
+    // 不给这句中文时，浏览器原生的空下拉只是一片空白，用户看不出下一步该去哪
     expect(screen.queryAllByText('No data')).toHaveLength(0);
   });
 
@@ -158,7 +148,7 @@ describe('JudgeSettingsCard', () => {
   // 而契约里 `defaultJudge: null` 才是「未配置」的合法取值。
   it('清空已选模型（allowClear）回写 defaultJudge: null', () => {
     const onChange = vi.fn();
-    const { container } = render(
+    render(
       <JudgeSettingsCard
         settings={settings({ defaultJudge: { providerId: 'p-1', modelId: 'deepseek-chat' } })}
         providers={[openai]}
@@ -167,10 +157,8 @@ describe('JudgeSettingsCard', () => {
       />,
     );
 
-    // 清除图标是 aria-hidden 的纯图标（role 查询取不到），按 antd 的类名取，与其它用例的类名查询同口径
-    const clear = container.querySelector<HTMLElement>('.ant-select-clear');
-    expect(clear).not.toBeNull();
-    fireEvent.click(clear as HTMLElement);
+    // 清空 = 选空值那一项（原生 select 没有独立的清除按钮；空值项就是「未配置」）
+    fireEvent.change(screen.getByLabelText('默认评分模型'), { target: { value: '' } });
 
     expect(onChange).toHaveBeenCalledWith({ defaultJudge: null });
   });
@@ -191,6 +179,7 @@ describe('JudgeSettingsCard', () => {
     expect(screen.getByText(/p-deleted::ghost-model/)).toBeInTheDocument();
     // 失效的 key 不能出现在选择框的选中项里（否则用户看到的是一个不存在的模型名）
     expect(screen.queryByText('ghost-model')).toBeNull();
+    expect(screen.getByLabelText('默认评分模型')).toHaveValue('');
   });
 
   /**
@@ -233,7 +222,7 @@ describe('JudgeSettingsCard', () => {
     );
 
     const budget = screen.getByRole('spinbutton', { name: 'diff 上限（KB）' });
-    expect(budget).toHaveValue('256');
+    expect(budget).toHaveValue(256);
 
     fireEvent.change(budget, { target: { value: '512' } });
 
@@ -273,8 +262,7 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
       />,
     );
 
-    fireEvent.mouseDown(screen.getByLabelText('默认评分智能体'));
-    fireEvent.click(await screen.findByText('DeepSeek Harness'));
+    fireEvent.change(screen.getByLabelText('默认评分智能体'), { target: { value: 'dsh' } });
 
     expect(onChange).toHaveBeenCalledWith({ defaultJudgeAgent: 'dsh' });
   });
@@ -290,19 +278,14 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
       />,
     );
 
-    fireEvent.mouseDown(screen.getByLabelText('默认评分智能体'));
-    const codex = await screen.findByText('Codex（与当前默认评分模型协议不匹配）');
-    // antd 把 disabled 的选项渲染成 aria-disabled 的 .ant-select-item-option-disabled
-    expect(codex.closest('.ant-select-item-option')).toHaveClass('ant-select-item-option-disabled');
+    const codex = screen.getByText('Codex（与当前默认评分模型协议不匹配）');
+    expect(codex.closest('option')).toBeDisabled();
     // **阳性面对照**：只断言「Codex 被禁用」的话，「选了模型就把三家全禁用」这种实现
     // 照样全绿——而那会让这一格彻底不可用。同协议的 cc 必须仍可选、标签不带后缀。
-    const claude = await screen.findByText('Claude Code');
-    expect(claude.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
+    expect(screen.getByText('Claude Code').closest('option')).not.toBeDisabled();
     // **双协议那家也必须可选**（dsh 两条 wire 都能收）：判据是「集合里有没有」，
-    // 写成 `accepted[0] !== judgeProtocol`（把集合当单值用）会让这一格当场变红——这是本条的区分力所在
-    const dsh = await screen.findByText('DeepSeek Harness');
-    expect(dsh.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
-    expect(dsh.closest('.ant-select-item-option')).toHaveAttribute('aria-disabled', 'false');
+    // 写成 `accepted[0] !== judgeProtocol`（把集合当单值用）会让这一格当场变红
+    expect(screen.getByText('DeepSeek Harness').closest('option')).not.toBeDisabled();
   });
 
   it('默认评分模型是 openai 协议时，只有 Claude Code 被禁用（dsh 双协议仍可选）', async () => {
@@ -316,14 +299,11 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
       />,
     );
 
-    fireEvent.mouseDown(screen.getByLabelText('默认评分智能体'));
-    const claude = await screen.findByText('Claude Code（与当前默认评分模型协议不匹配）');
-    expect(claude.closest('.ant-select-item-option')).toHaveClass('ant-select-item-option-disabled');
+    const claude = screen.getByText('Claude Code（与当前默认评分模型协议不匹配）');
+    expect(claude.closest('option')).toBeDisabled();
     // 另一侧的阳性面：Codex（本就 openai）与 dsh（集合含 openai）都不能被拦
-    const codex = await screen.findByText('Codex');
-    expect(codex.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
-    const dsh = await screen.findByText('DeepSeek Harness');
-    expect(dsh.closest('.ant-select-item-option')).not.toHaveClass('ant-select-item-option-disabled');
+    expect(screen.getByText('Codex').closest('option')).not.toBeDisabled();
+    expect(screen.getByText('DeepSeek Harness').closest('option')).not.toBeDisabled();
   });
 
   it('已存的值变成不兼容时给红色告警（与「悬空」同一套模式）', () => {
@@ -345,8 +325,8 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
     // **红色**是这一条的要点（用例名里就写着），而只断言标题文本的话改成 warning / info 也能过：
     // antd 把类型渲染成 `ant-alert-<type>`，按它判。正文按整块文本读（它是模板串拼出来的、
     // 会被 React 拆成多个文本节点，按 `getByText` 的整串匹配读不到——实测踩过）
-    const alert = title.closest('.ant-alert');
-    expect(alert).toHaveClass('ant-alert-error');
+    const alert = title.closest('[data-tone]');
+    expect(alert).toHaveAttribute('data-tone', 'error');
     // 正文点名**两家**的协议（缺一半就看不出该换哪一边）：存的是 codex（只吃 openai），
     // 而当前默认评分模型是 anthropic 协议。文案与 `protocolMismatchMessage` 同构：
     // 集合只一家时不写「两种协议」，故这里是 `只接受 OpenAI 兼容协议`
@@ -366,15 +346,8 @@ describe('JudgeSettingsCard 的默认评分智能体', () => {
       />,
     );
 
-    // 清除图标按 antd 的类名取，但**限定在这一格自己身上**：`document.querySelector`
-    // 取的是整页第一个命中的清除图标——本用例靠「默认评分模型那格没有值 ⇒ 没有清除图标」才碰巧
-    // 命中智能体那一格，多一个 Select 或换一下顺序就会点到错的控件上。
-    const select = screen.getByLabelText('默认评分智能体').closest('.ant-select');
-    const clear = select?.querySelector('.ant-select-clear') ?? null;
-    expect(clear).not.toBeNull();
-    // **必须点 click**：rc-select 把清除接在 onClick 上（SelectInput 的 `onClick: onClearMouseDown`），
-    // 它的 onMouseDown 只 preventDefault 并拦住下拉展开——只发 mouseDown 的话 onChange 一次都不会来。
-    fireEvent.click(clear as Element);
+    // 清空 = 选空值那一项（原生 select 没有独立的清除按钮）；限定在这一格自己身上
+    fireEvent.change(screen.getByLabelText('默认评分智能体'), { target: { value: '' } });
 
     expect(onChange).toHaveBeenCalledWith({ defaultJudgeAgent: null });
   });
@@ -398,16 +371,12 @@ describe('JudgeSettingsCard 的思考强度', () => {
   it('档位域跟着评分智能体：dsh 没有 medium，界面就不列出它', () => {
     renderCard({ settings: settings({ defaultJudge: picked, defaultJudgeAgent: 'dsh' }), providers: [openai] });
 
-    fireEvent.mouseDown(screen.getByLabelText('思考强度'));
-
     // 恰好四格、**不含 medium**：这正是「界面能存下的值，后端那道门必须收」的判据
     expect(visibleOptionTextsOf('思考强度')).toEqual([EFFORT_OFF, 'low', 'high', 'max']);
   });
 
   it('未配评分智能体时兜的是规范五档：medium 还在——dsh 少的那格是被筛掉的，不是写死的', () => {
     renderCard({ settings: settings({ defaultJudge: picked }), providers: [openai] });
-
-    fireEvent.mouseDown(screen.getByLabelText('思考强度'));
 
     // **阳性面对照**：只断言「dsh 没有 medium」的话，把候选写死成那四档照样全绿；
     // 这一条钉住 medium 是被 agentEfforts 筛掉的（与后端同一条 `intersectEfforts` 口径）
@@ -462,7 +431,6 @@ describe('JudgeSettingsCard 的思考强度', () => {
 
     // 临时禁用不是永久禁用：投影一到就恢复，否则一次慢请求会让这一格再也用不了
     expect(screen.getByLabelText('思考强度')).not.toBeDisabled();
-    fireEvent.mouseDown(screen.getByLabelText('思考强度'));
     expect(visibleOptionTextsOf('思考强度')).toEqual([EFFORT_OFF, 'low', 'high', 'max']);
   });
 
@@ -480,7 +448,7 @@ describe('JudgeSettingsCard 的思考强度', () => {
 
     expect(screen.queryByText('当前的思考强度已失效')).toBeNull();
     // 值照旧回显：用户要看得到此刻存的是什么（上面那条禁用只挡「改」，不挡「看」）
-    expect(screen.getByLabelText('思考强度').closest('.ant-select')?.textContent ?? '').toBe('medium');
+    expect(screen.getByLabelText('思考强度')).toHaveValue('medium');
   });
 
   it('投影到了之后如实判为悬空（dsh 收不了 medium）——上一条的阳性对照', () => {
@@ -503,8 +471,6 @@ describe('JudgeSettingsCard 的思考强度', () => {
       ],
     });
 
-    fireEvent.mouseDown(screen.getByLabelText('思考强度'));
-
     // medium 是 dsh 收不了的档、xhigh 不在规范五档里 ⇒ 都被筛掉；关闭档由 `intersectEfforts` 并到最前
     expect(visibleOptionTextsOf('思考强度')).toEqual([EFFORT_OFF, 'low']);
   });
@@ -513,8 +479,7 @@ describe('JudgeSettingsCard 的思考强度', () => {
     const onChange = vi.fn<(patch: SettingsPatch) => void>();
     renderCard({ settings: settings({ defaultJudge: picked, defaultJudgeAgent: 'dsh' }), providers: [openai], onChange });
 
-    fireEvent.mouseDown(screen.getByLabelText('思考强度'));
-    fireEvent.click(await screen.findByText('max'));
+    fireEvent.change(screen.getByLabelText('思考强度'), { target: { value: 'max' } });
 
     expect(onChange).toHaveBeenCalledWith({
       defaultJudge: { providerId: 'p-1', modelId: 'deepseek-chat', effort: 'max' },
@@ -529,13 +494,10 @@ describe('JudgeSettingsCard 的思考强度', () => {
       onChange,
     });
 
-    const select = screen.getByLabelText('思考强度').closest('.ant-select');
-    // 选中值回显在这一格上（与 `run-create-panel.test.tsx` 读选中值同口径：整格文本）
-    expect(select?.textContent ?? '').toBe('max');
-    // 清空图标只在「有值」时渲染，故它同时是回显成立的证据
-    const clear = select?.querySelector('.ant-select-clear') ?? null;
-    expect(clear).not.toBeNull();
-    fireEvent.click(clear as Element);
+    // 选中值回显在这一格上
+    expect(screen.getByLabelText('思考强度')).toHaveValue('max');
+    // 清空 = 选空值那一项
+    fireEvent.change(screen.getByLabelText('思考强度'), { target: { value: '' } });
 
     expect(onChange).toHaveBeenCalledTimes(1);
     const [patch] = onChange.mock.calls[0] ?? [];
@@ -554,10 +516,10 @@ describe('JudgeSettingsCard 的思考强度', () => {
 
     const title = screen.getByText('当前的思考强度已失效');
     // 与另外两条悬空告警同形：红色（error），不是提示性文案
-    expect(title.closest('.ant-alert')).toHaveClass('ant-alert-error');
+    expect(title.closest('[data-tone]')).toHaveAttribute('data-tone', 'error');
     // 正文把**存着的那个值**写出来（只说「已失效」的话，用户看不出设置里到底记着什么、
     // 也就不知道该去点哪一格）；正文是模板串拼的 ⇒ 按整块文本读，与智能体那条同口径
-    expect(title.closest('.ant-alert')?.textContent ?? '').toContain('设置里记的是 xhigh');
+    expect(title.closest('[data-tone]')?.textContent ?? '').toContain('设置里记的是 xhigh');
     // 失效的档不许出现在选择框里——否则用户看到的是「已经选好了一个用不了的档」
     expect(screen.queryByText('xhigh')).toBeNull();
   });

@@ -9,8 +9,16 @@
  *   2. **本组件不调接口**（纯展示）：`onRecognize` 由调用方实现，错误也由调用方提示（与 CaseFormPanel 同一条分工）；
  *   3. 关闭（取消 / 遮罩）只调 `onCancel`，**不写回**任何东西。
  */
-import { Button, Flex, Input, Modal, Typography } from 'antd';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
+import { Textarea } from '../components/ui/textarea';
 
 export interface RubricRecognizeModalProps {
   open: boolean;
@@ -24,24 +32,43 @@ export interface RubricRecognizeModalProps {
 export function RubricRecognizeModal({ open, recognizing, onCancel, onRecognize }: RubricRecognizeModalProps): ReactNode {
   const [text, setText] = useState('');
 
+  // 关闭即丢弃文本：留着下次打开又看到上次那份，用户会以为「已经识别过了」。
+  // 挂在 `open` 上而不是动画结束事件上——受控弹窗的开关由父组件决定，jsdom 里没有动画。
+  useEffect(() => {
+    if (!open) setText('');
+  }, [open]);
+
   return (
-    <Modal
+    <Dialog
       open={open}
-      title="智能识别评分标准项"
-      // 关闭即丢弃文本：留着下次打开又看到上次那份，用户会以为「已经识别过了」
-      destroyOnHidden
-      onCancel={onCancel}
-      afterClose={() => setText('')}
-      footer={
-        <Flex justify="end" gap={8}>
-          <Button size="small" autoInsertSpace={false} data-testid="rubric-recognize-cancel" onClick={onCancel}>
+      onOpenChange={(next) => {
+        if (!next) onCancel();
+      }}
+    >
+      <DialogContent data-testid="rubric-recognize-dialog" style={{ maxWidth: 720 }} showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>智能识别评分标准项</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            把你的评分要求粘贴进来，识别结果会回填到表单里的评分标准项表格
+          </p>
+          <Textarea
+            rows={10}
+            value={text}
+            aria-label="评分要求"
+            data-testid="rubric-recognize-text"
+            onChange={(event) => setText(event.target.value)}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" data-testid="rubric-recognize-cancel" onClick={onCancel}>
             取消
           </Button>
           <Button
-            size="small"
-            type="primary"
-            autoInsertSpace={false}
-            loading={recognizing}
+            data-loading={recognizing ? 'true' : undefined}
             disabled={recognizing}
             data-testid="rubric-recognize-submit"
             // 本组件**不看**这个 promise 的结果：失败时本来就不关窗、不清文本，原因由调用方提示。
@@ -49,22 +76,13 @@ export function RubricRecognizeModal({ open, recognizing, onCancel, onRecognize 
             // （浏览器控制台一条 uncaught，测试里直接记成一次 error 把整个 run 判红）。
             onClick={() => void onRecognize(text).catch(() => {})}
           >
+            {recognizing && (
+              <span className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />
+            )}
             识别
           </Button>
-        </Flex>
-      }
-    >
-      <Flex vertical gap={8}>
-        <Typography.Text type="secondary">
-          把你的评分要求粘贴进来，识别结果会回填到表单里的评分标准项表格
-        </Typography.Text>
-        <Input.TextArea
-          rows={10}
-          value={text}
-          data-testid="rubric-recognize-text"
-          onChange={(event) => setText(event.target.value)}
-        />
-      </Flex>
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

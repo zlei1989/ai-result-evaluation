@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 时间轴上的**段标题**：「追问 ×N」+ 时刻 + **那次追问的正文**。
+ * 时间轴上的**段标题**（`Marker` 形态）：「追问 ×N」+ 时刻 + **那次追问的正文**。
  *
  * 为什么它是一个块而不是一行小字：一次追问是**又开一次 `run()`**，那一段自己的厂商轮次从 1
  * 重新数 ⇒ 时间轴上会出现第二个「轮次 1」。没有这一行时，读者会把它当成首段的第 1 轮又画了一遍；
@@ -15,11 +15,17 @@
  *   · 正文缺失（`text === null`）时**只少那一块**，段号照旧——旧运行的账本里没有那条记录，
  *     而「第几次追问」这个事实仍在。
  *
+ * 形态用 `Marker` 的 `separator` 档：段界就是一条**横贯的分界线**，中间嵌着段号与时刻；
+ * 不自己拼 `Divider`（那种带标题的分隔件自己就是 flex 容器，塞进纵向 flex 里会被拉伸，
+ * 真机上表现为「段标题占满一整屏、正文被挤到右边缘外面」）。正文在 marker **下面**——
+ * 它是这一段的标题，不是分界线的一部分。
+ *
  * 数据层负责「哪一段从哪一轮开始、那句人话是什么」，本件只管画——它不认识消息、也不读账本。
  */
-import { Flex, Tag, Typography, theme } from 'antd';
 import type { ReactNode } from 'react';
 import { XMarkdownText } from '../../base/x-markdown';
+import { Badge } from '../../components/ui/badge';
+import { Marker, MarkerContent } from '../../components/ui/marker';
 
 export interface SegmentDividerProps {
   /** 段号（≥1）。`0` 不画——调用方负责（首段没有分隔线） */
@@ -31,29 +37,26 @@ export interface SegmentDividerProps {
 }
 
 export function SegmentDivider({ segment, at, text }: SegmentDividerProps): ReactNode {
-  const { token } = theme.useToken();
   return (
-    <Flex vertical data-testid="agent-log-segment-divider" data-segment={segment}>
-      {/*
-        标题行 = 「追问 ×N」+ 时刻，**不画横线**：段与段之间靠这一行自己的形状（青色 Tag）分开就够，
-        加一条线只会让这一块看起来像「被分隔线切过」的一段正文。
-        这一行也是自己拼、不用 `Divider` 的标题槽：`Divider` 带文字时**它自己就是 flex 容器**
-        （`align-items: center`），塞进纵向 flex 里当一项时高度会被拉伸、`inner-text` 会被压成一条竖缝
-        ——真机上表现为「段标题占满一整屏、正文被挤到右边缘外面」。
-      */}
-      <Flex align="center" gap={token.marginXS}>
-        <Tag color="cyan">追问 ×{segment}</Tag>
-        {at === '' ? null : <Typography.Text type="secondary">{formatClock(at)}</Typography.Text>}
-      </Flex>
-      {/* 正文与标题**同一个块**：它是这一段的标题（那句人话），不是下一条消息。
-          正文走 markdown（与正文块同一条口径：人写的那句话里可能有列表、代码、强调），
-          左侧与标题的形状对齐（标题那一整行都缩进在正文之外，正文不需要再缩进） */}
+    <div className="flex flex-col gap-1" data-testid="agent-log-segment-divider" data-segment={segment}>
+      {/* 段号是这一行的主标识（青色徽标），时刻是它的次要格；两者都在 marker 内容里，
+          读屏先听到「追问 ×2」再听到时刻 */}
+      <Marker variant="separator">
+        <MarkerContent className="flex items-center gap-1">
+          <Badge variant="outline" className="border-info/40 bg-info/10 text-info">
+            追问 ×{segment}
+          </Badge>
+          {at === '' ? null : <span className="text-sub text-muted-foreground">{formatClock(at)}</span>}
+        </MarkerContent>
+      </Marker>
+      {/* 正文与 marker **同一个块**：它是这一段的标题（那句人话），不是下一条消息。
+          正文走 markdown（与正文块同一条口径：人写的那句话里可能有列表、代码、强调） */}
       {text === null ? null : (
-        <Flex style={{ paddingTop: token.paddingXS }}>
+        <div className="pt-1">
           <XMarkdownText text={text} open={false} />
-        </Flex>
+        </div>
       )}
-    </Flex>
+    </div>
   );
 }
 

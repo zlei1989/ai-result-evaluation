@@ -2,14 +2,7 @@
 
 /**
  * 候选卡片底部的**活动行**：跑动期显示智能体最近一条输出；有实时正文在流时，**逐字打字**
- * 显示最后一个非空段。文字本身不动的那一档，一条高光带周期性扫过。
- *
- * 动效参考 DSH 的 `dsh-turn-status-shimmer`（`ChatView.module.css`：1.8s linear infinite、
- * `background-size: 250%`、`background-clip: text` 的渐变位移）——那是它「正在思考」那一行的观感，
- * 也是本仓「执行中」需要的观感。**动画本身不在这里**：ui 包一个 CSS 文件都没有，
- * 而全局样式只有 `apps/web-next/app/globals.css` 一处（它已经确立了「提供变量/类名供 ui 消费」的口径）。
- * 于是这里只负责带上类名，由 `apps/web-next` 的守卫读那份 CSS 钉住两边一致：
- * 类名对不上时**浏览器不会报错**，表现只是「文字静止」——那正是需要一条守卫的原因。
+ * 显示最后一个非空段。文字本身不动的那一档，交给 `TraceLine` 的 `running` 状态出 shimmer。
  *
  * 六条设计口径：
  *   1. **只有运行态才出现**（`activityText` 对终态返回 `null`）：它的语义是「正在……中」，
@@ -17,9 +10,10 @@
  *   2. **还没有输出时给回落文案**：空白行会被读成「界面坏了」，而此刻的真实情况是「还没开始说话」；
  *   3. **单行截断、不挂 Tooltip**：一条工具块 JSON 有几百字符，换行会把卡片撑高、把按钮挤出视口；
  *      而一个每秒都在变的浮层是噪声——全量内容本来就在「执行日志」里，那里才是读日志的地方；
- *   4. **颜色取 `theme` 之外的两个既有主题变量**（`--app-muted` / `--app-fg`，见 globals.css）：
- *      把 antd token 再复制一份进 CSS 就是第二份真源，主题一改必漂移。字号与行内边距一律不写
- *      （交紧凑密度与 `Typography` 的默认值，AGENTS.md 的硬口径）；
+ *   4. **动效只有一份来源**：静态档走 `TraceLine status="running"`（shimmer 由 `Trace` 提供，
+ *      并在 `prefers-reduced-motion` 下自动停），本件不再自绘扫光类、也不再有第二份 `@keyframes`；
+ *      颜色取 `--app-muted` / `--app-fg` 两个既有主题变量，字号与行内边距一律不写
+ *      （交紧凑密度与 `Typography` 的默认值，口径见 `docs/architecture/ui-primitives-and-theme.md`）；
  *   5. **实时正文优先、历史摘要兜底**：有 `activity.text` 就走打字态
  *      （最后一个非空段 + 闪烁光标），否则看工具块的摘要，最后才回落到 `log.summary`。
  *      这条分层是有意的——实时那条流**不回放历史**，刷新页面后它拿不到任何东西，
@@ -27,29 +21,23 @@
  *   6. **换行即清空重打**：只有一行可显示，模型换行意味着上一段说完了 ⇒ 取**最后一个非空段**，
  *      并用段号当 React `key`——同一段内持续追加不重挂（打字），换段才重挂（入场动画重放）。
  */
-import { Typography } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
 import type { EvalRowStatus } from '@aieval/contracts';
+import { TraceLine, TraceTitle } from '../components/ui/trace';
 import { STREAM_CURSOR_CLASS } from './stream-cursor';
 
 /**
- * 高光扫过用的类名。导出而不是就地写字面量：`apps/web-next/src/global-styles.test.ts` 要拿它去 CSS 里核对，
- * 两处各写一份字符串必然漂移，而漂移的症状是静默的（动画消失、无任何报错）。
- */
-export const ACTIVITY_SWEEP_CLASS = 'aieval-activity-sweep';
-
-/**
  * 打字态类名。换行重打的入场动画挂在它下面（样式在 `globals.css`），
- * 与 `ACTIVITY_SWEEP_CLASS` 同一处置：跨包一致性由同一条守卫钉住。
+ * 类名对不上时**浏览器不会报错**，表现只是「文字静止」——跨包一致性由 `apps/web-next` 的
+ * `global-styles.test.ts` 钉住两边一致。
  */
 export const ACTIVITY_TYPING_CLASS = 'aieval-activity-typing';
 
 /**
  * 单行截断的结构性样式。
- * 手写这三条而**不用** `Typography.Text` 的 `ellipsis`：那个变体会在首次省略时量出并固定宽度
- * （antd 文档原文：「it will fix width on the first ellipsis」），而这一行的文字每隔一拍就换一次，
- * 量出来的宽度只对旧文本成立；纯 CSS 省略没有这个问题，也不必给 jsdom 补 `ResizeObserver` 桩。
- * 只写结构性属性（显示方式与溢出），不碰字号与间距。
+ * 手写这三条而**不用**组件库的省略变体：那种实现会在首次省略时量出并固定宽度，
+ * 而这一行的文字每隔一拍就换一次，量出来的宽度只对旧文本成立；纯 CSS 省略没有这个问题，
+ * 也不必给 jsdom 补 `ResizeObserver` 桩。只写结构性属性（显示方式与溢出），不碰字号与间距。
  */
 const TRUNCATE_STYLE: CSSProperties = {
   display: 'block',
@@ -191,7 +179,7 @@ export function AgentActivityLine({ status, latestText, activity }: AgentActivit
   const typing = typingOf(status, activity);
   if (typing !== null) {
     return (
-      <Typography.Text
+      <span
         className={typing.streaming ? `${ACTIVITY_TYPING_CLASS} ${STREAM_CURSOR_CLASS}` : ACTIVITY_TYPING_CLASS}
         style={TRUNCATE_STYLE}
         data-testid="agent-activity-line"
@@ -199,14 +187,14 @@ export function AgentActivityLine({ status, latestText, activity }: AgentActivit
         data-typing="true"
       >
         <span key={typing.segmentIndex}>{typing.segment}</span>
-      </Typography.Text>
+      </span>
     );
   }
   const text = staticActivityText(status, latestText, activity);
   if (text === null) return null;
   return (
-    <Typography.Text className={ACTIVITY_SWEEP_CLASS} style={TRUNCATE_STYLE} data-testid="agent-activity-line">
-      {text}
-    </Typography.Text>
+    <TraceLine status="running" style={TRUNCATE_STYLE} data-testid="agent-activity-line">
+      <TraceTitle>{text}</TraceTitle>
+    </TraceLine>
   );
 }

@@ -15,20 +15,25 @@
  *      「这一行跑了什么」（状态 / 轮次 / 用量 / 耗时），这一行讲「这一行是谁在跑、改了什么、
  *      得了多少分」。
  */
-import { Flex, Tag, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
 import type { DomainFact, DomainFactSegment } from './types';
 
-/** antd 的主题 token（`theme.useToken()` 那一格），分段着色用它取语义色 */
-type Token = ReturnType<typeof theme.useToken>['token'];
 
-/** 领域事实的色档 → `Tag` 的预设色（**值整段一枚 Tag** 时用，如评分那一格的绿 Tag） */
-const DOMAIN_TONE_COLOR: Record<NonNullable<DomainFact['tone']>, string> = {
-  default: 'default',
-  success: 'success',
-  warning: 'warning',
-  error: 'error',
+/** 领域事实的色档 → 徽标的语义色（**值整段一枚徽标** 时用，如评分那一格的绿徽标） */
+const DOMAIN_TONE_CLASS: Record<NonNullable<DomainFact['tone']>, string> = {
+  default: 'border-border text-foreground',
+  success: 'border-success/40 text-success',
+  warning: 'border-warning/40 text-warning',
+  error: 'border-destructive/40 text-destructive',
 };
+
+/** `tag` 段的三个预设色档 → 语义类（蓝 / 靛 / 紫，与评分详情顶部那三格同色） */
+const DOMAIN_TAG_CLASS = {
+  blue: 'border-info/40 text-info',
+  geekblue: 'border-indigo-500/40 text-indigo-600 dark:text-indigo-400',
+  purple: 'border-fuchsia-500/40 text-fuchsia-600 dark:text-fuchsia-400',
+} as const;
 
 /**
  * 一段领域事实。三种画法**全按数据层的声明**（界面不认「哪个词是加号」）：
@@ -36,10 +41,17 @@ const DOMAIN_TONE_COLOR: Record<NonNullable<DomainFact['tone']>, string> = {
  *   · `insertion` / `deletion` ⇒ git 惯例的绿 / 红（`+N` / `−N`）；
  *   · 其余 ⇒ 跟随所在文字的颜色（放进 `type="secondary"` 的 `Text` 里就是次要色）。
  */
-function FactSegment({ segment, token }: { segment: DomainFactSegment; token: Token }): ReactNode {
-  if (segment.tag === true) return <Tag color={segment.tagTone ?? 'blue'}>{segment.text}</Tag>;
-  if (segment.tone === 'insertion') return <span style={{ color: token.colorSuccess }}>{segment.text}</span>;
-  if (segment.tone === 'deletion') return <span style={{ color: token.colorError }}>{segment.text}</span>;
+function FactSegment({ segment }: { segment: DomainFactSegment }): ReactNode {
+  if (segment.tag === true) {
+    const tone = segment.tagTone ?? 'blue';
+    return (
+      <Badge variant="outline" className={DOMAIN_TAG_CLASS[tone]} data-tone={tone}>
+        {segment.text}
+      </Badge>
+    );
+  }
+  if (segment.tone === 'insertion') return <span className="text-success">{segment.text}</span>;
+  if (segment.tone === 'deletion') return <span className="text-destructive">{segment.text}</span>;
   return segment.text;
 }
 
@@ -49,42 +61,43 @@ export interface AgentLogDomainFactsProps {
 }
 
 export function AgentLogDomainFacts({ domain }: AgentLogDomainFactsProps): ReactNode {
-  const { token } = theme.useToken();
   // 空数组整行不出现（口径 3）：留一行空的 flex 会多出一段 gap
   if (domain.length === 0) return null;
 
   return (
-    <Flex align="center" gap={token.marginSM} wrap data-testid="agent-log-domain-facts">
+    <div className="flex flex-wrap items-center gap-snug" data-testid="agent-log-domain-facts">
       {domain.map((fact) => (
-        <Flex key={fact.id} align="center" gap={token.marginXXS}>
-          <Typography.Text type="secondary">{fact.label}</Typography.Text>
+        <div key={fact.id} className="flex items-center gap-hair">
+          <span className="text-muted-foreground">{fact.label}</span>
           {/* 值两种画法：数据层给了 `segments` 就按段画（外层统一次要色，段内再覆盖成绿 / 红 /
               预设色 Tag），否则整段一枚色档 Tag（评分那一格就是 `57/57` 那枚绿 Tag） */}
           {fact.segments === undefined ? (
             fact.tone === undefined ? (
-              <Typography.Text>{fact.value}</Typography.Text>
+              <span>{fact.value}</span>
             ) : (
-              <Tag color={DOMAIN_TONE_COLOR[fact.tone]}>{fact.value}</Tag>
+              <Badge variant="outline" className={DOMAIN_TONE_CLASS[fact.tone]} data-tone={fact.tone}>
+                {fact.value}
+              </Badge>
             )
           ) : (
-            <Typography.Text type="secondary">
+            <span className="text-muted-foreground">
               {fact.segments.map((segment, index) => (
-                <FactSegment key={index} segment={segment} token={token} />
+                <FactSegment key={index} segment={segment} />
               ))}
-            </Typography.Text>
+            </span>
           )}
           {/* 提示同样可以分段（各段自带色档），没分段就是一句次要色文本 */}
           {fact.hintSegments === undefined
-            ? fact.hint !== undefined && <Typography.Text type="secondary">{fact.hint}</Typography.Text>
+            ? fact.hint !== undefined && <span className="text-muted-foreground">{fact.hint}</span>
             : (
-              <Typography.Text type="secondary">
+              <span className="text-muted-foreground">
                 {fact.hintSegments.map((segment, index) => (
-                  <FactSegment key={index} segment={segment} token={token} />
+                  <FactSegment key={index} segment={segment} />
                 ))}
-              </Typography.Text>
+              </span>
             )}
-        </Flex>
+        </div>
       ))}
-    </Flex>
+    </div>
   );
 }

@@ -2,17 +2,12 @@
 /**
  * 排名表的**源码形态**守卫（静态扫描：本目录既有手法，见 `case-form-panel.static.test.ts`）。
  *
- * 五条判据都是「行为测试测不到、而缺了会静默失效」的：
- *   ① **首列的锁靠三处同时在场**：`fixed: 'left'` + 显式的 `width` + `scroll.x` 是**数值**。
- *      jsdom 读不到 `position: sticky`（吸边效果量不出来），而宽度不给时 rc-table 算不出吸边偏移
- *      ——`provider-table.tsx` 的文件头把这条写成口径，这里把它钉在源码上：删掉 `width`、
- *      把 `fixed` 挪到别的列、或把 `scroll.x` 换成 `true` / `'max-content'`，三种改法都会让这一列
- *      在真机上「看着正常但不钉」，且没有任何用例会红；
- *   ② **滚动条那一条由 antd 自己的语义槽给**（`styles.content.paddingBottom`）：这根滚动条是原生
- *      浮层、落点是滚动容器自己的底边，不留位置它就压在最后一行「总分」上（9 候选实测）。
- *      三条都只有真机量得出来：不给内边距 ⇒ 压住总分；自己去改全局 CSS / 算高度 ⇒ 多出跨包契约
- *      与一处会漂移的字面量；给 `scroll.y` ⇒ 表体的 `overflow-y` 被写死成 `scroll`，
- *      两三行时右侧也常驻一条空滚动条（`base/table-scroll-area.tsx` 文件头的实测）；
+ * 判据都是「行为测试测不到、而缺了会静默失效」的：
+ *   ① **首列的锁靠「声明宽度 + pinned」**：`size: RANK_LABEL_WIDTH` 与 `pinned: 'start'` 必须在
+ *      同一个列定义里。jsdom 读不到 `position: sticky`（吸边效果量不出来），而偏移输入就是声明宽度
+ *      ——删掉 `size` 会被套件的运行期守卫拒掉，把 `pinned` 挪到别的列则没有任何用例会红；
+ *   ② **滚动条留位**（`scrollStyle.paddingBottom`）：这根滚动条是原生浮层、落点是滚动容器自己的
+ *      底边，不留位置它就压在最后一行「总分」上；
  *   ③ **判据说明与 `compareRows` 同源**：那句话由 `RANK_CRITERIA_PARTS` 拼装，三段分别对应
  *      总分 / 耗时 / token 三级判据。散写成一句字面量时，`compareRows` 改了判据说明不会跟着改
  *      ——界面照常显示，只是在说一件不再成立的事。
@@ -33,55 +28,45 @@ import {
 const source = readFileSync(join(import.meta.dirname, 'rank-table.tsx'), 'utf8');
 
 describe('排名表的锁列结构', () => {
-  it('首列 fixed 锁左，且**显式给宽度**（不给宽度，rc-table 的吸边偏移就算不出来）', () => {
-    // `fixed: 'left'` 与 `width: RANK_LABEL_WIDTH` 必须落在**同一个列定义**里：
+  it('首列 pinned 锁左，且**显式给宽度**（偏移输入就是声明的 size）', () => {
+    // `size: RANK_LABEL_WIDTH` 与 `pinned: 'start'` 必须落在**同一个列定义**里：
     // 中间不许出现 `}` 收掉对象，也不许跨过另一列（写散到别的列上不算数）
-    expect(source, '标签列的列定义里少了 fixed 或 width').toMatch(
-      /key: 'label'[\s\S]{0,400}?width: RANK_LABEL_WIDTH,[\s\S]{0,200}?fixed: 'left'/,
+    expect(source, '标签列的列定义里少了 size 或 pinned').toMatch(
+      /id: 'label'[\s\S]{0,400}?size: RANK_LABEL_WIDTH,[\s\S]{0,200}?pinned: 'start'/,
     );
+    // 候选列同样逐列声明宽度（表宽 = 标签列 + 每候选一列）
+    expect(source, '候选列没有声明宽度').toMatch(/size: RANK_CANDIDATE_WIDTH/);
   });
 
   it('不渲染表头：列头本来就是空的（名次落在「选手」行里），留一行空白只占高度', () => {
     expect(source, '表格必须显式关掉表头（showHeader={false}）').toMatch(/showHeader=\{false\}/);
-    // 与「列头留空」是一条口径的两面：给了表头就必须有内容，而这张表的列头没有内容可放
-    expect(source, '表格里不该再出现列头文案（title）').not.toMatch(/\btitle:\s*'/);
   });
 
   it('组名行不许横跨候选列：它必须留在锁列里（横跨 = 跟着横向滚动滑走）', () => {
-    // 组名行的判据是「标签列的 onCell 不给 colSpan」：给了就会铺满整行、跟着滚走
     expect(source, '组名行又铺满整行了：横向滚动时分类名会滑出视野').not.toMatch(/colSpan:\s*columnCount/);
-    // 候选列也不该再有「让位给铺满」的 colSpan: 0
     expect(source, '候选列还在为铺满的组名行让位（colSpan: 0）').not.toMatch(/colSpan:\s*0/);
   });
 
   it('标签列不截断：长目标折行显示（截断会让「这一项要做什么」看不见）', () => {
     // 标签格必须能折行（中文与长串没有词边界 ⇒ break-word / break-all 之一）
     expect(source, '标签格少了折行样式').toMatch(/wordBreak:\s*'break-(word|all)'/);
-    // `ellipsis: true` 会把目标截成一行加浮层 ⇒ 目标原文在这个表里就看不全了
-    expect(source, '标签列不许开 ellipsis').not.toMatch(/ellipsis:\s*true/);
+    // 套件没有 ellipsis 开关；这条防的是有人给标签格套 `truncate`
+    expect(source, '标签列不许截断').not.toMatch(/truncate/);
   });
 
-  it('`scroll.x` 是**具名函数算出来的数值**，不是 true / max-content（那两个取值会让固定列失效）', () => {
-    expect(source, 'scroll.x 必须走 rankTableMinWidth(...)（给 true / max-content 固定列会失效）').toMatch(
-      /scroll=\{\{\s*x:\s*rankTableMinWidth\(/,
-    );
-    expect(source, 'scroll.x 不许写成 true / max-content').not.toMatch(/scroll=\{\{\s*x:\s*(true|'max-content')/);
-    // 求和式本身：标签列 + 每候选一列（两个常量，没有裸数字）
+  it('列宽由具名常量算出来（没有裸数字，也没有 max-content）', () => {
     expect(rankTableMinWidth(0)).toBe(RANK_LABEL_WIDTH);
     expect(rankTableMinWidth(2)).toBe(RANK_LABEL_WIDTH + 2 * RANK_CANDIDATE_WIDTH);
+    expect(source, '不许把列宽写成 max-content / auto').not.toMatch(/max-content/);
   });
 
-  it('滚动条那一条走 antd 自己的语义槽（不写全局 CSS、不自己算高度、不许 scroll.y）', () => {
-    // 落点必须是 `styles.content`（表格自己的横向滚动容器）：写在根节点上无效——它的下内边距
-    // 不属于滚动容器的可滚动区，内容与滚动条都不会挪
-    expect(source, '表格没有用 styles.content 给滚动条留位置').toMatch(
-      /<Table<RankTableRow>[\s\S]{0,800}?styles=\{\{ content: \{ paddingBottom: RANK_SCROLLBAR_GUTTER \} \}\}/,
+  it('给横向滚动条留一条下内边距（不留位置就压在最后一行「总分」上）', () => {
+    expect(source, '滚动容器没有给滚动条留位置').toMatch(
+      /<DataTable<RankTableRow>[\s\S]{0,900}?scrollStyle=\{\{ paddingBottom: RANK_SCROLLBAR_GUTTER \}\}/,
     );
     expect(RANK_SCROLLBAR_GUTTER, '滚动条那一条至少要有浏览器的 15px 高').toBeGreaterThanOrEqual(15);
-    // `scroll={{ y }}` 会写死 `.ant-table-body` 的 overflow-y，空表也常驻滚动条（外层原语文件头的坑）
-    expect(source, '不许给 scroll.y：纵向滚动由抽屉正文承担').not.toMatch(/scroll=\{\{[^}]*\by:/);
-    // `sticky` 在这个组合下什么都不渲染（实测），留着只会让人以为滚动条归它管
-    expect(source, '不要再给 sticky：它在这个组合下不渲染吸底滚动条').not.toMatch(/<Table<RankTableRow>[\s\S]{0,800}?\n\s*sticky\n/);
+    // 不许回到 `scroll={{ y }}` 那种固定表体高度：空表也会常驻滚动条
+    expect(source, '不许给固定表体高度').not.toMatch(/scroll=\{\{[^}]*\by:/);
   });
 });
 

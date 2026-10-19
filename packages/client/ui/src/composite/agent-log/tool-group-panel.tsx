@@ -1,24 +1,39 @@
 'use client';
 
 /**
- * 工具组：连续的几次工具调用合成一个折叠面板（外层带边框），组内每条一行嵌套 `Collapse ghost`。
+ * 工具组：连续的几次工具调用合成一个 `Trace`（外层一行摘要 + 组内每条一行嵌套 `TraceCollapsible`）。
  *
  * 五条口径：
  *   · **`N` 只数 `entry.kind === 'call'` 的行**：孤立结果不是「调用」——
  *     把一条调用画成卡片却仍算进 N，读数就是不实的；
- *   · 组头四格各就各位：`工具调用 × N` + 调用名汇总（去重、最多 3 个 + `等 N 个`）在 `label`，
- *     「失败 N」+ 状态汇总在 `extra`（进行中转圈 / 结果未采集的灰字，分派仍收在 `AgentRunStateTag`）； * · **「失败 N」是失败在收起态的唯一落点**：失败的工具组与组内的失败行
+ *   · 组头四格各就各位：`工具调用 × N` 是标题，调用名汇总（去重、最多 3 个 + `等 N 个`）紧跟其后，
+ *     「失败 N」与状态汇总（进行中转圈 / 结果未采集的灰字，分派仍收在 `AgentRunStateTag`）；
+ *   · **「失败 N」是失败在收起态的唯一落点**：失败的工具组与组内的失败行
  *     **都默认折叠**，于是组头不表态的话，收起时就完全看不出这一组里出过错。N 数的是
  *     **结果为 `error` 的条目**（调用与孤立结果都算）——它与「工具调用 × N」是两个口径，
  *     各答各的问题；一条失败都没有时整格不渲染（不画一个恒为 0 的读数）；
  *   · **折叠态一律受控**：组头的开合走 `open`，组内各行走 `openEntries` + `onEntryOpenChange`
- *     （键由 `toolEntryKey` 给，与 React 的 `key` 同源）；本件不持任何开合态；
+ *     （键由 `toolEntryKey` 给，与 React 的 `key` 同源；失败帧列表再加一层 `|frames` 后缀）；
+ *     本件不持任何开合态；
+ *   · 组头的 `TraceLine.status` **从各条目的 `block.assembly` 推**（任一条还在收 ⇒ `running`；
+ *     都收口且有失败 ⇒ `error`；否则不传）。它回答「组里还在动吗」，与「转圈」的
+ *     `running`（轮次未结束且结果未到）是两个问题，故不共用一格。
  *   · 本件**不调用** `onRequestDiagnostics`：本层没有「原始输出」入口（那是固定区的 `RawOutputPanel`），
  *     在展开工具组时顺带取原文是错的时机。它留在签名里是因为注册表统一注入这一格，
  *     去掉它就得让注册表按块类型分支。
  */
-import { Collapse, Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { CircleIcon, CircleXIcon } from 'lucide-react';
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '../../components/ui/trace';
 import { AgentRunStateTag } from './agent-run-state-tag';
 import type { ToolGroupEntry, ToolItem } from './render-blocks';
 import { ToolItemDetail, toolEntryKey } from './tool-item-detail';
@@ -42,7 +57,11 @@ export interface ToolGroupPanelProps {
   missingReason?: string | null;
 }
 
-const PANEL_KEY = 'tool-group';
+/**
+ * 失败帧列表在**同一份折叠态**里的键后缀（与 `agent-message-timeline.tsx` 的 `|raw` 同一手法）：
+ * 帧是工具行正文里的第二层开合，各行的帧必须各开各的。
+ */
+const FRAMES_SUFFIX = '|frames';
 
 /**
  * 调用名汇总：去重后最多给 3 个，多了缀「等 N 个」（N 是**去重后**的名字数）。
@@ -73,55 +92,53 @@ export function ToolGroupPanel({
    */
   const failed = entries.filter((entry) => entry.output?.status === 'error').length;
   const names = nameSummary(calls);
-
-  const label = (
-    <Flex align="center" gap={4} wrap>
-      <Typography.Text>{`工具调用 × ${calls.length}`}</Typography.Text>
-      {names !== null && <Typography.Text type="secondary">{names}</Typography.Text>}
-    </Flex>
-  );
+  /** 组头动效的唯一判据：任一条**源块**还在收（`assembly === 'open'`） */
+  const status = entries.some((entry) => entry.assembly === 'open') ? 'running' : failed > 0 ? 'error' : undefined;
 
   return (
-    <Collapse
-      destroyOnHidden
-      activeKey={open ? [PANEL_KEY] : []}
-      onChange={(keys) => onOpenChange(keys.length > 0)}
-      items={[
-        {
-          key: PANEL_KEY,
-          label,
-          extra: (
-            <Flex align="center" gap={4}>
+    <Trace data-testid="tool-group">
+      <TraceCollapsible open={open} onOpenChange={onOpenChange}>
+        <div className="flex w-full min-w-0 items-center gap-2">
+          <TraceCollapsibleTrigger>
+            <TraceLine status={status} data-testid="tool-group-line">
+              <TraceIcon>{status === 'error' ? <CircleXIcon /> : <CircleIcon />}</TraceIcon>
+              <TraceTitle>{`工具调用 × ${calls.length}`}</TraceTitle>
+              {names !== null && <TraceDescription>{names}</TraceDescription>}
               {/* 失败在收起态的可见性全靠这一格（组与失败行都默认折叠，见文件头）：
                   `AgentRunStateTag` 在结果到手时不表态，指望它露出失败是等不到的 */}
-              {failed > 0 && <Tag color="error">{`失败 ${failed}`}</Tag>}
-              <AgentRunStateTag
-                running={pending.some((call) => call.running)}
-                hasResult={pending.length === 0}
-                // 原因由注册表从能力声明的 `toolResult` 那一维推出来（拿不到就是 `null` ⇒ 只写「结果未采集」）
-                missingReason={missingReason}
-                since={pending[0]?.at ?? null}
-              />
-            </Flex>
-          ),
-          children: (
-            <Flex vertical>
-              {entries.map((entry) => {
-                const key = toolEntryKey(entry);
-                return (
-                  <ToolItemDetail
-                    key={key}
-                    entry={entry}
-                    open={openEntries.has(key)}
-                    onOpenChange={(next) => onEntryOpenChange(key, next)}
-                    missingReason={missingReason}
-                  />
-                );
-              })}
-            </Flex>
-          ),
-        },
-      ]}
-    />
+              {failed > 0 && <span className="shrink-0 text-sub text-destructive">{`失败 ${failed}`}</span>}
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <AgentRunStateTag
+            running={pending.some((call) => call.running)}
+            hasResult={pending.length === 0}
+            // 原因由注册表从能力声明的 `toolResult` 那一维推出来（拿不到就是 `null` ⇒ 只写「结果未采集」）
+            missingReason={missingReason}
+            since={pending[0]?.at ?? null}
+          />
+        </div>
+        <TraceCollapsibleContent>
+          <div className="flex flex-col">
+            {entries.map((entry) => {
+              const key = toolEntryKey(entry);
+              const framesKey = `${key}${FRAMES_SUFFIX}`;
+              return (
+                <ToolItemDetail
+                  key={key}
+                  entry={entry}
+                  open={openEntries.has(key)}
+                  onOpenChange={(next) => onEntryOpenChange(key, next)}
+                  framesOpen={openEntries.has(framesKey)}
+                  onFramesOpenChange={(next) => onEntryOpenChange(framesKey, next)}
+                  testOpenKeys={openEntries}
+                  onTestOpenChange={onEntryOpenChange}
+                  missingReason={missingReason}
+                />
+              );
+            })}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }

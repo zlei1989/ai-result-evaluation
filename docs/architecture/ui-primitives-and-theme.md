@@ -2,56 +2,128 @@
 
 ## 定位
 
-`@aieval/ui` 按 base + composite 两层提供**纯展示**原语：不调接口、不依赖路由库，纯数据驱动（props 进、JSX 出），`ui → contracts` 是唯一内部依赖边。antd 6 的主题三处同步、紧凑密度字号反推、`Splitter` 受控回写这类反直觉坑，由原语层一次性收口，页面不再各自处理。
+`@aieval/ui` 用三类东西搭界面：**vendored 原语**（`src/components/ui/`，shadcn registry 的产物，只做说明符改写）、**Tailwind 语义类**（颜色 / 字号 / 间距全部来自 `apps/web-next/app/globals.css` 的主题与密度变量）、以及包在两者之上的本仓原语与功能组件。包对外只暴露纯展示件：不调接口、不依赖路由库，props 进、JSX 出，`ui → contracts` 是唯一内部依赖边。界面同时适配 `light` / `dark` 与弹性尺寸，窄视口降级见「形态与交互」的 `ListDetailLayout` 段。
+
+主题与密度各只有**一处真源**，组件不持有第二份：明暗是 `html[data-theme]` 属性，密度是最近的 `[data-density]` 祖先。因此不存在「组件亮了、底色还是暗的」这种半亮状态——没有第二处可不同步。
+
+页面长什么样只由**组装层**决定：主题层（`globals.css` 的语义变量）给变量、原语层（`components/ui/**`，registry 产物）给结构、组装层（`base/`、`composite/` 与 `app/**` 的页面骨架）决定页面。原语层不承载业务外观，组装层不重写原语的外观。
 
 ## 形态与交互
 
-三层组织：`src/base/` 单一职责原语、`src/composite/` 面向功能块的组装（`AppTopNav`、`eval-row-card`、`agent-log/` 全家、`provider-*`、`rubric-*` 等）、`src/testing/` jsdom 桩。base 随真实消费者生长（只实现有消费者的），当前核心原语与各自的实现契约：
+**四层组织**：
 
-- **PageShell**（页面根容器，「弹性布局 + 横向沾满」唯一出口）：四条不变量——纵向 Flex 根 + `width:100%` + `minWidth:0` + `height:100%`；**刻意不设 `alignItems`**（纵向 Flex 的交叉轴是水平方向，`flex-start` 会让子元素不横向拉伸）；`padding` / `gap` 默认不落 style（原语默认值一旦非 0，页面迁移会凭空新增间距）；**`minHeight:0` 无条件写**（高度链每个 scroll 模式共用，内容撑开容器时页面根收缩不到 flex 分配的高度，整页被顶出「顶栏那一截」）。结构性不变量自己写进**内联 style**——antd 的 `display` / `flex-direction` 走 CSS 类，内联读不到；不变量若只活在类名里，antd 换实现或改类名就静默失效。
-- **ResizableColumns**（多栏可拖）：尺寸口径三条（以 antd `useSizes.js` / `useResize.js` 的实现为准）——任一 Panel 带 `size` 整体走 propSizes 分支 ⇒ **弹性列必须不给 `size`**（条件展开而非 `size={0}`，给它传期望值会让它钉死、另一栏被压成 0）；`size` 是响应式受控入口，还原宽度必须给 `size`（`defaultSize` 刷新回旧值）；**受控拖拽必须把 `onResize` 回写进 `size`** 否则松手弹回（以 `onResize` 为准，别只监听 `onResizeEnd`）。`HANDLE_HIT_WIDTH = 6`；`restoreWidthsToAvailable` 是比例还原纯函数（弹性列原样回填）。栏增减后必须重收集宿主观察器，否则 `onPaneWidthChange` 从此**静默失效**。
-- **ListDetailLayout**（「列表 + 可拖拽右栏」唯一出口，用例页 / 评测页复用）：右栏显示条件 = `detailOpen && detail !== null && detail !== undefined`（**两个都判**，只判开关会渲染一条空栏）；单栏退化不用宽 0 的 Panel、不用 SplitPane；`PANE_PADDING`（= 8）导出常量（同时是吸底操作栏对齐依据）。内部已是 `PageShell`，页面**不再自己套一层**。
-- **SplitPane**（两栏薄适配）：`defaultSize`（挂载读一次），**不支持刷新还原拖过的宽度**——需要还原用 ResizableColumns；现状**无生产消费者**，保留为「不需要还原宽度时的两栏原语」。
-- **stored-preference**（偏好记忆）：URL 记「在看什么」（`?panel=` / `?id=`）、localStorage 记「怎么显示」（栏宽、开关）——个人偏好不该随链接串味。读取路径**绝不抛错**（SSR / 隐私模式 / 禁用 / 脏值一律回落默认）；`useStoredWidth` **挂载后再读**（首帧读会产生水合不一致）。
-- **theme-resolve + app-theme**（主题）：拆纯函数 + hook 两文件；`readAppliedThemeMode()` / `useAppliedThemeMode()` 读已解析明暗，消费方一律用这两个，不再自行解析一次。
-- **density + density-context**（紧凑密度）：全站紧凑唯一收口；设置页以 `density="default"` 豁免。
-- **AppTopNav**（顶栏，composite）：`Layout.Header` + `Menu`，导航项顺序**评测 / 用例 / 设置**；刻意不含产品名与主题切换（唯一入口在设置页，两处真源会打架）；**显式 `height: 40`**（`.ant-layout-header` 的 CSS 变量 `--ant-layout-header-height` 只在 Layout 嵌套作用域提供，根作用域实测为空、顶栏塌成 24.67px）+ **`flexShrink: 0`**（默认 1 时被压到 37.84px / 38.27px——随视口浮动，别当常数）；图标 `aria-hidden`；`aria-current` 由组件自己在 `<a>` 上给。
-- **EmptyState / Toolbar / EllipsisText**：纯 props 展示。**format.ts**：`formatBytes`（1024 进制、非有限数按 0）/ `formatDateTime`（ISO → `YYYY-MM-DD HH:mm`，非法输入原样返回）/ `shortHash`；原则是任何非法输入都要有可读兜底，绝不让 `NaN` / `Invalid Date` 上界面。
-- **testing/resize-observer.ts**：jsdom 无 `ResizeObserver`，antd Splitter 直接 `new` 全局构造器会 `ReferenceError`；桩**刻意不进共享 setup**（否则「无 ResizeObserver 也报初值」兜底分支永远测不到）；`installResizeObserverStub()` **顺带**装 matchMedia 桩（antd Table 两个 api 都要用，分两个入口必漏装一个）；替身只记账、从不调回调。
-- **globals.css**（应用侧）：主题底色变量（`--app-bg/-fg/-border/-muted/-selected`）+ 盒模型复位；字号间距一律 antd token。`.ant-app` 高度链必须内联到位（`height:100%` + 纵向 flex，断链则整页被内容撑长、滚动条不出现）。两组动效类（`aieval-activity-sweep` / `aieval-stream-cursor`）类名由 ui 包带上、样式只在此一处定义，只用既有主题变量（不构成第三处真源）；`prefers-reduced-motion` 兜底（动效静止成动态文本且颜色一起还原；光标保留只是不闪）。
-- **providers.tsx**（应用侧根装配，根 Provider 是 `XAppProvider`）：`XAppProvider` 是 X 的 `XProvider` 加本仓外壳，X 的 locale 合并与 `boxShadow*` 覆盖都收在壳里（见 `base/x-provider.tsx`），故本文件**不 import `@ant-design/x`**（装配侧解析不到它，也没必要）。本文件只给两项应用级配置：`locale={zhCN}`（antd 那份；不配则 antd 内置文案全英文——`No data`、`aria-label="Close"` 一整类问题一次性关掉）；`button` 组件配 `autoInsertSpace: false`（否则「编辑」渲染成「编 辑」，可访问名 ≠ 可见文案，按名定位失配）。**边界**：X 组件的文案只认壳里合并的那份 X locale（X 的 locale 是独立 context，antd 的传不进去）——合并在壳里而不是本文件，是为了让调用方没有「忘了合并」这个选项：漏合时 X 六组文案掉英文而 `localeCode` 仍报 `zh-cn`，症状到不了台面上。
+- `src/components/ui/`：vendored 原语（Button / Card / Dialog / Sheet / Select / Tabs / Table / Input / Textarea / InputGroup / Attachment / Collapsible / Field / MessageScroller / Trace / CodeBlock …）。结构照上游，本仓只在说明符层面改写；换合并库只改 `src/lib/utils.ts` 的 `cn` 一处。
+- `src/base/`：单一职责原语（PageShell、PageHeader、ListDetailLayoutgit、DataTable、VirtualList、drawer-geometry、app-theme、stored-preference、toast、Hint、EllipsisText、MonoText、EmptyState、Toolbar、RowStatusTag、MetricLine、ContextWindowTag、XMarkdownText 等）。
+- `src/composite/`：面向功能块的组装（`AppTopNav`、`cases-table`、`run-*`、`provider-*`、`mcp-*`、`rubric-*`、`agent-log/` 全家、命令面板、设置屏几件）。
+- `src/testing/`：jsdom 桩（`ResizeObserver` / `matchMedia` / 滚动几何），只给用例用；`src/dev/ui-probe.tsx` 是原语矩阵的真机验收页。
+
+**原语层逐字不动**：`src/components/ui/` 是上游 registry 产物，字号、颜色、圆角、边框、阴影都不在这里改。要变外观：优先传布局类（宽高 / 对齐 / 间距）或改组装层；确有依据的适配（去掉上游滚动特效、补焦点环）必须同时跑 `node scripts/vendored-manifest.mjs` 更新哈希清单并在提交说明里写理由——`components/vendored-manifest.test.ts` 会把任何未登记的改动判红。页面骨架用 `PageShell` / `PageHeader` / `ListDetailLayout` / `DataTable` 这些出口组装，不手写裸 `div` 拼布局。
+
+**颜色只用语义 token**（`background` / `foreground` / `muted-foreground` / `border` / `card` …）。**没有品牌色**：`--primary` 就是墨黑（dark 为近白），主操作、选中、进度与图表柱都用它；层级靠字号、字重、间距与发丝边框建立，不靠色相。`success` / `warning` / `info` / `destructive` 只标状态，不做装饰；图表走 `--chart-1..5` 的中性阶。唯一的第二处例外是 `base/row-status-tag.tsx` 的十种行状态色：它们靠色相区分十种状态，集中在一张映射表里；加状态只改表，不把调色板类散到调用点。
+
+**页面标题区**：`PageHeader` 是三个主页面的唯一出口——标题 `text-2xl font-semibold tracking-tight`、描述 `text-sm text-muted-foreground`、动作靠右；它**不跟密度档**（密度管正文与行高）。不许给页标题挂密度字号（`text-title`）。理由：页标题一旦压到正文同号，整页失去视觉重心；标题层级只由这一处决定，页面不再各写一份 `<h1>`（守卫 `apps/web-next/src/page-header.test.ts`）。
+
+**表格铺满容器**：`DataTable` 的表宽默认等于列宽之和；页面级列表传 `fillColumnId`（主标识列吃掉容器余量）。余量在**列定义**层加，不在 `<table>` 的宽度样式上加——`getStart()`、`<colgroup>` 与单元格宽度都读 `column.getSize()`，只改表格宽度会让固定列偏移与真实列宽错位。容器比列宽之和还窄时保持声明宽度并横向滚动；宽屏下不许只占左侧一段、右边留出死区。
+
+**空态不拉满整栏**：`EmptyState` 固定 `flex-none`（vendored `Empty` 自带 `flex-1`），不要在纵向 flex 里把空态撑满再垂直居中；空态高度不随视口增高。
+
+**页面骨架的高度链**：`html` / `body` 的 `height: 100%` → `PageShell` 的 `h-full` + `min-h-0`。`PageShell` 是页面根的唯一出口，无条件写 `min-h-0`（纵向主轴默认 `min-height: auto`，内容撑开时页面根收缩不到 flex 分配的高度，整页会被顶出顶栏那一截、内部滚动随之失效）。顶栏是 `PageShell` 的兄弟节点，显式 `height: 56`（shadcn 的 h-14）+ `flex-shrink: 0`：不写死高度时它的百分比高度与 flex 收缩会让它随视口浮动。**没有组件库的根节点承担这一段**——`Providers` 里没有任何 Provider 壳，`Toaster` 不产出包裹节点。
+
+**`PageShell` 的四条不变量**：纵向 flex 根 + `w-full` + `min-w-0` + `h-full`；刻意不设 `items-*`（纵向 flex 的交叉轴是水平方向，`items-start` 会让子元素不横向拉伸）；`padding` / `gap` 默认不落类，显式传入时只落密度间距档（`p-page` / `gap-page`）；`data-density` 无条件写（属性不在，整页落回 `:root` 的紧凑档）。
+
+**`ListDetailLayout`**（列表 + 可拖拽右栏的唯一出口）用 `react-resizable-panels` 的 `Group` / `Panel` / `Separator`：
+
+- `Panel` **没有受控 `size`**，宽度由库维护（拖拽、键盘、双击复位），外部只能 `panelRef.resize(px)` 命令式写回。存量值、右栏重新出现、视口变化都按规划出的**像素**写一次——按比例送会随窗口宽漂移。
+- 详情栏声明 `groupResizeBehavior="preserve-pixel-size"`：窗口变宽变窄时它保持像素宽，列表栏吃掉变化；`maxSize` 不每帧改（改 max 会触发约束重算，把像素意图冲成比例）。
+- `Separator` 自带双击复位；`onResize` 的 `inPixels` 是像素宽唯一可靠来源，落盘只在 `isUserInteraction` 为真时做（窗口缩放导致的夹紧不是用户意图）。
+- 右栏显示条件是 `detailOpen` **且** `detail` 非空——只判开关会渲染一条空栏；`PANE_PADDING`（= 8）与 `PANE_SEPARATOR_WIDTH` 是几何常量，不各写一份。
+
+**窄视口降级**：`ListDetailLayout` 在 `(max-width: 1279px)` 下默认把详情放进 `Sheet` 覆盖层（`narrowDetail="overlay"`），列表保持整宽——并排在 1280 以下会把列表压到六列表格的列宽之和（770）以下，只能横向滚动。覆盖层自带标题栏与「关闭详情」，关闭走调用方的 `onRequestCloseDetail`，布局本身不改 `detailOpen`。存量栏宽只在并排模式下有意义，覆盖模式下不读也不写。
+
+**`DataTable`**（TanStack Table v9 headless + 行虚拟化）：固定的唯一输入是列定义里的 `size`——TanStack 的固定列偏移算声明宽之和而非 DOM 实测，钉住的列缺 `size` 是静默错位，组件在渲染前直接抛错；行虚拟化以固定行高为前提，调用方必须给**有界高度**（否则滚动容器按内容撑开，虚拟化只剩空转）；滚动只由这一层容器承担且是 `overflow: auto`（空表不挂常驻滚动条）。列显隐 / 排序 / 行选择默认关闭。
+
+**`VirtualList`** 是 `useVirtualizer` 的**唯一持有者**：量不到高度（jsdom 的 `clientHeight === 0`、环境无 `ResizeObserver`）就退化为全量渲染、不抛错；宿主必须是有确定高度的 flex 子项，否则静默地不虚拟化。
+
+**抽屉几何**（`base/drawer-geometry.ts`）：主抽屉与二级抽屉各一档，**数值只写在全局样式**（`--drawer-main-width` / `--drawer-nested-width` / `--drawer-nested-give-way`），组件只引用变量。主抽屉恒宽于二级（61vw、下限 800px 对 60vw、上限 900px）；二级层打开时主抽屉的让位读 `--nested-dialogs`（Base UI 每开一层加一），不写死像素距离。三处抽屉壳与二级层都走 Base UI `Sheet`。
+
+**正文渲染**（`base/x-markdown.tsx`）：`streamdown` + `Code Block` + `Typeset`。四条口径——原始 HTML 只挂 `sanitize` + `harden`（不挂 raw 插件，标签转义成看得见的字面量）；`open` 必填且是「这一块还没收尾」的唯一判据（翻成 `isAnimating` 只有那一行）；围栏代码块不折行（超宽横向滚动）；`h1` → `<h4>`、`h2`–`h6` → `<h5>`。正文根的稳定钩子是 `data-slot="markdown"`。
+
+**输入区**是 Prompt Input 形态：一个 `InputGroup` 里装 `InputGroupTextarea`，附件清单在 `block-start` 的 addon（每份带移除键），「添加附件」与「发送」在 `block-end` 的 addon。两个入口（运行中的人工消息、跑完后的追问）共用 `composer-input.tsx` 的状态机与形态，各自只决定「这句话怎么发出去」；附件不往任何别处传，落盘走调用方的 multipart 回调。
+
+**禁用态必须说清原因**：`Hint` 是唯一壳——提示挂在**包住控件的真实元素**上，禁用按钮自己收不到鼠标事件；`TooltipProvider` 的打开延迟压到 0。
+
+**布局验收读几何**：960 / 1440 / 1920 三档下读 `getBoundingClientRect()`，主内容宽度 ÷ 容器宽度 ≥ 90%，空态高度不随视口增高。截图只作留档，不作判据。
+
+## 界面文案
+
+界面是中文、给做 AI 编码选型的工程师看，而且**人常常不在场**：一次评测跑几十分钟，回来看的是「发生了什么、该点什么」。因此文案按下面四组规则写，风格偏好一律让位于这四组。
+
+**一个概念一个词**。同一个东西在全局只有一种叫法，量词也钉住：
+
+| 概念 | 界面用 | 不用 |
+|---|---|---|
+| 被评测的题面 | 用例 | 案例、测试用例 |
+| 一次评测 | 评测（量词：**次**，「这一次评测」） | 用「轮」数评测 |
+| 模型一次 API 往返 | 轮次 / 本轮 | ——（「轮」只此一处，见 `GLOSSARY.md` 的「段」） |
+| 模型 × 智能体 的那一条 | 候选 | 行、候选行（`EvalRow` 是内部名） |
+| 跑在候选里的执行体 | 智能体 | 中文句子里夹 `agent` |
+| 可被装入的技能 | 技能 | 中文句子里夹 `skill` |
+| 候选产出的代码差量 | 变更 | 改动、`diff`（`diff 上限` 是体积预算这个旋钮的专名） |
+| 相对位置 | 名次 | 排序；「排名」只作视图名（按钮 / 抽屉） |
+| 评测的起点提交 | 基线提交 | commit（`基线` 与契约 `baselineCommit` 同词） |
+| 工作区落盘根 | 工作区根目录 | 工作基目录 |
+| 行状态 `pending` | 待开始 | 未开始 |
+| 缓存读入的 token | 缓存命中 | 缓存读 |
+
+**动作键写动作**。`ConfirmDialog`（`base/` 与 `composite/` 两份）的 `confirmLabel` 是**必填**，写被执行的那个动作（「删除这次评测」「终止」「重新评分」），不写「确定」「确认删除」——笼统的确认键在「终止这一行」与「删除这一次评测」上长得一模一样，用户只能回读标题才知道按的是什么。缺省值一旦存在，新调用点就会照抄它。同理，解释某颗按钮的浮层文案必须叫出**界面上真实存在的那个名字**（按钮叫「开始执行」，浮层就不能写「点『开始』」）。右栏表单的提交键另属一类：它提交的是整张已经写明动作的表单，标签固定按模式分两态（新建「确定」/ 编辑「保存」），不随标题改写。
+
+**四态分开写**。首次使用给下一步动作（「先创建一个用例，再新建一次评测」）；过滤后为空说是过滤造成的；读失败说清**哪一份**没读到、服务端中文原因、以及恢复路径（「刷新页面会重新请求」）——SWR 读失败时保留上一份数据，只报「加载失败」而列表还在，读起来像「加载成功但内容没变」；未就绪说清缺哪个前提、去哪儿补（「设置页还没有配置默认评分智能体」+ 去哪儿配）。
+
+**错误三段式**：什么失败了（点名对象）→ 为什么（服务端中文原因原样透出，不知道就不写）→ 现在能做什么。归因码（`AGENT_FAILED` 这类）照旧上屏——团队按报错原文 grep，`docs/faq/` 就是这么索引的——但排在中文原因**之后**（`中文原因（CODE）`），它回答不了「发生了什么」。
+
+`tok`、`MCP`、`HEAD`、`schema`、`JSON` 是这一行的行话，不译；产品名在 `PRODUCT.md` 里仍是未决项，别在界面里替它选一个。
 
 ## 数据与契约
 
-- 原语接口契约就是「props 表 + 尺寸口径 + 偏好记忆口径」三件套（见上节）；composite 面板收的全是 contracts 类型。
-- `ui → contracts` 是唯一内部依赖边：类型全部来自 contracts，纯数据驱动。`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型——**类型转出不算依赖边**（编译期即被抹掉），只允许 `export type`，写成值导出就真有运行时依赖，得回来改依赖方向表。
-- 主题底色变量按实际消费点分层：`--app-bg` / `--app-border` 由 ui 包的 `AppTopNav` 内联消费，`--app-muted` / `--app-fg` 由 globals.css 自消费（含动效渐变），`--app-selected` 由应用页的选中行样式消费（`app/runs/page.tsx`、`app/cases/page.tsx`）。
+- 原语接口契约 = 「props 表 + 尺寸口径 + 偏好记忆口径」三件套；composite 面板收的全是 contracts 类型。
+- `ui → contracts` 是唯一内部依赖边。`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型——**类型转出不算依赖边**（编译期即被抹掉），只允许 `export type`，写成值导出就真有运行时依赖，得回来改依赖方向表。
+- 个人偏好分两处存：URL 记「在看什么」（`?panel=` / `?id=`），localStorage 记「怎么显示」（栏宽、开关）。`useStoredWidth` **挂载后再读**（首帧读会产生水合不一致），读取路径绝不抛错（SSR / 隐私模式 / 脏值一律回落默认）。
+- 任何非法输入都要有可读兜底，绝不让 `NaN` / `Invalid Date` 上界面（`formatBytes` / `formatDateTime` / `shortHash`）。
 
 ## 机制与演化
 
-- **主题三处同步**：`ConfigProvider theme` + `html[data-theme]` + `ConfigProvider.config({ holderRender })`，缺一处就是半亮主题（「组件亮了、底色还是暗的」）。配套口径：`data-theme` 恒为解析后的 light / dark，`data-theme-preference` 保留偏好原值（auto 要能区分出来）；偏好未就绪按暗色兜底（SSR 不闪白）；auto 即时跟随系统无需刷新；主题唯一入口在设置页。
-- **紧凑密度机制**：明暗算法与 `compactAlgorithm` 组成 `algorithm` 数组按序应用；`COMPACT_THEMES` 按明暗预生成（避免每次 render 重建 ThemeConfig，algorithm 数组引用也保持稳定）。字号只给 `fontSizeSM: 11`（见下）。
-- **高度链机制**：`.ant-app` → `PageShell` → `Layout.Content` 的 `flex:auto + min-height:0`——断在任一环，整页被内容撑长、该出现的滚动条不出现。
-- **`useAppliedThemeMode` 用 `useSyncExternalStore`**（首帧不闪）：订阅的是 `data-theme` 属性变化（`providers` 写完属性后通知所有消费方），server snapshot 恒 `'dark'`。
-- **jsdom 缺口机制**：`matchMedia` 由用例自己注入；`ResizeObserver` 桩不进共享 setup（兜底分支要可达）；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉。
+**明暗单一真源**：`useResolvedTheme({ preference })` 只写两个属性——`data-theme`（解析后的 `light` / `dark`，SSR 由 `<html data-theme="dark">` 兜底、不闪白）与 `data-theme-preference`（偏好原值，`auto` 要能区分出来）。偏好来自设置（`GET /api/settings`），`auto` 走 `matchMedia` 即时跟随系统。需要布尔的消费方读 `useAppliedThemeMode()`（`useSyncExternalStore` 订阅 `data-theme`），**不再自行解析一次**。主题唯一入口在设置页。
+
+**颜色变量的两层名字**：`globals.css` 的 `:root` / `[data-theme='dark']` 给出语义变量（`--background` / `--foreground` / `--card` …），`@theme inline` 把它们映射成 Tailwind 的 `--color-*`。于是工具类 `bg-background` 落地成 `var(--background)`，手写 CSS 读 `var(--color-background)`——**改一个颜色要两处名字都对上**。`--app-bg/-fg/-border/-muted/-selected` 是给内联 style 与动画类留的别名，值一律指回语义色。
+
+**密度**：`PageShell` 写 `[data-density]`，缺省 `compact`，设置页豁免 `default`。字号 / 行高 / 间距只从作用域变量取（`text-body` / `text-sub` / `leading-body` / `gap-*` / `p-page`），组件里**不手写 `fontSize` 或行内 padding**——手写会把那一格从密度档上摘下来，切档时不跟随，而且没有用例会红。密度只管正文、行高与间距；页标题、区块标题、卡片标题的字号不跟密度档。两档变量都写全：只写一档时，嵌套的另一种密度壳会继承外层值，两档齐全才是「最近一层赢」。
+
+**Tailwind v4 从源文本抽候选，注释也算**：它在被 `@source` 覆盖的源文件里按**原始文本**找类名，注释里的字面量同样算数；`node_modules` 不在扫描范围。后果：上游组件硬编码的类（例如 `Streamdown` 根上的 `space-y-4`）在产物里本来**不生成**，一旦把它照抄进注释「说明上游用了什么」，那条 utility 就会**真的出现**并参与层叠。所以注释里别写 utility 类名；要说明上游行为时用代码块以外的措辞。判据：`grep` 构建产物里有没有那个选择器。
+
+**`@layer` 顺序的坑**：`globals.css` 声明 `@layer theme, base, components, utilities`。密度变量块**必须写在层外**（文件顶层，不在任何 `@layer` 里）：Tailwind 的默认主题变量输出在 `@layer theme`，层内声明永远输给层外的声明，写进 `@layer base` 也会被 `theme` 反超——尺寸静默变回 Tailwind 默认值，浏览器不报错。
+
+**跳过 preflight 的补偿**：管线只引 `tailwindcss/theme.css` 与 `utilities.css`，不引 `@import "tailwindcss"` 展开出的 preflight——那层全局复位（`*` 的 `margin` / `padding` / `border`、标题与表单控件的字号继承）会连带改掉原生元素与 vendored 原语的默认度量。代价是 preflight 自带的两条基础复位要自己补：
+
+- `* { box-sizing: border-box }`；
+- `[hidden] { display: none !important }`：UA 对 `[hidden]` 只给一条 `display: none`，作者样式里任何 `display`（本仓大量元素带 `flex` / `grid` 类）都会盖掉它 ⇒ 写了 `hidden` 仍然显示。Base UI 的页签面板靠这个属性隐藏非活动页签（`Tabs.Panel keepMounted`），缺了它三个面板会同时铺开。
 
 ## 已知边界与取舍
 
 | 边界 | 状态 | 处置与判据 |
 |---|---|---|
-| 双击复位不是 antd 能力 | 现状 | antd 6.6.5 `Splitter` 无内置双击复位（`es/splitter/SplitBar.js:203` 只把双击转给可选的 `onDraggerDoubleClick`，无人传）；需要时调用方自行实现，本期不做 |
-| ListDetailLayout 比例还原实测未生效 | 已知弱点，本期不修 | 传给 `restoreWidthsToAvailable` 的 `widths` 是 `[0, preferredWidth]`（弹性列写死 0），只要 `available ≥ preferredWidth + 6` 就原样返回 ⇒ 缩窄时右栏恒保偏好宽（实测恒 380），左栏被压到 88px、16px——低于它声明的 `min: 120`；修法（扣掉弹性列 min，或把左栏实测宽喂进 widths）留给后续。底线是「窗口变窄不崩」，勿把比例收缩写成已兑现能力 |
-| SplitPane 无生产消费者 | 保留 | 留在 ui 出口作「不需要还原宽度的两栏原语」；「右栏一律用 `end`」是给未来调用方的约定，非现状描述 |
-| `CopyOnClick` / `OperationStatus` 未实现 | 现状 | 别照脚手架占位去代码里找；中止按钮分别写在 `run-detail-panel.tsx`（运行级）与 `eval-row-card.tsx`（行级），未抽成原语 |
-| `.tsx` 测试只能在库包写 | 硬边界 | web-next 必须留 `jsx: preserve`（Next 需要），Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`，改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效；应用内测试一律 `.ts` |
-| `styles.dragger` 覆盖陷阱 | 实测钉住 | 传 `width` 会把命中带改成 0（实测三条分隔条全为 0）；命中带宽度由 antd 尺寸变量决定，运行时变量名是 `--ant-splitter-split-bar-size` 等（`--ant-splitter-bar-size` 不存在）；两栏**间距**是组件自己写的 CSS `gap`，与 antd 无关 |
-| 顶栏高度的两处实测数字 | 实测钉住 | `height: 40` 与 `flexShrink: 0` 都是确定值；37.84px / 38.27px 随视口浮动，**不要当固定常数**引用 |
-| `MonoText` 的等宽字体必须挂在**承载文本的那个元素**上 | 真机钉住 | 挂在宿主上会被 antd 自己的 `font-family` 盖掉（`Typography.Text` 渲染出的 `.ant-typography` 自带一条 `font-family`，继承打不过它）⇒ 宿主上写着等宽、真机量出来是系统字体，而**代码与截图都看不出这件事**。判据只能是真机读 `getComputedStyle(承载文本的元素).fontFamily` 含 `monospace`——**jsdom 里永远看不出来**（没有 CSS 级联，用例全绿），所以这条不靠单测、靠冒烟 |
-| `Splitter` / `Flex` / `Button` 各坑 | 收口在原语层 | 受控 `size` + `onResize` 回写、弹性列不给 `size`；`Flex` 的 `display` / `flex-direction` 走 CSS 类（结构性不变量写内联 style）；antd 6 `Button` 的 `variant` 单给不生效（须与 `color` 成对，或用 `type` 语法糖，单给 `variant="dashed"` 静默渲染成实线）——三坑的完整表述以 `AGENTS.md`「边界与工具链的已知坑」表为真源，本文不复制第二份 |
+| jsdom 没有 CSS 级联与布局 | 硬边界 | 字号实效、省略号、拖拽、`[data-density]` 切换后的真实度量都只能在真机量（读 `getBoundingClientRect` / `getComputedStyle`）；单测只钉可计算的几何与结构属性 |
+| 虚拟化在 jsdom 里退化 | 有意 | `clientHeight === 0` 时全量渲染：用例数得到全部内容，但虚拟化本身测不到；真机冒烟看「已渲染 N」锚点 |
+| `.tsx` 测试只能在库包写 | 硬边界 | `apps/web-next` 必须留 `jsx: preserve`（Vite 的 import-analysis 会拒绝），应用内测试一律 `.ts` |
+| 颜色变量有两个名字 | 现状 | `--color-*`（手写 CSS 用）与 `--*`（工具类落地用）同源但不同名，改颜色两处都要对 |
+| 密度块必须写在层外 | 硬约束 | 写进任何 `@layer` 都会被 `@layer theme` 的默认值反超，症状是切到宽松档无效且无报错 |
+| 主题没有 Provider | 现状 | 只认 `html[data-theme]`；不要在 `Providers` 里重新引入一层主题上下文，那等于开第二处真源 |
+| `streamdown` 的 `tailwind-merge` | 现状 | 由 pnpm `overrides` 别名到仓内 `cn`（`clsx` 沿用树里已有的版本） |
+| 真实拖拽不可达 | 硬边界 | jsdom 容器尺寸为 0；`ListDetailLayout` 的 `onResize` 回写要在真实调用方处钉 |
 
 ## 相关链接
 
-- 仓库内活文档：`AGENTS.md`「约束」（antd / 不手写字号 / 不裸写 `div` 的 UI 纪律）、「边界与工具链的已知坑」（紧凑密度、Button variant、主题三处同步、Splitter、Flex 各行）、「测试」（jsdom 缺口行）——按节名定位，坑表的真源在那里，本文不复制
-- [契约体系](/architecture/contracts) —— ui → contracts 依赖边、`ProviderView` 掩码下行
-- [用例管理](/features/case-management) —— ListDetailLayout 的真实消费方之一（列表 + 右栏三态）
-- [《评测详情与候选行》](/features/run-detail)、[《设置》](/features/settings) —— ListDetailLayout 的另一消费方、主题唯一入口在设置页
+- [冒烟测试方法论](/guard/smoke-testing) —— 几何断言与真机验收；[测试策略与提速](/guard/test-strategy) —— jsdom 缺口与 `.tsx` 测试的边界
+- [工具链与命令聚合](/architecture/toolchain) —— vendored manifest 脚本、构建与依赖口径
+- [分层与依赖方向](/architecture/layering) —— `ui → contracts` 边与装配侧职责
+- [契约体系](/architecture/contracts) —— 界面吃的领域类型来源
+- [《用例管理》](/features/case-management)、[《评测详情与候选行》](/features/run-detail)、[《设置》](/features/settings) —— `ListDetailLayout` 的消费方、主题唯一入口

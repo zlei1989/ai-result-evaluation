@@ -16,7 +16,7 @@ import type { Rubric, RubricChange } from '@aieval/contracts';
 import { RubricAdjustModal } from './rubric-adjust-modal';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
-// jsdom 没有 ResizeObserver，而清单里的 `EllipsisText`（Typography 的 ellipsis）会直接 new 它
+// jsdom 没有 ResizeObserver，`DataTable` 与部分原语会直接 new 它
 beforeEach(() => {
   installResizeObserverStub();
 });
@@ -197,6 +197,7 @@ describe('RubricAdjustModal：失败与在途取消', () => {
 
     const submit = screen.getByTestId('rubric-adjust-submit');
     expect(submit).toBeDisabled();
-    expect(submit.className).toContain('ant-btn-loading');
+    // 在途标记走 `data-loading`：新栈的按钮没有 antd 的 loading 类，转圈的是按钮里的那个 span
+    expect(submit).toHaveAttribute('data-loading', 'true');
   });
 });

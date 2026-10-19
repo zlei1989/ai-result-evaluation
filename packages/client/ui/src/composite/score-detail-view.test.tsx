@@ -29,7 +29,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
 import type { ReactNode } from 'react';
 import { AGENT_LABELS, type Rubric, type ScoreResult } from '@aieval/contracts';
 import { formatDateTime } from '../base/format';
@@ -51,7 +50,6 @@ afterEach(() => {
  * 语义色那条守卫用的**自定义** `colorError`：刻意不等于默认值（`#ff4d4f`），
  * 这样「颜色跟着 antd token 走」才是一条真断言——写死默认色值同样会红。
  */
-const CUSTOM_COLOR_ERROR = '#123456';
 
 const RUBRIC: Rubric = {
   groups: [
@@ -114,21 +112,18 @@ describe('ScoreDetailView', () => {
   });
 
   /**
-   * 逐项明细的**形态**守卫（`Table size="small"`）。
+   * 逐项明细的**形态**守卫（DataTable）。
    *
    * 为什么值得一条：换成表格是**观感与可读性**的改动，没有任何行为断言会因此变红
-   * （旧版是手写的 Flex 行，同样能把每个字段渲染出来）。三条判据各拦一种退化：
+   * （旧版是手写的 Flex 行，同样能把每个字段渲染出来）。两条判据各拦一种退化：
    * ① 行真的是 `<tr>`——退回手写行时红，而**上一组守卫的 `data-testid` 口径不必改**
-   *   （这也是这次改版刻意保留的契约：标记仍挂在行上，不是挪进某个单元格）；
-   * ② **一组一张表**——两组各一张，摊成一张大表时红；
-   * ③ 紧凑尺寸（`size="small"` 在 antd 里落到 `.ant-table-small`；antd 6 的枚举是
-   *   `large | medium | small`）——把尺寸去掉时红。
+   *   （标记仍挂在行上，不是挪进某个单元格）；
+   * ② **一组一张表**——两组各一张，摊成一张大表时红。
    *
-   * ② 的判据是 `.ant-table-wrapper` 而**不是**裸 `table`：抽屉顶部那一段的
-   * `Descriptions` **自己也是一个 `<table>`**（antd 的实现如此），数裸标签会把那一张也数进来
-   * ——判据必须点名「评分表那几张表」，否则以后每加一个 Descriptions 都要来改这个数。
+   * ② 的判据是套件的滚动容器而**不是**裸 `table`：这一屏别处也可能渲染表格语义
+   * （antd 的 `Descriptions` 实现如此），数裸标签会把无关的表也数进来。
    */
-  it('逐项明细走 antd 表格、紧凑尺寸，且一组一张表', () => {
+  it('逐项明细走 DataTable，且一组一张表', () => {
     const twoGroups: Rubric = {
       groups: [
         { name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 18 }] },
@@ -138,8 +133,7 @@ describe('ScoreDetailView', () => {
     const { container } = render(view(score(), twoGroups));
 
     expect(screen.getByTestId('score-judgment-A1').tagName).toBe('TR');
-    expect(container.querySelectorAll('.ant-table-wrapper')).toHaveLength(2);
-    expect(container.querySelectorAll('.ant-table-small')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-testid="data-table-scroll"]')).toHaveLength(2);
   });
 
   it('总分原样显示权威值，**不在前端重算**（18 分就是 18，不是按权重现场算出来的别的数）', () => {
@@ -163,27 +157,17 @@ describe('ScoreDetailView', () => {
    * 未达成那一行的**语义色**是另一半：只钉 `data-achieved` 与文案的话，把这一行改成与达成项同色
    * （或干脆去掉颜色）不会有任何东西红，而「一眼扫出哪几项没做到」正是这一行的用处。
    *
-   * 判据是**渲染出来的行内 style**（探针实测：颜色落在这一格的 `style.color` 上，达成项那一格是空串）。
-   * 这一份刻意把主题的 `colorError` 换成 `CUSTOM_COLOR_ERROR`（≠ 默认值）：于是「颜色来自 antd 的
-   * token」这句话才被断言兑现——**写死任何字面量都会红**，包括写死当前默认的 `#ff4d4f`
-   * （只拿默认 token 当基准时，写死默认值照样通过，那是一条比它看起来更弱的断言）。
-   * 归一化那一步不能省：jsdom 把 `#123456` 序列化成 `rgb(18, 52, 86)`，直接比原值会假红。
+   * 判据是**行上的语义类**：颜色仍来自 `--destructive`，但走命名类而不是内联色值。
+   * 「行内没有 style.color」也一起钉住——那不是本仓的取色方式。
    */
-  it('未达成的项带 antd 的语义色、达成的项不带（换成自定义 token 后颜色仍跟着走）', () => {
-    render(
-      <ConfigProvider theme={{ token: { colorError: CUSTOM_COLOR_ERROR } }}>
-        {view(score())}
-      </ConfigProvider>,
-    );
-    // 同一个自定义值在 jsdom 里走一遍同样的序列化，作为比较基准（不写死序列化后的形式）
-    const probe = document.createElement('span');
-    probe.style.color = CUSTOM_COLOR_ERROR;
+  it('未达成的项带语义色类、达成的项不带', () => {
+    render(view(score()));
 
     const achievedRow = screen.getByTestId('score-judgment-A1');
     const missedRow = screen.getByTestId('score-judgment-D1');
-    expect(missedRow.style.color).not.toBe('');
-    expect(missedRow.style.color).toBe(probe.style.color);
-    expect(achievedRow.style.color).toBe('');
+    expect(missedRow.classList.contains('text-destructive')).toBe(true);
+    expect(missedRow.style.color).toBe('');
+    expect(achievedRow.classList.contains('text-destructive')).toBe(false);
   });
 
   /**
@@ -302,8 +286,8 @@ describe('ScoreDetailView', () => {
       `输出约束：提示词约束 · 评分时间：${formatDateTime('2026-09-29T08:10:00.000Z')}`,
     );
     expect(accountingLine).toBeInTheDocument();
-    expect(accountingLine.querySelector('.ant-alert, .ant-typography-danger, .ant-typography-warning')).toBeNull();
-    expect(accountingLine.className).not.toMatch(/danger|warning/);
+    expect(accountingLine.querySelector('[data-slot="alert"]')).toBeNull();
+    expect(accountingLine.className).not.toMatch(/destructive|warning|amber/);
   });
 });
 
@@ -344,7 +328,7 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
     expect(meta.getByText('claude-opus-4-6')).toBeInTheDocument();
     expect(meta.getByText('思考强度')).toBeInTheDocument();
     // 「颜色不随取值变」的另一半在这里（下面那条钉的是文本通路与 `off`）：`max` 也是同一个紫
-    expect(meta.getByText('max')).toHaveClass('ant-tag-purple');
+    expect(meta.getByText('max')).toHaveAttribute('data-tone', 'effort');
     expect(meta.queryByText('耗时')).toBeNull();
     // 用量与耗时都在第二行，一个也不许留在第一行
     expect(meta.queryByText(/tok/)).toBeNull();
@@ -369,14 +353,15 @@ describe('评分运行信息（抽屉顶部那两行）', () => {
     const { unmount } = render(view(score({ judgeAgentKind: 'dsh', judgeEffort: 'off' })));
 
     const meta = within(screen.getByTestId('score-judge-meta'));
-    expect(meta.getByText(AGENT_LABELS.dsh)).toHaveClass('ant-tag-blue');
-    expect(meta.getByText('deepseek-chat')).toHaveClass('ant-tag-geekblue');
-    expect(meta.getByText('off')).toHaveClass('ant-tag-purple');
+    // 每个槽位一个固定语义色（`data-tone`），取值怎么变都不跟着换色
+    expect(meta.getByText(AGENT_LABELS.dsh)).toHaveAttribute('data-tone', 'agent');
+    expect(meta.getByText('deepseek-chat')).toHaveAttribute('data-tone', 'model');
+    expect(meta.getByText('off')).toHaveAttribute('data-tone', 'effort');
     unmount();
 
     // 文本通路：同一个蓝（底色说的是「这是哪一个槽位」，不是取值的好坏）
     render(view(score()));
-    expect(within(screen.getByTestId('score-judge-meta')).getByText('文本 API')).toHaveClass('ant-tag-blue');
+    expect(within(screen.getByTestId('score-judge-meta')).getByText('文本 API')).toHaveAttribute('data-tone', 'agent');
   });
 
   /**
@@ -577,7 +562,7 @@ describe('评分原始输出（judgeOutput 那一组）', () => {
 
   it('读取中 ⇒ 骨架屏（不是一个空抽屉）', () => {
     render(judgeView(judgeOutput({ state: { status: 'loading' } })));
-    expect(document.querySelectorAll('.ant-skeleton').length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
   });
 
   it('实时连接故障 ⇒ 一行警示，且已收内容不受影响', () => {

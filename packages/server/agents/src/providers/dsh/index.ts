@@ -1166,6 +1166,17 @@ export const DSH_SUBAGENT_DRAIN_MS = 60_000;
 
 async function startDsh(context: TurnContext): Promise<TurnStart> {
   const { input } = context;
+  /**
+   * **回到某一轮**：这一家做不到（客户端只有 `resumeSession(sessionId)`，没有任何截断 / 分叉 /
+   * 回退入口）⇒ 收到 `fork` **必须抛中文错**，不许静默退化成普通续接（那会让「回到第 N 轮」变成
+   * 「接着最后一条继续」——用户以为回到了那一点，模型其实什么都记得，而界面上一切正常）。
+   * 入口区的能力声明保证界面不会走到这里；这一句是旁路与将来误接的兜底。
+   */
+  if (input.fork !== undefined) {
+    throw new Error(
+      '[agents] dsh 不支持回到某一轮：客户端只有 resumeSession(sessionId)，没有截断 / 分叉 / 回退入口',
+    );
+  }
   // **不要**在这里加「收到 `outputSchema` 就报错」的守卫：支持与否由 `run` 转发的
   // `capability.structuredOutput` 交给骨架，`runTurn` 在 `start` 之前就把这一格摘掉了 ⇒ 走到这里
   // 它必定不存在，再判一次是死代码。代价已登记：绕过 `run` 构造 `AgentRunInput`
@@ -1897,6 +1908,20 @@ export const dshProvider: AgentProvider = {
      * 耗时量级：一次运行在**分钟级**（含 overlay 注入、stream-tap 插件到收尾）。
      * 真机冒烟的默认等待预算按这一档派生——声明小了，那一轮会被自己的预算掐掉。
      */
+    /**
+     * **回到某一轮**：做不到。这一家的客户端全部方法里只有 `resumeSession(sessionId)`——能接着
+     * 最后一条续，没有任何截断 / 分叉 / 回退入口。
+     *
+     * `reason: 'not-supported'` 必须如实给出：界面据此置灰并说出「这家结构上不支持」，
+     * 而不是让按钮可点之后静默从头开始（那是最坏的一种）。
+     */
+    checkpoint: {
+      supported: false,
+      mode: null,
+      filesRewind: false,
+      reason: 'not-supported',
+      notes: ['客户端只有 `resumeSession(sessionId)`：没有截断 / 分叉 / 回退入口'],
+    },
     timing: {
       runScale: 'minutes',
       notes: ['本机实测：一次运行的墙钟在分钟级；行内首次注入与插件落盘是其中的固定开销'],

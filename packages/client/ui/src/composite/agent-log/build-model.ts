@@ -126,6 +126,8 @@ export interface AgentLogFactsInput {
   thinking: AgentLogFacts['thinking'];
   domain: AgentLogFacts['domain'];
   error: AgentLogFacts['error'];
+  /** 模型声明的上下文窗口（token）；`null` = 拿不到（见 `AgentLogFacts.contextWindow`） */
+  contextWindow: AgentLogFacts['contextWindow'];
   /** 还有内容要到（决定 `LogTurn.running`） */
   live: boolean;
 }
@@ -695,6 +697,10 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
           thinking: null,
           domain: [],
           error: null,
+          // 汇总行读的是子会话自己的用量（会话尺度累计），它不是这一行的窗口占用 ⇒ 未采集
+          contextUsed: null,
+          // 这一档与主会话同一行、同一个模型：上限照搬这一行的事实
+          contextWindow: input.facts.contextWindow,
         },
       });
       continue;
@@ -990,6 +996,9 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     specVersion: 1,
     facts: {
       ...input.facts,
+      // 上下文占用只从**事件流**取（最后一条候选阶段主会话读数），不从 `facts.tokens` 求和：
+      // 后者是整行累计账单，两笔账混用会让长跑行的百分比涨过 100%
+      contextUsed: contextUsedOf(input.events),
       /**
        * **轮次的两个数都由时间轴自己派生**，不看 `facts.turns` 里传进来的那份：
        *   · `current` = 当前节点的轮次数——它就是时间轴上「轮次 N」的最大值，两处**必须同源**
@@ -1064,6 +1073,63 @@ function turnHomesOf(nodes: readonly LogNode[]): Set<string> {
 /** 取 `usage` 事件（判别联合的窄化辅助：调用方拿到的就是那个成员） */
 type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
 
+/** 候选阶段里最后一条**主会话**带计量的读数（里程碑与上下文占用共用这一份判据） */
+interface CandidateUsage {
+  index: number;
+  event: UsageEvent;
+  tokens: NonNullable<UsageEvent['tokens']>;
+}
+
+/**
+ * 扫描一遍事件流，取**候选阶段最后一条主会话** usage。
+ *
+ * 两处共用（整行唯一那条里程碑、上下文占用）：各扫一遍会各自判一次「哪一条算这一行的读数」，
+ * 而这两处一旦漂移，屏幕上就会出现「里程碑说轮次 2、占用按轮次 3 算」这种互相打脸的读数。
+ *
+ * 判据三格：
+ *   · **候选阶段的闸门**：`judging` / 终态帧把它**关上**（之后报的读数是评审者的——历史数据形态），
+ *     而 `preparing` / `running` 把它**重新打开**：一次追问（或一次重跑）就是又开一个候选阶段。
+ *     只关不开的症状：追问那一段的读数被当成评审者的用量丢掉，里程碑冻在首段的最后一条读数上
+ *     ——数字是旧的，位置也落在中间那一轮（真机 `ce008414` 的行 `673cd5f8`：最后一条消息是段 1 的轮次 3，
+ *     里程碑却停在段 1 的轮次 2）。`重新评分` 只落 `judging`、不落 `preparing`，故它不会误开这道闸门；
+ *   · **只认主会话**：子会话的读数是**它自己**的会话尺度累计（不是这一行的读数）——它只在派发点那张
+ *     子任务卡片里展示（`SessionNode.usage`），混进来会让占用跳成另一个会话的数；
+ *   · **只要带计量的**（`tokens === null` 的那条跳过，不覆盖前一条）。
+ */
+function lastCandidateUsageOf(events: readonly AgentEvent[]): CandidateUsage | null {
+  let candidatePhase = true;
+  let last: CandidateUsage | null = null;
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event === undefined) continue;
+    if (event.type === 'status') {
+      if (event.status === 'judging' || TERMINAL_ROW_STATUSES.includes(event.status)) candidatePhase = false;
+      else if (event.status === 'preparing' || event.status === 'running') candidatePhase = true;
+      continue;
+    }
+    if (event.type !== 'usage' || event.tokens === null) continue;
+    if (!candidatePhase) continue;
+    if ((event.turn?.subagentId ?? null) !== null) continue;
+    last = { index, event, tokens: event.tokens };
+  }
+  return last;
+}
+
+/**
+ * **上下文占用**：候选阶段最后一条主会话 usage 的 `input + cached`（这一刻送进模型的 prompt 总量）。
+ *
+ * 为什么不是 `facts.tokens`：那是**整行累计账单**（跨轮次、跨追问求和），拿它当占用会让长跑行的
+ * 百分比一路涨过 100%。两格分开存、各给各的展示用（账单在用量三元组，占用在这一格）。
+ * 拿不到读数、或数值不合法（负数 / 非有限）⇒ `null`（「未采集」，不是 0）。
+ */
+function contextUsedOf(events: readonly AgentEvent[]): number | null {
+  const last = lastCandidateUsageOf(events);
+  if (last === null) return null;
+  const { input, cached } = last.tokens;
+  if (!Number.isFinite(input) || !Number.isFinite(cached) || input < 0 || cached < 0) return null;
+  return input + cached;
+}
+
 /**
  * 行级事件的去向（逐条决定，不留洞）：
  *   · `error` **恒**进时间轴（失败归因不能只留最后一条）； * · `usage` **整行只出一条**（用户裁定）：取**候选阶段**里最后一条**主会话**带计量的读数
@@ -1074,15 +1140,9 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
  *   · `log` **不进时间轴**（它走 `diagnosticsOf` 的原文面板）；
  *   · 其余（`status` / `diff-summary` / `score` / `end`）只在终点有意义，留在 `facts` 里。
  *
- * 三条边界：
- *   · **候选阶段的边界是「一开一关」**：`judging` 或终态状态帧**关**（他们之后的读数是评审者的用量，
- *     落 `judge-events.jsonl`，与行级流分开；这条判据的输入源是历史数据回放——评分事件曾与候选
- *     同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，那些读数不属于这一行），
- *     `preparing` / `running` **重新开**（一次追问或一次重跑就是又开一个候选阶段）。只关不开的话，
- *     追问那一段的读数全被当成评审者的丢掉；
- *   · **子会话的读数一条都不出**：`turn.subagentId` 非空的那一类是**那个子会话自己**的累计，它只在
- *     派发点那张子任务卡片里展示（`SessionNode.usage`，数据来自 `SubagentRecord.usage`，与本函数无关）；
- *   · **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
+ * 边界：读数的筛选（候选阶段闸门 / 只认主会话 / 只认带计量的）只在 `lastCandidateUsageOf` 一处，
+ * 本函数不另写一份——两份判据漂了，这行与上下文占用就会按不同的事件各说各话。
+ * **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
  *
  * `homes` = 整行**存在**的轮次集合（见 `turnHomesOf`）；**不给时一律当孤儿** ⇒ 那一条的 `turn` 是 `null`，
  * 与老调用方、老用例的行为逐字一致。
@@ -1090,37 +1150,13 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
 export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<string>): RowEvent[] {
   /** 带事件下标的结果行：那一行用量可能出现在任何位置，最后按事件次序排回去 */
   const rows: { index: number; row: RowEvent }[] = [];
-  /** 候选阶段里最后一条**主会话**带计量的读数（整行唯一那条里程碑的候选；计量一并记下，取用时不重判） */
-  let lastCandidateUsage: { index: number; event: UsageEvent; tokens: NonNullable<UsageEvent['tokens']> } | null = null;
-  /**
-   * 候选阶段的闸门：开着时收读数。`judging` / 终态帧把它**关上**（之后报的读数是评审者的——历史数据形态），
-   * 而 `preparing` / `running` 把它**重新打开**：一次追问（或一次重跑）就是又开一个候选阶段。
-   *
-   * 少了「重新打开」这一半的症状：追问那一段的读数被当成评审者的用量丢掉，里程碑冻在首段的最后一条读数上
-   * ——数字是旧的，位置也落在中间那一轮（真机 `ce008414` 的行 `673cd5f8`：最后一条消息是段 1 的轮次 3，
-   * 里程碑却停在段 1 的轮次 2）。`重新评分` 只落 `judging`、不落 `preparing`，故它不会误开这道闸门。
-   */
-  let candidatePhase = true;
-
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
-    if (event === undefined) continue;
-    if (event.type === 'status') {
-      if (event.status === 'judging' || TERMINAL_ROW_STATUSES.includes(event.status)) candidatePhase = false;
-      else if (event.status === 'preparing' || event.status === 'running') candidatePhase = true;
-      continue;
-    }
-    if (event.type === 'error') {
-      rows.push({ index, row: { at: event.at, level: 'error', text: `错误 ${event.message}`, turn: null } });
-      continue;
-    }
-    if (event.type !== 'usage' || event.tokens === null) continue;
-    if (!candidatePhase) continue;
-    // 子会话自己的累计读数不算这一行（它在那张子任务卡片里）
-    if ((event.turn?.subagentId ?? null) !== null) continue;
-    lastCandidateUsage = { index, event, tokens: event.tokens };
+    if (event?.type !== 'error') continue;
+    rows.push({ index, row: { at: event.at, level: 'error', text: `错误 ${event.message}`, turn: null } });
   }
 
+  const lastCandidateUsage = lastCandidateUsageOf(events);
   if (lastCandidateUsage !== null) {
     const { event, tokens } = lastCandidateUsage;
     /**

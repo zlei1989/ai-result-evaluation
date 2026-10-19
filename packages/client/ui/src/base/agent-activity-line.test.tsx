@@ -5,14 +5,13 @@
  *   ① 终态不渲染——它是「正在……中」的指示，跑完还挂着等于在骗人；
  *   ② 还没有输出时回落成状态文案——一行空白会被读成「界面坏了」；
  *   ③ 单行截断——一条工具块 JSON 有几百字符，换行会把卡片撑高、把按钮挤出视口；
- *   ④ 类名是真的带上了——高光扫过全挂在那个类上，类名丢了只是「文字静止」，
- *      浏览器不报错、这里不红的话就没人会发现（CSS 那一侧的守卫在 `apps/web-next`）。
- * 前三条与展示有关，第四条是**跨包字符串契约**的一半。
+ *   ④ 动效来自 `TraceLine` 的 `status="running"`（Trace 的 shimmer），本件**不再自挂扫光类**
+ *      ——自绘那一份 `@keyframes` 已删，全仓只剩 Trace 一个动效来源。
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import type { EvalRowStatus } from '@aieval/contracts';
-import { ACTIVITY_SWEEP_CLASS, ACTIVITY_TYPING_CLASS, AgentActivityLine, activityText, lastSegmentOf, staticActivityText, typingOf, type AgentActivity } from './agent-activity-line';
+import { ACTIVITY_TYPING_CLASS, AgentActivityLine, activityText, lastSegmentOf, staticActivityText, typingOf, type AgentActivity } from './agent-activity-line';
 import { STREAM_CURSOR_CLASS } from './stream-cursor';
 
 describe('activityText（这一行显示什么）', () => {
@@ -48,13 +47,16 @@ describe('activityText（这一行显示什么）', () => {
 });
 
 describe('AgentActivityLine', () => {
-  it('运行中渲染一行文本，并带上高光扫过的类名（DSH 的 turnStatus 同款）', () => {
+  it('运行中走 `TraceLine status="running"`：shimmer 由 Trace 给，本件不再自挂扫光类', () => {
     render(<AgentActivityLine status="running" latestText="正在改 lib/http.js" />);
 
     const line = screen.getByTestId('agent-activity-line');
     expect(line).toHaveTextContent('正在改 lib/http.js');
-    // 类名没带上 = 文字是静止的（`@keyframes` 挂在它上面），而页面不会有任何报错
-    expect(line.className).toContain(ACTIVITY_SWEEP_CLASS);
+    // 动效的唯一判据是这枚属性：Trace 用它挂 shimmer；自绘类名已经不存在了
+    expect(line).toHaveAttribute('data-slot', 'trace-line');
+    expect(line).toHaveAttribute('data-status', 'running');
+    expect(line.querySelector('[data-slot="trace-title"]')).toHaveTextContent('正在改 lib/http.js');
+    expect(document.querySelector('.aieval-activity-sweep')).toBeNull();
   });
 
   it('还没有输出时显示回落文案，不是空白行', () => {
@@ -156,8 +158,8 @@ describe('AgentActivityLine 的打字态', () => {
     expect(line).not.toHaveTextContent('log 摘要（不该被显示）');
     expect(line.className).toContain(ACTIVITY_TYPING_CLASS);
     expect(line.className).toContain(STREAM_CURSOR_CLASS);
-    // **不打**高光类：打字态与「文字不动」那一档是两种观感，叠在一起会互相干扰
-    expect(line.className).not.toContain(ACTIVITY_SWEEP_CLASS);
+    // 打字态不是 `TraceLine`：shimmer 与逐字重打是两种观感，叠在一起会互相干扰
+    expect(line).not.toHaveAttribute('data-slot', 'trace-line');
   });
 
   it('收尾（快照到了）⇒ 保留文字但撤掉光标：逐字灯不再亮，但内容还在', () => {
@@ -171,7 +173,7 @@ describe('AgentActivityLine 的打字态', () => {
     expect(line.className).not.toContain(STREAM_CURSOR_CLASS);
   });
 
-  it('只有工具摘要时走静态档（高光那一路），不带光标——它没有「还在写」这个事实', () => {
+  it('只有工具摘要时走静态档（Trace 的 running 行），不带光标——它没有「还在写」这个事实', () => {
     render(
       <AgentActivityLine
         status="judging"
@@ -182,7 +184,7 @@ describe('AgentActivityLine 的打字态', () => {
 
     const line = screen.getByTestId('agent-activity-line');
     expect(line).toHaveTextContent('调用工具 Read：a.ts');
-    expect(line.className).toContain(ACTIVITY_SWEEP_CLASS);
+    expect(line).toHaveAttribute('data-status', 'running');
     expect(line.className).not.toContain(STREAM_CURSOR_CLASS);
   });
 });

@@ -13,6 +13,13 @@
 
 > 背景（一句话）：`$home = '...'` 赋值在某些 PowerShell 版本下不生效，紧随其后的 `Remove-Item $home -Recurse -Force` 会删到用户目录。这是本规则存在的原因。
 
+### 已审计的删除点
+
+下列删除是**有意行为**，不要「顺手加守卫」或改成通配删除：
+
+- `scripts/split-test-file.mjs:202` 的 `rmSync(src)`：拆完测试文件后删原文件，是脚本的收尾动作。
+- `packages/server/core/src/workspace.ts` 的 `clearRowArtifacts`：重跑前逐个列出 `workspace` / `.agenthome` / `.judgehome` / `attachments` 四个名字，**不用白名单之外的全清**——行目录里还住着 `events.jsonl`，它的清空归 `resetEvents` 独占。每一次删除都走 `removeTreeWithRetry`（Windows 句柄释放比进程退出晚）。
+
 ## 环境
 
 | 项 | 值 |
@@ -93,7 +100,7 @@ Remove-Item -LiteralPath $target -Recurse -Force
 
 ## 执行 `.ps1` 的两条约束
 
-本仓的 PS 脚本（`scripts/bench-gates.ps1`、两个 probe 外壳）改动靠人工审，所以这两条会直接影响"能不能跑起来"：
+本仓的 PS 脚本（`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`、`probe/v5/run.ps1`、`probe/v6/run.ps1`）改动靠人工审，所以这两条会直接影响"能不能跑起来"：
 
 | 约束 | 现象原文 | 正确做法 |
 |---|---|---|

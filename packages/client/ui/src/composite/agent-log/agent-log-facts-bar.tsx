@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * 行级事实进度条（L1）：状态 · 用量（含思考 token）· 耗时 · 轮次 · 错误。
+ * 行级事实进度条（L1）：状态 · 用量（含思考 token）· 上下文用量（用了窗口的多少）· 耗时 · 轮次 · 错误。
  *
  * 五条口径：
  *   1. **`null` 不显示成 0**：用量、思考 token、耗时、错误各自「没采到」时给一句话
- *      （「用量未采集」）或整格不出现，绝不写 0——0 是一个**读数**，「没采到」不是；
+ *      （「用量未采集」）或整格不出现，绝不写 0——0 是一个**读数**，「没采到」不是。
+ *      上下文用量同理：缺分子说「上下文未采集」、缺上限说「上限未采集」，**没有 0% 这一档**；
  *   2. **耗时只有这一个口径**：已结束用 `endedAt − startedAt` 的结算值，未结束才本地走秒表
  *      （`useNow` 只在真的在跑时挂定时器，抽成 `durationMsOf` 便于单测）；
  *   3. **领域事实不在这里**：`facts.domain`（智能体 · 模型 · 思考强度 ·
@@ -21,15 +22,14 @@
  * 「等待答复」是**派生**的（`waitingSince` 由调用方从当前节点的块里扫出来）：
  * 它不进 `facts`、也不进 `rowEvents`，因为它是**当前态**而不是发生过的事件。
  */
-import { Badge, Flex, Tag, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
+import { Progress } from '../../components/ui/progress';
 import type { AgentLogFacts, AgentRunStatus } from './types';
 import { formatDuration } from '../../base/metric-line';
-import { formatTokens, formatUsageTriple } from '../../base/usage-metrics';
+import { formatCount, formatTokens, formatUsageTriple } from '../../base/usage-metrics';
 import { useNow } from '../../base/use-now';
 
-/** antd 的主题 token（`theme.useToken()` 那一格），分段着色用它取语义色 */
-type Token = ReturnType<typeof theme.useToken>['token'];
 
 export interface AgentLogFactsBarProps {
   facts: AgentLogFacts;
@@ -39,13 +39,16 @@ export interface AgentLogFactsBarProps {
   contentTruncatedReason?: string | null;
 }
 
-/** 状态色档 → antd `Badge` 的档位。**只有 `running` 挂动效**（`processing` 自带波纹） */
-const BADGE_STATUS: Record<AgentRunStatus['tone'], 'processing' | 'default' | 'success' | 'error' | 'warning'> = {
-  running: 'processing',
-  pending: 'default',
-  ok: 'success',
-  failed: 'error',
-  canceled: 'warning',
+/**
+ * 状态色档 → 圆点色与动效。**只有 `running` 挂动效**（圆点自己一遍波纹）：
+ * 动效是「此刻在跑」的旁路信号，静止状态下它什么也不表示。
+ */
+const STATUS_DOT: Record<AgentRunStatus['tone'], string> = {
+  running: 'bg-info animate-pulse',
+  pending: 'bg-muted-foreground',
+  ok: 'bg-success',
+  failed: 'bg-destructive',
+  canceled: 'bg-warning',
 };
 
 /**
@@ -79,78 +82,125 @@ function isTicking(facts: AgentLogFacts): boolean {
   return facts.startedAt !== null && facts.endedAt === null;
 }
 
+/**
+ * 上下文用量的**三种状态**（缺数据时各不相同，绝不合成 0%）：
+ *   · `no-usage` —— 这一行没采到**占用**（最后一条主会话读数）：连分子都没有；
+ *   · `no-limit` —— 占用有了，但模型没声明窗口：**没有分母，就没有百分比**；
+ *   · `ready` —— 两者都在。
+ *
+ * 分子只读 `facts.contextUsed`（最后一条主会话 usage 的 `input + cached`）——
+ * **不读 `facts.tokens`**：那是整行累计账单，拿它算百分比，长跑行会涨过 100%。
+ */
+export type ContextMeter =
+  | { state: 'no-usage' }
+  | { state: 'no-limit'; used: number }
+  | { state: 'ready'; used: number; limit: number; percent: number };
+
+/**
+ * 事实条那一格要的三样：占用 / 上限 / 百分比。**只读本行的真实读数**，不兜底任何默认窗口。
+ * 脏值（负数 / 非有限）按「未采集」处理；真实的 0 照常算（那是「这一刻 prompt 是空的」）。
+ */
+export function contextMeterOf(facts: AgentLogFacts): ContextMeter {
+  const used = facts.contextUsed;
+  if (used === null || !Number.isFinite(used) || used < 0) return { state: 'no-usage' };
+  const limit = facts.contextWindow;
+  if (limit === null || !Number.isFinite(limit) || limit <= 0) return { state: 'no-limit', used };
+  return { state: 'ready', used, limit, percent: Math.round((used / limit) * 100) };
+}
+
 export function AgentLogFactsBar({ facts, waitingSince, contentTruncatedReason }: AgentLogFactsBarProps): ReactNode {
-  const { token } = theme.useToken();
   // 两个会走秒的量共用一次心跳：耗时（未结束）与等待时长（真的在等）
   const now = useNow(isTicking(facts) || waitingSince !== null);
   const durationMs = durationMsOf(facts, now);
   const waitedMs = waitingSince === null ? null : now - Date.parse(waitingSince);
   // 只有需要开口的档位才有说明（`undefined` ⇒ 这一格不画，免得占一份 flex 间距）
   const thinkingHint = facts.thinking === null ? undefined : THINKING_BASIS_HINTS[facts.thinking.basis];
+  // 上下文用量：分子来自本行 tokens、分母来自模型声明的窗口；任一缺格就**不给比值**
+  const context = contextMeterOf(facts);
 
   return (
-    <Flex align="center" gap={token.marginSM} wrap data-testid="agent-log-facts-bar">
-      {/* 状态文案照数据层给的渲染（`label` 是数据层的词汇，组件不自己翻译状态） */}
-      {/* `size="small"` 在这里**不改变外观**，它属于「抽屉里每个带 size 的组件都写死 small」这条全件口径：
-          `Badge.js` 把这个值只拼进**计数**徽标的 `ScrollNumber`（`${prefixCls}-count-sm`），
-          status 圆点徽标那条分支不带它（实测：抽屉里 status 徽标的类名与圆点宽度加不加都一样，6px）。
-          写出来是为了同口径可静态核对，不是「这个徽标偏大」 */}
-      <Badge size="small" status={BADGE_STATUS[facts.status.tone]} text={facts.status.label} />
+    <div className="flex flex-wrap items-center gap-snug" data-testid="agent-log-facts-bar">
+      {/* 状态文案照数据层给的渲染（`label` 是数据层的词汇，组件不自己翻译状态）：
+          圆点是「一眼看出在跑 / 挂了」的那一格，文案承担语义；`data-status` 是给用例的稳定判据 */}
+      <span className="inline-flex items-center gap-1.5 text-sm" data-status={facts.status.tone}>
+        <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[facts.status.tone]}`} />
+        {facts.status.label}
+      </span>
 
       {/* 用量格：`tokens === null` 说「未采集」而不是三个 0；思考 token 只在这一格里出现。
           文案走 `formatUsageTriple`（千分位 + `tok` 单位）——与里程碑 / 逐条页脚 / 子任务卡片同一出口 */}
-      <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-tokens">
+      <div className="flex items-center gap-hair" data-testid="agent-log-facts-tokens">
         {facts.tokens === null ? (
-          <Typography.Text type="secondary">用量未采集</Typography.Text>
+          <span className="text-muted-foreground">用量未采集</span>
         ) : (
-          <Typography.Text type="secondary">{formatUsageTriple(facts.tokens)}</Typography.Text>
+          <span className="text-muted-foreground">{formatUsageTriple(facts.tokens)}</span>
         )}
         {facts.thinking !== null && (
-          <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-thinking">
-            <Typography.Text type="secondary">思考 {formatTokens(facts.thinking.tokens)}</Typography.Text>
-            {thinkingHint !== undefined && <Typography.Text type="secondary">{thinkingHint}</Typography.Text>}
-          </Flex>
+          <div className="flex items-center gap-hair" data-testid="agent-log-facts-thinking">
+            <span className="text-muted-foreground">思考 {formatTokens(facts.thinking.tokens)}</span>
+            {thinkingHint !== undefined && <span className="text-muted-foreground">{thinkingHint}</span>}
+          </div>
         )}
-      </Flex>
+      </div>
+
+      {/* 上下文占用格（`Context`）：紧挨用量三元组——一个是「一共花了多少」，一个是「此刻占了多少」。
+          **不是** `context-window-tag` 的容量展示：那一格说「这个模型窗口多大」，这里说「这一行此刻用了多少」。
+          分子只读 `contextUsed`（最后一条主会话读数），**不读** `facts.tokens`（整行累计账单）：
+          两者混用会让长跑行的百分比涨过 100%。三档缺数据各有各的说法，绝不落到 `0%`。
+          进度条只画到 100%（再长也没有第二圈），百分比与两个数照实写（超窗也是真读数）。 */}
+      <div className="flex items-center gap-hair" data-testid="agent-log-facts-context">
+        {context.state === 'no-usage' ? (
+          <span className="text-muted-foreground">上下文未采集</span>
+        ) : context.state === 'no-limit' ? (
+          <span className="text-muted-foreground">上下文上限未采集（用量 {formatTokens(context.used)}）</span>
+        ) : (
+          <>
+            <span className="text-muted-foreground">上下文 {context.percent}%</span>
+            <Progress value={Math.min(100, context.percent)} aria-label="上下文用量" className="w-16 shrink-0" />
+            <span className="text-muted-foreground">
+              {formatCount(context.used)} / {formatCount(context.limit)} tok
+            </span>
+          </>
+        )}
+      </div>
 
       {/* 耗时格：`startedAt === null` 时整格不显示（不是「0s」，那是编出来的读数） */}
       {durationMs !== null && (
-        <Typography.Text type="secondary" data-testid="agent-log-facts-duration">
+        <span className="text-muted-foreground" data-testid="agent-log-facts-duration">
           耗时 {formatDuration(durationMs)}
-        </Typography.Text>
+        </span>
       )}
 
       {/* 轮次格**排在末尾**（用户 2026-10-07 口径：输入 · 缓存 · 输出 · 耗时 · 轮次）：
           前三格是这一次的**量**、耗时是它花了多久，轮次是「跑了几轮」这个过程读数——
           放在用量前面会把「量」那一串读断。`total` 为 `null` 时只说当前值（不编一个会走动的分母） */}
-      <Typography.Text type="secondary" data-testid="agent-log-facts-turns">
+      <span className="text-muted-foreground" data-testid="agent-log-facts-turns">
         轮次 {facts.turns.current}
         {facts.turns.total === null ? '' : ` / ${facts.turns.total}`} 轮
-      </Typography.Text>
+      </span>
 
       {/* 失败归因：`code` 可以为 null（不是每种失败都有错误码），有就一起给，没有就不留空格 */}
       {facts.error !== null && (
-        <Tag color="error" data-testid="agent-log-facts-error">
-          {facts.error.code === null ? facts.error.message : `${facts.error.code} ${facts.error.message}`}
-        </Tag>
+        <Badge variant="outline" className="border-destructive/40 text-destructive" data-testid="agent-log-facts-error">
+          {/* 中文原因在前、归因码在后：码是给 grep 用的，回答不了「发生了什么」 */}
+          {facts.error.code === null ? facts.error.message : `${facts.error.message}（${facts.error.code}）`}
+        </Badge>
       )}
 
       {/* 「等待答复」只在真的在等时出现（判据由调用方从当前节点的块里扫出来） */}
       {waitingSince !== null && (
-        <Badge
-          size="small"
-          status="processing"
-          data-testid="agent-log-facts-waiting"
-          text={`等待答复 ${formatDuration(waitedMs ?? 0)}`}
-        />
+        <span className="inline-flex items-center gap-1.5 text-sm" data-status="running" data-testid="agent-log-facts-waiting">
+          <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT.running}`} />
+          {`等待答复 ${formatDuration(waitedMs ?? 0)}`}
+        </span>
       )}
 
       {/* 内容被上限截断时如实显示那句话；`null` = 完整，什么都不显示 */}
       {contentTruncatedReason !== undefined && contentTruncatedReason !== null && contentTruncatedReason !== '' && (
-        <Typography.Text type="warning" data-testid="agent-log-facts-truncated">
+        <span className="text-warning" data-testid="agent-log-facts-truncated">
           {contentTruncatedReason}
-        </Typography.Text>
+        </span>
       )}
-    </Flex>
+    </div>
   );
 }

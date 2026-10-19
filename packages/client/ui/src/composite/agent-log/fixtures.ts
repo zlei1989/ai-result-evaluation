@@ -146,6 +146,8 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     turns: { current: 3, total: null },
     tokens: { input: 218, cached: 8832, output: 1420 },
     thinking: { tokens: 640, basis: 'subset-of-output' },
+    // 窗口**不编**：夹具代表「模型没声明这一格」那一档（界面显示「上限未采集」）
+    contextWindow: null,
     domain: [
       // 与数据层同形：**智能体 · 模型 · 思考强度 · 改动 · 评分**五格、顺序即渲染顺序
       // （前三格是「谁在跑」，后两格是「改了多少 / 得了多少分」）；评分那一格**只给分**
@@ -602,10 +604,32 @@ export function codexFixture(): AgentLogFixture {
         { type: 'tool-result', callId: 'cc_1', structured: null, isError: false, text: 'Tests  12 passed (12)', truncation: { kind: 'none' } },
       ],
     }),
+    /**
+     * 这一轮的正文带两级标题：`#` / `##` 在本仓分别降级渲染成 `h4` / `h5`，是标题档唯一的可见落点。
+     * 夹具里没有标题时，字号尺度（标题必须大于 14px 正文、段前距必须大于段落）在画廊里
+     * 根本量不到——`--typeset-heading-*` 那几档改了也不会有人看见。
+     */
     message({
       roundTrip: 2,
       role: 'assistant',
-      blocks: [{ type: 'text', text: '12 条用例全绿。\n\n```\nTests  12 passed (12)\n```' }],
+      blocks: [
+        {
+          type: 'text',
+          text: [
+            '# 验证记录',
+            '',
+            '12 条用例全绿。',
+            '',
+            '## 测试结果',
+            '',
+            '```text',
+            'Tests  12 passed (12)',
+            '```',
+            '',
+            '补跑一遍后仍是 12 条全绿。',
+          ].join('\n'),
+        },
+      ],
     }),
     // 行级汇总节点的那一档：厂商只给计数、没有逐条身份
     subagentRecord({

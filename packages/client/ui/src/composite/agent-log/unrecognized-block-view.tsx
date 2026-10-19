@@ -10,8 +10,9 @@
  *   · `raw === null` 时说「原样载荷未采集」，不留一个空面板（空面板会被读成「载荷是空的」）；
  *   · **默认收起由调用方给**（`open` 受控）——本件自己不持开合态。
  */
-import { Collapse, Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible';
 import { JsonText } from '../../base/json-text';
 import type { UnrecognizedPayloadBlock } from './types';
 import { MESSAGE_SOURCE_LABELS } from './types';
@@ -22,37 +23,31 @@ export interface UnrecognizedBlockViewProps {
   onOpenChange(next: boolean): void;
 }
 
-const PANEL_KEY = 'unrecognized';
-
 export function UnrecognizedBlockView({ block, open, onOpenChange }: UnrecognizedBlockViewProps): ReactNode {
   const sourceLabel = MESSAGE_SOURCE_LABELS[block.source];
-  const label = (
-    <Flex align="center" gap={4}>
-      <Typography.Text>未识别的厂商载荷</Typography.Text>
-      {block.vendorType !== null && block.vendorType !== '' && <Tag>{block.vendorType}</Tag>}
-      {sourceLabel !== null && <Tag>{sourceLabel}</Tag>}
-    </Flex>
-  );
 
   return (
-    // **不用 `ghost`**：`ghost` 的定义是「去描边 + 背景透明」，而这里是嵌在日志里的一块内容，
-    // 与 antd 默认折叠面板同形（`colorBgContainer` 底色 + 描边）——底色与描边都由 antd 给，本件不覆盖
-    <Collapse
-      destroyOnHidden
-      activeKey={open ? [PANEL_KEY] : []}
-      onChange={(keys) => onOpenChange(keys.length > 0)}
-      items={[
-        {
-          key: PANEL_KEY,
-          label,
-          children:
-            block.raw === null ? (
-              <Typography.Text type="secondary">原样载荷未采集</Typography.Text>
-            ) : (
-              <JsonText text={block.raw} />
-            ),
-        },
-      ]}
-    />
+    // 嵌在日志里的一块内容：给描边与卡片底色，与其它日志块同形。
+    // 受控 `open` + 收起即卸载（Base UI 的 Panel 默认不保留 DOM）：内容不认识的原始载荷不该占地方
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => onOpenChange(next)}
+      className="rounded-lg border border-border bg-card px-2 py-1.5"
+    >
+      <CollapsibleTrigger className="flex w-full items-center gap-1 text-left text-sm">
+        <span>未识别的厂商载荷</span>
+        {block.vendorType !== null && block.vendorType !== '' && (
+          <Badge variant="outline">{block.vendorType}</Badge>
+        )}
+        {sourceLabel !== null && <Badge variant="outline">{sourceLabel}</Badge>}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-1.5">
+        {block.raw === null ? (
+          <span className="text-muted-foreground">原样载荷未采集</span>
+        ) : (
+          <JsonText text={block.raw} />
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

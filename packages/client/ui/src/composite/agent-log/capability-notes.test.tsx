@@ -25,7 +25,7 @@ describe('CapabilityNotes', () => {
   it('按插入顺序渲染，未知维度原样显示', () => {
     const { container } = render(<CapabilityNotes capability={capability} notes={[]} />);
 
-    expect([...container.querySelectorAll('.ant-tag')].map((tag) => tag.textContent)).toEqual([
+    expect([...container.querySelectorAll('[data-slot="badge"]')].map((tag) => tag.textContent)).toEqual([
       '思考文本',
       '工具入参',
       'myNewDim',
@@ -90,7 +90,7 @@ describe('CapabilityNotes', () => {
       <CapabilityNotes capability={capability} notes={[]} only={['toolInput', 'myNewDim']} />,
     );
 
-    expect([...container.querySelectorAll('.ant-tag')].map((tag) => tag.textContent)).toEqual([
+    expect([...container.querySelectorAll('[data-slot="badge"]')].map((tag) => tag.textContent)).toEqual([
       '工具入参',
       'myNewDim',
     ]);

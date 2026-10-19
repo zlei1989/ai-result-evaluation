@@ -626,6 +626,12 @@ export interface FakeAgentCall {
    * 取值刻意保留 `undefined`（不兜成 `null`）：「没传这一格」正是「又从头开了一段」的判据。
    */
   resumeSessionId?: string;
+  /**
+   * **回到某一轮**的分叉坐标（原样记下；`undefined` = 普通追问/首次运行）。
+   * 必须记录：`run` 的可选入参如果被编排层漏传，适配器会照常「接着最后一条」跑完，
+   * 而用户以为回到了第 N 轮——这一格是唯一能看见它的地方。
+   */
+  fork?: AgentRunInput['fork'];
   startedAt: number;
   finishedAt: number | null;
   exitReason: AgentExitReason | null;
@@ -953,6 +959,7 @@ const FAKE_PROVIDER_METADATA = {
      */
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    checkpoint: { supported: true, mode: 'resume-at', filesRewind: true, reason: null, notes: [] },
     turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.cc),
     // 推理证据需求同真值：只有 codex 的思考全文与工具结果正文只在 messages.jsonl 里，
     // 编排层据它决定「执行过程记录」证据要不要多拼一份消息账本
@@ -973,6 +980,7 @@ const FAKE_PROVIDER_METADATA = {
     interaction: { askUser: 'off-by-adapter', askUserChannel: null, askUserReason: 'not-observed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    checkpoint: { supported: true, mode: 'fork', filesRewind: false, reason: null, notes: [] },
     turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.codex),
     needsMessagesForReasoningEvidence: true,
   },
@@ -990,6 +998,7 @@ const FAKE_PROVIDER_METADATA = {
     interaction: { askUser: 'not-projected-by-vendor', askUserChannel: null, askUserReason: 'not-exposed', askUserProofDriver: 'synthetic-fixture', askUserProofDriverReason: '夹具扮演厂商那一端（测试夹具，只为形状）', notes: [] },
     timing: { runScale: 'minutes', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    checkpoint: { supported: false, mode: null, filesRewind: false, reason: 'not-supported', notes: [] },
     turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.dsh),
     needsMessagesForReasoningEvidence: false,
     defaultEffort: 'high',
@@ -1014,6 +1023,7 @@ const FAKE_PROVIDER_METADATA = {
     // 秒级：in-process SDK，没有子进程冷启动（另三家都要 spawn 一个 CLI）
     timing: { runScale: 'seconds', notes: [] },
     messageCapability: FAKE_MESSAGE_CAPABILITY,
+    checkpoint: { supported: true, mode: 'fork', filesRewind: false, reason: null, notes: [] },
     turnInjection: fakeTurnInjection(FAKE_RESUME_CELLS.pi),
     needsMessagesForReasoningEvidence: false,
     defaultEffort: 'medium',
@@ -1055,6 +1065,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         injectAvailable: input.inject?.available ?? false,
         injectDelivered: [],
         resumeSessionId: input.resume?.sessionId,
+        fork: input.fork,
         startedAt: Date.now(),
         finishedAt: null,
         exitReason: null,

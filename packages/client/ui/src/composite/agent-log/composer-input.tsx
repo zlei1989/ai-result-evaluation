@@ -5,16 +5,23 @@
  *
  * 为什么单独一格：这一面有**两个入口共用一个形态**——运行中的「人工消息」（`inject-composer.tsx`）
  * 与跑完之后的「追问」（`follow-up-composer.tsx`）。两者只差「这一句话怎么发出去」，
- * 而形态（附件 chips 住框上方、X 自带的圆形发送键、紧凑密度只套输入区）必须**逐像素相同**：
- * 各写一份的结果是同一种控件在两个入口长得不一样，而那种漂移没人会当场发现。
+ * 而形态必须**逐像素相同**：各写一份的结果是同一种控件在两个入口长得不一样，而那种漂移
+ * 没人会当场发现。所以两个入口都只调 `CompactComposerArea`，自己不拼任何输入区结构。
  *
- * 三条口径原样保留（它们是从调用方搬过来的，理由不变）：
- *   1. **`beforeUpload: () => false`**：文件不往任何地方传，只留在调用方手里——它走本仓的
- *      multipart 端点（让 antd 自传会变成两份真相）；
- *   2. **附件清单住框上方一行 chips**（`scrollX`，只占一行高）、**不进 `prefix`**：
- *      `Attachments` 把清单渲在自己内部，塞进 `prefix` 会被挤进输入框那一行；
- *   3. **紧凑密度只套输入区**（`ConfigProvider` + `compactTheme`）：X 的 `Sender` / `Attachments`
- *      没有 `size` 能力，不套就是「页面 12px、输入框 14px」；而整支抽屉的字号不动是用户口径。
+ * 形态取 AI Elements 的 `Prompt Input`：一个 `InputGroup` 里装下全部——
+ *   · `InputGroupTextarea`（`data-slot=input-group-control`，可访问名由 placeholder 给）；
+ *   · 附件清单在 `block-start` 的 addon 里（`Attachment` 一份一条、各自带移除键）；
+ *   · 「添加附件」与「发送」在 `block-end` 的 addon 里（发送靠 `disabled={!canSend}`）。
+ * 键盘口径：`Enter` 发送、`Shift+Enter` 换行；**输入法组合中的 `Enter` 是选词**（不发送）。
+ * 附件入口有两个：框内的「添加附件」开系统选择器，以及**把文件拖进输入区**（同一落点、同一条回调）。
+ *
+ * 四条口径原样保留（它们是从调用方搬过来的，理由不变）：
+ *   1. **文件不往任何地方传**：隐藏的 `input[type=file]` 只交出 `File`，落盘走调用方的
+ *      multipart 回调（让附件组件自传会变成两份真相）；
+ *   2. **附件清单只占一行**（`AttachmentGroup` 横向滚动）：它住在框内的 block-start，
+ *      再高就会把日志区挤没；
+ *   3. **字号与间距取密度作用域**（`[data-density]` 的 CSS 变量 + `text-body` / `gap-*` 类）：
+ *      输入区不另包一层主题，避免出现第二份字号来源；
  *   4. **超限的那一份在选文件那一刻就拦掉、根本不进清单**（20 MB / 10 个，判据从
  *      `@aieval/contracts` 读，与服务端同一份常量）。这一道只为体验——服务端照样拦，界面能被
  *      绕开；让用户先选完 11 个文件、传到一半再收到 400，等于白等一趟往返。拦下时给一句
@@ -23,9 +30,19 @@
  * 本件**不判厂商、也不判可用性**：`canSend` 与 `disabled` 由调用方给（只有它知道这一档投不投得进去、
  * 有没有写动作在途）。
  */
-import { LinkOutlined } from '@ant-design/icons';
-import { Button, ConfigProvider, Flex, theme } from 'antd';
-import { useCallback, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { ArrowUpIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon } from 'lucide-react';
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type DragEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import {
   ATTACHMENT_MAX_FILE_BYTES,
   ATTACHMENT_MAX_PER_MESSAGE,
@@ -33,11 +50,18 @@ import {
   type InjectAttachment,
 } from '@aieval/contracts';
 import { formatBytes } from '../../base/format';
-import { XAttachments, type XAttachmentItem, type XAttachmentsHandle } from '../../base/x-attachments';
-import { XSender, XSenderHeader } from '../../base/x-sender';
-import { useDensityMode } from '../../base/density-context';
-import { compactTheme, type DensityMode } from '../../base/density';
-import { newInjectMessageId, pickedFiles, type PendingInjectAttachment } from './inject-vocab';
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+} from '../../components/ui/attachment';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from '../../components/ui/input-group';
+import { newInjectMessageId, type PendingInjectAttachment } from './inject-vocab';
 
 /** 一次附件上传：文件与它归属的那条草稿的 id */
 export interface ComposerUploadInput {
@@ -70,10 +94,10 @@ export interface ComposerDraftState {
   draftId(): string;
   /** 受理之后清空这一条草稿（失败时框里的内容一个字都不动，用户不必重打） */
   reset(): void;
-  /** 清单里被移除的那几份（X 交回的是**剩下的**那份清单） */
-  onPendingItemsChange(next: readonly XAttachmentItem[]): void;
+  /** 清单里被移除的那一份（按 `uid` 认：同一份文件选两次是两条） */
+  onRemovePending(uid: string): void;
   /** 新选进来（或拖进来）的文件：先落盘拿到路径，再允许发送 */
-  onPickFiles(items: readonly XAttachmentItem[]): void;
+  onPickFiles(files: readonly File[]): void;
 }
 
 /**
@@ -83,8 +107,7 @@ export interface ComposerDraftState {
  * 合成一句「附件不合法」会让用户不知道该做哪一件。上限从 `@aieval/contracts` 读，与服务端
  * **同一份常量**——在这里另写一份字面量，改了契约就会出现「界面放行、服务端拒绝」。
  *
- * `existing` 是清单里**已经有的**份数：条数上限判的是整条消息，不是这一批。判过的那几份由调用方
- * 记进去重集合（含被拒的），否则同一次选择里的后续回调会把它们反复判一遍。
+ * `existing` 是清单里**已经有的**份数：条数上限判的是整条消息，不是这一批。
  */
 export function filterWithinAttachmentLimits<T extends { file: File }>(
   picked: readonly T[],
@@ -134,8 +157,6 @@ export function useComposerDraft(options: ComposerDraftOptions): ComposerDraftSt
 
   /** 这一条草稿的 id：第一次要它的时候铸（附件落盘与登记共用同一个），发出去之后清掉 */
   const draftIdRef = useRef<string | null>(null);
-  /** 已经交给上传流程的清单 `uid`（触发态的清单是累积的，不去重会上传两份） */
-  const seenIdsRef = useRef<Set<string>>(new Set());
 
   const draftId = useCallback((): string => {
     if (draftIdRef.current === null) draftIdRef.current = newInjectMessageId();
@@ -146,25 +167,17 @@ export function useComposerDraft(options: ComposerDraftOptions): ComposerDraftSt
     setDraft('');
     setPending([]);
     draftIdRef.current = null;
-    seenIdsRef.current = new Set();
   }, []);
 
-  const onPendingItemsChange = useCallback((next: readonly XAttachmentItem[]) => {
-    const kept = new Set(next.map((item) => item.uid));
-    setPending((previous) => previous.filter((item) => kept.has(item.uid)));
+  const onRemovePending = useCallback((uid: string) => {
+    setPending((previous) => previous.filter((item) => item.uid !== uid));
   }, []);
 
   const onPickFiles = useCallback(
-    (items: readonly XAttachmentItem[]) => {
-      const picked = pickedFiles(items, seenIdsRef.current);
-      if (picked.length === 0) return;
-      /**
-       * **这一批里的每一份都只判一次**：X 的触发态在选多份文件时会按份回调几次，
-       * 每次都把累积的清单交回来；只把「收下的」记进 `seen` 的话，被拒的那一份会在后续几次里
-       * 反复被判、反复弹同一句提示。`seen` 按**这一次选择**的 `uid` 记（`uid` 每次选择都是新的），
-       * 故用户删掉几个再重新选同一份文件仍会被重新考虑——被拒过的文件不该被永久拉黑。
-       */
-      for (const { uid } of picked) seenIdsRef.current.add(uid);
+    (files: readonly File[]) => {
+      if (files.length === 0) return;
+      // 每一份铸一个 uid：清单按它认条目，同一份文件重复选两次是两条
+      const picked = files.map((file) => ({ uid: newInjectMessageId(), file }));
       // 前置拦：超限的那几份不进清单、也不发起上传（一次选多个时合成一句提示，不刷屏）
       const { accepted, reasons } = filterWithinAttachmentLimits(picked, pendingRef.current.length);
       if (reasons.length > 0) onError?.(new ServiceError('INVALID_QUERY', reasons.join('\n')));
@@ -214,7 +227,7 @@ export function useComposerDraft(options: ComposerDraftOptions): ComposerDraftSt
     uploading: pending.some((item) => item.status === 'uploading'),
     draftId,
     reset,
-    onPendingItemsChange,
+    onRemovePending,
     onPickFiles,
   };
 }
@@ -234,12 +247,6 @@ export function attachmentListOf(ready: readonly PendingInjectAttachment[]): Inj
   }));
 }
 
-/** 紧凑主题按明暗预生成一次（与 `PageShell` / 应答宿主同一份口径：别每次渲染重建 ThemeConfig） */
-const COMPACT_THEMES: Record<DensityMode, ReturnType<typeof compactTheme>> = {
-  light: compactTheme('light'),
-  dark: compactTheme('dark'),
-};
-
 export interface CompactComposerAreaProps {
   draft: string;
   onDraftChange(next: string): void;
@@ -249,8 +256,9 @@ export interface CompactComposerAreaProps {
   /** 只读态（写动作在途 / 这一档不能用） */
   disabled: boolean;
   pending: readonly PendingInjectAttachment[];
-  onPendingItemsChange(next: XAttachmentItem[]): void;
-  onPickFiles(items: XAttachmentItem[]): void;
+  /** 清单里被移除的那一份 */
+  onRemovePending(uid: string): void;
+  onPickFiles(files: readonly File[]): void;
   /** 这一键此刻能不能点（正文非空或附件已落盘、且没有写动作在途、且这一档投得进去） */
   canSend: boolean;
   /** 输入框下面那行常驻提示 */
@@ -261,100 +269,170 @@ export interface CompactComposerAreaProps {
   attachmentsTestId: string;
 }
 
+/** 草稿里一份附件此刻的处境：一句短文案（清单只占一行，塞不下长句） */
+const ATTACHMENT_STATUS_TEXT: Record<PendingInjectAttachment['status'], string> = {
+  uploading: '上传中…',
+  done: '已就绪',
+  error: '上传失败',
+};
+
 /**
- * 输入区那一块（**在 `ConfigProvider` 里面**读 token 的那一半）。
+ * 输入区（两个入口共用的那一块）：Prompt Input 的骨架在这里落一次，两个入口只递状态与两句话。
  *
- * 为什么拆成两半：`theme.useToken()` 读的是最近一层 `ConfigProvider`，而这一块要的是**紧凑之后**
- * 的间距与字号。在外层读 token 再传进来，等于把「段落内缩」钉回抽屉那份密度——两处数值会各说各话。
+ * 字号与间距取**密度作用域**（`[data-density]` 的变量），不另包一层主题——同一屏的字号
+ * 因此只有一个来源。键盘口径也收在这一处：`Enter` 提交、`Shift+Enter` 换行、输入法组合中的
+ * `Enter` 不提交（那一下是选词；提交会把半句话发出去）。
  */
-function ComposerInputArea({
+export function CompactComposerArea({
   draft,
   onDraftChange,
   onSend,
   placeholder,
   disabled,
   pending,
-  onPendingItemsChange,
+  onRemovePending,
   onPickFiles,
   canSend,
   hint,
   notice,
   attachmentsTestId,
 }: CompactComposerAreaProps): ReactNode {
-  const { token } = theme.useToken();
-  const trigger = useRef<XAttachmentsHandle | null>(null);
+  /** 「添加附件」那一颗键只负责开系统选择器：真正的落盘由 `onPickFiles` 走调用方的回调 */
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const submit = useCallback((): void => {
+    if (disabled || !canSend) return;
+    onSend();
+  }, [disabled, canSend, onSend]);
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      // 组合输入中的回车属于输入法（选词），不属于发送
+      if (event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      submit();
+    },
+    [submit],
+  );
 
   /**
-   * 清单项：把草稿里的附件翻成 X 认的形状。
-   * X 只认 `uid` / `name` / `status` 三格，我们自己的 `path` 不进这一层（那是发消息时用的）。
+   * 拖拽落点：拖进来的文件与点选走**同一条回调**（否则两条路会各自判一次上限、各自落一次盘）。
+   * 落点就是输入区这一块——抽屉别处不再接拖拽（那里没有附件的语义，接了只会让文件落在看不见的地方）。
    */
-  const items = useMemo<XAttachmentItem[]>(
-    () =>
-      pending.map((item) => ({
-        uid: item.uid,
-        name: item.name,
-        status: item.status === 'error' ? 'error' : item.status === 'uploading' ? 'uploading' : 'done',
-      })),
-    [pending],
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>): void => {
+      if (disabled) return;
+      event.preventDefault();
+      onPickFiles([...(event.dataTransfer?.files ?? [])]);
+    },
+    [disabled, onPickFiles],
+  );
+
+  const handleFiles = useCallback(
+    (event: ChangeEvent<HTMLInputElement>): void => {
+      const files = [...(event.currentTarget.files ?? [])];
+      // 清空选择器：同一份文件再选一次也要触发 change（不清就选不动第二次）
+      event.currentTarget.value = '';
+      onPickFiles(files);
+    },
+    [onPickFiles],
   );
 
   return (
-    <Flex vertical gap={token.marginXXS} style={{ padding: `${token.paddingXS}px ${token.paddingMD}px` }}>
+    <div
+      data-testid="composer-dropzone"
+      className="flex flex-col gap-hair px-roomy py-tight"
+      onDragOver={(event) => {
+        // 不 `preventDefault` 就没有 `drop` 事件（浏览器默认拒绝接收）
+        if (!disabled) event.preventDefault();
+      }}
+      onDrop={handleDrop}
+    >
       {notice}
-      <XSender
-        value={draft}
-        onChange={onDraftChange}
-        onSubmit={onSend}
-        placeholder={placeholder}
-        disabled={disabled}
-        // 清单住框上方一行（`scrollX` 只占一行高）；空清单时**不渲染那个面板**（否则白吃一段高度）
-        header={
-          items.length === 0 ? undefined : (
-            <XSenderHeader>
-              <Flex data-testid={attachmentsTestId}>
-                <XAttachments items={items} overflow="scrollX" onChange={onPendingItemsChange} />
-              </Flex>
-            </XSenderHeader>
-          )
-        }
-        // 触发态：回形针在框内左侧，它同时是「点选」与「拖拽落点」（`Attachments` 在它外面套了拖拽区）
-        prefix={
-          <XAttachments
-            ref={trigger}
-            beforeUpload={() => false}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <InputGroup>
+          {/*
+            附件清单住 **block-start** addon：`AttachmentGroup` 横向滚动、只占一行。
+            空清单时**不渲染这个 addon**（否则白吃一段高度，框顶多出一条空白）。
+          */}
+          {pending.length > 0 && (
+            <InputGroupAddon align="block-start">
+              <AttachmentGroup data-testid={attachmentsTestId}>
+                {pending.map((item) => (
+                  <Attachment key={item.uid} state={item.status} size="xs">
+                    <AttachmentMedia variant="icon">
+                      {item.mimeType !== null && item.mimeType.startsWith('image/') ? (
+                        <ImageIcon aria-hidden />
+                      ) : (
+                        <FileTextIcon aria-hidden />
+                      )}
+                    </AttachmentMedia>
+                    <AttachmentContent>
+                      <AttachmentTitle>{item.name}</AttachmentTitle>
+                      <AttachmentDescription>{ATTACHMENT_STATUS_TEXT[item.status]}</AttachmentDescription>
+                    </AttachmentContent>
+                    <AttachmentActions>
+                      {/* 可访问名带上文件名：清单里多份时读屏器要能分清删的是哪一份 */}
+                      <AttachmentAction
+                        aria-label={`移除 ${item.name}`}
+                        disabled={disabled}
+                        onClick={() => onRemovePending(item.uid)}
+                      >
+                        <XIcon aria-hidden />
+                      </AttachmentAction>
+                    </AttachmentActions>
+                  </Attachment>
+                ))}
+              </AttachmentGroup>
+            </InputGroupAddon>
+          )}
+          <InputGroupTextarea
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
             disabled={disabled}
-            // 拖到抽屉里任何地方都算数（缺省只贴在触发按钮那一小块上）
-            getDropContainer={() => document.body}
-            onChange={onPickFiles}
-          >
-            <Button size="small" type="text" icon={<LinkOutlined aria-hidden />} aria-label="添加附件" disabled={disabled} />
-          </XAttachments>
-        }
-        // 一行起步、最多 6 行（再长就把日志区压没了）；不写 `maxRows` 会用 X 的默认 8 行
-        autoSize={{ minRows: 1, maxRows: 6 }}
-        /**
-         * 发送键仍是 **X 自带的那一颗**（`components.SendButton`，圆形上箭头），只是把
-         * 「能不能点」显式交给这里：给 `Sender` 传 `disabled={false}` 会让 X 自己那条
-         * 「输入为空就禁用」失效（`ActionButton` 读的是 `restProps.disabled ?? …`，`??` 只跳过
-         * `null`/`undefined`），于是空框上那颗键看着可点、点下去什么都不发生。
-         * 契约里「只有附件、没有正文」是合法的一条 ⇒ 那一档要能点，空框那一档要灰掉。
-         */
-        suffix={(_origin, { components }) => <components.SendButton disabled={!canSend} />}
-      />
+            rows={1}
+            // 一行起步、最多 6 行（再长就把日志区压没了）；`field-sizing-content` 负责长高
+            className="max-h-40 min-h-8"
+          />
+          {/*
+            block-end：附件键在左、发送键靠右（`ml-auto` 从发送键那一侧把两个键拉开）。
+            发送键的禁用**只由 `canSend` 判**：空框要灰、只有附件也要能点，
+            而这两档都只有调用方知道（契约允许「只有附件、没有正文」这一条）。
+          */}
+          <InputGroupAddon align="block-end">
+            <InputGroupButton
+              size="icon-sm"
+              variant="outline"
+              aria-label="添加附件"
+              disabled={disabled}
+              onClick={() => fileInput.current?.click()}
+            >
+              <PaperclipIcon aria-hidden />
+            </InputGroupButton>
+            <InputGroupButton
+              type="submit"
+              size="icon-sm"
+              variant="default"
+              className="ml-auto"
+              aria-label="发送"
+              disabled={disabled || !canSend}
+            >
+              <ArrowUpIcon aria-hidden />
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
+      </form>
+      {/* 隐藏的文件选择器：「添加附件」那一颗键开它；`multiple` 一次选多份 */}
+      <input ref={fileInput} type="file" multiple className="hidden" tabIndex={-1} aria-hidden onChange={handleFiles} />
       {hint}
-    </Flex>
-  );
-}
-
-/**
- * 输入区（两个入口共用的那一块）：**只有这一层套紧凑密度**。
- * 调用方把状态机的四格与两句提示递进来即可，形态一处都不用再管。
- */
-export function CompactComposerArea(props: CompactComposerAreaProps): ReactNode {
-  const mode = useDensityMode();
-  return (
-    <ConfigProvider theme={COMPACT_THEMES[mode]}>
-      <ComposerInputArea {...props} />
-    </ConfigProvider>
+    </div>
   );
 }

@@ -60,4 +60,4 @@
 ## 相关链接
 
 - 知识文章：[《技能配置》](/features/skills-config)（第 4 个 Tab 的配置面 / 装入面 / 三态判据自成一文）、[《MCP 配置》](/features/mcp-config)（第 3 个 Tab 的配置面 / 注入面 / 失败判据自成一文）、[《评分》](/features/judging)（「评分」Tab 里那些配置的消费侧）、[《数据与存储》](/features/storage)（配置落盘与《用例目录》的完整口径）、[《用例管理》](/features/case-management)（用例的读写与删除侧）、[《功能总览》](/features/)（目录层）
-- 仓库内参考：AGENTS.md「持久化」节（原子写与 BOM 口径的真源）
+- 仓库内参考：[《数据与存储》](/features/storage)（原子写与 BOM 口径）

@@ -2,7 +2,7 @@
 
 ## 定位
 
-`@aieval/agents` 的对外面只有一张 provider 注册表：`getProvider(kind).run(input)` 是调智能体的**唯一入口**——包外不许自己 spawn 厂商 CLI、不许深路径 import `providers/*`、也不许再包一层「跑一次」的门面。`run` 不够用就扩展 `run` 本身，不是绕开它。
+`@aieval/agents` 的对外面只有一张 provider 注册表：`getProvider(kind).run(input)` 是调智能体的**唯一入口**——包外不许自己 spawn 厂商 CLI、不许深路径 import `providers/*`、也不许再包一层「跑一次」的门面。`run` 不够用就扩展 `run` 本身，不是绕开它。**扩展前先澄清**：要加什么、现有形状为什么不够、动到哪几家与哪些消费方、旧数据怎么读——讲清楚并得到确认再动手。
 
 ## 形态与交互
 

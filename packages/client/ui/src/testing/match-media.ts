@@ -1,12 +1,10 @@
 /**
  * 测试用的 `matchMedia` 替身 + 安装助手。
  *
- * 为什么**必须**打桩：jsdom 25（本仓装的这一份）**完全没有实现** `window.matchMedia`，
- * 而 antd 6.6.5 的 `Table` 在挂载时的 layout effect 里会经由 `_util/responsiveObserver`
- * 直接调 `window.matchMedia(query)`（`grid/hooks/useBreakpoint` → `InternalTable`，
- * 用来过滤 `responsive` 列，**无条件**订阅、不看列上有没有 `responsive`）——
- * 不打桩，任何挂载 `Table` 的用例都抛 `TypeError: window.matchMedia is not a function`。
- * 与 `ResizeObserver` 同属**环境缺口**，不是被测代码的问题。
+ * 为什么需要：jsdom 25（本仓装的这一份）**完全没有实现** `window.matchMedia`，
+ * 而主题解析要按系统偏好决定明暗（`auto` 档）——不打桩，「跟随系统」这条路在 jsdom 里
+ * 只能走「API 不存在」的兜底分支，测不到真正的解析。与 `ResizeObserver` 同属**环境缺口**，
+ * 不是被测代码的问题。
  *
  * 为什么不放进共享 `src/testing/setup.ts`：主题模块（`base/app-theme.tsx`、`base/theme-resolve.ts`）
  * 自带「无 `matchMedia` 时」的兜底分支，全局注入会让「这个 API 在环境里不存在」这一前提

@@ -232,8 +232,7 @@ export const ToolCallBlockSchema = z.object({
    * 为什么要有这一格：pi 的 `ToolCall.argumentsError`（厂商原文 *Set when the model's complete
    * arguments text was not a valid JSON object. `arguments` is then `{}`*）与「模型真的传了空对象」
    * 在 `input` 上**逐字同形**——两者都是 `{}`。不给它一个落点，界面上只能显示一个空对象，
-   * 而事实是「参数不是合法 JSON（原文在这一格）」。真机读数见
-   * `.scratch/pi-audit3/messages/report.md` 的 P3。
+   * 而事实是「参数不是合法 JSON（原文在这一格）」。
    *
    * **可缺**（与 `payload` 同一条理由）：磁盘上已有的 `messages.jsonl` 没有这一格，写成必填会让
    * 老记录在回放 / SSE 续订时成片解析失败；读侧把「键不存在」与显式 `null` 当同一件事（`?? null`）。

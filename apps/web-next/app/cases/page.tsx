@@ -27,8 +27,6 @@ import {
   useValidateRepo,
 } from '@aieval/client';
 import {
-  displayRepoName,
-  isNoneSource,
   type CaseCreate,
   type GenerateRubricInput,
   type GenerateRubricResult,
@@ -36,20 +34,27 @@ import {
   type TestCase,
 } from '@aieval/contracts';
 import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
   AppTopNav,
+  Button,
+  Card,
+  CardContent,
   CaseDetailPanel,
   CaseFormPanel,
-  EllipsisText,
-  EmptyState,
+  CasesTable,
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
   ListDetailLayout,
-  TableScrollArea,
-  Toolbar,
-  formatDateTime,
-  shortHash,
+  PageHeader,
+  Skeleton,
+  toast,
+  requestCommandPalette,
 } from '@aieval/ui';
-import { PlusOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Flex, Skeleton, Table, Tooltip, Typography, message } from 'antd';
-import type { TableColumnsType } from 'antd';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useState } from 'react';
 import { useSWRConfig } from 'swr';
@@ -62,68 +67,9 @@ import {
 } from '@/src/case-repo-validation';
 import { isJudgeConfigured } from '@/src/judge-gate';
 import { NAV_ITEMS, type NavKey } from '@/src/nav';
+import { usePageTitle } from '../use-page-title';
 
 const ACTIVE_NAV: NavKey = 'cases';
-
-/** 「标题」列的兜底最小宽度：左栏被拖窄时，这一列至少还得读得下一整个用例名（如「简单测试」） */
-const CASE_TITLE_MIN_WIDTH = 240;
-
-/** 另外三列申报的宽度：仓库 / commit / 更新时间 */
-const CASE_COLUMN_WIDTH = { repoPath: 200, commitHash: 110, updatedAt: 150 } as const;
-
-/**
- * 列表表格的最小宽度：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
- * （用户口径：「标题列左悬浮」；做法与常量来历见 `ProviderTable` 的
- * `PROVIDER_TABLE_MIN_WIDTH`，三张表是同一套口径）。
- *
- * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把四列**按比例压扁**——
- * 「标题」是唯一吃剩余宽度的列，它是第一个被压到只剩省略号的；给了数字后 rc-table 把 `width`
- * + `minWidth: 100%` 落到表格上，溢出变成**表格内部**的横向滚动，标题列钉在左侧、其余三列滑走。
- *
- * 700 = 三列宽（200 / 110 / 150）+ 标题列下限 240。≥700 时四列全都看得见、不滚（表格按
- * `minWidth: 100%` 铺满左栏，多出来的宽度全给标题列），<700 时横向滚动、标题留在左边。
- * ⚠️ jsdom 没有布局引擎、宽度量不了：这个数只由真机冒烟记录看着。
- */
-const CASES_TABLE_MIN_WIDTH =
-  CASE_TITLE_MIN_WIDTH +
-  CASE_COLUMN_WIDTH.repoPath +
-  CASE_COLUMN_WIDTH.commitHash +
-  CASE_COLUMN_WIDTH.updatedAt;
-
-/**
- * 列表排序的两个比较器。
- * 三条口径，缺一条都会在真机上看见怪序：
- *
- * ① 文本一律 `localeCompare('zh-Hans-CN', { numeric: true })`：默认的码点比较对中文等于乱序，
- * `numeric` 让「测试2」排在「测试10」前面而不是后面（`repoPath` 里也常带数字）；
- * ② **空值当最小值**，而且走显式分支：`updatedAt` 契约只声明 `z.string()`、读路径
- * `parseCaseFile` 又不过 schema，手改过的用例文件能让这两个排序键为空——不管的话
- * `String(undefined)` 会把 `"undefined"` 当正常字符串混进序里；
- * ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
- * 自己再按方向翻一次就是翻两次。
- *
- * 同值的行不需要兜底键：服务端给的就是 `updatedAt` 降序（api/cases.ts 的 `listCases`），
- * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序，与排序方向无关。
- *
- * ⚠️ runs 页有同口径的两份就地实现（本次口径：比较器不抽模块）。改这里必须同时改那边。
- */
-function compareSortText(left: unknown, right: unknown): number {
-  const leftBlank = typeof left !== 'string' || left.trim() === '';
-  const rightBlank = typeof right !== 'string' || right.trim() === '';
-  if (leftBlank || rightBlank) return leftBlank === rightBlank ? 0 : leftBlank ? -1 : 1;
-  return (left as string).localeCompare(right as string, 'zh-Hans-CN', { numeric: true });
-}
-
-/** 时间比较器（升序语义）：一律按时刻值比；解析不出时刻的（脏数据）与文本空值同一档，当最小值 */
-function compareSortTime(left: unknown, right: unknown): number {
-  const leftMs = typeof left === 'string' ? Date.parse(left) : Number.NaN;
-  const rightMs = typeof right === 'string' ? Date.parse(right) : Number.NaN;
-  const leftInvalid = Number.isNaN(leftMs);
-  const rightInvalid = Number.isNaN(rightMs);
-  // 同类 ISO 串的字典序与时刻序一致，但混进带时区偏移的写法（+08:00 与 Z 表示同一时刻）就会错位，故一律比毫秒数
-  if (leftInvalid || rightInvalid) return leftInvalid === rightInvalid ? 0 : leftInvalid ? -1 : 1;
-  return leftMs - rightMs;
-}
 
 export default function Page(): React.ReactNode {
   return (
@@ -138,11 +84,60 @@ function CasesFallback(): React.ReactNode {
   const router = useRouter();
   return (
     <>
-      <AppTopNav items={[...NAV_ITEMS]} active={ACTIVE_NAV} onNavigate={(href) => router.push(href)} />
-      <Card size="small" style={{ margin: 16 }}>
-        <Skeleton active />
+      <AppTopNav items={[...NAV_ITEMS]} active={ACTIVE_NAV} onNavigate={(href) => router.push(href)} onSearch={requestCommandPalette} />
+      <Card size="sm" className="m-4">
+        <CardContent>
+          <Skeleton className="h-32 w-full" />
+        </CardContent>
       </Card>
     </>
+  );
+}
+
+/**
+ * 空态：一句说清「用例是什么」的说明 + 一个引导动作。
+ * 空列表是新用户唯一会看到的界面，只写「暂无数据」而不给出路，等于让人自己猜下一步。
+ */
+function CasesEmpty({ onCreate }: { onCreate: () => void }): React.ReactNode {
+  return (
+    <Empty className="flex-1 border">
+      <EmptyHeader>
+        <EmptyTitle>还没有用例</EmptyTitle>
+        <EmptyDescription>用例 = 仓库 + 提交 + 考题提示词，是评测的输入</EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent>
+        <Button variant="outline" size="sm" onClick={onCreate}>
+          创建用例
+        </Button>
+      </EmptyContent>
+    </Empty>
+  );
+}
+
+/** 右栏的空态：与列表空态同形，只是文案按场景换 */
+function PanelEmpty({
+  title,
+  description,
+  onCreate,
+}: {
+  title: string;
+  description: string;
+  onCreate?: () => void;
+}): React.ReactNode {
+  return (
+    <Empty className="border">
+      <EmptyHeader>
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription>{description}</EmptyDescription>
+      </EmptyHeader>
+      {onCreate !== undefined && (
+        <EmptyContent>
+          <Button variant="outline" size="sm" onClick={onCreate}>
+            创建用例
+          </Button>
+        </EmptyContent>
+      )}
+    </Empty>
   );
 }
 
@@ -157,6 +152,7 @@ function errorMessage(error: unknown): string {
 }
 
 function CasesWorkspace(): React.ReactNode {
+  usePageTitle('用例');
   const router = useRouter();
   const searchParams = useSearchParams();
   const { mutate: mutateCache } = useSWRConfig();
@@ -207,9 +203,9 @@ function CasesWorkspace(): React.ReactNode {
       setValidatedRepo(null);
       setCurrentRepo({ repoPath: '', repoBranch: null });
       setRepoInfo(null);
-      // 评分标准项**不在这里复位**：它的真源是表单自己（`Form.Item name="rubric"`），
+      // 评分标准项**不在这里复位**：它的真源是表单自己（`rubric` 那一格），
       // 而面板的 key 是按用例给的（`case-edit-${id}` / `case-new`）——切用例即重挂载，
-      // `initialValues` 会重新播一次种。在页面里再存一份「当前表格」只会多出一份必然漂移的副本。
+      // `defaultValues` 会重新播一次种。在页面里再存一份「当前表格」只会多出一份必然漂移的副本。
       const params = new URLSearchParams();
       if (next.panel !== null) params.set('panel', next.panel);
       if (next.id !== undefined) params.set('id', next.id);
@@ -233,7 +229,7 @@ function CasesWorkspace(): React.ReactNode {
       setValidatedRepo(normalizeSelection(input));
       return info;
     } catch (error) {
-      void message.error(errorMessage(error));
+      void toast.error(errorMessage(error));
       // 失败的校验不得留下上一次的成功回显
       setRepoInfo(null);
       setValidatedRepo(null);
@@ -258,13 +254,13 @@ function CasesWorkspace(): React.ReactNode {
       const generated = await generate(input);
       // 提示只在**该说的时候**说：调整分支的产出是弹窗里那份改动清单（页面再弹一句「已新增 0 项」是错的），
       // 它只有 note（「模型认为不需要修改」）值得转达；生成分支照旧在真的补了条目时报数
-      if (generated.note !== undefined) void message.info(generated.note);
+      if (generated.note !== undefined) void toast.info(generated.note);
       else if (input.mode === 'generate' && generated.addedItems > 0) {
-        void message.success(`已新增 ${generated.addedItems} 项`);
+        void toast.success(`已新增 ${generated.addedItems} 项`);
       }
       return generated;
     } catch (error) {
-      void message.error(errorMessage(error));
+      void toast.error(errorMessage(error));
       throw error;
     }
   };
@@ -285,24 +281,24 @@ function CasesWorkspace(): React.ReactNode {
     if (panel === 'edit' && id !== null) {
       void update(id, values)
         .then(() => {
-          void message.success('用例已保存');
+          void toast.success('用例已保存');
           go({ panel: 'detail', id });
         })
-        .catch((error: unknown) => void message.error(errorMessage(error)));
+        .catch((error: unknown) => void toast.error(errorMessage(error)));
       return;
     }
     void create(values)
       .then((created) => {
-        void message.success('用例已创建');
+        void toast.success('用例已创建');
         go({ panel: 'detail', id: created.id });
       })
-      .catch((error: unknown) => void message.error(errorMessage(error)));
+      .catch((error: unknown) => void toast.error(errorMessage(error)));
   };
 
   /**
-   * 删除用例。**必须把在途的 promise 交回确认框**：antd 的确认按钮只在 `onConfirm` 返回 thenable 时
-   * 才等待它，返回 undefined（`() => { void remove(id) }`）会让确认框**立刻关闭**——用户看到的是
-   * 「点一下就没反应」，再点一次就是第二次 DELETE（CaseDetailPanel 的 `onDelete` 注释同此口径）。
+   * 删除用例。**必须把在途的 promise 交回确认条**：详情面板要等它结束才收起确认条，
+   * 返回 undefined（`() => { void remove(id) }`）会让确认条在请求落地前就消失——用户看到的是
+   * 「点一下就没反应」，再点一次就是第二次 DELETE。
    * 受影响评测数来自 DELETE 的响应（契约里没有「按用例查评测数」的路由）：
    * 数字在这里回显，删除本身不阻塞。
    */
@@ -310,174 +306,71 @@ function CasesWorkspace(): React.ReactNode {
     if (id === null) return undefined;
     return remove(id)
       .then((result) => {
-        void message.success(
+        void toast.success(
           result.affectedRuns === 0
             ? '用例已删除'
             : `用例已删除；${result.affectedRuns} 个评测记录的冗余快照仍可查看`,
         );
         go({ panel: null });
       })
-      // 失败要在这里收束：把 reject 交回给 antd 只会在控制台留一条未处理的 rejection，
-      // 用户已经在 message.error 里拿到了中文原因
-      .catch((error: unknown) => void message.error(errorMessage(error)));
+      // 失败要在这里收束：把 reject 交回确认条只会在控制台留一条未处理的 rejection，
+      // 用户已经在 toast.error 里拿到了中文原因
+      .catch((error: unknown) => void toast.error(errorMessage(error)));
   };
 
-  const columns: TableColumnsType<TestCase> = [
-    {
-      title: '标题',
-      dataIndex: 'title',
-      // 默认排序：进入页面就是「标题」倒序。
-      // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
-      // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
-      defaultSortOrder: 'descend',
-      // 首次点击升序：**这一列必须显式给** `['descend','ascend']`——antd 默认的 `['ascend','descend']`
-      // 在「当前已是 descend」时 `indexOf+1` 越界，点一下会直接**取消排序**（回到服务端顺序），
-      // 而不是切到升序。首项是本列的默认方向，循环才是 降序 → 升序 → 取消。
-      sortDirections: ['descend', 'ascend'],
-      sorter: (a: TestCase, b: TestCase) => compareSortText(a.title, b.title),
-      // 钉在左边：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
-      // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
-      // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
-      fixed: 'left',
-      // 不传 width：省略号跟着单元格走，栏位拖宽后长标题多显示（写死 px 会在窄栏里被硬裁掉、且没有省略号）
-      render: (title: string) => <EllipsisText text={title} />,
-    },
-    {
-      // 列名只叫「仓库」：格子里的内容是仓库名（`displayRepoName` 取末段）
-      title: '仓库',
-      dataIndex: 'repoPath',
-      width: CASE_COLUMN_WIDTH.repoPath,
-      // 按**显示的仓库名**排；同名再按全路径兜底，两个键同向翻转
-      sorter: (a: TestCase, b: TestCase) =>
-        compareSortText(displayRepoName(a.repoPath), displayRepoName(b.repoPath)) ||
-        compareSortText(a.repoPath, b.repoPath),
-      render: (repoPath: string) => (
-        // 列里只给末段，全路径在 Tooltip：深路径会把这列撑开、把标题挤没。
-        // 取名一律走 contracts 的 `displayRepoName`（**渲染期专用、任何字符串都不抛**）：列表画的是
-        // 已落盘的数据，而读路径不保证来源合法（旧的用例 schema 是裸字符串），
-        // 一条坏数据抛在渲染里就是整页白屏。`repoNameFromSource` 留给判定路径（那边抛错是对的）。
-        // 「创建评测」的用例下拉用同一个函数：两处口径分叉会让同一个仓库显示成两个名字。
-        // 末段本身也可能是长名字，故省略与提示仍交给 `EllipsisText`——注意提示里要的是**全路径**
-        // （`tooltip` 与显示的末段不同形，不能让它默认拿 `text`）。无来源没有「全路径」可提示，
-        // 提示换成一句说全的话（哨兵串 `none://` 本身不是给用户看的信息）。
-        <EllipsisText
-          text={displayRepoName(repoPath)}
-          tooltip={isNoneSource(repoPath) ? '空仓库，无来源代码' : repoPath}
-        />
-      ),
-    },
-    {
-      title: 'commit',
-      dataIndex: 'commitHash',
-      width: CASE_COLUMN_WIDTH.commitHash,
-      render: (commitHash: string | null) =>
-        commitHash === null ? (
-          <Typography.Text type="secondary">默认 HEAD</Typography.Text>
-        ) : (
-          // Tooltip 里必须是**全量**hash：短哈希再显示一遍等于没有 Tooltip
-          <Tooltip title={commitHash}>
-            <Typography.Text code>{shortHash(commitHash)}</Typography.Text>
-          </Tooltip>
-        ),
-    },
-    {
-      title: '更新时间',
-      dataIndex: 'updatedAt',
-      width: CASE_COLUMN_WIDTH.updatedAt,
-      // 时间列首次点击降序（先给「最近更新在前」才符合直觉）：`sortDirections` 的首项就是首次方向
-      sortDirections: ['descend', 'ascend'],
-      sorter: (a: TestCase, b: TestCase) => compareSortTime(a.updatedAt, b.updatedAt),
-      render: (updatedAt: string) => formatDateTime(updatedAt),
-    },
-  ];
-
   const listNode = (
-    <Flex vertical style={{ height: '100%', minHeight: 0 }}>
-      {/* 不写 title：页面名已由顶栏导航表达，再放一遍「用例」标题是重复 */}
-      <Toolbar
-        extra={
-          // 创建 / 添加类按钮全站同形：前导加号 + 虚线边框。两个细节都不能省：
-          // ① `color="default"` 与 `variant="dashed"` 必须成对给——antd 6 的 `variant` 单给会静默降级成实线；
-          // ② 图标 `aria-hidden`：`@ant-design/icons` 自带 `role="img" aria-label="plus"`，
-          // 不藏起来可访问名会变成「plus 创建用例」
-          <Button
-            color="default"
-            variant="dashed"
-            size="small"
-            icon={<PlusOutlined aria-hidden />}
-            data-testid="cases-create"
-            onClick={() => go({ panel: 'new' })}
-          >
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      {/* 与 /runs 同形：页标题 24 / 描述 14 + muted，动作靠右；不跟密度档（见 PageHeader 文件头） */}
+      <PageHeader
+        title="用例"
+        description={
+          cases === undefined ? '正在加载…' : `共 ${cases.length} 份 · 用例 = 仓库 + 提交 + 考题提示词`
+        }
+        actions={
+          <Button size="sm" data-testid="cases-create" onClick={() => go({ panel: 'new' })}>
+            <span aria-hidden>+</span>
             创建用例
           </Button>
         }
       />
       {/* `!= null` 一次挡住 undefined 与 null：SWR 用 undefined 表示「没有错误」，写法越多越容易漏掉一个 */}
       {listError != null && (
-        <Alert type="error" showIcon title={`用例列表读不出来：${errorMessage(listError)}`} />
+        <Alert variant="destructive" className="mb-1" data-testid="cases-error">
+          <AlertTitle>用例列表读不出来：{errorMessage(listError)}</AlertTitle>
+          <AlertDescription>列表显示的可能还是上一次读到的内容；刷新页面会重新请求。</AlertDescription>
+        </Alert>
       )}
       {/* 用例一文件一落后，坏文件是**跳过**的（一条坏文件不能让整页列表 500）。跳过而不说，
           用户的症状是「我的用例不见了」却查不到原因——这条例外清单就是那句话的唯一出口 */}
       {warnings.length > 0 && (
         <Alert
           data-testid="cases-warnings"
-          type="warning"
-          showIcon
-          title={`有 ${warnings.length} 个用例文件被跳过，这些用例没有显示出来`}
-          description={warnings.join('；')}
-        />
+          className="mb-1 border-warning/40 bg-warning/10 [&_[data-slot=alert-title]]:text-warning"
+        >
+          <AlertTitle>有 {warnings.length} 个用例文件被跳过，这些用例没有显示出来</AlertTitle>
+          <AlertDescription>{warnings.join('；')}</AlertDescription>
+        </Alert>
       )}
       {cases === undefined ? (
-        <Card size="small">
-          <Skeleton active />
+        <Card size="sm">
+          <CardContent>
+            <Skeleton className="h-24 w-full" />
+          </CardContent>
         </Card>
       ) : cases.length === 0 ? (
-        <EmptyState
-          title="还没有用例"
-          description="用例 = 仓库 + commit + 考题提示词，是评测的输入"
-          action={{
-            label: '创建用例',
-            icon: <PlusOutlined aria-hidden />,
-            variant: 'dashed',
-            onClick: () => go({ panel: 'new' }),
-          }}
-        />
+        <CasesEmpty onCreate={() => go({ panel: 'new' })} />
       ) : (
-        // 纵向还是外层容器滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y`
-        // 写死成 `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
-        // 表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
-        <TableScrollArea>
-          <Table<TestCase>
-            size="small"
-            rowKey="id"
-            columns={columns}
-            dataSource={cases}
-            pagination={false}
-            sticky
-            // 只给 `x`（**只开横向**，纵向那一位仍留给外层容器）：它是「左栏够不够宽」的判据本身——
-            // 表格拿到 `width: 700px` + `min-width: 100%`，窄于 700 时内部横向滚动（标题钉在左侧），
-            // 宽于 700 时按 100% 铺满、一条滚动条都不出现。给 `true` 等于没有下限，给 `'max-content'`
-            // 则按最宽内容撑开 —— 两者都让固定列失效（理由详见 `CASES_TABLE_MIN_WIDTH`）。
-            // ⚠️ 与 `sticky` 同时在场是安全组合：rc-table 在 `fixHeader || isSticky` 分支里把
-            // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
-            // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
-            scroll={{ x: CASES_TABLE_MIN_WIDTH }}
-            // 列宽由表头算，不跟内容走：`EllipsisText` 的
-            // `max-width: 100%` 要有确定的分母，「放不下才省略」才成立。rc-table 见到 `sticky`
-            // 本就会落到 `fixed`，这里显式写一遍是为了不把这条前提交给巧合——哪天 `sticky` 被
-            // 拿掉（它是钉表头用的），省略号会跟着一起坏掉，而症状只是「文字被硬裁、没有省略号」。
-            tableLayout="fixed"
-            onRow={(record) => ({
-              onClick: () => go({ panel: 'detail', id: record.id }),
-              style:
-                record.id === caseIdForQuery
-                  ? { background: 'var(--app-selected)', cursor: 'pointer' }
-                  : { cursor: 'pointer' },
-            })}
+        // 滚动容器在表格套件里（工具栏不跟着滚走）；外框与 /runs 同形，
+        // 主标识列由 `fillColumnId` 吃掉剩余宽度，表格不再只占左边一段
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border">
+          <CasesTable
+            cases={cases}
+            selectedId={caseIdForQuery}
+            onSelect={(caseId) => go({ panel: 'detail', id: caseId })}
           />
-        </TableScrollArea>
+        </div>
       )}
-    </Flex>
+    </div>
   );
 
   /**
@@ -508,7 +401,7 @@ function CasesWorkspace(): React.ReactNode {
     /** 详情 / 编辑共用同一段渲染：`stale` 分支也必须走这里，换一条渲染路径等于把表单卸载掉 */
     const renderCase = (target: TestCase, kind: 'detail' | 'edit'): React.ReactNode => {
       if (kind === 'edit') {
-        // key 带上 id：antd 的 initialValues 只在挂载时读一次，切换用例必须重挂载
+        // key 带上 id：表单的 `defaultValues` 只在挂载时读一次，切换用例必须重挂载
         return <CaseFormPanel key={`case-edit-${target.id}`} mode="edit" initial={target} {...sharedFormProps} />;
       }
       return (
@@ -530,25 +423,22 @@ function CasesWorkspace(): React.ReactNode {
         // key 固定为 'case-new'：新建面板每次都是全新的空表单
         return <CaseFormPanel key="case-new" mode="new" {...sharedFormProps} />;
       case 'no-selection':
-        return <EmptyState title="没有选中用例" description="从左侧列表点一个用例，或点右上「创建用例」" />;
+        return <PanelEmpty title="没有选中用例" description="从左侧列表点一个用例，或点右上「创建用例」" />;
       case 'not-found':
         // 一次都没取到数据 + 有错误：手改 URL 里的 id、或用例已被别的标签页删掉——给出路，而不是空白右栏
         return (
-          <EmptyState
+          <PanelEmpty
             title="用例不存在"
             description="它可能已经被删除；也可以直接用右上「创建用例」新建一个"
-            action={{
-              label: '创建用例',
-              icon: <PlusOutlined aria-hidden />,
-              variant: 'dashed',
-              onClick: () => go({ panel: 'new' }),
-            }}
+            onCreate={() => go({ panel: 'new' })}
           />
         );
       case 'loading':
         return (
-          <Card size="small">
-            <Skeleton active />
+          <Card size="sm">
+            <CardContent>
+              <Skeleton className="h-24 w-full" />
+            </CardContent>
           </Card>
         );
       case 'stale':
@@ -559,32 +449,33 @@ function CasesWorkspace(): React.ReactNode {
         // edit / detail 分支里在 index 0，位置本来就不同；承重的只有 key。
         // 另一条边界仍然成立：别把 Alert 包在面板**外面**（父元素类型一变，整棵子树照样卸载），它必须是兄弟节点。
         return (
-          <Flex vertical gap={8}>
+          <div className="flex flex-col gap-2">
             <Alert
               data-testid="case-detail-stale"
-              type="warning"
-              showIcon
-              title={`用例详情刷新失败：${errorMessage(caseError)}`}
-              description="右栏显示的是上一次成功读取的内容；你在表单里已经输入的内容不会被清掉。"
-            />
+              className="border-warning/40 bg-warning/10 [&_[data-slot=alert-title]]:text-warning"
+            >
+              <AlertTitle>用例详情刷新失败：{errorMessage(caseError)}</AlertTitle>
+              <AlertDescription>右栏显示的是上一次成功读取的内容；你在表单里已经输入的内容不会被清掉。</AlertDescription>
+            </Alert>
             {renderCase(panelView.testCase, panelView.panel)}
-          </Flex>
+          </div>
         );
       case 'edit':
-        return <Flex vertical gap={8}>{renderCase(panelView.testCase, 'edit')}</Flex>;
+        return <div className="flex flex-col gap-2">{renderCase(panelView.testCase, 'edit')}</div>;
       case 'detail':
-        return <Flex vertical gap={8}>{renderCase(panelView.testCase, 'detail')}</Flex>;
+        return <div className="flex flex-col gap-2">{renderCase(panelView.testCase, 'detail')}</div>;
     }
   };
 
   return (
     <>
-      <AppTopNav items={[...NAV_ITEMS]} active={ACTIVE_NAV} onNavigate={(href) => router.push(href)} />
+      <AppTopNav items={[...NAV_ITEMS]} active={ACTIVE_NAV} onNavigate={(href) => router.push(href)} onSearch={requestCommandPalette} />
       <ListDetailLayout
         list={listNode}
         detail={renderPanel()}
         detailOpen={panel !== null}
         widthStorageKey="cases-detail-width"
+        onRequestCloseDetail={() => go({ panel: null })}
       />
     </>
   );

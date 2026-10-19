@@ -1,15 +1,15 @@
 /**
- * RunCreatePanel：用例 + 执行模式 + 使用智能体评分 + 候选行（`Form.List` + small Table）。
+ * RunCreatePanel：用例 + 执行模式 + 使用智能体评分 + 候选行（`useFieldArray` + 手搭语义表格）。
  * 四件事必须成立：
  *   1. 模型候选池跟着**本行的智能体**变；
  *   2. 池子为空时当场内联 Alert 指出路，而不是让人选完到运行时才失败；
- *   3. 提交校验（至少一行、每行两个 Select 都选了）真的拦得住，且拦下来的请求**一个都不发**；
+ *   3. 提交校验（至少一行、每行的智能体与模型都选了）真的拦得住，且拦下来的请求**一个都不发**；
  *   4. 「使用智能体评分」默认关闭，且开关打开而设置页没配默认评分智能体时当场提示——
  *      判据由 `judgeAgentConfigured` 注入，正反两面都钉住（配了/未知时不许提示）；
  *   5. 执行模式的顺序与默认值（串行在前、默认串行）；
  *   5b. 思考强度：候选的**第一项是关闭档 `off`**（档位一律照上游词汇原样写，
- *      不再加工措辞），而「未指定」是
- *      `allowClear` 的清空态、由 placeholder 承担，**不是候选里的一项**（未选 ≠ 关闭）；
+ *      不再加工措辞），而「未指定」是**清空态**（可选框的清除键）、由 placeholder 承担，
+ *      **不是候选里的一项**（未选 ≠ 关闭）；
  *   6. 编辑模式：`mode="edit"` 预填当前轮次——执行模式取自 `initial`（不被缺省的
  *      「串行」盖掉）、每个候选行带着**原行 id**与**思考强度**（编辑载荷是行集合的全量替换，
  *      少回传一格就会被服务端判成「改了这一行」而白重置一行），且**只在真有行会被作废时**
@@ -17,14 +17,14 @@
  *   7. 候选行的**形态**：一行一个候选的小表格、字段名在列头里、
  *      删除是操作列里右对齐的图标 link 按钮 —— 三条形态守卫都在「RunCreatePanel」describe 里。
  *
- * jsdom 环境注意：本文件要打开 Select 的下拉（浮层定位走 @rc-component/resize-observer），
- * 而 jsdom 没有 ResizeObserver —— 必须自己装桩（桩刻意不放进共享 setup，理由见该文件）。
- * 表格同理：antd 的 `Table` 会直接 `new ResizeObserver`，少了这个桩连挂载都过不去。
+ * jsdom 环境注意：选择器与提示浮层的定位（Base UI 的 Positioner）需要 ResizeObserver，
+ * 而 jsdom 没有 —— 必须自己装桩（桩刻意不放进共享 setup，理由见该文件）。
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EFFORT_OFF, type AgentKind, type EvalRow, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
 import { installResizeObserverStub } from '../testing/resize-observer';
+import { formatContextWindow } from '../base/context-window-tag';
 import {
   RunCreatePanel,
   effortPlaceholder,
@@ -190,9 +190,8 @@ const twoModelPool: RunModelOption[] = [
 
 /** 表格里每一行「模型」那一格显示的文字，**按行的顺序**给出（增删 / 换位都靠它断言） */
 function modelCellTexts(): string[] {
-  return (screen.getAllByLabelText('模型') as HTMLElement[]).map(
-    (input) => input.closest('.ant-select')?.textContent ?? '',
-  );
+  // 模型菜单的触发器是按钮：显示文本就是 trigger 的 textContent（模型名 + 窗口 Tag）
+  return (screen.getAllByLabelText('模型') as HTMLElement[]).map((trigger) => trigger.textContent ?? '');
 }
 
 /**
@@ -217,29 +216,54 @@ function renderPanel(overrides: Partial<Parameters<typeof RunCreatePanel>[0]> = 
 }
 
 /**
- * 打开某一个下拉并按显示文本选中一项。
- *
- * **为什么不写 `getByRole('option', { name })`**（最初那么写的，实测点不动）：
- * antd 6 的 Select 在 DOM 里有两份选项——
- *   · 一份是 `.ant-select-item-option`（真正接收点击的可见行，内容在 `.ant-select-item-option-content` 里）；
- *   · 另一份是 `role="listbox"` 下那个 `height:0; width:0; overflow:hidden` 的**可访问性镜像**
- *     （rc-select 为屏幕阅读器准备），它的文本是**选项的 value**、可访问名取 `aria-label`。
- * 于是 `getByRole('option', { name: 'Codex' })` 拿到的是镜像节点，`fireEvent.click` 点它**不会**
- * 改变表单值（aria-hidden 的镜像不接事件）；而模型选项的 label 是 ReactNode（带来源 Tag），
- * 镜像节点连 `aria-label` 都没有，`name: /gpt-5/` 直接查不到。故这里按**可见行**的
- * `textContent` 匹配（可见行的文本就是「模型名 + 来源 Tag」）。
+ * 打开一个选择器。三种原语三种打开方式：
+ *   · `Combobox`（用例 / 智能体以外的旧原语）是输入框：focus + mousedown；
+ *   · `Select`（智能体）是触发按钮：mousedown + click；
+ *   · `DropdownMenu`（候选行的模型 / 思考强度两个菜单）：click 开、再点一下**关**——故已经展开时
+ *     不能再点，否则「打开再断言」会读到一片空。
  */
-function pickOption(labelText: string, optionText: string | RegExp, trigger?: HTMLElement): void {
-  const target = trigger ?? (screen.getAllByLabelText(labelText)[0] as HTMLElement);
-  fireEvent.mouseDown(target);
-  // 全局查一遍「可见」的浮层：换开另一个下拉时 antd 不卸载上一个、也不给它加 `hidden` 类
-  // ⇒ 这份查询其实跨了多个浮层（**脆**，理由见 `visibleOptionTexts` 的注释）。按文案点选仍然稳，
-  // 而找不到目标时下面会把**实际选项**列出来，所以「误点选」是响的；别在这里加顺序假设。
-  const rows = Array.from(
+function openPicker(labelText: string, index = 0): HTMLElement {
+  const control = screen.getAllByLabelText(labelText)[index] as HTMLElement;
+  if (control.getAttribute('aria-haspopup') === 'menu') {
+    if (control.getAttribute('aria-expanded') !== 'true') fireEvent.click(control);
+    return control;
+  }
+  fireEvent.focus(control);
+  fireEvent.mouseDown(control);
+  fireEvent.click(control);
+  return control;
+}
+
+/** 当前文档里**所有**选择器浮层的选项行（Combobox / Select / DropdownMenu 三种原语） */
+function optionRows(): HTMLElement[] {
+  return Array.from(
     document.querySelectorAll<HTMLElement>(
-      '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option',
+      '[data-slot="combobox-item"], [data-slot="select-item"], [data-slot="dropdown-menu-radio-item"]',
     ),
   );
+}
+
+/** 当前展开的模型菜单里**按供应商分组**的组名（同名模型靠组名分得开） */
+function menuGroupLabels(): string[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-label"]')).map(
+    (label) => label.textContent ?? '',
+  );
+}
+
+/**
+ * 打开某一个选择器并按显示文本选中一项。
+ *
+ * 匹配用**可见行**的 `textContent`：模型选项的 label 是复合内容（模型名 + 供应商 + 来源 + 窗口），
+ * 而可访问名只由 `aria-label` 承担。找不到目标时把**实际选项**列进错误消息，误点选是响的。
+ */
+function pickOption(labelText: string, optionText: string | RegExp, trigger?: HTMLElement): void {
+  const target = trigger ?? openPicker(labelText);
+  if (trigger !== undefined) {
+    fireEvent.focus(target);
+    fireEvent.mouseDown(target);
+    fireEvent.click(target);
+  }
+  const rows = optionRows();
   const wanted =
     typeof optionText === 'string'
       ? rows.find((row) => row.textContent === optionText)
@@ -251,50 +275,42 @@ function pickOption(labelText: string, optionText: string | RegExp, trigger?: HT
       )}`,
     );
   }
+  // Base UI 的选项在 `pointerdown` 时才允许鼠标选中（见 `SelectItem` 的 allowMouseSelection）：
+  // 只派发 click 在 jsdom 里不会改变值
+  fireEvent.pointerDown(wanted);
   fireEvent.click(wanted);
 }
 
-/**
- * **所有**浮层合起来的选项文本；断言「列了什么 / 没列什么」（集合语义）用它。
- *
- * ⚠️ **`:not(.ant-select-dropdown-hidden)` 这个过滤在本版本上基本是死的**（见下一个函数的注释）：
- * antd 换开另一个下拉时**不卸载**上一个的浮层，而那个浮层**不带** `hidden` 类 ⇒ 同一个文档里会同时
- * 有多份「可见」的 `.ant-select-item-option`，这个谓词一个都排不掉。它留着只是**没有坏处**（真带上
- * `hidden` 的那些确实该排掉），**不要**把它读成「能排除上一个浮层」的机制。
- *
- * ⚠️ 因此本函数（以及下面 `pickOption` 里同一份全局查询）是**脆的**：它把「此刻文档里所有浮层的选项」
- * 当做一个集合，用例里先开过用例下拉、再开强度下拉时，两份选项会混在一起。集合断言（`toContain`）与
- * 「按文案点选」还稳，`pickOption` 找不到目标时会把**实际选项**列进错误消息里，所以误点选是响的；
- * 但**顺序敏感**的断言（「第一项是 off」）必须改用 `visibleOptionTextsOf`（按 `aria-controls` 认浮层），
- * 否则会张冠李戴地通过。
- */
+/** **所有**浮层合起来的选项文本；断言「列了什么 / 没列什么」（集合语义）用它 */
 function visibleOptionTexts(): string[] {
+  return optionRows().map((row) => row.textContent ?? '');
+}
+
+/**
+ * **某一个**选择器当前可见的选项文本，按渲染顺序（顺序断言用它，避免把别的浮层混进来）。
+ * 认浮层的凭据是控件自己写下的 `aria-controls`——不按 DOM 顺序猜第几个浮层。
+ */
+function visibleOptionTextsOf(labelText: string): string[] {
+  const control = screen.getAllByLabelText(labelText)[0] as HTMLElement;
+  const listId = control.getAttribute('aria-controls');
+  if (listId === null) throw new Error(`「${labelText}」的控件上没有指到浮层的 id`);
+  const list = document.getElementById(listId);
+  const popup = list?.closest(
+    '[data-slot="combobox-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]',
+  );
+  if (popup === null || popup === undefined) throw new Error(`「${labelText}」下拉的浮层不在文档里`);
   return Array.from(
-    document.querySelectorAll<HTMLElement>(
-      '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option',
+    popup.querySelectorAll<HTMLElement>(
+      '[data-slot="combobox-item"], [data-slot="select-item"], [data-slot="dropdown-menu-radio-item"]',
     ),
   ).map((row) => row.textContent ?? '');
 }
 
-/**
- * **某一个**下拉（按它的 `aria-label` 认）当前可见的选项文本，按渲染顺序。
- *
- * 为什么还需要它：`visibleOptionTexts()` 把**所有**可见浮层合在一起，而 antd 在同一行里换开
- * 另一个下拉时，上一个浮层仍在文档里且**不带** `hidden` 类（实测：先选用例、再选模型、再开强度，
- * 三个浮层同时「可见」）⇒ 它的首项是用例选项，不是强度选项。
- * 「下拉的**第一项**是什么」这种顺序断言必须限定在自己那一个浮层里，否则会张冠李戴地通过。
- * 认浮层的凭据是 antd 自己写下的 `aria-controls` / `aria-owns`（两者只要有其一就够，
- * 不同版本用哪一个都认）——不按 DOM 顺序去猜第几个浮层。
- */
-function visibleOptionTextsOf(labelText: string): string[] {
-  const input = screen.getAllByLabelText(labelText)[0] as HTMLElement;
-  const listId = input.getAttribute('aria-controls') ?? input.getAttribute('aria-owns');
-  if (listId === null) throw new Error(`「${labelText}」的输入框上没有指到浮层的 id`);
-  const dropdown = document.getElementById(listId)?.closest('.ant-select-dropdown');
-  if (dropdown === null || dropdown === undefined) throw new Error(`「${labelText}」下拉的浮层不在文档里`);
-  return Array.from(dropdown.querySelectorAll<HTMLElement>('.ant-select-item-option')).map(
-    (row) => row.textContent ?? '',
-  );
+/** 选择器上**显示**的文本：输入框取 value，触发按钮取 textContent */
+function controlText(labelText: string, index = 0): string {
+  const control = screen.getAllByLabelText(labelText)[index] as HTMLElement;
+  if (control instanceof HTMLInputElement) return control.value === '' ? control.placeholder : control.value;
+  return control.textContent ?? '';
 }
 
 describe('RunCreatePanel', () => {
@@ -330,7 +346,7 @@ describe('RunCreatePanel', () => {
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
     renderPanel({ cases: [remoteCase] });
-    fireEvent.mouseDown(screen.getAllByLabelText('用例')[0] as HTMLElement);
+    openPicker('用例');
 
     expect(visibleOptionTexts()).toContain('多协议入站转换 · rbac-server · 71e6280');
   });
@@ -357,7 +373,7 @@ describe('RunCreatePanel', () => {
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
     renderPanel({ cases: [legacyCase] });
-    fireEvent.mouseDown(screen.getAllByLabelText('用例')[0] as HTMLElement);
+    openPicker('用例');
 
     expect(visibleOptionTexts()).toContain('历史遗留用例 · x · 默认分支 HEAD');
   });
@@ -377,7 +393,7 @@ describe('RunCreatePanel', () => {
       updatedAt: '2026-09-22T00:00:00.000Z',
     };
     renderPanel({ cases: [noneCase] });
-    fireEvent.mouseDown(screen.getAllByLabelText('用例')[0] as HTMLElement);
+    openPicker('用例');
 
     expect(visibleOptionTexts()).toContain('从零开始的用例 · 无 · 默认分支 HEAD');
   });
@@ -415,11 +431,12 @@ describe('RunCreatePanel', () => {
 
     // 第二行改成 Codex 并选它的模型 ⇒ 这次两行一起提交
     const agentSelects = screen.getAllByLabelText('智能体') as HTMLElement[];
+    fireEvent.focus(agentSelects[1] as HTMLElement);
     fireEvent.mouseDown(agentSelects[1] as HTMLElement);
-    const codexOption = Array.from(document.querySelectorAll<HTMLElement>('.ant-select-item-option')).find(
-      (row) => row.textContent === 'Codex',
-    );
+    fireEvent.click(agentSelects[1] as HTMLElement);
+    const codexOption = optionRows().find((row) => row.textContent === 'Codex');
     expect(codexOption).toBeDefined();
+    fireEvent.pointerDown(codexOption as HTMLElement);
     fireEvent.click(codexOption as HTMLElement);
 
     // 第二行的模型池跟着本行的智能体换成 openai 的。
@@ -443,8 +460,8 @@ describe('RunCreatePanel', () => {
     // 顺序是产品口径的一部分：默认值落在第一个选项上，顺序反了「默认串行」就名不副实
     const labels = screen.getAllByRole('radio').map((node) => node.closest('label')?.textContent ?? '');
     expect(labels).toEqual(['串行', '并行']);
-    expect(screen.getByLabelText('串行')).toBeChecked();
-    expect(screen.getByLabelText('并行')).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: '串行' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '并行' })).not.toBeChecked();
   });
 
   it('默认执行模式是串行，提交出去的 payload 与默认值一致', async () => {
@@ -481,8 +498,8 @@ describe('RunCreatePanel', () => {
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
-    const caseLabel = screen.getByText('用例', { selector: '.ant-form-item-label label' });
-    const noteLabel = screen.getByText('备注', { selector: '.ant-form-item-label label' });
+    const caseLabel = screen.getByText('用例', { selector: '[data-slot=field-label]' });
+    const noteLabel = screen.getByText('备注', { selector: '[data-slot=field-label]' });
     // 位置判据：用例那一行在备注之前（`compareDocumentPosition` 的 FOLLOWING 位）
     expect(caseLabel.compareDocumentPosition(noteLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
@@ -521,7 +538,8 @@ describe('RunCreatePanel', () => {
     pickOption('用例', '多协议入站转换 · gateway · 71e6280');
     pickOption('模型', /claude-opus-4-6/);
     // antd 的 Radio 把 input 包在 label 里，按 label 文本取即可
-    fireEvent.click(screen.getByLabelText('并行'));
+    fireEvent.pointerDown(screen.getByRole('radio', { name: '并行' }));
+    fireEvent.click(screen.getByRole('radio', { name: '并行' }));
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -536,23 +554,39 @@ describe('RunCreatePanel', () => {
     });
   });
 
-  it('模型下拉只列本行智能体协议下的模型，并标出来源与供应商', () => {
+  /**
+   * 协议过滤（模型菜单）：菜单里**只有**本行智能体接受的协议下的模型。
+   * 判据分两半，缺一不可：
+   *   · `cc` 只吃 anthropic ⇒ 选完 Codex 后菜单里一个 anthropic 模型都没有；
+   *   · 协议不匹配的组合是**不存在**，不是「列出来再置灰」——菜单里一个禁用项都没有。
+   */
+  it('模型菜单只列本行智能体接受的协议：Claude Code 的菜单里没有 openai 协议的模型', () => {
+    renderPanel();
+    // 默认行就是 Claude Code；先选一个，再换到只吃 openai 的那家
+    expect(menuGroupLabels()).toEqual([]);
+    openPicker('模型');
+    expect(menuGroupLabels()).toEqual(['Anthropic 网关']);
+    expect(visibleOptionTexts().some((text) => text.includes('claude-opus-4-6'))).toBe(true);
+    expect(visibleOptionTexts().some((text) => text.includes('gpt-5'))).toBe(false);
+    // 协议不匹配的组合不该被选中后到运行时才失败：它**根本不出现**，因此也没有置灰项
+    expect(document.querySelectorAll('[data-slot="dropdown-menu-radio-item"][data-disabled]')).toHaveLength(0);
+  });
+
+  it('换到 Codex 后，菜单里只剩 openai 协议的模型（anthropic 的一个都不出现）', () => {
     renderPanel();
     pickOption('智能体', 'Codex');
 
-    const openaiTrigger = screen.getAllByLabelText('模型')[0] as HTMLElement;
-    fireEvent.mouseDown(openaiTrigger);
+    openPicker('模型');
     const options = visibleOptionTexts();
-    // 标签是「模型名 + 供应商名 + 来源 Tag + 窗口 Tag」（窗口那一格夹具里没声明 ⇒ 显示「未知」；
-    // 供应商名见下面那条「同名模型要分得开」的用例）
-    expect(options).toContain('gpt-5OpenAI 网关自动拉取未知');
+    expect(menuGroupLabels()).toEqual(['OpenAI 网关']);
+    expect(options.some((text) => text.includes('gpt-5'))).toBe(true);
     // 上一行的 anthropic 模型必须**不在**这个池子里（协议不匹配的组合不该被选中后到运行时才失败）
     expect(options.some((text) => text.includes('claude-opus-4-6'))).toBe(false);
   });
 
   /**
    * 可解释性：双协议智能体（DSH）的池子是**两类协议的并集**，
-   * 而选项里必须能看出**每个模型来自哪个供应商**——否则「同一个模型名挂在两个网关」
+   * 而菜单按**供应商分组**——否则「同一个模型名挂在两个网关」
    * （跨网关同名很常见）时，两个选项长得一模一样，选出来却是不同的行。
    */
   it('双协议智能体的池子是并集，且每个选项都带得出供应商名（同名模型分得开）', () => {
@@ -561,11 +595,12 @@ describe('RunCreatePanel', () => {
     // `下拉「智能体」里找不到 dsh`（实际选项：Claude Code / Codex / DeepSeek Harness）
     pickOption('智能体', 'DeepSeek Harness');
 
-    const trigger = screen.getAllByLabelText('模型')[0] as HTMLElement;
-    fireEvent.mouseDown(trigger);
+    openPicker('模型');
     const options = visibleOptionTexts();
-    expect(options).toContain('gpt-5OpenAI 网关自动拉取未知');
-    expect(options).toContain('claude-opus-4-6Anthropic 网关手工维护未知');
+    // 两类协议的模型都在，且各自挂在自己的供应商组下（组名就是「这个模型来自哪个网关」）
+    expect(menuGroupLabels()).toEqual(['OpenAI 网关', 'Anthropic 网关']);
+    expect(options.some((text) => text.includes('gpt-5'))).toBe(true);
+    expect(options.some((text) => text.includes('claude-opus-4-6'))).toBe(true);
   });
 
   it('候选池为空时当场内联 Alert 指出路，且提交被拦住', async () => {
@@ -611,13 +646,15 @@ describe('RunCreatePanel', () => {
     const del = screen.getByRole('button', { name: /删\s*除/ });
     // 图标按钮：一个文字节点都没有（可访问名只挂在 `aria-label` 上），图标本身是 aria-hidden 的
     expect(del.textContent).toBe('');
-    expect(del.querySelector('.anticon-delete')).not.toBeNull();
+    expect(del.querySelector('svg')).not.toBeNull();
     expect(del).toHaveAttribute('aria-label', '删除');
 
-    // 右对齐是**列**的属性（antd 落到单元格的内联 textAlign 上）：少了它按钮会贴左
+    // 右对齐是**列**的属性：操作列由套件的列固定钉在右边，按钮组自己靠 justify-end 贴右
     const cell = del.closest('td');
     expect(cell).not.toBeNull();
-    expect(cell?.style.textAlign).toBe('right');
+    expect((cell as HTMLElement).style.position).toBe('sticky');
+    expect((cell as HTMLElement).style.right).toBe('0px');
+    expect(cell?.querySelector('.justify-end')).not.toBeNull();
 
     // 右对齐的前提是它真在最后一列：前面几列只要多一格，这个按钮就不在右边了
     const cells = Array.from(del.closest('tr')?.querySelectorAll('td') ?? []);
@@ -628,10 +665,10 @@ describe('RunCreatePanel', () => {
    * 形态守卫：字段名由**列头**承担（`Form.Item` 不再给 `label`，可访问名改挂控件的 `aria-label`）。
    * 这是「一行 = 一行」的前提：三个下拉只要有一个退回带 `label` 的写法，那一行就会比邻行高一截。
    *
-   * 为什么**不**在这里钉 `size="small"`（`document.querySelector('.ant-table-small')` 那类断言）：
-   * 它没有区分力 —— 紧凑密度是外层 `<Form size="small">` 经 antd 的 size context 传下来的，
-   * `<Table>` 上删掉 `size="small"` 也照样小。**没有见过失败的守卫
-   * 不算守卫**（AGENTS.md），故这里只留钉得住的三条：列头、单元格里没有标签行、三个控件同一行。
+   * 为什么**不**在这里钉紧凑密度（表格容器上有没有那枚密度类名那类断言）：
+   * 它没有区分力 —— 行高与内边距由 `DataTable` 自己的样式给，页面这一层没有可关的开关。
+   * **没有见过失败的守卫不算守卫**（AGENTS.md），故这里只留钉得住的三条：
+   * 列头、单元格里没有标签行、三个控件同一行。
    */
   it('候选行是表格：字段名在列头里（没有竖排标签），三个下拉各自带可访问名（C-TABLE）', () => {
     renderPanel();
@@ -647,7 +684,7 @@ describe('RunCreatePanel', () => {
 
     // 字段名**只在列头里**：单元格里再冒出一个标签行，每个候选就白多一行高度 —— 这正是改表格要解决的问题。
     // 作用域收在表格内：上面三格（用例 / 执行模式 / 使用智能体评分）本来就有标签，那是另一回事
-    expect(document.querySelector('.ant-table')?.querySelectorAll('.ant-form-item-label')).toHaveLength(0);
+    expect(screen.getByTestId('candidate-table').querySelectorAll('label')).toHaveLength(0);
 
     // 每行的三个控件都在单元格里，且各自有可访问名（列头 `<th>` 不会成为输入框的可访问名）
     expect(screen.getAllByLabelText('模型')).toHaveLength(1);
@@ -681,52 +718,48 @@ describe('RunCreatePanel', () => {
    * 左边、操作列钉在右边（中间两列从它们下面滑过）。三处必须同时在场，少一处就静默退回老样子 ——
    * 表格溢到容器外面、`思考强度` 与三个操作按钮落在右栏之外（右栏是 `overflow: auto`，横向没有
    * 滚动条，被挤出去的列**根本够不到**）。三条断言各自对应一处：
-   *   · 没有 `scroll={{ x: 数值 }}` ⇒ 内容容器拿不到 `overflow-x: auto`、表格也没有内联宽度；
-   *   · 首列没有 `fixed` ⇒ 表头第一格不再带粘性类（滚动时它会被推出视野）；
-   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（三个按钮跟着滚走，这一行删不掉）。
+   *   · 表格没有内联宽度 / 滚动容器拿不到 `overflow-x: auto` ⇒ 横向滚动不成立；
+   *   · 首列没有 `pinned: 'start'` ⇒ 表头第一格不再有 `position: sticky`（滚动时它会被推出视野）；
+   *   · 操作列没有 `pinned: 'end'` ⇒ 表头最后一格不再有 `position: sticky`（三个按钮跟着滚走，
+   *     这一行删不掉）。
    *
    * ⚠️ jsdom **没有布局引擎**：`sticky` 的实际吸边效果、「有没有真的滚起来」都量不出来，钉子只到
-   * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
-   * 里的 `.ant-table-cell-fix { position: sticky }`，故这里断言的是类名而不是算出来的 `position`）。
+   * 内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到按类名落在
+   * 样式表里的规则；`pinned` 给的 `position` 是内联的，故这里可以直接断言它）。
    * 真实几何（容器 404px 时表格 636px、列宽 130/306/120/80、滚到两端时首列左边缘与末列右边缘
    * 纹丝不动）jsdom 量不出来，只能真机冒烟看，同 `CANDIDATE_COLUMN_WIDTH` 那条注释。
    */
   it('右栏装不下时横向滚动，且首列钉左、操作列钉右（C-COLUMN-FIXED）', () => {
     renderPanel();
 
-    // 收窄到候选项表那一张：面板里还有用例 / 执行模式那些表单行，全局选 `.ant-table-content` 不稳
-    const content = document.querySelector('.ant-form .ant-table-content');
-    expect(content).not.toBeNull();
-    // 有横向滚动才谈得上固定列：给 `scroll.x` 之前这里一个内联样式都没有
-    expect(content).toHaveStyle({ overflowX: 'auto' });
-    const table = content?.querySelector('table');
-    // 最小宽度必须真的落到**表格自己**的宽度上（它才是滚动的那个更宽的盒子）：
-    // `min-width: 100%` 保证栏够宽时铺满、不给滚动条，不是恒定的 636
-    expect(table).toHaveStyle({ width: '636px', minWidth: '100%', tableLayout: 'fixed' });
+    // 收窄到候选项表那一张：面板里还有用例 / 执行模式那些表单行
+    const content = screen.getByTestId('candidate-table');
+    // 横向滚动由套件的滚动容器承担
+    const scroll = content.querySelector('[data-testid="data-table-scroll"]') as HTMLElement | null;
+    expect(scroll?.style.overflow).toBe('auto');
+    const table = content.querySelector('table');
+    // 130 + 306 + 120 + 80 = 636：表格宽度就是各列声明宽度之和
+    expect(table).toHaveStyle({ width: '636px', tableLayout: 'fixed' });
 
-    const cells = content?.querySelectorAll('thead th');
+    const cells = Array.from(content.querySelectorAll('thead th')) as HTMLElement[];
     expect(cells).toHaveLength(4);
-    // 首列与操作列刚需的两条粘性类（`-fix-start` / `-fix-end` 就是 `position: sticky` 的来源）
-    expect(cells?.[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(cells?.[3]?.className).toContain('ant-table-cell-fix-end');
+    expect(cells[0]?.style.position).toBe('sticky');
+    expect(cells[0]?.style.left).toBe('0px');
+    expect(cells[3]?.style.position).toBe('sticky');
+    expect(cells[3]?.style.right).toBe('0px');
     // 中间两列**不许**粘：把模型列也钉住的话，可滚动区域就只剩思考强度那一列
-    expect(cells?.[1]?.className).not.toContain('ant-table-cell-fix');
-    expect(cells?.[2]?.className).not.toContain('ant-table-cell-fix');
+    expect(cells[1]?.style.position).not.toBe('sticky');
+    expect(cells[2]?.style.position).not.toBe('sticky');
     // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去 —— 滚动时表头与数据行错位）
-    const firstBodyRow = content?.querySelector('tbody tr.ant-table-row');
-    expect(firstBodyRow?.querySelectorAll('td')[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(firstBodyRow?.querySelectorAll('td')[3]?.className).toContain('ant-table-cell-fix-end');
+    const firstBodyCells = Array.from(content.querySelectorAll('tbody tr')?.[0]?.querySelectorAll('td') ?? []) as HTMLElement[];
+    expect(firstBodyCells[0]?.style.left).toBe('0px');
+    expect(firstBodyCells[3]?.style.right).toBe('0px');
 
-    // 三列把宽度交出去，剩下的才归模型列（它**刻意不给宽度**，是唯一吃剩余宽度的列）。
-    // jsdom 量不出模型列的实测宽度：`colgroup` 里那些数字来自 rc-table 对单元格的 ResizeObserver
-    // 测量（`MeasureCell`），而 `installResizeObserverStub` 的替身**从不回调** —— 于是这里只钉得住
-    // 「三列各自申报的宽度」与「模型列一列都没申报」。
-    const widthsOf = (selector: string) =>
-      Array.from(content?.querySelectorAll(selector) ?? []).map((cell) => (cell as HTMLElement).style.width);
-    expect(widthsOf('colgroup col')).toEqual(['130px', '', '120px', '80px']);
-    // 操作列右对齐也得留着：它和 `fixed` 一起决定按钮贴哪条边（少了它按钮会在列中间浮着）。
-    // 读的是内联 `style` 属性而不是 `cell.style`：这里的类型是 `Element`，`style` 只长在 `HTMLElement` 上
-    expect(cells?.[3]?.getAttribute('style')).toContain('text-align: right');
+    // 四列全部申报宽度（固定列的偏移输入就是这些声明值）
+    const widths = Array.from(content.querySelectorAll('colgroup col')).map(
+      (cell) => (cell as HTMLElement).style.width,
+    );
+    expect(widths).toEqual(['130px', '306px', '120px', '80px']);
   });
 
   /**
@@ -782,14 +815,33 @@ describe('RunCreatePanel', () => {
     expect(remaining[0]).toContain('claude-opus-4-6');
   });
 
-  it('切换智能体后该行已选的模型被清空（否则会提交出协议不匹配的组合）', async () => {
+  /**
+   * 切换智能体后的旧模型：**清空**（不是留着、也不是「换成第一个可行项」）。
+   *
+   * 取「清空」而不是「换成第一个可行项」：换智能体是一次显式的目标变更，模型是目标的一部分，
+   * 替用户挑一个模型等于**静默改掉这一行要跑什么**；而清空是看得见的（触发器回到占位符），
+   * 且会被表单校验拦住——提交不出去，也就不会出现「选完才在服务端报协议不匹配」。
+   *
+   * 判据三处同时成立：界面上旧模型名消失、提交被拦、「请选择模型」当场出现。
+   */
+  it('切换智能体后，之前选的不兼容模型不可保留（清空 + 提交被拦，不是留在行上）', async () => {
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
     pickOption('用例', '多协议入站转换 · gateway · 71e6280');
     pickOption('模型', /claude-opus-4-6/);
+    expect(controlText('模型')).toContain('claude-opus-4-6');
+
     // 换成 openai 协议的智能体：上一行选的 anthropic 模型必须作废
     pickOption('智能体', 'Codex');
+    expect(controlText('模型')).toContain('选择模型');
+    expect(controlText('模型')).not.toContain('claude-opus-4-6');
+
+    // 菜单也必须是新的候选池：旧模型的协议不匹配，它连菜单都不该进
+    openPicker('模型');
+    expect(menuGroupLabels()).toEqual(['OpenAI 网关']);
+    expect(visibleOptionTexts().some((text) => text.includes('claude-opus-4-6'))).toBe(false);
+
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
 
     await waitFor(() => expect(screen.getByText('请选择模型')).toBeInTheDocument());
@@ -818,11 +870,13 @@ describe('RunCreatePanel', () => {
     /** 打开用例下拉并输入查询串；返回之后**可见**的选项文本 */
     async function searchCases(query: string): Promise<string[]> {
       const caseSelect = screen.getAllByLabelText('用例')[0] as HTMLElement;
+      fireEvent.focus(caseSelect);
       fireEvent.mouseDown(caseSelect);
+      fireEvent.click(caseSelect);
       fireEvent.change(caseSelect, { target: { value: query } });
       await waitFor(() => {
-        // 过滤是 rc-select 的内部状态：等它真的重渲染过一轮再断言
-        expect(document.querySelector('.ant-select-dropdown')).not.toBeNull();
+        // 过滤是组合框的内部状态：等浮层真的起来再断言
+        expect(document.querySelector('[data-slot="combobox-content"]')).not.toBeNull();
       });
       return visibleOptionTexts();
     }
@@ -1035,7 +1089,7 @@ describe('RunCreatePanel：思考强度', () => {
     // 窗口标签出现在**选中项**里（1.05M 与 1M 在 [1m] 阈值上分处两侧，不能都显示成 1M）。
     // 断言选中框自己而不是 getByText：下拉浮层不卸载，同一个 '1.05M' 在文档里会有两份。
     const modelSelect = screen.getAllByLabelText('模型')[0] as HTMLElement;
-    expect(modelSelect.closest('.ant-select')?.textContent ?? '').toContain('1.05M');
+    expect(controlText('模型')).toContain('1.05M');
 
     // 交集之外的档位一个都不出现：`pickOption` 找不到目标时会把**实际选项**列进错误消息里，
     // 所以「抛错」本身就是「这一档没被列出来」的判据（比读浮层 DOM 稳：antd 换开下拉时不卸载上一个）
@@ -1072,7 +1126,7 @@ describe('RunCreatePanel：思考强度', () => {
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
     // 清空态说的是「未指定」，
     // 而它具体落到哪个档由该家适配器决定（dsh 走缺省 high）——见「未指定」那一条用例
-    expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定');
+    expect(controlText('思考强度')).toContain('未指定');
   });
 
   it('换模型作废已选强度：换成没有档位的模型后提交，行上不带 effort', async () => {
@@ -1086,7 +1140,7 @@ describe('RunCreatePanel：思考强度', () => {
 
     // 换模型后强度回到「未指定」占位符 ⇒ 已选档被作废（交集随模型变，脏值会在创建时被服务端 400 拦下）。
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定');
+    expect(controlText('思考强度')).toContain('未指定');
 
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -1112,7 +1166,7 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('用例', /多协议入站转换/);
 
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    const text = strength.closest('.ant-select')?.textContent ?? '';
+    const text = controlText('思考强度');
     expect(text).toContain('未指定');
     // 不编档位：没声明 `defaultEffort` 的家（cc）不许出现「用 <档>」那半句
     expect(text).not.toMatch(/用 /);
@@ -1135,7 +1189,7 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('智能体', 'DeepSeek Harness');
 
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    const text = strength.closest('.ant-select')?.textContent ?? '';
+    const text = controlText('思考强度');
     expect(text).toContain('未指定（DeepSeek Harness 用 high）');
     expect(text).not.toContain('dsh');
   });
@@ -1161,7 +1215,7 @@ describe('RunCreatePanel：思考强度', () => {
 
     // 选中的这一项**显示**的就是 `off`（不是 placeholder、也不是别的措辞）
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    expect(strength.closest('.ant-select')?.textContent ?? '').toBe('off');
+    expect(controlText('思考强度')).toBe('off');
 
     // 提交值 = 契约的关闭档名（`option.value` 必须是 `effort`，不是文案、也不是厂商词汇）
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
@@ -1204,13 +1258,13 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('用例', /多协议入站转换/);
     pickOption('模型', /declared/);
     // 打开强度下拉（第一次打开 = 浮层按此刻的候选渲染）
-    fireEvent.mouseDown(screen.getAllByLabelText('思考强度')[0] as HTMLElement);
+    openPicker('思考强度');
     // 整列按序断言（比 slice 更强）：这三个就是全部候选，顺序与文案都是判据
     expect(visibleOptionTextsOf('思考强度')).toEqual([EFFORT_OFF, 'xhigh', 'max（推荐）']);
     // 选中的这一项显示的就是 `off`；选完仍旧落在候选里（不是被当成清空态）
     pickOption('思考强度', EFFORT_OFF);
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    expect(strength.closest('.ant-select')?.textContent ?? '').toBe(EFFORT_OFF);
+    expect(controlText('思考强度')).toBe(EFFORT_OFF);
   });
 
   /**
@@ -1240,7 +1294,7 @@ describe('RunCreatePanel：思考强度', () => {
     pickOption('用例', /多协议入站转换/);
     // 先选模型，**再第一次打开**强度下拉：这一次打开读到的必然是 `bare` 这一行此刻的候选
     pickOption('模型', /bare/);
-    fireEvent.mouseDown(screen.getAllByLabelText('思考强度')[0] as HTMLElement);
+    openPicker('思考强度');
     const bareOptions = visibleOptionTextsOf('思考强度');
 
     expect(bareOptions[0]).toBe(EFFORT_OFF);
@@ -1251,6 +1305,97 @@ describe('RunCreatePanel：思考强度', () => {
     expect(bareOptions.filter((text) => text.startsWith(EFFORT_OFF))).toEqual([EFFORT_OFF]);
     // 清空态没被当成候选：`off` 说的是「我关掉思考」，「未指定」说的是「我没选」（后者不在浮层里）
     expect(bareOptions.some((text) => text.includes('未指定'))).toBe(false);
+  });
+});
+
+/**
+ * Model Selector：候选行的「模型 + 思考强度」是两个菜单（智能体仍是选择器）。
+ * 这一组钉的是换成菜单后**不能退化**的两件事：
+ *   ① 上下文窗口显示的是**容量**（`contextWindow`），不是用量（24 的占用条在事实条上，不在这里）；
+ *   ② 不可行组合在创建阶段就**消失**——没选模型时强度菜单里一个档位都没有，而不是列出来再置灰。
+ */
+describe('RunCreatePanel：Model Selector（两个菜单）', () => {
+  /** 容量夹具：一个已知窗口、一个未知；两者都声明了档位（好让强度菜单有东西可比） */
+  const windowPool: RunModelOption[] = [
+    {
+      providerId: 'p-anthropic',
+      providerName: 'Anthropic 网关',
+      modelId: 'claude-opus-4-6',
+      source: 'manual',
+      contextWindow: 1_048_576,
+      efforts: ['low', 'high'],
+    },
+    {
+      providerId: 'p-anthropic',
+      providerName: 'Anthropic 网关',
+      modelId: 'no-window',
+      source: 'manual',
+      efforts: ['low', 'high'],
+    },
+    // 上游没声明档位的模型：强度菜单在它身上一个候选都不该有
+    { providerId: 'p-anthropic', providerName: 'Anthropic 网关', modelId: 'no-efforts', source: 'manual' },
+  ];
+
+  /**
+   * 「容量 ≠ 用量」的判据落在**读的是哪一格**上：菜单与触发器里的数字必须等于
+   * `formatContextWindow(option.contextWindow)`。夹具额外塞了一个 `usage` 字段（契约里没有这一格），
+   * 是为了让「有人把占用条的口径接到候选行上」当场红：读 usage 的话，显示出来的就不再是容量文案。
+   */
+  it('上下文窗口显示的是容量（读 contextWindow），不是用量', () => {
+    const withUsage = windowPool.map((option) => ({
+      ...option,
+      usage: { usedTokens: 900_000, totalTokens: 1_048_576 },
+    })) as RunModelOption[];
+
+    renderPanel({ modelOptionsFor: () => withUsage });
+
+    openPicker('模型');
+    const items = visibleOptionTexts();
+    // 每一项都带窗口 Tag：已知的显示格式化容量，未知的显示「未知」（不显示 0）
+    expect(items.some((text) => text.includes(formatContextWindow(1_048_576)))).toBe(true);
+    expect(items.some((text) => text.includes('未知'))).toBe(true);
+    // 用量形态（百分比 / 已用 token）一个字都不许出现在这里
+    expect(items.some((text) => text.includes('%'))).toBe(false);
+
+    pickOption('模型', /claude-opus-4-6/);
+    // 选中后触发器仍显示容量（下拉收起时也看得见），且读的是 contextWindow。
+    // 触发器是**菜单**（`aria-haspopup="menu"`）：Model Selector 的当前值就显示在收起的触发器上。
+    expect(screen.getByLabelText('模型')).toHaveAttribute('aria-haspopup', 'menu');
+    expect(controlText('模型')).toContain(formatContextWindow(1_048_576));
+    expect(controlText('模型')).not.toContain('%');
+    // 候选行里没有用量条：占用条在事实条上，是另一件事
+    expect(screen.getByTestId('candidate-table').querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  /**
+   * 不可行组合的处置：**不在菜单里出现**，而不是「选完才置灰」。
+   *
+   * 三处判据：
+   *   · 没选模型 ⇒ 没有任何「模型 × 强度」可行组合：强度触发器禁用，点开也一个候选都没有；
+   *   · 选了模型 ⇒ 菜单里正好是该模型支持的档位（多一个少一个都算缺陷），且没有禁用项；
+   *   · 换成没有档位的模型 ⇒ 又回到「一个候选都没有」，不会留下上一个模型的档位。
+   */
+  it('不可行组合根本不出现在下拉里：没选模型时强度菜单一个档位都没有（不是置灰）', () => {
+    renderPanel({ modelOptionsFor: () => windowPool });
+
+    const effort = screen.getByLabelText('思考强度');
+    expect(effort).toBeDisabled();
+    fireEvent.click(effort);
+    expect(visibleOptionTexts()).toEqual([]);
+
+    pickOption('模型', /claude-opus-4-6/);
+    openPicker('思考强度');
+    // 菜单里正好是该模型的档位（不需要「先选一个再报错」，也不需要置灰）
+    expect(visibleOptionTexts()).toEqual(['low', 'high']);
+    expect(document.querySelectorAll('[data-slot="dropdown-menu-radio-item"][data-disabled]')).toHaveLength(0);
+    pickOption('思考强度', 'high');
+
+    // 换成没有档位的模型：强度又回到「一个候选都没有」
+    pickOption('模型', /no-efforts/);
+    const after = screen.getByLabelText('思考强度');
+    expect(after).toBeDisabled();
+    fireEvent.click(after);
+    expect(visibleOptionTexts()).toEqual([]);
   });
 });
 
@@ -1274,8 +1419,9 @@ describe('RunCreatePanel（编辑模式）', () => {
 
   /** 保存前确认框的浮层根节点（组件挂了 `rootClassName="run-edit-confirm"`）：断言先收窄到这一个浮层 */
   async function saveDialog(): Promise<HTMLElement> {
-    await waitFor(() => expect(document.querySelector('.run-edit-confirm')).not.toBeNull());
-    return document.querySelector('.run-edit-confirm') as HTMLElement;
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveAttribute('data-testid', 'run-edit-confirm');
+    return dialog;
   }
 
   /** 「改模型 ⇒ 有行会被作废」的共同前奏：换智能体（模型那一格会被既有行为清空），再选一个 openai 的模型 */
@@ -1369,7 +1515,7 @@ describe('RunCreatePanel（编辑模式）', () => {
 
     // 强度必须**被预填**（不是回到「默认」占位符）
     const strength = screen.getAllByLabelText('思考强度')[0] as HTMLElement;
-    expect(strength.closest('.ant-select')?.textContent ?? '').toContain('high');
+    expect(controlText('思考强度')).toContain('high');
 
     submitForm();
 
@@ -1416,17 +1562,17 @@ describe('RunCreatePanel（编辑模式）', () => {
     changeModelToGpt5();
     submitForm();
     const dialog = await saveDialog();
-    // 先把节点抓在手里再点：转圈时 antd 会往按钮里塞一个带 `aria-label="loading"` 的图标，
-    // 可访问名不再是「保存」，按名字重查会落空（`run-detail-panel.test.tsx` 的删除用例同此写法）。
+    // 先把节点抓在手里再点：在途态会在文案前加一个转圈图标（`aria-hidden`），
+    // 按名字重查在那一帧不稳（`run-detail-panel.test.tsx` 的删除用例同此写法）。
     const save = within(dialog).getByRole('button', { name: '保存' });
     fireEvent.click(save);
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     // 保存**还没回来** ⇒ 浮层必须还在（提前关闭 = 用户看到「点一下没反应」，再点一次就是第二次 PUT）。
-    // 用 getAllByText 而不是 getByText：antd 的浮层把标题同时放进可见标题与无障碍标签两个节点
-    // （`run-detail-panel.test.tsx` 的 startDialog 注释同此口径），单数查询会报「找到多个」。
+    // 用 getAllByText 而不是 getByText：浮层标题可能同时出现在可见标题与无障碍名两个节点，
+    // 单数查询会报「找到多个」。
     expect(within(dialog).getAllByText(/作废/).length).toBeGreaterThan(0);
-    await waitFor(() => expect(save.className).toContain('ant-btn-loading'));
+    await waitFor(() => expect(save.dataset.loading).toBe('true'));
 
     await act(async () => { finish?.(); });
   });
@@ -1436,7 +1582,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     const deletedCaseRun = { ...editRun, caseId: 'c-gone', caseTitle: '已被删掉的用例' };
     renderPanel({ mode: 'edit', initial: deletedCaseRun, onSubmit, modelOptionsFor: poolFor });
 
-    expect(screen.getByText(/已被删掉的用例/)).toBeDefined();
+    expect(controlText('用例')).toBe('已被删掉的用例（原用例已删除，请重新选择）');
     submitForm();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -1458,7 +1604,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     // 「未知」的处置必须与「已知为空」看得出区别：这一句一个字都不许出现
     expect(screen.queryByText(/原用例已删除/)).toBeNull();
     // 但这一轮的用例仍要看得见（否则用户会以为用例丢了，或以为下拉坏了）
-    expect(screen.getByText(editRun.caseTitle)).toBeDefined();
+    expect(controlText('用例')).toBe(editRun.caseTitle);
     submitForm();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

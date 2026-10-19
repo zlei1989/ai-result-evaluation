@@ -18,8 +18,11 @@
  * 而漂移的表现是「我展开的那条自己合上了」。键放在 L1 而不是 L2，是因为**依赖只准向下**：
  * L1 不许 import L2，而 L2 可以 import L1。
  */
-import { Card, Flex, Tag, theme, Typography } from 'antd';
+import { Badge } from '../../components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Fragment, useMemo, type ReactNode } from 'react';
+import type { CheckpointCapability } from '@aieval/contracts';
+import { CheckpointMarker, type CheckpointTarget } from './checkpoint-marker';
 import type { RowEvent, LogNodeIndex, LogTurn, MessageCapabilityMap, SessionNode, AgentTokens, TurnRef } from './types';
 import { buildRenderBlocks, type RenderBlock } from './render-blocks';
 // 行键只有一处真源：L0 的 `tool-item-detail`（`ToolGroupPanel` 的 React key 与受控行键都用它）。
@@ -130,10 +133,10 @@ function turnSegmentHomes(turns: readonly LogTurn[]): ReadonlyMap<string, number
 }
 
 /** 行级事件 → 标签色档：`milestone` 中性、`warning` 警告色、`error` 错误色（三档不许合并） */
-const EVENT_TAG_COLOR: Record<RowEvent['level'], string> = {
-  milestone: 'default',
-  warning: 'warning',
-  error: 'error',
+const EVENT_TAG_CLASSES: Record<RowEvent['level'], string> = {
+  milestone: 'border-border text-muted-foreground',
+  warning: 'border-warning/40 text-warning',
+  error: 'border-destructive/40 text-destructive',
 };
 
 /** ISO 时间 → 本地 `HH:mm:ss`；非法输入原样返回（与 `composite/log-format.ts` 的 `formatClock` 同口径） */
@@ -186,6 +189,18 @@ export interface MessageTimelineProps {
    * **L1 不读它**——它只负责转发，读懂是 L0 与注册表的事。
    */
   capability?: MessageCapabilityMap;
+  /**
+   * **回到某一轮**的能力声明（逐格原样透出）：进轮末「回到这里」的可用性与文案。
+   * **L1 不读它**——判据在 `CheckpointMarker` 里，且只从这一格来（不在这里判厂商名）。
+   */
+  checkpoint?: CheckpointCapability | null;
+  /** 轮末「回到这里」：只报坐标，取厂商条目与发请求都是调用方的事 */
+  onCheckpoint?(target: CheckpointTarget): void;
+  /**
+   * 这一轮的**厂商条目坐标**（调用方从消息账本取）：`null` = 这一轮没有可用的条目
+   * （例如旧账本没记 `vendorId`）。它只决定「这一颗按钮这一刻能不能点」，与厂商能力无关。
+   */
+  checkpointAnchorOf?(target: CheckpointTarget): { keepAt: string; dropFrom: string | null } | null;
 }
 
 /**
@@ -247,8 +262,20 @@ function TurnRow({
   props: TurnRenderContext;
   events: readonly RowEvent[];
 }): ReactNode {
-  const { token } = theme.useToken();
-  const { nodes, activeNodeId = '', openKeys, onOpenChange, renderBlock, onEnterNode, onRetryNode, onRequestDiagnostics, capability } = props;
+  const {
+    nodes,
+    activeNodeId = '',
+    openKeys,
+    onOpenChange,
+    renderBlock,
+    onEnterNode,
+    onRetryNode,
+    onRequestDiagnostics,
+    capability,
+    checkpoint,
+    onCheckpoint,
+    checkpointAnchorOf,
+  } = props;
   const dispatch = renderBlock ?? DEFAULT_RENDERER;
 
   // 规则 3 在 `callId` 为 null 时用它兜底定位派发点。
@@ -283,34 +310,55 @@ function TurnRow({
   });
 
   return (
-    // `data-turn-row` 是 L2 数「已渲染 N 轮」的锚点（数我们自己标的属性，而不是 antd 内部类名，
+    // `data-turn-row` 是 L2 数「已渲染 N 轮」的锚点（数我们自己标的属性，而不是组件库内部类名，
     // 这样嵌套的 Listy 项不会被误算进来）
-    <Flex gap={token.marginSM} data-turn-row={turnKey(turn, index)}>
-      <Flex vertical align="flex-end" style={{ width: TURN_GUTTER_WIDTH, flexShrink: 0 }}>
-        <Typography.Text type="secondary">{turn.round === null ? '未归属' : `轮次 ${turn.round}`}</Typography.Text>
-        <Typography.Text type="secondary">{formatClock(turn.at)}</Typography.Text>
-      </Flex>
+    <div className="flex gap-snug" data-turn-row={turnKey(turn, index)}>
+      <div
+        className="flex flex-col items-end text-muted-foreground"
+        style={{ width: TURN_GUTTER_WIDTH, flexShrink: 0 }}
+      >
+        <span>{turn.round === null ? '未归属' : `轮次 ${turn.round}`}</span>
+        <span>{formatClock(turn.at)}</span>
+      </div>
 
-      <Flex vertical gap={token.marginSM} style={{ flex: 1, minWidth: 0 }}>
+      <div className="flex min-w-0 flex-1 flex-col gap-snug">
         {turn.durationMs !== null && (
           // 口径与设计文档的示例一致：轮次耗时带一位小数（「本轮 3.2s」），它不是结算级别的计量
-          <Typography.Text type="secondary">本轮 {(turn.durationMs / 1000).toFixed(1)}s</Typography.Text>
+          <span className="text-muted-foreground">本轮 {(turn.durationMs / 1000).toFixed(1)}s</span>
         )}
         {blocks.map((block, blockIndex) => {
           const key = renderBlockKey(block, blockIndex, turn.at);
           return <Fragment key={key}>{dispatch(block, contextOf(key))}</Fragment>;
         })}
         {usageFootersOf(turn).map((footer) => (
-          // 锚点照 `data-turn-row` / `data-row-event` 的既有习惯：断言数自己标的属性，不数 antd 内部类名。
+          // 锚点照 `data-turn-row` / `data-row-event` 的既有习惯：断言数自己标的属性，不数组件库内部类名。
           // `italic` 是刻意的：顶部事实条是正体灰字、轮末里程碑是 Tag 色块，
-          // 这一行只有斜体才与前两者两两可分；antd 没有比 secondary 更弱的档，所以不引入手写样式。
-          <Typography.Text key={footer.mergeKey} type="secondary" italic data-usage-footer>
+          // 这一行只有斜体才与前两者两两可分；`Badge` 没有比 secondary 更弱的档，所以不引入手写样式。
+          <span key={footer.mergeKey} className="text-muted-foreground italic" data-usage-footer>
             本条 {formatUsageTriple(footer.usage)}
-          </Typography.Text>
+          </span>
         ))}
         <RowEventLines events={events} />
-      </Flex>
-    </Flex>
+        {/*
+          轮末「回到这里」：只画在**主会话**的编号轮次上。
+          子会话的轮次不属于「这一行被追问的那一段」，在那儿放一个回到按钮会指向一个不存在的边界；
+          `round === null`（不属于任何轮次的内容）同理没有可回退的点。
+        */}
+        {turn.round !== null && turn.subagentId === null && checkpoint !== undefined ? (
+          <CheckpointMarker
+            segment={turn.segment}
+            turn={turn.round}
+            capability={checkpoint}
+            disabledReason={
+              checkpointAnchorOf?.({ segment: turn.segment, turn: turn.round }) === null
+                ? '这一轮在账本里没有厂商条目，无法定位分叉点'
+                : null
+            }
+            {...(onCheckpoint === undefined ? {} : { onCheckpoint })}
+          />
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -323,17 +371,18 @@ function TurnRow({
  * 与这一轮挂了几条事件无关。
  */
 function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
-  const { token } = theme.useToken();
   if (events.length === 0) return null;
   return (
-    <Flex vertical gap={token.marginXXS}>
+    <div className="flex flex-col gap-hair">
       {events.map((event, index) => (
-        <Flex key={`${event.at}#${index}`} align="center" gap={token.marginXXS} data-row-event={event.level}>
-          <Tag color={EVENT_TAG_COLOR[event.level]}>{event.text}</Tag>
-          <Typography.Text type="secondary">{formatClock(event.at)}</Typography.Text>
-        </Flex>
+        <div key={`${event.at}#${index}`} className="flex items-center gap-hair" data-row-event={event.level}>
+          <Badge variant="outline" className={EVENT_TAG_CLASSES[event.level]} data-tone={event.level}>
+            {event.text}
+          </Badge>
+          <span className="text-muted-foreground">{formatClock(event.at)}</span>
+        </div>
       ))}
-    </Flex>
+    </div>
   );
 }
 
@@ -345,28 +394,28 @@ function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
  * 若在虚拟列表外面另画一份，「滚动区里只有一轮轮」与「提示词永远钉在顶上」就会同时成立。
  */
 export function UserPromptBlock({ userPrompt }: { userPrompt: NonNullable<SessionNode['userPrompt']> }): ReactNode {
-  const { token } = theme.useToken();
   return (
     <Card
-      size="small"
+      size="sm"
       data-testid="agent-log-user-prompt"
       // 标题走 **Card 的插槽**（不再是正文里的第一行）：它归卡片头，有卡片自己的分隔与排版，
       // 也不会被正文那套 markdown 排版带着走。
       // 文案与用例表单里那一格同词（「考题提示词」）：同一件事在两个页面上必须是同一句话
-      title={
-        <Flex align="center" gap={token.marginXS}>
-          <Typography.Text strong>考题提示词</Typography.Text>
-          <Typography.Text type="secondary">{formatClock(userPrompt.at)}</Typography.Text>
-        </Flex>
-      }
     >
-      <XMarkdownText text={userPrompt.text} open={false} />
+      <CardHeader>
+        <CardTitle className="flex items-center gap-tight">
+          <span className="font-medium">考题提示词</span>
+          <span className="text-sm text-muted-foreground">{formatClock(userPrompt.at)}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <XMarkdownText text={userPrompt.text} open={false} />
+      </CardContent>
     </Card>
   );
 }
 
 export function AgentMessageTimeline(props: MessageTimelineProps): ReactNode {
-  const { token } = theme.useToken();
   const registry = useBlockRenderers();
   // 默认分派是**注册表**（能吃到 Provider 的叠加）；传了 `renderBlock` 就用传入的（S5 换整套折叠策略）
   const fromRegistry = useMemo(() => blockRendererOf(registry), [registry]);
@@ -375,7 +424,7 @@ export function AgentMessageTimeline(props: MessageTimelineProps): ReactNode {
   const rest: TurnRenderContext = { ...props, renderBlock: dispatch };
 
   return (
-    <Flex vertical gap={token.marginMD} data-testid="agent-message-timeline">
+    <div className="flex flex-col gap-roomy" data-testid="agent-message-timeline">
       {props.userPrompt !== undefined && props.userPrompt !== null && <UserPromptBlock userPrompt={props.userPrompt} />}
       {/* 补充提示紧挨用户提示词之后：它们是「这一段内容为什么长这样」的说明，属于导航级信息 */}
       {props.notices?.map((notice, index) => (
@@ -384,6 +433,6 @@ export function AgentMessageTimeline(props: MessageTimelineProps): ReactNode {
       {props.turns.map((turn, index) => (
         <Fragment key={turnKey(turn, index)}>{renderTurn(turn, index, rest)}</Fragment>
       ))}
-    </Flex>
+    </div>
   );
 }

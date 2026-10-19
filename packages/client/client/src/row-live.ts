@@ -121,7 +121,7 @@ export const LIVE_STATE_INIT: RowLiveState = {
 /**
  * 活动文本的**采样节奏**（毫秒）。
  * 写成可变对象是本仓的既有约定（同 `TEXT_API_RETRY` / `ROW_RETRY`）：用例把它调小以免每条用例
- * 真等一秒，而**产品默认值必须有独立用例钉住**、`afterEach` 必须还原（AGENTS.md）。
+ * 真等一秒，而**产品默认值必须有独立用例钉住**、`afterEach` 必须还原（见 `docs/guard/test-strategy.md` 的「数据与契约」）。
  * 为什么是 1s：卡片上那一行的动效是 1.8s 一轮的，文字跟着采样走完全够用，而重渲染因此被压到
  * 每秒最多一次（帧率再高也不变）——这是「日志帧不逐帧 setState」那条守卫的另一半。
  */

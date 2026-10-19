@@ -411,9 +411,12 @@ describe('runs 页面的备注接线', () => {
 
   it('标题列的显示与排序都走 runListTitle（看到的与排的同一份拼法）', () => {
     const text = source();
-    expect(text, '标题列没有走 runListTitle：备注不会出现在列表里').toContain('runListTitle(record)');
+    // 单元格与排序函数（DataTable 的 `cell` / `sortFn`）都必须走同一份拼法
+    expect(text, '标题列没有走 runListTitle：备注不会出现在列表里').toContain(
+      'runListTitle(row.original)',
+    );
     expect(text, '标题列排序没有走 runListTitle：看到的与排的不是一回事').toContain(
-      'compareSortText(runListTitle(a), runListTitle(b))',
+      'compareSortText(runListTitle(left.original), runListTitle(right.original))',
     );
   });
 });
@@ -431,34 +434,39 @@ describe('runs 页面的备注接线', () => {
  * 同一段源码里还挂着**顶部那两行的数据来源**那一条——它出于
  * 同一条理由：视图在包里、页面这一层没有渲染测试面。两条守卫共用下面那个「抠块」助手。
  *
- * 断言口径：抠出「评分详情」那一支抽屉的**整段**（从它的标题到它自己的 `</Drawer>`）再逐条断言，
- * 不整文件匹配 ——页面里还有别的抽屉，整文件扫会让「footer 挂在别的抽屉上」也照样绿。
+ * 断言口径：抠出「评分详情」那一支抽屉的**整段**（从它的开标签到它自己的 `</SheetContent>`）
+ * 再逐条断言，不整文件匹配 ——页面里还有别的抽屉，整文件扫会让「footer 挂在别的抽屉上」也照样绿。
  */
 describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控开合 + 评分数据来源）', () => {
   const source = (): string => readFileSync(pagePath, 'utf8');
 
   /**
    * 抠出「评分详情」抽屉的整段源码；抠不到直接抛（守卫不许静默失效）。
-   * 结束判据取**它自己的** `</Drawer>`：抽屉不嵌套，标题之后的第一个闭合标签就是它
+   * 起始锚点取**带换行的** `<Sheet`：`<SheetTitle` / `<SheetHeader` / `<SheetContent` 都以它开头，
+   * 裸前缀会把块切到标题上、把关闭回调与 footer 留在块外。
+   * 结束判据取**它自己的** `</SheetContent>`：抽屉不嵌套，标题之后的第一个闭合标签就是它
    * （正文里那个二级抽屉是组件内部的，不在这份源码里）。
    */
   function scoreDrawerBlock(): string {
     const text = source();
-    const start = text.indexOf('title="评分详情"');
-    if (start < 0) throw new Error('app/runs/page.tsx 里找不到「评分详情」抽屉（守卫失效了）');
-    const end = text.indexOf('</Drawer>', start);
-    if (end < 0) throw new Error('「评分详情」抽屉没有在预期处结束（找不到 `</Drawer>`）');
+    const drawerAt = text.indexOf('<RunDetailDrawer');
+    if (drawerAt < 0) throw new Error('app/runs/page.tsx 里找不到「评测详情」抽屉（守卫失效了）');
+    const start = text.indexOf('score={', drawerAt);
+    if (start < 0) throw new Error('「评测详情」抽屉没有 score 页签（守卫失效了）');
+    // score 是最后一个页签 prop：它的结束就是组件自闭合的那一行
+    const end = text.indexOf('\n      />', start);
+    if (end < 0) throw new Error('「评测详情」抽屉没有在预期处结束（守卫失效了）');
     return text.slice(start, end);
   }
 
   it('两个入口按钮都在评分详情抽屉的 footer 上，且各带那个 data-testid', () => {
     const block = scoreDrawerBlock();
 
-    expect(block, '评分详情抽屉没有 footer：入口按钮又回到正文里了').toContain('footer={');
+    expect(block, '评分详情抽屉没有 footer：入口按钮又回到正文里了').toContain('<SheetFooter');
     expect(block, 'footer 里没有「查看原始返回」的入口按钮').toContain('data-testid="score-raw-open"');
     expect(block, 'footer 里没有「原始输出 N 条」的入口按钮').toContain('data-testid="score-judge-output-open"');
-    // 两个按钮都必须在 **footer 属性里**，不是在 children 里（后者就是那次要拆掉的形状）
-    const footerStart = block.indexOf('footer={');
+    // 两个按钮都必须在 **footer 里**，不是在正文里（后者就是那次要拆掉的形状）
+    const footerStart = block.indexOf('<SheetFooter');
     for (const label of ['查看原始返回', '{judgeOutputLabel}']) {
       const footerEnd = block.indexOf('>', block.indexOf(label, footerStart));
       expect(footerEnd, `「${label}」不在 footer 表达式里`).toBeGreaterThan(footerStart);
@@ -470,9 +478,9 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     // 归一化空白后再比：判据是**条件本身**，不该被换行/缩进打红
     const block = scoreDrawerBlock().replace(/\s+/g, ' ');
 
-    // footer 整段为 null = 两个入口都没有；只缺分时（judging）「原始输出」仍在
+    // footer 整段不渲染 = 两个入口都没有；只缺分时（judging）「原始输出」仍在
     expect(block, 'footer 不再跟着「无分且无原始输出入口」判空：空态那一格也会长出点不动的入口').toContain(
-      'footer={ scoreDetail === null && !judgeOutputVisible ? null :',
+      '{scoreDetail === null && !judgeOutputVisible ? null : (',
     );
     // 「查看原始返回」只在有分时渲染（judging 那一态没有原文可看）
     expect(block, '「查看原始返回」不再跟着 scoreDetail 判空').toContain('{scoreDetail !== null && (');
@@ -583,8 +591,10 @@ describe('runs 页面的追问接线', () => {
     const text = source();
 
     expect(text, '「追问」没有打开日志抽屉：点了什么都不发生').toContain(
-      'onFollowUpRow={(rowId) => setDrawer({ kind: \'log\', rowId, followUp: true })}',
+      'setDrawer({ kind: \'row\', rowId, tab: \'log\', followUp: true })',
     );
+    // 「回到某一轮」的目标必须被清掉：否则下一次普通追问会带着上一次的续跑坐标发出去
+    expect(text, '打开普通追问时没有清掉上一次的「回到某一轮」目标').toContain('setCheckpoint(null);');
     expect(text, '没有透在途态：追问按钮不会转圈，连点两次就是两段上下文').toContain('followingUp={isFollowingUp}');
   });
 
@@ -596,7 +606,7 @@ describe('runs 页面的追问接线', () => {
     // 附件走**同一条 multipart 端点**（落点是同一个 rowDir/attachments/<messageId>/）
     expect(text, '追问的附件没有落在与人工消息同一条上传通路上').toContain('onUploadAttachment={async (input) => postInjectAttachment(');
     // 失败原因交回调用方提示（这一层是页面上唯一的提示出口）
-    expect(text, '追问的失败原因没有交回页面提示').toContain('onError={(cause) => void message.error(describeError(cause))}');
+    expect(text, '追问的失败原因没有交回页面提示').toContain('onError={(cause) => void toast.error(describeError(cause))}');
     // 两支 footer 互斥且都在：跑动中那一支不能被这一支顶掉
     expect(text, '底部槽没有把两支输入区合起来判空').toContain('const logFooter = followUpFooter ?? injectFooter;');
     expect(text, '底部槽没有真的接上（`footer` 一个节点都不渲染）').toContain('{ footer: logFooter }');
@@ -606,8 +616,24 @@ describe('runs 页面的追问接线', () => {
     const text = source();
     // jsx 里的换行与缩进不该打红这条判据：归一化空白之后再找那一段
     const compact = text.replace(/\s+/g, ' ');
+    // `logModel !== null` 是**输入区自身的必要条件**：建议 chips 读装配好的行级事实，没有模型就没有建议可给
+    // （`logRow !== undefined` 时它恒真，这一格只是把依赖写进条件里，不改「在跑就不渲染」那条判据）
     expect(compact, '追问输入区没有跟着「不在跑」判：在跑的行会长出一个点了会被 409 拒的输入框').toContain(
-      'drawer?.kind === \'log\' && drawer.followUp === true && logRow !== undefined && !isRunningRow(logRow.status)',
+      'drawer?.kind === \'row\' && drawer.tab === \'log\' && drawer.followUp === true && logRow !== undefined && logModel !== null && !isRunningRow(logRow.status)',
+    );
+  });
+
+  /**
+   * 建议 chips 的两份输入：**行级事实**（建议由结局派生）与**追问判据**（禁用与原因同源）。
+   * 漏接的症状是 chips 永远不出现、或永远置灰还说不出原因——而两个包各自的用例全绿
+   * （它们直接把 props 喂给组件），只有页面这一层看得见「没接上」。
+   */
+  it('追问输入区接上了建议 chips 的两份输入（行级事实 + 追问判据）', () => {
+    const text = source();
+
+    expect(text, '建议 chips 没有拿到行级事实——建议永远不出现').toContain('facts={logModel.facts}');
+    expect(text, 'chips 的禁用与原因没接追问判据——会自己编一句或永远置灰').toContain(
+      'followUpVerdict={followUps.verdictOf(logRow.id)}',
     );
   });
 });
@@ -635,5 +661,45 @@ describe('runs 页面的 run 焦点接线', () => {
     const text = compactSource();
 
     expect(text, '页面卸载时没有复位焦点').toContain('useEffect(() => () => setFocusedRun(null), [])');
+  });
+});
+
+/**
+ * **列表结论与可访问性**接线守卫。
+ *
+ * 页面这一层没有渲染测试面，而这三处都是「纯函数/组件各自绿、页面漏接就静默退化」的形状：
+ *   · 得分列只报最高分 ⇒ 1 个候选超时 + 2 个满分被读成「全满分」；
+ *   · 选中只靠 `bg-muted` ⇒ 键盘焦点落在同一行时零变化；
+ *   · 变更页失败只有一行灰字 ⇒ 没有重试、没有标题，故障与「正在读」分不开。
+ * 断言读的是归一化空白后的源码，只钉这几个锚点，换行与缩进不影响。
+ */
+describe('runs 页面的结论面板与可访问性接线', () => {
+  const source = (): string => readFileSync(pagePath, 'utf8').replace(/\s+/g, ' ');
+
+  it('得分列渲染每个候选的分布（只报 best 会把失败盖住）', () => {
+    expect(source(), '列表没有用 runScoreDistribution——最高分会把「1 个候选没出分」盖掉').toContain(
+      'const distribution = runScoreDistribution(row.original)',
+    );
+    expect(source()).toContain('{distribution}');
+  });
+
+  it('选中行有主色条、键盘焦点有 ring（底色差不足以表达两者）', () => {
+    const text = source();
+    expect(text, '选中行没有左侧主色条').toContain('shadow-[inset_2px_0_0_var(--primary)]');
+    expect(text, '键盘焦点没有可见的 ring').toContain('focus-visible:outline-2');
+    // 只写宽度不写样式时 `outline-style` 仍是 `none`（基类把它清零了）——真机上等于没有焦点
+    expect(text, '焦点框只写了宽度、没把 outline-style 立起来').toContain('focus-visible:[outline-style:solid]');
+  });
+
+  it('变更页失败给出重试与原始错误折叠（不是一行灰字）', () => {
+    const text = source();
+    expect(text, '变更失败没有独立标题').toContain('变更详情读取失败');
+    expect(text, '变更失败没有重试入口').toContain('onClick={diffIndex.refresh}');
+    expect(text, '原始 git 串没有收起').toContain('查看原始错误');
+    expect(text).toContain('data-testid="run-diff-drawer-failed"');
+  });
+
+  it('桌面右栏有显式关闭入口', () => {
+    expect(source(), '右栏没有关闭入口：只能点顶栏回列表').toContain('onClose={closePanel}');
   });
 });

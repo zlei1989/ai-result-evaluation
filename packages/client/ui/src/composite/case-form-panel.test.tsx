@@ -86,7 +86,8 @@ function setup(overrides: Partial<CaseFormPanelProps> = {}): ReturnType<typeof r
  * 对着容器 fireEvent.change 不会改变表单值——这条弯路不值得再走一遍。
  */
 function commitInput(): HTMLElement {
-  return screen.getByLabelText('commit hash');
+  // 标签文案是「提交（commit hash）」：按子串取，改括注写法不必再动用例
+  return screen.getByLabelText(/commit hash/);
 }
 
 /**
@@ -171,7 +172,9 @@ describe('CaseFormPanel 提交', () => {
 
     fireEvent.click(screen.getByTestId('case-submit'));
 
-    expect(await screen.findByText('请填写代码仓库的本地绝对路径')).toBeInTheDocument();
+    // 文案来自契约的 `RepoSourceStringSchema`（字段级校验与保存时是同一句话）；
+    // 纯空白与「非法协议」各有一句，见下面 describe 里的两条
+    expect(await screen.findByText('代码来源不能为空')).toBeInTheDocument();
     // 两次都必须是「没发出去」：拦不住就等于又走了一遍服务端往返 + 笼统报错的老路
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -230,9 +233,9 @@ describe('CaseFormPanel 提交', () => {
     expect(onSubmit.mock.calls[0]?.[0]?.commitHash).toBe(HASH_NOT_IN_LIST);
   });
 
-  // 断言落在**提交值**上而不是输入框的显示文本：显示成什么由 rc-select 决定，
-  // 而契约要的是「选中的候选 = 这个 hash」。若这条失败（提交值里混进了提交说明），
-  // 把选项的 label 改成只有 hash——说明文字挪到 extra 提示或别的展示位上。
+  // 断言落在**提交值**上而不是输入框的显示文本：候选按钮只负责把 hash 回填进输入框，
+  // 契约要的是「选中的候选 = 这个 hash」。若这条失败（提交值里混进了提交说明），
+  // 把候选按钮的文案改成只有 hash——说明文字挪到字段说明里。
   it('选中候选提交后，提交里带的是那个 hash', async () => {
     const onSubmit = vi.fn<(values: CaseCreate) => void>();
     setup({ onSubmit });
@@ -244,6 +247,33 @@ describe('CaseFormPanel 提交', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0]?.[0]?.commitHash).toBe(HASH_IN_LIST);
+  });
+
+  /**
+   * 屏级链路里的表单段：**新建 → 校验失败 → 修正 → 保存**。
+   * 这条把「失败那一拍什么都没交出去」与「补齐后同一张表单只交一次」串起来——
+   * 分开断言的版本会在「第一次点击其实已经提交了、只是提示恰好也出现」时照样绿。
+   */
+  it('新建链路：校验失败先拦下，补齐必填后保存', async () => {
+    const onSubmit = vi.fn<(values: CaseCreate) => void>();
+    setup({ onSubmit });
+
+    // 第一次提交：标题 / 考题提示词 / 仓库 / 评分标准项全空
+    fireEvent.click(screen.getByTestId('case-submit'));
+    expect(await screen.findByText('请填写标题')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // 修正：补齐三个文本字段 + 一项合法的评分标准项
+    fillRequired();
+    fireEvent.click(screen.getByTestId('case-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+      title: '新用例',
+      taskPrompt: '补一条回归',
+      repoPath: 'D:\\projects\\gateway',
+      rubric: { groups: [{ name: '一、生产代码', items: [{ id: '', goal: '追加 agent 字段', weight: 1 }] }] },
+    });
   });
 });
 
@@ -393,12 +423,12 @@ describe('CaseFormPanel 的评分标准项', () => {
     expect(screen.getByTestId('rubric-item-goal-0-0')).toHaveValue('追加 agent 字段');
   });
 
-  it('未配置评分模型时两个按钮都禁用，悬停给出「去设置页」的指引', async () => {
+  it('未配置评分模型时两个按钮都禁用，并在禁用区给出「去设置页」的指引', () => {
     setup({ judgeConfigured: false });
     expect(screen.getByTestId('case-generate-rubric')).toBeDisabled();
     expect(screen.getByTestId('case-recognize-rubric')).toBeDisabled();
-    fireEvent.mouseOver(screen.getByTestId('case-generate-wrapper'));
-    expect(await screen.findByText('请先到设置里配置默认评分模型')).toBeInTheDocument();
+    // 禁用按钮不触发鼠标事件：去向说明挂在禁用区外层容器的 title 上
+    expect(screen.getByTestId('case-generate-wrapper')).toHaveAttribute('title', '请先到设置里配置默认评分模型');
   });
 
   /**
@@ -430,9 +460,7 @@ describe('CaseFormPanel 的评分标准项', () => {
 
     expect(screen.getByTestId('case-generate-rubric')).toBeDisabled();
     expect(screen.getByTestId('case-recognize-rubric')).toBeDisabled();
-    fireEvent.mouseOver(screen.getByTestId('case-generate-wrapper'));
-
-    expect(await screen.findByText('请先到设置里配置默认评分模型')).toBeInTheDocument();
+    expect(screen.getByTestId('case-generate-wrapper')).toHaveAttribute('title', '请先到设置里配置默认评分模型');
   });
 
   /**
@@ -515,7 +543,7 @@ describe('CaseFormPanel 的仓库校验', () => {
     setup();
 
     // 「评分提示词」那个文本域已换成评分标准项表格：
-    // 这条守卫守的是 `monoStyle`（`theme.useToken().fontFamilyCode`）真的落在提示词文本域上，
+    // 这条守卫守的是 `monoStyle`（`--font-mono`）真的落在提示词文本域上，
     // 而考题提示词仍是同一个语义（交出去的是题面正文），故改指它、保留这条守卫。
     const textarea = screen.getByTestId('case-task-prompt');
     // 默认 token 是 'SFMono-Regular', Consolas, … monospace：断言落在「等宽」这个语义上，
@@ -569,8 +597,8 @@ describe('CaseFormPanel 提交按钮的形态', () => {
 
     const submit = screen.getByTestId('case-submit');
     expect(submit).toHaveTextContent('确定');
-    expect(submit.className).toContain('ant-btn-variant-solid');
-    expect(submit.querySelector('.anticon')).toBeNull();
+    expect(submit.className).toContain('bg-primary');
+    expect(submit.querySelector('svg')).toBeNull();
   });
 
   it('编辑态：同为实心主按钮，文案是「保存」，无图标', () => {
@@ -578,8 +606,8 @@ describe('CaseFormPanel 提交按钮的形态', () => {
 
     const submit = screen.getByTestId('case-submit');
     expect(submit).toHaveTextContent('保存');
-    expect(submit.className).toContain('ant-btn-variant-solid');
-    expect(submit.querySelector('.anticon')).toBeNull();
+    expect(submit.className).toContain('bg-primary');
+    expect(submit.querySelector('svg')).toBeNull();
   });
 });
 
@@ -602,8 +630,9 @@ describe('CaseFormPanel 来源切换（远端）', () => {
   it('新建态：远端仓库排在前且默认选中', () => {
     setup({ mode: 'new' });
 
-    expect(screen.getAllByRole('radio').map((node) => (node as HTMLInputElement).value)).toEqual(['remote', 'local', 'none']);
-    expect((screen.getByRole('radio', { name: '远端仓库' }) as HTMLInputElement).checked).toBe(true);
+    const group = screen.getByTestId('case-source-kind');
+    expect([...group.querySelectorAll('label')].map((label) => label.textContent)).toEqual(['远端仓库', '本地目录', '无']);
+    expect(screen.getByRole('radio', { name: '远端仓库' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('默认按初值判定来源：本地初值没有分支字段，远端初值有', () => {
@@ -791,15 +820,34 @@ describe('CaseFormPanel 来源切换（远端）', () => {
    * 与 user@host:path）」，而字段级提示若只说「请填写 git 地址」，他仍然不知道该换成哪种写法——
    * 这句话就是那句拒绝的补救办法。
    */
-  it('远端来源的字段级提示带协议白名单（本地那句逐字不变）', async () => {
+  it('远端来源的纯空白路径拿到契约那句「代码来源不能为空」', async () => {
     const onValidateRepo = vi.fn(async () => REMOTE_INFO);
     setup({ mode: 'edit', initial: REMOTE_CASE, onValidateRepo });
     fireEvent.change(screen.getByTestId('case-repo-path'), { target: { value: '   ' } });
 
     fireEvent.click(screen.getByTestId('case-validate-repo'));
 
-    expect(await screen.findByText('请填写 git 地址（ssh:// / http(s):// / git:// / file:// / user@host:path）')).toBeInTheDocument();
+    expect(await screen.findByText('代码来源不能为空')).toBeInTheDocument();
     // 字段没过就不该发出校验：提示是给用户的补救办法，不是又一次往返
+    expect(onValidateRepo).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 非法协议拿到的是**契约那句完整的白名单**（不只是「请填写 git 地址」）：
+   * 填 `ftp://…` 的人需要的正是「换成哪几种写法」，而这句话与保存时服务端拒绝他是同一句。
+   */
+  it('远端来源的非法协议带出契约的协议白名单（与保存时同一句）', async () => {
+    const onValidateRepo = vi.fn(async () => REMOTE_INFO);
+    setup({ mode: 'edit', initial: REMOTE_CASE, onValidateRepo });
+    fireEvent.change(screen.getByTestId('case-repo-path'), { target: { value: 'ftp://host/repo.git' } });
+
+    fireEvent.click(screen.getByTestId('case-validate-repo'));
+
+    expect(
+      await screen.findByText(
+        '不支持的 git 地址协议：ftp（支持 ssh:// / http:// / https:// / git:// / file:// 与 user@host:path）',
+      ),
+    ).toBeInTheDocument();
     expect(onValidateRepo).not.toHaveBeenCalled();
   });
 
@@ -870,7 +918,7 @@ describe('CaseFormPanel 来源切换（无）', () => {
   it('编辑无来源用例：默认选中「无」，三格隐藏', () => {
     setup({ mode: 'edit', initial: NONE_CASE });
 
-    expect((screen.getByRole('radio', { name: '无' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('radio', { name: '无' })).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryByTestId('case-repo-path')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('commit hash')).not.toBeInTheDocument();
   });

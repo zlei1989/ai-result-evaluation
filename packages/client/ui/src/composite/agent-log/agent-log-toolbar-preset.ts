@@ -4,7 +4,7 @@
  * 工具条动作的**预设**（L2）：本仓的业务口径只住在这个文件里。
  *
  * 为什么是数据而不是组件：`ToolbarAction[]` 交出去之后，「换一套动作」是传一个数组，
- * 而「工具条长什么样」（`Flex` + `Button` / `Switch` / `InputNumber` 的摆法）只有一处；
+ * 而「工具条长什么样」（`Button` / 开关 / 数字输入的摆法）只有一处；
  * 监控台场景可以把同一批动作渲染到侧栏上，动作本身的定义不用重写。
  *
  * 两处**有意相反**的显隐规则（不要统一成「没数据就不渲染」）：
@@ -13,7 +13,7 @@
  * （「没有这个功能」与「这次没采到」要分得开）。
  */
 import { createElement, useMemo, type ReactNode } from 'react';
-import { QuestionCircleOutlined } from '@ant-design/icons';
+import { CircleHelp } from 'lucide-react';
 import type { AgentLogDiagnostics, AgentEnvironment, Loadable } from './types';
 import type { AgentLogViewState } from './use-agent-log-view';
 
@@ -86,12 +86,12 @@ export function agentLogToolbarPreset(input: AgentLogToolbarPresetInput): readon
   return [
     {
       key: 'download',
-      label: '下载台账',
+      label: '下载日志',
       // 没有下载回调就不渲染入口：一个点了没反应的按钮比没有按钮更糟
       visible: onDownload !== undefined,
       onSelect: onDownload,
-      // 「下载台账」渲在**原文行**（挨着「原始输出 N 条」），不在轮次级工具条里：见 `placement` 的注释。
-      // 它与原文入口**互不依赖**：台账是落盘的事件原文，这一行没产出原文时照样能下载
+      // 「下载日志」渲在**原文行**（挨着「原始输出 N 条」），不在轮次级工具条里：见 `placement` 的注释。
+      // 它与原文入口**互不依赖**：下载的是落盘的事件原文，这一行没产出原文时照样能下载
       placement: 'raw',
     },
     {
@@ -132,16 +132,15 @@ export function agentLogToolbarPreset(input: AgentLogToolbarPresetInput): readon
     {
       key: 'environment',
       label: '环境信息',
-      // 图标必须 aria-hidden：`@ant-design/icons` 给每个图标挂了 role/aria-label，
-      // 不藏起来按钮的可访问名会变成「question-circle 环境信息」
-      icon: createElement(QuestionCircleOutlined, { 'aria-hidden': true }),
+      // 图标必须 aria-hidden：不藏起来按钮的可访问名会变成「circle-help 环境信息」
+      icon: createElement(CircleHelp, { 'aria-hidden': true }),
       visible: true,
       onSelect: onOpenEnvironment,
     },
   ];
 }
 
-/** 预设的 hook 版：同一份输入不重算（动作数组会被 `Flex` 逐项渲染，重算等于每帧新建七个对象） */
+/** 预设的 hook 版：同一份输入不重算（动作数组会被工具条逐项渲染，重算等于每帧新建七个对象） */
 export function useAgentLogToolbarPreset(input: AgentLogToolbarPresetInput): readonly ToolbarAction[] {
   const { diagnostics, environment, turnCount, currentTurn, viewState, onDownload, onJumpToTurn, onOpenEnvironment } = input;
   return useMemo(

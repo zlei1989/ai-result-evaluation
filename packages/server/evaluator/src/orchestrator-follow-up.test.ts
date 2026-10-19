@@ -37,6 +37,7 @@ import {
   until,
   writeFileSync,
 } from './testing/orchestrator-harness';
+import { subscribeRowEvents } from './events';
 // 队列表的登记口在编排层那一侧（与 `orchestrator-inject-messages.test.ts` 同一个入口）
 import { registerInjectMessage, resetInjectQueueForTesting } from './inject-port';
 
@@ -157,6 +158,9 @@ describe('followUpRow：追问复用行工作区与会话', { timeout: TEST_TIME
     expect(fakeAgents.calls.length).toBe(callsBefore + 1);
     const call = fakeAgents.calls.at(-1);
     expect(call?.resumeSessionId).toBe('sess-keep');
+    // **旧路径零改动**：普通追问不带 `fork`（`run` 的可选入参缺席 ⇒ 适配器一个 checkpoint
+    // 选项都不碰）。这一格与 cc 适配器那条「不带 fork 时两格都不出现」是同一判据的两端。
+    expect(call?.fork).toBeUndefined();
     expect(call?.cwd).toBe(workspacePath);
     expect(call?.prompt).toContain('接着把第二段也写了');
     expect(after.sessionId).toBe('sess-keep');
@@ -618,4 +622,51 @@ describe('followUpAvailability：读侧与写侧同源', { timeout: TEST_TIMEOUT
       expect(rowId).not.toBe('');
     }
   });
+});
+
+/**
+ * **分叉被拒的恢复路径**：厂商拒绝是**确定性**的（CC 的 `Resume rejected by --resume-drops-turn:`），
+ * 同一分叉请求再发一次永远失败。正确收场是「清目标 + 普通续接 + 保留证据」：
+ *   · 第一趟带 `fork`（适配器真的把它交给了厂商）；
+ *   · 拒绝被适配器报成 `AGENT_FORK_REJECTED` ⇒ 编排层**不再带 `fork`** 跑第二趟；
+ *   · 拒绝原文与那一句「不重试分叉」留在事件流里。
+ * 判据是两次 `run()` 的入参（`fork` 先有后无）与事件流——只看行状态的话，
+ * 「恢复成功」与「本来就没带分叉」长得一模一样。
+ */
+it('回到某一轮被拒 ⇒ 不重试分叉、清目标改普通续接，并保留拒绝证据', async () => {
+  const { runId, rowId } = await seedJudgedRow('codex', 'sess-fork');
+  fakeAgents.scripts.set('codex', {
+    mode: 'error',
+    errorCode: 'AGENT_FORK_REJECTED',
+    errorMessage: 'Resume rejected by --resume-drops-turn: discarded range contains a queued user message',
+    sessionId: 'sess-fork',
+  });
+  const events: { type: string; text?: string }[] = [];
+  const unsubscribe = subscribeRowEvents(runId, rowId, (event) => events.push(event as { type: string; text?: string }));
+  // 恢复那一条事件一落盘，就把脚本切回正常：第二趟（不带 fork）因此跑得完
+  const switchOnEvidence = subscribeRowEvents(runId, rowId, (event) => {
+    if (event.type === 'log' && event.text.includes('回到某一轮被拒')) {
+      fakeAgents.scripts.set('codex', { mode: 'ok', sessionId: 'sess-fork' });
+    }
+  });
+  try {
+    followUpRow(runId, rowId, {
+      text: '从这一点重来',
+      fork: { segment: 0, turn: 1, keepAt: 'entry-1', dropFrom: 'prompt-2' },
+    });
+    await drainRunningTasks();
+    await until(
+      () => rowOf(runId, rowId).status === 'judged',
+      '被拒后普通续接回到 judged',
+      TEST_TIMEOUT_MS,
+      () => rowSettled(runId, rowId),
+    );
+  } finally {
+    unsubscribe();
+    switchOnEvidence();
+  }
+  const calls = fakeAgents.calls.slice(-2);
+  expect(calls[0]?.fork).toMatchObject({ keepAt: 'entry-1' });
+  expect(calls[1]?.fork).toBeUndefined();
+  expect(events.some((event) => event.type === 'log' && event.text?.includes('不重试分叉'))).toBe(true);
 });

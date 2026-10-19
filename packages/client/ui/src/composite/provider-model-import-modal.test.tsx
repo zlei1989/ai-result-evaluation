@@ -59,7 +59,7 @@ describe('ProviderModelImportModal：外框', () => {
     renderModal();
 
     expect(screen.getByText('拉取到 3 个模型')).toBeInTheDocument();
-    expect((document.querySelector('.ant-modal') as HTMLElement | null)?.style.width).toBe(
+    expect(screen.getByTestId('provider-model-import-dialog').style.maxWidth).toBe(
       `${MODEL_IMPORT_MODAL_WIDTH}px`,
     );
   });
@@ -92,7 +92,7 @@ describe('ProviderModelImportModal：外框', () => {
 
     expect(onCancel).toHaveBeenCalledTimes(1);
     // 两颗按钮：取消 + 加入清单（不会再多出一颗「确定」之类）
-    expect(document.querySelectorAll('.ant-modal-footer button')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-slot="dialog-footer"] button')).toHaveLength(2);
   });
 });
 
@@ -201,6 +201,8 @@ describe('ProviderModelImportModal：确定', () => {
   it('importing 时「加入清单」转圈（loading 来自 props）', () => {
     renderModal({ importing: true });
 
-    expect(screen.getByRole('button', { name: '加入清单' }).className).toMatch(/loading/);
+    const submit = screen.getByRole('button', { name: '加入清单' });
+    expect(submit).toHaveAttribute('data-loading', 'true');
+    expect(submit).toBeDisabled();
   });
 });

@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
 import { buildAgentLogModel, diagnosticsOf, rowEventsOf, type AgentLogFactsInput } from './build-model';
+import { contextMeterOf } from './agent-log-facts-bar';
 import type { MessageCapabilityMap, RowEvent } from './types';
 
 function message(input: {
@@ -91,6 +92,7 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
     thinking: null,
     domain: [],
     error: null,
+    contextWindow: null,
     live: false,
     ...overrides,
   };
@@ -735,6 +737,70 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
     // 「没采到截断标记」原样保留 —— 它**不等于**「确认完整」
     expect(failed?.kind === 'tool-result' ? failed.truncation : null).toEqual({ kind: 'unknown' });
     expect(clipped?.kind === 'tool-result' ? clipped.truncation : null).toEqual({ kind: 'truncated', reason: '超过 256 KB' });
+  });
+});
+
+/**
+ * **上下文占用**（`contextUsed`）：候选阶段**最后一条主会话** usage 的 `input + cached`。
+ *
+ * 它与 `facts.tokens` 是两笔账：`tokens` 是整行累计（这一行一共花了多少），
+ * 占用是**这一刻窗口里有多少**。把累计求和当成占用，长跑行的百分比会一路涨过 100%，
+ * 而读者会把「账单」读成「占用」——这正是这一组用例要钉住的分界。
+ */
+describe('上下文占用（contextUsed）：只取最后一轮，不是整行累计', () => {
+  /** 一条主会话 usage（`turn` 缺省 = 主会话读数） */
+  function usage(seq: number, input: number, cached: number, turn?: { subagentId: string | null; round: number } | null): AgentEvent {
+    return event({
+      seq,
+      type: 'usage',
+      tokens: { input, cached, output: 0, reasoningOutput: null, total: null },
+      turns: seq,
+      timing: null,
+      ...(turn === undefined ? {} : { turn }),
+    });
+  }
+
+  it('多轮行只取最后一轮：input 10 / 5 / 30 ⇒ 占用是 30 + 它的 cached（不是累计 45）', () => {
+    const model = buildAgentLogModel({
+      records: [],
+      events: [usage(1, 10, 0), usage(2, 5, 0), usage(3, 30, 7)],
+      facts: facts({ tokens: { input: 45, cached: 7, output: 0 } }),
+    });
+
+    // 30 + 7 = 37（最后一条）；整行累计 45 + 7 = 52 是另一笔账
+    expect(model.facts.contextUsed).toBe(37);
+    expect(model.facts.contextUsed).not.toBe(52);
+  });
+
+  it('子会话自己的 usage 不影响这一格（那是那张子任务卡片的读数）', () => {
+    const model = buildAgentLogModel({
+      records: [],
+      events: [
+        usage(1, 10, 0),
+        usage(2, 30, 7),
+        // 子会话的读数是**会话尺度**的累计，不是这一行的上下文占用
+        usage(3, 999, 999, { subagentId: 's-1', round: 1 }),
+      ],
+      facts: facts({ tokens: { input: 1_039, cached: 1_006, output: 0 } }),
+    });
+
+    expect(model.facts.contextUsed).toBe(37);
+  });
+
+  it('`row.tokens`（累计账单）与占用不相等时，事实条读的是占用（防旧写法复发）', () => {
+    const model = buildAgentLogModel({
+      records: [],
+      events: [usage(1, 10, 0), usage(2, 5, 0), usage(3, 30, 7)],
+      // 数据层给的是**整行累计**（账单），它与占用不是同一个数
+      facts: facts({ tokens: { input: 45, cached: 7, output: 0 }, contextWindow: 100 }),
+    });
+
+    expect(model.facts.tokens?.input).toBe(45);
+    const meter = contextMeterOf(model.facts);
+    expect(meter.state).toBe('ready');
+    // 读的是 37/100 = 37%，不是 52/100
+    expect(meter.state === 'ready' ? meter.used : null).toBe(37);
+    expect(meter.state === 'ready' ? meter.percent : null).toBe(37);
   });
 });
 

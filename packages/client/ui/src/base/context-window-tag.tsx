@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 上下文窗口的展示：一个纯函数 + 一个 Tag（今天只有**创建评测的模型下拉**在用它——设置页的模型清单
+ * 上下文窗口的展示：一个纯函数 + 一个徽标（今天只有**创建评测的模型下拉**在用它——设置页的模型清单
  * 是「输入 / 输出」两列 `InputNumber`，不渲染窗口 Tag）。
  *
  * 为什么不做四舍五入到整数档：`1048576`（1.05M）与 `1000000`（1M）在 cc 的 `[1m]` 后缀阈值
@@ -10,7 +10,7 @@
  * 未知一律显示「未知」，不显示 0、也不留空：0 与「没采到」含义相反（同一口径）。
  */
 import type { ReactNode } from 'react';
-import { Tag } from 'antd';
+import { Badge } from '../components/ui/badge';
 
 /** 窗口的紧凑文案：≥1M 保留两位再去尾零（`1M` / `1.05M`），其余按 K 取整（`400K` / `131K`） */
 export function formatContextWindow(contextWindow?: number): string {
@@ -21,5 +21,7 @@ export function formatContextWindow(contextWindow?: number): string {
 
 export function ContextWindowTag({ contextWindow }: { contextWindow?: number }): ReactNode {
   // 颜色只在窗口已知时给：未知不是一种「状态」，给它上色会让人以为那是采到的值
-  return <Tag color={contextWindow === undefined ? undefined : 'geekblue'}>{formatContextWindow(contextWindow)}</Tag>;
+  return (
+    <Badge variant={contextWindow === undefined ? 'outline' : 'secondary'}>{formatContextWindow(contextWindow)}</Badge>
+  );
 }

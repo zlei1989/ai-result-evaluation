@@ -27,18 +27,8 @@ const FORBIDDEN: Record<PackageName, string[]> = {
   evaluator: ['next', 'next/*', 'react', 'react-dom'],
   api: ['next', 'next/*', 'react', 'react-dom'],
   contracts: ['next', 'next/*', 'react', 'react-dom'],
-  // X 的两个包（`@ant-design/x` 与 `@ant-design/x-markdown`）只允许出现在 `base/` 的本仓外壳里。
-  // 深路径（App Router 不支持点号子组件，`Bubble.List` 这类只能写
-  // `@ant-design/x/es/bubble/BubbleList`）由 `toGroups` 的「名/*」组覆盖，不需要另列通配条目。
-  ui: [
-    '@aieval/client',
-    '@aieval/api',
-    '@aieval/web-next',
-    'next',
-    'next/*',
-    '@ant-design/x',
-    '@ant-design/x-markdown',
-  ],
+  // 深路径（任何 `名/es/...` 形态）由 `toGroups` 的「名/*」组覆盖，不需要另列通配条目。
+  ui: ['@aieval/client', '@aieval/api', '@aieval/web-next', 'next', 'next/*'],
   client: ['@aieval/web-next'],
   'web-next': [],
 };
@@ -47,18 +37,14 @@ const FORBIDDEN: Record<PackageName, string[]> = {
  * 包级禁用名单里**允许在指定目录破例**的条目（`dirs` 是相对**包根**的 glob）。
  *
  * 为什么要有这一层、而不是把破例的名字从 `FORBIDDEN` 里挪出去：破例是**按目录**的
- * ——`base/` 能引 X、`composite/` 不能。名字留在 `FORBIDDEN` 里，下面按条目生成
+ * ——某个外壳目录能引、同包别处不能。名字留在 `FORBIDDEN` 里，下面按条目生成
  * 「该目录内仍然禁止的名单 = 全名单减去这一条点到的名字」的配置对象，两件事因此不会漂移。
  *
  * 多条互不干扰：每条各自生成一个配置对象、各自只减自己点到的名字。同一个目录被两条同时点到时，
- * 后一条整体替换前一条的规则（flat config 的一般语义）。
+ * 后一条整体替换前一条的规则（flat config 的一般语义）。当前没有破例条目；机制留着，
+ * 是因为「按目录破例」与「整包禁掉」混写成两张名单时，漂移是静默的。
  */
-const FORBIDDEN_DIR_EXEMPTIONS: Partial<Record<PackageName, Array<{ names: string[]; dirs: string[] }>>> = {
-  // X 的适配层：`base/x-markdown.tsx`、`base/x-think.tsx` 这些外壳是唯一允许引 X 的地方。
-  // 收口之后「换包 / 换深路径 / 换 `XProvider` 根」只动壳一处，X 的那几条约束
-  // （`escapeRawHtml`、`disableDefaultStyles`、点号子组件的替代写法）也不在各 composite 里各写一遍。
-  ui: [{ names: ['@ant-design/x', '@ant-design/x-markdown'], dirs: ['src/base/**'] }],
-};
+const FORBIDDEN_DIR_EXEMPTIONS: Partial<Record<PackageName, Array<{ names: string[]; dirs: string[] }>>> = {};
 
 /**
  * `FORBIDDEN_DIR_EXEMPTIONS` 里点到的名字**必须在 `FORBIDDEN[pkg]` 里**。
@@ -81,6 +67,37 @@ for (const [pkg, exemptions] of Object.entries(FORBIDDEN_DIR_EXEMPTIONS) as Arra
     }
   }
 }
+
+/**
+ * vendored 原语的位置（相对**包根**的 glob）：这些文件是 shadcn registry 产物的**逐字副本**，
+ * 不套仓库的引号 / 分号风格。两条理由，缺一都不够：
+ *
+ * 1. **可复算**：`vendor.mjs` 用「内容与 registry 一致」判定「已存在且内容一致」，重跑才幂等。
+ *    文件一旦被 `eslint --fix` 改写，脚本下次就报冲突、只能 `--force` 覆盖，而覆盖回来的又是
+ *    上游风格——门禁与脚本互相打架，每轮要人记着补跑一次 format。
+ * 2. **改格式会改坏样式，且是静默的**：类名本身带单引号（`[&_svg:not([class*='size-'])]:size-4`）。
+ *    `@stylistic/quotes` 把外层引号换成单引号后，源码里那对引号变成转义形态 `\'`；Tailwind v4
+ *    按**源码文本**提取候选，提取到的候选就带上了反斜杠，产出的 CSS 选择器因此是
+ *    `.…class\*\=\\\'size-…`（类名含字面反斜杠），与运行时 DOM 上的类名不再匹配 ⇒
+ *    那几条 `[&_svg:not([class*='size-'])]:size-*` 整条失效，没有任何报错。
+ *
+ * 只关这两条风格规则，其余规则（分层边界、unused-imports、ESM-only 的 require 禁令）照旧生效。
+ */
+const VENDORED_STYLE_EXEMPTIONS: Partial<Record<PackageName, string[]>> = {
+  ui: [
+    'src/components/ui/**/*.{ts,tsx}',
+    // `code-block` 带出来的两份：`useHighlightedCode` 与它的 shiki 加载器也是 registry 逐字副本
+    'src/hooks/use-highlighted-code.ts',
+    'src/lib/highlighter.tsx',
+    'src/lib/utils.ts',
+  ],
+};
+
+/** 豁免的**只有风格**：上游用双引号、不写分号，与仓库的 `@stylistic` 口径相反 */
+const VENDORED_STYLE_RULES: Linter.RulesRecord = {
+  '@stylistic/quotes': 'off',
+  '@stylistic/semi': 'off',
+};
 
 /** 各包在仓库中的目录（相对仓库根，用 `/` 分隔）：根配置据此把包级 glob 限定到对应目录 */
 const PACKAGE_DIRS: Record<PackageName, string> = {
@@ -264,12 +281,16 @@ function scopeToDir(dir: string, configs: Linter.Config[]): Linter.Config[] {
  */
 function boundaryConfigs(pkg: PackageName): Linter.Config[] {
   const names = FORBIDDEN[pkg];
+  /** vendored 件只豁免风格，与边界名单无关，故与 `names` 各算各的 */
+  const vendored = VENDORED_STYLE_EXEMPTIONS[pkg] ?? [];
   const configs: Linter.Config[] = [
     // next dev / next build 生成的类型声明：内容是双引号的三斜线引用与指向 .next/ 的相对
     // import，既不由本仓维护（文件头自述「should not be edited」）也已被 gitignore，
     // 故不纳入 lint。放在包级配置里而不是根配置里，是为了 `pnpm --filter @aieval/web-next lint`
     // 与根 `eslint .` 两条路径都覆盖到（根路径下这条会被前缀化成 apps/web-next/next-env.d.ts）。
     ...(pkg === 'web-next' ? [{ ignores: ['next-env.d.ts'] }] : []),
+    // 放在 `names.length === 0` 的提前返回之前：vendored 目录的豁免不该取决于那个包有没有边界名单
+    ...(vendored.length > 0 ? [{ files: vendored, rules: VENDORED_STYLE_RULES }] : []),
   ];
   if (names.length === 0) return configs;
   const exemptions = FORBIDDEN_DIR_EXEMPTIONS[pkg] ?? [];

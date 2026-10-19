@@ -42,7 +42,14 @@ interface Scenario {
   threads?: ReadonlyArray<Record<string, unknown> & { id: string }>;
   contents?: Record<
     string,
-    { thread: Record<string, unknown> & { id: string }; items?: ReadonlyArray<{ turnId: string; item: Record<string, unknown> }> }
+    {
+      /**
+       * 线程元数据。`turns` 显式列出（而不是只靠 `Record<string, unknown>` 的兜底）：
+       * 夹具把它直接喂给 `threadTurnsPages`，而 `unknown ?? []` 的类型是 `{}`，接不上分页函数要的数组。
+       */
+      thread: Record<string, unknown> & { id: string; turns?: ReadonlyArray<Record<string, unknown> & { id: string }> };
+      items?: ReadonlyArray<{ turnId: string; item: Record<string, unknown> }>;
+    }
   >;
   threadId?: string;
   threadError?: unknown;

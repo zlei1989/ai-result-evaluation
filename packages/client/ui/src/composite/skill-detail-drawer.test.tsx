@@ -15,6 +15,18 @@ import { ServiceError, type SkillEntry, type SkillFileText, type SkillTree } fro
 import { installResizeObserverStub } from '../testing/resize-observer';
 import { SkillDetailDrawer } from './skill-detail-drawer';
 
+/** 正文根：`data-slot="markdown"` 是外壳的稳定钩子（渲染器换了它也不变） */
+function markdownBody(): Element | null {
+  return document.querySelector('[data-slot="markdown"]');
+}
+
+/** 围栏代码块的正文：每行一个 span，`textContent` 不带换行，按行拼回 */
+function codeTextOf(root: Element | null): string {
+  return Array.from(root?.querySelectorAll('[data-slot="code-block-line-content"]') ?? [])
+    .map((line) => line.textContent ?? '')
+    .join('\n');
+}
+
 // jsdom 没有 ResizeObserver，而 antd 的 Drawer / Splitter 内部都会直接 new 它
 beforeEach(() => {
   installResizeObserverStub();
@@ -39,7 +51,7 @@ const BAD_SKILL: SkillEntry = {
   disabled: false,
 };
 
-/** 一棵两级树：`reference/API.md` 与 `SKILL.md`；`path` 都是**叶子名**（全路径由 X 的树自己拼） */
+/** 一棵两级树：`reference/API.md` 与 `SKILL.md`；`path` 都是**叶子名**（全路径由树逐层拼） */
 const TREE: SkillTree = {
   name: 'tang-poem-meal',
   dir: `${ROOT}/tang-poem-meal`,
@@ -138,9 +150,9 @@ describe('SkillDetailDrawer：标题与左树', () => {
   it('预览标题栏给**完整相对路径**（同名文件靠这里分）+ 复制按钮', () => {
     render(<SkillDetailDrawer {...propsOf({ selectedPath: 'reference/API.md' })} />);
 
-    expect(document.querySelector('.ant-folder-preview-title-wrapper'), '标题栏没渲染').not.toBeNull();
+    expect(screen.getByTestId('skill-file-preview-title'), '标题栏没渲染').toBeInTheDocument();
     expect(screen.getByText('reference/API.md')).toBeInTheDocument();
-    expect(document.querySelector('.ant-actions-copy-copy'), '复制按钮没渲染').not.toBeNull();
+    expect(screen.getByRole('button', { name: '复制' }), '复制按钮没渲染').toBeInTheDocument();
   });
 
   it('点树里的文件：交出去的就是**技能内相对路径**（不含技能名，多一段就是 404）', () => {
@@ -159,7 +171,7 @@ describe('SkillDetailDrawer：标题与左树', () => {
     render(<SkillDetailDrawer {...propsOf({ selectedPath: 'reference/API.md', file: undefined })} />);
 
     // 抽屉渲染在 portal 里（挂到 `document.body`），`render()` 的 container 里查不到它
-    const selected = document.querySelectorAll('.ant-tree-node-selected');
+    const selected = document.querySelectorAll('[aria-current="true"]');
     expect(selected.length).toBe(1);
     expect(selected[0]?.textContent).toContain('API.md');
   });
@@ -174,7 +186,7 @@ describe('SkillDetailDrawer：标题与左树', () => {
     render(<SkillDetailDrawer {...propsOf({ selectedPath: null, file: undefined })} />);
 
     expect(screen.getByText('还没选中文件')).toBeInTheDocument();
-    expect(document.querySelector('.x-markdown')).toBeNull();
+    expect(document.querySelector('[data-slot="markdown"]')).toBeNull();
   });
 
   it('不可用条目照旧打得开：整句中文原因在场', () => {
@@ -193,7 +205,7 @@ describe('SkillDetailDrawer：三态', () => {
   it('树读取中给骨架屏，不出树也不出错误', () => {
     render(<SkillDetailDrawer {...propsOf({ tree: undefined, treeLoading: true })} />);
 
-    expect(document.querySelector('.ant-skeleton')).not.toBeNull();
+    expect(document.querySelector('[data-slot="skeleton"]')).not.toBeNull();
     expect(screen.queryByText('技能目录读取失败')).toBeNull();
     expect(screen.queryByText('SKILL.md')).toBeNull();
   });
@@ -219,7 +231,7 @@ describe('SkillDetailDrawer：三态', () => {
 
   it('正文读取中给骨架屏；读失败说清是哪一步失败 + 服务端的中文原因', () => {
     const { unmount } = render(<SkillDetailDrawer {...propsOf({ file: undefined, fileLoading: true })} />);
-    expect(document.querySelector('.ant-skeleton')).not.toBeNull();
+    expect(document.querySelector('[data-slot="skeleton"]')).not.toBeNull();
     unmount();
 
     render(
@@ -247,19 +259,16 @@ describe('SkillDetailDrawer：正文 markdown', () => {
 
     expect(screen.queryByRole('heading', { name: /name: tang-poem-meal/ })).toBeNull();
 
-    const body = document.querySelector('.x-markdown');
-    // 正文里另有一个 ```text 围栏，故按内容认：这一条钉的是**第一块**代码
-    expect(body?.querySelector('pre code')?.textContent).toContain(
-      '---\nname: tang-poem-meal\ndescription: 推荐唐诗\n---',
-    );
+    // 正文里另有一个 ```text 围栏，故按内容认：这一条钉的是 yaml 那一块
+    expect(codeTextOf(markdownBody())).toContain('---\nname: tang-poem-meal\ndescription: 推荐唐诗\n---');
   });
 
   it('正文渲染成 markdown：粗体成 strong、GFM 表格成表', () => {
     render(<SkillDetailDrawer {...propsOf()} />);
 
     // 从正文根往下查而不是全局取第一个：抽屉顶部与左树都有元素，全局取会取错
-    const body = document.querySelector('.x-markdown');
-    expect(body, '正文没有交给 XMarkdown 渲染').not.toBeNull();
+    const body = markdownBody();
+    expect(body, '正文没有交给 markdown 外壳渲染').not.toBeNull();
     expect(body?.querySelector('strong')?.textContent).toBe('只推荐一首');
     expect(screen.getByRole('columnheader', { name: '项' })).toBeInTheDocument();
     expect(screen.getByRole('cell', { name: '1' })).toBeInTheDocument();
@@ -267,25 +276,24 @@ describe('SkillDetailDrawer：正文 markdown', () => {
 
   /**
    * 三条排版口径由共享渲染器承担（消费方只递文本）：围栏不折行、外链挡 opener、标题降两级。
-   * `white-space` 的**计算样式**只能真机量（jsdom 没有 CSS 级联），这里钉的是内联那一条声明——
-   * X 的默认样式写的是 `pre-wrap`，内联这条是唯一能盖住它的地方。
+   * `white-space` 的**计算样式**只能真机量（jsdom 没有 CSS 级联），这里钉两件能钉的：
+   * `wrap` 没被打开（`data-wrap` 缺席），以及承载文本的 `code` 层撑到内容宽（`min-w-max`）。
    */
   it('复刻三条口径：围栏不折行 / 外链新标签且带 noreferrer / 标题降两级', () => {
     render(<SkillDetailDrawer {...propsOf()} />);
 
-    const body = document.querySelector('.x-markdown');
+    const body = markdownBody();
     // 正文里两块围栏（frontmatter 的 yaml 块 + 夹具那个 text 块），按内容认，不靠顺序
-    const pre = Array.from(body?.querySelectorAll('pre') ?? []).find((node) =>
-      node.textContent?.includes('OpenController'),
-    );
-    expect(pre, '找不到正文那个围栏代码块').not.toBeUndefined();
-    expect(pre?.style.whiteSpace, '围栏代码块被折行：链路图的前导空格对齐会散掉').toBe('pre');
-    expect(pre?.style.overflowX, '超宽时没有横向滚动').toBe('auto');
-    // 内层 `code` 也要盖章：X 的 CSS 给 `pre` **与** `code` 都写了 `pre-wrap`，只盖 `pre` 时
-    // 文字在块级 `code` 那一层就折了、`pre` 永远滚不出来（jsdom 没有级联，这条只能钉内联声明）
-    expect(pre?.querySelector('code')?.style.whiteSpace, '围栏里的 code 仍在折行').toBe('pre');
+    const codeBlocks = Array.from(body?.querySelectorAll('[data-slot="code-block"]') ?? []);
+    const block = codeBlocks.find((node) => node.textContent?.includes('OpenController'));
+    expect(block, '找不到正文那个围栏代码块').not.toBeUndefined();
+    const pre = block?.querySelector('[data-slot="code-block-content"]');
+    expect(pre?.hasAttribute('data-wrap'), '围栏代码块被打开了 wrap（那就开始折行了）').toBe(false);
+    const code = pre?.querySelector('[data-slot="code-block-code"]');
+    expect(code?.className, '承载文本的 code 层没有撑到内容宽').toContain('min-w-max');
+    expect(code?.className, '承载文本的 code 层写了 pre-wrap').not.toContain('whitespace-pre-wrap');
     // 前导空格逐字保留：链路图靠它对齐
-    expect(pre?.textContent).toContain('  OpenController.queryFileChangeLogs   (lc-web:45)');
+    expect(codeTextOf(block ?? null)).toContain('  OpenController.queryFileChangeLogs   (lc-web:45)');
 
     const link = body?.querySelector('a');
     expect(link?.getAttribute('href')).toBe('https://example.com/doc');

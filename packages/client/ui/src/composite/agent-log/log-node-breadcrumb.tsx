@@ -14,9 +14,14 @@
  * 断链（`parentId` 指向不存在的节点）与成环都在这里停住：给出已经能确定的那一段，
  * 而不是抛错或死循环——界面缺一段比整个抽屉白屏可接受得多。
  */
-import { Breadcrumb, Flex, Typography } from 'antd';
-import type { BreadcrumbProps } from 'antd';
-import { useMemo, type ReactNode } from 'react';
+import { ChevronRightIcon } from 'lucide-react';
+import { Fragment, type ReactNode } from 'react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu';
 import type { LogNode } from './types';
 
 export interface LogNodeBreadcrumbProps {
@@ -70,70 +75,111 @@ export function nodeChain(nodes: readonly LogNode[], activeNodeId: string): read
  *     抽屉上唯一的入口是个灰项，点不动。正确口径：某一段的兄弟 = **它父节点的子节点**。 * · 光改对判据仍留一个死胡同：主会话是根、本来就没有同层兄弟 ⇒ 那一段必然只有一个灰项。
  *     所以「同层只有一个」时不能再给下拉，要把**这一段本身**做成入口。
  */
+export interface BreadcrumbSibling {
+  key: string;
+  label: string;
+  /** 当前段自己在菜单里是不可点的（它是「这一层你现在站在哪」的标记） */
+  disabled: boolean;
+  onSelect(): void;
+}
+
+/**
+ * 一段面包屑的**纯数据形状**：渲染与判据共用同一份。
+ * 三种形态由「这一层有没有别的节点」决定（见上方 1 / 2 / 3），`current` 与 `siblings` 互斥。
+ */
+export interface BreadcrumbSegment {
+  key: string;
+  label: string;
+  /** 当前段：不可点、带 `aria-current="page"` */
+  current: boolean;
+  /** 祖先段 + 同层只有它自己：整段可点回退 */
+  onSelect?: () => void;
+  /** 祖先段 + 同层还有兄弟：下拉里列这一层的兄弟（含本段的禁用项） */
+  siblings?: BreadcrumbSibling[];
+}
+
 export function breadcrumbItems(
   nodes: readonly LogNode[],
   activeNodeId: string,
   onSelect: (nodeId: string) => void,
-): BreadcrumbProps['items'] {
+): BreadcrumbSegment[] {
   const chain = nodeChain(nodes, activeNodeId);
   const navigable = navigableNodes(nodes);
 
   return chain.map((node, index) => {
-    if (index === chain.length - 1) {
-      return {
-        key: node.id,
-        title: (
-          <Typography.Text strong aria-current="page">
-            {nodeDisplayName(node)}
-          </Typography.Text>
-        ),
-      };
-    }
+    const label = nodeDisplayName(node);
+    if (index === chain.length - 1) return { key: node.id, label, current: true };
     // 这一段的层级 = 它父节点的子节点集合；`parentId === null`（根段）时列的是根层
     const siblings = navigable.filter((candidate) => candidate.parentId === node.parentId);
     if (siblings.length <= 1) {
       // 同层只有它自己：整段可点回退（不给下拉，免得给出一个只有灰项的死胡同）
-      return {
-        key: node.id,
-        title: (
-          <Typography.Text
-            role="link"
-            tabIndex={0}
-            style={{ cursor: 'pointer' }}
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') onSelect(node.id);
-            }}
-          >
-            {nodeDisplayName(node)}
-          </Typography.Text>
-        ),
-      };
+      return { key: node.id, label, current: false, onSelect: () => onSelect(node.id) };
     }
     return {
       key: node.id,
-      title: <Typography.Text>{nodeDisplayName(node)}</Typography.Text>,
-      menu: {
-        items: siblings.map((sibling) => ({
-          key: sibling.id,
-          label: nodeDisplayName(sibling),
-          disabled: sibling.id === node.id,
-        })),
-        onClick: ({ key }) => onSelect(String(key)),
-      },
+      label,
+      current: false,
+      siblings: siblings.map((sibling) => ({
+        key: sibling.id,
+        label: nodeDisplayName(sibling),
+        disabled: sibling.id === node.id,
+        onSelect: () => onSelect(sibling.id),
+      })),
     };
   });
 }
 
-export function LogNodeBreadcrumb({ nodes, activeNodeId, onSelect }: LogNodeBreadcrumbProps): ReactNode {
-  const items = useMemo(() => breadcrumbItems(nodes, activeNodeId, onSelect), [nodes, activeNodeId, onSelect]);
+/** 一段的渲染：当前段是带 `aria-current` 的文本，其余两种是可操作的按钮 / 下拉 */
+function Segment({ segment }: { segment: BreadcrumbSegment }): ReactNode {
+  if (segment.current) {
+    return (
+      <span className="font-medium" aria-current="page">
+        {segment.label}
+      </span>
+    );
+  }
+  if (segment.siblings === undefined) {
+    return (
+      <button
+        type="button"
+        className="cursor-pointer rounded-sm text-muted-foreground hover:text-foreground"
+        onClick={segment.onSelect}
+      >
+        {segment.label}
+      </button>
+    );
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger className="flex cursor-pointer items-center gap-0.5 rounded-sm text-muted-foreground hover:text-foreground">
+        {segment.label}
+        <ChevronRightIcon aria-hidden className="size-3 rotate-90" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent>
+        {segment.siblings.map((sibling) => (
+          <DropdownMenuItem key={sibling.key} disabled={sibling.disabled} onClick={sibling.onSelect}>
+            {sibling.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
-  if (items === undefined || items.length === 0) return null;
+export function LogNodeBreadcrumb({ nodes, activeNodeId, onSelect }: LogNodeBreadcrumbProps): ReactNode {
+  const items = breadcrumbItems(nodes, activeNodeId, onSelect);
+  if (items.length === 0) return null;
 
   return (
-    // `data-testid` 只能挂在宿主上：`BreadcrumbProps` 没有 `data-*` 索引签名，挂它自己编译不过
-    <Flex align="center" data-testid="log-node-breadcrumb">
-      <Breadcrumb items={items} />
-    </Flex>
+    <nav className="flex items-center gap-1 text-sm" aria-label="节点路径" data-testid="log-node-breadcrumb">
+      {items.map((segment, index) => (
+        <Fragment key={segment.key}>
+          {index > 0 && <span className="text-faint-foreground">/</span>}
+          <div className="flex items-center gap-1" data-segment={segment.key}>
+            <Segment segment={segment} />
+          </div>
+        </Fragment>
+      ))}
+    </nav>
   );
 }

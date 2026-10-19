@@ -27,7 +27,7 @@
  * 4. `streamError` 里 `undefined` 与 `null` 等价（`useRowStream.error` 的初值是 `null`）。
  */
 import { AGENT_LABELS, ROW_STATUS_LABELS, isRunningRow, type AgentEvent, type EvalRow } from '@aieval/contracts';
-import type { AgentLogFactsInput, AgentRunStatus, DomainFact, DomainFactSegment } from '@aieval/client';
+import type { AgentLogFactsInput, AgentModelOption, AgentRunStatus, DomainFact, DomainFactSegment } from '@aieval/client';
 import { describeError } from './runs-view';
 
 export type LogDrawerState =
@@ -161,6 +161,18 @@ function segmentsText(segments: readonly DomainFactSegment[]): string {
 }
 
 /**
+ * 这一行所用模型的**上下文窗口**（token）：在候选池里按 `providerId + modelId` 配对。
+ *
+ * 为什么由这一层配对、而不是让界面自己找：窗口是**模型清单里的声明**（官方明说 AI SDK 不发它），
+ * 而界面不取数、也不认识候选池。拿不到（模型已从供应商里删掉 / 这一格没声明）就是 `null`
+ * ——界面显示「上限未采集」，**不兜底一个默认窗口**（编一个 200K 出来，百分比就是假读数）。
+ */
+export function contextWindowOf(row: EvalRow, options: readonly AgentModelOption[]): number | null {
+  const option = options.find((item) => item.providerId === row.providerId && item.modelId === row.modelId);
+  return option?.contextWindow ?? null;
+}
+
+/**
  * 这一行的事实 → `AgentLogModel.facts`。
  *
  * 三处必须守的口径：
@@ -176,7 +188,12 @@ function segmentsText(segments: readonly DomainFactSegment[]): string {
  * 行级的**开始时刻只能从事件流取**：`EvalRow.startedAt` 是轮级字段，拿它当行级开始时刻
  * 会让同轮的另一行显示出一个不属于自己的耗时。
  */
-export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent[] }): AgentLogFactsInput {
+export function buildRowFacts(input: {
+  row: EvalRow;
+  events: readonly AgentEvent[];
+  /** 这一行模型的上下文窗口；缺省 = 没拿到（见 `contextWindowOf`） */
+  contextWindow?: number | null;
+}): AgentLogFactsInput {
   const { row, events } = input;
   const live = isRunningRow(row.status);
   const startedAt = events.find((event) => event.type === 'status' && event.status === 'running')?.at ?? null;
@@ -282,6 +299,8 @@ export function buildRowFacts(input: { row: EvalRow; events: readonly AgentEvent
         : { tokens: lastUsage.tokens.reasoningOutput, basis: 'subset-of-output' },
     domain,
     error: row.error === null ? null : { code: row.error.code, message: row.error.message },
+    // 上限由调用方按候选池配好递进来；没递 = 没拿到（界面显示「上限未采集」，不编一个窗口）
+    contextWindow: input.contextWindow ?? null,
     live,
   };
 }

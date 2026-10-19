@@ -9,14 +9,13 @@
  *   4. **`tag` 段按 `tagTone` 上色**（智能体 `blue` / 模型 `geekblue` /
  *      思考强度 `purple`），不给时回落 `blue`；
  *   5. **`insertion` / `deletion` 走 git 惯例的绿 / 红**，且整格**不再套 Tag**（套一枚徽标等于把
- *      这行数字框成一整块，正是要去掉的那个观感）——颜色判据取 antd token，写死字面量就会红；
+ *      这行数字框成一整块，正是要去掉的那个观感）——颜色判据取语义类；
  *   6. **`hint` / `hintSegments` 照画**（组件能力，产品侧当前不给提示）：tag 段是 Tag、其余文字次要色。
  *
  * 这一行**自占一行**（与事实条那一行分开），守卫落在
  * `agent-log-layout.test.tsx`（两行的父子关系），不在这里。
  */
 import { render, screen } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
 import { describe, expect, it } from 'vitest';
 import type { DomainFact } from './types';
 import { AgentLogDomainFacts } from './agent-log-domain-facts';
@@ -79,44 +78,42 @@ describe('AgentLogDomainFacts', () => {
 
   /**
    * `tag` 段的色档：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`。
-   * 判据落在 **class** 上：`Tag` 的预设色本来就只体现为 class（只有自定义 hex 才走行内 style）。
+   * 判据落在 **`data-tone`** 上：色档是语义，具体颜色由主题决定。
    * 第三格同时钉**回落**：不给 `tagTone` 的 `tag` 段仍是蓝的（老数据 / 别的消费方不必改）。
    */
   it('tag 段按 tagTone 上色（blue / geekblue / purple），不给时回落 blue', () => {
     render(<AgentLogDomainFacts domain={DOMAIN} />);
 
-    expect(screen.getByText('Claude Code')).toHaveClass('ant-tag-blue');
-    expect(screen.getByText('claude-opus-4-6')).toHaveClass('ant-tag-geekblue');
-    expect(screen.getByText('max')).toHaveClass('ant-tag-purple');
+    expect(screen.getByText('Claude Code')).toHaveAttribute('data-tone', 'blue');
+    expect(screen.getByText('claude-opus-4-6')).toHaveAttribute('data-tone', 'geekblue');
+    expect(screen.getByText('max')).toHaveAttribute('data-tone', 'purple');
 
     const { container } = render(
       <AgentLogDomainFacts domain={[{ id: 'x', label: '标识', value: 'v', segments: [{ text: 'v', tag: true }] }]} />,
     );
-    const tag = container.querySelector('[data-testid="agent-log-domain-facts"] .ant-tag');
+    const tag = container.querySelector('[data-testid="agent-log-domain-facts"] [data-slot="badge"]');
     expect(tag?.textContent).toBe('v');
-    expect(tag).toHaveClass('ant-tag-blue');
+    expect(tag).toHaveAttribute('data-tone', 'blue');
   });
 
   /**
-   * 值整段一枚色档 Tag：`tone` → antd 预设色（评分那一格是 `success` ⇒ 绿）。
-   * 这条同时钉住「值没有 `segments` 时才套 Tag」——两枚 Tag 各归各位。
+   * 值整段一枚色档徽标：`tone` → 语义色（评分那一格是 `success` ⇒ 绿）。
+   * 这条同时钉住「值没有 `segments` 时才套徽标」——两枚各归各位。
    */
-  it('值整段一枚色档 Tag：tone → antd 预设色', () => {
+  it('值整段一枚色档徽标：tone → 语义色', () => {
     render(<AgentLogDomainFacts domain={DOMAIN} />);
 
     const score = screen.getByText('8/10');
-    expect(score.closest('.ant-tag')).toHaveClass('ant-tag-success');
+    expect(score.closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'success');
   });
 
   /**
    * 改动那一格：**按 git stat 重排**——文件数次要色 + `+N` 绿 + `−N` 红，
-   * 且**整格没有 Tag**。
+   * 且**整格没有徽标**。
    *
-   * 颜色判据用**自定义 token**（同 `json-text.test.tsx`）：写死字面量——哪怕是当前默认值——都会红；
-   * 归一化那一步不能省，jsdom 会把 `#234567` 序列化成 `rgb(35, 69, 103)`。
+   * 颜色判据钉在语义类上（`text-success` / `text-destructive`）：写死色值在换主题时不会跟着走。
    */
-  it('改动那一格按 git stat 上色（+N 绿 / −N 红，都取自 antd token），且整格没有 Tag', () => {
-    const custom = { colorSuccess: '#234567', colorError: '#345678' };
+  it('改动那一格按 git stat 上色（+N 绿 / −N 红，语义类），且整格没有徽标', () => {
     const domain: readonly DomainFact[] = [
       {
         id: 'diff',
@@ -129,30 +126,21 @@ describe('AgentLogDomainFacts', () => {
         ],
       },
     ];
-    render(
-      <ConfigProvider theme={{ token: custom }}>
-        <AgentLogDomainFacts domain={domain} />
-      </ConfigProvider>,
-    );
-    const probe = (color: string): string => {
-      const element = document.createElement('span');
-      element.style.color = color;
-      return element.style.color;
-    };
+    render(<AgentLogDomainFacts domain={domain} />);
 
-    expect(screen.getByText('+12').style.color).toBe(probe(custom.colorSuccess));
-    expect(screen.getByText('−3').style.color).toBe(probe(custom.colorError));
-    // 「3 个文件」是次要色：整段外面是 antd 的 secondary `Text`（不是自己调一个灰）
-    expect(screen.getByText('+12').parentElement?.className).toContain('ant-typography-secondary');
-    expect(screen.getByTestId('agent-log-domain-facts').querySelectorAll('.ant-tag')).toHaveLength(0);
+    expect(screen.getByText('+12').classList.contains('text-success')).toBe(true);
+    expect(screen.getByText('−3').classList.contains('text-destructive')).toBe(true);
+    // 「3 个文件」是次要色：整段外面是命名类（不是自己调一个灰）
+    expect(screen.getByText('+12').parentElement?.className).toContain('text-muted-foreground');
+    expect(screen.getByTestId('agent-log-domain-facts').querySelectorAll('[data-slot="badge"]')).toHaveLength(0);
   });
 
   /**
    * `hint` / `hintSegments` 的渲染能力（**产品侧当前不给提示**：评分格的「评分模型：…」不显示，
    * 见 `apps/web-next/src/log-drawer-state.ts`）。这条钉的是通用件的能力：
-   * 数据层给了 `hintSegments` 就按段画，其中 `tag` 段是 Tag；值那一格的色档 Tag 不受影响。
+   * 数据层给了 `hintSegments` 就按段画，其中 `tag` 段是徽标；值那一格的色档徽标不受影响。
    */
-  it('hint / hintSegments 照画：tag 段是 Tag，值那一格的色档 Tag 不受影响', () => {
+  it('hint / hintSegments 照画：tag 段是徽标，值那一格的色档徽标不受影响', () => {
     const domain: readonly DomainFact[] = [
       {
         id: 'score',
@@ -165,8 +153,8 @@ describe('AgentLogDomainFacts', () => {
     ];
     const { container } = render(<AgentLogDomainFacts domain={domain} />);
 
-    expect(screen.getByText('deepseek-chat').closest('.ant-tag')).toHaveClass('ant-tag-blue');
-    expect(screen.getByText('8/10').closest('.ant-tag')).toHaveClass('ant-tag-success');
-    expect(container.querySelectorAll('[data-testid="agent-log-domain-facts"] .ant-tag')).toHaveLength(2);
+    expect(screen.getByText('deepseek-chat').closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'blue');
+    expect(screen.getByText('8/10').closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'success');
+    expect(container.querySelectorAll('[data-testid="agent-log-domain-facts"] [data-slot="badge"]')).toHaveLength(2);
   });
 });

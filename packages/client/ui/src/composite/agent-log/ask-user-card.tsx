@@ -33,11 +33,19 @@
  *      序号加卡片 id 才是身份）；`secret: true` 的遮罩**是显示口径、不是安全边界**
  *      （原文仍在结果与事件台账里），遮罩用 `Collapse` 的展开来表达「展开即显示」。
  */
-import { Badge, Card, Collapse, Flex, Listy, Tag, theme, Typography } from 'antd';
 import { useMemo, type ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '../../components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible';
+import { ChevronRightIcon } from 'lucide-react';
 import { EllipsisText } from '../../base/ellipsis-text';
 import { formatDuration } from '../../base/metric-line';
-import { SHRINKABLE_TITLE_STYLE } from '../../base/shrinkable-collapse-title';
 import { useNow } from '../../base/use-now';
 import { RawOutputPanel } from './raw-output-panel';
 import type { AskUserAnswer, AskUserInteraction, AskUserOutcome, AskUserQuestion } from './types';
@@ -121,10 +129,21 @@ function pairAnswers(
   return { byHeader, unmatched };
 }
 
-/** 收场 Tag：色档与文案都取 `ASK_USER_OUTCOME_LABELS`，`default` 档就是中性（不传 `color`） */
+/** 收场徽标：色档与文案都取 `ASK_USER_OUTCOME_LABELS`（`data-tone` 是给用例的稳定判据） */
+const OUTCOME_CLASS: Record<AskUserOutcome extends never ? never : 'success' | 'warning' | 'default' | 'error', string> = {
+  success: 'border-success/40 text-success',
+  warning: 'border-warning/40 text-warning',
+  default: 'border-border text-muted-foreground',
+  error: 'border-destructive/40 text-destructive',
+};
+
 function SettledStatus({ outcome }: { outcome: AskUserOutcome }): ReactNode {
   const meta = ASK_USER_OUTCOME_LABELS[outcome];
-  return <Tag color={meta.tone === 'default' ? undefined : meta.tone}>{meta.label}</Tag>;
+  return (
+    <Badge variant="outline" className={OUTCOME_CLASS[meta.tone]} data-tone={meta.tone}>
+      {meta.label}
+    </Badge>
+  );
 }
 
 /**
@@ -135,19 +154,19 @@ function SettledStatus({ outcome }: { outcome: AskUserOutcome }): ReactNode {
  */
 function QuestionTitle({ question }: { question: AskUserQuestion }): ReactNode {
   return (
-    <Flex align="center" gap={4} wrap>
-      {question.header !== '' && <Tag>{question.header}</Tag>}
-      {question.multiSelect && <Tag>可多选</Tag>}
+    <div className="flex min-w-0 flex-wrap items-center gap-1" data-testid="question-title">
+      {question.header !== '' && <Badge variant="outline">{question.header}</Badge>}
+      {question.multiSelect && <Badge variant="outline">可多选</Badge>}
       {/*
         题目那一格**必须自己可收缩**（`minWidth: 0` + `flex: 1`）——`EllipsisText` 的
         `max-width: 100%` 分母是**整个容器**，不是「扣掉前面两个 Tag 之后的剩余宽度」；
         不套这一层的话，长题目会把两个 Tag 挤到第二行，而它自己到容器宽度才截断。
       */}
-      <Flex style={{ minWidth: 0, flex: 1 }}>
-        {/* 单行省略 + Tooltip 显全量：题目本来就长，截断到一行不改事实（原文可查） */}
+      <div className="min-w-0 flex-1">
+        {/* 单行省略 + 原生 title 显全量：题目本来就长，截断到一行不改事实（原文可查） */}
         <EllipsisText text={firstLine(question.prompt)} tooltip={question.prompt} />
-      </Flex>
-    </Flex>
+      </div>
+    </div>
   );
 }
 
@@ -159,8 +178,7 @@ interface QuestionBodyProps {
 
 /** 面板体：**选项与作答**（问题类型与题目在面板标题里，这里不再重复画一遍） */
 function QuestionBody({ question, answer }: QuestionBodyProps): ReactNode {
-  const { token } = theme.useToken();
-  // `Listy` 要 `T[]`，而契约给的是只读数组；摊平一次并挂住引用
+  // 契约给的是只读数组；摊平一次并挂住引用
   const options = useMemo(() => [...question.options], [question.options]);
   const selected = answer === null ? [] : answer.selected;
   const custom = answer !== null && hasText(answer.custom) ? answer.custom : null;
@@ -173,27 +191,31 @@ function QuestionBody({ question, answer }: QuestionBodyProps): ReactNode {
 
   const answerNodes =
     answer === null ? null : (
-      <Flex vertical gap={4}>
+      <div className="flex flex-col gap-1">
         {/* 遮罩里选项旁的勾选看不到，故把「选了哪些」写成一句话 */}
         {question.secret && !overridden && selected.length > 0 && (
-          <Typography.Text>{`已选：${selected.join('、')}`}</Typography.Text>
+          <span>{`已选：${selected.join('、')}`}</span>
         )}
         {!question.multiSelect && custom !== null ? (
-          <Typography.Text>{`自由输入（覆盖选项）：${custom}`}</Typography.Text>
+          <span>{`自由输入（覆盖选项）：${custom}`}</span>
         ) : custom !== null ? (
-          <Typography.Text>{`补充：${custom}`}</Typography.Text>
+          <span>{`补充：${custom}`}</span>
         ) : null}
         {unknown.length > 0 && (
-          <Flex align="center" gap={4} wrap>
-            <Typography.Text type="secondary">选项里没有的：</Typography.Text>
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-muted-foreground">选项里没有的：</span>
             {unknown.map((label) => (
-              <Tag key={label} color="success">
+              <Badge
+                key={label}
+                variant="outline"
+                className="border-success/40 text-success"
+              >
                 {label}
-              </Tag>
+              </Badge>
             ))}
-          </Flex>
+          </div>
         )}
-      </Flex>
+      </div>
     );
 
   /**
@@ -203,49 +225,47 @@ function QuestionBody({ question, answer }: QuestionBodyProps): ReactNode {
    */
   const answerArea =
     answerNodes === null ? null : question.secret ? (
-      // 遮罩：默认 `••••`，展开即显示（`Collapse` 代管开合，本层不引入 state）
-      <Collapse
-        ghost
-        destroyOnHidden
-        items={[
-          {
-            key: SECRET_KEY,
-            label: (
-              <Flex align="center" gap={4}>
-                <Typography.Text code>••••</Typography.Text>
-                <Typography.Text type="secondary">显示</Typography.Text>
-              </Flex>
-            ),
-            children: answerNodes,
-          },
-        ]}
-      />
+      // 遮罩：默认 `••••`，展开即显示（折叠面板代管开合，本层不引入 state）
+      <Collapsible data-secret-mask>
+        <CollapsibleTrigger className="flex items-center gap-1 text-sm">
+          <code className="font-mono">••••</code>
+          <span className="text-muted-foreground">显示</span>
+        </CollapsibleTrigger>
+        <CollapsibleContent>{answerNodes}</CollapsibleContent>
+      </Collapsible>
     ) : (
       answerNodes
     );
 
   return (
-    <Flex vertical gap={4}>
+    <div className="flex flex-col gap-1">
       {options.length > 0 && (
-        <Listy
-          items={options}
-          rowKey={(option) => option.label}
-          itemRender={(option) => (
-            <Flex vertical>
-              <Flex align="center" gap={4} wrap>
-                <Typography.Text>{option.label}</Typography.Text>
-                {option.recommended && <Tag>推荐</Tag>}
-                {marksVisible && selected.includes(option.label) && <Tag color="success">已选</Tag>}
-              </Flex>
-              {option.description !== null && <Typography.Text type="secondary">{option.description}</Typography.Text>}
-            </Flex>
-          )}
-        />
+        <ul className="flex flex-col gap-1" data-testid="question-options">
+          {options.map((option) => (
+            <li key={option.label} className="flex flex-col">
+              <div className="flex flex-wrap items-center gap-1">
+                <span>{option.label}</span>
+                {option.recommended && <Badge variant="outline">推荐</Badge>}
+                {marksVisible && selected.includes(option.label) && (
+                  <Badge
+                    variant="outline"
+                    className="border-success/40 text-success"
+                  >
+                    已选
+                  </Badge>
+                )}
+              </div>
+              {option.description !== null && (
+                <span className="text-muted-foreground">{option.description}</span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
       {/*
         「其它（自由输入）」与它的作答区**合成一格卡片**：此前那只是一句悬空的次要文本，
         下面接什么全凭读者猜；卡片给了它标题与边界，「这一格是自由输入」于是有了归属。
-        `marginBlockStart` 取 token：它与上面那个选项列表（`Listy`）是两件事，
+        上边距取密度档：它与上面那个选项列表是两件事，
         紧贴着会把卡片的顶边读成列表的一部分。
 
         **没有自由输入内容就不画这格卡片**（`custom` 为空：还没作答、或答了但没写自己的话）：
@@ -253,14 +273,17 @@ function QuestionBody({ question, answer }: QuestionBodyProps): ReactNode {
         作答区的另一半（「选项里没有的」标签）照旧直接铺在问题下（下面那一支）。
       */}
       {question.allowOther && custom !== null ? (
-        <Card size="small" title="其它（自由输入）" style={{ marginBlockStart: token.marginSM }}>
-          {answerArea}
+        <Card size="sm" className="mt-snug" data-testid="ask-user-other-card">
+          <CardHeader>
+            <CardTitle>其它（自由输入）</CardTitle>
+          </CardHeader>
+          <CardContent>{answerArea}</CardContent>
         </Card>
       ) : (
         // 非「自由输入」的问题，以及没有自由输入内容时：作答区照旧直接铺在问题下面，不多包一层
         answerArea
       )}
-    </Flex>
+    </div>
   );
 }
 
@@ -273,7 +296,6 @@ export function AskUserCard({
   onRawOpenChange,
   onRequestDiagnostics,
 }: AskUserCardProps): ReactNode {
-  const { token } = theme.useToken();
   const questions = interaction.questions;
   const atMs = parseAt(interaction.at);
   const waiting = interaction.state === 'pending' && interaction.running;
@@ -288,14 +310,12 @@ export function AskUserCard({
   const statusNode: ReactNode =
     interaction.state === 'pending' ? (
       interaction.running ? (
-        <Flex align="center" gap={4}>
-          <Badge size="small" status="processing" />
-          <Typography.Text>
-            {atMs === null ? '等待答复中…' : `等待答复中… ${formatDuration(now - atMs)}`}
-          </Typography.Text>
-        </Flex>
+        <span className="inline-flex items-center gap-1" data-status="running">
+          <span aria-hidden className="size-1.5 shrink-0 animate-pulse rounded-full bg-info" />
+          <span>{atMs === null ? '等待答复中…' : `等待答复中… ${formatDuration(now - atMs)}`}</span>
+        </span>
       ) : (
-        <Typography.Text type="secondary">结果未采集</Typography.Text>
+        <span className="text-muted-foreground">结果未采集</span>
       )
     ) : (
       // `unavailable` / `skipped` / `canceled` 的色档是 `default`（中性）：它们**不是红色错误**
@@ -321,93 +341,93 @@ export function AskUserCard({
    * footer（`Card` 的 `actions`）：只放原文入口——「原始结果」+「重新读取」两枚按钮由
    * `RawOutputPanel` 一并给出（重试那一格在它里面）。没采到原文时给 `undefined` ⇒ 整格不画，不留空边。
    *
-   * 外面套一层 `Flex` 是为了**左对齐**：antd 把 `actions` 的每一项摆成居中
-   * （`.ant-card-actions > li` 带 `text-align: center`），而这一格是动作按钮、不是图标动作，
-   * 居中会让它悬在卡片中间、与左上角的卡面标题对不齐。`Flex` 是块级 flex 容器，
-   * `text-align` 管不到它的项，默认就从行首排（不必显式给 `justify`）；
+   * 外面套一层 flex 容器是为了**左对齐**：这一格是动作按钮、不是图标动作，
+   * 居中会让它悬在卡片中间、与左上角的卡面标题对不齐；
    * 顺带承担两枚按钮之间的间距（`RawOutputPanel` 不自带容器，见它的口径 7）。
    *
-   * **左内边距对齐卡面**：`actions` 那一行自己没有左右 padding，不补这一格按钮组就贴在卡片边框上，
-   * 而卡面标题与正文都在 `paddingSM` 处（`.ant-card-head` / `.ant-card-body` 的 12px）——
-   * 于是正文左对齐、footer 却比它多出一个按钮的宽度差。
+   * **左内边距对齐卡面**：不补这一格按钮组就贴在卡片边框上，
+   * 而卡面标题与正文都有自己的横向内边距——于是正文左对齐、footer 却比它多出一个按钮的宽度差。
    */
   const footer =
-    rawResult === null
-      ? undefined
-      : [
-        <Flex key="raw" align="center" gap={8} wrap style={{ paddingInlineStart: token.paddingSM }}>
-          <RawOutputPanel
-            source={{ kind: 'single', result: rawResult }}
-            open={rawOpen}
-            onOpenChange={onRawOpenChange}
-            label="原始结果"
-            onRetry={onRequestDiagnostics}
-          />
-        </Flex>,
-      ];
+    rawResult === null ? undefined : (
+      <div className="flex flex-wrap items-center gap-2 ps-sm">
+        <RawOutputPanel
+          source={{ kind: 'single', result: rawResult }}
+          open={rawOpen}
+          onOpenChange={onRawOpenChange}
+          label="原始结果"
+          onRetry={onRequestDiagnostics}
+        />
+      </div>
+    );
 
   return (
-    <Card
-      size="small"
-      data-testid="ask-user-card"
-      title={
-        // 自己的锚点（不数 antd 的 `.ant-card-head`）：卡面标题的**内容口径**由用例守
-        <Flex vertical data-testid="ask-user-card-title">
-          <Flex align="center" gap={4} wrap>
-            <Typography.Text>{`问题 ${questions.length} 个`}</Typography.Text>
-            {statusNode}
-          </Flex>
-          {hasText(noteLine) && <Typography.Text type="secondary">{noteLine}</Typography.Text>}
-        </Flex>
-      }
-      /*
-        footer 的内容见上面那个 `footer` 常量（左对齐的理由写在那里）。
-      */
-      actions={footer}
-    >
-      <Collapse
-        /*
-          **不带面板自己那层边框**：框由 `Card` 出（卡面与卡体都是它的），面板再画一圈就是
-          「框里套框」——收起态看起来像卡片里嵌了两个小盒子，而每一问本来就只是卡片里的一行。
-          `bordered={false}` 只去掉这一层框与圆角，`items` 之间那条分隔线、标题与正文的留白仍由
-          antd 给（本件不手写内边距）。
-        */
-        bordered={false}
-        destroyOnHidden
-        /* 面板键是序号（稳定、不随 `header` 重复而漂）；折叠态那一格用 `questionPanelKey` */
-        activeKey={questions.flatMap((_, index) => (openQuestions.has(questionPanelKey(cardId, index)) ? [String(index)] : []))}
-        onChange={(keys) => {
-          // antd 给的是**新的全量开合集合**：逐问对上，只把变化的那一问报出去
-          questions.forEach((_, index) => {
-            const open = openQuestions.has(questionPanelKey(cardId, index));
-            if (keys.includes(String(index)) !== open) onQuestionOpenChange(questionPanelKey(cardId, index), !open);
-          });
-        }}
-        // 标题里是单行省略的题目（`EllipsisText`）：标题不给收缩就会把整行顶宽（见常量处）
-        styles={SHRINKABLE_TITLE_STYLE}
-        items={questions.map((question, index) => ({
-          key: String(index),
-          label: <QuestionTitle question={question} />,
-          children: <QuestionBody question={question} answer={paired.byHeader.get(question.header) ?? null} />,
-        }))}
-      />
-      {interaction.state === 'settled' && interaction.answers === null && (
-        <Typography.Text type="secondary">答案未采集</Typography.Text>
-      )}
-      {paired.unmatched.length > 0 && (
-        <Flex vertical gap={4}>
-          <Typography.Text type="secondary">
-            {`另有 ${paired.unmatched.length} 份答案没能回填到问题上：`}
-          </Typography.Text>
-          {paired.unmatched.map((answer) => (
-            <Flex key={`${answer.header}|${answer.selected.join('、')}`} align="center" gap={4} wrap>
-              <Tag>{answer.header}</Tag>
-              {answer.selected.length > 0 && <Typography.Text>{answer.selected.join('、')}</Typography.Text>}
-              {hasText(answer.custom) && <Typography.Text>{answer.custom}</Typography.Text>}
-            </Flex>
-          ))}
-        </Flex>
-      )}
+    <Card size="sm" data-testid="ask-user-card">
+      <CardHeader>
+        <CardTitle>
+          {/* 自己的锚点（不数卡片内部类名）：卡面标题的**内容口径**由用例守 */}
+          <div className="flex flex-col" data-testid="ask-user-card-title">
+            <div className="flex flex-wrap items-center gap-1">
+              <span>{`问题 ${questions.length} 个`}</span>
+              {statusNode}
+            </div>
+            {hasText(noteLine) && <span className="text-sm text-muted-foreground">{noteLine}</span>}
+          </div>
+        </CardTitle>
+      </CardHeader>
+
+      <CardContent>
+        {/* **面板不带自己那层边框**：框由 `Card` 出，面板再画一圈就是框里套框——
+            收起态看起来像卡片里嵌了两个小盒子，而每一问本来就只是卡片里的一行。
+            这里只留两问之间的一条分隔线。 */}
+        <div className="flex flex-col">
+          {questions.map((question, index) => {
+            const key = questionPanelKey(cardId, index);
+            return (
+              <Collapsible
+                key={key}
+                open={openQuestions.has(key)}
+                onOpenChange={(next) => onQuestionOpenChange(key, next)}
+                className="border-b border-border last:border-b-0"
+              >
+                <CollapsibleTrigger
+                  className="flex w-full min-w-0 items-center gap-1 py-1 text-left text-sm"
+                  data-question-panel={index}
+                >
+                  <ChevronRightIcon
+                    aria-hidden
+                    className="size-3.5 shrink-0 text-muted-foreground transition-transform data-[panel-open]:rotate-90"
+                  />
+                  <QuestionTitle question={question} />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <QuestionBody question={question} answer={paired.byHeader.get(question.header) ?? null} />
+                </CollapsibleContent>
+              </Collapsible>
+            );
+          })}
+        </div>
+        {interaction.state === 'settled' && interaction.answers === null && (
+          <span className="text-muted-foreground">答案未采集</span>
+        )}
+        {paired.unmatched.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1">
+            <span className="text-muted-foreground">
+              {`另有 ${paired.unmatched.length} 份答案没能回填到问题上：`}
+            </span>
+            {paired.unmatched.map((answer) => (
+              <div key={`${answer.header}|${answer.selected.join('、')}`} className="flex flex-wrap items-center gap-1">
+                <Badge variant="outline">{answer.header}</Badge>
+                {answer.selected.length > 0 && <span>{answer.selected.join('、')}</span>}
+                {hasText(answer.custom) && <span>{answer.custom}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+
+      {/* footer 的内容见上面那个 `footer` 常量（左对齐的理由写在那里） */}
+      {footer === undefined ? null : <CardFooter className="ps-sm">{footer}</CardFooter>}
     </Card>
   );
 }

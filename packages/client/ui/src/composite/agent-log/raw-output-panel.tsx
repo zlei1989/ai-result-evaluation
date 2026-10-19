@@ -4,14 +4,15 @@
  * 「原始输出」入口 + 二级抽屉：**两种变体共用一个件**——固定区的逐行原文（`AgentLogDiagnostics`）
  * 与卡片底部的单份原文（`ToolCardResult`）。
  *
- * 七条口径：
+ * 八条口径：
  * 1. **本件只画 ready 态**。`Loadable` 的三态画面（`Skeleton` / `Alert` + 重试）由**调用方**决定：
  * 「取到没有」这件事只有数据层知道，本件吃的是已经到手的数据；
  * 2. **逐行原文逐字给出、不解析**。`summary` 是给人看的一句话，有就**优先**渲染，
  * 但 `text` 原文照旧逐字给出——规范逐字禁「拿 `text` 顶替 `summary`」，
  * 反过来用 `text` 顶替也不对。
- * 唯一例外是 **`single` 变体的正文**：自 走 `JsonText`
+ * 唯一例外是 **`single` 变体的正文**：走 `JsonText`
  * ——是 JSON 就缩进格式化 + 高亮，不是就**逐字原样**（`diagnostics` 那一档的逐行台账一字不动）；
+ * 它外面套一层 `CodeBlock`，只为拿到那个复制按钮与统一的框（见口径 8）；
  * 3. **`lines` 为空不渲染入口**：一个「原始输出 0 条」的按钮没有任何信息量；
  * 4. **不做脱敏**：`secret` 类遮罩是显示口径、由调用方决定；
  * 5. **入口是一个按钮、正文在二级抽屉里**：原文不再挤占主抽屉固定区
@@ -24,14 +25,22 @@
  * 抽屉不像 `Collapse` 那样自带非受控态，故这一格从「可选」变成了**必填**；
  * 7. **本件不自带布局容器**：返回的是**按钮本身**，
  * 横排 / 换行 / 间距由调用方的容器给——固定区里它与「下载台账」同层，卡片底部各自包一层。
- * 原先自带一层 `Flex gap={8}`，症状是同一行里两套间距、且「这一行有哪几个按钮」要去两层里数。
+ * 多包一层容器的话，同一行里会有两套间距，且「这一行有哪几个按钮」要去两层里数；
+ * 8. **单份原文的复制按钮来自 `CodeBlock`**：复制逐字原文是这一格唯一有副作用的动作，
+ * 手写一个按钮要自己管「复制了没有」的反馈与无障碍标签，而 `CodeBlockCopyButton` 已经有了。
  */
-import { Button, Flex, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import { JsonText } from '../../base/json-text';
 import { MonoText } from '../../base/mono-text';
 import { NestedDrawer } from '../../base/nested-drawer';
 import { VirtualList } from '../../base/virtual-list';
+import { Button } from '../../components/ui/button';
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+} from '../../components/ui/code-block';
 import type { AgentLogDiagnostics, ToolCardResult } from './types';
 import { truncationNote } from './types';
 
@@ -76,7 +85,7 @@ function hasText(value: string | null): value is string {
  * **走虚拟滚动**（「避免数据量大浏览器卡顿」）：`lines` 没有上限
  * （`diagnosticsOf` 把全部 `log` 事件映射成行，服务端 `readEvents` 也读整份文件），
  * 长跑的 stdout 上千行 ⇒ 普通 `.map` 就是几千个节点、且每次新事件到都整段重渲。
- * 虚拟化本身住在 `base/virtual-list.tsx`（**虚拟化的唯一持有者**；全仓另一处 `<Listy>` 在问答卡片的选项列表里，不虚拟化），
+ * 虚拟化本身住在 `base/virtual-list.tsx`（**虚拟化的唯一持有者**），
  * 本件只提供行内容与 `rowKey`。
  *
  * **截断提示留在列表外的固定位置**（不放进虚拟列表）：它是「这份原文本身不全」的结论，
@@ -88,31 +97,30 @@ function hasText(value: string | null): value is string {
  */
 export function diagnosticsBody(diagnostics: AgentLogDiagnostics): ReactNode {
   return (
-    <Flex vertical style={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="agent-log-diagnostics">
+    <div className="flex h-full flex-col" data-testid="agent-log-diagnostics">
       <VirtualList
         testId="raw-output-list"
         items={diagnostics.lines}
         // 行没有 id（契约里就是一段无结构的文本流），`at` + 序号足够稳定：`lines` 只追加、不重排
         rowKey={(line, index) => `${index}|${line.at}`}
         itemRender={(line) => (
-          <Flex
-            vertical
-            gap={4}
-            // 横向内边距加在行上（不是外面包一层）：滚动条才会贴抽屉边缘
+          // 横向内边距加在行上（不是外面包一层）：滚动条才会贴抽屉边缘
+          <div
+            className="flex flex-col gap-1"
             style={{ padding: `0 ${BODY_PADDING}px ${ROW_GAP}px` }}
             data-testid="raw-output-line"
           >
-            {hasText(line.summary) && <Typography.Text>{line.summary}</Typography.Text>}
+            {hasText(line.summary) && <span>{line.summary}</span>}
             <MonoText text={`[${formatClock(line.at)}] ${line.source} ${line.text}`} />
-          </Flex>
+          </div>
         )}
       />
       {hasText(diagnostics.truncatedReason) && (
-        <Typography.Text type="warning" style={{ padding: `0 ${BODY_PADDING}px ${BODY_PADDING}px` }}>
+        <span className="text-sub text-warning" style={{ padding: `0 ${BODY_PADDING}px ${BODY_PADDING}px` }}>
           {diagnostics.truncatedReason}
-        </Typography.Text>
+        </span>
       )}
-    </Flex>
+    </div>
   );
 }
 
@@ -120,17 +128,27 @@ export function diagnosticsBody(diagnostics: AgentLogDiagnostics): ReactNode {
 function singleBody(result: ToolCardResult): ReactNode {
   const note = truncationNote(result.truncation);
   return (
-    <Flex vertical gap={4}>
+    <div className="flex flex-col gap-1">
       {result.raw === null ? (
-        <Typography.Text type="secondary">结果未采集</Typography.Text>
+        <span className="text-sub text-muted-foreground">结果未采集</span>
       ) : (
         // 不传 `maxHeight`：正文交给抽屉 body 自己滚，这里不再开第二个滚动区
         // （与环境抽屉同口径：一个抽屉里不该出现两条滚动条）。
-        // 走 `JsonText`：是 JSON 就缩进格式化 + 高亮，不是就逐字原样（口径 2 不变）
-        <JsonText text={result.raw} />
+        // 正文走 `JsonText`：是 JSON 就缩进格式化 + 高亮，不是就逐字原样（口径 2 不变）；
+        // `CodeBlock` 只提供外观与复制按钮，不改变正文的呈现
+        <CodeBlock size="sm" data-testid="raw-output-code">
+          <CodeBlockHeader>
+            <CodeBlockActions>
+              <CodeBlockCopyButton value={result.raw} />
+            </CodeBlockActions>
+          </CodeBlockHeader>
+          <div className="px-2.5 py-2">
+            <JsonText text={result.raw} />
+          </div>
+        </CodeBlock>
       )}
-      {hasText(note) && <Typography.Text type="warning">{note}</Typography.Text>}
-    </Flex>
+      {hasText(note) && <span className="text-sub text-warning">{note}</span>}
+    </div>
   );
 }
 
@@ -166,46 +184,39 @@ export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: R
 
   return (
     /*
-     * **本件不自带容器**（把包裹那一层去掉，按钮拿出来）。
-     * 入口按钮与「重新读取」直接进调用方的排布容器，与旁边的兄弟（固定区里是「下载台账」）
-     * 同层——多包一层 `Flex gap={8}` 会在行里再嵌一层，同一个行里出现两套间距，
+     * **本件不自带容器**：渲染根的**直接子节点**就是入口按钮与「重新读取」。
+     * 多包一层横排容器会在行里再嵌一层，同一行出现两套间距，
      * 且让「这一行有哪几个按钮」变得要去两层里数。
-     * 摆位（横排 / 换行 / 间距）归调用方：固定区是原文行那个 `Flex`，卡片底部各自包一层。
+     * 摆位（横排 / 换行 / 间距）归调用方，与它旁边的兄弟（固定区里是「下载台账」）同层。
      * `NestedDrawer` 走 portal，不占父容器的排布（开合与标题都不受影响）。
      */
     <>
-      <Button
-        size="small"
-        autoInsertSpace={false}
-        data-testid="raw-output-open"
-        onClick={() => onOpenChange(true)}
-      >
+      <Button size="xs" variant="outline" data-testid="raw-output-open" onClick={() => onOpenChange(true)}>
         {text}
       </Button>
       {onRetry !== undefined && (
         // 重取入口：数据层可能在 ready 之后丢流；调用方不传 `onRetry` 时这里一个按钮都不渲染。
-        // **样式与旁边两个按钮同形**（默认按钮 + `size="small"`）：
-        // 写成 `type="text"`（无边框）时，与「原始输出 N 条」「下载台账」并排像是另一类东西
-        <Button size="small" autoInsertSpace={false} onClick={onRetry}>
+        // **样式与入口按钮同形**（`outline` + `size="xs"`）：并排的两个动作长得不一样，
+        // 读起来就像「其中一个更次要」——那不是在表达事实
+        <Button size="xs" variant="outline" onClick={onRetry}>
           重新读取
         </Button>
       )}
       <NestedDrawer open={open} onClose={() => onOpenChange(false)} title={text}>
         {source.kind === 'diagnostics' ? (
           /*
-            诊断变体：正文**取满抽屉正文的高度**（`display` / `flexDirection` 写进内联 style——
-            antd 的 `Flex` 这两个属性走 CSS 类，内联读不到，而这里是结构性不变量）。
+            诊断变体：正文**取满抽屉正文的高度**（`h-full` + 纵向 flex 走类名，这里是结构性不变量）。
             高度有界是虚拟滚动的**前提**：量不到高度时 `VirtualList` 会静默退化为全量渲染。
             横向内边距由每一行自己给：这样滚动条仍然贴在抽屉边缘（与列表口径一致）。
           */
-          <Flex vertical style={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="raw-output-body">
+          <div className="flex h-full flex-col" data-testid="raw-output-body">
             {diagnosticsBody(source.diagnostics)}
-          </Flex>
+          </div>
         ) : (
           // 单份原文：一块文本，不需要虚拟化；内边距自己给（抽屉 `body.padding` 已置 0）
-          <Flex vertical style={{ padding: BODY_PADDING }} data-testid="raw-output-body">
+          <div style={{ padding: BODY_PADDING }} data-testid="raw-output-body">
             {singleBody(source.result)}
-          </Flex>
+          </div>
         )}
       </NestedDrawer>
     </>

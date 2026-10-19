@@ -14,11 +14,13 @@
  * 本件一处都不判厂商：同一个「删除」在「还在我们表里」与「已交给厂商」上是两个动作，
  * 而后者成不成看这一家这一档。
  */
-import { Button, Flex, Tag, Tooltip, Typography, theme } from 'antd';
-import { DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Trash2Icon, ZapIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { InjectMessage, TurnInjectionCapability } from '@aieval/contracts';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
 import { EllipsisText } from '../../base/ellipsis-text';
+import { Hint } from '../../base/hint';
 import { formatDateTime } from '../../base/format';
 import {
   INJECTION_BOUNDARY_LABELS,
@@ -38,63 +40,65 @@ export interface InjectMessageRowProps {
 }
 
 export function InjectMessageRow({ message, declaration, busy = false, onPromote, onRetract }: InjectMessageRowProps): ReactNode {
-  const { token } = theme.useToken();
   const presentation = INJECT_STATE_PRESENTATION[message.state];
   const remove = deleteActionOf(message, declaration);
   const promote = promoteActionOf(message, declaration);
   const attachmentCount = message.attachments.length;
 
   return (
-    <Flex align="center" gap={token.marginXS} data-testid={`inject-message-${message.messageId}`}>
+    <div className="flex items-center gap-tight" data-testid={`inject-message-${message.messageId}`}>
       {/* 状态：文案与那句人话在 `INJECT_STATE_PRESENTATION` 里（`gone` 不该走到这里，调用方先跳过） */}
-      <Tooltip title={presentation.note}>
-        <Tag color={presentation.color === 'default' ? undefined : presentation.color}>{presentation.label}</Tag>
-      </Tooltip>
+      <Hint label={presentation.note}>
+        <Badge variant="outline" data-tone={presentation.color}>
+          {presentation.label}
+        </Badge>
+      </Hint>
 
       {/* 正文摘要：占满剩余宽度（`minWidth: 0` 让它在 flex 里真的能收缩，否则省略号轮不到它） */}
-      <Flex flex={1} style={{ minWidth: 0 }}>
+      <div className="min-w-0 flex-1">
         <EllipsisText text={message.text} tooltip={message.text} />
-      </Flex>
+      </div>
 
       {/* 投递档：与正文分开显示——「排队」那一条要等本轮收场，用户据此判断还要等多久 */}
-      <Typography.Text type="secondary">{INJECTION_BOUNDARY_LABELS[message.requires]}</Typography.Text>
-      {attachmentCount > 0 && <Typography.Text type="secondary">{`附件 ${String(attachmentCount)} 个`}</Typography.Text>}
-      <Typography.Text type="secondary">{formatDateTime(message.createdAt)}</Typography.Text>
+      <span className="text-muted-foreground">{INJECTION_BOUNDARY_LABELS[message.requires]}</span>
+      {attachmentCount > 0 && <span className="text-muted-foreground">{`附件 ${String(attachmentCount)} 个`}</span>}
+      <span className="text-muted-foreground">{formatDateTime(message.createdAt)}</span>
 
-      <Flex align="center" gap={token.marginXXS}>
+      <div className="flex items-center gap-hair">
         {/*
-          ⚠️ Tooltip 挂在**外面这层 `Flex`** 上，不挂在按钮上：antd 6 的 `Tooltip` 把事件处理器
-          直接克隆到子节点，而**禁用态的 `Button` 不派发鼠标事件**（浏览器里 `pointer-events: none`）
-          ⇒ 挂在按钮上时浮层永不出现，而禁用态恰恰是最需要那句话的地方（「为什么不能点」）。
-          外面这层不是禁用元素，事件照常冒泡上来。
+          ⚠️ 提示挂在**外面这层 span** 上，不挂在按钮上：**禁用态的按钮不派发鼠标事件**
+          （浏览器里 `pointer-events: none`）⇒ 挂在按钮上时浮层永不出现，而禁用态恰恰是最需要
+          那句话的地方（「为什么不能点」）。外面这层不是禁用元素，事件照常冒泡上来。
         */}
-        <Tooltip title={promote.tooltip}>
-          <Flex align="center" data-testid={`inject-promote-${message.messageId}`}>
+        <Hint label={promote.tooltip}>
+          <span className="inline-flex" data-testid={`inject-promote-${message.messageId}`}>
             {/* `aria-label` 与 tooltip 同名：图标按钮没有可访问名时，读屏器只会念「按钮」 */}
             <Button
-              size="small"
-              type="text"
-              icon={<ThunderboltOutlined aria-hidden />}
+              size="icon-xs"
+              variant="ghost"
               aria-label="立即发送"
               disabled={busy || !promote.enabled}
               onClick={() => onPromote(message.messageId)}
-            />
-          </Flex>
-        </Tooltip>
-        <Tooltip title={remove.tooltip}>
-          <Flex align="center" data-testid={`inject-retract-${message.messageId}`}>
+            >
+              <ZapIcon aria-hidden />
+            </Button>
+          </span>
+        </Hint>
+        <Hint label={remove.tooltip}>
+          <span className="inline-flex" data-testid={`inject-retract-${message.messageId}`}>
             <Button
-              size="small"
-              type="text"
-              danger
-              icon={<DeleteOutlined aria-hidden />}
+              size="icon-xs"
+              variant="ghost"
+              className="text-destructive hover:bg-destructive/10"
               aria-label="删除"
               disabled={busy || !remove.enabled}
               onClick={() => onRetract(message.messageId)}
-            />
-          </Flex>
-        </Tooltip>
-      </Flex>
-    </Flex>
+            >
+              <Trash2Icon aria-hidden />
+            </Button>
+          </span>
+        </Hint>
+      </div>
+    </div>
   );
 }

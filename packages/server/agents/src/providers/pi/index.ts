@@ -898,6 +898,35 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   const dispose = createSessionDisposer(session);
 
   /**
+   * **回到某一轮**：在**同一个会话文件**内导航到被保留那一轮的最后一条 entry，并把被放弃的那一段
+   * 摘要成一条 branch summary（`summarize: true`）。
+   *
+   * 三条口径：
+   *   · 必须在这里做（`bindExtensions` 之前、`prompt()` 之前）——晚于 prompt 就等于先跑了新的一轮再
+   *     回头，模型已经看到不该看到的上下文；
+   *   · **用 `navigateTree` 不用 `fork(entryId)`**：后者会另开一个会话文件、换掉会话 id，
+   *     而这一行的续接键正是会话文件路径 ⇒ 分叉之后这一行就接不回来了；
+   *   · 方法缺席时**抛中文错**（不许静默退化成普通续接）：那正是「用户以为回到了第 N 轮、
+   *     模型其实什么都记得」的坏形状。
+   */
+  if (input.fork !== undefined) {
+    if (session.navigateTree === undefined) {
+      await dispose();
+      throw new Error(
+        `[agents] pi 的会话面没有 navigateTree（entryId: ${input.fork.keepAt}）：这一版 SDK 不支持回到某一轮，`
+          + '本层不静默退化成普通续接',
+      );
+    }
+    await session.navigateTree(input.fork.keepAt, { summarize: true });
+    logger.debug('pi 已回到指定条目（被放弃的那一段折成 branch summary）', {
+      keepAt: input.fork.keepAt,
+      turn: input.fork.turn,
+      segment: input.fork.segment,
+    });
+  }
+
+
+  /**
    * ⑦ 扩展装配收尾：`mode` **必须写死 `'rpc'`**（缺省 `'print'` 会让按 rpc 写的扩展判定配置错误）。
    * 本行装了三样扩展（观察者、子智能体收数器、可选的 MCP），`bindExtensions` 是它们的绑定点；
    * 厂商把扩展工厂的执行点放在 `loader.reload()`（见 `subagent-wire.ts` 的文件头），两步都不能省。
@@ -1461,6 +1490,24 @@ export const piProvider: AgentProvider = {
      * 耗时量级：**秒级**（in-process SDK，没有子进程冷启动）。
      * 真机冒烟的等待预算按这一档派生——声明小了那一轮会被自己的预算掐掉。
      */
+    /**
+     * **回到某一轮**：走 `navigateTree(targetId, { summarize: true })`——**同一个会话文件内**导航到某个
+     * 节点，并把被放弃的那一段摘要成一条 branch summary（比直接丢弃更接近「回到这里，但别忘了刚才
+     * 试过什么」）。`fork(entryId)` 另开一条会话文件，那会换掉会话 id、与「接着这一行继续」冲突，
+     * 故本仓不用它。
+     *
+     * 工作区回退未定位 ⇒ `filesRewind: false`。
+     */
+    checkpoint: {
+      supported: true,
+      mode: 'fork',
+      filesRewind: false,
+      reason: null,
+      notes: [
+        '分叉走 `navigateTree(entryId, { summarize: true })`：仍在同一个会话文件里，被放弃的那一段折成 branch summary',
+        '工作区文件不动',
+      ],
+    },
     timing: {
       runScale: 'seconds',
       notes: ['前提是本机网关 + 短提示词；行内首次 import pi 另计 300–450 ms 与约 90 MB RSS'],

@@ -80,6 +80,8 @@ describe('@aieval/evaluator 导出面', () => {
         'assertRunMutable',
         'deleteRun',
         'drainRunningTasks',
+        // 回到某一轮：写到行快照的作废标记 + 从该点续跑一段（作废段由读侧默认跳过）
+        'checkpointRow',
         // 人工追问（第二期）的**读写两侧**：写侧是 api 层的追问入口（同步返回「已经在准备中」
         // 的快照），读侧是界面入口的判据来源（哪一行能追问、不能的那一行为什么）——
         // 两者必须同源，故一起出口

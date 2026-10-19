@@ -2,6 +2,8 @@
  * 偏好记忆：localStorage 读写的容错口径。
  * 三条硬要求：无 window / 存储抛错 / 脏值，都必须回落默认值而**不抛错**；
  * 且 useStoredWidth 不能在首帧就读 localStorage（否则 SSR 与客户端首帧不一致，触发水合警告）。
+ * 第三个返回值 `hydrated` 是「存量值已读完」的信号：调用方要靠它区分首帧 seed 与真正的用户偏好
+ * （`ListDetailLayout` 只用它决定何时 `panelRef.resize(px)`）。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -75,6 +77,18 @@ describe('useStoredWidth', () => {
     const { result } = renderHook(() => useStoredWidth('w', 420, 320, 900));
     await act(async () => {});
     expect(result.current[0]).toBe(700);
+  });
+
+  it('hydrated 在存量值读完后才为 true（首帧为 false，调用方据此区分 seed 与偏好）', async () => {
+    const seen: boolean[] = [];
+    const { result } = renderHook(() => {
+      const [, , hydrated] = useStoredWidth('w', 420, 320, 900);
+      seen.push(hydrated);
+      return hydrated;
+    });
+    expect(seen[0]).toBe(false);
+    await act(async () => {});
+    expect(result.current).toBe(true);
   });
 
   it('存量值越界时被夹紧到区间内', async () => {

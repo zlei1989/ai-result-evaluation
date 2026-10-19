@@ -161,6 +161,8 @@ function rowNode(id: string): RowNode {
       thinking: null,
       domain: [],
       error: null,
+      contextUsed: null,
+      contextWindow: null,
     },
   };
 }
@@ -408,5 +410,56 @@ describe('工具块的 `inputError` 透传', () => {
       .flatMap((group) => (group.kind === 'tool-group' ? group.entries : []))
       .find((one): one is ToolItem => one.kind === 'call');
     expect(plain?.inputError, '老账本/正常参数 ⇒ null，界面据此不显示任何提示').toBeNull();
+  });
+});
+
+/**
+ * 测试结果的识别在同一层完成：**命令 + 输出都在这里配对**，不留给每个渲染件各嗅一次。
+ * 变异体：删掉 `tool-result` 分支里的 `owner.testResult = testResultOf(...)` ⇒ 第一条红。
+ */
+describe('工具块的测试结果识别', () => {
+  const output = ` RUN  v4.1.11 /repo
+
+ ✓ src/x.test.ts > 数学 > 加法通过 1ms
+ × src/x.test.ts > 数学 > 减法失败 2ms
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Duration  70ms`;
+
+  function testCall(id: string): ContentBlock {
+    const block = call(id, 'call_1', 'Bash', 'run-shell') as Extract<ContentBlock, { kind: 'tool-call' }>;
+    return { ...block, input: { value: '{"command":"pnpm test"}', text: '{"command":"pnpm test"}', bytes: 22, description: null } };
+  }
+
+  it('命令与输出配对后挂上 parsed，suite / 用例都在（后续界面不需要再解析）', () => {
+    const resultBlock = { ...result('r1', 'call_1'), text: output } as ContentBlock;
+    const blocks = buildRenderBlocks([testCall('c1'), resultBlock], nodeIndex([]), TURN);
+    const item = blocks
+      .flatMap((block) => (block.kind === 'tool-group' ? block.entries : []))
+      .find((entry): entry is ToolItem => entry.kind === 'call');
+    expect(item?.testResult).toMatchObject({ status: 'parsed' });
+    if (item?.testResult?.status !== 'parsed') throw new Error('期望解析成功');
+    expect(item.testResult.run.suites[0]?.tests).toHaveLength(2);
+    expect(item.testResult.run.total).toBe(2);
+  });
+
+  it('输出被标成截断 ⇒ unparsed（不在残缺文本上算通过率）', () => {
+    const resultBlock = { ...result('r1', 'call_1'), text: output, truncation: { kind: 'truncated', reason: '超过上限' } } as ContentBlock;
+    const blocks = buildRenderBlocks([testCall('c1'), resultBlock], nodeIndex([]), TURN);
+    const item = blocks
+      .flatMap((block) => (block.kind === 'tool-group' ? block.entries : []))
+      .find((entry): entry is ToolItem => entry.kind === 'call');
+    expect(item?.testResult).toMatchObject({ status: 'unparsed' });
+    if (item?.testResult?.status !== 'unparsed') throw new Error('期望 unparsed');
+    expect(item.testResult.reason).toContain('截断');
+  });
+
+  it('普通命令的结果不挂测试结果（不误伤 `read` / `ls`）', () => {
+    const blocks = buildRenderBlocks([call('c1', 'call_1', 'read'), result('r1', 'call_1')], nodeIndex([]), TURN);
+    const item = blocks
+      .flatMap((block) => (block.kind === 'tool-group' ? block.entries : []))
+      .find((entry): entry is ToolItem => entry.kind === 'call');
+    expect(item?.testResult).toBeNull();
   });
 });

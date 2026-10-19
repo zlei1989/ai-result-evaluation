@@ -461,6 +461,7 @@ describe('GET /api/runs/model-options', () => {
     expect(Object.keys(groups[0] ?? {}).sort()).toEqual([
       'agentKind',
       'cancelMidTurn',
+      'checkpoint',
       'efforts',
       'messageCapability',
       'options',
@@ -472,6 +473,7 @@ describe('GET /api/runs/model-options', () => {
     expect(Object.keys(dsh).sort()).toEqual([
       'agentKind',
       'cancelMidTurn',
+      'checkpoint',
       'defaultEffort',
       'efforts',
       'messageCapability',

@@ -8,7 +8,22 @@
  */
 import type { NextConfig } from 'next';
 
+/**
+ * dev server 的额外来源。
+ *
+ * Next 只放行「启动时的 hostname」（默认 `localhost`）访问 `/_next` 的 dev 资源。同事用
+ * `http://127.0.0.1:3083` 或内网 IP 打开时，HMR 握手被拒（ERR_INVALID_HTTP_RESPONSE），
+ * 客户端停在**未水合**的 SSR 空壳：列表空着、骨架常驻、页签点不动，而界面上一点提示都没有。
+ * 额外来源从 `AIEVAL_DEV_ORIGINS`（逗号分隔）读，默认只补回环地址；部署在别人的机器上时
+ * 设一次这个变量即可（见 `docs/faq/` 的环境条目）。
+ */
+const devOrigins = (process.env.AIEVAL_DEV_ORIGINS ?? '127.0.0.1')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
 const nextConfig: NextConfig = {
+  allowedDevOrigins: devOrigins,
   transpilePackages: ['@aieval/contracts', '@aieval/core', '@aieval/agents', '@aieval/evaluator', '@aieval/api', '@aieval/ui', '@aieval/client'],
   serverExternalPackages: [
     '@anthropic-ai/claude-agent-sdk',

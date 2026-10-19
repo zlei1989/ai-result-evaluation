@@ -13,7 +13,7 @@
  * （固定区那一支靠这个回调向数据层上报「我需要了」，漏了它就等于把懒加载的触发点丢了）； * · **本件不自带布局容器**：两个按钮就是渲染根上的直接子节点，
  * 没有中间那一层——把 `Flex` 包回去时那条红。
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RawOutputPanel } from './raw-output-panel';
@@ -21,12 +21,11 @@ import { installResizeObserverStub } from '../../testing/resize-observer';
 import type { AgentLogDiagnostics, ToolCardResult } from './types';
 
 /**
- * 正文走虚拟滚动（`base/virtual-list.tsx`），而 `Listy` 内部 `new ResizeObserver(...)`
- * （`@rc-component/resize-observer` 的 `ensureResizeObserver` 读**全局构造器**）：
- * jsdom 里不打桩，抽屉一打开就抛 `ReferenceError`。与本仓其它渲染 `Table` / `Listy` 的用例同处置。
+ * 正文走虚拟滚动（`base/virtual-list.tsx`），而 `@tanstack/react-virtual` 内部 `new ResizeObserver(...)`：
+ * jsdom 里不打桩，抽屉一打开就抛 `ReferenceError`。与本仓其它渲染 `Table` 的用例同处置。
  *
- * 桩**不改变断言口径**：jsdom 的 `clientHeight` 恒为 0 ⇒ `VirtualList` 不给 `height`
- * ⇒ `Listy` 全量渲染，所以下面「每一行都在」的断言照样成立（那是它的退化口径，设计如此）。
+ * 桩**不改变断言口径**：jsdom 的 `clientHeight` 恒为 0 ⇒ `VirtualList` 不进虚拟化
+ * ⇒ 全量渲染，所以下面「每一行都在」的断言照样成立（那是它的退化口径，设计如此）。
  */
 beforeEach(() => {
   installResizeObserverStub();
@@ -218,6 +217,24 @@ describe('RawOutputPanel（single 变体）', () => {
 
     expect(screen.getByText(/输出可能不完整/)).toBeInTheDocument();
     expect(screen.queryByText(/^输出完整$/)).toBeNull();
+  });
+
+  /**
+   * 复制按钮来自 `CodeBlock`（不是本件手写的那一个）：它负责「复制了没有」的反馈与
+   * `aria-label`，本件只把**逐字原文**给它。判据是剪贴板真的收到了那一串——
+   * 只断言「按钮在」的话，`value` 传错（比如传了 `summary` 或空串）也照样绿。
+   */
+  it('单份原文带 CodeBlock 的复制按钮：点一下复制逐字原文', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const raw = '{"ok":true}';
+    render(rawPanel({ ok: true, raw, truncation: { kind: 'none' } }));
+
+    const copy = screen.getByTestId('raw-output-body').querySelector('[data-slot="code-block-copy-button"]');
+    expect(copy, '单份原文没有走 CodeBlock（复制按钮是它带来的）').not.toBeNull();
+    fireEvent.click(copy as HTMLElement);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(raw));
   });
 
   it('label 可覆盖文案（卡片底部换文案用）', () => {

@@ -38,6 +38,7 @@ export {
   type AgentKind,
   type AgentPermission,
   type AgentProvider,
+  type AgentFork,
   type AgentProviderMetadata,
   type AgentRunInput,
   type AgentRunResult,

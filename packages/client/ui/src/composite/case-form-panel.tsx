@@ -4,7 +4,7 @@
  * 用例表单面板（右栏内容）：新建与编辑共用一个组件，`mode` 区分。
  *
  * 纯展示：不调接口、不 import client 包；数据与回调全部来自 props。
- * **错误提示由页面负责**（页面在回调里 catch 后 `message.error`）——面板只负责「失败时什么都不做」，
+ * **错误提示由页面负责**（页面在回调里 catch 后提示）——面板只负责「失败时什么都不做」，
  * 这也正是「生成失败不清空已有评分标准项」这条规则的落点。
  *
  * **不套 `Card`**：右栏本身就是一张表单，与「创建评测」表单（`RunCreatePanel`）
@@ -13,15 +13,15 @@
  * 代价是**这一屏没有标题了**：新建 / 编辑的区分只由列表选中项与 URL 上的 `panel` 体现。
  *
  * 九条必须守住的行为：
- *   1. **评分标准项就是表单里的一个字段**（`Form.Item name="rubric"`，`RubricTable` 受控）：
- *      表格状态只存在 antd 的 store 里，面板自己不持有第二份——「智能生成 / 智能识别」成功后
- *      都只 `setFieldValue('rubric', …)` 写回。第二份状态必然漂移（改一处漏一处，界面与提交值分家）；
+ *   1. **评分标准项就是表单里的一个字段**（`rubric`，`RubricTable` 受控）：
+ *      表格状态只存在表单 store 里，面板自己不持有第二份——「智能生成 / 智能识别」成功后
+ *      都只 `setValue('rubric', …)` 写回。第二份状态必然漂移（改一处漏一处，界面与提交值分家）；
  *   2. **只有成功才写回表格**。反面写法是「先清空再请求」：一次网络抖动就会清掉用户刚调好的表，
  *      而用户看到的只是一句报错；
- *   3. **commit 候选只是便利**：用 AutoComplete 而不是只读下拉，手工输入任意合法 hash 必须能提交；
- *   4. **未配置评分模型时两个按钮都禁用**并用 Tooltip 说明去向（/：生成与识别用的是同一把尺子）。
- *      antd 的禁用按钮不触发鼠标事件，Tooltip 必须挂在**外层 span**上，否则禁用态下浮层永远不出现；
- *   5. **等宽字体取 antd token**（`theme.useToken().fontFamilyCode`），不写死字体名——
+ *   3. **commit 候选只是便利**：输入框始终接受手工输入的任意合法 hash，候选按钮只负责回填；
+ *   4. **未配置评分模型时两个按钮都禁用**并用去向说明（生成与识别用的是同一把尺子）。
+ *      禁用按钮不触发鼠标事件，所以说明文本挂在**外层容器**的 `title` 上；
+ *   5. **等宽字体取 `--font-mono`**（`globals.css` 的 `:root` 里定义），不写死字体名——
  *      主题换字体时这里跟着走；正文是代码，等宽是语义要求而不是装饰；
  *   6. **来源态只影响渲染与提交的归一，服务端永远按字符串形态判定**：界面上的「本地 / 远端 / 无」是
  *      给用户的一个显式选择（决定渲染哪些字段、提交时分支归不归一），它**不参与**任何判定——
@@ -37,15 +37,16 @@
  *      取消按钮因此**不禁用**——把不想再等的用户锁在慢请求后面，比白花一次调用更糟；
  *      作废靠一个代次（`recognizeEpochRef`）：取消把代次推进一格，旧代次的结果自己出局。
  *
- * 初值只在挂载时读一次（antd 的 `initialValues` 语义）：**切换用例必须换 key 重挂载**，
+ * 初值只在挂载时读一次（RHF 的 `defaultValues` 语义）：**切换用例必须换 key 重挂载**，
  * 页面里的 `key={panel === 'edit' ? `case-edit-${id}` : 'case-new'}` 就是为它准备的。
  * 表格的初值也走这条路（`initial.rubric`）——所以**页面不必再存一份「当前表格」**：
  * 多存一份只会得到一份与表单必然漂移的副本（见要点 1）。
+ *
+ * 校验与提交归一全在 `case-form-schema.ts`（zod resolver）：组件里只有绑定与渲染。
  */
 import {
   NONE_SOURCE,
   parseRepoSource,
-  validateRubric,
   type CaseCreate,
   type CommitCandidate,
   type GenerateRubricInput,
@@ -55,12 +56,23 @@ import {
   type RubricChange,
   type TestCase,
 } from '@aieval/contracts';
-import { Alert, AutoComplete, Button, Card, Flex, Form, Input, Radio, Switch, Tooltip, Typography, theme } from 'antd';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Controller, useForm, useWatch } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import type { z } from 'zod';
 import { formatDateTime } from '../base/format';
+import { Alert, AlertTitle } from '../components/ui/alert';
+import { Button } from '../components/ui/button';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Field, FieldDescription, FieldError, FieldLabel, FieldTitle } from '../components/ui/field';
+import { Input } from '../components/ui/input';
+import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
+import { Switch } from '../components/ui/switch';
+import { Textarea } from '../components/ui/textarea';
 import { RubricAdjustModal } from './rubric-adjust-modal';
 import { RubricRecognizeModal } from './rubric-recognize-modal';
 import { RubricTable } from './rubric-table';
+import { caseFormSchema, toCaseCreate, type CaseFormInput, type CaseSourceKind } from './case-form-schema';
 
 /**
  * 禁用两个评分按钮的提示：去向是设置页里的全局默认评分模型。
@@ -69,11 +81,15 @@ import { RubricTable } from './rubric-table';
  */
 const GLOBAL_JUDGE_TOOLTIP = '请先到设置里配置默认评分模型';
 
-/**
- * 来源类型：界面的态（用户可以显式选），与服务端「按形态判定」是两件事——那边永远以字符串形态为准。
- * 「无」落盘时 `repoPath` 写成哨兵值 `NONE_SOURCE`（`none://`），渲染时地址 / 分支 / commit 三格都隐藏。
- */
-type SourceKind = 'local' | 'remote' | 'none';
+/** 来源类型：界面的态（用户可以显式选），与服务端「按形态判定」是两件事 */
+type SourceKind = CaseSourceKind;
+
+/** 来源选项：顺序即默认口径的一部分——远端在前、本地其次、无最后 */
+const SOURCE_KIND_OPTIONS = [
+  { label: '远端仓库', value: 'remote' },
+  { label: '本地目录', value: 'local' },
+  { label: '无', value: 'none' },
+] as const;
 
 /**
  * 初值看起来是远端就按远端渲染；判定失败（未填 / 协议不支持）按本地渲染，让用户在本地态里改掉它。
@@ -88,23 +104,6 @@ function initialSourceKind(initial: TestCase | null): SourceKind {
   } catch {
     return 'local';
   }
-}
-
-/** 表单内部值：与 CaseCreate 同形，但 commitHash 允许空串（输入框清空拿到的是空串，提交时归一成 null） */
-interface CaseFormValues {
-  title: string;
-  taskPrompt: string;
-  /** 评分标准项：**表单里的一个字段**（见文件头要点 1），空表也是合法值，非空由提交时的规则拦 */
-  rubric: Rubric;
-  repoPath: string;
-  commitHash?: string;
-  /** 远端来源的分支；空串 = 没填（提交时归一成 null = 远端默认分支 HEAD） */
-  repoBranch?: string;
-  /**
-   * 「包含步骤」开关：开启 = 评分阶段把候选的执行过程记录纳入评分证据，关闭 = 评分只看最终改动。
-   * 单一布尔开关，**只影响评分阶段**（考题提示词与执行阶段不变），提交时原值透传进 CaseCreate。
-   */
-  includeSteps: boolean;
 }
 
 export interface CaseFormPanelProps {
@@ -158,10 +157,8 @@ export function CaseFormPanel({
   onGenerate,
   onLoadCommits,
 }: CaseFormPanelProps): ReactNode {
-  const [form] = Form.useForm<CaseFormValues>();
-  const { token } = theme.useToken();
-  // 等宽：取 token 而不是写死字体名（见文件头要点 5）
-  const monoStyle = { fontFamily: token.fontFamilyCode };
+  // 等宽：取语义变量而不是写死字体名（见文件头要点 5）
+  const monoStyle = { fontFamily: 'var(--font-mono)' };
 
   /**
    * 上一次校验成功的**那一对**（路径 + 分支，与「当前输入」同口径）。仓库信息只在「当前输入 == 它」时才回显——
@@ -169,23 +166,60 @@ export function CaseFormPanel({
    * 两项都要比：只比路径的那版会在改了分支之后继续显示旧分支的回显。
    */
   const [validatedSelection, setValidatedSelection] = useState<{ repoPath: string; repoBranch: string | null } | null>(null);
-  const repoPathValue = (Form.useWatch('repoPath', form) as string | undefined) ?? '';
+
+  /**
+   * 评分项是否「被动过」：新建时初值就是空表，一进来就飘红等于先把用户判成有罪。
+   * 红字等到「用户动过表格」或「点过一次提交」才出现（提交那条由 `formState.isSubmitted` 给）。
+   */
+  const [rubricTouched, setRubricTouched] = useState(false);
 
   /** 来源态：由初值判定一次，之后由用户显式切换（见文件头要点 6） */
   const [sourceKind, setSourceKind] = useState<SourceKind>(() => initialSourceKind(initial));
-  const repoBranchValue = (Form.useWatch('repoBranch', form) as string | undefined) ?? '';
+
+  /**
+   * 新建用例的表格初值是**空表**（空表是一个真实存在界面状态，非空要求由提交时那条规则给）；
+   * 编辑模式原样回填用例里那一份。
+   */
+  const initialValues: CaseFormInput =
+    initial === null
+      ? { title: '', taskPrompt: '', rubric: { groups: [] }, repoPath: '', commitHash: '', repoBranch: '', includeSteps: false }
+      : {
+        title: initial.title,
+        taskPrompt: initial.taskPrompt,
+        rubric: initial.rubric,
+        repoPath: initial.repoPath,
+        commitHash: initial.commitHash ?? '',
+        // null（本地用例 / 旧数据）落成空串：表单里「没有分支」的表示就是空串
+        repoBranch: initial.repoBranch ?? '',
+        // 契约里 includeSteps 必填（旧文件由读侧兜成 false），直接回显用例上的值
+        includeSteps: initial.includeSteps,
+      };
+
+  /**
+   * 来源态以回调交给 schema：校验与提交归一那一刻才读，于是切 Radion 之后规则立刻跟着换
+   * （表单实例不重建，`defaultValues` 也只在挂载时读一次）。
+   */
+  const schema = caseFormSchema(() => sourceKind);
+  const form = useForm<z.input<typeof schema>, unknown, z.output<typeof schema>>({
+    resolver: zodResolver(schema),
+    defaultValues: initialValues,
+  });
+  const { control, getValues, setValue, trigger, handleSubmit } = form;
+
+  const repoPathValue = (useWatch({ control, name: 'repoPath' }) as string | undefined) ?? '';
+  const repoBranchValue = (useWatch({ control, name: 'repoBranch' }) as string | undefined) ?? '';
+  /**
+   * 表格的当前值：状态在表单里（`rubric` 那一格），这里只是读出来给受控的 `RubricTable`。
+   * 断言到 `Rubric`：表单输入侧允许评分项的 `id` 缺省（新建时还没填），而表格的展示形状里它是必填的
+   * 空串——`RubricTable` 对两者一视同仁（空 id 就是「按位置引用」）。
+   */
+  const rubricValue = (useWatch({ control, name: 'rubric' }) ?? { groups: [] }) as Rubric;
+
   /** 来源不同，能填的东西与失败的处置都不同：本地只认目录，远端要联网镜像 */
   const repoPathExtra =
     sourceKind === 'local'
       ? '只支持本地目录：填仓库根目录（含 .git）'
       : '认证使用本机 git 的 SSH key / 凭据助手，工具不保存任何凭据；首次校验会克隆远端仓库到工作区根下，可能较慢';
-
-  /**
-   * 远端「代码仓库」的字段级提示（逐字）：协议白名单是**补救办法**，不是装饰——
-   * 填了 `ftp://…` 的用户拿到的是「不支持的 git 地址协议：ftp（支持 ssh:// / http:// / https:// / git:// / file:// 与 user@host:path）」，
-   * 而字段级提示只说「请填写 git 地址」的话，他仍然不知道该换成哪一种写法。
-   */
-  const remoteRepoMessage = '请填写 git 地址（ssh:// / http(s):// / git:// / file:// / user@host:path）';
 
   /**
    * 「正在拉取远端仓库…」这句只在**远端**说：本地来源两个动作都只读本地目录，一个字节都不上网，
@@ -238,18 +272,12 @@ export function CaseFormPanel({
    */
   const recognizeEpochRef = useRef(0);
 
-  /**
-   * 表格的当前值：状态在表单里（`name="rubric"`），这里只是把它读出来给受控的 `RubricTable`。
-   * 首帧 store 还没接上时给空表（`{ groups: [] }` 是契约里的合法值，也是新建用例的初值）。
-   */
-  const rubricValue = Form.useWatch('rubric', form) ?? { groups: [] };
-
   /** 校验仓库：先过本字段的必填校验，再交给页面（空路径直接调接口只会拿到一句「查询参数不合法」） */
   const handleValidate = async (): Promise<void> => {
-    const values = await form.validateFields(['repoPath']).catch(() => null);
-    if (values === null) return;
+    const valid = await trigger(['repoPath']);
+    if (!valid) return;
     // 这一对是**这一次点击**发出去的值：成功后要照它记录，之后输入只要有一项不同，回显就不作数
-    const selection = { repoPath: (values.repoPath ?? '').trim(), repoBranch: submitBranch(repoBranchValue) };
+    const selection = { repoPath: (getValues('repoPath') ?? '').trim(), repoBranch: submitBranch(repoBranchValue) };
     try {
       const info = await onValidateRepo(selection);
       // 记的是**发出去的那一对**（不是服务端回显的归一路径）：回显要与「当前输入」比较，
@@ -258,7 +286,7 @@ export function CaseFormPanel({
       // 分支记请求里那一个，不用 `info.branch`：留空时它是服务端解析出的默认分支名，不是用户的选择。
       setValidatedSelection(selection);
     } catch {
-      // 失败原因由页面统一 message.error 呈现；这里只负责不留下「已校验」的假状态
+      // 失败原因由页面统一提示；这里只负责不留下「已校验」的假状态
       setValidatedSelection(null);
     }
   };
@@ -266,19 +294,18 @@ export function CaseFormPanel({
   /** 智能生成：把**当前表格**一起交出去（AI 要靠它做「只增不改」）。
    *  无来源时交哨兵值（服务端认它、用固定仓库名替身起草），且地址格已隐藏、不参与校验。 */
   const handleGenerate = async (): Promise<void> => {
-    const values = await form
-      .validateFields(sourceKind === 'none' ? (['taskPrompt'] as const) : (['taskPrompt', 'repoPath'] as const))
-      .catch(() => null);
-    if (values === null) return;
+    const valid = await trigger(sourceKind === 'none' ? ['taskPrompt'] : ['taskPrompt', 'repoPath']);
+    if (!valid) return;
     try {
       const generated = await onGenerate({
         mode: 'generate',
-        rubric: form.getFieldValue('rubric') ?? { groups: [] },
-        taskPrompt: values.taskPrompt ?? '',
+        // 表单输入侧允许评分项 id 缺省（新建时用户还没填），而契约要求 id 是字符串（空串 = 按位置引用）
+        rubric: (getValues('rubric') ?? { groups: [] }) as Rubric,
+        taskPrompt: getValues('taskPrompt') ?? '',
         prompt: '',
-        repoPath: sourceKind === 'none' ? NONE_SOURCE : (values.repoPath ?? '').trim(),
+        repoPath: sourceKind === 'none' ? NONE_SOURCE : (getValues('repoPath') ?? '').trim(),
       });
-      form.setFieldValue('rubric', generated.rubric);
+      setValue('rubric', generated.rubric);
     } catch {
       // 刻意什么都不做：不清空、不回填——用户已有的表格必须原样保留（错误由页面提示）
     }
@@ -292,9 +319,9 @@ export function CaseFormPanel({
   const handleAdjust = async (instruction: string): Promise<{ rubric: Rubric; changes: RubricChange[] }> => {
     const generated = await onGenerate({
       mode: 'adjust',
-      rubric: form.getFieldValue('rubric') ?? { groups: [] },
+      rubric: (getValues('rubric') ?? { groups: [] }) as Rubric,
       // 题面只作理解上下文（服务端拿它帮模型读懂「A1」指的是哪一项）；空着也能用
-      taskPrompt: (form.getFieldValue('taskPrompt') as string | undefined) ?? '',
+      taskPrompt: getValues('taskPrompt') ?? '',
       prompt: instruction,
       repoPath: '',
     });
@@ -303,7 +330,7 @@ export function CaseFormPanel({
 
   /** 用户在预览段点了「应用改动」：**这一刻**才把新表写进表单（本功能唯一的写入口） */
   const handleAdjustApply = (rubric: Rubric): void => {
-    form.setFieldValue('rubric', rubric);
+    setValue('rubric', rubric);
     setAdjustOpen(false);
   };
 
@@ -318,7 +345,7 @@ export function CaseFormPanel({
     // 用户在请求在途时按了取消 / 关了弹窗（或又开了一次）：他刚表示「这次不要了」，
     // 结果回来时表格**必须原样**——在用户看不见的地方换掉表格是最难被发现的一种错
     if (epoch !== recognizeEpochRef.current) return;
-    form.setFieldValue('rubric', generated.rubric);
+    setValue('rubric', generated.rubric);
     setRecognizeOpen(false);
   };
 
@@ -332,157 +359,164 @@ export function CaseFormPanel({
     setRecognizeOpen(false);
   };
 
-  /** 提交：把表单值归一成契约形状（空串 → null，两侧空白 trim）。
-   *  无来源：`repoPath` 落哨兵值 `none://`，分支与 commit 恒为 null（服务端对「无 + 分支/commit」是硬拒绝）。 */
-  const handleFinish = (values: CaseFormValues): void => {
-    const commitHash = (values.commitHash ?? '').trim();
-    onSubmit({
-      title: values.title.trim(),
-      repoPath: sourceKind === 'none' ? NONE_SOURCE : values.repoPath.trim(),
-      commitHash: sourceKind === 'none' ? null : commitHash === '' ? null : commitHash,
-      // 分支必须交真实值：编辑一条远端用例时交 null 等于**静默清掉它的分支**（保存后这一轮会换起点）
-      repoBranch: submitBranch(values.repoBranch),
-      taskPrompt: values.taskPrompt,
-      rubric: values.rubric,
-      // 开关值原样透传：它是表单里的一个真实字段（valuePropName="checked"），不是提交时的临时常量
-      includeSteps: values.includeSteps,
-    });
-  };
-
-  /**
-   * 新建用例的表格初值是**空表**（空表是一个真实存在界面状态，非空要求由提交时那条规则给）；
-   * 编辑模式原样回填用例里那一份（**不拷贝**：`initialValues` 只在挂载时读一次，之后表格是受控的）。
-   */
-  const initialValues: Partial<CaseFormValues> =
-    initial === null
-      ? { rubric: { groups: [] }, includeSteps: false }
-      : {
-        title: initial.title,
-        taskPrompt: initial.taskPrompt,
-        rubric: initial.rubric,
-        repoPath: initial.repoPath,
-        commitHash: initial.commitHash ?? '',
-        // null（本地用例 / 旧数据）落成空串：表单里「没有分支」的表示就是空串
-        repoBranch: initial.repoBranch ?? '',
-        // 契约里 includeSteps 必填（旧文件由读侧兜成 false），直接回显用例上的值
-        includeSteps: initial.includeSteps,
-      };
+  /** 提交：先过 resolver 的校验，再由 `toCaseCreate` 归一成契约形状 */
+  const submit = handleSubmit((values) => onSubmit(toCaseCreate(values, sourceKind)));
 
   return (
-    <Form form={form} layout="vertical" size="small" initialValues={initialValues} onFinish={handleFinish}>
-      {/* 两条规则各管一段：`required` 只判空串（`'   '` 能过），`whitespace` 才判纯空白。
-          少了后者，只有空格的标题要先被 `handleFinish` 的 trim 变成 `''` 才交给服务端，
-          用户白等一次往返、拿到的还是一句与字段无关的笼统报错 */}
-      <Form.Item
+    <form
+      noValidate
+      className="flex flex-col gap-4"
+      onSubmit={(event) => {
+        void submit(event);
+      }}
+    >
+      {/* 面板标题：右栏换内容不弹层，第一行就要说清这是创建还是编辑、以及「用例」由哪几件东西构成 */}
+      <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h2 className="text-title font-medium">{mode === 'edit' ? '编辑用例' : '创建用例'}</h2>
+        <p className="text-sub text-muted-foreground">用例 = 仓库 + commit + 考题提示词</p>
+      </header>
+      <Controller
+        control={control}
         name="title"
-        label="标题"
-        rules={[
-          { required: true, message: '请填写标题' },
-          { whitespace: true, message: '标题不能只有空格' },
-        ]}
-      >
-        <Input data-testid="case-title" placeholder="例如：为网关补齐转换回归" />
-      </Form.Item>
+        render={({ field, fieldState }) => (
+          <Field data-invalid={fieldState.invalid}>
+            <FieldLabel htmlFor="case-title">标题</FieldLabel>
+            <Input
+              {...field}
+              id="case-title"
+              data-testid="case-title"
+              aria-invalid={fieldState.invalid}
+              placeholder="例如：为网关补齐转换回归"
+            />
+            {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+          </Field>
+        )}
+      />
 
-      <Form.Item
+      <Controller
+        control={control}
         name="taskPrompt"
-        label="考题提示词"
-        rules={[{ required: true, message: '请填写考题提示词' }]}
-        extra="交给智能体的题面；它决定了这一轮比的是什么"
-      >
-        <Input.TextArea data-testid="case-task-prompt" rows={4} style={monoStyle} />
-      </Form.Item>
+        render={({ field, fieldState }) => (
+          <Field data-invalid={fieldState.invalid}>
+            <FieldLabel htmlFor="case-task-prompt">考题提示词</FieldLabel>
+            <Textarea
+              {...field}
+              id="case-task-prompt"
+              data-testid="case-task-prompt"
+              rows={4}
+              style={monoStyle}
+              aria-invalid={fieldState.invalid}
+            />
+            <FieldDescription>交给智能体的题面；它决定了这一次评测比的是什么</FieldDescription>
+            {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+          </Field>
+        )}
+      />
 
-      {/* 评分标准项：表格常驻可见（不藏在弹窗里）——它才是主角，两个按钮只是帮它起草 */}
-      <Card
-        size="small"
-        title="评分标准项"
-        data-testid="case-rubric"
-        extra={
-          <Flex gap={8}>
-            {judgeConfigured ? (
-              <>
-                <Button
-                  size="small"
-                  autoInsertSpace={false}
-                  loading={generating}
-                  data-testid="case-generate-rubric"
-                  onClick={() => void handleGenerate()}
-                >
-                  智能生成
-                </Button>
-                <Button
-                  size="small"
-                  autoInsertSpace={false}
-                  disabled={generating}
-                  data-testid="case-recognize-rubric"
-                  onClick={() => setRecognizeOpen(true)}
-                >
-                  智能识别
-                </Button>
-                {/* 「智能调整」按**现有**表格改：与另两个的区别只在输入与落点，
-                    按钮文案说不清的部分由弹窗里的说明承担 */}
-                <Button
-                  size="small"
-                  autoInsertSpace={false}
-                  disabled={generating}
-                  data-testid="case-adjust-rubric"
-                  onClick={() => setAdjustOpen(true)}
-                >
-                  智能调整
-                </Button>
-              </>
-            ) : (
-              // 禁用按钮不触发鼠标事件：Tooltip 必须挂在 span 上（见文件头要点 4）。
-              // **三个按钮都在、都禁用**：识别与调整同样要用那把尺子，藏起来只会让用户以为这一版没有它们
-              <Tooltip title={GLOBAL_JUDGE_TOOLTIP}>
-                <Flex component="span" gap={8} data-testid="case-generate-wrapper">
-                  <Button size="small" disabled autoInsertSpace={false} data-testid="case-generate-rubric">
-                    智能生成
+      {/* 评分标准项：表格常驻可见（不藏在弹窗里）——它才是主角，两个按钮只是帮它起草。
+            这一格不属于 Controller：`RubricTable` 自己就是受控组件，值经 `setValue` 回写；
+            校验规则仍走 schema 里那一格（同一个 `validateRubric`）。 */}
+      <Card size="sm" data-testid="case-rubric">
+        <CardHeader>
+          <CardTitle>评分标准项</CardTitle>
+          <CardAction>
+            <div className="flex items-center gap-2">
+              {judgeConfigured ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={generating}
+                    data-testid="case-generate-rubric"
+                    onClick={() => void handleGenerate()}
+                  >
+                    {generating ? '生成中…' : '智能生成'}
                   </Button>
-                  <Button size="small" disabled autoInsertSpace={false} data-testid="case-recognize-rubric">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={generating}
+                    data-testid="case-recognize-rubric"
+                    onClick={() => setRecognizeOpen(true)}
+                  >
                     智能识别
                   </Button>
-                  <Button size="small" disabled autoInsertSpace={false} data-testid="case-adjust-rubric">
+                  {/* 「智能调整」按**现有**表格改：与另两个的区别只在输入与落点，
+                        按钮文案说不清的部分由弹窗里的说明承担 */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={generating}
+                    data-testid="case-adjust-rubric"
+                    onClick={() => setAdjustOpen(true)}
+                  >
                     智能调整
                   </Button>
-                </Flex>
-              </Tooltip>
-            )}
-          </Flex>
-        }
-      >
-        {/* 校验规则用的是**写侧的同一份** `validateRubric`（提交 / 落盘 / 设置页也用它）：
-            自己再写一份「至少一组、组名非空…」必然漂移，而漂移的症状是「表单放过去、服务端拒掉」。
-            `noStyle`：这一格不占一行标签，表格上方那句中文原因由 `RubricTable` 自己显示
-            （`validateRubric` 的 message 就是它显示的那一句） */}
-        <Form.Item
-          name="rubric"
-          noStyle
-          rules={[
-            {
-              validator: (_, value: Rubric | undefined) => {
-                const checked = validateRubric(value ?? { groups: [] });
-                return checked.ok ? Promise.resolve() : Promise.reject(new Error(checked.message));
-              },
-            },
-          ]}
-        >
-          <RubricTable value={rubricValue} onChange={(next) => form.setFieldValue('rubric', next)} />
-        </Form.Item>
+                </>
+              ) : (
+              // 禁用按钮不触发鼠标事件：去向说明挂在**外层 span** 的 `title` 上（见文件头要点 4）。
+              // **三个按钮都在、都禁用**：识别与调整同样要用那把尺子，藏起来只会让用户以为这一版没有它们
+                <span
+                  title={GLOBAL_JUDGE_TOOLTIP}
+                  data-testid="case-generate-wrapper"
+                  className="flex items-center gap-2"
+                >
+                  <Button variant="outline" size="sm" type="button" disabled data-testid="case-generate-rubric">
+                    智能生成
+                  </Button>
+                  <Button variant="outline" size="sm" type="button" disabled data-testid="case-recognize-rubric">
+                    智能识别
+                  </Button>
+                  <Button variant="outline" size="sm" type="button" disabled data-testid="case-adjust-rubric">
+                    智能调整
+                  </Button>
+                </span>
+              )}
+            </div>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          {/* 校验规则用的是**写侧的同一份** `validateRubric`（提交 / 落盘 / 设置页也用它）：
+                自己再写一份「至少一组、组名非空…」必然漂移，而漂移的症状是「表单放过去、服务端拒掉」。
+                这一格**不渲染** `FieldError`：表格上方那句中文原因由 `RubricTable` 自己显示
+                （两处显示同一个 message 只会让人分不清哪一句才是判据）。 */}
+          <RubricTable
+            value={rubricValue}
+            onChange={(next) => {
+              setRubricTouched(true);
+              setValue('rubric', next);
+            }}
+            validationVisible={rubricTouched || form.formState.isSubmitted}
+          />
+        </CardContent>
       </Card>
 
-      {/* 「包含步骤」：单一布尔开关（valuePropName="checked" 把 Switch 的 checked 绑进表单）。
-          开启 = 评分阶段把候选的执行过程记录纳入评分证据，评分标准可针对每一步推理给分；
-          关闭 = 评分只看最终改动。只影响评分阶段——考题提示词与执行阶段与开关无关。 */}
-      <Form.Item
+      {/* 「包含步骤」：单一布尔开关（`checked` / `onChange` 显式绑定）。
+            开启 = 评分阶段把候选的执行过程记录纳入评分证据，评分标准可针对每一步推理给分；
+            关闭 = 评分只看最终改动。只影响评分阶段——考题提示词与执行阶段与开关无关。 */}
+      <Controller
+        control={control}
         name="includeSteps"
-        label="包含步骤"
-        valuePropName="checked"
-        extra="开启后评分阶段会读到候选的执行过程记录，评分标准可针对每一步推理给分；关闭时评分只看最终改动"
-      >
-        <Switch data-testid="case-include-steps" />
-      </Form.Item>
+        render={({ field, fieldState }) => (
+          <Field data-invalid={fieldState.invalid}>
+            <FieldLabel htmlFor="case-include-steps">包含步骤</FieldLabel>
+            <Switch
+              id="case-include-steps"
+              data-testid="case-include-steps"
+              checked={field.value}
+              onCheckedChange={(checked) => field.onChange(checked)}
+              aria-invalid={fieldState.invalid}
+            />
+            <FieldDescription>
+              开启后评分阶段会读到候选的执行过程记录，评分标准可针对每一步推理给分；关闭时评分只看最终改动
+            </FieldDescription>
+            {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+          </Field>
+        )}
+      />
 
       <RubricRecognizeModal
         open={recognizeOpen}
@@ -501,157 +535,187 @@ export function CaseFormPanel({
       />
 
       {/* 来源类型：显式选择（界面态），与服务端的形态判定是两件事（见文件头要点 6）。
-          `Radio.Group` 用 options 写法（不手写 Radio 子元素）：选项文本与值一处给出，少一层手写节点 */}
-      <Form.Item
-        label="来源类型"
-        extra="远端仓库的代码由服务端镜像到工作区根下，评测时按分支或 commit 取起点；无 = 空仓库（无来源代码），评测时初始化一个空 git 仓库"
-      >
-        <Radio.Group
-          size="small"
+            三个选项由同一张表渲染：选项文本与值一处给出，标签包住单选控件，可访问名就是可见文案 */}
+      <Field>
+        <FieldTitle>来源类型</FieldTitle>
+        <RadioGroup
           value={sourceKind}
           data-testid="case-source-kind"
-          onChange={(event) => {
-            const next = event.target.value as SourceKind;
-            setSourceKind(next);
+          className="flex flex-wrap gap-4"
+          onValueChange={(next) => {
+            const nextKind = next as SourceKind;
+            setSourceKind(nextKind);
             // 切到本地必须清空分支：服务端对「本地 + 分支」是硬拒绝，
             // 留着一个看不见的值会让保存以一句与字段无关的报错失败
-            if (next === 'local') form.setFieldValue('repoBranch', '');
+            if (nextKind === 'local') setValue('repoBranch', '');
             // 来源形态变了，上一次的校验回显必须失效（两套回显的内容不可比）
             setValidatedSelection(null);
           }}
-          options={[
-            // 顺序即默认口径的一部分：远端在前、本地其次、无最后
-            { label: '远端仓库', value: 'remote' },
-            { label: '本地目录', value: 'local' },
-            { label: '无', value: 'none' },
-          ]}
-        />
-      </Form.Item>
-
-      {/* 仓库路径也要两条规则：`required` 只判空串，纯空格要 `whitespace` 才拦得住。
-          少了后者，纯空格的路径先被 `handleFinish` 的 trim 变成 `''` 交给服务端，用户白等一次往返、
-          拿到的还是一句与字段无关的「查询参数不合法」。无来源时整格隐藏（提交时落哨兵值）。 */}
-      {sourceKind !== 'none' && (
-        <Form.Item
-          name="repoPath"
-          label="代码仓库"
-          rules={[
-            { required: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
-            { whitespace: true, message: sourceKind === 'local' ? '请填写代码仓库的本地绝对路径' : remoteRepoMessage },
-          ]}
-          extra={repoPathExtra}
         >
-          <Input
-            data-testid="case-repo-path"
-            placeholder={sourceKind === 'local' ? 'D:\\projects\\gateway' : 'ssh://git@coding.jd.com/FlowAI/rbac-server.git'}
-            // 校验按钮走 `suffix`，不用 antd 6 已弃用的 `addonAfter`（后者每次挂载都打一条 **error 级**的
-            // `[antd: Input] addonAfter is deprecated`，而告警只在开发/测试环境出现，生产里静默——
-            // 既不会被用户报障发现，又会长期淹没控制台里真正的错误）。同包 `judge-settings-card.tsx`
-            // 的单位后缀就是这么处理的。
-            // 官方给的替代是 `Space.Compact`，但它会在 Form.Item 与 Input 之间插一层：antd 只给 Form.Item 的
-            // **直接孩子**注入 value/onChange（口径同本文件 AutoComplete 处的注释），包一层等于这个字段永远收不到
-            // 用户输入，`validateFields(['repoPath'])` 只能拿到空串，「校验」按钮就成了死键。
-            // suffix 把按钮留在输入框右端（可见布局不变），绑定与字段级报错都原地不动。
-            suffix={
-              <Button
-                size="small"
-                type="text"
-                autoInsertSpace={false}
-                loading={validating}
-                data-testid="case-validate-repo"
-                onClick={() => void handleValidate()}
-              >
-                {validatingLabel}
-              </Button>
-            }
-          />
-        </Form.Item>
+          {SOURCE_KIND_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-center gap-2 text-sm">
+              <RadioGroupItem value={option.value} id={`case-source-${option.value}`} />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </RadioGroup>
+        <FieldDescription>
+          远端仓库的代码由服务端镜像到工作区根下，评测时按分支或 commit 取起点；无 = 空仓库（无来源代码），评测时初始化一个空 git 仓库
+        </FieldDescription>
+      </Field>
+
+      {/* 仓库路径的规则在 schema 里（复用契约的 `RepoSourceStringSchema`）：纯空格与非法协议都拿到
+            契约那句中文。无来源时整格隐藏（提交时落哨兵值）。 */}
+      {sourceKind !== 'none' && (
+        <Controller
+          control={control}
+          name="repoPath"
+          render={({ field, fieldState }) => (
+            <Field data-invalid={fieldState.invalid}>
+              <FieldLabel htmlFor="case-repo-path">代码仓库</FieldLabel>
+              <div className="flex items-center gap-2">
+                <Input
+                  {...field}
+                  id="case-repo-path"
+                  data-testid="case-repo-path"
+                  aria-invalid={fieldState.invalid}
+                  placeholder={sourceKind === 'local' ? 'D:\\projects\\gateway' : 'ssh://git@coding.jd.com/FlowAI/rbac-server.git'}
+                />
+                {/* 校验按钮与输入框同一行：它只作用于这一格，不该被看成整张表单的动作 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={validating}
+                  data-testid="case-validate-repo"
+                  onClick={() => void handleValidate()}
+                >
+                  {validatingLabel}
+                </Button>
+              </div>
+              <FieldDescription>{repoPathExtra}</FieldDescription>
+              {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+            </Field>
+          )}
+        />
       )}
 
       {/* 分支：只在远端来源渲染。留空 = 远端默认分支 HEAD（提交成 null），填了就用该分支的 tip，
-          且每次评测重新解析——所以这里不做任何「记住上次 tip」的展示（tip 只在上面那次校验的回显里） */}
+            且每次评测重新解析——所以这里不做任何「记住上次 tip」的展示（tip 只在上面那次校验的回显里） */}
       {sourceKind === 'remote' && (
-        <Form.Item
+        <Controller
+          control={control}
           name="repoBranch"
-          label="分支"
-          extra="留空 = 远端默认分支 HEAD；填了就用该分支的 tip，每次评测重新解析"
-        >
-          <Input data-testid="case-repo-branch" placeholder="例如：feat/multi-protocol-inbound" />
-        </Form.Item>
+          render={({ field, fieldState }) => (
+            <Field data-invalid={fieldState.invalid}>
+              <FieldLabel htmlFor="case-repo-branch">分支</FieldLabel>
+              <Input
+                {...field}
+                id="case-repo-branch"
+                data-testid="case-repo-branch"
+                aria-invalid={fieldState.invalid}
+                placeholder="例如：feat/multi-protocol-inbound"
+              />
+              <FieldDescription>留空 = 远端默认分支 HEAD；填了就用该分支的 tip，每次评测重新解析</FieldDescription>
+              {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+            </Field>
+          )}
+        />
       )}
 
       {/* 这里冗余判一次 null：靠别名布尔量收窄虽然 TS 4.4+ 支持，但明写一次更稳，
-          也省得后人「看着多余」把它删掉再踩一次收窄失败 */}
+            也省得后人「看着多余」把它删掉再踩一次收窄失败 */}
       {showRepoInfo && repoInfo !== null && (
-        <Form.Item label=" " colon={false}>
+        <Field>
           <Alert
             data-testid="case-repo-info"
-            type="success"
-            showIcon
+            className="border-success/40 bg-success/10 [&_[data-slot=alert-title]]:text-success"
             // 远端与本地回显的是两套信息，故按 `kind` 分派；本地那句**逐字不变**（老用户认的就是它）。
             // 「默认分支 / 分支」看的是**表单里的分支输入**：用户填了分支却看到「当前分支：main」，
             // 会以为填的那个没生效（服务端解析出的 `info.branch` 是它的 tip 所在分支）
-            title={
-              repoInfo.kind === 'remote'
+          >
+            <AlertTitle>
+              {repoInfo.kind === 'remote'
                 ? `仓库：${repoInfo.repoName} · ${repoBranchValue.trim() === '' ? '默认分支' : '分支'}：${repoInfo.branch}` +
-                  `${repoInfo.tip === null ? '' : ` · tip ${repoInfo.tip}`}` +
-                  ` · 镜像：已就绪${repoInfo.mirrorFetchedAt === null ? '' : `（更新于 ${formatDateTime(repoInfo.mirrorFetchedAt)}）`}`
-                : `仓库：${repoInfo.repoName} · 当前分支：${repoInfo.branch}`
-            }
-          />
-        </Form.Item>
+                    `${repoInfo.tip === null ? '' : ` · tip ${repoInfo.tip}`}` +
+                    ` · 镜像：已就绪${repoInfo.mirrorFetchedAt === null ? '' : `（更新于 ${formatDateTime(repoInfo.mirrorFetchedAt)}）`}`
+                : `仓库：${repoInfo.repoName} · 当前分支：${repoInfo.branch}`}
+            </AlertTitle>
+          </Alert>
+        </Field>
       )}
 
-      {/* AutoComplete 直接做 Form.Item 的孩子（**不套一层 Flex**）：antd 只会给直接孩子注入 value/onChange
-          与 label 的 htmlFor 所指的 id，套一层容器会让绑定丢在内层控件上——测试里的 getByLabelText 也会失效。
-          这里刻意**不给 data-testid**：antd 的 Select 系组件把额外 props 放到外层容器，对着容器触发 change
-          改不到表单值；测试用 label 关联取内层 input（见测试里的 commitInput）。
-          无来源没有提交历史，整格隐藏（提交时 commitHash 恒为 null）。 */}
+      {/* commit 输入框始终可手工输入：候选只是便利，点一下回填，不改变「提交的是输入框里的值」。
+            无来源没有提交历史，整格隐藏（提交时 commitHash 恒为 null）。 */}
       {sourceKind !== 'none' && (
-        <Form.Item
+        <Controller
+          control={control}
           name="commitHash"
-          label="commit hash"
-          extra={
-            <Flex justify="space-between" align="center" gap={8}>
-              <Typography.Text type="secondary">留空 = 默认分支 HEAD；候选只是便利，可手工输入任意合法 hash</Typography.Text>
-              {/* 这个按钮在远端首访可能触发一次真实克隆（用户跳过了校验直接点它），而克隆期间整个进程
-                  是阻塞的（spec §6.8）：loading 与「正在拉取远端仓库…」就是那段时间里唯一的反馈 */}
-              <Button size="small" type="text" data-testid="case-load-commits" loading={loadingCommits} onClick={onLoadCommits}>
-                {loadCommitsLabel}
-              </Button>
-            </Flex>
-          }
-        >
-          <AutoComplete
-            placeholder="留空 = 默认分支 HEAD"
-            options={commits.map((commit) => ({ value: commit.hash, label: `${commit.hash} ${commit.subject}` }))}
-            // 候选只有 20 条：按输入前缀过滤即可，不过滤的话输入短哈希时下拉会把无关项排满
-            filterOption={(input, option) => String(option?.value ?? '').toLowerCase().startsWith(input.toLowerCase())}
-            notFoundContent="暂无候选提交，可手工输入完整 hash"
-          />
-        </Form.Item>
+          render={({ field, fieldState }) => (
+            <Field data-invalid={fieldState.invalid}>
+              <FieldLabel htmlFor="case-commit-hash">提交（commit hash）</FieldLabel>
+              <Input
+                {...field}
+                id="case-commit-hash"
+                aria-invalid={fieldState.invalid}
+                placeholder="留空 = 默认分支 HEAD"
+              />
+              {/* 候选只作便利：点一下把 hash 填进输入框，输入框本身始终可手工输入任意合法 hash。
+                    候选最多 20 条，直接摊成一行按钮比下拉少一层交互，也不会挡住表单 */}
+              {commits.length > 0 && (
+                <div className="flex flex-wrap gap-1" data-testid="case-commit-candidates">
+                  {commits.map((commit) => (
+                    <Button
+                      key={commit.hash}
+                      variant="outline"
+                      size="xs"
+                      type="button"
+                      onClick={() => field.onChange(commit.hash)}
+                    >
+                      {`${commit.hash} ${commit.subject}`}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              <FieldDescription>
+                <span className="flex flex-wrap items-center justify-between gap-2">
+                  <span>留空 = 默认分支 HEAD；候选只是便利，可手工输入任意合法 hash</span>
+                  {/* 这个按钮在远端首访可能触发一次真实克隆（用户跳过了校验直接点它），而克隆期间整个进程
+                        是阻塞的：禁用 + 「正在拉取远端仓库…」就是那段时间里唯一的反馈 */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    data-testid="case-load-commits"
+                    disabled={loadingCommits}
+                    onClick={onLoadCommits}
+                  >
+                    {loadCommitsLabel}
+                  </Button>
+                </span>
+              </FieldDescription>
+              {commits.length === 0 && (
+                <p className="text-sm text-muted-foreground">暂无候选提交，可手工输入完整 hash</p>
+              )}
+              {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+            </Field>
+          )}
+        />
       )}
 
-      <Flex justify="end" gap={8} style={{ marginTop: 12 }}>
+      <div className="flex justify-end gap-2 pt-1">
         {/* 取消只有这一个入口（卡片头上没有第二个）：
-            两个一模一样的「取消」在同一屏里，除了让人犹豫点哪个，没有任何信息量 */}
-        <Button size="small" autoInsertSpace={false} data-testid="case-cancel" onClick={onCancel}>
+              两个一模一样的「取消」在同一屏里，除了让人犹豫点哪个，没有任何信息量 */}
+        <Button variant="outline" size="sm" type="button" data-testid="case-cancel" onClick={onCancel}>
           取消
         </Button>
         {/* 提交按钮两态都是**实心主按钮、无图标**：它只提交这张已经写着
-            「创建用例 / 编辑用例」的右栏表单，按钮不必再复述一遍动作，也不该与左边「取消」撞成同一种灰。
-            文案仍分两态——新建「确定」、编辑「保存」：前者是确认这张新表单，后者是保存对已有用例的改动。 */}
-        <Button
-          size="small"
-          type="primary"
-          htmlType="submit"
-          loading={saving}
-          autoInsertSpace={false}
-          data-testid="case-submit"
-        >
-          {mode === 'new' ? '确定' : '保存'}
+              「创建用例 / 编辑用例」的右栏表单，按钮不必再复述一遍动作，也不该与左边「取消」撞成同一种灰。
+              文案仍分两态——新建「确定」、编辑「保存」：前者是确认这张新表单，后者是保存对已有用例的改动。 */}
+        <Button type="submit" size="sm" disabled={saving} data-testid="case-submit">
+          {saving ? '保存中…' : mode === 'new' ? '确定' : '保存'}
         </Button>
-      </Flex>
-    </Form>
+      </div>
+    </form>
   );
 }

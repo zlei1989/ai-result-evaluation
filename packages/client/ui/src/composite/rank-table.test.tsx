@@ -39,12 +39,11 @@ afterEach(() => {
 type Row = EvalRun['rows'][number];
 
 /**
- * 表格每一列的**实测列宽**（读 `colgroup` 的内联样式，剥掉分号）。
+ * 表格每一列声明的宽度（读 `colgroup` 的内联样式）。
  * jsdom 没有布局引擎：「首列真的钉住了吗」量不出来，能断言的只有「宽度按两个常量逐列给出」
- * ——而宽度不给，rc-table 的吸边偏移就算不出来（`provider-table.test.tsx` 同一处境）。
+ * ——而宽度不给，固定列的吸边偏移就算不出来（`provider-table.test.tsx` 同一处境）。
  */
 function columnWidths(): number[] {
-  // 两张表（吸顶表头一张、表体一张）**各带一份 colgroup**，两份逐列同宽 ⇒ 只读第一张，不重复计数
   return Array.from(document.querySelector('table')?.querySelectorAll('colgroup col') ?? []).map((col) =>
     // 内联样式是 `width: 120px`（不是裸数字），故按正则抠出数值
     Number.parseInt(/width:\s*(\d+)px/.exec(col.getAttribute('style') ?? '')?.[1] ?? '', 10),
@@ -172,7 +171,7 @@ describe('RankTable 名次', () => {
     // 两格都是金色的名次 Tag（与卡片徽标同色同字），且**左格名次更高**——列序即名次序
     const cells = within(rankRow).getAllByRole('cell').slice(1);
     expect(cells.map((cell) => cell.textContent)).toEqual(['第 1 名', '第 2 名']);
-    expect(cells[0]?.querySelector('.ant-tag-gold')).not.toBeNull();
+    expect(cells[0]?.querySelector('[data-tone="rank"]')).not.toBeNull();
     // 名次是按**整轮行集**算的：满分那行（best）在前、60 分那行（slow）在后
     expect(cells[0]?.getAttribute('data-testid')).toBe('rank-cell-rank-best');
     expect(cells[1]?.getAttribute('data-testid')).toBe('rank-cell-rank-slow');
@@ -236,6 +235,62 @@ describe('RankTable 名次', () => {
   });
 });
 
+describe('RankTable 测试通过率', () => {
+  it('有采集显示百分比与分子分母；缺数据显示「未采集」而不是 0%（本票的头号缺陷）', () => {
+    render(
+      <RankTable
+        run={makeRun([makeRow('a'), makeRow('b')])}
+        testResults={{
+          rows: [
+            {
+              rowId: 'a',
+              status: 'collected',
+              framework: 'vitest',
+              command: 'pnpm test',
+              passed: 1,
+              failed: 1,
+              skipped: 0,
+              total: 2,
+            },
+            { rowId: 'b', status: 'not-collected' },
+          ],
+        }}
+      />,
+    );
+
+    const row = screen.getByTestId('rank-table-row-test-pass-rate');
+    const cells = within(row).getAllByRole('cell');
+    expect(cells[0]?.textContent).toBe('测试通过率');
+    expect(cells[1]?.textContent).toBe('50%（1/2）');
+    // 缺数据那一格说的是「没采到」，不是 0 个通过、也不是 0%
+    expect(cells[2]?.textContent).toBe('未采集');
+    expect(row.textContent).not.toMatch(/(?:^|[^0-9])0%/);
+  });
+
+  it('解析失败同样落「未采集」（并把原因挂在浮层上），不拿残缺明细算一个数', () => {
+    render(
+      <RankTable
+        run={makeRun([makeRow('a')])}
+        testResults={{
+          rows: [
+            {
+              rowId: 'a',
+              status: 'unparsed',
+              framework: 'pytest',
+              command: 'pytest',
+              reason: '汇总与明细不一致',
+            },
+          ],
+        }}
+      />,
+    );
+    const cells = within(screen.getByTestId('rank-table-row-test-pass-rate')).getAllByRole('cell');
+    expect(cells[1]?.textContent).toBe('未采集');
+    expect(cells[1]?.querySelector('[data-hint]') ?? cells[1]?.firstElementChild).toHaveAttribute('data-hint', '汇总与明细不一致');
+    expect(screen.getByTestId('rank-table-row-test-pass-rate').textContent).not.toContain('%');
+  });
+});
+
 describe('RankTable 行与格', () => {
   it('四段行齐备：身份 / 执行 / 每组一行组名 + 各目标（带权重）/ 总分', () => {
     render(<RankTable run={makeRun([makeRow('only')])} />);
@@ -246,7 +301,7 @@ describe('RankTable 行与格', () => {
     }
     expect(within(screen.getByTestId('rank-table-row-rank')).getAllByRole('cell')[0]?.textContent).toBe('');
     // 执行四行（耗时 + token 三格，与判据同源的两个数逐格摆开）
-    for (const label of ['耗时', '输入', '缓存读', '输出']) {
+    for (const label of ['耗时', '输入', '缓存命中', '输出']) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     // 组名分隔行写组名、目标行带权重（权重是 Tag，见下一条用例）
@@ -270,14 +325,14 @@ describe('RankTable 行与格', () => {
     // 目标原文与权重各在一个节点里（不再是 `目标 · 50 分` 那样一串纯文本）
     expect(within(itemLabel('item-T1')).getByText('步骤中使用 skill')).toBeInTheDocument();
     expect(within(itemLabel('item-T1')).getByText('50 分')).toBeInTheDocument();
-    // 权重那个节点是 antd 的 Tag（可跳读的记号，不是句子的一部分）
-    expect(within(itemLabel('item-T1')).getByText('50 分').className).toContain('ant-tag');
+    // 权重那个节点是徽标（可跳读的记号，不是句子的一部分）
+    expect(within(itemLabel('item-T1')).getByText('50 分')).toHaveAttribute('data-tone', 'weight');
     // 另一项没有写 id（引用键是位置号 `#2`），同样走这条
-    expect(within(itemLabel('item-#2')).getByText('50 分').className).toContain('ant-tag');
+    expect(within(itemLabel('item-#2')).getByText('50 分')).toHaveAttribute('data-tone', 'weight');
 
-    // 其余行的标签**不带** Tag：名次、组名、总分都还是纯文本
+    // 其余行的标签**不带**徽标：名次、组名、总分都还是纯文本
     for (const key of ['rank', 'group-0', 'total']) {
-      expect(itemLabel(key).querySelector('.ant-tag'), `${key} 那一行的标签不该有 Tag`).toBeNull();
+      expect(itemLabel(key).querySelector('[data-tone="weight"]'), `${key} 那一行的标签不该有徽标`).toBeNull();
     }
   });
 
@@ -291,8 +346,10 @@ describe('RankTable 行与格', () => {
     expect(groupCells[0]?.textContent).toBe('一、任务完成度');
     // 候选列那一格留白（组名不重复到每一列上）
     expect(groupCells[1]?.textContent).toBe('');
-    // 组名那一格是**锁列**（横向滚到底也在视野内）
-    expect(groupCells[0]?.className).toContain('ant-table-cell-fix-start');
+    // 组名那一格是**锁列**（横向滚到底也在视野内）：位置与偏移来自套件的列固定
+    const labelCell = groupCells[0] as HTMLElement;
+    expect(labelCell.style.position).toBe('sticky');
+    expect(labelCell.style.left).toBe('0px');
   });
 
   it('整张表没有自定义行底色（分段靠位置与字重：组名加粗、总分是粗体）', () => {
@@ -321,8 +378,10 @@ describe('RankTable 行与格', () => {
     render(<RankTable run={makeRun([makeRow('only', { tokens: null, durationMs: null })])} />);
 
     expect(screen.queryByText('0 tok')).toBeNull();
-    // 耗时 1 处 + token 3 处
-    expect(screen.getAllByText('未采集')).toHaveLength(4);
+    // 只数执行段那四行：通过率行也有自己的「未采集」，它不该被这四格的计数吞掉
+    for (const key of ['duration', 'tokens-input', 'tokens-cached', 'tokens-output']) {
+      expect(within(screen.getByTestId(`rank-table-row-${key}`)).getAllByText('未采集')).toHaveLength(1);
+    }
   });
 
   it('未出分的列在执行段整段留白（行状态已经说明原因，五个「未采集」只是噪音）', () => {
@@ -348,8 +407,11 @@ describe('RankTable 行与格', () => {
       expect(cells[2]?.textContent).toBe(''); // 未出分那一列（排在右侧）
       expect(cells[1]?.textContent).not.toBe('');
     }
-    // 「未采集」一处都不该出现：这一轮里没有任何**有分**的行缺这两格
-    expect(screen.queryByText('未采集')).toBeNull();
+    // 执行段四行里没有「未采集」：这一轮里没有任何**有分**的行缺这两格
+    // （通过率行另有自己的「未采集」，不在这一条的靶子里）
+    for (const key of ['duration', 'tokens-input', 'tokens-cached', 'tokens-output']) {
+      expect(within(screen.getByTestId(`rank-table-row-${key}`)).queryByText('未采集')).toBeNull();
+    }
   });
 
   it('达成 / 未达成与评分详情逐字同形；评分表里有而判定里没有的项显式写「缺少判定」', () => {
@@ -375,13 +437,13 @@ describe('RankTable 行与格', () => {
 });
 
 describe('RankTable 表格结构与说明', () => {
-  it('scroll.x 是**数值**且随候选数增长（给 true / max-content 会让首列固定失效）', () => {
+  it('表格宽度随候选数增长（每候选一列，宽度来自声明值）', () => {
     // 函数本身是判据的落点：宽度 = 标签列 + 每候选一列
     expect(rankTableMinWidth(1)).toBe(RANK_LABEL_WIDTH + RANK_CANDIDATE_WIDTH);
     expect(rankTableMinWidth(3)).toBe(RANK_LABEL_WIDTH + 3 * RANK_CANDIDATE_WIDTH);
 
     const { unmount } = render(<RankTable run={makeRun([makeRow('a')])} />);
-    // colgroup 的宽度逐列来自那两个常量（吸边偏移按实测列宽算 ⇒ 宽度不显式给出，固定列会失效）
+    // colgroup 的宽度逐列来自那两个常量（固定列的偏移只认声明宽度）
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH]);
     unmount();
 
@@ -389,18 +451,20 @@ describe('RankTable 表格结构与说明', () => {
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH]);
   });
 
-  it('首列锁左、其余列不锁；第一列宽度显式给出（吸边偏移按实测列宽算）', () => {
+  it('首列锁左、其余列不锁（偏移来自声明的列宽）', () => {
     render(<RankTable run={makeRun([makeRow('a'), makeRow('b')])} />);
 
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH]);
-    // 吸边类只出现在首列（`-start`）：其余两列都不许 fix。
+    // 吸边只出现在首列：其余两列都不许钉。
     // 表头已隐藏（`showHeader={false}`）⇒ 判据落在**表体的 td** 上。
-    // （jsdom 读不到 `position: sticky`，类名是「这一列到底钉没钉」唯一可断言的东西，与 provider-table 同一手法）
-    const firstRowCells = Array.from(screen.getByTestId('rank-table-row-rank').querySelectorAll('td'));
+    const firstRowCells = Array.from(
+      screen.getByTestId('rank-table-row-rank').querySelectorAll('td'),
+    ) as HTMLElement[];
     expect(firstRowCells).toHaveLength(3);
-    expect(firstRowCells[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(firstRowCells[1]?.className).not.toContain('ant-table-cell-fix');
-    expect(firstRowCells[2]?.className).not.toContain('ant-table-cell-fix');
+    expect(firstRowCells[0]?.style.position).toBe('sticky');
+    expect(firstRowCells[0]?.style.left).toBe('0px');
+    expect(firstRowCells[1]?.style.position).not.toBe('sticky');
+    expect(firstRowCells[2]?.style.position).not.toBe('sticky');
   });
 
   it('判据说明逐字渲染在**表下方**，且内容来自具名片段（改文案只有一处落点）', () => {

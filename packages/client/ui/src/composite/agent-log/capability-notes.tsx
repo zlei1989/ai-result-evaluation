@@ -11,8 +11,8 @@
  *   · 四句原因的文案**直接取 `CAPABILITY_LEVEL_LABELS`**，一个字都不在这里重写——
  *     把「这家没有」说成「我们没接」正是本仓最忌讳的那类误读。
  */
-import { Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
 import type { MessageCapabilityMap } from './types';
 import { CAPABILITY_DIMENSION_LABELS, CAPABILITY_LEVEL_LABELS } from './types';
 
@@ -31,21 +31,21 @@ export function CapabilityNotes({ capability, notes, only }: CapabilityNotesProp
   );
 
   return (
-    <Flex vertical gap={4} data-testid="capability-notes">
+    <div className="flex flex-col gap-1" data-testid="capability-notes">
       {entries.map(([dimension, declaration]) => (
-        <Flex key={dimension} align="center" gap={4} wrap>
-          <Tag>{CAPABILITY_DIMENSION_LABELS[dimension] ?? dimension}</Tag>
+        <div key={dimension} className="flex flex-wrap items-center gap-1">
+          <Badge variant="outline">{CAPABILITY_DIMENSION_LABELS[dimension] ?? dimension}</Badge>
           {declaration.level === 'yes' ? (
             // `yes` 没有「原因」可给（`reason` 按契约是 null），但不能留空：这一格是「有」
-            <Typography.Text>支持</Typography.Text>
+            <span>支持</span>
           ) : (
-            <Typography.Text type="secondary">{CAPABILITY_LEVEL_LABELS[declaration.level]}</Typography.Text>
+            <span className="text-muted-foreground">{CAPABILITY_LEVEL_LABELS[declaration.level]}</span>
           )}
-        </Flex>
+        </div>
       ))}
       {notes.length > 0 && (
-        <Typography.Text type="secondary">{`能力随路由/模型变化：${notes.join('、')}`}</Typography.Text>
+        <span className="text-muted-foreground">{`能力随路由/模型变化：${notes.join('、')}`}</span>
       )}
-    </Flex>
+    </div>
   );
 }

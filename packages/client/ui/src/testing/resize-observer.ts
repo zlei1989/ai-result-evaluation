@@ -1,25 +1,24 @@
 /**
  * 测试用的 `ResizeObserver` 替身 + 安装助手。
  *
- * 为什么**必须**打桩：jsdom 不提供 `ResizeObserver`，而 antd 的 `Splitter` 内部
- * （`@rc-component/resize-observer` 的 `ensureResizeObserver`）直接 `new ResizeObserver(...)`
- * 读**全局构造器**、不带任何 polyfill。于是任何挂载 `Splitter` 的用例都会在 effect 里抛
- * `ReferenceError: ResizeObserver is not defined` —— 不是被测代码的问题，是环境缺口。
+ * 为什么**必须**打桩：jsdom 不提供 `ResizeObserver`，而 `react-resizable-panels` 在挂载与
+ * 尺寸变化时直接 `new window.ResizeObserver(...)` 读**全局构造器**、不带任何 polyfill。
+ * 于是任何挂载分栏的用例都会在 effect 里抛 `ReferenceError: ResizeObserver is not defined`
+ * ——不是被测代码的问题，是环境缺口。
  *
- * 为什么不放进共享 `src/testing/setup.ts`：`resizable-columns.tsx` 有一条
- * 「无 `ResizeObserver` 的环境也要把初值报一次」的兜底分支，全局注入桩会让那条分支在测试里
+ * 为什么不放进共享 `src/testing/setup.ts`：`list-detail-layout.tsx` 有一条
+ * 「无 `ResizeObserver` 的环境也要把容器初值读一次」的兜底分支，全局注入桩会让那条分支在测试里
  * **永远不可达**（正是「兜底路径被测试环境掩盖」这类问题）。需要的用例自己调用本助手。
  *
- * 断言口径提醒：`@rc-component/resize-observer` 在**模块级**缓存了一个 `observer` 单例
- * （`observerUtil.js` 的 `if (!observer)`），所以同一测试文件里只有**第一个**用例会经 antd
- * 创建一个替身实例；被测代码自己 `new ResizeObserver(...)` 的调用则每次都会创建。
+ * 断言口径提醒：被测代码每次挂载都会自己 `new ResizeObserver(...)`，所以实例记录按用例累积。
  * 需要「只看本用例创建的实例」时，在用例开头 `FakeResizeObserver.reset()`。
  *
  * **替身与真实实现的差距（读断言前必看）**：它只忠实于构造 / `observe` / `unobserve` / `disconnect`
  * 的**记账**语义——**从不调用**构造时收到的回调，也**从不构造** `ResizeObserverEntry`。因此
  * `entries[].target`、`contentRect` 这类回调参数在测试里恒为死代码，「尺寸变化触发回调」这条路径
- * 在本仓任何用例中都走不到（`resizable-columns.tsx` 的首帧上报是它自己在 effect 里直接调的，
- * 不依赖回调）。需要用回调驱动行为的用例**不能**靠本替身，得自己伪造 entry 并手动调用 `callback`。
+ * 在本仓任何用例中都走不到（`list-detail-layout.tsx` 的首帧容器测量是它自己在 effect 里直接读
+ * `offsetWidth` 的，不依赖回调）。需要用回调驱动行为的用例**不能**靠本替身，得自己伪造 entry
+ * 并手动调用 `callback`。
  */
 import { vi } from 'vitest';
 import { installMatchMediaStub } from './match-media';
@@ -34,7 +33,7 @@ export class FakeResizeObserver implements ResizeObserver {
     FakeResizeObserver.instances.length = 0;
   }
 
-  /** 构造时收到的回调（antd 与 `resizable-columns` 都会传） */
+  /** 构造时收到的回调（`react-resizable-panels` 会传） */
   readonly callback: ResizeObserverCallback;
 
   /** 被 `observe` 的目标，按调用顺序 */
@@ -61,13 +60,12 @@ export class FakeResizeObserver implements ResizeObserver {
 }
 
 /**
- * 把替身装成全局 `ResizeObserver`，**顺带**补上 antd 在 jsdom 里需要的另一个缺口
- * `matchMedia`（见 `./match-media.ts`）。
+ * 把替身装成全局 `ResizeObserver`，**顺带**补上 jsdom 的另一个缺口 `matchMedia`
+ * （见 `./match-media.ts`）。
  *
- * 为什么两件事合在一个入口：antd 的同一个 `Table` 既 `new ResizeObserver` 又调
- * `window.matchMedia`，只装前者的话用例仍会在挂载时抛错，而两个 api 的缺口成因、口径
- * 完全一致（jsdom 没实现 + 不进共享 setup）。分两个入口只会让每个挂载 `Table` 的用例
- * 都漏装一个 —— 那正是本入口被合并的原因。
+ * 为什么两件事合在一个入口：挂载分栏（`react-resizable-panels`）与主题解析经常出现在
+ * 同一个用例里，两个 api 的缺口成因、口径完全一致（jsdom 没实现 + 不进共享 setup）。
+ * 分两个入口只会让每个用例都漏装一个 —— 那正是本入口被合并的原因。
  *
  * 反复调用只会重设全局（`afterEach` 里用 `vi.unstubAllGlobals()` 解除）。
  */

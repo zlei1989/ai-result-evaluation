@@ -15,8 +15,8 @@ import { installResizeObserverStub } from '../../testing/resize-observer';
 
 const AT = '2026-10-02T10:44:31.000Z';
 
-// jsdom 没有 `ResizeObserver`：`Listy` 内部（`@rc-component/virtual-list`）会 new 它，
-// 不打桩挂载即抛（见 src/testing/resize-observer.ts）。本件自己也会 new 一个来量高度。
+// jsdom 没有 `ResizeObserver`：`@tanstack/react-virtual` 与本件自建宿主的高度测量都会 new 它，
+// 不打桩挂载即抛（见 src/testing/resize-observer.ts）。
 beforeEach(() => {
   installResizeObserverStub();
 });

@@ -270,9 +270,7 @@ cancelMidTurn: provider.metadata.capability.cancelMidTurn,   // 声明；判据�
 
 判据是 `runtime-deps.test.ts` 的三条断言（真解析、区间逐字相同、外置清单与派生集合逐项相同），
 它会随 ① 自动长出新的检查项——**派生集合本身有判据**（「派生集合非空且不含工作区包」），派生被改窄成空集时那三条会静默全绿。
-**别裸跑 `pnpm add`**：内网镜像缺平台可选包会直接
-`ERR_PNPM_NO_MATCHING_VERSION`，且默认重解析会把厂商 SDK 声明的 peer 降级——口径是手改 `package.json`
-+ 按「旧 lockfile + 新子树可达集」合并 lockfile，改完核对版本后缀并跑 `pnpm install --frozen-lockfile`。
+**别裸跑 `pnpm add`**：口径见[《工具链与命令聚合》](/architecture/toolchain)的「依赖安装」——手改 `package.json`、只把新子树的可达闭包并进旧 lockfile、再用 `pnpm install --frozen-lockfile` 核对。
 
 ## 数据与契约
 
@@ -392,8 +390,7 @@ pnpm live-smoke -- --dry-run     # 只检查服务与候选、打印将执行的
 **判据**（守卫名，或如实写成证据要求）、**参考实现**（哪家哪个文件）。守卫名一律指**跨家**的判据层：
 套件本体 `providers/conformance/kit.ts`、接入守卫 `providers/conformance/onboarding.test.ts`、
 套件自测 `providers/conformance/kit.test.ts`，其余按路径点名；**只有这一接入里写的用例**归 `providers/<kind>/`。
-工具链侧的坑（workspace 的 `allowBuilds`、「不裸跑 `pnpm add`」、eslint 边界规则前缀化等）见
-`AGENTS.md` 的「边界与工具链的已知坑」表，这里不重复抄。
+工具链侧的坑（workspace 的 `allowBuilds`、依赖安装、eslint 边界规则前缀化等）见[《工具链与命令聚合》](/architecture/toolchain)与[《仓库分层与依赖方向》](/architecture/layering)，这里不重复抄。
 
 ### 工具面 / 白名单类
 

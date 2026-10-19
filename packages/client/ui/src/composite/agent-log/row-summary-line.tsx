@@ -10,43 +10,45 @@
  *     （0 是「一个子任务都没派」，与「没采到」是两件事）；
  *   · 状态与状态缺失原因**两句并列**，口径与 `subagent-bar` 一致。
  */
-import { Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
 import type { LogNodeStatus, RowNode } from './types';
 import { LOG_NODE_STATUS_LABELS, MISSING_REASON_LABELS } from './types';
 
 /**
- * 状态七档 → `Tag` 色档，与 `subagent-bar` 同一口径（两处都画 `LogNodeStatus`）。
+ * 状态七档 → 徽标色档，与 `subagent-bar` 同一口径（两处都画 `LogNodeStatus`）。
  * 只映射三档，其余一律中性：`unknown` 涂成红或绿都是在替数据表态。
  */
-function statusColor(status: LogNodeStatus): 'processing' | 'success' | 'error' | 'default' {
+function statusTone(status: LogNodeStatus): string {
   switch (status) {
     case 'running':
-      return 'processing';
+      return 'border-info/40 bg-info/10 text-info';
     case 'completed':
-      return 'success';
+      return 'border-success/40 bg-success/10 text-success';
     case 'failed':
-      return 'error';
+      return 'border-destructive/40 bg-destructive/10 text-destructive';
     default:
-      return 'default';
+      return '';
   }
 }
 
 export function RowSummaryLine({ node }: { node: RowNode }): ReactNode {
   return (
-    <Flex align="center" gap={4} wrap>
-      <Tag>汇总</Tag>
-      <Tag color={statusColor(node.status)}>{LOG_NODE_STATUS_LABELS[node.status]}</Tag>
+    <div className="flex flex-wrap items-center gap-hair">
+      <Badge variant="outline">汇总</Badge>
+      <Badge variant="outline" className={statusTone(node.status)}>
+        {LOG_NODE_STATUS_LABELS[node.status]}
+      </Badge>
       {node.statusMissing !== null && (
-        <Typography.Text type="secondary">{`状态未采集 · ${MISSING_REASON_LABELS[node.statusMissing]}`}</Typography.Text>
+        <span className="text-sub text-muted-foreground">{`状态未采集 · ${MISSING_REASON_LABELS[node.statusMissing]}`}</span>
       )}
       {node.counts === null ? (
-        <Typography.Text type="secondary">计数未采集</Typography.Text>
+        <span className="text-sub text-muted-foreground">计数未采集</span>
       ) : (
-        <Typography.Text type="secondary">
+        <span className="text-sub text-muted-foreground">
           {`子任务 ${node.counts.subagents} · 完成 ${node.counts.completed} · 失败 ${node.counts.failed}`}
-        </Typography.Text>
+        </span>
       )}
-    </Flex>
+    </div>
   );
 }

@@ -128,15 +128,15 @@ describe('CaseDetailPanel', () => {
    * 无来源用例：来源显示短标签「无」（哨兵串 `none://` 不是给用户看的信息），悬停给说全的话；
    * 不显示分支行（repoBranch 恒为 null），commit 行是「默认分支 HEAD」。
    */
-  it('无来源用例：来源显示「无」+ 悬停说明，且没有分支行', async () => {
+  it('无来源用例：来源显示「无」+ 悬停说明，且没有分支行', () => {
     setup({ testCase: { ...CASE, repoPath: 'none://', commitHash: null, repoBranch: null } });
 
     expect(screen.queryByText('none://')).toBeNull();
     expect(screen.queryByText('分支')).not.toBeInTheDocument();
     expect(screen.getByText('默认分支 HEAD')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByText('无'));
-    expect(await screen.findByText('空仓库，无来源代码')).toBeInTheDocument();
+    // 说明挂在「无」这一格的 title 上：哨兵串不是给用户看的信息，说全的话在悬停提示里
+    expect(screen.getByText('无')).toHaveAttribute('title', '空仓库，无来源代码');
   });
 
   /**
@@ -153,7 +153,7 @@ describe('CaseDetailPanel', () => {
     });
 
     const heading = screen.getByRole('heading', { level: 4, name: '任务标题' });
-    const card = heading.closest('.ant-card');
+    const card = heading.closest('[data-slot="card"]');
     expect(card).not.toBeNull();
     expect(card).toHaveTextContent('考题提示词');
     expect(card?.querySelector('table')).not.toBeNull();
@@ -167,7 +167,7 @@ describe('CaseDetailPanel', () => {
   it('评分标准项卡片：只读渲染组名、目标、权重与表尾满分', () => {
     setup();
 
-    const card = screen.getByText('评分标准项').closest('.ant-card');
+    const card = screen.getByText('评分标准项').closest('[data-slot="card"]');
     expect(card).not.toBeNull();
     expect(card).toHaveTextContent('一、生产代码');
     expect(card).toHaveTextContent('追加 agent 字段');

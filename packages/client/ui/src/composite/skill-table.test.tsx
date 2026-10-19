@@ -63,15 +63,17 @@ describe('SkillTable：三列与固定列', () => {
     expect(screen.queryByRole('columnheader', { name: '操作' })).toBeNull();
   });
 
-  it('名称列钉左、启用列钉右，表格拿到数值最小宽度（三处同时在场才成立）', () => {
+  it('名称列钉左、启用列钉右，表格宽度是各列声明宽度之和', () => {
     const { container } = render(
       <SkillTable skills={SKILLS} skillWarnings={[]} root={ROOT} onOpen={vi.fn()} onRescan={vi.fn()} onToggle={vi.fn()} />,
     );
 
     const headers = screen.getAllByRole('columnheader');
-    expect(headers[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(headers[2]?.className).toContain('ant-table-cell-fix-end');
-    // 数值而不是 true / 'max-content'：后两者会让固定列静默失效（见 SKILL_TABLE_MIN_WIDTH 的注释）
+    expect(headers[0]?.style.position).toBe('sticky');
+    expect(headers[0]?.style.left).toBe('0px');
+    expect(headers[2]?.style.position).toBe('sticky');
+    expect(headers[2]?.style.right).toBe('0px');
+    // 220 + 320 + 90：固定列的偏移输入就是这些声明值
     const table = container.querySelector('table');
     expect(table?.style.width).toBe('630px');
   });
@@ -226,8 +228,8 @@ describe('SkillTable：两套空态', () => {
       />,
     );
 
-    const empty = screen.getByText('技能目录还不存在').closest('.ant-empty')?.parentElement ?? document.body;
-    expect(within(empty as HTMLElement).getByText(`把 skill 放进这个目录即可：${ROOT}`)).toBeInTheDocument();
+    const empty = screen.getByText('技能目录还不存在').closest('[data-slot="empty"]') ?? document.body;
+    expect(within(empty as HTMLElement).getByText(`把一个技能目录放进这里即可：${ROOT}`)).toBeInTheDocument();
     expect(screen.queryByText('这个目录里还没有技能')).toBeNull();
   });
 

@@ -79,3 +79,34 @@ describe('cases 页面的用例跳过告警接线', () => {
     expect(source, '跳过原因没有被渲染').toContain('warnings.join');
   });
 });
+
+/**
+ * 新建 → 校验失败 → 修正 → 保存 这条链路的**屏级**落点。
+ *
+ * 表单段（失败拦下 / 修正后提交一次）由 `case-form-panel.test.tsx` 的行为用例守着；
+ * 这里补的是页面这一侧：提交值确实接到 `create` / `update`，成功后带着**服务端返回的 id**
+ * 切到详情。少了后半句，用户保存完会停在一张空表单上，而表单用例照样全绿。
+ */
+describe('cases 页面的保存链路接线', () => {
+  it('新建与编辑共用同一个提交入口，且表单确实接上它', () => {
+    expect(source, '面板没接 onSubmit').toContain('onSubmit: handleSubmit');
+    // 新建与编辑走同一入口，由 panel 分派——两处各写一份提交逻辑必然漂移
+    expect(source, '新建分支没有调 create').toMatch(/create\(values\)/);
+    expect(source, '编辑分支没有调 update').toMatch(/update\(id, values\)/);
+  });
+
+  it('新建成功后用返回的 id 切到详情（不是停在表单上）', () => {
+    expect(source, '新建成功后没有切到新用例的详情').toMatch(
+      /create\(values\)[\s\S]*go\(\{ panel: 'detail', id: created\.id \}\)/,
+    );
+  });
+
+  it('编辑成功后回到同一条用例的详情', () => {
+    expect(source, '编辑成功后没有回到详情').toMatch(/update\(id, values\)[\s\S]*go\(\{ panel: 'detail', id \}\)/);
+  });
+
+  it('详情面板的编辑与删除都接上（右栏三态闭环）', () => {
+    expect(source, '详情面板没接 onEdit').toContain('onEdit={() => go({ panel: \'edit\', id: target.id })}');
+    expect(source, '详情面板没接 onDelete').toContain('onDelete={handleDelete}');
+  });
+});

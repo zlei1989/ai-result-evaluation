@@ -5,15 +5,12 @@
  *
  * 形态按 spec §4.4 的定稿，四处都是刻意的：
  *
- *   1. **输入区就是一行**：`Sender` 的 `prefix` 里放 `Attachments` 包一颗回形针按钮
- *      （`Attachments` 在它外面套拖拽区与隐藏的 file input ⇒ 那颗按钮同时是「点选」与
- *      「拖拽落点」，拖到抽屉里任何地方都算数）；发送键用 X 自带的圆形上箭头（`components.SendButton`，
- *      **不另画一颗**，只把「能不能点」显式交给调用方，理由见下面 `suffix` 那一处注释）；
- *      `beforeUpload: () => false` 是硬要求——文件**不往任何地方传**，走本仓的 multipart 端点
- *      （让 antd 自传会变成两份真相）。**附件清单住框上方一行 chips**（`scrollX`，只占一行高），
- *      **不进 `prefix`**：`Attachments` 把清单渲在自己内部，塞进 `prefix` 会被挤进输入框那一行。
- *   2. **紧凑密度只套输入区**（`ConfigProvider` + `compactTheme`）：X 的 `Sender` / `Attachments`
- *      没有 `size` 能力，不套就是「页面 12px、输入框 14px」；而整支抽屉的字号不动是用户口径。
+ *   1. **输入区就是一行**：`Prompt Input` 的骨架全在共用件 `composer-input.tsx` 里（`InputGroup`
+ *      + `InputGroupTextarea` + 两个 addon）；本件只递状态与两句话，自己不拼任何输入区结构。
+ *      附件清单住框内的 `block-start`、发送键在框内的 `block-end`——两个键都在框里，
+ *      「这一句话会以什么形式发出去」在一处看全。
+ *   2. **输入区与页面同一密度**：字号与间距取 `[data-density]` 的 CSS 变量（命名类），
+ *      不另包主题——作用域变量是唯一来源。
  *   3. **排队区在输入区上方**、默认收起（初值在调用方那次挂载里给），`gone` 不进队列
  *      （判定收在 `inject-vocab.ts` 一处）。
  *   4. **「删除」是双态动作**：还在排队的那条直接摘掉、已交给厂商的那条走撤回——成不成由
@@ -26,7 +23,7 @@
  * 「追问」输入区用的就是同一份，形态因此只有一处定义（两处各写一份的结果是同一种控件在两个入口
  * 长得不一样，而那种漂移没人会当场发现）。
  */
-import { Alert, Flex, Typography, theme } from 'antd';
+import { XIcon } from 'lucide-react';
 import { useCallback, useState, type ReactNode } from 'react';
 import type {
   InjectAttachment,
@@ -34,6 +31,8 @@ import type {
   InjectionBoundary,
   TurnInjectionCapability,
 } from '@aieval/contracts';
+import { Alert, AlertAction, AlertDescription } from '../../components/ui/alert';
+import { Button } from '../../components/ui/button';
 import { attachmentListOf, CompactComposerArea, useComposerDraft } from './composer-input';
 import { InjectQueuePanel } from './inject-queue-panel';
 import {
@@ -87,8 +86,6 @@ export function InjectComposer({
   onUploadAttachment,
   onError,
 }: InjectComposerProps): ReactNode {
-  const { token } = theme.useToken();
-
   /** 排队区默认收起（用户裁定；收起态的计数是那一行唯一的可见信号） */
   const [queueCollapsed, setQueueCollapsed] = useState(true);
   /** 撤回已交给厂商的那一条之后那句一次性提示 */
@@ -151,18 +148,18 @@ export function InjectComposer({
   const hint =
     availability.available === false ? (
       // 不能投：把「为什么」如实写在输入框下面（那几句「不能」互不相同，判定在 `inject-vocab`）
-      <Typography.Text type="secondary" data-testid="inject-unavailable">
+      <p data-testid="inject-unavailable" className="text-xs text-muted-foreground">
         {availability.note}
-      </Typography.Text>
+      </p>
     ) : (
       // 能投：也要说清「发出去不等于立刻到」（取件在下一次通知边界、排队那一档要等本轮收完）
-      <Typography.Text type="secondary" data-testid="inject-queue-hint">
+      <p data-testid="inject-queue-hint" className="text-xs text-muted-foreground">
         {INJECT_QUEUE_HINT}
-      </Typography.Text>
+      </p>
     );
 
   return (
-    <Flex vertical data-testid="inject-composer">
+    <div data-testid="inject-composer" className="flex flex-col">
       {/* 排队区不套紧凑密度（整支抽屉的字号不动）；它在输入区**上方** */}
       <InjectQueuePanel
         messages={messages}
@@ -173,35 +170,33 @@ export function InjectComposer({
         onPromote={handlePromote}
         onRetract={handleRetract}
       />
-      {/* 紧凑密度只套输入区这一块（`CompactComposerArea` 内部那一层 `ConfigProvider`） */}
+      {/* 输入区：间距与字号取密度作用域（不另包主题） */}
       <CompactComposerArea
         draft={draft}
         onDraftChange={setDraft}
         onSend={handleSend}
-        placeholder={availability.available ? '给这一轮的智能体补一句话（先排队，等它下一次可投递的时机）' : '这一档不能用（原因见下方）'}
+        placeholder={availability.available ? '给这一行的智能体补一句话（先排队，等它下一次可投递的时机）' : '这一档不能用（原因见下方）'}
         disabled={!availability.available || busy}
         pending={pending}
-        onPendingItemsChange={composer.onPendingItemsChange}
+        onRemovePending={composer.onRemovePending}
         onPickFiles={composer.onPickFiles}
         canSend={canSend}
         attachmentsTestId="inject-attachments"
         hint={hint}
         notice={
           notice === null ? null : (
-            <Alert
-              type="warning"
-              showIcon
-              // antd 6 把 Alert 的关闭面收进 `closable`：`closable` 与 `onClose` 旧名都会被废弃。
-              // 传对象即「可关闭」（antd 内部的判据是 `isPlainObject(closable) ⇒ isClosable`），
-              // 故不再另给 `closable` 布尔值
-              closable={{ onClose: () => setNotice(null) }}
-              title={notice}
-              data-testid="inject-refill-notice"
-              style={{ marginBottom: token.marginXXS }}
-            />
+            <Alert data-testid="inject-refill-notice" className="mb-hair">
+              <AlertDescription>{notice}</AlertDescription>
+              <AlertAction>
+                {/* 关闭面：一次性提示由用户自己收回（不给关闭面的提示会一直占着这一行） */}
+                <Button variant="ghost" size="icon-xs" aria-label="关闭提示" onClick={() => setNotice(null)}>
+                  <XIcon aria-hidden />
+                </Button>
+              </AlertAction>
+            </Alert>
           )
         }
       />
-    </Flex>
+    </div>
   );
 }

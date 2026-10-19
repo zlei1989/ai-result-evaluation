@@ -23,7 +23,8 @@ describe('AgentRunStateTag', () => {
     try {
       render(<AgentRunStateTag running hasResult={false} missingReason={null} since={START} />);
 
-      expect(document.querySelector('.ant-badge-status-processing')).not.toBeNull();
+      // 转圈只属于「进行中」这一档（静态的「没采到」绝不能带它）
+      expect(screen.getByTestId('run-state-running').querySelector('.animate-spin')).not.toBeNull();
       expect(screen.getByText('进行中 · 2m03s')).toBeInTheDocument();
 
       act(() => vi.advanceTimersByTime(60_000));
@@ -33,14 +34,15 @@ describe('AgentRunStateTag', () => {
     }
   });
 
-  it('running 为 false 且结果没到：静态灰字，且没有 processing 徽标', () => {
+  it('running 为 false 且结果没到：静态灰字，且没有转圈', () => {
     const { container } = render(
       <AgentRunStateTag running={false} hasResult={false} missingReason={null} since={START} />,
     );
 
     expect(screen.getByText('结果未采集')).toBeInTheDocument();
     // 这一条是核心：静态的「没采到」绝不能带一个转圈的徽标
-    expect(container.querySelector('.ant-badge-status-processing')).toBeNull();
+    expect(screen.queryByTestId('run-state-running')).toBeNull();
+    expect(container.querySelector('.animate-spin')).toBeNull();
   });
 
   it('结果未到时把能力声明给的原因缀上', () => {

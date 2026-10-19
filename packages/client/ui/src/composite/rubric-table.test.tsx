@@ -52,11 +52,10 @@ describe('RubricTable', () => {
   it('「添加评分项」往该组末尾加一个空项（权重给一个正数默认值，schema 不接受 0）', () => {
     const onChange = vi.fn();
     render(<RubricTable value={sample()} onChange={onChange} />);
-    // 按钮形态钉在类名上：antd 6 里 `variant` **单给**会被静默降级成实线，除了类名没有任何可观察
-    // 信号（同一处理由与写法见 `base/empty-state.test.tsx` 与 `composite/provider-table.test.tsx`）。
-    // 三个按钮一律 `color` + `variant` 成对给，故这里把两种形态各钉一次。
-    expect(screen.getByTestId('rubric-add-item-0').className).toContain('ant-btn-variant-dashed');
-    expect(screen.getByTestId('rubric-remove-item-0-0').className).toContain('ant-btn-variant-text');
+    // 按钮形态钉在类名上：新增类动作是「描边 + 虚线」（`outline` 给描边、`border-dashed` 给虚线），
+    // 行内删除是幽灵按钮——两者只差命名类，没有别的可观察信号。
+    expect(screen.getByTestId('rubric-add-item-0').className).toContain('border-dashed');
+    expect(screen.getByTestId('rubric-remove-item-0-0').className).not.toContain('border-dashed');
     fireEvent.click(screen.getByTestId('rubric-add-item-0'));
     const next = onChange.mock.calls[0]?.[0] as Rubric;
     expect(next.groups[0]?.items).toHaveLength(3);
@@ -114,10 +113,10 @@ describe('RubricTable', () => {
       ],
     };
     const view = render(<RubricTable value={duplicated} onChange={vi.fn()} />);
-    // 两个输入框都进 error 态（antd 的 error 类名是 `ant-input-status-error`）
+    // 两个输入框都进 error 态（新栈的 `Input` 用 `aria-invalid` 同时驱动视觉与读屏语义）
     const inputs = screen.getAllByDisplayValue('A1');
     expect(inputs).toHaveLength(2);
-    for (const input of inputs) expect(input.className).toContain('ant-input-status-error');
+    for (const input of inputs) expect(input).toHaveAttribute('aria-invalid', 'true');
 
     /**
      * 判据必须与 `validateRubric` / `rubricItemKeys` **同一口径：trim 之后比较**。
@@ -140,10 +139,10 @@ describe('RubricTable', () => {
     // 先断言「不该红」的那一对：标记写反（把空白当重复）时红的就是这一条，
     // 放在「该红」的前面，两种错法各有断言接得住，不会一条失败把另一条盖住
     for (const testId of ['rubric-item-id-2-0', 'rubric-item-id-2-1']) {
-      expect(screen.getByTestId(testId).className).not.toContain('ant-input-status-error');
+      expect(screen.getByTestId(testId)).toHaveAttribute('aria-invalid', 'false');
     }
     for (const testId of ['rubric-item-id-0-0', 'rubric-item-id-1-0']) {
-      expect(screen.getByTestId(testId).className).toContain('ant-input-status-error');
+      expect(screen.getByTestId(testId)).toHaveAttribute('aria-invalid', 'true');
     }
     // 「引用键有重复」这个 Tag 只挂在真有撞车键的组上：g1 / g2 撞了 `A1`，g3（两个空白 = 匿名）
     // 与 g4（唯一 ID）都是干净的——挂在 groups.map 里就会给四组挂四个 Tag，冤枉两组
@@ -169,7 +168,7 @@ describe('RubricTable', () => {
     // 写侧点的就是「引用键」，表格上方那句照旧来自 validateRubric
     expect(screen.getByTestId('rubric-validation-error')).toHaveTextContent('引用键');
     for (const testId of ['rubric-item-id-0-0', 'rubric-item-id-0-1']) {
-      expect(screen.getByTestId(testId).className).toContain('ant-input-status-error');
+      expect(screen.getByTestId(testId)).toHaveAttribute('aria-invalid', 'true');
     }
   });
 
@@ -184,13 +183,12 @@ describe('RubricTable', () => {
     };
     render(<RubricTable value={tooHeavy} onChange={vi.fn()} />);
     expect(screen.getByTestId('rubric-validation-error')).toHaveTextContent(`超过了上限 ${MAX_ITEM_WEIGHT}`);
-    // 上界真的交给了 antd（内层 input 的 `aria-valuemax`），不是只在自己这一层判
+    // 上界真的交给了原生输入（`max` 属性），不是只在自己这一层判
     const weight = screen.getByTestId('rubric-item-weight-0-0');
-    expect(weight).toHaveAttribute('aria-valuemax', String(MAX_ITEM_WEIGHT));
-    // 行内红框：antd 6 把 InputNumber 的 error 态挂在**外层 div** 上（内层 input 只管录入，
-    // `data-testid` 落的正是它）——故从测试 id 的父元素取，这一点与 `Input` 不同（那边在自身）
+    expect(weight).toHaveAttribute('max', String(MAX_ITEM_WEIGHT));
+    // 行内红框：`aria-invalid` 落在 input 自身（新栈的输入原语没有外层包裹要单独标）
     expect(weight.tagName).toBe('INPUT');
-    expect(weight.parentElement?.className).toContain('ant-input-number-status-error');
+    expect(weight).toHaveAttribute('aria-invalid', 'true');
   });
 
   /** 守卫：组轴与项轴一样按**索引**定位——改第 2 组的组名/权重时第 1 组必须原样 */
@@ -252,8 +250,10 @@ describe('RubricSummaryText', () => {
     expect(screen.getByText(/共 3 项/)).toBeInTheDocument();
   });
 
-  it('空表显示 0 分 0 项（不显示 NaN）', () => {
+  it('空表不写「满分 0 分」：那是还没开始配，不是一张 0 分的尺子（也不显示 NaN）', () => {
     render(<RubricSummaryText rubric={{ groups: [] }} />);
-    expect(screen.getByText(/满分 0 分/)).toBeInTheDocument();
+    expect(screen.getByText(/还没有评分项/)).toBeInTheDocument();
+    expect(screen.queryByText(/满分 0 分/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
   });
 });

@@ -58,8 +58,8 @@ function installShutdown(
 
 /** One shutdown: release (with budget) then re-raise the original signal; never throws -- nothing may block exit.
  *
- * 首行刻意写成 ASCII：Next 16 的代码帧渲染器在含中文的行上会切字符边界并 panic（见 AGENTS.md 的
- * 「边界与工具链的已知坑」），而这一行正是它在启动时唯一会渲染的那一行。中文口径与上面那句同义：
+ * 首行刻意写成 ASCII：Next 16 的代码帧渲染器在含中文的行上会切字符边界并 panic（见
+ * `docs/architecture/toolchain.md` 的「已知边界与取舍」），而这一行正是它在启动时唯一会渲染的那一行。中文口径与上面那句同义：
  * 一次停机，先释放（带预算）再重发原信号；本函数不抛——停机路径上任何异常都不得挡住退出。
  */
 async function shutdown(

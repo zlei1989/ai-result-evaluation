@@ -20,6 +20,7 @@
  * 本函数只做转发。而**块级**的「这一块说完了没有」也不许猜——它由 `block.assembly` 承担、
  * 不是本函数算出来的；猜「最后一轮 = 流式中」会让一次被中断的回复永远转圈。
  */
+import { detectTestFramework, parseTestOutput, testCommandOf } from '@aieval/contracts';
 import type {
   AskUserInteraction,
   AttachmentBlock,
@@ -34,6 +35,7 @@ import type {
   ToolCallBlock,
   ToolCardResult,
   ToolFamilyPayload,
+  ToolTestResult,
   TruncationState,
   UnrecognizedPayloadBlock,
 } from './types';
@@ -106,7 +108,19 @@ export interface ToolItem {
    */
   summary?: string;
   output: ToolOutput | null;
+  /**
+   * 这一次工具结果里的测试运行（命令是 `pnpm test` / `vitest` / `pytest` / `go test` 时才非空）。
+   * `null` = 已判定不是测试输出（不挂测试结果）。
+   */
+  testResult?: ToolTestResult | null;
   at: string;
+  /**
+   * 源块自己的 `assembly`（`open` = 还没收到过快照）。
+   *
+   * **它是动效的唯一判据**：摘要行的 `TraceLine.status` 由它（而不是任何「流式中」布尔）推出来，
+   * 于是「块说完了没有」在数据层只有一处真源。
+   */
+  assembly: ContentBlock['assembly'];
   /** 有调用、结果还没到、且所在轮次尚未结束 —— 只有这一种情况才转圈（`LogTurn.running` 转发） */
   running: boolean;
 }
@@ -125,10 +139,34 @@ export interface OrphanToolResult {
   blockId: string;
   at: string;
   output: ToolOutput;
+  /** 源块自己的 `assembly`：与 `ToolItem` 同一口径（动效的唯一判据） */
+  assembly: ContentBlock['assembly'];
 }
 
 /** 工具组里的一行 */
 export type ToolGroupEntry = ToolItem | OrphanToolResult;
+
+/**
+ * 工具结果 → 测试运行（只有命令或输出真的像那四种测试时才给）。
+ *
+ * **截断判定在解析之前**：`truncation` 说这段文本不全时，即便还能读出几行用例也不许算通过率
+ * ——那会把「读到的那部分」冒充成「整次运行」。解析失败返回 `unparsed`，没有 `run` 字段，
+ * 界面于是只能回落原文 + 标记，不能显示成 0 个用例。
+ */
+function testResultOf(input: ToolItem['input'], output: ToolOutput): ToolTestResult | null {
+  const command = testCommandOf(input.text ?? input.value) ?? '';
+  const framework = detectTestFramework(command, output.text);
+  if (framework === null) return null;
+  if (output.truncation.kind === 'truncated') {
+    return { status: 'unparsed', framework, command, reason: '测试输出被截断，无法确认全量用例' };
+  }
+  const parsed = parseTestOutput({ command, output: output.text });
+  if (parsed.status === 'parsed') return { status: 'parsed', run: parsed.run };
+  if (parsed.status === 'unparsed') {
+    return { status: 'unparsed', framework: parsed.framework ?? framework, command, reason: parsed.reason };
+  }
+  return null;
+}
 
 /** 结果块 → 工具条目的 `output`（`status` / `structured` 已由数据层判定，这里只搬运） */
 function outputOf(block: Extract<ContentBlock, { kind: 'tool-result' }>): ToolOutput {
@@ -342,8 +380,19 @@ export function buildRenderBlocks(
         // 主人是卡片时它已经在卡片里画过了（`cardOwned`），再落一条就是把同一次结果说两遍
         const owner = block.callId === null ? undefined : byCallId.get(block.callId);
         const takenOver = block.callId !== null && cardOwned.has(block.callId);
-        if (owner !== undefined) owner.output = outputOf(block);
-        else if (!takenOver) group.push({ kind: 'orphan-result', callId: block.callId, blockId: block.id, at: block.at, output: outputOf(block) });
+        if (owner !== undefined) {
+          owner.output = outputOf(block);
+          owner.testResult = testResultOf(owner.input, owner.output);
+        } else if (!takenOver) {
+          group.push({
+            kind: 'orphan-result',
+            callId: block.callId,
+            blockId: block.id,
+            at: block.at,
+            output: outputOf(block),
+            assembly: block.assembly,
+          });
+        }
         break;
       }
       case 'tool-call': {
@@ -398,7 +447,9 @@ export function buildRenderBlocks(
           inputError: block.inputError ?? null,
           summary: block.summary,
           output: null,
+          testResult: null,
           at: block.at,
+          assembly: block.assembly,
           running: turn.running,
         };
         group.push(item);

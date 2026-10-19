@@ -14,9 +14,8 @@
  *      在表格上方点名。用户不该等到点「确定」才知道。空 ID 不算重复（它们没有身份）；
  *   4. `readOnly` 供用例详情复用：不渲染任何增删控件，也不渲染输入框。
  *
- * 样式一律走 antd（主题 token / 紧凑密度），不手写字号、不裸写 div 做布局。
- * 按钮形态一律 `color` + `variant` **成对**给：antd 6 里 `variant` 单给会被**静默**降级成实线
- * （`variant="dashed"` 渲染成实线且没有任何可观察信号，同一处说明见 `base/empty-state.tsx`）。
+ * 行内「标红」靠 `aria-invalid`：新栈的 `Input` 用它触发 `border-destructive` 与聚焦环，
+ * 同时屏读器也会读出「这一格不合法」——只画一条红边等于对读屏用户没有信号。
  */
 import {
   MAX_ITEM_WEIGHT,
@@ -27,31 +26,62 @@ import {
   type RubricGroup,
   type RubricItem,
 } from '@aieval/contracts';
-import { Button, Card, Flex, Input, InputNumber, Table, Tag, Typography } from 'antd';
-import type { TableColumnsType } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '../components/ui/card';
+import { Input } from '../components/ui/input';
+import { DataTable, type DataTableColumn } from '../base/data-table';
 
 export interface RubricTableProps {
   value: Rubric;
   onChange: (next: Rubric) => void;
   /** 只读形态（用例详情）：不渲染任何增删控件 */
   readOnly?: boolean;
+  /**
+   * 是否显示校验红字。
+   *
+   * 默认 `true`（详情 / 设置页这类「已经在用的表」随时可以说它不合规）；新建表单必须由调用方在
+   * **用户动过或提交过之后**才置 true——空表是新建的合法初值，一进来就飘红等于先判用户有罪。
+   */
+  validationVisible?: boolean;
 }
 
 /** 新评分项的初值：权重给 1（0 会被 schema 与 validateRubric 拒掉） */
 const NEW_ITEM: RubricItem = { id: '', goal: '', weight: 1 };
 
+/** 表格的一行 = 一个评分项 + 它在组内的序号（`rowKey` 与 Controller 的定位都靠它） */
+interface RubricRow {
+  item: RubricItem;
+  index: number;
+}
+
 /** 表尾汇总：满分 = 全部项权重之和。它同时是用户自查权重配置的唯一手段（满分不强制是 100） */
 export function RubricSummaryText({ rubric }: { rubric: Rubric }): ReactNode {
   const count = rubric.groups.reduce((total, group) => total + group.items.length, 0);
+  // 空表不写「满分 0 分」：那是「一张 0 分的尺子」，读起来像结论；它其实只是还没开始配
+  if (count === 0) {
+    return <p className="text-sm text-muted-foreground">还没有评分项 · 满分随评分项自动计算</p>;
+  }
   return (
-    <Typography.Text type="secondary">
+    <p className="text-sm text-muted-foreground">
       满分 {rubricMaxScore(rubric)} 分 · 共 {count} 项
-    </Typography.Text>
+    </p>
   );
 }
 
-export function RubricTable({ value, onChange, readOnly = false }: RubricTableProps): ReactNode {
+export function RubricTable({
+  value,
+  onChange,
+  readOnly = false,
+  validationVisible = true,
+}: RubricTableProps): ReactNode {
   /** 校验结果：表格上方直接显示原因（用户不该等到点「确定」才知道哪一格有问题） */
   const validation = validateRubric(value);
   /**
@@ -90,7 +120,7 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
     return duplicated;
   })();
 
-  /** 该组是否含撞车的引用键：Tag 只挂在真有问题的组上（挂在 `groups.map` 里会让三组的表挂三个 Tag，冤枉两组） */
+  /** 该组是否含撞车的引用键：徽标只挂在真有问题的组上（挂在 `groups.map` 里会让三组的表挂三个徽标，冤枉两组） */
   const groupHasDuplicatedKey = (groupIndex: number): boolean =>
     keysByGroup[groupIndex]?.some((key) => duplicatedKeys.has(key)) ?? false;
 
@@ -132,114 +162,125 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
     );
   };
 
-  /**
-   * 某一组的列定义。**必须按组生成**（闭包捕获 groupIndex），不能用一份共享的 columns
-   * 再去数据里反查组索引——那在「两项内容完全相同」时会改错项（典型场景：连点两次「添加评分项」）。
-   */
-  const columnsFor = (groupIndex: number, group: RubricGroup): TableColumnsType<{ item: RubricItem; index: number }> => [
+  /** 操作列：编辑态才有（只读形态不渲染任何增删控件），按组的当前项集删这一行 */
+  const actionColumn = (groupIndex: number, group: RubricGroup): DataTableColumn<RubricRow> => ({
+    id: 'actions',
+    header: '',
+    size: 72,
+    cell: ({ row }) => {
+      const { index } = row.original;
+      return (
+        <Button
+          size="xs"
+          variant="ghost"
+          data-testid={`rubric-remove-item-${groupIndex}-${index}`}
+          onClick={() => replaceGroup(groupIndex, group.items.filter((_, itemIndex) => itemIndex !== index))}
+        >
+          删除
+        </Button>
+      );
+    },
+  });
+
+  const columnsFor = (groupIndex: number, group: RubricGroup): DataTableColumn<RubricRow>[] => [
     {
-      title: 'ID',
-      width: 96,
-      render: (_, { item, index }) =>
+      id: 'id',
+      header: 'ID',
+      size: 96,
+      accessorFn: (row) => row.item.id,
+      cell: ({ row: { original: { item, index } } }) =>
         readOnly ? (
           // 「这一项写没写 ID」**只有一条判据**：`trim()` 之后为空 = 没写（与 `rubricItemKeys` 内部
           // 决定「用 ID 还是用按位置的 `#k`」的那一行为同一条）。写成 `item.id === ''` 会让
           // 纯空白 ID 在只读态渲染成一段空白——同一个问题在同一个表格里出现两个答案。
-          <Typography.Text>{item.id.trim() === '' ? '—' : item.id}</Typography.Text>
+          <span>{item.id.trim() === '' ? '—' : item.id}</span>
         ) : (
           <Input
-            size="small"
             value={item.id}
-            status={duplicatedKeys.has(keyAt(groupIndex, index)) ? 'error' : undefined}
+            aria-invalid={duplicatedKeys.has(keyAt(groupIndex, index))}
+            aria-label={`第 ${groupIndex + 1} 组第 ${index + 1} 项的 ID`}
             data-testid={`rubric-item-id-${groupIndex}-${index}`}
             onChange={(event) => patchItem(groupIndex, index, { id: event.target.value })}
           />
         ),
     },
     {
-      title: '目标',
-      render: (_, { item, index }) =>
+      id: 'goal',
+      header: '目标',
+      size: 360,
+      accessorFn: (row) => row.item.goal,
+      cell: ({ row: { original: { item, index } } }) =>
         readOnly ? (
-          <Typography.Text>{item.goal}</Typography.Text>
+          <span>{item.goal}</span>
         ) : (
           <Input
-            size="small"
             value={item.goal}
             placeholder="既说清改哪里，也说清怎样算达成"
+            aria-label={`第 ${groupIndex + 1} 组第 ${index + 1} 项的目标`}
             data-testid={`rubric-item-goal-${groupIndex}-${index}`}
             onChange={(event) => patchItem(groupIndex, index, { goal: event.target.value })}
           />
         ),
     },
     {
-      title: '权重',
-      width: 96,
-      render: (_, { item, index }) =>
+      id: 'weight',
+      header: '权重',
+      size: 96,
+      accessorFn: (row) => row.item.weight,
+      cell: ({ row: { original: { item, index } } }) =>
         readOnly ? (
-          <Typography.Text>{item.weight}</Typography.Text>
+          <span>{item.weight}</span>
         ) : (
-          <InputNumber
-            size="small"
+          <Input
+            type="number"
             min={1}
             // 上界与 schema 同一个常量（`RubricSchema` 的 `.max(MAX_ITEM_WEIGHT)`）：
             // 没有它，用户能一路敲到提交才被拒（`validateRubric` 不查上限，见 `overweight` 的注释）
             max={MAX_ITEM_WEIGHT}
             value={item.weight}
-            status={item.weight > MAX_ITEM_WEIGHT ? 'error' : undefined}
+            aria-invalid={item.weight > MAX_ITEM_WEIGHT}
+            aria-label={`第 ${groupIndex + 1} 组第 ${index + 1} 项的权重`}
             data-testid={`rubric-item-weight-${groupIndex}-${index}`}
-            // `null`（清空输入框）落回 1：权重 0 会被 schema 与 validateRubric 拒掉，
+            // 清空输入框（`''`）与解析不出数字时落回 1：权重 0 会被 schema 与 validateRubric 拒掉，
             // 让用户点着点着就进一个非法状态是可用性问题
-            onChange={(next) => patchItem(groupIndex, index, { weight: next ?? 1 })}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              patchItem(groupIndex, index, { weight: Number.isFinite(next) && next >= 1 ? next : 1 });
+            }}
           />
         ),
     },
-    ...(readOnly
-      ? []
-      : [
-        {
-          title: '',
-          width: 72,
-          render: (_: unknown, { index }: { item: RubricItem; index: number }) => (
-            <Button
-              size="small"
-              color="default"
-              variant="text"
-              autoInsertSpace={false}
-              data-testid={`rubric-remove-item-${groupIndex}-${index}`}
-              onClick={() => replaceGroup(groupIndex, group.items.filter((_, itemIndex) => itemIndex !== index))}
-            >
-              删除
-            </Button>
-          ),
-        },
-      ]),
+    ...(readOnly ? [] : [actionColumn(groupIndex, group)]),
   ];
 
   return (
-    <Flex vertical gap={8}>
+    <div className="flex flex-col gap-2">
       {/* 校验原因直接显示在表格上方：用户不该等到点「确定」才知道哪一格有问题。
           首判据是写侧 / 表单提交 / 设置页共用的**同一份** `validateRubric`（这里只显示它）；
           「超过权重上限」那一条不在 `validateRubric` 里（它由 `RubricSchema` 在提交时才拒），
-          故由 `validationMessage` 在 `validateRubric` 通过之后补上——不另立第二套提示组件。 */}
-      {!readOnly && validationMessage !== undefined && (
-        <Typography.Text type="danger" data-testid="rubric-validation-error">
+          故由 `validationMessage` 在 `validateRubric` 通过之后补上——不另立第二套提示组件。
+          `validationVisible=false` 时（新建表单、用户还没动过）空表不飘红，只说一句中性的下一步。 */}
+      {!readOnly && validationMessage !== undefined && validationVisible && (
+        <p className="text-sm text-destructive" role="alert" data-testid="rubric-validation-error">
           {validationMessage}
-        </Typography.Text>
+        </p>
+      )}
+      {!readOnly && !validationVisible && value.groups.length === 0 && (
+        <p className="text-sm text-muted-foreground" data-testid="rubric-empty-hint">
+          还没有评分项。先添加一组，再给每项写目标与权重；满分随评分项自动计算。
+        </p>
       )}
       {value.groups.map((group, groupIndex) => (
-        <Card
-          key={`rubric-group-${groupIndex}`}
-          size="small"
-          data-testid={`rubric-group-${groupIndex}`}
-          title={
-            readOnly ? (
-              <Typography.Text strong>{group.name}</Typography.Text>
-            ) : (
-              <Flex align="center" gap={8}>
+        <Card key={`rubric-group-${groupIndex}`} size="sm" data-testid={`rubric-group-${groupIndex}`}>
+          <CardHeader>
+            <CardTitle className="flex min-w-0 items-center gap-2">
+              {readOnly ? (
+                <span className="font-medium">{group.name}</span>
+              ) : (
                 <Input
-                  size="small"
                   value={group.name}
                   placeholder="组名，例如：一、生产代码"
+                  aria-label={`第 ${groupIndex + 1} 组的组名`}
                   data-testid={`rubric-group-name-${groupIndex}`}
                   onChange={(event) =>
                     onChange({
@@ -249,51 +290,54 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
                     })
                   }
                 />
-                {groupHasDuplicatedKey(groupIndex) && <Tag color="error">引用键有重复</Tag>}
-              </Flex>
-            )
-          }
-          extra={
-            readOnly ? undefined : (
+              )}
+            </CardTitle>
+            {readOnly ? null : (
+              <CardAction>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  data-testid={`rubric-remove-group-${groupIndex}`}
+                  onClick={() => onChange({ groups: value.groups.filter((_, index) => index !== groupIndex) })}
+                >
+                  删除组
+                </Button>
+              </CardAction>
+            )}
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {!readOnly && groupHasDuplicatedKey(groupIndex) && (
+                <Badge variant="destructive">引用键有重复</Badge>
+              )}
+            </div>
+            <DataTable
+              columns={columnsFor(groupIndex, group)}
+              data={group.items.map((item, index) => ({ item, index }))}
+              rowKey={(record) => `${groupIndex}-${record.index}`}
+              virtualize={false}
+              rowHeight={40}
+              ariaLabel={`${group.name || `第 ${groupIndex + 1} 组`}的评分项`}
+            />
+            {readOnly ? null : (
               <Button
-                size="small"
-                danger
-                autoInsertSpace={false}
-                data-testid={`rubric-remove-group-${groupIndex}`}
-                onClick={() => onChange({ groups: value.groups.filter((_, index) => index !== groupIndex) })}
+                size="xs"
+                variant="outline"
+                className="self-start border-dashed"
+                data-testid={`rubric-add-item-${groupIndex}`}
+                onClick={() => replaceGroup(groupIndex, [...group.items, { ...NEW_ITEM }])}
               >
-                删除组
+                添加评分项
               </Button>
-            )
-          }
-        >
-          <Table
-            size="small"
-            rowKey={(record) => `${groupIndex}-${record.index}`}
-            pagination={false}
-            dataSource={group.items.map((item, index) => ({ item, index }))}
-            columns={columnsFor(groupIndex, group)}
-          />
-          {!readOnly && (
-            <Button
-              size="small"
-              color="default"
-              variant="dashed"
-              autoInsertSpace={false}
-              data-testid={`rubric-add-item-${groupIndex}`}
-              onClick={() => replaceGroup(groupIndex, [...group.items, { ...NEW_ITEM }])}
-            >
-              添加评分项
-            </Button>
-          )}
+            )}
+          </CardContent>
         </Card>
       ))}
       {!readOnly && (
         <Button
-          size="small"
-          color="default"
-          variant="dashed"
-          autoInsertSpace={false}
+          size="xs"
+          variant="outline"
+          className="self-start border-dashed"
           data-testid="rubric-add-group"
           onClick={() => onChange({ groups: [...value.groups, { name: '', items: [{ ...NEW_ITEM }] }] })}
         >
@@ -301,6 +345,6 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
         </Button>
       )}
       <RubricSummaryText rubric={value} />
-    </Flex>
+    </div>
   );
 }

@@ -9,7 +9,7 @@
  *   · 列表每行的操作列多一个「模型」按钮，落在「编辑」之前（模型清单比改接线常用得多）；
  *   · 编辑弹窗只留四个字段 + 一条指向本对话框的提示（那个入口必须**可见**，不能靠用户自己发现）。
  *
- * 纯展示：不调接口、不认识 message；动作全部以回调交给调用方（页面负责接 hooks 与报错）。
+ * 纯展示：不调接口、不认识提示通道；动作全部以回调交给调用方（页面负责接 hooks 与报错）。
  *
  * 拉取是两步：本对话框的「拉取模型」只发起**预览**（onFetchModels），候选回到页面后经
  * `modelCandidates` 传进来，由内层的 `ProviderModelImportModal`（挑选对话框）接手 ——
@@ -26,23 +26,31 @@
  *   4. 两格能力的**输入草稿**要能把「用户清空了输入框」与「用户没碰过」分开：前者回调 `null`
  *      （明确清空，服务端据此记住「这是用户的手工表态」），后者回落到清单里的现值。
  *      用 `Object.hasOwn` 判「改过没有」，因为草稿值本身可以是 `null`。
- *   5. **「手工维护」不用 Tag 表达**：改由保存图标变黄 + 提示语承担（少一个 Tag 就少一格宽度竞争）。
- *   6. 中文文案**全部显式给出**：应用没有配 antd 的 locale（见 apps/web-next/app/providers.tsx），
- *      漏给一处就是中英混杂；按钮一律 `autoInsertSpace={false}`（antd 默认会在两个汉字中间插空格，
- *      可访问名随之不再等于文案）。
+ *   5. **「手工维护」不用标签表达**：改由保存图标变黄 + 提示语承担（少一个标签就少一格宽度竞争）。
+ *   6. 中文文案**全部显式给出**，可访问名与可见文案逐字一致。
  *   7. **本对话框没有「确定 / 取消」**：它不做提交 —— 每一次增删与拉取都是**立即生效**的独立请求，
  *      页脚只留一个「关闭」。给它一个「确定」会让人以为不点就不保存。
- *      内层的挑选对话框**有**确定 / 取消：它表达的是「这一批要不要进清单」的一次性表态，
- *      与外层「每一行独立生效」的口径不冲突。
+ *      内层的挑选对话框**有**确定 / 取消：它表达的是「这一批要不要进清单」的一次性表态。
  *   8. **拉取中按钮转圈**（loading 来自页面 props）：预览是一次真实网络请求，
  *      无反馈的等待会让人连点几次（每次都发起一次请求）。
  */
-import { DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
+import { PlusIcon, SaveIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Alert, Button, Flex, Input, InputNumber, Modal, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ProviderModelCapability, ProviderModelPreview, ProviderView } from '@aieval/contracts';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
+import { Input } from '../components/ui/input';
+import { DataTable, type DataTableColumn } from '../base/data-table';
 import { ProviderModelImportModal } from './provider-model-import-modal';
+import { SettingsAlert } from './settings-alert';
 
 export interface ProviderModelsModalProps {
   open: boolean;
@@ -69,29 +77,24 @@ export interface ProviderModelsModalProps {
    * 服务端据此把窗口标成「用户手工改过」，下一次拉取不再覆盖它。
    * 两格同一次提交：它们是同一行相邻的两个输入框，用户点一次保存表达的是「这一行就是这样」。
    */
-  onSetModelContext: (modelId: string, capability: ProviderModelCapability) => void;
+  onSetModelContext: (modelId: string, modelCapability: ProviderModelCapability) => void;
 }
 
 /**
- * 模型清单这张表的列宽（px）。**它是 `table-layout: fixed`**（模型列的 `ellipsis` 会把它切成 fixed），
- * 所以每列宽必须自己算够：格子比内容窄时 td 是 `overflow: visible`，内容会**直接压到相邻列上**。
+ * 模型清单这张表的列宽（px）。**它是 `table-layout: fixed`**，所以每列宽必须自己算够：
+ * 格子比内容窄时 td 是 `overflow: visible`，内容会**直接压到相邻列上**。
  *
- * 这个坑在浏览器里量过真实几何（不是推的）：输入列写 96px 时，减左右各 8px 内边距只剩 80px，
- * 而输入框是 7em —— 14px 字号下 **98px** ⇒ 向右溢出 10px，两个输入框互相压、右边界再盖住操作列的图标按钮。
- * 现在的推导：`7em` = 98px + 单元格内边距 16px = 114，取 **116** 留 2px 余量。
- * 字号与内边距都由 antd 的密度/主题给（本仓不手写），故这里把它们当**常量假设**写进推导，
- * 并由 `provider-models-modal.test.tsx` 的列宽守卫盯着（谁把列宽改小到装不下 7em 就会变红）。
+ * 推导：输入框 7em = 98px + 单元格内边距 16px = 114，取 **116** 留 2px 余量。
+ * 常量假设由 `provider-models-modal.test.tsx` 的列宽守卫盯着（谁把列宽改小到装不下 7em 就会变红）。
  */
-export const MODEL_COLUMN_WIDTH = { source: 88, capability: 116, actions: 72 } as const;
+export const MODEL_COLUMN_WIDTH = { model: 280, source: 88, capability: 116, actions: 72 } as const;
 
 /** 弹窗宽度：560 放不下「模型名 + 两个输入 + 两个图标按钮」，模型列会被挤到 140px 只剩省略号 */
 export const MODELS_MODAL_WIDTH = 720;
 
 /**
  * 候选缺席时的占位数组：**模块级常量**（引用稳定）。挑选框的勾选集合随 `models` 引用重置，
- * 这里若写 `?? []`，每次 render 都是一个新数组 —— open=false 期间无所谓，但任何一次
- * 「父组件重渲染时 modelCandidates 仍为 null」都会让 effect 重跑一遍（空操作，无碍），
- * 真正要防的是把这种「引用不稳定」的写法习惯带到 open=true 的路径上去。
+ * 这里若写 `?? []`，每次 render 都是一个新数组。
  */
 const NO_CANDIDATES: ProviderModelPreview[] = [];
 
@@ -101,13 +104,16 @@ const SOURCE_LABELS: Record<ProviderView['models'][number]['source'], string> = 
   manual: '手工维护',
 };
 
-const SOURCE_COLORS: Record<ProviderView['models'][number]['source'], string> = {
-  fetched: 'blue',
-  manual: 'gold',
+const SOURCE_CLASSES: Record<ProviderView['models'][number]['source'], string> = {
+  fetched: 'border-info/30 bg-info/10 text-info',
+  manual: 'border-warning/30 bg-warning/10 text-warning',
 };
 
 /** 表格里两个可编辑的能力格（与 `ProviderModelCapability` 的键一一对应） */
 type CapabilityField = 'contextWindow' | 'maxOutputTokens';
+
+/** 能力输入框的宽度：与列宽常量一起构成「装得下」的判据（7em 在 14px 字号下是 98px） */
+const CAPABILITY_INPUT_WIDTH = '7em';
 
 export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode {
   const {
@@ -156,195 +162,236 @@ export function ProviderModelsModal(props: ProviderModelsModalProps): ReactNode 
   };
 
   /**
-   * 「手工维护过」这一行的保存提示：Tag 删掉之后，
-   * 这件事改由**保存图标变黄 + 提示语**承担。tooltip 与可访问名用同一份文案 ——
-   * Tooltip 不产生可访问名，两者分开写就会让屏读用户拿到一个「保存窗口」而不知道这是手工行。
+   * 「手工维护过」这一行的保存提示：这件事改由**保存图标变黄 + 提示语**承担。
+   * 提示语与可访问名用同一份文案 —— 屏读用户不该拿到一个「保存窗口」而不知道这是手工行。
    */
   const saveHintOf = (model: ProviderView['models'][number]): string =>
     model.contextWindowSource === 'manual' ? '保存窗口，模型已被手工维护' : '保存窗口';
 
-  return (
-    <Modal
-      open={open}
-      // 标题带上供应商名：从列表里点进来时，人未必记得自己点的是哪一行（两行名字只差一个后缀很常见）
-      title={provider === null ? '模型清单' : `模型清单：${provider.name}`}
-      onCancel={onClose}
-      width={MODELS_MODAL_WIDTH}
-      // 不做提交 ⇒ 不给「确定 / 取消」；页脚只留一个明确的出口（右上角的 × 与 Esc 照常可用）
-      footer={
-        <Button autoInsertSpace={false} onClick={onClose}>
-          关闭
-        </Button>
-      }
-    >
-      {provider === null ? (
-        // 目标在对话框开着时被删掉（别的标签页 / CLI 改配置）：说清去向，而不是给一片空白
-        <Alert
-          type="warning"
-          showIcon
-          title="这条供应商已不在列表里"
-          description="它可能已被删除或改名：请关闭这个对话框，等列表刷新后重新打开。"
+  /**
+   * 五列定义：模型 / 来源 / 输入 / 输出 / 操作。**表头隐藏**（`showHeader={false}`）：
+   * 列的含义由输入框占位符与按钮承担；固定宽度让两个能力输入框有确定的分母。
+   */
+  const columns: DataTableColumn<ProviderView['models'][number]>[] = [
+    {
+      id: 'model',
+      header: '模型',
+      accessorKey: 'id',
+      size: MODEL_COLUMN_WIDTH.model,
+      // 不套 `code`：模型名本身就是纯文本，等宽字形反而更难读长名。
+      // `data-ellipsis` 是「这一格真的开了省略」的稳定信号（jsdom 量不到宽度）
+      cell: ({ row }) => (
+        <span data-ellipsis className="block truncate" title={row.original.id}>
+          {row.original.id}
+        </span>
+      ),
+    },
+    {
+      id: 'source',
+      header: '来源',
+      accessorKey: 'source',
+      size: MODEL_COLUMN_WIDTH.source,
+      cell: ({ row }) => (
+        <Badge variant="outline" className={SOURCE_CLASSES[row.original.source]}>
+          {SOURCE_LABELS[row.original.source]}
+        </Badge>
+      ),
+    },
+    {
+      id: 'contextWindow',
+      header: '上下文窗口',
+      accessorKey: 'contextWindow',
+      size: MODEL_COLUMN_WIDTH.capability,
+      cell: ({ row }) => (
+        <Input
+          type="number"
+          min={1}
+          style={{ width: CAPABILITY_INPUT_WIDTH }}
+          aria-label={`${row.original.id} 的上下文窗口`}
+          placeholder="窗口 token 数"
+          className="[appearance:textfield]"
+          value={draftOf(row.original, 'contextWindow') ?? ''}
+          onChange={(event) =>
+            setDraft(row.original.id, 'contextWindow', event.target.value === '' ? null : Number(event.target.value))
+          }
         />
-      ) : (
-        <Flex vertical gap={8}>
-          <Flex align="center" gap={8}>
-            <Button
-              size="small"
-              autoInsertSpace={false}
-              loading={fetchingModels}
-              // 显式给可访问名：antd 的 loading 图标自带 `role="img" aria-label="loading"`，
-              // 拉取中这个名字会变成「loading 拉取模型」—— 同一颗按钮在两种状态下的名字必须一致
-              // （与文件头第 6 点同源：图标污染可访问名是本仓反复踩过的一类坑）。
-              aria-label="拉取模型"
-              onClick={onFetchModels}
-            >
-              拉取模型
-            </Button>
-            <Typography.Text type="secondary">拉取后先挑选要加入的模型；手工维护的条目不会被冲掉</Typography.Text>
-          </Flex>
+      ),
+    },
+    {
+      id: 'maxOutputTokens',
+      header: '最大输出',
+      accessorKey: 'maxOutputTokens',
+      size: MODEL_COLUMN_WIDTH.capability,
+      cell: ({ row }) => (
+        <Input
+          type="number"
+          min={1}
+          style={{ width: CAPABILITY_INPUT_WIDTH }}
+          aria-label={`${row.original.id} 的最大输出`}
+          placeholder="输出上限"
+          className="[appearance:textfield]"
+          value={draftOf(row.original, 'maxOutputTokens') ?? ''}
+          onChange={(event) =>
+            setDraft(row.original.id, 'maxOutputTokens', event.target.value === '' ? null : Number(event.target.value))
+          }
+        />
+      ),
+    },
+    {
+      id: 'actions',
+      header: '操作',
+      size: MODEL_COLUMN_WIDTH.actions,
+      cell: ({ row }) => (
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            data-manual={row.original.contextWindowSource === 'manual' ? 'true' : undefined}
+            className={
+              row.original.contextWindowSource === 'manual'
+                ? 'text-warning'
+                : undefined
+            }
+            aria-label={saveHintOf(row.original)}
+            // 手工维护过的行：图标变黄；`title` 与可访问名同文，悬停可读
+            title={saveHintOf(row.original)}
+            onClick={() =>
+              onSetModelContext(row.original.id, {
+                contextWindow: draftOf(row.original, 'contextWindow'),
+                maxOutputTokens: draftOf(row.original, 'maxOutputTokens'),
+              })
+            }
+          >
+            <SaveIcon aria-hidden />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="text-destructive"
+            aria-label="移除"
+            title="移除"
+            onClick={() => onRemoveModel(row.original.id)}
+          >
+            <Trash2Icon aria-hidden />
+          </Button>
+        </div>
+      ),
+    },
+  ];
 
-          {provider.models.length === 0 ? (
-            <Typography.Text type="secondary">还没有模型：拉取一次，或手工添加。</Typography.Text>
-          ) : (
-            /**
-             * 模型清单 = small Table（二稿口径）：列序 **模型 ｜ 来源 ｜ 输入 ｜ 输出 ｜ 操作**，
-             * **表头隐藏**（列的含义由输入框占位符与按钮承担），操作列**右对齐**。五条刻意的取舍：
-             *   · **模型列开 `ellipsis` 且不套 `code`**：网关的模型名可以很长（`vendor/very-long-name`），
-             *     撑破弹窗比截断更糟；`ellipsis` 会让 antd 把 tableLayout 切成 fixed，其余列必须给宽度；
-             *   · **两格能力各占一列、都是输入框、都 7em**：值只在输入框里（「窗口 Tag + 输入框」
-             *     把同一个值显示两遍）；
-             *   · **操作用图标按钮 + 右对齐**：两个汉字的文字按钮在这一列里占掉半张表，
-             *     图标 + Tooltip 把宽度还给内容；可访问名仍靠 `aria-label`（Tooltip 不产生可访问名）；
-             *   · **「手工维护」不再用 Tag**：改由保存图标变黄 + 提示语承担（`saveHintOf`），
-             *     少一个 Tag 就少一格宽度竞争；
-             *   · **表头隐藏**：五列的含义在占位符里已经写全（窗口 token 数 / 输出上限），
-             *     表头只是把同样的话再说一遍，还占掉一行高度。
-             */
-            <Table
-              size="small"
-              rowKey="id"
-              // 对话框里不分页：清单最多几十条，翻页只会把「我正要改的那一行」藏起来
-              pagination={false}
-              showHeader={false}
-              dataSource={provider.models}
-              columns={[
-                {
-                  title: '模型',
-                  dataIndex: 'id',
-                  ellipsis: true,
-                  // 不套 `code`（用户口径「去掉 tag 包裹」）：模型名本身就是纯文本，等宽字形反而更难读长名
-                  render: (_value, model) => model.id,
-                },
-                {
-                  title: '来源',
-                  width: MODEL_COLUMN_WIDTH.source,
-                  render: (_value, model) => (
-                    <Tag color={SOURCE_COLORS[model.source]}>{SOURCE_LABELS[model.source]}</Tag>
-                  ),
-                },
-                {
-                  title: '输入',
-                  width: MODEL_COLUMN_WIDTH.capability,
-                  render: (_value, model) => (
-                    <InputNumber
-                      size="small"
-                      min={1}
-                      style={{ width: '7em' }}
-                      aria-label={`${model.id} 的上下文窗口`}
-                      placeholder="窗口 token 数"
-                      value={draftOf(model, 'contextWindow')}
-                      onChange={(value) => setDraft(model.id, 'contextWindow', value ?? null)}
-                    />
-                  ),
-                },
-                {
-                  title: '输出',
-                  width: MODEL_COLUMN_WIDTH.capability,
-                  render: (_value, model) => (
-                    <InputNumber
-                      size="small"
-                      min={1}
-                      style={{ width: '7em' }}
-                      aria-label={`${model.id} 的最大输出`}
-                      placeholder="输出上限"
-                      value={draftOf(model, 'maxOutputTokens')}
-                      onChange={(value) => setDraft(model.id, 'maxOutputTokens', value ?? null)}
-                    />
-                  ),
-                },
-                {
-                  title: '操作',
-                  width: MODEL_COLUMN_WIDTH.actions,
-                  align: 'right',
-                  render: (_value, model) => (
-                    <Flex align="center" justify="flex-end" gap={2}>
-                      <Tooltip title={saveHintOf(model)}>
-                        <Button
-                          size="small"
-                          // 手工维护过的行：图标变黄（antd 的预设色，随主题走）；`color` 与 `variant` 必须成对给
-                          color={model.contextWindowSource === 'manual' ? 'gold' : 'default'}
-                          variant="text"
-                          icon={<SaveOutlined aria-hidden />}
-                          aria-label={saveHintOf(model)}
-                          onClick={() =>
-                            onSetModelContext(model.id, {
-                              contextWindow: draftOf(model, 'contextWindow'),
-                              maxOutputTokens: draftOf(model, 'maxOutputTokens'),
-                            })
-                          }
-                        />
-                      </Tooltip>
-                      <Tooltip title="移除">
-                        <Button
-                          size="small"
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined aria-hidden />}
-                          aria-label="移除"
-                          onClick={() => onRemoveModel(model.id)}
-                        />
-                      </Tooltip>
-                    </Flex>
-                  ),
-                },
-              ]}
-            />
-          )}
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent
+        className="sm:max-w-[720px]"
+        style={{ maxWidth: MODELS_MODAL_WIDTH }}
+        data-testid="provider-models-dialog"
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          {/* 标题带上供应商名：从列表里点进来时，人未必记得自己点的是哪一行（两行名字只差一个后缀很常见） */}
+          <DialogTitle>{provider === null ? '模型清单' : `模型清单：${provider.name}`}</DialogTitle>
+        </DialogHeader>
 
-          <Flex gap={8}>
-            <Input
-              size="small"
-              value={modelInput}
-              placeholder="手工添加模型名，如 deepseek-chat"
-              onChange={(event) => setModelInput(event.target.value)}
-              onPressEnter={addModel}
-            />
-            <Button
-              color="default"
-              variant="dashed"
-              size="small"
-              icon={<PlusOutlined aria-hidden />}
-              autoInsertSpace={false}
-              onClick={addModel}
-            >
-              添加
-            </Button>
-          </Flex>
-
-          {/**
-           * 挑选对话框（拉取第二步）：只在目标还在、且页面手里有候选时出现。
-           * 「已在清单」的标注由当前清单现算 —— 候选与清单都在 props 里，两份事实都是最新的。
-           */}
-          <ProviderModelImportModal
-            open={modelCandidates !== null}
-            models={modelCandidates ?? NO_CANDIDATES}
-            existingIds={new Set(provider.models.map((model) => model.id))}
-            importing={importingModels}
-            onImport={onImportModels}
-            onCancel={onCancelImport}
+        {provider === null ? (
+          // 目标在对话框开着时被删掉（别的标签页 / CLI 改配置）：说清去向，而不是给一片空白
+          <SettingsAlert
+            tone="warning"
+            title="这条供应商已不在列表里"
+            description="它可能已被删除或改名：请关闭这个对话框，等列表刷新后重新打开。"
           />
-        </Flex>
-      )}
-    </Modal>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label="拉取模型"
+                data-loading={fetchingModels ? 'true' : undefined}
+                disabled={fetchingModels}
+                onClick={onFetchModels}
+              >
+                {fetchingModels && (
+                  <span className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />
+                )}
+                拉取模型
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                拉取后先挑选要加入的模型；手工维护的条目不会被冲掉
+              </span>
+            </div>
+
+            {provider.models.length === 0 ? (
+              <p className="text-sm text-muted-foreground">还没有模型：拉取一次，或手工添加。</p>
+            ) : (
+              /**
+               * 模型清单：列序 **模型 ｜ 来源 ｜ 输入 ｜ 输出 ｜ 操作**，**表头隐藏**（列的含义由输入框
+               * 占位符与按钮承担），操作列**右对齐**。三条刻意的取舍：
+               *   · 模型列开 `truncate`：网关的模型名可以很长，撑破弹窗比截断更糟；
+               *   · 两格能力各占一列、都是输入框、都 7em：值只在输入框里；
+               *   · 操作用图标按钮 + 右对齐：两个汉字的文字按钮在这一列里占掉半张表。
+               */
+              <div className="w-full">
+                <DataTable
+                  columns={columns}
+                  data={provider.models}
+                  rowKey={(model) => model.id}
+                  showHeader={false}
+                  virtualize={false}
+                  rowHeight={40}
+                  // 操作列右对齐：与旧表的单元格语义一致（图标按钮贴着右边界）
+                  cellAttributes={(_model, columnId) =>
+                    columnId === 'actions' ? { style: { textAlign: 'right' } } : undefined
+                  }
+                  ariaLabel="模型清单"
+                />
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Input
+                size={undefined}
+                value={modelInput}
+                placeholder="手工添加模型名，如 deepseek-chat"
+                onChange={(event) => setModelInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    addModel();
+                  }
+                }}
+              />
+              <Button size="sm" variant="outline" className="border-dashed" onClick={addModel}>
+                <PlusIcon aria-hidden />
+                添加
+              </Button>
+            </div>
+
+            {/**
+             * 挑选对话框（拉取第二步）：只在目标还在、且页面手里有候选时出现。
+             * 「已在清单」的标注由当前清单现算 —— 候选与清单都在 props 里，两份事实都是最新的。
+             */}
+            <ProviderModelImportModal
+              open={modelCandidates !== null}
+              models={modelCandidates ?? NO_CANDIDATES}
+              existingIds={new Set(provider.models.map((model) => model.id))}
+              importing={importingModels}
+              onImport={onImportModels}
+              onCancel={onCancelImport}
+            />
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

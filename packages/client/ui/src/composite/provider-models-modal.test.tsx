@@ -82,9 +82,7 @@ describe('ProviderModelsModal：外框', () => {
   it('宽度是 720（模型名 + 两个输入框 + 两个图标按钮）', () => {
     renderModal();
 
-    expect((document.querySelector('.ant-modal') as HTMLElement | null)?.style.width).toBe(
-      `${MODELS_MODAL_WIDTH}px`,
-    );
+    expect(screen.getByTestId('provider-models-dialog').style.maxWidth).toBe(`${MODELS_MODAL_WIDTH}px`);
   });
 
   /**
@@ -105,7 +103,7 @@ describe('ProviderModelsModal：外框', () => {
     renderModal({ provider: { ...PROVIDER, models: [] } });
 
     expect(screen.getByText('还没有模型：拉取一次，或手工添加。')).toBeInTheDocument();
-    expect(document.querySelector('.ant-table')).toBeNull();
+    expect(document.querySelector('[data-slot="table"]')).toBeNull();
   });
 
   // 「拉取模型」发起的是**预览**（拉取第一步）：loading 由页面 props 给，
@@ -116,7 +114,7 @@ describe('ProviderModelsModal：外框', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '拉取模型' }));
     expect(onFetchModels).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: '拉取模型' }).className).not.toMatch(/loading/);
+    expect(screen.getByRole('button', { name: '拉取模型' })).not.toHaveAttribute('data-loading');
 
     rerender(
       <ProviderModelsModal
@@ -134,7 +132,9 @@ describe('ProviderModelsModal：外框', () => {
         onSetModelContext={noop}
       />,
     );
-    expect(screen.getByRole('button', { name: '拉取模型' }).className).toMatch(/loading/);
+    const fetching = screen.getByRole('button', { name: '拉取模型' });
+    expect(fetching).toHaveAttribute('data-loading', 'true');
+    expect(fetching).toBeDisabled();
   });
 
   /**
@@ -249,7 +249,7 @@ describe('ProviderModelsModal：外框', () => {
       provider: { ...PROVIDER, models: [{ id: 'm', source: 'fetched', contextWindow: 1_000 }] },
     });
     fireEvent.change(screen.getByLabelText('m 的上下文窗口'), { target: { value: '5000' } });
-    expect(screen.getByLabelText('m 的上下文窗口')).toHaveValue('5000');
+    expect(screen.getByLabelText('m 的上下文窗口')).toHaveValue(5000);
 
     const other = { ...PROVIDER, id: 'p-2', models: [{ id: 'm', source: 'fetched' as const, contextWindow: 2_000 }] };
     rerender(
@@ -268,7 +268,7 @@ describe('ProviderModelsModal：外框', () => {
         onSetModelContext={noop}
       />,
     );
-    expect(screen.getByLabelText('m 的上下文窗口')).toHaveValue('2000');
+    expect(screen.getByLabelText('m 的上下文窗口')).toHaveValue(2000);
   });
 });
 
@@ -301,8 +301,8 @@ describe('ProviderModelsModal：模型清单表格', () => {
     }
     expect(screen.queryByText('262K')).toBeNull(); // 大小 Tag 已删（一稿删的）
     expect(screen.queryByText('手工')).toBeNull(); // 「手工」Tag 已删（二稿删的，改由保存图标承担）
-    expect(screen.getByLabelText(`${LONG_ID} 的上下文窗口`)).toHaveValue('262144');
-    expect(screen.getByLabelText(`${LONG_ID} 的最大输出`)).toHaveValue('32768');
+    expect(screen.getByLabelText(`${LONG_ID} 的上下文窗口`)).toHaveValue(262144);
+    expect(screen.getByLabelText(`${LONG_ID} 的最大输出`)).toHaveValue(32768);
   });
 
   it('列序是 模型｜来源｜输入｜输出｜操作（操作在最后一列）', () => {
@@ -326,8 +326,8 @@ describe('ProviderModelsModal：模型清单表格', () => {
     renderModal({ provider: twoModels });
 
     for (const label of [`${LONG_ID} 的上下文窗口`, `${LONG_ID} 的最大输出`]) {
-      const wrapper = screen.getByLabelText(label).closest('.ant-input-number') as HTMLElement | null;
-      expect(wrapper?.style.width).toBe('7em');
+      const input = screen.getByLabelText(label) as HTMLElement;
+      expect(input.style.width).toBe('7em');
     }
     expect(firstRowCells()[4]?.style.textAlign).toBe('right');
   });
@@ -346,12 +346,12 @@ describe('ProviderModelsModal：模型清单表格', () => {
 
     renderModal({ provider: twoModels });
 
-    const widths = Array.from(document.querySelectorAll('.ant-table colgroup col')).map(
+    const widths = Array.from(document.querySelectorAll('table colgroup col')).map(
       (col) => (col as HTMLElement).style.width,
     );
-    // 模型列不给宽度（吃剩余空间），其余四列按常量
+    // 五列全部按常量声明宽度（固定列的偏移输入就是这些声明值）
     expect(widths).toEqual([
-      '',
+      `${MODEL_COLUMN_WIDTH.model}px`,
       `${MODEL_COLUMN_WIDTH.source}px`,
       `${MODEL_COLUMN_WIDTH.capability}px`,
       `${MODEL_COLUMN_WIDTH.capability}px`,
@@ -362,9 +362,9 @@ describe('ProviderModelsModal：模型清单表格', () => {
   it('模型名过长时用省略号（列上开 ellipsis，长 id 不撑破弹窗）', () => {
     renderModal({ provider: twoModels });
 
-    // ⚠️ 查 `document` 而不是 render 的 container：antd Modal 是 **portal** 渲染到 body 的，
-    // 表格不在测试容器的子树里（第一版查 container 得到 0，正是这个原因）。
-    expect(document.querySelectorAll('.ant-table-cell-ellipsis').length).toBeGreaterThan(0);
+    // ⚠️ 查 `document` 而不是 render 的 container：对话框是 **portal** 渲染到 body 的，
+    // 表格不在测试容器的子树里。
+    expect(document.querySelectorAll('[data-ellipsis]').length).toBeGreaterThan(0);
   });
 
   /**
@@ -377,10 +377,10 @@ describe('ProviderModelsModal：模型清单表格', () => {
     renderModal({ provider: twoModels });
 
     const manualSave = screen.getByRole('button', { name: '保存窗口，模型已被手工维护' });
-    expect(manualSave.className).toMatch(/gold/);
+    expect(manualSave).toHaveAttribute('data-manual', 'true');
     // 没手工过的那一行仍是普通保存按钮（对照组：否则「所有行都变黄」也会全绿）
     const plainSave = screen.getByRole('button', { name: '保存窗口' });
-    expect(plainSave.className).not.toMatch(/gold/);
+    expect(plainSave).not.toHaveAttribute('data-manual');
   });
 
   it('改输入后点图标保存 ⇒ 回调 (modelId, { contextWindow, maxOutputTokens })', () => {

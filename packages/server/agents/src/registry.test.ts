@@ -84,6 +84,16 @@ function turnInjectionCells(declaration: TurnInjectionDeclarationShape | undefin
 /** 注入面里**进回归网**的一格取值（`proofDriverReason` 是散文，声明与期望表都不带它） */
 type TurnInjectionCellValues = Omit<TurnInjectionCapability['resume'], 'proofDriverReason'>;
 
+/** 回到某一轮的能力：只比取值四格（`notes` 是实测前提的说明，随厂商更新，不进回归网） */
+function checkpointCells(declaration: AgentProviderMetadata['checkpoint']): unknown {
+  return {
+    supported: declaration.supported,
+    mode: declaration.mode,
+    filesRewind: declaration.filesRewind,
+    reason: declaration.reason,
+  };
+}
+
 /**
  * 注入面在期望表里的形状：与 `turnInjectionCells()` 的投影**逐格同形**
  * （`proofDriverReason` 与 `notes` 是散文，两边都不进——各写一份「比哪几格」的话，
@@ -136,6 +146,7 @@ const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
      * 端到端真路径观测），撤回两档 `by-id`，续接 `yes`。逐格理由写在 `providers/cc/index.ts`
      * 那一份里；这里进回归网的是**取值**——改一格就改了界面上「这家收不收人话」的结论。
      */
+    checkpoint: { supported: true, mode: 'resume-at', filesRewind: true, reason: null, notes: [] },
     turnInjection: {
       delivery: {
         round: { state: 'unverified', reason: 'unverified', channel: 'wire', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
@@ -181,6 +192,7 @@ const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
      * 撤回按档分开：在途那一档**没有**撤回面（`none`）、耐久队列那一档按身份可撤（`by-id`）；
      * 续接是 `yes`（真机两条独立判据都过），键只有 `threadId`。
      */
+    checkpoint: { supported: true, mode: 'fork', filesRewind: false, reason: null, notes: [] },
     turnInjection: {
       delivery: {
         round: { state: 'unverified', reason: 'unverified', channel: 'wire', gate: { version: '0.156.1' }, experimental: false, proofDriver: 'synthetic-fixture' },
@@ -227,6 +239,8 @@ const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
     timing: { runScale: 'minutes', notes: [] },
     // 推理证据 events.jsonl 即齐，不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,
+    // 回到某一轮：没有截断 / 分叉 / 回退入口（只有 `resumeSession`）⇒ 不支持，界面置灰并给原因
+    checkpoint: { supported: false, mode: null, filesRewind: false, reason: 'not-supported', notes: [] },
     // 人工消息面：两档各走一条路（`'idle'` 是 wire、`'round'` 是进程内插件）；
     // 续接走官方 wire 的 `session/resume`，正向证据是真路径驱动器
     turnInjection: {
@@ -271,6 +285,7 @@ const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
      * 但适配器一格都不挂端口）；撤回只有 `clearQueue()` 那一条整条清空的路；续接走进程内 SDK 的
      * `SessionManager.open(会话文件)`，真机同形夹具在 `providers/pi/session-resume.test.ts`。
      */
+    checkpoint: { supported: true, mode: 'fork', filesRewind: false, reason: null, notes: [] },
     turnInjection: {
       delivery: {
         round: { state: 'off-by-adapter', reason: 'not-observed', channel: 'in-process-sdk', gate: null, experimental: false, proofDriver: 'synthetic-fixture' },
@@ -318,19 +333,64 @@ describe('listAgentProviders', () => {
   });
 });
 
+/**
+ * **回到某一轮**的四家取值（本仓「能力只有声明表一个来源」这条纪律的判据）。
+ *
+ * 为什么单独钉一条：这四行决定界面上「回到这里」能不能点、点下去走哪条路、文案敢不敢说
+ * 「文件也一起回退」。把它们混在投影网里时，一处改错只有在期望表也一起改错时才放行；
+ * 这里按**家**把结论写死：DSH 必须是不支持且带原因，CC 必须是唯一声明了 `filesRewind` 的一家。
+ */
+describe('checkpoint 能力声明（四家取值）', () => {
+  it('CC 是 resume-at + 文件回退；Codex / Pi 是 fork 且不动文件；DSH 不支持并给出原因', () => {
+    expect(getProvider('cc').metadata.checkpoint).toMatchObject({
+      supported: true,
+      mode: 'resume-at',
+      filesRewind: true,
+      reason: null,
+    });
+    expect(getProvider('codex').metadata.checkpoint).toMatchObject({
+      supported: true,
+      mode: 'fork',
+      filesRewind: false,
+      reason: null,
+    });
+    expect(getProvider('pi').metadata.checkpoint).toMatchObject({
+      supported: true,
+      mode: 'fork',
+      filesRewind: false,
+      reason: null,
+    });
+    expect(getProvider('dsh').metadata.checkpoint).toMatchObject({
+      supported: false,
+      mode: null,
+      filesRewind: false,
+      reason: 'not-supported',
+    });
+  });
+});
+
 describe('元数据投影（回归网）', () => {
   it('各家与表逐格一致（`messageCapability` 与三组 `notes` 除外，它们各有真源）', () => {
     for (const provider of listAgentProviders()) {
       // 为什么排除 `messageCapability`：它由**各家自己**声明（三份真值在 `providers/<kind>/index.ts`），
       // 「声明过的东西真的拿得到」由 `message-conformance.test.ts` 钉住；这里再抄一份 stub 只会
       // 让同一件事有两个真源，而两份必然漂移。
-      const { messageCapability: _declared, injection, interaction, timing, turnInjection, ...rest } = provider.metadata;
+      const {
+        messageCapability: _declared,
+        injection,
+        interaction,
+        timing,
+        turnInjection,
+        checkpoint,
+        ...rest
+      } = provider.metadata;
       const {
         messageCapability: _expected,
         injection: expectedInjection,
         interaction: expectedInteraction,
         timing: expectedTiming,
         turnInjection: expectedTurnInjection,
+        checkpoint: expectedCheckpoint,
         ...wanted
       } = EXPECTED_METADATA[provider.kind];
       // 报错信息带上 kind：这一格是「哪一家错了」的定位线索（多家共用同一个断言体）
@@ -356,6 +416,10 @@ describe('元数据投影（回归网）', () => {
         turnInjectionCells(turnInjection),
         `${provider.kind} 的注入面（第五组）声明`,
       ).toEqual(turnInjectionCells(expectedTurnInjection));
+      // 回到某一轮：`notes` 是「前提」的说明，不进回归网；四格取值进——改一格就改了界面能不能点
+      expect(checkpointCells(checkpoint), `${provider.kind} 的 checkpoint 声明`).toEqual(
+        checkpointCells(expectedCheckpoint),
+      );
       // 耗时量级同理：改档会改真机冒烟的等待预算，属于「必须与适配器同一次提交里改掉」的那类
       expect(timing.runScale, `${provider.kind} 的耗时量级`).toBe(expectedTiming.runScale);
     }

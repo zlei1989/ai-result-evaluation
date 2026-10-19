@@ -2,7 +2,7 @@
  * UnrecognizedBlockView：我们不认识的厂商载荷。
  *
  * 三条守卫：
- *   · **默认收起**：`open === false` 时正文**不在 DOM 里**（antd 的 `Collapse` 收起时不渲染 children）；
+ *   · **默认收起**：`open === false` 时正文**不在 DOM 里**（折叠面板收起时不保留 children）；
  *   · 展开后给出**载荷原文**（是 JSON ⇒ 走 `JsonText` 缩进格式化 + 高亮），而不是把 `vendorType` 当正文；
  *   · `raw === null` 时说「原样载荷未采集」，不留空面板。
  *
@@ -65,12 +65,12 @@ describe('UnrecognizedBlockView', () => {
     expect(screen.getByText('原样载荷未采集')).toBeInTheDocument();
   });
 
-  it('vendorType 为空时不画一个空 Tag', () => {
+  it('vendorType 为空时不画一个空徽标', () => {
     const { container } = render(
       <UnrecognizedBlockView block={unrecognized({ vendorType: null })} open={false} onOpenChange={vi.fn()} />,
     );
 
-    expect(container.querySelectorAll('.ant-tag')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-slot="badge"]')).toHaveLength(0);
   });
 
   it('收起态点标题会把「要打开」上报给调用方（受控）', () => {

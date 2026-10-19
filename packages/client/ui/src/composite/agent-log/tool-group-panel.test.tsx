@@ -39,6 +39,7 @@ function call(overrides: Partial<ToolItem> = {}): ToolItem {
     input: { value: '{"path":"a.ts"}', text: '{"path":"a.ts"}', bytes: 14, description: null },
     output: { text: '结果原文', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'none' } },
     at: AT,
+    assembly: 'snapshot',
     running: false,
     ...overrides,
   };
@@ -50,6 +51,7 @@ const orphan: OrphanToolResult = {
   blockId: 'm1#9',
   at: AT,
   output: { text: '配不上调用的结果', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'none' } },
+  assembly: 'snapshot',
 };
 
 /** 结果为 `error` 的孤立结果：它同样是一次失败，组头的「失败 N」要把它算进去 */
@@ -110,15 +112,15 @@ describe('ToolGroupPanel', () => {
 
   it('展开后出组内的工具行，收起时行不在 DOM 里', () => {
     const { unmount } = render(<ToolGroupPanel {...props} entries={[call()]} />);
-    // 组头也有一份名字汇总，故按行内那两格（族名 Tag + 参数摘要）来断言
+    // 组头也有一份名字汇总，故按行内那两格（族名 + 参数摘要）来断言
     expect(screen.getByText('读文件')).toBeInTheDocument();
     expect(screen.getByText('{"path":"a.ts"}')).toBeInTheDocument();
     unmount();
 
     const { container: closed } = render(<ToolGroupPanel {...props} open={false} entries={[call()]} />);
-    // 收起时组头在、组内一行都不渲染
+    // 收起时组头在、组内一行都不渲染（只剩组头那一层 TraceCollapsible）
     expect(screen.getByText('工具调用 × 1')).toBeInTheDocument();
-    expect(closed.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
+    expect(closed.querySelectorAll('[data-slot="trace-collapsible"]')).toHaveLength(1);
     expect(screen.queryByText('{"path":"a.ts"}')).toBeNull();
   });
 
@@ -126,12 +128,33 @@ describe('ToolGroupPanel', () => {
     const { container, unmount } = render(
       <ToolGroupPanel {...props} entries={[call({ output: null, running: true })]} />,
     );
-    expect(container.querySelector('.ant-badge-status-processing')).not.toBeNull();
+    expect(container.querySelector('[data-testid="run-state-running"]')).not.toBeNull();
     unmount();
 
     const { container: done } = render(<ToolGroupPanel {...props} entries={[call()]} />);
-    expect(done.querySelector('.ant-badge-status-processing')).toBeNull();
+    expect(done.querySelector('[data-testid="run-state-running"]')).toBeNull();
     expect(screen.queryByText('结果未采集')).toBeNull();
+  });
+
+  /**
+   * 组头的动效判据与工具行同一条：**各条目的 `block.assembly`**，不另传一个「流式中」布尔。
+   * 三条分支各钉一次：还在收 ⇒ `running`；都收口 ⇒ 不传 `status`；收口且有失败 ⇒ `error`。
+   */
+  it('组头状态从各条目的 `assembly` 推：还在收 ⇒ running，收口 ⇒ 不传，失败 ⇒ error', () => {
+    const { container, unmount } = render(
+      <ToolGroupPanel {...props} open={false} entries={[call({ assembly: 'open', output: null, running: true })]} />,
+    );
+    expect(container.querySelector('[data-testid="tool-group-line"]')).toHaveAttribute('data-status', 'running');
+    unmount();
+
+    const { container: done } = render(<ToolGroupPanel {...props} open={false} entries={[call()]} />);
+    expect(done.querySelector('[data-testid="tool-group-line"]')?.hasAttribute('data-status')).toBe(false);
+    unmount();
+
+    const { container: failed } = render(
+      <ToolGroupPanel {...props} open={false} entries={[failedCall({ callId: 'c-fail' })]} />,
+    );
+    expect(failed.querySelector('[data-testid="tool-group-line"]')).toHaveAttribute('data-status', 'error');
   });
 
   it('组状态汇总：轮次结束而结果没到 → 静态灰字「结果未采集」', () => {
@@ -139,9 +162,9 @@ describe('ToolGroupPanel', () => {
       <ToolGroupPanel {...props} entries={[call({ output: null, running: false })]} />,
     );
 
-    // 组头的状态汇总（`items[].extra`）就是那一句灰字，且**不带**转圈徽标
-    expect(container.querySelector('.ant-collapse-extra')).toHaveTextContent('结果未采集');
-    expect(container.querySelector('.ant-badge-status-processing')).toBeNull();
+    // 组头的状态汇总就是那一句灰字（`AgentRunStateTag` 在触发器旁边），且**不带**转圈
+    expect(container).toHaveTextContent('结果未采集');
+    expect(container.querySelector('[data-testid="run-state-running"]')).toBeNull();
   });
 
   it('组头带「失败 N」：N 数结果为 error 的条目（含失败的孤立结果），与「工具调用 × N」各自独立', () => {
@@ -150,13 +173,13 @@ describe('ToolGroupPanel', () => {
 
     // 两个读数各说各的：调用次数只数 call，失败数数的是失败结果（调用与孤立结果都算）
     expect(screen.getByText('工具调用 × 2')).toBeInTheDocument();
-    expect(container.querySelector('.ant-collapse-extra')).toHaveTextContent('失败 2');
+    expect(container.querySelector('[data-slot="trace-collapsible-trigger"]')).toHaveTextContent('失败 2');
   });
 
   it('一条失败都没有时组头不出现「失败」这一格（不画一个恒为 0 的读数）', () => {
     const { container } = render(<ToolGroupPanel {...props} open={false} entries={[call(), orphan]} />);
 
-    expect(container.querySelector('.ant-collapse-extra')).not.toHaveTextContent('失败');
+    expect(container.querySelector('[data-slot="trace-collapsible-trigger"]')).not.toHaveTextContent('失败');
   });
 
   it('收起态就能看出这组有失败，而组内的行一条都不挂载（失败 N 是折叠口径的补偿）', () => {
@@ -164,9 +187,9 @@ describe('ToolGroupPanel', () => {
       <ToolGroupPanel {...props} open={false} entries={[failedCall({ callId: 'c1' })]} />,
     );
 
-    expect(container.querySelector('.ant-collapse-extra')).toHaveTextContent('失败 1');
+    expect(container.querySelector('[data-slot="trace-collapsible-trigger"]')).toHaveTextContent('失败 1');
     // 组头在、组内一行都没有：证据要用户自己点开
-    expect(container.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-slot="trace-collapsible"]')).toHaveLength(1);
     expect(screen.queryByText('boom')).toBeNull();
   });
 

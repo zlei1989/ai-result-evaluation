@@ -92,7 +92,7 @@ describe('AgentEnvironmentDrawer', () => {
 
   it('读取中 ⇒ Skeleton；读失败 ⇒ Alert，且只有给了 onRetry 才渲染重试按钮', () => {
     const { rerender } = renderDrawer({ environment: { status: 'loading' } });
-    expect(document.querySelector('.ant-skeleton')).not.toBeNull();
+    expect(document.querySelector('[data-slot="skeleton"]')).not.toBeNull();
 
     rerender(<AgentEnvironmentDrawer open onOpenChange={vi.fn()} environment={{ status: 'error', error: new Error('读盘失败') }} />);
     expect(screen.getByText('环境信息读取失败')).toBeInTheDocument();
@@ -149,7 +149,7 @@ describe('AgentEnvironmentDrawer', () => {
   it('分组按数据层给的组名与顺序渲染，来源标签各一档', () => {
     renderDrawer();
 
-    const headers = [...document.querySelectorAll('.ant-collapse-header')].map((node) => node.textContent ?? '');
+    const headers = [...document.querySelectorAll('[data-group-header]')].map((node) => node.textContent ?? '');
     expect(headers).toHaveLength(3);
     // 组名与顺序都照数据层给的来（组件里没有任何硬编码的组名）
     expect(headers[0]).toContain('用户层');
@@ -216,8 +216,8 @@ describe('AgentEnvironmentDrawer', () => {
     // 结论文案来自契约的四档标签（不在这里抄第二份词表）
     const connected = screen.getByText('已连上');
     const skipped = screen.getByText('已跳过');
-    expect(connected.closest('.ant-tag')?.className ?? '').toContain('ant-tag-green');
-    expect(skipped.closest('.ant-tag')?.className ?? '').toContain('ant-tag-orange');
+    expect(connected.closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'connected');
+    expect(skipped.closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'skipped');
     // 结论之前的半行与表头照常等宽原文（`MonoText`）
     expect(screen.getByText('2 台：')).toBeInTheDocument();
     expect(screen.getByText(/playwright：来源 unknown · 判据 厂商启动状态 · 结论/)).toBeInTheDocument();
@@ -270,10 +270,8 @@ describe('AgentEnvironmentDrawer', () => {
     const onOpenChange = vi.fn();
     renderDrawer({ onOpenChange });
 
-    // 关闭按钮按结构定位（`.ant-drawer-close`）：antd 的可访问名是英文的 Close，不该被这里钉死
-    const close = document.querySelector<HTMLElement>('.ant-drawer-close');
-    expect(close).not.toBeNull();
-    if (close !== null) fireEvent.click(close);
+    // 关闭键走 `Sheet` 的可访问名（英文 Close），不按 antd 的 DOM 类名定位
+    fireEvent.click(screen.getByRole('button', { name: /close|关闭/i }));
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     // 自己不改 `open`：开合态在调用方手上（受控件的能力就在于能被挂到任何地方）
@@ -282,43 +280,34 @@ describe('AgentEnvironmentDrawer', () => {
 });
 
 /**
- * **静态扫描**（jsdom 看不见的那一半）：宽度与语义槽样式都只许来自 `base/drawer-geometry.ts`。
+ * **静态扫描**（jsdom 看不见的那一半）：宽度与语义槽归 `NestedDrawer` 统一实现，
+ * 环境信息只渲染正文。
  *
- * 为什么值得单独钉：jsdom 没有布局引擎，「这个抽屉多宽 / 内边距多少」测不出来；而写错了是**静默**的——
- * 抽屉照样弹出来，只是宽窄或内边距不对，别的用例一条都不会红。「宽一些」时改的正是
- * 这一格（更窄的字面量在 1432px 视口上只有 601px，比它推开的那个主抽屉还窄），
- * 改法是**接上共享常量**（`NESTED_DRAWER_SIZE` / `DRAWER_SEMANTIC_STYLES`）而不是换一个新字面量：
- * 自持一份 = 与几何常量漂移。两个槽分开钉——只钉宽度时，语义槽样式内联一份仍然全绿。
+ * 为什么值得单独钉：jsdom 没有布局引擎，「这个抽屉多宽 / 内边距多少」测不出来；而写错了是**静默**的。
+ * 这个件的壳已经换成 Base UI 的 `Sheet`：宽度、窄屏兜底与二级层让位都由二级抽屉那一份实现，
+ * 本件再写一个 `size` / `width` / `styles` 只可能是第二份真源。
  */
 describe('AgentEnvironmentDrawer（几何，静态）', () => {
   const raw = readFileSync(join(import.meta.dirname, 'agent-environment-drawer.tsx'), 'utf8');
 
   /**
-   * 判据只许扫代码：文件头的口径注释与 `size` 那一行的说明里**正大光明地写着宽度值**
-   * （那是讲给读的人听的口径），扫全文的话负向断言会被注释直接判红——`nested-drawer.test.tsx`
-   * 第一次跑就是这么假红的。守卫误伤比漏放行更危险（会教人把守卫删掉），故先剥注释。
+   * 判据只许扫代码：文件头的口径注释里写着壳与让位的实现位置（那是讲给读的人听的口径），
+   * 扫全文的话负向断言会被注释直接判红。守卫误伤比漏放行更危险（会教人把守卫删掉），故先剥注释。
    */
   const source = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-  it('宽度走共享常量，不再自己写一份字面量（写了就会与几何常量静默漂移）', () => {
-    // 取**所有** `size=` 属性：本件里还有若干 `<Button size="small">`（它们是对的），
-    // 故不能只说「文件里出现过常量」，也不能只说「文件里没有 vw」——两句都要落在同一张表上，
-    // 否则把 `size={NESTED_DRAWER_SIZE}` 删掉、只留 `maxWidth: '100vw'` 时仍会绿。
-    const sizeProps = [...source.matchAll(/\bsize=(\{[^}]*\}|"[^"]*")/g)].map((match) => match[1]);
-    expect(sizeProps, '本件里没解析到 size（判据失效了）').not.toEqual([]);
-    expect(sizeProps, '环境抽屉的宽度没有走共享常量').toContain('{NESTED_DRAWER_SIZE}');
+  it('壳是 NestedDrawer：本件不写宽度 / 语义槽（写了就是第二份真源）', () => {
+    expect(source, '环境信息的壳不是 NestedDrawer').toContain('<NestedDrawer');
+    expect(source, '环境抽屉又自己写了一份语义槽样式').not.toMatch(/DRAWER_SEMANTIC_STYLES|maxWidth: '100vw'/);
+    // 所有 `size=` / `width=` 都不许带 vw / px：Button 的 size 预设不受影响
+    const geometryProps = [...source.matchAll(/\b(?:size|width)=(\{[^}]*\}|"[^"]*")/g)].map((match) => match[1]);
     expect(
-      sizeProps.filter((value) => /\d(vw|px)/.test(value ?? '')),
-      '环境抽屉又自己写了一份宽度字面量',
+      geometryProps.filter((value) => /\d(vw|px)/.test(value ?? '')),
+      '环境抽屉又自己写了一份几何字面量',
     ).toEqual([]);
   });
 
-  it('语义槽样式也走共享常量（内联一份 = 与几何常量静默漂移）', () => {
-    // 正向：`styles` 那一格必须引用共享常量。
-    // 负向：判据取「内联兜底里的那个 `maxWidth` 字面量」而不是 `styles={{`——后者会把本件里
-    // 别的组件（`Button` / `Collapse`）将来合法的内联样式一起误伤，而守卫误伤会教人删守卫；
-    // 这一格是**语义槽**，本件再出现 `maxWidth: '100vw'` 只可能是又内联了一份。
-    expect(source, '环境抽屉的语义槽样式没有走共享常量').toContain('styles={DRAWER_SEMANTIC_STYLES}');
-    expect(source, '环境抽屉又自己内联了一份语义槽样式').not.toMatch(/maxWidth: '100vw'/);
+  it('整件不 import antd（连正文展示件也不再用它）', () => {
+    expect(source, '环境信息又把 antd 请回来了').not.toMatch(/from\s+'antd'/);
   });
 });

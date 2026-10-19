@@ -1,148 +1,109 @@
 /**
- * PageShell：四条结构性不变量。
- * 最关键的一条是**不设 alignItems**——纵向 Flex 的交叉轴是水平方向，
- * align-items: flex-start 会让子元素不横向拉伸（表现为「没有横向沾满」）并把父级顶宽。
- * 后半段是密度守卫：ConfigProvider 不产生 DOM 节点，「紧凑」与「豁免」两条分支的 DOM
- * 完全相同，所以密度只能靠子组件里的 theme.useToken() 探针观察。
+ * PageShell：四条结构性不变量 + 密度作用域落到 DOM（三半判据里的「乙」）。
+ *
+ * jsdom 没有 CSS 级联，量不到渲染后的字号；密度在这里只断言两件**它能看见**的事：
+ * ① 根节点把 `density` 落到 `data-density` 属性上（CSS 变量按最近祖先继承，属性不在 = 豁免整页失效）；
+ * ② 根节点带 `text-body` / `leading-body`，让继承链上的文字真的读到作用域变量。
+ *
+ * 结构性不变量从「读内联 style」改成「读类名」：新写法只有一份类名，没有
+ * 「内联 style 与 antd 的 CSS 类谁赢」这个问题。
  */
 import { describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { theme } from 'antd';
 import { PageShell } from './page-shell';
-import { DensityProvider } from './density-context';
 
-function renderShell(ui: React.ReactNode, mode: 'light' | 'dark' = 'dark'): HTMLElement {
-  const { container } = render(<DensityProvider mode={mode}>{ui}</DensityProvider>);
+function renderShell(ui: React.ReactNode): HTMLElement {
+  const { container } = render(ui);
   return container.firstElementChild as HTMLElement;
 }
 
-/**
- * 实效 token 探针：读 ConfigProvider 真正下发的那份 token。
- * 为什么必须要它：ConfigProvider 不产生 DOM 节点，「包了紧凑主题」与「豁免、没包」
- * 两条分支的 DOM **完全相同**（见下一个用例的注释），结构断言区分不了密度。
- */
-function TokenProbe(): React.ReactNode {
-  const { token } = theme.useToken();
-  return <span data-testid="token-probe" data-font-size={String(token.fontSize)} data-color-bg-base={String(token.colorBgBase)} />;
-}
-
-function renderProbe(mode: 'light' | 'dark' = 'dark', density: 'compact' | 'default' = 'compact'): DOMStringMap {
-  render(
-    <DensityProvider mode={mode}>
-      <PageShell density={density}>
-        <TokenProbe />
-      </PageShell>
-    </DensityProvider>,
-  );
-  return (screen.getByTestId('token-probe') as HTMLElement).dataset;
-}
-
 describe('PageShell', () => {
-  it('根节点是纵向 Flex 且横向沾满', () => {
-    renderShell(
+  it('根节点是纵向 Flex 且吃掉顶栏之外的高度（命名工具类，不是任意值）', () => {
+    const root = renderShell(
       <PageShell>
         <span>内容</span>
       </PageShell>,
     );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.display).toBe('flex');
-    expect(root.style.flexDirection).toBe('column');
-    expect(root.style.width).toBe('100%');
-    expect(root.style.minWidth).toBe('0px');
-    expect(root.style.height).toBe('100%');
+    // `flex-1` 而不是 `h-full`：外壳是 body 的纵向 flex，顶栏 56px 是兄弟节点；
+    // 写 `h-full` 会把总高顶成「视口 + 40」，每页多一条滚动条、底栏被推到视口外。
+    for (const cls of ['flex', 'flex-col', 'flex-1', 'w-full', 'min-w-0', 'min-h-0']) {
+      expect(root.classList.contains(cls), `缺少结构类 ${cls}`).toBe(true);
+    }
+    expect(root.classList.contains('h-full'), 'h-full 会与顶栏叠加成 56px 溢出').toBe(false);
   });
 
-  it('不设 alignItems（否则子元素不横向拉伸）', () => {
-    renderShell(
+  it('不设 alignItems（否则子元素不横向拉伸、父级被顶宽）', () => {
+    const root = renderShell(
       <PageShell>
         <span>内容</span>
       </PageShell>,
     );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.alignItems).toBe('');
+    expect(root.classList.contains('items-start')).toBe(false);
+    expect(root.classList.contains('items-center')).toBe(false);
   });
 
   it('默认不落 padding / gap（不凭空新增间距）', () => {
-    renderShell(
+    const root = renderShell(
       <PageShell>
         <span>内容</span>
       </PageShell>,
     );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.padding).toBe('');
-    expect(root.style.gap).toBe('');
+    expect(root.classList.contains('p-page')).toBe(false);
+    expect(root.classList.contains('gap-page')).toBe(false);
   });
 
-  it('显式传入 padding / gap 时才落 style', () => {
-    renderShell(
-      <PageShell padding={16} gap={8}>
+  it('显式传入 padding / gap 时落密度间距类', () => {
+    const root = renderShell(
+      <PageShell padding={16} gap={16}>
         <span>内容</span>
       </PageShell>,
     );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.padding).toBe('16px');
-    expect(root.style.gap).toBe('8px');
+    expect(root.classList.contains('p-page')).toBe(true);
+    expect(root.classList.contains('gap-page')).toBe(true);
   });
 
-  it('scroll=inner 时自身滚动且带 minHeight:0', () => {
-    renderShell(
-      <PageShell scroll="inner">
-        <span>内容</span>
-      </PageShell>,
-    );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.overflow).toBe('auto');
-    expect(root.style.minHeight).toBe('0px');
-  });
-
-  it('scroll 三种模式下都带 minHeight:0（高度链是共用的，不只 inner 分支）', () => {
-    // 守的是真实缺陷：默认 scroll="page" 的 /demo 在「右栏打开 + 窗口够矮」时，页面根保持
-    // min-height:auto、收缩不到 flex 分配的高度，整页被顶出顶栏那一截——浏览器实测
-    // documentElement.scrollHeight 545 > clientHeight 520（溢出 25px）、PageShell 高卡在 520（本应 495.33）；
-    // 运行时把它的 min-height 压成 0 后溢出即归零（右栏内部滚动不受影响）。
-    // 布局本身在 jsdom 里测不出来，唯一可断言的就是「这条不变量无条件落在内联 style 上」。
+  it('scroll=inner 时自身滚动，且三种模式都带 min-h-0（高度链是共用的）', () => {
     for (const scroll of ['page', 'inner', 'none'] as const) {
       const root = renderShell(
         <PageShell scroll={scroll}>
           <span>内容</span>
         </PageShell>,
       );
-      expect(root.style.minHeight).toBe('0px');
-      // 只有 inner 接管滚动：其余模式不得凭空多出 overflow（否则页面会出现双滚动条）
-      expect(root.style.overflow).toBe(scroll === 'inner' ? 'auto' : '');
-      cleanup(); // 同一用例内多次 render：先清掉上一个容器，否则 screen 查询会撞到多份节点
+      expect(root.classList.contains('overflow-auto')).toBe(scroll === 'inner');
+      expect(root.classList.contains('min-h-0'), '高度链断了：整页会被顶出顶栏那一截').toBe(true);
+      cleanup(); // 同一用例内多次 render：先清掉上一个容器，否则查询会撞到多份节点
     }
   });
 
-  it('density=default 时按 antd 默认密度渲染（仍保持结构不变量）', () => {
-    renderShell(
+  it('密度落到 DOM：默认是 compact（data-density 是变量作用域的唯一入口）', () => {
+    const root = renderShell(
+      <PageShell>
+        <span>内容</span>
+      </PageShell>,
+    );
+    expect(root.dataset.density).toBe('compact');
+    expect(root.classList.contains('text-body')).toBe(true);
+    expect(root.classList.contains('leading-body')).toBe(true);
+  });
+
+  it('设置页豁免：density="default" 也落到属性上（两档都有规则，嵌套再入才正确）', () => {
+    const root = renderShell(
       <PageShell density="default">
         <span>内容</span>
       </PageShell>,
     );
-    const root = screen.getByText('内容').parentElement as HTMLElement;
-    expect(root.style.display).toBe('flex');
-    expect(root.style.height).toBe('100%');
+    expect(root.dataset.density).toBe('default');
   });
 
-  it('density=compact（默认）时实效字号是紧凑值 12', () => {
-    expect(renderProbe('dark', 'compact').fontSize).toBe('12');
-  });
-
-  it('density=default 时豁免紧凑主题，实效字号回落 antd 默认 14', () => {
-    // 上面那条 density=default 用例只能断言结构：豁免分支（直接 return content）与
-    // 包了 ConfigProvider 的分支**渲染出完全相同的 DOM**，ConfigProvider 不加节点，
-    // 所以「豁免有没有生效」只有读 token 才看得见。
-    expect(renderProbe('dark', 'default').fontSize).toBe('14');
-  });
-
-  it('紧凑底色按 DensityProvider 的 mode 选择（light 与 dark 不同）', () => {
-    const dark = renderProbe('dark').colorBgBase;
-    cleanup(); // 同一用例内第二次 render：先清掉上一个容器，否则 getByTestId 会撞到两个节点
-    const light = renderProbe('light').colorBgBase;
-    expect(light).not.toBe(dark);
-    // 顺手钉死方向：只有 equality 的话，「两份主题写反」这种变异体仍会通过
-    expect(dark).toBe('#000');
-    expect(light).toBe('#fff');
+  it('嵌套时内层赢：default 子树里的 compact 壳重新紧凑', () => {
+    render(
+      <PageShell density="default">
+        <PageShell density="compact">
+          <span>内层内容</span>
+        </PageShell>
+      </PageShell>,
+    );
+    const inner = screen.getByText('内层内容').parentElement as HTMLElement;
+    expect(inner.dataset.density).toBe('compact');
   });
 });

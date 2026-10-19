@@ -394,35 +394,61 @@ describe('McpServerFormModal', () => {
   });
 
   /**
-   * 形态守卫：键值行是**一张 small Table**，与模型供应商弹窗里那张模型清单同口径。
+   * 数组字段的增删：加两行、删掉**第一行**之后，留下的那一行仍是自己的键与值（不是按下标复用把值串位）。
+   * 判据必须落在「删中间/前面一行」而不是「删最后一行」：后者按下标复用也看不出错。
+   */
+  it('键值表增删行：删掉前一行之后，剩下的行值不串位', async () => {
+    const { onSubmit } = renderModal();
+
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'demo' } });
+    fireEvent.change(screen.getByLabelText('命令'), { target: { value: 'npx' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加环境变量' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加环境变量' }));
+
+    const keyInputs = screen.getAllByLabelText('变量名') as HTMLInputElement[];
+    const valueInputs = screen.getAllByLabelText('值') as HTMLInputElement[];
+    fireEvent.change(keyInputs[0] as HTMLElement, { target: { value: 'FIRST' } });
+    fireEvent.change(keyInputs[1] as HTMLElement, { target: { value: 'SECOND' } });
+    fireEvent.change(valueInputs[0] as HTMLElement, { target: { value: '1' } });
+    fireEvent.change(valueInputs[1] as HTMLElement, { target: { value: '2' } });
+
+    // 删掉第一行：剩下那一行必须还是 SECOND=2
+    fireEvent.click(screen.getAllByRole('button', { name: '删除这一行变量名' })[0] as HTMLElement);
+    expect(screen.getAllByLabelText('变量名')[0]).toHaveValue('SECOND');
+    expect(screen.getAllByLabelText('值')[0]).toHaveValue('2');
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ env: [{ key: 'SECOND', value: '2' }] });
+  });
+
+  /**
+   * 形态守卫：键值行是**一张 DataTable**，与模型供应商弹窗里那张模型清单同口径。
    *
-   * 判据里**哪些有牙、哪些只是记录**（如实写下来）：
+   * 判据：
    *   · **`thead` 不渲染**（`showHeader: false`）—— 有牙：去掉 `showHeader: false` ⇒ 这条红；
-   *   · **结构是 Table 不是 Space 行布局** —— 有牙：`getByTestId` 找不到就抛（换回 `Space` 行布局即红）；
-   *   · **行的身份用 `Form.List` 的 `key`**（`data-row-key` 在场）—— 防止退回按下标复用；
-   *   · `ant-table-small` 这条**只是记录效果、抓不住「有没有显式给 `size`」**：本仓全局是紧凑密度
-   *     （`ConfigProvider` 的 `componentSize`），去掉 `size="small"` 它照样成立（不放红）。
-   *     留它是为了写明「与供应商模型弹窗同一档尺寸」这个口径，别把它当守门的那一条。
+   *   · **结构是表格不是 Space 行布局** —— 有牙：`getByTestId` 找不到就抛（换回行布局即红）；
+   *   · **行的身份用 `useFieldArray` 的 `id`**（`data-row-key` 在场）—— 防止退回按下标复用。
    * 真实观感与列宽留真机冒烟量（`getBoundingClientRect()`）。
    */
-  it('键值行是一张 small Table（对齐供应商模型弹窗那张表）', () => {
+  it('键值行是一张 DataTable（对齐供应商模型弹窗那张表）', () => {
     renderModal({
       initialName: 'context7',
       initial: servers['context7'] as NonNullable<Parameters<typeof buildMcpConfig>[1]>,
     });
 
     const table = screen.getByTestId('mcp-key-value-headers');
-    // 尺寸类与 `data-testid` 都落在**外层 wrapper** 上（不是它内部那个 `.ant-table`）
-    expect(table.className).toContain('ant-table-small');
+    // `data-testid` 落在外层 wrapper 上，表格本体是它内部的那张 table
+    expect(table.querySelector('table')).not.toBeNull();
     // `showHeader: false` ⇒ 连 thead 都不渲染（表头只是把占位符与 aria-label 的话再说一遍）
     expect(table.querySelector('thead')).toBeNull();
-    expect(table.querySelectorAll('tbody tr.ant-table-row')).toHaveLength(1);
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(1);
     // 两格的可访问名给在输入框自己身上；删除按钮是图标按钮 + aria-label
     expect(screen.getByLabelText('请求头名')).toBeInTheDocument();
     expect(screen.getByLabelText('请求头值')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '删除这一行请求头名' })).toBeInTheDocument();
     // 行的身份用 Form.List 的 key（不是下标）：删中间一行时值不会串行错位
-    expect(table.querySelectorAll('tbody tr.ant-table-row')[0]?.getAttribute('data-row-key')).toBeTruthy();
+    expect(table.querySelectorAll('tbody tr')[0]?.getAttribute('data-row-key')).toBeTruthy();
   });
 
   it('env 的键名按契约规则拦（带点号 / 数字开头都不行），中文原因就地给出', async () => {

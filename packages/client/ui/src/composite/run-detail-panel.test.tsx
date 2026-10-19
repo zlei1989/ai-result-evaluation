@@ -1,18 +1,18 @@
 /**
  * RunDetailPanel：顶部信息卡 + 串行进度 + 候选卡片列表 + 吸底操作栏。
  * 本文件钉住的界面语义：
- *   · 顶部信息卡的字段（用例标题 / 代码仓库 / 分支 / commit 全量 / 工作基目录），
+ *   · 顶部信息卡的字段（用例标题 / 代码仓库 / 分支 / 基线提交全量 / 工作区根目录），
  *     形态与用例详情同构：`Card` + `Descriptions`；
  *   · 串行才有进度文案「3/6 已完成」，且零行时不能出现 NaN；
  *   · 出分后的排序与名次共用同一份判据：总分降序 → 耗时升序 → tok（输入+输出）升序，
  *     三项全同并列（同名次）、前三名带徽标；未采集的耗时/tok 按最差算；
- *   · 「开始」先 `Modal.confirm` 列出将执行的候选清单（误点一次要烧掉几十分钟）；
- *   · 「终止」走 `Popconfirm`。
+ *   · 「开始执行」先弹确认框（AlertDialog）列出将执行的候选清单（误点一次要烧掉几十分钟）；
+ *   · 「终止」用确认语义（AlertDialog，它杀进程、不可撤销）。
  * jsdom 环境注意：Modal / Select 的浮层走 rc-resize-observer，必须自己装 ResizeObserver 桩。
  *
  * 两处与 plan 原稿的**有意偏离**（都属于「让用例真的在测它声称在测的东西」）：
- *   ① 按钮可访问名无空格：本仓两个汉字的按钮一律 `autoInsertSpace={false}`
- * （provider-table.tsx 的文件头），故确认按钮是「开始 / 确定 / 取消」而不是「开始 / 确定 / 取消」；
+ *   ① 按钮可访问名与可见文案逐字一致：新栈不会在两个字之间插空格，故确认按钮就是
+ * 「开始执行 / 终止 / 删除这次评测 / 取消」（用例按这个名字查）；
  *   ② 能力透传用例额外断言 `usage: false` 的文案：只断言 `cancelMidTurn` 的话，
  *      「`capabilityOf` 根本没透给卡片」这个变异体也能通过（缺省能力里 `cancelMidTurn` 恰好是 true，
  *      而 `cancelMidTurn: false` 只会让断言失败——这条把两个字段都钉住才不空转）。
@@ -21,7 +21,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AgentKind, EvalRun } from '@aieval/contracts';
 import { installResizeObserverStub } from '../testing/resize-observer';
-import { RunDetailPanel, completionPercent, type RunDetailPanelProps } from './run-detail-panel';
+import {
+  RunDetailPanel,
+  compareRows,
+  completionPercent,
+  orderForDisplay,
+  rankOf,
+  type RunDetailPanelProps,
+} from './run-detail-panel';
 
 beforeEach(() => {
   installResizeObserverStub();
@@ -110,6 +117,18 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
   };
 }
 
+/**
+ * 悬浮到 `Hint` 的**触发元素**上。
+ *
+ * Base UI 的悬浮监听挂在触发元素的**原生** `mouseenter` 上（不冒泡），故直接把它派发到内层的
+ * 按钮 / 文字上不会触发浮层——真实浏览器里鼠标移入子元素会同时给祖先派发 `mouseenter`，
+ * jsdom 的合成事件不会。这层收口让用例继续按「悬浮在这个按钮上」写。
+ */
+function hover(element: HTMLElement): void {
+  const trigger = element.closest('[data-slot="tooltip-trigger"]');
+  fireEvent.mouseEnter(trigger ?? element);
+}
+
 const handlers = {
   onStart: vi.fn(),
   onAbortRun: vi.fn(),
@@ -133,7 +152,7 @@ function renderPanel(run: EvalRun, overrides: Partial<RunDetailPanelProps> = {})
 }
 
 describe('RunDetailPanel 顶部信息卡', () => {
-  it('五项都在，且是「卡片 + 描述组件」的标签形态：用例标题 / 代码仓库 / commit 全量 / 工作基目录', () => {
+  it('五项都在，且是「卡片 + 描述组件」的标签形态：用例标题 / 代码仓库 / 基线提交全量 / 工作区根目录', () => {
     renderPanel(makeRun());
 
     const header = within(screen.getByTestId('run-header'));
@@ -141,7 +160,7 @@ describe('RunDetailPanel 顶部信息卡', () => {
     expect(header.getByText('多协议入站转换')).toBeInTheDocument();
     // 字段一行一个标签：形态与用例详情同构（`Card` + `Descriptions`），不是一串用「·」连起来的文本
     expect(header.getByText('代码仓库')).toBeInTheDocument();
-    expect(header.getByText('工作基目录')).toBeInTheDocument();
+    expect(header.getByText('工作区根目录')).toBeInTheDocument();
     expect(header.getByText('D:\\projects\\gateway')).toBeInTheDocument();
     // commit 给**全量**：详情栏是核对「这一轮测的到底是哪个提交」的地方，短哈希在这里等于没地方看全
     expect(header.getByText('71e628091bf7134a6e677a58cc1e0f29b9302e6f')).toBeInTheDocument();
@@ -163,7 +182,7 @@ describe('RunDetailPanel 顶部信息卡', () => {
     expect(header.getByText('对比模型不同版本间的差异')).toBeInTheDocument();
     // 位置：第一行就是备注（在「代码仓库」之前）
     const labels = Array.from(
-      screen.getByTestId('run-header').querySelectorAll('.ant-descriptions-item-label'),
+      screen.getByTestId('run-header').querySelectorAll('dt'),
     ).map((node) => node.textContent ?? '');
     expect(labels[0]).toBe('备注');
   });
@@ -186,7 +205,7 @@ describe('RunDetailPanel 顶部信息卡', () => {
     expect(header.queryByText('分支')).toBeNull();
     expect(header.getByText('默认分支 HEAD')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(header.getByText('无'));
+    hover(header.getByText('无'));
     expect(await screen.findByText('空仓库，无来源代码')).toBeInTheDocument();
   });
 
@@ -313,7 +332,7 @@ describe('RunDetailPanel 卡片列表', () => {
     // 第 4 名没有徽标
     expect(screen.queryByText('第 4 名')).toBeNull();
     // 第 1 名挂在最高分那张卡上
-    const first = screen.getByText('第 1 名').closest('.ant-card');
+    const first = screen.getByText('第 1 名').closest('[data-slot="card"]');
     expect(first).toHaveTextContent('model-92');
   });
 
@@ -332,7 +351,7 @@ describe('RunDetailPanel 卡片列表', () => {
     expect(screen.getAllByText('第 1 名')).toHaveLength(2);
     // 两行 87 之后，60 分是第 3 名（并列占掉 1、1，下一档从 3 起）
     expect(screen.getByText('第 3 名')).toBeInTheDocument();
-    expect(screen.getByText('第 3 名').closest('.ant-card')).toHaveTextContent('model-c');
+    expect(screen.getByText('第 3 名').closest('[data-slot="card"]')).toHaveTextContent('model-c');
   });
 
   it('串行模式下等待中的行被标成排队（并行模式不标）', () => {
@@ -373,7 +392,7 @@ describe('RunDetailPanel 卡片列表', () => {
 describe('RunDetailPanel 排序与名次的判据', () => {
   /** 列表里各卡片**标题上**的模型名，按 DOM 顺序——排序断言只认屏幕上真实的先后 */
   const shownModels = (): string[] =>
-    [...screen.getByTestId('run-row-list').querySelectorAll('.ant-card-head-title code')].map(
+    [...screen.getByTestId('run-row-list').querySelectorAll('[data-slot="card-title"] code')].map(
       (node) => node.textContent ?? '',
     );
 
@@ -386,7 +405,7 @@ describe('RunDetailPanel 排序与名次的判据', () => {
 
   /** 第 N 名徽标挂在哪张卡上（卡片里带模型名，故能认人） */
   const cardOfRank = (rank: number): HTMLElement | null =>
-    screen.getByText(`第 ${rank} 名`).closest('.ant-card') as HTMLElement | null;
+    screen.getByText(`第 ${rank} 名`).closest('[data-slot="card"]') as HTMLElement | null;
 
   it('总分优先：后面的决胜项再好看也翻不过分数', () => {
     renderPanel(
@@ -465,7 +484,7 @@ describe('RunDetailPanel 排序与名次的判据', () => {
     );
 
     expect(screen.getAllByText('第 1 名')).toHaveLength(2);
-    expect(screen.getByText('第 3 名').closest('.ant-card')).toHaveTextContent('low');
+    expect(screen.getByText('第 3 名').closest('[data-slot="card"]')).toHaveTextContent('low');
   });
 
   it('耗时未采集按最差算：同分时有数的行在前、拿第 1 名', () => {
@@ -511,22 +530,75 @@ describe('RunDetailPanel 排序与名次的判据', () => {
   });
 });
 
+/**
+ * 判据的**函数面**与上面那一组渲染用例互补：
+ *   · 渲染用例验的是「屏幕上看到的先后与徽标」，看不出 `compareRows` 三项全同时返回的是 `0`
+ *     还是「同向前后各 1」——两行完全相同时 `sort` 稳定，返回 ±1 也能让顺序与名次看起来一样；
+ *   · 「未出分不参与排名」在渲染用例里只钉到「排在后面」，钉不到「它不占名次」：一行未出分的
+ *     候选夹在两行出分的候选中间时，出分那两行的名次必须是 1 / 2，而不是 1 / 3。
+ * 故这一组直接调纯函数，逐条钉住判据本身。
+ */
+describe('RunDetailPanel 排序与名次的判据（纯函数）', () => {
+  const tok = (input: number, output: number): { input: number; cached: number; output: number } => ({
+    input,
+    cached: 0,
+    output,
+  });
+
+  it('三项全同才返回 0（并列不是一个「先后」）', () => {
+    const left = makeRow('w-1', { score: score(87), durationMs: 60_000, tokens: tok(10, 10) });
+    const right = makeRow('w-2', { score: score(87), durationMs: 60_000, tokens: tok(10, 10) });
+
+    expect(compareRows(left, right)).toBe(0);
+    expect(compareRows(right, left)).toBe(0);
+  });
+
+  it('任何一项不同都不是并列：总分 → 耗时 → tok 逐级决胜', () => {
+    const base = makeRow('w-base', { score: score(87), durationMs: 60_000, tokens: tok(10, 10) });
+
+    // 总分高的在前
+    expect(compareRows(makeRow('w-hi', { ...base, id: 'w-hi', score: score(90) }), base)).toBeLessThan(0);
+    // 总分相同比耗时：短的在先
+    expect(compareRows(makeRow('w-fast', { ...base, id: 'w-fast', durationMs: 30_000 }), base)).toBeLessThan(0);
+    // 总分与耗时都相同比 tok：输入 + 输出少的在先
+    expect(compareRows(makeRow('w-light', { ...base, id: 'w-light', tokens: tok(9, 9) }), base)).toBeLessThan(0);
+  });
+
+  it('未出分的行排最后，且不参与排名（夹在中间也不挤占名次）', () => {
+    const top = makeRow('w-top', { score: score(87) });
+    const unscored = makeRow('w-unscored', { score: null, status: 'running' });
+    const second = makeRow('w-second', { score: score(60) });
+
+    // 展示顺序：出分的在前、未出分的垫底（不论原始顺序）
+    expect(orderForDisplay([unscored, second, top]).map((row) => row.id)).toEqual([
+      'w-top',
+      'w-second',
+      'w-unscored',
+    ]);
+
+    // 未出分不给名次，也不让别人多一名：60 分是第 2 名，不是第 3 名
+    expect(rankOf([top, unscored, second], unscored)).toBeUndefined();
+    expect(rankOf([top, unscored, second], top)).toBe(1);
+    expect(rankOf([top, unscored, second], second)).toBe(2);
+  });
+});
+
 describe('RunDetailPanel 吸底操作栏', () => {
   // 「终止」在页面上有两个（卡片上那个与吸底栏那个， 有意如此），
   // 所以吸底栏的断言一律先收窄到 footer 再查——否则用例自己会撞上「找到多个」而红。
   const footer = (): ReturnType<typeof within> => within(screen.getByTestId('run-footer'));
 
-  it('有运行中的行时「开始」禁用、「终止」可用', () => {
+  it('有运行中的行时「开始执行」禁用、「终止」可用', () => {
     renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'running', score: null })] }));
 
-    expect(footer().getByRole('button', { name: '开始' })).toBeDisabled();
+    expect(footer().getByRole('button', { name: '开始执行' })).toBeDisabled();
     expect(footer().getByRole('button', { name: '终止' })).toBeEnabled();
   });
 
-  it('全部已评分时「开始」禁用（没有可执行的行）', () => {
+  it('全部已评分时「开始执行」禁用（没有可执行的行）', () => {
     renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }));
 
-    expect(footer().getByRole('button', { name: '开始' })).toBeDisabled();
+    expect(footer().getByRole('button', { name: '开始执行' })).toBeDisabled();
     expect(footer().getByRole('button', { name: '终止' })).toBeDisabled();
   });
 
@@ -555,7 +627,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
     expect(button).toBeDisabled();
     // 禁用时**必须**能查到原因：这个按钮是新面孔，而「点了没反应」是最难自查的一种静默。
     // 事件打在**包住按钮的宿主**上（禁用按钮自己收不到鼠标事件）
-    fireEvent.mouseEnter(button.parentElement as HTMLElement);
+    hover(button.parentElement as HTMLElement);
     await waitFor(() => expect(screen.getByText('还没有出分的候选：评分完成后才能排名')).toBeInTheDocument());
   });
 
@@ -566,20 +638,19 @@ describe('RunDetailPanel 吸底操作栏', () => {
       }),
     );
 
-    // 「开始」因为还有行在跑而禁用，但「排名」照常可用——中间名次正是调试用例时最想看的
+    // 「开始执行」因为还有行在跑而禁用，但「排名」照常可用——中间名次正是调试用例时最想看的
     expect(footer().getByRole('button', { name: '排名' })).toBeEnabled();
   });
 
-  // 确认框的浮层根节点：`.run-start-confirm` 由组件显式挂上（页面上「开始」不止一处，
-  // 全局查询会撞上「找到多个」）。用例断言的是**框内**的文案与按钮。
-  // 标题文案不做 `getByText` 断言：antd 的浮层会把标题同时放进可见标题与无障碍标签两个节点，
-  // `getByText` 因此报「找到多个」——它**不是**缺陷，用 `waitFor` 等浮层出现即可。
+  // 确认框：新栈用 AlertDialog（`role="alertdialog"`，portal 到 body），开合由组件自持。
+  // 收窄到 `data-testid`：页面上「开始执行」不止一处，全局查按钮会撞上「找到多个」。
   const startDialog = async (): Promise<HTMLElement> => {
-    await waitFor(() => expect(document.querySelector('.run-start-confirm')).not.toBeNull());
-    return document.querySelector('.run-start-confirm') as HTMLElement;
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveAttribute('data-testid', 'run-start-confirm');
+    return dialog;
   };
 
-  it('「开始」先弹确认框列出将执行的候选，确认后才回调', async () => {
+  it('「开始执行」先弹确认框列出将执行的候选，确认后才回调', async () => {
     const onStart = vi.fn();
     renderPanel(
       makeRun({
@@ -588,19 +659,19 @@ describe('RunDetailPanel 吸底操作栏', () => {
       { onStart },
     );
 
-    fireEvent.click(footer().getByRole('button', { name: '开始' }));
+    fireEvent.click(footer().getByRole('button', { name: '开始执行' }));
 
     // 清单必须列出「将执行什么」——误点一次要烧掉几十分钟的额度
     const dialog = await startDialog();
-    expect(within(dialog).getAllByText('开始执行这一轮评测？').length).toBeGreaterThan(0);
+    expect(within(dialog).getByText('开始执行这次评测？')).toBeInTheDocument();
     expect(within(dialog).getByText('本次将执行 2 个候选：')).toBeInTheDocument();
     // 清单逐条列出候选（智能体中文名 · 模型），不是只给一个总数
     expect(within(dialog).getByText('· Claude Code · claude-opus-4-6-w-1')).toBeInTheDocument();
     expect(within(dialog).getByText('· Claude Code · claude-opus-4-6-w-2')).toBeInTheDocument();
     expect(onStart).not.toHaveBeenCalled();
 
-    // 点确认框自己的「开始」（不是吸底栏那个）
-    fireEvent.click(within(dialog).getByRole('button', { name: '开始' }));
+    // 点确认框自己的「开始执行」（不是吸底栏那个）
+    fireEvent.click(within(dialog).getByRole('button', { name: '开始执行' }));
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
   });
 
@@ -608,22 +679,23 @@ describe('RunDetailPanel 吸底操作栏', () => {
     const onStart = vi.fn();
     renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'pending', score: null })] }), { onStart });
 
-    fireEvent.click(footer().getByRole('button', { name: '开始' }));
+    fireEvent.click(footer().getByRole('button', { name: '开始执行' }));
     fireEvent.click(within(await startDialog()).getByRole('button', { name: '取消' }));
 
     expect(onStart).not.toHaveBeenCalled();
   });
 
-  it('「终止」走 Popconfirm，确认后才回调', async () => {
+  it('「终止」用确认语义（AlertDialog），确认后才回调', async () => {
     const onAbortRun = vi.fn();
     renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'running', score: null })] }), { onAbortRun });
 
     fireEvent.click(footer().getByRole('button', { name: '终止' }));
 
-    expect(await screen.findByText('终止这一轮评测？')).toBeInTheDocument();
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('终止这次评测？')).toBeInTheDocument();
     expect(onAbortRun).not.toHaveBeenCalled();
 
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '终止' }));
     await waitFor(() => expect(onAbortRun).toHaveBeenCalledTimes(1));
   });
 
@@ -632,7 +704,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
    *
    * jsdom 量不出布局，所以这里钉的是**那两个值本身**：上边 8px、下边 0。
    * 下边为什么是 0：栏底到内容之间那 8px 是 `ListDetailLayout` 详情槽的 `padding` 给的
-   * （`PANE_PADDING`，槽位那一侧由 `list-detail-layout.test.tsx` 用字面量 `8px` 钉住），
+   * （`PANE_PADDING`，槽位那一侧由 `list-detail-layout.test.tsx` 用字面量 `16px` 钉住），
    * 本组件再补一个下边距就会变成 16px —— 上下当场不一样宽。
    * 真机读数（1432×721，run `78ef5b58`）：分隔线→内容 8px、内容→栏底 8px。
    * 靶子就是这两个字面量：把上边改回 0、或改成 `padding: '8px 0'`，这一条即红。
@@ -641,7 +713,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
     renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }));
 
     const bar = screen.getByTestId('run-footer');
-    expect(bar.style.paddingTop).toBe('8px');
+    expect(bar.style.paddingTop).toBe('16px');
     expect(bar.style.paddingBottom).toBe('0px');
   });
 });
@@ -673,7 +745,7 @@ describe('RunDetailPanel：行级重新评分的透传', () => {
     const buttons = screen.getAllByRole('button', { name: '重新评分' });
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[1] as HTMLElement);
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '重新评分' }));
 
     await waitFor(() => expect(onRescoreRow).toHaveBeenCalledWith('w-2'));
   });
@@ -681,8 +753,8 @@ describe('RunDetailPanel：行级重新评分的透传', () => {
   it('rescoring 为真时每张卡片的按钮都转圈（在途时不许再点第二次）', () => {
     renderPanel(makeRun({ rows: [judgeFailedRow('w-1')] }), { rescoring: true });
 
-    const loading = [...document.querySelectorAll('button')].filter((item) =>
-      item.className.includes('ant-btn-loading'),
+    const loading = [...document.querySelectorAll('button')].filter(
+      (item) => item.dataset.loading === 'true',
     );
     expect(loading.map((item) => item.textContent)).toEqual(['重新评分']);
   });
@@ -691,8 +763,8 @@ describe('RunDetailPanel：行级重新评分的透传', () => {
 /**
  * 「编辑 / 删除」两个入口：与用例详情逐字同形，且**不在运行中**才可用。
  * 三条各自的理由：
- *   · 两个汉字的按钮必须关掉 antd 的自动空格，否则可访问名是「编 辑」/「删 除」；
- *   · `Popconfirm` 的 `onConfirm` 必须**回交 promise**（返回 undefined 时确认框立刻关闭，
+ *   · 两个汉字的按钮可访问名必须与可见文案一致（不许出现「编 辑」/「删 除」这种空格）；
+ *   · 确认框的 `onConfirm` 必须**回交 promise**（返回 undefined 时确认框立刻关闭，
  *     用户看到「点一下没反应」，再点一次就是第二次 DELETE）；
  *   · 有行在跑时两个按钮都要禁用（服务端同一判据会抛 409，界面的置灰是提前告知）；**禁用原因**只有
  *     「编辑」那一格挂了 `Tooltip`（用例正面钉它），「删除」没有——这一条**今天没有反向守卫**，如实登记。
@@ -713,7 +785,7 @@ describe('RunDetailPanel 的编辑 / 删除入口', () => {
     expect(screen.getByTestId('run-detail-edit')).toBeDisabled();
     expect(screen.getByTestId('run-detail-delete')).toBeDisabled();
     // 禁用不是「静默」：原因必须说得出「先终止」。Tooltip 的触发点在禁用按钮外面那层 span 上
-    fireEvent.mouseEnter(screen.getByTestId('run-detail-edit').parentElement ?? document.body);
+    hover(screen.getByTestId('run-detail-edit').parentElement ?? document.body);
     await waitFor(() => expect(screen.getByText(/先终止/)).toBeDefined());
   });
 
@@ -724,27 +796,54 @@ describe('RunDetailPanel 的编辑 / 删除入口', () => {
    */
   it('允许人工补充消息的轮次，详情顶部有可比性提示；没开的不出现', () => {
     renderPanel(makeRun({ injectMessages: true }));
-    expect(screen.getByText('这一轮允许人工补充消息')).toBeInTheDocument();
+    expect(screen.getByText('这一次评测开着人工消息')).toBeInTheDocument();
     expect(screen.getByText(/不可直接比/)).toBeInTheDocument();
   });
 
   it('阴性面：`injectMessages === false` 时没有那条提示（没插过话的轮次不许被标成插过）', () => {
     renderPanel(makeRun({ injectMessages: false }));
-    expect(screen.queryByText('这一轮允许人工补充消息')).toBeNull();
+    expect(screen.queryByText('这一次评测开着人工消息')).toBeNull();
   });
 
-  it('删除走 Popconfirm，确认后把在途 promise 交给它（否则确认框会提前关闭）', async () => {
+  it('删除走确认框，确认后把在途 promise 交给它（否则确认框会提前关闭）', async () => {
     let resolveDelete: (() => void) | undefined;
     const onDelete = vi.fn(() => new Promise<void>((resolve) => { resolveDelete = resolve; }));
     renderPanel(makeRun(), { onDelete });
 
     fireEvent.click(screen.getByTestId('run-detail-delete'));
-    const confirm = await screen.findByRole('button', { name: '确认删除' });
+    const confirm = await screen.findByRole('button', { name: '删除这次评测' });
     fireEvent.click(confirm);
 
     expect(onDelete).toHaveBeenCalledTimes(1);
     // promise 还没落定 ⇒ 确认按钮必须还在 loading（提前关闭就是「点一下没反应」那个缺陷）
-    await waitFor(() => expect(confirm.className).toContain('ant-btn-loading'));
+    await waitFor(() => expect(confirm.dataset.loading).toBe('true'));
     await act(async () => { resolveDelete?.(); });
+  });
+});
+
+/**
+ * 桌面右栏的关闭入口。
+ *
+ * 没有这一格时，桌面双栏下唯一出路是点顶栏「评测」——那会丢掉 `?panel=…&id=…` 与列表滚动位置。
+ * 窄屏则相反：右栏整体搬进 Sheet，Shell 头部已有自己的关闭键；面板再画一个就是两个 X。
+ * 两条判据都钉在这里：传了 `onClose` 才渲染，且这一格在 Sheet 内必须被隐藏。
+ */
+describe('RunDetailPanel 右栏关闭入口', () => {
+  it('传了 onClose 才渲染关闭键，点击回传', () => {
+    const onClose = vi.fn();
+    renderPanel(makeRun(), { onClose });
+
+    const close = screen.getByTestId('run-detail-close');
+    expect(close).toHaveAccessibleName('关闭详情');
+    // Sheet 内隐藏：祖先带 data-slot=sheet-content 时不画第二个 X
+    expect(close).toHaveClass('in-data-[slot=sheet-content]:hidden');
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('没有 onClose 就不渲染（窄屏 / 只读宿主不该出现死按钮）', () => {
+    renderPanel(makeRun());
+
+    expect(screen.queryByTestId('run-detail-close')).toBeNull();
   });
 });

@@ -6,7 +6,7 @@
  * Tab 的状态记在 URL 里（`?tab=basic|judge|mcp|skills`，解析与反向构造在 `src/settings-tab-state.ts`）：
  * 当前停在哪个 Tab 刷新后不变、地址可直接分享；切换走 `router.replace`（视图切换不进历史栈）。
  *
- * 本页是全仓唯一把 client hooks 与 ui 组件接起来的地方：组件保持纯展示（不调接口、不认识 message），
+ * 本页是全仓唯一把 client hooks 与 ui 组件接起来的地方：组件保持纯展示（不调接口、不认识提示通道），
  * 数据与回调在这里注入；异步与错误提示也留在这里。
  *
  * 评分配置与存储目录都写同一个 `PUT /api/settings`：它们同属一份 Settings、同一次原子落盘，
@@ -15,8 +15,8 @@
  * **动作**走 `POST /api/cases/sync`（跑完一轮才答复）。
  *
  * 注意：本页**没有渲染测试**—— `apps/web-next` 保留 `jsx: preserve`，该应用内不能写 `.tsx` 测试
- * （见 AGENTS.md）；`src/settings-page-wiring.test.ts` 那类守卫只读源码钉接线。因此页面逻辑必须薄到
- * 只剩「取值 → 传参 → 把 Promise 折成 message」：业务判断都在 ui 组件与 hooks 里，本页只负责接线
+ * （见 `docs/guard/test-strategy.md` 的「形态与交互」）；`src/settings-page-wiring.test.ts` 那类守卫只读源码钉接线。因此页面逻辑必须薄到
+ * 只剩「取值 → 传参 → 把 Promise 折成 toast」：业务判断都在 ui 组件与 hooks 里，本页只负责接线
  * 与**三态分支**（就绪 / 仍在读 / 读失败）——组件 props 里没有 error 位（契约冻结），
  * 这三个状态只能由页面分，而「读失败」必须说出来，不能让「还没读到」冒充「你还没配」。
  * 验收靠 `pnpm typecheck` + `pnpm lint` + 冒烟。
@@ -55,28 +55,43 @@ import type {
 } from '@aieval/contracts';
 import {
   AppTopNav,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Field,
+  FieldTitle,
   JudgeSettingsCard,
   McpPasteModal,
   McpServerFormModal,
   McpServerTable,
+  PageHeader,
   PageShell,
   ProviderFormModal,
   ProviderModelsModal,
   ProviderTable,
+  SettingsAlert,
+  Skeleton,
   SkillDetailDrawer,
   SkillTable,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   WorkspaceSettingsCard,
   buildMcpConfig,
   removeServer,
   upsertServer,
+  toast,
   type McpServerFormValues,
   type McpServerRow,
   type ProviderFormValues,
+  requestCommandPalette,
 } from '@aieval/ui';
-import { Alert, Card, Flex, Form, Segmented, Skeleton, Tabs, message } from 'antd';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { NAV_ITEMS, type NavKey } from '@/src/nav';
 import { normalizeSettingsTab, parseSettingsTab, settingsTabHref } from '@/src/settings-tab-state';
+import { usePageTitle } from '../use-page-title';
 
 /** 最近一次根目录校验的结果（工作区 / 用例目录共用一个形状）：null = 还没校验过；ok=false 时 message 是服务端的中文原因 */
 interface RootValidation {
@@ -96,6 +111,7 @@ export default function Page(): React.ReactNode {
 }
 
 function SettingsPage(): React.ReactNode {
+  usePageTitle('设置');
   const router = useRouter();
   const searchParams = useSearchParams();
   /**
@@ -136,12 +152,9 @@ function SettingsPage(): React.ReactNode {
   const { options: agentOptions } = useRunModelOptions();
 
   /**
-   * 供应商表单弹窗要**挂载后**才渲染：它内部是 antd `Modal` + `forceRender`（表单必须常挂 useForm
-   * 实例，见 `provider-form-modal.tsx`），而它住在默认激活的「基础」Tab 里、会参与首屏 SSR——
-   * 服务端渲染不出 Modal 的 portal 容器、客户端首帧却会渲染，于是每次打开设置页都报一条
-   * hydration mismatch（React 之后会整棵重渲染，用户看不出，但控制台都是红的）。
-   * 首帧两边都渲染 null 才一致：effect 跑完置 true，此后 Modal 常挂，`forceRender` 的语义不变；
-   * 用户点开弹窗前必然已经挂载。
+   * 供应商表单弹窗要**挂载后**才渲染：它内部是 `Dialog`（portal 只在打开时挂载），
+   * 而它住在默认激活的「基础」Tab 里、会参与首屏 SSR。首帧两边都渲染 null 才一致：
+   * effect 跑完置 true，此后打开弹窗时表单已挂载；用户点开弹窗前必然已经挂载。
    */
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -221,7 +234,7 @@ function SettingsPage(): React.ReactNode {
 
   /** 统一错误出口：服务端的 message 已是可直接展示的中文，别在这里再包一层 */
   const onError = (error: unknown): void => {
-    void message.error(error instanceof Error ? error.message : String(error));
+    void toast.error(error instanceof Error ? error.message : String(error));
   };
 
   /**
@@ -230,21 +243,23 @@ function SettingsPage(): React.ReactNode {
    * 供应商列表会退化成「还没有供应商」的空态引导（读起来像「你还没配」）；
    * 评分卡拿到空清单会对着完好的 defaultJudge 报「当前的默认评分模型已失效」（假结论）；
    * 设置读不出则永远停在 Skeleton 上，用户既等不到也没有任何解释。
+   *
+   * 末尾那句「怎么恢复」是这句文案的一半职责：SWR 会把上一份数据留着继续显示，
+   * 于是「读失败」在屏幕上长得像「读到了一份旧的」——不说清重试路径，人只会以为数据就是这样。
    */
   const loadFailure = (error: unknown, subject: string): React.ReactNode => (
-    <Alert
-      type="error"
-      showIcon
+    <SettingsAlert
+      tone="error"
       title={`${subject}加载失败`}
-      description={error instanceof Error ? error.message : String(error)}
+      description={`${error instanceof Error ? error.message : String(error)}（刷新页面会重新请求）`}
     />
   );
 
   /** 未就绪时的占位：读失败给错误（带服务端中文原因），仍在读给骨架屏 —— 两者不能混为一谈 */
   const settingsPending =
-    settingsError === undefined ? <Skeleton active /> : loadFailure(settingsError, '设置');
+    settingsError === undefined ? <Skeleton className="h-24 w-full" /> : loadFailure(settingsError, '设置');
   const providersPending =
-    providersError === undefined ? <Skeleton active /> : loadFailure(providersError, '模型供应商');
+    providersError === undefined ? <Skeleton className="h-24 w-full" /> : loadFailure(providersError, '模型供应商');
 
   const openCreate = (): void => {
     closeModels();
@@ -510,19 +525,23 @@ function SettingsPage(): React.ReactNode {
   /**
    * 用例同步的人工动作（提交 / 拉取）。`run` 等到服务端跑完才 settle：结果提示按**跑完之后**的快照说话
    * ——「提交完了」与「还剩 N 个没提交」是两句话，不能都报成功。
-   * 失败走统一的 `onError`（服务端已给中文原因，这里不再包一层）。
+   * 三态交给同一个 toast：进行中 → 成功 / 失败；失败原因原样透传（服务端已给中文，这里不再包一层）。
+   * `toast.promise` 返回的仍是原 promise（失败时再次 reject），失败已由 error 态呈现，
+   * 故这里必须接住 rejection，否则控制台会多一条未处理的 rejection。
    */
   const runSyncAction = (action: CaseSyncAction): void => {
-    void runSync(action).then(
-      (next) => {
-        if (next.pendingCount > 0) {
-          void message.success(`同步已完成；仍有 ${next.pendingCount} 个用例文件待提交`);
-        } else {
-          void message.success(action === 'commit' ? '用例变更已提交' : '已与远端对齐');
-        }
-      },
-      onError,
-    );
+    void toast
+      .promise(runSync(action), {
+        loading: { title: '正在同步用例变更…' },
+        success: (next) => {
+          if (next.pendingCount > 0) return { title: `同步已完成；仍有 ${next.pendingCount} 个用例文件待提交` };
+          return { title: action === 'commit' ? '用例变更已提交' : '已与远端对齐' };
+        },
+        error: (cause) => ({ title: cause instanceof Error ? cause.message : String(cause) }),
+      })
+      .catch(() => {
+        // 失败原因已经出现在 toast 的 error 态里，这里只消费 rejection
+      });
   };
 
   /**
@@ -542,206 +561,212 @@ function SettingsPage(): React.ReactNode {
 
   const activeNav: NavKey = 'settings';
 
-  return (
-    <>
-      <AppTopNav items={[...NAV_ITEMS]} active={activeNav} onNavigate={(href) => router.push(href)} />
-      <PageShell density="default" gap={16} padding={16}>
-        {/* 受控 Tabs：activeKey 从 URL 解析来、onChange 写回 URL（两个都是可选 prop，漏一个就退回
-            antd 内部状态——URL 照写但界面不读，刷新还原悄悄失效，typecheck 一个字不报） */}
-        <Tabs
-          activeKey={activeTab ?? 'basic'}
-          onChange={go}
-          items={[
-            {
-              key: 'basic',
-              // 基础 = 「开始评测之前先配一次」的三块，按配的先后排：模型从哪来（供应商）、
-              // 这块界面长什么样（主题）、评测产物落哪（存储目录）
-              label: '基础',
-              children: (
-                <Flex vertical gap={12}>
-                  {/* 读失败必须显式说清：ProviderTable 的 props 是按契约冻结的（没有 error 位），
-                      少了这条 Alert，一次 GET 失败在界面上就是「还没有供应商」—— 假结论 */}
-                  {providersError !== undefined && loadFailure(providersError, '模型供应商')}
-                  <ProviderTable
-                    providers={providers ?? []}
-                    loading={providersLoading || isDeleting}
-                    onCreate={openCreate}
-                    onModels={openModels}
-                    onEdit={openEdit}
-                    onDelete={deleteProvider}
-                  />
-                  {/* 挂载后才渲染（见 mounted 的注释）：SSR 与客户端首帧都渲染 null，Modal 的 portal
+  /**
+   * 四个页签的内容：页签的 key / 文案与顺序都在这一份数组里，JSX 只负责把它摊成
+   * `TabsList` 与 `TabsContent`。未激活页签的面板由 Tabs 原语惰性挂载（不渲染进 DOM），
+   * 所以每块内容里的大表与请求不会在别的页签上跑一遍。
+   */
+  const tabItems = [
+    {
+      key: 'basic',
+      // 基础 = 「开始评测之前先配一次」的三块，按配的先后排：模型从哪来（供应商）、
+      // 这块界面长什么样（主题）、评测产物落哪（存储目录）
+      label: '基础',
+      content: (
+        <div className="flex flex-col gap-3">
+          {/* 读失败必须显式说清：ProviderTable 的 props 是按契约冻结的（没有 error 位），
+                      少了这条告警，一次 GET 失败在界面上就是「还没有供应商」—— 假结论 */}
+          {providersError !== undefined && loadFailure(providersError, '模型供应商')}
+          <ProviderTable
+            providers={providers ?? []}
+            loading={providersLoading || isDeleting}
+            onCreate={openCreate}
+            onModels={openModels}
+            onEdit={openEdit}
+            onDelete={deleteProvider}
+          />
+          {/* 挂载后才渲染（见 mounted 的注释）：SSR 与客户端首帧都渲染 null，Modal 的 portal
                       才不会撞出 hydration mismatch */}
-                  {mounted && (
-                    <ProviderFormModal
-                      open={modalOpen}
-                      initial={editing}
-                      saving={isCreating || isSavingProvider}
-                      onSubmit={submitProvider}
-                      onCancel={closeModal}
-                    />
-                  )}
-                  <ProviderModelsModal
-                    open={modelsOpen}
-                    provider={modelsTarget}
-                    fetchingModels={isPreviewing}
-                    // 过期候选（发起那家已不是当前目标）在这里就折成 null，挑选框不会弹出来
-                    modelCandidates={
-                      fetchedCandidates !== null && fetchedCandidates.providerId === modelsId
-                        ? fetchedCandidates.models
-                        : null
+          {mounted && (
+            <ProviderFormModal
+              open={modalOpen}
+              initial={editing}
+              saving={isCreating || isSavingProvider}
+              onSubmit={submitProvider}
+              onCancel={closeModal}
+            />
+          )}
+          <ProviderModelsModal
+            open={modelsOpen}
+            provider={modelsTarget}
+            fetchingModels={isPreviewing}
+            // 过期候选（发起那家已不是当前目标）在这里就折成 null，挑选框不会弹出来
+            modelCandidates={
+              fetchedCandidates !== null && fetchedCandidates.providerId === modelsId
+                ? fetchedCandidates.models
+                : null
+            }
+            importingModels={isImporting}
+            onClose={closeModels}
+            onFetchModels={fetchProviderModels}
+            onImportModels={importProviderModels}
+            onCancelImport={cancelModelImport}
+            onAddModel={addProviderModel}
+            onRemoveModel={removeProviderModel}
+            onSetModelContext={setProviderModelContext}
+          />
+          <Card size="sm" data-testid="theme-card">
+            <CardHeader>
+              <CardTitle>界面主题</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {settings ? (
+                <Field>
+                  {/* 纯布局：主题偏好是受控的即时落盘（无表单字段、无校验），
+                              三档用 Tabs 表达（与页签同一套原语，键盘左右切换照常可用） */}
+                  <FieldTitle>主题偏好</FieldTitle>
+                  <Tabs
+                    data-testid="theme-segmented"
+                    value={settings.theme}
+                    onValueChange={(value) =>
+                      void update({ theme: value as ThemeMode }).catch(onError)
                     }
-                    importingModels={isImporting}
-                    onClose={closeModels}
-                    onFetchModels={fetchProviderModels}
-                    onImportModels={importProviderModels}
-                    onCancelImport={cancelModelImport}
-                    onAddModel={addProviderModel}
-                    onRemoveModel={removeProviderModel}
-                    onSetModelContext={setProviderModelContext}
-                  />
-                  <Card title="界面主题" size="small" data-testid="theme-card">
-                    {settings ? (
-                      <Form layout="vertical" size="small" component={false}>
-                        <Form.Item label="主题偏好" style={{ marginBottom: 0 }}>
-                          <Segmented
-                            data-testid="theme-segmented"
-                            size="small"
-                            value={settings.theme}
-                            options={[
-                              { label: '跟随系统', value: 'auto' },
-                              { label: '明亮', value: 'light' },
-                              { label: '暗色', value: 'dark' },
-                            ]}
-                            onChange={(value) => void update({ theme: value as ThemeMode }).catch(onError)}
-                          />
-                        </Form.Item>
-                      </Form>
-                    ) : (
-                      settingsPending
-                    )}
-                  </Card>
-                  {/* 存储目录：两格根目录 + 自动提交开关 + 同步状态与两个动作全部由一张卡承担。
-                      同步状态读不出来必须显式说清 —— 卡片的 props 里没有 error 位（契约冻结），
-                      少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 */}
-                  {settings ? (
-                    <Flex vertical gap={12}>
-                      {syncError !== undefined && loadFailure(syncError, '用例同步状态')}
-                      <WorkspaceSettingsCard
-                        settings={settings}
-                        saving={isUpdating}
-                        lastValidated={validation}
-                        onValidate={validateWorkspace}
-                        onValidateCasesRoot={validateCasesRoot}
-                        lastValidatedCases={casesValidation}
-                        onToggleAutoCommit={toggleAutoCommit}
-                        syncStatus={syncStatus}
-                        syncError={syncError}
-                        syncing={syncing}
-                        onSyncAction={runSyncAction}
-                      />
-                    </Flex>
-                  ) : (
-                    settingsPending
-                  )}
-                </Flex>
-              ),
-            },
-            {
-              key: 'judge',
-              // Tab 名「评分」说的是动作（这一页决定怎么评），卡片标题仍叫「评分配置」——那说的是配置本身
-              label: '评分',
-              // 评分卡要的是**已保存的**清单：只有拿到它才能判 defaultJudge 是否悬空。
-              // 清单没到时不能拿 `?? []` 顶替 —— 空清单会被卡片读成「供应商或模型被删了」，
-              // 对着完好的 defaultJudge 报一条红色的失效告警（假消息）。等或报错，二者选一。
-              children: settings ? (
-                providers ? (
-                  <JudgeSettingsCard
-                    settings={settings}
-                    providers={providers}
-                    agentProtocols={(agentOptions ?? []).map((group) => ({
-                      agentKind: group.agentKind,
-                      protocolTypes: group.protocolTypes,
-                      // 档位域要用它（同一个注册表投影，不新增端点）：评分卡片靠它把「思考强度」的候选
-                      // 交到「模型声明 ∩ 这家智能体的域」上——漏这一格，候选会退化成规范五档，
-                      // 而 dsh 收不了 medium（界面上能存、生成 / 识别时被硬拒）
-                      efforts: group.efforts,
-                    }))}
-                    saving={isUpdating}
-                    onChange={changeSettings}
-                  />
-                ) : (
-                  providersPending
-                )
+                  >
+                    <TabsList variant="line">
+                      <TabsTrigger value="auto">跟随系统</TabsTrigger>
+                      <TabsTrigger value="light">明亮</TabsTrigger>
+                      <TabsTrigger value="dark">暗色</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </Field>
               ) : (
                 settingsPending
-              ),
-            },
-            {
-              key: 'mcp',
-              // 第 3 个 Tab：基础与评分是日常要动的两处，MCP 是「接入外部能力」的配置，
-              // 配一次就很少再进来（「技能」紧跟在它之后，两者同族）。顺序即导航路径，别随手调
-              // （`settings-page-wiring.test.ts` 有守卫钉着）
-              label: 'MCP',
-              children: settings ? (
-                <Flex vertical gap={12}>
-                  {/* 与仓库自带条目的关系那条**静态说明**（spec §3）**已移进卡片**：落点是 `McpServerTable`
+              )}
+            </CardContent>
+          </Card>
+          {/* 存储目录：两格根目录 + 自动提交开关 + 同步状态与两个动作全部由一张卡承担。
+                      同步状态读不出来必须显式说清 —— 卡片的 props 里没有 error 位（契约冻结），
+                      少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 */}
+          {settings ? (
+            <div className="flex flex-col gap-3">
+              {syncError !== undefined && loadFailure(syncError, '用例同步状态')}
+              <WorkspaceSettingsCard
+                settings={settings}
+                saving={isUpdating}
+                lastValidated={validation}
+                onValidate={validateWorkspace}
+                onValidateCasesRoot={validateCasesRoot}
+                lastValidatedCases={casesValidation}
+                onToggleAutoCommit={toggleAutoCommit}
+                syncStatus={syncStatus}
+                syncError={syncError}
+                syncing={syncing}
+                onSyncAction={runSyncAction}
+              />
+            </div>
+          ) : (
+            settingsPending
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'judge',
+      // Tab 名「评分」说的是动作（这一页决定怎么评），卡片标题仍叫「评分配置」——那说的是配置本身
+      label: '评分',
+      // 评分卡要的是**已保存的**清单：只有拿到它才能判 defaultJudge 是否悬空。
+      // 清单没到时不能拿 `?? []` 顶替 —— 空清单会被卡片读成「供应商或模型被删了」，
+      // 对着完好的 defaultJudge 报一条红色的失效告警（假消息）。等或报错，二者选一。
+      content: settings ? (
+        providers ? (
+          <JudgeSettingsCard
+            settings={settings}
+            providers={providers}
+            agentProtocols={(agentOptions ?? []).map((group) => ({
+              agentKind: group.agentKind,
+              protocolTypes: group.protocolTypes,
+              // 档位域要用它（同一个注册表投影，不新增端点）：评分卡片靠它把「思考强度」的候选
+              // 交到「模型声明 ∩ 这家智能体的域」上——漏这一格，候选会退化成规范五档，
+              // 而 dsh 收不了 medium（界面上能存、生成 / 识别时被硬拒）
+              efforts: group.efforts,
+            }))}
+            saving={isUpdating}
+            onChange={changeSettings}
+          />
+        ) : (
+          providersPending
+        )
+      ) : (
+        settingsPending
+      ),
+    },
+    {
+      key: 'mcp',
+      // 第 3 个 Tab：基础与评分是日常要动的两处，MCP 是「接入外部能力」的配置，
+      // 配一次就很少再进来（「技能」紧跟在它之后，两者同族）。顺序即导航路径，别随手调
+      // （`settings-page-wiring.test.ts` 有守卫钉着）
+      label: 'MCP',
+      content: settings ? (
+        <div className="flex flex-col gap-3">
+          {/* 与仓库自带条目的关系那条**静态说明**（spec §3）**已移进卡片**：落点是 `McpServerTable`
                       表格上方那一行（`data-testid="mcp-priority-note"`，`Typography.Text type="secondary"`）。
                       为什么不再摆页面这一层：它说的是这张卡片里这些条目的事，摆在页面层会读成「在说整个设置页」，
                       而规格要求的落点本来就是「卡片头部」。
                       ⚠️ **别在这里再印一份**：两处都印就是两处真源，措辞迟早漂移成两句不同的话 */}
-                  <McpServerTable
-                    servers={mcpServers}
-                    loading={isUpdating}
-                    onToggle={toggleMcpServer}
-                    onEdit={openMcpEdit}
-                    onDelete={deleteMcpServer}
-                    onCreate={openMcpCreate}
-                    onPasteJson={openMcpPaste}
-                    onTest={testMcpServer}
-                  />
-                  <McpServerFormModal
-                    open={mcpModalOpen}
-                    initialName={editingMcpName}
-                    // 目标从当前集合里现取：弹窗开着时列表一刷新（别的标签页删了它），这里跟着变 null，
-                    // 而 `initialName` 仍记着那个名字 —— 保存会走 upsert 把旧键挪走（不静默失联）
-                    initial={editingMcpName === null ? null : (mcpServers[editingMcpName] ?? null)}
-                    servers={mcpServers}
-                    saving={isUpdating}
-                    onSubmit={submitMcpServer}
-                    onCancel={closeMcpModal}
-                    onTest={testMcpForm}
-                  />
-                  {/* 粘贴导入：贴进去 → 预览 → 确认。弹窗自己算好整份 map，页面只落盘一次（见 submitMcpPaste） */}
-                  <McpPasteModal
-                    open={mcpPasteOpen}
-                    servers={mcpServers}
-                    saving={isUpdating}
-                    onImport={submitMcpPaste}
-                    onCancel={closeMcpPaste}
-                  />
-                </Flex>
-              ) : (
-                settingsPending
-              ),
-            },
-            {
-              key: 'skills',
-              // 第 4 个 Tab，紧跟在 MCP 之后：同族相邻（都是「往智能体里装外部东西」）。
-              // 顺序即导航路径，别随手调（`settings-page-wiring.test.ts` 有守卫钉着相对位置）
-              label: '技能',
-              // 三态与其余两处同源：还没读到给骨架屏、读失败给带服务端中文原因的说明，
-              // **绝不让读失败退化成「还没有技能」**——那是把一次故障说成一个配置结论。
-              // 有结果时（哪怕是空列表）才渲染卡片：空态的两句话由卡片按根级 warning 挑。
-              children:
+          <McpServerTable
+            servers={mcpServers}
+            loading={isUpdating}
+            onToggle={toggleMcpServer}
+            onEdit={openMcpEdit}
+            onDelete={deleteMcpServer}
+            onCreate={openMcpCreate}
+            onPasteJson={openMcpPaste}
+            onTest={testMcpServer}
+          />
+          <McpServerFormModal
+            open={mcpModalOpen}
+            initialName={editingMcpName}
+            // 目标从当前集合里现取：弹窗开着时列表一刷新（别的标签页删了它），这里跟着变 null，
+            // 而 `initialName` 仍记着那个名字 —— 保存会走 upsert 把旧键挪走（不静默失联）
+            initial={editingMcpName === null ? null : (mcpServers[editingMcpName] ?? null)}
+            servers={mcpServers}
+            saving={isUpdating}
+            onSubmit={submitMcpServer}
+            onCancel={closeMcpModal}
+            onTest={testMcpForm}
+          />
+          {/* 粘贴导入：贴进去 → 预览 → 确认。弹窗自己算好整份 map，页面只落盘一次（见 submitMcpPaste） */}
+          <McpPasteModal
+            open={mcpPasteOpen}
+            servers={mcpServers}
+            saving={isUpdating}
+            onImport={submitMcpPaste}
+            onCancel={closeMcpPaste}
+            // 整份解析失败：弹窗内保留详细诊断，同一句原文经这里进 toast（文案不改写）
+            onParseError={onError}
+          />
+        </div>
+      ) : (
+        settingsPending
+      ),
+    },
+    {
+      key: 'skills',
+      // 第 4 个 Tab，紧跟在 MCP 之后：同族相邻（都是「往智能体里装外部东西」）。
+      // 顺序即导航路径，别随手调（`settings-page-wiring.test.ts` 有守卫钉着相对位置）
+      label: '技能',
+      // 三态与其余两处同源：还没读到给骨架屏、读失败给带服务端中文原因的说明，
+      // **绝不让读失败退化成「还没有技能」**——那是把一次故障说成一个配置结论。
+      // 有结果时（哪怕是空列表）才渲染卡片：空态的两句话由卡片按根级 warning 挑。
+      content:
                 skillList === undefined ? (
                   skillsError === undefined ? (
-                    <Skeleton active />
+                    <Skeleton className="h-24 w-full" />
                   ) : (
                     loadFailure(skillsError, '技能清单')
                   )
                 ) : (
-                  <Flex vertical gap={12}>
+                  <div className="flex flex-col gap-3">
                     {/* 读失败**每一轮都要说**：SWR 在重新验证失败时保留上一份数据，所以
                         「有数据」不等于「这次读到了」——「重新扫描」失败却照旧显示旧列表，
                         用户会以为扫描成功了。没有数据时（首屏就失败）走上面那条分支，只给这一条说明，
@@ -752,11 +777,10 @@ function SettingsPage(): React.ReactNode {
                         不会各印一份。⚠️ 不许抄 MCP 那句「同名时以设置页为准」：skills 的同名结果
                         四家各不相同（Claude Code 以本机为准 / DeepSeek Harness 与 Pi Coding Agent
                         以仓库为准 / Codex 两条都会进清单），给一个统一结论就是假话 */}
-                    <Alert
-                      type="info"
-                      showIcon
-                      title="与仓库自带 skill 的关系"
-                      description="这里只决定本机启用项；被测仓库自带的 skill 四家都会自动发现、不压制。同名时谁赢四家不同：Claude Code 以本机为准，DeepSeek Harness 与 Pi Coding Agent 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
+                    <SettingsAlert
+                      tone="info"
+                      title="与仓库自带技能的关系"
+                      description="这里只决定本机启用项；被测仓库自带的技能四家都会自动发现、不压制。同名时谁赢四家不同：Claude Code 以本机为准，DeepSeek Harness 与 Pi Coding Agent 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
                       data-testid="skills-repo-note"
                     />
                     <SkillTable
@@ -789,11 +813,32 @@ function SettingsPage(): React.ReactNode {
                       fileLoading={skillFileLoading}
                       onClose={() => setSkillName(null)}
                     />
-                  </Flex>
+                  </div>
                 ),
-            },
-          ]}
-        />
+    },
+  ];
+
+  return (
+    <>
+      <AppTopNav items={[...NAV_ITEMS]} active={activeNav} onNavigate={(href) => router.push(href)} onSearch={requestCommandPalette} />
+      <PageShell density="default" gap={16} padding={16}>
+        {/* 页面标题：四页签共用一份标题，避免屏读器大纲里第一个 heading 是页签组。
+            版式与 /runs、/cases 同源（PageHeader）；设置页的密度豁免只作用在间距上，不压页标题。 */}
+        <PageHeader title="设置" description="供应商与模型 · 评分默认值 · MCP · 技能" />
+        <Tabs value={activeTab ?? 'basic'} onValueChange={go}>
+          <TabsList variant="line">
+            {tabItems.map((tab) => (
+              <TabsTrigger key={tab.key} value={tab.key}>
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {tabItems.map((tab) => (
+            <TabsContent key={tab.key} value={tab.key} className="pt-2">
+              {tab.content}
+            </TabsContent>
+          ))}
+        </Tabs>
       </PageShell>
     </>
   );

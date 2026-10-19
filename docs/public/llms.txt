@@ -5,7 +5,7 @@
 - [契约体系](/architecture/contracts): `@aieval/contracts` 是全仓唯一跨端契约真源：zod 3 schema + 领域类型 + 错误码，服务端与客户端共享同一份；类型一律 `z.i…。
 - [仓库分层与依赖方向](/architecture/layering): 单仓 pnpm workspace：1 个下游应用 + 服务端 / 客户端两层共 8 个包，依赖方向自下游指向上游、无环。
 - [工具链与命令聚合](/architecture/toolchain): `pnpm lint` / `pnpm typecheck` / `pnpm test` 三条门禁命令各起**一个**进程覆盖 8 个包，靠「复用包级真源」聚合…。
-- [界面原语与主题](/architecture/ui-primitives-and-theme): `@aieval/ui` 按 base + composite 两层提供**纯展示**原语：不调接口、不依赖路由库，纯数据驱动（props 进、JSX 出），`…。
+- [界面原语与主题](/architecture/ui-primitives-and-theme): `@aieval/ui` 用三类东西搭界面：**vendored 原语**（`src/components/ui/`，shadcn registry 的产物，只…。
 - [Claude Code 适配 FAQ](/faq/claude-code): Claude Code（`@anthropic-ai/claude-agent-sdk`）在**真实运行环境**里踩过的坑。
 - [Codex 适配 FAQ](/faq/codex): Codex（`@openai/codex` CLI / `codex app-server`）在**真实运行环境**里踩过的坑。
 - [DeepSeek Harness 适配 FAQ](/faq/deepseek-harness): DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里踩过的坑。
@@ -23,6 +23,8 @@
 - [设置](/features/settings): 设置页四个 Tab：**基础**（模型供应商 / 界面主题 / 存储目录）、**评分**、**MCP**、**技能**。
 - [技能配置](/features/skills-config): 设置页**第 4 个 Tab**（排在 MCP 之后）管**本机启用了哪几条 skill**。
 - [数据与存储](/features/storage): 平台全部落盘事实的地图：配置、**用例文件**、评测产物、事件日志各落在哪、怎么写、坏了怎么读。
+- [注释与日志](/guard/code-conventions): 注释与日志是两种不同的「写给下一个人的话」：注释解释**这段代码现在为什么这样写**，日志记录**运行期发生了什么**。
+- [知识库口径](/guard/knowledge-base): `docs/` 原位构建 VitePress 知识库：`pnpm docs:dev` 起本地站浏览，`pnpm docs:build` 构建并重新生成 `doc…。
 - [变异验证](/guard/mutation-verification): 新增回归守卫必须把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希——没见过失败的守卫不算守卫。
 - [Playwright MCP](/guard/playwright-mcp): 用 MCP 浏览器工具前先读本文件。
 - [PowerShell](/guard/powershell): 跑 PowerShell 前先读本文件。

@@ -9,11 +9,10 @@
  * 出口少那一格时四家一律读成「不知道」，连 dsh 那条路也一起死。
  *
  * **为什么这里只断到「声明取值」这一层**（「可用 / 置灰」那一半在
- * `@aieval/ui` 的 `inject-vocab.test.ts` 里逐档断言）：`@aieval/ui` 的包根桶一被 node 环境的用例
- * 引入就会加载 `@ant-design/x-markdown` 的 CJS 产物（它内部 `require('./DebugPanel.css')`），
- * 而 node 的 CJS 加载器会把那份 CSS 当 JS 解析 ⇒ 整个用例文件在收集阶段就崩。
- * 于是这一格拆成**两侧都钉**（本仓对「接缝」的既有处置）：这里钉「出口原样透出、四家取值如实」，
- * `ui` 那边钉「每一档 → 可用性 / 那一句话」。两边都钉才叫接缝，只钉一边会漏掉另一半。
+ * `@aieval/ui` 的 `inject-vocab.test.ts` 里逐档断言）：那是两条不同的判据——这里是
+ * 注册表 → 创建期元数据的「原样透出」，那边是「取值 → 输入区可用性」的映射。
+ * 拆成**两侧各钉自己的真源**（本仓对「接缝」的既有处置）：一边改坏时另一边不会替它掩护，
+ * 只钉一侧就会漏掉另一半。
  */
 import { describe, expect, it } from 'vitest';
 import type { TurnInjectionCapability } from '@aieval/contracts';

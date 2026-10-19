@@ -74,7 +74,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // 节流窗口还原（AGENTS.md：可变对象改小后必须还原，产品默认值另有独立用例钉住）
+  // 节流窗口还原（`docs/guard/test-strategy.md`：可变对象改小后必须还原，产品默认值另有独立用例钉住）
   RUN_SIGNAL_DEBOUNCE.debounceMs = 300;
   vi.useRealTimers();
   vi.unstubAllGlobals();

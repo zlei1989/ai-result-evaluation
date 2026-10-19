@@ -23,6 +23,7 @@ import useSWR, { useSWRConfig } from 'swr';
 import {
   isRunningRow,
   type AgentKind,
+  type CheckpointCapability,
   type EvalRun,
   type MessageCapability,
   type ProtocolType,
@@ -31,6 +32,7 @@ import {
   type RowDiffFile,
   type RowDiffIndex,
   type RunArtifactIndex,
+  type RunTestResults,
   type RunCreate,
   type RunUpdate,
   type TurnInjectionCapability,
@@ -65,6 +67,16 @@ export function runRowUrl(
  */
 export function runArtifactsUrl(runId: string): string {
   return `${runKey(runId)}/artifacts`;
+}
+
+/**
+ * 一轮的**测试结果投影**端点（`/api/runs/{id}/test-results`）：排名页通过率列的数据源。
+ *
+ * 独立于 `runArtifactsUrl`：那一条扫的是产物文件，这一条读的是每行消息账本里的测试命令输出；
+ * 两者都在排名抽屉打开时才取，但一份读不出来不该牵连另一份。
+ */
+export function runTestResultsUrl(runId: string): string {
+  return `${runKey(runId)}/test-results`;
 }
 
 /**
@@ -247,6 +259,14 @@ export interface AgentOptionGroup {
    * **不是**一份编出来的「都支持」——具体理由见那个投影的注释。
    */
   messageCapability: MessageCapability;
+  /**
+   * **回到某一轮**的能力声明（服务端来自注册表 `metadata.checkpoint`，逐格原样透出）。
+   *
+   * 谁在用它：轮末「回到这里」的可用性与禁用原因**只从这一格来**（界面不判厂商）。
+   * 取不到时 `checkpointOf` 给 `null`——**不是**一份编出来的「都支持」：猜错会让按钮可点、
+   * 点下去却什么都不发生（或静默退化成普通续接），而界面上一切正常。
+   */
+  checkpoint: CheckpointCapability;
   /**
    * 注入面声明（`turnInjection`）：送话的两档边界、已交给厂商那一条能不能按条撤回、以及续接。
    *
@@ -495,6 +515,9 @@ export function useRetryRow(): {
  * `revalidateOnFocus: false`：这个 GET 在服务端是**一次真实的 git 计算**（合并三样 diff + 裁剪，
  * 可达数 MB 的输出与秒级耗时），而 SWR 默认会在窗口重新获得焦点时重跑它——每切回一次页面就重算一次。
  * 抽屉里的 diff 是「打开时看一眼」的产出快照，需要更新的使用者重新打开一次抽屉即可。
+ *
+ * 失败的读侧（工作区被占用 / 权限不足 / git 锁）给一个 `refresh`：错误页上的「重新读取」按钮
+ * 是这条路径唯一的出路，另外三个视图都由各自的重取入口兜底。
  */
 export function useRowDiffIndex(
   runId: string,
@@ -502,15 +525,15 @@ export function useRowDiffIndex(
   enabled: boolean,
   offset = 0,
   limit = 30,
-): { index: RowDiffIndex | undefined; error: unknown; isLoading: boolean } {
-  const { data, error, isLoading } = useSWR<RowDiffIndex>(
+): { index: RowDiffIndex | undefined; error: unknown; isLoading: boolean; refresh: () => void } {
+  const { data, error, isLoading, mutate } = useSWR<RowDiffIndex>(
     enabled && runId !== '' && rowId !== ''
       ? runRowUrl(runId, rowId, 'diff', `?offset=${offset}&limit=${limit}`)
       : null,
     getJson,
     { revalidateOnFocus: false },
   );
-  return { index: data, error, isLoading };
+  return { index: data, error, isLoading, refresh: () => void mutate() };
 }
 
 /**
@@ -553,6 +576,25 @@ export function useRunArtifacts(
     { revalidateOnFocus: false },
   );
   return { index: data, error, isLoading };
+}
+
+/**
+ * 一轮的**测试结果**投影（排名页的通过率列）。
+ *
+ * 与 `useRunArtifacts` 同一条「打开才取、只读快照」口径：读的是每行消息账本，
+ * 不是实时的运行状态；关掉排名抽屉再打开即重读一次。
+ * 返回 `undefined` = 还没读到（界面写「未采集」），**不回落成 0**。
+ */
+export function useRunTestResults(
+  runId: string,
+  enabled: boolean,
+): { results: RunTestResults | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<RunTestResults>(
+    enabled && runId !== '' ? runTestResultsUrl(runId) : null,
+    getJson,
+    { revalidateOnFocus: false },
+  );
+  return { results: data, error, isLoading };
 }
 
 /**
@@ -619,6 +661,7 @@ export function useRunModelOptions(): {
   capabilityOf: (agentKind: AgentKind) => { usage: boolean; cancelMidTurn: boolean };
   defaultEffortOf: (agentKind: AgentKind) => string | undefined;
   messageCapabilityOf: (agentKind: AgentKind) => MessageCapability | null;
+  checkpointOf: (agentKind: AgentKind) => CheckpointCapability | null;
   turnInjectionOf: (agentKind: AgentKind) => TurnInjectionCapability | null;
   isLoading: boolean;
   error: unknown;
@@ -661,6 +704,17 @@ export function useRunModelOptions(): {
    * 与 `messageCapabilityOf` 同一条口径：**不编一份「都支持」**。界面拿它决定输入区能不能用、
    * 两颗操作按钮禁不禁用，猜错的形态是「按钮可点、消息静默消失」——没有报错，只有人以为自己发了。
    */
+  /**
+   * 「回到某一轮」的能力声明；`null` = 不知道（元数据还没到 / 后端没给这一格）。
+   *
+   * 与 `messageCapabilityOf` 同一条口径：**不编一份「都支持」**。界面拿到 `null` 时按
+   * 「没验证过」置灰并如实说明——那比让按钮可点、点下去无声失败要诚实。
+   */
+  const checkpointOf = useCallback(
+    (agentKind: AgentKind): CheckpointCapability | null => byKind.get(agentKind)?.checkpoint ?? null,
+    [byKind],
+  );
+
   const turnInjectionOf = useCallback(
     (agentKind: AgentKind): TurnInjectionCapability | null => byKind.get(agentKind)?.turnInjection ?? null,
     [byKind],
@@ -678,5 +732,15 @@ export function useRunModelOptions(): {
     [byKind],
   );
 
-  return { options: data, optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, turnInjectionOf, isLoading, error };
+  return {
+    options: data,
+    optionsFor,
+    capabilityOf,
+    defaultEffortOf,
+    messageCapabilityOf,
+    checkpointOf,
+    turnInjectionOf,
+    isLoading,
+    error,
+  };
 }

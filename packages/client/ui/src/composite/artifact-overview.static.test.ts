@@ -27,9 +27,8 @@ const source = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 /**
  * 两个导出常量的值**从源码里抠**，不 import 本件。
  *
- * 为什么不能 import：这个文件是 node 环境，而 `artifact-overview.tsx` 会拉起
- * `@ant-design/x-markdown` 的 CJS 产物（它内部 `require('./DebugPanel.css')`）⇒ 收集期就
- * `SyntaxError: Unexpected token '.'`（`apps/web-next/src/inject-declaration.test.ts` 的文件头记着同一条）。
+ * 判据是「源码里怎么写的」（谁走沙箱 iframe、高度常量是多少），import 只会把整棵渲染树
+ * （markdown 渲染器、抽屉、antd）拉进 node 环境，对这条判据没有增益。
  * 抠不到就抛：判据失效时不能静默通过（与 `drawer-geometry.test.ts` 同一手法）。
  */
 function sourceConstant(pattern: RegExp, name: string): string {
@@ -87,7 +86,7 @@ describe('顺序与名次只有一个判据', () => {
   });
 
   it('卡片标题只有一份拼法（页面与守卫共用 `artifactCardTitle`）', () => {
-    expect(source, '卡片标题没有走 artifactCardTitle').toContain('title={artifactCardTitle(row, rank)}');
+    expect(source, '卡片标题没有走 artifactCardTitle').toContain('{artifactCardTitle(row, rank)}');
     // 四段的分隔符是那句拼法的实现细节，页面不该再拼一次
     expect(source.match(/' · '/g) ?? [], '四段标题被就地拼过一份').toHaveLength(1);
   });

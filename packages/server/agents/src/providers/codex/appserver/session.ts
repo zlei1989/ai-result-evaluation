@@ -67,6 +67,14 @@ export interface CodexSessionInput {
    *     不记得，而界面上一切正常。续接失败就让这一轮失败，原因里点名 `thread/resume`。
    */
   resumeThreadId?: string;
+  /**
+   * **从某条线程分叉一条新线**（`AgentRunInput.fork` 的落点，能力声明 `mode: 'fork'`）。
+   *
+   * 走 `thread/fork`（协议方法名取自 `codex app-server` 二进制的 `strings`）。`thread/revert`
+   * 的回退范围（轮 / 条目 / 是否动工作区）**未定位**，故本层不做回退：只分叉，不改工作区。
+   * 与 `resumeThreadId` 互斥——调用方给 `fork` 时给的源线程就是 `resume.sessionId`。
+   */
+  forkThreadId?: string;
   /** 结构化输出 schema；缺省则不带该字段 */
   outputSchema?: Record<string, unknown>;
   /**
@@ -449,8 +457,10 @@ export async function startCodexSession(input: CodexSessionInput): Promise<Codex
     const core = createSessionCore(client);
 
     const threadResult = await startOrResumeThread(client, input);
-    const resumed = input.resumeThreadId !== undefined;
-    const threadId = requireId(threadResult, 'thread', 'id', resumed ? 'thread/resume' : 'thread/start');
+    const openedBy = input.forkThreadId !== undefined
+      ? 'thread/fork'
+      : input.resumeThreadId !== undefined ? 'thread/resume' : 'thread/start';
+    const threadId = requireId(threadResult, 'thread', 'id', openedBy);
     core.mainThreadId = threadId;
 
     /**
@@ -487,6 +497,14 @@ async function startOrResumeThread(client: AppServerClient, input: CodexSessionI
     approvalPolicy: input.approvalPolicy,
     ...(input.config === undefined ? {} : { config: input.config }),
   };
+  if (input.forkThreadId !== undefined) {
+    try {
+      return await client.request<unknown>('thread/fork', { threadId: input.forkThreadId, ...overrides });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`codex 分叉失败（thread/fork 失败）：${reason}`);
+    }
+  }
   if (input.resumeThreadId === undefined) return await client.request<unknown>('thread/start', overrides);
   try {
     return await client.request<unknown>('thread/resume', { threadId: input.resumeThreadId, ...overrides });

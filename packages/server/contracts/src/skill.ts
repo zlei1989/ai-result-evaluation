@@ -199,7 +199,8 @@ export type SkillList = z.infer<typeof SkillListSchema>;
  * 目录树上的一个节点（左树那一栏）。
  *
  * `path` 是**叶子名**（`SKILL.md`、`reference`、`API.md`），全路径由组件遍历拼出——
- * 这与 `@ant-design/x` 的 `Folder` 官方 demo 同形，界面上不出现第二套路径表达。
+ * 这与 AI Elements 的 File Tree pattern（Collapsible + Button 递归）同形，
+ * 界面上不出现第二套路径表达。
  *
  * `sizeBytes` 是**单个文件的字节数**；目录为 `null`（目录体积要递归求和，那是另一件事，
  * 而且列树时不该做）。读不出大小（权限 / 坏链）同样是 `null`——

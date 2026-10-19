@@ -1,13 +1,15 @@
-node_modules/
+.codex/
+.impeccable/
 .next/
-out/
-dist/
-coverage/
 .oxlintcache
 .pnpm-store/
 .scratch/
-*.tsbuildinfo
 *.log
+*.tsbuildinfo
+coverage/
+dist/
+node_modules/
+out/
 # next dev / next build 自动生成，内容 import 了被忽略的 .next/，不入库
 next-env.d.ts
 
@@ -30,6 +32,6 @@ docs/.vitepress/dist/
 .superpowers/
 
 # 真机验证临时文件
+.playwright-mcp/
 .probe-*/
 mcp-bundles/
-.playwright-mcp/

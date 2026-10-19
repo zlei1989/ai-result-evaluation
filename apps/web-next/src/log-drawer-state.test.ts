@@ -16,7 +16,7 @@ import {
   type ScoreResult,
   type UsageTokens,
 } from '@aieval/contracts';
-import { buildRowFacts, resolveLogDrawer } from './log-drawer-state';
+import { buildRowFacts, contextWindowOf, resolveLogDrawer } from './log-drawer-state';
 
 /** 一条真实形状的 log 事件（只有 seq/at/type 之外还带 stream/text，够用即可） */
 function event(seq: number): AgentEvent {
@@ -446,5 +446,39 @@ describe('buildRowFacts：领域事实的分段', () => {
     expect(effort?.value).toBe('未指定');
     expect(effort?.value).not.toBe('off');
     expect(effort?.value).not.toBe('');
+  });
+});
+
+/**
+ * 上下文用量的**上限**：来自候选池里这一行模型的声明，而不是任何默认值。
+ *
+ * 两条靶子：配对必须按 `providerId + modelId`（同一个模型名在两个供应商下窗口可以不同），
+ * 以及**拿不到就是 `null`**——编一个默认窗口出来，事实条上的百分比就是假读数。
+ */
+describe('contextWindowOf：上限只认候选池里的声明', () => {
+  const OPTION = {
+    providerId: 'p-anthropic',
+    providerName: 'Anthropic 网关',
+    modelId: 'claude-opus-4-6',
+    source: 'manual' as const,
+    contextWindow: 200_000,
+  };
+
+  it('按 providerId + modelId 配对，拿到声明值', () => {
+    expect(contextWindowOf(row(), [OPTION])).toBe(200_000);
+  });
+
+  it('同一个模型 id 在天另一个供应商下不算数（配对不能只认 modelId）', () => {
+    expect(contextWindowOf(row(), [{ ...OPTION, providerId: 'p-other' }])).toBeNull();
+  });
+
+  it('候选池里没有这一行 / 声明缺这一格 ⇒ null（不是 0、不是默认窗口）', () => {
+    expect(contextWindowOf(row(), [])).toBeNull();
+    expect(contextWindowOf(row(), [{ ...OPTION, contextWindow: undefined }])).toBeNull();
+  });
+
+  it('buildRowFacts 把上限原样带进事实（没给就是 null）', () => {
+    expect(buildRowFacts({ row: row(), events: [], contextWindow: 200_000 }).contextWindow).toBe(200_000);
+    expect(buildRowFacts({ row: row(), events: [] }).contextWindow).toBeNull();
   });
 });

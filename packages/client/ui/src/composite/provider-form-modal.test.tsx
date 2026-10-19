@@ -77,6 +77,30 @@ describe('ProviderFormModal：新建态', () => {
     expect(await screen.findByText('请填写 API 密钥')).toBeInTheDocument();
   });
 
+  /**
+   * 错误回填：提交失败时每句红字必须落在**它自己那一格的 Field 里**，而不是整页任意位置。
+   * 只断言「页面上有这句话」时，把两条错误都挂到同一格上、或挂在外层容器上，照样绿；
+   * 而用户看到的会是「名称下面写着密钥的错」——比没有提示更糟。
+   * `data-invalid` 是给样式与读屏的第二条通道（`Field` 的 cva 认它）。
+   */
+  it('提交失败时错误回填到对应字段（红字在各自那一格，不串格）', async () => {
+    const onSubmit = vi.fn();
+    renderModal({ onSubmit });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    const nameError = await screen.findByText('请填写名称');
+    const keyError = await screen.findByText('请填写 API 密钥');
+    const nameField = nameError.closest('[data-slot=field]');
+    const keyField = keyError.closest('[data-slot=field]');
+
+    expect(nameField?.querySelector('[data-slot=field-label]')?.textContent).toBe('名称');
+    expect(keyField?.querySelector('[data-slot=field-label]')?.textContent).toBe('API 密钥');
+    expect(nameField).not.toBe(keyField);
+    expect(nameField).toHaveAttribute('data-invalid', 'true');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('填完提交：回调收到四个字段', async () => {
     const onSubmit = vi.fn();
     renderModal({ onSubmit });
@@ -180,7 +204,9 @@ describe('ProviderFormModal：模型清单不在这里（已搬到「模型」�
     renderModal({ initial: PROVIDER });
 
     expect(MODAL_WIDTH).toBe(560);
-    expect((document.querySelector('.ant-modal') as HTMLElement | null)?.style.width).toBe(`${MODAL_WIDTH}px`);
+    // `data-testid` 指的就是弹窗内容盒本身，宽度直接落在它的 `maxWidth` 上
+    // （外壳那层不参与定宽，写在外壳上量不到）
+    expect(screen.getByTestId('provider-form-dialog').style.maxWidth).toBe(`${MODAL_WIDTH}px`);
   });
 });
 

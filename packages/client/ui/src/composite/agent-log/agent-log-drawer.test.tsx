@@ -88,6 +88,8 @@ function model(): AgentLogModel {
       thinking: null,
       domain: [],
       error: null,
+      contextUsed: null,
+      contextWindow: null,
     },
     nodes: [node],
     activeNodeId: 'main',
@@ -103,6 +105,19 @@ describe('AgentLogDrawer', () => {
     render(<AgentLogDrawer open={false} onClose={vi.fn()} model={model()} />);
 
     expect(screen.queryByText('抽屉里的正文')).toBeNull();
+    expect(screen.queryByTestId('agent-log-layout')).toBeNull();
+  });
+
+  it('打开抽屉 → 渲染出轮次容器 → 关闭后整棵正文卸载', () => {
+    const { rerender } = render(<AgentLogDrawer open onClose={vi.fn()} model={model()} />);
+
+    // 轮次容器就是时间轴本身（虚拟列表住在它里面）
+    expect(screen.getByTestId('virtual-turn-list')).toBeInTheDocument();
+    expect(screen.getByText('抽屉里的正文')).toBeInTheDocument();
+
+    rerender(<AgentLogDrawer open={false} onClose={vi.fn()} model={model()} />);
+
+    expect(screen.queryByTestId('virtual-turn-list')).toBeNull();
     expect(screen.queryByTestId('agent-log-layout')).toBeNull();
   });
 

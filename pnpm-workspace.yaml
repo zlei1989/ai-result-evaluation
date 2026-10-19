@@ -42,3 +42,9 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-telemetry@1.3.0'
   - '@earendil-works/pi-tui@1.3.0'
   - '@openai/codex@0.163.0-darwin-arm64 || 0.163.0-darwin-x64 || 0.163.0-linux-arm64 || 0.163.0-linux-x64 || 0.163.0-win32-arm64 || 0.163.0-win32-x64 || 0.163.0'
+
+# streamdown 依赖 tailwind-merge 做类名合并，而本仓的 `cn` 就是它的替代（clsx + tailwind-merge，
+# 零传递依赖）。把这一条按包名+依赖者别名掉，避免为一条 `twMerge` 再进一棵 tailwind-merge；
+# `clsx` 不别名——它在树里早已存在（2.1.1，多个既有包共用），不构成重复安装。
+overrides:
+  streamdown>tailwind-merge: npm:cn@0.5.0

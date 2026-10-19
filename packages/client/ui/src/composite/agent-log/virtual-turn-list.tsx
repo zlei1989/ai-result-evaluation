@@ -4,21 +4,28 @@
  * 轮次时间轴的虚拟滚动（L2）：把「按项渲染」接到 L1 的单轮渲染上。
  *
  * ⚠️ **虚拟化本身住在 `base/virtual-list.tsx`**（**虚拟化的唯一持有者**，两处内容共用：
- * 时间轴与固定区的原文行；全仓另一处 `<Listy>` 在问答卡片里，不虚拟化）。本文件只剩这一层的事：
+ * 时间轴与固定区的原文行）。本文件只剩这一层的事：
  *   1. **`buildRenderBlocks` 在按项渲染回调里才被调用**：在渲染层外面先全建一遍的话，
  *      虚拟滚动只省了 DOM、没省计算（`itemRender` 调的就是 `renderTurn`）；
- *   2. **「已渲染 N」数的是我们自己标的 `data-turn-row`**（数 antd 内部类名会把嵌套 `Listy`
+ *   2. **「已渲染 N」数的是我们自己标的 `data-turn-row`**（数框架内部类名会把嵌套的列表
  *      的项一起算进来）。拿不到（从未滚动过 / 容器为空 / jsdom 量不到高度）时退回 `turns.length`
  *      —— **那是退化值，不是真值**，注释见 `shownRendered`；
- *   3. 「跳到轮次」「回到最新」经 `VirtualListHandle.scrollToKey` 落到 `Listy.scrollTo`。
+ *   3. **每行是一个 `MessageScrollerItem`**（外部宿主模式）：滚动容器的跟随 / 锚定 / 定位
+ *      都靠「内容区的直接子节点」认消息，故行根必须是 Item，中间不能再包一层定位 div。
+ *      `scrollAnchor` 只标**当前轮次的边界**（最后一段的首行）——虚拟化会随窗口不断增删子节点，
+ *      库把「新出现的锚点」当成新轮次并滚过去；历史段的锚点若也标上，上翻经过段首时会被拽回去；
+ *   4. 跳转先经 `VirtualListHandle.scrollToKey` 让目标行挂上，再由外层用库的
+ *      `scrollToMessage` 精确对齐（未挂上那一帧由库的 pending 机制在行挂载后补上）。
  *
  * `userPrompt` 与 `notices` 是**列表里的头几行**（不是列表外的固定条）：它们在时间轴上就是首条消息，
  * 钉在顶上会让长提示词永久占掉一屏高度。
  */
-import { Flex } from 'antd';
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
-import { VirtualList, type VirtualListHandle } from '../../base/virtual-list';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react';
+import { VirtualList, type VirtualContainerArgs, type VirtualListHandle, type VirtualRowArgs } from '../../base/virtual-list';
+import { MessageScrollerContent, MessageScrollerItem } from '../../components/ui/message-scroller';
 import type { LogNodeIndex, LogSegment, LogTurn, MessageCapabilityMap, RowEvent, SessionNode } from './types';
+import type { CheckpointCapability } from '@aieval/contracts';
+import type { CheckpointTarget } from './checkpoint-marker';
 import { UserPromptBlock, renderTurn, turnKey, type TurnRenderContext } from './agent-message-timeline';
 import { SegmentDivider } from './segment-divider';
 import { blockRendererOf, useBlockRenderers, type BlockRenderer } from './block-renderer-registry';
@@ -74,6 +81,10 @@ export interface VirtualTurnListProps {
    * 那句光秃秃的「结果未采集」——界面上看起来完全正常，只是**永远说不出原因**。
    */
   capability?: MessageCapabilityMap;
+  /** 轮末「回到这里」：能力声明与两个出口（与 `capability` 逐条同源，漏传会静默不显示按钮） */
+  checkpoint?: CheckpointCapability | null;
+  onCheckpoint?(target: CheckpointTarget): void;
+  checkpointAnchorOf?(target: CheckpointTarget): { keepAt: string; dropFrom: string | null } | null;
   /** 由 `AgentLogLayout` 持有的命令式句柄（跳轮次 / 回到最新） */
   controllerRef?: Ref<ListController>;
   /**
@@ -82,6 +93,11 @@ export interface VirtualTurnListProps {
    * 报的是 `(已渲染, 总轮次)`：两者一个是实测值、一个是数据的长度，凑齐才念得成一句话。
    */
   onRenderedChange?(rendered: number, total: number): void;
+  /**
+   * 外部滚动容器（Message Scroller 的 Viewport）：给了就把行交给它的内容区（MessageScrollerContent）。
+   * 不给时本件自建宿主（测试与嵌入场景），此时不产生任何 Message Scroller 语义。
+   */
+  scrollElementRef?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -97,9 +113,7 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
   const dispatch = props.renderBlock ?? blockRendererOf(registry);
   const { turns, userPrompt, notices, activeNodeId, nodes, rowEvents, openKeys, onOpenChange, controllerRef, segmentDividers, segments } = props;
 
-  /** 列表宿主的容器：这里只用来**数已渲染行数**（高度测量在 `VirtualList` 里） */
-  const listHostRef = useRef<HTMLElement | null>(null);
-  /** 列表命令式句柄（跳轮次 / 回到最新经它落到 `Listy.scrollTo`） */
+  /** 列表命令式句柄（跳轮次经它落到 react-virtual 的 `scrollToIndex`） */
   const listRef = useRef<VirtualListHandle>(null);
   /** 实测到的「已渲染轮数」；`null` = 还没量到（退化，见 `shownRendered`） */
   const [rendered, setRendered] = useState<number | null>(null);
@@ -111,11 +125,10 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
   }, [props.onRenderedChange]);
 
   /**
-   * 数一次已渲染行数。**只在 `VirtualList` 报「量过了」时数**——它已经把宿主交到手上，
+   * 数一次已渲染行数。**只在 `VirtualList` 报「可见范围变了」时数**——它已经把宿主交到手上，
    * 与那边的高度测量是同一次回调（两处各自 ResizeObserver 就是两份判据）。
    */
   const countRendered = useCallback((host: HTMLElement): void => {
-    listHostRef.current = host;
     const count = host.querySelectorAll(`[${TURN_ROW_ATTR}]`).length;
     setRendered(count);
     // 报数不在这里：这一次回调只拿得到「已渲染」，总量在 `turns` 上，
@@ -163,6 +176,31 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
     return [...head, ...body];
   }, [turns, userPrompt, notices, segmentDividers, segments]);
 
+  /**
+   * 当前轮次的边界（`scrollAnchor` 只标这一行）：最后一段的第一行——段分隔（「追问 ×N」）
+   * 或该段首个轮次；首段则取题面卡片，没有题面时取首轮。
+   *
+   * 为什么不标每个历史段：虚拟化窗口会随滚动不断增删子节点，库把「新出现的锚点」当成新的
+   * 一轮并把它滚到顶部 ⇒ 上翻经过历史段首时会被拽回去。只保留当前边界，锚定语义仍在
+   * （新追问开始时那句话停在顶上、回复在下面长出来）。
+   */
+  const anchorKey = useMemo<string | null>(() => {
+    const last = turns[turns.length - 1];
+    if (last === undefined) return null;
+    if (last.segment === 0) {
+      return (
+        rows.find((row) => row.key === 'user-prompt')?.key ??
+        rows.find((row) => row.kind === 'turn' && row.turn.segment === 0)?.key ??
+        null
+      );
+    }
+    return (
+      rows.find((row) => row.key === `segment-${last.segment}`)?.key ??
+      rows.find((row) => row.kind === 'turn' && row.turn.segment === last.segment)?.key ??
+      null
+    );
+  }, [rows, turns]);
+
   /** 单轮渲染的上下文：与 L1 的 props 同形，外加整份轮次（行级事件要靠邻轮判归属） */
   const turnContext = useMemo<TurnRenderContext>(
     () => ({
@@ -178,6 +216,9 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
       onRetryNode: props.onRetryNode,
       onRequestDiagnostics: props.onRequestDiagnostics,
       capability: props.capability,
+      checkpoint: props.checkpoint,
+      onCheckpoint: props.onCheckpoint,
+      checkpointAnchorOf: props.checkpointAnchorOf,
     }),
     [
       nodes,
@@ -191,6 +232,9 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
       props.onRetryNode,
       props.onRequestDiagnostics,
       props.capability,
+      props.checkpoint,
+      props.onCheckpoint,
+      props.checkpointAnchorOf,
     ],
   );
 
@@ -229,17 +273,53 @@ export function VirtualTurnList(props: VirtualTurnListProps): ReactNode {
     [scrollToTurn, scrollToBottom, shownRendered],
   );
 
+  const scrollElementRef = props.scrollElementRef;
+  const external = scrollElementRef !== undefined;
+
   return (
-    <Flex vertical flex={1} style={{ minHeight: 0 }} data-testid="virtual-turn-list">
-      <VirtualList
-        items={rows}
-        rowKey={(row) => row.key}
-        // 按项渲染：`buildRenderBlocks` 在这一层才被调用（护栏）
-        itemRender={(row) => (row.kind === 'head' ? row.node : renderTurn(row.turn, row.index, turnContext))}
-        // 宿主由 `VirtualList` 交回来：已渲染计数与高度测量是同一次回调
-        onMeasured={countRendered}
-        controllerRef={listRef}
-      />
-    </Flex>
+    <VirtualList
+      items={rows}
+      rowKey={(row) => row.key}
+      // 按项渲染：`buildRenderBlocks` 在这一层才被调用（护栏）
+      itemRender={(row) => (row.kind === 'head' ? row.node : renderTurn(row.turn, row.index, turnContext))}
+      // 宿主由 `VirtualList` 交回来：已渲染计数与高度测量是同一次回调
+      onMeasured={countRendered}
+      controllerRef={listRef}
+      testId={external ? undefined : 'virtual-turn-list'}
+      scrollElementRef={scrollElementRef}
+      // 外部宿主（Message Scroller）：行必须是内容区的直接子节点，定位与测量都落在 Item 根上
+      row={
+        external
+          ? ({ key, index, style, measureRef, children }: VirtualRowArgs): ReactNode => (
+            <MessageScrollerItem
+              key={key}
+              ref={measureRef}
+              data-index={index}
+              messageId={key}
+              scrollAnchor={key === anchorKey}
+              style={style}
+              className="min-w-0"
+            >
+              {children}
+            </MessageScrollerItem>
+          )
+          : undefined
+      }
+      container={
+        external
+          ? ({ totalSize, children }: VirtualContainerArgs): ReactNode => (
+            <MessageScrollerContent
+              data-testid="virtual-turn-list"
+              className="h-auto min-h-full gap-0"
+              // 虚拟化时高度由行偏移的总长度给（行是绝对定位的，内容区不再靠子节点撑开）；
+              // 退化渲染时不给高度，交给内容自己撑
+              style={totalSize === null ? undefined : { height: totalSize, position: 'relative' }}
+            >
+              {children}
+            </MessageScrollerContent>
+          )
+          : undefined
+      }
+    />
   );
 }

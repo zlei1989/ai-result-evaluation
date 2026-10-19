@@ -24,7 +24,7 @@ import {
   type Loadable,
 } from '@aieval/ui';
 import type { InjectMessage, TurnInjectionCapability } from '@aieval/contracts';
-import { Alert, Button, Flex, Segmented, Switch, Typography } from 'antd';
+import { Alert, AlertDescription, AlertTitle, Button, Switch , Tabs, TabsList, TabsTrigger  } from '@aieval/ui';
 import { useRouter } from 'next/navigation';
 import { NAV_ITEMS } from '@/src/nav';
 
@@ -106,42 +106,49 @@ export default function Page(): ReactNode {
     <>
       <AppTopNav items={[...NAV_ITEMS]} active="" onNavigate={(href) => router.push(href)} />
       <PageShell scroll="page">
-        <Flex vertical gap={16}>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            执行日志夹具预览
-          </Typography.Title>
-          <Alert
-            type="info"
-            showIcon
-            title="这份页面只吃夹具，不读任何接口"
-            description="dsh 覆盖全部块类型与两族卡片；codex 证明「补录」；cc 证明「这一类内容没被转发」那一档。"
-          />
-          <Flex align="center" gap={8} wrap>
-            <Segmented
-              value={active}
-              onChange={(value) => setActive(String(value))}
-              options={fixtures.map((item) => ({ label: item.name, value: item.name }))}
-            />
-            <Button size="small" onClick={() => setOpen(true)} disabled={open}>
+        <div className="flex flex-col gap-4">
+          <h1 className="text-lg font-semibold">执行日志夹具预览</h1>
+          <Alert className="border-border bg-muted/40">
+            <AlertTitle>这份页面只吃夹具，不读任何接口</AlertTitle>
+            <AlertDescription>
+              dsh 覆盖全部块类型与两族卡片；codex 证明「补录」；cc 证明「这一类内容没被转发」那一档。
+            </AlertDescription>
+          </Alert>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs value={active} onValueChange={(value) => setActive(String(value))}>
+              <TabsList variant="line" aria-label="夹具">
+                {fixtures.map((item) => (
+                  <TabsTrigger key={item.name} value={item.name}>
+                    {item.name}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            <Button size="sm" variant="outline" onClick={() => setOpen(true)} disabled={open}>
               打开抽屉
             </Button>
-            <Switch size="small" checked={withEnvironment} onChange={setWithEnvironment} aria-label="提供环境信息" />
-            <Typography.Text type="secondary">提供环境信息</Typography.Text>
-            <Switch size="small" checked={withComposer} onChange={setWithComposer} aria-label="显示输入区" />
-            <Typography.Text type="secondary">输入区</Typography.Text>
-            <Segmented
-              size="small"
-              value={declarationChoice}
-              onChange={(value) => setDeclarationChoice(value as InjectDeclarationChoice)}
-              options={[
-                { label: '声明：能做到', value: 'yes' },
-                { label: '声明：我们还没接', value: 'off-by-adapter' },
-                { label: '声明：读不到', value: 'unknown' },
-              ]}
+            <Switch
+              size="sm"
+              checked={withEnvironment}
+              onCheckedChange={setWithEnvironment}
+              aria-label="提供环境信息"
             />
-          </Flex>
-          <Typography.Text type="secondary">{fixture?.proves}</Typography.Text>
-        </Flex>
+            <span className="text-sm text-muted-foreground">提供环境信息</span>
+            <Switch size="sm" checked={withComposer} onCheckedChange={setWithComposer} aria-label="显示输入区" />
+            <span className="text-sm text-muted-foreground">输入区</span>
+            <Tabs
+              value={declarationChoice}
+              onValueChange={(value) => setDeclarationChoice(value as InjectDeclarationChoice)}
+            >
+              <TabsList variant="line" aria-label="投递声明">
+                <TabsTrigger value="yes">声明：能做到</TabsTrigger>
+                <TabsTrigger value="off-by-adapter">声明：我们还没接</TabsTrigger>
+                <TabsTrigger value="unknown">声明：读不到</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+          <span className="text-sm text-muted-foreground">{fixture?.proves}</span>
+        </div>
       </PageShell>
 
       {fixture === undefined ? null : (

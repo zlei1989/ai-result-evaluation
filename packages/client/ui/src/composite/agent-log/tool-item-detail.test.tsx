@@ -1,21 +1,24 @@
 /**
- * ToolItemDetail：单条工具行（摘要行 + 展开后的命令/参数与结果）。
+ * ToolItemDetail：单条工具行（`Trace` 摘要行 + 展开后的命令/参数与结果）。
  *
- * 七条守卫：
+ * 八条守卫：
  *   · 摘要行的行首有**一块**身份牌子 + 参数摘要（`description` 缺席时是 `value ?? text` 的第一行）；
  *   · **行首族名优先、没映射才回落工具名**（二选一，都在行首）；工具名落到展开后的正文；
  *   · **摘要行优先给入参里的 `description`**（模型自己写的一句人话），原文仍留在展开后的正文里；
  *   · `name === ''` 时**不编名字**，如实写「未采集」+ 原因；
  *   · `output === null && missingReason` 时写清「结果未采集 · 原因」；
- *   · 孤立结果不编工具名（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）。
+ *   · 孤立结果不编工具名（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）；
+ *   · **动效的唯一判据是 `block.assembly`**：`open` ⇒ `TraceLine status="running"` 且标题写现在时，
+ *     快照 ⇒ 不传 `status`（标题回到光秃秃的那句话）。没有第二个「流式中」布尔可传；
+ *   · **失败输出走 Stack Trace 的结构**：首行错误 + 可折叠的帧列表，而不是一整段等宽文本。
  */
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installResizeObserverStub } from '../../testing/resize-observer';
-import type { OrphanToolResult, ToolItem } from './render-blocks';
+import type { OrphanToolResult, ToolGroupEntry, ToolItem } from './render-blocks';
 import { ToolItemDetail, toolEntryKey } from './tool-item-detail';
 
-// `EllipsisText` 走 antd 的省略测量，它 `new ResizeObserver`（jsdom 没有）⇒ 与 ellipsis-text.test 同一口径
+// `MonoText` 走 antd 的滚动容器；`JsonText` 的测量会 `new ResizeObserver`（jsdom 没有）
 beforeEach(() => {
   installResizeObserverStub();
 });
@@ -38,6 +41,7 @@ function callItem(overrides: Partial<ToolItem> = {}): ToolItem {
     inputError: null,
     output: null,
     at: AT,
+    assembly: 'snapshot',
     running: false,
     ...overrides,
   };
@@ -50,8 +54,44 @@ function orphanResult(overrides: Partial<OrphanToolResult> = {}): OrphanToolResu
     blockId: 'm1#7',
     at: AT,
     output: { text: '命令输出原文', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'none' } },
+    assembly: 'snapshot',
     ...overrides,
   };
+}
+
+/** 一条失败结果（stderr 那种多行原文） */
+function failedOutput(text: string): ToolItem['output'] {
+  return { text, structured: null, status: 'error', bytes: text.length, truncation: { kind: 'none' } };
+}
+
+/** 渲染一条工具行；开合两格都给默认值，用例只改自己关心的那一格 */
+function renderDetail(
+  entry: ToolGroupEntry,
+  options: { open?: boolean; framesOpen?: boolean; missingReason?: string | null } = {},
+): ReturnType<typeof render> & { onOpenChange: ReturnType<typeof vi.fn>; onFramesOpenChange: ReturnType<typeof vi.fn> } {
+  const onOpenChange = vi.fn();
+  const onFramesOpenChange = vi.fn();
+  const view = render(
+    <ToolItemDetail
+      entry={entry}
+      open={options.open ?? true}
+      onOpenChange={onOpenChange}
+      framesOpen={options.framesOpen ?? false}
+      onFramesOpenChange={onFramesOpenChange}
+      missingReason={options.missingReason ?? null}
+    />,
+  );
+  return Object.assign(view, { onOpenChange, onFramesOpenChange });
+}
+
+/** 摘要行（收起态那一行）的文本 */
+function headerOf(container: HTMLElement): string {
+  return container.querySelector('[data-slot="trace-collapsible-trigger"]')?.textContent ?? '';
+}
+
+/** 展开后的正文文本 */
+function bodyOf(container: HTMLElement): string {
+  return container.querySelector('[data-slot="trace-collapsible-content"]')?.textContent ?? '';
 }
 
 describe('ToolItemDetail', () => {
@@ -61,10 +101,10 @@ describe('ToolItemDetail', () => {
    * 这条闸同时钉住「工具名没有被丢掉」：它原样落到展开后的正文。
    */
   it('行首是族名（人话）、工具名落到展开后的正文，参数摘要照旧', () => {
-    const { container } = render(<ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />);
+    const { container } = renderDetail(callItem());
 
-    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
-    const body = container.querySelector('.ant-collapse-body')?.textContent ?? '';
+    const header = headerOf(container);
+    const body = bodyOf(container);
     // 二选一：行首只有「跑命令」，`Bash` 一个字母都不在收起态那一行里
     expect(header).toContain('跑命令');
     expect(header).not.toContain('Bash');
@@ -75,83 +115,59 @@ describe('ToolItemDetail', () => {
   });
 
   /**
-   * 折叠标题那一格**必须可收缩**：摘要行是 `nowrap` 的长命令，而 antd 的 `.ant-collapse-title`
-   * 默认 `min-width: auto` ⇒ 最小宽度按内容算，标题把整行顶宽、外层时间轴冒出横向滚动条，
-   * 而省略号永远轮不到（`EllipsisText` 的 `max-width: 100%` 分母就是那个被顶宽的容器）。
+   * 摘要行的标题**自己就是可收缩的**：长命令不许把整行顶宽成横向滚动条。
    *
-   * jsdom 没有布局，这里只能钉住「那一格语义样式在位」；几何判据（标题宽度收到可用宽度、
-   * 列表 `scrollWidth === clientWidth`）在真实服务上读 `getBoundingClientRect`。
+   * 判据取 Trace 的结构：标题那一格带 `truncate`（`overflow: hidden` + 省略号），而它所在的
+   * 行是 `min-w-0` 的 flex 项。几何判据（标题宽度收到可用宽度、列表 `scrollWidth === clientWidth`）
+   * 在真实服务上读 `getBoundingClientRect`；jsdom 没有布局，只能钉住这两条结构。
    */
-  it('折叠标题可收缩（`minWidth: 0`）：长摘要不会把整行顶宽成横向滚动条', () => {
-    const { container } = render(
-      <ToolItemDetail entry={callItem()} open={false} onOpenChange={vi.fn()} missingReason={null} />,
-    );
+  it('标题可收缩（`truncate` + 行 `min-w-0`）：长摘要不会把整行顶宽成横向滚动条', () => {
+    const { container } = renderDetail(callItem(), { open: false });
 
-    expect(container.querySelector<HTMLElement>('.ant-collapse-title')?.style.minWidth).toBe('0');
+    const title = container.querySelector('[data-slot="trace-title"]');
+    expect(title?.className, '标题没有走截断（长命令会把整行顶宽）').toContain('truncate');
+    const line = container.querySelector('[data-slot="trace-line"]');
+    expect(line?.className, '标题所在的行不是可收缩的 flex 项').toContain('min-w-0');
   });
 
   it('没有族映射（`family === null`）时行首回落工具名——且正文不再重复一遍', () => {
-    const { container } = render(
-      <ToolItemDetail entry={callItem({ family: null })} open onOpenChange={vi.fn()} missingReason={null} />,
-    );
+    const { container } = renderDetail(callItem({ family: null }));
 
-    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
+    const header = headerOf(container);
     expect(header).toContain('Bash');
     expect(header).not.toContain('跑命令');
-    expect(container.querySelector('.ant-collapse-body')?.textContent).not.toContain('工具原名');
+    expect(bodyOf(container)).not.toContain('工具原名');
   });
 
   it('name 为空串：行首给族名，正文如实写「工具原名未采集 · 原因」（**不编名字**）', () => {
-    const { container } = render(
-      <ToolItemDetail entry={callItem({ name: '', nameMissing: null })} open onOpenChange={vi.fn()} missingReason={null} />,
-    );
+    const { container } = renderDetail(callItem({ name: '', nameMissing: null }));
 
-    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
-    expect(header).toContain('跑命令');
-    // 不编名字：整件里一个等宽标识符都不出
-    expect(container.querySelector('code')).toBeNull();
-    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain('工具原名未采集 · 没验证过');
+    expect(headerOf(container)).toContain('跑命令');
+    // 不编名字：整件里一个厂商工具名都不出（结果正文的 `<code>` 不是工具名）
+    expect(container.querySelector('code[data-tool-name]')).toBeNull();
+    expect(bodyOf(container)).toContain('工具原名未采集 · 没验证过');
   });
 
   it('name 为空串且没有族映射：行首就是「工具名未采集 · 原因」', () => {
-    render(
-      <ToolItemDetail
-        entry={callItem({ name: '', nameMissing: null, family: null })}
-        open={false}
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
-    );
+    renderDetail(callItem({ name: '', nameMissing: null, family: null }), { open: false });
 
     expect(screen.getByText('工具名未采集 · 没验证过')).toBeInTheDocument();
   });
 
   it('结果没到且给了原因时写清「结果未采集 · 原因」', () => {
-    const { container } = render(
-      <ToolItemDetail
-        entry={callItem()}
-        open
-        onOpenChange={vi.fn()}
-        missingReason="这家结构上不支持"
-      />,
-    );
+    const { container } = renderDetail(callItem(), { missingReason: '这家结构上不支持' });
 
-    // 摘要行与正文各说一次（摘要行给的是折叠态能看到的结论，正文展开后仍在）
+    // 摘要行旁边（`AgentRunStateTag`）与正文各说一次
     expect(screen.getAllByText('结果未采集 · 这家结构上不支持')).toHaveLength(2);
-    expect(container.querySelector('.ant-collapse-body')).toHaveTextContent('结果未采集 · 这家结构上不支持');
+    expect(bodyOf(container)).toContain('结果未采集 · 这家结构上不支持');
   });
 
   it('展开后给出完整参数（含字节数）与结果原文，以及截断提示', () => {
-    render(
-      <ToolItemDetail
-        entry={callItem({
-          input: { value: '{"command":"ls"}', text: '{\n  "command": "ls"\n}', bytes: 24, description: null },
-          output: { text: 'a.txt\nb.txt', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'truncated', reason: '只留前 100KB' } },
-        })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
+    renderDetail(
+      callItem({
+        input: { value: '{"command":"ls"}', text: '{\n  "command": "ls"\n}', bytes: 24, description: null },
+        output: { text: 'a.txt\nb.txt', structured: null, status: 'ok', bytes: 12, truncation: { kind: 'truncated', reason: '只留前 100KB' } },
+      }),
     );
 
     // 正文用 `text`（逐字原文）优先，摘要行才用 `value`；默认 matcher 会把缩进折成一个空格
@@ -171,20 +187,15 @@ describe('ToolItemDetail', () => {
    */
   it('摘要行用入参里的 `description`（人话优先），原文仍留在展开后的正文里', () => {
     const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
-    const { container } = render(
-      <ToolItemDetail
-        entry={callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
+    const { container } = renderDetail(
+      callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } }),
     );
 
     expect(screen.getByText('看生产改动与状态')).toBeInTheDocument();
     // 摘要行（收起态唯一可见的一行）里不再有那串 JSON……
-    expect(container.querySelector('.ant-collapse-header')?.textContent).not.toContain('git --no-pager diff');
+    expect(headerOf(container)).not.toContain('git --no-pager diff');
     // ……但它一字不少地留在展开后的正文里（「原文可查」不靠标题兜）
-    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain(raw);
+    expect(bodyOf(container)).toContain(raw);
   });
 
   /**
@@ -198,23 +209,17 @@ describe('ToolItemDetail', () => {
    */
   it('摘要行优先用数据层算好的 `summary`（带目标那句），压过 `input.description`', () => {
     const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
-    const { container } = render(
-      <ToolItemDetail
-        entry={callItem({
-          summary: '看生产改动与状态（git --no-pager diff）',
-          input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' },
-        })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
+    const { container } = renderDetail(
+      callItem({
+        summary: '看生产改动与状态（git --no-pager diff）',
+        input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' },
+      }),
     );
 
     // 摘要行（收起态唯一可见的一行）逐字是服务端那一句——`description` 单独那句已被它吸收
-    const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
-    expect(header).toContain('看生产改动与状态（git --no-pager diff）');
+    expect(headerOf(container)).toContain('看生产改动与状态（git --no-pager diff）');
     // 原文一字不少地留在展开后的正文里
-    expect(container.querySelector('.ant-collapse-body')?.textContent).toContain(raw);
+    expect(bodyOf(container)).toContain(raw);
   });
 
   /**
@@ -223,31 +228,80 @@ describe('ToolItemDetail', () => {
    */
   it('老记录没有 `summary` 这一格 ⇒ 回落到 `description`', () => {
     const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
-    const { container } = render(
-      <ToolItemDetail
-        entry={callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
+    const { container } = renderDetail(
+      callItem({ input: { value: raw, text: raw, bytes: 66, description: '看生产改动与状态' } }),
     );
 
-    expect(container.querySelector('.ant-collapse-header')?.textContent).toContain('看生产改动与状态');
+    expect(headerOf(container)).toContain('看生产改动与状态');
   });
 
-  it('结果失败时看得见（`AgentRunStateTag` 在结果到手时不表态，这一格不能也沉默）', () => {
-    render(
+  /**
+   * **`status` 从 `block.assembly` 派生，不从第二个 prop 来**。
+   *
+   * 判据分两半（缺一半就分不清「没传 status」与「传了个恒 undefined 的假格」）：
+   *   · `assembly === 'open'` ⇒ `data-status="running"` + 标题「正在运行 · …」（现在时）；
+   *   · `assembly === 'snapshot'` ⇒ **没有** `data-status` 这个属性（Trace 的规则是跑完不传），
+   *     标题回到光秃秃的那句话。
+   */
+  it('`assembly` 是动效的唯一判据：open ⇒ status="running" 且标题现在时，快照 ⇒ 不传 status', () => {
+    const { container, unmount } = renderDetail(callItem({ assembly: 'open', running: true }));
+    const running = container.querySelector('[data-slot="trace-line"]');
+    expect(running).toHaveAttribute('data-status', 'running');
+    expect(container.querySelector('[data-slot="trace-title"]')).toHaveTextContent('正在运行 · ');
+    unmount();
+
+    const { container: done } = renderDetail(callItem({ assembly: 'snapshot' }));
+    const line = done.querySelector('[data-slot="trace-line"]');
+    expect(line, '快照块不该带 status').not.toBeNull();
+    expect(line?.hasAttribute('data-status'), '快照块仍然传了 status ⇒ 跑完还在 shimmer').toBe(false);
+    expect(done.querySelector('[data-slot="trace-title"]')).not.toHaveTextContent('正在运行');
+  });
+
+  it('结果失败时看得见：status="error" + 标题「失败：…」（不靠颜色单独表达）', () => {
+    const { container } = renderDetail(callItem({ output: failedOutput('boom') }), { open: false });
+
+    expect(container.querySelector('[data-slot="trace-line"]')).toHaveAttribute('data-status', 'error');
+    // 状态词写进标题（只靠颜色的话，读屏与色觉障碍用户拿不到这个事实）
+    expect(headerOf(container)).toContain('失败：');
+  });
+
+  /**
+   * 失败输出**不是「一段更长的文本」**：它有自己的结构（首行错误 + 帧列表），
+   * 且帧列表是第二层折叠——收起时不进 DOM、展开才出现。
+   *
+   * 为什么必须钉：一整段 `MonoText` 与 Stack Trace 在「字都在」这个层面完全一样，
+   * 只有节点结构能区分「读者先看到第一行，再决定要不要看帧」与「在一屏 stderr 里自己找」。
+   */
+  it('失败输出走 Stack Trace：首行错误 + 可折叠的帧列表，而不是一整段等宽文本', () => {
+    const text = ['Error: boom', '    at run (/app/src/a.ts:10:3)', '    at next (node_modules/x/y.js:2:1)'].join('\n');
+    const entry = callItem({ output: failedOutput(text) });
+    const { container, rerender } = renderDetail(entry, { framesOpen: false });
+
+    const stack = container.querySelector('[data-testid="stack-trace"]');
+    expect(stack, '失败输出没有走 Stack Trace 的结构').not.toBeNull();
+    expect(stack?.querySelector('[data-slot="trace-line"]')).toHaveAttribute('data-status', 'error');
+    // **不是**一整段等宽文本：失败这一支不渲染 CodeBlock
+    expect(container.querySelector('[data-slot="code-block-content"]')).toBeNull();
+    // 收起的帧列表不在 DOM 里（真的有两档，而不是一直摊着）
+    expect(container.querySelector('[data-testid="stack-frames"]')).toBeNull();
+
+    rerender(
       <ToolItemDetail
-        entry={callItem({
-          output: { text: 'boom', structured: null, status: 'error', bytes: 4, truncation: { kind: 'none' } },
-        })}
-        open={false}
+        entry={entry}
+        open
         onOpenChange={vi.fn()}
+        framesOpen
+        onFramesOpenChange={vi.fn()}
         missingReason={null}
       />,
     );
-
-    expect(screen.getByText('失败')).toBeInTheDocument();
+    const frames = container.querySelectorAll('[data-testid="stack-frames"] li');
+    expect(frames).toHaveLength(2);
+    // 自己的帧与框架帧分开：`node_modules` 的帧不该与我们的代码同色
+    expect(frames[0]).toHaveAttribute('data-frame', 'own');
+    expect(frames[1]).toHaveAttribute('data-frame', 'framework');
+    // 标题会被截断，故错误那句话在正文顶部重复一遍
+    expect(container.querySelector('[data-testid="stack-error"]')).toHaveTextContent('Error: boom');
   });
 
   /**
@@ -258,21 +312,16 @@ describe('ToolItemDetail', () => {
    * 丢掉这一格时**界面上没有任何异常**——只是那些事实永远看不见，故必须有守卫。
    */
   it('结构化结果有落点（渲染成等宽 JSON 并标注），`null` 时整段不出现', () => {
-    const { container, unmount } = render(
-      <ToolItemDetail
-        entry={callItem({
-          output: {
-            text: '摘要正文',
-            structured: { lines: [{ number: 78, text: '<div id="app">' }], totalLines: 112 },
-            status: 'ok',
-            bytes: 12,
-            truncation: { kind: 'none' },
-          },
-        })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
+    const { container, unmount } = renderDetail(
+      callItem({
+        output: {
+          text: '摘要正文',
+          structured: { lines: [{ number: 78, text: '<div id="app">' }], totalLines: 112 },
+          status: 'ok',
+          bytes: 12,
+          truncation: { kind: 'none' },
+        },
+      }),
     );
 
     expect(screen.getByText('结构化结果')).toBeInTheDocument();
@@ -282,33 +331,22 @@ describe('ToolItemDetail', () => {
     unmount();
 
     // `null` = 这一家没给 ⇒ **不画空框**（空框会被读成「结构化结果坏了」）
-    const empty = render(
-      <ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />,
-    );
+    const empty = renderDetail(callItem());
     expect(empty.container.textContent).not.toContain('结构化结果');
   });
 
   it('孤立结果：写「配不上调用」+ 结果原文，且不编一个工具名', () => {
-    const { container } = render(
-      <ToolItemDetail entry={orphanResult()} open onOpenChange={vi.fn()} missingReason={null} />,
-    );
+    const { container } = renderDetail(orphanResult());
 
     expect(screen.getByText('孤立结果（配不上调用）')).toBeInTheDocument();
     expect(screen.getByText('命令输出原文')).toBeInTheDocument();
-    // 没有工具名 ⇒ 不出现等宽名字那一格
-    expect(container.querySelector('code')).toBeNull();
+    // 没有工具名 ⇒ 不出现工具名那一格
+    expect(container.querySelector('code[data-tool-name]')).toBeNull();
   });
 
-  it('超长结果不截断、也没有「展开全部」按钮（原文一字不少，滚动交给 MonoText）', () => {
+  it('超长结果不截断、也没有「展开全部」按钮（原文一字不少，滚动交给 CodeBlock）', () => {
     const long = `${'x'.repeat(4_500)}TAIL`;
-    render(
-      <ToolItemDetail
-        entry={callItem({ output: { text: long, structured: null, status: 'ok', bytes: long.length, truncation: { kind: 'none' } } })}
-        open
-        onOpenChange={vi.fn()}
-        missingReason={null}
-      />,
-    );
+    renderDetail(callItem({ output: { text: long, structured: null, status: 'ok', bytes: long.length, truncation: { kind: 'none' } } }));
 
     expect(screen.queryByText('展开全部')).toBeNull();
     expect(screen.getByText(long)).toBeInTheDocument();
@@ -336,14 +374,12 @@ describe('ToolItemDetail', () => {
    * 变异体：把 `tool-item-detail.tsx` 里那条 `hasText(item.inputError) && <Alert …>` 删掉 ⇒ 本用例红。
    */
   it('带 inputError 的调用画出一句可读提示（含厂商原文）；没有则不画', () => {
-    const view = render(
-      <ToolItemDetail entry={callItem({ inputError: 'Unexpected token: not valid JSON' })} open onOpenChange={vi.fn()} missingReason={null} />,
-    );
+    const view = renderDetail(callItem({ inputError: 'Unexpected token: not valid JSON' }));
     expect(view.getByText(/参数不是合法 JSON/)).toBeTruthy();
     expect(view.getByText(/not valid JSON/)).toBeTruthy();
     view.unmount();
 
-    const without = render(<ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />);
+    const without = renderDetail(callItem());
     expect(without.queryByText(/参数不是合法 JSON/)).toBeNull();
   });
 });

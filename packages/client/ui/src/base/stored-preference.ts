@@ -42,13 +42,22 @@ function clampWidth(value: number, min: number, max: number): number {
  * 宽度偏好状态：首帧取 clamp(seed)，挂载后读出存量值并夹紧；更新即写回。
  * 写入失败（配额 / 禁用存储）不抛错——本次会话内的改动仍然生效，只是记不住。
  */
-export function useStoredWidth(key: string, seed: number, min: number, max: number): [number, (next: number) => void] {
+export function useStoredWidth(
+  key: string,
+  seed: number,
+  min: number,
+  max: number,
+): [number, (next: number) => void, boolean] {
   const [width, setWidth] = useState<number>(() => clampWidth(seed, min, max));
+  // 存量值是否已读完：调用方要在「读到之后」才应用宽度（首帧的 seed 不是用户偏好）。
+  // 存储不可用/无值也算读完了——这时 seed 就是最终值，等下去没有意义。
+  const [hydrated, setHydrated] = useState(false);
 
   // 挂载后再读存量值：保证 SSR 与客户端首帧一致（否则水合不一致）
   useEffect(() => {
     const stored = readStoredPreference(key, seed, parseFiniteNumber);
     setWidth(clampWidth(stored, min, max));
+    setHydrated(true);
   }, [key, seed, min, max]);
 
   const update = useCallback(
@@ -64,5 +73,5 @@ export function useStoredWidth(key: string, seed: number, min: number, max: numb
     [key, min, max],
   );
 
-  return [width, update];
+  return [width, update, hydrated];
 }

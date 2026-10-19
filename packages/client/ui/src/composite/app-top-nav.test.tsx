@@ -1,16 +1,8 @@
-/** 顶栏：导航高亮、跳转回调、显式高度。纯 props 驱动（ui 不调接口、不依赖路由库）。 */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+/** 顶栏：导航项、高亮、跳转回调、显式高度。纯 props 驱动（ui 不调接口、不依赖路由库）。 */
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { SettingOutlined } from '@ant-design/icons';
+import { SettingsIcon } from 'lucide-react';
 import { AppTopNav, type AppTopNavProps } from './app-top-nav';
-import { installResizeObserverStub } from '../testing/resize-observer';
-
-// jsdom 不提供 ResizeObserver，而横向 Menu 的溢出折叠（@rc-component/overflow）会经由
-// @rc-component/resize-observer 直接 new 全局构造器：不打桩，挂载即抛 ReferenceError ——
-// 环境缺口，不是被测代码的问题（同全仓既定口径：需要的用例自己装桩，不进共享 setup）。
-beforeEach(() => {
-  installResizeObserverStub();
-});
 
 const ITEMS = [
   { key: 'cases', label: '用例', href: '/cases' },
@@ -28,6 +20,12 @@ describe('AppTopNav', () => {
     for (const item of ITEMS) expect(screen.getByText(item.label)).toBeInTheDocument();
   });
 
+  it('导航项的顺序与传入顺序一致（顺序是数据，不在组件里重排）', () => {
+    setup();
+    const labels = screen.getAllByRole('link').map((link) => link.textContent);
+    expect(labels).toEqual(['用例', '评测', '设置']);
+  });
+
   it('点击导航项回调该项的 href', () => {
     const onNavigate = vi.fn();
     setup({ onNavigate });
@@ -39,6 +37,16 @@ describe('AppTopNav', () => {
     setup({ active: 'runs' });
     const current = screen.getByText('评测').closest('[aria-current]');
     expect(current?.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('给了 onSearch 才渲染可见的搜索入口（⌘K 之外的第二条路）', () => {
+    setup();
+    expect(screen.queryByRole('button', { name: /搜索/ })).toBeNull();
+
+    const onSearch = vi.fn();
+    setup({ onSearch });
+    screen.getByRole('button', { name: /搜索/ }).click();
+    expect(onSearch).toHaveBeenCalledTimes(1);
   });
 
   it('不再渲染产品名与主题切换（主题的唯一入口在设置页，顶栏只留导航）', () => {
@@ -53,44 +61,42 @@ describe('AppTopNav', () => {
 
   /**
    * 图标守卫：导航项带图标时要渲染出来，且**不能污染可访问名**。
-   * 为什么值得钉：`@ant-design/icons` 给每个图标挂了 `role="img" aria-label="setting"`，
-   * 图标一旦没被 `aria-hidden` 藏起来，导航项（menuitem）的可访问名会变成「setting 用例」——
+   * 为什么值得钉：图标库会给 svg 挂 `role="img" aria-label`（`@ant-design/icons` 就是这样），
+   * 图标一旦没被 `aria-hidden` 藏起来，导航链接的可访问名会变成「setting 用例」——
    * 屏读器多念一个英文单词，按名字定位导航项也会失配，而界面「看起来完全正常」。
    */
   it('带 icon 的导航项渲染图标且 aria-hidden（可访问名仍只有文案）', () => {
     render(
       <AppTopNav
-        items={[{ key: 'cases', label: '用例', href: '/cases', icon: SettingOutlined }]}
+        items={[{ key: 'cases', label: '用例', href: '/cases', icon: SettingsIcon }]}
         active="cases"
         onNavigate={vi.fn()}
       />,
     );
 
-    const icon = document.querySelector('.anticon-setting');
+    const link = screen.getByRole('link', { name: '用例' });
+    const icon = link.querySelector('svg');
     expect(icon).not.toBeNull();
     expect(icon).toHaveAttribute('aria-hidden', 'true');
-    // 图标藏起来之后，导航项的可访问名才是纯文案（这句在漏掉 aria-hidden 时会失配）
-    expect(screen.getByRole('menuitem', { name: '用例' })).toBeInTheDocument();
-    // 链接本身就是文案：图标是装饰，不参与任何名字
-    expect(screen.getByRole('link', { name: '用例' })).toBeInTheDocument();
   });
 
-  it('顶栏有显式高度（根作用域里 --ant-layout-header-height 是空值，antd 的 height 解析不出值）', () => {
-    // 这条不变量守的是真实缺陷：顶栏渲染在**根** ConfigProvider 作用域（它是 PageShell 的兄弟节点，
-    // 紧凑作用域由 PageShell 自己创建），浏览器实测根作用域里 --ant-layout-header-height 为**空字符串**，
-    // 于是 antd 的 `.ant-layout-header { height: var(--ant-layout-header-height) }` 在计算值阶段失效、
-    // height 退回 auto：顶栏塌成内容高度 **24.67px**、padding-block 0（子元素上下零余量）。
-    // 布局在 jsdom 里测不出来，唯一可断言的就是「我们显式写了内联高度」。
+  it('顶栏有显式高度、flexShrink:0 与吸顶（否则会被压缩或随页面滚走）', () => {
+    // 布局在 jsdom 里测不出来，唯一可断言的就是「我们显式写了这几格」：
+    // 顶栏与 PageShell（flex-1）同处 body 的纵向 flex；页面内容撑出文档滚动时，
+    // 没有 sticky 的顶栏会跟着滚出视口，全站导航随之消失。
     const { container } = setup();
-    const header = container.querySelector<HTMLElement>('header.ant-layout-header');
+    const header = container.querySelector<HTMLElement>('header');
     expect(header).not.toBeNull();
-    expect(header?.style.height).not.toBe('');
-    // 顺带钉死当前取值（实测渲染高 40px）：改高度必须显式改这条断言
-    expect(header?.style.height).toBe('40px');
-    // 只有 height 还不够：顶栏与 PageShell（height:100%）同处 .ant-app 这个纵向 flex，
-    // PageShell 的 100% 把总高顶到「视口 + 顶栏」后，浏览器会把顶栏一起压缩——实测仅写 height:40
-    // （flexShrink 取默认 1）时顶栏是 37.84px（另一次测量 38.27px：被压掉多少随视口高与滚动条
-    // 的有无浮动，别当固定常数），补上 flexShrink:0 才是确定的 40px（页面照样不溢出）。
+    expect(header?.style.height).toBe('56px');
     expect(header?.style.flexShrink).toBe('0');
+    expect(header?.style.position).toBe('sticky');
+    expect(header?.style.top).toBe('0px');
+    // 顶栏是导航容器：桌面与窄窗都只有这一条
+    expect(container.querySelectorAll('header')).toHaveLength(1);
+  });
+
+  it('导航容器带可访问名（屏读器能把这一组链接当成主导航）', () => {
+    setup();
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument();
   });
 });

@@ -703,6 +703,17 @@ export function hasClaudeStructuredOutput(message: Record<string, unknown> | nul
  * 我们一次都没数到（没有 `message.id` 可归并）时兜底；两者不一致时落一条 WARN——
  * 「厂商报 60 次、我们数出 58 次」这种事绝不静默。
  */
+/**
+ * 「回到某一轮」被厂商**确定性拒绝**时，`result.result` 的文案前缀（原文见 SDK 的
+ * `resumeDropsTurn` 注释）。
+ *
+ * 为什么按前缀认而不按 subtype：CLI 把这次拒绝报成 `error_during_execution` 的 `result`，
+ * 与「外部终止」那一族**同名**；唯一分得开的是这句原文。认出来之后归成 `AGENT_FORK_REJECTED`
+ * （调用方走「清目标 + 普通续接 + 保留证据」的恢复路径），**不在这里重试**——拒绝是确定性的，
+ * 同一份转录、同一个分叉点再发一次永远失败。
+ */
+export const RESUME_REJECTED_PREFIX = 'Resume rejected by --resume-drops-turn:';
+
 function projectResult(
   message: Record<string, unknown> | null,
   state: TurnState,
@@ -898,6 +909,14 @@ function projectResult(
   if (vendorErrors.length > 0) {
     drafts.push(logDraft('stderr', `[WARN] cc 自报的收尾错误：${vendorErrors.join(' / ')}`));
   }
+  /**
+   * **回到某一轮被拒**：厂商按前缀说明这是分叉校验拒绝，不是上游故障。
+   * 归成 `AGENT_FORK_REJECTED` 让调用方走恢复路径；证据（厂商原文）照旧落 stderr 日志。
+   */
+  const forkRejected = failureText.trimStart().startsWith(RESUME_REJECTED_PREFIX);
+  if (forkRejected) {
+    drafts.push(logDraft('stderr', `[WARN] cc 拒绝了这一次「回到某一轮」：${failureText}`));
+  }
   return {
     drafts,
     tokens,
@@ -905,7 +924,13 @@ function projectResult(
     turns,
     // 归属：第三个出口同样要带（失败是这一行的结论，但它读的是主循环的那一次往返）
     turn: turns === null ? null : { subagentId: null, round: turns },
-    failure: classifyAgentMessage(failureText, context),
+    failure: forkRejected
+      ? {
+        code: 'AGENT_FORK_REJECTED',
+        message: `cc 拒绝了这一次「回到某一轮」（${failureText}）：这是确定性的，重试同一个分叉请求不会成功；`
+          + '请改为普通续接，或换一个分叉点',
+      }
+      : classifyAgentMessage(failureText, context),
   };
 }
 

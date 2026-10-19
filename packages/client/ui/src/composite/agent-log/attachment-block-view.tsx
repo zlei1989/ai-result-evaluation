@@ -11,8 +11,8 @@
  *
  * 不折叠：它是「这一轮带了这个文件」的事实，与正文同级（表格）。
  */
-import { Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Badge } from '../../components/ui/badge';
 import { MonoText } from '../../base/mono-text';
 import type { AttachmentBlock } from './types';
 import { MESSAGE_SOURCE_LABELS } from './types';
@@ -20,17 +20,17 @@ import { MESSAGE_SOURCE_LABELS } from './types';
 export function AttachmentBlockView({ block }: { block: AttachmentBlock }): ReactNode {
   const sourceLabel = MESSAGE_SOURCE_LABELS[block.source];
   return (
-    <Flex vertical gap={4}>
-      <Flex align="center" gap={4}>
-        <Tag>{block.attachmentKind === 'image' ? '图片' : '文件'}</Tag>
-        {sourceLabel !== null && <Tag>{sourceLabel}</Tag>}
-      </Flex>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <Badge variant="outline">{block.attachmentKind === 'image' ? '图片' : '文件'}</Badge>
+        {sourceLabel !== null && <Badge variant="outline">{sourceLabel}</Badge>}
+      </div>
       {block.path === null ? (
-        <Typography.Text type="secondary">内联内容，无路径</Typography.Text>
+        <span className="text-muted-foreground">内联内容，无路径</span>
       ) : (
         <MonoText text={block.path} />
       )}
-      {block.mimeType !== null && <Typography.Text type="secondary">{block.mimeType}</Typography.Text>}
-    </Flex>
+      {block.mimeType !== null && <span className="text-muted-foreground">{block.mimeType}</span>}
+    </div>
   );
 }

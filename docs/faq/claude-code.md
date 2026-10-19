@@ -548,7 +548,7 @@ Permission to use Read has been denied because Claude Code is running in don't a
 ⇒ 差异只在「目录 vs 文件」，与符号链接形态（macOS 的 `/var → /private/var`）无关。`sdk.d.ts` 的 JSDoc 逐字也是 *"Additional directories Claude can access beyond the current working directory"*。
 **测试环境 ≠ 运行环境**：`index.test.ts` 原先钉的判据是「`extraReadPaths` 原样转发成 `additionalDirectories`」——转发这一半是真的，**生效**那一半只有真 CLI 会回答；假 SDK 只记录入参，于是这一格从未生效这件事在单测里完全看不见。
 
-**解决方案**：`packages/server/agents/src/providers/cc/index.ts` 新增 `additionalDirectoriesFor(paths)`（目录项原样、文件项取 `dirname`、去重保序；`statSync` 取不到按文件项处置），`additionalDirectories` 那一格改用它，换算发生过就落一条 DEBUG（放行面比调用方写的宽一个目录，这件事不该只活在注释里）。守卫：`index.test.ts` 三条原判据改成父目录断言 + 新增换算单测（去重 / 目录原样 / 路径不存在）；**真机复采**：同一个探针（`.scratch/cc-audit3/probe/p5-extra-read-paths.test.ts`）修前那三条读不到（不给放行 + 两条文件项）、修后全部读到哨兵（这就是变异验证的另一半——探针在修前见过红）。精确到单个文件的另一条通道也已真机验过（`settings.permissions.allow: ["Read(//<绝对路径>)"]`，双斜杠前缀才认），但那档只覆盖 `Read` 工具、`Bash{cat}` 仍被拒，故本仓取换算父目录这条。
+**解决方案**：`packages/server/agents/src/providers/cc/index.ts` 新增 `additionalDirectoriesFor(paths)`（目录项原样、文件项取 `dirname`、去重保序；`statSync` 取不到按文件项处置），`additionalDirectories` 那一格改用它，换算发生过就落一条 DEBUG（放行面比调用方写的宽一个目录，这件事不该只活在注释里）。守卫：`index.test.ts` 三条原判据改成父目录断言 + 新增换算单测（去重 / 目录原样 / 路径不存在）；**真机复采**：同一个探针在修前那三条读不到（不给放行 + 两条文件项）、修后全部读到哨兵（这就是变异验证的另一半——探针在修前见过红）。精确到单个文件的另一条通道也已真机验过（`settings.permissions.allow: ["Read(//<绝对路径>)"]`，双斜杠前缀才认），但那档只覆盖 `Read` 工具、`Bash{cat}` 仍被拒，故本仓取换算父目录这条。
 
 **相关资料**：
 

@@ -4,7 +4,7 @@
 
 ## 定位
 
-测试策略回答两个问题：**怎么跑**——内循环在哪一层收口、全量留给门禁；**怎么快**——提速的计价单位是什么、长杆怎么削。规则简明真源是 `AGENTS.md`「测试」节，本篇展开其机制与判据。
+测试策略回答两个问题：**怎么跑**——内循环在哪一层收口、全量留给门禁；**怎么快**——提速的计价单位是什么、长杆怎么削。本篇是测试口径的真源；`AGENTS.md` 的「命令与测试」节只留常用入口。
 
 分层跑法（内循环从上往下钻，全量只在门禁跑）：
 
@@ -24,14 +24,25 @@
 - **双环境配置**：`vitest.node.ts`（库包与 web-next）/ `vitest.jsdom.ts`（`ui` 与 `client`）；纯函数测试标 `// @vitest-environment node`，不白拖一个 jsdom。
 - **`.tsx` 测试只能在库包写**：`apps/web-next` 必须留 `jsx: preserve`，否则 Vite 的 import-analysis 报 `make sure to not set jsx to preserve`；改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效。组件测试放 `packages/client/ui`，别试图给 web-next 开例外。
 - **别名**：`apps/web-next` 的 `@/*` 指应用根目录；**vitest 不读 tsconfig 的 `paths`**，故在 `apps/web-next/vitest.config.ts` 显式给 `resolve.alias`（其中把 evaluator 指向源码只为让路由测试的 `vi.mock` 生效，只活在测试期——别改成 devDependency）。
-- **jsdom 的缺口，桩的分寸**：`matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**——放进去，兜底分支再也测不到；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉，jsdom 里钉不住。jsdom 钉不住的行为由[冒烟测试方法论](/guard/smoke-testing)在真机补位。
+- **jsdom 的缺口，桩的分寸**：`matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**——放进去，兜底分支再也测不到；真实拖拽不可达（容器尺寸 0），`ListDetailLayout` 的 `onResize` 回写要在真实调用方处钉，jsdom 里钉不住。jsdom 钉不住的行为由[冒烟测试方法论](/guard/smoke-testing)在真机补位。
 - **`vi.mock` 逐文件重复**：前置提升只作用于本文件。`orchestrator-*.test.ts` 每个文件都要自己写全三条 `vi.mock`（`@aieval/agents`、`./judge`、`./run-store`，`orchestrator-run-row.test.ts` 头部是标准形）；漏一条不报错，会**静默 spawn 真厂商 CLI**。这条静默坑由静态守卫兜住：`packages/server/evaluator/src/static-assertions.test.ts` 判每个 mock 工厂体的运行时边（`export {} from` 空子句也算运行时边——转译后是一条真请求）。
 - **两处家目录默认根，两个 override 钩子**：`setConfigDirForTesting`（配置目录）与 `setCasesRootForTesting`（用例目录，默认 `~/.aieval-cases`）**互不覆盖**，夹具必须两个都设；批量动用例文件的夹具再加一道安全阀（`getCasesRootOverrideForTesting()` 为 null 就抛错，见 `evaluator/src/testing/fixtures.ts`）。隔离细节见[密钥与环境变量](/guard/secrets-and-env)。
 - **依赖「未入库产物」的守卫用 `it.skipIf(!existsSync(...))`，并在用例注释里交代怎么恢复那份产物**：真机抓包（`probe/dumps/**`）在 `.gitignore` 里、干净检出上必然没有，硬要它存在等于让一条永远不能变绿的守卫常驻门禁。先例：`agents/src/providers/codex/events.test.ts` 的抓包重放就是这种**有条件跳过**而不是「被关掉」。详见 [Codex FAQ](/faq/codex) 的那条 ENOENT 条目。
 
+### 测试环境 ≠ 运行环境：模块环的 TDZ 在 vitest 里不出现
+
+`contracts` 的包根一旦成环，真正的消费方会撞 `ReferenceError: Cannot access 'X' before initialization`——最典型的是 `pnpm dev` 起来就退、任何页面打不开。同一条环在 `vitest` 里**不报**：Vite 的 SSR runner 不实现 ESM 的 TDZ 语义，未初始化的绑定读成 `undefined`，环因此静默成立。逐文件用例又几乎不 import 包根，环的另一头早已被别的路径初始化好，于是「全部用例绿」完全不构成「包根可用」的证据。
+
+所以「包根可用」的判据不能用 vitest import 包根，只有两条：
+
+- **静态无环扫描**（首选）：把包内相对 `import` 组成有向图找环，成环即红并打印完整环路径——`packages/server/contracts/src/module-graph.test.ts`；
+- **Node 原生 ESM 子进程**（补充）：`node --input-type=module -e "import('@aieval/contracts')"`，让解析器用真实语义评估一次。
+
+边界：静态扫描只覆盖包内相对 import，跨包环由依赖方向表（`apps/web-next/src/package-dependency-boundaries.test.ts`）兜。断环的做法是**下沉**共用值域到叶子模块，不要用 `z.lazy` 之类把炸点推迟到运行期。
+
 ## 数据与契约
 
-**收集范围契约**：根 `projects` 的 glob 收 `packages/{server,client}/*` 与 `apps/*`，新包自带 `vitest.config.ts` 即被收进来；单包 `pnpm --filter @aieval/<包名> <脚本>` 与根命令结果必须一致。**改动收集方式后必须核对用例总数**——漏收一整个包是静默漏测。
+**收集范围契约**：根 `projects` 的 glob 收 `packages/{server,client}/*` 与 `apps/*`，新包自带 `vitest.config.ts` 即被收进来；另有 `docs/vitest.config.ts` 一条**显式路径**——docs 不是 workspace 包，glob 罩不到（知识库守卫工程，node 环境读磁盘断言）。单包 `pnpm --filter @aieval/<包名> <脚本>` 与根命令结果必须一致。**改动收集方式后必须核对用例总数**——漏收一整个包是静默漏测。
 
 **测试预算契约**（等待与重试的写法）：
 
@@ -53,7 +64,7 @@
 
 **墙钟由最长的文件决定**：vitest 按文件并行、文件内用例串行，套件墙钟 ≈ 最长文件的耗时。长杆文件**按 describe 拆开**，把串行长杆切成可并行的短杆——削长杆比优化每条用例划算。
 
-**当前构成（仅供判读「跑全了没有」）**：`pnpm test` 一次收 **242 个文件**（含 docs 的知识库守卫工程），安静机器上墙钟约 90s；其中 3266 条通过、8 条既有跳过。
+**当前构成（仅供判读「跑全了没有」）**：`pnpm test` 一次收 **454 个文件**（含 docs 的知识库守卫工程），安静机器上墙钟约 60–90s；其中 6187 条通过、31 条跳过。
 
 **清理期 EPERM flake 的机制**（判读依据见《已知边界与取舍》）：
 
@@ -109,4 +120,4 @@
 - [密钥与环境变量](/guard/secrets-and-env)——测试隔离的临时配置目录与环境差异假绿的点名法
 - [Playwright MCP](/guard/playwright-mcp)——jsdom 测不到的几何与拖拽在真机上的断言口径
 - [《变异验证》](/guard/mutation-verification) ——静态守卫必须见过失败才算守卫
-- 仓库内参考：`AGENTS.md`「测试」节——规则简明真源
+- 仓库内参考：`AGENTS.md`「命令与测试」节——常用入口与指针

@@ -42,12 +42,15 @@ import {
   hasLiveRows,
   isRunnableRow,
   isRunningRow,
+  messageFoldKey,
   parseRepoSource,
   resolveMcpServers,
+  voidedBy,
   rubricMaxScore,
   type AgentEvent,
   type AgentKind,
   type AgentMessage,
+  type CheckpointVoid,
   type EvalRow,
   type EvalRowStatus,
   type EvalRun,
@@ -83,6 +86,7 @@ import {
   rowEventsFile,
   rowJudgeEventsFile,
   rowJudgeMessagesFile,
+  readRecords,
   rowMessagesFile,
   runDir,
   runSnapshotFile,
@@ -93,6 +97,7 @@ import {
   carrierKeyOf,
   getProvider,
   protocolMismatchMessage,
+  type AgentFork,
   type AgentRunInput,
   type AgentRunResult,
 } from '@aieval/agents';
@@ -884,7 +889,7 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
  * 注意**停止这一侧只有第一臂**：评分阶段的「停下来」只可能是用户点的「终止」——没有外层兜底超时，
  * `judgeStageAttempt` 的 catch 里只剩 `userAborted` 一条记账。
  *
- * 失败留一条 WARN（AGENTS.md 的日志表）。为什么不只靠上面那条行事件：事件日志是**行级**的，
+ * 失败留一条 WARN（日志口径见 `docs/guard/code-conventions.md`）。为什么不只靠上面那条行事件：事件日志是**行级**的，
  * 而运维看的是服务端日志——评分阶段反复失败如果只在抽屉里，排障时没有任何线索。
  *
  * 落终态时**一律带 `stage: 'judge'`**：这一路的失败全部发生在评分那一段，而两段失败落的
@@ -2833,6 +2838,15 @@ export interface FollowUpInput {
   text: string;
   attachments?: readonly InjectAttachment[] | undefined;
   /**
+   * **回到某一轮**的分叉坐标（可选）：只有 `checkpointRow` 会传。
+   *
+   * 它与 `text` 是两件事：`text` 是「从这一点接着要做什么」，`fork` 是「从哪一条厂商条目接起」。
+   * 本层只搬运，翻成厂商方言是适配器的活。
+   */
+  fork?: AgentFork | undefined;
+  /** 行级留痕的抬头（不给 = 「[人工追问 ×N]」；回到某一轮那一趟用「[回到第 N 轮]」） */
+  banner?: string | undefined;
+  /**
    * 这条草稿的 id（客户端生成）：与附件的落点目录、消息账本、行级事件共用同一把钥匙。
    * 缺席就现铸一个——**它不承担幂等**：重复提交会撞上「该行正在运行中」而拒绝，
    * 那正是这里想要的结局（两次追问 = 两段上下文，不是同一条消息的重发）。
@@ -2844,6 +2858,10 @@ export interface FollowUpInput {
 interface FollowUpPlan {
   text: string;
   attachments: readonly InjectAttachment[];
+  /** 回到某一轮的分叉坐标；缺席 = 普通追问 */
+  fork?: AgentFork | undefined;
+  /** 行级留痕的抬头；缺席 = 「[人工追问 ×N]」 */
+  banner?: string | undefined;
   /** 拼给厂商的正文（人话 + 附件清单） */
   prompt: string;
   /** 账本与行级事件共用的钥匙（这次追问的身份） */
@@ -3015,6 +3033,10 @@ function followUpLogText(plan: FollowUpPlan, sessionId: string): string {
     plan.attachments.length === 0
       ? ''
       : `\n[附件]\n${plan.attachments.map((attachment) => `- ${attachment.path ?? '（没有路径的附件）'}`).join('\n')}`;
+  if (plan.banner !== undefined) {
+    return `${plan.banner} 接着同一段上下文再跑一段（复用本行工作区与会话 ${sessionId}；`
+      + `本次不重跑候选、不重建工作区）\n${plan.text}${attachmentLines}`;
+  }
   return `[人工追问 ×${plan.ordinal}] 接着同一段上下文再跑一段（复用本行工作区与会话 ${sessionId}；`
     + `本次不重跑候选、不重建工作区）\n${plan.text}${attachmentLines}`;
 }
@@ -3057,6 +3079,8 @@ export function followUpRow(runId: string, rowId: string, input: FollowUpInput):
     prompt: composeInjectedText(input.text, attachments, readAttachmentSize),
     messageId: input.messageId ?? randomUUID(),
     ordinal: row.followUpRounds + 1,
+    fork: input.fork,
+    banner: input.banner,
   };
   const key = rowKey(runId, rowId);
   const controller = new AbortController();
@@ -3128,6 +3152,163 @@ export function followUpRow(runId: string, rowId: string, input: FollowUpInput):
   followUpTasks.set(key, task);
 
   return getRunForWrite(runId);
+}
+
+/**
+ * **回到某一轮**的入参：回到哪一点、从哪条厂商条目接起、以及从这一点要做什么。
+ *
+ * `keepAt` / `dropFrom` 是厂商账本里的条目（读侧从消息账本取那条的 `vendorId`），本层不解释它们；
+ * `text` 是「从这一点接着跑什么」——与追问同一套提示词组装（附件清单也在里面）。
+ */
+export interface CheckpointInput {
+  /** 回到哪一段（0 = 第一次跑那一段） */
+  segment: number;
+  /** 回到这一段里的第几轮（保留，含） */
+  turn: number;
+  /** 被保留那一轮最后一条厂商条目 id */
+  keepAt: string;
+  /** 被丢掉那一轮第一条 prompt 的厂商条目 id；`null` = 不声明 */
+  dropFrom: string | null;
+  /** 从这一点接着要做什么（人写的那句话） */
+  text: string;
+  attachments?: readonly InjectAttachment[] | undefined;
+  /** 客户端生成的草稿 id（与追问同一含义，不承担幂等） */
+  messageId?: string | undefined;
+}
+
+/** 作废原因的中文：与消息能力那四句同一套词表（见 `contracts` 的 `MissingReason`） */
+function checkpointRefusalText(reason: string | null): string {
+  switch (reason) {
+    case 'not-exposed':
+      return '厂商有分叉入口、但它不在我们读得到的通道上';
+    case 'not-observed':
+      return '厂商有分叉入口、我们还没接';
+    case 'unverified':
+      return '这一家的分叉能力还没验证过';
+    default:
+      return '这家结构上不支持回到某一轮';
+  }
+}
+
+/**
+ * 作废范围（`segment` 之后 + `throughSegment` 以内）里那一截**自己的量**。
+ *
+ * 两个口径与行快照同源：
+ *   · `tokens` 按**逻辑消息**去重（`messageFoldKey`）后相加——同一条消息的多次投递会把同一份
+ *     用量记多遍，逐条加就会多扣；`null` 保持 `null`（没采到不等于 0）；
+ *   · `turns` 只数**主会话**（`subagentId === null`）的不同 `roundTrip`——行快照的 `turns` 是
+ *     全树合计，子智能体的轮次单独在 `subagentTurns` 里，而作废标记只扣主会话那一份会漏；
+ *     这里按「主会话往返数」扣，与「轮次 = 一次模型 API 往返」的定义一致。
+ */
+function checkpointVoidedTotals(
+  messages: readonly AgentMessage[],
+  range: { segment: number; turn: number; throughSegment: number },
+): { tokens: CheckpointVoid['tokens']; turns: number } {
+  const marker: CheckpointVoid = {
+    checkpointId: 'pending',
+    ...range,
+    at: '',
+    tokens: null,
+    turns: 0,
+  };
+  const seen = new Set<string>();
+  const rounds = new Set<number>();
+  let tokens: { input: number; cached: number; output: number } | null = null;
+  for (const message of messages) {
+    if (!voidedBy(marker, message)) continue;
+    const key = messageFoldKey(message);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (message.subagentId === null) rounds.add(message.roundTrip);
+    const usage = message.usage;
+    if (usage === null || usage === undefined) continue;
+    tokens ??= { input: 0, cached: 0, output: 0 };
+    tokens.input += usage.input;
+    tokens.cached += usage.cached;
+    tokens.output += usage.output;
+  }
+  return { tokens, turns: rounds.size };
+}
+
+/**
+ * **回到某一轮**：把这一点之后的旧内容标成作废（只追加标记、不改账本原文），再从这一点续跑一段。
+ *
+ * 四步顺序是载重的：
+ *   1. **先判能力与可用性**（同 `followUpRow` 那一套事实）：不支持的家、没有可续会话的行、
+ *      工作区/用例已删除的行都在这里拒掉——拒在落标记之前，不会留下「标记落了但跑不了」的半截状态；
+ *   2. 从消息账本算作废范围与那一截的量（`checkpointVoidedTotals`），**追加**一条 `CheckpointVoid`；
+ *   3. 把 `followUpRounds` 推进到 `throughSegment`：下一段用**大于所有已存在段**的号，
+ *      于是读侧的「作废到 throughSegment 为止」不会误伤这一段新内容（也保证轮次不跳号/重号）；
+ *   4. 交给 `followUpRow` 跑这一段（`fork` 原样透传）。**不重试**：厂商拒绝分叉是确定性的
+ *      （见 cc 适配器的 `AGENT_FORK_REJECTED`），同一请求再发一次永远失败。
+ */
+export function checkpointRow(runId: string, rowId: string, input: CheckpointInput): EvalRun {
+  const { run, row } = requireRow(runId, rowId);
+  const capability = getProvider(row.agentKind).metadata.checkpoint;
+  if (!capability.supported) {
+    throw new ServiceError('CONFLICT', `这一行不能回到某一轮：${checkpointRefusalText(capability.reason)}`);
+  }
+  const refusal = followUpRefusal(run, row, { text: input.text, attachments: input.attachments ?? [] });
+  if (refusal !== null) throw new ServiceError('CONFLICT', refusal);
+
+  const file = rowMessagesFile(run.workspaceBase, run.id, row.id);
+  let messages: AgentMessage[];
+  try {
+    messages = readRecords(file).flatMap((record) => (record.type === 'message' ? [record.message] : []));
+  } catch (error) {
+    throw new ServiceError(
+      'INTERNAL',
+      `读取消息账本失败（${file}）：${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  /** 落标记那一刻**已存在**的最大段号：作废范围的上界（见 `CheckpointVoid` 的注释） */
+  const throughSegment = messages.reduce((max, message) => Math.max(max, message.segment ?? 0), row.followUpRounds);
+  if (input.segment < 0 || input.segment > throughSegment || input.turn < 1) {
+    throw new ServiceError(
+      'CONFLICT',
+      `回到某一轮的坐标不在账本里（段 ${input.segment} 第 ${input.turn} 轮；账本最新段是 ${throughSegment}）`,
+    );
+  }
+  const range = { segment: input.segment, turn: input.turn, throughSegment };
+  const mark: CheckpointVoid = {
+    checkpointId: randomUUID(),
+    ...range,
+    at: new Date().toISOString(),
+    ...checkpointVoidedTotals(messages, range),
+  };
+  patchRow(runId, rowId, {
+    checkpointVoids: [...(row.checkpointVoids ?? []), mark],
+    // 下一段从 throughSegment + 1 起：段号只增，读侧的作废上界因此不会碰到这一段新内容
+    followUpRounds: throughSegment,
+  });
+  publishRowEvent(runId, rowId, {
+    type: 'log',
+    stream: 'stdout',
+    text: `[回到第 ${input.turn} 轮] 第 ${input.turn} 轮之后的旧内容已标为作废（不删、不改账本原文）；`
+      + '从这一点续跑一段，工作区文件不动',
+  });
+  log.info('回到某一轮：作废标记已落，开始续跑', {
+    runId,
+    rowId,
+    agentKind: row.agentKind,
+    segment: input.segment,
+    turn: input.turn,
+    throughSegment,
+    voidedTurns: mark.turns,
+  });
+  return followUpRow(runId, rowId, {
+    text: input.text,
+    ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    fork: {
+      segment: input.segment,
+      turn: input.turn,
+      keepAt: input.keepAt,
+      dropFrom: input.dropFrom,
+    },
+    banner: `[回到第 ${input.turn} 轮]`,
+  });
 }
 
 /**
@@ -3296,8 +3477,11 @@ async function followUpAttempt(input: FollowUpAttemptInput): Promise<void> {
 
   let result: AgentRunResult | null = null;
   let agentError: ServiceError | null = null;
-  // 与 runRowAttempt 同形：先挂一个 catch，免得「已经不再等它」之后才 reject 的孤儿 promise 打崩进程
-  const runPromise = agentProvider.run({
+  /**
+   * 起一次**这一段**的运行。抽成函数是为了「分叉被拒之后普通续接一次」那条恢复路径：
+   * 两次调用只差 `fork` 这一格，其余参数逐字相同（否则恢复那一趟会丢 MCP / 技能 / 注入面）。
+   */
+  const startRun = (fork: AgentFork | undefined): Promise<AgentRunResult> => agentProvider.run({
     // 复用行自己的工作区与配置目录（**不 prepare**，见本节第 ① 条）
     cwd: row.workspacePath,
     configHome: rowAgentHomeDir(run.workspaceBase, runId, rowId),
@@ -3315,6 +3499,11 @@ async function followUpAttempt(input: FollowUpAttemptInput): Promise<void> {
     signal: controller.signal,
     /** **续接**：行快照里那条会话（拒绝面已保证它非 null）。不传 = 又开一条新会话 = 智能体什么都不记得 */
     resume: { sessionId },
+    /**
+     * **回到某一轮**：带分叉坐标时由适配器翻成厂商方言（CC 的 `resumeSessionAt`、Pi 的
+     * `navigateTree`、Codex 的 `thread/fork`）。普通追问不传 ⇒ 既有路径逐字不变。
+     */
+    ...(fork === undefined ? {} : { fork }),
     // 环境两格（MCP 与技能）：与完整跑一行同一份规划（理由见 `planCandidateEnvironment`）
     ...environment.input,
     /**
@@ -3372,6 +3561,8 @@ async function followUpAttempt(input: FollowUpAttemptInput): Promise<void> {
       publishSubagentRecord(runId, rowId, record);
     },
   });
+  // 与 runRowAttempt 同形：先挂一个 catch，免得「已经不再等它」之后才 reject 的孤儿 promise 打崩进程
+  const runPromise = startRun(plan.fork);
   runPromise.catch(() => {});
   try {
     /**
@@ -3392,6 +3583,48 @@ async function followUpAttempt(input: FollowUpAttemptInput): Promise<void> {
     agentError = toServiceError(error);
   } finally {
     stopRowHeartbeat(key);
+  }
+  /**
+   * **分叉被拒的恢复路径**（CC 的 `Resume rejected by --resume-drops-turn:` 一族）：
+   * 拒绝是**确定性的**，所以**不重试分叉**；正确收场是「清目标 + 普通续接 + 保留证据」：
+   *   · 证据：拒绝原文已经由适配器落进事件流；这里再留一条行级说明，读的人知道发生了什么；
+   *   · 清目标：这一趟不再带 `fork`（待办目标只活在本次调用的入参里，丢掉它即清掉）；
+   *   · 普通续接：仍用同一条 `resume.sessionId` 再跑一次——用户仍然接在原会话上，
+   *     只是没有回到第 N 轮（这一点必须说在事件里，不能让界面静默当成成功）。
+   * 只在**这一行还没被终止**时做：用户已经终止的行走停止路径，不在这里多跑一趟。
+   */
+  if (
+    result !== null &&
+    result.error?.code === 'AGENT_FORK_REJECTED' &&
+    plan.fork !== undefined &&
+    !userAborted.has(key) &&
+    !isRowSettled(runId, rowId)
+  ) {
+    publishRowEvent(runId, rowId, {
+      type: 'log',
+      stream: 'stderr',
+      text: `[回到某一轮被拒] ${result.error.message}——按确定性拒绝处置：不重试分叉，改为普通续接`
+        + '（上下文接在最后一条，不会回到第 N 轮）；这次拒绝的原文已保留在本段事件里',
+    });
+    log.warn('厂商拒绝了回到某一轮（确定性）：清掉分叉目标，改为普通续接一次', {
+      runId,
+      rowId,
+      keepAt: plan.fork.keepAt,
+      reason: result.error.message,
+    });
+    const retry = startRun(undefined);
+    retry.catch(() => {});
+    try {
+      const outcome = await Promise.race([retry, terminalReached]);
+      result = outcome === 'terminal'
+        ? await Promise.race([
+          retry,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), TERMINATION_GRACE_MS)),
+        ])
+        : outcome;
+    } catch (error) {
+      agentError = toServiceError(error);
+    }
   }
   settled = true;
   const elapsedMs = Date.now() - startedAt;

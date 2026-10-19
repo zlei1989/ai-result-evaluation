@@ -4,15 +4,14 @@
  * 为什么值得一组守卫（这一格的产物是「观感」的改动，没有任何行为断言会因此变红）：
  *   · 格式化把 `{"a":1}` 变成多行 —— 「真的格式化了」与「只是把原文原样画出来」在肉眼上很像，
  *     而后者会让这一整次改动**什么都没做**却全绿；
- *   · 高亮的颜色必须**来自 antd token**（本仓「样式一律走 antd」的口径）：写死色值的版本在默认主题下
- *     看着一样，换主题 / 换 token 时才发现它不跟着走 —— 故判据用**自定义 token**，写死任何字面量都会红；
+ *   · 高亮的颜色必须**来自语义变量**（经 `@theme inline` 暴露成 `text-info` / `text-success` 一族）：
+ *     写死色值的版本在默认主题下看着一样，换主题时才发现它不跟着走 —— 判据钉在**类名**上；
  *   · **非 JSON 一律回落成逐字原文**：评分原文常常是散文（模型没照格式回），把它当 JSON 解析失败后
  *     自作聪明地「修一下」（补引号、去尾逗号）会把排障线索改掉 —— 判据是「原文逐字 == 输入」；
  *   · 围栏（```json）**逐字保留**：围栏本身是排障线索（提示词要求 JSON，模型有没有照做），
  *     格式化只动围栏**里面**的载荷，不减一个字。
  */
 import { render, screen } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
 import { describe, expect, it } from 'vitest';
 import { JsonText } from './json-text';
 
@@ -38,7 +37,7 @@ describe('JsonText', () => {
     // 反向判据：把格式化去掉、退回原文时这一条必红（`"name":"aieval"` 里没有空格）
     expect(text).not.toContain('"name":"aieval"');
     // ② 结构不塌：格式化靠 pre-wrap 才看得见换行（少了它，界面又变回一行）
-    expect(host.style.whiteSpace).toBe('pre-wrap');
+    expect(host.classList.contains('whitespace-pre-wrap')).toBe(true);
     // ③ 五种 token 齐全：键 / 字符串 / 数字 / 字面量 / 标点
     expect(tokensOf(host, 'key').map((node) => node.textContent)).toEqual([
       '"name"',
@@ -54,29 +53,22 @@ describe('JsonText', () => {
   });
 
   /**
-   * 颜色必须来自 antd 的 token（本仓「样式一律走 antd」的口径）。
-   *
-   * 判据用**自定义 token 值**（刻意不等于 antd 默认），于是「写死字面量」——包括写死当前默认值——
-   * 都会红。归一化那一步不能省：jsdom 把 `#123456` 序列化成 `rgb(18, 52, 86)`。
+   * 颜色必须来自**语义类**（`text-info` / `text-success` / `text-warning` / 两档灰）。
+   * 写死一个 hex 的版本在默认主题下看着一样，换主题时才发现它不跟着走。
    */
-  it('token 的颜色从 antd token 取（换成自定义 token 后颜色跟着走）', () => {
-    const custom = { colorInfo: '#123456', colorSuccess: '#234567', colorWarning: '#345678' };
-    render(
-      <ConfigProvider theme={{ token: custom }}>
-        <JsonText text={SINGLE_LINE} dataTestId="json" />
-      </ConfigProvider>,
-    );
+  it('五种 token 各自挂语义色类（不是内联色值、不是内置调色板）', () => {
+    render(<JsonText text={SINGLE_LINE} dataTestId="json" />);
     const host = screen.getByTestId('json');
-    // 同一个值在 jsdom 里走一遍同样的序列化，作为比较基准（不写死序列化后的形式）
-    const probe = (color: string): string => {
-      const element = document.createElement('span');
-      element.style.color = color;
-      return element.style.color;
-    };
 
-    expect(tokensOf(host, 'key')[0]?.style.color).toBe(probe(custom.colorInfo));
-    expect(tokensOf(host, 'string')[0]?.style.color).toBe(probe(custom.colorSuccess));
-    expect(tokensOf(host, 'number')[0]?.style.color).toBe(probe(custom.colorWarning));
+    expect(tokensOf(host, 'key')[0]?.classList.contains('text-info')).toBe(true);
+    expect(tokensOf(host, 'string')[0]?.classList.contains('text-success')).toBe(true);
+    expect(tokensOf(host, 'number')[0]?.classList.contains('text-warning')).toBe(true);
+    expect(tokensOf(host, 'literal')[0]?.classList.contains('text-muted-foreground')).toBe(true);
+    expect(tokensOf(host, 'punct')[0]?.classList.contains('text-faint-foreground')).toBe(true);
+    // 反向：写死色值会让上面五条同时失效（这里再钉一次「没有内联颜色」）
+    for (const node of host.querySelectorAll<HTMLElement>('[data-json-token]')) {
+      expect(node.style.color).toBe('');
+    }
   });
 
   it('非 JSON 回落成逐字原文，且一个高亮节点都不留', () => {

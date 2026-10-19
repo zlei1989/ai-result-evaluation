@@ -7,7 +7,7 @@
  * 预览有没有把「覆盖 / 跳过 / 不导入+原因 / 被丢字段」说出来、计数对不对、交出去的 map 是不是那一份。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MCP_PASTE_MAX_BYTES, MCP_PASTE_SHAPE_EXAMPLES, type McpServers } from '@aieval/contracts';
 import { McpPasteModal } from './mcp-paste-modal';
 import { installResizeObserverStub } from '../testing/resize-observer';
@@ -186,10 +186,39 @@ describe('McpPasteModal：预览 → 确认导入', () => {
     paste('{ "mcpServers": { "local": { "command": "npx" } } }');
 
     const ok = await screen.findByRole('button', { name: /导入 1 台/ });
-    // antd 的 loading 不给 `disabled` 属性（只在 handleClick 里提前 return），
-    // 故这一条只能钉类名 +「点了确实不回调」，不能钉 `toBeDisabled()`
-    expect(ok.className).toContain('ant-btn-loading');
+    // 转圈与禁用同时成立：新栈没有 antd 的 `ant-btn-loading` 类，`data-loading` 是稳定信号
+    expect(ok).toHaveAttribute('data-loading', 'true');
+    expect(ok).toBeDisabled();
     fireEvent.click(ok);
     expect(onImport).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 解析失败的那句话必须**原样**出现在提示通道里（页面把它接到 `toast.error`）。
+   * 为什么这条要钉：契约给出的 `error.message` 已经是可直接展示的中文（含「看到的顶层键」这类诊断），
+   * 界面若在转交时重新包一层（「导入失败：…」）或改写成自己的话，用户拿报错原文去搜就搜不到；
+   * 而组件这一侧只负责**转交原文**，弹窗里那条内联说明与 toast 必须是同一句。
+   */
+  it('整份认不出：把同一句原文交给调用方的提示通道（页面接 toast.error）', async () => {
+    const onParseError = vi.fn();
+    render(
+      <McpPasteModal
+        open
+        servers={{}}
+        saving={false}
+        onImport={noop}
+        onCancel={noop}
+        onParseError={onParseError}
+      />,
+    );
+
+    paste('{ "foo": 1 }');
+
+    // 内联说明先把诊断摆出来（用户要照着它改）
+    const inline = await screen.findByText(/看到的顶层键：foo/);
+    await waitFor(() => expect(onParseError).toHaveBeenCalled());
+    const forwarded = onParseError.mock.calls.at(-1)?.[0] as string;
+    // 逐字同一句：不是包过的、也不是另写一句
+    expect(forwarded).toBe(inline.textContent);
   });
 });

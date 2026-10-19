@@ -317,6 +317,17 @@ export interface PiSession {
    * （含 `'handled'` 那一档）；它唤不醒已经收工的会话——真正的收场由编排层的等待预算兜底。
    */
   followUp: (text: string) => Promise<'handled' | 'queued'>;
+  /**
+   * **同一个会话文件内**导航到某个节点（「回到某一轮」的落点）。
+   *
+   * 与 `fork(entryId)` 的差别：`navigateTree` 仍在**同一个会话文件**里，会话 id 不变 ⇒ 这一行的
+   * `sessionId` 照旧成立（续接键不被打断）；`fork` 会另开一个文件、换掉会话 id。
+   * `summarize: true` 把被放弃的那一段折成一条 branch summary，而不是直接丢弃。
+   *
+   * **可选**：窄壳只声明我们真用到的格子，假件与旧版本都可能没有它；适配器在收到 `fork`
+   * 而它缺席时**抛中文错**（不许静默退化成普通续接）。
+   */
+  navigateTree?: (targetId: string, options?: { summarize?: boolean }) => Promise<unknown>;
   abort: () => Promise<void>;
   waitForIdle: () => Promise<void>;
   dispose: () => void;

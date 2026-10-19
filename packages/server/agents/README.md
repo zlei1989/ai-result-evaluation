@@ -602,6 +602,6 @@ pnpm vitest run packages/server/agents/src/providers/live-smoke.test.ts
 ## 11. 相关文档
 
 - 根 [`README.md`](../../../README.md)：产品口径、使用手册、数据落在哪、排障表。
-- [`AGENTS.md`](../../../AGENTS.md)：分层边界与工具链坑（改代码前先读）。
-- [`docs/`](../../../docs/)：知识库（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫五域，AGENTS.md「知识库」节）；历史设计 spec 与冒烟记录已按 ADR 0001 熔炼进知识文章
+- [`AGENTS.md`](../../../AGENTS.md)：硬约束、依赖方向与知识库导航（改代码前先读）。
+- [`docs/`](../../../docs/)：知识库（协议规范 / 功能说明 / 架构设计 / FAQ / 规约守卫五域，入口见 `docs/index.md`）；历史设计 spec 与冒烟记录已按 ADR 0001 熔炼进知识文章
   （四家 SDK 的入口形状、事件 dump、权限档实测都记在那里，本包注释里的「实测」指的就是它们）。

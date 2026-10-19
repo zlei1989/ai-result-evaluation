@@ -5,11 +5,13 @@
  * 七条口径：
  * 1. `useSearchParams` 会把用到它的子树退化为客户端渲染，故给它一个 `Suspense` 边界
  * （Next 16 文档 useSearchParams 的 Prerendering 一节）；
- * 2. **日志那一条 SSE 只在该行的日志抽屉打开时订阅**（实时指标那一路只为在跑的行各开一条）；
- * 3. 三个抽屉的数据各自按需取：日志 = `useRowStream`+ `useRowLog`
+ * 2. **行级抽屉打开时**才订阅这一行的数据（日志事件 / 消息 / 改动索引 / 评分流水）；
+ * 页签切换不重订阅：三个视图共用同一个 `rowId`，切回日志时滚动位置与已展开的块都还在。
+ * 实时指标那一路只为在跑的行各开一条；
+ * 3. 行级三视图的数据都在同一个 `rowId` 上按需取：日志 = `useRowStream` + `useRowLog`
  * + `useRowMessages`、改动 = `useRowDiffIndex` + `useRowDiffFile`、
  * 评分详情 = 快照里的 `score` 与 `rubric` + 评分那条事件流 `useRowJudgeEvents`
- * （评审者自己的原始输出，只在抽屉开着才取、judging 才接 SSE）；
+ * （评审者自己的原始输出，judging 才接 SSE）；
  * 4. 页面的可测逻辑（URL 解析、错误文案、日志抽屉的三态）都在 `@/src/runs-view` 与
  * `@/src/log-drawer-state`，本文件只做拼装；
  * 5. **本页自己不套 `PageShell`**：`ListDetailLayout` 内部已经是 `PageShell`，
@@ -18,19 +20,14 @@
  * 6. **右栏三态**`?panel=detail|new|edit&id=…`：编辑与详情共用同一份快照
  * （`selectedId` 两态都取 id）。与 `/cases` 的一处有意差异：runs 页没有需要复位的跨面板
  * 临时状态（用例页那套 `go` 复位是为仓库校验回显服务的），故不引入那层。
- * 7. **「执行日志」全页只有一支抽屉**：
- * 「读取中」那一支**什么都不渲染**——那时 `model` 还没算出来，弹出来的必然是空壳，
- * 而它会把真抽屉的入场动画重置（实测：遮罩与面板各重放一次）。根因与实测日志见
- * `src/drawer-geometry.test.ts` 里那一组用例的注释。
+ * 7. **行级三视图住同一个抽屉 + 页签头**（`RunDetailDrawer`）：日志 / 变更 / 评分切换时
+ * **不卸载**内容（滚动位置、展开态、过滤条件都活着）；排名仍是页面级主抽屉。
  * 8. **本页是「run 焦点」的唯一写入方**：右栏选中哪一轮就 `setFocusedRun(那一轮)`、离开即复位，
  * 全局提问浮层据此把其余轮次的未答提问**暂缓**（不弹、不取消）。焦点是模块级单例——
  * 浮层挂在页面壳外面，`Context` 够不着本页的查询参数。
  */
-import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { PlusOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Drawer, Flex, Table, Tag, Tooltip, Typography } from 'antd';
-import type { TableColumnsType } from 'antd';
 import { isRunningRow, type AgentEnvironment, type EvalRun, type RowDiffIndex, type Rubric, type RunCreate, type ScoreResult } from '@aieval/contracts';
 import {
   buildAgentEnvironment,
@@ -40,6 +37,7 @@ import {
   useCreateRun,
   useDeleteRun,
   postInjectAttachment,
+  useCheckpointRow,
   useFollowUpAvailability,
   useFollowUpRow,
   useInjectMessages,
@@ -55,6 +53,7 @@ import {
   useRunArtifacts,
   useRunLiveMetrics,
   useRunModelOptions,
+  useRunTestResults,
   useRuns,
   useRescoreRow,
   useRetryRow,
@@ -67,48 +66,74 @@ import {
 } from '@aieval/client';
 import {
   ARTIFACT_OVERVIEW_LABEL,
-  AgentLogDrawer,
+  PlusIcon,
+  AgentLogLayout,
+  Alert,
+  AlertDescription,
+  AlertTitle,
   AppTopNav,
   ArtifactFileContent,
   ArtifactOverview,
-  DRAWER_SEMANTIC_STYLES,
+  Badge,
+  Button,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
   DiffFileContent,
+  DataTable,
   DiffView,
   EllipsisText,
   EmptyState,
   FollowUpComposer,
+  Hint,
   InjectComposer,
   ListDetailLayout,
-  MAIN_DRAWER_PUSH,
+  MAIN_DRAWER_STYLE,
+  PageHeader,
   RankTable,
   RunCreatePanel,
+  RunDetailDrawer,
   RunDetailPanel,
   ScoreDetailView,
-  TableScrollArea,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  ScoreChart,
+  Skeleton,
   // 能力声明的形状搬运（契约的扁平三格 → 界面要的字典）：唯一的一份实现，页面不自己摊
   toCapabilityMap,
-  Toolbar,
-  WIDE_DRAWER_SIZE,
   buildAgentLogModel,
   diagnosticsOf,
   formatDateTime,
   formatEventLog,
+  orderForDisplay,
   rawOutputLabel,
+  toast,
   useAppliedThemeMode,
+  type DataTableColumn,
   // 表单交回的值的形状：创建与编辑两条路径都按它收敛（`RunUpdate` 与它逐字段一致）
   type Loadable,
+  type RunDetailTab,
   type RunFormValues,
+  requestCommandPalette,
 } from '@aieval/ui';
-import { buildRowFacts, resolveLogDrawer } from '@/src/log-drawer-state';
+import { buildRowFacts, contextWindowOf, resolveLogDrawer } from '@/src/log-drawer-state';
 import { NAV_ITEMS } from '@/src/nav';
-import { describeError, parseRunsPanel, runListTitle, runsPanelHref, type OpenDrawer } from '@/src/runs-view';
+import { describeError, parseRunsPanel, runListTitle, runScoreDistribution, runScoreSummary, runsPanelHref, type OpenDrawer } from '@/src/runs-view';
+import { usePageTitle } from '../use-page-title';
 
-/** 轮级状态 → 中文与颜色（行级状态在 ui 的 RowStatusTag 里；轮级只有 4 个值） */
-const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string }> = {
-  idle: { label: '未开始', color: 'default' },
-  running: { label: '执行中', color: 'processing' },
-  partial: { label: '部分完成', color: 'warning' },
-  done: { label: '已完成', color: 'success' },
+/** 轮级状态 → 中文与徽标配色（行级状态在 ui 的 `EvalRowCard` 里；轮级只有 4 个值）
+ *
+ * **实心底色只留给「执行中」**：一轮跑完是常态、不是警报，十行「已完成」各顶一个黑白实心胶囊
+ * 会盖过真正的信息（分数、失败）。未开始 / 部分完成 / 已完成都用描边档，靠文字区分。 */
+const RUN_STATUS_META: Record<EvalRun['status'], { label: string; variant: 'outline' | 'secondary' | 'default' }> = {
+  idle: { label: '待开始', variant: 'outline' },
+  running: { label: '执行中', variant: 'secondary' },
+  partial: { label: '部分完成', variant: 'outline' },
+  done: { label: '已完成', variant: 'outline' },
 };
 
 /**
@@ -119,31 +144,13 @@ const RUN_STATUS_META: Record<EvalRun['status'], { label: string; color: string 
  */
 const RUN_STATUS_RANK: Record<EvalRun['status'], number> = { idle: 0, running: 1, partial: 2, done: 3 };
 
-/** 「标题」列的兜底最小宽度：左栏被拖窄时，这一列至少还得读得下一整个用例名（与用例页同口径的 240） */
-const RUN_TITLE_MIN_WIDTH = 240;
+/** 六列声明的宽度（px）：标题 / 状态 / 得分 / 候选数 / 执行模式 / 创建时间 */
+const RUN_COLUMN_WIDTH = { title: 200, status: 88, score: 168, rows: 72, executionMode: 88, createdAt: 144 } as const;
 
-/** 另外四列申报的宽度：状态 / 候选数 / 执行模式 / 创建时间 */
-const RUN_COLUMN_WIDTH = { status: 96, rows: 80, executionMode: 96, createdAt: 150 } as const;
-
-/**
- * 列表表格的最小宽度：左栏窄于它时**才**横向滚动，并把「标题」钉在左边
- * （用户口径：「标题列左悬浮」；与用例页、供应商表同一套口径，见
- * `ProviderTable` 的 `PROVIDER_TABLE_MIN_WIDTH`）。
- *
- * 为什么必须有这个数：不给 `scroll.x` 时 rc-table 不设宽度，左栏被拖窄只会把五列**按比例压扁**——
- * 「标题」是唯一吃剩余宽度的列，它是第一个被压到只剩省略号的；给了数字后 rc-table 把 `width`
- * + `minWidth: 100%` 落到表格上，溢出变成**表格内部**的横向滚动，标题列钉在左侧、其余四列滑走。
- *
- * 662 = 四列宽（96 / 80 / 96 / 150）+ 标题列下限 240。≥662 时五列全都看得见、不滚（表格按
- * `minWidth: 100%` 铺满左栏，多出来的宽度全给标题列），<662 时横向滚动、标题留在左边。
- * ⚠️ jsdom 没有布局引擎、宽度量不了：这个数只由真机冒烟记录看着。
+/*
+ * 六列声明宽度之和 = 200 + 88 + 168 + 72 + 88 + 144 = 760；容器更宽时由 `fillColumnId` 把
+ * 剩余宽度全部给标题列，更窄时横向滚动。固定列的偏移只认这些声明值。
  */
-const RUNS_TABLE_MIN_WIDTH =
-  RUN_TITLE_MIN_WIDTH +
-  RUN_COLUMN_WIDTH.status +
-  RUN_COLUMN_WIDTH.rows +
-  RUN_COLUMN_WIDTH.executionMode +
-  RUN_COLUMN_WIDTH.createdAt;
 
 /**
  * 列表排序的两个比较器。
@@ -155,14 +162,13 @@ const RUNS_TABLE_MIN_WIDTH =
  * 备注非空时再接「 · 备注」），而契约对 `caseTitle` 只声明 `z.string()`（**没有 `min(1)`**），
  * 手改过的 `run.json` 能写空串进列表——不管的话 `String(undefined)` 会把 `"undefined"`
  * 当正常字符串混进序里；
- * ③ 这里**只写升序语义**：方向由 antd 施加（它拿 `sortOrder === 'ascend' ? res : -res` 整体取反），
- * 自己再按方向翻一次就是翻两次。
+ * ③ 这里**只写升序语义**：方向由套件的排序态施加，比较器自己再按方向翻一次就是翻两次。
  *
  * 同值的行不需要兜底键：服务端给的就是 `createdAt` 降序（api/runs.ts 的 `listRunsView`），
  * `Array.prototype.sort` 稳定 ⇒ 比较为 0 的行永远保持那个顺序（同一用例的多轮自然聚在一起、
  * 组内最近创建的在前面），与排序方向无关。
  *
- * ⚠️ cases 页有同口径的两份就地实现（本次口径：比较器不抽模块）。改这里必须同时改那边。
+ * ⚠️ cases 页有同口径的实现（本次口径：比较器不抽模块）。改这里必须同时改那边。
  */
 function compareSortText(left: unknown, right: unknown): number {
   const leftBlank = typeof left !== 'string' || left.trim() === '';
@@ -181,6 +187,96 @@ function compareSortTime(left: unknown, right: unknown): number {
   if (leftInvalid || rightInvalid) return leftInvalid === rightInvalid ? 0 : leftInvalid ? -1 : 1;
   return leftMs - rightMs;
 }
+
+/**
+ * 列表的五列（列序即版面口径，与用例页同形）。
+ *
+ * 显示与排序**共用同一份拼法**（`runListTitle`）：备注非空时是「用例标题 · 备注」，
+ * 否则只有用例标题。两处各拼一份的漂移症状是「看到的和排的不是一回事」。
+ * 标题本身是**快照**（`caseTitle`）：用例改名不会改写历史轮次，所以排/显的都是历史标题。
+ * 固定位置写在列定义上（`pinned` + 声明的 `size`），偏移由套件算。
+ */
+const RUN_COLUMNS: DataTableColumn<EvalRun>[] = [
+  {
+    id: 'caseTitle',
+    header: '标题',
+    accessorFn: (run) => runListTitle(run),
+    size: RUN_COLUMN_WIDTH.title,
+    pinned: 'start',
+    sortFn: (left, right) => compareSortText(runListTitle(left.original), runListTitle(right.original)),
+    cell: ({ row }) => <EllipsisText text={runListTitle(row.original)} />,
+  },
+  {
+    id: 'status',
+    header: '状态',
+    accessorFn: (run) => RUN_STATUS_RANK[run.status],
+    size: RUN_COLUMN_WIDTH.status,
+    // 生命周期正序（未开始 → 执行中 → 部分完成 → 已完成）
+    sortFn: (left, right) => RUN_STATUS_RANK[left.original.status] - RUN_STATUS_RANK[right.original.status],
+    cell: ({ row }) => (
+      <Badge variant={RUN_STATUS_META[row.original.status].variant}>
+        {RUN_STATUS_META[row.original.status].label}
+      </Badge>
+    ),
+  },
+  {
+    id: 'score',
+    header: '得分',
+    // 排序用最高分：与「排名」抽屉同一口径（未出分的轮次垫底，按 -1 处理，不拿 0 分冒充）
+    accessorFn: (run) => runScoreSummary(run)?.best ?? -1,
+    size: RUN_COLUMN_WIDTH.score,
+    sortFn: (left, right) => (runScoreSummary(left.original)?.best ?? -1) - (runScoreSummary(right.original)?.best ?? -1),
+    sortDescFirst: true,
+    // 满分不固定 100，且读的是**评分那一刻**的快照：`得分 / 满分` 两个数必须成对出现。
+    // 第二行是**每个候选自己的分**（见 `runScoreDistribution`）：最高分盖得住失败，
+    // 「3 个候选里 1 个超时」必须在列表上就能看见，而不是点进右栏才发现。
+    cell: ({ row }) => {
+      const summary = runScoreSummary(row.original);
+      if (summary === null) return <span className="text-muted-foreground">—</span>;
+      const distribution = runScoreDistribution(row.original);
+      const incomplete = summary.scored < summary.total;
+      const tone = summary.unscored > 0 ? 'text-warning' : 'text-muted-foreground';
+      return (
+        <div className="flex flex-col gap-0.5 leading-tight tabular-nums">
+          <span className="flex items-baseline gap-1">
+            <span className="font-medium">{summary.best}</span>
+            <span className="text-sub text-muted-foreground">/ {summary.max}</span>
+            {incomplete ? <span className={`text-sub ${tone}`}>{`${summary.scored}/${summary.total} 出分`}</span> : null}
+          </span>
+          {distribution === null ? null : (
+            <span className={`text-sub ${tone}`}>{distribution}</span>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    id: 'rows',
+    header: '候选数',
+    accessorFn: (run) => run.rows.length,
+    size: RUN_COLUMN_WIDTH.rows,
+    enableSorting: false,
+    cell: ({ row }) => row.original.rows.length,
+  },
+  {
+    id: 'executionMode',
+    header: '执行模式',
+    accessorFn: (run) => run.executionMode,
+    size: RUN_COLUMN_WIDTH.executionMode,
+    enableSorting: false,
+    cell: ({ row }) => (row.original.executionMode === 'serial' ? '串行' : '并行'),
+  },
+  {
+    id: 'createdAt',
+    header: '创建时间',
+    accessorFn: (run) => run.createdAt,
+    size: RUN_COLUMN_WIDTH.createdAt,
+    sortFn: (left, right) => compareSortTime(left.original.createdAt, right.original.createdAt),
+    // 默认视图就是「创建时间」倒序：最新的一轮在最上面（服务端顺序即此，首点落到 desc）
+    sortDescFirst: true,
+    cell: ({ row }) => formatDateTime(row.original.createdAt),
+  },
+];
 
 /**
  * 一个文件的正文。
@@ -215,36 +311,12 @@ function ArtifactFileBody({ runId, rowId, name }: { runId: string; rowId: string
 }
 
 /**
- * 「变更详情」「评分详情」两个抽屉共用的几何口径——**与「执行日志」是同一份**。
+ * 主抽屉的几何：宽度、窄屏兜底与**嵌套让位量**都来自 `@aieval/ui` 的 `base/drawer-geometry`。
  *
- * 常量住在 `@aieval/ui` 的 `base/drawer-geometry`：那三个抽屉分居两个包（执行日志的几何在
- * `AgentLogDrawer` 里），各写一份必然漂移，而漂移是静默的（实测：antd 6 废弃
- * `width` 后这两处漏改，抽屉掉回默认 `378px`，比执行日志窄一半，且没有任何用例变红）。
- *
- * ⚠️ **宽度走 `size`，不走 `styles.wrapper.width`**（antd 6 已废弃 `width`，控制台会打 warning）。
- * 所以本页的抽屉都摊开这一份 `{ size, styles }`：`size` 是宽度本身，`styles` 是
- * 「窄屏兜底 + 内容区 `padding: 0`」（内边距由各抽屉自己的内容给）。
- *
- * `push` 也在这里：二级抽屉打开时**被推开的正是这三个主抽屉**，
- * 而位移量取的是被推开那一方自己的配置（见 `MAIN_DRAWER_PUSH` 的注释）。
+ * 行级三视图走 `RunDetailDrawer`（它自己消费同一份）；这里只剩「排名」这个页面级视图。
+ * `Sheet` 的默认宽度是 `w-3/4` + `sm:max-w-sm`，不显式覆盖就会掉回默认档，三个视图宽窄不一。
  */
-const DRAWER_GEOMETRY = {
-  size: WIDE_DRAWER_SIZE,
-  styles: DRAWER_SEMANTIC_STYLES,
-  push: MAIN_DRAWER_PUSH,
-} as const;
-
-/**
- * 「执行日志」**读取中 / 失败**那一支画的空抽屉：与 `AgentLogDrawer` 同几何
- * （同一份 `DRAWER_GEOMETRY`，不是照抄一遍——宽度改了这里必须跟着改）。
- * 单独一个常量而不是就地写两遍：读取中与失败两支本来就该一样宽。
- */
-const LOG_FALLBACK_DRAWER = {
-  placement: 'right',
-  ...DRAWER_GEOMETRY,
-  mask: { enabled: true, closable: true },
-  destroyOnHidden: true,
-} as const;
+const DRAWER_STYLE = MAIN_DRAWER_STYLE;
 
 /**
  * 「这一行还没开始跑」时抽屉吃的空模型。
@@ -268,6 +340,9 @@ const NEVER_RAN_MODEL: AgentLogModel = {
     thinking: null,
     domain: [],
     error: null,
+    // 还没开始跑：没有占用读数、窗口也未知（都不是 0）
+    contextUsed: null,
+    contextWindow: null,
   },
   nodes: [
     {
@@ -347,9 +422,9 @@ export default function Page(): ReactNode {
 }
 
 function RunsPage(): ReactNode {
+  usePageTitle('评测');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { message } = App.useApp();
   const panel = parseRunsPanel(searchParams);
   const [drawer, setDrawer] = useState<OpenDrawer | null>(null);
   const { runs, isLoading, error: listError } = useRuns();
@@ -374,7 +449,7 @@ function RunsPage(): ReactNode {
    * 不能把「还没读到设置」显示成「你没配」。
    */
   const { settings } = useSettings();
-  const { optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, turnInjectionOf } = useRunModelOptions();
+  const { optionsFor, capabilityOf, defaultEffortOf, messageCapabilityOf, checkpointOf, turnInjectionOf } = useRunModelOptions();
   const { create, isCreating } = useCreateRun();
   const { update, isUpdating } = useUpdateRun();
   const { remove, isDeleting } = useDeleteRun();
@@ -384,11 +459,17 @@ function RunsPage(): ReactNode {
   const { rescoreRow, isRescoring } = useRescoreRow();
   const { retryRow, isRetrying } = useRetryRow();
   const runId = run?.id ?? '';
-  const logRowId = drawer?.kind === 'log' ? drawer.rowId : null;
-  const diffRowId = drawer?.kind === 'diff' ? drawer.rowId : null;
+  /**
+   * 行级抽屉的 id 与当前页签：三个视图共用**同一行**，故只有一份 id。
+   * 页签只决定渲染哪一块；数据订阅在抽屉打开期间全部保持（切页签不重取、不闪加载），
+   * 这也是「切走时不卸载」的一半——另一半在 `RunDetailDrawer` 的 `keepMounted`。
+   */
+  const drawerRowId = drawer?.kind === 'row' ? drawer.rowId : null;
+  const drawerTab: RunDetailTab = drawer?.kind === 'row' ? drawer.tab : 'log';
+  const logRowId = drawerRowId;
+  const diffRowId = drawerRowId;
   /** 抽屉要渲染的那一行（评分详情那一支也用它；拿不到就整段不渲染）。排名抽屉没有行 id，故恒 undefined */
-  const logRow =
-    drawer === null || drawer.kind === 'rank' ? undefined : run?.rows.find((row) => row.id === drawer.rowId);
+  const logRow = drawerRowId === null ? undefined : run?.rows.find((row) => row.id === drawerRowId);
   /**
    * 只在该行的日志抽屉打开时才订阅它的事件流。
    * `attemptKey` 取这一行的 `attempts`：重跑同一行时它会变，订阅因此重挂——不重挂的话
@@ -451,6 +532,20 @@ function RunsPage(): ReactNode {
       .join('|'),
   });
   const { followUpRow, isFollowingUp } = useFollowUpRow();
+  const { checkpointRow, isCheckingPoint } = useCheckpointRow();
+  /**
+   * **回到某一轮**的待办目标：点「回到这里」先把目标记下来，再复用追问输入区收一句话
+   * （「从这一点接着要做什么」）。提交时这一格还在 ⇒ 走 `/api/checkpoint`，否则走追问。
+   *
+   * 为什么不单独做一个弹窗：输入区的附件上传、错误呈现、忙碌态都与追问逐字相同；
+   * 另起一个弹窗等于把同一套交互抄第二遍，两处必然漂。
+   */
+  const [checkpoint, setCheckpoint] = useState<{
+    segment: number;
+    turn: number;
+    keepAt: string;
+    dropFrom: string | null;
+  } | null>(null);
   /**
    * 索引是**分页**的（首帧只拉一页 30 条，其余按滚动逐页追加，**已加载的页不回收**），
    * 故这里自己累积已加载的文件：每次把新到的那一页接在后面，滚到底再由 `onLoadMore` 取下一页。
@@ -464,12 +559,12 @@ function RunsPage(): ReactNode {
   /**
    * 实际明暗**读已解析的结果**，不在这里再解析一次。
    * `useResolvedTheme()` 的偏好缺省是 `'dark'`（SSR 兜底），不传偏好就会拿到暗色——
-   * 既是第二份判据、又会把 `data-theme` 改回暗色，于是 ConfigProvider 是明亮主题、
-   * diff 视图却按暗色渲染（症状：亮色主题下背景不对）。真正的解析在 `providers.tsx`。
+   * 既是第二份判据、又会把 `data-theme` 改回暗色，于是页面底色与 diff 视图的配色互相打架
+   * （症状：亮色主题下背景不对）。真正的解析在 `providers.tsx`。
    */
   const themeMode = useAppliedThemeMode();
   /** 当前评分详情对应的行 id（不是评分抽屉时为 null）：footer 的入口与二级抽屉都以它为判据 */
-  const scoreRowId = drawer?.kind === 'score' ? drawer.rowId : null;
+  const scoreRowId = drawerRowId;
   /**
    * 评分详情对应的那一行（分与状态都在它身上）：`scoreDetail` 与「原始输出」入口的可见性都读它。
    * 行状态也在这里取——**judging ⇔ 无分**（首评 / 重评的入口都会同步清分），两个判据读同一行才不会漂。
@@ -497,10 +592,10 @@ function RunsPage(): ReactNode {
    * ——那种 bug 只在特定点击顺序下出现。带上行 id 之后判据自动为假（关抽屉时 `drawer` 已是 null）。
    */
   const [rawRowId, setRawRowId] = useState<string | null>(null);
-  const rawOpen = scoreRowId !== null && rawRowId === scoreRowId;
+  const rawOpen = drawerTab === 'score' && scoreRowId !== null && rawRowId === scoreRowId;
   /** 「原始输出 N 条」二级抽屉（评分那条流）的开合：与 `rawRowId` 同一条「记哪一行」的口径 */
   const [judgeOutputRowId, setJudgeOutputRowId] = useState<string | null>(null);
-  const judgeOutputOpen = scoreRowId !== null && judgeOutputRowId === scoreRowId;
+  const judgeOutputOpen = drawerTab === 'score' && scoreRowId !== null && judgeOutputRowId === scoreRowId;
   /** 这一行正在评分（judging）吗：SSE 的开关（judging 才接，终态行只拉历史） */
   const judgeLive = scoreRow?.status === 'judging';
   /**
@@ -539,6 +634,11 @@ function RunsPage(): ReactNode {
    * 关掉排名抽屉时在它的 `onClose` 里一并复位——否则重开排名抽屉时二级抽屉会自己弹出来。
    */
   const artifacts = useRunArtifacts(runId, drawer?.kind === 'rank');
+  /**
+   * 排名页的「测试通过率」列：与产物清单同一开关（只在排名抽屉打开时读消息账本）。
+   * 读不到时 `results` 是 `undefined`，表格写「未采集」——**不拿空对象当成 0 个通过**。
+   */
+  const runTests = useRunTestResults(runId, drawer?.kind === 'rank');
   const [artifactOpen, setArtifactOpen] = useState(false);
 
   /** 换一行（或重开抽屉）时把累积清空，免得看到上一行的文件 */
@@ -586,7 +686,17 @@ function RunsPage(): ReactNode {
    * 而把它摊在页面里意味着页面读源码守卫才能钉住形状。这里的 `useMemo` 依赖三个输入，
    * 为的是「一次上游提交只重建一次」（父组件因 SSE 重渲染时不重算）。
    */
-  const logFacts = logRow === undefined ? null : buildRowFacts({ row: logRow, events: stream.events });
+  const logFacts = logRow === undefined
+    ? null
+    : buildRowFacts({
+      row: logRow,
+      events: stream.events,
+      /**
+       * 上下文用量的**上限**：从候选池按 `providerId + modelId` 配（模型清单里的声明）。
+       * 拿不到就如实 `null`——界面显示「上限未采集」，不兜底一个默认窗口（编一个出来，百分比就是假读数）。
+       */
+      contextWindow: contextWindowOf(logRow, optionsFor(logRow.agentKind)),
+    });
   /**
    * 这一行的**能力声明**：五格各自带「从哪条通道取到 / 为什么取不到」。
    *
@@ -686,9 +796,52 @@ function RunsPage(): ReactNode {
         // 先落盘拿到路径、再点发送：附件目录名用同一条草稿的 id
         onUploadAttachment={async (input) => inject.uploadAttachment(input.messageId, input.file)}
         // 失败原因交回这里呈现（`describeError`：ServiceError 的中文 message 直接展示）
-        onError={(cause) => void message.error(describeError(cause))}
+        onError={(cause) => void toast.error(describeError(cause))}
       />
     ) : undefined;
+
+  /**
+   * **这一轮的厂商条目坐标**（「回到这里」把轮次坐标翻成厂商条目 id 的唯一一处）。
+   *
+   * 判据只用消息账本：`keepAt` = 被保留那一轮**最后一条**有 `vendorId` 的消息（CC 的
+   * `resumeSessionAt` 认的就是这条 chain entry），`dropFrom` = 下一轮**第一条 user 消息**的
+   * `vendorId`（CC 的 `resumeDropsTurn` 要的「被丢掉那一轮的 prompt」）。
+   * 账本没记条目（旧数据 / 厂商不投送）⇒ `null`，界面据此把按钮置灰并给出这一次的事实原因。
+   */
+  const checkpointAnchorOf = useCallback(
+    (target: { segment: number; turn: number }): { keepAt: string; dropFrom: string | null } | null => {
+      const records = messages.records.flatMap((record) => (record.type === 'message' ? [record.message] : []));
+      const inTurn = (turn: number): typeof records =>
+        records.filter((message) => (message.segment ?? 0) === target.segment && message.roundTrip === turn);
+      const keep = [...inTurn(target.turn)].reverse().find((message) => message.vendorId !== null);
+      if (keep?.vendorId == null) return null;
+      const nextTurn = inTurn(target.turn + 1);
+      const drop =
+        nextTurn.find((message) => message.role === 'user' && message.vendorId !== null) ??
+        nextTurn.find((message) => message.vendorId !== null);
+      return { keepAt: keep.vendorId, dropFrom: drop?.vendorId ?? null };
+    },
+    [messages.records],
+  );
+
+  /**
+   * 「回到这里」：记下目标并打开**同一套输入区**（问「从这一点接着要做什么」）。
+   * 真正发请求在输入区的 `onSend` 里分岔（有目标 ⇒ `/api/checkpoint`）。
+   * 目标算不出来时什么都不做——按钮那一刻本来就是禁用的（同一个 `checkpointAnchorOf` 判据）。
+   */
+  const handleCheckpoint = useCallback(
+    (target: { segment: number; turn: number }): void => {
+      const anchor = checkpointAnchorOf(target);
+      if (anchor === null) return;
+      setCheckpoint({ ...target, ...anchor });
+      setDrawer((previous) =>
+        previous?.kind === 'row'
+          ? { ...previous, followUp: true }
+          : { kind: 'row', rowId: logRowId ?? '', tab: 'log', followUp: true },
+      );
+    },
+    [checkpointAnchorOf, logRowId],
+  );
 
   /**
    * 追问的**输入区**：只在「这一行是点「追问」打开的、且它此刻不在跑」时渲染。
@@ -700,22 +853,45 @@ function RunsPage(): ReactNode {
    * `rowDir/attachments/<messageId>/`（生命周期挂在行目录上，不按入口分两处）。
    */
   const followUpFooter =
-    drawer?.kind === 'log' && drawer.followUp === true && logRow !== undefined && !isRunningRow(logRow.status) ? (
+    drawer?.kind === 'row' && drawer.tab === 'log' && drawer.followUp === true && logRow !== undefined && logModel !== null && !isRunningRow(logRow.status) ? (
       <FollowUpComposer
-        busy={isFollowingUp}
+        busy={isFollowingUp || isCheckingPoint}
+        // 建议 chips 读装配好的行级事实（`contextUsed` 是装配层从事件流算出来的，`logFacts` 里没有）
+        facts={logModel.facts}
+        // 追问判据（服务端读侧）：chips 的禁用与原因只读这一份，不在输入区里再判一遍
+        followUpVerdict={followUps.verdictOf(logRow.id)}
         onSend={async (input) => {
-          await followUpRow({
-            runId,
-            rowId: logRow.id,
-            messageId: input.messageId,
-            text: input.text,
-            attachments: input.attachments,
-          });
+          /**
+           * 有「回到某一轮」的目标 ⇒ 这一次提交是**从那一轮续跑**（旧内容先标作废），
+           * 否则就是普通追问。两条路共用同一个输入区：附件、错误呈现与忙碌态一行都不重复。
+           */
+          if (checkpoint !== null) {
+            await checkpointRow({
+              runId,
+              rowId: logRow.id,
+              segment: checkpoint.segment,
+              turn: checkpoint.turn,
+              keepAt: checkpoint.keepAt,
+              dropFrom: checkpoint.dropFrom,
+              messageId: input.messageId,
+              text: input.text,
+              attachments: input.attachments,
+            });
+            setCheckpoint(null);
+          } else {
+            await followUpRow({
+              runId,
+              rowId: logRow.id,
+              messageId: input.messageId,
+              text: input.text,
+              attachments: input.attachments,
+            });
+          }
           // 发出去之后这一行会翻成「准备中」：判据（能否追问）跟着变，顺手重读一次
           await followUps.refresh();
         }}
         onUploadAttachment={async (input) => postInjectAttachment({ runId, rowId: logRow.id, ...input })}
-        onError={(cause) => void message.error(describeError(cause))}
+        onError={(cause) => void toast.error(describeError(cause))}
       />
     ) : undefined;
 
@@ -724,13 +900,20 @@ function RunsPage(): ReactNode {
    * 运行中的排队输入区。两支互斥（判据见上面各自的注释），缺席时一个节点都不渲染。
    */
   const logFooter = followUpFooter ?? injectFooter;
+  /**
+   * 离开「追问/续跑」那一刻作废掉待办目标：否则下一次点普通的「追问」会带着上一次的
+   * 「回到第 N 轮」一起发出去——那是一次静默的错误续段。
+   */
+  useEffect(() => {
+    if (drawer?.kind !== 'row' || drawer.followUp !== true) setCheckpoint(null);
+  }, [drawer]);
 
   /** 每次操作都收口到 `describeError`：ServiceError 的中文 message 直接展示，其余给兜底文案 */
   const guard = async (action: () => Promise<unknown>): Promise<void> => {
     try {
       await action();
     } catch (cause) {
-      void message.error(describeError(cause));
+      void toast.error(describeError(cause));
     }
   };
 
@@ -760,7 +943,7 @@ function RunsPage(): ReactNode {
       // 创建完直接进详情：使用者下一步一定是点「开始」
       router.replace(runsPanelHref('detail', created.id));
     } catch (cause) {
-      void message.error(describeError(cause));
+      void toast.error(describeError(cause));
     }
   };
 
@@ -774,11 +957,11 @@ function RunsPage(): ReactNode {
     if (run === undefined) return;
     try {
       await update(run.id, values);
-      void message.success('评测已保存');
+      void toast.success('评测已保存');
       router.replace(runsPanelHref('detail', run.id));
     } catch (cause) {
       // 失败就留在编辑态（不跳转）：中文原因由服务端给，改完可以原地再存一次
-      void message.error(describeError(cause));
+      void toast.error(describeError(cause));
     }
   };
 
@@ -791,18 +974,34 @@ function RunsPage(): ReactNode {
     if (run === undefined) return undefined;
     return remove(run.id)
       .then((result) => {
-        void message.success(result.workspaceRemoved ? '评测已删除' : '评测已删除；行工作区有残留（被占用），可手动清理');
+        void toast.success(result.workspaceRemoved ? '评测已删除' : '评测已删除；行工作区有残留（被占用），可手动清理');
         // 删除后回列表（无右栏）：右栏留在一条已经不存在的轮次上没有意义
         closePanel();
       })
-      // 失败在这里收束：把 reject 交回给 antd 只会在控制台留一条未处理的 rejection，
-      // 用户已经在 message.error 里拿到了中文原因
-      .catch((error) => void message.error(describeError(error)));
+      // 失败在这里收束：把 reject 交回给确认框只会在控制台留一条未处理的 rejection，
+      // 用户已经在 toast.error 里拿到了中文原因
+      .catch((error) => void toast.error(describeError(error)));
   };
 
   const closePanel = (): void => {
     setDrawer(null);
     router.replace(runsPanelHref(null, null));
+  };
+
+  /**
+   * 切页签：只改同一支抽屉的 `tab`，`rowId` 不变 ⇒ 面板不重挂载。
+   *
+   * 评分页签的两个二级层（原始返回 / 原始输出）在这里一并收掉：它们的开合态住在页面，
+   * 留在别的页签上会成为「浮在主抽屉之上、却不属于当前页签」的孤儿层。
+   * 日志页签的环境信息由 `AgentLogLayout` 的 `active` 自己收（它的开合态在布局件内部）。
+   */
+  const handleDrawerTabChange = (tab: RunDetailTab): void => {
+    setRawRowId(null);
+    setJudgeOutputRowId(null);
+    setDrawer((previous) => {
+      if (previous === null || previous.kind !== 'row') return previous;
+      return { ...previous, tab, followUp: tab === 'log' ? previous.followUp : false };
+    });
   };
 
   /** 下载用 `/log` 的全量（而不是连接里收到的那份）：连接可能中途断过，落盘的那份才是完整的 */
@@ -818,128 +1017,90 @@ function RunsPage(): ReactNode {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
-  const columns: TableColumnsType<EvalRun> = [
-    {
-      // 列名只叫「标题」：与用例页的列表头逐字同形，左栏就一列标题，不必再冠以「用例」
-      title: '标题',
-      dataIndex: 'caseTitle',
-      // 显示与排序**共用同一份拼法**（`runListTitle`）：备注非空时是「用例标题 · 备注」，
-      // 否则只有用例标题。两处各拼一份的漂移症状是「看到的和排的不是一回事」。
-      // 标题本身是**快照**（`caseTitle`）：用例改名不会改写历史轮次，所以排/显的都是历史标题。
-      // 文本列首次点击升序：antd 的默认 `sortDirections` 是 `['ascend','descend']`，不用显式给
-      sorter: (a: EvalRun, b: EvalRun) => compareSortText(runListTitle(a), runListTitle(b)),
-      // 钉在左边：横向滚动时其余四列从它下面滑过，「这一行是哪个用例的评测」
-      // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
-      // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
-      fixed: 'left',
-      // 不传 width：与用例页同口径——省略号落在单元格右边缘，栏位拖宽后长标题多显示
-      // （写死 px 时文字块比单元格宽，超出的一段连同省略号一起被单元格裁掉）
-      render: (_caseTitle: string, record) => <EllipsisText text={runListTitle(record)} />,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      width: RUN_COLUMN_WIDTH.status,
-      // 生命周期正序（未开始 → 执行中 → 部分完成 → 已完成）首次即升序：默认 `sortDirections` 就够
-      sorter: (a: EvalRun, b: EvalRun) => RUN_STATUS_RANK[a.status] - RUN_STATUS_RANK[b.status],
-      render: (status: EvalRun['status']) => <Tag color={RUN_STATUS_META[status].color}>{RUN_STATUS_META[status].label}</Tag>,
-    },
-    {
-      title: '候选数',
-      dataIndex: 'rows',
-      width: RUN_COLUMN_WIDTH.rows,
-      align: 'left',
-      render: (_rows, record) => record.rows.length,
-    },
-    {
-      title: '执行模式',
-      dataIndex: 'executionMode',
-      width: RUN_COLUMN_WIDTH.executionMode,
-      render: (mode: EvalRun['executionMode']) => (mode === 'serial' ? '串行' : '并行'),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'createdAt',
-      width: RUN_COLUMN_WIDTH.createdAt,
-      // 默认排序：进入页面就是「创建时间」倒序。
-      // 用 `defaultSortOrder`（非受控初值）而不是 `sortOrder`：声明后者等于接管三态推进，
-      // 表头箭头的展示与状态推进仍由 antd 自己负责（写 `sortOrder` 就必须回写它，漏一次就点不动）。
-      defaultSortOrder: 'descend',
-      // 时间列首次点击降序（先给「最新在前」才符合直觉）：`sortDirections` 的首项就是首次方向
-      sortDirections: ['descend', 'ascend'],
-      sorter: (a: EvalRun, b: EvalRun) => compareSortTime(a.createdAt, b.createdAt),
-      render: (createdAt: string) => formatDateTime(createdAt),
-    },
-  ];
-
   const list = (
-    <Flex vertical style={{ height: '100%', minHeight: 0 }}>
-      <Toolbar
-        extra={
-          // 创建 / 添加类按钮全站同形：前导加号 + 虚线边框。两个细节都不能省：
-          // ① `color="default"` 与 `variant="dashed"` 必须成对给——antd 6 的 `variant` 单给会静默降级成实线；
-          // ② 图标 `aria-hidden`：`@ant-design/icons` 自带 `role="img" aria-label="plus"`，
-          // 不藏起来可访问名会变成「plus 创建评测」
-          <Button
-            color="default"
-            variant="dashed"
-            size="small"
-            icon={<PlusOutlined aria-hidden />}
-            onClick={() => router.replace(runsPanelHref('new', null))}
-          >
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      {/* 页标题按 shadcn 的 page header 约定：标题 24 / 描述 14 + muted，动作靠右。
+          它不跟密度档——密度管正文与行高，页标题一旦被压到正文同号，整页就没有视觉重心。 */}
+      <PageHeader
+        title="评测"
+        description={
+          runs === undefined ? '正在加载…' : `共 ${runs.length} 次评测 · 点一行查看分数、日志与变更`
+        }
+        actions={
+          <Button size="sm" onClick={() => router.replace(runsPanelHref('new', null))}>
+            <PlusIcon aria-hidden />
             创建评测
           </Button>
         }
       />
       {listError !== null && listError !== undefined && (
-        <Alert type="error" showIcon title={`评测列表加载失败：${describeError(listError)}`} />
+        // 说清「屏幕上这份列表可能是旧的」：SWR 读失败时保留上一份数据，
+        // 只报「加载失败」而列表还在，读起来像「加载成功但内容没变」
+        <Alert variant="destructive" className="mb-2">
+          <AlertTitle>{`评测列表读不出来：${describeError(listError)}`}</AlertTitle>
+          <AlertDescription>列表显示的可能还是上一次读到的内容；刷新页面会重新请求。</AlertDescription>
+        </Alert>
       )}
       {runs !== undefined && runs.length === 0 ? (
         <EmptyState
           title="还没有评测"
-          description="先创建一个用例，再用它开一轮评测"
+          description="先创建一个用例，再新建一次评测"
           action={{
             label: '创建评测',
-            icon: <PlusOutlined aria-hidden />,
+            icon: <PlusIcon aria-hidden />,
             variant: 'dashed',
             onClick: () => router.replace(runsPanelHref('new', null)),
           }}
         />
       ) : (
-        // 纵向还是外层容器滚：`scroll={{ y }}` 会让 rc-table 把 `.ant-table-body` 的 `overflow-y`
-        // 写死成 `scroll`，数据没超出也常驻一条空滚动条（口径见 `TableScrollArea` 的文件头）。
-        // 表头由 `sticky` 钉住；容器在工具栏**下面**，工具栏不跟着滚走。
-        <TableScrollArea>
-          {/* 显式给行类型（`<Table<EvalRun>>`）：`columns` 的 `TableColumnsType<EvalRun>` 与
-              `onRow` 的 `record` 都靠它对齐；`list-table-scroll-wiring.test.ts` 也按 `<Table<` 钉住
-              「表格在滚动容器里面」这一条 */}
-          <Table<EvalRun>
-            size="small"
-            rowKey="id"
-            loading={isLoading}
-            columns={columns}
-            dataSource={runs ?? []}
-            pagination={false}
-            sticky
-            // 只给 `x`（**只开横向**，纵向那一位仍留给外层容器）：它是「左栏够不够宽」的判据本身——
-            // 表格拿到 `width: 662px` + `min-width: 100%`，窄于 662 时内部横向滚动（标题钉在左侧），
-            // 宽于 662 时按 100% 铺满、一条滚动条都不出现。给 `true` 等于没有下限，给 `'max-content'`
-            // 则按最宽内容撑开 —— 两者都让固定列失效（理由详见 `RUNS_TABLE_MIN_WIDTH`）。
-            // ⚠️ 与 `sticky` 同时在场是安全组合：rc-table 在 `fixHeader || isSticky` 分支里把
-            // `scrollXStyle` 落在 `.ant-table-body` 上、表头另拆成 `.ant-table-sticky-holder`，
-            // 所以横向滚动不会把吸顶的表头一起带走（真机几何见本轮冒烟记录）。
-            scroll={{ x: RUNS_TABLE_MIN_WIDTH }}
-            // 同用例页：列宽由表头算，`EllipsisText` 的省略号才有确定的分母。
-            // `sticky` 本就会让 rc-table 落到 `fixed`，显式写出来是为了不把这条前提交给巧合
-            tableLayout="fixed"
-            onRow={(record) => ({
-              onClick: () => router.replace(runsPanelHref('detail', record.id)),
-              style: record.id === selectedId ? { background: 'var(--app-selected)', cursor: 'pointer' } : { cursor: 'pointer' },
-            })}
+        // 纵向与横向滚动都由 DataTable 自己的容器承担：空数据不会出现常驻滚动条，
+        // 标题列由 `pinned: 'start'` 钉在左边（偏移来自声明的 240），它的宽度由
+        // `fillColumnId` 吃掉容器剩余宽度——表格铺满整栏，右侧不再留一条空白。
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border">
+          <DataTable
+            columns={RUN_COLUMNS}
+            fillColumnId="caseTitle"
+            data={runs ?? []}
+            rowKey={(record) => record.id}
+            rowHeight={40}
+            enableSorting
+            // 默认创建时间倒序（与服务端顺序一致，首点落回 desc）
+            defaultSorting={[{ id: 'createdAt', desc: true }]}
+            tableAttributes={{ 'data-testid': 'runs-table' }}
+            emptyText={isLoading ? <Skeleton className="h-4 w-full" /> : '还没有评测'}
+            rowAttributes={(record) => {
+              const selected = record.id === selectedId;
+              return {
+                'data-testid': 'run-list-row',
+                'data-selected': String(selected),
+                'aria-selected': selected,
+                tabIndex: 0,
+                // 行是「按钮」语义：空格默认会滚动页面，必须拦下（与用例页的行同口径）
+                onKeyDown: (event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  router.replace(runsPanelHref('detail', record.id));
+                },
+                // 选中态**不能只靠底色**：`bg-muted` 与 `bg-background` 的明度差在浅色主题下约 3.5%，
+                // 键盘焦点再落到同一格就没有任何变化。故选中另给左侧 2px 主色条（落在首列单元格上，
+                // 表格是 separate border 模型，`<tr>` 的 box-shadow 不保证绘制），
+                // 焦点另给一圈 ring——两者是不同信号，互不覆盖。
+                className: `group cursor-pointer outline-none focus-visible:outline-2 focus-visible:[outline-style:solid] focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${
+                  selected ? 'bg-muted' : 'bg-background'
+                }`,
+                onClick: () => router.replace(runsPanelHref('detail', record.id)),
+              };
+            }}
+            cellAttributes={(record, columnId) =>
+              columnId === 'caseTitle' && record.id === selectedId
+                ? { className: 'shadow-[inset_2px_0_0_var(--primary)]' }
+                : undefined
+            }
+            ariaLabel="评测列表"
           />
-        </TableScrollArea>
+        </div>
       )}
-    </Flex>
+    </div>
   );
 
   const detail =
@@ -978,7 +1139,7 @@ function RunsPage(): ReactNode {
     ) : selectedId === null ? null : runError !== null && runError !== undefined && run === undefined ? (
       <EmptyState
         title="评测不存在或已被删除"
-        description="它可能被手工清理过；回到列表重新选择一轮"
+        description="它可能被手工清理过；回到列表重新选择一次评测"
         action={{ label: '回到列表', onClick: closePanel }}
       />
     ) : run === undefined ? (
@@ -1000,15 +1161,20 @@ function RunsPage(): ReactNode {
         retrying={isRetrying}
         // 「追问」只打开这一行的抽屉（输入区在 footer 上），故它没有自己的写请求：
         // 真正的承诺在那一句话发出去的时候，不需要额外一道确认
-        onFollowUpRow={(rowId) => setDrawer({ kind: 'log', rowId, followUp: true })}
+        onFollowUpRow={(rowId) => {
+          setCheckpoint(null);
+          setDrawer({ kind: 'row', rowId, tab: 'log', followUp: true });
+        }}
         followUpOf={followUps.verdictOf}
         followingUp={isFollowingUp}
-        onOpenLog={(rowId) => setDrawer({ kind: 'log', rowId })}
-        onOpenDiff={(rowId) => setDrawer({ kind: 'diff', rowId })}
-        onOpenScore={(rowId) => setDrawer({ kind: 'score', rowId })}
+        onOpenLog={(rowId) => setDrawer({ kind: 'row', rowId, tab: 'log' })}
+        onOpenDiff={(rowId) => setDrawer({ kind: 'row', rowId, tab: 'diff' })}
+        onOpenScore={(rowId) => setDrawer({ kind: 'row', rowId, tab: 'score' })}
         // 排名抽屉比的是候选之间的名次：它没有「哪一行」这一维，故不开行 id
         onOpenRank={() => setDrawer({ kind: 'rank' })}
         onEdit={() => router.replace(runsPanelHref('edit', run.id))}
+        // 桌面双栏下的关闭入口：退回单栏列表，URL 随之回到不带 panel 的形态
+        onClose={closePanel}
         onDelete={handleDelete}
         deleting={isDeleting}
       />
@@ -1016,164 +1182,197 @@ function RunsPage(): ReactNode {
 
   return (
     <>
-      <AppTopNav items={[...NAV_ITEMS]} active="runs" onNavigate={(href) => router.push(href)} />
-      <ListDetailLayout list={list} detail={detail} detailOpen={panel.panel !== null} widthStorageKey="runs-detail-width" />
+      <AppTopNav items={[...NAV_ITEMS]} active="runs" onNavigate={(href) => router.push(href)} onSearch={requestCommandPalette} />
+      <ListDetailLayout
+        list={list}
+        detail={detail}
+        detailOpen={panel.panel !== null}
+        widthStorageKey="runs-detail-width"
+        onRequestCloseDetail={closePanel}
+      />
 
       {/*
-        「执行日志」抽屉：**几何与滚动容器的归属都在 `AgentLogDrawer` 里**，
-        页面不套 `Drawer`、也不给内边距——它内部要自持一个确定高度的视口（虚拟列表需要它），
-        外面再包一层会让那条高度链断掉（表现为整页被内容撑长、该出现的滚动条不出现）。
-        宽度与语义槽样式取自同一个 `DRAWER_GEOMETRY`（组件内引的是同一份常量），
-        故它与下面的「变更详情」「评分详情」**必然等宽**。
+        「评测详情」抽屉：**同一个抽屉 + 页签头**（日志 / 变更 / 评分）。
+        三个入口仍然一次点击直达各自的页签；切页签只换可见面板，**不卸载**——
+        滚动位置、展开过的工具行、过滤条件因此活着，也不会播「关一个、开一个」两遍动画。
 
-        **读取中那一支什么都不渲染**（2026-10-03 用户口径「点开会闪一下」的修法）：那时 `model`
-        还没算出来，弹出来的是空壳，而它会把真抽屉的入场动画重置（遮罩与面板各重放一次）。
-        **故障那一支仍然整段替换**（既有口径不变）：抽屉内部的空态是
-        「还没有日志 · 这一行还没开始执行」，与「读不出来」一起出现会把一个带文件路径的真实故障
-        说成「还没开始跑」。两条来源的**非破坏性**提示（有数据时的实时通道故障 / 读失败）
-        照旧交给抽屉渲染，不藏真数据。
+        正文的高度链：`RunDetailDrawer` 的面板是纵向 flex，页签面板 `flex-1 min-h-0`，
+        日志页签里的 `AgentLogLayout` 再取满剩余高度（虚拟列表需要一个确定高度的视口）。
+        页面这里只给内容与内边距，不套第二层滚动区。
+
+        **读取中**在页签里给一句空态（不是整段不渲染）：抽屉已经是同一个元素，
+        不会再有「空壳重放进场动画」的问题；点「执行日志」立刻有回应比什么都不弹更好。
+        **故障**仍然整段替换日志页签的正文：抽屉内部的空态是「还没有日志 · 这一行还没开始执行」，
+        与「读不出来」一起出现会把一个带文件路径的真实故障说成「还没开始跑」。
+        两条来源的**非破坏性**提示（有数据时的实时通道故障 / 读失败）照旧交给布局件渲染。
       */}
-      {logState.kind === 'loading' ? null : logState.kind === 'failed' ? (
-        <Drawer {...LOG_FALLBACK_DRAWER} title="执行日志" open={drawer?.kind === 'log'} onClose={() => setDrawer(null)}>
-          <div style={{ padding: 16 }}>
-            <Alert
-              data-testid="run-log-drawer-failed"
-              type="error"
-              showIcon
-              title="执行日志读取失败"
-              description={logState.message}
+      <RunDetailDrawer
+        open={drawer?.kind === 'row'}
+        onClose={() => setDrawer(null)}
+        activeTab={drawerTab}
+        onTabChange={handleDrawerTabChange}
+        log={
+          logState.kind === 'loading' ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center p-roomy">
+              <EmptyState title="正在加载日志…" />
+            </div>
+          ) : logState.kind === 'failed' ? (
+            <div className="min-h-0 flex-1 overflow-auto px-roomy pb-roomy">
+              <Alert variant="destructive" data-testid="run-log-drawer-failed">
+                <AlertTitle>执行日志读取失败</AlertTitle>
+                <AlertDescription>{logState.message}</AlertDescription>
+              </Alert>
+            </div>
+          ) : (
+            <AgentLogLayout
+              // 日志页签被切走时把它内部的二级层（环境信息）收起来：否则那个 portal
+              // 会浮在变更 / 评分页签之上
+              active={drawerTab === 'log'}
+              model={logModel ?? NEVER_RAN_MODEL}
+              diagnostics={{ status: 'ready', data: logDiagnostics }}
+              {...(logEnvironment === undefined ? {} : { environment: logEnvironment })}
+              {...(logSourceRef === undefined ? {} : { source: logSourceRef })}
+              onDownload={handleDownloadLog}
+              // 非破坏性提示：判定在纯函数里（`resolveLogDrawer`），渲染在 `AgentLogLayout` 里。
+              // **有真数据时如实说明，不把它藏起来**——两条来源的故障各占一个提示位。
+              notice={logState.warning === undefined ? undefined : `日志可能不完整：${logState.warning}`}
+              liveError={logState.liveError}
+              connected={stream.connected}
+              // 终态行没有实时流是正常的：不传这一格时文案是「未连接」，读起来像通道故障
+              settled={logRow !== undefined && !isRunningRow(logRow.status)}
+              // 轮末「回到这里」：能力声明只从注册表元数据来（页面不判厂商），
+              // 厂商条目坐标由消息账本那两格现算（算不出 ⇒ 按钮置灰并说明这一次的事实原因）
+              checkpoint={logRow === undefined ? null : checkpointOf(logRow.agentKind)}
+              {...(logRow === undefined ? {} : { onCheckpoint: handleCheckpoint })}
+              checkpointAnchorOf={checkpointAnchorOf}
+              // 底部槽（第三段固定区）：运行中那一支是排队/插队输入区，跑完之后那一支是追问输入区
+              {...(logFooter === undefined ? {} : { footer: logFooter })}
             />
-          </div>
-        </Drawer>
-      ) : (
-        <AgentLogDrawer
-          open={drawer?.kind === 'log'}
-          onClose={() => setDrawer(null)}
-          model={logModel ?? NEVER_RAN_MODEL}
-          diagnostics={{ status: 'ready', data: logDiagnostics }}
-          {...(logEnvironment === undefined ? {} : { environment: logEnvironment })}
-          {...(logSourceRef === undefined ? {} : { source: logSourceRef })}
-          onDownload={handleDownloadLog}
-          // 非破坏性提示：判定在纯函数里（`resolveLogDrawer`），渲染在 `AgentLogLayout` 里。
-          // **有真数据时如实说明，不把它藏起来**——两条来源的故障各占一个提示位。
-          notice={logState.warning === undefined ? undefined : `日志可能不完整：${logState.warning}`}
-          liveError={logState.liveError}
-          connected={stream.connected}
-          // 底部槽（第三段固定区）：运行中那一支是排队/插队输入区，跑完之后那一支是追问输入区
-          {...(logFooter === undefined ? {} : { footer: logFooter })}
-        />
-      )}
-
-      <Drawer
-        title="变更详情"
-        placement="right"
-        {...DRAWER_GEOMETRY}
-        open={drawer?.kind === 'diff'}
-        onClose={() => setDrawer(null)}
-        destroyOnHidden
-      >
-        {diffIndex.index === undefined ? (
-          <div style={{ padding: 16 }}>
-            <Typography.Text type="secondary">
-              {diffIndex.error === null || diffIndex.error === undefined
-                ? '正在计算改动…'
-                : `读取失败：${describeError(diffIndex.error)}`}
-            </Typography.Text>
-          </div>
-        ) : (
-          <DiffView
-            // 列表给**累积**的那些文件，计数与截断信息仍取本页响应（它们是全局值）
-            index={{ ...diffIndex.index, files: diffFiles }}
-            dark={themeMode === 'dark'}
-            {...(diffFiles.length < diffIndex.index.total ? { onLoadMore: () => setDiffOffset(diffFiles.length) } : {})}
-            renderFileBody={(path) => (
-              <DiffFileBody runId={runId} rowId={diffRowId ?? ''} path={path} dark={themeMode === 'dark'} />
-            )}
-          />
-        )}
-      </Drawer>
-
-      <Drawer
-        title="评分详情"
-        placement="right"
-        {...DRAWER_GEOMETRY}
-        open={drawer?.kind === 'score'}
-        onClose={() => setDrawer(null)}
-        destroyOnHidden
-        /*
-          「查看原始返回」与「原始输出 N 条」两个入口都在 **footer** 上：不占正文的高度、
-          也不随正文一起滚走；正文里既没有标题也没有按钮。
-          **没有分就没有「查看原始返回」**：那一格是空态「这一行还没有评分」，没有原文可看。
-          「原始输出」有自己的可见性判据（`judgeOutputVisible`：智能体评分的行常驻、评分进行中
-          也开、文本 API 与 running 期间没有）——两个按钮各判各的，footer 整段为 null
-          才是「两个入口都没有」。
-        */
-        footer={
-          scoreDetail === null && !judgeOutputVisible ? null : (
-            <Flex justify="flex-end" gap={8}>
-              {scoreDetail !== null && (
-                <Button
-                  size="small"
-                  autoInsertSpace={false}
-                  data-testid="score-raw-open"
-                  onClick={() => setRawRowId(scoreRowId)}
-                >
-                  查看原始返回
-                </Button>
-              )}
-              {judgeOutputVisible && (
-                <Button
-                  size="small"
-                  autoInsertSpace={false}
-                  data-testid="score-judge-output-open"
-                  onClick={() => setJudgeOutputRowId(scoreRowId)}
-                >
-                  {judgeOutputLabel}
-                </Button>
-              )}
-            </Flex>
           )
         }
-      >
-        {scoreDetail === null ? (
-          <div style={{ padding: 16 }}>
-            <EmptyState title="这一行还没有评分" description="评分在 agent 跑完之后进行；失败的行不会有分" />
+        diff={
+          // 变更详情自己管滚动（左树与右栏各自滚），外层只负责把它撑满可用高度：
+          // 这里再套一层 `overflow-auto` 就会出现第二条滚动条
+          <div className="flex min-h-0 flex-1 flex-col">
+            {diffIndex.index === undefined ? (
+              diffIndex.error === null || diffIndex.error === undefined ? (
+                <p className="px-roomy pt-roomy text-sm text-muted-foreground">正在读取变更…</p>
+              ) : (
+                // 失败与「正在读」必须分开：把故障写在同一行灰字里，使用者分不清是慢还是坏了，
+                // 也没有任何出路。故给标题 + 中文原因 + 可重试的按钮，原始 git 串收进折叠区。
+                <div className="px-roomy pt-roomy">
+                  <Alert variant="destructive" data-testid="run-diff-drawer-failed">
+                    <AlertTitle>变更详情读取失败</AlertTitle>
+                    <AlertDescription>
+                      读取这一行的代码改动时失败，暂时看不到 diff。常见原因是工作区正被其它进程占用，
+                      或文件权限不允许读取；处理之后点「重新读取」。
+                    </AlertDescription>
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      <Button size="sm" variant="outline" onClick={diffIndex.refresh}>
+                        重新读取
+                      </Button>
+                      <Collapsible>
+                        <CollapsibleTrigger className="text-sub text-muted-foreground underline underline-offset-4 hover:text-foreground">
+                          查看原始错误
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <p className="mt-2 font-mono text-sub break-all text-muted-foreground">
+                            {describeError(diffIndex.error)}
+                          </p>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </div>
+                  </Alert>
+                </div>
+              )
+            ) : (
+              <DiffView
+                // 列表给**累积**的那些文件，计数与截断信息仍取本页响应（它们是全局值）
+                index={{ ...diffIndex.index, files: diffFiles }}
+                dark={themeMode === 'dark'}
+                {...(diffFiles.length < diffIndex.index.total ? { onLoadMore: () => setDiffOffset(diffFiles.length) } : {})}
+                renderFileBody={(path) => (
+                  <DiffFileBody runId={runId} rowId={diffRowId ?? ''} path={path} dark={themeMode === 'dark'} />
+                )}
+              />
+            )}
           </div>
-        ) : (
-          <ScoreDetailView
-            // 抽屉里的**五格**全在 `score` 上（顶部那一段说的是**这一分**是谁打的、
-            // 花了多少）⇒ 这里只递 `score` 与它的评分表快照，**不再传候选行**——少一个能配错的来源
-            score={scoreDetail.score}
-            rubric={scoreDetail.rubric}
-            rawOpen={rawOpen}
-            // 二级抽屉只能开、由它自己关；这里的 `false` 就是「关掉了」这一个动作
-            onRawOpenChange={(next) => setRawRowId(next ? scoreRowId : null)}
-            // 「原始输出」那一组（口径见 ScoreJudgeOutputProps）：可见性已在 judgeOutputVisible
-            // 判过，这里只管折数据——错误折成中文（describeError）、三态交给视图
-            judgeOutput={
-              judgeOutputVisible
-                ? {
-                  state:
-                      judgeOutput.status === 'error'
-                        ? { status: 'error', error: judgeOutput.error }
-                        : judgeOutput.status === 'loading'
-                          ? { status: 'loading' }
-                          : { status: 'ready', data: judgeDiagnostics },
-                  errorText: judgeOutput.status === 'error' ? describeError(judgeOutput.error) : null,
-                  judging: judgeLive,
-                  liveError: judgeOutput.liveError,
-                  onRetry: judgeOutput.retry,
-                  open: judgeOutputOpen,
-                  onOpenChange: (next) => setJudgeOutputRowId(next ? scoreRowId : null),
-                }
-                : undefined
-            }
-          />
-        )}
-      </Drawer>
+        }
+        score={
+          <>
+            <div className="min-h-0 flex-1 overflow-auto px-roomy pb-roomy">
+              {scoreDetail === null ? (
+                <EmptyState title="这一行还没有评分" description="评分在智能体跑完之后进行；失败的行不会有分" />
+              ) : (
+                <ScoreDetailView
+                  // 抽屉里的**五格**全在 `score` 上（顶部那一段说的是**这一分**是谁打的、
+                  // 花了多少）⇒ 这里只递 `score` 与它的评分表快照，**不再传候选行**——少一个能配错的来源
+                  score={scoreDetail.score}
+                  rubric={scoreDetail.rubric}
+                  rawOpen={rawOpen}
+                  // 二级抽屉只能开、由它自己关；这里的 `false` 就是「关掉了」这一个动作
+                  onRawOpenChange={(next) => setRawRowId(next ? scoreRowId : null)}
+                  // 「原始输出」那一组（口径见 ScoreJudgeOutputProps）：可见性已在 judgeOutputVisible
+                  // 判过，这里只管折数据——错误折成中文（describeError）、三态交给视图
+                  judgeOutput={
+                    judgeOutputVisible
+                      ? {
+                        state:
+                            judgeOutput.status === 'error'
+                              ? { status: 'error', error: judgeOutput.error }
+                              : judgeOutput.status === 'loading'
+                                ? { status: 'loading' }
+                                : { status: 'ready', data: judgeDiagnostics },
+                        errorText: judgeOutput.status === 'error' ? describeError(judgeOutput.error) : null,
+                        judging: judgeLive,
+                        liveError: judgeOutput.liveError,
+                        onRetry: judgeOutput.retry,
+                        open: judgeOutputOpen,
+                        onOpenChange: (next) => setJudgeOutputRowId(next ? scoreRowId : null),
+                      }
+                      : undefined
+                  }
+                />
+              )}
+            </div>
+            {/*
+              「查看原始返回」与「原始输出 N 条」两个入口都在 **footer** 上：不占正文的高度、
+              也不随正文一起滚走；正文里既没有标题也没有按钮。
+              **没有分就没有「查看原始返回」**：那一格是空态「这一行还没有评分」，没有原文可看。
+              「原始输出」有自己的可见性判据（`judgeOutputVisible`：智能体评分的行常驻、评分进行中
+              也开、文本 API 与 running 期间没有）——两个按钮各判各的，footer 整段不渲染
+              才是「两个入口都没有」。
+            */}
+            {scoreDetail === null && !judgeOutputVisible ? null : (
+              <SheetFooter className="flex flex-row justify-end gap-2 border-t">
+                {scoreDetail !== null && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="score-raw-open"
+                    onClick={() => setRawRowId(scoreRowId)}
+                  >
+                    查看原始返回
+                  </Button>
+                )}
+                {judgeOutputVisible && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="score-judge-output-open"
+                    onClick={() => setJudgeOutputRowId(scoreRowId)}
+                  >
+                    {judgeOutputLabel}
+                  </Button>
+                )}
+              </SheetFooter>
+            )}
+          </>
+        }
+      />
 
       {/*
-        「排名」抽屉：第四个主抽屉，几何与上面三个同一份（`DRAWER_GEOMETRY`）——
+        「排名」抽屉：页面级的独立主抽屉，几何与行级详情共用同一份（`MAIN_DRAWER_STYLE`）——
         它比的是候选之间的名次，比评分详情更需要宽度，不该另立一档。
         数据全部来自**已在内存里的这一份 run 快照**（各行的 `score` + 轮级 `rubric`）：
         没有任何一次网络往返，也没有「详情按需再拉一次」这一步。
@@ -1181,59 +1380,63 @@ function RunsPage(): ReactNode {
         后者的轮级那一格数不出 N，会出现「有 0 行正在执行」这种自相矛盾的句子）。
         run 未知（首帧 / 快照没到）时整段不渲染：排名表没有「部分数据」可言，少一行就是错的名次。
 
-        **「产物总览」是从这里推出来的第二层**（与评分详情那两个二级抽屉同一模式）：
-        入口按钮在 `footer` 上、正文在 `ArtifactOverview` 里，开合态受控（住页面）。
+        **「产物总览」是从这里推出来的第二层**：
+        入口按钮在 footer 上、正文在 `ArtifactOverview` 里，开合态受控（住页面）。
         `ArtifactOverview` 必须留在本抽屉的**子树里**：它内部渲染的 `NestedDrawer` 靠
-        `parentContext` 把主抽屉推开，而那个 context 只有 React 树能带过去（portal 带不走）。
+        React 树把宿主的上下文带过去（portal 带不走）。
       */}
       {run !== undefined && (
-        <Drawer
-          title="排名"
-          placement="right"
-          {...DRAWER_GEOMETRY}
+        <Sheet
           open={drawer?.kind === 'rank'}
           // 关掉排名抽屉时把二级抽屉的开合一起收掉：重开时它不该自己弹出来
-          onClose={() => {
+          onOpenChange={(next) => {
+            if (next) return;
             setDrawer(null);
             setArtifactOpen(false);
           }}
-          // 关掉即卸载：再次打开要按**那一刻**的快照重算名次（分数还在 SSE 里变），
-          // 留着上一次的结点只会让「重新打开的排名」看起来没刷新
-          destroyOnHidden
-          /*
-            「产物总览」的入口：**至少有一份产物才出现**（扫不到就没有可总览的东西）。
-            读不到清单时置灰 + Tooltip 挂中文原因，而不是静默不出现——会自己冒出来的按钮，
-            「点了没反应」与「它压根不在」是最难自查的两种状态（与「排名」按钮的同一条口径）。
-            读取中 / 确实没有产物两种情况都不画 footer。
-          */
-          footer={
-            artifacts.index !== undefined && artifacts.index.total > 0 ? (
-              <Flex justify="flex-end">
-                <Button size="small" autoInsertSpace={false} data-testid="rank-artifacts-open" onClick={() => setArtifactOpen(true)}>
+        >
+          <SheetContent side="right" data-drawer="main" style={DRAWER_STYLE}>
+            <SheetHeader>
+              <SheetTitle>排名</SheetTitle>
+              <SheetDescription>候选之间的名次（与候选卡片共用同一份判据）</SheetDescription>
+            </SheetHeader>
+            <div className="min-h-0 flex-1 overflow-auto px-4 pb-4">
+              {/* 评分对比图：横向柱长 = 各候选总分，顺序取排名判据（与下表同源，不在这里再排一次）。
+                  没有出分候选时它自己显示「未采集」，不画空坐标系。 */}
+              <ScoreChart rows={orderForDisplay(run.rows)} />
+              <RankTable run={run} runningCount={liveRowIds.length} testResults={runTests.results} />
+            </div>
+            {/*
+              「产物总览」的入口：**至少有一份产物才出现**（扫不到就没有可总览的东西）。
+              读不到清单时置灰 + 浮层挂中文原因，而不是静默不出现——会自己冒出来的按钮，
+              「点了没反应」与「它压根不在」是最难自查的两种状态（与「排名」按钮的同一条口径）。
+              读取中 / 确实没有产物两种情况都不画 footer。
+            */}
+            {artifacts.index !== undefined && artifacts.index.total > 0 ? (
+              <SheetFooter className="flex flex-row justify-end gap-2 border-t">
+                <Button size="sm" variant="outline" data-testid="rank-artifacts-open" onClick={() => setArtifactOpen(true)}>
                   {ARTIFACT_OVERVIEW_LABEL}
                 </Button>
-              </Flex>
+              </SheetFooter>
             ) : artifacts.error !== null && artifacts.error !== undefined ? (
-              <Flex justify="flex-end">
-                <Tooltip title={`读不到产物清单：${describeError(artifacts.error)}`}>
-                  <Button size="small" autoInsertSpace={false} disabled>
+              <SheetFooter className="flex flex-row justify-end gap-2 border-t">
+                <Hint label={`读不到产物清单：${describeError(artifacts.error)}`}>
+                  <Button size="sm" variant="outline" disabled>
                     {ARTIFACT_OVERVIEW_LABEL}
                   </Button>
-                </Tooltip>
-              </Flex>
-            ) : null
-          }
-        >
-          <RankTable run={run} runningCount={liveRowIds.length} />
-          {/* 二级抽屉只渲染 portal，不占正文盒子：排在表格之后不影响它的高度链 */}
-          <ArtifactOverview
-            run={run}
-            index={artifacts.index}
-            open={artifactOpen}
-            onOpenChange={setArtifactOpen}
-            renderBody={({ rowId, name }) => <ArtifactFileBody runId={runId} rowId={rowId} name={name} />}
-          />
-        </Drawer>
+                </Hint>
+              </SheetFooter>
+            ) : null}
+            {/* 二级抽屉只渲染 portal，不占正文盒子：排在表格之后不影响它的高度链 */}
+            <ArtifactOverview
+              run={run}
+              index={artifacts.index}
+              open={artifactOpen}
+              onOpenChange={setArtifactOpen}
+              renderBody={({ rowId, name }) => <ArtifactFileBody runId={runId} rowId={rowId} name={name} />}
+            />
+          </SheetContent>
+        </Sheet>
       )}
     </>
   );

@@ -106,6 +106,29 @@ export {
 } from './provider';
 export { CANONICAL_EFFORT_LEVELS, intersectEfforts } from './effort';
 export {
+  TEST_FRAMEWORKS,
+  TEST_CASE_STATUSES,
+  TEST_FRAMEWORK_LABELS,
+  TestFrameworkSchema,
+  TestCaseStatusSchema,
+  TestCaseResultSchema,
+  TestSuiteResultSchema,
+  TestRunResultSchema,
+  RowTestSummarySchema,
+  RunTestResultsSchema,
+  detectTestFramework,
+  parseTestOutput,
+  testCommandOf,
+  type TestFramework,
+  type TestCaseStatus,
+  type TestCaseResult,
+  type TestSuiteResult,
+  type TestRunResult,
+  type TestParseResult,
+  type RowTestSummary,
+  type RunTestResults,
+} from './test-result';
+export {
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_FILE_NAME,
   SKILL_FILE_PATH_MAX_LENGTH,
@@ -184,6 +207,21 @@ export {
   type RepoValidateInput,
   type TestCase,
 } from './case';
+export {
+  CheckpointCapabilitySchema,
+  CheckpointModeSchema,
+  CheckpointRequestSchema,
+  CheckpointVoidSchema,
+  visibleMessages,
+  voidedBy,
+  voidedByAny,
+  withoutVoidedTotals,
+  type CheckpointCapability,
+  type CheckpointMode,
+  type CheckpointRecordRef,
+  type CheckpointRequest,
+  type CheckpointVoid,
+} from './checkpoint';
 export {
   CASE_SYNC_ACTIONS,
   CaseSyncActionSchema,

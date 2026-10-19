@@ -1,27 +1,45 @@
 'use client';
 
 /**
- * `task` 族的状态化清单面板：agent 自述的进度**当前状态**（不是一次调用的回显）。
+ * `task` 族的状态化清单面板 → **`Plan` 摘要行 + `Queue` 两段步骤**。
  *
  * 六条口径：
- *   · **计数与变化摘要都照数据层给的渲染，UI 一个都不自己算**：本组件看不到上一张清单，
+ *   · **计数与变化摘要照数据层给的渲染，UI 一个都不自己算**：本组件看不到上一张清单，
  *     跨轮比较它做不到，而数据层本来就有累积态；
  *   · **分母是四格之和**（含 `unknown`）：少了 `unknown` 那一格，含未知项的「3/5 完成」分母必错；
  *     分母为 0 时写「清单为空」——不是「0/0 完成」；
  *   · **`change === null` 表示「没有可比的上一张」**，与「三项都是 0」不是一回事：
  *     前者不表态，后者也不表态（一标题的「+0」没有信息量）；
- *   · 清单四态各有中文与色档，**`unknown` 用中性灰、绝不显示成成功**；
- *     `owner === null`（这家没有「指派」这个概念）**整格不画**，`owner === ''`（有概念但无人认领）
- *     显示「未指派」；`id === null` 时 id 与依赖都不画（`blockedBy` 的值就是 id，**不自己发号**）； * · **形态是两列的 small `Table`**：左列任务（文本 + owner + 依赖），
- *     右列状态，且**右列走列级 `align: 'right'`**（antd 把它落到单元格的内联 `textAlign`，
- *     不手写 CSS）；表头整条隐藏（`showHeader={false}`）⇒ 列**不写 `title`**：写了也不会上屏，
- *     只会让读的人以为有个列名。一行一件任务，读法是「有什么任务、它到哪一步了」；
- *   · **「本轮另有 N 次更新」是一行静态说明，不是折叠项**：本件没有第二份开合态可用
- *     （L0 一律不得自己持态），画一个点不开的箭头比写清楚这件事更糟。
+ *   · **形态是 Plan + Queue**：一条摘要行（`TraceCollapsibleTrigger`，进行中带 `status="running"`）
+ *     说清楚「几分钟前走到哪一步」；展开后步骤是 `TraceLine`，并按 Queue 分成两段——
+ *     「N 未完成」**常驻可见**、「N 已完成」**默认收起**。`unknown` 留在未完成那一段：
+ *     它既不能算完成、也不能被藏起来，行上如实写「状态未知」（状态词在行上，不靠颜色）；
+ *   · **开合一律受控**（分层纪律 (d)）：外层 `open` 由 `useAgentLogView` 下传（默认键只认
+ *     `panel.running` ⇒ 进行中展开、完成收起）；已完成那一段用**同一份折叠态的另一个键**
+ *     （`doneSectionKey(cardId)`，与 `|raw` 后缀同一手法）。组件自己一份 state 都不持；
+ *   · `owner === null`（这家没有「指派」这个概念）**整格不画**，`owner === ''`（有概念但无人认领）
+ *     显示「未指派」；`id === null` 时 id 与依赖都不画（`blockedBy` 的值就是 id，**不自己发号**）。
  */
-import { Collapse, Flex, Table, Tag, Typography, theme } from 'antd';
-import type { TableColumnsType } from 'antd';
+import {
+  CircleCheckIcon,
+  CircleDotIcon,
+  CircleHelpIcon,
+  CircleIcon,
+  ListChecksIcon,
+  ListTodoIcon,
+  RouteIcon,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '../../components/ui/trace';
 import { AgentRunStateTag } from './agent-run-state-tag';
 import { RawOutputPanel } from './raw-output-panel';
 import type { TaskPanel, TaskStep } from './types';
@@ -29,10 +47,16 @@ import { TASK_STEP_STATUS_LABELS } from './types';
 
 export interface TaskPanelCardProps {
   panel: TaskPanel;
+  /** 这张卡片的稳定 id（`renderBlockKey` 用的同一个）：已完成段的折叠键以它为前缀 */
+  cardId: string;
   /** 同一轮里更早的（未出面板的）task 调用次数 */
   earlierCount: number;
+  /** 摘要行（Plan）是否展开（**受控**） */
   open: boolean;
   onOpenChange(next: boolean): void;
+  /** 已完成那一段（Queue 第二段）是否展开。不给 = 收起；不给回调 = 点不动（只读） */
+  doneOpen?: boolean;
+  onDoneOpenChange?(next: boolean): void;
   /** 底部「原始结果」二级抽屉的开合（**受控透传**：L0 自己不持态） */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
@@ -47,26 +71,18 @@ export interface TaskPanelCardProps {
   missingReason?: string | null;
 }
 
-const PANEL_KEY = 'task-panel';
+/**
+ * 已完成段的折叠键。与 `agent-message-timeline` 的 `|raw` 后缀同一条手法：**同一份折叠态、
+ * 不同后缀的键**，不新增状态通道。导出是为了让注册表与组件用**同一个公式**（各写一遍必然漂移，
+ * 漂了的表现是「点开的已完成段自己合上」）。
+ */
+export function doneSectionKey(cardId: string): string {
+  return `${cardId}|done`;
+}
 
 /** 非空判定：契约里 `null` = 没采到，空串同样是「没有这句话」 */
 function hasText(value: string | null): value is string {
   return value !== null && value !== '';
-}
-
-/**
- * 清单四态 → `Tag` 色档。
- * **`unknown` 用中性灰**：它是「状态没采到」，不是「已完成」——涂绿就是把未知项算进了进度。
- */
-function stepColor(status: TaskStep['status']): 'default' | 'processing' | 'success' {
-  switch (status) {
-    case 'inProgress':
-      return 'processing';
-    case 'completed':
-      return 'success';
-    default:
-      return 'default';
-  }
 }
 
 /** 变化摘要：只给非 0 的分量；三项全 0 或没有上一张（`null`）时不给这一格 */
@@ -89,137 +105,162 @@ function changeSummary(change: TaskPanel['change']): string | null {
 }
 
 /**
- * 任务单元格：文本 +（这家有这个概念时）owner +（拿得到 id 时）依赖。
- * owner 与依赖**跟文本同格**：它们描述的是「这件事」，不是「它现在什么状态」——
- * 而状态列要窄且稳定（右对齐才看得出来是右边那一列）。
+ * 一行的图标：四态各一枚。`unknown` 用问号而不是对勾——图标不能把「不知道」说成「做完了」。
+ * 图标是装饰性的（`TraceIcon` 对读屏隐藏），状态词在行上的 `TraceDescription` 里。
  */
-function TaskCell({ step }: { step: TaskStep }): ReactNode {
-  return (
-    <Flex align="center" gap={4} wrap>
-      <Typography.Text>{step.subject}</Typography.Text>
-      {/* `null` = 这一家没有「指派」这个概念 ⇒ 整格不画；`''` = 有概念但当前无人认领 ⇒ 明说 */}
-      {step.owner !== null && <Tag>{step.owner === '' ? '未指派' : step.owner}</Tag>}
-      {/* 依赖的值就是 id：没有 id 时画出来的「依赖」会看起来解析成功了 */}
-      {step.id !== null && step.blockedBy !== null && step.blockedBy.length > 0 && (
-        <Tag>{`依赖 ${step.blockedBy.join('、')}`}</Tag>
-      )}
-    </Flex>
-  );
-}
-
-/** 状态单元格：四态 Tag（色档见 `stepColor`，`unknown` 是中性灰） */
-function StatusCell({ step }: { step: TaskStep }): ReactNode {
-  return <Tag color={stepColor(step.status)}>{TASK_STEP_STATUS_LABELS[step.status]}</Tag>;
+function statusIcon(status: TaskStep['status']): ReactNode {
+  switch (status) {
+    case 'inProgress':
+      return <CircleDotIcon />;
+    case 'completed':
+      return <CircleCheckIcon />;
+    case 'unknown':
+      return <CircleHelpIcon />;
+    default:
+      return <CircleIcon />;
+  }
 }
 
 /**
- * 两列定义放在组件外：它既不读 props 也不读 token。
- * **每列显式给 `key`**：不给 `key` 也不给 `dataIndex` 时，rc-table 退回内部占位键
- * （`getColumnsKey`：`key || dataIndex || INTERNAL_KEY_PREFIX`，重名再补 `_next`）——
- * 键就成了位置性的、读不出是哪一列，而它正是列宽测量缓存的键。
- * 表头是隐藏的，故两列都不写 `title`。
+ * 一条步骤。`TraceLine.status` 只表达「还在跑」与「还没开始」这两种与动效有关的状态：
+ *   · `inProgress` ⇒ `running`（标题 shimmer）；
+ *   · `pending` ⇒ `pending`（整行压淡）；
+ *   · `completed` / `unknown` ⇒ 不传 status（终态，且 `unknown` 不是「待办」的一种）。
+ * 状态词一律写进 `TraceDescription`，同时给 `data-step-status` 供结构断言（不靠颜色）。
  */
-const COLUMNS: TableColumnsType<TaskStep> = [
-  { key: 'subject', render: (_, step) => <TaskCell step={step} /> },
-  { key: 'status', align: 'right', render: (_, step) => <StatusCell step={step} /> },
-];
+function StepLine({ step }: { step: TaskStep }): ReactNode {
+  return (
+    <TraceLine
+      data-step-status={step.status}
+      status={step.status === 'inProgress' ? 'running' : step.status === 'pending' ? 'pending' : undefined}
+    >
+      <TraceIcon>{statusIcon(step.status)}</TraceIcon>
+      <TraceTitle>{step.subject}</TraceTitle>
+      {/* `null` = 这一家没有「指派」这个概念 ⇒ 整格不画；`''` = 有概念但当前无人认领 ⇒ 明说 */}
+      {step.owner !== null && <TraceDescription>{step.owner === '' ? '未指派' : step.owner}</TraceDescription>}
+      {/* 依赖的值就是 id：没有 id 时画出来的「依赖」会看起来解析成功了 */}
+      {step.id !== null && step.blockedBy !== null && step.blockedBy.length > 0 && (
+        <TraceDescription>{`依赖 ${step.blockedBy.join('、')}`}</TraceDescription>
+      )}
+      <TraceDescription>{TASK_STEP_STATUS_LABELS[step.status]}</TraceDescription>
+    </TraceLine>
+  );
+}
 
 export function TaskPanelCard({
   panel,
+  cardId,
   earlierCount,
   open,
   onOpenChange,
+  doneOpen = false,
+  onDoneOpenChange,
   rawOpen,
   onRawOpenChange,
   onRequestDiagnostics,
   missingReason = null,
 }: TaskPanelCardProps): ReactNode {
-  const { token } = theme.useToken();
   const { counts } = panel;
   // 分母含 `unknown`：含未知项的清单少了它，分母必然偏小
   const total = counts.pending + counts.inProgress + counts.completed + counts.unknown;
   const countText = total === 0 ? '清单为空' : `${counts.completed}/${total} 完成`;
+  // 两段的标题都用数据层的计数（不拿 `steps` 重数一遍：那会是第二份真源）
+  const unfinishedCount = counts.pending + counts.inProgress + counts.unknown;
   const change = changeSummary(panel.change);
 
-  const label = (
-    <Flex vertical>
-      <Flex align="center" gap={4} wrap>
-        <Typography.Text>计划清单</Typography.Text>
-        <Typography.Text type="secondary">{countText}</Typography.Text>
-        {change !== null && <Typography.Text type="secondary">{change}</Typography.Text>}
-        <AgentRunStateTag
-          running={panel.running}
-          hasResult={panel.result !== null}
-          // 原因由注册表从能力声明的 `toolResult` 那一维推出来（与工具组同一处推导、同一句话）
-          missingReason={missingReason}
-          since={panel.at}
-        />
-      </Flex>
-      {hasText(panel.note) && <Typography.Text type="secondary">{panel.note}</Typography.Text>}
-    </Flex>
-  );
+  const unfinished = panel.steps.filter((step) => step.status !== 'completed');
+  const done = panel.steps.filter((step) => step.status === 'completed');
 
   return (
-    <Collapse
-      destroyOnHidden
-      /**
-       * **紧凑档**：外层这一格就是「卡片」本身（问答卡片那边是 `Card size="small"`），
-       * 而 antd 中档折叠面板的标题上下各 12、正文上 16——比问答卡片的卡头（8）与卡体（12）松一档，
-       * 两张卡并排时标题的呼吸感明显不同。`size="small"` 把标题收到上下 8、正文收到 12，
-       * 与问答卡片同档（值由 antd 给，本件不覆盖任何内边距）。
-       */
-      size="small"
-      activeKey={open ? [PANEL_KEY] : []}
-      onChange={(keys) => onOpenChange(keys.length > 0)}
-      items={[
-        {
-          key: PANEL_KEY,
-          label,
-          children: (
-            <Flex vertical gap={4}>
-              {panel.steps.length === 0 ? (
-                // 空表与「没采到」必须分得开：这家明确报了一张空清单
-                <Typography.Text type="secondary">清单为空（这家报了空表）</Typography.Text>
-              ) : (
-                <Table<TaskStep>
-                  // 紧凑尺寸（本仓口径：执行日志里每个带 size 的组件都写死 small）
-                  size="small"
-                  // 表头整条隐藏：一共就两列，列名白占一行高度
-                  showHeader={false}
-                  // 一张清单最多十几行，分页在这一页没有意义（与 `score-detail-view` 同口径）
-                  pagination={false}
-                  // 一行的稳定键：`id` 拿不到时退回 `subject`（与改造前同一个键口径）。
-                  // `steps` 是只读数组，而 antd 的 `dataSource` 类型本来就收 `readonly T[]` ⇒ 不必再摊平一份
-                  rowKey={(step) => step.id ?? step.subject}
-                  dataSource={panel.steps}
-                  columns={COLUMNS}
+    <Trace data-testid="task-panel">
+      <TraceCollapsible open={open} onOpenChange={onOpenChange}>
+        <TraceCollapsibleTrigger>
+          {/* 摘要行也带状态：进行中就有 shimmer，不必展开才看得出「还在跑」 */}
+          <TraceLine status={panel.running ? 'running' : undefined}>
+            <TraceIcon>
+              <RouteIcon />
+            </TraceIcon>
+            <TraceTitle>计划清单</TraceTitle>
+            <TraceDescription>{countText}</TraceDescription>
+            {change !== null && <TraceDescription>{change}</TraceDescription>}
+            <AgentRunStateTag
+              running={panel.running}
+              hasResult={panel.result !== null}
+              // 原因由注册表从能力声明的 `toolResult` 那一维推出来（与工具组同一处推导、同一句话）
+              missingReason={missingReason}
+              since={panel.at}
+            />
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <div className="flex flex-col gap-2">
+            {hasText(panel.note) && <p className="text-sub">{panel.note}</p>}
+
+            {panel.steps.length === 0 ? (
+              // 空表与「没采到」必须分得开：这家明确报了一张空清单
+              <p className="text-sub">清单为空（这家报了空表）</p>
+            ) : (
+              <Trace>
+                {/* Queue 第一段：未完成。常驻可见——「还剩几件、哪几件」是展开后第一眼要看的东西 */}
+                {unfinished.length > 0 && (
+                  <>
+                    <TraceLine>
+                      <TraceIcon>
+                        <ListTodoIcon />
+                      </TraceIcon>
+                      <TraceTitle>{`${unfinishedCount} 未完成`}</TraceTitle>
+                    </TraceLine>
+                    {unfinished.map((step) => (
+                      <StepLine key={step.id ?? step.subject} step={step} />
+                    ))}
+                  </>
+                )}
+
+                {/* Queue 第二段：已完成。默认收起，键是 `${cardId}|done`（同一份折叠态） */}
+                {done.length > 0 && (
+                  <TraceCollapsible open={doneOpen} onOpenChange={onDoneOpenChange ?? (() => undefined)}>
+                    <TraceCollapsibleTrigger>
+                      <TraceLine>
+                        <TraceIcon>
+                          <ListChecksIcon />
+                        </TraceIcon>
+                        <TraceTitle>{`${counts.completed} 已完成`}</TraceTitle>
+                      </TraceLine>
+                    </TraceCollapsibleTrigger>
+                    <TraceCollapsibleContent>
+                      <Trace>
+                        {done.map((step) => (
+                          <StepLine key={step.id ?? step.subject} step={step} />
+                        ))}
+                      </Trace>
+                    </TraceCollapsibleContent>
+                  </TraceCollapsible>
+                )}
+              </Trace>
+            )}
+
+            {earlierCount > 0 && (
+              <p className="text-sub">
+                {`本轮另有 ${earlierCount} 次更新（这几次调用不出面板：整表语义下只有最后一次是有效状态）`}
+              </p>
+            )}
+
+            {/* 归一化是视图，原文才是事实；结果没到手时连入口都不画（摘要行已写过「结果未采集」） */}
+            {panel.result !== null && (
+              // 入口不自带容器（`raw-output-panel.tsx` 口径 7）；间距由这一层给，`mt-1` 把它与清单分开
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <RawOutputPanel
+                  source={{ kind: 'single', result: panel.result }}
+                  open={rawOpen}
+                  onOpenChange={onRawOpenChange}
+                  label="原始结果"
+                  onRetry={onRequestDiagnostics}
                 />
-              )}
-              {earlierCount > 0 && (
-                <Typography.Text type="secondary">
-                  {`本轮另有 ${earlierCount} 次更新（这几次调用不出面板：整表语义下只有最后一次是有效状态）`}
-                </Typography.Text>
-              )}
-              {/* 归一化是视图，原文才是事实；结果没到手时连入口都不画（标题已写过「结果未采集」） */}
-              {panel.result !== null && (
-                // 入口不自带容器（`raw-output-panel.tsx` 口径 7）：横排与间距由这一层给。
-                // **上边距单独给**：外面那一列 `gap={4}` 是「清单内部」的紧凑间距（表格与说明文字之间），
-                // 而这一格是「清单之后的一个动作」——按 4px 排会紧贴表格底边。
-                // 取 `marginXS`(8)：加上那个 4px 共 12，与问答卡片 footer 那一圈留白齐平
-                <Flex align="center" gap={8} wrap style={{ marginBlockStart: token.marginXS }}>
-                  <RawOutputPanel
-                    source={{ kind: 'single', result: panel.result }}
-                    open={rawOpen}
-                    onOpenChange={onRawOpenChange}
-                    label="原始结果"
-                    onRetry={onRequestDiagnostics}
-                  />
-                </Flex>
-              )}
-            </Flex>
-          ),
-        },
-      ]}
-    />
+              </div>
+            )}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }

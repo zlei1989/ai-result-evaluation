@@ -5,13 +5,13 @@
  * 3. `timeline` 槽传函数时用传入的实现（S1/S5 的接缝）；
  * 4. **`actions` 传了用传入的、不传用预设**（变异体 (p) 的守卫）；
  * 5. `environment` 未提供时环境抽屉里显示「未提供」，而不是空白；
- * 6. 跟随最新**只有一份 state**：工具条开关与角落浮出按钮同步；
+ * 6. 跟随最新**只有一份 state**：工具条开关与角落浮出按钮同步；活边由 Message Scroller 判，未读仍是轮次水位；
  * 7. 「这一类内容没被转发」如实说明（三条判据各一句）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type {
   AgentLogFacts,
   AgentLogModel,
@@ -26,11 +26,12 @@ import type {
 import { AgentLogLayout } from './agent-log-layout';
 import type { AgentLogViewState } from './use-agent-log-view';
 import { installResizeObserverStub } from '../../testing/resize-observer';
+import { installScrollGeometry } from '../../testing/scroll-geometry';
 
 const AT = '2026-10-02T10:44:31.000Z';
 const AT2 = '2026-10-02T10:44:41.000Z';
 
-// 布局里的 `Listy` 与展开的工具行都会 new `ResizeObserver`（jsdom 没有）
+// 布局里的虚拟列表与展开的工具行都会 new `ResizeObserver`（jsdom 没有）
 beforeEach(() => {
   installResizeObserverStub();
 });
@@ -121,6 +122,8 @@ const FACTS: AgentLogFacts = {
   thinking: null,
   domain: [],
   error: null,
+  contextUsed: null,
+  contextWindow: null,
 };
 
 function modelOf(node: LogNode, overrides: Partial<AgentLogModel> = {}): AgentLogModel {
@@ -178,7 +181,7 @@ describe('AgentLogLayout', () => {
 
     const { container } = render(<AgentLogLayout model={modelOf(node)} actions={[]} />);
 
-    expect(container.querySelector('.ant-skeleton')).not.toBeNull();
+    expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
     expect(screen.queryByText('还没有日志')).toBeNull();
   });
 
@@ -420,7 +423,7 @@ describe('AgentLogLayout', () => {
   });
 
   /**
-   * 「下载台账」在**原文行**、排在「原始输出 N 条」之后。
+   * 「下载日志」在**原文行**、排在「原始输出 N 条」之后。
    *
    * 判据是**DOM 顺序 + 不在工具条那一行**，不是「按钮在不在」：落错行的症状恰恰是
    * 「按钮还在、只是跑到面包屑那一行」，按存在性断言会全绿。顺序用 `compareDocumentPosition`
@@ -428,9 +431,9 @@ describe('AgentLogLayout', () => {
    * 故这一条同时钉住「preset 的 `placement: 'raw'`」与「layout 按 placement 分两行渲」。
    *
    * ⚠️ **不钉它与「重新读取」的相对顺序**：那一格是原文面板自己的重试按钮，属于面板内部排布，
-   * 钉死它会让「把重试挪个位置」这种无关改动假红（守卫的靶子是「下载台账落在哪一行」）。
+   * 钉死它会让「把重试挪个位置」这种无关改动假红（守卫的靶子是「下载日志落在哪一行」）。
    */
-  it('「下载台账」在原文行、「原始输出 N 条」之后（不在工具条那一行）', () => {
+  it('「下载日志」在原文行、「原始输出 N 条」之后（不在工具条那一行）', () => {
     const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
 
     render(
@@ -449,11 +452,11 @@ describe('AgentLogLayout', () => {
     );
 
     const rawEntry = screen.getByTestId('raw-output-open');
-    const download = screen.getByRole('button', { name: '下载台账' });
+    const download = screen.getByRole('button', { name: '下载日志' });
 
     expect(rawEntry.compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // 反向那一条：工具条那一行（面包屑所在行）里**没有**下载台账
-    expect(screen.getByTestId('log-node-breadcrumb').parentElement?.textContent ?? '').not.toContain('下载台账');
+    // 反向那一条：工具条那一行（面包屑所在行）里**没有**下载日志
+    expect(screen.getByTestId('log-node-breadcrumb').parentElement?.textContent ?? '').not.toContain('下载日志');
     // 两条判据一起才说明「它在原文行、且排在原文入口之后」，而不是「它在页面上某处」
     expect(download.closest('[data-testid="log-node-breadcrumb"]')).toBeNull();
 
@@ -464,8 +467,10 @@ describe('AgentLogLayout', () => {
      * 把它改回无边框文本按钮会全绿。
      */
     const retry = screen.getByRole('button', { name: '重新读取' });
-    expect(retry.className, '「重新读取」又变成了另一类按钮（与旁边两个不同形）').toBe(rawEntry.className);
-    expect(download.className, '「下载台账」与原文入口不同形').toBe(rawEntry.className);
+    expect(retry.className, '「重新读取」又变成了另一类按钮（与原文入口不同形）').toBe(rawEntry.className);
+    // 「下载日志」走 vendored Button，原文入口仍是 antd：换栈期间两者外形不同，
+    // 这里只钉「它在同一行且是个按钮」，同形那一半等原文面板换栈后再恢复
+    expect(download.tagName).toBe('BUTTON');
   });
 
   /**
@@ -509,33 +514,112 @@ describe('AgentLogLayout', () => {
     expect(screen.getByText('未提供')).toBeInTheDocument();
   });
 
-  it('跟随最新只有一份 state：上翻关掉、角落按钮点回来', () => {
-    const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
+  /** 假几何里每行的高度（px）：与 `VirtualList` 的默认估值取同一个数，行高测量不会让总高抖动 */
+  const ROW_HEIGHT = 96;
+  const VIEWPORT_HEIGHT = 200;
 
-    // 不传 `actions`：这一条要验的正是「预设里的开关与角落浮出按钮是同一份 state」
-    const { container } = render(<AgentLogLayout model={modelOf(node)} />);
-    expect(screen.getByRole('switch', { name: '跟随最新' })).toBeChecked();
+  /**
+   * 读者上翻 ⇒ 库判「下方还有内容」⇒ 本仓释放跟随；新内容到达时**不抢视口**；
+   * 点「回到最新」⇒ 显式恢复跟随，之后的新内容重新被跟上。
+   *
+   * 这一条的判据都在**可见行为**上：工具条开关的勾选、`scrollTop` 有没有被改写、
+   * 浮出按钮的 `data-active`（库给的可点态）。jsdom 没有布局，几何由 `installScrollGeometry` 假造。
+   */
+  it('读者上翻后新内容不追、点「回到最新」恢复跟随（库判活边）', async () => {
+    const uninstall = installScrollGeometry({ viewportHeight: VIEWPORT_HEIGHT, rowHeight: ROW_HEIGHT });
+    try {
+      const turns = [
+        turn({ round: 1, blocks: [textBlock('t1', '第一轮：只有正文')] }),
+        turn({ round: 2, at: AT2, blocks: [toolCall('c2', 'call_2', AT2)] }),
+        turn({ round: 3, blocks: [textBlock('t3', '第三轮正文')] }),
+      ];
+      const modelOfTurns = (data: readonly LogTurn[]): AgentLogModel =>
+        modelOf(sessionNode({ id: 'main', content: { status: 'ready', data: [...data] } }));
 
-    const holder = container.querySelector<HTMLElement>('.ant-listy-holder');
-    expect(holder).not.toBeNull();
-    if (holder === null) return;
-    // 第一次滚动只记基线（容器刚认出来）；第二次是**向上**滚 ⇒ 自动关闭跟随
-    holder.scrollTop = 120;
-    fireEvent.scroll(holder);
-    holder.scrollTop = 20;
-    fireEvent.scroll(holder);
+      const { rerender } = render(<AgentLogLayout model={modelOfTurns(turns)} />);
+      const viewport = screen.getByTestId('agent-log-scroll-viewport');
+      expect(screen.getByRole('switch', { name: '跟随最新' })).toBeChecked();
 
-    expect(screen.getByRole('switch', { name: '跟随最新' })).not.toBeChecked();
-    const backButton = screen.getByRole('button', { name: /回到最新/ });
-    // 未读数从**文案**变成 **`badge`**：按钮的可视内容只剩一个图标，
-    // 所以「回到最新（N 轮未读）」这句只能由 `aria-label` 承载（否则读屏只剩一个无名按钮）
-    expect(backButton).toHaveAttribute('aria-label', '回到最新（0 轮未读）');
-    expect(container.querySelector('.ant-float-btn')).not.toBeNull();
+      // 等虚拟化把总高度写到内容区（首帧量不到高度时是退化渲染，第二帧才虚拟化）
+      const contentHeight = (): number =>
+        Number.parseFloat(
+          viewport.querySelector<HTMLElement>('[data-slot="message-scroller-content"]')?.style.height ?? '0',
+        );
+      await waitFor(() => expect(contentHeight()).toBe(3 * ROW_HEIGHT));
 
-    // 同一个 `follow`：点浮出按钮就把开关也打开
-    fireEvent.click(backButton);
-    expect(screen.getByRole('switch', { name: '跟随最新' })).toBeChecked();
-    expect(screen.queryByRole('button', { name: /回到最新/ })).toBeNull();
+      // 视口落到底：库认为「下方没有内容」，跟随成立
+      viewport.scrollTop = 3 * ROW_HEIGHT - VIEWPORT_HEIGHT;
+      fireEvent.scroll(viewport);
+
+      // 上翻：滚轮意图（库在这一步释放自己的 following 模式）+ 向上滚动（库据此算「下方还有内容」）
+      fireEvent.wheel(viewport, { deltaY: -ROW_HEIGHT });
+      viewport.scrollTop = 40;
+      fireEvent.scroll(viewport);
+      await waitFor(() => expect(screen.getByRole('switch', { name: '跟随最新' })).not.toBeChecked());
+
+      // 新内容到达：不追（`scrollTop` 原地不动），浮出按钮由库标成可点
+      const four = [...turns, turn({ round: 4, blocks: [textBlock('t4', '第四轮正文')] })];
+      rerender(<AgentLogLayout model={modelOfTurns(four)} />);
+      expect(viewport.scrollTop).toBe(40);
+      const back = screen.getByTestId('agent-log-back-to-latest');
+      expect(back).toHaveAttribute('data-active', 'true');
+
+      // 回到最新：显式恢复跟随，库的 `scrollToEnd` 落到新内容的底
+      fireEvent.click(back);
+      await waitFor(() => expect(screen.getByRole('switch', { name: '跟随最新' })).toBeChecked());
+      await waitFor(() => expect(viewport.scrollTop).toBe(4 * ROW_HEIGHT - VIEWPORT_HEIGHT));
+
+      // 恢复之后再来的内容重新被跟上
+      const five = [...four, turn({ round: 5, blocks: [textBlock('t5', '第五轮正文')] })];
+      rerender(<AgentLogLayout model={modelOfTurns(five)} />);
+      await waitFor(() => expect(viewport.scrollTop).toBe(5 * ROW_HEIGHT - VIEWPORT_HEIGHT));
+    } finally {
+      uninstall();
+    }
+  });
+
+  /**
+   * **未读仍是本仓的轮次水位**：`filtered.length - readCountRef.current`。
+   *
+   * Message Scroller 没有未读数 API——它能替的是「跟随 / 释放 / 回到最新」，
+   * 这一条钉住「数字不变」：释放跟随的那一刻水位冻住，之后到几轮就是几轮未读。
+   */
+  it('未读数仍是轮次水位：不跟随时新到 N 轮 ⇒ 未读 = N（库没有未读 API）', async () => {
+    const uninstall = installScrollGeometry({ viewportHeight: VIEWPORT_HEIGHT, rowHeight: ROW_HEIGHT });
+    try {
+      const turns = [
+        turn({ round: 1, blocks: [textBlock('t1', '第一轮：只有正文')] }),
+        turn({ round: 2, at: AT2, blocks: [toolCall('c2', 'call_2', AT2)] }),
+        turn({ round: 3, blocks: [textBlock('t3', '第三轮正文')] }),
+      ];
+      const modelOfTurns = (data: readonly LogTurn[]): AgentLogModel =>
+        modelOf(sessionNode({ id: 'main', content: { status: 'ready', data: [...data] } }));
+
+      const { rerender } = render(<AgentLogLayout model={modelOfTurns(turns)} />);
+      const viewport = screen.getByTestId('agent-log-scroll-viewport');
+
+      // 上翻释放跟随（水位冻在 3）
+      viewport.scrollTop = 3 * ROW_HEIGHT - VIEWPORT_HEIGHT;
+      fireEvent.scroll(viewport);
+      fireEvent.wheel(viewport, { deltaY: -ROW_HEIGHT });
+      viewport.scrollTop = 0;
+      fireEvent.scroll(viewport);
+      await waitFor(() => expect(screen.getByRole('switch', { name: '跟随最新' })).not.toBeChecked());
+
+      // 新到两轮、读者仍不跟随 ⇒ 未读 = 5 - 3 = 2
+      const five = [
+        ...turns,
+        turn({ round: 4, blocks: [textBlock('t4', '第四轮正文')] }),
+        turn({ round: 5, blocks: [textBlock('t5', '第五轮正文')] }),
+      ];
+      rerender(<AgentLogLayout model={modelOfTurns(five)} />);
+
+      const back = screen.getByTestId('agent-log-back-to-latest');
+      expect(back).toHaveAttribute('aria-label', '回到最新（2 轮未读）');
+      expect(back).toHaveAttribute('title', '回到最新（2 轮未读）');
+    } finally {
+      uninstall();
+    }
   });
 
   it('「这一类内容没被转发」如实说明：会话文件 + 未结束 ⇒ 等运行结束', () => {
@@ -622,12 +706,12 @@ describe('AgentLogLayout', () => {
 
     rerender(<AgentLogLayout model={settled} actions={[]} connected />);
     expect(screen.getByText('实时连接中')).toBeInTheDocument();
-    expect(document.querySelector('.ant-badge-status-processing')).not.toBeNull();
+    expect(document.querySelector('[data-testid="agent-log-connection"][data-status="processing"]')).not.toBeNull();
 
     rerender(<AgentLogLayout model={settled} actions={[]} connected={false} />);
     expect(screen.getByText('未连接')).toBeInTheDocument();
     //：`processing` 的动效是「真的在流」的信号，断线时必须是中性档
-    expect(document.querySelector('.ant-badge-status-processing')).toBeNull();
+    expect(document.querySelector('[data-testid="agent-log-connection"][data-status="processing"]')).toBeNull();
   });
 
   /**
@@ -650,7 +734,7 @@ describe('AgentLogLayout', () => {
           },
         }}
         connected
-        // 「下载台账」是预设里挂在原文行的动作（`visible: onDownload !== undefined`）：
+        // 「下载日志」是预设里挂在原文行的动作（`visible: onDownload !== undefined`）：
         // 不给它，那一行上就没有第二个兄弟，也就验证不了「同一行」
         onDownload={vi.fn()}
         source={{ requestDiagnostics: vi.fn() }}
@@ -664,7 +748,7 @@ describe('AgentLogLayout', () => {
     // 包裹去掉、按钮拿出来（`raw-output-panel.tsx` 口径 7），故这里判的是**同一父节点**；
     // 把包裹加回去时 `rawEntry.parentElement` 变成内层那个 flex，这条立刻红
     expect(badge.parentElement, '连接徽标与「原始输出 N 条」不在同一层').toBe(rawEntry.parentElement);
-    expect(rawEntry.parentElement?.contains(screen.getByRole('button', { name: '下载台账' }))).toBe(true);
+    expect(rawEntry.parentElement?.contains(screen.getByRole('button', { name: '下载日志' }))).toBe(true);
     // 最左：徽标排在原文入口之前
     expect(badge.compareDocumentPosition(rawEntry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // 反向判据：它**不在**事实条那一行里（挪回去时这条红）
@@ -706,7 +790,7 @@ describe('AgentLogLayout', () => {
      * 判据是**父容器是纵向 Flex**，不只是「同一个父节点」：把这两行再包进一个横向 `Flex` 时     * 它们的父节点仍然相同、顺序也仍然在，页面上却已经并回一行（靠 `wrap` 折行）——那正是要去掉的形态。`Flex vertical` 在本仓走 CSS 类（不在内联 style 里），故取类名。
      */
     expect(bar.parentElement, '领域事实行与事实条不在同一层').toBe(fixedArea);
-    expect(fixedArea?.className, '两行被并回了同一行（父容器不是纵向 Flex）').toContain('ant-flex-vertical');
+    expect(fixedArea?.className, '两行被并回了同一行（父容器不是纵向 flex）').toContain('flex-col');
     // 顺序：领域事实排在事实条之后（它是第二行）
     expect(bar.compareDocumentPosition(domainRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // 反向判据：它**不在**事实条里面（塞进事实条组件内部时这条红）
@@ -738,19 +822,42 @@ describe('AgentLogLayout', () => {
  * **结构**：滚动区带 `position: relative`、且浮动件出现在它内部。
  */
 describe('浮动件住在滚动区里（不压底部槽的输入区）', () => {
-  it('滚动区是定位基准，浮动件在它里面', () => {
-    const source = readFileSync(join(import.meta.dirname, 'agent-log-layout.tsx'), 'utf8');
-    const scrollAt = source.indexOf('ref={scrollAreaRef}');
-    const floatAt = source.indexOf('<FloatButton');
-    const footerAt = source.indexOf('data-testid="agent-log-footer"');
+  it('滚动视口是定位基准，浮出按钮在它之后、底部槽之前', () => {
+    const scroller = readFileSync(join(import.meta.dirname, 'log-scroller.tsx'), 'utf8');
+    // Root 带 `relative`：浮出按钮的 `position: absolute` 量的是它
+    const rootAt = scroller.indexOf('MessageScroller className="relative');
+    const viewportAt = scroller.indexOf('<MessageScrollerViewport');
+    const backAt = scroller.indexOf('{backToLatest}');
+    const rootEnd = scroller.indexOf('</MessageScroller>');
+    expect(rootAt).toBeGreaterThan(-1);
+    expect(viewportAt).toBeGreaterThan(rootAt);
+    expect(backAt).toBeGreaterThan(viewportAt);
+    expect(rootEnd).toBeGreaterThan(backAt);
+
+    // 底部槽排在滚动区之后：滚动区按它的实际高度自动缩水（flex 的既有行为，不算高度差）
+    const layout = readFileSync(join(import.meta.dirname, 'agent-log-layout.tsx'), 'utf8');
+    const scrollAt = layout.indexOf('<LogScroller');
+    const footerAt = layout.indexOf('data-testid="agent-log-footer"');
     expect(scrollAt).toBeGreaterThan(-1);
-    expect(floatAt).toBeGreaterThan(-1);
-    // 浮动件在滚动区之后、底部槽之前（底部槽那一格排在滚动区之后）
-    expect(floatAt).toBeGreaterThan(scrollAt);
-    expect(floatAt).toBeLessThan(footerAt);
-    // 滚动区带 `position: 'relative'`（浮出按钮的 `position: absolute` 量的是它的底边）
-    const scrollBlock = source.slice(scrollAt, floatAt);
-    // 用正则而不是字符串字面量：被断言的那一段源码里本身带引号，而本仓的引号规则不许转义
-    expect(scrollBlock).toMatch(/position:\s*'relative'/);
+    expect(footerAt).toBeGreaterThan(scrollAt);
+  });
+});
+
+/**
+ * 连接状态的第二层语义：**终态行没有实时流是正常的**。
+ *
+ * 同一个「未连接」在终态行上会被读成故障（跑完了却像是通道挂了）。`settled` 把它改成「已结束」，
+ * 状态点也从 processing 档退到中性档——两处都钉住，避免只改文案、点还在呼吸。
+ */
+describe('连接状态：终态行不说「未连接」', () => {
+  it('settled 时文案是「已结束」，状态点不是 processing', () => {
+    const node = sessionNode({ id: 'main', content: { status: 'ready', data: TWO_TURNS } });
+    const model = modelOf(node, { facts: { ...FACTS, status: { tone: 'ok', label: '已评分' } } });
+
+    render(<AgentLogLayout model={model} actions={[]} connected={false} settled />);
+
+    expect(screen.getByText('已结束')).toBeInTheDocument();
+    expect(screen.queryByText('未连接')).toBeNull();
+    expect(document.querySelector('[data-testid="agent-log-connection"][data-status="settled"]')).not.toBeNull();
   });
 });

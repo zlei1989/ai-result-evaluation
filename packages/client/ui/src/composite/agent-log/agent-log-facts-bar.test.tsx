@@ -14,7 +14,7 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentLogFacts } from './types';
-import { AgentLogFactsBar, durationMsOf } from './agent-log-facts-bar';
+import { AgentLogFactsBar, contextMeterOf, durationMsOf } from './agent-log-facts-bar';
 
 const START = '2026-10-02T10:00:00.000Z';
 const END = '2026-10-02T10:03:00.000Z';
@@ -29,6 +29,9 @@ function facts(overrides: Partial<AgentLogFacts> = {}): AgentLogFacts {
     thinking: null,
     domain: [],
     error: null,
+    // 默认不给占用/窗口：两者都是采到的读数，夹具不替它们编数
+    contextUsed: null,
+    contextWindow: null,
     ...overrides,
   };
 }
@@ -186,12 +189,12 @@ describe('AgentLogFactsBar', () => {
       <AgentLogFactsBar facts={facts({ status: { tone: 'running', label: '执行中' } })} waitingSince={null} />,
     );
     expect(screen.getByText('执行中')).toBeInTheDocument();
-    expect(container.querySelector('.ant-badge-status-processing')).not.toBeNull();
+    expect(container.querySelector('[data-status="running"]')).not.toBeNull();
 
     rerender(<AgentLogFactsBar facts={facts({ status: { tone: 'failed', label: '专有名词：炸了' } })} waitingSince={null} />);
     // 文案是数据层的词汇，组件不翻译、不改写
     expect(screen.getByText('专有名词：炸了')).toBeInTheDocument();
-    expect(container.querySelector('.ant-badge-status-processing')).toBeNull();
+    expect(container.querySelector('[data-status="running"]')).toBeNull();
   });
 
   it('「等待答复」徽标只在真的在等时出现', () => {
@@ -223,5 +226,61 @@ describe('AgentLogFactsBar', () => {
 
     rerender(<AgentLogFactsBar facts={facts()} waitingSince={null} contentTruncatedReason={null} />);
     expect(screen.queryByTestId('agent-log-facts-truncated')).toBeNull();
+  });
+});
+
+/**
+ * 上下文用量（`Context`）：**这一行吃了窗口的多少**。
+ *
+ * 与 `context-window-tag` 是两件事：那一格说的是「模型容量有多大」（创建表单里的 `400K`），
+ * 这里说的是「这一行已经用了多少」。两条纪律：
+ *   · 用量只从这一行的 token 与缓存数取（`input + cached` = 这一次送进模型的 prompt 总量），
+ *     不猜、不补 0；
+ *   · **某一格缺数据时不给比值**——没有上限就没有百分比，绝不显示 `0%`（0% 是一个读得到的读数）。
+ */
+describe('上下文用量（用量 / 上限 + Progress）', () => {
+  it('占用取自 `contextUsed`（最后一条主会话读数），不拿整行累计的 `tokens` 求和', () => {
+    // `tokens` 是账单：218 + 8,832 = 9,050（整行累计）。占用是 4,000 ⇒ 40%，不是 91%
+    render(
+      <AgentLogFactsBar facts={facts({ contextUsed: 4_000, contextWindow: 10_000 })} waitingSince={null} />,
+    );
+
+    const cell = screen.getByTestId('agent-log-facts-context');
+    expect(cell).toHaveTextContent('40%');
+    expect(cell).toHaveTextContent('4,000 / 10,000 tok');
+    // 上限是已知的：不该再出现「未采集」那一档
+    expect(cell).not.toHaveTextContent('未采集');
+    expect(cell.querySelector('[data-slot="progress"]')).not.toBeNull();
+  });
+
+  it('★ 缺上限时显示「上限未采集」，不画进度条、更不显示 0%', () => {
+    render(<AgentLogFactsBar facts={facts({ contextUsed: 4_000, contextWindow: null })} waitingSince={null} />);
+
+    const cell = screen.getByTestId('agent-log-facts-context');
+    expect(cell).toHaveTextContent('上下文上限未采集');
+    expect(cell).toHaveTextContent('4,000 tok');
+    // 核心：没有上限就没有百分比，0% 会被读成「真的用了 0」
+    expect(cell).not.toHaveTextContent('0%');
+    expect(cell.querySelector('[data-slot="progress"]')).toBeNull();
+  });
+
+  it('没有占用读数时整格说「上下文未采集」（不是 0 tok / 0%）', () => {
+    render(<AgentLogFactsBar facts={facts({ contextUsed: null, contextWindow: 10_000 })} waitingSince={null} />);
+
+    const cell = screen.getByTestId('agent-log-facts-context');
+    expect(cell).toHaveTextContent('上下文未采集');
+    expect(cell).not.toHaveTextContent('0%');
+    expect(cell.querySelector('[data-slot="progress"]')).toBeNull();
+  });
+
+  it('contextMeterOf：脏值（负数 / 非有限数）按「未采集」处理，不返回 NaN 或负百分比', () => {
+    expect(contextMeterOf(facts({ contextUsed: -1, contextWindow: 100 }))).toEqual({ state: 'no-usage' });
+    expect(contextMeterOf(facts({ contextUsed: 3, contextWindow: 0 }))).toEqual({ state: 'no-limit', used: 3 });
+    expect(contextMeterOf(facts({ contextUsed: 3, contextWindow: 6 }))).toEqual({
+      state: 'ready',
+      used: 3,
+      limit: 6,
+      percent: 50,
+    });
   });
 });

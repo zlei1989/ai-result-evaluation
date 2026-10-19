@@ -35,7 +35,7 @@ export const INJECTION_BOUNDARY_LABELS: Record<InjectionBoundary, string> = {
 /** 四态的界面呈现：一句短标签 + 一句说清「它现在在哪、还能不能要回来」的话 */
 export interface InjectStatePresentation {
   label: string;
-  /** antd `Tag` 的颜色档（`default` = 不给颜色） */
+  /** 语义色的颜色档（`default` = 不给颜色） */
   color: 'blue' | 'cyan' | 'default';
   /**
    * 悬停时那句人话。**每一态都不许把它说成别的态**——尤其 `queued`：
@@ -73,7 +73,8 @@ export const INJECT_STATE_PRESENTATION: Record<InjectMessageState, InjectStatePr
  *
  * 跳过而不是画一个灰行：`gone` 是终态，把它画成「还在等」的人话就是界面说谎；
  * 而它为什么消失（`timed-out` / `discarded` / `retracted`）已经由行级事件与账本说过一次，
- * 队列区再画一遍只会多一个会过期的地方。
+ * 队列区再画一遍只会多一个会过期的地方。词表里仍然保留它那句「已从队列消失」——
+ * 那回答的是「它为什么没了」，不是「它还在排队」。
  */
 export function visibleInjectMessages(messages: readonly InjectMessage[]): readonly InjectMessage[] {
   return messages.filter((message) => message.state !== 'gone');
@@ -242,7 +243,7 @@ export function refillNoticeOf(message: InjectMessage): string | null {
  * 草稿里的一份附件（**界面这一侧**的形状）。
  *
  * 与契约的 `InjectAttachment` 差三格，都是「这一刻在界面上怎么样」而不是「盘上是什么」：
- *   · `uid`——X 的清单按它认条目（同一份文件重复选两次是两条）；
+ *   · `uid`——清单按它认条目（同一份文件选两次是两条；由草稿状态机在选文件时铸）；
  *   · `name`——显示名（用户在系统选择器里看到的那个名字）；
  *   · `status`——`uploading`（正在落盘）/ `done`（已有路径）/ `error`（没落成）。
  *
@@ -319,26 +320,3 @@ export function newInjectMessageId(): string {
  */
 export const INJECT_QUEUE_HINT =
   '发出去先排队：智能体在下一次可投递的通知边界取件，而「排队」那一条要等本轮收完才投递 —— 发出去不等于立刻到。';
-
-/**
- * X 的文件清单 → 这一轮**新选进来**的那几份原始文件。
- *
- * 三处必须这样写：
- *   · 只认 `originFileObj`（antd 的 `file2Obj` 把原始 `File` 挂在这一格上）：刚点选那一份的
- *     `file` 字段是 antd 为「不真上传」造的一个克隆，它上面**没有**原始文件；
- *   · 按 `uid` 排重：触发态那个 `Attachments` 的清单是累积的（它的 `items` 不归我们控制），
- *     不去重就会把同一份文件重复上传，附件目录里出现两份；
- *   · 取不到 `File` 的条目**跳过**（而不是抛）：它可能是拖拽失败留下的空壳。
- */
-export function pickedFiles(
-  items: readonly { uid: string; originFileObj?: unknown }[],
-  seen: ReadonlySet<string>,
-): { uid: string; file: File }[] {
-  const picked: { uid: string; file: File }[] = [];
-  for (const item of items) {
-    if (seen.has(item.uid)) continue;
-    if (!(item.originFileObj instanceof File)) continue;
-    picked.push({ uid: item.uid, file: item.originFileObj });
-  }
-  return picked;
-}

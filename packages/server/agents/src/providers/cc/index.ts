@@ -568,6 +568,24 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        */
       ...(input.resume === undefined ? {} : { resume: input.resume.sessionId }),
       /**
+       * **回到某一轮**：`resumeSessionAt` 只续到某条 chain entry（含它），`resumeDropsTurn` 声明
+       * 被丢掉的那一轮供 CLI 校验（不匹配即拒绝）。
+       *
+       * 三条硬边界：
+       *   · **只在 headless 道生效**（print-mode / Agent SDK / ProcessTransport）：interactive
+       *     `claude --resume` 与后台任务 boot **静默忽略**这一对参数——不截断、不报错也不失败。
+       *     本仓走 headless，故这段注释是「换 boot 通道时唯一的警报」；
+       *   · `dropFrom` 为 `null` 时**只传 `resumeSessionAt`**：`resumeDropsTurn` 的语义是
+       *     「声明被丢掉的是哪一轮」，没有那一格就不声明（CLI 退回不校验的截断行为）；
+       *   · `fork` 缺席时**这一整块不出现**：既有的 `resume` 行为逐字不变（零回归的判据）。
+       */
+      ...(input.fork === undefined
+        ? {}
+        : {
+          resumeSessionAt: input.fork.keepAt,
+          ...(input.fork.dropFrom === null ? {} : { resumeDropsTurn: input.fork.dropFrom }),
+        }),
+      /**
        * 只读档的读放行范围：`dontAsk` 只预授权**工作目录内**的读，执行过程记录
        * （`events.jsonl` / `messages.jsonl`）落在 cwd 之外时需要 `--add-dir` 扩出去。
        * ⚠️ 这一格**只认目录**：文件项由 `additionalDirectoriesFor` 换算成父目录（理由与真机四臂
@@ -1404,6 +1422,35 @@ export const claudeCodeProvider: AgentProvider = {
         '续接与注入是两件事：`resume` 之后的追问天然落在 `idle` 档，`round` 只活在「同一条命」里（本进程、`result` 未到）',
         '续接只用 `resume`（按 id 指名道姓），**不用 `continue`**（取当前目录最近一条）：重跑复用同一个 cwd 时会静默续上一次尝试；会话身份只由 `CLAUDE_CONFIG_DIR` 定位——**cwd 不是隔离键**（同一个 configDir 下换 cwd 仍按 `session_id` 接上、原转录被继续追加，换 configDir 才被拒）⇒ 按行隔离只有「每行一个配置目录」这一条路',
         '`interrupt({ cancelQueued: true })` 那条粗粒度全清**不进本期**：SDK 的 `interrupt()` 从不发 `cancel_queued`（厂商 JSDoc 原文），要用只能自己发控制请求',
+      ],
+    },
+    /**
+     * **回到某一轮**：这一家走「同一条会话截断到某一轮」——`resumeSessionAt`（只续到某条 chain entry，
+     * 含它）+ `resumeDropsTurn`（声明被丢掉那一轮，CLI 校验不通过就**确定性拒绝**）。
+     *
+     * 三条边界（原文都在 SDK 的类型注释里）：
+     *   · **只在 headless 道生效**：这对参数只被 print-mode / Agent SDK / ProcessTransport 读取，
+     *     interactive 的 `claude --resume` 与后台任务 boot **静默忽略**（不截断、不报错）——本仓走的
+     *     正是 headless，但那一条必须留在声明里，换 boot 通道时它是唯一的警报；
+     *   · 拒绝是**确定性的**：同一份转录、同一个分叉点再发一次永远失败 ⇒ 调用方走「清目标 + 普通续接 +
+     *     保留证据」，本层只把拒绝如实报成 `AGENT_FORK_REJECTED`（不在这里重试）；
+     *   · 分叉点必须是**被保留那一轮的最后一条 chain entry**（end-turn 工具会话里是 `structured_output`
+     *     附件优先），不是「最后一条 assistant」——叉早了校验器会故意拒。
+     *
+     * `filesRewind`：厂商另有 `rewindFiles()` + `enableFileCheckpointing`（工作区文件回退），
+     * 是四家里唯一有的。本次运行**不改工作区**——回退与否由使用者在厂商侧显式发起，
+     * 文案因此只说「这家支持文件回退」，不说「本次已回退」。
+     */
+    checkpoint: {
+      supported: true,
+      mode: 'resume-at',
+      filesRewind: true,
+      reason: null,
+      notes: [
+        '只在 headless 通道生效：交互式 `claude --resume` 与后台任务 boot 会静默忽略这一对参数（不截断、不报错）',
+        '被拒是确定性的（`Resume rejected by --resume-drops-turn:`）：同一个分叉请求不许重试，调用方走「清目标 + 普通续接 + 保留证据」',
+        '分叉点认「被保留那一轮的最后一条 chain entry」（end-turn 工具会话里 `structured_output` 附件优先），不是最后一条 assistant',
+        '工作区文件回退由厂商的 `rewindFiles()` 提供，本次运行不自动改文件',
       ],
     },
     /**

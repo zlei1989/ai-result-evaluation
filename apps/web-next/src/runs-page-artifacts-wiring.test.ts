@@ -22,15 +22,17 @@ const pagePath = join(import.meta.dirname, '..', 'app', 'runs', 'page.tsx');
 const source = readFileSync(pagePath, 'utf8');
 
 /**
- * 排名抽屉那一段源码（开标签 → 第一个 `</Drawer>`）。
- * 这一段里没有嵌套的 `<Drawer>`（二级抽屉是组件，不是抽屉开标签），故第一个闭标签就是它的。
+ * 排名抽屉那一段源码（开标签 → 它自己的 `</SheetContent>`）。
+ * 这一段里没有嵌套的 `SheetContent`（二级抽屉是组件，不是抽屉开标签），故第一个闭标签就是它的。
  * 抠不到直接抛：判据失效时不能静默通过。
  */
 function rankDrawerBlock(): string {
-  const titleAt = source.indexOf('title="排名"');
+  const titleAt = source.indexOf('<SheetTitle>排名</SheetTitle>');
   if (titleAt < 0) throw new Error('app/runs/page.tsx 里找不到「排名」抽屉（判据失效了）');
-  const openAt = source.lastIndexOf('<Drawer', titleAt);
-  const closeAt = source.indexOf('</Drawer>', titleAt);
+  // `<Sheet` 后面必须跟换行：`<SheetTitle` / `<SheetHeader` / `<SheetContent` 都以 `<Sheet` 开头，
+  // 裸前缀会把块切到标题上、把关闭回调留在块外
+  const openAt = source.lastIndexOf('<Sheet\n', titleAt);
+  const closeAt = source.indexOf('</SheetContent>', titleAt);
   if (openAt < 0 || closeAt < 0) throw new Error('排名抽屉的开标签 / 闭标签不在预期位置');
   return source.slice(openAt, closeAt);
 }
@@ -56,8 +58,8 @@ describe('二级抽屉挂在排名抽屉的子树里', () => {
     const block = rankDrawerBlock();
 
     expect(block, '排名表被挪出排名抽屉了').toContain('<RankTable run={run}');
-    // 必须在这一段里：`NestedDrawer` 靠 React 树里的 `parentContext` 把主抽屉推开，
-    // portal 不影响 context 的传递，但**挪到抽屉外面就传不过去**
+    // 必须在这一段里：`NestedDrawer` 靠 React 树取上下文，portal 不影响传递，
+    // 但**挪到抽屉外面就传不过去**
     expect(block, '产物总览被挪出排名抽屉了：二级抽屉不会把主抽屉推开').toContain('<ArtifactOverview');
     expect(block, '二级抽屉的正文渲染没有接上每份一个实例的那一层').toContain('<ArtifactFileBody runId={runId}');
     // 开合必须受控（状态住页面），否则入口按钮点不到它
@@ -68,8 +70,8 @@ describe('二级抽屉挂在排名抽屉的子树里', () => {
     const block = rankDrawerBlock();
 
     expect(block, '排名抽屉的 onClose 没有复位二级抽屉').toContain('setArtifactOpen(false)');
-    // 复位必须挂在 onClose 上（而不是某个 effect 里）：那两件事是同一次用户动作
-    expect(block, '复位不在 onClose 里').toMatch(/onClose=\{\(\) => \{[\s\S]{0,200}?setArtifactOpen\(false\)/);
+    // 复位必须挂在关闭那一刻（`onOpenChange(false)`），而不是某个 effect 里：那两件事是同一次用户动作
+    expect(block, '复位不在关闭回调里').toMatch(/onOpenChange=\{\(next\) => \{[\s\S]{0,200}?setArtifactOpen\(false\)/);
   });
 });
 
@@ -85,7 +87,7 @@ describe('入口按钮', () => {
     const block = rankDrawerBlock();
 
     expect(block, '读不到清单被静默吞掉了').toContain('artifacts.error !== null');
-    expect(block, '置灰那一支没有 Tooltip 说明原因').toMatch(/<Tooltip title=\{`读不到产物清单：\$\{describeError\(artifacts\.error\)\}`\}/);
+    expect(block, '置灰那一支没有提示说明原因').toMatch(/<Hint label=\{`读不到产物清单：\$\{describeError\(artifacts\.error\)\}`\}/);
   });
 
   it('按钮文案与抽屉标题同源（不许就地写「产物总览」四个字）', () => {

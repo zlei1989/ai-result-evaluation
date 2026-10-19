@@ -14,13 +14,15 @@ packages/server/
   core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
   agents/          智能体抽象层 + 四家适配器（Claude Code / Codex / DSH / Pi Coding Agent）；唯一允许引厂商
                    SDK 的包，对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；
-                   **业务无关**：只认「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念
+                   **业务无关**：只认「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念，不知道评测领域
   evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
   api/             功能服务层，一个功能一个文件；禁止 import 任何框架
   contracts/       zod schema + 领域类型 + 错误码
 packages/client/
   ui/              纯展示组件（base + composite），纯数据驱动、不调接口
   client/          SWR hooks + HTTP 原语，类型全部来自 contracts
+docs/              知识库（五域 + FAQ 与规约守卫活文档，见《知识库口径》）
+eslint.shared.ts   共享规则 + 分层边界规则（withBoundary）
 ```
 
 路由的职责边界只有三件事：zod 校验请求 → 调 api → 错误映射；业务逻辑一律不下沉路由文件。
@@ -88,6 +90,8 @@ packages/client/
 
 根上 `eslint .` 一个进程覆盖全仓：`workspaceConfig` 经 `scopeToDir()` 把每个包的 glob 前缀到自己的目录（`PACKAGE_DIRS`），包间目录不重叠、永不跨包误伤；baseConfig 不前缀（它自带的是仓库级 ignores）。前缀化的验收是**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错——前缀化漏了会把 core 的名单误伤到全部包（web-next 被误伤成「禁止 import react」）。
 
+`next-env.d.ts` 已 gitignore；忽略它只能写在 `boundaryConfigs('web-next')` 里——散写在 `apps/web-next/eslint.config.ts` 的裸条目会被根路径漏掉。
+
 ### 清单守卫：表与清单双向比对
 
 `apps/web-next/src/package-dependency-boundaries.test.ts` 只读 package.json、不加载任何模块，判据三段：
@@ -120,5 +124,5 @@ packages/client/
 - [工具链与命令聚合](/architecture/toolchain) —— 前缀化（`scopeToDir` / `PACKAGE_DIRS`）的聚合侧：两页共用同一条真源机制
 - [契约体系](/architecture/contracts) —— contracts「指回任何 `@aieval/*` 都是环」的底层约束
 - [Provider 抽象与 run 入口](/protocols/provider-run) —— agents 的 provider 注册表是 `api → agents` 这条边的存在理由
-- 仓库根 `AGENTS.md` 的「目录结构」「依赖方向」节 —— 分包职责与逐边清单的真源（守卫逐字解析）
+- 仓库根 `AGENTS.md` 的「依赖方向」节 —— 逐边清单的真源（守卫逐字解析）；本页的「目录与职责」是分包职责的真源
 - `README.md`「代码结构」 —— 面向新人的分层一句话口径

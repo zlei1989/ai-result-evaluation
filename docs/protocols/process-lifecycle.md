@@ -82,7 +82,7 @@
 | **等待审批的一行会被判成静止超时**（dsh 的 `read-only` 档 approval 仍是 `ask`，越界操作停在无人应答的批准上） | **未豁免**（如实登记，机制未定、**不拿事件名猜判据**）：dsh 的 wire 上没有「待批准」这条通知——传输层的 server→client 请求通道尚未实现（SDK 逐字：「Client→server notifications and server→client requests are unimplemented on both wire ends; the transport carries them for future approval flows」），通知流里 `approval/policy` 只是装配期一次性的档位事实 ⇒「在等审批」与「对端挂了」在这条通道上同形。后果就是被看门狗按静止超时收掉。claude（`dontAsk` + `permissionPrompts: 'none'`）与 codex（两档都是 `approvalPolicy: 'never'`）没有批准面，这一条不适用 |
 | **工具在途挂死的家只能靠用户终止**（dsh 的静默长命令没有自己的超时；pi 的 `bash` 不给 `timeout` 时同样无默认上限） | 已知代价，与豁免那条是同一枚硬币：豁免了合法静默，也就顺带豁免了卡死的工具。要停下它只有用户点「终止」 |
 | **`SIGKILL` 拦不到**：宿主的 SIGTERM / SIGINT 处理器能回收在册会话（kill -9 谁也接不到） | 不可闭合，如实登记。`kill -9` 之后留下的工具子进程只能靠它们自己超时或人工清理 |
-| **装配段的等待没有上界**：`start()` 卡在 `await`（装配 / 建会话 / 投首轮提示词）时，看门狗到点只能置停止标志——骨架手里的 `started` 还是 `undefined`，没有句柄可释放 ⇒ **那一行会一直停在「运行中」**，直到用户点终止或宿主停机 | 能力边界（`turn.ts` 已注明「无法强制中止一个卡在 `await` 上的迭代器」）+ 可见性缺口。真机读数（`pi` 路径，`.scratch/pi-audit3/lifecycle/05-event-stream.test.ts` 的 D 臂：把 `session.prompt` 换成永不落定；我自己复跑过）：看门狗照常告警、释放链**跑完了**（`abort 2 / waitForIdle 3 / session_shutdown 1 / dispose 1 / 注销 1`），但**等待 7.5 s 后行仍未落定**；同一探针把该方法换回真实现时行在 300–1200 ms 内落定（阴性对照）。文案上还有一处噪声：亚秒预算下 `Math.round(400/1000)` 让 WARN 写成「已静止 0 秒」（生产默认分钟级，不出现）。**未闭合**：要给出上界（装配段自己的等待预算）或至少一句点名「卡在装配段」的结论——动它是骨架层、四家共用，按 AGENTS.md 的口径先澄清再改 |
+| **装配段的等待没有上界**：`start()` 卡在 `await`（装配 / 建会话 / 投首轮提示词）时，看门狗到点只能置停止标志——骨架手里的 `started` 还是 `undefined`，没有句柄可释放 ⇒ **那一行会一直停在「运行中」**，直到用户点终止或宿主停机 | 能力边界（`turn.ts` 已注明「无法强制中止一个卡在 `await` 上的迭代器」）+ 可见性缺口。真机读数（`pi` 路径：把 `session.prompt` 换成永不落定；我自己复跑过）：看门狗照常告警、释放链**跑完了**（`abort 2 / waitForIdle 3 / session_shutdown 1 / dispose 1 / 注销 1`），但**等待 7.5 s 后行仍未落定**；同一探针把该方法换回真实现时行在 300–1200 ms 内落定（阴性对照）。文案上还有一处噪声：亚秒预算下 `Math.round(400/1000)` 让 WARN 写成「已静止 0 秒」（生产默认分钟级，不出现）。**未闭合**：要给出上界（装配段自己的等待预算）或至少一句点名「卡在装配段」的结论——动它是骨架层、四家共用，按 AGENTS.md 的口径先澄清再改 |
 | dsh 停止走「等 5 秒宽限 → WARN → 强制关闭」 | 设计（`cancelMidTurn: false`）；点「终止」后该行晚 5 秒变 `canceled` |
 
 ## FAQ：行结束后留下的浏览器
@@ -130,5 +130,5 @@ Browser is already in use for <profile 目录>, use --isolated to run multiple i
 ## 相关链接
 
 - 活文档：[Codex FAQ](/faq/codex)——EPERM 清理失败条（完整证据链与真机守卫）、`Reconnecting` 条
-- 仓库内参考：`packages/server/agents/README.md`——§5.2 停止、释放与静止超时；AGENTS.md「删除与 PowerShell 安全」
+- 仓库内参考：`packages/server/agents/README.md`——§5.2 停止、释放与静止超时；[《PowerShell》](/guard/powershell)——删除与编码纪律
 - 知识文章：[《Provider 抽象与 run 入口》](/protocols/provider-run)（调用契约与终态语义）、[《事件流》](/protocols/event-stream)（终态事件从哪来）、[《行执行与日志》](/features/row-execution)（清理失败在行状态机上的落点）、《密钥与环境变量》（子进程环境凭据）

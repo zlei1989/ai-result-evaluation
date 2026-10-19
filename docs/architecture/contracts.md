@@ -71,7 +71,7 @@
 
 ## 相关链接
 
-- 仓库内活文档：`AGENTS.md`「技术栈」（zod 3 契约行）、「依赖方向」（contracts → 无的环约束、类型转出不算依赖边的口径）、「约束」（`agentProvider.run` 唯一入口与注册表判据）——按节名定位，表与规则的真源在那里，本文不复制
+- 仓库内参考：[《工具链与命令聚合》](/architecture/toolchain)（技术栈与 zod 3 契约行）、[《仓库分层与依赖方向》](/architecture/layering)（contracts → 无的环约束、类型转出不算依赖边的口径）、[《Provider 抽象与 run 入口》](/protocols/provider-run)（`agentProvider.run` 唯一入口与注册表判据）
 - 知识文章：[仓库分层与依赖方向](/architecture/layering)、[工具链与命令聚合](/architecture/toolchain)（架构域同批）
 - [用例管理](/features/case-management) —— 评分标准项契约（引用键 / `validateRubric` / 快照）与 `repo-source` 形态判定的消费现场
 - [《评分》](/features/judging)、[《数据与存储》](/features/storage) —— `ScoreResult` 的评分侧全链、落盘与原子写

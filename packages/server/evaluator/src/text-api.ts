@@ -376,7 +376,7 @@ function isRetryable(error: unknown, signal: AbortSignal | undefined): boolean {
 /**
  * 带瞬时重试的多轮调用：**所有文本调用（单轮与多轮）都从这里出去**。
  * 重试期间原样复用同一个 `body`（同一段对话），失败原因进 WARN 日志——
- * AGENTS.md 的日志表把「重试」列在 WARN 那一档，且重试必须在日志里留痕，
+ * AGENTS.md 的日志口径把「重试」列在 WARN 那一档（见 `docs/guard/code-conventions.md`），且重试必须在日志里留痕，
  * 否则「这一次为什么慢了三秒」在事后没有任何线索。
  */
 async function callWithRetry(

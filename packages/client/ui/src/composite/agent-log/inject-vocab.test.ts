@@ -15,7 +15,6 @@ import {
   deliveryAvailability,
   newInjectMessageId,
   pendingFromAttachment,
-  pickedFiles,
   promoteActionOf,
   refillDraftAttachments,
   refillDraftText,
@@ -370,35 +369,6 @@ describe('回填（「删除」把内容还回输入框）', () => {
     const id = newInjectMessageId();
     expect(INJECT_MESSAGE_ID_PATTERN.test(id)).toBe(true);
     expect(newInjectMessageId()).not.toBe(id);
-  });
-});
-
-describe('pickedFiles：从 X 的清单里取出新选进来的原始文件', () => {
-  const raw = (name: string): File => new File(['x'], name, { type: 'text/plain' });
-
-  it('只认 `originFileObj`（刚点选那一份的 `file` 字段是 antd 造的克隆，上面没有原始文件）', () => {
-    const file = raw('a.md');
-    const picked = pickedFiles([{ uid: 'u-1', originFileObj: file }], new Set());
-    expect(picked).toHaveLength(1);
-    expect(picked[0]?.file).toBe(file);
-    // 拿不到原始文件（拖拽失败留下的空壳）⇒ 跳过，不抛
-    expect(pickedFiles([{ uid: 'u-2' }], new Set())).toEqual([]);
-  });
-
-  it('已经处理过的 `uid` 不再取第二次（触发态的清单是累积的，不去重会上传两份）', () => {
-    const items = [{ uid: 'u-1', originFileObj: raw('a.md') }];
-    expect(pickedFiles(items, new Set(['u-1']))).toEqual([]);
-  });
-
-  it('一次点选多份时全取（顺序即清单顺序）', () => {
-    const picked = pickedFiles(
-      [
-        { uid: 'u-1', originFileObj: raw('a.md') },
-        { uid: 'u-2', originFileObj: raw('b.md') },
-      ],
-      new Set(),
-    );
-    expect(picked.map((item) => item.file.name)).toEqual(['a.md', 'b.md']);
   });
 });
 

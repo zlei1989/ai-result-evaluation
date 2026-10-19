@@ -6,11 +6,16 @@
  *   2. 多选 + 自由输入 = **并存**（选项不禁用，标签与自由输入都交出去）；单选 + 自由输入 = **覆盖**（选项整组禁用、`selected` 空，清空后恢复）；
  *   3. `allowOther === false` 时根本没有自由输入入口；
  *   4. `secret` 的答案默认遮罩，展开才显示；
- *   5. 「关掉」不是「回答」：只回调 `onClose`，不产生 `onComplete`；
+ *   5. 「关掉」不是「回答」：只回调 `onClose`，不产生 `onComplete`；输入框里按 Enter 也不交卷
+ *      （末题不做事、非末题只推进），只有「完成」按钮触发的 submit 才被受理；
  *   6. 关闭即丢弃：再打开是崭新一题，上次的输入不残留；
  *   7. 没有作答面的一问（选项为空且不允许自由输入）仍然走得通，空答案不许外溢到有作答面的问题上。
  *
  * 弹层走 portal ⇒ 查询一律走 `screen`（按 `render()` 的 `container` 查会恒得 0）。
+ *
+ * 「禁用」的判据是**原生 `<input>` 的 `disabled`**：`Questionnaire.Choice` 的选项是真的
+ * radio / checkbox（`Questionnaire.ChoiceInput`），故 `toBeDisabled()` 直接读的就是
+ * 浏览器会照办的那一格。
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -45,7 +50,7 @@ function question(overrides: Partial<AskUserQuestion> = {}): AskUserQuestion {
 
 const noop = (): void => {};
 
-it('单选 + 自由输入 = 覆盖：选项整组禁用，答案里 custom 有值、selected 为空', () => {
+it('口径 4｜单选 + 自由输入 = 覆盖：选项整组禁用，答案里 custom 有值、selected 为空', () => {
   const onComplete = vi.fn();
   render(
     <AskUserPanel
@@ -60,7 +65,8 @@ it('单选 + 自由输入 = 覆盖：选项整组禁用，答案里 custom 有�
   fireEvent.click(screen.getByRole('radio', { name: /选项 A/ }));
   fireEvent.change(screen.getByTestId('ask-user-custom'), { target: { value: '都不对，走第三条路' } });
 
-  // 写了话就不该再能点选项：那一点会交出一个会被丢掉的选择
+  // 写了话就不该再能点选项：那一点会交出一个会被丢掉的选择。
+  // 判据是原生 input 的 disabled：选项是真的 radio，浏览器拦得住才算数
   expect(screen.getByRole('radio', { name: /选项 A/ })).toBeDisabled();
   expect(screen.getByRole('radio', { name: /选项 B/ })).toBeDisabled();
 
@@ -95,7 +101,7 @@ it('单选：清空自由输入 ⇒ 选项恢复可选且选中生效', () => {
   expect(onComplete).toHaveBeenCalledWith([{ header: '选路径', selected: ['选项 A'], custom: null }]);
 });
 
-it('多选 + 自由输入 = 并存：不禁用选项，标签与自由输入一起交出去', () => {
+it('口径 4｜多选 + 自由输入 = 并存：不禁用选项，标签与自由输入一起交出去', () => {
   const onComplete = vi.fn();
   render(
     <AskUserPanel
@@ -133,9 +139,12 @@ it('一题一步：最后一问才给「完成」，载荷与问题逐问对上'
   fireEvent.click(screen.getByRole('radio', { name: /选项 A/ }));
   fireEvent.click(screen.getByRole('button', { name: '下一步' }));
 
-  // 第二问：标题与正文都换成第二问的，「上一步」这一步才出现
-  expect(screen.getByText(/要不要重跑/)).toBeInTheDocument();
-  expect(screen.queryByText(/选路径/)).toBeNull();
+  // 第二问：标题与正文都换成第二问的，「上一步」这一步才出现。
+  // 其余几问仍挂在 DOM 里（Questionnaire 用 `hidden`/`inert` 藏非当前问），故判据落在
+  // **可访问性**上：只当前那一问的控件能被读到，隐藏的问句不该被当成还能答的一问
+  expect(screen.getByRole('dialog')).toHaveTextContent('第 2/2 题 · 要不要重跑');
+  expect(screen.queryByRole('radio', { name: /选项 A/ })).toBeNull();
+  expect(screen.getByRole('radio', { name: /^要/ })).toBeVisible();
   expect(screen.getByRole('button', { name: '上一步' })).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole('radio', { name: /^要/ }));
@@ -145,6 +154,37 @@ it('一题一步：最后一问才给「完成」，载荷与问题逐问对上'
   expect(onComplete).toHaveBeenCalledWith([
     { header: '选路径', selected: ['选项 A'], custom: null },
     { header: '要不要重跑', selected: ['要'], custom: null },
+  ]);
+});
+
+it('口径 3｜配对键只用 header：题目顺序变了也按 header 配对，不按下标', async () => {
+  const onComplete = vi.fn();
+  const first = question({ header: '第一问', options: [option('选项 A')] });
+  const second = question({ header: '第二问', prompt: '第二问说什么？', options: [option('选项 C')] });
+  const { rerender } = render(
+    <AskUserPanel open questions={[first, second]} submitting={false} onComplete={onComplete} onClose={noop} />,
+  );
+
+  // 两问都答上：第一问选 A，推进到第二问选 C
+  fireEvent.click(screen.getByRole('radio', { name: /选项 A/ }));
+  fireEvent.click(screen.getByRole('button', { name: '下一步' }));
+  fireEvent.click(screen.getByRole('radio', { name: /选项 C/ }));
+
+  // 两问换位：内容跟着各自的问题走，下标全变了。
+  // 草稿要是按题目顺序存，A / C 就会跟着下标停到另一问上——正是「答案配错题」的症状
+  rerender(
+    <AskUserPanel open questions={[second, first]} submitting={false} onComplete={onComplete} onClose={noop} />,
+  );
+
+  // 换位后当前是「第二问」（下标 0）：先等官方件把 DOM 顺序重新登记完，再推进到最后一问
+  await waitFor(() => expect(screen.getByRole('button', { name: '下一步' })).toBeVisible());
+  fireEvent.click(screen.getByRole('button', { name: '下一步' }));
+  fireEvent.click(screen.getByRole('button', { name: '完成' }));
+
+  // 载荷按**当前问题清单的顺序**产出，但每一格的内容必须回到它自己的 header 上
+  expect(onComplete).toHaveBeenCalledWith([
+    { header: '第二问', selected: ['选项 C'], custom: null },
+    { header: '第一问', selected: ['选项 A'], custom: null },
   ]);
 });
 
@@ -181,7 +221,7 @@ it('secret 的答案默认遮罩，展开才显示作答区', () => {
   expect(screen.getByRole('radio', { name: /选项 A/ })).toBeInTheDocument();
 });
 
-it('关闭只回调 onClose，不产生完成事件', () => {
+it('口径 1｜不点完成不交出：关闭只回调 onClose，不产生完成事件', () => {
   const onComplete = vi.fn();
   const onClose = vi.fn();
   render(
@@ -195,13 +235,55 @@ it('关闭只回调 onClose，不产生完成事件', () => {
   );
 
   fireEvent.click(screen.getByRole('radio', { name: /选项 A/ }));
-  fireEvent.click(screen.getByRole('button', { name: /close|关闭/i }));
+  fireEvent.click(screen.getByRole('button', { name: '关闭' }));
 
   expect(onClose).toHaveBeenCalledTimes(1);
   expect(onComplete).not.toHaveBeenCalled();
 });
 
-it('关闭即丢弃：再打开时不残留上次的输入', async () => {
+it('口径 1｜输入框里按 Enter 不提交', () => {
+  const onComplete = vi.fn();
+  render(
+    <AskUserPanel
+      open
+      questions={[question({ allowOther: true })]}
+      submitting={false}
+      onComplete={onComplete}
+      onClose={noop}
+    />,
+  );
+
+  const input = screen.getByTestId('ask-user-custom');
+  // 敲完一句、习惯性回车：这是最容易误触的一格，末题上不许因此交出整份问卷。
+  // 官方件的 Enter 走的是不带 submitter 的 `requestSubmit()`，被 `onSubmit` 的完成标记判据拦下
+  fireEvent.change(input, { target: { value: '写完就回车' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+
+  expect(onComplete).not.toHaveBeenCalled();
+  expect(screen.getByTestId('ask-user-custom')).toHaveValue('写完就回车');
+});
+
+it('Enter 在非末题上等价于「下一题」：仍在这份问卷里，且没有交出答案', () => {
+  const onComplete = vi.fn();
+  const questions = [
+    question({ header: '第一问', allowOther: true }),
+    question({ header: '第二问', prompt: '第二问说什么？', options: [option('选项 C')] }),
+  ];
+  render(
+    <AskUserPanel open questions={questions} submitting={false} onComplete={onComplete} onClose={noop} />,
+  );
+
+  const input = screen.getByTestId('ask-user-custom');
+  fireEvent.change(input, { target: { value: '先写一句' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+
+  // 回车推进到下一题（与点「下一步」同一件事），绝不产生完成事件
+  expect(screen.getByRole('dialog')).toHaveTextContent('第 2/2 题 · 第二问');
+  expect(screen.getByRole('radio', { name: /选项 C/ })).toBeVisible();
+  expect(onComplete).not.toHaveBeenCalled();
+});
+
+it('口径 6｜关闭即丢弃：再打开时不残留上次的输入', async () => {
   const onComplete = vi.fn();
   const props = {
     questions: [question({ allowOther: true })],
@@ -214,7 +296,7 @@ it('关闭即丢弃：再打开时不残留上次的输入', async () => {
   fireEvent.click(screen.getByRole('radio', { name: /选项 A/ }));
   fireEvent.change(screen.getByTestId('ask-user-custom'), { target: { value: '写了一半' } });
 
-  // 关：`Drawer` 没有 `afterClose`，卸载与重置都发生在开合动画结束时
+  // 关：Sheet 关闭即卸载，草稿在关闭完成时重置（`onOpenChangeComplete`）
   rerender(<AskUserPanel open={false} {...props} />);
   await waitFor(() => expect(screen.queryByTestId('ask-user-custom')).toBeNull());
 
@@ -226,7 +308,7 @@ it('关闭即丢弃：再打开时不残留上次的输入', async () => {
   expect(screen.getByRole('button', { name: '完成' })).toBeDisabled();
 });
 
-it('没有作答面（选项为空且不允许自由输入）时仍然走得通：交出空答案', () => {
+it('没有作答面（选项为空且不允许自由输入）时仍然走得通：交出空答案', async () => {
   const onComplete = vi.fn();
   render(
     <AskUserPanel
@@ -244,7 +326,8 @@ it('没有作答面（选项为空且不允许自由输入）时仍然走得通�
 
   fireEvent.click(complete);
 
-  expect(onComplete).toHaveBeenCalledWith([{ header: '选路径', selected: [], custom: null }]);
+  // 没有作答面时页脚主按钮是官方 `Skip`：末题直接点击交出，不绕表单的 submit
+  await waitFor(() => expect(onComplete).toHaveBeenCalledWith([{ header: '选路径', selected: [], custom: null }]));
 });
 
 it('没有作答面的一问只放行自己：下一问仍要求先答，空答案不外溢', () => {
@@ -261,8 +344,8 @@ it('没有作答面的一问只放行自己：下一问仍要求先答，空答�
   const next = screen.getByRole('button', { name: '下一步' });
   expect(next).toBeEnabled();
   fireEvent.click(next);
-  expect(screen.getByText(/选路径/)).toBeInTheDocument();
-  expect(screen.queryByText(/没得选/)).toBeNull();
+  expect(screen.getByRole('dialog')).toHaveTextContent('第 2/2 题 · 选路径');
+  expect(screen.getByRole('radio', { name: /选项 A/ })).toBeVisible();
 
   // 第二问有作答面 ⇒ 回到「必须先答」，空答案不许蒙混过去
   const complete = screen.getByRole('button', { name: '完成' });

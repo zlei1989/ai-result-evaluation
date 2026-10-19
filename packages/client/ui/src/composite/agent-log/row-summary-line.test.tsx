@@ -20,6 +20,8 @@ const facts: AgentLogFacts = {
   thinking: null,
   domain: [],
   error: null,
+  contextUsed: null,
+  contextWindow: null,
 };
 
 function rowNode(overrides: Partial<RowNode> = {}): RowNode {

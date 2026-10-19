@@ -10,11 +10,12 @@
  *      一条要浮层里有那句「供应商：名字（地址）」，一条要标题行上**再也找不到**那个名字。
  * 另外「没有产出时不给看改动」与「运行中才给终止」也在这里钉住。
  *
- * 按钮的可访问名一律是**无空格**的中文（本仓既有口径：两个汉字的按钮一律
- * `autoInsertSpace={false}`，见 provider-table.tsx 的文件头）——用例按无空格名查找。
+ * 按钮的可访问名一律是**无空格**的中文（两个汉字的按钮不许在中间插空格）——用例按无空格名查找。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { EFFORT_OFF, type EvalRow } from '@aieval/contracts';
 import { EvalRowCard } from './eval-row-card';
 import { installResizeObserverStub } from '../testing/resize-observer';
@@ -44,6 +45,18 @@ const row: EvalRow = {
   followUpRounds: 0,
 };
 
+/**
+ * 悬浮到 `Hint` 的**触发元素**上。
+ *
+ * Base UI 的悬浮监听挂在触发元素的**原生** `mouseenter` 上（不冒泡），故直接把它派发到内层的
+ * 按钮 / 文字上不会触发浮层——真实浏览器里鼠标移入子元素会同时给祖先派发 `mouseenter`，
+ * jsdom 的合成事件不会。这层收口让用例继续按「悬浮在这个按钮上」写。
+ */
+function hover(element: HTMLElement): void {
+  const trigger = element.closest('[data-slot="tooltip-trigger"]');
+  fireEvent.mouseEnter(trigger ?? element);
+}
+
 const handlers = {
   onAbort: vi.fn(),
   onOpenLog: vi.fn(),
@@ -64,16 +77,15 @@ const agentFailed: EvalRow['error'] = { code: 'AGENT_FAILED', message: 'Codex Ex
 /** 老快照：磁盘上已有的记录没有 `stage` 这一格，读出来是 undefined */
 const legacyFailed: EvalRow['error'] = { code: 'AGENT_FAILED', message: '老记录没有失败阶段' };
 
-// 终止走 Popconfirm ⇒ 浮层对齐要 ResizeObserver + matchMedia（jsdom 两个都没有），
-// 与 provider-table / run-detail-panel 同一口径
+// 确认框与提示浮层的定位要 ResizeObserver（jsdom 没有），与 run-detail-panel 同一口径
 beforeEach(() => {
   installResizeObserverStub();
 });
 
 /**
  * 按**文案**拿按钮，而不是 `getByRole('button', { name })`。
- * 为什么需要它：antd 在 `loading` 时把按钮标成忙碌态，可访问名随之算不出来，
- * 而「转圈」这条用例要的正是**在途**那一帧——按角色查会「找不到元素」，
+ * 为什么需要它：在途态会在文案前加一个转圈图标，按角色查时名字里可能混进图标的
+ * 可访问文本，而「转圈」这条用例要的正是**在途**那一帧——按角色查会「找不到元素」，
  * 失败信息还会指向「按钮不存在」这个完全错误的方向（实测踩过）。
  */
 function buttonByText(text: string): HTMLButtonElement {
@@ -85,15 +97,15 @@ function buttonByText(text: string): HTMLButtonElement {
 /**
  * 悬浮之后**给浮层一个出场的机会**，再判「确实没有浮层」——所有「不给 Tooltip」的否定面都必须走这里。
  *
- * 为什么不能悬浮完就立刻查 `.ant-tooltip`：antd 的 `Tooltip` **不是同步挂载**的，鼠标进入后有
- * `mouseEnterDelay`（默认 **0.1s**）才把它推进 body 的 portal。于是「悬浮 → 同步查为 `null`」这条
+ * 为什么不能悬浮完就立刻查 `[data-slot="tooltip-content"]`：浮层**不是同步挂载**的，鼠标进入后要过
+ * 一个延迟窗口才把它推进 body 的 portal。于是「悬浮 → 同步查为 `null`」这条
  * 断言**在任何实现下都为真**：`title` 是 `undefined` 时它为真，`title` 挂着一句真原因时**它同样为真**
  * ——浮层还没到出场时间。它测的不是实现，是时序，等于没写。
  *
  * 两条断言都有区分力：把 `rescoreHint` 改成**无条件**给出原因（正是下面那条用例声称要拦的缺陷）、
  * 或把轮次那一格的 `> 0` 判据删掉，同步断言**照样绿**，等满一个延迟窗口再判才会红。
  * 本仓 `metric-line.test.tsx` 与 `ellipsis-text.test.tsx` 也各登记过同一件事（后者写明
- * 「`.ant-tooltip` 那一句单独不构成守卫」）。
+ * 「`[data-slot="tooltip-content"]` 那一句单独不构成守卫」）。
  *
  * 窗口取 300ms = 默认延迟的 3 倍：够浮层落定，又不至于把 20 条用例拖慢（每条 +0.3s）。
  */
@@ -101,7 +113,7 @@ const expectNoTooltip = async (): Promise<void> => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
-  expect(document.querySelector('.ant-tooltip')).toBeNull();
+  expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
 };
 
 describe('EvalRowCard', () => {
@@ -152,7 +164,7 @@ describe('EvalRowCard', () => {
       />,
     );
 
-    expect(screen.getByText('diff 已截断')).toBeInTheDocument();
+    expect(screen.getByText('变更已截断')).toBeInTheDocument();
   });
 
   it('不支持的计量显示「不支持计量」而不是 0', () => {
@@ -244,11 +256,11 @@ describe('EvalRowCard', () => {
     // 弹层要说清后果（杀子进程 + 不可撤销），并且此时一个请求都还没发
     expect(await screen.findByText('终止这一行？')).toBeInTheDocument();
     // 第二条提示也要等：弹层标题与正文不保证在同一帧渲染（口径同 provider-form-modal 的注释）
-    expect(await screen.findByText('正在跑的 agent 子进程会被杀掉，且不可撤销。')).toBeInTheDocument();
+    expect(await screen.findByText('正在跑的智能体子进程会被杀掉，这一行就此收场，且不可撤销。')).toBeInTheDocument();
     expect(onAbort).not.toHaveBeenCalled();
   });
 
-  it('确认框点「确定」才发 onAbort，点「取消」零副作用', async () => {
+  it('确认框点「终止」才发 onAbort，点「取消」零副作用', async () => {
     const onAbort = vi.fn();
     render(<EvalRowCard row={{ ...row, status: 'running' }} {...handlers} onAbort={onAbort} />);
 
@@ -259,7 +271,7 @@ describe('EvalRowCard', () => {
 
     // 确定：这一次才真的终止
     fireEvent.click(screen.getByRole('button', { name: '终止' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '终止' }));
     await waitFor(() => expect(onAbort).toHaveBeenCalledTimes(1));
   });
 
@@ -280,7 +292,7 @@ describe('EvalRowCard', () => {
     expect(onAbort).not.toHaveBeenCalled();
   });
 
-  it('没有产出改动时「变更详情」禁用；有错误时把码与原因一起显示', () => {
+  it('没有产出变更时「变更详情」禁用；有错误时把码与原因一起显示', () => {
     render(
       <EvalRowCard
         row={{
@@ -387,12 +399,12 @@ describe('EvalRowCard', () => {
 
     expect(await screen.findByText('重新评分这一行？')).toBeInTheDocument();
     expect(
-      screen.getByText('只重跑评分步骤，候选 agent 不会再跑；现有的分数会被新的评分结果替换。'),
+      screen.getByText('只重跑评分步骤，智能体不会再跑；现有的分数会被新的评分结果替换。'),
     ).toBeInTheDocument();
     expect(onRescore).not.toHaveBeenCalled();
   });
 
-  it('确认框点「确定」才发 onRescore，点「取消」零副作用', async () => {
+  it('确认框点「重新评分」才发 onRescore，点「取消」零副作用', async () => {
     const onRescore = vi.fn();
     render(<EvalRowCard row={{ ...row, status: 'failed', error: judgeFailed }} {...handlers} onRescore={onRescore} />);
 
@@ -401,7 +413,7 @@ describe('EvalRowCard', () => {
     expect(onRescore).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '重新评分' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '重新评分' }));
     await waitFor(() => expect(onRescore).toHaveBeenCalledTimes(1));
   });
 
@@ -411,8 +423,8 @@ describe('EvalRowCard', () => {
    * ——禁用而不解释等于一个坏掉的按钮。
    *
    * ⚠️ 这组用例**验不出文案是否真的能看见**：真实浏览器里鼠标悬浮禁用态的
-   * 「重新评分」时，Tooltip 的直接子节点若是 `Popconfirm` 组件，浮层**根本不出现**；而 jsdom 里
-   * `fireEvent.mouseEnter(button)` 是直接派发到按钮上的合成事件，会照常沿 React 树冒泡上去 ⇒
+   * 「重新评分」时，触发点若是禁用按钮本身（而不是包住它的真实元素），浮层**根本不出现**；而 jsdom 里
+   * `hover(button)` 是直接派发到按钮上的合成事件，会照常沿 React 树冒泡上去 ⇒
    * 下面这几条断言在两种结构下都绿。**改动这一处之后必须在真实浏览器里悬浮一次**
    * （见 `eval-row-card.tsx` 里那段注释）。
    */
@@ -422,10 +434,10 @@ describe('EvalRowCard', () => {
     const button = screen.getByRole('button', { name: '重新评分' });
     expect(button).toBeDisabled();
     // 原因文案挂在 Tooltip 上（浮层由 mouseEnter 打开；悬浮本身在 jsdom 里不代表真实鼠标行为）
-    fireEvent.mouseEnter(button);
+    hover(button);
     // 文案顺序与判据的三个条件同一序（在跑 → 没基线 → 没产出）：这一条夹具两个前提都缺，
     // 落到的是**工作区未就绪**（不是「没有改动」——那样会把原因指到错误的方向）
-    expect(await screen.findByText('这一行的工作区未就绪，请先点「开始」跑一次')).toBeInTheDocument();
+    expect(await screen.findByText('这一行的工作区还没准备好：请先点「开始执行」跑一次')).toBeInTheDocument();
   });
 
   it('没有产出（diff 为 null）的行不给重评，并说明原因', async () => {
@@ -433,8 +445,8 @@ describe('EvalRowCard', () => {
 
     const button = screen.getByRole('button', { name: '重新评分' });
     expect(button).toBeDisabled();
-    fireEvent.mouseEnter(button);
-    expect(await screen.findByText('这一行还没有跑过，没有可复评的改动')).toBeInTheDocument();
+    hover(button);
+    expect(await screen.findByText('这一行还没有跑过：没有可重新评分的变更')).toBeInTheDocument();
   });
 
   it('在跑的行不给重评（要重评得先终止它），并说明原因', async () => {
@@ -442,15 +454,15 @@ describe('EvalRowCard', () => {
 
     const button = screen.getByRole('button', { name: '重新评分' });
     expect(button).toBeDisabled();
-    fireEvent.mouseEnter(button);
-    expect(await screen.findByText('正在运行中：请先终止它，再重新评分')).toBeInTheDocument();
+    hover(button);
+    expect(await screen.findByText('这一行正在执行：等它收场，或先点「终止」')).toBeInTheDocument();
   });
 
   /**
    * 用户口径「已出分、无报错时取消禁用」落在界面上的两条正面：
    *   · 已经出分的行 ⇒ **两个按钮都可点**（这是这次改动的全部目的）；
    *   · 候选 agent 阶段失败的行 ⇒ 也可点（判据不再看失败阶段）。
-   * 误点的代价由各自的 `Popconfirm` 承担，不由 `disabled` 承担——下一条用例钉住那个确认框。
+   * 误点的代价由各自的确认框承担，不由 `disabled` 承担——下一条用例钉住那个确认框。
    */
   it('已经出分且没有报错的行：两个按钮都可点', () => {
     render(<EvalRowCard row={row} {...handlers} />); // 起点是 judged、error 为 null
@@ -492,12 +504,12 @@ describe('EvalRowCard', () => {
 
     const button = screen.getByRole('button', { name: '重新评分' });
     expect(button).toBeEnabled();
-    fireEvent.mouseEnter(button);
+    hover(button);
     /**
-     * 阴性面：`title={undefined}` 时 antd 不建浮层。
+     * 阴性面：`label` 为空时 `Hint` 不渲染浮层。
      *
      * ⚠️ 判据必须走 `expectNoTooltip()`（等满一个延迟窗口再判）：悬浮后**同步**查
-     * `.ant-tooltip` 的话，antd 的浮层要等 `mouseEnterDelay`（默认 0.1s）才进 portal ⇒ 那句断言在任何
+     * `[data-slot="tooltip-content"]` 的话，浮层要等一个延迟窗口才进 portal ⇒ 那句断言在任何
      * 实现下都为真（把 `rescoreHint` 改成**无条件**给出原因也照样绿）。等满窗口之后，
      * 同一个缺陷会让浮层在窗口内落定 ⇒ 当场变红。
      */
@@ -513,17 +525,17 @@ describe('EvalRowCard', () => {
   it('重评请求在途时按钮转圈（连点两次会让第二次的结果顶掉第一次）', () => {
     render(<EvalRowCard row={{ ...row, status: 'failed', error: judgeFailed }} {...handlers} rescorePending />);
 
-    // antd 的 loading 自己挡住点击（不额外置 `disabled` 属性，而是把按钮标成忙碌）：
+    // 新栈按钮没有 `loading`：在途态是 `data-loading` + 转圈图标 + `disabled`：
     // `ant-btn-loading` 就是「连点两次」那条承诺的落点，而它只能由 `rescorePending` 传出来
     // ——控件里没有第二个 loading 来源。按角色查不到它（忙碌态的按钮没有可访问名），故按文本定位。
     const button = buttonByText('重新评分');
-    expect(button.className).toContain('ant-btn-loading');
+    expect(button.dataset.loading).toBe('true');
   });
 
   it('不在途时不转圈：那个类名确实是 rescorePending 带出来的', () => {
     render(<EvalRowCard row={{ ...row, status: 'failed', error: judgeFailed }} {...handlers} />);
 
-    expect(buttonByText('重新评分').className).not.toContain('ant-btn-loading');
+    expect(buttonByText('重新评分').dataset.loading).toBeUndefined();
   });
 
   /**
@@ -545,13 +557,13 @@ describe('EvalRowCard', () => {
     expect(await screen.findByText('重新执行这一行？')).toBeInTheDocument();
     expect(
       screen.getByText(
-        '候选 agent 与评分都会重跑：工作区会被重新准备，现有分数会被新的评分结果替换。只跑这一行，本轮其他行不动。',
+        '智能体与评分都会重跑：工作区会被重新准备，现有分数会被新的评分结果替换。只跑这一行，这次评测的其他候选不动。',
       ),
     ).toBeInTheDocument();
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('重新执行确认框点「确定」才发 onRetry，点「取消」零副作用', async () => {
+  it('重新执行确认框点「重新执行」才发 onRetry，点「取消」零副作用', async () => {
     const onRetry = vi.fn();
     render(<EvalRowCard row={{ ...row, status: 'failed', error: agentFailed }} {...handlers} onRetry={onRetry} />);
 
@@ -560,7 +572,7 @@ describe('EvalRowCard', () => {
     expect(onRetry).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '重新执行' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '重新执行' }));
     await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
   });
 
@@ -590,12 +602,12 @@ describe('EvalRowCard', () => {
     fireEvent.click(button);
 
     expect(await screen.findByText('开始执行这一行？')).toBeInTheDocument();
-    expect(screen.getByText('只跑这一个候选：本轮其他行（含已经执行过的行）都不会重跑。')).toBeInTheDocument();
+    expect(screen.getByText('只跑这一个候选：这次评测的其他候选（含已经执行过的）都不会重跑。')).toBeInTheDocument();
     // 首点不发请求（与另外两个出口同一套「先确认再动手」的语义）
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('开始执行确认框点「确定」才发 onRetry', async () => {
+  it('开始执行确认框点「开始执行」才发 onRetry', async () => {
     const onRetry = vi.fn();
     render(
       <EvalRowCard
@@ -606,7 +618,7 @@ describe('EvalRowCard', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: '开始执行' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始执行' }));
 
     await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
   });
@@ -633,8 +645,8 @@ describe('EvalRowCard', () => {
 
     const button = screen.getByRole('button', { name: '重新执行' });
     expect(button).toBeDisabled();
-    fireEvent.mouseEnter(button);
-    expect(await screen.findByText('正在运行中：请先终止它，再执行')).toBeInTheDocument();
+    hover(button);
+    expect(await screen.findByText('这一行正在执行：等它收场，或先点「终止」')).toBeInTheDocument();
   });
 
   /**
@@ -666,7 +678,7 @@ describe('EvalRowCard', () => {
   it('重新执行请求在途时按钮转圈（与重评同一套防连点口径）', () => {
     render(<EvalRowCard row={{ ...row, status: 'failed', error: agentFailed }} {...handlers} retryPending />);
 
-    expect(buttonByText('重新执行').className).toContain('ant-btn-loading');
+    expect(buttonByText('重新执行').dataset.loading).toBe('true');
   });
 
   /**
@@ -750,7 +762,7 @@ describe('EvalRowCard', () => {
     render(<EvalRowCard row={{ ...row, effort: 'high' }} {...handlers} />);
 
     // 与 `metric-line.test.tsx` 同一套：hover 打开，且**必须等它入场**（同步查测的是时序不是实现）
-    fireEvent.mouseEnter(screen.getByText('high'));
+    hover(screen.getByText('high'));
     expect(await screen.findByText('思考强度：high')).toBeInTheDocument();
   });
 
@@ -763,8 +775,8 @@ describe('EvalRowCard', () => {
     render(<EvalRowCard row={{ ...row, effort: EFFORT_OFF }} {...handlers} />);
 
     // 浮层判据与 `metric-line.test.tsx` 同一套：hover 打开，且**必须等它入场**
-    // （同步查 `.ant-tooltip` 在任何实现下都为真，那测的是时序不是实现）
-    fireEvent.mouseEnter(screen.getByText(EFFORT_OFF));
+    // （同步查 `[data-slot="tooltip-content"]` 在任何实现下都为真，那测的是时序不是实现）
+    hover(screen.getByText(EFFORT_OFF));
     expect(await screen.findByText('关闭思考')).toBeInTheDocument();
   });
 });
@@ -780,7 +792,7 @@ describe('EvalRowCard：供应商信息挂在模型名上', () => {
     render(<EvalRowCard row={row} {...handlers} />);
 
     // 悬浮目标必须是**模型名本身**（挂到别处、或压根没挂，这条都红）
-    fireEvent.mouseEnter(screen.getByText('claude-opus-4-6'));
+    hover(screen.getByText('claude-opus-4-6'));
     expect(
       await screen.findByText('供应商：Anthropic 网关（https://gw.example.com/anthropic）'),
     ).toBeInTheDocument();
@@ -868,7 +880,7 @@ describe('EvalRowCard：子智能体那一份透传到 Tooltip', () => {
     // 卡片上的 tok 仍只算输入 + 输出（130 = 100 + 30，缓存读不进这一格）
     expect(screen.getByText('tok 130')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByText(/^tok /));
+    hover(screen.getByText(/^tok /));
 
     // 60 = 100 − 40、10 = 20 − 10、25 = 30 − 5
     expect(await screen.findByText('主会话 输入 60 tok · 缓存 10 tok · 输出 25 tok')).toBeInTheDocument();
@@ -905,7 +917,7 @@ describe('EvalRowCard：子智能体的轮次透传到 Tooltip', () => {
     // 卡片正文不改口径：合计仍是 20
     expect(screen.getByText('轮次 20')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
 
     // 13 = 20 − 7：主会话那一行只可能来自 `row.turns − row.subagentTurns`
     expect(await screen.findByText('主会话 13 轮')).toBeInTheDocument();
@@ -915,7 +927,7 @@ describe('EvalRowCard：子智能体的轮次透传到 Tooltip', () => {
   it('行上没有这一份分量（null）时「轮次」不给浮层，正文照旧是合计', async () => {
     render(<EvalRowCard row={{ ...row, turns: 20, subagentTurns: null }} {...handlers} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    hover(screen.getByText(/^轮次 /));
     await expectNoTooltip();
 
     expect(screen.getByText('轮次 20')).toBeInTheDocument();
@@ -971,8 +983,59 @@ describe('EvalRowCard：追问入口', () => {
 
     const button = screen.getByRole('button', { name: '追问' });
     expect(button).toBeDisabled();
-    fireEvent.mouseEnter(button);
+    hover(button);
     expect(await screen.findByText(reason)).toBeInTheDocument();
+  });
+
+  /**
+   * **七档拒绝原因逐条走一遍**：禁用与浮层文案必须来自**同一个 `followUpVerdict`**。
+   *
+   * 七句是服务端七档拒绝各自的原话（运行中 / 上次没收尾 / 没有可续接的会话 / 工作区没了 /
+   * 附件没了 / 用例删了 / 这一家不支持续接）。界面这一格**只许转述**：任何一句被界面改写成
+   * 自己的话（比如统一说成「当前不可追问」），用户就失去了「该做什么」——七档要做的事各不相同。
+   * 禁用与那句原话同源，才不会出现「按钮说不能、浮层说另一件事」。
+   */
+  it('★ 七档拒绝原因逐条：按钮禁用、点下去不动作，浮层里逐字是服务端那一句（同源）', async () => {
+    const reasons = [
+      '该行正在运行中（运行中）：请把这句话发进输入区排队，等这一轮跑完；追问只对已经跑过的行有效',
+      '该行上一次的运行还没收尾，请稍候再试',
+      '这一行没有可续接的会话（还没跑过，或是没有这一格的旧产物）：追问接不上原来那段上下文，这里不会从头重跑该行——要重跑请点「重新执行」',
+      '这一行的工作区已被删除（/runs/run-1/rows/w-1/workspace）：追问要在原工作区上继续，这里不会从头重跑该行——要重跑请点「重新执行」',
+      '追问带的附件不存在（/runs/run-1/rows/w-1/attachments/m-1/a.md）：请重新上传再追问。这里不会从头重跑该行——要重跑请点「重新执行」',
+      '用例已删除（case-1），无法追问；历史记录仍可查看',
+      '这一家不支持续接（off-by-adapter）：追问接不上原来那段上下文，这里不会从头重跑该行——要重跑请点「重新执行」',
+    ];
+
+    for (const reason of reasons) {
+      const onFollowUp = vi.fn();
+      const { unmount } = render(
+        <EvalRowCard
+          row={{ ...row, sessionId: 'sess-1' }}
+          {...handlers}
+          onFollowUp={onFollowUp}
+          followUpVerdict={{ ok: false, reason }}
+        />,
+      );
+
+      const button = screen.getByRole('button', { name: '追问' });
+      expect(button, `这一档没有禁用：${reason}`).toBeDisabled();
+      // 点下去不许发出任何动作（禁用是界面说法，回调是实际行为，两者都要对）
+      fireEvent.click(button);
+      expect(onFollowUp, `禁用的按钮仍然把这一行交出去了：${reason}`).not.toHaveBeenCalled();
+
+      hover(button);
+      expect(await screen.findByText(reason), `浮层里不是服务端那一句：${reason}`).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('禁用与浮层文案同源（静态判据：两处都只读 `followUpVerdict` 这一份）', () => {
+    const source = readFileSync(join(import.meta.dirname, 'eval-row-card.tsx'), 'utf8');
+    // 判据只取一次、原话只取一次：出现第二处取值就是「按钮按 A 判、浮层说 B」
+    expect(source.match(/followUpVerdict\?\.ok/g)).toHaveLength(1);
+    expect(source.match(/followUpVerdict\.reason/g)).toHaveLength(1);
+    expect(source).toContain('disabled={!followUpOk}');
+    expect(source).toContain('label={followUpHint}');
   });
 
   it('还没有判据 ⇒ 禁用并说清「读不到判据」（猜「能追问」会让用户点下去才拿到 409）', async () => {
@@ -980,7 +1043,7 @@ describe('EvalRowCard：追问入口', () => {
 
     const button = screen.getByRole('button', { name: '追问' });
     expect(button).toBeDisabled();
-    fireEvent.mouseEnter(button);
+    hover(button);
     expect(await screen.findByText('读不到这一行的追问判据（服务端没给出）：请刷新后重试')).toBeInTheDocument();
   });
 

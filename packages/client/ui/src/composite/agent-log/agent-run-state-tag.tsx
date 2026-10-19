@@ -15,10 +15,13 @@
  *   1. **结果到了就不表态**（返回 `null`）：已确定的事不占地方。`running` 的语义本来就含
  *      「结果未到」，两者同时为真只可能是数据层把这一格给宽了，此时以结果为准更诚实；
  *   2. **`since` 为 null 或非法时只写「进行中」**，不挂定时器、也不算出 NaN 耗时；
- *   3. 灰字**绝不同时带 `Badge status="processing"`**：静态的「没采到」加一个转圈，
- *      读的人会一直等一个不会来的结果。
+ *   3. 灰字**绝不同时带转圈**：静态的「没采到」加一个转圈，读的人会一直等一个不会来的结果。
+ *      转圈只画在 `data-testid="run-state-running"` 那一支里，两档在结构上就分得开。
+ *
+ * 形态是**行内一段文字**（不套卡片 / 不套标签）：它要和工具行的标题、计划清单的摘要行
+ * 排在同一行里，外面再包一层，那一行就会多出两套行高与间距。
  */
-import { Badge, Flex, Typography } from 'antd';
+import { LoaderCircleIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { formatDuration } from '../../base/metric-line';
 import { useNow } from '../../base/use-now';
@@ -56,16 +59,17 @@ export function AgentRunStateTag({ running, hasResult, missingReason, since }: A
 
   if (!running) {
     return (
-      <Typography.Text type="secondary">
+      <span className="text-sub text-muted-foreground">
         {missingReason === null || missingReason === '' ? '结果未采集' : `结果未采集 · ${missingReason}`}
-      </Typography.Text>
+      </span>
     );
   }
 
   return (
-    <Flex align="center" gap={4}>
-      <Badge size="small" status="processing" />
-      <Typography.Text>{sinceMs === null ? '进行中' : `进行中 · ${formatDuration(now - sinceMs)}`}</Typography.Text>
-    </Flex>
+    <span className="inline-flex items-center gap-1" data-testid="run-state-running">
+      {/* 转圈是这一档独有的信号；`prefers-reduced-motion` 下停转，文字仍然说明在跑 */}
+      <LoaderCircleIcon aria-hidden="true" className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />
+      <span className="tabular-nums">{sinceMs === null ? '进行中' : `进行中 · ${formatDuration(now - sinceMs)}`}</span>
+    </span>
   );
 }

@@ -28,8 +28,10 @@
  *      不画一排空卡（那会让人以为所有候选都没产出）；
  *   7. 卡片正文的内边距归 `Card` 自己，抽屉正文的内边距归这里（`NestedDrawer` 的 `body.padding` 已置 0）。
  */
-import { Alert, Card, Flex, Skeleton, Typography } from 'antd';
 import type { ReactNode } from 'react';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Skeleton } from '../components/ui/skeleton';
 import {
   AGENT_LABELS,
   ARTIFACT_FILE_HINT,
@@ -101,7 +103,7 @@ export function ArtifactOverview({ run, index, open, onOpenChange, renderBody }:
 
   return (
     <NestedDrawer open={open} onClose={() => onOpenChange(false)} title={ARTIFACT_OVERVIEW_LABEL}>
-      <Flex vertical gap={12} style={{ padding: 16 }}>
+      <div className="flex flex-col gap-3" style={{ padding: 16 }}>
         {index === undefined ? (
           <EmptyState title="还没读到产物清单" description="关掉排名抽屉再打开，会重新扫一遍候选工作区" />
         ) : (
@@ -113,36 +115,44 @@ export function ArtifactOverview({ run, index, open, onOpenChange, renderBody }:
               return (
                 <Card
                   key={`${row.id}|empty`}
-                  size="small"
+                  size="sm"
                   data-testid="artifact-card"
                   data-row-id={row.id}
                   data-artifact-name=""
-                  title={artifactCardTitle(row, rank)}
                 >
-                  <EmptyState
-                    title="这一行没有产物"
-                    description={`执行目录里没有 ${ARTIFACT_FILE_HINT}`}
-                  />
+                  <CardHeader>
+                    <CardTitle>{artifactCardTitle(row, rank)}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <EmptyState
+                      title="这一行没有产物"
+                      description={`执行目录里没有 ${ARTIFACT_FILE_HINT}`}
+                    />
+                  </CardContent>
                 </Card>
               );
             }
             return files.map((file) => (
               <Card
                 key={`${row.id}|${file.name}`}
-                size="small"
+                size="sm"
                 data-testid="artifact-card"
                 data-row-id={row.id}
                 data-artifact-name={file.name}
-                title={artifactCardTitle(row, rank)}
-                // 文件名单独放卡头右侧：一个候选可能有多份产物，四段标题里不掺文件名
-                extra={<Typography.Text type="secondary" code>{file.name}</Typography.Text>}
               >
-                {renderBody({ rowId: row.id, name: file.name })}
+                <CardHeader>
+                  <CardTitle>{artifactCardTitle(row, rank)}</CardTitle>
+                  {/* 文件名单独放卡头右侧：一个候选可能有多份产物，四段标题里不掺文件名 */}
+                  <CardAction>
+                    <code className="text-xs text-muted-foreground">{file.name}</code>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>{renderBody({ rowId: row.id, name: file.name })}</CardContent>
               </Card>
             ));
           })
         )}
-      </Flex>
+      </div>
     </NestedDrawer>
   );
 }
@@ -161,29 +171,35 @@ export interface ArtifactFileContentProps {
  * 而四份判断必然漂移（与 `DiffFileContent` 同一处置）。
  */
 export function ArtifactFileContent({ file, error, isLoading }: ArtifactFileContentProps): ReactNode {
-  // testid 挂在 `Flex` 这一层而不是 `Skeleton` 上：antd 6 的 Skeleton 不转发未知属性
-  //（它只认自己那张 props 表），`data-testid` 写在它身上会被**静默丢掉**
+  // testid 挂在包裹层而不是骨架条上：骨架是三条独立的占位条，给它们各挂一个 id 只是噪音
   if (isLoading) {
     return (
-      <Flex vertical data-testid="artifact-file-skeleton">
-        <Skeleton active paragraph={{ rows: 3 }} />
-      </Flex>
+      <div className="flex flex-col gap-2" data-testid="artifact-file-skeleton">
+        {[0, 1, 2].map((row) => (
+          <Skeleton key={row} className="h-4 w-full" />
+        ))}
+      </div>
     );
   }
   if (error !== null && error !== undefined) {
-    return <Alert type="error" showIcon title="这一份产物读取失败" description={String(error)} />;
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>这一份产物读取失败</AlertTitle>
+        <AlertDescription>{String(error)}</AlertDescription>
+      </Alert>
+    );
   }
   if (file === undefined) return null;
 
   return (
-    <Flex vertical gap={8}>
+    <div className="flex flex-col gap-2">
       {file.truncated && (
-        <Typography.Text type="warning" data-testid="artifact-truncated">
+        <span className="text-sm text-warning" data-testid="artifact-truncated">
           这一份超过 {ARTIFACT_TEXT_MAX_CHARS} 字符，只显示前一部分
-        </Typography.Text>
+        </span>
       )}
       {renderArtifactBody(file)}
-    </Flex>
+    </div>
   );
 }
 

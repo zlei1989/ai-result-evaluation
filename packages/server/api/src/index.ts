@@ -63,6 +63,10 @@ export {
 // 人工追问（第二期）：对已经跑过的行接着同一段上下文再跑一段。
 // 存在性检查与请求上限在本层，可用性判据与拒绝原因在 evaluator（界面按 409 的中文原因给 Tooltip）。
 export { followUpRow, getFollowUpAvailability, type FollowUpRequest } from './follow-up';
+// 回到某一轮：与追问同一条分工（存在性与请求上限在本层，能力与可用性判据在 evaluator）。
+export { checkpointRow, type CheckpointRequestInput } from './checkpoint';
+// 测试结果的只读投影：从 messages 账本里认测试命令与输出，产排名页的三态；不读、不改事件台账
+export { getRunTestResults } from './run-test-results';
 export {
   assertRowExists,
   getRowArtifactFile,

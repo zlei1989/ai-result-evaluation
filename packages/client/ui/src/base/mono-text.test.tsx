@@ -32,20 +32,24 @@ describe('MonoText', () => {
   });
 
   /**
-   * 等宽字体必须落在**承载文本的那个元素**上。
+   * 等宽字体必须**同时**落在承载文本的那个元素上。
    *
-   * 宿主上的 `fontFamily` 会被 `.ant-typography` 自己的 `font-family` 盖掉（实测：真机上宿主写着
-   * `SFMono-Regular…`，文本那一格算出来是系统字体），于是「等宽」变成一句写在代码里的话术。
-   * jsdom 没有 CSS 级联，量不出计算值，所以这里钉的是**机制**：字体在文本元素自己也有一份；
-   * 真机上的计算值由界面冒烟量 `getComputedStyle` 兜底。
+   * 宿主上的 `font-family` 会被任何给内层文本设了字体的包裹盖掉：真机上出现过宿主写着
+   * `SFMono-Regular…`、文本那一格算出来却是系统字体，于是「等宽」变成一句写在代码里的话术。
+   * jsdom 没有 CSS 级联，量不出计算值，
+   * 所以这里钉的是**机制**：字体在文本元素自己也有一份；真机上的计算值由界面冒烟量
+   * `getComputedStyle` 兜底。
    */
-  it('等宽字体也挂在文本元素上（只挂在宿主上会被 .ant-typography 覆盖）', () => {
+  it('等宽字体也挂在文本元素上（只挂在宿主上会被内层包裹覆盖）', () => {
     render(<MonoText text="a" dataTestId="log-text" />);
 
-    const inner = screen.getByTestId('log-text').querySelector('span');
+    const host = screen.getByTestId('log-text');
+    const inner = host.querySelector('span');
     expect(inner).not.toBeNull();
-    expect(inner?.style.fontFamily).not.toBe('');
-    expect(inner?.style.fontFamily).toBe(screen.getByTestId('log-text').style.fontFamily);
+    // 宿主与文本元素都走命名类 `font-mono`，文本元素另有内联字体兜底
+    expect(host.classList.contains('font-mono')).toBe(true);
+    expect(inner?.classList.contains('font-mono')).toBe(true);
+    expect(inner?.style.fontFamily).toBe('var(--font-mono)');
   });
 
   it('maxHeight 落到宿主的限高上，且文本保留换行', () => {
@@ -53,7 +57,7 @@ describe('MonoText', () => {
 
     const host = screen.getByTestId('log-text');
     expect(host.style.maxHeight).toBe('240px');
-    expect(host.style.whiteSpace).toBe('pre-wrap');
-    expect(host.style.overflow).toBe('auto');
+    expect(host.classList.contains('whitespace-pre-wrap')).toBe(true);
+    expect(host.classList.contains('overflow-auto')).toBe(true);
   });
 });

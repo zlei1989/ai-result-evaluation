@@ -41,12 +41,13 @@ function jsxProps(source: string, tag: string): string {
 }
 
 describe('全局 Provider 挂上应答宿主', () => {
-  it('providers.tsx 渲染 <AskUserHost />，且在 DensityProvider 与 AntdApp 的子树里', () => {
+  it('providers.tsx 渲染 <AskUserHost />，且在 AntdApp 的子树里', () => {
     expect(providersSource, '根 Provider 没挂应答宿主').toMatch(/<AskUserHost\s*\/>/);
-    // 顺序即嵌套：明暗上下文（DensityProvider）与 message 上下文（AntdApp）都必须先于它出现
+    // 顺序即嵌套：message 上下文（AntdApp）必须先于它出现（提交失败要能弹提示）
     const host = providersSource.indexOf('<AskUserHost');
-    expect(providersSource.indexOf('<DensityProvider'), '宿主不在 DensityProvider 子树里').toBeLessThan(host);
     expect(providersSource.indexOf('<AntdApp'), '宿主不在 AntdApp 子树里（拿不到 message 上下文）').toBeLessThan(host);
+    // 密度不再是 React 上下文：`:root` 就是紧凑档，宿主在页面壳外面也拿到同一组变量
+    expect(providersSource, '主题又长出了 React 上下文这条第二真源').not.toContain('<DensityProvider');
   });
 
   it('宿主从数据层取队列与焦点，而不是自己订阅或自己拼状态', () => {
@@ -59,11 +60,11 @@ describe('全局 Provider 挂上应答宿主', () => {
     expect(hostSource, '引入了 window 自定义事件（spec 已裁定不引入）').not.toMatch(/CustomEvent|dispatchEvent/);
   });
 
-  it('宿主自己包紧凑主题（它在页面壳外面，不包就是默认密度）', () => {
-    expect(hostSource, '宿主没读实际明暗').toContain('useDensityMode()');
-    expect(hostSource, '宿主没包紧凑主题').toMatch(/<ConfigProvider\s+theme=\{COMPACT_THEMES\[mode\]\}/);
-    // 紧凑主题只有一处定义点（ui 包的 compactTheme），宿主不许自己写 algorithm / fontSize
-    expect(hostSource, '宿主自己拼了主题（应走 compactTheme）').not.toContain('compactAlgorithm');
+  it('宿主不另包主题（密度取 :root 的紧凑档，字号只有一个来源）', () => {
+    expect(hostSource, '宿主又包了一层 ConfigProvider（第二份字号/主题来源）').not.toContain('<ConfigProvider');
+    expect(hostSource, '宿主自己拼了主题算法').not.toContain('compactAlgorithm');
+    // 面板挂在页面壳外面，但 CSS 变量按文档根继承 ⇒ 拿到的就是紧凑档
+    expect(hostSource, '宿主还在读已退役的密度上下文').not.toContain('useDensityMode');
   });
 
   it('面板接的是队列：开合、题面、在途、完成与关闭一个不少', () => {
@@ -83,6 +84,10 @@ describe('全局 Provider 挂上应答宿主', () => {
     // 关掉只记本地记号（current 变 null），那一问仍在队列里 —— 没有这个入口，误点一次就再也答不了。
     // 条数取 `answerableCount`（焦点内有资格弹的）：暂缓的那些在这里点不到任何东西
     expect(hostSource, '关掉之后没有回到待答提问的入口').toMatch(/current === null && answerableCount > 0/);
-    expect(jsxProps(hostSource, 'FloatButton'), '浮动入口没接重新打开').toContain('onClick={reopen}');
+    const entry = jsxProps(hostSource, 'Button');
+    expect(entry, '常驻入口没接重新打开').toContain('onClick={reopen}');
+    // 入口的条数取 `answerableCount`（焦点内有资格弹的）：暂缓的那些在这里点不到任何东西。
+    // 断言落在徽标的**正文**上，不是按钮的 aria-label——后者也含这个变量名，改坏徽标照样绿
+    expect(hostSource, '入口没把待答条数画出来').toMatch(/<Badge[^>]*>\s*\{answerableCount\}\s*<\/Badge>/);
   });
 });

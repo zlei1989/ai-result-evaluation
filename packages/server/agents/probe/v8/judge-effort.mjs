@@ -24,7 +24,7 @@
  *   C. **难题对照**（只在某协议主表判为「不区分 / 弱区分」时跑）：换一个必须多步推理的问题重跑 low 与 max，
  *      用来排除「题目太简单 ⇒ 各档都只想一句 ⇒ 看起来不区分」这个假阴性。难题下仍不区分，才是硬结论。
  *
- * key **只从环境变量读**（AGENTS.md 硬规则；反面教材 `probe/v2/lib/gateway.mjs:27` 那份硬编码），
+ * key **只从环境变量读**（硬规则见 `docs/guard/secrets-and-env.md`；反面教材 `probe/v2/lib/gateway.mjs:27` 那份硬编码），
  * 缺了就明确报错，且全程不回显。不 import `@aieval/agents` 的 provider：探针打的是网关的 HTTP 接口
  * 本身，不是「调智能体」，故不走 `agentProvider.run`（`probe/` 下 v2–v7 同形）。
  *

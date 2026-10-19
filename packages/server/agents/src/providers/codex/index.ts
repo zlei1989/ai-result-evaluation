@@ -395,6 +395,16 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   const permissionOptions = codexPermissionOptions(input.permission);
   // 收窄一次交给厂商：非对象一律按「没给」处置（见 `asSchemaObject` 的注释）
   const outputSchema = asSchemaObject(input.outputSchema);
+  /**
+   * **回到某一轮**的源线程：`thread/fork` 必须有一条源线程可分，而这一行的源线程就是
+   * `resume.sessionId`。收到 `fork` 却没有源线程时**抛中文错**（不许静默开新会话——
+   * 那会让「回到第 N 轮」变成「什么都不记得的新会话」，而界面上一切正常）。
+   */
+  if (input.fork !== undefined && input.resume === undefined) {
+    throw new Error('[agents] codex 收到 fork 但没有源线程（resume.sessionId）：无法分叉，本层不静默开新会话');
+  }
+  const forkThreadId = input.fork === undefined ? null : input.resume?.sessionId ?? null;
+
   const session = await startCodexSession({
     binary,
     env,
@@ -424,6 +434,9 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
      * （`'round'` 的有效范围见 `turn-injection.ts` 的第 1 条）。
      */
     ...(input.resume === undefined ? {} : { resumeThreadId: input.resume.sessionId }),
+    // **回到某一轮**：`thread/fork` 从源线程分出一条新线（源线程 = `resume.sessionId`）；
+    // `fork` 缺席时这一格整个不出现 ⇒ 既有 `thread/resume` 行为逐字不变。
+    ...(forkThreadId === null ? {} : { forkThreadId }),
     /**
      * 结构化输出按需带：给了 schema ⇒ 交给 `turn/start` 的一等字段 `outputSchema`
      * （形状由 codex 侧约束）。非对象（字符串 / 数组 / null）**什么都不传**——那不是一个能交给
@@ -1334,6 +1347,22 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
      * 一分钟以上的墙钟一律来自模型推理与工具执行 ⇒ 排障时按「模型/工具慢」查，
      * 别去查 app-server 启动。
      */
+    /**
+     * **回到某一轮**：走 `thread/fork`（协议方法名，见 `codex app-server` 的 `strings`）。分叉点实现落在
+     * `appserver/session.ts` 的 `startOrResumeThread`。
+     *
+     * 工作区回退**没有**语义定位（`thread/revert` 是否连带改动未定位）⇒ `filesRewind: false`，
+     * 文案只说「不动文件」，不许承诺撤销。
+     */
+    checkpoint: {
+      supported: true,
+      mode: 'fork',
+      filesRewind: false,
+      reason: null,
+      notes: [
+        '分叉走 `thread/fork`；`thread/revert` 的回退范围（轮 / 条目 / 是否动工作区）未定位，本仓不声明文件回退',
+      ],
+    },
     timing: {
       runScale: 'minutes',
       notes: [

@@ -6,8 +6,8 @@
  *
  * 六条各有一个靶子：
  * (a) L0 不 import L1/L2；(b) L1 不 import L2；
- * (c) **虚拟化的三个入口**（`virtual` / `itemHeight` / `Listy` 这一枚标识符）只出现在
- * `base/virtual-list.tsx`；
+ * (c) **虚拟化的入口**（`useVirtualizer` / `measureElement` / `@tanstack/react-virtual` 这三个标识符，
+ *     以及 rc-virtual-list 那一套 `virtual` / `itemHeight` / `Listy`）只出现在 `base/virtual-list.tsx`；
  * (d) L0/L1 不出现 `useState`（开合态一律受控， 纪律 2）；
  * (e) L0/L1 不出现 `EvalRow`，**也不按厂商分支**；
  * (f) `BlockRenderContext` 里没有 `streaming` 这一格（`assembly` 是动效的唯一判据）。
@@ -37,6 +37,7 @@ const dir = import.meta.dirname;
 const L2_FILES = [
   'agent-log-drawer.tsx',
   'agent-log-layout.tsx',
+  'log-scroller.tsx',
   'virtual-turn-list.tsx',
   'agent-log-toolbar-preset.ts',
   'use-agent-log-view.ts',
@@ -74,11 +75,17 @@ const L0_FILES = [
   'capability-notes.tsx',
   'raw-output-panel.tsx',
   'agent-environment-drawer.tsx',
+  // 失败输出的「首行错误 + 帧列表」：吃一段原文与受控开合，不虚拟化、不持态
+  'stack-trace-view.tsx',
+  // 测试结果三层：吃解析结果与受控开合，不虚拟化、不持态
+  'test-results-view.tsx',
   'block-renderer-registry.tsx',
   'render-blocks.ts',
   'inject-message-row.tsx',
   // 段分隔（「追问 ×N」）：吃段号 + 一个时刻，纯展示、受控
   'segment-divider.tsx',
+  // 轮末「回到这里」：吃能力声明 + 一个受控回调，不持态、不判厂商（可用性只看声明）
+  'checkpoint-marker.tsx',
 ] as const;
 
 /** 文件 → 层（找不到的文件视为「不在三层清单里」，不参与扫描） */
@@ -282,31 +289,25 @@ describe('agent-log 的分层纪律', () => {
   });
 
   /**
-   * (c) 虚拟化的三个入口**全仓只有一处**。
+   * (c) 虚拟化的入口**全仓只有一处**：`base/virtual-list.tsx`。
    *
-   * 这一处在 `base/virtual-list.tsx`：原文行
-   * （原始输出的逐行台账，`lines` 没有上限）也要虚拟化，两处各接一遍 `Listy` 就是两份高度测量、
-   * 两份退化兜底。`agent-log` 里任何文件都不许出现这三个入口
-   * （它们是「绕过原语自己造一个」的信号），而新家自己必须在扫面上
-   * ——否则这条守卫会退化成「谁都不许有」，实现躲在扫面外照样绿。
+   * 判据分两组，靶子各不同：
+   *   · **新入口**（`useVirtualizer`、逐项测量的 `measureElement`、包说明符 `@tanstack/react-virtual`）——
+   *     agent-log 的任何一个渲染件里出现，就是「绕过原语自己造一个」。扫的是**标识符本身**：
+   *     只认具名导入拦不住 `import * as v from '@tanstack/react-virtual'` 再 `v.useVirtualizer()`。
+   *   · **旧入口**（rc-virtual-list 的 `virtual` prop、`itemHeight`、`Listy` 标识符）——它们代表另一套
+   *     虚拟化 API；换库之后仍然禁，防止有人把 antd 的 `Listy` 请回来做第二个窗口化实现。
+   *     放行 `ask-user-card.tsx`：它的选项列表用 `Listy` 但**不虚拟化**（问答的选项就几条），
+   *     是「这一处」而**不是「这一类」**——别的文件再出现 `Listy` 仍然会红。
    *
-   * ⚠️ 第三个入口扫的是**标识符本身**：`from 'antd/listy'` 在 antd 6.6.5 没有这个子路径
-   * （`node_modules/antd/listy` 不存在），而只认「具名导入」也拦不住 `import * as antd from 'antd'`
-   * 再 `<antd.Listy virtual={…} height={…}>`、或 `React.createElement(Listy, …)`、
-   * `require('antd')`、`antd/es/listy` 这些写法。
-   * 故去掉注释之后出现 `Listy` 这个词就算命中——
-   * 不管它以哪种方式被引进来。代价是必须显式放行**唯一一处合法的非虚拟化用法**。
-   *
-   * 放行 `ask-user-card.tsx`：它的选项列表用 `Listy` 但**不虚拟化**
-   * （问答的选项就几条，不需要窗口化），**它并不在造第二个虚拟列表原语**。
-   * 放行的是「这一处」，不是「这一类」——别的文件再出现 `Listy` 仍然会红。
+   * 新家自己必须在扫面上（否则这条会退化成「谁都不许有」，实现躲在扫面外照样绿），
+   * 且两个消费方都得走同一个原语（漏一处就是「那里又变回全量渲染」）。
    */
-  it('(c) 虚拟化的三个入口只出现在 base/virtual-list.tsx', () => {
+  it('(c) 虚拟化的入口只出现在 base/virtual-list.tsx', () => {
     /**
-     * `virtual` 这个 prop。三个边界都要认：
+     * rc-virtual-list 的 `virtual` prop。三个边界都要认：
      *   · 注释里的 `virtual-turn-list` / `@rc-component/virtual-list` 不算（后面跟的是 `-`）；
-     *   · **紧跟 `=` / `:` / `,`** 也要算（`<Listy virtual={true}>`、`{ virtual: true }`
-     *     是 JSX/对象字面量的常见写法；只认后跟空白/`/`/`>`/`{` 的形态看不见它）；
+     *   · **紧跟 `=` / `:` / `,`** 也要算（`<Listy virtual={true}>`、`{ virtual: true }`）；
      *   · **行尾**的 `virtual` 也要算（`<Listy virtual` 换行写属性）。
      */
     const VIRTUAL_PROP = /(?<![\w-])virtual(?=[\s/>{=:,]|$)/;
@@ -319,10 +320,23 @@ describe('agent-log 的分层纪律', () => {
       LISTY_TOKEN,
     )).toEqual([]);
 
-    // 新家：唯一的实现必须在（`<Listy` + `virtual` 两个入口都在它里面）
+    /**
+     * 新入口的三个标识符：`useVirtualizer`（唯一的窗口化 API）、`measureElement`（逐项测量的入口）、
+     * 以及包说明符。`codeHitsIn` 已剥注释，解释文字不会误伤。
+     */
+    const VIRTUALIZER_TOKENS: readonly { name: string; pattern: RegExp }[] = [
+      { name: 'useVirtualizer', pattern: /\buseVirtualizer\b/ },
+      { name: 'measureElement', pattern: /\bmeasureElement\b/ },
+      { name: '@tanstack/react-virtual', pattern: /@tanstack\/react-virtual/ },
+    ];
+    for (const { name, pattern } of VIRTUALIZER_TOKENS) {
+      expect({ 判据: name, 命中: codeHitsIn([...LAYER_OF.keys()], pattern) }).toEqual({ 判据: name, 命中: [] });
+    }
+
+    // 新家：唯一的实现必须在，且它真的用了新入口
     const primitive = readFileSync(join(dir, '..', '..', 'base', 'virtual-list.tsx'), 'utf8');
-    expect(primitive, '虚拟列表原语里没有 <Listy>').toContain('<Listy');
-    expect(primitive, '虚拟列表原语没有开 virtual').toMatch(/(?:^|\s)virtual(?=[\s/>{])/);
+    expect(primitive, '虚拟列表原语里没有 useVirtualizer').toContain('useVirtualizer');
+    expect(primitive, '虚拟列表原语没有引 @tanstack/react-virtual').toContain('@tanstack/react-virtual');
     // 两处内容都用它（漏一处就是「那里又变回全量渲染」）
     for (const file of ['virtual-turn-list.tsx', 'raw-output-panel.tsx']) {
       expect(readFileSync(join(dir, file), 'utf8'), `${file} 没有走共用原语`).toContain('<VirtualList');

@@ -9,8 +9,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RubricRecognizeModal } from './rubric-recognize-modal';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
-// jsdom 既没有 ResizeObserver 也没有 matchMedia，而 antd 的 Modal（内部的 rc-resize-observer）
-// 两者都要（见 src/testing/resize-observer.ts）：不打桩，挂载即抛 `ResizeObserver is not defined`。
+// jsdom 没有 ResizeObserver：弹窗原语与部分表格件会直接 new 它（见 src/testing/resize-observer.ts）。
 beforeEach(() => {
   installResizeObserverStub();
 });

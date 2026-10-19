@@ -258,7 +258,7 @@ export function hostNpmrcPath(): string {
  * 两条容错：
  *   · **绝不抛**：这一步只是「让行内 registry 不掉回公网」的尽力而为，读不到宿主配置不能让整行失败；
  *   · **剥掉 UTF-8 BOM**：PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，
- *     不剥的话第一行会变成 `\uFEFFregistry=…`、正则匹配不上 ⇒ 宿主明明配了却「什么都不做」（见 AGENTS.md）。
+ *     不剥的话第一行会变成 `\uFEFFregistry=…`、正则匹配不上 ⇒ 宿主明明配了却「什么都不做」（见 `docs/features/storage.md` 的 BOM 口径）。
  */
 export function readNpmrcText(path: string): string | null {
   try {

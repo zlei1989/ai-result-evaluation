@@ -18,9 +18,19 @@
  * 清单里「权重变了」与「只是文字变了」**分类显示**（`updateLabel`）：模型有顺手润色的倾向，
  * 分开显示才能让用户一眼看出哪些改动不是他要的。
  */
-import { Alert, Button, Flex, Input, Modal, Tag, Typography } from 'antd';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Rubric, RubricChange, RubricItem } from '@aieval/contracts';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
+import { Textarea } from '../components/ui/textarea';
 import { EllipsisText } from '../base/ellipsis-text';
 
 export interface RubricAdjustModalProps {
@@ -34,14 +44,14 @@ export interface RubricAdjustModalProps {
   onApply: (rubric: Rubric) => void;
 }
 
-/** 每条改动的分类标签与颜色：新增绿 / 删除红 / 改动蓝（方向一眼可辨） */
-const CHANGE_STYLE: Record<RubricChange['kind'], { color: string }> = {
-  'add-group': { color: 'green' },
-  'remove-group': { color: 'red' },
-  'rename-group': { color: 'blue' },
-  'add-item': { color: 'green' },
-  'remove-item': { color: 'red' },
-  'update-item': { color: 'blue' },
+/** 每条改动的分类徽标：新增绿 / 删除红 / 改动蓝（方向一眼可辨） */
+const CHANGE_STYLE: Record<RubricChange['kind'], string> = {
+  'add-group': 'border-success/40 text-success',
+  'remove-group': 'border-destructive/40 text-destructive',
+  'rename-group': 'border-info/40 text-info',
+  'add-item': 'border-success/40 text-success',
+  'remove-item': 'border-destructive/40 text-destructive',
+  'update-item': 'border-info/40 text-info',
 };
 
 /** 项的显示名：写了 ID 就用 ID 领头（与评分通路里模型看到的引用键同口径），否则退回目标文字 */
@@ -55,82 +65,76 @@ function itemLabel(item: RubricItem): string {
  * 说得越具体，他越不用凭信任点「应用」。
  */
 function ChangeRow({ change }: { change: RubricChange }): ReactNode {
-  const tag = (label: string, color: string): ReactNode => (
-    <Tag color={color} style={{ marginInlineEnd: 0 }}>
+  const tag = (label: string): ReactNode => (
+    <Badge variant="outline" className={CHANGE_STYLE[change.kind]}>
       {label}
-    </Tag>
+    </Badge>
   );
 
   switch (change.kind) {
     case 'add-group':
       return (
-        <Flex gap={8} align="center">
-          {tag('新增组', CHANGE_STYLE['add-group'].color)}
-          <Typography.Text strong>{change.name}</Typography.Text>
-        </Flex>
+        <div className="flex items-center gap-2">
+          {tag('新增组')}
+          <span className="font-medium">{change.name}</span>
+        </div>
       );
     case 'remove-group':
       return (
-        <Flex gap={8} align="center">
-          {tag('删除组', CHANGE_STYLE['remove-group'].color)}
-          <Typography.Text strong delete>
-            {change.name}
-          </Typography.Text>
-        </Flex>
+        <div className="flex items-center gap-2">
+          {tag('删除组')}
+          <span className="font-medium line-through">{change.name}</span>
+        </div>
       );
     case 'rename-group':
       return (
-        <Flex gap={8} align="center">
-          {tag('组改名', CHANGE_STYLE['rename-group'].color)}
-          <Typography.Text type="secondary" delete>
-            {change.from}
-          </Typography.Text>
-          <Typography.Text>→ {change.to}</Typography.Text>
-        </Flex>
+        <div className="flex items-center gap-2">
+          {tag('组改名')}
+          <span className="text-muted-foreground line-through">{change.from}</span>
+          <span>→ {change.to}</span>
+        </div>
       );
     case 'add-item':
       return (
-        <Flex gap={8} align="center">
-          {tag('新增项', CHANGE_STYLE['add-item'].color)}
-          <Typography.Text type="secondary">{change.groupName}</Typography.Text>
+        <div className="flex items-center gap-2">
+          {tag('新增项')}
+          <span className="text-muted-foreground">{change.groupName}</span>
           <EllipsisText text={itemLabel(change.item)} />
-          <Typography.Text type="secondary">{`${change.item.weight} 分`}</Typography.Text>
-        </Flex>
+          <span className="text-muted-foreground">{`${change.item.weight} 分`}</span>
+        </div>
       );
     case 'remove-item':
       return (
-        <Flex gap={8} align="center">
-          {tag('删除项', CHANGE_STYLE['remove-item'].color)}
-          <Typography.Text type="secondary">{change.groupName}</Typography.Text>
-          <Typography.Text delete>{itemLabel(change.item)}</Typography.Text>
-        </Flex>
+        <div className="flex items-center gap-2">
+          {tag('删除项')}
+          <span className="text-muted-foreground">{change.groupName}</span>
+          <span className="line-through">{itemLabel(change.item)}</span>
+        </div>
       );
     case 'update-item': {
       // 两格分开显示：模型顺手润色文字时，用户看到的是一条「改文字」而不是被塞进「改权重」里
       const weightChanged = change.before.weight !== change.after.weight;
       const goalChanged = change.before.goal !== change.after.goal;
       return (
-        <Flex vertical gap={4}>
-          <Flex gap={8} align="center">
-            {tag(updateLabel(weightChanged, goalChanged), CHANGE_STYLE['update-item'].color)}
-            <Typography.Text type="secondary">{change.groupName}</Typography.Text>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            {tag(updateLabel(weightChanged, goalChanged))}
+            <span className="text-muted-foreground">{change.groupName}</span>
             <EllipsisText text={itemLabel(change.before)} />
-          </Flex>
+          </div>
           {weightChanged && (
-            <Typography.Text type="secondary">
+            <span className="text-sm text-muted-foreground">
               {`权重 ${change.before.weight} → `}
-              <Typography.Text strong>{change.after.weight}</Typography.Text>
-            </Typography.Text>
+              <span className="font-medium text-foreground">{change.after.weight}</span>
+            </span>
           )}
           {goalChanged && (
-            <Flex vertical gap={0}>
-              <Typography.Text type="secondary" delete>
-                {change.before.goal}
-              </Typography.Text>
-              <Typography.Text>{change.after.goal}</Typography.Text>
-            </Flex>
+            <div className="flex flex-col">
+              <span className="text-sm text-muted-foreground line-through">{change.before.goal}</span>
+              <span className="text-sm">{change.after.goal}</span>
+            </div>
           )}
-        </Flex>
+        </div>
       );
     }
   }
@@ -149,10 +153,17 @@ export function RubricAdjustModal({ open, adjusting, onCancel, onAdjust, onApply
   /** 请求代次：在途取消后回来的结果一律作废（见文件头要点 3） */
   const epochRef = useRef(0);
 
-  const closeAll = (): void => {
-    setText('');
-    setPreview(null);
-  };
+  /**
+   * 关窗即丢弃：留着上次的清单，下次打开会让人以为「已经应用过了」。
+   * 挂在 `open` 上而不是动画结束事件上——受控弹窗的开关由父组件决定，
+   * jsdom 里没有动画，等动画事件会把清理变成一条在生产才跑的分支。
+   */
+  useEffect(() => {
+    if (!open) {
+      setText('');
+      setPreview(null);
+    }
+  }, [open]);
 
   const handleCancel = (): void => {
     epochRef.current += 1;
@@ -171,97 +182,100 @@ export function RubricAdjustModal({ open, adjusting, onCancel, onAdjust, onApply
   const hasChanges = preview !== null && preview.changes.length > 0;
 
   return (
-    <Modal
+    <Dialog
       open={open}
-      title="智能调整评分标准项"
-      // 关闭即丢弃：留着上次的清单，下次打开会让人以为「已经应用过了」
-      destroyOnHidden
-      onCancel={handleCancel}
-      afterClose={closeAll}
-      footer={
-        preview === null ? (
-          <Flex justify="end" gap={8}>
-            <Button size="small" autoInsertSpace={false} data-testid="rubric-adjust-cancel" onClick={handleCancel}>
-              取消
-            </Button>
-            <Button
-              size="small"
-              type="primary"
-              autoInsertSpace={false}
-              loading={adjusting}
-              // 空要求不发请求：一次调用是真的钱，而空指令必然只换回一次「保持原样」
-              disabled={adjusting || text.trim() === ''}
-              data-testid="rubric-adjust-submit"
-              // 本组件不看这个 promise 的结果（失败时本来就不关窗、不清文本，原因由调用方提示），
-              // 但 `.catch` 不能省：被拒绝的 promise 会变成未处理的 rejection
-              onClick={() => void requestPreview().catch(() => {})}
-            >
-              生成改动
-            </Button>
-          </Flex>
-        ) : (
-          <Flex justify="end" gap={8}>
-            <Button
-              size="small"
-              autoInsertSpace={false}
-              data-testid="rubric-adjust-back"
-              onClick={() => setPreview(null)}
-            >
-              返回修改
-            </Button>
-            <Button
-              size="small"
-              type="primary"
-              autoInsertSpace={false}
-              // 清单为空 = 模型认为不用改：此时新表与旧表逐字节相同，没有可应用的东西
-              disabled={!hasChanges}
-              data-testid="rubric-adjust-apply"
-              onClick={() => {
-                if (preview !== null) onApply(preview.rubric);
-              }}
-            >
-              应用改动
-            </Button>
-          </Flex>
-        )
-      }
+      onOpenChange={(next) => {
+        if (!next) handleCancel();
+      }}
     >
-      <Flex vertical gap={8}>
-        {preview === null ? (
-          <>
-            <Typography.Text type="secondary">
-              写下你要怎么改这份评分标准（例如「把 A1 的权重提到 30，并加一条关于错误处理的条目」）。
-              会先给你一份改动清单，**确认之后**才会写进表格。
-            </Typography.Text>
-            <Input.TextArea
-              rows={6}
-              value={text}
-              data-testid="rubric-adjust-text"
-              onChange={(event) => setText(event.target.value)}
-            />
-          </>
-        ) : preview.changes.length === 0 ? (
-          <Alert
-            type="info"
-            showIcon
-            data-testid="rubric-adjust-empty"
-            title="模型认为这份评分标准不需要修改"
-            description="可以把要求写得更具体一些，或者直接在上面的表格里手动改"
-          />
-        ) : (
-          <>
-            <Typography.Text type="secondary">
-              {`共 ${preview.changes.length} 处改动。确认无误后再点「应用改动」——在那之前表格一点都没变。`}
-            </Typography.Text>
-            <Flex vertical gap={8} data-testid="rubric-adjust-changes">
-              {preview.changes.map((change, index) => (
-                // 清单是一次性的静态列表（没有增删改），用下标当 key 是安全的
-                <ChangeRow key={index} change={change} />
-              ))}
-            </Flex>
-          </>
-        )}
-      </Flex>
-    </Modal>
+      <DialogContent
+        data-testid="rubric-adjust-dialog"
+        style={{ maxWidth: 720 }}
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>智能调整评分标准项</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-2" data-testid="rubric-adjust-body">
+          {preview === null ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                写下你要怎么改这份评分标准（例如「把 A1 的权重提到 30，并加一条关于错误处理的条目」）。
+                会先给你一份改动清单，确认之后才会写进表格。
+              </p>
+              <Textarea
+                rows={6}
+                value={text}
+                aria-label="调整要求"
+                data-testid="rubric-adjust-text"
+                onChange={(event) => setText(event.target.value)}
+              />
+            </>
+          ) : preview.changes.length === 0 ? (
+            <Alert data-testid="rubric-adjust-empty" className="border-border bg-muted/40">
+              <AlertTitle>模型认为这份评分标准不需要修改</AlertTitle>
+              <AlertDescription>可以把要求写得更具体一些，或者直接在上面的表格里手动改</AlertDescription>
+            </Alert>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {`共 ${preview.changes.length} 处改动。确认无误后再点「应用改动」——在那之前表格一点都没变。`}
+              </p>
+              <div className="flex flex-col gap-2" data-testid="rubric-adjust-changes">
+                {preview.changes.map((change, index) => (
+                  // 清单是一次性的静态列表（没有增删改），用下标当 key 是安全的
+                  <ChangeRow key={index} change={change} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <DialogFooter>
+          {preview === null ? (
+            <>
+              <Button variant="outline" data-testid="rubric-adjust-cancel" onClick={handleCancel}>
+                取消
+              </Button>
+              <Button
+                data-loading={adjusting ? 'true' : undefined}
+                // 空要求不发请求：一次调用是真的钱，而空指令必然只换回一次「保持原样」
+                disabled={adjusting || text.trim() === ''}
+                data-testid="rubric-adjust-submit"
+                // 本组件不看这个 promise 的结果（失败时本来就不关窗、不清文本，原因由调用方提示），
+                // 但 `.catch` 不能省：被拒绝的 promise 会变成未处理的 rejection
+                onClick={() => void requestPreview().catch(() => {})}
+              >
+                {adjusting && (
+                  <span className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />
+                )}
+                生成改动
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                data-testid="rubric-adjust-back"
+                onClick={() => setPreview(null)}
+              >
+                返回修改
+              </Button>
+              <Button
+                // 清单为空 = 模型认为不用改：此时新表与旧表逐字节相同，没有可应用的东西
+                disabled={!hasChanges}
+                data-testid="rubric-adjust-apply"
+                onClick={() => {
+                  if (preview !== null) onApply(preview.rubric);
+                }}
+              >
+                应用改动
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

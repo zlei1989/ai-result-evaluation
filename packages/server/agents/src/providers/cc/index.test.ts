@@ -527,6 +527,108 @@ describe('claudeCodeProvider', () => {
     expect(events.some((event) => event.type === 'usage')).toBe(false);
   });
 
+  /**
+   * **回到某一轮**（`run` 的可选 `fork` 入参）在 cc 这一侧的三个判据：
+   *   · 不带 `fork` 时**一个 checkpoint 选项都不碰**（旧路径零改动的运行期证据）；
+   *   · 带 `fork` 时两格落点正确（`resumeSessionAt` / `resumeDropsTurn`）；
+   *   · 被拒时归成 `AGENT_FORK_REJECTED` 且**不重试**（拒绝是确定性的，重发同一个分叉请求永远失败）。
+   */
+  describe('回到某一轮（fork 入参）', () => {
+    it('不带 fork：checkpoint 的两格一个都不出现（旧路径零改动）', async () => {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({
+            recorder,
+            events: [{ type: 'system', subtype: 'init', session_id: 's-1' }, { type: 'result', subtype: 'success' }],
+          }),
+        },
+      });
+      await claudeCodeProvider.run(createRunInput({ resume: { sessionId: 's-1' } }));
+      const options = recorder.options ?? {};
+      expect(options['resume']).toBe('s-1');
+      expect('resumeSessionAt' in options).toBe(false);
+      expect('resumeDropsTurn' in options).toBe(false);
+    });
+
+    it('带 fork：resumeSessionAt 是保留点、resumeDropsTurn 是被丢掉那一轮的 prompt', async () => {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({
+            recorder,
+            events: [{ type: 'system', subtype: 'init', session_id: 's-1' }, { type: 'result', subtype: 'success' }],
+          }),
+        },
+      });
+      await claudeCodeProvider.run(
+        createRunInput({
+          resume: { sessionId: 's-1' },
+          fork: { segment: 0, turn: 2, keepAt: 'entry-keep-2', dropFrom: 'prompt-drop-3' },
+        }),
+      );
+      expect(recorder.options?.['resumeSessionAt']).toBe('entry-keep-2');
+      expect(recorder.options?.['resumeDropsTurn']).toBe('prompt-drop-3');
+    });
+
+    it('dropFrom 为 null 时只给 resumeSessionAt（不声明被丢掉的是哪一轮）', async () => {
+      const recorder = createRecorder();
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({
+            recorder,
+            events: [{ type: 'result', subtype: 'success' }],
+          }),
+        },
+      });
+      await claudeCodeProvider.run(
+        createRunInput({ resume: { sessionId: 's-1' }, fork: { segment: 0, turn: 1, keepAt: 'entry-1', dropFrom: null } }),
+      );
+      expect(recorder.options?.['resumeSessionAt']).toBe('entry-1');
+      expect('resumeDropsTurn' in (recorder.options ?? {})).toBe(false);
+    });
+
+    it('被拒：归成 AGENT_FORK_REJECTED、只发起一次查询（确定性拒绝不许重试）、证据留在事件流', async () => {
+      let queries = 0;
+      const events: AgentEvent[] = [];
+      const recorder = createRecorder();
+      const fake = createFakeClaudeSdk({
+        recorder,
+        events: [
+          { type: 'system', subtype: 'init', session_id: 's-1' },
+          {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'Resume rejected by --resume-drops-turn: discarded range contains a queued user message',
+          },
+        ],
+      }) as { query: (params: unknown) => unknown };
+      setAgentRuntimeForTesting({
+        sdkModule: {
+          [CLAUDE_PACKAGE_NAME]: {
+            ...fake,
+            query: (params: unknown): unknown => {
+              queries += 1;
+              return fake.query(params);
+            },
+          },
+        },
+      });
+      const result = await claudeCodeProvider.run(
+        createRunInput({
+          resume: { sessionId: 's-1' },
+          fork: { segment: 0, turn: 2, keepAt: 'entry-keep-2', dropFrom: 'prompt-drop-3' },
+          onEvent: collectEvents(events),
+        }),
+      );
+      expect(result).toMatchObject({ ok: false, exitReason: 'error' });
+      expect(result.error?.code).toBe('AGENT_FORK_REJECTED');
+      expect(queries).toBe(1);
+      expect(events.some((event) => event.type === 'error' && event.message.includes('Resume rejected'))).toBe(true);
+    });
+  });
+
   it('第二段兜底的 emit 出口抛错：不外抛、仍判 canceled、dispose 恰好一次、失败落 logger.error', async () => {
     // 控制方追加的回归钉：6 个发射口里 onGraceExceeded 这一处没有单出口用例。
     // 消费方抛错是真实形状：编排层的 publishRowEvent → appendEvent 在写侧 schema 不过时抛。

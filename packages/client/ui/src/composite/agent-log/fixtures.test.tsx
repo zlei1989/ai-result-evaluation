@@ -237,12 +237,38 @@ describe('夹具自身的三条口径', () => {
     const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
     const options = { open: true, onOpenChange: () => undefined, rawOpen: false, onRawOpenChange: () => undefined };
     const { container } = render(createElement('div', null, ...rendered.map((block) => renderBlock(block, options))));
-    // 正文在，思考那一块**连标题都没有**。⚠️ 判据是 `.ant-think` 与「思考中…」这两样，
-    // **不是「文本里没有『思考』」**：正文块在流式时新片段会自己淡入，字面上也会有别的「思考」字样
-    // ——按字面判会把正常信号误判成缺陷。
+    // 正文在（这一格同时证明前面那份模型确实上屏了）。判据不是「文本里没有『思考』」：
+    // 正文块在流式时新片段会自己淡入，字面上也会有别的「思考」字样——按字面判会把正常信号误判成缺陷。
     expect(container.textContent).toContain('我先看一眼构建脚本，再动手改。');
-    expect(container.querySelector('.ant-think')).toBeNull();
-    expect(container.textContent).not.toContain('思考中…');
+
+    // 第二道：模型万一漏过一条空白思考块，注册表那一格也不能把它画成空面板或一行「思考中…」。
+    // 直接构造模型过滤后本会交给注册表的形状，走注册表 → DOM（组件侧那条同款守卫在
+    // `thinking-block-view.test.tsx`；这里钉的是注册表这一格没有多画一层）。
+    const blank = render(
+      renderBlock(
+        {
+          kind: 'thinking',
+          block: {
+            kind: 'thinking',
+            id: 'blk-blank',
+            at: '2026-10-02T08:00:00.000Z',
+            messageId: 'msg-blank',
+            subagentId: null,
+            role: 'assistant',
+            source: 'wire',
+            assembly: 'open',
+            mergeKey: 'main|1|assistant|-',
+            segment: 0,
+            usage: null,
+            text: '',
+            textMissing: null,
+            textKind: 'full',
+          },
+        },
+        options,
+      ),
+    );
+    expect(blank.container, '空白思考被画成了空面板 / 一行「思考中…」').toBeEmptyDOMElement();
   });
 });
 
@@ -252,7 +278,7 @@ describe('夹具自身的三条口径', () => {
  * 为什么单列一组：`base/x-markdown.test.tsx` 钉的是外壳对半截围栏的行为，这里钉的是
  * 「日志这条链路上真的有一块半截围栏的正文」——中间那两格（`buildAgentLogModel` 的
  * `assembly` 转发、注册表选到 `TextBlockView`）断了的话，外壳那组用例照旧全绿，
- * 而界面上是「流式正文里没有围栏这一档」。缩进 2 空格的围栏是 X 2.9.0 最容易漏的一档。
+ * 而界面上是「流式正文里没有围栏这一档」。缩进 2 空格的围栏是最容易漏的一档。
  */
 describe('夹具：流式正文块的半截围栏', () => {
   const RENDERER_OPTIONS = { open: true, onOpenChange: () => undefined, rawOpen: false, onRawOpenChange: () => undefined };
@@ -283,10 +309,13 @@ describe('夹具：流式正文块的半截围栏', () => {
     const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
     const view = render(createElement('div', null, renderBlock(block, RENDERER_OPTIONS)));
 
-    const code = view.container.querySelector('code');
-    expect(code?.getAttribute('data-state'), '流式那块正文的围栏没有被标成「还没收尾」').toBe('loading');
-    // 围栏标记（```）是 markdown 语法，不该出现在正文里；它与正文一起被吞掉就是「内容没了」的形态
-    const codeText = code?.textContent ?? '';
+    // 「还没收尾」的可见产物：复制按钮禁用（半截代码复制走没有意义）
+    const copy = view.container.querySelector('[data-slot="code-block-copy-button"]');
+    expect(copy?.hasAttribute('disabled'), '流式那块正文的围栏没有被标成「还没收尾」').toBe(true);
+    // 每行一个 span，`textContent` 不带换行，按行拼回
+    const codeText = Array.from(view.container.querySelectorAll('[data-slot="code-block-line-content"]'))
+      .map((line) => line.textContent ?? '')
+      .join('\n');
     expect(codeText, '围栏里的内容被吞了').toContain('POST /api/open/query-file-change-log');
     expect(codeText, '缩进围栏的代码行没保住（对齐骨架散了）').toContain('queryFileChangeLogs   (lc-web:45)');
     expect(codeText, '围栏标记漏进了正文').not.toContain('```');
@@ -296,16 +325,17 @@ describe('夹具：流式正文块的半截围栏', () => {
   /**
    * **末行不再有「正在写」那一行**（用户口径：删掉那个持续动效）。
    *
-   * 判据取「那一行与它的转圈都不在」：它与正文无关，在一段已经读得通的正文底下只会被读成空白。
-   * `assembly === 'open'` 仍是动效的唯一判据，但它只驱动 `XMarkdownText` 的新片段淡入
-   * （上面那条半截围栏的用例已经钉住 `data-state="loading"`，那是判据仍在起作用的证据）。
+   * 判据取「那一行、它的文案与它的加载态锚点都不在」：它与正文无关，在一段已经读得通的正文底下
+   * 只会被读成空白。加载态的新锚点是 `role="status"`（状态播报）与 `.animate-spin`（转圈图标）。
+   * `assembly === 'open'` 仍是流式的唯一判据，它只驱动 `XMarkdownText`（上面那条半截围栏的
+   * 用例已经钉住「复制按钮禁用」，那是判据仍在起作用的证据）。
    */
-  it('流式那一块底下不再有「正在思考」那一行（也没有 Spin）', () => {
+  it('流式那一块底下不再有「正在思考」那一行（也没有转圈图标）', () => {
     const renderBlock = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
     const view = render(createElement('div', null, renderBlock(openTextBlock(), RENDERER_OPTIONS)));
 
     expect(view.container.textContent).not.toContain('正在思考');
-    expect(view.container.querySelector('.ant-spin')).toBeNull();
+    expect(view.container.querySelector('[role="status"], .animate-spin')).toBeNull();
     view.unmount();
   });
 });

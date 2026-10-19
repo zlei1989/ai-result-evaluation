@@ -15,6 +15,7 @@ import {
   type AskUserAnswer,
   type AskUserOutcome,
   type AskUserQuestion,
+  type CheckpointCapability,
   type InjectionBoundary,
   type InjectionCapability,
   type InteractionCapability,
@@ -115,7 +116,16 @@ export type AgentErrorCode =
    * 随附内容再发一次还是超，重试只会白跑 `3s × N` 与一整轮模型时间。补救动作是「缩短提示词 /
    * 减少随附文件 / 换窗口更大的模型」，那是配置层的动作，不是重试。
    */
-  | 'AGENT_CONTEXT_OVERFLOW';
+  | 'AGENT_CONTEXT_OVERFLOW'
+  /**
+   * 厂商**确定性拒绝**了这一次「回到某一轮」的分叉请求（如 CC 的
+   * `Resume rejected by --resume-drops-turn:`）。
+   *
+   * ⚠️ **不许重试同一个分叉请求**：拒绝是确定性的（同一份转录、同一个分叉点，再发一次永远失败）。
+   * 调用方的正确收场是「清掉分叉目标 → 普通续接一次 → 保留这次拒绝的证据」；
+   * 这一条与 `AGENT_CONTEXT_OVERFLOW` 同族（确定性失败，不进瞬时重试表）。
+   */
+  | 'AGENT_FORK_REJECTED';
 
 /**
  * 一条要装入的 skill：名字 + **源目录绝对路径**。
@@ -361,6 +371,36 @@ export interface AgentRunInput {
    * 那是最坏的一种——用户以为在追问、智能体其实什么都不记得，而界面上一切正常。
    */
   resume?: { sessionId: string };
+  /**
+   * **回到某一轮**（可选）：从这一行的某一点重开，而不是接着最后一轮。
+   *
+   * 语义只说「保留到哪一点、丢掉从哪一点开始的那一轮」——**不出现任何一家的字段名**：
+   *   · `segment` / `turn` 是**我们的**轮次坐标（段号 + 段内轮次），用于账本与 UI 对齐；
+   *   · `keepAt` 是**被保留那一轮的最后一条厂商条目**（CC 的 `resumeSessionAt`、Pi 的 `fork(entryId)`）；
+   *   · `dropFrom` 是**被丢掉那一轮的第一条 prompt**（CC 的 `resumeDropsTurn`），其余家不消费。
+   * 适配器各自翻成厂商方言；不支持的家（今天只有 DSH）**必须抛中文错**，不许静默退化成普通续接。
+   *
+   * **可选**：缺席 = 既有行为逐字不变（这是「旧调用方零改动」的判据）。
+   */
+  fork?: AgentFork;
+}
+
+/**
+ * 「回到某一轮」的分叉坐标（见 `AgentRunInput.fork`）。
+ *
+ * 两格都指向**厂商账本里的条目**而不是数字：各家截断/分叉的入参都是条目 id（CC 的 chain UUID、
+ * Pi 的 entryId），用我们自己数出来的轮次号去猜一个条目是做不到的——读侧（消息账本）手上本来就有
+ * 那一条的 `vendorId`。
+ */
+export interface AgentFork {
+  /** 回到哪一段（0 = 第一次跑那一段） */
+  segment: number;
+  /** 回到这一段里的第几轮（保留，含） */
+  turn: number;
+  /** 被保留那一轮的**最后一条**厂商条目 id（分叉点本身） */
+  keepAt: string;
+  /** 被丢掉那一轮的**第一条 prompt** 的厂商条目 id；没有（或这一家不消费）为 `null` */
+  dropFrom: string | null;
 }
 
 /**
@@ -568,6 +608,11 @@ export interface AgentProviderMetadata {
    * 把哪一格改成 `yes` 就要同时给出该格的真实场景。
    */
   turnInjection?: TurnInjectionCapability;
+  /**
+   * **回到某一轮**的能力声明（四家各给一份，界面与编排层读同一份）。
+   * 形状与配对规则的真源在 contracts 的 `CheckpointCapabilitySchema`；本包只消费与声明。
+   */
+  checkpoint: CheckpointCapability;
   /**
    * **耗时量级**：真机冒烟的等待预算按它派生，实测超出这一档的上限即判声明与事实不符。
    * 见 `ProviderTiming`。

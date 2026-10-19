@@ -132,4 +132,4 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 ## 相关链接
 
 - 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与行内注入落点）、[《技能配置》](/features/skills-config)（`settings.skills` 的停用名单、`<配置目录>/skills/` 的目录文法与行内装入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
-- 仓库内参考：AGENTS.md「持久化」节（原子写 / BOM / EPERM 口径的真源，互链不复制）
+- 仓库内参考：本篇即持久化口径的真源；测试隔离的完整口径见[《密钥与环境变量》](/guard/secrets-and-env)

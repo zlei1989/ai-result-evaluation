@@ -1,30 +1,36 @@
 'use client';
 
 /**
- * 抽屉正文的一体化布局（L2）：固定区 + 滚动区 + 浮动件。**不套 `Drawer`**——
- * 内嵌只读视图（S1）直接用这个件，几何口径不变，只是参照物从 `body` 换成宿主容器。
+ * 抽屉正文的一体化布局（L2）：固定区 + 滚动区 + 浮动件。**不套抽屉壳**——
+ * 内嵌只读视图（S1）直接用这个件，几何口径不变，只是参照物从抽屉面板换成宿主容器。
  *
  * 八条口径：
  * 1. **最外层取满父容器的全部高度**（`height: '100%'`，不是 `minHeight`）：虚拟列表要有确定高度的视口
- * 才能算出「渲染哪几项」；滚动容器不是 `.ant-drawer-body`；
- * 2. **根节点显式声明 `color` / `background`**（硬要求）：宿主 `.ant-app` 带外层主题类名时，
+ * 才能算出「渲染哪几项」；滚动容器是时间轴自己，不是抽屉面板；
+ * 2. **根节点显式声明 `color` / `background`**（硬要求）：宿主外层主题类名存在时，
  * 「靠继承拿颜色」的文字会变成近黑落在暗底上，而读 token 的组件不受影响——页面呈「组件正常、正文发黑」；
  * 3. **节点内容四态作用于时间轴区，不是整个抽屉**：固定区（进度条 / 面包屑 / 工具条）在任何一态下都在；
  * 4. **过滤在轮次级生效**（两个开关 AND），过滤不改面包屑与提示条的可见性（它们是导航，不是内容）；
- * 5. **跟随最新只有一份 state**：工具条开关、角落浮出按钮、`scrollToBottom` 都读 `viewState.follow`；
+ * 5. **跟随最新只有一份 state**：工具条开关、角落浮动按钮都读 `viewState.follow`；
+ *    「读者是否还在活边」由 `Message Scroller` 判（`end` 变真 ⇒ 释放跟随），恢复只走显式动作。
+ *    **未读仍是本仓的轮次水位**（`filtered.length - readCountRef.current`）：库没有未读数 API；
  * 6. **工具条动作是数据**：`actions` 传了就用传入的，不传用 `useAgentLogToolbarPreset` 的预设
  *    （这条守卫拦的是「预设盖掉调用方传进来的动作」：传了还读预设，工具条上会出现调用方没要的按钮）；
  * 7. **底部槽（`footer`）是第三段固定区**：它排在滚动区**之后**，故滚动区按它的高度**自动缩水**
  *    （`flex: 1` + `minHeight: 0` 已经保证了这一条，不需要额外改高度算术）。槽里**不加内边距**：
  *    占用它的件（消息输入区）自己那一层各段的内缩不同（排队行贴边、输入框内缩），
  *    在这里统一加一层 padding 会让它没法贴边。
- * 8. **浮动件（「回到最新」）住在滚动区里面**（不是根节点上）：定位基准因此是滚动区，而滚动区的
+ * 8. **浮动件（「回到最新」）住在滚动区的 Root 里**（不是根节点上）：定位基准因此是滚动区，而滚动区的
  *    高度已经扣掉了底部固定区 ⇒ 有没有 footer 都不必算高度差；它也不会压在 footer 里的输入区上
  *    （压在发送键上时点击会被它拦掉：症状是「那颗键点不动」）。
  */
-import { Alert, Badge, Button, Flex, FloatButton, InputNumber, Skeleton, Switch, Tooltip, Typography, theme } from 'antd';
-import { VerticalAlignBottomOutlined } from '@ant-design/icons';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowDown } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Alert, AlertAction, AlertTitle } from '../../components/ui/alert';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
+import { Skeleton } from '../../components/ui/skeleton';
+import { Switch } from '../../components/ui/switch';
 import type {
   AgentLogDiagnostics,
   AgentEnvironment,
@@ -40,6 +46,8 @@ import type {
   SessionNode,
 } from './types';
 import { capabilityReasonOf } from './types';
+import type { CheckpointCapability } from '@aieval/contracts';
+import type { CheckpointTarget } from './checkpoint-marker';
 import { nodeIndex } from './render-blocks';
 import type { BlockRenderer } from './block-renderer-registry';
 import { blockRendererOf, useBlockRenderers } from './block-renderer-registry';
@@ -52,7 +60,9 @@ import { EmptyState } from '../../base/empty-state';
 import { useAgentLogView, type AgentLogFilters, type AgentLogViewState } from './use-agent-log-view';
 import { useAgentLogToolbarPreset, type ToolbarAction } from './agent-log-toolbar-preset';
 import { VirtualTurnList, type ListController } from './virtual-turn-list';
-import { rowEventsOfTurn } from './agent-message-timeline';
+import { rowEventsOfTurn, turnKey } from './agent-message-timeline';
+import { MessageScrollerButton } from '../../components/ui/message-scroller';
+import { LogScroller, type LogScrollerCommands } from './log-scroller';
 
 /** 空轮次常量：`content` 不是 `ready` 时统一给这一份（每次新建数组会让下游的 memo 全部失效） */
 const EMPTY_TURNS: readonly LogTurn[] = [];
@@ -92,6 +102,15 @@ export interface TimelineSlotProps {
    * 采数通道可以不同（codex 迁移 app-server 前，子任务正文只在子线程会话文件里；今天唯一走 `session-file` 的是 claude 的子智能体用量），拿错节点就会说错原因。
    */
   capability?: MessageCapabilityMap;
+  /** 轮末「回到这里」：能力声明与两个出口（见 `CheckpointMarker`） */
+  checkpoint?: CheckpointCapability | null;
+  onCheckpoint?(target: CheckpointTarget): void;
+  checkpointAnchorOf?(target: CheckpointTarget): { keepAt: string; dropFrom: string | null } | null;
+  /**
+   * 滚动视口（Message Scroller 的 Viewport）。默认时间轴把它当 react-virtual 的滚动元素；
+   * 自带时间轴（S1/S5）的槽位可以不用它——滚动本身仍由这一层的 `LogScroller` 负责。
+   */
+  scrollElementRef?: RefObject<HTMLElement | null>;
 }
 
 export interface AgentLogLayoutProps {
@@ -104,6 +123,13 @@ export interface AgentLogLayoutProps {
   actions?: readonly ToolbarAction[];
   /** 时间轴槽位：不传 = `VirtualTurnList`（虚拟滚动）；传函数拿到的是已经定好的那一套 props */
   timeline?: ReactNode | ((props: TimelineSlotProps) => ReactNode);
+  /**
+   * 轮末「回到某一轮」的能力声明与两个出口（可选）。不传 = 不画这一格——
+   * 与 `capability` 同一条「不编一份都支持」的口径。
+   */
+  checkpoint?: CheckpointCapability | null;
+  onCheckpoint?(target: CheckpointTarget): void;
+  checkpointAnchorOf?(target: CheckpointTarget): { keepAt: string; dropFrom: string | null } | null;
   /** 视图态外置（S5）：不传则由本件内部用 `useAgentLogView` */
   viewState?: AgentLogViewState;
   /**
@@ -119,10 +145,26 @@ export interface AgentLogLayoutProps {
    */
   connected?: boolean;
   /**
+   * 这一行是否已经收场（终态）。
+   *
+   * 终态行没有实时流是**正常的**，与运行中断线是两件事：同一个「未连接」在三处出现时，
+   * 读的人分不清「跑完了」与「通道挂了」。传 `true` 时文案改成「已结束」，不再与「通道挂了」共用一个说法。
+   * 不传按「不知道」处理，文案保持中性的「未连接」。
+   */
+  settled?: boolean;
+  /**
    * 底部槽：排在滚动区之后的第三段固定区（本仓放消息输入区）。
    * 不给就**一个节点都不渲染**（不留空位、不动高度）——那是「这一行不收人工消息」的如实表达。
    */
   footer?: ReactNode;
+  /**
+   * 本视图是否在前台（默认 `true`）。不住在页签里的宿主不必传。
+   *
+   * 传 `false` 时把内部二级层（环境信息）收起来：页签切走后日志面板只是 `hidden`，
+   * 而环境抽屉走 portal，仍会浮在别的页签之上。只在**切走**这一刻关，不动用户的开合偏好
+   * 之外的任何状态（滚动位置、折叠态都不受影响）。
+   */
+  active?: boolean;
 }
 
 /** 当前视图的节点：找不到（模型换了）时回落到主会话，再回落到第一个节点 */
@@ -154,6 +196,28 @@ function errorText(error: unknown): string {
 /** 提示位有没有内容：`undefined` / `null` / `false` 都算「不传」，**不留空位** */
 function hasNotice(node: ReactNode): boolean {
   return node !== undefined && node !== null && node !== false;
+}
+
+/**
+ * 非破坏性提示的三种语气（信息 / 警告 / 错误）。
+ *
+ * 统一走 vendored `Alert`：`role="alert"` 与版式由它给，颜色只引语义变量，
+ * 不在这里另写一套提示条（同一屏两套边框与间距的漂移是静默的）。
+ */
+function InfoNotice({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <Alert className="border-info/40 bg-info/5">
+      <AlertTitle className="text-info">{children}</AlertTitle>
+    </Alert>
+  );
+}
+
+function WarningNotice({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <Alert className="border-warning/40 bg-warning/5">
+      <AlertTitle className="text-warning">{children}</AlertTitle>
+    </Alert>
+  );
 }
 
 /**
@@ -200,11 +264,11 @@ export function notForwardedNotice(node: LogNode, turns: readonly LogTurn[]): Re
   // 原因那一格与工具卡片的「结果未采集 · 原因」走**同一个函数**（`capabilityReasonOf`）：
   // 两处各判一次的话，同一个能力维度在两句话里可能给出不同答案
   const reason = capabilityReasonOf(node.capability['subagent']);
-  if (reason !== null) return <Alert type="info" showIcon title={`子任务轨迹不可用 · ${reason}`} />;
+  if (reason !== null) return <InfoNotice>{`子任务轨迹不可用 · ${reason}`}</InfoNotice>;
   if (node.kind !== 'row' && node.source === 'session-file' && node.endedAt === null) {
-    return <Alert type="info" showIcon title="运行期只有派发事件与状态，完整轨迹要等运行结束" />;
+    return <InfoNotice>运行期只有派发事件与状态，完整轨迹要等运行结束</InfoNotice>;
   }
-  return <Alert type="info" showIcon title="该子任务的对话未转发（只投送了工具调用）" />;
+  return <InfoNotice>该子任务的对话未转发（只投送了工具调用）</InfoNotice>;
 }
 
 /**
@@ -317,62 +381,65 @@ function ToolbarActions({
   onNumberDraft(next: number | null): void;
   onNumberCommit(action: ToolbarAction & { number: NonNullable<ToolbarAction['number']> }): void;
 }): ReactNode {
-  const { token } = theme.useToken();
   return (
-    <Flex align="center" gap={token.marginSM} wrap>
+    <div className="flex flex-wrap items-center gap-snug">
       {actions.map((action) => {
         if (action.visible === false) return null;
 
         if (action.toggle !== undefined) {
           return (
-            <Flex key={action.key} align="center" gap={token.marginXXS}>
-              {/* `aria-label` 与文案同名：`Switch` 没有可访问名时屏读器只会念「开关」 */}
+            <div key={action.key} className="flex items-center gap-hair">
+              {/* `aria-label` 与文案同名：开关没有可访问名时屏读器只会念「开关」 */}
               <Switch
-                size="small"
+                size="sm"
                 checked={action.toggle.checked}
-                onChange={action.toggle.onChange}
+                onCheckedChange={action.toggle.onChange}
                 disabled={action.disabled}
                 aria-label={action.label}
               />
-              <Typography.Text>{action.label}</Typography.Text>
-            </Flex>
+              <span className="text-body">{action.label}</span>
+            </div>
           );
         }
 
         if (action.number !== undefined) {
           const number = action.number;
           return (
-            <Flex key={action.key} align="center" gap={token.marginXXS}>
-              <Typography.Text>{action.label}</Typography.Text>
-              <InputNumber
-                size="small"
+            <div key={action.key} className="flex items-center gap-hair">
+              <span className="text-body">{action.label}</span>
+              <input
+                type="number"
+                className="h-6 w-16 rounded-md border border-input bg-background px-1.5 text-xs text-foreground"
                 min={number.min}
                 max={number.max}
                 value={numberDraft ?? number.value}
                 disabled={action.disabled}
                 aria-label={action.label}
-                onChange={(value) => onNumberDraft(typeof value === 'number' ? value : null)}
+                onChange={(event) => onNumberDraft(event.target.value === '' ? null : Number(event.target.value))}
                 // 回车 / 失焦即跳；越界在提交时 clamp，回显值由动作数据给
-                onPressEnter={() => onNumberCommit({ ...action, number })}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') onNumberCommit({ ...action, number });
+                }}
                 onBlur={() => onNumberCommit({ ...action, number })}
               />
-            </Flex>
+            </div>
           );
         }
 
-        // 纯图标按钮：`aria-label` 与 `Tooltip` 都写 label（「？环境信息」是唯一一处）
+        // 纯图标按钮：`aria-label` 与原生 `title` 都写 label（「？环境信息」是唯一一处）
         if (action.icon !== undefined) {
           return (
-            <Tooltip key={action.key} title={action.label}>
-              <Button
-                type="text"
-                size="small"
-                icon={action.icon}
-                aria-label={action.label}
-                disabled={action.disabled}
-                onClick={action.onSelect}
-              />
-            </Tooltip>
+            <Button
+              key={action.key}
+              variant="ghost"
+              size="icon-sm"
+              aria-label={action.label}
+              title={action.label}
+              disabled={action.disabled}
+              onClick={action.onSelect}
+            >
+              {action.icon}
+            </Button>
           );
         }
 
@@ -382,18 +449,17 @@ function ToolbarActions({
         if (action.onSelect === undefined) return null;
 
         return (
-          <Button key={action.key} size="small" autoInsertSpace={false} disabled={action.disabled} onClick={action.onSelect}>
+          <Button key={action.key} size="xs" variant="outline" disabled={action.disabled} onClick={action.onSelect}>
             {action.label}
           </Button>
         );
       })}
-    </Flex>
+    </div>
   );
 }
 
 export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
-  const { token } = theme.useToken();
-  const { model, environment, diagnostics, source, onDownload, actions, timeline, notice, liveError, connected, footer } = props;
+  const { model, environment, diagnostics, source, onDownload, actions, timeline, notice, liveError, connected, settled = false, footer } = props;
 
   const nodes = useMemo(() => nodeIndex(model.nodes), [model.nodes]);
   // 视图态：不传就内部持一份。**hook 无条件调用**（不能在条件分支里少调一个 hook），
@@ -403,6 +469,15 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
     props.viewState === undefined ? { model } : { model, defaultOpenKeys: EMPTY_KEYS },
   );
   const viewState = props.viewState ?? internalViewState;
+
+  /**
+   * 页签切走时收起环境信息：面板只是 `hidden`，而环境抽屉是 portal（不受 `display:none`
+   * 影响），不收入会浮在别的页签上。只在「变成非前台」这一刻关，用户切回来看到的是原样。
+   */
+  const active = props.active ?? true;
+  useEffect(() => {
+    if (!active) viewState.setEnvironmentOpen(false);
+  }, [active, viewState.setEnvironmentOpen]);
 
   const node = nodeOf(model, viewState.activeNodeId);
   const content = node?.content;
@@ -431,63 +506,35 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
 
   // ——— 折叠态：默认展开键由 `defaultOpenKeysOf` 算（住在 hook 里，故这里不重复算一遍）———
 
-  // ——— 跟随最新———
-  /** 已读水位：跟随期间的轮次数。用户上翻后它冻住，`未读 = 当前轮数 - 水位` */
+  // ——— 跟随最新（库判活边，本仓只留一份状态）———
+  /**
+   * 已读水位：跟随期间的轮次数。用户上翻后它冻住。
+   *
+   * **未读 = `filtered.length - readCountRef.current`**：Message Scroller 没有未读数 API，
+   * 这个「N 轮未读」是本仓的派生（轮次水位），不随跟随机制一起交出去。
+   */
   const readCountRef = useRef(filtered.length);
-  /** 滚动区容器（原生捕获监听挂在它上面）与它当前认下的那个滚动容器 */
-  const scrollAreaRef = useRef<HTMLElement | null>(null);
-  const scrollerRef = useRef<HTMLElement | null>(null);
-  const lastScrollTopRef = useRef(0);
+  /** 滚动区命令（回到最新 / 滚到某轮）：由 `LogScroller` 内部的库串起来 */
+  const scrollerRef = useRef<LogScrollerCommands | null>(null);
+  /** 滚动视口：默认时间轴用它当 react-virtual 的滚动元素 */
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (viewState.follow) readCountRef.current = filtered.length;
   }, [viewState.follow, filtered.length]);
 
-  useEffect(() => {
-    if (!viewState.follow) return;
-    // 在一次提交之后把视口带到底：**每次都算**（不缓存 index——轮次会随流式追加而增删）
-    controllerRef.current?.scrollToBottom();
-  }, [viewState.follow, filtered]);
-
   /**
-   * 用户向上滚动 ⇒ 自动关闭跟随。
-   *
-   * 为什么在**本件**监听而不是在 `VirtualTurnList` 里：那里只有 `Listy` 的 `onScroll`，
-   * 而换 `timeline` 槽（S1/S5 的自有时间轴实现）时那一条就断了；本件监听的是滚动区容器，
-   * 两条路径都覆盖。
-   *
-   * 用**原生捕获阶段**的监听（`addEventListener('scroll', fn, true)`）而不是 React 的 `onScrollCapture`：
-   * 滚动事件不冒泡，只有捕获阶段能从祖先看到它；原生监听在浏览器与 jsdom 里的语义完全一致，
-   * 「换个渲染器就收不到」这类差异也就没有了。
-   *
-   * 两个必须的过滤（否则会误关：① 轮次里的工具结果有自己的滚动区；② 换节点会换容器）：
-   *   · 只认「容器里真的有轮次行」的那一个（`data-turn-row` 是我们自己标的锚点）；
-   *   · 换了一个新的滚动容器时只记基线，不判方向。
+   * 库判「下方还有内容」⇒ 读者已离开活边：释放跟随。
+   * **只往释放方向改**（恢复一律由显式动作触发），这样工具条开关与库的判定不会互相打架。
    */
-  useEffect(() => {
-    const host = scrollAreaRef.current;
-    if (host === null) return;
-    const onScroll = (event: Event): void => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.querySelector('[data-turn-row]') === null) return;
-      if (scrollerRef.current !== target) {
-        scrollerRef.current = target;
-        lastScrollTopRef.current = target.scrollTop;
-        return;
-      }
-      const previous = lastScrollTopRef.current;
-      lastScrollTopRef.current = target.scrollTop;
-      if (target.scrollTop < previous) viewState.setFollow(false);
-    };
-    host.addEventListener('scroll', onScroll, true);
-    return () => host.removeEventListener('scroll', onScroll, true);
+  const handleReleaseFollow = useCallback((): void => {
+    viewState.setFollow(false);
   }, [viewState.setFollow]);
 
   const backToLatest = useCallback((): void => {
+    // 只打开跟随：滚到底由 `LogScroller` 在 Provider 拿到新的 autoScroll 之后调库的 scrollToEnd
     viewState.setFollow(true);
-    controllerRef.current?.scrollToBottom();
-  }, [viewState]);
+  }, [viewState.setFollow]);
 
   const unread = viewState.follow ? 0 : Math.max(filtered.length - readCountRef.current, 0);
 
@@ -501,7 +548,13 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
     onDownload,
     onJumpToTurn: (next: number) => {
       setJumpTarget(next);
+      const turn = filtered[next - 1];
+      // 越界（轮次被流式追加/回退掉）时什么都不做
+      if (turn === undefined) return;
+      // 先让虚拟列表把目标行挂上（react-virtual 只挂可见行），再让库按消息 id 精确对齐：
+      // 目标行还没挂上时库会挂 pending，在该行挂载后补一次（虚拟化下这是唯一可靠的两步）
       controllerRef.current?.scrollToTurn(next - 1, 'top');
+      scrollerRef.current?.scrollToMessage(turnKey(turn, next - 1), { align: 'start' });
     },
     onOpenEnvironment: () => {
       viewState.setEnvironmentOpen(true);
@@ -583,6 +636,11 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
     onRequestDiagnostics: source?.requestDiagnostics === undefined ? undefined : () => source.requestDiagnostics?.(),
     // 能力声明随节点走：它决定工具/清单卡片上那句「结果未采集 · 为什么」
     capability: node?.capability,
+    checkpoint: props.checkpoint,
+    onCheckpoint: props.onCheckpoint,
+    checkpointAnchorOf: props.checkpointAnchorOf,
+    // 滚动视口交给默认时间轴：虚拟化要拿它当 react-virtual 的滚动元素
+    scrollElementRef: viewportRef,
   };
 
   /** 时间轴区的内容：四态各有一幅画面（**不是整个抽屉**，固定区在任何一态下都在） */
@@ -600,7 +658,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
      */
     if (node !== undefined && node.kind === 'subagent' && (content === undefined || content.status === 'loading')) {
       // 「内容未到」给 Skeleton，**不是空态**：空态会被读成「这个子任务什么都没做」
-      return <Skeleton active />;
+      return <Skeleton className="h-24 w-full" />;
     }
     if (node !== undefined && node.kind === 'subagent' && content?.status === 'ready' && turns.length === 0) {
       return subagentEmptyState(node);
@@ -610,26 +668,25 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
       return <EmptyState title="还没有日志" description="这一行还没开始执行，或执行尚未产生输出" />;
     }
     if (content === undefined || content.status === 'loading') {
-      return <Skeleton active />;
+      return <Skeleton className="h-24 w-full" />;
     }
     if (content.status === 'error') {
       return (
-        <Flex vertical gap={token.marginSM} align="flex-start">
+        <div className="flex flex-col items-start gap-snug">
           {/* 原因如实显示（与调用方给的中文原因同源），不是一句「出错了」 */}
-          <Alert
-            type="error"
-            showIcon
-            title="节点内容读取失败"
-            description={errorText(content.error)}
-            style={{ width: '100%' }}
-          />
-          {/* 不给 `retryNode` 就只渲染 Alert、**不渲染按钮**：一个点了没反应的按钮比没有按钮更糟 */}
-          {source?.retryNode !== undefined && (
-            <Button size="small" autoInsertSpace={false} onClick={() => source.retryNode?.(node?.id ?? '')}>
-              重试
-            </Button>
-          )}
-        </Flex>
+          <Alert variant="destructive" className="w-full">
+            <AlertTitle>节点内容读取失败</AlertTitle>
+            <AlertAction>
+              {/* 不给 `retryNode` 就只渲染提示、**不渲染按钮**：一个点了没反应的按钮比没有按钮更糟 */}
+              {source?.retryNode !== undefined && (
+                <Button size="xs" variant="outline" onClick={() => source.retryNode?.(node?.id ?? '')}>
+                  重试
+                </Button>
+              )}
+            </AlertAction>
+            <div className="col-start-2 text-sm text-muted-foreground">{errorText(content.error)}</div>
+          </Alert>
+        </div>
       );
     }
     /**
@@ -642,7 +699,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
       return <EmptyState title="还没有日志" description="这一行还没开始执行，或执行尚未产生输出" />;
     }
     if (filtersActive && filtered.length === 0 && turns.length > 0) {
-      return <Typography.Text type="secondary">没有命中过滤的轮次</Typography.Text>;
+      return <span className="text-sub text-muted-foreground">没有命中过滤的轮次</span>;
     }
     if (typeof timeline === 'function') return timeline(timelineProps);
     if (timeline !== undefined) return timeline;
@@ -656,40 +713,27 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
   })();
 
   return (
-    // ⚠️ `color` / `background` 必须写在**自己的根节点**上：宿主 `.ant-app` 带外层主题类名时，
-    // 靠继承拿颜色的文字会变成近黑落在暗底上，而读 token 的 Card / Tag / Button 不受影响
-    <Flex
-      vertical
+    // ⚠️ 颜色与背景必须写在**自己的根节点**上：宿主外层主题类名存在时，
+    // 靠继承拿颜色的文字会变成近黑落在暗底上，而读 token 的组件不受影响
+    <div
       data-testid="agent-log-layout"
-      style={{
-        height: '100%',
-        color: token.colorText,
-        background: token.colorBgLayout,
-        position: 'relative',
-      }}
+      className="relative flex h-full flex-col bg-background text-foreground"
     >
       {/* ① 固定区（不滚、不可折叠）：事实进度条 + 面包屑 + 工具条 + 原始输出 */}
-      <Flex
-        vertical
-        gap={token.marginXXS}
-        style={{
-          padding: `${token.paddingSM}px ${token.paddingMD}px`,
-          borderBottom: `1px solid ${token.colorBorderSecondary}`,
-        }}
-      >
+      <div className="flex flex-col gap-hair border-b border-border px-roomy py-snug">
         {/* 两类非破坏性提示放在固定区最上面（有数据时才出现的**额外**行，不挤进事实条那一行） */}
         {hasNotice(notice) && (
-          <Flex vertical data-testid="agent-log-notice">
-            <Alert type="warning" showIcon title={notice} />
-          </Flex>
+          <div data-testid="agent-log-notice">
+            <WarningNotice>{notice}</WarningNotice>
+          </div>
         )}
         {hasNotice(liveError) && (
-          <Flex vertical data-testid="agent-log-live-error">
-            <Alert type="warning" showIcon title={liveError} />
-          </Flex>
+          <div data-testid="agent-log-live-error">
+            <WarningNotice>{liveError}</WarningNotice>
+          </div>
         )}
 
-        {/* 事实条 + 领域事实**两行**（用户 2026-10-07 口径）：前者讲「这一行跑了什么」
+        {/* 事实条 + 领域事实**两行**：前者讲「这一行跑了什么」
             （状态 / 轮次 / 用量 / 耗时 / 错误），后者讲「这一行是谁在跑、改了什么、得了多少分」
             （智能体 · 模型 · 思考强度 · 改动 · 评分）。**分行是硬要求**：并回一行时靠 `wrap`
             自然折行，「改动 / 评分」会被甩到第二行、与前三格拆散。
@@ -700,7 +744,7 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
           contentTruncatedReason={node?.contentTruncatedReason ?? null}
         />
         <AgentLogDomainFacts domain={model.facts.domain} />
-        <Flex align="center" gap={token.marginSM} wrap>
+        <div className="flex flex-wrap items-center gap-snug">
           <LogNodeBreadcrumb nodes={model.nodes} activeNodeId={viewState.activeNodeId} onSelect={viewState.setActiveNodeId} />
           <ToolbarActions
             actions={toolbarActions}
@@ -710,52 +754,51 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
           />
           {/* 过滤生效时才显示命中数：它回答「我筛掉了多少」，没过滤时这个数是废话 */}
           {filtersActive && (
-            <Typography.Text type="secondary">
+            <span className="text-sub text-muted-foreground">
               命中 {filtered.length} / {turns.length} 轮
-            </Typography.Text>
+            </span>
           )}
-        </Flex>
+        </div>
 
         {/* 原始输出（诊断变体）：三态各有画面（`RawOutputPanel` 只画 ready 态，其余由本件决定） */}
-        {diagnostics !== undefined && diagnostics.status === 'loading' && (
-          <Skeleton active title={false} paragraph={{ rows: 1 }} />
-        )}
+        {diagnostics !== undefined && diagnostics.status === 'loading' && <Skeleton className="h-5 w-full" />}
         {diagnostics !== undefined && diagnostics.status === 'error' && (
-          <Alert
-            type="error"
-            showIcon
-            title="原始输出读取失败"
-            action={
-              source?.requestDiagnostics === undefined ? undefined : (
-                <Button size="small" autoInsertSpace={false} onClick={() => source.requestDiagnostics?.()}>
+          <Alert variant="destructive">
+            <AlertTitle>原始输出读取失败</AlertTitle>
+            {source?.requestDiagnostics !== undefined && (
+              <AlertAction>
+                <Button size="xs" variant="outline" onClick={() => source.requestDiagnostics?.()}>
                   重试
                 </Button>
-              )
-            }
-          />
+              </AlertAction>
+            )}
+          </Alert>
         )}
         {/*
-          原文行：连接状态 + 「原始输出 N 条」+ 挂在这一行上的动作（`placement: 'raw'`，预设里是「下载台账」，
-          用户 2026-10-03 口径）。整行渲不渲染由 `rawRowVisible` 判：**三样都没有时不画**，
-          否则固定区会多出一段空 gap。
+          原文行：连接状态 + 「原始输出 N 条」+ 挂在这一行上的动作（`placement: 'raw'`，预设里是「下载台账」）。
+          整行渲不渲染由 `rawRowVisible` 判：**三样都没有时不画**，否则固定区会多出一段空 gap。
           `ToolbarActions` 与工具条那一行是同一个件——两行的渲法不该有两份实现。
         */}
         {rawRowVisible && (
-          <Flex align="center" gap={token.marginSM} wrap>
+          <div className="flex flex-wrap items-center gap-snug">
             {/*
-              连接状态在这一行的**最左侧**（用户 2026-10-07 口径：与「原始输出 N 条」合并成一行省空间）。
-              `size="small"` 对 status 徽标**不改变外观**（`Badge.js` 只把它拼进计数徽标的 `ScrollNumber`）：
-              写出来是为了「抽屉里每个带 size 的组件都写死 small」这条口径能静态核对，见
-              `agent-log-facts-bar.tsx` 的同名注释与 `agent-log-size-sweep.test.ts` 的守卫。
+              连接状态在这一行的**最左侧**（与「原始输出 N 条」合并成一行省空间）。
+              状态点只在 `connected` 时按 processing 上色；断线是中性点——processing 的动效
+              是「真的在流」的信号，不能在断线时留着。
               **只在传了 `connected` 时**渲染这一格（不传就是「这一行没有实时通道」这个事实，不编一个「未连接」）
             */}
             {connected !== undefined && (
-              <Badge
-                size="small"
+              <span
                 data-testid="agent-log-connection"
-                status={connected ? 'processing' : 'default'}
-                text={connected ? '实时连接中' : '未连接'}
-              />
+                data-status={connected ? 'processing' : settled ? 'settled' : 'default'}
+                className="inline-flex items-center gap-hair text-sub text-muted-foreground"
+              >
+                <span
+                  aria-hidden
+                  className={`size-1.5 shrink-0 rounded-full ${connected ? 'animate-pulse bg-success' : 'bg-faint-foreground'}`}
+                />
+                {connected ? '实时连接中' : settled ? '已结束' : '未连接'}
+              </span>
             )}
             {diagnostics !== undefined && diagnostics.status === 'ready' && (
               <RawOutputPanel
@@ -771,61 +814,63 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
               onNumberDraft={setNumberDraft}
               onNumberCommit={commitNumber}
             />
-            {/* 虚拟列表的读数：住「下载台账」**后面**（用户口径）——它是同一个问题的另一半：
+            {/* 虚拟列表的读数：住「下载台账」**后面**——它是同一个问题的另一半：
                 「原文在哪儿下载」与「这一屏画了几轮」一起构成这一行的自检信息 */}
             {renderedTurns !== null && (
-              <Typography.Text type="secondary">
+              <span className="text-sub text-muted-foreground">
                 已渲染 {renderedTurns.shown} / 共 {renderedTurns.total} 轮
-              </Typography.Text>
+              </span>
             )}
-          </Flex>
+          </div>
         )}
-      </Flex>
+      </div>
 
-      {/* ② 滚动区：`flex: 1` + `minHeight: 0` 取满剩余高度；滚动容器是时间轴自己（不是抽屉 body） */}
-      <Flex
-        vertical
-        ref={scrollAreaRef}
-        flex={1}
-        /*
-         * **滚动区不给自己留内边距**（用户口径）：日志正文贴到抽屉左右边缘，
-         * 横向空间全给内容（长命令行 / diff 少一层内缩）。行与行之间的呼吸由轮次行自己带。
-         *
-         * `position: relative` 是给**浮动件**（「回到最新」）当定位基准的：它住在这块滚动区里
-         * ⇒「距底 `paddingMD`」量到的是**滚动区的底边**，而滚动区的高度已经扣掉了底部固定区
-         * （footer 在它后面、被 flex 拿去自己的高度）。footer 存在与否都不必算高度差，
-         * 浮动件也不会压在输入区那颗发送键上（压在它上面时点击会被拦截，症状是「发送键点不动」）。
-         */
-        style={{ minHeight: 0, padding: 0, position: 'relative' }}
+      {/*
+        ② 滚动区：`Message Scroller` 的 Viewport（取满剩余高度）。
+        跟随（读者在活边才追新）、上翻释放、滚回最新、滚到某轮都在这一层；
+        **滚动区不给自己留内边距**：日志正文贴到抽屉左右边缘，横向空间全给内容。
+
+        浮出按钮住在 Root 里、Viewport 之后：`position: absolute` 量的是 Root，而 Root 的高度
+        已经扣掉了底部固定区（footer 在它后面、被 flex 拿去自己的高度）⇒ 有没有 footer 都不必算
+        高度差，按钮也不会压在输入区那颗发送键上（压在它上面时点击会被拦截，症状是「发送键点不动」）。
+        可点态由库给（无可滚方向时它 `inert` + `data-active="false"`）：本件只在「不跟随」时挂上它。
+      */}
+      <LogScroller
+        autoScroll={viewState.follow}
+        onReleaseFollow={handleReleaseFollow}
+        viewportRef={viewportRef}
+        controllerRef={scrollerRef}
+        backToLatest={
+          viewState.follow ? null : (
+            <MessageScrollerButton
+              data-testid="agent-log-back-to-latest"
+              direction="end"
+              behavior="auto"
+              aria-label={`回到最新（${unread} 轮未读）`}
+              title={`回到最新（${unread} 轮未读）`}
+              onClick={backToLatest}
+              style={{ right: 'var(--density-space-md)', bottom: 'var(--density-space-md)' }}
+            >
+              <ArrowDown aria-hidden />
+              {unread > 0 && (
+                <Badge variant="destructive" className="absolute -top-1 -right-1 h-5 min-w-5 justify-center px-1">
+                  {unread}
+                </Badge>
+              )}
+            </MessageScrollerButton>
+          )
+        }
       >
         {timelineArea}
-
-        {/* 浮动件：未读时右下角「回到最新」。显隐与工具条开关**是同一份 state**。
-            未读数是 `badge`（0 时 Badge 自己不出标），无障碍名走 `aria-label`——
-            `FloatButton` 的可视内容只有图标，没有 `aria-label` 读屏就只剩一个无名按钮 */}
-        {!viewState.follow && (
-          <FloatButton
-            icon={<VerticalAlignBottomOutlined aria-hidden />}
-            badge={{ count: unread }}
-            aria-label={`回到最新（${unread} 轮未读）`}
-            tooltip={`回到最新（${unread} 轮未读）`}
-            onClick={backToLatest}
-            style={{ position: 'absolute', right: token.paddingMD, bottom: token.paddingMD }}
-          />
-        )}
-      </Flex>
+      </LogScroller>
 
       {/* ③ 底部固定区：排队区 + 输入区住这里（**不传就一个节点都不渲染**）。
           它排在滚动区之后 ⇒ 滚动区按它的实际高度自动缩水，这是 flex 的既有行为，
           不需要（也不该）在这里算高度差：算出来的数会在字体加载 / 换密度时过期 */}
       {footer !== undefined && (
-        <Flex
-          vertical
-          data-testid="agent-log-footer"
-          style={{ borderTop: `1px solid ${token.colorBorderSecondary}` }}
-        >
+        <div data-testid="agent-log-footer" className="flex flex-col border-t border-border">
           {footer}
-        </Flex>
+        </div>
       )}
 
       {/* 环境抽屉：**内部件**（不是并列组件）——主抽屉一卸载它跟着没，调用方不必接线 */}
@@ -835,10 +880,10 @@ export function AgentLogLayout(props: AgentLogLayoutProps): ReactNode {
         environment={environment}
         onRetry={source?.requestEnvironment === undefined ? undefined : () => source.requestEnvironment?.()}
         // 能力声明取**当前节点**的那一份（不是主会话的、也不是全局一份）：同一行的不同子任务
-        // 采数通道可以不同（codex 迁移 app-server 前，子任务正文只在子线程会话文件里；今天唯一走 `session-file` 的是 claude 的子智能体用量），拿错节点就会说错原因
+        // 采数通道可以不同，拿错节点就会说错原因
         capability={node?.capability}
         capabilityNotes={node?.capabilityNotes}
       />
-    </Flex>
+    </div>
   );
 }

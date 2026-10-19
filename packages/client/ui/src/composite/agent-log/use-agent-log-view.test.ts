@@ -1,6 +1,7 @@
 /**
  * `useAgentLogView` 与 `defaultOpenKeysOf` 的守卫。四组： * 1. **默认展开态**（表格 + 例外）：进行中的组展开、**失败的组与失败的行都收起**、
- * 思考收起、首次计划清单展开、**问答卡片一格都不加**（卡片不折叠，里面的问题面板默认全收起）；
+ * 思考块进行中展开/结束收起、计划清单进行中展开/完成收起、**问答卡片一格都不加**
+ * （卡片不折叠，里面的问题面板默认全收起）；
  *   2. **折叠态是「默认 ∪ 手动开 ∖ 手动关」**：用户关得掉一个默认展开的块（否则那个开关是假的）；
  *   3. **节点回落**：模型换了、选中的节点没了 ⇒ 回到默认节点；
  *   4. **过滤两格的 AND 叠加**（判据见 `turnMatchesFilters`）。
@@ -43,7 +44,7 @@ function textBlock(id: string): TextBlock {
   };
 }
 
-function thinkingBlock(id: string): ThinkingBlock {
+function thinkingBlock(id: string, assembly: ThinkingBlock['assembly'] = 'snapshot'): ThinkingBlock {
   return {
     kind: 'thinking',
     id,
@@ -52,7 +53,7 @@ function thinkingBlock(id: string): ThinkingBlock {
     subagentId: null,
     role: 'assistant',
     source: 'wire',
-    assembly: 'snapshot',
+    assembly,
     mergeKey: 'main|1|assistant|-',
     segment: 0,
     usage: null,
@@ -60,6 +61,11 @@ function thinkingBlock(id: string): ThinkingBlock {
     textMissing: null,
     textKind: 'full',
   };
+}
+
+/** 只有一个节点的模型（主会话装这几轮）；`useAgentLogView` 的默认展开键按它的轮次算 */
+function mainModel(turns: readonly LogTurn[]): AgentLogModel {
+  return model([sessionNode({ id: 'main', kind: 'main', content: { status: 'ready', data: turns } })], 'main');
 }
 
 function toolCall(id: string, callId: string, tool: ToolCallBlock['tool'] = null): ToolCallBlock {
@@ -172,6 +178,8 @@ function model(nodes: LogNode[], activeNodeId: string): AgentLogModel {
       thinking: null,
       domain: [],
       error: null,
+      contextUsed: null,
+      contextWindow: null,
     },
     nodes,
     activeNodeId,
@@ -231,31 +239,57 @@ describe('defaultOpenKeysOf（内置默认展开态）', () => {
     expect(keys.has('call_1')).toBe(false);
   });
 
-  it('思考块默认收起（不加键）', () => {
-    expect(defaultOpenKeysOf([turn({ blocks: [thinkingBlock('k1')] })], nodes).size).toBe(0);
+  /**
+   * **思考块的 `open ?? running`：第一段「用户还没表态」由默认键承担。**
+   *
+   * 判据是块自己的 `assembly`（流式的唯一判据）：还在流 ⇒ 进默认键（自动展开）；
+   * 收成快照 ⇒ 不进键（自动收起）。两档必须一起钉：只钉前者时「结束不收起」照样绿。
+   */
+  it('思考中自动展开：`assembly` 为 open 的思考块进默认展开键；结束（snapshot）后不进键（自动收起）', () => {
+    expect(defaultOpenKeysOf([turn({ blocks: [thinkingBlock('k1', 'open')] })], nodes).has('k1')).toBe(true);
+    expect(defaultOpenKeysOf([turn({ blocks: [thinkingBlock('k1')] })], nodes).has('k1')).toBe(false);
   });
 
-  it('计划清单：首次（change 为 null）展开；其余收起；进行中或结果未采集时展开', () => {
-    const first = defaultOpenKeysOf([turn({ blocks: [toolCall('card-1', 'call_t', taskPayload())] })], nodes);
-    expect(first.has('card-1')).toBe(true);
-
-    const later = defaultOpenKeysOf(
-      [turn({ blocks: [toolCall('card-2', 'call_t2', taskPayload({ change: { completed: 1, added: 0, removed: 0 }, result: { ok: true, raw: null, truncation: { kind: 'none' } } }))] })],
-      nodes,
-    );
-    expect(later.has('card-2')).toBe(false);
-
+  /**
+   * 计划清单：**进行中展开、完成收起**（不看「首次」也不看「结果采没采到」）。
+   *
+   * 「首次」不是展开的理由：一张已完成的清单把结论写在摘要行上（`4/7 完成` + 状态词），
+   * 展开只会多占一屏。结果未采集也不是：那是「这一格的证据没到」，
+   * 与「这一步还在跑」是两件事（状态行自己会说原因）。
+   */
+  it('计划清单：进行中展开；已完成（无论是否首次、结果采没采到）收起', () => {
     const running = defaultOpenKeysOf(
-      [turn({ blocks: [toolCall('card-3', 'call_t3', taskPayload({ change: { completed: 1, added: 0, removed: 0 }, running: true }))] })],
+      [turn({ running: true, blocks: [toolCall('card-1', 'call_t', taskPayload({ running: true }))] })],
       nodes,
     );
-    expect(running.has('card-3')).toBe(true);
+    expect(running.has('card-1')).toBe(true);
 
+    // 首次（`change === null`）+ 已完成 ⇒ 收起（旧口径在这一格是「展开」，正是本票要改的默认行为）
+    const firstDone = defaultOpenKeysOf([turn({ blocks: [toolCall('card-2', 'call_t2', taskPayload())] })], nodes);
+    expect(firstDone.has('card-2')).toBe(false);
+
+    const laterDone = defaultOpenKeysOf(
+      [
+        turn({
+          blocks: [
+            toolCall(
+              'card-3',
+              'call_t3',
+              taskPayload({ change: { completed: 1, added: 0, removed: 0 }, result: { ok: true, raw: null, truncation: { kind: 'none' } } }),
+            ),
+          ],
+        }),
+      ],
+      nodes,
+    );
+    expect(laterDone.has('card-3')).toBe(false);
+
+    // 结果未采集但已收场 ⇒ 同样收起（摘要行的状态词负责说「结果未采集」）
     const noResult = defaultOpenKeysOf(
       [turn({ blocks: [toolCall('card-4', 'call_t4', taskPayload({ change: { completed: 1, added: 0, removed: 0 } }))] })],
       nodes,
     );
-    expect(noResult.has('card-4')).toBe(true);
+    expect(noResult.has('card-4')).toBe(false);
   });
 
   /**
@@ -330,6 +364,52 @@ describe('useAgentLogView', () => {
     );
 
     expect(result.current.openKeys.has('tool-group:call_1')).toBe(true);
+  });
+
+  /**
+   * **思考块的三段语义**（`open ?? running`，判据来自块自己的 `assembly`）：
+   *   ① 用户还没表态 ⇒ 跟 `running`（默认键）；② 用户点开过 ⇒ 听用户的（`openedKeys`）；
+   *   ③ 用户点收过 ⇒ 听用户的（`closedKeys`，**即使它还在流**）。
+   *
+   * 三段落全部由 `useAgentLogView` 的合并式（默认 ∪ 点开 ∖ 点收）承担，组件只吃一个受控 `open`
+   * ——组件里没有第二份 state（分层纪律 (d)）。三条用例各钉一段，任一段退化都能单独见红。
+   */
+  it('思考块：进行中自动展开，结束后自动收起（默认键随 `assembly` 来去）', () => {
+    const streaming = mainModel([turn({ blocks: [thinkingBlock('k1', 'open')] })]);
+    const { result, rerender } = renderHook(({ current }) => useAgentLogView({ model: current }), {
+      initialProps: { current: streaming },
+    });
+    expect(result.current.openKeys.has('k1')).toBe(true);
+
+    // 同一条思考结束：块收成快照 ⇒ 默认键消失 ⇒ 自动收起
+    rerender({ current: mainModel([turn({ blocks: [thinkingBlock('k1')] })]) });
+    expect(result.current.openKeys.has('k1')).toBe(false);
+  });
+
+  it('思考块：用户手动收起后，后续流式更新不会把它重新展开（第二段之后听用户的）', () => {
+    const { result, rerender } = renderHook(({ current }) => useAgentLogView({ model: current }), {
+      initialProps: { current: mainModel([turn({ blocks: [thinkingBlock('k1', 'open')] })]) },
+    });
+    expect(result.current.openKeys.has('k1')).toBe(true);
+
+    act(() => result.current.onOpenChange('k1', false));
+    expect(result.current.openKeys.has('k1')).toBe(false);
+
+    // 流还在继续（新模型、新数组、assembly 仍是 open）：默认键会重新算出来，但「点收」压住它
+    rerender({ current: mainModel([turn({ blocks: [thinkingBlock('k1', 'open')] })]) });
+    expect(result.current.openKeys.has('k1')).toBe(false);
+  });
+
+  it('思考块：用户手动展开的，结束后保持展开（第三段的另一面）', () => {
+    const { result, rerender } = renderHook(({ current }) => useAgentLogView({ model: current }), {
+      initialProps: { current: mainModel([turn({ blocks: [thinkingBlock('k1')] })]) },
+    });
+    expect(result.current.openKeys.has('k1')).toBe(false);
+
+    act(() => result.current.onOpenChange('k1', true));
+    // 结束后默认键已不存在，但「点开」那份记忆还在
+    rerender({ current: mainModel([turn({ blocks: [thinkingBlock('k1')] })]) });
+    expect(result.current.openKeys.has('k1')).toBe(true);
   });
 
   it('filters 是两格一个对象：setFilters 原样落进 state（AND 由判据函数负责）', () => {

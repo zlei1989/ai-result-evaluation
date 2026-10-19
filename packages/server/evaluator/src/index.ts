@@ -99,11 +99,13 @@ export {
   assertRunMutable,
   deleteRun,
   drainRunningTasks,
+  checkpointRow,
   followUpAvailability,
   followUpRow,
   recoverInterruptedRuns,
   rescoreRow,
   retryRow,
   startRun,
+  type CheckpointInput,
   type FollowUpInput,
 } from './orchestrator';

@@ -12,8 +12,8 @@
  *      故 ` ```json ` 与收尾的 ` ``` ` 原样各占一行（弱化显示），只格式化**围栏里面**的载荷；
  *   3. **非 JSON 分支直接复用 `MonoText`**：那一档的行为与这一格改造前逐字一致（同样的等宽、
  *      `pre-wrap`、`maxHeight` 滚动），两条分支共用同一个件，日后不会各改各的；
- *   4. **颜色全取 antd token**（本仓「样式一律走 antd」的口径）：键 `colorInfo`、字符串 `colorSuccess`、
- *      数字 `colorWarning`、`true/false/null` 用 `colorTextSecondary`、标点 `colorTextTertiary`。
+ *   4. **颜色全取语义变量**：键 `--info`、字符串 `--success`、数字 `--warning`、
+ *      `true/false/null` 用 `--muted-foreground`、标点 `--faint-foreground`。
  *      `literal` 刻意**不借语义色**（把 JSON 里的 `false` 染成"错误色"会被读成出错了）；
  *   5. **它是 `ui` 包的内部件，不从包根转出**（与 `NestedDrawer` 同一口径）：四个调用点都在包内，
  *      转出去等于承诺一套还没有外部消费者的 API（要有外部消费者时再转，顺带补用例）。
@@ -21,7 +21,6 @@
  * 高亮的可测面是 `data-json-token`（`key` / `string` / `number` / `literal` / `punct`）：
  * 观感类的改动没有任何行为断言会因此变红，判据只能挂在**结构**上（见 json-text.test.tsx）。
  */
-import { Flex, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import { MonoText } from './mono-text';
 
@@ -127,52 +126,46 @@ function formatJson(text: string): Formatted | null {
 }
 
 export function JsonText({ text, maxHeight, dataTestId }: JsonTextProps): ReactNode {
-  const { token } = theme.useToken();
   const formatted = formatJson(text);
 
   // 不是 JSON：逐字原样（口径 3）。走同一个 `MonoText`，那一档的行为与改造前逐字一致
   if (formatted === null) return <MonoText text={text} maxHeight={maxHeight} dataTestId={dataTestId} />;
 
-  const colors: Record<JsonTokenKind, string> = {
-    key: token.colorInfo,
-    string: token.colorSuccess,
-    number: token.colorWarning,
+  const tokenClasses: Record<JsonTokenKind, string> = {
+    key: 'text-info',
+    string: 'text-success',
+    number: 'text-warning',
     // 语义色一律不借（口径 4）：`false` / `null` 是**值**，不是「出错了」
-    literal: token.colorTextSecondary,
-    punct: token.colorTextTertiary,
+    literal: 'text-muted-foreground',
+    punct: 'text-faint-foreground',
   };
   const pieces = tokenize(formatted.body);
 
   return (
-    <Flex
-      vertical
+    <div
       data-testid={dataTestId}
-      style={{
-        fontFamily: token.fontFamilyCode,
-        whiteSpace: 'pre-wrap',
-        overflow: 'auto',
-        ...(maxHeight === undefined ? {} : { maxHeight }),
-      }}
+      className="flex min-w-0 flex-col overflow-auto font-mono text-sm whitespace-pre-wrap"
+      style={maxHeight === undefined ? undefined : { maxHeight }}
     >
-      <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>
+      <span style={{ whiteSpace: 'pre-wrap' }}>
         {formatted.fenceOpen !== '' && (
-          <Typography.Text type="secondary">{formatted.fenceOpen}</Typography.Text>
+          <span className="text-muted-foreground">{formatted.fenceOpen}</span>
         )}
         {formatted.fenceOpen !== '' && '\n'}
         {pieces.map((piece, index) =>
           piece.kind === null ? (
             piece.text
           ) : (
-            <span key={index} data-json-token={piece.kind} style={{ color: colors[piece.kind] }}>
+            <span key={index} data-json-token={piece.kind} className={tokenClasses[piece.kind]}>
               {piece.text}
             </span>
           ),
         )}
         {formatted.fenceClose !== '' && '\n'}
         {formatted.fenceClose !== '' && (
-          <Typography.Text type="secondary">{formatted.fenceClose}</Typography.Text>
+          <span className="text-muted-foreground">{formatted.fenceClose}</span>
         )}
-      </Typography.Text>
-    </Flex>
+      </span>
+    </div>
   );
 }

@@ -36,6 +36,7 @@ export {
   runArtifactsUrl,
   runRowMessagesStreamUrl,
   runRowUrl,
+  runTestResultsUrl,
   useAbortRow,
   useAbortRun,
   useCreateRun,
@@ -47,6 +48,7 @@ export {
   useRun,
   useRunArtifacts,
   useRunModelOptions,
+  useRunTestResults,
   useRuns,
   useRescoreRow,
   useRetryRow,
@@ -66,6 +68,8 @@ export {
   type UseFollowUpAvailabilityInput,
   type UseFollowUpAvailabilityResult,
 } from './follow-up';
+// 回到某一轮（写侧）：定位与请求体形状与追问同源，多三格分叉坐标。
+export { CHECKPOINT_URL, postCheckpoint, useCheckpointRow } from './checkpoint';
 /** 评分那条事件流（评审者自己的流水）：与行级流分开的读数与续订（口径见该文件头） */
 export { useRowJudgeEvents, type UseRowJudgeEventsInput, type UseRowJudgeEventsResult } from './judge-events';
 export {

@@ -59,8 +59,7 @@ function createHarness(
     hang?: boolean;
     /**
      * `hooks.start()` **永不返回**（装配段卡住）：用来钉「看门狗只能点名、没有句柄可释放，
-     * 这一行不会落定」这条能力边界（真机读数见 `.scratch/pi-audit3/lifecycle/05-event-stream.test.ts`
-     * 的 D 臂）。
+     * 这一行不会落定」这条能力边界。
      */
     startHang?: boolean;
     streamError?: unknown;

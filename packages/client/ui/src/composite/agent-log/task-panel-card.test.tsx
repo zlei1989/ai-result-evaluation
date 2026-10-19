@@ -1,34 +1,26 @@
 /**
- * TaskPanelCard：状态化清单面板。
+ * TaskPanelCard（`Plan` + `Queue` 形态）：摘要行 + 步骤 `TraceLine`，两段清单。
  *
- * 七条守卫（前两条是「不自己算」的落实）：
+ * 守卫（前两条是「不自己算」的落实）：
  *   · **计数照数据层给的渲染**：夹具里 `counts` 与 `steps.length` 故意不一致
  *     （7 vs 3），UI 自己数一遍就会显示成 `1/3 完成`；
  *   · 变化摘要只给非 0 的分量（`+1 完成 · +2 新增 · −1 移除`）；
- *   · 四态 Tag：`unknown` **不显示成成功**（Tag 没有 `success` 类）；
- *   · `steps` 空数组 → 「清单为空（这家报了空表）」，不是空白面板；分母为 0 → 标题写「清单为空」；
+ *   · 四态各出中文：`unknown` **不显示成成功**，且「未完成」段能看到它（它既不能算完成、也不能被藏起来）；
+ *   · `steps` 空数组 → 「清单为空（这家报了空表）」；分母为 0 → 摘要行写「清单为空」；
  *   · `owner === null` **整格不显示**（这家没有「指派」这个概念）、`owner === ''` 显示「未指派」；
- *     `id === null` 时不画依赖（**不自己发号**）； * · **表格形态**（用例名见「清单是表格且表头整条隐藏」「左列任务…右对齐」
- *     与「清单不分页」三条）：两列 small `Table`、表头整条隐藏、状态列在最右且 `textAlign: 'right'`、
- *     owner 与依赖跟任务同格（不进状态列）、不分页（12 步也全在）；
+ *     `id === null` 时不画依赖（**不自己发号**）；
+ *   · **形态是 Trace / Plan / Queue**（用例名见「摘要行是唯一触发器」「步骤是 TraceLine」
+ *     与「已完成段默认收起」三条）：根节点是 `[data-slot="trace"]`、摘要行包在
+ *     `TraceCollapsibleTrigger` 里（`aria-expanded` 跟受控 `open` 走）、步骤是 `[data-slot="trace-line"]`，
+ *     **不再有 `<table>` / 列头 / 分页**；
+ *   · **「进行中展开、完成收起」的第二半在组件里**：外层 `open` 由 `useAgentLogView` 下传
+ *     （默认键只认 `running`），已完成那一段默认收起、由 `${cardId}|done` 键控开合；
  *   · `earlierCount > 0` 出「本轮另有 N 次更新」，`note` 可见。
- *
- * jsdom 环境注意：antd 的 `Table` 会 `new ResizeObserver` 并读 `matchMedia`，jsdom 两个都没有
- * ——环境缺口，不是被测代码的问题（替身与安装助手的说明见 `testing/resize-observer.ts`）。
  */
-import { render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installResizeObserverStub } from '../../testing/resize-observer';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { TaskPanelCard } from './task-panel-card';
 import type { TaskPanel, TaskStep } from './types';
-
-beforeEach(() => {
-  installResizeObserverStub();
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
 
 const AT = '2026-10-02T08:00:00.000Z';
 
@@ -54,7 +46,24 @@ function panel(overrides: Partial<TaskPanel> = {}): TaskPanel {
   };
 }
 
-const props = { earlierCount: 0, open: true, onOpenChange: vi.fn(), rawOpen: false, onRawOpenChange: vi.fn() };
+const props = {
+  cardId: 'card-1',
+  earlierCount: 0,
+  open: true,
+  onOpenChange: vi.fn(),
+  rawOpen: false,
+  onRawOpenChange: vi.fn(),
+};
+
+/** 摘要行（Plan 的那一行）：唯一带 `aria-expanded` 的「计划清单」按钮 */
+const summaryTrigger = (): HTMLElement => screen.getByRole('button', { name: /计划清单/ });
+
+/** 一条步骤行（按标题文本定位）；TraceLine 的 `data-slot` 是结构判据 */
+const stepLine = (subject: string): HTMLElement => {
+  const line = screen.getByText(subject).closest<HTMLElement>('[data-slot="trace-line"]');
+  if (line === null) throw new Error(`「${subject}」没有画成 TraceLine`);
+  return line;
+};
 
 describe('TaskPanelCard', () => {
   it('计数照数据层给的渲染（含 unknown 的那一格，分母是四格之和）', () => {
@@ -82,12 +91,12 @@ describe('TaskPanelCard', () => {
     expect(screen.queryByText(/完成 ·/)).toBeNull();
   });
 
-  it('四态 Tag 各出中文，unknown 不显示成成功', () => {
+  it('四态各出中文；unknown 在「未完成」段可见，且不显示成成功', () => {
     render(
       <TaskPanelCard
         {...props}
         panel={panel({
-          counts: { pending: 1, inProgress: 1, completed: 1, unknown: 4 },
+          counts: { pending: 1, inProgress: 1, completed: 1, unknown: 1 },
           steps: [
             step({ id: 's1', subject: '一', status: 'pending' }),
             step({ id: 's2', subject: '二', status: 'inProgress' }),
@@ -98,12 +107,16 @@ describe('TaskPanelCard', () => {
       />,
     );
 
-    expect(screen.getByText('待办')).toBeInTheDocument();
-    expect(screen.getByText('进行中')).toBeInTheDocument();
-    expect(screen.getByText('已完成')).toBeInTheDocument();
-    const unknownTag = screen.getByText('状态未知').closest('.ant-tag');
-    expect(unknownTag).not.toBeNull();
-    expect(unknownTag?.className).not.toContain('success');
+    expect(stepLine('一')).toHaveTextContent('待办');
+    expect(stepLine('二')).toHaveTextContent('进行中');
+    // 已完成项在收起的那一段里：摘要行给数量，行本身要点开才出来
+    expect(screen.getByRole('button', { name: /1 已完成/ })).toBeInTheDocument();
+    expect(screen.queryByText('三')).toBeNull();
+
+    // `unknown` 留在未完成段：它既不能算完成，也不该被藏起来
+    expect(stepLine('四')).toHaveTextContent('状态未知');
+    expect(stepLine('四')).toHaveAttribute('data-step-status', 'unknown');
+    expect(stepLine('四')).not.toHaveAttribute('data-status', 'running');
   });
 
   it('steps 为空数组时显示「清单为空（这家报了空表）」而不是空白面板', () => {
@@ -112,7 +125,7 @@ describe('TaskPanelCard', () => {
     expect(screen.getByText('清单为空（这家报了空表）')).toBeInTheDocument();
   });
 
-  it('分母为 0 时标题写「清单为空」，不写 0/0', () => {
+  it('分母为 0 时摘要行写「清单为空」，不写 0/0', () => {
     render(
       <TaskPanelCard
         {...props}
@@ -126,10 +139,6 @@ describe('TaskPanelCard', () => {
   });
 
   it('owner 为 null 时整格不显示；owner 为空串时显示「未指派」', () => {
-    // 行的判据落在 `<tr>` 上：表格化之后 `parentElement` 只是单元格里那层 Flex，
-    // 状态 Tag 在**另一格**，拿它当行会把两列的关系漏掉
-    const rowOf = (subject: string): HTMLElement | null => screen.getByText(subject).closest('tr');
-
     render(
       <TaskPanelCard
         {...props}
@@ -139,11 +148,10 @@ describe('TaskPanelCard', () => {
       />,
     );
 
-    // `null` = 这一家没有「指派」这个概念 ⇒ 这一格整个不画（整行只剩状态 Tag 那一个）
-    expect(rowOf('没人认领的概念都没有')?.querySelectorAll('.ant-tag')).toHaveLength(1);
-    expect(rowOf('没人认领的概念都没有')).not.toHaveTextContent('未指派');
+    // `null` = 这一家没有「指派」这个概念 ⇒ 这一格整个不画
+    expect(stepLine('没人认领的概念都没有')).not.toHaveTextContent('未指派');
     // `''` = 有概念但当前无人认领 ⇒ 明说
-    expect(rowOf('有概念但空着')).toHaveTextContent('未指派');
+    expect(stepLine('有概念但空着')).toHaveTextContent('未指派');
   });
 
   it('id 为 null 时不画依赖（blockedBy 的值就是 id，不自己发号）', () => {
@@ -166,68 +174,73 @@ describe('TaskPanelCard', () => {
   });
 
   /**
-   * 形态守卫：清单是**两列的 small Table**，**表头整条隐藏**。
-   * jsdom 不做布局、量不了像素：这里只钉结构，真实几何在浏览器里量。
-   */
-  it('清单是表格且表头整条隐藏（没有列头那行）', () => {
-    render(<TaskPanelCard {...props} panel={panel()} />);
-
-    expect(screen.queryAllByRole('columnheader')).toHaveLength(0);
-    // rc-table 的判据是 `showHeader !== false && <Header/>`：隐藏时 `<thead>` 整个不存在，不是「空表头」
-    expect(document.querySelector('.ant-table-thead')).toBeNull();
-  });
-
-  /**
-   * 形态守卫：左列任务、右列状态，右列**列级右对齐**。
-   * 三条各对应一个会静默退化的写法（都能被单独变异掉）：
-   *   · 漏掉状态列的 `align: 'right'` ⇒ Tag 贴左，右列看着还是左列（textAlign 那一条会红）；
-   *   · 两列顺序被调换 ⇒ 状态跑到最左边（「第二格是状态」那一条会红）；
-   *   · owner / 依赖被挪进状态列 ⇒ 右列宽度随 Tag 长短跳动（它们留在左格那两条会红）。
-   */
-  it('左列任务（含 owner 与依赖）、右列状态且右对齐', () => {
-    render(
-      <TaskPanelCard
-        {...props}
-        panel={panel({
-          steps: [step({ id: 't9', subject: '依赖项', status: 'inProgress', owner: 'alice', blockedBy: ['t1', 't2'] })],
-        })}
-      />,
-    );
-
-    const cells = Array.from(screen.getByText('依赖项').closest('tr')?.querySelectorAll('td') ?? []);
-    // ⚠️ 这一条是**承重**的：把清单退回 `Listy`（或任何非表格形态）时，「没有表头」那条守卫**单独是绿的**
-    // （没有 `<thead>` 它照样满足），真正拦得住退回的就是「一行两格」这件事。别把它当冗余简化掉。
-    expect(cells).toHaveLength(2);
-    // 任务在左：文本、owner、依赖三样同在第一格
-    expect(cells[0]).toHaveTextContent('依赖项');
-    expect(cells[0]).toHaveTextContent('alice');
-    expect(cells[0]).toHaveTextContent('依赖 t1、t2');
-
-    // 状态在右：右对齐是**列**的属性（antd 把它落到单元格的内联 `textAlign` 上，本仓不手写 CSS）
-    const statusCell = screen.getByText('进行中').closest('td');
-    expect(statusCell).toBe(cells[1]);
-    expect(statusCell?.style.textAlign).toBe('right');
-  });
-
-  /**
-   * 形态守卫：清单**不分页**。
+   * **结构守卫：不再是整张表。**
    *
-   * 为什么单独钉这一格：antd 的默认是 `pageSize = 10`（`table/hooks/usePagination.js` 的
-   * `DEFAULT_PAGE_SIZE`，只有 `pagination === false` 才提前退出）——掉掉这一格，**11 步以上的清单
-   * 只画前 10 行**外加一个分页器，而上面那两条形态守卫（无表头 / 右对齐）**照样全绿**。
-   * 夹具刻意给 **12** 步：正好越过那个默认值一档（给 10 步就不再有任何区分力）。
+   * 三条各挡一种退回：根节点必须是 `Trace`（`Card` / `Table` 都会让这一条红）、
+   * 摘要行必须是 `Trace` 的触发器（不是正文里的一行字）、
+   * DOM 里任何位置都不许出现表格 / 列头 / 分页器。
+   * 只断言文案（「4/7 完成」在不在）的话，退回两列表格照样全绿。
    */
-  it('清单不分页：12 步全在表里（第 12 步也没被藏起来），且没有分页器', () => {
-    const steps = Array.from({ length: 12 }, (_, index) => step({ id: `s${index + 1}`, subject: `第 ${index + 1} 步` }));
-    render(<TaskPanelCard {...props} panel={panel({ steps })} />);
+  it('形态是 Trace / Plan：根节点是 trace，摘要行是唯一触发器，没有表格与列头', () => {
+    const { container } = render(<TaskPanelCard {...props} panel={panel()} />);
 
-    // 数自己标的行：`ant-table-measure-row` 是 rc-table 量列宽用的空行，不是清单项
-    const rows = Array.from(document.querySelectorAll('tbody tr')).filter(
-      (tr) => !tr.classList.contains('ant-table-measure-row'),
+    expect(container.querySelector('[data-slot="trace"]')).not.toBeNull();
+    expect(container.querySelector('[data-slot="card"]')).toBeNull();
+    expect(summaryTrigger()).toHaveAttribute('aria-expanded', 'true');
+
+    // 步骤是 trace-line，不是 `<td>`
+    expect(stepLine('写实现')).toBeInTheDocument();
+    expect(container.querySelector('table')).toBeNull();
+    expect(screen.queryAllByRole('columnheader')).toHaveLength(0);
+    expect(container.querySelector('[data-slot="table"]')).toBeNull();
+  });
+
+  it('摘要行的开合受控：aria-expanded 跟着 open 走，点击只把 !open 交回调用方', () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <TaskPanelCard {...props} open={false} onOpenChange={onOpenChange} panel={panel()} />,
     );
-    expect(rows).toHaveLength(steps.length);
-    expect(screen.getByText('第 12 步')).toBeInTheDocument();
-    expect(document.querySelector('.ant-pagination')).toBeNull();
+    expect(summaryTrigger()).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(summaryTrigger());
+    expect(onOpenChange.mock.calls[0]?.[0]).toBe(true);
+    expect(summaryTrigger()).toHaveAttribute('aria-expanded', 'false');
+
+    rerender(<TaskPanelCard {...props} open onOpenChange={onOpenChange} panel={panel()} />);
+    expect(summaryTrigger()).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('摘要行状态由 `panel.running` 派生：进行中是 running，收场后没有 status', () => {
+    const { container, unmount } = render(<TaskPanelCard {...props} panel={panel({ running: true })} />);
+    expect(container.querySelector('[data-slot="trace-line"]')).toHaveAttribute('data-status', 'running');
+    unmount();
+
+    const { container: done } = render(<TaskPanelCard {...props} panel={panel({ running: false })} />);
+    expect(done.querySelector('[data-slot="trace-line"]')?.hasAttribute('data-status')).toBe(false);
+  });
+
+  /**
+   * **Queue 的第二段默认收起**（「完成收起」的组分那半）：已完成项不在 DOM 里，
+   * 摘要行只给数量；点开那一段才出现。`doneOpen` 是同一份折叠态里的 `${cardId}|done` 键，
+   * 组件自己不持态（分层纪律 (d)）。
+   */
+  it('已完成段默认收起；点它的摘要行把 true 交回调用方，回写后行才进 DOM', () => {
+    const onDoneOpenChange = vi.fn();
+    const { rerender } = render(
+      <TaskPanelCard {...props} onDoneOpenChange={onDoneOpenChange} panel={panel()} />,
+    );
+
+    const doneTrigger = screen.getByRole('button', { name: /4 已完成/ });
+    expect(doneTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('改文档')).toBeNull();
+
+    fireEvent.click(doneTrigger);
+    expect(onDoneOpenChange.mock.calls[0]?.[0]).toBe(true);
+    expect(doneTrigger).toHaveAttribute('aria-expanded', 'false');
+
+    rerender(<TaskPanelCard {...props} doneOpen onDoneOpenChange={onDoneOpenChange} panel={panel()} />);
+    expect(screen.getByRole('button', { name: /4 已完成/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(stepLine('改文档')).toHaveTextContent('已完成');
   });
 
   it('本轮另有 N 次更新与 note 都可见', () => {
@@ -237,7 +250,7 @@ describe('TaskPanelCard', () => {
     expect(screen.getByText('按评审意见调整了顺序')).toBeInTheDocument();
   });
 
-  it('结果没到手时连「原始结果」入口都不画（标题已写过结果未采集）', () => {
+  it('结果没到手时连「原始结果」入口都不画（摘要行已写过结果未采集）', () => {
     const { unmount } = render(<TaskPanelCard {...props} panel={panel()} />);
     expect(screen.getByText('原始结果')).toBeInTheDocument();
     unmount();
@@ -247,21 +260,12 @@ describe('TaskPanelCard', () => {
     expect(screen.getByText('结果未采集')).toBeInTheDocument();
   });
 
-  it('「原始结果」入口的上下留白与问答卡片 footer 齐平（各 12）', () => {
-    const { container } = render(<TaskPanelCard {...props} panel={panel()} />);
+  it('「原始结果」入口排在步骤之后（清单之后的动作，不是清单里的第一行）', () => {
+    render(<TaskPanelCard {...props} panel={panel()} />);
 
-    const bar = screen.getByText('原始结果').closest('.ant-flex');
-    expect(bar, '入口那一层容器不在').not.toBeNull();
-    // jsdom 没有布局引擎，量不到「表格底到按钮顶几像素」——真机读数在冒烟里。
-    // 判据落在两个取值上：外面那一列是 `gap={4}`（清单内部：表格与说明文字之间），
-    // 这一格再加 `marginXS`(8) 才够「清单之后的一个动作」（合计 12，与问答卡片 footer 齐平）；
-    // 面板体的内边距则整档交给 antd 的 `size="small"`（正文 12、标题上下 8，与问答卡片的
-    // 卡体 12 / 卡头 8 同档）——本件一个内边距都不覆盖，故判据只能钉那一档的类名。
-    expect((bar as HTMLElement).style.getPropertyValue('margin-block-start')).toBe('8px');
-
-    const collapse = container.querySelector<HTMLElement>('.ant-collapse');
-    expect(collapse, '外层折叠面板不在').not.toBeNull();
-    expect(collapse?.className, '折叠面板退回中档 ⇒ 标题上下多 4px、正文顶多 4px').toContain('ant-collapse-small');
+    const raw = screen.getByText('原始结果');
+    const lastStep = stepLine('跑测试');
+    expect(lastStep.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   /**
@@ -270,14 +274,11 @@ describe('TaskPanelCard', () => {
    * 底部的「原始结果」就是一个点不开的按钮，而别的用例（只查入口文案在不在）**照样全绿**。
    *
    * ⚠️ 那一份原文是 JSON ⇒ 正文走 `JsonText`，被缩进格式化并切成高亮 token
-   * （`{"todos":[]}` → 三行）。故判据从「整串 `getByText('{"todos":[]}')`」换成
-   * 「**载荷片段 + 高亮标记**」：整串匹配在新形态下恒查不到（`getByText` 只看直接文本子节点），
-   * 留着它就是一条永远绿的假守卫。穿透力的那一半（开/关两态）原样保留。
+   * （`{"todos":[]}` → 三行），故判据取「载荷片段 + 高亮标记」。
    */
   it('rawOpen 透传：为真时原文真的在抽屉里，为假时同一份原文不在 DOM', () => {
     const { unmount } = render(<TaskPanelCard {...props} rawOpen panel={panel()} />);
     expect(screen.getByTestId('raw-output-body')).toBeInTheDocument();
-    // 载荷的键还在（`"todos"` 带引号 ⇒ 只可能来自那一份原文），且高亮真的落在节点上
     expect(document.body.textContent).toContain('"todos"');
     expect(document.querySelectorAll('[data-json-token]').length).toBeGreaterThan(0);
     unmount();

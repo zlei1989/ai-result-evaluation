@@ -231,6 +231,7 @@ function sessionChainModel(input: {
       thinking: null,
       domain: [],
       error: null,
+      contextWindow: null,
       live: false,
     },
     startedAt: AT,
@@ -280,6 +281,28 @@ describe('AgentMessageTimeline', () => {
 
     expect(screen.getByText('思考')).toBeInTheDocument();
     expect(screen.queryByText('先看看 package.json 里的脚本长什么样')).toBeNull();
+  });
+
+  /**
+   * **思考中自动展开、结束自动收起**（整条链路：`defaultOpenKeysOf` → `openKeys` → 受控 `open`）。
+   *
+   * 判据必须是「同一块从 `assembly: 'open'` 收成 `snapshot`」：只测「进行中可见」时
+   * 「结束不收起」照样绿；只测「结束收起」时又分不清「本来就没展开过」。
+   * 两档在同一个用例里递进，`openKeys` 每档都按当前轮次重算（与真实数据更新同一口径）。
+   */
+  it('思考中自动展开，结束（assembly 收成 snapshot）后自动收起', () => {
+    const nodes = nodeIndex([]);
+    const streaming = [turn({ blocks: [{ ...thinkingBlock('k1', '先看看脚本'), assembly: 'open' }] })];
+    const { rerender } = render(
+      <AgentMessageTimeline turns={streaming} nodes={nodes} openKeys={defaultOpenKeysOf(streaming, nodes)} />,
+    );
+    expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('先看看脚本')).toBeInTheDocument();
+
+    const done = [turn({ blocks: [thinkingBlock('k1', '先看看脚本')] })];
+    rerender(<AgentMessageTimeline turns={done} nodes={nodes} openKeys={defaultOpenKeysOf(done, nodes)} />);
+    expect(screen.getByRole('button', { name: /思考/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('先看看脚本')).toBeNull();
   });
 
   it('工具组默认收起：组头在，组内正文（参数摘要）不在', () => {
@@ -435,9 +458,9 @@ describe('AgentMessageTimeline', () => {
       />,
     );
 
-    expect(screen.getByText('用量创新高').closest('.ant-tag')).toHaveClass('ant-tag-default');
-    expect(screen.getByText('配置项没认出来').closest('.ant-tag')).toHaveClass('ant-tag-warning');
-    expect(screen.getByText('工具返回非零退出码').closest('.ant-tag')).toHaveClass('ant-tag-error');
+    expect(screen.getByText('用量创新高').closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'milestone');
+    expect(screen.getByText('配置项没认出来').closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'warning');
+    expect(screen.getByText('工具返回非零退出码').closest('[data-slot="badge"]')).toHaveAttribute('data-tone', 'error');
   });
 
   /**
@@ -593,6 +616,7 @@ describe('AgentMessageTimeline', () => {
         thinking: null,
         domain: [],
         error: null,
+        contextWindow: null,
         live: false,
       },
       startedAt: AT,
@@ -772,7 +796,7 @@ describe('消息级用量页脚', () => {
 
     expect(footers(container)).toEqual(['本条 输入 295 tok · 缓存 7,424 tok · 输出 841 tok']);
     // 形制与轮末里程碑 Tag 必须两两可分
-    expect(container.querySelectorAll('[data-usage-footer].ant-tag')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-usage-footer] [data-slot="badge"]')).toHaveLength(0);
   });
 
   it('usage 为 null 时一行都不出（不显示 0、也不显示「未采集」）', () => {

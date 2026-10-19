@@ -1,26 +1,29 @@
-/** SSR 壳：html/body + antd Provider + 全局样式。 */
+/** SSR 壳：html/body + 根 Providers + 全局样式。 */
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
+import { APP_TITLE } from '@/src/app-title';
 import { Providers } from './providers';
 import './globals.css';
-// X 的正文排版（XMarkdown 的主题变量与 `.x-markdown-*` 规则）。两份都必须引：
-// 选择器各挂在 `.x-markdown-light` / `.x-markdown-dark` 下，由 `XMarkdownText` 按 antd token
-// 二选一 —— 只引一份，另一套主题下的正文就是无样式的兜底。
-// 只能由应用侧引：`ui` 包直出 TS 源码、不是 Next 应用，全局 CSS 过不了它的构建；
-// 也因此这个包必须在 `apps/web-next` 的 dependencies 里，否则 Next 从应用侧解析不到（整站 500）。
-import '@ant-design/x-markdown/themes/light.css';
-import '@ant-design/x-markdown/themes/dark.css';
 
 export const metadata: Metadata = {
-  title: 'AI 代码评测',
+  title: APP_TITLE,
   description: 'AI 生成代码的评测工具',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }): ReactNode {
   return (
-    <html lang="zh-CN">
+    // `data-theme` 直出暗色：SSR 兜底与 `useResolvedTheme` 的缺省一致（不闪白）；
+    // 客户端 effect 挂载后按用户偏好改写，主题的唯一真源就是这个属性。
+    <html lang="zh-CN" data-theme="dark">
       <body>
         <Providers>{children}</Providers>
+        {/* 未水合兜底：8 秒后由 CSS 浮出（`#hydrate-fallback` 的动画），Providers 一挂载就摘掉它。
+            只有「客户端脚本没跑起来」时才会被看见——最常见的原因是开发期用 127.0.0.1 / 内网 IP
+            打开 dev server，`/_next` 被跨源策略挡住。没有这条，用户看到的是永远转的骨架和点不动的页签。 */}
+        <div id="hydrate-fallback" role="status" data-testid="hydrate-fallback">
+          <strong>界面脚本没有加载完成。</strong>
+          <span>若你用的是 127.0.0.1 或内网地址，请改用 http://localhost:3083；或让服务端放过该来源（AIEVAL_DEV_ORIGINS）。</span>
+        </div>
       </body>
     </html>
   );

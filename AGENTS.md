@@ -4,83 +4,23 @@
 
 ## 约束
 
-- 写 Next.js 代码前先读 `apps/web-next/node_modules/next/dist/docs/` 的相关指南（当前版本有训练数据未覆盖的破坏性变更）
-- 写 UI 前先用 context7 查组件用法；界面与布局用 `antd`，适配 `light` / `dark` 与弹性尺寸；样式只走 antd 的主题 token / 紧凑密度 / 语义 `styles`——不手写字号、不手调行内边距、不裸写 `div` 等原始标签
-- 提交逐个显式 `git add <路径>`，**禁止 `git add -A`**；`git status` 里不属于你的文件保持原样
-- 改完代码按序执行 `pnpm typecheck` → `pnpm lint`，修完所有错误再进代码审查；格式修复随本次改动一并提交
-- 新增回归守卫必须做**变异验证**：把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希。没见过失败的守卫不算守卫
-- **遇到厂商智能体的运行期问题就追加一条 FAQ**（报错、卡死、行为与预期不符、环境差异导致的假绿都算）：先把问题修掉，再按下面的格式写进对应文件。**发现即记录，逐步攒成知识库**
-- **调智能体只有 `agentProvider.run` 一个入口**（`getProvider(kind).run(input)`，即 `@aieval/agents` 的 `AgentProvider`）：包外不许自己 spawn 厂商 CLI、不许深路径 import `providers/*`、也不许再包一层「跑一次」的门面。**`run` 不够用就扩展 `run` 本身**，不是绕开它；**扩展前先澄清**：要加什么、现有形状为什么不够、动到哪几家与哪些消费方、旧数据怎么读——讲清楚并得到确认再动手
-- `pnpm dev` 端口被占用时先 kill 占用进程再启动
-
-## 厂商适配 FAQ（发现即追加）
-
-四家各一份，问题按厂商归档：
-
-| 厂商 | 文件 |
-|------|------|
-| Codex（`@openai/codex` / `codex app-server`） | `docs/faq/codex.md` |
-| Claude Code（`@anthropic-ai/claude-agent-sdk`） | `docs/faq/claude-code.md` |
-| DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`） | `docs/faq/deepseek-harness.md` |
-| Pi Coding Agent（`@earendil-works/pi-coding-agent`） | `docs/faq/pi.md` |
-
-每条四格，**缺一不可**：
-
-1. **现象** —— 做成二级小标题，**照抄日志/界面里的原文**（含报错码、英文原句）。下次拿报错原文一搜就能命中；改写成自己的话就搜不到了。
-2. **日期** —— `YYYY-MM-DD`。
-3. **根因** —— 说到机制层（哪一层、哪个键、哪次替换、谁先谁后）。**没定位到就写「未定位」**并留下下一步，不要写「可能」当结论。
-4. **解决方案** —— 改了哪个文件/哪个键、判据是什么（守卫名、命令、变异结果）。改不动的就写「未闭合」并说明代价。
-
-有外部资料（官方文档、issue、协议说明）就补第 5 格**相关资料**，附链接。
-
-两条维护规矩：
-- **同一现象只留一条**：修法与事实冲突时**改旧条目**，不要新开一条并列。
-- **测试环境 ≠ 运行环境**：凡是「单测绿、真机红」的（打包器改写、解析器差异、子进程环境差异），根因里必须点名差异在哪，避免下一个人再信一次单测。
+- 写 Next.js 代码前先读 `apps/web-next/node_modules/next/dist/docs/` 的相关指南（当前版本有训练数据未覆盖的破坏性变更）。
+- 写 UI 前先用 context7 查组件用法；界面只用 vendored 原语（`packages/client/ui/src/components/ui/`）与语义 token 组装，不手写字号与行内边距。口径见[《界面原语与主题》](docs/architecture/ui-primitives-and-theme.md)。
+- 提交逐个显式 `git add <路径>`，**禁止 `git add -A`**；`git status` 里不属于你的文件保持原样。
+- 改完代码按序执行 `pnpm typecheck` → `pnpm lint`，修完所有错误再进代码审查；格式修复随本次改动一并提交。
+- 新增回归守卫必须做**变异验证**：把要拦的缺陷人为制造回去、确认守卫失败、再还原并核对文件哈希。没见过失败的守卫不算守卫。方法见[《变异验证》](docs/guard/mutation-verification.md)。
+- 遇到厂商智能体的运行期问题（报错、卡死、行为与预期不符、环境差异导致的假绿）先把问题修掉，再按四格追加 FAQ；格式与索引见[《故障索引》](docs/faq/index.md)。
+- 调智能体只有 `agentProvider.run` 一个入口（`getProvider(kind).run(input)`）：包外不许自己 spawn 厂商 CLI、不许深路径 import `providers/*`、也不许再包一层「跑一次」的门面；`run` 不够用就扩展它本身，扩展前先澄清。口径见[《Provider 抽象与 run 入口》](docs/protocols/provider-run.md)。
+- 落盘一律原子写（临时文件创建即 `0600` → `rename` 覆盖），读盘容忍 BOM；别先删目标再 `rename`。口径见[《数据与存储》](docs/features/storage.md)。
+- 递归删除先断言目标在允许根之下、打印目标、再执行；临时值用专属名，绝不给 `$home` / `$profile` / `$env:*` 赋值。完整规则见[《PowerShell》](docs/guard/powershell.md)。
+- 冒烟记录落 `.scratch/<feature-slug>/smoke.md`，不进知识库；真机操作与四要素见[《冒烟测试方法论》](docs/guard/smoke-testing.md)。
+- 源码一律 ESM：`require()` 被 `baseConfig` 与 `withBoundary` 两处规则禁止（`tsc` 与 eslint 的边界规则都拦不住它，Vitest 的 SSR runner 还会注入模块级 `require`）。
 
 ## 知识库
 
-`docs/` 原位构建 VitePress 知识库：`pnpm docs:dev` 起本地站浏览，`pnpm docs:build` 构建并重新生成 `docs/public/llms.txt`。知识按五域组织，**接任务先按域找文章，别全仓扫描**：
+知识按五域组织：协议规范（`docs/protocols/`）、功能说明（`docs/features/`）、架构设计（`docs/architecture/`）、FAQ（`docs/faq/`）、规约守卫（`docs/guard/`）。**接任务先按域找文章，别全仓扫描**。全站地图见 `docs/index.md`；每域收什么、终态写作与关账口径见[《知识库口径》](docs/guard/knowledge-base.md)。
 
-| 域 | 位置 | 收什么 |
-|----|------|--------|
-| 协议规范 | `docs/protocols/` | providers 抽象与 run 入口、消息与事件、进程生命周期、新增 SDK 接入流程、四家厂商接入与横向对比 |
-| 功能说明 | `docs/features/` | 按功能模块组织的现时行为说明；目录层《功能总览》 |
-| 架构设计 | `docs/architecture/` | 分层与依赖方向、契约体系、界面原语与主题、工具链与命令聚合 |
-| FAQ | 四份厂商 FAQ 原文 + 目录层 `docs/faq/index.md`《故障索引》 | 运行期问题按报错原文索引，可 grep |
-| 规约守卫 | `docs/guard/`；另有 PowerShell / Playwright MCP 两份活文档原文编入（`docs/guard/powershell.md`、`docs/guard/playwright-mcp.md`） | 密钥与环境变量、冒烟方法论、变异验证、测试策略 |
-
-- **AI 读口径**：路径稳定、文件可 grep、本节指针可导航；`docs/public/llms.txt`（构建期由 `docs/.vitepress/build-llms.mjs` 按 `pages.mjs` 生成，全站页面清单 + 一句话摘要）是**副产品**判据，不是主判据。
-- **关账回写（ADR 0001）**：关账时把设计决策回写进对应知识文章的小节，**不再新增过程档案**；冒烟记录按「冒烟测试」节落 `.scratch/`，**不进知识库**。过程可追溯性交给 git 历史与 `.scratch/` 台账；FAQ 追加条目时同步《故障索引》目录层，少一条即未关账。
-- **终态口径（知识文章与代码注释共用这一条）**：**只写终态**——「它现在是什么、为什么这样设计、当前有哪些已知边界与未证实项」。**不写过程**：日期、票号 / 需求号、评审编号、变更史（「原先」「曾经」「从 X 改成 Y」「已删除」）、实测与验证的叙述（哪次跑的、跑出什么、变异见了什么红）、提交哈希——一律不进文章、不进代码注释。理由：读者要的是「现在怎么用、为什么这样」，而过程文字会随代码腐烂成假话（改一处忘一处，比不写更坏）；过程的可追溯性交给 git 历史与 `.scratch/` 台账。
-  - **写使用视角**：读者是「要用这个功能 / 这个包的人」，写他拿它做什么、看到什么、按什么顺序操作、踩哪一格会怎样；内部实现只写到「用的人需要知道为什么」为止（含包名、函数名、契约字段）。反面是写给改代码的人看的实现导读——那样文章会被重构追着改。
-  - **与「关账回写」不冲突**：ADR 0001 要回写的是**结论与判据**（这条口径是什么、判据钉在哪、边界在哪），不是「这次是怎么发现、什么时候改的」。
-  - **实测数字分两种**：描述**现时约束**的留（「行内首次注入 17.2 s / 61 MB ⇒ 等待预算 ≥20 s」——数字是事实，也是设计理由）；描述**过程**的删（「某日实测发现 X，于是从 A 改成 B」）。
-  - **`docs/guard/` 的方法学文章同样只写做法与判据**；针对某一次改动的「实测记录」小节不留在知识库里。
-  - **例外**：**按四格格式写的 FAQ 条目**（厂商四份在 `docs/faq/**`；跨家 / 环境类的那几条落在它们各自的主题文章里，如《进程生命周期》）——那里的「日期」格写的是「这个故障何时被观察到」，是条目身份的一部分，不受本口径影响；判据是**格式**（现象 / 日期 / 根因 / 解决方案四格齐），不是文件路径。
-
-## 目录结构
-
-1 个下游应用 + 服务端/客户端两层，职责严格分离（架构见 `docs/architecture/layering.md`，知识库入口见「知识库」节）：
-
-```text
-apps/web-next/     Next.js 薄组装；路由只做「zod 校验、调 api、错误映射」
-packages/server/
-  core/            git CLI 原语、配置落盘、路径校验；只用 Node 内置 + contracts
-  agents/          智能体抽象层 + 四家适配器（Claude Code / Codex / DSH / Pi Coding Agent）；唯一允许引厂商 SDK 的包，
-                   对外只暴露 provider 注册表，差异吸收在 providers/<kind>/；**业务无关**——只认
-                   「运行 / 消息 / 事件 / 工具 / 权限 / 用量」这类通用概念，不知道评测领域
-  evaluator/       编排状态机 + 评分器 + 事件落盘；不碰框架、不碰具体 SDK
-  api/             功能服务层，一个功能一个文件；禁止 import 任何框架
-  contracts/       zod schema + 领域类型 + 错误码
-packages/client/
-  ui/              纯展示组件（base + composite），纯数据驱动、不调接口
-  client/          SWR hooks + HTTP 原语，类型全部来自 contracts
-docs/ 知识库（五域 + FAQ 与规约守卫活文档，见「知识库」节）
-docs/guard/powershell.md   PowerShell 的事实与硬规则（删除守卫、编码坑）
-docs/guard/playwright-mcp.md   Playwright MCP 的 filename 路径规则与冒烟口径
-docs/faq/  四家厂商 FAQ（发现即追加，格式见上）+ 目录层《故障索引》
-eslint.shared.ts   共享规则 + 分层边界规则（withBoundary）
-```
+工具链 / 依赖 / UI 的已知坑分别归档在[《工具链与命令聚合》](docs/architecture/toolchain.md)、[《界面原语与主题》](docs/architecture/ui-primitives-and-theme.md)、[《仓库分层与依赖方向》](docs/architecture/layering.md)。
 
 ## 依赖方向
 
@@ -95,117 +35,16 @@ contracts→ 无（只依赖 zod 这类第三方；指回任何 @aieval/* 都是
 core     → contracts
 ```
 
-表是**真源**，由 `apps/web-next/src/package-dependency-boundaries.test.ts` 逐条比对每个包的 `package.json`：新增或删除跨包依赖必须同时改表和清单，只改一处测试就红（`pnpm lint` / `pnpm typecheck` 查不出这种错位）。
+表是**真源**，由 `apps/web-next/src/package-dependency-boundaries.test.ts` 逐条比对每个包的 `package.json`：新增或删除跨包依赖必须同时改表和清单，只改一处测试就红。目录与分层、类型转出与测试期别名的口径见[《仓库分层与依赖方向》](docs/architecture/layering.md)。
 
-- **类型转出不算依赖边**：`@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故表里不列这行、ui 放 `devDependencies`。只允许 `export type`；写成值导出就真有运行时依赖，得回来改表。
-- `apps/web-next/vitest.config.ts` 的 `resolve.alias` 把 evaluator 指向源码，只为让路由测试的 `vi.mock` 生效，只活在测试期。别改成 devDependency（会动 `pnpm-lock.yaml`，还会装进一条运行时可解析的依赖边）。
+## 命令与测试
 
-## 删除与 PowerShell 安全
+- 开发：`pnpm dev`（web-next :3083；端口被占用先 kill 占用进程）；构建：`pnpm build`。
+- 门禁：`pnpm typecheck` → `pnpm lint` → `pnpm test`；内循环用 `pnpm test:changed`，单包 / 单文件跑法与命令全表见[《工具链与命令聚合》](docs/architecture/toolchain.md)。
+- `.tsx` 测试只能在库包写：`apps/web-next` 必须留 `jsx: preserve`，否则 Vite 的 import-analysis 报 `make sure to not set jsx to preserve`。
+- 双环境、`vi.mock` 逐文件重复、jsdom 缺口、测试预算、负载下假红、根聚合的收集范围见[《测试策略与提速》](docs/guard/test-strategy.md)。
 
-> PowerShell 的通用规则（自动变量禁令、`Assert-Deletable` 完整实现、编码与 `Get-Content` 坑）见 `docs/guard/powershell.md`。
+## 注释与日志
 
-- **禁止**把 `$home` / `$profile` / `$env:USERPROFILE` / `$env:APPDATA` 等当临时变量：5.1 下报只读错，**pwsh 7 下却是静默成功**，于是 `Remove-Item $home -Recurse -Force` 会真的删掉用户目录。临时值一律用专属名 `$repoRoot` / `$tmpDir` / `$outPath`；判据是「有没有给自动变量赋值」，不是「上次跑报没报错」。
-- **递归删除按序做三件事**：断言目标在允许根之下（用 `docs/guard/powershell.md`「递归删除」一节的 `Assert-Deletable`，允许根传 `$env:TEMP` 或本仓工作目录）→ 打印目标 → 执行；删除语句**不得**带 `-ErrorAction SilentlyContinue`。
-- 能用现成的临时目录 API 就别手写递归删除（JS 用 `mkdtempSync`，PS 用 `New-TemporaryFile`）；也别指望 PSScriptAnalyzer 做静态门禁（本机未安装且装不上）。
-- 本仓只有两个 PS 脚本：`scripts/bench-gates.ps1`、`packages/server/agents/probe/v2/codex-cli-plan.ps1`，改动靠人工审。`scripts/bench-gates.ps1:28` 用 `Invoke-Expression` 执行命令串，**调用方只能传字面量**。
-- 已审计的永久删除点，别"顺手加守卫"：`scripts/split-test-file.mjs:202` 的 `rmSync(src)` 是拆完测试文件删原文件的有意行为；`packages/server/core/src/workspace.ts:124-126` 的三个 `rmSync` 分开写是刻意的（改前先读该处注释）。
-- **网关 key 只能从环境变量读**：探测脚本一律读 `AIEVAL_PROBE_GATEWAY_API_KEY`（可选 `AIEVAL_PROBE_GATEWAY_KEY_FILE` 指向本机凭据文件），源码里出现明文 key 即缺陷。历史上有脚本把 key 硬编码在 `probe/v2/lib/gateway.mjs`，**明文已进过 git 历史 ⇒ 该 key 仍需轮换**（未闭合：轮换要由持有该 key 的人做）。
-
-## 命令
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm dev` | web-next 开发服务器（http://localhost:3083） |
-| `pnpm build` | 生产构建 |
-| `pnpm lint` | ESLint 全量检查，一个进程覆盖 8 个包 |
-| `pnpm format` | ESLint `--fix`（与 `lint` 同一条根配置） |
-| `pnpm typecheck` | TypeScript 全链类型检查，一个 tsc 进程 |
-| `pnpm test` | vitest 全量测试，一个进程收齐 8 个包 |
-| `pnpm test:changed` | 只跑与改动相关的文件——**内循环用这个**，全量留给门禁 |
-
-- 三条聚合命令**刻意不走 `pnpm -r`**（递归会给 8 个包各起一次进程）；聚合靠复用包级真源：根 eslint 配置前缀化 `boundaryConfigs()`、根 `vitest.config.ts` 用 `projects` 引用各包配置、根 `tsconfig.typecheck.json` 是各包 `include` 的并集。别退回 `pnpm -r`，也别把包级规则抄进根配置。
-- 单包：`pnpm --filter @aieval/<包名> <脚本>`，与根命令结果必须一致。
-
-## 测试
-
-| 规则 | 说明 |
-|------|------|
-| 环境 | `vitest.node.ts`（库包与 web-next）/ `vitest.jsdom.ts`（`ui` 与 `client`）；纯函数测试标 `// @vitest-environment node` |
-| **`.tsx` 测试只能在库包写** | `apps/web-next` 必须留 `jsx: preserve`，Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`；改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效 |
-| 别名 | `apps/web-next` 的 `@/*` 指应用根目录；**vitest 不读 tsconfig 的 `paths`**，故在 `apps/web-next/vitest.config.ts` 显式给 `resolve.alias` |
-| 根聚合的收集范围 | 根 `vitest.config.ts` 的 `projects` glob 收 `packages/{server,client}/*` 与 `apps/*`；新包自带 `vitest.config.ts` 即被收进来。**另有 docs 一条**：知识库守卫工程（`docs/vitest.config.ts`，读磁盘断言的 node 环境）以显式路径并列——docs 不是 workspace 包，glob 罩不到；改收集方式后核对全仓用例总数对它同样适用 |
-| **`vi.mock` 逐文件重复** | 前置提升只作用于本文件：`orchestrator-*.test.ts` 每个文件都要自己写三条 `vi.mock`，漏一条会**静默** spawn 真厂商 CLI（守卫在 `packages/server/evaluator/src/static-assertions.test.ts`） |
-| jsdom 的缺口 | `matchMedia` 由用例自己注入；`ResizeObserver` 桩在 `packages/client/ui/src/testing/resize-observer.ts`，**不放进共享 setup**（否则兜底分支再也测不到）；真实拖拽不可达（容器尺寸 0），`Splitter` 的 `onResize` 回写要在真实调用方处钉 |
-| 测试预算 | `TEXT_API_RETRY` / `ROW_RETRY` 写成可变对象：`beforeEach` 读产品默认值再改小、`afterEach` 还原，默认值要有独立用例钉住；`until` 的第 4 参 `impossible` 只给**终态期望**用；所有等待上限按「宁可超时也不假红」定 |
-| 跑法与提速 | 单包 `pnpm vitest run packages/server/<包>`、单文件 `pnpm vitest run <文件路径>`、改动相关 `pnpm test:changed`，**全量留给门禁**。计价单位是**进程创建**：夹具用 `beforeAll` 模板 + `cpSync`、缓存预热（`prewarmCaseCache`）、产品侧合并 git 往返；墙钟由最长的文件决定（按文件并行），长杆文件按 describe 拆开 |
-| 机器带负载时 | 用 `pnpm vitest run --maxWorkers=6 --testTimeout=150000 --hookTimeout=150000`；先看 `tests` 累积项，比上次大 2 倍以上就别把红当回归 |
-
-## 注释
-
-- TS/TSX 用 JSDoc；中文，简洁，专业的口语，先说"做什么"再说"怎么做"
-- 文件头写明职责与注意事项；嵌套 > 2 层必须注释业务含义
-- 方法、条件分支、事件处理、数据转换等独立功能单元都要说明业务目的与关键逻辑；重要方法注释算法思路
-- 环境判断、响应处理等特殊处理要注释原因；密度在同文件内保持一致
-- **注释只写终态**（口径见「知识库」节的终态口径）：说清「这段代码现在做什么、为什么这么写、有哪些坑与不变量」，**不写改动史与验证过程**——日期、票号 / 评审编号、「原先 / 改成 / 删掉了」、「变异验证 ⇒ 某条守卫见红」都不进注释。过程记录归 git 历史与 `.scratch/` 台账；**唯一例外是描述数据的措辞**（「历史事件里的字符串形态」「旧 `run.json` 缺席这一格」讲的是当前仍要兼容的数据，不是这次的改动史）。
-- 注释里的举例与实测数字要能**独立成立**：写「这一格窄了主标识会被截断」而不是「某次量到 180px 不够所以调宽」。
-
-## 日志
-
-| 级别 | 场景 |
-|------|------|
-| ERROR | 业务异常、外部调用失败 — 必须打印堆栈和业务上下文 |
-| WARN | 降级、重试、超时、配置缺失但可继续 |
-| INFO | 请求入口、关键状态变更、外部调用耗时 >500ms |
-| DEBUG | 分支走向、中间变量、循环关键节点（生产默认关闭，`AIEVAL_DEBUG=1` 打开） |
-
-必须打日志的点位：请求入口（INFO + 标识）、外部调用（DEBUG 参数 + INFO 耗时）、异常捕获（ERROR + 堆栈 + 上下文）、关键分支（DEBUG + 依据）。
-
-日志器是 `@aieval/core` 的 `createLogger(scope)`；**上下文作为 `console` 的第二个参数透传，不要 `JSON.stringify`**（循环引用或 BigInt 会抛，日志器不该能打断业务流程）。
-
-## 持久化
-
-- 配置目录：`AIEVAL_CONFIG_DIR` > `~/.aieval`；测试用 `setConfigDirForTesting(dir)` 指向临时目录，**不得触碰真实 `~/.aieval`**
-- **用例目录是第二处「默认根在真实家目录下」**：`settings.casesRoot` > `AIEVAL_CASES_ROOT` > `~/.aieval-cases`，一用例一文件（`<id>.json`）；测试用 `setCasesRootForTesting(dir)`——`setConfigDirForTesting` **管不到**它，夹具动手前先查 `getCasesRootOverrideForTesting()`（详见 `docs/features/storage.md` 的《用例目录》）
-- **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖；不要先删目标再 rename（中间崩溃会让配置彻底消失，而 `loadConfig()` 会静默回落默认值）
-- rename 的 `EPERM` 有两种成因、处置相反：目标是只读文件（只能先删）与杀软瞬时占用（重试即可）。用 `statSync(file).mode & 0o200` 区分，别无脑先删
-- **读盘必须容忍 UTF-8 BOM**（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，`JSON.parse` 遇到就抛）；自己落盘不要产 BOM
-- 配置损坏时抛**含路径的中文原因**，别让 `SyntaxError` 冒充「请求体不是合法 JSON」
-
-## 边界与工具链的已知坑
-
-| 坑 | 正确做法 |
-|----|----------|
-| `pnpm-workspace.yaml` 的 `allowBuilds` | pnpm 11 必需（`sharp` / `unrs-resolver`）；写进 `onlyBuiltDependencies` 不再生效 |
-| flat config 的规则是**整体替换**不是选项合并 | `withBoundary` 会整条盖掉 `baseConfig` 的 `no-restricted-syntax`——两处各放一份（共用同一常量对象） |
-| 边界规则管不到的三种写法 | `no-restricted-imports` 管不到动态 `import()` / `require()`，要另配 `no-restricted-syntax` 且选择器按说明符过滤（裸 `ImportExpression` 会禁掉合法的代码分割）；`import-x/no-relative-packages` 要补 `settings['import-x/resolver'].node.extensions`，否则 `resolve()` 失败时静默 return；`escapeRegExp` 必须转义 `/`，漏了 ESLint 直接以退出码 2 崩溃 |
-| 紧凑密度**不显式写 `fontSize`** | `compactAlgorithm` 会覆盖并反向推导，实效字号掉到 10px；只给 `fontSizeSM: 11`（产出 12 / 11 / 14） |
-| antd 6 `Button` 的 `variant` **单给不生效** | 须与 `color` 成对给（`color="default" variant="dashed"`）或改用 `type` 语法糖；单给 `variant="dashed"` 会**静默**渲染成实线 |
-| antd 6 的**废弃 props 只告警、行为不变**（`Alert.message` → `title`、`Alert` 的关闭面收进 `closable.*`…） | 唯一信号是开发构建里那句 `Warning: [antd: Alert] \`message\` is deprecated. Please use \`title\` instead.`（生产静默），而**告警里的组件栈指向调用方父组件**——真机报在 `app/runs/page.tsx`，那一处其实在 ui 包的 `run-detail-panel.tsx`，照着栈找会找错文件。判据是仓库级静态守卫 `apps/web-next/src/antd-deprecations.test.ts`（按组件名查废弃 props 表，命中即红并直接写出新名） |
-| 主题必须**三处同步** | `ConfigProvider theme` + `html[data-theme]` + `ConfigProvider.config({ holderRender })`，缺一处就是半亮主题 |
-| `Splitter` 的尺寸用受控 `size` | 不用 `defaultSize`；受控下拖拽必须把 `onResize` 回写进 `size`，否则松手弹回；弹性列不给 `size`。唯 `SplitPane` 原语用 `defaultSize`（它不支持刷新后还原拖过的宽度） |
-| `Flex` 的 `display` / `flex-direction` 走 CSS 类 | 内联 `style` 读不到；结构性不变量要自己写进内联 style |
-| antd `Collapse` 的标题默认**不可收缩** | `.ant-collapse-title` 带 `min-width: auto`；标题里放 `nowrap` 的长内容（`EllipsisText` 的摘要行 / 单行问句）时它按**内容**定最小宽度 ⇒ 把整行顶宽、外层容器冒出横向滚动条，省略号永远轮不到。面板传 `styles={SHRINKABLE_TITLE_STYLE}`（`packages/client/ui/src/base/shrinkable-collapse-title.ts`）。jsdom 没有布局，判据只能真机读 `getBoundingClientRect`（`scrollWidth === clientWidth`） |
-| `next-env.d.ts` | 已 gitignore；忽略它只能写在 `boundaryConfigs('web-next')` 里，散写在 `apps/web-next/eslint.config.ts` 的裸条目会被根路径漏掉 |
-| PowerShell 5.1 的 `Get-Content` 读 UTF-8 文件 | 见 `docs/guard/powershell.md`「读写文件与编码」：无 BOM 时按 ANSI 解码，中文乱码且**行号少算** |
-| 依赖一律从 `https://registry.npmmirror.com` 装（仓内 `.npmrc` 的 `registry`） | **不用本机默认的内网镜像**：它的元数据是周期同步的旧快照，已发布的版本端点会返 404，而 pnpm **只要清单改过就做一次全量重解析**（加一个依赖就要重读整棵树的元数据）⇒ 任何新增依赖都被它卡死（`ERR_PNPM_NO_MATCHING_VERSION`）。两格踩过的缺货：`@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.281`（内网只到 0.3.280，而 SDK 声明的与 lockfile 钉的都是 0.3.281）与 `node-addon-require-builtin-darwin-x64@0.1.6`（内网只到 0.1.4）。本仓 pin 的厂商版本在 npmmirror 上逐条核对过都有货，故不按 scope 分流 |
-| **不裸跑 `pnpm add`，也不跑 `--no-frozen-lockfile`** | 那条路是**全量重解析**：既有 snapshot 条目会消失、厂商 SDK 的 peer 会被换掉（`@anthropic-ai/claude-agent-sdk` 的 peer 从 `@anthropic-ai/sdk@0.124.0` 漂到 `0.129.0`、`undici` 8.10.2→8.11.2）。口径：**手改 `package.json`** → 用一个同 peer 集合的临时工作区解析出新依赖的**可达闭包** → **只把新增的** `packages:` / `snapshots:` 条目并进旧 lockfile（既有条目一行不动）→ `pnpm install --frozen-lockfile`。判据：`git diff --stat pnpm-lock.yaml` 是**纯插入**（0 deletions），既有版本后缀逐字不变 |
-| 加依赖时 `pnpm install` 报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` | 新依赖改变了 `hoistPattern: ['*']` 的提升集合 ⇒ pnpm 选择**整体重链** `node_modules`，非 TTY 下先要求确认。放行用 `--config.confirmModulesPurge=false`；那一次是全量重链（分钟级），大二进制包从慢 registry 拉会超时 ⇒ 配 `--fetch-timeout=900000 --fetch-retries=6 --fetch-retry-maxtimeout=300000 --network-concurrency=4` |
-| 改过 `package.json` 之后跑 `pnpm <script>` | pnpm 的依赖自检会**裸跑一次 `pnpm install`**，于是上面那两条会在看起来无关的命令里冒出来（看起来像回归）。口径：那一轮先 `pnpm install --frozen-lockfile` 对齐状态；退路是直接跑 `node_modules/.bin/{tsc,vitest,eslint}` |
-| 根 `eslint .` 的边界规则必须**按目录前缀化** | 否则 core 的禁用名单会落到全部包（web-next 被误伤成「禁止 import react」）；前缀化在 `scopeToDir()`。改完做**双向变异验证**：core 里写 `import 'react'` 要报错、web-next 里同样的 import 不报错 |
-| **`next dev` 在含中文的源码行上 panic ⇒ 服务直接不可用** | Next 16 的代码帧渲染器（`next-code-frame/src/highlight.rs:1011`）按**字节**偏移切它要展示的那一行，切在汉字中间就 panic（Rust 的字符串切片语义），随后那个 worker 线程死掉、日志只留 `[Error: Panic in async function] { code: 'GenericFailure' }`——**真正的诊断被吞掉**，症状是「Ready 之后服务不响应」（主检出与 worktree 上都会，已复现）。它渲染的那一行是本仓 `apps/web-next/instrumentation.ts` 里那条停机 JSDoc ⇒ **那一行的首行刻意写成 ASCII**（同一份说明的中文紧随其后）；别把它改回中文，也别把中文挪到紧邻的上一行。通用风险：**任何**会被 Next 代码帧渲染的含中文行都可能触发它；真撞上时先把那一行临时换 ASCII 看清诊断，再决定怎么改 |
-
-## 冒烟测试
-
-- 启动真实服务（web-next :3083），用 mcp 按真实用户路径逐项操作（输入、按钮、弹窗、导航、拖拽），并用 CLI 复核落盘事实（配置文件、git 分支与 diff），页面与磁盘互证。
-- **几何断言别靠眼睛**：读 `getBoundingClientRect()`（`read_picked_element` 或 `browser_evaluate`），不要凭截图判断。
-- MCP 浏览器工具的 `filename` 路径规则与几何断言见 `docs/guard/playwright-mcp.md`。
-- 每次冒烟在**本次改动的冒烟记录**里写入四要素：范围清单（逐项 ✅/❌/跳过+理由）、操作路径、证据（浏览器 + CLI 互证）、未覆盖项与后续计划。
-- **冒烟记录落 `.scratch/<feature-slug>/smoke.md`**——与 spec、票据同处一处；**不写进知识库**。冒烟带日期与证据链，本身就是一次过程；知识库只留其中**能长期成立的那部分结论**（现时行为、边界、未覆盖项），且要写进对应文章的小节、只写终态。终态口径见「知识库」节。
-
-## 技术栈
-
-- **路由** — web-next：App Router（Server Components + API Routes）
-- **语言/构建** — TypeScript 5（`strict` + `noUncheckedIndexedAccess` + `verbatimModuleSyntax`）；库包直出 TS 源码（`main` 指 `./src/index.ts`），由 Next 的 `transpilePackages` 编译
-- **测试** — vitest 4（node / jsdom 双配置）
-- **UI** — antd 6 + React 19；**数据** — SWR 2 + zod 3 契约
-- **源码一律 ESM** — `require()` 被 `baseConfig` 与 `withBoundary` 两处规则禁止（`tsc` 与 eslint 的边界规则都拦不住它，Vitest 的 SSR runner 还会注入模块级 `require`，故必须显式禁）
+- 注释：TS/TSX 用 JSDoc；中文，简洁、专业的口语，先说「做什么」再说「怎么做」；文件头写职责，嵌套 > 2 层注释业务含义；**只写终态**，不写改动史与验证过程。
+- 日志：统一用 `@aieval/core` 的 `createLogger(scope)`，禁止模块自己 `console`；上下文作为 `console` 的第二个参数透传，不 `JSON.stringify`。级别与必打点位见[《注释与日志》](docs/guard/code-conventions.md)。

@@ -14,6 +14,7 @@
 import { existsSync } from 'node:fs';
 import {
   ServiceError,
+  visibleMessages,
   type AgentEvent,
   type AgentMessage,
   type EvalRow,
@@ -320,7 +321,14 @@ export function getRowRecords(runId: string, rowId: string): { messages: AgentMe
 
   try {
     const { messages, subagents } = readRowRecords(file);
-    return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
+    /**
+     * **作废段默认跳过**（读侧唯一一处过滤点）：历史、轮次计数、用量归集与排名页的测试结论
+     * 都从这里取消息，故只要在这里滤掉，四处同时成立。标记缺席（旧 `run.json`）⇒ 一条都不滤。
+     */
+    return {
+      messages: visibleMessages(foldMessages(messages), row.checkpointVoids ?? []),
+      subagents: foldSubagents(subagents),
+    };
   } catch (error) {
     // 坏行 / 权限 / 编码问题都可能在这里抛：一律折成含路径的中文原因（与 getRowLog 同一条理由）
     throw new ServiceError(

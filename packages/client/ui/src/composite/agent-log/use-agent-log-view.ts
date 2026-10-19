@@ -84,8 +84,11 @@ export function defaultActiveNodeId(model: AgentLogModel): string {
  *   · 进行中的工具组展开（`turn.running` 或组内有 `running` 的调用）——「这一步正在干什么」不能被折叠吞掉； * · **失败不是展开的理由**（覆盖的例外 2）：失败的工具组与组内的
  * 失败行**都默认收起**，与成功的一视同仁。「这一组里有失败」由**组头的「失败 N」标记**承担
  * （`ToolGroupPanel`），证据要用户自己点开；
- *   · 思考块 / `unrecognized` 块**不加键**（默认收起）；
- *   · 计划清单：首次（`change === null`）、进行中、或结果未采集时展开，其余收起；
+ *   · **思考块进行中展开**（`assembly === 'open'`）——流式思考必须当场看得见；结束后自动收起。
+ *     这是 `Reasoning` 的 `open ?? running` 的「用户还没表态」那一段，另外两段（点开 / 点收）
+ *     由 `useAgentLogView` 的两份集合压过来；
+ *   · `unrecognized` 块**不加键**（默认收起）；
+ *   · 计划清单：**进行中展开、完成收起**（「首次」与「结果未采集」都不是展开的理由）；
  *   · **问答卡片不加键**：卡片本身不折叠（`Card` 外壳），它里面**一问一格**面板
  *     全部默认收起——「还在等」由卡面那枚「等待答复中… 12m」承担（见 `ask-user-card.tsx` 口径 1–2），
  *     不必靠展开哪一个问题才看得见。
@@ -124,8 +127,26 @@ export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex
           if (running) keys.add(key);
           break;
         }
+        /**
+         * **思考块的 `open ?? running`：第一段「用户还没表态」就落在这里。**
+         *
+         * 判据是块自己的 `assembly`（**流式的唯一判据**，本目录不许第二个）：还在流 ⇒ 进默认键
+         * ⇒ 思考中自动展开；收成快照 ⇒ 不进键 ⇒ 结束自动收起。
+         * 另外两段由 `useAgentLogView` 的合并式承担：用户点开过的留在 `openedKeys`（结束后仍展开），
+         * 点收过的进 `closedKeys`（**即使还在流也不重新展开**）。组件只吃一个受控 `open`，
+         * 自己一份 state 都不持（分层纪律 (d)）。
+         */
+        case 'thinking':
+          if (block.block.assembly === 'open') keys.add(key);
+          break;
+        /**
+         * 计划清单：**进行中展开、完成收起**。
+         *
+         * 「首次」与「结果未采集」都不是展开的理由——摘要行已经给出结论（`4/7 完成` + 状态词），
+         * 展开只该由「这一步还在跑」触发；完成态收起也让同一轮里多张清单不会同时摊开。
+         */
         case 'task-panel':
-          if (block.panel.change === null || block.panel.running || block.panel.result === null) keys.add(key);
+          if (block.panel.running) keys.add(key);
           break;
         // 问答卡片**不加键**：卡片是 `Card` 外壳、不折叠；里面的问题面板全部默认收起
         // （见本函数注释里那一条，以及 `ask-user-card.tsx` 的 `questionPanelKey`）

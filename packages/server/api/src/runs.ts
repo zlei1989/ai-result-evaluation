@@ -18,8 +18,10 @@ import {
   hasLiveRows,
   intersectEfforts,
   isRunnableRow,
+  withoutVoidedTotals,
   isSameRowTarget,
   type AgentKind,
+  type CheckpointCapability,
   type EvalRow,
   type EvalRun,
   type MessageCapability,
@@ -113,6 +115,15 @@ export interface AgentOptionGroup {
    */
   messageCapability: MessageCapability;
   /**
+   * **回到某一轮**的能力声明（注册表元数据 `metadata.checkpoint`，逐格原样透出）。
+   *
+   * 为什么必须在这里透出来：界面里「回到这里」这颗按钮的可用性与禁用原因**只从这一格读**
+   * （不在组件里判 `providerKind`）。少了它整条链路在 api 处静默断掉——界面一律读成「不知道」，
+   * 连 CC 这种支持的家也一起置灰，且说不出为什么。`reason` 是四句「为什么没有」之一，
+   * 与消息能力共用同一套词表（`MissingReason`）。
+   */
+  checkpoint: CheckpointCapability;
+  /**
    * **注入面声明**（`turnInjection`）：人往运行中的一轮送话（两档边界各一格）、已经交给厂商的
    * 那一条能不能按条撤回（两档各一格），以及能不能接着一条已有会话再跑一段。
    *
@@ -134,12 +145,32 @@ export interface AgentOptionGroup {
  * 用 `[...listRuns()]` 复制再排：原地 sort 会把「读接口不改写入参」这条隐性约定变成陷阱。
  */
 export function listRunsView(): EvalRun[] {
-  return [...listRunsFromDisk()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...listRunsFromDisk()]
+    .map(withoutVoidedSnapshot)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * 读侧投影：把每个行快照里**作废段**的用量与轮次扣掉。
+ *
+ * 为什么在 api 的读侧做而不是改写 `run.json`：`run.json` 是历史真相（作废标记只追加、旧值不改写），
+ * 而「作废段不计入用量与轮次」是**读侧默认口径**。扣减依据就是标记里存的那一截的量
+ * （`CheckpointVoid`），因此列表页与详情页读到的是同一份读数。
+ */
+function withoutVoidedSnapshot(run: EvalRun): EvalRun {
+  if (!run.rows.some((row) => (row.checkpointVoids ?? []).length > 0)) return run;
+  return {
+    ...run,
+    rows: run.rows.map((row) => ({
+      ...row,
+      ...withoutVoidedTotals(row, row.checkpointVoids ?? []),
+    })),
+  };
 }
 
 /** 单轮评测快照；不存在时由编排层抛 NOT_FOUND（api 不重复造这个判定） */
 export function getRunView(runId: string): EvalRun {
-  return getRunSnapshot(runId);
+  return withoutVoidedSnapshot(getRunSnapshot(runId));
 }
 
 /** 校验链解析出来的一行：候选行本身 + 服务端快照（供应商名 / baseUrl）+ 编辑才有的原行 id */
@@ -493,6 +524,8 @@ export function listAgentModelOptions(): AgentOptionGroup[] {
       // 能力声明**逐格原样透出**（含每格自己的 source / reason 与 notes）：api 不做任何裁剪，
       // 裁一格就等于替厂商重写一句「为什么没有」（见 `AgentOptionGroup.messageCapability`）
       messageCapability: metadata.messageCapability,
+      // 回到某一轮的能力声明：**一格都不裁**（界面据此置灰并给出原因）
+      checkpoint: metadata.checkpoint,
       // 注入面声明同样**逐格原样透出**（含四档撤回能力与各自的 reason）：api 一格都不裁。
       // 这一组是可选的 ⇒ 按「有意义才出现」投影，缺席时这一格不存在（界面据此读到「不知道」）
       ...(metadata.turnInjection === undefined ? {} : { turnInjection: metadata.turnInjection }),

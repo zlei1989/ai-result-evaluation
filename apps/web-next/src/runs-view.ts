@@ -3,27 +3,28 @@
  * 为什么单独成文件：`apps/web-next` 的 `jsx` 是 `preserve`，该应用里**不能写 .tsx 测试**，
  * 页面里可测的逻辑只能抽成 `.ts`；把「脏 URL 怎么落」「标题列怎么拼」抽出来，这些规则才有守卫。
  */
-import { ServiceError, type EvalRun } from '@aieval/contracts';
+import { ServiceError, TERMINAL_ROW_STATUSES, type EvalRun } from '@aieval/contracts';
 
 /**右栏的三种内容（/：同一个栏位换内容，不叠加、不弹层） */
 export type RunsPanelKind = 'detail' | 'new' | 'edit';
 
 /**
  * 当前打开的是哪个抽屉（`null` = 都关着）。
- * **判别联合**（不是「kind + 恒有 rowId」）：三个抽屉读的是**某一行**的产物，而排名读的是**整轮**
- * ——它比的是候选之间的名次，没有「哪一行」这一维。硬塞一个 `rowId: ''` 会让「按行取快照」凭空
- * 多出一个「空 id 时怎么办」的分支，而那个分支没有意义。
+ *
+ * 行级三视图（日志 / 变更 / 评分）住**同一个抽屉**，故它们不是三个 `kind`，而是同一支里的
+ * `tab`：`kind: 'row'` + `rowId` + `tab`。这样切页签只改 `tab`，抽屉的挂载与正文状态都不动
+ * ——「关一个、开一个」正是会把滚动位置与折叠态丢掉的那条路。
+ * 排名读的是**整轮**（候选之间的名次），没有「哪一行」这一维，故仍是独立的一支。
  *
  * 住在这一层（而不是页面里）是因为它是**可分享状态**的一部分：页面的 `?panel=…&id=…` 与它同源，
  * 两边各写一份形态必然漂移（页面那份判别联合不再被这里的类型约束）。
  */
 export type OpenDrawer =
   /**
-   * `kind: 'log'` 的两支：普通打开（只读执行日志）与**追问**打开（底部槽换成追问输入区）。
-   * 用同一支抽屉是因为追问要看着这一行的上下文写那句话；`followUp` 只影响底部槽渲染哪一块。
+   * `followUp` 只对日志页签有意义（底部槽换成追问输入区）。它跟着行走：
+   * 从「追问」进来的人是带着这一行的上下文来的，切到别的页签时只是不渲染那个槽。
    */
-  | { kind: 'log'; rowId: string; followUp?: boolean }
-  | { kind: 'diff' | 'score'; rowId: string }
+  | { kind: 'row'; rowId: string; tab: 'log' | 'diff' | 'score'; followUp?: boolean }
   | { kind: 'rank' };
 
 export interface RunsPanelState {
@@ -78,4 +79,65 @@ export function runListTitle(run: Pick<EvalRun, 'caseTitle' | 'note'>): string {
   const note = run.note.trim();
   if (note === '') return run.caseTitle;
   return run.caseTitle.trim() === '' ? note : `${run.caseTitle} · ${note}`;
+}
+
+export interface RunScoreSummary {
+  best: number;
+  max: number;
+  scored: number;
+  /** 这一轮的候选总数（含还没跑完的） */
+  total: number;
+  /** 已经收场却没有分的候选数（失败 / 超时 / 取消 / 跳过 / 中断） */
+  unscored: number;
+}
+
+/**
+ * 列表「得分」列的数据：这一轮里**最高的一行**与它自己的满分。
+ *
+ * 列表是这个产品做决定的地方（「换不换模型」看的就是这一格），而分数原本只在详情里；
+ * 抽成纯函数是为了让「取最高分、满分读快照」这条口径可测——满分不固定 100，
+ * 且每一行带的是**评分那一刻**的满分快照（`score.maxScore`），不能拿当前用例的评分表重算。
+ *
+ * **最高分不是结论**：一轮里两个候选满分、一个超时，最高分仍是 100 —— 故同时给出
+ * `scored` / `total` / `unscored`，让列表能如实说「3 个候选里 1 个没出分」。
+ * `unscored` 只数**已经收场**的行：还在排队/运行的行没有分是正常态，不是失败。
+ *
+ * 没有任何一行出分时返回 `null`（列表显示「—」，不显示 0 分：0 分是「评过且全没达成」）。
+ */
+export function runScoreSummary(run: Pick<EvalRun, 'rows'>): RunScoreSummary | null {
+  let best: number | null = null;
+  let max = 0;
+  let scored = 0;
+  for (const row of run.rows) {
+    const score = row.score;
+    if (score === null || score === undefined) continue;
+    scored += 1;
+    max = Math.max(max, score.maxScore);
+    best = best === null ? score.totalScore : Math.max(best, score.totalScore);
+  }
+  if (best === null) return null;
+  return {
+    best,
+    max,
+    scored,
+    total: run.rows.length,
+    unscored: run.rows.filter((row) => row.score === null && TERMINAL_ROW_STATUSES.includes(row.status)).length,
+  };
+}
+
+/**
+ * 列表「得分」列的第二个读数：**出分候选的分布**，按分降序，最多列 4 个（其余折成 `+N`）。
+ *
+ * 为什么不是只给最高分：最高分盖得住失败——`100 / 100` 与「3 个候选里 1 个超时」可以同时成立。
+ * 未出分与还在跑的候选**不在这一行重复**：第一行已经用 `2/3 出分` 说了这件事，
+ * 这一行只回答「出了分的那些差多少」。
+ * 返回 `null` 表示一个候选都没出分（列表整格退回「—」，不拿「…」冒充结论）。
+ */
+export function runScoreDistribution(run: Pick<EvalRun, 'rows'>): string | null {
+  const scored = run.rows.flatMap((row) => (row.score === null ? [] : [row.score.totalScore]));
+  if (scored.length === 0) return null;
+  scored.sort((left, right) => right - left);
+  const shown = scored.slice(0, 4).map(String);
+  if (scored.length > 4) shown.push(`+${scored.length - 4}`);
+  return shown.join(' · ');
 }

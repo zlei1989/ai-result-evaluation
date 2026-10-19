@@ -67,13 +67,13 @@ function renderCard(overrides: Partial<WorkspaceSettingsCardProps> = {}): Return
 
 /**
  * 两格按钮的可访问名**逐字相同**（都叫「校验并保存」）——`getByRole` 会同时命中两个而抛错。
- * 故按输入框所在的 Form.Item 定位：这条查询的写法本身就是「两格各管各的」的守卫，
+ * 故按输入框所在的 Field 定位：这条查询的写法本身就是「两格各管各的」的守卫，
  * 哪天有人把其中一个按钮挪到别处（例如把用例目录那一格接回工作区的回调），这里会先红。
  */
 function validateButton(inputLabel: string): HTMLElement {
   const input = screen.getByLabelText(inputLabel);
-  const item = input.closest('.ant-form-item');
-  if (item === null) throw new Error(`「${inputLabel}」不在任何 Form.Item 里`);
+  const item = input.closest('[data-slot=field]');
+  if (item === null) throw new Error(`「${inputLabel}」不在任何 Field 里`);
   return within(item as HTMLElement).getByRole('button', { name: '校验并保存' });
 }
 
@@ -135,7 +135,10 @@ describe('WorkspaceSettingsCard', () => {
     renderCard();
 
     // 两格都有 extra：必须取用例目录那一格的（`document.querySelector` 拿到的是第一格工作区的）
-    const extra = screen.getByLabelText('用例目录').closest('.ant-form-item')?.querySelector('.ant-form-item-extra');
+    const extra = screen
+      .getByLabelText('用例目录')
+      .closest('[data-slot=field]')
+      ?.querySelector('[data-slot=field-description]');
     expect(extra?.textContent).toContain('<用例 id>.json');
     expect(extra?.textContent).toContain('~/.aieval-cases');
     expect(extra?.textContent).toContain('不会迁移已有用例文件');
@@ -229,7 +232,12 @@ describe('WorkspaceSettingsCard', () => {
     const reason = 'D:/tmp/plain 不是 git 仓库：用例变更不会提交（在该目录 git init 并配置远端后即可启用）';
     renderCard({ syncStatus: syncStatus({ isRepo: false, blockedReason: reason }) });
 
-    expect(screen.getByRole('switch', { name: '用例变更时自动提交' })).toBeDisabled();
+    // 新栈的 Switch 是 span 语义（`aria-disabled`，不是原生 `disabled`）：
+    // `toBeDisabled()` 只认表单元素，故按它真正暴露给读屏器的属性断言
+    expect(screen.getByRole('switch', { name: '用例变更时自动提交' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     expect(within(autoCommitRow()).getByText(reason)).toBeInTheDocument();
     // 状态区用一条警告说清整块功能为什么不可用
     expect(screen.getByText('用例目录还不是 git 仓库：用例变更不会提交')).toBeInTheDocument();
@@ -237,11 +245,11 @@ describe('WorkspaceSettingsCard', () => {
 
   it('状态未到时画骨架屏；读失败（syncError 有值）时不画骨架屏（错误由页面说出来）', () => {
     const loading = renderCard({ syncStatus: undefined, syncError: undefined });
-    expect(loading.container.querySelector('.ant-skeleton')).not.toBeNull();
+    expect(loading.container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
     loading.unmount();
 
     const failed = renderCard({ syncStatus: undefined, syncError: new Error('设置加载失败') });
-    expect(failed.container.querySelector('.ant-skeleton')).toBeNull();
+    expect(failed.container.querySelector('[data-slot="skeleton"]')).toBeNull();
   });
 
   // 没有待提交、也没有未推送的提交时，「提交」是一颗点了什么都不做的按钮

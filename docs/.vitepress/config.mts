@@ -7,9 +7,8 @@
  * 知识文章的临时原料，不生成页面、不进产物。站点口径为本地/内网：不含任何公网部署配置。
  *
  * 注意：nav / sidebar 只允许链向**已存在**的页面——VitePress 构建把死链当错误
- * （ignoreDeadLinks: false 是刻意的，这是构建缝的一部分）。还没有文章的域
- * （协议规范 / 功能说明 / 架构设计），nav 项锚到首页知识库地图的锚点上，
- * 待文章落地后由对应票据逐票补链。
+ * （ignoreDeadLinks: false 是刻意的，这是构建缝的一部分）。新增页面时同步这里与
+ * docs/index.md 的五域地图。
  */
 import { defineConfig } from 'vitepress';
 import { SRC_EXCLUDES } from './pages.mjs';
@@ -33,14 +32,14 @@ export default defineConfig({
   srcExclude: SRC_EXCLUDES,
 
   themeConfig: {
-    // 无文章的域锚到首页地图（index.md 的标题锚点），文章落地后逐票改为真实链接
     nav: [
-      { text: '协议规范', link: '/#协议规范' },
-      { text: '功能说明', link: '/#功能说明' },
-      { text: '架构设计', link: '/#架构设计' },
+      { text: '协议规范', link: '/protocols/provider-run' },
+      { text: '功能说明', link: '/features/' },
+      { text: '架构设计', link: '/architecture/layering' },
       {
         text: 'FAQ',
         items: [
+          { text: '故障索引', link: '/faq/' },
           { text: 'Codex FAQ', link: '/faq/codex' },
           { text: 'Claude Code FAQ', link: '/faq/claude-code' },
           { text: 'DeepSeek Harness FAQ', link: '/faq/deepseek-harness' },
@@ -50,8 +49,14 @@ export default defineConfig({
       {
         text: '规约守卫',
         items: [
-          { text: 'PowerShell 安全', link: '/guard/powershell' },
+          { text: 'PowerShell', link: '/guard/powershell' },
           { text: 'Playwright MCP', link: '/guard/playwright-mcp' },
+          { text: '冒烟测试方法论', link: '/guard/smoke-testing' },
+          { text: '变异验证', link: '/guard/mutation-verification' },
+          { text: '密钥与环境变量', link: '/guard/secrets-and-env' },
+          { text: '测试策略与提速', link: '/guard/test-strategy' },
+          { text: '注释与日志', link: '/guard/code-conventions' },
+          { text: '知识库口径', link: '/guard/knowledge-base' },
         ],
       },
     ],
@@ -84,6 +89,7 @@ export default defineConfig({
             { text: '提问与应答', link: '/features/ask-user-answer' },
             { text: '评分', link: '/features/judging' },
             { text: '设置', link: '/features/settings' },
+            { text: 'MCP 配置', link: '/features/mcp-config' },
             { text: '技能配置', link: '/features/skills-config' },
             { text: '数据与存储', link: '/features/storage' },
           ],
@@ -112,12 +118,14 @@ export default defineConfig({
         {
           text: '规约守卫',
           items: [
-            { text: 'PowerShell 安全', link: '/guard/powershell' },
+            { text: 'PowerShell', link: '/guard/powershell' },
             { text: 'Playwright MCP', link: '/guard/playwright-mcp' },
             { text: '冒烟测试方法论', link: '/guard/smoke-testing' },
             { text: '变异验证', link: '/guard/mutation-verification' },
             { text: '密钥与环境变量', link: '/guard/secrets-and-env' },
             { text: '测试策略与提速', link: '/guard/test-strategy' },
+            { text: '注释与日志', link: '/guard/code-conventions' },
+            { text: '知识库口径', link: '/guard/knowledge-base' },
           ],
         },
       ],

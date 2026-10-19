@@ -83,7 +83,7 @@ beforeEach(() => {
 /**
  * 文本采样节奏是**可变对象**（与 `TEXT_API_RETRY` / `ROW_RETRY` 同一约定）：用例把它调小，
  * 免得每条用例都真等一秒。**产品默认值必须有独立用例钉住**（否则它成了无人验证的常量），
- * `afterEach` 必须还原——三条都是 AGENTS.md 里那条约定的原文。
+ * `afterEach` 必须还原——三条都见 `docs/guard/test-strategy.md` 的「数据与契约」。
  */
 const DEFAULT_SAMPLE_MS = LIVE_TEXT_SAMPLE.intervalMs;
 

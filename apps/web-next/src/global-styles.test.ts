@@ -2,63 +2,78 @@
 /**
  * 全局样式 × ui 组件的**跨包字符串契约**守卫。
  *
- * 缺口长什么样：活动行那条高光扫过全靠 `app/globals.css` 里的类名与 `@keyframes`，而组件那一侧
+ * 缺口长什么样：这些动效全靠 `app/globals.css` 里的类名与 `@keyframes`，而组件那一侧
  * 只是把一个字符串挂到 `className` 上。**两边对不上时浏览器不会报错**——表现只是「文字静止」，
  * 组件用例与其余守卫都不会红，这样的静默漂移在本仓已经发生过多次。
  *
  * 三条断言各有各的靶子：
- * ① CSS 里有这个类名——删掉类 = 组件带了个不存在的类名；
- * ② CSS 里有同名 `@keyframes`——删掉它只剩静态渐变，肉眼几乎分不出差别；
- * ③ 「减少动态效果」兜底存在**且把颜色还回来**——只关动画的话 `color: transparent` 会让
- * 这一行整行消失，而这一条在任何浏览器里都不会自己浮出来。
+ * ① 自绘高光的类名与 `@keyframes` 已删——动效只留 `Trace` 的 shimmer 一份；
+ * ② 活动行走 `TraceLine status="running"` 取动效，不再自己挂类名；
+ * ③ 全仓的 shimmer 关键帧只有 `tw-shimmer` 一份（自绘那一份删干净了）。
  *
- * **为什么读源码抠字面量、而不是 `import { ACTIVITY_SWEEP_CLASS } from '@aieval/ui'`**：
+ * **为什么读源码抠字面量、而不是 `import { … } from '@aieval/ui'`**：
  * 后者会把整条 antd 依赖图拖进这个 node 环境文件（实测 `import` 阶段 27.6s），而本仓的墙钟
  * 「由最长的那个文件决定」，一个字符串不值得当那个长杆。抠不到就**抛**——
  * 守卫不许静默失效（与 `runs-page-wiring.test.ts` 抠调用实参块同一套做法）。
- * 链条的另一半在 ui 那侧：`agent-activity-line.test.tsx` 断言渲染出来的类名就是那个常量。
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /** 应用根目录（`apps/web-next`）：用文件自身位置推导，不依赖 `process.cwd()`（同 `runs-page-wiring.test.ts`） */
 const appRoot = join(import.meta.dirname, '..');
 const cssPath = join(appRoot, 'app', 'globals.css');
+const tailwindCssPath = join(appRoot, 'app', 'shadcn-tailwind.css');
 const componentPath = join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src', 'base', 'agent-activity-line.tsx');
+const uiSrc = join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src');
 
-/** 从组件源码里抠出那个类名；抠不到直接抛（守卫不许静默失效） */
-function sweepClass(): string {
-  const source = readFileSync(componentPath, 'utf8');
-  const matched = /export const ACTIVITY_SWEEP_CLASS = '([^']+)'/.exec(source);
-  const value = matched?.[1];
-  if (value === undefined) {
-    throw new Error('agent-activity-line.tsx 里找不到 ACTIVITY_SWEEP_CLASS 的字面量定义，本守卫无法核对');
-  }
-  return value;
+/** 递归收集 `.css`；`node_modules` 与点目录不算（上游产物里的关键帧不是本仓的动效来源） */
+function cssFilesUnder(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) return [];
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) return cssFilesUnder(full);
+    return entry.name.endsWith('.css') ? [full] : [];
+  });
 }
 
-describe('globals.css 里的活动行高光', () => {
-  it('定义了组件带上的那个类名（对不上时浏览器保持静默）', () => {
-    expect(readFileSync(cssPath, 'utf8')).toContain(`.${sweepClass()} {`);
+/** 一份 CSS 里声明的全部关键帧名 */
+function keyframeNames(file: string): string[] {
+  return [...readFileSync(file, 'utf8').matchAll(/@keyframes\s+([\w-]+)/g)].map((matched) => matched[1] ?? '');
+}
+
+/**
+ * 活动行的高光**只有一份来源**：`Trace` 的 `shimmer`（关键帧 `tw-shimmer`）。
+ *
+ * 自绘那一份（`.aieval-activity-sweep` + 同名 `@keyframes`）已经删掉：同一行挂两份动效时，
+ * 谁在动、按什么节奏动取决于层叠顺序，而这种叠加没有行为断言能看出来。
+ * 判据落在**两份文件的字面**上：组件侧不许再挂那个类、也不许再写动画；CSS 侧一个关键帧都不许剩，
+ * 全仓按名字过滤只剩 `tw-shimmer`。
+ */
+describe('活动行高光的唯一来源（Trace 的 shimmer）', () => {
+  it('自绘高光的类名与 @keyframes 都已从 globals.css 删除', () => {
+    const css = readFileSync(cssPath, 'utf8');
+    expect(css).not.toContain('aieval-activity-sweep');
+    expect(css).not.toContain('@keyframes aieval-activity-sweep');
   });
 
-  it('定义了同名 @keyframes（少了它只剩静态渐变，看不出差别）', () => {
-    expect(readFileSync(cssPath, 'utf8')).toContain(`@keyframes ${sweepClass()} {`);
+  it('活动行走 `TraceLine status="running"` 取动效，不再自己挂类名或写动画', () => {
+    const source = readFileSync(componentPath, 'utf8');
+    expect(source).toContain('TraceLine');
+    expect(source).toContain('status="running"');
+    expect(source).not.toContain('ACTIVITY_SWEEP_CLASS');
+    // 注释里解释「为什么只剩一份动效」是说明文字，不是可执行的动画声明 ⇒ 先剥注释再判
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+    expect(code).not.toMatch(/@keyframes|animation:/);
   });
 
-  it('「减少动态效果」下静止但**把颜色还回来**（只关动画会让这一行整行消失）', () => {
-    const source = readFileSync(cssPath, 'utf8');
-    const start = source.indexOf('@media (prefers-reduced-motion: reduce)');
-    expect(start, 'globals.css 里没有 prefers-reduced-motion 兜底').toBeGreaterThanOrEqual(0);
-    // 媒体查询那一整块：它内部的规则是缩进的，只有最外层那个 `}` 顶格
-    const block = source.slice(start, source.indexOf('\n}', start) + 2);
-
-    expect(block, '兜底里没有关掉动画').toContain('animation: none');
-    expect(
-      block,
-      '兜底没有把 -webkit-text-fill-color 从 transparent 换回来：这一行会整行消失',
-    ).toContain('-webkit-text-fill-color: var(--app-muted)');
+  it('全仓只剩一份 shimmer 关键帧：Trace 的 tw-shimmer', () => {
+    const files = [cssPath, tailwindCssPath, ...cssFilesUnder(uiSrc)];
+    const shimmer = files.flatMap(keyframeNames).filter((name) => /shimmer/i.test(name));
+    expect(shimmer, '自绘高光与 Trace 的 shimmer 叠成了两份动效来源').toEqual(['tw-shimmer']);
+    // 反过来钉存在性：只剩一份不等于它是对的（Trace 依赖这个关键帧名）
+    expect(keyframeNames(tailwindCssPath)).toContain('tw-shimmer');
   });
 });
 
@@ -146,35 +161,27 @@ describe('globals.css 里的活动行打字态', () => {
 });
 
 /**
- * 虚拟列表自绘滚动条的拇指。
+ * 日志滚动区的两条样式判据。
  *
- * 缺口长什么样：拇指背景由底层 `rc-virtual-list` 内联成
- * `var(--rc-virtual-list-scrollbar-bg, rgba(0, 0, 0, 0.5))`，那个默认值是纯黑半透明 ⇒
- * **暗色主题下滚动条看不见**（antd 的 `List` / `Tree` / `Table` 都补了这个变量，只有 `Listy` 漏了）。
- * 类名与 CSS 对不上时浏览器保持静默：不报错，只是又变回那条看不见的黑条。
+ * ① **rc-virtual-list 的滚动条补丁退役了**：虚拟化换成了 `@tanstack/react-virtual`，滚动条是浏览器原生的，
+ *    那条 `--rc-virtual-list-scrollbar-bg` 补丁没有任何消费者。留着它不会报错，只会让下一个人以为
+ *    还有一份自绘滚动条要维护，故这条守卫钉「不许再出现」。
+ * ② **首次定位期间不可见**：`Message Scroller` 在定位完成前给 Root 标 `data-pending-scroll`，
+ *    不藏起来就会看到内容从顶部闪到底部。标记名由库给，样式只能落在这里。
  */
-describe('globals.css 里的虚拟列表滚动条', () => {
-  /** 从组件源码里抠出类名；抠不到直接抛（与上面 `sweepClass` 同一口径） */
-  function virtualListClass(): string {
-    const source = readFileSync(
-      join(appRoot, '..', '..', 'packages', 'client', 'ui', 'src', 'base', 'virtual-list.tsx'),
-      'utf8',
-    );
-    const matched = /export const VIRTUAL_LIST_CLASS = '([^']+)'/.exec(source);
-    const value = matched?.[1];
-    if (value === undefined) {
-      throw new Error('virtual-list.tsx 里找不到 VIRTUAL_LIST_CLASS 的字面量定义，本守卫无法核对');
-    }
-    return value;
-  }
-
-  it('定义了组件带上的那个类名，并且真的把 rc-virtual-list 的变量接过去', () => {
+describe('globals.css 里的日志滚动区', () => {
+  it('rc-virtual-list 的滚动条变量补丁已退役（没有消费者，也不许回来）', () => {
     const css = readFileSync(cssPath, 'utf8');
-    const cls = virtualListClass();
-    expect(css, `globals.css 里没有 .${cls}`).toContain(`.${cls} {`);
-    // 光有类名没用：没把 `--rc-virtual-list-scrollbar-bg` 指到本仓变量上，拇指照旧是那条黑条
-    const rule = css.slice(css.indexOf(`.${cls} {`), css.indexOf('}', css.indexOf(`.${cls} {`)));
-    expect(rule, '规则里没有接 `--rc-virtual-list-scrollbar-bg`').toContain('--rc-virtual-list-scrollbar-bg');
-    expect(rule, '拇指颜色没有取本仓的分主题变量').toContain('var(--app-');
+    expect(css).not.toContain('--rc-virtual-list-scrollbar-bg');
+    // 类名也一并不许出现：它是那条补丁的挂点
+    expect(css).not.toContain('.aieval-virtual-list');
+  });
+
+  it('首次定位期间藏起滚动区（`data-pending-scroll` 由 Message Scroller 标）', () => {
+    const css = readFileSync(cssPath, 'utf8');
+    const rule = /\[data-slot='message-scroller'\]\[data-pending-scroll\]\s*\{([^}]*)\}/.exec(css)?.[1];
+    expect(rule, 'globals.css 里没有针对 data-pending-scroll 的规则').toBeDefined();
+    // 只藏可见性：display:none 会让库量到的滚动几何变成 0，首次定位就再也算不准
+    expect(rule ?? '', '规则里没有把元素藏起来').toContain('visibility: hidden');
   });
 });

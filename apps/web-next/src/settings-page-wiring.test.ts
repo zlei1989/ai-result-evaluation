@@ -348,6 +348,20 @@ describe('settings 页面的粘贴 JSON 导入接线', () => {
   it('导入是**一次** PUT { mcpServers }：弹窗交出的整份 map 直接落盘，页面不再合并第二次', () => {
     expect(source, '粘贴导入没有落到 PUT { mcpServers }').toContain('update({ mcpServers: next })');
   });
+
+  /**
+   * 解析失败那句话的**提示通道**：弹窗只把原文交出来（它不认识 toast），页面接到统一错误出口，
+   * 由后者走 `toast.error(error.message)`。漏接这一根线时弹窗照常显示内联诊断，
+   * 用户切到别的 Tab 就再也看不到那句话——而类型检查一个字都不报。
+   */
+  it('解析失败原文接到页面的统一错误出口（toast），文案不改写', () => {
+    expect(openingTag('McpPasteModal'), '少了 onParseError——解析失败只留在弹窗里').toContain(
+      'onParseError={onError}',
+    );
+    expect(source, '统一错误出口没有走 toast.error(原文)').toContain(
+      'void toast.error(error instanceof Error ? error.message : String(error))',
+    );
+  });
 });
 
 /**
@@ -361,7 +375,7 @@ describe('settings 页面的粘贴 JSON 导入接线', () => {
  *
  * 「抽屉走 `XMarkdownText`」这一条**跨包**：判据在 `ui` 的抽屉源码里（页面只是把它挂上去），
  * 故这里一并读那份源码钉住渲染器**选型**；「原始 HTML 一律转义」那条口径落在壳里
- * （`base/x-markdown.tsx` 的 `escapeRawHtml` 恒开），所以第三份源码就是那个壳——
+ * （`base/x-markdown.tsx` 只挂 `sanitize` + `harden`、不挂 raw HTML 插件），所以第三份源码就是那个壳——
  * 行为断言（粗体成 `strong`、GFM 表格成表、原始 HTML 只当文本）在 `skill-detail-drawer.test.tsx` 里，
  * 两处合起来才是完整证据。
  */
@@ -372,9 +386,11 @@ describe('settings 页面的技能 Tab 接线', () => {
   const drawerSource = readFileSync(drawerPath, 'utf8');
   /**
    * markdown 外壳源码。判据取**外壳**而不是抽屉，是因为「转义成文本」是壳的一档恒开行为：
-   * 抽屉只是消费方，壳里那条一旦被做成 prop（或被人翻成 `false`），两个按需面会同时失守。
+   * 抽屉只是消费方，壳里那条一旦被做成 prop（或把 raw HTML 插件加回来），两个按需面会同时失守。
    */
   const shellSource = readFileSync(join(uiSrcDir, 'base', 'x-markdown.tsx'), 'utf8');
+  // 注释里会写到插件名（说明为什么不用它们），判据只看**代码**
+  const shellCode = shellSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
   it('Tab 的 key 是 skills、label 是「技能」，且排在 mcp 之后', () => {
     expect(source, 'Tab 的 key 不是 skills').toContain('key: \'skills\'');
@@ -464,18 +480,21 @@ describe('settings 页面的技能 Tab 接线', () => {
 
   it('抽屉走 XMarkdownText，且渲染器把原始 HTML 转义成文本（SKILL.md 是外部输入）', () => {
     expect(drawerSource, '抽屉没有用 XMarkdownText').toContain('<XMarkdownText');
-    // 「转义」这一条的真源在**外壳**里：裸写 `escapeRawHtml`（布尔简写）就是恒开。
-    // 写成 prop 形式就等于把这条口径交给调用方——迟早有人为了「让某个标签生效」把它关掉，
-    // 而 SKILL.md 与考题提示词都是外部输入，两处会同时变成活元素。
-    expect(shellSource, '外壳没把 escapeRawHtml 打开').toMatch(/^\s*escapeRawHtml$/m);
-    expect(shellSource, '转义被做成了可关闭的 prop').not.toMatch(/escapeRawHtml\s*=/);
+    // 「转义」这一条的真源在**外壳**里：只挂消毒 / 硬化两个插件、不挂 raw HTML 插件，
+    // 标签因此被转义成字面量。写成可传的 prop 就等于把这条口径交给调用方——迟早有人为了
+    // 「让某个标签生效」把它关掉，而 SKILL.md 与考题提示词都是外部输入，两处会同时变成活元素。
+    expect(shellCode, '外壳没有显式声明「只消毒、不放 raw HTML」的插件表').toMatch(
+      /rehypePlugins=\{\[defaultRehypePlugins\.sanitize, defaultRehypePlugins\.harden\]/,
+    );
+    expect(shellCode, '把 raw HTML 的插件加回来了').not.toMatch(/defaultRehypePlugins(\.|\[['"])raw/);
   });
 
-  it('Folder 紧贴内容区：内容那层不带内边距（边距只由不该贴边的那几块自己留）', () => {
-    // 为什么用源码判据：jsdom 没有布局引擎，量不到「Folder 与抽屉 body 差多少」——
-    // 真机那一条读数在冒烟里（`.ant-folder` 与 `.ant-drawer-body` 的 rect 完全相同）。
-    // 判据取「那层内容容器的 style 里不许出现 padding」：它一旦带上 `paddingMD`，
-    // Folder 四周就空出一圈，而界面上只是「看起来有点空」，不报错。
+  it('文件树紧贴内容区：内容那层不带内边距（边距只由不该贴边的那几块自己留）', () => {
+    // 为什么用源码判据：jsdom 没有布局引擎，量不到「文件树与抽屉内容区差多少」——
+    // 真机那一条读数在冒烟里（`[data-testid="skill-file-tree"]` 与抽屉内容区
+    // `[data-drawer="main"]` 的 rect 完全相同）。
+    // 判据取「那层内容容器的 style 里不许出现 padding」：它一旦带上内边距，
+    // 文件树四周就空出一圈，而界面上只是「看起来有点空」，不报错。
     const anchor = drawerSource.indexOf('data-testid="skill-detail-drawer"');
     expect(anchor, '抽屉里找不到那层内容容器').toBeGreaterThan(-1);
 
@@ -519,16 +538,16 @@ describe('settings 页面的 Tab 状态接线（?tab=）', () => {
     expect(source, 'Suspense 里渲染的不是 SettingsPage').toContain('<SettingsPage />');
   });
 
-  it('Tabs 受控：activeKey 从 URL 解析来（null 回落第一个 Tab「基础」）', () => {
-    // 只扫 <Tabs 到 items={ 之间的属性头：items 的 children 里嵌着一堆子组件的自闭合标签，
-    // 沿用 openingTag 会一路切进 items 内部，锚点就失焦了
-    const start = source.indexOf('<Tabs');
-    expect(start, '页面里找不到 <Tabs').toBeGreaterThan(-1);
-    const head = source.slice(start, source.indexOf('items={[', start));
-    expect(head, 'Tabs 没有受控 activeKey——URL 照写界面不读，刷新还原悄悄失效').toContain(
-      'activeKey={activeTab ?? \'basic\'}',
+  it('Tabs 受控：value 从 URL 解析来（null 回落第一个 Tab「基础」）', () => {
+    // 只扫**页面级**那个 <Tabs 的开标签：主题卡里还有一个三档 Tabs（`value={settings.theme}`），
+    // 锚点必须落在带 `activeTab` 的那个上，否则守卫会对着主题卡断言
+    const start = source.indexOf('<Tabs value={activeTab');
+    expect(start, '页面里找不到受控的 <Tabs value={activeTab…}>').toBeGreaterThan(-1);
+    const head = source.slice(start, source.indexOf('>', start));
+    expect(head, 'Tabs 没有受控 value——URL 照写界面不读，刷新还原悄悄失效').toContain(
+      'value={activeTab ?? \'basic\'}',
     );
-    expect(head, 'Tabs 没有接 onChange——URL 永远停在进入时的那个 Tab').toContain('onChange={go}');
+    expect(head, 'Tabs 没有接 onValueChange——URL 永远停在进入时的那个 Tab').toContain('onValueChange={go}');
   });
 
   it('activeTab 来自 searchParams 的解析，不是页面自己另存的一份 state', () => {
@@ -544,5 +563,29 @@ describe('settings 页面的 Tab 状态接线（?tab=）', () => {
       'settingsTabHref(normalizeSettingsTab(key))',
     );
     expect(body, '切 Tab 用了 push——后退会在 Tab 之间逐个倒退').toContain('router.replace(');
+  });
+});
+
+/**
+ * Tab 的内容字段。
+ *
+ * 要挡的缺陷：`tabItems` 里把内容写成 `children:`，而渲染处读的是 `tab.content`——
+ * 于是那个页签**渲染成空面板**，而 `pnpm typecheck` 不响（`children` 在对象字面量上是合法键）、
+ * 页签的惰性用例也不响（它断言「未激活时内容不在 DOM 里」，空内容同样满足）。
+ * 症状只有真机才看得见：切到「评分」「MCP」「技能」三个页签，一片空白。
+ *
+ * 判据是**结构对齐**而不是措辞：`tabItems` 里不许出现 `children:`，且 `key:` 与 `content:` 数量相等。
+ */
+describe('settings 页面的 Tab 内容字段', () => {
+  it('每个 Tab 都把内容挂在 content 上（写成 children 的那个页签会渲染成空面板）', () => {
+    const start = source.indexOf('const tabItems = [');
+    const end = start < 0 ? -1 : source.indexOf('];', start);
+    if (start < 0 || end < 0) throw new Error('抠不到 tabItems，本守卫无法核对');
+    const block = source.slice(start, end);
+    expect(block, 'tabItems 里出现了 children：渲染处读的是 tab.content').not.toMatch(/\bchildren:/);
+    const keys = block.match(/^\s+key: '/gm) ?? [];
+    const contents = block.match(/^\s+content:/gm) ?? [];
+    expect(keys.length, '一个 key 都没抠到，守卫已失效').toBeGreaterThan(0);
+    expect(contents.length, `tabItems 有 ${keys.length} 个 key，却只有 ${contents.length} 个 content`).toBe(keys.length);
   });
 });

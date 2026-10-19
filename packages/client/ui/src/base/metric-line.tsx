@@ -58,8 +58,9 @@
  * 候选结束那一刻（与快照的 `durationMs` 同口径：它只算候选那一段），没采到时说「未采集」
  * 而不是「采集中」——那几格此后不会再有人报数，说「采集中」是空承诺。
  */
-import { Flex, Tooltip, Typography } from 'antd';
+
 import type { ReactNode } from 'react';
+import { Hint } from './hint';
 import type { ScoreResult } from '@aieval/contracts';
 import { formatDuration } from './format';
 import { formatCacheHitRate, formatCount, formatUsageTriple } from './usage-metrics';
@@ -246,10 +247,10 @@ export function MetricLine({
       : split === null
         ? formatUsageTriple(shownTokens)
         : (
-          <Flex vertical>
+          <div className="flex flex-col">
             <span>{`主会话 ${formatUsageTriple(split.main)}`}</span>
             <span>{`子智能体 ${formatUsageTriple(split.sub)}`}</span>
-          </Flex>
+          </div>
         );
   // 命中率与 tok 同源：没采到用量时同样只说「未采集 / 采集中 / 不支持计量」，不显示 0%（0 与「没采到」含义相反）
   const hitRateText = shownTokens === null ? missingTokensText : formatCacheHitRate(shownTokens);
@@ -270,25 +271,27 @@ export function MetricLine({
     turnsSplit === null
       ? undefined
       : (
-        <Flex vertical>
+        <div className="flex flex-col">
           <span>{`主会话 ${formatCount(turnsSplit.main)} 轮`}</span>
           <span>{`子智能体 ${formatCount(turnsSplit.sub)} 轮`}</span>
-        </Flex>
+        </div>
       );
 
   return (
-    <Flex gap={16} wrap>
-      <Tooltip title={tokenDetail}>
-        <Typography.Text type="secondary">tok {tokenText}</Typography.Text>
-      </Tooltip>
-      <Typography.Text type="secondary">缓存命中 {hitRateText}</Typography.Text>
-      <Tooltip title={turnsDetail}>
-        <Typography.Text type="secondary">轮次 {shownTurns === null ? missingTurnsText : formatCount(shownTurns)}</Typography.Text>
-      </Tooltip>
-      <Typography.Text type="secondary">
+    <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
+      {/* 得分排在计量行**最前**且用正文色/中粗：它是这一行的结论，tok / 轮次 / 耗时是它的成本上下文。
+          此前它与成本项同号同色、还在末尾，读卡片时眼睛要穿过四个数才找到分。 */}
+      <span className="font-medium text-foreground">得分 {score === null ? '未评分' : formatCount(score.totalScore)}</span>
+      <Hint label={tokenDetail}>
+        <span>tok {tokenText}</span>
+      </Hint>
+      <span>缓存命中 {hitRateText}</span>
+      <Hint label={turnsDetail}>
+        <span>轮次 {shownTurns === null ? missingTurnsText : formatCount(shownTurns)}</span>
+      </Hint>
+      <span>
         耗时 {shownDurationMs === null ? (collecting ? '采集中' : '未采集') : formatDuration(shownDurationMs)}
-      </Typography.Text>
-      <Typography.Text type="secondary">得分 {score === null ? '未评分' : formatCount(score.totalScore)}</Typography.Text>
-    </Flex>
+      </span>
+    </div>
   );
 }

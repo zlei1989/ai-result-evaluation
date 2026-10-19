@@ -7,8 +7,8 @@
  * 标题列的拼法同理：页面不能写 `.tsx` 测试，显示口径只能钉在这个纯函数上。
  */
 import { describe, expect, it } from 'vitest';
-import { ServiceError } from '@aieval/contracts';
-import { describeError, parseRunsPanel, runListTitle, runsPanelHref } from './runs-view';
+import { ServiceError, type EvalRun } from '@aieval/contracts';
+import { describeError, parseRunsPanel, runListTitle, runScoreDistribution, runScoreSummary, runsPanelHref } from './runs-view';
 
 describe('parseRunsPanel', () => {
   it.each([
@@ -84,5 +84,54 @@ describe('describeError', () => {
   it('其它抛出物兜底成一句中文，不透英文内部错误', () => {
     expect(describeError(new TypeError('Failed to fetch'))).toBe('操作失败，请稍后重试');
     expect(describeError('字符串')).toBe('操作失败，请稍后重试');
+  });
+});
+
+/**
+ * 列表「结论」两格的判据。
+ *
+ * 这一页最危险的信息失真就是「最高分盖住失败」：3 个候选里 1 个超时、2 个满分时，
+ * `best` 仍是 100。故这两条用例钉的是「分布与未出分数必须同时读得出来」，
+ * 以及「还在跑的行不能被当成失败」。
+ */
+describe('runScoreSummary / runScoreDistribution', () => {
+  const row = (status: string, totalScore: number | null, maxScore = 100) =>
+    ({
+      status,
+      score: totalScore === null ? null : { totalScore, maxScore },
+    }) as unknown as EvalRun['rows'][number];
+
+  it('最高分与它的满分成对给出，并数出已收场但没出分的候选', () => {
+    const run = { rows: [row('judged', 100), row('timed-out', null), row('judged', 80)] } as unknown as Pick<EvalRun, 'rows'>;
+
+    expect(runScoreSummary(run)).toEqual({ best: 100, max: 100, scored: 2, total: 3, unscored: 1 });
+  });
+
+  it('一个候选都没出分时返回 null（显示「—」，不拿 0 分冒充）', () => {
+    const run = { rows: [row('timed-out', null), row('failed', null)] } as unknown as Pick<EvalRun, 'rows'>;
+
+    expect(runScoreSummary(run)).toBeNull();
+  });
+
+  it('分布按分降序，只列已出分的（未出分/在跑由第一行的 x/y 表达）', () => {
+    const run = {
+      rows: [row('judged', 80), row('running', null), row('timed-out', null), row('judged', 100)],
+    } as unknown as Pick<EvalRun, 'rows'>;
+
+    expect(runScoreDistribution(run)).toBe('100 · 80');
+  });
+
+  it('超过 4 个出分候选时折成 +N，避免撑破 168px 的列', () => {
+    const run = {
+      rows: [row('judged', 100), row('judged', 98), row('judged', 90), row('judged', 88), row('judged', 21)],
+    } as unknown as Pick<EvalRun, 'rows'>;
+
+    expect(runScoreDistribution(run)).toBe('100 · 98 · 90 · 88 · +1');
+  });
+
+  it('只有还没收场的行时返回 null（此时没有结论，别把「…」画成失败）', () => {
+    const run = { rows: [row('pending', null), row('running', null)] } as unknown as Pick<EvalRun, 'rows'>;
+
+    expect(runScoreDistribution(run)).toBeNull();
   });
 });

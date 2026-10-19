@@ -1,40 +1,47 @@
 /** ui 公共出口：纯展示组件与界面原语。本包不调接口（数据由调用方以 props 注入）。 */
-export { DensityProvider, useDensityMode } from './base/density-context';
-export { COMPACT_FONT_TOKENS, compactTheme, type DensityMode } from './base/density';
 export { SYSTEM_DARK_QUERY, readSystemDark, resolveThemeMode, type ThemePreference } from './base/theme-resolve';
 export { useAppliedThemeMode, useResolvedTheme, type ResolvedTheme, type UseResolvedThemeOptions } from './base/app-theme';
-// 根 Provider 的壳：X 的 locale 合并与暗色阴影覆盖都收在壳里，装配侧（`apps/web-next`）不碰 `@ant-design/x`
-export { XAppProvider, type XAppProviderProps } from './base/x-provider';
+/**
+ * 提示通道：`Toaster` 一次挂全（Provider + Portal + Viewport + 列表），`toast` 是按意图命名的调用面
+ * （success / error / info / warning / promise），底层是同一个模块级单例，不需要 hook 或上下文。
+ * 明暗不在这里配：toast 读 `globals.css` 的语义变量，而真源只有 `html[data-theme]` 一处。
+ */
+export { Toaster } from './components/ui/toast';
+export { toast } from './base/toast';
 export { PageShell, type PageShellProps } from './base/page-shell';
+export { PageHeader, type PageHeaderProps } from './base/page-header';
 export { readStoredPreference, useStoredWidth } from './base/stored-preference';
-export { SplitPane, type SplitPaneProps } from './base/split-pane';
+// 分栏几何：分隔条占位宽 + 宽度规划纯函数。`ListDetailLayout` 之外没有消费者，
+// 但它是「窄窗下列表栏不低于 min」的唯一判据来源，故与布局组件并列转出，便于调用方核几何。
+export { PANE_SEPARATOR_WIDTH, planPaneWidths, type PaneWidthPlan } from './base/pane-width-plan';
 export {
-  HANDLE_HIT_WIDTH,
-  ResizableColumns,
-  restoreWidthsToAvailable,
-  type PaneGeometry,
-  type ResizablePane,
-  type ResizableColumnsProps,
-} from './base/resizable-columns';
-export {
-  // 三个右侧抽屉（变更详情 / 评分详情 / 执行日志）**共用**的宽度口径：宽度与语义槽样式
-  // 全站只有这一份字面量，评测页与 `AgentLogDrawer` 都从这里取——漂移是静默的
-  // （把其中一个值就地写死 ⇒ 那一处掉回默认 378px，而没有任何用例变红），见该文件头。
-  // `MAIN_DRAWER_PUSH` 是「二级抽屉打开时把主抽屉推开多远」，**必须给主抽屉**（给二级是空转）。
-  // 二级抽屉那一档宽度（`NESTED_DRAWER_SIZE`）**不转出**：它的两个消费者（`NestedDrawer` 与
-  // 「环境信息」抽屉）都在包内。
-  DRAWER_SEMANTIC_STYLES,
-  MAIN_DRAWER_PUSH,
+  // 主抽屉与二级抽屉的宽度档：数值只在应用全局样式里写一次，这里转出的是变量引用。
+  // 评测页的 `Sheet`、`AgentLogDrawer` 与技能预览都从这一份取——漂移是静默的
+  // （把其中一个值就地写死 ⇒ 那一处掉回默认宽度，而没有任何用例变红），见该文件头。
+  // `MAIN_DRAWER_STYLE` 还把「二级层打开时主抽屉左移」接在了 Base UI 的嵌套计数上。
+  MAIN_DRAWER_STYLE,
   WIDE_DRAWER_SIZE,
 } from './base/drawer-geometry';
 export { EllipsisText, type EllipsisTextProps } from './base/ellipsis-text';
 export { EmptyState, type EmptyStateProps } from './base/empty-state';
 export { Toolbar, type ToolbarProps } from './base/toolbar';
+/**
+ * 数据表套件（TanStack v9）：列固定、行虚拟化、列显隐/排序/行选择（后三者默认关）。
+ * 固定列的唯一输入是列定义里的 `size`；缺了 `size` 时 `DataTable` 在渲染前抛错，
+ * 静态守卫（`data-table.static.test.ts`）同时扫产品代码里的列定义。
+ */
 export {
-  TABLE_SCROLL_STYLE,
-  TableScrollArea,
-  type TableScrollAreaProps,
-} from './base/table-scroll-area';
+  columnPinningOf,
+  DATA_TABLE_SCROLL_STYLE,
+  DataTable,
+  pinnedColumnsMissingSize,
+  type DataTableCellAttributes,
+  type DataTableColumn,
+  type DataTableElementAttributes,
+  type DataTableFeatures,
+  type DataTableProps,
+  type DataTableRowAttributes,
+} from './base/data-table';
 export { formatBytes, formatDateTime, shortHash } from './base/format';
 export { MonoText, type MonoTextProps } from './base/mono-text';
 export { RubricSummaryText, RubricTable, type RubricTableProps } from './composite/rubric-table';
@@ -58,7 +65,6 @@ export {
 export {
   // 类名要跨包核对的缘故见 `agent-activity-line.tsx` 的文件头：样式在 apps/web-next 的 globals.css 里，
   // 两处各写一份字符串必然漂移，而「类名对不上」在浏览器里是静默的（动画消失、无报错）。
-  ACTIVITY_SWEEP_CLASS,
   ACTIVITY_TYPING_CLASS,
   AgentActivityLine,
   activityText,
@@ -71,9 +77,36 @@ export {
 } from './base/agent-activity-line';
 export { ListDetailLayout, type ListDetailLayoutProps } from './base/list-detail-layout';
 export { AppTopNav, type AppTopNavItem, type AppTopNavProps } from './composite/app-top-nav';
+export {
+  CommandPalette,
+  GatedCommandPalette,
+  requestCommandPalette,
+  type CommandPaletteEntry,
+  type CommandPaletteGroup,
+  type CommandPaletteProps,
+  type GatedCommandPaletteProps,
+} from './composite/command-palette';
 export { CaseFormPanel, type CaseFormPanelProps } from './composite/case-form-panel';
 export { CaseDetailPanel, type CaseDetailPanelProps } from './composite/case-detail-panel';
+export {
+  CASES_TABLE_COLUMN_WIDTH,
+  CASES_TABLE_MIN_WIDTH,
+  CASES_TABLE_TITLE_MIN_WIDTH,
+  CasesTable,
+  type CasesTableProps,
+} from './composite/cases-table';
 export { ProviderTable, type ProviderTableProps } from './composite/provider-table';
+/**
+ * 设置屏共用的三件小组件：语义告警、删除二次确认、表格空态。
+ * 它们的消费者都在设置屏（页面 + 几张表），但页面在 `apps/web-next` 里，只能经包根取用。
+ */
+export { SettingsAlert, type SettingsAlertProps, type SettingsAlertTone } from './composite/settings-alert';
+export { ConfirmDialog, type ConfirmDialogProps } from './composite/confirm-dialog';
+export {
+  SettingsEmpty,
+  type SettingsEmptyAction,
+  type SettingsEmptyProps,
+} from './composite/settings-empty';
 export { SkillTable, type SkillTableProps } from './composite/skill-table';
 export { SkillDetailDrawer, type SkillDetailDrawerProps } from './composite/skill-detail-drawer';
 export {
@@ -165,6 +198,19 @@ export {
   rankTableMinWidth,
   type RankTableProps,
 } from './composite/rank-table';
+export {
+  // 排名抽屉里的评分对比图（横柱 = 总分）。只导出界面与几个常量：
+  // 高度与列宽由静态用例对拍（`ResponsiveContainer` 在 jsdom 里量不到尺寸，尺寸必须可计算）
+  SCORE_CHART_LABEL_WIDTH,
+  SCORE_CHART_ROW_HEIGHT,
+  SCORE_CHART_WIDTH,
+  ScoreChart,
+  scoreChartData,
+  scoreChartDomainMax,
+  scoreChartHeight,
+  type ScoreChartDatum,
+  type ScoreChartProps,
+} from './composite/score-chart';
 export { DiffFileContent, DiffView, type DiffViewProps } from './composite/diff-view';
 export {
   // 产物总览（二级抽屉）：按名次逐份摆候选工作区根下的 `RESULT.*`。
@@ -194,6 +240,11 @@ export {
   AgentLogDrawer,
   type AgentLogDrawerProps,
 } from './composite/agent-log/agent-log-drawer';
+/**
+ * 评测详情的**同一个抽屉 + 页签头**：日志 / 变更 / 评分住在一个 `Sheet` 里，切页签不卸载。
+ * 排名不在这里（它是页面级视图，比的是候选之间）。开合与页签都归调用方。
+ */
+export { RunDetailDrawer, type RunDetailDrawerProps, type RunDetailTab } from './composite/run-detail-drawer';
 export {
   AgentLogLayout,
   type AgentLogLayoutProps,
@@ -220,20 +271,6 @@ export {
   type FollowUpSendInput,
   type FollowUpUploadInput,
 } from './composite/agent-log/follow-up-composer';
-/* 输入区的两个 X 壳：装配侧（`apps/web-next`）要自己拼这一块，故必须能从包外拿到。
-   与 `XThink` / `XFolder` 那几支不同——那几支只在包内被 composite 消费，不必出口。 */
-export {
-  XSender,
-  XSenderHeader,
-  type XSenderProps,
-  type XSenderHeaderProps,
-} from './base/x-sender';
-export {
-  XAttachments,
-  type XAttachmentItem,
-  type XAttachmentsHandle,
-  type XAttachmentsProps,
-} from './base/x-attachments';
 export { VirtualTurnList, type VirtualTurnListProps } from './composite/agent-log/virtual-turn-list';
 export {
   AgentMessageTimeline,
@@ -276,6 +313,14 @@ export {
  * 单独转出是因为「一行一段」这件事在别的消费场景（比如将来的只读导出）也要用同一件。
  */
 export { SegmentDivider, type SegmentDividerProps } from './composite/agent-log/segment-divider';
+// 轮末「回到某一轮」：可用性与禁用原因只从能力声明读（UI 不判厂商）
+export {
+  CheckpointMarker,
+  checkpointFileNote,
+  checkpointReasonOf,
+  type CheckpointMarkerProps,
+  type CheckpointTarget,
+} from './composite/agent-log/checkpoint-marker';
 export {
   useAgentLogView,
   type AgentLogViewState,
@@ -343,3 +388,124 @@ export {
  */
 export { diagnosticsBody, rawOutputLabel } from './composite/agent-log/raw-output-panel';
 export { allFixtures, claudeFixture, codexFixture, dshFixture, type AgentLogFixture } from './composite/agent-log/fixtures';
+/**
+ * vendored 原语（`components/ui/`）：上游 shadcn registry 的产物，只做说明符改写
+ * （内部别名 → 相对路径、`cn` → `lib/utils`），结构不进本仓的类型体系。
+ * 样式是纯 Tailwind 类名，由 `apps/web-next` 的 Tailwind 管线产出（`globals.css` 的 `@source`
+ * 覆盖整个 `src/`，故组件放在哪一层都会被扫到）。
+ *
+ * 逐个具名转出，不用 `export *`：通配符把「哪些是公共面」交给上游文件，而 vendored 件会继续增加，
+ * `Card` / `Badge` 这类通用名一旦与既有出口撞名就是编译错。`cn` 不从包根转出——它只是这批文件的
+ * 内部换实现点（换合并库时只改 `lib/utils.ts` 一处），不是调用方要用的东西。
+ */
+export { Alert, AlertAction, AlertDescription, AlertTitle } from './components/ui/alert';
+export { Badge, badgeVariants } from './components/ui/badge';
+export { Button, buttonVariants } from './components/ui/button';
+export { Collapsible, CollapsibleContent, CollapsibleTrigger } from './components/ui/collapsible';
+export {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from './components/ui/card';
+export { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty';
+export { Input } from './components/ui/input';
+/**
+ * 覆盖层与选择类原语：设置屏的对话框（`Dialog`）、评分卡的三个下拉（`Select`）、
+ * 页签（`Tabs`，**默认惰性挂载**，见 `components/ui/tabs.test.tsx`）。
+ * 逐个具名转出（理由同上：`Card` / `Select` 这类通用名一旦与既有出口撞名就是编译错）。
+ */
+export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+  DialogTrigger,
+} from './components/ui/dialog';
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectScrollDownButton,
+  SelectScrollUpButton,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from './components/ui/select';
+export { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
+export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './components/ui/tooltip';
+export { RadioGroup, RadioGroupItem } from './components/ui/radio-group';
+export { Separator } from './components/ui/separator';
+export { Skeleton } from './components/ui/skeleton';
+export { Switch } from './components/ui/switch';
+export {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from './components/ui/table';
+export { Textarea } from './components/ui/textarea';
+export {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+  FieldTitle,
+} from './components/ui/field';
+export { FieldWarning, type FieldWarningProps } from './base/field-warning';
+/**
+ * 评测屏用的原语：抽屉（`Sheet`）与「禁用原因」的提示壳。
+ * 表格 / 徽标 / 卡片那一批已在上面统一转出（两个屏共用），这里不重复转出同名成员。
+ * 二次确认框（`ConfirmDialog`）由设置屏转出的那一份对外，评测屏的那一份是包内部件。
+ */
+export {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from './components/ui/sheet';
+export { Hint, HintProvider, type HintProps } from './base/hint';
+/**
+ * 图标：vendored 原语与 `Sheet` 的关闭键都用 lucide，装配侧没有这一条第三方依赖
+ * （也不该为几个图标新增一条依赖边），故经包根转出本屏要用的几个。
+ */
+export {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  ChevronsUpDownIcon,
+  FileTextIcon,
+  FlaskConicalIcon,
+  LoaderCircleIcon,
+  PlusIcon,
+  SearchIcon,
+  SettingsIcon,
+} from 'lucide-react';
+
+/**
+ * `/dev/ui-probe` 的探针矩阵：四格 × 四件 × 五块色板，只给真机验收基座用（不进导航）。
+ * 页面必须经包根取它：装配侧（`apps/web-next`）没有子路径导出可用。
+ */
+export { UiProbeGrid } from './dev/ui-probe';

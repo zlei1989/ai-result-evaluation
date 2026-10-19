@@ -10,8 +10,9 @@
  */
 import { z } from 'zod';
 // `EvalRowStatusSchema` 给 status 事件；`RowMcpChannelSchema` 给 `vendor-system.mcpChannel`
-// （同一份「通道」值域，与行级观测格的 `judgedBy` 同源派生——各写一份枚举必然漂移）
-import { EvalRowStatusSchema, RowMcpChannelSchema } from './run';
+// （同一份「通道」值域，与行级观测格的 `judgedBy` 同源派生——各写一份枚举必然漂移）。
+// 从叶子取而不是从 `./run` 取：`run → agent-message → agent-event` 已经把这两处连成环（见 `row-vocab.ts`）。
+import { EvalRowStatusSchema, RowMcpChannelSchema } from './row-vocab';
 import { ScoreResultSchema } from './score';
 // `VendorSkillSchema` 给 `vendor-system.skills`（厂商当时看见了哪几条技能）
 import { VendorSkillSchema } from './skill';

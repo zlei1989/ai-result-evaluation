@@ -12,7 +12,19 @@
  *      界面不得用「有没有结果」「是不是最后一块」推出来（推断一次，被中断的块就会永远转圈）；
  *   3. **不判厂商**：本目录不出现 `agentKind` 分支，族名与组名一律按收到的值渲染。
  */
-import type { AgentMessage, Capability, InjectMessageOutcome, MessageCapability, MessageSource, MissingReason, SubagentRecord, ThinkingTextKind, ToolFamily } from '@aieval/contracts';
+import type {
+  AgentMessage,
+  Capability,
+  InjectMessageOutcome,
+  MessageCapability,
+  MessageSource,
+  MissingReason,
+  SubagentRecord,
+  TestFramework,
+  TestRunResult,
+  ThinkingTextKind,
+  ToolFamily,
+} from '@aieval/contracts';
 
 /**
  * **环境信息模型从 contracts 转出**。
@@ -40,6 +52,16 @@ export interface AgentRunStatus {
   label: string;
 }
 
+/**
+ * 一次测试运行的界面形态：**解析成功给 `run`，失败只给原因**。
+ *
+ * 失败态没有 `run` 字段是刻意的：类型上就拿不到一个可以被渲染成「0 个用例」的结果，
+ * 界面只能回落原文并挂上那句明确标记。
+ */
+export type ToolTestResult =
+  | { status: 'parsed'; run: TestRunResult }
+  | { status: 'unparsed'; framework: TestFramework | null; command: string; reason: string };
+
 /** 计量三项。整格为 `null` = 这一家根本不报（**不写 0**） */
 export interface AgentTokens {
   /** 非缓存输入 */
@@ -63,7 +85,7 @@ export interface DomainFactSegment {
   tag?: boolean;
   /**
    * `tag` 段的**色档**（不给 = `blue`）。与 `AgentRunStatus.tone` / `DomainFact.tone` 同一条口径：
-   * 数据层给的是**档位**（界面词汇），渲染层把它翻成 antd 的具体预设色。
+   * 数据层给的是**档位**（界面词汇），渲染层把它翻成 `Badge` 的具体预设色。
    * 今天的三格：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`——同一个档位在本仓的
    * 两处（事实条那一行与评分详情顶部）长得一样。
    */
@@ -104,6 +126,25 @@ export interface AgentLogFacts {
   /** 已观察到的轮次；`total` 为 `null` = 还没跑完（**不是**「一共就这么多」） */
   turns: { current: number; total: number | null };
   tokens: AgentTokens | null;
+  /**
+   * **上下文占用**：候选阶段最后一条**主会话** usage 的 `input + cached`（这一刻送进模型的
+   * prompt 总量）。`null` = 拿不到（还没有候选阶段读数 / 厂商没报 token）。
+   *
+   * ⚠️ 它与 `tokens` 是**两笔账**，不能互相顶替：
+   *   · `tokens` 是**整行累计**（这一行一共花了多少，账单）；
+   *   · 这一格是**占用**（此刻窗口里有多少，会随轮次上下浮动）。
+   * 拿累计求百分比，长跑行会一路涨过 100%，读者会把账单读成占用——故两格分开存。
+   * 子会话自己的 usage 不算：那是子任务卡片的会话尺度读数，不是这一行的窗口占用。
+   */
+  contextUsed: number | null;
+  /**
+   * 这一行所用模型**声明的上下文窗口**（token）。`null` = 拿不到（模型没声明 / 已不在供应商清单里）。
+   *
+   * ⚠️ 它与 `base/context-window-tag.tsx` 不是一件事：那个件显示的是**模型容量**（创建表单里
+   * 「这个模型窗口多大」）；容量只在这里当**分母**，分子是 `contextUsed`。
+   * **不要**用 `context-window-tag` 的 `formatContextWindow` 当用量：那是容量，不是读数。
+   */
+  contextWindow: number | null;
   /**
    * 思考 token 的结算值与它的**可加性**。`basis !== 'additive'` 时**不提供任何相加口径**：
    * `subset-of-output` 相加即双计，`unknown` 连跨家比较都不允许。

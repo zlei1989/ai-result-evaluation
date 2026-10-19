@@ -10,7 +10,7 @@
  *   5. 「删除」撤回成功后**文本与附件一起回填**，交出去过的那条另给一次性提示（缺一不可）；
  *   6. 附件：选一份 → 走 multipart 回调拿回路径 → 出现在框上方那一行；**超限的那一份不进清单**
  *      （判据与服务端读同一处常量，界面这一道只为体验）；
- *   7. 紧凑密度只套输入区（静态判据：`ConfigProvider` 不包排队区——真机字号读数在冒烟里）。
+ *   7. 输入区不另包主题（静态判据：不出现 `ConfigProvider`——真机字号读数在冒烟里）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -90,18 +90,14 @@ function renderComposer(options: {
   );
 }
 
-/** 输入框（X 的 `Sender` 内部那个 textarea） */
+/** 输入框（`InputGroupTextarea` 渲染出的那个受控 textarea） */
 function textarea(): HTMLTextAreaElement {
   return screen.getByRole('textbox') as HTMLTextAreaElement;
 }
 
-/** 发送键：X 自带那颗圆形上箭头（按图标认，别按位置认） */
+/** 发送键：Prompt Input 的 block-end addon 里那颗键（两个入口同名同序，按可访问名认） */
 function sendButton(): HTMLButtonElement {
-  const found = [...document.querySelectorAll('.ant-sender button')].find(
-    (button) => button.querySelector('[aria-label="arrow-up"]') !== null,
-  );
-  if (found === undefined) throw new Error('输入区里没有那颗圆形上箭头（发送键的形态变了）');
-  return found as HTMLButtonElement;
+  return screen.getByRole('button', { name: '发送' }) as HTMLButtonElement;
 }
 
 /** 打字并敲回车（`submitType` 的默认就是「回车发送」，与真实用户路径一致） */
@@ -192,7 +188,7 @@ describe('发送', () => {
     expect(textarea().value).toBe('这句话会失败');
   });
 
-  it('空的框按回车不发（X 自己的空输入判据）', () => {
+  it('空的框按回车不发（空输入判据在调用方，与发送键同一个 `canSend`）', () => {
     const onSend = vi.fn(() => Promise.resolve());
     renderComposer({ onSend });
     fireEvent.keyDown(textarea(), { key: 'Enter', code: 'Enter' });
@@ -200,12 +196,10 @@ describe('发送', () => {
   });
 
   /**
-   * 发送键（X 自带那颗圆形上箭头）的禁用态**两档都要对**。
+   * 发送键的禁用态**两档都要对**。
    *
-   * 这一条来自真实浏览器冒烟：给 `Sender` 传 `disabled={false}` 会让 X 自己那条「输入为空就禁用」
-   * **彻底失效**（`ActionButton` 的判据是 `restProps.disabled ?? rootDisabled ?? context.onSendDisabled`，
-   * `??` 只在 `null`/`undefined` 上继续往下问）⇒ 空框上那颗键看着可点、点下去什么都不发生。
-   * 而契约里「只有附件、没有正文」是合法的一条 ⇒ 那一档又必须能点。两档只能由调用方判。
+   * 按契约，「只有附件、没有正文」是合法的一条 ⇒ 那一档必须能点；空框那一档必须灰掉。
+   * 两档只能由调用方的 `canSend` 判：输入区只认识这一个布尔值，不去猜什么算「有内容」。
    */
   it('空框 + 没有附件 ⇒ 发送键禁用（不许留一颗点了没反应的键）', () => {
     renderComposer();
@@ -276,8 +270,8 @@ describe('撤回之后回填（删除是双态动作）', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
     await waitFor(() => expect(textarea().value).toBe('还回来的这句'));
-    // 附件跟着回来（只回文本会静默丢文件）：路径不上屏幕，故以「框上方那一行的清单里出现了它」为判据
-    // （X 把文件名拆成主名与后缀两个节点，故按整段 `textContent` 判，不逐节点找文本）
+    // 附件跟着回来（只回文本会静默丢文件）：路径不上屏幕，故以「框内那一行的清单里出现了它」为判据
+    // （显示名是路径最后一段，按整段 `textContent` 判，不逐节点找文本）
     const chips = await screen.findByTestId('inject-attachments');
     expect(chips.textContent).toContain('a.md');
     expect(screen.queryByTestId('inject-refill-notice')).toBeNull();
@@ -313,7 +307,7 @@ describe('撤回之后回填（删除是双态动作）', () => {
 });
 
 describe('附件：点选 → 落盘 → 进清单', () => {
-  it('选一份文件 ⇒ 走 multipart 回调（`beforeUpload: () => false`，文件不往别处传）⇒ 名字进框上方那一行', async () => {
+  it('选一份文件 ⇒ 走 multipart 回调（隐藏的 file input 只交 `File`，文件不往别处传）⇒ 名字进框内那一行', async () => {
     const onUploadAttachment = vi.fn((_input: InjectUploadInput) => Promise.resolve(ATTACHMENT));
     const { container } = renderComposer({ onUploadAttachment });
 
@@ -385,8 +379,8 @@ describe('附件：点选 → 落盘 → 进清单', () => {
 });
 
 /**
- * 点选文件（X 的触发态把真实 input 藏在 `Attachments` 里）：把 `files` 挂上去再派发 `change`。
- * 与既有那条用例同一手法——本仓的 `beforeUpload: () => false` 让这条路不需要真上传。
+ * 点选文件：把 `files` 挂到隐藏的 file input 上再派发 `change`。
+ * 该 input 只交 `File`（落盘由调用方的 multipart 回调接管），故这条路不需要真上传。
  */
 function pickFiles(container: HTMLElement, files: readonly File[]): void {
   const input = container.querySelector('input[type="file"]');
@@ -395,14 +389,14 @@ function pickFiles(container: HTMLElement, files: readonly File[]): void {
   fireEvent.change(input);
 }
 
-describe('紧凑密度只套输入区（静态判据）', () => {
+describe('输入区不另包主题（静态判据）', () => {
   /**
-   * 这一格跨**两个文件**：排队区在 `inject-composer.tsx`（整支抽屉的密度），
-   * 输入区与那一层 `ConfigProvider` 在共用件 `composer-input.tsx`（两个入口共用同一份形态）。
-   * 判据仍是原来的两条——**顺序**（排队区在上、输入区在下）与**包裹**（`ConfigProvider` 真的
-   * 把输入区包在里面）——只是不再假设它们同住一个文件。
+   * 这一格跨**两个文件**：排队区在 `inject-composer.tsx`，输入区在共用件 `composer-input.tsx`
+   * （两个入口共用同一份形态）。
+   * 判据两条：**顺序**（排队区在上、输入区在下）与**不另包主题**——密度由 `[data-density]`
+   * 作用域变量供给，输入区再包一层 `ConfigProvider` 就会让同一屏出现两种字号。
    */
-  it('排队区在输入区**之前**，且紧凑密度那一层真的包住输入区', () => {
+  it('排队区在输入区**之前**，且输入区不另包主题', () => {
     const composer = readFileSync(join(import.meta.dirname, 'inject-composer.tsx'), 'utf8');
     const queueAt = composer.indexOf('<InjectQueuePanel');
     const inputAt = composer.indexOf('<CompactComposerArea');
@@ -410,13 +404,9 @@ describe('紧凑密度只套输入区（静态判据）', () => {
     expect(inputAt).toBeGreaterThan(queueAt);
 
     const shared = readFileSync(join(import.meta.dirname, 'composer-input.tsx'), 'utf8');
-    const providerAt = shared.indexOf('<ConfigProvider');
-    const areaAt = shared.indexOf('<ComposerInputArea');
-    expect(providerAt).toBeGreaterThan(-1);
-    expect(areaAt).toBeGreaterThan(providerAt);
-    // 输入区那一块必须**在** `ConfigProvider` 的闭合之前（否则它其实没被套上）
-    expect(shared.indexOf('</ConfigProvider>')).toBeGreaterThan(areaAt);
-    // 套的是**紧凑**那一份主题：换成默认主题会让「页面 12px、输入框 14px」当场回来
-    expect(shared).toContain('compactTheme(');
+    // 输入区的字号与间距取作用域变量（命名档），不再有第二层主题
+    expect(shared, '输入区又包了一层 ConfigProvider').not.toContain('<ConfigProvider');
+    expect(shared, '输入区自己拼了紧凑主题').not.toContain('compactTheme(');
+    expect(shared, '输入区没落密度间距档').toContain('gap-hair');
   });
 });

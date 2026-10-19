@@ -112,7 +112,11 @@ describe('两颗操作按钮的可用性来自声明', () => {
      * 挂在它上面时那句话永远读不到——而禁用态恰恰最需要「为什么不能点」。
      * 这条断言因此同时钉住「原因写对了」与「它真的能看见」。
      */
-    fireEvent.mouseEnter(screen.getByTestId('inject-retract-m-1'));
+    // Base UI 的浮层监听的是指针进入 / 移动（不是 `mouseenter`）：事件打在触发器上，`delay=0` 下立即开
+    const trigger = screen.getByTestId('inject-retract-m-1').parentElement as HTMLElement;
+    fireEvent.pointerEnter(trigger, { pointerType: 'mouse' });
+    fireEvent.pointerMove(trigger, { pointerType: 'mouse' });
+    fireEvent.mouseEnter(trigger);
     expect(await screen.findByText(/整条/)).toBeInTheDocument();
   });
 

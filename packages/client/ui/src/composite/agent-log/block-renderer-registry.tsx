@@ -19,7 +19,7 @@ import { AskUserCard } from './ask-user-card';
 import { AttachmentBlockView } from './attachment-block-view';
 import { RowSummaryLine } from './row-summary-line';
 import { SubagentBar } from './subagent-bar';
-import { TaskPanelCard } from './task-panel-card';
+import { TaskPanelCard, doneSectionKey } from './task-panel-card';
 import { TextBlockView } from './text-block-view';
 import { ThinkingBlockView } from './thinking-block-view';
 import { ToolGroupPanel } from './tool-group-panel';
@@ -114,15 +114,29 @@ export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
     <UnrecognizedBlockView block={block.block} open={ctx.open} onOpenChange={ctx.onOpenChange} />
   ),
   'subagent-bar': (block, ctx) => (
-    <SubagentBar node={block.node} onEnter={ctx.onEnterNode} onRetry={ctx.onRetryNode} />
+    <SubagentBar
+      node={block.node}
+      open={ctx.open}
+      onOpenChange={ctx.onOpenChange}
+      onEnter={ctx.onEnterNode}
+      onRetry={ctx.onRetryNode}
+    />
   ),
   'row-summary': (block) => <RowSummaryLine node={block.node} />,
   'task-panel': (block, ctx) => (
     <TaskPanelCard
+      cardId={block.cardId}
       panel={block.panel}
       earlierCount={block.earlierCount}
       open={ctx.open}
       onOpenChange={ctx.onOpenChange}
+      // 已完成那一段：与卡片同一个折叠态、另一个后缀的键（见 `doneSectionKey`）
+      doneOpen={ctx.openKeys?.has(doneSectionKey(block.cardId)) ?? false}
+      onDoneOpenChange={
+        ctx.onEntryOpenChange === undefined
+          ? undefined
+          : (next) => ctx.onEntryOpenChange?.(doneSectionKey(block.cardId), next)
+      }
       rawOpen={ctx.rawOpen}
       onRawOpenChange={ctx.onRawOpenChange}
       onRequestDiagnostics={ctx.onRequestDiagnostics}

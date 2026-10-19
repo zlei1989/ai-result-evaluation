@@ -105,7 +105,7 @@ describe('ProviderTable', () => {
     expect(screen.getAllByRole('button', { name: /^[^ ]{2}$/ })).toHaveLength(3);
   });
 
-  it('删除必须过一次 Popconfirm：只点「删除」不触发，点「确认删除」才触发', async () => {
+  it('删除必须过一次 Popconfirm：只点「删除」不触发，点「删除这个供应商」才触发', async () => {
     const onDelete = vi.fn();
     render(<ProviderTable providers={[openai]} onModels={noop} onEdit={noop} onDelete={onDelete} onCreate={noop} />);
 
@@ -113,7 +113,7 @@ describe('ProviderTable', () => {
     expect(onDelete).not.toHaveBeenCalled();
 
     // 浮层里的确认按钮必须显式给中文：应用没有配 antd locale，默认是 "OK" / "Cancel"
-    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除这个供应商' }));
 
     expect(onDelete).toHaveBeenCalledWith(openai);
   });
@@ -144,69 +144,62 @@ describe('ProviderTable', () => {
   });
 
   /**
-   * 形态守卫（与 `RunCreatePanel` 候选行表同款）：卡片窄到装不下五列时，
-   * 表格**内部**横向滚动，`名称` 钉在左边、`操作` 钉在右边（中间三列从它们下面滑过）。
-   * 三处必须同时在场，少一处就静默退回老样子 —— `名称` 与三个按钮跟着滚出视野：
-   *   · 没有 `scroll={{ x: 数值 }}` ⇒ 内容容器拿不到 `overflow-x: auto`、表格也没有内联宽度；
-   *   · 首列没有 `fixed` ⇒ 表头第一格不再带粘性类；
-   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（那一行的编辑 / 删除跟着滚走）。
+   * 形态守卫：卡片窄到装不下五列时，表格**内部**横向滚动，`名称` 钉在左边、`操作` 钉在右边
+   * （中间三列从它们下面滑过）。列固定由套件的 `columnPinning` 表达：位置与偏移都落在内联样式上，
+   * 宽度来自列定义里声明的 `size`。
    *
    * ⚠️ jsdom **没有布局引擎**：`sticky` 的实际吸边效果、「有没有真的滚起来」都量不出来，钉子只到
-   * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
-   * 里的 `.ant-table-cell-fix { position: sticky }`，故这里断言的是类名而不是算出来的 `position`）。
-   * 真实几何只能真机冒烟看，同 `PROVIDER_TABLE_MIN_WIDTH` 那条注释。
+   * 内联样式与 `colgroup` 的宽度为止；真实几何只能真机冒烟看。
    */
   it('卡片装不下时横向滚动，且名称列钉左、操作列钉右（P-COLUMN-FIXED）', () => {
     const { container } = render(
       <ProviderTable providers={[openai, anthropic]} onModels={noop} onEdit={noop} onDelete={noop} onCreate={noop} />,
     );
 
-    const content = container.querySelector('.ant-table-content');
+    const content = container.querySelector('[data-testid="provider-table-scroll"]');
     expect(content).not.toBeNull();
-    // 有横向滚动才谈得上固定列：给 `scroll.x` 之前这里一个内联样式都没有
-    expect(content).toHaveStyle({ overflowX: 'auto' });
-    const table = content?.querySelector('table');
-    // 最小宽度必须真的落到**表格自己**的宽度上（它才是滚动的那个更宽的盒子）：
-    // `min-width: 100%` 保证卡片够宽时铺满、不给滚动条，不是恒定的 900
-    expect(table).toHaveStyle({ width: '900px', minWidth: '100%', tableLayout: 'fixed' });
+    // 滚动由套件自己的容器承担，且只在需要时才出现滚动条
+    const scroll = content?.querySelector('[data-testid="data-table-scroll"]') as HTMLElement | null;
+    expect(scroll?.style.overflow).toBe('auto');
 
-    const headers = content?.querySelectorAll('thead th');
+    const table = content?.querySelector('table');
+    expect(table).toHaveStyle({ width: '900px', tableLayout: 'fixed' });
+
+    const headers = Array.from(content?.querySelectorAll('thead th') ?? []) as HTMLElement[];
     expect(headers).toHaveLength(5);
-    // 首列与操作列刚需的两条粘性类（`-fix-start` / `-fix-end` 就是 `position: sticky` 的来源）
-    expect(headers?.[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(headers?.[4]?.className).toContain('ant-table-cell-fix-end');
+    // 首列与操作列钉在两侧：位置来自套件的 pinning，偏移来自声明宽度
+    expect(headers[0]?.style.position).toBe('sticky');
+    expect(headers[0]?.style.left).toBe('0px');
+    expect(headers[4]?.style.position).toBe('sticky');
+    expect(headers[4]?.style.right).toBe('0px');
     // 中间三列**不许**粘：把地址列也钉住的话，可滚动区域就只剩协议与模型数两列
     for (const index of [1, 2, 3]) {
-      expect(headers?.[index]?.className).not.toContain('ant-table-cell-fix');
+      expect(headers[index]?.style.position).not.toBe('sticky');
     }
     // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去 —— 滚动时表头与数据行错位）
-    const bodyCells = content?.querySelector('tbody tr.ant-table-row')?.querySelectorAll('td');
-    expect(bodyCells?.[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(bodyCells?.[4]?.className).toContain('ant-table-cell-fix-end');
+    const bodyCells = Array.from(content?.querySelectorAll('tbody tr')?.[0]?.querySelectorAll('td') ?? []) as HTMLElement[];
+    expect(bodyCells[0]?.style.left).toBe('0px');
+    expect(bodyCells[4]?.style.right).toBe('0px');
 
-    // 四列把宽度交出去，剩下的才归「API 地址」（它**刻意不给宽度**，是唯一吃剩余宽度的列）。
-    // jsdom 量不出地址列的实测宽度：`colgroup` 里那些数字来自 rc-table 对单元格的 ResizeObserver
-    // 测量（`MeasureCell`），而 `installResizeObserverStub` 的替身**从不回调** —— 于是这里只钉得住
-    // 「四列各自申报的宽度」与「地址列一列都没申报」。
+    // 每一列都申报了宽度：固定列的偏移输入就是这些声明值之和
     const widths = Array.from(content?.querySelectorAll('colgroup col') ?? []).map(
       (cell) => (cell as HTMLElement).style.width,
     );
-    expect(widths).toEqual(['180px', '150px', '', '90px', '200px']);
+    expect(widths).toEqual(['180px', '150px', '280px', '90px', '200px']);
   });
 
   /**
    * 形态守卫：本组件的两个创建 / 添加入口（表格下方 + 空态）都必须是「前导加号 + 虚线边框」。
-   * 为什么钉类名而不是钉截图：`variant="dashed"` 漏掉配对的 `color="default"` 时会**静默**渲染成实线
-   * （antd 6 只在 `color && variant` 同时存在时才用它们，否则回落到 `['default','outlined']`），
-   * 界面照常可用、控制台一声不响 —— 只有断言类名才拦得住。
+   * 虚线是「新建」的视觉约定：漏掉 `border-dashed` 时按钮照常可点、只是悄悄变成实线，
+   * 界面上分不出「新建」与「推进流程」——只有断言类名才拦得住。
    */
   it('两个新增入口都是加号 + 虚线（全站新增形态），且图标不污染可访问名', () => {
     render(<ProviderTable providers={[]} onModels={noop} onEdit={noop} onDelete={noop} onCreate={noop} />);
 
     for (const name of ['添加供应商', '添加第一个供应商']) {
       const button = screen.getByRole('button', { name });
-      expect(button.className).toContain('ant-btn-variant-dashed');
-      expect(button.querySelector('.anticon-plus')).toHaveAttribute('aria-hidden', 'true');
+      expect(button.className).toContain('border-dashed');
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     }
   });
 });

@@ -6,12 +6,12 @@
  *   1. 自动滚底只在**文本变化时**执行一次（不是每次渲染）——每次渲染都滚会把用户往上翻的动作按回去；
  *   2. 滚动用 `host.scrollTop = host.scrollHeight`，不用 `scrollTo`：后者在 jsdom 里不可达，
  *      而这条分支正是要能被测到的那条（见 mono-text.test.tsx 的说明）。
- * 等宽字体取自 antd 的 `token.fontFamilyCode`，不手写字体名（与全站「样式走 antd」一致）。
- * ⚠️ **字体必须挂在承载文本的那个元素上**（下面那个 `Typography.Text`）：只挂在宿主上会被
- * `.ant-typography` 自己的 `font-family` 盖掉——宿主上写着等宽、量出来却是系统字体，
+ * 等宽字体取 `--font-mono`（`globals.css` 的 `:root` 里定义）。
+ * ⚠️ **字体必须同时挂在承载文本的那个元素上**：只挂在宿主上时，任何给内层文本设了
+ * `font-family` 的包裹都会把它盖掉——宿主上写着等宽、量出来却是系统字体，
  * 而这件事在 jsdom 里看不出来（没有 CSS 级联），只有真机读 `getComputedStyle` 才现形。
+ * 两处都挂 `font-mono`，内层的 `var(--font-mono)` 是兜底。
  */
-import { Flex, theme, Typography } from 'antd';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 export interface MonoTextProps {
@@ -25,8 +25,7 @@ export interface MonoTextProps {
 }
 
 export function MonoText({ text, maxHeight, autoScroll = false, dataTestId }: MonoTextProps): ReactNode {
-  const { token } = theme.useToken();
-  const hostRef = useRef<HTMLElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -35,18 +34,15 @@ export function MonoText({ text, maxHeight, autoScroll = false, dataTestId }: Mo
   }, [autoScroll, text]);
 
   return (
-    <Flex
+    <div
       ref={hostRef}
-      vertical
       data-testid={dataTestId}
-      style={{
-        fontFamily: token.fontFamilyCode,
-        whiteSpace: 'pre-wrap',
-        overflow: 'auto',
-        ...(maxHeight === undefined ? {} : { maxHeight }),
-      }}
+      className="flex min-w-0 flex-col overflow-auto font-mono text-sm whitespace-pre-wrap"
+      style={maxHeight === undefined ? undefined : { maxHeight }}
     >
-      <Typography.Text style={{ fontFamily: token.fontFamilyCode, whiteSpace: 'pre-wrap' }}>{text}</Typography.Text>
-    </Flex>
+      <span className="font-mono" style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' }}>
+        {text}
+      </span>
+    </div>
   );
 }

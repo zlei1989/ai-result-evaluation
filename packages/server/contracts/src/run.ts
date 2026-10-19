@@ -19,6 +19,17 @@
  *      「误点会白烧一次」这件事改由界面的 `Popconfirm` 二次确认承担。
  */
 import { z } from 'zod';
+
+/** 行状态与 MCP 通道住在叶子模块里（见 `row-vocab.ts` 的文件头）：本文件要用，也要转出给 `index.ts` */
+import {
+  ROW_MCP_CHANNELS,
+  RowMcpChannelSchema,
+  EvalRowStatusSchema,
+  type RowMcpChannel,
+  type EvalRowStatus,
+} from './row-vocab';
+
+export { ROW_MCP_CHANNELS, RowMcpChannelSchema, EvalRowStatusSchema, type RowMcpChannel, type EvalRowStatus };
 // 本文件自己也要用 AgentKindSchema（EvalRow.agentKind 与创建入参的候选行）、AgentKind
 // （`isSameRowTarget` 的入参类型）与 AGENT_LABELS（追问那一族的原因里要写「哪一家」），
 // 而 `export … from` 只把名字转出去、不引入本地作用域——故这里另有一行 import（不是重复）。
@@ -26,6 +37,9 @@ import { AGENT_LABELS, AgentKindSchema, type AgentKind } from './agent';
 // 追问判据要读「这一家声明的续接那一格」（`turnInjection.resume`）：类型从 agent-message 借，
 // 判据本身留在本文件——它是行级动作判据那一族的一员（与 `canRescoreRow` / `canRetryRow` 同住）。
 import type { TurnInjectionCell } from './agent-message';
+// 从叶子取而不是从 `./checkpoint` 取：后者会经 inject-message → agent-message → agent-event 回到本文件，
+// 形成环并在包根评估时撞 TDZ（见 `checkpoint-void.ts` 的文件头）
+import { CheckpointVoidSchema } from './checkpoint-void';
 import { RubricSchema } from './rubric';
 import { ScoreResultSchema } from './score';
 
@@ -37,11 +51,6 @@ export { AGENT_KINDS, AGENT_LABELS, AgentKindSchema, type AgentKind } from './ag
 export const ExecutionModeSchema = z.enum(['parallel', 'serial']);
 export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 
-export const EvalRowStatusSchema = z.enum([
-  'pending', 'preparing', 'running', 'judging', 'judged',
-  'failed', 'timed-out', 'canceled', 'skipped', 'interrupted',
-]);
-export type EvalRowStatus = z.infer<typeof EvalRowStatusSchema>;
 
 /**
  * 终态集合：SSE 收到它即可关连接。
@@ -109,9 +118,6 @@ export type RowMcpVerdict = z.infer<typeof RowMcpVerdictSchema>;
  * ⚠️ 通道**决定结论怎么读**，所以它必须跟着证据走、而不是按厂商名去查一张静态表：同一个形状
  * （「表里没有这一台」）在前两档是「不判失败」，在第三档是「判失败」。声明与实际读到的东西会各自漂移。
  */
-export const ROW_MCP_CHANNELS = ['vendor-status', 'vendor-startup-status', 'vendor-tool-table'] as const;
-export const RowMcpChannelSchema = z.enum(ROW_MCP_CHANNELS);
-export type RowMcpChannel = z.infer<typeof RowMcpChannelSchema>;
 
 /**
  * 那条结论是**凭什么**下的（判据来源的四档）= 三条通道 + `none`（没有任何厂商证据）。
@@ -492,6 +498,18 @@ export const EvalRowSchema = z.object({
    * 静默跳过那一轮；缺格读成 0 也是语义正确的兜底（那一轮确实没追问过）。
    */
   followUpRounds: z.number().int().min(0).default(0),
+  /**
+   * **回到某一轮**留下的作废标记（追加，不删不改账本原文）。
+   *
+   * 每一条回答「从哪一点重开、作废到哪一段为止、作废那一截自己的量是多少」，读侧据此把作废段
+   * 从历史 / 轮次计数 / 用量 / 排名里默认滤掉（判据见 `checkpoint.ts`）。
+   *
+   * **可选**是载重的：旧 `run.json` 里没有这一格，必填会让 `listRuns()` 静默跳过那一轮；
+   * 缺席读作「一无所作废」也是语义正确的兜底——老数据本来就没有回到过某一轮。
+   * 这里**只追加、不重写**：一次回到某一轮给数组新增一条，账本（`messages.jsonl` /
+   * `events.jsonl`）一行都不动。
+   */
+  checkpointVoids: z.array(CheckpointVoidSchema).optional(),
 });
 export type EvalRow = z.infer<typeof EvalRowSchema>;
 

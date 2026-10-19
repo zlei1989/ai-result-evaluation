@@ -8,24 +8,23 @@
  *      全部来自 `parseMcpPaste`（契约里的纯函数），组件这一层不自己再判一次 ——
  *      两处各判一次的话，「预览说覆盖、落盘是新增」这类偏差只能靠肉眼发现。
  *   2. **一次原子落盘**：确认时组件交出的是**算好的整份 map**（`applyMcpPaste` 的结果），
- *      调用方拿它走一次 `PUT /api/settings`；组件自己不调接口、不碰 message。
+ *      调用方拿它走一次 `PUT /api/settings`；组件自己不调接口、不碰提示通道。
  *   3. **同名默认覆盖、逐行可切跳过**：默认合并（覆盖同名），每一行都给一个「跳过」开关；
  *      「先清空现有条目再导入」是默认**关**的勾选框（它删的是用户已有的配置，不能是默认行为）。
  *   4. **名字只有裸单项可改**：map 形状里名字住在键上（改键就是改名），裸单项的名字是猜的，
- *      故只有它给输入框；名字为空、或与本批内另一台净化后撞名 ⇒ 那一行**不许导入**并提示改名
- *      （判据在 `mcpPasteNameIssue` 里，与契约同一把尺子）。
- *   5. 中文文案**全部显式给出**、按钮一律 `autoInsertSpace={false}`（antd 默认给两个汉字的标签插空格，
- *      渲染成 `导 入`，可访问名随之不再等于文案）。
+ *      故只有它给输入框；名字为空、或与本批内另一台净化后撞名 ⇒ 那一行**不许导入**并提示改名。
+ *   5. 中文文案**全部显式给出**，可访问名与可见文案逐字一致。
+ *
+ * 解析失败那句话的**去向**：弹窗里保留完整诊断（原因 + 四类形状示例，用户要照着它改），
+ * 同时经 `onParseError` 把**同一句原文**交给调用方（页面接到 `toast.error`）。
+ * 组件不认识 toast —— 提示通道由调用方注入，文案一个字节都不改写（用户拿报错原文才搜得到）。
  *
  * 为什么草稿要连**文本**一起存（`drafts.text`）：预览里的「跳过 / 改名」是逐行决定，
- * 文本一换，上一批决定就不该继续生效（上一份配置里的 `context7` 与这一份里的 `context7`
- * 未必是同一件事）。存在一起、读的时候对不上就当空，比用一个 effect 事后清更稳：
- * effect 会在「文本已换、决定还没清」的那一帧里画出错的预览。
+ * 文本一换，上一批决定就不该继续生效。存在一起、读的时候对不上就当空，比用一个 effect
+ * 事后清更稳：effect 会在「文本已换、决定还没清」的那一帧里画出错的预览。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Alert, Checkbox, Flex, Input, Modal, Switch, Table, Tag, Typography } from 'antd';
-import type { TableColumnsType } from 'antd';
 import {
   MCP_PASTE_SHAPE_EXAMPLES,
   applyMcpPaste,
@@ -34,10 +33,24 @@ import {
   type McpServerConfig,
   type McpServers,
 } from '@aieval/contracts';
-import { EllipsisText } from '../base/ellipsis-text';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
+import { Input } from '../components/ui/input';
+import { Switch } from '../components/ui/switch';
+import { DataTable, type DataTableColumn } from '../base/data-table';
+import { Textarea } from '../components/ui/textarea';
+import { SettingsEllipsis } from './settings-ellipsis';
 // 复用表格那一列的同一份口径（http 显 URL、stdio 显 `command args…`）：预览与落盘后的表格
 // 对同一条给出两种写法的话，用户会以为自己看错了
 import { endpointText } from './mcp-server-table';
+import { SettingsAlert } from './settings-alert';
 
 export interface McpPasteModalProps {
   open: boolean;
@@ -48,6 +61,11 @@ export interface McpPasteModalProps {
   /** 确认导入：交出的是一份**算好的整份 map**（调用方一次 PUT 落盘，不做第二次合并） */
   onImport: (servers: McpServers) => void;
   onCancel: () => void;
+  /**
+   * 整份解析失败时把**原文**交给调用方（页面接 `toast.error`）。
+   * 只在错误文案变化时调用一次：用户每敲一个字符都弹一条 toast 会比错误本身更烦。
+   */
+  onParseError?: (message: string) => void;
 }
 
 /** 弹窗宽度：预览表五列（名称 / 传输 / 端点或命令 / 处置 / 被丢字段）要放得下，窄了处置列只能读半句 */
@@ -72,15 +90,23 @@ interface PreviewRow {
   droppedFields: string[];
   renamable: boolean;
   skipped: boolean;
-  /** 处置标签的文字与颜色（Tag 的 `color` 直接用 antd 的预设名） */
+  /** 处置标签的文字与配色（语义色由 `actionTone` 决定） */
   actionText: string;
-  actionColor: string;
+  actionTone: 'muted' | 'destructive' | 'warning' | 'success';
   /** 不导入的中文原因（含「名字为空 / 重名」这类改名问题）；null = 这一行会导入 */
   blockedReason: string | null;
 }
 
+/** 处置标签的语义配色：四种处置在表里必须一眼可分 */
+const ACTION_CLASSES: Record<PreviewRow['actionTone'], string> = {
+  muted: 'border-border bg-muted text-muted-foreground',
+  destructive: 'border-destructive/30 bg-destructive/10 text-destructive',
+  warning: 'border-warning/30 bg-warning/10 text-warning',
+  success: 'border-success/30 bg-success/10 text-success',
+};
+
 export function McpPasteModal(props: McpPasteModalProps): ReactNode {
-  const { open, servers, saving, onImport, onCancel } = props;
+  const { open, servers, saving, onImport, onCancel, onParseError } = props;
   const [text, setText] = useState('');
   const [drafts, setDrafts] = useState<{ text: string; decisions: Record<string, RowDecision> }>({
     text: '',
@@ -93,6 +119,24 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
 
   const parsed = useMemo(() => parseMcpPaste(text, servers), [text, servers]);
   const existingNames = Object.keys(servers);
+
+  /**
+   * 解析失败的原文转交给调用方：只在**文案变化**时交一次。
+   * 依赖里是 `parsed.error?.message` 而不是整个 `parsed`（后者每次 render 都是新对象，
+   * 会让同一条错误重复弹）。
+   */
+  const parseErrorMessage = parsed.error?.message;
+  useEffect(() => {
+    if (parseErrorMessage !== undefined) onParseError?.(parseErrorMessage);
+  }, [parseErrorMessage, onParseError]);
+
+  // 关掉即丢弃：留着上次那段文本，用户会以为已经导入过了
+  useEffect(() => {
+    if (open) return;
+    setText('');
+    setDrafts({ text: '', decisions: {} });
+    setClearFirst(false);
+  }, [open]);
 
   const patchDecision = (id: string, patch: RowDecision): void => {
     setDrafts({ text, decisions: { ...decisions, [id]: { ...decisions[id], ...patch } } });
@@ -117,6 +161,13 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
       // 名字问题只对「将要导入」的行算：被跳过的行不占名字，也不该因为名字而报错
       const issue = skipped ? null : nameIssueOf(item.name, name);
       const overwrite = servers[name] !== undefined;
+      const actionTone: PreviewRow['actionTone'] = skipped
+        ? 'muted'
+        : issue !== null
+          ? 'destructive'
+          : clearFirst || !overwrite
+            ? 'success'
+            : 'warning';
       return {
         id: item.name,
         kind: 'entry',
@@ -127,7 +178,7 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
         renamable: item.renamable,
         skipped,
         actionText: skipped ? '跳过' : issue !== null ? '不导入' : clearFirst || !overwrite ? '新增' : `覆盖已有 ${name}`,
-        actionColor: skipped ? 'default' : issue !== null ? 'red' : overwrite && !clearFirst ? 'gold' : 'green',
+        actionTone,
         blockedReason: issue,
       };
     }),
@@ -141,7 +192,7 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
         renamable: false,
         skipped: false,
         actionText: '不导入',
-        actionColor: 'red',
+        actionTone: 'destructive',
         blockedReason: item.reason,
       }),
     ),
@@ -159,171 +210,213 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
     onImport(applyMcpPaste(servers, importRows, clearFirst));
   };
 
-  const columns: TableColumnsType<PreviewRow> = [
+  /**
+   * 五列定义：名称 / 传输 / 端点或命令 / 处置 / 被丢字段。
+   * 这张预览表在弹窗内滚动（`viewportHeight=320`），行高由「处置」列里的两行内容决定。
+   */
+  const columns: DataTableColumn<PreviewRow>[] = [
     {
-      title: '名称',
-      key: 'name',
-      width: 190,
-      render: (_value, row) =>
-        // 只有裸单项的名字是「猜」的（map 形状里名字住在键上，改键就是改名），故只有它给输入框
-        row.renamable ? (
+      id: 'name',
+      header: '名称',
+      accessorKey: 'name',
+      size: 190,
+      cell: ({ row }) =>
+        // 只有裸单项的名字是「猜」的（map 形状里名字住在键上，改键就是改名），
+        // 故只有它给输入框
+        row.original.renamable ? (
           <Input
-            size="small"
-            value={row.name}
+            value={row.original.name}
             aria-label="名称"
-            status={row.blockedReason === null ? undefined : 'error'}
-            onChange={(event) => patchDecision(row.id, { name: event.target.value })}
+            aria-invalid={row.original.blockedReason !== null}
+            className={row.original.blockedReason === null ? undefined : 'border-destructive'}
+            onChange={(event) => patchDecision(row.original.id, { name: event.target.value })}
           />
         ) : (
-          <EllipsisText text={row.name} />
+          <SettingsEllipsis text={row.original.name} />
         ),
     },
     {
-      title: '传输',
-      key: 'transport',
-      width: 90,
-      render: (_value, row) =>
-        row.transport === undefined ? (
-          <Typography.Text type="secondary">—</Typography.Text>
+      id: 'transport',
+      header: '传输',
+      accessorFn: (row) => row.transport,
+      size: 90,
+      cell: ({ row }) =>
+        row.original.transport === undefined ? (
+          <span className="text-sm text-muted-foreground">—</span>
         ) : (
-          <Tag color={row.transport === 'http' ? 'blue' : 'purple'}>{row.transport}</Tag>
+          <Badge
+            variant="outline"
+            className={
+              row.original.transport === 'http'
+                ? 'border-info/30 bg-info/10 text-info'
+                : 'border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-300'
+            }
+          >
+            {row.original.transport}
+          </Badge>
         ),
     },
     {
-      title: '端点或命令',
-      key: 'endpoint',
-      render: (_value, row) =>
-        row.entry === undefined ? (
-          <Typography.Text type="secondary">—</Typography.Text>
+      id: 'endpoint',
+      header: '端点或命令',
+      accessorFn: (row) => (row.entry === undefined ? '' : endpointText(row.entry)),
+      size: 200,
+      cell: ({ row }) =>
+        row.original.entry === undefined ? (
+          <span className="text-sm text-muted-foreground">—</span>
         ) : (
-          <EllipsisText text={endpointText(row.entry)} />
+          <SettingsEllipsis text={endpointText(row.original.entry)} />
         ),
     },
     {
-      title: '处置',
-      key: 'action',
-      width: 240,
-      render: (_value, row) => (
-        <Flex vertical gap={4}>
-          <Flex gap={8} align="center">
-            <Tag color={row.actionColor}>{row.actionText}</Tag>
-            {row.kind === 'entry' && (
+      id: 'action',
+      header: '处置',
+      accessorKey: 'actionText',
+      size: 240,
+      cell: ({ row }) => (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={ACTION_CLASSES[row.original.actionTone]}>
+              {row.original.actionText}
+            </Badge>
+            {row.original.kind === 'entry' && (
               // 逐行可切跳过（默认关）：勾上之后这一行既不新增也不覆盖，名字也不占位
-              <Flex gap={4} align="center">
-                <Typography.Text type="secondary">跳过</Typography.Text>
+              <span className="flex items-center gap-1">
+                <span className="text-sm text-muted-foreground">跳过</span>
                 <Switch
-                  size="small"
-                  checked={row.skipped}
-                  aria-label={`跳过 ${row.name}`}
-                  onChange={(checked) => patchDecision(row.id, { skipped: checked })}
+                  size="sm"
+                  checked={row.original.skipped}
+                  aria-label={`跳过 ${row.original.name}`}
+                  onCheckedChange={(checked) => patchDecision(row.original.id, { skipped: checked })}
                 />
-              </Flex>
+              </span>
             )}
-          </Flex>
-          {row.blockedReason !== null && <Typography.Text type="danger">{row.blockedReason}</Typography.Text>}
-        </Flex>
+          </div>
+          {row.original.blockedReason !== null && (
+            <span className="text-sm text-destructive">{row.original.blockedReason}</span>
+          )}
+        </div>
       ),
     },
     {
-      title: '被丢字段',
-      key: 'dropped',
-      width: 170,
-      render: (_value, row) =>
-        row.droppedFields.length === 0 ? (
-          <Typography.Text type="secondary">—</Typography.Text>
+      id: 'droppedFields',
+      header: '被丢字段',
+      accessorFn: (row) => row.droppedFields.join('、'),
+      size: 170,
+      cell: ({ row }) =>
+        row.original.droppedFields.length === 0 ? (
+          <span className="text-sm text-muted-foreground">—</span>
         ) : (
-          <EllipsisText text={row.droppedFields.join('、')} />
+          <SettingsEllipsis text={row.original.droppedFields.join('、')} />
         ),
     },
   ];
 
   return (
-    <Modal
+    <Dialog
       open={open}
-      title="粘贴 MCP 配置"
-      width={MCP_PASTE_MODAL_WIDTH}
-      okText={overwriteCount > 0 ? `导入 ${importRows.length} 台（覆盖 ${overwriteCount}）` : `导入 ${importRows.length} 台`}
-      cancelText="取消"
-      confirmLoading={saving}
-      okButtonProps={{ autoInsertSpace: false, disabled: parsed.error !== undefined || importRows.length === 0 }}
-      cancelButtonProps={{ autoInsertSpace: false }}
-      onOk={confirm}
-      onCancel={onCancel}
-      // 关掉即丢弃：留着上次那段文本，用户会以为已经导入过了（与 RubricRecognizeModal 同一条口径）
-      destroyOnHidden
-      afterClose={() => {
-        setText('');
-        setDrafts({ text: '', decisions: {} });
-        setClearFirst(false);
+      onOpenChange={(next) => {
+        if (!next) onCancel();
       }}
     >
-      <Flex vertical gap={12}>
-        <Typography.Text type="secondary">
-          认三种形状：{'"mcpServers"'} 信封（Claude / Cursor）、{'"servers"'} 信封（VS Code，{'inputs'} 会被丢掉）、
-          单台服务器；JSONC 的注释与尾逗号也认。贴进来先看预览，点「导入」才写入。
-        </Typography.Text>
-        <Input.TextArea
-          rows={6}
-          value={text}
-          aria-label="粘贴内容"
-          data-testid="mcp-paste-text"
-          placeholder={'如 { "mcpServers": { "context7": { "url": "https://mcp.context7.com/mcp" } } }'}
-          onChange={(event) => setText(event.target.value)}
-        />
+      <DialogContent
+        className="sm:max-w-[880px]"
+        style={{ maxWidth: MCP_PASTE_MODAL_WIDTH }}
+        data-testid="mcp-paste-dialog"
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>粘贴 MCP 配置</DialogTitle>
+        </DialogHeader>
 
-        {parsed.error !== undefined && (
-          <Alert
-            type="error"
-            showIcon
-            title="认不出这段内容"
-            description={
-              <Flex vertical gap={4}>
-                <Typography.Text>{parsed.error.message}</Typography.Text>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            认三种形状：{'"mcpServers"'} 外层（Claude / Cursor）、{'"servers"'} 信封（VS Code，{'inputs'} 会被丢掉）、
+            单台服务器；JSONC 的注释与尾逗号也认。贴进来先看预览，点「导入」才写入。
+          </p>
+          <Textarea
+            rows={6}
+            value={text}
+            aria-label="粘贴内容"
+            data-testid="mcp-paste-text"
+            placeholder={'如 { "mcpServers": { "context7": { "url": "https://mcp.context7.com/mcp" } } }'}
+            onChange={(event) => setText(event.target.value)}
+          />
+
+          {parsed.error !== undefined && (
+            <SettingsAlert tone="error" title="认不出这段内容">
+              <div className="flex flex-col gap-1">
+                <p className="text-sm">{parsed.error.message}</p>
                 {/* 「无法识别」时把四类形状摆出来：用户要照着它自己判断该贴哪一份 */}
                 {parsed.error.topLevelKeys !== undefined && (
-                  <Typography.Text type="secondary">能贴的形状（四选一）：</Typography.Text>
+                  <p className="text-sm text-muted-foreground">能贴的形状（四选一）：</p>
                 )}
                 {parsed.error.topLevelKeys !== undefined &&
                   MCP_PASTE_SHAPE_EXAMPLES.map((example) => (
-                    <Typography.Text key={example} code data-testid="mcp-paste-shape-example">
+                    <code
+                      key={example}
+                      className="block rounded bg-muted px-1.5 py-1 font-mono text-xs whitespace-pre-wrap"
+                      data-testid="mcp-paste-shape-example"
+                    >
                       {example}
-                    </Typography.Text>
+                    </code>
                   ))}
-              </Flex>
-            }
-          />
-        )}
+              </div>
+            </SettingsAlert>
+          )}
 
-        {/* 整份级别被丢掉的字段（信封的兄弟键）：不点名的话，用户会以为 `inputs` 也一起导进来了 */}
-        {parsed.droppedFields.length > 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            title={`整份丢掉了这些字段：${parsed.droppedFields.join('、')}`}
-            description="它们是信封自己的字段（如 VS Code 的 inputs），不会写进 MCP 配置。"
-          />
-        )}
+          {/* 整份级别被丢掉的字段（信封的兄弟键）：不点名的话，用户会以为 `inputs` 也一起导进来了 */}
+          {parsed.droppedFields.length > 0 && (
+            <SettingsAlert
+              tone="warning"
+              title={`整份丢掉了这些字段：${parsed.droppedFields.join('、')}`}
+              description="它们是外层容器自己的字段（如 VS Code 的 inputs），不会写进 MCP 配置。"
+            />
+          )}
 
-        {rows.length > 0 && (
-          <Table<PreviewRow>
-            rowKey="id"
-            size="small"
-            columns={columns}
-            dataSource={rows}
-            pagination={false}
-            data-testid="mcp-paste-preview"
-            scroll={{ y: PREVIEW_MAX_HEIGHT }}
-          />
-        )}
+          {rows.length > 0 && (
+            <div
+              data-testid="mcp-paste-preview"
+              className="w-full rounded-lg border"
+            >
+              <DataTable
+                columns={columns}
+                data={rows}
+                rowKey={(row) => row.id}
+                virtualize={false}
+                viewportHeight={320}
+                rowHeight={64}
+                ariaLabel="粘贴预览"
+              />
+            </div>
+          )}
 
-        {rows.length > 0 && (
-          <Checkbox checked={clearFirst} onChange={(event) => setClearFirst(event.target.checked)}>
-            {existingNames.length > 0
-              ? `先清空现有条目再导入（会删掉现有 ${existingNames.length} 台）`
-              : '先清空现有条目再导入'}
-          </Checkbox>
-        )}
-      </Flex>
-    </Modal>
+          {rows.length > 0 && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={clearFirst} onChange={(event) => setClearFirst(event.target.checked)} />
+              {existingNames.length > 0
+                ? `先清空现有条目再导入（会删掉现有 ${existingNames.length} 台）`
+                : '先清空现有条目再导入'}
+            </label>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
+            取消
+          </Button>
+          <Button
+            data-loading={saving ? 'true' : undefined}
+            disabled={saving || parsed.error !== undefined || importRows.length === 0}
+            onClick={confirm}
+          >
+            {saving && (
+              <span className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />
+            )}
+            {overwriteCount > 0 ? `导入 ${importRows.length} 台（覆盖 ${overwriteCount}）` : `导入 ${importRows.length} 台`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

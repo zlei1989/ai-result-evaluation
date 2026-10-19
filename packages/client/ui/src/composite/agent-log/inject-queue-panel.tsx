@@ -12,19 +12,15 @@
  *   · **`gone` 不进这一层**：跳过由 `visibleInjectMessages` 一处判定（它留在表里只为幂等，
  *     画出来就是把一条已经消失的消息说成还在等）。
  *
- * 标题传 `SHRINKABLE_TITLE_STYLE`：antd 的 `.ant-collapse-title` 是 `min-width: auto` 的 flex 项，
- * 标题里一旦出现 `nowrap` 的长内容就会把整行顶宽、外层冒出横向滚动条。今天这行只有一句固定的
- * 短文案 + 计数，短标题传了没有副作用；留着是为了「以后往标题里放摘要」不必再想起这一格。
+ * 开合由 Base UI 的 `Collapsible` 管：收起时面板**卸载**（不是被 CSS 藏住），
+ * 再展开拿到的是新挂载的一份——与「它此刻还在队列里」这件事一致。
  */
-import { Collapse, Flex, theme } from 'antd';
+import { ChevronDownIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { InjectMessage, TurnInjectionCapability } from '@aieval/contracts';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible';
 import { InjectMessageRow } from './inject-message-row';
 import { visibleInjectMessages } from './inject-vocab';
-import { SHRINKABLE_TITLE_STYLE } from '../../base/shrinkable-collapse-title';
-
-/** 折叠面板的键（只有一格） */
-const QUEUE_PANEL_KEY = 'inject-queue';
 
 export interface InjectQueuePanelProps {
   /** 这一行的队列快照（含终态：`gone` 由本件跳过） */
@@ -49,7 +45,6 @@ export function InjectQueuePanel({
   onPromote,
   onRetract,
 }: InjectQueuePanelProps): ReactNode {
-  const { token } = theme.useToken();
   const visible = visibleInjectMessages(messages);
   // 一条都没有 ⇒ 一个节点都不渲染（不占高度：输入区上面不留一段空白）
   if (visible.length === 0) return null;
@@ -66,25 +61,22 @@ export function InjectQueuePanel({
   ));
 
   return (
-    <Flex vertical data-testid="inject-queue" style={{ paddingInline: token.paddingMD }}>
+    <div data-testid="inject-queue" className="px-roomy">
       {visible.length === 1 ? (
         // 一条时不套壳：标题（「1 条排队消息」）比内容还长，折起来只会多一次点击
-        <Flex vertical>{rows}</Flex>
+        <div className="flex flex-col">{rows}</div>
       ) : (
-        <Collapse
-          activeKey={collapsed ? [] : [QUEUE_PANEL_KEY]}
-          onChange={(keys) => onCollapsedChange(keys.length === 0)}
-          expandIconPlacement="end"
-          styles={SHRINKABLE_TITLE_STYLE}
-          items={[
-            {
-              key: QUEUE_PANEL_KEY,
-              label: `${String(visible.length)} 条排队消息`,
-              children: <Flex vertical>{rows}</Flex>,
-            },
-          ]}
-        />
+        <Collapsible open={!collapsed} onOpenChange={(open) => onCollapsedChange(!open)}>
+          {/* `group` + `data-panel-open`（落在 trigger 自己身上）驱动箭头翻转 */}
+          <CollapsibleTrigger className="group flex w-full items-center justify-between gap-2 py-hair text-xs text-muted-foreground hover:text-foreground">
+            <span>{`${String(visible.length)} 条排队消息`}</span>
+            <ChevronDownIcon aria-hidden className="size-3.5 transition-transform group-data-panel-open:rotate-180" />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="flex flex-col">{rows}</div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
-    </Flex>
+    </div>
   );
 }

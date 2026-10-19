@@ -3,55 +3,52 @@
 /**
  * 评测详情面板：顶部信息卡（串行进度在卡内底部）+ 候选卡片列表 + 吸底操作栏。
  *
- * 顶部信息**与用例详情同构**：`Card` 标题 = 用例标题，正文是
- * `Descriptions` 的「标签 : 值」；备注非空时多一行「备注」（唯一一格用户注解，形态见 `headerFields`）。
- * 值一律给**全量**——详情栏是核对「这一轮跑的到底是哪份代码」的地方，短哈希 / 省略号在这里就等于没地方能看全
- * （与 `case-detail-panel.tsx` 的口径 1 同源）。
+ * 顶部信息**与用例详情同构**：卡片标题 = 用例标题，正文是「标签 : 值」的字段表；备注非空时
+ * 多一行「备注」（唯一一格用户注解）。值一律给**全量**——详情栏是核对「这一轮跑的到底是哪份代码」
+ * 的地方，短哈希 / 省略号在这里就等于没地方能看全（与 `case-detail-panel.tsx` 的口径同源）。
  *
- * 四条口径：
- *   1. 「开始」必须先 `Modal.confirm` 列出本次将执行的候选清单——
+ * 五条口径：
+ *   1. 「开始」必须先确认并**列出本次将执行的候选清单**——
  *      误点一次要烧掉几十分钟的额度与时间，确认框是这里唯一的安全带；
- *   2. 「终止」用 `Popconfirm`（它杀进程、不可撤销）；单行的终止在卡片上，同一套语义；
+ *   2. 「终止」用确认语义（它杀进程、不可撤销）；单行的终止在卡片上，同一套语义；
  *   3. 排序与排名**共用同一份判据**（`compareRows`）：总分降序 → 耗时升序 →
  *      tok（输入+输出）升序；三项全同才算并列（同名次，不硬拆成 1、2 名）。未出分的行排在最后、
  *      不参与排名，只有 1..3 名带徽标；未采集的耗时/tok 按最差算（见 `compareRows` 的注释）；
- *   4. 吸底栏用 `Layout.Footer` 但把它的默认内边距清零——那是页面级的 24/50，
- *      放进右栏会把卡片顶出视口；间距交给 `Flex` 的 `gap`。
- *      「视觉上下边距一样宽」在这一条上追加半句：清零之后**上边补回
- *      `PANE_PADDING`**（下边那 8px 是 `ListDetailLayout` 详情槽自己的 padding，不归本组件），
- *      于是「分隔线→内容」与「内容→栏底」都是 8px；左右仍为 0。
- *
- * 第五条口径：「编辑 / 删除」两个入口放在**顶部信息卡的 `extra`**上，
- * 与 `case-detail-panel.tsx` 逐字同形（同一个位置、同一套 Popconfirm 语义）；两者都只在
- * **没有行在运行**时可用——判据是 contracts 的 `hasLiveRows`，与服务端抛 409 的那一条同源。
+ *   4. 吸底栏把上边距补成 `PANE_PADDING`、下边留 0——下边那 16px 由 `ListDetailLayout` 详情槽
+ *      自己的 padding 提供，于是「分隔线→内容」与「内容→栏底」都是 8px；左右为 0，与卡片那一列对齐；
+ *   5. 「编辑 / 删除」两个入口放在**顶部信息卡的右上角**，与 `case-detail-panel.tsx` 同形；
+ *      两者都只在**没有行在运行**时可用——判据是 contracts 的 `hasLiveRows`，与服务端抛 409
+ *      的那一条同源。禁用原因走浮层，浮层的触发点包在按钮外面（禁用按钮自己不触发鼠标事件）。
  *
  * 两条读数口径（都不猜）：
  *   · **进度与状态全部来自快照**（`row.status` / `run.executionMode`）：不用「有没有分数」这类
  *     前端推断去判断终态——那正是「把旧数据渲染成新数据」的形状；
  *   · 串行进度的分子是 **`TERMINAL_ROW_STATUSES` 的行数**，不是「已评分」的行数。
- *
- * 本仓约定：两个汉字的按钮一律 `autoInsertSpace={false}`（provider-table.tsx 的文件头），
- * 否则可访问名会变成「开 始」/「确 定」，用例与屏幕阅读器都会撞上。
  */
-import { Alert, Badge, Button, Card, Descriptions, Flex, Layout, Modal, Popconfirm, Progress, Tooltip, Typography, theme } from 'antd';
-import type { DescriptionsProps } from 'antd';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   AGENT_LABELS,
   TERMINAL_ROW_STATUSES,
+  type AgentKind,
+  type EvalRow,
+  type EvalRun,
   type FollowUpVerdict,
   hasLiveRows,
   isNoneSource,
   isRunnableRow,
   isRunningRow,
-  type AgentKind,
-  type EvalRow,
-  type EvalRun,
 } from '@aieval/contracts';
-import { PANE_PADDING } from '../base/list-detail-layout';
+import { XIcon } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Button } from '../components/ui/button';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Progress } from '../components/ui/progress';
+import { PANE_PADDING } from '../base/pane-metrics';
 import type { LiveMetricsView } from '../base/metric-line';
-import { EvalRowCard, type AgentCapabilityView } from './eval-row-card';
 import type { AgentActivity } from '../base/agent-activity-line';
+import { ConfirmDialog } from '../base/confirm-dialog';
+import { Hint, HintProvider } from '../base/hint';
+import { EvalRowCard, type AgentCapabilityView } from './eval-row-card';
 
 export interface RunDetailPanelProps {
   run: EvalRun;
@@ -101,13 +98,18 @@ export interface RunDetailPanelProps {
   /** 打开编辑表单（右栏切到 edit） */
   onEdit: () => void;
   /**
-   * 删除这一轮。**必须返回在途请求的 promise**（`() => remove(id)`，而不是 `() => { void remove(id) }`）：
-   * antd 的 `ActionButton` 只在 `onConfirm` 返回 thenable 时才等待它——返回 undefined 时确认框会
-   * **立刻关闭**，用户看到的是「点一下就没反应」，再点一次就是第二次 DELETE
-   * （`case-detail-panel.tsx` 的 `onDelete` 注释同此口径）。
+   * 关闭右栏（回到单栏列表）。
+   *
+   * 桌面双栏下这是右栏**唯一**的关闭入口：退回列表只能点顶栏「评测」、而那会丢掉这一页的
+   * 查询参数与滚动位置；窄屏由 `Sheet` 头部的关闭键承担，这一格可以不传。
+   */
+  onClose?: () => void;
+  /**
+   * 删除这一轮。**可以返回在途请求的 promise**：确认框只在它落定后才关闭，
+   * 否则用户看到的是「点一下没反应」，再点一次就是第二次 DELETE。
    */
   onDelete: () => void | Promise<unknown>;
-  /** 删除请求在途：给确认按钮上 loading，避免重复点 */
+  /** 删除请求在途：给确认按钮上在途态，避免重复点 */
   deleting?: boolean;
 }
 
@@ -119,9 +121,8 @@ export const RANK_BADGE_LIMIT = 3;
 
 /**
  * 串行进度百分比：`total <= 0` 时返回 **0**，绝不让除零的 `NaN` 流进界面。
- * 单独抽成纯函数是因为它必须能被**直接**测到：`Progress` 的 `percent` 只决定条宽、
- * 不产生可断言的文案，留在组件里就只能靠间接断言——「零行时不出现 NaN」这条
- * 会退化成一条谁也测不到的注释。
+ * 单独抽成纯函数是因为它必须能被**直接**测到：进度条只吃数字、不产生可断言的文案，
+ * 留在组件里就只能靠间接断言——「零行时不出现 NaN」这条会退化成一条谁也测不到的注释。
  */
 export function completionPercent(done: number, total: number): number {
   if (total <= 0) return 0;
@@ -166,7 +167,7 @@ export function compareRows(a: EvalRow, b: EvalRow): number {
  * 卡片上那个 tok 数：输入 + 输出（缓存读不计入）；未采集按最差算。
  *
  * ⚠️ 这个加法**跨三家口径一致**，前提是契约把 `input` 定义成**非缓存输入**
- * （2026-10-XX 的归一化：codex 侧做过 `input_tokens − cached_input_tokens`，claude / dsh 原文就不含 cache）
+ * （归一化时 codex 侧做过 `input_tokens − cached_input_tokens`，claude / dsh 原文就不含 cache）
  * ⇒ `input` / `cached` / `output` 三者互斥，`input + output` 不会双计。改契约那一格时必须回来看这里。
  */
 function totalTokens(row: EvalRow): number {
@@ -202,6 +203,13 @@ export function orderForDisplay(rows: EvalRow[]): EvalRow[] {
 /** 缺省能力：按「都支持」处理（与 `EvalRowCard` 的缺省一致） */
 const OPTIMISTIC_CAPABILITY: AgentCapabilityView = { usage: true, cancelMidTurn: true };
 
+/** 顶部信息卡的一格：`label` 与值分两列渲染（与用例详情同构） */
+interface HeaderField {
+  key: string;
+  label: string;
+  children: ReactNode;
+}
+
 export function RunDetailPanel({
   run,
   starting,
@@ -224,23 +232,22 @@ export function RunDetailPanel({
   onOpenScore,
   onOpenRank,
   onEdit,
+  onClose,
   onDelete,
   deleting = false,
 }: RunDetailPanelProps): ReactNode {
-  const { token } = theme.useToken();
-  const [modal, contextHolder] = Modal.useModal();
-
   const runnable = run.rows.filter((row) => isRunnableRow(row.status));
   const hasRunning = run.rows.some((row) => isRunningRow(row.status));
   // 分子是终态行数：失败/超时/终止/跳过/被打断都是「跑完了」，不把它们算进去进度永远到不了 100%
   const done = run.rows.filter((row) => TERMINAL_ROW_STATUSES.includes(row.status)).length;
   const total = run.rows.length;
   const serial = run.executionMode === 'serial';
+  const percent = completionPercent(done, total);
 
   /**
    * 「能不能改 / 能不能删」：只有一条判据（`hasLiveRows`），由服务端同一份函数抛 409。
-   * 有行在跑时两个入口一律禁用；**原因只在「编辑」那一格有 `Tooltip`**（「删除」被 `Popconfirm`
-   * 的 `disabled` 一并挡住，禁用态没有任何解释）——正在跑的行有自己的生命周期，处置是「先终止」。
+   * 有行在跑时两个入口一律禁用；**原因只在「编辑」那一格有浮层**——「删除」被自己的禁用态挡住，
+   * 正在跑的行有自己的生命周期，处置是「先终止」。
    */
   const live = hasLiveRows(run);
   const mutateDisabledReason = live ? '有候选行正在运行：先终止，再编辑 / 删除' : undefined;
@@ -255,71 +262,42 @@ export function RunDetailPanel({
 
   const startDisabled = starting || hasRunning || runnable.length === 0;
   const startDisabledReason = hasRunning
-    ? '有候选行正在运行：等它结束，或先终止'
+    ? '有候选正在执行：等它收场，或先点「终止」'
     : runnable.length === 0
-      ? '没有可执行的行（全部已评分）'
+      ? '没有要执行的候选：这一次评测的候选都已评分'
       : undefined;
 
-  /** 「开始」的确认框：把将执行的清单摆出来，避免误点跑掉几十分钟 */
-  const confirmStart = (): void => {
-    modal.confirm({
-      title: '开始执行这一轮评测？',
-      width: 520,
-      // 浮层根节点带一个类名：调用方（与用例）要能收窄到「这一个浮层」——
-      // 页面上「开始」「终止」都不止一处，靠全局查询必然撞上「找到多个」。
-      rootClassName: 'run-start-confirm',
-      content: (
-        <Flex vertical gap={4}>
-          <Typography.Text>
-            执行模式：{serial ? '串行（一行跑完含评分，才起下一行）' : '并行（全部同时开跑）'}
-          </Typography.Text>
-          <Typography.Text>本次将执行 {runnable.length} 个候选：</Typography.Text>
-          {runnable.map((row) => (
-            <Typography.Text key={row.id} type="secondary">
-              · {AGENT_LABELS[row.agentKind]} · {row.modelId}
-            </Typography.Text>
-          ))}
-        </Flex>
-      ),
-      okText: '开始',
-      cancelText: '取消',
-      okButtonProps: { autoInsertSpace: false },
-      cancelButtonProps: { autoInsertSpace: false },
-      onOk: onStart,
-    });
-  };
+  /** 确认框由组件自持：三个动作各自一段文案，「开始」那一支还要列出候选清单 */
+  const [confirm, setConfirm] = useState<'start' | 'abort' | 'delete' | null>(null);
 
   /**
-   * 顶部信息卡的字段表（与 `case-detail-panel.tsx` 的 `fields` 同构，只有字段集不同）：
+   * 顶部信息卡的字段表（与 `case-detail-panel.tsx` 同构，只有字段集不同）：
    *   · **备注只在非空时出现**，且排第一行：它回答「这一轮为什么这么测」，紧跟卡片标题读起来
-   *     才像一句副题；空备注摆一行「备注：—」等于凭空多一个让人去猜「为什么是空的」的字段
-   *     （与「分支只在远端轮次出现」同一条口径）；
-   *   · **分支只在远端轮次出现**（`repoBranch !== null`）。本地轮次 / 旧数据渲染出的字段与新增这一行
-   *     之前逐字相同——摆一行「分支：—」等于凭空多一个让人去猜「为什么是空的」的字段；
-   *   · commit 给**全量** 40 位（不再截成短哈希 + Tooltip）：右栏是核对「这一轮测的到底是哪个提交」
-   *     的地方，悬停才能看全的写法在这里没有必要——卡片布局本来就有整行的宽度；
+   *     才像一句副题；空备注摆一行「备注：—」等于凭空多一个让人去猜「为什么是空的」的字段；
+   *   · **分支只在远端轮次出现**（`repoBranch !== null`）：本地轮次 / 旧数据渲染出的字段不变；
+   *   · commit 给**全量** 40 位：右栏是核对「这一轮测的到底是哪个提交」的地方；
    *   · 仓库路径与工作基目录同样给全量，靠换行而不是省略（右栏可能只有 320px）。
    */
-  const headerFields: NonNullable<DescriptionsProps['items']> = [
+  const headerFields: HeaderField[] = [
     ...(run.note.trim() === ''
       ? []
       : [
         {
           key: 'note',
           label: '备注',
-          children: <Typography.Text>{run.note.trim()}</Typography.Text>,
+          children: <span>{run.note.trim()}</span>,
         },
       ]),
     {
       key: 'repoPath',
       label: '代码仓库',
-      // 无来源显示短标签「无」，哨兵串 `none://` 不是给用户看的信息，说全的话放 Tooltip 里
+      // 无来源显示短标签「无」，哨兵串 `none://` 不是给用户看的信息，说全的话放浮层里
       children: isNoneSource(run.repoPath) ? (
-        <Tooltip title="空仓库，无来源代码">
-          <Typography.Text code>无</Typography.Text>
-        </Tooltip>
+        <Hint label="空仓库，无来源代码">
+          <code className="text-xs">无</code>
+        </Hint>
       ) : (
-        <Typography.Text code>{run.repoPath}</Typography.Text>
+        <code className="text-xs break-all">{run.repoPath}</code>
       ),
     },
     ...(run.repoBranch === null
@@ -328,203 +306,240 @@ export function RunDetailPanel({
         {
           key: 'repoBranch',
           label: '分支',
-          children: <Typography.Text code>{run.repoBranch}</Typography.Text>,
+          children: <code className="text-xs break-all">{run.repoBranch}</code>,
         },
       ]),
     {
       key: 'commitHash',
-      label: 'commit',
+      label: '基线提交',
       children:
         run.commitHash === null ? (
-          <Typography.Text type="secondary">默认分支 HEAD</Typography.Text>
+          <span className="text-muted-foreground">默认分支 HEAD</span>
         ) : (
-          <Typography.Text code>{run.commitHash}</Typography.Text>
+          <code className="text-xs break-all">{run.commitHash}</code>
         ),
     },
     {
       key: 'workspaceBase',
-      label: '工作基目录',
-      children: <Typography.Text code>{run.workspaceBase}</Typography.Text>,
+      label: '工作区根目录',
+      children: <code className="text-xs break-all">{run.workspaceBase}</code>,
     },
   ];
 
   return (
-    <Flex vertical gap={8} style={{ height: '100%', minHeight: 0 }}>
-      {/* 顶部信息卡：用例标题 +（备注非空才有）备注 / 代码仓库 /（远端才有）分支 / commit / 工作基目录 */}
-      <Card
-        size="small"
-        title={run.caseTitle}
-        data-testid="run-header"
-        extra={
-          <Flex gap={8}>
-            {/* 两个汉字的标签必须关掉 antd 的自动空格：否则可访问名变成「编 辑」/「删 除」 */}
-            <Tooltip title={mutateDisabledReason}>
-              {/* Tooltip 必须包在一个**真实 DOM 元素**上，不能直接包 `Button`：
-                  antd 的禁用按钮不触发鼠标事件（谁接住它谁才有 hover），直接包时
-                  真实浏览器里悬浮上去连一个 `.ant-tooltip` 节点都不出现——
-                  而「禁用而不解释」正是这条 Tooltip 存在的理由。同 `eval-row-card.tsx` 文件头第 3 条。 */}
-              <span>
+    <HintProvider>
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        {/* 顶部信息卡：用例标题 +（备注非空才有）备注 / 代码仓库 /（远端才有）分支 / 基线提交 / 工作区根目录 */}
+        <Card size="sm" data-testid="run-header">
+          <CardHeader>
+            <CardTitle>{run.caseTitle}</CardTitle>
+            <CardAction>
+              <div className="flex gap-2">
+                <Hint label={mutateDisabledReason}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={live}
+                    data-testid="run-detail-edit"
+                    onClick={onEdit}
+                  >
+                    编辑
+                  </Button>
+                </Hint>
                 <Button
-                  size="small"
-                  autoInsertSpace={false}
+                  size="sm"
+                  variant="outline"
                   disabled={live}
-                  data-testid="run-detail-edit"
-                  onClick={onEdit}
+                  data-testid="run-detail-delete"
+                  onClick={() => setConfirm('delete')}
                 >
-                  编辑
+                  删除
                 </Button>
+                {onClose === undefined ? null : (
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    // 窄屏时右栏整体搬进 Sheet，Sheet 头部已有自己的关闭键；这一格再画一个就是两个 X。
+                    // 用祖先属性判据而不是「页面上有没有 Sheet」：两处渲染走的是同一棵组件树。
+                    className="in-data-[slot=sheet-content]:hidden"
+                    aria-label="关闭详情"
+                    data-testid="run-detail-close"
+                    onClick={onClose}
+                  >
+                    <XIcon aria-hidden />
+                  </Button>
+                )}
+              </div>
+            </CardAction>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              {headerFields.map((field) => (
+                <div key={field.key} className="col-span-2 grid grid-cols-subgrid">
+                  <dt className="text-muted-foreground">{field.label}</dt>
+                  <dd className="min-w-0">{field.children}</dd>
+                </div>
+              ))}
+            </dl>
+            {/**
+             * **可比性提示**（与开关那一格同源）：开着输入区的一轮里，人在半路补的话**照旧进评分证据**
+             * ⇒ 它的产物与没插过话的轮次不可直接比。提示放在这里而不是只放卡片上：
+             * 评分的证据面在轮次这一层，而候选卡片可能不在视野里（列表要滚动）——
+             * 不提示就等于让分数静默地换了口径。
+             */}
+            {run.injectMessages ? (
+              <Alert>
+                <AlertTitle>这一次评测开着人工消息</AlertTitle>
+                <AlertDescription>
+                  运行中补的话会进智能体的上下文，也算进评分证据——所以这一次评测的产物与没被插过话的评测不可直接比。候选卡片上的「人工消息 ×N」是实际送达的条数（运行中补的话与跑完之后的追问都算）。
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {/* 串行进度钉在信息卡**内部底部**：它读的是「整轮跑完了几行」，
+                与上面这组「这一轮跑的到底是哪份代码」属于同一块元信息；浮在卡片外面时，
+                它悬在卡片与候选列表之间，看着像下面那串候选卡片的表头。 */}
+            {serial && (
+              <div className="mt-1 flex items-center gap-2" data-testid="run-progress">
+                <Progress value={percent} aria-label="串行进度" className="w-full flex-1" />
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {done}/{total} 已完成
+                </span>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto" data-testid="run-row-list">
+          {orderForDisplay(run.rows).map((row) => {
+            const rank = rankOf(run.rows, row);
+            return (
+              <EvalRowCard
+                key={row.id}
+                row={row}
+                rank={rank !== undefined && rank <= RANK_BADGE_LIMIT ? rank : undefined}
+                queued={serial && row.status === 'pending'}
+                capability={capabilityOf === undefined ? OPTIMISTIC_CAPABILITY : capabilityOf(row.agentKind)}
+                live={liveOf?.(row.id)}
+                activity={activityOf?.(row.id)}
+                onAbort={() => onAbortRow(row.id)}
+                onRescore={() => onRescoreRow(row.id)}
+                rescorePending={rescoring}
+                onRetry={() => onRetryRow(row.id)}
+                retryPending={retrying}
+                // 没有回调就不传（卡片据此不渲染那个按钮）：一个点了没反应的按钮比没有按钮更糟
+                {...(onFollowUpRow === undefined ? {} : { onFollowUp: () => onFollowUpRow(row.id) })}
+                {...(followUpOf === undefined ? {} : { followUpVerdict: followUpOf(row.id) })}
+                followUpPending={followingUp}
+                onOpenLog={() => onOpenLog(row.id)}
+                onOpenDiff={() => onOpenDiff(row.id)}
+                onOpenScore={() => onOpenScore(row.id)}
+              />
+            );
+          })}
+        </div>
+
+        <footer
+          data-testid="run-footer"
+          className="sticky bottom-0 border-t"
+          style={{ padding: `${PANE_PADDING}px 0 0`, background: 'var(--card)' }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {/* 状态点：有行在跑是实心主色 + 呼吸，全部收场是灰点（颜色不承担全部信息：旁边的文案同时说模式与行数） */}
+              <span
+                data-testid="run-running-dot"
+                aria-hidden
+                className={
+                  hasRunning
+                    ? 'inline-block size-2 animate-pulse rounded-full bg-primary'
+                    : 'inline-block size-2 rounded-full bg-muted-foreground/40'
+                }
+              />
+              {/* 执行模式只读展示：**本面板不提供切换入口**（执行模式随评测落库、运行中不可改） */}
+              <span className="text-xs text-muted-foreground">
+                {serial ? '串行' : '并行'} · 共 {total} 个候选
               </span>
-            </Tooltip>
-            {/* `loading` 这一格**只在真的要转圈时才存在**（多写一个 `loading: undefined` 都不行）：
-                antd 的 `ActionButton` 把 `buttonProps` 展开在自己的 `loading` **之后**
-                （`antd@6.6.5/es/_util/ActionButton.js:92-99`），键只要在场（哪怕是 `undefined`）就会盖掉
-                它内部那一格 ⇒ `onConfirm={onDelete}` 交回的 promise **照样被等、确认框照样等它落定才关**
-                （等待与关闭在 `:42-61`，与按钮的转圈是两条路），丢的只是「按钮在转圈」这个反馈：
-                删除期间按钮看起来没反应（正是 `onDelete` 注释里那个「点一下没反应」的观感）。 */}
-            <Popconfirm
-              title="删除这一轮评测？"
-              description="这一轮的全部行工作区与执行日志会一起删掉，不可恢复。"
-              okText="确认删除"
-              cancelText="取消"
-              okButtonProps={{ danger: true, autoInsertSpace: false, ...(deleting ? { loading: true } : {}) }}
-              cancelButtonProps={{ autoInsertSpace: false }}
-              disabled={live}
-              onConfirm={onDelete}
-            >
-              <Button size="small" danger autoInsertSpace={false} disabled={live} data-testid="run-detail-delete">
-                删除
-              </Button>
-            </Popconfirm>
-          </Flex>
-        }
-      >
-        {/* antd 6 的 Descriptions 推荐 items（子节点写法已弃用）；列数固定 1 列：右栏窄，多的列只会挤到换行 */}
-        <Descriptions size="small" column={1} items={headerFields} />
-        {/**
-         * **可比性提示**（与开关那一格同源）：开着输入区的一轮里，人在半路补的话**照旧进评分证据**
-         * ⇒ 它的产物与没插过话的轮次不可直接比。提示放在这里而不是只放卡片上：
-         * 评分的证据面在轮次这一层，而候选卡片可能不在视野里（列表要滚动）——
-         * 不提示就等于让分数静默地换了口径。`askUser` 那一格同理，但它今天没有这条提示面。
-         */}
-        {run.injectMessages ? (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginTop: 8 }}
-            // antd 6 把 `Alert.message` 换成了 `title`（旧名只是废弃、运行期仍回落，但控制台会告警）
-            title="这一轮允许人工补充消息"
-            description="人在运行中补的话会进智能体的上下文、也照旧进评分证据。代价如实说：这一轮被人介入过，产物与没插过话的轮次不可直接比；候选卡片上的「人工消息 ×N」是实际送达的条数（运行中插的话与跑完之后的追问都算）。"
-          />
-        ) : null}
-        {/* 串行进度钉在信息卡**内部底部**：它读的是「整轮跑完了几行」，
-            与上面这组「这一轮跑的到底是哪份代码」属于同一块元信息；浮在卡片外面时，
-            它悬在卡片与候选列表之间，看着像下面那串候选卡片的表头。
-            间距用 `marginTop` 而不是外层 `Flex` 的 `gap`：卡片与进度现在是同一个盒子里的上下两段。 */}
-        {serial && (
-          <Flex align="center" gap={8} data-testid="run-progress" style={{ marginTop: 8 }}>
-            <Progress percent={completionPercent(done, total)} size="small" showInfo={false} style={{ flex: 1 }} />
-            <Typography.Text type="secondary">
-              {done}/{total} 已完成
-            </Typography.Text>
-          </Flex>
-        )}
-      </Card>
-
-      <Flex vertical gap={8} data-testid="run-row-list" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {orderForDisplay(run.rows).map((row) => {
-          const rank = rankOf(run.rows, row);
-          return (
-            <EvalRowCard
-              key={row.id}
-              row={row}
-              rank={rank !== undefined && rank <= RANK_BADGE_LIMIT ? rank : undefined}
-              queued={serial && row.status === 'pending'}
-              capability={capabilityOf === undefined ? OPTIMISTIC_CAPABILITY : capabilityOf(row.agentKind)}
-              live={liveOf?.(row.id)}
-              activity={activityOf?.(row.id)}
-              onAbort={() => onAbortRow(row.id)}
-              onRescore={() => onRescoreRow(row.id)}
-              rescorePending={rescoring}
-              onRetry={() => onRetryRow(row.id)}
-              retryPending={retrying}
-              // 没有回调就不传（卡片据此不渲染那个按钮）：一个点了没反应的按钮比没有按钮更糟
-              {...(onFollowUpRow === undefined ? {} : { onFollowUp: () => onFollowUpRow(row.id) })}
-              {...(followUpOf === undefined ? {} : { followUpVerdict: followUpOf(row.id) })}
-              followUpPending={followingUp}
-              onOpenLog={() => onOpenLog(row.id)}
-              onOpenDiff={() => onOpenDiff(row.id)}
-              onOpenScore={() => onOpenScore(row.id)}
-            />
-          );
-        })}
-      </Flex>
-
-      <Layout.Footer
-        data-testid="run-footer"
-        style={{
-          position: 'sticky',
-          bottom: 0,
-          // 只补**上边**：分隔线与内容之间 8px，内容到栏底也是 8px（后者由 `ListDetailLayout`
-          // 详情槽的 `padding` 提供，见 `PANE_PADDING`）⇒ 视觉上下边距一样宽。
-          // 左右仍为 0：横向对齐卡片那一列的左右边，多一圈内边距只会让内容缩进去。
-          padding: `${PANE_PADDING}px 0 0`,
-          background: token.colorBgContainer,
-          borderTop: `1px solid ${token.colorBorderSecondary}`,
-        }}
-      >
-        <Flex justify="space-between" align="center" gap={8} wrap>
-          <Flex align="center" gap={8}>
-            <Badge status={hasRunning ? 'processing' : 'default'} />
-            {/* 执行模式只读展示：**本面板不提供切换入口**（spec §3 F9：执行模式随评测落库、运行中不可改） */}
-            <Typography.Text type="secondary">
-              {serial ? '串行' : '并行'} · 共 {total} 行
-            </Typography.Text>
-          </Flex>
-          <Flex gap={8}>
-            <Tooltip title={startDisabledReason}>
+            </div>
+            <div className="flex gap-2">
+              <Hint label={startDisabledReason}>
+                <Button
+                  size="sm"
+                  disabled={startDisabled}
+                  data-loading={starting ? 'true' : undefined}
+                  onClick={() => setConfirm('start')}
+                >
+                  {starting ? <BusyDot busy /> : null}
+                  开始执行
+                </Button>
+              </Hint>
               <Button
-                type="primary"
-                size="small"
-                autoInsertSpace={false}
-                loading={starting}
-                disabled={startDisabled}
-                onClick={confirmStart}
+                size="sm"
+                variant="destructive"
+                data-loading={aborting ? 'true' : undefined}
+                disabled={aborting || !hasRunning}
+                onClick={() => setConfirm('abort')}
               >
-                开始
-              </Button>
-            </Tooltip>
-            <Popconfirm
-              title="终止这一轮评测？"
-              description="正在跑的 agent 子进程会被杀掉，且不可撤销。"
-              okText="确定"
-              cancelText="取消"
-              okButtonProps={{ autoInsertSpace: false }}
-              cancelButtonProps={{ autoInsertSpace: false }}
-              disabled={aborting || !hasRunning}
-              onConfirm={onAbortRun}
-            >
-              <Button danger size="small" autoInsertSpace={false} loading={aborting} disabled={aborting || !hasRunning}>
+                {aborting ? <BusyDot busy /> : null}
                 终止
               </Button>
-            </Popconfirm>
-            {/* 「排名」常驻在「开始 / 终止」之后（边界置灰而不是隐藏：会自己冒出来的按钮，
-                用户得先知道它存在）。禁用时**必须**挂 Tooltip 说明条件——这个按钮是新面孔，
-                不像「终止」那样一看就懂，而「点了没反应」是最难自查的一种静默。
-                两个汉字 ⇒ `autoInsertSpace={false}`（否则可访问名会变成「排 名」）。 */}
-            {/* 禁用时按钮自己收不到鼠标事件 ⇒ 宿主必须是一个**包住它的**元素
-                （antd 的 `Tooltip` 需要一个能接事件又没被禁用的宿主，否则浮层永远不弹）。
-                `Flex` 只是个内联盒子，不改变按钮的位置与尺寸。 */}
-            <Tooltip title={rankDisabledReason}>
-              <Flex>
-                <Button size="small" autoInsertSpace={false} disabled={rankDisabled} onClick={onOpenRank}>
+              {/* 「排名」常驻在「开始 / 终止」之后（边界置灰而不是隐藏：会自己冒出来的按钮，
+                  用户得先知道它存在）。禁用时**必须**挂浮层说明条件——这个按钮是新面孔，
+                  不像「终止」那样一看就懂，而「点了没反应」是最难自查的一种静默。 */}
+              <Hint label={rankDisabledReason}>
+                <Button size="sm" variant="outline" disabled={rankDisabled} onClick={onOpenRank}>
                   排名
                 </Button>
-              </Flex>
-            </Tooltip>
-          </Flex>
-        </Flex>
-      </Layout.Footer>
-      {contextHolder}
-    </Flex>
+              </Hint>
+            </div>
+          </div>
+        </footer>
+
+        <ConfirmDialog
+          open={confirm === 'start'}
+          onOpenChange={(next) => setConfirm(next ? 'start' : null)}
+          title="开始执行这次评测？"
+          description={`执行模式：${serial ? '串行（一行跑完含评分，才起下一行）' : '并行（全部同时开跑）'}`}
+          confirmLabel="开始执行"
+          onConfirm={onStart}
+          testId="run-start-confirm"
+        >
+          <div className="flex flex-col gap-1 text-sm">
+            <span>本次将执行 {runnable.length} 个候选：</span>
+            <ul className="flex flex-col gap-0.5">
+              {runnable.map((row) => (
+                <li key={row.id} className="text-muted-foreground">
+                  · {AGENT_LABELS[row.agentKind]} · {row.modelId}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </ConfirmDialog>
+        <ConfirmDialog
+          open={confirm === 'abort'}
+          onOpenChange={(next) => setConfirm(next ? 'abort' : null)}
+          title="终止这次评测？"
+          description="正在跑的智能体子进程会被杀掉，这些候选就此收场，且不可撤销。"
+          confirmLabel="终止"
+          destructive
+          onConfirm={onAbortRun}
+          testId="run-abort-confirm"
+        />
+        <ConfirmDialog
+          open={confirm === 'delete'}
+          onOpenChange={(next) => setConfirm(next ? 'delete' : null)}
+          title="删除这次评测？"
+          description="这一次评测的全部候选工作区与执行日志会一起删掉，不可恢复。"
+          confirmLabel="删除这次评测"
+          destructive
+          onConfirm={onDelete}
+          testId="run-delete-confirm"
+        />
+      </div>
+    </HintProvider>
   );
+}
+
+/** 在途态的小转圈：附在吸底栏按钮的文案前（可访问名仍只由文案构成） */
+function BusyDot({ busy }: { busy: boolean }): ReactNode {
+  return busy ? <span className="inline-block size-2 animate-spin rounded-full border border-current border-t-transparent" aria-hidden /> : null;
 }
