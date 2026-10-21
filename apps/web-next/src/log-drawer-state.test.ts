@@ -3,7 +3,7 @@
  * 日志抽屉的「读失败 / 读取中 / 有内容」判定（纯函数）。
  *
  * 这个文件守的是一条会被误读的边界：api 的读失败原因**带文件路径**（`读取执行日志失败（…events.jsonl）：…`），
- * 而抽屉的空态文案是「还没有日志 · 这一行还没开始执行」。两者一起出现时，
+ * 而抽屉的空态文案是「还没有日志 · 这个候选还没开始执行」。两者一起出现时，
  * 使用者会把一个真实的故障读成「还没开始跑」——去等一个永远不会开始的执行。
  * 所以有错且**两条来源都空**时必须整段替换抽屉内容，且这条判定必须能被直接测到。
  */
@@ -12,11 +12,11 @@ import {
   AGENT_LABELS,
   ServiceError,
   type AgentEvent,
-  type EvalRow,
+  type EvalCandidate,
   type ScoreResult,
   type UsageTokens,
 } from '@aieval/contracts';
-import { buildRowFacts, resolveLogDrawer } from './log-drawer-state';
+import { buildCandidateFacts, resolveLogDrawer } from './log-drawer-state';
 
 /** 一条真实形状的 log 事件（只有 seq/at/type 之外还带 stream/text，够用即可） */
 function event(seq: number): AgentEvent {
@@ -25,7 +25,7 @@ function event(seq: number): AgentEvent {
 
 const readFailure = new ServiceError(
   'INTERNAL',
-  '读取执行日志失败（D:\\ws\\run-1\\rows\\row-1\\events.jsonl）：Unexpected token < in JSON at position 0',
+  '读取执行日志失败（D:\\ws\\run-1\\candidates\\row-1\\events.jsonl）：Unexpected token < in JSON at position 0',
 );
 
 describe('resolveLogDrawer', () => {
@@ -69,7 +69,7 @@ describe('resolveLogDrawer', () => {
   it('**实时通道故障且没有事件 → failed，带上原因**（断流不能只说「还没有日志」）', () => {
     // 场景：`/stream` 建立了但一帧都收不到（C1 的零交付 / 中间层掐断），或环境没有 EventSource。
     // 过去页面只喂 `logError`（这里为 null）⇒ 抽屉回到 `log` 态、渲染空态
-    // 「还没有日志 · 这一行还没开始执行」+ 徽标「未连接」——**没有原因、没有出路提示**。
+    // 「还没有日志 · 这个候选还没开始执行」+ 徽标「未连接」——**没有原因、没有出路提示**。
     const state = resolveLogDrawer({
       events: [],
       logError: null,
@@ -123,7 +123,7 @@ describe('resolveLogDrawer', () => {
   });
 
   /**
-   * 抽屉有**两条独立的来源**：行级事件（固定事实条与「原始输出」）与内容记录（时间轴）。
+   * 抽屉有**两条独立的来源**：候选级事件（固定事实条与「原始输出」）与内容记录（时间轴）。
    * 一条读不出来不等于没有内容可看——反过来也一样。故 `failed` 只在**两条都空**时才成立。
    */
   it('事件一条都没有但**有内容记录** → 不是 failed（时间轴有东西可画，事件那条路空是正常的）', () => {
@@ -145,8 +145,8 @@ describe('resolveLogDrawer', () => {
   });
 });
 
-/** 造一行评测：只给 `buildRowFacts` 读的那几格（默认 = 评分中、快照还没写用量） */
-function row(overrides: Partial<EvalRow> = {}): EvalRow {
+/** 造一行评测：只给 `buildCandidateFacts` 读的那几格（默认 = 评分中、快照还没写用量） */
+function row(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
   return {
     id: 'row-1',
     agentKind: 'cc',
@@ -156,7 +156,7 @@ function row(overrides: Partial<EvalRow> = {}): EvalRow {
     modelId: 'claude-opus-4-6',
     status: 'judging',
     branch: 'test/row-1',
-    workspacePath: 'D:\\runs\\run-1\\rows\\row-1\\workspace',
+    workspacePath: 'D:\\runs\\run-1\\candidates\\row-1\\workspace',
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
     // claude 的跑动期 usage 事件带 `tokensBasis: 'estimated'`（估算不回写快照）⇒ 终态之前
     // `row.tokens` 恒为 null，事实条这一格只能从事件流取。下面守的正是「从**哪一条**事件取」
@@ -197,7 +197,7 @@ const SCORE = {
 
 /**
  * 一条 `usage` 事件：`turn` 缺省 = 主会话读数；`turn.subagentId` **非空**= **那个子会话自己的**读数
- * （`tokens` 是该会话的累计，与这一行的累计不是一把尺子）。
+ * （`tokens` 是该会话的累计，与这个候选的累计不是一把尺子）。
  *
  * `turn` 允许显式 `null`（契约那一格是 `.nullable.optional`，读侧与键缺席同一件事）——用例要能写出
  * 「三档主会话读数」里的中间那一档。
@@ -219,19 +219,19 @@ function usageEvent(input: {
 }
 
 /**
- * 事实条的**行级读数只认主会话那一条**。
+ * 事实条的**候选级读数只认主会话那一条**。
  *
  * 为什么这一格会被会话尺度读数污染：claude 收尾为每个子会话逐轮发一条 `turn.subagentId` 非空的 `usage`
  * （`tokens` = **该子会话自己的**累计），而它**排在主会话读数之后**；这一格取的是「最后一条 usage」。
- * 真机复算（run `155f7f1e` 的 claude 行）：评分期事实条显示子会话的 16,335，而这一行的权威值是 34,101。
- * 行级读数没有第二个出口可退回——`row.tokens` 在 claude 上终态之前恒为 null。
+ * 真机复算（run `155f7f1e` 的 claude 行）：评分期事实条显示子会话的 16,335，而这个候选的权威值是 34,101。
+ * 候选级读数没有第二个出口可退回——`row.tokens` 在 claude 上终态之前恒为 null。
  */
-describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
+describe('buildCandidateFacts：候选级读数只认主会话那一条 usage', () => {
   it('带会话身份的 usage 排在最后时，事实条仍取**最后一条主会话读数**', () => {
-    const facts = buildRowFacts({
+    const facts = buildCandidateFacts({
       row: row(),
       events: [
-        // 主会话读数（这一行的累计）：收尾之前最后一条
+        // 主会话读数（这个候选的累计）：收尾之前最后一条
         usageEvent({ seq: 1, tokens: { input: 30580, cached: 59008, output: 3521 }, turns: 6 }),
         // 收尾那批：子会话自己的累计，逐轮一条，排在主会话读数**之后**
         usageEvent({
@@ -249,7 +249,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
       ],
     });
 
-    // 行级事实：tok 取主会话那一条（改掉就是真机那次的 16,335 = 14738 + 1597）
+    // 候选级事实：tok 取主会话那一条（改掉就是真机那次的 16,335 = 14738 + 1597）
     expect(facts.tokens).toEqual({ input: 30580, cached: 59008, output: 3521 });
     expect(facts.turns).toEqual({ current: 6, total: null });
     // 思考 token 那一格**不在这里断**：主会话读数没带 `reasoningOutput` 时它恒为 `null`，删不删身份过滤
@@ -267,17 +267,17 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
     });
 
     // ① `turn` 整格缺席（老事件 / 主会话读数不带归属）
-    const turnAbsent = buildRowFacts({
+    const turnAbsent = buildCandidateFacts({
       row: row(),
       events: [sessionScale, usageEvent({ seq: 2, tokens: { input: 100, cached: 0, output: 10 }, turns: 2 })],
     });
     // ② 显式 `turn: null`（契约那一格的注释：读侧与键缺席是同一件事）
-    const turnNull = buildRowFacts({
+    const turnNull = buildCandidateFacts({
       row: row(),
       events: [sessionScale, usageEvent({ seq: 2, tokens: { input: 200, cached: 20, output: 20 }, turns: 3, turn: null })],
     });
     // ③ 显式 `subagentId: null`（主会话身份）
-    const subagentIdNull = buildRowFacts({
+    const subagentIdNull = buildCandidateFacts({
       row: row(),
       events: [
         sessionScale,
@@ -298,11 +298,11 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
    *
    * 上面那条只钉到「`null` 身份算主会话」，而 `subagentId` 的类型是 `string | null` ⇒ 空串是一个
    * **非 `null` 的身份**：`lastEvent` 的匹配谓词一旦写成真值判断（`!event.turn?.subagentId`），这一条会被
-   * 当主会话读数采纳，事实条于是拿会话尺度读数冒充这一行（正是 C1 的形状，只是触发条件从「有身份」
+   * 当主会话读数采纳，事实条于是拿会话尺度读数冒充这个候选（正是 C1 的形状，只是触发条件从「有身份」
    * 缩成「身份非空串」）。这一条是那道变异体在**本文件**的唯一靶子。
    */
   it('身份判据是「非 null」而不是「非空」：空串身份的 usage 同样不被采纳', () => {
-    const facts = buildRowFacts({
+    const facts = buildCandidateFacts({
       row: row(),
       events: [
         usageEvent({ seq: 1, tokens: { input: 100, cached: 0, output: 10 }, turns: 2 }),
@@ -320,7 +320,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
    * 正向与反向给出的答案不同，这才叫钉住（取第一条会把事实条退回到旧的那条读数）。
    */
   it('主会话读数不止一条时取**后一条**（正向找第一条会拿到旧值）', () => {
-    const facts = buildRowFacts({
+    const facts = buildCandidateFacts({
       row: row(),
       events: [
         usageEvent({ seq: 1, tokens: { input: 10, cached: 0, output: 1 }, turns: 1 }),
@@ -339,7 +339,7 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
    * `toBeNull`，删不删过滤都成立 ——它谁也钉不住。
    */
   it('主会话读数带 reasoningOutput 时思考那一格留着（会话尺度读数不许把它清掉）', () => {
-    const facts = buildRowFacts({
+    const facts = buildCandidateFacts({
       row: row(),
       events: [
         usageEvent({ seq: 1, tokens: { input: 30580, cached: 59008, output: 3521, reasoningOutput: 2495 }, turns: 6 }),
@@ -364,17 +364,18 @@ describe('buildRowFacts：行级读数只认主会话那一条 usage', () => {
 });
 
 /**
- * 领域事实的**分段**：改动那一格按 git stat 上色（`+N` 绿 / `−N` 红）。
+ * 领域事实的**分段**：改动那一格按 git stat 排版，三段各一枚 Tag（文件数中性、`+N` 绿、`−N` 红）。
  * 评分那一格**只给分**——同一天的另一条口径把「评分模型：…」那句提示删了，
  * 因为尺子是谁由**评分详情**那一页说，事实条上再写一遍是与它争夺注意力。
  *
  * 为什么守在这里：分段是**数据层声明**的（界面不解析文本，见 `DomainFactSegment` 的注释），
- * 而 `value` 是给读屏与排障用的纯文本——两者必须逐字一致。手写第二遍数字就会漂移，
+ * 而 `value` 是给读屏与排障用的纯文本——两者必须一致。手写第二遍数字就会漂移，
  * 症状是「复制出来的那一串字」与眼睛看到的不是一件事，且**没有任何别的地方会红**。
+ * **分段里不写排版用的空格**：渲染间距由界面 `Flex gap` 给，纯文本由各段以一个空格相接。
  */
-describe('buildRowFacts：领域事实的分段', () => {
-  it('改动那一格：分段拼起来逐字等于 `value`，且只有 `+N` / `−N` 两段带色档', () => {
-    const facts = buildRowFacts({
+describe('buildCandidateFacts：领域事实的分段', () => {
+  it('改动那一格：分段以空格相接等于 `value`，三段各自带 Tag 色档', () => {
+    const facts = buildCandidateFacts({
       row: row({ diff: { filesChanged: 1, insertions: 111, deletions: 0, truncated: false } }),
       events: [],
     });
@@ -382,18 +383,19 @@ describe('buildRowFacts：领域事实的分段', () => {
     const diff = facts.domain.find((fact) => fact.id === 'diff');
     expect(diff?.value).toBe('1 个文件 +111 −0');
     expect(diff?.segments).toEqual([
-      { text: '1 个文件 ' },
-      { text: '+111', tone: 'insertion' },
-      { text: ' −0', tone: 'deletion' },
+      { text: '1', tag: true, tagTone: 'default' },
+      { text: '个文件' },
+      { text: '+111', tag: true, tagTone: 'success' },
+      { text: '−0', tag: true, tagTone: 'error' },
     ]);
-    // 逐字同源：分段拼起来就是 `value`（两处不一致时这条先红）
-    expect(diff?.segments?.map((segment) => segment.text).join('')).toBe(diff?.value);
-    // 整格**不再**给色档：它按 git stat 排版，渲染层据此不再套 Tag
+    // 同源：分段以单个空格相接就是 `value`；任一段偷偷带上排版空格时这条先红
+    expect(diff?.segments?.map((segment) => segment.text).join(' ')).toBe(diff?.value);
+    // 整格**不给**色档：三段各画各的 Tag，整格再套一枚就是两套色
     expect(diff?.tone).toBeUndefined();
   });
 
   it('评分那一格只给分：不再产出「评分模型：…」那句提示（两条通路都不给）', () => {
-    const textPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: null } }), events: [] });
+    const textPath = buildCandidateFacts({ row: row({ score: { ...SCORE, judgeAgentKind: null } }), events: [] });
     const textCell = textPath.domain.find((fact) => fact.id === 'score');
     expect(textCell?.value).toBe('57/60');
     expect(textCell?.tone).toBe('success');
@@ -402,7 +404,7 @@ describe('buildRowFacts：领域事实的分段', () => {
     expect(textCell?.hintSegments).toBeUndefined();
 
     // 智能体通路**同一口径**：一条给一条不给，会让人以为只有文本通路才说得出尺子是谁
-    const agentPath = buildRowFacts({ row: row({ score: { ...SCORE, judgeAgentKind: 'cc' } }), events: [] });
+    const agentPath = buildCandidateFacts({ row: row({ score: { ...SCORE, judgeAgentKind: 'cc' } }), events: [] });
     const agentCell = agentPath.domain.find((fact) => fact.id === 'score');
     expect(agentCell?.hint).toBeUndefined();
     expect(agentCell?.hintSegments).toBeUndefined();
@@ -416,7 +418,7 @@ describe('buildRowFacts：领域事实的分段', () => {
    * （`blue` / `geekblue` / `purple`），与评分详情顶部那一段同色。
    */
   it('「谁在跑」三格在最前：智能体 → 模型 → 思考强度（一色一格），改动与评分在后', () => {
-    const facts = buildRowFacts({
+    const facts = buildCandidateFacts({
       row: row({
         effort: 'max',
         diff: { filesChanged: 1, insertions: 2, deletions: 3, truncated: false },
@@ -441,7 +443,7 @@ describe('buildRowFacts：领域事实的分段', () => {
    * 反向那一半：**不是** `off`——显式关闭档是一个真实读数，与「没这一格」不是同一件事。
    */
   it('思考强度键缺席 ⇒「未指定」，不是 `off`、也不是空白', () => {
-    const effort = buildRowFacts({ row: row(), events: [] }).domain.find((fact) => fact.id === 'effort');
+    const effort = buildCandidateFacts({ row: row(), events: [] }).domain.find((fact) => fact.id === 'effort');
 
     expect(effort?.value).toBe('未指定');
     expect(effort?.value).not.toBe('off');

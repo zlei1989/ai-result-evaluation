@@ -6,7 +6,7 @@
  *      `RESULT.html` / `RESULT.svg`（大小写不敏感）。后缀白名单是**渲染分档**本身——
  *      界面上「怎么渲染这一份」不是第二份判据（见 `ArtifactKind`）；
  *      加一档只改 `ARTIFACT_EXTENSIONS` 一处，识别与排序都跟着走。
- *   2. **索引与正文分开两个形状**（与 `RowDiffIndex` / `RowDiffFile` 同一条口径）：
+ *   2. **索引与正文分开两个形状**（与 `CandidateDiffIndex` / `CandidateDiffFile` 同一条口径）：
  *      正文体积不可控，而一份读不出来不该把整张总览打成空白——逐份各自的错误态。
  *   3. 两个上限都不是「截断就完事」：`ARTIFACT_TEXT_MAX_CHARS` 是**带提示的降级**
  *      （正文截断 + `truncated`，卡片上如实说明）；`ARTIFACT_READ_MAX_BYTES` 是**拒绝**
@@ -74,13 +74,13 @@ export function artifactKindOf(name: string): ArtifactKind | null {
  * 「产物总览」的索引：**每个候选一行**（顺序 = 快照顺序，服务端**不排名**——名次只有一个判据，
  * 在界面那一侧由 `rankOf` 算）。
  *
- * 没有产物的行照样进来、`files` 是空数组：**「这一行没有产出」是一句要显示出来的事实**，
- * 而不是「这一行不存在」。工作区还没建起来的行同样如此（没跑过 ≠ 读不出来）。
+ * 没有产物的行照样进来、`files` 是空数组：**「这个候选没有产出」是一句要显示出来的事实**，
+ * 而不是「这个候选不存在」。工作区还没建起来的行同样如此（没跑过 ≠ 读不出来）。
  */
 export const RunArtifactIndexSchema = z.object({
-  rows: z.array(
+  candidates: z.array(
     z.object({
-      rowId: z.string().min(1),
+      candidateId: z.string().min(1),
       files: z.array(
         z.object({
           name: z.string().min(1),
@@ -102,7 +102,7 @@ export type RunArtifactIndex = z.infer<typeof RunArtifactIndexSchema>;
  * `truncated` 与 `text` 必须一起给：只给截断后的正文，界面就分不清「它只写了这么多」
  * 与「我们只显示了这么多」——而这两句话对「谁做得更好」的判断完全不同。
  */
-export const RowArtifactFileSchema = z.object({
+export const CandidateArtifactFileSchema = z.object({
   name: z.string().min(1),
   kind: ArtifactKindSchema,
   /** 原文（已剥 UTF-8 BOM）；`truncated` 为真时是前 `ARTIFACT_TEXT_MAX_CHARS` 个字符 */
@@ -111,4 +111,4 @@ export const RowArtifactFileSchema = z.object({
   bytes: z.number(),
   truncated: z.boolean(),
 });
-export type RowArtifactFile = z.infer<typeof RowArtifactFileSchema>;
+export type CandidateArtifactFile = z.infer<typeof CandidateArtifactFileSchema>;

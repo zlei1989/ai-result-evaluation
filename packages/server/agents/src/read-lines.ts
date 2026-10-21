@@ -3,7 +3,7 @@
  * codex 自 app-server 改造后只走协议取数，不再读转录文件）。
  *
  * 为什么需要它（用户点名）：会话转录是 CLI **边跑边追加**的，
- * 长运行里可以到几十上百 MB，而 `readFileSync` + `split('\n')` 的峰值是「整份文本 + 行数组」
+ * 长运行里可以到几十上百 MB，而 `readFileSync` + `split('\n')` 的峰值是「整份文本 + 本次运行数组」
  * （约 2–3× 文件大小）——那正是「大文件导致内存溢出」那条路。
  *
  * 四条判据：
@@ -29,7 +29,7 @@ export interface ReadLinesOptions {
   chunkBytes?: number;
   /**
    * 从这一字节偏移开始读（默认 0）。⚠️ 必须是**上一行结束之后**的位置
-   * （即上一次返回的 `nextOffset`）——落在行中间会让那一行被拦腰截断。
+   * （即上一次返回的 `nextOffset`）——落在行中间会让那一本次运行被拦腰截断。
    */
   offset?: number;
   /**
@@ -75,7 +75,7 @@ export function readLines(
     const buffer = Buffer.allocUnsafe(chunkBytes);
     /** 上一块末尾那段**没凑成完整行**的字节（不含换行符）——跨块拼行靠它，且它始终是字节不是字符串 */
     let pending: Buffer = Buffer.alloc(0);
-    /** 已经交出去的行的字节终点（下一次续读的起点） */
+    /** 已经交出去的本次运行的字节终点（下一次续读的起点） */
     let consumed = start;
     /** 下一次 `readSync` 的位置：显式给，免得依赖 fd 自身的读写位置（`offset` 那一档要用它） */
     let position = start;
@@ -87,7 +87,7 @@ export function readLines(
       const chunk = pending.length === 0 ? buffer.subarray(0, bytes) : Buffer.concat([pending, buffer.subarray(0, bytes)]);
       const lastNewline = chunk.lastIndexOf(NEWLINE);
       if (lastNewline < 0) {
-        // 这一块里一条完整的行都没有（超长行 / 块长很小）：整块留给下一轮
+        // 这一块里一条完整的本次运行都没有（超长行 / 块长很小）：整块留给下一轮
         pending = Buffer.from(chunk);
         continue;
       }
@@ -96,7 +96,7 @@ export function readLines(
       pending = Buffer.from(chunk.subarray(lastNewline + 1));
       consumed = batchStart + complete.length;
       // `complete` 以换行收尾 ⇒ 它解码后 split 出来的**最后一段**必然是空串（那是「最后一个换行之后」
-      // 的位置，不是一行内容）；其余各段（含中间的空行）**照原样交出去**——调用方自己判空行
+      // 的位置，不是一运行内容）；其余各段（含中间的空行）**照原样交出去**——调用方自己判空行
       const lines = complete.toString('utf8').split('\n');
       lines.pop();
       for (const line of lines) {
@@ -146,7 +146,7 @@ export function incompleteTail(file: string, size: number, chunkBytes: number = 
       }
       end = start;
     }
-    // 整份文件里一个换行都没有 ⇒ 全部都是「未收尾的那一段」
+    // 整份文件里一个换本次运行都没有 ⇒ 全部都是「未收尾的那一段」
     return { start: 0, text: readRangeSync(fd, 0, size) };
   } finally {
     closeSync(fd);

@@ -78,7 +78,7 @@ function validateButton(inputLabel: string): HTMLElement {
 }
 
 /** 开关那一行：置灰原因与开关同排，用它可以避开状态区里同文案的警告 Alert */
-function autoCommitRow(): HTMLElement {
+function autoCommitCandidate(): HTMLElement {
   const row = screen.getByRole('switch', { name: '用例变更时自动提交' }).closest('div');
   if (row === null) throw new Error('自动提交开关不在任何容器里');
   return row;
@@ -139,6 +139,16 @@ describe('WorkspaceSettingsCard', () => {
     expect(extra?.textContent).toContain('<用例 id>.json');
     expect(extra?.textContent).toContain('~/.aieval-cases');
     expect(extra?.textContent).toContain('不会迁移已有用例文件');
+  });
+
+  // 工作区那一格也压着「改目录不迁移」：两段说明合并后这句只剩这里，删了它用户会以为
+  // 换根目录就把旧评测搬了家（用例目录那格说的是用例文件，管不到评测产物）
+  it('工作区根目录的说明写清「默认值 / 改目录不迁移」', () => {
+    renderCard();
+
+    const extra = screen.getByLabelText('工作区根目录').closest('.ant-form-item')?.querySelector('.ant-form-item-extra');
+    expect(extra?.textContent).toContain('~/.aieval-runs');
+    expect(extra?.textContent).toContain('不迁移');
   });
 
   it('校验成功显示可用路径', () => {
@@ -230,7 +240,7 @@ describe('WorkspaceSettingsCard', () => {
     renderCard({ syncStatus: syncStatus({ isRepo: false, blockedReason: reason }) });
 
     expect(screen.getByRole('switch', { name: '用例变更时自动提交' })).toBeDisabled();
-    expect(within(autoCommitRow()).getByText(reason)).toBeInTheDocument();
+    expect(within(autoCommitCandidate()).getByText(reason)).toBeInTheDocument();
     // 状态区用一条警告说清整块功能为什么不可用
     expect(screen.getByText('用例目录还不是 git 仓库：用例变更不会提交')).toBeInTheDocument();
   });
@@ -297,7 +307,7 @@ describe('WorkspaceSettingsCard', () => {
     expect(screen.getByRole('button', { name: '拉取（远端领先 2 个提交）' })).toBeDisabled();
   });
 
-  // 状态行是**只读事实**：能说清的都要说出来，别让用户从「按钮不见了」去反推
+  // 状态候选是**只读事实**：能说清的都要说出来，别让用户从「按钮不见了」去反推
   it('状态区逐条展示正在同步 / 上次失败 / 上次成功 / 被忽略 / 没有远端', () => {
     // 用**本地时间**造 ISO：formatDateTime 按本地时区渲染，写死一个 UTC 字面量会让断言随机器时区红
     const lastSuccessAt = new Date(2026, 9, 8, 10, 30).toISOString();

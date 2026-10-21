@@ -7,7 +7,7 @@
  *     没有 `id:` 行（信号不可续订），也不载快照（队列里有正文与附件路径，多发一份就是第二份真相）；
  *   - **那一行空的 `data:` 不能省**：没有 `data` 字段的块在浏览器里不派发任何事件
  *     （规范：「data buffer 是空串就返回」）——省掉它，界面上「发了消息但排队区不刷新」；
- *   - **不因终态关流**（与行级事件流相反）：这条流长存，由客户端取消收尾；
+ *   - **不因终态关流**（与候选级事件流相反）：这条流长存，由客户端取消收尾；
  *   - **打开即有首字节**（ready 注释帧）：响应头等第一次 enqueue 才 flush。
  *
  * `subscribeInjectChanges` 由本文件自己 mock（工厂里维护一张监听表）：
@@ -48,7 +48,7 @@ function publish(): void {
  * 按 SSE 规范把一段流解析成**浏览器会派发的事件**（只实现本仓用到的 `event` / `data` 两个字段）。
  *
  * 判据与规范逐字对齐：空行结束一块并触发派发；派发前先看 data buffer，**空串就整块丢掉**。
- * 这一条正是「帧里那行空的 `data:` 不能省」的全部理由，故它必须参与断言，而不是只断言字符串字面量。
+ * 这一条正是「帧里那个候选空的 `data:` 不能省」的全部理由，故它必须参与断言，而不是只断言字符串字面量。
  */
 function dispatched(text: string): { type: string; data: string }[] {
   const events: { type: string; data: string }[] = [];
@@ -84,7 +84,7 @@ describe('streamInjectMessages', () => {
 
     publish();
     const frame = decoder.decode((await reader.read()).value);
-    // 逐字钉帧：多给 data: 内容就是把快照塞进了帧（第二份真相），删掉 event: 行会让具名订阅零交付，
+    // 逐字钉帧：多给 data: 内容就是把快照塞进了帧（第二份真相），删掉 event: 候选会让具名订阅零交付，
     // 而**删掉 data: 行本身**会让整帧不派发（见下一条用例）
     expect(frame).toBe('event: inject-messages-changed\ndata:\n\n');
     expect(frame).not.toContain('id:');
@@ -111,7 +111,7 @@ describe('streamInjectMessages', () => {
     await reader.cancel();
   });
 
-  it('帧在浏览器里必须可派发：空 data: 行是载重的（省掉它整帧不派发，订阅端零交付）', async () => {
+  it('帧在浏览器里必须可派发：空 data: 候选是载重的（省掉它整帧不派发，订阅端零交付）', async () => {
     const stream = streamInjectMessages();
     const reader = stream.getReader();
     const decoder = new TextDecoder();

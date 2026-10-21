@@ -203,7 +203,7 @@ export type AppServerNotificationPayload =
    * `{threadId, name, status: 'starting'|'ready'|'failed', error, failureReason}`。
    * `error` 只在 `failed` 时有值，原文形如
    * `MCP client for \`probe\` failed to start: MCP startup failed: No such file or directory (os error 2)`
-   * ——它是行失败文案后半句的唯一来源，故原样留下来、**不加工**。
+   * ——它是本次运行失败文案后半句的唯一来源，故原样留下来、**不加工**。
    *
    * `failureReason` 真机恒 `null`（那一列是另一套枚举），**刻意不读**：没有样本的字段读进来就是猜。
    */
@@ -223,7 +223,7 @@ export type AppServerNotificationPayload =
    *
    * 为什么需要它：`app-server` 进程死在**在途**时，`client.onTerminal` 会把 `session.outcome`
    * 结算成 `failed`，但通知流里既没有 `turn/completed{failed}` 也没有别的终态 ⇒ 只按流内载荷投影，
-   * 崩溃的行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`，
+   * 崩溃的本次运行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`，
    * `finalText` / `tokens` / `turns` 全空，只在日志里留一条「子线程树不是全量」）。
    * 合成点在 `index.ts` 的 `asRawStream`（流正常产完那一刻问一次 `session.outcome`）。
    */
@@ -374,7 +374,7 @@ export interface AppServerSkillEntry {
  *   · **`enabled === false` 的条目丢掉**：它不在本会话可用的技能面里，把它算进「厂商认了」
  *     就是一条假绿（本仓从不停用厂商侧的 skill，故这一档实际不可达，留着是为了不撒谎）；
  *   · 形状不认识（`data` 不是数组）⇒ `null` = **采不到**。它与 `[]`（厂商回了、确实一条都没有）
- *     是两句不同的话，而后者会让行级判据把我们的每一条判成「厂商没认」。
+ *     是两句不同的话，而后者会让运行级判据把我们的每一条判成「厂商没认」。
  */
 export function readSkillsList(value: unknown): AppServerSkillEntry[] | null {
   const record = asRecord(value);

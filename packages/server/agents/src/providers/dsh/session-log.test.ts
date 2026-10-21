@@ -31,7 +31,7 @@ function frameOf(lines: readonly string[]): Buffer {
   return zstd.zstdCompressSync!(Buffer.from(`${lines.join('\n')}\n`, 'utf8'));
 }
 
-/** 会话日志的第一行是 header（无 `type`），后面才是事件 */
+/** 会话日志的第一候选是 header（无 `type`），后面才是事件 */
 const HEADER = JSON.stringify({ id: 'session-fixture', cwd: '/tmp/fixture', seq: 0 });
 let stepSeq = 0;
 function stepStart(turn: number, step: number): string {

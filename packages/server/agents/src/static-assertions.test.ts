@@ -53,7 +53,7 @@ const READ_ONLY_BEHIND = /\bObject\.(entries|keys|values)\s*\(\s*$/;
  * 去掉注释，只留可执行源码。
  * 为什么必须去：本仓的注释里到处在说 `process.env`（`route.ts` 的不变量说明、`types.ts` 的字段注释），
  * 裸令牌规则会把它们全部判成违规——「裸令牌纳入检查」只有在去注释后才可落地。
- * 已知局限（如实登记）：正则不区分字符串字面量里的 `//`，含 `://` 的字符串常量会被从该行截断，
+ * 已知局限（如实登记）：正则不区分字符串字面量里的 `//`，含 `://` 的字符串常量会被从该候选截断，
  * 于是**同一行**注释后面的代码看不见——方向是漏报而不是误报，且本仓没有那种形态。
  */
 function stripComments(text: string): string {
@@ -97,7 +97,7 @@ const VENDOR_PACKAGES = [
   // pi 的**模型层**包：适配器要从它拿 `InMemoryCredentialStore`（凭据只进内存的那条通道）。
   // 它在清单里，因此也受「只能动态 import」管——与它的兄弟包 `pi-coding-agent` 同一条纪律。
   '@earendil-works/pi-ai',
-  // pi 的**终端 UI** 包：本仓一行都不 import 它，它进依赖清单只是为了让 pi 的兄弟包（子智能体扩展）
+  // pi 的**终端 UI** 包：本仓一个候选都不 import 它，它进依赖清单只是为了让 pi 的兄弟包（子智能体扩展）
   // 的 peer 落在同一份实例上。仍然登记——「反向」那条断言要求依赖清单里凡属厂商 scope 的包都在这张表里，
   // 漏了它这条 scope 的覆盖就静默变窄。
   '@earendil-works/pi-tui',

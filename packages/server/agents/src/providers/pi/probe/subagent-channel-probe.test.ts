@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, it } from 'vitest';
 import { removeTreeWithRetry } from '../../../testing/cleanup';
-import { anthropicText, anthropicToolUse, runPiConformanceRow } from '../../../testing/pi-conformance-fixture';
+import { anthropicText, anthropicToolUse, runPiConformanceCandidate } from '../../../testing/pi-conformance-fixture';
 import { piSubagentTranscriptPath } from '../transcript';
 
 const agentDir = mkdtempSync(join(tmpdir(), 'pi-probe-subagent-home-'));
@@ -42,10 +42,10 @@ afterAll(() => {
 
 it('探针：真机派发一次，读三条通道的事实', async () => {
   const before = new Set(walk(wireRoot));
-  let rowCwd = '';
-  const run = await runPiConformanceRow({
+  let candidateCwd = '';
+  const run = await runPiConformanceCandidate({
     prompt: '按剧本收尾。',
-    cwdSetup: (cwd) => { rowCwd = cwd; },
+    cwdSetup: (cwd) => { candidateCwd = cwd; },
     script: [
       anthropicToolUse('Agent', {
         prompt: '只回一句话：子任务完成。',
@@ -62,7 +62,7 @@ it('探针：真机派发一次，读三条通道的事实', async () => {
   const after = walk(wireRoot).filter((path) => !before.has(path));
   console.log('[PROBE] wireRoot =', wireRoot);
   console.log('[PROBE] 本次新增的转写文件 =', JSON.stringify(after, null, 2));
-  console.log('[PROBE] row cwd =', rowCwd);
+  console.log('[PROBE] row cwd =', candidateCwd);
   console.log('[PROBE] outcome.sessionId（会话文件）=', run.outcome.sessionId);
 
   const sessionFile = run.outcome.sessionId ?? '';
@@ -70,7 +70,7 @@ it('探针：真机派发一次，读三条通道的事实', async () => {
   console.log('[PROBE] 从会话文件名反推的 sessionId =', sessionId);
 
   for (const record of run.product.subagents) {
-    const path = piSubagentTranscriptPath({ cwd: rowCwd, sessionId, agentId: record.subagentId });
+    const path = piSubagentTranscriptPath({ cwd: candidateCwd, sessionId, agentId: record.subagentId });
     console.log('[PROBE] 适配器算出的转写路径 =', path, '存在 =', path !== null && existsSync(path));
     if (path !== null && existsSync(path)) {
       const text = readFileSync(path, 'utf8');

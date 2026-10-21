@@ -10,8 +10,8 @@ export type RunsPanelKind = 'detail' | 'new' | 'edit';
 
 /**
  * 当前打开的是哪个抽屉（`null` = 都关着）。
- * **判别联合**（不是「kind + 恒有 rowId」）：三个抽屉读的是**某一行**的产物，而排名读的是**整轮**
- * ——它比的是候选之间的名次，没有「哪一行」这一维。硬塞一个 `rowId: ''` 会让「按行取快照」凭空
+ * **判别联合**（不是「kind + 恒有 candidateId」）：三个抽屉读的是**某一行**的产物，而排名读的是**整轮**
+ * ——它比的是候选之间的名次，没有「哪一行」这一维。硬塞一个 `candidateId: ''` 会让「按行取快照」凭空
  * 多出一个「空 id 时怎么办」的分支，而那个分支没有意义。
  *
  * 住在这一层（而不是页面里）是因为它是**可分享状态**的一部分：页面的 `?panel=…&id=…` 与它同源，
@@ -20,10 +20,10 @@ export type RunsPanelKind = 'detail' | 'new' | 'edit';
 export type OpenDrawer =
   /**
    * `kind: 'log'` 的两支：普通打开（只读执行日志）与**追问**打开（底部槽换成追问输入区）。
-   * 用同一支抽屉是因为追问要看着这一行的上下文写那句话；`followUp` 只影响底部槽渲染哪一块。
+   * 用同一支抽屉是因为追问要看着这个候选的上下文写那句话；`followUp` 只影响底部槽渲染哪一块。
    */
-  | { kind: 'log'; rowId: string; followUp?: boolean }
-  | { kind: 'diff' | 'score'; rowId: string }
+  | { kind: 'log'; candidateId: string; followUp?: boolean }
+  | { kind: 'diff' | 'score'; candidateId: string }
   | { kind: 'rank' };
 
 export interface RunsPanelState {

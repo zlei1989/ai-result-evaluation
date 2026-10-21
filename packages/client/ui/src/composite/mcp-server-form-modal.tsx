@@ -19,7 +19,7 @@
  *   3. **撞名不拦、只提示**：名字住在 map 的键上 ⇒ 保存到已有名字 = **覆盖**那一条。
  *      这是合法操作（贴进来的配置常需要覆盖），所以提示文案是「已存在，保存会覆盖」而不是「名字重复」。
  *   4. **`args` 一行一个参数**：一个 TextArea 比可增删的行更省事，也更好从命令行粘贴过来。
- *      空行会被丢掉（粘贴时常带尾随空行），但**参数内部的空格保留**——`--browser chrome` 是一个参数。
+ *      空候选会被丢掉（粘贴时常带尾随空行），但**参数内部的空格保留**——`--browser chrome` 是一个参数。
  *   5. **表单用 `forceRender` 常挂载 + effect 重灌初值**，重灌只依赖 `open` 与被编辑那条的**名字**：
  *      列表每次刷新都会给出新的对象，依赖它会让 effect 在用户打字中途清空输入（同 `ProviderFormModal`）。
  *   6. **按钮一律 `autoInsertSpace={false}`**（含 Modal 页脚）：antd 默认给两个汉字的标签中间插一个空格
@@ -99,7 +99,7 @@ const EMPTY: McpServerFormValues = {
 export const MCP_FORM_MODAL_WIDTH = 640;
 
 /**
- * `McpServerConfig` → 表单初值：两张表各摊成行数组，args 拼成多行文本（反向变换见 `buildMcpConfig`）。
+ * `McpServerConfig` → 表单初值：两张表各摊成候选数组，args 拼成多行文本（反向变换见 `buildMcpConfig`）。
  *
  * ⚠️ **值格一律置空**，当前值只以**占位符**回显（见下）。这不是偷懒，是「值留空 = 不修改」那条语义的
  * 落点：界面拿到的是**掩码**（服务端出口形态），把掩码灌进值格里，用户一按保存就把真密钥覆盖成
@@ -108,7 +108,7 @@ export const MCP_FORM_MODAL_WIDTH = 640;
  */
 function toFormValues(name: string, config: McpServerConfig): McpServerFormValues {
   // 只搬**键**：值留空，占位符回显当前值（掩码或明文原样，出口给的是什么就显示什么）
-  const rowsOf = (map: Record<string, string> | undefined): McpKeyValueRow[] =>
+  const candidatesOf = (map: Record<string, string> | undefined): McpKeyValueRow[] =>
     Object.entries(map ?? {}).map(([key]) => ({ key, value: '' }));
   if (config.transport === 'http') {
     return {
@@ -116,7 +116,7 @@ function toFormValues(name: string, config: McpServerConfig): McpServerFormValue
       name,
       transport: 'http',
       url: config.url,
-      headers: rowsOf(config.headers),
+      headers: candidatesOf(config.headers),
     };
   }
   return {
@@ -125,7 +125,7 @@ function toFormValues(name: string, config: McpServerConfig): McpServerFormValue
     transport: 'stdio',
     command: config.command,
     args: (config.args ?? []).join('\n'),
-    env: rowsOf(config.env),
+    env: candidatesOf(config.env),
   };
 }
 /**
@@ -214,7 +214,7 @@ function KeyValueList({
   /**
    * 值格的占位符，按**键**取当前值：编辑态回显「留空 = 不修改（当前：…）」。
    * 为什么逐行现算而不是给一句统一的提示：密钥是**逐键**的（`CONTEXT7_API_KEY` 有值、`Accept` 没有），
-   * 一句统括的话在「这一行本来就没值」的画面上是假话，用户会以为不填就会保留某个并不存在的东西。
+   * 一句统括的话在「这个候选本来就没值」的画面上是假话，用户会以为不填就会保留某个并不存在的东西。
    */
   valuePlaceholder: (key: unknown) => string;
 }): ReactNode {
@@ -238,7 +238,7 @@ function KeyValueList({
             <Table
               size="small"
               rowKey="key"
-              // 弹窗里不分页：这几行就是全部（翻页只会把「我正要改的那一行」藏起来）
+              // 弹窗里不分页：这几个候选就是全部（翻页只会把「我正要改的那一行」藏起来）
               pagination={false}
               showHeader={false}
               dataSource={fields}
@@ -274,12 +274,12 @@ function KeyValueList({
                   width: MCP_KEY_VALUE_COLUMN_WIDTH.actions,
                   align: 'right',
                   render: (_value, field) => (
-                    <Tooltip title="删除这一行">
+                    <Tooltip title="删除这个候选">
                       <Button
                         size="small"
                         type="text"
                         danger
-                        aria-label={`删除这一行${keyLabel}`}
+                        aria-label={`删除这个候选${keyLabel}`}
                         icon={<DeleteOutlined aria-hidden />}
                         onClick={() => remove(field.name)}
                       />
@@ -311,7 +311,7 @@ export function McpServerFormModal(props: McpServerFormModalProps): ReactNode {
   const { open, initialName, initial, servers, saving, onSubmit, onCancel, onTest } = props;
   const [form] = Form.useForm<McpServerFormValues>();
   const isEdit = initialName !== null && initial !== null;
-  /** 探活在跑 + 本次探活的结论（与表格行内那份共用渲染，见 `mcp-probe-result.tsx`） */
+  /** 探活在跑 + 本次探活的结论（与表格候选内那份共用渲染，见 `mcp-probe-result.tsx`） */
   const [testing, setTesting] = useState(false);
   const [outcome, setOutcome] = useState<McpProbeOutcome | null>(null);
 
@@ -482,7 +482,7 @@ export function McpServerFormModal(props: McpServerFormModalProps): ReactNode {
               <Form.Item name="command" label="命令" rules={[{ required: true, message: '请填写命令' }]}>
                 <Input placeholder="如 npx" />
               </Form.Item>
-              <Form.Item name="args" label="参数" extra="一行一个参数；空行会被忽略">
+              <Form.Item name="args" label="参数" extra="一行一个参数；空候选会被忽略">
                 <Input.TextArea rows={3} placeholder={'如\n-y\n@playwright/mcp@latest'} />
               </Form.Item>
               <Form.Item label="环境变量">
@@ -525,7 +525,7 @@ export function McpServerFormModal(props: McpServerFormModalProps): ReactNode {
           </Typography.Text>
 
           {/* 表单里的测试入口：测的是**手上这份还没保存的输入**。
-              与行内那个入口共用同一个结果区组件，故两处说出来的话逐字一致 */}
+              与候选内那个入口共用同一个结果区组件，故两处说出来的话逐字一致 */}
           <Flex vertical gap={4}>
             <Flex gap={8} align="center">
               <Button

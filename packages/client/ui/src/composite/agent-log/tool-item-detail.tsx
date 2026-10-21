@@ -16,10 +16,16 @@
  *     编一个名字会让一次配对失败看起来像一次成功的调用；
  *   · 「进行中」与「结果未采集」的分派**收在 `AgentRunStateTag`**（工具行 / 工具组 / 计划清单三处共用；
  *     问答卡片自持一支，不走它。本件只转发四个字段）；
- *   · **结果不截断**：超长时自己截一段会与 `MonoText` 的滚动打架，也会让「原文可查」变成
- *     「原文查不全」；整段交给 `MonoText`（`maxHeight` + 滚动），一字不少。
+ *   · **结果不截断、也不限高**：参数与结果整段展开（自己截一段会让「原文可查」变成「原文查不全」，
+ *     套一个限高的小框同样要先滚才能看全，还容易被读成「内容就这么多」）；超长内容由外层时间轴滚动。
+ *
+ * 正文的形态是**一张没有标题的小卡片 + 纵向 `Descriptions`**：展开后是「一格一个字段」的
+ * 事实表（工具 / 参数 / 结果 / 结构化结果），标签在上、值在下——参数与结果都是
+ * 可能很长的文本，值那一栏必须吃满整个宽度（`column={1}`），横排会把它们压成窄条。
+ * 参数与结构化结果都走 `JsonText` 的压缩档（一条 JSON + 高亮 + 自动换行），不是 JSON 的入参逐字原文。
  */
-import { Alert, Collapse, Flex, Tag, Typography } from 'antd';
+import { Alert, Card, Collapse, Descriptions, Flex, Tag, Typography } from 'antd';
+import type { DescriptionsProps } from 'antd';
 import type { ReactNode } from 'react';
 import { EllipsisText } from '../../base/ellipsis-text';
 import { JsonText } from '../../base/json-text';
@@ -40,9 +46,6 @@ export interface ToolItemDetailProps {
 
 /** 单面板：每条工具行各挂一个 `Collapse` 实例，键写死即可（它只在自己这个实例里唯一） */
 const PANEL_KEY = 'tool-item';
-
-/** 正文限高（px）：命令与结果都可能很长，交给 `MonoText` 自己滚 */
-const DETAIL_MAX_HEIGHT = 320;
 
 /** 非空判定：契约里 `null` = 没采到，空串同样是「没有这句话」 */
 function hasText(value: string | null): value is string {
@@ -75,12 +78,12 @@ export function toolEntryKey(entry: ToolGroupEntry): string {
  *   ① 数据层算好的 `tool-call.summary`——词表真源是 `@aieval/agents` 的 `activity.ts`
  *      （描述优先、每族拼法、截断尺子），界面按分层表不许 import 它，故只能读这一格；
  *   ② `input.description`——**老记录**（`summary` 这一格落盘之前的 `messages.jsonl`）里
- *      当年就是靠它撑起这一行的，留着是为了刷新老 run 时不出现回退；
+ *      当年就是靠它撑起这个候选的，留着是为了刷新老 run 时不出现回退；
  *   ③ 参数原文首行——`{command, description}` 那种形状照原文渲染是一整串 JSON（真机 1495px 宽），
  *      而原文在**展开后的正文**里一字不少（见 `CallBody`）。
  *
- * 这一行**不自己拼词表**：`summary` 为空串时按「没有」处理（数据层对「没参数」给的就是空串），
- * 也不在这里补一句「调用工具 <名>」——工具名是这一行左边那个独立元素。
+ * 这个候选**不自己拼词表**：`summary` 为空串时按「没有」处理（数据层对「没参数」给的就是空串），
+ * 也不在这里补一句「调用工具 <名>」——工具名是这个候选左边那个独立元素。
  */
 function inputSummary(item: ToolItem): { text: string; missing: boolean } {
   const fromServer = item.summary ?? '';
@@ -99,10 +102,11 @@ export function ToolItemDetail({ entry, open, onOpenChange, missingReason }: Too
   return (
     <Collapse
       ghost
+      size="small"
       destroyOnHidden
       activeKey={open ? [PANEL_KEY] : []}
       onChange={(keys) => onOpenChange(keys.length > 0)}
-      // 摘要行是 `nowrap` 的长命令：标题不给收缩，它会把整行顶宽 ⇒ 时间轴冒出横向滚动条（见常量处）
+      // 摘要候选是 `nowrap` 的长命令：标题不给收缩，它会把整行顶宽 ⇒ 时间轴冒出横向滚动条（见常量处）
       styles={SHRINKABLE_TITLE_STYLE}
       items={[{ key: PANEL_KEY, label, children }]}
     />
@@ -114,8 +118,8 @@ export function ToolItemDetail({ entry, open, onOpenChange, missingReason }: Too
  * + 失败 / 状态。
  *
  * 为什么行首只有一块：`Bash` 与「跑命令」本来各占一头
- * （工具名在行首、族 Tag 在行尾），同一件事在一行里说两遍；现在二选一、**族名优先**，
- * 且都放在**行首**。工具名没有被丢掉——它落到展开后的正文（`CallBody` 的「工具原名」）。
+ * （工具名在行首、族 Tag 在行尾），同一件事在一个候选里说两遍；现在二选一、**族名优先**，
+ * 且都放在**行首**。工具名没有被丢掉——它落到展开后的正文（`CallBody` 的「工具」那一格）。
  */
 function CallSummary({ item, missingReason }: { item: ToolItem; missingReason: string | null }): ReactNode {
   const summary = inputSummary(item);
@@ -171,52 +175,79 @@ function OrphanSummary(): ReactNode {
   return <Typography.Text type="secondary">孤立结果（配不上调用）</Typography.Text>;
 }
 
-/** 展开后的正文：完整命令/参数（+ 原始字节数）与结果 */
+/** 字段表的一行（`Descriptions` 的 `items` 元素） */
+type DetailField = NonNullable<DescriptionsProps['items']>[number];
+
+/** 正文那张无标题小卡片的外壳：`Descriptions` 只管字段，边框与内边距归卡片 */
+function DetailCard({ children }: { children: ReactNode }): ReactNode {
+  return <Card size="small">{children}</Card>;
+}
+
+/** 展开后的正文：完整命令/参数与结果，一格一个字段 */
 function CallBody({ item, missingReason }: { item: ToolItem; missingReason: string | null }): ReactNode {
   // 正文用 `text`（逐字原文）优先：`value` 是归一后的形状，摘要行才用它
   const full = item.input.text ?? item.input.value;
-  const note = item.output === null ? null : truncationNote(item.output.truncation);
+  const fields: DetailField[] = [
+    // 摘要行把行首让给了族名（人话）⇒ 厂商的工具名原样落到这里；摘要行已经写着工具名时不再重复
+    ...(item.family === null ? [] : [{ key: 'name', label: '工具', children: <ToolNameValue item={item} /> }]),
+    {
+      key: 'input',
+      label: '参数',
+      // 与结构化结果同一档：是 JSON 就**压成一条 + 高亮**（缩进版会把参数摊成十几行），
+      // 不是 JSON（自由文本入参）就由 `JsonText` 回落成逐字原文
+      children:
+        full === null ? <Typography.Text type="secondary">参数未采集</Typography.Text> : <JsonText text={full} compact />,
+    },
+    { key: 'output', label: '结果', children: <ResultValue output={item.output} missingReason={missingReason} /> },
+    ...structuredField(item.output?.structured),
+  ];
+
   return (
-    <Flex vertical gap={4}>
-      {/* 摘要行把行首让给了族名（人话）⇒ 厂商的工具名原样落到这里；摘要行已经写着工具名时不再重复 */}
-      {item.family !== null && <OriginalToolName item={item} />}
-      {full === null ? (
-        <Typography.Text type="secondary">参数未采集</Typography.Text>
-      ) : (
-        <MonoText text={full} maxHeight={DETAIL_MAX_HEIGHT} />
-      )}
-      {item.input.bytes !== null && (
-        <Typography.Text type="secondary">{`参数原文 ${item.input.bytes} 字节`}</Typography.Text>
-      )}
-      {/*
-        参数解析失败：厂商那句话放在参数正文下面。此刻 `input` 是个空对象，与「模型真传了空对象」
-        同形——只有这一格能说出真相。语义色与图标都走 antd，不手写字号与颜色。
-      */}
-      {hasText(item.inputError) && (
-        <Alert type="warning" showIcon title={`参数不是合法 JSON：${item.inputError}`} />
-      )}
-      {item.output === null ? (
-        <Typography.Text type="secondary">
-          {hasText(missingReason) ? `结果未采集 · ${missingReason}` : '结果未采集'}
-        </Typography.Text>
-      ) : (
-        <>
-          <MonoText text={item.output.text} maxHeight={DETAIL_MAX_HEIGHT} />
-          {hasText(note) && <Typography.Text type="warning">{note}</Typography.Text>}
-          <StructuredResult structured={item.output.structured} />
-        </>
-      )}
+    <DetailCard>
+      <Flex vertical gap={8}>
+        {/*
+          参数解析失败：厂商那句话放在字段表上面。此刻 `input` 是个空对象，与「模型真传了空对象」
+          同形——只有这一格能说出真相。语义色与图标都走 antd，不手写字号与颜色。
+        */}
+        {hasText(item.inputError) && (
+          <Alert type="warning" showIcon title={`参数不是合法 JSON：${item.inputError}`} />
+        )}
+        <Descriptions size="small" layout="vertical" column={1} items={fields} />
+      </Flex>
+    </DetailCard>
+  );
+}
+
+/**
+ * 结果那一格：未采集就说清原因，到手了给原文（整段展开）与**确认被截断**时的提示。
+ *
+ * 「没采到截断标记」（`unknown`）不画提示：三家多半不报这一格，那半句几乎每条结果都挂一次，
+ * 而正文已经整段展开——它只会让人以为内容缺了。真被截过（`truncated`）仍然要说，那是事实。
+ */
+function ResultValue({ output, missingReason }: { output: ToolOutput | null; missingReason: string | null }): ReactNode {
+  if (output === null) {
+    return (
+      <Typography.Text type="secondary">
+        {hasText(missingReason) ? `结果未采集 · ${missingReason}` : '结果未采集'}
+      </Typography.Text>
+    );
+  }
+  const note = output.truncation.kind === 'truncated' ? truncationNote(output.truncation) : null;
+  return (
+    <Flex vertical gap={2}>
+      <MonoText text={output.text} />
+      {hasText(note) && <Typography.Text type="warning">{note}</Typography.Text>}
     </Flex>
   );
 }
 
 /**
- * 「工具原名」那一行：摘要行把行首让给族名之后，厂商的标识符落在这里。
+ * 「工具」那一格的值：摘要行把行首让给族名之后，厂商的标识符落在这里。
  *
  * 为什么不干脆丢掉：工具名是**排障时唯一能与厂商日志对上号的东西**（原始输出里那些 `tool_use`
  * 事件认的就是它的名字）。没采到就如实说「工具原名未采集」+ 原因——空着会被读成「这家没有工具名」。
  */
-function OriginalToolName({ item }: { item: ToolItem }): ReactNode {
+function ToolNameValue({ item }: { item: ToolItem }): ReactNode {
   if (item.name === '') {
     return (
       <Typography.Text type="warning">
@@ -224,54 +255,56 @@ function OriginalToolName({ item }: { item: ToolItem }): ReactNode {
       </Typography.Text>
     );
   }
-  return (
-    <Flex align="center" gap={4}>
-      <Typography.Text type="secondary">工具原名</Typography.Text>
-      <Typography.Text code>{item.name}</Typography.Text>
-    </Flex>
-  );
+  return <Typography.Text>{item.name}</Typography.Text>;
 }
 
 /** 孤立结果的正文：结果原文（它一定在——没有结果就不会有这个条目） */
 function OrphanBody({ output }: { output: ToolOutput }): ReactNode {
-  const note = truncationNote(output.truncation);
   return (
-    <Flex vertical gap={4}>
-      <MonoText text={output.text} maxHeight={DETAIL_MAX_HEIGHT} />
-      {hasText(note) && <Typography.Text type="warning">{note}</Typography.Text>}
-      <StructuredResult structured={output.structured} />
-    </Flex>
+    <DetailCard>
+      <Descriptions
+        size="small"
+        layout="vertical"
+        column={1}
+        items={[
+          { key: 'output', label: '结果', children: <ResultValue output={output} missingReason={null} /> },
+          ...structuredField(output.structured),
+        ]}
+      />
+    </DetailCard>
   );
 }
 
 /**
- * 厂商已解析的结构化结果（`tool-result.structured`）。
+ * 厂商已解析的结构化结果（`tool-result.structured`）作为**独立一格字段**。
  *
  * 为什么必须给它一个落点：规范明写「**有 `meta` 就不要退回去解析文本**」，而 dsh 的
- * `read` / `write` / `edit` 把行数、改动对象这些**已解析过的事实**只放在这一格里，
+ * `read` / `write` / `edit` 把候选数、改动对象这些**已解析过的事实**只放在这一格里，
  * 正文那一段只是给人看的摘要（`<path>…</path>` 那种）。丢掉它，界面上就只剩摘要可读——
  * 那是「有数据但看不见」的形状。
  *
- * 呈现口径沿用的既有取舍：**等宽原文，不做族专属渲染**，但如实标注它是结构化结果
+ * 呈现口径沿用的既有取舍：**等宽原文，不做族专属渲染**，但标签如实标注它是结构化结果
  * （让人分得清「这一段是给模型看的文本」与「这一段是工具报出来的事实」）。
  * 正文走 `JsonText`：这一格本来就是 `JSON.stringify` 出来的对象 / 数组，
  * 于是它顺理成章地拿到缩进与高亮（`null` / 序列化不动那两条分支不变）。
- * `null` / `undefined` 时**整段不渲染**（不画空框：那会被读成「结构化结果坏了」）。
+ * `null` / `undefined` 时**整格不出现**（不画空框：那会被读成「结构化结果坏了」）。
  */
-function StructuredResult({ structured }: { structured: unknown }): ReactNode {
-  if (structured === null || structured === undefined) return null;
+function structuredField(structured: unknown): DetailField[] {
+  if (structured === null || structured === undefined) return [];
   let text: string | undefined;
   try {
     text = JSON.stringify(structured, null, 2);
   } catch {
     // 循环引用等序列化不动的值：**如实说序列化不了**，不假装没有这一格
-    return <Typography.Text type="secondary">结构化结果无法序列化（含循环引用）</Typography.Text>;
+    return [
+      {
+        key: 'structured',
+        label: '结构化结果',
+        children: <Typography.Text type="warning">结构化结果无法序列化（含循环引用）</Typography.Text>,
+      },
+    ];
   }
-  if (text === undefined || text === '') return null;
-  return (
-    <Flex vertical gap={2}>
-      <Typography.Text type="secondary">结构化结果</Typography.Text>
-      <JsonText text={text} maxHeight={DETAIL_MAX_HEIGHT} />
-    </Flex>
-  );
+  if (text === undefined || text === '') return [];
+  // 压缩档：这一格是「一条 JSON 事实」，缩进版（几十行）会把整张卡片撑得比参数还高
+  return [{ key: 'structured', label: '结构化结果', children: <JsonText text={text} compact /> }];
 }

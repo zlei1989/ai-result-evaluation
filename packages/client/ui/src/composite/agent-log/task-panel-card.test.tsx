@@ -11,7 +11,7 @@
  *     `id === null` 时不画依赖（**不自己发号**）； * · **表格形态**（用例名见「清单是表格且表头整条隐藏」「左列任务…右对齐」
  *     与「清单不分页」三条）：两列 small `Table`、表头整条隐藏、状态列在最右且 `textAlign: 'right'`、
  *     owner 与依赖跟任务同格（不进状态列）、不分页（12 步也全在）；
- *   · `earlierCount > 0` 出「本轮另有 N 次更新」，`note` 可见。
+ *   · `earlierCount > 0` 出「本步另有 N 次更新」，`note` 可见。
  *
  * jsdom 环境注意：antd 的 `Table` 会 `new ResizeObserver` 并读 `matchMedia`，jsdom 两个都没有
  * ——环境缺口，不是被测代码的问题（替身与安装助手的说明见 `testing/resize-observer.ts`）。
@@ -126,9 +126,9 @@ describe('TaskPanelCard', () => {
   });
 
   it('owner 为 null 时整格不显示；owner 为空串时显示「未指派」', () => {
-    // 行的判据落在 `<tr>` 上：表格化之后 `parentElement` 只是单元格里那层 Flex，
-    // 状态 Tag 在**另一格**，拿它当行会把两列的关系漏掉
-    const rowOf = (subject: string): HTMLElement | null => screen.getByText(subject).closest('tr');
+    // 候选的判据落在 `<tr>` 上：表格化之后 `parentElement` 只是单元格里那层 Flex，
+    // 状态 Tag 在**另一格**，拿它当候选会把两列的关系漏掉
+    const candidateOf = (subject: string): HTMLElement | null => screen.getByText(subject).closest('tr');
 
     render(
       <TaskPanelCard
@@ -140,10 +140,10 @@ describe('TaskPanelCard', () => {
     );
 
     // `null` = 这一家没有「指派」这个概念 ⇒ 这一格整个不画（整行只剩状态 Tag 那一个）
-    expect(rowOf('没人认领的概念都没有')?.querySelectorAll('.ant-tag')).toHaveLength(1);
-    expect(rowOf('没人认领的概念都没有')).not.toHaveTextContent('未指派');
+    expect(candidateOf('没人认领的概念都没有')?.querySelectorAll('.ant-tag')).toHaveLength(1);
+    expect(candidateOf('没人认领的概念都没有')).not.toHaveTextContent('未指派');
     // `''` = 有概念但当前无人认领 ⇒ 明说
-    expect(rowOf('有概念但空着')).toHaveTextContent('未指派');
+    expect(candidateOf('有概念但空着')).toHaveTextContent('未指派');
   });
 
   it('id 为 null 时不画依赖（blockedBy 的值就是 id，不自己发号）', () => {
@@ -230,10 +230,10 @@ describe('TaskPanelCard', () => {
     expect(document.querySelector('.ant-pagination')).toBeNull();
   });
 
-  it('本轮另有 N 次更新与 note 都可见', () => {
+  it('本步另有 N 次更新与 note 都可见', () => {
     render(<TaskPanelCard {...props} earlierCount={2} panel={panel()} />);
 
-    expect(screen.getByText(/本轮另有 2 次更新/)).toBeInTheDocument();
+    expect(screen.getByText(/本步另有 2 次更新/)).toBeInTheDocument();
     expect(screen.getByText('按评审意见调整了顺序')).toBeInTheDocument();
   });
 

@@ -28,7 +28,7 @@ function sample(): Rubric {
 }
 
 /**
- * 数一行里的**真列边界**：GFM 只在「前面有偶数个反斜杠」的 `|` 上切列——
+ * 数一个候选里的**真列边界**：GFM 只在「前面有偶数个反斜杠」的 `|` 上切列——
  * `\|` 是转义的竖线，而 `\\|` 是「一个字面反斜杠 + 一个真分隔符」。
  * 为什么不用 `row.split(/(?<!\\)\|/)`：它只看前一个字符，`\\|` 会被当成转义而漏判，
  * 于是「反斜杠没先转义」这类缺陷能在段数断言下蒙混过关。
@@ -270,7 +270,7 @@ describe('renderRubricForJudge', () => {
    * 守卫：目标里带竖线或换行时**列不能错位**。
    * 错位的后果不是报错，而是模型读到一张与界面不同的表——它会按错位后的列去理解权重。
    */
-  it('目标里的竖线被转义、换行被压成空格（列不错位）', () => {
+  it('目标里的竖线被转义、换候选被压成空格（列不错位）', () => {
     const text = renderRubricForJudge({
       groups: [{ name: 'g', items: [{ id: 'A', goal: '第一行\n第二行|带竖线', weight: 7 }] }],
     });
@@ -284,7 +284,7 @@ describe('renderRubricForJudge', () => {
   /**
    * 目标里**先出现反斜杠、再出现竖线**（`foo\|bar`）时，
    * 只转义竖线是不够的——`foo\\|bar` 里那个 `|` 仍然是真分隔符，列照旧错位。
-   * 所以 `escapeCell` 必须先转义反斜杠。断言方式与上面几条一致：**数这一行的真列边界**
+   * 所以 `escapeCell` 必须先转义反斜杠。断言方式与上面几条一致：**数这个候选的真列边界**
    * （`countRowDelimiters` 按反斜杠的奇偶判 `|` 算不算分隔符），三列的行必须是 4 个。
    */
   it('目标里的反斜杠先被转义：`\\|` 不会把分隔符吃掉（列仍不错位）', () => {
@@ -308,12 +308,12 @@ describe('renderRubricForJudge', () => {
   /**
    * 守卫：**第一列（引用键）与组名、目标一样要走同一份转义**——组名与目标都过
    * `escapeCell`，而键直接来自用户填的 `item.id`（`RubricSchema` 只管它是字符串、`validateRubric`
-   * 只 `trim()` 与查重，两处都不限定字符）。于是 ID 里带一个 `|` 就让这一行多出一个**真分隔符**、
-   * 带一个换行就让它裂成两行：模型读到的是一张与界面不同的表（哪把权重属于哪一项全错），
+   * 只 `trim()` 与查重，两处都不限定字符）。于是 ID 里带一个 `|` 就让这个候选多出一个**真分隔符**、
+   * 带一个换候选就让它裂成两行：模型读到的是一张与界面不同的表（哪把权重属于哪一项全错），
    * 而测试、校验、界面三处都不作声——与目标里带竖线是**同一个**后果。
    *
-   * 断言的形状是**行纪律**（一项一行、每行恰好三列），不是「字符串里有没有 `\|`」：后者对
-   * 「键转义了但换行没压掉」这类缺陷是空转的。两种字符**各占一条用例**（输入只有一个缺陷）：
+   * 断言的形状是**行纪律**（一项一行、每个候选恰好三列），不是「字符串里有没有 `\|`」：后者对
+   * 「键转义了但换候选没压掉」这类缺陷是空转的。两种字符**各占一条用例**（输入只有一个缺陷）：
    * 合在一起时，换行那条会先把总行数断言打红，竖线那条就永远得不到自己的红——
    * 变异验证时要注意「红了，但红在别的性质上」。输入可达性也各自自证：
    * 这样的 ID 真的过得了 schema 与 `validateRubric`（否则守卫防的是一个到不了的形状）。
@@ -330,7 +330,7 @@ describe('renderRubricForJudge', () => {
       return { lines, tableRows: lines.filter((line) => line.startsWith('|')) };
     }
 
-    it('ID 里的竖线被转义：这一行仍是三列（4 个真分隔符），不把权重挤到第四列去', () => {
+    it('ID 里的竖线被转义：这个候选仍是三列（4 个真分隔符），不把权重挤到第四列去', () => {
       const rubric = oneItem('A|B');
       expect(RubricSchema.safeParse(rubric).success).toBe(true);
       expect(validateRubric(rubric)).toEqual({ ok: true });
@@ -344,13 +344,13 @@ describe('renderRubricForJudge', () => {
       expect(lines).toContain('| A\\|B | 目标 | 7 |');
     });
 
-    it('ID 里的换行被压成空格：仍是一项一行（不会裂成两行把权重甩到表外）', () => {
+    it('ID 里的换候选被压成空格：仍是一项一行（不会裂成两行把权重甩到表外）', () => {
       const rubric = oneItem('C\nD');
       expect(RubricSchema.safeParse(rubric).success).toBe(true);
       expect(validateRubric(rubric)).toEqual({ ok: true });
 
       const { lines, tableRows } = renderLines(rubric);
-      // 换行没被压掉时这里会多一行（`| C` 与 `D | 目标 | 7 |` 各占一行），而表内行数仍是 3
+      // 换候选没被压掉时这里会多一行（`| C` 与 `D | 目标 | 7 |` 各占一行），而表内行数仍是 3
       expect(lines).toHaveLength(6);
       expect(tableRows).toHaveLength(3);
       expect(countRowDelimiters(tableRows[2] ?? '')).toBe(4);

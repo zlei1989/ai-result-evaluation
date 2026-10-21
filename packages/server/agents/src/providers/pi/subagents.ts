@@ -25,11 +25,11 @@
  *     而 `details` 是 `Agent` 工具返回值里的一份快照——后台档下它在子智能体还没收场时就定下了）；
  *   · `turnCount` **只有** `details` 有（总线载荷里没有这一格）⇒ 它单独取，不拿 `toolUses` 顶替。
  *
- * ### 总线是**每行一份**的
+ * ### 总线是**每个本次运行一份**的
  *
  * `DefaultResourceLoader` 的 `eventBus` 缺省时自己 `createEventBus()`（每次调用一个新
- * EventEmitter2），而本适配器**每行新建一个装载器** ⇒ 两行并发时各自的 `pi.events` 互不可见。
- * 这不是推测：装载器实例化那一行是 `this.eventBus = options.eventBus ?? createEventBus()`，
+ * EventEmitter2），而本适配器**每个本次运行新建一个装载器** ⇒ 两行并发时各自的 `pi.events` 互不可见。
+ * 这不是推测：装载器实例化那一本次运行是 `this.eventBus = options.eventBus ?? createEventBus()`，
  * 且实测两个装载器各自 emit/on 互不可见。
  *
  * ### 收数在**扩展回调**里、产事件在**投影**里
@@ -89,7 +89,7 @@ function isFilesystemPath(value: string): boolean {
  *
  * 解析基准是列表而不是单点：`import.meta.url` 在 Next 的服务端产物里指向 bundle 内的文件，
  * 而 `process.cwd()` 未必是本仓的包目录——单一基准都会在某些启动方式下失效。
- * 任一基准拿到文件路径即返回；全失败就按 `AGENT_LOAD_FAILED` **抛**，由装配面把这一行判成失败
+ * 任一基准拿到文件路径即返回；全失败就按 `AGENT_LOAD_FAILED` **抛**，由装配面把本次运行判成失败
  * （绝不静默少装一个扩展）：解析不出入口与「解析出来了但装载器没挂上」是同一类姿态，
  * 两者都归这一码、都由装配面点名包名。
  */
@@ -192,7 +192,7 @@ export interface PiSubagentRecorder {
 }
 
 /**
- * 造一个收数器。**每行一份**：收的是这一行那次会话的扩展事件，跨行共享等于让两行并发的子任务
+ * 造一个收数器。**每个本次运行一份**：收的是本次运行那次会话的扩展事件，跨行共享等于让两行并发的子任务
  * 互相串（与 `PiRunState` / 请求侧观察者同一条处置）。
  *
  * 回调里只做两件事——收窄载荷、写表（外加 `hooks` 的纯通知）。**不发射器、不抛**：那个时刻不在
@@ -232,7 +232,7 @@ export function createPiSubagentRecorder(hooks?: { onStarted?: (agentId: string)
   };
   return {
     factory: (pi) => {
-      // 扩展面缺 `events` 时**什么都不做**：这一行的子任务行会缺分量并落一条点名 WARN，
+      // 扩展面缺 `events` 时**什么都不做**：本次运行的子任务行会缺分量并落一条点名 WARN，
       // 而在回调里抛错会让整行连结论都没有
       if (typeof pi.events?.on !== 'function') return;
       pi.events.on('subagents:started', (data) => absorb(data, false));
@@ -244,7 +244,7 @@ export function createPiSubagentRecorder(hooks?: { onStarted?: (agentId: string)
     startedIds: () => [...started],
     deliver: (record) => {
       /**
-       * 签名走完整序列化：这一行的每一格都是标量或 `null`（`usage` 是四个数），
+       * 签名走完整序列化：本次运行的每一格都是标量或 `null`（`usage` 是四个数），
        * 没有一个会序列化不了；字段顺序由同一个构造点固定，故同一份快照的签名逐字相同。
        */
       const signature = `${record.subagentId}|${JSON.stringify(record)}`;

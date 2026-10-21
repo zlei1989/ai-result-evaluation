@@ -6,7 +6,7 @@
  *
  * 六个刻意的取舍（每条都对应一个真实会伤到用户的情形）：
  *   1. **模型清单不在这里**：它已单独提成 `provider-models-modal.tsx`，
- *      入口是列表每行的「模型」按钮。理由是两者的使用频率差一个量级 —— 清单维护是高频动作，
+ *      入口是列表每个候选的「模型」按钮。理由是两者的使用频率差一个量级 —— 清单维护是高频动作，
  *      而接线字段很少改；挤在一起的结果是「改个模型名要先把整张表单拉出来」。
  *      **但入口必须在这里可见**：本弹窗留一条 Alert 指向那个按钮，不能让用户自己去找
  *      （把一块功能搬走却不留路标，读起来就是「功能没了」）；
@@ -140,7 +140,7 @@ export function ProviderFormModal(props: ProviderFormModalProps): ReactNode {
         </Form.Item>
 
         {/* 模型清单已搬进独立的对话框（文件头第 1 点）：这里只留**可见的路标**。
-            文案分两态：新建态还没有 id（列表里也还没有这一行），编辑态则指向列表那一行的按钮。 */}
+            文案分两态：新建态还没有 id（列表里也还没有这个候选），编辑态则指向列表那一候选的按钮。 */}
         {isEdit ? (
           <Alert
             type="info"
@@ -153,7 +153,7 @@ export function ProviderFormModal(props: ProviderFormModalProps): ReactNode {
             type="info"
             showIcon
             title="保存后可维护模型清单"
-            description="新建时还没有供应商 id；保存后到列表里点这一行的「模型」按钮，在对话框里拉取或手工增删。"
+            description="新建时还没有供应商 id；保存后到列表里点这个候选的「模型」按钮，在对话框里拉取或手工增删。"
           />
         )}
       </Form>

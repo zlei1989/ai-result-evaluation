@@ -124,7 +124,7 @@ afterEach(() => {
 describe('订阅：快照 + 信号流', () => {
   it('挂载即拉快照，并接上全局流（与列表信号、待答快照共用一条连接）', async () => {
     stubServer({ snapshot: () => [messageOf('m-1')] });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
 
     await waitFor(() => expect(result.current.messages).toHaveLength(1));
     expect(result.current.messages[0]?.messageId).toBe('m-1');
@@ -134,7 +134,7 @@ describe('订阅：快照 + 信号流', () => {
   it('只认 inject-messages-changed 那一族帧：同一条连接上的另两族不重读队列快照', async () => {
     let snapshot: InjectMessage[] = [messageOf('m-1')];
     const fetchMock = stubServer({ snapshot: () => snapshot });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(result.current.messages).toHaveLength(1));
 
     const source = FakeEventSource.instances[0];
@@ -155,7 +155,7 @@ describe('订阅：快照 + 信号流', () => {
   it('重连补读一次（帧不重放，断线期间登记的条目靠这一读补回来）；首次连接不重复读', async () => {
     let snapshot: InjectMessage[] = [messageOf('m-1')];
     const fetchMock = stubServer({ snapshot: () => snapshot });
-    renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     const source = FakeEventSource.instances[0];
@@ -171,7 +171,7 @@ describe('订阅：快照 + 信号流', () => {
 
   it('卸载时把那条连接关掉（全局信号流不该随抽屉关掉而泄漏）', async () => {
     stubServer({ snapshot: () => [] });
-    const { unmount } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { unmount } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const source = FakeEventSource.instances[0];
     unmount();
@@ -180,7 +180,7 @@ describe('订阅：快照 + 信号流', () => {
 
   it('`enabled === false`：一个请求都不发、一条连接都不开', async () => {
     const fetchMock = stubServer({ snapshot: () => [messageOf('m-1')] });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: false });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: false });
 
     await act(async () => {
       await Promise.resolve();
@@ -195,12 +195,12 @@ describe('写动作：失败也不许乐观出队', () => {
   it('发送成功之后重读快照（队列以服务端为准，客户端不自己往队尾塞一条）', async () => {
     let snapshot: InjectMessage[] = [];
     const fetchMock = stubServer({ snapshot: () => snapshot });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     snapshot = [messageOf('m-9')];
     await act(async () => {
-      await result.current.send({ runId: 'run-1', rowId: 'w-1', messageId: 'm-9', text: '话', attachments: [], requires: 'idle' });
+      await result.current.send({ runId: 'run-1', candidateId: 'w-1', messageId: 'm-9', text: '话', attachments: [], requires: 'idle' });
     });
     await waitFor(() => expect(result.current.messages.map((item) => item.messageId)).toEqual(['m-9']));
     expect(snapshotReads(fetchMock)).toBe(2);
@@ -212,7 +212,7 @@ describe('写动作：失败也不许乐观出队', () => {
       snapshot: () => snapshot,
       onRetract: () => json({ error: { code: 'CONFLICT', message: '已经交给智能体了，撤不回来' } }, 409),
     });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     // 服务端在那次失败的撤回里把它判成 consumed
@@ -233,7 +233,7 @@ describe('写动作：失败也不许乐观出队', () => {
       snapshot: () => snapshot,
       onRetract: () => json({ outcome: 'removed', message: messageOf('m-1', { state: 'gone', settledAt: '2026-09-22T10:32:00.000Z', outcome: 'retracted' }) }),
     });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     snapshot = [messageOf('m-1', { state: 'gone', settledAt: '2026-09-22T10:32:00.000Z', outcome: 'retracted' })];
@@ -245,21 +245,21 @@ describe('写动作：失败也不许乐观出队', () => {
     expect(result.current.messages).toHaveLength(1);
   });
 
-  it('改期带齐三格定位（`runId` / `rowId` / `messageId` 走请求体）', async () => {
+  it('改期带齐三格定位（`runId` / `candidateId` / `messageId` 走请求体）', async () => {
     const fetchMock = stubServer({ snapshot: () => [messageOf('m-1')] });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     await act(async () => {
       await result.current.promote('m-1');
     });
     const call = fetchMock.mock.calls.find(([url]) => String(url) === INJECT_MESSAGES_PROMOTE_URL);
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ runId: 'run-1', rowId: 'w-1', messageId: 'm-1' });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ runId: 'run-1', candidateId: 'w-1', messageId: 'm-1' });
   });
 
   it('附件上传走 multipart：三格文本 + 字段名固定 `file`，且不自己写 `content-type`', async () => {
     const fetchMock = stubServer({ snapshot: () => [messageOf('m-1')] });
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     const file = new File(['hello'], 'a.md', { type: 'text/markdown' });
@@ -272,7 +272,7 @@ describe('写动作：失败也不许乐观出队', () => {
     expect(form).toBeInstanceOf(FormData);
     const body = form as FormData;
     expect(body.get('runId')).toBe('run-1');
-    expect(body.get('rowId')).toBe('w-1');
+    expect(body.get('candidateId')).toBe('w-1');
     expect(body.get('messageId')).toBe('m-1');
     expect(body.get('file')).toBeInstanceOf(File);
     // 手写 `content-type` 会把 boundary 丢掉，服务端 `formData()` 会解析出零个字段
@@ -283,7 +283,7 @@ describe('写动作：失败也不许乐观出队', () => {
     let release: (() => void) | null = null;
     const fetchMock = stubServer({ snapshot: () => [] });
     fetchMock.mockImplementationOnce(async () => json([])); // 首次快照
-    const { result } = renderInjectHook({ runId: 'run-1', rowId: 'w-1', enabled: true });
+    const { result } = renderInjectHook({ runId: 'run-1', candidateId: 'w-1', enabled: true });
     await waitFor(() => expect(snapshotReads(fetchMock)).toBe(1));
 
     fetchMock.mockImplementationOnce(
@@ -294,7 +294,7 @@ describe('写动作：失败也不许乐观出队', () => {
     );
     let pending: Promise<unknown> | null = null;
     act(() => {
-      pending = result.current.send({ runId: 'run-1', rowId: 'w-1', messageId: 'm-9', text: '话', attachments: [], requires: 'idle' });
+      pending = result.current.send({ runId: 'run-1', candidateId: 'w-1', messageId: 'm-9', text: '话', attachments: [], requires: 'idle' });
     });
     await waitFor(() => expect(result.current.busy).toBe(true));
     await act(async () => {

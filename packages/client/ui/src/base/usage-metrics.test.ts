@@ -77,7 +77,7 @@ describe('generationWindowMs', () => {
     expect(generationWindowMs(timing({ totalMs: 30_000, ttftMs: 5_000 }))).toBe(30_000);
   });
 
-  it('差值 ≤ 0（脏数据 / 极短轮次）时不产出一个负分母，退回 totalMs；两个都不行就是 null', () => {
+  it('差值 ≤ 0（脏数据 / 极短轮次）时不产出一个负分母，退回 totalMs；两个都不候选就是 null', () => {
     expect(generationWindowMs(timing({ totalMs: 30_000, apiMs: 5_000, ttftMs: 5_000 }))).toBe(30_000);
     expect(generationWindowMs(timing({ totalMs: 30_000, apiMs: 4_000, ttftMs: 5_000 }))).toBe(30_000);
     // 分母为 0 会把速率算成 Infinity ⇒ 这里是 null（「算不出来」），由调用方说「未采集」

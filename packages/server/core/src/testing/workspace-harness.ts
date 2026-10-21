@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 工作区目录结构与行工作区准备：真实 git CLI + 真实目录复制。
+ * 工作区目录结构与候选工作区准备：真实 git CLI + 真实目录复制。
  * 四条最关键的守卫：
  *   ① 目录布局逐字固定（缓存 / workspace / .agenthome / events.jsonl 四者的位置）；
  *   ② 重跑同一行必须**清掉旧工作区**——否则第二个候选是在第一个候选的改动之上继续写，
@@ -120,4 +120,4 @@ export { execFileSync } from 'node:child_process';
 export { getConfigDir, setConfigDirForTesting } from '../config-store';
 export type { AppConfig, Logger, PendingAgentEvent } from '../index';
 export { appendEvent, readEvents } from '../event-log';
-export { caseCacheDir, ensureRowJudgeHome, prepareRowWorkspace, rowAgentHomeDir, rowAttemptsFile, rowDir, rowEventsFile, rowJudgeHomeDir, rowWorkspaceDir, runDir, runSnapshotFile } from '../workspace';
+export { caseCacheDir, ensureCandidateJudgeHome, prepareCandidateWorkspace, candidateAgentHomeDir, candidateAttemptsFile, candidateDir, candidateEventsFile, candidateJudgeHomeDir, candidateWorkspaceDir, runDir, runSnapshotFile } from '../workspace';

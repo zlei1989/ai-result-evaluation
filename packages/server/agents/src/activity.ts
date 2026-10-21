@@ -2,7 +2,7 @@
  * 三家共用的**活动摘要词表**：把一条通知/一次工具调用翻成「此刻在做什么」的一句话。
  * 本模块是这一层的唯一实现（各家「在哪一条通知上发」由各适配器决定）。
  *
- * 为什么要有这一个文件：候选卡片底部那一行只吃 `log` 事件的 `summary`（判定在 `@aieval/client`
+ * 为什么要有这一个文件：本次运行卡片底部那一行只吃 `log` 事件的 `summary`（判定在 `@aieval/client`
  * 的 `activityOf`），而这句话过去由三家各写一份——同一次工具调用于是有三种信息量（claude 只给工具名
  * `调用工具 Bash`，dsh 给参数 `调用工具 pwsh：git status`，codex 什么都不给），子任务摘要那两份还是
  * 逐字复制粘贴（连「名字缺失就回落成字面量『子任务』」这个毛病一起复制）。现在**只有这一份实现**，
@@ -17,7 +17,7 @@
  *      （Claude `Bash` 的说明逐字：「the user reads this description, often without seeing the command」；
  *      DSH 的 `pwsh`/`bash` 更把它设成**必填**并在运行期校验）。只有描述、没有目标
  *      （`command` / `file_path` / `pattern` / `url`）时，那句描述就是答案；**两个都在时给
- *      `描述（目标）`**——描述说明「为什么」，目标说明「哪一个」，而同一行里两次 `exec_command`
+ *      `描述（目标）`**——描述说明「为什么」，目标说明「哪一个」，而同一本次运行里两次 `exec_command`
  *      的描述可能逐字相同，只留描述会让两次调用在界面上长得一模一样。
  *   2. **没有 `description` 就按族拼**（`targetOf`）：读文件给 `路径:起-止`、搜内容给
  *      `模式（范围）`、跑命令给命令原文、派子任务给任务名……每个族一种拼法。
@@ -40,7 +40,7 @@
  *      run `08b56e95` 的 dsh 行与 claude 行，末尾都停在 `思考：Only one file changed…`）。
  *   2. **不给摘要 ≠ 不落事件**：`text` 照旧是原始负载，抽屉的原始输出面板逐字可见；
  *      拿掉摘要只是让活动行**保留上一句人话**，不是把证据丢掉。
- *   3. **一句话必须是一句话**：单行化 + 截断（卡片底部只有一行，换行会被 CSS 省略号吃掉）。
+ *   3. **一句话必须是一句话**：单行化 + 截断（卡片底部只有一行，换本次运行会被 CSS 省略号吃掉）。
  *
  * 与服务端其余日志的关系：本模块只产出**字符串**，不碰事件形状——发不发那一条 `log`、
  * 原始负载是什么，仍由各家的 `events.ts` 决定。
@@ -51,7 +51,7 @@ import { classifyTool } from './tool-family';
 
 /**
  * 摘要主体的长度上限（`调用工具 pwsh：` 这样的前缀不计入）。
- * 沿用 dsh 的口径：这一行的用途是「一眼看出在干什么」，
+ * 沿用 dsh 的口径：本次运行的用途是「一眼看出在干什么」，
  * 完整参数与输出都在抽屉的原始负载里 ⇒ 超长一律截断带省略号。
  */
 export const ACTIVITY_SUMMARY_MAX_LENGTH = 120;
@@ -107,7 +107,7 @@ function loneScalarOf(record: Record<string, unknown> | null): string | null {
   return line === '' || line.length > 32 ? null : line;
 }
 
-/** 计划类入参的键名：命中**任意一个**数组就按「更新计划：N 步」说（claude 的 `todos` / dsh 的 `steps` / codex 的 `plan`） */
+/** 计划类入参的键名：命中**任意一个**数组就按「更新计划：N 项」说（claude 的 `todos` / dsh 的 `steps` / codex 的 `plan`） */
 const PLAN_ARGUMENT_KEYS = ['todos', 'plan', 'steps'] as const;
 
 /** 十族全表（与契约的 `TOOL_FAMILIES` 同集）；用来区分「这家我们认识」与「完全不认识」 */
@@ -175,8 +175,8 @@ export function toolCallTitle(name: string | null): string {
  * `调用工具：ls`（名字没给）。两者都没有就给 `调用工具`——不编一个名字（编出来的名字会让排障的人
  * 去找一个不存在的工具），也不留一个空冒号。
  *
- * 计划类调用在这里**整体换句**（`更新计划：2 步`，不再带 `调用工具` 前缀）：那三个键的值是一整张
- * 清单，而「几张表、第几版」才是使用者要的——而工具行拿到的仍是 `2 步`（见 `detailOf`）。
+ * 计划类调用在这里**整体换句**（`更新计划：2 项`，不再带 `调用工具` 前缀）：那三个键的值是一整张
+ * 清单，而「几张表、第几版」才是使用者要的——而工具行拿到的仍是 `2 项`（见 `detailOf`）。
  *
  * @param name 厂商原始工具名（`null` = 拿不到）
  * @param input 厂商原文：对象，或 dsh 那种**未解析的 JSON 字符串**（本模块自己解析）
@@ -185,7 +185,7 @@ export function toolCallTitle(name: string | null): string {
 export function toolCallSummary(name: string | null, input: unknown, family?: ToolFamily | null): string {
   const context = contextOf(name, input, family);
   const steps = planStepsOf(asRecord(input));
-  // 计划类**整体换句**：`更新计划：N 步`（`task` 族；codex 的原生计划通知也走这一句）
+  // 计划类**整体换句**：`更新计划：N 项`（`task` 族；codex 的原生计划通知也走这一句）
   if (steps !== null && context.family === 'task') return planSummary(steps);
   const hint = detailOf(context);
   const title = toolCallTitle(name);
@@ -202,15 +202,15 @@ export function toolCallHint(name: string | null, input: unknown, family?: ToolF
 
 /**
  * 摘要主体（冒号后面那一段），三档按序：
- *   ① 计划类入参 → `N 步`（先判：它的值是一整张清单，不是「第一个非空字符串」能表达的）；
+ *   ① 计划类入参 → `N 项`（先判：它的值是一整张清单，不是「第一个非空字符串」能表达的）；
  *   ② **描述**（有目标就拼成 `描述（目标）`）；
  *   ③ 族自己的拼法（`targetOf`），族不认或拼不出再回落到通用参数摘要。
  */
 function detailOf(context: FamilyContext): string {
   const record = asRecord(context.input);
   const steps = planStepsOf(record);
-  // 计划类的值是**一整张清单**：转成 JSON 只是把一坨结构塞进一行，而「几步」才是使用者要的
-  if (steps !== null) return `${steps} 步`;
+  // 计划类的值是**一整张清单**：转成 JSON 只是把一坨结构塞进一行，而「几项」才是使用者要的
+  if (steps !== null) return `${steps} 项`;
 
   const description = descriptionOf(record);
   const target = targetOf(context, record);
@@ -255,7 +255,7 @@ function descriptionOf(record: Record<string, unknown> | null): string | null {
  *   · `spawn-agent` → **`prompt`**——派发工具的 `description` 按厂商定义就是子任务名，
  *     它已经进了描述那一档，同一个值出现两遍没有信息量，故这里补任务正文
  *   · `ask-user`   → 第一个问题的正文（正文空但清单在就说「N 问」）
- *   · `task`       → `null`（步数在 `detailOf` 的①档就返回了）
+ *   · `task`       → `null`（项数在 `detailOf` 的①档就返回了）
  *   · `null`（不认识）→ 通用优先键那一档
  *
  * 拿不到就给 `null`——**不编一个目标**（编出来的目标会让排障的人去找一个不存在的文件）。
@@ -422,9 +422,9 @@ export function toolDeniedSummary(name: string | null, reason: string | null): s
   return detail === '' ? title : `${title}：${detail}`;
 }
 
-/** 计划更新的一句话：`更新计划：N 步`（codex 的原生 `turn/plan/updated` 与另两家的清单工具同形） */
+/** 计划更新的一句话：`更新计划：N 项`（codex 的原生 `turn/plan/updated` 与另两家的清单工具同形） */
 export function planSummary(steps: number): string {
-  return `更新计划：${steps} 步`;
+  return `更新计划：${steps} 项`;
 }
 
 /** 子任务派发的一句话：`已派发子任务：<任务名>` */
@@ -452,7 +452,7 @@ function withSubagentName(title: string, name: string | null): string {
   return who === '' ? title : `${title}：${who}`;
 }
 
-/** 计划步数：入参对象里有那三个键中的任意一个数组就认（空数组也算——「0 步」是事实，不是「没采到」） */
+/** 计划项数：入参对象里有那三个键中的任意一个数组就认（空数组也算——「0 项」是事实，不是「没采到」） */
 function planStepsOf(record: Record<string, unknown> | null): number | null {
   if (record === null) return null;
   for (const key of PLAN_ARGUMENT_KEYS) {
@@ -486,7 +486,7 @@ function changedPathsOf(record: Record<string, unknown>): string[] {
   return out;
 }
 
-/** 路径列表：两个以内全列，更多则前两个 + 「等 N 个」（一行里塞不下一条补丁的全部路径） */
+/** 路径列表：两个以内全列，更多则前两个 + 「等 N 个」（一本次运行里塞不下一条补丁的全部路径） */
 function pathsOf(paths: string[]): string {
   if (paths.length <= 2) return paths.join('、');
   return `${paths[0] ?? ''}、${paths[1] ?? ''} 等 ${paths.length} 个`;

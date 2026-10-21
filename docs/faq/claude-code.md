@@ -29,12 +29,12 @@ Claude Code（`@anthropic-ai/claude-agent-sdk`）在**真实运行环境**里踩
 
 两层证据：
 
-- **实测量级**（run `7f05c765-9c7b-48aa-ad2f-212787d52475` 的 claude 行 `057d00fb`）：该行 **12,509 条 `log`** 里 **11,629 条**是这一种帧（93%），评分智能体那条路（走同一个适配器）再叠 **670 条**；单行 `events.jsonl` 因此涨到 MB 级——「页面卡死」与「日志文件过大」是同一个成因的两面。
+- **实测量级**（run `7f05c765-9c7b-48aa-ad2f-212787d52475` 的 claude 行 `057d00fb`）：该候选 **12,509 条 `log`** 里 **11,629 条**是这一种帧（93%），评分智能体那条路（走同一个适配器）再叠 **670 条**；单行 `events.jsonl` 因此涨到 MB 级——「页面卡死」与「日志文件过大」是同一个成因的两面。
 - **协议语义**（SDK 0.3.281 `sdk.d.ts` 的 `SDKThinkingTokensMessage` 注释原文）：*Live thinking-token estimate, digested from `thinking_delta.estimated_tokens` during the redacted-thinking phase … **Approximate progress for spinners/pills, not the authoritative billed `output_tokens`*** ⇒ 它是**进度帧**，权威值在收尾的 `result.usage.output_tokens_details.thinking_tokens`，丢它不损失任何事实。
 
 **解决方案**：`packages/server/agents/src/providers/cc/events.ts` 新增常量 `THINKING_TOKENS_SUBTYPE = 'thinking_tokens'` 与一支 `emptyProjection()`（与 `stream_event` 并列），并在文件头「规则 2」写明这是**唯一一类例外**（其余未识别消息照旧保留原文）；同步登记进《消息规范》的「非渲染增量」表（四类→五类）。守卫三处：① `events.test.ts` 新增零事件产出用例，**带反向判据**——`system/status` 必须仍保留原始负载（防「凡 `system` 一律丢」的过度修复）；② 一致性套件 §2.12——claude 的 `plain-reply` 场景里真喂一条这种帧，事件条数仍声明 `2`；③ 跨家条数声明表。**变异验证**：删掉该排除分支 ⇒ 两处同时红（单元用例 + `cc/plain-reply：事件条数 3 ≠ 声明的 2`），还原后哈希 `6c7bec82cc08cfb492b27e53308af4cc3365762b941640fb77e6b4e6c4819950` 逐字一致、66 条用例复绿。
 
-**已知残留**：已经写进 `events.jsonl` 的那 12,509 条**不会自动消失**（历史产物不回收、读侧不做过滤），要清掉只能重跑该行（`resetEvents` 清空当次产物）；另外运行中的评测进程持有模块，**重启 dev server 后**新帧才不再写入。
+**已知残留**：已经写进 `events.jsonl` 的那 12,509 条**不会自动消失**（历史产物不回收、读侧不做过滤），要清掉只能重跑该候选（`resetEvents` 清空当次产物）；另外运行中的评测进程持有模块，**重启 dev server 后**新帧才不再写入。
 
 **相关资料**：
 
@@ -48,12 +48,12 @@ Claude Code（`@anthropic-ai/claude-agent-sdk`）在**真实运行环境**里踩
 
 **日期**：2026-10-10
 
-**现象原文**（真机探针那一行的失败文案，行级归因码 `AGENT_FAILED`；模型名 `test-model` 是夹具默认值，见根因）：
+**现象原文**（真机探针那一行的失败文案，候选级归因码 `AGENT_FAILED`；模型名 `test-model` 是夹具默认值，见根因）：
 ```
 AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.
 ```
 
-**根因**：机制层——行的模型名来自**行快照**（`EvalRow.modelId`，创建时写死的那一格），适配器把它原样交给 CLI（`modelForClaudeCode` 只可能在它后面追加 `[1m]`）。夹具工厂 `makeRowFixture` 的默认值是假适配器专用的 `test-model`，而真机路由里这个名字在网关的模型清单里**不存在** ⇒ CLI 自己的模型校验当场拒掉整轮，行落 `failed` / `AGENT_FAILED`。
+**根因**：机制层——行的模型名来自**候选快照**（`EvalCandidate.modelId`，创建时写死的那一格），适配器把它原样交给 CLI（`modelForClaudeCode` 只可能在它后面追加 `[1m]`）。夹具工厂 `makeRowFixture` 的默认值是假适配器专用的 `test-model`，而真机路由里这个名字在网关的模型清单里**不存在** ⇒ CLI 自己的模型校验当场拒掉整轮，行落 `failed` / `AGENT_FAILED`。
 
 **测试环境 ≠ 运行环境**：单测里适配器被整个换成 `fakeAgents`，模型名从不发出去，于是这个默认值一路绿；只有在「真适配器 + 真网关」的探针里才会暴露（本仓的 live 探针就是这条差异的靶子）。
 
@@ -68,13 +68,13 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 **现象原文**（模型自己的话，两条指向同一件事）：
 
 ```
-关于技能：本次会话里我**没有**收到任何可用技能（skill）的清单，因此没有可逐行列出的名字。
+关于技能：本次会话里我**没有**收到任何可用技能（skill）的清单，因此没有可逐个列出的名字。
 关于令牌：没看到。
 ```
 
 **根因**：**技能清单压根没到模型** —— 不是模型不肯调 `Skill`，也不是装入链有缺陷。机制一层：
 
-**丢弃点已定位（不再是「某处翻译层」）：`proxyGateway` 的 `lib/convert/anthropic.js` 的 `anthropicToOpenAI` 里那一行显式丢弃** —— `if (role === "system") continue;`。抓包原文：主请求体 `messages[0].role='user'` 是题面（587 字符）、`messages[1].role='system'` 是那坨 reminder（7694 字符，技能清单在里面），`tools[]` 里 `Skill` 在；Anthropic 的 Messages API 只定义 `user` / `assistant`，而这一行不认它，整条 `continue` 掉 ⇒ 模型上下文里从来没有这份清单。清单里没有名字、`Skill` 的入参无处可来，「不主动读 skill」是**信息缺失**的必然结果，不是模型偏好。
+**丢弃点已定位（不再是「某处翻译层」）：`proxyGateway` 的 `lib/convert/anthropic.js` 的 `anthropicToOpenAI` 里那一行显式丢弃** —— `if (role === "system") continue;`。抓包原文：主请求体 `messages[0].role='user'` 是题面（587 字符）、`messages[1].role='system'` 是那坨 reminder（7694 字符，技能清单在里面），`tools[]` 里 `Skill` 在；Anthropic 的 Messages API 只定义 `user` / `assistant`，而这个候选不认它，整条 `continue` 掉 ⇒ 模型上下文里从来没有这份清单。清单里没有名字、`Skill` 的入参无处可来，「不主动读 skill」是**信息缺失**的必然结果，不是模型偏好。
 
 三个细节决定了它为什么能长期静默（**三处都以为别人管着**）：
 
@@ -99,8 +99,8 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 **测试环境 ≠ 运行环境**：单测里适配器整个换成 `fakeAgents`，行为面在 `pnpm test` 里永远是绿的；而**这一层连真机行也看不出来**——`getContextUsage().skills.skillFrontmatter` 是 CLI **自己报的装配读数**（「我装上了」），与「模型收到了」隔着网关那一跳，把前者当后者用就会得出「模型不肯读」这个错判——那就是**把 L1 的装配结论当 L3 的行为证据**用。装配链那两半的事实如下（仍成立，是上面三条判据的前提）：
 
-- **装入链没问题**（L1 + 厂商确证）：`<行配置目录>/skills/tang-poem-meal/SKILL.md` 与源目录逐字相同，`SKILL.md` 在 `query()` 之前落盘；厂商自己报的技能面里**有它**——`getContextUsage().skills.skillFrontmatter` = `[{"name":"tang-poem-meal","source":"userSettings"},…]`（同一条里另有 12 条 `built-in`；另造一条仓库自带 skill，来源原值 `projectSettings`，说明这条通道真的在按来源分档）。`source: userSettings` 就是「本机启用项那一份进了系统提示的技能面」的厂商原话。
-- **行为面是空的**：该行 `工具调用名：[]`——一个工具都没调；答复是一首唐诗，**末行没有哨兵串**。`Skill` 是 CLI 侧的工具，模型要在 wire 上回一个 `tool_use(name='Skill', input.skill='…')` 才会触发；这条路由下的模型只回文本。**换 `GLM-5.3` 同样一次都不调** ⇒ 不是某一个模型的怪癖，而是**两个模型都拿不到那份清单**：只把那条消息的 `role` 改成 `user`，两个模型都会调（见上表）。
+- **装入链没问题**（L1 + 厂商确证）：`<候选配置目录>/skills/tang-poem-meal/SKILL.md` 与源目录逐字相同，`SKILL.md` 在 `query()` 之前落盘；厂商自己报的技能面里**有它**——`getContextUsage().skills.skillFrontmatter` = `[{"name":"tang-poem-meal","source":"userSettings"},…]`（同一条里另有 12 条 `built-in`；另造一条仓库自带 skill，来源原值 `projectSettings`，说明这条通道真的在按来源分档）。`source: userSettings` 就是「本机启用项那一份进了系统提示的技能面」的厂商原话。
+- **行为面是空的**：该候选 `工具调用名：[]`——一个工具都没调；答复是一首唐诗，**末行没有哨兵串**。`Skill` 是 CLI 侧的工具，模型要在 wire 上回一个 `tool_use(name='Skill', input.skill='…')` 才会触发；这条路由下的模型只回文本。**换 `GLM-5.3` 同样一次都不调** ⇒ 不是某一个模型的怪癖，而是**两个模型都拿不到那份清单**：只把那条消息的 `role` 改成 `user`，两个模型都会调（见上表）。
 
 **解决方案**：**网关侧已修，待部署**——丢弃点不在本仓，修的是 `proxyGateway`（同一台机器上的 `~/Coding/proxyGateway`）。四件事：
 
@@ -108,7 +108,7 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 - **守卫**：`test/system-prefix.test.js` 的三处断言随之改写（原断言钉的正是旧行为）；`test/diagnostic-sites.test.js` 新增 S4（正例 + 两条「位置未变则零诊断」反例 + 三条目标各保 reminder 原文的复验）与一条真实 HTTP 往返的端到端用例。**变异验证**：把 `continue` 放回去 ⇒ 6 条守卫同时变红（3 条反例仍绿），还原后 `lib/convert/anthropic.js` 哈希 `1bd66503d7e208bfa7001bfa0ad42547bc8609c581de7904b13ec2ea27bcb756` 逐字一致。
 - **本机端到端**：真启动改后的网关 + 假上游，把本轮抓到的**真实请求体**POST 进 `/v1/messages` ⇒ 上游报文的 `messages` = `[system 62, user 647, **user 7694**]`，技能清单标题、`Primary working directory`、reminder 原文全部逐字到达，控制台出现 `转换诊断 1 条(semantic=1) codes=mid_sequence_system_downgraded_to_user`。
 - **生效条件**：远端 `likecode-llm-proxy.jd.com` 仍跑旧代码 ⇒ **部署前本仓现象照旧**。
-- **行级判据维持「技能面确证」不变**：`getContextUsage().skills.skillFrontmatter` 里出现该条且来源为 `userSettings`（观测格记 `installed · 判据 厂商清单`），**但绝不把「模型会用它」写成已兑现**；它报的是装配读数，与模型是否收到隔着网关那一跳。**换真 Claude 模型或另一条网关是唯一的替代复验路径**：三条判据同时看——真发 `tool_use(name='Skill')`、答复**末行逐字**命中哨兵串（只出现唐诗不算，唐诗是模型本来就会的东西）、`SKILL.md` 在行配置目录里。
+- **候选级判据维持「技能面确证」不变**：`getContextUsage().skills.skillFrontmatter` 里出现该条且来源为 `userSettings`（观测格记 `installed · 判据 厂商清单`），**但绝不把「模型会用它」写成已兑现**；它报的是装配读数，与模型是否收到隔着网关那一跳。**换真 Claude 模型或另一条网关是唯一的替代复验路径**：三条判据同时看——真发 `tool_use(name='Skill')`、答复**末行逐字**命中哨兵串（只出现唐诗不算，唐诗是模型本来就会的东西）、`SKILL.md` 在候选配置目录里。
 - **兜底（未实施，网关修好后不再是必需）**：候选执行的任务提示里显式注入技能清单。它只补技能一项，补不了环境块 / agent 类型表 / 日期 / token 预算——那些随网关这一修一起回来。
 - **复验判据**：跑 `packages/server/agents/probe/v9/replay-role-differential.mjs`，`A1-原样(system)` 臂的 `Skill调用` 由 0 变正即说明这一跳被修好（**部署后**才可能变正）；请求体由 `claude-skill-mount-capture.mjs` 现场抓取，不依赖上游会答题。真机那一半仍由 `packages/server/agents/src/providers/cc/live-skills-context.test.ts`（`AIEVAL_LIVE_SKILL_CONTEXT=1`）与离线的 `packages/server/agents/src/skills-config-prereq.test.ts` 钉。
 
@@ -121,19 +121,19 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 ---
 
-## Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）
+## Write 落点缺一级 workspace：`"file_path":"…/candidates/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）
 
 **日期**：2026-10-11
 
 **根因**：机制层三层，前两层是绿的事实、缺口在第三层：
 
-- **平台三层全绿**：① `system/init` 帧 `cwd` = `…/rows/<rowId>/workspace`（给 CLI 的 cwd 正确）；② 厂商确证技能面里有该条——`getContextUsage().skills.skillFrontmatter` 含 `{"name":"tang-poem-meal","source":"userSettings"}`；③ **CC 2.1.281 在主请求的 `<system-reminder>` 里确实注入了技能清单**（原文 `The following skills are available for use with the Skill tool: - tang-poem-meal: …`）——本地假网关捕获真实请求体逐项对齐真机 options（模型名 `glm-5.3` / `GLM-5.3[1m]` / `claude-sonnet-4-5`、`CLAUDE_CODE_ENABLE_TODO_TOOLS`、禁用名单、`forwardSubagentText`、`includePartialMessages`、`settings.env`）全部带清单；第一轮请求构造先于任何网关响应，故「CLI 没把清单注入请求体」这一半被排除——**至于它到不到模型，是网关那一跳的事，见上一条**。
-- **模型没见过清单（不是「没利用」），改翻文件系统**：该行模型（GLM-5.3 走 likecode anthropic 协议网关）的 thinking 自述 `I don't see a system-reminder listing skills in this conversation`，于是用 Bash `find $HOME/skills` 找技能——命中平台物化目录，**输出把 `<行目录>/.agenthome/skills/<名>/SKILL.md` 的绝对路径送进上下文**。那句自述是**字面事实**：整份 `<system-reminder>` 随 `role:"system"` 那条消息一起被网关丢掉（判据见上一条），模型确实没收到过它。
-- **落点**：模型随后 Write 时复用该绝对路径前缀，`poetry.md` 落在 `.agenthome` 的**父目录**（行目录）——比正确工作区少一级 `workspace`。diff 采集只扫 `workspace/`（口径：工作区外的产物对评分不可见），于是 `diff = 0 改动` → 评分判「未达成」→ 0 分。
+- **平台三层全绿**：① `system/init` 帧 `cwd` = `…/candidates/<candidateId>/workspace`（给 CLI 的 cwd 正确）；② 厂商确证技能面里有该条——`getContextUsage().skills.skillFrontmatter` 含 `{"name":"tang-poem-meal","source":"userSettings"}`；③ **CC 2.1.281 在主请求的 `<system-reminder>` 里确实注入了技能清单**（原文 `The following skills are available for use with the Skill tool: - tang-poem-meal: …`）——本地假网关捕获真实请求体逐项对齐真机 options（模型名 `glm-5.3` / `GLM-5.3[1m]` / `claude-sonnet-4-5`、`CLAUDE_CODE_ENABLE_TODO_TOOLS`、禁用名单、`forwardSubagentText`、`includePartialMessages`、`settings.env`）全部带清单；第一轮请求构造先于任何网关响应，故「CLI 没把清单注入请求体」这一半被排除——**至于它到不到模型，是网关那一跳的事，见上一条**。
+- **模型没见过清单（不是「没利用」），改翻文件系统**：该候选模型（GLM-5.3 走 likecode anthropic 协议网关）的 thinking 自述 `I don't see a system-reminder listing skills in this conversation`，于是用 Bash `find $HOME/skills` 找技能——命中平台物化目录，**输出把 `<候选目录>/.agenthome/skills/<名>/SKILL.md` 的绝对路径送进上下文**。那句自述是**字面事实**：整份 `<system-reminder>` 随 `role:"system"` 那条消息一起被网关丢掉（判据见上一条），模型确实没收到过它。
+- **落点**：模型随后 Write 时复用该绝对路径前缀，`poetry.md` 落在 `.agenthome` 的**父目录**（候选目录）——比正确工作区少一级 `workspace`。diff 采集只扫 `workspace/`（口径：工作区外的产物对评分不可见），于是 `diff = 0 改动` → 评分判「未达成」→ 0 分。
 
 与同日「技能面确证在但 `工具调用名：[]`」条目同源（模型不调 `Skill` 工具），本条目是它的下游一环：**文件系统翻找把平台私有目录（`.agenthome`）的绝对路径送进模型上下文，模型复用它拼产物路径**。「经常」的机制：skills 冒烟场景每次重跑都可能触发同一条模型行为链。
 
-**解决方案**：**未闭合**（用户裁定不动平台代码，接受为已知模型行为）。代价：第三方模型走 CC 时，技能可见性押在模型对 `<system-reminder>` 的服从上；模型翻文件系统并复用绝对路径时，产物落到 `workspace/` 之外，`diff=0`、评分失真。复验判据：真机重跑该行，看 `messages.jsonl` 里 `Write` 的 `file_path` 是否带 `.agenthome` 前缀（或缺一级 `workspace`）。可选兜底（未实施）：候选执行的任务提示里**显式注入技能清单**（名字 + description + 使用条件）与「所有产物写入当前工作目录」锚点，三家统一——不再依赖厂商 system-reminder。
+**解决方案**：**未闭合**（用户裁定不动平台代码，接受为已知模型行为）。代价：第三方模型走 CC 时，技能可见性押在模型对 `<system-reminder>` 的服从上；模型翻文件系统并复用绝对路径时，产物落到 `workspace/` 之外，`diff=0`、评分失真。复验判据：真机重跑该候选，看 `messages.jsonl` 里 `Write` 的 `file_path` 是否带 `.agenthome` 前缀（或缺一级 `workspace`）。可选兜底（未实施）：候选执行的任务提示里**显式注入技能清单**（名字 + description + 使用条件）与「所有产物写入当前工作目录」锚点，三家统一——不再依赖厂商 system-reminder。
 
 **相关资料**：
 
@@ -158,7 +158,7 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 - **缺陷**：`providers/cc/message.ts` 的 `assistant()` 每条投递都走 `takeStreaming(id) ?? createBlockIndexAllocator()`，而 `takeStreaming` **取一次就清空** ⇒ 第二次投递拿到一本新账、`forSource(0)` 又算出 `i:0`，把第一次的 `thinking` 覆盖成 `text`。账本必须**按 `message.id` 跨投递存活**（即分配器文档里那句「每个载体一个实例」）。
 - **为什么第 1 轮（`thinking` + `tool_use`）看不出**：工具调用按 `c:<callId>` 分槽，撞不上 `i:0` ⇒ 这个缺陷只在「两次投递都是文本 / 思考块」时暴露。
 
-**判据**（真机产物 `96e5f6e2…/rows/ceec6cb1…`）：`messages.jsonl` 里同一个 `mergeKey`（`main|2|assistant|-`）有两条记录，一条只有 `[thinking]`、一条只有 `[text]`；读侧按 `mergeKey` 留最后一条 ⇒ 最终视图只剩 `text`，而原始输出里思考原文俱在。把那一行的转录逐帧复放（归一器 + 装配器）修复前打印 `main|2|assistant|- → ["text"]`、修复后 `["thinking","text"]`。
+**判据**（真机产物 `96e5f6e2…/candidates/ceec6cb1…`）：`messages.jsonl` 里同一个 `mergeKey`（`main|2|assistant|-`）有两条记录，一条只有 `[thinking]`、一条只有 `[text]`；读侧按 `mergeKey` 留最后一条 ⇒ 最终视图只剩 `text`，而原始输出里思考原文俱在。把那一行的转录逐帧复放（归一器 + 装配器）修复前打印 `main|2|assistant|- → ["text"]`、修复后 `["thinking","text"]`。
 
 **解决方案**：`packages/server/agents/src/providers/cc/message.ts` 把「每条投递一本新账」改为**按 `message.id` 一本账**（`ordinalBooks`：`{ allocator, delivered }` 随消息存活；`assistant()` 用 `delivered + position` 续号并按厂商 `content` 数组长度推进 `delivered`；`message_start` 重开一本；增量那一侧不推进 `delivered`）。守卫：`providers/cc/message.test.ts` 新增三条（先 thinking 后 text / 反向顺序 / `tool_use` 对照）。**变异验证**：把 `assistant()` 那本账改回「每帧新建」（`ordinalBookOf(key, true)`）⇒ 两条红 + 真机复放打印回 `["text"]`，`tool_use` 对照仍绿；还原后 `message.ts` 哈希 `20229089889a8728e5ac25be9abf016f5c1a66dd01a5366218d17f80c5616945` 逐字一致。**残留**：已经写进 `messages.jsonl` 的历史行**不会自愈**（读侧不做重算）——要让某一行的执行日志补上思考，得**重跑那一行**。
 
@@ -171,7 +171,7 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 ---
 
-## `AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这一行在 `running` 上挂了 6 分钟才失败）
+## `AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这个候选在 `running` 上挂了 6 分钟才失败）
 
 **现象原文**（`attempts.jsonl` 的 `phase: "end"` 那一行，逐字）：
 
@@ -187,13 +187,13 @@ AGENT_FAILED：Claude Code returned an error result: There's an issue with the s
 
 **日期**：2026-10-12
 
-**根因**：**这一行的供应商端点没有进程在监听**——不是防火墙、不是平台。三层：
+**根因**：**这个候选的供应商端点没有进程在监听**——不是防火墙、不是平台。三层：
 
-- **我们的配置**：这一行的 `providerId` 指向 `local` 供应商，`baseUrl = http://127.0.0.1:7999`（`~/.aieval/config.json` 的 `providers[]` 里可逐字核到）。该端点上没有任何服务在跑：同机 `curl http://127.0.0.1:7999/v1/models` 得到的是连接层失败（退出码非零、无 HTTP 状态），即 TCP `ECONNREFUSED`。
+- **我们的配置**：这个候选的 `providerId` 指向 `local` 供应商，`baseUrl = http://127.0.0.1:7999`（`~/.aieval/config.json` 的 `providers[]` 里可逐字核到）。该端点上没有任何服务在跑：同机 `curl http://127.0.0.1:7999/v1/models` 得到的是连接层失败（退出码非零、无 HTTP 状态），即 TCP `ECONNREFUSED`。
 - **厂商那一层**：CC 的 CLI 拿到连接被拒后不会立刻放弃，而是**带指数退避重试同一请求**（`api_retry` 帧：`attempt` 1→10、`retry_delay_ms` 逐次翻倍到 36 秒量级），重试耗尽才把整轮判失败；我们的编排层再把整个 attempt 重来一遍（`attempts.jsonl` 里 `attempt: 1` 与 `2` 都是同样的 `ECONNREFUSED`，间隔约 3 分钟）。
 - **那句「a firewall or proxy may be blocking it」是 CLI 自己加的猜测**，不是诊断结论：真实原因就是「本机那个端口没人监听」。这一格会把人往网络策略上引，而实际上只要把本地网关起起来（或换一个在线的供应商）就好。
 
-**解决方案**：**未闭合**（不需要改代码：本仓没有任何一处该做而未做的事）。判据链按顺序核三格即可定位同类问题：① `run.json` 里该行 `providerId` → ② 配置里它的 `baseUrl` → ③ 在**同一台机器**上 `curl` 那个 `baseUrl`。第三格失败即根因落定。**代价**：这一格从现象到终态要 **6 分钟以上**（CLI 的 10 次退避 + 我们的一次 attempt 重试），期间行状态是 `running`、名次表里那一列显示「执行中」——看的人容易以为它在正常干活。要更快失败只能改厂商侧的退避策略（不在本仓控制内）。
+**解决方案**：**未闭合**（不需要改代码：本仓没有任何一处该做而未做的事）。判据链按顺序核三格即可定位同类问题：① `run.json` 里该候选 `providerId` → ② 配置里它的 `baseUrl` → ③ 在**同一台机器**上 `curl` 那个 `baseUrl`。第三格失败即根因落定。**代价**：这一格从现象到终态要 **6 分钟以上**（CLI 的 10 次退避 + 我们的一次 attempt 重试），期间候选状态是 `running`、名次表里那一列显示「执行中」——看的人容易以为它在正常干活。要更快失败只能改厂商侧的退避策略（不在本仓控制内）。
 
 **相关资料**：
 
@@ -431,11 +431,11 @@ This is how Claude Code surfaces messages the user sends mid-turn — within the
 
 ---
 
-## `result` 已经到了、这一行却永远不收场：`query({ prompt: AsyncIterable })` 下输入流不 `end()`，查询不会自己结束
+## `result` 已经到了、这个候选却永远不收场：`query({ prompt: AsyncIterable })` 下输入流不 `end()`，查询不会自己结束
 
 **日期**：2026-10-15
 
-**根因**：机制层——**`prompt` 的两种形状在厂商侧不是同一件事**。传字符串时 CLI 判定 `isSingleUserTurn`：那一轮的首条 `result` 一到就 `endInput()` 关掉自己的 stdin，`query` 的迭代器随之结束（既有行为）。换成 `AsyncIterable<SDKUserMessage>`（streaming input，运行中注入要的那一支）之后 stdin **一直留着**：`result` 变成**每一轮一条**的整轮收尾，迭代器要等到输入流 `end()`（或 `interrupt()` / `abortController`）才结束。于是「首条 `result` = 运行结束」这条旧口径在**读侧**仍然成立（`result` 照样到、事件照样投影），但**这一行不会收场**——界面上的样子是「一直停在 running」，没有任何报错、也没有任何一帧说不收场。判据：`packages/server/agents/probe/v11/cc-stream-input.mjs` 各臂跑完必须显式 `stream.end()`，不 `end()` 时那一刻的读数就是「迭代器挂着」。
+**根因**：机制层——**`prompt` 的两种形状在厂商侧不是同一件事**。传字符串时 CLI 判定 `isSingleUserTurn`：那一轮的首条 `result` 一到就 `endInput()` 关掉自己的 stdin，`query` 的迭代器随之结束（既有行为）。换成 `AsyncIterable<SDKUserMessage>`（streaming input，运行中注入要的那一支）之后 stdin **一直留着**：`result` 变成**每一轮一条**的整轮收尾，迭代器要等到输入流 `end()`（或 `interrupt()` / `abortController`）才结束。于是「首条 `result` = 运行结束」这条旧口径在**读侧**仍然成立（`result` 照样到、事件照样投影），但**这个候选不会收场**——界面上的样子是「一直停在 running」，没有任何报错、也没有任何一帧说不收场。判据：`packages/server/agents/probe/v11/cc-stream-input.mjs` 各臂跑完必须显式 `stream.end()`，不 `end()` 时那一刻的读数就是「迭代器挂着」。
 
 **解决方案**：**收场由适配器驱动**（`providers/cc/index.ts`）：`'idle'` 档一条都没取到就 `inputStream.end()`，流循环的 `finally` 里再收一次（正常收尾、消费者提前退出、abort / 终止四档都走得到）。判据是 `providers/cc/inject.test.ts` 的两条：①「队列里没有待投递的消息 ⇒ 本轮收场就收流」——夹具那条假流在收到 `end()` 之前一直挂着，适配器不收流时用例红在「运行未在预算内落定」那句人话上（而不是把整个文件挂到超时）；②边界序列（工具结果取 `round`、`result` 收场取 `idle`）。
 
@@ -500,7 +500,7 @@ This is how Claude Code surfaces messages the user sends mid-turn — within the
 
 ## `num_turns` 与本轮数出的轮次对不上（并行工具档 `3` vs `2`、结构化输出档 `2` vs `1`）
 
-**现象**：`[WARN] cc 自报的 num_turns=3 与本轮按 assistant 消息数出的轮次=2 不一致；界面与本行快照以数出来的为准（一次模型 API 往返算一次）`——纯文本与单工具两档不亮，**并行工具**与**结构化输出**两档必亮。
+**现象**：`[WARN] cc 自报的 num_turns=3 与本轮按 assistant 消息数出的轮次=2 不一致；界面与候选快照以数出来的为准（一次模型 API 往返算一次）`——纯文本与单工具两档不亮，**并行工具**与**结构化输出**两档必亮。
 
 **日期**：2026-10-17
 
@@ -526,7 +526,7 @@ This is how Claude Code surfaces messages the user sends mid-turn — within the
 
 ## `Permission to use Read has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools …`（评分阶段读 cwd 之外的执行过程记录时一次都没成功过）
 
-**现象**：`read-only` 档（= `dontAsk` + `permissionPrompts: 'none'`）下，评审者按提示词去读「候选的执行过程」那两份绝对路径（`events.jsonl` / `messages.jsonl`，都落在行工作区之外），工具结果是**拒绝**：
+**现象**：`read-only` 档（= `dontAsk` + `permissionPrompts: 'none'`）下，评审者按提示词去读「候选的执行过程」那两份绝对路径（`events.jsonl` / `messages.jsonl`，都落在候选工作区之外），工具结果是**拒绝**：
 ```
 Permission to use Read has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. …
 ```
@@ -548,7 +548,7 @@ Permission to use Read has been denied because Claude Code is running in don't a
 ⇒ 差异只在「目录 vs 文件」，与符号链接形态（macOS 的 `/var → /private/var`）无关。`sdk.d.ts` 的 JSDoc 逐字也是 *"Additional directories Claude can access beyond the current working directory"*。
 **测试环境 ≠ 运行环境**：`index.test.ts` 原先钉的判据是「`extraReadPaths` 原样转发成 `additionalDirectories`」——转发这一半是真的，**生效**那一半只有真 CLI 会回答；假 SDK 只记录入参，于是这一格从未生效这件事在单测里完全看不见。
 
-**解决方案**：`packages/server/agents/src/providers/cc/index.ts` 新增 `additionalDirectoriesFor(paths)`（目录项原样、文件项取 `dirname`、去重保序；`statSync` 取不到按文件项处置），`additionalDirectories` 那一格改用它，换算发生过就落一条 DEBUG（放行面比调用方写的宽一个目录，这件事不该只活在注释里）。守卫：`index.test.ts` 三条原判据改成父目录断言 + 新增换算单测（去重 / 目录原样 / 路径不存在）；**真机复采**：同一个探针（`.scratch/cc-audit3/probe/p5-extra-read-paths.test.ts`）修前那三条读不到（不给放行 + 两条文件项）、修后全部读到哨兵（这就是变异验证的另一半——探针在修前见过红）。精确到单个文件的另一条通道也已真机验过（`settings.permissions.allow: ["Read(//<绝对路径>)"]`，双斜杠前缀才认），但那档只覆盖 `Read` 工具、`Bash{cat}` 仍被拒，故本仓取换算父目录这条。
+**解决方案**：`packages/server/agents/src/providers/cc/index.ts` 新增 `additionalDirectoriesFor(paths)`（目录项原样、文件项取 `dirname`、去重保序；`statSync` 取不到按文件项处置），`additionalDirectories` 那一格改用它，换算发生过就落一条 DEBUG（放行面比调用方写的宽一个目录，这件事不该只活在注释里）。守卫：`index.test.ts` 三条原判据改成父目录断言 + 新增换算单测（去重 / 目录原样 / 路径不存在）；**真机复采**：同一个探针（真机探针，不入库）修前那三条读不到（不给放行 + 两条文件项）、修后全部读到哨兵（这就是变异验证的另一半——探针在修前见过红）。精确到单个文件的另一条通道也已真机验过（`settings.permissions.allow: ["Read(//<绝对路径>)"]`，双斜杠前缀才认），但那档只覆盖 `Read` 工具、`Bash{cat}` 仍被拒，故本仓取换算父目录这条。
 
 **相关资料**：
 

@@ -11,7 +11,7 @@
  *   ① **交付登记**：端口那一侧的 `markDelivered` 收到过这条 id（账本记的就是它）；
  *   ② **真到模型面前**：哨兵文本出现在**厂商出站请求体**里（`/v1/responses` 的原文，不经过我们任何投影）；
  *   ③ **那一轮跑完**：`turn/started` 与 `turn/completed` 同数（没被 `dispose` 杀掉），
- *      且它的答复就是本行 `finalText`——结论取的是续跑那一轮，不是首轮。
+ *      且它的答复就是本次运行 `finalText`——结论取的是续跑那一轮，不是首轮。
  *
  * **阴性对照**（同装配、同剧本，只是不挂注入面）：哨兵一次都不许出现在出站请求体里
  * ——没有它，「哨兵在里面」可能只是工作区/提示词泄漏，而不是投递真的发生了。
@@ -56,7 +56,7 @@ export interface CodexInjectionRun {
   /** 厂商收场的轮数（`turn/completed` 条数）：与 `turnStarted` 同数才算那一轮跑完了 */
   turnCompleted: number;
   ok: boolean;
-  /** 本行的最终答复（判「结论取的是哪一轮」） */
+  /** 本次运行的最终答复（判「结论取的是哪一轮」） */
   finalText: string | null;
   /** 这一次运行发出了哪些 wire 请求（判投递路径：`queue/add` → `queue/start` → `queue/list`） */
   requests: string[];

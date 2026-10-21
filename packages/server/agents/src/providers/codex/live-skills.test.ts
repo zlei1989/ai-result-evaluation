@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * **真机**：codex 行的技能发现面**只在行配置目录里**——宿主家目录 `~/.agents/skills` 里的那一条
+ * **真机**：codex 候选的技能发现面**只在候选配置目录里**——宿主家目录 `~/.agents/skills` 里的那一条
  * 看不见。判据是厂商自己的 `skills/list`（app-server 的结构化应答，离线、不调模型、秒级），
  * 不是「文件在盘上」：`skills/list` 一次给回**全部已发现的根**，所以它同时能看见「多出来的根」。
  *
  * 为什么这条必须有：`CODEX_HOME` 只挡得住 `<CODEX_HOME>/skills` 这一个根，而 codex 的 user scope
  * 发现根里还有一个 **`<HOME>/.agents/skills`**（跟随 `HOME` / `USERPROFILE`，不是 `CODEX_HOME`）。
- * 只改 `CODEX_HOME` 的世界里，宿主家目录那一批 skill 会漏进**每一行**——行与行不再是同一起点，
- * 而且候选行会看到与被测任务无关的本机技能。本文件把这条后果**做成可复现的判据**：
+ * 只改 `CODEX_HOME` 的世界里，宿主家目录那一批 skill 会漏进**每个候选**——候选与候选不再是同一起点，
+ * 而且候选会看到与被测任务无关的本机技能。本文件把这条后果**做成可复现的判据**：
  * 第二臂刻意把 `HOME` 指回「宿主家目录」，它必须**看得见**那一条（否则第一臂的绿色说明不了任何事）。
  *
  * 用的是**生产同一套**：`buildSubprocessEnv`（适配器构造子进程环境的唯一入口）+ `resolveCodexBinary`
@@ -33,8 +33,8 @@ const TIMEOUT_MS = 120_000;
 
 /** 「宿主家目录」里的那一条：`<home>/.agents/skills/<名称>/SKILL.md`（codex 的 user scope 发现根之一） */
 const HOST_SKILL = 'host-home-only';
-/** 行内物化出来的那一条：`<CODEX_HOME>/skills/<名称>/SKILL.md` */
-const ROW_SKILL = 'row-planted';
+/** 候选内物化出来的那一条：`<CODEX_HOME>/skills/<名称>/SKILL.md` */
+const CANDIDATE_SKILL = 'row-planted';
 
 let root: string | null = null;
 afterEach(() => {
@@ -67,20 +67,20 @@ async function listSkillNames(env: AppServerEnv): Promise<string[]> {
 }
 
 describe.skipIf(!ENABLED)('真机：codex 的技能发现面按行隔离', () => {
-  it('HOME 指向行配置目录 ⇒ 只看得到行内那一条与厂商内置，宿主家目录那一条看不见', async () => {
+  it('HOME 指向候选配置目录 ⇒ 只看得到候选内那一条与厂商内置，宿主家目录那一条看不见', async () => {
     root = mkdtempSync(join(tmpdir(), 'aieval-codex-skills-live-'));
     const hostHome = join(root, 'host-home');
-    const configHome = join(root, 'rows', 'row-1', '.agenthome');
+    const configHome = join(root, 'candidates', 'row-1', '.agenthome');
     seedSkill(join(hostHome, '.agents', 'skills'), HOST_SKILL);
-    seedSkill(join(configHome, 'skills'), ROW_SKILL);
+    seedSkill(join(configHome, 'skills'), CANDIDATE_SKILL);
 
-    // 生产同一套：适配器就是这么构造子进程环境的（行配置目录同时是 HOME 与 CODEX_HOME）
+    // 生产同一套：适配器就是这么构造子进程环境的（候选配置目录同时是 HOME 与 CODEX_HOME）
     const env = buildSubprocessEnv({
       homeDir: configHome,
       injected: { CODEX_HOME: configHome, OPENAI_API_KEY: 'dummy' },
     });
     /**
-     * 本臂的**前提**：交给 codex 的 `HOME` / `USERPROFILE` 就是行配置目录。
+     * 本臂的**前提**：交给 codex 的 `HOME` / `USERPROFILE` 就是候选配置目录。
      * 它一旦漂回宿主家目录，下面那条「看不见宿主 skill」的绿色就不再说明隔离生效，而只说明
      * 「我们恰好没在宿主家目录里造那一条」——两种解释必须在这里被分开。
      */
@@ -88,10 +88,10 @@ describe.skipIf(!ENABLED)('真机：codex 的技能发现面按行隔离', () =>
     expect(env.USERPROFILE).toBe(configHome);
     const names = await listSkillNames(env);
 
-    expect(names).toContain(ROW_SKILL);
+    expect(names).toContain(CANDIDATE_SKILL);
     expect(names).not.toContain(HOST_SKILL);
     // 厂商内置的 6 条照样在（我们不压它们）：它们是 `skills/.system` 物化出来的
-    expect(names.filter((name) => name === ROW_SKILL || name === HOST_SKILL)).toEqual([ROW_SKILL]);
+    expect(names.filter((name) => name === CANDIDATE_SKILL || name === HOST_SKILL)).toEqual([CANDIDATE_SKILL]);
   }, TIMEOUT_MS);
 
   /**
@@ -102,9 +102,9 @@ describe.skipIf(!ENABLED)('真机：codex 的技能发现面按行隔离', () =>
   it('反证：只把 HOME 指回宿主家目录（CODEX_HOME 不变）⇒ 那一条立刻漏进来', async () => {
     root = mkdtempSync(join(tmpdir(), 'aieval-codex-skills-live-'));
     const hostHome = join(root, 'host-home');
-    const configHome = join(root, 'rows', 'row-1', '.agenthome');
+    const configHome = join(root, 'candidates', 'row-1', '.agenthome');
     seedSkill(join(hostHome, '.agents', 'skills'), HOST_SKILL);
-    seedSkill(join(configHome, 'skills'), ROW_SKILL);
+    seedSkill(join(configHome, 'skills'), CANDIDATE_SKILL);
 
     const env = buildSubprocessEnv({
       homeDir: configHome,
@@ -115,7 +115,7 @@ describe.skipIf(!ENABLED)('真机：codex 的技能发现面按行隔离', () =>
     env.USERPROFILE = hostHome;
     const names = await listSkillNames(env);
 
-    expect(names).toContain(ROW_SKILL);
+    expect(names).toContain(CANDIDATE_SKILL);
     expect(names).toContain(HOST_SKILL);
   }, TIMEOUT_MS);
 });

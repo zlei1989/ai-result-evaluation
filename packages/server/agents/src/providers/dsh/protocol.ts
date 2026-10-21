@@ -1,7 +1,7 @@
 /**
  * dsh 会话通知的**判别常量**（真机逐字核过，见 `probe/dumps/v3/` 与 `probe/dumps/v11/`）。
  *
- * 为什么单独一个模块：`events.ts`（行级事件投影）与 `message.ts`（内容级消息归一）都要按这些
+ * 为什么单独一个模块：`events.ts`（运行级事件投影）与 `message.ts`（内容级消息归一）都要按这些
  * 字符串分流，两处各写一份必然漂移——而漂移的症状是「某一类通知在事件里出现、在消息里消失」
  * （或反过来），排查时看不出是哪一层丢的。
  *
@@ -9,7 +9,7 @@
  * `session.status`（会话级状态）、`subagent.started`、`subagent.finished`。后两种是**顶层通知**，
  * 不套在 `session.event` 里。
  *
- * ⚠️ 它**同时是 dsh 用量字段名与读法的唯一真源**：`events.ts`（行级累计）与
+ * ⚠️ 它**同时是 dsh 用量字段名与读法的唯一真源**：`events.ts`（运行级累计）与
  * `message.ts`（消息级那一次调用）都按同一份字段名读——两处各写一份必然漂移，而漂移的症状是
  * 「事件里的用量对、消息上的用量不对」（或反过来），界面上看着都正常。
  */
@@ -59,7 +59,7 @@ export const DSH_JOB_SETTLED_TYPE = 'job/settled';
  * 会话起手的**权限预设**（真机 `data = { preset: 'danger-full-access' | 'workspace-write' | 'read-only' }`，
  * seq 0，**每会话一条**；追问 / 续接段不重投）。
  *
- * 它是本行 `vendor-system` 的 `permissionMode` 唯一来源：契约那一格在另三家是厂商自己的档位字符串
+ * 它是本次运行 `vendor-system` 的 `permissionMode` 唯一来源：契约那一格在另三家是厂商自己的档位字符串
  * （claude 的 `bypassPermissions` / `dontAsk`），而 dsh 这一家就是这里的 preset 字符串。
  * 少读这一格的表现是环境抽屉上「权限档」**恒为空**，连评分阶段被限成 `read-only` 也看不出来
  * （`sandbox/mode` 与 `approval/policy` 是同一份事实的另两格，本仓契约没有对应字段）。
@@ -115,7 +115,7 @@ export const DSH_SKILL_CATALOG_KIND = 'skill-catalog';
 /**
  * `session.status`（`running` / `idle`）的通知方法名。
  *
- * 它是**已识别且有意不投影**的一格：与轮次语义无关、骨架不需要它，而它在真机每行必然出现两条。
+ * 它是**已识别且有意不投影**的一格：与轮次语义无关、骨架不需要它，而它在真机每个本次运行必然出现两条。
  * 显式分流的意义在于**别落进未识别的原始 JSON 兜底**——那两条与内容、失败都无关，
  * 落成日志只会让「未识别的厂商载荷」汇总里多两条噪声，把真正未知的类型埋掉。
  */
@@ -213,7 +213,7 @@ export const DSH_SUBAGENT_CATALOG_TYPE = 'subagent/catalog';
  *   · **它不产草稿**（投影拿不出完整的子任务记录——`label` 由 `subagent/catalog` 那条补，
  *     落进未识别的原始 JSON 只是噪声）；
  *   · **但它的信封 `params.sessionId` 是子会话白名单的来源之一**（与 `subagent.started` 并列）：
- *     子会话的事件与用量能进这一行、能算进「子智能体那一份」，靠的就是 `index.ts` 的
+ *     子会话的事件与用量能进本次运行、能算进「子智能体那一份」，靠的就是 `index.ts` 的
  *     `dshChildSessionIdentities` 读信封那一格。少了它，子会话被放行判据挡掉
  *     ⇒ 子智能体的话与它的 tok 一起消失。
  */
@@ -238,7 +238,7 @@ export const DSH_SUBAGENT_TOOL_NAMES: ReadonlySet<string> = new Set(['subagent',
  * **流式增量伪事件**（stream-tap 机制——本仓自造、不经厂商通知通道）。
  *
  * 厂商的逐字流（`agent/assistant-stream` 进程内事件）不投送到 stdio 通知流（任何版本都不投，
- * 见 `docs/faq/deepseek-harness.md`），适配器把一个插件写进每行的 profile 目录、由它把
+ * 见 `docs/faq/deepseek-harness.md`），适配器把一个插件写进每个本次运行的 profile 目录、由它把
  * `StreamChunk` 旁路到 `<configHome>/aieval-stream-tap.jsonl`；适配器 tail 该文件后包成这种
  * `session.event` 形状的**伪通知**喂给投影——与真通知同一条 `project` 路径，读侧零分叉。
  *
@@ -392,7 +392,7 @@ export function readUsageTokens(usage: unknown): DshUsageReading | null {
   if (input === null || output === null) return null;
   /**
    * **负数一律当「读不动」**（与缺项同档：整条不采、由调用点落 WARN）。
-   * 为什么：token 计数没有负值，而负数一旦被照收，卡片与行快照会显示负 token、累计还能倒退
+   * 为什么：token 计数没有负值，而负数一旦被照收，卡片与运行快照会显示负 token、累计还能倒退
    * （受控读数：`{input:-5, output:-3}` ⇒ `tokens={input:-5,output:-3}`、累计变成 -5）；
    * 更难看的是同一份读数在**子会话分量**那一侧被 `Math.max(0, …)` 夹掉 ⇒ 合计说「-5」、分量说
    * 「没报」（交 null + 点名 WARN），两句话互相拆台。
@@ -473,7 +473,7 @@ export function readSkillCatalog(data: unknown): string[] | null {
    * ⚠️ **块在、行一条都读不出 ⇒ `null`（采不到），不是 `[]`**（R6-B 的 F4，受控六档复现）：
    * `[]` 的口径是「厂商投送了、确实一条都没有」；而 `* name: desc`、中文冒号、无冒号那些**只是我们
    * 没解析出来**——交 `[]` 会让界面与收尾那条 WARN（「整轮都没观测到厂商的技能目录」）一起说假话。
-   * 判据：围栏之间**一行非空内容都没有** ⇒ 真的是空的（`[]`）；有行却一行都没认出来 ⇒ `null`。
+   * 判据：围栏之间**一行非空内容都没有** ⇒ 真的是空的（`[]`）；有行却一本次运行都没认出来 ⇒ `null`。
    */
   if (names.length === 0 && body.trim() !== '') return null;
   return names;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * **真机**：dsh 行的 MCP 注入与厂商侧判据。
+ * **真机**：dsh 候选的 MCP 注入与厂商侧判据。
  *
  * 两条判据，缺一不可：
  *   · **硬门槛**：模型**真的调用**了注入的工具，且 **MCP server 侧收到 `tools/call`**
@@ -11,7 +11,7 @@
  *
  * 两臂：
  *   · A 正常 server ⇒ 工具表里有 `mcp__probe__probe_echo` + server 侧至少一条 `tools/call`；
- *   · B `command` 指向不存在的二进制（**负例①**）⇒ 工具表里**没有**它（行失败归因据此落地）、
+ *   · B `command` 指向不存在的二进制（**负例①**）⇒ 工具表里**没有**它（候选失败归因据此落地）、
  *     而 `turn/end` 照样是 `completed`（「装不上不报错」这件事本身也是证据）。
  *
  * 开关（默认跳过，绝不进内循环与 CI——它会真的起 dsh、真的调模型、真的花钱）：
@@ -167,11 +167,11 @@ describe.skipIf(!ENABLED)('真机：dsh 的 MCP 注入与工具表判据', () =>
       console.log('[live-dsh-mcp] B 臂工具表（含 mcp__ 的那几项）：', JSON.stringify((brokenTable.seen ?? []).filter((t) => t.startsWith('mcp__'))));
       console.log('[live-dsh-mcp] B 臂答复：', String(broken.finalText).slice(0, 200));
       console.log('[live-dsh-mcp] B 臂结局：', broken.ok, broken.exitReason);
-      // 工具**静默消失**：这正是「表里没有 ⇒ 行失败」这条判据的全部依据
+      // 工具**静默消失**：这正是「表里没有 ⇒ 候选失败」这条判据的全部依据
       expect(brokenTable.seen).not.toBeNull();
       expect(brokenTable.hit).toBe(false);
       // 而这一次运行本身**照常跑完**（适配器侧没有结构化错误、`run` 报 ok）——「装不上不报错」也是证据
-      //（`end` 事件是编排层发的，不在适配器这一层；行级失败由 `AGENT_MCP_UNAVAILABLE` 收口）
+      //（`end` 事件是编排层发的，不在适配器这一层；候选级失败由 `AGENT_MCP_UNAVAILABLE` 收口）
       expect(broken.events.some((event) => event.type === 'error')).toBe(false);
       expect(broken.ok).toBe(true);
       expect(broken.exitReason).toBe('completed');

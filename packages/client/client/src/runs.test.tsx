@@ -30,15 +30,15 @@ import {
   AGENT_OPTIONS_KEY,
   RUNS_KEY,
   runKey,
-  runRowUrl,
-  useAbortRow,
+  runCandidateUrl,
+  useAbortCandidate,
   useAbortRun,
   useCreateRun,
   useDeleteRun,
-  useRowArtifactFile,
-  useRowDiffFile,
-  useRowDiffIndex,
-  useRowLog,
+  useCandidateArtifactFile,
+  useCandidateDiffFile,
+  useCandidateDiffIndex,
+  useCandidateLog,
   useRun,
   useRunArtifacts,
   useRunModelOptions,
@@ -51,7 +51,7 @@ import {
 import { useCases } from './cases';
 import { resetRunEventsForTesting } from './run-events';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
-import { makeRow, makeRun } from './testing/run-fixtures';
+import { makeCandidate, makeRun } from './testing/run-fixtures';
 
 /** fetch 替身的签名：显式写出来，`vi.fn(async () => …)` 会被推成零参函数，`mock.calls[0][0]` 直接报 TS2493 */
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
@@ -119,7 +119,7 @@ function stubRunRoutes(overrides: { list?: unknown; detail?: unknown } = {}): Fe
     if (target === RUNS_KEY && method === 'POST') return json(makeRun(), 201);
     if (target === RUNS_KEY) return json(overrides.list ?? [makeRun()]);
     if (target === '/api/runs/run-1' && method === 'GET') return json(overrides.detail ?? makeRun());
-    // start / abort / rows/{id}/abort 三个动作端点
+    // start / abort / candidates/{id}/abort 三个动作端点
     if (target.startsWith('/api/runs/run-1/')) return json(makeRun());
     return json({ error: { code: 'NOT_FOUND', message: '没有这个路由' } }, 404);
   });
@@ -141,9 +141,9 @@ describe('键与端点', () => {
   it('键就是真实路由 URL（字面量散落必然漂移，而漂移的表现是「安静地拿不到数据」）', () => {
     expect(RUNS_KEY).toBe('/api/runs');
     expect(runKey('run-1')).toBe('/api/runs/run-1');
-    expect(runRowUrl('run-1', 'w-1', 'diff')).toBe('/api/runs/run-1/rows/w-1/diff');
-    expect(runRowUrl('run-1', 'w-1', 'log')).toBe('/api/runs/run-1/rows/w-1/log');
-    expect(runRowUrl('run-1', 'w-1', 'stream')).toBe('/api/runs/run-1/rows/w-1/stream');
+    expect(runCandidateUrl('run-1', 'w-1', 'diff')).toBe('/api/runs/run-1/candidates/w-1/diff');
+    expect(runCandidateUrl('run-1', 'w-1', 'log')).toBe('/api/runs/run-1/candidates/w-1/log');
+    expect(runCandidateUrl('run-1', 'w-1', 'stream')).toBe('/api/runs/run-1/candidates/w-1/stream');
     expect(AGENT_OPTIONS_KEY).toBe('/api/runs/model-options');
   });
 });
@@ -163,7 +163,7 @@ describe('useRuns', () => {
     // 「不要来回刷新」的用户口径落到这条守卫上：把 3 秒轮询放回去时，
     // 这里必须红——它是本次改造的回归门。
     const fetchMock = stubFetch(async () =>
-      json([makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })]),
+      json([makeRun({ status: 'running', candidates: [makeCandidate({ status: 'running' })] })]),
     );
 
     renderHook(() => useRuns(), { wrapper });
@@ -181,7 +181,7 @@ describe('useRuns', () => {
 
   it('有活在跑时只开 60 秒慢兜底：60 秒整点补一次，跑完立刻停', async () => {
     const fetchMock = stubFetch(async () =>
-      json([makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })]),
+      json([makeRun({ status: 'running', candidates: [makeCandidate({ status: 'running' })] })]),
     );
 
     const { result } = renderHook(() => useRuns(), { wrapper });
@@ -249,7 +249,7 @@ describe('useRuns', () => {
   });
 
   it('行还在跑（轮状态还没翻）时也要开慢兜底：编排层翻转轮状态有一拍延迟', async () => {
-    const fetchMock = stubFetch(async () => json([makeRun({ status: 'idle', rows: [makeRow({ status: 'judging' })] })]));
+    const fetchMock = stubFetch(async () => json([makeRun({ status: 'idle', candidates: [makeCandidate({ status: 'judging' })] })]));
 
     renderHook(() => useRuns(), { wrapper });
     await flushMount();
@@ -282,7 +282,7 @@ describe('useRun', () => {
   });
 
   it('还有活在跑时详情只开 60 秒慢兜底（信号通道断掉时靠它兜底）', async () => {
-    const fetchMock = stubFetch(async () => json(makeRun({ status: 'running', rows: [makeRow({ status: 'running' })] })));
+    const fetchMock = stubFetch(async () => json(makeRun({ status: 'running', candidates: [makeCandidate({ status: 'running' })] })));
 
     renderHook(() => useRun('run-1'), { wrapper });
     await flushMount();
@@ -325,7 +325,7 @@ describe('四个动作', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm-1' }],
+      candidates: [{ agentKind: 'cc' as const, providerId: 'p-1', modelId: 'm-1' }],
     };
     await act(async () => {
       await result.current.create.create(input);
@@ -343,11 +343,11 @@ describe('四个动作', () => {
     expect(result.current.list.runs).toHaveLength(1);
   });
 
-  it('start / abort / abortRow 发到正确的端点', async () => {
+  it('start / abort / abortCandidate 发到正确的端点', async () => {
     const fetchMock = stubRunRoutes();
 
     const { result } = renderHook(
-      () => ({ start: useStartRun(), abort: useAbortRun(), abortRow: useAbortRow() }),
+      () => ({ start: useStartRun(), abort: useAbortRun(), abortCandidate: useAbortCandidate() }),
       { wrapper },
     );
 
@@ -362,10 +362,10 @@ describe('四个动作', () => {
     expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/runs/run-1/abort');
 
     await act(async () => {
-      await result.current.abortRow.abortRow('run-1', 'w-1');
+      await result.current.abortCandidate.abortCandidate('run-1', 'w-1');
     });
-    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/runs/run-1/rows/w-1/abort');
-    expect(countCalls(fetchMock, '/api/runs/run-1/rows/w-1/abort', 'POST')).toBe(1);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/runs/run-1/candidates/w-1/abort');
+    expect(countCalls(fetchMock, '/api/runs/run-1/candidates/w-1/abort', 'POST')).toBe(1);
   });
 
   /**
@@ -404,52 +404,52 @@ describe('四个动作', () => {
 });
 
 describe('产物读取', () => {
-  it('useRowDiffIndex 在 enabled=false 时一个请求都不发', async () => {
+  it('useCandidateDiffIndex 在 enabled=false 时一个请求都不发', async () => {
     const fetchMock = stubRunRoutes();
 
-    renderHook(() => useRowDiffIndex('run-1', 'w-1', false), { wrapper });
+    renderHook(() => useCandidateDiffIndex('run-1', 'w-1', false), { wrapper });
     await flushMount();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('useRowLog 在 enabled=false 时一个请求都不发', async () => {
+  it('useCandidateLog 在 enabled=false 时一个请求都不发', async () => {
     const fetchMock = stubRunRoutes();
 
-    renderHook(() => useRowLog('run-1', 'w-1', false), { wrapper });
+    renderHook(() => useCandidateLog('run-1', 'w-1', false), { wrapper });
     await flushMount();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('useRowDiffFile 的 path 为 undefined 时一个请求都不发（「滚动到才加载」的开关）', async () => {
+  it('useCandidateDiffFile 的 path 为 undefined 时一个请求都不发（「滚动到才加载」的开关）', async () => {
     const fetchMock = stubRunRoutes();
 
-    renderHook(() => useRowDiffFile('run-1', 'w-1', undefined), { wrapper });
+    renderHook(() => useCandidateDiffFile('run-1', 'w-1', undefined), { wrapper });
     await flushMount();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('useRowDiffIndex / useRowDiffFile / useRowLog 的键就是真实端点（索引带分页参数、正文带 file）', async () => {
+  it('useCandidateDiffIndex / useCandidateDiffFile / useCandidateLog 的键就是真实端点（索引带分页参数、正文带 file）', async () => {
     const fetchMock = stubRunRoutes();
 
-    renderHook(() => useRowDiffIndex('run-1', 'w-1', true), { wrapper });
+    renderHook(() => useCandidateDiffIndex('run-1', 'w-1', true), { wrapper });
     await flushMount();
     // 翻页：offset/limit 必须真的进 URL，否则第 31 个之后的文件永远拿不到
-    renderHook(() => useRowDiffIndex('run-1', 'w-1', true, 30), { wrapper });
+    renderHook(() => useCandidateDiffIndex('run-1', 'w-1', true, 30), { wrapper });
     await flushMount();
     // 含空格的路径必须编码，否则服务端解出来是截断的
-    renderHook(() => useRowDiffFile('run-1', 'w-1', 'src/a b.ts'), { wrapper });
+    renderHook(() => useCandidateDiffFile('run-1', 'w-1', 'src/a b.ts'), { wrapper });
     await flushMount();
-    renderHook(() => useRowLog('run-1', 'w-1', true), { wrapper });
+    renderHook(() => useCandidateLog('run-1', 'w-1', true), { wrapper });
     await flushMount();
 
     const urls = fetchMock.mock.calls.map(([url]) => url);
-    expect(urls).toContain('/api/runs/run-1/rows/w-1/diff?offset=0&limit=30');
-    expect(urls).toContain('/api/runs/run-1/rows/w-1/diff?offset=30&limit=30');
-    expect(urls).toContain('/api/runs/run-1/rows/w-1/diff?file=src%2Fa%20b.ts');
-    expect(urls).toContain('/api/runs/run-1/rows/w-1/log');
+    expect(urls).toContain('/api/runs/run-1/candidates/w-1/diff?offset=0&limit=30');
+    expect(urls).toContain('/api/runs/run-1/candidates/w-1/diff?offset=30&limit=30');
+    expect(urls).toContain('/api/runs/run-1/candidates/w-1/diff?file=src%2Fa%20b.ts');
+    expect(urls).toContain('/api/runs/run-1/candidates/w-1/log');
   });
 
   it('useRunArtifacts 在 enabled=false 时一个请求都不发（没打开排名抽屉就不扫盘）', async () => {
@@ -461,27 +461,27 @@ describe('产物读取', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('useRowArtifactFile 的 name 为 undefined 时一个请求都不发（「这一份还没取」的开关）', async () => {
+  it('useCandidateArtifactFile 的 name 为 undefined 时一个请求都不发（「这一份还没取」的开关）', async () => {
     const fetchMock = stubRunRoutes();
 
-    renderHook(() => useRowArtifactFile('run-1', 'w-1', undefined), { wrapper });
+    renderHook(() => useCandidateArtifactFile('run-1', 'w-1', undefined), { wrapper });
     await flushMount();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('两个产物 hook 的键就是真实端点（清单在轮级、正文在行级且 name 走编码）', async () => {
+  it('两个产物 hook 的键就是真实端点（清单在轮级、正文在候选级且 name 走编码）', async () => {
     const fetchMock = stubRunRoutes();
 
     renderHook(() => useRunArtifacts('run-1', true), { wrapper });
     await flushMount();
-    renderHook(() => useRowArtifactFile('run-1', 'w-1', 'RE SULT.md'), { wrapper });
+    renderHook(() => useCandidateArtifactFile('run-1', 'w-1', 'RE SULT.md'), { wrapper });
     await flushMount();
 
     const urls = fetchMock.mock.calls.map(([url]) => url);
     expect(urls).toContain('/api/runs/run-1/artifacts');
     // 带空格的 name 必须编码：不编码时服务端解出来是截断的（白名单会再挡一次，但拼 URL 这一步不该假设取值面）
-    expect(urls).toContain('/api/runs/run-1/rows/w-1/artifacts?name=RE%20SULT.md');
+    expect(urls).toContain('/api/runs/run-1/candidates/w-1/artifacts?name=RE%20SULT.md');
   });
 });
 
@@ -514,7 +514,7 @@ describe('焦点重验', () => {
       json({ files: [], total: 0, offset: 0, insertions: 0, deletions: 0, noBodyCount: 0, truncated: false, droppedFiles: [] }),
     );
 
-    const { result } = renderHook(() => useRowDiffIndex('run-1', 'w-1', true), { wrapper: focusWrapper });
+    const { result } = renderHook(() => useCandidateDiffIndex('run-1', 'w-1', true), { wrapper: focusWrapper });
     await waitFor(() => expect(result.current.index).toBeDefined());
     const before = fetchMock.mock.calls.length;
 
@@ -722,7 +722,7 @@ describe('useUpdateRun', () => {
     expect(result.current.list.runs).toHaveLength(1);
     expect(countGets(fetchMock, runKey('run-1'))).toBe(1);
 
-    // 入参里的 `rows[].id`（原地更新这一行）与 `rows[].effort`（思考强度）都由服务端读，
+    // 入参里的 `rows[].id`（原地更新这个候选）与 `rows[].effort`（思考强度）都由服务端读，
     // 钩子只负责**原样**送到线路上：任何「挑字段重组」的实现都会在这一条上露馅
     const input: RunUpdate = {
       caseId: 'c-1',
@@ -730,7 +730,7 @@ describe('useUpdateRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         {
           id: 'w-1',
           agentKind: 'cc',
@@ -758,7 +758,7 @@ describe('useUpdateRun', () => {
   it('请求失败时抛 ServiceError，且不把缓存写坏', async () => {
     const fetchMock = stubFetch(async (url, init) => {
       if (init?.method === 'PUT') {
-        return json({ error: { code: 'CONFLICT', message: '这一轮还有候选行在运行' } }, 409);
+        return json({ error: { code: 'CONFLICT', message: '这一轮还有候选在运行' } }, 409);
       }
       return json(makeRun());
     });
@@ -778,7 +778,7 @@ describe('useUpdateRun', () => {
           useAgentJudge: false,
           askUser: false,
           injectMessages: false,
-          rows: [
+          candidates: [
             { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
           ],
         }),
@@ -813,7 +813,7 @@ describe('useDeleteRun', () => {
     });
     await flushMount();
 
-    // `workspaceRemoved` 原样交给页面：false = 磁盘上的行工作区没能回收，界面要如实说出来
+    // `workspaceRemoved` 原样交给页面：false = 磁盘上的候选工作区没能回收，界面要如实说出来
     expect(removed).toEqual({ workspaceRemoved: false });
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
     // 详情缓存被清掉：改回同一个 URL 时不许先渲染一条已经不存在的轮次
@@ -831,7 +831,7 @@ describe('useDeleteRun', () => {
   it('删除失败时抛 ServiceError：转圈停、详情缓存原样保留', async () => {
     const fetchMock = stubFetch(async (url, init) => {
       if (init?.method === 'DELETE') {
-        return json({ error: { code: 'CONFLICT', message: '这一轮还有候选行在运行' } }, 409);
+        return json({ error: { code: 'CONFLICT', message: '这一轮还有候选在运行' } }, 409);
       }
       if (url === RUNS_KEY) return json([makeRun()]);
       return json(makeRun());

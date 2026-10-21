@@ -18,8 +18,8 @@ import {
   type AgentEvent,
   type EnvGroup,
   type EnvItem,
-  type EvalRow,
-  type RowRecord,
+  type EvalCandidate,
+  type CandidateRecord,
 } from '@aieval/contracts';
 import { ENV_GROUP_ORDER, buildAgentEnvironment, envItem } from './build-environment';
 
@@ -32,7 +32,7 @@ const ROW = {
   modelId: 'deepseek-flash',
   status: 'judged',
   branch: 'test/row-1',
-  workspacePath: 'D:/tmp/runs/run-1/rows/row-1/workspace',
+  workspacePath: 'D:/tmp/runs/run-1/candidates/row-1/workspace',
   baselineCommit: '1cf3c821116213b69de72df99b39d071639f7159',
   tokens: null,
   turns: 4,
@@ -42,7 +42,7 @@ const ROW = {
   error: null,
   attempts: 1,
   effort: 'high',
-} as unknown as EvalRow;
+} as unknown as EvalCandidate;
 
 /** 真机 claude 的 `system/init` 行（裁到与本文件断言相关的字段） */
 const CLAUDE_INIT = JSON.stringify({
@@ -111,7 +111,7 @@ function mcpItemOf(environment: ReturnType<typeof buildAgentEnvironment>): Extra
  * 一条工具调用记录。**`mergeKey` 必须逐条不同**：同一个键的后一条会在折叠时覆盖前一条
  * （那是合并器的正确行为），于是「用了三次」会被压成一次。
  */
-function toolCall(name: string, id: string): RowRecord {
+function toolCall(name: string, id: string): CandidateRecord {
   return {
     type: 'message',
     message: {
@@ -130,10 +130,10 @@ function toolCall(name: string, id: string): RowRecord {
       blocks: [{ type: 'tool-call', callId: id, family: null, name, input: null }],
       raw: null,
     },
-  } as unknown as RowRecord;
+  } as unknown as CandidateRecord;
 }
 
-function build(events: AgentEvent[], records: RowRecord[] = []): ReturnType<typeof buildAgentEnvironment> {
+function build(events: AgentEvent[], records: CandidateRecord[] = []): ReturnType<typeof buildAgentEnvironment> {
   return buildAgentEnvironment({ row: ROW, workspaceBase: 'D:/tmp/runs/run-1', events, records });
 }
 
@@ -165,7 +165,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
     // 认不出的那一档：`row.agentKind` 在契约里是联合类型，但老快照 / 坏数据会是别的串
     expect(
       buildAgentEnvironment({
-        row: { ...ROW, agentKind: 'cursor' } as unknown as EvalRow,
+        row: { ...ROW, agentKind: 'cursor' } as unknown as EvalCandidate,
         workspaceBase: 'D:/tmp/runs/run-1',
         events: [],
         records: [],
@@ -216,7 +216,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
 
   it('`effort` 没给 ⇒ `null`（未指定 ≠ 某个默认档）', () => {
     const environment = buildAgentEnvironment({
-      row: { ...ROW, effort: undefined } as unknown as EvalRow,
+      row: { ...ROW, effort: undefined } as unknown as EvalCandidate,
       workspaceBase: 'D:/tmp/runs/run-1',
       events: [],
       records: [],
@@ -239,7 +239,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
     const project = groupOf(
       buildAgentEnvironment({
         // 真值形状：ROW 是 cc，而**只有 dsh** 声明了缺省档 ⇒ 夹具按 dsh 那一家给
-        row: { ...ROW, agentKind: 'dsh', effort: undefined } as unknown as EvalRow,
+        row: { ...ROW, agentKind: 'dsh', effort: undefined } as unknown as EvalCandidate,
         workspaceBase: 'D:/tmp/runs/run-1',
         events: [],
         records: [],
@@ -263,7 +263,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
   it('`effort` 没给且这一家没声明缺省档 ⇒ 只说「未指定」，不编一个档', () => {
     const project = groupOf(
       buildAgentEnvironment({
-        row: { ...ROW, effort: undefined } as unknown as EvalRow,
+        row: { ...ROW, effort: undefined } as unknown as EvalCandidate,
         workspaceBase: 'D:/tmp/runs/run-1',
         events: [],
         records: [],
@@ -276,7 +276,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
     expect(model.text.split('\n')[1]).toBe('思考强度：未指定');
   });
 
-  it('`effort` 给了 ⇒ 那一格写的是这一行实际要求的档位', () => {
+  it('`effort` 给了 ⇒ 那一格写的是这个候选实际要求的档位', () => {
     const project = groupOf(build([], []).groups, 'project');
     const model = project.items.find((item) => item.id === 'project-model');
     if (model?.present !== true) throw new Error('「模型与思考强度」应当在场');
@@ -292,7 +292,7 @@ describe('buildAgentEnvironment：摘要与四组', () => {
   it('`effort` 是关闭档 ⇒ 那一格逐字写 `off`（不是「未指定」）', () => {
     const project = groupOf(
       buildAgentEnvironment({
-        row: { ...ROW, effort: EFFORT_OFF } as unknown as EvalRow,
+        row: { ...ROW, effort: EFFORT_OFF } as unknown as EvalCandidate,
         workspaceBase: 'D:/tmp/runs/run-1',
         events: [],
         records: [],
@@ -380,7 +380,7 @@ describe('buildAgentEnvironment：厂商系统层', () => {
   });
 
   /**
-   * **这一行被下发了哪几台 MCP**。
+   * **这个候选被下发了哪几台 MCP**。
    *
    * 为什么这一格必须在：`mcpServers` 若是字符串数组、真机对象数组又被折成 `[]`
    * ⇒ 环境抽屉里**一个字都没有**，而「装没装上」「实际生效了哪几台」
@@ -421,9 +421,9 @@ describe('buildAgentEnvironment：厂商系统层', () => {
  *
  * 为什么：claude 只在开头报一次（取最后 = 取唯一），而 codex / dsh 的 MCP 事实是逐拍长出来的
  * （`starting → ready`、工具表逐拍补全，每条交全量）。取第一条会让环境抽屉显示最早那一拍，
- * 与同抽屉的「本行 MCP」观测格（都取最后）对**同一行**给出两种状态。
+ * 与同抽屉的「候选 MCP」观测格（都取最后）对**同一行**给出两种状态。
  */
-  it('厂商事实逐拍长时取最后一条（与行级观测格同口径），时间也取那一条', () => {
+  it('厂商事实逐拍长时取最后一条（与候选级观测格同口径），时间也取那一条', () => {
     const environment = build([
       vendorSystemEvent({ mcpServers: [{ name: 'probe', status: 'starting', source: 'dynamic', error: null }] }, 1),
       {
@@ -485,16 +485,16 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
   });
 
   /**
- * 「**本行 MCP**」那一格。它读的是**行快照**上那一格观测
- * （`EvalRow.mcpServers`），而不是从事件流里现推：事件流回答「厂商当时说了什么」，
- * 而这一格要回答「这一行实际装上了哪几台、凭什么这么说」——含**环境变量未设置而被我们跳过**的那几台
+ * 「**候选 MCP**」那一格。它读的是**候选快照**上那一格观测
+ * （`EvalCandidate.mcpServers`），而不是从事件流里现推：事件流回答「厂商当时说了什么」，
+ * 而这一格要回答「这个候选实际装上了哪几台、凭什么这么说」——含**环境变量未设置而被我们跳过**的那几台
  * （厂商事件里根本没有它们，只有我们这边的账）。
  *
  * 三态与 `streamingDelta` 逐条同构，故各自一条守卫：缺席 / `null` = 没观测；
  * `[]` = 观测了、确实一台都没有；非空 = 逐台来源 + 判据 + 结论。
  */
-  describe('本行 MCP 观测格（行快照那一格）', () => {
-    const envWith = (mcpServers: EvalRow['mcpServers']): EnvGroup =>
+  describe('候选 MCP 观测格（候选快照那一格）', () => {
+    const envWith = (mcpServers: EvalCandidate['mcpServers']): EnvGroup =>
       groupOf(
         buildAgentEnvironment({ row: { ...ROW, mcpServers }, workspaceBase: '', events: [], records: [] }).groups,
         'observed',
@@ -513,7 +513,7 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
     it('`[]` ⇒ **在场**且写明「观测到 0 台」，不得与「没观测」合并', () => {
       const item = itemOf(envWith([]));
       if (!item.present) throw new Error('观测到零台也是一条观测，必须在场');
-      expect(item.label).toBe('本行 MCP');
+      expect(item.label).toBe('候选 MCP');
       expect(item.text).toContain('0 台');
       // 没有逐台结论可标，就不给 Tag 渲染声明（渲染层回落纯文本）
       expect(item.verdictLines).toBeUndefined();
@@ -584,7 +584,7 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
       expect(item.text).toBe(
         [
           '3 台：',
-          // 来源采信厂商原值（`dynamic` = 本行注入、`project` = 仓库自带），不翻译成中文词表
+          // 来源采信厂商原值（`dynamic` = 候选注入、`project` = 仓库自带），不翻译成中文词表
           'playwright：来源 dynamic · 判据 厂商工具表 · 结论 已连上',
           'find：来源 project · 判据 厂商连接状态 · 结论 已连上',
           'context7：来源 unknown · 判据 无厂商证据 · 结论 已跳过',
@@ -627,12 +627,12 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
   });
 
   /**
-   * 流式增量的**运行期观测**（`EvalRow.streamingDelta`）：三态必须各自可辨。
+   * 流式增量的**运行期观测**（`EvalCandidate.streamingDelta`）：三态必须各自可辨。
    * 这一组的靶子是「厂商声明 yes、实际一条都没投」这档异常——它在界面上与「这家本来就没有」
    * 完全同形（都是不打字），而增量帧不落盘 ⇒ 事后没有第二个地方能看出区别。
    */
   describe('流式增量观测（增量帧只广播不落盘，事后唯一痕迹）', () => {
-    const envWith = (streamingDelta: EvalRow['streamingDelta']): EnvGroup =>
+    const envWith = (streamingDelta: EvalCandidate['streamingDelta']): EnvGroup =>
       groupOf(
         buildAgentEnvironment({ row: { ...ROW, streamingDelta }, workspaceBase: '', events: [], records: [] }).groups,
         'observed',
@@ -643,7 +643,7 @@ describe('buildAgentEnvironment：运行配置与实测统计', () => {
       return item;
     };
 
-    it('格缺席 ⇒ `not-observed`（老数据 / 这一行没跑到统计那一步）', () => {
+    it('格缺席 ⇒ `not-observed`（老数据 / 这个候选没跑到统计那一步）', () => {
       expect(missingOf(envWith(undefined), 'observed-streaming-delta')).toBe('not-observed');
     });
 
@@ -684,19 +684,19 @@ describe('buildAgentEnvironment：单格的截断与字节数', () => {
 });
 
 /**
- * **技能的两格**：厂商组的「已下发的技能」+ 实测统计组的「本行技能」。
+ * **技能的两格**：厂商组的「已下发的技能」+ 实测统计组的「候选技能」。
  *
  * 两格回答两个不同的问题（照 MCP 那两格的既有分工，不合并）：
  *   · 厂商那一格 = 「**厂商当时说它手里有哪几条**」（含厂商内置与被测仓库自带的，逐条标来源）；
- *   · 行级那一格 = 「**我们装进去的那几条落地了没有、凭什么**」。
+ *   · 候选级那一格 = 「**我们装进去的那几条落地了没有、凭什么**」。
  *
  * 三态逐条与 `streamingDelta` / `mcpServers` 同构，两个方向都要钉：
  * `null`（没投送 / 没观测）与 `[]`（投送了、确实是空的）**不许互相顶替**。
  */
 describe('buildAgentEnvironment：技能两格', () => {
-  /** 带行级技能格的行（`ROW` 是共享夹具，不能就地改） */
-  function buildWith(row: Partial<EvalRow>, events: AgentEvent[] = []): ReturnType<typeof buildAgentEnvironment> {
-    return buildAgentEnvironment({ row: { ...ROW, ...row } as EvalRow, workspaceBase: 'D:/tmp/runs/run-1', events, records: [] });
+  /** 带候选级技能格的行（`ROW` 是共享夹具，不能就地改） */
+  function buildWith(row: Partial<EvalCandidate>, events: AgentEvent[] = []): ReturnType<typeof buildAgentEnvironment> {
+    return buildAgentEnvironment({ row: { ...ROW, ...row } as EvalCandidate, workspaceBase: 'D:/tmp/runs/run-1', events, records: [] });
   }
 
   function itemOf(environment: ReturnType<typeof buildAgentEnvironment>, source: string, id: string): EnvItem {
@@ -737,7 +737,7 @@ describe('buildAgentEnvironment：技能两格', () => {
 
   it('安全提示只在真的装到「来自被测仓库」的 skill 时出现，数量 = 那些条数', () => {
     const withRepo = itemOf(build([vendorSystemEvent({ skills: VENDOR_SKILLS })]), 'vendor', 'vendor-skills');
-    expect(withRepo.present ? withRepo.text : '').toContain('本行额外装载了来自被测仓库的 1 条 skill —— 它们是被测内容的一部分');
+    expect(withRepo.present ? withRepo.text : '').toContain('候选额外装载了来自被测仓库的 1 条 skill —— 它们是被测内容的一部分');
 
     const withoutRepo = itemOf(
       build([vendorSystemEvent({ skills: [LOCAL_SKILL, BUILTIN_SKILL] })]),
@@ -755,7 +755,7 @@ describe('buildAgentEnvironment：技能两格', () => {
     expect(itemOf(env, 'vendor', 'vendor-skills').present).toBe(true);
   });
 
-  it('行级那一格：三句文案各自出现在对的条件上（四格逐条列出）', () => {
+  it('候选级那一格：三句文案各自出现在对的条件上（四格逐条列出）', () => {
     const item = itemOf(
       buildWith({
         skillInstall: [
@@ -772,11 +772,11 @@ describe('buildAgentEnvironment：技能两格', () => {
     expect(text).toContain('alpha：已装上 · 判据 厂商清单 · 来源 userSettings');
     expect(text).toContain('beta：缺失 · 判据 厂商清单 · 来源 unknown');
     expect(text).toContain('gamma：未验证 · 判据 仅落盘 · 来源 unknown');
-    // **行级那格不重复来源分档**（那是厂商侧那格的事）
+    // **候选级那格不重复来源分档**（那是厂商侧那格的事）
     expect(text).not.toContain('本机启用项');
   });
 
-  it('行级那一格的三态：缺席 / `null` ⇒ not-observed；`[]` ⇒ 在场写「0 条」', () => {
+  it('候选级那一格的三态：缺席 / `null` ⇒ not-observed；`[]` ⇒ 在场写「0 条」', () => {
     expect(missingOf(groupOf(buildWith({}).groups, 'observed'), 'observed-skills')).toBe('not-observed');
     expect(missingOf(groupOf(buildWith({ skillInstall: null }).groups, 'observed'), 'observed-skills')).toBe('not-observed');
     const empty = itemOf(buildWith({ skillInstall: [] }), 'observed', 'observed-skills');

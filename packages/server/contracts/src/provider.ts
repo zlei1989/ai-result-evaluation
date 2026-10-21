@@ -113,9 +113,9 @@ export const ProviderModelInputSchema = ProviderModelSchema;
 export type ProviderModelInput = z.infer<typeof ProviderModelInputSchema>;
 
 /**
- * 模型能力的两格（设置页的行内编辑器 / 数据层的入参）：`null` = **明确清空**。
+ * 模型能力的两格（设置页的候选内编辑器 / 数据层的入参）：`null` = **明确清空**。
  * 为什么两格同进同出：它们是同一张表格里相邻的两个可编辑列，用户点一次「保存窗口」
- * 表达的是「这一行的能力就是这样」——分两次请求只会让中间态（只存了窗口、输出还是旧的）有机会落盘。
+ * 表达的是「这个候选的能力就是这样」——分两次请求只会让中间态（只存了窗口、输出还是旧的）有机会落盘。
  * 它同时是 ui 与 client 两个包共用的形状（两侧都只依赖 contracts，谁也不依赖谁）。
  */
 export const ProviderModelCapabilitySchema = z.object({
@@ -125,7 +125,7 @@ export const ProviderModelCapabilitySchema = z.object({
 export type ProviderModelCapability = z.infer<typeof ProviderModelCapabilitySchema>;
 
 /**
- * 单条模型的窗口入参（设置页的行内编辑器）：`contextWindow: null` = **明确清空**。
+ * 单条模型的窗口入参（设置页的候选内编辑器）：`contextWindow: null` = **明确清空**。
  * 为什么用 null 而不是「字段缺席」：缺席与「不改」在语义上不可区分，而清空是一次真实意图
  * —— 它同样要把 `contextWindowSource` 置成 manual（清空 = 别用上游那个数）。
  * `maxOutputTokens` 可选是为了兼容只改窗口的老客户端。

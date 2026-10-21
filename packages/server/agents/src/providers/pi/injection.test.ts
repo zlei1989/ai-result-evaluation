@@ -5,10 +5,10 @@
  *
  * 为什么这几条必须逐条钉住（每一条都对应一类真机缺陷）：
  *   · 不装 MCP 扩展时，`<agentDir>/mcp.json` 躺在盘上也一台都不连；只装扩展不给 `loadConfig`，
- *     读的是 `getAgentDir()` 而不是这一行的配置目录；
+ *     读的是 `getAgentDir()` 而不是这个候选的配置目录；
  *   · 曝光档的缺省是 `codemode`：工具**只可调用、不声明** ⇒ 我们的 L3 判据（payload 工具表里出现
  *     `mcp__<名>__`）永不触发，MCP 注入本身也会静默失效；
- *   · `vendor-system` 一条都不发时，行级观测格整组退化成「厂商没投送」，而这一行其实什么都有。
+ *   · `vendor-system` 一条都不发时，候选级观测格整组退化成「厂商没投送」，而这个候选其实什么都有。
  *
  * ⚠️ **本文件的 `requestPayloads` 是手搓的夹具入参，不是厂商真发出去的请求**：它只能证明
  * 「拿到这样一份 payload 时我们读得出什么」，**不覆盖白名单**——工具**能不能进** payload
@@ -39,8 +39,8 @@ afterEach(() => {
   removeTreeWithRetry(tempRoot);
 });
 
-/** 一棵行目录（技能与 MCP 都往 `configHome` 里落，共享目录会让断言互相泄漏） */
-function freshRow(): { root: string; cwd: string; configHome: string } {
+/** 一棵候选目录（技能与 MCP 都往 `configHome` 里落，共享目录会让断言互相泄漏） */
+function freshCandidate(): { root: string; cwd: string; configHome: string } {
   const root = mkdtempSync(join(tempRoot, 'row-'));
   const cwd = join(root, 'workspace');
   const configHome = join(root, '.agenthome');
@@ -61,7 +61,7 @@ function makeSourceSkill(row: { root: string }, name: string): string {
  * 交给 `before_provider_request` 的处理器，等价于「模型往返发出之前，观察者读到了这份 payload」；
  * `discoveredSkills` / `skillDiagnostics` 是厂商装载器在 `reload()` 那一刻报回来的技能面。
  */
-async function runRow(
+async function runCandidate(
   recorder: ReturnType<typeof createFakePiRecorder>,
   input: AgentRunInput,
   sdkOptions: Pick<FakePiSdkOptions, 'requestPayloads' | 'discoveredSkills' | 'skillDiagnostics'> = {},
@@ -134,19 +134,19 @@ function loadConfigOf(recorder: ReturnType<typeof createFakePiRecorder>): () => 
 
 describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', () => {
   it('装 MCP 扩展时给的是我们自己的 loadConfig，逐台 exposure 是 direct', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
     const input: AgentRunInput = {
       ...createRunInput({ cwd: row.cwd, configHome: row.configHome }),
       mcpServers: { context7: { transport: 'http', enabled: true, url: 'https://mcp.context7.com/mcp' } },
     };
-    await runRow(recorder, input);
+    await runCandidate(recorder, input);
 
     expect(recorder.mcpExtensionInstalled, '配了 MCP 却不装扩展 ⇒ 一台都不会连').toBe(true);
-    // 默认 loadConfig 读 `getAgentDir()`（受 `PI_CODING_AGENT_DIR` 控制，**不是**这一行的 agentDir），
+    // 默认 loadConfig 读 `getAgentDir()`（受 `PI_CODING_AGENT_DIR` 控制，**不是**这个候选的 agentDir），
     // 且会把被测仓库的 `.pi/mcp.json` 一起读进来 ⇒ 必须自给
-    expect(typeof recorder.mcpExtensionOptions?.['loadConfig'], '不给 loadConfig ⇒ 读的不是我们的行目录').toBe('function');
+    expect(typeof recorder.mcpExtensionOptions?.['loadConfig'], '不给 loadConfig ⇒ 读的不是我们的候选目录').toBe('function');
     expect(recorder.mcpExtensionOptions?.['startupWaitMs'], '等待预算显式钉住，不吃厂商缺省').toBe(PI_MCP_STARTUP_WAIT_MS);
 
     const loaded = loadConfigOf(recorder)();
@@ -157,18 +157,18 @@ describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', (
     expect(loaded.autoEnableCodemode).toBe(false);
   });
 
-  it('不给 mcpServers ⇒ 不装 MCP 扩展（本行没有 MCP 这件事在装配面上看得出来）', async () => {
-    const row = freshRow();
+  it('不给 mcpServers ⇒ 不装 MCP 扩展（候选没有 MCP 这件事在装配面上看得出来）', async () => {
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
-    await runRow(recorder, createRunInput({ cwd: row.cwd, configHome: row.configHome }));
+    await runCandidate(recorder, createRunInput({ cwd: row.cwd, configHome: row.configHome }));
     expect(recorder.mcpExtensionInstalled).toBe(false);
     // 观察者与 MCP 无关，它恒装：没有它两份 L3 判据都无处落
     expect(recorder.extensionHandlers['before_provider_request']?.length).toBe(1);
   });
 
-  it('零文件注入：行目录里没有 mcp.json，被测仓库自带的 .pi/mcp.json 也进不来', async () => {
-    const row = freshRow();
+  it('零文件注入：候选目录里没有 mcp.json，被测仓库自带的 .pi/mcp.json 也进不来', async () => {
+    const row = freshCandidate();
     // 被测仓库自带一台服务器：默认 loadConfig 会把它读进来（SDK 下 trust 恒真）
     mkdirSync(join(row.cwd, '.pi'), { recursive: true });
     writeFileSync(join(row.cwd, '.pi', 'mcp.json'), JSON.stringify({ mcpServers: { repoOnly: { command: 'node' } } }), 'utf8');
@@ -179,10 +179,10 @@ describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', (
       ...createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
       mcpServers: { probe: { transport: 'stdio', enabled: true, command: 'node', args: ['server.js'] } },
     };
-    await runRow(recorder, input);
+    await runCandidate(recorder, input);
 
     expect(loadConfigOf(recorder)().servers.map((server) => server.name)).toEqual(['probe']);
-    // 落盘事实：注入零文件（行目录里不该出现 mcp.json）
+    // 落盘事实：注入零文件（候选目录里不该出现 mcp.json）
     expect(readdirSync(row.configHome)).not.toContain('mcp.json');
     expect(logTexts(events).join('\n')).not.toContain('repoOnly');
   });
@@ -289,13 +289,13 @@ describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', (
   /**
    * **被摘掉的条目要落一条可见的 `log`**（不只是服务端进程日志）。
    *
-   * 为什么必须有：编排层的注入集里这一台仍算 `injectable`（契约放行），而 pi 的行级观测格把
+   * 为什么必须有：编排层的注入集里这一台仍算 `injectable`（契约放行），而 pi 的候选级观测格把
    * 「工具表里没有它」读成失败 ⇒ 整行 `AGENT_MCP_UNAVAILABLE`，文案说「未能启动」——它根本没起过。
    * 厂商那边的启动报告走 `ctx.ui.notify`，SDK 装配下那是 no-op ⇒ 事件里这一条 `log`
    * 是整条链上唯一说得出真因的地方。
    */
   it('被摘掉的条目落一条点名 log（真因不能只活在进程日志里）', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
     const events: AgentEvent[] = [];
@@ -303,7 +303,7 @@ describe('MCP 注入：自给 loadConfig、零文件、每台显式 exposure', (
       ...createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
       mcpServers: { broken: { transport: 'stdio', enabled: true, command: 'node', args: 'a.js' } } as unknown as McpServers,
     };
-    await runRow(recorder, input, { requestPayloads: [anthropicPayload('', ['read'])] });
+    await runCandidate(recorder, input, { requestPayloads: [anthropicPayload('', ['read'])] });
 
     const texts = logTexts(events);
     const warning = texts.find((text) => text.includes('MCP 条目「broken」未注入')) ?? '';
@@ -318,7 +318,7 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
   // ⚠️ 这一组是**读出侧**的补充用例：payload 由本文件手搓，所以它证不了白名单放不放 MCP 工具进来
   // （那个判据在 `allowlist.test.ts`，必须走真包）。它们守的是另一半——工具表如实投送、通道自报正确。
   it('openai wire：工具表与技能清单同一条事件交出去，通道自报 vendor-tool-table', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
     const events: AgentEvent[] = [];
@@ -326,7 +326,7 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
       ...createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
       mcpServers: { probe: { transport: 'stdio', enabled: true, command: 'node' } },
     };
-    await runRow(recorder, input, {
+    await runCandidate(recorder, input, {
       discoveredSkills: [
         { name: 'alpha', filePath: join(row.configHome, 'skills', 'alpha', 'SKILL.md') },
         { name: 'repo-skill', filePath: join(row.cwd, '.pi', 'skills', 'repo-skill', 'SKILL.md') },
@@ -351,7 +351,7 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
   });
 
   it('anthropic wire：同一份 payload 也能读出工具表（tools[].name）', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
     const events: AgentEvent[] = [];
@@ -364,17 +364,17 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
       }),
       mcpServers: { probe: { transport: 'stdio', enabled: true, command: 'node' } },
     };
-    await runRow(recorder, input, { requestPayloads: [anthropicPayload('光秃秃', ['read', 'mcp__probe__echo'])] });
+    await runCandidate(recorder, input, { requestPayloads: [anthropicPayload('光秃秃', ['read', 'mcp__probe__echo'])] });
 
     expect(vendorEvents(events)[0]?.tools).toEqual(['read', 'mcp__probe__echo']);
   });
 
   it('同一份 payload 只发一条 vendor-system（观测格的读法是「取最后一条」）', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push({ type: 'turn_start' }, SETTLED);
     const events: AgentEvent[] = [];
-    await runRow(
+    await runCandidate(
       recorder,
       createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
       { requestPayloads: [openaiPayload(skillsSection([]), ['read'])] },
@@ -383,11 +383,11 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
   });
 
   it('一次请求都没有 ⇒ 不发 vendor-system（没有取证点，不许编一份空事实）', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.events.push(SETTLED);
     const events: AgentEvent[] = [];
-    await runRow(
+    await runCandidate(
       recorder,
       createRunInput({ cwd: row.cwd, configHome: row.configHome, onEvent: (event) => events.push(event) }),
     );
@@ -395,7 +395,7 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
   });
 
   it('L3 装载档：装入的技能没进这一轮的系统段 ⇒ 一条点名的 WARN（两条 wire 各读自己那一处）', async () => {
-    const row = freshRow();
+    const row = freshCandidate();
     const sourceDir = makeSourceSkill(row, 'alpha');
     const location = join(row.configHome, 'skills', 'alpha', 'SKILL.md');
     /** 跑一次，返回全部日志文字（`inPrompt` 决定这一轮的系统段里有没有 alpha） */
@@ -417,7 +417,7 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
       const payload = protocolType === 'openai'
         ? openaiPayload(section, ['read'])
         : anthropicPayload(section, ['read']);
-      await runRow(recorder, input, { requestPayloads: [payload] });
+      await runCandidate(recorder, input, { requestPayloads: [payload] });
       return logTexts(events).join('\n');
     };
 
@@ -432,8 +432,8 @@ describe('厂商侧事实：工具表走 vendor-tool-table、技能面走 getSki
 });
 
 describe('同名冲突：只作 note、结论仍按厂商清单判「已装上」', () => {
-  it('冲突的胜者在清单里 ⇒ vendor-system.skills 仍然带着这个名字（行级不会判 missing）', async () => {
-    const row = freshRow();
+  it('冲突的胜者在清单里 ⇒ vendor-system.skills 仍然带着这个名字（候选级不会判 missing）', async () => {
+    const row = freshCandidate();
     const sourceDir = makeSourceSkill(row, 'alpha');
     const winner = join(row.cwd, '.pi', 'skills', 'alpha', 'SKILL.md');
     const loser = join(row.configHome, 'skills', 'alpha', 'SKILL.md');
@@ -445,7 +445,7 @@ describe('同名冲突：只作 note、结论仍按厂商清单判「已装上�
       skills: [{ name: 'alpha', sourceDir }],
     };
     // 厂商的清单里是胜者那一条（被测仓库自带），我们物化的那一份被顶掉、根本不在表里
-    await runRow(recorder, input, {
+    await runCandidate(recorder, input, {
       discoveredSkills: [{ name: 'alpha', filePath: winner }],
       skillDiagnostics: [{
         type: 'collision',
@@ -456,7 +456,7 @@ describe('同名冲突：只作 note、结论仍按厂商清单判「已装上�
       requestPayloads: [anthropicPayload(skillsSection([{ name: 'alpha', location: winner }]), ['read'])],
     });
 
-    // ① 清单里有这个名字 ⇒ 行级推导（`vendor-skill-list`）判的是 `installed`；
+    // ① 清单里有这个名字 ⇒ 候选级推导（`vendor-skill-list`）判的是 `installed`；
     //    `missing` 的条件是「清单非空且里面没有它」，而这里它明明在。
     expect(vendorEvents(events)[0]?.skills?.map((skill) => skill.name)).toEqual(['alpha']);
     // ② 冲突如实呈现：两端路径都在，且措辞不暗示「厂商没认」

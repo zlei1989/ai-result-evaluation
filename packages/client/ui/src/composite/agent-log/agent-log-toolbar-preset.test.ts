@@ -63,17 +63,18 @@ function actionOf(actions: readonly ToolbarAction[], key: string): ToolbarAction
 }
 
 describe('agentLogToolbarPreset', () => {
-  it('七个动作、键唯一且稳定（React key 与测试定位都用它）', () => {
+  it('八个动作、键唯一且稳定（React key 与测试定位都用它）', () => {
     const actions = agentLogToolbarPreset(presetInput());
 
     expect(actions.map((action) => action.key)).toEqual([
-      'download',
-      'follow',
+      'follow-up',
       'jump',
+      'follow',
       'only-tools',
       'only-errors',
-      'raw',
       'environment',
+      'raw',
+      'download',
     ]);
     expect(new Set(actions.map((action) => action.key)).size).toBe(actions.length);
   });
@@ -100,6 +101,7 @@ describe('agentLogToolbarPreset', () => {
 
     expect(action.visible).toBe(true);
     expect(action.label).toBe('环境信息');
+    expect(action.shape).toBe('circle');
     // 图标是 React 元素（`.ts` 文件不能写 JSX，用 createElement）
     expect(isValidElement(action.icon)).toBe(true);
     expect((action.icon as { props: Record<string, unknown> }).props['aria-hidden']).toBe(true);
@@ -125,20 +127,84 @@ describe('agentLogToolbarPreset', () => {
   });
 
   /**
-   * 「下载台账」**渲在原文行**（它挨着「原始输出 N 条」）。
-   * 两种写法的渲法完全一样，差别只在落哪一行 ⇒ 这一格是 `placement`，不是组件分支；
-   * 落错了的症状是「按钮跑到面包屑那一行去了」，而**没有任何行为断言会红**（按钮照样能点）。
+   * 「原始输出」入口排在「环境信息」之后、「下载台账」之前。顺序用数组下标钉（渲染顺序就是这个数组的顺序）；
+   * 落错位置时按钮照样能点，没有任何行为断言会变红，故这里只钉顺序。
+   *
+   * 这一簇的四颗都标 `iconGroup`（合进一个渲染区、组内 4px），其余动作不标（仍按工具条的 12px 排）：
+   * 标错了没有任何行为断言会红，只会散成一排。`raw` 那一格没有 `icon` / `onSelect`——
+   * 控件本体（入口 + 受控抽屉）由布局注入 `entry`，预设只决定它在簇里的位置与显隐。
    */
-  it('「下载台账」标了 placement: raw（其余动作留在工具条那一行）', () => {
-    const actions = agentLogToolbarPreset(presetInput({ onDownload: vi.fn() }));
+  it('「原始输出」排在「环境信息」之后、「下载台账」之前，四颗都在图标簇里', () => {
+    const actions = agentLogToolbarPreset(
+      presetInput({
+        onDownload: vi.fn(),
+        diagnostics: { status: 'ready', data: diagnostics(2) } satisfies Loadable<AgentLogDiagnostics>,
+      }),
+    );
 
-    expect(actionOf(actions, 'download').placement).toBe('raw');
-    // 其余动作都不带 placement（默认 'toolbar'）：写死一片 'toolbar' 只会让「默认值」有两个写法
-    const others = actions.filter((action) => action.key !== 'download');
-    expect(others.map((action) => action.placement)).toEqual(others.map(() => undefined));
+    const keys = actions.map((action) => action.key);
+    expect(keys.indexOf('raw')).toBe(keys.indexOf('environment') + 1);
+    expect(keys.indexOf('download')).toBe(keys.indexOf('raw') + 1);
+
+    // 「下载台账」仍是圆形透明底的图标按钮
+    const download = actionOf(actions, 'download');
+    expect(download.icon).toBeDefined();
+    expect(download.iconVariant).toBe('text');
+    expect(download.shape).toBe('circle');
+
+    for (const key of ['follow-up', 'environment', 'raw', 'download']) {
+      expect(actionOf(actions, key).iconGroup).toBe(true);
+    }
+    for (const action of actions) {
+      if (['follow-up', 'environment', 'raw', 'download'].includes(action.key)) continue;
+      expect(action.iconGroup).toBeUndefined();
+    }
+    // 原始输出那一格自己不是按钮：可点性/抽屉归布局注入的 `entry`
+    expect(actionOf(actions, 'raw').icon).toBeUndefined();
+    expect(actionOf(actions, 'raw').onSelect).toBeUndefined();
   });
 
-  it('「跳到轮次」：min/max 来自 turnCount，越界 clamp 后如实回显', () => {
+  /**
+   * 「追问」入口的三态：没有写动作就不渲染；判据读不到 / 不可行都禁用，
+   * Tooltip 换成那一句实话，而 `label`（可访问名）恒为「追问」。
+   */
+  it('「追问」：给回调才出现，判据三态决定可点与 Tooltip', () => {
+    expect(actionOf(agentLogToolbarPreset(presetInput()), 'follow-up').visible).toBe(false);
+
+    const onFollowUp = vi.fn();
+    const action = actionOf(
+      agentLogToolbarPreset(presetInput({ onFollowUp, followUpVerdict: { ok: true } })),
+      'follow-up',
+    );
+    expect(action.visible).toBe(true);
+    expect(action.disabled).toBe(false);
+    expect(action.label).toBe('追问');
+    expect(action.tooltip).toBe('追问');
+    expect(action.shape).toBe('circle');
+    expect(action.iconVariant).toBe('text');
+    expect(action.iconGroup).toBe(true);
+    expect(isValidElement(action.icon)).toBe(true);
+    expect((action.icon as { props: Record<string, unknown> }).props['aria-hidden']).toBe(true);
+    action.onSelect?.();
+    expect(onFollowUp).toHaveBeenCalledTimes(1);
+
+    // 不可追问：禁用，Tooltip 用服务端那一句原因
+    const reason = '这个候选没有可续接的会话（还没跑过，或是没有这一格的旧产物）';
+    const refused = actionOf(
+      agentLogToolbarPreset(presetInput({ onFollowUp, followUpVerdict: { ok: false, reason } })),
+      'follow-up',
+    );
+    expect(refused.disabled).toBe(true);
+    expect(refused.tooltip).toBe(reason);
+    expect(refused.label).toBe('追问');
+
+    // 判据还没读到：与「不可追问」分开说（处置是刷新，不是换一件事做）
+    const unknown = actionOf(agentLogToolbarPreset(presetInput({ onFollowUp })), 'follow-up');
+    expect(unknown.disabled).toBe(true);
+    expect(unknown.tooltip).toContain('读不到这个候选的追问判据');
+  });
+
+  it('「跳转」：min/max 来自 turnCount，越界 clamp 后如实回显', () => {
     const actions = agentLogToolbarPreset(presetInput({ turnCount: 83, currentTurn: 999 }));
     const number = actionOf(actions, 'jump').number;
 
@@ -154,7 +220,7 @@ describe('agentLogToolbarPreset', () => {
     expect(actionOf(none, 'jump').visible).toBe(false);
   });
 
-  it('「跳到轮次」提交时把轮次交回去', () => {
+  it('「跳转」提交时把轮次交回去', () => {
     const onJumpToTurn = vi.fn();
     const actions = agentLogToolbarPreset(presetInput({ onJumpToTurn }));
 

@@ -9,7 +9,7 @@
  * (c) **虚拟化的三个入口**（`virtual` / `itemHeight` / `Listy` 这一枚标识符）只出现在
  * `base/virtual-list.tsx`；
  * (d) L0/L1 不出现 `useState`（开合态一律受控， 纪律 2）；
- * (e) L0/L1 不出现 `EvalRow`，**也不按厂商分支**；
+ * (e) L0/L1 不出现 `EvalCandidate`，**也不按厂商分支**；
  * (f) `BlockRenderContext` 里没有 `streaming` 这一格（`assembly` 是动效的唯一判据）。
  *
  * **为什么 (e) 的判据写得比「不许出现 `agentKind` 字样」窄**（这条是刻意收窄，不是放宽）：
@@ -55,7 +55,7 @@ const L1_FILES = [
   'agent-log-domain-facts.tsx',
   'inject-queue-panel.tsx',
   // ⚠️ 原型件（一次性）：它渲染、不虚拟化、不持态（附件句柄走 `useRef` 而非 `useState`），
-  // 按 L1 的判据归这一层。收敛之后这一行与那个文件一起删。
+  // 按 L1 的判据归这一层。收敛之后这个候选与那个文件一起删。
 ] as const;
 
 /** L0 纯渲染件：吃「一个块 / 一个节点 / 一份声明」，一律受控 */
@@ -65,9 +65,10 @@ const L0_FILES = [
   'tool-group-panel.tsx',
   'tool-item-detail.tsx',
   'attachment-block-view.tsx',
+  'image-view-block-view.tsx',
   'unrecognized-block-view.tsx',
   'subagent-bar.tsx',
-  'row-summary-line.tsx',
+  'candidate-summary-line.tsx',
   'task-panel-card.tsx',
   'ask-user-card.tsx',
   'agent-run-state-tag.tsx',
@@ -76,7 +77,7 @@ const L0_FILES = [
   'agent-environment-drawer.tsx',
   'block-renderer-registry.tsx',
   'render-blocks.ts',
-  'inject-message-row.tsx',
+  'inject-message-item.tsx',
   // 段分隔（「追问 ×N」）：吃段号 + 一个时刻，纯展示、受控
   'segment-divider.tsx',
 ] as const;
@@ -181,7 +182,7 @@ function relativeImportTargets(source: string): string[] {
  * 误伤比漏放更危险（守卫一旦显得碍事就会被绕过），所以这里只对**可执行源码**判。
  *
  * **已知局限（如实登记，与 `agents/src/static-assertions.test.ts` 同一条）**：正则不区分
- * 字符串字面量里的 `//`，含 `://` 的行会被从那里截断 ⇒ **同一行注释后面的代码看不见**。
+ * 字符串字面量里的 `//`，含 `://` 的候选会被从那里截断 ⇒ **同一行注释后面的代码看不见**。
  * 方向是漏报而不是误报，且本仓没有那种形态（判据都是单行正则，跨行写法本身也不在射程内）。
  */
 function stripComments(text: string): string {
@@ -333,12 +334,12 @@ describe('agent-log 的分层纪律', () => {
     expect(codeHitsIn([...L0_FILES, ...L1_FILES], /\buseState\b/)).toEqual([]);
   });
 
-  it('(e) L0/L1 不出现 EvalRow，也不按厂商分支', () => {
+  it('(e) L0/L1 不出现 EvalCandidate，也不按厂商分支', () => {
     /**
      * 扫描面是 `VENDOR_SCANNED_FILES`（三层 + `build-model.ts`），**不是** `LAYER_OF.keys()`：
      * 后者会漏掉那个决定「哪些块被画成卡片」的装配件，而它恰恰是历史上唯一在嗅探厂商形状的地方。
      */
-    expect(codeHitsIn(VENDOR_SCANNED_FILES, /\bEvalRow\b/)).toEqual([]);
+    expect(codeHitsIn(VENDOR_SCANNED_FILES, /\bEvalCandidate\b/)).toEqual([]);
     for (const { name, pattern } of VENDOR_BRANCH_PATTERNS) {
       expect({ 判据: name, 命中: codeHitsIn(VENDOR_SCANNED_FILES, pattern) }).toEqual({ 判据: name, 命中: [] });
     }

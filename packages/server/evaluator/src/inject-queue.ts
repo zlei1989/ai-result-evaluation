@@ -2,7 +2,7 @@
  * 人工消息的**队列表**：人往运行中的一行送的那句话在服务端进程内的唯一真相源，外加端口实现与它的变更信号。
  *
  * 一条记录的命运只有四条：被取件投出去（`queued → delivered`）、被撤回（→ `gone`）、
- * 被行收场或等待预算丢弃（→ `gone`）、以及被惰性判定成「模型已经看到了」（→ `consumed`）。
+ * 被候选收场或等待预算丢弃（→ `gone`）、以及被惰性判定成「模型已经看到了」（→ `consumed`）。
  * 四条都走本模块的收口，因此「表里那一格变了」与「消费方看到的事实」永远同时发生。
  *
  * 六格口径（改本模块之前先读完）：
@@ -12,7 +12,7 @@
  *      静默失效（订阅端一个事件都收不到，而两侧日志都正常）。表本身由本模块独占读写，
  *      裂脑只可能发生在模块被重建的那一瞬间，代价是「那一刻的在途消息要重新登记」——
  *      与「重启即无从投递」同一条如实声明的口径。
- *   2. **键是 `runId + rowId`**：端口要找到「哪一行」的那份状态，而 `@aieval/agents` 里没有行身份
+ *   2. **键是 `runId + candidateId`**：端口要找到「哪一行」的那份状态，而 `@aieval/agents` 里没有行身份
  *      （业务无关），所以端口由编排层实现、在闭包里捕获这一对键，经入参传进去。
  *   3. **`messageId` 是幂等键**：客户端为每一条草稿生成它，服务端以它去重——重复登记回**同一条**
  *      （不新增、不重置状态）。没有它，用户点两次「发送」= 模型看到两遍。
@@ -21,8 +21,8 @@
  *      `deliveredAt` 回答「什么时候真的交出去的」，两者不是同一件事。
  *   5. **不做持续对账**：取件之后一条消息**同时**在我们的表与厂商的队列里，「一条消息只在一个地方」
  *      如实翻译成「我们的表是我们知道的全部，厂商侧只在撤回那一刻读一次」。故 `consumed` 是**惰性判定**。
- *   6. **行收场与等待预算是两件事**：前者管「这一行真的结束了，表里剩下的怎么办」，后者管
- *      「适配器已收工、只剩队列时还要等多久」。两者都落 `gone`，但原因不同（见 `settleRowReason`
+ *   6. **候选收场与等待预算是两件事**：前者管「这个候选真的结束了，表里剩下的怎么办」，后者管
+ *      「适配器已收工、只剩队列时还要等多久」。两者都落 `gone`，但原因不同（见 `settleCandidateReason`
  *      与 `expireWaitReason`）。
  *
  * 两条**时序性质**（如实登记，不是缺陷；界面必须容得下它们）：
@@ -58,19 +58,19 @@ export type InjectAttachment = ContractInjectAttachment;
 
 /**
  * 队列表里的一条：形状同样由 `@aieval/contracts` 定义（`InjectMessageSchema`），本包转出类型。
- * `messageId` 同时是幂等键与三处共用的钥匙（表 / 账本 / 行级事件）。
+ * `messageId` 同时是幂等键与三处共用的钥匙（表 / 账本 / 候选级事件）。
  */
 export type InjectQueueEntry = ContractInjectMessage;
 
-/** 表里的键：一行一份（`runId:rowId`，与编排层别处那些进程内表的键法同形） */
-function queueKey(runId: string, rowId: string): string {
-  return `${runId}:${rowId}`;
+/** 表里的键：一行一份（`runId:candidateId`，与编排层别处那些进程内表的键法同形） */
+function queueKey(runId: string, candidateId: string): string {
+  return `${runId}:${candidateId}`;
 }
 
 /**
  * 服务端写入时刻的 ISO 8601 带时区串（三个时刻格共用的唯一一处口径）。
  *
- * 为什么不留 epoch 毫秒：这三格要落进快照、要给人读、还要与轮上行上别的时刻（`EvalRun.createdAt`
+ * 为什么不留 epoch 毫秒：这三格要落进快照、要给人读、还要与轮上候选上别的时刻（`EvalRun.createdAt`
  * 那一家）并排显示——两种形状并存会让每一条消费路径都得自己知道「这一格是数字」，
  * 界面还要为此并列两个格式化函数。与提问应答面的 `askedAt` 同口径。
  */
@@ -83,10 +83,10 @@ function nowIso(): string {
  * 负载为空：信号只推「变了，重读」，内容由快照端点给——把内容塞进信号，乱序到达时旧内容会盖掉新内容。
  */
 interface InjectQueueBus {
-  /** `runId:rowId` → 该行的条目数组；插入顺序即登记顺序（取件的先后由它决定） */
+  /** `runId:candidateId` → 该候选的条目数组；插入顺序即登记顺序（取件的先后由它决定） */
   entries: Map<string, InjectQueueEntry[]>;
   /**
-   * `runId:rowId` → `messageId → 撤回句柄`。与条目分开存是**刻意的**：条目是快照面
+   * `runId:candidateId` → `messageId → 撤回句柄`。与条目分开存是**刻意的**：条目是快照面
    * （要能整条交给快照端点），而撤回句柄是一个闭包——把它挂进条目，快照面就会长出一个
    * 序列化不了、也没人该读的格子。
    */
@@ -103,7 +103,7 @@ const globalWithBus = globalThis as GlobalWithBus;
 globalWithBus[BUS_KEY] ??= { entries: new Map(), retractors: new Map(), subscribers: new Set() };
 const bus: InjectQueueBus = globalWithBus[BUS_KEY];
 
-/** 发布一条「这一行的队列变了」：同步、不落盘、无负载；订阅者抛错只记日志（一个坏订阅者不能打断其余） */
+/** 发布一条「这个候选的队列变了」：同步、不落盘、无负载；订阅者抛错只记日志（一个坏订阅者不能打断其余） */
 export function publishInjectChanged(): void {
   // 先复制一份再遍历：订阅者在回调里退订是合法用法，遍历原集合会漏掉后续订阅者
   for (const listener of [...bus.subscribers]) {
@@ -126,14 +126,14 @@ export function subscribeInjectChanges(listener: () => void): () => void {
   };
 }
 
-/** 这一行当前的条目（含终态：`gone` 留在表里正是为了让重复撤回能答「已经处理过了」） */
-export function listInjectEntries(runId: string, rowId: string): InjectQueueEntry[] {
-  return bus.entries.get(queueKey(runId, rowId)) ?? [];
+/** 这个候选当前的条目（含终态：`gone` 留在表里正是为了让重复撤回能答「已经处理过了」） */
+export function listInjectEntries(runId: string, candidateId: string): InjectQueueEntry[] {
+  return bus.entries.get(queueKey(runId, candidateId)) ?? [];
 }
 
-/** 这一行还有没有**没投递**的条目（`queued` 或已取件但还没确认交付）：等待窗口与「不收场」的判据 */
-export function hasUndeliveredInjectEntries(runId: string, rowId: string): boolean {
-  return listInjectEntries(runId, rowId).some((entry) => isUndelivered(entry));
+/** 这个候选还有没有**没投递**的条目（`queued` 或已取件但还没确认交付）：等待窗口与「不收场」的判据 */
+export function hasUndeliveredInjectEntries(runId: string, candidateId: string): boolean {
+  return listInjectEntries(runId, candidateId).some((entry) => isUndelivered(entry));
 }
 
 /**
@@ -180,8 +180,8 @@ function formatBytes(bytes: number): string {
  *
  * 三条口径：
  *   · 清单放在那句话**之后**——先给话再给材料，模型读到的顺序与人写的顺序一致；
- *   · 每一行给**大小**：模型据此判断值不值得去读那几个文件；
- *   · 路径必须是**绝对**的（模型的工作目录是行工作区，相对路径对它没有意义）。
+ *   · 每个候选给**大小**：模型据此判断值不值得去读那几个文件；
+ *   · 路径必须是**绝对**的（模型的工作目录是候选工作区，相对路径对它没有意义）。
  *
  * `sizeOf` 由调用方注入（产品侧读盘、用例侧给固定值）：本函数因此是纯的，
  * 「拼出来的形状」这件事可以不碰磁盘就断言。
@@ -206,7 +206,7 @@ export interface EnqueueInjectResult {
 /** 登记入参：`messageId` 由调用方（客户端）生成，表不自己发号——它同时是幂等键 */
 export interface EnqueueInjectInput {
   runId: string;
-  rowId: string;
+  candidateId: string;
   messageId: string;
   text: string;
   attachments: readonly InjectAttachment[];
@@ -221,8 +221,8 @@ export interface EnqueueInjectInput {
  * 会悄悄覆盖第一次已被取走的那一条，而模型看到的是哪一个版本无从追。
  */
 export function enqueueInjectMessage(input: EnqueueInjectInput): EnqueueInjectResult {
-  const { runId, rowId, messageId } = input;
-  const key = queueKey(runId, rowId);
+  const { runId, candidateId, messageId } = input;
+  const key = queueKey(runId, candidateId);
   let entries = bus.entries.get(key);
   if (entries === undefined) {
     entries = [];
@@ -255,8 +255,8 @@ export type PromoteInjectResult = 'promoted' | 'already-round' | 'not-queued' | 
  * 「立即发送」：把这一条的 `requires` 由 `'idle'` 改成 `'round'`。
  * **单向**——只能变早不能变晚（把已经要求「立即」的那条改回「排队」会让它比原来更晚到，那不是用户的意图）。
  */
-export function promoteInjectEntry(runId: string, rowId: string, messageId: string): PromoteInjectResult {
-  const entry = listInjectEntries(runId, rowId).find((item) => item.messageId === messageId);
+export function promoteInjectEntry(runId: string, candidateId: string, messageId: string): PromoteInjectResult {
+  const entry = listInjectEntries(runId, candidateId).find((item) => item.messageId === messageId);
   if (entry === undefined) return 'not-found';
   if (entry.state !== 'queued') return 'not-queued';
   if (entry.requires === 'round') return 'already-round';
@@ -271,17 +271,17 @@ export function promoteInjectEntry(runId: string, rowId: string, messageId: stri
  * 两条刻意的处置：
  *   · `state` 改成 `'delivered'`（「已交给厂商」那一格），但 **`deliveredAt` 仍是 `null`**——
  *     它是「真的交出去了」的时刻，由 `markInjectEntriesDelivered` 写。于是「取走但没交成」
- *     的那一条既不会被再取一次（不会让模型看到两遍），也仍然是**未投递**（等待窗口与行收场照旧管它）；
+ *     的那一条既不会被再取一次（不会让模型看到两遍），也仍然是**未投递**（等待窗口与候选收场照旧管它）；
  *   · 交出去的正文用 `composeInjectedText` 拼好（附件清单已在里面）——适配器只认文本，
  *     它不该、也无法自己知道附件在哪。
  */
 export function takeInjectEntries(
   runId: string,
-  rowId: string,
+  candidateId: string,
   boundary: InjectionBoundary,
   sizeOf: (path: string) => number | null,
 ): UserMessage[] {
-  const selected = selectForDrain(listInjectEntries(runId, rowId), boundary);
+  const selected = selectForDrain(listInjectEntries(runId, candidateId), boundary);
   for (const entry of selected) entry.state = 'delivered';
   if (selected.length > 0) publishInjectChanged();
   return selected.map((entry) => ({ id: entry.messageId, text: composeInjectedText(entry.text, entry.attachments, sizeOf) }));
@@ -296,15 +296,15 @@ export function takeInjectEntries(
  */
 export function markInjectEntriesDelivered(
   runId: string,
-  rowId: string,
+  candidateId: string,
   ids: readonly string[],
   retract: (id: string) => Promise<RetractOutcome>,
 ): InjectQueueEntry[] {
   const now = nowIso();
-  const key = queueKey(runId, rowId);
+  const key = queueKey(runId, candidateId);
   const marked: InjectQueueEntry[] = [];
   for (const id of ids) {
-    const entry = listInjectEntries(runId, rowId).find((item) => item.messageId === id);
+    const entry = listInjectEntries(runId, candidateId).find((item) => item.messageId === id);
     if (entry === undefined || entry.deliveredAt !== null) continue;
     entry.deliveredAt = now;
     let handles = bus.retractors.get(key);
@@ -336,30 +336,30 @@ export type InjectRetractResult =
   | { kind: 'unknown'; entry: InjectQueueEntry }
   | { kind: 'not-found' };
 
-export async function retractInjectEntry(runId: string, rowId: string, messageId: string): Promise<InjectRetractResult> {
-  const entry = listInjectEntries(runId, rowId).find((item) => item.messageId === messageId);
+export async function retractInjectEntry(runId: string, candidateId: string, messageId: string): Promise<InjectRetractResult> {
+  const entry = listInjectEntries(runId, candidateId).find((item) => item.messageId === messageId);
   if (entry === undefined) return { kind: 'not-found' };
   if (entry.state === 'gone') return { kind: 'gone', entry };
   if (entry.state === 'consumed') return { kind: 'consumed', entry };
   // 我们自己手里那一条：直接摘掉，不问厂商（它还不知道有这条消息）
   if (entry.state === 'queued') {
-    settleInjectEntry(runId, rowId, entry, 'retracted', null);
+    settleInjectEntry(runId, candidateId, entry, 'retracted', null);
     return { kind: 'removed', entry };
   }
-  const retract = bus.retractors.get(queueKey(runId, rowId))?.get(messageId);
+  const retract = bus.retractors.get(queueKey(runId, candidateId))?.get(messageId);
   if (retract === undefined) {
     // 取走但从未确认交付（适配器投递失败）：厂商那一侧没有它，撤不撤得掉都由我们说 —— 摘掉即可
-    settleInjectEntry(runId, rowId, entry, 'retracted', null);
+    settleInjectEntry(runId, candidateId, entry, 'retracted', null);
     return { kind: 'removed', entry };
   }
   const outcome = await retract(entry.messageId);
   if (outcome === 'retracted') {
-    settleInjectEntry(runId, rowId, entry, 'retracted', null);
+    settleInjectEntry(runId, candidateId, entry, 'retracted', null);
     return { kind: 'retracted', entry };
   }
   if (outcome === 'already-consumed') {
     // 竞态里厂商赢：**如实**落「已经被模型看到了」——不许乐观出队（那会让用户以为撤干净了）
-    settleInjectEntry(runId, rowId, entry, 'already-consumed', '这一条已经交给智能体了，撤不回来');
+    settleInjectEntry(runId, candidateId, entry, 'already-consumed', '这一条已经交给智能体了，撤不回来');
     return { kind: 'consumed', entry };
   }
   // `unsupported` / `unknown`：什么都没改变，那一条留在 `delivered` 上等下一次机会
@@ -372,7 +372,7 @@ export async function retractInjectEntry(runId: string, rowId: string, messageId
  */
 export function settleInjectEntry(
   runId: string,
-  rowId: string,
+  candidateId: string,
   entry: InjectQueueEntry,
   outcome: InjectMessageOutcome,
   reason: string | null,
@@ -382,23 +382,23 @@ export function settleInjectEntry(
   entry.outcome = outcome;
   entry.reason = reason;
   entry.settledAt = nowIso();
-  bus.retractors.get(queueKey(runId, rowId))?.delete(entry.messageId);
+  bus.retractors.get(queueKey(runId, candidateId))?.delete(entry.messageId);
   publishInjectChanged();
 }
 
 /**
- * 行收场：把这一行**所有还没投递的**条目落 `gone`（原因 `discarded`）并清表，
- * 返回被丢弃的那些（调用方据此各落一条行级事件）。
+ * 候选收场：把这个候选**所有还没投递的**条目落 `gone`（原因 `discarded`）并清表，
+ * 返回被丢弃的那些（调用方据此各落一条候选级事件）。
  *
- * 为什么连已投递的条目一起清表：这一行已经结束了，厂商那边还会不会把它交给模型与我们已经无关，
- * 留着只会让下一轮读取到上一轮的幽灵条目（行 id 在重跑时复用）。
+ * 为什么连已投递的条目一起清表：这个候选已经结束了，厂商那边还会不会把它交给模型与我们已经无关，
+ * 留着只会让下一轮读取到上一轮的幽灵条目（候选 id 在重跑时复用）。
  */
-export function discardUndeliveredInjectEntries(runId: string, rowId: string): InjectQueueEntry[] {
-  const key = queueKey(runId, rowId);
+export function discardUndeliveredInjectEntries(runId: string, candidateId: string): InjectQueueEntry[] {
+  const key = queueKey(runId, candidateId);
   const entries = bus.entries.get(key);
   if (entries === undefined) return [];
   const discarded = entries.filter((entry) => isUndelivered(entry));
-  for (const entry of discarded) settleInjectEntry(runId, rowId, entry, 'discarded', '这一行已经结束，这条消息没能交给智能体');
+  for (const entry of discarded) settleInjectEntry(runId, candidateId, entry, 'discarded', '这个候选已经结束，这条消息没能交给智能体');
   bus.entries.delete(key);
   bus.retractors.delete(key);
   publishInjectChanged();
@@ -406,14 +406,14 @@ export function discardUndeliveredInjectEntries(runId: string, rowId: string): I
 }
 
 /**
- * 等待预算到点：把这一行**还没投递的**条目落 `gone`（原因 `timed-out`），返回它们。
+ * 等待预算到点：把这个候选**还没投递的**条目落 `gone`（原因 `timed-out`），返回它们。
  *
- * 与行收场分开的**唯一**区别就是原因与人话：界面上「这一行结束了」与「这一条等太久了」
+ * 与候选收场分开的**唯一**区别就是原因与人话：界面上「这个候选结束了」与「这一条等太久了」
  * 是两句不同的话，而读侧只有这一格能分开它们。终态（已撤回 / 已被吃掉）的条目不动。
  */
-export function expireUndeliveredInjectEntries(runId: string, rowId: string): InjectQueueEntry[] {
-  const expired = listInjectEntries(runId, rowId).filter((entry) => isUndelivered(entry));
-  for (const entry of expired) settleInjectEntry(runId, rowId, entry, 'timed-out', '等太久了，这一条没能交给智能体');
+export function expireUndeliveredInjectEntries(runId: string, candidateId: string): InjectQueueEntry[] {
+  const expired = listInjectEntries(runId, candidateId).filter((entry) => isUndelivered(entry));
+  for (const entry of expired) settleInjectEntry(runId, candidateId, entry, 'timed-out', '等太久了，这一条没能交给智能体');
   return expired;
 }
 

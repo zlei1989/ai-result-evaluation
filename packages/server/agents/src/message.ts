@@ -79,7 +79,7 @@ export interface MessageDraft {
   /**
    * 这条消息**自己那一次模型调用**的用量。**草稿层必填**（没有就写 `null`）：
    * 三家都必须显式交这一格 ⇒ `tsc` 会把全部构造点列出来，不会出现「某家 `undefined`、某家 `null`」的漂移
-   * （与 `timing` / `subagentTokens` 同一条处置）。它与行级累计口径无关：不是累计、不进任何合计。
+   * （与 `timing` / `subagentTokens` 同一条处置）。它与运行级累计口径无关：不是累计、不进任何合计。
    */
   usage: UsageTokens | null;
   /** 该条消息的原始载荷（未归类字段原样保留，供排障） */
@@ -214,7 +214,7 @@ export function createMessageAssembler(options: MessageAssemblerOptions): Messag
        * 带值覆盖、缺省保留：同一条逻辑消息会多次投递（增量块 / `block-end` 快照），
        * 而用量只在完整 `assistant/message` 那一次到达 ⇒ 后到的投递不带它时**必须保留**已采到的值
        * （改成「后到覆盖」会把已经采到的计量抹掉，界面上表现为页脚自己消失）。
-       * 也不累加：它是「这一次调用」的值，累加是行级 `tokens` 那一格的事。
+       * 也不累加：它是「这一次调用」的值，累加是运行级 `tokens` 那一格的事。
        */
       if (draft.usage !== null) carrier.usage = draft.usage;
       // 信封跟着最后一次投递走：收口时没有 draft，补发的那条消息只能用这一份信封
@@ -412,6 +412,20 @@ export function unrecognizedBlockDraft(
   identity: BlockIdentity = { kind: 'index', index: 0 },
 ): MessageBlockDraft {
   return { phase, identity, block: { type: 'unrecognized', reason, vendorType, raw: safeStringify(raw) } };
+}
+
+/**
+ * 图片块草稿：模型看过的一张图，**只有路径**（内容不落账本）。
+ *
+ * `path` 是厂商原文，本函数不做任何裁剪或相对化——工作区边界是读侧的事实，
+ * 适配器这一层不知道宿主把工作区放在哪。
+ */
+export function imageViewBlockDraft(
+  path: string,
+  phase: ChunkKind = 'snapshot',
+  identity: BlockIdentity = { kind: 'index', index: 0 },
+): MessageBlockDraft {
+  return { phase, identity, block: { type: 'image-view', path } };
 }
 
 /**

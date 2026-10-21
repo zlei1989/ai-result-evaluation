@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, it } from 'vitest';
 import { removeTreeWithRetry } from '../../../testing/cleanup';
-import { anthropicText, anthropicToolUse, runPiConformanceRow } from '../../../testing/pi-conformance-fixture';
+import { anthropicText, anthropicToolUse, runPiConformanceCandidate } from '../../../testing/pi-conformance-fixture';
 import { PI_SUBAGENTS_MANAGER_KEY } from '../subagent-wire';
 import { piSubagentsExtensionPath, piSubagentsVersion } from '../subagents';
 import { piSubagentTranscriptPath } from '../transcript';
@@ -44,7 +44,7 @@ function walk(dir: string, base = dir): string[] {
   return out;
 }
 
-function report(label: string, run: Awaited<ReturnType<typeof runPiConformanceRow>>, newFiles: string[]): void {
+function report(label: string, run: Awaited<ReturnType<typeof runPiConformanceCandidate>>, newFiles: string[]): void {
   console.log(`[PROBE2:${label}] 新增转写文件 =`, JSON.stringify(newFiles, null, 1));
   const own = run.product.messages.filter((message) => message.subagentId !== null);
   console.log(`[PROBE2:${label}] subagentId!==null 条数 =`, own.length);
@@ -88,7 +88,7 @@ afterAll(() => {
 
 it('A：子会话带一次真工具调用', async () => {
   const before = new Set(walk(wireRoot));
-  const run = await runPiConformanceRow({
+  const run = await runPiConformanceCandidate({
     prompt: '按剧本收尾。',
     script: [
       anthropicToolUse('Agent', {
@@ -123,11 +123,11 @@ it('A：子会话带一次真工具调用', async () => {
 
 it('B：预占 registry 槽 ⇒ wire 拿不到 manager，正文只能走转写兜底', async () => {
   const before = new Set(walk(wireRoot));
-  // 扩展的 claim 是先到先得（槽非空就不写）⇒ 这一行扩展的 manager 永远不挂上
+  // 扩展的 claim 是先到先得（槽非空就不写）⇒ 这个候选扩展的 manager 永远不挂上
   (globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY] = { getRecord: (): undefined => undefined };
-  let run: Awaited<ReturnType<typeof runPiConformanceRow>>;
+  let run: Awaited<ReturnType<typeof runPiConformanceCandidate>>;
   try {
-    run = await runPiConformanceRow({
+    run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [
         anthropicToolUse('Agent', {
@@ -184,7 +184,7 @@ it('D：身份 / 会话 id 的拒绝分支', () => {
 
 it('E：后台档派发（run_in_background: true，也就是该入参的缺省值）', async () => {
   const before = new Set(walk(wireRoot));
-  const run = await runPiConformanceRow({
+  const run = await runPiConformanceCandidate({
     prompt: '按剧本收尾。',
     script: [
       anthropicToolUse('Agent', {

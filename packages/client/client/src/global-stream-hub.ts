@@ -45,7 +45,7 @@ export interface GlobalStreamSink {
   onReconnect?(): void;
 }
 
-/** 一帧是不是全局流的信号帧（不是就当坏帧丢掉：这条流不带行级帧） */
+/** 一帧是不是全局流的信号帧（不是就当坏帧丢掉：这条流不带候选级帧） */
 function isGlobalStreamFrame(frame: RunStreamFrame): frame is GlobalStreamFrame {
   return frame.type === 'run-updated' || frame.type === 'ask-user-changed' || frame.type === 'inject-messages-changed';
 }

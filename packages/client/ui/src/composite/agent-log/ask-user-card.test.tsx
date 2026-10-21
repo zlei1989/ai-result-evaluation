@@ -73,15 +73,14 @@ function settled(overrides: Partial<AskUserSettled> = {}): AskUserSettled {
   };
 }
 
-/** 选项那一行的容器（label 的父节点）：用来断言「已选」标挂在哪一项上 */
-const rowOf = (label: string): HTMLElement | null => screen.getByText(label).parentElement;
+/** 选项那一候选的容器（label 的父节点）：用来断言「已选」标挂在哪一项上 */
+const candidateOf = (label: string): HTMLElement | null => screen.getByText(label).parentElement;
 
 interface RenderCardOptions {
   /** 展开哪几问：默认**全展开**（内容是渲染出来的才算数）；`[]` = 按默认态全部收起 */
   open?: 'all' | readonly number[];
   rawOpen?: boolean;
   onQuestionOpenChange?(key: string, open: boolean): void;
-  onRequestDiagnostics?(): void;
 }
 
 /**
@@ -100,7 +99,6 @@ function renderCard(interaction: AskUserInteraction, options: RenderCardOptions 
       onQuestionOpenChange={options.onQuestionOpenChange ?? vi.fn()}
       rawOpen={options.rawOpen ?? false}
       onRawOpenChange={vi.fn()}
-      onRequestDiagnostics={options.onRequestDiagnostics}
     />,
   );
 }
@@ -189,14 +187,13 @@ describe('AskUserCard：卡片结构', () => {
     expect(container.querySelector<HTMLElement>('.ant-collapse-title')?.style.minWidth).toBe('0');
   });
 
-  it('footer 放原文入口：收场且有原文时「原始结果」+「重新读取」都在卡面 footer 里', () => {
+  it('footer 放原文入口：收场且有原文时「原始结果」在卡面 footer 里', () => {
     const result = { ok: true, raw: '{"questions":[]}', truncation: { kind: 'none' } as const };
-    renderCard(settled({ result }), { onRequestDiagnostics: vi.fn() });
+    renderCard(settled({ result }));
 
     const open = screen.getByTestId('raw-output-open');
     // 位置就是 footer（antd 的 `actions` 那一行）：不是面板体里、也不是卡面标题里
     expect(open.closest('.ant-card-actions')).not.toBeNull();
-    expect(screen.getByText('重新读取')).toBeInTheDocument();
   });
 
   it('没采到原文时整个 footer 不画（不留一条空边）', () => {
@@ -228,7 +225,7 @@ describe('AskUserCard：还没收场', () => {
       expect(screen.getByText('等待答复中… 2m03s')).toBeInTheDocument();
       expect(document.querySelector('.ant-badge-status-processing')).not.toBeNull();
       // 无人值守：这一句必须写出来（它解释「为什么可能一直等」）
-      expect(screen.getByText('无人值守的运行里，这一步会一直等到轮次被取消')).toBeInTheDocument();
+      expect(screen.getByText('无人值守的运行里，这一步会一直等到本轮被取消')).toBeInTheDocument();
 
       // 收场文案一条都不能出现
       for (const meta of Object.values(ASK_USER_OUTCOME_LABELS)) {
@@ -248,8 +245,8 @@ describe('AskUserCard：还没收场', () => {
     expect(screen.getByText('结果未采集')).toBeInTheDocument();
     expect(container.querySelector('.ant-badge-status-processing')).toBeNull();
     expect(screen.queryByText(/等待答复中/)).toBeNull();
-    // 轮次已经结束，「会一直等到轮次被取消」当场就是假的
-    expect(screen.queryByText('无人值守的运行里，这一步会一直等到轮次被取消')).toBeNull();
+    // 轮次已经结束，「会一直等到本轮被取消」当场就是假的
+    expect(screen.queryByText('无人值守的运行里，这一步会一直等到本轮被取消')).toBeNull();
   });
 });
 
@@ -291,10 +288,10 @@ describe('AskUserCard：答案回填', () => {
   it('按 label 匹配：选项顺序与 selected 顺序不同也不会错位', () => {
     renderCard(settled({ answers: [{ header: '选路径', selected: ['选项 C', '选项 A'], custom: null }] }));
 
-    expect(rowOf('选项 A')).toHaveTextContent('已选');
-    expect(rowOf('选项 C')).toHaveTextContent('已选');
+    expect(candidateOf('选项 A')).toHaveTextContent('已选');
+    expect(candidateOf('选项 C')).toHaveTextContent('已选');
     // 按下标匹配会把「已选」标到 A、B 上——B 是那条路留下的指纹
-    expect(rowOf('选项 B')).not.toHaveTextContent('已选');
+    expect(candidateOf('选项 B')).not.toHaveTextContent('已选');
     expect(screen.getAllByText('已选')).toHaveLength(2);
   });
 
@@ -313,7 +310,7 @@ describe('AskUserCard：答案回填', () => {
       }),
     );
 
-    expect(rowOf('选项 B')).toHaveTextContent('已选');
+    expect(candidateOf('选项 B')).toHaveTextContent('已选');
     expect(screen.getByText('补充：还有一条自定路径')).toBeInTheDocument();
   });
 
@@ -323,7 +320,7 @@ describe('AskUserCard：答案回填', () => {
     );
 
     expect(screen.getByText('自由输入（覆盖选项）：都不对，走第三条路')).toBeInTheDocument();
-    expect(rowOf('选项 A')).not.toHaveTextContent('已选');
+    expect(candidateOf('选项 A')).not.toHaveTextContent('已选');
     expect(screen.queryByText('已选')).toBeNull();
   });
 
@@ -419,7 +416,7 @@ describe('AskUserCard：自由输入那一格', () => {
     renderCard(withOther([{ header: '选路径', selected: ['选项 A'], custom: null }]));
 
     expect(screen.queryByText('其它（自由输入）')).toBeNull();
-    expect(rowOf('选项 A')).toHaveTextContent('已选');
+    expect(candidateOf('选项 A')).toHaveTextContent('已选');
   });
 
   it('`custom: \'\'`（写了但内容为空）与没写同档 ⇒ 也不画', () => {
@@ -468,7 +465,7 @@ describe('AskUserCard：只读与原文', () => {
   it('secret 的答案默认遮罩，展开才显示；选项上也不留「已选」的痕迹', () => {
     renderCard(
       settled({
-        // 多选：遮罩里两行都要能看到（「选了哪些」与自由输入）
+        // 多选：遮罩里两个候选都要能看到（「选了哪些」与自由输入）
         questions: [question({ secret: true, multiSelect: true })],
         answers: [{ header: '选路径', selected: ['选项 A'], custom: '机密内容' }],
       }),
@@ -477,7 +474,7 @@ describe('AskUserCard：只读与原文', () => {
     expect(screen.getByText('••••')).toBeInTheDocument();
     expect(screen.queryByText('已选：选项 A')).toBeNull();
     expect(screen.queryByText(/机密内容/)).toBeNull();
-    expect(rowOf('选项 A')).not.toHaveTextContent('已选');
+    expect(candidateOf('选项 A')).not.toHaveTextContent('已选');
 
     fireEvent.click(screen.getByText('••••'));
 

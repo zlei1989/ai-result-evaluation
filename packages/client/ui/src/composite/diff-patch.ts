@@ -6,15 +6,15 @@
  * 「把这份 diff 当新文件全文」——`+foo` 会显示成新增了一行字面量 `+foo`，是一份完全错误的 diff。
  *
  * 三条不能动的口径（写错任何一条都会**静默**给出错误的对照关系）：
- *   ① 按 hunk 头的行号**定位**，不做顺序拼接——否则相隔 200 行的两处改动会被画成相邻行；
+ *   ① 按 hunk 头的行号**定位**，不做顺序拼接——否则相隔 200 候选的两处改动会被画成相邻行；
  *   ② 两侧按**同一个 origin**（所有 hunk 里 oldStart / newStart 的最小值）平移：
- *      不平移的话，文件第 498 行的改动前面会多出 497 行空白；平移量相同故不影响彼此对齐；
+ *      不平移的话，文件第 498 候选的改动前面会多出 497 行空白；平移量相同故不影响彼此对齐；
  *   ③ **不做**「短的一侧补空串到等长」：组件不是按下标逐行比较，而是把两个字符串重新 diff
  *      （见 `reconstructSides` 里那段注释与实测）——补空串会让两侧**结尾不同**，jsdiff 于是把
- *      未修改的行也画成改动。保留空洞由 `join('\n')` 自然变成空行，行数不同**不会**错位。
+ *      未修改的行也画成改动。保留空洞由 `join('\n')` 自然变成空行，候选数不同**不会**错位。
  */
 
-/** hunk 头：`@@ -旧起点[,旧行数] +新起点[,新行数] @@` */
+/** hunk 头：`@@ -旧起点[,旧候选数] +新起点[,新候选数] @@` */
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 export function reconstructSides(patch: string): { oldValue: string; newValue: string } {
@@ -37,8 +37,8 @@ export function reconstructSides(patch: string): { oldValue: string; newValue: s
       if (raw.startsWith('\\')) continue;
       body.push(raw);
     }
-    // 只有两个**捕获**组：起点行号。两个行数都在 `(?:…)` 非捕获组里，
-    // 故新起点是 header[2] 而**不是** header[3]——写成 [3] 会得到 undefined ⇒ NaN ⇒ 每一行都写到
+    // 只有两个**捕获**组：起点行号。两个候选数都在 `(?:…)` 非捕获组里，
+    // 故新起点是 header[2] 而**不是** header[3]——写成 [3] 会得到 undefined ⇒ NaN ⇒ 每个候选都写到
     // NaN 下标上并静默丢失（症状是「所有用例都返回空串」，而不是报错）。
     hunks.push({ oldStart: Number(header[1]), newStart: Number(header[2]), body });
     i = j - 1;
@@ -55,7 +55,7 @@ export function reconstructSides(patch: string): { oldValue: string; newValue: s
     // 这会让每处 hunk **多出一格**：真实行号从 1 起算、数组下标从 0 起算，
     // 而 diff 并不包含文件开头到第一处 hunk 之间的内容（那是前面那些行）。
     // 于是第 1 行落在下标 1、文件第 L 行落在下标 L-origin：**绝对行号被如实保留**。
-    // 两处 hunk 之间的间距也因此与现实一致（相隔 200 行的改动不会被画成相邻行）。
+    // 两处 hunk 之间的间距也因此与现实一致（相隔 200 候选的改动不会被画成相邻行）。
     let oldNo = hunk.oldStart - origin;
     let newNo = hunk.newStart - origin;
     for (const raw of hunk.body) {
@@ -84,7 +84,7 @@ export function reconstructSides(patch: string): { oldValue: string; newValue: s
   // 补空串会让两侧**结尾不同**（一侧以 `\n` 收尾、另一侧以内容收尾），jsdiff 于是把尾部重新配对，
   // 把**未修改的行也画成改动**——实测本仓一次真实改动（补丁 +3/−1）：
   //   补空串 → removed=3 added=4（多出 2 行假删除、1 行假新增）；不补 → removed=1 added=3，与补丁**完全一致**。
-  // 保留空洞由 `join('\n')` 自然变成空行，两侧行数不同**不会**错位。
+  // 保留空洞由 `join('\n')` 自然变成空行，两侧候选数不同**不会**错位。
   //
   // 关于行号：下标 = 行号 - origin，故第一处 hunk 之前会留一格空白（真实行号被如实保留），
   //   origin = 所有 hunk 起点的最小值，作用是让深处的改动不会带上几百行前导空白。

@@ -10,7 +10,7 @@
  * ① CSS 里有这个类名——删掉类 = 组件带了个不存在的类名；
  * ② CSS 里有同名 `@keyframes`——删掉它只剩静态渐变，肉眼几乎分不出差别；
  * ③ 「减少动态效果」兜底存在**且把颜色还回来**——只关动画的话 `color: transparent` 会让
- * 这一行整行消失，而这一条在任何浏览器里都不会自己浮出来。
+ * 这个候选整行消失，而这一条在任何浏览器里都不会自己浮出来。
  *
  * **为什么读源码抠字面量、而不是 `import { ACTIVITY_SWEEP_CLASS } from '@aieval/ui'`**：
  * 后者会把整条 antd 依赖图拖进这个 node 环境文件（实测 `import` 阶段 27.6s），而本仓的墙钟
@@ -47,7 +47,7 @@ describe('globals.css 里的活动行高光', () => {
     expect(readFileSync(cssPath, 'utf8')).toContain(`@keyframes ${sweepClass()} {`);
   });
 
-  it('「减少动态效果」下静止但**把颜色还回来**（只关动画会让这一行整行消失）', () => {
+  it('「减少动态效果」下静止但**把颜色还回来**（只关动画会让这个候选整行消失）', () => {
     const source = readFileSync(cssPath, 'utf8');
     const start = source.indexOf('@media (prefers-reduced-motion: reduce)');
     expect(start, 'globals.css 里没有 prefers-reduced-motion 兜底').toBeGreaterThanOrEqual(0);
@@ -57,7 +57,7 @@ describe('globals.css 里的活动行高光', () => {
     expect(block, '兜底里没有关掉动画').toContain('animation: none');
     expect(
       block,
-      '兜底没有把 -webkit-text-fill-color 从 transparent 换回来：这一行会整行消失',
+      '兜底没有把 -webkit-text-fill-color 从 transparent 换回来：这个候选会整行消失',
     ).toContain('-webkit-text-fill-color: var(--app-muted)');
   });
 });
@@ -108,7 +108,7 @@ describe('globals.css 里的流式光标', () => {
  *
  * 缺口与上面两条同形，但**症状不同**：这条动画挂在 `key={段号}` 重挂的那个 `span` 上，
  * 类名或 `@keyframes` 少一个，浏览器都不报错——少类名 = 换段时文字直接跳变（观感退化成
- * 「整行被替换」），少 `@keyframes` = 动画声明指向一个不存在的关键帧，元素停在最终态。
+ * 「整候选被替换」），少 `@keyframes` = 动画声明指向一个不存在的关键帧，元素停在最终态。
  * 两者都只有肉眼看得出，而「看得出」正是本仓不接受的判据。
  *
  * 三条断言各有各的靶子：

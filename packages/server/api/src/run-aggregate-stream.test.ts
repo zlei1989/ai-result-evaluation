@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * 聚合流的帧产出：**逐行游标**回放 → 接 run 级总线 → 两 rowChannel 的消息实时扇出。
+ * 聚合流的帧产出：**逐行游标**回放 → 接 run 级总线 → 两 candidateChannel 的消息实时扇出。
  *
- * 与行级流（`run-stream.test.ts`）的三处刻意不同，也是本文件的靶子：
- *   1. **游标是一张表**（`rowId → seq`），不是单一 seq：表里有的行从各自 seq 之后回放，
- *      **跨行不做全局排序**（每行的折叠各算各的）；不在表里的行不回放历史、只推实时帧；
+ * 与候选级流（`run-stream.test.ts`）的三处刻意不同，也是本文件的靶子：
+ *   1. **游标是一张表**（`candidateId → seq`），不是单一 seq：表里有的候选从各自 seq 之后回放，
+ *      **跨行不做全局排序**（每个候选的折叠各算各的）；不在表里的候选不回放历史、只推实时帧；
  *   2. **事件帧带 `id:`、消息帧不带**：`id` 是浏览器 `Last-Event-ID` 的唯一来源，
  *      而消息的 `messageId` 跨运行重号、`delta` 覆盖使历史可变 ⇒ 按 seq 续订对可变历史没有意义；
- *   3. **不因终态关流**：一条连接承载一轮下所有行，某一行跑完不能把别行的实时通道一起关掉。
+ *   3. **不因终态关流**：一条连接承载一轮下所有行，某一个候选跑完不能把别候选的实时通道一起关掉。
  *
  * run 级总线由本文件自己实现（`vi.mock` 的工厂里维护两张监听表，候选与评分分开），
  * 于是「总线推一条 → 流里出现一帧」这条链路可以在不启动编排的情况下被验证。
@@ -16,23 +16,23 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ServiceError, type AgentEvent, type AgentMessage, type EvalRun, type RowRecord } from '@aieval/contracts';
+import { ServiceError, type AgentEvent, type AgentMessage, type EvalRun, type CandidateRecord } from '@aieval/contracts';
 import { appendEvent, resetEvents, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { streamRunAggregate } from './run-aggregate-stream';
 import { updateSettings } from './settings';
-import { makeCase, makeRow, makeRun, seedConfig } from './testing/run-fixtures';
+import { makeCase, makeCandidate, makeRun, seedConfig } from './testing/run-fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /** run 级事件订阅者（键 = `runId` 候选 / `runId:judge` 评分） */
-type RunEventListener = (rowId: string, event: AgentEvent) => void;
+type RunEventListener = (candidateId: string, event: AgentEvent) => void;
 /** run 级记录订阅者（同样的两把键） */
-type RunRecordListener = (rowId: string, record: RowRecord) => void;
+type RunRecordListener = (candidateId: string, record: CandidateRecord) => void;
 
 const bus = vi.hoisted(() => {
   /** 两张表**刻意分开**：共用一个 Map 时「评分事件不进聚合流」这条不变量会假绿 */
-  const events = new Map<string, Array<(rowId: string, event: unknown) => void>>();
-  const records = new Map<string, Array<(rowId: string, record: unknown) => void>>();
+  const events = new Map<string, Array<(candidateId: string, event: unknown) => void>>();
+  const records = new Map<string, Array<(candidateId: string, record: unknown) => void>>();
   const subscribe = <L>(table: Map<string, L[]>, key: string, listener: L): (() => void) => {
     const bucket = table.get(key) ?? [];
     bucket.push(listener);
@@ -53,7 +53,7 @@ vi.mock('@aieval/evaluator', () => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
+  abortCandidate: vi.fn(),
   subscribeRunEvents: vi.fn((runId: string, listener: RunEventListener) => bus.subscribe(bus.events, runId, listener)),
   subscribeRunJudgeEvents: vi.fn((runId: string, listener: RunEventListener) =>
     bus.subscribe(bus.events, `${runId}:judge`, listener),
@@ -68,11 +68,11 @@ let dir: string;
 let workspaceRoot: string;
 let store: Map<string, EvalRun>;
 
-/** 往该行的事件日志里追加一条事件（写真实文件，走 core 的 seq 分配） */
-function append(runId: string, rowId: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
-  const rowDir = join(workspaceRoot, runId, 'rows', rowId);
-  mkdirSync(rowDir, { recursive: true });
-  return appendEvent(join(rowDir, 'events.jsonl'), event);
+/** 往该候选的事件日志里追加一条事件（写真实文件，走 core 的 seq 分配） */
+function append(runId: string, candidateId: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
+  const candidateDir = join(workspaceRoot, runId, 'candidates', candidateId);
+  mkdirSync(candidateDir, { recursive: true });
+  return appendEvent(join(candidateDir, 'events.jsonl'), event);
 }
 
 /** 打开即有首字节的那条注释帧：每一条用例都要先摘掉它 */
@@ -138,13 +138,13 @@ function captureThrow(action: () => unknown): ServiceError {
 }
 
 /** 候选事件帧的逐字文本（`id:` + `data:`，无名事件） */
-function eventFrame(rowId: string, event: AgentEvent, rowChannel: 'candidate' | 'judge' = 'candidate'): string {
-  return `id: ${event.seq}\ndata: ${JSON.stringify({ ...event, rowId, rowChannel })}\n\n`;
+function eventFrame(candidateId: string, event: AgentEvent, candidateChannel: 'candidate' | 'judge' = 'candidate'): string {
+  return `id: ${event.seq}\ndata: ${JSON.stringify({ ...event, candidateId, candidateChannel })}\n\n`;
 }
 
 /** 消息帧的逐字文本（**没有** `id:` 行） */
-function messageFrame(rowId: string, rowChannel: 'candidate' | 'judge', record: RowRecord): string {
-  return `data: ${JSON.stringify({ ...record, rowId, rowChannel })}\n\n`;
+function messageFrame(candidateId: string, candidateChannel: 'candidate' | 'judge', record: CandidateRecord): string {
+  return `data: ${JSON.stringify({ ...record, candidateId, candidateChannel })}\n\n`;
 }
 
 beforeEach(() => {
@@ -173,10 +173,10 @@ afterEach(() => {
 });
 
 describe('streamRunAggregate：逐行游标', () => {
-  it('两行各给不同游标，各自只回放 seq 大于自己游标的部分', async () => {
+  it('两个候选各给不同游标，各自只回放 seq 大于自己游标的部分', async () => {
     store.set(
       'run-1',
-      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' }), makeRow({ id: 'w-2' })] }),
+      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' }), makeCandidate({ id: 'w-2' })] }),
     );
     append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: 'w1-旧' });
     const w1Kept = append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: 'w1-新' });
@@ -198,13 +198,13 @@ describe('streamRunAggregate：逐行游标', () => {
     expect(frames).toEqual([eventFrame('w-1', w1Kept), eventFrame('w-2', w2Kept)]);
   });
 
-  it('不在游标表里的行不回放历史，但后续实时帧照推', async () => {
+  it('不在游标表里的候选不回放历史，但后续实时帧照推', async () => {
     store.set(
       'run-1',
-      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' }), makeRow({ id: 'w-2' })] }),
+      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' }), makeCandidate({ id: 'w-2' })] }),
     );
-    const replayed = append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '表里那行的历史' });
-    // 盘上有历史、但这一行不在游标表里（刚开详情页，客户端还没读到它的快照位置）
+    const replayed = append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '表里那候选的历史' });
+    // 盘上有历史、但这个候选不在游标表里（刚开详情页，客户端还没读到它的快照位置）
     append('run-1', 'w-2', { type: 'log', stream: 'stdout', text: '不该被回放的历史' });
 
     const stream = streamRunAggregate('run-1', new Map([['w-1', 0]]));
@@ -224,13 +224,13 @@ describe('streamRunAggregate：逐行游标', () => {
     }
   });
 
-  it('游标超过该行水位（重跑删过日志）时按从头回放', async () => {
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+  it('游标超过该候选水位（重跑删过日志）时按从头回放', async () => {
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
     append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '上一代一' });
     append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '上一代二' });
     const previous = append('run-1', 'w-1', { type: 'status', status: 'judged' });
 
-    resetEvents(join(workspaceRoot, 'run-1', 'rows', 'w-1', 'events.jsonl'));
+    resetEvents(join(workspaceRoot, 'run-1', 'candidates', 'w-1', 'events.jsonl'));
     const fresh = append('run-1', 'w-1', { type: 'status', status: 'running' });
 
     const frames = await readFrames(streamRunAggregate('run-1', new Map([['w-1', previous.seq]])), 1);
@@ -241,9 +241,9 @@ describe('streamRunAggregate：逐行游标', () => {
 
 describe('streamRunAggregate：帧格式与归属', () => {
   it('事件帧带 `id: <seq>`，消息帧**没有** `id:` 行、也没有 `seq`', async () => {
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
     const event = append('run-1', 'w-1', { type: 'status', status: 'running' });
-    const record: RowRecord = { type: 'message', message: makeMessage('m-1') };
+    const record: CandidateRecord = { type: 'message', message: makeMessage('m-1') };
 
     const stream = streamRunAggregate('run-1', new Map([['w-1', 0]]));
     const reader = stream.getReader();
@@ -263,16 +263,16 @@ describe('streamRunAggregate：帧格式与归属', () => {
       expect(messageText).not.toContain('id:');
       const parsed = JSON.parse(messageText.slice('data: '.length).trim()) as Record<string, unknown>;
       expect(parsed).not.toHaveProperty('seq');
-      expect(parsed).toMatchObject({ rowId: 'w-1', rowChannel: 'candidate', type: 'message' });
+      expect(parsed).toMatchObject({ candidateId: 'w-1', candidateChannel: 'candidate', type: 'message' });
     } finally {
       await reader.cancel();
     }
   });
 
-  it('两个 rowChannel 的消息都推、且各带自己的 rowChannel（候选与评分各一条）', async () => {
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
-    const candidate: RowRecord = { type: 'message', message: makeMessage('m-candidate') };
-    const judge: RowRecord = { type: 'message', message: makeMessage('m-judge') };
+  it('两个 candidateChannel 的消息都推、且各带自己的 candidateChannel（候选与评分各一条）', async () => {
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
+    const candidate: CandidateRecord = { type: 'message', message: makeMessage('m-candidate') };
+    const judge: CandidateRecord = { type: 'message', message: makeMessage('m-judge') };
 
     const stream = streamRunAggregate('run-1', new Map());
     const reader = stream.getReader();
@@ -290,8 +290,8 @@ describe('streamRunAggregate：帧格式与归属', () => {
     }
   });
 
-  it('实时候选事件帧带正确的 rowId 与 rowChannel；评分事件**不进**这条流', async () => {
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+  it('实时候选事件帧带正确的 candidateId 与 candidateChannel；评分事件**不进**这条流', async () => {
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
     const judgeEvent = append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '评审者的流水' });
     const candidateEvent = append('run-1', 'w-1', { type: 'log', stream: 'stdout', text: '候选的流水' });
 
@@ -311,10 +311,10 @@ describe('streamRunAggregate：帧格式与归属', () => {
     }
   });
 
-  it('某一行进终态不关流：别行的实时帧照常到达（一条连接承载整轮）', async () => {
+  it('某一行进终态不关流：别候选的实时帧照常到达（一条连接承载整轮）', async () => {
     store.set(
       'run-1',
-      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' }), makeRow({ id: 'w-2' })] }),
+      makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' }), makeCandidate({ id: 'w-2' })] }),
     );
     append('run-1', 'w-1', { type: 'status', status: 'running' });
     const end = append('run-1', 'w-1', { type: 'end', exitReason: 'completed' });
@@ -337,20 +337,20 @@ describe('streamRunAggregate：帧格式与归属', () => {
 });
 
 describe('streamRunAggregate：开流前后的资源口径', () => {
-  it('轮或游标里的行不存在时**同步**抛错（路由据此回 404 JSON）', () => {
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+  it('轮或游标里的候选不存在时**同步**抛错（路由据此回 404 JSON）', () => {
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
 
     // 游标表为空时也要校验轮存在：否则脏 URL 拿到的是一条「开了即静默」的连接
     expect(captureThrow(() => streamRunAggregate('nope', new Map())).code).toBe('NOT_FOUND');
 
-    const missingRow = captureThrow(() => streamRunAggregate('run-1', new Map([['r-x', 0]])));
-    expect(missingRow.code).toBe('NOT_FOUND');
-    expect(missingRow.message).toBe('该评测里没有这一行（r-x）');
+    const missingCandidate = captureThrow(() => streamRunAggregate('run-1', new Map([['r-x', 0]])));
+    expect(missingCandidate.code).toBe('NOT_FOUND');
+    expect(missingCandidate.message).toBe('该评测里没有这个候选（r-x）');
   });
 
   it('打开即有首字节：不等 15s 心跳就发一条 ready 注释帧', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
 
     const reader = streamRunAggregate('run-1', new Map()).getReader();
     const decoder = new TextDecoder();
@@ -363,7 +363,7 @@ describe('streamRunAggregate：开流前后的资源口径', () => {
 
   it('空历史时 15s 发一条 keep-alive 注释帧；取消后定时器清零并退订三条总线', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, rows: [makeRow({ id: 'w-1' })] }));
+    store.set('run-1', makeRun({ id: 'run-1', workspaceBase: workspaceRoot, candidates: [makeCandidate({ id: 'w-1' })] }));
 
     const reader = streamRunAggregate('run-1', new Map()).getReader();
     const decoder = new TextDecoder();

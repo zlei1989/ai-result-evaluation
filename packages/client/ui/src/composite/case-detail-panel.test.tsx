@@ -70,7 +70,7 @@ describe('CaseDetailPanel', () => {
     expect(screen.getByText('默认分支 HEAD')).toBeInTheDocument();
   });
 
-  // 「评分模型」那一行是固定文案（用例上不再有评分模型这一格）：它回答的是「这个用例拿什么打分」
+  // 「评分模型」那一候选是固定文案（用例上不再有评分模型这一格）：它回答的是「这个用例拿什么打分」
   // 这个必然会被问一次的问题，并且指出真正的配置在哪一节
   it('评分模型显示固定的「跟随全局默认（设置 → 评分配置）」', () => {
     setup();
@@ -109,7 +109,7 @@ describe('CaseDetailPanel', () => {
 
   /**
    * 远端用例：来源那一行显示的仍是**全量 URL**（详情栏是核对「这一轮测的是哪份代码」的地方，
-   * 这里省略就等于没地方能看全），并多一行分支——分支决定了从远端哪条历史取起点。
+   * 这里省略就等于没地方能看全），并多一候选分支——分支决定了从远端哪条历史取起点。
    */
   it('远端用例：来源显示 URL，并多一行「分支」', () => {
     setup({ testCase: { ...CASE, repoPath: 'git@host:g/r.git', repoBranch: 'feat/x' } });
@@ -126,7 +126,7 @@ describe('CaseDetailPanel', () => {
 
   /**
    * 无来源用例：来源显示短标签「无」（哨兵串 `none://` 不是给用户看的信息），悬停给说全的话；
-   * 不显示分支行（repoBranch 恒为 null），commit 行是「默认分支 HEAD」。
+   * 不显示分支行（repoBranch 恒为 null），commit 候选是「默认分支 HEAD」。
    */
   it('无来源用例：来源显示「无」+ 悬停说明，且没有分支行', async () => {
     setup({ testCase: { ...CASE, repoPath: 'none://', commitHash: null, repoBranch: null } });
@@ -172,8 +172,8 @@ describe('CaseDetailPanel', () => {
     expect(card).toHaveTextContent('一、生产代码');
     expect(card).toHaveTextContent('追加 agent 字段');
     /**
-     * 权重那一格必须在**表格行里**断言：整张卡片找 '18' 是不够的——表尾那句「满分 18 分」也含 18，
-     * 权重列整列消失时那种写法照样绿。行内还钉住引用键 A1（只读态渲染的是用例里写的那把键）。
+     * 权重那一格必须在**表格候选里**断言：整张卡片找 '18' 是不够的——表尾那句「满分 18 分」也含 18，
+     * 权重列整列消失时那种写法照样绿。候选内还钉住引用键 A1（只读态渲染的是用例里写的那把键）。
      */
     const row = card?.querySelector('tbody tr') ?? null;
     expect(row).not.toBeNull();

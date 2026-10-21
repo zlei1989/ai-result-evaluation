@@ -7,15 +7,15 @@
  * 四格口径（改本模块之前先读完）：
  *
  *   1. **挂 `globalThis`**，理由与编排层既有那三条进程内总线（`events.ts` / `run-signals.ts` /
- *      `row-messages.ts`）**逐字相同**：dev 的 HMR 会重新实例化模块，模块作用域的表会裂成两半，
+ *      `candidate-messages.ts`）**逐字相同**：dev 的 HMR 会重新实例化模块，模块作用域的表会裂成两半，
  *      症状是「页面连上的是新表、编排层登记的是旧表」——连接 OPEN、快照恒空、应答恒 404，
  *      而两边各自的日志都看不出异样。挂上之后无论模块被重建多少次，读写两侧看到的都是同一张表。
  *   2. **存的是决议函数，不是 promise**：表要能在应答到达的那一刻**当场**结束等待，
- *      而「等」的那一侧（`Promise.race([等待, 行终止, 预算])`）归调用方——表不认识定时器，
+ *      而「等」的那一侧（`Promise.race([等待, 候选终止, 预算])`）归调用方——表不认识定时器，
  *      也就无从在超时后自己清理。`settle` 收口两个出口，超时与取消因此不会漏退登记。
  *   3. **进程重启 = 表为空**：这里**没有持久化，也不该有**——「待答」是只存在于内存里的一刻，
  *      落盘只会造出一张重启后无人能兑现的欠条。重启后旧 `askId` 一律应答不到（`NOT_FOUND`），
- *      在跑的行由既有的重启恢复路径收场（`recoverInterruptedRuns`），不是静默悬挂。
+ *      在跑的候选由既有的重启恢复路径收场（`recoverInterruptedRuns`），不是静默悬挂。
  *   4. **信号只推「变了，重读」**：`publishAskUserChanged` 在登记、答复、取消三处各发一条，
  *      负载为空——待答清单的内容由快照端点给。把内容塞进信号，乱序到达时旧内容会盖掉新内容，
  *      快照就变成第二份真相（与 `run-signals.ts` 口径 1 同源）。
@@ -49,8 +49,8 @@ export interface PendingAskUserRequest {
 export interface PendingAskUserEntry {
   askId: string;
   runId: string;
-  /** `null` = 这一问不在某一行上 */
-  rowId: string | null;
+  /** `null` = 这一问不在某一个候选上 */
+  candidateId: string | null;
   stage: AskUserStage;
   request: PendingAskUserRequest;
   askedAt: string;
@@ -139,7 +139,7 @@ export function listPendingAskUser(): PendingAskUser[] {
   return [...registry.entries.values()].map((entry) => ({
     askId: entry.askId,
     runId: entry.runId,
-    rowId: entry.rowId,
+    candidateId: entry.candidateId,
     stage: entry.stage,
     questions: entry.request.questions,
     askedAt: entry.askedAt,
@@ -165,17 +165,17 @@ function toSettled(outcome: AskUserOutcome, answers: AskUserAnswer[] | null): As
 export interface RegisterAskUserInput {
   askId: string;
   runId: string;
-  rowId: string | null;
+  candidateId: string | null;
   stage: AskUserStage;
   request: PendingAskUserRequest;
-  /** 行终止信号：一旦中止，这一问当场落「随轮次取消」并出表 */
+  /** 候选终止信号：一旦中止，这一问当场落「随本轮取消」并出表 */
   signal?: AbortSignal;
 }
 
 /** 一次挂起登记的句柄：拿在调用方手里的收场 promise 与清理入口 */
 export interface PendingAskHandle {
   /**
-   * 这一问的收场。**恒 resolve、不 reject**：没人答（超时 / 行终止 / 取消）与行失败是两件事，
+   * 这一问的收场。**恒 resolve、不 reject**：没人答（超时 / 候选终止 / 取消）与候选失败是两件事，
    * 折成 reject 会让调用方把「没人答」写进行的失败归因（与 `AskUserReply` 的口径一致）。
    */
   outcome: Promise<AskUserSettled>;
@@ -192,11 +192,11 @@ export interface PendingAskHandle {
  * `askId` 重复登记是**调用方的编程错误**（一个 id 对应两次等待，后一个答复会去向不明），
  * 故直接抛错而不是覆盖：覆盖的症状是「第一次提问永远等不到答案」，且没有任何日志能说明原因。
  *
- * 已经中止的 `signal` 不能登记——它一进表就该落「随轮次取消」，留在表里会让快照显示一条
+ * 已经中止的 `signal` 不能登记——它一进表就该落「随本轮取消」，留在表里会让快照显示一条
  * 永远不会被答复的提问。
  */
 export function registerAskUser(input: RegisterAskUserInput): PendingAskHandle {
-  const { askId, runId, rowId, stage, request, signal } = input;
+  const { askId, runId, candidateId, stage, request, signal } = input;
 
   if (registry.entries.has(askId)) {
     throw new ServiceError('CONFLICT', '这一问已经在等待答复了（askId 重复登记）', { context: { askId } });
@@ -216,12 +216,12 @@ export function registerAskUser(input: RegisterAskUserInput): PendingAskHandle {
     registry.entries.delete(askId);
     conclude(outcome, answers);
     publishAskUserChanged();
-    log.info('待答提问已收场', { askId, runId, rowId, stage, outcome });
+    log.info('待答提问已收场', { askId, runId, candidateId, stage, outcome });
   };
 
   // 已经中止的等待方不该在表里留痕：直接落收场，登记这一步等于空操作
   if (signal?.aborted === true) {
-    log.debug('登记时就已中止：直接落「随轮次取消」，不进表', { askId, runId, rowId });
+    log.debug('登记时就已中止：直接落「随本轮取消」，不进表', { askId, runId, candidateId });
     return { outcome: Promise.resolve(toSettled('canceled', null)), settle };
   }
 
@@ -232,20 +232,20 @@ export function registerAskUser(input: RegisterAskUserInput): PendingAskHandle {
   registry.entries.set(askId, {
     askId,
     runId,
-    rowId,
+    candidateId,
     stage,
     request,
     askedAt: new Date().toISOString(),
     resolve: settle,
   });
   publishAskUserChanged();
-  log.info('登记待答提问', { askId, runId, rowId, stage, questionCount: request.questions.length, toolName: request.toolName });
+  log.info('登记待答提问', { askId, runId, candidateId, stage, questionCount: request.questions.length, toolName: request.toolName });
 
-  // 订阅行终止信号：终止后这一问出表（口径 3 的「不是静默悬挂」在行内的那一半）
+  // 订阅候选终止信号：终止后这一问出表（口径 3 的「不是静默悬挂」在候选内的那一半）
   signal?.addEventListener(
     'abort',
     () => {
-      log.debug('行终止：这一问落「随轮次取消」', { askId, runId, rowId });
+      log.debug('候选终止：这一问落「随本轮取消」', { askId, runId, candidateId });
       settle('canceled');
     },
     { once: true },

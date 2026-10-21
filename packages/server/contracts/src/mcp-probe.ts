@@ -10,7 +10,7 @@
  *
  * ⚠️ 口径：成功文案只说**已经验到的三件事**
  * （进程起得来 / 目标讲 MCP / 声明了 N 个工具），**永不**说「配置可用」「配置正常」——
- * key 对不对、浏览器起不起得来、行内首次下载能不能过，这三条探活一条都没验。
+ * key 对不对、浏览器起不起得来、候选内首次下载能不能过，这三条探活一条都没验。
  *
  * 本文件只有形状与文案，没有 IO：探活的机制在 `core/src/mcp-probe.ts`，策略在 `api/src/mcp.ts`。
  */
@@ -19,7 +19,7 @@ import { MCP_NAME_PATTERN, McpServerConfigSchema } from './mcp';
 
 /**
  * 探活请求：**二选一**。
- *   - `{ name }`：用**已保存**的那一份（行内按钮走这条）；
+ *   - `{ name }`：用**已保存**的那一份（候选内按钮走这条）；
  *   - `{ entry }`：用表单当前值，**不落盘**（表单里那个入口走这条）。
  * 同时给两个时以 `name` 为准（union 的分支顺序就是优先级，zod 默认 strip 掉另一个）。
  * 只给 `{ entry }` 时不校验名字：表单里名字可能还没填，而名字与「连不连得上」无关。
@@ -116,7 +116,7 @@ export type McpProbeResult = z.infer<typeof McpProbeResultSchema>;
 /**
  * 超时预算（两者都**罩住收尾**）：
  *   - http 15 s：实测 1–3.4 s，留够慢网关；
- *   - stdio 30 s：npx 解析层固定 +2.7 s、冷下载实测 3.6 s，而行内 HOME 是全新的（还要重下）。
+ *   - stdio 30 s：npx 解析层固定 +2.7 s、冷下载实测 3.6 s，而候选内 HOME 是全新的（还要重下）。
  * 为什么不能照抄 `api/src/providers.ts` 的 `MODELS_TIMEOUT_MS = 15_000` 给 stdio：那个数
  * 是「网关响应」的预算，与「起一个子进程并等它把依赖下下来」不是一件事。
  */
@@ -127,8 +127,8 @@ export const MCP_PROBE_TIMEOUT_MS = { http: 15_000, stdio: 30_000 } as const;
  * （尤其是 npx 那句与停用那句，它们是验收清单上的两条）。
  */
 export const MCP_PROBE_NOTES = {
-  /** `command` 含 npx / npm：候选执行时行内 HOME 是新的，缓存为空 */
-  npxFirstRun: '候选执行时首次启动还要在本行环境里下载依赖',
+  /** `command` 含 npx / npm：候选执行时候选内 HOME 是新的，缓存为空 */
+  npxFirstRun: '候选执行时首次启动还要在候选环境里下载依赖',
   /** 停用条目的结果照样给，但要写明它不会被注入 */
   disabled: '已停用，不会注入',
   /**

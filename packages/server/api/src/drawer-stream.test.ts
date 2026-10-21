@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * 抽屉流（单行单 channel 的完整流水）：该族的事件按 seq 回放 + 续订、该族的消息全量回放 + 续订，
+ * 抽屉流（单个候选单 channel 的完整流水）：该族的事件按 seq 回放 + 续订、该族的消息全量回放 + 续订，
  * 两条既有通道合成一条连接。
  *
  * 三处是本文件最硬的断言对象（合流之后才出现的新接缝）：
- *   ① **帧头分轨**：事件帧有 `id:` 行（`Last-Event-ID` 的唯一来源），消息帧一行都没有——
+ *   ① **帧头分轨**：事件帧有 `id:` 行（`Last-Event-ID` 的唯一来源），消息帧一个候选都没有——
  *      `messageId` 跨运行重号、delta 覆盖让历史可变，按 seq 续订对一份会变的历史没有意义；
  *   ② **消息先回放、事件后回放**：终态一到就关流，事件排在前面会把消息回放整段吞掉
- *      （跑完的行的对话视图会立刻断连，而那份历史正是用户要看的东西）；
+ *      （跑完的候选的对话视图会立刻断连，而那份历史正是用户要看的东西）；
  *   ③ **两族互不串**：候选那条流不许收到评分那族的总线推送，反之亦然。
  *
  * 帧的载荷一律用**契约**（`RunStreamFrameSchema`）校验，不拿实现里的拼法再算一遍：
@@ -26,7 +26,7 @@ import {
   type AgentEvent,
   type AgentMessage,
   type EvalRun,
-  type RowRecord,
+  type CandidateRecord,
   type SubagentRecord,
 } from '@aieval/contracts';
 import {
@@ -35,34 +35,34 @@ import {
   appendSubagent,
   resetEvents,
   resetRecords,
-  rowEventsFile,
-  rowJudgeEventsFile,
-  rowJudgeMessagesFile,
-  rowMessagesFile,
+  candidateEventsFile,
+  candidateJudgeEventsFile,
+  candidateJudgeMessagesFile,
+  candidateMessagesFile,
   setCasesRootForTesting,
   setConfigDirForTesting,
 } from '@aieval/core';
 import { getRun as getRunSnapshot } from '@aieval/evaluator';
 import { streamDrawer } from './drawer-stream';
 import { updateSettings } from './settings';
-import { makeCase, makeRow, makeRun, seedConfig } from './testing/run-fixtures';
+import { makeCase, makeCandidate, makeRun, seedConfig } from './testing/run-fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /** 候选那族的两条总线（事件 / 记录）——与评分那两张**刻意分开**：共用一张 Map 的话，
  * 「评分推送不投给候选订阅者」这条不变量在替身里会假绿，而那正是它要守的东西 */
 const listeners = new Map<string, Array<(event: AgentEvent) => void>>();
-const recordListeners = new Map<string, Array<(record: RowRecord) => void>>();
+const recordListeners = new Map<string, Array<(record: CandidateRecord) => void>>();
 /** 评分那族的两条总线 */
 const judgeListeners = new Map<string, Array<(event: AgentEvent) => void>>();
-const judgeRecordListeners = new Map<string, Array<(record: RowRecord) => void>>();
+const judgeRecordListeners = new Map<string, Array<(record: CandidateRecord) => void>>();
 
 /**
- * 一张监听的登记表（`key` 一律是 `runId/rowId`，两条流各自一张）。
+ * 一张监听的登记表（`key` 一律是 `runId/candidateId`，两条流各自一张）。
  * 退订到空就把键删掉：用例据此区分「从没订阅过」与「订阅过又退干净了」——两者都该是
  * 「这条总线此刻没有这个流的监听」，而留着空数组会让第一种断言写成第二种。
  */
-function track<Item>(table: Map<string, Item[]>, runId: string, rowId: string, item: Item): () => void {
-  const key = `${runId}/${rowId}`;
+function track<Item>(table: Map<string, Item[]>, runId: string, candidateId: string, item: Item): () => void {
+  const key = `${runId}/${candidateId}`;
   const bucket = table.get(key) ?? [];
   bucket.push(item);
   table.set(key, bucket);
@@ -79,24 +79,24 @@ vi.mock('@aieval/evaluator', () => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
-  subscribeRowEvents: vi.fn((runId: string, rowId: string, listener: (event: AgentEvent) => void) =>
-    track(listeners, runId, rowId, listener),
+  abortCandidate: vi.fn(),
+  subscribeCandidateEvents: vi.fn((runId: string, candidateId: string, listener: (event: AgentEvent) => void) =>
+    track(listeners, runId, candidateId, listener),
   ),
-  subscribeJudgeEvents: vi.fn((runId: string, rowId: string, listener: (event: AgentEvent) => void) =>
-    track(judgeListeners, runId, rowId, listener),
+  subscribeJudgeEvents: vi.fn((runId: string, candidateId: string, listener: (event: AgentEvent) => void) =>
+    track(judgeListeners, runId, candidateId, listener),
   ),
-  subscribeRowRecords: vi.fn((runId: string, rowId: string, listener: (record: RowRecord) => void) =>
-    track(recordListeners, runId, rowId, listener),
+  subscribeCandidateRecords: vi.fn((runId: string, candidateId: string, listener: (record: CandidateRecord) => void) =>
+    track(recordListeners, runId, candidateId, listener),
   ),
-  subscribeJudgeRecords: vi.fn((runId: string, rowId: string, listener: (record: RowRecord) => void) =>
-    track(judgeRecordListeners, runId, rowId, listener),
+  subscribeJudgeRecords: vi.fn((runId: string, candidateId: string, listener: (record: CandidateRecord) => void) =>
+    track(judgeRecordListeners, runId, candidateId, listener),
   ),
 }));
 
 /** 用例只建一轮一行（夹具的缺省 id） */
 const RUN_ID = 'run-1';
-const ROW_ID = 'r-1';
+const CANDIDATE_ID = 'r-1';
 
 let dir: string;
 let store: Map<string, EvalRun>;
@@ -108,63 +108,63 @@ function currentRun(): EvalRun {
   return run;
 }
 
-/** 该轮该行的产物文件（一律从快照的 `workspaceBase` 推：用户改过工作区根之后历史产物仍在旧根下） */
+/** 该轮该候选的产物文件（一律从快照的 `workspaceBase` 推：用户改过工作区根之后历史产物仍在旧根下） */
 function fileOf(kind: 'events' | 'judge-events' | 'messages' | 'judge-messages'): string {
   const run = currentRun();
   switch (kind) {
     case 'events':
-      return rowEventsFile(run.workspaceBase, run.id, ROW_ID);
+      return candidateEventsFile(run.workspaceBase, run.id, CANDIDATE_ID);
     case 'judge-events':
-      return rowJudgeEventsFile(run.workspaceBase, run.id, ROW_ID);
+      return candidateJudgeEventsFile(run.workspaceBase, run.id, CANDIDATE_ID);
     case 'messages':
-      return rowMessagesFile(run.workspaceBase, run.id, ROW_ID);
+      return candidateMessagesFile(run.workspaceBase, run.id, CANDIDATE_ID);
     case 'judge-messages':
-      return rowJudgeMessagesFile(run.workspaceBase, run.id, ROW_ID);
+      return candidateJudgeMessagesFile(run.workspaceBase, run.id, CANDIDATE_ID);
   }
 }
 
 /** 往文件里追加一条事件（走 core 的 seq 分配） */
-function appendRowEvent(file: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
+function appendEventTo(file: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
   mkdirSync(dirname(file), { recursive: true });
   return appendEvent(file, event);
 }
 
 function appendCandidateEvent(event: Parameters<typeof appendEvent>[1]): AgentEvent {
-  return appendRowEvent(fileOf('events'), event);
+  return appendEventTo(fileOf('events'), event);
 }
 
 function appendJudgeEvent(event: Parameters<typeof appendEvent>[1]): AgentEvent {
-  return appendRowEvent(fileOf('judge-events'), event);
+  return appendEventTo(fileOf('judge-events'), event);
 }
 
 /** 往记录文件里追加一条记录（走 core 的校验与落盘） */
-function appendRowRecord(file: string, record: RowRecord): void {
+function appendRecordTo(file: string, record: CandidateRecord): void {
   mkdirSync(dirname(file), { recursive: true });
   if (record.type === 'message') appendMessage(file, record.message);
   else appendSubagent(file, record.subagent);
 }
 
-function appendCandidateRecord(record: RowRecord): void {
-  appendRowRecord(fileOf('messages'), record);
+function appendCandidateRecord(record: CandidateRecord): void {
+  appendRecordTo(fileOf('messages'), record);
 }
 
-function appendJudgeRecord(record: RowRecord): void {
-  appendRowRecord(fileOf('judge-messages'), record);
+function appendJudgeRecord(record: CandidateRecord): void {
+  appendRecordTo(fileOf('judge-messages'), record);
 }
 
-/** 把一条事件推给挂在候选事件总线上的监听（模拟编排层 `publishRowEvent`） */
+/** 把一条事件推给挂在候选事件总线上的监听（模拟编排层 `publishCandidateEvent`） */
 function publishCandidateEvent(event: AgentEvent): void {
-  for (const listener of listeners.get(`${RUN_ID}/${ROW_ID}`) ?? []) listener(event);
+  for (const listener of listeners.get(`${RUN_ID}/${CANDIDATE_ID}`) ?? []) listener(event);
 }
 
 /** 把一条记录推给挂在候选记录总线上的监听 */
-function publishCandidateRecord(record: RowRecord): void {
-  for (const listener of recordListeners.get(`${RUN_ID}/${ROW_ID}`) ?? []) listener(record);
+function publishCandidateRecord(record: CandidateRecord): void {
+  for (const listener of recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`) ?? []) listener(record);
 }
 
 /** 把一条记录推给挂在评分记录总线上的监听（栅栏用例用它） */
-function publishJudgeRecord(record: RowRecord): void {
-  for (const listener of judgeRecordListeners.get(`${RUN_ID}/${ROW_ID}`) ?? []) listener(record);
+function publishJudgeRecord(record: CandidateRecord): void {
+  for (const listener of judgeRecordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`) ?? []) listener(record);
 }
 
 /** 一条最小合法消息（用例只覆盖自己关心的格） */
@@ -190,12 +190,12 @@ function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 /** 一条完整消息记录（非增量 ⇒ 出口不合并，即时成帧） */
-function snapshotRecord(text: string, mergeKey = 'main|1|assistant|-'): RowRecord {
+function snapshotRecord(text: string, mergeKey = 'main|1|assistant|-'): CandidateRecord {
   return { type: 'message', message: makeMessage({ mergeKey, blocks: [{ type: 'text', text }] }) };
 }
 
 /** 一条增量记录（`chunk: 'delta'` + `assembly: 'open'`，与适配器交出来的形状同构） */
-function deltaRecord(text: string, mergeKey = 'main|1|assistant|-'): RowRecord {
+function deltaRecord(text: string, mergeKey = 'main|1|assistant|-'): CandidateRecord {
   return { type: 'message', message: makeMessage({ messageId: 'run-1:d', chunk: 'delta', assembly: 'open', mergeKey, blocks: [{ type: 'text', text }] }) };
 }
 
@@ -255,7 +255,7 @@ beforeEach(() => {
   judgeRecordListeners.clear();
 
   store = new Map();
-  store.set(RUN_ID, makeRun({ rows: [makeRow()] }));
+  store.set(RUN_ID, makeRun({ candidates: [makeCandidate()] }));
   vi.mocked(getRunSnapshot).mockImplementation((runId: string) => {
     const found = store.get(runId);
     if (found === undefined) throw new ServiceError('NOT_FOUND', `评测不存在：${runId}`);
@@ -278,25 +278,25 @@ afterEach(() => {
 });
 
 describe('streamDrawer：帧形态与两族的接缝', () => {
-  it('事件帧有 `id:` 行、消息帧一行都没有（两族的帧头分轨）', async () => {
+  it('事件帧有 `id:` 行、消息帧一个候选都没有（两族的帧头分轨）', async () => {
     const event = appendCandidateEvent({ type: 'log', stream: 'stdout', text: '第一行' });
     appendCandidateRecord(snapshotRecord('对话历史'));
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     // 顺序：ready → 消息回放 → 事件回放（文件头口径 ②）
     expect(await readChunk(reader)).toBe(': ready\n\n');
     const messageFrame = await readChunk(reader);
     const eventFrame = await readChunk(reader);
     await reader.cancel();
 
-    // 消息帧只有 event/data 两行：`id:` 行是浏览器 `Last-Event-ID` 的唯一来源，
+    // 消息帧只有 event/data 两个候选：`id:` 候选是浏览器 `Last-Event-ID` 的唯一来源，
     // 而这一侧没有任何东西能解释那个值（messageId 跨运行重号、delta 覆盖让历史可变）
     expect(messageFrame).not.toMatch(/^id: /m);
     expect(messageFrame.split('\n')[0]).toBe('event: message');
     expect(payloadOf(messageFrame)).toMatchObject({
       type: 'message',
-      rowId: ROW_ID,
-      rowChannel: 'candidate',
+      candidateId: CANDIDATE_ID,
+      candidateChannel: 'candidate',
       message: { messageId: 'run-1:1' },
     });
 
@@ -304,8 +304,8 @@ describe('streamDrawer：帧形态与两族的接缝', () => {
     expect(eventFrame.split('\n')[1]).toBe('event: log');
     expect(payloadOf(eventFrame)).toMatchObject({
       type: 'log',
-      rowId: ROW_ID,
-      rowChannel: 'candidate',
+      candidateId: CANDIDATE_ID,
+      candidateChannel: 'candidate',
       seq: event.seq,
       text: '第一行',
     });
@@ -317,7 +317,7 @@ describe('streamDrawer：帧形态与两族的接缝', () => {
     const judgeEvent = appendJudgeEvent({ type: 'log', stream: 'stderr', text: '评分事件' });
     appendJudgeRecord(snapshotRecord('评分消息', 'judge|-'));
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'judge', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'judge', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
     const messageFrame = await readChunk(reader);
     const eventFrame = await readChunk(reader);
@@ -326,24 +326,24 @@ describe('streamDrawer：帧形态与两族的接缝', () => {
     expect(messageFrame).not.toMatch(/^id: /m);
     expect(payloadOf(messageFrame)).toMatchObject({
       type: 'message',
-      rowId: ROW_ID,
-      rowChannel: 'judge',
+      candidateId: CANDIDATE_ID,
+      candidateChannel: 'judge',
       message: { mergeKey: 'judge|-' },
     });
     expect(eventFrame).toMatch(new RegExp(`^id: ${judgeEvent.seq}$`, 'm'));
-    expect(payloadOf(eventFrame)).toMatchObject({ type: 'log', rowId: ROW_ID, rowChannel: 'judge', text: '评分事件' });
+    expect(payloadOf(eventFrame)).toMatchObject({ type: 'log', candidateId: CANDIDATE_ID, candidateChannel: 'judge', text: '评分事件' });
     expect(messageFrame + eventFrame).not.toContain('候选');
   });
 
   it('两族总线互不串：往候选总线推，judge 那条流一帧都收不到', async () => {
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'judge', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'judge', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     // judge 流挂的是评分那两条总线（候选那两条一格都不该挂）
-    expect(judgeListeners.get(`${RUN_ID}/${ROW_ID}`)).toHaveLength(1);
-    expect(judgeRecordListeners.get(`${RUN_ID}/${ROW_ID}`)).toHaveLength(1);
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
+    expect(judgeListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toHaveLength(1);
+    expect(judgeRecordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toHaveLength(1);
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
 
     // 候选那两条总线上的推送（事件走 `appendCandidateEvent` 的返回值：`at`/`seq` 由 core 补全）
     publishCandidateEvent(appendCandidateEvent({ type: 'log', stream: 'stdout', text: '候选的推送' }));
@@ -361,14 +361,14 @@ describe('streamDrawer：帧形态与两族的接缝', () => {
   it('子任务行也是消息那一侧的一帧（`event` 名取记录的 `type`）', async () => {
     appendCandidateRecord({ type: 'subagent', subagent: makeSubagent() });
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
     const frame = await readChunk(reader);
     await reader.cancel();
 
     expect(frame.split('\n')[0]).toBe('event: subagent');
     expect(frame).not.toMatch(/^id: /m);
-    expect(payloadOf(frame)).toMatchObject({ type: 'subagent', rowId: ROW_ID, rowChannel: 'candidate', subagent: { subagentId: 'child-1' } });
+    expect(payloadOf(frame)).toMatchObject({ type: 'subagent', candidateId: CANDIDATE_ID, candidateChannel: 'candidate', subagent: { subagentId: 'child-1' } });
   });
 });
 
@@ -380,7 +380,7 @@ describe('streamDrawer：续订游标', () => {
     appendCandidateRecord({ type: 'message', message: makeMessage({ messageId: 'run-1:a', blocks: [{ type: 'text', text: '消息一' }] }) });
     appendCandidateRecord({ type: 'message', message: makeMessage({ messageId: 'run-1:b', mergeKey: 'main|2|assistant|-', blocks: [{ type: 'text', text: '消息二' }] }) });
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 2).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 2).getReader();
     let text = await readChunk(reader); // ready
     for (let index = 0; index < 3; index += 1) text += await readChunk(reader); // 两条消息 + 一条事件
     await reader.cancel();
@@ -400,7 +400,7 @@ describe('streamDrawer：续订游标', () => {
     resetEvents(fileOf('events'));
     const fresh = appendCandidateEvent({ type: 'status', status: 'running' });
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', previous.seq).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', previous.seq).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
     const frame = await readChunk(reader);
     await reader.cancel();
@@ -415,7 +415,7 @@ describe('streamDrawer：续订游标', () => {
     appendCandidateEvent({ type: 'log', stream: 'stdout', text: '上一代' });
     const previous = appendCandidateEvent({ type: 'log', stream: 'stdout', text: '上一代末尾' });
 
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', previous.seq).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', previous.seq).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     resetEvents(fileOf('events'));
@@ -435,7 +435,7 @@ describe('streamDrawer：续订游标', () => {
     for (let index = 0; index < 5; index += 1) appendCandidateEvent({ type: 'log', stream: 'stdout', text: `候选${index}` });
 
     // 候选那条流的号已经到 5，评分那条只到 2 ⇒ 5 是「被删掉的那一代」的游标
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'judge', 5).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'judge', 5).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
     const text = (await readChunk(reader)) + (await readChunk(reader));
     await reader.cancel();
@@ -451,28 +451,28 @@ describe('streamDrawer：终态与生命周期', () => {
     appendCandidateRecord(snapshotRecord('跑完之后的对话历史'));
 
     // 回放里带终态 ⇒ 流自己结束（否则 `text()` 这里会挂住）
-    const text = await new Response(streamDrawer(RUN_ID, ROW_ID, 'candidate', 0)).text();
+    const text = await new Response(streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0)).text();
 
     expect(text).toContain(`id: ${end.seq}\nevent: end`);
     expect(text).toContain('跑完之后的对话历史');
-    // 消息在终态帧**之前**：排在后面就会被关流吞掉，而那是用户打开一个跑完的行时要看的东西
+    // 消息在终态帧**之前**：排在后面就会被关流吞掉，而那是用户打开一个跑完的候选时要看的东西
     expect(text.indexOf('跑完之后的对话历史')).toBeLessThan(text.indexOf('event: end'));
     // 历史里已有终态 ⇒ 一条总线都不订阅（订阅了就再也没人退订，长驻服务里越积越多）
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
   });
 
   it('终态的 status 事件同样关流（不必等到 end）', async () => {
     appendCandidateEvent({ type: 'status', status: 'canceled' });
 
-    const text = await new Response(streamDrawer(RUN_ID, ROW_ID, 'candidate', 0)).text();
+    const text = await new Response(streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0)).text();
 
     expect(text).toContain('event: status');
     expect(text.endsWith('\n\n')).toBe(true);
   });
 
   it('实时到达终态 ⇒ 关流并退订两条总线；消息不参与终态判定', async () => {
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     // 只有消息时不关流（消息一侧**不参与**终态判定）
@@ -484,15 +484,15 @@ describe('streamDrawer：终态与生命周期', () => {
     const frame = await readChunk(reader);
 
     expect(frame).toMatch(new RegExp(`^id: ${end.seq}$`, 'm'));
-    expect(payloadOf(frame)).toMatchObject({ type: 'end', rowId: ROW_ID, rowChannel: 'candidate' });
+    expect(payloadOf(frame)).toMatchObject({ type: 'end', candidateId: CANDIDATE_ID, candidateChannel: 'candidate' });
     expect((await reader.read()).done).toBe(true);
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
   });
 
   it('终态关流前先把出口窗口里待发的增量冲出去（否则一段正文停在半截）', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     // 增量进窗口时一条都还没发（16ms 窗口还没到）；终态紧接着来 —— 关流前必须冲出去
@@ -509,7 +509,7 @@ describe('streamDrawer：终态与生命周期', () => {
 
   it('没有终态时流一直活着：消息照发、心跳续着（消息侧不触发关流）', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     publishCandidateRecord(snapshotRecord('实时消息'));
@@ -521,36 +521,36 @@ describe('streamDrawer：终态与生命周期', () => {
 
     await reader.cancel();
     expect(vi.getTimerCount()).toBe(0);
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
   });
 
   it('客户端取消时退订两条总线（否则记录会一直往没人读的流里塞）', async () => {
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     await reader.read();
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toHaveLength(1);
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toHaveLength(1);
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toHaveLength(1);
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toHaveLength(1);
 
     await reader.cancel();
 
-    expect(listeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
-    expect(recordListeners.get(`${RUN_ID}/${ROW_ID}`)).toBeUndefined();
+    expect(listeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
+    expect(recordListeners.get(`${RUN_ID}/${CANDIDATE_ID}`)).toBeUndefined();
   });
 
   it('轮或行不存在时**同步**抛 NOT_FOUND：路由据此给 404 JSON，而不是开一个立刻结束的流', () => {
     for (const channel of ['candidate', 'judge'] as const) {
-      expect(captureThrow(() => streamDrawer('nope', ROW_ID, channel, 0)).code).toBe('NOT_FOUND');
-      // 「行不存在」的校验只有一份（run-artifacts 的 findRow）：连同错误码与**逐字文案**一起钉住
-      const missingRow = captureThrow(() => streamDrawer(RUN_ID, 'r-x', channel, 0));
-      expect(missingRow.code).toBe('NOT_FOUND');
-      expect(missingRow.message).toBe('该评测里没有这一行（r-x）');
+      expect(captureThrow(() => streamDrawer('nope', CANDIDATE_ID, channel, 0)).code).toBe('NOT_FOUND');
+      // 「行不存在」的校验只有一份（run-artifacts 的 findCandidate）：连同错误码与**逐字文案**一起钉住
+      const missingCandidate = captureThrow(() => streamDrawer(RUN_ID, 'r-x', channel, 0));
+      expect(missingCandidate.code).toBe('NOT_FOUND');
+      expect(missingCandidate.message).toBe('该评测里没有这个候选（r-x）');
     }
   });
 });
 
 describe('streamDrawer：增量帧的出口合并', () => {
   it('同一 mergeKey 的连续增量只出一条（末条累积值），快照紧随其后', async () => {
-    const reader = streamDrawer(RUN_ID, ROW_ID, 'candidate', 0).getReader();
+    const reader = streamDrawer(RUN_ID, CANDIDATE_ID, 'candidate', 0).getReader();
     expect(await readChunk(reader)).toBe(': ready\n\n');
 
     publishCandidateRecord(deltaRecord('我先'));

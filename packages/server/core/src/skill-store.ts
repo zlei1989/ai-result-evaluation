@@ -54,10 +54,44 @@ const log = createLogger('skill-store');
 const MISSING_FILE_REASON = `缺 ${SKILL_FILE_NAME}（技能是一个目录，里面放 ${SKILL_FILE_NAME}；只扫这一层，不递归）`;
 
 /**
+ * **不是技能内容、哪一层都不列**的常见噪声条目：OS 元数据、版本库 / 编辑器目录、依赖与缓存。
+ *
+ * 为什么按名字钉死、而不是「点开头一律不列」：技能里完全可能有 `.env` / `.eslintrc` 这类真内容，
+ * 一网打尽会让用户以为「我放的文件不见了」。藏与不藏的边界因此是**这张表**，不是一条通配——
+ * 表外的点文件照列（`.hidden` 这类名字仍然看得见）。
+ *
+ * 目录命中时**连子树一起跳过**，不只是不显示：`node_modules` / `.git` 真进去会白吃掉节点预算
+ * （`SKILL_TREE_MAX_NODES`），把整棵树挤成「没列全」。文件与目录同名判据一致（`.git` 在 worktree
+ * 里本来就是一个文件）。
+ *
+ * 顶层扫描（`scanSkills`）用的是同一张表：技能根下偶然出现的 `node_modules` 不该占一行「缺 SKILL.md」，
+ * 那看起来像「我放的技能坏了」。
+ */
+const HIDDEN_ENTRY_NAMES: ReadonlySet<string> = new Set([
+  // macOS Finder / Windows 资源管理器自己写的元数据
+  '.DS_Store',
+  'Thumbs.db',
+  'desktop.ini',
+  // 版本库与编辑器
+  '.git',
+  '.hg',
+  '.svn',
+  '.idea',
+  '.vscode',
+  // 依赖与语言缓存
+  'node_modules',
+  '.venv',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+]);
+
+/**
  * `disable-model-invocation: true` 的中文原因（**不收**这一条，与上面那条同档）。
  *
  * 为什么它不是一条普通 frontmatter 键：它的语义是「装载进厂商的技能表、但不写进系统提示词」
- * ——于是行级观测格会报「已装上」（厂商清单里确实有它），而模型**根本看不到它**：
+ * ——于是候选级观测格会报「已装上」（厂商清单里确实有它），而模型**根本看不到它**：
  * 一个格子里同时说着「装上了」与「用不上」两句互相拆台的话，且两句都像真的。
  * 本仓的停用语义是**文件级不放**（`installableSkills` 剔掉），不是「藏起来但还能显式调」，
  * 两者混在一处就无法从观测格上区分「用户停用了」与「用户写了这个键」。
@@ -113,7 +147,7 @@ export interface SkillScan {
 
 /**
  * 某一层配置目录下的技能目录（`<配置目录>/skills`）：**源侧与行侧同一个名字**。
- * 源侧是 `getSkillsRoot()`（技能根 = 配置目录 + 它），行侧是「装入这一行的落点」
+ * 源侧是 `getSkillsRoot()`（技能根 = 配置目录 + 它），行侧是「装入这个候选的落点」
  * （`materializeSkills` 收到 `configHome` 后 + 它）——两处各写一个字符串字面量迟早漂成两个落点。
  */
 export function skillsDirOf(configDir: string): string {
@@ -262,7 +296,8 @@ function scanEntry(root: string, name: string, directory: boolean): ScannedSkill
  * 扫技能根：缺目录 ⇒ 空列表 + 一条根级 warning；读失败 ⇒ 抛 INTERNAL。
  *
  * 第一层只留**目录与软链**（软链跟随后按它的目标判定，技能目录常常整条是软链）；
- * 普通文件（`.DS_Store` / `README.md` / 扁平的 `.md`）与其余特殊类型不是技能，忽略并留一条 DEBUG。
+ * 普通文件（`README.md` / 扁平的 `.md`）与其余特殊类型不是技能，忽略并留一条 DEBUG；
+ * `HIDDEN_ENTRY_NAMES` 里的噪声名字（`.DS_Store` / `.git` / `node_modules` …）**连候选都不进**。
  * 输出按 `name` 码位升序（见 `compareSkillNames`）；**不建目录、不删文件**。
  */
 export function scanSkills(): SkillScan {
@@ -286,11 +321,16 @@ export function scanSkills(): SkillScan {
   const candidates: Dirent[] = [];
   const ignored: string[] = [];
   for (const dirent of dirents) {
+    // 噪声条目先按名字挡掉：`node_modules` 这种目录进了候选就会变成一行「缺 SKILL.md」
+    if (HIDDEN_ENTRY_NAMES.has(dirent.name)) {
+      ignored.push(dirent.name);
+      continue;
+    }
     if (dirent.isDirectory() || dirent.isSymbolicLink()) candidates.push(dirent);
     else ignored.push(dirent.name);
   }
   if (ignored.length > 0) {
-    log.debug('技能根下的文件不是技能，已忽略', { root, ignored });
+    log.debug('技能根下的条目不是技能，已忽略', { root, ignored });
   }
 
   const skills = candidates
@@ -299,10 +339,14 @@ export function scanSkills(): SkillScan {
   return { skills, skillWarnings: [] };
 }
 
-/** 走过一棵树时的共享状态：节点计数与「这棵树没列全」标记 */
+/**
+ * 走过一棵树时的共享状态：节点计数、「这棵树没列全」标记，以及被 `HIDDEN_ENTRY_NAMES` 挡下的名字。
+ * `hidden` 只进 DEBUG 日志（按名字挡下的噪声不是「没列全」，不置 `truncated`）。
+ */
 interface TreeWalkState {
   count: number;
   truncated: boolean;
+  hidden: string[];
 }
 
 /** 单个文件的字节数；读不出（权限 / 坏链）返回 `null`——`null ≠ 0` 同纪律，不拿 0 顶替 */function fileSize(path: string): number | null {
@@ -326,6 +370,9 @@ function formatSize(bytes: number): string {
  * `realRoot` 是**已解析**的技能目录真实路径，专门用来复核符号链接不越界（见 `readSkillTree`）。
  * 三条不静默的处置：这一层读不出来、深度到上限、节点数到上限——任一发生都把 `truncated` 置真，
  * 让界面说出「没列全」，而不是让人把「树里没有」当成「磁盘上没有」。
+ *
+ * 与上面三条不同，`HIDDEN_ENTRY_NAMES` 里的名字是**有意不列**（见那张表的说明）：它不置
+ * `truncated`、只在 DEBUG 里留一笔，因为那不是「我们没列全」，而是「这一类东西不是技能内容」。
  */
 function walkDirectory(
   realRoot: string,
@@ -353,6 +400,11 @@ function walkDirectory(
     if (state.count >= SKILL_TREE_MAX_NODES) {
       state.truncated = true;
       break;
+    }
+    // 噪声条目在这里就跳过：不计数、不递归（`node_modules` 进来会白吃节点预算）
+    if (HIDDEN_ENTRY_NAMES.has(dirent.name)) {
+      state.hidden.push(dirent.name);
+      continue;
     }
     const fullPath = join(currentDir, dirent.name);
     let isDirectory = dirent.isDirectory();
@@ -397,7 +449,8 @@ function walkDirectory(
 }
 
 /**
- * 列一条技能的**目录树**（左树那一栏）：`<技能根>/<名称>` 之下递归全列。
+ * 列一条技能的**目录树**（左树那一栏）：`<技能根>/<名称>` 之下递归全列，
+ * `HIDDEN_ENTRY_NAMES` 里的噪声条目除外。
  *
  * 与列表那条「只扫第一层、不递归」不是一回事，别互相套用：列表回答的是「哪几条技能」，
  * 树回答的是「这一条技能里有什么」——`references/` 在列表里是附属文件、在树里正是要展开的东西。
@@ -419,8 +472,11 @@ export function readSkillTree(name: string): SkillTree {
     });
   }
 
-  const state: TreeWalkState = { count: 0, truncated: false };
+  const state: TreeWalkState = { count: 0, truncated: false, hidden: [] };
   const children = walkDirectory(realDir, realDir, 1, state);
+  if (state.hidden.length > 0) {
+    log.debug('技能目录里的噪声条目未列出', { name, dir, hidden: [...new Set(state.hidden)] });
+  }
   return {
     name,
     dir,

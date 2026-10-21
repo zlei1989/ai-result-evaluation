@@ -20,7 +20,7 @@ export const ERROR_CODES = [
   'AUTH_FAILED',        // 401  上游凭据无效（context 带 host）
   'RATE_LIMITED',       // 429  上游限流
   'JUDGE_PARSE_FAILED', // 500  评分模型返回不可解析 / 维度缺失（context 带 raw 原文）
-  'SESSION_ID_SHARED',  // 500  同一轮的候选行跑在了同一条厂商会话上（行间隔离漏了）
+  'SESSION_ID_SHARED',  // 500  同一轮的候选跑在了同一条厂商会话上（行间隔离漏了）
   'INTERNAL',           // 500  其它内部错误
 ] as const;
 

@@ -11,14 +11,14 @@
  *      `null` 与 `''` 是两件事，两份形状漂了就会「回灌给厂商的答案」与「落进账本的答案」不一致。
  */
 import { describe, expect, it } from 'vitest';
-import { AskUserAnswerRequestSchema, AskUserStageSchema, PendingAskUserSchema, RowFailureStageSchema } from './index';
+import { AskUserAnswerRequestSchema, AskUserStageSchema, PendingAskUserSchema, CandidateFailureStageSchema } from './index';
 
-/** 一条待答提问的完整样本（`rowId` 可为空的两种取值各测一遍） */
+/** 一条待答提问的完整样本（`candidateId` 可为空的两种取值各测一遍） */
 function pending(patch: Record<string, unknown> = {}) {
   return {
     askId: 'ask-1',
     runId: 'run-1',
-    rowId: 'row-1',
+    candidateId: 'candidate-1',
     stage: 'agent',
     questions: [
       {
@@ -36,15 +36,15 @@ function pending(patch: Record<string, unknown> = {}) {
 }
 
 describe('待答提问的形状', () => {
-  it('stage 与 RowFailureStageSchema 同词表（排障时「哪一段」只该有一套说法）', () => {
-    expect([...AskUserStageSchema.options]).toEqual([...RowFailureStageSchema.options]);
+  it('stage 与 CandidateFailureStageSchema 同词表（排障时「哪一段」只该有一套说法）', () => {
+    expect([...AskUserStageSchema.options]).toEqual([...CandidateFailureStageSchema.options]);
   });
 
-  it('一条待答提问：五格缺一不可，rowId 允许 null（不在某一行上的提问是合法事实）', () => {
+  it('一条待答提问：五格缺一不可，candidateId 允许 null（不在某一个候选上的提问是合法事实）', () => {
     const parsed = PendingAskUserSchema.safeParse(pending());
     expect(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues)).toBe(true);
     expect(parsed.success ? parsed.data : null).toEqual(pending());
-    expect(PendingAskUserSchema.safeParse(pending({ rowId: null })).success).toBe(true);
+    expect(PendingAskUserSchema.safeParse(pending({ candidateId: null })).success).toBe(true);
 
     // 少了 runId 的条目在界面上表现为「有一问在等，但不知道属于谁」——宁可解析失败
     const { runId: _runId, ...missingRun } = pending();

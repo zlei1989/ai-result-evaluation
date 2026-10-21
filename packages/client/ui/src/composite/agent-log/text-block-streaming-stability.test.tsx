@@ -13,13 +13,13 @@
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import type { ReactElement } from 'react';
-import type { AgentMessage, RowRecord } from '@aieval/contracts';
+import type { AgentMessage, CandidateRecord } from '@aieval/contracts';
 import { buildAgentLogModel, type AgentLogFactsInput } from './build-model';
 import { nodeIndex } from './render-blocks';
 import { AgentMessageTimeline } from './agent-message-timeline';
 
 /** 与 `MessageAssembler.ingest` 的产出同形：同 `mergeKey`、`messageId` 每投递 +1、`blocks` 为累积值 */
-function frame(seq: number, chunk: 'delta' | 'snapshot', blocks: AgentMessage['blocks']): RowRecord {
+function frame(seq: number, chunk: 'delta' | 'snapshot', blocks: AgentMessage['blocks']): CandidateRecord {
   return {
     type: 'message',
     message: {
@@ -55,7 +55,7 @@ const FACTS: AgentLogFactsInput = {
 };
 
 /** 一帧 records → 时间轴视图：走真实的 `buildAgentLogModel`（fold 与摊块都在链上），不绕过任何一层 */
-function timelineOf(records: readonly RowRecord[]): ReactElement {
+function timelineOf(records: readonly CandidateRecord[]): ReactElement {
   const model = buildAgentLogModel({ records, events: [], facts: FACTS });
   const main = model.nodes.find((node) => node.kind === 'main') ?? model.nodes[0];
   if (main === undefined) throw new Error('模型里没有会话节点');
@@ -70,7 +70,7 @@ function chunkSpans(container: HTMLElement): NodeListOf<HTMLSpanElement> {
 
 describe('正文块流式挂载稳定性', () => {
   it('帧序列推进（messageId 每帧变化、text 累积、块收尾快照、下一块增量）时正文块不重挂、chunk 只增不减', () => {
-    // 帧 1：正文增量（半截；未闭合的行内代码会被 X 的流式缓存扣住，只显示已 commit 的前缀）
+    // 帧 1：正文增量（半截；未闭合的候选内代码会被 X 的流式缓存扣住，只显示已 commit 的前缀）
     const view = render(
       timelineOf([frame(1, 'delta', [{ type: 'text', text: '先看看 `package.json' }])]),
     );

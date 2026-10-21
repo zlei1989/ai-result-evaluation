@@ -50,10 +50,10 @@ const route: AgentRunInput['route'] = {
   modelId: 'claude-sonnet-4-5',
 };
 
-/** ② 每行一份事件回调：同步消费、不 await；本层抛错会改变结论吗——不会（骨架吞掉并记 error 日志），
+/** ② 每个候选一份事件回调：同步消费、不 await；本层抛错会改变结论吗——不会（骨架吞掉并记 error 日志），
  *  但「把事件落盘」是你的职责，抛错会让那一条事件丢失 */
 const onEvent = (event: AgentEvent): void => {
-  appendRowEvent(rowId, event);        // 实现自便：落 events.jsonl / 推 SSE / 逐步回写快照
+  appendCandidateEvent(candidateId, event);        // 实现自便：落 events.jsonl / 推 SSE / 逐步回写快照
 };
 
 // ③ 工作区与独立配置目录由编排层的准备步骤产好（适配器不做 git 操作、不建目录）

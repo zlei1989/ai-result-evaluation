@@ -51,7 +51,7 @@ export function AgentRunStateTag({ running, hasResult, missingReason, since }: A
    */
   const now = useNow(!hasResult && running && sinceMs !== null);
 
-  // 结果到手 ⇒ 这一格不表态（包括轮次还在跑、但这行的结果已经回来了的那种）
+  // 结果到手 ⇒ 这一格不表态（包括轮次还在跑、但这候选的结果已经回来了的那种）
   if (hasResult) return null;
 
   if (!running) {

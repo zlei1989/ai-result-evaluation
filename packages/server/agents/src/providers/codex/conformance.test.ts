@@ -95,7 +95,7 @@ function product(payloads: readonly AppServerNotificationPayload[], options: { o
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
   /**
-   * 行级事件**如实收**，且必须走**真实发射路径**（`createEventEmitter`）：投影出来的只是 draft，
+   * 候选级事件**如实收**，且必须走**真实发射路径**（`createEventEmitter`）：投影出来的只是 draft，
    * `seq` 与 `at` 是发射时补的——直接收 draft 会造出一批形状残缺的事件，
    * 而事件形状正是契约管的东西（套件的 `checkEventShapes` 逐个校验）。
    * 收进来之后「增量的落点是内容块、不是事件」这条口径才有条数判据。
@@ -512,7 +512,7 @@ describeProviderConformance({
       },
       /**
        * `'idle'` 档走**真路径**：真 `codex app-server` 下厂商自己把条目撒成新一轮，
-       * 哨兵文本进的是**厂商出站请求体**、那一轮跑完、它的答复成为本行 `finalText`
+       * 哨兵文本进的是**厂商出站请求体**、那一轮跑完、它的答复成为候选 `finalText`
        * （驱动器 `testing/codex-injection-fixture.ts`，用例 `turn-injection-delivery.test.ts`；
        * 阴性对照是不挂注入面的同一套剧本）。
        */

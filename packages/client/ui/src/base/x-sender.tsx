@@ -36,7 +36,7 @@ export interface XSenderProps {
   /** 点发送键或回车时触发；调用方在这一刻决定这条消息的意图 */
   onSubmit(message: string): void;
   placeholder?: string;
-  /** 只读态（例如这一行已经收场） */
+  /** 只读态（例如这个候选已经收场） */
   disabled?: boolean;
   /** 输入框**上方**的展开面板（本仓放附件预览） */
   header?: ReactNode;

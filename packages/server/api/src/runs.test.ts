@@ -7,7 +7,7 @@
  * 契约就是 evaluator 导出的那几个函数；在这一层替换掉它们，能同时做到三件事——
  *   1. **不起真实 agent 进程**：`startRun` / `abortRun` 落到假的实现上，编排状态机（以及它
  *      会 spawn 的子进程）在 api 用例里根本不会被进入；
- *   2. 断言「api 有没有把该做的事交给编排层」（调用次数与入参），这比 sdk 层的行为更能定位问题；
+ *   2. 断言「api 有没有把该做的事交给编排层」（调用次数与入参），这比 sdk 层的候选为更能定位问题；
  *   3. 快照的读写在假实现里是一个内存 Map，用例可以精确控制「磁盘上有什么」。
  *
  * `@aieval/agents` **保持真实**：注册表是静态注册 + 纯元数据（厂商 SDK 是函数作用域
@@ -32,26 +32,26 @@ import {
   EFFORT_OFF,
   PROTOCOL_LABELS,
   ServiceError,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
   type Rubric,
   type TestCase,
 } from '@aieval/contracts';
-import { rowWorkspaceDir, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
+import { candidateWorkspaceDir, setCasesRootForTesting, setConfigDirForTesting } from '@aieval/core';
 import {
-  abortRow as abortRowInOrchestrator,
+  abortCandidate as abortCandidateInOrchestrator,
   abortRun as abortRunInOrchestrator,
   assertRunMutable,
   deleteRun as deleteRunInOrchestrator,
   getRun as getRunSnapshot,
   listRuns as listRunsFromDisk,
-  rescoreRow as rescoreRowInOrchestrator,
-  retryRow as retryRowInOrchestrator,
+  rescoreCandidate as rescoreCandidateInOrchestrator,
+  retryCandidate as retryCandidateInOrchestrator,
   saveRun,
   startRun as startRunInOrchestrator,
 } from '@aieval/evaluator';
 import {
-  abortRow,
+  abortCandidate,
   abortRun,
   createRun,
   deleteRun,
@@ -60,9 +60,9 @@ import {
   listModelOptions,
   listRunsView,
   planRunUpdate,
-  rescoreRow,
-  resolveRunRows,
-  retryRow,
+  rescoreCandidate,
+  resolveRunCandidates,
+  retryCandidate,
   startRun,
   updateRun,
   type RunTargetCase,
@@ -72,7 +72,7 @@ import {
   makeAnthropicProvider,
   makeCase,
   makeProvider,
-  makeRow,
+  makeCandidate,
   makeRun,
   seedConfig,
 } from './testing/run-fixtures';
@@ -96,9 +96,9 @@ vi.mock('@aieval/evaluator', async (importOriginal) => {
     saveRun: vi.fn(),
     startRun: vi.fn(),
     abortRun: vi.fn(),
-    abortRow: vi.fn(),
-    rescoreRow: vi.fn(),
-    retryRow: vi.fn(),
+    abortCandidate: vi.fn(),
+    rescoreCandidate: vi.fn(),
+    retryCandidate: vi.fn(),
     // 守卫：真实实现读的是编排层的在途任务表，而本层没有在途任务 ⇒ 恒通过，
     // 于是「它一抛就不许落盘」这条不变式一直没人守。换成可抛的替身，下面那条用例才钉得住它。
     assertRunMutable: vi.fn(),
@@ -141,12 +141,12 @@ beforeEach(() => {
     if (run === undefined) throw new ServiceError('NOT_FOUND', `评测不存在：${runId}`);
     return { ...run, status: 'partial' };
   });
-  vi.mocked(abortRowInOrchestrator).mockImplementation((runId: string) => {
+  vi.mocked(abortCandidateInOrchestrator).mockImplementation((runId: string) => {
     const run = store.get(runId);
     if (run === undefined) throw new ServiceError('NOT_FOUND', `评测不存在：${runId}`);
     return { ...run, status: 'partial' };
   });
-  // 工作区根目录指到临时目录：创建出来的行路径不会落到真实 ~/.aieval-runs
+  // 工作区根目录指到临时目录：创建出来的候选路径不会落到真实 ~/.aieval-runs
   updateSettings({ workspaceRoot: join(dir, 'ws') });
   seedConfig({ providers: [makeProvider(), makeAnthropicProvider()], cases: [makeCase()] });
 });
@@ -163,14 +163,14 @@ afterEach(() => {
 });
 
 describe('createRun', () => {
-  it('落库 idle、不自动开跑，并按行快照供应商名与 baseUrl', () => {
+  it('落库 idle、不自动开跑，并按候选快照供应商名与 baseUrl', () => {
     const run = createRun({
       caseId: 'c-1',
       executionMode: 'serial',
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
@@ -180,18 +180,18 @@ describe('createRun', () => {
     expect(run.executionMode).toBe('serial');
     expect(run.startedAt).toBeNull();
     expect(run.finishedAt).toBeNull();
-    expect(run.rows).toHaveLength(2);
+    expect(run.candidates).toHaveLength(2);
     // 创建**不得**把「开始」一起做了：编排层的启动函数一次都不能被调用
     expect(vi.mocked(startRunInOrchestrator)).not.toHaveBeenCalled();
 
-    const [first, second] = run.rows;
+    const [first, second] = run.candidates;
     expect(first?.status).toBe('pending');
     expect(first?.providerId).toBe('p-anthropic');
     expect(first?.providerName).toBe('Anthropic 网关');
     expect(first?.baseUrl).toBe('https://gw.example.com/anthropic');
     expect(first?.modelId).toBe('claude-opus-4-6');
     expect(second?.providerName).toBe('OpenAI 网关');
-    // 分支名用行 id（同一用例下多候选共用分支名会互相踩）
+    // 分支名用候选 id（同一用例下多候选共用分支名会互相踩）
     expect(first?.branch).toBe(`test/${first?.id ?? ''}`);
     expect(first?.workspacePath.startsWith(join(dir, 'ws'))).toBe(true);
     expect(first?.tokens).toBeNull();
@@ -201,7 +201,7 @@ describe('createRun', () => {
   });
 
   it('创建时落 baselineCommit 空串（= 尚未准备），绝不伪造 40 位假 hash', () => {
-    // 基线要到准备阶段才解析成具体 hash（contracts 的 EvalRowSchema 就是 z.string()，
+    // 基线要到准备阶段才解析成具体 hash（contracts 的 EvalCandidateSchema 就是 z.string()，
     // 早先有一条断言明确要求空串必须解析成功）。写假 hash 会让界面显示一个不存在的 commit，
     // 也让「准备阶段把 HEAD 解析成具体 hash」这一步失去判据。
     const run = createRun({
@@ -210,13 +210,13 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     });
 
-    expect(run.rows.map((row) => row.baselineCommit)).toEqual(['', '']);
+    expect(run.candidates.map((candidate) => candidate.baselineCommit)).toEqual(['', '']);
   });
 
   it('冗余快照用例标题/仓库路径/commit：用例被删也说得清当时测的是什么', () => {
@@ -231,7 +231,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.caseTitle).toBe('为多协议入站补齐 Anthropic 到 Chat 的转换');
@@ -257,7 +257,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.repoBranch).toBe('feat/x');
@@ -285,7 +285,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.rubric).toEqual(rubric);
@@ -308,7 +308,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     const on = createRun({
       caseId: 'c-2',
@@ -316,7 +316,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(off.includeSteps).toBe(false);
@@ -339,7 +339,7 @@ describe('createRun', () => {
       askUser: false,
       injectMessages: false,
       note: '  对比模型不同版本间的差异  ',
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(explicit.note).toBe('对比模型不同版本间的差异');
 
@@ -349,7 +349,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(defaulted.note).toBe('');
     // 落盘的是收敛后的值（不是 undefined）
@@ -377,7 +377,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.repoBranch).toBeNull();
@@ -392,7 +392,7 @@ describe('createRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -412,7 +412,7 @@ describe('createRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -430,7 +430,7 @@ describe('createRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-3-5-sonnet' }],
       });
     } catch (error) {
       caught = error;
@@ -449,7 +449,7 @@ describe('createRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       });
     } catch (error) {
       caught = error;
@@ -480,7 +480,7 @@ describe('createRun', () => {
         useAgentJudge: true,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/没有配置默认评分智能体/);
     // 拦下来就等于没创建：不能在磁盘上留一轮「永远跑不了评分」的评测
@@ -504,7 +504,7 @@ describe('createRun', () => {
         useAgentJudge: true,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/Codex 只接受 OpenAI 兼容协议/);
     expect(vi.mocked(saveRun)).not.toHaveBeenCalled();
@@ -525,7 +525,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: true,
       injectMessages: true,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(created.askUser).toBe(true);
 
@@ -536,7 +536,7 @@ describe('createRun', () => {
       // 老客户端不带这一格：它必须落 `false` 而不是 `undefined`（读侧只有布尔这一档）
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(defaulted.askUser).toBe(false);
 
@@ -547,7 +547,7 @@ describe('createRun', () => {
       useAgentJudge: created.useAgentJudge,
       askUser: true,
       injectMessages: true,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(edited.askUser).toBe(true);
   });
@@ -564,7 +564,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: true,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(created.injectMessages).toBe(true);
 
@@ -575,7 +575,7 @@ describe('createRun', () => {
       askUser: false,
       // 老客户端不带这一格：它必须落 `false` 而不是 `undefined`（读侧只有布尔这一档）
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(defaulted.injectMessages).toBe(false);
 
@@ -586,7 +586,7 @@ describe('createRun', () => {
       useAgentJudge: created.useAgentJudge,
       askUser: false,
       injectMessages: true,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(edited.injectMessages).toBe(true);
 
@@ -597,7 +597,7 @@ describe('createRun', () => {
       useAgentJudge: created.useAgentJudge,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
     expect(off.injectMessages).toBe(false);
   });
@@ -610,7 +610,7 @@ describe('createRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(run.useAgentJudge).toBe(false);
@@ -670,8 +670,8 @@ describe('getRunView', () => {
 });
 
 describe('startRun', () => {
-  it('有可执行行时交给编排层并返回它的结果', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ status: 'failed' })] }));
+  it('有可执行候选时交给编排层并返回它的结果', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ status: 'failed' })] }));
 
     const run = startRun('run-1');
 
@@ -679,10 +679,10 @@ describe('startRun', () => {
     expect(run.status).toBe('running');
   });
 
-  it('没有可执行行时抛 CONFLICT，且不惊动编排层', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ id: 'r-1', status: 'judged' })] }));
+  it('没有可执行候选时抛 CONFLICT，且不惊动编排层', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ id: 'r-1', status: 'judged' })] }));
 
-    expect(() => startRun('run-1')).toThrowError(/没有可执行的候选行/);
+    expect(() => startRun('run-1')).toThrowError(/没有可执行的候选/);
     // 静默什么都不做是最难排查的一种反馈：界面刚点过「开始」，必须有明确失败
     expect(vi.mocked(startRunInOrchestrator)).not.toHaveBeenCalled();
   });
@@ -693,7 +693,7 @@ describe('startRun', () => {
   });
 });
 
-describe('abortRun / abortRow', () => {
+describe('abortRun / abortCandidate', () => {
   it('终止整轮：直通编排层', () => {
     store.set('run-1', makeRun());
 
@@ -706,87 +706,87 @@ describe('abortRun / abortRow', () => {
     expect(vi.mocked(abortRunInOrchestrator)).not.toHaveBeenCalled();
   });
 
-  it('终止单行：行存在则直通编排层', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ id: 'r-1', status: 'running' })] }));
+  it('终止单个候选：行存在则直通编排层', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ id: 'r-1', status: 'running' })] }));
 
-    abortRow('run-1', 'r-1');
+    abortCandidate('run-1', 'r-1');
 
-    expect(vi.mocked(abortRowInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
+    expect(vi.mocked(abortCandidateInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
   });
 
-  it('终止单行：行 id 不存在 → NOT_FOUND（脏 URL 不能真的去杀别人）', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ id: 'r-1', status: 'running' })] }));
+  it('终止单个候选：候选 id 不存在 → NOT_FOUND（脏 URL 不能真的去杀别人）', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ id: 'r-1', status: 'running' })] }));
 
-    expect(() => abortRow('run-1', 'r-other')).toThrowError(/没有这一行/);
-    expect(vi.mocked(abortRowInOrchestrator)).not.toHaveBeenCalled();
+    expect(() => abortCandidate('run-1', 'r-other')).toThrowError(/没有这个候选/);
+    expect(vi.mocked(abortCandidateInOrchestrator)).not.toHaveBeenCalled();
   });
 });
 
 /**
  * 重新评分的 api 侧分工。
  *
- * 本层**不重写可用性判据**（那是 contracts 的 `canRescoreRow` + 编排层的 `rescoreRefusal`）：
- * 它只做「这一行在不在这一轮里」的存在性检查，然后把请求转给编排层。故这两条用例钉的是**分工**，
+ * 本层**不重写可用性判据**（那是 contracts 的 `canRescoreCandidate` + 编排层的 `rescoreRefusal`）：
+ * 它只做「这个候选在不在这一轮里」的存在性检查，然后把请求转给编排层。故这两条用例钉的是**分工**，
  * 而不是判据本身——判据的用例在 `orchestrator.test.ts` 的「只重跑评分」那一组里。
  *
- * 为什么这一层要讲分工：`abortRow` 与 `rescoreRow` 的形状逐字同形，而职责边界一漂移，
+ * 为什么这一层要讲分工：`abortCandidate` 与 `rescoreCandidate` 的形状逐字同形，而职责边界一漂移，
  * 最先出现的症状是「界面拿到了 200，但什么都没发生」——那比一个 409 难查得多。
  */
-describe('rescoreRow', () => {
+describe('rescoreCandidate', () => {
   it('行存在则直通编排层，并把编排层给的那份快照原样返回（不另读一次磁盘）', () => {
     const run = makeRun({
       useAgentJudge: true,
       askUser: false,
       injectMessages: false,
-      rows: [makeRow({ id: 'r-1', status: 'judged', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
+      candidates: [makeCandidate({ id: 'r-1', status: 'judged', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
     });
     store.set('run-1', run);
-    vi.mocked(rescoreRowInOrchestrator).mockReturnValue({ ...run, status: 'running' });
+    vi.mocked(rescoreCandidateInOrchestrator).mockReturnValue({ ...run, status: 'running' });
 
-    expect(rescoreRow('run-1', 'r-1').status).toBe('running');
-    expect(vi.mocked(rescoreRowInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
+    expect(rescoreCandidate('run-1', 'r-1').status).toBe('running');
+    expect(vi.mocked(rescoreCandidateInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
   });
 
-  it('行 id 不存在 → NOT_FOUND，且不惊动编排层（脏 URL 不能拿别人的工作区去评分）', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ id: 'r-1' })] }));
+  it('候选 id 不存在 → NOT_FOUND，且不惊动编排层（脏 URL 不能拿别人的工作区去评分）', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ id: 'r-1' })] }));
 
-    expect(() => rescoreRow('run-1', 'r-other')).toThrowError(/没有这一行/);
-    expect(vi.mocked(rescoreRowInOrchestrator)).not.toHaveBeenCalled();
+    expect(() => rescoreCandidate('run-1', 'r-other')).toThrowError(/没有这个候选/);
+    expect(vi.mocked(rescoreCandidateInOrchestrator)).not.toHaveBeenCalled();
   });
 
   it('评测不存在 → NOT_FOUND（存在性检查先于转出）', () => {
-    expect(() => rescoreRow('nope', 'r-1')).toThrowError(ServiceError);
-    expect(vi.mocked(rescoreRowInOrchestrator)).not.toHaveBeenCalled();
+    expect(() => rescoreCandidate('nope', 'r-1')).toThrowError(ServiceError);
+    expect(vi.mocked(rescoreCandidateInOrchestrator)).not.toHaveBeenCalled();
   });
 });
 
 /**
- * 单行重新执行（内部名 retry，界面文案「重新执行」）的 api 侧分工：与 `rescoreRow` **逐字同形**——只有存在性检查在本层，
+ * 单个候选重新执行（内部名 retry，界面文案「重新执行」）的 api 侧分工：与 `rescoreCandidate` **逐字同形**——只有存在性检查在本层，
  * 可用性判据与拒绝原因都在编排层。两条路径分开写是因为它们**做的是两件事**：
  * 重评只重跑评分，重新执行连候选 agent 一起重跑（分钟级 vs 几十秒）。
  */
-describe('retryRow', () => {
+describe('retryCandidate', () => {
   it('行存在则直通编排层，并把编排层给的那份快照原样返回（不另读一次磁盘）', () => {
     const run = makeRun({
-      rows: [makeRow({ id: 'r-1', status: 'failed', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
+      candidates: [makeCandidate({ id: 'r-1', status: 'failed', diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false } })],
     });
     store.set('run-1', run);
-    vi.mocked(retryRowInOrchestrator).mockReturnValue({ ...run, status: 'running' });
+    vi.mocked(retryCandidateInOrchestrator).mockReturnValue({ ...run, status: 'running' });
 
-    expect(retryRow('run-1', 'r-1').status).toBe('running');
-    expect(vi.mocked(retryRowInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
+    expect(retryCandidate('run-1', 'r-1').status).toBe('running');
+    expect(vi.mocked(retryCandidateInOrchestrator)).toHaveBeenCalledWith('run-1', 'r-1');
   });
 
-  it('行 id 不存在 → NOT_FOUND，且不惊动编排层（脏 URL 不能拿别人的工作区去重跑）', () => {
-    store.set('run-1', makeRun({ rows: [makeRow({ id: 'r-1' })] }));
+  it('候选 id 不存在 → NOT_FOUND，且不惊动编排层（脏 URL 不能拿别人的工作区去重跑）', () => {
+    store.set('run-1', makeRun({ candidates: [makeCandidate({ id: 'r-1' })] }));
 
-    expect(() => retryRow('run-1', 'r-other')).toThrowError(/没有这一行/);
-    expect(vi.mocked(retryRowInOrchestrator)).not.toHaveBeenCalled();
+    expect(() => retryCandidate('run-1', 'r-other')).toThrowError(/没有这个候选/);
+    expect(vi.mocked(retryCandidateInOrchestrator)).not.toHaveBeenCalled();
   });
 
   it('评测不存在 → NOT_FOUND（存在性检查先于转出）', () => {
-    expect(() => retryRow('nope', 'r-1')).toThrowError(ServiceError);
-    expect(vi.mocked(retryRowInOrchestrator)).not.toHaveBeenCalled();
+    expect(() => retryCandidate('nope', 'r-1')).toThrowError(ServiceError);
+    expect(vi.mocked(retryCandidateInOrchestrator)).not.toHaveBeenCalled();
   });
 });
 
@@ -828,7 +828,7 @@ describe('listModelOptions', () => {
    * 为什么这条必须存在：只改元数据、没有这条正向用例的话，「放宽」这件事在测试里**没有靶子**——
    * 把 `protocolTypes` 改回单元素，所有既有用例照样全绿（它们断言的正是「只看得到一种协议」）。
    */
-  it('DSH 同时接受两种协议：openai 供应商的模型也进候选池', () => {
+  it('DSH 同时接受两种协议：openai 供应商的模型也进行的池', () => {
     // 顺序 = **供应商清单的顺序**（`listModelOptions` 按 `listProviders()` 逐个 flatMap，
     // 不是按协议集合的顺序）——夹具里 openai 那条排在前面，所以它先出现
     // （`efforts` 这一格的来由见本组开头的说明）
@@ -857,7 +857,7 @@ describe('listAgentModelOptions', () => {
     const groups = listAgentModelOptions();
 
     // 顺序与取值都按真源现比（不写死字面量清单）：加一家时这一条不该红在「清单没抄全」上，
-    // 而该红在真正的行为差异上——逐个下标断言的那些格才是判据
+    // 而该红在真正的候选为差异上——逐个下标断言的那些格才是判据
     expect(groups.map((group) => group.agentKind)).toEqual([...AGENT_KINDS]);
     expect(groups[0]?.protocolTypes).toEqual(['anthropic']);
     expect(groups[1]?.protocolTypes).toEqual(['openai']);
@@ -1026,7 +1026,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'medium' }],
+        candidates: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'medium' }],
       });
     expect(bad).toThrow(ServiceError);
     // 两个值域都要点名：用户才知道是「模型不支持」还是「这家智能体不支持」
@@ -1039,16 +1039,16 @@ describe('思考强度：候选池交集与创建校验', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'high' }],
+      candidates: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: 'high' }],
     });
-    expect(run.rows[0]?.effort).toBe('high');
+    expect(run.candidates[0]?.effort).toBe('high');
 
     /**
      * **关闭档也要能落盘**：上游只声明了 `low/high/max`，`off` 靠
      * `intersectEfforts` 的并集才在候选里 ⇒ 这一条同时钉住「候选里真有它」与「校验放它过去」。
      * 为什么必须有一条：全仓此前**没有一处**用 `effort: EFFORT_OFF` 建过行（ui 与 api 的用例
      * 都只提交过 `high` / `low`）⇒ 把关闭档从候选里去掉、或让校验误拒它，今天照样全绿，
-     * 而症状是「界面选了关闭档 `off`，建行被 400 拦下」。
+     * 而症状是「界面选了关闭档 `off`，建候选被 400 拦下」。
      */
     const off = createRun({
       caseId: 'c-1',
@@ -1056,9 +1056,9 @@ describe('思考强度：候选池交集与创建校验', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: EFFORT_OFF }],
+      candidates: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm', effort: EFFORT_OFF }],
     });
-    expect(off.rows[0]?.effort).toBe(EFFORT_OFF);
+    expect(off.candidates[0]?.effort).toBe(EFFORT_OFF);
 
     const bare = createRun({
       caseId: 'c-1',
@@ -1066,15 +1066,15 @@ describe('思考强度：候选池交集与创建校验', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm' }],
+      candidates: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'm' }],
     });
     // 「没说」与「说了 high」在快照里必须分得开
-    expect(bare.rows[0]?.effort).toBeUndefined();
+    expect(bare.candidates[0]?.effort).toBeUndefined();
   });
 
   /**
    * **未选也要校验**：dsh 的「未选」不是「什么都没要求」，
-   * 它会真的落到缺省档 `high` ⇒ 该档不在候选里时必须**建行就拒**，否则要跑到 dsh 的硬校验处
+   * 它会真的落到缺省档 `high` ⇒ 该档不在候选里时必须**建候选就拒**，否则要跑到 dsh 的硬校验处
    * 才失败（`UNSUPPORTED_REASONING_EFFORT`，正是要避免的「症状离真因很远」）。
    */
   it('未选档位也校验：dsh 的缺省档 high 不在候选里 ⇒ 建行即拒并点名', () => {
@@ -1091,7 +1091,7 @@ describe('思考强度：候选池交集与创建校验', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'only-low' }],
+        candidates: [{ agentKind: 'dsh', providerId: provider.id, modelId: 'only-low' }],
       });
     expect(create).toThrow(ServiceError);
     expect(create).toThrow(/未选档位时/);
@@ -1110,22 +1110,22 @@ describe('思考强度：候选池交集与创建校验', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: provider.id, modelId: 'only-low' }],
+      candidates: [{ agentKind: 'cc', providerId: provider.id, modelId: 'only-low' }],
     });
-    expect(run.rows[0]?.effort).toBeUndefined();
+    expect(run.candidates[0]?.effort).toBeUndefined();
   });
 });
 
 /**
  * `planRunUpdate`：编辑的**逐行处置**。
- * 这是本功能最容易写错的一处——「多重置一行」等于静默丢分，「少重置一行」等于让待开始的行挂着旧分。
- * 故它被抽成纯函数并在这里**直接**测，不走 HTTP（间接断言盖不住「哪一行被重置了」）。
+ * 这是本功能最容易写错的一处——「多重置一行」等于静默丢分，「少重置一行」等于让待开始的候选挂着旧分。
+ * 故它被抽成纯函数并在这里**直接**测，不走 HTTP（间接断言盖不住「哪一个候选被重置了」）。
  */
 describe('planRunUpdate', () => {
   const providers = [makeAnthropicProvider(), makeProvider()];
-  /** 造一条「跑过且有结果」的行：重置与否一看便知 */
-  const judgedRow = (id: string, overrides: Partial<EvalRow> = {}): EvalRow =>
-    makeRow({
+  /** 造一条「跑过且有结果」的候选：重置与否一看便知 */
+  const judgedCandidate = (id: string, overrides: Partial<EvalCandidate> = {}): EvalCandidate =>
+    makeCandidate({
       id,
       status: 'judged',
       baselineCommit: 'a'.repeat(40),
@@ -1135,8 +1135,8 @@ describe('planRunUpdate', () => {
       diff: { filesChanged: 1, insertions: 2, deletions: 0, truncated: false },
       score: {
         // 评分契约：模型只给逐项二元判定，总分与满分由系统按权重加总。
-        // 这一行按「A1（80 分，达成）+ A2（20 分，未达成）」这张表打出来 ⇒ 80 分 / 满分 100。
-        // 本组用例断言的是「重置有没有把这一行的分清掉」，与分是怎么算出来的无关
+        // 这个候选按「A1（80 分，达成）+ A2（20 分，未达成）」这张表打出来 ⇒ 80 分 / 满分 100。
+        // 本组用例断言的是「重置有没有把这个候选的分清掉」，与分是怎么算出来的无关
         judgments: [
           { id: 'A1', achieved: true, reason: '夹具：这一项达成' },
           { id: 'A2', achieved: false, reason: '夹具：这一项未达成' },
@@ -1217,21 +1217,21 @@ describe('planRunUpdate', () => {
   });
 
   it('只改执行模式：所有行逐字不变（含分数 / diff / 计量 / attempts）', () => {
-    const row = judgedRow('r-1');
-    const run = makeRun({ rows: [row], executionMode: 'parallel' });
+    const candidate = judgedCandidate('r-1');
+    const run = makeRun({ candidates: [candidate], executionMode: 'parallel' });
     const input = {
       caseId: 'c-1',
       executionMode: 'serial' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
     expect(next.executionMode).toBe('serial');
-    expect(next.rows).toEqual([row]);
+    expect(next.candidates).toEqual([candidate]);
     // 轮级状态跟着行集合收敛：全 judged ⇒ done
     expect(next.status).toBe('done');
   });
@@ -1239,11 +1239,11 @@ describe('planRunUpdate', () => {
   /**
    * 备注只改自己那一格：显式值 trim 后写进新快照，缺席按空串（编辑载荷是全量替换）。
    * 两件事都不能交给 `{ ...run }` 兜：忘了写这一格 ⇒ 界面上改备注、保存后一点变化都没有；
-   * 顺手把它塞进行的判据 ⇒ 一次什么都没改的「只改备注」也会把跑过的行重置掉（分数与产物消失）。
+   * 顺手把它塞进行的判据 ⇒ 一次什么都没改的「只改备注」也会把跑过的候选重置掉（分数与产物消失）。
    */
   it('只改备注：note 更新（trim）、所有行逐字不变；缺席按空串', () => {
-    const row = judgedRow('r-1');
-    const run = makeRun({ rows: [row], note: '旧备注' });
+    const candidate = judgedCandidate('r-1');
+    const run = makeRun({ candidates: [candidate], note: '旧备注' });
     const input = {
       caseId: 'c-1',
       executionMode: run.executionMode,
@@ -1251,15 +1251,15 @@ describe('planRunUpdate', () => {
       askUser: run.askUser,
       injectMessages: run.injectMessages,
       note: '  对比模型不同版本间的差异  ',
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
     expect(next.note).toBe('对比模型不同版本间的差异');
-    expect(next.rows).toEqual([row]);
+    expect(next.candidates).toEqual([candidate]);
 
-    const cleared = planRunUpdate(run, { ...input, note: undefined }, resolveRunRows(input.rows, providers), target);
+    const cleared = planRunUpdate(run, { ...input, note: undefined }, resolveRunCandidates(input.candidates, providers), target);
     expect(cleared.note).toBe('');
   });
 
@@ -1268,15 +1268,15 @@ describe('planRunUpdate', () => {
    *
    * 症状链（可达路径，不是理论）：用户改的是**用例自己**的 `commitHash` / `repoPath`（`CasePatchSchema`
    * 是 `CaseCreateSchema.partial()`，允许改），此后哪怕只想把这一轮从串行改成并行，无条件按当前用例
-   * 重写快照也会让这一轮的「复现条件」变成新 commit，而每一行还挂着在**旧** commit 上挣来的分；
-   * 再点「开始」时 pending / failed 的行按 `run.commitHash` 重跑 ⇒ **一轮里两条基线**，两端都不报错
+   * 重写快照也会让这一轮的「复现条件」变成新 commit，而每个候选还挂着在**旧** commit 上挣来的分；
+   * 再点「开始」时 pending / failed 的候选按 `run.commitHash` 重跑 ⇒ **一轮里两条基线**，两端都不报错
    * （客户端按 `caseId` 判「同一用例」，连作废确认框都不会弹）。
    *
    * 为什么现有用例看不见：`makeCase` 与 `makeRun` 的五格取值逐字相同，无条件重写在它们眼里等于没改。
    * 故这条用例**刻意让两边全不相同**（`caseId` 相同 = 同一个用例被改过）。
    */
   it('只改执行模式：用例快照逐字保留（用例自己的 commit / 仓库改过，也不许跟着漂过来）', () => {
-    const row = judgedRow('r-1');
+    const candidate = judgedCandidate('r-1');
     const run = ranRun({
       caseId: 'c-1',
       caseTitle: '旧标题（建这一轮时的快照）',
@@ -1288,7 +1288,7 @@ describe('planRunUpdate', () => {
       // 保留侧同样必须是**具体的**开关值（夹具缺省是 false）：false ≠ editedCase 的 true 时，
       // 「无条件重写」这一半才拦得住（两边都取夹具缺省时无条件重写等于没改）
       includeSteps: false,
-      rows: [row],
+      candidates: [candidate],
     });
     // 当前用例：七格与上面**全不相同**（`rubric` 也换一张，否则「无条件重写」瞒得过这一条）
     const editedCase: RunTargetCase = {
@@ -1306,95 +1306,95 @@ describe('planRunUpdate', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), editedCase);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), editedCase);
 
     // 五格逐字不变（任一格跟着 `editedCase` 漂了就红）
     expect(caseSnapshotOf(next)).toEqual(caseSnapshotOf(run));
     expect(next.executionMode).toBe('serial');
-    // 行也一行都不动（处置表的第一行：只改执行模式）
-    expect(next.rows).toEqual([row]);
+    // 行也一个候选都不动（处置表的第一行：只改执行模式）
+    expect(next.candidates).toEqual([candidate]);
   });
 
   /**
    * 重置必须把失败归因（`error`）一起清掉。
    *
-   * 为什么值得单独一条：夹具里的行 `error` 恒为 `null`（`makeRow` 的初值），于是「漏清 error」这一格
-   * 在别的用例眼里等于「本来就是 null」——把 `resetRow` 里那句 `error: null` 删掉，既有用例**一条都不红**。
-   * 症状：换了模型的行回到「待开始」，卡片上却还挂着**上一任被评对象**的失败原因。
+   * 为什么值得单独一条：夹具里的候选 `error` 恒为 `null`（`makeCandidate` 的初值），于是「漏清 error」这一格
+   * 在别的用例眼里等于「本来就是 null」——把 `resetCandidate` 里那句 `error: null` 删掉，既有用例**一条都不红**。
+   * 症状：换了模型的候选回到「待开始」，卡片上却还挂着**上一任被评对象**的失败原因。
    */
-  it('重置清掉失败归因：换了模型的行不再挂着旧 error', () => {
-    const failed = judgedRow('r-1', {
+  it('重置清掉失败归因：换了模型的候选不再挂着旧 error', () => {
+    const failed = judgedCandidate('r-1', {
       status: 'failed',
       error: { code: 'UPSTREAM_5XX', message: '上游 502', stage: 'agent' },
     });
-    const run = ranRun({ rows: [failed] });
+    const run = ranRun({ candidates: [failed] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
+      candidates: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
-    expect(next.rows[0]?.error).toBeNull();
-    // 归因只是「那一笔失败的事实」，重置后这一行连状态都换了
-    expect(next.rows[0]?.status).toBe('pending');
+    expect(next.candidates[0]?.error).toBeNull();
+    // 归因只是「那一笔失败的事实」，重置后这个候选连状态都换了
+    expect(next.candidates[0]?.status).toBe('pending');
   });
 
   /**
    * 重置也必须把「**候选未作答**」清掉 —— 它和 `error` 是同一族：**都是上一趟的观测结果**。
    *
-   * 为什么值得单独一条（与上面那条 `error` 逐字同理）：夹具里的行**初始不带这一格**
-   * （`makeRow` 的初值里没有它），于是「漏清」在别的用例眼里等于「本来就没有」——
-   * 把 `resetRow` 里那句 `delete next.emptyAnswer;` 删掉，既有用例**一条都不红**。
-   * 症状：换了模型 / 换了用例的行回到「待开始」，候选卡片却还挂着**上一趟**的「候选未作答」。
+   * 为什么值得单独一条（与上面那条 `error` 逐字同理）：夹具里的候选**初始不带这一格**
+   * （`makeCandidate` 的初值里没有它），于是「漏清」在别的用例眼里等于「本来就没有」——
+   * 把 `resetCandidate` 里那句 `delete next.emptyAnswer;` 删掉，既有用例**一条都不红**。
+   * 症状：换了模型 / 换了用例的候选回到「待开始」，候选卡片却还挂着**上一趟**的「候选未作答」。
    *
    * 判据刻意写成 **`in`**（键缺席）而不是 `toBeNull()`：这一格的「未记录」约定就是**键不在**，
    * 写成 `null` 会让「没记录」与「记录为 null」看起来一样 —— 而那正是这一格要区分的事。
    */
-  it('重置清掉「候选未作答」：换了模型的行不再挂着上一趟的断言', () => {
-    const answered = judgedRow('r-1', { emptyAnswer: true });
-    const run = ranRun({ rows: [answered] });
+  it('重置清掉「候选未作答」：换了模型的候选不再挂着上一趟的断言', () => {
+    const answered = judgedCandidate('r-1', { emptyAnswer: true });
+    const run = ranRun({ candidates: [answered] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
+      candidates: [{ id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
-    expect('emptyAnswer' in (next.rows[0] ?? {}), '重置后这一格必须**键缺席**').toBe(false);
-    expect(next.rows[0]?.status).toBe('pending');
+    expect('emptyAnswer' in (next.candidates[0] ?? {}), '重置后这一格必须**键缺席**').toBe(false);
+    expect(next.candidates[0]?.status).toBe('pending');
   });
 
-  it('改某行模型：**只有那一行**重置，其余行逐字不变', () => {
-    const changed = judgedRow('r-1');
-    const untouched = judgedRow('r-2');
-    const run = ranRun({ rows: [changed, untouched] });
+  it('改某个候选模型：**只有那一行**重置，其余行逐字不变', () => {
+    const changed = judgedCandidate('r-1');
+    const untouched = judgedCandidate('r-2');
+    const run = ranRun({ candidates: [changed, untouched] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       ],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
-    const reset = next.rows.find((row) => row.id === 'r-1');
+    const reset = next.candidates.find((candidate) => candidate.id === 'r-1');
     expect(reset?.status).toBe('pending');
     expect(reset?.score).toBeNull();
     expect(reset?.diff).toBeNull();
@@ -1410,51 +1410,51 @@ describe('planRunUpdate', () => {
     expect(reset?.providerName).toBe('OpenAI 网关');
     expect(reset?.baseUrl).toBe('https://gw.example.com/v1');
     // 没被碰的那一行逐字不变
-    expect(next.rows.find((row) => row.id === 'r-2')).toEqual(untouched);
-    // attempts 归零的理由：换了被评对象，旧模型的账不能算到新模型头上（与 retryRow 刻意不清零相反）
+    expect(next.candidates.find((candidate) => candidate.id === 'r-2')).toEqual(untouched);
+    // attempts 归零的理由：换了被评对象，旧模型的账不能算到新模型头上（与 retryCandidate 刻意不清零相反）
     expect(next.status).toBe('partial');
   });
 
   it('新增一行：新 id / branch=test/{id} / workspacePath 落在 run.workspaceBase 下', () => {
-    const run = ranRun({ workspaceBase: 'D:\\runs-old', rows: [judgedRow('r-1')] });
+    const run = ranRun({ workspaceBase: 'D:\\runs-old', candidates: [judgedCandidate('r-1')] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
       ],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
-    const added = next.rows[1];
+    const added = next.candidates[1];
     expect(added?.status).toBe('pending');
     expect(added?.attempts).toBe(0);
     expect(added?.baselineCommit).toBe('');
-    // 新行的 id **非空且不等于任何原行 id**。
-    // 只钉「两条路径的 id 互不相同」（下面那条差分守卫）盖不住这一格：复用**同一轮里**某一行的 id
-    // 照样能过那条，而快照里就出现两行同 id——`rowKey` / 行工作区 / 事件目录三处同时撞车，
+    // 新候选的 id **非空且不等于任何原候选 id**。
+    // 只钉「两条路径的 id 互不相同」（下面那条差分守卫）盖不住这一格：复用**同一轮里**某一候选的 id
+    // 照样能过那条，而快照里就出现两个候选同 id——`candidateKey` / 候选工作区 / 事件目录三处同时撞车，
     // 界面上的候选数与进度分母还会各算一份，两端都不报错。
     expect(added?.id).toBeTruthy();
-    expect(run.rows.map((row) => row.id)).not.toContain(added?.id);
+    expect(run.candidates.map((candidate) => candidate.id)).not.toContain(added?.id);
     expect(added?.branch).toBe(`test/${added?.id ?? ''}`);
     // ⚠️ 必须落在**这一轮自己记录的根**下：用当前 settings.workspaceRoot 算会让产物裂成两半
-    expect(added?.workspacePath).toBe(rowWorkspaceDir('D:\\runs-old', run.id, added?.id ?? ''));
+    expect(added?.workspacePath).toBe(candidateWorkspaceDir('D:\\runs-old', run.id, added?.id ?? ''));
     expect(next.status).toBe('partial');
   });
 
   /**
-   * **差分守卫**：创建路径与「编辑新增」路径造出来的行必须逐字段相同，只有三格**行身份**
-   * （`id` / `branch` / `workspacePath`）各自独立。两条路径共用 `buildRow` 就是为了这件事，
+   * **差分守卫**：创建路径与「编辑新增」路径造出来的候选必须逐字段相同，只有三格**行身份**
+   * （`id` / `branch` / `workspacePath`）各自独立。两条路径共用 `buildCandidate` 就是为了这件事，
    * 而这条用例不重复任何一格的期望值，只钉「两条路径不许各自漂移」。
-   * 为什么值得单独守：初值漏一格或写歪一格的症状不是「少显示一个字段」——`EvalRowSchema` 的必填格缺失
+   * 为什么值得单独守：初值漏一格或写歪一格的症状不是「少显示一个字段」——`EvalCandidateSchema` 的必填格缺失
    * 会让 `saveRun` 拒绝，或让 `listRuns()` **静默跳过整轮**（「我的评测记录凭空少了几轮」）。
    */
-  it('创建的行与编辑新增的行逐字段相同（除 id / branch / workspacePath 三格行身份）', () => {
+  it('创建的候选与编辑新增的候选逐字段相同（除 id / branch / workspacePath 三格行身份）', () => {
     // 上游声明过档位才可选强度 ⇒ 顺带把 `effort` 的写法也纳入这条比较（它正是被迫改三处的那一格）
     const provider = makeAnthropicProvider({
       models: [{ id: 'claude-opus-4-6', source: 'manual', supportedEfforts: ['low', 'high'] }],
@@ -1468,81 +1468,81 @@ describe('planRunUpdate', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' }],
     });
 
     // 编辑路径：同一条候选（同 kind / 供应商 / 模型 / 档位）作为**新行**加进另一轮
-    const run = ranRun({ rows: [judgedRow('r-1')] });
+    const run = ranRun({ candidates: [judgedCandidate('r-1')] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'high' },
       ],
     };
-    const addedRow = planRunUpdate(run, input, resolveRunRows(input.rows, [provider]), target).rows[1]!;
-    const createdRow = created.rows[0]!;
+    const addedCandidate = planRunUpdate(run, input, resolveRunCandidates(input.candidates, [provider]), target).candidates[1]!;
+    const createdCandidate = created.candidates[0]!;
 
     /** 摘掉三格**行身份**（它们本来就该各自独立），只比其余字段 */
-    const withoutIdentity = ({ id, branch, workspacePath, ...rest }: EvalRow): Omit<EvalRow, 'id' | 'branch' | 'workspacePath'> => rest;
+    const withoutIdentity = ({ id, branch, workspacePath, ...rest }: EvalCandidate): Omit<EvalCandidate, 'id' | 'branch' | 'workspacePath'> => rest;
 
     // 用 `toStrictEqual` 而不是 `toEqual`：后者**忽略值为 undefined 的键**，
     // 于是「新增行漏了一格初值」在它眼里等于「没写这一格」——正是这条守卫最该抓住的那种漂移。
-    expect(withoutIdentity(addedRow)).toStrictEqual(withoutIdentity(createdRow));
+    expect(withoutIdentity(addedCandidate)).toStrictEqual(withoutIdentity(createdCandidate));
     // 三格行身份确实各自独立（否则上面那条比较会因为「本来就一样」而失去意义）
-    expect(addedRow.id).not.toBe(createdRow.id);
-    expect(addedRow.branch).toBe(`test/${addedRow.id}`);
+    expect(addedCandidate.id).not.toBe(createdCandidate.id);
+    expect(addedCandidate.branch).toBe(`test/${addedCandidate.id}`);
   });
 
   it('删掉一行：从快照消失，其余行不变', () => {
-    const run = makeRun({ rows: [judgedRow('r-1'), judgedRow('r-2')] });
+    const run = makeRun({ candidates: [judgedCandidate('r-1'), judgedCandidate('r-2')] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
 
-    expect(next.rows.map((row) => row.id)).toEqual(['r-2']);
+    expect(next.candidates.map((candidate) => candidate.id)).toEqual(['r-2']);
   });
 
-  it('patch 里带未知行 id ⇒ NOT_FOUND（不许静默当新行：那会凭空多出一行用户没打算要的候选）', () => {
-    const run = makeRun({ rows: [judgedRow('r-1')] });
+  it('patch 里带未知候选 id ⇒ NOT_FOUND（不许静默当新行：那会凭空多出一行用户没打算要的候选）', () => {
+    const run = makeRun({ candidates: [judgedCandidate('r-1')] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-404', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-404', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
 
-    expect(() => planRunUpdate(run, input, resolveRunRows(input.rows, providers), target)).toThrowError(/r-404/);
+    expect(() => planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target)).toThrowError(/r-404/);
   });
 
   /**
-   * 同一个行 id 在入参里出现两次 ⇒ `INVALID_QUERY`。
-   * 必须在服务端拦：`resolved.map` 会把两条都落到**同一个**现有行上，快照里那一行就出现两次——
+   * 同一个候选 id 在入参里出现两次 ⇒ `INVALID_QUERY`。
+   * 必须在服务端拦：`resolved.map` 会把两条都落到**同一个**现有候选上，快照里那一个候选就出现两次——
    * 候选数、进度分母、排名全部多算一份，而两端都不报错。孪生的那条（id 不在这一轮里 ⇒ NOT_FOUND）
    * 本来就只能在这里判，故两条 id 完整性检查留在同一处，不放进契约的 schema。
    */
-  it('同一行 id 出现两次 ⇒ INVALID_QUERY（不许把同一行算两遍）', () => {
-    const run = makeRun({ rows: [judgedRow('r-1'), judgedRow('r-2')] });
+  it('同一候选 id 出现两次 ⇒ INVALID_QUERY（不许把同一行算两遍）', () => {
+    const run = makeRun({ candidates: [judgedCandidate('r-1'), judgedCandidate('r-2')] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { id: 'r-1', agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' },
       ],
@@ -1550,7 +1550,7 @@ describe('planRunUpdate', () => {
 
     let caught: unknown;
     try {
-      planRunUpdate(run, input, resolveRunRows(input.rows, providers), target);
+      planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), target);
     } catch (error) {
       caught = error;
     }
@@ -1561,14 +1561,14 @@ describe('planRunUpdate', () => {
   });
 
   it('换来用例：重取五格快照（含评分表），且**所有行**重置（题面与基线都变了）', () => {
-    const run = makeRun({ caseId: 'c-1', caseTitle: '旧标题', repoPath: 'D:\\old', rows: [judgedRow('r-1')] });
+    const run = makeRun({ caseId: 'c-1', caseTitle: '旧标题', repoPath: 'D:\\old', candidates: [judgedCandidate('r-1')] });
     const input = {
       caseId: 'c-2',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     };
     const newCase: RunTargetCase = {
       caseId: 'c-2',
@@ -1580,43 +1580,43 @@ describe('planRunUpdate', () => {
       includeSteps: true,
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, providers), newCase);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, providers), newCase);
 
     expect([next.caseId, next.caseTitle, next.repoPath, next.commitHash, next.repoBranch]).toEqual([
       'c-2', '新标题', 'D:\\new', 'b'.repeat(40), 'feat/x',
     ]);
-    // 换过去的那张评分表必须跟着走：不重取的话，新用例的行会拿**旧用例**的尺子评分
+    // 换过去的那张评分表必须跟着走：不重取的话，新用例的候选会拿**旧用例**的尺子评分
     // （评分阶段读的是 `run.rubric` 这份快照，不是用例现取的那一份）
     expect(next.rubric).toEqual(targetRubric);
-    // 开关值同样跟着走：新用例开着「包含步骤」，换过去之后的行要按新口径评分
+    // 开关值同样跟着走：新用例开着「包含步骤」，换过去之后的候选要按新口径评分
     expect(next.includeSteps).toBe(true);
     // 目标一个字都没变，但题面变了 ⇒ 照样重置
-    expect(next.rows[0]?.status).toBe('pending');
-    expect(next.rows[0]?.score).toBeNull();
-    expect(next.rows[0]?.attempts).toBe(0);
+    expect(next.candidates[0]?.status).toBe('pending');
+    expect(next.candidates[0]?.score).toBeNull();
+    expect(next.candidates[0]?.attempts).toBe(0);
   });
 
   it('轮级状态收敛三条分支（没跑过 ⇒ idle / 跑过又有待跑 ⇒ partial / 全 judged ⇒ done 且保留 finishedAt）', () => {
-    const pending = makeRow({ id: 'r-1', status: 'pending', baselineCommit: '', attempts: 0 });
-    const untouchedRows = [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
-    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, askUser: false, injectMessages: false, rows: untouchedRows };
-    const resolved = resolveRunRows(input.rows, providers);
+    const pending = makeCandidate({ id: 'r-1', status: 'pending', baselineCommit: '', attempts: 0 });
+    const untouchedCandidates = [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
+    const input = { caseId: 'c-1', executionMode: 'parallel' as const, useAgentJudge: false, askUser: false, injectMessages: false, candidates: untouchedCandidates };
+    const resolved = resolveRunCandidates(input.candidates, providers);
 
-    const neverStarted = planRunUpdate(makeRun({ rows: [pending], status: 'idle', startedAt: null }), input, resolved, target);
+    const neverStarted = planRunUpdate(makeRun({ candidates: [pending], status: 'idle', startedAt: null }), input, resolved, target);
     expect(neverStarted.status).toBe('idle');
     expect(neverStarted.finishedAt).toBeNull();
 
     const ranBefore = planRunUpdate(
-      ranRun({ rows: [judgedRow('r-1')] }),
-      { ...input, rows: [{ ...untouchedRows[0]!, agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }] },
-      resolveRunRows([{ agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers),
+      ranRun({ candidates: [judgedCandidate('r-1')] }),
+      { ...input, candidates: [{ ...untouchedCandidates[0]!, agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }] },
+      resolveRunCandidates([{ agentKind: 'codex' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers),
       target,
     );
     expect(ranBefore.status).toBe('partial');
     expect(ranBefore.finishedAt).toBeNull();
 
     const stillDone = planRunUpdate(
-      ranRun({ rows: [judgedRow('r-1')] }),
+      ranRun({ candidates: [judgedCandidate('r-1')] }),
       input,
       resolved,
       target,
@@ -1626,8 +1626,8 @@ describe('planRunUpdate', () => {
   });
 
   /**
-   * 强度是**这一行的配置**，与 agent / 模型同级：编辑换掉被评对象时它必须跟着换。
-   * 两条面都要钉住——「新档位没写进去」（这一行按旧档位跑）与「清回默认后旧键还留着」
+   * 强度是**这个候选的配置**，与 agent / 模型同级：编辑换掉被评对象时它必须跟着换。
+   * 两条面都要钉住——「新档位没写进去」（这个候选按旧档位跑）与「清回默认后旧键还留着」
    * （界面显示默认、实际按旧档位跑）都是静默的错配，而 `...current` 的展开正好会犯第二种。
    */
   it('强度跟着行配置一起进重置后的快照：换档位写新值，清回默认不留旧键', () => {
@@ -1639,57 +1639,57 @@ describe('planRunUpdate', () => {
         { id: 'm-new', source: 'manual', supportedEfforts: ['low', 'high'] },
       ],
     });
-    const run = ranRun({ rows: [judgedRow('r-1', { modelId: 'm-old', effort: 'high' })] });
+    const run = ranRun({ candidates: [judgedCandidate('r-1', { modelId: 'm-old', effort: 'high' })] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new', effort: 'low' }],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, [provider]), target);
-    expect(next.rows[0]?.effort).toBe('low');
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, [provider]), target);
+    expect(next.candidates[0]?.effort).toBe('low');
 
-    // 表单把这一行的强度清回「默认」：重置后的快照里连这把键都不该有（与 createRun 的「缺省不写键」同口径）。
-    // 只改强度本身现在也会触发重置（`d1b79fa` 起 `isSameRowTarget` 计入 effort）；这条夹具沿用上面那一段
+    // 表单把这个候选的强度清回「默认」：重置后的快照里连这把键都不该有（与 createRun 的「缺省不写键」同口径）。
+    // 只改强度本身现在也会触发重置（`d1b79fa` 起 `isSameCandidateTarget` 计入 effort）；这条夹具沿用上面那一段
     // 同时换了模型，不影响本格断言。
     const cleared = {
       ...input,
-      rows: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'm-new' }],
     };
-    const afterClear = planRunUpdate(run, cleared, resolveRunRows(cleared.rows, [provider]), target);
-    expect(afterClear.rows[0]?.status).toBe('pending');
-    expect(afterClear.rows[0]).not.toHaveProperty('effort');
+    const afterClear = planRunUpdate(run, cleared, resolveRunCandidates(cleared.candidates, [provider]), target);
+    expect(afterClear.candidates[0]?.status).toBe('pending');
+    expect(afterClear.candidates[0]).not.toHaveProperty('effort');
   });
 
   /**
-   * 只改某行的**强度**（其余身份格一个字都不动）⇒ 只有那一行被重置，且快照里写的是新的档位。
-   * 这一条覆盖的是**接线**：`resolveRunRows` 保留下来的 `effort` 必须真的走进 `isSameRowTarget` 的比较
+   * 只改某候选的**强度**（其余身份格一个字都不动）⇒ 只有那一个候选被重置，且快照里写的是新的档位。
+   * 这一条覆盖的是**接线**：`resolveRunCandidates` 保留下来的 `effort` 必须真的走进 `isSameCandidateTarget` 的比较
    * （`d1b79fa` 起判据计入 effort）。契约那一侧只覆盖判据本身——接不上线的症状是「保存成功、档位没变」。
    */
-  it('只改某行的强度 ⇒ 只有那一行重置且快照写新档位，其余行逐字不变', () => {
+  it('只改某候选的强度 ⇒ 只有那一行重置且快照写新档位，其余行逐字不变', () => {
     const provider = makeAnthropicProvider({
       models: [{ id: 'claude-opus-4-6', source: 'manual', supportedEfforts: ['low', 'high'] }],
     });
-    const untouched = judgedRow('r-2');
-    const run = ranRun({ rows: [judgedRow('r-1', { effort: 'high' }), untouched] });
+    const untouched = judgedCandidate('r-2');
+    const run = ranRun({ candidates: [judgedCandidate('r-1', { effort: 'high' }), untouched] });
     const input = {
       caseId: 'c-1',
       executionMode: 'parallel' as const,
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [
+      candidates: [
         { id: 'r-1', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6', effort: 'low' },
         { id: 'r-2', agentKind: 'cc' as const, providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       ],
     };
 
-    const next = planRunUpdate(run, input, resolveRunRows(input.rows, [provider]), target);
+    const next = planRunUpdate(run, input, resolveRunCandidates(input.candidates, [provider]), target);
 
-    const changed = next.rows.find((row) => row.id === 'r-1');
+    const changed = next.candidates.find((candidate) => candidate.id === 'r-1');
     expect(changed?.status).toBe('pending');
     expect(changed?.score).toBeNull();
     expect(changed?.diff).toBeNull();
@@ -1698,34 +1698,34 @@ describe('planRunUpdate', () => {
     expect(changed?.effort).toBe('low');
     // 行身份稳定；没被碰的那一行逐字不变
     expect(changed?.branch).toBe('test/r-1');
-    expect(next.rows.find((row) => row.id === 'r-2')).toEqual(untouched);
+    expect(next.candidates.find((candidate) => candidate.id === 'r-2')).toEqual(untouched);
   });
 
-  it('resolveRunRows：供应商不存在 / 模型不在清单 / 协议不匹配三条各自抛出（与创建同一份）', () => {
+  it('resolveRunCandidates：供应商不存在 / 模型不在清单 / 协议不匹配三条各自抛出（与创建同一份）', () => {
     const bad = (providerId: string, modelId: string) => [{ agentKind: 'codex' as const, providerId, modelId }];
-    expect(() => resolveRunRows(bad('p-gone', 'gpt-5'), providers)).toThrowError(/p-gone/);
-    expect(() => resolveRunRows(bad('p-openai', 'nope'), providers)).toThrowError(/模型清单/);
-    expect(() => resolveRunRows([{ agentKind: 'cc' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers)).toThrowError(/协议/);
+    expect(() => resolveRunCandidates(bad('p-gone', 'gpt-5'), providers)).toThrowError(/p-gone/);
+    expect(() => resolveRunCandidates(bad('p-openai', 'nope'), providers)).toThrowError(/模型清单/);
+    expect(() => resolveRunCandidates([{ agentKind: 'cc' as const, providerId: 'p-openai', modelId: 'gpt-5' }], providers)).toThrowError(/协议/);
   });
 });
 
 /**
  * 编辑一轮评测的 api 侧：**校验 → 算新快照 → 落盘**，且顺序承重。
  * 这一组钉的是那三件在纯函数层看不见的事——「能不能改」的判据先跑、校验失败一个字节都不写、
- * 落盘的是新快照而不是内存里那一份。逐行处置（哪一行被重置）在 `planRunUpdate` 那一组里。
+ * 落盘的是新快照而不是内存里那一份。逐行处置（哪一个候选被重置）在 `planRunUpdate` 那一组里。
  */
 describe('updateRun', () => {
   /** 落一盘「已经跑过一轮」的评测，返回它的快照 */
   function seedJudgedRun(): EvalRun {
     const run = makeRun({
-      rows: [
-        makeRow({
+      candidates: [
+        makeCandidate({
           id: 'r-1',
           status: 'judged',
           baselineCommit: 'a'.repeat(40),
           score: {
-            // 与 `planRunUpdate` 那一组的 `judgedRow` 同一形状（逐项判定 + 满分快照）：
-            // 这一行「跑过一轮且出过分」——编辑之后它该被逐字保留
+            // 与 `planRunUpdate` 那一组的 `judgedCandidate` 同一形状（逐项判定 + 满分快照）：
+            // 这个候选「跑过一轮且出过分」——编辑之后它该被逐字保留
             judgments: [
               { id: 'A1', achieved: true, reason: '夹具：这一项达成' },
               { id: 'A2', achieved: false, reason: '夹具：这一项未达成' },
@@ -1765,15 +1765,15 @@ describe('updateRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(next.executionMode).toBe('serial');
     expect(next.status).toBe('done');
-    expect(next.rows).toEqual(before.rows);
+    expect(next.candidates).toEqual(before.candidates);
     // 「先全校验、再一次性落盘」：store 里那一份也必须是新的
     expect(store.get(before.id)?.executionMode).toBe('serial');
-    expect(store.get(before.id)?.rows).toEqual(before.rows);
+    expect(store.get(before.id)?.candidates).toEqual(before.candidates);
   });
 
   it('换模型 ⇒ 那一行重置并落盘（评分 / diff / 基线 / attempts 全清）', () => {
@@ -1785,14 +1785,14 @@ describe('updateRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
+      candidates: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
     });
 
-    expect(next.rows[0]?.status).toBe('pending');
-    expect(next.rows[0]?.score).toBeNull();
-    expect(next.rows[0]?.attempts).toBe(0);
-    expect(next.rows[0]?.providerName).toBe('OpenAI 网关');
-    expect(store.get(before.id)?.rows[0]?.status).toBe('pending');
+    expect(next.candidates[0]?.status).toBe('pending');
+    expect(next.candidates[0]?.score).toBeNull();
+    expect(next.candidates[0]?.attempts).toBe(0);
+    expect(next.candidates[0]?.providerName).toBe('OpenAI 网关');
+    expect(store.get(before.id)?.candidates[0]?.status).toBe('pending');
   });
 
   it('运行中 ⇒ CONFLICT（界面上入口也置灰，两层同一判据）', () => {
@@ -1807,7 +1807,7 @@ describe('updateRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -1829,7 +1829,7 @@ describe('updateRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-gone', modelId: 'gpt-5' }],
+        candidates: [{ id: 'r-1', agentKind: 'codex', providerId: 'p-gone', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/p-gone/);
     expect(store.get(before.id)).toEqual(before);
@@ -1857,7 +1857,7 @@ describe('updateRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       });
     } catch (error) {
       caught = error;
@@ -1888,14 +1888,14 @@ describe('updateRun', () => {
       useAgentJudge: false,
       askUser: false,
       injectMessages: false,
-      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
 
     expect(next.caseTitle).toBe('另一个用例');
     expect(next.repoPath).toBe('D:\\projects\\other');
     // 开关值随用例快照一起重取（新用例开着「包含步骤」，换过去之后要按新口径评分）
     expect(next.includeSteps).toBe(true);
-    expect(next.rows[0]?.status).toBe('pending');
+    expect(next.candidates[0]?.status).toBe('pending');
   });
 
   it('开着「使用智能体评分」而设置页没配 ⇒ CONFLICT，且不落盘（与创建同一份判定）', () => {
@@ -1908,7 +1908,7 @@ describe('updateRun', () => {
         useAgentJudge: true,
         askUser: false,
         injectMessages: false,
-        rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+        candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
       }),
     ).toThrowError(/评分智能体|评分/);
     expect(store.get(before.id)).toEqual(before);
@@ -1922,7 +1922,7 @@ describe('updateRun', () => {
         useAgentJudge: false,
         askUser: false,
         injectMessages: false,
-        rows: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     ).toThrowError(/评测不存在/);
   });
@@ -1942,7 +1942,7 @@ describe('deleteRun（api 层）', () => {
    * 顺序才是这道检查存在的**唯一理由**（见 `runs.ts` 里 `deleteRun` 的 JSDoc）：编排层的
    * `getRunForWrite` 有「按进程内记忆兜底」的分支，**先委派**的话，一个留在旧根、当前根里看不到的
    * 轮次会被解析出来，**它的工作区会被真的删掉**——正是本条用例名自称要防的那件事。
-   * 故这里不只断言「检查存在」，还断言「委派一次都没发生」：两行对调 ⇒ 这条必红
+   * 故这里不只断言「检查存在」，还断言「委派一次都没发生」：两个候选对调 ⇒ 这条必红
    * （只断言抛错是拦不住的：先委派时 `getRunSnapshot` 照样抛 `/评测不存在/`）。
    */
   it('不存在 ⇒ NOT_FOUND（脏 URL 不能删到别人的目录）', () => {

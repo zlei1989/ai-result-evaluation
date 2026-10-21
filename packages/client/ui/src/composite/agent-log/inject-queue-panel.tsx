@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 排队区（L1 受控组合件）：把这一行的若干条人工消息画成「单行直出 / 多行折叠」两种形态。
+ * 排队区（L1 受控组合件）：把这个候选的若干条人工消息画成「单行直出 / 多行折叠」两种形态。
  *
  * 四条口径：
  *   · **一条时不套壳**（标题比内容还长），两条起才收进折叠面板；
@@ -19,7 +19,7 @@
 import { Collapse, Flex, theme } from 'antd';
 import type { ReactNode } from 'react';
 import type { InjectMessage, TurnInjectionCapability } from '@aieval/contracts';
-import { InjectMessageRow } from './inject-message-row';
+import { InjectMessageItem } from './inject-message-item';
 import { visibleInjectMessages } from './inject-vocab';
 import { SHRINKABLE_TITLE_STYLE } from '../../base/shrinkable-collapse-title';
 
@@ -27,14 +27,14 @@ import { SHRINKABLE_TITLE_STYLE } from '../../base/shrinkable-collapse-title';
 const QUEUE_PANEL_KEY = 'inject-queue';
 
 export interface InjectQueuePanelProps {
-  /** 这一行的队列快照（含终态：`gone` 由本件跳过） */
+  /** 这个候选的队列快照（含终态：`gone` 由本件跳过） */
   messages: readonly InjectMessage[];
-  /** 这一行的家在这一面上的声明；`null` = 不知道 */
+  /** 这个候选的家在这一面上的声明；`null` = 不知道 */
   declaration: TurnInjectionCapability | null;
   /** 折叠态（受控）；默认收起由调用方给初值 */
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
-  /** 有没有写动作在途（在途时每一行的两颗按钮都禁用） */
+  /** 有没有写动作在途（在途时每个候选的两颗按钮都禁用） */
   busy?: boolean;
   onPromote(messageId: string): void;
   onRetract(messageId: string): void;
@@ -55,7 +55,7 @@ export function InjectQueuePanel({
   if (visible.length === 0) return null;
 
   const rows = visible.map((message) => (
-    <InjectMessageRow
+    <InjectMessageItem
       key={message.messageId}
       message={message}
       declaration={declaration}
@@ -72,6 +72,7 @@ export function InjectQueuePanel({
         <Flex vertical>{rows}</Flex>
       ) : (
         <Collapse
+          size="small"
           activeKey={collapsed ? [] : [QUEUE_PANEL_KEY]}
           onChange={(keys) => onCollapsedChange(keys.length === 0)}
           expandIconPlacement="end"

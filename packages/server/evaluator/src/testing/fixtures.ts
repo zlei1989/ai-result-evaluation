@@ -20,7 +20,7 @@ import {
   rubricItemKeys,
   rubricMaxScore,
   type AgentEvent,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
   type ExecutionMode,
   type McpServers,
@@ -192,8 +192,8 @@ export function makeCaseFixture(overrides: Partial<TestCase> = {}): TestCase {
   };
 }
 
-/** 造一个候选行（字段齐全，避免每个用例各写一遍；id 与 branch 自洽） */
-export function makeRowFixture(overrides: Partial<EvalRow> = {}): EvalRow {
+/** 造一个候选（字段齐全，避免每个用例各写一遍；id 与 branch 自洽） */
+export function makeCandidateFixture(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
   const id = overrides.id ?? randomUUID();
   return {
     id,
@@ -205,8 +205,8 @@ export function makeRowFixture(overrides: Partial<EvalRow> = {}): EvalRow {
     status: 'pending',
     branch: `test/${id}`,
     workspacePath: '',
-    // 占位基线：真实基线是 40 位具体 hash，要等准备阶段由 prepareRowWorkspace 解析出来。
-    // 这里用 ''（= 尚未准备）：EvalRowSchema 就是 `z.string()`，run.test.ts 明确断言
+    // 占位基线：真实基线是 40 位具体 hash，要等准备阶段由 prepareCandidateWorkspace 解析出来。
+    // 这里用 ''（= 尚未准备）：EvalCandidateSchema 就是 `z.string()`，run.test.ts 明确断言
     // 「空串必须解析成功」，所以夹具无需伪造一个假的 40 位 hash（实现层修正第 14 条已据此改写）。
     baselineCommit: '',
     tokens: null,
@@ -252,7 +252,7 @@ export function makeRunFixture(input: {
   injectMessages?: boolean;
   /** 这一轮的用户备注；不填即空串（与 `EvalRunSchema.note` 的缺省一致） */
   note?: string;
-  rows?: EvalRow[];
+  candidates?: EvalCandidate[];
   status?: EvalRun['status'];
 }): EvalRun {
   return {
@@ -270,7 +270,7 @@ export function makeRunFixture(input: {
     useAgentJudge: input.useAgentJudge ?? false,
     askUser: input.askUser ?? false,
     injectMessages: input.injectMessages ?? false,
-    rows: input.rows ?? [makeRowFixture()],
+    candidates: input.candidates ?? [makeCandidateFixture()],
     workspaceBase: input.workspaceRoot,
     createdAt: new Date().toISOString(),
     startedAt: null,
@@ -417,7 +417,7 @@ function usageForCall(): TextUsage | null {
 
 /**
  * 供 `vi.mock('./text-api', …)` 用作替代模块：`callTextApi` 与 `callTextApiConversation`
- * **都要给**——`judgeRow` 现在走多轮入口，只给单轮那一支会让整个评分域在测试里 import 到 undefined。
+ * **都要给**——`judgeCandidate` 现在走多轮入口，只给单轮那一支会让整个评分域在测试里 import 到 undefined。
  * 两者记进同一个 `calls`（同一个边界、同一套断言），单轮被展开成一条 user 消息。
  */
 export function fakeTextApiModule(): {
@@ -454,8 +454,8 @@ export function fakeTextApiModule(): {
 
 /**
  * 造一个**真实**的小 git 仓库（真 git，不是 mock）。
- * 为什么工作区相关的用例必须用真仓库：最重要的一条守卫是「每行工作目录互不相同」，
- * 而假造复制/checkout 等于把守卫建立在自己的假设上——真仓库能让 prepareRowWorkspace 真的
+ * 为什么工作区相关的用例必须用真仓库：最重要的一条守卫是「每个候选工作目录互不相同」，
+ * 而假造复制/checkout 等于把守卫建立在自己的假设上——真仓库能让 prepareCandidateWorkspace 真的
  * 复制目录、真的 checkout、真的建分支，共用目录的实现在它面前藏不住。
  */
 export function initFixtureRepo(dir: string): { repoPath: string; commit: string } {
@@ -477,7 +477,7 @@ export function initFixtureRepo(dir: string): { repoPath: string; commit: string
  * 就带 `core.autocrlf=true`，而产品的唯一 git 入口（core 的 `execute`，`git-exec.ts:26`）**总是**
  * 带这个 `-c`——口径是「工作树字节与仓库一致」。夹具不带它的话，`git clone` 检出的工作树是 CRLF
  * 而 blob 是 LF，于是 `collectDiff`（同样走 `execute`）把 README.md / src.txt 这类**一个字节都没被
- * 改过**的文本文件算成改动：`orchestrator-run-row` 的「改动前」diff 会从 0 个文件变成
+ * 改过**的文本文件算成改动：`orchestrator-run-candidate` 的「改动前」diff 会从 0 个文件变成
  * `+3 −2`，用例红在 `filesChanged` 上，而真因与协议、与适配器都无关。
  * core 侧的三份 harness（`git-diff-harness` / `git-repo-harness` / `workspace-harness`）早就带着它，
  * evaluator 这边是漏了。
@@ -582,7 +582,7 @@ export interface FakeAgentCall {
    *
    * 为什么必须记录：这一格的落点是「**只有**候选执行阶段、且由编排层从配置快照填入」
    * （控制权在编排层）——漏传是静默的（那一家照常跑完，只是仓库里一台 MCP 都没有，
-   * 界面上的「本行 MCP」会记成 `unverified`），多传（评分那一次也带上）同样是静默的。
+   * 界面上的「候选 MCP」会记成 `unverified`），多传（评分那一次也带上）同样是静默的。
    * 两个方向都只有这一格看得见，故取值刻意保留 `undefined`，不兜成 `{}`。
    */
   mcpServers?: McpServers;
@@ -590,7 +590,7 @@ export interface FakeAgentCall {
    * 实际交给适配器的**技能清单**（原样记下；`undefined` = 这一格根本没传）。
    *
    * 为什么必须记录：这一格的落点是「**只有**候选执行阶段、且由编排层从技能根扫出来」——
-   * 漏传是静默的（那一行照常跑完，只是行配置目录里一条 skill 都没有，而厂商侧对「没有这条 skill」
+   * 漏传是静默的（那一行照常跑完，只是候选配置目录里一条 skill 都没有，而厂商侧对「没有这条 skill」
    * 不报任何错），多传（评分那一次也带上）同样是静默的。两个方向都只有这一格看得见，
    * 故取值刻意保留 `undefined`，不兜成 `[]`。
    */
@@ -621,7 +621,7 @@ export interface FakeAgentCall {
   /**
    * 这一次运行拿到的**续接会话 id**（`input.resume?.sessionId`；`undefined` = 这一格根本没传）。
    *
-   * 为什么必须记录：追问的全部价值就在这一格上——不传 / 传成另一行的 id / 传成 `null` 时，
+   * 为什么必须记录：追问的全部价值就在这一格上——不传 / 传成另一候选的 id / 传成 `null` 时，
    * 行照样跑完、分数照样出得来（厂商那边只是开了一条空的新会话），而界面上一切正常。
    * 取值刻意保留 `undefined`（不兜成 `null`）：「没传这一格」正是「又从头开了一段」的判据。
    */
@@ -632,7 +632,7 @@ export interface FakeAgentCall {
   aborted: boolean;
 }
 
-/** 假适配器的行为脚本（按 kind 设置） */
+/** 假适配器的候选为脚本（按 kind 设置） */
 export interface FakeAgentScript {
   /**
    * ok=正常返回；error=返回 ok:false；gate=挂起等测试放行（被终止时按协作适配器返回 canceled）；
@@ -694,7 +694,7 @@ export interface FakeAgentScript {
    */
   sessionId?: string | null;
   /**
-   * `applied.structuredOutput`（适配器上报的**每-run**通道事实）。不写就按真适配器的行为现算：
+   * `applied.structuredOutput`（适配器上报的**每-run**通道事实）。不写就按真适配器的候选为现算：
    * cc / codex 拿到 schema 时报 `true`（原生通道），dsh 恒 `false`（只有填充层）。
    * 为什么留这一格旋钮：要造「厂商这一轮没照做」（网关把 schema 丢了）这种形态时，
    * 写死现算式子就造不出来——而那一格正是记账与降级留痕的判据。
@@ -739,7 +739,7 @@ export interface FakeAgentScript {
    * **只给请求、不给答复**：答复从哪来是**被测代码那一半**（挂起表 + 应答入口或预算），
    * 夹具替它编一份就等于把「有人答了」这条判据变成自述。它只负责问，并把交回来的那一份记下。
    *
-   * 不填 = 这一行不问。填了而回调缺席（闸门没开）时**如实记一次 attempts、零次 calls**：
+   * 不填 = 这个候选不问。填了而回调缺席（闸门没开）时**如实记一次 attempts、零次 calls**：
    * 「不问就不动」与「一次都不被调用」两条判据靠这两个数分开。
    */
   askUser?: { request: AskUserRequest };
@@ -747,10 +747,10 @@ export interface FakeAgentScript {
    * 在 `finish()` 之前**像真适配器那样取一次件并交出去**：`drain(boundary)` →
    * 逐条 `markDelivered(ids, retract)`。取到的 `messageId` 记在 `call.injectDelivered` 上。
    *
-   * 为什么需要这一格：编排层那一侧的接缝（闸门 → 端口 → 账本 → 行快照的计数）只有把
+   * 为什么需要这一格：编排层那一侧的接缝（闸门 → 端口 → 账本 → 候选快照的计数）只有把
    * 「适配器真的取走并确认交付」这一步走一遍才连得起来。夹具扮演的是**适配器那一端**
    * （取件归它认边界），编排层那一端由被测代码实现。
-   * 不填 = 这一行不取件（一条消息就留在队列里，等编排层的等待预算收场）。
+   * 不填 = 这个候选不取件（一条消息就留在队列里，等编排层的等待预算收场）。
    */
   injectDrain?: 'round' | 'idle';
 }
@@ -776,8 +776,8 @@ export const fakeAgents = {
  * `generation += 1` 是**载重**的，不是记账：`concurrent` 是模块级计数器，而 `resetFakeAgents()`
  * 只能把它清零、**没法让一个已经在 gate 里挂着的 `run()` 落定**。于是用例超时（本机上的
  * 环境性超时，实测有 60s 以上才建完夹具的）把一行丢在 gate 里之后，那一行唯一的终结者是
- * **编排层的行兜底定时器**（默认配置下约 33 分钟后才响）；它迟到的那一次 `concurrent -= 1`
- * 会落进**后面某个用例**的断言窗口里，让「三行同时在跑」这条断言以 `expected 3, received 2`
+ * **编排层的候选兜底定时器**（默认配置下约 33 分钟后才响）；它迟到的那一次 `concurrent -= 1`
+ * 会落进**后面某个用例**的断言窗口里，让「三个候选同时在跑」这条断言以 `expected 3, received 2`
  * 随机变红——已经真实发生过一次，且那种红不可复现、只能靠重跑碰运气。
  * 代际守卫把「上一代的出口」整条作废：它不再改任何计数，也不再改 `calls` / `gates`。
  * 注意它**只**管跨用例的迟到出口：同一代内部的并发计数一个字节都没动（那些峰值断言照旧）。
@@ -791,7 +791,7 @@ export function resetFakeAgents(): void {
   fakeAgents.scripts.clear();
 }
 
-/** 放行某一行的 gate（按 cwd）；没有等待者时是空操作 */
+/** 放行某一候选的 gate（按 cwd）；没有等待者时是空操作 */
 export function releaseAgent(cwd: string): void {
   fakeAgents.gates.get(cwd)?.();
 }
@@ -842,7 +842,7 @@ const FAKE_MESSAGE_CAPABILITY: AgentProviderMetadata['messageCapability'] = {
  * `resume`（追问那一格判据：`state !== 'yes'` ⇒ 拒绝追问）。
  *
  * 为什么投递 / 撤回那几格是同一份显式占位而不是各家真值：它们**没有一个消费方在本包内**
- * （投递由适配器按端口取件、撤回在 api 的端点上），抄一遍等于把四家各 30 行的代价事实
+ * （投递由适配器按端口取件、撤回在 api 的端点上），抄一遍等于把四家各 30 候选的代价事实
  * 复制到第二个文件里，而两份必然漂移；占位值把这件事写在脸上（`unverified` + 说出原因），
  * 真值仍只有各家 `providers/<kind>/index.ts` 那一份。
  * `resume` 那一格必须照抄：追问的可用性与拒绝原因读的就是它，填错了整组用例都在测一个假前提。
@@ -920,7 +920,7 @@ const FAKE_RESUME_CELLS = {
  * 为什么不能随手写个「默认值」：编排层的协议校验读的就是这份元数据
  *（`orchestrator.ts`：`acceptsProtocol(agentProvider.metadata, providerRecord.protocolType)`），
  * 夹具里写错一格，对应那几条用例的绿色就建立在**被 mock 的假元数据**上
- * （改回真值，两条 dsh 用例立刻以 `CONFLICT` 变红）。`run()` 的行为完全由脚本决定。
+ * （改回真值，两条 dsh 用例立刻以 `CONFLICT` 变红）。`run()` 的候选为完全由脚本决定。
  */
 const FAKE_PROVIDER_METADATA = {
   cc: {
@@ -943,7 +943,7 @@ const FAKE_PROVIDER_METADATA = {
     },
     /**
      * 交互面声明同真值（取值那几格；`notes` 与「凭什么是这个驱动」的散文不进逐格一致这条前提）。
-     * 编排层只读 `askUserChannel` 一格（抄进行级观测事件），抄错的表现是日志里写着「宿主工具」
+     * 编排层只读 `askUserChannel` 一格（抄进行的级观测事件），抄错的表现是日志里写着「宿主工具」
      * 而这一家实际走的是厂商自己的提问工具。
      */
     interaction: { askUser: 'yes', askUserChannel: 'vendor-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
@@ -1007,7 +1007,7 @@ const FAKE_PROVIDER_METADATA = {
     /**
      * 交互面同真值：**宿主工具**那一档——厂商结构上没有提问工具，这一件由我们注册进会话装配面，
      * 陈述句的证明走真路径（真包 + 可编排的假网关）。
-     * 这一格是本夹具唯一要「读」的能力格：编排层把它抄进行级观测事件（提问工具来源），
+     * 这一格是本夹具唯一要「读」的能力格：编排层把它抄进行的级观测事件（提问工具来源），
      * 抄错的表现是日志里写着「厂商工具」而实际是我们注册的。
      */
     interaction: { askUser: 'yes', askUserChannel: 'host-tool', askUserReason: null, askUserProofDriver: 'real-path', askUserProofDriverReason: null, notes: [] },
@@ -1086,7 +1086,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         const subagentTurns = script.subagentTurns === undefined ? null : script.subagentTurns;
         /**
          * `applied`（必填格）：**适配器上报的每-run 通道事实**，而假 provider 不走骨架 ⇒ 这里照真适配器
-         * 的行为现算：原生 schema 通道只有 cc / codex 有（claude 的 `outputFormat`、codex 的
+         * 的候选为现算：原生 schema 通道只有 cc / codex 有（claude 的 `outputFormat`、codex 的
          * `outputSchema`），dsh 与 pi 都没有 ⇒ 那一格恒 `false`。
          *
          * 为什么不写死 `false`：cc / codex 走真 `run` 时**真的**走原生通道，写死会让夹具的绿色建立在
@@ -1177,8 +1177,8 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
       if (mode === 'hang') {
         // 非合作适配器：无视 signal、永不返回。孤儿 promise 无法回收（JS 没有取消异步的机制），
         // 这正是适配器要自带 interrupt → dispose 有界清理的原因。
-        // ⚠️ **没有兜底超时**能收这一行了（用户口径「执行不限时间」）：用它造的用例
-        // 必须自己把行终止掉（abortRow / abortRun），否则会一直挂在 running 上。
+        // ⚠️ **没有兜底超时**能收这个候选了（用户口径「执行不限时间」）：用它造的用例
+        // 必须自己把候选终止掉（abortCandidate / abortRun），否则会一直挂在 running 上。
         await new Promise<never>(() => {});
       }
       if (mode === 'throw') {
@@ -1194,7 +1194,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
       if (mode === 'late') {
         // 编排层**已经按超时收尾之后**才吐事件的那一档：无视 signal、睡够硬停的时长，
         // 然后投递一条日志并成功返回。真实形状就是「适配器收尾很慢」——dispose 之后才把最后几条日志
-        // 交出来，而那时这一行早已落了终态。闸门失效时它会静默追加进 events.jsonl（日志抽屉被拖长）。
+        // 交出来，而那时这个候选早已落了终态。闸门失效时它会静默追加进 events.jsonl（日志抽屉被拖长）。
         await new Promise((resolve) => setTimeout(resolve, script.lateMs ?? 4_000));
         if (currentGeneration()) {
           input.onEvent({
@@ -1224,7 +1224,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
       if (script.selfTimeout === true) {
         // **上游自己报**的超时（骨架的看门狗之外的另一条来路）：直接按 timed-out 收场。
         // 这一档让 `classifyStop` 的 timed-out 支在「不是看门狗掐的」那条路上也有守卫——
-        // 行状态 `timed-out` 的两个生产者在这一支上合流，编排层对两者一视同仁。
+        // 候选状态 `timed-out` 的两个生产者在这一支上合流，编排层对两者一视同仁。
         return finish('timed-out', false, { code: 'AGENT_TIMED_OUT', message: '假适配器：自报超时' });
       }
       if (mode === 'gate') {
@@ -1290,7 +1290,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
  * 多了 `acceptsProtocol` / `protocolMismatchMessage`，而 `vi.mock` 是**整模块替换**——
  * 工厂没给的导出在消费点上是 `undefined`，症状不是「mock 失效」，而是
  * `[vitest] No "acceptsProtocol" export is defined on the "@aieval/agents" mock`：编排层的协议复检
- * 当场抛 `INTERNAL`，整行落 `failed`（实测：evaluator 16 个文件、83 条用例一起红，而报错点离真因很远）。
+ * 当场抛 `INTERNAL`，整个候选落 `failed`（实测：evaluator 16 个文件、83 条用例一起红，而报错点离真因很远）。
  *
  * 为什么用 `vi.importActual` 而不是在夹具里再写一遍那个判据与文案：`acceptsProtocol` 是**四个消费点
  * 唯一的判据**（A3），`protocolMismatchMessage` 是**唯一文案**；夹具里复制一份就是第五、第六份真源，
@@ -1328,29 +1328,29 @@ export const fakeJudge = {
   achieved: true,
   gates: [] as (() => void)[],
   /**
-   * 每次 `judgeRow` 调用若为 `true`：**这一次调用**先抛一次 `JUDGE_PARSE_FAILED`
+   * 每次 `judgeCandidate` 调用若为 `true`：**这一次调用**先抛一次 `JUDGE_PARSE_FAILED`
    * 并报一轮「修复进度」，再成功返回分数。
    *
    * 为什么需要它（而不是再加一个 mode）：真实评分器内部有一套**结构检查 + 回问模型**的修复循环，
    * 而「第一轮答错、第二轮答对」正是那条循环的主路径。用 `mode: 'fail'` 只能造出「每次都失败」，
    * 于是「修复循环在最外层看来就是一次成功的评分」这条不变量在编排层完全没有观测点。
    *
-   * **为什么是 boolean 而不是「前 N 次调用」**：修复循环、行级自动重试、手动重试三层都会调
-   * `judgeRow`，一个**跨调用**的计数器会让「第 2 次调用」的含义随上下文漂移——实测踩过：
-   * 行级自动重试的第二个 attempt 因为「已经失败过一次」而连第一次评分都直接失败，
+   * **为什么是 boolean 而不是「前 N 次调用」**：修复循环、候选级自动重试、手动重试三层都会调
+   * `judgeCandidate`，一个**跨调用**的计数器会让「第 2 次调用」的含义随上下文漂移——实测踩过：
+   * 候选级自动重试的第二个 attempt 因为「已经失败过一次」而连第一次评分都直接失败，
    * 用例再也造不出「重试之后成功」这条主路径。语义收窄成「这一次调用先失败一次、再成功」之后，
-   * 三个层次的行为都可预期。
+   * 三个层次的候选为都可预期。
    */
   failOnceThenSucceed: false,
-  /** 前 `N` 次 `judgeRow` 调用抛结构失败，之后成功（计数由 `onAttemptStart` 在每次尝试开始时复位） */
+  /** 前 `N` 次 `judgeCandidate` 调用抛结构失败，之后成功（计数由 `onAttemptStart` 在每次尝试开始时复位） */
   failFirstNCalls: 0,
   /**
-   * 当前**尝试**内已经发生的 `judgeRow` 调用次数。
+   * 当前**尝试**内已经发生的 `judgeCandidate` 调用次数。
    *
    * 复位点是生产代码里的那个接缝：编排层每次进入评分阶段都会调 `input.onAttemptStart?.()`
    * （真实评分器把它当 no-op）。为什么需要这个边界：`failFirstNCalls = 1` 要表达的是
    * 「这一次跑起来时评分第一次失败、第二次成功」——把计数做成跨 attempt 累加的话，
-   * 行级自动重试的第二个 attempt 会看到「已经失败过一次」，于是它连第一次评分都直接失败，
+   * 候选级自动重试的第二个 attempt 会看到「已经失败过一次」，于是它连第一次评分都直接失败，
    * 用例再也造不出「重试之后成功」这条主路径（实测踩过）。
    * 同一 attempt 内的多次调用不触发复位 ⇒ 计数继续累加（那正是「这一次尝试里第一次失败」的语义）。
    */
@@ -1373,7 +1373,7 @@ export function releaseJudge(): void {
   for (const release of fakeJudge.gates.splice(0)) release();
 }
 
-/** 假评分智能体的状态（与 fakeJudge 同形，但记的是 `judgeRowByAgent` 的入参） */
+/** 假评分智能体的状态（与 fakeJudge 同形，但记的是 `judgeCandidateByAgent` 的入参） */
 export const fakeJudgeAgent = {
   calls: [] as AgentJudgeInput[],
   /** ok=返回固定判定；fail=抛 JudgeAgentError（记完入参再抛，用例仍能看到证据传没传） */
@@ -1389,14 +1389,14 @@ export function resetFakeJudgeAgent(): void {
 }
 
 /**
- * 供测试里的 `vi.mock('./judge-agent', …)` 用作替代模块：只换 `judgeRowByAgent`，
+ * 供测试里的 `vi.mock('./judge-agent', …)` 用作替代模块：只换 `judgeCandidateByAgent`，
  * `JudgeAgentError` 必须是真的（编排层靠 `instanceof` 分路，换成假类会静默走错归因）。
  * 失败档刻意抛**假类的裸 Error** 而不是真 `JudgeAgentError`：编排层把它折成 INTERNAL 的
  * 行为由别处测，本夹具只服务「证据有没有传进智能体通路」这一件事。
  */
-export function fakeJudgeAgentModule(): { judgeRowByAgent: (input: AgentJudgeInput) => Promise<ScoreResult> } {
+export function fakeJudgeAgentModule(): { judgeCandidateByAgent: (input: AgentJudgeInput) => Promise<ScoreResult> } {
   return {
-    judgeRowByAgent: async (input) => {
+    judgeCandidateByAgent: async (input) => {
       fakeJudgeAgent.calls.push(input);
       if (fakeJudgeAgent.mode === 'fail') {
         throw new Error('假评分智能体：脚本要求失败（证据入参已记入 fakeJudgeAgent.calls）');
@@ -1407,16 +1407,16 @@ export function fakeJudgeAgentModule(): { judgeRowByAgent: (input: AgentJudgeInp
 }
 
 /** 供 `vi.mock('./judge', …)` 用作替代模块 */
-export function fakeJudgeModule(): { judgeRow: (input: JudgeInput) => Promise<ScoreResult> } {
+export function fakeJudgeModule(): { judgeCandidate: (input: JudgeInput) => Promise<ScoreResult> } {
   return {
-    judgeRow: async (input) => {
+    judgeCandidate: async (input) => {
       fakeJudge.calls.push(input);
       // 编排层在每次尝试开始时通过这个接缝复位计数（见 `callCount` 的注释）
       input.onAttemptStart?.();
       fakeJudge.callCount += 1;
       // 两种失败脚本（可以叠加）：
       //   · `failOnceThenSucceed` —— **这一次调用**先失败一次再成功（模拟评分器内部的修复循环）；
-      //   · `failFirstNCalls`     —— 跨调用的真计数（模拟「整个 attempt 都失败」，用于行级重试）
+      //   · `failFirstNCalls`     —— 跨调用的真计数（模拟「整个 attempt 都失败」，用于候选级重试）
       if (fakeJudge.failOnceThenSucceed) {
         // 「这一次调用先失败一次」：报一轮修复进度（真实评分器的 onProgress 就是这个形状），
         // 再把这一次调用标记成已失败——**下一次调用**（真实实现里是修复后的第二轮）返回分数

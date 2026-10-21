@@ -25,7 +25,7 @@
  *      作答区里的「选项里没有的」照旧直接铺在问题下）；
  *   7. **只读复盘视图**：不提供任何「回答」按钮——应答面在**弹层**（宿主 + 弹层组件），
  *      卡片只回答「当时问了什么、最后怎么收场的」；**原文入口落在卡面 footer**（`Card` 的 `actions`）：
- *      「原始结果」+「重新读取」，没采到原文时整格不画；
+ *      「原始结果」，没采到原文时整格不画；
  *   8. **不重排选项、不美化 `header`**：`recommended` 的置顶是厂商给的顺序，UI 只加一个 `Tag`；
  *      截断会改事实（与「工具名原样透传」同一口径）；
  *   9. **折叠态一律受控**（本层不持态，见 `agent-log-layering.test.ts` 的 (d)）：一问一格键，
@@ -58,7 +58,6 @@ export interface AskUserCardProps {
   /** 底部「原始结果」二级抽屉的开合（**受控透传**：L0 自己不持态） */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
-  onRequestDiagnostics?(): void;
 }
 
 /**
@@ -206,6 +205,7 @@ function QuestionBody({ question, answer }: QuestionBodyProps): ReactNode {
       // 遮罩：默认 `••••`，展开即显示（`Collapse` 代管开合，本层不引入 state）
       <Collapse
         ghost
+        size="small"
         destroyOnHidden
         items={[
           {
@@ -271,7 +271,6 @@ export function AskUserCard({
   onQuestionOpenChange,
   rawOpen,
   onRawOpenChange,
-  onRequestDiagnostics,
 }: AskUserCardProps): ReactNode {
   const { token } = theme.useToken();
   const questions = interaction.questions;
@@ -303,14 +302,14 @@ export function AskUserCard({
     );
 
   /**
-   * 收场行的那一句说明。
-   * `pending && !running`（轮次已结束、结果没到）**不给**「会一直等到轮次被取消」——
-   * 轮次已经结束了，那句话当场就是假的；这一支只留「结果未采集」。
+   * 收场候选的那一句说明。
+   * `pending && !running`（本轮已结束、结果没到）**不给**「会一直等到本轮被取消」——
+   * 本轮已经结束了，那句话当场就是假的；这一支只留「结果未采集」。
    */
   const noteLine =
     interaction.state === 'pending'
       ? interaction.running
-        ? '无人值守的运行里，这一步会一直等到轮次被取消'
+        ? '无人值守的运行里，这一步会一直等到本轮被取消'
         : null
       : (outcome?.note ?? null);
 
@@ -318,14 +317,14 @@ export function AskUserCard({
   const rawResult = interaction.state === 'settled' ? interaction.result : null;
 
   /**
-   * footer（`Card` 的 `actions`）：只放原文入口——「原始结果」+「重新读取」两枚按钮由
-   * `RawOutputPanel` 一并给出（重试那一格在它里面）。没采到原文时给 `undefined` ⇒ 整格不画，不留空边。
+   * footer（`Card` 的 `actions`）：只放原文入口——「原始结果」那一枚按钮由
+   * `RawOutputPanel` 给出。没采到原文时给 `undefined` ⇒ 整格不画，不留空边。
    *
    * 外面套一层 `Flex` 是为了**左对齐**：antd 把 `actions` 的每一项摆成居中
    * （`.ant-card-actions > li` 带 `text-align: center`），而这一格是动作按钮、不是图标动作，
    * 居中会让它悬在卡片中间、与左上角的卡面标题对不齐。`Flex` 是块级 flex 容器，
    * `text-align` 管不到它的项，默认就从行首排（不必显式给 `justify`）；
-   * 顺带承担两枚按钮之间的间距（`RawOutputPanel` 不自带容器，见它的口径 7）。
+   * 顺带承担按钮与邻居之间的间距（`RawOutputPanel` 不自带容器，见它的口径 7）。
    *
    * **左内边距对齐卡面**：`actions` 那一行自己没有左右 padding，不补这一格按钮组就贴在卡片边框上，
    * 而卡面标题与正文都在 `paddingSM` 处（`.ant-card-head` / `.ant-card-body` 的 12px）——
@@ -341,7 +340,6 @@ export function AskUserCard({
             open={rawOpen}
             onOpenChange={onRawOpenChange}
             label="原始结果"
-            onRetry={onRequestDiagnostics}
           />
         </Flex>,
       ];
@@ -373,6 +371,8 @@ export function AskUserCard({
           antd 给（本件不手写内边距）。
         */
         bordered={false}
+        /* 紧凑档：外层就是 `Card size="small"`，中档折叠面板的标题与正文比卡头卡体松一档 */
+        size="small"
         destroyOnHidden
         /* 面板键是序号（稳定、不随 `header` 重复而漂）；折叠态那一格用 `questionPanelKey` */
         activeKey={questions.flatMap((_, index) => (openQuestions.has(questionPanelKey(cardId, index)) ? [String(index)] : []))}

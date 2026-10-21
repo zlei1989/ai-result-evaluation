@@ -38,7 +38,7 @@ function pending(askId: string, runId = 'run-1'): PendingAskUser {
   return {
     askId,
     runId,
-    rowId: 'w-1',
+    candidateId: 'w-1',
     stage: 'agent',
     questions: [
       { header: '选路径', prompt: '这次改哪条路径？', options: [], multiSelect: false, allowOther: true, secret: false },

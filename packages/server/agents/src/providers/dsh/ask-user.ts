@@ -5,7 +5,7 @@
  * 提问走的是**进程内**服务——Cordis 的一条 waterfall 监听器 `user-questions/request`
  * （`@deepseek-ai/dsh-user-questions`）：**return 一份 `{answers}` 即认领**、`next()` 即委派，
  * 一个应答者都没有时落到厂商内置的 fail-closed 分支（码 `NO_PROVIDER`）。应答者只能注册在厂商进程里
- * ⇒ 适配器把一个**插件**写进每行的配置根，overlay 里 `insert` 一行指向它（相对名按 `<dshHome>` 解析：
+ * ⇒ 适配器把一个**插件**写进每个本次运行的配置根，overlay 里 `insert` 一行指向它（相对名按 `<dshHome>` 解析：
  * 落点与挂载路径与 `stream-tap.ts` 逐字相同，理由见那里的 JSDoc）。
  *
  * 两条 side channel（同一套 JSONL 机制、方向相反，两边各自轮询）：
@@ -52,7 +52,7 @@ export const DSH_ASK_ANSWERER_REPLIES_RELATIVE_PATH = 'aieval-ask-replies.jsonl'
 export const DSH_ASK_USER_TOOL = 'ask_user_question';
 
 /**
- * `tool-ask-user` 那一行的等待档（overlay 里 `config.timeout`，单位秒）——**两档各自对应
+ * `tool-ask-user` 那一本次运行的等待档（overlay 里 `config.timeout`，单位秒）——**两档各自对应
  * 「这一轮有没有人能被问到」**，取值与应答面同源派生（`buildDshRoutePatch` 只按一个自变量选）：
  *
  *   · **挂了应答面**：`timed` + `-1`。厂商源码在 `timeout === -1` 时**回落阻塞档**
@@ -87,7 +87,7 @@ export const DSH_ASK_ANSWERER_POLL_MS = 20;
  * 任何抛错都可能打断被测运行，观测与应答都不许制造失败（失败一律退成 `next()` 委派）。
  *
  * 认领用的是 waterfall 的 return：**不调 `attachWait`**——那一格一认领就停掉 Host 自己的定时器，
- * 而本适配器要的是「答案由父进程给」这条最朴素的路，等待档留在厂商的工具行上。
+ * 而本适配器要的是「答案由父进程给」这条最朴素的路，等待档留在厂商的工具本次运行上。
  */
 export const DSH_ASK_ANSWERER_PLUGIN_SOURCE = `// 由 ai-result-evaluation 的 dsh 适配器写入：进程内提问服务的应答者（文件型双向 side channel）。
 // 为什么存在：dsh 的 JSON-RPC 面没有「服务端问客户端」那一类，答案只能从 runtime 进程内的应答者回去。
@@ -262,7 +262,7 @@ function readRows(file: string): Array<Record<string, unknown>> {
 export interface DshAskAnswererBridge {
   /**
    * 停机（幂等）：唤醒轮询、不再看新的提问。
-   * **不等在飞的那一问**——它的收场归提问端口（行终止 / 预算），而这里等它只会把释放拖到一个
+   * **不等在飞的那一问**——它的收场归提问端口（本次运行终止 / 预算），而这里等它只会把释放拖到一个
    * 人工等待的时长上（十分钟级）。
    */
   close(): void;
@@ -292,7 +292,7 @@ export interface DshAskAnswererOptions {
  *
  * 三条口径：
  *   · **一问只服务一次**：游标按「流水里第几条 `phase:'request'`」推进（流水是追加型，
- *     行序就是到达序）⇒ 插件的重复写行、坏行都不会让同一问被问两遍；
+ *     行序就是到达序）⇒ 插件的重复写行、坏本次运行都不会让同一问被问两遍；
  *   · **并发的两问各自服务**：不排队等前一问收场——追加 + 按 `key` 配对本来就不会串答案，
  *     而排队会让第二问在界面上迟迟不出现；
  *   · **循环自身不许抛**：读文件与端口调用都各自兜住（端口契约上不抛，兜的是实现缺陷），
@@ -332,7 +332,7 @@ export function startDshAskAnswerer(options: DshAskAnswererOptions): DshAskAnswe
     const key = readString(row, 'key');
     const callId = readString(row, 'callId');
     if (key === null) {
-      logger.warn('提问流水里有一行没有配对键，答复交不回去', { transcriptPath: options.transcriptPath });
+      logger.warn('提问流水里有一本次运行没有配对键，答复交不回去', { transcriptPath: options.transcriptPath });
       return;
     }
     /**
@@ -350,16 +350,16 @@ export function startDshAskAnswerer(options: DshAskAnswererOptions): DshAskAnswe
         questions: dshQuestionsOf(questions),
         toolName: DSH_ASK_USER_TOOL,
         callId,
-        // 进程内服务自己不设到点收场（等待档在厂商的工具行上，见 index.ts 的 overlay）⇒ 如实 null
+        // 进程内服务自己不设到点收场（等待档在厂商的工具本次运行上，见 index.ts 的 overlay）⇒ 如实 null
         vendorBudgetMs: null,
         // 子智能体的提问到不了应答者（厂商先 `assertLiveRoot`）⇒ 恒 null，见模块头
         subagentId: null,
       });
       if (answer.answers === null) {
         /**
-         * 「收场了但没有答案」那几态（等超时 / 随轮次取消 / 通道不可用）：**不编一份空答案**——
+         * 「收场了但没有答案」那几态（等超时 / 随本轮取消 / 通道不可用）：**不编一份空答案**——
          * 厂商的阻塞档对「没人应答」的原生语义就是它自己的 fail-closed 收场，交委派即落到那一支；
-         * 而这一问在我们这一侧的收场方式（`outcome`）已经由编排层落进账本与行级事件。
+         * 而这一问在我们这一侧的收场方式（`outcome`）已经由编排层落进账本与运行级事件。
          */
         logger.info('这一问没有答案可回填，按「委派」交回厂商', { callId, outcome: answer.outcome });
         reply({ key, delegate: true, reason: answer.outcome });
@@ -393,7 +393,7 @@ export function startDshAskAnswerer(options: DshAskAnswererOptions): DshAskAnswe
   return {
     /**
      * 判据是**流水里那一行**（不是内存标志）：插件的加载收据是它自己写的第一行，父进程只读流水
-     * ⇒ 插件从未加载与「加载了但一行都没写」这两种形状不会混。读盘失败按「没等到」处置。
+     * ⇒ 插件从未加载与「加载了但一本次运行都没写」这两种形状不会混。读盘失败按「没等到」处置。
      */
     pluginLoaded(): { url: string } | null {
       for (const row of readRows(options.transcriptPath)) {

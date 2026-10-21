@@ -26,7 +26,7 @@ import {
 const base = { seq: 1, at: '2026-09-22T10:30:00.000Z' };
 
 describe('AgentEventSchema', () => {
-  it('接受行级事件成员（九个成员各有样本；`vendor-system` 的形状另有一组专测）', () => {
+  it('接受候选级事件成员（九个成员各有样本；`vendor-system` 的形状另有一组专测）', () => {
     const events = [
       { ...base, type: 'status', status: 'running' },
       { ...base, type: 'log', stream: 'stdout', text: '开始执行' },
@@ -90,7 +90,7 @@ describe('AgentEventSchema', () => {
   /**
    * `log.summary` 是**可选**的「人话摘要」（卡片底部的活动行显示它）。
    * 两个方向都要钉住，各自有靶子：
-   *   ① **老日志必须照样解析**——磁盘上已有的行没有这一格，写成必填会让所有历史行在回放 /
+   *   ① **老日志必须照样解析**——磁盘上已有的候选没有这一格，写成必填会让所有历史行在回放 /
    *      SSE 续订时解析失败（那是最难查的一类静默失败：日志在抽屉里成片消失）；
    *   ② 带上它时**原样保留**——被 schema 悄悄 strip 掉的话，适配器那句人话永远到不了界面，
    *      而所有用例（都是直接构造事件、不过 schema）照样全绿。
@@ -268,7 +268,7 @@ describe('AgentEventSchema', () => {
     expect(tokens !== null && 'cache_creation_input_tokens' in tokens).toBe(false);
   });
 
-  it('status 成员只接受 EvalRowStatus 的取值（事件状态与行状态必须同一套词）', () => {
+  it('status 成员只接受 EvalCandidateStatus 的取值（事件状态与候选状态必须同一套词）', () => {
     expect(AgentEventSchema.safeParse({ ...base, type: 'status', status: 'timed-out' }).success).toBe(true);
     expect(AgentEventSchema.safeParse({ ...base, type: 'status', status: 'timeout' }).success).toBe(false);
   });
@@ -322,7 +322,7 @@ describe('AgentEventSchema', () => {
  * 那是一句假话，且它把「厂商下发了四台 MCP」这件事实从事件流里彻底抹掉（`null` 才是「没投送」）。
  */
 describe('vendor-system 的 mcpServers', () => {
-  /** 真机 run `7f05c765` 的 claude 候选行 raw `system/init` 逐字（四台，来源全是项目 `.mcp.json`） */
+  /** 真机 run `7f05c765` 的 claude 候选 raw `system/init` 逐字（四台，来源全是项目 `.mcp.json`） */
   const REAL_MCP_SERVERS = [
     { name: 'context7', status: 'pending', source: 'project' },
     { name: 'playwright', status: 'pending', source: 'project' },
@@ -366,7 +366,7 @@ describe('vendor-system 的 mcpServers', () => {
    * **历史事件必须照样读得动**（旧版落盘的 `events.jsonl` 里 `mcpServers` 是字符串数组）。
    *
    * 为什么这条不能省：读侧走的是 `AgentEventSchema.safeParse`，契约一旦只认对象数组，
-   * 历史行会**整行解析失败**——`core` 的 `readEvents` 只 WARN 后跳过，于是日志抽屉里
+   * 历史候选会**整行解析失败**——`core` 的 `readEvents` 只 WARN 后跳过，于是日志抽屉里
    * 那一整条 `vendor-system` 凭空消失（最难查的一类静默失败）。
    * 归一之后：老形态（只有一个名字）读成 `{name, status: null, source: null}`——
    * 名字是它当时真的给了的，另两格它当时真的没给，如实记 `null`，**不编**。
@@ -404,7 +404,7 @@ describe('vendor-system 的 mcpServers', () => {
   });
 
   /**
-   * **厂商原文那一格**（行失败文案要用它）：
+   * **厂商原文那一格**（候选失败文案要用它）：
    * 名字 / 状态 / 来源都不足以说清「为什么没起来」，而厂商恰好给了原文——
    * 它是「MCP「<name>」未能启动：<厂商原文首行>」这句话里唯一有价值的那半句。
    */
@@ -435,7 +435,7 @@ describe('vendor-system 的 mcpServers', () => {
   /**
    * **这条事件里的 MCP 事实是从哪个通道读到的**（三家各一格）。
    *
-   * 为什么必须由**事件自己**说：行级观测格的四个结论（`connected` / `unavailable` / `unverified` /
+   * 为什么必须由**事件自己**说：候选级观测格的四个结论（`connected` / `unavailable` / `unverified` /
    * `skipped`）只有一半来自形状——「表里没有它」在 claude 上是「不判失败」，在 dsh 上**就是判失败**
    * （它起不来时工具静默消失，那是唯一判据）。让事件自报通道，`events.jsonl` 才自证得清，
    * 消费方也不必按厂商名去查一张静态表（声明与实际读到的东西会各自漂移）。
@@ -461,7 +461,7 @@ describe('AGENT_EVENT_TYPES', () => {
     // `vendor-system` 挨着 `log` 排：两者都是**厂商侧投送的事实**（原文 / 归一之后的形状）；
     // `usage` 之后那一串则是本仓自己发的过程事件（计量 / 改动 / 提问收场 / 人工消息落点 / 评分 /
     // 失败 / 结束），其中 `diff-summary` / `ask-user` / `inject-message` 相邻——三条都是编排层
-    // 自己算出来的行级观测（后两条成对：一条是「模型问人」，一条是「人喂模型」）
+    // 自己算出来的候选级观测（后两条成对：一条是「模型问人」，一条是「人喂模型」）
     expect([...AGENT_EVENT_TYPES]).toEqual([
       'status', 'log', 'vendor-system', 'usage', 'diff-summary', 'ask-user', 'inject-message', 'score', 'error', 'end',
     ]);
@@ -616,7 +616,7 @@ describe('AgentMessageSchema 的消息级 usage', () => {
  * 把「没投送」写成 `[]`（或反过来）会让界面说一句厂商没说过的话。
  *
  * `origin` 那一格是**归一后的来源分档**（由采集它的适配器按 `classifySkillOrigin` 判：
- * 那一层同时知道行配置目录与工作目录）；`source` 是**厂商原值照抄**，两格都在才追得回事件。
+ * 那一层同时知道候选配置目录与工作目录）；`source` 是**厂商原值照抄**，两格都在才追得回事件。
  */
 describe('vendor-system 的 skills', () => {
   /** 真机 `getContextUsage().skills.skillFrontmatter` 的三档原值（本机实测） */
@@ -717,7 +717,7 @@ describe('ask-user 答案侧', () => {
 });
 
 /**
- * **交互面能力声明**（与「行级」「内容级」「下发级」并列的一组）。
+ * **交互面能力声明**（与「候选级」「内容级」「下发级」并列的一组）。
  *
  * 五条判据的靶子，与 `InjectionStateSchema` 同源：
  *   · `askUser` 用**既有五态词表**（不新造取值）；

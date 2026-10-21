@@ -291,15 +291,15 @@ describe('SKILL_FILE_NAME', () => {
  *
  * 为什么这一格要有守卫：它是「已下发的技能」那一格里唯一由**我们**下的结论，而两处容易猜错——
  *   · 判据必须**先看落点再看原值**：codex 的 `.system/` 内置目录与我们的那几条**同居**
- *     `<行配置目录>/skills/` 之下，顺序反了会把厂商内置说成「本机启用项」；
+ *     `<候选配置目录>/skills/` 之下，顺序反了会把厂商内置说成「本机启用项」；
  *   · 原值表里的取值**逐字来自真机**（claude：`userSettings` / `projectSettings` / `built-in`；
  *     codex：`user` / `system`），不认识的取值一律 `unverified`——**不许按命名推测**
  *     （猜错的表现是来源那一格说了一句假话，而它在界面上与真话长得一模一样）。
  */
 describe('classifySkillOrigin（来源分档）', () => {
-  const layout = { configHome: '/runs/run-1/rows/row-1/.agenthome', cwd: '/runs/run-1/rows/row-1/workspace' };
+  const layout = { configHome: '/runs/run-1/candidates/candidate-1/.agenthome', cwd: '/runs/run-1/candidates/candidate-1/workspace' };
 
-  it('落点在行配置目录之下 ⇒ 本机启用项（厂商原值只是旁证）', () => {
+  it('落点在候选配置目录之下 ⇒ 本机启用项（厂商原值只是旁证）', () => {
     expect(
       classifySkillOrigin({ source: null, path: `${layout.configHome}/skills/alpha/SKILL.md`, ...layout }),
     ).toBe('local-enabled');
@@ -329,7 +329,7 @@ describe('classifySkillOrigin（来源分档）', () => {
 
   it('落点与原值都给不出结论 ⇒ 来源未证实（不许猜）', () => {
     // codex 的 `scope: "user"` 单独出现时说明不了「是本机启用项还是别的 user 根」——那是原值，
-    // 不是结论（行内的 `~` 会指到行配置目录，但我们没有落点可核）
+    // 不是结论（候选内的 `~` 会指到候选配置目录，但我们没有落点可核）
     expect(classifySkillOrigin({ source: 'user', path: null, ...layout })).toBe('unverified');
     expect(classifySkillOrigin({ source: null, path: null, ...layout })).toBe('unverified');
     expect(classifySkillOrigin({ source: 'whatever', path: '/opt/other/skills/x/SKILL.md', ...layout })).toBe('unverified');
@@ -348,7 +348,7 @@ describe('classifySkillOrigin（来源分档）', () => {
    * 这种环境下**落点这一条分支整体失效**，只剩原值兜底，而 codex 的原值 `user` 给不出结论
    * ⇒ 界面上把「我们自己刚装进去的那两条」显示成「来源未证实」。
    *
-   * 覆盖面按 `classifySkillOrigin` 的三支各来一条：行配置目录（含 `.system` 那一档）、
+   * 覆盖面按 `classifySkillOrigin` 的三支各来一条：候选配置目录（含 `.system` 那一档）、
    * 工作目录；两侧的形态**交叉给**（软链形态 vs 真实形态各占一半），任一侧不归一都见红。
    */
   it('软链形态与真实形态是同一个目录：落点分档不许因为写法不同而失效', () => {
@@ -368,13 +368,13 @@ describe('classifySkillOrigin（来源分档）', () => {
       writeFileSync(file, '---\nname: x\ndescription: x\n---\n', 'utf8');
       return file;
     };
-    const realRow = join(realBase, 'row');
-    place('row/skills/tang-poem-meal/SKILL.md');
-    place('row/skills/.system/imagegen/SKILL.md');
+    const realCandidate = join(realBase, 'candidate');
+    place('candidate/skills/tang-poem-meal/SKILL.md');
+    place('candidate/skills/.system/imagegen/SKILL.md');
     place('workspace/.claude/skills/repo-owned/SKILL.md');
-    const linkRow = linkOf('row', realRow);
+    const linkCandidate = linkOf('candidate', realCandidate);
 
-    const layout = { configHome: '/runs/run-1/rows/row-1/.agenthome', cwd: '/runs/run-1/rows/row-1/workspace' };
+    const layout = { configHome: '/runs/run-1/candidates/candidate-1/.agenthome', cwd: '/runs/run-1/candidates/candidate-1/workspace' };
 
     /** 解析器由 **Node 侧**注入（契约不许引 `node:fs`）；这一条用例验的就是两种形态要归一 */
     const classify = (
@@ -384,17 +384,17 @@ describe('classifySkillOrigin（来源分档）', () => {
 
     // ① 真实形态的 configHome + 软链形态的落点 ⇒ 仍要认成「本机启用项」（codex 原值 `user`）
     expect(
-      classify({ source: 'user', path: `${linkRow}/skills/tang-poem-meal/SKILL.md`, configHome: realRow, cwd: layout.cwd }),
+      classify({ source: 'user', path: `${linkCandidate}/skills/tang-poem-meal/SKILL.md`, configHome: realCandidate, cwd: layout.cwd }),
     ).toBe('local-enabled');
 
     // ② 反向：软链形态的 configHome + 真实形态的落点
     expect(
-      classify({ source: 'user', path: `${realRow}/skills/tang-poem-meal/SKILL.md`, configHome: linkRow, cwd: layout.cwd }),
+      classify({ source: 'user', path: `${realCandidate}/skills/tang-poem-meal/SKILL.md`, configHome: linkCandidate, cwd: layout.cwd }),
     ).toBe('local-enabled');
 
     // ③ `.system/` 那一档同样要过真实路径：落点优先于原值，认不出就只剩兜底（`user` ⇒ 未证实）
     expect(
-      classify({ source: 'user', path: `${realRow}/skills/.system/imagegen/SKILL.md`, configHome: linkRow, cwd: layout.cwd }),
+      classify({ source: 'user', path: `${realCandidate}/skills/.system/imagegen/SKILL.md`, configHome: linkCandidate, cwd: layout.cwd }),
     ).toBe('vendor-builtin');
 
     // ④ 工作目录那一侧同理（被测仓库自带的那条走 `.claude/skills/`）

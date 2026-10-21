@@ -108,7 +108,7 @@ function isFilesystemPath(value: string): boolean {
 }
 
 /**
- * 解析基准候选。
+ * 解析基准本次运行。
  *
  * 为什么是列表：`import.meta.url` 在打包后指向产物内的文件，而 `process.cwd()` 未必是本仓的包目录
  * （从仓库根启动时它解析不到 `@openai/codex`）——单一基准都会在某些启动方式下失效。

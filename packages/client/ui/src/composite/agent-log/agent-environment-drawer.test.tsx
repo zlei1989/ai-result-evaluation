@@ -196,7 +196,7 @@ describe('AgentEnvironmentDrawer', () => {
                 {
                   present: true,
                   id: 'observed-mcp-servers',
-                  label: '本行 MCP',
+                  label: '候选 MCP',
                   text: '2 台：\nplaywright：来源 unknown · 判据 厂商启动状态 · 结论 已连上\ncontext7：来源 unknown · 判据 无厂商证据 · 结论 已跳过',
                   truncated: null,
                   at: null,
@@ -263,7 +263,33 @@ describe('AgentEnvironmentDrawer', () => {
     expect(screen.getByText('厂商有、我们还没接')).toBeInTheDocument();
     expect(screen.getByText('这家结构上不支持')).toBeInTheDocument();
     // 能力成立的前提（路由 / 模型 / 开关）如实显示，不吞掉
-    expect(screen.getByText('能力随路由/模型变化：多智能体随路由变化')).toBeInTheDocument();
+    expect(screen.getByText('能力前提（随路由 / 模型 / 开关变化）')).toBeInTheDocument();
+    expect(screen.getByText('多智能体随路由变化')).toBeInTheDocument();
+  });
+
+  /**
+   * 版式：**大类由 `Card` 分开**（能力声明 / 运行环境）。能力声明整块只有 `Descriptions`
+   * （维度格并排、前提整行）；运行环境用 `Descriptions` 摆摘要、`Collapse` 收分组。
+   * 这一条钉的是结构，不是文案：把 Card 去掉、把摘要换回裸 `Flex`、
+   * 或给能力声明再套一层 `Collapse`，它都会红。
+   */
+  it('能力声明只用 Descriptions；运行环境的摘要与分组分别走 Descriptions / Collapse', () => {
+    renderDrawer({
+      capability: { thinkingText: { level: 'yes', source: 'wire', reason: null } },
+      capabilityNotes: ['多智能体随路由变化'],
+    });
+
+    const cards = [...document.querySelectorAll('.ant-card')];
+    expect(cards.map((card) => card.querySelector('.ant-card-head-title')?.textContent)).toEqual([
+      '能力声明',
+      '运行环境',
+    ]);
+    // 能力声明那张：维度格与前提各一张 Descriptions，没有折叠面板
+    expect(cards[0]?.querySelector('.ant-descriptions')).not.toBeNull();
+    expect(cards[0]?.querySelector('.ant-collapse')).toBeNull();
+    // 运行环境那张：摘要走 Descriptions、分组走 Collapse
+    expect(cards[1]?.querySelector('.ant-descriptions')).not.toBeNull();
+    expect(cards[1]?.querySelector('.ant-collapse')).not.toBeNull();
   });
 
   it('受控：点关闭只把 onOpenChange(false) 交回去', () => {
@@ -294,7 +320,7 @@ describe('AgentEnvironmentDrawer（几何，静态）', () => {
   const raw = readFileSync(join(import.meta.dirname, 'agent-environment-drawer.tsx'), 'utf8');
 
   /**
-   * 判据只许扫代码：文件头的口径注释与 `size` 那一行的说明里**正大光明地写着宽度值**
+   * 判据只许扫代码：文件头的口径注释与 `size` 那一候选的说明里**正大光明地写着宽度值**
    * （那是讲给读的人听的口径），扫全文的话负向断言会被注释直接判红——`nested-drawer.test.tsx`
    * 第一次跑就是这么假红的。守卫误伤比漏放行更危险（会教人把守卫删掉），故先剥注释。
    */

@@ -153,7 +153,7 @@ export interface CcRealPathRun {
   elapsedMs: number;
 }
 
-/** 一次运行要的装配：临时行目录 + 真 SDK 模块 + 脚本式上游 */
+/** 一次运行要的装配：临时本次运行目录 + 真 SDK 模块 + 脚本式上游 */
 export interface CcRealPathOptions {
   /** 这一次提问的那一帧（调用 id / 工具名 / 厂商方言入参） */
   frame: { callId: string; toolName: string; input: unknown };

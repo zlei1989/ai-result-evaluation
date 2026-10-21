@@ -256,7 +256,7 @@ describe('toolPayloadOf：ask-user 族', () => {
 describe('toolPayloadOf：族与形状的对应', () => {
   /**
    * **只有这两族有载荷**。其余八族一律 `null`——给 `read-file` 猜一个清单出来，
-   * 后果是工具行被一张空卡片顶掉（调用看不见了），比「没有卡片」严重得多。
+   * 后果是工具候选被一张空卡片顶掉（调用看不见了），比「没有卡片」严重得多。
    */
   it('其余族一律 null（不替它们猜载荷）', () => {
     expect(toolPayloadOf('read-file', { file_path: '/tmp/a' }, 'cc')).toBeNull();

@@ -1,5 +1,5 @@
 /**
- * 人工消息的**数据层**：一行的队列快照（读侧唯一入口）+ 信号式 SSE + 四个写动作
+ * 人工消息的**数据层**：一候选的队列快照（读侧唯一入口）+ 信号式 SSE + 四个写动作
  * （发送 / 改期 / 撤回 / 附件上传）。
  *
  * 通道形状照既有两条信号流（`ask-user.ts` 与 `run-events.ts`），三处不能照抄的地方都写在下面对应位置：
@@ -42,8 +42,8 @@ export const INJECT_MESSAGES_PROMOTE_URL = '/api/inject-messages/promote';
 export const INJECT_MESSAGES_ATTACHMENTS_URL = '/api/inject-messages/attachments';
 
 /** 一行队列快照的地址（也是 SWR 键）：与 REST 端点同形，换行即换键 */
-export function injectMessagesUrl(runId: string, rowId: string): string {
-  return `${INJECT_MESSAGES_URL}?runId=${encodeURIComponent(runId)}&rowId=${encodeURIComponent(rowId)}`;
+export function injectMessagesUrl(runId: string, candidateId: string): string {
+  return `${INJECT_MESSAGES_URL}?runId=${encodeURIComponent(runId)}&candidateId=${encodeURIComponent(candidateId)}`;
 }
 
 /**
@@ -76,17 +76,17 @@ export function postInjectMessageRetract(ref: InjectMessageRef): Promise<InjectM
  * 上传一份附件，拿回它的清单项（`{kind, path, mimeType}`，**没有字节数**——大小由服务端在取件那刻现读）。
  *
  * **先上传拿到路径、再点发送**：登记那一刻正文与附件清单就是完整事实。附件落在
- * `rowDir/attachments/<messageId>/`，`messageId` 由调用方先铸好（它同时是登记的幂等键）。
+ * `candidateDir/attachments/<messageId>/`，`messageId` 由调用方先铸好（它同时是登记的幂等键）。
  */
 export function postInjectAttachment(input: {
   runId: string;
-  rowId: string;
+  candidateId: string;
   messageId: string;
   file: File;
 }): Promise<InjectAttachmentAccepted> {
   const form = new FormData();
   form.set('runId', input.runId);
-  form.set('rowId', input.rowId);
+  form.set('candidateId', input.candidateId);
   form.set('messageId', input.messageId);
   // 字段名固定 `file`：路由层按这个名字取文件，写错会得到一句「上传请求里没有文件」
   form.set('file', input.file);
@@ -95,13 +95,13 @@ export function postInjectAttachment(input: {
 
 export interface UseInjectMessagesInput {
   runId: string;
-  rowId: string;
+  candidateId: string;
   /** 闸门关着 / 抽屉关着时不发任何请求（也不开那条全局信号流） */
   enabled: boolean;
 }
 
 export interface UseInjectMessagesResult {
-  /** 这一行的人工消息（**含终态**，渲染层自己跳过 `gone`）；顺序即服务端表的顺序 */
+  /** 这个候选的人工消息（**含终态**，渲染层自己跳过 `gone`）；顺序即服务端表的顺序 */
   messages: InjectMessage[];
   isLoading: boolean;
   error: unknown;
@@ -117,12 +117,12 @@ export interface UseInjectMessagesResult {
 }
 
 /**
- * 订阅一行的队列快照。`enabled` 为 false 时（闸门关着、抽屉关着）一个请求都不发。
+ * 订阅一候选的队列快照。`enabled` 为 false 时（闸门关着、抽屉关着）一个请求都不发。
  */
 export function useInjectMessages(input: UseInjectMessagesInput): UseInjectMessagesResult {
-  const { runId, rowId, enabled } = input;
-  const active = enabled && runId !== '' && rowId !== '';
-  const key = active ? injectMessagesUrl(runId, rowId) : null;
+  const { runId, candidateId, enabled } = input;
+  const active = enabled && runId !== '' && candidateId !== '';
+  const key = active ? injectMessagesUrl(runId, candidateId) : null;
   const { data, error, isLoading, mutate } = useSWR<InjectMessageList>(key, getJson);
 
   /** 写动作在途计数：并发两个动作时不能被先回来的那个清掉 */
@@ -185,16 +185,16 @@ export function useInjectMessages(input: UseInjectMessagesInput): UseInjectMessa
     [run],
   );
   const promote = useCallback(
-    (messageId: string) => run(() => postInjectMessagePromote({ runId, rowId, messageId })),
-    [run, runId, rowId],
+    (messageId: string) => run(() => postInjectMessagePromote({ runId, candidateId, messageId })),
+    [run, runId, candidateId],
   );
   const retract = useCallback(
-    (messageId: string) => run(() => postInjectMessageRetract({ runId, rowId, messageId })),
-    [run, runId, rowId],
+    (messageId: string) => run(() => postInjectMessageRetract({ runId, candidateId, messageId })),
+    [run, runId, candidateId],
   );
   const uploadAttachment = useCallback(
-    (messageId: string, file: File) => run(() => postInjectAttachment({ runId, rowId, messageId, file })),
-    [run, runId, rowId],
+    (messageId: string, file: File) => run(() => postInjectAttachment({ runId, candidateId, messageId, file })),
+    [run, runId, candidateId],
   );
 
   return {

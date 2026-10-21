@@ -21,15 +21,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import {
-  isRunningRow,
+  isRunningCandidate,
   type AgentKind,
   type EvalRun,
   type MessageCapability,
   type ProtocolType,
   type ProviderModel,
-  type RowArtifactFile,
-  type RowDiffFile,
-  type RowDiffIndex,
+  type CandidateArtifactFile,
+  type CandidateDiffFile,
+  type CandidateDiffIndex,
   type RunArtifactIndex,
   type RunCreate,
   type RunUpdate,
@@ -40,74 +40,74 @@ import { useRunEvents } from './run-events';
 import { RUNS_KEY, runKey } from './run-keys';
 import { delJson, getJson, postJson, putJson } from './http';
 
-// 键的真源在 `run-keys.ts`（叶子模块）；这里 re-export 是为了让三条行级流与页面的
+// 键的真源在 `run-keys.ts`（叶子模块）；这里 re-export 是为了让三条候选级流与页面的
 // 既有 import 路径一律不动（它们都从 './runs' 拿键）。
 export { RUNS_KEY, runKey };
 
 /**
- * 一行的产物端点（diff / log / stream / messages / 评分那两条同前缀）——SSE 与多处按需读取共用，
+ * 一候选的产物端点（diff / log / stream / messages / 评分那两条同前缀）——SSE 与多处按需读取共用，
  * 免得字面量三份。`query` 由调用方给（含 `?`），本函数只负责拼，不解释语义。
  * 评分那条的 `seq` 是**独立一套**（`appendEvent` 按文件续号），`afterSeq` 不许拿执行日志的号来续。
  */
-export function runRowUrl(
+export function runCandidateUrl(
   runId: string,
-  rowId: string,
+  candidateId: string,
   artifact: 'diff' | 'artifacts' | 'log' | 'stream' | 'messages' | 'messages/stream' | 'judge/events' | 'judge/events/stream',
   query = '',
 ): string {
-  return `${runKey(runId)}/rows/${rowId}/${artifact}${query}`;
+  return `${runKey(runId)}/candidates/${candidateId}/${artifact}${query}`;
 }
 
 /**
- * 一轮的**候选产物清单**端点（`/api/runs/{id}/artifacts`）：轮级而不是行级——
+ * 一轮的**候选产物清单**端点（`/api/runs/{id}/artifacts`）：轮级而不是候选级——
  * 它一次给的是「这一轮每个候选各自有哪些 `RESULT.*`」，界面拿它决定「产物总览」按钮出不出现。
- * 单独一个构造函数而不复用 `runRowUrl`：那一个的前缀是 `/rows/<rowId>`，这一条不属于任何一行。
+ * 单独一个构造函数而不复用 `runCandidateUrl`：那一个的前缀是 `/candidates/<candidateId>`，这一条不属于任何一行。
  */
 export function runArtifactsUrl(runId: string): string {
   return `${runKey(runId)}/artifacts`;
 }
 
 /**
- * 一行的**消息流**端点（`/messages/stream`）：内容级 SSE，与行级事件流并行。
- * 单独一个函数而不复用 `runRowUrl` 的查询串：这条流**没有 `afterSeq` 续订**——
+ * 一候选的**消息流**端点（`/messages/stream`）：内容级 SSE，与候选级事件流并行。
+ * 单独一个函数而不复用 `runCandidateUrl` 的查询串：这条流**没有 `afterSeq` 续订**——
  * 它每次连接都回放全量，客户端按 `mergeKey` 覆盖累积（**不按 `messageId` 去重**）。
  * 拼错一个 query 不会报错，只会静默拿到一份对不上的视图。
  */
-export function runRowMessagesStreamUrl(runId: string, rowId: string): string {
-  return runRowUrl(runId, rowId, 'messages/stream');
+export function runCandidateMessagesStreamUrl(runId: string, candidateId: string): string {
+  return runCandidateUrl(runId, candidateId, 'messages/stream');
 }
 
 /**
- * 一行的**候选活动流**端点：`/messages/stream?replay=0` = **不回放历史**。
- * 卡片底部那一行的实时打字现在走整轮共享的聚合流（见 `run-stream-hub.ts`）：它只要「此刻在打字的
+ * 一候选的**候选活动流**端点：`/messages/stream?replay=0` = **不回放历史**。
+ * 卡片底部那一候选的实时打字现在走整轮共享的聚合流（见 `run-stream-hub.ts`）：它只要「此刻在打字的
  * 那一句」，而历史里没有增量，回放只会把整份 `messages.jsonl` 读出来、推过 socket 再丢掉。
- * 这个构造器仍留在出口面上——行级端点本身照旧服务，直连它的消费方按这里的形状拼 URL。
+ * 这个构造器仍留在出口面上——候选级端点本身照旧服务，直连它的消费方按这里的形状拼 URL。
  */
-export function runRowActivityStreamUrl(runId: string, rowId: string): string {
-  return runRowUrl(runId, rowId, 'messages/stream', '?replay=0');
+export function runCandidateActivityStreamUrl(runId: string, candidateId: string): string {
+  return runCandidateUrl(runId, candidateId, 'messages/stream', '?replay=0');
 }
 
 /**
- * 一轮的**聚合流**端点：一轮下所有行的实时数据走这一条。
+ * 一轮的**聚合流**端点：一轮下所有候选的实时数据走这一条。
  *
- * `after` 是一张**逐行游标表**（`rowId:seq` 逗号分隔），不是单一 seq——每行的 `seq` 按各自文件发号，
- * 跨行没有可比性。空表（`cursors` 为空）时不带这个参数：**不回放历史、只推实时帧**。
- * 行 id 逐个编码：它来自 URL 那一侧，`encodeURIComponent` 是唯一能保证 `,` / `:` / 空格
- * 不会被当成分隔符的那一步（拼错的症状是「某一行的历史静默不回放」）。
+ * `after` 是一张**逐行游标表**（`candidateId:seq` 逗号分隔），不是单一 seq——每个候选的 `seq` 按各自文件发号，
+ * 跨候选没有可比性。空表（`cursors` 为空）时不带这个参数：**不回放历史、只推实时帧**。
+ * 候选 id 逐个编码：它来自 URL 那一侧，`encodeURIComponent` 是唯一能保证 `,` / `:` / 空格
+ * 不会被当成分隔符的那一步（拼错的症状是「某一候选的历史静默不回放」）。
  */
 export function runAggregateStreamUrl(runId: string, cursors: ReadonlyMap<string, number>): string {
-  const table = [...cursors].map(([rowId, seq]) => `${encodeURIComponent(rowId)}:${seq}`).join(',');
+  const table = [...cursors].map(([candidateId, seq]) => `${encodeURIComponent(candidateId)}:${seq}`).join(',');
   return `${runKey(runId)}/stream${table === '' ? '' : `?after=${table}`}`;
 }
 
 /**
- * 一行的**评分活动流**端点：`/judge/messages/stream?replay=0`。
+ * 一候选的**评分活动流**端点：`/judge/messages/stream?replay=0`。
  * 评审者是**另一个会话**，它的消息落在自己的文件里（`judge-messages.jsonl`）——活动行在评分阶段
- * 看的是这一条，不是候选那条（两条同时订阅会让那一行被候选的残留内容占住）；聚合流上这两条
- * channel 是同一帧族，靠 `rowChannel` 分。
+ * 看的是这一条，不是候选那条（两条同时订阅会让那一个候选被候选的残留内容占住）；聚合流上这两条
+ * channel 是同一帧族，靠 `candidateChannel` 分。
  */
-export function runRowJudgeActivityStreamUrl(runId: string, rowId: string): string {
-  return `${runKey(runId)}/rows/${rowId}/judge/messages/stream?replay=0`;
+export function runCandidateJudgeActivityStreamUrl(runId: string, candidateId: string): string {
+  return `${runKey(runId)}/candidates/${candidateId}/judge/messages/stream?replay=0`;
 }
 
 /** 候选池与能力元数据的端点 */
@@ -120,9 +120,9 @@ export const AGENT_OPTIONS_KEY = '/api/runs/model-options';
  */
 const RUN_FALLBACK_POLL_MS = 60_000;
 
-/** 一轮「还有活在跑」：轮级 status 与行级状态都要看——编排层翻转轮状态有一拍延迟 */
+/** 一轮「还有活在跑」：轮级 status 与候选级状态都要看——编排层翻转轮状态有一拍延迟 */
 function isLiveRun(run: EvalRun): boolean {
-  return run.status === 'running' || run.rows.some((row) => isRunningRow(row.status));
+  return run.status === 'running' || run.candidates.some((row) => isRunningCandidate(row.status));
 }
 
 /**
@@ -163,7 +163,7 @@ export function useRun(id: string | null): {
   isLoading: boolean;
   refresh: () => void;
 } {
-  // 行级 SSE 覆盖逐行的计量跳动；轮级状态与排名的收敛由信号（saveRun 落盘即推）驱动重验，
+  // 候选级 SSE 覆盖逐候选的计量跳动；轮级状态与排名的收敛由信号（saveRun 落盘即推）驱动重验，
   // 60 秒慢兜底让「信号通道万一断掉」也不会永久停在「执行中」
   const { data, error, isLoading, mutate } = useFallbackRun<EvalRun>(
     id === null ? null : runKey(id),
@@ -198,7 +198,7 @@ export interface AgentModelOption {
   /** 上下文窗口（token）；缺省 = 未知（界面显示「未知」，绝不兜底一个数字） */
   contextWindow?: number;
   /**
-   * 该组合**可选**的思考强度档位（api 已把上游声明的档位与本行智能体的档位域求过交；
+   * 该组合**可选**的思考强度档位（api 已把上游声明的档位与候选智能体的档位域求过交；
    * 上游未声明 ⇒ 该家完整档位域）。**该家能收关闭档、且交集里还没有它时**，关闭档会被并入并排在
    * 首位（上游自己已声明 `off` 时保留上游顺序）；缺省 = 一个档位都没有。
    */
@@ -285,9 +285,9 @@ export function useCreateRun(): { create: (input: RunCreate) => Promise<EvalRun>
  * 编辑一轮评测（「修改」）：PUT 全量可变字段 → 回写详情与列表两个键。
  * 形状与本文件其它写操作逐字相同（见文件头约定 3）：手工 `mutate`、`revalidate: false`、
  * 再显式刷新列表——缺任何一处都会出现「详情新、列表旧」。
- * 入参**原样**送上线（不挑字段、不补默认值）：`rows[].id`（原地更新这一行、保留它的结果）
+ * 入参**原样**送上线（不挑字段、不补默认值）：`rows[].id`（原地更新这个候选、保留它的结果）
  * 与 `rows[].effort`（思考强度）都是服务端要读的字段，钩子在中间重抄一遍就会静默丢字段。
- * `isUpdating` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `hasLiveRows`，与服务端同一份。
+ * `isUpdating` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `hasLiveCandidates`，与服务端同一份。
  */
 export function useUpdateRun(): {
   update: (runId: string, input: RunUpdate) => Promise<EvalRun>;
@@ -317,7 +317,7 @@ export function useUpdateRun(): {
 
 /**
  * 删除一轮评测：清掉详情缓存（照 `useDeleteCase` 的口径）+ 刷新列表。
- * 响应里的 `workspaceRemoved` 必须原样交给页面：`false` = 磁盘上的行工作区没能回收，
+ * 响应里的 `workspaceRemoved` 必须原样交给页面：`false` = 磁盘上的候选工作区没能回收，
  * 界面要如实说出来（不假装干净，也不把「回收失败」说成「删除失败」）。
  */
 export function useDeleteRun(): {
@@ -390,18 +390,18 @@ export function useAbortRun(): { abort: (runId: string) => Promise<EvalRun>; isA
   return { abort, isAborting };
 }
 
-export function useAbortRow(): {
-  abortRow: (runId: string, rowId: string) => Promise<EvalRun>;
+export function useAbortCandidate(): {
+  abortCandidate: (runId: string, candidateId: string) => Promise<EvalRun>;
   isAborting: boolean;
 } {
   const { mutate } = useSWRConfig();
   const [isAborting, setAborting] = useState(false);
 
-  const abortRow = useCallback(
-    async (runId: string, rowId: string): Promise<EvalRun> => {
+  const abortCandidate = useCallback(
+    async (runId: string, candidateId: string): Promise<EvalRun> => {
       setAborting(true);
       try {
-        const run = await postJson<EvalRun>(`${runKey(runId)}/rows/${rowId}/abort`, {});
+        const run = await postJson<EvalRun>(`${runKey(runId)}/candidates/${candidateId}/abort`, {});
         await mutate(runKey(runId), run, { revalidate: false });
         await mutate(RUNS_KEY);
         return run;
@@ -412,27 +412,27 @@ export function useAbortRow(): {
     [mutate],
   );
 
-  return { abortRow, isAborting };
+  return { abortCandidate, isAborting };
 }
 
 /**
  * 重新评分：只重跑评分步骤。回写两个键与本文件其它写操作同形——
  * 「状态立刻变成 judging」这件事必须同时被详情与列表看到。
  * `isRescoring` 在界面上只用于**转圈与禁用**（避免连点两次）；它不参与可用性判据，
- * 那个判据是 contracts 的 `canRescoreRow`，与服务端同一份。
+ * 那个判据是 contracts 的 `canRescoreCandidate`，与服务端同一份。
  */
-export function useRescoreRow(): {
-  rescoreRow: (runId: string, rowId: string) => Promise<EvalRun>;
+export function useRescoreCandidate(): {
+  rescoreCandidate: (runId: string, candidateId: string) => Promise<EvalRun>;
   isRescoring: boolean;
 } {
   const { mutate } = useSWRConfig();
   const [isRescoring, setRescoring] = useState(false);
 
-  const rescoreRow = useCallback(
-    async (runId: string, rowId: string): Promise<EvalRun> => {
+  const rescoreCandidate = useCallback(
+    async (runId: string, candidateId: string): Promise<EvalRun> => {
       setRescoring(true);
       try {
-        const run = await postJson<EvalRun>(`${runKey(runId)}/rows/${rowId}/rescore`, {});
+        const run = await postJson<EvalRun>(`${runKey(runId)}/candidates/${candidateId}/rescore`, {});
         await mutate(runKey(runId), run, { revalidate: false });
         await mutate(RUNS_KEY);
         return run;
@@ -443,35 +443,35 @@ export function useRescoreRow(): {
     [mutate],
   );
 
-  return { rescoreRow, isRescoring };
+  return { rescoreCandidate, isRescoring };
 }
 
 /**
- * 单行**执行**（内部名仍是 retry；界面文案按行态分叉：没跑过 = 「开始执行」、跑过 = 「重新执行」）：
- * 只跑这一行（候选 agent + 评分），本轮其他行一律不动——
+ * 单行**执行**（内部名仍是 retry；界面文案按候选状态分叉：没跑过 = 「开始执行」、跑过 = 「重新执行」）：
+ * 只跑这个候选（候选 agent + 评分），本轮其他行一律不动——
  * 「只执行当前候选项，不要完成后重新执行下方已经执行过的候选项」。
- * 与 `useRescoreRow`是同一个形状、不同的端点。回写两个键的理由与其它写操作一样：
+ * 与 `useRescoreCandidate`是同一个形状、不同的端点。回写两个键的理由与其它写操作一样：
  * 状态立刻变成 `preparing` 这件事必须同时被详情与列表看到。
- * `isRetrying` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `canRunRow`（*不在跑就放行**，
- * 含一次都没跑过的行）；`canRetryRow` 只决定文案。
+ * `isRetrying` 只用于按钮转圈与禁用；可用性判据是 contracts 的 `canRunCandidate`（*不在跑就放行**，
+ * 含一次都没跑过的候选）；`canRetryCandidate` 只决定文案。
  *
  * ⚠️ **这一次请求可能很久才回来**：
- * 服务端的准备阶段（镜像 fetch + 复制 + checkout）跑在 `retryRow` 返回**之前**，而它是同步重活。
+ * 服务端的准备阶段（镜像 fetch + 复制 + checkout）跑在 `retryCandidate` 返回**之前**，而它是同步重活。
  * 不是本 hook 的问题，写在这里是为了下一个人排查「点了没反应」时不必从零开始
  * ——详见 `docs/features/row-execution.md` 已知边界里「retry 准备阶段同步重活」条。
  */
-export function useRetryRow(): {
-  retryRow: (runId: string, rowId: string) => Promise<EvalRun>;
+export function useRetryCandidate(): {
+  retryCandidate: (runId: string, candidateId: string) => Promise<EvalRun>;
   isRetrying: boolean;
 } {
   const { mutate } = useSWRConfig();
   const [isRetrying, setRetrying] = useState(false);
 
-  const retryRow = useCallback(
-    async (runId: string, rowId: string): Promise<EvalRun> => {
+  const retryCandidate = useCallback(
+    async (runId: string, candidateId: string): Promise<EvalRun> => {
       setRetrying(true);
       try {
-        const run = await postJson<EvalRun>(`${runKey(runId)}/rows/${rowId}/retry`, {});
+        const run = await postJson<EvalRun>(`${runKey(runId)}/candidates/${candidateId}/retry`, {});
         await mutate(runKey(runId), run, { revalidate: false });
         await mutate(RUNS_KEY);
         return run;
@@ -482,7 +482,7 @@ export function useRetryRow(): {
     [mutate],
   );
 
-  return { retryRow, isRetrying };
+  return { retryCandidate, isRetrying };
 }
 
 /**
@@ -496,16 +496,16 @@ export function useRetryRow(): {
  * 可达数 MB 的输出与秒级耗时），而 SWR 默认会在窗口重新获得焦点时重跑它——每切回一次页面就重算一次。
  * 抽屉里的 diff 是「打开时看一眼」的产出快照，需要更新的使用者重新打开一次抽屉即可。
  */
-export function useRowDiffIndex(
+export function useCandidateDiffIndex(
   runId: string,
-  rowId: string,
+  candidateId: string,
   enabled: boolean,
   offset = 0,
   limit = 30,
-): { index: RowDiffIndex | undefined; error: unknown; isLoading: boolean } {
-  const { data, error, isLoading } = useSWR<RowDiffIndex>(
-    enabled && runId !== '' && rowId !== ''
-      ? runRowUrl(runId, rowId, 'diff', `?offset=${offset}&limit=${limit}`)
+): { index: CandidateDiffIndex | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<CandidateDiffIndex>(
+    enabled && runId !== '' && candidateId !== ''
+      ? runCandidateUrl(runId, candidateId, 'diff', `?offset=${offset}&limit=${limit}`)
       : null,
     getJson,
     { revalidateOnFocus: false },
@@ -520,14 +520,14 @@ export function useRowDiffIndex(
  * 不需要另造一个 `enabled` 布尔（两个开关必然漂移成「传了 path 却是 disabled」这种矛盾态）。
  * 同一个文件重复请求由 SWR 自己的缓存兜住，不会重复打服务端。
  */
-export function useRowDiffFile(
+export function useCandidateDiffFile(
   runId: string,
-  rowId: string,
+  candidateId: string,
   path: string | undefined,
-): { file: RowDiffFile | undefined; error: unknown; isLoading: boolean } {
-  const { data, error, isLoading } = useSWR<RowDiffFile>(
-    path !== undefined && runId !== '' && rowId !== ''
-      ? runRowUrl(runId, rowId, 'diff', `?file=${encodeURIComponent(path)}`)
+): { file: CandidateDiffFile | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<CandidateDiffFile>(
+    path !== undefined && runId !== '' && candidateId !== ''
+      ? runCandidateUrl(runId, candidateId, 'diff', `?file=${encodeURIComponent(path)}`)
       : null,
     getJson,
     { revalidateOnFocus: false },
@@ -538,8 +538,8 @@ export function useRowDiffFile(
 /**
  * 「产物总览」的清单（这一轮每个候选工作区根下的 `RESULT.*`）。
  *
- * 与 `useRowDiffIndex` 同一条「只读的展示快照」口径（`revalidateOnFocus: false`）：
- * 一次扫描 = 每行一次 `readdir`，切回窗口就重扫没有意义。
+ * 与 `useCandidateDiffIndex` 同一条「只读的展示快照」口径（`revalidateOnFocus: false`）：
+ * 一次扫描 = 每个候选一次 `readdir`，切回窗口就重扫没有意义。
  * **打开期间不自动重扫**：关掉排名抽屉再打开（`enabled` 由 false 翻回 true）即重扫一次——
  * 候选还在跑时想看到最新产物，走这条路。
  */
@@ -559,17 +559,17 @@ export function useRunArtifacts(
  * 单个候选的**一份**产物正文。
  *
  * **`name === undefined` 就是「这一份还没取」**，此时 SWR key 传 `null`、一个请求都不发
- * （与 `useRowDiffFile` 同一条口径：不另造一个 `enabled` 布尔，两个开关必然漂移）。
+ * （与 `useCandidateDiffFile` 同一条口径：不另造一个 `enabled` 布尔，两个开关必然漂移）。
  * 文件名虽然只可能是 `RESULT.md` 这类白名单里的值，仍照常编码：拼 URL 的那一步不该假设取值面。
  */
-export function useRowArtifactFile(
+export function useCandidateArtifactFile(
   runId: string,
-  rowId: string,
+  candidateId: string,
   name: string | undefined,
-): { file: RowArtifactFile | undefined; error: unknown; isLoading: boolean } {
-  const { data, error, isLoading } = useSWR<RowArtifactFile>(
-    name !== undefined && runId !== '' && rowId !== ''
-      ? runRowUrl(runId, rowId, 'artifacts', `?name=${encodeURIComponent(name)}`)
+): { file: CandidateArtifactFile | undefined; error: unknown; isLoading: boolean } {
+  const { data, error, isLoading } = useSWR<CandidateArtifactFile>(
+    name !== undefined && runId !== '' && candidateId !== ''
+      ? runCandidateUrl(runId, candidateId, 'artifacts', `?name=${encodeURIComponent(name)}`)
       : null,
     getJson,
     { revalidateOnFocus: false },
@@ -580,19 +580,19 @@ export function useRowArtifactFile(
 /**
  * 执行日志全量：抽屉首帧与「下载台账」共用（下载要的是完整落盘内容，不依赖长连接是否活着）。
  *
- * 这里**不关**焦点重验（与 `useRowDiffIndex` 相反，是有意的）：读一个 jsonl 文件比现场算 diff 便宜
+ * 这里**不关**焦点重验（与 `useCandidateDiffIndex` 相反，是有意的）：读一个 jsonl 文件比现场算 diff 便宜
  * 几个数量级，而「下载」直接消费这份数据——切回窗口时重读一次，换来一份更完整的落盘日志。
  *
  * `refresh` 是给`AgentLogSource.retryNode` 用的：节点内容**按值给**（UI 不做取数），
  * 于是「重取」在页面上就是重取这两条来源——它就是 SWR 的 `mutate`，没有第二份缓存。
  */
-export function useRowLog(
+export function useCandidateLog(
   runId: string,
-  rowId: string,
+  candidateId: string,
   enabled: boolean,
 ): { events: AgentEvent[] | undefined; error: unknown; isLoading: boolean; refresh: () => void } {
   const { data, error, isLoading, mutate } = useSWR<AgentEvent[]>(
-    enabled && runId !== '' && rowId !== '' ? runRowUrl(runId, rowId, 'log') : null,
+    enabled && runId !== '' && candidateId !== '' ? runCandidateUrl(runId, candidateId, 'log') : null,
     getJson,
   );
   return { events: data, error, isLoading, refresh: () => void mutate() };
@@ -606,7 +606,7 @@ const OPTIMISTIC_CAPABILITY = { usage: true, cancelMidTurn: true } as const;
 
 /**
  * 候选池 + 能力元数据。一次取全三个 kind：
- * 创建表单要按行的智能体过滤模型池，候选卡片要 `usage` / `cancelMidTurn`，
+ * 创建表单要按候选的智能体过滤模型池，候选卡片要 `usage` / `cancelMidTurn`，
  * 两者同源，分两次请求只会让「同一个 kind 的两份元数据」有机会不一致。
  *
  * 三个出口都给：`options` 是钉的原始列表形状，`optionsFor` / `capabilityOf` 是页面
@@ -645,7 +645,7 @@ export function useRunModelOptions(): {
   /**
    * 能力声明（不是上面的 `capabilityOf`——两者刻意不合并）。
    *
-   * **缺省是 `null`，不是一份编出来的「都支持」**：`capabilityOf` 那两格是**行级**能力
+   * **缺省是 `null`，不是一份编出来的「都支持」**：`capabilityOf` 那两格是**候选级**能力
    * （能不能终止、能不能计量），乐观默认值只是「多给一个按钮」；而这里是**逐格的采数事实**，
    * 编一份出来等于替厂商声明「我们验过这一家」，而真相可能是「还没验证」。
    * 拿不到就如实给 `null`，界面据此显示「没验证过」——那是真的。

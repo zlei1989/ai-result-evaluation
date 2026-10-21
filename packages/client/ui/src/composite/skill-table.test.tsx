@@ -76,7 +76,7 @@ describe('SkillTable：三列与固定列', () => {
     expect(table?.style.width).toBe('630px');
   });
 
-  it('每行显名称与描述，不可用的挂红标签（原因在 Tooltip 里）', async () => {
+  it('每个候选显名称与描述，不可用的挂红标签（原因在 Tooltip 里）', async () => {
     render(
       <SkillTable skills={SKILLS} skillWarnings={[]} root={ROOT} onOpen={vi.fn()} onRescan={vi.fn()} onToggle={vi.fn()} />,
     );
@@ -137,7 +137,7 @@ describe('SkillTable：开关与行点击', () => {
     expect(screen.getByRole('switch', { name: '启用 broken-skill' })).not.toBeChecked();
   });
 
-  it('点开关交出去的是这一行 + **期望状态**（开着的点一下 ⇒ disabled:true）', () => {
+  it('点开关交出去的是这个候选 + **期望状态**（开着的点一下 ⇒ disabled:true）', () => {
     const onToggle = vi.fn();
     render(
       <SkillTable skills={SKILLS} skillWarnings={[]} root={ROOT} onOpen={vi.fn()} onRescan={vi.fn()} onToggle={onToggle} />,
@@ -188,7 +188,7 @@ describe('SkillTable：开关与行点击', () => {
   });
 
   it('点开关**不**触发「点一行开抽屉」：写入口不该顺手把预览抽屉顶开', () => {
-    // 行本身是抽屉的入口（`onRow` 的 onClick），而开关住在行里 ⇒ 不掐断冒泡的话，
+    // 行本身是抽屉的入口（`onRow` 的 onClick），而开关住在候选里 ⇒ 不掐断冒泡的话，
     // 每切一次启停都会弹出一个盖住表格的抽屉，用户下一步只能先关掉它
     const onOpen = vi.fn();
     const onToggle = vi.fn();
@@ -199,10 +199,10 @@ describe('SkillTable：开关与行点击', () => {
     fireEvent.click(screen.getByRole('switch', { name: '启用 alpha-skill' }));
 
     expect(onToggle).toHaveBeenCalledTimes(1);
-    expect(onOpen, '开关的点击冒泡到了行上，把抽屉顶开了').not.toHaveBeenCalled();
+    expect(onOpen, '开关的点击冒泡到了候选上，把抽屉顶开了').not.toHaveBeenCalled();
   });
 
-  it('点一行开抽屉：交出去的是这一行的条目', () => {
+  it('点一行开抽屉：交出去的是这个候选的条目', () => {
     const onOpen = vi.fn();
     render(<SkillTable skills={SKILLS} skillWarnings={[]} root={ROOT} onOpen={onOpen} onRescan={vi.fn()} onToggle={vi.fn()} />);
 

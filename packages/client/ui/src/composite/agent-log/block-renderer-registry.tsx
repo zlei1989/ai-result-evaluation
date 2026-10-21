@@ -16,8 +16,9 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import type { RenderBlock } from './render-blocks';
 import { capabilityReasonOf, type MessageCapabilityMap } from './types';
 import { AskUserCard } from './ask-user-card';
+import { ImageViewBlockView } from './image-view-block-view';
 import { AttachmentBlockView } from './attachment-block-view';
-import { RowSummaryLine } from './row-summary-line';
+import { CandidateSummaryLine } from './candidate-summary-line';
 import { SubagentBar } from './subagent-bar';
 import { TaskPanelCard } from './task-panel-card';
 import { TextBlockView } from './text-block-view';
@@ -54,8 +55,14 @@ export interface BlockRenderContext {
   onEnterNode?(nodeId: string): void;
   /** 节点内容读失败时的重试（`source.retryNode` 的入口；不给时**不渲染**重试按钮） */
   onRetryNode?(nodeId: string): void;
-  /** 「原始输出」面板展开时向数据层上报一次（`source.requestDiagnostics`） */
-  onRequestDiagnostics?(): void;
+  /**
+   * **工作区相对路径 → 可加载的图片 URL**（`image-view` 块的缩略图）。
+   *
+   * 为什么在上下文里：块只拿到厂商给的路径，「这张图从哪条路由取」是宿主的接线
+   * （web-next 把它接到一条读工作区的字节路由）。**不给就不画缩略图**——
+   * 本层不认识任何路由，也不该为「能不能预览」编一个看起来正常的空框。
+   */
+  imageSrcOf?: (previewPath: string) => string;
   /**
    * 当前节点的**能力声明**。
    *
@@ -69,7 +76,7 @@ export interface BlockRenderContext {
   capability?: MessageCapabilityMap;
 }
 
-/** 渲染器注册表：**九个臂齐全**（用映射类型写，漏一臂编译期就报错，比运行时的兜底更早） */
+/** 渲染器注册表：**十个臂齐全**（用映射类型写，漏一臂编译期就报错，比运行时的兜底更早） */
 export type BlockRendererRegistry = {
   readonly [K in RenderBlock['kind']]: (
     block: Extract<RenderBlock, { kind: K }>,
@@ -86,13 +93,13 @@ const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
  * 为什么是这一维：`AgentRunStateTag` 说的是「这次工具调用的结果没有」，而它对应的能力格
  * 就是 `toolResult`（契约里五维之一）。拿 `thinkingText` 或 `subagent` 的原因去解释工具结果，
  * 会把「子任务整块没采到」说成「它没有子任务」——两个不同的坑，修法也不同。
- * 三个调用点（工具组状态行、组内每一行、计划清单）共用这一处推导，不各判一次。
+ * 三个调用点（工具组状态行、组内每个候选、计划清单）共用这一处推导，不各判一次。
  */
 function toolResultReasonOf(ctx: BlockRenderContext): string | null {
   return capabilityReasonOf(ctx.capability?.['toolResult']);
 }
 
-/** 默认那九臂（本仓的业务口径只住在这张表里） */
+/** 默认那十臂（本仓的业务口径只住在这张表里） */
 export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
   text: (block) => <TextBlockView block={block.block} />,
   thinking: (block, ctx) => (
@@ -105,18 +112,18 @@ export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
       onOpenChange={ctx.onOpenChange}
       openEntries={ctx.openKeys ?? EMPTY_KEYS}
       onEntryOpenChange={ctx.onEntryOpenChange ?? (() => undefined)}
-      onRequestDiagnostics={ctx.onRequestDiagnostics}
       missingReason={toolResultReasonOf(ctx)}
     />
   ),
   attachment: (block) => <AttachmentBlockView block={block.block} />,
+  'image-view': (block, ctx) => <ImageViewBlockView block={block.block} srcOf={ctx.imageSrcOf} />,
   unrecognized: (block, ctx) => (
     <UnrecognizedBlockView block={block.block} open={ctx.open} onOpenChange={ctx.onOpenChange} />
   ),
   'subagent-bar': (block, ctx) => (
     <SubagentBar node={block.node} onEnter={ctx.onEnterNode} onRetry={ctx.onRetryNode} />
   ),
-  'row-summary': (block) => <RowSummaryLine node={block.node} />,
+  'row-summary': (block) => <CandidateSummaryLine node={block.node} />,
   'task-panel': (block, ctx) => (
     <TaskPanelCard
       panel={block.panel}
@@ -125,7 +132,6 @@ export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
       onOpenChange={ctx.onOpenChange}
       rawOpen={ctx.rawOpen}
       onRawOpenChange={ctx.onRawOpenChange}
-      onRequestDiagnostics={ctx.onRequestDiagnostics}
       missingReason={toolResultReasonOf(ctx)}
     />
   ),
@@ -139,7 +145,6 @@ export const DEFAULT_BLOCK_RENDERERS: BlockRendererRegistry = {
       onQuestionOpenChange={ctx.onEntryOpenChange ?? (() => undefined)}
       rawOpen={ctx.rawOpen}
       onRawOpenChange={ctx.onRawOpenChange}
-      onRequestDiagnostics={ctx.onRequestDiagnostics}
     />
   ),
 };

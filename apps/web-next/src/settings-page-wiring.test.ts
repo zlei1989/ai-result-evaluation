@@ -270,18 +270,18 @@ describe('settings 页面的 MCP 卡接线', () => {
 
   /**
    * 测试连接两个入口的接线：两个入口各喂一份，**喂错的那一份不会红**——
-   * 行内喂成 `entry` 就测不到「已保存的那份」（用户改完没保存，行内会去测还没落盘的值），
+   * 候选内喂成 `entry` 就测不到「已保存的那份」（用户改完没保存，候选内会去测还没落盘的值），
    * 表单喂成 `name` 则测的是旧配置（表单里新填的地址根本没被测）。两处都只有源码锚点拦得住。
    */
-  it('行内入口测**已保存**的那份（{ name }），表单入口测**表单当前值**（{ entry }）', () => {
+  it('候选内入口测**已保存**的那份（{ name }），表单入口测**表单当前值**（{ entry }）', () => {
     const tableTag = openingTag('McpServerTable');
     const modalTag = openingTag('McpServerFormModal');
 
-    expect(tableTag, '行内少了 onTest=').toContain('onTest={testMcpServer}');
+    expect(tableTag, '候选内少了 onTest=').toContain('onTest={testMcpServer}');
     expect(modalTag, '表单少了 onTest=').toContain('onTest={testMcpForm}');
 
     // 两个入口的请求体形状必须**分开**：混用不会报错，只会静默测错那一份
-    expect(source, '行内入口没有用 { name }').toContain('probeMcpServer({ name: row.name })');
+    expect(source, '候选内入口没有用 { name }').toContain('probeMcpServer({ name: row.name })');
     expect(source, '表单入口没有用 { entry }').toContain('probeMcpServer({ entry:');
   });
 
@@ -403,7 +403,7 @@ describe('settings 页面的技能 Tab 接线', () => {
   });
 
   /**
-   * 启停开关的接线。组件那一侧钉住了「交出去的是这一行 + 期望状态」，看不见**页面有没有把它接上**：
+   * 启停开关的接线。组件那一侧钉住了「交出去的是这个候选 + 期望状态」，看不见**页面有没有把它接上**：
    *   · 漏传 `onToggle` ⇒ typecheck 会红（必填 prop），但传错**回调体**不会：写成 `update({ mcpServers })`
    *     或整条替换 `skills` 也能编译，界面上开关照常翻转，而停用名单在一次刷新后被服务端冲掉；
    *   · 少写 `entries` 这一层 ⇒ 服务端的补丁 schema 判 400（开关点了没反应，原因只在网络面板里）。
@@ -413,7 +413,7 @@ describe('settings 页面的技能 Tab 接线', () => {
 
     const body = actionBody('toggleSkill');
     expect(body, '开关没有落到 PUT { skills }').toContain('skills: { entries:');
-    // 键是**被点那一行的名字**（不是整份名单）：服务端逐条合并，只动补丁里出现的名字
+    // 键是**被点那一候选的名字**（不是整份名单）：服务端逐条合并，只动补丁里出现的名字
     expect(body, '补丁里带的不是被点那一行').toContain('[skill.name]: { disabled }');
     // 落盘成功之后必须**重新取一次清单**：开关的 checked 读的是清单里那条 `disabled`，
     // 不重取的话它永远停在旧值上——写成功了而界面上「点了没反应」（比乐观翻转更难查）

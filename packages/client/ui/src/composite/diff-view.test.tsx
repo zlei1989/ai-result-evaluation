@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import type { ReactNode } from 'react';
-import type { RowDiffFile, RowDiffIndex } from '@aieval/contracts';
+import type { CandidateDiffFile, CandidateDiffIndex } from '@aieval/contracts';
 import { DiffFileContent, DiffView } from './diff-view';
 import { installResizeObserverStub } from '../testing/resize-observer';
 
@@ -61,7 +61,7 @@ beforeEach(() => {
   vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
 });
 
-const index: RowDiffIndex = {
+const index: CandidateDiffIndex = {
   files: [
     { path: 'lib/a.ts', insertions: 1, deletions: 0, untracked: false, hasBody: true },
     { path: 'lib/b.ts', insertions: 0, deletions: 3, untracked: false, hasBody: true },
@@ -75,7 +75,7 @@ const index: RowDiffIndex = {
   droppedFiles: [],
 };
 
-/** 一段真能在组件里渲染出内容的 patch（首行是段落头，与 collectDiff 的真实形态一致） */
+/** 一段真能在组件里渲染出内容的 patch（首候选是段落头，与 collectDiff 的真实形态一致） */
 const PATCH = [
   '### 未提交改动（工作区 vs HEAD）',
   'diff --git a/lib/a.ts b/lib/a.ts',
@@ -87,12 +87,12 @@ const PATCH = [
   '',
 ].join('\n');
 
-function loadedFile(): RowDiffFile {
+function loadedFile(): CandidateDiffFile {
   return { path: 'lib/a.ts', patch: PATCH, insertions: 1, deletions: 0, binary: false };
 }
 
 /** 把 `renderFileBody` 包成 spy 的辅助：默认渲染一份受控的正文 */
-function bodySpy(file: RowDiffFile | undefined = undefined, isLoading = false): (path: string) => ReactNode {
+function bodySpy(file: CandidateDiffFile | undefined = undefined, isLoading = false): (path: string) => ReactNode {
   return vi.fn((path: string) => (
     <DiffFileContent file={file} error={null} isLoading={isLoading} dark={false} />
   )) as unknown as (path: string) => ReactNode;
@@ -158,7 +158,7 @@ describe('DiffView', () => {
 
     // diff 组件的 diff 计算在 componentDidMount 里是**异步**的（首帧渲染的是一个空 tbody），
     // 故必须等它，不能同步断言。
-    // 也不能用 `getByText(/const b = 2;/)`：开了语法高亮之后这一行被拆进多个 <span>，
+    // 也不能用 `getByText(/const b = 2;/)`：开了语法高亮之后这个候选被拆进多个 <span>，
     // 文本匹配取不到跨元素的字符串。改为断言「确实出现了一条插入行，且它的文字是新内容」。
     const inserted = await waitFor(() => {
       const node = document.querySelector('[data-testid="diff-file-section-lib/a.ts"] ins');
@@ -178,7 +178,7 @@ describe('DiffView', () => {
   });
 
   it('hasBody=false 的文件明说「未包含在本轮评分输入中」，且不给加载入口', () => {
-    const dropped: RowDiffIndex = {
+    const dropped: CandidateDiffIndex = {
       ...index,
       files: [{ path: 'lib/big.ts', insertions: 9, deletions: 9, untracked: false, hasBody: false }],
       total: 1,
@@ -286,7 +286,7 @@ describe('DiffView', () => {
     expect(title.querySelector('.ant-typography-ellipsis')).not.toBeNull();
   });
 
-  it('变更行数不换行（换行会让吸顶条忽厚忽薄）', () => {
+  it('变更候选数不换行（换候选会让吸顶条忽厚忽薄）', () => {
     render(<DiffView index={index} renderFileBody={bodySpy()} dark={false} />);
 
     const title = screen.getByTestId('diff-file-title-lib/a.ts');
@@ -319,7 +319,7 @@ describe('DiffView', () => {
    */
   it('还有更多文件时挂哨兵，滚到底（哨兵进入视口）会调 onLoadMore', () => {
     const onLoadMore = vi.fn();
-    const many: RowDiffIndex = {
+    const many: CandidateDiffIndex = {
       ...index,
       total: 45,
       files: Array.from({ length: 30 }, (_, i) => ({

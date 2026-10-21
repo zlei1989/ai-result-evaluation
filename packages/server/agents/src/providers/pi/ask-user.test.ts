@@ -5,7 +5,7 @@
  *  ① **注册面**（假 SDK 装配）：只在有应答面且全权限档时才进会话选项——「不问就不动」这条边界
  *     与既有的结构化输出那一件同形；漏了白名单那一格的表现是**静默**少一件工具（模型永远看不到），
  *     所以两处都要判；
- *  ② **契约面**（纯函数）：工具名落进既有的 `ask-user` 族（族表一行都不用改）、参数形状与契约
+ *  ② **契约面**（纯函数）：工具名落进既有的 `ask-user` 族（族表一个候选都不用改）、参数形状与契约
  *     逐字同形、答复映射成一条普通工具结果（`content` 是模型读的、`details` 是界面看的、**不给
  *     `terminate`**）。
  *
@@ -21,7 +21,7 @@ import { createRunInput } from '../../testing/agent-fixtures';
 import {
   anthropicText,
   anthropicToolUse,
-  runPiConformanceRow,
+  runPiConformanceCandidate,
 } from '../../testing/pi-conformance-fixture';
 import { createFakePiRecorder, createFakePiSdk } from '../../testing/pi-sdk-fixture';
 import { classifyTool } from '../../tool-family';
@@ -43,8 +43,8 @@ afterEach(() => {
   setAgentRuntimeForTesting(null);
 });
 
-/** 每一行一棵自己的目录：装配会真的往 `configHome` 里建东西，共享目录会让断言互相泄漏 */
-function freshRow(): ReturnType<typeof createRunInput> {
+/** 每个候选一棵自己的目录：装配会真的往 `configHome` 里建东西，共享目录会让断言互相泄漏 */
+function freshCandidate(): ReturnType<typeof createRunInput> {
   const root = mkdtempSync(join(tmpdir(), 'pi-ask-row-'));
   const cwd = join(root, 'workspace');
   return createRunInput({ cwd, configHome: join(root, '.agenthome') });
@@ -80,7 +80,7 @@ describe('pi 的宿主提问工具：注册面', () => {
   it('不传回调 ⇒ 会话选项逐字不变（工具不进名单、`customTools` 那一格都不给）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    await piProvider.run({ ...freshRow(), onEvent: () => {} });
+    await piProvider.run({ ...freshCandidate(), onEvent: () => {} });
 
     const { names, custom } = sessionToolsOf(recorder.sessionOptions);
     expect(names).toEqual(['read', 'bash', 'edit', 'write', 'Agent', 'get_subagent_result', 'steer_subagent', 'mcp__*']);
@@ -92,7 +92,7 @@ describe('pi 的宿主提问工具：注册面', () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
     const surface = answeringSurface();
-    await piProvider.run({ ...freshRow(), onEvent: () => {}, onAskUser: surface.onAskUser });
+    await piProvider.run({ ...freshCandidate(), onEvent: () => {}, onAskUser: surface.onAskUser });
 
     const { names, custom } = sessionToolsOf(recorder.sessionOptions);
     expect(names).toEqual([
@@ -107,7 +107,7 @@ describe('pi 的宿主提问工具：注册面', () => {
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
     const surface = answeringSurface();
     await piProvider.run({
-      ...freshRow(),
+      ...freshCandidate(),
       permission: 'read-only',
       onEvent: () => {},
       onAskUser: surface.onAskUser,
@@ -128,7 +128,7 @@ describe('pi 的宿主提问工具：注册面', () => {
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
     const surface = answeringSurface();
     await piProvider.run({
-      ...freshRow(),
+      ...freshCandidate(),
       onEvent: () => {},
       onAskUser: surface.onAskUser,
       outputSchema: { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] },
@@ -170,7 +170,7 @@ describe('pi 的宿主提问工具：契约面', () => {
     secret: false,
   };
 
-  it('工具名落进既有的 `ask-user` 族，载荷按契约归一（族表一行都不用改）', () => {
+  it('工具名落进既有的 `ask-user` 族，载荷按契约归一（族表一个候选都不用改）', () => {
     // 族表已识别的那个名字：与 dsh 同名是**有意**的——归一、卡片与七态因此全部复用
     expect(PI_ASK_USER_TOOL).toBe('ask_user_question');
     expect(classifyTool(PI_ASK_USER_TOOL)).toBe('ask-user');
@@ -235,7 +235,7 @@ describe('pi 的宿主提问工具：契约面', () => {
    */
   it('模型给空 `questions: []` ⇒ 厂商拒在 `execute` 之前（端口零调用）', async () => {
     let portCalls = 0;
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '问用户一件事。',
       script: [
         anthropicToolUse(PI_ASK_USER_TOOL, { questions: [] }, 'toolu_ask'),
@@ -311,7 +311,7 @@ describe('pi 的宿主提问工具：契约面', () => {
       text: '没有人回答（收场方式：timeout）。请按你的最佳判断继续，不要重复提问。',
     }]);
     expect(result.details).toEqual({ outcome: 'timeout', answers: null });
-    // 「没人答」是正常收场，不是这一行失败：它不许把工具结果标成错误
+    // 「没人答」是正常收场，不是这个候选失败：它不许把工具结果标成错误
     expect(result).not.toHaveProperty('isError');
   });
 

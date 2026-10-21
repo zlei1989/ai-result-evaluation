@@ -1,9 +1,9 @@
 // @vitest-environment node
 /**
- * 抽屉流路由：`GET /api/runs/[runId]/drawer/stream?rowId=&rowChannel=[&afterSeq=N]`。
+ * 抽屉流路由：`GET /api/runs/[runId]/drawer/stream?candidateId=&candidateChannel=[&afterSeq=N]`。
  *
  * 只在这一层出现的东西就是本文件的断言对象：
- *   1. **查询参数的 zod 校验**：`rowChannel` 白名单（非法值 / 缺参 400）、`rowId` 必填（缺参 400）
+ *   1. **查询参数的 zod 校验**：`candidateChannel` 白名单（非法值 / 缺参 400）、`candidateId` 必填（缺参 400）
  *      ——静默空流会让调用方以为「连上了、只是没内容」；
  *   2. **错误映射**：轮/行不存在折成 404 + 中文原因（不是一条开了就断的 SSE）；
  *   3. **SSE 响应头三件套**与帧头分轨（事件帧有 `id:`、消息帧没有）；
@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunStreamFrameSchema, ServiceError, type EvalRun } from '@aieval/contracts';
-import { appendEvent, appendMessage, loadConfig, rowEventsFile, rowMessagesFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
+import { appendEvent, appendMessage, loadConfig, candidateEventsFile, candidateMessagesFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
 import { POST as postRun } from '@/app/api/runs/route';
 import {
   GET as getDrawerStream,
@@ -36,10 +36,10 @@ const evaluator = vi.hoisted(() => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
-  subscribeRowEvents: vi.fn(() => () => {}),
+  abortCandidate: vi.fn(),
+  subscribeCandidateEvents: vi.fn(() => () => {}),
   subscribeJudgeEvents: vi.fn(() => () => {}),
-  subscribeRowRecords: vi.fn(() => () => {}),
+  subscribeCandidateRecords: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
   subscribeRunChanges: vi.fn(() => () => {}),
   resolveJudgeRoute: vi.fn(),
@@ -115,19 +115,19 @@ afterEach(() => {
 });
 
 /** 走真实路由建一轮评测（真实 core 落盘），返回快照与它那一行 */
-async function createRun(): Promise<{ run: EvalRun; rowId: string }> {
+async function createRun(): Promise<{ run: EvalRun; candidateId: string }> {
   const res = await postRun(
     jsonRequest({
       caseId: 'c-1',
       executionMode: 'serial',
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     }),
   );
   expect(res.status).toBe(201);
   const run = (await res.json()) as EvalRun;
-  const rowId = run.rows[0]?.id;
-  if (rowId === undefined) throw new Error('创建评测没有产生候选行');
-  return { run, rowId };
+  const candidateId = run.candidates[0]?.id;
+  if (candidateId === undefined) throw new Error('创建评测没有产生候选');
+  return { run, candidateId };
 }
 
 /**
@@ -144,16 +144,16 @@ function url(query: string, init?: RequestInit): Request {
   return new Request(`http://localhost/api/runs/run-1/drawer/stream${query}`, init);
 }
 
-/** 往该行的事件日志里追加一条事件（写真实文件，走 core 的 seq 分配） */
-function appendRowEvent(run: EvalRun, rowId: string, event: Parameters<typeof appendEvent>[1]): void {
-  const file = rowEventsFile(run.workspaceBase, run.id, rowId);
+/** 往该候选的事件日志里追加一条事件（写真实文件，走 core 的 seq 分配） */
+function appendCandidateEvent(run: EvalRun, candidateId: string, event: Parameters<typeof appendEvent>[1]): void {
+  const file = candidateEventsFile(run.workspaceBase, run.id, candidateId);
   mkdirSync(dirname(file), { recursive: true });
   appendEvent(file, event);
 }
 
-/** 往该行的记录日志里追加一条消息（同上，写真实文件） */
-function appendRowMessage(run: EvalRun, rowId: string, text: string): void {
-  const file = rowMessagesFile(run.workspaceBase, run.id, rowId);
+/** 往该候选的记录日志里追加一条消息（同上，写真实文件） */
+function appendCandidateMessage(run: EvalRun, candidateId: string, text: string): void {
+  const file = candidateMessagesFile(run.workspaceBase, run.id, candidateId);
   mkdirSync(dirname(file), { recursive: true });
   appendMessage(file, {
     messageId: 'run-1:1',
@@ -180,22 +180,22 @@ describe('GET /api/runs/[runId]/drawer/stream', () => {
     expect(streamDynamic).toBe('force-dynamic');
   });
 
-  it('`rowChannel` 非法或缺参 → 400（不许静默空流、不许默认成候选）', async () => {
-    const { run, rowId } = await createRun();
+  it('`candidateChannel` 非法或缺参 → 400（不许静默空流、不许默认成候选）', async () => {
+    const { run, candidateId } = await createRun();
 
-    const missing = await getDrawerStream(url(`?rowId=${rowId}`), context({ runId: run.id }));
+    const missing = await getDrawerStream(url(`?candidateId=${candidateId}`), context({ runId: run.id }));
     expect(missing.status).toBe(400);
     expect(((await missing.json()) as { error: { code: string } }).error.code).toBe('INVALID_QUERY');
 
-    const illegal = await getDrawerStream(url(`?rowId=${rowId}&rowChannel=judge-events`), context({ runId: run.id }));
+    const illegal = await getDrawerStream(url(`?candidateId=${candidateId}&candidateChannel=judge-events`), context({ runId: run.id }));
     expect(illegal.status).toBe(400);
     expect(((await illegal.json()) as { error: { code: string } }).error.code).toBe('INVALID_QUERY');
   });
 
-  it('`rowId` 缺参或空串 → 400', async () => {
+  it('`candidateId` 缺参或空串 → 400', async () => {
     const { run } = await createRun();
 
-    for (const query of ['?rowChannel=candidate', '?rowId=&rowChannel=candidate']) {
+    for (const query of ['?candidateChannel=candidate', '?candidateId=&candidateChannel=candidate']) {
       const res = await getDrawerStream(url(query), context({ runId: run.id }));
       expect(res.status, query).toBe(400);
       expect(((await res.json()) as { error: { code: string } }).error.code).toBe('INVALID_QUERY');
@@ -205,28 +205,28 @@ describe('GET /api/runs/[runId]/drawer/stream', () => {
   it('行不属于这一轮 → 404 + 中文原因（不是一条开了就断的 SSE）', async () => {
     const { run } = await createRun();
 
-    const res = await getDrawerStream(url('?rowId=row-never&rowChannel=candidate'), context({ runId: run.id }));
+    const res = await getDrawerStream(url('?candidateId=row-never&candidateChannel=candidate'), context({ runId: run.id }));
 
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string; message: string } };
     expect(body.error.code).toBe('NOT_FOUND');
-    expect(body.error.message).toBe('该评测里没有这一行（row-never）');
+    expect(body.error.message).toBe('该评测里没有这个候选（row-never）');
   });
 
   it('轮不存在 → 404', async () => {
-    const res = await getDrawerStream(url('?rowId=w-1&rowChannel=candidate'), context({ runId: 'run-never' }));
+    const res = await getDrawerStream(url('?candidateId=w-1&candidateChannel=candidate'), context({ runId: 'run-never' }));
 
     expect(res.status).toBe(404);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('NOT_FOUND');
   });
 
   it('响应头三件套 + 帧头分轨：事件帧有 `id:`、消息帧没有（回放带终态 ⇒ 流自己结束）', async () => {
-    const { run, rowId } = await createRun();
-    appendRowMessage(run, rowId, '历史对话');
-    appendRowEvent(run, rowId, { type: 'log', stream: 'stdout', text: '第一行' });
-    appendRowEvent(run, rowId, { type: 'end', exitReason: 'completed' });
+    const { run, candidateId } = await createRun();
+    appendCandidateMessage(run, candidateId, '历史对话');
+    appendCandidateEvent(run, candidateId, { type: 'log', stream: 'stdout', text: '第一行' });
+    appendCandidateEvent(run, candidateId, { type: 'end', exitReason: 'completed' });
 
-    const res = await getDrawerStream(url(`?rowId=${rowId}&rowChannel=candidate`), context({ runId: run.id }));
+    const res = await getDrawerStream(url(`?candidateId=${candidateId}&candidateChannel=candidate`), context({ runId: run.id }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
@@ -246,24 +246,24 @@ describe('GET /api/runs/[runId]/drawer/stream', () => {
     const dataLine = messageFrame?.split('\n').find((line) => line.startsWith('data: ')) ?? '';
     expect(RunStreamFrameSchema.parse(JSON.parse(dataLine.slice('data: '.length)))).toMatchObject({
       type: 'message',
-      rowId,
-      rowChannel: 'candidate',
+      candidateId,
+      candidateChannel: 'candidate',
     });
   });
 
   it('`Last-Event-ID` 优先于 query：重连时只发头、不发 query 的浏览器因此不重不漏', async () => {
-    const { run, rowId } = await createRun();
-    for (const text of ['一', '二', '三']) appendRowEvent(run, rowId, { type: 'log', stream: 'stdout', text });
-    appendRowEvent(run, rowId, { type: 'end', exitReason: 'completed' });
+    const { run, candidateId } = await createRun();
+    for (const text of ['一', '二', '三']) appendCandidateEvent(run, candidateId, { type: 'log', stream: 'stdout', text });
+    appendCandidateEvent(run, candidateId, { type: 'end', exitReason: 'completed' });
 
-    const byQuery = await getDrawerStream(url(`?rowId=${rowId}&rowChannel=candidate&afterSeq=2`), context({ runId: run.id }));
+    const byQuery = await getDrawerStream(url(`?candidateId=${candidateId}&candidateChannel=candidate&afterSeq=2`), context({ runId: run.id }));
     const queryText = await byQuery.text();
     expect(queryText).not.toContain('"text":"一"');
     expect(queryText).toContain('"text":"三"');
 
     // 头与 query 冲突时以头为准（query 里带的是首连那一刻的旧值）
     const byHeader = await getDrawerStream(
-      url(`?rowId=${rowId}&rowChannel=candidate&afterSeq=3`, { headers: { 'last-event-id': '1' } }),
+      url(`?candidateId=${candidateId}&candidateChannel=candidate&afterSeq=3`, { headers: { 'last-event-id': '1' } }),
       context({ runId: run.id }),
     );
     const headerText = await byHeader.text();
@@ -273,13 +273,13 @@ describe('GET /api/runs/[runId]/drawer/stream', () => {
   });
 
   it('judge 那条 channel 读评分那一族：候选的事件不出现在这条流里', async () => {
-    const { run, rowId } = await createRun();
-    appendRowEvent(run, rowId, { type: 'log', stream: 'stdout', text: '候选的第一行' });
-    const judgeFile = rowEventsFile(run.workspaceBase, run.id, rowId).replace(/events\.jsonl$/, 'judge-events.jsonl');
+    const { run, candidateId } = await createRun();
+    appendCandidateEvent(run, candidateId, { type: 'log', stream: 'stdout', text: '候选的第一行' });
+    const judgeFile = candidateEventsFile(run.workspaceBase, run.id, candidateId).replace(/events\.jsonl$/, 'judge-events.jsonl');
     mkdirSync(dirname(judgeFile), { recursive: true });
     appendEvent(judgeFile, { type: 'log', stream: 'stderr', text: '评分的第一行' });
 
-    const res = await getDrawerStream(url(`?rowId=${rowId}&rowChannel=judge`), context({ runId: run.id }));
+    const res = await getDrawerStream(url(`?candidateId=${candidateId}&candidateChannel=judge`), context({ runId: run.id }));
     const reader = res.body?.getReader();
     if (reader === undefined) throw new Error('响应没有 body');
     // 评分的 `judge-events.jsonl` 里没有终态 ⇒ 这条流不会自己结束：读两块（ready + 历史）后取消

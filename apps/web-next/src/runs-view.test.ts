@@ -76,8 +76,8 @@ describe('runListTitle', () => {
 
 describe('describeError', () => {
   it('ServiceError 用它的中文 message（契约要求 message 可直接展示）', () => {
-    expect(describeError(new ServiceError('CONFLICT', '这一轮没有可执行的候选行：全部行都已评分'))).toBe(
-      '这一轮没有可执行的候选行：全部行都已评分',
+    expect(describeError(new ServiceError('CONFLICT', '这一轮没有可执行的候选：全部候选都已评分'))).toBe(
+      '这一轮没有可执行的候选：全部候选都已评分',
     );
   });
 

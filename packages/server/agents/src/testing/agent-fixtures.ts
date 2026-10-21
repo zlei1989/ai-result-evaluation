@@ -21,11 +21,11 @@ import { DSH_STREAM_TAP_RELATIVE_PATH } from '../providers/dsh/stream-tap';
 import { removeTreeWithRetry } from './cleanup';
 
 /**
- * 夹具的行目录根：**当前平台认得的真绝对路径**，每个测试文件一棵（vitest 按文件隔离模块图，
+ * 夹具的本次运行目录根：**当前平台认得的真绝对路径**，每个测试文件一棵（vitest 按文件隔离模块图，
  * 故两份用例文件不会共用同一棵树），随本模块的 `afterAll` 一起回收。
  *
  * 为什么必须这样：这些地址会被**真的**拿去碰盘——dsh 适配器 `mkdirSync(input.configHome)` 并在其下
- * 写 `aieval-route.patch.yml`（`providers/dsh/index.ts`）。写成 `D:/tmp/rows/row-1/...` 时，
+ * 写 `aieval-route.patch.yml`（`providers/dsh/index.ts`）。写成 `D:/tmp/candidates/row-1/...` 时，
  * 它在 Windows 上是绝对路径、在 POSIX 上却**不是**（是相对路径）⇒ 产物落进进程 cwd（仓库根），
  * 长出一个名为 `D:/tmp` 的目录；同一条路径还会让「overlay 必须是绝对路径」那条不变量当场红
  * （如 `providers/dsh/index.test.ts` 的 `expect(isAbsolute(patches[0])).toBe(true)`）。
@@ -39,11 +39,11 @@ afterAll(() => {
   removeTreeWithRetry(FIXTURE_ROOT);
 });
 
-/** 夹具的行工作区（`createRunInput().cwd` 的默认值） */
-export const FIXTURE_CWD = join(FIXTURE_ROOT, 'rows', 'row-1', 'workspace');
+/** 夹具的运行工作区（`createRunInput().cwd` 的默认值） */
+export const FIXTURE_CWD = join(FIXTURE_ROOT, 'candidates', 'row-1', 'workspace');
 
 /** 夹具的行独立配置目录（`createRunInput().configHome` 的默认值；dsh 的 overlay 就落在这里） */
-export const FIXTURE_CONFIG_HOME = join(FIXTURE_ROOT, 'rows', 'row-1', '.agenthome');
+export const FIXTURE_CONFIG_HOME = join(FIXTURE_ROOT, 'candidates', 'row-1', '.agenthome');
 
 export interface FakeVendorRecorder {
   /** 调用顺序：'interrupt' / 'turn-end' / 'dispose'（释放顺序断言的全部可观测量） */
@@ -950,7 +950,7 @@ export function createFakeDshSdk(options: FakeDshSdkOptions): unknown {
     /**
      * 把 `tapLines` 落到适配器 tail 的那个旁路文件（路径从构造选项的 `dshHome` 推出，
      * 与适配器同源）。占位 sid 改写成真实会话 id——与 `tagSession` 同一条理由：
-     * 适配器 mint 会话 id 交给 run()，tap 行的归属必须对上同一个 id 才不会被门闸挂住。
+     * 适配器 mint 会话 id 交给 run()，tap 本次运行的归属必须对上同一个 id 才不会被门闸挂住。
      */
     private writeTapLines(sessionId: string): void {
       if (options.tapLines === undefined || options.tapLines.length === 0) return;

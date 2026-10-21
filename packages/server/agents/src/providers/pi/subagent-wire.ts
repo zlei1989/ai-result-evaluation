@@ -14,8 +14,8 @@
  * 槽非空就不写）。`getRecord(id)` 返回的 record 上有**子会话的活句柄** `session`，
  * 对它 `subscribe()` 即可拿到与主会话同构的全量事件流（含逐字增量）。
  *
- * 每行拿到**自己那份** manager 的办法（并发两行时槽只有一个）：
- * **每行 reload 落定后把当时的注册表条目快照进本行、随即删掉全局槽**——下一行 reload 时
+ * 每个本次运行拿到**自己那份** manager 的办法（并发两行时槽只有一个）：
+ * **每个本次运行 reload 落定后把当时的注册表条目快照进行的、随即删掉全局槽**——下一行 reload 时
  * 扩展工厂见槽是空的，就会挂上自己的 manager。扩展工厂的执行点在 `loader.reload()`
  * （`resource-loader.js` 的 `loadFinalExtensionSet` → `initializeExtension`），
  * `createAgentSession`（我们传了 loader）与 `bindExtensions` 都不再执行工厂 ⇒ 快照紧跟
@@ -23,9 +23,9 @@
  * （全包仅定义 / claim / release 三处使用），release 侧有双重卫兵（槽 === 自己的条目才删），
  * 我们先删等于让它空转一次。
  *
- * 并发竞态：两行同时 reload 时，后一行的工厂可能落在「前行 claim 之后、快照删槽之前」的
+ * 并发竞态：两行同时 reload 时，后一本次运行的工厂可能落在「前行 claim 之后、快照删槽之前」的
  * 微任务缝隙里而错过 claim ⇒ reload + 快照 + 删槽整段走**模块级互斥链**（跨行共享，
- * 见 `reloadChain`）。互斥失败（快照落空）的姿态是降级：该行退回转写文件通道，不失败。
+ * 见 `reloadChain`）。互斥失败（快照落空）的姿态是降级：本次运行退回转写文件通道，不失败。
  *
  * ## 事件怎么进来、怎么出去
  *
@@ -132,7 +132,7 @@ export const PI_SUBAGENT_WIRE_TICK_MS = 25;
 
 /**
  * 订阅重试的节拍与放弃上限。真机上 `started` 到会话出现是毫秒级，但子会话的创建包含
- * 扩展自建装载器的整段初始化（jiti 无模块缓存、每次全量编译）——**测试全量并行的 CPU
+ * 扩展自建装载器的整段初始化（jiti 无模块缓存、每次全量编译）——**测试全量并本次运行的 CPU
  * 争抢下实测会超过 10 s**，窗口太短会把这一档误判成「没有会话」而整行退回转写通道。
  * 放长到 60 s 没有代价：轮询在终态 / 退订 / 收尾时都会停，计时器也不占事件循环。
  * 导出供测试钉值：节拍一变，「订阅密度」与「放弃窗口」两个行为面就跟着变，得是有意的。
@@ -149,7 +149,7 @@ export function setPiSubagentWireTimingsForTesting(timings: { pollMs: number; gi
 
 /**
  * 模块级互斥链：`reload + 快照 + 删槽` 整段串行（**跨行共享**，进程内唯一）。
- * 链上吞掉前一次的失败——一次行的装配失败不该让后面所有行的装配都排队等一个死 promise。
+ * 链上吞掉前一次的失败——一次本次运行的装配失败不该让后面所有本次运行的装配都排队等一个死 promise。
  */
 let reloadChain: Promise<unknown> = Promise.resolve();
 
@@ -234,7 +234,7 @@ export interface PiSubagentWireDrain {
   warnings: string[];
 }
 
-/** 每行一份的 wire 通道（跨行共享的只有互斥链与全局槽本身） */
+/** 每个本次运行一份的 wire 通道（跨行共享的只有互斥链与全局槽本身） */
 export interface PiSubagentWire {
   /**
    * 互斥地跑一次 `loader.reload()` 并紧跟快照 + 删槽。
@@ -260,9 +260,9 @@ export interface PiSubagentWire {
   attachPump(push: () => void): () => void;
   /** 只排空**指定身份**的缓冲（行还没落账的身份留在缓冲里等下一批，事件不重放） */
   drain(agentIds: Iterable<string>): PiSubagentWireDrain;
-  /** 本行收尾：全部退订、清缓冲（快照条目随本行实例一起回收） */
+  /** 本次运行收尾：全部退订、清缓冲（快照条目随本次运行实例一起回收） */
   dispose(): void;
-  /** 快照是否拿到了本行的 registry 条目（没拿到 = 本行退回转写文件通道） */
+  /** 快照是否拿到了本次运行的 registry 条目（没拿到 = 本次运行退回转写文件通道） */
   readonly available: boolean;
 }
 
@@ -271,7 +271,7 @@ export interface PiSubagentWire {
  * `available` 落它的 WARN——模块本身保持与 `transcript.ts` 同样的纯度。
  */
 export function createPiSubagentWire(): PiSubagentWire {
-  /** 本行快照到的 registry 条目（最后一次 reload 之后的那份） */
+  /** 运行快照到的 registry 条目（最后一次 reload 之后的那份） */
   let entry: PiSubagentManagerEntry | null = null;
   const buffers = new Map<string, WireBuffer>();
   const subscriptions = new Map<string, WireSubscription>();
@@ -307,7 +307,7 @@ export function createPiSubagentWire(): PiSubagentWire {
   /**
    * 请求一次排空：按节拍推一帧合成帧。
    *
-   * 三道闸：已有帧在飞 / 没接泵 / 本行已收尾 —— 都只写缓冲不泵。距上一帧不足一个节拍时
+   * 三道闸：已有帧在飞 / 没接泵 / 本次运行已收尾 —— 都只写缓冲不泵。距上一帧不足一个节拍时
    * 挂一发定时器补推（而不是丢掉这次请求）：末尾那几条正文不该因为「来得太快」而等到
    * 父会话的下一个事件。
    */
@@ -514,8 +514,8 @@ export function createPiSubagentWire(): PiSubagentWire {
           return await reloadFn();
         } finally {
           /**
-           * reload 落定（无论成败）：此刻槽里若有合法条目，必是本行工厂挂上的（互斥链保证
-           * 上一行已删槽）⇒ 快照进本行、随即删槽。失败的那次也照删——那一行反正要死，
+           * reload 落定（无论成败）：此刻槽里若有合法条目，必是本次运行工厂挂上的（互斥链保证
+           * 上一行已删槽）⇒ 快照进行的、随即删槽。失败的那次也照删——那一行反正要死，
            * 留着槽只会挡住下一行 claim。
            */
           const claimed = readManagerEntry();
@@ -606,7 +606,7 @@ export function createPiSubagentWire(): PiSubagentWire {
       for (const subscription of subscriptions.values()) subscription.unsubscribe();
       subscriptions.clear();
       buffers.clear();
-      // 泵与它那发计时器一起收：本行已终，再推帧也没有流去接
+      // 泵与它那发计时器一起收：本次运行已终，再推帧也没有流去接
       pump = null;
       tickPending = false;
       if (tickTimer !== null) {

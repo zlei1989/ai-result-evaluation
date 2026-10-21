@@ -1,10 +1,10 @@
 // @vitest-environment node
 /**
  * 追问路由组：`POST /api/follow-up`（一句话 + 附件清单）与
- * `GET /api/follow-up/availability?runId=…`（这一轮每一行的可用性读侧）。
+ * `GET /api/follow-up/availability?runId=…`（这一轮每个候选的可用性读侧）。
  *
  * 与既有路由用例同源：**只断路由层自己的东西**——状态码映射、zod 拦下的请求体 / 查询参数、
- * 出参形状、以及「中文原因原样透出」。判据与文案在契约里（`canFollowUpRow` 的真值表在
+ * 出参形状、以及「中文原因原样透出」。判据与文案在契约里（`canFollowUpCandidate` 的真值表在
  * `@aieval/contracts`），编排层的同源在 `@aieval/evaluator` 自己的用例里，这里不重复。
  *
  * `@aieval/evaluator` 用 `importOriginal` **展开真身、只换两个成员**：本文件经 `@/app/api/follow-up`
@@ -25,10 +25,10 @@ import { GET as getAvailability } from '@/app/api/follow-up/availability/route';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /** 编排层那两个入口的替身（`vi.hoisted` 让它们先于 import 求值） */
-const orchestrator = vi.hoisted(() => ({ followUpRow: vi.fn(), followUpAvailability: vi.fn() }));
+const orchestrator = vi.hoisted(() => ({ followUpCandidate: vi.fn(), followUpAvailability: vi.fn() }));
 vi.mock('@aieval/evaluator', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  followUpRow: orchestrator.followUpRow,
+  followUpCandidate: orchestrator.followUpCandidate,
   followUpAvailability: orchestrator.followUpAvailability,
 }));
 
@@ -48,7 +48,7 @@ beforeEach(() => {
   setCasesRootForTesting(join(dir, 'cases'));
   // 快照读侧只扫**当前设置里的根**，故它必须与夹具落盘的那棵树对上
   updateSettings({ workspaceRoot: dir });
-  orchestrator.followUpRow.mockReset();
+  orchestrator.followUpCandidate.mockReset();
   orchestrator.followUpAvailability.mockReset();
 });
 
@@ -75,7 +75,7 @@ function seedRun(): EvalRun {
     useAgentJudge: false,
     askUser: false,
     injectMessages: true,
-    rows: [
+    candidates: [
       {
         id: 'r-1',
         agentKind: 'cc',
@@ -85,7 +85,7 @@ function seedRun(): EvalRun {
         modelId: 'claude-opus-4-6',
         status: 'judged',
         branch: 'test/r-1',
-        workspacePath: join(dir, 'run-1', 'rows', 'r-1', 'workspace'),
+        workspacePath: join(dir, 'run-1', 'candidates', 'r-1', 'workspace'),
         baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
         tokens: null,
         turns: null,
@@ -126,29 +126,29 @@ async function errorOf(response: Response): Promise<{ code: string; message: str
 describe('POST /api/follow-up', () => {
   it('合法请求 ⇒ 200 + api 交回的那份快照（原样透出，不加工）', async () => {
     const run = seedRun();
-    orchestrator.followUpRow.mockReturnValue(run);
-    const response = await postFollowUp(request({ runId: run.id, rowId: 'r-1', text: '接着干' }));
+    orchestrator.followUpCandidate.mockReturnValue(run);
+    const response = await postFollowUp(request({ runId: run.id, candidateId: 'r-1', text: '接着干' }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(run);
-    // 交给编排层的是**三个位置参数**（runId / rowId / 那一句话），与 `followUpRow` 的签名同形：
+    // 交给编排层的是**三个位置参数**（runId / candidateId / 那一句话），与 `followUpCandidate` 的签名同形：
     // zod 没把字段丢掉（丢一格的表现是「追问发出去了、附件没了」），且附件那一格缺席时给的是空数组
-    expect(orchestrator.followUpRow).toHaveBeenCalledWith(run.id, 'r-1', { text: '接着干', attachments: [] });
+    expect(orchestrator.followUpCandidate).toHaveBeenCalledWith(run.id, 'r-1', { text: '接着干', attachments: [] });
   });
 
   it('附件与 messageId 原样带过去（两格可选：给了才传）', async () => {
     const run = seedRun();
-    orchestrator.followUpRow.mockReturnValue(run);
+    orchestrator.followUpCandidate.mockReturnValue(run);
     const attachments = [{ kind: 'image', path: '/tmp/a.png', mimeType: 'image/png' }];
-    await postFollowUp(request({ runId: run.id, rowId: 'r-1', text: '', attachments, messageId: 'm-9' }));
-    expect(orchestrator.followUpRow).toHaveBeenCalledWith(run.id, 'r-1', { text: '', attachments, messageId: 'm-9' });
+    await postFollowUp(request({ runId: run.id, candidateId: 'r-1', text: '', attachments, messageId: 'm-9' }));
+    expect(orchestrator.followUpCandidate).toHaveBeenCalledWith(run.id, 'r-1', { text: '', attachments, messageId: 'm-9' });
   });
 
-  it('缺 runId / rowId ⇒ 400（zod 拦下，不进服务层）', async () => {
+  it('缺 runId / candidateId ⇒ 400（zod 拦下，不进服务层）', async () => {
     const run = seedRun();
-    const missingRow = await postFollowUp(request({ runId: run.id, text: '在吗' }));
-    expect(missingRow.status).toBe(400);
-    expect((await errorOf(missingRow)).code).toBe('INVALID_QUERY');
-    expect(orchestrator.followUpRow).not.toHaveBeenCalled();
+    const missingCandidate = await postFollowUp(request({ runId: run.id, text: '在吗' }));
+    expect(missingCandidate.status).toBe(400);
+    expect((await errorOf(missingCandidate)).code).toBe('INVALID_QUERY');
+    expect(orchestrator.followUpCandidate).not.toHaveBeenCalled();
   });
 
   it('附件超过条数上限 ⇒ 400（上限在契约里，路由这一层就拦下，不进服务层）', async () => {
@@ -158,10 +158,10 @@ describe('POST /api/follow-up', () => {
       path: `/tmp/${String(index)}.txt`,
       mimeType: null,
     }));
-    const response = await postFollowUp(request({ runId: run.id, rowId: 'r-1', text: '带一堆附件', attachments }));
+    const response = await postFollowUp(request({ runId: run.id, candidateId: 'r-1', text: '带一堆附件', attachments }));
     expect(response.status).toBe(400);
     expect((await errorOf(response)).code).toBe('INVALID_QUERY');
-    expect(orchestrator.followUpRow).not.toHaveBeenCalled();
+    expect(orchestrator.followUpCandidate).not.toHaveBeenCalled();
   });
 
   it('请求体不是合法 JSON ⇒ 400「请求体不是合法 JSON」（不许让别的 SyntaxError 冒充它）', async () => {
@@ -172,19 +172,19 @@ describe('POST /api/follow-up', () => {
 
   it('编排层的拒绝原样透出：409 + 中文原因一个字都不改写（界面按它给 Tooltip）', async () => {
     const run = seedRun();
-    orchestrator.followUpRow.mockImplementation(() => {
-      throw new ServiceError('CONFLICT', '该行上一次的运行还没收尾，请稍候再试');
+    orchestrator.followUpCandidate.mockImplementation(() => {
+      throw new ServiceError('CONFLICT', '该候选上一次的运行还没收尾，请稍候再试');
     });
-    const response = await postFollowUp(request({ runId: run.id, rowId: 'r-1', text: '再试一次' }));
+    const response = await postFollowUp(request({ runId: run.id, candidateId: 'r-1', text: '再试一次' }));
     expect(response.status).toBe(409);
-    expect((await errorOf(response)).message).toBe('该行上一次的运行还没收尾，请稍候再试');
+    expect((await errorOf(response)).message).toBe('该候选上一次的运行还没收尾，请稍候再试');
   });
 
-  it('这一行不存在 ⇒ 404（api 层的存在性检查，不打扰编排层）', async () => {
+  it('这个候选不存在 ⇒ 404（api 层的存在性检查，不打扰编排层）', async () => {
     const run = seedRun();
-    const response = await postFollowUp(request({ runId: run.id, rowId: 'r-missing', text: '在吗' }));
+    const response = await postFollowUp(request({ runId: run.id, candidateId: 'r-missing', text: '在吗' }));
     expect(response.status).toBe(404);
-    expect(orchestrator.followUpRow).not.toHaveBeenCalled();
+    expect(orchestrator.followUpCandidate).not.toHaveBeenCalled();
   });
 });
 
@@ -194,11 +194,11 @@ describe('GET /api/follow-up/availability', () => {
     return new Request(`http://localhost/api/follow-up/availability${query}`, { method: 'GET' });
   }
 
-  it('给这一轮每一行的结论 ⇒ 200（出参过 schema，顺序原样）', async () => {
+  it('给这一轮每个候选的结论 ⇒ 200（出参过 schema，顺序原样）', async () => {
     const run = seedRun();
     const availability = {
-      rows: [
-        { rowId: 'r-1', verdict: { ok: false as const, reason: '这一行的工作区已被删除（/gone）：追问要在原工作区上继续' } },
+      candidates: [
+        { candidateId: 'r-1', verdict: { ok: false as const, reason: '这个候选的工作区已被删除（/gone）：追问要在原工作区上继续' } },
       ],
     };
     orchestrator.followUpAvailability.mockReturnValue(availability);
@@ -220,10 +220,10 @@ describe('GET /api/follow-up/availability', () => {
 
   /**
    * **端到端那一条**：这一格不换实现，让请求真的走
-   * 路由 → api → evaluator → contracts（`canFollowUpRow`），判据链一节都不缺。
+   * 路由 → api → evaluator → contracts（`canFollowUpCandidate`），判据链一节都不缺。
    *
    * 为什么值得单开一条：上面几条把编排层换成替身，证的是「形状与状态码」；而
-   * 「盘上的事实最终变成哪一句中文」只有在真链路上才看得见——把 `canFollowUpRow` 短路成
+   * 「盘上的事实最终变成哪一句中文」只有在真链路上才看得见——把 `canFollowUpCandidate` 短路成
    * 「永远可行」，上面那些形状断言照样全绿，这一条会红。
    */
   it('端到端：盘上真没了工作区 ⇒ 200 + 契约那一句原因（判据链一路到 contracts）', async () => {
@@ -234,7 +234,7 @@ describe('GET /api/follow-up/availability', () => {
     const response = await getAvailability(availabilityRequest(`?runId=${run.id}`));
     expect(response.status).toBe(200);
     const body = (await response.json()) as FollowUpAvailability;
-    const verdict = body.rows[0]?.verdict;
+    const verdict = body.candidates[0]?.verdict;
     expect(verdict?.ok).toBe(false);
     expect(verdict?.ok === false ? verdict.reason : '').toContain('工作区已被删除');
   });
@@ -247,7 +247,7 @@ describe('GET /api/follow-up/availability', () => {
 
   it('出参不合契约 ⇒ 400（畸形出参在这里就响，不让界面拿到一个没有原因的 verdict）', async () => {
     const run = seedRun();
-    orchestrator.followUpAvailability.mockReturnValue({ rows: [{ rowId: 'r-1', verdict: { ok: false, reason: '' } }] });
+    orchestrator.followUpAvailability.mockReturnValue({ candidates: [{ candidateId: 'r-1', verdict: { ok: false, reason: '' } }] });
     const response = await getAvailability(availabilityRequest(`?runId=${run.id}`));
     expect(response.status).toBe(400);
   });

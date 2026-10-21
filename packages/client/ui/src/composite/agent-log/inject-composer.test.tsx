@@ -165,7 +165,7 @@ describe('可用性由声明决定（不判厂商）', () => {
 });
 
 describe('发送', () => {
-  it('回车发送：带 `messageId` + 正文 + 「排队」那一档（要插队就在排队行上点「立即发送」）', async () => {
+  it('回车发送：带 `messageId` + 正文 + 「排队」那一档（要插队就在排队候选上点「立即发送」）', async () => {
     const onSend = vi.fn((_input: InjectSendInput) => Promise.resolve());
     renderComposer({ onSend });
     typeAndSend('顺便把 changelog 也补上');
@@ -186,7 +186,7 @@ describe('发送', () => {
 
   it('失败 ⇒ 原因交给调用方，框里的内容原样留着（用户不必重打）', async () => {
     const onError = vi.fn();
-    renderComposer({ onSend: () => Promise.reject(new Error('这一行不存在')), onError });
+    renderComposer({ onSend: () => Promise.reject(new Error('这个候选不存在')), onError });
     typeAndSend('这句话会失败');
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(textarea().value).toBe('这句话会失败');
@@ -253,7 +253,7 @@ describe('排队区', () => {
     expect(screen.queryByText(/m-1 的正文/)).toBeNull();
   });
 
-  it('「删除」把**这一条**的 id 交出去（画错行会把别人的消息撤掉）', async () => {
+  it('「删除」把**这一条**的 id 交出去（画错候选会把别人的消息撤掉）', async () => {
     const onRetract = vi.fn(() => Promise.resolve());
     renderComposer({ messages: [messageOf('m-7')], onRetract });
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
@@ -276,7 +276,7 @@ describe('撤回之后回填（删除是双态动作）', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
     await waitFor(() => expect(textarea().value).toBe('还回来的这句'));
-    // 附件跟着回来（只回文本会静默丢文件）：路径不上屏幕，故以「框上方那一行的清单里出现了它」为判据
+    // 附件跟着回来（只回文本会静默丢文件）：路径不上屏幕，故以「框上方那一候选的清单里出现了它」为判据
     // （X 把文件名拆成主名与后缀两个节点，故按整段 `textContent` 判，不逐节点找文本）
     const chips = await screen.findByTestId('inject-attachments');
     expect(chips.textContent).toContain('a.md');

@@ -1,5 +1,5 @@
 /**
- * Next 服务启动钩子：两件事——把上一个进程留下的在途候选行标成 interrupted（F10，不自动续跑），
+ * Next 服务启动钩子：两件事——把上一个进程留下的在途候选标成 interrupted（F10，不自动续跑），
  * 以及在 SIGTERM / SIGINT 上装停机回收（把本进程在册的在途会话释放掉，见 `installShutdown`）。
  * 位置由 Next 规定：`instrumentation.ts` 放在应用根（或 src/），**不能**放进 app/。
  *
@@ -58,8 +58,8 @@ function installShutdown(
 
 /** One shutdown: release (with budget) then re-raise the original signal; never throws -- nothing may block exit.
  *
- * 首行刻意写成 ASCII：Next 16 的代码帧渲染器在含中文的行上会切字符边界并 panic（见 AGENTS.md 的
- * 「边界与工具链的已知坑」），而这一行正是它在启动时唯一会渲染的那一行。中文口径与上面那句同义：
+ * 首行刻意写成 ASCII：Next 16 的代码帧渲染器在含中文的候选上会切字符边界并 panic（见 AGENTS.md 的
+ * 「边界与工具链的已知坑」），而这个候选正是它在启动时唯一会渲染的那一行。中文口径与上面那句同义：
  * 一次停机，先释放（带预算）再重发原信号；本函数不抛——停机路径上任何异常都不得挡住退出。
  */
 async function shutdown(
@@ -99,7 +99,7 @@ export async function register(): Promise<void> {
 
   try {
     const { recovered } = recoverInterruptedRuns();
-    log.info('服务启动：已完成被中断候选行的恢复', { recovered });
+    log.info('服务启动：已完成被中断候选的恢复', { recovered });
   } catch (error) {
     // 启动钩子不能把服务拖垮：恢复失败只记 ERROR，宁可用「状态不对」也不让整个服务起不来
     log.error('服务启动恢复失败（服务继续启动）', {
@@ -108,7 +108,7 @@ export async function register(): Promise<void> {
   }
 
   // 登记在同类 try/catch 之外：上面那一步失败（磁盘读不了）不该顺带把停机回收也丢掉——
-  // 在途子进程与行状态是两件事，回收那一件与恢复成不成功无关
+  // 在途子进程与候选状态是两件事，回收那一件与恢复成不成功无关
   if (!shutdownInstalled) {
     shutdownInstalled = true;
     for (const signal of SHUTDOWN_SIGNALS) installShutdown(signal, disposeLiveSessions, log);

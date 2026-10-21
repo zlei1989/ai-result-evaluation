@@ -96,9 +96,9 @@ interface ProbeRow {
  * 跑一行真包：真网关 + 真 stdio MCP 服务器，返回**出站请求体**里的工具表。
  *
  * `maxOutputTokens` 与假网关夹具取同一个数：这里不判档位预算，但要避开「预算塌缩」那条已知边界。
- * 每行一棵自己的行目录——服务器脚本与握手日志都落在里面，共用会让上一行的事实泄漏到下一行。
+ * 每个候选一棵自己的候选目录——服务器脚本与握手日志都落在里面，共用会让上一候选的事实泄漏到下一行。
  */
-async function runProbeRow(permission: 'full' | 'read-only'): Promise<ProbeRow> {
+async function runProbeCandidate(permission: 'full' | 'read-only'): Promise<ProbeRow> {
   const root = mkdtempSync(join(tempRoot, 'row-'));
   const cwd = join(root, 'workspace');
   const configHome = join(root, '.agenthome');
@@ -154,7 +154,7 @@ function openaiRequestToolNames(body: Record<string, unknown>): string[] {
 
 describe('工具白名单：MCP 派生名进请求，且名单外的工具可证不在', () => {
   it('full 档：默认四件 + MCP 工具都在请求里', async () => {
-    const row = await runProbeRow('full');
+    const row = await runProbeCandidate('full');
     // 先证夹具健康：握手走到 tools/list 才说明「MCP 工具进没进请求」是个真问题
     expect(row.handshake, 'probe 服务器没被连上或没列工具，这一条的结论不成立').toContain('tools/list');
     for (const name of ['read', 'bash', 'edit', 'write']) {
@@ -175,7 +175,7 @@ describe('工具白名单：MCP 派生名进请求，且名单外的工具可证
    * 之类）⇒ `mcp__probe__echo` 出现在请求里，本用例当场红。
    */
   it('read-only 档：四件只读工具在、MCP 工具与写能力都不在', async () => {
-    const row = await runProbeRow('read-only');
+    const row = await runProbeCandidate('read-only');
     expect(row.handshake, 'probe 服务器没被连上或没列工具，这一条的结论不成立').toContain('tools/list');
     for (const name of ['read', 'grep', 'find', 'ls']) {
       expect(row.tools, `${name} 该在这一档`).toContain(name);

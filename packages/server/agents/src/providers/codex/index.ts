@@ -26,7 +26,7 @@ import {
   hostNpmrcPath,
   readNpmrcText,
   toCodexMcpServers,
-  writeRowNpmrc,
+  writeCandidateNpmrc,
   type CodexMcpServer,
 } from '../../mcp';
 import { codexPermissionOptions } from '../../permission';
@@ -58,7 +58,7 @@ const logger = createLogger('agents/codex');
 /**
  * 一次运行里「人话续跑」最多起几轮。
  *
- * 为什么必须有上限：人一直发消息就能一直续跑，而这一行**永远不收场**——编排层的等待预算只在
+ * 为什么必须有上限：人一直发消息就能一直续跑，而本次运行**永远不收场**——编排层的等待预算只在
  * 适配器返回之后才开窗口，靠它兜不住这里。上限到点就当没有更多话，按正常收场走。
  * 写成可变对象是给用例压小用的（`beforeEach` 读产品默认值再改、`afterEach` 还原）。
  */
@@ -72,7 +72,7 @@ export const CODEX_IDLE_CONTINUATION = { rounds: 3 };
  * 那一轮连同人话一起没（真机复现）。
  *
  * 为什么要有界：厂商若因为任何原因没把这一轮跑起来（例如投递失败、线程又忙了），
- * 没有这一格这一行会一直挂在流上（看门狗只在适配器返回之后才由编排层兜）。读数取 5 秒：
+ * 没有这一格本次运行会一直挂在流上（看门狗只在适配器返回之后才由编排层兜）。读数取 5 秒：
  * 真机上 `turn/started` 与 `queue/add` 在同一拍内到达（毫秒级），5 秒是两个数量级的余量。
  * 写成可变对象是给用例压小用的（口径同 `CODEX_IDLE_CONTINUATION`）。
  */
@@ -158,7 +158,7 @@ export interface CodexConfigOptions {
    * 为什么**同时**写进 config：`turn/start` 那一格只管它起的那一轮，而人话续跑起的那一轮走
    * `thread/queue/start`——那个请求的参数**只有** `threadId` 与 `queuedSubmissionId`（探针 dump
    * `v2/ThreadQueueStartParams.json` 的 `required`），带不了档位 ⇒ 只能靠线程级这一格兜住。
-   * 不给的话，续跑那一轮会按线程默认档跑，而行快照上写着用户选的那一档（一句半真话）。
+   * 不给的话，续跑那一轮会按线程默认档跑，而运行快照上写着用户选的那一档（一句半真话）。
    * 同一个值写两处不是重复：一处管本轮、一处管线程默认，取值同源（都来自 `input.effort`）。
    */
   reasoningEffort?: string | undefined;
@@ -226,7 +226,7 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
     /**
       * MCP 条目：形状由 `toCodexMcpServers` 一处定（snake_case、无 `type`），
      * 这里只决定「放不放进去」。**空集整个键都不给**（与 effort 同一条口径）：给了空表等于向
-     * codex 声明「本行显式要零台」，与「本次没有程序化注入」不是一件事。
+     * codex 声明「本次运行显式要零台」，与「本次没有程序化注入」不是一件事。
      */
     ...(mcpServers === undefined || Object.keys(mcpServers).length === 0 ? {} : { mcp_servers: mcpServers }),
   };
@@ -250,7 +250,7 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
  * 一次运行的取数面（可注入）。
  *
  * 为什么挂在 provider 对象上而不是模块级可变量：注册表是「按 kind 解析出 provider 再调 run」的
- * 唯一入口，注入必须**跟着这一个对象**走，「并行跑两行、一行用假客户端」这件事的边界才清楚。
+ * 唯一入口，注入必须**跟着这一个对象**走，「并本次运行跑两行、一行用假客户端」这件事的边界才清楚。
  * 两个函数合成一个入口：`session.ts` 与 `reader.ts` 必须共用**同一个** `AppServerClient`。
  */
 export interface CodexRuntimeHooks {
@@ -302,7 +302,7 @@ interface CodexRun {
   runState: CodexRunState;
   /** 主线程 id：`thread/list{ancestorThreadId}` 的锚点，也是「会话身份」的判据 */
   mainThreadId: string;
-  /** 本行已交出的权威读数（主线程没采到用量时的兜底，也是收尾判「要不要再发一条」的依据） */
+  /** 本次运行已交出的权威读数（主线程没采到用量时的兜底，也是收尾判「要不要再发一条」的依据） */
   lastTokens: UsageTokens | null;
   /** 收尾取数的结果（由 `startFinalizeReader` 在后台填；`null` = 还没落定） */
   readback: CodexReadback | null;
@@ -329,7 +329,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   const env = buildSubprocessEnv({
     homeDir: input.configHome,
     injected: {
-      // 该行独立的 codex home：会话记录、配置、缓存都落在它下面（行与行之间不共享状态）
+      // 本次运行独立的 codex home：会话记录、配置、缓存都落在它下面（运行与运行之间不共享状态）
       CODEX_HOME: input.configHome,
       // 网关凭据进**子进程环境**（不写 process.env）：provider 的 `env_key` 由它取 Bearer
       [CODEX_API_KEY_ENV]: input.route.apiKey,
@@ -337,27 +337,27 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   });
   const baseUrl = ensureV1Suffix(input.route.baseUrl);
   /**
-   * 本行的**技能装入**：把清单里那几条整目录复制进 `<CODEX_HOME>/skills/`（= `configHome/skills`）。
+   * 本次运行的**技能装入**：把清单里那几条整目录复制进 `<CODEX_HOME>/skills/`（= `configHome/skills`）。
    *
    * 时机：必须在 `hooks.createClient(...)` **之前**——app-server 起来的那一刻就把
    * `<CODEX_HOME>/skills` 扫进技能清单，写晚了这一次 spawn 就看不到它们，而**它不报错**
-   * （只是这一行按「没有这条 skill」跑完）。
+   * （只是本次运行按「没有这条 skill」跑完）。
    *
    * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
    * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
-   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、本次运行失败。
    */
   if (input.skills !== undefined) {
     materializeSkills({ configHome: input.configHome, skills: input.skills });
   }
   /**
-   * 行内 npm registry（与 claude / dsh 同一条口径）：宿主的 `.npmrc` 里那一行**照抄**进
-   * 行私有 `configHome`。本行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc`
-   * 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 掉回公网，行内首次注入 playwright MCP 从 ~4 s
+   * 运行内 npm registry（与 claude / dsh 同一条口径）：宿主的 `.npmrc` 里那一行**照抄**进
+   * 行私有 `configHome`。本次运行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc`
+   * 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 掉回公网，运行内首次注入 playwright MCP 从 ~4 s
    * 变成 17.2 s / 61 MB（≥ 20 s 的等待预算就是被它撑起来的）。
    * 时机：必须在 app-server 起 MCP 子进程**之前**——写完再 spawn。
    */
-  const registryLine = writeRowNpmrc({
+  const registryLine = writeCandidateNpmrc({
     configHome: input.configHome,
     hostNpmrc: readNpmrcText(hostNpmrcPath()),
   });
@@ -441,7 +441,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     baseUrl,
     threadId: session.threadId,
     // **只记名字**（条目的 env / http_headers 里可能有密钥，日志不该能把它带出去）；
-    // registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容（与 claude 侧同一条口径）
+    // registry 那一格同理只记「写没写进去」，不抄宿主那一本次运行的内容（与 claude 侧同一条口径）
     mcpServers: Object.keys(mcpServers),
     // 技能那一格只记条名（源目录路径进日志没有额外信息量，且可能很长）
     skills: (input.skills ?? []).map((skill) => skill.name),
@@ -494,7 +494,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
     queueStart: (id) => session.queueStart(id),
   });
   /**
-   * **续跑闸门**：这一行的**收场时机**由它决定。
+   * **续跑闸门**：本次运行的**收场时机**由它决定。
    *
    * 为什么需要它：`'idle'` 档的人话只能靠「厂商起一轮」进模型上下文，而那一轮必须有人接着消费
    * 事件流——流若在第一轮收场时就结束，`dispose` 随即杀掉 app-server，那条消息就白投了
@@ -506,7 +506,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
    *     （「不挂应答面就不动」的零回归判据）；
    *   · **失败与取消都不续跑**：一轮已经失败（401 / 429 / 上游 5xx）或用户点了终止时再起一轮没有
    *     意义，而厂商在中断之后本来就把队列置为暂停；
-   *   · **有上限**：人一直发就能一直续跑的话，这一行永远不收场，而编排层的等待预算根本不会被触发
+   *   · **有上限**：人一直发就能一直续跑的话，本次运行永远不收场，而编排层的等待预算根本不会被触发
    *     （它只在适配器返回之后才开窗口）⇒ 上限到了就当没有更多话，正常收场。
    */
   const continuation = { used: 0 };
@@ -519,7 +519,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
   }
   /**
    * 技能面：**起会话之后立刻取一次**（app-server 已就绪、`thread/start` 已回来 ⇒ 连接可用）。
-   * **只在本行真的装了技能时取**（`input.skills` 给过）：评分与用例同步那两处不传这一格，
+   * **只在本次运行真的装了技能时取**（`input.skills` 给过）：评分与用例同步那两处不传这一格，
    * 它们不该付这次 RPC 的钱、也不该在事件流里多出一条「采不到」的 WARN（与物化同一条判据）。
    *
    * 之所以在这里同步 await 而不是像收尾取数那样后台跑：它是一次**本地进程**的 RPC（不是模型调用），
@@ -602,7 +602,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
            *   · **厂商自己投递起了一轮**（`vendorDispatched`，真机形状：`thread/queue/add` 落在空闲
            *     线程上时厂商当场就把条目撒出去了）⇒ **绝不能收场**：收场即 `dispose` 杀进程，
            *     那一轮连同那句话一起没（真机复现过）。**暂存的结局照旧留着**（不 `continueWith`）：
-           *     那一轮真收场时它会替换掉这一份，于是这一行的结论取最后一轮；
+           *     那一轮真收场时它会替换掉这一份，于是本次运行的结论取最后一轮；
            *   · 否则收场。
            */
           const settledTurnId = activeTurnId;
@@ -620,7 +620,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
             /**
              * **重新起表之前先撤掉上一只表**：厂商那一轮的 `turn/started` 可能在本拍**之前**就到了
              * （`queue/add` 落在空闲线程上时它在 add 那一拍就投，而我们正站在 `turn/completed` 的
-             * 处理里）⇒ 上一只表的「等到了」永远不会再触发，它到点就会把这一行收场——那一轮连同
+             * 处理里）⇒ 上一只表的「等到了」永远不会再触发，它到点就会把本次运行收场——那一轮连同
              * 还在厂商队列里的那些话一起没。每一拍都以自己那一刻起表。
              */
             clearVendorTurnWait();
@@ -644,7 +644,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
       /**
        * 流**正常产完**之后的兜底：进程死在在途这一条路上，通知流里一条终态都没有
        * （`core.end` 只结算 `session.outcome`），而 `project` 只认流里的载荷 ⇒ 不补这一条，
-       * 崩溃的行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`、
+       * 崩溃的本次运行会按 `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`、
        * `finalText/tokens/turns` 全空、只在日志里留一条"子线程树不是全量"）。
        *
        * 三条排除：**已取消**（结论归 canceled 那条通路）、**不是 failed**（正常收场）、
@@ -664,7 +664,7 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
        * ⇒ 拿它发必被拒（**自然收场**的轮回 `-32600 no active turn to interrupt`；**被我们中断过**的轮再发一次则**一帧都不回**，客户端要白等一个超时），中途取消会退化成杀进程树。
        */
       void session.interrupt(activeTurnId).catch((error: unknown) => {
-        logger.warn('codex 中止请求失败（该行仍会按终止收场）', { error });
+        logger.warn('codex 中止请求失败（本次运行仍会按终止收场）', { error });
       });
     },
     // 收工顺序：先把在飞的投递等回来，再关客户端（关早了那次投递只会拿到「客户端已关闭」）
@@ -760,7 +760,7 @@ async function* asRawStream(
      */
     onPayload: (payload: AppServerNotificationPayload) => Promise<void>;
     /**
-     * 上游**正常产完**之后问一次：这一行有没有一个「流内投影表达不出来」的失败要补一条载荷。
+     * 上游**正常产完**之后问一次：本次运行有没有一个「流内投影表达不出来」的失败要补一条载荷。
      * 返回 `null` = 没有（正常收场）；返回一条载荷 = 交给 `onPayload` 投影（本函数负责 yield）。
      *
      * 为什么这个口必须在流的终点：真机形状是「app-server 进程死在在途」——通知流被 `core.end`
@@ -809,7 +809,7 @@ async function* asRawStream(
       step = iterator.next();
     }
   } finally {
-    // 放行收尾取数（幂等）：取消 / 提前 return 那两条路也要放行，否则取数会等一个永不放行的闸门
+    // 放行收尾取数（幂等）：取消 / 提前 return 那两条路也要放行，否则取数会等一个永不放本次运行的闸门
     hooks.releaseQuiet();
     /**
      * 消费者提前 `return`（`dispose` 那条停止消费的路径）时也要汇合：`session.notifications` 的
@@ -824,7 +824,7 @@ async function* asRawStream(
 
 /**
  * 一条通知 → 三条出口（事件 / 消息 / 子任务行）。
- * 一条通知只在一处归一：行级在 `events.ts`、内容级在 `message.ts`，这里只做接线。
+ * 一条通知只在一处归一：运行级在 `events.ts`、内容级在 `message.ts`，这里只做接线。
  */
 function projectNotification(
   run: CodexRun,
@@ -834,7 +834,7 @@ function projectNotification(
 ): ReturnType<TurnStart['project']> {
   const payload = raw as AppServerNotificationPayload;
   if (payload.kind === 'threadStarted') {
-    // 昵称是子任务行上的展示名：越早登记，行上的名字越早对得上（收尾时 reader 给更权威的一份）
+    // 昵称是子任务行上的展示名：越早登记，本次运行上的名字越早对得上（收尾时 reader 给更权威的一份）
     noteThreadStarted(payload.thread.id, payload.thread.agentNickname, run.runState);
   }
   const event = projectCodexEvent(payload, state, run.runState, {
@@ -880,7 +880,7 @@ function startFinalizeReader(run: CodexRun, session: CodexSession, quiet: Promis
       try {
         refs = await listDescendantThreads(run.client, run.mainThreadId);
       } catch (error) {
-        logger.error('codex 子线程枚举失败（本行的子智能体分量按「未采集」处理）', { error });
+        logger.error('codex 子线程枚举失败（本次运行的子智能体分量按「未采集」处理）', { error });
         run.readback = { threads: null };
         return;
       }
@@ -895,7 +895,7 @@ function startFinalizeReader(run: CodexRun, session: CodexSession, quiet: Promis
       }
       run.readback = { threads };
     } catch (error) {
-      logger.error('codex 收尾取数失败（本行的子智能体分量按「未采集」处理）', { error });
+      logger.error('codex 收尾取数失败（本次运行的子智能体分量按「未采集」处理）', { error });
       run.readback = { threads: null };
     }
   })();
@@ -912,7 +912,7 @@ function startFinalizeReader(run: CodexRun, session: CodexSession, quiet: Promis
  *      ——两格是一对，只给其一都会让界面按「主会话 = 合计 − 分量」算出一个不存在的主会话；
  *   4. **轮次同一把尺**：分母 = 主线程答复条目数 + 各子线程答复条目数（同一个函数），
  *      分子 = 各子线程之和 ⇒ `subagentTurns ≤ turns` 是构造上的性质；
- *   5. **收尾不改结论**：读不到子线程只是少几行内容与一格分量，不影响本次运行的成功与失败。
+ *   5. **收尾不改结论**：读不到子线程只是少几运行内容与一格分量，不影响本次运行的成功与失败。
  */
 function finalizeCodex(run: CodexRun, options: { canceled: boolean }): {
   drafts: AgentEventDraft[];
@@ -929,7 +929,7 @@ function finalizeCodex(run: CodexRun, options: { canceled: boolean }): {
   const context = { mainThreadId: run.mainThreadId };
   const readback = run.readback;
   /**
-   * 逐条线程补内容与行。`content === null`（那一条读失败）时仍出子任务行：行的**身份与终态**
+   * 逐条线程补内容与行。`content === null`（那一条读失败）时仍出子任务行：本次运行的**身份与终态**
    * 来自 `thread/list` 的元数据（那一份拿到了），缺的只是它自己的条目。
    */
   const threads = readback?.threads ?? null;
@@ -993,7 +993,7 @@ function finalizeCodex(run: CodexRun, options: { canceled: boolean }): {
   /**
    * **技能面那一条事件**（`vendor-system.skills`）：起会话时采到的 `skills/list` 清单。
    *
-   * 为什么在收尾才发、而且带**整份**事实：`vendor-system` 的消费方（行级 MCP 证据、环境抽屉的
+   * 为什么在收尾才发、而且带**整份**事实：`vendor-system` 的消费方（运行级 MCP 证据、环境抽屉的
    * 厂商那一组）都是**取最后一条**读的，故这一条必须把 MCP 那一格一起带上（用
    * `currentMcpStartup` 的累积全量），否则最后那条事件里的 MCP 事实是空的，把先前那几拍
    * （`starting → ready`）在界面上抹掉。
@@ -1028,11 +1028,11 @@ function finalizeCodex(run: CodexRun, options: { canceled: boolean }): {
   /**
    * 采不到时**不发 vendor-system 事件**、只落这一条 WARN：一条 `skills: null` 的事件在界面上的
    * 读数是「厂商没投送这一格」——那是替厂商说一句我们并不知道的话；而「我们没采到」有这条日志
-   * 自己承载（行级判据据此降级成 `unverified`，不会误判成 `missing`）。
+   * 自己承载（运行级判据据此降级成 `unverified`，不会误判成 `missing`）。
    */
   if (skillProbe !== null && skillProbe.error !== null) {
     drafts.push(
-      logDraft('stderr', `[WARN] 采不到 codex 的技能清单（${skillProbe.error}）：本行「技能」判据降级为未验证，不据此判失败`),
+      logDraft('stderr', `[WARN] 采不到 codex 的技能清单（${skillProbe.error}）：本次运行「技能」判据降级为未验证，不据此判失败`),
     );
   }
 
@@ -1087,7 +1087,7 @@ function usageOfRun(
     return {
       total: null,
       subagent: null,
-      warn: `${why}：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
+      warn: `${why}：本次运行的**子智能体分量与步数分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
     };
   }
   if (threads.length === 0) {
@@ -1102,7 +1102,7 @@ function usageOfRun(
        */
       warn:
         mainTokens === null
-          ? '[WARN] codex 主线程的用量本行没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：这一行的**合计计量**给不出（记 null，不编造、不填 0）'
+          ? '[WARN] codex 主线程的用量没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：本次运行的**合计计量**给不出（记 null，不编造、不填 0）'
           : null,
     };
   }
@@ -1120,7 +1120,7 @@ function usageOfRun(
   const missing = resolved.filter((one) => one.tokens === null).map((one) => one.threadId);
   if (missing.length > 0) {
     /**
-     * 文案只说**我们这一侧**的事实（「本行没采到」），**不替厂商下结论**。
+     * 文案只说**我们这一侧**的事实（「本次运行没采到」），**不替厂商下结论**。
      *
      * 为什么不能写「没有用量通知」：用量只从运行期的 `thread/tokenUsage/updated` 通知累计，而通知
      * 是在**流那一侧**投影进 `runState` 的——流在本轮结算那一刻就停（`iterate()` 排空队列后
@@ -1131,7 +1131,7 @@ function usageOfRun(
     return {
       total: null,
       subagent: null,
-      warn: `[WARN] codex 子线程 ${missing.join('、')} 的用量本行没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
+      warn: `[WARN] codex 子线程 ${missing.join('、')} 的用量没有采到（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）：本次运行的**子智能体分量与步数分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径`,
     };
   }
   const subagent = sumUsageTokens(resolved.flatMap((one) => (one.tokens === null ? [] : [one.tokens])));
@@ -1213,7 +1213,7 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
      *     一条服务端请求都不下发。两格随应答面同生同灭（`CodexConfigOptions.askUser`）。
      *   · **没有一档收场由厂商自己结束**：`autoResolutionMs` 已 `@deprecated` 且实测恒 `null`，
      *     `isBlocking: false` 也不让它收场——不回帧它会一直等（实测 45 s 无下一轮、无收束通知）
-     *     ⇒ 「没人答 / 等超时 / 行终止」三条都由我们回一帧**空答案**（厂商原生的「没有答案」语义），
+     *     ⇒ 「没人答 / 等超时 / 本次运行终止」三条都由我们回一帧**空答案**（厂商原生的「没有答案」语义），
      *     那一问的收场方式因此落在我们自己的预算上（`timeout`），**没有** `auto-resolved` 这条路径。
      *   · 分界线：**审批类仍然只归类不回帧**（`approvalPolicy: never` 下也不会被问到；回帧等于替用户
      *     批准）；子线程发起的提问厂商自己就拒（`… can only be used by the root thread`），
@@ -1255,16 +1255,16 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
           // 真机读数只证到 wire 上**存在**这些方法：我们这条投递路径没被观测过
           proofDriver: 'synthetic-fixture',
           proofDriverReason: '真机读数只证到 wire 上存在 `turn/steer`；我们这条投递路径'
-            + '（steer 落在哪一次模型往返之前）没被验过 ⇒ 今天的证据来自假 wire 夹具',
+            + '（steer 落在哪一步之前）没被验过 ⇒ 今天的证据来自假 wire 夹具',
         },
         idle: {
           /**
            * **`yes`（真路径）**：真 `codex app-server` 下，人话在收场那一刻交出去之后**真的进到了模型面前**，
-           * 而且那一轮的答复成了本行的结论——三件事都在产品路径上发生，只把上游模型换成脚本式：
+           * 而且那一轮的答复成了本次运行的结论——三件事都在产品路径上发生，只把上游模型换成脚本式：
            *   · 交付**登记**了（`markDelivered` 收到那个 id）；
            *   · 那句话出现在**厂商出站请求体**里（判据是 `/v1/responses` 的原文，不经过我们任何投影）；
            *   · 厂商起的那一轮**跑完**（`turn/started` 与 `turn/completed` 同数，没被 `dispose` 杀掉），
-           *     且它的答复就是本行 `finalText`。
+           *     且它的答复就是本次运行 `finalText`。
            * 起轮的形状与上游语义一致：条目录在**空闲**线程上时厂商在 `thread/queue/add` 那一刻自己就投，
            * 我们的 `thread/queue/start` 因此常拿到 `queue is empty`——按「条目已被消费」判交付（见 `deliverIdle`）。
            */
@@ -1289,13 +1289,13 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
           reason: '按厂商的 `queuedSubmissionId` 撤（`thread/queue/delete`）；它只回 `{deleted}`，'
             + '「已消费 / 已删过 / id 不对」三种失败**逐字相同**。删不到时读一次 `thread/queue/list` 分两桶：'
             + 'id **还在**表里 ⇒ 身份对不上（`unknown`）；id **不在**表里 ⇒ 只证「它已经不在队列里了」，'
-            + '两件事都能造成这个结果，故取「已消费」是**基于本行自己销账的推断**（本行是唯一的删除方，'
+            + '两件事都能造成这个结果，故取「已消费」是**基于本次运行自己销账的推断**（本次运行是唯一的删除方，'
             + '撤回路径上我们没有删过它），不是厂商告诉我们的',
         },
       },
       /**
        * **续接**：`thread/resume{threadId}`——必填入参只有 `threadId` 一格（与 cwd 无关，
-       * cwd 只是可选覆盖），转录落在该行自己的 `$CODEX_HOME` 下。
+       * cwd 只是可选覆盖），转录落在本次运行自己的 `$CODEX_HOME` 下。
        * 真路径驱动器在 `testing/codex-resume-fixture.ts`（真二进制 → 真 app-server + 脚本式上游）。
        */
       resume: {
@@ -1309,17 +1309,17 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
       },
       notes: [
         '`\'idle\'` 档走真路径（真二进制 + 脚本式上游，见 `probes/inject-idle-live.test.ts`）⇒ 记 `yes`；'
-        + '`\'round\'` 档的**投递点**仍未验（steer 落在哪一次模型往返之前）⇒ 仍记 `unverified`',
+        + '`\'round\'` 档的**投递点**仍未验（steer 落在哪一步之前）⇒ 仍记 `unverified`',
         '**接不回的是「上一个进程」那一轮**：它早已收场，拿它的 turn id 去 steer 会被厂商拒（`-32600 no active turn to steer`）⇒ `\'round\'` 的有效范围是本进程内 `turn/start` 已起、未收场的那一轮。续接**不**落在这条约束外：`thread/resume` 之后照旧发一次 `turn/start` ⇒ 续接轮同样有在途轮、两档都可用',
         '`thread/queue/*` 的方法在 wire 上一直都在，但它们各自带 `#[experimental]` 闸门 ⇒ 要靠握手的 `experimentalApi: true`（本仓已开，见 `appserver/client.ts` 的 `initialize`）；`--experimental` 改的只是 schema 产物',
         '`\'idle\'` 档的交付判据是「**这一轮真的跑起来了**」：先 `thread/queue/add{clientUserMessageId}` 登记（保住按身份撤），再 `thread/queue/start`；'
         + '起轮成不成看**条目还在不在可见队列里**——厂商在空闲线程上会在 `add` 那一刻自己把它撒成一轮（上游 README 的 "dispatches … once the thread is idle"），'
         + '此时 `queue/start` 回 `queue is empty`，那**不是失败**：按交付登记并让流继续消费厂商起的那一轮（`vendorDispatched`）；条目还留在队列里才是真没投成（回滚 + 不登记）',
         '`\'idle\'` 档起的那一轮**带不了档位**（`thread/queue/start` 的参数只有 `threadId` 与可空的 `queuedSubmissionId`）⇒ 档位同时写进线程级 `config.model_reasoning_effort`，续跑那一轮由它兜住（同一个值写两处：一处管本轮、一处管线程默认）',
-        '`\'idle\'` 档续跑**有上限**（`CODEX_IDLE_CONTINUATION.rounds`）：没有它，人一直发就能一直续跑、这一行永远不收场，而编排层的等待预算只在适配器返回之后才开窗口，兜不住这里',
+        '`\'idle\'` 档续跑**有上限**（`CODEX_IDLE_CONTINUATION.rounds`）：没有它，人一直发就能一直续跑、本次运行永远不收场，而编排层的等待预算只在适配器返回之后才开窗口，兜不住这里',
         '跨轮的运行靠 `turnStarted` 重置墙钟（`TurnProjection.roundTripStarted`）：否则上一轮耗掉的预算会算进新起的那一轮里',
         '`thread/resume` 不发 `thread/started` 通知帧 ⇒ 线程 id 只从响应的 `thread.id` 取，续接后的终态判据也挂在那个 id 上',
-        '**不用「cwd + 最近一条」找会话**：本行的 MCP / 路由只写在**线程级 config** 里、从不落 `$CODEX_HOME/config.toml`，`thread/list{cwd}` 因此列不到这一行的线程（真机读数）⇒ 会话身份只能由我们自己落盘',
+        '**不用「cwd + 最近一条」找会话**：本次运行的 MCP / 路由只写在**线程级 config** 里、从不落 `$CODEX_HOME/config.toml`，`thread/list{cwd}` 因此列不到本次运行的线程（真机读数）⇒ 会话身份只能由我们自己落盘',
       ],
     },
     /**
@@ -1343,7 +1343,7 @@ export const codexProvider: AgentProvider & { runtimeHooks: CodexRuntimeHooks } 
     },
     /**
      * 推理证据必须补 messages.jsonl：思考全文与工具结果正文**结构性不进** events.jsonl
-     * （事件流只有摘要与结构件），唯一落点是消息账本 ⇒ 编排层据此给 codex 候选行多拼一份
+     * （事件流只有摘要与结构件），唯一落点是消息账本 ⇒ 编排层据此给 codex 本次运行多拼一份
      * messages.jsonl 证据，而不是把厂商名硬编码进编排层。
      */
     needsMessagesForReasoningEvidence: true,

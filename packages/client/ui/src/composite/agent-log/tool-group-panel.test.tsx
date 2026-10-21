@@ -4,7 +4,7 @@
  * 五条守卫：
  *   · 组头的 `工具调用 × N` **只数 `entry.kind === 'call'`**——把孤立结果算进去就是虚报调用次数
  *     （一条调用被画成卡片却仍算进 N，读数就是不实的）；
- *   · 调用名汇总去重、最多 3 个、多了缀「等 N 个」； * · 组头带**「失败 N」**：失败的工具组与失败行都默认收起，
+ *   · 调用名汇总去重、最多 3 个、多了缀「等 N 个」； * · 组头带**「失败 N」**：失败的工具组与失败候选都默认收起，
  *     于是「这一组里有失败」只能靠这一格在收起态露出来；N 数的是**结果为 `error` 的条目**
  *     （与「工具调用 × N」是两个口径，失败的孤立结果也算），一条失败都没有时整格不渲染；
  *   · 展开后组内出 `ToolItemDetail`，收起时组内的行**不在 DOM 里**；
@@ -16,7 +16,7 @@ import { installResizeObserverStub } from '../../testing/resize-observer';
 import type { OrphanToolResult, ToolGroupEntry, ToolItem } from './render-blocks';
 import { ToolGroupPanel } from './tool-group-panel';
 
-// 组内的工具行会渲染 `EllipsisText`（antd 的省略测量要 `ResizeObserver`，jsdom 没有）
+// 组内的工具候选会渲染 `EllipsisText`（antd 的省略测量要 `ResizeObserver`，jsdom 没有）
 beforeEach(() => {
   installResizeObserverStub();
 });
@@ -110,13 +110,13 @@ describe('ToolGroupPanel', () => {
 
   it('展开后出组内的工具行，收起时行不在 DOM 里', () => {
     const { unmount } = render(<ToolGroupPanel {...props} entries={[call()]} />);
-    // 组头也有一份名字汇总，故按行内那两格（族名 Tag + 参数摘要）来断言
+    // 组头也有一份名字汇总，故按候选内那两格（族名 Tag + 参数摘要）来断言
     expect(screen.getByText('读文件')).toBeInTheDocument();
     expect(screen.getByText('{"path":"a.ts"}')).toBeInTheDocument();
     unmount();
 
     const { container: closed } = render(<ToolGroupPanel {...props} open={false} entries={[call()]} />);
-    // 收起时组头在、组内一行都不渲染
+    // 收起时组头在、组内一个候选都不渲染
     expect(screen.getByText('工具调用 × 1')).toBeInTheDocument();
     expect(closed.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
     expect(screen.queryByText('{"path":"a.ts"}')).toBeNull();
@@ -165,7 +165,7 @@ describe('ToolGroupPanel', () => {
     );
 
     expect(container.querySelector('.ant-collapse-extra')).toHaveTextContent('失败 1');
-    // 组头在、组内一行都没有：证据要用户自己点开
+    // 组头在、组内一个候选都没有：证据要用户自己点开
     expect(container.querySelectorAll('.ant-collapse-item')).toHaveLength(1);
     expect(screen.queryByText('boom')).toBeNull();
   });
@@ -180,7 +180,7 @@ describe('ToolGroupPanel', () => {
       />,
     );
 
-    // 组头也有一份名字汇总 ⇒ 只点行里那一格（参数摘要）
+    // 组头也有一份名字汇总 ⇒ 只点候选里那一格（参数摘要）
     fireEvent.click(screen.getByText('{"path":"a.ts"}'));
 
     expect(onEntryOpenChange).toHaveBeenCalledWith('call-9', true);
@@ -215,11 +215,11 @@ describe('ToolGroupPanel', () => {
       <ToolGroupPanel {...props} onEntryOpenChange={onEntryOpenChange} entries={entries} />,
     );
 
-    // 两行的摘要行逐字相同 ⇒ 按下标点第一条，看它上报的键认不认得出是**哪一条**
+    // 两个候选的摘要行逐字相同 ⇒ 按下标点第一条，看它上报的键认不认得出是**哪一条**
     const rows = screen.getAllByText('孤立结果（配不上调用）');
-    const firstRow = rows[0];
-    if (firstRow === undefined) throw new Error('应有两条孤立结果行');
-    fireEvent.click(firstRow);
+    const firstCandidate = rows[0];
+    if (firstCandidate === undefined) throw new Error('应有两条孤立结果行');
+    fireEvent.click(firstCandidate);
     const key: unknown = onEntryOpenChange.mock.calls[0]?.[0];
     expect(key).toBe('call_00_a');
     unmount();
@@ -249,11 +249,11 @@ describe('ToolGroupPanel', () => {
     );
 
     // 行首现在是族名（「读文件」），`code` 那一格（工具名）已经让到展开后的正文里 ⇒
-    // 用参数摘要定位这两行；两行的摘要逐字相同，故仍按下标点第二条
+    // 用参数摘要定位这两行；两个候选的摘要逐字相同，故仍按下标点第二条
     const rows = screen.getAllByText('{"path":"a.ts"}');
-    const secondRow = rows[1];
-    if (secondRow === undefined) throw new Error('应有两条同名调用行');
-    fireEvent.click(secondRow);
+    const secondCandidate = rows[1];
+    if (secondCandidate === undefined) throw new Error('应有两条同名调用行');
+    fireEvent.click(secondCandidate);
     expect(onEntryOpenChange).toHaveBeenCalledWith('m1#1', true);
     unmount();
 

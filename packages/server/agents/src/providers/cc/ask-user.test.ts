@@ -356,7 +356,7 @@ describe('cc 的无人应答：拒这一次调用并点名收场方式', () => {
    * 缺省预算等**十分钟**；而控制帧一旦被 `control_cancel_request` 撤掉，那一帧早就无人接收
    * （`sdk.mjs` 只会打一条 `Response write failed`）——等满预算只是把界面上的卡片与挂起表白占着。
    * 判据同时钉「**不抛**」：抛会顺着 `processControlRequest` 冒到 SDK、打断适配器的流循环，
-   * 而「这一帧作废」不该升级成整行失败。
+   * 而「这一帧作废」不该升级成整候选失败。
    */
   it('厂商撤销了这一帧（signal aborted）⇒ 当场回 deny，不等满预算', async () => {
     const controller = new AbortController();

@@ -4,7 +4,7 @@
  * 这一份存在的理由（与「假 app-server 顶替厂商」那一档的根本差别）：续接的全部意义是
  * 「**新进程**接上旧会话」——假件把厂商那一侧换掉之后，`thread/resume` 读的是夹具的内存，
  * 证不到「转录在盘上、新进程读得到」。这里厂商那一侧全是真的：真二进制起 app-server、
- * 真 JSON-RPC 管道、线程转录落在该行自己的 `$CODEX_HOME` 下；每一次运行都是**新的 app-server 进程**
+ * 真 JSON-RPC 管道、线程转录落在本次运行自己的 `$CODEX_HOME` 下；每一次运行都是**新的 app-server 进程**
  * （上一次运行收尾时整棵进程树已回收）。我们只换掉**上游那个模型**。
  *
  * 三段读数（与 `providers/pi` 的续接用例同形，判据也同源）：
@@ -57,7 +57,7 @@ export interface CodexResumeScenario {
   control: CodexResumeRun;
   /** 这一组读数落在哪个临时目录（用例收尾删它） */
   root: string;
-  /** 三次运行共用的行配置目录（`$CODEX_HOME`）：线程转录落在它下面 */
+  /** 三次运行共用的运行配置目录（`$CODEX_HOME`）：线程转录落在它下面 */
   configHome: string;
   /** 三次运行共用的工作区 */
   cwd: string;

@@ -19,19 +19,19 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
-import { appendEvent, loadConfig, rowEventsFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
+import { appendEvent, loadConfig, candidateEventsFile, saveConfig, setCasesRootForTesting, setConfigDirForTesting, writeCase, type AppConfig } from '@aieval/core';
 import { POST as postRun } from '@/app/api/runs/route';
 import { GET as getArtifactIndex } from '@/app/api/runs/[runId]/artifacts/route';
-import { GET as getRowArtifact } from '@/app/api/runs/[runId]/rows/[rowId]/artifacts/route';
-import { GET as getDiff } from '@/app/api/runs/[runId]/rows/[rowId]/diff/route';
-import { GET as getLog } from '@/app/api/runs/[runId]/rows/[rowId]/log/route';
+import { GET as getCandidateArtifact } from '@/app/api/runs/[runId]/candidates/[candidateId]/artifacts/route';
+import { GET as getDiff } from '@/app/api/runs/[runId]/candidates/[candidateId]/diff/route';
+import { GET as getLog } from '@/app/api/runs/[runId]/candidates/[candidateId]/log/route';
 // 段配置（Next 的 route segment config）也要有守卫：它没有任何运行时症状，
 // 掉了之后表现是「本机单进程下一切正常、换个 runtime 就连不上编排层」
 import {
   GET as getStream,
   dynamic as streamDynamic,
   runtime as streamRuntime,
-} from '@/app/api/runs/[runId]/rows/[rowId]/stream/route';
+} from '@/app/api/runs/[runId]/candidates/[candidateId]/stream/route';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /** mock 句柄（`vi.hoisted` 的理由见 route-runs.test.ts） */
@@ -41,14 +41,14 @@ const evaluator = vi.hoisted(() => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
-  subscribeRowEvents: vi.fn(() => () => {}),
+  abortCandidate: vi.fn(),
+  subscribeCandidateEvents: vi.fn(() => () => {}),
   // 评分那两条流：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
   // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
   // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
-  subscribeRowRecords: vi.fn(() => () => {}),
+  subscribeCandidateRecords: vi.fn(() => () => {}),
   // 全局流的三条信号总线（`/api/runs/stream`）：api 的 index 转出 `streamGlobalSignals`，
   // run-events.ts 在模块求值期读这三个键，缺键在 import 阶段就抛（见 route-runs.test.ts 的同款注释）
   subscribeRunChanges: vi.fn(() => () => {}),
@@ -154,7 +154,7 @@ async function createRun(): Promise<EvalRun> {
     jsonRequest({
       caseId: 'c-1',
       executionMode: 'serial',
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     }),
   );
   expect(res.status).toBe(201);
@@ -164,28 +164,28 @@ async function createRun(): Promise<EvalRun> {
 /**
  * 动态段上下文：Next 16 的 `params` 是 Promise。
  * 必须**泛型**（写成 `Record<string, string>` 就错了）：路由的上下文参数是
- * `{ runId: string; rowId: string }`，`Record<string, string>` 只提供索引签名、不提供具名属性，
+ * `{ runId: string; candidateId: string }`，`Record<string, string>` 只提供索引签名、不提供具名属性，
  * `strictFunctionTypes` 下参数是逆变位置，传进去直接 TS2345（实测）。
  */
-function rowContext<P extends Record<string, string>>(params: P): { params: Promise<P> } {
+function candidateContext<P extends Record<string, string>>(params: P): { params: Promise<P> } {
   return { params: Promise.resolve(params) };
 }
 
-describe('GET .../rows/[rowId]/diff', () => {
+describe('GET .../candidates/[candidateId]/diff', () => {
   /** 建一轮 + 真仓库，返回 run 与 row（三样改动都覆盖：已提交 / 未提交 / 未跟踪） */
-  async function seedRepo(): Promise<{ runId: string; rowId: string }> {
+  async function seedRepo(): Promise<{ runId: string; candidateId: string }> {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
     const { baseline } = initRepo(row.workspacePath);
-    store.set(run.id, { ...run, rows: [{ ...row, baselineCommit: baseline }] });
-    return { runId: run.id, rowId: row.id };
+    store.set(run.id, { ...run, candidates: [{ ...row, baselineCommit: baseline }] });
+    return { runId: run.id, candidateId: row.id };
   }
 
   it('索引：不带正文，只给文件清单与三个计数', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff'), candidateContext({ runId, candidateId }));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -197,9 +197,9 @@ describe('GET .../rows/[rowId]/diff', () => {
   });
 
   it('索引：未跟踪的新文件带 untracked 标记', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff'), candidateContext({ runId, candidateId }));
     const body = await res.json();
 
     const untracked = body.files.find((f: { path: string }) => f.path === 'c.ts');
@@ -207,32 +207,32 @@ describe('GET .../rows/[rowId]/diff', () => {
   });
 
   it('索引：?limit= 分页，且 limit 封顶后不报错', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff?offset=0&limit=1'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff?offset=0&limit=1'), candidateContext({ runId, candidateId }));
     const body = await res.json();
 
     expect(res.status).toBe(200);
     expect(body.files.length).toBeLessThanOrEqual(1);
     expect(body.offset).toBe(0);
 
-    const huge = await getDiff(new Request('http://localhost/api/diff?limit=99999'), rowContext({ runId, rowId }));
+    const huge = await getDiff(new Request('http://localhost/api/diff?limit=99999'), candidateContext({ runId, candidateId }));
     expect(huge.status).toBe(200);
   });
 
   it('索引：非法 offset/limit 宽容降级（不是 400）', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff?offset=abc&limit=-3'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff?offset=abc&limit=-3'), candidateContext({ runId, candidateId }));
 
     expect(res.status).toBe(200);
     expect((await res.json()).offset).toBe(0);
   });
 
   it('单文件正文：?file= 取到那一段，含未提交的改动与未跟踪新文件的正文', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff?file=a.ts'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff?file=a.ts'), candidateContext({ runId, candidateId }));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -241,21 +241,21 @@ describe('GET .../rows/[rowId]/diff', () => {
     expect(body.patch).toContain('const b = 2;');
     expect(body.binary).toBe(false);
 
-    const untrackedFile = await getDiff(new Request('http://localhost/api/diff?file=c.ts'), rowContext({ runId, rowId }));
+    const untrackedFile = await getDiff(new Request('http://localhost/api/diff?file=c.ts'), candidateContext({ runId, candidateId }));
     expect((await untrackedFile.json()).patch).toContain('const c = 3;');
   });
 
   it('单文件正文：路径含空格时按 URL 编码解码后仍能取到', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
     const { baseline } = initRepo(row.workspacePath);
     writeFileSync(join(row.workspacePath, 'my file.ts'), 'export const s = 1;\n', 'utf8');
-    store.set(run.id, { ...run, rows: [{ ...row, baselineCommit: baseline }] });
+    store.set(run.id, { ...run, candidates: [{ ...row, baselineCommit: baseline }] });
 
     const res = await getDiff(
       new Request(`http://localhost/api/diff?file=${encodeURIComponent('my file.ts')}`),
-      rowContext({ runId: run.id, rowId: row.id }),
+      candidateContext({ runId: run.id, candidateId: row.id }),
     );
 
     expect(res.status).toBe(200);
@@ -263,35 +263,35 @@ describe('GET .../rows/[rowId]/diff', () => {
   });
 
   it('单文件正文：路径不在改动里 → 404', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const res = await getDiff(new Request('http://localhost/api/diff?file=nope.ts'), rowContext({ runId, rowId }));
+    const res = await getDiff(new Request('http://localhost/api/diff?file=nope.ts'), candidateContext({ runId, candidateId }));
 
     expect(res.status).toBe(404);
   });
 
   it('工作区还没建起来 → 409 中文原因，而不是英文 git 报错', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
 
-    const res = await getDiff(new Request('http://localhost/api/diff'), rowContext({ runId: run.id, rowId: row.id }));
+    const res = await getDiff(new Request('http://localhost/api/diff'), candidateContext({ runId: run.id, candidateId: row.id }));
 
     expect(res.status).toBe(409);
     expect((await res.json()).error.message).toContain('还没有工作区');
   });
 
   it('轮不存在 → 404', async () => {
-    const res = await getDiff(new Request('http://localhost/api/diff'), rowContext({ runId: 'nope', rowId: 'w-1' }));
+    const res = await getDiff(new Request('http://localhost/api/diff'), candidateContext({ runId: 'nope', candidateId: 'w-1' }));
 
     expect(res.status).toBe(404);
   });
 
   it('回归守卫：?file= 与 ?offset= 走的是两条不同的分支', async () => {
-    const { runId, rowId } = await seedRepo();
+    const { runId, candidateId } = await seedRepo();
 
-    const indexRes = await getDiff(new Request('http://localhost/api/diff'), rowContext({ runId, rowId }));
-    const fileRes = await getDiff(new Request('http://localhost/api/diff?file=a.ts'), rowContext({ runId, rowId }));
+    const indexRes = await getDiff(new Request('http://localhost/api/diff'), candidateContext({ runId, candidateId }));
+    const fileRes = await getDiff(new Request('http://localhost/api/diff?file=a.ts'), candidateContext({ runId, candidateId }));
 
     // 索引有 files/total，单文件有 patch —— 两个形状不能互相冒充
     expect(Object.keys(await indexRes.json())).toContain('total');
@@ -299,37 +299,37 @@ describe('GET .../rows/[rowId]/diff', () => {
   });
 });
 
-describe('GET .../rows/[rowId]/log', () => {
+describe('GET .../candidates/[candidateId]/log', () => {
   it('返回全量；?afterSeq= 只返回增量', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
-    const file = rowEventsFile(workspaceRoot, run.id, row.id);
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
+    const file = candidateEventsFile(workspaceRoot, run.id, row.id);
     mkdirSync(dirname(file), { recursive: true });
     appendEvent(file, { type: 'log', stream: 'stdout', text: '一' });
     appendEvent(file, { type: 'log', stream: 'stdout', text: '二' });
     appendEvent(file, { type: 'log', stream: 'stdout', text: '三' });
 
-    const all = await getLog(new Request('http://localhost/api/log'), rowContext({ runId: run.id, rowId: row.id }));
+    const all = await getLog(new Request('http://localhost/api/log'), candidateContext({ runId: run.id, candidateId: row.id }));
     expect(((await all.json()) as AgentEvent[]).map((event) => event.seq)).toEqual([1, 2, 3]);
 
-    const inc = await getLog(new Request('http://localhost/api/log?afterSeq=2'), rowContext({ runId: run.id, rowId: row.id }));
+    const inc = await getLog(new Request('http://localhost/api/log?afterSeq=2'), candidateContext({ runId: run.id, candidateId: row.id }));
     expect(((await inc.json()) as AgentEvent[]).map((event) => event.seq)).toEqual([3]);
   });
 
   it('?afterSeq=abc → 400（不静默当成 0 给全量）', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
 
-    const res = await getLog(new Request('http://localhost/api/log?afterSeq=abc'), rowContext({ runId: run.id, rowId: row.id }));
+    const res = await getLog(new Request('http://localhost/api/log?afterSeq=abc'), candidateContext({ runId: run.id, candidateId: row.id }));
 
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('INVALID_QUERY');
   });
 });
 
-describe('GET .../rows/[rowId]/stream', () => {
+describe('GET .../candidates/[candidateId]/stream', () => {
   it('段配置：nodejs runtime + force-dynamic（进程内事件总线）', () => {
     // 事件总线是**进程内**的：换到 edge 之类的 runtime，SSE 路由就连不上编排层，
     // 而症状是「连上了、永远没有新事件」——零报错。段配置本身没有任何运行时守卫，故在这里钉住。
@@ -339,14 +339,14 @@ describe('GET .../rows/[rowId]/stream', () => {
 
   it('响应头是 SSE 的四个必需项，帧格式为 id/event/data + 空行', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
-    const file = rowEventsFile(workspaceRoot, run.id, row.id);
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
+    const file = candidateEventsFile(workspaceRoot, run.id, row.id);
     mkdirSync(dirname(file), { recursive: true });
     const first = appendEvent(file, { type: 'log', stream: 'stdout', text: '第一行' });
     const end = appendEvent(file, { type: 'end', exitReason: 'completed' });
 
-    const res = await getStream(new Request('http://localhost/api/stream'), rowContext({ runId: run.id, rowId: row.id }));
+    const res = await getStream(new Request('http://localhost/api/stream'), candidateContext({ runId: run.id, candidateId: row.id }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
@@ -366,9 +366,9 @@ describe('GET .../rows/[rowId]/stream', () => {
 
   it('Last-Event-ID 优先于 ?afterSeq=（重连只发头，query 里是首连那一刻的旧值）', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
-    const file = rowEventsFile(workspaceRoot, run.id, row.id);
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
+    const file = candidateEventsFile(workspaceRoot, run.id, row.id);
     mkdirSync(dirname(file), { recursive: true });
     appendEvent(file, { type: 'log', stream: 'stdout', text: '一' });
     appendEvent(file, { type: 'log', stream: 'stdout', text: '二' });
@@ -376,7 +376,7 @@ describe('GET .../rows/[rowId]/stream', () => {
 
     const res = await getStream(
       new Request('http://localhost/api/stream?afterSeq=0', { headers: { 'last-event-id': '2' } }),
-      rowContext({ runId: run.id, rowId: row.id }),
+      candidateContext({ runId: run.id, candidateId: row.id }),
     );
 
     const text = await res.text();
@@ -388,46 +388,46 @@ describe('GET .../rows/[rowId]/stream', () => {
 
   it('轮/行不存在时回 404 JSON（不是开了就结束的 SSE 流）', async () => {
     const run = await createRun();
-    const res = await getStream(new Request('http://localhost/api/stream'), rowContext({ runId: run.id, rowId: 'w-x' }));
+    const res = await getStream(new Request('http://localhost/api/stream'), candidateContext({ runId: run.id, candidateId: 'w-x' }));
 
     expect(res.status).toBe(404);
     expect(res.headers.get('content-type')).toContain('application/json');
-    expect((await res.json()).error.message).toContain('没有这一行');
+    expect((await res.json()).error.message).toContain('没有这个候选');
   });
 });
 
 /**
- * 「产物总览」两条路由：索引（轮级）与单份正文（行级）。
+ * 「产物总览」两条路由：索引（轮级）与单份正文（候选级）。
  *
  * 与上面三条同一条口径：**工作区真的建在临时目录里、产物真的写盘**——这条路的价值就在于
  * 「真的能扫到、真的能读出正文」，把它 mock 掉等于把最容易错的地方（哪一层目录、白名单、两道门）
  * 从测试里删掉。
  */
 describe('GET /api/runs/[runId]/artifacts', () => {
-  /** 建一轮 + 在那一行的工作区根写两份产物（另放一份不认的与一个子目录） */
-  async function seedArtifacts(): Promise<{ runId: string; rowId: string; workspacePath: string }> {
+  /** 建一轮 + 在那一候选的工作区根写两份产物（另放一份不认的与一个子目录） */
+  async function seedArtifacts(): Promise<{ runId: string; candidateId: string; workspacePath: string }> {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
     mkdirSync(join(row.workspacePath, 'sub'), { recursive: true });
     writeFileSync(join(row.workspacePath, 'RESULT.md'), '# 交付说明\n', 'utf8');
     writeFileSync(join(row.workspacePath, 'RESULT.html'), '<p>正文</p>', 'utf8');
     writeFileSync(join(row.workspacePath, 'notes.txt'), '不认的', 'utf8');
     writeFileSync(join(row.workspacePath, 'sub', 'RESULT.svg'), '<svg/>', 'utf8');
-    return { runId: run.id, rowId: row.id, workspacePath: row.workspacePath };
+    return { runId: run.id, candidateId: row.id, workspacePath: row.workspacePath };
   }
 
   it('索引：每个候选一行、只列白名单里的产物（子目录与其它后缀都不算）', async () => {
-    const { runId, rowId } = await seedArtifacts();
+    const { runId, candidateId } = await seedArtifacts();
 
-    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId }));
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), candidateContext({ runId }));
     const body = await res.json();
 
     expect(res.status).toBe(200);
     expect(body.total).toBe(2);
-    expect(body.rows).toEqual([
+    expect(body.candidates).toEqual([
       {
-        rowId,
+        candidateId,
         files: [
           { name: 'RESULT.md', kind: 'md', bytes: Buffer.byteLength('# 交付说明\n', 'utf8') },
           { name: 'RESULT.html', kind: 'html', bytes: Buffer.byteLength('<p>正文</p>', 'utf8') },
@@ -436,28 +436,28 @@ describe('GET /api/runs/[runId]/artifacts', () => {
     ]);
   });
 
-  it('索引：行还没开始跑（工作区不存在）⇒ 那一行是空清单，不是错误', async () => {
+  it('索引：行还没开始跑（工作区不存在）⇒ 那一候选是空清单，不是错误', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
 
-    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId: run.id }));
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), candidateContext({ runId: run.id }));
 
     expect(res.status).toBe(200);
-    expect((await res.json()).rows).toEqual([{ rowId: row.id, files: [] }]);
+    expect((await res.json()).candidates).toEqual([{ candidateId: row.id, files: [] }]);
   });
 
   it('轮不存在 ⇒ 404（不是空清单：那是「这一轮没有产物」的误读）', async () => {
-    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), rowContext({ runId: 'nope' }));
+    const res = await getArtifactIndex(new Request('http://localhost/api/artifacts'), candidateContext({ runId: 'nope' }));
 
     expect(res.status).toBe(404);
     expect((await res.json()).error.message).toContain('评测不存在');
   });
 
   it('单份正文：?name= 取到那一份，形状带 kind / bytes / truncated', async () => {
-    const { runId, rowId } = await seedArtifacts();
+    const { runId, candidateId } = await seedArtifacts();
 
-    const res = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId, rowId }));
+    const res = await getCandidateArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), candidateContext({ runId, candidateId }));
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -470,10 +470,10 @@ describe('GET /api/runs/[runId]/artifacts', () => {
   });
 
   it('单份正文：缺 name / 空 name ⇒ 400（与「名字不合法」分开说）', async () => {
-    const { runId, rowId } = await seedArtifacts();
+    const { runId, candidateId } = await seedArtifacts();
 
-    const missing = await getRowArtifact(new Request('http://localhost/api/artifacts'), rowContext({ runId, rowId }));
-    const empty = await getRowArtifact(new Request('http://localhost/api/artifacts?name='), rowContext({ runId, rowId }));
+    const missing = await getCandidateArtifact(new Request('http://localhost/api/artifacts'), candidateContext({ runId, candidateId }));
+    const empty = await getCandidateArtifact(new Request('http://localhost/api/artifacts?name='), candidateContext({ runId, candidateId }));
 
     expect(missing.status).toBe(400);
     expect((await missing.json()).error).toMatchObject({ code: 'INVALID_QUERY' });
@@ -481,12 +481,12 @@ describe('GET /api/runs/[runId]/artifacts', () => {
   });
 
   it('单份正文：白名单外的名字 ⇒ 400 INVALID_QUERY（连拼路径的机会都不给）', async () => {
-    const { runId, rowId } = await seedArtifacts();
+    const { runId, candidateId } = await seedArtifacts();
 
     for (const name of ['notes.txt', '../RESULT.md', 'sub/RESULT.svg', 'RESULT.md.bak']) {
-      const res = await getRowArtifact(
+      const res = await getCandidateArtifact(
         new Request(`http://localhost/api/artifacts?name=${encodeURIComponent(name)}`),
-        rowContext({ runId, rowId }),
+        candidateContext({ runId, candidateId }),
       );
       expect(res.status, name).toBe(400);
       expect((await res.json()).error.code, name).toBe('INVALID_QUERY');
@@ -494,23 +494,23 @@ describe('GET /api/runs/[runId]/artifacts', () => {
   });
 
   it('单份正文：白名单内的名字但盘上没有 ⇒ 404；行不存在 ⇒ 404', async () => {
-    const { runId, rowId } = await seedArtifacts();
+    const { runId, candidateId } = await seedArtifacts();
 
-    const absent = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.svg'), rowContext({ runId, rowId }));
-    const unknownRow = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId, rowId: 'w-x' }));
+    const absent = await getCandidateArtifact(new Request('http://localhost/api/artifacts?name=RESULT.svg'), candidateContext({ runId, candidateId }));
+    const unknownCandidate = await getCandidateArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), candidateContext({ runId, candidateId: 'w-x' }));
 
     expect(absent.status).toBe(404);
     expect((await absent.json()).error.message).toContain('没有这份产物');
-    expect(unknownRow.status).toBe(404);
-    expect((await unknownRow.json()).error.message).toContain('没有这一行');
+    expect(unknownCandidate.status).toBe(404);
+    expect((await unknownCandidate.json()).error.message).toContain('没有这个候选');
   });
 
   it('单份正文：工作区还没建 ⇒ 409 中文原因（不是英文 errno）', async () => {
     const run = await createRun();
-    const row = run.rows[0];
-    if (row === undefined) throw new Error('创建评测没有产生候选行');
+    const row = run.candidates[0];
+    if (row === undefined) throw new Error('创建评测没有产生候选');
 
-    const res = await getRowArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), rowContext({ runId: run.id, rowId: row.id }));
+    const res = await getCandidateArtifact(new Request('http://localhost/api/artifacts?name=RESULT.md'), candidateContext({ runId: run.id, candidateId: row.id }));
 
     expect(res.status).toBe(409);
     expect((await res.json()).error.message).toContain('还没有工作区');

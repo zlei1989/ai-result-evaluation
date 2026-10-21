@@ -137,4 +137,4 @@ export { basename, join } from 'node:path';
 export { execFileSync } from 'node:child_process';
 export { ServiceError } from '@aieval/contracts';
 export { setConfigDirForTesting } from '../config-store';
-export { assertCommit, checkoutRow, copyWorkspace, ensureCaseCache, isGitRepo, listCommits, resolveRepoInfo } from '../git';
+export { assertCommit, checkoutCandidate, copyWorkspace, ensureCaseCache, isGitRepo, listCommits, resolveRepoInfo } from '../git';

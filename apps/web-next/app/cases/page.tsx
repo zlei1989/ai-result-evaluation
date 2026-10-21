@@ -335,7 +335,7 @@ function CasesWorkspace(): React.ReactNode {
       // 而不是切到升序。首项是本列的默认方向，循环才是 降序 → 升序 → 取消。
       sortDirections: ['descend', 'ascend'],
       sorter: (a: TestCase, b: TestCase) => compareSortText(a.title, b.title),
-      // 钉在左边：横向滚动时其余三列从它下面滑过，「这一行是哪个用例」
+      // 钉在左边：横向滚动时其余三列从它下面滑过，「这个候选是哪个用例」
       // 始终看得见。第一列的 sticky `left` 恒为 0，**不依赖自身申报宽度**（要靠前面列宽累加的是
       // 第二个之后的固定列，本表没有），所以下面那条「不传 width」的口径原样保留。
       fixed: 'left',

@@ -91,8 +91,8 @@ async function startRecordingProxy(upstream: string, sink: Recorded[]): Promise<
   };
 }
 
-/** 跑一行：真适配器 + 录制反代；返回这一行的产物 + 我这一行打出去的那几条请求 */
-async function runRow(options: {
+/** 跑一行：真适配器 + 录制反代；返回这个候选的产物 + 我这个候选打出去的那几条请求 */
+async function runCandidate(options: {
   protocolType: 'openai' | 'anthropic';
   effort?: string;
   outputSchema?: unknown;
@@ -133,7 +133,7 @@ async function runRow(options: {
 
 describe.skipIf(!live)('出站请求真机取证（两条 wire）', () => {
   it('openai wire：端点 / 档位落点 / strict 落点 / 网关 200', async () => {
-    const { requests, events } = await runRow({ protocolType: 'openai', effort: 'off' });
+    const { requests, events } = await runCandidate({ protocolType: 'openai', effort: 'off' });
     const body = requests.at(-1)?.body ?? {};
     dump('06-wire-openai', { requests, usageEvent: events.find((event) => event.type === 'usage') ?? null });
 
@@ -148,7 +148,7 @@ describe.skipIf(!live)('出站请求真机取证（两条 wire）', () => {
   }, 180_000);
 
   it('anthropic wire：端点 / thinking.disabled / strict 落点 / 网关 200', async () => {
-    const { requests, events } = await runRow({ protocolType: 'anthropic', effort: 'off' });
+    const { requests, events } = await runCandidate({ protocolType: 'anthropic', effort: 'off' });
     const body = requests.at(-1)?.body ?? {};
     dump('06-wire-anthropic', { requests, usageEvent: events.find((event) => event.type === 'usage') ?? null });
 
@@ -159,7 +159,7 @@ describe.skipIf(!live)('出站请求真机取证（两条 wire）', () => {
 
   it('档位直传：low/medium/high 在 openai wire 上同名出站', async () => {
     for (const effort of ['low', 'medium', 'high'] as const) {
-      const { requests } = await runRow({ protocolType: 'openai', effort });
+      const { requests } = await runCandidate({ protocolType: 'openai', effort });
       const body = requests.at(-1)?.body ?? {};
       expect({ effort, reasoning: (body.reasoning as Record<string, unknown> | undefined)?.effort }, `${effort} 档的出站形态与预期不符`).toEqual({
         effort,
@@ -176,7 +176,7 @@ describe.skipIf(!live)('出站请求真机取证（两条 wire）', () => {
       properties: { verdict: { type: 'string' }, note: { type: ['string', 'null'] } },
     };
     for (const protocolType of ['openai', 'anthropic'] as const) {
-      const { requests } = await runRow({ protocolType, outputSchema: schema, effort: 'off' });
+      const { requests } = await runCandidate({ protocolType, outputSchema: schema, effort: 'off' });
       const body = requests.at(-1)?.body ?? {};
       const declared = piRequestToolDeclaration(body, 'submit_result');
       dump(`06-wire-strict-${protocolType}`, { url: requests.at(-1)?.url, status: requests.at(-1)?.upstreamStatus, declared });

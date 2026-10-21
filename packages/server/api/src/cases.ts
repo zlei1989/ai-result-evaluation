@@ -146,7 +146,7 @@ function assertUsableRubric(testCase: TestCase): Rubric {
  *   · `rubric` 过一遍**不抛**的 `safeParse`：靠 schema 缺省值的合法记录（例如某一项没写 `id`，
  *     由 `RubricItemSchema.id` 的 `.default('')` 补齐）也必须以 `id: ''` 流出去，而不是
  *     `id: undefined`——契约声明的是 `id: string`，第三态要留给下游猜（A10③ 的口径）。
- *     解析不过就把这一格**删掉**（`delete`，与上面那三列同一形状）：`stale` 是整行的 spread，
+ *     解析不过就把这一格**删掉**（`delete`，与上面那三列同一形状）：`stale` 是整候选的 spread，
  *     `rubric` 本来就在里面——在失败分支里 spread 一个空对象**删不掉**任何东西，一个非 `Rubric`
  *     的值就这么从列表流出去了（`{ groups: '这不是数组' }` 会原样透传）。
  *     这条路径（`listCases`）必须能渲染，该用例会在 `asUsableCase` 里被明确拒绝。
@@ -251,7 +251,7 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
   const branchTouched = nextBranch !== (current.repoBranch ?? null);
 
   // 来源 / 分支真的变了才判定成型；没变时**连解析都不做**（`resolved` 是 null）。
-  // 为什么解析必须懒：`parseRepoSource` 对一条手改坏的 legacy 行会抛 INVALID_QUERY，
+  // 为什么解析必须懒：`parseRepoSource` 对一条手改坏的 legacy 候选会抛 INVALID_QUERY，
   // 而无条件算一次 `resolved` 就等于「每次保存都解析当前来源」——只改标题也保存不了，
   // 正是文件头口径 1 承诺不会发生的事（比「仓库掉线」更硬的一种坏数据：重试多少次都一样）。
   const resolved = repoChanged || branchTouched ? resolveCaseSource(nextRepoPath, nextBranch) : null;
@@ -277,7 +277,7 @@ export function updateCase(caseId: string, patch: CasePatch): TestCase {
     ...(patch.title === undefined ? {} : { title: patch.title.trim() }),
     repoPath: resolved?.repoPath ?? current.repoPath,
     commitHash,
-    // 必须**合并** patch.repoBranch：漏了这一行，用户切分支保存会拿到 200、界面显示成功、落盘还是旧分支
+    // 必须**合并** patch.repoBranch：漏了这个候选，用户切分支保存会拿到 200、界面显示成功、落盘还是旧分支
     // （最坏的失败：用户以为生效了）
     repoBranch: resolved?.repoBranch ?? current.repoBranch ?? null,
     ...(patch.taskPrompt === undefined ? {} : { taskPrompt: patch.taskPrompt }),

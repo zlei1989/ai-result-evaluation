@@ -24,9 +24,10 @@ import type {
   AskUserInteraction,
   AttachmentBlock,
   ContentBlock,
+  ImageViewBlock,
   LogNode,
   LogNodeIndex,
-  RowNode,
+  CandidateNode,
   SessionNode,
   TaskPanel,
   TextBlock,
@@ -47,9 +48,10 @@ export type RenderBlock =
   | { kind: 'thinking'; block: ThinkingBlock }
   | { kind: 'tool-group'; entries: ToolGroupEntry[] }
   | { kind: 'attachment'; block: AttachmentBlock }
+  | { kind: 'image-view'; block: ImageViewBlock }
   | { kind: 'unrecognized'; block: UnrecognizedPayloadBlock }
   | { kind: 'subagent-bar'; node: SessionNode }
-  | { kind: 'row-summary'; node: RowNode }
+  | { kind: 'row-summary'; node: CandidateNode }
   | { kind: 'task-panel'; panel: TaskPanel; earlierCount: number; cardId: string }
   | { kind: 'ask-user-card'; interaction: AskUserInteraction; cardId: string };
 
@@ -58,7 +60,7 @@ export interface ToolOutput {
   text: string;
   /**
    * 厂商已解析的结构化结果；`null` = 这一家没给（**不是**「空对象」）。
-   * dsh 的 `read` / `write` / `edit` 把行数、改动对象这类**已解析事实**只放在这里，
+   * dsh 的 `read` / `write` / `edit` 把候选数、改动对象这类**已解析事实**只放在这里，
    * 丢掉它等于让「有数据」变成「看不见」。
    */
   structured: unknown;
@@ -233,11 +235,11 @@ function barNodes(
 }
 
 /**
- * 行级汇总节点：只在时间轴上占一条带计数与状态的说明行。
+ * 候选级汇总节点：只在时间轴上占一条带计数与状态的说明行。
  * **不可点、不进面包屑**——点进去只会得到一个空会话。
  */
-function rowNodes(nodes: LogNodeIndex): RowNode[] {
-  const rows: RowNode[] = [];
+function candidateNodes(nodes: LogNodeIndex): CandidateNode[] {
+  const rows: CandidateNode[] = [];
   for (const node of nodes.values()) if (node.kind === 'row') rows.push(node);
   return rows;
 }
@@ -333,6 +335,11 @@ export function buildRenderBlocks(
         flush();
         out.push({ kind: 'attachment', block });
         break;
+      case 'image-view':
+        // 与附件同档：不并进工具组（它不是一次调用，也没有可展开的结果）
+        flush();
+        out.push({ kind: 'image-view', block });
+        break;
       case 'unrecognized':
         flush();
         out.push({ kind: 'unrecognized', block });
@@ -422,10 +429,10 @@ export function buildRenderBlocks(
     out.push({ kind: 'subagent-bar', node });
   }
   /**
-   * 行级汇总节点（`kind: 'row'`）：**不可点、整条时间轴只画一次**（挂第一轮之后）。
+   * 候选级汇总节点（`kind: 'row'`）：**不可点、整条时间轴只画一次**（挂第一轮之后）。
    * 每一轮都画的话，两轮的节点上会出现两句一模一样的说明行——它不是「每轮的事实」。
    */
-  if (turn.firstTurn) for (const node of rowNodes(nodes)) out.push({ kind: 'row-summary', node });
+  if (turn.firstTurn) for (const node of candidateNodes(nodes)) out.push({ kind: 'row-summary', node });
 
   return out;
 }

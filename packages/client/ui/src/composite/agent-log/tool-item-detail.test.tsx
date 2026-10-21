@@ -2,12 +2,14 @@
  * ToolItemDetail：单条工具行（摘要行 + 展开后的命令/参数与结果）。
  *
  * 七条守卫：
- *   · 摘要行的行首有**一块**身份牌子 + 参数摘要（`description` 缺席时是 `value ?? text` 的第一行）；
+ *   · 摘要候选的行首有**一块**身份牌子 + 参数摘要（`description` 缺席时是 `value ?? text` 的第一行）；
  *   · **行首族名优先、没映射才回落工具名**（二选一，都在行首）；工具名落到展开后的正文；
  *   · **摘要行优先给入参里的 `description`**（模型自己写的一句人话），原文仍留在展开后的正文里；
  *   · `name === ''` 时**不编名字**，如实写「未采集」+ 原因；
  *   · `output === null && missingReason` 时写清「结果未采集 · 原因」；
- *   · 孤立结果不编工具名（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）。
+ *   · 孤立结果不编工具名（且不出现工具名那一格）；结果**不截断**（没有「展开全部」按钮）；
+ *   · 展开后的正文是**无标题小卡片 + 纵向 `Descriptions`**（一格一个字段），参数与结果**整段展开**：
+ *     不套限高、不显示字节数、工具名也不包 `code`；「没采到截断标记」那半句不画（真被截过才提示）。
  */
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,7 +59,7 @@ function orphanResult(overrides: Partial<OrphanToolResult> = {}): OrphanToolResu
 describe('ToolItemDetail', () => {
   /**
    * 行首那一块牌子的口径：`Bash` 与「跑命令」是同一件事的两种说法，
-   * **二选一、族名优先，且都在行首**——「工具名在行首、族 Tag 在行尾」是一行里说两遍。
+   * **二选一、族名优先，且都在行首**——「工具名在行首、族 Tag 在行尾」是一个候选里说两遍。
    * 这条闸同时钉住「工具名没有被丢掉」：它原样落到展开后的正文。
    */
   it('行首是族名（人话）、工具名落到展开后的正文，参数摘要照旧', () => {
@@ -65,17 +67,46 @@ describe('ToolItemDetail', () => {
 
     const header = container.querySelector('.ant-collapse-header')?.textContent ?? '';
     const body = container.querySelector('.ant-collapse-body')?.textContent ?? '';
-    // 二选一：行首只有「跑命令」，`Bash` 一个字母都不在收起态那一行里
+    // 二选一：行首只有「跑命令」，`Bash` 一个字母都不在收起态那一个候选里
     expect(header).toContain('跑命令');
     expect(header).not.toContain('Bash');
     expect(header).toContain('{"command":"npm test"}');
-    // 工具名没丢：展开后的正文里原样给出（排障要与厂商日志对号）
-    expect(body).toContain('工具原名');
+    // 工具名没丢：展开后的正文里原样给出（排障要与厂商日志对号），标签是「工具」
+    expect(container.querySelector('.ant-collapse-body th')?.textContent).toBe('工具');
     expect(body).toContain('Bash');
+    // 但不再包一层 `code`：这一格是字段值，不是候选内代码
+    expect(container.querySelector('.ant-collapse-body code')).toBeNull();
   });
 
   /**
-   * 折叠标题那一格**必须可收缩**：摘要行是 `nowrap` 的长命令，而 antd 的 `.ant-collapse-title`
+   * 展开后的正文形态：**一张没有标题的小卡片，里面是纵向 `Descriptions`**。
+   *
+   * 为什么钉：改回一串手摆的 `Flex` 行时页面照样能读，所有文本断言也都绿（字一个不少），
+   * 只有「字段表」这件事没了。三条判据各管一半——
+   * 卡片无标题（`.ant-card-head` 一个都不画）、两张卡都取 `small`、字段纵向排（`layout="vertical"`
+   * 把标签放进独立的 `<th>` 行；非边框的横向布局只有 `<td>`）。
+   */
+  it('展开后的正文是「无标题小卡片 + 纵向 Descriptions」：一格一个字段', () => {
+    const { container } = render(<ToolItemDetail entry={callItem()} open onOpenChange={vi.fn()} missingReason={null} />);
+
+    const card = container.querySelector<HTMLElement>('.ant-collapse-body .ant-card');
+    expect(card).not.toBeNull();
+    expect(card?.classList.contains('ant-card-small')).toBe(true);
+    // 无标题：卡片头（title / extra 那一条）不渲染
+    expect(card?.querySelector('.ant-card-head')).toBeNull();
+
+    const descriptions = card?.querySelector<HTMLElement>('.ant-descriptions');
+    expect(descriptions?.classList.contains('ant-descriptions-small')).toBe(true);
+    // 纵向布局的判据：每个字段各占一行标签（`<th>`），横向非边框布局里一个都没有
+    expect([...(descriptions?.querySelectorAll('th') ?? [])].map((cell) => cell.textContent)).toEqual([
+      '工具',
+      '参数',
+      '结果',
+    ]);
+  });
+
+  /**
+   * 折叠标题那一格**必须可收缩**：摘要候选是 `nowrap` 的长命令，而 antd 的 `.ant-collapse-title`
    * 默认 `min-width: auto` ⇒ 最小宽度按内容算，标题把整行顶宽、外层时间轴冒出横向滚动条，
    * 而省略号永远轮不到（`EllipsisText` 的 `max-width: 100%` 分母就是那个被顶宽的容器）。
    *
@@ -141,8 +172,14 @@ describe('ToolItemDetail', () => {
     expect(container.querySelector('.ant-collapse-body')).toHaveTextContent('结果未采集 · 这家结构上不支持');
   });
 
-  it('展开后给出完整参数（含字节数）与结果原文，以及截断提示', () => {
-    render(
+  /**
+   * 参数与结果**整段展开**：不套限高（`maxHeight`）、不显示字节数。
+   *
+   * 为什么钉：这两格是排障时要逐字读的原文，限高的小框要先滚才能看全，还容易被读成
+   * 「内容就这么多」；字节数是给机器看的口径，占一行只会把真正的内容往下挤。
+   */
+  it('展开后给出完整参数与结果原文（无限高、无字节数），确认被截断时给出提示', () => {
+    const { container } = render(
       <ToolItemDetail
         entry={callItem({
           input: { value: '{"command":"ls"}', text: '{\n  "command": "ls"\n}', bytes: 24, description: null },
@@ -154,11 +191,33 @@ describe('ToolItemDetail', () => {
       />,
     );
 
-    // 正文用 `text`（逐字原文）优先，摘要行才用 `value`；默认 matcher 会把缩进折成一个空格
-    expect(screen.getByText('{ "command": "ls" }')).toBeInTheDocument();
-    expect(screen.getByText('参数原文 24 字节')).toBeInTheDocument();
+    // 参数是 JSON ⇒ 压成一条 + 高亮（缩进被压掉，键与值之间不留空格）
+    expect(screen.getByText('{"command":"ls"}')).toBeInTheDocument();
+    expect(container.querySelector('.ant-collapse-body [data-json-token="key"]')).not.toBeNull();
     expect(screen.getByText(/a\.txt/)).toBeInTheDocument();
+    // 字节数不再显示；两段原文都不带限高（`MonoText` 只有在传了 `maxHeight` 时才写这一格）
+    expect(container.textContent).not.toContain('字节');
+    expect([...container.querySelectorAll<HTMLElement>('[style]')].every((el) => el.style.maxHeight === '')).toBe(true);
+    // 真被截过仍然要说——那是事实，不是噪声
     expect(screen.getByText('输出已被截断（只留前 100KB）')).toBeInTheDocument();
+  });
+
+  /**
+   * 「没采到截断标记」（`unknown`）**不画提示**：三家多半不报这一格，那半句几乎每条结果都挂一次；
+   * 正文已经整段展开，它只会让人以为内容缺了。原始输出面板那条路径不受影响（它另有自己的用例）。
+   */
+  it('截断标记没采到（`unknown`）时不画「输出可能不完整」', () => {
+    const { container } = render(
+      <ToolItemDetail
+        entry={callItem({ output: { text: 'ok', structured: null, status: 'ok', bytes: 2, truncation: { kind: 'unknown' } } })}
+        open
+        onOpenChange={vi.fn()}
+        missingReason={null}
+      />,
+    );
+
+    expect(container.textContent).not.toContain('输出可能不完整');
+    expect(container.textContent).not.toContain('没采到截断标记');
   });
 
   /**
@@ -167,7 +226,7 @@ describe('ToolItemDetail', () => {
    * 为什么必须钉（真机）：dsh 的 `pwsh` 把 `{command, description}` 一起送来，
    * 照原文首行渲染就是 1495px 宽的一整串 JSON——而「这一步在干什么」只在 `description` 里。
    * 这条闸拦的是「又退回照原文首行渲染」：那是**看不出错**的回归（字都在，只是没法读），
-   * 所以两半都要断言——摘要行有人话，且**摘要行里没有那串 JSON**。
+   * 所以两半都要断言——摘要行有人话，且**摘要候选里没有那串 JSON**。
    */
   it('摘要行用入参里的 `description`（人话优先），原文仍留在展开后的正文里', () => {
     const raw = '{"command":"git --no-pager diff","description":"看生产改动与状态"}';
@@ -188,7 +247,7 @@ describe('ToolItemDetail', () => {
   });
 
   /**
-   * 摘要行的**第一档**是数据层算好的 `tool-call.summary`（口径：
+   * 摘要候选的**第一档**是数据层算好的 `tool-call.summary`（口径：
    * 词表真源收在 `@aieval/agents` 的 `activity.ts`，界面按分层表不许 import 它）。
    *
    * 为什么必须钉：这一档一旦失效，界面会**静默**退回自己抽 `description` 的老路——
@@ -253,7 +312,7 @@ describe('ToolItemDetail', () => {
   /**
    * 结构化结果（规范：**有 `meta` 就不要退回去解析文本**）。
    *
-   * 为什么必须钉：dsh 的 `read` / `write` / `edit` 把行数、改动对象这类**已解析过的事实**
+   * 为什么必须钉：dsh 的 `read` / `write` / `edit` 把候选数、改动对象这类**已解析过的事实**
    * 只放在 `tool-result.structured` 里，正文那一段只是给人看的摘要（`<path>…</path>` 那种）。
    * 丢掉这一格时**界面上没有任何异常**——只是那些事实永远看不见，故必须有守卫。
    */
@@ -277,6 +336,9 @@ describe('ToolItemDetail', () => {
 
     expect(screen.getByText('结构化结果')).toBeInTheDocument();
     expect(container.textContent).toContain('totalLines');
+    // 压缩档：一条逻辑行（`"totalLines":112` 没有缩进与冒号后的空格），不把格子撑成十几行
+    expect(container.textContent).toContain('"totalLines":112');
+    expect(container.textContent).not.toContain('"totalLines": 112');
     // 这一格与其它 JSON 原文同档（`JsonText`）——缩进 + 高亮都得真的落到节点上
     expect(container.querySelectorAll('[data-json-token]').length).toBeGreaterThan(0);
     unmount();

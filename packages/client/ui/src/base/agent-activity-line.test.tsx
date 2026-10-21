@@ -1,21 +1,21 @@
 /**
  * `AgentActivityLine`：候选卡片底部的「智能体活动行」。
  *
- * 这一行是**跑动期的动效 + 智能体最近一条输出**。四条口径必须有区分力：
+ * 这个候选是**跑动期的动效 + 智能体最近一条输出**。四条口径必须有区分力：
  *   ① 终态不渲染——它是「正在……中」的指示，跑完还挂着等于在骗人；
  *   ② 还没有输出时回落成状态文案——一行空白会被读成「界面坏了」；
- *   ③ 单行截断——一条工具块 JSON 有几百字符，换行会把卡片撑高、把按钮挤出视口；
+ *   ③ 单行截断——一条工具块 JSON 有几百字符，换候选会把卡片撑高、把按钮挤出视口；
  *   ④ 类名是真的带上了——高光扫过全挂在那个类上，类名丢了只是「文字静止」，
  *      浏览器不报错、这里不红的话就没人会发现（CSS 那一侧的守卫在 `apps/web-next`）。
  * 前三条与展示有关，第四条是**跨包字符串契约**的一半。
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { EvalRowStatus } from '@aieval/contracts';
+import type { EvalCandidateStatus } from '@aieval/contracts';
 import { ACTIVITY_SWEEP_CLASS, ACTIVITY_TYPING_CLASS, AgentActivityLine, activityText, lastSegmentOf, staticActivityText, typingOf, type AgentActivity } from './agent-activity-line';
 import { STREAM_CURSOR_CLASS } from './stream-cursor';
 
-describe('activityText（这一行显示什么）', () => {
+describe('activityText（这个候选显示什么）', () => {
   it('三个运行态各有回落文案（还没有输出时不显示空白）', () => {
     expect(activityText('preparing', null)).toBe('正在准备…');
     expect(activityText('running', null)).toBe('正在思考…');
@@ -32,7 +32,7 @@ describe('activityText（这一行显示什么）', () => {
   });
 
   it('非运行态一律返回 null——即使手里还攥着上一轮的残留文本', () => {
-    const notRunning: EvalRowStatus[] = [
+    const notRunning: EvalCandidateStatus[] = [
       'pending',
       'judged',
       'failed',
@@ -99,7 +99,7 @@ describe('lastSegmentOf（换行取最后一段）', () => {
     expect(lastSegmentOf('已经写完的一段\n')).toEqual({ segment: '已经写完的一段', segmentIndex: 0 });
   });
 
-  it('段内首尾空白被裁掉（缩进与空行不进这一行）', () => {
+  it('段内首尾空白被裁掉（缩进与空行不进这个候选）', () => {
     expect(lastSegmentOf('  带缩进的一段  ')).toEqual({ segment: '带缩进的一段', segmentIndex: 0 });
   });
 

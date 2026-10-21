@@ -28,7 +28,7 @@ import { readNotification, type AppServerNotificationPayload } from './protocol'
 const logger = createLogger('agents/codex/session');
 
 /**
- * 等注入的 MCP 落定的预算。**写成可变对象**（口径同仓库的 `TEXT_API_RETRY` / `ROW_RETRY`）：
+ * 等注入的 MCP 落定的预算。**写成可变对象**（口径同仓库的 `TEXT_API_RETRY` / `CANDIDATE_RETRY`）：
  * 用例要把它调小才跑得动，`beforeEach` 读产品默认值、`afterEach` 还原，默认值另有一条用例钉住。
  *
  *  - `fallbackSec`：条目**没申报** `startup_timeout_sec` 时的启动预算（秒）；
@@ -43,7 +43,7 @@ export const CODEX_MCP_STARTUP_WAIT = {
 export interface CodexSessionInput {
   /** codex 可执行文件（`binary.ts` 解析） */
   binary: string;
-  /** 子进程环境（含本行 `CODEX_HOME`） */
+  /** 子进程环境（含本次运行 `CODEX_HOME`） */
   env: AppServerEnv;
   cwd: string;
   model: string;
@@ -61,7 +61,7 @@ export interface CodexSessionInput {
    *
    * 两条硬口径：
    *   · **键只有 `threadId`**：`ThreadResumeParams.required = ['threadId']`，cwd 只是可选覆盖
-   *     （转录落在该行自己的 `$CODEX_HOME` 下，与 cwd 无关）⇒「换一个 cwd 就找不到会话」这件事
+   *     （转录落在本次运行自己的 `$CODEX_HOME` 下，与 cwd 无关）⇒「换一个 cwd 就找不到会话」这件事
    *     在 codex 上不成立，别为它写兜底；
    *   · **绝不回落 `thread/start`**：静默开新会话是最坏的一种——用户以为在追问、智能体其实什么都
    *     不记得，而界面上一切正常。续接失败就让这一轮失败，原因里点名 `thread/resume`。
@@ -261,7 +261,7 @@ async function settleMcpStartup(client: AppServerClient, config: Record<string, 
   if (pending.size > 0) {
     const unsubscribe = client.subscribe(consume);
     /**
-     * 进程死在启动窗口里也要**立刻放行**：否则这一行会白等到预算上限，而那几十秒里轮次根本没机会起
+     * 进程死在启动窗口里也要**立刻放行**：否则本次运行会白等到预算上限，而那几十秒里轮次根本没机会起
      * （`turn/start` 会照旧报进程已退出，回收走 `startCodexSession` 的 catch）。
      */
     const unsubscribeTerminal = client.onTerminal(settle);
@@ -272,11 +272,11 @@ async function settleMcpStartup(client: AppServerClient, config: Record<string, 
     unsubscribeTerminal();
   }
   if (failed.length > 0) {
-    // 不在这里抛：这一行的失败判据是事件流那一侧（`AGENT_MCP_UNAVAILABLE` 的文案要厂商原文）
+    // 不在这里抛：本次运行的失败判据是事件流那一侧（`AGENT_MCP_UNAVAILABLE` 的文案要厂商原文）
     logger.warn('注入的 MCP 启动失败：本轮工具表里不会有它', { failed });
   }
   if (pending.size > 0) {
-    logger.warn('MCP 启动未在预算内落定，先起轮次', { timedOut: [...pending], waitMs });
+    logger.warn('MCP 启动未在预算内落定，先起轮', { timedOut: [...pending], waitMs });
   }
 }
 
@@ -292,7 +292,7 @@ async function settleMcpStartup(client: AppServerClient, config: Record<string, 
  *      （`ready` 往往晚到一步，于是成功路径看起来一切正常）。
  *   2. **终结结算必须早于 `turn/start`**：`turn/completed` 可能在 `turn/start` 的响应回来之前就被投递
  *      （快速失败的一轮、以及夹具那种「提交即产通知」的形状都是这样）⇒ 结算器晚一步登记，
- *      `outcome` 就**永不落定**，这一行会一直挂着（40 s 级别的用例超时就是它的警报）。
+ *      `outcome` 就**永不落定**，本次运行会一直挂着（40 s 级别的用例超时就是它的警报）。
  *
  * 主线程 id 到手之前 `mainThreadId` 是 `null`：填之前不可能有 `turn/completed`（轮次还没起来），
  * 故那条判据在 `null` 期间恒不成立。
@@ -440,7 +440,7 @@ export async function startCodexSession(input: CodexSessionInput): Promise<Codex
    *
    * 为什么这条不能省：`runTurn` 拿到的 `TurnStart` 才是 `dispose` 的载体（A7：「守卫绑定被关闭的
    * 对象」），而这三步抛错时 `runTurn` 里 `started` 仍是 undefined ⇒ `dispose` 永远不会被调用，
-   * 进程就此常驻（实测：`thread/start` 超时 30s 后的 codex 进程会一直持着该行的 `$CODEX_HOME`，
+   * 进程就此常驻（实测：`thread/start` 超时 30s 后的 codex 进程会一直持着本次运行的 `$CODEX_HOME`，
    * 下一轮的行产物清理直接 `EPERM`）。收不掉也不改变失败结论：`close()` 自己吞掉回收异常。
    */
   try {
@@ -475,7 +475,7 @@ export async function startCodexSession(input: CodexSessionInput): Promise<Codex
 
 /**
  * 建线程或接线程：两条路只有方法名与「要不要带 `threadId`」不同，覆盖项逐字相同（模型 / cwd /
- * 权限档 / 线程级 config 都得再给一次——续接那一轮同样要按本行的路由与权限档跑）。
+ * 权限档 / 线程级 config 都得再给一次——续接那一轮同样要按本次运行的路由与权限档跑）。
  *
  * 续接失败**原样上抛并点名 `thread/resume`**：绝不回落 `thread/start`（见 `resumeThreadId` 的说明）。
  */

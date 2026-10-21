@@ -144,7 +144,7 @@ describe('夹具：不认识的载荷与认识的附件是两条路', () => {
 });
 
 describe('夹具自身的三条口径', () => {
-  it('三家的模型都非空，且 `empty` 为假（夹具是「跑过的行」）', () => {
+  it('三家的模型都非空，且 `empty` 为假（夹具是「跑过的候选」）', () => {
     for (const fixture of allFixtures()) {
       expect(fixture.model.empty, `${fixture.name} 的夹具被判成空`).toBe(false);
       expect(fixture.model.nodes.length, `${fixture.name} 没有会话节点`).toBeGreaterThan(0);
@@ -288,7 +288,7 @@ describe('夹具：流式正文块的半截围栏', () => {
     // 围栏标记（```）是 markdown 语法，不该出现在正文里；它与正文一起被吞掉就是「内容没了」的形态
     const codeText = code?.textContent ?? '';
     expect(codeText, '围栏里的内容被吞了').toContain('POST /api/open/query-file-change-log');
-    expect(codeText, '缩进围栏的代码行没保住（对齐骨架散了）').toContain('queryFileChangeLogs   (lc-web:45)');
+    expect(codeText, '缩进围栏的代码候选没保住（对齐骨架散了）').toContain('queryFileChangeLogs   (lc-web:45)');
     expect(codeText, '围栏标记漏进了正文').not.toContain('```');
     view.unmount();
   });

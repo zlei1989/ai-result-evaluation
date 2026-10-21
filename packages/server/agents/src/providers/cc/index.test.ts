@@ -35,7 +35,7 @@ import { CLAUDE_PACKAGE_NAME } from './sdk';
 import { removeTreeWithRetry } from '../../testing/cleanup';
 
 /**
- * 假的宿主家目录（`homedir()` 的替身）：行内 `.npmrc` 的**来源**是宿主那一份 `.npmrc`，
+ * 假的宿主家目录（`homedir()` 的替身）：候选内 `.npmrc` 的**来源**是宿主那一份 `.npmrc`，
  * 而真实家目录在测试里既不该读也不该写（读到开发机上的真实配置会造出一类最难查的假绿）。
  *
  * 为什么用环境变量传参而不是在工厂里直接造目录：`vi.mock` 的工厂是**提升**的，
@@ -140,7 +140,7 @@ describe('claudeCodeProvider', () => {
     //   · 判据写成 `modelId === 'claude'` / 只匹配小写前缀 ⇒ 网关侧的 `anthropic/claude-sonnet-4-6`
     //     被当成「非 Claude 模型」，WebSearch 白禁；
     //   · 判据反过来（`!includes`）⇒ 第三方模型拿到网关不实现的工具（网关对这类命名空间
-    //     工具回 400），行会以工具报错收场，而界面上只看到「模型报错」。
+    //     工具回 400），候选会以工具报错收场，而界面上只看到「模型报错」。
     const cases: Array<{ modelId: string; webSearchBanned: boolean }> = [
       { modelId: 'claude-sonnet-4-6', webSearchBanned: false },
       { modelId: 'anthropic/Claude-4.5', webSearchBanned: false }, // 大小写 + 网关前缀两种写法
@@ -163,7 +163,7 @@ describe('claudeCodeProvider', () => {
   });
 
   /**
-   * MCP 注入：本行的条目经 `AgentRunInput.mcpServers` 进来，
+   * MCP 注入：候选的条目经 `AgentRunInput.mcpServers` 进来，
    * 翻译成 SDK 的 `Options.mcpServers`。
    *
    * 三条各自都是**静默**的坏法，故各有一条守卫：
@@ -221,7 +221,7 @@ describe('claudeCodeProvider', () => {
     expect('mcpServers' in (recorder2.options ?? {})).toBe(false);
   });
 
-  it('行内 .npmrc：宿主有 registry 时只把那一行写进 configHome（宿主那份一个字都不动）', async () => {
+  it('候选内 .npmrc：宿主有 registry 时只把那一行写进 configHome（宿主那份一个字都不动）', async () => {
     // 为什么这条必须在**适配器**这一层钉：写盘的时机与位置就是注入落点本身——
     // 写在 `sdk.query()` 之前、写在行私有的 `configHome` 下，两者都对才有效（早一步没有目录、
     // 晚一步 MCP 子进程已经带着公网 registry 起来了）。
@@ -264,7 +264,7 @@ describe('claudeCodeProvider', () => {
     // 为什么不是 `plan`：`plan` 的语义是「不执行任何工具」，评审者连 `git diff` 都跑不了——
     // 而它的工作正是**自己去看改动**（这正是不走文本通路的理由，见 judge-agent.ts 头注）。
     // 为什么必须带 `permissionPrompts: 'none'`：评测没有任何批准面，越界操作要**当场被拒**
-    // 并把原因回给模型；少了它，一次越界会挂在一个永远没人应答的批准上，把该行无限拖住
+    // 并把原因回给模型；少了它，一次越界会挂在一个永远没人应答的批准上，把该候选无限拖住
     // ——那时界面上看到的是「一直没结束」，而真实原因是「它想写文件」。
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
@@ -529,7 +529,7 @@ describe('claudeCodeProvider', () => {
 
   it('第二段兜底的 emit 出口抛错：不外抛、仍判 canceled、dispose 恰好一次、失败落 logger.error', async () => {
     // 控制方追加的回归钉：6 个发射口里 onGraceExceeded 这一处没有单出口用例。
-    // 消费方抛错是真实形状：编排层的 publishRowEvent → appendEvent 在写侧 schema 不过时抛。
+    // 消费方抛错是真实形状：编排层的 publishCandidateEvent → appendEvent 在写侧 schema 不过时抛。
     const loggerErrors = captureLoggerErrors();
     vi.useFakeTimers();
     const recorder = createRecorder();
@@ -561,7 +561,7 @@ describe('claudeCodeProvider', () => {
   it('第二段兜底的回调自身抛错（logger 路径）：释放仍走完 dispose，结论照常给出，run 不抛', async () => {
     // 这条钉的是 release.ts ↔ turn.ts 的接缝：onGraceExceeded 不是「只是打个日志」，
     // 它一旦抛出去而 release 侧没有 try/catch，`dispose()` 永不执行（子进程/临时目录没人回收），
-    // 且异常会从 runTurn 的 finally 冒出 ⇒ run() 抛、该行永远停在 running。
+    // 且异常会从 runTurn 的 finally 冒出 ⇒ run() 抛、该候选永远停在 running。
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {
       throw new Error('服务日志写入失败（兜底 WARN）');
@@ -820,7 +820,7 @@ describe('cc 的思考强度', () => {
    */
   beforeEach(() => {
     vi.stubEnv(CLAUDE_CODE_EXTRA_BODY, undefined);
-    // 同一个钩子里补这一行（`HOST_DISABLE_BETAS_ENV`）：上面那段理由对它**逐字成立**
+    // 同一个钩子里补这个候选（`HOST_DISABLE_BETAS_ENV`）：上面那段理由对它**逐字成立**
     // ——本组新加的「宿主没设 ⇒ `off` 档不出现 WARN」读的也是合并后的 `recorder.env`，
     // 宿主设过就假红。**并进同一个钩子**而不是另起一个 describe：两者都是「本组用例的宿主环境基线」，
     // 分成两处写必然漂移（一处补了新变量、另一处没有）。
@@ -1069,9 +1069,9 @@ describe('cc 的思考强度', () => {
 
   /**
    * **守卫 9b 的第三半**（「它是观测，不是拦截」）：
-   * WARN 出现时 `CLAUDE_CODE_EXTRA_BODY` **照旧逐字注入**，本行也**照常跑完**（不抛、不跳过）。
+   * WARN 出现时 `CLAUDE_CODE_EXTRA_BODY` **照旧逐字注入**，候选也**照常跑完**（不抛、不跳过）。
    */
-  it('观测不拦截：WARN 出现时覆盖层仍逐字注入，本行照常跑完', async () => {
+  it('观测不拦截：WARN 出现时覆盖层仍逐字注入，候选照常跑完', async () => {
     vi.stubEnv(HOST_DISABLE_BETAS_ENV, 'true');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const recorder = createRecorder();
@@ -1186,7 +1186,7 @@ function dispatchStarted(taskId: string, extra: Record<string, unknown> = {}): R
  * `<CLAUDE_CONFIG_DIR>/projects/<项目>/<sessionId>/subagents/agent-<agentId>.jsonl`，
  * 由收尾（`finalize`）读出来并折进结果。
  *
- * 为什么这两条用例必须存在：`subagentTokens` 走的是「结果 → 行快照」这一条链路，
+ * 为什么这两条用例必须存在：`subagentTokens` 走的是「结果 → 候选快照」这一条链路，
  * 而它只在**收尾**才产生 ⇒ 少接一根线（没记 `task_id`、没记 `session_id`、没交回结果）
  * 的表现都是「界面上的 tok 只有主会话」——与今天的行为**一模一样**，静默且看不出缺。
  */
@@ -1230,7 +1230,7 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
    * 一次派发都没有，`subagentTokens` 仍是上一段那一份、`subagentTurns` 仍是 1）。
    *
    * 机制：转录目录按 `configHome` + `sessionId` 定位，续接用同一个会话、同一个目录，CLI 只往原文件
-   * 追加 ⇒ 「枚举目录」那条路会把上一段的转录读进来；而行级计量是**累加**的，追问一次就算两遍。
+   * 追加 ⇒ 「枚举目录」那条路会把上一段的转录读进来；而候选级计量是**累加**的，追问一次就算两遍。
    * 判据：第二段的 `subagentTokens` 是 `{0,0,0}`（「这一段确实没有子智能体」），`turns` 只算主会话。
    */
   it('续接段排除上一段留下的子智能体转录（不然追问一次就把那份用量算两遍）', async () => {
@@ -1435,7 +1435,7 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
    *   · **面板照产一行**：「**丢一个真派发比多一条幽灵行更坏**」（用户裁定）；
    *   · **不要求它有转录、也不改两格**：说它是子智能体（`null` + 「读不到」）会把一条幻影的代价转嫁给
    *     真子智能体——正是用户报的症状；所以两格照算（这一档里没有转录 ⇒ 仍是 `{0,0,0}` 与 0 轮）；
-   *   · **但必须点一句名**：`[WARN] 只见到收场帧的 task 条目 X 没有转录：这一行的 tok / 缓存命中 /
+   *   · **但必须点一句名**：`[WARN] 只见到收场帧的 task 条目 X 没有转录：这个候选的 tok / 缓存命中 /
    *     轮次可能少算它（无法判定它是不是子智能体）`——既不静默少算，也**不叫它子智能体**（那条教训）。
    */
   it('只见到收场帧 ⇒ 面板照产一行、两格仍是 {0,0,0}，且落一条**不叫它子智能体**的「可能少算」WARN', async () => {
@@ -1549,7 +1549,7 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
    * 为什么单开一条：收尾那条路**声称**覆盖「被中断 / 失败」的运行（见 `finalize` 的 JSDoc），
    * 而那种运行最常见的形状就是**一条 `result` 消息都没有**——`result` 是 CLI 自己的收尾消息，
    * 崩掉 / 被终止时它根本不会到。此时 `mainTokens` 是 `null` ⇒ 合计拿不出来；若分量照旧交出去，
-   * 这一行就落成「`tokens: null` + 一个真实的 `subagentTokens`」，而消费方按「主会话 = 合计 − 分量」
+   * 这个候选就落成「`tokens: null` + 一个真实的 `subagentTokens`」，而消费方按「主会话 = 合计 − 分量」
    * 推导，那个减法在这里**没有被减数**（两格各自看起来都正常）。
    * codex 早就为同一形状做了同一个选择（`providers/codex/index.ts` 的 `finalize`：
    * `subagentTokens: combined === null ? null : projected.subagentUsage`）。
@@ -1585,8 +1585,8 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
    * **子智能体自己的那一格用量**（用户报的缺陷：抽屉里「Agent」工具下的子任务条永远
    * 显示「用量未采集」，而 dsh / codex 两家都有数）。
    *
-   * 为什么这条与上面三条不是同一件事：那三条钉的是**行快照**（`result.subagentTokens`，走
-   * 「结果 → 行快照」），本条钉的是**内容流**（`SubagentRecord.usage`，走 `messages.jsonl` →
+   * 为什么这条与上面三条不是同一件事：那三条钉的是**候选快照**（`result.subagentTokens`，走
+   * 「结果 → 候选快照」），本条钉的是**内容流**（`SubagentRecord.usage`，走 `messages.jsonl` →
    * 抽屉里的子任务条）。两格各有自己的接线，少接一根的症状**完全不同**：
    *   · 少 `subagentTokens` ⇒ 列表上的 tok 只有主会话；
    *   · 少 `usage` ⇒ 抽屉里那一格写「用量未采集」（而它是采到了的——CLI 盘上那份文件里就有）。
@@ -1664,7 +1664,7 @@ describe('cc 的子智能体用量（收尾读 CLI 落盘的会话文件）', ()
  * （`turns` 的口径一个字节都没改，它本来就是全树合计）。
  *
  * 为什么这四条必须存在：这一格只决定界面画不画「轮次」那一格的拆分行，而它**缺席**与
- * 「这一行没有子智能体」在界面上长得一模一样（都只有合计那一行）——少接一根线是**静默**的，
+ * 「这个候选没有子智能体」在界面上长得一模一样（都只有合计那一行）——少接一根线是**静默**的，
  * 与 `subagentTokens` 当初同一条理由。四条各钉一条口径：
  *   ① 成对交回结果（含「侧链记录不重复计数」——那正是「主 + 子」这个加法成立的前提）；
  *   ② 有任何一个子智能体读不到 ⇒ **两格一起** `null` + 点名那条 WARN（绝不拿部分和冒充）；
@@ -1900,7 +1900,7 @@ describe('cc 的子智能体轮次（轮次那一格的 claude 段）', () => {
  * claude 因此与 codex 同形：主会话走事件流，**每个子智能体自己的最终用量**走
  * `SubagentRecord.usage`（抽屉里子任务条那一格，收尾重交——见 `subagent-usage-cache.test.ts`）。
  *
- * ⚠️ **删掉的只是事件，行级三格一个字节都没动**（这正是本组 ② 要钉的东西）：`subagentTokens` 仍是
+ * ⚠️ **删掉的只是事件，候选级三格一个字节都没动**（这正是本组 ② 要钉的东西）：`subagentTokens` 仍是
  * 「各转录按 `message.id` 去重后求和」、`subagentTurns` 仍是它们的往返数之和、`tokens` / `turns`
  * 仍是「主 + 子」。
  */
@@ -1908,8 +1908,8 @@ describe('cc 收尾只交最终用量（不含子会话逐轮读数）', () => {
   /**
    * **两个**子会话、各两轮（task-1 的 `task-1-m-1` 出现两次、后到覆盖 ⇒ 仍是两轮）。
    *
-   * ⚠️ 为什么必须是两个：只有一个子会话时「它末轮的累计」与「行级分量」数值恰好相同，
-   * 「把会话自己的数写进行级分量」这类缺陷在这份夹具上**分辨不出来**。
+   * ⚠️ 为什么必须是两个：只有一个子会话时「它末轮的累计」与「候选级分量」数值恰好相同，
+   * 「把会话自己的数写进行的级分量」这类缺陷在这份夹具上**分辨不出来**。
    */
   function writeTwoSubagents(configHome: string, sessionId: string): void {
     writeAgentFile(configHome, sessionId, 'task-1', [

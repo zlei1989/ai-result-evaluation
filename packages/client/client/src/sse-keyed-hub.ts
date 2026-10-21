@@ -28,7 +28,7 @@
 export interface SseSink<TFrame> {
   /** 一帧到手（已解析成 `TFrame`，且属于这个键） */
   onFrame(frame: TFrame): void;
-  /** 连接建立：徽标转「实时连接中」，并把上一次的故障原因清掉 */
+  /** 连接建立：连接状态点转「实时连接中」，并把上一次的故障原因清掉 */
   onOpen?(): void;
   /** 连接故障（浏览器会自己重连）：参数是各条流自己那句中文 */
   onError?(message: string): void;

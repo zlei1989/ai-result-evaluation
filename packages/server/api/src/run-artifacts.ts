@@ -2,7 +2,7 @@
  * 评测产物的按需读取：代码改动（现场算）与执行日志（读 events.jsonl）。
  * 两条口径：
  *   1. **不预先落库**：一轮评测的 diff 正文可达数 MB，只在有人打开抽屉时才算；
- *      `EvalRow.diff` 只存计数摘要；
+ *      `EvalCandidate.diff` 只存计数摘要；
  *   2. 一切都以**该轮自己的 `workspaceBase`** 为根：用户改过工作区根目录之后，
  *      历史评测的产物仍留在旧根目录下——按当前设置去找会「产物明明在、抽屉却是空的」。
  *
@@ -16,11 +16,11 @@ import {
   ServiceError,
   type AgentEvent,
   type AgentMessage,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
-  type RowArtifactFile,
-  type RowDiffFile,
-  type RowDiffIndex,
+  type CandidateArtifactFile,
+  type CandidateDiffFile,
+  type CandidateDiffIndex,
   type RunArtifactIndex,
   type SubagentRecord,
 } from '@aieval/contracts';
@@ -33,39 +33,41 @@ import {
   maxEventSeq,
   readEvents,
   readEventsAfter,
-  readRowRecords,
+  readCandidateRecords,
   readWorkspaceArtifact,
-  rowEventsFile,
-  rowJudgeEventsFile,
-  rowJudgeMessagesFile,
-  rowMessagesFile,
+  readWorkspaceImage,
+  candidateEventsFile,
+  candidateJudgeEventsFile,
+  candidateJudgeMessagesFile,
+  candidateMessagesFile,
   scanWorkspaceArtifacts,
   truncateDiff,
+  type WorkspaceImageFile,
 } from '@aieval/core';
 import { getRunView } from './runs';
 import { getSettings } from './settings';
 
 const log = createLogger('runs');
 
-/** 在快照里找一行；找不到抛 NOT_FOUND（轮 id 与行 id 都可能来自脏 URL） */
-function findRow(run: EvalRun, rowId: string): EvalRow {
-  const row = run.rows.find((item) => item.id === rowId);
-  if (row === undefined) {
-    throw new ServiceError('NOT_FOUND', `该评测里没有这一行（${rowId}）`);
+/** 在快照里找一行；找不到抛 NOT_FOUND（轮 id 与候选 id 都可能来自脏 URL） */
+function findCandidate(run: EvalRun, candidateId: string): EvalCandidate {
+  const candidate = run.candidates.find((item) => item.id === candidateId);
+  if (candidate === undefined) {
+    throw new ServiceError('NOT_FOUND', `该评测里没有这个候选（${candidateId}）`);
   }
-  return row;
+  return candidate;
 }
 
 /** 索引每页默认条数（首帧只渲染一页，其余按滚动追加、已加载的页不回收） */
 const DIFF_PAGE_DEFAULT = 30;
 /** 索引每页上限：手改 URL 也不能把全量拉回来 */
 const DIFF_PAGE_MAX = 200;
-/** 缓存存活时间。语义是「打开抽屉这半分钟内的快照」，与 useRowDiffIndex 的 revalidateOnFocus:false 同口径 */
+/** 缓存存活时间。语义是「打开抽屉这半分钟内的快照」，与 useCandidateDiffIndex 的 revalidateOnFocus:false 同口径 */
 const DIFF_CACHE_TTL_MS = 30_000;
 /**
  * 缓存**条数**上限。每条的 `collected.text` 可达数 MB（预算上限 256 KB，但那是**裁剪后**的，
- * 缓存里存的是裁剪**前**的原文），若不封顶，一台长期运行的机器上「看过的行」会一直堆在内存里。
- * 超限时按时间戳淘汰最旧的若干条（见 `evictRowDiffCache`）。
+ * 缓存里存的是裁剪**前**的原文），若不封顶，一台长期运行的机器上「看过的候选」会一直堆在内存里。
+ * 超限时按时间戳淘汰最旧的若干条（见 `evictCandidateDiffCache`）。
  */
 const DIFF_CACHE_MAX_ENTRIES = 32;
 
@@ -85,7 +87,7 @@ interface CacheEntry {
 }
 
 /**
- * 进程内 diff 缓存，键 = `${runId}/${rowId}`。
+ * 进程内 diff 缓存，键 = `${runId}/${candidateId}`。
  *
  * 为什么必须有：单文件正文接口是**按文件**拉的，几十个文件进视口就是几十次请求，
  * 每次都现场跑一遍 `collectDiff`（一次多次 git 进程，本仓实测进程创建 ≈ 0.5s/次）会慢到不可用。
@@ -96,7 +98,7 @@ interface CacheEntry {
 const diffCache = new Map<string, CacheEntry>();
 
 /** 测试专用：清空缓存，避免用例之间串台 */
-export function resetRowDiffCache(): void {
+export function resetCandidateDiffCache(): void {
   diffCache.clear();
 }
 
@@ -104,7 +106,7 @@ export function resetRowDiffCache(): void {
  * 超限时淘汰最旧的条目。为什么按时间戳而不是 LRU：这里没有「命中计数」的语义需求，
  * 「最旧」的近似就是「最不可能再被看的那一行」，而实现只有一行排序。
  */
-function evictRowDiffCache(): void {
+function evictCandidateDiffCache(): void {
   if (diffCache.size <= DIFF_CACHE_MAX_ENTRIES) return;
   const oldestFirst = [...diffCache.entries()].sort((a, b) => a[1].at - b[1].at);
   for (const [key] of oldestFirst.slice(0, diffCache.size - DIFF_CACHE_MAX_ENTRIES)) {
@@ -115,15 +117,15 @@ function evictRowDiffCache(): void {
 /**
  * 现场算 diff（带 30 秒缓存）。工作区不存在时抛 CONFLICT，且**不写缓存**。
  *
- * 工作区还不存在（该行没开始跑、或准备阶段就失败了）时抛 CONFLICT，而不是让 git 抛英文原文——
+ * 工作区还不存在（该候选没开始跑、或准备阶段就失败了）时抛 CONFLICT，而不是让 git 抛英文原文——
  * 「还没有产出」与「算 diff 出错」是两回事，文案必须能区分。
  *
- * 为什么用 `row.workspacePath` 而不是现算：它是创建这一轮时按**那一轮的根**算出来并落进快照的
- * （`createRun` 与编排层的 `prepareRowWorkspace` 用的是同一个 `core.rowWorkspaceDir`），
+ * 为什么用 `candidate.workspacePath` 而不是现算：它是创建这一轮时按**那一轮的根**算出来并落进快照的
+ * （`createRun` 与编排层的 `prepareCandidateWorkspace` 用的是同一个 `core.candidateWorkspaceDir`），
  * 拿它定位等于「读快照」，不受「后来改了设置里的 workspaceRoot」影响。
  */
-function collectRowDiff(runId: string, rowId: string): CacheEntry {
-  const key = `${runId}/${rowId}`;
+function collectCandidateDiff(runId: string, candidateId: string): CacheEntry {
+  const key = `${runId}/${candidateId}`;
   const hit = diffCache.get(key);
   if (hit !== undefined && Date.now() - hit.at < DIFF_CACHE_TTL_MS) {
     // 命中要**续期**：否则一次超过 30 秒的抽屉会话会在中途重新跑一遍 collectDiff
@@ -134,20 +136,20 @@ function collectRowDiff(runId: string, rowId: string): CacheEntry {
   }
 
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
+  const candidate = findCandidate(run, candidateId);
 
-  if (!existsSync(row.workspacePath)) {
-    throw new ServiceError('CONFLICT', `这一行还没有工作区（${row.workspacePath}），没有可看的代码改动`);
+  if (!existsSync(candidate.workspacePath)) {
+    throw new ServiceError('CONFLICT', `这个候选还没有工作区（${candidate.workspacePath}），没有可看的代码改动`);
   }
 
   let collected: CollectedDiff;
   try {
-    collected = collectDiff(row.workspacePath, row.baselineCommit);
+    collected = collectDiff(candidate.workspacePath, candidate.baselineCommit);
   } catch (error) {
     // 折成含路径的中文原因：git 的英文 stderr 直接透给使用者，无法定位是哪一行出的问题
     throw new ServiceError(
       'INTERNAL',
-      `读取代码改动失败（${row.workspacePath}）：${error instanceof Error ? error.message : String(error)}`,
+      `读取代码改动失败（${candidate.workspacePath}）：${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
@@ -155,10 +157,10 @@ function collectRowDiff(runId: string, rowId: string): CacheEntry {
   const clipped = truncateDiff(collected.text, getSettings().diffBudgetBytes);
   const entry: CacheEntry = { collected, clipped, at: Date.now() };
   diffCache.set(key, entry);
-  evictRowDiffCache();
+  evictCandidateDiffCache();
   log.info('按需计算代码改动', {
     runId,
-    rowId,
+    candidateId,
     filesChanged: collected.filesChanged,
     truncated: clipped.truncated,
   });
@@ -188,8 +190,8 @@ function untrackedPaths(clippedText: string): Set<string> {
  * `insertions` / `deletions` 取**全局**合计：头部的「共 N 个文件 · +X −Y」要的是全局值，
  * 按页累加会让数字在翻页时跳动。
  */
-export function getRowDiffIndex(runId: string, rowId: string, offset = 0, limit = DIFF_PAGE_DEFAULT): RowDiffIndex {
-  const { collected, clipped } = collectRowDiff(runId, rowId);
+export function getCandidateDiffIndex(runId: string, candidateId: string, offset = 0, limit = DIFF_PAGE_DEFAULT): CandidateDiffIndex {
+  const { collected, clipped } = collectCandidateDiff(runId, candidateId);
 
   // 非法入参按默认值处理而不是 400：这是只读的展示接口，宽容降级比报错有用
   const safeOffset = Number.isInteger(offset) && offset > 0 ? offset : 0;
@@ -222,8 +224,8 @@ export function getRowDiffIndex(runId: string, rowId: string, offset = 0, limit 
  * 两条错误必须分开：「这个文件不在本次改动里」与
  * 「它在，但正文被预算丢了」在排障时是两回事——合成一条 NOT_FOUND 会让人以为文件没改过。
  */
-export function getRowDiffFile(runId: string, rowId: string, path: string): RowDiffFile {
-  const { collected, clipped } = collectRowDiff(runId, rowId);
+export function getCandidateDiffFile(runId: string, candidateId: string, path: string): CandidateDiffFile {
+  const { collected, clipped } = collectCandidateDiff(runId, candidateId);
 
   const meta = collected.files.find((file) => file.path === path);
   if (meta === undefined) {
@@ -256,73 +258,93 @@ export function getRowDiffFile(runId: string, rowId: string, path: string): RowD
  * 「产物总览」的索引：这一轮**每个候选**在它自己的工作区根下写下的 `RESULT.*`。
  *
  * 三条口径：
- *   1. **每个候选一行，没有产物的行照样进来**（`files: []`）：「这一行没有产出」是要显示出来的事实，
- *      而不是「这一行不存在」。工作区还没建的行同样如此（没跑过 ≠ 读不出来）；
- *   2. **逐行降级**：某一行扫不动（权限、坏目录）只把那一行的 `files` 记成空 + 一条 WARN，
+ *   1. **每个候选一行，没有产物的候选照样进来**（`files: []`）：「这个候选没有产出」是要显示出来的事实，
+ *      而不是「这个候选不存在」。工作区还没建的候选同样如此（没跑过 ≠ 读不出来）；
+ *   2. **逐行降级**：某一行扫不动（权限、坏目录）只把那一候选的 `files` 记成空 + 一条 WARN，
  *      不把整张总览打挂——但降级要留痕，不许静默；
- *   3. **服务端不排名**：行的顺序就是快照顺序，名次在界面那一侧由 `rankOf` 算（名次只有一个判据）。
+ *   3. **服务端不排名**：候选的顺序就是快照顺序，名次在界面那一侧由 `rankOf` 算（名次只有一个判据）。
  *
- * 没有缓存：一次扫描 = 每行一次 `readdir` + 每份一次 `stat`，比现场算 diff 便宜几个数量级，
+ * 没有缓存：一次扫描 = 每个候选一次 `readdir` + 每份一次 `stat`，比现场算 diff 便宜几个数量级，
  * 而缓存会让「候选刚写完的那一份」在抽屉里迟到半分钟才出现。
  */
 export function getRunArtifactIndex(runId: string): RunArtifactIndex {
   const run = getRunView(runId);
-  const rows = run.rows.map((row) => {
+  const candidates = run.candidates.map((candidate) => {
     try {
       return {
-        rowId: row.id,
-        files: row.workspacePath === '' ? [] : scanWorkspaceArtifacts(row.workspacePath),
+        candidateId: candidate.id,
+        files: candidate.workspacePath === '' ? [] : scanWorkspaceArtifacts(candidate.workspacePath),
       };
     } catch (error) {
-      log.warn('扫描候选产物失败（该行按没有产物处理）', {
+      log.warn('扫描候选产物失败（该候选按没有产物处理）', {
         runId,
-        rowId: row.id,
-        workspacePath: row.workspacePath,
+        candidateId: candidate.id,
+        workspacePath: candidate.workspacePath,
         error,
       });
-      return { rowId: row.id, files: [] };
+      return { candidateId: candidate.id, files: [] };
     }
   });
 
-  return { rows, total: rows.reduce((sum, row) => sum + row.files.length, 0) };
+  return { candidates, total: candidates.reduce((sum, candidate) => sum + candidate.files.length, 0) };
 }
 
 /**
  * 读某个候选的某一份产物正文。
  *
- * 工作区还没建起来（这一行没开始跑、或准备阶段就失败了）⇒ `CONFLICT` + 中文原因，
- * 与 `getRowDiffIndex` 那条「还没有工作区」同一档同一语气：「还没有产出」与「读产物出错」是两回事。
+ * 工作区还没建起来（这个候选没开始跑、或准备阶段就失败了）⇒ `CONFLICT` + 中文原因，
+ * 与 `getCandidateDiffIndex` 那条「还没有工作区」同一档同一语气：「还没有产出」与「读产物出错」是两回事。
  * 名字、越界、体积、二进制这些拒绝由 core 的 `readWorkspaceArtifact` 给（各自的中文原因）。
  */
-export function getRowArtifactFile(runId: string, rowId: string, name: string): RowArtifactFile {
+export function getCandidateArtifactFile(runId: string, candidateId: string, name: string): CandidateArtifactFile {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
+  const candidate = findCandidate(run, candidateId);
 
-  if (row.workspacePath === '' || !existsSync(row.workspacePath)) {
-    throw new ServiceError('CONFLICT', `这一行还没有工作区（${row.workspacePath}），没有可看的产物`);
+  if (candidate.workspacePath === '' || !existsSync(candidate.workspacePath)) {
+    throw new ServiceError('CONFLICT', `这个候选还没有工作区（${candidate.workspacePath}），没有可看的产物`);
   }
-  return readWorkspaceArtifact(row.workspacePath, name);
+  return readWorkspaceArtifact(candidate.workspacePath, name);
 }
 
 /**
- * 该行的**消息与子任务行**（折叠后的最终视图）。
+ * 读某个候选工作区里的一张图片（`image-view` 块预览的唯一取数口）。
  *
- * 与 `getRowLog` 同一处置、**不排序**：`readRowRecords` 逐行读的是一个只追加的文件，
+ * `relativePath` 由**界面数据层**换算：块的 `path` 是厂商原文（codex 给绝对路径），
+ * 只有「在该候选工作区内」的那一段才进 URL——宿主绝对路径既没有额外信息，也让「读到哪儿了」不可复核。
+ *
+ * 工作区不在 ⇒ `NOT_FOUND`（与产物那条的 `CONFLICT` 不同）：单张图片在运行结束后被删掉是常见情形
+ * （运行期截图往往只是给模型看的临时文件），把它说成「这个候选还没有工作区」会把排障引向错的方向。
+ * 路径形状、后缀、越界、体积这些拒绝由 core 的 `readWorkspaceImage` 给。
+ */
+export function getCandidateWorkspaceImage(runId: string, candidateId: string, relativePath: string): WorkspaceImageFile {
+  const run = getRunView(runId);
+  const candidate = findCandidate(run, candidateId);
+
+  if (candidate.workspacePath === '' || !existsSync(candidate.workspacePath)) {
+    throw new ServiceError('NOT_FOUND', `这个候选的工作区已经不在了，读不到图片：${relativePath}`);
+  }
+  return readWorkspaceImage(candidate.workspacePath, relativePath);
+}
+
+/**
+ * 该候选的**消息与子任务行**（折叠后的最终视图）。
+ *
+ * 与 `getCandidateLog` 同一处置、**不排序**：`readCandidateRecords` 逐行读的是一个只追加的文件，
  * 而 `foldMessages` / `foldSubagents` 按**首次出现顺序**输出——那正是「这条逻辑消息第一次被说到」
  * 的顺序，也正是消费方该渲染的顺序。在这里再排一次只会多一个会漂移的判据。
  *
- * 文件不存在时返回两个空数组（该行还没开始跑）：**不是错误**，界面上显示「还没有消息」。
+ * 文件不存在时返回两个空数组（该候选还没开始跑）：**不是错误**，界面上显示「还没有消息」。
  */
-export function getRowRecords(runId: string, rowId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
+export function getCandidateRecords(runId: string, candidateId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  const file = rowMessagesFile(run.workspaceBase, run.id, row.id);
+  const candidate = findCandidate(run, candidateId);
+  const file = candidateMessagesFile(run.workspaceBase, run.id, candidate.id);
 
   try {
-    const { messages, subagents } = readRowRecords(file);
+    const { messages, subagents } = readCandidateRecords(file);
     return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
   } catch (error) {
-    // 坏行 / 权限 / 编码问题都可能在这里抛：一律折成含路径的中文原因（与 getRowLog 同一条理由）
+    // 坏行 / 权限 / 编码问题都可能在这里抛：一律折成含路径的中文原因（与 getCandidateLog 同一条理由）
     throw new ServiceError(
       'INTERNAL',
       `读取消息记录失败（${file}）：${error instanceof Error ? error.message : String(error)}`,
@@ -333,17 +355,17 @@ export function getRowRecords(runId: string, rowId: string): { messages: AgentMe
 
 /**
  * 执行日志：给了 `afterSeq` 就只取 `seq` 更大的部分（抽屉首帧与 SSE 续订共用同一个出口）。
- * 文件不存在时 `readEvents` 返回 `[]`（该行还没开始跑），这不是错误。
+ * 文件不存在时 `readEvents` 返回 `[]`（该候选还没开始跑），这不是错误。
  *
  * 排序与 seq 的来源（派发稿的高危口径）：本函数**只读盘、不排序、也不另造 seq**。
  * `readEvents` / `readEventsAfter` 逐行读的是一个**只追加**的文件，而 seq 由 `core.appendEvent`
  * 按「文件里已用的最大 seq + 1」分配，因此文件顺序**恒等于** seq 升序——
  * 这正是 SSE 按 `Last-Event-ID` 续订与前端按 seq 去重的前提，在 api 层再排一次只会多一个会漂移的判据。
  */
-export function getRowLog(runId: string, rowId: string, afterSeq?: number): AgentEvent[] {
+export function getCandidateLog(runId: string, candidateId: string, afterSeq?: number): AgentEvent[] {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  const file = rowEventsFile(run.workspaceBase, run.id, row.id);
+  const candidate = findCandidate(run, candidateId);
+  const file = candidateEventsFile(run.workspaceBase, run.id, candidate.id);
 
   try {
     return afterSeq === undefined || afterSeq <= 0 ? readEvents(file) : readEventsAfter(file, afterSeq);
@@ -359,17 +381,17 @@ export function getRowLog(runId: string, rowId: string, afterSeq?: number): Agen
 }
 
 /**
- * 该行事件日志的 **seq 水位**（文件里已用过的最大 seq，文件不存在为 0）。
+ * 该候选事件日志的 **seq 水位**（文件里已用过的最大 seq，文件不存在为 0）。
  *
  * 给 SSE 的续订入口用：客户端带来的 `afterSeq` / `Last-Event-ID` 是**它上一次见过的最大 seq**，
- * 而重跑同一行会 `resetEvents` 删文件、seq 从 1 重新发号 ⇒ 游标大于水位就说明它属于**被删掉的那一代**，
+ * 而重跑同一个候选会 `resetEvents` 删文件、seq 从 1 重新发号 ⇒ 游标大于水位就说明它属于**被删掉的那一代**，
  * 拿着它回放只会得到空历史（症状是「重跑后执行日志一直停在上一轮」）。
- * 口径与 `readEvents` 一致地容忍坏行：占过号的行也算水位（见 `core.maxEventSeq`）。
+ * 口径与 `readEvents` 一致地容忍坏行：占过号的候选也算水位（见 `core.maxEventSeq`）。
  */
-export function getRowLogMaxSeq(runId: string, rowId: string): number {
+export function getCandidateLogMaxSeq(runId: string, candidateId: string): number {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  return maxEventSeq(rowEventsFile(run.workspaceBase, run.id, row.id));
+  const candidate = findCandidate(run, candidateId);
+  return maxEventSeq(candidateEventsFile(run.workspaceBase, run.id, candidate.id));
 }
 
 /**
@@ -377,32 +399,32 @@ export function getRowLogMaxSeq(runId: string, rowId: string): number {
  *
  * 给「不回放历史」的那条 SSE 用（卡片活动行）：它只要「此刻之后」的记录，而把校验一起省掉，
  * 客户端拿到的就不是带原因的 404，而是一条「开了即静默」的连接——那种失败在界面上表现为
- * 「活动行一直不动」，与「这一行真的没在输出」完全同形。
+ * 「活动行一直不动」，与「这个候选真的没在输出」完全同形。
  *
- * 它同时是**那句「这一轮里没有这一行」的 404 唯一一处**：人工消息的四个动作、追问、日志流都
- * 从这里过。逐处手写 `rows.some` 的代价不是多几行，而是同一格在两条路上给出两句不同的话
+ * 它同时是**那句「这一轮里没有这个候选」的 404 唯一一处**：人工消息的四个动作、追问、日志流都
+ * 从这里过。逐处手写 `candidates.some` 的代价不是多几行，而是同一格在两条路上给出两句不同的话
  * ——客户端按文案分支时就成了两个行为。
  */
-export function assertRowExists(runId: string, rowId: string): void {
+export function assertCandidateExists(runId: string, candidateId: string): void {
   const run = getRunView(runId);
-  findRow(run, rowId);
+  findCandidate(run, candidateId);
 }
 
 /**
- * 该行**评分阶段**的消息与子任务行：与 `getRowRecords` 逐字同口径
+ * 该候选**评分阶段**的消息与子任务行：与 `getCandidateRecords` 逐字同口径
  * （折叠、不排序、文件不存在即两个空数组），只是读 `judge-messages.jsonl` 那条**独立的流**。
  *
- * 为什么是独立的一份而不是给 `getRowRecords` 加个筛选参数：两条流记的是**两个会话**
+ * 为什么是独立的一份而不是给 `getCandidateRecords` 加个筛选参数：两条流记的是**两个会话**
  * （候选 / 评审者），消费方也是两处（执行日志抽屉 / 卡片活动行）。混在一个出口里，
  * 调用方每次都得自己再分一次，而分错的症状是「执行日志里冒出评审者的对话」。
  */
-export function getRowJudgeRecords(runId: string, rowId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
+export function getCandidateJudgeRecords(runId: string, candidateId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  const file = rowJudgeMessagesFile(run.workspaceBase, run.id, row.id);
+  const candidate = findCandidate(run, candidateId);
+  const file = candidateJudgeMessagesFile(run.workspaceBase, run.id, candidate.id);
 
   try {
-    const { messages, subagents } = readRowRecords(file);
+    const { messages, subagents } = readCandidateRecords(file);
     return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
   } catch (error) {
     throw new ServiceError(
@@ -414,14 +436,14 @@ export function getRowJudgeRecords(runId: string, rowId: string): { messages: Ag
 }
 
 /**
- * 评分阶段的日志：与 `getRowLog` 逐字同口径（`afterSeq` 语义、不排序、文件不存在返回 `[]`），
+ * 评分阶段的日志：与 `getCandidateLog` 逐字同口径（`afterSeq` 语义、不排序、文件不存在返回 `[]`），
  * 只是读 `judge-events.jsonl`。它的 `seq` 是**独立一套**（`appendEvent` 按文件续号），
- * 所以 `afterSeq` 也必须取自这条流自己的号，不能拿行级那条流的游标来续。
+ * 所以 `afterSeq` 也必须取自这条流自己的号，不能拿候选级那条流的游标来续。
  */
-export function getRowJudgeLog(runId: string, rowId: string, afterSeq?: number): AgentEvent[] {
+export function getCandidateJudgeLog(runId: string, candidateId: string, afterSeq?: number): AgentEvent[] {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  const file = rowJudgeEventsFile(run.workspaceBase, run.id, row.id);
+  const candidate = findCandidate(run, candidateId);
+  const file = candidateJudgeEventsFile(run.workspaceBase, run.id, candidate.id);
 
   try {
     return afterSeq === undefined || afterSeq <= 0 ? readEvents(file) : readEventsAfter(file, afterSeq);
@@ -435,12 +457,12 @@ export function getRowJudgeLog(runId: string, rowId: string, afterSeq?: number):
 }
 
 /**
- * 该行**评分那条流**的 seq 水位：与 `getRowLogMaxSeq` 逐字同口径，只是读 `judge-events.jsonl`。
+ * 该候选**评分那条流**的 seq 水位：与 `getCandidateLogMaxSeq` 逐字同口径，只是读 `judge-events.jsonl`。
  * 两条流各有自己一套从 1 起的号（`appendEvent` 按各自文件续号）⇒ 水位也必须各算各的，
- * 拿行级那条的水位去判评分那条的游标会把正常的续订误判成换代。
+ * 拿候选级那条的水位去判评分那条的游标会把正常的续订误判成换代。
  */
-export function getRowJudgeLogMaxSeq(runId: string, rowId: string): number {
+export function getCandidateJudgeLogMaxSeq(runId: string, candidateId: string): number {
   const run = getRunView(runId);
-  const row = findRow(run, rowId);
-  return maxEventSeq(rowJudgeEventsFile(run.workspaceBase, run.id, row.id));
+  const candidate = findCandidate(run, candidateId);
+  return maxEventSeq(candidateJudgeEventsFile(run.workspaceBase, run.id, candidate.id));
 }

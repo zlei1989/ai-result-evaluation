@@ -39,7 +39,7 @@ function renderShell(text: string, open: boolean): { container: HTMLElement; bod
  *
  * 为什么按行而不是逐字节比整个源串：markdown 标记（围栏行、`**`）本来就不上屏，X 还会给代码块
  * 补一个结尾换行，逐字节比源串永远不等。按行比仍然能拦住三类真缺陷：**少一行**（内容被吞）、
- * **多一行**（流式缓存重置导致前缀重复）、**行内前导空格被改**（靠前导空格对齐的链路图散掉）。
+ * **多一行**（流式缓存重置导致前缀重复）、**候选内前导空格被改**（靠前导空格对齐的链路图散掉）。
  */
 function sourceLines(text: string): string[] {
   return text.split('\n').filter((line) => line.trim() !== '' && !/^\s*```/.test(line));
@@ -58,7 +58,7 @@ function renderedLines(text: string): string[] {
 /** 围栏代码块的正文：JSX 字符串里反引号太密，统一从这里取 */
 const FENCE = '```';
 
-/** 围栏里那两行正文（第二行的前导空格是链路图的对齐骨架） */
+/** 围栏里那两行正文（第二候选的前导空格是链路图的对齐骨架） */
 const BODY_LINES = ['POST /api/open/query-file-change-log', '  OpenController.queryFileChangeLogs   (lc-web:45)'];
 
 /**
@@ -99,8 +99,8 @@ describe('XMarkdownText：未闭合围栏', () => {
   /**
    * 0–3 空格缩进的围栏是 X 2.9.0 流式走线最容易漏的一档（`feedFenceState` 逐字符判围栏）。
    * 这里钉的是**未闭合**档：必须不挂，正文一字不漏、`data-state` 是 `loading`。
-   * 缩进会被 marked 从正文行里剥掉（开围栏缩进几格就剥几格），故只断言「内容在场且不重复、
-   * 行内对齐用的连续空格没被改」——按缩进写死剥几格会把 marked 的正常行为当成缺陷钉住。
+   * 缩进会被 marked 从正文本行里剥掉（开围栏缩进几格就剥几格），故只断言「内容在场且不重复、
+   * 候选内对齐用的连续空格没被改」——按缩进写死剥几格会把 marked 的正常行为当成缺陷钉住。
    */
   it.each([0, 1, 2, 3])('%i 空格缩进的未闭合围栏：进 loading 档、内容不被吞、围栏标记不漏进正文', (indent) => {
     const pad = ' '.repeat(indent);
@@ -111,12 +111,12 @@ describe('XMarkdownText：未闭合围栏', () => {
     expect(code?.getAttribute('data-state'), `缩进 ${indent} 的未闭合围栏没进 loading 档`).toBe('loading');
     const codeText = code?.textContent ?? '';
     for (const line of BODY_LINES) {
-      expect(codeText, `缩进 ${indent} 的围栏里少了这一行：${line.trim()}`).toContain(line.trim());
+      expect(codeText, `缩进 ${indent} 的围栏里少了这个候选：${line.trim()}`).toContain(line.trim());
     }
-    // 行内那段连续空格是链路图的对齐骨架，被折行 / 归一化就散架
-    expect(codeText, '代码行里的对齐空格被改了').toContain('queryFileChangeLogs   (lc-web:45)');
+    // 候选内那段连续空格是链路图的对齐骨架，被折行 / 归一化就散架
+    expect(codeText, '代码候选里的对齐空格被改了').toContain('queryFileChangeLogs   (lc-web:45)');
     expect(codeText, '围栏标记漏进了正文').not.toContain(FENCE);
-    expect(codeText.match(/OpenController/g)?.length, '同一行被渲染了两次').toBe(1);
+    expect(codeText.match(/OpenController/g)?.length, '同一个候选被渲染了两次').toBe(1);
     unmount();
   });
 
@@ -160,9 +160,9 @@ describe('XMarkdownText：未闭合围栏', () => {
     const codeText = code?.textContent ?? '';
     expect(codeText, '非流式下围栏标记漏进了正文').not.toContain(FENCE);
     for (const line of BODY_LINES) {
-      expect(codeText, `非流式下少了这一行：${line.trim()}`).toContain(line.trim());
+      expect(codeText, `非流式下少了这个候选：${line.trim()}`).toContain(line.trim());
     }
-    expect(codeText, '代码行里的对齐空格被改了').toContain('queryFileChangeLogs   (lc-web:45)');
+    expect(codeText, '代码候选里的对齐空格被改了').toContain('queryFileChangeLogs   (lc-web:45)');
     unmount();
   });
 });

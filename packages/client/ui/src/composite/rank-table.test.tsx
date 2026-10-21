@@ -2,9 +2,9 @@
  * 排名表：列 = 候选、行 = 各项事实、左首列锁住 + 其余列横向滚动（抽屉本身在页面那一层，不在本文件）。
  *
  * 本文件钉住的界面语义：
- *   · 名次落在第一行（标签留空，金色 Tag 自己说明这一行是什么；与候选卡片徽标同形），且**用的是同一份判据**
+ *   · 名次落在第一行（标签留空，金色 Tag 自己说明这个候选是什么；与候选卡片徽标同形），且**用的是同一份判据**
  *     （总分降序 → 耗时升序 → token 输入+输出升序；三项全同并列、允许跳号）；
- *   · 未出分的候选照进表：列头不写名次、首行格写行状态、评分与总分格留空；
+ *   · 未出分的候选照进表：列头不写名次、首行格写候选状态、评分与总分格留空；
  *   · 判定与评分项按引用键对齐，评分表里有而判定里没有的那一格显式写「缺少判定」；
  *   · 列随候选数增长，`scroll.x` 是**数值**（给 `true` / `'max-content'` 会让首列固定失效）；
  *   · 判据说明那一句由具名片段拼装（散写就没有东西守着它与 `compareRows` 一致）。
@@ -36,7 +36,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-type Row = EvalRun['rows'][number];
+type Candidate = EvalRun['candidates'][number];
 
 /**
  * 表格每一列的**实测列宽**（读 `colgroup` 的内联样式，剥掉分号）。
@@ -51,7 +51,7 @@ function columnWidths(): number[] {
   );
 }
 
-function score(totalScore: number, judged: { id: string; achieved: boolean; reason?: string }[]): Row['score'] {
+function score(totalScore: number, judged: { id: string; achieved: boolean; reason?: string }[]): Candidate['score'] {
   return {
     judgments: judged.map((item) => ({ id: item.id, achieved: item.achieved, reason: item.reason ?? '理由' })),
     totalScore,
@@ -69,7 +69,7 @@ function score(totalScore: number, judged: { id: string; achieved: boolean; reas
   };
 }
 
-function makeRow(id: string, overrides: Partial<Row> = {}): Row {
+function makeCandidate(id: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
     id,
     agentKind: 'dsh',
@@ -79,7 +79,7 @@ function makeRow(id: string, overrides: Partial<Row> = {}): Row {
     modelId: 'GLM-5.3',
     status: 'judged',
     branch: `test/${id}`,
-    workspacePath: `/runs/run-1/rows/${id}/workspace`,
+    workspacePath: `/runs/run-1/candidates/${id}/workspace`,
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
     tokens: { input: 18756, cached: 19840, output: 808 },
     turns: 4,
@@ -95,7 +95,7 @@ function makeRow(id: string, overrides: Partial<Row> = {}): Row {
   };
 }
 
-function makeRun(rows: Row[]): EvalRun {
+function makeRun(candidates: Candidate[]): EvalRun {
   return {
     id: 'run-1',
     caseId: 'c-1',
@@ -115,7 +115,7 @@ function makeRun(rows: Row[]): EvalRun {
     executionMode: 'parallel',
     useAgentJudge: false,
     askUser: false,
-    rows,
+    candidates,
     injectMessages: false,
     workspaceBase: '/runs',
     createdAt: '2026-10-12T08:00:00.000Z',
@@ -134,8 +134,8 @@ describe('RankTable 名次', () => {
     const { unmount } = render(
       <RankTable
         run={makeRun([
-          makeRow('blank', { score: score(60, [{ id: 'T1', achieved: true }]), emptyAnswer: true }),
-          makeRow('ok', { score: score(100, [{ id: 'T1', achieved: true }]) }),
+          makeCandidate('blank', { score: score(60, [{ id: 'T1', achieved: true }]), emptyAnswer: true }),
+          makeCandidate('ok', { score: score(100, [{ id: 'T1', achieved: true }]) }),
         ])}
       />,
     );
@@ -145,8 +145,8 @@ describe('RankTable 名次', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('a', { score: score(60, [{ id: 'T1', achieved: true }]) }),
-          makeRow('b', { score: score(100, [{ id: 'T1', achieved: true }]) }),
+          makeCandidate('a', { score: score(60, [{ id: 'T1', achieved: true }]) }),
+          makeCandidate('b', { score: score(100, [{ id: 'T1', achieved: true }]) }),
         ])}
       />,
     );
@@ -157,8 +157,8 @@ describe('RankTable 名次', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('slow', { score: score(60, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: false }]) }),
-          makeRow('best', { score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
+          makeCandidate('slow', { score: score(60, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: false }]) }),
+          makeCandidate('best', { score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
         ])}
       />,
     );
@@ -183,9 +183,9 @@ describe('RankTable 名次', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('a', { ...tied, score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
-          makeRow('b', { ...tied, score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
-          makeRow('c', {
+          makeCandidate('a', { ...tied, score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
+          makeCandidate('b', { ...tied, score: score(100, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: true }]) }),
+          makeCandidate('c', {
             tokens: { input: 900, cached: 0, output: 90 },
             score: score(60, [{ id: 'T1', achieved: true }, { id: 'T2', achieved: false }]),
           }),
@@ -197,18 +197,18 @@ describe('RankTable 名次', () => {
     expect(screen.getByTestId('rank-table-row-rank').getAttribute('data-rank')).toBe(rankMarker([1, 1, 3]));
   });
 
-  it('未出分的候选排在有分的右侧、不给名次（首行格写行状态），评分与总分格留空', () => {
+  it('未出分的候选排在有分的右侧、不给名次（首行格写候选状态），评分与总分格留空', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('failed-row', {
+          makeCandidate('failed-row', {
             status: 'failed',
             tokens: null,
             durationMs: null,
             score: null,
             error: { code: 'AGENT_FAILED', message: '崩了' },
           }),
-          makeRow('ok'),
+          makeCandidate('ok'),
         ])}
       />,
     );
@@ -218,7 +218,7 @@ describe('RankTable 名次', () => {
     expect(screen.getByTestId('rank-table-row-rank').getAttribute('data-rank')).toBe(rankMarker([1, undefined]));
 
     const rankRow = screen.getByTestId('rank-table-row-rank');
-    // 有分的列在左、未出分的列在右；未出分那一格写的是**行状态**（「这行为什么没分」的第一句话）
+    // 有分的列在左、未出分的列在右；未出分那一格写的是**候选状态**（「这行为什么没分」的第一句话）
     expect(within(rankRow).getAllByText(/^第 \d 名$/)).toHaveLength(1);
     expect(within(rankRow).getByText('失败')).toBeInTheDocument();
 
@@ -227,8 +227,8 @@ describe('RankTable 名次', () => {
     expect(within(rankRow).getAllByRole('cell')[1]?.getAttribute('data-testid')).toBe('rank-cell-rank-ok');
     expect(within(rankRow).getAllByRole('cell')[2]?.getAttribute('data-testid')).toBe('rank-cell-rank-failed-row');
 
-    const totalRow = screen.getByTestId('rank-table-row-total');
-    const totalCells = within(totalRow).getAllByRole('cell');
+    const totalCandidate = screen.getByTestId('rank-table-row-total');
+    const totalCells = within(totalCandidate).getAllByRole('cell');
     expect(totalCells).toHaveLength(3);
     // 单元格只写这一列拿到的分（满分在左锁列的标签里，不在每一列重复）
     expect(totalCells[1]?.textContent).toBe('100');
@@ -238,9 +238,9 @@ describe('RankTable 名次', () => {
 
 describe('RankTable 行与格', () => {
   it('四段行齐备：身份 / 执行 / 每组一行组名 + 各目标（带权重）/ 总分', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
-    // 身份四行：**第一行的标签留空**（名次 Tag 自己说明这一行是什么），其余三行各有一个标签
+    // 身份四行：**第一候选的标签留空**（名次 Tag 自己说明这个候选是什么），其余三行各有一个标签
     for (const label of ['智能体', '模型', '思考强度']) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
@@ -254,15 +254,15 @@ describe('RankTable 行与格', () => {
     expect(screen.getByText('二、结果')).toBeInTheDocument();
     expect(screen.getByText('步骤中使用 skill')).toBeInTheDocument();
     expect(screen.getByText('结果含暗号')).toBeInTheDocument();
-    // 总分那一行的**标签**只写满分（取自这一分自己的 `score.maxScore`，不是常量 100）：
+    // 总分那一候选的**标签**只写满分（取自这一分自己的 `score.maxScore`，不是常量 100）：
     // 位置已经说明它是总分那一行，措辞越短越好扫
     expect(screen.getByText('满分 100')).toBeInTheDocument();
     // 单元格只有得分本身，没有 `100 / 100` 这种重复了两遍满分的写法
     expect(screen.getByTestId('rank-table-row-total').textContent).not.toContain('/');
   });
 
-  it('目标行的权重是 Tag（与目标原文分开成两类事实），其余行的标签是纯文本', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+  it('目标候选的权重是 Tag（与目标原文分开成两类事实），其余候选的标签是纯文本', () => {
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
     const itemLabel = (key: string): HTMLElement =>
       within(screen.getByTestId(`rank-table-row-${key}`)).getAllByRole('cell')[0] as HTMLElement;
@@ -275,14 +275,14 @@ describe('RankTable 行与格', () => {
     // 另一项没有写 id（引用键是位置号 `#2`），同样走这条
     expect(within(itemLabel('item-#2')).getByText('50 分').className).toContain('ant-tag');
 
-    // 其余行的标签**不带** Tag：名次、组名、总分都还是纯文本
+    // 其余候选的标签**不带** Tag：名次、组名、总分都还是纯文本
     for (const key of ['rank', 'group-0', 'total']) {
-      expect(itemLabel(key).querySelector('.ant-tag'), `${key} 那一行的标签不该有 Tag`).toBeNull();
+      expect(itemLabel(key).querySelector('.ant-tag'), `${key} 那一候选的标签不该有 Tag`).toBeNull();
     }
   });
 
   it('组名只写在左锁列里、不横跨候选列（横跨时它会跟着横向滚动滑走）', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
     const groupCells = within(screen.getByTestId('rank-table-row-group-0')).getAllByRole('cell');
     // 标签列 + 候选列各占一格，没有任何 `colSpan` 铺满
@@ -296,10 +296,10 @@ describe('RankTable 行与格', () => {
   });
 
   it('整张表没有自定义行底色（分段靠位置与字重：组名加粗、总分是粗体）', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
-    // 每一行的每一格都不带内联底色：自加一层会与表格自身的斑马纹 / hover 打架，
-    // 且亮暗两套主题下都要重调（用户口径：三行都不上色）
+    // 每个候选的每一格都不带内联底色：自加一层会与表格自身的斑马纹 / hover 打架，
+    // 且亮暗两套主题下都要重调（用户口径：三个候选都不上色）
     for (const key of ['rank', 'agent', 'duration', 'group-0', 'item-T1', 'total']) {
       const cells = within(screen.getByTestId(`rank-table-row-${key}`)).getAllByRole('cell');
       for (const cell of cells) {
@@ -309,7 +309,7 @@ describe('RankTable 行与格', () => {
   });
 
   it('执行那一段：耗时走 formatDuration、悬浮给精确毫秒；token 三格走千分位 + tok', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
     expect(screen.getByText('24s')).toBeInTheDocument();
     expect(screen.getByText('18,756 tok')).toBeInTheDocument();
@@ -318,19 +318,19 @@ describe('RankTable 行与格', () => {
   });
 
   it('出分但没采到耗时 / 用量时写「未采集」，绝不写 0（0 是一个读数，不是「没采到」）', () => {
-    render(<RankTable run={makeRun([makeRow('only', { tokens: null, durationMs: null })])} />);
+    render(<RankTable run={makeRun([makeCandidate('only', { tokens: null, durationMs: null })])} />);
 
     expect(screen.queryByText('0 tok')).toBeNull();
     // 耗时 1 处 + token 3 处
     expect(screen.getAllByText('未采集')).toHaveLength(4);
   });
 
-  it('未出分的列在执行段整段留白（行状态已经说明原因，五个「未采集」只是噪音）', () => {
+  it('未出分的列在执行段整段留白（候选状态已经说明原因，五个「未采集」只是噪音）', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('ok'),
-          makeRow('failed-row', {
+          makeCandidate('ok'),
+          makeCandidate('failed-row', {
             status: 'failed',
             tokens: null,
             durationMs: null,
@@ -341,7 +341,7 @@ describe('RankTable 行与格', () => {
       />,
     );
 
-    // 有分那一列照常显示读数；未出分那一列在四行里都是空的
+    // 有分那一列照常显示读数；未出分那一列在四个候选里都是空的
     expect(screen.getAllByText('24s')).toHaveLength(1);
     for (const key of ['duration', 'tokens-input', 'tokens-cached', 'tokens-output']) {
       const cells = within(screen.getByTestId(`rank-table-row-${key}`)).getAllByRole('cell');
@@ -356,7 +356,7 @@ describe('RankTable 行与格', () => {
     render(
       <RankTable
         run={makeRun([
-          makeRow('a', {
+          makeCandidate('a', {
             score: score(50, [{ id: 'T1', achieved: false, reason: '没调用 skill' }]),
           }),
         ])}
@@ -369,28 +369,28 @@ describe('RankTable 行与格', () => {
   });
 
   it('思考强度缺省写「未指定」（不是「默认」，也不是留空）', () => {
-    render(<RankTable run={makeRun([makeRow('only', { effort: undefined })])} />);
+    render(<RankTable run={makeRun([makeCandidate('only', { effort: undefined })])} />);
     expect(screen.getByText('未指定')).toBeInTheDocument();
   });
 });
 
 describe('RankTable 表格结构与说明', () => {
   it('scroll.x 是**数值**且随候选数增长（给 true / max-content 会让首列固定失效）', () => {
-    // 函数本身是判据的落点：宽度 = 标签列 + 每候选一列
+    // 函数本身是判据的落点：宽度 = 标签列 + 每个候选一列
     expect(rankTableMinWidth(1)).toBe(RANK_LABEL_WIDTH + RANK_CANDIDATE_WIDTH);
     expect(rankTableMinWidth(3)).toBe(RANK_LABEL_WIDTH + 3 * RANK_CANDIDATE_WIDTH);
 
-    const { unmount } = render(<RankTable run={makeRun([makeRow('a')])} />);
+    const { unmount } = render(<RankTable run={makeRun([makeCandidate('a')])} />);
     // colgroup 的宽度逐列来自那两个常量（吸边偏移按实测列宽算 ⇒ 宽度不显式给出，固定列会失效）
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH]);
     unmount();
 
-    render(<RankTable run={makeRun([makeRow('a'), makeRow('b'), makeRow('c')])} />);
+    render(<RankTable run={makeRun([makeCandidate('a'), makeCandidate('b'), makeCandidate('c')])} />);
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH]);
   });
 
   it('首列锁左、其余列不锁；第一列宽度显式给出（吸边偏移按实测列宽算）', () => {
-    render(<RankTable run={makeRun([makeRow('a'), makeRow('b')])} />);
+    render(<RankTable run={makeRun([makeCandidate('a'), makeCandidate('b')])} />);
 
     expect(columnWidths()).toEqual([RANK_LABEL_WIDTH, RANK_CANDIDATE_WIDTH, RANK_CANDIDATE_WIDTH]);
     // 吸边类只出现在首列（`-start`）：其余两列都不许 fix。
@@ -404,7 +404,7 @@ describe('RankTable 表格结构与说明', () => {
   });
 
   it('判据说明逐字渲染在**表下方**，且内容来自具名片段（改文案只有一处落点）', () => {
-    render(<RankTable run={makeRun([makeRow('only')])} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} />);
 
     const criteria = screen.getByTestId('rank-criteria');
     expect(criteria).toHaveTextContent(RANK_CRITERIA_TEXT);
@@ -422,12 +422,12 @@ describe('RankTable 表格结构与说明', () => {
     expect(RANK_CRITERIA_TEXT).toContain('tok');
   });
 
-  it('有行在跑才出现实时提示，且 N 是行数（不是「有 / 没有」）', () => {
-    const { unmount } = render(<RankTable run={makeRun([makeRow('only')])} />);
+  it('有行在跑才出现实时提示，且 N 是候选数（不是「有 / 没有」）', () => {
+    const { unmount } = render(<RankTable run={makeRun([makeCandidate('only')])} />);
     expect(screen.queryByTestId('rank-live-note')).toBeNull();
     unmount();
 
-    render(<RankTable run={makeRun([makeRow('only')])} runningCount={2} />);
+    render(<RankTable run={makeRun([makeCandidate('only')])} runningCount={2} />);
     const note = screen.getByTestId('rank-live-note');
     expect(note).toHaveTextContent('有 2 行正在执行，名次可能变化');
     // 实时提示也挂在表格下方（与判据说明同一条口径）

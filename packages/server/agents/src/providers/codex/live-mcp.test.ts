@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * **真机**：codex 行的 MCP 注入与厂商侧判据。
+ * **真机**：codex 候选的 MCP 注入与厂商侧判据。
  *
  * 判据只有一条是硬的：`mcpServer/startupStatus/updated` 到 **`ready`**（codex）。
  * **不验「工具被调用了」**——本机自定义 Responses 网关下那是**上游能力缺口**
@@ -11,7 +11,7 @@
  *
  * 两臂（同一适配器、同一 provider，只有 server 的 command 不同）：
  *   · A 正常 ⇒ 末条 `vendor-system` 里那一台是 `ready`；
- *   · B `command` 指向不存在的二进制（**负例①**）⇒ `failed` + **厂商原文**（行失败文案的后半句）。
+ *   · B `command` 指向不存在的二进制（**负例①**）⇒ `failed` + **厂商原文**（候选失败文案的后半句）。
  *
  * 落点同时被钉住：`mcp_servers` 走**线程级 `config`**（app-server 协议），
  * `$CODEX_HOME/config.toml` 里**不写** MCP 表——真机 A 臂能到 `ready` 就是这条落点生效的证据。
@@ -251,7 +251,7 @@ describe.skipIf(!ENABLED)('真机：codex 的 MCP 注入与启动状态判据', 
       console.log('[live-codex-mcp] B 臂答复：', String(broken.finalText).slice(0, 200));
       expect(failed?.[0]?.name).toBe('probe');
       expect(failed?.[0]?.status).toBe('failed');
-      // **厂商原文照抄**（行失败文案 `MCP「probe」未能启动：<原文首行>` 的后半句就是它）
+      // **厂商原文照抄**（候选失败文案 `MCP「probe」未能启动：<原文首行>` 的后半句就是它）
       expect(failed?.[0]?.error ?? '').toContain('failed to start');
       expect(failed?.[0]?.error ?? '').toContain('No such file or directory');
     } finally {

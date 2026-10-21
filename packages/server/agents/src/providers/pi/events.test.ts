@@ -8,7 +8,7 @@
  * 三条最要紧的：
  *   · **思考正文与工具结果正文必须能在 `log` 里逐字查到**（`needsMessagesForReasoningEvidence: false`
  *     的全部依据）；
- *   · **增量帧零行级事件**（一旦掉进兜底，原始输出面板会被刷成 JSON 流水，上面那条证据也就没人看得见）；
+ *   · **增量帧零候选级事件**（一旦掉进兜底，原始输出面板会被刷成 JSON 流水，上面那条证据也就没人看得见）；
  *   · **`reasoning` 不并进 `output`**（并了就是双计，症状是「这家 tok 偏大」而且看不出来）。
  */
 import { describe, afterEach, expect, it } from 'vitest';
@@ -195,7 +195,7 @@ describe('pi 的工具结果', () => {
     expect(block?.type === 'tool-result' ? block.isError : null).toBe(false);
   });
 
-  it('失败的结果给摘要（那是「这一行出事了」的唯一行级出口）', () => {
+  it('失败的结果给摘要（那是「这个候选出事了」的唯一候选级出口）', () => {
     const projection = project(
       {
         type: 'tool_execution_end',
@@ -359,7 +359,7 @@ describe('pi 的时长（只用厂商那一把尺子）', () => {
    * `mergeTiming` 相加得出——那一层的约定就是「每条投影交增量」。
    *
    * 为什么这一条要钉死：自己在这一层累加会与骨架的相加叠成平方级偏大。真机读数（三轮各约 160 ms
-   * 的网关延迟）：行级 `apiMs` 读到 966 ms，而整行跨度 `totalMs` 只有 483 ms——比它自己装着的
+   * 的网关延迟）：候选级 `apiMs` 读到 966 ms，而整行跨度 `totalMs` 只有 483 ms——比它自己装着的
    * 那段时间还长。两个断言合起来才拦得住：单条是增量、合并后是总和。
    */
   it('`apiMs` 逐条交当轮那一份（增量），累计由骨架 `mergeTiming` 相加', () => {
@@ -373,14 +373,14 @@ describe('pi 的时长（只用厂商那一把尺子）', () => {
     const second = project(messageEnd(assistantMessage({ timestamp: 5_000, durationMs: 25 })), state, runState);
     // 单条交 25（当轮），不是 65（累计）——累计由下面那次合并给出
     expect(second.timing).toEqual({ firstMs: 5_000, lastMs: 5_025, apiMs: 25, ttftMs: null, source: 'vendor' });
-    // 骨架按「首见即起点、再见即终点」合并 ⇒ 整行的跨度是 1_000 → 5_025，apiMs 是 40 + 25
+    // 骨架按「首见即起点、再见即终点」合并 ⇒ 整候选的跨度是 1_000 → 5_025，apiMs 是 40 + 25
     const merged = mergeTiming(first.timing as TimingSpan, second.timing as TimingSpan);
     expect(merged).toEqual({ firstMs: 1_000, lastMs: 5_025, apiMs: 65, ttftMs: null, source: 'vendor' });
   });
 });
 
 describe('pi 的增量帧', () => {
-  it('增量只产内容消息、零行级事件', () => {
+  it('增量只产内容消息、零候选级事件', () => {
     const state = createTurnState();
     project(turnStart(), state);
     const text = project(
@@ -700,7 +700,7 @@ describe('pi 的子任务投影', () => {
     const row = projection.subagents?.[0];
     expect(row).toMatchObject({
       subagentId: 'agent-1',
-      // 入参里的 `name` 优先（它是模型给这一行起的名字）；没有才退回 `details.description`
+      // 入参里的 `name` 优先（它是模型给这个候选起的名字）；没有才退回 `details.description`
       name: 'pong-agent',
       kind: PI_SUBAGENT_DISPATCH_TOOL,
       source: 'wire',
@@ -936,7 +936,7 @@ describe('pi 的子任务投影', () => {
     const onToolEnd = runDispatch(recorder, runState, state);
     expect(onToolEnd.subagents?.[0]).toMatchObject({
       subagentId: 'agent-1',
-      // 名字取**入参的 `name`**（模型给这一行起的名字），不是任务描述
+      // 名字取**入参的 `name`**（模型给这个候选起的名字），不是任务描述
       name: 'pong-agent',
       status: 'completed',
       outcome: 'PONG',
@@ -949,10 +949,10 @@ describe('pi 的子任务投影', () => {
    *
    * 为什么 pi 这里是**相加**而不是「防双计」：子智能体跑在**另一个会话**里，父会话助手消息的
    * `usage` 覆盖不到它（真机实测：主子那一轮的读数与子任务那一条各自独立）。两份读数
-   * **覆盖面不相交** ⇒ 相加是补全「这一行一共花了多少」，不是把同一笔算两遍。
+   * **覆盖面不相交** ⇒ 相加是补全「这个候选一共花了多少」，不是把同一笔算两遍。
    * 正好拿一个「子比主大得多」的形状来钉：若实现改回「不把子折进合计」，这一条当场红。
    */
-  it('合计逐格 ≥ 分量、轮次分量 ≤ 合计轮次（界面按「主会话 = 合计 − 分量」推导的前提）', () => {
+  it('合计逐格 ≥ 分量、步数分量 ≤ 合计步数（界面按「主会话 = 合计 − 分量」推导的前提）', () => {
     const recorder = createPiSubagentRecorder();
     recorder.factory({
       events: {
@@ -981,7 +981,7 @@ describe('pi 的子任务投影', () => {
     expect(final.turns! - final.subagentTurns!).toBe(state.turns);
   });
 
-  it('子智能体没收到场（本行收尾时它还没跑完）⇒ 两格都 null + 逐格点名 WARN，合计退回主会话口径', () => {
+  it('子智能体没收到场（候选收尾时它还没跑完）⇒ 两格都 null + 逐格点名 WARN，合计退回主会话口径', () => {
     const recorder = createPiSubagentRecorder();
     const runState = createPiRunState();
     const state = createTurnState();
@@ -995,10 +995,10 @@ describe('pi 的子任务投影', () => {
     expect(final.tokens).toBeUndefined();
     expect(final.turns).toBeUndefined();
     const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
-    // 逐格点名：哪一格缺（用量 / 轮次）与为什么缺（本行的释放序列终结了它）都要读得出来
+    // 逐格点名：哪一格缺（用量 / 轮次）与为什么缺（候选的释放序列终结了它）都要读得出来
     expect(logs).toContain('子智能体用量给不出');
-    expect(logs).toContain('子智能体轮次给不出');
-    expect(logs).toContain('本行的释放序列会连同它一起终结');
+    expect(logs).toContain('子智能体步数给不出');
+    expect(logs).toContain('本次运行的释放序列会连同它一起终结');
   });
 
   /**
@@ -1040,20 +1040,20 @@ describe('pi 的子任务投影', () => {
     expect(final.subagentTokens).toEqual({ input: 3052, cached: 2048, output: 3, reasoningOutput: null, total: null });
     expect(final.subagentTurns).toBeNull();
     const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
-    expect(logs, '承诺的点名 WARN 缺席').toContain('子智能体轮次给不出');
+    expect(logs, '承诺的点名 WARN 缺席').toContain('子智能体步数给不出');
     expect(logs, 'WARN 要点名是哪个身份缺记录').toContain('agent-1');
     // 总线报过终态的身份要拿到它那条终态行：否则界面上的卡片永远停在「运行中」
     expect(final.subagents?.map((record) => [record.subagentId, record.status])).toEqual([['agent-1', 'completed']]);
   });
 
   /**
-   * **后台档的结构性缺口**（真机形状：真网关派一个 `run_in_background: true` 的子智能体，它在本行
-   * 收尾前就 `completed`、终态行的 `usage` 读得到，而 `Agent` 工具的收尾快照里没有轮次）。
+   * **后台档的结构性缺口**（真机形状：真网关派一个 `run_in_background: true` 的子智能体，它在候选
+   * 收尾前就 `completed`、终态候选的 `usage` 读得到，而 `Agent` 工具的收尾快照里没有轮次）。
    *
    * 两件事要同时成立：① 用量那一格**不能**跟着轮次一起作废（那是「给不出」，而它确实花掉了一整轮
-   * 输入）；② 文案不能指向另一件事（它已收场，说「活过了本行」会让排障的人去查一个不存在的问题）。
+   * 输入）；② 文案不能指向另一件事（它已收场，说「活过了本次运行」会让排障的人去查一个不存在的问题）。
    */
-  it('后台档收场了但拿不到轮次：用量照交、轮次 null，点名文案不许说「活过了本行」', () => {
+  it('后台档收场了但拿不到轮次：用量照交、轮次 null，点名文案不许说「活过了本次运行」', () => {
     const recorder = createPiSubagentRecorder();
     const state = createTurnState();
     const runState = createPiRunState();
@@ -1079,7 +1079,7 @@ describe('pi 的子任务投影', () => {
     expect(final.turns).toBeUndefined();
     const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
     expect(logs).toContain('后台档');
-    expect(logs, '它已经收场了，说「活过了本行」会把排障指向错误的方向').not.toContain('活过了本行');
+    expect(logs, '它已经收场了，说「活过了本次运行」会把排障指向错误的方向').not.toContain('活过了本次运行');
     expect(logs, '用量那一格交得出，就不该有为它而落的那条 WARN').not.toContain('子智能体用量给不出');
   });
 
@@ -1120,7 +1120,7 @@ describe('pi 的子任务投影', () => {
    * 修法不是「有总线就不看派发」，而是**沿用在飞派发已经记下的状态**：`Agent` 工具的收尾快照里
    * 写着 `background` ⇒ `piSubagentStatus` 映成 `running`，收尾快照沿用它。
    */
-  it('后台档（总线只报 started）⇒ 收尾快照如实记「已停止」（被本行释放序列终结），不降级成 unknown', () => {
+  it('后台档（总线只报 started）⇒ 收尾快照如实记「已停止」（被候选释放序列终结），不降级成 unknown', () => {
     const { recorder, emit } = bus();
     const runState = createPiRunState();
     const state = createTurnState();
@@ -1135,14 +1135,14 @@ describe('pi 的子任务投影', () => {
       runState,
       recorder,
     );
-    // 派发那一刻投出去的那条行就是 `running`（工具收尾通路，见 `projectDispatchEnd`）
+    // 派发那一刻投出去的那条候选就是 `running`（工具收尾通路，见 `projectDispatchEnd`）
     expect(atDispatch.subagents?.map((record) => record.status), '派发那一刻就该是运行中').toEqual(['running']);
-    // 总线晚一步报「开始」，此后**没有**终态事件（本行收尾会终结这个子会话）
+    // 总线晚一步报「开始」，此后**没有**终态事件（候选收尾会终结这个子会话）
     emit('subagents:started', startedPayload());
 
     const final = finalizePiSubagents(state, runState, recorder);
     /**
-     * 收尾这一份快照**必须**与派发那一份不同：它把「运行中」如实改成**已停止**——本行的释放序列
+     * 收尾这一份快照**必须**与派发那一份不同：它把「运行中」如实改成**已停止**——候选的释放序列
      * 会连同这个子会话一起终结（真机 `dispose-only` 一臂即足以让它一个模型往返都跑不起来）。
      * 变异体：把状态改回沿用派发的 `background` ⇒ 这里又变回空数组（界面永远停在「运行中」），
      * 或者改成 `unknown` ⇒ 那是从「已知在跑」退回「不知道」的倒退，同样当场红。
@@ -1153,13 +1153,13 @@ describe('pi 的子任务投影', () => {
     expect(final.subagentTurns).toBeNull();
     const logs = final.drafts.flatMap((draft) => (draft.type === 'log' ? [draft.text] : [])).join('');
     /**
-     * 文案的判据是**机制**：本行的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话
+     * 文案的判据是**机制**：候选的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话
      * 一起终结——真机五档对照里 `dispose-only` 那一臂就足以让它一个模型往返都跑不起来。
-     * 写成「活过了本行」会把排障指向「它还在后台跑」，而事实是它已经死了。
+     * 写成「活过了本次运行」会把排障指向「它还在后台跑」，而事实是它已经死了。
      */
-    expect(logs, 'WARN 要说清是本行的释放序列终结了它，不是一句「活过了本行」')
-      .toContain('本行的释放序列会连同它一起终结');
-    expect(logs).not.toContain('活过了本行');
+    expect(logs, 'WARN 要说清是候选的释放序列终结了它，不是一句「活过了本次运行」')
+      .toContain('本次运行的释放序列会连同它一起终结');
+    expect(logs).not.toContain('活过了本次运行');
     expect(logs).toContain('background');
   });
 
@@ -1301,10 +1301,10 @@ describe('pi 的子任务投影', () => {
     it('子任务行落账的那一批不带增量，下一批才跟出（骨架先发消息后发行，同批混发会让消息先于行进账、掉进主会话）', () => {
       const agent = armedAgent();
       const fake = fakeTranscript([messageDraftForTranscript(1)]);
-      const rowBatch = projectWith(unrelatedEvent(), agent, fake.read);
+      const candidateBatch = projectWith(unrelatedEvent(), agent, fake.read);
       // 行在这一批投出（running）；闸门按「更早一批」判 ⇒ 这一批连读都没读
-      expect(rowBatch.subagents?.map((row) => row.status)).toEqual(['running']);
-      expect(rowBatch.messages ?? []).toHaveLength(0);
+      expect(candidateBatch.subagents?.map((row) => row.status)).toEqual(['running']);
+      expect(candidateBatch.messages ?? []).toHaveLength(0);
       expect(fake.calls()).toBe(0);
       const next = projectWith(unrelatedEvent(), agent, fake.read);
       expect(next.messages?.map((message) => [message.subagentId, message.roundTrip])).toEqual([['agent-1', 1]]);
@@ -1459,9 +1459,9 @@ describe('pi 的子任务投影', () => {
       const agent = await wiredBus(session);
       agent.emit('subagents:started', startedPayload());
       session.emit(childAssistantEnd('子任务第一步'));
-      const rowBatch = projectWire(unrelatedEvent(), agent, agent.wire);
-      expect(rowBatch.subagents?.map((row) => row.status)).toEqual(['running']);
-      expect(rowBatch.messages ?? []).toHaveLength(0);
+      const candidateBatch = projectWire(unrelatedEvent(), agent, agent.wire);
+      expect(candidateBatch.subagents?.map((row) => row.status)).toEqual(['running']);
+      expect(candidateBatch.messages ?? []).toHaveLength(0);
     });
 
     it('行还没落账的身份：事件留在缓冲等下一批（wire 是一次性的，不像转写可以重读——不丢是硬要求）', async () => {

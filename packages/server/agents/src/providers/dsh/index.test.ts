@@ -181,7 +181,7 @@ const TURN_END_EVENT = sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind
 const STEP_START_EVENT = sessionEvent('step/start', { turn: 1, step: 1 });
 
 describe('dshProvider', () => {
-  it('注入落点：路由键 + 绝对路径的 overlay + **自定义变量名**带凭据；DSH_HOME/HOME 都指向该行目录', async () => {
+  it('注入落点：路由键 + 绝对路径的 overlay + **自定义变量名**带凭据；DSH_HOME/HOME 都指向该候选目录', async () => {
     const recorder = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder, events: [] }) } });
     await dshProvider.run(
@@ -205,9 +205,9 @@ describe('dshProvider', () => {
     // 路由：`provider` 必须是 overlay 里声明的那个键（三者不同源就会在 initialize 阶段报 no adapter）
     expect(recorder.options?.provider).toBe(DSH_ROUTE_KEY);
     // overlay 路径必须是**绝对路径**：SDK 用 `resolve(callerCwd, path)` 解析，而 callerCwd 是宿主进程的
-    // cwd ⇒ 相对路径会让文件落到别处（甚至不在本行的 .agenthome 里）。
+    // cwd ⇒ 相对路径会让文件落到别处（甚至不在候选的 .agenthome 里）。
     // ⚠️ 这条断言同时是夹具的守卫：夹具的 configHome 若写盘符字面量（`D:/tmp/…`），它在 POSIX 上
-    // 不是绝对路径——这行会当场红，而不是悄悄把 overlay 写进仓库根。
+    // 不是绝对路径——这候选会当场红，而不是悄悄把 overlay 写进仓库根。
     const patches = recorder.options?.patches as string[] | undefined;
     expect(patches).toHaveLength(1);
     expect(isAbsolute(patches?.[0] ?? '')).toBe(true);
@@ -246,7 +246,7 @@ describe('dshProvider', () => {
    * `DEFAULT_INITIALIZE_TIMEOUT_MS = 10000`），而本适配器每次都跑在**全新的 `configHome`** 上
    *（不变量 3）⇒ 每次都是冷启动。实测：默认值下两条协议**双双**
    * `initialize timed out after 10000ms waiting for dsh profile "sdk"`，被折成 `AGENT_FAILED`，
-   * 界面上只看到「这一行失败了」；少了 `startDsh` 里这一行，本用例当场红（`undefined`）。
+   * 界面上只看到「这个候选失败了」；少了 `startDsh` 里这个候选，本用例当场红（`undefined`）。
    */
   it('冷启动握手预算显式给足：不吃 SDK 的 10s 默认值', async () => {
     const recorder = createRecorder();
@@ -574,7 +574,7 @@ describe('dshProvider', () => {
     expect(result.exitReason).toBe('error');
     expect(result.error?.code).toBe('AGENT_FAILED');
     expect(result.error?.message).toContain('传输中断');
-    expect(events.some((event) => event.type === 'error')).toBe(true); // 失败也要进该行的事件日志
+    expect(events.some((event) => event.type === 'error')).toBe(true); // 失败也要进该候选的事件日志
     expect(recorder.closeCount).toBe(1); // 释放路径在失败出口上照样走完（dispose 恰好一次）
   });
 });
@@ -739,7 +739,7 @@ describe('dsh 的 ask_user_question 挂载', () => {
        * **时序判据**：dsh 在 **boot 时**读装配清单（`--patch` 由 SDK 拼进 argv）⇒ 这份文件必须在
        * `new DeepSeekHarness(...)` 之前就写好。所以快照点取构造那一刻，而不是 run() 结束之后。
        * 为什么这条断言是必需的：把写入挪到 `start()` 之后，只看「run() 结束后文件在」的用例
-       * **照样全绿**（实测过的守卫无区分力），而生产上那一行会以
+       * **照样全绿**（实测过的守卫无区分力），而生产上那一个候选会以
        * `no adapter registered for provider "aieval-route"` 收场。
        */
       let snapshotAtBoot: string | null = null;
@@ -766,7 +766,7 @@ describe('dsh 的 ask_user_question 挂载', () => {
       /**
        * 等待档**逐字**钉住（四行必须连续、顺序不许换）：本仓没有应答面，阻塞档下模型一问就拿到
        * `NO_PROVIDER` 工具错误，而有限 `timeout` 的定时档到点交回的是「尚未答复」这个设计好的结果。
-       * 判据取整块而不是逐行 `toContain`：逐行写的话，「配置挂到了别的插件行上」与
+       * 判据取整块而不是逐行 `toContain`：逐行写的话，「配置挂到了别的插件候选上」与
        * 「`mode` 被写成阻塞档」两种坏法都能溜过去（两行各自都还在文件里）。
        * ⚠️ `timeout` 必须是有限正整数——`-1` 会回落阻塞档，等于这条止血没做。
        */
@@ -847,7 +847,7 @@ describe('dsh 的 ask_user_question 挂载', () => {
  * 它同时决定 overlay 里那一行与插件落盘（见 `ask-user.ts` 的文件头）。
  *
  * 判据是**磁盘上的文件**：只看适配器内部算了什么，证明不了 dsh 读得到（装配清单在 boot 那一步读，
- * 写晚了这一行照样「跑完」，只是没人认领那一问——那是静默的空）。两条一正一反缺一不可：
+ * 写晚了这个候选照样「跑完」，只是没人认领那一问——那是静默的空）。两条一正一反缺一不可：
  * 只钉「挂了就有」会让「没挂也有」这种回归（插件白挂、文件白落）无人出声。
  */
 describe('dsh 的提问应答面装配（ask-user）', () => {
@@ -938,7 +938,7 @@ describe('buildDshRoutePatch', () => {
    * 整份 overlay **逐字**：窗口与上限未知（那两个键就不写）时的完整产物。
    *
    * 为什么要有这一条（下面那些 `toContain` 各自只证明「某一行在文件里」）：dsh 读的是**整份**装配
-   * 清单，所以「其余行没被顺手改动」本身就是要守的性质——路由块、模型、档位映射、三条插件挂载行
+   * 清单，所以「其余候选没被顺手改动」本身就是要守的性质——路由块、模型、档位映射、三条插件挂载行
    * 与它们的先后，全在这份字面量里。少了它，改动别的行（甚至删掉某一行）不会有任何用例出声；
    * 有了它，任何一处漂移都必须显式改这份字面量，改的人躲不过去。
    */
@@ -977,7 +977,7 @@ describe('buildDshRoutePatch', () => {
 
   /**
    * 应答面那一格**同时**决定两件事：插不插应答者那一行、等待档取哪一档（`askUserAnswerer`）。
-   * 判据是「两份 patch 的**逐行差集**恰好是这两处」——只 `toContain` 那一行的话，
+   * 判据是「两份 patch 的**逐行差集**恰好是这两处」——只 `toContain` 那一候选的话，
    * 「顺手改坏了别的行」「没挂时也插了」「等待档与应答面各写一份」三种坏法都能溜过去。
    */
   it('挂了应答面 ⇒ 只多应答者那一块、且等待档换成阻塞档；没挂 ⇒ 定时档 1 秒且一个字都不多', () => {
@@ -1157,15 +1157,15 @@ const MAIN_USAGE = sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
  *
  * 今天的事实（本任务**不改**）：dsh 的 `assistant/message` 与 `step/start` 两支**都不按会话分叉**
  * ⇒ `tokens` 与 `turns` 已经含子会话；本组钉的是新那一格——「其中的**子智能体分量**」，
- * 它**只按本行的子会话白名单**求和。
+ * 它**只按候选的子会话白名单**求和。
  *
  * 为什么白名单是重点：`sessionUsage` 是 `message.ts` 里**模块级**的表（同一个 Node 进程里并行跑着
- * 好几行），主会话之外还有**别的行**的会话 ⇒ 只有白名单能把这一行圈出来。
+ * 好几行），主会话之外还有**别的行**的会话 ⇒ 只有白名单能把这个候选圈出来。
  *
  * 两条**夹具层面**的事实（与真机的差别，先说清楚）：
  *   · 子会话的事件带的是**它自己的** `params.sessionId`（真机如此）⇒ `sessionEvent(..., 'child-1')`
  *     就是「这一条属于 child-1」；
- *   · 假 harness 会执行适配器交给 `subscribe` 的**会话过滤**，所以「别的行的会话」那一条根本到不了
+ *   · 假 harness 会执行适配器交给 `subscribe` 的**会话过滤**，所以「别的候选的会话」那一条根本到不了
  *     投影（它既不是本会话、也不在白名单里）。「合计含子会话用量」这件事由第一条用例钉住
  *     （child-1 的 4 / 1 / 3 进了 `tokens`）；「别的行绝不算进来」钉的是**分量**只认白名单——
  *     去掉白名单（改成遍历 `sessionUsage` 全部键）时它会红：主会话那一笔就在表里。
@@ -1204,7 +1204,7 @@ describe('子智能体那一份用量', () => {
     expect(usageEvents(events).at(-1)?.subagentTokens).toMatchObject({ input: 0, cached: 0, output: 0 });
   });
 
-  it('别的行的会话（不在本行子会话白名单里）绝不算进来', async () => {
+  it('别的候选的会话（不在候选子会话白名单里）绝不算进来', async () => {
     const events = await runDshWith([
       STEP_START_EVENT,
       MAIN_USAGE,
@@ -1251,7 +1251,7 @@ describe('子智能体那一份用量', () => {
   /**
    * 收尾那一格：`startDsh` 的 `TurnStart` 也要给 `finalize`，
    * 否则「子会话收场却没报到用量 ⇒ 没采到」这个结论**在整轮再也没有消息**时就送不出去——
-   * 留在 `AgentRunResult.subagentTokens`（进而进行快照）里的是骨架那个初值或上一版的旧数。
+   * 留在 `AgentRunResult.subagentTokens`（进而进行的快照）里的是骨架那个初值或上一版的旧数。
    * `finalize` 在 `finally` 里跑（正常 / 失败 / 被终止都跑，`turn.ts:611-626`），
    * 且 `subagentTokens` 的**显式 `null` 会覆盖**。
    */
@@ -1369,7 +1369,7 @@ describe('子智能体那一份用量', () => {
    * `subagent.finished` 永远不来、子智能体那一份用量与轮次只到一半。`session/wait` 正是补这条缺口
    * 的原语（等整棵子树收场），门面没包、只能走 `client.request`。
    *
-   * 四档：还有子会话在跑 ⇒ 恰好调一次且带本行 sessionId；全部收场 ⇒ 一次都不调（零开销）；
+   * 四档：还有子会话在跑 ⇒ 恰好调一次且带候选 sessionId；全部收场 ⇒ 一次都不调（零开销）；
    * 已终止 ⇒ 不等（停机不能被一分钟的等待拖住）；请求失败 ⇒ 吞掉且不改结论。
    */
   describe('释放前等子智能体收场（session/wait）', () => {
@@ -1580,7 +1580,7 @@ describe('子智能体那一份用量', () => {
  *
  * 与用量那一组是同一件事的两半，但 dsh 的**取数面不同**：`turns` 从第一天起就是全树口径
  * （`step/start` 那一支不按会话分叉，`events.ts` 的既成口径）⇒ 分量必须**另按会话数**，
- * 而圈出「本行的子会话」的唯一依据仍是**同一份白名单**。
+ * 而圈出「候选的子会话」的唯一依据仍是**同一份白名单**。
  *
  * 三条口径与用量**逐字相同**（三档）：
  *   · 没有子会话 ⇒ `0`（确实没有，不是 `null`）；
@@ -1632,7 +1632,7 @@ describe('子智能体那一份轮次', () => {
    *
    * `sessionUsage` 与按会话的往返计数都是**模块级、跨 run 不清**的（同一个 Node 进程里还跑着别的行），
    * 而「子智能体那一份」问的是**本 run** 的增量 ⇒ 少了基线，第二个 run 的分量会把前一个 run 一起算上：
-   * 真机形状是行快照上出现「合计 60 / 子分量 2010」。基线在 `noteChildSession` 首次登记时记下。
+   * 真机形状是候选快照上出现「合计 60 / 子分量 2010」。基线在 `noteChildSession` 首次登记时记下。
    */
   it('同一个子会话 id 在第二个 run 里再登记 ⇒ 分量只算本 run 那一段', async () => {
     const recorder = createRecorder();
@@ -1710,7 +1710,7 @@ describe('子智能体那一份轮次', () => {
     expect(last?.turns).toBe(1);
   });
 
-  it('别的行的会话（不在本行白名单里）的 step 绝不算进分量', async () => {
+  it('别的候选的会话（不在候选白名单里）的 step 绝不算进分量', async () => {
     const events = await runDshWith([
       STEP_START_EVENT,
       MAIN_USAGE,
@@ -1741,7 +1741,7 @@ describe('子智能体那一份轮次', () => {
    * `null` 那一格**不能是静默的**：这一格与用量同源，所以**同一条**点名 WARN 必须说清
    * 「给不出的是**哪一格**」。
    *
-   * ⚠️ **措辞与判据一起定**：抄另两家的「这一行的 tok / 缓存命中 / 轮次**不含**它们」不行——
+   * ⚠️ **措辞与判据一起定**：抄另两家的「这个候选的 tok / 缓存命中 / 轮次**不含**它们」不行——
    * 那句话在 codex / claude 上成立（那两家的
    * 合计真的会退回主线程口径），**在 dsh 上是假的**：dsh 的 `turns` 是**构造上的全树累加**
    * （`step/start` 不按会话分叉，上一条「轮次继续含子会话的 step」用例钉着它）⇒ 一个收场却没报
@@ -1764,7 +1764,7 @@ describe('子智能体那一份轮次', () => {
     expect(warns[0]).toContain('分量');
     // ② 轮次那一格的合计**含**它的 step（dsh 的既成口径）——这句话反过来说就是错的。
     //    两条一起钉：缺的是分量（①），而合计并没有因此少算谁的轮次（②）。
-    expect(warns[0]).toContain('轮次含');
+    expect(warns[0]).toContain('步数含');
     // ③ 另两家那句句式（「…/ 轮次**不含**它们」，在 dsh 上是假的）不许借过来：
     //    换成另两家那种句式 ⇒ ① 与 ③ 同时红
     expect(warns[0]).not.toContain('不含它们');
@@ -2077,7 +2077,7 @@ describe('dsh 通知订阅中途失败：如实报出、不忙循环', () => {
     expect(line?.type === 'log' ? line.stream : null).toBe('stderr');
     expect(line?.type === 'log' ? line.text : '').toContain(boom.message);
     expect(line?.type === 'log' ? line.text : '').toContain('已放行');
-    // 中断之后的事件确实没进来 ⇒ 这条 log 是这一行唯一的解释（`turn/end` 拿不到了）
+    // 中断之后的事件确实没进来 ⇒ 这条 log 是这个候选唯一的解释（`turn/end` 拿不到了）
     expect(events.some((event) => event.type === 'end')).toBe(false);
     // ③ 不忙循环：订阅失败后我们不再把立刻拒绝的 `next()` 放进 race
     //    （放宽到 50：正常路径每轮最多一次，忙循环在同样墙钟内是几千次）
@@ -2403,7 +2403,7 @@ describe('dsh 的 MCP 注入与判据', () => {
     }
   });
 
-  it('行内 `.npmrc` 复刻宿主的 registry 那一行（dsh 也要——行内首次注入 61 MB 就卡在这一格）', async () => {
+  it('候选内 `.npmrc` 复刻宿主的 registry 那一行（dsh 也要——候选内首次注入 61 MB 就卡在这一格）', async () => {
     const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-mcp-'));
     try {
       const previous = process.env['npm_config_registry'];
@@ -2415,7 +2415,7 @@ describe('dsh 的 MCP 注入与判据', () => {
         });
         await dshProvider.run(createRunInput({ configHome: home }));
         // 宿主的 `.npmrc` 有没有 registry 由这台机器决定：**有就复刻、没有就什么都不做**
-        // （判据与 `writeRowNpmrc` 的守卫同源，这里只钉「这家也调了它」——本机有配置时文件必须在）
+        // （判据与 `writeCandidateNpmrc` 的守卫同源，这里只钉「这家也调了它」——本机有配置时文件必须在）
         const hostNpmrc = join(homedir(), '.npmrc');
         const hostHasRegistry = existsSync(hostNpmrc) && /^\s*registry\s*=/im.test(readFileSync(hostNpmrc, 'utf8'));
         expect(existsSync(join(home, '.npmrc'))).toBe(hostHasRegistry);
@@ -2595,7 +2595,7 @@ describe('填充层：提示词注入与同会话修正', () => {
 
     await dshProvider.run(createRunInput({ prompt: CALLER_PROMPT }));
 
-    expect(calls[0]?.prompt, '没要 schema 就不许往提示词里加任何东西：逐字相同，连换行都不许多').toBe(CALLER_PROMPT);
+    expect(calls[0]?.prompt, '没要 schema 就不许往提示词里加任何东西：逐字相同，连换候选都不许多').toBe(CALLER_PROMPT);
   });
 
   it('outputSchema 是字符串 / 数组 / null ⇒ 按「没给」处置：不注入、也不报错', async () => {
@@ -2651,8 +2651,8 @@ describe('填充层：提示词注入与同会话修正', () => {
       .filter((event) => event.type === 'log')
       .map((event) => (event.type === 'log' ? event.text : ''));
     expect(
-      repairLogs.some((text) => text.includes('结构化输出未通过校验') && text.includes('第 1/2 轮')),
-      '修正轮必须落一条带轮次的 WARN（否则「为什么多了一轮模型往返」在日志里查不到）',
+      repairLogs.some((text) => text.includes('结构化输出未通过校验') && text.includes('第 1/2 步')),
+      '修正轮必须落一条带步数的 WARN（否则「为什么多了一轮模型往返」在日志里查不到）',
     ).toBe(true);
   });
 
@@ -2699,7 +2699,7 @@ describe('人工消息面：装与不装的边界 + 续接的版本门', () => {
   const QUEUE_FILE = DSH_INJECT_QUEUE_RELATIVE_PATH;
   const RECEIPTS_FILE = DSH_INJECT_RECEIPTS_RELATIVE_PATH;
 
-  /** 一次运行之后，行配置目录里有哪些跟人工消息面有关的落点 */
+  /** 一次运行之后，候选配置目录里有哪些跟人工消息面有关的落点 */
   function injectionArtifacts(configHome: string): Record<string, boolean> {
     return {
       plugin: existsSync(join(configHome, PLUGIN_FILE)),
@@ -3105,10 +3105,10 @@ describe('人工消息面：装与不装的边界 + 续接的版本门', () => {
  *  1. **`resume` 被厂商拒之后不许留下孤儿运行时**。`runtime.start()` 已经 spawn 了子进程，
  *     而骨架此刻还没有 `TurnStart`（`started === undefined`）⇒ 它的 `finally` 碰不到任何可关闭
  *     对象。disposer 因此建在 `start()` **之前**，并由这一段自己兜住抛错路径。
- *     症状（缺这一格时）：每次失败的追问都在机器上留一个常驻 `dsh` 进程捏着该行 `.agenthome`。
+ *     症状（缺这一格时）：每次失败的追问都在机器上留一个常驻 `dsh` 进程捏着该候选 `.agenthome`。
  *  2. **我们自己发起的关闭不算「通知流中断」**。关闭运行时会同步终结订阅，而消费循环此刻还挂在
  *     `next()` 上、`settled` 仍是 `false` ⇒ 只看 `settled` 的判据会把每一次用户终止都报成
- *     「内容丢了」（真机上那一行会多一条 stderr 事件说「执行日志因此不完整」）。
+ *     「内容丢了」（真机上那一个候选会多一条 stderr 事件说「执行日志因此不完整」）。
  */
 describe('dsh 运行时生命周期：失败回收与「自己关的不算断流」', () => {
   /** 只补夹具缺的那一格（`resumeSession`）与本用例要断言的关闭计数 */
@@ -3146,7 +3146,7 @@ describe('dsh 运行时生命周期：失败回收与「自己关的不算断流
     return { recorder, module: { DeepSeekHarness: FakeHarness } };
   }
 
-  it('续接被厂商拒（not found）⇒ 行失败，且已起来的运行时**恰好被回收一次**', async () => {
+  it('续接被厂商拒（not found）⇒ 候选失败，且已起来的运行时**恰好被回收一次**', async () => {
     const { recorder, module } = fakeSdkWithResume(async () => {
       throw new Error('session "session-x" not found');
     });
@@ -3188,7 +3188,7 @@ describe('dsh 运行时生命周期：失败回收与「自己关的不算断流
  *
  * stream-tap 的门闸按「会话已知表」放行伪通知，而那张表**每条活动区间重建一份**。
  * 只放自己的会话 id 会让上一轮登记过的子会话在追问区间里重新变成「未知」：
- * 那些增量行被挂住，最后随 `tap.close()` 一起丢掉——子智能体的话缺一段，零报错。
+ * 那些增量候选被挂住，最后随 `tap.close()` 一起丢掉——子智能体的话缺一段，零报错。
  * 播种因此取 `runState.childSessions`（与放行判据同一份事实，过滤器在收到
  * `subagent.started` 时写入）。
  *
@@ -3269,7 +3269,7 @@ describe('stream-tap 门闸：追问区间仍认上一轮登记的子会话', ()
  * 但服务端必须留一条 WARN。
  *
  * 为什么值得钉：失败通道只有 `turn/end` 一条，而「收尾那条通知已经被 `shift()` 出来、却在竞速里
- * 没人读它的值」这条路径会把整条丢掉（FAQ 的 `24 / 24 / 25 / 25` 条）——那时这一行照旧判成功，
+ * 没人读它的值」这条路径会把整条丢掉（FAQ 的 `24 / 24 / 25 / 25` 条）——那时这个候选照旧判成功，
  * **任何日志、任何事件都没有**，排障只能去翻厂商会话日志。这条 WARN 是那种形状的唯一线索。
  */
 describe('收尾留痕：没见过 turn/end', () => {
@@ -3285,7 +3285,7 @@ describe('收尾留痕：没见过 turn/end', () => {
       });
       const result = await dshProvider.run(createRunInput({ onEvent: collectEvents(events) }));
 
-      expect(result.ok, '留痕不改结论：这一行照旧按已产出的内容判').toBe(true);
+      expect(result.ok, '留痕不改结论：这个候选照旧按已产出的内容判').toBe(true);
       expect(events.some((event) => event.type === 'error')).toBe(false);
       const texts = warn.mock.calls.map((call) => String(call[0] ?? ''));
       expect(texts.some((text) => text.includes('没收到 turn/end'))).toBe(true);

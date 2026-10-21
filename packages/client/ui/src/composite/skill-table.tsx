@@ -10,7 +10,7 @@
  *      「被压扁 / 滚出去够不到」的样子：`scroll={{ x: 数值 }}`、名称列 `fixed: 'left'`、
  *      启用列 `fixed: 'right'`。⚠️ jsdom 没有布局引擎，真实吸边只有真机冒烟量得出来；
  *      单测钉的是「列定义与两处 fixed 的存在」，**不假装量到了尺寸**；
- *   2. **坏条目照旧一行**：不可用的在名字后挂红 `Tag`、原因进 Tooltip（不占一列：「一行里两套状态
+ *   2. **坏条目照旧一行**：不可用的在名字后挂红 `Tag`、原因进 Tooltip（不占一列：「一个候选里两套状态
  *      会互相打架」，所以不单列「状态」）；描述照旧显示——它往往是判断「哪里不合格」的线索；
  *   3. **不显示来源路径列**：所有条目同根、前缀完全相同，这一列只是把同一个前缀重复 N 遍；
  *      路径在抽屉顶部。**也没有操作列**：这一页不做增删改；
@@ -82,7 +82,7 @@ export function SkillTable({
   loading = false,
 }: SkillTableProps): ReactNode {
   const unusableCount = skills.filter((skill) => !skill.ok).length;
-  // 计数只说两件事：有几条、其中几条现在不可用。逐条状态在行上，这里不重复
+  // 计数只说两件事：有几条、其中几条现在不可用。逐条状态在候选上，这里不重复
   const countText =
     unusableCount === 0 ? `共 ${skills.length} 条` : `共 ${skills.length} 条，其中 ${unusableCount} 条不可用`;
   const rootMissing = skillWarnings.some((warning) => warning.path === root);
@@ -93,12 +93,12 @@ export function SkillTable({
       dataIndex: 'name',
       key: 'name',
       width: SKILL_COLUMN_WIDTH.name,
-      // 钉在左边（见文件头第 1 点）：横向滚动时描述从它下面滑过，「这一行是谁」始终看得见
+      // 钉在左边（见文件头第 1 点）：横向滚动时描述从它下面滑过，「这个候选是谁」始终看得见
       fixed: 'left',
       render: (_value, skill) => (
         <Flex gap={4} align="center">
           <EllipsisText text={skill.name} strong />
-          {/* 不可用只用标签表达，**不占一列**：一行里两套「状态」（可用性 + 启停）会互相打架 */}
+          {/* 不可用只用标签表达，**不占一列**：一个候选里两套「状态」（可用性 + 启停）会互相打架 */}
           {!skill.ok && (
             <Tooltip title={skill.reason ?? '这一条现在不可用'}>
               <Tag color="red" data-testid="skill-bad-tag">

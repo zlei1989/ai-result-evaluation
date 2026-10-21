@@ -1,5 +1,5 @@
 /**
- * `useAgentLogView` 与 `defaultOpenKeysOf` 的守卫。四组： * 1. **默认展开态**（表格 + 例外）：进行中的组展开、**失败的组与失败的行都收起**、
+ * `useAgentLogView` 与 `defaultOpenKeysOf` 的守卫。四组： * 1. **默认展开态**（表格 + 例外）：进行中的组展开、**失败的组与失败的候选都收起**、
  * 思考收起、首次计划清单展开、**问答卡片一格都不加**（卡片不折叠，里面的问题面板默认全收起）；
  *   2. **折叠态是「默认 ∪ 手动开 ∖ 手动关」**：用户关得掉一个默认展开的块（否则那个开关是假的）；
  *   3. **节点回落**：模型换了、选中的节点没了 ⇒ 回到默认节点；
@@ -175,7 +175,7 @@ function model(nodes: LogNode[], activeNodeId: string): AgentLogModel {
     },
     nodes,
     activeNodeId,
-    rowEvents: [],
+    candidateEvents: [],
     // 段这一层的事实：本夹具没有追问，故一个段标题都不画
     segments: [],
     empty: false,
@@ -207,10 +207,10 @@ describe('defaultOpenKeysOf（内置默认展开态）', () => {
 
   /**
    * 覆盖的例外 2「失败的工具自动展开」：
-   * 失败的工具调用**默认也折叠**，组与组内那一行都不展开。
+   * 失败的工具调用**默认也折叠**，组与组内那一个候选都不展开。
    * 失败不再是展开的理由——「收起态仍看得出这组有失败」由组头的「失败 N」标记承担（`ToolGroupPanel`）。
    */
-  it('失败的工具组与失败的行都默认收起（不加键就是收起）', () => {
+  it('失败的工具组与失败的候选都默认收起（不加键就是收起）', () => {
     const keys = defaultOpenKeysOf(
       [turn({ blocks: [toolCall('c1', 'call_1'), toolResult('r1', 'call_1', 'error')] })],
       nodes,
@@ -220,7 +220,7 @@ describe('defaultOpenKeysOf（内置默认展开态）', () => {
     expect(keys.has('call_1')).toBe(false);
   });
 
-  it('组内有失败而轮次还在跑时，仍因「进行中」展开——但那一行失败仍收起', () => {
+  it('组内有失败而轮次还在跑时，仍因「进行中」展开——但那一候选失败仍收起', () => {
     const keys = defaultOpenKeysOf(
       [turn({ running: true, blocks: [toolCall('c1', 'call_1'), toolResult('r1', 'call_1', 'error')] })],
       nodes,

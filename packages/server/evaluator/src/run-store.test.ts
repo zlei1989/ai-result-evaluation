@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_DEFAULTS, ServiceError, type EvalRun } from '@aieval/contracts';
-import { loadConfig, readEvents, rowEventsFile, saveConfig, setConfigDirForTesting } from '@aieval/core';
-import { publishRowEvent } from './events';
+import { loadConfig, readEvents, candidateEventsFile, runSnapshotFile, saveConfig, setConfigDirForTesting } from '@aieval/core';
+import { publishCandidateEvent } from './events';
 import { recalledRunRoot } from './run-root-memory';
 import { getRun, getRunForWrite, listRuns, listRunsForCase, saveRun } from './run-store';
-import { makeRowFixture, makeRunFixture, makeScoreFixture, RUBRIC_FIXTURE } from './testing/fixtures';
+import { makeCandidateFixture, makeRunFixture, makeScoreFixture, RUBRIC_FIXTURE } from './testing/fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 // 「rename 覆盖失败」的三个分支（瞬时失败要重试 / 只读才先删 / 两次都失败要报中文错）无法在 CI 上
@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 /**
- * 最小合法快照：rows 允许为空数组，其余字段必须给全——
+ * 最小合法快照：candidates 允许为空数组，其余字段必须给全——
  * 少任何一个 EvalRunSchema 都会拒绝，测试就变成在测自己的夹具而不是被测代码。
  * `rubric` 与 `caseTitle` / `repoPath` 同一档：它是**必填的评分表快照**，缺了 `saveRun` 的写侧自检
  * 会直接拒绝（契约），而那时红的会是这一整个文件里的每一条用例。
@@ -77,7 +77,7 @@ function makeRun(overrides: Partial<EvalRun> & Pick<EvalRun, 'id' | 'caseId'>): 
     useAgentJudge: false,
     askUser: false,
     injectMessages: false,
-    rows: [],
+    candidates: [],
     workspaceBase: ws,
     createdAt: '2026-09-22T10:00:00.000Z',
     startedAt: null,
@@ -288,14 +288,14 @@ describe('run-store', () => {
    * 用它永远造不出「缺这一格」的快照（与上面几条直接写盘的用例同一手法）。
    */
   it('磁盘上已有的评分（score 里没有 structuredOutput）读盘后是 false', () => {
-    const row = makeRowFixture({ id: 'row-legacy', status: 'judged', score: makeScoreFixture(true) });
-    const run = makeRun({ id: 'run-legacy-score', caseId: 'case-1', rows: [row] });
+    const candidate = makeCandidateFixture({ id: 'candidate-legacy', status: 'judged', score: makeScoreFixture(true) });
+    const run = makeRun({ id: 'run-legacy-score', caseId: 'case-1', candidates: [candidate] });
     const runDir = join(run.workspaceBase, run.id);
     mkdirSync(runDir, { recursive: true });
     const legacy = structuredClone(run);
     // 老快照的形状：那一行已经有分，但 score 里**没有** structuredOutput 这一格
-    for (const legacyRow of legacy.rows) {
-      if (legacyRow.score !== null) delete (legacyRow.score as { structuredOutput?: boolean }).structuredOutput;
+    for (const legacyCandidate of legacy.candidates) {
+      if (legacyCandidate.score !== null) delete (legacyCandidate.score as { structuredOutput?: boolean }).structuredOutput;
     }
     const file = join(runDir, 'run.json');
     writeFileSync(file, JSON.stringify(legacy), 'utf8');
@@ -305,7 +305,7 @@ describe('run-store', () => {
 
     const loaded = getRun(run.id);
 
-    expect(loaded.rows[0]?.score?.structuredOutput).toBe(false);
+    expect(loaded.candidates[0]?.score?.structuredOutput).toBe(false);
   });
 
   /**
@@ -316,6 +316,22 @@ describe('run-store', () => {
    * 症状是「评测记录凭空少了几轮」，两端都不报错。走**直接写盘**（绕过 `saveRun`）才是真的老文件：
    * `saveRun` 的写侧自检会把默认值补齐，用它永远造不出「缺这一格」的快照。
    */
+  it('旧快照把候选数组写在 rows 里 ⇒ 读侧迁成 candidates，写回后只留新名', () => {
+    const run = makeRun({ id: 'run-legacy-rows', caseId: 'case-1', candidates: [makeCandidateFixture({ id: 'w-1' })] });
+    const { candidates, ...rest } = run;
+    const file = runSnapshotFile(ws, run.id);
+    mkdirSync(join(ws, run.id), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...rest, rows: candidates }), 'utf8');
+
+    expect(getRun(run.id).candidates.map((one) => one.id)).toEqual(['w-1']);
+    expect(listRuns().map((one) => one.id)).toContain('run-legacy-rows');
+
+    saveRun(getRun(run.id));
+    const written = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    expect(written['candidates']).toEqual(candidates);
+    expect(written).not.toHaveProperty('rows');
+  });
+
   it('磁盘上已有的 run.json（没有 note）读盘后是空串，且仍出现在 listRuns 里', () => {
     const run = makeRun({ id: 'run-legacy-note', caseId: 'case-1' });
     const runDir = join(run.workspaceBase, run.id);
@@ -398,8 +414,8 @@ describe('run-store 的 runId 形状校验', () => {
  */
 describe('saveRun 的写侧自检', () => {
   it('形状漂移（NaN 计量）在写入点抛中文 ServiceError，且盘上不留快照（不许写完再让 listRuns 静默跳过）', () => {
-    const row = makeRowFixture({ tokens: { input: Number.NaN, cached: 0, output: 0 } });
-    const run = makeRunFixture({ id: 'run-nan', caseId: 'case-1', workspaceRoot: ws, rows: [row] });
+    const candidate = makeCandidateFixture({ tokens: { input: Number.NaN, cached: 0, output: 0 } });
+    const run = makeRunFixture({ id: 'run-nan', caseId: 'case-1', workspaceRoot: ws, candidates: [candidate] });
 
     // 错误面必须与 I/O 失败一致：**中文 ServiceError**（code + 可直接展示的原因），不是裸英文 ZodError
     //（B2 裁决 2：口径同 core 的 appendEvent 写侧校验，否则路由层会把 zod 的英文文案返回给用户）。
@@ -410,7 +426,7 @@ describe('saveRun 的写侧自检', () => {
     expect(caught.code).toBe('INTERNAL');
     expect(caught.message).toContain('运行快照不符合契约');
     // 报错必须指向出问题的字段（不是「写入失败」这种无法定位的兜底文案）
-    expect(caught.message).toContain('rows.0.tokens.input');
+    expect(caught.message).toContain('candidates.0.tokens.input');
     expect(caught.context).toMatchObject({ runId: 'run-nan' });
 
     // 盘上连这一轮的目录都不该留下：校验先于 mkdir，否则残留的空目录会让人以为「跑过这一轮」
@@ -474,32 +490,32 @@ describe('saveRun 的 workspaceBase 形状校验', () => {
 /**
  * 写侧与 `events.ts` 的根目录口径必须同源（B2 裁决 1）。
  *
- * `events.ts` 按 `rowEventsFile(getRunForWrite(runId).workspaceBase, …)` 定位事件日志——**该轮自己记录的根**；
+ * `events.ts` 按 `candidateEventsFile(getRunForWrite(runId).workspaceBase, …)` 定位事件日志——**该轮自己记录的根**；
  * 而写侧若改取「当前 `settings.workspaceRoot`」：一轮评测进行中用户改了根目录，快照写进新根、
- * 事件留在旧根，这一轮的产物就**裂成两半**（界面上的行状态与日志抽屉对不上，而两边都不报错）。
+ * 事件留在旧根，这一轮的产物就**裂成两半**（界面上的候选状态与日志抽屉对不上，而两边都不报错）。
  * 裁决口径是「该轮整体留在旧根，把根目录改回去即可恢复可见」，所以写侧也必须取自 `run.workspaceBase`。
  */
 describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源）', () => {
   it('一轮进行中改了工作区根目录：快照与事件都留在旧根，新根下不出现这一轮', () => {
     const runId = 'run-root-switch';
-    const rowId = 'row-root-switch';
+    const candidateId = 'candidate-root-switch';
     saveRun(makeRun({ id: runId, caseId: 'case-1' }));
     // 先发一条事件：生产里编排层的第一步就是发 `preparing` 状态事件，事件路径在这一刻与「这一轮的根」
     // 绑定（events.ts 的进程内缓存，与本条守卫无关）；这里照生产顺序走，保证断言的是根目录口径本身。
-    publishRowEvent(runId, rowId, { type: 'status', status: 'preparing' });
+    publishCandidateEvent(runId, candidateId, { type: 'status', status: 'preparing' });
 
     // 模拟用户跑到一半去设置页把工作区根目录改到 B（只改设置，不搬任何产物）
     const otherRoot = join(dir, 'runs-b');
     saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: otherRoot } });
 
     saveRun(makeRun({ id: runId, caseId: 'case-1', status: 'running' }));
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '改根目录之后的一行日志' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '改根目录之后的一行日志' });
 
     // 快照仍在 A，且是刚写下的那一份（写进 B 的话这里读到的还是最初的 idle 快照）
     const snapshot = JSON.parse(readFileSync(join(ws, runId, 'run.json'), 'utf8')) as EvalRun;
     expect(snapshot.status).toBe('running');
     // 事件也在 A，并且能按契约读回来
-    const events = readEvents(rowEventsFile(ws, runId, rowId));
+    const events = readEvents(candidateEventsFile(ws, runId, candidateId));
     expect(events.map((event) => event.type)).toEqual(['status', 'log']);
     expect(JSON.stringify(events)).toContain('改根目录之后的一行日志');
 
@@ -513,35 +529,35 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
    *
    * 上面那条守卫先发了一条事件，事件路径因此在 `events.ts` 里被缓存，于是它**没有覆盖**真正的
    * 生产故障面：同一轮的**后续行**（事件路径尚未缓存）在用户改完根目录后第一次发事件时，
-   * `getRun` 会抛 NOT_FOUND，`publishRowEvent` 把这个异常冒出去 ⇒ 一次设置变更把在途轮次**中途打死**。
+   * `getRun` 会抛 NOT_FOUND，`publishCandidateEvent` 把这个异常冒出去 ⇒ 一次设置变更把在途轮次**中途打死**。
    * 生产上编排层第一步就发 `preparing`，所以典型的在途轮次首行不受影响，后续行照样会撞上。
    *
-   * 这条守卫因此必须用**另一个此前从未发布过事件的 rowId**：那正是「事件路径尚未缓存」这个前提。
+   * 这条守卫因此必须用**另一个此前从未发布过事件的 candidateId**：那正是「事件路径尚未缓存」这个前提。
    * 期望行为是「仍写在 A 下」——不抛 NOT_FOUND（在途轮次不崩），也不写进 B（产物不裂成两半）。
    */
-  it('改根目录后，对**尚未发布过事件**的行发事件仍写在旧根（进程内记忆兜底，不抛 NOT_FOUND）', () => {
+  it('改根目录后，对**尚未发布过事件**的候选发事件仍写在旧根（进程内记忆兜底，不抛 NOT_FOUND）', () => {
     const runId = 'run-root-memory';
-    const firstRowId = 'row-already-published';
-    const laterRowId = 'row-never-published';
+    const firstCandidateId = 'candidate-already-published';
+    const laterCandidateId = 'candidate-never-published';
     saveRun(makeRun({ id: runId, caseId: 'case-1' }));
     // 同一轮的首行照生产顺序先发一条：它把「这一轮的事件路径」缓存起来，
     // 从而保证本用例钉的是**记忆兜底**本身，而不是事件路径缓存顺手掩盖了问题
-    publishRowEvent(runId, firstRowId, { type: 'status', status: 'preparing' });
+    publishCandidateEvent(runId, firstCandidateId, { type: 'status', status: 'preparing' });
 
     // 用户改根目录到 B（只改设置，不搬任何产物）
     const otherRoot = join(dir, 'runs-b');
     saveConfig({ ...loadConfig(), settings: { ...SETTINGS_DEFAULTS, workspaceRoot: otherRoot } });
 
     // 后续行第一次发事件：事件路径尚未缓存 ⇒ 只能靠进程内记忆解析出「这一轮自己的根」
-    publishRowEvent(runId, laterRowId, { type: 'log', stream: 'stdout', text: '改根目录之后的后续行' });
+    publishCandidateEvent(runId, laterCandidateId, { type: 'log', stream: 'stdout', text: '改根目录之后的后续行' });
 
-    const events = readEvents(rowEventsFile(ws, runId, laterRowId));
+    const events = readEvents(candidateEventsFile(ws, runId, laterCandidateId));
     expect(events).toHaveLength(1);
     expect(events[0]?.type === 'log' && events[0].text).toBe('改根目录之后的后续行');
-    // 新根下不许出现这一行的任何产物（写进 B 就等于「一轮的产物裂成两半」，比找不到更难查）
+    // 新根下不许出现这个候选的任何产物（写进 B 就等于「一轮的产物裂成两半」，比找不到更难查）
     expect(existsSync(join(otherRoot, runId))).toBe(false);
-    // 首行的事件日志也不受影响地留在 A
-    expect(readEvents(rowEventsFile(ws, runId, firstRowId))).toHaveLength(1);
+    // 首候选的事件日志也不受影响地留在 A
+    expect(readEvents(candidateEventsFile(ws, runId, firstCandidateId))).toHaveLength(1);
   });
 
   // 反向对照：记忆里没有这个 runId 时，NOT_FOUND 照旧（「跨重启 + 改过根」找不到是明确接受的）。
@@ -554,7 +570,7 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
 
     let caught: unknown;
     try {
-      publishRowEvent('run-never-saved', 'row-1', { type: 'log', stream: 'stdout', text: '不该落盘' });
+      publishCandidateEvent('run-never-saved', 'candidate-1', { type: 'log', stream: 'stdout', text: '不该落盘' });
     } catch (error) {
       caught = error;
     }
@@ -566,7 +582,7 @@ describe('saveRun 的根目录口径（与该轮自己的 workspaceBase 同源�
 
   /**
    * **快照侧**：编排层要在同一份记忆上读快照，否则「改了根目录 = 在途轮次被打死」
-   * 只是换了一扇门——`requireRow → getRun` 抛 NOT_FOUND，`settleFailed` 也要先 `requireRow`
+   * 只是换了一扇门——`requireCandidate → getRun` 抛 NOT_FOUND，`settleFailed` 也要先 `requireCandidate`
    * ⇒ 行停在非终态。`getRunForWrite` 就是那个入口：当前根优先、NOT_FOUND 时用记忆兜底。
    * 同时钉住**对外读侧口径不变**：`getRun` 仍只扫当前根（对外读侧口径，api 层的路由用的就是它）。
    */

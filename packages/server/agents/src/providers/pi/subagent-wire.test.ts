@@ -75,7 +75,7 @@ function fastTimings(): void {
 }
 
 describe('pi 子智能体 wire：reload 的快照与删槽', () => {
-  it('reload 落定后快照进本行、随即删槽（下一行的 claim 因此能成立）', async () => {
+  it('reload 落定后快照进行的、随即删槽（下一候选的 claim 因此能成立）', async () => {
     const wire = createPiSubagentWire();
     expect(wire.available).toBe(false);
     await wire.reload(async () => {
@@ -101,8 +101,8 @@ describe('pi 子智能体 wire：reload 的快照与删槽', () => {
     /**
      * 贴真机的竞态形状：**claim 在 reload 的前段**（扩展工厂在 pre-trust 装载那一步就执行），
      * reload 其余部分还有一段异步尾巴——「claim 到删槽」之间隔着整段 reload。没有互斥时
-     * 后一行的工厂会立刻跑、见槽非空、claim 失败（`[true, false]`）；互斥成立时后一行的
-     * reload 要等前一行的快照 + 删槽全部落定才开始，两次都成功。
+     * 后一候选的工厂会立刻跑、见槽非空、claim 失败（`[true, false]`）；互斥成立时后一候选的
+     * reload 要等前一候选的快照 + 删槽全部落定才开始，两次都成功。
      */
     const run = (wire: ReturnType<typeof createPiSubagentWire>, tag: string): Promise<void> =>
       wire.reload(async () => {
@@ -406,7 +406,7 @@ describe('pi 子智能体 wire：退订与收尾', () => {
       .toEqual(['收场前的最后一步']);
   });
 
-  it('dispose 全部退订并清缓冲：后台档子智能体不随本行续命', async () => {
+  it('dispose 全部退订并清缓冲：后台档子智能体不随候选续命', async () => {
     const session = createFakePiChildSession();
     const wire = createPiSubagentWire();
     await wire.reload(async () => {

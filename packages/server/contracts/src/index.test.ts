@@ -27,7 +27,7 @@ import {
   DRAWER_CHANNELS,
   DrawerChannelSchema,
   ERROR_CODES,
-  EvalRowSchema,
+  EvalCandidateSchema,
   InjectionBoundarySchema,
   InjectMessagesChangedFrameSchema,
   RetractAbilitySchema,
@@ -36,7 +36,7 @@ import {
   TurnInjectionChannelSchema,
   TurnInjectionCellSchema,
   TurnInjectionRetractSchema,
-  EvalRowStatusSchema,
+  EvalCandidateStatusSchema,
   EvalRunSchema,
   ExecutionModeSchema,
   GenerateRubricSchema,
@@ -58,15 +58,15 @@ import {
   ProviderSchema,
   ProviderViewSchema,
   ProtocolTypeSchema,
-  ROW_STATUS_LABELS,
+  CANDIDATE_STATUS_LABELS,
   RepoCommitsInputSchema,
   RepoInfoSchema,
   RepoPathInputSchema,
   RepoSourceStringSchema,
   RepoValidateInputSchema,
-  RowDiffFileSchema,
-  RowDiffIndexSchema,
-  RowArtifactFileSchema,
+  CandidateDiffFileSchema,
+  CandidateDiffIndexSchema,
+  CandidateArtifactFileSchema,
   RunArtifactIndexSchema,
   RunSignalFrameSchema,
   RunStreamFrameSchema,
@@ -95,7 +95,7 @@ import {
   SkillWarningSchema,
   SkillsPatchSchema,
   SkillsSettingsSchema,
-  TERMINAL_ROW_STATUSES,
+  TERMINAL_CANDIDATE_STATUSES,
   TestCaseSchema,
   ThemeModeSchema,
   composeTotalScore,
@@ -103,8 +103,8 @@ import {
   endpointText,
   hasSensitiveValue,
   httpStatusFor,
-  isRunnableRow,
-  isRunningRow,
+  isRunnableCandidate,
+  isRunningCandidate,
   isSensitiveKey,
   maskApiKey,
   mergeSkillsEntries,
@@ -124,9 +124,9 @@ import {
   type DrawerChannel,
   type RubricItem,
   type RubricEntry,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
-  type EvalRowStatus,
+  type EvalCandidateStatus,
   type ExecutionMode,
   type GenerateRubricInput,
   type ProtocolType,
@@ -142,9 +142,9 @@ import {
   type RepoCommitsInput,
   type RepoInfo,
   type RepoValidateInput,
-  type RowArtifactFile,
-  type RowDiffFile,
-  type RowDiffIndex,
+  type CandidateArtifactFile,
+  type CandidateDiffFile,
+  type CandidateDiffIndex,
   type RunArtifactIndex,
   type RunCreate,
   type RunStreamFrame,
@@ -183,9 +183,9 @@ describe('contracts 公共出口', () => {
       TestCaseSchema, CaseCreateSchema, CasePatchSchema, RepoInfoSchema, CommitCandidateSchema,
       RepoPathInputSchema, GenerateRubricSchema, RepoValidateInputSchema, RepoCommitsInputSchema,
       RepoSourceStringSchema,
-      AgentKindSchema, ExecutionModeSchema, EvalRowStatusSchema, EvalRowSchema, EvalRunSchema,
-      RunCreateSchema, RowDiffIndexSchema, RowDiffFileSchema,
-      RunArtifactIndexSchema, RowArtifactFileSchema, ArtifactKindSchema,
+      AgentKindSchema, ExecutionModeSchema, EvalCandidateStatusSchema, EvalCandidateSchema, EvalRunSchema,
+      RunCreateSchema, CandidateDiffIndexSchema, CandidateDiffFileSchema,
+      RunArtifactIndexSchema, CandidateArtifactFileSchema, ArtifactKindSchema,
       DrawerChannelSchema, RunSignalFrameSchema, RunStreamFrameSchema,
       AskUserChangedFrameSchema, InjectMessagesChangedFrameSchema,
       RubricGroupSchema, RubricItemSchema, ScoreResultSchema,
@@ -213,8 +213,8 @@ describe('contracts 公共出口', () => {
     expect(AGENT_LABELS.dsh).toBe('DeepSeek Harness');
     expect(AGENT_LABELS.pi).toBe('Pi Coding Agent');
     expect(PROTOCOL_LABELS.openai).toBe('OpenAI 兼容');
-    expect(ROW_STATUS_LABELS['timed-out']).toBe('已超时');
-    expect(TERMINAL_ROW_STATUSES).toContain('judged');
+    expect(CANDIDATE_STATUS_LABELS['timed-out']).toBe('已超时');
+    expect(TERMINAL_CANDIDATE_STATUSES).toContain('judged');
     // 抽屉通道值域：抽屉流的 URL 参数、服务端的白名单校验、客户端的抽屉键都从这一份派生
     expect([...DRAWER_CHANNELS]).toEqual(['candidate', 'judge']);
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
@@ -265,8 +265,8 @@ describe('contracts 公共出口', () => {
     // 总分仍由 `composeTotalScore` 算，但它现在的入参是「评分表 + 逐项判定」（判定与模型回的同形）
     const rubric = { groups: [{ name: 'g', items: [{ id: 'A', goal: 'g', weight: 100 }] }] };
     expect(composeTotalScore(rubric, [{ id: 'A', achieved: true, reason: '达成' }])).toBe(100);
-    expect(isRunnableRow('failed')).toBe(true);
-    expect(isRunningRow('running')).toBe(true);
+    expect(isRunnableCandidate('failed')).toBe(true);
+    expect(isRunningCandidate('running')).toBe(true);
     expect(httpStatusFor('JUDGE_PARSE_FAILED')).toBe(500);
     expect(new ServiceError('CONFLICT', '冲突').code).toBe('CONFLICT');
     expect(normalizeRemoteUrl('https://host/x.git/')).toBe('https://host/x.git');
@@ -313,7 +313,7 @@ describe('contracts 公共出口', () => {
     const protocol: ProtocolType = 'openai';
     const agent: AgentKind = 'codex';
     const mode: ExecutionMode = 'parallel';
-    const status: EvalRowStatus = 'judged';
+    const status: EvalCandidateStatus = 'judged';
     const rubricItem: RubricItem = { id: 'A1', goal: '追加 agent 字段', weight: 18 };
     const rubricEntry: RubricEntry = { key: 'A1', item: rubricItem, groupName: '一、生产代码', groupIndex: 0 };
     const theme: ThemeMode = 'auto';
@@ -340,14 +340,14 @@ describe('contracts 公共出口', () => {
     const repoValidateInput: RepoValidateInput | null = null;
     const repoCommitsInput: RepoCommitsInput | null = null;
     const generateInput: GenerateRubricInput | null = null;
-    const row: EvalRow | null = null;
+    const row: EvalCandidate | null = null;
     const run: EvalRun | null = null;
     const runCreate: RunCreate | null = null;
-    const rowDiffIndex: RowDiffIndex | null = null;
-    const rowDiffFile: RowDiffFile | null = null;
+    const candidateDiffIndex: CandidateDiffIndex | null = null;
+    const candidateDiffFile: CandidateDiffFile | null = null;
     const artifactKind: ArtifactKind | null = null;
     const artifactIndex: RunArtifactIndex | null = null;
-    const artifactFile: RowArtifactFile | null = null;
+    const artifactFile: CandidateArtifactFile | null = null;
     const score: ScoreResult | null = null;
     const rubricGroup: RubricGroup | null = null;
     const event: AgentEvent | null = null;
@@ -371,7 +371,7 @@ describe('contracts 公共出口', () => {
       protocol, agent, mode, status, rubricItem, rubricEntry, theme, code, settings, settingsView, patch, servers,
       provider, view, model, modelInput, modelPreview, modelPreviewList, modelsImport, providerCreate, providerPatch,
       testCase, caseCreate, casePatch, candidate, repoInfo, repoValidateInput, repoCommitsInput,
-      generateInput, row, run, runCreate, rowDiffIndex, rowDiffFile,
+      generateInput, row, run, runCreate, candidateDiffIndex, candidateDiffFile,
       artifactKind, artifactIndex, artifactFile,
       score, rubricGroup, event,
       drawerChannel, frame,
@@ -381,13 +381,13 @@ describe('contracts 公共出口', () => {
   });
 
   /**
-   * 老 `run.json` 里那一行的构造夹具（最小一份；
+   * 老 `run.json` 里那一候选的构造夹具（最小一份；
    * `run.test.ts` 那份同名夹具在另一个模块作用域里，跨文件取不到）。
-   * 刻意返回**字面量**而不是 `EvalRowSchema.parse` 的结果：这一条要验的正是「磁盘上已有的
+   * 刻意返回**字面量**而不是 `EvalCandidateSchema.parse` 的结果：这一条要验的正是「磁盘上已有的
    * 那一行**没有** `subagentTokens` 这一格时还能不能解析」——先 parse 再断言，就变成拿 schema
    * 自己的输出去问 schema（zod 会把未声明的键 strip 掉，那个问题恒为假，守卫也就永远不响）。
    */
-  function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
+  function makeCandidate(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
     return {
       id: 'row-1',
       agentKind: 'codex',
@@ -397,7 +397,7 @@ describe('contracts 公共出口', () => {
       modelId: 'm1',
       status: 'judged',
       branch: 'test/row-1',
-      workspacePath: 'C:/runs/run-1/rows/row-1/workspace',
+      workspacePath: 'C:/runs/run-1/candidates/row-1/workspace',
       baselineCommit: 'a'.repeat(40),
       tokens: null,
       turns: null,
@@ -414,64 +414,64 @@ describe('contracts 公共出口', () => {
   }
 
   /**
-   * `EvalRow.subagentTokens`。
-   * 两个方向都要钉住，与 `EvalRow.error.stage` / `EvalRow.attempts` 同一组理由：
+   * `EvalCandidate.subagentTokens`。
+   * 两个方向都要钉住，与 `EvalCandidate.error.stage` / `EvalCandidate.attempts` 同一组理由：
    *   ① **老 run.json 必须照样解析**——它整格不存在，写成必填会让 `listRuns()` 静默跳过那一轮
    *      （使用者看到的是「我的评测记录凭空少了几轮」，两端都不报错）；
    *   ② 带上它（数字或显式 `null`）时**原样保留**——被 strip 掉的话适配器写的分量永远到不了界面，
    *      而所有直接构造行对象的用例照样全绿。
    */
-  it('EvalRow 的 subagentTokens：可选、可空，老 run.json 不受影响', () => {
-    const legacy = makeRow();
+  it('EvalCandidate 的 subagentTokens：可选、可空，老 run.json 不受影响', () => {
+    const legacy = makeCandidate();
     expect('subagentTokens' in legacy).toBe(false); // 老记录：整格不存在
     // 上一句只证明夹具没写这一格；「写成必填就会让 listRuns() 静默跳过那一轮」由这里拦
-    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
-    const withSplit = makeRow({ subagentTokens: { input: 4, cached: 1, output: 2 } });
-    expect(EvalRowSchema.parse(withSplit).subagentTokens).toEqual({ input: 4, cached: 1, output: 2 });
-    const unknown = makeRow({ subagentTokens: null });
-    expect(EvalRowSchema.parse(unknown).subagentTokens).toBeNull();
+    expect(EvalCandidateSchema.safeParse(legacy).success).toBe(true);
+    const withSplit = makeCandidate({ subagentTokens: { input: 4, cached: 1, output: 2 } });
+    expect(EvalCandidateSchema.parse(withSplit).subagentTokens).toEqual({ input: 4, cached: 1, output: 2 });
+    const unknown = makeCandidate({ subagentTokens: null });
+    expect(EvalCandidateSchema.parse(unknown).subagentTokens).toBeNull();
   });
 
   /**
-   * `EvalRow.subagentTurns`（与 `subagentTokens` 逐格同一条处置）：
+   * `EvalCandidate.subagentTurns`（与 `subagentTokens` 逐格同一条处置）：
    * 同一组两个方向——老 `run.json` 整格不存在时要照样解析（必填会让 `listRuns()` 静默跳过那一轮），
    * 而带上它（数字或显式 `null`）时必须原样保留（被 strip 掉的话适配器写的分量永远到不了界面）。
    * 与上面那一条分开写而不是合并：两格是**两个**可选键，合并之后只要有一格漏进 schema，
    * 另一格的断言会替它把整条用例撑绿。
    */
-  it('EvalRow 的 subagentTurns：可选、可空，老 run.json 不受影响', () => {
-    const legacy = makeRow();
+  it('EvalCandidate 的 subagentTurns：可选、可空，老 run.json 不受影响', () => {
+    const legacy = makeCandidate();
     expect('subagentTurns' in legacy).toBe(false); // 老记录：整格不存在
-    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
-    const withSplit = makeRow({ subagentTurns: 4 });
-    expect(EvalRowSchema.parse(withSplit).subagentTurns).toBe(4);
+    expect(EvalCandidateSchema.safeParse(legacy).success).toBe(true);
+    const withSplit = makeCandidate({ subagentTurns: 4 });
+    expect(EvalCandidateSchema.parse(withSplit).subagentTurns).toBe(4);
     // 显式 null = 「明确没采到」（有子智能体但轮次读不到），与缺格的「保持原值」是两件事
-    const unknown = makeRow({ subagentTurns: null });
-    expect(EvalRowSchema.parse(unknown).subagentTurns).toBeNull();
+    const unknown = makeCandidate({ subagentTurns: null });
+    expect(EvalCandidateSchema.parse(unknown).subagentTurns).toBeNull();
   });
 
   /**
-   * `EvalRow.streamingDelta`：同一组两个方向 + **三态不许互相顶替**。
+   * `EvalCandidate.streamingDelta`：同一组两个方向 + **三态不许互相顶替**。
    *
    * 这一格是「本次到底有没有收到逐字流」的唯一事后痕迹（增量帧只广播不落盘），
    * 而它的三态在语义上是三件事：**缺格 = 没观测**、`frameCount: 0` = 观测到零帧、
    * `> 0` = 有增量。所以除了「老 run.json 照样解析」之外，还要钉住**数字原样保留**——
    * 被 strip 掉的话适配器写的观测永远到不了环境抽屉，界面继续把「没挂上」显示成「没观测」。
    */
-  it('EvalRow 的 streamingDelta：可选、可空，三态各自可辨', () => {
-    const legacy = makeRow();
+  it('EvalCandidate 的 streamingDelta：可选、可空，三态各自可辨', () => {
+    const legacy = makeCandidate();
     expect('streamingDelta' in legacy).toBe(false); // 老记录：整格不存在 = 没观测
-    expect(EvalRowSchema.safeParse(legacy).success).toBe(true);
+    expect(EvalCandidateSchema.safeParse(legacy).success).toBe(true);
 
-    const withDelta = makeRow({ streamingDelta: { frameCount: 12, lastFrameChars: 340 } });
-    expect(EvalRowSchema.parse(withDelta).streamingDelta).toEqual({ frameCount: 12, lastFrameChars: 340 });
+    const withDelta = makeCandidate({ streamingDelta: { frameCount: 12, lastFrameChars: 340 } });
+    expect(EvalCandidateSchema.parse(withDelta).streamingDelta).toEqual({ frameCount: 12, lastFrameChars: 340 });
 
     // `0` 是**观测到的值**（不是「没采到」）：显式 null 才是「没观测」，两者必须都能表达
-    const zero = makeRow({ streamingDelta: { frameCount: 0, lastFrameChars: 0 } });
-    expect(EvalRowSchema.parse(zero).streamingDelta).toEqual({ frameCount: 0, lastFrameChars: 0 });
-    expect(EvalRowSchema.parse(makeRow({ streamingDelta: null })).streamingDelta).toBeNull();
+    const zero = makeCandidate({ streamingDelta: { frameCount: 0, lastFrameChars: 0 } });
+    expect(EvalCandidateSchema.parse(zero).streamingDelta).toEqual({ frameCount: 0, lastFrameChars: 0 });
+    expect(EvalCandidateSchema.parse(makeCandidate({ streamingDelta: null })).streamingDelta).toBeNull();
 
     // 负数帧数不是「没观测」的近义词，而是坏数据：schema 层就拒（免得界面画出负的条数）
-    expect(EvalRowSchema.safeParse(makeRow({ streamingDelta: { frameCount: -1, lastFrameChars: 0 } })).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse(makeCandidate({ streamingDelta: { frameCount: -1, lastFrameChars: 0 } })).success).toBe(false);
   });
 });

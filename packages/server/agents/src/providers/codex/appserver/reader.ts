@@ -178,7 +178,7 @@ export async function readThreadContent(
 }
 
 /**
- * 读一次技能清单（`skills/list`）——**厂商的结构化清单**，行级「本行技能」那一格最硬的证据。
+ * 读一次技能清单（`skills/list`）——**厂商的结构化清单**，运行级「本次运行的技能」那一格最硬的证据。
  *
  * 参数只给 `cwds`：真机三种参数形状（`{}` / `{cwds:[]}` / `{cwds:[cwd]}`）都能通，而带上 cwd 才会
  * 把**项目级** skill 根（`<cwd>/.{agents,codex}/skills/`）一并列出来——那正是「被测仓库自带的

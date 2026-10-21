@@ -231,7 +231,7 @@ describe('projectDshNotification：派发行的派发点（目录项晚到 ⇒ �
       lastAssistantMessage: [{ type: 'text', text: '3' }],
     },
   });
-  /** 带派发记账三格的取数面（生产上由 `index.ts` 每行建一份） */
+  /** 带派发记账三格的取数面（生产上由 `index.ts` 每个候选建一份） */
   function newRunState() {
     return {
       childSessions: new Set<string>(),
@@ -324,7 +324,7 @@ describe('projectDshNotification：派发行的派发点（目录项晚到 ⇒ �
     expect(atCatalog.subagents?.[0]).toMatchObject({ name: '同名任务', parentCallId: null });
   });
 
-  it('子会话自己再派子智能体不进这一行的记账（嵌套派发不参与认领）', () => {
+  it('子会话自己再派子智能体不进这个候选的记账（嵌套派发不参与认领）', () => {
     const state = newState();
     const runState = newRunState();
     projectDshNotification(started(), state, CONTEXT, runState);
@@ -475,7 +475,7 @@ describe('projectDshNotification（通知投影）', () => {
     expect(projection.drafts).toHaveLength(1);
   });
 
-  it('实测确认：assistant/message 的用量被提取并记进**本行累计**，并当场交出去（字段名逐字来自探测 dump）', () => {
+  it('实测确认：assistant/message 的用量被提取并记进**候选累计**，并当场交出去（字段名逐字来自探测 dump）', () => {
     const state = newState();
     const projection = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
@@ -652,7 +652,7 @@ describe('projectDshNotification（通知投影）', () => {
    *
    * 判据两条：① 厂商源码里 `mapUsage` 直传 pi-ai 的 `usage.totalTokens`，而那一格来自**该次响应**；
    * ② 真机四条 `assistant/message` 的恒等式逐条成立（`10058+384+110 = 10552`、…、`8613+13312+604 = 22529`），
-   * 而四条之和是 57447。按「覆盖」读会把这一行记成最后一步的 22529——比同一个对象里求和出来的
+   * 而四条之和是 57447。按「覆盖」读会把这个候选记成最后一步的 22529——比同一个对象里求和出来的
    * `cached: 34688` 还小，任何并排对照都会得出「我们读错了字段」。
    */
   it('usage.total 与三格同族 ⇒ 逐条相加（真机四条读数）', () => {
@@ -766,8 +766,8 @@ describe('projectDshNotification（通知投影）', () => {
   });
 
   /**
-   * `session.status`（真机每行两条：`running` / `idle`）是**已识别且有意不投影**的一格 ⇒
-   * 零草稿。曾经的实现让它落进 `unknown` 兜底，于是每行多两条原始 JSON 日志，
+   * `session.status`（真机每个候选两条：`running` / `idle`）是**已识别且有意不投影**的一格 ⇒
+   * 零草稿。曾经的实现让它落进 `unknown` 兜底，于是每个候选多两条原始 JSON 日志，
    * 界面「未识别的厂商载荷」汇总里混着与轮次、内容、失败都无关的厂商状态。
    */
   it('已识别但有意不投影的通知（session.status）不产任何草稿', () => {
@@ -786,7 +786,7 @@ describe('projectDshNotification（通知投影）', () => {
   });
 
   /**
-   * 真机**每行必现**的一批厂商事件（本轮真机通知直方图逐条核过）⇒ 显式登记成「已识别、零草稿」，
+   * 真机**每个候选必现**的一批厂商事件（本轮真机通知直方图逐条核过）⇒ 显式登记成「已识别、零草稿」，
    * 不再走 `unknown` 兜底。判据：它们既不携带轮次、也不携带用量或失败，落成原始 JSON 只是噪声——
    * 而噪声的代价是「真正未识别的类型」被埋在几百条 JSON 里（`session/title` 那条正是被埋的一格）。
    */
@@ -842,8 +842,8 @@ describe('projectDshNotification（通知投影）', () => {
 
 /**
  * 消息级用量。三条判据：
- *   · wire 上的 `data.usage` **逐字**进这条消息的 `usage`（不是累计快照、不是行级 tokens）；
- *   · 三项缺一 ⇒ 消息级与行级**同时**是「未采集」（都不填 0）；
+ *   · wire 上的 `data.usage` **逐字**进这条消息的 `usage`（不是累计快照、不是候选级 tokens）；
+ *   · 三项缺一 ⇒ 消息级与候选级**同时**是「未采集」（都不填 0）；
  *   · 子会话的消息同样带它自己的用量（与主会话共用同一个归一函数）。
  */
 /**
@@ -927,7 +927,7 @@ describe('assistant/message 的消息级 usage', () => {
     });
   });
 
-  it('缓存读缺席 ⇒ 消息级按 0 计（与行级同一份读数）；input / output 缺失才是「未采到」', () => {
+  it('缓存读缺席 ⇒ 消息级按 0 计（与候选级同一份读数）；input / output 缺失才是「未采到」', () => {
     const state = newState();
     const projection = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
@@ -985,12 +985,12 @@ describe('assistant/message 的消息级 usage', () => {
 });
 
 /**
- * **消息级用量与行级累计并存且互不影响**。
+ * **消息级用量与候选级累计并存且互不影响**。
  * 两条口径同源于同一条 wire 负载，但一个是「这一次调用」、一个是「到目前为止」——
  * 改动最容易在这里出静默的错：拿累计当消息级（页脚数字越滚越大）或反过来（卡片少报）。
  */
-describe('消息级与行级两条口径并存', () => {
-  it('同一条通知喂两处：消息级各是各的，行级是两次之和', () => {
+describe('消息级与候选级两条口径并存', () => {
+  it('同一条通知喂两处：消息级各是各的，候选级是两次之和', () => {
     const state = newState();
     const first = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, {
@@ -1016,7 +1016,7 @@ describe('消息级与行级两条口径并存', () => {
     // 消息级：每条各是它自己那一次调用的值（不是累计）
     expect(first.messages?.[0]?.usage?.input).toBe(295);
     expect(second.messages?.[0]?.usage?.input).toBe(210);
-    // 行级：两次之和（既有口径一个字不动）
+    // 候选级：两次之和（既有口径一个字不动）
     expect(second.tokens).toEqual({ input: 505, cached: 15872, output: 1403, reasoningOutput: null, total: null });
   });
 });
@@ -1028,7 +1028,7 @@ describe('消息级与行级两条口径并存', () => {
  * 口径：消息的 `roundTrip` 与 `usage.turn.round` 是**同一个数**，都由 `message.ts` 的
  * `dshTurnAttribution` 算出来——**按会话单调编号**（会话计数是权威、厂商的 `step` 只用来补缺口，
  * 因为 `step` 是「每个 turn 内从 1 数」），不带 `step` 的出口（`turn/end`、tap 增量）退回**该会话**
- * 当前往返号，一次都没见过的会话给 `null`（**不拿本行累计号顶替**）。合计（`turns` / `tokens`）
+ * 当前往返号，一次都没见过的会话给 `null`（**不拿候选累计号顶替**）。合计（`turns` / `tokens`）
  * 仍是全树口径，与这两格不是一回事。
  */
 describe('projectDshNotification：归属（每会话自己的 step）', () => {
@@ -1042,7 +1042,7 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
   /**
    * 每会话自己的往返号（与厂商给的 `step` 不是一回事：`step` 每个 turn 内从 1 数）。
    * 消息的 `roundTrip` 与 `usage.turn.round` 都用它。
-   * 用 `state.turns`（本行全局计数）⇒ 主会话第二条读到的是**别人**的数——**1**
+   * 用 `state.turns`（候选全局计数）⇒ 主会话第二条读到的是**别人**的数——**1**
    * （全局计数里只有子会话那一步），子会话再多跑几步时它还会被推得更高。号因此既不等于自己的步数、
    * 也不等于任何会话的步数。
    */
@@ -1053,7 +1053,7 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
       state,
       CONTEXT,
     );
-    // 子会话插一条（本行累计轮次照样 +1：`state.turns` 是**全树**口径，见下一条用例）
+    // 子会话插一条（候选累计轮次照样 +1：`state.turns` 是**全树**口径，见下一条用例）
     projectDshNotification(sessionEvent('step/start', { turn: 1, step: 1 }, 'child-1'), state, CONTEXT);
     const main2 = projectDshNotification(
       sessionEvent(DSH_ASSISTANT_MESSAGE_TYPE, { turn: 1, step: 2, message: { content: [{ type: 'text', text: '二' }] } }),
@@ -1125,7 +1125,7 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
   });
 
   /**
-   * **子会话的失败不是本行的失败**（真机读数：只把子会话打挂（注入 400）、父会话正常答完，
+   * **子会话的失败不是候选的失败**（真机读数：只把子会话打挂（注入 400）、父会话正常答完，
    * 整行却是 `ok:false / exitReason:'error'`，错误文案与 stack 全是**子会话**那一句）。
    *
    * 口径与 `finalText` 那道会话闸**完全同源**：`assistant/message` 那一支有
@@ -1134,7 +1134,7 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
    * 子会话那一笔**照旧留证据**：`error` 草稿进事件日志，子任务行的终态走
    * `subagent.finished{status,stopReason}` 那条通道。
    */
-  it('子会话的 `turn/end(kind:error)` 只留证据、不判整行失败；主会话的同样失败照旧判失败', () => {
+  it('子会话的 `turn/end(kind:error)` 只留证据、不判整候选失败；主会话的同样失败照旧判失败', () => {
     const state = newState();
     projectDshNotification(CHILD_STARTED, state, CONTEXT);
     const child = projectDshNotification(
@@ -1148,7 +1148,7 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
     );
     // 证据照留（一条 error 草稿，带厂商原文）
     expect(child.drafts.some((draft) => draft.type === 'error' && draft.message.includes('child hit a 400'))).toBe(true);
-    // 但不改本行结论
+    // 但不改候选结论
     expect(child.failure).toBeNull();
 
     // 主会话的失败照旧判失败（同一支分支、同一份判据，两个方向都要钉）
@@ -1367,10 +1367,10 @@ describe('projectDshNotification：归属（每会话自己的 step）', () => {
       CONTEXT,
     );
     expect(child.turn).toEqual({ subagentId: 'child-1', round: 1 });
-    // `turn/end` 的载荷里没有 step ⇒ 退回**该会话**最后一个 step（不是本行累计号）
+    // `turn/end` 的载荷里没有 step ⇒ 退回**该会话**最后一个 step（不是候选累计号）
     const end = projectDshNotification(sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind: 'completed' } }, 'child-1'), state, CONTEXT);
     expect(end.turn).toEqual({ subagentId: 'child-1', round: 1 });
-    // 一次 step 都没见过的会话 ⇒ 没有归属（不拿本行累计号顶替）
+    // 一次 step 都没见过的会话 ⇒ 没有归属（不拿候选累计号顶替）
     const stranger = projectDshNotification(sessionEvent(DSH_TURN_END_TYPE, { turn: 1, reason: { kind: 'completed' } }, 'child-2'), newState(), CONTEXT);
     expect(stranger.turn).toBeNull();
   });
@@ -1515,7 +1515,7 @@ describe('projectDshNotification：工具调用 / 结果的人话摘要', () => 
    * 载荷逐字取自真机（该次运行的 `assistant/attempt`：`stream[]` 里
    * `{type:'chunk', chunk:{type:'usage', usage:{…}}}` 排在最后，`finish` 是 `kind:'error'`）。
    */
-  it('assistant/attempt 的用量进本行累计（重试掉的失败尝试不再静默少算）', () => {
+  it('assistant/attempt 的用量进行的累计（重试掉的失败尝试不再静默少算）', () => {
     const state = newState();
     const projection = projectDshNotification(
       sessionEvent('assistant/attempt', {
@@ -2058,7 +2058,7 @@ describe('projectDshNotification：技能目录（user/message / skill-catalog�
  * 最终答复的**会话归属**（`state.finalText` 只认主会话）。
  *
  * 子会话的 `assistant/message` 与主会话走同一条通知流、且明确放行（见 `index.ts` 的放行规则），
- * 少了这道过滤，子智能体在本行答复之后再说话就会把它顶掉——而评分通路只读最终答复
+ * 少了这道过滤，子智能体在候选答复之后再说话就会把它顶掉——而评分通路只读最终答复
  * （`AgentRunResult.finalText`），症状是「拿子智能体那句话去评分」，`ok` 仍是 true、零 WARN。
  * 判据与另三家同尺（codex 的 `threadId === mainThreadId`、claude 只在主循环 `result` 上写、
  * pi 只认父会话的 `message_end`），一致性套件也要求「`finalText` 必须是主会话答复之一」。
@@ -2073,7 +2073,7 @@ describe('projectDshNotification：最终答复只认主会话', () => {
       sessionId,
     );
 
-  it('子会话在本行答复之后再说话 ⇒ `finalText` 仍是主会话那一句', () => {
+  it('子会话在候选答复之后再说话 ⇒ `finalText` 仍是主会话那一句', () => {
     const state = newState();
     const runState = {
       childSessions: new Set<string>(),
@@ -2113,7 +2113,7 @@ describe('projectDshNotification：最终答复只认主会话', () => {
  *
  * 契约：`kind` 是「派发方式」（如 `spawn_agent` / `subagent` / `Task`），界面把它渲染成
  * 「派发方式」那一格（`build-model` → `subagent-bar`）。catalog 的 `mode`（`one-shot` /
- * `continuable`）是这一格在运行行的取值；`subagent.finished` 上的 `provider` 是另一件事
+ * `continuable`）是这一格在本次运行的取值；`subagent.finished` 上的 `provider` 是另一件事
  * （跑这个子会话的提供方名），契约里没有它的落点。把 `provider` 写进 `kind` 的后果是：
  * 同一张卡片在跑动期显示 `one-shot`、收尾那一刻变成 `spawn`，而 `mode` 此后彻底消失。
  */

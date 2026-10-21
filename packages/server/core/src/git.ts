@@ -1,5 +1,5 @@
 /**
- * git CLI 原语：仓库校验、commit 判定、用例级缓存克隆、文件系统级目录复制、行分支。
+ * git CLI 原语：仓库校验、commit 判定、用例级缓存克隆、文件系统级目录复制、候选分支。
  * 三个必须成立的口径：
  *   1. **只用真实 git 进程**，不做任何 mock 封装：mock 掉的正是最容易错的地方
  *      （`cat-file -e` 的 `^{commit}` 语法、`rev-parse --show-toplevel` 的返回形态、
@@ -28,8 +28,8 @@ import { createLogger } from './logger';
 
 const log = createLogger('git');
 
-/** 行分支的命名空间（`test/{rowId}`）：解析默认分支时要整个排除 */
-const ROW_BRANCH_PREFIX = 'test/';
+/** 候选分支的命名空间（`test/{candidateId}`）：解析默认分支时要整个排除 */
+const CANDIDATE_BRANCH_PREFIX = 'test/';
 
 /**
  * `execute` 的失败包装：中文原因当用户文案，git 的英文 `fatal:` 原文只进 `context`。
@@ -130,7 +130,7 @@ export function resolveRepoInfo(repoPath: string): RepoInfo {
  *
  * **一条命令而不是两条**：早先是 `cat-file -e` 判存在 + `rev-parse` 取全量 hash（2 个进程），
  * 而 `--verify` 一条就能同时给出两者（实测：短 hash 归一成 40 位、blob 与非 commit 对象非零退出、
- * 不存在的 hash 非零退出），在「每次 git 进程创建 ≈ 0.5s」的机器上每行准备省一次。
+ * 不存在的 hash 非零退出），在「每次 git 进程创建 ≈ 0.5s」的机器上每个候选准备省一次。
  * **不加 `--quiet`**：它会连 stderr 一起吃掉，`context.gitMessage` 就空了——那是区分
  * 「hash 不存在」与「仓库坏了 / index.lock 被占」的唯一线索。
  * 失败原因合成一条中文文案（早先 `cat-file` 与 `rev-parse` 各有一条，而调用方无法分辨两者，
@@ -196,8 +196,8 @@ export function listCommits(repoPath: string, limit = 20, ref: string | null = n
  *      克隆那一刻，「默认分支 HEAD」就成了「上次克隆时的 HEAD」——来源新增的提交不会被评测；
  *   ③ 请求了具体 `commitHash` 而缓存里没有（来源在缓存建立之后才有的提交）先 `git fetch` 一次再判，
  *      仍没有才报 INVALID_REF，且 message 点名**来源仓库路径**：用例域校验这个 hash 用的是来源仓库，
- *      错误信息里出现行工作区路径会把用户指向完全无关的地方。
- * 来源记录放 `.git` 里面而不是工作树根：工作树根的文件会被 `copyWorkspace` 复制进行工作区，
+ *      错误信息里出现行的工作区路径会把用户指向完全无关的地方。
+ * 来源记录放 `.git` 里面而不是工作树根：工作树根的文件会被 `copyWorkspace` 复制进行的工作区，
  * 再被 `git status` 当成「agent 新建的文件」计入三样 diff 与界面的文件树（污染评分输入）。
  */
 export function ensureCaseCache(repoPath: string, cacheDir: string, commitHash: string | null = null): void {
@@ -255,7 +255,7 @@ export function ensureCaseCache(repoPath: string, cacheDir: string, commitHash: 
   );
 }
 
-/** 来源记录的落点：缓存仓库的 `.git` 内（见 `ensureCaseCache` 的 JSDoc：工作树根会被复制进行工作区） */
+/** 来源记录的落点：缓存仓库的 `.git` 内（见 `ensureCaseCache` 的 JSDoc：工作树根会被复制进行的工作区） */
 function cacheOriginFile(cacheDir: string): string {
   return join(cacheDir, '.git', 'aieval-origin.json');
 }
@@ -281,7 +281,7 @@ function readCacheOrigin(cacheDir: string): CacheOriginRecord | null {
   const file = cacheOriginFile(cacheDir);
   if (!existsSync(file)) return null;
   try {
-    // 容忍 BOM（与 event-log 同口径）：外部工具编辑过的 JSON 首行会带 U+FEFF，JSON.parse 直接抛
+    // 容忍 BOM（与 event-log 同口径）：外部工具编辑过的 JSON 首个候选会带 U+FEFF，JSON.parse 直接抛
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
     if (typeof parsed !== 'object' || parsed === null) return null;
     const { repoPath, tip, recordedAt } = parsed as Partial<CacheOriginRecord>;
@@ -345,14 +345,14 @@ function cloneCaseCache(repoPath: string, cacheDir: string): void {
 
 /**
  * 把已有缓存刷新到来源仓库当前的 HEAD（`commitHash: null` 的语义 = 默认分支 tip）：`git fetch` + `reset --hard`。
- * `reset --hard` 丢掉缓存工作树里的脏改动**是要的**：缓存是来源的只读快照，agent 的改动在行工作区里；
- * 缓存脏着会让「复制出的工作区 == 来源 tip」这个前提不成立，行里凭空出现没人改过的改动。
+ * `reset --hard` 丢掉缓存工作树里的脏改动**是要的**：缓存是来源的只读快照，agent 的改动在候选工作区里；
+ * 缓存脏着会让「复制出的工作区 == 来源 tip」这个前提不成立，候选里凭空出现没人改过的改动。
  * 来源不可达（路径被删 / 移走）时**抛错而不是沿用旧缓存**：此时「默认分支 HEAD」根本无法确定，
  * 沿用等于把一个用户已经看不到的快照当成当前代码来评分（那类静默错分）。
  */
 function refreshCacheToSourceHead(repoPath: string, cacheDir: string): void {
   const target = sourceHeadCommit(repoPath);
-  // 仓库在、但还没有任何提交（unborn HEAD）：没有可刷新的 tip，把报错留给 checkoutRow 去说
+  // 仓库在、但还没有任何提交（unborn HEAD）：没有可刷新的 tip，把报错留给 checkoutCandidate 去说
   if (target === null) return;
   try {
     execute(cacheDir, ['fetch', '--quiet', 'origin']);
@@ -398,9 +398,9 @@ function sourceHeadCommit(repoPath: string): string | null {
 }
 
 /**
- * 文件系统级目录复制：缓存 → 行工作区；目标父目录不存在则创建。
- * 为什么不是每行 `git clone`：本地路径克隆仍是完整对象复制与打包传输，
- * 而缓存已是完整仓库，复制出的目录直接 `checkout` 即可——每行准备时间从「克隆耗时」
+ * 文件系统级目录复制：缓存 → 候选工作区；目标父目录不存在则创建。
+ * 为什么不是每个候选 `git clone`：本地路径克隆仍是完整对象复制与打包传输，
+ * 而缓存已是完整仓库，复制出的目录直接 `checkout` 即可——每个候选准备时间从「克隆耗时」
  * 降到「磁盘复制耗时」，这是「开一轮评测」秒开的关键。
  * `cpSync` 会连同 `.git` 一起复制，这正是我们要的（复制出来的必须是个能 checkout 的仓库）。
  */
@@ -428,25 +428,25 @@ export function copyWorkspace(srcDir: string, destDir: string): void {
 
 /**
  * 解析「默认分支 HEAD」（`commitHash === null` 的语义），返回 40 位具体 hash。
- * 为什么不直接 `rev-parse HEAD`：重跑同一行时工作区的 HEAD 已经切在 `test/{rowId}` 上，
+ * 为什么不直接 `rev-parse HEAD`：重跑同一行时工作区的 HEAD 已经切在 `test/{candidateId}` 上，
  * 而那是个**已经前移**的分支（上一轮 agent 的提交）——拿它当基线等于「以上一轮的产出为起点」，
  * 第二轮 diff 会变成空的，评分模型据此给出错误的高分（要防的正是这个）。
  * 两条路径：
- *   ① HEAD 不在行分支上（全新工作副本的常态：prepareRowWorkspace 每次清掉行目录再复制）
+ *   ① HEAD 不在候选分支上（全新工作副本的常态：prepareCandidateWorkspace 每次清掉候选目录再复制）
  *      → HEAD 就是默认分支的 tip，与 `rev-parse HEAD` 等价；
- *   ② HEAD 已在行分支上（同一个工作区被重跑）→ 从本地分支表里排除**行分支与整个 `test/*`
- *      命名空间**后取那一个。为什么要连整个命名空间一起排除：同一用例下多候选行各自
- *      建 `test/{rowId}`，重跑某一行时别的行分支还留在工作区里；只排自己那一个会把它们当成
+ *   ② HEAD 已在候选分支上（同一个工作区被重跑）→ 从本地分支表里排除**候选分支与整个 `test/*`
+ *      命名空间**后取那一个。为什么要连整个命名空间一起排除：同一用例下多候选各自
+ *      建 `test/{candidateId}`，重跑某一行时别的候选分支还留在工作区里；只排自己那一个会把它们当成
  *      默认分支候选，于是「多候选」误报成不唯一，重跑直接失败。
  * ② 成立的前提（必须写在这里而不只是体现在代码里）：用例缓存来自
  * `git clone <本地路径>`，而本地路径克隆**只建一个本地分支**——来源仓库的默认分支；
  * 其余分支都被映射成 `refs/remotes/origin/*` 远程跟踪引用。于是工作区的本地分支集合
- * 在行分支建立前是 {默认分支}，建立后是 {默认分支, test/rowId}，排除行分支后必然唯一。
+ * 在候选分支建立前是 {默认分支}，建立后是 {默认分支, test/candidateId}，排除候选分支后必然唯一。
  * 一旦这个前提不成立（本地分支 0 个或 ≥2 个），说明工作区不是「我们克隆 + 复制」出来的，
  * 此时**报错而不是随手挑一个**：挑错会让 diff 悄悄变成空，那是最坏的失败模式
- * （静默给出错误高分），宁可让这一行明确失败。
+ * （静默给出错误高分），宁可让这个候选明确失败。
  */
-function resolveBaselineCommit(dir: string, rowBranch: string): string {
+function resolveBaselineCommit(dir: string, candidateBranch: string): string {
   let current = '';
   try {
     current = execute(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
@@ -454,35 +454,35 @@ function resolveBaselineCommit(dir: string, rowBranch: string): string {
     // 还没有任何提交时 `HEAD` 不可解析：交给 assertCommit 去给出 INVALID_REF 的中文原因
     current = '';
   }
-  if (current !== rowBranch) return assertCommit(dir, 'HEAD');
+  if (current !== candidateBranch) return assertCommit(dir, 'HEAD');
 
   const candidates = execute(dir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])
     .split('\n')
     .map((line) => line.trim())
-    .filter((name) => name !== '' && name !== rowBranch && !name.startsWith(ROW_BRANCH_PREFIX));
+    .filter((name) => name !== '' && name !== candidateBranch && !name.startsWith(CANDIDATE_BRANCH_PREFIX));
   const only = candidates.length === 1 ? candidates[0] : undefined;
   if (only === undefined) {
     throw new ServiceError(
       'INTERNAL',
-      `无法确定默认分支：${dir}（HEAD 已在 ${rowBranch} 上，除它之外的本地分支有 ` +
+      `无法确定默认分支：${dir}（HEAD 已在 ${candidateBranch} 上，除它之外的本地分支有 ` +
         `${candidates.length} 个：${candidates.join('、') || '（一个都没有）'}）`,
-      { context: { dir, branch: rowBranch, candidates } },
+      { context: { dir, branch: candidateBranch, candidates } },
     );
   }
   return assertCommit(dir, only);
 }
 
 /**
- * 在工作副本里取基线并建行分支：checkout <commit> → checkout -b <branch>。
+ * 在工作副本里取基线并建候选分支：checkout <commit> → checkout -b <branch>。
  * 用 `checkout -B` 一条命令同时办成两件事：把分支重置到基线并切过去。
- * 为什么是 `-B` 而不是 `-b`：重跑同一行时 `test/{rowId}` 已存在，`-b` 会直接以
+ * 为什么是 `-B` 而不是 `-b`：重跑同一行时 `test/{candidateId}` 已存在，`-b` 会直接以
  * 「分支已存在」失败；`-B` 等价于「先删旧分支再建」，且是原子的。
  * `baselineCommit` 返回的是**解析后的 40 位具体 hash**：`commitHash: null`（用默认分支 HEAD）时
  * 必须把默认分支解析成具体值，否则后面没有可比基线（见 resolveBaselineCommit）。
  * 先 `assertCommit` 再切换：否则失败会留下一个「切了一半」的工作区，错误码也分不清是
  * 「commit 不存在」还是「checkout 失败」。
  */
-export function checkoutRow(
+export function checkoutCandidate(
   dir: string,
   commitHash: string | null,
   branch: string,
@@ -491,11 +491,11 @@ export function checkoutRow(
   try {
     execute(dir, ['checkout', '--quiet', '-B', branch, target]);
   } catch (error) {
-    throw new ServiceError('INTERNAL', `建立行分支失败：${branch}（${gitMessage(error)}）`, {
+    throw new ServiceError('INTERNAL', `建立候选分支失败：${branch}（${gitMessage(error)}）`, {
       context: { dir, branch, target },
     });
   }
-  log.info('行分支已建立', { dir, branch, baselineCommit: target });
+  log.info('候选分支已建立', { dir, branch, baselineCommit: target });
   return { baselineCommit: target };
 }
 
@@ -507,8 +507,8 @@ const EMPTY_COMMIT_AUTHOR = { name: 'Aieval Bot', email: 'bot@aieval.local' };
 
 /**
  * 「无来源」用例的工作区初始化：建空目录 → `git init -b main` → 空提交。
- * 空提交不是仪式：HEAD 不存在（unborn HEAD）时，checkoutRow 的基线解析（`assertCommit(dir, 'HEAD')`）
- * 与 collectDiff 都会以「commit 不存在」失败——有了这一次提交，基线 / 行分支 / diff 全部照常成立。
+ * 空提交不是仪式：HEAD 不存在（unborn HEAD）时，checkoutCandidate 的基线解析（`assertCommit(dir, 'HEAD')`）
+ * 与 collectDiff 都会以「commit 不存在」失败——有了这一次提交，基线 / 候选分支 / diff 全部照常成立。
  * 默认分支显式 `-b main`：`git init` 的初始分支随机器配置走（master / main 不定），
  * 而工具要求跨机器行为一致（测试夹具同口径）。
  */
@@ -544,15 +544,15 @@ const TRUNCATED_MARK = '\n\n> **diff 已截断**：以下文件因超出体积�
 
 /**
  * 三样 diff 合并 + 计数。
- * `baselineCommit` 必须是具体 hash：空串（「尚未准备」）在函数第一行就抛 INTERNAL，
- * 绝不降级成 `HEAD..HEAD` 的空 diff（理由见那里的行内注释）。
+ * `baselineCommit` 必须是具体 hash：空串（「尚未准备」）在函数第一个候选就抛 INTERNAL，
+ * 绝不降级成 `HEAD..HEAD` 的空 diff（理由见那里的候选内注释）。
  * 读取次序是**刻意选定**的（①→⑤，本机实测于 `git version 2.47.0.windows.2`），但**顺序本身不承重**：
  *   ① `git status --porcelain -z` 先读未跟踪清单：第三个来源就是 `??` 清单，
  *      先读也让 `parseUntracked` 的主用例保持为 `?? `（实测 `-N` 之后同一份输出里
  *      `?? brand-new.txt` 会变成 ` A brand-new.txt`）。**但这是冗余保险，不是硬约束**：
  *      `parseUntracked` 同时接受 `?? ` 与 ` A `，把本行挪到 ② 之后没有任何可观测差异——
  *      变异验证：整套 `git-diff-*.test.ts`（29 条）仍绿。真正保住结果的是「接受 ` A `」那次放宽；
- *      若日后把它收窄回只认 `?? `，本行的顺序就**重新**变成承重的。
+ *      若日后把它收窄回只认 `?? `，本候选的顺序就**重新**变成承重的。
  *   ② `git add --intent-to-add --all`：只**登记**不暂存（实测登记后 `tracked.txt` 仍是 ` M`），
  *      让未跟踪文件的正文进入 `git diff HEAD`。不加它，新文件只有文件名——评分模型看不见内容，
  *      会把「看不到的改动」当成「没改」，静默给出错误的高分。
@@ -580,7 +580,7 @@ export function collectDiff(
     deletions: number;
   } {
   // 空基线必须在这里拦住：`git diff ..HEAD` 会被 git 当成 `HEAD..HEAD`，退出码 0、输出为空，
-  // 于是「准备阶段失败、baselineCommit 还空着」的行会拿到一份**看起来没改动**的 diff 并照常打分
+  // 于是「准备阶段失败、baselineCommit 还空着」的候选会拿到一份**看起来没改动**的 diff 并照常打分
   //（最坏的那类失败：静默给出错误的高分）。空串的语义是「尚未准备」，
   // 它不是合法基线，调用方也无法从返回值里看出基线是空的，故只能在这里抛。
   if (baselineCommit.trim() === '') {
@@ -595,7 +595,7 @@ export function collectDiff(
   executeOrFail(dir, ['add', '--intent-to-add', '--all'], '登记未跟踪文件');
 
   // ③+④ 与 ⑤ 各合并成**一次** `git diff`：`--numstat -p` 一次进程同时给出计数与正文
-  // （实测：numstat 的每一行在前、补丁块从第一行行首的 `diff --git ` 开始；两条命令的输出
+  // （实测：numstat 的每行记录在前、补丁块从第一行行首的 `diff --git ` 开始；两条命令的输出
   // 逐字节相同，只是省掉一次进程创建——本机进程创建 ≈ 0.5s/次，一个用例调两次 collectDiff
   // 就少起 2 个进程）。切分口径见 splitNumstatPatch。
   // ③ 必须在 ② 之后：未跟踪文件的增删两列只有登记之后才出现在 numstat 里。
@@ -647,13 +647,13 @@ export function collectDiff(
 /**
  * 把 `git diff --numstat -p` 的**一次**输出切成「计数段」与「补丁段」。
  *
- * 实测（git 2.47.0.windows.2）：计数段在前（每行 `<插入>\t<删除>\t<路径>`），补丁段从
+ * 实测（git 2.47.0.windows.2）：计数段在前（每个候选 `<插入>\t<删除>\t<路径>`），补丁段从
  * **第一行行首的** `diff --git ` 开始。切分点只看行首：补丁正文里也会出现 `diff --git`
  * 这样的字符串（改动的就是一份 diff 文本时），按子串切会把正文当成计数段——
  * 于是 `filesChanged` 凭空多出几个文件，而正文被从「已改未提交」段里切掉。
  *
  * 没有 `diff --git` 时整段都是计数段（补丁为空）：无改动的 diff 与只有二进制改动的 diff
- * 都会走这条（后者的计数行是 `-\t-\tpath`，正文里没有可读的 hunk）。
+ * 都会走这条（后者的计数候选是 `-\t-\tpath`，正文里没有可读的 hunk）。
  */
 function splitNumstatPatch(output: string): { counts: string; patch: string } {
   const firstPatchLine = /^diff --git /m.exec(output);
@@ -709,8 +709,8 @@ function parseUntracked(output: string): string[] {
 }
 
 /**
- * `git diff --numstat` → 「路径 + 增删行数」清单（供 `RowDiff.files` 与三个计数）。
- * 每行形如 `<插入>\t<删除>\t<路径>`（实测 `1\t1\ta.txt`）。
+ * `git diff --numstat` → 「路径 + 增删行数」清单（供 `CandidateDiff.files` 与三个计数）。
+ * 每个候选形如 `<插入>\t<删除>\t<路径>`（实测 `1\t1\ta.txt`）。
  * 三种需要处理的形态：
  *   ① 二进制文件的两列是 `-`（实测），按 0 计；
  *   ② 重命名会把路径写成 `old => new`（两条路径没有公共前后缀时）或 `prefix/{old => new}/suffix`
@@ -807,7 +807,7 @@ interface DiffPiece {
 
 /**
  * 按 `diff --git` 边界把文本切成「段落头 + 文件段」。
- * 切分点必须是行首的 `diff --git`：正文里出现同名字符串（比如一个恰好含这行的测试夹具）
+ * 切分点必须是行首的 `diff --git`：正文里出现同名字符串（比如一个恰好含这候选的测试夹具）
  * 不该被当成新的文件段。
  */
 function splitDiffFiles(text: string): { header: string; pieces: DiffPiece[] } {

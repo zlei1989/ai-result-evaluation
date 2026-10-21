@@ -4,12 +4,12 @@
  * 「粘贴 JSON」弹窗：贴进去 → **先看预览**（逐条说清将要发生什么）→ 确认才导入。
  *
  * 五个必须守住的点：
- *   1. **预览与落盘是同一份判定**：预览每一行的「新增 / 覆盖已有 X / 跳过 / 不导入+原因」
+ *   1. **预览与落盘是同一份判定**：预览每个候选的「新增 / 覆盖已有 X / 跳过 / 不导入+原因」
  *      全部来自 `parseMcpPaste`（契约里的纯函数），组件这一层不自己再判一次 ——
  *      两处各判一次的话，「预览说覆盖、落盘是新增」这类偏差只能靠肉眼发现。
  *   2. **一次原子落盘**：确认时组件交出的是**算好的整份 map**（`applyMcpPaste` 的结果），
  *      调用方拿它走一次 `PUT /api/settings`；组件自己不调接口、不碰 message。
- *   3. **同名默认覆盖、逐行可切跳过**：默认合并（覆盖同名），每一行都给一个「跳过」开关；
+ *   3. **同名默认覆盖、逐行可切跳过**：默认合并（覆盖同名），每个候选都给一个「跳过」开关；
  *      「先清空现有条目再导入」是默认**关**的勾选框（它删的是用户已有的配置，不能是默认行为）。
  *   4. **名字只有裸单项可改**：map 形状里名字住在键上（改键就是改名），裸单项的名字是猜的，
  *      故只有它给输入框；名字为空、或与本批内另一台净化后撞名 ⇒ 那一行**不许导入**并提示改名
@@ -56,13 +56,13 @@ export const MCP_PASTE_MODAL_WIDTH = 880;
 /** 预览表的最大高度：超过就表内滚动（100 条上限时，整页跟着滚会让底部的勾选框滑出视野） */
 const PREVIEW_MAX_HEIGHT = 320;
 
-/** 用户对某一行的改动（按行 id 存）：`skipped` 是逐行的「跳过」，`name` 只有裸单项会用到 */
-interface RowDecision {
+/** 用户对某一候选的改动（按候选 id 存）：`skipped` 是逐候选的「跳过」，`name` 只有裸单项会用到 */
+interface CandidateDecision {
   skipped?: boolean;
   name?: string;
 }
 
-/** 预览表里的一行：`rejected` 行没有条目，只有一个中文原因 */
+/** 预览表里的一行：`rejected` 候选没有条目，只有一个中文原因 */
 interface PreviewRow {
   id: string;
   kind: 'entry' | 'rejected';
@@ -75,14 +75,14 @@ interface PreviewRow {
   /** 处置标签的文字与颜色（Tag 的 `color` 直接用 antd 的预设名） */
   actionText: string;
   actionColor: string;
-  /** 不导入的中文原因（含「名字为空 / 重名」这类改名问题）；null = 这一行会导入 */
+  /** 不导入的中文原因（含「名字为空 / 重名」这类改名问题）；null = 这个候选会导入 */
   blockedReason: string | null;
 }
 
 export function McpPasteModal(props: McpPasteModalProps): ReactNode {
   const { open, servers, saving, onImport, onCancel } = props;
   const [text, setText] = useState('');
-  const [drafts, setDrafts] = useState<{ text: string; decisions: Record<string, RowDecision> }>({
+  const [drafts, setDrafts] = useState<{ text: string; decisions: Record<string, CandidateDecision> }>({
     text: '',
     decisions: {},
   });
@@ -94,7 +94,7 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
   const parsed = useMemo(() => parseMcpPaste(text, servers), [text, servers]);
   const existingNames = Object.keys(servers);
 
-  const patchDecision = (id: string, patch: RowDecision): void => {
+  const patchDecision = (id: string, patch: CandidateDecision): void => {
     setDrafts({ text, decisions: { ...decisions, [id]: { ...decisions[id], ...patch } } });
   };
 
@@ -148,15 +148,15 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
   ];
 
   // 将要写入的那些行：没被跳过、也没有名字问题。计数与落盘用的是**同一个**数组
-  const importRows = rows
+  const importCandidates = rows
     .filter((row): row is PreviewRow & { entry: McpServerConfig } => row.kind === 'entry' && row.entry !== undefined)
     .filter((row) => !row.skipped && row.blockedReason === null)
     .map((row) => ({ name: row.name, entry: row.entry }));
   // 勾了「先清空」就没有「覆盖」可言：先删光再写进去，标成覆盖会是假话
-  const overwriteCount = clearFirst ? 0 : importRows.filter((row) => servers[row.name] !== undefined).length;
+  const overwriteCount = clearFirst ? 0 : importCandidates.filter((row) => servers[row.name] !== undefined).length;
 
   const confirm = (): void => {
-    onImport(applyMcpPaste(servers, importRows, clearFirst));
+    onImport(applyMcpPaste(servers, importCandidates, clearFirst));
   };
 
   const columns: TableColumnsType<PreviewRow> = [
@@ -208,7 +208,7 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
           <Flex gap={8} align="center">
             <Tag color={row.actionColor}>{row.actionText}</Tag>
             {row.kind === 'entry' && (
-              // 逐行可切跳过（默认关）：勾上之后这一行既不新增也不覆盖，名字也不占位
+              // 逐行可切跳过（默认关）：勾上之后这个候选既不新增也不覆盖，名字也不占位
               <Flex gap={4} align="center">
                 <Typography.Text type="secondary">跳过</Typography.Text>
                 <Switch
@@ -242,10 +242,10 @@ export function McpPasteModal(props: McpPasteModalProps): ReactNode {
       open={open}
       title="粘贴 MCP 配置"
       width={MCP_PASTE_MODAL_WIDTH}
-      okText={overwriteCount > 0 ? `导入 ${importRows.length} 台（覆盖 ${overwriteCount}）` : `导入 ${importRows.length} 台`}
+      okText={overwriteCount > 0 ? `导入 ${importCandidates.length} 台（覆盖 ${overwriteCount}）` : `导入 ${importCandidates.length} 台`}
       cancelText="取消"
       confirmLoading={saving}
-      okButtonProps={{ autoInsertSpace: false, disabled: parsed.error !== undefined || importRows.length === 0 }}
+      okButtonProps={{ autoInsertSpace: false, disabled: parsed.error !== undefined || importCandidates.length === 0 }}
       cancelButtonProps={{ autoInsertSpace: false }}
       onOk={confirm}
       onCancel={onCancel}

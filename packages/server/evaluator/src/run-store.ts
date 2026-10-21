@@ -62,6 +62,19 @@ interface ScanTally {
 }
 
 /**
+ * 旧快照的字段迁移：候选数组曾经叫 `rows`，现在叫 `candidates`。
+ * 只在读侧做一次改名——`EvalRunSchema` 只认新名，写回时天然落成新形态。
+ * 这是**读旧数据**的兼容层，不是第二套字段：新写出的快照永远不带 `rows`。
+ */
+function migrateLegacySnapshot(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (record['candidates'] !== undefined || record['rows'] === undefined) return raw;
+  const { rows, ...rest } = record;
+  return { ...rest, candidates: rows };
+}
+
+/**
  * 读单个快照：不存在或读不出都返回 null（列表路径不允许抛）。
  * 传了 `tally` 才记账（`listRuns` 的那个计数）；`getRun` 那条路只关心这一个文件读不读得出来。
  */
@@ -69,7 +82,7 @@ function readSnapshot(file: string, tally?: ScanTally): EvalRun | null {
   if (!existsSync(file)) return null;
   try {
     // BOM 容忍与 config-store 同口径：外部工具写过的 JSON 可能带 U+FEFF，JSON.parse 遇到它直接抛
-    const parsed = EvalRunSchema.safeParse(JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')));
+    const parsed = EvalRunSchema.safeParse(migrateLegacySnapshot(JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))));
     if (!parsed.success) {
       if (tally !== undefined) tally.incompatible += 1;
       log.warn('运行快照字段不合法，已跳过', { file, issueCount: parsed.error.issues.length });
@@ -106,7 +119,7 @@ export function listRuns(): EvalRun[] {
     if (run !== null) runs.push(run);
   }
   if (tally.incompatible > 0) {
-    log.warn('有运行快照不再符合当前契约，已从列表跳过（列表显示的轮次会比磁盘上的少）', {
+    log.warn('有运行快照不再符合当前契约，已从列表跳过（列表显示的轮会比磁盘上的少）', {
       root,
       incompatible: tally.incompatible,
     });
@@ -193,7 +206,7 @@ export function getRun(runId: string): EvalRun {
  *
  * 与 `getRun` 的唯一差别是「当前根找不到时用进程内记忆兜底」（『记住 runId → workspaceBase』）。
  * 为什么必须有这个入口：`getRun` 只扫当前根，而用户在评测进行中把工作区根目录从 A 改到 B 后，
- * 编排层第一次 `requireRow` 就抛 NOT_FOUND ⇒ `settleFailed` 也要先 `requireRow` ⇒ **行停在非终态**、
+ * 编排层第一次 `requireCandidate` 就抛 NOT_FOUND ⇒ `settleFailed` 也要先 `requireCandidate` ⇒ **行停在非终态**、
  * 只留一行 ERROR 日志——「一次设置变更把在途轮次打死」换个扇门照样发生。
  * 事件路径（`events.ts`）与快照路径现在共用这一个解析，两边的兜底口径不可能再分叉。
  *
@@ -238,9 +251,9 @@ function isReadOnly(file: string): boolean {
  * 每次都整体覆盖（调用方传的是完整快照）——不做增量合并，避免出现「两份真相」。
  *
  * 根目录取自 **`run.workspaceBase`（该轮自己记录的根）**，不是当前 `settings.workspaceRoot`：
- * 这与 `events.ts` 的 `rowEventsFile(getRunForWrite(runId).workspaceBase, …)` 同源，保证「一轮的产物不裂成两半」
+ * 这与 `events.ts` 的 `candidateEventsFile(getRunForWrite(runId).workspaceBase, …)` 同源，保证「一轮的产物不裂成两半」
  * （口径 4）。用当前设置的话，用户在评测进行中改一次根目录，快照就会写进新根、事件留在旧根——
- * 这一轮的行状态与事件日志分居两处，界面显示的行状态与日志抽屉对不上，而两边都不报错。
+ * 这一轮的候选状态与事件日志分居两处，界面显示的候选状态与日志抽屉对不上，而两边都不报错。
  */
 export function saveRun(run: EvalRun): void {
   assertRunId(run.id);
@@ -317,7 +330,7 @@ export function saveRun(run: EvalRun): void {
   /**
    * 落盘成功后发一条「这一轮变了」的信号（run-signals 总线）——**位置必须在最后一步成功之后**：
    * 写失败时快照没变，推信号会让订阅者去读一份没更新的磁盘（「推了但没落盘」的镜像分叉）。
-   * 这里是**唯一发射点**：行级（mutateRow）、轮级（setRunStatus）与 api 的创建 / 更新
+   * 这里是**唯一发射点**：候选级（mutateCandidate）、轮级（setRunStatus）与 api 的创建 / 更新
    * 都收口到 `saveRun`，信号随之全覆盖，不会漏发也不会重发。删除不落盘、故无信号——
    * 同页的删除自己会刷列表，跨标签页的删除通知不在此通道的职责内。
    */

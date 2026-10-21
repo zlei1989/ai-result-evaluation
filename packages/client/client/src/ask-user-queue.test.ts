@@ -24,7 +24,7 @@ function pending(askId: string, askedAt = '2026-10-13T10:00:00.000Z'): PendingAs
   return {
     askId,
     runId: 'run-1',
-    rowId: 'w-1',
+    candidateId: 'w-1',
     stage: 'agent',
     questions: [{ header: askId, prompt: '这次改哪条路径？', options: [], multiSelect: false, allowOther: true, secret: false }],
     askedAt,

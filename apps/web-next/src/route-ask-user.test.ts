@@ -42,32 +42,32 @@ const evaluator = vi.hoisted(() => ({
   resolveJudgeEffort: vi.fn(),
   resolveJudgeRoute: vi.fn(),
   recoverInterruptedRuns: vi.fn(),
-  abortRow: vi.fn(),
+  abortCandidate: vi.fn(),
   abortRun: vi.fn(),
   assertRunMutable: vi.fn(),
   deleteRun: vi.fn(),
   getRun: vi.fn(),
   listRuns: vi.fn(() => []),
-  rescoreRow: vi.fn(),
-  retryRow: vi.fn(),
+  rescoreCandidate: vi.fn(),
+  retryCandidate: vi.fn(),
   saveRun: vi.fn(),
   startRun: vi.fn(),
   subscribeJudgeEvents: vi.fn(() => () => {}),
-  subscribeRowEvents: vi.fn(() => () => {}),
+  subscribeCandidateEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
-  subscribeRowRecords: vi.fn(() => () => {}),
+  subscribeCandidateRecords: vi.fn(() => () => {}),
   subscribeRunChanges: vi.fn(() => () => {}),
 }));
 
 vi.mock('@aieval/evaluator', () => {
   // 假表的实现（不能用 `vi.hoisted` 里的闭包：那里只能放 `vi.fn`，逻辑写在这里更好读）
   evaluator.registerAskUser.mockImplementation(
-    (input: { askId: string; runId: string; rowId: string | null; stage: string; request: { questions: AskUserQuestion[] } }) => {
+    (input: { askId: string; runId: string; candidateId: string | null; stage: string; request: { questions: AskUserQuestion[] } }) => {
       // 快照端点要的那几格：真表在登记时算 `askedAt`，并把 `questions` 从请求上下文里摊平出来
       table.pending.set(input.askId, {
         askId: input.askId,
         runId: input.runId,
-        rowId: input.rowId,
+        candidateId: input.candidateId,
         stage: input.stage,
         questions: input.request.questions,
         askedAt: '2026-10-13T12:00:00.000Z',
@@ -108,11 +108,11 @@ const QUESTION: AskUserQuestion = {
 const ANSWER: AskUserAnswer = { header: '选路径', selected: ['原地改'], custom: null };
 
 /** 往假表里登记一条提问（路由层只读 askId 与快照那几格；`runId` 是快照过滤的判据） */
-function register(askId = 'ask-1', rowId: string | null = 'row-1', runId = 'run-1'): void {
+function register(askId = 'ask-1', candidateId: string | null = 'row-1', runId = 'run-1'): void {
   evaluator.registerAskUser({
     askId,
     runId,
-    rowId,
+    candidateId,
     stage: 'agent',
     request: { questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call-1', vendorBudgetMs: null, subagentId: null },
   });
@@ -156,8 +156,8 @@ describe('GET /api/ask-user（待答快照）', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as Array<Record<string, unknown>>;
     expect(body.map((entry) => entry.askId)).toEqual(['ask-1', 'ask-2']);
-    expect(body[0]).toMatchObject({ runId: 'run-1', rowId: 'row-1', stage: 'agent', questions: [QUESTION] });
-    expect(body[1]).toMatchObject({ rowId: null });
+    expect(body[0]).toMatchObject({ runId: 'run-1', candidateId: 'row-1', stage: 'agent', questions: [QUESTION] });
+    expect(body[1]).toMatchObject({ candidateId: null });
     // 快照不带宽商上下文：那是回灌答案时才用的东西，界面没有消费方
     expect(Object.keys(body[0] ?? {})).not.toContain('toolName');
   });

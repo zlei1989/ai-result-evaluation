@@ -44,9 +44,9 @@ import { useAppliedThemeMode } from './app-theme';
  *      （`.x-markdown pre, .x-markdown code`），`disableDefaultStyles` 关不掉它，只能内联 style 覆盖。
  *      **只盖 `pre` 不够**：块级 `code` 是 `display: block`，文字在它自己那一层就折了，
  *      `pre` 永远滚不出来（真机量到 8 行逻辑文本被折成 16 行视觉行、`scrollWidth` 等于 `clientWidth`）。
- *      提示词里的调用链路图靠前导空格对齐，折行会把树形结构撕成几段读不出来——宁可让用户横向滚。
+ *      提示词里的调用链路图靠前导空格对齐，折候选会把树形结构撕成几段读不出来——宁可让用户横向滚。
  *      X 自己产出的这两个标签不带布局类属性（见它的 code renderer），故只透传 X 塞进来的属性。
- *      行内代码（`block === false`）不动：那一段本来就该跟着段落折行。
+ *      候选内代码（`block === false`）不动：那一段本来就该跟着段落折行。
  *   2. **标题降两级**：`h1` → 4 级、`h2` 及以下 → 5 级。右栏只有 320–640px，照原级渲染会得到
  *      页面级巨标题，还会把整页的标题大纲带偏（详情页不该长出 `h1`）；antd 的 `Title` 只到 5 级。
  *   3. **外链新标签打开**：X 默认不给 `a` 加 `target` / `rel`，故开它自己的 `openLinksInNewTab`
@@ -54,7 +54,7 @@ import { useAppliedThemeMode } from './app-theme';
  *      不挡 `window.opener` 等于把详情页交出去。这一条走 X 的 prop，**不在这张表里**——
  *      放进表里会把 `a` 变成自定义组件，未闭合链接的流式档位就得由本仓自己维护。
  *
- * 映射表照旧只覆盖这几类：段落 / 列表 / 表格 / 行内代码的样式归 X 自己的主题 CSS。
+ * 映射表照旧只覆盖这几类：段落 / 列表 / 表格 / 候选内代码的样式归 X 自己的主题 CSS。
  */
 const PROSE_COMPONENTS: NonNullable<XMarkdownProps['components']> = {
   h1: ({ children }) => <Typography.Title level={4}>{children}</Typography.Title>,

@@ -74,7 +74,7 @@ describe('真机：收尾回读的轮次顺序', () => {
       binary: resolveCodexBinary(),
       env: {
         ...process.env,
-        // 三格全指行配置目录：宿主家目录里的 codex 配置与 skills 都不许进来
+        // 三格全指候选配置目录：宿主家目录里的 codex 配置与 skills 都不许进来
         CODEX_HOME: configHome,
         HOME: configHome,
         USERPROFILE: configHome,

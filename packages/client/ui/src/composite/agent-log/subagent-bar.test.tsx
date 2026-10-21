@@ -173,7 +173,7 @@ describe('SubagentBar 的版面', () => {
     const retry = screen.getByText('重试').closest('button') as HTMLElement;
     const actions = enter.parentElement as HTMLElement;
 
-    // 两个按钮同属一个动作组，不是散在身份那一行里
+    // 两个按钮同属一个动作组，不是散在身份那一个候选里
     expect(actions).toBe(retry.parentElement);
     // 组内顺序：重试在前、进入在后（导航入口占最右角）
     expect(actions.textContent).toBe('重试进入 ▸');
@@ -191,17 +191,17 @@ describe('SubagentBar 的版面', () => {
     render(<SubagentBar node={node()} />);
 
     const outcome = fieldBox('结果摘要');
-    const secondRow = fieldBox('用量').parentElement as HTMLElement;
+    const secondCandidate = fieldBox('用量').parentElement as HTMLElement;
     const usage = fieldBox('用量');
     const dispatch = fieldBox('派发方式');
 
-    // 摘要是**头部行的下一个兄弟**、不在第二行里：它是独占的一行，不是第二行的第一格
-    expect(outcome.parentElement).not.toBe(secondRow);
+    // 摘要是**头部候选的下一个兄弟**、不在第二候选里：它是独占的一行，不是第二候选的第一格
+    expect(outcome.parentElement).not.toBe(secondCandidate);
     expect(outcome.previousElementSibling?.textContent).toContain('子任务');
-    expect(secondRow.previousElementSibling).toBe(outcome);
+    expect(secondCandidate.previousElementSibling).toBe(outcome);
 
     // 第二行两格：用量在左、派发方式在右（后者 auto 外边距顶到右端）
-    expect(dispatch.parentElement).toBe(secondRow);
+    expect(dispatch.parentElement).toBe(secondCandidate);
     expect(usage.compareDocumentPosition(dispatch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(dispatch.style.marginInlineStart).toBe('auto');
     expect(usage.style.marginInlineStart).toBe('');
@@ -212,7 +212,7 @@ describe('SubagentBar 的版面', () => {
    * 它必须**仍然贴右**——`justify="space-between"` 在只有一个子元素时会把它推到左端
    * （`base/toolbar.tsx` 的注释记着同一族事故），这一条就是那个写法的靶子。
    */
-  it('第二行没有用量那一格时，「派发方式」仍在右端', () => {
+  it('第二候选没有用量那一格时，「派发方式」仍在右端', () => {
     render(<SubagentBar node={node({ kind: 'main', usage: null })} />);
 
     expect(screen.queryByText('用量')).toBeNull();

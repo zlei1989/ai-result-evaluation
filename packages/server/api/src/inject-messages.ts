@@ -1,13 +1,13 @@
 /**
- * 人工消息的**传输面**（功能服务层）：一行的队列快照、发送、改期（「立即发送」）、撤回，以及附件落盘。
+ * 人工消息的**传输面**（功能服务层）：一候选的队列快照、发送、改期（「立即发送」）、撤回，以及附件落盘。
  *
  * 四格口径：
  *
  *   1. **真相源是 `@aieval/evaluator` 的队列表，本层不缓存任何一份**：快照直读表，写动作直调表，
- *      本层只做三件事——校验「这一行在不在」、把结论折成 HTTP 结局、把附件落进该行的附件根。
+ *      本层只做三件事——校验「这个候选在不在」、把结论折成 HTTP 结局、把附件落进该候选的附件根。
  *      缓存一份的代价是「撤回成功了但快照还是旧的」这类两处不一致，而它不是偶发、是必然。
- *   2. **三个动作都先校验行存在**：不校验的话，给一个拼错的 `rowId` 登记消息会**静默**成功，
- *      而那条消息永远等不到取件（编排层按 `(runId, rowId)` 取件）——用户看到「已排队」，
+ *   2. **三个动作都先校验行存在**：不校验的话，给一个拼错的 `candidateId` 登记消息会**静默**成功，
+ *      而那条消息永远等不到取件（编排层按 `(runId, candidateId)` 取件）——用户看到「已排队」，
  *      模型永远收不到。404 至少让客户端知道该刷新。
  *   3. **附件根按这一轮自己记录的 `workspaceBase` 解析**，不按当前设置里的根：用户改过工作区根
  *      之后，在跑的轮次与新上传的附件仍应落在同一棵树下（与 `run-artifacts` 同一口径）。
@@ -35,7 +35,7 @@ import {
 import {
   createLogger,
   listAttachmentFileNames,
-  rowAttachmentDir,
+  candidateAttachmentDir,
   writeAttachmentFile,
 } from '@aieval/core';
 import {
@@ -46,38 +46,38 @@ import {
   type InjectQueueEntry,
   type InjectRetractResult,
 } from '@aieval/evaluator';
-import { assertRowExists } from './run-artifacts';
+import { assertCandidateExists } from './run-artifacts';
 import { getRunView } from './runs';
 
 const log = createLogger('inject-messages');
 
 /** 这一条不在表里时给的中文原因 */
 function entryMissing(messageId: string): ServiceError {
-  return new ServiceError('NOT_FOUND', `这一行里没有这条人工消息（${messageId}）`);
+  return new ServiceError('NOT_FOUND', `这个候选里没有这条人工消息（${messageId}）`);
 }
 
-/** 校验这一行在不在，并取出这一轮的快照（附件根要按它的 `workspaceBase` 解析） */
-function requireRun(runId: string, rowId: string): EvalRun {
-  assertRowExists(runId, rowId);
+/** 校验这个候选在不在，并取出这一轮的快照（附件根要按它的 `workspaceBase` 解析） */
+function requireRun(runId: string, candidateId: string): EvalRun {
+  assertCandidateExists(runId, candidateId);
   return getRunView(runId);
 }
 
 /** 表里找这一条（找不到抛 404）。用于「动作成功了，把改动后的那一条回给客户端」 */
-function requireEntry(runId: string, rowId: string, messageId: string): InjectQueueEntry {
-  const entry = listInjectEntries(runId, rowId).find((item) => item.messageId === messageId);
+function requireEntry(runId: string, candidateId: string, messageId: string): InjectQueueEntry {
+  const entry = listInjectEntries(runId, candidateId).find((item) => item.messageId === messageId);
   if (entry === undefined) throw entryMissing(messageId);
   return entry;
 }
 
 /**
- * 这一行的队列快照（**含终态**）：`gone` 与 `consumed` 那两条带着 `outcome` / `reason` 一起回
+ * 这个候选的队列快照（**含终态**）：`gone` 与 `consumed` 那两条带着 `outcome` / `reason` 一起回
  * ——「这一条为什么从队列里消失」「哪一条撤不回来了」正是客户端要在界面上说出来的话，
  * 而这两件事的表侧真相只有这一份。裁剪掉它们等于让客户端去猜。
  */
-export function getInjectMessages(runId: string, rowId: string): InjectMessage[] {
-  assertRowExists(runId, rowId);
-  const entries = listInjectEntries(runId, rowId);
-  log.debug('读人工消息快照', { runId, rowId, count: entries.length });
+export function getInjectMessages(runId: string, candidateId: string): InjectMessage[] {
+  assertCandidateExists(runId, candidateId);
+  const entries = listInjectEntries(runId, candidateId);
+  log.debug('读人工消息快照', { runId, candidateId, count: entries.length });
   return entries;
 }
 
@@ -88,10 +88,10 @@ export function getInjectMessages(runId: string, rowId: string): InjectMessage[]
  * 不新增、不再投递。本层不做第二次去重——两处判重必然漂，而漂的那一次就是「模型看到两遍」。
  */
 export function sendInjectMessage(request: InjectMessageSendRequest): InjectMessageSendAccepted {
-  assertRowExists(request.runId, request.rowId);
+  assertCandidateExists(request.runId, request.candidateId);
   const { entry, created } = registerInjectMessage({
     runId: request.runId,
-    rowId: request.rowId,
+    candidateId: request.candidateId,
     messageId: request.messageId,
     text: request.text,
     attachments: request.attachments,
@@ -99,7 +99,7 @@ export function sendInjectMessage(request: InjectMessageSendRequest): InjectMess
   });
   log.info(created ? '人工消息已登记' : '人工消息重复登记（幂等命中）', {
     runId: request.runId,
-    rowId: request.rowId,
+    candidateId: request.candidateId,
     messageId: request.messageId,
     requires: request.requires,
     attachmentCount: request.attachments.length,
@@ -114,14 +114,14 @@ export function sendInjectMessage(request: InjectMessageSendRequest): InjectMess
  * 已经交出去的那一条回 409——边界已经用掉了，改投递时机这句话对它没有意义。
  */
 export function promoteInjectMessage(ref: InjectMessageRef): InjectMessagePromoteAccepted {
-  assertRowExists(ref.runId, ref.rowId);
-  const result = promoteInQueue(ref.runId, ref.rowId, ref.messageId);
+  assertCandidateExists(ref.runId, ref.candidateId);
+  const result = promoteInQueue(ref.runId, ref.candidateId, ref.messageId);
   if (result === 'not-found') throw entryMissing(ref.messageId);
   if (result === 'not-queued') {
     throw new ServiceError('CONFLICT', '这一条已经交给智能体了，改不了投递时机');
   }
-  log.info('人工消息改期', { runId: ref.runId, rowId: ref.rowId, messageId: ref.messageId, outcome: result });
-  return { outcome: result, message: requireEntry(ref.runId, ref.rowId, ref.messageId) };
+  log.info('人工消息改期', { runId: ref.runId, candidateId: ref.candidateId, messageId: ref.messageId, outcome: result });
+  return { outcome: result, message: requireEntry(ref.runId, ref.candidateId, ref.messageId) };
 }
 
 /**
@@ -158,15 +158,15 @@ export function retractHttpResult(result: InjectRetractResult, messageId: string
  * 拆成两个动作的代价是把服务端的真相复制一份到客户端，两份必然漂：界面只有一个「删除」按钮。
  */
 export async function retractInjectMessage(ref: InjectMessageRef): Promise<InjectMessageRetractAccepted> {
-  assertRowExists(ref.runId, ref.rowId);
-  const result = await retractInQueue(ref.runId, ref.rowId, ref.messageId);
+  assertCandidateExists(ref.runId, ref.candidateId);
+  const result = await retractInQueue(ref.runId, ref.candidateId, ref.messageId);
   return retractHttpResult(result, ref.messageId);
 }
 
 /** 落一个附件要的那几格：行身份 + 上传流里的三格（文件名 / 类型 / 字节） */
 export interface SaveInjectAttachmentInput {
   runId: string;
-  rowId: string;
+  candidateId: string;
   /** 客户端为这条草稿生成的 id：附件的落点是 `attachments/<messageId>/` */
   messageId: string;
   fileName: string;
@@ -207,7 +207,7 @@ export function assertUploadContentLength(contentLength: string | null): void {
 }
 
 /**
- * 把一个上传的附件落到**该行的附件根**（`rowDir/attachments/<messageId>/`），返回它的清单项。
+ * 把一个上传的附件落到**该候选的附件根**（`candidateDir/attachments/<messageId>/`），返回它的清单项。
  *
  * 四件事的顺序是刻意的：
  *   1. **校验行存在**（`workspaceBase` 也从这里来）：轮不存在时不该在磁盘上建出一棵树；
@@ -224,7 +224,7 @@ export function assertUploadContentLength(contentLength: string | null): void {
  * 流式解析——那超出本函数的职责。
  */
 export function saveInjectAttachment(input: SaveInjectAttachmentInput): InjectAttachment {
-  const run = requireRun(input.runId, input.rowId);
+  const run = requireRun(input.runId, input.candidateId);
   if (input.bytes.byteLength > ATTACHMENT_MAX_FILE_BYTES) {
     throw new ServiceError(
       'INVALID_QUERY',
@@ -232,7 +232,7 @@ export function saveInjectAttachment(input: SaveInjectAttachmentInput): InjectAt
     );
   }
   // 目录名拼装由 core 负责，`messageId` 的形状校验也在那一道门里（拼路径前先校验，见 core 的同名注释）
-  const dir = rowAttachmentDir(run.workspaceBase, input.runId, input.rowId, input.messageId);
+  const dir = candidateAttachmentDir(run.workspaceBase, input.runId, input.candidateId, input.messageId);
   const existing = listAttachmentFileNames(dir);
   if (existing.length >= ATTACHMENT_MAX_PER_MESSAGE) {
     throw new ServiceError(
@@ -245,7 +245,7 @@ export function saveInjectAttachment(input: SaveInjectAttachmentInput): InjectAt
   const mimeType = input.mimeType === '' ? null : input.mimeType;
   log.info('人工消息附件已受理', {
     runId: input.runId,
-    rowId: input.rowId,
+    candidateId: input.candidateId,
     messageId: input.messageId,
     name: written.name,
     bytes: input.bytes.byteLength,

@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * 智能体评分通路：拼词、事件透传、失败面。
- * 适配器被 mock 成 `fakeAgentsModule()`（`testing/fixtures.ts`），它的行为由 `fakeAgents.scripts` 驱动。
+ * 适配器被 mock 成 `fakeAgentsModule()`（`testing/fixtures.ts`），它的候选为由 `fakeAgents.scripts` 驱动。
  * 注意 `vi.mock` 的工厂**会被提升**：里面不能引用顶层的 import，只能动态 import（与 orchestrator.test.ts 同形）。
  *
  * 本节守卫的三条口径（每一条都对应一个会静默出错的写法）：
@@ -15,7 +15,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JUDGE_OUTPUT_CONTRACT, ServiceError, type AgentEvent, type Rubric } from '@aieval/contracts';
 import { fakeAgents, resetFakeAgents } from './testing/fixtures';
-import { JudgeAgentError, buildAgentJudgePrompt, judgeRowByAgent, type AgentJudgeInput } from './judge-agent';
+import { JudgeAgentError, buildAgentJudgePrompt, judgeCandidateByAgent, type AgentJudgeInput } from './judge-agent';
 
 vi.mock('@aieval/agents', async () => {
   const { fakeAgentsModule } = await import('./testing/fixtures');
@@ -40,13 +40,13 @@ const EVIDENCE = {
       filename: 'candidate-events.jsonl',
       content: 'raw 事件账本（占位：智能体通路不消费这一格）',
       truncated: false,
-      absolutePath: '/srv/aieval/workspace/run-1/rows/r-1/events.jsonl',
+      absolutePath: '/srv/aieval/workspace/run-1/candidates/r-1/events.jsonl',
     },
     {
       filename: 'candidate-messages.jsonl',
       content: 'raw 消息账本（占位，同上）',
       truncated: true,
-      absolutePath: '/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl',
+      absolutePath: '/srv/aieval/workspace/run-1/candidates/r-1/messages.jsonl',
     },
   ],
 };
@@ -61,8 +61,8 @@ const EVIDENCE_SECTION = [
   '',
   '## 候选的执行过程',
   '候选做这道题时的执行过程记录落在以下文件（绝对路径），需要时直接读取：',
-  '- `/srv/aieval/workspace/run-1/rows/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
-  '- `/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl`：候选消息记录（messages 账本：候选的思考全文与工具结果正文）',
+  '- `/srv/aieval/workspace/run-1/candidates/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
+  '- `/srv/aieval/workspace/run-1/candidates/r-1/messages.jsonl`：候选消息记录（messages 账本：候选的思考全文与工具结果正文）',
   '读取指引：',
   '- 用 Read 工具或 `cat` 读取；',
   '- 文件可能很大：先看文件结构（行数、首尾几行），再按需读与本题相关的片段，不要把整份记录打印出来；',
@@ -88,8 +88,8 @@ function judgeReplyJson(achieved = true): string {
 function callJudge(
   signal: AbortSignal = new AbortController().signal,
   overrides: Partial<AgentJudgeInput> = {},
-): ReturnType<typeof judgeRowByAgent> {
-  return judgeRowByAgent({
+): ReturnType<typeof judgeCandidateByAgent> {
+  return judgeCandidateByAgent({
     kind: 'codex',
     cwd: process.cwd(),
     configHome: process.cwd(),
@@ -108,8 +108,8 @@ beforeEach(() => {
   resetFakeAgents();
 });
 
-describe('judgeRowByAgent', () => {
-  it('提示词带上基线 commit、只读要求与输出契约（本通路存在的理由都在这几行里）', () => {
+describe('judgeCandidateByAgent', () => {
+  it('提示词带上基线 commit、只读要求与输出契约（本通路存在的理由都在这几个候选里）', () => {
     const prompt = buildAgentJudgePrompt({
       taskPrompt: '把 README 改成中文',
       rubric: RUBRIC,
@@ -162,7 +162,7 @@ describe('judgeRowByAgent', () => {
         '',
         '## 候选的执行过程',
         '候选做这道题时的执行过程记录落在以下文件（绝对路径），需要时直接读取：',
-        '- `/srv/aieval/workspace/run-1/rows/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
+        '- `/srv/aieval/workspace/run-1/candidates/r-1/events.jsonl`：执行过程记录（events 账本：候选每一步的动作与工具调用）',
         '读取指引：',
         '- 用 Read 工具或 `cat` 读取；',
         '- 文件可能很大：先看文件结构（行数、首尾几行），再按需读与本题相关的片段，不要把整份记录打印出来；',
@@ -229,7 +229,7 @@ describe('judgeRowByAgent', () => {
 
   /**
    * 评分自己的用量与耗时（用户口径：评分详情里那一段说的是**评分的花销**，
-   * 不是被评那一行的执行花销）。这条通路的两格**取适配器自报值**——与候选行 `EvalRow.tokens` /
+   * 不是被评那一候选的执行花销）。这条通路的两格**取适配器自报值**——与候选 `EvalCandidate.tokens` /
    * `durationMs` 同一份原料，故两者可以直接对着看。
    * 耗时用夹具的 `durationMs` 钉一个具体数字：不钉的话「取自报值」「写死 0」「取我们的掐表」
    * 在假适配器那几毫秒的墙钟面前没有区别。
@@ -272,7 +272,7 @@ describe('judgeRowByAgent', () => {
 
   it('失败时即使适配器给了最终答复也先按失败处置（cc 会把厂商错误文本写进 finalText）', async () => {
     // 契约违例的复现：ok:false 却带着一段**看起来可解析**的答复。若把 finalText 的判据放在 ok 之前，
-    // 这一行会拿到一个「厂商错误文本被当成评分」的结果，而状态是成功。
+    // 这个候选会拿到一个「厂商错误文本被当成评分」的结果，而状态是成功。
     fakeAgents.scripts.set('codex', { mode: 'error', finalText: judgeReplyJson() });
     const error = await callJudge().catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(JudgeAgentError);
@@ -288,7 +288,7 @@ describe('judgeRowByAgent', () => {
   });
 
   it('AUTH_FAILED / RATE_LIMITED 原样带出（不折成解析失败——「没问到」与「答错了」是两回事）', async () => {
-    // 走**真实**路径：夹具按脚本给出上游归因码，断言的是 judgeRowByAgent 的透传，而不是构造函数的赋值
+    // 走**真实**路径：夹具按脚本给出上游归因码，断言的是 judgeCandidateByAgent 的透传，而不是构造函数的赋值
     fakeAgents.scripts.set('codex', { mode: 'error', errorCode: 'AUTH_FAILED' });
     const auth = await callJudge().catch((caught: unknown) => caught);
     expect(auth).toBeInstanceOf(JudgeAgentError);
@@ -326,8 +326,8 @@ describe('judgeRowByAgent', () => {
     fakeAgents.scripts.set('codex', { mode: 'ok', finalText: judgeReplyJson() });
     await callJudge(undefined, { processEvidence: EVIDENCE });
     expect(fakeAgents.calls[0]?.extraReadPaths).toEqual([
-      '/srv/aieval/workspace/run-1/rows/r-1/events.jsonl',
-      '/srv/aieval/workspace/run-1/rows/r-1/messages.jsonl',
+      '/srv/aieval/workspace/run-1/candidates/r-1/events.jsonl',
+      '/srv/aieval/workspace/run-1/candidates/r-1/messages.jsonl',
     ]);
     expect(fakeAgents.calls[0]?.prompt).toContain('## 候选的执行过程');
   });
@@ -422,7 +422,7 @@ describe('judgeRowByAgent', () => {
    * 事件**原样透传，不加前缀**（用户口径：「候选执行与评分的日志是分开的，不用再添加
    * `[评分智能体] ` 前缀」）。评分的出口落在自己的流里（`judge-events.jsonl`，编排层
    * `judgeStageAttempt` 分流），消费侧靠「读的是哪条流」分辨来源——转发时再给文本镶一个
-   * 标签，只是给每一行重复一遍同样的字。三个方向都要钉住，各有靶子：
+   * 标签，只是给每个候选重复一遍同样的字。三个方向都要钉住，各有靶子：
    *   ① `text` 一字不动（戴上转发前缀就是噪声）；
    *   ② 源事件的 `summary` 原样透传，**没有摘要的不补**（补出来的那一句是转发层的编造；
    *      消费方读卡片时自己按 `summary ?? text` 兜底，两层兜底会漂移）；
@@ -448,7 +448,7 @@ describe('judgeRowByAgent', () => {
       ],
     });
 
-    await judgeRowByAgent({
+    await judgeCandidateByAgent({
       kind: 'codex',
       cwd: process.cwd(),
       configHome: process.cwd(),
@@ -492,7 +492,7 @@ describe('judgeRowByAgent', () => {
       ],
     });
 
-    await judgeRowByAgent({
+    await judgeCandidateByAgent({
       kind: 'codex',
       cwd: process.cwd(),
       configHome: process.cwd(),
@@ -534,8 +534,8 @@ describe('judgeRowByAgent', () => {
   /**
    * 适配器**违约抛异常**（`turn.ts` 明写 run() 不抛，故这是纵深防御）。
    *
-   * 为什么必须折成 `JudgeAgentError`：上抛会被 `runRow` 折成 `INTERNAL`
-   * （`EvalRow.error.code = INTERNAL`），也就是把「适配器违约」记到我们自己头上；
+   * 为什么必须折成 `JudgeAgentError`：上抛会被 `runCandidate` 折成 `INTERNAL`
+   * （`EvalCandidate.error.code = INTERNAL`），也就是把「适配器违约」记到我们自己头上；
    * 而候选阶段的同形违约走 `classifyStop` 的 agentError 分支、归因码取自适配器——
    * 两条通路的归因口径必须一致。第二条用例覆盖 abort 之后抛的那一半：
    * 那种形状交给编排层记账去区分「用户终止」（signal 不带原因，这里判不了）。
@@ -564,7 +564,7 @@ describe('judgeRowByAgent', () => {
 
   /**
    * 评分这一轮的 route 也带上模型声明的窗口。
-   * 为什么值得单独钉：候选行那条路由由编排层组装，而评分这条由 `resolveJudgeRoute()` 组装后
+   * 为什么值得单独钉：候选那条路由由编排层组装，而评分这条由 `resolveJudgeRoute()` 组装后
    * **原样**交给适配器 —— 少传一格的后果是**静默**的（评分照样出分，只是 cc 不加 `[1m]`、
    * codex 不写 `model_context_window`），界面上一个字都看不出来。
    * 强度**不在**这条路由上：它是**请求参数**，走 `judgeEffort` 入参——

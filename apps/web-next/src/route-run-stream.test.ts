@@ -20,7 +20,7 @@ import { ServiceError, type AgentEvent, type EvalRun } from '@aieval/contracts';
 import {
   appendEvent,
   loadConfig,
-  rowEventsFile,
+  candidateEventsFile,
   saveConfig,
   setCasesRootForTesting,
   setConfigDirForTesting,
@@ -42,13 +42,13 @@ const evaluator = vi.hoisted(() => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
-  subscribeRowEvents: vi.fn(() => () => {}),
-  // 评分那两条行级流：`@aieval/api` 的 index 转出了它们，而 `run-stream.ts` / `messages-stream.ts`
+  abortCandidate: vi.fn(),
+  subscribeCandidateEvents: vi.fn(() => () => {}),
+  // 评分那两条候选级流：`@aieval/api` 的 index 转出了它们，而 `run-stream.ts` / `messages-stream.ts`
   // 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
-  subscribeRowRecords: vi.fn(() => () => {}),
+  subscribeCandidateRecords: vi.fn(() => () => {}),
   // run 级那一套（聚合流按它订阅整轮）：同样是模块求值期读取
   subscribeRunEvents: vi.fn(() => () => {}),
   subscribeRunJudgeEvents: vi.fn(() => () => {}),
@@ -82,9 +82,9 @@ function jsonRequest(body: unknown): Request {
   });
 }
 
-/** 往该行的事件日志里追加一条事件（真实文件，seq 由 core 按文件发号） */
-function append(runId: string, rowId: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
-  const file = rowEventsFile(workspaceRoot, runId, rowId);
+/** 往该候选的事件日志里追加一条事件（真实文件，seq 由 core 按文件发号） */
+function append(runId: string, candidateId: string, event: Parameters<typeof appendEvent>[1]): AgentEvent {
+  const file = candidateEventsFile(workspaceRoot, runId, candidateId);
   mkdirSync(dirname(file), { recursive: true });
   return appendEvent(file, event);
 }
@@ -144,13 +144,13 @@ afterEach(() => {
   removeTreeWithRetry(dir);
 });
 
-/** 走真实路由建一轮两行的评测，返回 runId / 两个 rowId */
-async function createRun(): Promise<{ runId: string; rowIds: string[] }> {
+/** 走真实路由建一轮两个候选的评测，返回 runId / 两个 candidateId */
+async function createRun(): Promise<{ runId: string; candidateIds: string[] }> {
   const res = await postRun(
     jsonRequest({
       caseId: 'c-1',
       executionMode: 'parallel',
-      rows: [
+      candidates: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       ],
@@ -158,9 +158,9 @@ async function createRun(): Promise<{ runId: string; rowIds: string[] }> {
   );
   expect(res.status).toBe(201);
   const run = (await res.json()) as EvalRun;
-  const rowIds = run.rows.map((row) => row.id);
-  expect(rowIds).toHaveLength(2);
-  return { runId: run.id, rowIds };
+  const candidateIds = run.candidates.map((row) => row.id);
+  expect(candidateIds).toHaveLength(2);
+  return { runId: run.id, candidateIds };
 }
 
 function streamRequest(query = ''): Request {
@@ -201,13 +201,13 @@ describe('GET /api/runs/[runId]/stream', () => {
     );
     expect(res.status).toBe(404);
     expect((await res.json()) as { error: { message: string } }).toMatchObject({
-      error: { message: '该评测里没有这一行（row-never）' },
+      error: { message: '该评测里没有这个候选（row-never）' },
     });
   });
 
   it('合法请求：SSE 头三件套 + 按逐行游标回放各自的尾段（一帧一块）', async () => {
-    const { runId, rowIds } = await createRun();
-    const [first = '', second = ''] = rowIds;
+    const { runId, candidateIds } = await createRun();
+    const [first = '', second = ''] = candidateIds;
     append(runId, first, { type: 'log', stream: 'stdout', text: '第一行-旧' });
     const firstKept = append(runId, first, { type: 'log', stream: 'stdout', text: '第一行-新' });
     append(runId, second, { type: 'log', stream: 'stdout', text: '第二行-更旧' });
@@ -237,16 +237,16 @@ describe('GET /api/runs/[runId]/stream', () => {
     await reader?.cancel();
 
     expect(texts[0]).toBe(': ready\n\n');
-    // 跨行不排序：各行的帧按自己的 seq 升序，行与行之间按游标表的顺序
-    expect(texts[1]).toBe(`id: ${firstKept.seq}\ndata: ${JSON.stringify({ ...firstKept, rowId: first, rowChannel: 'candidate' })}\n\n`);
+    // 跨行不排序：各候选的帧按自己的 seq 升序，候选与候选之间按游标表的顺序
+    expect(texts[1]).toBe(`id: ${firstKept.seq}\ndata: ${JSON.stringify({ ...firstKept, candidateId: first, candidateChannel: 'candidate' })}\n\n`);
     expect(texts[2]).toBe(
-      `id: ${secondKept.seq}\ndata: ${JSON.stringify({ ...secondKept, rowId: second, rowChannel: 'candidate' })}\n\n`,
+      `id: ${secondKept.seq}\ndata: ${JSON.stringify({ ...secondKept, candidateId: second, candidateChannel: 'candidate' })}\n\n`,
     );
   });
 
   it('不带 `after`（空游标）⇒ 200 但**不回放**任何历史', async () => {
-    const { runId, rowIds } = await createRun();
-    const [first = ''] = rowIds;
+    const { runId, candidateIds } = await createRun();
+    const [first = ''] = candidateIds;
     append(runId, first, { type: 'log', stream: 'stdout', text: '盘上有历史' });
 
     const res = await getAggregateStream(streamRequest(), runContext({ runId }));

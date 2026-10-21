@@ -92,7 +92,7 @@ describe('ScoreResultSchema', () => {
   /**
    * 评分**自己**的用量与耗时：界面顶部那一段说的是「这一分是谁花的、花了多少」，
    * 于是这两格必须与 `judgeAgentKind` / `judgeModelId` 同源（都在 `score` 上），
-   * 而不是拿候选行的 `tokens` / `durationMs` 顶上——那是**执行**那一份，两者差了整整一个阶段。
+   * 而不是拿候选的 `tokens` / `durationMs` 顶上——那是**执行**那一份，两者差了整整一个阶段。
    *
    * `.default(null)` 同 `judgeAgentKind`：磁盘上已有的评分记录里没有这两格，必填会让
    * `listRuns()` 静默跳过那一轮（老记录的分数还在，却整轮从列表里消失）。
@@ -114,7 +114,7 @@ describe('ScoreResultSchema', () => {
     // 不许被真值判断兜成 null
     expect(ScoreResultSchema.parse({ ...goodScore(), judgeDurationMs: 0 }).judgeDurationMs).toBe(0);
 
-    // 三元组缺一格非法：与 `EvalRow.tokens` 同一个形状口径（半份用量比没有用量更难解释）
+    // 三元组缺一格非法：与 `EvalCandidate.tokens` 同一个形状口径（半份用量比没有用量更难解释）
     expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeTokens: { input: 1, cached: 2 } }).success).toBe(false);
     expect(ScoreResultSchema.safeParse({ ...goodScore(), judgeTokens: { input: '1', cached: 2, output: 3 } }).success).toBe(false);
   });

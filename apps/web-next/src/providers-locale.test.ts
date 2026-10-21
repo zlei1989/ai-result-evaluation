@@ -9,7 +9,7 @@
  *
  * 为什么值得钉（点名 「有落点但无守卫」）：`locale={zhCN}` 是「antd 内置文案默认
  * 英文」这一整类的**根因修复**——不配它就只能在每个浮层上逐个显式补中文，漏一个就漏一个英文，
- * 而删掉包根这一行**不会有任何测试变红**——它就是个无守卫的落点。
+ * 而删掉包根这个候选**不会有任何测试变红**——它就是个无守卫的落点。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,7 +26,7 @@ describe('app/providers.tsx 的根级配置', () => {
   it('ConfigProvider 上真的传了 locale={zhCN}', () => {
     // 只断言「import 了」是不够的：import 进来没传下去，antd 的内置文案照样是英文
     expect(providersSource).toMatch(/locale=\{zhCN\}/);
-    // 反面：不能写成别的 locale / 字符串（改掉这一行 ⇒ 本用例必须红）
+    // 反面：不能写成别的 locale / 字符串（改掉这个候选 ⇒ 本用例必须红）
     expect(providersSource).not.toMatch(/locale=\{zhTW\}/);
     expect(providersSource).not.toMatch(/locale="zh_CN"/);
   });

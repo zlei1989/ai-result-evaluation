@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * `events.ts` 的行为契约：app-server 通知 → 行级事件与 `TurnProjection`。
+ * `events.ts` 的行为契约：app-server 通知 → 候选级事件与 `TurnProjection`。
  *
- * 逐条钉住计划表的行级那几格：增量给不给轮次、`turn/completed` 的计量与时长、
+ * 逐条钉住计划表的候选级那几格：增量给不给轮次、`turn/completed` 的计量与时长、
  * 失败/中止的分档、按线程的用量累计、未识别通知不丢。
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -136,7 +136,7 @@ describe('增量与条目：只推进轮次，不产日志垃圾', () => {
     expect(project({ kind: 'itemCompleted', threadId: MAIN, turnId: 'turn-1', item: answer, completedAtMs: null }, { state, runState }).projection.turns).toBe(2);
   });
 
-  it('子线程的答复条目**不**推高本行的轮次（本行的事件流只有主线程的进度语义）', () => {
+  it('子线程的答复条目**不**推高候选的轮次（候选的事件流只有主线程的进度语义）', () => {
     const outcome = project({
       kind: 'itemCompleted',
       threadId: 'thread-child',
@@ -206,7 +206,7 @@ describe('turn/completed：计量、时长、归属', () => {
    * 时刻缺一端时的两臂。
    *
    * 要拦的缺陷：时间被建模成「必须两点」，于是厂商在**同一个 `Turn`** 上给出的 `durationMs`
-   * 被整格丢掉 ⇒ 行上的时长永久为空。而 `TimingSpan` 只要求两端之差有意义（不要求绝对时刻），
+   * 被整格丢掉 ⇒ 候选上的时长永久为空。而 `TimingSpan` 只要求两端之差有意义（不要求绝对时刻），
    * 以 0 为基准给出同样长的跨度是事实而非「拿 0 冒充」——真正不许编的是**三格全缺**那一档。
    */
   it('时刻缺一端但有 `durationMs` ⇒ 回落成同样长的跨度（厂商给的时长不丢）', () => {
@@ -339,7 +339,7 @@ describe('turn/completed：计量、时长、归属', () => {
     ]);
   });
 
-  it('子线程的 `turn/completed` 不结算本行（不发计量、不给轮次），但仍推进它自己的轮次', () => {
+  it('子线程的 `turn/completed` 不结算候选（不发计量、不给轮次），但仍推进它自己的轮次', () => {
     const runState = createCodexRunState();
     const outcome = project(
       {
@@ -380,7 +380,7 @@ describe('按线程用量与未识别通知', () => {
 
   it('计划更新落一条摘要（面板由 message.ts 出块）', () => {
     const outcome = project({ kind: 'turnPlanUpdated', threadId: MAIN, turnId: 'turn-1', steps: [{ step: 'a', status: 'pending' }] });
-    expect(outcome.projection.drafts[0]).toMatchObject({ type: 'log', stream: 'stdout', summary: '更新计划：1 步' });
+    expect(outcome.projection.drafts[0]).toMatchObject({ type: 'log', stream: 'stdout', summary: '更新计划：1 项' });
   });
 
   /**
@@ -409,7 +409,7 @@ describe('按线程用量与未识别通知', () => {
 
 /**
  * 活动行（候选卡片底部那一行）只吃 `log` 事件的 `summary` / 人话 `text`，而 app-server 的工具面
- * 全走 `message.ts` 的块 ⇒ 不在这里补一句，那一行整轮只剩「更新计划：N 步」
+ * 全走 `message.ts` 的块 ⇒ 不在这里补一句，那一行整轮只剩「更新计划：N 项」
  * （真机 run `7d8d5f3b`：74 条事件里 10 条带摘要、全是计划那一句，活动行因此永久冻住）。
  *
  * 逐条钉住**在哪一条通知上发**与**发什么**：开始发「在做什么」、完成只发报错或结果类事实。
@@ -523,7 +523,7 @@ describe('活动行：`调用工具 <名>：<参数摘要>`（词表在 src/acti
     expect(anonymous.projection.drafts[0]).toMatchObject({ summary: '工具报错：改文件失败' });
   });
 
-  it('MCP：开始发调用，完成只在**报错**时发（错误没有别的行级出口）', () => {
+  it('MCP：开始发调用，完成只在**报错**时发（错误没有别的候选级出口）', () => {
     const call: AppServerItem = {
       kind: 'mcpToolCall',
       id: 'm1',

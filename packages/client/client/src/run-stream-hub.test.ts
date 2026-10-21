@@ -6,14 +6,14 @@
  *   ② 开连接晚一拍：同一拍注册的两个 sink 一起进 URL（早开一步就会漏掉后注册那个 sink 需要的历史）；
  *   ③ 晚到且「需要历史的行」不在当前游标表里的 sink 触发**带合并游标的重连**（关旧开新）；
  *   ④ 不需要历史的 sink（活动行那一路）随便什么时候注册都不重连；
- *   ⑤ 行集合变小不重连：某一行跑完被移出订阅集合，只是那个 sink 不再关心它的帧，连接不动。
+ *   ⑤ 行集合变小不重连：某一个候选跑完被移出订阅集合，只是那个 sink 不再关心它的帧，连接不动。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunStreamFrame } from '@aieval/contracts';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 import {
   isAgentEventFrame,
-  isRowRecordFrame,
+  isCandidateRecordFrame,
   resetRunStreamHubForTesting,
   runStreamOpenCount,
   subscribeRunStream,
@@ -25,16 +25,16 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function logFrame(rowId: string, seq: number, text: string): string {
-  return JSON.stringify({ type: 'log', seq, at: '2026-09-22T08:00:00.000Z', stream: 'stdout', text, rowId, rowChannel: 'candidate' });
+function logFrame(candidateId: string, seq: number, text: string): string {
+  return JSON.stringify({ type: 'log', seq, at: '2026-09-22T08:00:00.000Z', stream: 'stdout', text, candidateId, candidateChannel: 'candidate' });
 }
 
 /** 一条消息帧（**没有** `id:` 行，与 api 的 `toMessageFrame` 同形） */
-function messageFrame(rowId: string, rowChannel: 'candidate' | 'judge', text: string): string {
+function messageFrame(candidateId: string, candidateChannel: 'candidate' | 'judge', text: string): string {
   return JSON.stringify({
     type: 'message',
-    rowId,
-    rowChannel,
+    candidateId,
+    candidateChannel,
     message: {
       messageId: 'm-1',
       vendorId: null,
@@ -78,15 +78,15 @@ describe('帧族谓词（两条 hook 靠它把自己那一族挑出来）', () =
     const event = JSON.parse(logFrame('w-1', 1, '一条日志')) as RunStreamFrame;
     const message = JSON.parse(messageFrame('w-1', 'candidate', '一句正文')) as RunStreamFrame;
     expect(isAgentEventFrame(event)).toBe(true);
-    expect(isRowRecordFrame(event)).toBe(false);
+    expect(isCandidateRecordFrame(event)).toBe(false);
     expect(isAgentEventFrame(message)).toBe(false);
-    expect(isRowRecordFrame(message)).toBe(true);
+    expect(isCandidateRecordFrame(message)).toBe(true);
 
-    // 聚合流将来会推信号帧（`ask-user-changed` 等）：它们没有 `rowId` / `rowChannel`，
-    // 只按 `type` 判别会被当成事件帧交给折叠层（那边读 `rowId` 读到 undefined）
+    // 聚合流将来会推信号帧（`ask-user-changed` 等）：它们没有 `candidateId` / `candidateChannel`，
+    // 只按 `type` 判别会被当成事件帧交给折叠层（那边读 `candidateId` 读到 undefined）
     const signal = { type: 'ask-user-changed' } as RunStreamFrame;
     expect(isAgentEventFrame(signal)).toBe(false);
-    expect(isRowRecordFrame(signal)).toBe(false);
+    expect(isCandidateRecordFrame(signal)).toBe(false);
   });
 });
 
@@ -134,12 +134,12 @@ describe('run-stream-hub：一条连接 + 游标并集', () => {
     const source = FakeEventSource.instances[0];
 
     source?.feed('data: 这不是 JSON\n\n');
-    // 判别键认识、但没有归属格（旧行级流那种裸 AgentEvent）：不是合法信封
+    // 判别键认识、但没有归属格（旧候选级流那种裸 AgentEvent）：不是合法信封
     source?.feed('data: {"type":"log","seq":1,"at":"2026-09-22T08:00:00.000Z","stream":"stdout","text":"x"}\n\n');
     source?.feed(`data: ${logFrame('w-1', 2, '好帧')}\n\n`);
 
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ type: 'log', text: '好帧', rowId: 'w-1', rowChannel: 'candidate' });
+    expect(seen[0]).toMatchObject({ type: 'log', text: '好帧', candidateId: 'w-1', candidateChannel: 'candidate' });
     off();
   });
 
@@ -177,7 +177,7 @@ describe('run-stream-hub：一条连接 + 游标并集', () => {
     expect(() => off()).not.toThrow();
   });
 
-  it('同一拍注册的两个带游标 sink：只开一条连接，表里两行都在', async () => {
+  it('同一拍注册的两个带游标 sink：只开一条连接，表里两个候选都在', async () => {
     const first: RunStreamFrame[] = [];
     const second: RunStreamFrame[] = [];
     const offFirst = subscribeRunStream({ runId: 'run-1', sink: sink(first, cursors([['w-1', 3]])) });
@@ -191,7 +191,7 @@ describe('run-stream-hub：一条连接 + 游标并集', () => {
     offSecond();
   });
 
-  it('同一行的两个 sink 游标不同时取**较小**者：宁重不漏（取大的会跳过小游标还没折过的帧）', async () => {
+  it('同一候选的两个 sink 游标不同时取**较小**者：宁重不漏（取大的会跳过小游标还没折过的帧）', async () => {
     const offA = subscribeRunStream({ runId: 'run-1', sink: sink([], cursors([['w-1', 5]])) });
     const offB = subscribeRunStream({ runId: 'run-1', sink: sink([], cursors([['w-1', 3]])) });
     await settle();
@@ -267,14 +267,14 @@ describe('run-stream-hub：晚到的 sink', () => {
     offLate();
   });
 
-  it('行集合变小不重连：某一行跑完被移出订阅集合，只是那个 sink 不再关心它的帧', async () => {
+  it('行集合变小不重连：某一个候选跑完被移出订阅集合，只是那个 sink 不再关心它的帧', async () => {
     const offFirst = subscribeRunStream({ runId: 'run-1', sink: sink([], cursors([['w-1', 3]])) });
     const offSecond = subscribeRunStream({ runId: 'run-1', sink: sink([], cursors([['w-2', 5]])) });
     await settle();
     const source = FakeEventSource.instances[0];
     expect(source?.url).toBe('/api/runs/run-1/stream?after=w-1:3,w-2:5');
 
-    // 第二行跑完：那一路退订（帧照旧到达，只是没人要了）
+    // 第二候选跑完：那一路退订（帧照旧到达，只是没人要了）
     offSecond();
     await settle();
 

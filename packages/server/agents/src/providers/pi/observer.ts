@@ -15,7 +15,7 @@
  *     `anthropic-messages` 放在顶层 `params.system`（文本块数组）。只写一条会让另一条 wire 必然假红。
  */
 /**
- * 本行实际用的 wire（= pi 的 provider `api` 字段，取值见 `wireForProtocol`）。
+ * 本次运行实际用的 wire（= pi 的 provider `api` 字段，取值见 `wireForProtocol`）。
  * 不引 `index.ts` 的类型是为了让本模块保持零依赖：装配面与取证面各自独立演进。
  */
 export type PiWire = 'openai-responses' | 'anthropic-messages';
@@ -36,11 +36,11 @@ export interface PiRequestObserver {
 }
 
 /**
- * 造一个观察者。**每行一份**：捕获的是这一行那次会话的请求，跨行共享等于让两行并发的 payload
+ * 造一个观察者。**每个本次运行一份**：捕获的是本次运行那次会话的请求，跨行共享等于让两行并发的 payload
  * 互相覆盖（与 `PiRunState` 同一条处置）。
  *
  * 特意不在回调里做任何判断：厂商什么时候发这个事件、发几次（每轮一次）都不由我们决定，
- * 回调里多写一行就多一处能把厂商的异常放大成我们异常的地方。
+ * 回调里多写一本次运行就多一处能把厂商的异常放大成我们异常的地方。
  */
 export function createPiObserver(): PiRequestObserver {
   let count = 0;
@@ -237,7 +237,7 @@ function readPathOf(args: unknown): string | null {
 /**
  * 取一个 XML 标签里的文本（`<location>…</location>`）。
  * 读到的值**反转义**：厂商对技能名与落点做了 XML 转义（`&` / `<` / `"` …），
- * 而这两格在下游是「与实际路径逐字相等」的判据——带着 `&amp;` 的路径永远匹配不上本行的目录。
+ * 而这两格在下游是「与实际路径逐字相等」的判据——带着 `&amp;` 的路径永远匹配不上本次运行目录。
  */
 function tagText(body: string, tag: string): string | null {
   const matched = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(body);

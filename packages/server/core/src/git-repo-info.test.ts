@@ -42,7 +42,7 @@ describe('isGitRepo', () => {
     expect(isGitRepo(sub)).toBe(true);
   });
 
-  it('裸仓库不算工作树（本工具的每行工作区必须能 checkout）', () => {
+  it('裸仓库不算工作树（本工具的每个候选工作区必须能 checkout）', () => {
     const bare = makeTmp('aieval-bare-');
     git(bare, 'init', '-q', '--bare');
     expect(isGitRepo(bare)).toBe(false);

@@ -77,17 +77,17 @@ describe('三种渲染分档', () => {
 
 describe('顺序与名次只有一个判据', () => {
   it('卡片顺序来自 orderForDisplay（本件不许自己排）', () => {
-    expect(source, '卡片顺序没有走 orderForDisplay').toContain('orderForDisplay(run.rows)');
+    expect(source, '卡片顺序没有走 orderForDisplay').toContain('orderForDisplay(run.candidates)');
     // 自己排一次 = 第二个判据，两者迟早分叉
     expect(source, '本件自己写了一次排序').not.toMatch(/\.sort\(/);
   });
 
-  it('名次来自 rankOf(run.rows, …)（传整轮行集：名次是整轮的性质）', () => {
-    expect(source, '名次没有走 rankOf').toContain('rankOf(run.rows, row)');
+  it('名次来自 rankOf(run.candidates, …)（传整轮行集：名次是整轮的性质）', () => {
+    expect(source, '名次没有走 rankOf').toContain('rankOf(run.candidates, row)');
   });
 
-  it('卡片标题只有一份拼法（页面与守卫共用 `artifactCardTitle`）', () => {
-    expect(source, '卡片标题没有走 artifactCardTitle').toContain('title={artifactCardTitle(row, rank)}');
+  it('面板标题只有一份拼法（页面与守卫共用 `artifactPanelTitle`）', () => {
+    expect(source, '面板标题没有走 artifactPanelTitle').toContain('const label = artifactPanelTitle(row, rank);');
     // 四段的分隔符是那句拼法的实现细节，页面不该再拼一次
     expect(source.match(/' · '/g) ?? [], '四段标题被就地拼过一份').toHaveLength(1);
   });

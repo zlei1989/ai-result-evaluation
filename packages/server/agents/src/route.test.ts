@@ -92,7 +92,7 @@ describe('buildSubprocessEnv', () => {
     expect(env[childPathKey ?? '']).toBe(process.env[hostPathKey ?? '']);
   });
 
-  it('HOME 与 USERPROFILE 都指向该行独立目录（Windows 上只改 HOME 等于没隔离）', () => {
+  it('HOME 与 USERPROFILE 都指向该候选独立目录（Windows 上只改 HOME 等于没隔离）', () => {
     const env = buildSubprocessEnv({ homeDir: 'D:/tmp/row/.agenthome', injected: {} });
     expect(env.HOME).toBe('D:/tmp/row/.agenthome');
     expect(env.USERPROFILE).toBe('D:/tmp/row/.agenthome');

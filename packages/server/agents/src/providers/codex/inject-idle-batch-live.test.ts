@@ -172,7 +172,7 @@ describe('真机：一次 drain(\'idle\') 交出多条人话', () => {
   it('两条都要投出去（对照臂：单条行为逐字不变；阴性对照：不挂注入面时哨兵零出现）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'codex-inject-idle-batch-'));
     try {
-      // 对照臂在前：单条那一档是本行 `real-path` 已验的行为，改动不许碰它
+      // 对照臂在前：单条那一档是候选 `real-path` 已验的行为，改动不许碰它
       const single = await runArm(root, 1, true);
       expect(single.deliveredIds, '对照臂：单条照旧登记交付').toEqual(['inject-idle-batch-msg-1']);
       expect(single.sentinel1InOutbound, '对照臂：第 1 条哨兵要进请求体').toBeGreaterThan(0);

@@ -5,7 +5,7 @@
  * 文案断言刻意对**字面量**（模板），不从实现里推算期望值：
  * 从实现推算出来的期望值永远与实现一致，那种用例证明不了「文案对不对」，只能证明「代码没变」。
  * 「配置可用 / 配置正常」那条是**越界措辞守卫**：这两个词是本功能唯一不能说的话
- * （握手成功证明不了 key、浏览器、行内下载任何一条）。
+ * （握手成功证明不了 key、浏览器、候选内下载任何一条）。
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -177,7 +177,7 @@ describe('probeSuccessText', () => {
 
   it('notes 是「有限判据」的补充说明，不是第二份结论（stdio 那条要点明浏览器通道未校验）', () => {
     expect(MCP_PROBE_NOTES.stdioHandshakeOnly).toContain('只做握手');
-    expect(MCP_PROBE_NOTES.npxFirstRun).toBe('候选执行时首次启动还要在本行环境里下载依赖');
+    expect(MCP_PROBE_NOTES.npxFirstRun).toBe('候选执行时首次启动还要在候选环境里下载依赖');
     expect(MCP_PROBE_NOTES.disabled).toBe('已停用，不会注入');
   });
 });

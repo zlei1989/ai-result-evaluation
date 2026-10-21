@@ -3,7 +3,7 @@
  * 只造数据，不做断言；runs.test.tsx 与 row-stream.test.tsx 共用。
  * 注意：本文件不是 *.test.tsx，vitest 不会把它当用例收集。
  */
-import type { AgentEvent, AgentMessage, EvalRun, EvalRow, Rubric } from '@aieval/contracts';
+import type { AgentEvent, AgentMessage, EvalRun, EvalCandidate, Rubric } from '@aieval/contracts';
 
 /**
  * 这一轮用的评分表**快照**（`EvalRun.rubric` 是必填格，与 `getRun` 的读盘口径同一条）。
@@ -15,7 +15,7 @@ const FIXTURE_RUBRIC: Rubric = {
 };
 
 /** 造一行评测：默认是「跑完了、有分」的形状，可用 overrides 覆盖 */
-export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
+export function makeCandidate(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
   return {
     id: 'w-1',
     agentKind: 'cc',
@@ -25,7 +25,7 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     modelId: 'claude-opus-4-6',
     status: 'judged',
     branch: 'test/w-1',
-    workspacePath: 'D:\\runs\\run-1\\rows\\w-1\\workspace',
+    workspacePath: 'D:\\runs\\run-1\\candidates\\w-1\\workspace',
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
     tokens: { input: 128_450, cached: 12_800, output: 4_200 },
     turns: 17,
@@ -59,7 +59,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     useAgentJudge: false,
     askUser: false,
     injectMessages: false,
-    rows: [makeRow()],
+    candidates: [makeCandidate()],
     workspaceBase: 'D:\\runs',
     createdAt: '2026-09-22T08:00:00.000Z',
     startedAt: '2026-09-22T08:01:00.000Z',

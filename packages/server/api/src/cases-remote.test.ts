@@ -90,9 +90,9 @@ describe('validateRepo（远端来源）', () => {
     expect(info.repoPath).toBe(origin.url);
   }, REMOTE_FIXTURE_TIMEOUT_MS);
 
-  // 校验只读镜像。造一份工作树（甚至行工作区）在这里是错的：
+  // 校验只读镜像。造一份工作树（甚至候选工作区）在这里是错的：
   // 镜像跨用例复用、评测准备才 checkout，校验多克隆一份既是浪费也是「两个来源」的入口
-  it('远端校验只读镜像：镜像本身是裸仓库，工作区里不冒出 cases 这类行级目录', () => {
+  it('远端校验只读镜像：镜像本身是裸仓库，工作区里不冒出 cases 这类候选级目录', () => {
     const origin = makeRemoteOrigin('remote-readonly');
     const info = validateRepo({ repoPath: origin.url, repoBranch: null });
 

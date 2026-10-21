@@ -4,7 +4,7 @@
  * **为什么是 Route Handler 而不是 Server Action**：Server Action 的 `bodySizeLimit` 默认 1 MB，
  * 而 Route Handler 没有 body 上限——20 MB 的文件走 Server Action 要么被拦、要么要改配置。
  *
- * 表单四格：`runId` / `rowId` / `messageId` 三个文本字段 + `file` 一份文件。三格先过
+ * 表单四格：`runId` / `candidateId` / `messageId` 三个文本字段 + `file` 一份文件。三格先过
  * `InjectAttachmentUploadRequestSchema`（`messageId` 的形状就在里面：它会被拼进附件目录名），
  * 之后把文件名 / 类型 / 字节交给 api 层——上限（单文件 20 MB、单条消息 10 个）、文件名净化与
  * 落盘都在那边。**先上传拿到路径、再点发送**：登记那一刻正文与附件清单就是完整事实。
@@ -46,7 +46,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     const ref = InjectAttachmentUploadRequestSchema.parse({
       runId: formField(form, 'runId'),
-      rowId: formField(form, 'rowId'),
+      candidateId: formField(form, 'candidateId'),
       messageId: formField(form, 'messageId'),
     });
     const bytes = new Uint8Array(await file.arrayBuffer());

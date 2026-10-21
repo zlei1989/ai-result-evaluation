@@ -19,13 +19,13 @@
 import { Alert, Empty, Flex, Input, Skeleton, Tag, Typography, theme } from 'antd';
 import DiffViewer from 'react-diff-viewer-continued';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { RowDiffFile, RowDiffIndex } from '@aieval/contracts';
+import type { CandidateDiffFile, CandidateDiffIndex } from '@aieval/contracts';
 import { EllipsisText } from '../base/ellipsis-text';
 import { EmptyState } from '../base/empty-state';
 import { languageOf, reconstructSides } from './diff-patch';
 
 export interface DiffViewProps {
-  index: RowDiffIndex | undefined;
+  index: CandidateDiffIndex | undefined;
   /** 由调用方渲染单个文件的正文（ui 包不调接口，故收一个渲染函数而不是取数函数） */
   renderFileBody: (path: string) => ReactNode;
   /** 继续加载下一页索引；undefined = 没有更多 */
@@ -45,7 +45,7 @@ export function DiffFileContent({
   isLoading,
   dark,
 }: {
-  file: RowDiffFile | undefined;
+  file: CandidateDiffFile | undefined;
   error: unknown;
   isLoading: boolean;
   dark: boolean;
@@ -70,7 +70,7 @@ export function DiffFileContent({
  * **正文归它**。故这里把 `hideSummary` 打开，只留它自己的展开/折叠按钮（`summary`），
  * 路径不再重复出现。
  */
-function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean }): ReactNode {
+function DiffContentViewer({ file, dark }: { file: CandidateDiffFile; dark: boolean }): ReactNode {
   const { token } = theme.useToken();
   const sides = useMemo(() => reconstructSides(file.patch), [file.patch]);
 
@@ -86,7 +86,7 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
       newValue={sides.newValue}
       splitView={false}
       useDarkTheme={dark}
-      // 不折叠未修改行：两侧已按 hunk 头各自恢复到真实位置（缺失行是空洞、没补空串），
+      // 不折叠未修改行：两侧已按 hunk 头各自恢复到真实位置（缺失候选是空洞、没补空串），
       // 折叠会把「相隔多远」这层信息藏起来
       showDiffOnly={false}
       // 每个文件一个 worker 在几十个文件同时进视口时是纯开销；jsdom 里也没有 worker
@@ -101,7 +101,7 @@ function DiffContentViewer({ file, dark }: { file: RowDiffFile; dark: boolean })
          * `minWidth: '1000px'` 与 `overflowX: 'auto'`，而抽屉宽度可能是 800px（`WIDE_DRAWER_SIZE`
          * 的下限）——窄屏上它比这个最小宽还窄，横向滚动条就是必然的；宽屏上也不该由组件的默认
          * 最小宽替我们定死排版宽度。这里把最小宽度放开、改成按容器宽度排版；正文本身已是
-         * `pre-wrap` + `lineBreak: anywhere`，长行会在单元格内折行，所以不需要靠横向滚动来看全。
+         * `pre-wrap` + `lineBreak: anywhere`，长候选会在单元格内折行，所以不需要靠横向滚动来看全。
          */
         diffContainer: { minWidth: 0, width: '100%', tableLayout: 'fixed', overflowX: 'auto' },
       }}
@@ -269,7 +269,7 @@ export function DiffView({ index, renderFileBody, onLoadMore, dark }: DiffViewPr
 
       {index.total === 0 ? (
         <div style={{ padding: '0 16px 16px' }}>
-          <EmptyState title="没有代码改动" description="这一行没有产生任何文件变更" />
+          <EmptyState title="没有代码改动" description="这个候选没有产生任何文件变更" />
         </div>
       ) : visible.length === 0 ? (
         <div style={{ padding: '0 16px 16px' }}>

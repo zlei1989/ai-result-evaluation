@@ -69,7 +69,7 @@ describe('formatEventLine', () => {
   it('usage：三项用量（千分位 + `tok`）、命中率与轮次（`timing` 缺 ⇒ 明说「耗时未采集」，不写 0s）', () => {
     expect(
       formatEventLine({ seq: 3, at, type: 'usage', tokens: { input: 1000, cached: 200, output: 500 }, turns: 3 }),
-    ).toBe(`[${expectedClock(at)}] 用量 输入 1,000 tok · 缓存 200 tok · 命中 17% · 输出 500 tok · 轮次 3 · 耗时未采集`);
+    ).toBe(`[${expectedClock(at)}] 用量 输入 1,000 tok · 缓存 200 tok · 命中 17% · 输出 500 tok · 步数 3 · 耗时未采集`);
   });
 
   /**
@@ -234,7 +234,7 @@ describe('formatEventLine', () => {
     });
 
     expect(line).toBe(
-      `[${expectedClock(at)}] 用量 输入 100 tok · 缓存 900 tok · 命中 90% · 输出 200 tok · 轮次 2`
+      `[${expectedClock(at)}] 用量 输入 100 tok · 缓存 900 tok · 命中 90% · 输出 200 tok · 步数 2`
       + ' · 耗时 166.7s · 首字 5.0s · 生成 3.6 tok/s · （厂商自报（纯模型时间，不含工具执行））',
     );
   });
@@ -317,10 +317,10 @@ describe('formatEventLine', () => {
     expect(withoutExtras).not.toContain('厂商总量');
   });
 
-  // 只带轮次的 usage 是常态：说轮次就好，**不写三个 0**（那会让人以为「这家很省」）。
-  it('usage：只带轮次（tokens 为 null）时只渲染轮次与时间那一截', () => {
+  // 只带步数的 usage 是常态：说步数就好，**不写三个 0**（那会让人以为「这家很省」）。
+  it('usage：只带步数（tokens 为 null）时只渲染步数与时间那一截', () => {
     expect(formatEventLine({ seq: 3, at, type: 'usage', tokens: null, turns: 7 })).toBe(
-      `[${expectedClock(at)}] 轮次 7 · 耗时未采集`,
+      `[${expectedClock(at)}] 步数 7 · 耗时未采集`,
     );
   });
 
@@ -392,7 +392,7 @@ describe('formatEventLine', () => {
 
   /**
    * `inject-message`（人喂模型那一条的落点）：**「没送到」的三种必须能被读到**。
-   * 它们一条账本记录都不会产生（账本只在真的交出去那一刻才写），这一行日志是它们在界面上唯一的身影。
+   * 它们一条账本记录都不会产生（账本只在真的交出去那一刻才写），这个候选日志是它们在界面上唯一的身影。
    * 三条靶子：① 投递成功不带原因（`null` 不许渲染成「null」）；② 丢弃与超时各带那句人话；
    * ③ 五个取值都取界面那一份词表（与队列区、卡片上的标签逐字相同）。
    */
@@ -401,9 +401,9 @@ describe('formatEventLine', () => {
       .toBe(`[${expectedClock(at)}] 人工消息 已送达`);
     expect(formatEventLine({ seq: 21, at, type: 'inject-message', messageId: 'm-2', requires: 'idle', outcome: 'timed-out', reason: '等太久了，这一条没能交给智能体' }))
       .toBe(`[${expectedClock(at)}] 人工消息 未送达（等超时） · 等太久了，这一条没能交给智能体`);
-    expect(formatEventLine({ seq: 22, at, type: 'inject-message', messageId: 'm-3', requires: 'round', outcome: 'discarded', reason: '这一行已经结束，这条消息没能交给智能体' }))
-      .toBe(`[${expectedClock(at)}] 人工消息 未送达（行已结束） · 这一行已经结束，这条消息没能交给智能体`);
-    // 五态五种说法：合成一句「发送失败」会让使用者分不清「等太久了」与「这一行早就结束了」
+    expect(formatEventLine({ seq: 22, at, type: 'inject-message', messageId: 'm-3', requires: 'round', outcome: 'discarded', reason: '这个候选已经结束，这条消息没能交给智能体' }))
+      .toBe(`[${expectedClock(at)}] 人工消息 未送达（候选已结束） · 这个候选已经结束，这条消息没能交给智能体`);
+    // 五态五种说法：合成一句「发送失败」会让使用者分不清「等太久了」与「这个候选早就结束了」
     const labels = Object.values(INJECT_OUTCOME_LABELS).map((item) => item.label);
     expect(new Set(labels).size).toBe(5);
   });
@@ -440,7 +440,7 @@ describe('formatEventLine', () => {
     // 每条都以 `[时间] ` 开头：少了这个前缀就是「有时间戳没内容」或「没时间戳」的形状
     for (const line of lines) expect(line.startsWith(`[${expectedClock(at)}] `)).toBe(true);
     // 真正的 0 照常显示 0，不是「未采集」（与 null ≠ 0 同一条口径）；单位不因 0 而省掉
-    expect(lines[2]).toContain('输入 0 tok · 缓存 0 tok · 命中 0% · 输出 0 tok · 轮次 0');
+    expect(lines[2]).toContain('输入 0 tok · 缓存 0 tok · 命中 0% · 输出 0 tok · 步数 0');
   });
 });
 

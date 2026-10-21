@@ -31,7 +31,7 @@ export type {
 } from '@aieval/contracts';
 
 /**
- * 运行状态。界面只要「一个色档 + 一句文案」，不复用评测编排的十态词汇
+ * 运行的状态。界面只要「一个色档 + 一句文案」，不复用评测编排的十态词汇
  * （`preparing` / `judging` 这些段只有本仓的评分通路才有）。
  * `tone` 是**界面词汇**（决定徽标色与要不要挂动效），`label` 是**数据层给的文案**。
  */
@@ -64,10 +64,11 @@ export interface DomainFactSegment {
   /**
    * `tag` 段的**色档**（不给 = `blue`）。与 `AgentRunStatus.tone` / `DomainFact.tone` 同一条口径：
    * 数据层给的是**档位**（界面词汇），渲染层把它翻成 antd 的具体预设色。
-   * 今天的三格：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`——同一个档位在本仓的
-   * 两处（事实条那一行与评分详情顶部）长得一样。
+   * 今天用到的档位：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`；改动那一格的
+   * 文件数 `default`、`+N` `success`、`−N` `error`——同一个档位在本仓的两处
+   * （事实条那一行与评分详情顶部）长得一样。
    */
-  tagTone?: 'blue' | 'geekblue' | 'purple';
+  tagTone?: 'blue' | 'geekblue' | 'purple' | 'default' | 'success' | 'error';
 }
 
 /**
@@ -80,21 +81,24 @@ export interface DomainFact {
   label: string;
   value: string;
   /**
-   * 值的**逐段渲染**：给了就按段画（各段 `text` 拼起来必须逐字等于 `value`，由数据层用同一份分段
-   * 拼出来），不给就画 `value` 的纯文本。
+   * 值的**逐段渲染**：给了就按段画，不给就画 `value` 的纯文本。
    *
-   * **给了 `segments` 就不再套色档 `Tag`**：改动那一格按 git stat 排版（文件数次要色 + 新增绿 +
-   * 删除红），外面再套一枚徽标会把这行数字框成一个整体，正是用户要去掉的那个观感。
+   * **段里不写排版空格**：段与段之间的间距由界面的 `Flex gap`（`marginXXS` = 4px）给；
+   * `value` 是给人读 / 读屏 / 复制的纯文本，由数据层把各段以一个空格相接（见 `segmentsText`）。
+   * 段内文字与 Tag 都不自带用于排版的空白——排版字符混进正文，复制与读屏拿到的就不是同一句话。
+   *
+   * **给了 `segments` 就由各段自己决定画法**（Tag / 纯文字），整格不再套色档 `Tag`：
+   * 改动那一格是三枚 Tag（文件数中性、新增绿、删除红），外面再套一枚就把这一簇框成一个整体。
    */
   segments?: readonly DomainFactSegment[];
   tone?: 'default' | 'success' | 'warning' | 'error';
   /** 补充说明（改动那一格放「按预算裁剪过」）。**完整结构由各自的详情抽屉读自己的 props**，不走这里 */
   hint?: string;
-  /** 提示的逐段渲染，约定同 `segments`（各段拼起来等于 `hint`） */
+  /** 提示的逐段渲染，约定同 `segments`（各段以空格相接等于 `hint`；段间距由界面 gap 给） */
   hintSegments?: readonly DomainFactSegment[];
 }
 
-/** 行级事实。会随时间自己变的量（耗时）**不在模型里**——界面用 `useNow` 本地走秒表算 */
+/** 候选级事实。会随时间自己变的量（耗时）**不在模型里**——界面用 `useNow` 本地走秒表算 */
 export interface AgentLogFacts {
   status: AgentRunStatus;
   /** 开始时刻；`null` = 还没开始 */
@@ -124,7 +128,7 @@ export type Loadable<T> =
   | { status: 'ready'; data: T };
 
 /**
- * 节点的运行状态。**七档**——`stopped` / `canceled` / `unsettled` 三档各有各的语义，不可并。
+ * 节点的运行的状态。**七档**——`stopped` / `canceled` / `unsettled` 三档各有各的语义，不可并。
  *
  * ⚠️ **`unsettled` 目前赋不出来**：两条装配路径各只走五档，并集六档、恰好缺这一档
  * （`build-model.ts` 的 `nodeStatusOf` 直映契约 `SubagentStatus` 五态；
@@ -148,7 +152,7 @@ export interface CapabilityDecl {
 /** 能力声明：**维度名由数据层给**，界面按收到的顺序渲染，不硬编码任何维度名 */
 export type MessageCapabilityMap = Readonly<Record<string, CapabilityDecl>>;
 
-/** 六类块共有的归属字段 + 来源三格（契约把它放在消息信封上，定型时摊到块上） */
+/** 各块共有的归属字段 + 来源三格（契约把它放在消息信封上，定型时摊到块上） */
 export interface ContentBlockBase {
   /** 稳定键：折叠态 / React key 都挂在它上面，**不用数组下标**（下标会随流式追加漂移） */
   id: string;
@@ -263,7 +267,7 @@ export interface ToolCallBlock extends ContentBlockBase {
  * `structured` 是**厂商已解析的结构化结果**（`boolean` 只表示「有没有」）。
  * 为什么保留这一格而不是丢掉：规范明写「**有 `meta` 就不要退回去解析文本**」，
  * 而 dsh 的 `read` / `write` / `edit` / `grep` / `glob` 的结果正文只是一段人读的摘要
- * （`<path>…</path>` 那种），**行数、命中数、改动对象这些已解析过的事实只在 `structured` 里**。
+ * （`<path>…</path>` 那种），**候选数、命中数、改动对象这些已解析过的事实只在 `structured` 里**。
  * 丢掉它，界面上就只剩摘要可读——那是「有数据但看不见」的另一种形状。
  * 呈现口径（既有取舍）：**等宽原文，不做族专属渲染**，并如实标注它是结构化结果。
  */
@@ -286,6 +290,19 @@ export interface AttachmentBlock extends ContentBlockBase {
   mimeType: string | null;
 }
 
+/**
+ * **模型看过的一张图片**（厂商只给路径）。
+ *
+ * `path` 是**展示用**路径：在该候选工作区内时已相对化（摘要与图片预览同一把尺子），否则是厂商原文。
+ * `previewPath` 是**预览用**的工作区相对路径；`null` = 这张图不在该候选工作区内，界面不画缩略图
+ * （拿绝对路径去请求等于让宿主开一个任意文件读的口子）。
+ */
+export interface ImageViewBlock extends ContentBlockBase {
+  kind: 'image-view';
+  path: string;
+  previewPath: string | null;
+}
+
 /** 兜底：**我们不认识的厂商载荷**。正文是原文 `raw`，`reason` 说明为什么落到这里 */
 export interface UnrecognizedPayloadBlock extends ContentBlockBase {
   kind: 'unrecognized';
@@ -300,6 +317,7 @@ export type ContentBlock =
   | ToolCallBlock
   | ToolResultBlock
   | AttachmentBlock
+  | ImageViewBlock
   | UnrecognizedPayloadBlock;
 
 /** 卡片底部的「原始结果」：卡片可以只画归一后的形状，但原文必须可查 */
@@ -405,7 +423,7 @@ export type ToolFamilyPayload =
   | { family: 'ask-user'; interaction: AskUserInteraction };
 
 /**
- * 行级事件的**归属键**：这一条属于哪个会话的哪一轮（`subagentId: null` = 主会话）。
+ * 候选级事件的**归属键**：这一条属于哪个会话的哪一轮（`subagentId: null` = 主会话）。
  * 形状与契约 `usage.turn` 一致，但界面用**自己的名字**（"UI 永远看不到传输层"那条边界的同一条处置）。
  */
 export interface TurnRef {
@@ -414,20 +432,20 @@ export interface TurnRef {
 }
 
 /**
- * 时间轴上必须可见的行级事件（谁进这张表由数据层的去向表决定）。
+ * 时间轴上必须可见的事件（谁进这张表由数据层的去向表决定）。
  *
- * ⚠️ **`level: 'warning'` 这一档目前没有产出方**：`build-model.ts` 的 `rowEventsOf` 只写
+ * ⚠️ **`level: 'warning'` 这一档目前没有产出方**：`build-model.ts` 的 `candidateEventsOf` 只写
  * `'error'` 与 `'milestone'` 两种；适配器把 codex 的 item 级 `error` 折成 `warning` 那一步还没落地。
  * 类型与渲染出口先留着（那种告警确实存在，只是现在落在「原始输出」的 `log` 原文里）。
  */
-export interface RowEvent {
+export interface CandidateEvent {
   at: string;
-  /** 三档：`milestone` / `error` / **`warning`**（消息层的非致命告警**不得**当成运行失败） */
+  /** 三档：`milestone` / `error` / **`warning`**（消息层的非致命告警**不得**当成运行的失败） */
   level: 'milestone' | 'error' | 'warning';
   text: string;
   /**
    * 归属键：有时间轴的落点由它决定——**有键按「身份 + 号」精确归位，无键按时刻**
-   * （见 `rowEventsOfTurn`）。`null` = 没有归属信息（`error` / `warning`，以及算不出归属的里程碑）。
+   * （见 `candidateEventsOfTurn`）。`null` = 没有归属信息（`error` / `warning`，以及算不出归属的里程碑）。
    */
   turn: TurnRef | null;
 }
@@ -504,7 +522,7 @@ export interface SessionNode extends LogNodeBase {
   usage: AgentTokens | null;
   /** 子智能体的最终答复；拿不到为 `null`（**不得拿推理或状态文案顶替**） */
   outcome: string | null;
-  /** 会话级事实。**主会话为 `null`**（它的行级事实在 `AgentLogModel.facts`） */
+  /** 会话级事实。**主会话为 `null`**（它的候选级事实在 `AgentLogModel.facts`） */
   sessionFacts: SessionFacts | null;
 }
 
@@ -514,15 +532,15 @@ export interface SessionFacts {
   error: { code: string | null; message: string } | null;
 }
 
-/** **行级节点**：厂商只给汇总、没有逐个身份的那一档。**它不进面包屑、不可点** */
-export interface RowNode extends LogNodeBase {
+/** **候选级节点**：厂商只给汇总、没有逐个身份的那一档。**它不进面包屑、不可点** */
+export interface CandidateNode extends LogNodeBase {
   kind: 'row';
   counts: { subagents: number; completed: number; failed: number } | null;
-  /** 行级事实（这一档**必然**是行级，故非空） */
+  /** 候选级事实（这一档**必然**是候选级，故非空） */
   facts: AgentLogFacts;
 }
 
-export type LogNode = SessionNode | RowNode;
+export type LogNode = SessionNode | CandidateNode;
 
 /** 会话树索引：`buildRenderBlocks` 的规则 3（派发点）用它定位 */
 export type LogNodeIndex = ReadonlyMap<string, LogNode>;
@@ -531,13 +549,13 @@ export type LogNodeIndex = ReadonlyMap<string, LogNode>;
 export interface AgentLogModel {
   /** 契约版本：UI 据此判断来的是不是它认识的那一版 */
   specVersion: 1;
-  /** 这一行的事实（只读，不含任何会自己走的数） */
+  /** 这个候选的事实（只读，不含任何会自己走的数） */
   facts: AgentLogFacts;
   /** 会话树**扁平**存储：主会话 + 所有后代子任务 */
   nodes: readonly LogNode[];
   /** 当前视图（面包屑选中的节点） */
   activeNodeId: string;
-  rowEvents: readonly RowEvent[];
+  candidateEvents: readonly CandidateEvent[];
   /**
    * 追问那几段（`segment ≥ 1`，按段号升序）。**首段不在里面**——首段的分界就是题面那张卡片。
    *
@@ -558,7 +576,7 @@ export interface AgentLogModel {
  * 标题会跟着一起消失）。
  */
 export interface LogSegment {
-  /** 段号（≥ 1）：与行快照的 `followUpRounds` 同源 = 第几次追问 */
+  /** 段号（≥ 1）：与候选快照的 `followUpRounds` 同源 = 第几次追问 */
   segment: number;
   /** 这一段的开始时刻（ISO）；空串 = 拿不到 */
   at: string;
@@ -566,7 +584,7 @@ export interface LogSegment {
   text: string | null;
 }
 
-/** 一行的**原始输出**（`log` 事件的原文）。它是**原文，不是事件**：没有 `seq`、没有事件类型 */
+/** 一候选的**原始输出**（`log` 事件的原文）。它是**原文，不是事件**：没有 `seq`、没有事件类型 */
 export interface AgentLogDiagnostics {
   /** 逐字原文行。UI 不截断、不解析、不合并 */
   lines: readonly {
@@ -667,7 +685,7 @@ export const LOG_NODE_STATUS_LABELS: Record<LogNodeStatus, string> = {
   completed: '已完成',
   failed: '失败',
   stopped: '已被厂商终止',
-  canceled: '随轮次中断',
+  canceled: '随本轮中断',
   unsettled: '未收场（等不到结果了）',
   unknown: '状态未知',
 };
@@ -709,16 +727,16 @@ export const ASK_USER_OUTCOME_LABELS: Record<
     note: '这一问没有答案：调用方没开应答面、该家没把提问投到这条通道上、通道当场出错，或同批两题共用一个标题（答案按标题配对，配不准就不问）',
   },
   rejected: { label: '被拒绝', tone: 'error', note: '子智能体不能向用户提问' },
-  canceled: { label: '随轮次取消', tone: 'default', note: '轮次被中断，提问一起收场' },
+  canceled: { label: '随本轮取消', tone: 'default', note: '本轮被中断，提问一起收场' },
 };
 
 /**
  * 一条人工消息（人往运行中的智能体送的话）的**五种落点**：两句「按预期发生了」+ 三个「没到」的原因。
  *
  * 与 `ASK_USER_OUTCOME_LABELS` 同形（同一套 tone 档），因为它们是同一件事的两个方向：
- * 那边是「模型问人」，这边是「人喂模型」，界面上要能并排读出「这一行被人介入过几次、各去了哪」。
+ * 那边是「模型问人」，这边是「人喂模型」，界面上要能并排读出「这个候选被人介入过几次、各去了哪」。
  * `delivered` 是唯一「模型真收到了」的那一档——**投递失败的三种必须各有各的说法**，
- * 合成一句「发送失败」会让人分不清「等太久了」与「这一行早就结束了」。
+ * 合成一句「发送失败」会让人分不清「等太久了」与「这个候选早就结束了」。
  */
 export const INJECT_OUTCOME_LABELS: Record<
   InjectMessageOutcome,
@@ -732,9 +750,9 @@ export const INJECT_OUTCOME_LABELS: Record<
     note: '撤回时厂商说它已经交给模型了——撤不回来，如实告诉你',
   },
   discarded: {
-    label: '未送达（行已结束）',
+    label: '未送达（候选已结束）',
     tone: 'warning',
-    note: '这一行在投递之前就收场了，这条消息没有进过模型的上下文',
+    note: '这个候选在投递之前就收场了，这条消息没有进过模型的上下文',
   },
   'timed-out': {
     label: '未送达（等超时）',

@@ -1,6 +1,6 @@
 /**
  * dsh 的**消息归一**：把会话通知折成统一的 `AgentMessage`
- * 与 `SubagentRecord`。事件投影仍在 `events.ts`（行级审计与摘要），本文件只管内容级视图。
+ * 与 `SubagentRecord`。事件投影仍在 `events.ts`（运行级审计与摘要），本文件只管内容级视图。
  *
  * 取值路径逐条（真机逐字核过，见 `probe/dumps/v3/` 与 `probe/dumps/v11/`）：
  *   · 正文与思考：`session.event` → `params.event.type === 'assistant/message'` →
@@ -60,11 +60,11 @@ const sessionUsage = new Map<string, UsageTokens>();
 /**
  * 子会话轮次：`sessionId → 该会话已观察到的 `step/start` 次数`。
  *
- * 为什么需要第二张表：本行的 `turns` 是**全树**口径（`events.ts` 的 `step/start` 那一支不按会话
+ * 为什么需要第二张表：本次运行的 `turns` 是**全树**口径（`events.ts` 的 `step/start` 那一支不按会话
  * 分叉，是既成口径），而「轮次」那一格现在要拆出**子智能体那一份** ⇒ 只能按会话另记一遍。
  * 与 `sessionUsage` 同住这里而不是写进 `events.ts` 的 `TurnState`：它是**模块级的按会话关联表**
- * （同一个进程里并行跑着好几行），与 `sessionUsage` 是同一类东西、同一处清理；塞进 `TurnState`
- * 会让「别家的会话」也进这一行的表。
+ * （同一个进程里并本次运行跑着好几行），与 `sessionUsage` 是同一类东西、同一处清理；塞进 `TurnState`
+ * 会让「别家的会话」也进本次运行的表。
  */
 /** 测试隔离：清空全部模块级关联表（身份 / 用量 / 往返号 / 权限档 / 父子关系） */
 export function resetDshMessageStateForTesting(): void {
@@ -185,7 +185,7 @@ export function dshAssistantMessageDraft(
     chunk: 'snapshot',
     /**
      * 这条消息**自己那一次调用**的用量：`data.usage` 就是它（**被中断的那一次可能没有这一格**
-     * ⇒ 那时读数是 `null`，不是 0）。**不参与行级累计**（那是 `events.ts` 的 `state.usage*` 与
+     * ⇒ 那时读数是 `null`，不是 0）。**不参与运行级累计**（那是 `events.ts` 的 `state.usage*` 与
      * `cumulativeTokens` 的事），也不是「到这一步为止」的快照。子会话消息走同一个函数 ⇒ 同样带上。
      * 读数（含「缓存两格缺席即 0」）只有 `protocol.ts` 一份实现。
      */
@@ -342,8 +342,8 @@ export function dshToolResultDraft(
  * 错认成子智能体的。判据是**登记事实**，不是猜测。
  *
  * 两个读者，判据只有一份：消息信封的 `subagentId`（`dshAssistantMessageDraft` 等）与
- * **本行最终答复**（`events.ts` 的 `assistant/message` 只在主会话那一支写 `state.finalText`）——
- * 后者漏了这道过滤的表现是「子智能体的话顶掉本行答复」，而评分通路只读最终答复。
+ * **本次运行最终答复**（`events.ts` 的 `assistant/message` 只在主会话那一支写 `state.finalText`）——
+ * 后者漏了这道过滤的表现是「子智能体的话顶掉本次运行答复」，而评分通路只读最终答复。
  *
  * ⚠️ 这两张表是**模块级**的（跨 run 累积），而真机上每一条子任务的身份都是新 UUID
  * ⇒ 同一个进程里跑多行不会串味；测试隔离走 `resetDshMessageStateForTesting`。
@@ -426,7 +426,7 @@ export function dshSubagentIdentity(notification: Record<string, unknown> | null
  *
  * 为什么要有第二条通路：任务名（catalog 的 `label`）与派生它的那次调用（`parentCallId`）都可能在
  * `subagent.started` **之后**才拿到 ⇒ 派发时那条行既没有名字、也指不出派发点，界面上落不进任何一轮
- * （没有卡片、也没有「进入」入口）。目录项到达后按同一身份再投一条，这一行才可达。
+ * （没有卡片、也没有「进入」入口）。目录项到达后按同一身份再投一条，本次运行才可达。
  *
  * `name` / `kind` 一律现查关联表（**不接收调用方传值**）：catalog 是它们的唯一来源，
  * 传值会让同一身份的两次投递有机会写出两个名字。
@@ -484,7 +484,7 @@ export function dshSubagentRecord(
    * 带的 `params.sessionId` 就是这个身份 ⇒ 登记之后它们才会被归到这条子任务上，
    * 而不是被当成主会话的话（或被丢掉）。
    *
-   * 三个候选名都登记：真机给 `childSessionId`（`subagent.finished` 另有同值的 `agentId`），
+   * 三个本次运行名都登记：真机给 `childSessionId`（`subagent.finished` 另有同值的 `agentId`），
    * 而**登记多一个不存在的 id 是无害的**（没有任何事件会带它），漏登记才有害。
    */
   for (const candidate of [identity, agentId, childSessionId]) {
@@ -567,7 +567,7 @@ function subagentOutcome(params: Record<string, unknown> | null): string | null 
  * 记一条子会话的 `assistant/message` 用量（子任务通知不带用量 ⇒ 收场时按会话求和）。
  * 同一个会话的多条 `assistant/message` 各自是一次往返 ⇒ 逐条相加，可选格读不到就是 `null`。
  *
- * 读法与行级合计**同源**（`readUsageTokens`）：缓存两格缺席即 0（厂商条件写入）、
+ * 读法与运行级合计**同源**（`readUsageTokens`）：缓存两格缺席即 0（厂商条件写入）、
  * `totalTokens` 是**这一条自己的合计** ⇒ 同样相加。两处各写一份读数必然漂移，而漂移的症状是
  * 「合计里子会话那一份比主会话口径小一截」，界面上看不出哪一边错。
  * 读不动的形状（缺 input / output）整条跳过——那一条的用量在两边都不算数，口径一致。
@@ -593,7 +593,7 @@ export function noteDshSessionUsage(sessionId: string | null, usage: unknown): v
  *
  * 给「run 基线」用：`sessionUsage` 是模块级的、跨 run 不清（同一个子会话 id 在追问/续接的下一
  * 个 run 里会被重新登记），所以本 run 的**分量**必须是「当前累计 − 本 run 登记它时的累计」，
- * 否则第二个 run 的分量把前一个 run 一起算进去（真机形状：行快照上会出现「合计 60 / 子分量 2010」）。
+ * 否则第二个 run 的分量把前一个 run 一起算进去（真机形状：运行快照上会出现「合计 60 / 子分量 2010」）。
  */
 export function dshSessionUsageOf(sessionId: string): UsageTokens | null {
   return sessionUsage.get(sessionId) ?? null;
@@ -765,12 +765,12 @@ export function dshTurnAttribution(sessionId: string | null, data: Record<string
   }
   const state = sessionRounds.get(sessionId);
   const round = state === undefined ? null : state.highWater > 0 ? state.highWater : dshSessionRoundOf(sessionId);
-  // `null` = 这条会话一次 step/start 都没见过（**不拿本行累计号顶替**：那会把读数挂到别的会话上）
+  // `null` = 这条会话一次 step/start 都没见过（**不拿本次运行累计号顶替**：那会把读数挂到别的会话上）
   return round === null ? null : { subagentId: dshSubagentIdOf(sessionId), round };
 }
 
 /**
- * 本行「**已收场却没报用量**」的子会话 id（白名单 ∩ 已收场 − 有用量）：**事实缺失**那一档。
+ * 本次运行「**已收场却没报用量**」的子会话 id（白名单 ∩ 已收场 − 有用量）：**事实缺失**那一档。
  *
  * 为什么单独抽出来而不是写在 `dshSubagentUsage` 里：这个判据有**两个**读者——
  * `dshSubagentUsage` 用它决定「整格交 `null`」，收尾那条**点名 WARN** 用它说清「是谁没报」
@@ -805,14 +805,14 @@ export function dshSilentChildSessions(input: {
 }
 
 /**
- * 本行的**子智能体那一份**用量。
+ * 本次运行的**子智能体那一份**用量。
  *
- * 为什么按**本行的**子会话白名单（参数 `input.childSessions`）求和、而不是「主会话之外的全部」：
- * `sessionUsage` 是**模块级**的（同一个 Node 进程里并行跑着好几行），主会话之外还有**别的行**的会话
- * ⇒ 只有本行的白名单能把这一行圈出来。
+ * 为什么按**本次运行的**子会话白名单（参数 `input.childSessions`）求和、而不是「主会话之外的全部」：
+ * `sessionUsage` 是**模块级**的（同一个 Node 进程里并本次运行跑着好几行），主会话之外还有**别的行**的会话
+ * ⇒ 只有本次运行的白名单能把本次运行圈出来。
  *
  * ⚠️ 别与本文件顶部那个**模块级**的 `childSessions` 混淆：那是**子会话身份表**（供
- * `dshSubagentIdOf` 判归属，跨 run 累积、刻意不清），不是本行的白名单——
+ * `dshSubagentIdOf` 判归属，跨 run 累积、刻意不清），不是本次运行的白名单——
  * 同名不同物，这里读的**只有参数**那一份。
  *
  * 三档（「全量或 null」）：
@@ -848,7 +848,7 @@ export function dshSubagentUsage(input: {
 }
 
 /**
- * 本行的**子智能体那一份**轮次。
+ * 本次运行的**子智能体那一份**轮次。
  *
  * 为什么不是「拿 `turns` 减主会话的轮次」：主会话的轮次没有任何一处单独记过（`turns` 是全树累加），
  * 而按会话记一笔是**同一个计数点**上的顺手动作 ⇒ 两格由同一条 `step/start` 驱动，

@@ -112,19 +112,19 @@ describe('loadConfig', () => {
     expect(config.providers).toEqual([]);
   });
 
-  // 磁盘上**已有**的 config.json 里可能还留着 rowTimeoutMs（单行超时已取消）。
+  // 磁盘上**已有**的 config.json 里可能还留着 candidateTimeoutMs（单行超时已取消）。
   // 读侧**只认契约里还有的键**：它既不能让读盘失败，也不该继续出现在 `GET /api/settings` 的
   // 响应里（那是契约里不存在的字段）——落盘数据照原样留在文件里，下一次保存自然把它带走。
-  it('旧配置里多出来的 rowTimeoutMs 被丢掉（不抛、其余字段照常、读侧看不到它）', () => {
+  it('旧配置里多出来的 candidateTimeoutMs 被丢掉（不抛、其余字段照常、读侧看不到它）', () => {
     writeFileSync(
       join(dir, 'config.json'),
-      JSON.stringify({ settings: { theme: 'dark', rowTimeoutMs: 1_800_000 } }),
+      JSON.stringify({ settings: { theme: 'dark', candidateTimeoutMs: 1_800_000 } }),
       'utf8',
     );
     const config = loadConfig();
     expect(config.settings.theme).toBe('dark');
     expect(config.settings.diffBudgetBytes).toBe(SETTINGS_DEFAULTS.diffBudgetBytes);
-    expect('rowTimeoutMs' in config.settings).toBe(false);
+    expect('candidateTimeoutMs' in config.settings).toBe(false);
   });
 
   it('容忍外部工具写入的 UTF-8 BOM', () => {

@@ -51,7 +51,7 @@ function remoteOptions(timeoutMs?: number): { env: Record<string, string>; timeo
   return { env, timeoutMs: positiveOr(timeoutMs, REMOTE_TRANSFER_TIMEOUT_MS) };
 }
 
-/** 工作区根下的镜像父目录（与 cases / {runId} 平级，不进任何行工作区） */
+/** 工作区根下的镜像父目录（与 cases / {runId} 平级，不进任何候选工作区） */
 export function remotesDir(workspaceRoot: string): string {
   return join(workspaceRoot, 'remotes');
 }
@@ -212,7 +212,7 @@ export function ensureMirror(input: { workspaceRoot: string; url: string; timeou
 const RENAME_ATTEMPTS = 5;
 const RENAME_RETRY_DELAY_MS = 100;
 
-/** 同步等待：本模块的改名发生在**同步**路径上（`prepareRowWorkspace` 全程同步），没有 await 可用 */
+/** 同步等待：本模块的改名发生在**同步**路径上（`prepareCandidateWorkspace` 全程同步），没有 await 可用 */
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

@@ -3,8 +3,8 @@
  * 源码级不变量：**每次状态变更由同一个函数同时写快照与追加事件**。
  *
  * 为什么这条不变式只能扫源码：违反它的实现与正确的实现在**运行期可观测结果上完全一样**。
- * 违反它的写法——把第 7 步的 `setRowStatus(…, 'judging')` 拆成
- * `patchRow({status:'judging'})` → `await yieldToEventLoop()` → `publishRowEvent({type:'status'})`——
+ * 违反它的写法——把第 7 步的 `setCandidateStatus(…, 'judging')` 拆成
+ * `patchCandidate({status:'judging'})` → `await yieldToEventLoop()` → `publishCandidateEvent({type:'status'})`——
  * 终态与事件序列一字不变，整套行为用例**全绿**；唯一的差别在那个 `setImmediate` 窗口里：
  * `run.json` 已说 `judging` 而 `events.jsonl` 里还没有这条状态事件，并发读会看到「快照比日志超前一步」。
  *
@@ -16,15 +16,15 @@
 /**
  * 扫描面是 evaluator 包自己的 `src/**`（**排除 `*.test.ts`**）：本文件里的正则字面量与样本
  * 会把规则自己判违规（与 agents 包同一条理由）。注释先被剥掉——文档里正好在讨论
- * 「直接 `row.status = …` 再 `saveRun`」这种写法，不去注释就会把说明判成违规。
+ * 「直接 `candidate.status = …` 再 `saveRun`」这种写法，不去注释就会把说明判成违规。
  *
  * **轮级的扩展（窄口，判据没放松）**：轮级状态机需要写 `EvalRun.status` / `startedAt` / `finishedAt`，
- * 而它不可能走 `mutateRow`（那个函数的定位参数是 `(runId, rowId)`，轮级收尾发生在所有行都结束之后，
+ * 而它不可能走 `mutateCandidate`（那个函数的定位参数是 `(runId, candidateId)`，轮级收尾发生在所有候选都结束之后，
  * 没有「当事行」）。于是允许**第二个具名写入点** `setRunStatus`，它只碰轮级的三个字段。
- * 这不是给行级开口子：① 判据仍是「`saveRun(` 只出现在两个具名函数体内」，其余任何位置照旧违规；
- * ② `setRunStatus` 里没有状态事件、也不会写行字段（要写行字段必须经过 `Object.assign(row, …)`，
+ * 这不是给候选级开口子：① 判据仍是「`saveRun(` 只出现在两个具名函数体内」，其余任何位置照旧违规；
+ * ② `setRunStatus` 里没有状态事件、也不会写行字段（要写行字段必须经过 `Object.assign(candidate, …)`，
  * 那条判据的允许集合没变）；③ 样本表里新增了「把轮级写入点搬到别处」的反例，证明这个窄口不是放行。
- * 轮级为什么不需要「同时追加事件」：`AgentEvent` 八个成员全是行级的，
+ * 轮级为什么不需要「同时追加事件」：`AgentEvent` 八个成员全是候选级的，
  * 事件日志也按行落盘，轮级状态在协议里没有对应的事件类型可写。
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -32,7 +32,7 @@ import { join, posix } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-/** 状态不变式的宿主文件（`setRowStatus` / `patchRow` / `mutateRow` 都在这里） */
+/** 状态不变式的宿主文件（`setCandidateStatus` / `patchCandidate` / `mutateCandidate` 都在这里） */
 const ORCHESTRATOR = 'orchestrator.ts';
 
 /** 包内全部非测试源码（相对 src，Windows 分隔符统一成正斜杠） */
@@ -51,9 +51,9 @@ function sourceFiles(): string[] {
 
 /**
  * 去掉注释、只留可执行源码。**保持行号不变**（块注释按原字符数换成空格，行注释整段删掉），
- * 这样违规信息里的行号就是人肉打开文件时的行号。
+ * 这样违规信息里的候选号就是人肉打开文件时的候选号。
  * 已知局限（与 agents 包同款、如实登记）：正则不区分字符串字面量里的 `//`，含 `://` 的字符串常量会被
- * 从该行截断——方向是漏报而不是误报；`orchestrator.ts` 今天没有任何含 `//` 的字符串（已逐行核对）。
+ * 从该候选截断——方向是漏报而不是误报；`orchestrator.ts` 今天没有任何含 `//` 的字符串（已逐行核对）。
  */
 function stripComments(text: string): string {
   return text
@@ -74,10 +74,10 @@ function occurrences(text: string, pattern: RegExp): number[] {
  */
 const SAVE_RUN_CALL = /(?<![\w.])(?<!function )saveRun\(/g;
 
-/** 状态事件字面量：`{ type: 'status'`（唯一发布点只能是 setRowStatus） */
+/** 状态事件字面量：`{ type: 'status'`（唯一发布点只能是 setCandidateStatus） */
 const STATUS_EVENT = /\{\s*type:\s*'status'/g;
 
-/** 下标对应的行号（1 起） */
+/** 下标对应的候选号（1 起） */
 function lineOf(text: string, index: number): number {
   return text.slice(0, index).split('\n').length;
 }
@@ -106,26 +106,26 @@ function functionRange(source: string, name: string): [number, number] {
 /**
  * 一份源码里对「状态变更单一写入点」的全部违规（空数组 = 这条不变式成立）。
  * 五条判据（前三条是「写入点必须落在哪个函数里」，后两条是「不许有第二种写法」）：
- *   ① 状态事件（`{ type: 'status'`）只出现在 `setRowStatus` 里，且至少有一处；
- *   ② 行字段写入（`Object.assign(row, …)`）只出现在 `setRowStatus` / `patchRow` 里，且至少有一处；
- *   ③ 快照落盘（`saveRun(…)` 调用）只出现在 `mutateRow`（**行级**唯一出口）或 `setRunStatus`
+ *   ① 状态事件（`{ type: 'status'`）只出现在 `setCandidateStatus` 里，且至少有一处；
+ *   ② 行字段写入（`Object.assign(candidate, …)`）只出现在 `setCandidateStatus` / `patchCandidate` 里，且至少有一处；
+ *   ③ 快照落盘（`saveRun(…)` 调用）只出现在 `mutateCandidate`（**候选级**唯一出口）或 `setRunStatus`
  *      （**轮级**唯一出口）里，且至少有一处；
  *   ④ 不出现 `.status = …` 的直接赋值；
- *   ⑤ `patchRow` / `mutateRow` 的实参里不出现 `status` 令牌（一次状态变更不许从 patch 侧夹带进来）。
+ *   ⑤ `patchCandidate` / `mutateCandidate` 的实参里不出现 `status` 令牌（一次状态变更不许从 patch 侧夹带进来）。
  * ①②③ 的「至少有一处」不是凑数：把写入点整个删掉（例如状态事件不再发布）同样是这条不变式的破坏。
  */
 function statusWriteViolations(source: string): string[] {
   const text = stripComments(source);
   const violations: string[] = [];
 
-  let setRowStatus: [number, number];
-  let patchRow: [number, number];
-  let mutateRow: [number, number];
+  let setCandidateStatus: [number, number];
+  let patchCandidate: [number, number];
+  let mutateCandidate: [number, number];
   let setRunStatus: [number, number];
   try {
-    setRowStatus = functionRange(text, 'setRowStatus');
-    patchRow = functionRange(text, 'patchRow');
-    mutateRow = functionRange(text, 'mutateRow');
+    setCandidateStatus = functionRange(text, 'setCandidateStatus');
+    patchCandidate = functionRange(text, 'patchCandidate');
+    mutateCandidate = functionRange(text, 'mutateCandidate');
     setRunStatus = functionRange(text, 'setRunStatus');
   } catch (error) {
     // 判据的前提没了（函数被改名 / 拆走）必须显式失败：静默跳过等于这条守卫悄悄失效
@@ -136,12 +136,12 @@ function statusWriteViolations(source: string): string[] {
     ranges.some(([start, end]) => index >= start && index <= end);
 
   const rules: Array<[RegExp, string, Array<[number, number]>]> = [
-    [STATUS_EVENT, '状态事件（快照与事件必须由 setRowStatus 一起写）', [setRowStatus]],
-    [/Object\.assign\(\s*row,/g, '行字段写入（只允许 setRowStatus / patchRow）', [setRowStatus, patchRow]],
+    [STATUS_EVENT, '状态事件（快照与事件必须由 setCandidateStatus 一起写）', [setCandidateStatus]],
+    [/Object\.assign\(\s*candidate,/g, '行字段写入（只允许 setCandidateStatus / patchCandidate）', [setCandidateStatus, patchCandidate]],
     [
       SAVE_RUN_CALL,
-      '快照落盘（行级唯一出口是 mutateRow、轮级唯一出口是 setRunStatus）',
-      [mutateRow, setRunStatus],
+      '快照落盘（候选级唯一出口是 mutateCandidate、轮级唯一出口是 setRunStatus）',
+      [mutateCandidate, setRunStatus],
     ],
   ];
   for (const [pattern, why, allowed] of rules) {
@@ -155,8 +155,8 @@ function statusWriteViolations(source: string): string[] {
   for (const index of occurrences(text, /\.status\s*=(?!=)/g)) {
     violations.push(`直接给 .status 赋值（第二个状态写入点）：第 ${lineOf(text, index)} 行`);
   }
-  for (const index of occurrences(text, /(?:patchRow|mutateRow)\s*\([^)]*\bstatus\b/g)) {
-    violations.push(`patchRow / mutateRow 的实参里夹带 status：第 ${lineOf(text, index)} 行`);
+  for (const index of occurrences(text, /(?:patchCandidate|mutateCandidate)\s*\([^)]*\bstatus\b/g)) {
+    violations.push(`patchCandidate / mutateCandidate 的实参里夹带 status：第 ${lineOf(text, index)} 行`);
   }
   return violations;
 }
@@ -175,26 +175,26 @@ const VIOLATION_SAMPLES: ReadonlyArray<readonly [string, string]> = [
   [
     '把一次状态变更拆成「先写快照 → 让出事件循环 → 再追加事件」（朴素守卫会漏掉的那种写法）',
     `
-async function runRowAttempt(runId: string, rowId: string): Promise<void> {
-  patchRow(runId, rowId, { status: 'judging' });
+async function runCandidateAttempt(runId: string, candidateId: string): Promise<void> {
+  patchCandidate(runId, candidateId, { status: 'judging' });
   await yieldToEventLoop();
-  publishRowEvent(runId, rowId, { type: 'status', status: 'judging' });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status: 'judging' });
 }
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
-  publishRowEvent(runId, rowId, { type: 'status', status });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -206,23 +206,23 @@ function setRunStatus(runId: string, patch: RunStatusPatch): EvalRun {
 `,
   ],
   [
-    '直接给 row.status 赋值后再 saveRun（绕过 setRowStatus 的第二条快照路径）',
+    '直接给 candidate.status 赋值后再 saveRun（绕过 setCandidateStatus 的第二条快照路径）',
     `
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
-  publishRowEvent(runId, rowId, { type: 'status', status });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -231,31 +231,31 @@ function setRunStatus(runId: string, patch: RunStatusPatch): EvalRun {
   saveRun(next);
   return next;
 }
-function markJudging(runId: string, rowId: string): void {
-  const { run, row } = requireRow(runId, rowId);
-  row.status = 'judging';
+function markJudging(runId: string, candidateId: string): void {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  candidate.status = 'judging';
   saveRun(run);
 }
 `,
   ],
   [
-    '把状态事件搬到 patchRow 里（快照与事件不再由同一个函数写）',
+    '把状态事件搬到 patchCandidate 里（快照与事件不再由同一个函数写）',
     `
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
-  publishRowEvent(runId, rowId, { type: 'status', status: 'running' });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status: 'running' });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -269,21 +269,21 @@ function setRunStatus(runId: string, patch: RunStatusPatch): EvalRun {
   [
     '把轮级快照的写入点从 setRunStatus 搬到 finalizeRun（轮级出现第二个 saveRun 出口，T6 的窄口不许放行）',
     `
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
-  publishRowEvent(runId, rowId, { type: 'status', status });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -299,23 +299,23 @@ function finalizeRun(runId: string): void {
 `,
   ],
   [
-    '在第三个函数里另起一处 saveRun（`abortRow` 内，既不是 mutateRow 也不是 setRunStatus）',
+    '在第三个函数里另起一处 saveRun（`abortCandidate` 内，既不是 mutateCandidate 也不是 setRunStatus）',
     `
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
-  publishRowEvent(runId, rowId, { type: 'status', status });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -324,30 +324,30 @@ function setRunStatus(runId: string, patch: RunStatusPatch): EvalRun {
   saveRun(next);
   return next;
 }
-function abortRow(runId: string, rowId: string): void {
-  const { run } = requireRow(runId, rowId);
-  saveRun({ ...run, rows: run.rows.filter((item) => item.id !== rowId) });
+function abortCandidate(runId: string, candidateId: string): void {
+  const { run } = requireCandidate(runId, candidateId);
+  saveRun({ ...run, candidates: run.candidates.filter((item) => item.id !== candidateId) });
 }
 `,
   ],
   [
-    '在 setRowStatus / patchRow 之外直接改行字段（`Object.assign(row, …)` 出圈：行快照的第二个写入路径）',
+    '在 setCandidateStatus / patchCandidate 之外直接改行字段（`Object.assign(candidate, …)` 出圈：候选快照的第二个写入路径）',
     `
-function setRowStatus(runId: string, rowId: string, status: EvalRowStatus, patch?: Partial<EvalRow>): EvalRun {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch ?? {}, { status });
+function setCandidateStatus(runId: string, candidateId: string, status: EvalCandidateStatus, patch?: Partial<EvalCandidate>): EvalRun {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch ?? {}, { status });
   });
-  publishRowEvent(runId, rowId, { type: 'status', status });
+  publishCandidateEvent(runId, candidateId, { type: 'status', status });
   return getRunForWrite(runId);
 }
-function patchRow(runId: string, rowId: string, patch: Partial<EvalRow>): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, patch);
+function patchCandidate(runId: string, candidateId: string, patch: Partial<EvalCandidate>): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, patch);
   });
 }
-function mutateRow(runId: string, rowId: string, mutate: (row: EvalRow) => void): EvalRun {
-  const { run, row } = requireRow(runId, rowId);
-  mutate(row);
+function mutateCandidate(runId: string, candidateId: string, mutate: (candidate: EvalCandidate) => void): EvalRun {
+  const { run, candidate } = requireCandidate(runId, candidateId);
+  mutate(candidate);
   saveRun(run);
   return run;
 }
@@ -356,9 +356,9 @@ function setRunStatus(runId: string, patch: RunStatusPatch): EvalRun {
   saveRun(next);
   return next;
 }
-function clearRowScore(runId: string, rowId: string): void {
-  mutateRow(runId, rowId, (row) => {
-    Object.assign(row, { score: null });
+function clearCandidateScore(runId: string, candidateId: string): void {
+  mutateCandidate(runId, candidateId, (candidate) => {
+    Object.assign(candidate, { score: null });
   });
 }
 `,
@@ -366,7 +366,7 @@ function clearRowScore(runId: string, rowId: string): void {
 ];
 
 describe('源码级不变量：状态变更单一写入点', () => {
-  it('orchestrator.ts 里「写快照 + 追加状态事件」只由 setRowStatus 成对完成，别处没有第二条状态写路径', () => {
+  it('orchestrator.ts 里「写快照 + 追加状态事件」只由 setCandidateStatus 成对完成，别处没有第二条状态写路径', () => {
     // 为什么这条守卫必须存在：把一次状态变更拆成两次写，最终状态与事件序列一字不差（14 个用例全绿），
     // 但 run.json 与 events.jsonl 之间会出现「快照比日志超前一步」的真实窗口——并发读看到状态对不上。
     expect(statusWriteViolations(readSource(ORCHESTRATOR))).toEqual([]);
@@ -403,7 +403,7 @@ describe('源码级不变量：状态变更单一写入点', () => {
    * 这条守卫补的是「有落点但无守卫」那一格。
    *
    * **编排层不再单独调 `ensureCaseCache`**——用例缓存的预热归 `core/workspace.ts`
-   * 的 `prepareRowWorkspace`（唯一的 `ensureCaseCache` 调用点）。事实是：
+   * 的 `prepareCandidateWorkspace`（唯一的 `ensureCaseCache` 调用点）。事实是：
    * `evaluator/src` 里 `ensureCaseCache` **只出现在 `orchestrator.ts:20` 的注释里**，
    * 没有任何测试断言「它不被调用」⇒ 将来有人在编排层补一句预热（看似优化、实则多一份缓存真源）
    * 不会有任何测试变红。
@@ -505,7 +505,7 @@ describe('拆分后的编排测试文件各自注册 mock（防静默退回真�
  * `async () => (await import('<字面量>'))…` 形态 ⇒ ROOTS 非空、判据确实在跑。
  * （`static-assertions.test.ts` 里另有 3 处 `vi.mock(` 只出现在**样本字符串**里，不是真 mock，不计入 58。）
  * 但这是判据的**结构性缺口**：本盲区**同时登记在两处入库载体** —— 这段 JSDoc 与
- * `docs/features/row-execution.md`「收集死锁教训」一节
+ * `docs/features/candidate-execution.md`「收集死锁教训」一节
  * （`.superpowers/` 下的 ledger 是 gitignore 的，不算入库载体）。
  * 要真正堵住它，得追静态 import 的绑定来源（属独立一条线，本线不扩环）。
  */
@@ -526,9 +526,9 @@ interface RuntimeTouch {
  * ⇒ 从 `src/testing/` 看，`../judge` 与从 `src/` 看的 `./judge` 是**同一个身份**。
  */
 const MOCKED_MODULES: ReadonlyArray<{ label: string; key: string }> = [
-  // 三方：orchestrator-run-row.test.ts:12、judge-agent.test.ts:18、run-delete.test.ts:39 等
+  // 三方：orchestrator-run-candidate.test.ts:12、judge-agent.test.ts:18、run-delete.test.ts:39 等
   { label: '@aieval/agents', key: '@aieval/agents' },
-  // 本地：orchestrator-run-row.test.ts:13 / :17；judge.test.ts:22（同一类环的另一个入口）
+  // 本地：orchestrator-run-candidate.test.ts:13 / :17；judge.test.ts:22（同一类环的另一个入口）
   { label: './judge', key: 'judge' },
   { label: './run-store', key: 'run-store' },
   { label: './text-api', key: 'text-api' },
@@ -604,7 +604,7 @@ function isRuntimeModuleStatement(statement: ts.Statement): boolean {
     /**
      * ⚠️ **空子句 `export {} from 'x'` 必须单独判红**：它与 import 侧的
      * 空子句同理——转译后是 **1 条真请求**（`__vite_ssr_import__` 1 条），而
-     * `elements.some(…)` 对**空数组**恒返回 `false` ⇒ 少了这一行就会把它**静默放行**。
+     * `elements.some(…)` 对**空数组**恒返回 `false` ⇒ 少了这个候选就会把它**静默放行**。
      * 补之前的状态是「**权威文档判违规、实现判放行**」
      * 都写明它违规（那个矛盾此前只记在 gitignore 的 ledger 里，不在任何入库文档里）。
      * 对应的负样本是样本表里的 `export {} from '@aieval/agents';`。
@@ -895,7 +895,7 @@ describe('orchestrator 不再预读 agents 能力表（可度量收益）', () =
   });
 });
 
-/** 整包非测试源码里，模式命中的位置（`文件:行号`，行号是去掉注释后仍与人肉打开时的行号一致） */
+/** 整包非测试源码里，模式命中的位置（`文件:行号`，行号是去掉注释后仍与人肉打开时的候选号一致） */
 function sourceHits(pattern: RegExp): string[] {
   const hits: string[] = [];
   for (const file of sourceFiles()) {
@@ -914,12 +914,12 @@ function filesOf(hits: readonly string[]): string[] {
  * MCP 注入的**单一消费点**。
  *
  * 三条都只能扫源码，因为违反它们时**运行期结果一模一样**：
- *   ① 多一处 `settings.mcpServers` 读点 ⇒ 两次读盘各拿一份快照，行里注入的那台与设置页显示的可能不是
+ *   ① 多一处 `settings.mcpServers` 读点 ⇒ 两次读盘各拿一份快照，候选里注入的那台与设置页显示的可能不是
  *      同一次读盘的结果（并发改配置时才会现形，而且现形在别人的机器上）；
  *   ② `AgentRunInput.mcpServers` 多填一处（例如评分那一跳）⇒ 类型全过（那一格是可选的），
  *      表现是「评分智能体也能看见这些工具」，而这正是控制者裁定要禁的；
- *   ③ evaluator 里出现探活调用 ⇒ 跑一行会顺手连一遍 MCP（明确不做全真探活），
- *      代价是每行多一次握手 + 一次子进程（stdio 那侧还会真的起 `npx`）。
+ *   ③ evaluator 里出现探活调用 ⇒ 跑一个候选会顺手连一遍 MCP（明确不做全真探活），
+ *      代价是每个候选多一次握手 + 一次子进程（stdio 那侧还会真的起 `npx`）。
  */
 describe('MCP 注入的单一消费点', () => {
   /** 读配置里那一份 MCP 条目的**唯一**写法（`settings` 是 `loadConfig()` 快照上的那一格） */
@@ -949,8 +949,8 @@ describe('MCP 注入的单一消费点', () => {
     expect(sourceHits(INJECTABLE_FILL), '注入集被填进了第二个地方（评分 / 别的调用点也吃到了它）').toHaveLength(
       1,
     );
-    // 反向钉：观测格那一格照旧在（它不是注入的第二个填点，是「这一行到底装上没有」的记账）
-    expect(readSource(ORCHESTRATOR)).toContain('deriveRowMcpServers(mcpEvidence)');
+    // 反向钉：观测格那一格照旧在（它不是注入的第二个填点，是「这个候选到底装上没有」的记账）
+    expect(readSource(ORCHESTRATOR)).toContain('deriveCandidateMcpServers(mcpEvidence)');
 
     // 评分路径（评分智能体这条路：`judge.ts` 选路、`judge-route.ts` 读配置、`text-api.ts` 发请求）
     // 里一个 MCP 字样都不许有——评分是**文本 API** 调用，没有「给它几台 MCP 服务器」这一格
@@ -964,7 +964,7 @@ describe('MCP 注入的单一消费点', () => {
 
   it('探活不进入 run 的调用链：evaluator 整包不出现任何探活调用', () => {
     // 探活是 api 层的独立入口（设置页那两个按钮），跑一行**永远**不该顺手连一遍 MCP：
-    // 违反时类型全过、行照跑，只是每行多一次握手（stdio 那侧还会真的起一个子进程）。
+    // 违反时类型全过、行照跑，只是每个候选多一次握手（stdio 那侧还会真的起一个子进程）。
     expect(sourceHits(PROBE_CALLS), 'evaluator 调了探活——它只能在设置页那两个入口被调').toEqual([]);
   });
 });
@@ -981,7 +981,7 @@ describe('技能装入的单一消费点', () => {
   /** 读配置里那份**停用名单**的唯一写法（`settings` 是 `loadConfig()` 快照上的那一格） */
   const SETTINGS_SKILLS = /\bsettings\.skills\b/g;
 
-  /** 把技能根扫成「本行要装入的那一份」的那个函数（core）的**调用点** */
+  /** 把技能根扫成「候选要装入的那一份」的那个函数（core）的**调用点** */
   const INSTALLABLE_SKILLS = /(?<![\w.])installableSkills\(/g;
 
   /** 清单的填点：只有 `AgentRunInput.skills` 那一格吃它 */
@@ -1011,18 +1011,18 @@ describe('技能装入的单一消费点', () => {
     }
   });
 
-  it('行级观测格只由编排层推导一次：`deriveRowSkillInstall` 的调用点只在候选执行那两条路里', () => {
-    // 定义在 `row-skill.ts`，`skillMissingMessage` 内部复用同一份推导（那是**刻意**的第二读点：
+  it('候选级观测格只由编排层推导一次：`deriveCandidateSkillInstall` 的调用点只在候选执行那两条路里', () => {
+    // 定义在 `candidate-skill.ts`，`skillMissingMessage` 内部复用同一份推导（那是**刻意**的第二读点：
     // 两处各拼一份的表现是「快照里记着厂商没认、行却照常出了分」）。
-    // 编排层里的落盘推导点有**两处**——候选执行有两条路（完整跑一行 `runRowAttempt` 与追问
+    // 编排层里的落盘推导点有**两处**——候选执行有两条路（完整跑一行 `runCandidateAttempt` 与追问
     // `followUpAttempt`），每一次执行都要按**这一次**的厂商证据下结论。判据因此从「只有一处」
     // 收紧成「只允许在这两个函数体里」，第三处（评分、用例同步、别处顺手推导）照旧红。
-    const hits = sourceHits(/deriveRowSkillInstall\(/g);
+    const hits = sourceHits(/deriveCandidateSkillInstall\(/g);
     const orchestratorHits = hits.filter((hit) => hit.startsWith(`${ORCHESTRATOR}:`));
     expect(orchestratorHits, '编排层里的推导点不在候选执行那两条路里').toHaveLength(2);
     const candidateSource = stripComments(readSource(ORCHESTRATOR));
     const candidatePaths = [
-      functionRange(candidateSource, 'runRowAttempt'),
+      functionRange(candidateSource, 'runCandidateAttempt'),
       functionRange(candidateSource, 'followUpAttempt'),
     ];
     // `sourceHits` 给的是行号（1 起），换算成下标才能问「它在不在那个函数体里」
@@ -1036,11 +1036,11 @@ describe('技能装入的单一消费点', () => {
       ).toBe(true);
     }
     expect(new Set(filesOf(hits)), '推导跑到了第三个文件里——它只该出现在定义处与编排层').toEqual(
-      new Set([ORCHESTRATOR, 'row-skill.ts']),
+      new Set([ORCHESTRATOR, 'candidate-skill.ts']),
     );
     // 落盘那一格与失败判定读的是**同一份**证据（两处各拼一份 ⇒ 快照记着「厂商没认」、行却出了分）
     const orchestrator = stripComments(readSource(ORCHESTRATOR));
-    expect(orchestrator).toContain('skillInstall: deriveRowSkillInstall(skillEvidence)');
+    expect(orchestrator).toContain('skillInstall: deriveCandidateSkillInstall(skillEvidence)');
     expect(orchestrator).toContain('skillMissingMessage(skillEvidence');
   });
 });
@@ -1049,34 +1049,34 @@ describe('技能装入的单一消费点', () => {
  * 追问**不许走「重新执行」那条路**（静态护栏，行为面的那一条在 `orchestrator-follow-up.test.ts`
  * 的哨兵文件用例里）。
  *
- * 为什么需要结构面这一条：`runRow` 的第一件重活是 `prepareRowWorkspace`
- * （`resetRowDir → clearRowArtifacts` 整删 `workspace/` + `.agenthome/` + `.judgehome/`），
+ * 为什么需要结构面这一条：`runCandidate` 的第一件重活是 `prepareCandidateWorkspace`
+ * （`resetCandidateDir → clearCandidateArtifacts` 整删 `workspace/` + `.agenthome/` + `.judgehome/`），
  * 而 `.agenthome` 正是 cc 的 `CLAUDE_CONFIG_DIR`、codex 的 `CODEX_HOME`、pi 的会话落点
  * ⇒ 追问接到那条路上等于**把要续接的会话删掉**。而症状是**静默**的：行照跑、分照出，
  * 只是「智能体什么都不记得了」——看起来像模型变笨，没有任何一处报错。
  *
- * 判据是「`followUp*` 的函数体里不出现 `runRow` / `retryRow` 的调用」（`retryRow` 是同一跳的
- * 另一种写法：它内部就是 `runRow`）。扫函数体而不是扫整节：这样将来在那一节里新增辅助函数
+ * 判据是「`followUp*` 的函数体里不出现 `runCandidate` / `retryCandidate` 的调用」（`retryCandidate` 是同一跳的
+ * 另一种写法：它内部就是 `runCandidate`）。扫函数体而不是扫整节：这样将来在那一节里新增辅助函数
  * 也一并被罩住，而不再扩大范围到整份 orchestrator（那里有合法的调用点）。
  */
 describe('追问不走「重新执行」那条路（静态护栏）', () => {
-  it('`followUp*` 的函数体里不出现 runRow / retryRow 的调用', () => {
+  it('`followUp*` 的函数体里不出现 runCandidate / retryCandidate 的调用', () => {
     const text = stripComments(readSource(ORCHESTRATOR));
     const names = [...text.matchAll(/\bfunction\s+(followUp\w*)\s*\(/g)].map((match) => String(match[1]));
     // 判据的前提必须显式成立：函数被改名 / 搬走时这一条要红，而不是悄悄扫了个空集
-    expect(names, '追问的两个函数必须都还在（判据靠它们的函数体）').toContain('followUpRow');
+    expect(names, '追问的两个函数必须都还在（判据靠它们的函数体）').toContain('followUpCandidate');
     expect(names, '追问的两个函数必须都还在（判据靠它们的函数体）').toContain('followUpAttempt');
 
     const violations: string[] = [];
     for (const name of names) {
       const [start, end] = functionRange(text, name);
       const body = text.slice(start, end);
-      for (const call of [/(?<![\w.])runRow\s*\(/g, /(?<![\w.])retryRow\s*\(/g]) {
+      for (const call of [/(?<![\w.])runCandidate\s*\(/g, /(?<![\w.])retryCandidate\s*\(/g]) {
         for (const index of occurrences(body, call)) {
           violations.push(`${name} 第 ${lineOf(text, start + index)} 行：${call.source}`);
         }
       }
     }
-    expect(violations, '追问那一节里出现了 runRow / retryRow：那会重建工作区并删掉要续接的会话').toEqual([]);
+    expect(violations, '追问那一节里出现了 runCandidate / retryCandidate：那会重建工作区并删掉要续接的会话').toEqual([]);
   });
 });

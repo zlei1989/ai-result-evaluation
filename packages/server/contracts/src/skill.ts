@@ -114,7 +114,7 @@ export const SkillDisabledSchema = z.object({ disabled: z.literal(true) }).stric
  *
  * ⚠️ **命名撞车（三处同名不同义）**：这一格回答「**本机配置里关了哪几条**」；
  * `VendorSkillSchema`（本文件）回答「**厂商当时说它手里有哪几条**」；
- * `RowSkillInstallSchema`（`run.ts`）回答「**这一行实际装上了哪几条、我们凭什么这么说**」。
+ * `CandidateSkillInstallSchema`（`run.ts`）回答「**这个候选实际装上了哪几条、我们凭什么这么说**」。
  * 三处都以 skills 命名，`grep skills` 时先读这三行。
  *
  * 与 MCP 的 `mcpServers` 两处刻意不同：① **没有预置项**（默认就是空 map），
@@ -152,7 +152,7 @@ export type SkillsPatch = z.infer<typeof SkillsPatchSchema>;
  * 要被展示出来的那类坏条目（走了最严规则的话它们连列表都进不来，等于静默丢弃）。
  *
  * **没有体积这一格**，这是刻意的：整目录字节数要递归遍历 + 逐文件 `stat`，而列表是每次进设置页
- * 都要扫一遍的热路径；一个没人读的派生量不值得挂在每一行上。真要看占用就 `du -sh`——
+ * 都要扫一遍的热路径；一个没人读的派生量不值得挂在每个候选上。真要看占用就 `du -sh`——
  * 那也不经过契约，没有第二个真源。
  * **也不留一个恒缺席的可选字段**：算不出来时它只能缺席，于是「没采集」与「真的是 0」分不开。
  */
@@ -232,7 +232,7 @@ export const SkillTreeNodeSchema: z.ZodType<SkillTreeNode> = z.lazy(() =>
  *
  * `name` / `dir` 与列表里那条同义（`dir` 是绝对路径，抽屉顶部要显示它）。
  * `truncated` 是**如实交代**：深度或节点数到达上限时为真，界面据此说「没列全」——
- * 静默少列几行会让人把「树里没有」当成「磁盘上没有」。
+ * 静默少列几个候选会让人把「树里没有」当成「磁盘上没有」。
  */
 export const SkillTreeSchema = z.object({
   name: z.string().min(1),
@@ -245,10 +245,10 @@ export type SkillTree = z.infer<typeof SkillTreeSchema>;
 /**
  * 一条 skill **从哪来**（本机启用项 / 厂商内置 / 被测仓库自带 / 来源未证实）。
  *
- * ⚠️ **命名撞车（三处同名不同义，先看这一行再 grep）**：
+ * ⚠️ **命名撞车（三处同名不同义，先看这个候选再 grep）**：
  *   · `SkillsSettingsSchema`（本文件）＝ 设置页的**停用名单**：本机配置里关了哪几条；
  *   · `VendorSkillSchema`（本文件）＝ **厂商当时说它手里有哪几条**（含内置与被测仓库自带的）；
- *   · `RowSkillInstallSchema`（`run.ts`）＝ **这一行实际装上了哪几条、我们凭什么这么说**。
+ *   · `CandidateSkillInstallSchema`（`run.ts`）＝ **这个候选实际装上了哪几条、我们凭什么这么说**。
  */
 export const VENDOR_SKILL_ORIGINS = ['local-enabled', 'vendor-builtin', 'repo-provided', 'unverified'] as const;
 
@@ -256,8 +256,8 @@ export const VendorSkillOriginSchema = z.enum(VENDOR_SKILL_ORIGINS);
 export type VendorSkillOrigin = z.infer<typeof VendorSkillOriginSchema>;
 
 /**
- * 四档来源的中文文案。**放契约里**（与 `ROW_MCP_VERDICT_LABELS` 同一条理由）：
- * 界面、行卡片与服务端说的是同一件事，各抄一份必然漂移。
+ * 四档来源的中文文案。**放契约里**（与 `CANDIDATE_MCP_VERDICT_LABELS` 同一条理由）：
+ * 界面、候选卡片与服务端说的是同一件事，各抄一份必然漂移。
  * `unverified` 的文案是「**来源未证实**」：厂商给不出这一格就照实说，**不许猜**。
  */
 export const VENDOR_SKILL_ORIGIN_LABELS: Record<VendorSkillOrigin, string> = {
@@ -269,20 +269,20 @@ export const VENDOR_SKILL_ORIGIN_LABELS: Record<VendorSkillOrigin, string> = {
 
 /**
  * 判来源时用得到的三样证据：厂商原值（claude 的 `source` / codex 的 `scope`）、
- * 厂商给的落点（codex 有、claude 没有）、以及**本行的两个目录**。
+ * 厂商给的落点（codex 有、claude 没有）、以及**候选的两个目录**。
  *
- * 为什么本行的目录要传进来而不是「按厂商名查一张静态表」：同一个 `scope: "user"`
- * 在这台机器上可能指行配置目录、也可能指厂商自己的目录，只有与本行的目录比对才是证据
- * （与 `row-mcp.ts` 那条「通道决定读法、别按厂商名查表」同一条纪律）。
+ * 为什么候选的目录要传进来而不是「按厂商名查一张静态表」：同一个 `scope: "user"`
+ * 在这台机器上可能指候选配置目录、也可能指厂商自己的目录，只有与候选的目录比对才是证据
+ * （与 `candidate-mcp.ts` 那条「通道决定读法、别按厂商名查表」同一条纪律）。
  */
 export interface SkillOriginEvidence {
   /** 厂商原值照抄（不认识就落 `unverified`，不翻译、不猜） */
   source: string | null;
   /** 厂商给的落点绝对路径；厂商没给 ⇒ `null`（那就只能靠 `source`） */
   path: string | null;
-  /** 本行的配置目录（`AgentRunInput.configHome`） */
+  /** 候选的配置目录（`AgentRunInput.configHome`） */
   configHome: string;
-  /** 本行的工作目录（被测仓库根） */
+  /** 候选的工作目录（被测仓库根） */
   cwd: string;
   /**
    * 真实路径解析器（跟随软链）。**只由 Node 侧的采集方注入**（适配器传 `realpathSync`）。
@@ -343,11 +343,11 @@ const VENDOR_BUILTIN_DIR = '.system';
  * 给一条厂商下发的 skill 判来源。**判据只有「厂商原值」与「落点」两样**，拿不到就 `unverified`。
  *
  * 顺序是有意的（先落点、后原值；落点比原值细）：
- *   1. 落在 `<行配置目录>/skills/.system/` 之下 ⇒ `vendor-builtin`（codex 自己的内置目录，
+ *   1. 落在 `<候选配置目录>/skills/.system/` 之下 ⇒ `vendor-builtin`（codex 自己的内置目录，
  *      它在**同一个** `skills/` 下，所以这一条必须排在下一档之前）；
- *   2. 落在行配置目录之下 ⇒ `local-enabled`（`~` 在行内就是这里 ⇒ codex 的 `scope: "user"` 同档）；
+ *   2. 落在候选配置目录之下 ⇒ `local-enabled`（`~` 在候选内就是这里 ⇒ codex 的 `scope: "user"` 同档）；
  *   3. 落在工作目录之下 ⇒ `repo-provided`（被测仓库自带的 `.claude/skills/` 那一类，
- *      行内 `settingSources` 全开时会被自动发现，是跨家的静默差异）；
+ *      候选内 `settingSources` 全开时会被自动发现，是跨家的静默差异）；
  *   4. 厂商原值里的三档已知取值：claude 的 `userSettings` ⇒ 本机启用项、`projectSettings` ⇒ 被测仓库自带、
  *      `built-in` ⇒ 厂商内置；codex 的 `system` ⇒ 厂商内置；
  *   5. 其余一律 `unverified`——**不拿「厂商没给这一格」推一个来源出来**。
@@ -373,15 +373,15 @@ export function classifySkillOrigin(evidence: SkillOriginEvidence): VendorSkillO
 /**
  * 厂商下发的技能清单里的**一条**（`vendor-system.skills` 的元素）。
  *
- * 与 `RowSkillInstallSchema` 的分工（照 MCP 那两格）：这一格回答「**厂商当时说了什么**」，
- * 行级那一格回答「**这一行实际装上了哪几条、我们凭什么这么说**」。
+ * 与 `CandidateSkillInstallSchema` 的分工（照 MCP 那两格）：这一格回答「**厂商当时说了什么**」，
+ * 候选级那一格回答「**这个候选实际装上了哪几条、我们凭什么这么说**」。
  */
 export const VendorSkillSchema = z.object({
   /** 厂商报的技能名（本仓装入的那几条名 = 目录名，两边可直接配对） */
   name: z.string().min(1),
   /**
    * 这一条**从哪来**的厂商原值：claude 的 `skillFrontmatter[].source`、codex 的 `scope`。
-   * 自由字符串、**照抄不翻译**（与 `RowMcpServerSchema.source` 同一条理由：翻译就是第二个真源）。
+   * 自由字符串、**照抄不翻译**（与 `CandidateMcpServerSchema.source` 同一条理由：翻译就是第二个真源）。
    * 厂商没投这一格 ⇒ `null`。
    */
   source: z.string().nullable(),
@@ -389,7 +389,7 @@ export const VendorSkillSchema = z.object({
   path: z.string().nullable(),
   /**
    * 归一后的来源分档，**由采集它的适配器按 `classifySkillOrigin` 判**（那一层同时知道
-   * 行配置目录与工作目录）。界面只按 `VENDOR_SKILL_ORIGIN_LABELS` 渲染，不再自己推。
+   * 候选配置目录与工作目录）。界面只按 `VENDOR_SKILL_ORIGIN_LABELS` 渲染，不再自己推。
    */
   origin: VendorSkillOriginSchema,
 });
@@ -443,7 +443,7 @@ const BLOCK_INDICATOR = /^[>|][+-]?$/;
 /** 顶层字段行：`key: value`（键只认字母数字、下划线、连字符） */
 const FIELD_LINE = /^([A-Za-z0-9_-]+):(.*)$/;
 
-/** 去掉行尾的 `\r`：CRLF 文件里每一行都带着它，不剥掉会连字段名与围栏一起对不上 */
+/** 去掉行尾的 `\r`：CRLF 文件里每个候选都带着它，不剥掉会连字段名与围栏一起对不上 */
 function stripCr(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line;
 }
@@ -482,7 +482,7 @@ function joinBlock(lines: readonly string[], folded: boolean): string {
 /**
  * 解析 frontmatter 的顶层标量字段。
  * 三条已知边界（都是**刻意**的，不是漏掉）：① 嵌套映射 / 数组不进 `fields`（技能只用得到
- * name 与 description 两个平铺标量）；② `#` 行按注释跳过，行尾的 ` #` 不当注释切（值里带 `#` 更常见）；
+ * name 与 description 两个平铺标量）；② `#` 候选按注释跳过，行尾的 ` #` 不当注释切（值里带 `#` 更常见）；
  * ③ 值里的转义不还原（见 `unquote`）。
  */
 function parseFields(lines: readonly string[]): Record<string, string> {

@@ -32,7 +32,7 @@
  * （读不到才整条按未采到处置），缓存读 / 缓存写两格「大于 0 才写」⇒ 缺席就是 **0**
  * （见该函数的 JSDoc 与 `readTokens`）。
  * **时长**：dsh 的用量载荷里**没有任何时间字段**，时间只在会话事件自己身上
- * （`params.event.time`，epoch 毫秒，每条事件都有）⇒ 本行的 `timing` 一律 `source: 'events'`
+ * （`params.event.time`，epoch 毫秒，每条事件都有）⇒ 本次运行的 `timing` 一律 `source: 'events'`
  * （含工具执行的墙钟），起止取**识别到的那几条事件**的首末 `time`（见 `noteEventTime`）。
  * ⚠️ **它不含第一次模型往返**（`request/header` → 首条 `assistant/message`，量级 1.6~2.5 s）
  * 与冷启动 / 收尾（`run()` 的墙钟比它多 0.7 s 上下）：短一轮的运行里那一跳占比可达三成，
@@ -47,18 +47,18 @@
  * **既成口径：用量与轮次都不按会话分叉**（spec
  * "docs/protocols/message-spec.md"「轮次归属」与行尺度一档）。
  * 子会话的 `assistant/message` 与 `step/start` 与主会话同形，而这一层**只认 `event.type`、
- * 不按 `sessionId` 分流**：`assistant/message` 那一支把三元组**无条件**累进本行的 `state.usage*`
+ * 不按 `sessionId` 分流**：`assistant/message` 那一支把三元组**无条件**累进行的 `state.usage*`
  * （`sessionId` 只喂 `noteDshSessionUsage` 那张按会话分组的表），`step/start` 那一支把
  * `state.turns` **无条件** +1 ⇒ **dsh 的三格（tok / 缓存命中 / 轮次）含它派发的
  * 子智能体**，是**构造上如此**，不是投影漏了一层过滤。它是**有意**的既成口径并由守卫钉住
- * 本行的读数问的就是「这个候选一共花了多少」，子会话干的活正是它干的活
+ * 本次运行的读数问的就是「本次运行一共花了多少」，子会话干的活正是它干的活
  * ⇒ 换成主 / 子两把尺子等于换一套口径。
- * 分量另外交出来（`subagentTokens`，按本行的子会话白名单求和），合计口径不受影响。
+ * 分量另外交出来（`subagentTokens`，按本次运行的子会话白名单求和），合计口径不受影响。
  *
  * 另一条口径（`docs/protocols/message-spec.md`）：
  * **合计**（`tokens` / `turns`，服务卡片与快照）仍**不分会话**——与上面那一段同一口径；而
  * **消息的轮次号与 `usage.turn`** 改按**各会话自己的 `step`** 走（两者是同一个数，
- * `message.ts` 的 `dshTurnAttribution` 是唯一实现）。两者不是一回事：合计答的是「这一行一共花了
+ * `message.ts` 的 `dshTurnAttribution` 是唯一实现）。两者不是一回事：合计答的是「本次运行一共花了
  * 多少」，归属答的是「这条读数属于哪个会话的第几次模型往返」——同一个数在两边都成立才是错的。
  *
  * **轮次那一格的分量**（`subagentTurns`，子任务级轮次）：同一份白名单、
@@ -75,7 +75,7 @@
  *    评分阶段跑的是同一个适配器，它的消息因此同样会滚上去。
  *
  * **活动行只播「正在做什么」**（用户裁定；词表与实现只有一份，在 `src/activity.ts`）：
- * 给「答复 / 推理 / 轮次 / 工具返回」**每一条都配摘要**会让卡片底部那一行被最新一句占据——
+ * 给「答复 / 推理 / 轮次 / 工具返回」**每一条都配摘要**会让卡片底部那一本次运行被最新一句占据——
  * 真机形态（run `08b56e95` 的 dsh 行与 claude 行）是**永久停在英文推理**上：
  * `思考：Only one file changed: index.html. Now evaluate each item…`，因为同一轮里推理行排在答复行**之后**。
  * 现在的分工：
@@ -89,7 +89,7 @@
  * **子智能体那一份**：`tokens` / `turns` **已经含**子会话（与上面那条
  * 「投影不按会话分叉」的口径一致）——这一格交出的是**其中的分量**，按 run 作用域的
  * **子会话白名单**求和（`childSessions` 是模块级的表，同一个进程里还跑着别的行 ⇒ 只有白名单能圈出
- * 这一行）。它随 `runState` 走：`projectDshNotification` 的第 4 个参数，**可选**（缺省 = 空集合，
+ * 本次运行）。它随 `runState` 走：`projectDshNotification` 的第 4 个参数，**可选**（缺省 = 空集合，
  * 既有直调用例不必改）。
  */
 import { namedVendorSkill, type SubagentRecord, type UsageTokens, type VendorSkill } from '@aieval/contracts';
@@ -191,7 +191,7 @@ export { DSH_USAGE_FIELDS } from './protocol';
 export const DSH_EVENT_TIME_FIELD = 'time';
 
 /**
- * 投影的**取数面**（本行自己的状态，不塞进骨架的 `TurnState`）。
+ * 投影的**取数面**（本次运行自己的状态，不塞进骨架的 `TurnState`）。
  *
  * 七格分三类：子会话白名单 / 已收场集合（归属与计量）、两条「只在变了时才发」的清单缓存、
  * 以及**派发记账**三格——厂商的 `subagent.*` 通知里没有派发调用 id、任务名又从另一条消息到，
@@ -209,7 +209,7 @@ export interface DshProjectionRunState {
    * 本 run 的**子会话分量基线**：登记某个子会话时它已经有的累计用量 / 往返数。
    * 分量 = 当前累计 − 基线（`message.ts` 的 `dshSubagentUsage` / `dshSubagentTurns`）——
    * `sessionUsage` 与往返计数都是**模块级、跨 run 不清**的，少了基线，追问/续接的第二个 run
-   * 会把前一个 run 一起算进「子智能体那一份」（合计不受影响，于是行快照上会出现「合计 60 / 子分量 2010」）。
+   * 会把前一个 run 一起算进「子智能体那一份」（合计不受影响，于是运行快照上会出现「合计 60 / 子分量 2010」）。
    * 基线在 `index.ts` 的 `noteChildSession` 里**首次登记**时记下（同一个 id 只记一次）。
    */
   childUsageBaseline?: Map<string, UsageTokens>;
@@ -254,7 +254,7 @@ export interface DshProjectionRunState {
   dispatchStarts?: Map<string, DshDispatchStart>;
   /** 已认领出来的派发点（`子任务身份` → `callId`）：同一身份的**每一条**投递都要带上同一格 */
   claimedDispatches?: Map<string, string>;
-  /** 已投递过的运行行内容签名（`子任务身份` → 签名）：目录项晚到时靠它判「要不要再投一条」 */
+  /** 已投递过的运行运行内容签名（`子任务身份` → 签名）：目录项晚到时靠它判「要不要再投一条」 */
   deliveredStarts?: Map<string, string>;
 }
 
@@ -263,7 +263,7 @@ export function projectDshNotification(
   state: TurnState,
   context: FailureContext,
   /**
-   * 本行的子会话白名单与已收场集合（可选，缺省 = 空）。
+   * 本次运行的子会话白名单与已收场集合（可选，缺省 = 空）。
    * 为什么走参数而不是塞进 `TurnState`：那是**骨架**的状态形状（三家共用），
     * 而这两个集合是 dsh 自己的取数面。
    */
@@ -282,7 +282,7 @@ export function projectDshNotification(
     const record = dshSubagentRecord(notification, claim);
     if (record !== null && method === DSH_SUBAGENT_STARTED_METHOD) {
       /**
-       * 记住这条运行行的内容：**目录项（任务名）晚到**时还要按同一身份再投一条更完整的
+       * 记住这条运行本次运行的内容：**目录项（任务名）晚到**时还要按同一身份再投一条更完整的
        * （见 `catalog` 那一支）。不记的话「投过没有」无从判断，就会在每条目录项上重发。
        */
       runState.deliveredStarts?.set(record.subagentId, JSON.stringify(record));
@@ -298,7 +298,7 @@ export function projectDshNotification(
        * 往返）⇒ 就算在这里算出结论也送不出去。收场那一刻的结论（收场了却没报到用量 ⇒ `null`）因此由
        * **下一条**带轮次的投影（`assistant/message` / `turn/end`）与收尾的 `finalize`
        * （`index.ts` 的 `TurnStart.finalize`，它在 `finally` 里跑）交出去——后者保证
-       * **即使这一轮再也没有消息**，结果（进而行快照）里也是「没采到」，而不是上一版的旧数。
+       * **即使这一轮再也没有消息**，结果（进而运行快照）里也是「没采到」，而不是上一版的旧数。
        */
       turns: null,
       failure: null,
@@ -306,7 +306,7 @@ export function projectDshNotification(
     };
   }
   /**
-   * `session.status`：**已识别且有意不投影**（真机每行两条：`running` / `idle`）⇒ 零草稿。
+   * `session.status`：**已识别且有意不投影**（真机每个本次运行两条：`running` / `idle`）⇒ 零草稿。
    * 放在这里而不是走下面的兜底，是因为兜底的语义是「不认识的载荷」——把这两条混进去，
    * 原始输出面板就多两条与内容、失败都无关的 JSON。
    */
@@ -325,7 +325,7 @@ export function projectDshNotification(
   const sessionId = dshSessionIdOf(notification);
 
   /**
-   * **已识别但无用的那批**（真机每行必现，见 `DSH_QUIET_EVENT_TYPES`）：零草稿。
+   * **已识别但无用的那批**（真机每个本次运行必现，见 `DSH_QUIET_EVENT_TYPES`）：零草稿。
    * 它们既不带轮次也不带用量或失败；继续走 `unknown` 兜底会把原始输出面板刷成 JSON 流水，
    * 而「未识别的厂商载荷」那一栏也就失去了诊断价值（真正未知的类型混在几十条噪声里）。
    * ⚠️ 顺序：`subagent/descriptor` 在这批里，而它的信封身份已经在**过滤器**里登记过
@@ -337,7 +337,7 @@ export function projectDshNotification(
 
   /**
    * 权限预设：**只登记、不产草稿**。厂商在会话起手投一条（seq 0），
-   * 它是本行 `vendor-system.permissionMode` 的唯一来源（见 `DshProjectionRunState.permissionPreset`）——
+   * 它是本次运行 `vendor-system.permissionMode` 的唯一来源（见 `DshProjectionRunState.permissionPreset`）——
    * 不登记的表现是环境抽屉上「权限档」恒为空，连评分阶段被限成 `read-only` 都看不出来。
    * 事件本身由随后的 `vendor-system` 出口带出去（工具表在每个运行里至少变一次 ⇒ 必然发一条）。
    */
@@ -346,7 +346,7 @@ export function projectDshNotification(
     /**
      * **本次要的档 ≠ 厂商这一会话的档** ⇒ 落一条 WARN：厂商的档是**会话属性**，本段改不了它
      * （真机：`read-only` + 续接照样写得进文件，而新会话同一动作被拒）。只观测、不改写结论——
-     * 「这一行的环境抽屉显示哪一档」与「实际生效哪一档」必须是同一句话，冲突时留痕。
+     * 「本次运行的环境抽屉显示哪一档」与「实际生效哪一档」必须是同一句话，冲突时留痕。
      */
     const presetValue = readString(data, 'preset');
     const desired = runState.permissionDesired ?? null;
@@ -455,7 +455,7 @@ export function projectDshNotification(
     const rawUsage = asRecord(data)?.usage;
     const tokens = rawUsage === undefined ? null : readTokens(rawUsage, drafts);
     if (tokens !== null) {
-      // 记进**本行累计**：`step/start` / `turn/end` 两条出口都从这里取「到目前为止」的值。
+      // 记进**本次运行累计**：`step/start` / `turn/end` 两条出口都从这里取「到目前为止」的值。
       // 刻意**不清零**（原来在 `turn/end` 上取走并归零）：现在的口径是「累计快照」，
       // 每次交出都带全量，界面上只会单调增长；清零+跨消息配对正是旧口径下一堆特判的来源。
       state.usageInput = (state.usageInput ?? 0) + tokens.input;
@@ -482,7 +482,7 @@ export function projectDshNotification(
     // 而 reasoning 块**也带 text 字段** —— 按 text 取值会把推理内容混进答复。
     const reply = readAssistantText(data);
     /**
-     * ⚠️ **只有主会话的正文才算本行答复**（`dshSubagentIdOf` 是归属判据的唯一实现）。
+     * ⚠️ **只有主会话的正文才算本次运行答复**（`dshSubagentIdOf` 是归属判据的唯一实现）。
      * 子会话的事件与主会话走**同一条通知流**且明确放行（见 `index.ts` 的放行规则），
      * 少了这道过滤，最后一次主会话答复之后子智能体再说话就会把 `state.finalText` 顶掉——
      * 而评分通路只读最终答复（`AgentRunResult.finalText`），于是拿子智能体那句话（或它吐的 JSON）
@@ -491,7 +491,7 @@ export function projectDshNotification(
      * pi 只认父会话的 `message_end`；一致性套件里也有对应通则
      * （`finalText` 必须是产物里某一条**主会话**答复正文）。
      *
-     * 日志那一支**不分会话**：行级事件流本来就是多会话的（子会话的工具调用与结果同样落在这里），
+     * 日志那一支**不分会话**：运行级事件流本来就是多会话的（子会话的工具调用与结果同样落在这里），
      * 把子智能体说过的话从这里拿掉等于丢证据——它的落点是对话视图里那条带 `subagentId` 的消息。
      */
     if (reply !== '') {
@@ -545,7 +545,7 @@ export function projectDshNotification(
       /**
        * 内容级消息：同一个 `assistant/message` 的 `content[]` 是**完整快照**
        * ⇒ 一条消息带齐全部块（推理 + 正文），块序号按内容顺序分配。
-       * 与上面的日志**并行**：事件是行级审计与活动行，消息是对话视图与工具族统计的载体。
+       * 与上面的日志**并行**：事件是运行级审计与活动行，消息是对话视图与工具族统计的载体。
        */
       messages: optionalMessage(dshAssistantMessageDraft(notification, sessionId, roundOf(sessionId, data))),
     };
@@ -584,7 +584,7 @@ export function projectDshNotification(
           permissionMode: runState.permissionPreset ?? dshSessionPermissionOf(sessionId),
           outputStyle: null,
           /**
-           * 技能目录那一格**一起带上**（哪怕这一次是工具表变了才发的）：消费方（行级 MCP 证据、
+           * 技能目录那一格**一起带上**（哪怕这一次是工具表变了才发的）：消费方（运行级 MCP 证据、
            * 环境抽屉的厂商那一组）都是**取最后一条**读的，一条不带它的 `vendor-system` 会把先前
            * 采到的清单在界面上抹成「厂商没投送」。真机顺序上目录先到、工具表后到，
            * 少了这一步最后一条事件里的技能面**恒为空**。
@@ -618,7 +618,7 @@ export function projectDshNotification(
     if (source?.['kind'] !== DSH_SKILL_CATALOG_KIND) return unknown(raw);
     /**
      * ⚠️ **只认主会话的目录**：子会话也会收到它自己的 `<available_skills>`（同一条通知流的另一条
-     * 会话），认了它就会让「本行的技能格」显示子会话的清单——那不是这一行配的技能。
+     * 会话），认了它就会让「本次运行的技能格」显示子会话的清单——那不是本次运行配的技能。
      */
     const catalog = dshSubagentIdOf(sessionId) === null ? readSkillCatalog(data) : null;
     // 读不动（`null`）⇒ **不发**：`[]` 的定义是「投送了、确实一条都没有」，
@@ -666,7 +666,7 @@ export function projectDshNotification(
       /**
         * ⚠️ **两格分量都在这一支交**（只交轮次那一格会让用量分量永远缺一份）。
        *
-       * 合计那一格在这里刚刚 +1，两格分量若不跟上，界面上那两行会**短暂地算错**
+       * 合计那一格在这里刚刚 +1，两格分量若不跟上，界面上那两本次运行会**短暂地算错**
        * （主会话 = 合计 − 旧分量 ⇒ 主会话多 1、子智能体少 1，而这是能画出来的一行假拆分）。
        * 而只交其中一格还会多出一种更难看的形状：**子 A 报过用量 → 子 B 收场却一条都没报 →
        * 主会话开下一步**，此时 `dshSilentChildSessions` 已经为真（两格分量同时该是 `null`），
@@ -677,7 +677,7 @@ export function projectDshNotification(
        * 代价照实登记：这一支多一次 `dshSubagentUsage`（两次遍历白名单 + 每个子会话一次 Map 查找，
        * O(子会话数)，通常 1–3）。它**不在任何定时器路径上**（dsh 没有 codex 那种 500ms 读盘刷新，
        * 见 `CONTENT_READ_MIN_INTERVAL_MS` 的用处），只在每个 `step/start` 上跑一次。⚠️ 间隔的量级：
-       * 本机产物 `runs/8e13e7a3…/rows/08c61bc6…` 那一行 34 个 `step/start` / `durationMs 47821`
+       * 本机产物 `runs/8e13e7a3…/candidates/08c61bc6…` 那一行 34 个 `step/start` / `durationMs 47821`
        * ⇒ 平均 **≈1.4 秒**一次（子会话多、并发的行更密）。代价的结论不变（两次白名单遍历远低于
        * 一次读盘）。
        */
@@ -872,7 +872,7 @@ export function projectDshNotification(
     const failureText = readTurnFailure(data);
     /**
      * 归属：`turn/end` 的载荷里**没有 `step`**（实测只有收尾信息）⇒ `dshTurnAttribution` 退回
-     * **该会话最后一个 step**；一次 step 都没见过的会话给 `null`（**不拿本行累计号顶替**）。
+     * **该会话最后一个 step**；一次 step 都没见过的会话给 `null`（**不拿本次运行累计号顶替**）。
      * 成功与失败两个分支都要带这一格——失败那一支也是一次真实的读数，漏了它就会按时刻乱归位。
      */
     if (failureText === null) {
@@ -923,10 +923,10 @@ export function projectDshNotification(
         failure: null,
       };
     }
-    // 失败进该行的事件日志（骨架的 error 出口还会再发一条带 stack 的，两条都留：这条保留厂商原文）
+    // 失败进本次运行的事件日志（骨架的 error 出口还会再发一条带 stack 的，两条都留：这条保留厂商原文）
     drafts.push({ type: 'error', message: failureText });
     /**
-     * ⚠️ **只有主会话的失败才是本行的失败**（与 `finalText` 那道会话闸同一条口径）。
+     * ⚠️ **只有主会话的失败才是本次运行的失败**（与 `finalText` 那道会话闸同一条口径）。
      *
      * 子会话的 `turn/end(kind:'error')` 在同一条通知流里、同样带 `reason.error`，而**父会话可能
      * 一切正常**（真机读数：父会话正常答完、`finalText` 164 字、父会话的 `turn/end` 是
@@ -968,7 +968,7 @@ export function projectDshNotification(
      * 工具结果：**只有报错才给摘要**（统一口径）。
      * 成功返回那句「工具返回：<内容>」会把活动行变成流水账——最新一句常常停在
      * `工具返回：<path>D:\.tmp\aieval\runs\…`；结果的落点是结果块与抽屉的原始输出面板。
-     * 报错必须播：那是「这一行出事了」，而它没有别的行级出口。
+     * 报错必须播：那是「本次运行出事了」，而它没有别的运行级出口。
      */
     const error = asRecord(data?.message)?.isError === true;
     /**
@@ -1026,7 +1026,7 @@ function retagToolResultError(projected: unknown): MessageDraft {
 }
 
 /**
- * 本行累计的计量。三项齐了才认；缺一项就是 null，不发明 0。
+ * 本次运行累计的计量。三项齐了才认；缺一项就是 null，不发明 0。
  * 与旧 `takeTurnTokens` 的唯一区别是**不取走、不清零**：现在的口径是「到目前为止的累计」，
  * 事件本身也是覆盖语义（`row-live.ts` 直接覆盖），清零只会让跨 step 的相加变成特判。
  *
@@ -1051,7 +1051,7 @@ function cumulativeTokens(state: TurnState): UsageTokens | null {
 }
 
 /**
- * 记一条会话事件的时间戳（epoch 毫秒）进本行的跨度（2026-10-XX 新增）。
+ * 记一条会话事件的时间戳（epoch 毫秒）进行的跨度（2026-10-XX 新增）。
  *
  * 落点是 `params.event.time`——**dsh 唯一的时间来源**（用量载荷 `data.usage` 里没有时间字段，
  * 实测）。合并规则完全复用骨架的 `mergeTiming`（起点只认第一条、终点每次覆盖、
@@ -1249,7 +1249,7 @@ function noteDshDispatchStart(
   // 派发工具是**枚举**的两个名字（`subagent` / `subagent_fork`，同一插件的两次挂载）：
   // 只认前者会让 fork 那条路的派发行永远拿不到派发点（真机两臂对照见 `protocol.ts`）
   if (toolName === null || !DSH_SUBAGENT_TOOL_NAMES.has(toolName)) return;
-  // 子会话自己也可能派子智能体（嵌套派发）：那些不进本行的子任务面，记了只会让认领撞名
+  // 子会话自己也可能派子智能体（嵌套派发）：那些不进行的子任务面，记了只会让认领撞名
   if (sessionId !== null && runState.childSessions.has(sessionId)) return;
   const callId = readString(data, 'callId');
   if (callId === null || callId === '') return;

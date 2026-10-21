@@ -8,7 +8,7 @@
  *      估算的 tokens 进快照会把「没采到」说成「采到了」（快照是唯一落盘真相）；
  *   ③ **整格缺** `tokensBasis`（老适配器 / 第三方 provider 直接发事件）时按 `'estimated'` 处置：
  *      缺省落在安全侧（见 contracts 的 `tokensBasis` 注释）；
- *   ④ 跑动期每 `ROW_HEARTBEAT_MS` 把**已耗时**回写快照，且行结束之后心跳必须停
+ *   ④ 跑动期每 `CANDIDATE_HEARTBEAT_MS` 把**已耗时**回写快照，且行结束之后心跳必须停
  *      （不能回头覆盖终态的结算值）。
  *
  * 为什么单独一个文件：既有 `orchestrator.test.ts` 的假适配器（fixtures 里的 `fakeAgents`）
@@ -22,15 +22,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Provider } from '@aieval/contracts';
-import { readEvents, rowEventsFile, runSnapshotFile } from '@aieval/core';
-import { ROW_HEARTBEAT_MS, abortRow, runRow } from './orchestrator';
+import { readEvents, candidateEventsFile, runSnapshotFile } from '@aieval/core';
+import { CANDIDATE_HEARTBEAT_MS, abortCandidate, runCandidate } from './orchestrator';
 import { getRun, saveRun } from './run-store';
 import {
   createTempHome,
   initFixtureRepo,
   makeCaseFixture,
   makeProviderFixture,
-  makeRowFixture,
+  makeCandidateFixture,
   makeRunFixture,
   seedConfig,
   type TempHome,
@@ -69,7 +69,7 @@ const live = vi.hoisted(() => ({
      */
     basis?: 'reported' | 'estimated' | null,
   ) => void),
-  /** 放行挂起的假适配器 = 「这一行跑完了」 */
+  /** 放行挂起的假适配器 = 「这个候选跑完了」 */
   release: null as null | (() => void),
   /** 结算值（终态写入的那一份），刻意与跑动期上报值不同，便于区分「谁写的」 */
   finalTokens: { input: 7, cached: 1, output: 9 },
@@ -81,14 +81,14 @@ const live = vi.hoisted(() => ({
    * `beforeEach` 会把它复位成这个初值（有一条用例要把它改成 `null` 来钉「终态清空」）。
    *
    * ⚠️ **必须逐格 ≤ `finalTokens`**（不变量：`{6,1,1} ≤ {7,1,9}`）：这两格会被写进
-   * **同一行快照**，夹具给出一个违反它的组合，就等于把一份**不可能落盘的快照**当成正常输入。
+   * **同一候选快照**，夹具给出一个违反它的组合，就等于把一份**不可能落盘的快照**当成正常输入。
    * 同时它与跑动期上报的 `{5,1,2}` 仍**刻意不同**（输入 6≠5、输出 1≠2）——否则下面那条
    * 「终态到底写没写这一格」的断言就分不出是谁写的。
    */
   finalSubagentTokens: { input: 6, cached: 1, output: 1 } as { input: number; cached: number; output: number } | null,
   /**
    * 结算值里的**子智能体那一份轮次**：与 `finalTurns` 刻意不同（2 ≠ 4），
-   * 判据是「跑动期写了、终态漏写」时断言能分得开。⚠️ 必须 ≤ `finalTurns`（同一行快照上的不变量）。
+   * 判据是「跑动期写了、终态漏写」时断言能分得开。⚠️ 必须 ≤ `finalTurns`（同一候选快照上的不变量）。
    */
   finalSubagentTurns: 2 as number | null,
   finalDurationMs: 5,
@@ -104,7 +104,7 @@ const live = vi.hoisted(() => ({
  * `importOriginal` 是必须的：`vi.mock` 是**整模块替换**，本文件只打算换掉 `getProvider`，
  * 而模块的其余导出（`acceptsProtocol` / `protocolMismatchMessage`——编排层的协议复检读它们）
  * 缺一个就会在运行时抛 `No "…" export is defined on the "@aieval/agents" mock`，
- * 表现为整行落 `failed`、报错点离真因很远（与 `testing/fixtures.ts` 的 `fakeAgentsModule` 同一口径）。
+ * 表现为整个候选落 `failed`、报错点离真因很远（与 `testing/fixtures.ts` 的 `fakeAgentsModule` 同一口径）。
  */
 vi.mock('@aieval/agents', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aieval/agents')>();
@@ -182,7 +182,7 @@ vi.mock('@aieval/agents', async (importOriginal) => {
 vi.mock('./judge', async () => {
   const { makeScoreFixture: makeScore } = await import('./testing/fixtures');
   return {
-    judgeRow: async (input: { judgeProviderId: string; route: { modelId: string } }) =>
+    judgeCandidate: async (input: { judgeProviderId: string; route: { modelId: string } }) =>
       makeScore(true, input.judgeProviderId, input.route.modelId),
   };
 });
@@ -236,8 +236,8 @@ async function until(condition: () => boolean, label: string, timeoutMs = 10_000
   throw new Error(`等待超时（${timeoutMs}ms）：${label}`);
 }
 
-/** 造一轮真实可跑的单行评测（真实 git 小仓库 + 已落盘的供应商 / 用例 / 轮次） */
-function seedRun(): { runId: string; rowId: string } {
+/** 造一轮真实可跑的单个候选评测（真实 git 小仓库 + 已落盘的供应商 / 用例 / 轮次） */
+function seedRun(): { runId: string; candidateId: string } {
   // 模板副本（见 repoTemplate）：真仓库、独立路径、内容与模板逐字节相同，省下 7 个 git 进程
   const repoPath = join(home.root, `repo-${randomUUID()}`);
   if (repoTemplate === null) throw new Error('模板仓库还没建出来（见本文件的 beforeAll）');
@@ -256,7 +256,7 @@ function seedRun(): { runId: string; rowId: string } {
     cases: [testCase],
     defaultJudge: { providerId: provider.id, modelId: 'judge-model' },
   });
-  const row = makeRowFixture({
+  const candidate = makeCandidateFixture({
     agentKind: 'codex',
     providerId: provider.id,
     providerName: provider.name,
@@ -267,27 +267,27 @@ function seedRun(): { runId: string; rowId: string } {
     caseId: testCase.id,
     repoPath: fixtureRepo.repoPath,
     commitHash: fixtureRepo.commit,
-    rows: [row],
+    candidates: [candidate],
   });
   saveRun(run);
-  return { runId: run.id, rowId: row.id };
+  return { runId: run.id, candidateId: candidate.id };
 }
 
 describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   it('权威用量（reported）一到就写进快照：行还在跑时就能看到 tok / 轮次', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
-    // 前提：这一行确实还在跑，且此刻快照里没有任何用量（否则下面的断言无法区分「谁写的」）
-    const before = getRun(runId).rows[0];
+    // 前提：这个候选确实还在跑，且此刻快照里没有任何用量（否则下面的断言无法区分「谁写的」）
+    const before = getRun(runId).candidates[0];
     expect(before?.status).toBe('running');
     expect(before?.tokens).toBeNull();
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
 
     // 同步落库：事件到达的那一刻快照就该是新的（不需要等下一次轮询）
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.status).toBe('running');
     expect(mid?.tokens).toEqual({ input: 11, cached: 2, output: 3 });
     expect(mid?.turns).toBe(2);
@@ -295,8 +295,8 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     live.release?.();
     await pending;
     // 终态仍以**结算值**为准（逐步回写只是让中途可见，不改变最终口径）
-    expect(getRun(runId).rows[0]?.tokens).toEqual(live.finalTokens);
-    expect(getRun(runId).rows[0]?.turns).toBe(live.finalTurns);
+    expect(getRun(runId).candidates[0]?.tokens).toEqual(live.finalTokens);
+    expect(getRun(runId).candidates[0]?.turns).toBe(live.finalTurns);
   });
 
   /**
@@ -307,17 +307,17 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    *   · 事件**整格缺席**（`undefined`，老事件）⇒ **保持**已采到的那一份。
    */
   it('跑动期的 usage 事件把 subagentTokens 一并回写快照（事件带 reported）', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
     // 前提：这一格此刻是「没采到」（夹具不写它）——否则下面的断言分不清「谁写的」
-    expect(getRun(runId).rows[0]?.subagentTokens ?? null).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTokens ?? null).toBeNull();
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, { input: 5, cached: 1, output: 2 });
 
     // 同步落库：事件到达的那一刻快照就该是新的（不需要等下一次轮询）
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.status).toBe('running');
     expect(mid?.subagentTokens).toEqual({ input: 5, cached: 1, output: 2 });
 
@@ -325,34 +325,34 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     await pending;
     // 终态仍以**结算值**为准（跑动期回写只是让中途可见）：这一格由 `live.finalSubagentTokens` 驱动，
     // 与跑动期上报的那一份**刻意不同**——写成同一个数就看不出终态到底写没写这一格
-    expect(getRun(runId).rows[0]?.subagentTokens).toEqual(live.finalSubagentTokens);
+    expect(getRun(runId).candidates[0]?.subagentTokens).toEqual(live.finalSubagentTokens);
   });
 
   it('显式 null 的 usage 事件把分量清成 null（读失败时合计已退回主会话口径，留着旧分量会破坏「分量 ≤ 合计」）', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, { input: 5, cached: 1, output: 2 });
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 3, null);
 
-    expect(getRun(runId).rows[0]?.subagentTokens).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTokens).toBeNull();
 
     live.release?.();
     await pending;
   });
 
   it('**缺这一格**（老事件 / undefined）时保持已采到的分量——与显式 null 是两件事', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, { input: 5, cached: 1, output: 2 });
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 3, undefined);
 
-    expect(getRun(runId).rows[0]?.subagentTokens).toEqual({ input: 5, cached: 1, output: 2 });
+    expect(getRun(runId).candidates[0]?.subagentTokens).toEqual({ input: 5, cached: 1, output: 2 });
 
     live.release?.();
     await pending;
@@ -361,81 +361,81 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
   /**
    * 终态**必须**写这一格。
    *
-   * 为什么这一条比 `orchestrator-run-row` 里那条同名判据更能钉住它：这里跑动期**已经**把分量写进快照了，
+   * 为什么这一条比 `orchestrator-run-candidate` 里那条同名判据更能钉住它：这里跑动期**已经**把分量写进快照了，
    * 删掉 `measured` 里那一行之后快照会停在跑动期那个值上（`{5,1,2}`），而断言要的是 `null`
-   * ——两者分得开。收尾那条 `usage` 事件会在几毫秒后被终态的 `patchRow` 覆盖（见 `TurnFinalize` 的注释），
+   * ——两者分得开。收尾那条 `usage` 事件会在几毫秒后被终态的 `patchCandidate` 覆盖（见 `TurnFinalize` 的注释），
    * 所以「只在事件里给数」的实现拿不到这个 `null`。
    */
   it('终态以适配器结果的这一格为准：结果是 null ⇒ 清掉跑动期已回写的分量', async () => {
     live.finalSubagentTokens = null;
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, { input: 5, cached: 1, output: 2 });
-    expect(getRun(runId).rows[0]?.subagentTokens).toEqual({ input: 5, cached: 1, output: 2 });
+    expect(getRun(runId).candidates[0]?.subagentTokens).toEqual({ input: 5, cached: 1, output: 2 });
 
     live.release?.();
     await pending;
 
-    expect(getRun(runId).rows[0]?.subagentTokens).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTokens).toBeNull();
   });
 
   /**
    * 轮次那一格的分量在**跑动期**的回写：三条判据与 `subagentTokens` **逐字相同**
    * （三档）——带值 ⇒ 跟着变；显式 `null` ⇒ 清空；整格缺席 ⇒ 保持。
    *
-   * 为什么这一格也要单独钉：它是**另一格**，而两格的写法在同一处（`onEvent` 的 `patchRow`）——
-   * 只钉用量那一格的话，「顺手复制了用量那一行、忘了轮次这一行」的实现照样全绿，
+   * 为什么这一格也要单独钉：它是**另一格**，而两格的写法在同一处（`onEvent` 的 `patchCandidate`）——
+   * 只钉用量那一格的话，「顺手复制了用量那一行、忘了轮次这个候选」的实现照样全绿，
    * 而界面上「轮次」那一格的拆分行永远画不出来。
    */
   it('跑动期的 usage 事件把 subagentTurns 一并回写快照（事件带 reported）', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
     // 前提：这一格此刻是「没采到」——否则下面的断言分不清「谁写的」
-    expect(getRun(runId).rows[0]?.subagentTurns ?? null).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTurns ?? null).toBeNull();
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, 3);
 
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.status).toBe('running');
     expect(mid?.subagentTurns).toBe(3);
-    // 与合计同刻：分量 ≤ 合计（同一行快照上的不变量）
+    // 与合计同刻：分量 ≤ 合计（同一候选快照上的不变量）
     expect(mid?.turns).toBe(5);
 
     live.release?.();
     await pending;
     // 终态以**结算值**为准：`live.finalSubagentTurns`（2）与跑动期上报的 3 刻意不同
-    expect(getRun(runId).rows[0]?.subagentTurns).toBe(live.finalSubagentTurns);
+    expect(getRun(runId).candidates[0]?.subagentTurns).toBe(live.finalSubagentTurns);
   });
 
   it('显式 null 的 usage 事件把轮次分量清成 null——与用量那一格同一条规则', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, 3);
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, null);
 
-    expect(getRun(runId).rows[0]?.subagentTurns).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTurns).toBeNull();
 
     live.release?.();
     await pending;
   });
 
   it('**缺这一格**（老事件 / undefined）时保持已采到的轮次分量——与显式 null 是两件事', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, 3);
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, undefined);
 
-    expect(getRun(runId).rows[0]?.subagentTurns).toBe(3);
+    expect(getRun(runId).candidates[0]?.subagentTurns).toBe(3);
 
     live.release?.();
     await pending;
@@ -443,45 +443,45 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
 
   it('终态以适配器结果的这一格为准：结果是 null ⇒ 清掉跑动期已回写的轮次分量', async () => {
     live.finalSubagentTurns = null;
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 5, { input: 5, cached: 1, output: 2 }, 3);
-    expect(getRun(runId).rows[0]?.subagentTurns).toBe(3);
+    expect(getRun(runId).candidates[0]?.subagentTurns).toBe(3);
 
     live.release?.();
     await pending;
 
     // 停在上面的 3 就说明终态漏写了这一格（跑动期那个值是旧的，而结果是「明确没采到」）
-    expect(getRun(runId).rows[0]?.subagentTurns).toBeNull();
+    expect(getRun(runId).candidates[0]?.subagentTurns).toBeNull();
   });
 
   /**
    * 回写口径按每一条事件自己的 `tokensBasis`，不再按整家的
    * 静态声明。于是「估算的家」（cc 的跑动期读数按 assistant 消息累加）也**实时回写轮次**了
    * ——旧口径把轮次与 tokens 一起挡掉，界面因此在整个跑动期都看不到「轮到第几轮」。
-   * 唯一不许进快照的仍然只有**估算的 `tokens`**：快照是唯一落盘真相，写进去会让崩溃 / 被杀的行
+   * 唯一不许进快照的仍然只有**估算的 `tokens`**：快照是唯一落盘真相，写进去会让崩溃 / 被杀的候选
    * 看起来像「采到了计量」。
    */
   it('跑动期：轮次实时回写，估算的 tokens 绝不回写（A2 的新口径）', async () => {
     live.emitEstimated = true;
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
     // 事件流里有它（界面靠 SSE 实时显示估算值），且**落盘那一格也在**（契约真的收了这一格——
     // zod 默认会把 schema 里没有的键悄悄剥掉，只在内存里拼事件的话这条断言才通不过）
-    const events = readEvents(rowEventsFile(home.workspaceRoot, runId, rowId));
+    const events = readEvents(candidateEventsFile(home.workspaceRoot, runId, candidateId));
     const usage = events.find((event) => event.type === 'usage');
     expect(usage?.type === 'usage' ? usage.turns : null).toBe(2);
     expect(usage?.type === 'usage' ? usage.tokensBasis : null).toBe('estimated');
 
     // 快照里**只有轮次**——这里是「写侧」的判据：给异步实现留一拍（旧实现下两格都是 null）
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.status).toBe('running');
     expect(mid?.turns).toBe(2);
     expect(mid?.tokens).toBeNull();
@@ -489,7 +489,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     live.release?.();
     await pending;
     // 结算值照写：不回写估算 ≠ 终态也不写
-    expect(getRun(runId).rows[0]?.tokens).toEqual(live.finalTokens);
+    expect(getRun(runId).candidates[0]?.tokens).toEqual(live.finalTokens);
   });
 
   /**
@@ -499,15 +499,15 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    * 轮次照旧回写：它只有权威形态（骨架里只有 `tokensEstimated` 一个标记）。
    */
   it('事件整格缺 tokensBasis（老适配器 / 第三方 provider）时按估算处置：轮次回写、tokens 不回写', async () => {
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2, undefined, undefined, null);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.turns).toBe(2);
     expect(mid?.tokens).toBeNull();
 
@@ -515,23 +515,23 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     await pending;
   });
 
-  it('跑动期每 ROW_HEARTBEAT_MS 回写已耗时；终态之后心跳必须停（不覆盖结算值）', async () => {
+  it('跑动期每 CANDIDATE_HEARTBEAT_MS 回写已耗时；终态之后心跳必须停（不覆盖结算值）', async () => {
     // 只假 setInterval：仓库准备与 promise 调度走的仍是真实定时器（否则这个用例会卡在 git 上）
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     // 顺带钉一条：心跳**只**写耗时，不把估算顺手带进快照（估算那条路径见上一条用例）
     live.emitEstimated = true;
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
-    expect(getRun(runId).rows[0]?.durationMs).toBeNull();
+    expect(getRun(runId).candidates[0]?.durationMs).toBeNull();
 
     live.emitUsage?.({ input: 11, cached: 2, output: 3 }, 2);
-    vi.advanceTimersByTime(ROW_HEARTBEAT_MS);
+    vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS);
 
     // 行还在跑：耗时已经被心跳写进去了（「跑了多久」是客观事实，不是估算）。
     // 轮次是**事件**回写的（A2 起恒回写，与心跳无关），估算的 tokens 两条路径都不写
-    const mid = getRun(runId).rows[0];
+    const mid = getRun(runId).candidates[0];
     expect(mid?.status).toBe('running');
     expect(mid?.durationMs).not.toBeNull();
     expect(mid?.turns).toBe(2);
@@ -540,11 +540,11 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
     live.release?.();
     await pending;
     // 终态写的是结算值（夹具给的 5ms），覆盖心跳的最后一次写入
-    expect(getRun(runId).rows[0]?.durationMs).toBe(live.finalDurationMs);
+    expect(getRun(runId).candidates[0]?.durationMs).toBe(live.finalDurationMs);
 
     // 心跳若没被清掉，下面这几拍会拿「真实经过时间」再覆盖一次结算值
-    vi.advanceTimersByTime(ROW_HEARTBEAT_MS * 4);
-    expect(getRun(runId).rows[0]?.durationMs).toBe(live.finalDurationMs);
+    vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS * 4);
+    expect(getRun(runId).candidates[0]?.durationMs).toBe(live.finalDurationMs);
   });
 
   /**
@@ -556,7 +556,7 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    *
    * 判据三条，缺一条都会留下可见的错读数：
    *   ① 结算值是**终止那一刻**（不是心跳的最后一拍）；
-   *   ② 心跳**随终态当场拆掉**（不能等 `runRowAttempt` 的 `finally`——那条路要等适配器交卷）；
+   *   ② 心跳**随终态当场拆掉**（不能等 `runCandidateAttempt` 的 `finally`——那条路要等适配器交卷）；
    *   ③ 收尾那一次写入也不许覆盖冻结值（它算的是「终止 + 收尾延迟」的墙钟）。
    *
    * 为什么用假 `Date`：只假 `setInterval` 的话，心跳每拍写出的 `Date.now() - startedAt` 都是
@@ -564,35 +564,35 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    */
   it('用户终止后耗时冻结在终止那一刻：心跳当场停，收尾也不覆盖', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
-    vi.advanceTimersByTime(ROW_HEARTBEAT_MS * 2);
-    const beforeAbort = getRun(runId).rows[0]?.durationMs ?? null;
+    vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS * 2);
+    const beforeAbort = getRun(runId).candidates[0]?.durationMs ?? null;
     expect(beforeAbort).not.toBeNull();
 
     // 再走 1 秒但不跨过心跳那一拍：终止时刻与「心跳最后一拍」因此有一个可辨识的差
     vi.advanceTimersByTime(1_000);
     // 假适配器不响应停止信号（它一直挂到 `live.release()`）⇒ 行任务仍等在 await 上，
     // 这正是现场的形状：状态当场落终态，而任务还远远没到收尾
-    abortRow(runId, rowId);
-    expect(getRun(runId).rows[0]?.status).toBe('canceled');
-    const atAbort = getRun(runId).rows[0]?.durationMs ?? null;
+    abortCandidate(runId, candidateId);
+    expect(getRun(runId).candidates[0]?.status).toBe('canceled');
+    const atAbort = getRun(runId).candidates[0]?.durationMs ?? null;
     expect(atAbort).not.toBeNull();
     // ① 结算在「终止那一刻」，不是沿用心跳的最后一拍
     expect(atAbort).toBeGreaterThan(beforeAbort ?? 0);
 
-    // ② 心跳必须已经停了：旧实现下这几拍会把读数一路推上去（每拍 +ROW_HEARTBEAT_MS）
-    vi.advanceTimersByTime(ROW_HEARTBEAT_MS * 6);
-    expect(getRun(runId).rows[0]?.durationMs).toBe(atAbort);
+    // ② 心跳必须已经停了：旧实现下这几拍会把读数一路推上去（每拍 +CANDIDATE_HEARTBEAT_MS）
+    vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS * 6);
+    expect(getRun(runId).candidates[0]?.durationMs).toBe(atAbort);
 
     // ③ 适配器终于交卷，收尾那一次写入同样不许覆盖冻结值（它算的是「终止 + 收尾延迟」的墙钟，
     //    拿它顶上去等于把使用者按终止之后又涨的那一段再演一遍）
     live.release?.();
     await pending;
-    expect(getRun(runId).rows[0]?.durationMs).toBe(atAbort);
+    expect(getRun(runId).candidates[0]?.durationMs).toBe(atAbort);
   });
 
   /**
@@ -605,21 +605,21 @@ describe('跑动期的实时数据', { timeout: TEST_TIMEOUT_MS }, () => {
    */
   it('心跳写入失败（快照已不存在）时自停，不把异常抛到定时器外', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const { runId, rowId } = seedRun();
+    const { runId, candidateId } = seedRun();
 
-    const pending = runRow(runId, rowId);
+    const pending = runCandidate(runId, candidateId);
     await until(() => live.emitUsage !== null, '假适配器已启动');
 
-    vi.advanceTimersByTime(ROW_HEARTBEAT_MS);
-    expect(getRun(runId).rows[0]?.durationMs).not.toBeNull();
+    vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS);
+    expect(getRun(runId).candidates[0]?.durationMs).not.toBeNull();
 
-    // 把快照从磁盘上拿掉：等价于「这一轮被清理 / 根目录被改走」（patchRow 会抛 NOT_FOUND）
+    // 把快照从磁盘上拿掉：等价于「这一轮被清理 / 根目录被改走」（patchCandidate 会抛 NOT_FOUND）
     rmSync(runSnapshotFile(home.workspaceRoot, runId), { force: true });
 
-    // 旧实现：这个异常直接从定时器回调里冒出来（`advanceTimersByTime` 会把它抛给本行）
-    expect(() => vi.advanceTimersByTime(ROW_HEARTBEAT_MS)).not.toThrow();
+    // 旧实现：这个异常直接从定时器回调里冒出来（`advanceTimersByTime` 会把它抛给候选）
+    expect(() => vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS)).not.toThrow();
     // 自停之后就算再推进几拍也什么都不做（不会反复抛）
-    expect(() => vi.advanceTimersByTime(ROW_HEARTBEAT_MS * 3)).not.toThrow();
+    expect(() => vi.advanceTimersByTime(CANDIDATE_HEARTBEAT_MS * 3)).not.toThrow();
 
     live.release?.();
     // 快照没了 ⇒ 编排层收尾也会失败，但那是它自己的失败面（记 ERROR、绝不上抛），这里照常返回

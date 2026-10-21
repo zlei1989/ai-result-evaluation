@@ -3,7 +3,7 @@
  * **只读验证探针**（不属于产品代码，也不改产品代码）。
  *
  * 真机读数三组：
- *   A. MCP 条目翻译（真 `toPiMcpServers` / `resolveMcpServers` / `deriveRowMcpServers` 逐格矩阵）；
+ *   A. MCP 条目翻译（真 `toPiMcpServers` / `resolveMcpServers` / `deriveCandidateMcpServers` 逐格矩阵）；
  *   A3+. 真适配器 + 真 SDK + 真 stdio 服务器 + 假网关（读厂商真发出去的请求体）。
  *   B. 提问应答面的注册条件与两格提示词落点。
  * 每条结论都配阴性对照。
@@ -19,7 +19,7 @@ import {
   anthropicText,
   anthropicToolUse,
   MCP_PROBE_SERVER_SOURCE,
-  runPiConformanceRow,
+  runPiConformanceCandidate,
   startPiScriptedGateway,
 } from '../../../testing/pi-conformance-fixture';
 import { piProvider } from '..';
@@ -131,7 +131,7 @@ describe('探针 A4：MCP 真注入（真适配器 + 真 stdio 服务器 + 假�
           + ' env: { MARK: process.env.MARK }, cwd: process.cwd() }));\n'
           + 'const readline = require(\'node:readline\');',
       );
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('接上了。')],
       prompt: '随便说一句。',
       mcpServers: {
@@ -152,7 +152,7 @@ describe('探针 A4：MCP 真注入（真适配器 + 真 stdio 服务器 + 假�
   }, 120_000);
 
   it('A4-2 起不来（命令不存在）：会话照常跑完，事件里没有任何归因', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('好。')],
       prompt: '随便说一句。',
       mcpServers: { 'dead-server': { transport: 'stdio', enabled: true, command: '/nonexistent/pi-probe-binary-xyz' } },
@@ -209,7 +209,7 @@ describe('探针 A4：MCP 真注入（真适配器 + 真 stdio 服务器 + 假�
       'process.stderr.write(\'probe-server-stderr-marker\\n\');\nconst readline = require(\'node:readline\');',
     );
     try {
-      const run = await runPiConformanceRow({
+      const run = await runPiConformanceCandidate({
         script: [anthropicText('好。')],
         prompt: '随便说一句。',
         mcpServers: { probe: { transport: 'stdio', enabled: true, command: process.execPath, args: ['-e', stderrSource] } },
@@ -238,7 +238,7 @@ const ASK_SCRIPT = [
 describe('探针 B：提问应答面的注册条件与提示词落点', () => {
   it('B1 有应答面 + 全权限：工具进请求表，两格提示词进系统提示词，答复回填', async () => {
     const calls: unknown[] = [];
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: ASK_SCRIPT,
       prompt: '随便说一句。',
       permission: 'full',
@@ -260,7 +260,7 @@ describe('探针 B：提问应答面的注册条件与提示词落点', () => {
   }, 120_000);
 
   it('B2 无应答面（不传 onAskUser）：工具与两格提示词都不在', async () => {
-    const run = await runPiConformanceRow({ script: [anthropicText('直接答。')], prompt: '随便说一句。', permission: 'full' });
+    const run = await runPiConformanceCandidate({ script: [anthropicText('直接答。')], prompt: '随便说一句。', permission: 'full' });
     const system = systemText(run.requests.at(-1)?.body ?? {});
     dump('B2 requestTools', run.requestTools);
     dump('B2 snippet 在系统提示词里', system.includes(PI_ASK_USER_SNIPPET));
@@ -270,7 +270,7 @@ describe('探针 B：提问应答面的注册条件与提示词落点', () => {
 
   it('B3 有应答面 + 只读档：工具不在、端口不被调用', async () => {
     const calls: unknown[] = [];
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('只读。')],
       prompt: '随便说一句。',
       permission: 'read-only',

@@ -133,16 +133,16 @@ describe('按族自己拼（没有 `description` 的那一大片：真机 130 �
     );
   });
 
-  it('计划类入参给**统一的那一句**：`更新计划：N 步`（三家同形，不再是 JSON 转储）', () => {
-    expect(toolCallSummary('TodoWrite', { todos: [{ content: 'a' }, { content: 'b' }] })).toBe('更新计划：2 步');
-    expect(toolCallSummary('update_plan', { plan: [{ step: 'a' }] })).toBe('更新计划：1 步');
-    expect(toolCallSummary('todo_write', '{"steps":[{"step":"a"},{"step":"b"},{"step":"c"}]}')).toBe('更新计划：3 步');
+  it('计划类入参给**统一的那一句**：`更新计划：N 项`（三家同形，不再是 JSON 转储）', () => {
+    expect(toolCallSummary('TodoWrite', { todos: [{ content: 'a' }, { content: 'b' }] })).toBe('更新计划：2 项');
+    expect(toolCallSummary('update_plan', { plan: [{ step: 'a' }] })).toBe('更新计划：1 项');
+    expect(toolCallSummary('todo_write', '{"steps":[{"step":"a"},{"step":"b"},{"step":"c"}]}')).toBe('更新计划：3 项');
     // 计划类**先判**：哪怕同时给了描述，也说「几步」（那张表才是这一步在干的事）
-    expect(toolCallSummary('todo_write', { todos: [{ content: 'a' }], description: '更新清单' })).toBe('更新计划：1 步');
+    expect(toolCallSummary('todo_write', { todos: [{ content: 'a' }], description: '更新清单' })).toBe('更新计划：1 项');
   });
 });
 
-describe('工具行的摘要主体（`toolCallHint`）：不带 `调用工具 <名>：` 前缀', () => {
+describe('工具候选的摘要主体（`toolCallHint`）：不带 `调用工具 <名>：` 前缀', () => {
   it('与活动行同源同词表，只差前缀', () => {
     const input = { file_path: 'src/index.ts' };
     expect(toolCallSummary('Read', input)).toBe(`调用工具 Read：${toolCallHint('Read', input)}`);
@@ -152,9 +152,9 @@ describe('工具行的摘要主体（`toolCallHint`）：不带 `调用工具 <�
     );
   });
 
-  it('计划类在工具行是 `N 步`（工具名由界面自己渲染，不再带「更新计划」这四个字）', () => {
-    expect(toolCallHint('todo_write', { todos: [{ content: 'a' }, { content: 'b' }] })).toBe('2 步');
-    expect(toolCallHint('update_plan', { plan: [{ step: 'a' }] })).toBe('1 步');
+  it('计划类在工具候选是 `N 项`（工具名由界面自己渲染，不再带「更新计划」这四个字）', () => {
+    expect(toolCallHint('todo_write', { todos: [{ content: 'a' }, { content: 'b' }] })).toBe('2 项');
+    expect(toolCallHint('update_plan', { plan: [{ step: 'a' }] })).toBe('1 项');
   });
 
   it('什么都没给就是空串（界面据此说「参数未采集」），不编一句话', () => {
@@ -213,7 +213,7 @@ describe('不认识的工具（`family: null`）：既不假装认识形状，�
   });
 });
 
-describe('单行化与截断（一行里只放得下一句话）', () => {
+describe('单行化与截断（一个候选里只放得下一句话）', () => {
   it('换行压成空格、超长带省略号；长度上限只管摘要主体', () => {
     const command = `echo a\necho b\n${'x'.repeat(ACTIVITY_SUMMARY_MAX_LENGTH + 40)}`;
     // 截断按**整段目标**算（换行先压成空格再数长度），不是从那一串 x 起算
@@ -260,8 +260,8 @@ describe('子任务：派发与收场', () => {
 
 describe('计划与通用工具', () => {
   it('计划更新按步数说话', () => {
-    expect(planSummary(4)).toBe('更新计划：4 步');
-    expect(planSummary(0)).toBe('更新计划：0 步');
+    expect(planSummary(4)).toBe('更新计划：4 项');
+    expect(planSummary(0)).toBe('更新计划：0 项');
   });
 
   it('单行化与截断是公开口径（三家适配器都要按同一把尺子用）', () => {

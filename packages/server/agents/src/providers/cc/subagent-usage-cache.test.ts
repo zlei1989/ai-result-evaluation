@@ -8,7 +8,7 @@
  * 界面上一个字都看不出来。⇒ 判据是「**同一个版本的转录文件在一次收尾里被打开了几次**」。
  *
  * 两条读盘路径（`index.ts` 的 `finalize`）：
- *   ① **合计读**（`readClaudeSubagentUsage` ⇒ 行级 `subagentTokens` / `subagentTurns`）；
+ *   ① **合计读**（`readClaudeSubagentUsage` ⇒ 候选级 `subagentTokens` / `subagentTurns`）；
  *   ② **逐个子智能体重读**（`finalSubagents` ⇒ 每个子智能体的**最终**用量，进 `SubagentRecord.usage`）。
  *
  * ⚠️ **跑动期不读盘**（用户裁定：只展示最终用量）：子智能体的**终态通知**到达时只登记记录、

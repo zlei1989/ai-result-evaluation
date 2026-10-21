@@ -1,20 +1,20 @@
 // @vitest-environment node
 /**
- * 行产物清理：**瞬时占用就地重试** + 失败文案点名成因。
+ * 候选产物清理：**瞬时占用就地重试** + 失败文案点名成因。
  *
  * 这一条链路的真机成因（`docs/faq/codex.md`）：codex 在 `thread/start` 期间 spawn 了一串 `git`
- * 孙进程去同步插件目录，它们**继承父进程的句柄**；父进程一死，句柄继续捏着该行的 `.judgehome`
- * ⇒ 下一轮的行产物清理 `EPERM`。而 `fs.rmSync` 在本机没有可用的重试（见 `remove-tree.ts` 文件头），
- * 于是「一次失败」直接等于「这一行失败」，且锁消失之前**每次重跑都失败**。
+ * 孙进程去同步插件目录，它们**继承父进程的句柄**；父进程一死，句柄继续捏着该候选的 `.judgehome`
+ * ⇒ 下一轮的候选产物清理 `EPERM`。而 `fs.rmSync` 在本机没有可用的重试（见 `remove-tree.ts` 文件头），
+ * 于是「一次失败」直接等于「这个候选失败」，且锁消失之前**每次重跑都失败**。
  *
  * 本文件钉住两件事（真实重试逻辑的单元判据在 `remove-tree.test.ts`）：
- *   ① `prepareRowWorkspace` 走的是**带重试**的那条路，且三个产物的删除动作逐个发生、顺序固定；
+ *   ① `prepareCandidateWorkspace` 走的是**带重试**的那条路，且三个产物的删除动作逐个发生、顺序固定；
  *   ② 真删不掉时折成**中文 INTERNAL**，并把「常见成因：厂商子进程未退出」写进文案。
  */
 import { existsSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { writeAttachmentFile } from './attachment-store';
-import { rowAttachmentDir } from './workspace';
+import { candidateAttachmentDir } from './workspace';
 
 /**
  * 真实现的落点。为什么需要它：替身里要**代理回真实现**（「重试后成功」那条用例），
@@ -35,7 +35,7 @@ import { removeTreeWithRetry } from './remove-tree';
 import {
   join,
   makeRepo,
-  prepareRowWorkspace,
+  prepareCandidateWorkspace,
   registerWorkspaceHooks,
   root,
   type AppConfig,
@@ -61,18 +61,18 @@ function baseInput(dir: string, commit: string) {
     caseId: 'case-1',
     repoPath: dir,
     runId: 'run-1',
-    rowId: 'row-1',
+    candidateId: 'candidate-1',
     commitHash: commit,
-    branch: 'test/row-1',
+    branch: 'test/candidate-1',
   };
 }
 
-describe('行产物清理 —— 走带重试的回收', () => {
+describe('候选产物清理 —— 走带重试的回收', () => {
   it('四个产物逐个删，顺序固定为 workspace → .agenthome → .judgehome → attachments', () => {
     const { dir, commit } = makeRepo();
-    prepareRowWorkspace(baseInput(dir, commit));
-    // 第二轮才是「清理」那条路：第一次调用时行目录还不存在
-    prepareRowWorkspace(baseInput(dir, commit));
+    prepareCandidateWorkspace(baseInput(dir, commit));
+    // 第二轮才是「清理」那条路：第一次调用时候选目录还不存在
+    prepareCandidateWorkspace(baseInput(dir, commit));
     const targets = vi.mocked(removeTreeWithRetry).mock.calls.map(([target]) => target.replace(/\\/g, '/').split('/').slice(-1)[0]);
     expect(targets).toEqual(['workspace', '.agenthome', '.judgehome', 'attachments']);
   });
@@ -80,27 +80,27 @@ describe('行产物清理 —— 走带重试的回收', () => {
   it('附件根真的被删掉（重跑是另一次尝试：上一轮人上传的材料不该留到这一轮）', () => {
     const { dir, commit } = makeRepo();
     const input = baseInput(dir, commit);
-    prepareRowWorkspace(input);
+    prepareCandidateWorkspace(input);
     const attached = writeAttachmentFile({
-      dir: rowAttachmentDir(input.workspaceRoot, input.runId, input.rowId, 'm-1'),
+      dir: candidateAttachmentDir(input.workspaceRoot, input.runId, input.candidateId, 'm-1'),
       name: 'a.txt',
       bytes: new Uint8Array([1, 2, 3]),
     });
     expect(existsSync(attached.path)).toBe(true);
 
-    prepareRowWorkspace(input);
+    prepareCandidateWorkspace(input);
 
     expect(existsSync(attached.path)).toBe(false);
   });
 
   it('附件目录名拼之前过 id 形状校验（`..` 拼不进路径，换来的是一句可展示的中文原因）', () => {
-    expect(() => rowAttachmentDir(join(root, 'runs'), 'run-1', 'row-1', '..')).toThrow(/消息 id 不合法/);
+    expect(() => candidateAttachmentDir(join(root, 'runs'), 'run-1', 'candidate-1', '..')).toThrow(/消息 id 不合法/);
   });
 
   it('单个产物删不掉 ⇒ 折成中文 INTERNAL，且文案点名「厂商子进程未退出」这一常见成因', () => {
     const { dir, commit } = makeRepo();
     const input = baseInput(dir, commit);
-    prepareRowWorkspace(input);
+    prepareCandidateWorkspace(input);
 
     // 第二轮：只让 `.judgehome` 这一次失败（真机形态：它被 codex 的 git 孙进程捏着）
     vi.mocked(removeTreeWithRetry).mockImplementation((target: string) => {
@@ -110,12 +110,12 @@ describe('行产物清理 —— 走带重试的回收', () => {
 
     let caught: unknown = null;
     try {
-      prepareRowWorkspace(input);
+      prepareCandidateWorkspace(input);
     } catch (error) {
       caught = error;
     }
     const message = caught instanceof Error ? caught.message : '';
-    expect(message).toContain('清理上一轮的行产物失败');
+    expect(message).toContain('清理上一轮的候选产物失败');
     expect(message).toContain('.judgehome');
     expect(message).toContain('EPERM');
     expect(message).toContain('厂商子进程');
@@ -123,10 +123,10 @@ describe('行产物清理 —— 走带重试的回收', () => {
     expect((caught as { code?: string }).code).toBe('INTERNAL');
   });
 
-  it('瞬时占用（重试后成功）不算失败：这一行照常准备出来', () => {
+  it('瞬时占用（重试后成功）不算失败：这个候选照常准备出来', () => {
     const { dir, commit } = makeRepo();
     const input = baseInput(dir, commit);
-    prepareRowWorkspace(input);
+    prepareCandidateWorkspace(input);
 
     const real = realRemoveTree.fn;
     expect(real).toBeDefined();
@@ -136,7 +136,7 @@ describe('行产物清理 —— 走带重试的回收', () => {
       return real?.(target, options);
     }) as typeof removeTreeWithRetry);
 
-    const prepared = prepareRowWorkspace(input);
+    const prepared = prepareCandidateWorkspace(input);
     expect(prepared.workspacePath).toContain('workspace');
   });
 });

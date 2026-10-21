@@ -10,7 +10,7 @@
  * 三条容易踩空的地方：
  *   1. **`message_start` 必须带 `usage`**：pi 直接读它的 `input_tokens`，缺了整轮以厂商原文的
  *      `Cannot read properties of undefined` 收场。帧构造器已默认带上（见假件）。
- *   2. **增量帧不产行级事件**：`streamingDelta: yes` ⇒ 凡产物里有 `chunk === 'delta'` 的场景，
+ *   2. **增量帧不产候选级事件**：`streamingDelta: yes` ⇒ 凡产物里有 `chunk === 'delta'` 的场景，
  *      `expectedEventCounts` 都得给。条数是**实测**的，不是估的——把它删掉，套件当场红。
  *   3. **有两个场景名在本家结构上造不出来**（`tool-plan` / `usage-missing`），
  *      理由逐条写在文件末——那两条不写，写了就是假产物。
@@ -37,7 +37,7 @@ import {
   observePiCancelAt,
   observePiLifecycle,
   observePiRepairDisposal,
-  runPiConformanceRow,
+  runPiConformanceCandidate,
   writeSkillSource,
   type PiConformanceRun,
 } from '../../testing/pi-conformance-fixture';
@@ -93,7 +93,7 @@ afterAll(() => {
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 });
 
-/** 造一份技能源（`input.skills` 要的是「名字 + 源目录」，落进本行的是它的副本） */
+/** 造一份技能源（`input.skills` 要的是「名字 + 源目录」，落进行的是它的副本） */
 function skillSource(name: string, body: string): { name: string; sourceDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'pi-conformance-skill-'));
   skillRoots.push(root);
@@ -119,8 +119,8 @@ function abortAfterMs(ms: number): AbortSignal {
  *
  * 所有场景共用一份提示词：它进的是**请求侧**，我们不判模型看懂了什么——每条的差别全在网关回的剧本上。
  */
-async function run(options: Omit<Parameters<typeof runPiConformanceRow>[0], 'prompt'>): Promise<PiConformanceRun> {
-  return runPiConformanceRow({ ...options, prompt: '按剧本收尾。' });
+async function run(options: Omit<Parameters<typeof runPiConformanceCandidate>[0], 'prompt'>): Promise<PiConformanceRun> {
+  return runPiConformanceCandidate({ ...options, prompt: '按剧本收尾。' });
 }
 
 /**
@@ -180,7 +180,7 @@ const SCENARIOS = {
     script: [anthropicText('MCP 接上了。')],
     mcpServers: piMcpProbeServers(),
   }),
-  /** 技能注入：物化到本行的技能副本应出现在请求的系统段里（逐条 `<name>` 比对） */
+  /** 技能注入：物化到候选的技能副本应出现在请求的系统段里（逐条 `<name>` 比对） */
   'skill-injection': await run({
     script: [anthropicText('技能已就位。')],
     skills: [skillSource('alpha', '示例技能正文。')],
@@ -236,14 +236,14 @@ const SCENARIOS = {
       anthropicToolUse('Agent', {
         prompt: '只回一句话：子任务完成。',
         /**
-         * 模型给这一行起的名字与 `description`（厂商侧的任务描述）**刻意不同**：两条通路各自
+         * 模型给这个候选起的名字与 `description`（厂商侧的任务描述）**刻意不同**：两条通路各自
          * 取得到的那一份不同名，才判得出「收尾有没有拿描述把名字盖掉」——两者同值时那条判据是空转。
          */
         name: 'pong-agent',
         description: 'conformance subagent',
         subagent_type: 'general-purpose',
         // ⚠️ **必须显式 `false`**：这一格缺省是 `true`（派发即分离、工具立刻返回 ID），
-        // 那样出站请求的次序就变成「父 → 父收尾 → 子」，剧本对不上，而子智能体还会活过本行
+        // 那样出站请求的次序就变成「父 → 父收尾 → 子」，剧本对不上，而子智能体还会活过候选
         // （已知的第三方缺陷：完成回调打在旧 ctx 上抛未处理拒绝）
         run_in_background: false,
       }, 'toolu_subagent'),
@@ -493,7 +493,7 @@ describe('注入面探针挂载（pi）', () => {
     const run = SCENARIOS['skill-injection'];
     expect(run.requests.length, '技能场景一次模型往返都没发出去，请求侧事实无从谈起').toBe(1);
     expect(run.requestSkills.map((skill) => skill.name)).toEqual(['alpha']);
-    // 落点必须是**本行**物化出来的那一份（绝对路径 + 本仓的技能落点），不能是宿主技能目录
+    // 落点必须是**候选**物化出来的那一份（绝对路径 + 本仓的技能落点），不能是宿主技能目录
     expect(run.requestSkills[0]?.location).toMatch(/\/skills\/alpha\/SKILL\.md$/);
     expect(run.product.injectionProbe?.skillsInstalled).toEqual(['alpha']);
     const vendorSkills = run.product.events
@@ -639,7 +639,7 @@ describe('应答帧挂载（pi）', () => {
 describe('子任务正文（pi）', () => {
   /**
    * **真链路守卫**：真 SDK + 真扩展，子会话正文经 wire 通道进消息流——真扩展在 reload 里
-   * claim `pi-subagents:manager` 注册表，适配器快照本行的条目、`subagents:started` 后订阅
+   * claim `pi-subagents:manager` 注册表，适配器快照候选的条目、`subagents:started` 后订阅
    * **真子会话**的事件流（`subagent-wire.ts`）。`events.test.ts` 那一组钉的是投影逻辑
    * （读口是假的），这一条钉的是**两端真源对得上**——注册表挂载、`getRecord` 的 record
    * 形状、子会话 `subscribe` 的 this 绑定任何一侧漂移，这里当场红，症状是「子任务正文
@@ -648,14 +648,14 @@ describe('子任务正文（pi）', () => {
    */
   it('subagent 场景的产物里有子任务自己的消息：带身份、wire 来源、自己的轮次、它自己说的正文', () => {
     const run = SCENARIOS.subagent;
-    const rows = run.product.subagents;
-    expect(rows.length, '子任务行一条都没投出来——先看派发那一刻那条通路').toBeGreaterThan(0);
-    const agentId = rows[0]?.subagentId ?? '';
+    const candidates = run.product.subagents;
+    expect(candidates.length, '子任务行一条都没投出来——先看派发那一刻那条通路').toBeGreaterThan(0);
+    const agentId = candidates[0]?.subagentId ?? '';
     const own = run.product.messages.filter((message) => message.subagentId === agentId);
     expect(
       own.length,
       '子任务自己的消息一条都没读到——wire 链路断了（注册表快照、订阅或排空任何一格），'
-        + `子任务行有 ${rows.length} 条、身份 ${agentId}`,
+        + `子任务行有 ${candidates.length} 条、身份 ${agentId}`,
     ).toBeGreaterThan(0);
     for (const message of own) {
       expect(message.source, '子任务正文必须标流式来源 wire（wire 不可用才退 session-file 补录）').toBe('wire');
@@ -722,7 +722,7 @@ describe('修正轮的预算与释放（pi）', () => {
    * 所以三轮都拿到同一段非 JSON 正文。
    */
   it('首答不合格 ⇒ 修正轮跑满 2 轮（1 + 2 = 3 次出站请求），且不落「不支持同会话修正」', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [anthropicText('这不是 JSON。')],
       outputSchema: STRUCTURED_SCHEMA,

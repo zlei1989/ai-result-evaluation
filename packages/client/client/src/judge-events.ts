@@ -2,19 +2,19 @@
  * 一行**评分阶段**的事件流：`/judge/events` 补历史 +（评分进行中）抽屉流的 judge channel 按 seq 续订。
  *
  * 帧从抽屉 hub（`drawer-stream-hub.ts`）来：judge 那个 channel 的完整流水里也带着评分侧的
- * 消息与子任务行，本 hook 只挑行级事件那一族（`isAgentEventFrame`）。具名事件订阅、
+ * 消息与子任务行，本 hook 只挑候选级事件那一族（`isAgentEventFrame`）。具名事件订阅、
  * `error` 按帧形状分流、无名帧兜底、引用计数归零关连接四件通用知识都在 `sse-keyed-hub.ts`。
  *
  * 与候选那条（`row-stream.ts`）消费的是同一份 SSE 帧协议——差异全部来自「这条流没有终态」：
  *
  * 1. **服务端不会自己关流**：`judge-events.jsonl` 只收评审者自己的事件（`log` / `usage` /
- *    `vendor-system` / `error`），终态落行级那条流 ⇒ SSE 挂着靠心跳吊命，直到客户端关。
- *    故连接生命周期完全等于本 hook 的 effect 生命周期，且**只在 `live`（行状态 judging）时
+ *    `vendor-system` / `error`），终态落候选级那条流 ⇒ SSE 挂着靠心跳吊命，直到客户端关。
+ *    故连接生命周期完全等于本 hook 的 effect 生命周期，且**只在 `live`（候选状态 judging）时
  *    才接**——已拿分的行历史拉完即止，不给浏览器留一条只发心跳的空连接（空闲零连接口径）；
  * 2. **不做「新一代」检测**：序号侧的换代判据（`row-stream.ts` 的 `restarts`）在这条流上没有落点。
  *    清空 `judge-events.jsonl` 的两个入口（重跑 / 重评）都会**同步**把行落成 running / judging 并
  *    清掉 `score`，于是 `live` 必然翻转、effect 必然重挂重拉——候选那条达到同一效果靠的是调用方
- *    传进来的「这一次尝试」标识（见 `useRowStream` 的口径 5）。
+ *    传进来的「这一次尝试」标识（见 `useCandidateStream` 的口径 5）。
  *    ⚠️ 两条流的换代都**不能**只靠「看到 seq 回到 1」：SSE 续订的游标停在上一代，
  *    新一代的头几条根本发不出服务端那道去重闸门，那个信号不可达。
  *    按 seq 去重仍保留：历史与 SSE 在边界上的重复投递是常态（浏览器重连带 `Last-Event-ID`、
@@ -29,18 +29,18 @@ import { useEffect, useRef, useState } from 'react';
 import type { AgentEvent } from '@aieval/contracts';
 import { eventOf, isAgentEventFrame, subscribeDrawerStream } from './drawer-stream-hub';
 import { getJson } from './http';
-import { runRowUrl } from './runs';
+import { runCandidateUrl } from './runs';
 
-export interface UseRowJudgeEventsInput {
+export interface UseCandidateJudgeEventsInput {
   runId: string;
-  rowId: string;
-  /** 评分详情抽屉开着且这一行有这个入口时才取数（文本 API 评分没有这条流） */
+  candidateId: string;
+  /** 评分详情抽屉开着且这个候选有这个入口时才取数（文本 API 评分没有这条流） */
   enabled: boolean;
-  /** 行状态是 judging 时才接 SSE；终态行只拉历史（口径 1：空闲零连接） */
+  /** 候选状态是 judging 时才接 SSE；终态行只拉历史（口径 1：空闲零连接） */
   live: boolean;
 }
 
-export interface UseRowJudgeEventsResult {
+export interface UseCandidateJudgeEventsResult {
   /** 到手的事件（按 seq 升序）；live 时随 SSE 到达原地增长 */
   events: AgentEvent[];
   /** 历史读取的三态（SSE 不改变它：实时追加失败走 `liveError`） */
@@ -53,8 +53,8 @@ export interface UseRowJudgeEventsResult {
   retry(): void;
 }
 
-export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEventsResult {
-  const { runId, rowId, enabled, live } = input;
+export function useCandidateJudgeEvents(input: UseCandidateJudgeEventsInput): UseCandidateJudgeEventsResult {
+  const { runId, candidateId, enabled, live } = input;
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const [error, setError] = useState<unknown>(null);
@@ -67,7 +67,7 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
   const lastSeqRef = useRef(0);
 
   useEffect(() => {
-    if (!enabled || runId === '' || rowId === '') return;
+    if (!enabled || runId === '' || candidateId === '') return;
 
     let cancelled = false;
     /** 本次订阅的退订函数（hub 里引用计数归零即关连接）；没订阅上时为 null */
@@ -109,10 +109,10 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
       }
       unsubscribe = subscribeDrawerStream(
         runId,
-        rowId,
+        candidateId,
         'judge',
         {
-          // 同一个 channel 的完整流水里也带着评分侧的消息与子任务行，本 hook 只认行级事件那一族
+          // 同一个 channel 的完整流水里也带着评分侧的消息与子任务行，本 hook 只认候选级事件那一族
           onFrame: (frame) => {
             if (cancelled) return;
             if (!isAgentEventFrame(frame)) return;
@@ -130,14 +130,14 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
 
     void (async () => {
       try {
-        const history = await getJson<AgentEvent[]>(runRowUrl(runId, rowId, 'judge/events'));
+        const history = await getJson<AgentEvent[]>(runCandidateUrl(runId, candidateId, 'judge/events'));
         if (cancelled) return;
         merge(history);
         setStatus('ready');
         // afterSeq 用已交付的最大 seq（刚 merge 过历史）；只在评分进行中才接实时（口径 1）
         if (live) connect(lastSeqRef.current);
       } catch (cause) {
-        // 历史都拿不到（例如行 id 不存在）就不接 SSE 了：接上也只会立刻收到错误
+        // 历史都拿不到（例如候选 id 不存在）就不接 SSE 了：接上也只会立刻收到错误
         if (!cancelled) {
           setStatus('error');
           setError(cause);
@@ -149,7 +149,7 @@ export function useRowJudgeEvents(input: UseRowJudgeEventsInput): UseRowJudgeEve
       cancelled = true;
       stop();
     };
-  }, [enabled, runId, rowId, live, attempt]);
+  }, [enabled, runId, candidateId, live, attempt]);
 
   return { events, status, error, liveError, retry: () => setAttempt((n) => n + 1) };
 }

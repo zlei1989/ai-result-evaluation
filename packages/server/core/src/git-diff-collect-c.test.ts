@@ -27,7 +27,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
   /**
    * 计数与正文是**一次** `git diff --numstat -p` 拿回来的（少一次进程创建，见 `splitNumstatPatch`）。
    * 这条守卫钉的是那个切分点**只看行首**：
-   * 用例造一个**文件名里就含 `diff --git `** 的文件——计数行是 `2\t0\tdiff --git fake.txt`，
+   * 用例造一个**文件名里就含 `diff --git `** 的文件——计数候选是 `2\t0\tdiff --git fake.txt`，
    * 那个子串出现在行中而不是行首。切分点改成按子串找（`indexOf('diff --git ')`）时会在这里提前切断：
    * 计数段只剩 `2\t0\t`（路径解析成空串）、正文段以一个不存在的文件名开头。
    * 变异验证：把切分改成 `indexOf` 后这条**确实红**。
@@ -128,7 +128,7 @@ describe('collectDiff —— 三样合并的四种组合', () => {
   });
   it('空基线（空串 = 尚未准备）直接抛中文 INTERNAL，绝不降级成 `HEAD..HEAD` 的空 diff', () => {
     // `git diff ..HEAD` 是合法的：git 把它当成 `HEAD..HEAD`，退出码 0、输出为空（本机实测 git 2.47）。
-    // 于是「准备阶段失败、baselineCommit 还空着」的行会拿到一份**看起来没改动**的 diff 并照常打分——
+    // 于是「准备阶段失败、baselineCommit 还空着」的候选会拿到一份**看起来没改动**的 diff 并照常打分——
     // 最坏的那类失败（静默给出错误的高分），而调用方从返回值里看不出基线是空的。
     const { dir } = makeRepo('aieval-diff-emptybase-');
     writeFileSync(join(dir, 'a.txt'), 'hello\nagent 的改动\n', 'utf8');

@@ -37,7 +37,7 @@ export let repo: string;
 /**
  * 用例根目录（`<casesRoot>/<case-id>.json`）。
  * **必须**由 `setCasesRootForTesting` 指到临时目录：默认根目录是真实的 `~/.aieval-cases`，
- * 而 `setConfigDirForTesting` 只管 `config.json` 所在目录，管不到它——少了这一行，
+ * 而 `setConfigDirForTesting` 只管 `config.json` 所在目录，管不到它——少了这个候选，
  * 整套用例测试会去读写开发者的家目录。
  */
 export let casesRoot: string;
@@ -240,18 +240,18 @@ function mustReadCase(caseId: string): TestCase {
  *   · 存在但形状不对（半截对象、`items` 写成字符串）。
  * 对用户的处置是同一句话（`cases.ts` 的 `assertUsableRubric`），故**取详情**与**列表**两侧的用例共用这一份。
  *
- * `carriesJudgePrompt`：这一形状的盘上那一行是否真的带着旧字段 `judgePrompt`
+ * `carriesJudgePrompt`：这一形状的盘上那一候选是否真的带着旧字段 `judgePrompt`
  * （重构前建的用例都带，形状②是手改出来的、不一定）。
  * 为什么把它写在夹具上而不是让调用方自己判断：读侧「丢掉契约上已删除的列」那条守卫需要一条
  * **非空对照**（先证明盘上真有这一格，再断言列表里没有它），否则形状②那种不带它的记录会让
  * 「列表不带 judgePrompt」变成一条恒真的空转断言。夹具自己说清楚哪种形状带、哪种不带。
  */
-export const legacyCaseShapes: Array<{ label: string; mangle: (row: TestCase) => TestCase; carriesJudgePrompt: boolean }> = [
+export const legacyCaseShapes: Array<{ label: string; mangle: (candidate: TestCase) => TestCase; carriesJudgePrompt: boolean }> = [
   {
     label: '没有 rubric 这一格',
     carriesJudgePrompt: true,
-    mangle: (row) => {
-      const legacy = { ...row, judgePrompt: '按五维评分，重点看是否真的补了用例' } as unknown as Record<string, unknown>;
+    mangle: (candidate) => {
+      const legacy = { ...candidate, judgePrompt: '按五维评分，重点看是否真的补了用例' } as unknown as Record<string, unknown>;
       delete legacy.rubric;
       return legacy as unknown as TestCase;
     },
@@ -259,7 +259,7 @@ export const legacyCaseShapes: Array<{ label: string; mangle: (row: TestCase) =>
   {
     label: 'rubric 存在但形状不对',
     carriesJudgePrompt: false,
-    mangle: (row) => ({ ...row, rubric: { groups: '这不是数组' } }) as unknown as TestCase,
+    mangle: (candidate) => ({ ...candidate, rubric: { groups: '这不是数组' } }) as unknown as TestCase,
   },
 ];
 
@@ -267,7 +267,7 @@ export const legacyCaseShapes: Array<{ label: string; mangle: (row: TestCase) =>
  * 造一条「旧版用例」：按历史数据的真实来路——先落盘一条合法用例，再按 `mangle` 把它改成旧版形状
  * （`delete` + 写入旧字段，而不是置 `rubric: undefined`；前者才是旧 config.json 的形态）。
  */
-export function seedLegacyCase(label: string, mangle: (row: TestCase) => TestCase): TestCase {
+export function seedLegacyCase(label: string, mangle: (candidate: TestCase) => TestCase): TestCase {
   const created = createCase(caseInput({ title: `旧用例：${label}` }));
   // 按真实来路的第一半：先落一条合法用例；第二半是把它改成旧版形状后**覆盖同一个用例文件**
   writeCase(mangle(mustReadCase(created.id)));
@@ -281,9 +281,9 @@ export function seedLegacyCase(label: string, mangle: (row: TestCase) => TestCas
  * 让它合法）。按它的真实来路造——`createCase` 会经 `assertStorable` 把缺省值补齐，所以只能像
  * 手改过的 config.json 那样直接写盘。读侧归一必须把它补成 `id: ''`，而不是把 `undefined` 流出去。
  */
-export function seedRowWithoutItemId(): TestCase {
+export function seedCandidateWithoutItemId(): TestCase {
   const base = caseInput();
-  const row = {
+  const candidate = {
     id: 'c-hand-edited',
     title: '手改过：某一项没写 id',
     repoPath: base.repoPath,
@@ -296,8 +296,8 @@ export function seedRowWithoutItemId(): TestCase {
     updatedAt: '2026-09-22T00:00:00.000Z',
   } as unknown as TestCase;
   // 直接写文件（而不是过 createCase）：这一条要复现的正是「手改过的用例文件」那种绕过写侧自检的来路
-  writeCase(row);
-  return row;
+  writeCase(candidate);
+  return candidate;
 }
 
 /**
@@ -343,7 +343,7 @@ export function makeRun(runId: string, caseId: string, caseTitle: string, repoPa
     status: 'done',
     executionMode: 'parallel',
     useAgentJudge: false,
-    rows: [],
+    candidates: [],
     workspaceBase: ws,
     createdAt: '2026-09-22T10:00:00.000Z',
     startedAt: '2026-09-22T10:00:01.000Z',

@@ -4,7 +4,7 @@
  *
  * 为什么这一层必须有自己的守卫：它是**跨轮次 EPERM** 的唯一防线——
  * `child.kill()` 在 Windows 上只杀直接子进程，而厂商 CLI 会 spawn 一串继承句柄的孙进程
- * （真机：codex 的插件同步 `git` 链），它们持着本行的 `.agenthome` / `.judgehome`。
+ * （真机：codex 的插件同步 `git` 链），它们持着候选的 `.agenthome` / `.judgehome`。
  * 守卫要钉住的正是那三件事：**按 pid 杀整棵树**、**等退出**、**等不到也不抛**。
  *
  * 这里一律用假子进程 + 注入的杀树动作：真机形态（真 `taskkill /T /F` 与真孙进程）

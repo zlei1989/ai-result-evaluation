@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * 记录日志（`messages.jsonl`）：追加（一行一条记录）、全量读、按 `(segment, mergeKey)` / `subagentId`
- * 覆盖累积、清空，以及坏行的容忍。
+ * 覆盖累积、清空，以及坏候选的容忍。
  *
  * 六条关键守卫：
  *   ① **一条记录一行**、逐字读回（`messageId` / `mergeKey` / `segment` / `blocks` 都不能被改写）——
@@ -10,7 +10,7 @@
  *   ③ **`foldMessages` 是覆盖而非追加**：同一 `(segment, mergeKey)` 的多条只留最后一条（它的
  *      `blocks` 已是全量），且顺序按**首次出现**（打字过程中的覆盖不该让这条消息跳到列表末尾）；
  *      段号不同 ⇒ 两条不同的逻辑消息，**都留**（追问段与首段的轮次会同号）；
- *   ④ 坏行（写一半被杀、手工编辑、空行）只跳过该行并 WARN，其余记录必须全部读出来；
+ *   ④ 坏行（写一半被杀、手工编辑、空行）只跳过该候选并 WARN，其余记录必须全部读出来；
  *   ⑤ **写**进去的记录必须符合契约：读侧容忍（④）是为了「一行坏不牵连别人」，写侧容忍的后果是
  *      唯一真相源静默少记录（写成功、读时被 schema 丢掉）；
  *   ⑥ 清空后重新追加是干净的（重跑同一行不能把两次尝试的对话混在一起）。
@@ -19,7 +19,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RowRecordSchema, ServiceError, type AgentMessage, type SubagentRecord } from '@aieval/contracts';
+import { CandidateRecordSchema, ServiceError, type AgentMessage, type SubagentRecord } from '@aieval/contracts';
 import {
   appendMessage,
   appendRecord,
@@ -27,7 +27,7 @@ import {
   foldMessages,
   foldSubagents,
   readRecords,
-  readRowRecords,
+  readCandidateRecords,
   resetRecords,
 } from './message-log';
 import { removeTreeWithRetry } from './testing/cleanup';
@@ -92,7 +92,7 @@ describe('appendRecord / appendMessage / appendSubagent', () => {
     const lines = readFileSync(file, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual({ type: 'message', message: message() });
-    expect(readRowRecords(file).messages).toEqual([message()]);
+    expect(readCandidateRecords(file).messages).toEqual([message()]);
   });
 
   it('`messageId` 与 `mergeKey` 由适配器给，本模块不补、不改（补了会让消费方拿两套号对不上）', () => {
@@ -105,7 +105,7 @@ describe('appendRecord / appendMessage / appendSubagent', () => {
     appendMessage(file, message());
     appendSubagent(file, subagent());
     appendSubagent(file, subagent({ subagentId: 'child-2', status: 'completed', statusMissing: null }));
-    const { messages, subagents } = readRowRecords(file);
+    const { messages, subagents } = readCandidateRecords(file);
     expect(messages.map((entry) => entry.messageId)).toEqual(['run-1:1']);
     expect(subagents.map((entry) => entry.subagentId)).toEqual(['child-1', 'child-2']);
     // 原始顺序也在（需要按到达顺序做别的处理时不必再解析一遍文件）
@@ -121,47 +121,47 @@ describe('appendRecord / appendMessage / appendSubagent', () => {
 
   it('子任务行的 `statusMissing` 与 `status` 分开记（采不到必须显式说明原因，不得用 null 状态表达）', () => {
     appendSubagent(file, subagent({ status: 'unknown', statusMissing: 'unverified' }));
-    const written = readRowRecords(file).subagents[0];
+    const written = readCandidateRecords(file).subagents[0];
     expect(written).toMatchObject({ status: 'unknown', statusMissing: 'unverified' });
     // 契约层不接受「状态为空」的写法
     const bad = { type: 'subagent' as const, subagent: { ...subagent(), status: null } };
-    expect(RowRecordSchema.safeParse(bad).success).toBe(false);
+    expect(CandidateRecordSchema.safeParse(bad).success).toBe(false);
   });
 
-  it('目录不存在时自己建（消息可能先于行目录就位到达）', () => {
-    const nested = join(dir, 'run-1', 'rows', 'row-1', 'messages.jsonl');
+  it('目录不存在时自己建（消息可能先于候选目录就位到达）', () => {
+    const nested = join(dir, 'run-1', 'candidates', 'candidate-1', 'messages.jsonl');
     appendRecord(nested, { type: 'message', message: message() });
     expect(existsSync(nested)).toBe(true);
   });
 });
 
-describe('readRowRecords / readRecords', () => {
-  it('文件不存在返回空（评测还没跑过的行也要能打开对话视图）', () => {
+describe('readCandidateRecords / readRecords', () => {
+  it('文件不存在返回空（评测还没跑过的候选也要能打开对话视图）', () => {
     expect(readRecords(join(dir, 'nope.jsonl'))).toEqual([]);
-    expect(readRowRecords(join(dir, 'nope.jsonl'))).toEqual({ messages: [], subagents: [] });
+    expect(readCandidateRecords(join(dir, 'nope.jsonl'))).toEqual({ messages: [], subagents: [] });
   });
 
-  it('坏行只跳过该行并 WARN，其余记录全部读出来', () => {
+  it('坏行只跳过该候选并 WARN，其余记录全部读出来', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     writeFileSync(
       file,
       [
         JSON.stringify({ type: 'message', message: message({ messageId: 'run-1:1' }) }),
-        '{这一行不是合法 JSON',
+        '{这个候选不是合法 JSON',
         JSON.stringify({ type: 'message', message: { messageId: 'run-1:2' } }), // 合法 JSON 但不符合契约
         '',
         JSON.stringify({ type: 'message', message: message({ messageId: 'run-1:3' }) }),
       ].join('\n'),
       'utf8',
     );
-    expect(readRowRecords(file).messages.map((entry) => entry.messageId)).toEqual(['run-1:1', 'run-1:3']);
+    expect(readCandidateRecords(file).messages.map((entry) => entry.messageId)).toEqual(['run-1:1', 'run-1:3']);
     // 两种坏行各一条 WARN（文件头口径 4）
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
-  it('容忍 UTF-8 BOM（外部工具编辑过的文件首行会带 U+FEFF）', () => {
+  it('容忍 UTF-8 BOM（外部工具编辑过的文件首个候选会带 U+FEFF）', () => {
     writeFileSync(file, `\uFEFF${JSON.stringify({ type: 'message', message: message() })}\n`, 'utf8');
-    expect(readRowRecords(file).messages).toHaveLength(1);
+    expect(readCandidateRecords(file).messages).toHaveLength(1);
   });
 
   it('追加后故意改坏文件里的 `blocks`，读侧必须跳过它（而不是抛）', () => {
@@ -172,7 +172,7 @@ describe('readRowRecords / readRecords', () => {
       'utf8',
     );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(readRowRecords(file).messages.map((entry) => entry.messageId)).toEqual(['run-1:1']);
+    expect(readCandidateRecords(file).messages.map((entry) => entry.messageId)).toEqual(['run-1:1']);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });
@@ -224,7 +224,7 @@ describe('foldMessages：按 `(segment, mergeKey)` 覆盖累积', () => {
   it('旧账本没有 `segment` 这一格 ⇒ 折叠键按 0 算，与写明 0 的那条同一条逻辑消息', () => {
     const older = { ...message({ messageId: 'run-1:1' }) } as Record<string, unknown>;
     delete older['segment'];
-    const parsed = RowRecordSchema.parse({ type: 'message', message: older });
+    const parsed = CandidateRecordSchema.parse({ type: 'message', message: older });
     const withZero = message({ messageId: 'run-1:2', segment: 0, blocks: [{ type: 'text', text: '后来的快照' }] });
     if (parsed.type !== 'message') throw new Error('夹具坏了：这不是一条消息记录');
     expect(foldMessages([parsed.message, withZero]).map((entry) => entry.messageId)).toEqual(['run-1:2']);
@@ -232,7 +232,7 @@ describe('foldMessages：按 `(segment, mergeKey)` 覆盖累积', () => {
 
   it('折叠出来的每一条都仍是合法消息（消费方拿到的就是契约形状）', () => {
     const folded = foldMessages([message({ messageId: 'run-1:1' }), message({ messageId: 'run-1:2' })]);
-    for (const entry of folded) expect(RowRecordSchema.safeParse({ type: 'message', message: entry }).success).toBe(true);
+    for (const entry of folded) expect(CandidateRecordSchema.safeParse({ type: 'message', message: entry }).success).toBe(true);
   });
 
   it('空输入给空数组（不发明一条空消息）', () => {
@@ -259,14 +259,14 @@ describe('resetRecords', () => {
     resetRecords(file);
     expect(existsSync(file)).toBe(false);
     appendMessage(file, message({ messageId: 'run-1:1', blocks: [{ type: 'text', text: '这一次' }] }));
-    expect(readRowRecords(file).messages).toHaveLength(1);
+    expect(readCandidateRecords(file).messages).toHaveLength(1);
   });
 
   it('文件不存在时是 no-op（不抛）', () => {
     expect(() => resetRecords(join(dir, 'nope.jsonl'))).not.toThrow();
   });
 
-  it('BOM 与空行的处理与读取侧一致（同一个文件在两处不能被切成不同的行）', () => {
+  it('BOM 与空候选的处理与读取侧一致（同一个文件在两处不能被切成不同的行）', () => {
     writeFileSync(file, `\uFEFF${JSON.stringify({ type: 'message', message: message() })}\n\n`, 'utf8');
     resetRecords(file);
     expect(existsSync(file)).toBe(false);

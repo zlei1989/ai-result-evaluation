@@ -12,9 +12,9 @@
  *      一次被中断的回复停了就是停了（`facts.live === false` ⇒ 全部 `running === false`）。
  */
 import { describe, expect, it } from 'vitest';
-import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
-import { buildAgentLogModel, diagnosticsOf, rowEventsOf, type AgentLogFactsInput } from './build-model';
-import type { MessageCapabilityMap, RowEvent } from './types';
+import type { AgentEvent, AgentMessage, CandidateRecord } from '@aieval/contracts';
+import { buildAgentLogModel, diagnosticsOf, candidateEventsOf, type AgentLogFactsInput } from './build-model';
+import type { MessageCapabilityMap, CandidateEvent } from './types';
 
 function message(input: {
   id: string;
@@ -31,7 +31,7 @@ function message(input: {
   parentCallId?: string | null;
   usage?: AgentMessage['usage'];
   blocks: AgentMessage['blocks'];
-}): RowRecord {
+}): CandidateRecord {
   return {
     type: 'message',
     message: {
@@ -61,7 +61,7 @@ function message(input: {
   };
 }
 
-function subagent(id: string, overrides: Partial<Extract<RowRecord, { type: 'subagent' }>['subagent']> = {}): RowRecord {
+function subagent(id: string, overrides: Partial<Extract<CandidateRecord, { type: 'subagent' }>['subagent']> = {}): CandidateRecord {
   return {
     type: 'subagent',
     subagent: {
@@ -97,7 +97,7 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
 }
 
 /**
- * 造一条行级事件。
+ * 造一条候选级事件。
  * **必须过一层 `unknown`**：这里刻意只写用例关心的那几格，而 `AgentEvent` 是判别联合、
  * 每个成员都要求自己的必填格（如 `error.code`）——直接断言会被 TS 判成「两个类型不重叠」。
  */
@@ -107,7 +107,7 @@ function event(input: Record<string, unknown> & { seq: number; type: AgentEvent[
 
 describe('buildAgentLogModel：合并与分组', () => {
   it('同一 `mergeKey` 的多次投递只留最后一条（覆盖，不是追加）', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '半截' }] }),
       message({ id: 'm2', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '完整正文' }] }),
     ];
@@ -120,7 +120,7 @@ describe('buildAgentLogModel：合并与分组', () => {
   });
 
   it('按 `roundTrip` 分轮并升序排列；`turn` 不参与分组', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm2', mergeKey: 'main|2|assistant|-', roundTrip: 2, blocks: [{ type: 'text', text: '第二轮' }] }),
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '第一轮' }] }),
     ];
@@ -133,7 +133,7 @@ describe('buildAgentLogModel：合并与分组', () => {
   });
 
   it('`facts.turns` 的两个数由时间轴派生：`current` 同源、`total` 恒为 `null`', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '一' }] }),
       message({ id: 'm2', mergeKey: 'main|2|assistant|-', roundTrip: 2, blocks: [{ type: 'text', text: '二' }] }),
       message({ id: 'm3', mergeKey: 'main|3|assistant|-', roundTrip: 3, blocks: [{ type: 'text', text: '三' }] }),
@@ -145,7 +145,7 @@ describe('buildAgentLogModel：合并与分组', () => {
       facts: facts({ turns: { current: 1, total: 3 } }),
       startedAt: '2026-10-02T10:00:00.000Z',
     });
-    // 进度条与时间轴护栏不许互相打脸（两者会同时上屏：`轮次 4 / 3 轮` 与 `已渲染 4 / 共 4 轮`）
+    // 进度条与时间轴不许互相打脸（拿候选快照当分母会渲染出 `步数 4 / 3`）
     expect(model.facts.turns).toEqual({ current: 3, total: null });
   });
 
@@ -158,7 +158,7 @@ describe('buildAgentLogModel：合并与分组', () => {
    */
   it('（已知死代码）派发调用块与 `dispatchOf` 扫同一张表，回填分支不可达', () => {
     const startedAt = '2026-10-02T10:00:00.000Z';
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm-other', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '先说话' }] }),
       message({
         id: 'm-dispatch',
@@ -177,7 +177,7 @@ describe('buildAgentLogModel：合并与分组', () => {
   });
 
   it('按 `subagentId` 把消息分给会话节点，子任务节点与主会话**同一份形状**', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '主会话正文' }] }),
       message({
         id: 'm2',
@@ -206,7 +206,7 @@ describe('buildAgentLogModel：合并与分组', () => {
    * （真机：20 条消息、0 条被认领）。
    */
   it('消息挂的是「派发调用的 id」、记录挂的是「子任务身份」时，仍归到同一个子任务节点', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       // 记录：身份是原生 id，`parentCallId` 是派生它的那次调用
       subagent('task-9f2a', { name: '审查页面', parentCallId: 'call_agent_1' }),
       // 主会话里那次派发调用（派发点要落在这一轮上）
@@ -254,7 +254,7 @@ describe('buildAgentLogModel：合并与分组', () => {
    * （认领错了也一样能过）。两侧消息都在，才是在考「认领判据」本身。
    */
   it('多条协作记录时，派发点认的是 `spawn_agent` 而不是 `close_agent`', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({
         id: 'm-spawn',
         mergeKey: 'main|1|assistant|-',
@@ -280,7 +280,7 @@ describe('buildAgentLogModel：合并与分组', () => {
   });
 
   it('`running` 只在 `facts.live` 且是**最后一轮**时为真', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: '一' }] }),
       message({ id: 'm2', mergeKey: 'main|2|assistant|-', roundTrip: 2, assembly: 'open', blocks: [{ type: 'text', text: '二' }] }),
     ];
@@ -296,14 +296,14 @@ describe('buildAgentLogModel：合并与分组', () => {
     expect(mainEnded.content.data.map((turn) => turn.running)).toEqual([false, false]);
   });
 
-  it('子任务的 `status`/`statusMissing` 分开记（「未收场」不会被说成「运行中」）', () => {    const records: RowRecord[] = [subagent('sub-1', { status: 'unknown', statusMissing: 'not-observed' })];
+  it('子任务的 `status`/`statusMissing` 分开记（「未收场」不会被说成「运行中」）', () => {    const records: CandidateRecord[] = [subagent('sub-1', { status: 'unknown', statusMissing: 'not-observed' })];
     const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
     const child = model.nodes.find((node) => node.kind === 'subagent');
     expect(child?.status).toBe('unknown');
     expect(child?.statusMissing).toBe('not-observed');
   });
 
-  it('主会话节点的 `sessionFacts` 为 `null`（行级事实不存第二份真值）', () => {
+  it('主会话节点的 `sessionFacts` 为 `null`（候选级事实不存第二份真值）', () => {
     const model = buildAgentLogModel({ records: [], events: [], facts: facts(), startedAt: null });
     const main = model.nodes.find((node) => node.kind === 'main');
     expect(main?.kind === 'main' ? main.sessionFacts : 'unexpected').toBeNull();
@@ -317,7 +317,7 @@ describe('buildAgentLogModel：合并与分组', () => {
 
 describe('buildAgentLogModel：能力声明与载荷', () => {
   it('契约的扁平能力声明被摊成三元组字典（`toCapabilityMap` 的唯一搬运点）', () => {
-    const records: RowRecord[] = [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: 'x' }] })];
+    const records: CandidateRecord[] = [message({ id: 'm1', mergeKey: 'main|1|assistant|-', roundTrip: 1, blocks: [{ type: 'text', text: 'x' }] })];
     const model = buildAgentLogModel({
       records,
       events: [],
@@ -350,7 +350,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
    * `input.questions` 自己拼，「厂商改一个字段名」就等于界面上静默少一张卡片。
    */
   it('`task` / `ask-user` 载荷取自契约的 `payload`（不再读厂商原文）；`running` 由轮次给', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({
         id: 'm1',
         mergeKey: 'main|1|assistant|-',
@@ -440,7 +440,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
    * 「没有产出方时不许假装收场」）——两种情形混成一种，卡片就会把「还在等」画成「已经答了」。
    */
   it('`tool-result` 那一半里的答复回填成 `settled`（答案逐字、原文可查）', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({
         id: 'm1',
         mergeKey: 'main|1|assistant|-',
@@ -500,7 +500,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
   });
 
   /**
-   * **codex 那一行的账本**（真机读数逐字）：这一家的提问是 server→client 请求、**不进线程条目**
+   * **codex 那一候选的账本**（真机读数逐字）：这一家的提问是 server→client 请求、**不进线程条目**
    * （`ThreadItem` 里没有这一格），提问那一半由适配器补进账本（`askUserCallDraft`）。
    * 补出来的形状与另三家 wire 上那条**逐字同形**，因此这一段折叠逻辑对四家是同一条——
    * 本用例的判据就是「四家的形状在这里混不出差别」。
@@ -537,7 +537,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
         secret: false,
       },
     ];
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       // 适配器补出来的那一半：`callId` 取厂商的 `itemId`
       message({
         id: 'run-codex:426',
@@ -602,7 +602,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
   });
 
   it('没有结果那一半时保持 `pending`：别的工具的 `structured` 不许冒充答案', () => {
-    const call: RowRecord = message({
+    const call: CandidateRecord = message({
       id: 'm1',
       mergeKey: 'main|1|assistant|-',
       roundTrip: 1,
@@ -617,7 +617,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
         },
       ],
     });
-    const otherResult: RowRecord = message({
+    const otherResult: CandidateRecord = message({
       id: 'm2',
       mergeKey: 'main|1|tool|-',
       roundTrip: 1,
@@ -649,7 +649,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
    */
   it('`ask-user` / `task` 的 `at` 取块的时刻（不是空串）——「等待了多久」两处共用这一格', () => {
     const startedAt = '2026-10-02T10:00:00.000Z';
-    const ask = (callId: string): RowRecord =>
+    const ask = (callId: string): CandidateRecord =>
       message({
         id: `m-${callId}`,
         mergeKey: 'main|1|assistant|-',
@@ -689,7 +689,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
    * 同时钉住另一半：**族名照给**（`payload: null` ≠ 「不认识的族」），调用不会从界面上消失。
    */
   it('只有厂商原文、`payload` 为 null ⇒ 不出卡片（族名照给，回退通用工具行）', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({
         id: 'm1',
         mergeKey: 'main|1|assistant|-',
@@ -714,7 +714,7 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
   });
 
   it('工具结果为错误时 `status` 是 `error`；截断三态**照契约带出**', () => {
-    const records: RowRecord[] = [
+    const records: CandidateRecord[] = [
       message({
         id: 'm1',
         mergeKey: 'main|1|assistant|-',
@@ -738,12 +738,12 @@ describe('buildAgentLogModel：能力声明与载荷', () => {
   });
 });
 
-describe('行级事件的去向', () => {
+describe('候选级事件的去向', () => {
   /**
    * 三条去向判据：`error` **逐条**进（失败归因不能只剩一条）；
    * `usage` **整行只出最后一条候选读数**；`log` 不进时间轴（它走 `diagnosticsOf` 的原文面板）。
    *
-   * 「只出最后一条」是要钉的靶子：逐条成行会出三条（10 / 30 / 40 各一条），而真机症状正是
+   * 「只出最后一条」是要钉的靶子：逐条成候选会出三条（10 / 30 / 40 各一条），而真机症状正是
    * 「同一行串出一长串几乎一样的用量行」。位置也要对：用量那一行落在**它自己那一条事件**的位置上，
    * 不许被挤到末尾（`error` 行之后）。
    */
@@ -757,12 +757,12 @@ describe('行级事件的去向', () => {
       // 候选阶段里最后一条读数（它排在错误之后 ⇒ 它那一行也必须排在错误行之后）
       event({ seq: 6, type: 'usage', tokens: { input: 40, cached: 0, output: 0, reasoningOutput: null, total: null }, turns: 3, timing: null }),
     ];
-    const rows = rowEventsOf(events);
+    const rows = candidateEventsOf(events);
     expect(rows.map((row) => row.level)).toEqual(['error', 'milestone']);
-    expect(rows[1]?.text).toBe('用量 输入 40 tok · 缓存 0 tok · 输出 0 tok · 轮次 3');
+    expect(rows[1]?.text).toBe('输入 40 tok · 缓存 0 tok · 输出 0 tok · 步数 3');
 
     // 反向：那一条用量**排在错误之前**时同样不许被挪到末尾（按事件次序，不是「一律追加」）
-    const earlier = rowEventsOf([
+    const earlier = candidateEventsOf([
       event({ seq: 1, type: 'usage', tokens: { input: 40, cached: 0, output: 0, reasoningOutput: null, total: null }, turns: 1, timing: null }),
       event({ seq: 2, type: 'error', code: 'AGENT_FAILED', message: '之后报的失败' }),
     ]);
@@ -783,12 +783,12 @@ describe('行级事件的去向', () => {
 
   /**
    * 归属（整行只剩这一条）：那一条带上归属键，文案里的轮次号用
-   * **归属号**（不再是本行累计号——否则文字与它所在分组对不上）；归属轮次整行都不存在时抹成 `null`
+   * **归属号**（不再是候选累计号——否则文字与它所在分组对不上）；归属轮次整候选都不存在时抹成 `null`
    * （落到时间轴上按时刻归位，**不丢**）。
    */
   it('那一条带归属键、文案用归属号；归属轮次整行不存在时抹成 `null`', () => {
     /** 归属轮次真有 ⇒ 原样带出，文案用归属号（它的 `turns` 是 4，文案给的是归属的 2） */
-    const attributed = rowEventsOf(
+    const attributed = candidateEventsOf(
       [
         event({ seq: 1, type: 'usage', tokens: { input: 10, cached: 0, output: 0, reasoningOutput: null, total: null }, turns: 4, timing: null, turn: { subagentId: null, round: 2 } }),
       ],
@@ -796,10 +796,10 @@ describe('行级事件的去向', () => {
     );
     expect(attributed).toHaveLength(1);
     expect(attributed[0]?.turn).toEqual({ subagentId: null, round: 2 });
-    expect(attributed[0]?.text).toContain('轮次 2');
+    expect(attributed[0]?.text).toContain('步数 2');
 
-    /** 孤儿：最后那一条引用了一个整行都没有的轮次（第 9 轮）⇒ 归属抹成 `null`、文案退回本行累计号 */
-    const orphan = rowEventsOf(
+    /** 孤儿：最后那一条引用了一个整候选都没有的轮次（第 9 轮）⇒ 归属抹成 `null`、文案退回候选累计号 */
+    const orphan = candidateEventsOf(
       [
         event({ seq: 1, type: 'usage', tokens: { input: 10, cached: 0, output: 0, reasoningOutput: null, total: null }, turns: 4, timing: null, turn: { subagentId: null, round: 2 } }),
         // 老日志：没有归属格
@@ -810,14 +810,14 @@ describe('行级事件的去向', () => {
     );
     expect(orphan).toHaveLength(1);
     expect(orphan[0]?.turn).toBeNull();
-    expect(orphan[0]?.text).toContain('轮次 6');
+    expect(orphan[0]?.text).toContain('步数 6');
   });
 
   /**
-   * **整链接线**：上面那条纯函数用例把 `homes` 直接喂给了 `rowEventsOf`，
+   * **整链接线**：上面那条纯函数用例把 `homes` 直接喂给了 `candidateEventsOf`，
    * 于是它拦不住接线的两处静默降级——
    *   · `build-model.ts` 的调用点是否真的把 `turnHomesOf(allNodes)` 传了进去
-   *     （退回 `rowEventsOf(input.events)` ⇒ 整行里程碑全变孤儿，界面退回「按时刻」，本需求的可观测效果归零）；
+   *     （退回 `candidateEventsOf(input.events)` ⇒ 整候选里程碑全变孤儿，界面退回「按时刻」，本需求的可观测效果归零）；
    *   · `turnHomesOf` 本身是否真的从节点轮次里收出了那一格（`return new Set()` 同样让归属全灭）。
    * 两处都**不会**让任何别的用例变红，所以这条必须走 `buildAgentLogModel` 的真入口：
    * `records` 给一条主会话第 1 轮（`roundTrip: 1`）的消息 ⇒ `(null, 1)` 真的有归属，
@@ -847,8 +847,8 @@ describe('行级事件的去向', () => {
     if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
     expect(main.content.data.map((turn) => turn.round)).toEqual([1]);
 
-    expect(model.rowEvents).toHaveLength(1);
-    expect(model.rowEvents[0]?.turn).toEqual({ subagentId: null, round: 1 });
+    expect(model.candidateEvents).toHaveLength(1);
+    expect(model.candidateEvents[0]?.turn).toEqual({ subagentId: null, round: 1 });
   });
 
   /**
@@ -882,7 +882,7 @@ describe('行级事件的去向', () => {
         event({
           seq: 1,
           type: 'usage',
-          // `tokens` 必须非 `null`：`rowEventsOf` 对「没有计量」的 usage 直接跳过（拿不到数就不出里程碑），
+          // `tokens` 必须非 `null`：`candidateEventsOf` 对「没有计量」的 usage 直接跳过（拿不到数就不出里程碑），
           // 那样这条用例就不是在考「子会话读数出不出行」了
           tokens: { input: 10, cached: 0, output: 0, reasoningOutput: null, total: null },
           turns: 1,
@@ -901,7 +901,7 @@ describe('行级事件的去向', () => {
     expect(child.content.data.map((turn) => turn.round)).toEqual([1]);
     expect(child.spawnedBy?.callId).toBe('call_sub');
 
-    expect(model.rowEvents).toEqual([]);
+    expect(model.candidateEvents).toEqual([]);
   });
 
   /**
@@ -939,13 +939,13 @@ describe('行级事件的去向', () => {
       startedAt: '2026-10-02T10:00:00.000Z',
     });
 
-    // 前提：那一条读数**确实指向一个真实存在的轮次**（否则「不出行」可能只是因为整行没有那一轮）
+    // 前提：那一条读数**确实指向一个真实存在的轮次**（否则「不出行」可能只是因为整候选没有那一轮）
     const child = model.nodes.find((node) => node.kind === 'subagent');
     // `kind` 是判别格：判它一次，`child` 才收窄到 `SessionNode`（`usage` 只在那个成员上）
     if (child?.kind !== 'subagent' || child.content.status !== 'ready') throw new Error('子会话内容应就绪');
     expect(child.content.data.map((turn) => turn.round)).toEqual([1]);
 
-    expect(model.rowEvents).toEqual([]);
+    expect(model.candidateEvents).toEqual([]);
     // 子任务卡片那一格原样还在：折行口径改了，卡片的数据源一格都不许跟着动
     expect(child.usage).toEqual({ input: 40, cached: 10, output: 5 });
   });
@@ -955,8 +955,8 @@ describe('行级事件的去向', () => {
  * 用量里程碑：**整行一条**（用户裁定）。
  *
  * `usage` 事件是**每次模型往返**一条、带的是「到目前为止」的累计值：按「累计创新高就出一条」折行，
- * 同一行会出 5 条（轮次 1/2/3/4/4），其中同一轮先出跑动期估算（`输出 0`）、一秒后再出厂商结算值，
- * 屏幕上就是两条几乎一样的「用量 … 轮次 4」。现在的口径是**只取候选阶段里最后一条主会话读数**。
+ * 同一个候选会出 5 条（轮次 1/2/3/4/4），其中同一轮先出跑动期估算（`输出 0`）、一秒后再出厂商结算值，
+ * 屏幕上就是两条几乎一样的「用量 … 步数 4」。现在的口径是**只取候选阶段里最后一条主会话读数**。
  *
  * 按会话分桶的那一套「水位」判据已整体退役——它服务的就是「逐轮各出一条」；
  * 子会话那一条现在**根本不进折行**（用户口径：子智能体用量只在派发点那张子任务卡片里展示）。
@@ -978,7 +978,7 @@ describe('用量里程碑：整行一条', () => {
       ...(options.turn === undefined ? {} : { turn: options.turn }),
     });
 
-  /** 造一条行状态帧（候选阶段的边界只认 `judging` 与终态，与 `row-live.ts` 的 `candidateEnded` 同一条判据） */
+  /** 造一条候选状态帧（候选阶段的边界只认 `judging` 与终态，与 `row-live.ts` 的 `candidateEnded` 同一条判据） */
   const status = (seq: number, value: 'running' | 'judging' | 'judged' | 'failed'): AgentEvent =>
     event({ seq, at: `2026-10-02T10:00:${String(seq).padStart(2, '0')}.000Z`, type: 'status', status: value });
 
@@ -988,7 +988,7 @@ describe('用量里程碑：整行一条', () => {
    * 逐条成行时这一对会在同一轮画两行；现在**整行只剩最后那一条**（结算值）。
    */
   it('候选阶段多条读数 ⇒ 恰一条，取最后那条（值、归属、文案都用它）', () => {
-    const rows = rowEventsOf(
+    const rows = candidateEventsOf(
       [
         usage(1, { input: 14308 }, { turn: { subagentId: null, round: 1 } }),
         usage(2, { input: 14449, cached: 14464 }, { turn: { subagentId: null, round: 2 } }),
@@ -998,12 +998,12 @@ describe('用量里程碑：整行一条', () => {
       new Set(['main#1', 'main#2', 'main#4']),
     );
 
-    expect(rows.map((row) => row.text)).toEqual(['用量 输入 15,763 tok · 缓存 45,824 tok · 输出 2,164 tok · 轮次 4']);
+    expect(rows.map((row) => row.text)).toEqual(['输入 15,763 tok · 缓存 45,824 tok · 输出 2,164 tok · 步数 4']);
     expect(rows[0]?.turn).toEqual({ subagentId: null, round: 4 });
   });
 
   it('子会话的读数一条都不出（子智能体用量只在派发点那张子任务卡片里）', () => {
-    const mixed = rowEventsOf(
+    const mixed = candidateEventsOf(
       [
         usage(1, { input: 50000 }, { turn: { subagentId: null, round: 1 } }),
         usage(2, { input: 1000 }, { turn: { subagentId: 'sub-1', round: 1 } }),
@@ -1011,20 +1011,20 @@ describe('用量里程碑：整行一条', () => {
       ],
       new Set(['main#1', 'sub-1#1', 'sub-1#2']),
     );
-    // 子会话那两条读数更高也不许顶替主会话那一条：它们不属于这一行
-    expect(mixed.map((row) => row.text)).toEqual(['用量 输入 50,000 tok · 缓存 0 tok · 输出 0 tok · 轮次 1']);
+    // 子会话那两条读数更高也不许顶替主会话那一条：它们不属于这个候选
+    expect(mixed.map((row) => row.text)).toEqual(['输入 50,000 tok · 缓存 0 tok · 输出 0 tok · 步数 1']);
 
     // 整行只有子会话报过读数 ⇒ **一条都不出**（不是退回空值、更不是编一条 0）
-    expect(rowEventsOf([usage(1, { input: 10 }, { turn: { subagentId: 'sub-1', round: 1 } })], new Set(['sub-1#1']))).toEqual([]);
+    expect(candidateEventsOf([usage(1, { input: 10 }, { turn: { subagentId: 'sub-1', round: 1 } })], new Set(['sub-1#1']))).toEqual([]);
   });
 
   /**
-   * **候选阶段之后的读数不属于这一行**（历史数据形状：评分事件曾与候选同一条流的时期落盘的
+   * **候选阶段之后的读数不属于这个候选**（历史数据形状：评分事件曾与候选同一条流的时期落盘的
    * `events.jsonl`，候选跑完 → 评审者接着报用量，轮次从 1 重新数、token 只有候选的零头）。
-   * 只看「最后一条」会把这一行的读数换成评审者的。
+   * 只看「最后一条」会把这个候选的读数换成评审者的。
    */
   it('`judging` 与终态帧之后报的读数一条都不出（那是评分智能体的用量）', () => {
-    const afterJudging = rowEventsOf(
+    const afterJudging = candidateEventsOf(
       [
         usage(1, { input: 42315, cached: 165376, output: 13607 }, { turn: { subagentId: null, round: 4 } }),
         status(2, 'judging'),
@@ -1032,10 +1032,10 @@ describe('用量里程碑：整行一条', () => {
       ],
       new Set(['main#1', 'main#4']),
     );
-    expect(afterJudging.map((row) => row.text)).toEqual(['用量 输入 42,315 tok · 缓存 165,376 tok · 输出 13,607 tok · 轮次 4']);
+    expect(afterJudging.map((row) => row.text)).toEqual(['输入 42,315 tok · 缓存 165,376 tok · 输出 13,607 tok · 步数 4']);
 
     // 终态帧同样关闸（候选失败、几十分钟后又被「重新评分」那种形状：第一条 `judging` 来得很晚）
-    const afterTerminal = rowEventsOf(
+    const afterTerminal = candidateEventsOf(
       [
         usage(1, { input: 100 }, { turn: { subagentId: null, round: 1 } }),
         status(2, 'failed'),
@@ -1043,7 +1043,7 @@ describe('用量里程碑：整行一条', () => {
       ],
       new Set(['main#1']),
     );
-    expect(afterTerminal.map((row) => row.text)).toEqual(['用量 输入 100 tok · 缓存 0 tok · 输出 0 tok · 轮次 1']);
+    expect(afterTerminal.map((row) => row.text)).toEqual(['输入 100 tok · 缓存 0 tok · 输出 0 tok · 步数 1']);
   });
 
   /**
@@ -1057,7 +1057,7 @@ describe('用量里程碑：整行一条', () => {
    * 判据：**新的候选阶段会重新开始**（`preparing` / `running` 把闸门打开），`judging` / 终态帧关上。
    */
   it('追问那一段的读数照样算数：里程碑落在**最后一个**读数上（不被第一次 judging 锁死）', () => {
-    const rows = rowEventsOf(
+    const rows = candidateEventsOf(
       [
         status(1, 'running'),
         usage(2, { input: 100, cached: 10 }, { turn: { subagentId: null, round: 1 } }),
@@ -1074,12 +1074,12 @@ describe('用量里程碑：整行一条', () => {
       new Set(['main#1', 'main#2', 'main#3']),
     );
 
-    expect(rows.map((row) => row.text)).toEqual(['用量 输入 40 tok · 缓存 6 tok · 输出 9 tok · 轮次 3']);
+    expect(rows.map((row) => row.text)).toEqual(['输入 40 tok · 缓存 6 tok · 输出 9 tok · 步数 3']);
     expect(rows[0]?.turn).toEqual({ subagentId: null, round: 3 });
   });
 
   it('多段之后仍不吃评审者的读数：最后一段跑完的那条 `judging` 之后关闸', () => {
-    const rows = rowEventsOf(
+    const rows = candidateEventsOf(
       [
         status(1, 'running'),
         usage(2, { input: 40, cached: 6, output: 9 }, { turn: { subagentId: null, round: 3 } }),
@@ -1088,7 +1088,7 @@ describe('用量里程碑：整行一条', () => {
       ],
       new Set(['main#1', 'main#3']),
     );
-    expect(rows.map((row) => row.text)).toEqual(['用量 输入 40 tok · 缓存 6 tok · 输出 9 tok · 轮次 3']);
+    expect(rows.map((row) => row.text)).toEqual(['输入 40 tok · 缓存 6 tok · 输出 9 tok · 步数 3']);
   });
 
   /**
@@ -1106,15 +1106,15 @@ describe('用量里程碑：整行一条', () => {
     event({ seq: 6, at: '2026-10-02T10:00:06.000Z', type: 'error', code: 'AGENT_FAILED', message: '失败了' }),
     usage(7, { input: 40, cached: 20 }),
   ];
-  const legacyRows: RowEvent[] = [
+  const legacyCandidates: CandidateEvent[] = [
     { at: '2026-10-02T10:00:06.000Z', level: 'error', text: '错误 失败了', turn: null },
-    { at: '2026-10-02T10:00:07.000Z', level: 'milestone', text: '用量 输入 40 tok · 缓存 20 tok · 输出 0 tok · 轮次 7', turn: null },
+    { at: '2026-10-02T10:00:07.000Z', level: 'milestone', text: '输入 40 tok · 缓存 20 tok · 输出 0 tok · 步数 7', turn: null },
   ];
 
   it('老日志（没有 `turn` 格、也没有状态帧）：出一条，归属 `null` ⇒ 按时刻落最后一轮', () => {
-    expect(rowEventsOf(legacyEvents())).toEqual(legacyRows);
+    expect(candidateEventsOf(legacyEvents())).toEqual(legacyCandidates);
     // 给了 `homes` 也一字不差：无归属的事件根本不走归属那一支
-    expect(rowEventsOf(legacyEvents(), new Set(['main#1']))).toEqual(legacyRows);
+    expect(candidateEventsOf(legacyEvents(), new Set(['main#1']))).toEqual(legacyCandidates);
   });
 
   it('老日志走真入口（`homes` 非空、整行真有 `main#1`）仍是那一条', () => {
@@ -1128,7 +1128,7 @@ describe('用量里程碑：整行一条', () => {
     const main = model.nodes.find((node) => node.kind === 'main');
     if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
     expect(main.content.data.map((turn) => turn.round)).toEqual([1]);
-    expect(model.rowEvents).toEqual(legacyRows);
+    expect(model.candidateEvents).toEqual(legacyCandidates);
   });
 
   /**
@@ -1139,7 +1139,7 @@ describe('用量里程碑：整行一条', () => {
    * 比先后**（谁最后谁上），而不是各算一份——各算一份时，同一条序列会多出一条里程碑。
    */
   it('整格缺省与显式 `subagentId: null` 混在同一条序列：仍只有一条，取时间上最后那条', () => {
-    const rows = rowEventsOf(
+    const rows = candidateEventsOf(
       [
         usage(1, { input: 30 }, { turns: 1, turn: { subagentId: null, round: 1 } }),
         // 老写法（整格缺省）排在后面 ⇒ 它才是那一条；归属算不出 ⇒ `null`（按时刻归位）
@@ -1148,7 +1148,7 @@ describe('用量里程碑：整行一条', () => {
       new Set(['main#1']),
     );
 
-    expect(rows.map((row) => row.text)).toEqual(['用量 输入 10 tok · 缓存 0 tok · 输出 0 tok · 轮次 2']);
+    expect(rows.map((row) => row.text)).toEqual(['输入 10 tok · 缓存 0 tok · 输出 0 tok · 步数 2']);
     expect(rows.map((row) => row.turn)).toEqual([null]);
   });
 
@@ -1157,10 +1157,10 @@ describe('用量里程碑：整行一条', () => {
    *
    * 这一格的坑：给「水位」之类的缺省值写 `?? 0` 时，某会话**第一条**读数恰好是三项全零，
    * 它会被 `0 <= 0` 当场丢掉。判据要钉住的是——不许顺手加一道
-   * `total > 0` 才算数」的闸门：`0` 是**采到了且为零**，它照样是这一行的读数。
+   * `total > 0` 才算数」的闸门：`0` 是**采到了且为零**，它照样是这个候选的读数。
    */
   it('最后一条读数是 0（三项全零）也照样出', () => {
-    const rows = rowEventsOf(
+    const rows = candidateEventsOf(
       [
         usage(1, { input: 5 }, { turns: 1, turn: { subagentId: null, round: 1 } }),
         usage(2, { input: 0 }, { turns: 2, turn: { subagentId: null, round: 2 } }),
@@ -1168,7 +1168,7 @@ describe('用量里程碑：整行一条', () => {
       new Set(['main#1', 'main#2']),
     );
 
-    expect(rows.map((row) => row.text)).toEqual(['用量 输入 0 tok · 缓存 0 tok · 输出 0 tok · 轮次 2']);
+    expect(rows.map((row) => row.text)).toEqual(['输入 0 tok · 缓存 0 tok · 输出 0 tok · 步数 2']);
   });
 });
 
@@ -1314,7 +1314,7 @@ describe('没有正文的思考块整块隐藏', () => {
 /**
  * 工具入参：**原文两份 + 模型自己写的一句话**。
  *
- * `description` 的用处是工具行摘要行的标题（收起态唯一可见的一行）：照原文首行渲染就是
+ * `description` 的用处是工具行摘要候选的标题（收起态唯一可见的一行）：照原文首行渲染就是
  * 一整串 JSON。它由**数据层**抽出来（`serializeInput`），组件不自己反解原文——
  * 故这一层必须钉住「抽得出来 / 抽不出来时如实 `null`」，否则组件那边会拿一个恒 `null` 的格子
  * 静默回落到老行为（字都还在，只是又没法读了）。
@@ -1346,7 +1346,7 @@ describe('工具入参：原文与 `description`', () => {
   }
 
   it('`tool-call.summary`（数据层算好的那一句）原样搬到界面块上；老记录缺格 ⇒ `undefined`', () => {
-    // 这一格是摘要行的**第一档**：词表真源在 `@aieval/agents` 的
+    // 这一格是摘要候选的**第一档**：词表真源在 `@aieval/agents` 的
     // `activity.ts`，界面按分层表不许 import 它 ⇒ 只能读这一格。它一旦在搬运路上丢了，
     // 界面会**静默**退回下面那两档（描述 → 原文首行），症状是「每族拼法全丢」而用例不红。
     const model = buildAgentLogModel({
@@ -1414,7 +1414,7 @@ describe('工具入参：原文与 `description`', () => {
  */
 describe('题面：首条卡片与轮次里的「不重复画」', () => {
   /** 题面那条消息（编排层在把 `run()` 交出去之前落的账） */
-  function casePrompt(text: string): RowRecord {
+  function casePrompt(text: string): CandidateRecord {
     return message({
       id: 'case-prompt:row-1',
       mergeKey: 'main|1|user|-|case-prompt',
@@ -1454,7 +1454,7 @@ describe('题面：首条卡片与轮次里的「不重复画」', () => {
   });
 
   /**
-   * 一行跑了却一条内容都没产出：界面上仍该说出「它被要求做什么」。
+   * 一个候选跑了却一条内容都没产出：界面上仍该说出「它被要求做什么」。
    * `empty` 判的是「**有没有得画**」——题面那张卡片也是要画的东西。
    */
   it('只有题面一条时不是空态（`empty === false`），轮次里一条内容都没有', () => {
@@ -1496,7 +1496,7 @@ describe('题面：首条卡片与轮次里的「不重复画」', () => {
 
 describe('段：追问那一段与首段各归各的', () => {
   /** 适配器投的一条消息（段号只在追问那一段给）；`id` 不给则由段号与正文派生一个稳定值 */
-  function adapter(segment: number | undefined, text: string, id?: string): RowRecord {
+  function adapter(segment: number | undefined, text: string, id?: string): CandidateRecord {
     return message({
       id: id ?? `m-${segment ?? 0}-${text}`,
       mergeKey: 'main|1|assistant|-',
@@ -1506,7 +1506,7 @@ describe('段：追问那一段与首段各归各的', () => {
     });
   }
 
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     adapter(undefined, '首段的第 1 轮'),
     message({ id: 'f1', mergeKey: 'main|1|user|-|followup:f1', roundTrip: 1, role: 'user', origin: 'human', source: 'hook', segment: 1, blocks: [{ type: 'text', text: '再说一句' }] }),
     adapter(1, '追问那一段的第 1 轮'),
@@ -1524,7 +1524,7 @@ describe('段：追问那一段与首段各归各的', () => {
     expect(model.segments.map((one) => [one.segment, one.text])).toEqual([[1, '再说一句']]);
   });
 
-  it('轮次的键带段号（两个「轮次 1」不能是同一个 key）', () => {
+  it('步的键带段号（两个「第 1 步」不能是同一个 key）', () => {
     const model = buildAgentLogModel({ records, events: [], facts: facts(), startedAt: null });
     const main = model.nodes.find((node) => node.kind === 'main');
     if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
@@ -1555,7 +1555,7 @@ describe('段：追问那一段与首段各归各的', () => {
    * 于是同一轮桶里助手块按投递顺序排在用户块前面，界面上「我追问的那句话」被画到了这一段的**末尾**
    * （它该是这一段的标题）。本组钉的就是「那句人话不看投递顺序，只看段号」。
    */
-  describe('轮内顺序：人说的话排在模型答复之前（投递顺序不保证这一点）', () => {
+  describe('步内顺序：人说的话排在模型答复之前（投递顺序不保证这一点）', () => {
     it('追问那句后到 ⇒ 它照样是这一段的标题（真机 run 4812ed11 的形状）', () => {
       const model = buildAgentLogModel({
         records: [
@@ -1576,7 +1576,7 @@ describe('段：追问那一段与首段各归各的', () => {
       expect(model.segments).toEqual([{ segment: 1, at: '', text: '逐句用普通话解释诗意' }]);
       const second = main.content.data.find((turn) => turn.segment === 1);
       expect(second?.blocks.map((block) => (block.kind === 'text' ? block.text : ''))).toEqual(['追问那一段的答复']);
-      // 换序**不改变轮次归属**：那两条仍是同一个 `(段 1, 轮次 1)`，不多出一个轮次
+      // 换序**不改变轮次归属**：那两条仍是同一个 `(段 1, 步 1)`，不多出一个轮次
       expect(main.content.data.filter((turn) => turn.segment === 1).map((turn) => [turn.segment, turn.round])).toEqual([[1, 1]]);
       /**
        * 兜底定位键跟着**投递顺序**走：这一段投递的第一条是那句答复（`id: 'a1'`），
@@ -1587,7 +1587,7 @@ describe('段：追问那一段与首段各归各的', () => {
     });
 
     it('同一段里的两句人话：凑成一个段标题，且保持投递顺序', () => {
-      const human = (id: string, text: string, segment?: number): RowRecord =>
+      const human = (id: string, text: string, segment?: number): CandidateRecord =>
         message({ id, mergeKey: `main|1|user|-|inject:${id}`, roundTrip: 1, role: 'user', origin: 'human', source: 'hook', ...(segment === undefined ? {} : { segment }), blocks: [{ type: 'text', text }] });
       const model = buildAgentLogModel({
         records: [
@@ -1614,7 +1614,7 @@ describe('段：追问那一段与首段各归各的', () => {
     });
 
     it('同一轮两条人话：都排在全部助手块之前，且两条人话之间保持投递顺序', () => {
-      const human = (id: string, text: string): RowRecord =>
+      const human = (id: string, text: string): CandidateRecord =>
         message({ id, mergeKey: `main|1|user|-|inject:${id}`, roundTrip: 1, role: 'user', origin: 'human', source: 'hook', blocks: [{ type: 'text', text }] });
       const model = buildAgentLogModel({
         records: [
@@ -1638,5 +1638,198 @@ describe('段：追问那一段与首段各归各的', () => {
       // 段 0 的一句人话**不进段标题**（首段的分界是题面那张卡片）
       expect(model.segments).toEqual([]);
     });
+  });
+});
+
+/**
+ * 折叠标题里的路径**相对化**：标题那一行只该出现工作区内的相对路径。
+ *
+ * 为什么必须有用例：这一格错了没有任何运行时症状（标题照样显示，只是文件名被前缀挤出省略号），
+ * 而两种输入形态都要成立——**新账本**（摘要是完整路径）与**老账本**（摘要已被 120 字上限截断，
+ * 整句只剩一截工作目录，文件名留在入参里）。
+ */
+describe('buildAgentLogModel：工具标题里的路径相对化', () => {
+  const WORKSPACE = '/Users/eval/aieval-runs/run-1/candidates/row-1/workspace';
+
+  function summaryOf(summary: string, input: unknown, workspacePath?: string): string | undefined {
+    const model = buildAgentLogModel({
+      records: [
+        message({
+          id: 'm1',
+          mergeKey: 'main|1|assistant|-',
+          roundTrip: 1,
+          blocks: [{ type: 'tool-call', callId: 'c1', family: 'write-file', name: 'write', input, summary }],
+        }),
+      ],
+      events: [],
+      facts: facts(),
+      startedAt: null,
+      ...(workspacePath === undefined ? {} : { workspacePath }),
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    const block = main.content.data[0]?.blocks.find((one) => one.kind === 'tool-call');
+    return block?.kind === 'tool-call' ? block.summary : undefined;
+  }
+
+  it('摘要以工作目录开头 ⇒ 删掉前缀，只留工作区内的相对路径', () => {
+    expect(summaryOf(`${WORKSPACE}/src/index.html`, { file_path: `${WORKSPACE}/src/index.html` }, WORKSPACE)).toBe(
+      'src/index.html',
+    );
+  });
+
+  it('老账本：摘要被截断在路径中间 ⇒ 从入参里找回完整路径再相对化', () => {
+    // 造一条长到会被 120 字上限截断在**工作目录内部**的路径（老账本的真实形态）
+    const longDir = `${WORKSPACE}/${'nested/'.repeat(12)}`;
+    const full = `${longDir}index.html`;
+    // 数据层先截断：120 字 + `…`，截断点落在工作目录里
+    const stored = `${full.slice(0, 120)}…`;
+    expect(stored.startsWith(`${WORKSPACE}/`)).toBe(true);
+    expect(stored.endsWith('…')).toBe(true);
+
+    expect(summaryOf(stored, { file_path: full }, WORKSPACE)).toBe(full.slice(WORKSPACE.length + 1));
+  });
+
+  it('入参里没有对应路径（或截断点不在工作目录内）⇒ 原样保留，不猜', () => {
+    expect(summaryOf('Check surefire report summaries（/opt/other/file.ts）', {}, WORKSPACE)).toBe(
+      'Check surefire report summaries（/opt/other/file.ts）',
+    );
+  });
+
+  it('不给工作目录 ⇒ 一律原样保留（夹具与其它消费方不被迫认识这一格）', () => {
+    expect(summaryOf(`${WORKSPACE}/src/index.html`, {}, undefined)).toBe(`${WORKSPACE}/src/index.html`);
+  });
+
+  it('Windows 的工作目录同样按它自己的分隔符裁', () => {
+    const windows = 'C:\\aieval\\run-1\\candidates\\row-1\\workspace';
+    expect(summaryOf(`${windows}\\src\\index.html`, { file_path: `${windows}\\src\\index.html` }, windows)).toBe(
+      'src\\index.html',
+    );
+  });
+});
+
+/**
+ * `image-view` 块的两格路径：展示用（工作区内相对化）与预览用（工作区相对路径）。
+ *
+ * 三条边界：
+ *   · 在**该候选工作区内** ⇒ 两格都是相对路径，界面据此画缩略图；
+ *   · 在**工作区之外** ⇒ 展示照旧（原文），`previewPath` 为 `null`——界面不许拿宿主绝对路径去请求；
+ *   · **历史账本**里这一格还是 `unrecognized`（`vendorType` = 类型、`raw` 是条目原文）⇒
+ *     读侧按同一形状认一次；认不出（坏 JSON / 没路径）就**原样当未识别载荷**，不猜。
+ */
+describe('buildAgentLogModel：image-view 块', () => {
+  const WORKSPACE = '/w/candidates/row-1/workspace';
+
+  /** 取主会话第一轮的第一个块（这些用例一轮一块，故不另写查找） */
+  function firstBlockOf(records: CandidateRecord[], workspacePath: string | undefined) {
+    const model = buildAgentLogModel({
+      records,
+      events: [],
+      facts: facts(),
+      startedAt: '2026-10-02T10:00:00.000Z',
+      ...(workspacePath === undefined ? {} : { workspacePath }),
+    });
+    const main = model.nodes.find((node) => node.kind === 'main');
+    if (main?.content.status !== 'ready') throw new Error('主会话内容应就绪');
+    return main.content.data[0]?.blocks[0];
+  }
+
+  it('工作区内的绝对路径 ⇒ 展示与预览都是相对路径', () => {
+    const block = firstBlockOf(
+      [message({
+        id: 'm1',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [{ type: 'image-view', path: `${WORKSPACE}/shots/a.png` }],
+      })],
+      WORKSPACE,
+    );
+
+    expect(block).toMatchObject({ kind: 'image-view', path: 'shots/a.png', previewPath: 'shots/a.png' });
+  });
+
+  it('工作区之外的路径 ⇒ 展示照原文，`previewPath` 为 `null`（不拿绝对路径去请求）', () => {
+    // 第二条刻意取「与工作目录共享前缀、但只差一个字符边界」的那一档：
+    // 只判 `startsWith(root)` 会把它当成工作区内（真正的判据必须带上分隔符）
+    for (const outside of ['/tmp/elsewhere/a.png', `${WORKSPACE}-other/a.png`]) {
+      const block = firstBlockOf(
+        [message({
+          id: 'm1',
+          mergeKey: 'main|1|assistant|-',
+          roundTrip: 1,
+          blocks: [{ type: 'image-view', path: outside }],
+        })],
+        WORKSPACE,
+      );
+
+      expect(block, outside).toMatchObject({ kind: 'image-view', path: outside, previewPath: null });
+    }
+  });
+
+  it('不给工作目录 ⇒ 一律不可预览（夹具与其它消费方不被迫认识这一格）', () => {
+    const block = firstBlockOf(
+      [message({
+        id: 'm1',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [{ type: 'image-view', path: `${WORKSPACE}/a.png` }],
+      })],
+      undefined,
+    );
+
+    expect(block).toMatchObject({ kind: 'image-view', path: `${WORKSPACE}/a.png`, previewPath: null });
+  });
+
+  it('历史账本里的 `unrecognized{imageView}` ⇒ 还原成 `image-view`（路径与前缀都照同一套判据）', () => {
+    const block = firstBlockOf(
+      [message({
+        id: 'm1',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [{
+          type: 'unrecognized',
+          reason: 'unrecognized',
+          vendorType: 'imageView',
+          raw: JSON.stringify({ type: 'imageView', id: 'c1', path: `${WORKSPACE}/shot.png` }),
+        }],
+      })],
+      WORKSPACE,
+    );
+
+    expect(block).toMatchObject({ kind: 'image-view', path: 'shot.png', previewPath: 'shot.png' });
+  });
+
+  it('历史账本里认不出的载荷 ⇒ 原样保留 `unrecognized`（坏 JSON / 没路径都不猜）', () => {
+    for (const raw of ['{"type":"imageView"', '{"type":"imageView","id":"c1"}', null]) {
+      const block = firstBlockOf(
+        [message({
+          id: 'm1',
+          mergeKey: 'main|1|assistant|-',
+          roundTrip: 1,
+          blocks: [{ type: 'unrecognized', reason: 'unrecognized', vendorType: 'imageView', raw }],
+        })],
+        WORKSPACE,
+      );
+      expect(block?.kind, String(raw)).toBe('unrecognized');
+    }
+  });
+
+  it('别的 `vendorType` 的未识别载荷不受影响（只认这一种）', () => {
+    const block = firstBlockOf(
+      [message({
+        id: 'm1',
+        mergeKey: 'main|1|assistant|-',
+        roundTrip: 1,
+        blocks: [{
+          type: 'unrecognized',
+          reason: 'unrecognized',
+          vendorType: 'sleep',
+          raw: JSON.stringify({ type: 'sleep', path: `${WORKSPACE}/x.png` }),
+        }],
+      })],
+      WORKSPACE,
+    );
+
+    expect(block?.kind).toBe('unrecognized');
   });
 });

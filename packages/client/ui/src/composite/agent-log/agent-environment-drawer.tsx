@@ -21,9 +21,9 @@
  * `MISSING_REASON_LABELS` 一张表——放两处才不会出现「同一个原因两种说法」。
  * 它是**可选**的：不给就整段不出现（宁可不显示，也不编一份「都支持」出来）。
  */
-import { Alert, Button, Collapse, Descriptions, Drawer, Flex, Skeleton, Tag, Typography, theme } from 'antd';
+import { Alert, Button, Card, Collapse, Descriptions, Drawer, Flex, Skeleton, Tag, Typography, theme } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
-import { ROW_MCP_VERDICT_LABELS, type RowMcpVerdict } from '@aieval/contracts';
+import { CANDIDATE_MCP_VERDICT_LABELS, type CandidateMcpVerdict } from '@aieval/contracts';
 import type { ReactNode } from 'react';
 import type { AgentEnvironment, EnvGroup, EnvItem, Loadable, MessageCapabilityMap } from './types';
 import { MISSING_REASON_LABELS } from './types';
@@ -60,7 +60,7 @@ const SOURCE_LABELS: Record<EnvGroup['source'], string> = {
  * 为什么 `unverified` 与 `skipped` 刻意**都**不用红色：红 = 失败，而这两档都不是失败
  * （前者是「没有证据」，后者是「我们主动跳过」）。`unavailable` 才是「有证据说它没起来」，故只有它红。
  */
-const MCP_VERDICT_TAG_COLORS: Record<RowMcpVerdict, string> = {
+const MCP_VERDICT_TAG_COLORS: Record<CandidateMcpVerdict, string> = {
   connected: 'green',
   unavailable: 'red',
   unverified: 'default',
@@ -98,7 +98,7 @@ function summaryItems(summary: AgentEnvironment['summary']): { key: string; labe
     { key: 'agentLabel', label: '智能体', children: summary.agentLabel },
     { key: 'modelId', label: '模型', children: summary.modelId },
     // `effort === null` ⇒「未指定」：不显示空白（空白会被读成「这一格没有这个概念」）；
-    // 档位照上游词汇原样写（关闭档也不加工，与行卡片上那个 `off` 同一份）
+    // 档位照上游词汇原样写（关闭档也不加工，与候选卡片上那个 `off` 同一份）
     { key: 'effort', label: '思考强度', children: summary.effort === null ? '未指定' : summary.effort },
     { key: 'providerName', label: '供应商', children: summary.providerName },
     { key: 'baseUrl', label: '接口地址', children: summary.baseUrl },
@@ -134,12 +134,12 @@ function EnvItemRow({ item }: { item: EnvItem }): ReactNode {
         // `text` 那一格仍是完整原文（复制按钮读它），这里只换了画法。
         <Flex vertical gap={token.marginXXS} data-testid="verdict-lines">
           {verdictLines.map((line) => (
-            // 行内文字逐台唯一（服务名在设置页里是唯一键），当 React key 不会串行
+            // 候选内文字逐台唯一（服务名在设置页里是唯一键），当 React key 不会串行
             <Flex key={line.text} gap={token.marginXXS} align="center" wrap>
               {line.text !== '' && <MonoText text={line.text} />}
               {line.verdict !== null && (
                 <Tag color={MCP_VERDICT_TAG_COLORS[line.verdict]} style={{ marginInlineEnd: 0 }}>
-                  {ROW_MCP_VERDICT_LABELS[line.verdict]}
+                  {CANDIDATE_MCP_VERDICT_LABELS[line.verdict]}
                 </Tag>
               )}
             </Flex>
@@ -179,7 +179,7 @@ export function AgentEnvironmentDrawer({
   const { token } = theme.useToken();
   /**
    * 能力声明那一节是否出现：**两个条件缺一不可**——有声明，且至少有一个维度。
-   * 空对象（`{}`）与 `undefined` 同一处置：画一个没有行的标题只会让人以为「五格都是空的」。
+   * 空对象（`{}`）与 `undefined` 同一处置：画一个没有候选的标题只会让人以为「五格都是空的」。
    */
   const showCapability = capability !== undefined && Object.keys(capability).length > 0;
 
@@ -206,53 +206,59 @@ export function AgentEnvironmentDrawer({
           * 明明拿到了的声明一起藏掉——而它恰恰是解释「为什么这里没内容」的那句话。
           */}
         {showCapability && (
-          <Flex vertical gap={token.marginXS}>
-            <Typography.Text strong>能力声明</Typography.Text>
+          <Card size="small" title="能力声明">
             {/* 维度名与顺序由数据层给：本件按 `capability` 的插入顺序渲染，未知维度原样显示 */}
             <CapabilityNotes capability={capability} notes={capabilityNotes ?? []} />
-          </Flex>
+          </Card>
         )}
-        {environment === undefined ? (
-          // 「没提供」与「读取中」是两件事：一直转圈会把「这次没采到」说成「还在取」
-          <Typography.Text type="secondary">未提供</Typography.Text>
-        ) : environment.status === 'loading' ? (
-          <Skeleton active />
-        ) : environment.status === 'error' ? (
-          <Flex vertical gap={token.marginSM}>
-            {/* antd 6 的 `Alert` 用 `title`（`message` 已废弃：控制台会打 deprecation 警告） */}
-            <Alert type="error" showIcon title="环境信息读取失败" description={errorText(environment.error)} />
-            {/* 不给重试回调就不渲染按钮：一个点了没反应的按钮比没有按钮更糟 */}
-            {onRetry !== undefined && (
-              <Button size="small" autoInsertSpace={false} onClick={onRetry} style={{ alignSelf: 'flex-start' }}>
-                重试
-              </Button>
-            )}
-          </Flex>
-        ) : (
-          <>
-            <Descriptions size="small" column={1} items={summaryItems(environment.data.summary)} />
-            <Collapse
-              // 组名与分组顺序都由数据层给；默认全开，因为打开这个抽屉的人本来就是来看事实的
-              defaultActiveKey={environment.data.groups.map((group) => group.id)}
-              items={environment.data.groups.map((group) => ({
-                key: group.id,
-                label: (
-                  <Flex align="center" gap={token.marginXS}>
-                    <Typography.Text>{group.title}</Typography.Text>
-                    <Tag>{SOURCE_LABELS[group.source]}</Tag>
-                  </Flex>
-                ),
-                children: (
-                  <Flex vertical gap={token.marginSM}>
-                    {group.items.map((item) => (
-                      <EnvItemRow key={item.id} item={item} />
-                    ))}
-                  </Flex>
-                ),
-              }))}
-            />
-          </>
-        )}
+        {/**
+         * 环境信息这一大类内部按「读数 / 明细」分层：摘要走 `Descriptions`（一格一项），
+         * 分组走 `Collapse`（默认全开——打开这个抽屉的人本来就是来看事实的）。
+         */}
+        <Card size="small" title="运行环境">
+          {environment === undefined ? (
+            // 「没提供」与「读取中」是两件事：一直转圈会把「这次没采到」说成「还在取」
+            <Typography.Text type="secondary">未提供</Typography.Text>
+          ) : environment.status === 'loading' ? (
+            <Skeleton active />
+          ) : environment.status === 'error' ? (
+            <Flex vertical gap={token.marginSM}>
+              {/* antd 6 的 `Alert` 用 `title`（`message` 已废弃：控制台会打 deprecation 警告） */}
+              <Alert type="error" showIcon title="环境信息读取失败" description={errorText(environment.error)} />
+              {/* 不给重试回调就不渲染按钮：一个点了没反应的按钮比没有按钮更糟 */}
+              {onRetry !== undefined && (
+                <Button size="small" autoInsertSpace={false} onClick={onRetry} style={{ alignSelf: 'flex-start' }}>
+                  重试
+                </Button>
+              )}
+            </Flex>
+          ) : (
+            <Flex vertical gap={token.marginMD}>
+              <Descriptions size="small" column={1} items={summaryItems(environment.data.summary)} />
+              <Collapse
+                size="small"
+                // 组名与分组顺序都由数据层给；默认全开，因为打开这个抽屉的人本来就是来看事实的
+                defaultActiveKey={environment.data.groups.map((group) => group.id)}
+                items={environment.data.groups.map((group) => ({
+                  key: group.id,
+                  label: (
+                    <Flex align="center" gap={token.marginXS}>
+                      <Typography.Text>{group.title}</Typography.Text>
+                      <Tag>{SOURCE_LABELS[group.source]}</Tag>
+                    </Flex>
+                  ),
+                  children: (
+                    <Flex vertical gap={token.marginSM}>
+                      {group.items.map((item) => (
+                        <EnvItemRow key={item.id} item={item} />
+                      ))}
+                    </Flex>
+                  ),
+                }))}
+              />
+            </Flex>
+          )}
+        </Card>
       </Flex>
     </Drawer>
   );

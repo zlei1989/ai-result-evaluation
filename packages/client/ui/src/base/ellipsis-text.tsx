@@ -29,7 +29,7 @@ export interface EllipsisTextProps {
   /** 加粗（列表里的主字段，如供应商「名称」用） */
   strong?: boolean;
   /**
-   * 次级色（antd 的 `type="secondary"`）：给「这一行整条不生效，但内容照旧要读」的格用——
+   * 次级色（antd 的 `type="secondary"`）：给「这个候选整条不生效，但内容照旧要读」的格用——
    * MCP 表里停用条目的**名称**那一格就是这样：弱化信号落在名称上，端点与命令保持可读
    * （为什么不是整行加灰，见 `mcp-server-table.tsx` 文件头第 2 点）。颜色走 antd 的语义类，
    * 不写死色值，`light` / `dark` 两态由主题自己管。

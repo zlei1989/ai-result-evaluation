@@ -26,7 +26,7 @@ import type { AgentLogDiagnostics, ToolCardResult } from './types';
  * jsdom 里不打桩，抽屉一打开就抛 `ReferenceError`。与本仓其它渲染 `Table` / `Listy` 的用例同处置。
  *
  * 桩**不改变断言口径**：jsdom 的 `clientHeight` 恒为 0 ⇒ `VirtualList` 不给 `height`
- * ⇒ `Listy` 全量渲染，所以下面「每一行都在」的断言照样成立（那是它的退化口径，设计如此）。
+ * ⇒ `Listy` 全量渲染，所以下面「每个候选都在」的断言照样成立（那是它的退化口径，设计如此）。
  */
 beforeEach(() => {
   installResizeObserverStub();
@@ -41,10 +41,16 @@ const diagnostics: AgentLogDiagnostics = {
 };
 
 describe('RawOutputPanel（diagnostics 变体）', () => {
-  it('入口是按钮，正文在抽屉里（关着时正文不在 DOM）', () => {
+  it('入口是圆形、透明底的图标按钮（条数走 aria-label / Tooltip），正文在抽屉里', () => {
     render(<RawOutputPanel source={{ kind: 'diagnostics', diagnostics }} open={false} onOpenChange={vi.fn()} />);
 
-    expect(screen.getByTestId('raw-output-open')).toHaveTextContent('原始输出 2 条');
+    // 图标按钮没有可见文字：可访问名必须由 `aria-label` 给，否则屏读器只会念「read」
+    const open = screen.getByRole('button', { name: '原始输出 2 条' });
+    expect(open).toBe(screen.getByTestId('raw-output-open'));
+    expect(open.className).toContain('ant-btn-variant-text');
+    expect(open.className).toContain('ant-btn-circle');
+    expect(open.querySelector('.anticon-read')).not.toBeNull();
+    expect(open.textContent).toBe('');
     expect(screen.queryByTestId('agent-log-diagnostics')).toBeNull();
     expect(screen.queryByTestId('nested-drawer')).toBeNull();
   });
@@ -55,8 +61,9 @@ describe('RawOutputPanel（diagnostics 变体）', () => {
     expect(screen.getByTestId('agent-log-diagnostics')).toBeInTheDocument();
     expect(screen.getByText(/^\[\d{2}:\d{2}:\d{2}\] stdout 开始改文件$/)).toBeInTheDocument();
     expect(screen.getByText(/^\[\d{2}:\d{2}:\d{2}\] stderr 警告原文$/)).toBeInTheDocument();
-    // 入口按钮与抽屉标题同一句话（点开前后指向的是同一件事）
-    expect(screen.getAllByText('原始输出 2 条').length).toBeGreaterThanOrEqual(2);
+    // 抽屉标题与入口的可访问名同一句话：入口只画图标，文字只在标题这一处
+    expect(screen.getAllByText('原始输出 2 条')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '原始输出 2 条' })).toBeInTheDocument();
   });
 
   it('summary 非空时优先渲染，且 text 原文仍逐字给出', () => {
@@ -107,49 +114,21 @@ describe('RawOutputPanel（diagnostics 变体）', () => {
     expect(screen.getByText('只保留了最近 200 行')).toBeInTheDocument();
   });
 
-  it('给了 onRetry 才渲染「重新读取」，点了会回调', () => {
-    const onRetry = vi.fn();
-    const { unmount } = render(
-      <RawOutputPanel source={{ kind: 'diagnostics', diagnostics }} open={false} onOpenChange={vi.fn()} />,
-    );
-    expect(screen.queryByText('重新读取')).toBeNull();
-    unmount();
-
-    render(
-      <RawOutputPanel
-        source={{ kind: 'diagnostics', diagnostics }}
-        open={false}
-        onOpenChange={vi.fn()}
-        onRetry={onRetry}
-      />,
-    );
-    screen.getByText('重新读取').click();
-    expect(onRetry).toHaveBeenCalledTimes(1);
-  });
-
   /**
    * **本件不自带布局容器**（把包裹那一层去掉，按钮拿出来）。
    *
    * 判据是**父节点身份**而不是「按钮在不在」：包一层 `Flex` 时按钮照样在页面上，只有
    * 「它的父节点是本件的渲染根」才能区分「拿出来」与「还嵌在里面」。
-   * 顺带钉住「两个按钮同层」——重试按钮若被挪进别处，第二条也红。
    */
-  it('不自带容器：两个入口按钮都是渲染根的直接子节点（没有中间那一层）', () => {
+  it('不自带容器：入口按钮是渲染根的直接子节点（没有中间那一层）', () => {
     const { container } = render(
-      <RawOutputPanel
-        source={{ kind: 'diagnostics', diagnostics }}
-        open={false}
-        onOpenChange={vi.fn()}
-        onRetry={vi.fn()}
-      />,
+      <RawOutputPanel source={{ kind: 'diagnostics', diagnostics }} open={false} onOpenChange={vi.fn()} />,
     );
 
     const open = screen.getByTestId('raw-output-open');
-    const retry = screen.getByRole('button', { name: '重新读取' });
 
-    expect(container.childElementCount).toBe(2);
+    expect(container.childElementCount).toBe(1);
     expect(open.parentElement, '入口按钮还嵌在中间那一层容器里').toBe(container);
-    expect(retry.parentElement, '「重新读取」与入口按钮不同层').toBe(container);
   });
 
   /**

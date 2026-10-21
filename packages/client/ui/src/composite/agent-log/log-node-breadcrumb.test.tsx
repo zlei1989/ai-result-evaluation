@@ -1,17 +1,19 @@
 /**
- * `LogNodeBreadcrumb`（L1）的守卫。四条：
+ * `LogNodeBreadcrumb`（L1）的守卫。五条：
  *   1. **链是派生的**：换 `activeNodeId` 就换链，段顺序 = 根 → 当前；
- *   2. **当前段不可点**：`aria-current="page"`，且它不带下拉；
+ *   2. **样式归组件库**：每段只给纯文本（没有 `Typography` / `strong` / 候选内样式），
+ *      当前段靠 `li:last-child` 的末段色 + `aria-current="page"` 高亮；
  *   3. **下拉列的是同层兄弟**（不是全树），当前项 `disabled`；
- *   4. **`kind === 'row'` 的节点不进链**（点进去只有一个空会话）。
+ *   4. **同层只有一个的祖先段是链接入口**（组件库的 `<a>` 形态，键盘可达、点击不跳转）；
+ *   5. **`kind === 'row'` 的节点不进链**（点进去只有一个空会话）。
  *
  * 下拉的断言直接打在导出的 `breadcrumbItems` 上：浮层要靠 hover 才出现，
  * 用 DOM 去测既慢又脆，而「菜单里列了谁」本来就是一份纯数据。
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { BreadcrumbProps } from 'antd';
-import type { LogNode, RowNode, SessionNode } from './types';
+import type { LogNode, CandidateNode, SessionNode } from './types';
 import { LogNodeBreadcrumb, breadcrumbItems, nodeChain, nodeDisplayName } from './log-node-breadcrumb';
 
 /**
@@ -55,8 +57,8 @@ function sessionNode(overrides: Partial<SessionNode> & { id: string }): SessionN
   };
 }
 
-/** 行级汇总节点（`kind === 'row'`）：不进面包屑的那一档 */
-function rowNode(id: string, parentId: string | null = null): RowNode {
+/** 候选级汇总节点（`kind === 'row'`）：不进面包屑的那一档 */
+function candidateNode(id: string, parentId: string | null = null): CandidateNode {
   return {
     kind: 'row',
     id,
@@ -88,7 +90,7 @@ const MAIN = sessionNode({ id: 'main', kind: 'main', name: null });
 const SUB_A = sessionNode({ id: 'sub-a', parentId: 'main', subagentId: 'agent-9c1f2b44', name: '整理变更清单' });
 const SUB_B = sessionNode({ id: 'sub-b', parentId: 'main', subagentId: 'agent-deadbeef', name: null });
 const SUB_A1 = sessionNode({ id: 'sub-a1', parentId: 'sub-a', subagentId: 'agent-11112222', name: '跑全量测试' });
-const ROW = rowNode('row-1', 'main');
+const ROW = candidateNode('row-1', 'main');
 
 const NODES: LogNode[] = [MAIN, SUB_A, SUB_B, SUB_A1, ROW];
 
@@ -99,21 +101,41 @@ describe('LogNodeBreadcrumb', () => {
     expect(nodeChain(NODES, 'main').map((node) => node.id)).toEqual(['main']);
   });
 
-  it('段数与顺序：主会话 / A / A1 三段，当前段带 aria-current 且加粗', () => {
+  it('段数与顺序：主会话 / A / A1 三段，当前段带 aria-current', () => {
     render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={vi.fn()} />);
 
     const host = screen.getByTestId('log-node-breadcrumb');
     const labels = [...host.querySelectorAll('.ant-breadcrumb-item')].map((li) => li.textContent);
     expect(labels).toEqual(['主会话', '整理变更清单', '跑全量测试']);
 
-    // `strong` 会把文字包进 `<strong>`，故 `aria-current` 挂在它的祖先 `Typography.Text` 上
     const current = screen.getByText('跑全量测试');
     const marked = current.closest('[aria-current="page"]');
     expect(marked).not.toBeNull();
     expect(marked).toHaveTextContent('跑全量测试');
-    expect(current.closest('.ant-typography')).not.toBeNull();
     // 当前段不可点：它没有下拉（只有带 `menu` 的段才会被套上 overlay-link）
     expect(current.closest('.ant-breadcrumb-overlay-link')).toBeNull();
+    expect(current.closest('a')).toBeNull();
+  });
+
+  /**
+   * **默认样式的守卫**：每段只给纯文本。包一层 `Typography.Text` 就会把
+   * `Breadcrumb` 的 `itemColor` / `lastItemColor`（祖先次要色 vs 当前正文色）盖成同一个颜色，
+   * 于是「当前项」只能靠手写 `strong` 区分——那正是这条守卫要拦的形态。
+   */
+  it('每段都是纯文本：没有 Typography / strong / 候选内样式，当前段由末段色 + aria-current 标出', () => {
+    render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={vi.fn()} />);
+
+    const host = screen.getByTestId('log-node-breadcrumb');
+    expect(host.querySelector('.ant-typography')).toBeNull();
+    expect(host.querySelector('strong')).toBeNull();
+    expect(host.querySelectorAll('[style]')).toHaveLength(0);
+
+    // 当前段是末段那条 `li` 里的裸 `.ant-breadcrumb-link`：色差由 `li:last-child` 给
+    const lastItem = host.querySelector('.ant-breadcrumb-item:last-child');
+    const currentLink = lastItem?.querySelector(':scope > .ant-breadcrumb-link');
+    expect(currentLink?.tagName).toBe('SPAN');
+    expect(currentLink?.getAttribute('aria-current')).toBe('page');
+    expect(currentLink?.childElementCount).toBe(0);
   });
 
   it('换 activeNodeId 即换链（同一份 nodes，不存第二份真值）', () => {
@@ -140,15 +162,30 @@ describe('LogNodeBreadcrumb', () => {
     const onSelect = vi.fn();
     render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={onSelect} />);
 
-    // 主会话那一段必须是**可交互的**：要么整段可点（同层只有一个），要么下拉里有可用项。
-    // 修复前它必然落到「下拉里只有一个 disabled 的自己」⇒ 抽屉上根本没有回退入口。
+    // 主会话那一段必须是**可交互的**：要么整段是链接入口（同层只有一个），要么下拉里有可用项。
+    // 落到「下拉里只有一个 disabled 的自己」时，抽屉上根本没有回退入口。
     const mainSegment = screen.getByText('主会话');
-    const clickable = mainSegment.closest('.ant-dropdown-trigger') !== null || mainSegment.getAttribute('role') === 'link';
+    const link = mainSegment.closest('a');
+    const clickable = mainSegment.closest('.ant-dropdown-trigger') !== null || link !== null;
     expect(clickable, '主会话那一段既没有下拉也没有点击入口（回不去主会话）').toBe(true);
 
-    // 直接点它：必须把 `main` 交回去
-    mainSegment.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // 直接点它：必须把 `main` 交回去，且不真的跳走（链接只是借来的形态）
+    expect(link?.getAttribute('href')).not.toBeNull();
+    fireEvent.click(mainSegment);
     expect(onSelect).toHaveBeenCalledWith('main');
+    expect(window.location.hash).toBe('');
+  });
+
+  it('同层只有一个的祖先段是 `<a>`（组件库的链接形态）：键盘可达、不自己写 role / tabIndex', () => {
+    render(<LogNodeBreadcrumb nodes={NODES} activeNodeId="sub-a1" onSelect={vi.fn()} />);
+
+    const link = screen.getByText('主会话').closest('a');
+    expect(link).not.toBeNull();
+    // 链接自带焦点与 Enter 激活，故不需要手写 `role="link"` / `tabIndex`（写了就与默认形态分叉）
+    expect(link?.getAttribute('role')).toBeNull();
+    expect(link?.getAttribute('tabindex')).toBeNull();
+    // 同层有兄弟的祖先段不走这条：它是下拉触发器，不是链接
+    expect(screen.getByText('整理变更清单').closest('a')).toBeNull();
   });
 
   it('同一份形状对**两层以上的链**同样成立（A 段回到 A、主会话段回到 main）', () => {

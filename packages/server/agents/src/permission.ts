@@ -3,7 +3,7 @@
  *
  * 为什么单独一个文件、而不是各自写在 provider 里：这几份表只有**放在一起**才能逐格对照，
  * 而它们必须同时正确——「两家给全权限、第三家忘给」正是冒烟实测过的缺陷形状
- *（cc 当时是三家唯一没设写使能的那家，7 行候选**全部 0 改动**、评分在空 diff 上打出 20 分，
+ *（cc 当时是三家唯一没设写使能的那家，7 行本次运行**全部 0 改动**、评分在空 diff 上打出 20 分，
  * 见 `docs/protocols/provider-run.md`「权限档按阶段给」表）。放一起之后，
  * `permission.test.ts` 能把「每一档在每一家都有落点」写成一条可执行断言。
  *
@@ -42,7 +42,7 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'bypassPermission
 /** claude 的权限选项：`permissionMode` 与它的两个配套开关（JSDoc 里写明「必须同时给」的那两个） */
 export interface ClaudePermissionOptions {
   permissionMode: ClaudePermissionMode;
-  /** 必须为 true 才能让 `bypassPermissions` 真正生效（见下表 `full` 一行的注释） */
+  /** 必须为 true 才能让 `bypassPermissions` 真正生效（见下表 `full` 一本次运行的注释） */
   allowDangerouslySkipPermissions?: boolean;
   /** `'none'` = 没有批准面：任何「本该弹批准」的操作**立即被拒**，而不是挂到超时 */
   permissionPrompts?: 'host' | 'none';
@@ -54,7 +54,7 @@ export interface CodexPermissionOptions {
   approvalPolicy: string;
 }
 
-/** dsh 的权限选项：一个环境变量（dsh-base 的 `sandbox-policy` 与 `approval` 两行都读它） */
+/** dsh 的权限选项：一个环境变量（dsh-base 的 `sandbox-policy` 与 `approval` 两本次运行都读它） */
 export interface DshPermissionOptions {
   env: { DSH_PERMISSION_MODE: string };
 }
@@ -72,7 +72,7 @@ export interface DshPermissionOptions {
  *     （这正是不走文本通路的理由，见 `judge-agent.ts` 头注）；
  *   · `dontAsk` 的语义是「不弹批准，未预授权的一律拒」——读放行、写被拒，正是「只读」；
  *   · `permissionPrompts: 'none'` 再钉死一层：本进程没有任何批准面，越界操作**当场被拒**
- *     并把原因回给模型，而不是挂在一个永远没人应答的批准上（后者只会把该行拖到兜底超时）。
+ *     并把原因回给模型，而不是挂在一个永远没人应答的批准上（后者只会把本次运行拖到兜底超时）。
  */
 export const CLAUDE_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, ClaudePermissionOptions>> = {
   full: { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true },
@@ -87,7 +87,7 @@ export const CLAUDE_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, ClaudeP
  * 而 `danger-full-access` 是「不设沙箱」。评测要观察的正是「改完自己跑不跑得起来」，
  * 装依赖 / 跑测试都不能因为沙箱断网而失败。
  *
- * `approvalPolicy` 两档都是 `'never'`：评测是非交互的，任何走人工批准的路径都只会让该行走到超时。
+ * `approvalPolicy` 两档都是 `'never'`：评测是非交互的，任何走人工批准的路径都只会让本次运行走到超时。
  * 「只读」靠 `sandboxMode: 'read-only'` 本身——**不靠模型自觉**。
  */
 export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPermissionOptions>> = {
@@ -103,10 +103,10 @@ export const CODEX_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, CodexPer
  * 都起不来（`codex_core::tools::router: error=exec_command failed: CreateProcess { … rejected: blocked by policy }`），
  * 而 codex **没有独立的文件读取工具**，读文件只能靠 shell ⇒ 评分阶段（只读档）在 Windows 上等于
  * **盲评**：链路全通（`ok`、`judgments` 齐、`structuredOutput: true`），结论全错
- * （真机：候选确实做到了三项，评分 `0 / 25`）。三档矩阵见 `docs/faq/codex.md`。
+ * （真机：本次运行确实做到了三项，评分 `0 / 25`）。三档矩阵见 `docs/faq/codex.md`。
  *
  * 处置：**只在 Windows 上**把只读档落成 `danger-full-access`（读得到），代价是评审者**能写**工作区
- * ——那一条由编排层的「评分前后 diff 摘要对照」兜底（不一致即该行失败，见 `judgeStageAttempt`）。
+ * ——那一条由编排层的「评分前后 diff 摘要对照」兜底（不一致即本次运行失败，见 `judgeStageAttempt`）。
  * 别的平台保持真只读：macOS 的 seatbelt / Linux 的 landlock 有可用的只读实现，不受这条豁免影响。
  *
  * 为什么平台是**入参**而不是直接读 `process.platform`：这一格要能在两个平台上都被测到
@@ -140,7 +140,7 @@ export function codexPermissionOptions(
  * 七个请求、四个通知，没有「服务端问客户端」那一类）。这一格**不会挂起**：厂商自己的 runtime-context
  * 消息里逐字写着「without an available answerer, the request fails closed」，真机复核
  * （`read-only` 档 + 模型写工作区内文件）也是当场被拒、墙钟 827 ms、文件没有长出来。
- * 也就是说「没有批准面」等价于「越界操作立即被拒」，不会把该行拖到静止超时。
+ * 也就是说「没有批准面」等价于「越界操作立即被拒」，不会把本次运行拖到静止超时。
  */
 export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermissionOptions>> = {
   full: { env: { DSH_PERMISSION_MODE: 'danger-full-access' } },
@@ -152,13 +152,13 @@ export const DSH_PERMISSION_OPTIONS: Readonly<Record<AgentPermission, DshPermiss
  *
  * ⚠️ pi **没有权限标志位**——`.d.ts` 与真机都找不到 permission / sandbox 面（另三家的
  * `PermissionMode` / `SandboxMode` / `DSH_PERMISSION_MODE` 在这里没有对应物）。
- * 所以这一档**不是照抄三家的形状**，而是映射到「这一行拿得到哪些工具」：
+ * 所以这一档**不是照抄三家的形状**，而是映射到「本次运行拿得到哪些工具」：
  * `createAgentSession({ tools })` 是 SDK 的**一等白名单**（`CreateAgentSessionOptions.tools`），
  * 名单外的工具这一轮根本不在可用集里。
  *
  * 为什么不能像三家那样「只给一个权限开关、工具集不动」：pi 的写能力就住在工具集里。
  * 评分阶段（`read-only`）若沿用默认工具集，评审者会拿到 `edit` / `write` / `bash`，
- * 而工作区是候选的产出——它一改，抽屉里看到的 diff 就不再是候选交的那一份
+ * 而工作区是本次运行的产出——它一改，抽屉里看到的 diff 就不再是本次运行交的那一份
  * （编排层另有一次改动摘要对照，本档是**执行层**的那一道）。
  *
  * 名单取自 SDK 的 `ToolName` 联合（`read | bash | powershell | edit | write | grep | find | ls`）：

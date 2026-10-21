@@ -1,5 +1,5 @@
 /**
- * pi（`@earendil-works/pi-coding-agent`）适配器：**in-process SDK**，每行一个自注册 provider。
+ * pi（`@earendil-works/pi-coding-agent`）适配器：**in-process SDK**，每个本次运行一个自注册 provider。
  *
  * 元数据是**真值**（每条声明的依据写在对应字段的注释里），改动前先核那几条结构事实：
  *   · `protocolTypes` 是 `openai` **与** `anthropic`：协议决定 wire
@@ -8,11 +8,11 @@
  *     文本评分通路（evaluator 的 `text-api`）与这里用同一个判据，故两条通路打到同一个端点；
  *   · `subagent` 是 **`yes` / `wire`**：派发能力整条来自白名单装载的扩展
  *     `@tintinweb/pi-subagents`（`additionalExtensionPaths`），子任务的身份 / 状态 / 用量经
- *     扩展事件总线到达——取数路径、每行隔离与已知代价写在 `subagents.ts` 的文件头；
+ *     扩展事件总线到达——取数路径、每个本次运行隔离与已知代价写在 `subagents.ts` 的文件头；
  *   · `defaultEffort: 'medium'`：pi 的「未选档位」会**真的**落到一个具体档
  *     （`DEFAULT_THINKING_LEVEL`），声明它，API 侧才能拦「未选 + 该模型不支持这个缺省档」。
  *
- * 一处实现现状（写给读代码的人，不是待办清单）：事件投影在 `providers/pi/events.ts`（行级事件、
+ * 一处实现现状（写给读代码的人，不是待办清单）：事件投影在 `providers/pi/events.ts`（运行级事件、
  * 计量、轮次、失败与结束信号），厂商载荷 → 统一消息在 `providers/pi/message.ts`，请求侧取证在
  * `providers/pi/observer.ts`（两条 L3 判据都读它抓到的 payload），MCP 的条目翻译与 `loadConfig`
  * 在 `providers/pi/mcp.ts`；本文件负责装配、凭据投射、`vendor-system` 的取数与把三者接到
@@ -76,7 +76,7 @@ import { PI_SUBAGENT_WIRE_TICK_TYPE, createPiSubagentWire, type PiSubagentWire }
 
 const logger = createLogger('agents/pi');
 
-/** 本行技能根（相对 `configHome`）：`materializeSkills` 写的就是这一层（`core` 的 `skillsDirOf`） */
+/** 本次运行的技能根（相对 `configHome`）：`materializeSkills` 写的就是这一层（`core` 的 `skillsDirOf`） */
 export const PI_SKILLS_RELATIVE_PATH = 'skills';
 
 /**
@@ -107,7 +107,7 @@ export const PI_DEFAULT_EFFORT = 'medium';
  *   · 任意认不出的串 ⇒ openai wire `reasoning: { effort: 'none' }`（等于关闭）、anthropic wire
  *     `thinking: { type: 'disabled' }`（也是关闭）。
  * 三种落法都不是调用方给的那一档，而这条路上一个字都不报 ⇒ 本层把域外值换成**声明过**的缺省档，
- * 并在调用点落一条点名 WARN（见 `startPi` 里那一处）。产品路径到不了这里（候选池按
+ * 并在调用点落一条点名 WARN（见 `startPi` 里那一处）。产品路径到不了这里（本次运行池按
  * `intersectEfforts` 收窄过），但批量入口与评测脚本能把 `effort` 直接交给本层。
  */
 export function piThinkingLevel(effort: string | undefined): string {
@@ -153,11 +153,11 @@ const PI_UNKNOWN_CONTEXT_WINDOW = 1_000_000;
 const PI_UNKNOWN_MAX_TOKENS = 8_192;
 
 /**
- * 本行自注册 provider 的 id：由 **`configHome` 派生**（每行唯一）。
+ * 本次运行自注册 provider 的 id：由 **`configHome` 派生**（每个本次运行唯一）。
  *
- * 为什么必须是**行内唯一**：编排层是无界并发（`orchestrator.ts` 的 `Promise.all`），
+ * 为什么必须是**运行内唯一**：编排层是无界并发（`orchestrator.ts` 的 `Promise.all`），
  * 而 `ModelRuntime` 的 provider 注册是**按 id 索引的全局表**。复用内建 id 或写死一个常量 id，
- * 两行就会互相改掉对方的 `baseUrl` / `apiKey`——症状是「A 行的请求带着 B 行的密钥打到 B 行的网关」，
+ * 两本次运行就会互相改掉对方的 `baseUrl` / `apiKey`——症状是「A 本次运行的请求带着 B 本次运行的密钥打到 B 本次运行的网关」，
  * 且只在并发时出现。
  *
  * 为什么用哈希而不是把 `configHome` 直接拼进 id：目录名里有 `/`、空格与中文，而 id 会进
@@ -197,7 +197,7 @@ export function baseUrlForWire(baseUrl: string, protocolType: ProtocolType): str
  *
  * 为什么不能省：`detectCompat()` 对不认识的自建 provider 一律给 `false`，而「strict 工具 schema」
  * 这条能力位关着时 pi 会把整轮判成配置错误——**零出站请求**、43 毫秒、`stopReason: 'error'`，
- * 症状是一个与本行配置毫无关系的失败。
+ * 症状是一个与本次运行配置毫无关系的失败。
  *
  * 为什么只开这一格：本机网关对默认 auto-detect 发出的 `store: false` / `prompt_cache_key` /
  * `max_output_tokens` / `developer` 角色 / `reasoning.effort` **全部接受**，
@@ -221,7 +221,7 @@ export function compatForWire(wire: 'openai-responses' | 'anthropic-messages'): 
  *   · `reasoning: false` 的模型在 pi 眼里只有 `off` 一档，任何档位都被夹成关闭 ⇒ metadata 声明的
  *     档位域整体失效（用户选了 `high`，出站一个 reasoning 参数都没有）；
  *   · 没有 `thinkingLevelMap` 就没有 `max` 这一档（会被夹到 `high`）。
- * 「上游模型到底会不会思考」是路由条目的事（`supportedEfforts` 收窄候选），不是这一格能断言的；
+ * 「上游模型到底会不会思考」是路由条目的事（`supportedEfforts` 收窄本次运行），不是这一格能断言的；
  * 这里声明的是**我们这条 wire 支持按档位下发**。
  */
 function providerModel(input: AgentRunInput, wire: string, baseUrl: string): PiProviderModel {
@@ -244,11 +244,11 @@ function providerModel(input: AgentRunInput, wire: string, baseUrl: string): PiP
 }
 
 /**
- * 本行物化的技能根（**绝对路径**）。
+ * 本次运行物化的技能根（**绝对路径**）。
  * 为什么必须绝对：相对路径按 `cwd` 解析（实测传 `'skills'` ⇒ 发现 0 条技能），
- * 而我们的技能住在**行配置目录**里，与工作区没有任何相对关系。
+ * 而我们的技能住在**运行配置目录**里，与工作区没有任何相对关系。
  */
-export function rowSkillsPath(configHome: string): string {
+export function candidateSkillsPath(configHome: string): string {
   return join(configHome, PI_SKILLS_RELATIVE_PATH);
 }
 
@@ -260,15 +260,15 @@ export function rowSkillsPath(configHome: string): string {
  * 「被测仓库自带的技能」是被测内容的一部分（与另三家同口径），必须留住。
  * `noSkills: true` 做不到这件事：它把项目技能一起关掉。
  *
- * 判据是**路径前缀**而不是技能名：「白名单」在这里指的就是「这一行物化出去的那棵树」，
+ * 判据是**路径前缀**而不是技能名：「白名单」在这里指的就是「本次运行物化出去的那棵树」，
  * 按名字比对会让同在 cwd 之下、只是恰好同名的另一条被误留。
  */
-export function keepRowAndProjectSkills(
+export function keepCandidateAndProjectSkills(
   base: PiSkills,
-  roots: { rowSkillsDir: string; cwd: string },
+  roots: { candidateSkillsDir: string; cwd: string },
 ): PiSkills {
   const skills = base.skills.filter(
-    (skill) => isUnder(skill.filePath, roots.rowSkillsDir) || isUnder(skill.filePath, roots.cwd),
+    (skill) => isUnder(skill.filePath, roots.candidateSkillsDir) || isUnder(skill.filePath, roots.cwd),
   );
   return { skills, diagnostics: base.diagnostics };
 }
@@ -289,7 +289,7 @@ function isUnder(path: string, root: string): boolean {
  * → `dispose()` 断开驱动并做 SDK 自己的收尾。
  *
  * 为什么 `abort()` 之后还要 `waitForIdle()`：`abort()` 只发停止信号，在途的那次模型往返要自己
- * 收尾；不等它就让下一行的运行时与这一行的会话交错，是「跑完的行偶尔还发事件」的形状。
+ * 收尾；不等它就让下一本次运行的运行时与本次运行的会话交错，是「跑完的行偶尔还发事件」的形状。
  * 顺序不可颠倒（与另三家同一条口径：直接 dispose 会与在途轮次争抢同一批资源），
  * 且**必须幂等**（看门狗与用户终止可能先后触发）。
  *
@@ -315,7 +315,7 @@ function createSessionDisposer(session: PiSession): () => Promise<void> {
 
 /**
  * 给扩展投一次「会话关掉了」。**失败只记日志**：它是关闭序列里的一步，不能挡住 `dispose()`
- * （那一步在 `finally` 里，而它才是回收本行资源的那一下）。没有运行器 / 没有监听者时静默跳过。
+ * （那一步在 `finally` 里，而它才是回收本次运行资源的那一下）。没有运行器 / 没有监听者时静默跳过。
  */
 async function emitPiSessionShutdown(session: PiSession): Promise<void> {
   const runner = session.extensionRunner;
@@ -340,18 +340,18 @@ async function emitPiSessionShutdown(session: PiSession): Promise<void> {
  *     「表在、里面没有 `mcp__<名>__`」就等于**没起来**（`row-mcp.ts` 按通道决定读法）。
  *     服务清单那一格给 `null`——pi 没有「每台一张状态表」这种东西，而工具表已经是最硬的证据；
  *   · **技能走 `getSkills()` 非空清单**：它是 SDK 的权威面。⚠️ **不许拿 payload 里的技能段当厂商清单**
- *     ——那是 L3 判据（模型侧可见），采不到时会把「我们没读到」误判成「厂商没认」并让整行失败。
+ *     ——那是 L3 判据（模型侧可见），采不到时会把「我们没读到」误判成「厂商没认」并让整本次运行失败。
  *
- * **同名冲突**在这里作如实呈现：清单里那个名字由厂商侧的胜者顶着（名字仍然在，故行级结论是
+ * **同名冲突**在这里作如实呈现：清单里那个名字由厂商侧的胜者顶着（名字仍然在，故运行级结论是
  * `installed`），我们把 `winnerPath` / `loserPath` 落成一条 WARN——**不判 `missing`**：
- * `missing` 的语义是「厂商没认这个名字」，而它在清单里，判它就是让整行失败且文案说假话。
+ * `missing` 的语义是「厂商没认这个名字」，而它在清单里，判它就是让整本次运行失败且文案说假话。
  */
 function createPiVendorFactsReader(params: {
   observer: PiRequestObserver;
   wire: PiWire;
   readSkills: () => PiSkills;
   layout: { configHome: string; cwd: string };
-  /** 我们这一行真的装进去的那几条名字（`AgentRunInput.skills`），供 L3 装载档逐名比对 */
+  /** 我们本次运行真的装进去的那几条名字（`AgentRunInput.skills`），供 L3 装载档逐名比对 */
   materialized: readonly string[];
 }): () => AgentEventDraft[] {
   const { observer, wire, readSkills, layout, materialized } = params;
@@ -396,9 +396,9 @@ function createPiVendorFactsReader(params: {
  * 两条**只在第一次读到请求时**播一次的 WARN（都不改变任何结论，但缺了它们这两件事在事件里
  * 一个字都没有）：
  *   · **L3 装载档的缺口**：我们装入的技能没出现在这一轮请求的系统段里（逐名比对）。
- *     它与行级判据是两张脸——行级看厂商清单（`getSkills()`），这里看**模型侧真的收到了什么**；
+ *     它与运行级判据是两张脸——运行级看厂商清单（`getSkills()`），这里看**模型侧真的收到了什么**；
  *   · **同名冲突**：厂商侧的胜者路径与我们那一份的路径一起落，供用户自己判断以谁为准。
- *     措辞**不许暗示「厂商没认」**：名字在清单里，行级结论就是 `installed`。
+ *     措辞**不许暗示「厂商没认」**：名字在清单里，运行级结论就是 `installed`。
  */
 function piSkillFaceAnnouncements(
   requestSkills: readonly { name: string; location: string }[],
@@ -447,7 +447,7 @@ function skillCollisions(skills: PiSkills): Array<{ name: string; winnerPath: st
  *
  * `source` 给的是厂商原值（`sourceInfo.scope`：`user` / `project` / `temporary`）——**不翻译**：
  * 那一格是证据，翻成我们的词表就是第二个真源（与另三家同一条口径）。
- * 分档判的是**落点**：本行物化的那几条在 `configHome` 之下 ⇒ 本机启用项；被测仓库自带的在 `cwd`
+ * 分档判的是**落点**：本次运行物化的那几条在 `configHome` 之下 ⇒ 本机启用项；被测仓库自带的在 `cwd`
  * 之下 ⇒ 被测仓库自带（环境抽屉那句安全提示由此自动生效，不另造说明位）。
  */
 function vendorSkillsOf(skills: PiSkills, layout: { configHome: string; cwd: string }): VendorSkill[] {
@@ -473,7 +473,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 /**
  * 一次运行的装配（顺序是硬要求，别重排）：
  * `mkdir` → 物化 skills → 建 `DefaultResourceLoader` → `reload({ resolveProjectTrust })`
- * → 建 `ModelRuntime` 并注册本行的 provider → `createAgentSession` → `bindExtensions({ mode: 'rpc' })`。
+ * → 建 `ModelRuntime` 并注册本次运行的 provider → `createAgentSession` → `bindExtensions({ mode: 'rpc' })`。
  *
  * 两个「写晚了照样跑完、只是静默少东西」的时刻，都由**用例**钉住：
  *   · 技能物化必须早于 `reload`（技能表在那一刻扫出来）；
@@ -489,20 +489,20 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   const ai = await loadPiAi();
 
   /**
-   * ① `configHome` 由本层自己建：契约只说「这一行有一个自己的配置目录」，**没保证它一定存在**
+   * ① `configHome` 由本层自己建：契约只说「本次运行有一个自己的配置目录」，**没保证它一定存在**
    * （生产路径上编排层会建，但那是它的实现细节）。不建的表现是 `ENOENT: open '…/.agenthome/…'`，
    * 归因成一个离真因很远的失败。
    */
   mkdirSync(input.configHome, { recursive: true });
-  const rowSkillsDir = rowSkillsPath(input.configHome);
+  const candidateSkillsDir = candidateSkillsPath(input.configHome);
 
   /**
-   * ② 本行的技能装入：整目录复制进 `<configHome>/skills/<名称>`。
+   * ② 本次运行的技能装入：整目录复制进 `<configHome>/skills/<名称>`。
    *
-   * **物化必须发生在建装载器之前**：技能表是 `reload()` 那一刻扫出来的，写晚了这一行照样跑完，
+   * **物化必须发生在建装载器之前**：技能表是 `reload()` 那一刻扫出来的，写晚了本次运行照样跑完，
    * 只是**没有任何技能、也没有任何报错**。不传 `skills` ⇒ 一次都不调（连目录都不建）：
    * 评分与用例同步两处不该有技能面，而「不传」是这条口径唯一的表达方式。
-   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、本次运行失败。
    */
   if (input.skills !== undefined) {
     materializeSkills({ configHome: input.configHome, skills: input.skills });
@@ -512,10 +512,10 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * ②-b **MCP 的注入集**（canonical 条目 → 厂商条目）与观察者。
    *
    * 两个「什么时候做」的判据：
-   *   · 条目的翻译在**建装载器之前**完成——扩展工厂是装载器的构造选项，装晚了这一行照样跑完，
+   *   · 条目的翻译在**建装载器之前**完成——扩展工厂是装载器的构造选项，装晚了本次运行照样跑完，
    *     只是一台 MCP 都没有、也没有任何报错；
    *   · `input.mcpServers === undefined` ⇒ **不装 MCP 扩展**（与「不传 `skills` 就不物化」同一条口径）：
-   *     编排层只在注入集非空时才带这一格，于是「本行没有 MCP」这件事在装配面上也看得出来。
+   *     编排层只在注入集非空时才带这一格，于是「本次运行没有 MCP」这件事在装配面上也看得出来。
    *
    * 被我们摘掉的条目**必须说出来**：静默摘掉的表现是「我配的那台怎么没注入」，而线索
    * （哪一条、哪一格）只存在于这一刻。同一个原因串还会随 `loadConfig` 进厂商的启动报告。
@@ -532,16 +532,16 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * 被摘掉的条目**必须在产物里看得见**，不能只活在服务端进程日志里。
    *
    * 为什么：这一层是**契约之后的第二道闸**（手改配置 / 将来的新调用点），而编排层的注入集里
-   * 这一台仍算 `injectable` ⇒ 行级观测格在 `vendor-tool-table` 通道上把「工具表里没有它」
+   * 这一台仍算 `injectable` ⇒ 运行级观测格在 `vendor-tool-table` 通道上把「工具表里没有它」
    * 读成**失败**（`AGENT_MCP_UNAVAILABLE`，文案是「未能启动」）——它根本没起过。
    * 事件里那一条 `log` 是这条链上**唯一**说得出真因的地方（厂商的启动报告走 `ctx.ui.notify`，
    * 而 SDK 装配下那是 no-op，见 `createPiMcpLoadConfig` 的注释）。落到 stdout 而不是 stderr：
-   * 它是「这一行的环境里有一台没进去」的事实陈述，不是错误输出。
+   * 它是「本次运行的环境里有一台没进去」的事实陈述，不是错误输出。
    */
   const mcpDropDrafts: AgentEventDraft[] = mcpPlan.dropped.map((item) => logDraft(
     'stdout',
     `[WARN] MCP 条目「${item.name}」未注入（行照跑）：${item.reason}`
-      + '。这一台在厂商侧不会出现工具，故行级观测格里它记「未验证」而不是「起不来」——'
+      + '。这一台在厂商侧不会出现工具，故运行级观测格里它记「未验证」而不是「起不来」——'
       + '要让它生效请按上面这条原因改配置。',
   ));
   /** 请求侧观察者：两份 L3 判据的唯一取证点（见 `observer.ts`） */
@@ -551,7 +551,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    *
    * 为什么必须在装配期定：pi 的 `strict: 'require'` 拿不到 strict 时**抛在建请求那一刻**，表现为
    * 零出站请求 + `stopReason: 'error'` 的 43 毫秒收场（`prompt()` 还不 reject）——从界面上看就是
-   * 「这一行莫名其妙失败了」，与真因离得很远。预检把这件事提前成一次可判的裁定；判不过时**由我们
+   * 「本次运行莫名其妙失败了」，与真因离得很远。预检把这件事提前成一次可判的裁定；判不过时**由我们
    * 显式降级**（工具改声明成 `'prefer'` + 填充层 + 修正轮兜底，记 `false` + 一条 WARN），
    * 而不是让厂商炸。降级档的工具照旧出站，只是那一档的 schema 没有厂商侧强制。
    *
@@ -619,7 +619,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    *   · **全权限档**：提问是「往运行外面要一次人工输入」，而只读档的整个意义是不接触外部状态
    *     （它的工具面里连 `bash` 都不给）⇒ 只读档不装这一件。应答面存在与否不改变这条裁定。
    *
-   * `ask` 直接把骨架的提问端口接上去：等待语义（行终止 / 预算 / 静止超时豁免 / 回调抛错）
+   * `ask` 直接把骨架的提问端口接上去：等待语义（本次运行终止 / 预算 / 静止超时豁免 / 回调抛错）
    * 全在端口那一层，这里只补厂商没有的那两格——`vendorBudgetMs` 恒 `null`（pi 没有厂商预算），
    * `subagentId` 恒 `null`（这一件只装在主会话上，见 `subagents.ts` 的子会话语境）。
    */
@@ -647,7 +647,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
      * 通配符是唯一能把它们放进闭集名单的写法，于是**只读档给出通配就等于把「服务器自带写工具」
      * 一并授权**——真机读数：read-only 出站表里出现 `mcp__ws__write_file`，模型调它**真写成功**
      * （`interaction/report.md` 的 P1）。而这一档的整个意义是不接触外部状态（连 `bash` 都不给，
-     * 提问工具也不装）。产品路径今天不组合这两者（MCP 只在候选执行阶段注入，那一档是全权限），
+     * 提问工具也不装）。产品路径今天不组合这两者（MCP 只在本次运行执行阶段注入，那一档是全权限），
      * 所以这条改动对现时产物零影响；将来若真有「只读 + MCP」的调用点，它会以
      * `AGENT_MCP_UNAVAILABLE`（注入的服务器没进工具表）**响着失败**，而不是静默给出写能力。
      */
@@ -665,8 +665,8 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   /**
    * **子智能体收数器**：扩展生命周期事件（`pi.events` 的 `subagents:*`）的唯一取证点。
    *
-   * 与观察者同一条处置——回调只记不改（见 `subagents.ts`）；`providerId` 那一侧每行唯一，
-   * 这一条同样每行一份（总线本身也是每行一个装载器各自 `createEventBus()`）。
+   * 与观察者同一条处置——回调只记不改（见 `subagents.ts`）；`providerId` 那一侧每个本次运行唯一，
+   * 这一条同样每个本次运行一份（总线本身也是每个本次运行一个装载器各自 `createEventBus()`）。
    * 钩子把「开始 / 终态」扇给 wire 通道（订阅启停），收数器仍是总线的唯一监听者。
    */
   const subagentWire = createPiSubagentWire();
@@ -675,15 +675,15 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     onSettled: (agentId) => subagentWire.onSettled(agentId),
   });
   /**
-   * 扩展入口的绝对路径。**在这里解析而不是在装载器参数里现取**：解析失败要**点名**这一行装不上
+   * 扩展入口的绝对路径。**在这里解析而不是在装载器参数里现取**：解析失败要**点名**本次运行装不上
    * （「声明挂了子智能体、实际没装」是假声明），而那是一个与厂商 SDK 无关的、当场可判的失败。
    */
   const subagentsExtensionPath = piSubagentsExtensionPath();
-  /** 本行的 wire：模型投射、观察者的判据读法、L3 取证三处共用同一份（只算一次） */
+  /** 本次运行的 wire：模型投射、观察者的判据读法、L3 取证三处共用同一份（只算一次） */
   const wire = wireForProtocol(input.route.protocolType);
   const extensionFactories: unknown[] = [observer.factory, subagentRecorder.factory];
   if (input.mcpServers !== undefined) {
-    // MCP 那一格只有配了 MCP 的行走（缺了它不该让不配 MCP 的行失败），故校验落在使用点
+    // MCP 那一格只有配了 MCP 的行走（缺了它不该让不配 MCP 的本次运行失败），故校验落在使用点
     assertPiMcpExtension(sdk);
     extensionFactories.push(sdk.createMcpExtension({
       loadConfig: createPiMcpLoadConfig(mcpPlan),
@@ -707,11 +707,11 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   const createLoader = (): PiResourceLoader => new sdk.DefaultResourceLoader({
     cwd: input.cwd,
     agentDir: input.configHome,
-    additionalSkillPaths: [rowSkillsDir],
+    additionalSkillPaths: [candidateSkillsDir],
     noExtensions: true,
     additionalExtensionPaths: [subagentsExtensionPath],
     extensionFactories,
-    skillsOverride: (base) => keepRowAndProjectSkills(base, { rowSkillsDir, cwd: input.cwd }),
+    skillsOverride: (base) => keepCandidateAndProjectSkills(base, { candidateSkillsDir, cwd: input.cwd }),
     settingsManager: sdk.SettingsManager.inMemory(),
   });
   let loader = createLoader();
@@ -731,7 +731,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * 为什么要有这一条：`noExtensions` 只筛「发现路径」——这是它对我们**有利**的一面（工厂与白名单
    * 不受它管），也是它**唯一**的一面。一旦它对某个版本失效，被测仓库里的扩展就会带着任意代码执行
    * 进来，而装配面上不会出现任何异常。判据取「扩展表里的每一条都来自我们」：
-   * 我们装进来的那些路径是合成的 `<inline:…>` 或本行配置目录里的文件，其余一律算发现来的。
+   * 我们装进来的那些路径是合成的 `<inline:…>` 或运行配置目录里的文件，其余一律算发现来的。
    *
    * 兜底是**丢掉这一份装载器、按不信任项目重建一份**（代价：同时失去项目技能，可比性降级），
    * 而不是把信任开关改回去重载——`noExtensions` 失效时正是「装载即执行」，要在**装载之前**
@@ -740,7 +740,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    */
   const foreign = foreignExtensions(loader, input.configHome, [subagentsExtensionPath]);
   if (foreign.length > 0) {
-    logger.error('pi 的 noExtensions 未挡住发现来的扩展：改按不信任项目重建装载器（本行将失去项目技能）', {
+    logger.error('pi 的 noExtensions 未挡住发现来的扩展：改按不信任项目重建装载器（本次运行将失去项目技能）', {
       configHome: input.configHome,
       extensions: foreign,
     });
@@ -752,7 +752,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     if (stillForeign.length > 0) {
       throw new Error(
         `[agents] pi 的扩展隔离失败：仍装载了 ${stillForeign.join('、')}——`
-          + '这一行拒绝在被测仓库能执行任意代码的前提下运行。',
+          + '本次运行拒绝在被测仓库能执行任意代码的前提下运行。',
       );
     }
   }
@@ -776,7 +776,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    *
    * 为什么必须断言而不是「装不上就算了」：能力位声明的是 `subagent: yes`——
    * 声明与事实分家的两种表现（扩展没装上、路径被 `noExtensions` 顺手挡掉）**都不会抛错**，
-   * 只是这一行悄悄没有派发工具，而界面上「这家支持子智能体」照样写着 `yes`。
+   * 只是本次运行悄悄没有派发工具，而界面上「这家支持子智能体」照样写着 `yes`。
    * 判据取**扩展表里的路径**（`loader.getExtensions()` 是 SDK 的权威面），失败时点名包名与版本，
    * 归因走 `AGENT_LOAD_FAILED`——「声明支持却加载不上」不是厂商运行期错误，
    * 与「包没装 / 入口解析不出来」（`piSubagentsExtensionPath` 那一处）同一码。
@@ -798,7 +798,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
         `入口 ${subagentsExtensionPath} 没有进扩展表`
           + `${version === null ? '' : `（${PI_SUBAGENTS_PACKAGE}@${version}）`}`
           + `${reason === undefined ? '' : `；装载器报：${String(reason)}`}。`
-          + '这一行拒绝在没有派发能力的前提下声称支持子智能体。',
+          + '本次运行拒绝在没有派发能力的前提下声称支持子智能体。',
       ),
     );
   }
@@ -810,7 +810,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * 结论与子任务行一个字都不受影响（降级姿态见 `subagent-wire.ts` 的文件头）。
    */
   if (!subagentWire.available) {
-    logger.warn('pi 的子智能体 wire 通道快照落空：本行子任务正文退回转写文件通道（补录角标）', {
+    logger.warn('pi 的子智能体 wire 通道快照落空：子任务正文退回转写文件通道（补录角标）', {
       configHome: input.configHome,
     });
   }
@@ -840,21 +840,21 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   const model = runtime.getModel(providerId, input.route.modelId);
 
   /**
-   * ⑥ **会话落盘**：管理器是文件型的，落点显式钉在行配置目录里；续接时打开会话文件。
+   * ⑥ **会话落盘**：管理器是文件型的，落点显式钉在运行配置目录里；续接时打开会话文件。
    *
    * 三条都是硬要求（各自的失败形态都不报错、只是行为悄悄不对）：
    *   · **文件型而不是内存型**：内存型跑完盘上什么都没有，续接（本仓声明 `resume: yes`）无从谈起；
    *   · **`sessionDir` 显式给**：厂商默认落点是 `agentDir` × `cwd` **两轴**的函数，而工作区会被重建
-   *     ⇒ 不给这一格，「这一行的会话落在哪」就成了算不出来的东西；
+   *     ⇒ 不给这一格，「本次运行的会话落在哪」就成了算不出来的东西；
    *   · **续接用 `open(会话文件)` 不用 `continueRecent`**：后者取目录里 mtime 最新的一条，
-   *     而行内重跑会在同一目录里留下上一次尝试的会话 ⇒ 接回来的是**上一次尝试**的上下文。
+   *     而运行内重跑会在同一目录里留下上一次尝试的会话 ⇒ 接回来的是**上一次尝试**的上下文。
    *
    * 设置仍然全走内存（`SettingsManager.inMemory`）：它不含任何要跨进程带走的东西。
    */
   /**
    * 域外档位**点名**：`piThinkingLevel` 会把它换成缺省档（厂商自己会静默夹到另一档，见那个函数的
    * 注释），这里把「收到了什么、用了什么」写成一句可搜的话——没有这一句，一次批量入口传错档名
-   * 只会表现为「这一行好像比预期慢 / 好像没思考」，没有任何线索指向入参。
+   * 只会表现为「本次运行好像比预期慢 / 好像没思考」，没有任何线索指向入参。
    */
   if (input.effort !== undefined && !PI_REASONING_EFFORTS.includes(input.effort)) {
     logger.warn('pi 收到域外的思考档位：本家收不了它，改用缺省档（厂商会静默夹到另一档，故不能沉默）', {
@@ -899,7 +899,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
 
   /**
    * ⑦ 扩展装配收尾：`mode` **必须写死 `'rpc'`**（缺省 `'print'` 会让按 rpc 写的扩展判定配置错误）。
-   * 本行装了三样扩展（观察者、子智能体收数器、可选的 MCP），`bindExtensions` 是它们的绑定点；
+   * 本次运行装了三样扩展（观察者、子智能体收数器、可选的 MCP），`bindExtensions` 是它们的绑定点；
    * 厂商把扩展工厂的执行点放在 `loader.reload()`（见 `subagent-wire.ts` 的文件头），两步都不能省。
    */
   try {
@@ -914,7 +914,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     await dispose();
     throw error;
   }
-  /** 本行的投影状态：记录「有没有被要求停、是不是用户点的」（结论由骨架按停止来源给） */
+  /** 本次运行的投影状态：记录「有没有被要求停、是不是用户点的」（结论由骨架按停止来源给） */
   const runState = createPiRunState();
   /**
    * 合成帧入口的**转交**：包一层而不是把方法摘下来传——wire 的实现今天是闭包对象
@@ -924,18 +924,18 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   const attachWirePump: PiSubagentWire['attachPump'] = (push) => subagentWire.attachPump(push);
   /** 骨架逐条传给 `project` 的那一份状态（收尾要用它的累计读数，见 `project` 里的注释） */
   let latestState: TurnState | null = null;
-  /** 被摘掉的 MCP 条目只播一次（挂在第一条投影上，见 `projectRow` 里那一段） */
+  /** 被摘掉的 MCP 条目只播一次（挂在第一条投影上，见 `projectCandidate` 里那一段） */
   let mcpDropsAnnounced = false;
-  /** 结构化输出的预算中止只发一次（同一行里可能连着好几条收尾帧） */
+  /** 结构化输出的预算中止只发一次（同一本次运行里可能连着好几条收尾帧） */
   let structuredBudgetAborted = false;
   /**
    * 子智能体转写的读取口：跑动期增量与收尾补差量**共用同一份**——路径的两格
-   * （`cwd` 与 `sessionId`）都来自本行的装配，两处各写一遍会在其中一侧漂移。
+   * （`cwd` 与 `sessionId`）都来自本次运行的装配，两处各写一遍会在其中一侧漂移。
    */
   const readTranscript = (agentId: string): PiSubagentTranscript =>
     readPiSubagentTranscript({ cwd: input.cwd, sessionId: session.sessionId, agentId });
 
-  logger.debug('pi 已装配本行的运行时与会话', {
+  logger.debug('pi 已装配本次运行的运行时与会话', {
     model: input.route.modelId,
     provider: providerId,
     api: wire,
@@ -959,7 +959,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    *
    * **整 run 一份**：所有活动区间（首轮与每一次追问）共用它——同一个 `session`、同一个停止来源。
    */
-  const interruptRow = (): void => {
+  const interruptCandidate = (): void => {
     notePiStopRequest(runState, input.signal.aborted);
     void session.abort().catch((error: unknown) => {
       logger.warn('pi 的中止信号失败（释放路径仍会兜底）', { error });
@@ -974,13 +974,13 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * `subagentWire.dispose()` / `unregisterProvider()` 全部跳过）。`createDisposer` 保证
    * 「恰好一次」绑定在被关闭的对象上，所以共用一份不会重复释放。
    */
-  const disposeRow = async (): Promise<void> => {
+  const disposeCandidate = async (): Promise<void> => {
     // wire 通道先关：它的子会话订阅在骨架的收尾路径之外，越早退订越不占厂商资源
     subagentWire.dispose();
     await dispose();
     /**
-     * run 结束**注销本行的 provider**：`ModelRuntime` 是每次运行新造的，本可以随它一起被回收，
-     * 但显式注销让「这一行的注册在 run 的边界内」成为一条可断言的事实
+     * run 结束**注销本次运行的 provider**：`ModelRuntime` 是每次运行新造的，本可以随它一起被回收，
+     * 但显式注销让「本次运行的注册在 run 的边界内」成为一条可断言的事实
      * （守卫：并发用例里两行各自只看得见自己的 provider）。
      */
     runtime.unregisterProvider(providerId);
@@ -998,10 +998,10 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    */
   const activityInterval = (run: () => Promise<void>): TurnStart => ({
     stream: sessionEventStream(session, run, attachWirePump),
-    interrupt: interruptRow,
-    dispose: disposeRow,
+    interrupt: interruptCandidate,
+    dispose: disposeCandidate,
     continue: async (prompt) => activityInterval(() => session.prompt(prompt)),
-    project: (raw, state) => projectRow(raw, state),
+    project: (raw, state) => projectCandidate(raw, state),
   });
 
   return {
@@ -1011,14 +1011,14 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
      * 事件投影（归一、计量、失败与结束信号）住在 `events.ts`：本文件只把它接到骨架上。
      *
      * `vendor-system` 那一条**由这里追加**而不是塞进 `events.ts` 的判别链：它读的是
-     * 「这一行装配了什么」（观察者抓到的 payload、装载器的技能表），而那三样东西都在本闭包里，
+     * 「本次运行装配了什么」（观察者抓到的 payload、装载器的技能表），而那三样东西都在本闭包里，
      * 一条都不在投影函数拿得到的状态上。取数器自带去重（同一份事实只发一次）。
      */
-    project: (raw, state) => projectRow(raw, state),
+    project: (raw, state) => projectCandidate(raw, state),
     /**
      * 收尾：子任务行的**终态快照**与那两格分量（子智能体的用量与终态只在扩展事件总线上到达，
      * 而它到达的时刻与父会话的事件流没有先后保证——见 `finalizePiSubagents`），
-     * 外加本行的**通道事实**与**会话落点**。
+     * 外加本次运行的**通道事实**与**会话落点**。
      * 没有派发过子智能体时它原样返回空，一个字都不改。
      */
     finalize: () => ({
@@ -1050,7 +1050,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
    * `latestState` 那一手引用是收尾要的（`finalize` 的契约不带参数）；`structuredProjection` 只传给
    * 结构化输出那一件的采用点——它是「当前最终答复是谁产出的」的记账，别的分支不碰它。
    */
-  function projectRow(raw: unknown, state: TurnState): TurnProjection {
+  function projectCandidate(raw: unknown, state: TurnState): TurnProjection {
     latestState = state;
     const projection = projectPiEvent(
       raw,
@@ -1072,7 +1072,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
       structuredBudgetAborted = true;
       runState.selfAborted = true;
       notePiStopRequest(runState, false);
-      logger.warn('pi 的结构化输出参数连续被厂商拒：中止这一轮（避免无界往返）', {
+      logger.warn('pi 的结构化输出参数连续被厂商拒：中止这一轮（避免无界的步数）', {
         rejections: runState.structuredRejections,
         budget: PI_STRUCTURED_REJECTION_BUDGET,
       });
@@ -1087,7 +1087,7 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
      *
      * 第三条为什么要走投影而不是在第一帧就发出去：骨架的产物只有「投影」与「收尾」两个出口
      * （`TurnStart.project` / `finalize`），装配期没有一个能发事件的通道。挂在**第一条投影**上
-     * 是这两条路里最早的一个点，且它必然是这一行跑起来之后——没有请求就没有「这一行的环境是什么」
+     * 是这两条路里最早的一个点，且它必然是本次运行跑起来之后——没有请求就没有「本次运行的环境是什么」
      * 可言（与 `readVendorFacts` 自己那条「先读到请求再播报」同一条判据）。
      * `mcpDropDrafts` 只在这里读一次、发一次（`mcpDropsAnnounced`）。
      */
@@ -1133,7 +1133,7 @@ function sessionEventStream(session: PiSession, run: () => Promise<void>, attach
        * 厂商的 `prompt()` 在**起请求之前**就会抛——没有可用凭据 / 模型未选 / 正在压缩 /
        * 已有在跑的轮次（厂商 `.d.ts` 的 `@throws` 一族）。把它与落定归成同一个信号的话，
        * 骨架的 catch 与归因层都看不到它：一次「凭据缺失」会被读成 `ok:true / completed /
-       * finalText:null`，即「这一行成功了、只是没说话」——最坏的一种误读。
+       * finalText:null`，即「本次运行成功了、只是没说话」——最坏的一种误读。
        */
       let promptError: unknown = null;
       let promptFailed = false;
@@ -1173,7 +1173,7 @@ function sessionEventStream(session: PiSession, run: () => Promise<void>, attach
           if (settled) {
             /**
              * **剩的事件先交完，再把拒绝交给骨架**：投影已经落过的事件不该因为一次
-             * 起请求前的失败而消失（「这一行说过什么」与「这一次为什么没跑成」是两件事）。
+             * 起请求前的失败而消失（「本次运行说过什么」与「这一次为什么没跑成」是两件事）。
              * 抛出去之后归 `runTurn` 的 catch 处置：外部要求停止 ⇒ canceled；否则
              * `classifyAgentFailure` 归成 `AGENT_*`。
              */
@@ -1199,7 +1199,7 @@ function sessionEventStream(session: PiSession, run: () => Promise<void>, attach
  *
  * 「我们装进来的」有三类，缺一类都会把自家扩展误判成发现来的：
  *   · 内联工厂（合成路径 `<inline:…>`）；
- *   · 落在本行配置目录下的文件（扩展自己写出来的那些）；
+ *   · 落在运行配置目录下的文件（扩展自己写出来的那些）；
  *   · **显式白名单的那几条绝对路径**（`additionalExtensionPaths`——子智能体扩展住在本仓的
  *     `node_modules` 里，既不是内联也不在配置目录下）。
  * 漏了第三类的症状不是「漏检」而是**假红**：装载器被无谓地按不信任项目重建，随后那一条仍在表里
@@ -1213,11 +1213,11 @@ function foreignExtensions(loader: PiResourceLoader, configHome: string, allowed
 }
 
 /**
- * 本行的会话落点：`<configHome>/sessions`。
+ * 本次运行的会话落点：`<configHome>/sessions`。
  *
- * 为什么显式钉在**行配置目录**下而不是让厂商自己算：厂商默认落点是
- * `<agentDir>/sessions/--<编码后的 cwd>--`，也就是「家目录 × 工作区」两轴的函数。行工作区会被
- * 重建（`retryRow` / 重新执行），配置目录也会随行变 ⇒ 靠默认值的话，「这一行的会话落在哪」
+ * 为什么显式钉在**运行配置目录**下而不是让厂商自己算：厂商默认落点是
+ * `<agentDir>/sessions/--<编码后的 cwd>--`，也就是「家目录 × 工作区」两轴的函数。运行工作区会被
+ * 重建（`retryCandidate` / 重新执行），配置目录也会随行变 ⇒ 靠默认值的话，「本次运行的会话落在哪」
  * 每次都得靠两条都会变的路径重新推导。钉在 `configHome` 下之后，**换行即换目录**，
  * 「按行隔离」这一条不需要第二个机制（真机探针验过：同一个 cwd 只换会话目录就已经隔开）。
  */
@@ -1226,14 +1226,14 @@ export function piSessionDir(configHome: string): string {
 }
 
 /**
- * 这一轮用哪份会话管理器：**续接**打开指定的会话文件，否则在行内落点开一条新的。
+ * 这一轮用哪份会话管理器：**续接**打开指定的会话文件，否则在运行内落点开一条新的。
  *
- * 续接**必须用 `open` 而不是 `continueRecent`**：后者取目录里 mtime 最新的一条，而行内重跑会在
+ * 续接**必须用 `open` 而不是 `continueRecent`**：后者取目录里 mtime 最新的一条，而运行内重跑会在
  * 同一目录里留下上一次尝试的会话 ⇒ 接回来的是上一次尝试的上下文（用户以为在追问，模型答的是
  * 另一轮的题）。
  *
  * 打开之前**自己判文件在不在**：厂商的 `open(path)` 在文件不存在时**不抛**，它当场在同名路径上
- * 造一条新的 ⇒ 「会话没了」与「接上了」在调用点完全同形。这里的失败是**响**的（该行以中文原因
+ * 造一条新的 ⇒ 「会话没了」与「接上了」在调用点完全同形。这里的失败是**响**的（本次运行以中文原因
  * 收场）：用户明确要求接着上一轮跑，而产物已经不在了，静默开新会话正是本仓最不接受的那种
  * 「看起来一切正常」的错。
  */
@@ -1243,11 +1243,11 @@ function openPiSessionManager(sdk: PiSdkModule, input: AgentRunInput): unknown {
   if (!existsSync(resume.sessionId)) {
     throw new Error(
       `[agents] pi 的续接会话文件不存在：${resume.sessionId}——`
-        + '这一行的会话产物已被清理，无法把上一轮的上下文带回来；本层不静默开新会话',
+        + '本次运行的会话产物已被清理，无法把上一轮的上下文带回来；本层不静默开新会话',
     );
   }
   /**
-   * **0 字节与「不存在」同档**：文件在场但一行内容都没有（上次写到一半被中断、或被截断）时，
+   * **0 字节与「不存在」同档**：文件在场但一运行内容都没有（上次写到一半被中断、或被截断）时，
    * 厂商的 `open()` 照样成功——它开出来的是一条**没有历史的会话**，于是「用户以为在追问、
    * 模型什么都不记得」这件事在产物上长得与成功续接**逐字一样**（真机读数：`{ok:true,
    * requests:1}`、`sessionId` 就是同一个文件）。半截 JSON 会被厂商拒（`Session file is not a
@@ -1269,7 +1269,7 @@ export const piProvider: AgentProvider = {
     /**
      * 两条 wire 都能收：`openai` → `openai-responses`（补 `/v1` + `/responses`）、
      * `anthropic` → `anthropic-messages`（剥尾 `/v1` + `/v1/messages`）。少声明一条会平白砍掉
-     * 一半现有供应商条目的候选。
+     * 一半现有供应商条目的本次运行。
      */
     protocolTypes: ['openai', 'anthropic'],
     capability: {
@@ -1309,13 +1309,13 @@ export const piProvider: AgentProvider = {
       streamingDeltaSource: 'wire',
       streamingDeltaReason: null,
       notes: [
-        '成本不可用：上游不报成本，本行成本这一格没有真值（model 的四条费率全 0 只为让 SDK 的计价函数不炸）',
-        '一次模型往返 = `turns` 的一格：assistant `message_end` 与 `turn_start` 同数，一次工具调用算两轮',
+        '成本不可用：上游不报成本，本次运行的成本这一格没有真值（model 的四条费率全 0 只为让 SDK 的计价函数不炸）',
+        '一步 = `turns` 的一格：assistant `message_end` 与 `turn_start` 同数，一次工具调用算两轮',
         '子任务由扩展 @tintinweb/pi-subagents@0.21.0 提供：派发工具与子任务身份 / 状态 / 用量都挂在扩展上，'
-          + '扩展没装上时本行**失败并点名**（不许「声明支持、实际没装」）',
+          + '扩展没装上时本次运行**失败并点名**（不许「声明支持、实际没装」）',
         '派发能力整条在扩展里，但**模型也可以自己用 `bash` 拉起宿主 `pi` CLI 凑一个子智能体**——'
-          + '那条路径**不在我们的观测面内**：真机实测里子智能体真跑了、真交了报告，而本行 `subagentTurns: 0`、'
-          + 'token 不进本行、事件流里一个字都没有 ⇒ 子任务那几格只回答「经扩展派发的那些」。'
+          + '那条路径**不在我们的观测面内**：真机实测里子智能体真跑了、真交了报告，而本次运行 `subagentTurns: 0`、'
+          + 'token 不进行的、事件流里一个字都没有 ⇒ 子任务那几格只回答「经扩展派发的那些」。'
           + '**工具可用 ≠ 模型一定用它**：装了扩展这条边界依然成立',
         '子会话**继承主会话的模型与网关 / 密钥**（`subagentSource` 之所以是 `wire`）：父会话的 `modelRegistry` 与 '
           + '`modelRuntime` 原样传下去 ⇒ 子智能体打的是同一台网关，**不需要**配置文件 / 环境变量 / 宿主 CLI',
@@ -1325,7 +1325,7 @@ export const piProvider: AgentProvider = {
         '子任务只到**顶层**：扩展只给顶层子智能体发生命周期事件，子会话自己再派发的那些'
           + '在父会话里一个字都没有 ⇒ 子任务行的 `parentSubagentId` 恒 `null`',
         '合计（`tokens` / `turns`）**含**子智能体那一份：主子自己的读数与子会话的读数覆盖面不相交，'
-          + '两份相加才是「这一行一共花了多少」，界面按「主会话 = 合计 − 分量」推导',
+          + '两份相加才是「本次运行一共花了多少」，界面按「主会话 = 合计 − 分量」推导',
         '子会话的**会话文件与 settings/memory 落真实 `~/.pi`**：它们走 SDK 的进程级 `getAgentDir()`'
           + '（装载器的 `agentDir` 那一格管不到子会话），可用的开关只有 `PI_CODING_AGENT_DIR` 与'
           + '`PI_CODING_AGENT_SESSION_DIR`（后者优先，只管落盘目录）——本适配器不写宿主环境变量'
@@ -1351,7 +1351,7 @@ export const piProvider: AgentProvider = {
         'MCP 的观测格走「厂商工具表」这一条通道：`direct` 档下工具真的进请求，表在、里面没有它 ⇒ 未启动；'
           + '这一家没有「每台一张状态表」那种东西，工具面就是最硬的证据',
         '技能的同名冲突如实呈现：厂商清单里仍是那个名字（结论判「已装上」），两端路径落一条 WARN——'
-          + '冲突**不判**「缺失」，那会让整行失败且文案说假话',
+          + '冲突**不判**「缺失」，那会让整本次运行失败且文案说假话',
         'MCP 的 OAuth 登录不补（401 落到 `needs sign-in`，与另三家同档）：**可补、不构成未覆盖项**——'
           + '公开包 `@earendil-works/pi-mcp/oauth` 与 `createMcpExtension({ credentials })` 这两处入口存在（厂商 `mcp/index.js`），'
           + '但**补法未验证**：本仓没有任何调用点或探针跑过 OAuth 刷新那条路',
@@ -1373,8 +1373,8 @@ export const piProvider: AgentProvider = {
      *
      * 两条写进 `notes` 的前提（都是「不看就会用错」的那类）：
      *   · 续接**必须**用 `open(文件)` 而不是 `continueRecent`（后者取目录里 mtime 最新的一条，
-     *     行内重跑会接到上一次尝试）；落点是**会话文件路径**而不是会话 id（文件名嵌着不可预知的时间戳）；
-     *   · `'round'` 那一档只在**同一条命**里有效：跨进程续接之后没有在途轮次，
+     *     运行内重跑会接到上一次尝试）；落点是**会话文件路径**而不是会话 id（文件名嵌着不可预知的时间戳）；
+     *   · `'round'` 那一档只在**同一条命**里有效：跨进程续接之后没有在途轮，
      *     续接之后的追问天然落在排队那一档。
      */
     turnInjection: {
@@ -1420,13 +1420,13 @@ export const piProvider: AgentProvider = {
       },
       notes: [
         '续接必须用 `SessionManager.open(会话文件)`，不能用 `continueRecent`：后者取会话目录里 mtime 最新的一条，'
-          + '而行内重跑会在同一目录里留下上一次尝试的会话 ⇒ 接回来的是上一次尝试的上下文',
+          + '而运行内重跑会在同一目录里留下上一次尝试的会话 ⇒ 接回来的是上一次尝试的上下文',
         '要落的键是**会话文件路径**（不是会话 id）：文件名是 `<ISO 时间戳>_<会话 id>.jsonl`，时间戳不可预知 ⇒ id 拼不回路径',
-        '会话落点显式钉在行配置目录下的 `sessions/`：不给这一格时厂商按 `agentDir` × `cwd` 两轴推导默认落点，'
-          + '而工作区会被重建 ⇒「这一行的会话在哪」变成算不出来的东西',
-        '续接的会话文件不存在时该行失败并点名路径：厂商的 `open()` 在文件不存在时不抛、当场新造一条，'
+        '会话落点显式钉在运行配置目录下的 `sessions/`：不给这一格时厂商按 `agentDir` × `cwd` 两轴推导默认落点，'
+          + '而工作区会被重建 ⇒「本次运行的会话在哪」变成算不出来的东西',
+        '续接的会话文件不存在时本次运行失败并点名路径：厂商的 `open()` 在文件不存在时不抛、当场新造一条，'
           + '静默开新会话正是「用户以为在追问、模型什么都不记得」的那种失败',
-        '`round` 那一档只在同一条命（同一个进程内、本轮未收场）里有效：跨进程续接之后没有在途轮次，'
+        '`round` 那一档只在同一条命（同一个进程内、本轮未收场）里有效：跨进程续接之后没有在途轮，'
           + '续接之后的追问天然落在排队那一档',
         '投递两档今天还没接（`off-by-adapter`）：窄壳声明了 `steer` / `followUp`，但适配器一格都不挂端口',
       ],
@@ -1463,7 +1463,7 @@ export const piProvider: AgentProvider = {
      */
     timing: {
       runScale: 'seconds',
-      notes: ['前提是本机网关 + 短提示词；行内首次 import pi 另计 300–450 ms 与约 90 MB RSS'],
+      notes: ['前提是本机网关 + 短提示词；运行内首次 import pi 另计 300–450 ms 与约 90 MB RSS'],
     },
     // 事件流即齐（见本文件头那条实现义务）：不需要补 messages.jsonl
     needsMessagesForReasoningEvidence: false,

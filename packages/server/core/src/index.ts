@@ -67,7 +67,7 @@ export {
 } from './paths';
 export {
   assertCommit,
-  checkoutRow,
+  checkoutCandidate,
   collectDiff,
   copyWorkspace,
   ensureCaseCache,
@@ -94,20 +94,20 @@ export {
 } from './mirror';
 export {
   caseCacheDir,
-  ensureRowJudgeHome,
-  prepareEmptyRowWorkspace,
-  prepareRowWorkspace,
-  rowAgentHomeDir,
-  rowAttachmentDir,
-  rowAttachmentsDir,
-  rowAttemptsFile,
-  rowDir,
-  rowEventsFile,
-  rowJudgeEventsFile,
-  rowJudgeHomeDir,
-  rowJudgeMessagesFile,
-  rowMessagesFile,
-  rowWorkspaceDir,
+  ensureCandidateJudgeHome,
+  prepareEmptyCandidateWorkspace,
+  prepareCandidateWorkspace,
+  candidateAgentHomeDir,
+  candidateAttachmentDir,
+  candidateAttachmentsDir,
+  candidateAttemptsFile,
+  candidateDir,
+  candidateEventsFile,
+  candidateJudgeEventsFile,
+  candidateJudgeHomeDir,
+  candidateJudgeMessagesFile,
+  candidateMessagesFile,
+  candidateWorkspaceDir,
   runDir,
   runSnapshotFile,
 } from './workspace';
@@ -127,6 +127,12 @@ export {
   scanWorkspaceArtifacts,
   type WorkspaceArtifactEntry,
 } from './artifact-store';
+// 工作区图片（`image-view` 块预览）：只认相对路径 + 图片后缀白名单 + `realpath` 复核 + 字节上限
+export {
+  readWorkspaceImage,
+  WORKSPACE_IMAGE_MAX_BYTES,
+  type WorkspaceImageFile,
+} from './workspace-image';
 export { appendEvent, maxEventSeq, readEvents, readEventsAfter, resetEvents, type PendingAgentEvent } from './event-log';
 // MCP stdio 探活原语：机制进 core（与 git-exec.ts 同一类「非智能体子进程原语」），
 // 策略（失败分档与文案）在 api/src/mcp.ts。⚠️ 探活不是跑智能体，不受 agentProvider.run 唯一入口约束。
@@ -144,6 +150,6 @@ export {
   foldMessages,
   foldSubagents,
   readRecords,
-  readRowRecords,
+  readCandidateRecords,
   resetRecords,
 } from './message-log';

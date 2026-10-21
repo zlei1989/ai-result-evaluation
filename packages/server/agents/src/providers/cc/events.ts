@@ -8,7 +8,7 @@
  *     原始负载仍然逐字在 `text` 里，抽屉的证据一个字没少；
  *     **例外有三类**：`stream_event` 与 `system/thinking_tokens` 逐 token 各一条，落进这条兜底就是
  *     「抽屉刷成 JSON 流水 + 单行产物涨到 MB 级」（真机 11,629 条，见那一支的注释）；
- *     **历史重放帧**（`isReplay`，续接时 CLI 把已发生过的用户消息再投一遍）则是「这份内容本行已有」。
+ *     **历史重放帧**（`isReplay`，续接时 CLI 把已发生过的用户消息再投一遍）则是「这份内容本次运行已有」。
  *     三类都**显式丢弃**（不是默默丢弃）：登记点是这条规则 + 知识库《消息规范》的「非渲染增量」表
  *     ——「不许静默丢弃」依然成立，只是处置写的是「丢」；
  *  3. 计量只在 `result` 消息上取：`usage.input_tokens` /
@@ -81,7 +81,7 @@ const PERMISSION_DENIED_SUBTYPE = 'permission_denied';
  * `system` 下那条**上游重试**的 subtype（`SDKAPIRetryMessage`）。
  *
  * 真机形状逐字：`{subtype:'api_retry', attempt:1, max_retries:10, retry_delay_ms:529, error_status:500,
- * error:'server_error'}`。它承载的正是「这一行现在为什么不动」——上游连续 500 时真机跑出过
+ * error:'server_error'}`。它承载的正是「本次运行现在为什么不动」——上游连续 500 时真机跑出过
  * **10 次重试、墙钟约 3 分钟**的一串帧，而在此之前它们只落原始 JSON：活动行一个字都不说，
  * 界面看起来像卡死。厂商在这几格里已经说清了「第几次、等多久、什么错」⇒ 给一句摘要，
  * 原始负载照旧整条落盘（排障要的是那份原文）。
@@ -95,7 +95,7 @@ const API_RETRY_SUBTYPE = 'api_retry';
  *     ⇒ 维持原样只落原始负载（它还是「这一轮什么时候开始」的时间戳证据，量级也小）；
  *   · `status: 'compacting'`：自动压缩**开始**；
  *   · `status: null` + `compact_result: 'success' | 'failed'`（+ `compact_error`）：压缩**结束**。
- * 后两档是长过程里唯一的行级出口——压缩失败（真机：`too_few_groups`，压不动）此前只躺在原始 JSON 里，
+ * 后两档是长过程里唯一的运行级出口——压缩失败（真机：`too_few_groups`，压不动）此前只躺在原始 JSON 里，
  * 界面既不知道它在压缩、也不知道它压失败了。
  */
 const STATUS_SUBTYPE = 'status';
@@ -170,7 +170,7 @@ export function vendorSystemDraftOf(
  *   · `source` 是**厂商原值照抄**（真机 `userSettings`），空串按「没给」记 `null`——把空串留在
  *     契约里会让界面显示一个空来源，而事实是厂商没报这一格；
  *   · `origin` 是**我们**按落点与原值归一出来的分档，判据只有 `classifySkillOrigin` 一份
- *     （本层恰好同时知道行配置目录与工作目录，故由这里判，界面不再重推）。
+ *     （本层恰好同时知道运行配置目录与工作目录，故由这里判，界面不再重推）。
  *
  * claude 的 `getContextUsage().skills.skillFrontmatter` **不带落点**（只有名字、来源、token 数）
  * ⇒ `path` 恒 `null`，来源只能靠原值那一档。
@@ -194,8 +194,8 @@ export function skillsDraftOf(
 /**
  * `system/init` 自带的技能名单 → `vendor-system.skills` 那一格的**回落来源**。
  *
- * 为什么要它：`getContextUsage()` 那条探针**只在「这一行配了技能」时才跑**（编排层按「空集不给键」
- * 的口径不下发 `skills`）⇒ 没配技能的行上，收尾那条事件本来一个 `skills` 格都不带，而下游把
+ * 为什么要它：`getContextUsage()` 那条探针**只在「本次运行配了技能」时才跑**（编排层按「空集不给键」
+ * 的口径不下发 `skills`）⇒ 没配技能的本次运行上，收尾那条事件本来一个 `skills` 格都不带，而下游把
  * 「没有这一格」读成**厂商没投送**——可厂商在 `system/init` 里明明投了（真机 19 条，含本次注入的
  * 那一条）。这一格是**免费的**：init 帧本来就在手上。
  *
@@ -235,12 +235,12 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
    * **已经发生过**的用户侧消息重新投一遍。
    *
    * 为什么不能按新内容收下：重放帧带的是**自己的** `uuid`（与原帧不同）⇒ 上面那张去重表挡不住
-   * 它；而追问这一段是**追加到同一行**上的（工作区与产物都不重置，见编排层 `followUpRow` 的
-   * 「计量是这一行的累计产出」），那些内容早就在本行的 `events.jsonl` / `messages.jsonl` 里
+   * 它；而追问这一段是**追加到同一行**上的（工作区与产物都不重置，见编排层 `followUpCandidate` 的
+   * 「计量是本次运行的累计产出」），那些内容早就在本次运行的 `events.jsonl` / `messages.jsonl` 里
    * ⇒ 收下就是把上一轮的工具结果连同证据再写一遍（消息侧还会把任务台账的 patch 再放一遍）。
    *
    * 这是本文件**第三类**显式登记的丢弃（前两类是 `stream_event` 与 `system/thinking_tokens`，
-   * 见文件头规则 2）：「不许静默丢弃」对它依然成立——处置写的是「丢」，依据是「这份内容本行已有」。
+   * 见文件头规则 2）：「不许静默丢弃」对它依然成立——处置写的是「丢」，依据是「这份内容本次运行已有」。
    */
   if (message?.isReplay === true) return emptyProjection();
   const type = readString(message, 'type') ?? 'unknown';
@@ -281,11 +281,11 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
      * 为什么这一帧必须有摘要、不能只落原始 JSON：它是**评分档的常态**——那一段走的是
      * `dontAsk` + `permissionPrompts: 'none'`（本进程没有批准面），厂商 JSDoc 逐字说明
      * 「dontAsk 模式、headless auto-deny、deny rule 都走这条」。而它是「模型想写盘但被拒」的
-     * **唯一行级出口**（`decision_reason` 与 `message` 是那句给模型看的原因）⇒ 原来只落一坨 JSON 时，
+     * **唯一运行级出口**（`decision_reason` 与 `message` 是那句给模型看的原因）⇒ 原来只落一坨 JSON 时，
      * 活动行一个字都不说，排障只能逐笔翻原始负载。
      *
      * **原始负载照发**（与 `init` 那一支同形）：摘要之外仍要留证，消费者按 `tool_name` / `agent_id`
-     * 自行配对。刻意**不**折成 failure：被拒一次不是这一行失败了——模型会看到工具结果并换一条路。
+     * 自行配对。刻意**不**折成 failure：被拒一次不是本次运行失败了——模型会看到工具结果并换一条路。
      *
      * ⚠️ **只发一条**（不是「摘要一条 + 原始负载一条」）：那两条的 `text` 逐字相同
      * （`unknownEventDraft(raw)` 就是 `logDraft('stdout', safeStringify(raw))`）⇒ 落两条等于
@@ -300,14 +300,14 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
         failure: null,
       };
     }
-    // 厂商系统层事实：`init` 那一行的六格归一成一条独立事件（**原始负载那条 log 照发**）
+    // 厂商系统层事实：`init` 那一本次运行的六格归一成一条独立事件（**原始负载那条 log 照发**）
     if (readString(message, 'subtype') === INIT_SUBTYPE) {
       return { drafts: [vendorSystemDraftOf(message), unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
     }
     /**
      * **上游重试**（`api_retry`）：给活动行一句「第几次、等多久、什么错」，原始负载照发。
      *
-     * 为什么它值得独占一支：这一帧是**长退避期间唯一的行级出口**（真机 500 臂：10 次重试、
+     * 为什么它值得独占一支：这一帧是**长退避期间唯一的运行级出口**（真机 500 臂：10 次重试、
      * 墙钟约 3 分钟，期间没有任何 assistant / result）。不给摘要就等于让界面在那三分钟里
      * 一个字都不说——读者分不清「在重试」与「卡死了」。
      */
@@ -335,7 +335,7 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
   }
   /**
    * `user` 消息里承载的是**工具结果**（`tool_result` 块）：只有报错才给一句人话摘要
-   * （统一口径）——那是「这一行出事了」，而它没有别的行级出口；成功返回不播，
+   * （统一口径）——那是「本次运行出事了」，而它没有别的运行级出口；成功返回不播，
    * 它的落点是结果块与抽屉的原始输出面板（口径与判据见 `src/activity.ts`）。
    */
   if (type === 'user') {
@@ -353,7 +353,7 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
    *      ⇒ SSE 实时驱动执行日志的打字机效果。事件侧零产出（`uuid` 去重照常在上面做——重复帧仍丢）。
    *   ② `system` + `subtype: 'thinking_tokens'`（**思考进度帧**，见 `THINKING_TOKENS_SUBTYPE` 的 SDK 原文）：
    *      它是给 spinner 用的近似进度，每个思考 token 一条。**量级**（run `7f05c765`
-   *      的 claude 行）：这一种帧 **11,629 条**，占该行 12,509 条 `log` 的 **93%**；评分智能体那条路
+   *      的 claude 行）：这一种帧 **11,629 条**，占本次运行 12,509 条 `log` 的 **93%**；评分智能体那条路
    *      （走同一个适配器）再叠 **670 条**。后果两条都很硬：
    *      「原始输出」面板被刷成 JSON 流水且卡死、`events.jsonl` 的单行产物涨到 MB 级。
    *      而它承载的信息与收尾的权威值（`result.usage.output_tokens_details.thinking_tokens`）重复且更差
@@ -374,13 +374,13 @@ export function projectClaudeMessage(raw: unknown, state: TurnState, context: Fa
  *
  * 为什么必须分档、不能一律判失败：`api_retry` 帧用的是**同一个**错误枚举
  * （`sdk.d.ts` 的 `SDKAPIRetryMessage.error`）⇒ `overloaded` / `rate_limit` / `server_error`
- * 这些是「失败了一次、马上自己退避重试」，重试成功后这一行是好的；而 `max_output_tokens` 另有
+ * 这些是「失败了一次、马上自己退避重试」，重试成功后本次运行是好的；而 `max_output_tokens` 另有
  * 自愈通道（`resumed_from_incomplete_thinking`：下一轮接着上一轮的思考块跑完）。
  * 骨架那一侧的 `failure` 是**最后写入者赢且不会被清除**（`turn.ts` 的消费循环）⇒ 把可重试档
  * 写进去，就等于让一次自己恢复了的运行永远判失败。
  *
  * 表里这几条反过来：重试不会让它们变好，而 CLI **不一定**会为它们写 `result.is_error`
- * （进程被杀、流被掐断时根本到不了那一帧）⇒ 这一格是它们唯一的行级出口。
+ * （进程被杀、流被掐断时根本到不了那一帧）⇒ 这一格是它们唯一的运行级出口。
  *
  * ⚠️ **为什么不走 `classifyAgentMessage`**：那一份归因表的入口是 **HTTP 状态**
  * （`errors.ts` 的 `statusOf`：读 `status` / `statusCode`，或从文案里抓 `401` 这样的数字），
@@ -435,10 +435,10 @@ function assistantFailure(
       'stderr',
       terminal === undefined
         ? `[WARN] cc 的上游这一次报 ${error}（可重试档，厂商会自己退避重试）：不据此判失败，最终结论看收尾那条 result`
-        : `[WARN] cc 的上游以 ${error} 收场（终局错误，重试不会改变结果）：本行按失败处置`,
+        : `[WARN] cc 的上游以 ${error} 收场（终局错误，重试不会改变结果）：本次运行按失败处置`,
     ),
   );
-  // 可重试档只留痕：厂商重试成功后这一行是好的，而骨架的 failure 一旦写入就再也清不掉
+  // 可重试档只留痕：厂商重试成功后本次运行是好的，而骨架的 failure 一旦写入就再也清不掉
   if (terminal === undefined) return null;
   return { code: terminal.code, message: `cc 的上游报告 ${error}——${terminal.reason}` };
 }
@@ -567,7 +567,7 @@ const phantomTaskIds = new Set<string>();
  * （`message.ts` 的 `isDispatchShaped`：`subagent_type` / `spawn_depth` / `prompt` 至少一格非 `null`）。
  * 为什么这一侧也要挡：活动行显示的就是这一条日志的 `summary`
  * ⇒ 不挡就会对着一条**后台 Bash 命令**播「已派发子任务：sleep 5 && echo ok」，
- * 而面板与 `messages.jsonl` 那边按同一条判据**一行都不产**（两个面互相打脸）。
+ * 而面板与 `messages.jsonl` 那边按同一条判据**一本次运行都不产**（两个面互相打脸）。
  *
  * **「厂商标了 `ambient` / `skip_transcript`」不在这条判据里**：那一类同样拿不到活动行摘要
  * （见下面的 `quiet`），但**载荷照发**——厂商说的是「别当活动展示」，不是「这条不存在」，
@@ -730,7 +730,7 @@ function projectResult(
   //     那一支**同源**：本函数明确拒绝把 `''` 当成「采到了答复」（文件头 N3），那么空的 schema 产出同样
   //     不该顶掉一个非空的 `result`——少这一格，同一个函数里就有两套互相矛盾的「空串算不算答复」；
   //   · **已序列化的 JSON 字符串** ⇒ 原样当 JSON 文本用。若照对象那样再 `JSON.stringify` 一次就是二次
-  //     编码（`'"{\"a\":1}"'`），下游 parse 出来是**字符串**而不是对象 ⇒ schema 约束下的每一行都失败在
+  //     编码（`'"{\"a\":1}"'`），下游 parse 出来是**字符串**而不是对象 ⇒ schema 约束下的每个本次运行都失败在
   //     「顶层不是对象」。只有对象形态才走 `safeStringify`。
   const structured = message?.structured_output;
   if (hasClaudeStructuredOutput(message)) {
@@ -739,7 +739,7 @@ function projectResult(
       drafts.push(
         logDraft(
           'stderr',
-          '[WARN] cc 的 structured_output 与 result 文本不一致；本行的最终答复以 structured_output 为准'
+          '[WARN] cc 的 structured_output 与 result 文本不一致；本次运行的最终答复以 structured_output 为准'
             + '（结构化输出是 CLI 按 schema 校验过的产出）',
         ),
       );
@@ -757,11 +757,11 @@ function projectResult(
    * 又会把全表和当成「到目前为止」交出去，骨架的 `liveTokens = estimatedTokens ?? tokens`
    * 于是从权威值**退回**估算（界面上 tok 往回跳，`tokensBasis` 也翻回 `estimated`）。
    * 清掉之后这张表的语义收窄成「**还没结算的那一轮**」，由 `index.ts` 的 `project` 把它加在
-   * 已结算的累计上（那里才是本行唯一的累计点）。
+   * 已结算的累计上（那里才是本次运行唯一的累计点）。
    *
    * ⚠️ **只在真读到权威值时才清**（`tokens !== null`）：`result.usage` 缺项那一档虽然罕见，
    * 但无条件清会把「还没结算那一轮」的估算也丢掉、又没有任何权威值顶上来 ⇒ 下一条 usage 事件的
-   * 读数**比上一条小**，与「本行到目前为止的累计、单调不减」这条口径直接冲突（见 `index.ts`）。
+   * 读数**比上一条小**，与「本次运行到目前为止的累计、单调不减」这条口径直接冲突（见 `index.ts`）。
    * 读了零个字节就不算结算，那一轮的估算留着才对。
    */
   if (tokens !== null) state.usageByMessageId.clear();
@@ -802,11 +802,11 @@ function projectResult(
       logDraft(
         'stderr',
         reported > state.turns
-          ? `[WARN] cc 自报的 num_turns=${reported} 多于本轮按 assistant 消息数出的轮次=${state.turns}；` +
-            '已知一种成因是厂商把同一次往返的多次投递按多次计（刻度差异），但**也可能是我们少算**' +
-            '——本层按 `message.id` 去重，两条不同往返撞同一个 id 时只算一轮 ⇒ 请查上游是否复用 message.id'
-          : `[WARN] cc 自报的 num_turns=${reported} 少于本轮按 assistant 消息数出的轮次=${state.turns}；` +
-            '界面与本行快照以数出来的为准（一次模型 API 往返算一次）',
+          ? `[WARN] cc 自报的 num_turns=${reported} 多于本轮按 assistant 消息数出的步数=${state.turns}；` +
+            '已知一种成因是厂商把同一步的多次投递按多次计（刻度差异），但**也可能是我们少算**' +
+            '——本层按 `message.id` 去重，两条不同步撞同一个 id 时只算一步 ⇒ 请查上游是否复用 message.id'
+          : `[WARN] cc 自报的 num_turns=${reported} 少于本轮按 assistant 消息数出的步数=${state.turns}；` +
+            '界面与运行快照以数出来的为准（一次模型调用算一步）',
       ),
     );
   }
@@ -903,7 +903,7 @@ function projectResult(
     tokens,
     timing,
     turns,
-    // 归属：第三个出口同样要带（失败是这一行的结论，但它读的是主循环的那一次往返）
+    // 归属：第三个出口同样要带（失败是本次运行的结论，但它读的是主循环的那一次往返）
     turn: turns === null ? null : { subagentId: null, round: turns },
     failure: classifyAgentMessage(failureText, context),
   };
@@ -975,7 +975,7 @@ type TokenTrio = UsageTokens;
 /**
  * 跑动期的用量估算（用户口径；由投影返回、骨架发事件）。
  *
- * 为什么需要它：`result` 消息要等这一行跑完才到，而界面要在跑动期就看到 tok 在动。
+ * 为什么需要它：`result` 消息要等本次运行跑完才到，而界面要在跑动期就看到 tok 在动。
  * assistant 消息从第一条起就带 `message.usage`，把它按 `message.id` 归并累加即可。
  *
  * 四条取舍（每条都有对应的守卫用例）：

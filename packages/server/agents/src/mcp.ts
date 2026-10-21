@@ -1,15 +1,15 @@
 /**
- * MCP 的**注入落点**：canonical 条目 → 各家厂商的形状，以及行内
+ * MCP 的**注入落点**：canonical 条目 → 各家厂商的形状，以及运行内
  * `.npmrc` 的 registry 落盘。
  *
  * 两条口径写在这里、别处不许各写一份：
  *   · **适配器只认入参、不读 `loadConfig()`**（控制权在编排层）：本模块的函数收什么译什么，
- *     条目从 `AgentRunInput.mcpServers` 来，由编排层在候选执行那一处填；
+ *     条目从 `AgentRunInput.mcpServers` 来，由编排层在本次运行执行那一处填；
  *   · **claude 一律走 SDK 参数**（`Options.mcpServers`），**不落 `<configHome>/.claude.json`**：
  *     参数是编程入口，优先级实测高于磁盘配置，且不落盘就不会与宿主那份混起来。
  *     `strictMcpConfig` **保持关闭**（不压制被测仓库自带的 `.mcp.json`，那是用户口径）。
  *
- * 本模块只有纯函数 + 两处 IO（写行内 npmrc / 读宿主 npmrc），没有厂商对象、没有全局状态：
+ * 本模块只有纯函数 + 两处 IO（写运行内 npmrc / 读宿主 npmrc），没有厂商对象、没有全局状态：
  * 条目翻译的守卫因此可以逐字断言形状（见 `mcp.test.ts`）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -37,7 +37,7 @@ export type ClaudeMcpServer =
  * 编排层的 WARN），正常路径上畸形条目到不了这里。留这一道是因为翻译器有独立的入口
  * （`toDshMcpPluginLines` 等对 `AgentRunInput.mcpServers` 直接开口，见 `providers/<家>/index.ts`），
  * 而这里的坏法**不是静默**：dsh 那支对 `undefined` 直接抛 `TypeError`（`quoteYaml` 里 `value.replaceAll`），
- * 一整行会以内部错误收口——一个手改坏的配置条目不该有这个后果。
+ * 一整本次运行会以内部错误收口——一个手改坏的配置条目不该有这个后果。
  *
  * 为什么是「跳过这一条」而不是「补一个空串」：空 `command` / 空 `url` 在厂商侧是**另一件事**
  * （一台起不来、或者打到一个空地址），凭我们手里的半个条目编不出它本来该是什么。
@@ -53,7 +53,7 @@ function isTranslatableEntry(entry: McpServerConfig | null | undefined): boolean
  * canonical 条目 → claude 的 `Options.mcpServers`。
  *
  * 入参必须是**已经过 `resolveMcpServers` 的那一份**（占位已解析、停用条目已剔除）——
- * 「解析」与「翻译」分成两步是因为解析的产物还要被编排层记账（`skipped` 进行级观测格），
+ * 「解析」与「翻译」分成两步是因为解析的产物还要被编排层记账（`skipped` 进行的级观测格），
  * 而翻译只需要形状。翻译器本身**不再判**任何业务条件（不问 `enabled`、不碰环境变量），
  * 于是「同一份条目 → 什么形状」可以逐字断言；唯一的例外是 `isTranslatableEntry` 那道形状闸，
  * 它判的是「这一条翻不翻得出来」，不是业务条件。
@@ -113,7 +113,7 @@ function translateClaudeEntry(entry: McpServerConfig): ClaudeMcpServer {
  * （传输靠字段推断）、http 的头叫 **`http_headers`**（不是 claude 的 `headers`）。
  *
  * 刻意不含 `cwd`：canonical 里没有这一格，而 codex 的 stdio 子进程继承
- * app-server 的 cwd（= 行工作区）。
+ * app-server 的 cwd（= 运行工作区）。
  */
 export interface CodexMcpServer {
   command?: string;
@@ -127,7 +127,7 @@ export interface CodexMcpServer {
 
 /**
  * MCP server 的启动超时（秒）。**必须给**：codex 的默认值管不到本仓的场景——
- * 行内首次注入 playwright MCP 要现下载 61 MB（实测 17.2 s），而等待预算是
+ * 运行内首次注入 playwright MCP 要现下载 61 MB（实测 17.2 s），而等待预算是
  * **≥ 20 s**。给一个比预算小的值会把「正在下载」判成启动失败，而那正是这一趟要避免的假红。
  * 取 30 与厂商文档里的默认值同档（`docs/protocols/comparison.md:46`），一分钱不多花。
  */
@@ -204,7 +204,7 @@ function yamlMapLines(key: string, entries: Record<string, string>, indent: stri
  *
  * 三条形状口径：
  *   · `serverName` **就是我们的名字**（工具名前缀 `mcp__<serverName>__` 里的那一段，
- *     三家同形）；`id` 另起 `mcp-<name>`（插件行的身份，不是服务名——日志里要对得上）；
+ *     三家同形）；`id` 另起 `mcp-<name>`（插件本次运行的身份，不是服务名——日志里要对得上）；
  *   · `transport` 是 dsh 的两档 `stdio` / `streamable-http`（**不是** canonical 的 `http`）；
  *   · http 的头在 dsh 侧仍叫 `headers`（与 claude 同、与 codex 的 `http_headers` 不同）。
  *
@@ -245,7 +245,7 @@ export function toDshMcpPluginLines(servers: McpServers): string[] {
 
 /**
  * 宿主 npm 配置文件的路径。**为什么是 `homedir()` 而不是子进程环境里的 `HOME`**：
- * 行的子进程 `HOME` 已经被 `buildSubprocessEnv` 换成行私有目录（那正是「registry 掉回公网」的
+ * 本次运行的子进程 `HOME` 已经被 `buildSubprocessEnv` 换成行私有目录（那正是「registry 掉回公网」的
  * 机制来源），而这里要读的是**宿主**那一份 ⇒ 只能取进程自己的家目录（本层从不写 `process.env`）。
  */
 export function hostNpmrcPath(): string {
@@ -256,9 +256,9 @@ export function hostNpmrcPath(): string {
  * 读一份 npmrc 文本，**读不到就 `null`**（不存在 / 是目录 / 没有权限都归这一档）。
  *
  * 两条容错：
- *   · **绝不抛**：这一步只是「让行内 registry 不掉回公网」的尽力而为，读不到宿主配置不能让整行失败；
+ *   · **绝不抛**：这一步只是「让运行内 registry 不掉回公网」的尽力而为，读不到宿主配置不能让整本次运行失败；
  *   · **剥掉 UTF-8 BOM**：PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，
- *     不剥的话第一行会变成 `\uFEFFregistry=…`、正则匹配不上 ⇒ 宿主明明配了却「什么都不做」（见 AGENTS.md）。
+ *     不剥的话第一本次运行会变成 `\uFEFFregistry=…`、正则匹配不上 ⇒ 宿主明明配了却「什么都不做」（见 AGENTS.md）。
  */
 export function readNpmrcText(path: string): string | null {
   try {
@@ -272,10 +272,10 @@ export function readNpmrcText(path: string): string | null {
  * 从 npmrc 文本里取 **registry 那一行**（原文照抄，含它自己的空白与大小写）。
  *
  * 三条判定：
- *   · 行首（可有空白）是 `registry` + `=` 才算——注释行里的 registry 不算（`#` 开头）；
+ *   · 行首（可有空白）是 `registry` + `=` 才算——注释本次运行里的 registry 不算（`#` 开头）；
  *   · **多条同名键取最后一条**：npm 的 ini 解析是「后者覆盖前者」，取第一条会与
  *     `npm config get registry` 的实际生效值不一致（那种不一致的表现是「明明写进去了还是慢」）；
- *   · 没有这一行 ⇒ `null` ⇒ 调用方**什么都不做**（凭空写一个公网 registry 进去比不写更糟）。
+ *   · 没有本次运行 ⇒ `null` ⇒ 调用方**什么都不做**（凭空写一个公网 registry 进去比不写更糟）。
  */
 export function hostRegistryLine(npmrcText: string | null): string | null {
   if (npmrcText === null) return null;
@@ -290,17 +290,17 @@ export function hostRegistryLine(npmrcText: string | null): string | null {
  * 把宿主的 registry 那一行写进行 `configHome` 的 `.npmrc`；宿主没有 ⇒ **什么都不做**（返回 `null`，
  * 连目录都不建）。返回写进去的那一行（或 `null`），供调用方记日志。
  *
- * 为什么需要它：行的 `HOME` 一换，npm 的 `userconfig` 就从
- * `~/.npmrc` 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 从内网镜像掉回公网，行内首次注入
+ * 为什么需要它：本次运行的 `HOME` 一换，npm 的 `userconfig` 就从
+ * `~/.npmrc` 变成 `<行HOME>/.npmrc`（不存在）⇒ registry 从内网镜像掉回公网，运行内首次注入
  * playwright MCP 从 ~4 s 变成 **17.2 s / 61 MB**——≥ 20 s 的等待预算就是被这件事撑起来的。
  *
  * 三条边界：
- *   · **只写那一行**：宿主 `.npmrc` 里其余内容（含认证 token）一个字节都不进行内；
- *   · **不碰宿主**：只读宿主那一份，写的是行内路径；
+ *   · **只写那一行**：宿主 `.npmrc` 里其余内容（含认证 token）一个字节都不进行的内；
+ *   · **不碰宿主**：只读宿主那一份，写的是运行内路径；
  *   · 权限位 `0600`（与 dsh 的 overlay 同口径）。这里不套「临时文件 + rename」的原子写：
  *     这份文件丢了只会让下一次注入慢十几秒，不会像配置那样「写坏就再也读不回来」。
  */
-export function writeRowNpmrc(input: { configHome: string; hostNpmrc: string | null }): string | null {
+export function writeCandidateNpmrc(input: { configHome: string; hostNpmrc: string | null }): string | null {
   const line = hostRegistryLine(input.hostNpmrc);
   if (line === null) return null;
   mkdirSync(input.configHome, { recursive: true });

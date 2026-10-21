@@ -8,7 +8,7 @@
  * 「配了」与「生效」是两件事（与 `x-provider.test.tsx` 同一口径）。
  *
  * 边界：X 官网 demo 的逐字打字机（`typewriter`）在官方 main 分支、2.9.0 没有该属性；
- * 官方发版换布尔预设后，本文件的 chunk 断言按新行为重写（见《行执行与日志》边界表）。
+ * 官方发版换布尔预设后，本文件的 chunk 断言按新行为重写（见《候选执行与日志》边界表）。
  */
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';

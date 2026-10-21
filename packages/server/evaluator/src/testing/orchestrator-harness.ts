@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 单行执行与失败面。
+ * 单候选执行与失败面。
  *
  * 智能体用假注册表（`vi.mock('@aieval/agents')`）：编排层对智能体的**唯一**入口就是
  * `getProvider(kind).run()`，换掉这个模块边界就完全控制了「什么时候开始、什么时候结束、
@@ -10,9 +10,9 @@
  * 的耦合体，超时与终止的时序还要绕过适配器自己的释放窗口，用例会又慢又脆。
  * 适配器本身由假实现单独测；本层把适配器当作已被验证过的边界。
  *
- * 评分用假 judgeRow（`vi.mock('./judge')`）：本文件测的是编排时序与落盘，
- * 评分器的行为有它自己的测试。
- * 工作区用**真实** git 小仓库：「每行独立工作区」必须建立在真实目录上。
+ * 评分用假 judgeCandidate（`vi.mock('./judge')`）：本文件测的是编排时序与落盘，
+ * 评分器的候选为有它自己的测试。
+ * 工作区用**真实** git 小仓库：「每个候选独立工作区」必须建立在真实目录上。
  *
  * 每个用例显式放宽到 `TEST_TIMEOUT_MS`：真仓库的 `git clone` + 目录复制 + `checkout` 在本机
  * 实测单个用例 2–7 秒（Windows 上 git 进程启动 + 杀软实时扫描），而 vitest 的默认上限是 5 秒——
@@ -31,12 +31,12 @@ import {
   foldMessages,
   foldSubagents,
   readEvents,
-  readRowRecords,
-  rowAttemptsFile,
-  rowEventsFile,
-  rowMessagesFile,
+  readCandidateRecords,
+  candidateAttemptsFile,
+  candidateEventsFile,
+  candidateMessagesFile,
 } from '@aieval/core';
-import { ROW_RETRY } from '../orchestrator';
+import { CANDIDATE_RETRY } from '../orchestrator';
 import { getRun, saveRun } from '../run-store';
 import type { TextRoute } from '../text-api';
 import {
@@ -45,7 +45,7 @@ import {
   initFixtureRepo,
   makeCaseFixture,
   makeProviderFixture,
-  makeRowFixture,
+  makeCandidateFixture,
   makeRunFixture,
   makeScoreFixture,
   resetFakeAgents,
@@ -59,20 +59,20 @@ import { removeTreeWithRetry } from './cleanup';
 /** 单个用例的等待上限（见文件头：真仓库准备在本机要几秒，默认 5 秒会把断言失败误报成超时） */
 export const TEST_TIMEOUT_MS = 60_000;
 
-/** 行的**终态**：落定之后不会再有任何进展，等待只会烧预算（判据见 `until` 的 `impossible`） */
-const SETTLED_ROW_STATUS = new Set(['judged', 'failed', 'canceled', 'skipped', 'interrupted', 'timed-out']);
+/** 候选的**终态**：落定之后不会再有任何进展，等待只会烧预算（判据见 `until` 的 `impossible`） */
+const SETTLED_CANDIDATE_STATUS = new Set(['judged', 'failed', 'canceled', 'skipped', 'interrupted', 'timed-out']);
 
-/** 这一行是否已经落终态（给 `until` 的第 4 参用：等一个终态期望时，落成别的终态就是真失败） */
-export function rowSettled(runId: string, rowId: string): boolean {
-  const row = getRun(runId).rows.find((item) => item.id === rowId);
-  return row !== undefined && SETTLED_ROW_STATUS.has(row.status);
+/** 这个候选是否已经落终态（给 `until` 的第 4 参用：等一个终态期望时，落成别的终态就是真失败） */
+export function candidateSettled(runId: string, candidateId: string): boolean {
+  const candidate = getRun(runId).candidates.find((item) => item.id === candidateId);
+  return candidate !== undefined && SETTLED_CANDIDATE_STATUS.has(candidate.status);
 }
 
 /**
  * 等一个条件成立（只用于「假适配器已经进入挂起态」这类测试内同步点）。
  * 为什么不用固定 sleep：那是在赌夹具的调度，机器一慢就假红；这里轮询到条件成立为止，
  * 且超时会带标签抛错，排查时一眼看出等的是什么。
- * 上限默认 5 秒，轮级用例按需放宽：真仓库复制在本机要几秒（见文件头），「三行都启动」这类
+ * 上限默认 5 秒，轮级用例按需放宽：真仓库复制在本机要几秒（见文件头），「三个候选都启动」这类
  * 条件在满载时会超过 5 秒；而「有界时间」判据要的**不是**更短的上限，是「有没有上限」。
  *
  * `impossible`（可选，第 4 参）：**条件已经不可能成立**的判据——每轮先问它，成立就立刻抛错。
@@ -80,8 +80,8 @@ export function rowSettled(runId: string, rowId: string): boolean {
  * 实测一次全量里 12 条红 = 5×300s + 7×60s = **32 分钟**，占那次墙钟的 79%。
  * 上限一并保持不变——要的是「失败得快」，不是「等得久」。
  *
- * 只给**终态期望**的等待接 `impossible`（例如「重评之后该行回到 judged」：它落成别的终态就是真失败）。
- * 「同步点」式的等待（等某行进入 running 再动手）**刻意不接**：行可能比轮询更快地走过那个瞬时状态，
+ * 只给**终态期望**的等待接 `impossible`（例如「重评之后该候选回到 judged」：它落成别的终态就是真失败）。
+ * 「同步点」式的等待（等某个候选进入 running 再动手）**刻意不接**：行可能比轮询更快地走过那个瞬时状态，
  * 拿「已落定」当「不可能」会把一次错过观察判成产品缺陷（本仓最不能接受的就是假红）。
  */
 export async function until(
@@ -115,16 +115,16 @@ import { injected } from './orchestrator-seams';
 
 
 /**
- * 产品默认的重试预算（`ROW_RETRY` 的初值）。
+ * 产品默认的重试预算（`CANDIDATE_RETRY` 的初值）。
  * 为什么在 `beforeEach` 里把它关掉：**自动重试会把每一条「失败面」用例都变成 N 倍时长**
  * （每条重试都重跑一次真仓库的准备：`git` 进程 + 目录复制，本机实测 2–7 秒）。
  * 关掉之后既有的失败面用例回到「一次就落终态」的原本时序，而重试本身由
  * 「瞬时失败的自动重试」那一组**显式打开**它来验证——两组各测各的，互不拖慢。
  * 值取产品默认值而不是写死 2：改默认值时这一组跟着变，不会静默失配。
  */
-export const PRODUCTION_ROW_RETRIES = ROW_RETRY.maxRetries;
+export const PRODUCTION_CANDIDATE_RETRIES = CANDIDATE_RETRY.maxRetries;
 /** 产品默认的退避（与上面同理：会在 `beforeEach` 里被压到 1ms） */
-export const PRODUCTION_ROW_RETRY_DELAY_MS = ROW_RETRY.delayMs;
+export const PRODUCTION_CANDIDATE_RETRY_DELAY_MS = CANDIDATE_RETRY.delayMs;
 
 export let home: TempHome;
 
@@ -204,7 +204,7 @@ export function registerOrchestratorHooks(): void {
     cacheTemplate = cache;
     // `core.autocrlf=false` 同 `gitIn`：这份预热缓存模拟的是产品自己的 `cloneCaseCache`
     //（它走 core 的 `execute`，总是带这个 `-c`）——不带就会产出 CRLF 工作树，
-    // 让每一行「一个字节都没改」的准备阶段 diff 变成非空（见 fixtures.ts 的 `runGit`）。
+    // 让每个候选「一个字节都没改」的准备阶段 diff 变成非空（见 fixtures.ts 的 `runGit`）。
     execFileSync('git', ['-c', 'core.autocrlf=false', 'clone', '--quiet', repo.repoPath, cache], { cwd: tmpdir(), encoding: 'utf8' });
   }, TEST_TIMEOUT_MS);
   afterAll(() => {
@@ -218,20 +218,20 @@ export function registerOrchestratorHooks(): void {
     resetFakeAgents();
     resetFakeJudge();
     resetFakeJudgeAgent();
-    // 自动重试：默认关（见 PRODUCTION_ROW_RETRIES 的注释），退避压到 1ms
-    ROW_RETRY.maxRetries = 0;
-    ROW_RETRY.delayMs = 1;
+    // 自动重试：默认关（见 PRODUCTION_CANDIDATE_RETRIES 的注释），退避压到 1ms
+    CANDIDATE_RETRY.maxRetries = 0;
+    CANDIDATE_RETRY.delayMs = 1;
     // 注入接缝是模块级状态：不在这里复位的话会串到下一个用例（同文件共享一个模块实例）
     injected.failRunStatusSaveFor = null;
     injected.runStatusSaveFailed = false;
     injected.staleList = null;
-    injected.failRowSaveFor = null;
-    injected.rowSaveFailed = false;
+    injected.failCandidateSaveFor = null;
+    injected.candidateSaveFailed = false;
   });
   afterEach(() => {
     // 还原成产品默认值：下一个用例（以及同进程的其它文件）不该继承本次的等待时间与预算
-    ROW_RETRY.maxRetries = PRODUCTION_ROW_RETRIES;
-    ROW_RETRY.delayMs = 3_000;
+    CANDIDATE_RETRY.maxRetries = PRODUCTION_CANDIDATE_RETRIES;
+    CANDIDATE_RETRY.delayMs = 3_000;
     home.cleanup();
     vi.restoreAllMocks();
   });
@@ -240,7 +240,7 @@ export function registerOrchestratorHooks(): void {
 
 /** 造一轮真实可跑的评测：真实 git 小仓库 + 已落盘的供应商 / 用例 / 轮次 */
 export function seedRunnableRun(options: {
-  rowCount: number;
+  candidateCount: number;
   executionMode: 'parallel' | 'serial';
   diffBudgetBytes?: number;
   withJudge?: boolean;
@@ -251,7 +251,7 @@ export function seedRunnableRun(options: {
   /**
    * 轮快照里钉死的 commit。
    * 默认是**本文件另一个**夹具仓库（`repoPath` 没被覆盖时的那个）的 tip；远端来源的用例必须显式传 `null`：
-   * 远端轮次只认镜像里的对象，而「另一个仓库的 hash」在镜像里根本不存在 —— 那会让每一行都以
+   * 远端轮次只认镜像里的对象，而「另一个仓库的 hash」在镜像里根本不存在 —— 那会让每个候选都以
    * `INVALID_REF`（commit 不存在）失败，测出来的是夹具的自相矛盾而不是被测语义。
    */
   commitHash?: string | null;
@@ -295,9 +295,9 @@ export function seedRunnableRun(options: {
   const repoPath = options.repoPath ?? fixtureRepo.repoPath;
   // `undefined` 才是「没给」：显式传 null 是远端用例的「不钉 commit」语义，不能被 `??` 兜掉
   const commitHash = options.commitHash === undefined ? fixtureRepo.commit : options.commitHash;
-  // 模型清单要同时含假适配器用的 `test-model`（makeRowFixture 的默认）与全局默认评分模型
+  // 模型清单要同时含假适配器用的 `test-model`（makeCandidateFixture 的默认）与全局默认评分模型
   // 用的 `judge-model`：`resolveJudgeRoute` 会核对「这个模型在不在这条供应商的清单里」，
-  // 少了它每一行都会在评分前落 CONFLICT——那样测出来的就不是编排时序，而是夹具自己的缺口。
+  // 少了它每个候选都会在评分前落 CONFLICT——那样测出来的就不是编排时序，而是夹具自己的缺口。
   const provider = makeProviderFixture({
     models: [
       { id: 'test-model', source: 'manual' },
@@ -334,8 +334,8 @@ export function seedRunnableRun(options: {
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
   });
-  const rows = Array.from({ length: options.rowCount }, () =>
-    makeRowFixture({
+  const candidates = Array.from({ length: options.candidateCount }, () =>
+    makeCandidateFixture({
       agentKind: options.agentKind ?? 'codex',
       providerId: provider.id,
       providerName: provider.name,
@@ -350,12 +350,12 @@ export function seedRunnableRun(options: {
     askUser: options.askUser ?? false,
     injectMessages: options.injectMessages ?? false,
     includeSteps: options.includeSteps ?? false,
-    rows,
+    candidates,
     repoPath,
     commitHash,
     repoBranch: options.repoBranch ?? null,
   });
-  // 钉死 commit 的轮次：把用例缓存**预热**好（见 prewarmCaseCache），省掉 `prepareRowWorkspace`
+  // 钉死 commit 的轮次：把用例缓存**预热**好（见 prewarmCaseCache），省掉 `prepareCandidateWorkspace`
   // 里那次真 `git clone`（实测 1053ms/用例）。`commitHash === null` 的轮次不预热——语义会漂。
   if (commitHash !== null) prewarmCaseCache(testCase.id, repoPath, commitHash);
   saveRun(run);
@@ -377,7 +377,7 @@ export function judgeReplyJson(achieved = true): string {
 
 
 /**
- * 「这一分是哪把尺子打的」的接缝守卫：`resolveJudgeRoute()` 解析出的路由与编排层记在行上的
+ * 「这一分是哪把尺子打的」的接缝守卫：`resolveJudgeRoute()` 解析出的路由与编排层记在候选上的
  * `judgeProviderId` 必须指向**同一家供应商**（`TextRoute` 不带 providerId，
  * 两者只能靠守卫钉住不漂移）。
  * 契约依据：`docs/architecture/contracts.md`（契约体系）。
@@ -404,39 +404,39 @@ export function startedCwds(): string[] {
   return fakeAgents.calls.map((call) => call.cwd);
 }
 
-/** 某一行的预期工作目录（prepareRowWorkspace 的布局：{root}/{runId}/rows/{rowId}/workspace） */
-export function expectedWorkspace(runId: string, rowId: string): string {
-  return join(home.workspaceRoot, runId, 'rows', rowId, 'workspace');
+/** 某一候选的预期工作目录（prepareCandidateWorkspace 的布局：{root}/{runId}/candidates/{candidateId}/workspace） */
+export function expectedWorkspace(runId: string, candidateId: string): string {
+  return join(home.workspaceRoot, runId, 'candidates', candidateId, 'workspace');
 }
 
 /**
  * 尝试账本的**原始行数**（`attempts.jsonl` 里的记录条数）。
- * 为什么数行数而不是读最后一行的 `attempt`：「一行都没被碰过」这件事必须能从磁盘上证否——
- * 单行执行的守卫要的是「别的行连一次 start 记录都没多出来」，而 `getRun` 的快照只给累计的
+ * 为什么数行数而不是读最后一候选的 `attempt`：「一个候选都没被碰过」这件事必须能从磁盘上证否——
+ * 单候选执行的守卫要的是「别的候选连一次 start 记录都没多出来」，而 `getRun` 的快照只给累计的
  * `attempts` 数字（它同样够用，但它读的是快照、不是那一行自己的账本）。
  */
-export function attemptRecordCount(runId: string, rowId: string): number {
-  return readFileSync(rowAttemptsFile(home.workspaceRoot, runId, rowId), 'utf8')
+export function attemptRecordCount(runId: string, candidateId: string): number {
+  return readFileSync(candidateAttemptsFile(home.workspaceRoot, runId, candidateId), 'utf8')
     .split('\n')
     .filter((line) => line.trim() !== '').length;
 }
 
 /** 事件日志里的全部 log 文本：日志抽屉是唯一能看到 `[编排]` 这类提示的地方 */
-export function logTextOf(runId: string, rowId: string): string {
-  return readEvents(rowEventsFile(home.workspaceRoot, runId, rowId))
+export function logTextOf(runId: string, candidateId: string): string {
+  return readEvents(candidateEventsFile(home.workspaceRoot, runId, candidateId))
     .filter((event) => event.type === 'log')
     .map((event) => (event.type === 'log' ? event.text : ''))
     .join('\n');
 }
 
-/** 该行记录日志（`messages.jsonl`）的绝对路径：消息与子任务行共用这一个文件 */
-export function recordsFileOf(runId: string, rowId: string): string {
-  return rowMessagesFile(home.workspaceRoot, runId, rowId);
+/** 该候选记录日志（`messages.jsonl`）的绝对路径：消息与子任务行共用这一个文件 */
+export function recordsFileOf(runId: string, candidateId: string): string {
+  return candidateMessagesFile(home.workspaceRoot, runId, candidateId);
 }
 
-/** 该行的**最终视图**：消息按 `(segment, mergeKey)`、子任务行按 `subagentId` 覆盖累积之后的那一份 */
-export function rowRecordsOf(runId: string, rowId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
-  const { messages, subagents } = readRowRecords(recordsFileOf(runId, rowId));
+/** 该候选的**最终视图**：消息按 `(segment, mergeKey)`、子任务行按 `subagentId` 覆盖累积之后的那一份 */
+export function candidateRecordsOf(runId: string, candidateId: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
+  const { messages, subagents } = readCandidateRecords(recordsFileOf(runId, candidateId));
   return { messages: foldMessages(messages), subagents: foldSubagents(subagents) };
 }
 
@@ -460,8 +460,8 @@ export function isOwnLedgerMessage(message: AgentMessage): boolean {
  * 账本里**适配器产出的**那些消息：断言「候选/评审者说了什么」用它。
  * 不剔除记账消息时，题面那条会永远排在首位，让 `messages[0]` 这类断言读到的不是适配器的内容。
  */
-export function adapterMessagesOf(runId: string, rowId: string): AgentMessage[] {
-  return rowRecordsOf(runId, rowId).messages.filter((message) => !isOwnLedgerMessage(message));
+export function adapterMessagesOf(runId: string, candidateId: string): AgentMessage[] {
+  return candidateRecordsOf(runId, candidateId).messages.filter((message) => !isOwnLedgerMessage(message));
 }
 
 
@@ -469,10 +469,10 @@ export function adapterMessagesOf(runId: string, rowId: string): AgentMessage[] 
 
 
 /* ===================================================================================================
- * 远端来源的行准备
+ * 远端来源的候选准备
  *
  * 编排层在调用 core 之前先把「远端 URL」物化成**本地镜像路径 + 具体 40 位 hash**：
- * `prepareRowWorkspace` / `ensureCaseCache` / `checkoutRow` / `collectDiff` 一行都不改，
+ * `prepareCandidateWorkspace` / `ensureCaseCache` / `checkoutCandidate` / `collectDiff` 一个候选都不改，
  * 它们只认本地路径。这一组用例钉的就是这个物化结果，而不是某一段 git 命令的写法。
  * =================================================================================================== */
 
@@ -538,10 +538,10 @@ export { randomUUID } from 'node:crypto';
 export { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 export { join } from 'node:path';
 export type { AgentKind, EvalRun, Provider } from '@aieval/contracts';
-export { ServiceError, canRescoreRow, canRetryRow, canRunRow } from '@aieval/contracts';
-export { loadConfig, mirrorDir, readEvents, rowAttemptsFile, rowEventsFile, runSnapshotFile, saveConfig } from '@aieval/core';
-export { abortRow, abortRun, drainRunningTasks, followUpAvailability, followUpRow, recoverInterruptedRuns, rescoreRow, retryRow, ROW_RETRY, runRow, startRun } from '../orchestrator';
+export { ServiceError, canRescoreCandidate, canRetryCandidate, canRunCandidate } from '@aieval/contracts';
+export { loadConfig, mirrorDir, readEvents, candidateAttemptsFile, candidateEventsFile, runSnapshotFile, saveConfig } from '@aieval/core';
+export { abortCandidate, abortRun, drainRunningTasks, followUpAvailability, followUpCandidate, recoverInterruptedRuns, rescoreCandidate, retryCandidate, CANDIDATE_RETRY, runCandidate, startRun } from '../orchestrator';
 export { getRun, listRuns, saveRun } from '../run-store';
 export type { TextRoute } from '../text-api';
-export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, fakeJudgeAgent, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeRowFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
+export { clearCases, createTempHome, fakeAgents, fakeAgentsModule, fakeJudge, fakeJudgeAgent, initFixtureRepo, makeCaseFixture, makeProviderFixture, makeCandidateFixture, makeRunFixture, makeScoreFixture, overwriteCase, releaseAgent, releaseAllAgents, releaseJudge, resetFakeAgents, resetFakeJudge, seedConfig } from './fixtures';
 export type { TempHome } from './fixtures';

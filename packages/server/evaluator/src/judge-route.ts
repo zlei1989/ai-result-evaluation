@@ -77,7 +77,7 @@ export function resolveJudgeRoute(): TextRoute {
     apiKey: provider.apiKey,
     modelId,
     // 窗口两格：这条路由会被智能体评分通路**原样**当适配器路由用，
-    // 少了它，cc 驱动的评分模型不会加 `[1m]`、codex 不写 `model_context_window` —— 与候选行的行为不一致。
+    // 少了它，cc 驱动的评分模型不会加 `[1m]`、codex 不写 `model_context_window` —— 与候选的行为不一致。
     // 缺省时不写这两个键（适配器一律按「键不存在 = 未知」处理）。
     ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
     ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
@@ -86,7 +86,7 @@ export function resolveJudgeRoute(): TextRoute {
 
 /**
  * 这一次评分要求的思考强度（`settings.defaultJudge.effort`）。**唯一读点**：
- * `judgeRow` / `judgeRowByAgent` 今天是纯入参的（不读配置、不碰落盘），由调用方把值传进去。
+ * `judgeCandidate` / `judgeCandidateByAgent` 今天是纯入参的（不读配置、不碰落盘），由调用方把值传进去。
  * 为什么不做成 `TextRoute` 的一格：那是**连接事实**，而强度是**请求参数**
  * （与 `AgentRunInput.effort` 的既有口径同源）。
  * 未配置（老配置读盘后是 `undefined`）= 未指定：文本侧一个强度键都不发（听网关缺省），
@@ -103,7 +103,7 @@ export function resolveJudgeEffort(): string | undefined {
  * `effort` 的 schema 守卫只作用于走 schema 的**写下侧**（设置页那条 patch 路由），而 `loadConfig()`
  * 刻意不做校验（一条手改坏的值不该让设置页打不开），于是磁盘上那一份只能在这里拦。不拦就要跑到
  * dsh 的 `UNSUPPORTED_REASONING_EFFORT` 才失败，症状离真因很远。
- * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunRows`）**同源**：都用 `intersectEfforts`。
+ * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunCandidates`）**同源**：都用 `intersectEfforts`。
  *
  * 三处刻意的口径：
  *   · `undefined` = **未指定**（一个强度键都不发）⇒ 直接放行，它不是越域，也不是某一档；

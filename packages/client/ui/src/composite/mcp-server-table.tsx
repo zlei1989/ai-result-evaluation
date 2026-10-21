@@ -14,7 +14,7 @@
  *   2. **停用只弱化、不隐藏**：条目被停用后仍要看得见（它是「暂时不注入」而不是「不存在」）——
  *      直接不渲染的话用户会以为配置丢了。弱化那一笔**只落在名称那一格**（次级色，`muted`）：
  *      整行 `type="secondary"` 会把「端点或命令」也涂淡，而那是排障时要读的字（状态列的开关本身
- *      也只是一个信号，它回答不了「这一行是哪一台」）。判据是「停用行的名称格有弱化类 + 端点文本原样在」。
+ *      也只是一个信号，它回答不了「这个候选是哪一台」）。判据是「停用候选的名称格有弱化类 + 端点文本原样在」。
  *   3. **删除走 `Popconfirm` 且文案点明后果**：误点一次就少一台服务器，而「删了就没了」这件事
  *      要到候选执行时才发现；`okText="确认删除"` 必须显式给中文（应用没配 antd locale）。
  *   4. **不渲染密钥列**（同供应商表第 5 点）：密钥本体只在表单弹窗里以掩码出现，
@@ -25,9 +25,9 @@
  *      回调与表格的其它动作同一条口径 —— 没接上时**禁用并说明原因**，而不是摆一个点了没反应的
  *      按钮（与「测试连接」那格同款）。弹窗与导入语义都不在本组件里：这里只有入口。
  *      **空态那份引导同样摆这两个入口**：`EmptyState` 的 `action` 支持传一组动作。
- *   7. **「测试连接」的结果就地展开在该行下方**：用 antd 的展开行渲染结果区，但**不给展开列**
+ *   7. **「测试连接」的结果就地展开在该候选下方**：用 antd 的展开行渲染结果区，但**不给展开列**
  * （`expandable.showExpandColumn: false`）—— 五列的定义是用几何钉过的，
- *      多出一个展开列会让「哪一列吃剩余宽度」当场变样。行级 loading 与结果状态是本组件的局部 state：
+ *      多出一个展开列会让「哪一列吃剩余宽度」当场变样。候选级 loading 与结果状态是本组件的局部 state：
  *      它是**界面状态**（哪一行展开了、哪一行在转），请求本身仍然由调用方通过 `onTest` 注入。
  *   8. **卡片内、表格上方一条静态说明**（「卡片头部一条静态说明」）：永远显示、**不是错误提示**
  *      —— 与仓库自带条目的关系那句话是正文（`Typography.Text type="secondary"`），不是 Alert。
@@ -50,7 +50,7 @@ import { McpProbeResultView, McpProbeWaiting, type McpProbeOutcome } from './mcp
  */
 export { endpointText };
 
-/**表格里的一行：名字住在 map 的**键**上（条目里没有 `name` 字段），故行数据要带上它 */
+/**表格里的一行：名字住在 map 的**键**上（条目里没有 `name` 字段），故候选数据要带上它 */
 export interface McpServerRow {
   name: string;
   config: McpServerConfig;
@@ -58,14 +58,14 @@ export interface McpServerRow {
 
 export interface McpServerTableProps {
   servers: McpServers;
-  /** 单项启停：把这一行的新状态交出去（条目增删改都走弹窗的「确定」，只有开关是即时落盘） */
+  /** 单项启停：把这个候选的新状态交出去（条目增删改都走弹窗的「确定」，只有开关是即时落盘） */
   onToggle: (name: string, enabled: boolean) => void;
   onEdit: (row: McpServerRow) => void;
   onDelete: (row: McpServerRow) => void;
   onCreate: () => void;
   /**
    * 「测试连接」：交出去整行，**返回**这次的探活结论。
-   * 为什么是 `Promise`：按钮的 loading、该行其它动作的禁用、结果区的展开都要等它 settle；
+   * 为什么是 `Promise`：按钮的 loading、该候选其它动作的禁用、结果区的展开都要等它 settle；
    * 组件自己不调接口，请求由调用方注入（`probeMcpServer({ name })` 测的就是**已保存**的那份）。
    */
   onTest?: (row: McpServerRow) => Promise<McpProbeResult>;
@@ -165,7 +165,7 @@ export function McpServerTable({
    * 真正的互斥在服务端（同一时刻只跑一个探活，多出来的排队），前端这一层不该替它做串行。
    */
   const [testingNames, setTestingNames] = useState<readonly string[]>([]);
-  /** 逐行的结论。探活结果**留在原地**（不弹 toast）：用户要对着这一行读「连通了什么 / 错在哪一档」 */
+  /** 逐候选的结论。探活结果**留在原地**（不弹 toast）：用户要对着这个候选读「连通了什么 / 错在哪一档」 */
   const [outcomes, setOutcomes] = useState<Record<string, McpProbeOutcome>>({});
   /** 展开的行 = 结果区所在的那些行（受控：结果一出就要是展开的，而用户仍可手动收起） */
   const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
@@ -173,7 +173,7 @@ export function McpServerTable({
   const isTesting = (name: string): boolean => testingNames.includes(name);
 
   /**
-   * 点「测试连接」：先展开该行（loading 提示就在结果区里）、清掉上一次的结论，再等 `onTest` settle。
+   * 点「测试连接」：先展开该候选（loading 提示就在结果区里）、清掉上一次的结论，再等 `onTest` settle。
    * 上一次的结论必须先撤掉：留着它会让「正在测」与「上次的结果」同时出现在一块区域里，
    * 而两次探活的结果完全可能不一样（改了端点、上游刚挂）。
    */
@@ -205,11 +205,11 @@ export function McpServerTable({
       dataIndex: 'name',
       key: 'name',
       width: MCP_COLUMN_WIDTH.name,
-      // 钉在左边（见文件头第 1 点）：横向滚动时中间三列从它下面滑过，「这一行是谁」始终看得见
+      // 钉在左边（见文件头第 1 点）：横向滚动时中间三列从它下面滑过，「这个候选是谁」始终看得见
       fixed: 'left',
       render: (_value, row) => (
         <Flex gap={4} align="center">
-          {/* 停用行的弱化信号**只在这一格**（文件头第 2 点）：次级色让「这一台现在不生效」一眼可见，
+          {/* 停用候选的弱化信号**只在这一格**（文件头第 2 点）：次级色让「这一台现在不生效」一眼可见，
               而端点 / 命令那两列保持原样——排障时要读它们，涂淡了等于把线索藏起来 */}
           <EllipsisText text={row.name} strong muted={!row.config.enabled} />
           {/* 「已配置密钥」小标（spec §3）：密钥本体不在这张表里出现，只给一个「配过」的信号 */}
@@ -250,7 +250,7 @@ export function McpServerTable({
           checked={row.config.enabled}
           // 可访问名带上行名：多台服务器各有开关，只念「启用」的话屏读器与按名字定位的用例都分不出是哪一行
           aria-label={`启用 ${row.name}`}
-          // 这一行正在探活：启停会改「已停用，不会注入」那条结论的成立条件，转完再动
+          // 这个候选正在探活：启停会改「已停用，不会注入」那条结论的成立条件，转完再动
           disabled={isTesting(row.name)}
           onChange={(checked) => onToggle(row.name, checked)}
         />
@@ -272,8 +272,8 @@ export function McpServerTable({
           >
             编辑
           </Button>
-          {/* 「测试连接」：点下去按钮 loading、该行其它动作禁用、结果就地展开在
-              该行下方。停用条目**仍可点**（spec §3）—— 结论里会写明「已停用，不会注入」；
+          {/* 「测试连接」：点下去按钮 loading、该候选其它动作禁用、结果就地展开在
+              该候选下方。停用条目**仍可点**（spec §3）—— 结论里会写明「已停用，不会注入」；
               别的行正在测时这里禁用（服务端同一时刻只跑一个探活，允许连点只会让大家排队） */}
           <Button
             size="small"
@@ -287,7 +287,7 @@ export function McpServerTable({
           </Button>
           <Popconfirm
             title="删除这台 MCP 服务器？"
-            // 后果必须写在确认框里：用户点删除时看到的只有这一行字，
+            // 后果必须写在确认框里：用户点删除时看到的只有这个候选字，
             // 「候选执行时用不到这些工具」是删除真正的代价
             description="删除后这些工具在候选执行时就没了。"
             okText="确认删除"
@@ -357,7 +357,7 @@ export function McpServerTable({
           scroll={{ x: MCP_TABLE_MIN_WIDTH }}
           // `fixed` 是「端点或命令」那格省略号能成立的前提（列宽由表头算，`max-width: 100%` 才有分母）
           tableLayout="fixed"
-          // 结果区就地展开在这一行下方（见文件头第 6 点）：`showExpandColumn: false` 是关键 ——
+          // 结果区就地展开在这个候选下方（见文件头第 6 点）：`showExpandColumn: false` 是关键 ——
           // 留着展开列就变成六列，五列的定义与那两处固定列当场失效
           expandable={{
             showExpandColumn: false,

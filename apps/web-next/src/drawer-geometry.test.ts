@@ -83,6 +83,70 @@ function drawerOpenTags(text: string): string[] {
 }
 
 /**
+ * 取 `<Drawer>` **自己**的 `size` 属性值（只认花括号深度 0 的那些）。
+ *
+ * 不能直接在开标签上跑正则：`title={<Badge size="small" />}` 这类嵌套 JSX 是**子组件**的 prop，
+ * 不是抽屉预设——扫到它就把一条正确写法判成「Drawer 写了不存在的预设」（假红）。
+ * 故这里只取顶层属性：遇到 `{…}` 整段跳过，`size=` 只在其名字处于深度 0 时读值。
+ */
+function drawerOwnSizeAttrs(tag: string): string[] {
+  const values: string[] = [];
+  let i = '<Drawer'.length;
+  while (i < tag.length) {
+    const ch = tag[i];
+    if (ch === undefined) break;
+    // 嵌套 JSX / 表达式里的属性名一律不算
+    if (ch === '{') {
+      i = skipBraces(tag, i);
+      continue;
+    }
+    if (tag.startsWith('size=', i) && /[\s<]/.test(tag[i - 1] ?? '')) {
+      const start = i + 'size='.length;
+      const first = tag[start];
+      if (first === '"') {
+        const close = tag.indexOf('"', start + 1);
+        values.push(tag.slice(start + 1, close === -1 ? tag.length : close));
+        i = close === -1 ? tag.length : close + 1;
+      } else if (first === '{') {
+        const close = skipBraces(tag, start);
+        values.push(tag.slice(start + 1, close - 1));
+        i = close;
+      } else {
+        // 无引号也无花括号的写法当前不存在；按「读到空白 / 收尾尖括号」兜住
+        let end = start;
+        while (end < tag.length && !/[\s>]/.test(tag[end] ?? '')) end += 1;
+        values.push(tag.slice(start, end));
+        i = end;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return values;
+}
+
+/** 从 `{` 跳到配对的 `}` 之后；引号里的括号不计数（尾递归退化成一次循环） */
+function skipBraces(tag: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < tag.length; i += 1) {
+    const ch = tag[i];
+    if (ch === undefined) break;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === '\'' || ch === '`') quote = ch;
+    else if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return tag.length;
+}
+
+/**
  * 取几何常量里的字面量（`export const NAME = '…';`）。抠不到直接抛：常量改名 / 改了形状时，
  * 下面那条不变量必须**当场失效**，而不是拿一个 `undefined` 去比大小后静默放过。
  */
@@ -220,16 +284,15 @@ describe('抽屉几何', () => {
     // `AgentLogDrawer` 里 ⇒ 有人把 `size="large"` 加到**组件**上时，页面仍是干净的、上一条照样绿。
     // 而这一条一旦被违反，症状是抽屉宽度变成固定预设、与共享的宽度口径直接打架（没有任何别的用例会红）。
     //
-    // ⚠️ 判据必须**只取 `<Drawer>` 那个开标签**，不能扫全文：这两个文件里还有若干 `<Button size="small">`
-    // 与 `<Descriptions size="small">`（它们是对的），全文扫会把它们当成抽屉预设（本条第一次跑就是这么假红的），
-    // 而文件名里带 `fontSize="small"` 这类属性名时更会误伤——守卫误伤比漏放行更危险，它会让守卫被绕过。
+    // ⚠️ 判据必须**只取 `<Drawer>` 自己的属性**（开标签 + 花括号深度 0），不能扫全文、也不能扫
+    // 开标签里的嵌套 JSX：这两个文件里还有若干 `<Button size="small">`、`<Descriptions size="small">`
+    // 与 `title={<Badge size="small" />}`（它们都是对的），混进来就会把正确写法判成「抽屉预设写错」——
+    // 守卫误伤比漏放行更危险，它会让守卫被绕过。
     const drawerDir = join(repositoryRoot, 'packages', 'client', 'ui', 'src', 'composite', 'agent-log');
     for (const file of ['agent-log-drawer.tsx', 'agent-environment-drawer.tsx']) {
       const text = readFileSync(join(drawerDir, file), 'utf8');
       // 两种写法都算数：字面量 `size="…"`（环境抽屉）与常量 `size={…}`（主抽屉走共享几何）
-      const sizeAttrs = drawerOpenTags(text).flatMap((tag) =>
-        [...tag.matchAll(/(?:^|\s)size=(?:"([^"]*)"|\{([^}]*)\})/g)].map((attr) => attr[1] ?? attr[2] ?? ''),
-      );
+      const sizeAttrs = drawerOpenTags(text).flatMap(drawerOwnSizeAttrs);
       expect(sizeAttrs.length, `${file} 里的 <Drawer> 没有解析到 size（判据失效了）`).toBeGreaterThan(0);
       expect(sizeAttrs, `${file} 又用回了 size="large"`).not.toContain('large');
       // `Drawer` 的 `size` 只收 'default' | 'large' | number | string（antd 6.6.5 的 `Drawer.d.ts`）：
@@ -271,7 +334,7 @@ describe('抽屉几何', () => {
  */
 describe('「执行日志」抽屉不许在瞬时态之间换元素（入场动画会被重置 = 用户看到的闪烁）', () => {
   /**
-   * 抠出「读取中」这一格：从真代码锚点到**这一行的行尾**。
+   * 抠出「读取中」这一格：从真代码锚点到**这个候选的行尾**。
    *
    * 为什么结束在行尾：这一格是**单行**的（`? null :` ⇒ 没有子元素），而行尾之后的注释块里
    * 逐字写着这次缺陷的两个组件名（讲根因必须点到它们），把注释框进来会让「这一格里没有抽屉件」

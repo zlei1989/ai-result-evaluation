@@ -14,7 +14,7 @@
  *   2. **`messageId` 由客户端生成，同时是幂等键与拼路径的那一段**：形状因此收紧到
  *      「首字符是字母或数字 + 只允许字母数字点下划线连字符 + 最长 128」，空串、`..`、带分隔符的
  *      一律从入口拒掉（与用例 id 的处置同源：它同时是身份判据与安全边界）。
- *   3. **三个写动作都带 `runId` + `rowId`**：队列表按这一对定位一行，而它们不是 URL 层级里的
+ *   3. **三个写动作都带 `runId` + `candidateId`**：队列表按这一对定位一行，而它们不是 URL 层级里的
  *      资源标识（真相源在服务端的表里）——放进请求体，客户端就不必为了发一条消息去拼 URL、
  *      服务端也不必在两种来源之间做二次合并。
  *   4. **不用 `.default()`**：这一面的格没有「老客户端」要兼容（客户端与服务端同一次发布），
@@ -31,8 +31,8 @@ import { InjectMessageOutcomeSchema, InjectMessageStateSchema, InjectionBoundary
 /**
  * 一条人工消息 id 的**形状**（身份判据 + 安全边界）。
  *
- * 为什么这么紧：它由浏览器生成，而服务端要拿它当幂等键、当账本与行级事件共用的钥匙，
- * 还要拿它拼附件目录名（`rowDir/attachments/<messageId>/`）。首字符限定字母或数字一条就同时挡掉
+ * 为什么这么紧：它由浏览器生成，而服务端要拿它当幂等键、当账本与候选级事件共用的钥匙，
+ * 还要拿它拼附件目录名（`candidateDir/attachments/<messageId>/`）。首字符限定字母或数字一条就同时挡掉
  * 了 `..`、`.hidden` 与空串；分隔符不在字符集里，路径穿越因此在这一格就断了
  * （`join` 不拦 `..`，靠调用方逐个 `assert*` 是本仓既有处置——用例 id 同一道光）。
  */
@@ -65,7 +65,7 @@ export type InjectAttachment = z.infer<typeof InjectAttachmentSchema>;
  *   · `settledAt`——落终态那一刻（只有 `gone` / `consumed` 有），撤回结果与丢弃原因都在它的旁边。
  *
  * 三格都是**服务端写入时刻的 ISO 8601 带时区串**（与提问应答面的 `askedAt` 同口径）：
- * 它们要落进快照、要给人读、还要与轮上行上别的时刻并排显示。
+ * 它们要落进快照、要给人读、还要与轮上候选上别的时刻并排显示。
  *
  * `outcome` 与 `reason` 成对：`reason` 是**可直接展示**的中文原因（「等太久了，这一条没能交给
  * 智能体」这类），界面不必自己按 `outcome` 反查文案——同一件事两处写文案必然漂。
@@ -87,7 +87,7 @@ export const InjectMessageSchema = z.object({
 });
 export type InjectMessage = z.infer<typeof InjectMessageSchema>;
 
-/** 快照（一行的队列）：**含终态**——`gone` 那一条带的 `outcome` / `reason` 正是「它为什么消失」 */
+/** 快照（一候选的队列）：**含终态**——`gone` 那一条带的 `outcome` / `reason` 正是「它为什么消失」 */
 export const InjectMessageListSchema = z.array(InjectMessageSchema);
 export type InjectMessageList = z.infer<typeof InjectMessageListSchema>;
 
@@ -97,15 +97,15 @@ export type InjectMessageList = z.infer<typeof InjectMessageListSchema>;
  */
 export const InjectMessageRefSchema = z.object({
   runId: z.string().min(1),
-  rowId: z.string().min(1),
+  candidateId: z.string().min(1),
   messageId: InjectMessageIdSchema,
 });
 export type InjectMessageRef = z.infer<typeof InjectMessageRefSchema>;
 
-/** 快照路由的查询参数（`GET /api/inject-messages?runId=…&rowId=…`） */
+/** 快照路由的查询参数（`GET /api/inject-messages?runId=…&candidateId=…`） */
 export const InjectMessageQuerySchema = z.object({
   runId: z.string().min(1),
-  rowId: z.string().min(1),
+  candidateId: z.string().min(1),
 });
 export type InjectMessageQuery = z.infer<typeof InjectMessageQuerySchema>;
 
@@ -192,11 +192,11 @@ export const InjectAttachmentAcceptedSchema = InjectAttachmentSchema;
 export type InjectAttachmentAccepted = InjectAttachment;
 
 /**
- * 一次**追问**的请求体（第二期：对已经跑过的行补一句话，接着同一段会话再跑一段）。
+ * 一次**追问**的请求体（第二期：对已经跑过的候选补一句话，接着同一段会话再跑一段）。
  * 它没有队列表那一格 `requires`——续接之后的追问天然落在**排队**那一档（`'idle'`）。
  *
  * 与 `InjectMessageSendRequest` 的「一句话 + 附件清单」同源（同一份 `InjectAttachmentSchema`、
- * 同一条条数上限、同样带 `runId` + `rowId`）：两条路发出去的是同一种东西（人写的一句话），
+ * 同一条条数上限、同样带 `runId` + `candidateId`）：两条路发出去的是同一种东西（人写的一句话），
  * 各写一份必然漂移，而漂移的表现是「同一份清单在一条路上合法、在另一条上被拒」。
  * `messageId` 在这里**可选**：它同时是附件落点目录名与账本钥匙，缺席时编排层现铸一个
  * （与发送那条不同——那条的 `messageId` 是幂等键，必须由客户端给）。
@@ -206,7 +206,7 @@ export type InjectAttachmentAccepted = InjectAttachment;
  */
 export const FollowUpRequestSchema = z.object({
   runId: z.string().min(1),
-  rowId: z.string().min(1),
+  candidateId: z.string().min(1),
   text: z.string(),
   attachments: z
     .array(InjectAttachmentSchema)

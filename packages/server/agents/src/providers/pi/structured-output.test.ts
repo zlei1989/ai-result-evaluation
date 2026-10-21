@@ -22,7 +22,7 @@ import {
   anthropicStart,
   anthropicText,
   anthropicToolUse,
-  runPiConformanceRow,
+  runPiConformanceCandidate,
 } from '../../testing/pi-conformance-fixture';
 import { PI_STRUCTURED_REJECTION_BUDGET } from './events';
 import {
@@ -233,7 +233,7 @@ describe('pi 的 strict 预检：原样透传（禁止预归一化）', () => {
 });
 
 describe('pi 的结构化输出采纳结论', () => {
-  it('没要 schema ⇒ 三格都空（这不是降级，本行与结构化输出无关）', () => {
+  it('没要 schema ⇒ 三格都空（这不是降级，候选与结构化输出无关）', () => {
     expect(adoptStructuredOutput(undefined, 'openai')).toEqual({ tool: null, fallback: null, preflightReason: null });
     expect(adoptStructuredOutput(null, 'anthropic')).toEqual({ tool: null, fallback: null, preflightReason: null });
   });
@@ -426,7 +426,7 @@ describe('pi 的结构化输出文本投影（同一轮消息里的落槽）', (
   };
 
   it('同轮已有正文块：JSON 追加成独立块，模型正文与工具块都不被顶掉', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按 schema 作答。',
       outputSchema: schema,
       script: [textThenSubmit('这是结论：', { verdict: 'ok' })],
@@ -459,7 +459,7 @@ describe('pi 的结构化输出文本投影（同一轮消息里的落槽）', (
    * 变异体：把 `readString(block, 'argumentsError')` 那一格去掉 ⇒ 本用例当场红。
    */
   it('参数不是合法 JSON ⇒ 工具块带上厂商的 `inputError`（不是只有一个空对象）', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '读一个文件。',
       // 厂商对「参数不是合法 JSON」的处置：`arguments` 记 `{}`、原文进 `argumentsError`
       // 第二段是收口：坏参数那一轮之后模型「答一句」，避免网关复用最后一段把这一次探针拖成无限重试
@@ -478,7 +478,7 @@ describe('pi 的结构化输出文本投影（同一轮消息里的落槽）', (
   });
 
   it('模型持续交越界参数 ⇒ 有上限地收手（不是无界往返）', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按 schema 作答。',
       outputSchema: schema,
       // 参数不是 schema 的形状 ⇒ 厂商校验失败；剧本越界后复用最后一段 ⇒ 模型「再交一次」
@@ -490,7 +490,7 @@ describe('pi 的结构化输出文本投影（同一轮消息里的落槽）', (
   }, 60_000);
 
   it('阴性对照：模型只调工具、不写正文时工具块与 JSON 块都在（顺序为追加）', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按 schema 作答。',
       outputSchema: schema,
       script: [anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, { verdict: 'ok' }, 'toolu_submit')],

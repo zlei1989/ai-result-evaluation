@@ -7,7 +7,7 @@
  * 在浏览器里可验、在单测里可回归。
  *
  * 三条口径：
- *   1. **夹具走真实链路**：这里是 `messages.jsonl` 的行（`RowRecord`）+ 行级事件，
+ *   1. **夹具走真实链路**：这里是 `messages.jsonl` 的行（`CandidateRecord`）+ 候选级事件，
  *      不是「已建好的 `AgentLogModel`」——它必须经过 `buildAgentLogModel`
  *      与 `buildRenderBlocks` 才能上屏，否则夹具能过而真实数据过不了。
  *   2. **认不出来的字段照给**：`unrecognized` 那一类必须有一条，
@@ -15,7 +15,7 @@
  *   3. **`null` 就是 `null`**：拿不到的量一律留空，不用 0 或空串冒充
  *      （夹具要是自己就不守这条，界面上的「未采集」就永远测不出来）。
  */
-import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
+import type { AgentEvent, AgentMessage, CandidateRecord } from '@aieval/contracts';
 import { buildAgentLogModel, type AgentLogFactsInput } from './build-model';
 import type { AgentEnvironment, AgentLogModel, MessageCapabilityMap } from './types';
 
@@ -61,7 +61,7 @@ let seq = 0;
  * 故这一格在本包内只能照式重写一遍。它只出现在夹具里：产品代码一个字节都不读它，
  * 漂移的表现是夹具造出的记录不再被折叠成一条（那是这条用例自己的断言当场变红，不是静默错）。
  */
-function message(input: MessageInput): RowRecord {
+function message(input: MessageInput): CandidateRecord {
   seq += 1;
   const subagentId = input.subagentId ?? null;
   const parentCallId = input.parentCallId ?? null;
@@ -101,7 +101,7 @@ function subagentRecord(input: {
   parentCallId?: string | null;
   parentSubagentId?: string | null;
   usage?: { input: number; cached: number; output: number } | null;
-}): RowRecord {
+}): CandidateRecord {
   return {
     type: 'subagent',
     subagent: {
@@ -132,7 +132,7 @@ function capability(overrides: Partial<MessageCapabilityMap> = {}): MessageCapab
   };
 }
 
-/** 行级事实的默认值（各夹具按需覆盖） */
+/** 候选级事实的默认值（各夹具按需覆盖） */
 function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput {
   return {
     status: { tone: 'ok', label: '已评分' },
@@ -173,9 +173,10 @@ function facts(overrides: Partial<AgentLogFactsInput> = {}): AgentLogFactsInput 
         label: '改动',
         value: '3 个文件 +12 −3',
         segments: [
-          { text: '3 个文件 ' },
-          { text: '+12', tone: 'insertion' },
-          { text: ' −3', tone: 'deletion' },
+          { text: '3', tag: true, tagTone: 'default' },
+          { text: '个文件' },
+          { text: '+12', tag: true, tagTone: 'success' },
+          { text: '−3', tag: true, tagTone: 'error' },
         ],
       },
       {
@@ -246,7 +247,7 @@ export function environmentFixture(agentLabel: string, modelId: string): AgentEn
       effort: null,
       providerName: '本地网关',
       baseUrl: 'https://gateway.internal/v1',
-      workspaceBase: 'D:\\aieval\\runs\\run-7\\rows\\row-2\\workspace',
+      workspaceBase: 'D:\\aieval\\runs\\run-7\\candidates\\row-2\\workspace',
       baselineCommit: '4f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c',
     },
     groups: [
@@ -275,7 +276,7 @@ export function environmentFixture(agentLabel: string, modelId: string): AgentEn
         source: 'project',
         items: [
           { present: true, id: 'permission', label: '权限档', text: 'never（无人值守：审批一律拒绝）', truncated: null, at: null },
-          { present: true, id: 'workspace', label: '工作区与基线', text: 'D:\\aieval\\runs\\run-7\\rows\\row-2\\workspace @ 4f1a2b3c', truncated: null, copyPath: 'D:\\aieval\\runs\\run-7\\rows\\row-2\\workspace', at: null },
+          { present: true, id: 'workspace', label: '工作区与基线', text: 'D:\\aieval\\runs\\run-7\\candidates\\row-2\\workspace @ 4f1a2b3c', truncated: null, copyPath: 'D:\\aieval\\runs\\run-7\\candidates\\row-2\\workspace', at: null },
           { present: false, id: 'disallowed', label: '被禁用的工具', missing: 'unverified' },
         ],
       },
@@ -314,7 +315,7 @@ export function dshFixture(): AgentLogFixture {
     { id: '3', subject: '更新 README', status: 'pending' },
     { id: '4', subject: '打 tag', status: 'whatever-this-is' },
   ];
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     // ① 第 1 轮：用户消息（一次会话可以有多个用户轮）+ 思考 + 工具调用（结果随后到达）
     message({
       roundTrip: 1,
@@ -493,7 +494,7 @@ export function dshFixture(): AgentLogFixture {
         {
           type: 'text',
           text: [
-            '在等你选发布环境——**这一步在无人值守的运行里会一直等到轮次被取消**。',
+            '在等你选发布环境——**这一步在无人值守的运行里会一直等到本轮被取消**。',
             '',
             '  ```text',
             '  POST /api/open/query-file-change-log',
@@ -579,7 +580,7 @@ export function dshFixture(): AgentLogFixture {
  */
 export function codexFixture(): AgentLogFixture {
   seq = 0;
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     message({
       roundTrip: 1,
       role: 'assistant',
@@ -607,7 +608,7 @@ export function codexFixture(): AgentLogFixture {
       role: 'assistant',
       blocks: [{ type: 'text', text: '12 条用例全绿。\n\n```\nTests  12 passed (12)\n```' }],
     }),
-    // 行级汇总节点的那一档：厂商只给计数、没有逐条身份
+    // 候选级汇总节点的那一档：厂商只给计数、没有逐条身份
     subagentRecord({
       subagentId: 'aggregate-1',
       name: null,
@@ -647,7 +648,7 @@ export function codexFixture(): AgentLogFixture {
  */
 export function claudeFixture(): AgentLogFixture {
   seq = 0;
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     message({
       roundTrip: 1,
       role: 'assistant',
@@ -699,7 +700,7 @@ export function claudeFixture(): AgentLogFixture {
 }
 
 /**
- * **追问那一段**：一行跑完之后人对它追问了一次，于是又开一次 `run()`。
+ * **追问那一段**：一个候选跑完之后人对它追问了一次，于是又开一次 `run()`。
  *
  * 这一份夹具要证明的是「两段各归各的」：
  *   · 首条卡片是**账本里那条题面**（不是调用方塞的 `userPrompt`——真实链路就是它）；
@@ -716,7 +717,7 @@ export function claudeFixture(): AgentLogFixture {
  */
 export function followUpFixture(): AgentLogFixture {
   seq = 0;
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     // 题面（编排层在把这一轮交出去之前落的账）
     message({
       roundTrip: 1,
@@ -767,7 +768,7 @@ export function followUpFixture(): AgentLogFixture {
 
   return {
     name: '追问段',
-    proves: '题面那张首条卡片 + 「追问 ×1」段分隔 + 两段各自的轮次 1（同号同键不互相覆盖）',
+    proves: '题面那张首条卡片 + 「追问 ×1」段分隔 + 两段各自的第 1 步（同号同键不互相覆盖）',
     events,
     capability: capability(),
     capabilityNotes: [],
@@ -793,7 +794,7 @@ export function followUpFixture(): AgentLogFixture {
  */
 export function blankThinkingFixture(): AgentLogFixture {
   seq = 0;
-  const records: RowRecord[] = [
+  const records: CandidateRecord[] = [
     message({
       roundTrip: 1,
       role: 'user',

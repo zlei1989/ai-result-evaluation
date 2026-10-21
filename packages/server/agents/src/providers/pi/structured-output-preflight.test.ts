@@ -5,7 +5,7 @@
  * 为什么必须对拍：适配器的预检是**另一份实现**（它自己重写了厂商那套规则），两份实现只要有一处
  * 差集不一致，就会出现两种静默失败：
  *   · **假放行**（预检说能过、厂商拒）⇒ 采纳 `strict: 'require'`，而厂商在建请求那一刻抛：
- *     **零出站请求** + `stopReason: 'error'`，`prompt()` 还不 reject —— 界面上是「这一行莫名其妙失败了」；
+ *     **零出站请求** + `stopReason: 'error'`，`prompt()` 还不 reject —— 界面上是「这个候选莫名其妙失败了」；
  *   · **假降级**（预检说不能过、厂商其实放行）⇒ 白白丢掉原生通道（`applied.structuredOutput` 恒 `false`），
  *     而没有任何报错。
  *
@@ -125,7 +125,7 @@ function vendorVerdict(schema: Record<string, unknown>, protocolType: 'openai' |
 describe('预检差分对拍：`preflightStructuredOutput` vs 厂商裁定', () => {
   for (const protocolType of ['openai', 'anthropic'] as const) {
     it(`${protocolType} wire：${CASES.length} 条语料逐条一致`, () => {
-      const rows = CASES.map((entry) => {
+      const candidates = CASES.map((entry) => {
         const preflight = preflightStructuredOutput(entry.schema, protocolType);
         const vendor = vendorVerdict(entry.schema, protocolType);
         return {
@@ -141,7 +141,7 @@ describe('预检差分对拍：`preflightStructuredOutput` vs 厂商裁定', () 
        *   · 预检 accept + 厂商不发 strict（`fallback` / `throws`）⇒ **假放行**；
        *   · 预检 reject + 厂商发 strict ⇒ **假降级**。
        */
-      const mismatches = rows
+      const mismatches = candidates
         .map((row) => ({
           ...row,
           kind: row.preflight === 'accept' && row.vendor !== 'strict'
@@ -149,7 +149,7 @@ describe('预检差分对拍：`preflightStructuredOutput` vs 厂商裁定', () 
             : row.preflight === 'reject' && row.vendor === 'strict' ? '假降级（白丢原生通道）' : null,
         }))
         .filter((row) => row.kind !== null);
-      dump(`07-preflight-${protocolType}`, { rows, mismatches });
+      dump(`07-preflight-${protocolType}`, { candidates, mismatches });
       // 一条不一致就是一条缺陷：假放行会打出「零出站请求」的失败，假降级会静默丢掉原生通道
       expect(
         mismatches.map((row) => `${row.kind}｜${row.name}: 预检=${row.preflight} 厂商=${row.vendor}｜${row.note}`),

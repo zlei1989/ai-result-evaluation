@@ -16,11 +16,11 @@ import {
   getCasesRootOverrideForTesting,
   listCases,
   loadConfig,
-  rowWorkspaceDir,
+  candidateWorkspaceDir,
   saveConfig,
   writeCase,
 } from '@aieval/core';
-import type { EvalRow, EvalRun, Provider, Rubric, TestCase } from '@aieval/contracts';
+import type { EvalCandidate, EvalRun, Provider, Rubric, TestCase } from '@aieval/contracts';
 import { afterAll } from 'vitest';
 import { removeTreeWithRetry } from './cleanup';
 
@@ -28,11 +28,11 @@ import { removeTreeWithRetry } from './cleanup';
  * 夹具的工作区根：**当前平台认得的真绝对路径**，每个测试文件一棵（vitest 按文件隔离模块图，
  * 故两份用例文件不会共用同一棵树），随本模块的 `afterAll` 一起回收。
  *
- * 为什么必须这样：`makeRun().workspaceBase` / `makeRow().workspacePath` 会被用例**真的**拿去
+ * 为什么必须这样：`makeRun().workspaceBase` / `makeCandidate().workspacePath` 会被用例**真的**拿去
  * mkdir / 写盘（`run-artifacts.test.ts` 的 `seedRun(..., { createWorkspace: true })`、
  * `messages-stream.test.ts` 的 `resetRecords(...)`），而盘符路径在 POSIX 上**不是绝对路径**——
  * 它是相对路径，产物会落进进程 cwd（仓库根），长出一个名为 `D:\runs` 的目录
- * （`D:\runs\run-1\rows\r-1\workspace` 与 `D:\runs/run-1/rows/r-1` 两棵树）。
+ * （`D:\runs\run-1\candidates\r-1\workspace` 与 `D:\runs/run-1/candidates/r-1` 两棵树）。
  * 顺带钉住一条不变量：夹具交给产品代码的地址必须 `isAbsolute()`（守卫见 `run-fixtures.test.ts`）。
  */
 const FIXTURE_WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), 'aieval-run-fixtures-'));
@@ -122,7 +122,7 @@ export function seedConfig(input: { providers?: Provider[]; cases?: TestCase[] }
 }
 
 /** 造一行评测：默认是「还没开始跑」的形状 */
-export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
+export function makeCandidate(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
   return {
     id: 'r-1',
     agentKind: 'cc',
@@ -132,7 +132,7 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
     modelId: 'claude-opus-4-6',
     status: 'pending',
     branch: 'test/r-1',
-    workspacePath: rowWorkspaceDir(FIXTURE_WORKSPACE_ROOT, 'run-1', 'r-1'),
+    workspacePath: candidateWorkspaceDir(FIXTURE_WORKSPACE_ROOT, 'run-1', 'r-1'),
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
     tokens: null,
     turns: null,
@@ -150,7 +150,7 @@ export function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
 }
 
 /**
- * 造一轮评测快照：默认单行、idle。
+ * 造一轮评测快照：默认单个候选、idle。
  * `rubric` 与 `makeCase` 逐字相同（见 `FIXTURE_RUBRIC` 的说明）：它是这一轮**创建时**拍下的那把尺子，
  * 不填这一格等于造一轮「快照里没有评分表」的评测——`saveRun` 的写侧自检会当场拒绝，
  * 而「没换用例就不许动快照」那条守卫的保留侧也会退化成 `undefined`（拦不住「被丢掉/清空」）。
@@ -173,7 +173,7 @@ export function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     useAgentJudge: false,
     askUser: false,
     injectMessages: false,
-    rows: [makeRow()],
+    candidates: [makeCandidate()],
     workspaceBase: FIXTURE_WORKSPACE_ROOT,
     createdAt: '2026-09-22T08:00:00.000Z',
     startedAt: null,

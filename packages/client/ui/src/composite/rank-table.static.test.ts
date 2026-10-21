@@ -41,14 +41,14 @@ describe('排名表的锁列结构', () => {
     );
   });
 
-  it('不渲染表头：列头本来就是空的（名次落在「选手」行里），留一行空白只占高度', () => {
+  it('不渲染表头：列头本来就是空的（名次落在「选手」候选里），留一行空白只占高度', () => {
     expect(source, '表格必须显式关掉表头（showHeader={false}）').toMatch(/showHeader=\{false\}/);
     // 与「列头留空」是一条口径的两面：给了表头就必须有内容，而这张表的列头没有内容可放
     expect(source, '表格里不该再出现列头文案（title）').not.toMatch(/\btitle:\s*'/);
   });
 
   it('组名行不许横跨候选列：它必须留在锁列里（横跨 = 跟着横向滚动滑走）', () => {
-    // 组名行的判据是「标签列的 onCell 不给 colSpan」：给了就会铺满整行、跟着滚走
+    // 组名候选的判据是「标签列的 onCell 不给 colSpan」：给了就会铺满整行、跟着滚走
     expect(source, '组名行又铺满整行了：横向滚动时分类名会滑出视野').not.toMatch(/colSpan:\s*columnCount/);
     // 候选列也不该再有「让位给铺满」的 colSpan: 0
     expect(source, '候选列还在为铺满的组名行让位（colSpan: 0）').not.toMatch(/colSpan:\s*0/);
@@ -66,7 +66,7 @@ describe('排名表的锁列结构', () => {
       /scroll=\{\{\s*x:\s*rankTableMinWidth\(/,
     );
     expect(source, 'scroll.x 不许写成 true / max-content').not.toMatch(/scroll=\{\{\s*x:\s*(true|'max-content')/);
-    // 求和式本身：标签列 + 每候选一列（两个常量，没有裸数字）
+    // 求和式本身：标签列 + 每个候选一列（两个常量，没有裸数字）
     expect(rankTableMinWidth(0)).toBe(RANK_LABEL_WIDTH);
     expect(rankTableMinWidth(2)).toBe(RANK_LABEL_WIDTH + 2 * RANK_CANDIDATE_WIDTH);
   });

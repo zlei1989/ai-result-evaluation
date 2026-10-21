@@ -10,7 +10,7 @@
 import type {
   AgentEvent,
   McpServerEntry,
-  RowMcpChannel,
+  CandidateMcpChannel,
   UsageTiming,
   UsageTokens,
   UsageTurn,
@@ -18,7 +18,7 @@ import type {
 } from '@aieval/contracts';
 import { inspect } from 'node:util';
 
-/** 适配器能发的三类事件；status / diff-summary / score / end 由编排层发（行状态的唯一写入点在编排层） */
+/** 适配器能发的三类事件；status / diff-summary / score / end 由编排层发（本次运行状态的唯一写入点在编排层） */
 export type AgentEventDraft =
   /**
    * `summary` = **给人看的一句话**（可选）：适配器认识这个形状时给一句人话，
@@ -93,7 +93,7 @@ export type AgentEventDraft =
      * 而消费方（编排层的推导）正是靠它决定「工具表里没有这一台」算不算失败。
      * 契约那边 `.optional()`（磁盘上有早期落的老事件，缺格按 `vendor-status` 处置）。
      */
-    mcpChannel: RowMcpChannel;
+    mcpChannel: CandidateMcpChannel;
     permissionMode: string | null;
     outputStyle: string | null;
     /**
@@ -125,7 +125,7 @@ export function createEventEmitter(onEvent: (event: AgentEvent) => void): EventE
 
 /**
  * 日志草稿。
- * `summary`（可选）= 这一行的人话版本；不认识那个形状的调用方留空即可——**不要**拿 `text` 凑。
+ * `summary`（可选）= 本次运行的人话版本；不认识那个形状的调用方留空即可——**不要**拿 `text` 凑。
  */
 export function logDraft(stream: 'stdout' | 'stderr', text: string, summary?: string): AgentEventDraft {
   return summary === undefined ? { type: 'log', stream, text } : { type: 'log', stream, text, summary };
@@ -149,7 +149,7 @@ export function vendorSystemDraft(facts: {
   slashCommands: string[] | null;
   agents: string[] | null;
   mcpServers: McpServerEntry[] | null;
-  mcpChannel: RowMcpChannel;
+  mcpChannel: CandidateMcpChannel;
   permissionMode: string | null;
   outputStyle: string | null;
   skills?: VendorSkill[];

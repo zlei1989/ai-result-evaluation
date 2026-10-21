@@ -43,7 +43,7 @@ export {
   RubricRecognizeModal,
   type RubricRecognizeModalProps,
 } from './composite/rubric-recognize-modal';
-export { ROW_STATUS_COLORS, RowStatusTag, type RowStatusTagProps } from './base/row-status-tag';
+export { CANDIDATE_STATUS_COLORS, CandidateStatusTag, type CandidateStatusTagProps } from './base/candidate-status-tag';
 export { MetricLine, formatCacheHitRate, formatCount, formatDuration, type MetricLineProps } from './base/metric-line';
 /**
  * 派生指标：`tok/s` 与「这段时间是哪一种口径」。
@@ -114,7 +114,7 @@ export {
   McpPasteModal,
   type McpPasteModalProps,
 } from './composite/mcp-paste-modal';
-// 测试连接的结果区：两个入口（行内 / 表单）共用同一份渲染，「说什么话」只有一处实现
+// 测试连接的结果区：两个入口（候选内 / 表单）共用同一份渲染，「说什么话」只有一处实现
 export {
   McpProbeResultView,
   McpProbeWaiting,
@@ -131,13 +131,13 @@ export {
   // 编辑模式的保存前确认框要用的判据（「这次会作废哪几行」）：面板自己拿它填确认框的内容。
   // **没有任何页面消费者**（别再照抄成「页面拿它决定弹不弹」：弹不弹是面板在 `handleFinish` 里自己判的，
   // 页面只把 `onSubmit` 转发出去）。它随组件一起转出，是因为这条判据与组件同源、且要被**直接**测到
-  // （`run-create-panel.test.tsx` 里的 `invalidatedRows` 那一组）。
-  invalidatedRows,
+  // （`run-create-panel.test.tsx` 里的 `invalidatedCandidates` 那一组）。
+  invalidatedCandidates,
   type RunCreatePanelProps,
   type RunFormValues,
   type RunModelOption,
 } from './composite/run-create-panel';
-export { EvalRowCard, type AgentCapabilityView, type EvalRowCardProps } from './composite/eval-row-card';
+export { EvalCandidateCard, type AgentCapabilityView, type EvalCandidateCardProps } from './composite/eval-candidate-card';
 export {
   RANK_BADGE_LIMIT,
   RunDetailPanel,
@@ -151,9 +151,15 @@ export {
   rankOf,
   type RunDetailPanelProps,
 } from './composite/run-detail-panel';
+export {
+  // 快照未到时右栏的占位：页面只负责「读到了没有」，骨架的形状归 ui 包（与 `RunDetailPanel` 同构）
+  RUN_DETAIL_SKELETON_ROWS,
+  RunDetailSkeleton,
+  type RunDetailSkeletonProps,
+} from './composite/run-detail-skeleton';
 export { ScoreDetailView, type ScoreDetailViewProps } from './composite/score-detail-view';
 export {
-  // 排名表：列是候选、行是各项事实（身份 / 执行 / 评分 / 总分），左首列锁住、其余列横向滚动。
+  // 排名表：列是候选、候选是各项事实（身份 / 执行 / 评分 / 总分），左首列锁住、其余列横向滚动。
   // 三个几何常量、判据说明与名次标记一并转出：守卫按它们断言（判据那几句由具名片段拼装，
   // 改判据时必须回来改这几段；名次标记的拼法同理——用例照抄一份就会与实现漂移）。
   RANK_CANDIDATE_WIDTH,
@@ -174,7 +180,7 @@ export {
   ARTIFACT_OVERVIEW_LABEL,
   ArtifactFileContent,
   ArtifactOverview,
-  artifactCardTitle,
+  artifactPanelTitle,
   type ArtifactFileContentProps,
   type ArtifactOverviewProps,
 } from './composite/artifact-overview';
@@ -201,7 +207,7 @@ export {
 } from './composite/agent-log/agent-log-layout';
 /**
  * 人工消息的**输入区与排队区**：装配侧把它塞进 `AgentLogLayout` 的 `footer` 槽
- * （只有「这一行允许人送话」时才渲染它）。它自带排队区，故调用方不必自己拼两段。
+ * （只有「这个候选允许人送话」时才渲染它）。它自带排队区，故调用方不必自己拼两段。
  */
 export {
   InjectComposer,
@@ -215,7 +221,6 @@ export {
  */
 export {
   FollowUpComposer,
-  FOLLOW_UP_HINT,
   type FollowUpComposerProps,
   type FollowUpSendInput,
   type FollowUpUploadInput,
@@ -266,7 +271,7 @@ export {
   activeNodeOf,
   buildAgentLogModel,
   diagnosticsOf,
-  rowEventsOf,
+  candidateEventsOf,
   userPromptOf,
   type AgentLogFactsInput,
   type BuildAgentLogModelInput,
@@ -326,8 +331,8 @@ export {
   type LogNodeStatus,
   type LogTurn,
   type MessageCapabilityMap,
-  type RowEvent,
-  type RowNode,
+  type CandidateEvent,
+  type CandidateNode,
   type SessionFacts,
   type SessionNode,
   type TaskPanel,

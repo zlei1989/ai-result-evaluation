@@ -1,7 +1,7 @@
 /**
  * 适配器的错误归因。
  * 注意：这里的 `AgentErrorCode` **不是** contracts 的 `ErrorCode`——它没有对应的 HTTP 状态，落点是
- * 该行的事件日志；不要塞进 `ERROR_CODES`（那会逼 `STATUS_BY_CODE` 为它编造状态码）。
+ * 本次运行的事件日志；不要塞进 `ERROR_CODES`（那会逼 `STATUS_BY_CODE` 为它编造状态码）。
  * 用户可见文案的要求：**只说技术事实**——加载失败点名包名与安装方式、密钥无效带 host、
  * 限流带 host 与本次是哪一家、模型名不存在保留上游响应正文（网关的 404 与模型名拼错在正文之外无法区分）。
  * 「去哪儿改、按哪个按钮」属**产品知识**，由编排层按归因码追加（见 `orchestrator.ts` 的
@@ -151,7 +151,7 @@ function shapeMismatchMessage(packageName: string, reason: string, options: Agen
   const expected = options.expected ?? '（未登记）';
   const actual =
     options.actual === undefined || options.actual.length === 0 ? '（读不到任何导出）' : options.actual.join(' / ');
-  return `厂商 SDK 导出面不匹配：${packageName} 已安装，但导出面与适配器期望的不一致（期望 ${expected}；实测有 ${actual}；原因：${reason}）。这是适配器版本/回写问题，不是安装问题——不要重装该包，请更新本应用或把本行日志反馈给维护者；**换版本后需要重启服务**（模块实例已被进程内的模块表记住）`;
+  return `厂商 SDK 导出面不匹配：${packageName} 已安装，但导出面与适配器期望的不一致（期望 ${expected}；实测有 ${actual}；原因：${reason}）。这是适配器版本/回写问题，不是安装问题——不要重装该包，请更新本应用或把运行日志反馈给维护者；**换版本后需要重启服务**（模块实例已被进程内的模块表记住）`;
 }
 
 /** 从错误对象归因（事件流里通常给的是 Error 实例） */
@@ -177,10 +177,10 @@ export function classifyAgentFailure(error: unknown, context: FailureContext): A
    * **厂商的结构化失败码**（dsh 的 `LlmFailure.code`，由适配器以 `[CODE] 原文` 前缀带进这一格）。
    *
    * 为什么必须在这里认：缺省那条路把这些失败一并归成 `AGENT_FAILED`，而它在
-   * `TRANSIENT_ROW_RETRY_CODES` 里 ⇒ 一类**确定性**的失败会被自动重跑两遍（每次再等 3 秒 + 一整轮
+   * `TRANSIENT_CANDIDATE_RETRY_CODES` 里 ⇒ 一类**确定性**的失败会被自动重跑两遍（每次再等 3 秒 + 一整轮
    * 模型时间），而界面上的原因还指向「CLI 起不来 / 进程非零退出」这条错方向。真机读数（同一份
    * 探针，`.scratch` 里的 `ctrl-cred-classify.mts`）：
-   *   · 空 key ⇒ 厂商 `MISSING_CREDENTIAL`、带换行的 key ⇒ `INVALID_CREDENTIAL` —— 两者都是配置
+   *   · 空 key ⇒ 厂商 `MISSING_CREDENTIAL`、带换本次运行的 key ⇒ `INVALID_CREDENTIAL` —— 两者都是配置
    *     错误，补救动作是「去核对这一家的密钥」，与 HTTP 401 同一码（`AUTH_FAILED`，**不在**重试表里）；
    *   · `contextWindow` 给小 + 长提示词 ⇒ `CONTEXT_WINDOW_EXCEEDED` —— 同一份输入再发一次还是超，
    *     归 `AGENT_CONTEXT_OVERFLOW`（**不在**重试表里）。

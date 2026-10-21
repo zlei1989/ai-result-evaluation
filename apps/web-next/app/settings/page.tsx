@@ -419,7 +419,7 @@ function SettingsPage(): React.ReactNode {
    * 新建时没有「当前那条」，才用缺省的 true。
    *
    * `current` 还兼任 `buildMcpConfig` 的第二个参数（**同一条**，别分两次取）：值格留空时，
-   * 只有「这一格原来就在」的行才交空串（服务端据此认「未改动」并换回落盘原值）——不喂的话那些行被
+   * 只有「这一格原来就在」的行才交空串（服务端据此认「未改动」并换回落盘原值）——不喂的话那些候选被
    * 整条丢掉，于是「打开编辑弹窗、一个字不改直接保存」就把原密钥从补丁里删掉了（`mcpServers` 是整份替换）。
    */
   const submitMcpServer = (values: McpServerFormValues): void => {
@@ -448,7 +448,7 @@ function SettingsPage(): React.ReactNode {
 
   /**
    * 测试连接——两个入口各测一份，**都不写盘**：
-   *   · 行内：`{ name }`，服务端读**已保存**的那份（表格里显示的就是它）；
+   *   · 候选内：`{ name }`，服务端读**已保存**的那份（表格里显示的就是它）；
    *   · 表单：`{ entry }`，用**当前表单值**（还没保存的输入），保存仍然只由「保存」按钮触发。
    * 探活的 loading 与结果状态留在两个组件内部（逐行逐弹窗），这一层只负责把请求接上。
    *
@@ -460,7 +460,7 @@ function SettingsPage(): React.ReactNode {
   /**
    * 表单入口**刻意不**把 `current` 喂给 `buildMcpConfig`（与保存那条不同）：探活拿的是**要发出去的**
    * 那一份，而「留空 = 不修改」只在落盘那一跳成立——探活里交空串会把一个空值的请求头发给上游，
-   * 换回一句「需要鉴权」，比这里少一个头发出去更容易看错。要测带密钥的那一份就用行内入口（读已保存的配置）。
+   * 换回一句「需要鉴权」，比这里少一个头发出去更容易看错。要测带密钥的那一份就用候选内入口（读已保存的配置）。
    */
   const testMcpForm = (values: McpServerFormValues): Promise<McpProbeResult> => {
     const built = buildMcpConfig(values);
@@ -756,7 +756,7 @@ function SettingsPage(): React.ReactNode {
                       type="info"
                       showIcon
                       title="与仓库自带 skill 的关系"
-                      description="这里只决定本机启用项；被测仓库自带的 skill 四家都会自动发现、不压制。同名时谁赢四家不同：Claude Code 以本机为准，DeepSeek Harness 与 Pi Coding Agent 以仓库为准，Codex 两条都会进清单。逐家细节见行详情的「本行技能」格。"
+                      description="这里只决定本机启用项；被测仓库自带的 skill 四家都会自动发现、不压制。同名时谁赢四家不同：Claude Code 以本机为准，DeepSeek Harness 与 Pi Coding Agent 以仓库为准，Codex 两条都会进清单。逐家细节见候选详情的「候选技能」格。"
                       data-testid="skills-repo-note"
                     />
                     <SkillTable

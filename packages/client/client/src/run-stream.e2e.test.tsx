@@ -20,11 +20,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentEvent, AgentMessage } from '@aieval/contracts';
 import { useRunActivity } from './run-activity';
-import { useRunLiveMetrics } from './row-live';
+import { useRunLiveMetrics } from './candidate-live';
 import { resetRunStreamHubForTesting } from './run-stream-hub';
 import { realEventSourcePath, type RealEventSource, type RealEventSourceCtor } from './testing/real-event-source';
 
-/** 一行的事件历史：准备中 → 跑起来（带 at）→ 一条用量（末号 = 3，正是指标那一路的游标） */
+/** 一候选的事件历史：准备中 → 跑起来（带 at）→ 一条用量（末号 = 3，正是指标那一路的游标） */
 const START_AT = '2026-09-22T08:01:30.000Z';
 const HISTORY: AgentEvent[] = [
   { seq: 1, at: '2026-09-22T08:01:00.000Z', type: 'status', status: 'preparing' },
@@ -33,13 +33,13 @@ const HISTORY: AgentEvent[] = [
 ];
 
 /** 按 api 的 `toEventFrame` 逐字成帧：**无名事件**（没有 `event:` 行）+ `id:` */
-function eventFrame(rowId: string, event: AgentEvent): string {
-  return `id: ${event.seq}\ndata: ${JSON.stringify({ ...event, rowId, rowChannel: 'candidate' })}\n\n`;
+function eventFrame(candidateId: string, event: AgentEvent): string {
+  return `id: ${event.seq}\ndata: ${JSON.stringify({ ...event, candidateId, candidateChannel: 'candidate' })}\n\n`;
 }
 
 /** 按 api 的 `toMessageFrame` 逐字成帧：**没有** `id:` 行 */
-function messageFrame(rowId: string, rowChannel: 'candidate' | 'judge', message: AgentMessage): string {
-  return `data: ${JSON.stringify({ type: 'message', rowId, rowChannel, message })}\n\n`;
+function messageFrame(candidateId: string, candidateChannel: 'candidate' | 'judge', message: AgentMessage): string {
+  return `data: ${JSON.stringify({ type: 'message', candidateId, candidateChannel, message })}\n\n`;
 }
 
 function makeMessage(text: string): AgentMessage {
@@ -72,10 +72,10 @@ interface Harness {
   hits: Hit[];
   /** 这一刻**还开着**的聚合流连接数（服务端视角）：详情页的连接数判据就是它 */
   openStreams: () => number;
-  /** 服务器推一条候选事件（模拟编排层 `publishRowEvent` 经聚合流出去） */
-  publishEvent: (rowId: string, event: AgentEvent) => void;
-  /** 服务器推一条消息（模拟 `publishRowMessage`） */
-  publishMessage: (rowId: string, rowChannel: 'candidate' | 'judge', message: AgentMessage) => void;
+  /** 服务器推一条候选事件（模拟编排层 `publishCandidateEvent` 经聚合流出去） */
+  publishEvent: (candidateId: string, event: AgentEvent) => void;
+  /** 服务器推一条消息（模拟 `publishCandidateMessage`） */
+  publishMessage: (candidateId: string, candidateChannel: 'candidate' | 'judge', message: AgentMessage) => void;
   /** 服务端断开这条连接（中间层掐断）；浏览器会自己重连，客户端不写重连 */
   drop: () => void;
   close: () => Promise<void>;
@@ -133,8 +133,8 @@ async function startAggregateServer(): Promise<Harness> {
   return {
     hits,
     openStreams: () => clients.size,
-    publishEvent: (rowId, event) => write(eventFrame(rowId, event)),
-    publishMessage: (rowId, rowChannel, message) => write(messageFrame(rowId, rowChannel, message)),
+    publishEvent: (candidateId, event) => write(eventFrame(candidateId, event)),
+    publishMessage: (candidateId, candidateChannel, message) => write(messageFrame(candidateId, candidateChannel, message)),
     drop: () => {
       for (const res of clients) res.destroy();
       clients.clear();
@@ -157,8 +157,8 @@ const wrapper = ({ children }: { children: ReactNode }) =>
 function mountDetail() {
   return renderHook(
     () => ({
-      live: useRunLiveMetrics({ runId: 'run-1', rowIds: ['w-1'] }),
-      activity: useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }),
+      live: useRunLiveMetrics({ runId: 'run-1', candidateIds: ['w-1'] }),
+      activity: useRunActivity({ runId: 'run-1', candidates: [{ id: 'w-1', status: 'running' }] }),
     }),
     { wrapper },
   );
@@ -196,7 +196,7 @@ describe('聚合流 × 真实 EventSource × 真实 HTTP', () => {
     await waitFor(() => expect(result.current.live['w-1']?.turns).toBe(1));
     expect(result.current.live['w-1']?.startedAtMs).toBe(Date.parse(START_AT));
 
-    // 实时：事件帧（无名事件 + id）与消息帧（无名事件）都由真实 EventSource 交付、按 rowId 分流到两路
+    // 实时：事件帧（无名事件 + id）与消息帧（无名事件）都由真实 EventSource 交付、按 candidateId 分流到两路
     const usage: AgentEvent = {
       seq: 4,
       at: '2026-09-22T08:03:00.000Z',

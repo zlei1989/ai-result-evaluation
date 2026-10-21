@@ -38,7 +38,7 @@ const QUESTION: AskUserQuestion = {
 const PENDING = {
   askId: 'ask-1',
   runId: 'run-1',
-  rowId: 'row-1',
+  candidateId: 'candidate-1',
   stage: 'agent' as const,
   questions: [QUESTION],
   askedAt: '2026-10-13T12:00:00.000Z',
@@ -53,7 +53,7 @@ beforeEach(() => {
 
 describe('待答快照', () => {
   it('原样透出清单（本层不缓存、不排序：界面要的先来后到就是表里那一刻的顺序）', () => {
-    table.pending = [PENDING, { ...PENDING, askId: 'ask-2', rowId: null }];
+    table.pending = [PENDING, { ...PENDING, askId: 'ask-2', candidateId: null }];
 
     expect(getPendingAskUser()).toEqual(table.pending);
   });
@@ -63,7 +63,7 @@ describe('待答快照', () => {
   });
 
   it('按 runId 过滤：只给该轮的条目；不传（或空串）时给全部', () => {
-    table.pending = [PENDING, { ...PENDING, askId: 'ask-2', runId: 'run-2', rowId: null }];
+    table.pending = [PENDING, { ...PENDING, askId: 'ask-2', runId: 'run-2', candidateId: null }];
 
     // 归属过滤走的是**条目自己那一格 runId**（信号帧不带归属，读侧才是权威）
     expect(getPendingAskUser('run-1').map((item) => item.askId)).toEqual(['ask-1']);

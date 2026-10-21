@@ -27,7 +27,7 @@ describe('createEventEmitter', () => {
     });
     // `timing: null` = 这一次没采到时间（2026-10-XX 新增的那一格）：**这一格必填**，
     // 于是「未采集」只有一种写法，读侧不必再区分「键不存在」与「键是 null」。
-    // `subagentTokens: null` 同一条处置：这一行没有子智能体、或没采到。
+    // `subagentTokens: null` 同一条处置：这个候选没有子智能体、或没采到。
     // `subagentTurns: null` 同理（轮次那一格的分量）：**恒带**，`null` = 没采到、`0` = 确实没有。
     // `tokensBasis` 也**恒带**：它没有「不知道」这一态（发事件的人总知道自己手里那个数的来源），
     // 于是事件流里每一条 usage 都能自证「这个 tokens 是厂商上报的还是我们估的」。

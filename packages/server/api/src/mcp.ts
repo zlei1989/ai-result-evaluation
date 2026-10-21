@@ -21,7 +21,7 @@
  *      AbortController + setTimeout 罩住「fetch + 读正文」整段，stdio 由 core 的那条预算罩住握手与收尾。
  *   4. **同一时刻只允许一个探活**：宿主侧并发是唯一会撞浏览器 profile 的组合，也避免连点起多个 `npx`。
  *      串行在**服务端**做（前端 loading 只是提示，两个标签页就绕过去了）。
- *   5. **不落盘**：纯读操作。行内入口读已保存的那份，表单入口用传进来的那份——两者都不写配置。
+ *   5. **不落盘**：纯读操作。候选内入口读已保存的那份，表单入口用传进来的那份——两者都不写配置。
  */
 import {
   MCP_PLACEHOLDER_PATTERN,
@@ -59,7 +59,7 @@ const VENDOR_TEXT_LIMIT = 2_000;
 /**
  * 占位判据与**注入层共用一份**（`contracts/src/mcp.ts` 的 `MCP_PLACEHOLDER_PATTERN` /
  * `MCP_UNSUPPORTED_PLACEHOLDER`）：两边判的是同一段配置文本，各抄一份正则迟早出现
- * 「探活认、注入不认」——而那时用户看到的是「测试连接绿了，行里却没注入」。
+ * 「探活认、注入不认」——而那时用户看到的是「测试连接绿了，候选里却没注入」。
  * 差别只在**残留之后怎么办**：注入侧整条判死（`MCP_UNRESOLVED_PLACEHOLDER`），
  * 探活侧只丢掉这一格并记一条说明（`MCP_UNSUPPORTED_PLACEHOLDER`）。
  */
@@ -499,7 +499,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 /**
  * stdio 探活：委托 core 的进程原语，把机制层的四类信号翻成中文分档。
  *
- * 「依赖拉取失败」与「命令无法启动」的分界**逐字照那两行**：
+ * 「依赖拉取失败」与「命令无法启动」的分界**逐字照那两个候选**：
  *   · 命令无法启动 = `spawn` 的 error（ENOENT）**或「握手前退出」**；
  *   · 依赖拉取失败 = **npx/npm + 非零退出 + stderr**。
  * 于是三条退出码都不算拉包失败：`code === null`（进程没给出码就没了 = 握手前退出那一档）、

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 评测路由端到端：列表 / 创建 / 详情 / 启动 / 终止 / 单行终止 / 候选池。
+ * 评测路由端到端：列表 / 创建 / 详情 / 启动 / 终止 / 单候选终止 / 候选池。
  *
  * **`@aieval/evaluator` 被整块 mock 掉**：这些用例要验的是「zod → api → 错误映射」这条链路，
  * 而编排层的启动会真的 spawn agent 子进程（评测执行用假的 evaluator：在 api 边界替换掉它，
@@ -47,9 +47,9 @@ import {
 import { GET as getRun, DELETE as deleteRunRoute, PUT as putRun } from '@/app/api/runs/[runId]/route';
 import { POST as postStart } from '@/app/api/runs/[runId]/start/route';
 import { POST as postAbortRun } from '@/app/api/runs/[runId]/abort/route';
-import { POST as postAbortRow } from '@/app/api/runs/[runId]/rows/[rowId]/abort/route';
-import { POST as postRescore } from '@/app/api/runs/[runId]/rows/[rowId]/rescore/route';
-import { POST as postRetry } from '@/app/api/runs/[runId]/rows/[rowId]/retry/route';
+import { POST as postAbortCandidate } from '@/app/api/runs/[runId]/candidates/[candidateId]/abort/route';
+import { POST as postRescore } from '@/app/api/runs/[runId]/candidates/[candidateId]/rescore/route';
+import { POST as postRetry } from '@/app/api/runs/[runId]/candidates/[candidateId]/retry/route';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 /**
@@ -68,24 +68,24 @@ const evaluator = vi.hoisted(() => ({
   saveRun: vi.fn(),
   startRun: vi.fn(),
   abortRun: vi.fn(),
-  abortRow: vi.fn(),
-  // `@aieval/api` 的 index.ts 转出了 `rescoreRow`，而本文件经 `@/app/api/runs/route`
+  abortCandidate: vi.fn(),
+  // `@aieval/api` 的 index.ts 转出了 `rescoreCandidate`，而本文件经 `@/app/api/runs/route`
   // 间接 import 了那个 index：缺键是**访问那一刻**才抛
-  // 「No "rescoreRow" export is defined on the mock」（与文件头第 2 条同一个坑）
-  rescoreRow: vi.fn(),
-  // 单行重新执行与重评同一个形状、同一个坑：api 的 index 转出了 `retryRow`，
-  // 缺键在**访问到它**（走那条路由的用例）时才抛「No "retryRow" export is defined on the mock」
-  retryRow: vi.fn(),
-  subscribeRowEvents: vi.fn(() => () => {}),
+  // 「No "rescoreCandidate" export is defined on the mock」（与文件头第 2 条同一个坑）
+  rescoreCandidate: vi.fn(),
+  // 单行重新执行与重评同一个形状、同一个坑：api 的 index 转出了 `retryCandidate`，
+  // 缺键在**访问到它**（走那条路由的用例）时才抛「No "retryCandidate" export is defined on the mock」
+  retryCandidate: vi.fn(),
+  subscribeCandidateEvents: vi.fn(() => () => {}),
   // 评分那两条流：`@aieval/api` 的 index 转出了它们，而 `messages-stream.ts` /
   // `run-stream.ts` 在**模块求值期**就把 `subscribeJudge*` 收进 channel 常量 ⇒ 缺键在 import 阶段就抛
   subscribeJudgeEvents: vi.fn(() => () => {}),
   subscribeJudgeRecords: vi.fn(() => () => {}),
   // 候选那条记录流：`messages-stream.ts` 在模块求值期收进 channel 常量，同上
-  subscribeRowRecords: vi.fn(() => () => {}),
+  subscribeCandidateRecords: vi.fn(() => () => {}),
   // 全局流的三条信号总线（`/api/runs/stream`）：api 的 index 转出 `streamGlobalSignals`，
   // 而 run-events.ts 在模块求值期就读这三个键——缺一个，**任何**经 `@aieval/api` index 的 import
-  // 都当场抛「No "…" export is defined on the mock」（比 rescoreRow 那类访问时才抛更早）。
+  // 都当场抛「No "…" export is defined on the mock」（比 rescoreCandidate 那类访问时才抛更早）。
   // 签名显式写 listener 参数：下面那条接驳用例要 mockImplementation，零参推断会与之不兼容
   subscribeRunChanges: vi.fn((listener: (runId: string) => void) => {
     void listener;
@@ -100,7 +100,7 @@ const evaluator = vi.hoisted(() => ({
   deleteRun: vi.fn(),
   // 编辑的活性守卫（`updateRun` 在落盘前调它）：同样是 api 的 index.ts 转出的名字。
   // 留成空桩是有意的——这里钉的是传输链，活性判据在 contracts / api 自己的用例里。
-  // ⚠️ 缺了它**不会**在模块求值期报错：删掉这一行文件照样加载，只有真的走到
+  // ⚠️ 缺了它**不会**在模块求值期报错：删掉这个候选文件照样加载，只有真的走到
   // `updateRun` 的那两条 PUT 用例红（500，cause 是 `[vitest] No "assertRunMutable" export is
   // defined on the mock`），其余 21 条照绿——「手写键清单要一直照补」的理由就在这里。
   assertRunMutable: vi.fn(),
@@ -206,7 +206,7 @@ async function createRealRun(): Promise<EvalRun> {
     jsonRequest({
       caseId: 'c-1',
       executionMode: 'parallel',
-      rows: [
+      candidates: [
         { agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', providerId: 'p-openai', modelId: 'gpt-5' },
       ],
@@ -239,10 +239,10 @@ describe('POST /api/runs', () => {
     const run = await createRealRun();
 
     expect(run.status).toBe('idle');
-    expect(run.rows[0]?.providerName).toBe('Anthropic 网关');
-    expect(run.rows[0]?.baseUrl).toBe('https://gw.example.com/anthropic');
+    expect(run.candidates[0]?.providerName).toBe('Anthropic 网关');
+    expect(run.candidates[0]?.baseUrl).toBe('https://gw.example.com/anthropic');
     // 落的是磁盘（假的 store），不是内存里的临时对象
-    expect(store.get(run.id)?.rows).toHaveLength(2);
+    expect(store.get(run.id)?.candidates).toHaveLength(2);
   });
 
   /**
@@ -259,7 +259,7 @@ describe('POST /api/runs', () => {
         caseId: testCase.id,
         executionMode: 'parallel',
         useAgentJudge: true,
-        rows: [{ agentKind: 'codex', providerId: openaiProvider.id, modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'codex', providerId: openaiProvider.id, modelId: 'gpt-5' }],
       }),
     );
 
@@ -279,7 +279,7 @@ describe('POST /api/runs', () => {
         caseId: testCase.id,
         executionMode: 'parallel',
         note: '  对比模型不同版本间的差异  ',
-        rows: [{ agentKind: 'codex', providerId: openaiProvider.id, modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'codex', providerId: openaiProvider.id, modelId: 'gpt-5' }],
       }),
     );
 
@@ -298,8 +298,8 @@ describe('POST /api/runs', () => {
     expect(body.error.context.map((issue: { path: string[] }) => issue.path[0])).toContain('executionMode');
   });
 
-  it('一行都没有时 400（RunCreateSchema 的 min(1)）', async () => {
-    const res = await postRun(jsonRequest({ caseId: 'c-1', executionMode: 'parallel', rows: [] }));
+  it('一个候选都没有时 400（RunCreateSchema 的 min(1)）', async () => {
+    const res = await postRun(jsonRequest({ caseId: 'c-1', executionMode: 'parallel', candidates: [] }));
 
     expect(res.status).toBe(400);
   });
@@ -309,7 +309,7 @@ describe('POST /api/runs', () => {
       jsonRequest({
         caseId: 'c-1',
         executionMode: 'parallel',
-        rows: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-gone', modelId: 'claude-opus-4-6' }],
       }),
     );
 
@@ -322,7 +322,7 @@ describe('POST /api/runs', () => {
       jsonRequest({
         caseId: 'c-1',
         executionMode: 'parallel',
-        rows: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
+        candidates: [{ agentKind: 'cc', providerId: 'p-openai', modelId: 'gpt-5' }],
       }),
     );
 
@@ -356,7 +356,7 @@ describe('GET /api/runs/[runId]', () => {
 });
 
 describe('POST /api/runs/[runId]/start', () => {
-  it('有可执行行时交给编排层', async () => {
+  it('有可执行候选时交给编排层', async () => {
     const run = await createRealRun();
     evaluator.startRun.mockReturnValue({ ...run, status: 'running' });
 
@@ -368,7 +368,7 @@ describe('POST /api/runs/[runId]/start', () => {
 
   it('全部已评分 → 409，且不调用编排层', async () => {
     const run = await createRealRun();
-    store.set(run.id, { ...run, rows: run.rows.map((row) => ({ ...row, status: 'judged' as const })) });
+    store.set(run.id, { ...run, candidates: run.candidates.map((row) => ({ ...row, status: 'judged' as const })) });
     evaluator.startRun.mockClear();
 
     const res = await post(postStart, { runId: run.id });
@@ -387,52 +387,52 @@ describe('POST /api/runs/[runId]/abort 与单行 abort', () => {
     expect((await post(postAbortRun, { runId: 'nope' })).status).toBe(404);
   });
 
-  it('单行终止：行不存在 → 404（脏 URL 不能真的去杀别人）', async () => {
+  it('单候选终止：行不存在 → 404（脏 URL 不能真的去杀别人）', async () => {
     const run = await createRealRun();
-    evaluator.abortRow.mockReturnValue({ ...run, status: 'partial' });
+    evaluator.abortCandidate.mockReturnValue({ ...run, status: 'partial' });
 
-    expect((await post(postAbortRow, { runId: run.id, rowId: run.rows[0]?.id ?? '' })).status).toBe(200);
-    expect((await post(postAbortRow, { runId: run.id, rowId: 'r-x' })).status).toBe(404);
+    expect((await post(postAbortCandidate, { runId: run.id, candidateId: run.candidates[0]?.id ?? '' })).status).toBe(200);
+    expect((await post(postAbortCandidate, { runId: run.id, candidateId: 'r-x' })).status).toBe(404);
   });
 });
 
 /**
- * 行级重新评分路由。
+ * 候选级重新评分路由。
  *
  * 这一条钉的是**传输链**：路由把 `params` 里两个 id 原样交给 `@aieval/api`，再把它的返回值
- * 作为 JSON 回出去。可重评的判据不在这里（它是 contracts 的 `canRescoreRow` + 编排层的
+ * 作为 JSON 回出去。可重评的判据不在这里（它是 contracts 的 `canRescoreCandidate` + 编排层的
  * `rescoreRefusal`），故这里只验「转到了、回的是快照」——与单行 abort 同一套写法。
  */
-describe('POST /api/runs/[runId]/rows/[rowId]/rescore', () => {
+describe('POST /api/runs/[runId]/candidates/[candidateId]/rescore', () => {
   it('转发到服务层并回快照，两个 id 都按 URL 里的那一个原样传下去', async () => {
     const run = await createRealRun();
-    const rowId = run.rows[0]?.id ?? '';
-    evaluator.rescoreRow.mockReturnValue({ ...run, status: 'running' });
+    const candidateId = run.candidates[0]?.id ?? '';
+    evaluator.rescoreCandidate.mockReturnValue({ ...run, status: 'running' });
 
-    const res = await post(postRescore, { runId: run.id, rowId });
+    const res = await post(postRescore, { runId: run.id, candidateId });
 
     expect(res.status).toBe(200);
     expect((await res.json()).id).toBe(run.id);
-    expect(evaluator.rescoreRow).toHaveBeenCalledWith(run.id, rowId);
+    expect(evaluator.rescoreCandidate).toHaveBeenCalledWith(run.id, candidateId);
   });
 });
 
 /**
  * 单行**重新执行**路由（引入，界面文案 晚间起是「重新执行」，
  * 路由与 api 名保持 `retry`）：与 rescore 逐字同形的传输链守卫。
- * 判据（`canRetryRow`）与服务端拒绝原因都不在这里，这里只验「两个 id 原样转下去、回的是快照」。
+ * 判据（`canRetryCandidate`）与服务端拒绝原因都不在这里，这里只验「两个 id 原样转下去、回的是快照」。
  */
-describe('POST /api/runs/[runId]/rows/[rowId]/retry', () => {
+describe('POST /api/runs/[runId]/candidates/[candidateId]/retry', () => {
   it('转发到服务层并回快照，两个 id 都按 URL 里的那一个原样传下去', async () => {
     const run = await createRealRun();
-    const rowId = run.rows[0]?.id ?? '';
-    evaluator.retryRow.mockReturnValue({ ...run, status: 'running' });
+    const candidateId = run.candidates[0]?.id ?? '';
+    evaluator.retryCandidate.mockReturnValue({ ...run, status: 'running' });
 
-    const res = await post(postRetry, { runId: run.id, rowId });
+    const res = await post(postRetry, { runId: run.id, candidateId });
 
     expect(res.status).toBe(200);
     expect((await res.json()).id).toBe(run.id);
-    expect(evaluator.retryRow).toHaveBeenCalledWith(run.id, rowId);
+    expect(evaluator.retryCandidate).toHaveBeenCalledWith(run.id, candidateId);
   });
 });
 
@@ -568,28 +568,28 @@ describe('GET /api/runs/model-options', () => {
 
 /**
  * `PUT /api/runs/[runId]`（编辑）与 `DELETE`（删除）：这一层钉的是**传输链**——
- * zod 有没有把 `rows[].id` 解析掉、两个 id 有没有按 URL 原样交给 api、错误有没有映射成中文。
- * 「哪一行被重置」是 api / contracts 的判据，不在本文件的职责里（mock 掉了 evaluator）。
+ * zod 有没有把 `candidates[].id` 解析掉、两个 id 有没有按 URL 原样交给 api、错误有没有映射成中文。
+ * 「哪一个候选被重置」是 api / contracts 的判据，不在本文件的职责里（mock 掉了 evaluator）。
  *
  * 三条失败路径都断言**错误码映射出来的 HTTP 状态**（400 / 404 / 409）：路由的第三件事就是
  * 这张映射表，只断 message 的话，「404 是从 NOT_FOUND 来的」与「是从别处漏出来的」分不开。
  */
 describe('PUT /api/runs/[runId]', () => {
-  it('把 rows[].id 真的交给了服务端（zod 默认 strip 未知键，漏声明就是静默当新行）', async () => {
+  it('把 candidates[].id 真的交给了服务端（zod 默认 strip 未知键，漏声明就是静默当新行）', async () => {
     const run = await createRealRun();
-    const rowId = run.rows[0]?.id ?? '';
+    const candidateId = run.candidates[0]?.id ?? '';
     // 编排层被 mock，故这里断言的是「api 层收到了带 id 的那一行」——用 saveRun 的落盘物反向核对
     store.set(run.id, run);
 
-    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: rowId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }), {
+    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', candidates: [{ id: candidateId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }), {
       params: Promise.resolve({ runId: run.id }),
     });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as EvalRun;
     expect(body.executionMode).toBe('serial');
-    // 行 id 原样保留 = 「原地更新这一行」这条语义真的走到了 api
-    expect(body.rows.map((row) => row.id)).toEqual([rowId]);
+    // 候选 id 原样保留 = 「原地更新这个候选」这条语义真的走到了 api
+    expect(body.candidates.map((row) => row.id)).toEqual([candidateId]);
     expect(store.get(run.id)?.executionMode).toBe('serial');
   });
 
@@ -600,28 +600,28 @@ describe('PUT /api/runs/[runId]', () => {
    */
   it('PUT /api/runs/[runId] 把 note 交给服务端；缺席按空串（全量替换）', async () => {
     const run = await createRealRun();
-    const rowId = run.rows[0]?.id ?? '';
-    const rows = [{ id: rowId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
+    const candidateId = run.candidates[0]?.id ?? '';
+    const candidates = [{ id: candidateId, agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }];
     store.set(run.id, run);
 
     const withNote = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', note: '  对比差异  ', rows }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', note: '  对比差异  ', candidates }),
       { params: Promise.resolve({ runId: run.id }) },
     );
     expect(withNote.status).toBe(200);
     expect(((await withNote.json()) as EvalRun).note).toBe('对比差异');
 
     const withoutNote = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', candidates }),
       { params: Promise.resolve({ runId: run.id }) },
     );
     expect(withoutNote.status).toBe(200);
     expect(((await withoutNote.json()) as EvalRun).note).toBe('');
   });
 
-  it('rows 为空的请求体 → 400（RunUpdateSchema 的 min(1)）', async () => {
+  it('candidates 为空的请求体 → 400（RunUpdateSchema 的 min(1)）', async () => {
     const run = await createRealRun();
-    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [] }), {
+    const res = await putRun(jsonRequest({ caseId: 'c-1', executionMode: 'serial', candidates: [] }), {
       params: Promise.resolve({ runId: run.id }),
     });
 
@@ -629,10 +629,10 @@ describe('PUT /api/runs/[runId]', () => {
     expect((await res.json()).error.code).toBe('INVALID_QUERY');
   });
 
-  it('未知的行 id → 404，且带出那个 id（不许静默当新行）', async () => {
+  it('未知的候选 id → 404，且带出那个 id（不许静默当新行）', async () => {
     const run = await createRealRun();
     const res = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ id: 'r-404', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', candidates: [{ id: 'r-404', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
       { params: Promise.resolve({ runId: run.id }) },
     );
 
@@ -646,7 +646,7 @@ describe('PUT /api/runs/[runId]', () => {
     const run = await createRealRun();
     store.set(run.id, { ...run, status: 'running' });
     const res = await putRun(
-      jsonRequest({ caseId: 'c-1', executionMode: 'serial', rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
+      jsonRequest({ caseId: 'c-1', executionMode: 'serial', candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }] }),
       { params: Promise.resolve({ runId: run.id }) },
     );
 
@@ -716,7 +716,7 @@ describe('GET /api/runs/stream（全局信号 SSE）', () => {
     expect(decoder.decode((await reader.read()).value)).toBe(': ready\n\n');
 
     handlers[0]?.('run-1');
-    // 全局流的帧是**无名**的（判别键是信封顶层的 type）：多一个 event: 行就会让只绑 onmessage 的客户端零交付
+    // 全局流的帧是**无名**的（判别键是信封顶层的 type）：多一个 event: 候选就会让只绑 onmessage 的客户端零交付
     expect(decoder.decode((await reader.read()).value)).toBe('data: {"type":"run-updated","runId":"run-1"}\n\n');
 
     await reader.cancel();

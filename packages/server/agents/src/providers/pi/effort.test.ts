@@ -10,7 +10,7 @@
  * 时长上报（同一台假网关）在 `timing.test.ts`：两件事的变异体与判据各不相同，分成两份文件。
  */
 import { describe, expect, it, vi } from 'vitest';
-import { runPiRow, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
+import { runPiCandidate, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
 import { PI_DEFAULT_EFFORT, PI_REASONING_EFFORTS, piProvider, piThinkingLevel } from './index';
 
 describe('pi 的档位域与域外值', () => {
@@ -41,12 +41,12 @@ describe('pi 的档位域与域外值', () => {
       warns.push(args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' '));
     });
     try {
-      const openai = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort: 'xhigh' });
+      const openai = await runPiCandidate(seen, gateway.port, { protocolType: 'openai', effort: 'xhigh' });
       expect(reasoningEffortOf(openai.body), '域外值不许被厂商静默升成 max').toBe(PI_DEFAULT_EFFORT);
-      const bogus = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort: 'bogus' });
+      const bogus = await runPiCandidate(seen, gateway.port, { protocolType: 'openai', effort: 'bogus' });
       expect(reasoningEffortOf(bogus.body), '域外值不许让「思考」静默关掉').toBe(PI_DEFAULT_EFFORT);
 
-      const anthropic = await runPiRow(seen, gateway.port, { protocolType: 'anthropic', effort: 'bogus' });
+      const anthropic = await runPiCandidate(seen, gateway.port, { protocolType: 'anthropic', effort: 'bogus' });
       expect(anthropic.body['thinking']).toEqual({ type: 'enabled', budget_tokens: 8192, display: 'summarized' });
 
       const logged = warns.join('\n');
@@ -75,7 +75,7 @@ describe('pi 的档位映射（openai wire 的请求体）', () => {
     const seen: CapturedPiRequest[] = [];
     const gateway = await startPiGateway(seen);
     try {
-      const { body } = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort: 'off' });
+      const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'openai', effort: 'off' });
       expect(seen.map((request) => request.url)).toEqual(['/v1/responses']);
       expect(body['reasoning']).toEqual({ effort: 'none' });
     } finally {
@@ -94,7 +94,7 @@ describe('pi 的档位映射（openai wire 的请求体）', () => {
     try {
       const sent: Record<string, unknown> = {};
       for (const effort of ['minimal', 'low', 'medium', 'high', 'max']) {
-        const { body } = await runPiRow(seen, gateway.port, { protocolType: 'openai', effort });
+        const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'openai', effort });
         sent[effort] = reasoningEffortOf(body);
       }
       expect(sent).toEqual({ minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', max: 'max' });
@@ -107,7 +107,7 @@ describe('pi 的档位映射（openai wire 的请求体）', () => {
     const seen: CapturedPiRequest[] = [];
     const gateway = await startPiGateway(seen);
     try {
-      const { body } = await runPiRow(seen, gateway.port, { protocolType: 'openai' });
+      const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'openai' });
       expect(reasoningEffortOf(body)).toBe(PI_DEFAULT_EFFORT);
       expect(piProvider.metadata.defaultEffort).toBe(PI_DEFAULT_EFFORT);
     } finally {
@@ -122,7 +122,7 @@ describe('pi 的档位映射（anthropic wire 的请求体）', () => {
     const seen: CapturedPiRequest[] = [];
     const gateway = await startPiGateway(seen);
     try {
-      const { body } = await runPiRow(seen, gateway.port, { protocolType: 'anthropic', effort: 'off' });
+      const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'anthropic', effort: 'off' });
       expect(seen.map((request) => request.url)).toEqual(['/v1/messages?beta=true']);
       expect(body['thinking']).toEqual({ type: 'disabled' });
     } finally {
@@ -142,7 +142,7 @@ describe('pi 的档位映射（anthropic wire 的请求体）', () => {
     try {
       const budgets: Record<string, unknown> = {};
       for (const effort of ['minimal', 'low', 'medium', 'high', 'max']) {
-        const { body } = await runPiRow(seen, gateway.port, { protocolType: 'anthropic', effort });
+        const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'anthropic', effort });
         const thinking = body['thinking'] as Record<string, unknown> | undefined;
         budgets[effort] = thinking?.['budget_tokens'];
         expect(thinking?.['type']).toBe('enabled');

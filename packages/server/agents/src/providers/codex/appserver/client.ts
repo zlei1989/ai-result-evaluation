@@ -17,7 +17,7 @@
  *
  * 第四条：**`close()` 回收整棵进程树并等确认**（`process-tree.ts`）。
  * codex 会在 `thread/start` 期间 spawn `git` 链去同步插件目录，只杀直接子进程会把它们留成孤儿，
- * 而它们持着本行的 `$CODEX_HOME`——下一轮的行产物清理就此 `EPERM`。
+ * 而它们持着本次运行的 `$CODEX_HOME`——下一轮的行产物清理就此 `EPERM`。
  *
  * 第五条：**管道两端的三个不变量**（都只在真机现形，单测拿假子进程看不见，故写在接口上由类型强制）：
  *   · 读侧 `setEncoding('utf8')`——不设编码时跨 chunk 的汉字会被切成替换字符，而坏字落在 JSON
@@ -125,13 +125,13 @@ export interface AppServerClient {
    * `options.onServerRequest` 决定。
    */
   serverRequests(): readonly AppServerServerRequest[];
-  /** 解析不了的整行数（见文件头第 3 条） */
+  /** 解析不了的整本次运行数（见文件头第 3 条） */
   unparsedFrames(): number;
   /**
    * 关闭客户端并**回收整棵进程树**（见 `process-tree.ts` 的文件头）。
    *
    * 为什么是异步、且必须 `await`：只发信号不等于进程已退出，孙进程更不会随父进程一起消失——
-   * 它们持着本行的配置目录，回收不干净会让下一轮的行产物清理 `EPERM`。
+   * 它们持着本次运行的配置目录，回收不干净会让下一轮的行产物清理 `EPERM`。
    * 幂等：重复调用返回同一个 Promise（`createDisposer` 之外再兜一层，因为 `start` 失败那条路
    * 也会调它）。
    */
@@ -141,7 +141,7 @@ export interface AppServerClient {
 export interface AppServerClientOptions {
   /** codex 可执行文件的绝对路径（由 `binary.ts` 解析） */
   binary: string;
-  /** 子进程环境（调用方负责展开宿主环境，如本行 `.agenthome` ⇒ `CODEX_HOME`） */
+  /** 子进程环境（调用方负责展开宿主环境，如本次运行 `.agenthome` ⇒ `CODEX_HOME`） */
   env: AppServerEnv;
   /**
    * 服务端主动请求的应答者：**返回结果 ⇒ 写回一帧**（`{jsonrpc, id, result}`，id 逐字用请求那一个），
@@ -274,7 +274,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
    *
    * 为什么抛错也回一帧：厂商正阻塞在这一帧上（`isBlocking` 为假也不让它自己收场）⇒ 让它继续等
    * 比回一帧空的更坏。回的是**空结果**而不是错误帧：我们这一侧坏了，不该让厂商把整轮判成失败
-   * ——「没人答」与「行失败」是两件事（与 `ask-user.ts` 的收场口径同源）。
+   * ——「没人答」与「本次运行失败」是两件事（与 `ask-user.ts` 的收场口径同源）。
    *
    * **审批类不回帧也要留痕**：`null` 同时表达「本类不应答」与「什么都不记」会让一次
    * 「厂商阻塞在审批帧上 ⇒ 行静止到看门狗」在日志里一个字都没有。
@@ -302,7 +302,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
        * **先挡住「不是对象」的那些**——这一格是崩溃与不崩溃的分界，不是洁癖。
        *
        * `JSON.parse('null')` 是**合法 JSON**，而 `null.id` 会抛
-       * `TypeError: Cannot read properties of null (reading 'id')`；这一行是从 socket 的 `data`
+       * `TypeError: Cannot read properties of null (reading 'id')`；本次运行是从 socket 的 `data`
        * 处理器里跑出来的，抛出去就是**未捕获异常**，带走整个宿主 Node 进程（本仓是 Next 服务）
        * ——真机复现：在真管道上注入一行 `null`，装着本客户端的 Node 子进程退出码 1。
        * 数字 / 字符串同样是合法 JSON 也不是帧（属性访问得 `undefined`，不抛，但会一路滑到
@@ -310,7 +310,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
        */
       if (parsed === null || typeof parsed !== 'object') {
         unparsed += 1;
-        logger.warn('codex app-server 的这一行不是 JSON-RPC 帧（已计入坏帧）', {
+        logger.warn('codex app-server 的本次运行不是 JSON-RPC 帧（已计入坏帧）', {
           count: unparsed,
           head: line.slice(0, BAD_FRAME_LOG_LIMIT),
           length: line.length,
@@ -325,7 +325,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
        * （启动横幅、Rust panic 文本）就此消失，症状会表现成「子线程突然没了」而无任何线索。
        * 原文截断后入日志——整行可能是一条几十 KB 的输出。
        */
-      logger.warn('codex app-server 的这一行解析不了（已计入坏帧）', {
+      logger.warn('codex app-server 的本次运行解析不了（已计入坏帧）', {
         count: unparsed,
         head: line.slice(0, BAD_FRAME_LOG_LIMIT),
         length: line.length,
@@ -472,7 +472,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
      *
      * 为什么不能只 `child.kill()`：那只杀直接子进程，而 codex 自己在启动阶段 spawn 了一条
      * `git` 链去同步插件目录（真机探针 `probe/v7/codex-plugins-sync.mjs`）。孙进程活着 =
-     * `$CODEX_HOME`（本行的 `.agenthome` / `.judgehome`）被句柄锁住 = 下一轮的行产物清理 EPERM。
+     * `$CODEX_HOME`（本次运行的 `.agenthome` / `.judgehome`）被句柄锁住 = 下一轮的行产物清理 EPERM。
      */
     close: () => {
       closePromise ??= (async () => {
@@ -489,7 +489,7 @@ export function createAppServerClient(options: AppServerClientOptions): AppServe
           logger.debug('codex 子进程已回收', { via: outcome.via, waitedMs: outcome.waitedMs, pid: child.pid });
         } else {
           // 可见性：这一条**必然**会在下一轮的行产物清理上以 EPERM 现身，先把因果写在日志里
-          logger.warn('codex 子进程在宽限期内没有退出（可能有残留下级进程锁住本行的配置目录）', {
+          logger.warn('codex 子进程在宽限期内没有退出（可能有残留下级进程锁住本次运行的配置目录）', {
             pid: child.pid,
             via: outcome.via,
             waitedMs: outcome.waitedMs,

@@ -60,7 +60,7 @@ describe('McpPasteModal：预览 → 确认导入', () => {
     });
   });
 
-  it('同名默认覆盖：处置写着「覆盖已有 context7」、计数带上覆盖台数；切成跳过后这一行不写', async () => {
+  it('同名默认覆盖：处置写着「覆盖已有 context7」、计数带上覆盖台数；切成跳过后这个候选不写', async () => {
     const onImport = vi.fn();
     render(<McpPasteModal open servers={servers} saving={false} onImport={onImport} onCancel={noop} />);
 
@@ -73,7 +73,7 @@ describe('McpPasteModal：预览 → 确认导入', () => {
     });
 
     // 逐行切「跳过」：处置列与开关标签都写着「跳过」（两处都读得到这件事），
-    // 关键是这一行不再进 map —— 计数归零、确认按钮禁用（点了也没东西可写）
+    // 关键是这个候选不再进 map —— 计数归零、确认按钮禁用（点了也没东西可写）
     fireEvent.click(screen.getByRole('switch', { name: '跳过 context7' }));
     expect(screen.getAllByText('跳过').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '导入 0 台' })).toBeDisabled();

@@ -53,7 +53,7 @@ describe('getSettings', () => {
       casesRoot: defaultCasesRoot(),
       // mcpServers 走**出口形态**：预置两项里 context7 的 `CONTEXT7_API_KEY` 是敏感键，
       // 出口那一侧照口径把 `${CONTEXT7_API_KEY}` 这个占位也掩掉（值可能是占位、也可能是
-      // 用户手填的明文，两者都原样下行就是泄密）。故这里按掩码后的那份比对，而不是拿默认值硬套。
+      // 用户手填的明文，两者都原样下候选就是泄密）。故这里按掩码后的那份比对，而不是拿默认值硬套。
       mcpServers: toSettingsView(SETTINGS_DEFAULTS).mcpServers,
     });
   });

@@ -8,10 +8,10 @@
  *     「这条上下文真的走到了模型面前」。
  *
  * 两个**必备件**（缺一个都会让「答对了」有第二种解释）：
- *   · **阴性对照**：同一行目录、同一 cwd、同一会话目录，只是**不打开那份会话文件**跑一轮
+ *   · **阴性对照**：同一本次运行目录、同一 cwd、同一会话目录，只是**不打开那份会话文件**跑一轮
  *     ——它必须一个暗号都答不出。没有它，「答对了」可能来自工作区残留或别的东西泄漏；
- *   · **按行隔离**：换一条行目录（会话落点也随之换掉），但**刻意复用同一个 cwd**
- *     ——这是更难的那一半：证明「每行一个会话落点」本身就够，不需要 cwd 也不同。
+ *   · **按行隔离**：换一条本次运行目录（会话落点也随之换掉），但**刻意复用同一个 cwd**
+ *     ——这是更难的那一半：证明「每个本次运行一个会话落点」本身就够，不需要 cwd 也不同。
  *
  * 为什么这一格算 `real-path` 而不是 `synthetic-fixture`：厂商侧全是真的（真包装配、真会话管理器、
  * 真 JSONL 落盘、真事件投影），假网关只扮演**上游模型**——与另三家 `askUserProofDriver: 'real-path'`
@@ -23,7 +23,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentRunResult } from '../types';
-import { createPiRowDir, runPiRowIn, startPiGateway, type CapturedPiRequest, type PiRowDir } from './pi-gateway-fixture';
+import { createPiCandidateDir, runPiCandidateIn, startPiGateway, type CapturedPiRequest, type PiCandidateDir } from './pi-gateway-fixture';
 
 /** 一次续接格的全部读数（断言在测试侧，本模块只负责把事实摆出来） */
 export interface PiResumeReading {
@@ -37,20 +37,20 @@ export interface PiResumeReading {
 }
 
 export interface PiResumeScenario {
-  /** 首跑：在一棵空的行目录上开新会话、记住暗号 A */
+  /** 首跑：在一棵空的本次运行目录上开新会话、记住暗号 A */
   first: PiResumeReading;
-  /** 续接：同一条行目录，`resume` 指向首跑的会话文件 ⇒ 必须带回暗号 A */
+  /** 续接：同一条本次运行目录，`resume` 指向首跑的会话文件 ⇒ 必须带回暗号 A */
   resumed: PiResumeReading;
-  /** 阴性对照：同一条行目录，**不传 resume** ⇒ 一个暗号都带不回来 */
+  /** 阴性对照：同一条本次运行目录，**不传 resume** ⇒ 一个暗号都带不回来 */
   control: PiResumeReading;
-  /** 另一条行目录（**同一个 cwd**）：记住暗号 B */
-  otherRow: PiResumeReading;
-  /** 另一条行目录里续接 ⇒ 只认得自己的暗号 B，认不出 A */
-  otherRowResumed: PiResumeReading;
+  /** 另一条本次运行目录（**同一个 cwd**）：记住暗号 B */
+  otherCandidate: PiResumeReading;
+  /** 另一条本次运行目录里续接 ⇒ 只认得自己的暗号 B，认不出 A */
+  otherCandidateResumed: PiResumeReading;
   nonceA: string;
   nonceB: string;
-  rowOne: PiRowDir;
-  rowTwo: PiRowDir;
+  candidateOne: PiCandidateDir;
+  candidateTwo: PiCandidateDir;
 }
 
 /**
@@ -73,13 +73,13 @@ function bodyHasNonce(body: Record<string, unknown>, nonce: string): boolean {
  */
 export async function runPiResumeScenario(): Promise<PiResumeScenario> {
   const root = mkdtempSync(join(tmpdir(), 'pi-session-'));
-  const rowOne = createPiRowDir(join(root, 'row1'));
+  const candidateOne = createPiCandidateDir(join(root, 'candidate1'));
   /**
-   * 第二条行目录**刻意复用 row1 的 cwd**：隔离判据因此只剩「会话落点不同」这一个自变量。
+   * 第二条本次运行目录**刻意复用 candidate1 的 cwd**：隔离判据因此只剩「会话落点不同」这一个自变量。
    * 配置目录仍然是各自的（会话落点就在它下面）。
    */
-  const rowTwo: PiRowDir = { cwd: rowOne.cwd, configHome: join(root, 'row2', '.agenthome') };
-  mkdirSync(rowTwo.configHome, { recursive: true });
+  const candidateTwo: PiCandidateDir = { cwd: candidateOne.cwd, configHome: join(root, 'candidate2', '.agenthome') };
+  mkdirSync(candidateTwo.configHome, { recursive: true });
 
   const nonceA = `AIEVAL-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   const nonceB = `AIEVAL-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
@@ -95,11 +95,11 @@ export async function runPiResumeScenario(): Promise<PiResumeScenario> {
 
   /** 跑一格：读出站体与答复；`seen` 逐格清空，免得上一格的请求体混进这一格的判据 */
   const read = async (
-    dir: PiRowDir,
+    dir: PiCandidateDir,
     options: { prompt: string; nonce: string; resume?: { sessionId: string } },
   ): Promise<PiResumeReading> => {
     seen.length = 0;
-    const { body, result } = await runPiRowIn(seen, dir, gateway.port, {
+    const { body, result } = await runPiCandidateIn(seen, dir, gateway.port, {
       protocolType: 'anthropic',
       prompt: options.prompt,
       ...(options.resume === undefined ? {} : { resume: options.resume }),
@@ -115,21 +115,21 @@ export async function runPiResumeScenario(): Promise<PiResumeScenario> {
   };
 
   try {
-    const first = await read(rowOne, { prompt: remember(nonceA), nonce: nonceA });
-    const resumed = await read(rowOne, {
+    const first = await read(candidateOne, { prompt: remember(nonceA), nonce: nonceA });
+    const resumed = await read(candidateOne, {
       prompt: recall,
       nonce: nonceA,
       ...(first.sessionFile === null ? {} : { resume: { sessionId: first.sessionFile } }),
     });
-    const control = await read(rowOne, { prompt: recall, nonce: nonceA });
-    const otherRow = await read(rowTwo, { prompt: remember(nonceB), nonce: nonceB });
-    const otherRowResumed = await read(rowTwo, {
+    const control = await read(candidateOne, { prompt: recall, nonce: nonceA });
+    const otherCandidate = await read(candidateTwo, { prompt: remember(nonceB), nonce: nonceB });
+    const otherCandidateResumed = await read(candidateTwo, {
       prompt: recall,
       nonce: nonceB,
-      ...(otherRow.sessionFile === null ? {} : { resume: { sessionId: otherRow.sessionFile } }),
+      ...(otherCandidate.sessionFile === null ? {} : { resume: { sessionId: otherCandidate.sessionFile } }),
     });
 
-    return { first, resumed, control, otherRow, otherRowResumed, nonceA, nonceB, rowOne, rowTwo };
+    return { first, resumed, control, otherCandidate, otherCandidateResumed, nonceA, nonceB, candidateOne, candidateTwo };
   } finally {
     gateway.server.close();
   }

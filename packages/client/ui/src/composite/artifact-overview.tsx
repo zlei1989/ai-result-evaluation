@@ -2,17 +2,17 @@
 
 /**
  * 「产物总览」二级抽屉：把每个候选在**工作区根**写下的 `RESULT.*` 按名次自上而下逐份摆出来，
- * 一份产物一张卡（`Card size="small"`），标题是「排名 · 智能体 · 模型 · 思考强度」，
+ * 一份产物一个折叠面板（`Collapse size="small"`，默认全部展开），标题是「排名 · 智能体 · 模型 · 思考强度」，
  * 正文是这份产物**渲染后的效果**。抽屉与开合由页面给（受控），本件只画内容。
  *
- * 七条口径：
+ * 八条口径：
  *   1. **顺序与名次只有一份判据**（`orderForDisplay` + `rankOf`，来自 `run-detail-panel`）：
  *      本件不自己排、不自己算名次——两处各写一份的形状是「卡片挂第 1 名、总览里排第 2」，
  *      而那种错在界面上看起来像数据坏了，不是判据分叉；
- *   2. **没有产物的候选也占一张卡**：正文是 `EmptyState`，标题同样四段（首段是行状态）。
- *      「这一行没有产出」是一句要显示出来的事实——跳过它等于把「没产出」说成「这一行不存在」；
- *      判据与排名表第一格同源：未出分的候选在名次那个位置写 `ROW_STATUS_LABELS`；
- *   3. **取数不在这里**：`ui` 包不调接口。每份产物的正文由调用方传 `renderBody({ rowId, name })` 进来，
+ *   2. **没有产物的候选也占一个面板**：正文是 `EmptyState`，标题同样四段（首段是候选状态）。
+ *      「这个候选没有产出」是一句要显示出来的事实——跳过它等于把「没产出」说成「这个候选不存在」；
+ *      判据与排名表第一格同源：未出分的候选在名次那个位置写 `CANDIDATE_STATUS_LABELS`；
+ *   3. **取数不在这里**：`ui` 包不调接口。每份产物的正文由调用方传 `renderBody({ candidateId, name })` 进来，
  *      它为每一份挂一份自己的订阅——hook 不能按参数循环调用，故「每份一个组件实例」是唯一站得住的形状
  *      （与 `DiffView` 的 `renderFileBody` 同一条口径）；
  *   4. **渲染分档 = 产物后缀**（`file.kind`）：`md` 走 `XMarkdownText`（本仓 markdown 外壳：
@@ -25,19 +25,21 @@
  *   5. **三态都有可读文案**：加载中 `Skeleton`、读失败 `Alert`（中文原因由调用方折好）、
  *      截断一行 `warning`——截断是**可见的降级**，不能让人以为「它只写了这么多」；
  *   6. **`index === undefined` 是「还没读到」，不是「没有产物」**：正文给空态并说明怎么重扫，
- *      不画一排空卡（那会让人以为所有候选都没产出）；
- *   7. 卡片正文的内边距归 `Card` 自己，抽屉正文的内边距归这里（`NestedDrawer` 的 `body.padding` 已置 0）。
+ *      不画一排空面板（那会让人以为所有候选都没产出）；
+ *   7. 面板正文的内边距归 `Collapse` 自己，抽屉正文的内边距归这里（`NestedDrawer` 的 `body.padding` 已置 0）；
+ *   8. **面板一律 `size="small"` 且默认全部展开**：这一层就是拿来逐份摊开对比的，
+ *      收起态等于每次打开都要挨个点开；紧凑档与排名表同尺寸。
  */
-import { Alert, Card, Flex, Skeleton, Typography } from 'antd';
+import { Alert, Collapse, Flex, Skeleton, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
   ARTIFACT_FILE_HINT,
   ARTIFACT_TEXT_MAX_CHARS,
-  ROW_STATUS_LABELS,
-  type EvalRow,
+  CANDIDATE_STATUS_LABELS,
+  type EvalCandidate,
   type EvalRun,
-  type RowArtifactFile,
+  type CandidateArtifactFile,
   type RunArtifactIndex,
 } from '@aieval/contracts';
 import { EmptyState } from '../base/empty-state';
@@ -73,14 +75,22 @@ export const ARTIFACT_FRAME_HEIGHT = 420;
 const SVG_FRAME_SHELL = '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}svg{display:block;width:100%;height:auto;max-height:100%}</style>';
 
 /**
- * 卡片标题的四段：名次 · 智能体 · 模型 · 思考强度。
+ * 面板标题的四段：名次 · 智能体 · 模型 · 思考强度。
  *
- * 未出分的候选在名次那一格写**行状态**（与排名表第一格同源）：它们不参与排名，
+ * 未出分的候选在名次那一格写**候选状态**（与排名表第一格同源）：它们不参与排名，
  * 写成「最后一名」或留空都是在替使用者下结论。思考强度缺省写「未指定」（不是空串）。
  */
-export function artifactCardTitle(row: EvalRow, rank: number | undefined): string {
-  const place = rank === undefined ? ROW_STATUS_LABELS[row.status] : `第 ${rank} 名`;
+export function artifactPanelTitle(row: EvalCandidate, rank: number | undefined): string {
+  const place = rank === undefined ? CANDIDATE_STATUS_LABELS[row.status] : `第 ${rank} 名`;
   return [place, AGENT_LABELS[row.agentKind], row.modelId, row.effort ?? '未指定'].join(' · ');
+}
+
+/** 一格折叠面板：键是「候选 id | 文件名」，`label` 是四段标题 */
+interface ArtifactPanel {
+  key: string;
+  label: string;
+  extra?: ReactNode;
+  children: ReactNode;
 }
 
 export interface ArtifactOverviewProps {
@@ -92,55 +102,64 @@ export interface ArtifactOverviewProps {
   open: boolean;
   onOpenChange(next: boolean): void;
   /** 一份产物的正文由调用方渲染（`ui` 包不调接口，见口径 3） */
-  renderBody(input: { rowId: string; name: string }): ReactNode;
+  renderBody(input: { candidateId: string; name: string }): ReactNode;
 }
 
 export function ArtifactOverview({ run, index, open, onOpenChange, renderBody }: ArtifactOverviewProps): ReactNode {
-  // 清单按 rowId 建一次索引：下面按名次顺序逐行取，每行再 find 一遍是候选数的平方
-  const filesByRow = new Map((index?.rows ?? []).map((row) => [row.rowId, row.files]));
+  // 清单按 candidateId 建一次索引：下面按名次顺序逐行取，每个候选再 find 一遍是候选数的平方
+  const filesByCandidate = new Map((index?.candidates ?? []).map((row) => [row.candidateId, row.files]));
+
+  /*
+    面板清单先铺平再交给 `Collapse`：一格一份，键是「候选 id | 文件名」（没有产物的行用 `empty`）。
+    标题与名次都走 `artifactPanelTitle` + `rankOf`，本件不另写一份身份拼法。
+  */
+  const panels: ArtifactPanel[] = orderForDisplay(run.candidates).flatMap((row) => {
+    const rank = rankOf(run.candidates, row);
+    const label = artifactPanelTitle(row, rank);
+    const files = filesByCandidate.get(row.id) ?? [];
+    if (files.length === 0) {
+      // 没有产物也是一个结论：面板照出现、正文是空态（口径 2）
+      return [
+        {
+          key: `${row.id}|empty`,
+          label,
+          children: (
+            <Flex vertical data-testid="artifact-panel" data-row-id={row.id} data-artifact-name="">
+              <EmptyState title="这个候选没有产物" description={`执行的目录里没有 ${ARTIFACT_FILE_HINT}`} />
+            </Flex>
+          ),
+        },
+      ];
+    }
+    return files.map((file) => ({
+      key: `${row.id}|${file.name}`,
+      label,
+      // 文件名单独放标题右侧（`extra`）：一个候选可能有多份产物，四段标题里不掺文件名
+      extra: (
+        <Typography.Text type="secondary" code>
+          {file.name}
+        </Typography.Text>
+      ),
+      children: (
+        <Flex vertical data-testid="artifact-panel" data-row-id={row.id} data-artifact-name={file.name}>
+          {renderBody({ candidateId: row.id, name: file.name })}
+        </Flex>
+      ),
+    }));
+  });
 
   return (
     <NestedDrawer open={open} onClose={() => onOpenChange(false)} title={ARTIFACT_OVERVIEW_LABEL}>
-      <Flex vertical gap={12} style={{ padding: 16 }}>
+      <Flex vertical style={{ padding: 16 }}>
         {index === undefined ? (
           <EmptyState title="还没读到产物清单" description="关掉排名抽屉再打开，会重新扫一遍候选工作区" />
         ) : (
-          orderForDisplay(run.rows).map((row) => {
-            const rank = rankOf(run.rows, row);
-            const files = filesByRow.get(row.id) ?? [];
-            if (files.length === 0) {
-              // 没有产物也是一个结论：卡片照出现、正文是空态（口径 2）
-              return (
-                <Card
-                  key={`${row.id}|empty`}
-                  size="small"
-                  data-testid="artifact-card"
-                  data-row-id={row.id}
-                  data-artifact-name=""
-                  title={artifactCardTitle(row, rank)}
-                >
-                  <EmptyState
-                    title="这一行没有产物"
-                    description={`执行目录里没有 ${ARTIFACT_FILE_HINT}`}
-                  />
-                </Card>
-              );
-            }
-            return files.map((file) => (
-              <Card
-                key={`${row.id}|${file.name}`}
-                size="small"
-                data-testid="artifact-card"
-                data-row-id={row.id}
-                data-artifact-name={file.name}
-                title={artifactCardTitle(row, rank)}
-                // 文件名单独放卡头右侧：一个候选可能有多份产物，四段标题里不掺文件名
-                extra={<Typography.Text type="secondary" code>{file.name}</Typography.Text>}
-              >
-                {renderBody({ rowId: row.id, name: file.name })}
-              </Card>
-            ));
-          })
+          <Collapse
+            size="small"
+            // 默认全部展开（`defaultActiveKey` 给全量键）：逐份摊开是这一层的用途，收起态要多点 N 下
+            defaultActiveKey={panels.map((panel) => panel.key)}
+            items={panels}
+          />
         )}
       </Flex>
     </NestedDrawer>
@@ -148,7 +167,7 @@ export function ArtifactOverview({ run, index, open, onOpenChange, renderBody }:
 }
 
 export interface ArtifactFileContentProps {
-  file: RowArtifactFile | undefined;
+  file: CandidateArtifactFile | undefined;
   /** 读失败的原因（调用方已折成中文） */
   error: unknown;
   isLoading: boolean;
@@ -191,7 +210,7 @@ export function ArtifactFileContent({ file, error, isLoading }: ArtifactFileCont
  * 按 `kind` 分档渲染（口径 4）。分档就是产物后缀：契约里 `ArtifactKind` 与白名单同源，
  * 故这里不需要第二份「哪个后缀算哪种内容」的映射。
  */
-function renderArtifactBody(file: RowArtifactFile): ReactNode {
+function renderArtifactBody(file: CandidateArtifactFile): ReactNode {
   switch (file.kind) {
     case 'md':
       return <XMarkdownText text={file.text} open={false} />;

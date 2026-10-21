@@ -11,7 +11,7 @@ import {
   legacyCaseShapes,
   seedLegacyCase,
   seedLegacyJudgeOverrideCase,
-  seedRowWithoutItemId,
+  seedCandidateWithoutItemId,
   ServiceError,
   listStoredCases,
   createCase,
@@ -171,7 +171,7 @@ describe('createCase / listCases / getCase', () => {
       const listed = listCases().cases.find((item) => item.id === legacy.id) as unknown as Record<string, unknown>;
 
       expect(listed, label).toBeDefined();
-      // 其余字段照常可读（归一不是「把整行换掉」）
+      // 其余字段照常可读（归一不是「把整个候选换掉」）
       expect(listed.title, label).toBe(legacy.title);
       // 关键断言：**键不在**，而不是「键在、值是坏数据」
       expect('rubric' in listed, label).toBe(false);
@@ -187,7 +187,7 @@ describe('createCase / listCases / getCase', () => {
     }
 
     // Fix A：缺省值必须在**列表**这条路上也补齐（此前只有 getCase 补，列表会把 undefined 发出去）
-    const defaulted = seedRowWithoutItemId();
+    const defaulted = seedCandidateWithoutItemId();
     const fromList = listCases().cases.find((item) => item.id === defaulted.id);
     expect(fromList?.rubric.groups[0]?.items[0]?.id).toBe('');
   });

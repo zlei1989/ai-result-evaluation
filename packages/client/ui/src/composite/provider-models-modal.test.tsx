@@ -279,7 +279,7 @@ describe('ProviderModelsModal：外框', () => {
  */
 describe('ProviderModelsModal：模型清单表格', () => {
   const LONG_ID = 'vendor/some-very-long-model-name-that-overflows';
-  /** 第一行是「手工改过」的（`contextWindowSource: 'manual'`），第二行没改过 —— 两种保存态都要能验 */
+  /** 第一候选是「手工改过」的（`contextWindowSource: 'manual'`），第二候选没改过 —— 两种保存态都要能验 */
   const twoModels = {
     ...PROVIDER,
     models: [
@@ -288,7 +288,7 @@ describe('ProviderModelsModal：模型清单表格', () => {
     ],
   };
 
-  /** 第一行的单元格（列序断言都靠它，避免每处各写一遍 querySelector） */
+  /** 第一候选的单元格（列序断言都靠它，避免每处各写一遍 querySelector） */
   const firstRowCells = (): HTMLElement[] =>
     Array.from(((document.querySelectorAll('tbody tr')[0] as HTMLElement) ?? document.createElement('tr')).querySelectorAll('td'));
 
@@ -373,12 +373,12 @@ describe('ProviderModelsModal：模型清单表格', () => {
    * 判据取可访问名而不是 tooltip 文本：Tooltip 要 hover 才进 DOM，而可访问名是它的稳定投影
    * （两者在我这里逐字相同，见实现里的 `saveHint`）。
    */
-  it('手工改过的行：保存按钮变黄且可访问名带上「模型已被手工维护」；没改过的行是普通「保存窗口」', () => {
+  it('手工改过的行：保存按钮变黄且可访问名带上「模型已被手工维护」；没改过的候选是普通「保存窗口」', () => {
     renderModal({ provider: twoModels });
 
     const manualSave = screen.getByRole('button', { name: '保存窗口，模型已被手工维护' });
     expect(manualSave.className).toMatch(/gold/);
-    // 没手工过的那一行仍是普通保存按钮（对照组：否则「所有行都变黄」也会全绿）
+    // 没手工过的那一行仍是普通保存按钮（对照组：否则「所有候选都变黄」也会全绿）
     const plainSave = screen.getByRole('button', { name: '保存窗口' });
     expect(plainSave.className).not.toMatch(/gold/);
   });

@@ -238,7 +238,7 @@ describe('SkillDetailDrawer：三态', () => {
 
 describe('SkillDetailDrawer：正文 markdown', () => {
   /**
-   * 夹具的 `SKILL.md` 首行就是 `---`：不包围栏时，收尾那条 `---` 会命中 CommonMark 的 setext
+   * 夹具的 `SKILL.md` 首个候选就是 `---`：不包围栏时，收尾那条 `---` 会命中 CommonMark 的 setext
    * 下划线规则，把 `name:` / `description:` 两行吃成 `<h2>`（本仓降级成 5 级 `Title`）——
    * 一份 YAML 变成页面里最大的一行字。这条判据要能在真实消费方这里红。
    */

@@ -29,20 +29,19 @@ import { TASK_STEP_STATUS_LABELS } from './types';
 
 export interface TaskPanelCardProps {
   panel: TaskPanel;
-  /** 同一轮里更早的（未出面板的）task 调用次数 */
+  /** 同一步里更早的（未出面板的）task 调用次数 */
   earlierCount: number;
   open: boolean;
   onOpenChange(next: boolean): void;
   /** 底部「原始结果」二级抽屉的开合（**受控透传**：L0 自己不持态） */
   rawOpen: boolean;
   onRawOpenChange(next: boolean): void;
-  onRequestDiagnostics?(): void;
   /**
    * 「结果未采集」的原因（能力声明的 `toolResult` 那一维，由注册表从 `BlockRenderContext` 推出）。
    * `null` = 声明里没谈到这一维 ⇒ 只写「结果未采集」，**不编一句话**。
    *
    * 与工具组那一处**同一个来源、同一句文案**：这是同一个能力的两个落点，
-   * 各写一份必然漂移，而漂移的表现是「同一行的工具说没投送、清单说没验证过」。
+   * 各写一份必然漂移，而漂移的表现是「同一候选的工具说没投送、清单说没验证过」。
    */
   missingReason?: string | null;
 }
@@ -131,7 +130,6 @@ export function TaskPanelCard({
   onOpenChange,
   rawOpen,
   onRawOpenChange,
-  onRequestDiagnostics,
   missingReason = null,
 }: TaskPanelCardProps): ReactNode {
   const { token } = theme.useToken();
@@ -188,7 +186,7 @@ export function TaskPanelCard({
                   showHeader={false}
                   // 一张清单最多十几行，分页在这一页没有意义（与 `score-detail-view` 同口径）
                   pagination={false}
-                  // 一行的稳定键：`id` 拿不到时退回 `subject`（与改造前同一个键口径）。
+                  // 一候选的稳定键：`id` 拿不到时退回 `subject`（与改造前同一个键口径）。
                   // `steps` 是只读数组，而 antd 的 `dataSource` 类型本来就收 `readonly T[]` ⇒ 不必再摊平一份
                   rowKey={(step) => step.id ?? step.subject}
                   dataSource={panel.steps}
@@ -197,7 +195,7 @@ export function TaskPanelCard({
               )}
               {earlierCount > 0 && (
                 <Typography.Text type="secondary">
-                  {`本轮另有 ${earlierCount} 次更新（这几次调用不出面板：整表语义下只有最后一次是有效状态）`}
+                  {`本步另有 ${earlierCount} 次更新（这几次调用不出面板：整表语义下只有最后一次是有效状态）`}
                 </Typography.Text>
               )}
               {/* 归一化是视图，原文才是事实；结果没到手时连入口都不画（标题已写过「结果未采集」） */}
@@ -212,7 +210,6 @@ export function TaskPanelCard({
                     open={rawOpen}
                     onOpenChange={onRawOpenChange}
                     label="原始结果"
-                    onRetry={onRequestDiagnostics}
                   />
                 </Flex>
               )}

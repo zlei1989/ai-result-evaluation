@@ -25,7 +25,7 @@ import { RUNS_KEY, runKey } from './run-keys';
  * 信号重验的节流窗口（毫秒），可变对象（仓库约定，同 `LIVE_TEXT_SAMPLE` / `TEXT_API_RETRY`）：
  * 用例把它调小以免每条用例真等 300ms，**产品默认值有独立用例钉住**、`afterEach` 还原。
  *
- * 为什么要有这个窗口：一次状态翻转链上可能连着两三笔 saveRun（行状态 → 评分 → 终态），
+ * 为什么要有这个窗口：一次状态翻转链上可能连着两三笔 saveRun（候选状态 → 评分 → 终态），
  * 逐条重验等于把「一拍内的三笔」放大成三次全量读；攒到窗口末尾读一次，拿到的就是终值。
  */
 export const RUN_SIGNAL_DEBOUNCE = { debounceMs: 300 };
@@ -111,7 +111,7 @@ export function resetRunEventsForTesting(): void {
  *
  * `currentRunId` **只在详情打开时给**（列表页挂本 hook 时传 null / 缺省）：重验范围 =
  * 列表键恒在 + 当前打开那一轮的详情键。一次信号 = 页面上两处可见的视图各重验一次，
- * 不多不少；列表视图（状态列、候选数、待答数）与详情视图（行状态、评分、排名）读的是同一份快照，
+ * 不多不少；列表视图（状态列、候选数、待答数）与详情视图（候选状态、评分、排名）读的是同一份快照，
  * 别处一概不需要动。
  */
 export function useRunEvents(input: { currentRunId?: string | null }): void {

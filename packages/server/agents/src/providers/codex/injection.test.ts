@@ -183,9 +183,9 @@ describe('codex 注入接线 —— `\'idle\'` 档落在 thread/queue/*', () => 
     expect(methodsOf(server)).not.toContain('turn/steer');
     server.emit('turn/completed', { threadId: MAIN, turn: { id: TURN, items: [], status: 'completed' } });
     /**
-     * **第一轮收场不再等于这一行收场**：闸门把它拦下，适配器把那一批人话交给厂商、
+     * **第一轮收场不再等于这个候选收场**：闸门把它拦下，适配器把那一批人话交给厂商、
      * 厂商起了新一轮（`thread/queue/start` 回 `turn-2`）⇒ 流要继续消费第二轮，
-     * 直到**第二轮**的终态才结算。少投这一帧，这一行就永远挂在那里（闸门那一格最难踩的地方）。
+     * 直到**第二轮**的终态才结算。少投这一帧，这个候选就永远挂在那里（闸门那一格最难踩的地方）。
      */
     await until(() => methodsOf(server).includes('thread/queue/start'));
     expect(server.stats.closeCount).toBe(0);
@@ -263,7 +263,7 @@ describe('codex 注入接线 —— `\'idle\'` 档落在 thread/queue/*', () => 
   });
 
   /**
-   * **上限**：人一直发就能一直续跑的话，这一行永远不收场，而编排层的等待预算只在适配器
+   * **上限**：人一直发就能一直续跑的话，这个候选永远不收场，而编排层的等待预算只在适配器
    * 返回之后才开窗口 ⇒ 靠它兜不住这里。上限到点就当没有更多话，正常收场。
    */
   it('续跑有上限：`thread/queue/start` 最多发 `CODEX_IDLE_CONTINUATION.rounds` 次', async () => {

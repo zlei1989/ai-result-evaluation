@@ -2,8 +2,8 @@
  * 路由注入：base URL 规范化 + 「替换型」子进程环境构造。
  * 三条硬性不变量：
  *  1. 注入后返回**新对象**，输入的 route 只读，`process.env` 永不写入（有静态断言守着）；
- *  2. 子进程环境以宿主环境为底（不展开就补不上 PATH，子进程连 node 都找不到），再覆盖该行独立 HOME；
- *  3. 每行的 configHome 是独立目录：行与行之间共享配置目录会互相注入 MCP / 插件定义，直接破坏
+ *  2. 子进程环境以宿主环境为底（不展开就补不上 PATH，子进程连 node 都找不到），再覆盖本次运行独立 HOME；
+ *  3. 每个本次运行的 configHome 是独立目录：运行与运行之间共享配置目录会互相注入 MCP / 插件定义，直接破坏
  *     「同一起点」这个前提。
  */
 
@@ -67,7 +67,7 @@ function stripV1Path(path: string): string {
 }
 
 export interface SubprocessEnvInput {
-  /** 该行独立配置目录（编排层第 3 步备好的 `.agenthome`） */
+  /** 本次运行独立配置目录（编排层第 3 步备好的 `.agenthome`） */
   homeDir: string;
   /** 本次要注入的厂商变量；值为 undefined 的键会被删掉，避免子进程看到空串凭据 */
   injected: Record<string, string | undefined>;

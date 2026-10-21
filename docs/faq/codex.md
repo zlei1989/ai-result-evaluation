@@ -126,8 +126,8 @@ Chromium 不匹配**的环境问题，与分发无关。
 
 **解决方案**：本仓仍按「已知边界」处置（`docs/protocols/codex.md` 的 MCP 条目 + 契约常量
 `CODEX_MCP_DISPATCH_GAP_NOTE`）——**判据只到「装上了」**：`mcpServer/startupStatus === 'ready'` ⇒
-行级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；环境抽屉的
-「本行 MCP」格在逐台结论之后附上那句话（`build-environment.ts` 拼进那一格、
+候选级观测格记 `connected`（判据来源 `vendor-startup-status`），**一个字都不暗示工具可用**；环境抽屉的
+「候选 MCP」格在逐台结论之后附上那句话（`build-environment.ts` 拼进那一格、
 `agent-environment-drawer.tsx` 渲染，文案取契约里那份共用常量）。网关侧补上之后，用这两条判据收口：
 
 ```
@@ -178,7 +178,7 @@ AIEVAL_LIVE_MCP=1 pnpm vitest run packages/server/agents/src/providers/codex/liv
 
 **现象原文**（界面 + `run.json` 的 `error.message`，`.agenthome` 与 `.judgehome` 两种落点逐字同形）：
 ```
-清理上一轮的行产物失败：D:\.tmp\aieval\runs\<runId>\rows\<rowId>（EPERM, Permission denied: \\?\…\.judgehome '\\?\…\.judgehome'）
+清理上一轮的行产物失败：D:\.tmp\aieval\runs\<runId>\rows\<candidateId>（EPERM, Permission denied: \\?\…\.judgehome '\\?\…\.judgehome'）
 ```
 症状的**反直觉处**：同一行连着 7 次尝试（`attempts: 7`）全部折在这一句上，而前两条产物（`workspace` / `.agenthome`）都删掉了——磁盘现场只剩 `.judgehome`，与报错点名的那一条互证。
 
@@ -222,9 +222,9 @@ AIEVAL_LIVE_MCP=1 pnpm vitest run packages/server/agents/src/providers/codex/liv
 ```
 AIEVAL_LIVE_DISPOSE=1 pnpm vitest run packages/server/agents/src/providers/codex/lifecycle-live.test.ts
 ```
-它走**本仓的适配器**（不是裸二进制）：`createAppServerClient` → `initialize` → `thread/start`（触发插件同步）→ `close()`，断言「没有残留的 codex/git 进程」且「该行的 `CODEX_HOME` 可以删掉」。
+它走**本仓的适配器**（不是裸二进制）：`createAppServerClient` → `initialize` → `thread/start`（触发插件同步）→ `close()`，断言「没有残留的 codex/git 进程」且「该候选的 `CODEX_HOME` 可以删掉」。
 
-**未闭合**：插件同步本身没关（`features.plugins=false` 只在盘上 `config.toml` 或 `-c` 上生效，且会改变被测智能体的能力面）。今天它只表现为「每次 `thread/start` 白连一次 github + 起一串 git」，进程树回收已经不再让这件事变成行失败。
+**未闭合**：插件同步本身没关（`features.plugins=false` 只在盘上 `config.toml` 或 `-c` 上生效，且会改变被测智能体的能力面）。今天它只表现为「每次 `thread/start` 白连一次 github + 起一串 git」，进程树回收已经不再让这件事变成候选失败。
 
 **相关资料**：`taskkill` 的 `/T` 语义（https://learn.microsoft.com/windows-server/administration/windows-commands/taskkill）；Node `fs.rm` 的异步重试白名单（`internal/fs/rimraf` 的 `retryErrorCodes`，同步 `rmSync` 走 C++ 不走这条）。
 
@@ -446,7 +446,7 @@ codex 没有独立的文件读取工具，读文件只能靠 shell ⇒ 受限沙
 **解决方案**（2026-10-07 裁决为方案 (a)，已落地）：适配器**按平台选档**——`permission.ts` 的 `codexPermissionOptions()` 在
 **Windows** 上把只读档落成 `danger-full-access`（别的平台一个字不改：macOS 的 seatbelt / Linux 的 landlock 有可用的只读实现），
 先把「读得到」这条底线拿回来。代价是评审者在 Windows 上**能写**工作区，兜底是编排层的「评分前后 diff 摘要对照」——
-它同时**从 WARN 升级为该行失败**：拿到分之后才发现现场被改过 ⇒ `JudgeAgentError('AGENT_FAILED')` ⇒ 行 `failed` + `stage: 'judge'`
+它同时**从 WARN 升级为该候选失败**：拿到分之后才发现现场被改过 ⇒ `JudgeAgentError('AGENT_FAILED')` ⇒ 行 `failed` + `stage: 'judge'`
 （拿不到分时只留痕：那种情况的第一归因仍是「它为什么没跑完」，拿污染顶掉真因是不可接受的）。
 
 判据（三条，各自见过失败）：
@@ -455,7 +455,7 @@ codex 没有独立的文件读取工具，读文件只能靠 shell ⇒ 受限沙
 |---|---|
 | `permission.test.ts`：Windows 落最宽档、Linux/darwin 保持 `read-only`、常量表本身不被就地改写 | 去掉 `platform === 'win32'` ⇒ 唯一红 `expected 'danger-full-access' to be 'read-only'` |
 | `providers/codex/index.test.ts`：接线走翻译层那一份（不绕过它索引常量表） | 把 `codexPermissionOptions()` 换回直接索引 ⇒ `sandbox` 期望值对不上 |
-| `orchestrator-judge-route-b.test.ts`：评审者写文件 ⇒ 该行 `failed` + `error.code === 'AGENT_FAILED'` + `error.stage === 'judge'` | 退回只留痕 ⇒ 唯一红 `expected 'judged' to be 'failed'` |
+| `orchestrator-judge-route-b.test.ts`：评审者写文件 ⇒ 该候选 `failed` + `error.code === 'AGENT_FAILED'` + `error.stage === 'judge'` | 退回只留痕 ⇒ 唯一红 `expected 'judged' to be 'failed'` |
 
 **真机复验**：同一份候选（Vue3 CDN + Hello World + 无构建工具）修后**三项全达成、`totalScore = 25 / 25`**；
 修前同一份候选是 `0 / 25`，理由「无法读取任何工作区文件」。
@@ -644,7 +644,7 @@ MCP 工具的落点是**工具表**，而工具表**随每条模型请求重算*
 
 **解决方案**（`packages/server/agents/src/providers/codex/appserver/session.ts`）：`thread/start` 与 `turn/start` 之间加 `settleMcpStartup()`——等**注入的每一台** MCP 落到终态（`ready` / `failed`）再起轮次。五条边界：
 
-1. **预算**：`CODEX_MCP_STARTUP_WAIT` = 各台申报的 `startup_timeout_sec` 取最大（一台都没申报时按 30 s）+ 余量（5 s，给 codex 投出 `failed` 留时间）。等超了只记 WARN 并照常起轮次——**不改失败语义**，行失败的判据仍在事件流那一侧（`AGENT_MCP_UNAVAILABLE` 要厂商原文）。
+1. **预算**：`CODEX_MCP_STARTUP_WAIT` = 各台申报的 `startup_timeout_sec` 取最大（一台都没申报时按 30 s）+ 余量（5 s，给 codex 投出 `failed` 留时间）。等超了只记 WARN 并照常起轮次——**不改失败语义**，候选失败的判据仍在事件流那一侧（`AGENT_MCP_UNAVAILABLE` 要厂商原文）。
 2. **历史先扫一遍**：`client.subscribe` 不补投历史，而毫秒级启动的 server 可能在我们登记之前就到 `ready`。
 3. **`starting` 不算落定**：把它当终态就是这条缺陷本身。
 4. **app-server 在等待窗口里终止 ⇒ 立刻放行**：不白等满预算（`turn/start` 会照旧报进程已退出，回收走起手失败那条路）。
@@ -721,7 +721,7 @@ ERROR codex_core::tools::router: error=request_user_input is unavailable in Defa
 
 **日期**：2026-10-13
 
-**根因**：`autoResolutionMs` 在 0.156.1 已标 **`@deprecated`**（原文：*Use `isBlocking` to decide whether the request should block.*），实测下发值恒为 `null`；`isBlocking: false` 也不让它自己收场——它与「这一帧要不要阻塞客户端」无关，只描述这次调用的语义。⇒ **收场只能由我们给**：没有人答、等到超时、随行终止，三种都必须回一帧，否则这一轮不会结束。
+**根因**：`autoResolutionMs` 在 0.156.1 已标 **`@deprecated`**（原文：*Use `isBlocking` to decide whether the request should block.*），实测下发值恒为 `null`；`isBlocking: false` 也不让它自己收场——它与「这一帧要不要阻塞客户端」无关，只描述这次调用的语义。⇒ **收场只能由我们给**：没有人答、等到超时、随候选终止，三种都必须回一帧，否则这一轮不会结束。
 
 **解决方案**：`providers/codex/ask-user.ts` 的应答者对**每一档收场**都回帧——`answers === null`（没人答 / 等超时 / 取消）回**空表** `{answers: {}}`，那是厂商原生的「没有答案」语义（模型据此继续按最佳判断干活）。⚠️ **由此得出一条映射边界**：spec 里「厂商到点自己收场 ⇒ 落 `auto-resolved`」在这家**不成立**——它没有「自己收场」这回事，收场方式只会是我们自己的 `timeout` / `unavailable` / `canceled`，`auto-resolved` 在这条通道上落不出来（`docs/protocols/codex.md` 与适配器交互面声明同一条口径）。
 
@@ -853,7 +853,7 @@ run-codex:85 | mk: main|1|assistant|- | rt: 1 | vid: msg_b959754e5ed84827ad41bf7
 - **两条兜底**：`item.id` 里没有分隔符时退回结构判据（上一次产出之后跑过工具才算新的一次往返）；工具条目在一次产出都没见过时**补记一票**（工具执行蕴含它前面必有一次往返，真机形状：turn 的第一条通知就是命令执行）。
 - 增量（`agentMessageDelta` / `reasoningTextDelta`）也过这把尺子（`noteDeltaRoundTrip`）：`item/started` 与增量谁先到不由本层定；载荷的 `itemId` 与条目 id 逐字相同（抓包逐帧核对：`item/agentMessage/delta` 的 `itemId` 就是 `item/completed` 的 `item.id`）。
 - 收尾回读（`projectThreadMessages`）**自带开号**：那条路上一条运行期通知都没走过，号必须在那里补。
-- **内容级归一不再依赖行级投影先跑**（`projectCodexMessages` 自己也数一遍，幂等）：合并键不该取决于另一层的执行顺序——这正是本缺陷的土壤。
+- **内容级归一不再依赖候选级投影先跑**（`projectCodexMessages` 自己也数一遍，幂等）：合并键不该取决于另一层的执行顺序——这正是本缺陷的土壤。
 
 判据：`providers/codex/message.test.ts` 的「往返号源：一次模型往返一条消息」五条（真机形状：想→调工具→想→答复、同响应共享号、提问那一轮、工具打头、增量先到）＋「收尾回读的一批条目自带开号」＋`providers/codex/events.test.ts` 的「推理条目推进往返」与「turn 的第一条通知就是工具执行」。
 
@@ -875,7 +875,7 @@ run-codex:85 | mk: main|1|assistant|- | rt: 1 | vid: msg_b959754e5ed84827ad41bf7
 
 - `inject-message` 事件落 `outcome: 'delivered'`；
 - 消息账本多一条 `role: 'user'` / `origin: 'human'` 的记录；
-- 行快照的 `followUps` 计数 +1。
+- 候选快照的 `followUps` 计数 +1。
 
 而模型那一侧的上下文里**一个字都没有**——后续答复完全不提这件事，`events.jsonl` 里也找不到任何异常。
 
@@ -898,7 +898,7 @@ run-codex:85 | mk: main|1|assistant|- | rt: 1 | vid: msg_b959754e5ed84827ad41bf7
 3. `queue/start` 失败时**读一次 `thread/queue/list`**：
    - 条目**不在**表里 ⇒ 厂商已消费 ⇒ **按交付登记**，并让流继续消费厂商起的那一轮
      （`vendorDispatched`；在途轮号由 `turn/started` 补——中止请求要的正是它）。收场那一拍**不结算**，
-     那一轮真收场时它的结局替换掉暂存的，于是这一行的结论取最后一轮；等不到 `turn/started` 时按
+     那一轮真收场时它的结局替换掉暂存的，于是这个候选的结论取最后一轮；等不到 `turn/started` 时按
      `CODEX_VENDOR_TURN_WAIT`（5 s）有界收场；
    - 条目**还在**表里 ⇒ 见下一条：**没被消费 ≠ 失败**（厂商会在当前轮收场后自己把它撒出去），
      一次交多条时尤其不能整批处置。
@@ -979,16 +979,16 @@ thread-child|2|assistant|-  roundTrip 2  ["子答复乙", "子答复甲"]   ← 
 
 ---
 
-## `turn/started` 两条、`turn/completed` 一条，而这一行按 `ok: true` 落盘（`finalText` / `tokens` / `turns` 全空）
+## `turn/started` 两条、`turn/completed` 一条，而这个候选按 `ok: true` 落盘（`finalText` / `tokens` / `turns` 全空）
 
 **日期**：2026-10-17
 
-**现象**：app-server 进程死在**在途**（Rust panic / OOM / 被外部杀掉）时，界面上这一行是**跑完了**：
+**现象**：app-server 进程死在**在途**（Rust panic / OOM / 被外部杀掉）时，界面上这个候选是**跑完了**：
 
 ```
 result: { ok: true, exitReason: 'completed', error: null, finalText: null, tokens: null, turns: null }
 事件流里唯一相关的一条: [WARN] codex 子线程树不是全量（枚举失败）：…（stderr）
-服务端日志: [ERROR] [agents/codex] codex 子线程枚举失败（本行的子智能体分量按「未采集」处理）
+服务端日志: [ERROR] [agents/codex] codex 子线程枚举失败（候选的子智能体分量按「未采集」处理）
             error: Error: codex app-server 进程已退出（code=null）
 ```
 
@@ -1021,7 +1021,7 @@ result: { ok: true, exitReason: 'completed', error: null, finalText: null, token
 **现象**：`'idle'` 档送过一次人话（厂商因此起过新一轮）之后再点「终止」或看门狗开火，日志里出现
 
 ```
-[WARN] [agents/codex] codex 中止请求失败（该行仍会按终止收场）
+[WARN] [agents/codex] codex 中止请求失败（该候选仍会按终止收场）
   error: Error: app-server 返回错误（-32600）：no active turn to interrupt
 ```
 
@@ -1163,7 +1163,7 @@ D tools.update_plan.enabled=true    tools[]: A + function:update_plan
  omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.","details":null}}
 ```
 
-而本行的线程对象上写着 `"historyMode":"paginated"`。
+而候选的线程对象上写着 `"historyMode":"paginated"`。
 
 **根因**：`appserver/reader.ts` 的收尾取数用 `thread/read{includeTurns:true}` 做全量水合，
 而 paginated 线程上这条路已被厂商弃用（上游 `thread_processor.rs` 的两条 `PAGINATED_*_DEPRECATION_SUMMARY` 就是这条文案）。
@@ -1185,7 +1185,7 @@ D tools.update_plan.enabled=true    tools[]: A + function:update_plan
 
 **日期**：2026-10-17
 
-**现象**：模型调用 `view_image`（这件工具**就在本行的工具表里**）之后，
+**现象**：模型调用 `view_image`（这件工具**就在候选的工具表里**）之后，
 厂商连投两帧、条目的 `type` 是 `imageView`：
 
 ```
@@ -1193,30 +1193,33 @@ D tools.update_plan.enabled=true    tools[]: A + function:update_plan
 {"method":"item/completed","params":{"item":{"type":"imageView","id":"call_img_0"},"threadId":"…","turnId":"…","completedAtMs":…}}
 ```
 
-而同一次运行里，本行的消息账本与事件流对它的命中数是 **0**——界面上既没有工具调用行、
+而同一次运行里，候选的消息账本与事件流对它的命中数是 **0**——界面上既没有工具调用行、
 也没有结果行、也没有「这里有一条我们没看懂的东西」。对照：同一轮里 `exec_command` 产出的
 `commandExecution` 条目照旧成块（工具调用 + 结果两条），证明不是「这一整套投影本来就不产东西」。
 
 **根因**：**未识别的「条目类型」没有兜底出口**。一条链上三个分支叠出来的：
-① `appserver/protocol.ts` 的 `readItem` 只归一 `ThreadItem` 19 个变体里的 12 个，剩下 7 个
+① `appserver/protocol.ts` 的 `readItem` 当时只归一 `ThreadItem` 19 个变体里的 12 个，剩下 7 个
 （`hookPrompt` / `imageView` / `sleep` / `imageGeneration` / `enteredReviewMode` /
-`exitedReviewMode` / `contextCompaction`）落进兜底 `{kind:'other'}`；
+`exitedReviewMode` / `contextCompaction`）落进兜底 `{kind:'other'}`（`imageView` 现已归一出自己的块，见下）；
 ② `message.ts` 的 `projectItem` 与 `events.ts` 的 `activityDrafts` **都没有 `other` 分支**，
 一路落到「什么都不产」；③ `run-state.ts` 的 `roundTripRoleOf('other')` 是「透明」⇒ 连轮次计数都不留痕。
 未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前没有对应物——这个不对称就是缺陷本身。
 ⚠️ 改之前 `message.ts` 的兜底注释写着「它们也不是『丢弃』：条目原文仍在同一份通知的 `raw` 里」——
 **那句话是假的**：`raw` 的唯一载体就是产出的那条消息的 `raw` 字段，不产消息就没有载体（真机读数正面否证）。
 
-**解决方案**：`readItem` 的 `other` 支带上条目原文（`raw`），`projectItem` 对 `kind:'other'` 产一条
-**`unrecognized` 块**（契约的 `UnrecognizedPayloadBlockSchema` 是一等成员，界面有独立渲染路径），
-只在 `item/completed` 产（与 `fileChange` / `agentMessage` 同口径）。新增共享构造器
-`unrecognizedBlockDraft`（`packages/server/agents/src/message.ts`）。
-判据：真机守卫 `packages/server/agents/src/providers/codex/unrecognized-item-live.test.ts`
+**解决方案**：`readItem` 的 `other` 支带上条目原文（`raw`）；`projectItem` 对 `kind:'other'`
+**按类型分派**——已认识的类型出自己的块（`imageView` ⇒ `image-view`，界面画缩略图，图片字节走
+`/api/runs/[runId]/candidates/[candidateId]/image`），其余产一条 **`unrecognized` 块**
+（契约的 `UnrecognizedPayloadBlockSchema` 是一等成员，界面有独立渲染路径），
+只在 `item/completed` 产（与 `fileChange` / `agentMessage` 同口径）。共享构造器
+`unrecognizedBlockDraft` / `imageViewBlockDraft`（`packages/server/agents/src/message.ts`）。
+判据：真机守卫 `packages/server/agents/src/providers/codex/image-view-live.test.ts`
 （真二进制 + 脚本式上游让模型调 `view_image`；断言「厂商必须真投过 `imageView`」+「对照臂
-`exec_command` 成块」+「`unrecognized` 块的 `vendorType` 是 `imageView`、`raw` 里带那个路径」）+
-单测 `message.test.ts` 两条 / `protocol.test.ts` 一条。
-**变异验证**：把 `projectItem` 的 `other` 支改回「什么都不产」⇒ 2 条见红（真机臂 + 单测），
-其余 44 条照绿；还原后 sha256 一致。
+`exec_command` 成块」+「`image-view` 块的 `path` 里带那个文件名」+「同一个载荷不再落一条
+`unrecognized`」）+ 单测 `message.test.ts` 三条（`imageView` 归一 / 没路径落 `unmapped-shape` /
+未识别类型留痕）/ `protocol.test.ts` 一条。
+**变异验证**：把 `projectItem` 的 `other` 支改回「什么都不产」⇒ 真机臂与两条单测见红；
+把 `imageView` 分支改回直接走 `unrecognized` ⇒ 真机反臂与单测见红；还原后 sha256 一致。
 
 ---
 
@@ -1298,7 +1301,7 @@ queueOpsOnWire      = [add, add, start, list]     ← 没有 delete（没回滚�
 新一轮 ⇒ 第 2 条 add 撞在忙线程上只入队，紧接着的 `thread/queue/start` 回
 `-32600 thread already has an active or pending turn`。而 `deliverIdle` 把这一批当**整体**处置：
 `idsConsumedByVendor` 只要发现「**有任意一条**被消费」就走「厂商自己投递」那一支并 `return`——
-注册了被消费的那条，剩下的既不登记、也不回滚、也没人等它，随本行 `dispose` 一起没。
+注册了被消费的那条，剩下的既不登记、也不回滚、也没人等它，随候选 `dispose` 一起没。
 那一支还只走 `logger.debug` ⇒ **默认日志级别一条都不打**。
 
 ⚠️ 与之配套的一条真机事实（决定修法）：**厂商会自己在当前轮收场后把队列里剩下那条撒出去**——
@@ -1312,11 +1315,11 @@ queueOpsOnWire      = [add, add, start, list]     ← 没有 delete（没回滚�
 2. 每一拍先 `reconcilePending()` 与 `thread/queue/list` 对一次账：**不在表里 ⇒ 厂商取走了**，
    此刻才登记交付；还在表里 ⇒ 留到下一拍；
 3. `queueStart` 失败时按**本拍有没有被消费**分档：有 ⇒ `vendorDispatched: true`（那一轮在跑，
-   队列里的其余条目会被它在收场时撒出去，**这一行不许收场**）；一条都没有 ⇒ 与过去逐字相同，
+   队列里的其余条目会被它在收场时撒出去，**这个候选不许收场**）；一条都没有 ⇒ 与过去逐字相同，
    不登记并回滚；
 4. `index.ts` 那一侧补一处：重新起「等 `turn/started`」的表之前先撤掉上一只——厂商那一轮的
    `turn/started` 可能在本拍**之前**就到了（`queue/add` 落在空闲线程上时它在 add 那一拍就投），
-   那只旧表到点会把这一行收场。
+   那只旧表到点会把这个候选收场。
 
 判据：**真机守卫** `providers/codex/inject-idle-batch-live.test.ts`（真二进制 + 脚本式上游，
 四条判据＝两条都登记交付 / 两条哨兵都进出站请求体 / 起过的轮次全部跑完 / 结论取两句都收到那一轮；
@@ -1341,7 +1344,7 @@ TypeError: Cannot read properties of null (reading 'id')
 「认不出归属的响应」WARN，后面的请求照常配对。
 
 **根因**：`JSON.parse('null')` 返回 `null` 是**合法 JSON**，而 `handleLine` 拿到它之后直接读
-`message.id` ⇒ 抛 `TypeError`。这一行是从 socket 的 `data` 处理器里跑出来的，抛出去就是
+`message.id` ⇒ 抛 `TypeError`。这个候选是从 socket 的 `data` 处理器里跑出来的，抛出去就是
 **未捕获异常**——Node 的默认处置是打印后 `process.exit(1)`，于是**整个宿主进程（本仓是 Next 服务）
 被一行坏帧带走**。数字 / 字符串那一档不抛（原始值属性访问得 `undefined`），但它们同样不是帧，
 会一路滑到「认不出归属」那一支 ⇒ `unparsedFrames()` 把这三类都漏掉，计数不再是「坏帧数」。
@@ -1402,7 +1405,7 @@ E1′ 事后手工 kill(-pgid)
 
 ```
 [WARN] codex 子线程 01a145… 没有用量通知（协议只按线程报累计用量）：
-这一行的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径
+这个候选的**子智能体分量与轮次分量**都给不出（记 null，不编造、不填 0），合计退回主线程口径
 ```
 
 而同一轮的探针读数里，那条通知**明明到了**：子线程 `thread/tokenUsage/updated` 落在 t=158、
@@ -1415,7 +1418,7 @@ E1′ 事后手工 kill(-pgid)
 「厂商压根没发」在读数上长得一模一样——而旧文案选了一个说，把排查方向指到厂商那边去。
 
 **解决方案**：**文案先说我们这一侧的事实**——`index.ts` 的两条 WARN（主线程 / 子线程）改成
-「用量**本行没有采到**（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）」，
+「用量**候选没有采到**（协议只按线程报累计用量；通知若在流收尾之后才到，就没有人再把它投影进读数）」，
 不再替厂商下结论。判据：`index.test.ts` 的两条断言同步改成新措辞。
 
 **根因已闭合**（同批）：`asRawStream` 在上游产完之后走一段**有界**的静默窗口
@@ -1446,7 +1449,7 @@ E1′ 事后手工 kill(-pgid)
 
 **日期**：2026-10-17
 
-**现象**：本地脚本式上游回 401，codex 投的行级失败通知逐字是：
+**现象**：本地脚本式上游回 401，codex 投的候选级失败通知逐字是：
 
 ```json
 {"method":"error","error":{"message":"Reconnecting... 1/5",
@@ -1474,7 +1477,7 @@ E1′ 事后手工 kill(-pgid)
 （`expected 'AGENT_FAILED' to be 'AUTH_FAILED'`）；还原后 sha256 一致。
 
 **未闭合**：`sandboxError` / `contextWindowExceeded` 两档仍未观测到（触发条件未知）；
-连接被拒那一档（`httpStatusCode: null`）**会自行收场，用的正是产品自己的预算**：厂商持续回 `error`/重连（21 帧里 13 帧是 `error`），定案的是**单轮墙钟那条**看门狗，落在 **600.1 s** —— 逐条读数依次是「看门狗：单次模型往返超过 600 秒仍未收尾」→「codex 本轮被中止」→「用量本行没有采到」→「该行已按看门狗判定静止超时收场」。原先这里记的「600 s 内不自行收场」是**取样点压在边界上**（恰在 600 s 那一刻去看）造成；**关掉那条看门狗再测一次**（`turnWallClockMs: 0`）⇒ **到 700 s 仍不收场**（690 s / 695 s 两档都是「本轮尚未结算」，全程只有 17 条事件、约 40 s 一次 `error`），最后是**测量臂自己的上限**把它终止的。⇒ **厂商不会自己收场，是产品那条单轮墙钟看门狗把这一行救回来的** ——它不是「避免了一个 bug」，而是**这一档上的载荷路径**
+连接被拒那一档（`httpStatusCode: null`）**会自行的收场，用的正是产品自己的预算**：厂商持续回 `error`/重连（21 帧里 13 帧是 `error`），定案的是**单轮墙钟那条**看门狗，落在 **600.1 s** —— 逐条读数依次是「看门狗：单次模型往返超过 600 秒仍未收尾」→「codex 本轮被中止」→「用量候选没有采到」→「该候选已按看门狗判定静止超时收场」。原先这里记的「600 s 内不自行的收场」是**取样点压在边界上**（恰在 600 s 那一刻去看）造成；**关掉那条看门狗再测一次**（`turnWallClockMs: 0`）⇒ **到 700 s 仍不收场**（690 s / 695 s 两档都是「本轮尚未结算」，全程只有 17 条事件、约 40 s 一次 `error`），最后是**测量臂自己的上限**把它终止的。⇒ **厂商不会自己收场，是产品那条单轮墙钟看门狗把这个候选救回来的** ——它不是「避免了一个 bug」，而是**这一档上的载荷路径**
 （看门狗是静止超时，而重连本身在产事件），归因与预算都还没有读数。
 
 ---

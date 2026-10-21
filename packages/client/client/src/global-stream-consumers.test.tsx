@@ -55,7 +55,7 @@ function renderConsumers() {
     () => ({
       runs: useRuns(),
       askUser: useAskUserQueue(),
-      inject: useInjectMessages({ runId: 'run-1', rowId: 'w-1', enabled: true }),
+      inject: useInjectMessages({ runId: 'run-1', candidateId: 'w-1', enabled: true }),
     }),
     { wrapper },
   );

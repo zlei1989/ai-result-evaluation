@@ -5,7 +5,7 @@
  * `lib/jsdom/living/interfaces.js`：有 `WebSocket`、没有 `EventSource`），
  * 而这里要测的正是「首帧拉 /log → 接 /stream → 去重 → 终态关连接」这条链路。
  *
- * 为什么不放进共享 `src/testing/setup.ts`：`useRowStream` 有一条「环境不支持 EventSource 时
+ * 为什么不放进共享 `src/testing/setup.ts`：`useCandidateStream` 有一条「环境不支持 EventSource 时
  * 退化为只读历史」的兜底分支，全局注入替身会让那条分支在测试里**永远不可达**
  * （与 `resize-observer.ts` 刻意不共享是同一个理由）。需要的用例自己调用本助手。
  *
@@ -39,7 +39,7 @@ import { vi } from 'vitest';
 /** `addEventListener` / `removeEventListener` 的两种入参：本仓只用函数形态，对象形态原样接受、一并移除 */
 type EventListenerLike = (event: never) => void;
 
-/** 一段流里**会被派发**的一个事件：事件名（无名事件是 `message`）+ 已去掉尾换行的载荷 */
+/** 一段流里**会被派发**的一个事件：事件名（无名事件是 `message`）+ 已去掉尾换候选的载荷 */
 export interface ParsedEvent {
   readonly type: string;
   readonly data: string;
@@ -153,7 +153,7 @@ export class FakeEventSource {
     return total;
   }
 
-  /** 用例驱动：模拟服务端推来一帧**无名**事件（SSE 里没有 `event:` 行的帧） */
+  /** 用例驱动：模拟服务端推来一帧**无名**事件（SSE 里没有 `event:` 候选的帧） */
   emit(data: string): void {
     this.dispatch('message', { type: 'message', data, origin: this.origin });
   }

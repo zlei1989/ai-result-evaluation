@@ -40,11 +40,11 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 ---
 
-## `This extension ctx is stale after session replacement or reload.`（后台档子智能体活过本行时，完成回调打旧 ctx ⇒ 未处理的 Promise 拒绝）
+## `This extension ctx is stale after session replacement or reload.`（后台档子智能体活过候选时，完成回调打旧 ctx ⇒ 未处理的 Promise 拒绝）
 
 **日期**：2026-10-13
 
-**现象**：`Agent` 工具派出的子智能体活过了本行。行已收尾、会话已释放之后，扩展的完成回调仍拿着装载时的旧 `ctx` 去发总线事件，抛出上面那句原文（厂商在 `dist/core/extensions/runner.js` 里的逐字文案是 `This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().`）；而且**没有人 catch 那条 promise** ⇒ 表现为一次**未处理拒绝**，长驻服务下会掀进程，测试里只是多一条 unhandled rejection、用例本身照样可能绿。同一时刻本行的子任务分量按格记 `null` 并落一条点名 WARN。
+**现象**：`Agent` 工具派出的子智能体活过了候选。行已收尾、会话已释放之后，扩展的完成回调仍拿着装载时的旧 `ctx` 去发总线事件，抛出上面那句原文（厂商在 `dist/core/extensions/runner.js` 里的逐字文案是 `This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().`）；而且**没有人 catch 那条 promise** ⇒ 表现为一次**未处理拒绝**，长驻服务下会掀进程，测试里只是多一条 unhandled rejection、用例本身照样可能绿。同一时刻候选的子任务分量按格记 `null` 并落一条点名 WARN。
 
 **根因**：机制层是三个事实叠在一起：
 
@@ -52,9 +52,9 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 2. 扩展的完成回调**捕获**了装载期的 `ctx`，而 pi 的 `runner` 在会话替换 / `reload()` 之后把旧 `ctx` 判为失效并**主动抛错**——那是厂商侧有意的守卫，不是厂商缺陷；
 3. 回调那条 promise 链**没有终止 catch**，于是守卫抛出的错误升级成进程级未处理拒绝。
 
-**解决方案**：**未闭合**（第三方缺陷，修在扩展侧——完成回调要么改从 `withSession` 拿新 `ctx`，要么自己 catch 并降级成一条日志）。当前处置是**如实登记、不掩盖**：子智能体若在本行收尾那一刻还没收场，`subagentTokens` / `subagentTurns` 两格都记 `null`（**不填 0**）+ 一条点名 WARN，合计退回主会话口径。两格**各自判完整性**：用量那一格来自总线终态载荷（`subagents:completed` / `failed` 的 `usage`，读得到就照交），轮次那一格只在 `Agent` 工具结果的 `details.turnCount` 里，而**后台档工具派发即返回、总线终态载荷里没有这一格** ⇒ 后台档结构上拿不到轮次（记 `null` 并点名「后台档：…总线终态载荷里不带 turnCount」，用量不受它连坐）。代价两层：默认路径下（模型不显式给 `run_in_background: false`）轮次那一格拿不到，而子智能体确实跑了几轮；服务进程多一次未处理拒绝的风险面。复现判据：真机跑一轮让模型派后台子智能体，看收尾后的 stderr（未处理拒绝）与行上那条 WARN 原文；两条 wire 下分量各自的可读性见 `providers/pi/events.test.ts` 的后台档用例。
+**解决方案**：**未闭合**（第三方缺陷，修在扩展侧——完成回调要么改从 `withSession` 拿新 `ctx`，要么自己 catch 并降级成一条日志）。当前处置是**如实登记、不掩盖**：子智能体若在候选收尾那一刻还没收场，`subagentTokens` / `subagentTurns` 两格都记 `null`（**不填 0**）+ 一条点名 WARN，合计退回主会话口径。两格**各自判完整性**：用量那一格来自总线终态载荷（`subagents:completed` / `failed` 的 `usage`，读得到就照交），轮次那一格只在 `Agent` 工具结果的 `details.turnCount` 里，而**后台档工具派发即返回、总线终态载荷里没有这一格** ⇒ 后台档结构上拿不到轮次（记 `null` 并点名「后台档：…总线终态载荷里不带 turnCount」，用量不受它连坐）。代价两层：默认路径下（模型不显式给 `run_in_background: false`）轮次那一格拿不到，而子智能体确实跑了几轮；服务进程多一次未处理拒绝的风险面。复现判据：真机跑一轮让模型派后台子智能体，看收尾后的 stderr（未处理拒绝）与行上那条 WARN 原文；两条 wire 下分量各自的可读性见 `providers/pi/events.test.ts` 的后台档用例。
 
-**同一现象的第二半（已闭合）——那一格状态被降级成 `unknown`**：后台档下总线只报得起一条 `subagents:started`，而它**没有** `status` 字段；收尾对账读的正是那条记录，于是派发时已经投出去的 `running` 行被覆盖成 `unknown`——与「从终态退回运行中」同类的倒退，只是方向相反（把「已知在跑」说成「不知道」）。修在收尾那一侧：`Agent` 工具收尾快照里的状态（后台档是 `background`）记进派发记录，收尾快照**沿用**它（两处都没有才是真的没采集）。同一批还把那条 WARN 的措辞补成能自己解释的形态——``agent-1（派发即分离、活过了本行：收尾那一刻的状态是 background）``，而不是一句要用户猜的「还没收场」。判据：`providers/pi/events.test.ts` 的「后台档（总线只报 started）⇒ 收尾快照沿用派发那一刻的状态，不降级成 unknown」；变异验证：把 `rawStatus: event?.rawStatus ?? dispatch?.rawStatus ?? null` 改回只读总线 ⇒ 该用例见红（收尾多投一条内容不同的行）。
+**同一现象的第二半（已闭合）——那一格状态被降级成 `unknown`**：后台档下总线只报得起一条 `subagents:started`，而它**没有** `status` 字段；收尾对账读的正是那条记录，于是派发时已经投出去的 `running` 行被覆盖成 `unknown`——与「从终态退回运行中」同类的倒退，只是方向相反（把「已知在跑」说成「不知道」）。修在收尾那一侧：`Agent` 工具收尾快照里的状态（后台档是 `background`）记进派发记录，收尾快照**沿用**它（两处都没有才是真的没采集）。同一批还把那条 WARN 的措辞补成能自己解释的形态——``agent-1（派发即分离、活过了候选：收尾那一刻的状态是 background）``，而不是一句要用户猜的「还没收场」。判据：`providers/pi/events.test.ts` 的「后台档（总线只报 started）⇒ 收尾快照沿用派发那一刻的状态，不降级成 unknown」；变异验证：把 `rawStatus: event?.rawStatus ?? dispatch?.rawStatus ?? null` 改回只读总线 ⇒ 该用例见红（收尾多投一条内容不同的行）。
 
 ---
 
@@ -62,11 +62,11 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 **日期**：2026-10-13
 
-**现象**：并发跑两条 pi 行，两行的子智能体转写都写进**同一个**共享目录 `os.tmpdir()/pi-subagents-<uid>/`。行级隔离（每行独占 `.agenthome`）在这一格上不成立。
+**现象**：并发跑两条 pi 行，两行的子智能体转写都写进**同一个**共享目录 `os.tmpdir()/pi-subagents-<uid>/`。候选级隔离（每个候选独占 `.agenthome`）在这一格上不成立。
 
-**根因**：机制层是**路径来源没有注入面**——扩展内部用 `os.tmpdir()` 加 uid 自己拼目录，不接受宿主传入的行级目录；而 SDK 的 `getAgentDir()` 是**进程级**那一格（只认 `PI_CODING_AGENT_DIR` 与 `~/.pi/agent`），`createAgentSession({ agentDir })` 只管会话自己的 settings / memory，管不到扩展的这一格。⇒ 只要同一个宿主进程里并发跑两行，这一格必然共享。
+**根因**：机制层是**路径来源没有注入面**——扩展内部用 `os.tmpdir()` 加 uid 自己拼目录，不接受宿主传入的候选级目录；而 SDK 的 `getAgentDir()` 是**进程级**那一格（只认 `PI_CODING_AGENT_DIR` 与 `~/.pi/agent`），`createAgentSession({ agentDir })` 只管会话自己的 settings / memory，管不到扩展的这一格。⇒ 只要同一个宿主进程里并发跑两行，这一格必然共享。
 
-**解决方案**：**未闭合**（第三方缺陷，修在扩展侧——接受一个宿主给的转写根）。当前处置是登记并接受代价：子智能体的转写**不作为本行产物**、不进 `diff`、不进评分；行与行在这一格上不隔离，排障时按 `pi-subagents-<uid>` 这个共享目录读，别当成某一行的私有产物。⚠️ 附带影响：这个目录的清理**不属于本行的释放序列**（我们删的是 `.agenthome`），它会跨行攒着。
+**解决方案**：**未闭合**（第三方缺陷，修在扩展侧——接受一个宿主给的转写根）。当前处置是登记并接受代价：子智能体的转写**不作为候选产物**、不进 `diff`、不进评分；候选与候选在这一格上不隔离，排障时按 `pi-subagents-<uid>` 这个共享目录读，别当成某一行的私有产物。⚠️ 附带影响：这个目录的清理**不属于候选的释放序列**（我们删的是 `.agenthome`），它会跨行攒着。
 
 ---
 
@@ -101,11 +101,11 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 **日期**：2026-10-13
 
-**现象**：配置里那台 MCP 服务器叫 **`my-server`**（带连字符，名字正则本来就允许），真包 + 假网关 + 真 stdio 服务器跑一轮：出站请求体里明明有 `mcp__my_server__echo`，模型侧调得动，但这一行以 **`AGENT_MCP_UNAVAILABLE`** 收场，文案逐字是 ``MCP「my-server」未能启动：工具表里没有它的工具（这一家起不来时不投结构化错误）``——引擎里没有的这台，观测格却记 `{"name":"my-server","judgedBy":"vendor-tool-table","verdict":"unavailable"}`。
+**现象**：配置里那台 MCP 服务器叫 **`my-server`**（带连字符，名字正则本来就允许），真包 + 假网关 + 真 stdio 服务器跑一轮：出站请求体里明明有 `mcp__my_server__echo`，模型侧调得动，但这个候选以 **`AGENT_MCP_UNAVAILABLE`** 收场，文案逐字是 ``MCP「my-server」未能启动：工具表里没有它的工具（这一家起不来时不投结构化错误）``——引擎里没有的这台，观测格却记 `{"name":"my-server","judgedBy":"vendor-tool-table","verdict":"unavailable"}`。
 
-**根因**：**「我们配置的名字」与「厂商工具表里的名字」不是同一个字符串，而判据拿原始名拼精确前缀**。pi 的 `createMcpToolName` 对**整条**工具名做 `replace(/[^A-Za-z0-9_]/g, "_")`（`dist/extensions/mcp/tools.js`；厂商 CHANGELOG 记的修复原文是 *Like in Codex … `mcp__my-server__x` is now `mcp__my_server__x`*）⇒ `server` 段里的 `-` 照样变 `_`。行级判据当时用 `` `mcp__${serverName}__` `` 精确前缀 ⇒ 判「表里没有它」，而 `vendor-tool-table` 通道下这一档**就是整行失败**（不是「未验证」）。**测试环境 ≠ 运行环境**：单测喂的工具表是**原样保留**形态（`mcp__my-server__echo`，那正是 cc / dsh 的形态），与 pi / codex 的真实形态差一个字符 ⇒ 单测全绿、真机红。
+**根因**：**「我们配置的名字」与「厂商工具表里的名字」不是同一个字符串，而判据拿原始名拼精确前缀**。pi 的 `createMcpToolName` 对**整条**工具名做 `replace(/[^A-Za-z0-9_]/g, "_")`（`dist/extensions/mcp/tools.js`；厂商 CHANGELOG 记的修复原文是 *Like in Codex … `mcp__my-server__x` is now `mcp__my_server__x`*）⇒ `server` 段里的 `-` 照样变 `_`。候选级判据当时用 `` `mcp__${serverName}__` `` 精确前缀 ⇒ 判「表里没有它」，而 `vendor-tool-table` 通道下这一档**就是整候选失败**（不是「未验证」）。**测试环境 ≠ 运行环境**：单测喂的工具表是**原样保留**形态（`mcp__my-server__echo`，那正是 cc / dsh 的形态），与 pi / codex 的真实形态差一个字符 ⇒ 单测全绿、真机红。
 
-**解决方案**：判据换成共享匹配器 `matchMcpToolName`（`packages/server/contracts/src/mcp-tool-name.ts`）：**先精确、再回退到归一化形态**，`row-mcp.ts` 与 pi 的一致性套件共用同一份。撞名（`my-server` 与 `my_server` 归一化后同形）时那一批工具**归不到**具体哪一台 ⇒ 那几台记 `unverified` + 一句说明（`RowMcpServer.note`，抽屉里画在自己那行后面），**不判失败**、也不互相记账。判据：`row-mcp.test.ts`（带连字符判 `connected`、撞名不判失败）与 `mcp-tool-name.test.ts`（精确优先、前缀必须整段）。两条变异都见过红：① 匹配改回原始名精确前缀 ⇒ `my-server` 那条用例红；② 无条件两边都 sanitize ⇒ 撞名那条用例红。
+**解决方案**：判据换成共享匹配器 `matchMcpToolName`（`packages/server/contracts/src/mcp-tool-name.ts`）：**先精确、再回退到归一化形态**，`row-mcp.ts` 与 pi 的一致性套件共用同一份。撞名（`my-server` 与 `my_server` 归一化后同形）时那一批工具**归不到**具体哪一台 ⇒ 那几台记 `unverified` + 一句说明（`CandidateMcpServer.note`，抽屉里画在自己那行后面），**不判失败**、也不互相记账。判据：`row-mcp.test.ts`（带连字符判 `connected`、撞名不判失败）与 `mcp-tool-name.test.ts`（精确优先、前缀必须整段）。两条变异都见过红：① 匹配改回原始名精确前缀 ⇒ `my-server` 那条用例红；② 无条件两边都 sanitize ⇒ 撞名那条用例红。
 
 **相关资料**：`@earendil-works/pi-coding-agent` 的 `dist/extensions/mcp/tools.js`（`createMcpToolName` 的整条 `replace`）、`dist/core/mcp-servers.js`（`mcpNamespace()` 的 `-` ⇒ `_`）。
 
@@ -115,9 +115,9 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 **日期**：2026-10-16
 
-**现象**：http 服务器配了 `headers: { "X Y": "v" }`（带空格的键）。真机读数三层对不上：契约层 `resolveMcpServers.injectable` **含这一台**，pi 适配器层 `toPiMcpServers` 把它摘进 `dropped`（理由 `headers 的键 "X Y" 不合法`），而行级观测格记 `{"name":"…","judgedBy":"vendor-tool-table","verdict":"unavailable"}` ⇒ 整行以 **`AGENT_MCP_UNAVAILABLE`** 收场，文案逐字是 ``MCP「X Y」未能启动：工具表里没有它的工具（这一家起不来时不投结构化错误）``。**这一台根本没起过**，真因只活在服务端进程日志里（`logger.warn`）。
+**现象**：http 服务器配了 `headers: { "X Y": "v" }`（带空格的键）。真机读数三层对不上：契约层 `resolveMcpServers.injectable` **含这一台**，pi 适配器层 `toPiMcpServers` 把它摘进 `dropped`（理由 `headers 的键 "X Y" 不合法`），而候选级观测格记 `{"name":"…","judgedBy":"vendor-tool-table","verdict":"unavailable"}` ⇒ 整行以 **`AGENT_MCP_UNAVAILABLE`** 收场，文案逐字是 ``MCP「X Y」未能启动：工具表里没有它的工具（这一家起不来时不投结构化错误）``。**这一台根本没起过**，真因只活在服务端进程日志里（`logger.warn`）。
 
-**根因**：**两层判据分家**。契约的 `headers` 当时是 `z.record(z.string().min(1), z.string())`（任何非空字符串都算合法键），而适配器的形状闸是 `/[\s:]/`（拒空白与冒号）——后者比前者严。适配器摘掉之后，编排层的注入集**仍按契约把它算成 `injectable`**，而行级判据在 `vendor-tool-table` 通道上的读法是「表在、里面没有它 ⇒ `unavailable`」⇒ 失败档；这个条目不在编排层的 `invalid` 桶里（那个桶的语义是「弱判据不装强结论」，走的正是「行照跑 + `unverified`」那一档）。**测试环境 ≠ 运行环境**：适配器那层有一条「坏条目摘掉」的用例（喂 `X Y` 进去、断言它进 `dropped`），契约那层没有对应用例 ⇒ 两边各自绿，合起来是整行假失败——「第二道防线」摘掉一个**上游认为合法**的条目时，下游没有任何机制能知道。
+**根因**：**两层判据分家**。契约的 `headers` 当时是 `z.record(z.string().min(1), z.string())`（任何非空字符串都算合法键），而适配器的形状闸是 `/[\s:]/`（拒空白与冒号）——后者比前者严。适配器摘掉之后，编排层的注入集**仍按契约把它算成 `injectable`**，而候选级判据在 `vendor-tool-table` 通道上的读法是「表在、里面没有它 ⇒ `unavailable`」⇒ 失败档；这个条目不在编排层的 `invalid` 桶里（那个桶的语义是「弱判据不装强结论」，走的正是「行照跑 + `unverified`」那一档）。**测试环境 ≠ 运行环境**：适配器那层有一条「坏条目摘掉」的用例（喂 `X Y` 进去、断言它进 `dropped`），契约那层没有对应用例 ⇒ 两边各自绿，合起来是整行假失败——「第二道防线」摘掉一个**上游认为合法**的条目时，下游没有任何机制能知道。
 
 **解决方案**：把判据提到**契约层**——`MCP_HEADER_KEY_PATTERN`（HTTP field-name 的 token 语法：字母数字与 `` !#$%&'*+-.^_`|~ ``）进 `McpServerConfigSchema.headers` 的键，契约与适配器共用同一份模式。落这一层之后该条目走 `invalid` 桶：行照跑、观测格记 `unverified`、日志点名到格（`headers 的键 "X Y" 不合法：…`），用户去设置页改键名即可。适配器那一层保留同一份判据作为第二道防线（手改 `config.json` 的路），并新增一条**可见的 `log`**：被它摘掉的条目在产物里点名（厂商的启动报告走 `ctx.ui.notify`，SDK 装配下那是 `noOpUIContext`，一个字都不会出现）。判据：`contracts/src/mcp.test.ts` 的「headers 键按 HTTP field-name 收」、`providers/pi/injection.test.ts` 的「被摘掉的条目落一条点名 log」。变异验证：① 契约那格改回 `z.string().min(1)` ⇒ 契约用例红；② 适配器那格放宽回「只拒空键」⇒ 适配器用例红。
 
@@ -129,7 +129,7 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 **日期**：2026-10-16
 
-**现象**：手改 `config.json` 把某台 stdio 服务器的 `args` 写成字符串（`"args": "a.js"`）。绕过编排层直接调 `agentProvider.run`（或将来新加的调用点）时，这一行以 `TypeError: (entry.args ?? []).findIndex is not a function` 收场：`run` resolve 成 `{ok:false, exitReason:'error', finalText:null}`、**零出站请求**，而产物里看不出是 `args` 写错了。
+**现象**：手改 `config.json` 把某台 stdio 服务器的 `args` 写成字符串（`"args": "a.js"`）。绕过编排层直接调 `agentProvider.run`（或将来新加的调用点）时，这个候选以 `TypeError: (entry.args ?? []).findIndex is not a function` 收场：`run` resolve 成 `{ok:false, exitReason:'error', finalText:null}`、**零出站请求**，而产物里看不出是 `args` 写错了。
 
 **根因**：`toPiMcpServers` 的形状闸在 `args` 这一格上**只判了元素类型**（`findIndex((arg) => typeof arg !== 'string')`），没判容器本身是不是数组——容器是字符串时 `.findIndex` 直接不存在。而这一层的定位是「第二道防线，拦手改配置与将来多出来的调用点」，口径是**跳过 + 行照跑**：抛出去与这条口径正好相反。编排层路径上它被上游 zod 闸先拦成 `invalid`（`args 不合法：Expected array, received string`），所以这个洞只在绕过编排层时可达——而那正是这一层存在的理由。
 
@@ -159,9 +159,9 @@ pi（`@earendil-works/pi-coding-agent`）在**真实运行环境**里踩过的�
 
 **根因**：**子会话是另一个 pi 会话**（`@tintinweb/pi-subagents` 在同一进程里另起一个），它的事件**不进父会话的 `session.subscribe` 流** ⇒ 投影层从来没有机会给任何消息挂 `subagentId`。而界面按 `message.subagentId` 把消息分给会话节点、按 `message.roundTrip` 给每个节点分轮（`build-model.ts`）⇒ 那个节点**零轮次**，只能渲染成空态。三条排查要点：① 缺的是**消息**不是日志——`log` 事件在契约里根本没有 `subagentId` 这一格，界面也不把 `log` 折进时间轴，**拿日志事件找归属是找错了地方**；② `AgentMessage.turn` 是**厂商轮号**（`z.number().nullable()`，pi 没有 ⇒ 恒 `null` 是正确值），**不是**归属键，别拿它当「有没有对齐」的判据；③ 另外两条候选通道都取不到正文——扩展事件总线除 `subagents:started/completed/failed` 外只有身份与元数据频道，`Agent` 工具的 `tool_execution_update` 载荷只有一行 spinner 活动文案（按帧动画频率刷）。
 
-**解决方案**：读扩展自己写的**逐 agent 转写文件**（`@tintinweb/pi-subagents` 的 `output-file.ts`，默认开：`<tmpdir>/pi-subagents-<uid>/<cwd 编码>/<会话 id>/tasks/<子任务 id>.output`，JSONL，`turn_end` 时 flush）。落点是骨架的**收尾接缝**（与 codex 读 `rollout-*.jsonl` 同一格），实现见 `packages/server/agents/src/providers/pi/transcript.ts`：正文复用既有的助手 / 工具结果归一（转写的 `message` 与 `message_end.message` 同构），逐条盖上 `subagentId` 与 `source: 'session-file'`，轮次按**该子会话自己**的模型往返序从 1 起（与 claude 的 `roundTripOfSession` 同一条口径——共用一个计数器会让几十条消息全挤进一个轮次行）。路径由**本行的 `cwd` 与本会话的 `sessionId`** 拼出，**不扫目录**（转写根是全机共享的，扫目录会让并发的两行互相认领对方的子任务）；读不到**不失败**，如实落一条点名 WARN（子任务节点为空即这条边界）。判据：`transcript.test.ts`（路径公式、轮次与 `subagentId` 挂载、坏行与半截末行、上限截断、文件缺失）与 `events.test.ts`（收尾搬运正文、缺失时不改结论）。三条变异都见过红：① 去掉投影 ⇒ `transcript.test.ts` 9 条红；①b 收尾不搬运正文 ⇒「收尾把子会话转写折成子任务的消息」红；② 去掉 `subagentId` 挂载 ⇒「逐条带 subagentId」与「文件在时读得到」红；③ 去掉子任务行去重 ⇒「同身份同内容只出一条」红。
+**解决方案**：读扩展自己写的**逐 agent 转写文件**（`@tintinweb/pi-subagents` 的 `output-file.ts`，默认开：`<tmpdir>/pi-subagents-<uid>/<cwd 编码>/<会话 id>/tasks/<子任务 id>.output`，JSONL，`turn_end` 时 flush）。落点是骨架的**收尾接缝**（与 codex 读 `rollout-*.jsonl` 同一格），实现见 `packages/server/agents/src/providers/pi/transcript.ts`：正文复用既有的助手 / 工具结果归一（转写的 `message` 与 `message_end.message` 同构），逐条盖上 `subagentId` 与 `source: 'session-file'`，轮次按**该子会话自己**的模型往返序从 1 起（与 claude 的 `roundTripOfSession` 同一条口径——共用一个计数器会让几十条消息全挤进一个轮次行）。路径由**候选的 `cwd` 与本会话的 `sessionId`** 拼出，**不扫目录**（转写根是全机共享的，扫目录会让并发的两行互相认领对方的子任务）；读不到**不失败**，如实落一条点名 WARN（子任务节点为空即这条边界）。判据：`transcript.test.ts`（路径公式、轮次与 `subagentId` 挂载、坏行与半截末行、上限截断、文件缺失）与 `events.test.ts`（收尾搬运正文、缺失时不改结论）。三条变异都见过红：① 去掉投影 ⇒ `transcript.test.ts` 9 条红；①b 收尾不搬运正文 ⇒「收尾把子会话转写折成子任务的消息」红；② 去掉 `subagentId` 挂载 ⇒「逐条带 subagentId」与「文件在时读得到」红；③ 去掉子任务行去重 ⇒「同身份同内容只出一条」红。
 
-**已知边界**：转写文件通道今天是**兜底**（wire 不可用的整行、以及 wire 订阅前的缺口都由它补；跑动期增量投递挂在每个事件的投影上、按身份节流读盘，收尾只补差量——载体键与 wire 对齐后由投影层去重，`messages.jsonl` 不留双份）。子任务正文的**首选来源是 wire**（`subagent-wire.ts`：经 `globalThis[Symbol.for("pi-subagents:manager")]` 快照本行的 manager、订阅子会话自己的事件流，`source: 'wire'`、无「补录」角标；机制与取舍见 `docs/protocols/pi.md` 已知边界表）。「补录」角标只在兜底通路上出现。扩展关掉转写（`output_transcript`）且 wire 也不可用时，子任务节点回到空态并留一条 WARN。
+**已知边界**：转写文件通道今天是**兜底**（wire 不可用的整行、以及 wire 订阅前的缺口都由它补；跑动期增量投递挂在每个事件的投影上、按身份节流读盘，收尾只补差量——载体键与 wire 对齐后由投影层去重，`messages.jsonl` 不留双份）。子任务正文的**首选来源是 wire**（`subagent-wire.ts`：经 `globalThis[Symbol.for("pi-subagents:manager")]` 快照候选的 manager、订阅子会话自己的事件流，`source: 'wire'`、无「补录」角标；机制与取舍见 `docs/protocols/pi.md` 已知边界表）。「补录」角标只在兜底通路上出现。扩展关掉转写（`output_transcript`）且 wire 也不可用时，子任务节点回到空态并留一条 WARN。
 
 **相关资料**：`@tintinweb/pi-subagents` 的 `src/output-file.ts`（`encodeCwd` / `sessionTaskDir` / `streamToOutputFile`）与 `src/index.ts` 的 `createOutputFilePath(ctx.cwd, agentId, ctx.sessionManager.getSessionId())`。
 
@@ -191,7 +191,7 @@ TypeError: sdk.getDefaultSessionDir is not a function
 
 **现象**：跨进程续接探针的正面臂（新 node 进程 + `SessionManager.open(<上一进程写的会话文件>)`）里，模型回答逐字是 `不知道`；而**同一个进程在 `prompt()` 之前**读到的厂商投影 `manager.buildSessionContext().messages` 里，那条带暗号的用户消息**在场**（3 条：`system` / `user:请记住这串暗号：AIEVAL-…` / `assistant:记住了`）。紧接着的下一格拿**同一个会话文件**再问一次，答案就是那串暗号。三轮真机共 12 个「带暗号的问回」格，其中 **2 格**出现这个形状（`open` 与 `continueRecent` 各一次），且两次的投影读数都是「暗号在场」。
 
-**根因**：**未定位到模型侧**（不是 SDK 这一层）。已排除的两条：① 会话文件没内容——`getEntryCount()` 与文件行数都在（同格读数 `entries=7`）；② SDK 没把历史灌进上下文——`dist/core/sdk.js:84` 取 `sessionManager.buildSessionContext()`、`:259` 把它交给 `Agent({ initialState: { messages: existingSession.messages } })`，而这一格读到的投影里暗号在场。⇒ 剩下的位置是**模型/网关这一侧**：端到端的暗号回读**会偶发假红**（本机这一档约 1/6），而机制层读数**每次都对**。
+**根因**：**未定位到模型侧**（不是 SDK 这一层）。已排除的两条：① 会话文件没内容——`getEntryCount()` 与文件候选数都在（同格读数 `entries=7`）；② SDK 没把历史灌进上下文——`dist/core/sdk.js:84` 取 `sessionManager.buildSessionContext()`、`:259` 把它交给 `Agent({ initialState: { messages: existingSession.messages } })`，而这一格读到的投影里暗号在场。⇒ 剩下的位置是**模型/网关这一侧**：端到端的暗号回读**会偶发假红**（本机这一档约 1/6），而机制层读数**每次都对**。
 
 **解决方案**：**判据不许只取单次端到端回读**。凡是要判「这家能不能续接」，必须**同时**读厂商自己的投影（`buildSessionContext()`，在 `prompt()` 之前取，不花额度）与模型答复：投影是机制判据，答复是端到端判据，两者都成立才算过；只有答复不成立而投影成立时，记成**模型抖了一次**而不是「不支持」。落点：`packages/server/agents/probe/v11/pi-session-resume.mjs` 的 `projectionHasNonce`（每格都落进 dump）。⚠️ 那一格判据自己也有一个坑：`nonce !== ''` 不能省——空串是任何字符串的子串，省掉它会让**每一格**（含阴性对照）都报「投影里有暗号」，那正是这条探针要防的假绿。
 
@@ -201,7 +201,7 @@ TypeError: sdk.getDefaultSessionDir is not a function
 
 **日期**：2026-10-15
 
-**现象**：pi 行派发子智能体后，执行期点进那个子任务节点：一条消息都没有（空态「这个子任务还在跑 · 逐步骤正文还没到」）；子智能体乃至整行收尾的那一刻，它的全部逐步骤消息**一次性**涌出。产物一侧的形状（真机 `86e02ea1…/rows/f394dd00` 的 `messages.jsonl` 逐行序，共 25 行）：主会话 18 条 wire 消息（round 1–9）之后，子任务的 7 条 `source: "session-file"` 消息（round 1–4）**全部挤在文件尾**；而子智能体其实 `07:25:59` 就随 `Agent` 工具收尾交了 `completed` 的子任务行，消息却要等**整行** `agent_settled`（约 20 秒后）才落盘。
+**现象**：pi 行派发子智能体后，执行期点进那个子任务节点：一条消息都没有（空态「这个子任务还在跑 · 逐步骤正文还没到」）；子智能体乃至整行收尾的那一刻，它的全部逐步骤消息**一次性**涌出。产物一侧的形状（真机 `86e02ea1…/candidates/f394dd00` 的 `messages.jsonl` 逐行序，共 25 行）：主会话 18 条 wire 消息（round 1–9）之后，子任务的 7 条 `source: "session-file"` 消息（round 1–4）**全部挤在文件尾**；而子智能体其实 `07:25:59` 就随 `Agent` 工具收尾交了 `completed` 的子任务行，消息却要等**整行** `agent_settled`（约 20 秒后）才落盘。
 
 **根因**：**不是消息的关联键没对齐**（`subagentId` 与别名解析是通的——完成时能整齐点亮就是证据），是**谁来触发采集**。子会话是另一个 pi 会话，它的事件不进父会话流；两条取数通路（wire 订阅缓冲、转写文件读盘）的**排空点都挂在父会话事件的投影上**。而 `Agent` 是**阻塞工具**：派发期父会话的帧**不带子任务正文**——这正是子智能体在干活的那整段时间。于是缓冲只进不出，到工具收尾那一刻才被一次性取走。
 
@@ -241,7 +241,7 @@ TypeError: sdk.getDefaultSessionDir is not a function
 
 ---
 
-## 路由不给 API key 时**零出站请求**、这一行却报成功（`No API key found for aieval-pi-…`）
+## 路由不给 API key 时**零出站请求**、这个候选却报成功（`No API key found for aieval-pi-…`）
 
 **日期**：2026-10-16
 
@@ -253,7 +253,7 @@ No API key found for aieval-pi-6d04f99c1bbe.
 Use /login to log into a provider via OAuth or API key. See: …/docs/providers.md
 ```
 
-**根因**：**厂商的 `prompt()` 除了「运行期失败」（走 `stopReason` / `errorMessage`）之外，还会在起请求之前直接抛**——`.d.ts` 的 `@throws` 一族有五种（`no model selected or no API key available` / `Cannot submit a prompt while compaction is in progress.` / `Agent is already processing. Specify streamingBehavior …` / `formatNoModelSelectedMessage()` / `Authentication failed for "…"`）。适配器把「提示词落定」与「提示词抛错」归成了同一个信号（`run().then(note, note)`），于是拒绝被吞在流内部：骨架的 `catch` 与 `classifyAgentFailure` 都看不到它，结论由「没有任何失败信号」推出 ⇒ 一次凭据缺失被读成「成功了、只是没说话」。候选行据此记 `completed`（看起来就是「这个候选什么都没干」），评分行则报「适配器未回传最终消息」——两处都指向错误的方向。
+**根因**：**厂商的 `prompt()` 除了「运行期失败」（走 `stopReason` / `errorMessage`）之外，还会在起请求之前直接抛**——`.d.ts` 的 `@throws` 一族有五种（`no model selected or no API key available` / `Cannot submit a prompt while compaction is in progress.` / `Agent is already processing. Specify streamingBehavior …` / `formatNoModelSelectedMessage()` / `Authentication failed for "…"`）。适配器把「提示词落定」与「提示词抛错」归成了同一个信号（`run().then(note, note)`），于是拒绝被吞在流内部：骨架的 `catch` 与 `classifyAgentFailure` 都看不到它，结论由「没有任何失败信号」推出 ⇒ 一次凭据缺失被读成「成功了、只是没说话」。候选据此记 `completed`（看起来就是「这个候选什么都没干」），评分行则报「适配器未回传最终消息」——两处都指向错误的方向。
 
 **解决方案**：`packages/server/agents/src/providers/pi/index.ts` 的 `sessionEventStream` 把拒绝**单独记下**（`promptFailed` / `promptError`），队列里剩的事件先交完，再在流收尾时抛给骨架 ⇒ 归 `AGENT_FAILED`（外部要求停止那一档仍走 `canceled`，因为骨架先判 `stopRequested`）。判据：`index.test.ts` 的「prompt() 在建请求前抛错 ⇒ 折成失败（不许静默成功），且释放照旧」（假 SDK 把 `prompt` 换成 reject）真机判据：`providers/pi/index.test.ts` 的「路由不给 apiKey ⇒ 零出站请求、结论是失败（不是静默成功）」（真包 + 假网关，同一剧本只差 `apiKey` 一格；有 key 的对照臂正常拿到答复）。变异验证：把吞拒绝的那一行改回去，守卫见红。
 
@@ -263,13 +263,13 @@ Use /login to log into a provider via OAuth or API key. See: …/docs/providers.
 
 **日期**：2026-10-16
 
-**现象**：假网关回 500 的一轮（连接失败 / 被中止 / 网关没回 usage 块同理）跑完，行结果里 `tokens` 是 `{input:0,cached:0,output:0,total:0}`、`turns: 1`，而那条「这一条助手消息没有可读的用量，本行按「未采集计量」处理（不填 0）」的 WARN **一条都不落**：
+**现象**：假网关回 500 的一轮（连接失败 / 被中止 / 网关没回 usage 块同理）跑完，行结果里 `tokens` 是 `{input:0,cached:0,output:0,total:0}`、`turns: 1`，而那条「这一条助手消息没有可读的用量，候选按「未采集计量」处理（不填 0）」的 WARN **一条都不落**：
 
 ```json
 {"ok":false,"exitReason":"error","tokens":{"input":0,"cached":0,"output":0,"reasoningOutput":null,"total":0},"turns":1,"usageLogs":0}
 ```
 
-**根因**：厂商的 `AssistantMessage.usage` 是**必填字段**，pi-ai 构造消息时把它初始化成**全 0**（`api/openai-responses-shared.js` / `api/openai-completions.js` 的 usage 组装里 `… || 0` 那一族）；请求失败、被中止、网关没回 usage 块这三条**都不是异常路径**，都会把这份冻结的全 0 原样留在最终消息上。适配器原来按「三个键在场 ⇒ 厂商报过用量」判，于是「没采到」被读成「采到了 0 token」——而契约（`tokens` 采不到就是 `null`）与界面读法（0 会让人得出「这家很省」）双双被违反，且 `orchestrator` 会把这一格当终态事实写进行快照。同一处还有一格：OpenAI 的两条 wire 把缺失的推理明细补成 `reasoning: 0`（Responses 是 `output_tokens_details?.reasoning_tokens || 0`、Completions 是 `completion_tokens_details?…`），anthropic 那条只在真有思考 token 时才写 ⇒ 同一份 `reasoning: 0` 在两条 wire 上是两句不同的话。
+**根因**：厂商的 `AssistantMessage.usage` 是**必填字段**，pi-ai 构造消息时把它初始化成**全 0**（`api/openai-responses-shared.js` / `api/openai-completions.js` 的 usage 组装里 `… || 0` 那一族）；请求失败、被中止、网关没回 usage 块这三条**都不是异常路径**，都会把这份冻结的全 0 原样留在最终消息上。适配器原来按「三个键在场 ⇒ 厂商报过用量」判，于是「没采到」被读成「采到了 0 token」——而契约（`tokens` 采不到就是 `null`）与界面读法（0 会让人得出「这家很省」）双双被违反，且 `orchestrator` 会把这一格当终态事实写进行的快照。同一处还有一格：OpenAI 的两条 wire 把缺失的推理明细补成 `reasoning: 0`（Responses 是 `output_tokens_details?.reasoning_tokens || 0`、Completions 是 `completion_tokens_details?…`），anthropic 那条只在真有思考 token 时才写 ⇒ 同一份 `reasoning: 0` 在两条 wire 上是两句不同的话。
 
 **解决方案**：`packages/server/agents/src/providers/pi/message.ts` 的 `readPiUsageTokens` 拒掉**四项同时为 0**（输入 / 缓存 / 输出 / 厂商自报总量——一次真实往返不可能全 0）⇒ 回 `null`，让那条点名 WARN 真正生效；`reasoningZeroIsMissing` 由调用方按消息自带的 `api` 决定（openai 那条 wire 传 `true`）。判据：`events.test.ts` 的「厂商的冻结全 0 用量 ⇒ 既不给 tokens 也不给 total，并落那条「没有可读的用量」WARN」与「openai wire 的 reasoning=0 算「没报」」；真机判据：`providers/pi/index.test.ts` 的「上游回 500（失败的一轮）⇒ tokens 是 null，不是「采到了 0 token」」（真包 + 假网关）。
 

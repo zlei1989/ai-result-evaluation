@@ -36,18 +36,18 @@ function rankDrawerBlock(): string {
 }
 
 describe('产物清单的取数开关', () => {
-  it('只在排名抽屉打开时扫盘（别的抽屉开着不扫：一次扫描 = 每行一次 readdir）', () => {
+  it('只在排名抽屉打开时扫盘（别的抽屉开着不扫：一次扫描 = 每个候选一次 readdir）', () => {
     expect(source, '清单的取数开关写错了').toContain('useRunArtifacts(runId, drawer?.kind === \'rank\')');
   });
 
   it('每份正文一个组件实例（hook 不能按行 × 文件名循环调用）', () => {
-    // 页面里必须有一个只吃 { runId, rowId, name } 的小组件，由它自己调那个 hook
-    expect(source, '少了「一份产物一个组件实例」的那一层').toContain('function ArtifactFileBody({ runId, rowId, name }');
-    expect(source, 'ArtifactFileBody 里没有调 useRowArtifactFile').toMatch(
-      /function ArtifactFileBody[\s\S]{0,400}?useRowArtifactFile\(runId, rowId, name\)/,
+    // 页面里必须有一个只吃 { runId, candidateId, name } 的小组件，由它自己调那个 hook
+    expect(source, '少了「一份产物一个组件实例」的那一层').toContain('function ArtifactFileBody({ runId, candidateId, name }');
+    expect(source, 'ArtifactFileBody 里没有调 useCandidateArtifactFile').toMatch(
+      /function ArtifactFileBody[\s\S]{0,400}?useCandidateArtifactFile\(runId, candidateId, name\)/,
     );
-    // 循环里自己调 hook 是非法写法（行数随数据变），出现即说明形状被改回去了
-    expect(source, '页面按行循环调了 hook').not.toMatch(/\.map\([^)]*=>\s*useRowArtifactFile/);
+    // 循环里自己调 hook 是非法写法（候选数随数据变），出现即说明形状被改回去了
+    expect(source, '页面按行循环调了 hook').not.toMatch(/\.map\([^)]*=>\s*useCandidateArtifactFile/);
   });
 });
 

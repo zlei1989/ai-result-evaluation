@@ -31,7 +31,7 @@ export interface ClaudeQueryOptions {
    *
    * 会话身份由 **`CLAUDE_CONFIG_DIR`** 定位，**cwd 不是隔离键**：同一个 configDir 之下，换一个
    * cwd 照样按 `session_id` 接上（返回的 id 不变、原转录被继续追加），换 configDir 才被拒。
-   * 故按行隔离只有「每行一个 `CLAUDE_CONFIG_DIR`」这一条路（本仓正是每行一个行私有配置目录）。
+   * 故按行隔离只有「每个本次运行一个 `CLAUDE_CONFIG_DIR`」这一条路（本仓正是每个本次运行一个行私有配置目录）。
    *
    * ⚠️ **只声明 `resume`，刻意不声明厂商那个 `continue`**：`continue` 取的是「当前目录最近的一条」，
    * 而重跑复用同一个 cwd ⇒ 它会**静默续上一次尝试**（用户以为在追问，智能体答的是上一轮的上下文）。
@@ -77,7 +77,7 @@ export interface ClaudeQueryOptions {
   allowDangerouslySkipPermissions?: boolean;
   /**
    * 谁回答批准请求。`'none'` = 没有任何批准面：本该弹批准的操作**当场被拒**并把原因回给模型，
-   * 而不是挂在一个永远没人应答的批准上（后者只会把该行拖到兜底超时，界面上看起来像「评分超时」）。
+   * 而不是挂在一个永远没人应答的批准上（后者只会把本次运行拖到兜底超时，界面上看起来像「评分超时」）。
    */
   permissionPrompts?: 'host' | 'none';
   /**
@@ -99,7 +99,7 @@ export interface ClaudeQueryOptions {
    */
   disallowedTools?: readonly string[];
   /**
-   * 加载哪些**文件系统 settings**：`'user'` = `~/.claude/settings.json`（本仓的隔离下 = 本行
+   * 加载哪些**文件系统 settings**：`'user'` = `~/.claude/settings.json`（本仓的隔离下 = 本次运行
    * `CLAUDE_CONFIG_DIR/settings.json`）、`'project'` = `${cwd}/.claude/settings.json`、
    * `'local'` = `${cwd}/.claude/settings.local.json`；`[]` = 隔离模式（不读任何文件系统 settings）。
    *
@@ -173,7 +173,7 @@ export interface ClaudeQueryOptions {
    *
    * 为什么走参数而不是磁盘配置：
    *   · 参数是**编程入口**，同名时程序化注入赢且只留一条（`source: 'dynamic'` 顶掉 `'project'`）；
-   *   · 不落盘就不会与宿主那份 `.claude.json` 混起来——本行的 `CLAUDE_CONFIG_DIR` 是一个空目录，
+   *   · 不落盘就不会与宿主那份 `.claude.json` 混起来——本次运行的 `CLAUDE_CONFIG_DIR` 是一个空目录，
    *     磁盘上那份配置从哪来、谁改过，都不必再追。
    *
    * 形状是窄结构 `ClaudeMcpServer`（`../../mcp`，同一份真源，别在这里重抄一遍）：

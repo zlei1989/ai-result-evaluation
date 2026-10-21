@@ -1,7 +1,7 @@
 /**
  * 排队区（L1）：单行直出 / 多行折叠、默认收起、`gone` 跳过。
  *
- * 三条靶子（都在收起态下最要紧，因为收起时这一行是那条消息唯一的可见信息）：
+ * 三条靶子（都在收起态下最要紧，因为收起时这个候选是那条消息唯一的可见信息）：
  *   1. **`gone` 不许被画成排队项**（它留在快照里只为幂等；画错就是把一条已经消失的消息说成还在等）；
  *   2. **单行不套壳、两行起套壳**，且收起态**露出计数**（「N 条排队消息」是那两颗按钮被藏起来后
  *      唯一的可见信号）；
@@ -88,11 +88,11 @@ describe('单行直出 / 多行折叠', () => {
   it('两条 ⇒ 收进折叠面板；收起态**露出计数**（按钮被藏起来后唯一的可见信号）', () => {
     renderPanel([messageOf('m-1'), messageOf('m-2')], { collapsed: true });
     expect(screen.getByText('2 条排队消息')).toBeInTheDocument();
-    // 收起态：行内容与两颗按钮都不在 DOM 里（antd 的 `destroyOnHidden` 语义由 Collapse 自己给）
+    // 收起态：候选内容与两颗按钮都不在 DOM 里（antd 的 `destroyOnHidden` 语义由 Collapse 自己给）
     expect(screen.queryByText(/m-1 的正文/)).toBeNull();
   });
 
-  it('展开态把每一行都画出来（`gone` 那一条仍然不在）', () => {
+  it('展开态把每个候选都画出来（`gone` 那一条仍然不在）', () => {
     renderPanel([messageOf('m-1'), messageOf('m-2'), messageOf('m-3', { state: 'gone', outcome: 'retracted' })], {
       collapsed: false,
     });

@@ -1,5 +1,5 @@
 /**
- * pi 的事件投影：`session.subscribe` 的原始事件 → 行级事件 + 消息草稿 + 计量。
+ * pi 的事件投影：`session.subscribe` 的原始事件 → 运行级事件 + 消息草稿 + 计量。
  *
  * ## 事件全集与取舍
  *
@@ -30,7 +30,7 @@
  * 共用的归因层够不着 ⇒ 本文件先把它们翻成带 host 的中文原因，再交给 `classifyAgentMessage`。
  * ⚠️ **起请求之前**它是会抛的（没有可用凭据 / 模型未选 / 压缩中 / 已有在跑的轮次）——那一路必须
  * 抛给骨架（见 `index.ts` 的 `sessionEventStream`），否则一次「凭据缺失」会被读成
- * 「这一行成功了、只是没说话」。
+ * 「本次运行成功了、只是没说话」。
  *
  * ## 停止的三种来源与 `watchdogFired`
  *
@@ -136,10 +136,10 @@ export interface PiRunState {
    */
   watchdogFired: boolean;
   /**
-   * 这一行**派发过**子智能体（见过一次 `Agent` 工具调用）。
+   * 本次运行**派发过**子智能体（见过一次 `Agent` 工具调用）。
    *
-   * 为什么不是「有没有子任务行」：行只在收场那一刻才造得出来，而子智能体可能在整行跑完时还在跑。
-   * 这一格判的是「本行的计量里有没有子这一份」——有派发就必须按「有子智能体」那三档处置，
+   * 为什么不是「有没有子任务行」：行只在收场那一刻才造得出来，而子智能体可能在整本次运行跑完时还在跑。
+   * 这一格判的是「本次运行的计量里有没有子这一份」——有派发就必须按「有子智能体」那三档处置，
    * 否则跑动期会报出 `{0,0,0}` 那句「**确实没有**子智能体」，与事实相反。
    */
   dispatched: boolean;
@@ -163,7 +163,7 @@ export interface PiRunState {
    */
   unclaimedWarned: Set<string>;
   /**
-   * 已收场的派发记录（`agentId` → 这一行的收尾快照），键是**子智能体身份**。
+   * 已收场的派发记录（`agentId` → 本次运行的收尾快照），键是**子智能体身份**。
    *
    * 为什么要按身份而不是按工具调用登记：收尾要拿它去总线那一条上对账（总线载荷只有身份），
    * 而 `turnCount` 只出现在 `Agent` 工具结果的 `details` 里。两边的唯一公共键就是身份。
@@ -203,7 +203,7 @@ export interface PiRunState {
 
 /** 一次派发在**发起那一刻**留下的三格事实（见 `PiRunState.dispatchStarts`） */
 export interface PiDispatchStart {
-  /** 入参的 `name`（模型给这一行起的名字）；没给记 `null` */
+  /** 入参的 `name`（模型给本次运行起的名字）；没给记 `null` */
   name: string | null;
   /** 入参的 `description`（任务描述）。认领判据与派发行的名字兜底都用它（与总线载荷同源） */
   description: string | null;
@@ -234,14 +234,14 @@ export interface PiDispatch {
    *
    * 为什么必须留这一格：后台档下总线只会来一条 `subagents:started`（没有 `status` 字段），
    * 于是收尾对账时 `latest()` 给出的是一条**没有状态**的记录。只读它会让已经投出去的
-   * `running` 行被覆盖成 `unknown`——那是与「从终态退回运行中」同类的**倒退**，只是方向相反
+   * `running` 本次运行被覆盖成 `unknown`——那是与「从终态退回运行中」同类的**倒退**，只是方向相反
    * （把「已知在跑」说成「不知道」）。有这一格，收尾就能沿用它。
    */
   rawStatus: string | null;
 }
 
 
-/** 每行一份的空状态（**不跨运行共享**：两行并发时共享会让「谁停的」互相串） */
+/** 每个本次运行一份的空状态（**不跨运行共享**：两行并发时共享会让「谁停的」互相串） */
 export function createPiRunState(): PiRunState {
   return {
     stopRequested: false,
@@ -280,15 +280,15 @@ function noSubagentTokens(): UsageTokens {
 }
 
 /**
- * 「这一行跑到第几轮」与「其中的子智能体分量」**只有这一个出口**：两格必须同生共死。
+ * 「本次运行跑到第几轮」与「其中的子智能体分量」**只有这一个出口**：两格必须同生共死。
  * 分量非 `null` 而合计为 `null` 是自相矛盾的读数（一致性套件的用量配对判据会当场红），
- * 而还没数到任何一轮时两格都**不交**——那时谈不上「这一行跑了几个往返」，也就谈不上分量。
+ * 而还没数到任何一轮时两格都**不交**——那时谈不上「本次运行跑了几个往返」，也就谈不上分量。
  *
- * ⚠️ **分量那一格是按「这一行有没有子智能体」分档的**（三档语义见 `PiSubagentEvent` 那一族）：
+ * ⚠️ **分量那一格是按「本次运行有没有子智能体」分档的**（三档语义见 `PiSubagentEvent` 那一族）：
  *   · **没派发过** ⇒ `{0,0,0}` / `0`——那是「确实没有子智能体」这句**事实**；
  *   · **派发过** ⇒ `null` / `null`——「有子智能体但还没采到」。子智能体跑在自己的会话里，
  *     它的用量与轮次只在它收场那一刻经扩展事件总线到达（见 `subagents.ts`），
- *     而本行的收尾会把它连同合计一起交出去。跑动期**不许**用 `{0,0,0}` 顶替：
+ *     而本次运行的收尾会把它连同合计一起交出去。跑动期**不许**用 `{0,0,0}` 顶替：
  *     那句「确实没有」与事实相反。
  */
 function roundTripFields(
@@ -408,7 +408,7 @@ function projectEvent(
  * `tool_execution_start`：派发类工具（`Agent`）要**留下入参**——`tool_execution_end`
  * 的事件里没有 `args`，而「这一次派发的名字」只在入参里（见 `PiRunState.dispatchStarts`）。
  *
- * 同时把「本行派发过子智能体」记成事实：计量那一组的三档由它分叉（见 `roundTripFields`）。
+ * 同时把「本次运行派发过子智能体」记成事实：计量那一组的三档由它分叉（见 `roundTripFields`）。
  *
  * **结构化输出那一件也在这里落**：它的产物在**工具参数**里，而两条消费通路都只认助手消息
  * （评分通路读 `finalText`、对话视图读消息流）⇒ 采用点一次做三件事：写 `state.finalText`、
@@ -465,7 +465,7 @@ function projectTurnStart(raw: unknown, state: TurnState, runState: PiRunState):
 }
 
 /**
- * `message_update`：一条增量帧只产**内容消息**，零行级事件（见文件头那两条硬口径）。
+ * `message_update`：一条增量帧只产**内容消息**，零运行级事件（见文件头那两条硬口径）。
  * 不是正文/思考增量的帧（块边界、流级帧、工具入参片段）连消息都不产。
  */
 function projectMessageUpdate(event: Record<string, unknown> | null, state: TurnState): TurnProjection {
@@ -504,7 +504,7 @@ function projectMessageEnd(
   });
   if (usage === null) {
     // 形状异常与「这一条没带用量」合流到同一条 WARN：不填 0 是硬口径，采不到必须看得见
-    drafts.push(logDraft('stderr', `[WARN] pi 这一条助手消息没有可读的用量，本行按「未采集计量」处理（不填 0）：${safeStringify(message?.['usage'])}`));
+    drafts.push(logDraft('stderr', `[WARN] pi 这一条助手消息没有可读的用量，本次运行按「未采集计量」处理（不填 0）：${safeStringify(message?.['usage'])}`));
   } else {
     accumulateUsage(state, usage);
   }
@@ -543,8 +543,8 @@ function projectMessageEnd(
  * 的起点与最新的终点，这一段含工具执行时间（与 claude 的 `duration_ms` 同口径）。
  *
  * `apiMs` 交的是**当轮那一份 `durationMs`**（厂商对「一次响应」的定义，逐轮各报一次），
- * 由骨架的 `mergeTiming` 相加成「本行到目前为止」——它那一层的约定就是「每条投影交增量」。
- * 自己在这里累加会与骨架的相加叠成平方级的偏大（三轮各 160 ms 时行级 `apiMs` 读到 966 ms，
+ * 由骨架的 `mergeTiming` 相加成「本次运行到目前为止」——它那一层的约定就是「每条投影交增量」。
+ * 自己在这里累加会与骨架的相加叠成平方级的偏大（三轮各 160 ms 时运行级 `apiMs` 读到 966 ms，
  * 而整行跨度只有 483 ms：比它自己装着的那段时间还长）。
  *
  * `ttftMs` **恒 `null`**：厂商不报首字时延，唯一测法是盯我们自己的第一帧——那是另一把尺子
@@ -572,7 +572,7 @@ function piTimingSpan(message: Record<string, unknown> | null): TimingSpan | und
  * 的依据之一），外加一条内容级消息。
  *
  * 摘要只给**报错**那一种：成功返回那句「工具返回：…」会把活动行变成流水账，而结果的落点是
- * 结果块与原始输出面板；报错必须播，那是「这一行出事了」，且它没有别的行级出口。
+ * 结果块与原始输出面板；报错必须播，那是「本次运行出事了」，且它没有别的运行级出口。
  *
  * **派发类工具（`Agent`）另产一条子任务行**——见 `projectDispatchEnd`。
  */
@@ -593,7 +593,7 @@ function projectToolExecutionEnd(
    * 结构化输出的参数被厂商拒 ⇒ 记一次；连续越界超过预算就**交出失败**（无界往返的机制见
    * `PI_STRUCTURED_REJECTION_BUDGET`）。⚠️ 光交 `failure` **停不下厂商的 agent loop**——
    * 骨架只把它记下来、消费循环继续跑到流结束；真正让往返停下的是装配面在同一个判据上
-   * `session.abort()`（见 `index.ts` 的 `projectRow`）。
+   * `session.abort()`（见 `index.ts` 的 `projectCandidate`）。
    */
   let rejectionFailure: TurnProjection['failure'] = null;
   if (toolName === PI_STRUCTURED_OUTPUT_TOOL && isError) {
@@ -602,7 +602,7 @@ function projectToolExecutionEnd(
       rejectionFailure = {
         code: 'AGENT_FAILED',
         message: `pi 的结构化输出参数连续 ${runState.structuredRejections} 次被厂商拒（参数不合法）：`
-          + `超过 ${PI_STRUCTURED_REJECTION_BUDGET} 次的上限后中止这一轮，避免无界的模型往返。`
+          + `超过 ${PI_STRUCTURED_REJECTION_BUDGET} 次的上限后中止这一轮，避免无界的模型调用。`
           + `厂商原文：${(piToolResultText(event) ?? '').slice(0, 500)}`,
       };
     }
@@ -628,7 +628,7 @@ function projectToolExecutionEnd(
 /**
  * 两次投递共用的名字解析：**入参的 `name` 优先，没有才退回任务描述**。
  *
- * 为什么必须是共用的一份：派发行与收尾行是同一个身份的两次投递，界面按后者覆盖前者
+ * 为什么必须是共用的一份：派发行与收尾本次运行是同一个身份的两次投递，界面按后者覆盖前者
  * ⇒ 两处各算一遍必然漂移，而漂移的表现是「卡片标题在收尾那一刻换了一个」。
  * 描述那一端优先取**入参**（派发那一刻就定了，与总线载荷同源），`details.description` 只作兜底
  * （`tool_execution_end` 的结果里那一格与入参同值，保留它只为「入参没采到」这一档）。
@@ -684,7 +684,7 @@ function deliverStartedSubagents(
         runState.unclaimedWarned.add(agentId);
         drafts.push(logDraft('stderr', '[WARN] 这次子智能体派发没能与它的工具调用对上'
           + `（身份 ${agentId}、任务描述 ${started.description ?? '未采集'}）：`
-          + '描述与在飞的派发对不上或不唯一，本行**不在派发时刻**投它的子任务行'
+          + '描述与在飞的派发对不上或不唯一，本次运行**不在派发时刻**投它的子任务行'
           + '——卡片要等这次工具收尾才出现（那是完整快照），不猜一个派发点'));
       }
       continue;
@@ -768,7 +768,7 @@ const PI_SUBAGENT_TRANSCRIPT_POLL_MS = 250;
  * ## 与骨架的两处交互（有意为之）
  *
  * · 这批消息让 `projectionHasOutput` 为真 ⇒ 看门狗的空闲计时随之重置——子智能体在干活
- *   就是这一行在干活（与 `deliverStartedSubagents` 的子任务行算「有输出」同一条先例）；
+ *   就是本次运行在干活（与 `deliverStartedSubagents` 的子任务行算「有输出」同一条先例）；
  * · 消息里的工具块会进 `trackToolBlocks` 的在途集合：子会话命名空间的 callId 与其结果
  *   自配平（add 后随差量 delete），跨会话撞名才会错销账，pi 的调用 id 带随机后缀，实践上不撞。
  */
@@ -803,8 +803,8 @@ function deliverTranscriptIncrements(
  * **跑动期的 wire 增量**：把子会话事件缓冲折成消息，只投**行已落账**的那部分身份。
  *
  * 与转写增量同一条闸门（`deliveredEarlier`）与同一个原因：骨架在同一批投影里先发消息、
- * 后发子任务行。差别在**排空是选择性的**——`wire.drain(身份集合)` 只取走已放行的身份，
- * 还没放行的留在缓冲里等下一批（wire 事件是一次性的，排空即消费，不像转写可以重读）。
+ * 后发子任务行。差别在**排空是选择性的**——`wire.drain(身份集合)` 只取走已放本次运行的身份，
+ * 还没放本次运行的留在缓冲里等下一批（wire 事件是一次性的，排空即消费，不像转写可以重读）。
  *
  * 不设「已收场不排」的闸（转写增量有）：wire 缓冲是唯一正源、无重读竞态，收场身份的
  * 尾巴在随后的父事件上照常排空，收尾 `finalizePiSubagents` 再兜一次底。
@@ -868,7 +868,7 @@ function emitSubagentDrafts(runState: PiRunState, drafts: MessageDraft[]): Messa
  *
  * ⚠️ **名字取入参里的 `name`，没有才退回任务描述**（两条通路共用 `resolveDispatchName`，
  * 见那一格的说明）：`details.displayName` 是 agent **类型**的展示名（真机上是常量 `Agent`），
- * 拿它当名字等于每一行都叫同一个名字。
+ * 拿它当名字等于每个本次运行都叫同一个名字。
  */
 function projectDispatchEnd(
   event: Record<string, unknown> | null,
@@ -975,7 +975,7 @@ function readAssistantFailure(
       return null;
     }
     return classifyAgentMessage(
-      `pi 本次往返被中止，但本侧没有发起过停止请求（${hostOf(context.baseUrl)}）`,
+      `pi 本次调用被中止，但本侧没有发起过停止请求（${hostOf(context.baseUrl)}）`,
       context,
     );
   }
@@ -986,7 +986,7 @@ function readAssistantFailure(
    * 上游**自己报的超时**按契约归 `AGENT_TIMED_OUT`（`types.ts`：「上游自己报的超时也归它」）。
    * 为什么不能交给 `classifyAgentMessage`：它只认 HTTP 状态（`status` / 文案里的状态码），
    * 而厂商原文是一句不带状态码的裸英文短句 ⇒ 会被归成 `AGENT_FAILED`，那一格在自动重试表里
-   * （`orchestrator.ts` 的 `TRANSIENT_ROW_RETRY_CODES`）⇒ 一次上游超时被白跑两遍还各等一次退避，
+   * （`orchestrator.ts` 的 `TRANSIENT_CANDIDATE_RETRY_CODES`）⇒ 一次上游超时被白跑两遍还各等一次退避，
    * 而重试改变不了它。
    */
   if (errorMessage !== null && PI_TIMEOUT_TEXT.test(errorMessage)) {
@@ -1013,7 +1013,7 @@ const PI_TIMEOUT_TEXT = /request timed out/i;
 function piFailureText(errorMessage: string | null, baseUrl: string): string {
   const host = hostOf(baseUrl);
   const original = errorMessage === null ? '' : errorMessage.trim();
-  if (original === '') return `pi 本次往返以失败收场，但厂商没有给出原因（${host}）`;
+  if (original === '') return `pi 本次调用以失败收场，但厂商没有给出原因（${host}）`;
   if (/connection error/i.test(original)) {
     return `无法连接上游（${host}）：连接被拒绝或中途断开（厂商原文「${original}」）`;
   }
@@ -1023,7 +1023,7 @@ function piFailureText(errorMessage: string | null, baseUrl: string): string {
   if (/^terminated$/i.test(original)) {
     return `上游在响应中途切断了连接（${host}）：通常是网关或代理的响应体空闲超时（厂商原文「${original}」）`;
   }
-  return `pi 本次往返失败（${host}）：厂商原文「${original}」`;
+  return `pi 本次调用失败（${host}）：厂商原文「${original}」`;
 }
 
 /** 取 host 用于文案；URL 不合法时退回原文（绝不因为「文案里放不下 host」而抛） */
@@ -1042,11 +1042,11 @@ function stopOrigin(runState: PiRunState): string {
 }
 
 /**
- * 折进本行累计。三格相加；`reasoning` 也相加但**不加进 `output`**（它是 `output` 的子集，
+ * 折进行的累计。三格相加；`reasoning` 也相加但**不加进 `output`**（它是 `output` 的子集，
  * 加进去就是双计，而症状是「这家 tok 偏大」）。
  *
  * `totalTokens` 在这里也**相加**（与 dsh 的处置刻意不同）：pi 报的是**本次往返**的量，
- * 逐次相加才是「本行到目前为止厂商自报的总量」；dsh 那一格是会话级累计快照，相加会算成好几倍。
+ * 逐次相加才是「本次运行到目前为止厂商自报的总量」；dsh 那一格是会话级累计快照，相加会算成好几倍。
  * 差别来自厂商载荷的语义，不是两套口径——本仓「归一放在适配器里」的全部理由就是这个。
  */
 function accumulateUsage(state: TurnState, tokens: UsageTokens): void {
@@ -1060,7 +1060,7 @@ function accumulateUsage(state: TurnState, tokens: UsageTokens): void {
 }
 
 /**
- * 本行累计的计量：三格齐了才认（缺一项就是 `null`，**不填 0**）。
+ * 本次运行累计的计量：三格齐了才认（缺一项就是 `null`，**不填 0**）。
  * 两个可选格同样是「没采到就是 null」——`reasoningOutput: 0` 会让人得出「这家不做推理」。
  */
 function cumulativeTokens(state: TurnState): UsageTokens | null {
@@ -1104,17 +1104,17 @@ function roundOf(state: TurnState): number {
  *
  * 主子自己的读数**不含**子智能体的开销：pi 的子会话另起一个会话，父会话的助手消息里只有它自己的
  * `usage`（真机：主子那一轮的读数与子任务那一条各自独立、覆盖面不相交）。所以：
- *   · `tokens` = 主会话累计 **+** 子智能体分量 ⇒ 这一格回答的仍是「这一行一共花了多少」；
+ *   · `tokens` = 主会话累计 **+** 子智能体分量 ⇒ 这一格回答的仍是「本次运行一共花了多少」；
  *   · `subagentTokens` = 其中的分量（界面按「主会话 = 合计 − 分量」推导主子那一行）；
  *   · `turns` 同理：主子数自己的 `turn_start`，子那一份来自扩展给的 `turnCount`。
- * 逐格相加**不是双计**——两份读数覆盖面不相交；相加只是把「这一行」的边界补全。
+ * 逐格相加**不是双计**——两份读数覆盖面不相交；相加只是把「本次运行」的边界补全。
  * 求和走 `usage.ts` 的**唯一共享实现**（与另三家同一份代码）：三格逐格相加，而 `total`
  * **不相加**——两个会话各自自报的总量相加得到的是我们的算术，契约里那一格的语义是「厂商原文」，
  * 只有**单会话**那一份（子任务行自己的 `usage`、无子智能体时的合计）才留着它。
  *
  * ## 两格分量**各自**判「全量或 null」
  *
- * 任何一次**已派发**的子智能体拿不到终态（还在跑、或这一行的结论先落了），或拿到了终态却没有可读的
+ * 任何一次**已派发**的子智能体拿不到终态（还在跑、或本次运行的结论先落了），或拿到了终态却没有可读的
  * 用量 / 轮次 ⇒ **那一格**记 `null`、对应的合计退回主会话口径，并落一条**点名** WARN——绝不把部分和
  * 冒充总数（部分和与全部读完在界面上长得一模一样）。与 codex / claude 那两条 reads 同一条口径。
  *
@@ -1145,7 +1145,7 @@ export function finalizePiSubagents(
    */
   readTranscript?: (agentId: string) => PiSubagentTranscript,
   /**
-   * wire 通道（缺省 = 这一行没有 wire）。收尾排空它**尚未消费的尾巴**：终态事件的到达
+   * wire 通道（缺省 = 本次运行没有 wire）。收尾排空它**尚未消费的尾巴**：终态事件的到达
    * 与最后几条子会话事件之间没有先后保证，最后一次父事件排空可能差那几条；
    * 转写差量随后只补 wire 没覆盖到的载体（`emitSubagentDrafts`，两条通路同一把尺）。
    */
@@ -1164,7 +1164,7 @@ export function finalizePiSubagents(
    * **对账集合 = 派发记录 ∪ 总线身份**。
    *
    * 为什么不能只遍历 `runState.dispatches`：那一格只在 `Agent` 工具的收尾事件里带得出
-   * `details.agentId` 时才登记（见 `projectDispatchEnd`），而「这一行有哪些子智能体」的权威面是
+   * `details.agentId` 时才登记（见 `projectDispatchEnd`），而「本次运行有哪些子智能体」的权威面是
    * 扩展总线。两者分家时（工具结果是厂商自己合成的裸错误、或那次收尾压根没到），一个**真跑过**
    * 的子智能体会既拿不到终态行（卡片永远停在「运行中」）也不进用量——而这里正是它唯一的补账点。
    */
@@ -1175,14 +1175,14 @@ export function finalizePiSubagents(
   ]);
 
   /**
-   * **要投终态行的那些身份** = 派发记录 ∪ **总线已报终态**的身份。
+   * **要投终态本次运行的那些身份** = 派发记录 ∪ **总线已报终态**的身份。
    *
    * 只加「已报终态」那一半：总线只报了 `started` 的身份现在有一条 `running` 行在账上，
    * 而这一层给不出它的 `rawStatus`（总线载荷没有状态时就该判 `unknown`）⇒ 在这里补一条
    * 会把状态从「运行中」改成「未知」，那是倒退。它若在派发收尾时留下了状态，
    * 走 `dispatch?.rawStatus` 那一支沿用（见下面 `piSubagentRecord` 的调用点）。
    */
-  const rowIds = [...new Set([...runState.dispatches.keys(), ...settled.keys()])];
+  const candidateIds = [...new Set([...runState.dispatches.keys(), ...settled.keys()])];
 
   /**
    * 逐个对账：派发过、但没拿到完整读数的那些**必须点名**（静默按已收到的求和会得到一个看着正常的数）。
@@ -1196,24 +1196,24 @@ export function finalizePiSubagents(
   let turns = 0;
   if (accounted.size === 0) {
     // 派发过（`dispatched` 为真）却连一条身份都没拿到：两格都没有可求和的读数，不能报零
-    usageGaps.push('本行派发过子智能体，但一条身份都没拿到（工具结果里没有身份，总线也没报过）');
+    usageGaps.push('本次运行派发过子智能体，但一条身份都没拿到（工具结果里没有身份，总线也没报过）');
   }
   for (const agentId of accounted) {
     const dispatch = runState.dispatches.get(agentId) ?? null;
     const event = settled.get(agentId) ?? null;
     if (event === null) {
       /**
-       * 没有终态事件 = 本行收尾那一刻它还没收场。**这不是「它活过了本行」**：子会话与父会话共用
-       * 同一个扩展运行器，本行的释放序列（`session.dispose()` 里的 `_extensionRunner.invalidate`）
+       * 没有终态事件 = 本次运行收尾那一刻它还没收场。**这不是「它活过了本次运行」**：子会话与父会话共用
+       * 同一个扩展运行器，本次运行的释放序列（`session.dispose()` 里的 `_extensionRunner.invalidate`）
        * 会把它一起终结——真机五档释放对照里 `dispose-only` 那一臂就足以让子会话一个模型往返都
        * 跑不起来（子会话出站 0 次、转写只剩 user 行），而只 abort / 不释放两臂照常跑完。
        * **两格都拿不到**：用量只在终态载荷里，而轮次那一刻本来就是半截的。文案要把机制说出来
        * （并附上收尾那一刻的厂商状态原文），否则读起来像「它还在后台跑」。
        */
       const unsettled = dispatch?.rawStatus === null || dispatch?.rawStatus === undefined
-        ? `${agentId}（本行收尾那一刻它还没收场：本行的释放序列会连同它一起终结）`
-        : `${agentId}（本行收尾那一刻它还没收场（厂商记的状态是 ${dispatch.rawStatus}）：`
-          + '子会话挂在父会话的扩展运行器上，本行的释放序列会连同它一起终结）';
+        ? `${agentId}（本次运行收尾那一刻它还没收场：本次运行的释放序列会连同它一起终结）`
+        : `${agentId}（本次运行收尾那一刻它还没收场（厂商记的状态是 ${dispatch.rawStatus}）：`
+          + '子会话挂在父会话的扩展运行器上，本次运行的释放序列会连同它一起终结）';
       usageGaps.push(unsettled);
       turnGaps.push(unsettled);
       continue;
@@ -1222,7 +1222,7 @@ export function finalizePiSubagents(
     else usage.push(event.usage);
     if (dispatch === null) {
       // 派发记录缺席 ⇒ 轮次也没有来源（那一格只从 `Agent` 工具结果的 `details` 里来）
-      turnGaps.push(`${agentId}（终态到了，但没有派发记录：轮次只在 Agent 工具结果的 details 里，总线载荷不带这一格）`);
+      turnGaps.push(`${agentId}（终态到了，但没有派发记录：步数只在 Agent 工具结果的 details 里，总线载荷不带这一格）`);
     } else if (dispatch.turnCount === null) {
       /**
        * 后台档的结构性缺口：`projectDispatchEnd` 在工具收尾那一刻状态还是「运行中」时**刻意**
@@ -1242,8 +1242,8 @@ export function finalizePiSubagents(
    * 分量比合计更清楚是自相矛盾的读数（一致性套件的用量配对判据会当场红）。
    */
   const mainGap = mainTokens === null
-    ? (state.turns <= 0 ? '主会话一条助手用量都没读到、一次往返也没数到' : '主会话一条助手用量都没读到')
-    : (state.turns <= 0 ? '主会话一次往返都没数到' : null);
+    ? (state.turns <= 0 ? '主会话一条助手用量都没读到、一步也没数到' : '主会话一条助手用量都没读到')
+    : (state.turns <= 0 ? '主会话一步都没数到' : null);
   const usageTotal = accounted.size === 0 || usageGaps.length > 0 || mainGap !== null
     ? null
     : sumUsageTokens(usage);
@@ -1254,7 +1254,7 @@ export function finalizePiSubagents(
   /**
    * 子会话正文：**wire 尾巴先排**（`deliverWireIncrements` 同一把载体尺，先到先占），
    * **转写逐身份各读一次**补差量，顺带把「为什么读不到」落成点名 WARN。
-   * 只给**已经收场**的那些补转写差量——还在跑的子会话增量那一段已经在账本里，而它在本行
+   * 只给**已经收场**的那些补转写差量——还在跑的子会话增量那一段已经在账本里，而它在本次运行
    * 收尾之后还会继续写、追不到底；已收场身份「最后一次增量读」之后的尾巴只有这里能拿到。
    */
   const messages: MessageDraft[] = [];
@@ -1268,10 +1268,10 @@ export function finalizePiSubagents(
   const transcriptNotes: string[] = [];
   if (readTranscript !== undefined) {
     /**
-     * 逐身份补差量的集合 = 「要投终态行的那些」（见 `rowIds`）——总线报了终态但没有派发记录的
+     * 逐身份补差量的集合 = 「要投终态本次运行的那些」（见 `candidateIds`）——总线报了终态但没有派发记录的
      * 身份同样要读：那正是它的步骤唯一的来源。
      */
-    for (const agentId of rowIds) {
+    for (const agentId of candidateIds) {
       if (!settled.has(agentId)) continue;
       const transcript = readTranscript(agentId);
       /**
@@ -1294,17 +1294,17 @@ export function finalizePiSubagents(
   const usageWarn = usageTotal !== null
     ? null
     : usageGaps.length > 0
-      ? `[WARN] 这一行的子智能体用量给不出（记 null，不编造、不填 0）：${usageGaps.join('、')}`
+      ? `[WARN] 本次运行的子智能体用量给不出（记 null，不编造、不填 0）：${usageGaps.join('、')}`
       : mainGap === null
         ? null
-        : `[WARN] 这一行的主子用量拿不出来（${mainGap}），子智能体用量随之记 null（分量不可能比合计更清楚）`;
+        : `[WARN] 本次运行的主子用量拿不出来（${mainGap}），子智能体用量随之记 null（分量不可能比合计更清楚）`;
   const turnsWarn = turnsTotal !== null
     ? null
     : turnGaps.length > 0
-      ? `[WARN] 这一行的子智能体轮次给不出（记 null，不编造、不填 0）：${turnGaps.join('、')}`
+      ? `[WARN] 本次运行的子智能体步数给不出（记 null，不编造、不填 0）：${turnGaps.join('、')}`
       : mainGap === null
         ? null
-        : `[WARN] 这一行的主子轮次拿不出来（${mainGap}），子智能体轮次随之记 null（分量不可能比合计更清楚）`;
+        : `[WARN] 本次运行的主子步数拿不出来（${mainGap}），子智能体步数随之记 null（分量不可能比合计更清楚）`;
   drafts.push(
     ...(usageWarn === null ? [] : [logDraft('stderr', usageWarn)]),
     ...(turnsWarn === null ? [] : [logDraft('stderr', turnsWarn)]),
@@ -1313,7 +1313,7 @@ export function finalizePiSubagents(
       : []),
   );
 
-  const rows = rowIds.map((agentId) => {
+  const candidates = candidateIds.map((agentId) => {
     const dispatch = runState.dispatches.get(agentId) ?? null;
     const event = settled.get(agentId) ?? null;
     return piSubagentRecord({
@@ -1332,11 +1332,11 @@ export function finalizePiSubagents(
        * 状态**不许倒退**，且**收尾时如实记「已停止」**：
        *   · 总线报了终态 ⇒ 用它（它是子会话收场那一刻的记录）；
        *   · 总线只报了 `started`（后台档的常态）⇒ **不再沿用派发那一刻的 `background`**：
-       *     本行的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话一起终结，
+       *     本次运行的释放序列（`session.dispose()` → 扩展运行器作废）会把这个子会话一起终结，
        *     真机五档对照里 `dispose-only` 一臂就足以让它一个模型往返都跑不起来 ⇒ 收尾这一份
        *     快照记 `stopped`（`piSubagentStatus('stopped')`），界面上从「运行中」翻成「已停止」，
        *     而不是永远转圈。理由与点名 WARN 一致（见 `usageGaps` / `turnGaps` 里那条
-       *     「本行收尾那一刻它还没收场……本行的释放序列会连同它一起终结」）。
+       *     「本次运行收尾那一刻它还没收场……本次运行的释放序列会连同它一起终结」）。
        *   · 两处都没有（连派发记录也没有）才是真的没采到 ⇒ `unknown` + `not-observed`。
        */
       rawStatus: event?.rawStatus ?? (dispatch === null ? null : 'stopped'),
@@ -1346,7 +1346,7 @@ export function finalizePiSubagents(
     });
   });
   // 收尾这一份是**完整快照**；与工具收尾那条逐字相同的话由收数器挡掉（见 `deliver`）
-  const delivered = rows.flatMap((row) => subagents.deliver(row));
+  const delivered = candidates.flatMap((row) => subagents.deliver(row));
 
   /**
    * 四格各按各的完整性交：`subagentTokens` / `subagentTurns` 的 `null` 是**明确没采到**（覆盖掉旧值），

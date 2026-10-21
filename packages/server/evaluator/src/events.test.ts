@@ -11,10 +11,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '@aieval/contracts';
-import { appendEvent, readEvents, rowEventsFile } from '@aieval/core';
-import { publishRowEvent, subscribeRowEvents } from './events';
+import { appendEvent, readEvents, candidateEventsFile } from '@aieval/core';
+import { publishCandidateEvent, subscribeCandidateEvents } from './events';
 import { saveRun } from './run-store';
-import { createTempHome, makeRowFixture, makeRunFixture, type TempHome } from './testing/fixtures';
+import { createTempHome, makeCandidateFixture, makeRunFixture, type TempHome } from './testing/fixtures';
 
 let home: TempHome;
 
@@ -27,23 +27,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** 落盘一轮带单行的评测，返回三个 id 与事件文件路径 */
-function seedRow(): { runId: string; rowId: string; file: string } {
-  const row = makeRowFixture();
-  const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [row] });
+/** 落盘一轮带单候选的评测，返回三个 id 与事件文件路径 */
+function seedCandidate(): { runId: string; candidateId: string; file: string } {
+  const candidate = makeCandidateFixture();
+  const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [candidate] });
   saveRun(run);
-  return { runId: run.id, rowId: row.id, file: rowEventsFile(home.workspaceRoot, run.id, row.id) };
+  return { runId: run.id, candidateId: candidate.id, file: candidateEventsFile(home.workspaceRoot, run.id, candidate.id) };
 }
 
-describe('publishRowEvent', () => {
+describe('publishCandidateEvent', () => {
   it('落盘：seq 从 1 起单调递增，订阅者拿到的是「已落盘的那一条」', () => {
-    const { runId, rowId, file } = seedRow();
+    const { runId, candidateId, file } = seedCandidate();
     const seen: AgentEvent[] = [];
-    subscribeRowEvents(runId, rowId, (event) => seen.push(event));
+    subscribeCandidateEvents(runId, candidateId, (event) => seen.push(event));
 
     // 调用方不给 seq：它由 core 的写入器分配（唯一真相源只能有一个分配者）
-    publishRowEvent(runId, rowId, { type: 'status', status: 'running' });
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '你好' });
+    publishCandidateEvent(runId, candidateId, { type: 'status', status: 'running' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '你好' });
 
     const events = readEvents(file);
     expect(events.map((event) => event.seq)).toEqual([1, 2]);
@@ -58,7 +58,7 @@ describe('publishRowEvent', () => {
   });
 
   it('seq 以落盘写入器为准：文件里已有事件时接着往后发号，而不是自己从 1 计数', () => {
-    const { runId, rowId, file } = seedRow();
+    const { runId, candidateId, file } = seedCandidate();
     // 造「订阅之前文件里就有事件」：上一轮运行留下的日志，或别的写入者直接调 appendEvent。
     // 为什么必须这么造：空白文件上「用写入器的返回值」与「自己从 1 计数」结果都是 1，看不出差别；
     // 而写入器是按**文件里已用的最大 seq** 发号的，所以下一条只能是 3。
@@ -66,11 +66,11 @@ describe('publishRowEvent', () => {
     appendEvent(file, { type: 'log', stream: 'stdout', text: '订阅之前就有的第二条' });
 
     const seen: AgentEvent[] = [];
-    subscribeRowEvents(runId, rowId, (event) => seen.push(event));
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '本次' });
+    subscribeCandidateEvents(runId, candidateId, (event) => seen.push(event));
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '本次' });
     // 调用方硬塞一个 seq 也不算数（放宽的是**入参形状**，不是发号权）：
     // 完整 AgentEvent 是合法入参，但它带的 seq 必须被写入器的返回值覆盖，否则磁盘上会出现重号。
-    publishRowEvent(runId, rowId, {
+    publishCandidateEvent(runId, candidateId, {
       type: 'log',
       stream: 'stdout',
       text: '硬塞 seq 的调用方',
@@ -85,22 +85,22 @@ describe('publishRowEvent', () => {
     expect(seen).toEqual([events[2], events[3]]);
   });
 
-  it('行目录不存在时自己建，事件照样落盘（「准备中」这条事件先于工作区复制）', () => {
-    const { runId, rowId, file } = seedRow();
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stderr', text: '还没建目录' });
+  it('候选目录不存在时自己建，事件照样落盘（「准备中」这条事件先于工作区复制）', () => {
+    const { runId, candidateId, file } = seedCandidate();
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stderr', text: '还没建目录' });
     expect(readEvents(file)).toHaveLength(1);
   });
 
   it('订阅者抛错不影响落盘，也不影响其它订阅者', () => {
-    const { runId, rowId, file } = seedRow();
+    const { runId, candidateId, file } = seedCandidate();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const good: AgentEvent[] = [];
-    subscribeRowEvents(runId, rowId, () => {
+    subscribeCandidateEvents(runId, candidateId, () => {
       throw new Error('坏订阅者');
     });
-    subscribeRowEvents(runId, rowId, (event) => good.push(event));
+    subscribeCandidateEvents(runId, candidateId, (event) => good.push(event));
 
-    expect(() => publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: 'x' })).not.toThrow();
+    expect(() => publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: 'x' })).not.toThrow();
 
     expect(readEvents(file)).toHaveLength(1);
     expect(good).toHaveLength(1);
@@ -108,17 +108,17 @@ describe('publishRowEvent', () => {
   });
 });
 
-describe('subscribeRowEvents', () => {
+describe('subscribeCandidateEvents', () => {
   it('只收订阅之后的事件（历史由读文件承担，不在这里回放）', () => {
-    const { runId, rowId } = seedRow();
+    const { runId, candidateId } = seedCandidate();
     // 订阅之前就发布两条：它们已经在磁盘上了，消费方该做的是「先订阅、再读文件、按 seq 去重」，
     // 而不是指望订阅时把历史推一遍（那会让「先订阅再读文件」的消费方拿到重复事件）。
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '订阅之前的第 1 条' });
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '订阅之前的第 2 条' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '订阅之前的第 1 条' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '订阅之前的第 2 条' });
 
     const seen: AgentEvent[] = [];
-    subscribeRowEvents(runId, rowId, (event) => seen.push(event));
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '订阅之后' });
+    subscribeCandidateEvents(runId, candidateId, (event) => seen.push(event));
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '订阅之后' });
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.type === 'log' && seen[0].text).toBe('订阅之后');
@@ -126,39 +126,39 @@ describe('subscribeRowEvents', () => {
   });
 
   it('取消订阅后不再收到；重复取消不抛', () => {
-    const { runId, rowId } = seedRow();
+    const { runId, candidateId } = seedCandidate();
     const seen: AgentEvent[] = [];
-    const unsubscribe = subscribeRowEvents(runId, rowId, (event) => seen.push(event));
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '第一条' });
+    const unsubscribe = subscribeCandidateEvents(runId, candidateId, (event) => seen.push(event));
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '第一条' });
     unsubscribe();
     unsubscribe();
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: '第二条' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: '第二条' });
 
     expect(seen).toHaveLength(1);
   });
 
   it('订阅者在回调里取消自己，不会漏掉本次扇出的其它订阅者', () => {
-    const { runId, rowId } = seedRow();
+    const { runId, candidateId } = seedCandidate();
     const seen: string[] = [];
-    const first = subscribeRowEvents(runId, rowId, () => {
+    const first = subscribeCandidateEvents(runId, candidateId, () => {
       first();
       seen.push('first');
     });
-    subscribeRowEvents(runId, rowId, () => seen.push('second'));
+    subscribeCandidateEvents(runId, candidateId, () => seen.push('second'));
 
-    publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: 'x' });
+    publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: 'x' });
     expect(seen).toEqual(['first', 'second']);
   });
 
-  it('同一行只推给该行的订阅者，别行的事件不会串台', () => {
-    const rowA = makeRowFixture();
-    const rowB = makeRowFixture();
-    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [rowA, rowB] });
+  it('同一行只推给该候选的订阅者，别候选的事件不会串台', () => {
+    const candidateA = makeCandidateFixture();
+    const candidateB = makeCandidateFixture();
+    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [candidateA, candidateB] });
     saveRun(run);
     const seen: AgentEvent[] = [];
-    subscribeRowEvents(run.id, rowA.id, (event) => seen.push(event));
+    subscribeCandidateEvents(run.id, candidateA.id, (event) => seen.push(event));
 
-    publishRowEvent(run.id, rowB.id, { type: 'log', stream: 'stdout', text: 'B 的日志' });
+    publishCandidateEvent(run.id, candidateB.id, { type: 'log', stream: 'stdout', text: 'B 的日志' });
     expect(seen).toHaveLength(0);
   });
 
@@ -172,9 +172,9 @@ describe('subscribeRowEvents', () => {
    * 发出的那一条必须落到旧实例的订阅者手里」——正是下面这条断言。
    */
   it('模块重新实例化后订阅表不分裂：新实例发布的能到达旧实例的订阅者（dev HMR 的形状）', async () => {
-    const { runId, rowId } = seedRow();
+    const { runId, candidateId } = seedCandidate();
     const seen: AgentEvent[] = [];
-    subscribeRowEvents(runId, rowId, (event) => seen.push(event));
+    subscribeCandidateEvents(runId, candidateId, (event) => seen.push(event));
 
     vi.resetModules();
     // `resetModules` 会把**所有**模块重新实例化（包括 core 的「配置目录」记忆）⇒ 在**新实例**上把临时
@@ -183,7 +183,7 @@ describe('subscribeRowEvents', () => {
     const freshCore = await import('@aieval/core');
     freshCore.setConfigDirForTesting(home.configDir);
     const reloaded = await import('./events');
-    reloaded.publishRowEvent(runId, rowId, { type: 'log', stream: 'stdout', text: 'HMR 之后的一条' });
+    reloaded.publishCandidateEvent(runId, candidateId, { type: 'log', stream: 'stdout', text: 'HMR 之后的一条' });
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.type === 'log' && seen[0].text).toBe('HMR 之后的一条');

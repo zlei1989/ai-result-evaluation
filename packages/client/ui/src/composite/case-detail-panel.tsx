@@ -50,7 +50,7 @@ export function CaseDetailPanel({ testCase, referencedRuns, onEdit, onDelete, de
   /**
    * 字段表：**分支只在远端用例出现**（`repoBranch !== null`）。
    * 本地用例 / 旧数据渲染出的字段与新增这一列之前**逐字相同**——给它们摆一行「分支：—」等于凭空多一个
-   * 让人去猜「为什么是空的」的字段。远端则必须有这一行：分支决定了从哪条历史取起点。
+   * 让人去猜「为什么是空的」的字段。远端则必须有这个候选：分支决定了从哪条历史取起点。
    * 评分标准项**不在这张表里**：一条 Descriptions 行塞不下二级表格，它自己占一张卡片（见下方）。
    */
   const fields: NonNullable<DescriptionsProps['items']> = [
@@ -86,8 +86,8 @@ export function CaseDetailPanel({ testCase, referencedRuns, onEdit, onDelete, de
           <Typography.Text code>{testCase.commitHash}</Typography.Text>
         ),
     },
-    // 评分模型**不在用例上**：这一行是固定文案，回答的是「这个用例拿什么打分」这个必然会被问一次的问题。
-    // 写成「跟随全局默认」而不是删掉这一行——删掉之后用户只能去设置页找答案，而这里本来一句话就能说清。
+    // 评分模型**不在用例上**：这个候选是固定文案，回答的是「这个用例拿什么打分」这个必然会被问一次的问题。
+    // 写成「跟随全局默认」而不是删掉这个候选——删掉之后用户只能去设置页找答案，而这里本来一句话就能说清。
     { key: 'judgeModel', label: '评分模型', children: <Typography.Text type="secondary">跟随全局默认（设置 → 评分配置）</Typography.Text> },
     { key: 'createdAt', label: '创建时间', children: formatDateTime(testCase.createdAt) },
     { key: 'updatedAt', label: '更新时间', children: formatDateTime(testCase.updatedAt) },
@@ -133,7 +133,7 @@ export function CaseDetailPanel({ testCase, referencedRuns, onEdit, onDelete, de
 
       {/* 评分标准项（只读）：这一轮拿什么打分，在详情里要能逐项核对（组名 / 目标 / 权重 + 表尾满分）。
           只读形态由 `readOnly` 给（表格不渲染任何输入框与增删控件），故 `onChange` 在这一格**不可达**
-          ——props 要求给一个，它留空而不是省略，是为了让「详情页一行数据都不写」在类型上就成立。 */}
+          ——props 要求给一个，它留空而不是省略，是为了让「详情页一候选数据都不写」在类型上就成立。 */}
       <Card size="small" title="评分标准项">
         <RubricTable value={testCase.rubric} onChange={() => {}} readOnly />
       </Card>

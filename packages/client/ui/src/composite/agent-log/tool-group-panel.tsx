@@ -13,9 +13,7 @@
  *     各答各的问题；一条失败都没有时整格不渲染（不画一个恒为 0 的读数）；
  *   · **折叠态一律受控**：组头的开合走 `open`，组内各行走 `openEntries` + `onEntryOpenChange`
  *     （键由 `toolEntryKey` 给，与 React 的 `key` 同源）；本件不持任何开合态；
- *   · 本件**不调用** `onRequestDiagnostics`：本层没有「原始输出」入口（那是固定区的 `RawOutputPanel`），
- *     在展开工具组时顺带取原文是错的时机。它留在签名里是因为注册表统一注入这一格，
- *     去掉它就得让注册表按块类型分支。
+ *   · 本件**没有「原始输出」入口**（那是固定区的 `RawOutputPanel`）：在展开工具组时顺带取原文是错的时机。
  */
 import { Collapse, Flex, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
@@ -27,11 +25,9 @@ export interface ToolGroupPanelProps {
   entries: ToolGroupEntry[];
   open: boolean;
   onOpenChange(next: boolean): void;
-  /** 组内各行的展开键（`toolEntryKey` = `callId ?? 源块 id`）；受控 */
+  /** 组内各候选的展开键（`toolEntryKey` = `callId ?? 源块 id`）；受控 */
   openEntries: ReadonlySet<string>;
   onEntryOpenChange(key: string, open: boolean): void;
-  /** 「原始输出」面板展开时上报数据层（可选） */
-  onRequestDiagnostics?(): void;
   /**
    * 「结果未采集」的原因（能力声明的 `toolResult` 那一维，由注册表从 `BlockRenderContext` 推出）。
    * `null` = 声明里没谈到这一维 ⇒ 只写「结果未采集」，**不编一句话**。
@@ -83,6 +79,7 @@ export function ToolGroupPanel({
 
   return (
     <Collapse
+      size="small"
       destroyOnHidden
       activeKey={open ? [PANEL_KEY] : []}
       onChange={(keys) => onOpenChange(keys.length > 0)}
@@ -92,7 +89,7 @@ export function ToolGroupPanel({
           label,
           extra: (
             <Flex align="center" gap={4}>
-              {/* 失败在收起态的可见性全靠这一格（组与失败行都默认折叠，见文件头）：
+              {/* 失败在收起态的可见性全靠这一格（组与失败候选都默认折叠，见文件头）：
                   `AgentRunStateTag` 在结果到手时不表态，指望它露出失败是等不到的 */}
               {failed > 0 && <Tag color="error">{`失败 ${failed}`}</Tag>}
               <AgentRunStateTag

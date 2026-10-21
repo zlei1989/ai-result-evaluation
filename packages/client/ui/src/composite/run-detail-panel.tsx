@@ -11,9 +11,9 @@
  * 四条口径：
  *   1. 「开始」必须先 `Modal.confirm` 列出本次将执行的候选清单——
  *      误点一次要烧掉几十分钟的额度与时间，确认框是这里唯一的安全带；
- *   2. 「终止」用 `Popconfirm`（它杀进程、不可撤销）；单行的终止在卡片上，同一套语义；
+ *   2. 「终止」用 `Popconfirm`（它杀进程、不可撤销）；单候选的终止在卡片上，同一套语义；
  *   3. 排序与排名**共用同一份判据**（`compareRows`）：总分降序 → 耗时升序 →
- *      tok（输入+输出）升序；三项全同才算并列（同名次，不硬拆成 1、2 名）。未出分的行排在最后、
+ *      tok（输入+输出）升序；三项全同才算并列（同名次，不硬拆成 1、2 名）。未出分的候选排在最后、
  *      不参与排名，只有 1..3 名带徽标；未采集的耗时/tok 按最差算（见 `compareRows` 的注释）；
  *   4. 吸底栏用 `Layout.Footer` 但把它的默认内边距清零——那是页面级的 24/50，
  *      放进右栏会把卡片顶出视口；间距交给 `Flex` 的 `gap`。
@@ -23,12 +23,12 @@
  *
  * 第五条口径：「编辑 / 删除」两个入口放在**顶部信息卡的 `extra`**上，
  * 与 `case-detail-panel.tsx` 逐字同形（同一个位置、同一套 Popconfirm 语义）；两者都只在
- * **没有行在运行**时可用——判据是 contracts 的 `hasLiveRows`，与服务端抛 409 的那一条同源。
+ * **没有行在运行**时可用——判据是 contracts 的 `hasLiveCandidates`，与服务端抛 409 的那一条同源。
  *
  * 两条读数口径（都不猜）：
  *   · **进度与状态全部来自快照**（`row.status` / `run.executionMode`）：不用「有没有分数」这类
  *     前端推断去判断终态——那正是「把旧数据渲染成新数据」的形状；
- *   · 串行进度的分子是 **`TERMINAL_ROW_STATUSES` 的行数**，不是「已评分」的行数。
+ *   · 串行进度的分子是 **`TERMINAL_CANDIDATE_STATUSES` 的候选数**，不是「已评分」的候选数。
  *
  * 本仓约定：两个汉字的按钮一律 `autoInsertSpace={false}`（provider-table.tsx 的文件头），
  * 否则可访问名会变成「开 始」/「确 定」，用例与屏幕阅读器都会撞上。
@@ -38,64 +38,64 @@ import type { DescriptionsProps } from 'antd';
 import type { ReactNode } from 'react';
 import {
   AGENT_LABELS,
-  TERMINAL_ROW_STATUSES,
+  TERMINAL_CANDIDATE_STATUSES,
   type FollowUpVerdict,
-  hasLiveRows,
+  hasLiveCandidates,
   isNoneSource,
-  isRunnableRow,
-  isRunningRow,
+  isRunnableCandidate,
+  isRunningCandidate,
   type AgentKind,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
 } from '@aieval/contracts';
 import { PANE_PADDING } from '../base/list-detail-layout';
 import type { LiveMetricsView } from '../base/metric-line';
-import { EvalRowCard, type AgentCapabilityView } from './eval-row-card';
+import { EvalCandidateCard, type AgentCapabilityView } from './eval-candidate-card';
 import type { AgentActivity } from '../base/agent-activity-line';
 
 export interface RunDetailPanelProps {
   run: EvalRun;
   starting: boolean;
   aborting: boolean;
-  /** 每行智能体的能力元数据（usage / cancelMidTurn）；不传按「都支持」处理 */
+  /** 每个候选智能体的能力元数据（usage / cancelMidTurn）；不传按「都支持」处理 */
   capabilityOf?: (agentKind: AgentKind) => AgentCapabilityView;
   /**
-   * 每行的**实时指标**（跑动期的叠加层）；不传即没有实时通道，卡片显示快照值。
+   * 每个候选的**实时指标**（跑动期的叠加层）；不传即没有实时通道，卡片显示快照值。
    * 由调用方提供而不是本组件自己订阅：ui 层不许 import 数据层（`@aieval/client`），
-   * 而「哪些行要订阅」是页面的事（只有在这一屏里、且正在跑的行才值得开连接）。
+   * 而「哪些行要订阅」是页面的事（只有在这一屏里、且正在跑的候选才值得开连接）。
    */
-  liveOf?: (rowId: string) => LiveMetricsView | undefined;
+  liveOf?: (candidateId: string) => LiveMetricsView | undefined;
   /**
-   * 每行的**实时活动内容**：与 `liveOf` 并列的第二路（`useRunActivity` 折 AgentMessage）。
+   * 每个候选的**实时活动内容**：与 `liveOf` 并列的第二路（`useRunActivity` 折 AgentMessage）。
    * 由调用方提供是同一个理由：ui 层不许 import 数据层，而「哪些行要订阅」是页面的事。
    */
-  activityOf?: (rowId: string) => AgentActivity | undefined;
+  activityOf?: (candidateId: string) => AgentActivity | undefined;
   onStart: () => void;
   onAbortRun: () => void;
-  onAbortRow: (rowId: string) => void;
-  onRescoreRow: (rowId: string) => void;
+  onAbortCandidate: (candidateId: string) => void;
+  onRescoreCandidate: (candidateId: string) => void;
   /** 重评请求在途：透给卡片做转圈与禁用（避免连点两次） */
   rescoring: boolean;
-  /** 单行**执行**：只跑这一行（候选 agent + 评分），本轮其他行不动；文案见行卡片（「开始执行 / 重新执行」） */
-  onRetryRow: (rowId: string) => void;
-  /** 单行执行请求在途：同上，只用于转圈与禁用 */
+  /** 单个候选**执行**：只跑这个候选（候选 agent + 评分），本轮其他行不动；文案见候选卡片（「开始执行 / 重新执行」） */
+  onRetryCandidate: (candidateId: string) => void;
+  /** 单候选执行请求在途：同上，只用于转圈与禁用 */
   retrying: boolean;
   /**
-   * 这一行此刻能不能**追问**（第二期：接着原来那段会话再补一句话）。
+   * 这个候选此刻能不能**追问**（第二期：接着原来那段会话再补一句话）。
    * 由调用方（页面）从服务端的可用性读侧取——判据里有一半的事实在盘上与厂商声明上，
    * 浏览器一格都看不到，故 ui 层不复算也不编文案。**不传即不渲染那个按钮**。
    */
-  onFollowUpRow?: (rowId: string) => void;
-  /** 追问判据：按行取；`undefined` = 还没有这一行的结论（未加载 / 读失败） */
-  followUpOf?: (rowId: string) => FollowUpVerdict | undefined;
+  onFollowUpCandidate?: (candidateId: string) => void;
+  /** 追问判据：按行取；`undefined` = 还没有这个候选的结论（未加载 / 读失败） */
+  followUpOf?: (candidateId: string) => FollowUpVerdict | undefined;
   /** 追问请求在途：透给卡片做转圈与禁用 */
   followingUp?: boolean;
-  onOpenLog: (rowId: string) => void;
-  onOpenDiff: (rowId: string) => void;
-  onOpenScore: (rowId: string) => void;
+  onOpenLog: (candidateId: string) => void;
+  onOpenDiff: (candidateId: string) => void;
+  onOpenScore: (candidateId: string) => void;
   /**
-   * 打开「排名」抽屉（比的是候选之间的名次，**不带行 id**）。
-   * 与上面三个读单行产物的入口并列，但它是**整轮**的视角。
+   * 打开「排名」抽屉（比的是候选之间的名次，**不带候选 id**）。
+   * 与上面三个读单个候选产物的入口并列，但它是**整轮**的视角。
    */
   onOpenRank: () => void;
   /** 打开编辑表单（右栏切到 edit） */
@@ -112,7 +112,7 @@ export interface RunDetailPanelProps {
 }
 
 /**
- * 只有 1..3 名带徽标。并列时两行同名次，故这里没有「名次唯一」的假设。
+ * 只有 1..3 名带徽标。并列时两个候选同名次，故这里没有「名次唯一」的假设。
  * 导出它而不是在测试里抄一份 3：改阈值时用例必须跟着显式改。
  */
 export const RANK_BADGE_LIMIT = 3;
@@ -144,9 +144,9 @@ export function completionPercent(done: number, total: number): number {
  * 比较一律走 `!==` 分支而**不做减法**：两边都「最差」时 `Infinity - Infinity` 是 `NaN`，
  * 而 `NaN !== 0` 会让它冒充「不相等」——并列就被拆成了随机的先后。
  */
-export function compareRows(a: EvalRow, b: EvalRow): number {
-  // 未出分兜底成 -Infinity：本面板只拿它比出分的行（调用处先过滤），但它是导出的判据，
-  // 别处直接拿去排全量时也不会把没分的行顶到最前面
+export function compareRows(a: EvalCandidate, b: EvalCandidate): number {
+  // 未出分兜底成 -Infinity：本面板只拿它比出分的候选（调用处先过滤），但它是导出的判据，
+  // 别处直接拿去排全量时也不会把没分的候选顶到最前面
   const scoreA = a.score === null ? Number.NEGATIVE_INFINITY : a.score.totalScore;
   const scoreB = b.score === null ? Number.NEGATIVE_INFINITY : b.score.totalScore;
   if (scoreA !== scoreB) return scoreA > scoreB ? -1 : 1;
@@ -169,23 +169,23 @@ export function compareRows(a: EvalRow, b: EvalRow): number {
  * （2026-10-XX 的归一化：codex 侧做过 `input_tokens − cached_input_tokens`，claude / dsh 原文就不含 cache）
  * ⇒ `input` / `cached` / `output` 三者互斥，`input + output` 不会双计。改契约那一格时必须回来看这里。
  */
-function totalTokens(row: EvalRow): number {
+function totalTokens(row: EvalCandidate): number {
   if (row.tokens === null) return Number.POSITIVE_INFINITY;
   return row.tokens.input + row.tokens.output;
 }
 
 /**
- * 名次 = 1 + 按同一判据**严格优于**它的行数；三项全同 ⇒ 同名次（并列）；没有分的行不给名次。
+ * 名次 = 1 + 按同一判据**严格优于**它的候选数；三项全同 ⇒ 同名次（并列）；没有分的候选不给名次。
  *
  * 导出它（而不是留在组件里）是因为**排名抽屉**要拿同一份名次去排它的列：名次在本仓只有一个判据，
  * 两处各算一次的形状是「卡片挂第 1 名、抽屉里排第 2」——那种错看起来像数据坏了，而不是判据分叉。
- * 入参是**全量行**（含未出分的），未出分的行既不给自己名次、也不让别人多一名。
+ * 入参是**全量行**（含未出分的），未出分的候选既不给自己名次、也不让别人多一名。
  */
-export function rankOf(rows: EvalRow[], row: EvalRow): number | undefined {
+export function rankOf(rows: EvalCandidate[], row: EvalCandidate): number | undefined {
   if (row.score === null) return undefined;
   let better = 0;
   for (const other of rows) {
-    // 未出分的行不参与排名：它们在列表里垫底，但不算「优于」任何一行
+    // 未出分的候选不参与排名：它们在列表里垫底，但不算「优于」任何一行
     if (other.score === null) continue;
     if (compareRows(other, row) < 0) better += 1;
   }
@@ -193,13 +193,13 @@ export function rankOf(rows: EvalRow[], row: EvalRow): number | undefined {
 }
 
 /** 展示顺序：有分的按同一判据在前（全同时 `sort` 稳定，保持创建顺序），其余保持原始顺序 */
-export function orderForDisplay(rows: EvalRow[]): EvalRow[] {
+export function orderForDisplay(rows: EvalCandidate[]): EvalCandidate[] {
   const scored = rows.filter((row) => row.score !== null).sort(compareRows);
   const rest = rows.filter((row) => row.score === null);
   return [...scored, ...rest];
 }
 
-/** 缺省能力：按「都支持」处理（与 `EvalRowCard` 的缺省一致） */
+/** 缺省能力：按「都支持」处理（与 `EvalCandidateCard` 的缺省一致） */
 const OPTIMISTIC_CAPABILITY: AgentCapabilityView = { usage: true, cancelMidTurn: true };
 
 export function RunDetailPanel({
@@ -211,12 +211,12 @@ export function RunDetailPanel({
   activityOf,
   onStart,
   onAbortRun,
-  onAbortRow,
-  onRescoreRow,
+  onAbortCandidate,
+  onRescoreCandidate,
   rescoring,
-  onRetryRow,
+  onRetryCandidate,
   retrying,
-  onFollowUpRow,
+  onFollowUpCandidate,
   followUpOf,
   followingUp = false,
   onOpenLog,
@@ -230,34 +230,34 @@ export function RunDetailPanel({
   const { token } = theme.useToken();
   const [modal, contextHolder] = Modal.useModal();
 
-  const runnable = run.rows.filter((row) => isRunnableRow(row.status));
-  const hasRunning = run.rows.some((row) => isRunningRow(row.status));
-  // 分子是终态行数：失败/超时/终止/跳过/被打断都是「跑完了」，不把它们算进去进度永远到不了 100%
-  const done = run.rows.filter((row) => TERMINAL_ROW_STATUSES.includes(row.status)).length;
-  const total = run.rows.length;
+  const runnable = run.candidates.filter((row) => isRunnableCandidate(row.status));
+  const hasRunning = run.candidates.some((row) => isRunningCandidate(row.status));
+  // 分子是终态候选数：失败/超时/终止/跳过/被打断都是「跑完了」，不把它们算进去进度永远到不了 100%
+  const done = run.candidates.filter((row) => TERMINAL_CANDIDATE_STATUSES.includes(row.status)).length;
+  const total = run.candidates.length;
   const serial = run.executionMode === 'serial';
 
   /**
-   * 「能不能改 / 能不能删」：只有一条判据（`hasLiveRows`），由服务端同一份函数抛 409。
+   * 「能不能改 / 能不能删」：只有一条判据（`hasLiveCandidates`），由服务端同一份函数抛 409。
    * 有行在跑时两个入口一律禁用；**原因只在「编辑」那一格有 `Tooltip`**（「删除」被 `Popconfirm`
-   * 的 `disabled` 一并挡住，禁用态没有任何解释）——正在跑的行有自己的生命周期，处置是「先终止」。
+   * 的 `disabled` 一并挡住，禁用态没有任何解释）——正在跑的候选有自己的生命周期，处置是「先终止」。
    */
-  const live = hasLiveRows(run);
-  const mutateDisabledReason = live ? '有候选行正在运行：先终止，再编辑 / 删除' : undefined;
+  const live = hasLiveCandidates(run);
+  const mutateDisabledReason = live ? '有候选正在运行：先终止，再编辑 / 删除' : undefined;
 
   /**
    * 「排名」能不能点：**至少要有一行出了分**——没有分就没有名次，抽屉会是一张只有行标签的空表。
    * 判据落在「有没有分」而不是「跑完没有」：跑到一半也能看此刻的名次（那是调试用例时最想看的），
-   * 而**部分失败**的轮次里「所有候选都评分完成」这个条件可能永远不成立，按钮会等于永久消失。
+   * 而**部分失败**的轮里「所有候选都评分完成」这个条件可能永远不成立，按钮会等于永久消失。
    */
-  const rankDisabled = run.rows.every((row) => row.score === null);
+  const rankDisabled = run.candidates.every((row) => row.score === null);
   const rankDisabledReason = rankDisabled ? '还没有出分的候选：评分完成后才能排名' : undefined;
 
   const startDisabled = starting || hasRunning || runnable.length === 0;
   const startDisabledReason = hasRunning
-    ? '有候选行正在运行：等它结束，或先终止'
+    ? '有候选正在运行：等它结束，或先终止'
     : runnable.length === 0
-      ? '没有可执行的行（全部已评分）'
+      ? '没有可执行的候选（全部已评分）'
       : undefined;
 
   /** 「开始」的确认框：把将执行的清单摆出来，避免误点跑掉几十分钟 */
@@ -271,7 +271,7 @@ export function RunDetailPanel({
       content: (
         <Flex vertical gap={4}>
           <Typography.Text>
-            执行模式：{serial ? '串行（一行跑完含评分，才起下一行）' : '并行（全部同时开跑）'}
+            执行模式：{serial ? '串行（一个候选跑完含评分，才起下一行）' : '并行（全部同时开跑）'}
           </Typography.Text>
           <Typography.Text>本次将执行 {runnable.length} 个候选：</Typography.Text>
           {runnable.map((row) => (
@@ -293,11 +293,11 @@ export function RunDetailPanel({
    * 顶部信息卡的字段表（与 `case-detail-panel.tsx` 的 `fields` 同构，只有字段集不同）：
    *   · **备注只在非空时出现**，且排第一行：它回答「这一轮为什么这么测」，紧跟卡片标题读起来
    *     才像一句副题；空备注摆一行「备注：—」等于凭空多一个让人去猜「为什么是空的」的字段
-   *     （与「分支只在远端轮次出现」同一条口径）；
-   *   · **分支只在远端轮次出现**（`repoBranch !== null`）。本地轮次 / 旧数据渲染出的字段与新增这一行
+   *     （与「分支只在远端轮出现」同一条口径）；
+   *   · **分支只在远端轮出现**（`repoBranch !== null`）。本地轮 / 旧数据渲染出的字段与新增这个候选
    *     之前逐字相同——摆一行「分支：—」等于凭空多一个让人去猜「为什么是空的」的字段；
    *   · commit 给**全量** 40 位（不再截成短哈希 + Tooltip）：右栏是核对「这一轮测的到底是哪个提交」
-   *     的地方，悬停才能看全的写法在这里没有必要——卡片布局本来就有整行的宽度；
+   *     的地方，悬停才能看全的写法在这里没有必要——卡片布局本来就有整候选的宽度；
    *   · 仓库路径与工作基目录同样给全量，靠换行而不是省略（右栏可能只有 320px）。
    */
   const headerFields: NonNullable<DescriptionsProps['items']> = [
@@ -383,7 +383,7 @@ export function RunDetailPanel({
                 删除期间按钮看起来没反应（正是 `onDelete` 注释里那个「点一下没反应」的观感）。 */}
             <Popconfirm
               title="删除这一轮评测？"
-              description="这一轮的全部行工作区与执行日志会一起删掉，不可恢复。"
+              description="这一轮的全部候选工作区与执行日志会一起删掉，不可恢复。"
               okText="确认删除"
               cancelText="取消"
               okButtonProps={{ danger: true, autoInsertSpace: false, ...(deleting ? { loading: true } : {}) }}
@@ -402,8 +402,8 @@ export function RunDetailPanel({
         <Descriptions size="small" column={1} items={headerFields} />
         {/**
          * **可比性提示**（与开关那一格同源）：开着输入区的一轮里，人在半路补的话**照旧进评分证据**
-         * ⇒ 它的产物与没插过话的轮次不可直接比。提示放在这里而不是只放卡片上：
-         * 评分的证据面在轮次这一层，而候选卡片可能不在视野里（列表要滚动）——
+         * ⇒ 它的产物与没插过话的轮不可直接比。提示放在这里而不是只放卡片上：
+         * 评分的证据面在轮这一层，而候选卡片可能不在视野里（列表要滚动）——
          * 不提示就等于让分数静默地换了口径。`askUser` 那一格同理，但它今天没有这条提示面。
          */}
         {run.injectMessages ? (
@@ -413,12 +413,12 @@ export function RunDetailPanel({
             style={{ marginTop: 8 }}
             // antd 6 把 `Alert.message` 换成了 `title`（旧名只是废弃、运行期仍回落，但控制台会告警）
             title="这一轮允许人工补充消息"
-            description="人在运行中补的话会进智能体的上下文、也照旧进评分证据。代价如实说：这一轮被人介入过，产物与没插过话的轮次不可直接比；候选卡片上的「人工消息 ×N」是实际送达的条数（运行中插的话与跑完之后的追问都算）。"
+            description="人在运行中补的话会进智能体的上下文、也照旧进评分证据。代价如实说：这一轮被人介入过，产物与没插过话的轮不可直接比；候选卡片上的「人工消息 ×N」是实际送达的条数（运行中插的话与跑完之后的追问都算）。"
           />
         ) : null}
         {/* 串行进度钉在信息卡**内部底部**：它读的是「整轮跑完了几行」，
             与上面这组「这一轮跑的到底是哪份代码」属于同一块元信息；浮在卡片外面时，
-            它悬在卡片与候选列表之间，看着像下面那串候选卡片的表头。
+            它悬在卡片与候选列表之间，看着像下面那串行的卡片的表头。
             间距用 `marginTop` 而不是外层 `Flex` 的 `gap`：卡片与进度现在是同一个盒子里的上下两段。 */}
         {serial && (
           <Flex align="center" gap={8} data-testid="run-progress" style={{ marginTop: 8 }}>
@@ -431,10 +431,10 @@ export function RunDetailPanel({
       </Card>
 
       <Flex vertical gap={8} data-testid="run-row-list" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {orderForDisplay(run.rows).map((row) => {
-          const rank = rankOf(run.rows, row);
+        {orderForDisplay(run.candidates).map((row) => {
+          const rank = rankOf(run.candidates, row);
           return (
-            <EvalRowCard
+            <EvalCandidateCard
               key={row.id}
               row={row}
               rank={rank !== undefined && rank <= RANK_BADGE_LIMIT ? rank : undefined}
@@ -442,13 +442,13 @@ export function RunDetailPanel({
               capability={capabilityOf === undefined ? OPTIMISTIC_CAPABILITY : capabilityOf(row.agentKind)}
               live={liveOf?.(row.id)}
               activity={activityOf?.(row.id)}
-              onAbort={() => onAbortRow(row.id)}
-              onRescore={() => onRescoreRow(row.id)}
+              onAbort={() => onAbortCandidate(row.id)}
+              onRescore={() => onRescoreCandidate(row.id)}
               rescorePending={rescoring}
-              onRetry={() => onRetryRow(row.id)}
+              onRetry={() => onRetryCandidate(row.id)}
               retryPending={retrying}
               // 没有回调就不传（卡片据此不渲染那个按钮）：一个点了没反应的按钮比没有按钮更糟
-              {...(onFollowUpRow === undefined ? {} : { onFollowUp: () => onFollowUpRow(row.id) })}
+              {...(onFollowUpCandidate === undefined ? {} : { onFollowUp: () => onFollowUpCandidate(row.id) })}
               {...(followUpOf === undefined ? {} : { followUpVerdict: followUpOf(row.id) })}
               followUpPending={followingUp}
               onOpenLog={() => onOpenLog(row.id)}
@@ -477,7 +477,7 @@ export function RunDetailPanel({
             <Badge status={hasRunning ? 'processing' : 'default'} />
             {/* 执行模式只读展示：**本面板不提供切换入口**（spec §3 F9：执行模式随评测落库、运行中不可改） */}
             <Typography.Text type="secondary">
-              {serial ? '串行' : '并行'} · 共 {total} 行
+              {serial ? '串行' : '并行'} · 共 {total} 个候选
             </Typography.Text>
           </Flex>
           <Flex gap={8}>

@@ -34,7 +34,7 @@
 - [中文正文里凭空出现 `\uFFFD`（`中���内容ok`）：命令输出与答复正文**静默**损坏](/faq/codex#中文正文里凭空出现-ufffd-中���内容ok-命令输出与答复正文静默损坏)
 - [`Error: write EPIPE` 打崩 Web 服务进程：往已死的 app-server 写一帧](/faq/codex#error-write-epipe-打崩-web-服务进程-往已死的-app-server-写一帧)
 - [子线程的正文出现两份、且顺序颠倒（第 1 轮的内容排在第 2 轮之后）](/faq/codex#子线程的正文出现两份、且顺序颠倒-第-1-轮的内容排在第-2-轮之后)
-- [`turn/started` 两条、`turn/completed` 一条，而这一行按 `ok: true` 落盘（`finalText` / `tokens` / `turns` 全空）](/faq/codex#turn-started-两条、turn-completed-一条-而这一行按-ok-true-落盘-finaltext-tokens-turns-全空)
+- [`turn/started` 两条、`turn/completed` 一条，而这个候选按 `ok: true` 落盘（`finalText` / `tokens` / `turns` 全空）](/faq/codex#turn-started-两条、turn-completed-一条-而这个候选按-ok-true-落盘-finaltext-tokens-turns-全空)
 - [`no active turn to interrupt`（续跑之后点「终止」：取消退化成杀进程树）](/faq/codex#no-active-turn-to-interrupt-续跑之后点「终止」-取消退化成杀进程树)
 - [子任务行的状态与结论被打回 `unknown` / `null`（`closeAgent` 的 `item/started` 排在收场之后）](/faq/codex#子任务行的状态与结论被打回-unknown-null-closeagent-的-item-started-排在收场之后)
 - [`thread/queue/list requires experimentalApi capability`（投递与子线程枚举一起静默失效）](/faq/codex#thread-queue-list-requires-experimentalapi-capability-投递与子线程枚举一起静默失效)
@@ -56,16 +56,16 @@
 - [`[22:21:22] stdout {"type":"system","subtype":"thinking_tokens","estimated_tokens":1,"estimated_tokens_delta":1,"session_id":"8a23d018-0dec-4c5c-b67f-8d98ac31d970","uuid":"b51b18af-2b8c-4af6-a4d8-abbc51c011ac"}`（「原始输出」抽屉被思考进度帧刷满、页面卡死）](/faq/claude-code#_22-21-22-stdout-type-system-subtype-thinking-tokens-estimated-tokens-1-estimated-tokens-delta-1-session-id-8a23d018-0dec-4c5c-b67f-8d98ac31d970-uuid-b51b18af-2b8c-4af6-a4d8-abbc51c011ac-「原始输出」抽屉被思考进度帧刷满、页面卡死)
 - [`AGENT_FAILED：Claude Code returned an error result: There's an issue with the selected model (test-model). It may not exist or you may not have access to it.`](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-there-s-an-issue-with-the-selected-model-test-model-it-may-not-exist-or-you-may-not-have-access-to-it)
 - [技能面确证 `[{"name":"tang-poem-meal","source":"userSettings"},…]` 在，但 `工具调用名：[]`、哨兵 `AIEVAL-SKILL-OK-7f3a` 未命中](/faq/claude-code#技能面确证-name-tang-poem-meal-source-usersettings-在-但-工具调用名-、哨兵-aieval-skill-ok-7f3a-未命中)
-- [Write 落点缺一级 workspace：`"file_path":"…/rows/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-rows-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
+- [Write 落点缺一级 workspace：`"file_path":"…/candidates/54fbe2bf-…/poetry.md"` 应为 `…/workspace/poetry.md`（评分「工作区无任何改动、无未跟踪文件」→ 0 分）](/faq/claude-code#write-落点缺一级-workspace-file-path-candidates-54fbe2bf-poetry-md-应为-workspace-poetry-md-评分「工作区无任何改动、无未跟踪文件」→-0-分)
 - [执行日志里没有思考、原始输出里有（`messages.jsonl` 折叠后只剩 `text`；原文 `[{"type":"thinking","thinking":"…","signature":""}]`）](/faq/claude-code#执行日志里没有思考、原始输出里有-messages-jsonl-折叠后只剩-text-原文-type-thinking-thinking-signature)
-- [`AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这一行在 `running` 上挂了 6 分钟才失败）](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-api-error-connection-refused-—-a-firewall-or-proxy-may-be-blocking-it-econnrefused-这一行在-running-上挂了-6-分钟才失败)
+- [`AGENT_FAILED：Claude Code returned an error result: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`（这个候选在 `running` 上挂了 6 分钟才失败）](/faq/claude-code#agent-failed-claude-code-returned-an-error-result-api-error-connection-refused-—-a-firewall-or-proxy-may-be-blocking-it-econnrefused-这个候选在-running-上挂了-6-分钟才失败)
 - [`No such tool available: AskUserQuestion. AskUserQuestion is disabled for this session, in subagents as well as here.`（没有批准面时，提问工具根本不提供给模型）](/faq/claude-code#no-such-tool-available-askuserquestion-askuserquestion-is-disabled-for-this-session-in-subagents-as-well-as-here-没有批准面时-提问工具根本不提供给模型)
 - [`[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted.`（全权档并没有遮蔽提问工具）](/faq/claude-code#claude-sdk-can-use-tool-shadowed-warning-canusetool-will-not-be-invoked-permissionmode-bypasspermissions-auto-approves-every-tool-call-except-explicit-deny-rules-before-the-callback-is-consulted-全权档并没有遮蔽提问工具)
 - [`updatedInput.response` 一给就把选项答案整条盖掉：`The user responded: …`（自由输入该走选项值那一格）](/faq/claude-code#updatedinput-response-一给就把选项答案整条盖掉-the-user-responded-自由输入该走选项值那一格)
 - [执行日志里任务工具没有「计划清单」卡片：一行一个「计划清单」标签 + 参数原文（`{"taskId":"1","status":"in_progress"}`），而 codex 同题是一整张表](/faq/claude-code#执行日志里任务工具没有「计划清单」卡片-一行一个「计划清单」标签-参数原文-taskid-1-status-in-progress-而-codex-同题是一整张表)
 - [回了 tool_use 却没跑工具、SDK 时间线里直接 `result/success`（CLI 在真正的第一轮之前还会打 `messages: []` 的探路请求与 `<session>…</session>` 包裹的辅助请求）](/faq/claude-code#回了-tool-use-却没跑工具、sdk-时间线里直接-result-success-cli-在真正的第一轮之前还会打-messages-的探路请求与-session-session-包裹的辅助请求)
 - [探针读数 `insertedSeenInRequests: []`：「注入的那句话没进任何模型请求」](/faq/claude-code#探针读数-insertedseeninrequests-「注入的那句话没进任何模型请求」)
-- [`result` 已经到了、这一行却永远不收场：`query({ prompt: AsyncIterable })` 下输入流不 `end()`，查询不会自己结束](/faq/claude-code#result-已经到了、这一行却永远不收场-query-prompt-asynciterable-下输入流不-end-查询不会自己结束)
+- [`result` 已经到了、这个候选却永远不收场：`query({ prompt: AsyncIterable })` 下输入流不 `end()`，查询不会自己结束](/faq/claude-code#result-已经到了、这个候选却永远不收场-query-prompt-asynciterable-下输入流不-end-查询不会自己结束)
 - [执行日志「只有全部完成才显示」：第 2 轮起没有打字机效果（正文等到该轮跑完才整段出现，`messages.jsonl` 与快照齐全、无任何报错）](/faq/claude-code#执行日志「只有全部完成才显示」-第-2-轮起没有打字机效果-正文等到该轮跑完才整段出现-messages-jsonl-与快照齐全、无任何报错)
 
 - [运行中投出去的那句话**另起了一轮**：多一次模型往返，而 `tool_result.content` 里没有 `<system-reminder>The user sent a new message while you were working: …</system-reminder>`](/faq/claude-code#运行中投出去的那句话另起了一轮-多一次模型往返-而-tool-result-content-里没有-system-reminder-the-user-sent-a-new-message-while-you-were-working-system-reminder)
@@ -84,7 +84,7 @@
 - [子智能体失败把整行判成失败（`ok:false / exitReason:'error'`，而父会话已正常答完、`finalText` 完好）](/faq/deepseek-harness#子智能体失败把整行判成失败-ok-false-exitreason-error-而父会话已正常答完、finaltext-完好)
 - [`[WARN] 用量负载读不动（缺 inputTokens / outputTokens）…：undefined`（厂商本来就没报用量）](/faq/deepseek-harness#warn-用量负载读不动-缺-inputtokens-outputtokens-undefined-厂商本来就没报用量)
 - [失败的命令在界面上被画成成功（`job/settled.detail = "exit code: 7"` 而结果块 `isError=false`）](/faq/deepseek-harness#失败的命令在界面上被画成成功-job-settled-detail-exit-code-7-而结果块-iserror-false)
-- [行快照上出现「合计 60 / 子分量 2010」（子智能体分量跨 run 累积）](/faq/deepseek-harness#行快照上出现「合计-60-子分量-2010」-子智能体分量跨-run-累积)
+- [候选快照上出现「合计 60 / 子分量 2010」（子智能体分量跨 run 累积）](/faq/deepseek-harness#候选快照上出现「合计-60-子分量-2010」-子智能体分量跨-run-累积)
 - [对话视图里同一段答复出现两次、而第一段那条被顶掉（`roundTrip` 撞号：厂商的 `step` 是**每个 turn 内从 1 数**）](/faq/deepseek-harness#对话视图里同一段答复出现两次、而第一段那条被顶掉-roundtrip-撞号-厂商的-step-是每个-turn-内从-1-数)
 - [`[MISSING_CREDENTIAL] llm-pi-ai: no credential for provider route "aieval-route"` / `[CONTEXT_WINDOW_EXCEEDED] pi-ai detected context overflow for model "…"` 被归成 `AGENT_FAILED`（可重试码 ⇒ 确定性失败白跑两遍）](/faq/deepseek-harness#missing-credential-llm-pi-ai-no-credential-for-provider-route-aieval-route-context-window-exceeded-pi-ai-detected-context-overflow-for-model-被归成-agent-failed-可重试码-⇒-确定性失败白跑两遍)
 
@@ -93,7 +93,7 @@
 - [`[WARN] 用量负载不完整，本次运行按「未采集计量」处理（不填 0）：{"inputTokens":5949,"outputTokens":2,"totalTokens":5951}`（同一份探针两跑两样：一次 `tokens: null`、一次有值）](/faq/deepseek-harness#warn-用量负载不完整-本次运行按「未采集计量」处理-不填-0-inputtokens-5949-outputtokens-2-totaltokens-5951-同一份探针两跑两样-一次-tokens-null、一次有值)
 - [`dsh：声明 streamingDelta=yes，但 plain-reply 场景里没有任何 delta 消息`](/faq/deepseek-harness#dsh-声明-streamingdelta-yes-但-plain-reply-场景里没有任何-delta-消息)
 - [`AssertionError: expected false to be true // Object.is equality`（`providers/dsh/index.test.ts` 的 overlay 绝对路径那条）＋仓库根长出 `D:\runs\run-1\rows\r-1\workspace`](/faq/deepseek-harness#assertionerror-expected-false-to-be-true-object-is-equality-providers-dsh-index-test-ts-的-overlay-绝对路径那条-仓库根长出-d-runs-run-1-rows-r-1-workspace)
-- [同一条脚本两次运行的行级事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）](/faq/deepseek-harness#同一条脚本两次运行的行级事件条数差一条-24-24-25-25-收尾那条-usage-与-run-落定抢跑)
+- [同一条脚本两次运行的事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）](/faq/deepseek-harness#同一条脚本两次运行的事件条数差一条-24-24-25-25-收尾那条-usage-与-run-落定抢跑)
 - [`原始输出 38164 行，但执行日志是空的`（dsh 行：厂商会话日志 201 条事件，我们只收到前 13 条）](/faq/deepseek-harness#原始输出-38164-行-但执行日志是空的-dsh-行-厂商会话日志-201-条事件-我们只收到前-13-条)
 - [`TransportClosedError dsh profile "sdk": JSON-RPC input closed`（真因被外层错误吞掉：`overlay …/profiles/sdk/cordis.patch.yml must be a top-level YAML array of loader patch entries`）](/faq/deepseek-harness#transportclosederror-dsh-profile-sdk-json-rpc-input-closed-真因被外层错误吞掉-overlay-profiles-sdk-cordis-patch-yml-must-be-a-top-level-yaml-array-of-loader-patch-entries)
 - [`session "probe-resume-…" already exists`（换一个新进程、用同一个 `sessionId` 与同一个 `DSH_HOME` 续接；`run` / `session().run` / `client.prompt` 三条形状全抛它）](/faq/deepseek-harness#session-probe-resume-already-exists-换一个新进程、用同一个-sessionid-与同一个-dsh-home-续接-run-session-run-client-prompt-三条形状全抛它)
@@ -109,7 +109,7 @@
 ### Pi Coding Agent
 
 - [`mcp__<服务器>__<工具>` 握手成功却不在出站请求的 `tools` 里（SDK 注释原文：`MCP tools kept registered without being named stay inactive`）](/faq/pi#mcp-服务器-工具-握手成功却不在出站请求的-tools-里-sdk-注释原文-mcp-tools-kept-registered-without-being-named-stay-inactive)
-- [`This extension ctx is stale after session replacement or reload.`（后台档子智能体活过本行时，完成回调打旧 ctx ⇒ 未处理的 Promise 拒绝）](/faq/pi#this-extension-ctx-is-stale-after-session-replacement-or-reload-后台档子智能体活过本行时-完成回调打旧-ctx-⇒-未处理的-promise-拒绝)
+- [`This extension ctx is stale after session replacement or reload.`（后台档子智能体活过候选时，完成回调打旧 ctx ⇒ 未处理的 Promise 拒绝）](/faq/pi#this-extension-ctx-is-stale-after-session-replacement-or-reload-后台档子智能体活过候选时-完成回调打旧-ctx-⇒-未处理的-promise-拒绝)
 - [子智能体转写固定落 `os.tmpdir()/pi-subagents-<uid>/…`（不随行隔离）](/faq/pi#子智能体转写固定落-os-tmpdir-pi-subagents-uid-不随行隔离)
 - [只跑一次 `pi --help`，真实家目录长出 `~/.pi/agent/auth.json` 与 `~/.pi/agent/models-store.json`](/faq/pi#只跑一次-pi-help-真实家目录长出-pi-agent-auth-json-与-pi-agent-models-store-json)
 - [思考正文重复 5 段（同一段推理在执行日志的思考块里出现 5 次）](/faq/pi#思考正文重复-5-段-同一段推理在执行日志的思考块里出现-5-次)
@@ -122,7 +122,7 @@
 - [会话文件在盘上、`buildSessionContext()` 里也有暗号，模型却回「不知道」（同一个文件的下一轮就答对）](/faq/pi#会话文件在盘上、buildsessioncontext-里也有暗号-模型却回「不知道」-同一个文件的下一轮就答对)
 - [「pi subagent 启动时进入 subagent 执行日志 里面是空的无消息，当 subagent 执行完成时消息一次性全部显示」](/faq/pi#「pi-subagent-启动时进入-subagent-执行日志-里面是空的无消息-当-subagent-执行完成时消息一次性全部显示」)
 - [「subagent 的消息能不能像主会话那样逐字出？」（子任务节点整条消息才出现，长答复时等待感明显）](/faq/pi#「subagent-的消息能不能像主会话那样逐字出-」-子任务节点整条消息才出现-长答复时等待感明显)
-- [路由不给 API key 时**零出站请求**、这一行却报成功（`No API key found for aieval-pi-…`）](/faq/pi#路由不给-api-key-时零出站请求、这一行却报成功-no-api-key-found-for-aieval-pi)
+- [路由不给 API key 时**零出站请求**、这个候选却报成功（`No API key found for aieval-pi-…`）](/faq/pi#路由不给-api-key-时零出站请求、这个候选却报成功-no-api-key-found-for-aieval-pi)
 - [失败/中止的那一轮把 `tokens` 写成 `{0,0,0}`、日志里还是 `metered: true`（厂商的 `usage` 是全 0 冻结对象）](/faq/pi#失败-中止的那一轮把-tokens-写成-0-0-0-、日志里还是-metered-true-厂商的-usage-是全-0-冻结对象)
 - [`run()` 返回后 MCP stdio 子进程还活着（`AgentSession.dispose()` 不 emit `session_shutdown`）](/faq/pi#run-返回后-mcp-stdio-子进程还活着-agentsession-dispose-不-emit-session-shutdown)
 - [`expected 'session-file' to be 'wire'` + `子任务一条逐字增量都没有`（满载时 red、空载时 green 的假红）](/faq/pi#expected-session-file-to-be-wire-子任务一条逐字增量都没有-满载时-red、空载时-green-的假红)
@@ -133,6 +133,6 @@
 「某一家 × 某个环境」的组合仍归该厂商 FAQ）。落点是知识文章，不在四份 FAQ 原文里——本页只给指针。
 本节的条目**不受**上面那条「目录层与四份 FAQ 二级标题集合逐字一致」的守卫约束（那条守卫只管四个厂商分组）。
 
-- [行结束后仍能 `pgrep` 到上一轮的浏览器（重跑同一行撞 `Browser is already in use for …, use --isolated …`）](/protocols/process-lifecycle#行结束后仍能-pgrep-到上一轮的浏览器-重跑同一行撞-browser-is-already-in-use-for-use-isolated)
+- [候选结束后仍能 `pgrep` 到上一轮的浏览器（重跑同一候选撞 `Browser is already in use for …, use --isolated …`）](/protocols/process-lifecycle#行结束后仍能-pgrep-到上一轮的浏览器-重跑同一行撞-browser-is-already-in-use-for-use-isolated)
 
 ## 维护口径

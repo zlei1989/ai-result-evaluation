@@ -59,9 +59,9 @@ export interface InjectUploadInput {
 }
 
 export interface InjectComposerProps {
-  /** 这一行的队列快照（**含终态**：`gone` 由本件跳过） */
+  /** 这个候选的队列快照（**含终态**：`gone` 由本件跳过） */
   messages: readonly InjectMessage[];
-  /** 这一行的家在这一面上的声明；`null` = 不知道（不编一份「都支持」） */
+  /** 这个候选的家在这一面上的声明；`null` = 不知道（不编一份「都支持」） */
   declaration: TurnInjectionCapability | null;
   /** 有没有写动作在途（数据层给；在途时输入区与按钮都禁用） */
   busy?: boolean;
@@ -102,7 +102,7 @@ export function InjectComposer({
   const availability = deliveryAvailability(declaration, 'idle');
   const canSend = availability.available && !busy && !uploading && (draft.trim() !== '' || ready.length > 0);
 
-  /** 发送：固定用「排队」那一档（要提前投递就在排队行上点「立即发送」） */
+  /** 发送：固定用「排队」那一档（要提前投递就在排队候选上点「立即发送」） */
   const handleSend = useCallback(() => {
     if (!canSend || submitting) return;
     const messageId = draftId();

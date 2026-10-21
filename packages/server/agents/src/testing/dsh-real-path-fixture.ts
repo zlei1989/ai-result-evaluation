@@ -201,7 +201,7 @@ export interface DshRealPathRun {
   elapsedMs: number;
 }
 
-/** 一次运行要的装配：临时行目录 + 真运行时 + 脚本式上游 */
+/** 一次运行要的装配：临时本次运行目录 + 真运行时 + 脚本式上游 */
 export interface DshRealPathOptions {
   /** 这一次提问的那一帧（调用 id / 工具名 / 厂商方言入参） */
   frame: { callId: string; toolName: string; args: unknown };
@@ -349,7 +349,7 @@ export async function runDshRealPath(options: DshRealPathOptions): Promise<DshRe
       const replies = readTranscript(repliesPath);
       for (; seenReplies < replies.length; seenReplies += 1) {
         const row = replies[seenReplies];
-        // 只有「真交了答案」的那些行算应答帧；「委派」那一行是适配器在说「这一问没有答案」
+        // 只有「真交了答案」的那些行算应答帧；「委派」那一本次运行是适配器在说「这一问没有答案」
         if (Array.isArray(row?.['answers'])) answerBatches.push({ answers: row['answers'] });
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));

@@ -71,7 +71,7 @@ function defaults(): AppConfig {
  * 多的丢掉）。
  *
  * 为什么要丢「多的」：loadConfig **故意不做 schema 校验**（一条手改坏的值不该让
- * 设置页打不开），于是旧版本写下、如今已从契约里删掉的字段（例如「单行超时」`rowTimeoutMs`）
+ * 设置页打不开），于是旧版本写下、如今已从契约里删掉的字段（例如「单行超时」`candidateTimeoutMs`）
  * 会一路带进读侧——`GET /api/settings` 于是回一个契约里根本不存在的字段。键表直接取自
  * `SETTINGS_DEFAULTS`（契约的真源），新增字段只要进了默认值就自动被认，不需要在这里维护第二份清单。
  */
@@ -107,7 +107,7 @@ export function loadConfig(): AppConfig {
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   try {
     const parsed = JSON.parse(text) as Partial<AppConfig>;
-    // 只认这两段：多出来的键（旧版的 `cases`、更早的 `rowTimeoutMs`）一律丢掉，
+    // 只认这两段：多出来的键（旧版的 `cases`、更早的 `candidateTimeoutMs`）一律丢掉，
     // 用法与 `normalizeSettings` 的键表过滤同源——落盘文件里留着的东西不等于运行时认的东西
     return {
       settings: normalizeSettings(parsed.settings),

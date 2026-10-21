@@ -1,16 +1,16 @@
 /**
- * codex 的**行级事件投影**：app-server 通知 → `AgentEventDraft` 与 `TurnProjection`。
+ * codex 的**运行级事件投影**：app-server 通知 → `AgentEventDraft` 与 `TurnProjection`。
  * 内容级视图（消息与子任务行）在 `message.ts`，两份共用 `run-state.ts` 的同一把尺子。
  *
  * 三条职责边界：
- *   1. **只投影行级事实**：计量、轮次、时长、失败、未识别通知的原始负载，以及**活动行的那一句话**
+ *   1. **只投影运行级事实**：计量、轮次、时长、失败、未识别通知的原始负载，以及**活动行的那一句话**
  *      （`activityDrafts`，产物是 `log` 事件）。内容与子任务行一律走 `message.ts`——一条通知只在
  *      一处归一，两处都出会让同一条目落两次。
  *      两处例外，都各有理由：骨架状态 `finalText`（它不落事件、也不出内容块，而本层恰好是
  *      **拿得到 state 且已经按主线程判过**的地方），以及活动行（卡片底部那一行只吃 `log` 事件，
- *      同一条通知若不在这里补一句人话，那一行就只剩「更新计划：N 步」——真机形态见 `activityDrafts`）。
+ *      同一条通知若不在这里补一句人话，那一本次运行就只剩「更新计划：N 步」——真机形态见 `activityDrafts`）。
  *   2. **轮次按线程分别数**（`run-state.ts` 的 `countRoundTrips`），这里交出的是**主线程**那一份
- *      ——进度条与 `EvalRow.turns` 读的是本行跑到第几轮。子线程那一份由 `message.ts` 用同一个函数
+ *      ——进度条与 `EvalCandidate.turns` 读的是本次运行跑到第几轮。子线程那一份由 `message.ts` 用同一个函数
  *      数出来，收尾时两半相加。
  *   3. **「过路报错」与「这一轮的结论」分开**：`error` 通知是**每次尝试**都会发的过路消息（上游自己
  *      还会重试），折成失败会把一次最终成功的运行判死 ⇒ 它只落一条 WARN；`turn/completed` 才是
@@ -44,7 +44,7 @@ export interface CodexEventProjection {
   projection: TurnProjection;
   /**
    * 本条通知交出的权威读数；`null` = 本条不带计量。
-   * 与 `projection.tokens` 的区别：后者是「本条要发出去的值」，这一格是「本行已知的最新值」
+   * 与 `projection.tokens` 的区别：后者是「本条要发出去的值」，这一格是「本次运行已知的最新值」
    * （`turn/completed` 不带用量时它仍是 `null`，调用方**保持**上一份，不回填 0）。
    */
   tokens: UsageTokens | null;
@@ -66,7 +66,7 @@ export function projectCodexEvent(
      * 厂商起了一轮 ⇒ 声明「一次新的模型往返开始」，让骨架的墙钟按**一次往返**重新起表
      * （见 `TurnProjection.roundTripStarted`）。
      *
-     * 只认主线程：子线程的轮次是它自己那一幕，与这一行的墙钟不是同一把尺。
+     * 只认主线程：子线程的轮次是它自己那一幕，与本次运行的墙钟不是同一把尺。
      * 本条**不产事件**（与过去逐字相同：这一格从来只是记账，`activity-conformance` 钉着它）。
      */
     return payload.threadId === context.mainThreadId ? { projection: { ...idle().projection, roundTripStarted: true }, tokens: null } : idle();
@@ -100,7 +100,7 @@ export function projectCodexEvent(
     if (turns === null || payload.threadId !== context.mainThreadId) return idle(drafts);
     /**
      * 归属：与 `turns` 同一个号（本条通知来自主线程）⇒ 界面能把这条读数放回它自己那一轮。
-     * 子线程的条目**刻意不给归属**：本行的事件流只有主线程的进度语义，把子线程的号贴上来
+     * 子线程的条目**刻意不给归属**：本次运行的事件流只有主线程的进度语义，把子线程的号贴上来
      * 会让界面按 `turns` 反推出的会话关系全错。
      *
      * **用量也在这一支交**（`runningTokens`）：发射门槛是轮次，而用量通知本身不带轮次
@@ -186,7 +186,7 @@ export function projectCodexEvent(
     /**
      * **进程死在在途**（适配器合成的载荷，不是厂商方法）：这一条是结论，不是过路消息
      * ⇒ 与 `turn/completed{failed}` 同一个出口（error draft + `failure`），归因走文案。
-     * 没有它，崩溃的行会被判成功（真机复现）。
+     * 没有它，崩溃的本次运行会被判成功（真机复现）。
      */
     return {
       projection: {
@@ -206,7 +206,7 @@ export function projectCodexEvent(
   }
 
   /**
-   * 其余通知**一条事件都不发**：增量的落点是内容块（`message.ts`），落到行级日志里只会把抽屉灌满
+   * 其余通知**一条事件都不发**：增量的落点是内容块（`message.ts`），落到运行级日志里只会把抽屉灌满
    * （一次答复几十条片段）。未识别的通知（`other`）照旧保留原始负载——静默丢弃会让
    * 「上游换了方法名」表现为「什么都没发生」。
    *
@@ -234,8 +234,8 @@ export function projectCodexEvent(
  *   · `commandExecution` —— 只在**开始**发：那一刻命令行已完整（上面的真机证据）；
  *     完成时的输出与退出码是**结果**，落点是结果块与原始输出面板，不进活动行；
  *   · `fileChange` —— 只在**完成**发：`item/started` 的 `changes` 可能还是空的，
- *     拿它出一行会得到没有信息的「调用工具 apply_patch」；
- *   · `mcpToolCall` —— 开始发调用、完成只在**报错**时发（错误没有别的行级出口）；
+ *     拿它出一本次运行会得到没有信息的「调用工具 apply_patch」；
+ *   · `mcpToolCall` —— 开始发调用、完成只在**报错**时发（错误没有别的运行级出口）；
  *   · `webSearch` / `dynamicToolCall` —— 开始发调用；
  *   · `collabToolCall` / `subAgentActivity` —— 派发与收场（见 `collabDrafts`）；
  *   · `agentMessage` —— 完成时落一条日志，**不带摘要**：正文本身就是人话，

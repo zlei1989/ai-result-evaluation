@@ -117,7 +117,7 @@ describe('真机：结构化输出走的是原生 schema 通道（判据＝出�
        * **我们这一侧上报的那一格**（`applied.structuredOutput`）——它与出站请求体是两件事：
        * 前者是适配器的自述、后者是厂商真的收到了什么。只判后者时把 `applied` 改成恒 `false`
        * 在仓库里**一条都不红**（真机变异读数：356 条 codex 用例 + judge-agent + judge-route×2
-       * 全绿），而下游是按前者分叉的（`score.structuredOutput` 与行级那条降级留痕）。
+       * 全绿），而下游是按前者分叉的（`score.structuredOutput` 与候选级那条降级留痕）。
        */
       expect(withSchema.applied.structuredOutput, '带 schema 时适配器必须上报「走了原生通道」').toBe(true);
       expect(withoutSchema.applied.structuredOutput, '不给 schema 时不许上报成走了').toBe(false);

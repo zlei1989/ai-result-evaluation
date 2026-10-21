@@ -79,6 +79,36 @@ describe('JsonText', () => {
     expect(tokensOf(host, 'number')[0]?.style.color).toBe(probe(custom.colorWarning));
   });
 
+  /**
+   * 压缩档：**一条逻辑行**（不缩进），按容器宽度**自动换行**，高亮照旧。
+   *
+   * 用在字段表这种「一格一行」的地方——缩进版把一条结果摊成几十行，格子高度全花在缩进与换候选上。
+   * 判据三半：正文里一个换候选都没有（紧凑产物）、宿主仍是 `pre-wrap`（不是靠不换行撑宽）、
+   * `overflow-wrap: anywhere` 在位（JSON 里的一个字符串就是一个长 token，只在空格处断会顶出横向滚动条）；
+   * 高亮节点仍在（压缩不等于退回逐字原文）。
+   */
+  it('压缩档：不缩进、自动换行（`pre-wrap` + `overflow-wrap: anywhere`），高亮照旧', () => {
+    render(<JsonText text={SINGLE_LINE} dataTestId="compact" compact />);
+    const host = screen.getByTestId('compact');
+
+    // 一条逻辑行：既没有换行，也没有缩进那两个空格（`JSON.stringify` 的紧凑产物）
+    expect(host.textContent).toBe(SINGLE_LINE);
+    expect(host.textContent ?? '').not.toContain('\n');
+    expect(host.style.whiteSpace).toBe('pre-wrap');
+    expect(host.style.overflowWrap).toBe('anywhere');
+    // 不出现横向滚动条：既没有横向滚动容器，也没有把内容顶宽的 `pre`
+    expect(host.style.overflowX).toBe('');
+    expect(tokensOf(host, 'key')).toHaveLength(5);
+  });
+
+  it('压缩档不压围栏 JSON：围栏是「模型有没有照做」的线索，压成一个候选就看不见了', () => {
+    render(<JsonText text={FENCED} dataTestId="compact-fenced" compact />);
+
+    const host = screen.getByTestId('compact-fenced');
+    expect(host.textContent).toBe(FENCED);
+    expect(host.querySelectorAll('[data-json-token]')).toHaveLength(0);
+  });
+
   it('非 JSON 回落成逐字原文，且一个高亮节点都不留', () => {
     const prose = '这不是 JSON，模型回了一段散文\n第二行也原样';
     render(<JsonText text={prose} dataTestId="json" maxHeight={120} />);

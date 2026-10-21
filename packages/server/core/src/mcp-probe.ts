@@ -150,7 +150,7 @@ export async function probeMcpStdio(input: McpStdioProbeInput): Promise<McpStdio
       try {
         message = JSON.parse(line.trim()) as JsonRpcMessage;
       } catch {
-        // 服务端往 stdout 夹日志行是常态：跳过它，不要让一行噪音毁掉整次探活
+        // 服务端往 stdout 夹日志候选是常态：跳过它，不要让一行噪音毁掉整次探活
         continue;
       }
       const waiter = typeof message.id === 'number' ? waiters.get(message.id) : undefined;

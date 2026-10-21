@@ -1,7 +1,7 @@
 /**
  * 人工消息的**词表**：可投递边界（两档）、一条消息在队列表里的四态、以及它收场时的落点（五值）。
  *
- * 为什么单独一格而不是留在 `agent-message.ts`（边界词表原来的落点）：这三份词表**行级事件与队列表都要用**
+ * 为什么单独一格而不是留在 `agent-message.ts`（边界词表原来的落点）：这三份词表**候选级事件与队列表都要用**
  * ——「这一条最后怎么收场的」进 `events.jsonl`，「它现在在哪一态」进队列快照。若把定义留在
  * `agent-message`，`agent-event` 引它就会与既有那条「`agent-message` 引 `agent-event` 的
  * `UsageTokensSchema`」构成环：环上先求值的那个模块拿到的是 `undefined`，而 zod 在模块求值期就会读这些
@@ -51,14 +51,14 @@ export const InjectMessageStateSchema = z.enum(INJECT_MESSAGE_STATES);
 export type InjectMessageState = z.infer<typeof InjectMessageStateSchema>;
 
 /**
- * **没有投出去的那两种收场**（终态，条目落 `gone`）：行收场时还没投递的条目走 `discarded`，
- * 等待预算到点的那一批走 `timed-out`。两者分开是因为处置动作完全不同——前者是「这一行结束了」，
- * 后者是「这一行还在，但这一条等太久了」。
+ * **没有投出去的那两种收场**（终态，条目落 `gone`）：候选收场时还没投递的条目走 `discarded`，
+ * 等待预算到点的那一批走 `timed-out`。两者分开是因为处置动作完全不同——前者是「这个候选结束了」，
+ * 后者是「这个候选还在，但这一条等太久了」。
  */
 export const INJECT_DROP_REASONS = ['discarded', 'timed-out'] as const;
 
 /**
- * **一条人工消息的收场**（行级事件的载荷）：投递两值 + 上面那两种丢弃 + 撤回的两个结果。
+ * **一条人工消息的收场**（候选级事件的载荷）：投递两值 + 上面那两种丢弃 + 撤回的两个结果。
  *
  * 与 `RetractOutcome` 的关系是**刻意重叠而不是相等**：`retracted` / `already-consumed` 逐字复用它的
  * 两个取值（同一次撤回在两处说的是同一件事），而 `unsupported` / `unknown` 不进这里——那两种撤回

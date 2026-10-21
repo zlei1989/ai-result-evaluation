@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * **真机**：claude 这一行的**技能面**（L3 判据）——「厂商到底认没认我们装进去的那条 skill」。
+ * **真机**：claude 这个候选的**技能面**（L3 判据）——「厂商到底认没认我们装进去的那条 skill」。
  *
- * 为什么这条判据是承重的：真机行里文件确实装上了（L1 成功），而模型**一次工具都没调**、
+ * 为什么这条判据是承重的：真机候选里文件确实装上了（L1 成功），而模型**一次工具都没调**、
  * 哨兵串没命中。两种可能分不开：**① 这家没把 skill 放进会话的技能面** vs
  * **② 这个模型不肯调 `Skill`**（网关后面不是 Claude 模型）。本文件把 ① 变成可读的事实：
  * `getContextUsage().skills.skillFrontmatter` 是厂商自己列出的那份清单（带 `source`），
@@ -48,7 +48,7 @@ description: 当用户让你推荐唐诗时，必须按本技能的规则作答
 ---
 
 推荐唐诗时，只推荐一首与「吃饭 / 饮食」有关的唐诗。
-答复的最后一行必须逐字写出这一行：${SENTINEL}
+答复的最后一行必须逐字写出这个候选：${SENTINEL}
 `;
 
 /** 被测仓库自带的那一条（只为量它的 `source` 原值，正文与服务端行为无关） */
@@ -57,7 +57,7 @@ name: ${REPO_SKILL_NAME}
 description: 仓库自带的探针 skill（只为观测来源原值）
 ---
 
-这条 skill 是被测仓库自带的，本行不该由我们装入它。
+这条 skill 是被测仓库自带的，候选不该由我们装入它。
 `;
 
 function hostAnthropicProvider(): { baseUrl: string; apiKey: string; modelId: string } | null {
@@ -131,7 +131,7 @@ describe.skipIf(!ENABLED)('真机：claude 的技能面（L3）与模型行为',
       });
 
       /**
-       * 判据：**最后一条** `vendor-system` 里的技能面（本行只在收尾发一条带它的）。
+       * 判据：**最后一条** `vendor-system` 里的技能面（候选只在收尾发一条带它的）。
        * 读侧取最后一条的理由与编排层逐字相同（后到的覆盖先到的）。
        */
       const vendor = [...events].reverse().find((event) => event.type === 'vendor-system');
@@ -144,7 +144,7 @@ describe.skipIf(!ENABLED)('真机：claude 的技能面（L3）与模型行为',
       console.log('[live-skill-context] 技能面（vendor-system.skills）：', JSON.stringify(skills));
       console.log('[live-skill-context] 工具调用名：', JSON.stringify(tools));
       console.log('[live-skill-context] 哨兵命中：', sentinelHit, '| finalText 末 200 字：', String(result.finalText).slice(-200));
-      console.log('[live-skill-context] 行内装到的文件：', readFileSync(join(configHome, 'skills', SKILL_NAME, 'SKILL.md'), 'utf8').split('\n')[1]);
+      console.log('[live-skill-context] 候选内装到的文件：', readFileSync(join(configHome, 'skills', SKILL_NAME, 'SKILL.md'), 'utf8').split('\n')[1]);
 
       /**
        * **硬判据只有一条**：厂商的技能面真的采到了（`skills !== null`）。

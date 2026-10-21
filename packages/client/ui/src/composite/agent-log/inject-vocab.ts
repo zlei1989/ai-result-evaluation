@@ -1,7 +1,7 @@
 /**
  * 人工消息输入区与排队区的**词表与派生判定**（纯函数：无 DOM、无请求、无 React）。
  *
- * 为什么单独一格：这些判定有多个消费方（输入区的可用性、排队区每一行的按钮、回填时那句提示），
+ * 为什么单独一格：这些判定有多个消费方（输入区的可用性、排队区每个候选的按钮、回填时那句提示），
  * 而它们各自都要说一句**由声明决定**的人话。判定与文案散在渲染件里，同一件事就会有两份说法，
  * 而漂移在这类地方是**静默的**——界面照旧画得出来，只是说了另一句话。
  *
@@ -49,7 +49,7 @@ export const INJECT_STATE_PRESENTATION: Record<InjectMessageState, InjectStatePr
   queued: {
     label: '排队中',
     color: 'blue',
-    note: '还在我们这边排队：智能体下一次可投递的通知边界才取件，而「排队」那一档要等本轮没活可干了才投 —— 发出去不等于立刻到，中间可能隔着一次工具往返。',
+    note: '还在我们这边排队：智能体下一次可投递的通知边界才取件，而「排队」那一档要等本轮没活可干了才投 —— 发出去不等于立刻到，中间可能隔着一步。',
   },
   delivered: {
     label: '已交给厂商',
@@ -64,7 +64,7 @@ export const INJECT_STATE_PRESENTATION: Record<InjectMessageState, InjectStatePr
   gone: {
     label: '已从队列消失',
     color: 'default',
-    note: '这一条已经撤回、或者行收场时被丢弃 —— 它留在表里只为幂等，不再是一个还在等的人话。',
+    note: '这一条已经撤回、或者候选收场时被丢弃 —— 它留在表里只为幂等，不再是一个还在等的人话。',
   },
 };
 
@@ -72,7 +72,7 @@ export const INJECT_STATE_PRESENTATION: Record<InjectMessageState, InjectStatePr
  * 队列区真正要画的那几条：**`gone` 跳过**。
  *
  * 跳过而不是画一个灰行：`gone` 是终态，把它画成「还在等」的人话就是界面说谎；
- * 而它为什么消失（`timed-out` / `discarded` / `retracted`）已经由行级事件与账本说过一次，
+ * 而它为什么消失（`timed-out` / `discarded` / `retracted`）已经由候选级事件与账本说过一次，
  * 队列区再画一遍只会多一个会过期的地方。
  */
 export function visibleInjectMessages(messages: readonly InjectMessage[]): readonly InjectMessage[] {
@@ -137,8 +137,8 @@ export function deliveryAvailability(
   };
 }
 
-/** 一个排队行上的动作按钮：能不能点 + 悬停那句人话（**两种情形都要有话说**） */
-export interface InjectRowAction {
+/** 一个排队候选上的动作按钮：能不能点 + 悬停那句人话（**两种情形都要有话说**） */
+export interface InjectCandidateAction {
   enabled: boolean;
   tooltip: string;
 }
@@ -184,7 +184,7 @@ function retractTooltip(
 export function deleteActionOf(
   message: InjectMessage,
   declaration: TurnInjectionCapability | null,
-): InjectRowAction {
+): InjectCandidateAction {
   switch (message.state) {
     case 'queued':
       return { enabled: true, tooltip: '从队列里摘掉：它还没交给厂商，撤回来之后内容会回填到输入框。' };
@@ -212,7 +212,7 @@ export function deleteActionOf(
 export function promoteActionOf(
   message: InjectMessage,
   declaration: TurnInjectionCapability | null,
-): InjectRowAction {
+): InjectCandidateAction {
   if (message.state === 'consumed') return { enabled: false, tooltip: '已经交给智能体了：边界用掉了，改不了。' };
   if (message.state === 'delivered') return { enabled: false, tooltip: '已经交给厂商了：边界用掉了，改不了。' };
   if (message.state === 'gone') return { enabled: false, tooltip: '这一条已经从队列里消失了。' };

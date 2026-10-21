@@ -12,12 +12,12 @@
  *   2. **事件与消息共用同一把钥匙**（`messageId` = 客户端登记时那个 id）：两处能互相追回；
  *   3. **落盘过同一条终态闸门**：行已落终态后适配器收尾期吐的一律不落；
  *   4. **两条人话不许在账本里折成一条**（`mergeKey` 必须带身份那一段，见 `deliveredMessage`）；
- *   5. **预算与行收场是两件事**：前者说「等太久了」、后者说「这一行已经结束了」。
+ *   5. **预算与候选收场是两件事**：前者说「等太久了」、后者说「这个候选已经结束了」。
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentEvent, AgentMessage, RetractOutcome } from '@aieval/contracts';
-import { readEvents, rowEventsFile, rowMessagesFile } from '@aieval/core';
+import { readEvents, candidateEventsFile, candidateMessagesFile } from '@aieval/core';
 import {
   INJECT_WAIT,
   createInjectionPort,
@@ -25,29 +25,29 @@ import {
   readAttachmentSize,
   registerInjectMessage,
   retractInjectMessage,
-  settleInjectQueueOnRowEnd,
+  settleInjectQueueOnCandidateEnd,
   waitForInjectQueue,
 } from './inject-port';
 import { resetInjectQueueForTesting } from './inject-queue';
 import { saveRun } from './run-store';
-import { createTempHome, makeRowFixture, makeRunFixture, type TempHome } from './testing/fixtures';
+import { createTempHome, makeCandidateFixture, makeRunFixture, type TempHome } from './testing/fixtures';
 
 let home: TempHome;
 let runId: string;
-let rowId: string;
-/** `noteDelivered` 收到的条数（产品侧它会写进 `EvalRow.followUps`） */
+let candidateId: string;
+/** `noteDelivered` 收到的条数（产品侧它会写进 `EvalCandidate.followUps`） */
 let counted: number;
-/** 落盘闸门（行是否还收记录） */
+/** 落盘闸门（候选是否还收记录） */
 let landingOpen: boolean;
 
 beforeEach(() => {
   home = createTempHome();
   resetInjectQueueForTesting();
-  const row = makeRowFixture();
-  const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [row] });
+  const candidate = makeCandidateFixture();
+  const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [candidate] });
   saveRun(run);
   runId = run.id;
-  rowId = row.id;
+  candidateId = candidate.id;
   counted = 0;
   landingOpen = true;
 });
@@ -57,9 +57,9 @@ afterEach(() => {
   home.cleanup();
 });
 
-/** 这一行在磁盘上的消息账本（不存在时给空数组） */
+/** 这个候选在磁盘上的消息账本（不存在时给空数组） */
 function records(): AgentMessage[] {
-  const file = rowMessagesFile(home.workspaceRoot, runId, rowId);
+  const file = candidateMessagesFile(home.workspaceRoot, runId, candidateId);
   try {
     return readFileSync(file, 'utf8')
       .split('\n')
@@ -71,16 +71,16 @@ function records(): AgentMessage[] {
   }
 }
 
-/** 这一行在磁盘上的行级事件 */
+/** 这个候选在磁盘上的事件 */
 function events(): AgentEvent[] {
-  return readEvents(rowEventsFile(home.workspaceRoot, runId, rowId));
+  return readEvents(candidateEventsFile(home.workspaceRoot, runId, candidateId));
 }
 
 /** 造一个端口（落盘口径与产品侧同形；`roundTrip` 固定成 2，断言里读得到） */
 function port(sizeOf?: (path: string) => number | null): ReturnType<typeof createInjectionPort> {
   return createInjectionPort({
     runId,
-    rowId,
+    candidateId,
     landingOpen: () => landingOpen,
     roundTripHere: () => 2,
     noteDelivered: (count) => {
@@ -92,7 +92,7 @@ function port(sizeOf?: (path: string) => number | null): ReturnType<typeof creat
 
 /** 登记一条（默认「排队」档） */
 function register(messageId: string, text: string, attachments: { kind: 'image' | 'file'; path: string | null; mimeType: string | null }[] = []): void {
-  registerInjectMessage({ runId, rowId, messageId, text, attachments, requires: 'idle' });
+  registerInjectMessage({ runId, candidateId, messageId, text, attachments, requires: 'idle' });
 }
 
 describe('落点：交给厂商那一刻才写账本', () => {
@@ -126,19 +126,19 @@ describe('落点：交给厂商那一刻才写账本', () => {
 
   it('附件清单进账本（块形状），但**交付给厂商的正文**里带的是路径与大小', () => {
     register('m-1', '看这两份', [
-      { kind: 'image', path: '/rows/a/attachments/m-1/a.png', mimeType: 'image/png' },
+      { kind: 'image', path: '/candidates/a/attachments/m-1/a.png', mimeType: 'image/png' },
       { kind: 'file', path: null, mimeType: null }, // 没有路径的附件：不写进清单，但仍然记账本块
     ]);
     const inject = port((path) => (path.endsWith('.png') ? 2_048 : null));
     expect(inject.drain('idle')).toEqual([
-      { id: 'm-1', text: '看这两份\n\n[附件]\n- /rows/a/attachments/m-1/a.png (2.0 KB)' },
+      { id: 'm-1', text: '看这两份\n\n[附件]\n- /candidates/a/attachments/m-1/a.png (2.0 KB)' },
     ]);
     inject.markDelivered(['m-1'], async () => 'unsupported');
 
     const [message] = records();
     expect(message?.blocks).toEqual([
       { type: 'text', text: '看这两份' },
-      { type: 'attachment', kind: 'image', path: '/rows/a/attachments/m-1/a.png', mimeType: 'image/png' },
+      { type: 'attachment', kind: 'image', path: '/candidates/a/attachments/m-1/a.png', mimeType: 'image/png' },
       { type: 'attachment', kind: 'file', path: null, mimeType: null },
     ]);
   });
@@ -171,14 +171,14 @@ describe('落点：交给厂商那一刻才写账本', () => {
   });
 });
 
-describe('等待预算：等太久了（与「行收场」是两件事）', () => {
+describe('等待预算：等太久了（与「候选收场」是两件事）', () => {
   it('到点 ⇒ 那一条落 gone + `timed-out` 事件，窗口以 `expired` 落定', async () => {
     register('m-1', '人话');
     const controller = new AbortController();
-    const outcome = await waitForInjectQueue({ runId, rowId, signal: controller.signal, budgetMs: 5 });
+    const outcome = await waitForInjectQueue({ runId, candidateId, signal: controller.signal, budgetMs: 5 });
 
     expect(outcome).toBe('expired');
-    expect(listInjectMessages(runId, rowId)[0]).toMatchObject({ state: 'gone', outcome: 'timed-out' });
+    expect(listInjectMessages(runId, candidateId)[0]).toMatchObject({ state: 'gone', outcome: 'timed-out' });
     expect(events()[0]).toMatchObject({ type: 'inject-message', messageId: 'm-1', outcome: 'timed-out' });
     // 未投递的收场**不产生账本记录**：模型从来没看到过它
     expect(records()).toEqual([]);
@@ -186,17 +186,17 @@ describe('等待预算：等太久了（与「行收场」是两件事）', () =
 
   it('队列本来就是空的 ⇒ 立刻 `empty`（不起计时器、不落任何东西）', async () => {
     const controller = new AbortController();
-    expect(await waitForInjectQueue({ runId, rowId, signal: controller.signal, budgetMs: 5 })).toBe('empty');
+    expect(await waitForInjectQueue({ runId, candidateId, signal: controller.signal, budgetMs: 5 })).toBe('empty');
     expect(events()).toEqual([]);
   });
 
-  it('行终止 ⇒ `canceled`，那一条**原样留着**（它的收场归行收场那条路）', async () => {
+  it('候选终止 ⇒ `canceled`，那一条**原样留着**（它的收场归候选收场那条路）', async () => {
     register('m-1', '人话');
     const controller = new AbortController();
     controller.abort();
-    const outcome = await waitForInjectQueue({ runId, rowId, signal: controller.signal, budgetMs: 10_000 });
+    const outcome = await waitForInjectQueue({ runId, candidateId, signal: controller.signal, budgetMs: 10_000 });
     expect(outcome).toBe('canceled');
-    expect(listInjectMessages(runId, rowId)[0]?.state).toBe('queued');
+    expect(listInjectMessages(runId, candidateId)[0]?.state).toBe('queued');
     expect(events()).toEqual([]);
   });
 
@@ -206,24 +206,24 @@ describe('等待预算：等太久了（与「行收场」是两件事）', () =
   });
 });
 
-describe('行收场：这一行已经结束了', () => {
+describe('候选收场：这个候选已经结束了', () => {
   it('未投递的条目落 gone + `discarded` 事件，表清空（含已投递的那些）', () => {
     register('m-1', '还没投出去');
     register('m-2', '已经投出去了');
     const inject = port();
     inject.drain('idle');
     inject.markDelivered(['m-2'], async () => 'unsupported');
-    // 又来了第三条：行收场时它也没投出去
+    // 又来了第三条：候选收场时它也没投出去
     register('m-3', '行结束前一刻到的');
 
-    expect(settleInjectQueueOnRowEnd(runId, rowId)).toBe(2);
-    // 事件逐条落（与消息共用 `messageId`），两条的原因是「行已结束」
-    // 事件按发生顺序：先 m-2 的「已送达」，再两条「行已结束」的丢弃
+    expect(settleInjectQueueOnCandidateEnd(runId, candidateId)).toBe(2);
+    // 事件逐条落（与消息共用 `messageId`），两条的原因是「候选已结束」
+    // 事件按发生顺序：先 m-2 的「已送达」，再两条「候选已结束」的丢弃
     const injectEvents = events().filter((event) => event.type === 'inject-message');
     expect(injectEvents.map((event) => (event.type === 'inject-message' ? [event.messageId, event.outcome] : null)))
       .toEqual([['m-2', 'delivered'], ['m-1', 'discarded'], ['m-3', 'discarded']]);
-    expect(listInjectMessages(runId, rowId)).toEqual([]);
-    // 已投递的那条早已落过账本，行收场不动它
+    expect(listInjectMessages(runId, candidateId)).toEqual([]);
+    // 已投递的那条早已落过账本，候选收场不动它
     expect(records().map((message) => message.messageId)).toEqual(['m-2']);
   });
 });
@@ -231,7 +231,7 @@ describe('行收场：这一行已经结束了', () => {
 describe('撤回：四值分派 + 只有真的变了才落事件', () => {
   it('还在我们手里 ⇒ 直接摘掉（200 + 已撤回），落一条 `retracted` 事件', async () => {
     register('m-1', '人话');
-    expect((await retractInjectMessage(runId, rowId, 'm-1')).kind).toBe('removed');
+    expect((await retractInjectMessage(runId, candidateId, 'm-1')).kind).toBe('removed');
     expect(events()[0]).toMatchObject({ type: 'inject-message', outcome: 'retracted', reason: null });
     // 端口的四值映射：gone ⇒ `retracted`（那一条回不来了）
     expect(await port().retract('m-1')).toBe('retracted');
@@ -245,7 +245,7 @@ describe('撤回：四值分派 + 只有真的变了才落事件', () => {
     inject.markDelivered(['m-1', 'm-2'], async () => 'retracted');
 
     expect(await inject.retract('m-1')).toBe('retracted');
-    expect((await retractInjectMessage(runId, rowId, 'm-2')).kind).toBe('retracted');
+    expect((await retractInjectMessage(runId, candidateId, 'm-2')).kind).toBe('retracted');
     // 先两条「已送达」（`markDelivered` 那一刻落的），再两条「已撤回」
     expect(events().filter((event) => event.type === 'inject-message').map((event) => (event.type === 'inject-message' ? event.outcome : null)))
       .toEqual(['delivered', 'delivered', 'retracted', 'retracted']);
@@ -257,7 +257,7 @@ describe('撤回：四值分派 + 只有真的变了才落事件', () => {
     inject2.markDelivered(['m-3'], async () => 'already-consumed');
     const outcome: RetractOutcome = await inject2.retract('m-3');
     expect(outcome).toBe('already-consumed');
-    const consumed = listInjectMessages(runId, rowId).find((entry) => entry.messageId === 'm-3');
+    const consumed = listInjectMessages(runId, candidateId).find((entry) => entry.messageId === 'm-3');
     expect([consumed?.state, consumed?.outcome, consumed?.reason]).toEqual(['consumed', 'already-consumed', '这一条已经交给智能体了，撤不回来']);
   });
 
@@ -267,20 +267,20 @@ describe('撤回：四值分派 + 只有真的变了才落事件', () => {
     inject.drain('idle');
     inject.markDelivered(['m-1'], async () => 'unsupported');
     const before = events().length;
-    expect((await retractInjectMessage(runId, rowId, 'm-1')).kind).toBe('unsupported');
+    expect((await retractInjectMessage(runId, candidateId, 'm-1')).kind).toBe('unsupported');
     expect(events()).toHaveLength(before);
-    expect(listInjectMessages(runId, rowId)[0]?.state).toBe('delivered');
+    expect(listInjectMessages(runId, candidateId)[0]?.state).toBe('delivered');
   });
 
   it('不存在的 id ⇒ `not-found`（端口的四值读作 `unknown`：撤不到、也说不出为什么）', async () => {
-    expect((await retractInjectMessage(runId, rowId, 'nope')).kind).toBe('not-found');
+    expect((await retractInjectMessage(runId, candidateId, 'nope')).kind).toBe('not-found');
     expect(await port().retract('nope')).toBe('unknown');
   });
 });
 
 describe('附件大小：读不到就不写那一格', () => {
   it('真实文件读到字节数，路径不存在时给 null', () => {
-    const file = rowMessagesFile(home.workspaceRoot, runId, rowId);
+    const file = candidateMessagesFile(home.workspaceRoot, runId, candidateId);
     // 用一条已知内容的真实文件：`readAttachmentSize` 只是 `statSync` 的一层薄壳
     const size = readAttachmentSize(file);
     expect(size === null || size > 0).toBe(true);

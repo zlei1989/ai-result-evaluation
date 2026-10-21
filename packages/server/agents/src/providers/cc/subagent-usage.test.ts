@@ -334,7 +334,7 @@ describe('readClaudeSubagentUsage', () => {
    *
    * 旧的兜底会扫 `<projects>/<项目>/<会话>/subagents/` 取第一个读得动的目录——那时判据是按 id 找文件，
    * 猜错目录多半只是「找不到文件 ⇒ 点名 WARN」；**改成按目录枚举之后，猜错目录就会把别的会话
-   * （同一个 configHome 下的另一次尝试 / 评分那一次）的转录算到这一行上**：一个看起来完全正常的
+   * （同一个 configHome 下的另一次尝试 / 评分那一次）的转录算到这个候选上**：一个看起来完全正常的
    * 错数。⇒ 会话 id 未知时返回「没有目录」，上层照「事实缺失」落 null + 点名 WARN。
    */
   it('采不到 session id ⇒ 不猜目录：宁可 null + 点名，也不读别的会话的转录', () => {
@@ -346,7 +346,7 @@ describe('readClaudeSubagentUsage', () => {
     expect(read.turns).toBeNull();
     expect(read.missing).toEqual(['ae63ead9521ee0d28']);
   });
-  it('坏行（半截 JSON）跳过而不是整份作废——CLI 边跑边写，半截行是常态', () => {
+  it('坏行（半截 JSON）跳过而不是整份作废——CLI 边跑边写，半截候选是常态', () => {
     const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-'));
     const dir = join(configHome, 'projects', 'D---tmp-proj', 's-4', 'subagents');
     mkdirSync(dir, { recursive: true });
@@ -432,7 +432,7 @@ describe('readClaudeSubagentUsage：同步流式 + 同版本不重复解析', ()
     fsSpies.readdirSync.mockClear();
   });
 
-  /** 一份**跨多块**的转录（每行约 200 B × 900 行 ≈ 180 KB ⇒ 64 KB 一块要读三次以上） */
+  /** 一份**跨多块**的转录（每个候选约 200 B × 900 行 ≈ 180 KB ⇒ 64 KB 一块要读三次以上） */
   function writeBigAgentFile(configHome: string, sessionId: string, count: number): number {
     const lines = Array.from({ length: count }, (_, index) =>
       JSON.stringify(assistant(`m-${index}`, { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 })),
@@ -564,7 +564,7 @@ describe('readClaudeSubagentUsage：同步流式 + 同版本不重复解析', ()
     const configHome = mkdtempSync(join(tmpdir(), 'claude-sub-'));
     const file = join(agentDir(configHome, 's-25'), 'agent-task-1.jsonl');
     mkdirSync(agentDir(configHome, 's-25'), { recursive: true });
-    // ⚠️ 第 1 行**不带结尾换行**：追加方必须补一个，否则两行会粘成一条（那条会被当成坏行跳过）
+    // ⚠️ 第 1 行**不带结尾换行**：追加方必须补一个，否则两个候选会粘成一条（那条会被当成坏行跳过）
     writeFileSync(
       file,
       JSON.stringify(assistant('m-1', { input_tokens: 5, cache_read_input_tokens: 0, output_tokens: 1 })),
@@ -593,7 +593,7 @@ describe('readClaudeSubagentUsage：同步流式 + 同版本不重复解析', ()
    * 真机形状：收尾为「每个子智能体的最终用量」那一个循环里**每个**子会话都调一次
    * `readClaudeSubagentFile`（`index.ts` 的 `finalSubagents()`），而它每次都从 `<configHome>/projects`
    * 重新枚举一遍项目目录、再逐个项目 `readdirSync` 试一次 ⇒ O(子会话数 × 项目目录数) 次目录遍历，
-   * 而这两个输入在一行里是固定的。判据取「`<projects>` 被枚举了几次」：共用一个缓存时必须是 **1**。
+   * 而这两个输入在一个候选里是固定的。判据取「`<projects>` 被枚举了几次」：共用一个缓存时必须是 **1**。
    *
    * ⚠️ 判据只数 `projects` 那一层（不看候选目录那几次 `readdirSync`）：那才是随子会话数线性增长的部分。
    * ⚠️ 两条前提钉缺一不可：每一次都必须**真读到**（否则「只枚举一次」可能只是「压根没找」）、
@@ -633,7 +633,7 @@ describe('readClaudeSubagentUsage：同步流式 + 同版本不重复解析', ()
  *
  * 缺陷形状：`statSync` 成功而 `openSync` / `readSync` 抛（瞬时占用 / 权限 / 磁盘错）时，旧实现把
  * `streamUsage` 吞回来的 `null` **写进了缓存** ⇒ 对一份**已经写完**（size / mtimeMs 不再变）的转录，
- * 收尾那次「必须真读」直接命中这条失败：行级分量整格 `null` + 点名 WARN，而按上一段的口径
+ * 收尾那次「必须真读」直接命中这条失败：候选级分量整格 `null` + 点名 WARN，而按上一段的口径
  * 「收尾仍要真读」，这一次本该读得到。同一个 catch 还把 `consume` 里
  * 任何意外异常（编程错）也降级成「读不出」并被缓存。
  *

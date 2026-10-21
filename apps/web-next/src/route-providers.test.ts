@@ -526,7 +526,7 @@ describe('POST /api/providers/[providerId]/models/import', () => {
 });
 
 /**
- * PUT /api/providers/{id}/models：设置单条模型的窗口（设置页的行内编辑器走它）。
+ * PUT /api/providers/{id}/models：设置单条模型的窗口（设置页的候选内编辑器走它）。
  * 与同文件其余用例同口径：断言**落盘事实**，因为响应体是内存对象，证明不了「用户改的东西真的存下来了」。
  */
 describe('PUT /api/providers/{id}/models：设置模型窗口', () => {

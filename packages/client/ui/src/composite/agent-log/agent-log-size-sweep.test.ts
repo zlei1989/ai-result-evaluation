@@ -6,7 +6,7 @@
  * 只是那一格比旁边大一圈），既有的行为守卫会全绿——只有专门扫源文件的一条能拦住。
  * 与 `agent-log-layering.test.ts` 同一手法（用 `fs` 读本目录的源文件）。
  *
- * 三条边界，都是**刻意**的：
+ * 四条边界，都是**刻意**的：
  *   1. **按组件名逐个查开标签**，不是「整份文件里有 `size="small"` 就算过」——后者只被一个按钮满足， * 剩下九处全漏（这类断言没有区分力）；
  *   2. **查的是「开标签里的 `size`」**，所以抽屉几何那两处（主抽屉 `size={WIDE_DRAWER_SIZE}`，
  *      值 `max(61vw, 800px)`；二级抽屉 `size={NESTED_DRAWER_SIZE}`）不是靶子：它们给的是**宽度**，
@@ -14,7 +14,11 @@
  *      ——收不到 `'small'`；
  *   3. **`Tag` / `Listy` 不在扫描面上**：antd 6.6.5 实测 `TagProps` 与 `ListyProps` 都没有 `size`，
  *      写上去只会多一个读的人以为生效的属性。**最后两条用例**把这条依据钉住，
- *      antd 升版后不至于靠记忆（升版真加了 `size` 时这两条会红，那就是该回来扩扫描面的信号）。
+ *      antd 升版后不至于靠记忆（升版真加了 `size` 时这两条会红，那就是该回来扩扫描面的信号）；
+ *   4. **`XAttachments` 的 body 不吃这条口径**：那颗附件图标是 X 的 `children`，高度由 `Sender`
+ *      那一行定（紧凑密度下 28px、与输入框和发送键同高）；写 `size="small"` 会矮半截、图标比正文低。
+ *      豁免按**组件区间**划，不按文件划——同一份输入区里、`XAttachments` 外面的按钮照旧要带
+ *      `size="small"`；那颗触发器另有一条**反向判据**（不许写 `size`）。
  *
  * `Badge` 是唯一「写了也不改变外观」的一格：`Badge.js` 把这个值只拼进**计数**徽标的
  * `ScrollNumber`（`${prefixCls}-count-sm`），status 圆点徽标那条分支不带它。
@@ -63,13 +67,17 @@ const RENDER_FILES = readdirSync(dir)
  * ——`antd/es/table/InternalTable.d.ts:52` 写 `size?: SizeType`。本目录里只有计划清单那一处
  * `<Table>`，故这一格是真的有靶子，不是凑数。
  *
+ * `Collapse` 同样在面上（`antd/es/collapse/Collapse.d.ts` 写 `size?: SizeType`）：尺寸落到根类
+ * `.ant-collapse-small`，标题与正文各收一档。本目录的折叠面板都嵌在卡片或工具组里，
+ * 退回中档就是「卡片里嵌了一个比卡片自身更松的盒子」。
+ *
  * **X 的组件（`Bubble` / `Sender` / `ThoughtChain` / `FileCard` …）不在这张表里**：它们没有
  * `size` 能力（`SenderProps` 连 `size` 都没有，官方 FAQ 的 `<Sender size="small" />` 是文档错误），
  * 写上去就是一个在本仓查不到东西的靶子。X 那一路的尺寸纪律换成了另一条判据——静态扫壳
  * （`base/x-shell-size-discipline.test.ts`：壳里不手写字号 / 行高 / 内边距），
  * 而**量出来的那一半在真机冒烟里**（jsdom 没有 CSS 级联，量不到字号，与 `MonoText` 等宽字体同一条边界）。
  */
-const SIZED_COMPONENTS = ['Badge', 'Button', 'Card', 'Descriptions', 'InputNumber', 'Switch', 'Table'] as const;
+const SIZED_COMPONENTS = ['Badge', 'Button', 'Card', 'Collapse', 'Descriptions', 'InputNumber', 'Switch', 'Table'] as const;
 
 /** 合法标识符起头 ⇒ `<Badge` 其实更长的名字（闭包组件的前缀） */
 const IDENTIFIER_START = /^[A-Za-z0-9_$]/;
@@ -169,16 +177,58 @@ function openingTags(source: string, name: string): Hit[] {
   return hits;
 }
 
+/**
+ * `XAttachments` 的 **body 区间**（自闭合的那几处不产生区间）。
+ *
+ * 为什么要按组件划出一块豁免面：输入区那颗回形针是 `XAttachments` 的 `children`——
+ * X 把它套成拖拽区与文件选择器，它的高度必须跟 `Sender` 那一行同高（紧凑密度下 28px）。
+ * 写 `size="small"` 会让它矮半截，图标比正文低 3.5px；不写才是「用组件自带的那一档」。
+ * 按文件名放行整份 `composer-input.tsx` 会把以后加进那支输入区的按钮也一起漏掉，故只放这一块。
+ */
+function xAttachmentBodies(source: string): { start: number; end: number }[] {
+  const bodies: { start: number; end: number }[] = [];
+  for (const tag of openingTags(source, 'XAttachments')) {
+    // 自闭合的那几处（清单态）没有 body，别把后面一整段都算进来
+    if (/\s*\/>$/.test(tag.value)) continue;
+    const close = source.indexOf('</XAttachments>', tag.index + tag.value.length);
+    if (close === -1) continue;
+    bodies.push({ start: tag.index, end: close });
+  }
+  return bodies;
+}
+
+/** 开标签是否落在附件触发器槽里（落在里面就由 X 的行高定尺寸，不吃 `size="small"` 口径） */
+function inAttachmentTrigger(hit: Hit, bodies: readonly { start: number; end: number }[]): boolean {
+  return bodies.some(({ start, end }) => hit.index > start && hit.index < end);
+}
+
 /** 扫描面上全部命中 */
 function sizedHits(): { file: string; name: string; hit: Hit }[] {
   const hits: { file: string; name: string; hit: Hit }[] = [];
   for (const file of RENDER_FILES) {
     const source = readFileSync(join(dir, file), 'utf8');
+    const triggerBodies = xAttachmentBodies(source);
     for (const name of SIZED_COMPONENTS) {
-      for (const hit of openingTags(source, name)) hits.push({ file, name, hit });
+      for (const hit of openingTags(source, name)) {
+        if (inAttachmentTrigger(hit, triggerBodies)) continue;
+        hits.push({ file, name, hit });
+      }
     }
   }
   return hits;
+}
+
+/** `XAttachments` 槽里那颗附件触发器（本轮只有 `Button`；扫描面为空时下面那条会红） */
+function triggerButtons(): { file: string; hit: Hit }[] {
+  const found: { file: string; hit: Hit }[] = [];
+  for (const file of RENDER_FILES) {
+    const source = readFileSync(join(dir, file), 'utf8');
+    const triggerBodies = xAttachmentBodies(source);
+    for (const hit of openingTags(source, 'Button')) {
+      if (inAttachmentTrigger(hit, triggerBodies)) found.push({ file, hit });
+    }
+  }
+  return found;
 }
 
 describe('执行日志的 size 口径：带 size 的组件一律 small', () => {
@@ -217,6 +267,43 @@ describe('执行日志的 size 口径：带 size 的组件一律 small', () => {
       return [`${file}:${line} <${name}> size=${bad.join(' / ')}`];
     });
     expect(wrong).toEqual([]);
+  });
+
+  /**
+   * 豁免必须**窄**：自闭合的 `XAttachments`（清单态）没有 body，不能把后面的按钮一起吞掉；
+   * 触发器槽外面的按钮照旧回到扫描面上。没有这一条，`xAttachmentBodies` 一旦把 self-closing
+   * 判成有 body，整份输入区后面的按钮都会静默免检。
+   */
+  it('XAttachments 的豁免只覆盖它的 body：自闭合那几处不产生区间', () => {
+    const source = [
+      '<XAttachments items={items} />',
+      '<Button />',
+      '<XAttachments>',
+      '  <Button type="text" />',
+      '</XAttachments>',
+      '<Button />',
+    ].join('\n');
+    const bodies = xAttachmentBodies(source);
+    expect(bodies).toHaveLength(1);
+    expect(openingTags(source, 'Button').filter((hit) => !inAttachmentTrigger(hit, bodies))).toHaveLength(2);
+  });
+
+  /**
+   * 附件触发器是这条口径**唯一的反向格**：它不但不吃 `size="small"`，而且不该写 `size`
+   * ——高度由 `Sender` 那一行定（紧凑密度下 28px，与输入框、发送键同高），写小档就会矮半截、
+   * 图标比正文低 3.5px。静态扫描看不到这 3.5px，只能靠这一条把「别再写回去」钉住。
+   */
+  it('附件触发器不写 size（写了就矮半截、图标与正文错开）', () => {
+    const triggers = triggerButtons();
+    // 防静默空转：触发器槽里真的有一颗按钮，否则下面那条永远绿
+    expect(triggers.map(({ file }) => file)).toContain('composer-input.tsx');
+    const offenders = triggers.flatMap(({ file, hit }) => {
+      if (!/\ssize=/.test(hit.value)) return [];
+      const source = readFileSync(join(dir, file), 'utf8');
+      const line = source.slice(0, hit.index).split('\n').length;
+      return [`${file}:${line} <Button> 写了 size（触发器高度由 Sender 那一行定）`];
+    });
+    expect(offenders).toEqual([]);
   });
 
   it('`Tag` 不在扫描面上：antd 6 的 TagProps 没有 size', () => {

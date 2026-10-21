@@ -1,5 +1,5 @@
 /**
- * useRowJudgeEvents：评分那条事件流的历史读取与（仅 judging 时的）实时续订。
+ * useCandidateJudgeEvents：评分那条事件流的历史读取与（仅 judging 时的）实时续订。
  *
  * 五个用例是本 hook 的全部风险面：
  * 1. **终态行不接 SSE**（空闲零连接」口径）：历史拉完即止，`live=false` 时一个
@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { AgentEvent } from '@aieval/contracts';
 import { resetDrawerStreamHubForTesting } from './drawer-stream-hub';
-import { useRowJudgeEvents } from './judge-events';
+import { useCandidateJudgeEvents } from './judge-events';
 import { FakeEventSource, installEventSourceStub } from './testing/event-source';
 import { makeEvent, makeMessage } from './testing/run-fixtures';
 
@@ -52,9 +52,9 @@ function stubJudgeFetch(history: unknown[], secondRead: unknown[] = history): Fe
   return fetchMock;
 }
 
-/** SSE 的 `data:` 行内容 = 信封里的那一帧（与 api 的组帧逐字同形：业务载荷 + 归属两格） */
+/** SSE 的 `data:` 候选内容 = 信封里的那一帧（与 api 的组帧逐字同形：业务载荷 + 归属两格） */
 function frame(event: AgentEvent): string {
-  return JSON.stringify({ ...event, rowId: 'w-1', rowChannel: 'judge' });
+  return JSON.stringify({ ...event, candidateId: 'w-1', candidateChannel: 'judge' });
 }
 
 beforeEach(() => {
@@ -68,11 +68,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('useRowJudgeEvents', () => {
+describe('useCandidateJudgeEvents', () => {
   it('先拉 /judge/events 补历史；live=false（终态行）一个 SSE 都不接', async () => {
     stubJudgeFetch([makeEvent({ seq: 1 }), makeEvent({ seq: 2 }), makeEvent({ seq: 3 })]);
 
-    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: false }), {
+    const { result } = renderHook(() => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live: false }), {
       wrapper,
     });
 
@@ -87,12 +87,12 @@ describe('useRowJudgeEvents', () => {
   it('live=true 时接 SSE（afterSeq = 历史最大 seq），具名事件进 events 且按 seq 去重', async () => {
     stubJudgeFetch([makeEvent({ seq: 1 }), makeEvent({ seq: 2 })]);
 
-    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: true }), {
+    const { result } = renderHook(() => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live: true }), {
       wrapper,
     });
 
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=judge&afterSeq=2');
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?candidateId=w-1&candidateChannel=judge&afterSeq=2');
 
     const source = FakeEventSource.instances[0];
     await act(async () => {
@@ -110,10 +110,10 @@ describe('useRowJudgeEvents', () => {
 
   it('评分侧的消息帧不进事件列表（judge 那个 channel 也带消息族）', async () => {
     // 抽屉流是「一个 channel 的完整流水」：judge 那条也带着评分侧的消息与子任务行，
-    // 本 hook 只认行级事件那一族——不筛的话时间轴的内容会混进「原始输出」面板
+    // 本 hook 只认候选级事件那一族——不筛的话时间轴的内容会混进「原始输出」面板
     stubJudgeFetch([makeEvent({ seq: 1 })]);
 
-    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: true }), {
+    const { result } = renderHook(() => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live: true }), {
       wrapper,
     });
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
@@ -122,7 +122,7 @@ describe('useRowJudgeEvents', () => {
     await act(async () => {
       source?.emitNamed(
         'message',
-        JSON.stringify({ type: 'message', rowId: 'w-1', rowChannel: 'judge', message: makeMessage({ mergeKey: 'judge|-' }) }),
+        JSON.stringify({ type: 'message', candidateId: 'w-1', candidateChannel: 'judge', message: makeMessage({ mergeKey: 'judge|-' }) }),
       );
       const fresh = makeEvent({ seq: 2, type: 'log', stream: 'stderr', text: '评审者的实时输出' });
       source?.emitNamed('log', frame(fresh));
@@ -136,7 +136,7 @@ describe('useRowJudgeEvents', () => {
     stubJudgeFetch([makeEvent({ seq: 1 })], [makeEvent({ seq: 1 }), makeEvent({ seq: 2 }), makeEvent({ seq: 3 })]);
 
     const { result, rerender } = renderHook(
-      ({ live }: { live: boolean }) => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live }),
+      ({ live }: { live: boolean }) => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live }),
       { wrapper, initialProps: { live: true } },
     );
 
@@ -160,7 +160,7 @@ describe('useRowJudgeEvents', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: true }), {
+    const { result } = renderHook(() => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live: true }), {
       wrapper,
     });
 
@@ -194,7 +194,7 @@ describe('useRowJudgeEvents', () => {
       ),
     );
 
-    const { result } = renderHook(() => useRowJudgeEvents({ runId: 'run-1', rowId: 'w-1', enabled: true, live: true }), {
+    const { result } = renderHook(() => useCandidateJudgeEvents({ runId: 'run-1', candidateId: 'w-1', enabled: true, live: true }), {
       wrapper,
     });
 

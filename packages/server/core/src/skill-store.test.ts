@@ -149,6 +149,14 @@ describe('scanSkills：识别单位与准入', () => {
     expect(scanSkills().skills.map((skill) => skill.name)).toEqual(['real-skill']);
   });
 
+  it('第一层的噪声目录（.git / node_modules）也不占一行「缺 SKILL.md」', () => {
+    seedSkill('real-skill', { name: 'real-skill', description: '真技能' });
+    mkdirSync(join(root, '.git'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'left-pad'), { recursive: true });
+
+    expect(scanSkills().skills.map((skill) => skill.name)).toEqual(['real-skill']);
+  });
+
   it('软链形态的技能照旧入列（过滤只挡普通文件，不许把软链一起滤掉）', () => {
     // 技能常住在仓库里、在技能根挂一条软链：`isDirectory()` 对软链恒为 false，判据漏了它就整条不见
     const source = join(configDir, 'skill-source');
@@ -341,11 +349,30 @@ describe('readSkillTree：左树那一栏', () => {
     ]);
   });
 
-  it('点文件也列出来（藏起来会让人以为「我放的文件不见了」）', () => {
+  it('表外的点文件照列（藏与不藏的边界是一张名单，不是「点开头就藏」）', () => {
     seedSkill('dotted', { name: 'dotted', description: '点文件' });
     writeFileSync(join(root, 'dotted', '.hidden'), 'x', 'utf8');
 
     expect(readSkillTree('dotted').root.children.map((node) => node.path)).toContain('.hidden');
+  });
+
+  it('常见噪声条目（.DS_Store / .git / node_modules）哪一层都不列，且不说「没列全」', () => {
+    seedSkill('noisy', { name: 'noisy', description: '带噪声' });
+    writeFileSync(join(root, 'noisy', '.DS_Store'), 'x', 'utf8');
+    mkdirSync(join(root, 'noisy', '.git', 'objects'), { recursive: true });
+    mkdirSync(join(root, 'noisy', 'node_modules', 'left-pad'), { recursive: true });
+    writeFileSync(join(root, 'noisy', 'node_modules', 'left-pad', 'index.js'), '', 'utf8');
+    mkdirSync(join(root, 'noisy', 'reference'), { recursive: true });
+    writeFileSync(join(root, 'noisy', 'reference', '.DS_Store'), 'x', 'utf8');
+    writeFileSync(join(root, 'noisy', 'reference', 'API.md'), '# API\n', 'utf8');
+
+    const tree = readSkillTree('noisy');
+
+    expect(tree.root.children.map((node) => node.path)).toEqual(['reference', 'SKILL.md']);
+    // 子树里也拦得住，同层其余文件照旧在
+    expect(tree.root.children[0]?.children.map((node) => node.path)).toEqual(['API.md']);
+    // 这是「有意不列」，不是「没列全」：那一句亮了会让用户以为树读坏了
+    expect(tree.truncated).toBe(false);
   });
 
   it('名字不合法 ⇒ INVALID_QUERY（防路径穿越的那一道门）', () => {

@@ -51,7 +51,7 @@ export const SettingsSchema = z.object({
    * 送评分模型的 diff 体积上限（字节），超出按文件裁剪并标注截断。
    *
    * 注意这里**没有**「单行超时」这一格（用户口径）：执行与评分都不限时间，
-   * 一行只会因为「跑完 / 失败 / 用户点终止」结束。旧 `config.json` 里多出来的 `rowTimeoutMs`
+   * 一行只会因为「跑完 / 失败 / 用户点终止」结束。旧 `config.json` 里多出来的 `candidateTimeoutMs`
    * 在读盘时就被丢掉——**丢键的不是本 schema**：`loadConfig` 故意不做 schema 校验（一条手改坏的
    * 值不该让设置页打不开），它按 `SETTINGS_DEFAULTS` 的键表过滤（多出来的键丢掉，见 core 的
    * `normalizeSettings`）。本 schema 的 strip 语义只在**本文件被 `parse` 时**生效（契约测试走的

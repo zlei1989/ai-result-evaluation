@@ -366,7 +366,7 @@ describe('startCodexSession —— 中断、终止与关闭', () => {
  * 起手失败必须回收。
  *
  * 为什么单列一组：这三步抛错时 `runTurn` 里 `started` 还是 undefined ⇒ `dispose` **永远不会被调用**
- * （`dispose` 挂在 `TurnStart` 上，而它根本没被返回）。进程就此常驻，并一直持着该行的 `$CODEX_HOME`
+ * （`dispose` 挂在 `TurnStart` 上，而它根本没被返回）。进程就此常驻，并一直持着该候选的 `$CODEX_HOME`
  * ——下一轮的行产物清理会 `EPERM`。守卫的判据是「client 被关了」，不是「错误有没有抛」。
  */
 describe('startCodexSession —— 起手失败要回收已经 spawn 的进程', () => {

@@ -136,16 +136,16 @@ export interface DshHarness {
 
 /** 构造选项（`DeepSeekHarnessOptions` 的窄结构）。 */
 export interface DshHarnessOptions {
-  /** 该行工作区（记录在 SDK 创建的会话头上） */
+  /** 该运行工作区（记录在 SDK 创建的会话头上） */
   cwd: string;
-  /** 该行独立配置目录：SDK 把它落成子进程的 `DSH_HOME` */
+  /** 本次运行独立配置目录：SDK 把它落成子进程的 `DSH_HOME` */
   dshHome: string;
   /** dsh 进程自己的工作目录（默认 = 父进程 cwd） */
   processCwd: string;
-  /** 该行的模型名 */
+  /** 本次运行的模型名 */
   model: string;
   /**
-   * 该行走哪条 **provider 路由**（`GenerateOptions.provider`，默认 `deepseek-official`）。
+   * 本次运行走哪条 **provider 路由**（`GenerateOptions.provider`，默认 `deepseek-official`）。
    * 本仓传自己的路由键（`DSH_ROUTE_KEY`）：`initialize` 会先用 `llm.listProviders()` 校验它存在
    * （不认就抛 `no adapter registered for provider "…"`），再用 `resolveCallConfig` 校验
    * provider/model 可解析 ⇒ 路由与模型都必须在 boot 时就已注册（见 `patches`）。
@@ -160,11 +160,11 @@ export interface DshHarnessOptions {
   /**
    * 初始 profile 握手的墙钟上限（`HarnessClientOptions.initializeTimeoutMs`，**SDK 默认 10000**）。
    *
-   * 为什么必须由我们显式给：这一行**每次都跑在一个全新的 `configHome` 上**（不变量 3：
-   * 每行独立配置目录），也就是说**每一次运行都是冷启动**——dsh 要把整棵插件树解析完才回 initialize。
+   * 为什么必须由我们显式给：本次运行**每次都跑在一个全新的 `configHome` 上**（不变量 3：
+   * 每个本次运行独立配置目录），也就是说**每一次运行都是冷启动**——dsh 要把整棵插件树解析完才回 initialize。
    * 实测（`probe/v3/dsh-adapter-dual-protocol.mts`）：在 SDK 默认的 10s 下，
    * **两条协议双双**以 `initialize timed out after 10000ms waiting for dsh profile "sdk"` 收场，
-   * 适配器把它折成 `AGENT_FAILED`——界面上只看到「这一行失败了」，而真实原因与协议、与凭据、
+   * 适配器把它折成 `AGENT_FAILED`——界面上只看到「本次运行失败了」，而真实原因与协议、与凭据、
    * 与 overlay 内容都无关，正是本仓最忌讳的那类「症状离真因很远」的失败。
    */
   initializeTimeoutMs?: number;

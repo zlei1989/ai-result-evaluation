@@ -4,10 +4,10 @@
  *
  * 为什么这几条判据都住在本文件（编排用例很贵：每个文件都要自己写三条 `vi.mock`）：
  * 它们各自钉一件事，且都只能在「跑完一行」之后才看得见：
- *   ① **落盘那一件事**（本票的主判据）：答复落进候选消息账本的 `tool-result` 那一半（逐字），
- *      收场方式与等待时长落进行级事件；
+ *   ① **落盘那一件事**（本票的主判据）：答复落进行的消息账本的 `tool-result` 那一半（逐字），
+ *      收场方式与等待时长落进行的级事件；
  *   ② **没人答**：到点按「超时」收场并**从挂起表里出表**（不是留在快照里当一条再也答不了的提问），
- *      且行的结论不受影响（「没人答」与「行失败」是两件事）；
+ *      且候选的结论不受影响（「没人答」与「候选失败」是两件事）；
  *   ③ **闸门**（零回归判据）：这一轮没开应答面时回调**根本不在入参上**，一次都不被调用，
  *      账本与事件里也没有任何与提问有关的记录；
  *   ④ 子智能体发起的提问落「被拒绝」，同样不进表。
@@ -23,7 +23,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AskUserAnswer, AskUserQuestion } from '@aieval/contracts';
 import type { AskUserRequest } from '@aieval/agents';
-import { readEvents, rowEventsFile } from '@aieval/core';
+import { readEvents, candidateEventsFile } from '@aieval/core';
 import { listPendingAskUser, listPendingAskUserEntries, resetAskUserForTesting, resolveAskUser } from './ask-user';
 import {
   adapterMessagesOf,
@@ -32,8 +32,8 @@ import {
   getRun,
   home,
   registerOrchestratorHooks,
-  rowRecordsOf,
-  rowSettled,
+  candidateRecordsOf,
+  candidateSettled,
   seedRunnableRun,
   startRun,
   TEST_TIMEOUT_MS,
@@ -78,14 +78,14 @@ function askRequest(overrides: Partial<AskUserRequest> = {}): AskUserRequest {
   };
 }
 
-/** 这一行的行级事件（每次都从盘上现读：用例断言的是**落盘事实**，不是内存里的账） */
-function rowEventsOf(runId: string, rowId: string) {
-  return readEvents(rowEventsFile(home.workspaceRoot, runId, rowId));
+/** 这个候选的事件（每次都从盘上现读：用例断言的是**落盘事实**，不是内存里的账） */
+function candidateEventsOf(runId: string, candidateId: string) {
+  return readEvents(candidateEventsFile(home.workspaceRoot, runId, candidateId));
 }
 
-/** 这一行的提问收场事件（0 条或 1 条；多过一条就是重复落盘） */
-function askEventsOf(runId: string, rowId: string) {
-  return rowEventsOf(runId, rowId).filter((event) => event.type === 'ask-user');
+/** 这个候选的提问收场事件（0 条或 1 条；多过一条就是重复落盘） */
+function askEventsOf(runId: string, candidateId: string) {
+  return candidateEventsOf(runId, candidateId).filter((event) => event.type === 'ask-user');
 }
 
 /**
@@ -101,9 +101,9 @@ beforeEach(() => {
 });
 
 describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, () => {
-  it('开启应答面：答复逐字落进 `tool-result` 那一半，收场方式与耗时落进行级事件', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
-    const rowId = getRun(run.id).rows[0]!.id;
+  it('开启应答面：答复逐字落进 `tool-result` 那一半，收场方式与耗时落进行的级事件', async () => {
+    const { run } = seedRunnableRun({ candidateCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
+    const candidateId = getRun(run.id).candidates[0]!.id;
     const request = askRequest();
     fakeAgents.scripts.set('pi', {
       messages: [{ text: '先问一句再动手。' }],
@@ -125,7 +125,7 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
     expect(call?.askUserReplies).toEqual([{ outcome: 'answered', answers: [ANSWER] }]);
 
     // ② 账本 `tool-result` 那一半：`callId` 配对、答案是逐字的那一份
-    const resultBlock = rowRecordsOf(run.id, rowId)
+    const resultBlock = candidateRecordsOf(run.id, candidateId)
       .messages.flatMap((message) => message.blocks)
       .find((block) => block.type === 'tool-result' && block.callId === request.callId);
     expect(resultBlock?.type === 'tool-result' ? resultBlock.structured : null).toEqual({
@@ -135,8 +135,8 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
     // 「没人答」不是错误结果：`isError` 只表示「这次工具调用失败了」
     expect(resultBlock?.type === 'tool-result' ? resultBlock.isError : true).toBe(false);
 
-    // ③ 行级观测事件：收场方式 + 等待时长 + 提问来源通道（这一家声明的是宿主工具）
-    const askEvents = askEventsOf(run.id, rowId);
+    // ③ 候选级观测事件：收场方式 + 等待时长 + 提问来源通道（这一家声明的是宿主工具）
+    const askEvents = askEventsOf(run.id, candidateId);
     expect(askEvents).toHaveLength(1);
     expect(askEvents[0]).toMatchObject({
       askId,
@@ -152,9 +152,9 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
     expect(listPendingAskUser()).toEqual([]);
   });
 
-  it('没人答：到点按「超时」收场、从挂起表出表，行的结论不受影响', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
-    const rowId = getRun(run.id).rows[0]!.id;
+  it('没人答：到点按「超时」收场、从挂起表出表，候选的结论不受影响', async () => {
+    const { run } = seedRunnableRun({ candidateCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
+    const candidateId = getRun(run.id).candidates[0]!.id;
     // 厂商给的预算只有 1.2 s：编排层因此比端口自己那条兜底（同一预算）早一步到点
     const request = askRequest({ vendorBudgetMs: 1_200 });
     fakeAgents.scripts.set('pi', { askUser: { request } });
@@ -167,16 +167,16 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
     expect(fakeAgents.calls[0]?.askUserReplies).toEqual([{ outcome: 'timeout', answers: null }]);
     // 挂起表里出表了（留在里面就是一条再也答不了的提问，快照会一直显示它）
     expect(listPendingAskUser()).toEqual([]);
-    const askEvents = askEventsOf(run.id, rowId);
+    const askEvents = askEventsOf(run.id, candidateId);
     expect(askEvents).toHaveLength(1);
     expect(askEvents[0]?.type === 'ask-user' ? askEvents[0].outcome : null).toBe('timeout');
-    // 「没人答」与「行失败」是两件事：这一行照常跑完并拿到分
-    expect(getRun(run.id).rows[0]?.status).toBe('judged');
+    // 「没人答」与「候选失败」是两件事：这个候选照常跑完并拿到分
+    expect(getRun(run.id).candidates[0]?.status).toBe('judged');
   });
 
   it('闸门：这一轮没开应答面时不传回调，一次都不被调用，产物里没有提问的痕迹', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial', agentKind: 'pi' });
-    const rowId = getRun(run.id).rows[0]!.id;
+    const { run } = seedRunnableRun({ candidateCount: 1, executionMode: 'serial', agentKind: 'pi' });
+    const candidateId = getRun(run.id).candidates[0]!.id;
     fakeAgents.scripts.set('pi', {
       messages: [{ text: '先问一句再动手。' }],
       // 厂商那一侧照常问（脚本里有这一格）——闸门关着，没有人接
@@ -185,13 +185,13 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
 
     startRun(run.id);
     /**
-     * 闸门关着 ⇒ 这一行**不等人**：等它落定即可。
-     * 上限刻意短、且接上「已经有人被问了」这条不可能判据：闸门一旦失效，这一行会挂在等人上
+     * 闸门关着 ⇒ 这个候选**不等人**：等它落定即可。
+     * 上限刻意短、且接上「已经有人被问了」这条不可能判据：闸门一旦失效，这个候选会挂在等人上
      * 直到预算烧完（十分钟），而那时红出来的是一句「测试超时」——离真因很远。
      */
     await until(
-      () => rowSettled(run.id, rowId),
-      '这一行落定（闸门关着 ⇒ 不该有人在等用户回答）',
+      () => candidateSettled(run.id, candidateId),
+      '这个候选落定（闸门关着 ⇒ 不该有人在等用户回答）',
       5_000,
       () => (fakeAgents.calls[0]?.askUserCalls ?? 0) > 0,
     );
@@ -206,16 +206,16 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
 
     // 产物与今天逐字相同：适配器自己只投了那一条消息（题面那条记账消息不算它的产出），
     // 事件里没有一条提问事件
-    const messages = adapterMessagesOf(run.id, rowId);
+    const messages = adapterMessagesOf(run.id, candidateId);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.blocks).toEqual([{ type: 'text', text: '先问一句再动手。' }]);
-    expect(askEventsOf(run.id, rowId)).toEqual([]);
+    expect(askEventsOf(run.id, candidateId)).toEqual([]);
     expect(listPendingAskUser()).toEqual([]);
   });
 
   it('子智能体发起的提问：落「被拒绝」，不进挂起表（子智能体不能向用户提问）', async () => {
-    const { run } = seedRunnableRun({ rowCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
-    const rowId = getRun(run.id).rows[0]!.id;
+    const { run } = seedRunnableRun({ candidateCount: 1, executionMode: 'serial', agentKind: 'pi', askUser: true });
+    const candidateId = getRun(run.id).candidates[0]!.id;
     const request = askRequest({ callId: 'call_ask_sub', subagentId: 'sub-1' });
     fakeAgents.scripts.set('pi', { askUser: { request } });
 
@@ -224,7 +224,7 @@ describe('应答面：编排层接线与落盘', { timeout: TEST_TIMEOUT_MS }, (
 
     expect(fakeAgents.calls[0]?.askUserReplies).toEqual([{ outcome: 'rejected', answers: null }]);
     expect(listPendingAskUser()).toEqual([]);
-    const askEvents = askEventsOf(run.id, rowId);
+    const askEvents = askEventsOf(run.id, candidateId);
     expect(askEvents[0]?.type === 'ask-user' ? askEvents[0].outcome : null).toBe('rejected');
   });
 });

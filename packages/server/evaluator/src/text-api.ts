@@ -26,11 +26,11 @@
  *      两条路径共用 `buildBody` 与 `callOnce`，**请求体形状只有一个构造点**，否则「单轮能跑、
  *      多轮 400」这类漂移只会在多轮那一条路径上出现。
  *  7. **瞬时失败（网络 / 5xx / 限流）自动重试一次以上**：本机实测真实网关会回 `500 服务维护中`，
- *      一次抖动就让一整行落 `failed`（还要人工重跑）是不划算的。重试**只覆盖瞬时面**
+ *      一次抖动就让一整个候选落 `failed`（还要人工重跑）是不划算的。重试**只覆盖瞬时面**
  *      （见 `RETRYABLE_CODES`），`AUTH_FAILED` / `CONFLICT` 与「已中止」一次都不重试。
  *  8. **思考强度只有一张协议表**：`reasoningFields` 是文本侧**唯一**的落点，
  *      且 `buildBody` 的两个分支都要展开它；未指定 = 不下发任何强度键（听网关的缺省，**不是**关闭，
- *      也**不等强**于智能体侧 `EvalRow.effort` 的「走适配器缺省」），关闭档 `EFFORT_OFF` =
+ *      也**不等强**于智能体侧 `EvalCandidate.effort` 的「走适配器缺省」），关闭档 `EFFORT_OFF` =
  *      Responses 的 `reasoning: { effort: 'none' }` / Messages 的 `thinking: { type: 'disabled' }`。
  */
 import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
@@ -146,10 +146,10 @@ const MAX_TOKENS = 16_384;
 /**
  * 瞬时失败的重试预算（**不含首次**）与退避间隔。
  * 为什么要有它：真实网关实测会回 `500 {"type":"api_error","message":"服务维护中，请稍后重试"}`
- * ——一次抖动就把整行判 `failed`、还要人工点一次重跑，而重试一次的成本是几秒。
+ * ——一次抖动就把整个候选判 `failed`、还要人工点一次重跑，而重试一次的成本是几秒。
  * 3 次尝试（首次 + 2 次重试）是「临时抖动够用」与「不把一次真故障拖成分钟级」之间的折中；
  * 退避只用固定 600ms：上游是「维护中」这类短时故障，指数退避在这里买不到更多东西，
- * 却会让一行失败多等好几秒。
+ * 却会让一候选失败多等好几秒。
  *
  * **为什么是一个导出的可变对象而不是两个常量**：用例要能断言「第 2 次调用时带的是同一段对话」
  * 与「退避确实发生了」，而真等 2×600ms 会让每条负例都慢一秒多（全量套件里成倍放大）。
@@ -224,8 +224,8 @@ function hostOf(url: string): string {
  *     （[使用 Anthropic API](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api)，
  *     `thinking.budget_tokens` 被上游忽略）。
  * **未指定 = 不下发任何强度键**（把决定权交给网关的缺省，不是关闭）；关闭档要我们自己说。
- * ⚠️ 这与 `EvalRow.effort`（智能体侧）的口径**不等强，不要互相引用**：那边「未选」= 走该家适配器
- * 自己的缺省（dsh 会落到 `high`，见 `contracts/src/run.ts` 的 `EvalRow.effort`），是**我们这一侧**
+ * ⚠️ 这与 `EvalCandidate.effort`（智能体侧）的口径**不等强，不要互相引用**：那边「未选」= 走该家适配器
+ * 自己的缺省（dsh 会落到 `high`，见 `contracts/src/run.ts` 的 `EvalCandidate.effort`），是**我们这一侧**
  * 做的决定；这边是**不下发**、由网关定。同一个「未指定」在两条通路上可以不落到同一个强度。
  * ⚠️ 另一条边界（**原样下发，不做本地归一**）：普通档照发——`minimal` / `xhigh` / `ultra` 这些非规范档名照发，
  * 由网关按它自己的映射表折。本地归一要么把档位信息丢掉、要么把网关的映射表抄第二份（抄第二份必然漂移）。
@@ -406,7 +406,7 @@ async function callWithRetry(
       await sleep(TEXT_API_RETRY.backoffMs);
     }
   }
-  // 循环必然在 return 或 throw 上离开；这一行只为让 tsc 看到「不是所有分支都返回值」
+  // 循环必然在 return 或 throw 上离开；这个候选只为让 tsc 看到「不是所有分支都返回值」
   throw lastError instanceof Error ? lastError : new ServiceError('INTERNAL', `调用文本 API 失败（${host}，模型 ${route.modelId}）`);
 }
 
@@ -416,7 +416,7 @@ async function callWithRetry(
  * `input.signal` 可选：评分通路传编排层那一把（用户终止 + 外层兜底超时都走它），
  * 提示词生成不传——不传时行为与本功能之前逐字相同（见文件头第 5 条）。
  * `input.effort` 也**必须**透下去：单轮是「一段对话只有一条用户消息」，请求体仍由 `buildBody` 造，
- * 不透就等于「`generateRubric`（走单轮）没有强度、`judgeRow`（走多轮）有」——同一条通路的两种行为。
+ * 不透就等于「`generateRubric`（走单轮）没有强度、`judgeCandidate`（走多轮）有」——同一条通路的两种行为。
  */
 export async function callTextApi(route: TextRoute, input: TextCallInput): Promise<string> {
   const { text } = await callWithRetry(route, {
@@ -436,7 +436,7 @@ export async function callTextApi(route: TextRoute, input: TextCallInput): Promi
  * 多轮调用：把**完整对话**交给模型（含它上一轮不合格的答复与我们的纠错要求），
  * 并把**这一次调用自己的用量**一起交出来（评分详情要显示「这一分花了多少」）。
  * 为什么需要它（目标页实测）：评分模型偶尔回一段散文或半截 JSON，一次解析失败就
- * 让整行落 `failed`——而它手里已经有全部上下文，只要告诉它「哪里不合格」就能答对。
+ * 让整个候选落 `failed`——而它手里已经有全部上下文，只要告诉它「哪里不合格」就能答对。
  * 与 `callTextApi` 共用请求体构造、折错、中止、思考强度与瞬时重试（见文件头第 6/7/8 条）。
  * **求和不在这一层**：本函数一次只交一次调用的读数，结构修复的每一轮各算一次，
  * 「多轮要不要累计」是评分器（`judge.ts`）的口径，不是外壳的。

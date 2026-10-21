@@ -35,7 +35,7 @@ beforeEach(() => {
   workspaceRoot = join(root, 'runs');
   setConfigDirForTesting(join(root, 'config'));
   // 用例目录也指到临时目录：恢复流程会按 caseId 去读用例（core 的 case-store），
-  // 少了这一行它读的是真实家目录下的 ~/.aieval-cases
+  // 少了这个候选它读的是真实家目录下的 ~/.aieval-cases
   setCasesRootForTesting(join(root, 'cases'));
   saveConfig({ settings: { ...SETTINGS_DEFAULTS, workspaceRoot }, providers: [] });
   listenersBefore = {
@@ -59,9 +59,9 @@ afterEach(() => {
   }
 });
 
-/** 手写一份 run.json，返回它的路径（行状态由调用方给） */
-function seedRun(rowStatuses: string[]): string {
-  const runId = `run-${rowStatuses.join('-')}`;
+/** 手写一份 run.json，返回它的路径（候选状态由调用方给） */
+function seedRun(candidateStatuses: string[]): string {
+  const runId = `run-${candidateStatuses.join('-')}`;
   const dir = join(workspaceRoot, runId);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, 'run.json');
@@ -79,7 +79,7 @@ function seedRun(rowStatuses: string[]): string {
       rubric: { groups: [{ name: '功能', items: [{ id: 'A1', goal: '转换正确', weight: 100 }] }] },
       status: 'running',
       executionMode: 'parallel',
-      rows: rowStatuses.map((status, index) => ({
+      candidates: candidateStatuses.map((status, index) => ({
         id: `row-${index}`,
         agentKind: 'codex',
         providerId: 'provider-1',
@@ -89,7 +89,7 @@ function seedRun(rowStatuses: string[]): string {
         status,
         branch: `test/row-${index}`,
         workspacePath: '',
-        // 任意字符串都能解析成功（`EvalRowSchema.baselineCommit` 就是 `z.string()`，没有 `.min(1)`，
+        // 任意字符串都能解析成功（`EvalCandidateSchema.baselineCommit` 就是 `z.string()`，没有 `.min(1)`，
         // run.test.ts 明确断言「空串 = 尚未准备」合法）；这里用 40 位只是为贴近真实快照
         baselineCommit: 'a'.repeat(40),
         tokens: null,
@@ -110,9 +110,9 @@ function seedRun(rowStatuses: string[]): string {
 }
 
 /** 读回快照里的行（本应用不为 run.json 再声明一套类型，故断言成最小形状即可） */
-function readRows(file: string): { status: string }[] {
-  const payload = JSON.parse(readFileSync(file, 'utf8')) as { rows: { status: string }[] };
-  return payload.rows;
+function readCandidates(file: string): { status: string }[] {
+  const payload = JSON.parse(readFileSync(file, 'utf8')) as { candidates: { status: string }[] };
+  return payload.candidates;
 }
 
 describe('instrumentation.register', () => {
@@ -122,7 +122,7 @@ describe('instrumentation.register', () => {
 
     await register();
 
-    expect(readRows(file).map((row) => row.status)).toEqual([
+    expect(readCandidates(file).map((row) => row.status)).toEqual([
       'judged',
       'interrupted',
       'interrupted',
@@ -137,7 +137,7 @@ describe('instrumentation.register', () => {
 
     await register();
 
-    expect(readRows(file)[0]?.status).toBe('interrupted');
+    expect(readCandidates(file)[0]?.status).toBe('interrupted');
   });
 
   it('edge 运行时什么都不做（恢复要读写磁盘，边缘运行时没有文件系统）', async () => {
@@ -146,7 +146,7 @@ describe('instrumentation.register', () => {
 
     await register();
 
-    expect(readRows(file)[0]?.status).toBe('running');
+    expect(readCandidates(file)[0]?.status).toBe('running');
   });
 
   it('没有需要恢复的行时不抛（工作区目录都还不存在）', async () => {

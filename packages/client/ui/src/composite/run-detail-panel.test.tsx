@@ -31,7 +31,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const score = (totalScore: number): NonNullable<EvalRun['rows'][number]['score']> => ({
+const score = (totalScore: number): NonNullable<EvalRun['candidates'][number]['score']> => ({
   // 逐项判定 + 满分（旧的 `dimensions: []` 已随重构删除；这里只用到 totalScore）
   judgments: [],
   totalScore,
@@ -52,7 +52,7 @@ const score = (totalScore: number): NonNullable<EvalRun['rows'][number]['score']
   judgeDurationMs: null,
 });
 
-function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): EvalRun['rows'][number] {
+function makeCandidate(id: string, overrides: Partial<EvalRun['candidates'][number]> = {}): EvalRun['candidates'][number] {
   return {
     id,
     agentKind: 'cc',
@@ -62,7 +62,7 @@ function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): 
     modelId: `claude-opus-4-6-${id}`,
     status: 'judged',
     branch: `test/${id}`,
-    workspacePath: `D:\\runs\\run-1\\rows\\${id}\\workspace`,
+    workspacePath: `D:\\runs\\run-1\\candidates\\${id}\\workspace`,
     baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
     tokens: null,
     turns: null,
@@ -70,7 +70,7 @@ function makeRow(id: string, overrides: Partial<EvalRun['rows'][number]> = {}): 
     diff: { filesChanged: 1, insertions: 1, deletions: 0, truncated: false },
     score: score(60),
     error: null,
-    // 这一行走过几次尝试：默认 1 次（「没重试过」那一档）
+    // 这个候选走过几次尝试：默认 1 次（「没重试过」那一档）
     attempts: 1,
     sessionId: null,
     followUps: 0,
@@ -93,14 +93,14 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
     rubric: { groups: [{ name: '一、生产代码', items: [{ id: 'A1', goal: '追加 agent 字段', weight: 60 }] }] },
     includeSteps: false,
     // 轮级状态默认取**空闲**：这是「什么都没在跑」的那一档，也是编辑 / 删除可用的那一档
-    // （`hasLiveRows` 会读它）。此前这里是 `'running'`——那时没有任何用例读轮级状态，
+    // （`hasLiveCandidates` 会读它）。此前这里是 `'running'`——那时没有任何用例读轮级状态，
     // 值是什么都不参与断言；「有行在跑」那一档由用例自己显式 overrides 出来（判据要看得见）。
     status: 'idle',
     executionMode: 'parallel',
     // 评分方式快照：这一轮走纯文本评分通路
     useAgentJudge: false,
     askUser: false,
-    rows: [makeRow('w-1')],
+    candidates: [makeCandidate('w-1')],
     injectMessages: false,
     workspaceBase: 'D:\\runs',
     createdAt: '2026-09-22T08:00:00.000Z',
@@ -113,10 +113,10 @@ function makeRun(overrides: Partial<EvalRun> = {}): EvalRun {
 const handlers = {
   onStart: vi.fn(),
   onAbortRun: vi.fn(),
-  onAbortRow: vi.fn(),
-  onRescoreRow: vi.fn(),
+  onAbortCandidate: vi.fn(),
+  onRescoreCandidate: vi.fn(),
   rescoring: false,
-  onRetryRow: vi.fn(),
+  onRetryCandidate: vi.fn(),
   retrying: false,
   onOpenLog: vi.fn(),
   onOpenDiff: vi.fn(),
@@ -155,13 +155,13 @@ describe('RunDetailPanel 顶部信息卡', () => {
    * 备注非空 ⇒ 顶部信息卡多一行「备注」，位置在**第一行**（紧跟在用例标题下面，读作这一轮的副题）。
    * 值给原文（不做省略、不挂 Tooltip）：详情栏是核对的地方，`EllipsisText` 那套只属于列表窄格。
    */
-  it('备注非空 ⇒ 第一行是「备注」与全文', () => {
+  it('备注非空 ⇒ 第一候选是「备注」与全文', () => {
     renderPanel(makeRun({ note: '对比模型不同版本间的差异' }));
 
     const header = within(screen.getByTestId('run-header'));
     expect(header.getByText('备注')).toBeInTheDocument();
     expect(header.getByText('对比模型不同版本间的差异')).toBeInTheDocument();
-    // 位置：第一行就是备注（在「代码仓库」之前）
+    // 位置：第一个候选就是备注（在「代码仓库」之前）
     const labels = Array.from(
       screen.getByTestId('run-header').querySelectorAll('.ant-descriptions-item-label'),
     ).map((node) => node.textContent ?? '');
@@ -176,7 +176,7 @@ describe('RunDetailPanel 顶部信息卡', () => {
 
   /**
    * 无来源轮次：来源显示短标签「无」（哨兵串 `none://` 不是给用户看的信息），悬停给说全的话；
-   * 不显示分支行（repoBranch 恒为 null），commit 行是「默认分支 HEAD」。
+   * 不显示分支行（repoBranch 恒为 null），commit 候选是「默认分支 HEAD」。
    */
   it('无来源轮次：来源显示「无」+ 悬停说明，且没有分支行', async () => {
     renderPanel(makeRun({ repoPath: 'none://', commitHash: null, repoBranch: null }));
@@ -192,12 +192,12 @@ describe('RunDetailPanel 顶部信息卡', () => {
 
   /**
    * 远端轮次要显示分支：这一轮到底从哪条历史取起点，是核对一次评测时最先要看的两个事实之一
-   * （另一个是 commit）。本地轮次（`repoBranch === null`）**整行不渲染**——旧数据的界面逐字不变。
+   * （另一个是 commit）。本地轮次（`repoBranch === null`）**整个候选不渲染**——旧数据的界面逐字不变。
    *
-   * 断言收窄到**顶部信息卡**（`run-header`）：候选行卡片上本来就有一个「分支」标签
-   * （那是每行的 `test/{rowId}` 工作分支），不收敛的话这条用例会撞上它、变成一句没有指向的断言。
+   * 断言收窄到**顶部信息卡**（`run-header`）：候选卡片上本来就有一个「分支」标签
+   * （那是每个候选的 `test/{candidateId}` 工作分支），不收敛的话这条用例会撞上它、变成一句没有指向的断言。
    */
-  it('远端轮次多一行「分支」，本地轮次整行不出现', () => {
+  it('远端轮次多一行「分支」，本地轮次整个候选不出现', () => {
     const { unmount } = renderPanel(makeRun({ repoBranch: 'feat/x' }));
 
     const remoteHeader = within(screen.getByTestId('run-header'));
@@ -215,52 +215,52 @@ describe('RunDetailPanel 顶部信息卡', () => {
 
 /**
  * 跑动期的实时指标按行注入。
- * 判据是「每一行拿**自己**的那份」：只断言「有实时值出现」的实现，
- * 把第一行的指标发给所有行也能绿——而并行跑多个候选时那正是最常见的形状（一排一模一样的数字）。
+ * 判据是「每个候选拿**自己**的那份」：只断言「有实时值出现」的实现，
+ * 把第一候选的指标发给所有行也能绿——而并行跑多个候选时那正是最常见的形状（一排一模一样的数字）。
  */
 describe('RunDetailPanel 的实时指标注入', () => {
-  it('liveOf 按行 id 取值：两行各显示自己的实时值', () => {
+  it('liveOf 按候选 id 取值：两个候选各显示自己的实时值', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { status: 'running', tokens: null, turns: null, durationMs: null, score: null }),
-          makeRow('w-2', { status: 'running', tokens: null, turns: null, durationMs: null, score: null }),
+        candidates: [
+          makeCandidate('w-1', { status: 'running', tokens: null, turns: null, durationMs: null, score: null }),
+          makeCandidate('w-2', { status: 'running', tokens: null, turns: null, durationMs: null, score: null }),
         ],
       }),
       {
-        liveOf: (rowId) =>
-          rowId === 'w-1'
+        liveOf: (candidateId) =>
+          candidateId === 'w-1'
             ? { startedAtMs: null, tokens: { input: 10, cached: 0, output: 5 }, subagentTokens: null, subagentTurns: null, turns: 3, latestText: null, candidateEnded: false, candidateEndedAtMs: null }
             : { startedAtMs: null, tokens: { input: 100, cached: 0, output: 200 }, subagentTokens: null, subagentTurns: null, turns: 8, latestText: null, candidateEnded: false, candidateEndedAtMs: null },
       },
     );
 
     expect(screen.getByText('tok 15')).toBeInTheDocument();
-    expect(screen.getByText('轮次 3')).toBeInTheDocument();
+    expect(screen.getByText('步数 3')).toBeInTheDocument();
     expect(screen.getByText('tok 300')).toBeInTheDocument();
-    expect(screen.getByText('轮次 8')).toBeInTheDocument();
+    expect(screen.getByText('步数 8')).toBeInTheDocument();
   });
 
   it('没传 liveOf 时退回快照值（不传 = 没有实时通道，不是「显示空」）', () => {
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'running', tokens: { input: 1, cached: 0, output: 2 }, turns: 4 })] }));
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'running', tokens: { input: 1, cached: 0, output: 2 }, turns: 4 })] }));
 
     expect(screen.getByText('tok 3')).toBeInTheDocument();
-    expect(screen.getByText('轮次 4')).toBeInTheDocument();
+    expect(screen.getByText('步数 4')).toBeInTheDocument();
   });
 });
 
 describe('RunDetailPanel 进度', () => {
-  it('串行模式下给出「N/M 已完成」，分子含失败与终止的行', () => {
+  it('串行模式下给出「N/M 已完成」，分子含失败与终止的候选', () => {
     renderPanel(
       makeRun({
         executionMode: 'serial',
-        rows: [
-          makeRow('w-1', { status: 'judged' }),
-          makeRow('w-2', { status: 'failed', score: null }),
-          makeRow('w-3', { status: 'canceled', score: null }),
-          makeRow('w-4', { status: 'running', score: null }),
-          makeRow('w-5', { status: 'pending', score: null }),
-          makeRow('w-6', { status: 'pending', score: null }),
+        candidates: [
+          makeCandidate('w-1', { status: 'judged' }),
+          makeCandidate('w-2', { status: 'failed', score: null }),
+          makeCandidate('w-3', { status: 'canceled', score: null }),
+          makeCandidate('w-4', { status: 'running', score: null }),
+          makeCandidate('w-5', { status: 'pending', score: null }),
+          makeCandidate('w-6', { status: 'pending', score: null }),
         ],
       }),
     );
@@ -275,8 +275,8 @@ describe('RunDetailPanel 进度', () => {
     expect(screen.queryByText(/已完成/)).toBeNull();
   });
 
-  it('零候选行时不出现 NaN', () => {
-    renderPanel(makeRun({ executionMode: 'serial', rows: [] }));
+  it('零候选时不出现 NaN', () => {
+    renderPanel(makeRun({ executionMode: 'serial', candidates: [] }));
 
     expect(screen.getByText('0/0 已完成')).toBeInTheDocument();
     expect(screen.queryByText(/NaN/)).toBeNull();
@@ -295,14 +295,14 @@ describe('RunDetailPanel 进度', () => {
 });
 
 describe('RunDetailPanel 卡片列表', () => {
-  it('出分的行按总分降序在前，前三名带徽标', () => {
+  it('出分的候选按总分降序在前，前三名带徽标', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(70), modelId: 'model-70' }),
-          makeRow('w-2', { score: score(92), modelId: 'model-92' }),
-          makeRow('w-3', { score: score(85), modelId: 'model-85' }),
-          makeRow('w-4', { score: score(60), modelId: 'model-60' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(70), modelId: 'model-70' }),
+          makeCandidate('w-2', { score: score(92), modelId: 'model-92' }),
+          makeCandidate('w-3', { score: score(85), modelId: 'model-85' }),
+          makeCandidate('w-4', { score: score(60), modelId: 'model-60' }),
         ],
       }),
     );
@@ -317,44 +317,44 @@ describe('RunDetailPanel 卡片列表', () => {
     expect(first).toHaveTextContent('model-92');
   });
 
-  it('同分同名次（并列不硬拆成 1、2 名），未出分的行排在后面', () => {
+  it('同分同名次（并列不硬拆成 1、2 名），未出分的候选排在后面', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), modelId: 'model-a' }),
-          makeRow('w-2', { score: score(87), modelId: 'model-b' }),
-          makeRow('w-3', { score: score(60), modelId: 'model-c' }),
-          makeRow('w-4', { score: null, status: 'running', modelId: 'model-running' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), modelId: 'model-a' }),
+          makeCandidate('w-2', { score: score(87), modelId: 'model-b' }),
+          makeCandidate('w-3', { score: score(60), modelId: 'model-c' }),
+          makeCandidate('w-4', { score: null, status: 'running', modelId: 'model-running' }),
         ],
       }),
     );
 
     expect(screen.getAllByText('第 1 名')).toHaveLength(2);
-    // 两行 87 之后，60 分是第 3 名（并列占掉 1、1，下一档从 3 起）
+    // 两个候选 87 之后，60 分是第 3 名（并列占掉 1、1，下一档从 3 起）
     expect(screen.getByText('第 3 名')).toBeInTheDocument();
     expect(screen.getByText('第 3 名').closest('.ant-card')).toHaveTextContent('model-c');
   });
 
-  it('串行模式下等待中的行被标成排队（并行模式不标）', () => {
+  it('串行模式下等待中的候选被标成排队（并行模式不标）', () => {
     const { unmount } = renderPanel(
-      makeRun({ executionMode: 'serial', rows: [makeRow('w-1', { status: 'pending', score: null })] }),
+      makeRun({ executionMode: 'serial', candidates: [makeCandidate('w-1', { status: 'pending', score: null })] }),
     );
     expect(screen.getByText('串行排队中：前一行结束后自动开始')).toBeInTheDocument();
     unmount();
 
-    renderPanel(makeRun({ executionMode: 'parallel', rows: [makeRow('w-1', { status: 'pending', score: null })] }));
+    renderPanel(makeRun({ executionMode: 'parallel', candidates: [makeCandidate('w-1', { status: 'pending', score: null })] }));
     expect(screen.queryByText('串行排队中：前一行结束后自动开始')).toBeNull();
   });
 
-  it('把每行智能体的能力元数据透给卡片（DSH 的终止文案不同）', () => {
+  it('把每个候选智能体的能力元数据透给卡片（DSH 的终止文案不同）', () => {
     const capabilityOf = vi.fn((_agentKind: AgentKind) => ({ usage: false, cancelMidTurn: false }));
-    renderPanel(makeRun({ rows: [makeRow('w-1', { agentKind: 'dsh', status: 'running', score: null })] }), {
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { agentKind: 'dsh', status: 'running', score: null })] }), {
       capabilityOf,
     });
 
     expect(screen.getByRole('button', { name: '关闭运行时' })).toBeInTheDocument();
     // 两个字段都要断言：只断言 cancelMidTurn 的话「capabilityOf 没透给卡片」这个变异体会存活
-    // （EvalRowCard 的缺省能力恰好是 cancelMidTurn: true，缺省时不报错、静默显示成「终止」）
+    // （EvalCandidateCard 的缺省能力恰好是 cancelMidTurn: true，缺省时不报错、静默显示成「终止」）
     expect(screen.getByText('tok 不支持计量')).toBeInTheDocument();
     expect(capabilityOf).toHaveBeenCalledWith('dsh');
   });
@@ -366,7 +366,7 @@ describe('RunDetailPanel 卡片列表', () => {
  *   · 判据只有**一份**——展示顺序与徽标都从它派生。「排在第 2 张却挂着第 1 名」正是两处各写
  *     一份判据的形状，故这里既断言顺序、也断言名次落在同一张卡上；
  *   · 「省 tok」比的是卡片上那个数（**输入 + 输出**，缓存读单列在缓存命中里）：故「缓存巨大、
- *     但输入+输出小」的行必须仍然胜出——这条专门拦「三项相加」的实现（它会把赢家换成输家）；
+ *     但输入+输出小」的候选必须仍然胜出——这条专门拦「三项相加」的实现（它会把赢家换成输家）；
  *   · 未采集（`null`）按**最差**算：并列项上有数的一方胜出，两边都没采到才算相等。
  *     否则「没采到」会白捡一个更好的名次，而那是把「不知道」当成了「更好」。
  */
@@ -391,14 +391,14 @@ describe('RunDetailPanel 排序与名次的判据', () => {
   it('总分优先：后面的决胜项再好看也翻不过分数', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', {
+        candidates: [
+          makeCandidate('w-1', {
             score: score(90),
             durationMs: 900_000,
             tokens: tok(10_000, 10_000),
             modelId: 'high-slow-heavy',
           }),
-          makeRow('w-2', {
+          makeCandidate('w-2', {
             score: score(80),
             durationMs: 1_000,
             tokens: tok(1, 1),
@@ -415,9 +415,9 @@ describe('RunDetailPanel 排序与名次的判据', () => {
   it('同分比耗时：耗时短的在先、拿第 1 名', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), durationMs: 900_000, modelId: 'slow' }),
-          makeRow('w-2', { score: score(87), durationMs: 300_000, modelId: 'fast' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), durationMs: 900_000, modelId: 'slow' }),
+          makeCandidate('w-2', { score: score(87), durationMs: 300_000, modelId: 'fast' }),
         ],
       }),
     );
@@ -430,15 +430,15 @@ describe('RunDetailPanel 排序与名次的判据', () => {
   it('同分同耗时比 tok：输入+输出少的在先（缓存读不计入）', () => {
     renderPanel(
       makeRun({
-        rows: [
+        candidates: [
           // 缓存读给一个数量级更大的值：三项相加的实现会把它判成「更费」，从而把两张卡换个位置
-          makeRow('w-1', {
+          makeCandidate('w-1', {
             score: score(87),
             durationMs: 60_000,
             tokens: tok(1_000, 500, 0),
             modelId: 'heavy',
           }),
-          makeRow('w-2', {
+          makeCandidate('w-2', {
             score: score(87),
             durationMs: 60_000,
             tokens: tok(300, 100, 90_000),
@@ -453,13 +453,13 @@ describe('RunDetailPanel 排序与名次的判据', () => {
     expect(cardOfRank(2)).toHaveTextContent('heavy');
   });
 
-  it('三项全同才算并列：两行同为第 1 名，下一档从第 3 名起', () => {
+  it('三项全同才算并列：两个候选同为第 1 名，下一档从第 3 名起', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), durationMs: 60_000, tokens: tok(10, 10), modelId: 'twin-a' }),
-          makeRow('w-2', { score: score(87), durationMs: 60_000, tokens: tok(10, 10), modelId: 'twin-b' }),
-          makeRow('w-3', { score: score(60), durationMs: 1_000, tokens: tok(1, 1), modelId: 'low' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), durationMs: 60_000, tokens: tok(10, 10), modelId: 'twin-a' }),
+          makeCandidate('w-2', { score: score(87), durationMs: 60_000, tokens: tok(10, 10), modelId: 'twin-b' }),
+          makeCandidate('w-3', { score: score(60), durationMs: 1_000, tokens: tok(1, 1), modelId: 'low' }),
         ],
       }),
     );
@@ -468,12 +468,12 @@ describe('RunDetailPanel 排序与名次的判据', () => {
     expect(screen.getByText('第 3 名').closest('.ant-card')).toHaveTextContent('low');
   });
 
-  it('耗时未采集按最差算：同分时有数的行在前、拿第 1 名', () => {
+  it('耗时未采集按最差算：同分时有数的候选在前、拿第 1 名', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), durationMs: null, modelId: 'no-duration' }),
-          makeRow('w-2', { score: score(87), durationMs: 600_000, modelId: 'has-duration' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), durationMs: null, modelId: 'no-duration' }),
+          makeCandidate('w-2', { score: score(87), durationMs: 600_000, modelId: 'has-duration' }),
         ],
       }),
     );
@@ -482,12 +482,12 @@ describe('RunDetailPanel 排序与名次的判据', () => {
     expect(cardOfRank(1)).toHaveTextContent('has-duration');
   });
 
-  it('tok 未采集按最差算：分与耗时都相同时有数的行在前', () => {
+  it('tok 未采集按最差算：分与耗时都相同时有数的候选在前', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), durationMs: 60_000, tokens: null, modelId: 'no-tok' }),
-          makeRow('w-2', { score: score(87), durationMs: 60_000, tokens: tok(5, 5), modelId: 'has-tok' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), durationMs: 60_000, tokens: null, modelId: 'no-tok' }),
+          makeCandidate('w-2', { score: score(87), durationMs: 60_000, tokens: tok(5, 5), modelId: 'has-tok' }),
         ],
       }),
     );
@@ -499,9 +499,9 @@ describe('RunDetailPanel 排序与名次的判据', () => {
   it('两边都没采到（耗时与 tok 都是 null）⇒ 判不出高下，并列第 1 名', () => {
     renderPanel(
       makeRun({
-        rows: [
-          makeRow('w-1', { score: score(87), modelId: 'unknown-a' }),
-          makeRow('w-2', { score: score(87), modelId: 'unknown-b' }),
+        candidates: [
+          makeCandidate('w-1', { score: score(87), modelId: 'unknown-a' }),
+          makeCandidate('w-2', { score: score(87), modelId: 'unknown-b' }),
         ],
       }),
     );
@@ -516,15 +516,15 @@ describe('RunDetailPanel 吸底操作栏', () => {
   // 所以吸底栏的断言一律先收窄到 footer 再查——否则用例自己会撞上「找到多个」而红。
   const footer = (): ReturnType<typeof within> => within(screen.getByTestId('run-footer'));
 
-  it('有运行中的行时「开始」禁用、「终止」可用', () => {
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'running', score: null })] }));
+  it('有运行中的候选时「开始」禁用、「终止」可用', () => {
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'running', score: null })] }));
 
     expect(footer().getByRole('button', { name: '开始' })).toBeDisabled();
     expect(footer().getByRole('button', { name: '终止' })).toBeEnabled();
   });
 
-  it('全部已评分时「开始」禁用（没有可执行的行）', () => {
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }));
+  it('全部已评分时「开始」禁用（没有可执行的候选）', () => {
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'judged' })] }));
 
     expect(footer().getByRole('button', { name: '开始' })).toBeDisabled();
     expect(footer().getByRole('button', { name: '终止' })).toBeDisabled();
@@ -532,11 +532,11 @@ describe('RunDetailPanel 吸底操作栏', () => {
 
   /**
    * 「排名」：常驻渲染、靠 `disabled` 控可用性（边界置灰而不是隐藏——会自己冒出来的按钮，
-   * 用户得先知道它存在）。判据是「有没有出分的行」，不是「跑完没有」。
+   * 用户得先知道它存在）。判据是「有没有出分的候选」，不是「跑完没有」。
    */
-  it('有行出分时「排名」可用，点了就开抽屉（不带行 id）', () => {
+  it('有行出分时「排名」可用，点了就开抽屉（不带候选 id）', () => {
     const onOpenRank = vi.fn();
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }), { onOpenRank });
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'judged' })] }), { onOpenRank });
 
     const button = footer().getByRole('button', { name: '排名' });
     expect(button).toBeEnabled();
@@ -547,7 +547,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
   it('一行分都没有时「排名」禁用（没有名次可排），且挂 Tooltip 说明条件', async () => {
     renderPanel(
       makeRun({
-        rows: [makeRow('w-1', { status: 'failed', score: null }), makeRow('w-2', { status: 'pending', score: null })],
+        candidates: [makeCandidate('w-1', { status: 'failed', score: null }), makeCandidate('w-2', { status: 'pending', score: null })],
       }),
     );
 
@@ -562,7 +562,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
   it('跑到一半也能看排名（判据是「有没有分」，不是「跑完没有」）', () => {
     renderPanel(
       makeRun({
-        rows: [makeRow('w-1', { status: 'judged' }), makeRow('w-2', { status: 'running', score: null })],
+        candidates: [makeCandidate('w-1', { status: 'judged' }), makeCandidate('w-2', { status: 'running', score: null })],
       }),
     );
 
@@ -583,7 +583,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
     const onStart = vi.fn();
     renderPanel(
       makeRun({
-        rows: [makeRow('w-1', { status: 'failed', score: null }), makeRow('w-2', { status: 'pending', score: null })],
+        candidates: [makeCandidate('w-1', { status: 'failed', score: null }), makeCandidate('w-2', { status: 'pending', score: null })],
       }),
       { onStart },
     );
@@ -606,7 +606,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
 
   it('确认框里点取消不会开跑', async () => {
     const onStart = vi.fn();
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'pending', score: null })] }), { onStart });
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'pending', score: null })] }), { onStart });
 
     fireEvent.click(footer().getByRole('button', { name: '开始' }));
     fireEvent.click(within(await startDialog()).getByRole('button', { name: '取消' }));
@@ -616,7 +616,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
 
   it('「终止」走 Popconfirm，确认后才回调', async () => {
     const onAbortRun = vi.fn();
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'running', score: null })] }), { onAbortRun });
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'running', score: null })] }), { onAbortRun });
 
     fireEvent.click(footer().getByRole('button', { name: '终止' }));
 
@@ -638,7 +638,7 @@ describe('RunDetailPanel 吸底操作栏', () => {
    * 靶子就是这两个字面量：把上边改回 0、或改成 `padding: '8px 0'`，这一条即红。
    */
   it('吸底栏只补上边距（下边那 8px 由详情槽的 padding 提供，两侧才一样宽）', () => {
-    renderPanel(makeRun({ rows: [makeRow('w-1', { status: 'judged' })] }));
+    renderPanel(makeRun({ candidates: [makeCandidate('w-1', { status: 'judged' })] }));
 
     const bar = screen.getByTestId('run-footer');
     expect(bar.style.paddingTop).toBe('8px');
@@ -647,39 +647,39 @@ describe('RunDetailPanel 吸底操作栏', () => {
 });
 
 /**
- * 行级「重新评分」的**透传**：判据与二次确认都在卡片自己身上（`EvalRowCard` 的用例
+ * 候选级「重新评分」的**透传**：判据与二次确认都在卡片自己身上（`EvalCandidateCard` 的用例
  * 已经钉住），本面板只负责把「哪一行」和「在途没有」交给卡片。这一条钉的正是那个 id——
- * 传错 id 的表现是「点了 A 行，重评的是 B 行」，而两行的界面在那一刻完全相同。
+ * 传错 id 的表现是「点了 A 行，重评的是 B 行」，而两个候选的界面在那一刻完全相同。
  *
- * ⚠️ 起点仍是「跑过一次且有产出」的行（本文件用「评分阶段失败」造这一形状，最省事）。
- * 判据放开之后 `judged` 的行两个按钮同样可点，这条夹具没有「`judged` 点不动」
+ * ⚠️ 起点仍是「跑过一次且有产出」的候选（本文件用「评分阶段失败」造这一形状，最省事）。
+ * 判据放开之后 `judged` 的候选两个按钮同样可点，这条夹具没有「`judged` 点不动」
  * 那层顾虑；它与真实形状的差别只剩「有分 / 无分」，而本文件验的是 id 透传，与分数无关。
  */
-describe('RunDetailPanel：行级重新评分的透传', () => {
-  /** 该行可重评的形状：跑过、有基线、有改动（`stage: 'judge'` 只是叙述，判据不读它） */
-  const judgeFailedRow = (id: string): EvalRun['rows'][number] =>
-    makeRow(id, {
+describe('RunDetailPanel：候选级重新评分的透传', () => {
+  /** 该候选可重评的形状：跑过、有基线、有改动（`stage: 'judge'` 只是叙述，判据不读它） */
+  const judgeFailedCandidate = (id: string): EvalRun['candidates'][number] =>
+    makeCandidate(id, {
       status: 'failed',
       score: null,
       baselineCommit: '30b86eedca90b70d15b9eb9e75b454a2574762d4',
       error: { code: 'JUDGE_PARSE_FAILED', message: '评分模型返回的不是合法 JSON', stage: 'judge' },
     });
 
-  it('卡片上确认后把**该行**的 id 交回调用方', async () => {
-    const onRescoreRow = vi.fn();
-    renderPanel(makeRun({ rows: [judgeFailedRow('w-1'), judgeFailedRow('w-2')] }), { onRescoreRow });
+  it('卡片上确认后把**该候选**的 id 交回调用方', async () => {
+    const onRescoreCandidate = vi.fn();
+    renderPanel(makeRun({ candidates: [judgeFailedCandidate('w-1'), judgeFailedCandidate('w-2')] }), { onRescoreCandidate });
 
-    // 两张卡片各有一个「重新评分」：取第二个，钉住「传的是这一行的 id」而不是第一行的
+    // 两张卡片各有一个「重新评分」：取第二个，钉住「传的是这个候选的 id」而不是第一候选的
     const buttons = screen.getAllByRole('button', { name: '重新评分' });
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[1] as HTMLElement);
     fireEvent.click(await screen.findByRole('button', { name: '确定' }));
 
-    await waitFor(() => expect(onRescoreRow).toHaveBeenCalledWith('w-2'));
+    await waitFor(() => expect(onRescoreCandidate).toHaveBeenCalledWith('w-2'));
   });
 
   it('rescoring 为真时每张卡片的按钮都转圈（在途时不许再点第二次）', () => {
-    renderPanel(makeRun({ rows: [judgeFailedRow('w-1')] }), { rescoring: true });
+    renderPanel(makeRun({ candidates: [judgeFailedCandidate('w-1')] }), { rescoring: true });
 
     const loading = [...document.querySelectorAll('button')].filter((item) =>
       item.className.includes('ant-btn-loading'),
@@ -708,7 +708,7 @@ describe('RunDetailPanel 的编辑 / 删除入口', () => {
   });
 
   it('有行在跑时两个入口都禁用（原因在 Tooltip 里）', async () => {
-    renderPanel(makeRun({ status: 'running', rows: [makeRow('w-1', { status: 'running' })] }));
+    renderPanel(makeRun({ status: 'running', candidates: [makeCandidate('w-1', { status: 'running' })] }));
 
     expect(screen.getByTestId('run-detail-edit')).toBeDisabled();
     expect(screen.getByTestId('run-detail-delete')).toBeDisabled();

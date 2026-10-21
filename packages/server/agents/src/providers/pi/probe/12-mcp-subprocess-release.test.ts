@@ -13,7 +13,7 @@
  * 判据三步（缺一步都不算数）：
  *   ① 跑动期：MCP 子进程**起来了**（探针服务器自己把 pid 写进文件）；
  *   ② 收尾后：同一个 pid **不在**了；
- *   ③ 这一行的产物里真有 `mcp__<名>__` 工具（证明那台服务器是被厂商真的接进会话的，
+ *   ③ 这个候选的产物里真有 `mcp__<名>__` 工具（证明那台服务器是被厂商真的接进会话的，
  *      而不是「起都没起所以没有可回收的」）。
  *
  * 用法（不需要凭据）：
@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { anthropicText, runPiConformanceRow } from '../../../testing/pi-conformance-fixture';
+import { anthropicText, runPiConformanceCandidate } from '../../../testing/pi-conformance-fixture';
 import type { McpServers } from '@aieval/contracts';
 import { eventOfType, textsOf } from './readings';
 
@@ -85,12 +85,12 @@ function startedPid(pidFile: string): number | null {
 }
 
 describe('真适配器跑完一行之后：MCP stdio 子进程的结局', () => {
-  it('子进程跑动期活着、收尾之后被回收（且这一行真的拿到了它的工具）', async () => {
+  it('子进程跑动期活着、收尾之后被回收（且这个候选真的拿到了它的工具）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'pi-v12-mcprelease-'));
     const pidFile = join(root, 'pids.jsonl');
     let pid: number | null = null;
     try {
-      const run = await runPiConformanceRow({
+      const run = await runPiConformanceCandidate({
         script: [anthropicText('跑完了。')],
         prompt: '只回一句话。',
         mcpServers: {
@@ -103,7 +103,7 @@ describe('真适配器跑完一行之后：MCP stdio 子进程的结局', () => 
         } satisfies McpServers,
       });
 
-      // ③ 这一行真的把那一台接进了会话（工具表里有它）
+      // ③ 这个候选真的把那一台接进了会话（工具表里有它）
       const tools = run.requestTools;
       const vendorTools = run.product.events
         .filter((event) => eventOfType(event, 'vendor-system'))
@@ -119,7 +119,7 @@ describe('真适配器跑完一行之后：MCP stdio 子进程的结局', () => 
 
       dump('12-mcp-subprocess-release', { sawMcpTool, pid, reaped, pidFileLines: lines, tools });
       expect(pid, `MCP 探针服务器没有写 pid 文件（${pidFile}）⇒ 这一格没跑起来`).not.toBeNull();
-      expect(sawMcpTool, '这一行的工具表里没有 mcp__pidprobe__* ⇒ 那台没被接进会话').toBe(true);
+      expect(sawMcpTool, '这个候选的工具表里没有 mcp__pidprobe__* ⇒ 那台没被接进会话').toBe(true);
       expect(reaped, `收尾之后 MCP 子进程 ${pid} 还在进程表里（孤儿进程）`).toBe(true);
     } finally {
       if (pid !== null && alive(pid)) process.kill(pid, 'SIGKILL');

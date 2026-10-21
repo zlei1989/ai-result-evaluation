@@ -64,7 +64,7 @@ export type ConformanceScenarioName =
 export interface ConformanceProduct {
   messages: AgentMessage[];
   subagents: SubagentRecord[];
-  /** 行级事件；形状由 `checkEventShapes` 逐个过契约 schema，这里只查类型与 `log` 的 `stream` */
+  /** 运行级事件；形状由 `checkEventShapes` 逐个过契约 schema，这里只查类型与 `log` 的 `stream` */
   events: Array<Record<string, unknown>>;
   usage: {
     tokens: UsageTokens | null;
@@ -172,7 +172,7 @@ export interface ConformanceRunResult {
   /**
    * 最终答复：**最后一次观察到的、主会话的、已收尾的非空答复正文**；没采到就是 `null`。
    * 三条口径：
-   *   · 只取**主会话**（子线程的结论不算这一行的答复）；
+   *   · 只取**主会话**（子线程的结论不算本次运行的答复）；
    *   · 只认**已收尾**的答复（流式增量的半截正文不是答复）；
    *   · 没采到记 `null`，**绝不填空串**——调用方对两者给的是两句不同的归因。
    */
@@ -248,7 +248,7 @@ export interface ConformanceFixture {
    * 诚实登记优于硬凑一条读假件的用例——后者会让「这条通路通了」这件事永远没有人判。
    */
   realOutboundGaps?: Partial<Record<'mcp' | 'structured-output', string>>;
-  /** 声明「这些行的 status 是**采到的**」，其余行的 `statusMissing` 必须非 `null` */
+  /** 声明「这些本次运行的 status 是**采到的**」，其余本次运行的 `statusMissing` 必须非 `null` */
   observedStatusIds?: string[];
   /**
    * **宿主注册的提问工具名**（`askUserChannel === 'host-tool'` 的家必填）。
@@ -356,7 +356,7 @@ export function checkCapabilityDeclaration(fixture: ConformanceFixture): void {
   }
 }
 
-/** 消息与子任务行过契约 schema（行级事件的形状另有 `checkEventShapes`） */
+/** 消息与子任务行过契约 schema（运行级事件的形状另有 `checkEventShapes`） */
 export function checkContracts(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     for (const message of build().messages) {
@@ -503,7 +503,7 @@ export function checkSubagentAttribution(fixture: ConformanceFixture): void {
     if (attributed.length === 0) {
       throw new Error(
         `${fixture.kind}/${name}：产物里有 ${product.subagents.length} 条子任务行，但没有一条消息带 subagentId`
-        + '——子任务节点折叠后的轮次必然是空的（点进去「没有逐条对话记录」，而消息就在产物里）',
+        + '——子任务节点折叠后的步必然是空的（点进去「没有逐条对话记录」，而消息就在产物里）',
       );
     }
     const byNode = messagesByNode(product);
@@ -513,7 +513,7 @@ export function checkSubagentAttribution(fixture: ConformanceFixture): void {
         throw new Error(
           `${fixture.kind}/${name}：子任务 ${subagentId} 没有一条归属它自己的消息`
           + `（产物有 ${attributed.length} 条带 subagentId 的消息，但一条都不落在它这个节点上）`
-          + '——子任务折叠后的轮次为空，界面只能给出终局行',
+          + '——子任务折叠后的步为空，界面只能给出终局行',
         );
       }
     }
@@ -540,7 +540,7 @@ export function checkSubagentAttribution(fixture: ConformanceFixture): void {
  *      是零——这种重发既不在折叠上留下痕迹，也不在任何形状判据里露头，唯一的表现是磁盘上多一行、
  *      派发面板与导出里多出一张卡片。判据按**内容**比而不是「发过没有」，故它不挡第 2 条要的补全。
  */
-export function checkSubagentSingleRow(fixture: ConformanceFixture): void {
+export function checkSubagentSingleCandidate(fixture: ConformanceFixture): void {
   for (const [name, build] of SCENARIO_ENTRIES(fixture)) {
     const product = build();
     const folded = foldSubagentDeliveries(product.subagents);
@@ -637,7 +637,7 @@ function tokenSum(tokens: UsageTokens): number {
  *     四家的实现都是「主子 + 子分量」，故这条也是「同一把尺」的判据。
  *
  * **用量那一格刻意不判「合计缺席时分量必须也缺席」**（与轮次那条不对称，是有意的）：
- * 轮次的分量是**从合计推出来的**，而用量的分量是**独立收的**——「这一行有没有派子任务」这件事
+ * 轮次的分量是**从合计推出来的**，而用量的分量是**独立收的**——「本次运行有没有派子任务」这件事
  * 不依赖厂商报不报用量，故「零个分量 + 合计未采到」是合法形态（dsh 的用量通道不投送时正是它）。
  * 判据只在两格都在时比大小：那时界面才会真去做那个减法。
  */
@@ -697,7 +697,7 @@ export function checkCapabilityNailing(fixture: ConformanceFixture): void {
  * 返回一句人话（拿不到）或 `null`（拿得到），kind / 场景名由调用方拼上。
  *
  * 为什么按**格**分派而不是按场景名分派：一格声明 `yes` 时，能证明它的场景常常不止一个
- * （`toolInput` 就有 tool-shell / tool-edit / tool-plan 三个候选）。按场景分派会把「这一格要什么」
+ * （`toolInput` 就有 tool-shell / tool-edit / tool-plan 三个本次运行）。按场景分派会把「这一格要什么」
  * 与「这个场景里该有什么」绑死——`toolResult` 就这样被绑在 `tool-shell` 上，于是它的证明只查了
  * tool-call 的入参：**产物里一个工具结果块都没有也照样绿**。按格分派后，每格只认自己的形态。
  */
@@ -761,7 +761,7 @@ function hasRequestFact(value: unknown): boolean {
 }
 
 /**
- * 行级事件**逐个过契约 schema**（`AgentEventSchema`）。
+ * 运行级事件**逐个过契约 schema**（`AgentEventSchema`）。
  *
  * 为什么需要它：`events` 在产物里是 `Record<string, unknown>[]`，类型系统管不到，而形状本该由契约管。
  * 少了这一条，适配器发一条形状残缺的事件不会有任何判据发现——少了 `status` 的 status 事件、
@@ -773,7 +773,7 @@ export function checkEventShapes(fixture: ConformanceFixture): void {
     for (const event of build().events) {
       const parsed = AgentEventSchema.safeParse(event);
       if (!parsed.success) {
-        throw new Error(`${fixture.kind}/${name} 的行级事件不合契约：${JSON.stringify(parsed.error.issues)}`);
+        throw new Error(`${fixture.kind}/${name} 的运行级事件不合契约：${JSON.stringify(parsed.error.issues)}`);
       }
     }
   }
@@ -844,7 +844,7 @@ export function checkLineEventsAndSources(fixture: ConformanceFixture): void {
     const product = build();
     for (const event of product.events) {
       if (!CONTRACT_EVENT_TYPES.includes(String(event.type))) {
-        throw new Error(`${fixture.kind}/${name}：出现了契约外的行级事件 ${JSON.stringify(event.type)}`);
+        throw new Error(`${fixture.kind}/${name}：出现了契约外的运行级事件 ${JSON.stringify(event.type)}`);
       }
       if (event.type === 'log' && !['stdout', 'stderr'].includes(String(event.stream))) {
         throw new Error(`${fixture.kind}/${name}：log 事件缺少 stream`);
@@ -1182,7 +1182,7 @@ export async function checkLifecycle(fixture: ConformanceFixture): Promise<void>
   if (evidence.canceledMidTurn !== fixture.cancelMidTurn) {
     throw new Error(
       `${fixture.kind}：声明 cancelMidTurn=${String(fixture.cancelMidTurn)}，`
-      + `但观测到取消${evidence.canceledMidTurn ? '终结了' : '没有终结'}在途轮次——声明与观测不符`,
+      + `但观测到取消${evidence.canceledMidTurn ? '终结了' : '没有终结'}在途轮——声明与观测不符`,
     );
   }
 }
@@ -1284,19 +1284,19 @@ export function describeProviderConformance(fixture: ConformanceFixture): void {
     ['消息 / 子任务 / 环境过契约 schema', () => checkContracts(fixture)],
     ['合并键等于契约公式', () => checkMergeKeys(fixture)],
     ['子任务桥与状态口径', () => checkSubagentBridge(fixture)],
-    ['子任务归属：带 subagentId 且折叠后轮次非空', () => checkSubagentAttribution(fixture)],
-    ['子任务同一身份只出一条', () => checkSubagentSingleRow(fixture)],
+    ['子任务归属：带 subagentId 且折叠后步非空', () => checkSubagentAttribution(fixture)],
+    ['子任务同一身份只出一条', () => checkSubagentSingleCandidate(fixture)],
     ['子任务名字在派发与收尾之间稳定', () => checkSubagentNameStability(fixture)],
-    ['用量与轮次配对', () => checkUsagePairing(fixture)],
+    ['用量与步数配对', () => checkUsagePairing(fixture)],
     ['能力声明与产物互钉', () => checkCapabilityNailing(fixture)],
     ['注入面（MCP / skills）声明与产物互钉', () => checkInjectionNailing(fixture)],
     ['交互面（提问）声明与产物互钉', () => checkInteractionNailing(fixture)],
     ['人工消息面（投递两档 + 续接）声明与夹具互钉', () => checkTurnInjectionNailing(fixture)],
-    ['行级事件逐个过契约 schema', () => checkEventShapes(fixture)],
+    ['运行级事件逐个过契约 schema', () => checkEventShapes(fixture)],
     ['最终答复口径', () => checkFinalAnswer(fixture)],
     ['结构化输出与产出可解析', () => checkStructuredOutputGroup(fixture)],
     ['传输时序（C 类：缓冲补投 / 终态不早于响应 / 不重复）', () => checkTransportDeliveryGroup(fixture)],
-    ['行级事件三类与来源闭集', () => checkLineEventsAndSources(fixture)],
+    ['运行级事件三类与来源闭集', () => checkLineEventsAndSources(fixture)],
     ['增量通道隔离：喂了增量就必须钉住事件条数', () => checkDeltaChannelIsolation(fixture)],
     ['生命周期：释放恰好一次 + 取消与声明一致', () => checkLifecycle(fixture)],
   ];

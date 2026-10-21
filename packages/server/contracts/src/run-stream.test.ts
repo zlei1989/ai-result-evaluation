@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * SSE 信封契约的守卫：四类帧（run 信号 / 行级事件 / 行级消息 / 两个信号）的判别联合、
+ * SSE 信封契约的守卫：四类帧（run 信号 / 候选级事件 / 候选级消息 / 两个信号）的判别联合、
  * 每类帧「该有的格有、该没有的格没有」，以及三条只能靠断言钉住的口径——
  * 判别字面量不许与 `AGENT_EVENT_TYPES` 撞名、`DRAWER_CHANNELS` 与 `DrawerChannelSchema` 同源、
  * **归属格不许与任何业务字段同名**。
@@ -20,7 +20,7 @@ import { DRAWER_CHANNELS, DrawerChannelSchema, RunStreamFrameSchema, type RunStr
 /** 事件公共两格：`seq` 由 core 的事件日志写入器分配，`at` 是 ISO 8601 */
 const base = { seq: 1, at: '2026-09-22T10:30:00.000Z' };
 
-/** 一条 `log` 事件：下面「缺归属格」「坏 rowChannel」两条反例都拿它当底样 */
+/** 一条 `log` 事件：下面「缺归属格」「坏 candidateChannel」两条反例都拿它当底样 */
 const logEvent = { ...base, type: 'log', stream: 'stdout', text: '开始执行' };
 
 /** 十种事件各一条合法样本（每一格都按契约必填项给全），用来钉「每个成员都被扩上了归属格」 */
@@ -81,7 +81,7 @@ const eventSamples = [
 ];
 
 /**
- * 消息族的两条样本：`RowRecord` 的两个成员（内容流一条、派发视图一条）。
+ * 消息族的两条样本：`CandidateRecord` 的两个成员（内容流一条、派发视图一条）。
  * 两条各用一个 channel，顺带覆盖通道值域的两端。
  */
 const messageRecord = {
@@ -138,24 +138,24 @@ describe('RunStreamFrameSchema 的 run 信号帧', () => {
   });
 });
 
-describe('RunStreamFrameSchema 的行级事件帧', () => {
+describe('RunStreamFrameSchema 的事件帧', () => {
   /**
    * **对着未加归属格的原始样本逐格比**，而不是与「拼好的帧」比——这一条是本文件最要紧的判据。
    *
-   * 与拼好的帧比是查不出撞名的：`.extend()` 对同名键是**覆盖**，而组帧写作 `{ ...event, rowId, rowChannel }`
+   * 与拼好的帧比是查不出撞名的：`.extend()` 对同名键是**覆盖**，而组帧写作 `{ ...event, candidateId, candidateChannel }`
    * 时展开顺序也是覆盖 ⇒ 「输入」本身在那一刻就已经被顶掉了，两边比出来照样相等（绿的）。
    * 真发生过：`ask-user` 事件自带一格 `channel`（提问工具来源），信封那一格当时也叫 `channel`，
    * 于是这一支的业务通道从类型与运行时双双消失，界面（`ui/composite/log-format.ts` 的提问行）
    * 只印出 `undefined`，没有任何报错。改成对原始样本比之后，任何归属格与业务字段撞名都会在这里红。
    */
-  it('每个事件类型各扩上 rowId + rowChannel，业务载荷与 seq 逐字保留', () => {
+  it('每个事件类型各扩上 candidateId + candidateChannel，业务载荷与 seq 逐字保留', () => {
     for (const event of eventSamples) {
-      const parsed = parseFrame({ ...event, rowId: 'w-1', rowChannel: 'judge' }) as Record<string, unknown>;
+      const parsed = parseFrame({ ...event, candidateId: 'w-1', candidateChannel: 'judge' }) as Record<string, unknown>;
       for (const [key, value] of Object.entries(event)) {
         expect([key, parsed[key]]).toEqual([key, value]);
       }
-      expect(parsed['rowId']).toBe('w-1');
-      expect(parsed['rowChannel']).toBe('judge');
+      expect(parsed['candidateId']).toBe('w-1');
+      expect(parsed['candidateChannel']).toBe('judge');
     }
   });
 
@@ -165,49 +165,49 @@ describe('RunStreamFrameSchema 的行级事件帧', () => {
     expect(eventSamples.map((event) => event.type).sort()).toEqual([...AGENT_EVENT_TYPES].sort());
   });
 
-  it('缺 rowId 的行级事件帧被拒（归属格是信封存在的理由）', () => {
-    expect(RunStreamFrameSchema.safeParse({ ...logEvent, rowChannel: 'candidate' }).success).toBe(false);
+  it('缺 candidateId 的事件帧被拒（归属格是信封存在的理由）', () => {
+    expect(RunStreamFrameSchema.safeParse({ ...logEvent, candidateChannel: 'candidate' }).success).toBe(false);
   });
 
-  it('rowChannel 不在值域被拒（`judge2` 不是通道，不许静默收下）', () => {
-    expect(RunStreamFrameSchema.safeParse({ ...logEvent, rowId: 'w-1', rowChannel: 'judge2' }).success).toBe(false);
+  it('candidateChannel 不在值域被拒（`judge2` 不是通道，不许静默收下）', () => {
+    expect(RunStreamFrameSchema.safeParse({ ...logEvent, candidateId: 'w-1', candidateChannel: 'judge2' }).success).toBe(false);
   });
 
   /**
    * 上面那条「逐格保留」的失败信息是一条 `[key, value]` 数组，读起来要知道去哪儿找原因；
    * 这一条把**真实踩过的那一格**单独立成用例——它红的时候，用例名本身就是根因。
    */
-  it('ask-user 事件的业务通道原样保留（信封的 rowChannel 不许顶掉它）', () => {
+  it('ask-user 事件的业务通道原样保留（信封的 candidateChannel 不许顶掉它）', () => {
     const askUser = eventSamples.find((event) => event.type === 'ask-user');
     if (askUser === undefined) throw new Error('样本里没有 ask-user：上一条「样本覆盖全部事件类型」已经失败');
-    const parsed = parseFrame({ ...askUser, rowId: 'w-1', rowChannel: 'candidate' }) as Extract<
+    const parsed = parseFrame({ ...askUser, candidateId: 'w-1', candidateChannel: 'candidate' }) as Extract<
       RunStreamFrame,
       { type: 'ask-user' }
     >;
     expect(parsed.channel).toBe('vendor-tool');
-    expect(parsed.rowChannel).toBe('candidate');
+    expect(parsed.candidateChannel).toBe('candidate');
   });
 });
 
-describe('RunStreamFrameSchema 的行级消息帧', () => {
+describe('RunStreamFrameSchema 的候选级消息帧', () => {
   /** 与事件族**同一条判据**（对着原始样本逐格比）：消息族同样会被同名归属格静默顶掉业务格 */
-  it('两个成员各带 rowId + rowChannel，载荷逐字保留、且没有 seq', () => {
+  it('两个成员各带 candidateId + candidateChannel，载荷逐字保留、且没有 seq', () => {
     const channels = ['candidate', 'judge'];
     recordSamples.forEach((record, index) => {
-      const rowChannel = channels[index % channels.length];
-      const parsed = parseFrame({ ...record, rowId: 'w-1', rowChannel }) as Record<string, unknown>;
+      const candidateChannel = channels[index % channels.length];
+      const parsed = parseFrame({ ...record, candidateId: 'w-1', candidateChannel }) as Record<string, unknown>;
       for (const [key, value] of Object.entries(record)) {
         expect([key, parsed[key]]).toEqual([key, value]);
       }
-      expect(parsed['rowId']).toBe('w-1');
-      expect(parsed['rowChannel']).toBe(rowChannel);
+      expect(parsed['candidateId']).toBe('w-1');
+      expect(parsed['candidateChannel']).toBe(candidateChannel);
       // 消息帧**没有** `seq`：`messageId` 跨运行重号、delta 覆盖使历史可变，
       // 按 seq 续订对一份可变历史没有意义（去重靠 messageId、覆盖靠 mergeKey）
       expect('seq' in parsed).toBe(false);
     });
   });
 
-  it('样本覆盖 RowRecord 的两个成员', () => {
+  it('样本覆盖 CandidateRecord 的两个成员', () => {
     expect(recordSamples.map((record) => record.type).sort()).toEqual(['message', 'subagent']);
   });
 
@@ -219,14 +219,14 @@ describe('RunStreamFrameSchema 的行级消息帧', () => {
       RunStreamFrameSchema.safeParse({
         ...messageRecord,
         message: messageWithoutMergeKey,
-        rowId: 'w-1',
-        rowChannel: 'candidate',
+        candidateId: 'w-1',
+        candidateChannel: 'candidate',
       }).success,
     ).toBe(false);
   });
 
-  it('缺 rowId 的消息帧被拒', () => {
-    expect(RunStreamFrameSchema.safeParse({ ...messageRecord, rowChannel: 'candidate' }).success).toBe(false);
+  it('缺 candidateId 的消息帧被拒', () => {
+    expect(RunStreamFrameSchema.safeParse({ ...messageRecord, candidateChannel: 'candidate' }).success).toBe(false);
   });
 });
 
@@ -242,8 +242,8 @@ describe('RunStreamFrameSchema 的两个信号帧', () => {
   it('都没有归属格与 seq（信号不属于任何一行、也不可续订）', () => {
     for (const type of signalTypes) {
       const parsed = parseFrame({ type });
-      expect('rowId' in parsed).toBe(false);
-      expect('rowChannel' in parsed).toBe(false);
+      expect('candidateId' in parsed).toBe(false);
+      expect('candidateChannel' in parsed).toBe(false);
       expect('seq' in parsed).toBe(false);
     }
   });

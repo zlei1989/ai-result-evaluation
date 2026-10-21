@@ -10,7 +10,7 @@
  * 块内容**不做截断**——diff 与证据都在进入评分前按 diffBudgetBytes 裁剪好
  * （证据的裁剪在 `process-evidence.ts` 的组装里完成）。
  *
- * 判据：**按评分表逐项取，缺一项即整行失败**。
+ * 判据：**按评分表逐项取，缺一项即整候选失败**。
  * 为什么缺项不能算「未达成」：那会让「模型漏答」与「确实没做」在分数上完全同形；
  * 当送分更糟——白送一整项权重，而分数看起来完全正常。
  *
@@ -18,14 +18,14 @@
  * 模型**根本不给总分**（输出契约第 5 条），故「模型算错总分」这一整类问题不存在。
  *
  * 本文件里的 `parseJudgeResponse` 与 `finalizeScore` 是**两条评分通路共用的尺子**：
- * 文本通路（`judgeRow`）与智能体通路（`judge-agent.ts` 的 `judgeRowByAgent`）解析完都必须过这两个函数。
+ * 文本通路（`judgeCandidate`）与智能体通路（`judge-agent.ts` 的 `judgeCandidateByAgent`）解析完都必须过这两个函数。
  * 各写一份必然在某处漂移，而漂移的表现是「两条通路的分数不可比」——最不该静默发生的一类。
  *
  * 结构检查不合格时回问模型（多轮修复）保留：修复只**修形状**，不改尺子——各项都取、缺一项失败、
  * 总分由权重加总这三条一个字都没动（`validateJudgeResponse` 就是 `parseJudgeResponse` 的判据本身，
- * 不存在「宽松版解析器」）。每一轮都留痕（`onProgress` → 该行事件日志）。
+ * 不存在「宽松版解析器」）。每一轮都留痕（`onProgress` → 该候选事件日志）。
  *
- * 注意：本文件不碰工作区、不碰 git、不写 run.json；调用文本 API 的是 judgeRow，解析与收口是纯函数。
+ * 注意：本文件不碰工作区、不碰 git、不写 run.json；调用文本 API 的是 judgeCandidate，解析与收口是纯函数。
  */
 import {
   JUDGE_OUTPUT_CONTRACT,
@@ -57,7 +57,7 @@ const REASON_FALLBACK = '（模型未给出理由）';
  */
 export const JUDGE_REPAIR_ROUNDS = 2;
 
-/** 解析失败一律 JUDGE_PARSE_FAILED：该行落 failed；raw 原文由 judgeRow 补进 context */
+/** 解析失败一律 JUDGE_PARSE_FAILED：该候选落 failed；raw 原文由 judgeCandidate 补进 context */
 function parseFailed(message: string): ServiceError {
   return new ServiceError('JUDGE_PARSE_FAILED', message);
 }
@@ -87,7 +87,7 @@ function stripCodeFence(raw: string): string {
  *   · 达成：`true` / `"true"` / `"是"` / `"达成"`（`"True"` / `"TRUE"` 同样算）
  *   · 未达成：`false` / `"false"` / `"否"` / `"未达成"`
  * 为什么宽容：模型很爱把布尔写成字符串，而 schema 那一关只在**上游认了**的时候才拦得住
- * （网关不透传时形同虚设）；此处不宽容会让一次格式小毛病变成整行失败。
+ * （网关不透传时形同虚设）；此处不宽容会让一次格式小毛病变成整候选失败。
  * 为什么连「达成 / 未达成」也收：那正是本工具自己的两个词（评分口径、界面、输出契约都用它们），
  * 模型照着题面用词回答是最可能的一种中文写法——不收它等于专挑最自然的那个词失败。
  * 大小写不敏感是同一条理由的延伸（`"True"` 与 `"true"` 没有语义差别）。
@@ -182,7 +182,7 @@ export type JudgeValidation =
   | { ok: true; parsed: { judgments: RubricJudgment[]; verdict: string } }
   | { ok: false; message: string };
 
-/** 结构检查（**不抛**）：模型的原文合不合契约。`judgeRow` 的修复循环靠它决定要不要再问一轮 */
+/** 结构检查（**不抛**）：模型的原文合不合契约。`judgeCandidate` 的修复循环靠它决定要不要再问一轮 */
 export function validateJudgeResponse(raw: string, rubric: Rubric): JudgeValidation {
   return collectJudgeJudgments(raw, rubric);
 }
@@ -227,7 +227,7 @@ export function finalizeScore(input: {
    * 同一条处置：两条通路各自表一次态，给缺省会让「忘了传下来」与「确实没采到」在数据上同形。
    * `null` = 没采到（**不是 0**）——界面据此显示「用量未采集 / 耗时未采集」。
    * 语义：文本侧是**各轮成功调用之和**（结构修复是额外请求，钱要算进去）与整段的掐表；
-   * 智能体侧是适配器自报的 `result.tokens` / `result.durationMs`（与候选行同一份原料）。
+   * 智能体侧是适配器自报的 `result.tokens` / `result.durationMs`（与候选同一份原料）。
    */
   judgeTokens: { input: number; cached: number; output: number } | null;
   judgeDurationMs: number | null;
@@ -303,8 +303,8 @@ export function buildJudgeFeedback(input: { message: string; raw: string; rubric
 }
 
 /**
- * 一次结构修复的进度事件：由调用方（编排层）写进该行的日志抽屉。
- * 为什么必须有它：修复是**额外请求**，使用者在日志里必须能看到「为什么这一行多花了十几秒」。
+ * 一次结构修复的进度事件：由调用方（编排层）写进该候选的日志抽屉。
+ * 为什么必须有它：修复是**额外请求**，使用者在日志里必须能看到「为什么这个候选多花了十几秒」。
  */
 export interface JudgeProgress {
   /** 已经失败的轮次序号（第 1 次回答不合格 ⇒ 1） */
@@ -326,13 +326,13 @@ export interface JudgeInput {
   judgeProviderId: string;
   /**
    * 这一次评分要求的思考强度（来自 `settings.defaultJudge.effort`，由调用方读配置后传进来）。
-   * 为什么是**入参**：`judgeRow` 今天是纯入参的（不读配置、不碰落盘），读点只有一个
+   * 为什么是**入参**：`judgeCandidate` 今天是纯入参的（不读配置、不碰落盘），读点只有一个
    * （`judge-route.ts` 的 `resolveJudgeEffort`）。为什么不做成 `route` 的一格：那是**连接事实**，
    * 而强度是**请求参数**（与候选侧 `AgentRunInput.effort` 同一口径）。
    * 未指定 = 一个强度键都不发（听网关的缺省，**不是**关闭）；档名可不可用不在这一层判（本层只把值递下去）。
    */
   judgeEffort?: string;
-  /** 这一行的停止信号（可选：不传即「不可中止」） */
+  /** 这个候选的停止信号（可选：不传即「不可中止」） */
   signal?: AbortSignal;
   /**
    * 「包含步骤」的执行过程记录证据（编排层组装：快照门控 + codex 补 messages + 预算截断，
@@ -340,9 +340,9 @@ export interface JudgeInput {
    * 由编排层传入——本模块只负责把它拼成独立的 text 块，不读盘、不再截断。
    */
   processEvidence?: ProcessEvidence;
-  /** 结构修复的进度回调（可选；编排层把它接到该行的事件日志上） */
+  /** 结构修复的进度回调（可选；编排层把它接到该候选的事件日志上） */
   onProgress?: (progress: JudgeProgress) => void;
-  /** 「编排层开始了一次新的行尝试」的接缝（可选；生产代码里它是一个 no-op） */
+  /** 「编排层开始了一次新的候选尝试」的接缝（可选；生产代码里它是一个 no-op） */
   onAttemptStart?: () => void;
 }
 
@@ -411,7 +411,7 @@ function judgeUserBlocks(text: string, attachment: string, evidenceFiles: readon
  *     并把**最后一轮**的原文放进 `context.raw`；
  *   - 形状不合契约 → 由 `finalizeScore` 里的 `ScoreResultSchema` 兜住，并折成中文 `ServiceError`。
  */
-export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
+export async function judgeCandidate(input: JudgeInput): Promise<ScoreResult> {
   const { intent, attachment } = buildJudgePrompt(input);
   // system 用 contracts 的输出契约文本：生成侧与解析侧共用同一份字段名
   const system = JUDGE_OUTPUT_CONTRACT;
@@ -422,7 +422,7 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
   /**
    * 这一分的花销：文本通路没有适配器替我们记账，两格都只能在这里采。
    * 耗时从**进函数就开始掐**：结构修复的每一轮与瞬时重试的退避都算这一次评分的成本，
-   * 而「这一行为什么多花了十几秒」正是靠它回答的（口径与 `EvalRow.durationMs` 的掐表那一支同源）。
+   * 而「这一行为什么多花了十几秒」正是靠它回答的（口径与 `EvalCandidate.durationMs` 的掐表那一支同源）。
    * 用量**逐轮累加**：修复是额外的上游调用，只记最后一轮会把一次评分报成半价。
    */
   const startedAt = Date.now();
@@ -468,7 +468,7 @@ export async function judgeRow(input: JudgeInput): Promise<ScoreResult> {
       if (repairs >= JUDGE_REPAIR_ROUNDS) {
         throw new ServiceError(
           'JUDGE_PARSE_FAILED',
-          `评分解析失败：${checked.message}（结构检查已回问模型 ${repairs} 轮，仍未得到合格输出）`,
+          `评分解析失败：${checked.message}（结构检查已回问模型 ${repairs} 步，仍未得到合格输出）`,
           { context: { raw: truncateRaw(raw), repairs, reason: checked.message } },
         );
       }

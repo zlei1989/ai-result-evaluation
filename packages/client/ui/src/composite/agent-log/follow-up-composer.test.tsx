@@ -87,7 +87,7 @@ describe('FollowUpComposer：发送', () => {
 
   it('发送失败 ⇒ 框里的内容一个字不动，原因交回调用方（那句话多半要改一改再发）', async () => {
     const onError = vi.fn();
-    renderComposer({ onSend: () => Promise.reject(new Error('这一行没有可续接的会话')), onError });
+    renderComposer({ onSend: () => Promise.reject(new Error('这个候选没有可续接的会话')), onError });
 
     fireEvent.change(textarea(), { target: { value: '在吗' } });
     await waitFor(() => expect(sendButton()).toBeEnabled());
@@ -95,12 +95,6 @@ describe('FollowUpComposer：发送', () => {
 
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(textarea().value).toBe('在吗');
-  });
-
-  it('常驻提示说清发出去之后会发生什么（不是只说「能发」）', () => {
-    renderComposer();
-    expect(screen.getByTestId('follow-up-hint').textContent).toContain('接着这一行原来那段会话');
-    expect(screen.getByTestId('follow-up-hint').textContent).toContain('自动重新评分');
   });
 
   it('有写动作在途 ⇒ 输入框禁用（连点两次会变成两段上下文）', () => {

@@ -86,14 +86,14 @@ function run(frames: readonly { label: string; raw: unknown }[]): Row[] {
   const state = makeState();
   const normalizer = createClaudeMessageNormalizer();
   const assembler = createMessageAssembler({ runId: 'probe' });
-  const rows: Row[] = [];
+  const candidates: Row[] = [];
   for (const { label, raw } of frames) {
     projectClaudeMessage(raw, state, { kind: 'cc', baseUrl: 'http://probe.invalid' });
     const out = normalizer.normalize(raw, state);
     for (const draft of out.messages as readonly MessageDraft[]) {
       const draftKey = [draft.subagentId ?? 'main', String(draft.roundTrip), draft.role, draft.parentCallId ?? '-'].join('|');
       assembler.ingest(draft, (message) => {
-        rows.push({
+        candidates.push({
           frame: label,
           key: draftKey,
           chunk: message.chunk,
@@ -105,10 +105,10 @@ function run(frames: readonly { label: string; raw: unknown }[]): Row[] {
       });
     }
   }
-  return rows;
+  return candidates;
 }
 
-/** 两轮（各带流式 + 一次工具往返）——与真机 cc 行的形状同构 */
+/** 两轮（各带流式 + 一次工具往返）——与真机 cc 候选的形状同构 */
 const TWO_ROUNDS: readonly { label: string; raw: unknown }[] = [
   { label: 'T1 message_start', raw: messageStart('u1', 'msg_A') },
   { label: 'T1 delta 1', raw: textDelta('u2', '第一') },
@@ -127,29 +127,29 @@ const TWO_ROUNDS: readonly { label: string; raw: unknown }[] = [
 
 describe('cc 主会话流式增量的载体对齐', () => {
   it('第 1 轮：增量与该轮快照同键，且增量当场写进载体', () => {
-    const rows = run(TWO_ROUNDS);
-    const deltaKeys = rows.filter((row) => row.frame.startsWith('T1 delta')).map((row) => row.key);
-    const snapshotKey = rows.find((row) => row.frame === 'T1 快照')?.key;
+    const candidates = run(TWO_ROUNDS);
+    const deltaKeys = candidates.filter((row) => row.frame.startsWith('T1 delta')).map((row) => row.key);
+    const snapshotKey = candidates.find((row) => row.frame === 'T1 快照')?.key;
     expect(deltaKeys).toEqual([snapshotKey, snapshotKey]);
-    expect(rows.find((row) => row.frame === 'T1 delta 1')?.carrierText).toBe('第一'.length);
-    expect(rows.find((row) => row.frame === 'T1 delta 2')?.carrierText).toBe('第一句话'.length);
+    expect(candidates.find((row) => row.frame === 'T1 delta 1')?.carrierText).toBe('第一'.length);
+    expect(candidates.find((row) => row.frame === 'T1 delta 2')?.carrierText).toBe('第一句话'.length);
   });
 
   it('第 2 轮：增量**不**落上一轮的载体（否则会被已 seal 的槽位静默丢弃）', () => {
-    const rows = run(TWO_ROUNDS);
-    const deltaKeys = rows.filter((row) => row.frame.startsWith('T2 delta')).map((row) => row.key);
-    const snapshotKey = rows.find((row) => row.frame === 'T2 快照')?.key;
+    const candidates = run(TWO_ROUNDS);
+    const deltaKeys = candidates.filter((row) => row.frame.startsWith('T2 delta')).map((row) => row.key);
+    const snapshotKey = candidates.find((row) => row.frame === 'T2 快照')?.key;
     expect(snapshotKey).toBe('main|2|assistant|-');
     expect(deltaKeys).toEqual([snapshotKey, snapshotKey]);
     // 增量到达那一刻载体就该长起来（等快照才出现 = 使用者看到的「只有全部完成才显示」）
-    expect(rows.find((row) => row.frame === 'T2 delta 1')?.carrierText).toBe('第二'.length);
-    expect(rows.find((row) => row.frame === 'T2 delta 2')?.carrierText).toBe('第二句话'.length);
+    expect(candidates.find((row) => row.frame === 'T2 delta 1')?.carrierText).toBe('第二'.length);
+    expect(candidates.find((row) => row.frame === 'T2 delta 2')?.carrierText).toBe('第二句话'.length);
     // 第 1 轮的载体不许被这一轮的增量改写
-    expect(rows.filter((row) => row.key === 'main|1|assistant|-').at(-1)?.carrierText).toBe('第一句话'.length);
+    expect(candidates.filter((row) => row.key === 'main|1|assistant|-').at(-1)?.carrierText).toBe('第一句话'.length);
   });
 
   it('每条消息的增量都归自己那一轮（多轮不串联）', () => {
-    const rows = run([
+    const candidates = run([
       ...TWO_ROUNDS,
       { label: 'T3 message_start', raw: messageStart('u11', 'msg_C') },
       { label: 'T3 delta 1', raw: textDelta('u12', '第三') },
@@ -161,13 +161,13 @@ describe('cc 主会话流式增量的载体对齐', () => {
       ['T2', 'main|2|assistant|-'],
       ['T3', 'main|3|assistant|-'],
     ] as const) {
-      expect(rows.filter((row) => row.frame.startsWith(`${round} delta`)).map((row) => row.key)).toEqual([key, key]);
-      expect(rows.find((row) => row.frame === `${round} 快照`)?.key).toBe(key);
+      expect(candidates.filter((row) => row.frame.startsWith(`${round} delta`)).map((row) => row.key)).toEqual([key, key]);
+      expect(candidates.find((row) => row.frame === `${round} 快照`)?.key).toBe(key);
     }
   });
 
   it('同一条消息分块多次投递：号按 message.id 稳定（第 2 次投递不新开一轮、不挪轮次）', () => {
-    const rows = run([
+    const candidates = run([
       { label: 'T1 message_start', raw: messageStart('u1', 'msg_A') },
       { label: 'T1 快照 第1块', raw: assistant('u2', 'msg_A', [{ type: 'text', text: '第一句话' }]) },
       {
@@ -182,11 +182,11 @@ describe('cc 主会话流式增量的载体对齐', () => {
       { label: 'T2 快照', raw: assistant('u6', 'msg_B', [{ type: 'text', text: '第二句话' }]) },
     ]);
     // 同一条消息的两次投递都落它自己那一轮（号由 id 的位次给，不由投递次数给）
-    expect(rows.filter((row) => row.frame.startsWith('T1 快照')).map((row) => row.key)).toEqual([
+    expect(candidates.filter((row) => row.frame.startsWith('T1 快照')).map((row) => row.key)).toEqual([
       'main|1|assistant|-',
       'main|1|assistant|-',
     ]);
-    expect(rows.find((row) => row.frame === 'T2 增量')?.key).toBe('main|2|assistant|-');
-    expect(rows.find((row) => row.frame === 'T2 快照')?.key).toBe('main|2|assistant|-');
+    expect(candidates.find((row) => row.frame === 'T2 增量')?.key).toBe('main|2|assistant|-');
+    expect(candidates.find((row) => row.frame === 'T2 快照')?.key).toBe('main|2|assistant|-');
   });
 });

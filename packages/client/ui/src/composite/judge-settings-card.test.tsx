@@ -100,7 +100,7 @@ describe('JudgeSettingsCard', () => {
     render(<JudgeSettingsCard settings={settings()} providers={[]} onChange={noop} saving={false} />);
 
     expect(screen.getByText('未配置默认评分模型')).toBeInTheDocument();
-    expect(screen.getByText(/评分步骤都不可用/)).toBeInTheDocument();
+    expect(screen.getByText(/评测的评分都不可用/)).toBeInTheDocument();
     // 一个供应商都没有时给出明确出路，而不是一个空下拉
     expect(screen.getByText('请先在「模型供应商」页添加供应商')).toBeInTheDocument();
   });
@@ -194,22 +194,15 @@ describe('JudgeSettingsCard', () => {
   });
 
   /**
-   * 这一格讲的是**要求模型输出什么**（逐项达成 / 未达成 + 一句理由，不给总分）。
-   * 这里整句钉住文案，并同时断言「按维度打分 / 满分 100」那一套的痕迹一个都不许留
-   * ——维度名与合成算式在界面上出现，就说明这一格又走回了按维度打分的旧口径。
+   * 输出契约的真源是合约里的提示词模板；界面不复制一份——两处口径必然漂移，而漂移的那一侧
+   * 看起来永远是对的。这条守卫钉的是「它不在界面上」：加回来必须红。
    */
-  it('输出契约预览写的是评分标准项的口径（逐项达成 / 未达成 + 理由，不给总分）', () => {
+  it('不再有「输出契约（只读）」这一格', () => {
     render(<JudgeSettingsCard settings={settings()} providers={[openai]} onChange={noop} saving={false} />);
 
     const card = screen.getByTestId('judge-settings-card');
-    expect(card).toHaveTextContent(
-      '评分模型只输出一个 JSON：对评分标准项里每一项给出「达成 / 未达成 + 一句理由」，不给总分。',
-    );
-    expect(card).toHaveTextContent('总分 = 达成项的权重之和；满分 = 全部项权重之和（由每个用例的「评分标准项」决定）。');
-    // 旧口径的痕迹：维度名、满分 100、那条合成算式——加回来必须红
-    expect(card).not.toHaveTextContent('功能正确性');
-    expect(card).not.toHaveTextContent('满分 100');
-    expect(card).not.toHaveTextContent('round(');
+    expect(card).not.toHaveTextContent('输出契约');
+    expect(card).not.toHaveTextContent('达成项的权重之和');
   });
 
   // 执行与评分都不限时间 ⇒ 没有「单行超时（分钟）」这一格，契约字段也没有。

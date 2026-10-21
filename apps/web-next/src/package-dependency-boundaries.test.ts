@@ -57,7 +57,7 @@ const PACKAGE_DIRS: Record<string, string> = {
  *
  * 箭头用 `String.fromCharCode(0x2192)` 现造、不写成字面量：本文件的读写路径上，
  * 多字节字符被工具链改写时**不会报错**，只会让匹配静默失败（实测踩过一次），
- * 而这条守卫的失效方式必须是「响亮的报错」。同理，解析不出 8 行就抛，不静默通过。
+ * 而这条守卫的失效方式必须是「响亮的报错」。同理，解析不出 8 候选就抛，不静默通过。
  */
 function readDependencyTable(): Map<string, Set<string>> {
   const arrow = String.fromCharCode(0x2192);
@@ -102,7 +102,7 @@ function internalNames(manifest: Record<string, string> | undefined): string[] {
 const table = readDependencyTable();
 
 describe('依赖清单与 AGENTS.md 的方向表一致', () => {
-  it('解析出来的表就是那 8 个包（解析失败的兜底：少一行就报错，不是静默）', () => {
+  it('解析出来的表就是那 8 个包（解析失败的兜底：少一个候选就报错，不是静默）', () => {
     expect([...table.keys()].sort()).toEqual(Object.keys(PACKAGE_DIRS).sort());
     // 抽查两行，钉住解析结果不是「全都解析成空集」这种假绿
     expect([...(table.get('client') ?? new Set<string>())].sort()).toEqual(['contracts']);

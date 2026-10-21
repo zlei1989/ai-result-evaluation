@@ -7,7 +7,7 @@
  *     「请求打到哪台」）。
  *
  * 第 3 层的存在理由：pi 的 provider 注册是**按 id 索引的全局表**，而编排层是无界并发。
- * 写错这一格的表现是「A 行的请求带着 B 行的密钥打到 B 行的网关」，只在并发时出现，
+ * 写错这一格的表现是「A 候选的请求带着 B 候选的密钥打到 B 候选的网关」，只在并发时出现，
  * 而且每一格的日志都正常。所以它必须拿真实现跑一次真请求。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -25,9 +25,9 @@ import { PI_SUBAGENTS_MANAGER_KEY } from './subagent-wire';
 import {
   anthropicText,
   anthropicToolUse,
-  runPiConformanceRow,
+  runPiConformanceCandidate,
 } from '../../testing/pi-conformance-fixture';
-import { runPiRow, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
+import { runPiCandidate, startPiGateway, type CapturedPiRequest } from '../../testing/pi-gateway-fixture';
 import { piRequestToolDeclaration, piSystemText } from './observer';
 import { PI_ASK_USER_GUIDELINES, PI_ASK_USER_SNIPPET, PI_ASK_USER_TOOL } from './ask-user';
 import { PI_STRUCTURED_OUTPUT_TOOL } from './structured-output';
@@ -38,12 +38,12 @@ import {
   PI_THINKING_LEVEL_MAP,
   baseUrlForWire,
   compatForWire,
-  keepRowAndProjectSkills,
+  keepCandidateAndProjectSkills,
   piProvider,
   piProviderId,
   piSessionDir,
   piThinkingLevel,
-  rowSkillsPath,
+  candidateSkillsPath,
   wireForProtocol,
 } from './index';
 
@@ -92,7 +92,7 @@ describe('piProvider 的注册形态', () => {
    */
   it('子智能体的边界写在说明里（宿主 CLI 那条在观测面外、子会话继承模型与凭据、扩展点名到版本）', () => {
     const notes = piProvider.metadata.messageCapability.notes.join('\n');
-    // ① 绕开扩展走宿主 CLI 的派发：真跑了也不算进本行那几格
+    // ① 绕开扩展走宿主 CLI 的派发：真跑了也不算进行的那几格
     expect(notes).toContain('拉起宿主 `pi` CLI');
     expect(notes).toContain('不在我们的观测面内');
     expect(notes).toContain('`subagentTurns: 0`');
@@ -129,25 +129,25 @@ describe('pi 的 provider 投射（纯函数）', () => {
   });
 
   /**
-   * provider id 由 `configHome` 派生：**每行唯一**是硬要求（`ModelRuntime` 的 provider 表按 id 索引，
+   * provider id 由 `configHome` 派生：**每个候选唯一**是硬要求（`ModelRuntime` 的 provider 表按 id 索引，
    * 复用 id 会让两行互相改掉对方的 baseUrl / apiKey）。
    */
   it('provider id 由 configHome 派生：不同行不同 id、同一行稳定', () => {
-    const a = piProviderId('/rows/a/.agenthome');
-    const b = piProviderId('/rows/b/.agenthome');
+    const a = piProviderId('/candidates/a/.agenthome');
+    const b = piProviderId('/candidates/b/.agenthome');
     expect(a).not.toBe(b);
-    expect(piProviderId('/rows/a/.agenthome')).toBe(a);
+    expect(piProviderId('/candidates/a/.agenthome')).toBe(a);
     // 目录名里的分隔符与中文不进 id（它要进请求路径与日志）
     expect(a).toMatch(/^aieval-pi-[0-9a-f]{12}$/);
     expect(piProviderId('/行/一/.agenthome')).toMatch(/^aieval-pi-[0-9a-f]{12}$/);
   });
 
   it('技能谓词：留白名单 ∪ cwd 之下的项目技能，丢掉 HOME 锚定的发现结果', () => {
-    const rowDir = rowSkillsPath('/rows/a/.agenthome');
-    const kept = keepRowAndProjectSkills(
+    const candidateDir = candidateSkillsPath('/candidates/a/.agenthome');
+    const kept = keepCandidateAndProjectSkills(
       {
         skills: [
-          { name: 'ours', filePath: `${rowDir}/ours/SKILL.md` },
+          { name: 'ours', filePath: `${candidateDir}/ours/SKILL.md` },
           { name: 'project', filePath: '/ws/.agents/skills/project/SKILL.md' },
           { name: 'personal', filePath: '/home/someone/.agents/skills/personal/SKILL.md' },
           // 前缀相近但**不在** cwd 之下的目录：`startsWith` 会把它误留
@@ -155,7 +155,7 @@ describe('pi 的 provider 投射（纯函数）', () => {
         ],
         diagnostics: [{ kind: 'collision' }],
       },
-      { rowSkillsDir: rowDir, cwd: '/ws' },
+      { candidateSkillsDir: candidateDir, cwd: '/ws' },
     );
     expect(kept.skills.map((skill) => skill.name)).toEqual(['ours', 'project']);
     // 诊断原样带出（同名裁决要靠它如实呈现，不在这一层取舍）
@@ -165,10 +165,10 @@ describe('pi 的 provider 投射（纯函数）', () => {
 
 describe('pi 的装配序列与隔离序列', () => {
   /**
-   * 每次装配用**自己那棵行目录**：技能是往 `configHome` 里真的写盘的，而共享夹具目录会让
-   * 「这一行的物化」泄漏到下一个用例（`existsSync` 那类断言因此变成假绿）。
+   * 每次装配用**自己那棵候选目录**：技能是往 `configHome` 里真的写盘的，而共享夹具目录会让
+   * 「这个候选的物化」泄漏到下一个用例（`existsSync` 那类断言因此变成假绿）。
    */
-  function freshRow(): ReturnType<typeof createRunInput> {
+  function freshCandidate(): ReturnType<typeof createRunInput> {
     const root = mkdtempSync(join(tmpdir(), 'pi-row-'));
     const cwd = join(root, 'workspace');
     const configHome = join(root, '.agenthome');
@@ -183,7 +183,7 @@ describe('pi 的装配序列与隔离序列', () => {
   it('按 mkdir → 装载器 → reload → runtime → 会话 → bindExtensions 的顺序装配', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     const events: AgentEvent[] = [];
     const result = await piProvider.run({
       ...input,
@@ -200,11 +200,11 @@ describe('pi 的装配序列与隔离序列', () => {
     ]);
     // configHome 由本层自己建（契约不保证它存在）；不传 skills 时技能根不建
     expect(existsSync(input.configHome)).toBe(true);
-    expect(existsSync(rowSkillsPath(input.configHome))).toBe(false);
+    expect(existsSync(candidateSkillsPath(input.configHome))).toBe(false);
   });
 
   /**
-   * **`bindExtensions` 抛错时这一行仍然收干净**：释放入口必须建在绑定点之前。
+   * **`bindExtensions` 抛错时这个候选仍然收干净**：释放入口必须建在绑定点之前。
    *
    * 为什么：骨架手里的 `started` 要等 `start()` 返回才有值，而 `bindExtensions` 正是在 `start()`
    * 里面——它抛错时骨架的释放兜底**落空**（真机读数：dispose / abort / waitForIdle /
@@ -235,7 +235,7 @@ describe('pi 的装配序列与隔离序列', () => {
     };
     setAgentRuntimeForTesting({ sdkModule: fake });
 
-    const result = await piProvider.run({ ...freshRow(), onEvent: () => {} });
+    const result = await piProvider.run({ ...freshCandidate(), onEvent: () => {} });
     expect(result.ok).toBe(false);
     expect(result.error?.message ?? '').toContain('扩展绑定点炸了');
     expect(disposed, '释放链一次都没跑：MCP 的 stdio 清理会留在那边').toBe(1);
@@ -248,7 +248,7 @@ describe('pi 的装配序列与隔离序列', () => {
     await piProvider.run({ ...input, onEvent: () => {} });
 
     const loader = recorder.loaderOptions ?? {};
-    const skillsPath = rowSkillsPath(input.configHome);
+    const skillsPath = candidateSkillsPath(input.configHome);
     // 绝对路径：相对路径按 cwd 解析（实测传 'skills' ⇒ 发现 0 条）
     expect(loader['additionalSkillPaths']).toEqual([skillsPath]);
     expect(skillsPath.startsWith('/') || /^[A-Za-z]:/.test(skillsPath)).toBe(true);
@@ -257,7 +257,7 @@ describe('pi 的装配序列与隔离序列', () => {
     // 这两个键**不许出现**：noSkills 会把项目技能一起关掉，noContextFiles 会让 pi 读不到 AGENTS.md
     expect(loader).not.toHaveProperty('noSkills');
     expect(loader).not.toHaveProperty('noContextFiles');
-    // agentDir 就是本行的配置目录，cwd 就是本行工作区
+    // agentDir 就是候选的配置目录，cwd 就是候选工作区
     expect(loader['agentDir']).toBe(input.configHome);
     expect(loader['cwd']).toBe(input.cwd);
     // 项目信任**显式**打开（不显式给会走 SDK 的内建探测，将来默认值变了我们不知道）
@@ -279,26 +279,26 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
-   * **会话落盘**：管理器换成文件型、落点显式钉在行配置目录里，且**首跑与续接走两条不同的构造路径**。
+   * **会话落盘**：管理器换成文件型、落点显式钉在候选配置目录里，且**首跑与续接走两条不同的构造路径**。
    *
    * 为什么这三格都必须钉住：
    *   · 退回 `inMemory()` ⇒ 会话不落盘，续接无从谈起（而这一家在能力声明里写的是 `resume: yes`）；
    *   · 不给 `sessionDir` ⇒ 落点由「`agentDir` × `cwd`」两轴共同决定（厂商默认值就是那个形状），
-   *     而行工作区会被重建、配置目录也会变 ⇒ 「这一行的会话在哪」变成算不出来的东西；
-   *   · 续接用 `continueRecent` ⇒ 它取目录里 **mtime 最新**的一条，而行内重跑会在同一目录里留下
+   *     而候选工作区会被重建、配置目录也会变 ⇒ 「这个候选的会话在哪」变成算不出来的东西；
+   *   · 续接用 `continueRecent` ⇒ 它取目录里 **mtime 最新**的一条，而候选内重跑会在同一目录里留下
    *     上一次尝试的会话 ⇒ 接回来的是**上一次尝试**，用户以为在追问、模型答的是别人的上下文。
    *     故这里不只断言 `open` 被调用，还断言 `continueRecent` **一次都没被调用**。
    */
-  it('首跑 create 到行内的显式会话目录（不是内存、不是厂商默认落点）', async () => {
+  it('首跑 create 到候选内的显式会话目录（不是内存、不是厂商默认落点）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     await piProvider.run({ ...input, onEvent: () => {} });
 
     expect(recorder.sessionManagerCalls).toEqual([
       { kind: 'create', cwd: input.cwd, sessionDir: piSessionDir(input.configHome) },
     ]);
-    // 落点在行配置目录之内：换行即换目录，不需要第二个隔离机制
+    // 落点在候选配置目录之内：换行即换目录，不需要第二个隔离机制
     expect(piSessionDir(input.configHome).startsWith(input.configHome)).toBe(true);
     expect(piSessionDir(input.configHome)).not.toContain(input.cwd);
     // 会话管理器是文件型的那一份（假件的三条构造路径各自记一笔，`inMemory` 已不在声明里）
@@ -309,10 +309,10 @@ describe('pi 的装配序列与隔离序列', () => {
     });
   });
 
-  it('续接 open(会话文件)——不是 continueRecent（后者取 mtime 最新，行内重跑会接到上一次尝试）', async () => {
+  it('续接 open(会话文件)——不是 continueRecent（后者取 mtime 最新，候选内重跑会接到上一次尝试）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     // 续接要打开的会话文件必须真的在盘上（适配器先判存在性，见下一条用例）
     const sessionFile = join(piSessionDir(input.configHome), '2026-01-02T03-04-05-000Z_session-under-test.jsonl');
     mkdirSync(piSessionDir(input.configHome), { recursive: true });
@@ -330,10 +330,10 @@ describe('pi 的装配序列与隔离序列', () => {
    * ——它当场在同名路径上造一条新的。于是「文件没了」与「接上了」在调用点完全同形，
    * 表现是用户以为在追问、模型什么都不记得，而界面上一切正常（本仓最不接受的那类失败）。
    */
-  it('续接的会话文件不存在 ⇒ 该行失败并点名路径（不静默开新会话）', async () => {
+  it('续接的会话文件不存在 ⇒ 该候选失败并点名路径（不静默开新会话）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     const missing = join(piSessionDir(input.configHome), '2000-01-01T00-00-00-000Z_gone.jsonl');
 
     const result = await piProvider.run({ ...input, resume: { sessionId: missing }, onEvent: () => {} });
@@ -346,17 +346,17 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
-   * **0 字节的会话文件与「不存在」同档**：文件在场、一行内容都没有（写到一半被中断 /
+   * **0 字节的会话文件与「不存在」同档**：文件在场、一候选内容都没有（写到一半被中断 /
    * 被截断）时厂商的 `open()` 照样成功，开出来的是一条**没有历史**的会话
    * ⇒ 「用户以为在追问、模型什么都不记得」在产物上长得与成功续接逐字一样。
    * 判据取盘上的字节数（半截 JSON 由厂商自己拒，零行不会）。
    *
    * 变异体：去掉 `statSync(...).size === 0` 这一支 ⇒ 本用例转成 `ok:true` + 一次 `open`，当场红。
    */
-  it('续接的会话文件是 0 字节 ⇒ 该行失败并说明「里面没有上下文」（不静默开新会话）', async () => {
+  it('续接的会话文件是 0 字节 ⇒ 该候选失败并说明「里面没有上下文」（不静默开新会话）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     const empty = join(piSessionDir(input.configHome), '2000-01-01T00-00-00-000Z_empty.jsonl');
     mkdirSync(piSessionDir(input.configHome), { recursive: true });
     writeFileSync(empty, '');
@@ -379,7 +379,7 @@ describe('pi 的装配序列与隔离序列', () => {
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-under-test';
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
 
     const result = await piProvider.run({ ...input, onEvent: () => {} });
 
@@ -401,7 +401,7 @@ describe('pi 的装配序列与隔离序列', () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
     const drained: string[] = [];
-    const input = freshRow();
+    const input = freshCandidate();
 
     const result = await piProvider.run({
       ...input,
@@ -425,7 +425,7 @@ describe('pi 的装配序列与隔离序列', () => {
 
   /**
    * 技能装入：整目录复制进 `<configHome>/skills/<名称>`，且**必须发生在建装载器之前**
-   * （技能表是 `reload()` 那一刻扫出来的，写晚了这一行照样跑完、只是没有任何技能）。
+   * （技能表是 `reload()` 那一刻扫出来的，写晚了这个候选照样跑完、只是没有任何技能）。
    * 判据取「假件在 `reload` 时扫到的 cwd」——那正是谓词的入参，绕不过去。
    */
   /**
@@ -436,7 +436,7 @@ describe('pi 的装配序列与隔离序列', () => {
   it('模型定义：cost 全 0；窗口/输出上限缺省给可辨认上界、给了值就透传', async () => {
     const first = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: first }) });
-    await piProvider.run({ ...freshRow(), onEvent: () => {} });
+    await piProvider.run({ ...freshCandidate(), onEvent: () => {} });
     const fallback = (first.registered[0]?.config['models'] as Array<Record<string, unknown>>)[0];
     expect(fallback?.['cost']).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     // 缺省 = 未知：不得伪装成任何真实模型的规格（128000 / 16384 那类）
@@ -455,7 +455,7 @@ describe('pi 的装配序列与隔离序列', () => {
 
     const second = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: second }) });
-    const input = freshRow();
+    const input = freshCandidate();
     await piProvider.run({
       ...input,
       route: { ...input.route, contextWindow: 200_000, maxOutputTokens: 8_192 },
@@ -470,12 +470,12 @@ describe('pi 的装配序列与隔离序列', () => {
   it('技能装入落在 reload 之前：物化结果就是谓词看到的那一份', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     const skillSource = mkdtempSync(join(tmpdir(), 'pi-skill-src-'));
     writeFileSync(join(skillSource, 'SKILL.md'), '# 演示技能\n\n按步骤做。\n', 'utf8');
     // 假件在 reload 时按装载器的入参扫盘，故把「物化结果」如实报出来
     const discovered = () => [
-      { name: 'demo', filePath: join(rowSkillsPath(input.configHome), 'demo', 'SKILL.md') },
+      { name: 'demo', filePath: join(candidateSkillsPath(input.configHome), 'demo', 'SKILL.md') },
       { name: 'personal', filePath: '/home/someone/.agents/skills/personal/SKILL.md' },
     ];
     setAgentRuntimeForTesting({
@@ -489,7 +489,7 @@ describe('pi 的装配序列与隔离序列', () => {
     });
 
     // 物化本体真的落盘了（整目录复制）
-    expect(existsSync(join(rowSkillsPath(input.configHome), 'demo', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(candidateSkillsPath(input.configHome), 'demo', 'SKILL.md'))).toBe(true);
     // 谓词只留白名单那一条，HOME 锚定的那条被丢掉
     expect(recorder.skills.skills.map((skill) => skill.name)).toEqual(['demo']);
   });
@@ -497,9 +497,9 @@ describe('pi 的装配序列与隔离序列', () => {
   it('不传 skills ⇒ 一条都不装、连技能根都不建（评分与用例同步两处没有技能面）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
-    const input = freshRow();
+    const input = freshCandidate();
     await piProvider.run({ ...input, onEvent: () => {} });
-    expect(existsSync(rowSkillsPath(input.configHome))).toBe(false);
+    expect(existsSync(candidateSkillsPath(input.configHome))).toBe(false);
   });
 
   it('权限档落成工具白名单（pi 没有权限标志位，写能力住在工具集里）', async () => {
@@ -516,10 +516,10 @@ describe('pi 的装配序列与隔离序列', () => {
 
   /**
    * 运行期断言：`noExtensions: true` 之下**发现来的扩展必须是 0**。
-   * 造一条「发现来的扩展」（既不是 `<inline:` 也不在本行配置目录下）来证明兜底真的会开火：
-   * 兜底是**不信任项目**重建装载器，且第二次断言仍失败时整行失败。
+   * 造一条「发现来的扩展」（既不是 `<inline:` 也不在候选配置目录下）来证明兜底真的会开火：
+   * 兜底是**不信任项目**重建装载器，且第二次断言仍失败时整候选失败。
    */
-  it('发现来的扩展非空 ⇒ 按不信任项目重建装载器；仍挡不住 ⇒ 整行失败', async () => {
+  it('发现来的扩展非空 ⇒ 按不信任项目重建装载器；仍挡不住 ⇒ 整候选失败', async () => {
     const recorder = createFakePiRecorder();
     const backdoor = { path: '/ws/.pi/extensions/repo_backdoor.ts' };
     setAgentRuntimeForTesting({
@@ -541,7 +541,7 @@ describe('pi 的装配序列与隔离序列', () => {
     expect(recorder.sessionOptions).toBeNull();
   });
 
-  it('兜底之后扩展表干净 ⇒ 继续跑（代价是本行失去项目技能）', async () => {
+  it('兜底之后扩展表干净 ⇒ 继续跑（代价是候选失去项目技能）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({
       sdkModule: createFakePiSdk({
@@ -575,13 +575,13 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
-   * 白名单那一条**没装上**时这一行必须失败并点名——「声明 `subagent: yes` 而实际没有派发工具」
+   * 白名单那一条**没装上**时这个候选必须失败并点名——「声明 `subagent: yes` 而实际没有派发工具」
    * 是假声明，而它在装配面上一个字都不报（扩展表里少一条、其余全正常）。
    *
    * 归因码取 `AGENT_LOAD_FAILED`：它不是厂商运行期的失败（那样会归成 `AGENT_FAILED`，
    * 语义是「CLI 起不来 / 进程非零退出」），而是「声明支持却加载不上」。
    */
-  it('子智能体扩展没装载 ⇒ 整行失败并点名包名与版本（不许声明支持却没装）', async () => {
+  it('子智能体扩展没装载 ⇒ 整候选失败并点名包名与版本（不许声明支持却没装）', async () => {
     const recorder = createFakePiRecorder();
     setAgentRuntimeForTesting({
       sdkModule: createFakePiSdk({ recorder, extensionsAfterReload: [[{ path: '<inline:ours>' }]] }),
@@ -599,7 +599,7 @@ describe('pi 的装配序列与隔离序列', () => {
 
   /**
    * 入口**解析不出来**（包不在 `node_modules` 里、或入口文件缺失）与上一条同一姿态：
-   * 这一行拒绝在没有派发能力的前提下声称支持子智能体，且失败码同为 `AGENT_LOAD_FAILED`
+   * 这个候选拒绝在没有派发能力的前提下声称支持子智能体，且失败码同为 `AGENT_LOAD_FAILED`
    * （归成 `AGENT_FAILED` 会让「包没装」被读成「网关抽风」）。
    *
    * 判据传**空基准表**：解析基准逐个试完、全失败才会抛，而「拿一个不存在的目录当基准」在测试
@@ -634,7 +634,7 @@ describe('pi 的装配序列与隔离序列', () => {
     expect(recorder.abortCount).toBeGreaterThanOrEqual(1);
     expect(recorder.waitForIdleCount).toBeGreaterThanOrEqual(1);
     expect(recorder.disposeCount).toBe(1);
-    // 本行的 provider 注册在 run 的边界内注销
+    // 候选的 provider 注册在 run 的边界内注销
     expect(recorder.unregistered).toEqual([recorder.registered[0]?.providerId]);
   });
 
@@ -706,15 +706,15 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
-   * **收尾读子会话转写这条接线**（只有整条链路上验得了：转写路径要同时用到**本行的 `cwd`**
+   * **收尾读子会话转写这条接线**（只有整条链路上验得了：转写路径要同时用到**候选的 `cwd`**
    * 与**本会话的 `sessionId`**，两者都在适配器的装配闭包里，投影函数拿不到）。
    *
    * 判据是产物：那个子会话的消息落进 `onMessage`，逐条带 `subagentId` 与 `session-file` 来源，
    * 轮次是它自己的 1..N。转写投影本身的规则由 `transcript.test.ts` 钉住，这条只钉**接线**——
    * 路径少用一格（例如拿主会话的轮次号或别的会话 id 去拼）就会读不到文件、这里当场红。
    */
-  it('收尾把子会话转写读成子任务的消息：本行 cwd 与会话 id 都要用对', async () => {
-    const input = freshRow();
+  it('收尾把子会话转写读成子任务的消息：候选 cwd 与会话 id 都要用对', async () => {
+    const input = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-under-test';
     for (const event of fullRoundTripEvents()) recorder.events.push(event);
@@ -786,10 +786,10 @@ describe('pi 的装配序列与隔离序列', () => {
    * 总线报 started ⇒ 订阅子会话 ⇒ 事件缓冲在投影里排空）。
    *
    * 判据全是产物级：子会话消息的来源是 `wire`（不再带「补录」角标）、轮次从 1 起、
-   * 全局槽在运行结束后被删（下一行的 claim 不会被挡）。
+   * 全局槽在运行结束后被删（下一候选的 claim 不会被挡）。
    */
   it('子会话正文走 wire：订阅子会话事件流，消息带 wire 来源与正确轮次', async () => {
-    const input = freshRow();
+    const input = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-wire';
     // 子会话假件（共享夹具）：订阅那一刻同步吐两条助手收尾（与主会话夹具同一时序）
@@ -851,7 +851,7 @@ describe('pi 的装配序列与隔离序列', () => {
       [2, 'wire', 'assistant'],
     ]);
     expect(child[0]?.blocks[0]).toMatchObject({ type: 'text', text: '子任务第一步' });
-    // 全局槽被删、claim 恰好一次：下一行的注册表快照不会被这一行挡住
+    // 全局槽被删、claim 恰好一次：下一候选的注册表快照不会被这个候选挡住
     expect((globalThis as Record<symbol, unknown>)[PI_SUBAGENTS_MANAGER_KEY]).toBeUndefined();
     expect(recorder.registryClaims).toBe(1);
   });
@@ -866,14 +866,14 @@ describe('pi 的装配序列与隔离序列', () => {
    *
    * ⚠️ 本夹具把父会话造成**彻底静默**（`hangPrompt` 之后一帧都不发），因此它证明的是
    * 「完全没有父事件时泵仍然把正文送出去」这一档，**证不了**「有那 4 帧时泵是否还必要」——
-   * 后者要两臂同时测时延（接泵 / 不接泵），见 `.scratch/pi-audit3/LEDGER.md` 的交接速查 C-1。
+   * 后者要两臂同时测时延（接泵 / 不接泵），见真机探针记录（不入库）的交接速查 C-1。
    *
    * 夹具按这个形状搭：父会话交完派发的 `tool_execution_start` 就**停住不产事件**
    * （`hangPrompt`），子会话随后才产正文；判据是「子任务的消息在父会话还没有下一个事件时
    * 就已经到了 `onMessage`」。摘掉泵（或摘掉 `drain` 后的续泵）这里当场挂住到超时。
    */
   it('派发期父会话静默时子任务正文照样实时到达：不等 Agent 工具收尾', async () => {
-    const input = freshRow();
+    const input = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-pump';
     /** 子会话假件：**订阅时不吐**，正文由用例在「父会话已静默」之后手动 emit */
@@ -959,7 +959,7 @@ describe('pi 的装配序列与隔离序列', () => {
    * 判据取「收尾之前收到的条数 ≥ 2 且逐步递增」，纯整条投递的实现在这里当场红。
    */
   it('派发期逐字流式：同一轮的增量分批到达消费方，不是攒到收尾才一次性给', async () => {
-    const input = freshRow();
+    const input = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-delta';
     const childSession = createFakePiChildSession();
@@ -1033,15 +1033,15 @@ describe('pi 的装配序列与隔离序列', () => {
   });
 
   /**
-   * **wire 通道按 run 划界**（snapshot-then-delete 的隔离判据）：每行 reload 后快照到
+   * **wire 通道按 run 划界**（snapshot-then-delete 的隔离判据）：每个候选 reload 后快照到
    * **自己那份**注册表条目。假件的 claim 是先到先得（与真实工厂同语义）⇒ 若产品侧忘了
-   * 「快照后删槽」，第二行的 claim 会落空、它的 `getRecord` 拿到的是第一行的条目（永远
+   * 「快照后删槽」，第二候选的 claim 会落空、它的 `getRecord` 拿到的是第一候选的条目（永远
    * 查不到自己的子会话）⇒ 它的子任务正文整行退回转写通道（来源变 `session-file`），当场红。
    * 「两行 reload 交叠时互斥串行」那条竞态由 `subagent-wire.test.ts` 的并发用例单独钉住
-   * （本用例的两行按 `waitFor` 先后装配，reload 本就不交叠）。
+   * （本用例的两个候选按 `waitFor` 先后装配，reload 本就不交叠）。
    */
   it('wire 通道按 run 划界：并发两行各自拿到自己的子会话事件流，正文互不串', async () => {
-    const makeRow = (agentId: string, task: string): {
+    const makeCandidate = (agentId: string, task: string): {
       recorder: ReturnType<typeof createFakePiRecorder>;
       input: ReturnType<typeof createRunInput>;
       session: { messages: unknown[]; subscribe: (listener: (event: unknown) => void) => () => void };
@@ -1077,8 +1077,8 @@ describe('pi 的装配序列与隔离序列', () => {
       recorder.events.push({ type: 'agent_settled', aborted: false });
       return { recorder, input: createRunInput({ cwd, configHome }), session };
     };
-    const first = makeRow('agent-first', '第一行任务');
-    const second = makeRow('agent-second', '第二行任务');
+    const first = makeCandidate('agent-first', '第一行任务');
+    const second = makeCandidate('agent-second', '第二行任务');
 
     // 两行交叠着跑（与「注册面按 run 划界」同一条时序：交叠正是互斥要挡的窗口）
     setAgentRuntimeForTesting({
@@ -1128,7 +1128,7 @@ describe('pi 的装配序列与隔离序列', () => {
     });
     await Promise.all([runFirst, runSecond]);
 
-    // 各行只看得到自己那份子会话正文（来源 wire），另一行的身份一个字都不进本行
+    // 各行只看得到自己那份子会话正文（来源 wire），另一候选的身份一个字都不进行的
     expect(messagesFirst.filter((message) => message.subagentId !== null).map((message) => [message.subagentId, message.source]))
       .toEqual([['agent-first', 'wire']]);
     expect(messagesSecond.filter((message) => message.subagentId !== null).map((message) => [message.subagentId, message.source]))
@@ -1141,7 +1141,7 @@ describe('pi 的装配序列与隔离序列', () => {
    * 来源照旧 `session-file`（「补录」角标如实标注），结论与子任务行不受影响。
    */
   it('wire 快照落空：子任务正文退回转写文件通道（来源 session-file），结论不受影响', async () => {
-    const input = freshRow();
+    const input = freshCandidate();
     const recorder = createFakePiRecorder();
     recorder.sessionId = 'session-degraded';
     for (const event of fullRoundTripEvents()) recorder.events.push(event);
@@ -1290,7 +1290,7 @@ describe('pi 的装配序列与隔离序列', () => {
    * 的 `@throws` 一族），它不是「运行期失败」那条 `stopReason` 通道。把拒绝与落定归成同一个信号
    * ⇒ 一次「凭据缺失」被读成 `ok:true / completed / finalText:null`（「成功了、只是没说话」），
    * 而骨架的 catch 与归因层都看不到它（真机形状：路由不给 apiKey ⇒ **零出站请求**却报成功；
-   * 候选行因此被记成 completed、评分行报「适配器未回传最终消息」，两处都指向错误的方向）。
+   * 候选因此被记成 completed、评分行报「适配器未回传最终消息」，两处都指向错误的方向）。
    */
   it('prompt() 在建请求前抛错 ⇒ 折成失败（不许静默成功），且释放照旧', async () => {
     const recorder = createFakePiRecorder();
@@ -1326,8 +1326,8 @@ describe('pi 的装配序列与隔离序列', () => {
    * 与 `reload()` 会。窄壳走 `createAgentSession()`，所以这一发由适配器按厂商同一条顺序补上
    * （`AgentSessionRuntime.dispose()` 的实体就是 `emit(session_shutdown{reason:'quit'})` → `session.dispose()`）。
    *
-   * 判据取**两条**：装了监听者的行里那一发有且只有一次、且排在 `dispose` 之前；
-   * 没有监听者的行里**一次都不发**（`hasHandlers` 那一格不是装饰）。
+   * 判据取**两条**：装了监听者的候选里那一发有且只有一次、且排在 `dispose` 之前；
+   * 没有监听者的候选里**一次都不发**（`hasHandlers` 那一格不是装饰）。
    */
   it('释放时给扩展发一次 session_shutdown(quit)，且排在 dispose 之前；没人听就不发', async () => {
     const withListener = createFakePiRecorder();
@@ -1410,9 +1410,9 @@ function fullRoundTripEvents(): unknown[] {
 
 describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () => {
   /**
-   * **交叠闸门**：两行都发出**第一次**请求之前，谁都拿不到回包。
+   * **交叠闸门**：两个候选都发出**第一次**请求之前，谁都拿不到回包。
    *
-   * 为什么需要它：没有闸门时第二行要等第一行整个跑完才开始装配（实测两行的注册都在 370 ms 前后、
+   * 为什么需要它：没有闸门时第二行要等第一行整个跑完才开始装配（实测两个候选的注册都在 370 ms 前后、
    * 但注销也一样整齐），于是「两行共用一份 provider 注册 / 一份凭据表」这类缺陷**原理上踩不到**
    * ——把 provider id 改成常量、把 runtime 改成模块级共享，用例照样全绿（实测过）。
    * 闸门把两行钉在同一个窗口里：各自的注册、鉴权与首次请求都发生在对方的运行期内，
@@ -1427,7 +1427,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
       release = resolve;
     });
     return {
-      /** 这一行的第一次请求到了：两台都到齐就一起放行 */
+      /** 这个候选的第一次请求到了：两台都到齐就一起放行 */
       async wait(): Promise<void> {
         arrived += 1;
         if (arrived >= 2) release?.();
@@ -1458,7 +1458,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
         });
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         void (async () => {
-          // 首次请求过闸门（第二次起直接放行，否则两行的第二次请求会互相等）
+          // 首次请求过闸门（第二次起直接放行，否则两个候选的第二次请求会互相等）
           if (!gate.opened) await gate.wait();
           // Responses wire 的最简流（事件名 + `type` 都给，见 `pi-gateway-fixture` 的同款说明）
           const item = {
@@ -1510,7 +1510,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
   }
 
   /** 一行：真包走生产路径（不经 sdkModule 注入），打到指定的本地网关 */
-  async function runRow(root: string, port: number, apiKey: string): Promise<void> {
+  async function runCandidate(root: string, port: number, apiKey: string): Promise<void> {
     const cwd = join(root, 'workspace');
     const configHome = join(root, '.agenthome');
     mkdirSync(cwd, { recursive: true });
@@ -1534,8 +1534,8 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
    * **并发隔离**（规格的硬要求）：两行**同时**跑、`baseUrl` 与 `apiKey` 各不相同，
    * 断言各自出站打到自己那台、密钥不串。
    *
-   * 变异体（把 per-run runtime 改成模块级共享）必须让这条红：共享之后两行的 provider 注册互相覆盖，
-   * 请求会一起落到同一台网关上、带着同一个密钥——而两行的日志、事件、结论全是正常的。
+   * 变异体（把 per-run runtime 改成模块级共享）必须让这条红：共享之后两个候选的 provider 注册互相覆盖，
+   * 请求会一起落到同一台网关上、带着同一个密钥——而两个候选的日志、事件、结论全是正常的。
    */
   it('两行同时跑：各自打到自己那台网关、各自的密钥不串', async () => {
     const seenA: Array<{ url: string; auth: string | undefined }> = [];
@@ -1549,8 +1549,8 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
     const rootB = mkdtempSync(join(tmpdir(), 'pi-row-b-'));
     try {
       await Promise.all([
-        runRow(rootA, gatewayA.port, 'sk-row-a'),
-        runRow(rootB, gatewayB.port, 'sk-row-b'),
+        runCandidate(rootA, gatewayA.port, 'sk-row-a'),
+        runCandidate(rootB, gatewayB.port, 'sk-row-b'),
       ]);
       /**
        * 判据是**每一条**出站请求，不是「至少有一条」：
@@ -1562,7 +1562,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
       expect(seenB.length).toBe(1);
       expect([...new Set(seenA.map((request) => request.auth))]).toEqual(['Bearer sk-row-a']);
       expect([...new Set(seenB.map((request) => request.auth))]).toEqual(['Bearer sk-row-b']);
-      // 密钥不串：以「另一行的密钥」为子串的请求一条都不许有（含被改写过的形态）
+      // 密钥不串：以「另一候选的密钥」为子串的请求一条都不许有（含被改写过的形态）
       expect(seenB.some((request) => request.auth?.includes('sk-row-a'))).toBe(false);
       expect(seenA.some((request) => request.auth?.includes('sk-row-b'))).toBe(false);
       expect(seenA.every((request) => request.url === '/v1/responses')).toBe(true);
@@ -1576,7 +1576,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
   /**
    * **注册面归属**：每次运行各有一份 `ModelRuntime` 与一份凭据存储，凭据不跨运行残留。
    *
-   * 为什么这条与出站那条不能互相顶替：出站断言证明的是「请求打对了地方」，而**每行的模型定义自带
+   * 为什么这条与出站那条不能互相顶替：出站断言证明的是「请求打对了地方」，而**每个候选的模型定义自带
    * destination**（`Model` 上有 `baseUrl`）⇒ 把 runtime 改成模块级共享、provider id 改成常量，
    * 出站照样各自正确（实测：共享 runtime + 常量 id，两行仍各自 200、密钥不串）。
    * 真正会坏的是**注册面本身**：共享之后序号 N 的注册被 N+1 覆盖（同名对撞），
@@ -1584,7 +1584,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
    * 这条用例就钉「注册面按 run 划界」：两行各自的注册 id 必须留在**自己那一份**里。
    */
   it('注册面按 run 划界：两行各有一份 runtime 与凭据存储，注册 id 不互见', async () => {
-    const makeRow = (): { recorder: ReturnType<typeof createFakePiRecorder>; input: ReturnType<typeof createRunInput> } => {
+    const makeCandidate = (): { recorder: ReturnType<typeof createFakePiRecorder>; input: ReturnType<typeof createRunInput> } => {
       const root = mkdtempSync(join(tmpdir(), 'pi-row-registry-'));
       const cwd = join(root, 'workspace');
       const configHome = join(root, '.agenthome');
@@ -1592,8 +1592,8 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
       const recorder = createFakePiRecorder();
       return { recorder, input: createRunInput({ cwd, configHome }) };
     };
-    const first = makeRow();
-    const second = makeRow();
+    const first = makeCandidate();
+    const second = makeCandidate();
 
     // 两行真的同时跑：先各装配到一半，再一起收尾（共享句柄的缺陷正是在交叠里现形）
     const fakeFirst = createFakePiSdk({ recorder: first.recorder });
@@ -1683,7 +1683,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
   }, 60_000);
 
   /**
-   * **凭据不落盘**：跑完行配置目录里只有**会话落点**那一层——没有 `auth.json`、没有 `models.json`、
+   * **凭据不落盘**：跑完候选配置目录里只有**会话落点**那一层——没有 `auth.json`、没有 `models.json`、
    * 没有 `models-store.json`。默认的 `DefaultAuthStorage` 会在**读一下**的时候就建出一个空壳
    * `auth.json`，这条用例是那条通道的唯一网。
    *
@@ -1691,7 +1691,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
    * 这一格是**该有的产物**，与「凭据 / 模型目录泄漏」是两件事——故用**正列举**而不是「目录为空」，
    * 既有那几条泄漏断言逐条保留。
    */
-  it('跑完行目录里只有会话落点（凭据与模型目录都不落盘）', async () => {
+  it('跑完候选目录里只有会话落点（凭据与模型目录都不落盘）', async () => {
     const seen: Array<{ url: string; auth: string | undefined }> = [];
     const gateway = await startGateway(seen, { wait: async () => {}, opened: true });
     try {
@@ -1710,7 +1710,7 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
         onEvent: () => {},
       });
       /**
-       * 行配置目录里只有会话落点那一层（本次没传 skills ⇒ 连技能根都不建）。
+       * 候选配置目录里只有会话落点那一层（本次没传 skills ⇒ 连技能根都不建）。
        * 默认的 `DefaultAuthStorage` 会在**读一下**的时候就建出 2 字节的空壳 `auth.json`，
        * `modelsPath` 不设 `null` 时会建出 `models.json` / `models-store.json`——三者逐个点名。
        */
@@ -1743,12 +1743,12 @@ describe('pi 的凭据投射（并发隔离：真包 + 本地假网关）', () =
  */
 describe('pi 的出站工具表（真包 + 假网关）', () => {
   it('执行档请求体里有扩展那三件、只读档一件都没有（白名单是成员匹配器，不列就静默消失）', async () => {
-    const full = await runPiConformanceRow({
+    const full = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       permission: 'full',
       script: [anthropicText('好。')],
     });
-    const readOnly = await runPiConformanceRow({
+    const readOnly = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       permission: 'read-only',
       script: [anthropicText('好。')],
@@ -1771,12 +1771,12 @@ describe('pi 的出站工具表（真包 + 假网关）', () => {
    * 「我们交了一份工具定义」与「模型看得到它」是两件事，只有出站那一份请求分得开。
    */
   it('提问工具只随应答面出站：传了回调在 `tools[]` 里，不传则整表少它一件', async () => {
-    const withCallback = await runPiConformanceRow({
+    const withCallback = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [anthropicText('好。')],
       onAskUser: async () => ({ outcome: 'answered', answers: [{ header: '选路径', selected: ['选项 A'], custom: null }] }),
     });
-    const withoutCallback = await runPiConformanceRow({
+    const withoutCallback = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [anthropicText('好。')],
     });
@@ -1799,7 +1799,7 @@ describe('pi 的出站工具表（真包 + 假网关）', () => {
    * 而不是「我们把这个字符串交给了 SDK」。
    */
   it('提问工具的三格提示词都进了出站请求的系统段（宿主工具这条通道的时机提示只能靠它）', async () => {
-    const withCallback = await runPiConformanceRow({
+    const withCallback = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [anthropicText('好。')],
       onAskUser: async () => ({ outcome: 'unavailable', answers: null }),
@@ -1811,7 +1811,7 @@ describe('pi 的出站工具表（真包 + 假网关）', () => {
       expect(system, `提示词里的时机约束「${guideline.slice(0, 12)}…」没进系统段`).toContain(guideline);
     }
     // 不传回调 ⇒ 这一件不在，那两段里也就不该有它（同一个判据的反面）
-    const withoutCallback = await runPiConformanceRow({ prompt: '按剧本收尾。', script: [anthropicText('好。')] });
+    const withoutCallback = await runPiConformanceCandidate({ prompt: '按剧本收尾。', script: [anthropicText('好。')] });
     const bare = piSystemText(withoutCallback.requests[0]?.body, 'anthropic-messages');
     expect(bare).not.toContain(PI_ASK_USER_TOOL);
   }, 60_000);
@@ -1833,7 +1833,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
   };
 
   it('原生通道：工具带着原 schema 出站、参数投影回最终答复、上报为真', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [
         anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, { verdict: '还行' }, 'toolu_native'),
@@ -1853,7 +1853,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
   }, 60_000);
 
   it('模型没走工具（只回正文）⇒ 工具声明照样出站，但上报为假', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       // 这一格是**允许**的：pi 的 `ToolChoice` 只有 auto / none，模型完全可以不调工具
       script: [anthropicText(JSON.stringify({ verdict: '还行' }))],
@@ -1871,7 +1871,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
       required: ['verdict'],
       additionalProperties: true,
     };
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [anthropicText(JSON.stringify({ verdict: '还行' }))],
       outputSchema: rejected,
@@ -1900,7 +1900,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
       required: ['verdict'],
       additionalProperties: true,
     };
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '按剧本收尾。',
       script: [
         anthropicToolUse(PI_STRUCTURED_OUTPUT_TOOL, { verdict: '还行' }, 'toolu_degraded'),
@@ -1913,7 +1913,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
   }, 60_000);
 
   it('没要 schema ⇒ 一件工具都不多、上报为假（这一格不是「降级」）', async () => {
-    const run = await runPiConformanceRow({ prompt: '按剧本收尾。', script: [anthropicText('好。')] });
+    const run = await runPiConformanceCandidate({ prompt: '按剧本收尾。', script: [anthropicText('好。')] });
     expect(run.requestTools).not.toContain(PI_STRUCTURED_OUTPUT_TOOL);
     expect(run.strictTool).toBeNull();
     expect(run.outcome.applied.structuredOutput).toBe(false);
@@ -1925,7 +1925,7 @@ describe('pi 的结构化输出通道（真包 + 假网关）', () => {
  * 在 anthropic 那条上落在 `tools[]` 顶层。
  *
  * 为什么必须两条都判：`compat` 少开一格时（`supportsStrictMode` / `supportsStrictTools`）厂商是
- * **零出站请求 + `stopReason: 'error'`** 收场——请求侧事实整个消失，而这一格看起来只是「这一行
+ * **零出站请求 + `stopReason: 'error'`** 收场——请求侧事实整个消失，而这一格看起来只是「这个候选
  * 莫名其妙失败了」。判据读 `observer.ts` 的纯函数（与一致性套件同一份读法），不另写一份解析。
  */
 describe('pi 的 strict 工具声明在两条 wire 上的出站位置', () => {
@@ -1935,9 +1935,9 @@ describe('pi 的 strict 工具声明在两条 wire 上的出站位置', () => {
     const seen: CapturedPiRequest[] = [];
     const gateway = await startPiGateway(seen);
     try {
-      const { body } = await runPiRow(seen, gateway.port, { protocolType: 'openai', outputSchema: schema });
+      const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'openai', outputSchema: schema });
       /**
-       * 这一行的剧本回的是**正文**（不是工具参数）⇒ 骨架会追问一轮修正，请求因此不止一条。
+       * 这个候选的剧本回的是**正文**（不是工具参数）⇒ 骨架会追问一轮修正，请求因此不止一条。
        * 路径那一格只钉第一条：它证明 openai 那条 wire 的请求真的发出去了（`compat` 没开时是零请求）。
        */
       expect(seen[0]?.url).toBe('/v1/responses');
@@ -1954,7 +1954,7 @@ describe('pi 的 strict 工具声明在两条 wire 上的出站位置', () => {
     const seen: CapturedPiRequest[] = [];
     const gateway = await startPiGateway(seen);
     try {
-      const { body } = await runPiRow(seen, gateway.port, { protocolType: 'anthropic', outputSchema: schema });
+      const { body } = await runPiCandidate(seen, gateway.port, { protocolType: 'anthropic', outputSchema: schema });
       const declaration = piRequestToolDeclaration(body, PI_STRUCTURED_OUTPUT_TOOL);
       expect(declaration, 'anthropic 那条 wire 的请求里没有那一件工具').not.toBeNull();
       expect(declaration?.strict, 'anthropic 侧没有开厂商侧强制（compat.supportsStrictTools 没生效）').toBe(true);
@@ -1972,7 +1972,7 @@ describe('pi 的 strict 工具声明在两条 wire 上的出站位置', () => {
  */
 describe('pi 的失败读数（真包 + 假网关）', () => {
   it('路由不给 apiKey ⇒ 零出站请求、结论是失败（不是静默成功）', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       prompt: '随便问一句。',
       script: [anthropicText('答复。')],
       apiKey: '',
@@ -1985,7 +1985,7 @@ describe('pi 的失败读数（真包 + 假网关）', () => {
   }, 60_000);
 
   it('上游回 500（失败的一轮）⇒ tokens 是 null，不是「采到了 0 token」', async () => {
-    const run = await runPiConformanceRow({ prompt: '随便问一句。', script: [], status: 500 });
+    const run = await runPiConformanceCandidate({ prompt: '随便问一句。', script: [], status: 500 });
     expect(run.outcome.ok).toBe(false);
     /**
      * 契约：`tokens` 采不到就是 `null`（0 会让人得出「这家很省」的错误结论）。厂商那一侧
@@ -2001,7 +2001,7 @@ describe('pi 的失败读数（真包 + 假网关）', () => {
 
 
 /**
- * **MCP stdio 子进程要随这一行一起收掉**（真包 + 真 MCP 服务器 + 假网关）。
+ * **MCP stdio 子进程要随这个候选一起收掉**（真包 + 真 MCP 服务器 + 假网关）。
  *
  * 这是 §2.6 那条的**验收判据**：厂商把 MCP 连接的清理挂在扩展事件 `session_shutdown` 上，
  * 而 `AgentSession.dispose()` 不 emit 它 ⇒ 适配器必须在释放序列里自己补那一发（见

@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 import { MissingReasonSchema } from './agent-message';
-import { RowMcpVerdictSchema } from './run';
+import { CandidateMcpVerdictSchema } from './run';
 
 /**
  * 一组环境信息。`source` 是**必须**的：它回答「这条要求是谁下发的」，
@@ -27,11 +27,11 @@ export type EnvSource = z.infer<typeof EnvSourceSchema>;
 /**
  * 「结论 Tag」的一行。`text` 是结论之前的半行文字（服务名 / 来源 / 判据），
  * `verdict` 是结论的档位（渲染层把它翻成四档中文与颜色）；`verdict: null`
- * 表示这一行没有结论——纯文本注解（如 codex 的能力缺口说明），整行照 `text` 画。
+ * 表示这个候选没有结论——纯文本注解（如 codex 的能力缺口说明），整行照 `text` 画。
  */
 export const EnvVerdictLineSchema = z.object({
   text: z.string(),
-  verdict: RowMcpVerdictSchema.nullable(),
+  verdict: CandidateMcpVerdictSchema.nullable(),
 });
 export type EnvVerdictLine = z.infer<typeof EnvVerdictLineSchema>;
 
@@ -55,8 +55,8 @@ export const EnvItemSchema = z.discriminatedUnion('present', [
      * 逐行「结论 Tag」的渲染声明（可选）。给定时渲染层按行画：`text` 照常等宽文本，
      * `verdict` 非空的那一枚画成 Tag；不给就整段 `text` 纯文本。
      * `text` 仍是纯文本的那一份（复制按钮与回退渲染都读它），两格**同义**：
-     * 各行的 `text` 与结论文案拼起来等于 `text` 里对应的那几行。
-     * 只有「一台一个结论」的观测格（今天是「本行 MCP」）才给；其余条目没有结论可标。
+     * 各候选的 `text` 与结论文案拼起来等于 `text` 里对应的那几行。
+     * 只有「一台一个结论」的观测格（今天是「候选 MCP」）才给；其余条目没有结论可标。
      */
     verdictLines: z.array(EnvVerdictLineSchema).optional(),
   }),
@@ -81,7 +81,7 @@ export type EnvGroup = z.infer<typeof EnvGroupSchema>;
 /**
  * 一行摘要（环境抽屉的抬头）：谁 · 哪个模型 · 哪一档权限。
  *
- * 七格全部来自 `EvalRow` / `EvalRun` 的快照字段——**服务端已经存了**，
+ * 七格全部来自 `EvalCandidate` / `EvalRun` 的快照字段——**服务端已经存了**，
  * 故这一组不需要读事件流（真机逐字段核过）。
  */
 export const AgentEnvironmentSummarySchema = z.object({

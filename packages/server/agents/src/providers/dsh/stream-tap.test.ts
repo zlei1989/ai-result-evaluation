@@ -89,7 +89,7 @@ describe('DSH_STREAM_TAP_PLUGIN_SOURCE（插件源码形状）', () => {
 describe('createDshStreamTapGate（tail 与门闸）', () => {
   const known = new Set(['session-main']);
 
-  it('渐进读行：新行按落盘顺序出、半截行留到下次补齐', () => {
+  it('渐进读行：新候选按落盘顺序出、半截行留到下次补齐', () => {
     const dir = mkdtempSync(join(tmpdir(), 'aieval-tap-'));
     const file = join(dir, DSH_STREAM_TAP_RELATIVE_PATH);
     const gate = createDshStreamTapGate(file);
@@ -98,7 +98,7 @@ describe('createDshStreamTapGate（tail 与门闸）', () => {
       writeFileSync(file, `${tapLine('block-start', { blockType: 'text' })}\n${tapLine('text-delta', { text: '你好' })}\n`, 'utf8');
       const out = gate.drain(known);
       expect(out).toHaveLength(1); // block-start 只占位不产消息
-      // 半截行：没有结尾换行的那段必须留到下次（读盘只能到「写完整行」为止）
+      // 半截行：没有结尾换候选的那段必须留到下次（读盘只能到「写完整行」为止）
       writeFileSync(file, tapLine('text-delta', { text: '，世界' }), { flag: 'a', encoding: 'utf8' });
       expect(gate.drain(known)).toEqual([]);
       writeFileSync(file, '\n', { flag: 'a', encoding: 'utf8' });
@@ -267,7 +267,7 @@ describe('createDshStreamTapGate（tail 与门闸）', () => {
    * 让 `drain()` 之后恒返回空，追问区间里子智能体继续说话的那一段就整段消失（零报错）。
    * 真机症状：修正轮之后子会话的增量一条都没有，而 `messages.jsonl` 里也看不出少了什么。
    */
-  it('close() 之后仍能接着读（跨区间复用）：偏移不重置、句柄可重开，只有挂起的行被丢弃', () => {
+  it('close() 之后仍能接着读（跨区间复用）：偏移不重置、句柄可重开，只有挂起的候选被丢弃', () => {
     const dir = mkdtempSync(join(tmpdir(), 'aieval-tap-'));
     const file = join(dir, DSH_STREAM_TAP_RELATIVE_PATH);
     writeFileSync(file, `${tapLine('text-delta', { text: '第一段' })}\n`, 'utf8');
@@ -341,7 +341,7 @@ describe('DSH_STREAM_TAP_PLUGIN_SOURCE：插件本体跑一次（判据取落盘
     expect(row.frame?.chunk?.text).toBe('你好');
   });
 
-  it('不认识的帧、非 chunk 帧、拿不到会话 id 的帧、非对象载荷 ⇒ 一行都不落', async () => {
+  it('不认识的帧、非 chunk 帧、拿不到会话 id 的帧、非对象载荷 ⇒ 一个候选都不落', async () => {
     const home = mkdtempSync(join(tmpdir(), 'aieval-tap-plugin-'));
     const handler = await applyPlugin(home);
 

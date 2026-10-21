@@ -44,7 +44,7 @@ export async function DELETE(req: Request, ctx: ProviderRouteContext): Promise<R
 }
 
 /**
- * PUT：设置单条模型的窗口（设置页的行内编辑器）。用 PUT 而不是 PATCH，是为了复用客户端既有的
+ * PUT：设置单条模型的窗口（设置页的候选内编辑器）。用 PUT 而不是 PATCH，是为了复用客户端既有的
  * `putJson`（本包 http 原语里没有 patch 形态），语义上也成立：这一次调用**完整**表达了该条模型
  * 的能力两格（给了就是给了，null 就是清空）。
  */

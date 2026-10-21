@@ -36,7 +36,7 @@ let sourceDir: string;
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'aieval-skill-face-'));
-  configHome = join(tempRoot, 'rows', 'row-1', '.agenthome');
+  configHome = join(tempRoot, 'candidates', 'row-1', '.agenthome');
   cwd = join(tempRoot, 'workspace');
   sourceDir = join(tempRoot, 'skills', 'alpha');
   mkdirSync(cwd, { recursive: true });
@@ -106,7 +106,7 @@ describe('claude：技能面来自 getContextUsage（流循环里采一次、收
     const withSkills = vendorEvents(events).filter((event) => (event.skills ?? null) !== null);
     expect(withSkills).toHaveLength(1);
     expect(withSkills[0]?.skills).toEqual([
-      // 装在行配置目录里 ⇒ 本机启用项；来源原值照抄
+      // 装在候选配置目录里 ⇒ 本机启用项；来源原值照抄
       { name: 'alpha', source: 'userSettings', path: null, origin: 'local-enabled' },
       // 被测仓库自带的（真机原值 `projectSettings`）⇒ 那句安全提示的计数就是它
       { name: 'repo-owned', source: 'projectSettings', path: null, origin: 'repo-provided' },
@@ -172,7 +172,7 @@ describe('claude：技能面来自 getContextUsage（流循环里采一次、收
     expect(carrying[0]?.skills).toEqual([]);
   });
 
-  it('本行没装技能（`skills` 缺席）⇒ 一次都不采（评分与用例同步两处不该付这个钱）', async () => {
+  it('候选没装技能（`skills` 缺席）⇒ 一次都不采（评分与用例同步两处不该付这个钱）', async () => {
     const calls = { count: 0 };
     setAgentRuntimeForTesting({
       sdkModule: {

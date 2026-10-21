@@ -22,7 +22,7 @@ import { z } from 'zod';
  * 做什么：把「注入成功、启动 `ready`，但工具**调不动**」这件事用一句能直接展示的中文说清，
  * 并明说**不是本仓的缺陷**（否则下一个人会去硬修一个上游问题）。
  *
- * 为什么放契约里：它是**一份文案**，两个消费方——环境抽屉的「本行 MCP」格、
+ * 为什么放契约里：它是**一份文案**，两个消费方——环境抽屉的「候选 MCP」格、
  * 知识库 / FAQ——而 `@aieval/client` 只依赖 contracts（拿不到 agents）。放 agents 会被迫在界面侧
  * 抄第二份，漂移的表现是「界面上说能用、文档说调不动」。
  *
@@ -51,7 +51,7 @@ export const MCP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  *
  * 为什么要有它：一个含空白或冒号的键**发不出去**——HTTP 头名里两者都是分隔符，
  * 拼进请求就是一句畸形的头。这一格必须在**契约层**拦住，理由不是「更严谨」，而是两层口径
- * 分家的后果已经量到过：契约放行、适配器自己摘掉 ⇒ 编排层把它算进 `injected`，而行级观测格在
+ * 分家的后果已经量到过：契约放行、适配器自己摘掉 ⇒ 编排层把它算进 `injected`，而候选级观测格在
  * `vendor-tool-table` 通道上把「表里没有它」读成「厂商没起来」⇒ **整行 `AGENT_MCP_UNAVAILABLE`**，
  * 文案还指着一台从没起过的服务器。落在契约层之后，这个条目走 `invalid` 桶：行照跑、
  * 记 `unverified`、日志里直接点名是哪一条的哪个键。
@@ -65,7 +65,7 @@ export const MCP_HEADER_KEY_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
  *   - `transport`：`stdio`（本地命令）| `http`（远端端点）；
  *   - `enabled`：**缺省 true**（`.default(true)`），但落盘时显式写出——不让「没写」与「写了 false」
  *     在文件里长得一样。
- * 刻意不含：`cwd`（claude 的 stdio 没有这个字段，子进程继承行工作区的 cwd）、各类超时
+ * 刻意不含：`cwd`（claude 的 stdio 没有这个字段，子进程继承候选工作区的 cwd）、各类超时
  * （三家名字与语义都不同，用厂商默认）、时间戳（没有消费方）。
  */
 export const McpServerConfigSchema = z.discriminatedUnion('transport', [
@@ -117,7 +117,7 @@ export const MCP_PLACEHOLDER_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
  * 后两种为什么必须一并判死（本仓一个都没实现，而它们的两条下场都是坏的）：
  *   · 裸 `$NAME`：厂商的取值来源是**宿主进程自己的 `process.env`**（不是设置页那份映射）——
  *     宿主设过就把它**静默发到远端 MCP 端点 / 塞进 stdio 子进程**，没设则让**整台服务器起不来**
- *     且没有任何归因（行级观测格只会读成「厂商没起来」）；
+ *     且没有任何归因（候选级观测格只会读成「厂商没起来」）；
  *   · `!cmd`：厂商把那段文本**当命令执行**（`stdio` 的 `env` / `http` 的 `headers` 都走这条取值）。
  * 比探活那条**更宽**——`${` 之后就算没闭合也一律按「不解析」处置：这一份要交给厂商，
  * 宁可少注入一台，也不许把一串来路不明的写法送过去。
@@ -131,7 +131,7 @@ export const MCP_UNRESOLVED_PLACEHOLDER = /(\$\{|\$[A-Za-z_]|^!)/;
  */
 export const MCP_UNSUPPORTED_PLACEHOLDER = /\$\{[^}]*\}/;
 
-/** 一条**被跳过**的条目：名字 + 中文原因（日志与行级观测格都照它说，不许各写一句） */
+/** 一条**被跳过**的条目：名字 + 中文原因（日志与候选级观测格都照它说，不许各写一句） */
 export interface McpSkippedServer {
   name: string;
   /**
@@ -188,7 +188,7 @@ function resolveValue(value: string, env: Readonly<Record<string, string | undef
  * 为什么非有不可（「手改配置文件能被读到」那一面）：`loadConfig` **故意**不做 schema 校验
  * （一条手改坏的值不该让整页打不开），于是 `settings.mcpServers` 里的值在类型上可信、在运行期不可信。
  * 缺 `transport` 的条目会被一路当成 http 翻成 `{type:'http', url: undefined}`，**厂商之前没有任何一层会拦**——
- * 表现是「界面上明明配了，行里静默少一台」，而这一格正是唯一能当场说清「哪一条、缺什么」的地方。
+ * 表现是「界面上明明配了，候选里静默少一台」，而这一格正是唯一能当场说清「哪一条、缺什么」的地方。
  *
  * 诊断顺序按「最像人话」排：先说名字/`transport` 这两处一眼可见的，再点缺的那个必填格，
  * 其余（`env` 键名、`args` 类型这类）退回 zod 的首条 issue（`env` 键名那条本来就是本仓的中文文案）。

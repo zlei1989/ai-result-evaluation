@@ -15,7 +15,7 @@
  *    绝不改写、绝不缓存 strict 产物——改写在这里的代价不是「多一次转换」，而是整轮零出站请求。
  *
  * 2. **预检在装配期做，判据与厂商同一份**。`strict: 'require'` 的失败姿态是「零出站请求 +
- *    `stopReason: 'error'`、43 毫秒收场」，`prompt()` 也不会 reject ⇒ 从界面上看就是「这一行
+ *    `stopReason: 'error'`、43 毫秒收场」，`prompt()` 也不会 reject ⇒ 从界面上看就是「本次运行
  *    莫名其妙失败了」。故把这件事提前到装配期由我们显式裁定：落在子集内就走原生通道（`'require'`），
  *    落在子集外就**由我们显式降级**（工具改声明成 `'prefer'` + 调用方落 WARN + 走填充层），
  *    而不是让厂商在第一次请求时炸。本模块因此把「会不会被拒」按两条 wire 的差集各写一遍
@@ -42,7 +42,7 @@ import type { ProtocolType } from '../../types';
 
 /**
  * 结构化输出工具的**参数名**（也是 `piRequestToolNames` 会读到的工具名）。
- * 名字与另三家无关：它只是本行 `tools[]` 里的一件，不参与跨家比对。
+ * 名字与另三家无关：它只是本次运行 `tools[]` 里的一件，不参与跨家比对。
  */
 export const PI_STRUCTURED_OUTPUT_TOOL = 'submit_result';
 
@@ -96,7 +96,7 @@ const ANTHROPIC_UNSUPPORTED_KEYS = new Set([
 ]);
 
 /**
- * anthropic 放行的 `format` 白名单（逐字来自 `anthropic-messages.js` 的集合）。
+ * anthropic 放本次运行的 `format` 白名单（逐字来自 `anthropic-messages.js` 的集合）。
  * `format` 不在这个白名单里（`regex` / `uri-reference` 之类）即被拒。
  */
 const ANTHROPIC_FORMATS = new Set([
@@ -280,7 +280,7 @@ export function preflightStructuredOutput(outputSchema: unknown, protocolType: P
 }
 
 /**
- * 本行的结构化输出**采纳结论**（装配期一次算好，随运行闭包走）。
+ * 本次运行的结构化输出**采纳结论**（装配期一次算好，随运行闭包走）。
  *
  * 为什么把「降级提示词」也放在这里：降级时那份约束必须**加在首轮提示词上**，
  * 而装配面只在 `input.prompt` 一个地方能改它——两处各判一次「是不是降级了」必然漂移，
@@ -304,7 +304,7 @@ export interface StructuredOutputAdoption {
 /**
  * 装配期裁定一次：走原生通道还是降级档。
  *
- * `undefined` / `null` 表示调用方没要 schema ⇒ 三格都空，本行与这件事无关（不是「降级」）。
+ * `undefined` / `null` 表示调用方没要 schema ⇒ 三格都空，本次运行与这件事无关（不是「降级」）。
  * 要了 schema 而预检不过时**只降强度、不改 schema**：那份原样的 schema 进工具参数、提示词与修正轮，
  * 四家拿到的题目因此逐字相同。
  */
@@ -368,7 +368,7 @@ export interface StructuredOutputProjection {
    */
   owner: 'structured' | 'text';
   /**
-   * 本行的工具声明**带不带厂商侧强制**（装配期由采纳档位定死，运行期不变）：
+   * 本次运行的工具声明**带不带厂商侧强制**（装配期由采纳档位定死，运行期不变）：
    * 原生通道（`strict: 'require'`）为真；降级档（`'prefer'`）为假——那一档的工具调用
    * **照样**把参数投影进最终答复，但没有厂商按 schema 约束过形状 ⇒ 上报口径必须一起看这一格，
    * 否则「降级档模型调了工具」会被记成「形状由厂商保证」。

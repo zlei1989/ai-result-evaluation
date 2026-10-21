@@ -55,7 +55,7 @@ export interface RemoveTreeOptions {
   isRetryable?: (error: unknown) => boolean;
 }
 
-/** 同步睡一小会儿（本模块跑在同步路径上：`prepareRowWorkspace` 全程同步，没有 await 可用） */
+/** 同步睡一小会儿（本模块跑在同步路径上：`prepareCandidateWorkspace` 全程同步，没有 await 可用） */
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

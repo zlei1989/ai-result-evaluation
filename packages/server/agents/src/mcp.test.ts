@@ -1,16 +1,16 @@
 // @vitest-environment node
 /**
  * MCP **注入落点**的守卫：canonical 条目 → claude 的 `Options.mcpServers` 逐字形状，
- * 以及行内 `.npmrc` 的 registry 落盘。
+ * 以及候选内 `.npmrc` 的 registry 落盘。
  *
  * 为什么这些守卫非有不可（三条退化各自都有一个**静默**的坏法）：
  *   1. **停用条目**：漏了它，用户在设置页关掉的那台照样会被注入——而界面上显示的是「已停用」，
  *      于是「我明明关了它」变成一句谁也证不了的话；
  *   2. **`${ENV}` 占位未设**：漏了它，注入的是 `${CONTEXT7_API_KEY}` 这串原文，厂商侧只报
- *      「认证失败 / 401」，真因（环境变量没设）离现场很远；正确形态是跳过该条并在行级观测格记
+ *      「认证失败 / 401」，真因（环境变量没设）离现场很远；正确形态是跳过该条并在候选级观测格记
  *      `skipped`（行照跑）；
  *   3. **宿主没有 registry 配置**：这时**什么都不做**才是对的——凭空写一个公网 registry 进去会把
- *      内网镜像换成公网（行内首次注入从 ~4 s 变成 17.2 s，等待预算就是被这件事撑起来的）。
+ *      内网镜像换成公网（候选内首次注入从 ~4 s 变成 17.2 s，等待预算就是被这件事撑起来的）。
  *
  * ⚠️ 这一组钉两条硬口径：「占位未设 ⇒ 跳过」与「未解析的占位绝不原样透出去」。
  */
@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveMcpServers, type McpServers } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
-import { CODEX_MCP_STARTUP_TIMEOUT_SEC, readNpmrcText, toClaudeMcpServers, toCodexMcpServers, toDshMcpPluginLines, writeRowNpmrc } from './mcp';
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC, readNpmrcText, toClaudeMcpServers, toCodexMcpServers, toDshMcpPluginLines, writeCandidateNpmrc } from './mcp';
 
 /** 一份「设置页里那份」条目：启用 + 停用 + 占位未设 + 无需占位，四种形态各一台 */
 const SETTINGS_ENTRIES: McpServers = {
@@ -61,7 +61,7 @@ describe('toClaudeMcpServers（canonical → claude 的 Options.mcpServers）', 
     });
 
     // 逐字：`type` 是厂商的判别键；stdio 那一条**不许**有 `cwd`
-    // （canonical 里刻意没有 `cwd`，claude 的 stdio 也没有这个字段——子进程继承行工作区的 cwd）
+    // （canonical 里刻意没有 `cwd`，claude 的 stdio 也没有这个字段——子进程继承候选工作区的 cwd）
     expect(translated).toEqual({
       playwright: {
         type: 'stdio',
@@ -148,7 +148,7 @@ describe('toCodexMcpServers（canonical → codex 的 mcp_servers）', () => {
       expect('headers' in entry).toBe(false);
       expect('cwd' in entry).toBe(false);
     }
-    // 启动超时按等待预算给：缺了它 codex 用默认值，而行内首次注入要下载 61 MB
+    // 启动超时按等待预算给：缺了它 codex 用默认值，而候选内首次注入要下载 61 MB
     expect(translated['playwright']?.startup_timeout_sec).toBe(CODEX_MCP_STARTUP_TIMEOUT_SEC);
     expect(CODEX_MCP_STARTUP_TIMEOUT_SEC).toBeGreaterThanOrEqual(20);
   });
@@ -181,7 +181,7 @@ describe('toCodexMcpServers（canonical → codex 的 mcp_servers）', () => {
 });
 
 describe('toDshMcpPluginLines（canonical → overlay 的 `insert` 行）', () => {
-  it('同一份条目译成插件行的逐字形状：`serverName` = 我们的名字、传输名是 `stdio` / `streamable-http`', () => {
+  it('同一份条目译成插件候选的逐字形状：`serverName` = 我们的名字、传输名是 `stdio` / `streamable-http`', () => {
     const lines = toDshMcpPluginLines({
       playwright: {
         transport: 'stdio',
@@ -225,7 +225,7 @@ describe('toDshMcpPluginLines（canonical → overlay 的 `insert` 行）', () =
     expect(text).not.toContain('type:');
   });
 
-  it('每条插件的 `id` 唯一且不出现在 config 里（`id` 是插件行的身份，不是服务名）', () => {
+  it('每条插件的 `id` 唯一且不出现在 config 里（`id` 是插件候选的身份，不是服务名）', () => {
     const lines = toDshMcpPluginLines({
       a: { transport: 'stdio', enabled: true, command: 'node' },
       b: { transport: 'stdio', enabled: true, command: 'node' },
@@ -235,7 +235,7 @@ describe('toDshMcpPluginLines（canonical → overlay 的 `insert` 行）', () =
     expect(ids).toEqual(['    - id: mcp-a', '    - id: mcp-b']);
   });
 
-  it('三条退化：停用不进、占位未设不进、空集产出空行数组（调用方据此一行都不插）', () => {
+  it('三条退化：停用不进、占位未设不进、空集产出空数组（调用方据此一个候选都不插）', () => {
     expect(toDshMcpPluginLines(resolveMcpServers(SETTINGS_ENTRIES, {}).injectable).join('\n')).not.toContain('context7');
     expect(toDshMcpPluginLines({})).toEqual([]);
     const withKey = toDshMcpPluginLines(resolveMcpServers(SETTINGS_ENTRIES, { CONTEXT7_API_KEY: 'sk-live' }).injectable);
@@ -275,7 +275,7 @@ describe('toDshMcpPluginLines（canonical → overlay 的 `insert` 行）', () =
  * 于是**整行以内部错误收口**。一个手改坏的配置条目不该有这个后果，正确处置是「按契约跳过这一条」。
  *
  * 判据双向：① **不抛**（少了 `isTranslatableEntry` 那道闸，dsh 那支会对 `undefined` 抛 TypeError，
- * 整行以内部错误收口）；② 那一条不许出现（claude / codex 的对象里没有它的键、dsh 的行里没有它的
+ * 整行以内部错误收口）；② 那一条不许出现（claude / codex 的对象里没有它的键、dsh 的候选里没有它的
  * `serverName`），同时**同批的合法条目照常译出**。
  */
 describe('三个翻译器的形状闸：拿不到必需格的条目跳过、不抛', () => {
@@ -286,7 +286,7 @@ describe('三个翻译器的形状闸：拿不到必需格的条目跳过、不�
     'no-command': { transport: 'stdio' as const, enabled: true, args: ['-y', 'pkg'] },
   } as unknown as McpServers;
 
-  it('toDshMcpPluginLines：缺 url / 缺 command 都不抛，且这两条一行都不产出', () => {
+  it('toDshMcpPluginLines：缺 url / 缺 command 都不抛，且这两条一个候选都不产出', () => {
     const lines = toDshMcpPluginLines(malformed);
     const text = lines.join('\n');
 
@@ -308,21 +308,21 @@ describe('三个翻译器的形状闸：拿不到必需格的条目跳过、不�
   });
 });
 
-describe('writeRowNpmrc（行内 registry）', () => {
+describe('writeCandidateNpmrc（候选内 registry）', () => {
   const registryLine = 'registry=http://registry.m.jd.com/';
 
   it('宿主有 registry ⇒ 只把那一行写进行 configHome 的 .npmrc，权限位 0600', () => {
     const root = mkdtempSync(join(tmpdir(), 'row-npmrc-'));
     const configHome = join(root, '.agenthome');
     try {
-      const written = writeRowNpmrc({
+      const written = writeCandidateNpmrc({
         configHome,
         hostNpmrc: `# 宿主的 npm 配置\n${registryLine}\n//registry.example.com/:_authToken=secret\n`,
       });
 
       expect(written).toBe(registryLine);
       const target = join(configHome, '.npmrc');
-      // **只那一行**：宿主那一行以外的内容（哪怕同文件里还有认证 token）一个字节都不进行内
+      // **只那一行**：宿主那一行以外的内容（哪怕同文件里还有认证 token）一个字节都不进行的内
       expect(readFileSync(target, 'utf8')).toBe(`${registryLine}\n`);
       // 权限位 0600（与 dsh 的 overlay 同口径，与 core 的配置落盘同一个值）
       if (process.platform !== 'win32') expect(statSync(target).mode & 0o777).toBe(0o600);
@@ -335,8 +335,8 @@ describe('writeRowNpmrc（行内 registry）', () => {
     const root = mkdtempSync(join(tmpdir(), 'row-npmrc-'));
     const configHome = join(root, '.agenthome');
     try {
-      expect(writeRowNpmrc({ configHome, hostNpmrc: 'save-exact=true\n' })).toBeNull();
-      expect(writeRowNpmrc({ configHome, hostNpmrc: null })).toBeNull();
+      expect(writeCandidateNpmrc({ configHome, hostNpmrc: 'save-exact=true\n' })).toBeNull();
+      expect(writeCandidateNpmrc({ configHome, hostNpmrc: null })).toBeNull();
       // 「什么都不做」是字面意思：连目录都不建
       expect(() => statSync(configHome)).toThrow();
     } finally {
@@ -355,12 +355,12 @@ describe('writeRowNpmrc（行内 registry）', () => {
       ]) {
         const configHome = join(root, String(written.length));
         mkdirSync(configHome, { recursive: true });
-        written.push(writeRowNpmrc({ configHome, hostNpmrc }) ?? '(none)');
+        written.push(writeCandidateNpmrc({ configHome, hostNpmrc }) ?? '(none)');
       }
       expect(written).toEqual([
         'registry=http://a.example.com/',
         'REGISTRY = https://b.example.com/',
-        // 多条同名键：npm 的 ini 是「后者覆盖前者」⇒ 行内必须跟**最终生效**的那一条一致
+        // 多条同名键：npm 的 ini 是「后者覆盖前者」⇒ 候选内必须跟**最终生效**的那一条一致
         'registry=http://last.example.com/',
       ]);
     } finally {
@@ -374,7 +374,7 @@ describe('writeRowNpmrc（行内 registry）', () => {
     try {
       expect(readNpmrcText(join(root, 'nope', '.npmrc'))).toBeNull();
       expect(readNpmrcText(root)).toBeNull();
-      // BOM 不剥掉的话，第一行会变成 `\uFEFFregistry=…`，正则匹配不上 ⇒ 宿主明明配了却「什么都不做」
+      // BOM 不剥掉的话，第一个候选会变成 `\uFEFFregistry=…`，正则匹配不上 ⇒ 宿主明明配了却「什么都不做」
       writeFileSync(bomFile, `\uFEFF${registryLine}\nsave-exact=true\n`, 'utf8');
       expect(readNpmrcText(bomFile)).toBe(`${registryLine}\nsave-exact=true\n`);
     } finally {
@@ -382,14 +382,14 @@ describe('writeRowNpmrc（行内 registry）', () => {
     }
   });
 
-  it('注入的是行内那份，宿主那份一个字节都不动（不碰宿主是硬要求）', () => {
+  it('注入的是候选内那份，宿主那份一个字节都不动（不碰宿主是硬要求）', () => {
     const root = mkdtempSync(join(tmpdir(), 'row-npmrc-'));
     const configHome = join(root, '.agenthome');
     const hostFile = join(root, 'host-npmrc');
     const hostText = `${registryLine}\nsave-exact=true\n`;
     writeFileSync(hostFile, hostText, 'utf8');
     try {
-      expect(writeRowNpmrc({ configHome, hostNpmrc: readNpmrcText(hostFile) })).toBe(registryLine);
+      expect(writeCandidateNpmrc({ configHome, hostNpmrc: readNpmrcText(hostFile) })).toBe(registryLine);
       expect(readFileSync(hostFile, 'utf8')).toBe(hostText);
     } finally {
       rmSync(root, { recursive: true, force: true });

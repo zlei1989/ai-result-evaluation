@@ -55,7 +55,7 @@ function findCodexPid(): number | null {
 
 describe.skipIf(!ENABLED)('真机：codex 适配器的进程树回收', () => {
   it(
-    'close() 之后没有残留的厂商进程，且该行的 CODEX_HOME 可以删掉',
+    'close() 之后没有残留的厂商进程，且该候选的 CODEX_HOME 可以删掉',
     async () => {
       const home = mkdtempSync(join(tmpdir(), 'aieval-live-dispose-'));
       const env = { ...process.env, CODEX_HOME: home, HOME: home, USERPROFILE: home, RUST_LOG: 'error' };
@@ -87,7 +87,7 @@ describe.skipIf(!ENABLED)('真机：codex 适配器的进程树回收', () => {
       const survivors = descendants(codexPid as number).filter((line) => /codex|git/i.test(line));
       expect(survivors, `close() 之后仍有残留进程：\n${survivors.join('\n')}`).toEqual([]);
 
-      // 产品级判据：这份目录就是下一轮 `clearRowArtifacts` 要删的那个（`.agenthome` / `.judgehome`）
+      // 产品级判据：这份目录就是下一轮 `clearCandidateArtifacts` 要删的那个（`.agenthome` / `.judgehome`）
       expect(() => rmSync(home, { recursive: true, force: true })).not.toThrow();
       expect(existsSync(home)).toBe(false);
     },

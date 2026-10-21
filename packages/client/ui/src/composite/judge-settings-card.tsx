@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * 评分配置卡：默认评分模型 + 思考强度 + 默认评分智能体 + 输出契约只读预览 + diff 上限。
+ * 评分配置卡：默认评分模型 + 思考强度 + 默认评分智能体 + diff 上限。
  * 纯展示：数据从 settings / providers / agentProtocols 三个 props 来，改动以 patch 回调交给调用方
  * （本组件不调接口）。
  *
- * 六处刻意的设计：
+ * 五处刻意的设计：
  * 1. **两种协议的模型都列**：这一格是**文本调用**的目标，与智能体协议无关，
  * 按协议过滤会平白砍掉一半候选（Anthropic 协议的模型照样能评分）。
  * 「不过滤」只针对**模型**这一格；智能体那一格反过来必须按协议过滤 ——
@@ -15,15 +15,12 @@
  * 3. **单位换算只在这里做**：配置存字节，界面用 KB（人填的是 256）；
  * 4. **这里没有「单行超时」这一格**：执行与评分都不限时间，
  * 一行只会因为「跑完 / 失败 / 用户点终止」结束——那一格连契约字段一起删了。
- * 5. **「输出契约（只读）」那一格描述的是我们要求模型输出什么**（逐项达成 / 未达成 +
- * 一句理由，**不给总分**）：它是只读预览，真源是评分提示词模板，改一处必须同步另一处——
- * 「界面描述与手册各说一套」正是这类缺陷的典型。
- * 6. **「思考强度」的候选项是写下侧的安全边界**：`settings.defaultJudge.effort` 在 schema 上
+ * 5. **「思考强度」的候选项是写下侧的安全边界**：`settings.defaultJudge.effort` 在 schema 上
  * 只有 `z.string().min(1).optional()`，档位域**完全**由本组件算出的候选把关 —— 算错一格，用户就能
  * 存下一个会被服务端硬拒的值（`requireJudgeEffort` 连生成 / 识别一起拦）。故它必须与后端**同一个
  * 函数、同一个参数序**：`intersectEfforts(model, agentEfforts, CANONICAL_EFFORT_LEVELS)`。
  */
-import { Alert, Card, Flex, Form, InputNumber, Select, Typography } from 'antd';
+import { Alert, Card, Flex, Form, InputNumber, Select } from 'antd';
 import type { ReactNode } from 'react';
 import {
   AGENT_KINDS,
@@ -160,7 +157,7 @@ export function JudgeSettingsCard({
             type="warning"
             showIcon
             title="未配置默认评分模型"
-            description="未配置时，用例页的「智能生成 / 智能识别」与评测的评分步骤都不可用；请在这里选一个——评分模型只有这一个来源，用例上没有可以覆盖它的地方。"
+            description="未配置时，用例页的「智能生成 / 智能识别」与评测的评分都不可用；请在这里选一个——评分模型只有这一个来源，用例上没有可以覆盖它的地方。"
           />
         )}
         {dangling && (
@@ -269,18 +266,6 @@ export function JudgeSettingsCard({
                 onChange({ defaultJudgeAgent: value ?? null });
               }}
             />
-          </Form.Item>
-
-          <Form.Item label="输出契约（只读）" style={{ marginBottom: 8 }}>
-            <Flex vertical gap={4}>
-              <Typography.Text type="secondary">
-                评分模型只输出一个 JSON：对评分标准项里<Typography.Text strong>每一项</Typography.Text>给出「达成 /
-                未达成 + 一句理由」，不给总分。
-              </Typography.Text>
-              <Typography.Text type="secondary">
-                总分 = 达成项的权重之和；满分 = 全部项权重之和（由每个用例的「评分标准项」决定）。
-              </Typography.Text>
-            </Flex>
           </Form.Item>
 
           <Form.Item label="diff 上限（KB）" style={{ marginBottom: 0 }}>

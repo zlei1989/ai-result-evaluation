@@ -3,13 +3,13 @@
  * 真机冒烟四格判据的正反例——**这个文件是那四格「见过红」的唯一证据**。
  *
  * 判据原先住在 `live-smoke.test.ts` 里，而那个文件默认跳过：它们从没红过，装载那一格甚至因为
- * 读了行上不存在的 `errorCode`（契约里叫 `error.code`）而**不可能红**——文档却写着它是
+ * 读了候选上不存在的 `errorCode`（契约里叫 `error.code`）而**不可能红**——文档却写着它是
  * 「装载缺陷的唯一拦法」。判据抽到 `live-smoke-checks.ts` 之后，这里给每条一个反例。
  *
- * 行的形状取**契约类型**（`EvalRow` 的 `Pick`）：判据读什么就声明什么，字段名写错时 `tsc`
+ * 候选的形状取**契约类型**（`EvalCandidate` 的 `Pick`）：判据读什么就声明什么，字段名写错时 `tsc`
  * 直接点名。本地影子接口配 `as T` 正是当初让①格恒绿的原因，这里不再重蹈。
  */
-import { AGENT_KINDS, type AgentKind, type EvalRow } from '@aieval/contracts';
+import { AGENT_KINDS, type AgentKind, type EvalCandidate } from '@aieval/contracts';
 import { describe, expect, it } from 'vitest';
 import {
   LIVE_SMOKE_COVERAGE,
@@ -26,17 +26,17 @@ import {
 import { DEFAULT_TURN_WALL_CLOCK_MS } from '../turn';
 
 /** 判据读的那几格（不伪造整行：读什么给什么） */
-interface JudgedRow {
+interface JudgedCandidate {
   providerId: string;
   modelId: string;
   baseUrl: string;
-  status: EvalRow['status'];
-  error: EvalRow['error'];
+  status: EvalCandidate['status'];
+  error: EvalCandidate['error'];
   score: { judgeProviderId: string; verdict: string; structuredOutput: boolean; raw: string } | null;
 }
 
 /** 一份四格都过的行 */
-function judged(overrides: Partial<JudgedRow> = {}): JudgedRow {
+function judged(overrides: Partial<JudgedCandidate> = {}): JudgedCandidate {
   return {
     providerId: 'p-1',
     modelId: 'm-1',
@@ -78,7 +78,7 @@ describe('② 传输格', () => {
     expect(checkTransportCell(judged(), EXPECTED)).toBeNull();
   });
 
-  it('行的 providerId 与本次选择不一致 ⇒ 红', () => {
+  it('候选的 providerId 与本次选择不一致 ⇒ 红', () => {
     expect(checkTransportCell(judged({ providerId: 'other' }), EXPECTED)).toMatch(/providerId 与本次选择不一致/);
   });
 
@@ -98,7 +98,7 @@ describe('③ 产物格', () => {
   });
 
   it('没跑完 ⇒ 红（装载与凭据失败都落在这里）', () => {
-    expect(checkProductCell(judged({ status: 'failed' }))).toMatch(/行没跑完/);
+    expect(checkProductCell(judged({ status: 'failed' }))).toMatch(/本次运行没跑完/);
   });
 
   it('跑完了但没分数 ⇒ 红', () => {
@@ -164,7 +164,7 @@ describe('真机冒烟覆盖台账', () => {
    *
    * 为什么值得单钉：这一格谁也拦不住随手填一句，而它唯一的失败模式是「没跑过却写得像跑过」
    * ——新家接入时最容易发生（适配器还没接上，台账先抄了别家那一行）。判据取**形状**而不是内容：
-   * 跑过的行必须给出日期与墙钟，未跑的行必须逐字点明「未跑」。
+   * 跑过的候选必须给出日期与墙钟，未跑的行必须逐字点明「未跑」。
    */
   it('每条登记要么是跑过的实证（日期 + 墙钟），要么逐字写明「未跑」', () => {
     for (const kind of AGENT_KINDS) {

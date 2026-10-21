@@ -1,5 +1,5 @@
 /**
- * 智能体评分通路：把评分交给一个**在该行工作区里跑的智能体会话**，而不是一次文本请求。
+ * 智能体评分通路：把评分交给一个**在该候选工作区里跑的智能体会话**，而不是一次文本请求。
  *
  * 为什么需要它：纯文本通路要把「评分标准项表格 + diff」一次性塞进一次
  * 请求。改动超过上下文窗口时只有两条路——请求失败，或按 `diffBudgetBytes` 裁掉一部分文件。后者更危险：
@@ -45,7 +45,7 @@ import type { TextRoute } from './text-api';
 
 /**
  * 评分智能体**自身**的停止 / 失败：不是契约的 `ErrorCode`，故不能折成 `ServiceError`。
- * 携带 agents 的原始归因码（`AgentErrorCode`），由编排层翻译成行的终态：
+ * 携带 agents 的原始归因码（`AgentErrorCode`），由编排层翻译成候选的终态：
  * `AGENT_CANCELED` → canceled、`AGENT_TIMED_OUT` → timed-out、其余 → failed。
  */
 export class JudgeAgentError extends Error {
@@ -61,9 +61,9 @@ export class JudgeAgentError extends Error {
 export interface AgentJudgeInput {
   /** 评分智能体（来自 `settings.defaultJudgeAgent`，由 `requireJudgeAgent` 校验过协议） */
   kind: AgentKind;
-  /** 该行工作区（候选改完的状态）—— 评分智能体的 cwd */
+  /** 该候选工作区（候选改完的状态）—— 评分智能体的 cwd */
   cwd: string;
-  /** 评分智能体自己的独立配置目录（`.judgehome`，见 core 的 `rowJudgeHomeDir`） */
+  /** 评分智能体自己的独立配置目录（`.judgehome`，见 core 的 `candidateJudgeHomeDir`） */
   configHome: string;
   /** 复用「默认评分模型」那一对：模型与凭据都在这里 */
   route: TextRoute;
@@ -186,7 +186,7 @@ export function buildAgentJudgePrompt(input: {
  * 已中止的 signal 也要走一次 `run()`：适配器自己知道「进入即已中止」该怎么收场
  * （`turn.ts` 的对应分支会给 canceled 且不建任何运行时），在这里另写一份判断只会造出第二条真相。
  */
-export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResult> {
+export async function judgeCandidateByAgent(input: AgentJudgeInput): Promise<ScoreResult> {
   const provider = getProvider(input.kind);
   const evidenceFiles = input.processEvidence?.files ?? [];
   const prompt = buildAgentJudgePrompt({
@@ -228,7 +228,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
        * 事件、消息与子任务行**原样转出（不加任何前缀、不补摘要）**：三个出口各自落在评分
        * 自己的流里（`judge-events.jsonl` / `judge-messages.jsonl` / 子任务记录，分流在编排层
        * `judgeStageAttempt`），消费侧靠「读的是哪条流」分辨来源——候选与评分的日志分开之后，
-       * 同一格文本上再镶一个标签只是给每一行重复一遍同样的字。
+       * 同一格文本上再镶一个标签只是给每个候选重复一遍同样的字。
        * 可缺（老调用方 / 夹具不传）：与 `onMessage` 在 `AgentRunInput` 里同一条口径——不传就是不消费。
        */
       ...(input.onMessage === undefined ? {} : { onMessage: input.onMessage }),
@@ -236,7 +236,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     });
   } catch (error) {
     // 契约说 run() 返回 ok:false、**绝不抛**（见 `turn.ts`）；违约也必须归因到**适配器**而不是我们：
-    // 上抛会被 `runRow` 折成 `INTERNAL`（`EvalRow.error.code = INTERNAL`），而候选阶段的同形违约
+    // 上抛会被 `runCandidate` 折成 `INTERNAL`（`EvalCandidate.error.code = INTERNAL`），而候选阶段的同形违约
     // 走的是 `classifyStop` 的 agentError 分支（归因码取自适配器）——两条通路的归因口径必须一致。
     // 两种形状分开：抛在 abort 之后 ⇒ 记为「被停止」，让编排层按用户终止收尾
     //（评分阶段**只有**用户终止这一条停止通路：两处超时都已删除；
@@ -245,7 +245,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     if (input.signal.aborted) {
       throw new JudgeAgentError('AGENT_CANCELED', `评分智能体已被停止（适配器在停止过程中抛了异常）：${reason(error)}`);
     }
-    throw new JudgeAgentError('AGENT_FAILED', `评分智能体执行失败（适配器违约抛了异常）：${reason(error)}`);
+    throw new JudgeAgentError('AGENT_FAILED', `评分智能体执行的失败（适配器违约抛了异常）：${reason(error)}`);
   }
 
   // 先判运行结论，再读答复：顺序不能换。cc 的采集点在 `is_error` 分支之前，出错时
@@ -253,7 +253,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
   if (!result.ok) {
     // 适配器违约（ok:false 却不给 error）也要给出可读归因，不能让界面显示空白原因
     const code = result.error?.code ?? 'AGENT_FAILED';
-    const message = result.error?.message ?? '评分智能体执行失败（适配器未给出原因）';
+    const message = result.error?.message ?? '评分智能体执行的失败（适配器未给出原因）';
     throw new JudgeAgentError(code, message);
   }
 
@@ -302,7 +302,7 @@ export async function judgeRowByAgent(input: AgentJudgeInput): Promise<ScoreResu
     // （`result.applied.structuredOutput` 就是那个结论，同一个式子在骨架里只算一次），这里原样透传，
     // 于是「声称被 schema 约束」与「实际被约束」不再可能分叉；本模块也因此不读注册表、不做能力判断。
     structuredOutput: result.applied.structuredOutput,
-    // 评分**自己**的花销（用户口径）：与候选行的 `EvalRow.tokens` / `durationMs`
+    // 评分**自己**的花销（用户口径）：与候选的 `EvalCandidate.tokens` / `durationMs`
     // 同一份原料（适配器自报值），故两者可以直接对着看。`result.tokens` 为 `null` 时原样记 null
     // ——「这家不报用量」与「一个 token 都没花」是两句相反的话，不许互相兜底。
     judgeTokens: result.tokens,

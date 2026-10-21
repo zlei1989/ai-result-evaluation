@@ -28,7 +28,7 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 
 **现象**：首段正常，追问段的运行日志里多一条 `[WARN] 本次运行装了 N 条技能，但整轮都没观测到厂商的技能目录…`，环境抽屉的「已下发的技能」跟着变成「未能核验」。
 
-**根因**：厂商的 `agent/pre-step` 钩子先扫会话历史里那条 `skill-catalog`，摘要没变就直接 return（不重发）——技能目录在**同一会话的第二段**里本来就不会再来一条。那条 WARN 的判据只看「本段有没有看到目录」，于是把设计当成了异常。另一条加重因素：子会话自己的 `<available_skills>` 也会进同一条通知流，认了它会让「本行技能格」显示子会话的清单（同一形状时有时无）。
+**根因**：厂商的 `agent/pre-step` 钩子先扫会话历史里那条 `skill-catalog`，摘要没变就直接 return（不重发）——技能目录在**同一会话的第二段**里本来就不会再来一条。那条 WARN 的判据只看「本段有没有看到目录」，于是把设计当成了异常。另一条加重因素：子会话自己的 `<available_skills>` 也会进同一条通知流，认了它会让「候选技能格」显示子会话的清单（同一形状时有时无）。
 
 **解决方案**：WARN 的判据收窄到**会话起手那一段**（`resume === null`），并让技能目录只认**主会话**的消息（`dshSubagentIdOf(sessionId) === null`）。
 
@@ -60,7 +60,7 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 
 **解决方案**：**收流之前**（根会话落定、`break` 之前）补一次 `client.request('session/wait', { sessionId })`——位置很关键：分量与子任务终态是**收流之后 `finalize` 现算**的，等在释放那一步就改不了任何结果。四条口径：**只在这一轮确实还有子会话没收场时调**（`childSessions − finishedSessions` 非空）；上限 `DSH_SUBAGENT_DRAIN_MS = 60_000`；**已终止（`signal.aborted`）不等**（停机不能被一分钟的等待拖住）；等不到（到点 / 请求失败）⇒ **那些子会话按「事实缺失」交 `null` 并点名 WARN**，不按 0 计（运行一释放它们就被掐死，「还在跑、以后会报」是假话）。
 
-判据：`providers/dsh/index.test.ts` 的「释放前等子智能体收场（session/wait）」三档（还有子会话在跑 ⇒ 恰好一次且带本行 `sessionId`；全部收场 ⇒ 一次都不调；已终止 ⇒ 不等；请求失败 ⇒ 分量 `null` + 点名 WARN + 结论不变），变异验证：把收流前那次等待去掉 ⇒ 三条都见红。真机复核（同一支 `fork` 场景）：修复前 `subagent.finished` **0 条** + 子任务行停在 `running` + 分量只有部分读数；修复后 **1 条** `subagent.finished`、`subagentTurns=3`、分量读全（等不到那一档的读数见上一条口径）。
+判据：`providers/dsh/index.test.ts` 的「释放前等子智能体收场（session/wait）」三档（还有子会话在跑 ⇒ 恰好一次且带候选 `sessionId`；全部收场 ⇒ 一次都不调；已终止 ⇒ 不等；请求失败 ⇒ 分量 `null` + 点名 WARN + 结论不变），变异验证：把收流前那次等待去掉 ⇒ 三条都见红。真机复核（同一支 `fork` 场景）：修复前 `subagent.finished` **0 条** + 子任务行停在 `running` + 分量只有部分读数；修复后 **1 条** `subagent.finished`、`subagentTurns=3`、分量读全（等不到那一档的读数见上一条口径）。
 
 **代价（口径已定）**：运行时长由最慢的后代决定——今天可能提前收工，补上就必须等；上限 60 s 与「终止不等」是这条口径的两道闸。
 
@@ -111,9 +111,9 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 **根因**：两层叠在一起。
 
 1. 厂商**首次发布且这次会话里零条技能**时根本不投 `skill-catalog` 那条消息（`dsh-tool-skill`：`if (!history.published && skills.length === 0) …`）⇒「我们装进去的技能被厂商**全丢了**」与「厂商就是没投」在 wire 上是**同一格 `null`**；
-2. 厂商对技能文件的 frontmatter 用**严格 YAML** 解析（`dsh-skill-filesystem`），解析不了的文件它**静默丢弃**——自己的那句 `skill file … ignored` 没有任何出口（cordis 的 `LoggerService.exporters` 是空 Map、SDK 的 `stderrTail` 正常收场时 0 行）⇒ 丢了也没人说。本仓的扫描器判据比它宽（行级切分 + 只看 name/description），于是「界面显示合格 → 文件装上了 → 厂商一条不认 → 行照跑」这条链没有任何一处报警。
+2. 厂商对技能文件的 frontmatter 用**严格 YAML** 解析（`dsh-skill-filesystem`），解析不了的文件它**静默丢弃**——自己的那句 `skill file … ignored` 没有任何出口（cordis 的 `LoggerService.exporters` 是空 Map、SDK 的 `stderrTail` 正常收场时 0 行）⇒ 丢了也没人说。本仓的扫描器判据比它宽（候选级切分 + 只看 name/description），于是「界面显示合格 → 文件装上了 → 厂商一条不认 → 行照跑」这条链没有任何一处报警。
 
-**解决方案**：`providers/dsh/index.ts` 收尾补一条**点名 WARN**（`skillCatalogWarns`）：这一轮装了 N 条技能（N>0）且整轮没观测到技能目录时落一条，说清「装了几条」「无法区分被丢与没投」「观测格因此是未能核验、这一行不会因此失败」「要收口去看落点与 frontmatter」。
+**解决方案**：`providers/dsh/index.ts` 收尾补一条**点名 WARN**（`skillCatalogWarns`）：这一轮装了 N 条技能（N>0）且整轮没观测到技能目录时落一条，说清「装了几条」「无法区分被丢与没投」「观测格因此是未能核验、这个候选不会因此失败」「要收口去看落点与 frontmatter」。
 
 三条口径：**装了 0 条不出声**（那种情况下厂商不投是设计）；**只说话、不改观测格**（把 `null` 补成 `[]` 会把另两种厂商不投的情况——发现不完整、`skill` 工具没挂——误判成失败）；**点名到条数**。
 
@@ -166,7 +166,7 @@ DeepSeek Harness（`@deepseek-ai/dsh-sdk-client`）在**真实运行环境**里�
 
 **日期**：2026-10-17
 
-**现象**：只把**子会话**打挂（哨兵代理只对子会话的首个请求注入 HTTP 400）、父会话一切正常时，整行的结论是失败：
+**现象**：只把**子会话**打挂（哨兵代理只对子会话的首个请求注入 HTTP 400）、父会话一切正常时，整个候选的结论是失败：
 
 ```text
 result: { ok: false, exitReason: 'error',
@@ -178,11 +178,11 @@ stack: at classifyAgentMessage (agents/src/errors.ts) ← at projectDshNotificat
 
 一次**成功**的运行因此不评分、还可能被自动重试（`AGENT_FAILED` 在重试表里），而界面上看到的错误与父会话的产出毫无关系。触发条件很常见：子智能体限流 / 超窗 / 鉴权失败。
 
-**根因**：`finalText` 与 `failure` 两条出口的**会话闸不一致**。`assistant/message` 那一支有 `dshSubagentIdOf(sessionId) === null` 的闸（防的正是这类跨会话外溢，注释里写着「少了这道过滤，子智能体的话会顶掉本行答复」），而同一支的 `turn/end` 失败分支**没有**——子会话的 `turn/end(kind:'error')` 与主会话走同一条通知流、同样带 `reason.error`，于是它的失败被当成整行的失败。
+**根因**：`finalText` 与 `failure` 两条出口的**会话闸不一致**。`assistant/message` 那一支有 `dshSubagentIdOf(sessionId) === null` 的闸（防的正是这类跨会话外溢，注释里写着「少了这道过滤，子智能体的话会顶掉候选答复」），而同一支的 `turn/end` 失败分支**没有**——子会话的 `turn/end(kind:'error')` 与主会话走同一条通知流、同样带 `reason.error`，于是它的失败被当成整行的失败。
 
 **解决方案**：`providers/dsh/events.ts` 的 `turn/end` 失败分支补上同一道闸——`failure: dshSubagentIdOf(sessionId) === null ? classifyAgentMessage(...) : null`。子会话那一笔**照旧留证据**（`error` 草稿进事件日志，带厂商原文；子任务行的终态由 `subagent.finished{status,stopReason}` 那条通道给，不靠这一格）。
 
-判据：`providers/dsh/events.test.ts` 的「子会话的 `turn/end(kind:error)` 只留证据、不判整行失败；主会话的同样失败照旧判失败」（两个方向都钉）。变异验证：把那道闸去掉 ⇒ 见红；还原后逐字一致。真机复核：同一支哨兵代理（只打挂子会话首个请求，代理日志里 `inject=true` 只出现一次）修复前 `ok:false / exitReason:'error'`，修复后 **`ok:true / exitReason:'completed'`**、`finalText` 是父会话那句「子智能体出错没能回话」。
+判据：`providers/dsh/events.test.ts` 的「子会话的 `turn/end(kind:error)` 只留证据、不判整候选失败；主会话的同样失败照旧判失败」（两个方向都钉）。变异验证：把那道闸去掉 ⇒ 见红；还原后逐字一致。真机复核：同一支哨兵代理（只打挂子会话首个请求，代理日志里 `inject=true` 只出现一次）修复前 `ok:false / exitReason:'error'`，修复后 **`ok:true / exitReason:'completed'`**、`finalText` 是父会话那句「子智能体出错没能回话」。
 
 **测试环境 ≠ 运行环境**：夹具里的子会话从来只成功收场（`subagent` 场景的剧本），所以「子会话失败」这条通路在单测里没有任何数据流过——它是真机上子智能体被限流/超窗时才现形的。
 
@@ -248,7 +248,7 @@ status: killed    → detail: "signal: SIGTERM"       （被信号杀掉，含�
 
 ---
 
-## 行快照上出现「合计 60 / 子分量 2010」（子智能体分量跨 run 累积）
+## 候选快照上出现「合计 60 / 子分量 2010」（子智能体分量跨 run 累积）
 
 **日期**：2026-10-17
 
@@ -311,7 +311,7 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 
 **日期**：2026-10-17
 
-**现象**：三种**配置类**失败在适配器侧拿到的都是 `errorCode: "AGENT_FAILED"`，而 `AGENT_FAILED` 在编排层的 `TRANSIENT_ROW_RETRY_CODES` 里（`ROW_RETRY.maxRetries = 2`、间隔 3 s、候选段失败整行重跑）：
+**现象**：三种**配置类**失败在适配器侧拿到的都是 `errorCode: "AGENT_FAILED"`，而 `AGENT_FAILED` 在编排层的 `TRANSIENT_CANDIDATE_RETRY_CODES` 里（`ROW_RETRY.maxRetries = 2`、间隔 3 s、候选段失败整行重跑）：
 
 ```text
 [cred:blank]          errorCode=AGENT_FAILED  [MISSING_CREDENTIAL] llm-pi-ai: no credential for provider route "aieval-route"…
@@ -326,7 +326,7 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 **解决方案**：`classifyAgentFailure` 在状态码分支之前认厂商的结构化码（只认我们自己加的那个方括号前缀 + 两句厂商特征串，别家的文案不会撞上）：
 
 - `[MISSING_CREDENTIAL]` / `[INVALID_CREDENTIAL]`（或 `no credential for provider route` / `contains characters no HTTP header can carry`）⇒ `AUTH_FAILED`，文案沿用「密钥无效或无权访问（host）：请核对该供应商的密钥后重试」，编排层会再补一句「去哪儿改」；
-- `[CONTEXT_WINDOW_EXCEEDED]`（或 `detected context overflow`）⇒ 新增的 `AGENT_CONTEXT_OVERFLOW`（`packages/server/agents/src/types.ts` 的 `AgentErrorCode`，**刻意不进** `TRANSIENT_ROW_RETRY_CODES`，与 `AGENT_SKILLS_UNAVAILABLE` 同一条理由）：文案点名 host 与补救动作「缩短提示词 / 减少随附内容 / 换窗口更大的模型；重试同一份请求不会成功」。
+- `[CONTEXT_WINDOW_EXCEEDED]`（或 `detected context overflow`）⇒ 新增的 `AGENT_CONTEXT_OVERFLOW`（`packages/server/agents/src/types.ts` 的 `AgentErrorCode`，**刻意不进** `TRANSIENT_CANDIDATE_RETRY_CODES`，与 `AGENT_SKILLS_UNAVAILABLE` 同一条理由）：文案点名 host 与补救动作「缩短提示词 / 减少随附内容 / 换窗口更大的模型；重试同一份请求不会成功」。
 
 判据：`packages/server/agents/src/errors.test.ts` 的三条守卫（凭证码 ×2 档、超窗码、以及「没带厂商码时不误判」——普通 401 文案仍走状态码那一支）。变异验证：把两条新分支各停用一次 ⇒ 对应守卫见红；还原后逐字一致。真机复核（同一支探针）：三档分别拿到 `AUTH_FAILED` / `AUTH_FAILED` / `AGENT_CONTEXT_OVERFLOW`。
 
@@ -346,8 +346,8 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 
 **根因**：厂商对**一次尝试**只写两者之一（`@deepseek-ai/dsh-agent-loop` 的 `finish.kind === 'error' | 'aborted'` 走 `assistant/attempt`，正常收尾与「abort 但已有内容」走 `assistant/message`），而用量在 `assistant/attempt` 上**不在 `data.usage`**，在 `data.stream[]` 的最后一条 `{type:'chunk',chunk:{type:'usage',usage}}` 上（厂商 `dsh-token-meter` 的 `streamUsage` 正是这么读的，`deriveTurnTokenUsage` 两条都算）。适配器把 `assistant/attempt` 列进「已识别但零草稿」⇒ 那次尝试的用量一个字都没读。同一族的第二处：`llm/retry` 整条落进「未识别厂商负载」兜底（一条原始 JSON），于是「这一步为什么慢」在界面上没有解释。
 
-**解决方案**：`providers/dsh/protocol.ts` 新增 `readAttemptUsage`（照抄厂商的取值顺序：从 `data.stream[]` 尾部往前找第一条 usage chunk）+ `DSH_ASSISTANT_ATTEMPT_TYPE` / `DSH_LLM_RETRY_TYPE`；`events.ts` 新增两支——`assistant/attempt` 按与 `assistant/message` **同一段**累计口径把用量记进本行（并交一次 `usage` 快照），`llm/retry` 落一条人话 `[WARN] 厂商重试（第 N/M 次，[CODE] 原因，X ms 后重发）`；`llm/retry-started` 进零草稿名单（信息全在配对上）。
-判据：`providers/dsh/events.test.ts` 的「assistant/attempt 的用量进本行累计」「读不到 usage chunk ⇒ 什么都不记」「llm/retry 落一条人话 WARN」三条守卫（变异验证：两支各停用一次 ⇒ 见红）。真机复核（本机反代在首条请求上「等 `message_delta` 到齐 → 冲刷 → 断连接」造出真重试）：适配器 `{"input":6898,"cached":18432,"output":250,"total":25580}` 与厂商 meter `{"uncachedInputTokens":6898,"outputTokens":250,"cacheReadTokens":18432}` **逐格相等**，`WARN` 里出现那条重试原文。
+**解决方案**：`providers/dsh/protocol.ts` 新增 `readAttemptUsage`（照抄厂商的取值顺序：从 `data.stream[]` 尾部往前找第一条 usage chunk）+ `DSH_ASSISTANT_ATTEMPT_TYPE` / `DSH_LLM_RETRY_TYPE`；`events.ts` 新增两支——`assistant/attempt` 按与 `assistant/message` **同一段**累计口径把用量记进行的（并交一次 `usage` 快照），`llm/retry` 落一条人话 `[WARN] 厂商重试（第 N/M 次，[CODE] 原因，X ms 后重发）`；`llm/retry-started` 进零草稿名单（信息全在配对上）。
+判据：`providers/dsh/events.test.ts` 的「assistant/attempt 的用量进行的累计」「读不到 usage chunk ⇒ 什么都不记」「llm/retry 落一条人话 WARN」三条守卫（变异验证：两支各停用一次 ⇒ 见红）。真机复核（本机反代在首条请求上「等 `message_delta` 到齐 → 冲刷 → 断连接」造出真重试）：适配器 `{"input":6898,"cached":18432,"output":250,"total":25580}` 与厂商 meter `{"uncachedInputTokens":6898,"outputTokens":250,"cacheReadTokens":18432}` **逐格相等**，`WARN` 里出现那条重试原文。
 
 **测试环境 ≠ 运行环境**：一致性夹具的剧本里没有「失败尝试」这一档（每次尝试都正常收尾），所以这条路径在单测里从来没有数据流过——它只在真网关真的重试过之后才现形。
 
@@ -397,7 +397,7 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 **解决方案**：读数规则改为「**两格必在、两格可缺**」（`providers/dsh/protocol.ts` 的 `readUsageTokens`）：
 `inputTokens` / `outputTokens` 读不到才整条按未采到处置（WARN 措辞改成「缺 inputTokens / outputTokens，**这一条**按未采到处置」）；
 `cacheReadTokens` 缺席按 **0** 计；`reasoningTokens` / `totalTokens` 仍是可选证据格（读不到就是 `null`）。
-同一条读数被**行级合计**（`events.ts`）与**消息级/子会话分量**（`message.ts` 的 `noteDshSessionUsage`）共用一份实现。
+同一条读数被**候选级合计**（`events.ts`）与**消息级/子会话分量**（`message.ts` 的 `noteDshSessionUsage`）共用一份实现。
 另修同一族的第二处：`totalTokens` 是**这一条自己**的合计（不是累计快照）⇒ 与三格一样**逐条相加**，
 并按 `total = input + cached + cacheWrite + output` 校验，不成立就把 `total` 置 `null` + WARN
 （宁可说不出总量，不给一个自己都解释不了的数）。
@@ -426,7 +426,7 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 
 **解决方案**：结论分两层。
 **通知层**：这条通道（stdio 的 `session.event`）确实**永远不投送增量**——上游 jsonrpc-server 只订阅 `session/event` / `agent/status` / `session/created` / `subagent/end` / `agent/error` 五个进程内事件，`agent/assistant-stream` 不在其中（任何版本都不在）。
-**能力层**：适配器**换了一层拿**——`stream-tap` 把一个零依赖插件写进每行配置目录（overlay `insert`，相对名按 `dshHome` 解析），插件订阅厂商**进程内**的 `agent/assistant-stream`，把四类 chunk 追加写到 `<configHome>/aieval-stream-tap.jsonl`，父进程 tail 后包成 `aieval/delta` 伪通知 ⇒ `messageCapability` 现在是 `streamingDelta: 'yes'` + `streamingDeltaSource: 'hook'`（`providers/dsh/index.ts` 的 `messageCapability`，机制与边界见 [《DeepSeek Harness 接入》](/protocols/dsh) 的「流式增量旁路」）。
+**能力层**：适配器**换了一层拿**——`stream-tap` 把一个零依赖插件写进每个候选配置目录（overlay `insert`，相对名按 `dshHome` 解析），插件订阅厂商**进程内**的 `agent/assistant-stream`，把四类 chunk 追加写到 `<configHome>/aieval-stream-tap.jsonl`，父进程 tail 后包成 `aieval/delta` 伪通知 ⇒ `messageCapability` 现在是 `streamingDelta: 'yes'` + `streamingDeltaSource: 'hook'`（`providers/dsh/index.ts` 的 `messageCapability`，机制与边界见 [《DeepSeek Harness 接入》](/protocols/dsh) 的「流式增量旁路」）。
 判据：真机旁路文件里有 `text-delta` 帧、界面上打字机动（探针 `probe/v3/dsh-tap-truncation.mjs` 的落点对照：写在 `profiles/sdk/` 里插件**从来没被加载过**，会打 `dsh: warning: 1 entry did not activate`）；能力声明与产物互钉在 `providers/dsh/conformance.test.ts`。
 ⚠️ 这一格是 `'hook'` 而**不是** `'wire'`：谁把 `streamingDeltaSource` 改回 `wire`，就等于说「通知流里能拿到」——那是这条 FAQ 已经推翻过一次的结论。
 
@@ -442,13 +442,13 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 
 **现象**：macOS 上跑测试，两件事同时发生：
 
-1. `FAIL  |@aieval/agents| src/providers/dsh/index.test.ts > dshProvider > 注入落点：路由键 + 绝对路径的 overlay + **自定义变量名**带凭据；DSH_HOME/HOME 都指向该行目录`，报
+1. `FAIL  |@aieval/agents| src/providers/dsh/index.test.ts > dshProvider > 注入落点：路由键 + 绝对路径的 overlay + **自定义变量名**带凭据；DSH_HOME/HOME 都指向该候选目录`，报
    `AssertionError: expected false to be true // Object.is equality`（`expect(isAbsolute(patches?.[0] ?? '')).toBe(true)` 那一行）；
-2. 仓库根（进程 cwd）冒出 Windows 名字的目录：`D:\runs\run-1\rows\r-1\workspace`（api 夹具 `makeRow().workspacePath` 的原值）、`D:\runs/run-1/rows/r-1`（`rowWorkspaceDir('D:\runs', …)` 拼出的混合分隔符树），以及 `D:/tmp/rows/row-1/.agenthome/aieval-route.patch.yml`。
+2. 仓库根（进程 cwd）冒出 Windows 名字的目录：`D:\runs\run-1\rows\r-1\workspace`（api 夹具 `makeRow().workspacePath` 的原值）、`D:\runs/run-1/candidates/r-1`（`rowWorkspaceDir('D:\runs', …)` 拼出的混合分隔符树），以及 `D:/tmp/candidates/row-1/.agenthome/aieval-route.patch.yml`。
 
 **根因**：**夹具把「磁盘地址」写成了盘符字面量，而盘符路径在 POSIX 上不是绝对路径**（`isAbsolute('D:/tmp/x') === false`），于是它按**相对 cwd** 解析，产物落进进程 cwd。
 
-- `packages/server/agents/src/testing/agent-fixtures.ts` 的 `createRunInput` 默认 `cwd: 'D:/tmp/rows/row-1/workspace'`、`configHome: 'D:/tmp/rows/row-1/.agenthome'`；dsh 适配器**真的**会 `mkdirSync(input.configHome)` 并在其下写 overlay（`providers/dsh/index.ts`）⇒ `D:/tmp/…/.agenthome/aieval-route.patch.yml` 落在仓库根。
+- `packages/server/agents/src/testing/agent-fixtures.ts` 的 `createRunInput` 默认 `cwd: 'D:/tmp/candidates/row-1/workspace'`、`configHome: 'D:/tmp/candidates/row-1/.agenthome'`；dsh 适配器**真的**会 `mkdirSync(input.configHome)` 并在其下写 overlay（`providers/dsh/index.ts`）⇒ `D:/tmp/…/.agenthome/aieval-route.patch.yml` 落在仓库根。
 - 同一条路径还撞上 dsh 的既有不变量：`patches` 必须是绝对路径（SDK 用 `resolve(callerCwd, path)` 解析，callerCwd 是宿主进程的 cwd），故 `isAbsolute` 那行红。
 - 同一类缺陷在 api 侧：`packages/server/api/src/testing/run-fixtures.ts` 的 `makeRow().workspacePath` / `makeRun().workspaceBase` 是 `D:\runs…`，而 `run-artifacts.test.ts`（`seedRun(..., { createWorkspace: true })`）与 `messages-stream.test.ts`（`resetRecords(...)`）拿它们直接 `mkdirSync` —— `D:\runs` 那棵树就是这么来的。
 
@@ -460,17 +460,17 @@ turn=2 step=1 → turn=2 step=2 → turn/end(turn=2)
 - `run-fixtures.ts` 导出 `fixtureWorkspaceRoot()`，`makeRow().workspacePath = rowWorkspaceDir(FIXTURE_WORKSPACE_ROOT, 'run-1', 'r-1')`、`makeRun().workspaceBase = FIXTURE_WORKSPACE_ROOT`。
 - 夹具里的 `repoPath`（`D:\projects\gateway`）**刻意保留盘符形状**：用例的 git 操作要么被 mock、要么指向自建的临时仓库，它只走运输链，不碰盘。
 
-判据（守卫 + 变异验证）：新增 `agent-fixtures.test.ts` 与 `run-fixtures.test.ts` 的「夹具里的磁盘地址按当前平台拼」两条，断言 `isAbsolute()` + 落在 `tmpdir()` 下 + 不在 `process.cwd()` 下（刻意不问「等于某个常量」——常量本身就是缺陷现场）。三个变异体都见过红：① `makeRun().workspaceBase` 改回 `'D:\\runs'` → api 守卫红；② 夹具根改成相对路径 `'aieval-run-fixtures'` → api 守卫红在 `isAbsolute` 那条；③ `configHome` 改回 `'D:/tmp/rows/row-1/.agenthome'` → agents 守卫红 **且** dsh 那条 overlay 不变量同时红，仓库根重新长出 `D:/tmp/…/aieval-route.patch.yml`（缺陷可复现）。还原后两份夹具的 sha256 与变异前逐字一致。
+判据（守卫 + 变异验证）：新增 `agent-fixtures.test.ts` 与 `run-fixtures.test.ts` 的「夹具里的磁盘地址按当前平台拼」两条，断言 `isAbsolute()` + 落在 `tmpdir()` 下 + 不在 `process.cwd()` 下（刻意不问「等于某个常量」——常量本身就是缺陷现场）。三个变异体都见过红：① `makeRun().workspaceBase` 改回 `'D:\\runs'` → api 守卫红；② 夹具根改成相对路径 `'aieval-run-fixtures'` → api 守卫红在 `isAbsolute` 那条；③ `configHome` 改回 `'D:/tmp/candidates/row-1/.agenthome'` → agents 守卫红 **且** dsh 那条 overlay 不变量同时红，仓库根重新长出 `D:/tmp/…/aieval-route.patch.yml`（缺陷可复现）。还原后两份夹具的 sha256 与变异前逐字一致。
 
 **相关资料**：
 - [Node.js `path.isAbsolute()`：POSIX 与 Windows 的「绝对路径」判定不同（盘符路径在 POSIX 上是普通相对路径）](https://nodejs.org/api/path.html#pathisabsolutepath)
 - [Node.js `fs.mkdtempSync()`：推荐的临时目录 API（本仓口径：能用现成 API 就别手写递归删除）](https://nodejs.org/api/fs.html#fsmkdtempsyncprefix-options)
 
-## 同一条脚本两次运行的行级事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）
+## 同一条脚本两次运行的事件条数差一条（`24 / 24 / 25 / 25`：收尾那条 `usage` 与 run 落定抢跑）
 
 **日期**：2026-10-13
 
-**现象**：dsh 的真路径一致性场景（真运行时 + 本机假 `/v1/messages` 上游 + 应答者插件）连跑四次，**同一臂**产出的行级事件条数是 `24 / 24 / 25 / 25`，多出来的那一条是**收尾处**的计量事件，载荷与上一条逐字相同（`seq` 与时刻除外）：
+**现象**：dsh 的真路径一致性场景（真运行时 + 本机假 `/v1/messages` 上游 + 应答者插件）连跑四次，**同一臂**产出的事件条数是 `24 / 24 / 25 / 25`，多出来的那一条是**收尾处**的计量事件，载荷与上一条逐字相同（`seq` 与时刻除外）：
 
 ```json
 {"type":"usage","turns":2,"tokensBasis":"reported","tokens":null,"subagentTokens":{"input":0,"cached":0,"output":0,"reasoningOutput":null,"total":null},"subagentTurns":0,"turn":{"round":2,"subagentId":null}}
@@ -592,7 +592,7 @@ dsh/ask-user：不传回调的对照运行产物与带回调那次不同——�
 
 - **dsh 族** = 名字以 `@deepseek-ai/` 开头的键 ∪ 从 `@deepseek-ai/dsh-sdk-client@*` 在 snapshots 图上**正向可达**的键。⚠️ 图的边要含**键自身的 peer 后缀**（`pkg@1.0.0(zod@4.4.3)`）——这一家的包之间大量靠 peer 连接，只走 `dependencies:` 会把它们判成「族外」并在合并时丢掉（`zod` / `node-addon-*` / `@deepseek-ai/cosmokit` 都这样被漏过）。
 - **同时被非 dsh 引用到的 dsh 键保留旧版**（`@anthropic-ai/sdk@0.124.0` 之于 claude-agent-sdk 的 peer 就是），并且要把它在**旧图里的依赖闭包**一起保留（保留集不闭包化会留下悬空引用：`zod-to-json-schema@…(zod@4.6.5)` 即此例）。
-- 判据三条：**无新增悬空引用**、**非 dsh 族的 packages / snapshots 块与旧 lockfile 逐字相同**、**importers 段里 dsh 那两格之外的每一行逐字不变**；最后由 `pnpm install --frozen-lockfile` 判定 lockfile 自洽。
+- 判据三条：**无新增悬空引用**、**非 dsh 族的 packages / snapshots 块与旧 lockfile 逐字相同**、**importers 段里 dsh 那两格之外的每个候选逐字不变**；最后由 `pnpm install --frozen-lockfile` 判定 lockfile 自洽。
 
 **相关资料**：
 
@@ -658,7 +658,7 @@ JsonRpcResponseError [-32603] SDK session is already open or opening: session-�
 
 **根因**：机制层——`dsh-sdk-jsonrpc-server` 的 `createSession(sessionId, resume)` 里，`resume` 那一支是 `ctx.agents.resume({ resumeSessionId, agentOptions })`，**不带 `meta: { cwd }`**（只有 `create` 那一支带 `meta: { cwd: this.cwd }`）⇒ 会话的 cwd 只来自持久化 header 里的记录（投影缓存里 `identity.cwd` 逐字就是它），启动参数里的 `cwd` / `processCwd` 在这条路上**不参与**。对照 headless 那条路：`dsh --profile headless --session-id` 会显式比对记录的 cwd 并拒绝不符的——**那边是真闸，SDK wire 上没有那道闸**。
 
-**解决方案**：接续接线时不要指望"resume 会按新 cwd 拒绝"：① 要拿会话的有效工作目录就调 `getWorkingDirectory()`（它在目录已被删时按 Session origin 恢复）；② 要钉"这一行的会话没串行"就用行快照里的 `sessionId` + `agentKind` 校验，**不要拿 cwd 当判据**（它在 resume 这条路上不构成隔离面）。落点：`probe/v11/dsh-session-resume-alpha3.mjs` 的 `--role=fence-cwd-mismatch` 档（读数：拒绝原文为空、`WORKDIR` 是记录里的那个）。
+**解决方案**：接续接线时不要指望"resume 会按新 cwd 拒绝"：① 要拿会话的有效工作目录就调 `getWorkingDirectory()`（它在目录已被删时按 Session origin 恢复）；② 要钉"这个候选的会话没串行"就用候选快照里的 `sessionId` + `agentKind` 校验，**不要拿 cwd 当判据**（它在 resume 这条路上不构成隔离面）。落点：`probe/v11/dsh-session-resume-alpha3.mjs` 的 `--role=fence-cwd-mismatch` 档（读数：拒绝原文为空、`WORKDIR` 是记录里的那个）。
 
 ---
 
@@ -676,7 +676,7 @@ JsonRpcResponseError [-32603] SDK session is already open or opening: session-�
 
 **现象**：写一支插件（overlay `insert` 一行、落 `<DSH_HOME>` 根）想从 runtime 进程内 `agent.steer` / `agent.inbox.remove` 接出人工消息面。插件的加载收据里如实写着 `serviceAtLoad: false`：`ctx.get('agents')` 返回 undefined、`ctx.agents` 也取不到 ⇒ 投递那一步回 `agent-not-found`，**插件本身加载成功、一句报错都没有**，而同一份代码在动作那一刻（收到投递流水之后）用同一个取法就拿到了服务。
 
-**根因**：**加载顺序**——`agents` 服务由另一行插件（`@deepseek-ai/dsh-agent` 的 `AgentRegistry`，`super(ctx, "agents")`）provide，而 profile 的装配清单里那一行**不保证排在我们这一行之前**；Cordis 的服务表在插件 `apply()` 跑起来的那一刻可能还没有它。**在加载那一刻把服务缓存进闭包**（一个很自然的写法）等于把"这一行排在哪"变成功能能不能用的前提——症状是"插件在、功能全废、零报错"。
+**根因**：**加载顺序**——`agents` 服务由另一行插件（`@deepseek-ai/dsh-agent` 的 `AgentRegistry`，`super(ctx, "agents")`）provide，而 profile 的装配清单里那一行**不保证排在我们这个候选之前**；Cordis 的服务表在插件 `apply()` 跑起来的那一刻可能还没有它。**在加载那一刻把服务缓存进闭包**（一个很自然的写法）等于把"这个候选排在哪"变成功能能不能用的前提——症状是"插件在、功能全废、零报错"。
 
 **解决方案**：**每次用时现取**，别在加载时缓存。落点 `providers/dsh/inject.ts` 的 `agentService()`：先试 `ctx.get('agents')`（服务表通用入口），再退到 `ctx.agents` 属性式访问，两条都包在 try 里；`plugin-loaded` 收据里的读数改名 `serviceAtLoad`（**它是事实、不是判据**），判据取每条动作收据（`steered` / `removed`）里的 `hasAgents`。判据：真路径驱动器 `providers/dsh/injection-real-path.test.ts`（真运行时 + 本机假上游 + 产品的插件）三条全过——`'round'` 档的哨兵进**下一次 step** 的入站请求体、`'idle'` 档进**下一轮**、撤回那一条一次都没进；把缓存写回加载那一刻，这一组当场红（`hasAgents: false`）。
 

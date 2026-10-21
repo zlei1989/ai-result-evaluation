@@ -34,7 +34,7 @@ describe('ensureCaseCache', () => {
     expect(existsSync(join(cache, '.git'))).toBe(true);
     expect(readFileSync(join(cache, 'a.txt'), 'utf8')).toBe('hello\n');
     // 来源记录（`.aieval-origin.json`）写在 `.git` 里，绝不能出现在工作树：工作树里的文件会被
-    // copyWorkspace 复制进行工作区，再被 `git status` 当成「agent 新建的文件」计入三样 diff
+    // copyWorkspace 复制进行的工作区，再被 `git status` 当成「agent 新建的文件」计入三样 diff
     //（污染评分输入与界面的文件树）。故这条 status 必须是干净的。
     expect(git(cache, 'status', '--porcelain').trim()).toBe('');
   });
@@ -67,7 +67,7 @@ describe('ensureCaseCache', () => {
 
     // 用例改填了另一个仓库，而旧来源**已经不存在**（仓库被移走 / 改名是最常见的情形）。
     // 缓存里存着旧的 origin URL：不按来源记录重建的话，后续 fetch / 刷新会一直对着旧来源，
-    // 把「来源仓库不可达」报成这一行的失败，而用户明明已经在用例里填了新路径。
+    // 把「来源仓库不可达」报成这个候选的失败，而用户明明已经在用例里填了新路径。
     removeTreeWithRetry(a.dir);
     const b = makeRepoWithCommit('aieval-git-srcB-');
     writeFileSync(join(b.dir, 'from-b.txt'), 'b\n', 'utf8');
@@ -113,7 +113,7 @@ describe('ensureCaseCache', () => {
 
     expect(() => ensureCaseCache(dir, cache, later)).not.toThrow();
 
-    // 缓存里现在有这个 commit（checkoutRow 拿得到它），而缓存目录没有被重建
+    // 缓存里现在有这个 commit（checkoutCandidate 拿得到它），而缓存目录没有被重建
     expect(git(cache, 'rev-parse', `${later}^{commit}`).trim()).toBe(later);
     expect(existsSync(join(cache, 'local-marker.txt'))).toBe(true);
   });
@@ -139,7 +139,7 @@ describe('ensureCaseCache', () => {
 
     expect(caught).toBeInstanceOf(ServiceError);
     expect((caught as ServiceError).code).toBe('INVALID_REF');
-    // 消息点名**来源仓库路径**（用例就是拿它校验 hash 的，行工作区路径会把人指错方向），并说清试过什么。
+    // 消息点名**来源仓库路径**（用例就是拿它校验 hash 的，候选工作区路径会把人指错方向），并说清试过什么。
     // 注意比的是 realpath：来源记录与错误文案里的路径都归一成真实路径（同一个仓库的不同写法要判等）
     const source = realpathSync(dir);
     expect((caught as Error).message).toContain(source);
@@ -151,7 +151,7 @@ describe('ensureCaseCache', () => {
 describe('copyWorkspace', () => {
   it('文件系统级复制带上了 .git（否则复制出来的目录没法 checkout）', () => {
     const { dir, commit } = makeRepoWithCommit('aieval-git-src-');
-    const dest = join(makeTmp('aieval-ws-'), 'rows', 'row-1', 'workspace');
+    const dest = join(makeTmp('aieval-ws-'), 'candidates', 'candidate-1', 'workspace');
     copyWorkspace(dir, dest);
     expect(existsSync(join(dest, '.git'))).toBe(true);
     expect(git(dest, 'rev-parse', 'HEAD').trim()).toBe(commit);

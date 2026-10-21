@@ -253,11 +253,11 @@ export interface CompactComposerAreaProps {
   onPickFiles(items: XAttachmentItem[]): void;
   /** 这一键此刻能不能点（正文非空或附件已落盘、且没有写动作在途、且这一档投得进去） */
   canSend: boolean;
-  /** 输入框下面那行常驻提示 */
-  hint: ReactNode;
+  /** 输入框下面那一行常驻提示（可选：只有需要解释「发出去之后会怎样」的入口才给） */
+  hint?: ReactNode;
   /** 一次性提示（撤回已交给厂商的那一条之后出现） */
   notice?: ReactNode;
-  /** 附件清单那一行的 testid（两个入口各用自己的名字，免得两处的用例互相撞上） */
+  /** 附件清单那一候选的 testid（两个入口各用自己的名字，免得两处的用例互相撞上） */
   attachmentsTestId: string;
 }
 
@@ -327,7 +327,8 @@ function ComposerInputArea({
             getDropContainer={() => document.body}
             onChange={onPickFiles}
           >
-            <Button size="small" type="text" icon={<LinkOutlined aria-hidden />} aria-label="添加附件" disabled={disabled} />
+            {/* 尺寸交给 Sender 那一行：紧凑密度下默认档正好与输入框、发送键同高（21px 的小档会矮半截，图标偏下） */}
+            <Button type="text" icon={<LinkOutlined aria-hidden />} aria-label="添加附件" disabled={disabled} />
           </XAttachments>
         }
         // 一行起步、最多 6 行（再长就把日志区压没了）；不写 `maxRows` 会用 X 的默认 8 行
@@ -348,7 +349,7 @@ function ComposerInputArea({
 
 /**
  * 输入区（两个入口共用的那一块）：**只有这一层套紧凑密度**。
- * 调用方把状态机的四格与两句提示递进来即可，形态一处都不用再管。
+ * 调用方把状态机的四格与提示（常驻提示可选、一次性提示可选）递进来即可，形态一处都不用再管。
  */
 export function CompactComposerArea(props: CompactComposerAreaProps): ReactNode {
   const mode = useDensityMode();

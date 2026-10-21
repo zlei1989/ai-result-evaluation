@@ -1,13 +1,13 @@
 /**
- * 每候选行的**记录日志**（`messages.jsonl`）：追加 / 全量读 / 折叠成最终视图 / 清空。
+ * 每个候选的**记录日志**（`messages.jsonl`）：追加 / 全量读 / 折叠成最终视图 / 清空。
  *
- * 里面装的是 **`RowRecord` 两种行**：`message`（内容流：说话者、内容块、工具族）
+ * 里面装的是 **`CandidateRecord` 两种行**：`message`（内容流：说话者、内容块、工具族）
  * 与 `subagent`（派发视图：子任务身份、终态、父链、用量）。两者共用一条流与一次订阅，
  * 消费方按 `type` 分流——各开一份的代价是「一次运行要落两处、读两处，还得保证两处一致」，
  * 而它们本来就来自同一条适配器回调。
  *
  * 与 `event-log.ts` 的分工（两者刻意不合并）：
- *   · 事件日志按 `seq` 去重与续订（行级：状态、日志、计量、失败、结束）；
+ *   · 事件日志按 `seq` 去重与续订（候选级：状态、日志、计量、失败、结束）；
  *   · 本模块按 **`(segment, mergeKey)`** **覆盖累积**（内容级）——段号是「第几次追问那一段」，
  *     没有它时两段的同号轮次会互相覆盖（见 `foldMessages`）。
  *
@@ -23,14 +23,14 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { messageFoldKey, RowRecordSchema, ServiceError, type AgentMessage, type RowRecord, type SubagentRecord } from '@aieval/contracts';
+import { messageFoldKey, CandidateRecordSchema, ServiceError, type AgentMessage, type CandidateRecord, type SubagentRecord } from '@aieval/contracts';
 import { createLogger } from './logger';
 
 const log = createLogger('message-log');
 
 /** 追加一条记录，返回校验后的那一条（`messageId` / `mergeKey` / `subagentId` 原样保留） */
-export function appendRecord(file: string, record: RowRecord): RowRecord {
-  const parsed = RowRecordSchema.safeParse(record);
+export function appendRecord(file: string, record: CandidateRecord): CandidateRecord {
+  const parsed = CandidateRecordSchema.safeParse(record);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const path = issue === undefined || issue.path.length === 0 ? '（根对象）' : issue.path.join('.');
@@ -61,7 +61,7 @@ export function appendSubagent(file: string, subagent: SubagentRecord): Subagent
  * 读全量（对话视图首帧 + 导出）；文件不存在返回 `[]`。
  * 返回 `{ messages, subagents }` 两份：消费方极少同时要两者，分开省得每处再筛一遍。
  */
-export function readRowRecords(file: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
+export function readCandidateRecords(file: string): { messages: AgentMessage[]; subagents: SubagentRecord[] } {
   const messages: AgentMessage[] = [];
   const subagents: SubagentRecord[] = [];
   for (const record of readRecords(file)) {
@@ -72,11 +72,11 @@ export function readRowRecords(file: string): { messages: AgentMessage[]; subage
 }
 
 /** 读全量记录（保留原始顺序；需要最终视图用 `foldMessages` / `foldSubagents`） */
-export function readRecords(file: string): RowRecord[] {
+export function readRecords(file: string): CandidateRecord[] {
   if (!existsSync(file)) return [];
-  // 容忍 UTF-8 BOM：外部工具（PowerShell 5.1）编辑过的文件首行会带 U+FEFF，JSON.parse 直接抛
+  // 容忍 UTF-8 BOM：外部工具（PowerShell 5.1）编辑过的文件首个候选会带 U+FEFF，JSON.parse 直接抛
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-  const records: RowRecord[] = [];
+  const records: CandidateRecord[] = [];
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
     let parsed: unknown;
@@ -86,7 +86,7 @@ export function readRecords(file: string): RowRecord[] {
       log.warn('记录日志有一行不是合法 JSON，已跳过', { file, line: line.slice(0, 200) });
       continue;
     }
-    const result = RowRecordSchema.safeParse(parsed);
+    const result = CandidateRecordSchema.safeParse(parsed);
     if (!result.success) {
       log.warn('记录日志有一行不符合消息契约，已跳过', { file, line: line.slice(0, 200) });
       continue;
@@ -134,7 +134,7 @@ export function foldSubagents(subagents: readonly SubagentRecord[]): SubagentRec
   return order.map((key) => latest.get(key)!);
 }
 
-/** 清空该行的记录日志（重跑同一行前调用，避免新旧消息混在一个文件里） */
+/** 清空该候选的记录日志（重跑同一行前调用，避免新旧消息混在一个文件里） */
 export function resetRecords(file: string): void {
   if (!existsSync(file)) return;
   // 删文件而不是写空串：下一次 appendRecord 会重新建

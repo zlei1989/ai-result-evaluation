@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 行级事实进度条（L1）：状态 · 用量（含思考 token）· 耗时 · 轮次 · 错误。
+ * 候选级事实进度条（L1）：状态 · 用量（含思考 token）· 耗时 · 步数 · 错误。
  *
  * 五条口径：
  *   1. **`null` 不显示成 0**：用量、思考 token、耗时、错误各自「没采到」时给一句话
@@ -11,17 +11,20 @@
  *   3. **领域事实不在这里**：`facts.domain`（智能体 · 模型 · 思考强度 ·
  *      改动 · 评分）由 `agent-log-domain-facts.tsx` **单独占一行**画。并回本条末尾时，「改动 /
  *      评分」会被自然折行甩到第二行、与前三格拆散；而这两组是连起来读的一句话。本条只画
- *      「这一行跑了什么」那几个读数；
+ *      「这个候选跑了什么」那几个读数；
  *   4. **不可折叠、也不放入口**：「原始输出」归 `raw-output-panel`，「？环境信息」归工具条预设，
  *      放进来会让固定区变成第二个工具条；
  *   5. **不展示「结束原因」**：`end` 事件里的 `exitReason` 只逐字落在
  *      **下载台账**里——⚠️ **它不在「原始输出」里**（那个面板只收 `log` 事件）。事实条不再重复这一格：
  *      同一格要说的处境，状态徽标已经说了一遍。
+ *   6. **三类读数各自成组、用竖分隔线隔开**：用量（含思考）｜耗时｜步数。分隔线两侧各留
+ *      `marginXS`（8px）、分隔线自带的外边距归零——线贴着字太紧，8px 是读得开又不成一候选的档；
+ *      耗时缺席时只剩一根线（用量｜步数），不留两根挨着的空线。
  *
  * 「等待答复」是**派生**的（`waitingSince` 由调用方从当前节点的块里扫出来）：
- * 它不进 `facts`、也不进 `rowEvents`，因为它是**当前态**而不是发生过的事件。
+ * 它不进 `facts`、也不进 `candidateEvents`，因为它是**当前态**而不是发生过的事件。
  */
-import { Badge, Flex, Tag, theme, Typography } from 'antd';
+import { Badge, Divider, Flex, Tag, theme, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import type { AgentLogFacts, AgentRunStatus } from './types';
 import { formatDuration } from '../../base/metric-line';
@@ -59,7 +62,7 @@ const THINKING_BASIS_HINTS: Partial<Record<NonNullable<AgentLogFacts['thinking']
 };
 
 /**
- * 这一行的耗时（毫秒）。三种情形各有明确结果，**不猜**：
+ * 这个候选的耗时（毫秒）。三种情形各有明确结果，**不猜**：
  *   · `startedAt === null`（还没开始）⇒ `null`，那一格整格不显示；
  *   · `endedAt` 非空 ⇒ **结算值** `endedAt − startedAt`（终态不该再涨）；
  *   · 未结束 ⇒ `now − startedAt`，由调用方每秒推进 `now`（本地走秒表）。
@@ -97,36 +100,48 @@ export function AgentLogFactsBar({ facts, waitingSince, contentTruncatedReason }
           写出来是为了同口径可静态核对，不是「这个徽标偏大」 */}
       <Badge size="small" status={BADGE_STATUS[facts.status.tone]} text={facts.status.label} />
 
-      {/* 用量格：`tokens === null` 说「未采集」而不是三个 0；思考 token 只在这一格里出现。
-          文案走 `formatUsageTriple`（千分位 + `tok` 单位）——与里程碑 / 逐条页脚 / 子任务卡片同一出口 */}
-      <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-tokens">
-        {facts.tokens === null ? (
-          <Typography.Text type="secondary">用量未采集</Typography.Text>
-        ) : (
-          <Typography.Text type="secondary">{formatUsageTriple(facts.tokens)}</Typography.Text>
-        )}
-        {facts.thinking !== null && (
-          <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-thinking">
-            <Typography.Text type="secondary">思考 {formatTokens(facts.thinking.tokens)}</Typography.Text>
-            {thinkingHint !== undefined && <Typography.Text type="secondary">{thinkingHint}</Typography.Text>}
-          </Flex>
-        )}
-      </Flex>
+      {/*
+        三类读数**各自成组**（用量｜耗时｜步数），中间用竖分隔线隔开。
+        分隔线两侧各 `marginXS`（8px）+ 分隔线 `margin: 0`：线贴着字太紧，留一档呼吸。
+        耗时缺席时只剩一根线（用量｜步数）——不画一根后面什么都没有的线。
+      */}
+      <Flex align="center" gap={token.marginXS} wrap data-testid="agent-log-facts-groups">
+        {/* 用量格：`tokens === null` 说「未采集」而不是三个 0；思考 token 只在这一格里出现。
+            文案走 `formatUsageTriple`（千分位 + `tok` 单位）——与里程碑 / 逐条页脚 / 子任务卡片同一出口 */}
+        <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-tokens">
+          {facts.tokens === null ? (
+            <Typography.Text type="secondary">用量未采集</Typography.Text>
+          ) : (
+            <Typography.Text type="secondary">{formatUsageTriple(facts.tokens)}</Typography.Text>
+          )}
+          {facts.thinking !== null && (
+            <Flex align="center" gap={token.marginXXS} data-testid="agent-log-facts-thinking">
+              <Typography.Text type="secondary">思考 {formatTokens(facts.thinking.tokens)}</Typography.Text>
+              {thinkingHint !== undefined && <Typography.Text type="secondary">{thinkingHint}</Typography.Text>}
+            </Flex>
+          )}
+        </Flex>
 
-      {/* 耗时格：`startedAt === null` 时整格不显示（不是「0s」，那是编出来的读数） */}
-      {durationMs !== null && (
-        <Typography.Text type="secondary" data-testid="agent-log-facts-duration">
-          耗时 {formatDuration(durationMs)}
+        {/* 耗时格：`startedAt === null` 时整格不显示（不是「0s」，那是编出来的读数）；
+            它自己也带分隔线，故缺席时不会留下一根孤线 */}
+        {durationMs !== null && (
+          <>
+            <Divider orientation="vertical" style={{ margin: 0 }} />
+            <Typography.Text type="secondary" data-testid="agent-log-facts-duration">
+              耗时 {formatDuration(durationMs)}
+            </Typography.Text>
+          </>
+        )}
+
+        <Divider orientation="vertical" style={{ margin: 0 }} />
+        {/* 步数格**排在末尾**（用户口径：输入 · 缓存 · 输出 · 耗时 · 步数）：
+            前三格是这一次的**量**、耗时是它花了多久，步数是「跑了几步」这个过程读数——
+            放在用量前面会把「量」那一串读断。`total` 为 `null` 时只说当前值（不编一个会走动的分母） */}
+        <Typography.Text type="secondary" data-testid="agent-log-facts-turns">
+          步数 {facts.turns.current}
+          {facts.turns.total === null ? '' : ` / ${facts.turns.total}`}
         </Typography.Text>
-      )}
-
-      {/* 轮次格**排在末尾**（用户 2026-10-07 口径：输入 · 缓存 · 输出 · 耗时 · 轮次）：
-          前三格是这一次的**量**、耗时是它花了多久，轮次是「跑了几轮」这个过程读数——
-          放在用量前面会把「量」那一串读断。`total` 为 `null` 时只说当前值（不编一个会走动的分母） */}
-      <Typography.Text type="secondary" data-testid="agent-log-facts-turns">
-        轮次 {facts.turns.current}
-        {facts.turns.total === null ? '' : ` / ${facts.turns.total}`} 轮
-      </Typography.Text>
+      </Flex>
 
       {/* 失败归因：`code` 可以为 null（不是每种失败都有错误码），有就一起给，没有就不留空格 */}
       {facts.error !== null && (

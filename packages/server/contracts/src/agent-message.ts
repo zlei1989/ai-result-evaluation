@@ -10,7 +10,7 @@
  *   3. **每个值都带来源**：同一字段在不同家可能来自事件流、会话文件或 hook，来源随值一起给出，
  *      否则消费方无法判断实时性与可比性。
  *
- * 为什么不与 `AgentEvent` 合成一个形状：事件是**行级**的（状态、日志、计量、失败、结束，
+ * 为什么不与 `AgentEvent` 合成一个形状：事件是**候选级**的（状态、日志、计量、失败、结束，
  * 供 SSE 与日志抽屉消费，按 `seq` 去重与续订），消息是**内容级**的（说话者、块、归属、往返序号，
  * 供对话视图与工具族统计消费）。两者的消费方、去重键与生命周期都不同，塞进一个联合只会让
  * 两边都出现用不到的可选格。
@@ -170,7 +170,7 @@ export const AskUserAnswerSchema = z.object({
 });
 
 /**
- * 收场方式与提问通道两份词表的**定义**在 `ask-user-vocab.ts`（消息账本与行级事件共用，见那里的头注），
+ * 收场方式与提问通道两份词表的**定义**在 `ask-user-vocab.ts`（消息账本与候选级事件共用，见那里的头注），
  * 这里只把它们摆在既有的导出面上：本文件的消费方（答案形状、交互面声明）与包根出口因此一个字都不用改。
  */
 export { AskUserChannelSchema, AskUserOutcomeSchema };
@@ -233,7 +233,7 @@ export const ToolCallBlockSchema = z.object({
    * arguments text was not a valid JSON object. `arguments` is then `{}`*）与「模型真的传了空对象」
    * 在 `input` 上**逐字同形**——两者都是 `{}`。不给它一个落点，界面上只能显示一个空对象，
    * 而事实是「参数不是合法 JSON（原文在这一格）」。真机读数见
-   * `.scratch/pi-audit3/messages/report.md` 的 P3。
+   * 真机探针报告（不入库）的 P3。
    *
    * **可缺**（与 `payload` 同一条理由）：磁盘上已有的 `messages.jsonl` 没有这一格，写成必填会让
    * 老记录在回放 / SSE 续订时成片解析失败；读侧把「键不存在」与显式 `null` 当同一件事（`?? null`）。
@@ -342,12 +342,28 @@ export const UnrecognizedPayloadBlockSchema = z.object({
   raw: z.string().nullable(),
 });
 
+/**
+ * **模型看过的一张图片**：厂商只给路径，不给内容。
+ *
+ * 为什么不复用 `attachment`：附件的语义是「随这条消息带过来的东西」（资料），而这一格是
+ * **模型主动看了一眼本机的一张图**（一次动作）——两者在界面上要画成两件事，合成一格会让
+ * 「这一轮带了什么」与「它看了什么」互相顶替。
+ *
+ * `path` 是厂商原文（codex 给绝对路径）。**能否预览不由契约定**：那取决于这一刻的宿主能否
+ * 读到那张图（工作区范围、文件是否还在），属于读侧的事实。
+ */
+export const ImageViewBlockSchema = z.object({
+  type: z.literal('image-view'),
+  path: z.string(),
+});
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,
   ToolCallBlockSchema,
   ToolResultBlockSchema,
   AttachmentBlockSchema,
+  ImageViewBlockSchema,
   UnrecognizedPayloadBlockSchema,
 ]);
 export type ContentBlock = z.infer<typeof ContentBlockSchema>;
@@ -356,6 +372,7 @@ export type ThinkingBlock = z.infer<typeof ThinkingBlockSchema>;
 export type ToolCallBlock = z.infer<typeof ToolCallBlockSchema>;
 export type ToolResultBlock = z.infer<typeof ToolResultBlockSchema>;
 export type AttachmentBlock = z.infer<typeof AttachmentBlockSchema>;
+export type ImageViewBlock = z.infer<typeof ImageViewBlockSchema>;
 export type UnrecognizedPayloadBlock = z.infer<typeof UnrecognizedPayloadBlockSchema>;
 
 /**
@@ -383,7 +400,7 @@ export const AgentMessageSchema = z.object({
    */
   origin: MessageOriginSchema.default('case-prompt'),
   /**
-   * **这一行被分成几段执行，这一条属于第几段**：缺省（= 0）= 第一次跑那一段，`n ≥ 1` = 第 n 次追问那一段。
+   * **这个候选被分成几段执行，这一条属于第几段**：缺省（= 0）= 第一次跑那一段，`n ≥ 1` = 第 n 次追问那一段。
    *
    * 为什么账本必须有这一格：一次追问是**又开一次 `run()`**，厂商那一侧的轮次从 1 重新数 ⇒ 两段的
    * `roundTrip` 撞号、`mergeKey` 逐字相同（`main|1|assistant|-`）。按 `mergeKey` 覆盖累积的读侧于是
@@ -393,7 +410,7 @@ export const AgentMessageSchema = z.object({
    * 三条口径：
    *   · **只有追问那一侧写它**，第一次跑那一段与旧账本一样**整格缺席** ⇒ 旧数据照读、旧行为逐字不变
    *     （写 `0` 与缺席同义，故不为了「显式」把 0 落到每一条上）；
-   *   · 段号与行快照的 `followUpRounds` 同源（都是「第几次追问」），故界面上那一行段标题与卡片计数对得上；
+   *   · 段号与候选快照的 `followUpRounds` 同源（都是「第几次追问」），故界面上那一行段标题与卡片计数对得上；
    *   · 它是**归属**不是序号——同段内所有消息（含适配器投的、人工插的、提问结算的）共用一个值。
    */
   segment: z.number().int().min(0).optional(),
@@ -458,7 +475,7 @@ export type AgentMessage = z.infer<typeof AgentMessageSchema>;
  * 消息账本的**折叠键**：段号 + 载体键（`<segment ?? 0>:<mergeKey>`）。
  *
  * 为什么是一格独立函数而不是各处现拼：账本的折叠有**三处**——服务端落盘前（`@aieval/core` 的
- * `foldMessages`）、浏览器手里的这一份（`@aieval/client` 的 `foldRowRecords`：打开抽屉先拉一次
+ * `foldMessages`）、浏览器手里的这一份（`@aieval/client` 的 `foldCandidateRecords`：打开抽屉先拉一次
  * `/messages`、随后按同一把键叠加 SSE 增量）、界面装配（`@aieval/ui` 的 `buildAgentLogModel`）。
  * 三处分居三个包、都够不着对方的实现，判据一旦漂开，症状是「一处认段、一处不认」——
  * 看起来像内容丢失，而不是合并错（真机：关掉再打开执行日志，首段的消息整段不见了）。
@@ -566,7 +583,7 @@ export type AskUserProofDriver = ProofDriver;
 /**
  * **交互面能力声明**：这一家能不能被模型问、提问工具是谁提供的、不能时为什么。
  *
- * 为什么与「行级」「内容级」「下发级」三组并列而不是并进任何一组：那三组回答「跑这一行能做什么」
+ * 为什么与「候选级」「内容级」「下发级」三组并列而不是并进任何一组：那三组回答「跑这个候选能做什么」
  * 「拿得到哪些块」「我们下发的东西认不认」，这一组回答「模型问出来的时候有没有人能答」——
  * 变化原因（厂商通道的有无与投送）、消费方（应答面与弹层）与判据通道都不同。
  *
@@ -638,7 +655,7 @@ export const InteractionCapabilitySchema = z
 export type InteractionCapability = z.infer<typeof InteractionCapabilitySchema>;
 
 /**
- * 注入边界的**定义**在 `inject-vocab.ts`（消息账本、行级事件与队列快照共用那份词表，见那里的头注），
+ * 注入边界的**定义**在 `inject-vocab.ts`（消息账本、候选级事件与队列快照共用那份词表，见那里的头注），
  * 这里只把它摆在既有的导出面上：本文件的消费方（端口、声明组）与包根出口因此一个字都不用改。
  */
 export { InjectionBoundarySchema };
@@ -839,16 +856,16 @@ export type SubagentRecord = z.infer<typeof SubagentRecordSchema>;
 /**
  * 消息日志（`messages.jsonl`）里的一行：**内容流与派发视图共用一条流**。
  *
- * 为什么把子任务行与消息放进同一个文件、而不各开一份：两者是同一次运行的**两条并行内容流**
+ * 为什么把子任务行与消息放进同一个文件、而不各开一份：两者是同一次运行的**两条并行的内容流**
  * （说话者与内容块 / 子任务身份与终态），消费方（对话视图与派发面板）按 `type` 分流即可。
  * 各开一份的代价是「一次运行要落两处、读两处，还得保证两处一致」——而它们本来就来自同一条
  * 适配器回调，分开只会多一个对不上的机会。
  */
-export const RowRecordSchema = z.discriminatedUnion('type', [
+export const CandidateRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('message'), message: AgentMessageSchema }),
   z.object({ type: z.literal('subagent'), subagent: SubagentRecordSchema }),
 ]);
-export type RowRecord = z.infer<typeof RowRecordSchema>;
+export type CandidateRecord = z.infer<typeof CandidateRecordSchema>;
 
 /**
  * 能力声明：每家每次运行都带一份，说明「这次到底能拿到什么」。

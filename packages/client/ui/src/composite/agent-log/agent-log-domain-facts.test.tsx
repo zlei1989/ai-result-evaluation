@@ -8,15 +8,14 @@
  *   3. **值整段一枚色档 Tag**（评分那一格）：`tone` → antd 预设色；
  *   4. **`tag` 段按 `tagTone` 上色**（智能体 `blue` / 模型 `geekblue` /
  *      思考强度 `purple`），不给时回落 `blue`；
- *   5. **`insertion` / `deletion` 走 git 惯例的绿 / 红**，且整格**不再套 Tag**（套一枚徽标等于把
- *      这行数字框成一整块，正是要去掉的那个观感）——颜色判据取 antd token，写死字面量就会红；
+ *   5. **`insertion` / `deletion` 各是一枚绿 / 红 Tag**（git 惯例的 `+N` / `−N`）；段间距由
+ *      段容器的 `Flex gap`（4px）给，段内文字不带排版空格、Tag 不留自带外边距；
  *   6. **`hint` / `hintSegments` 照画**（组件能力，产品侧当前不给提示）：tag 段是 Tag、其余文字次要色。
  *
- * 这一行**自占一行**（与事实条那一行分开），守卫落在
- * `agent-log-layout.test.tsx`（两行的父子关系），不在这里。
+ * 这个候选**自占一行**（与事实条那一行分开），守卫落在
+ * `agent-log-layout.test.tsx`（两个候选的父子关系），不在这里。
  */
 import { render, screen } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
 import { describe, expect, it } from 'vitest';
 import type { DomainFact } from './types';
 import { AgentLogDomainFacts } from './agent-log-domain-facts';
@@ -46,9 +45,10 @@ const DOMAIN: readonly DomainFact[] = [
     label: '改动',
     value: '3 个文件 +12 −3',
     segments: [
-      { text: '3 个文件 ' },
-      { text: '+12', tone: 'insertion' },
-      { text: ' −3', tone: 'deletion' },
+      { text: '3', tag: true, tagTone: 'default' },
+      { text: '个文件' },
+      { text: '+12', tag: true, tagTone: 'success' },
+      { text: '−3', tag: true, tagTone: 'error' },
     ],
   },
   { id: 'score', label: '评分', value: '8/10', tone: 'success' },
@@ -79,7 +79,7 @@ describe('AgentLogDomainFacts', () => {
 
   /**
    * `tag` 段的色档：智能体 `blue` / 模型 `geekblue` / 思考强度 `purple`。
-   * 判据落在 **class** 上：`Tag` 的预设色本来就只体现为 class（只有自定义 hex 才走行内 style）。
+   * 判据落在 **class** 上：`Tag` 的预设色本来就只体现为 class（只有自定义 hex 才走候选内 style）。
    * 第三格同时钉**回落**：不给 `tagTone` 的 `tag` 段仍是蓝的（老数据 / 别的消费方不必改）。
    */
   it('tag 段按 tagTone 上色（blue / geekblue / purple），不给时回落 blue', () => {
@@ -109,42 +109,44 @@ describe('AgentLogDomainFacts', () => {
   });
 
   /**
-   * 改动那一格：**按 git stat 重排**——文件数次要色 + `+N` 绿 + `−N` 红，
-   * 且**整格没有 Tag**。
+   * 改动那一格：**三段各一枚 Tag**——文件数中性档、`+N` 绿档、`−N` 红档。
+   * 段间**不写空格**：间距由段容器的 `Flex gap`（`marginXXS` = 4px）给，Tag 自带外边距归零。
    *
-   * 颜色判据用**自定义 token**（同 `json-text.test.tsx`）：写死字面量——哪怕是当前默认值——都会红；
-   * 归一化那一步不能省，jsdom 会把 `#234567` 序列化成 `rgb(35, 69, 103)`。
+   * 判据落在 **class** 上（`Tag` 的色档只体现为 class），另用 `gap` 与 `marginInlineEnd` 钉「间距」那一条；
+   * 单位「个文件」仍是 antd 的 secondary `Text`（不跟着上色，也不带排版空格）。
    */
-  it('改动那一格按 git stat 上色（+N 绿 / −N 红，都取自 antd token），且整格没有 Tag', () => {
-    const custom = { colorSuccess: '#234567', colorError: '#345678' };
+  it('改动那一格三段各一枚 Tag（中性 / 绿 / 红），段间距由 Flex gap 给', () => {
     const domain: readonly DomainFact[] = [
       {
         id: 'diff',
         label: '改动',
         value: '3 个文件 +12 −3',
         segments: [
-          { text: '3 个文件 ' },
-          { text: '+12', tone: 'insertion' },
-          { text: ' −3', tone: 'deletion' },
+          { text: '3', tag: true, tagTone: 'default' },
+          { text: '个文件' },
+          { text: '+12', tag: true, tagTone: 'success' },
+          { text: '−3', tag: true, tagTone: 'error' },
         ],
       },
     ];
-    render(
-      <ConfigProvider theme={{ token: custom }}>
-        <AgentLogDomainFacts domain={domain} />
-      </ConfigProvider>,
-    );
-    const probe = (color: string): string => {
-      const element = document.createElement('span');
-      element.style.color = color;
-      return element.style.color;
-    };
+    render(<AgentLogDomainFacts domain={domain} />);
 
-    expect(screen.getByText('+12').style.color).toBe(probe(custom.colorSuccess));
-    expect(screen.getByText('−3').style.color).toBe(probe(custom.colorError));
-    // 「3 个文件」是次要色：整段外面是 antd 的 secondary `Text`（不是自己调一个灰）
-    expect(screen.getByText('+12').parentElement?.className).toContain('ant-typography-secondary');
-    expect(screen.getByTestId('agent-log-domain-facts').querySelectorAll('.ant-tag')).toHaveLength(0);
+    const group = screen.getByTestId('agent-log-domain-fact-segments');
+    const tags = [...group.querySelectorAll('.ant-tag')];
+    expect(tags.map((tag) => tag.textContent)).toEqual(['3', '+12', '−3']);
+    expect(tags[0]).toHaveClass('ant-tag-default');
+    expect(tags[1]).toHaveClass('ant-tag-success');
+    expect(tags[2]).toHaveClass('ant-tag-error');
+
+    // 间距由 flex gap 给（4px = marginXXS），Tag 自带的外边距归零——两者相加会松成另一档
+    expect((group as HTMLElement).style.gap).toBe('4px');
+    for (const tag of tags) expect(Number.parseFloat((tag as HTMLElement).style.marginInlineEnd)).toBe(0);
+    // 四段各是一个 flex 项（没有只为排版存在的空白段）
+    expect(group.children).toHaveLength(4);
+    // 单位仍是次要色文本，且不带首尾空格（间距不靠空格）
+    const unit = screen.getByText('个文件');
+    expect(unit).toHaveClass('ant-typography-secondary');
+    expect(unit.textContent).toBe('个文件');
   });
 
   /**

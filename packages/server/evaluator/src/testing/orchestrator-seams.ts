@@ -24,8 +24,8 @@
  * 接缝本身（`injected`）为什么需要：两件事在单测里没有别的办法造出来，而它们都不是
  * 「夹具编出来的假场景」，是生产上真实存在的时序：
  *   ① **轮级收尾落盘失败**：`finalizeRun → setRunStatus → saveRun` 会因磁盘满 / 快照被删 / 根目录形状
- *      非法而抛，而它与该轮最后一次行级写入之间**没有任何 `await`** ⇒ 测试不可能「恰好在那一刻」动手脚；
- *   ② **陈旧的 `listRuns()` 结果**：恢复路径拿到的列表与它改写时的当前快照之间可能夹着别人跑完的行
+ *      非法而抛，而它与该轮最后一次候选级写入之间**没有任何 `await`** ⇒ 测试不可能「恰好在那一刻」动手脚；
+ *   ② **陈旧的 `listRuns()` 结果**：恢复路径拿到的列表与它改写时的当前快照之间可能夹着别人跑完的候选
  *      （恢复路径与改写之间的那个窗口），同样没有 `await` 可供插入。
  * 默认全部原样透传（`...actual`）：注入点只在被点名的那一轮 / 那一次调用上生效，用完即失效。
  */
@@ -43,19 +43,19 @@ import { fakeAgentsModule, fakeJudgeAgentModule, fakeJudgeModule } from './fixtu
 const injectedState = vi.hoisted(() => ({
   /** 让**这一轮**的「轮级终态」写入失败一次（done / partial 才是收尾那一笔） */
   failRunStatusSaveFor: null as string | null,
-  /** 「收尾那一笔已经被拒绝」的标记：用例等它发生（它一定晚于该轮最后一行的落库） */
+  /** 「收尾那一笔已经被拒绝」的标记：用例等它发生（它一定晚于该轮最后一候选的落库） */
   runStatusSaveFailed: false,
-  /** 下一次 `listRuns()` 返回这份**陈旧**快照（模拟「读到之后、改写之前别人把这行跑完了」） */
+  /** 下一次 `listRuns()` 返回这份**陈旧**快照（模拟「读到之后、改写之前别人把这候选跑完了」） */
   staleList: null as EvalRun[] | null,
   /**
-   * 让**这一轮**的「行级」写入失败一次（`rescoreRow` 入口区的等价物：磁盘满 / 快照被删）。
+   * 让**这一轮**的「候选级」写入失败一次（`rescoreCandidate` 入口区的等价物：磁盘满 / 快照被删）。
    * 为什么需要它：入口区那三步（登记控制器 → 标记事件 → 写状态）之间**没有 `await`**，
-   * 测试不可能「恰好在那一刻」动手脚；而不回退的后果是「这一行永久不可重评」——
-   * 一条只在真实故障下出现、却再也修不回来的状态（见 rescoreRow 入口区的注释）。
+   * 测试不可能「恰好在那一刻」动手脚；而不回退的后果是「这个候选永久不可重评」——
+   * 一条只在真实故障下出现、却再也修不回来的状态（见 rescoreCandidate 入口区的注释）。
    */
-  failRowSaveFor: null as string | null,
-  /** 「行级那一笔已经被拒绝」的标记：用例等它发生 */
-  rowSaveFailed: false,
+  failCandidateSaveFor: null as string | null,
+  /** 「候选级那一笔已经被拒绝」的标记：用例等它发生 */
+  candidateSaveFailed: false,
 }));
 
 /** 接缝对象（各测试文件读写它来制造落盘失败 / 陈旧列表） */
@@ -73,7 +73,7 @@ export function agentsMock() {
 }
 
 /**
- * judge：只替换 `judgeRow`，`parseJudgeResponse` / `finalizeScore` 必须是真的——
+ * judge：只替换 `judgeCandidate`，`parseJudgeResponse` / `finalizeScore` 必须是真的——
  * `judge-agent.ts` 也 import 它们，整模块替换会让智能体通路拿到 undefined（崩成 TypeError，
  * 指向完全错误的方向）。
  */
@@ -82,7 +82,7 @@ export function judgeMock(actual: typeof import('../judge')) {
 }
 
 /**
- * judge-agent：只替换 `judgeRowByAgent`，`JudgeAgentError` 必须是真的（编排层按 `instanceof`
+ * judge-agent：只替换 `judgeCandidateByAgent`，`JudgeAgentError` 必须是真的（编排层按 `instanceof`
  * 分路）。智能体通路的用例靠它观察「编排层把什么交给了评分智能体」（如执行过程证据）。
  */
 export function judgeAgentMock(actual: typeof import('../judge-agent')) {
@@ -103,17 +103,17 @@ export function runStoreMock(actual: typeof import('../run-store')) {
     },
     saveRun: (run: EvalRun) => {
       if (run.id === injected.failRunStatusSaveFor && (run.status === 'done' || run.status === 'partial')) {
-        injected.failRunStatusSaveFor = null; // 一次性：只让收尾这一笔失败，行级写入照常
+        injected.failRunStatusSaveFor = null; // 一次性：只让收尾这一笔失败，候选级写入照常
         injected.runStatusSaveFailed = true;
         throw new ServiceError('INTERNAL', '夹具注入：轮级收尾落盘失败（磁盘满 / 快照被删的等价物）');
       }
-      // 行级那一笔（轮状态是 idle / running 的那些写入）：按**调用顺序**一次性失败。
-      // 判据用「这一轮」而不是状态：行级写入落在各种轮状态下（idle / running / partial），
-      // 按状态判会漏掉一半，而这条注入要的正是「不管当时轮状态是什么，下一次行级写入失败」
-      if (run.id === injected.failRowSaveFor) {
-        injected.failRowSaveFor = null;
-        injected.rowSaveFailed = true;
-        throw new ServiceError('INTERNAL', '夹具注入：行级落盘失败（磁盘满 / 快照被删的等价物）');
+      // 候选级那一笔（轮状态是 idle / running 的那些写入）：按**调用顺序**一次性失败。
+      // 判据用「这一轮」而不是状态：候选级写入落在各种轮状态下（idle / running / partial），
+      // 按状态判会漏掉一半，而这条注入要的正是「不管当时轮状态是什么，下一次候选级写入失败」
+      if (run.id === injected.failCandidateSaveFor) {
+        injected.failCandidateSaveFor = null;
+        injected.candidateSaveFailed = true;
+        throw new ServiceError('INTERNAL', '夹具注入：候选级落盘失败（磁盘满 / 快照被删的等价物）');
       }
       actual.saveRun(run);
     },

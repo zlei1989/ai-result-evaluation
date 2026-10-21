@@ -50,7 +50,7 @@ function linesOf(file: string): Array<Record<string, unknown>> {
   }
 }
 
-/** 一次运行要的临时行目录（两份流水都住在它下面，与适配器的相对落点同源） */
+/** 一次运行要的临时候选目录（两份流水都住在它下面，与适配器的相对落点同源） */
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), 'dsh-inject-'));
 }
@@ -114,9 +114,9 @@ function startFakePlugin(
   let stopped = false;
   const timer = setInterval(() => {
     if (stopped) return;
-    const rows = linesOf(queue);
-    for (; cursor < rows.length; cursor += 1) {
-      const row = rows[cursor];
+    const candidates = linesOf(queue);
+    for (; cursor < candidates.length; cursor += 1) {
+      const row = candidates[cursor];
       if (row === undefined) continue;
       const receipt = onRow(row);
       if (receipt !== null) appendFileSync(receipts, `${JSON.stringify(receipt)}\n`, 'utf8');
@@ -239,8 +239,8 @@ describe('人工消息面：两档各走各的路', () => {
     // 这一档**不**走 wire
     expect(prompts).toEqual([]);
     expect(drained[0]).toBe('round');
-    const rows = linesOf(join(home, DSH_INJECT_QUEUE_RELATIVE_PATH));
-    expect(rows[0]).toMatchObject({ key: 'r-1', kind: 'steer', sessionId: 'session-inject-1', text: '顺便把 changelog 补上' });
+    const candidates = linesOf(join(home, DSH_INJECT_QUEUE_RELATIVE_PATH));
+    expect(candidates[0]).toMatchObject({ key: 'r-1', kind: 'steer', sessionId: 'session-inject-1', text: '顺便把 changelog 补上' });
   });
 });
 
@@ -260,7 +260,7 @@ describe('人工消息面：撤回', () => {
     expect(outcome).toBe('retracted');
     const removes = linesOf(join(home, DSH_INJECT_QUEUE_RELATIVE_PATH)).filter((row) => row['kind'] === 'remove');
     expect(removes).toHaveLength(1);
-    // 落到插件那一行的仍是**厂商那条消息的 id**（`inbox.remove` 只认它）
+    // 落到插件那一候选的仍是**厂商那条消息的 id**（`inbox.remove` 只认它）
     expect(removes[0]).toMatchObject({ kind: 'remove', sessionId: 'session-inject-1', messageId: 'vendor-a' });
   });
 
@@ -325,7 +325,7 @@ describe('人工消息面：如实处置', () => {
     const fake = await deliverOne(home, 'vendor-r');
     const startedAt = Date.now();
     const pending = fake.port.retract('m-1');
-    // 撤回那一行是**投递流水**里的 `kind: 'remove'`，它的 `key` 才是收据要带回来的（不是条目 id）
+    // 撤回那一候选是**投递流水**里的 `kind: 'remove'`，它的 `key` 才是收据要带回来的（不是条目 id）
     await waitFor('撤回行落盘', () => linesOf(join(home, DSH_INJECT_QUEUE_RELATIVE_PATH)).some((row) => row['kind'] === 'remove'));
     const retractKey = linesOf(join(home, DSH_INJECT_QUEUE_RELATIVE_PATH)).find((row) => row['kind'] === 'remove')?.['key'];
     expect(typeof retractKey).toBe('string');

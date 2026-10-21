@@ -10,7 +10,7 @@
  *    顺序错了会丢掉开头那批事件（含 `turn/start`），所以订阅由**流自己**建立，`start()` 里不碰它。
  *
  * **注入模型**（判据与探测结论见 `docs/protocols/dsh.md` 的「pi-ai 路由与两条 wire」）：
- * 本行统一走 **pi-ai 路由**，
+ * 本次运行统一走 **pi-ai 路由**，
  * 协议决定 wire（`anthropic → anthropic-messages`、`openai → openai-responses`）。
  * 四个落点：
  *  1. **per-run overlay**（`<configHome>/aieval-route.patch.yml`，见 `DSH_ROUTE_PATCH_RELATIVE_PATH`）——
@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path';
 import { createLogger, materializeSkills } from '@aieval/core';
 import type { McpServers, UsageTokens } from '@aieval/contracts';
 import { logDraft, type AgentEventDraft } from '../../emit';
-import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeRowNpmrc } from '../../mcp';
+import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeCandidateNpmrc } from '../../mcp';
 import { DSH_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, ensureV1Suffix, stripV1Suffix } from '../../route';
@@ -144,15 +144,15 @@ export const DSH_ROUTE_API_KEY_ENV = 'AIEVAL_ROUTE_API_KEY';
  * 初始 profile 握手的墙钟上限（毫秒）。
  *
  * 为什么**不能**吃 SDK 的默认值（10000，`launch.d.ts` 的 `DEFAULT_INITIALIZE_TIMEOUT_MS`）：
- * 每一行都跑在一个**全新的 `configHome`** 上（不变量 3），于是每次运行都是冷启动，
+ * 每个本次运行都跑在一个**全新的 `configHome`** 上（不变量 3），于是每次运行都是冷启动，
  * dsh 要解析整棵插件树才回 initialize。实测（`probe/v3/dsh-adapter-dual-protocol.mts`）：
  * 默认 10s 下 anthropic 与 openai **两条协议双双**以
  * `initialize timed out after 10000ms waiting for dsh profile "sdk"` 失败，被折成 `AGENT_FAILED`——
- * 症状（「这一行失败了」）离真因（握手预算给小了）很远，而它与协议、凭据、overlay 内容都无关。
+ * 症状（「本次运行失败了」）离真因（握手预算给小了）很远，而它与协议、凭据、overlay 内容都无关。
  *
  * 取值依据：探测在相同的冷启动形状下用的就是 60s（`probe/v3/lib/harness.mjs` 的
  * `initializeTimeoutMs`，注释逐字写着「冷启动要解析整棵插件树；默认 10s 会偶发 initialize 超时」），
- * 那是本次唯一有执行级证据的值。这不是「执行超时」——用户口径是执行不限时间；它只是**握手**的上界，
+ * 那是本次唯一有执行的级证据的值。这不是「执行超时」——用户口径是执行不限时间；它只是**握手**的上界，
  * 真正起不来的 dsh 仍然会被挡住，而不是永远挂着。
  */
 export const DSH_INITIALIZE_TIMEOUT_MS = 60_000;
@@ -223,7 +223,7 @@ export interface DshRoutePatchInput {
   /** 单次输出上限；缺省 = 未知 ⇒ 不写 */
   maxOutputTokens?: number;
   /**
-     * 本行要注入的 MCP 条目；缺省 / 空集 ⇒ **一行插件都不插**。
+     * 本次运行要注入的 MCP 条目；缺省 / 空集 ⇒ **一行插件都不插**。
    * 收的是 canonical 形状（与另两家同一份），翻译在 `toDshMcpPluginLines` 里一处完成。
    */
   mcpServers?: McpServers;
@@ -236,7 +236,7 @@ export interface DshRoutePatchInput {
   /**
    * 这一轮挂没挂**人工消息面**（= 调用方传了开着的 `inject` 端口，见 `inject.ts`）：
    * `'round'` 档与撤回都只能走进程内插件 ⇒ 这一格决定插不插那一行。
-   * 没挂 ⇒ 一行都不插、插件也不落盘（「不进人工消息就一处都不动」在磁盘上就是这样）。
+   * 没挂 ⇒ 一本次运行都不插、插件也不落盘（「不进人工消息就一处都不动」在磁盘上就是这样）。
    */
   injectMessages?: boolean;
 }
@@ -245,7 +245,7 @@ export interface DshRoutePatchInput {
  * 生成 per-launch overlay patch 的 YAML 文本（**纯函数**：无时间戳、无随机、无环境读取）。
  *
  * 两段内容：
- *   ① `- id: llm-pi-ai` 的 **id 定向覆盖**——patch 语义是「整份替换该行的 config，不是深合并」
+ *   ① `- id: llm-pi-ai` 的 **id 定向覆盖**——patch 语义是「整份替换本次运行的 config，不是深合并」
  *      （dsh-base 的文件头逐字），所以我们只声明本次运行要用到的那一条路由与那一个模型；
  *   ② `- insert:` 把 `ask_user_question` 挂进 profile——**新增行必须走 insert**，
  *      顶层 `- id:` 只能改或禁既有行。同一份 insert 里还有我们自己那两个插件行
@@ -280,11 +280,11 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     // 等待档：**与应答面同源派生**（见 `ask-user.ts` 的两个常量各自的取值理由）——
     // 挂了应答面走阻塞档（`-1`：既不到点收场、又带 `wait.callId`），没挂走定时档 1 秒
     //（到点交回厂商设计好的「待答」结果，而不是让模型一问就吃一个工具错误）。
-    // ⚠️ 四处口子，改这一行之前先读：
+    // ⚠️ 四处口子，改本次运行之前先读：
     //   ① `timeout: -1` **不构成**定时档——源码只在 `timeout !== -1` 时才走定时档，`-1` 回落阻塞档；
     //      而这一格的工具描述主动鼓励模型在「不给答案就没法继续」时传 `-1` ⇒ 那一问照样拿到工具错误。
     //   ② 定时档的 schema 比阻塞档**多一个模型可见参数** `timeout`（`TIMED_WAIT_PARAMETER`），且 dsh
-    //      判定「这一行是哪一档」读的是 `request/header` 里记下的**工具 schema**
+    //      判定「本次运行是哪一档」读的是 `request/header` 里记下的**工具 schema**
     //      （`isTimedAskUserQuestionSchema`）、不是调用实参 ⇒ 档位只能落在装配产物上。
     //   ③ 守卫钉的是**配置文本**、钉不到模型实参：定时档的效果是「**默认**不报错」，不是「免疫」。
     //   ④ 「待答」这一格契约里今天没有（本适配器不改契约）⇒ 它在模型眼里与一个普通工具结果无异；
@@ -300,7 +300,7 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     // 纯 node: 内建依赖 ⇒ 不需要 profile 的 pnpm 安装（与 `tool-ask-user` 不同，那个是包名）。
     '    - id: aieval-stream-tap',
     '      name: "./aieval-stream-tap.mjs"',
-    // 提问应答者（见 `ask-user.ts`）：**只在挂了应答面时**才有这一行。没挂应答面时不插、
+    // 提问应答者（见 `ask-user.ts`）：**只在挂了应答面时**才有本次运行。没挂应答面时不插、
     // 插件文件也不落盘——厂商那个提问工具照旧 fail-closed，「不问就不动」在磁盘上就是这样。
     ...(input.askUserAnswerer === true
       ? [
@@ -309,7 +309,7 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
       ]
       : []),
     // 人工消息面（见 `inject.ts`）：契约的 `'round'` 档与「撤回已投递」在 wire 上都没有落点，
-    // 只能由这一行插件在 runtime 进程内接出来。**只在挂了注入端口时**才有这一行。
+    // 只能由本次运行插件在 runtime 进程内接出来。**只在挂了注入端口时**才有本次运行。
     ...(input.injectMessages === true
       ? [
         '    - id: aieval-inject',
@@ -317,7 +317,7 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
       ]
       : []),
     // MCP：一台 server = 一行 `@deepseek-ai/dsh-mcp-client`，**同样走 insert**
-    // （顶层 `- id:` 只能改或禁既有行）。空集时这里一行都不加——不写空壳行。
+    // （顶层 `- id:` 只能改或禁既有行）。空集时这里一本次运行都不加——不写空壳行。
     ...toDshMcpPluginLines(input.mcpServers ?? {}),
     '',
   ].join('\n');
@@ -331,7 +331,7 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
  * 流里那个 `const childSessions` 投影根本看不见。
  */
 export interface DshRunState extends DshProjectionRunState {
-  /** 本行的**子会话白名单**：只在这里面的会话才计入「子智能体那一份」 */
+  /** 本次运行的**子会话白名单**：只在这里面的会话才计入「子智能体那一份」 */
   childSessions: Set<string>;
   /** 已收场的子会话（`subagent.finished`）：投影据此把「收场了却没报用量」判成事实缺失（null） */
   finishedSessions: Set<string>;
@@ -341,7 +341,7 @@ export interface DshRunState extends DshProjectionRunState {
    */
   headerTools: string[] | null;
   /**
-   * 上一条 `user/message`（`source.kind === 'skill-catalog'`）里的**技能目录**：厂商说这一行
+   * 上一条 `user/message`（`source.kind === 'skill-catalog'`）里的**技能目录**：厂商说本次运行
    * 有哪些 skill（真机全轮恰好一条）。与 `headerTools` 同一处置——只在清单变了的时候发事件，
    * 且**两条通道各自发出时都要带上对方那一格**（消费方取最后一条读，缺一格就等于把它抹掉）。
    * `null` = 还没采到（不是「清单是空的」）。
@@ -385,7 +385,7 @@ export interface DshRunState extends DshProjectionRunState {
  *      （读侧按会话 id 覆盖累积，对缺开头本来就宽容）。
  *
  * 为什么不干脆「凡带 sessionId 的都放行」：同一个 harness 实例在多行之间共享，
- * 放行全部会话等于把**别的行**的事件混进这一行的落盘文件——那比丢几条更难查。
+ * 放行全部会话等于把**别的行**的事件混进本次运行的落盘文件——那比丢几条更难查。
  */
 function notificationStream(
   harness: DshHarness,
@@ -425,7 +425,7 @@ function notificationStream(
          * detach 并带上终态错误**（`unsubscribe()` + `fail(error)`），此后 `next()` 立刻拒绝，
          * 而**兄弟订阅与传输读循环都不受影响**（也就是说：SDK 自己的那条订阅照常跑到收尾，
          * 我们这一条悄悄死了，外面完全看不出区别）。
-         * 原样写这三行就等于把「通知流的生死」押在三个纯函数的健壮性上，而它们的失败模式是
+         * 原样写这三本次运行就等于把「通知流的生死」押在三个纯函数的健壮性上，而它们的失败模式是
          * **整段对话静默消失**：真机 run `7f05c765` 的 dsh 行，厂商会话日志 201 条事件、
          * 我们只收到前 13 条（+56ms 后彻底断），那次运行照旧判 `judged`、执行日志整段空白。
          * 故这里 **fail-open**：抛了就记 ERROR、放行该条，绝不把一条通知的解析问题升级成
@@ -454,7 +454,7 @@ function notificationStream(
       });
       /**
        * **会话已知表**（stream-tap 的放行判据，见 `stream-tap.ts` 的门闸注释）：
-       * 自己的会话 + **本行已登记的子会话**先入（`runState.childSessions` 与放行判据同一份事实，
+       * 自己的会话 + **本次运行已登记的子会话**先入（`runState.childSessions` 与放行判据同一份事实，
        * 由过滤器在收到 `subagent.started` 时写入）；每放行一条真通知，再把它带出的会话身份
        * （`params.sessionId` 与 `subagent.*` 通知的子会话三级兜底）记进来。子会话的增量行必须等
        * `subagent.started` **投影之后**才放——`dshSubagentIdOf` 只认登记过的 id，
@@ -462,7 +462,7 @@ function notificationStream(
        *
        * ⚠️ 播种必须带 `runState.childSessions`：这张表是**每条活动区间一份**（追问会再造一条），
        * 只放自己的会话 id 会让上一轮登记过的子会话在追问区间里重新变成「未知」——
-       * 那些增量行被门闸挂住，最后随 `tap.close()` 一起丢掉（子智能体的话缺一段，零报错）。
+       * 那些增量本次运行被门闸挂住，最后随 `tap.close()` 一起丢掉（子智能体的话缺一段，零报错）。
        */
       const knownSessions = new Set<string>([sessionId, ...runState.childSessions]);
       const noteKnown = (notification: DshNotification): void => {
@@ -471,7 +471,7 @@ function notificationStream(
         for (const identity of childSessionIdentities(notification, sessionId)) knownSessions.add(identity);
       };
       let settled = false;
-      /** 已放行的通知条数（失败上报时用它说明「断在哪」：收到 N 条之后就再没有了） */
+      /** 已放本次运行的通知条数（失败上报时用它说明「断在哪」：收到 N 条之后就再没有了） */
       let received = 0;
       /** 最后一次收到通知的时刻（停滞判据的输入） */
       let lastNotificationAt = Date.now();
@@ -557,7 +557,7 @@ function notificationStream(
            *   · **`fail(error)`**（SDK 的 `push()` 在过滤器抛错时调的，或传输读循环死了）⇒
            *     **投送已经死了，而这一轮还远没结束**。
            * 把第二种读成第一种的后果是真机上看到的形状：厂商会话日志 201 条、
-           * 我们只收到前 13 条，之后 138 秒的内容一条不剩，**而这一行照旧判 `judged`、
+           * 我们只收到前 13 条，之后 138 秒的内容一条不剩，**而本次运行照旧判 `judged`、
            * 执行日志整段空白、任何一条日志都没有**（run `7f05c765` 的 dsh 行）。
            * 所以这里把失败**留下来**（`streamFailure`），收尾时如实进行事件流。
            */
@@ -701,7 +701,7 @@ function notificationStream(
           yield* tap.drain(knownSessions);
         }
         /**
-         * 投送中途死掉 ⇒ **必须如实报出去**（这条流是这一行唯一的内容来源）：
+         * 投送中途死掉 ⇒ **必须如实报出去**（这条流是本次运行唯一的内容来源）：
          * 一条 ERROR 日志（带原因与堆栈，给排障）+ **一条 stderr 的 `log` 事件**（给界面——
          * 否则「执行日志整段空白」就成了一句无法解释的现象，真机事故里正是如此）。
          * 顺序在 `runError` 之前：先留下「内容为什么不全」，再让骨架按 run 的失败归因收场。
@@ -717,7 +717,7 @@ function notificationStream(
         if (end.kind === 'failed' || end.kind === 'stalled') {
           logger.error(
             end.kind === 'failed'
-              ? 'dsh 通知订阅在中途失败：此后的事件与消息全部未采集（这一行的执行日志会不完整）'
+              ? 'dsh 通知订阅在中途失败：此后的事件与消息全部未采集（本次运行的执行日志会不完整）'
               : 'dsh 通知流静默停滞：既没有 turn/end、也没报错，此后的事件与消息全部未采集',
             {
               sessionId,
@@ -734,7 +734,7 @@ function notificationStream(
            * **没见过 `turn/end`、静默也没超过阈值**：界面上一律不报（没有证据就别编一个故障），
            * 但**服务端要留一条痕**——失败通道只有 `turn/end` 一条，而「收尾那条通知已经被
            * `shift()` 出来、却在竞速里没人读它的值」这条路径会把它整条丢掉（见 FAQ 的
-           * `24 / 24 / 25 / 25` 条）：那时这一行照旧判成功，且**任何日志、任何事件都没有**，
+           * `24 / 24 / 25 / 25` 条）：那时本次运行照旧判成功，且**任何日志、任何事件都没有**，
            * 排障只能去翻厂商会话日志。这一条 WARN 就是那种形状的唯一线索。
            */
           logger.warn('dsh 通知流结束但整轮没收到 turn/end（结论不改写：界面不报，这里留痕）', {
@@ -761,7 +761,7 @@ function notificationStream(
 
 /**
  * 「静默停滞」的判据阈值：一轮结束前**超过这么久**没有任何通知、且整轮**没见过 `turn/end`**，
- * 就认定投送在中途停住了（真机 run `7f05c765` 的 dsh 行是 **138 秒**）。
+ * 就认定投送在中途停住了（真机 run `7f05c765` 的 dsh 本次运行是 **138 秒**）。
  *
  * 为什么用 5 秒：正常一轮的收尾几乎与最后一条通知同刻（`turn/end` → `session.status: idle` →
  * `run()` 落定），间隔是毫秒级；而长的工具调用虽然也让流静默，但那时 `run()` **还没落定**、
@@ -779,7 +779,7 @@ export const DSH_SILENT_STALL_MS = 5_000;
  *   · `closed`  —— **我们自己发起的关闭**（用户终止 / 看门狗 / 停机 / 收尾）之后流断了。
  *     流断在这里是**预期收场**：关闭运行时会同步终结订阅、之后也不会再有通知，
  *     「没收到 `turn/end`」与「静默超过阈值」都只是这个事实的另一面。**不报**——
- *     否则每一次终止都会往该行事件流里落一句「执行日志因此不完整」，而其实一条都没丢；
+ *     否则每一次终止都会往本次运行事件流里落一句「执行日志因此不完整」，而其实一条都没丢；
  *   · `stalled` —— **没有报错、也不是我们关的，但投送就是停了**：没见过 `turn/end` 且静默超过阈值。
  *     真机第二次重跑（attempt 2）就是这一种：厂商会话日志 245 KB 内容齐全，我们 13 条之后再无音信。
  *   · `unknown` —— 没见过 `turn/end`，但静默没超过阈值（多半是夹具那种「事件吐完就落定」的形状）
@@ -903,12 +903,12 @@ export function noteChildSession(
   ownSessionId: string,
   childSessions: Set<string>,
   /**
-   * 本行的取数面：给了就顺手记下「这个子会话**在本次 run 登记它时**已有的累计量」。
+   * 本次运行的取数面：给了就顺手记下「这个子会话**在本次 run 登记它时**已有的累计量」。
    *
    * 为什么必须有这一格：`sessionUsage` 与按会话的往返计数都是**模块级、跨 run 不清**的
    * （同一个子会话 id 在追问 / 续接的下一个 run 里会被重新登记），而「子智能体那一份」问的是
    * **本 run** 的增量 ⇒ 没有基线，第二个 run 的分量会把前一个 run 一起算上
-   * （真机形状：行快照上出现「合计 60 / 子分量 2010」）。基线只记一次：同一个 id 在本 run 内
+   * （真机形状：运行快照上出现「合计 60 / 子分量 2010」）。基线只记一次：同一个 id 在本 run 内
    * 再登记也不覆盖。
    */
   runState?: {
@@ -970,14 +970,14 @@ function noteFinishedChildSession(
  * 日志里必须说得出「是哪些子会话没报用量」——否则「没采到」与「确实没有子智能体」长得一样。
  *
  * 三条口径：
- *   · **一条**文案串起全部 id（`、` 分隔），不是每个 id 一条：这是**一个事实**（这一行的分量为什么
+ *   · **一条**文案串起全部 id（`、` 分隔），不是每个 id 一条：这是**一个事实**（本次运行的分量为什么
  *     是 `null`），刷成 N 条只会把日志淹掉；
-   *   · 文案与另两家**同用途**（都是「点名谁没报」）**但句式刻意不同**：另两家说的是「这一行的
+   *   · 文案与另两家**同用途**（都是「点名谁没报」）**但句式刻意不同**：另两家说的是「本次运行的
  *     tok / 缓存命中 / 轮次**都不含**它们」——那句话在 codex / claude 上成立（它们的合计真的会
  *     退回主线程口径），**在 dsh 上是假的**：dsh 的 `turns` 是**构造上的全树累加**
  *     （`step/start` 不按会话分叉），一个收场却没报用量的子会话，它的 `step` **已经在合计里**，
- *     缺的只是**分量**。所以这里逐格说对：「分量给不出」+「轮次含它的 step」+「tok 里没有它报过的
- *     用量」。这一行正是运维对着 `主 27 + 子 7 = 34` 复核时会读到的字，措辞必须与事实同尺。
+ *     缺的只是**分量**。所以这里逐格说对：「分量给不出」+「步数含它的 step」+「tok 里没有它报过的
+ *     用量」。本次运行正是运维对着 `主 27 + 子 7 = 34` 复核时会读到的字，措辞必须与事实同尺。
  *   · 没有 id 时**一条都不发**：判据是 `dshSilentChildSessions`（与 `dshSubagentUsage` 的 `null` 档
  *     同源），空列表说明两处漂移了，此时宁可不出声也不要落一条没有名字的 WARN。
  */
@@ -987,7 +987,7 @@ function unsettledSubagentWarns(runState: DshRunState): AgentEventDraft[] {
   return [
     logDraft(
       'stderr',
-      `[WARN] 释放运行时之前没能等到子会话 ${pending.join('、')} 收场：它们的用量与轮次分量给不出`
+      `[WARN] 释放运行时之前没能等到子会话 ${pending.join('、')} 收场：它们的用量与步数分量给不出`
         + '（按「事实缺失」交 null，不按 0 计——运行一释放它们就被掐死，不会再有读数）',
     ),
   ];
@@ -999,9 +999,9 @@ function silentSubagentWarns(runState: DshRunState): AgentEventDraft[] {
   return [
     logDraft(
       'stderr',
-      `[WARN] 子会话 ${silent.join('、')} 已收场却没有用量事件：这一行的**子智能体分量**给不出`
-        + '（tok 与轮次的分量都是 null，不编造、不填 0）；合计仍是已观察到的全树读数——'
-        + '轮次含它的 step，tok 里没有它报过的用量',
+      `[WARN] 子会话 ${silent.join('、')} 已收场却没有用量事件：本次运行的**子智能体分量**给不出`
+        + '（tok 与步数的分量都是 null，不编造、不填 0）；合计仍是已观察到的全树读数——'
+        + '步数含它的 step，tok 里没有它报过的用量',
     ),
   ];
 }
@@ -1061,7 +1061,7 @@ function pluginWarns(input: {
  * 为什么必须有它：厂商**首次发布且这次会话里零条技能**时根本不投 `skill-catalog` 那条消息
  * （`dsh-tool-skill` 的 `if (!history.published && skills.length === 0) return;`）⇒ 观测格
  * `vendor-system.skills` 给不出数，而「我们装进去的技能被厂商**全丢了**」（frontmatter 不合它的
- * YAML 判据、键名被它拒收…）与「厂商就是没投」在 wire 上是**同一格 `null`**——`deriveRowSkillInstall`
+ * YAML 判据、键名被它拒收…）与「厂商就是没投」在 wire 上是**同一格 `null`**——`deriveCandidateSkillInstall`
  * 因此读成 `unverified`，界面显示「未能核验」，**行照跑照出分**。真机读数：10 条臂里 7 条一次
  * `[]` 都没读到，其中 3 条磁盘上确实物化好了技能、厂商一条都没认领 ⇒ 这一格必须有人说话。
  *
@@ -1082,7 +1082,7 @@ function pluginWarns(input: {
  *
  * 为什么只报非 full：`full` 那一档即使实际被降级，表现是工具报错（可见），风险方向相反；
  * 而在只读档下静默拿到写权限是**评分阶段最不能接受**的那一类（评审者一改工作区，抽屉里的 diff
- * 就不再是候选交的那一份）。修在编排层（对「会话起手档 vs 本次 permission」加断言）之前，
+ * 就不再是本次运行交的那一份）。修在编排层（对「会话起手档 vs 本次 permission」加断言）之前，
  * 至少要让这件事有出口。
  */
 function permissionMismatchWarns(runState: DshRunState, resumed: boolean, sessionId: string): AgentEventDraft[] {
@@ -1134,7 +1134,7 @@ function skillCatalogWarns(runState: DshRunState, injectedSkillCount: number, re
       'stderr',
       `[WARN] 本次运行装了 ${injectedSkillCount} 条技能，但整轮都没观测到厂商的技能目录`
         + '（`<available_skills>` 那条消息）：无法区分「厂商把这几条都丢了」与「厂商根本没投」——'
-        + '技能面的观测格因此是「未能核验」，这一行不会因此失败；要收口请看磁盘上 `<DSH_HOME>/skills/` 的落点'
+        + '技能面的观测格因此是「未能核验」，本次运行不会因此失败；要收口请看磁盘上 `<DSH_HOME>/skills/` 的落点'
         + '与每条的 frontmatter（厂商用严格 YAML 解析，解析不了的文件它静默丢弃）',
     ),
   ];
@@ -1197,7 +1197,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   const injectionPort = context.inject.available ? context.inject : null;
   // 权限档（见 `permission.ts`）：dsh 的档位**烘在启动 profile 里**（「改了必须重建运行时」），
   // 所以它不是 SDK 的一个选项，而是子进程环境里的 `DSH_PERMISSION_MODE`——`dsh-base` 的
-  // `sandbox-policy` 与 `approval` 两行都读它，不设时 dsh 自己回落到 `workspace-write`。
+  // `sandbox-policy` 与 `approval` 两本次运行都读它，不设时 dsh 自己回落到 `workspace-write`。
   // 注入通道仍是 `buildSubprocessEnv`（替换型子进程环境），**不碰** `process.env`。
   const { env: permissionEnv } = DSH_PERMISSION_OPTIONS[input.permission];
   const env = buildSubprocessEnv({
@@ -1211,7 +1211,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
        * **退役旧通道：显式删除，而不是「不再注入」**。
        *
        * `buildSubprocessEnv` 是「以宿主环境为底展开、再覆盖本次注入」，而它的删除语义正是
-       * 「值为 undefined 就 delete」。不写这两行的话，宿主里若存在 `DEEPSEEK_API_KEY`
+       * 「值为 undefined 就 delete」。不写这两本次运行的话，宿主里若存在 `DEEPSEEK_API_KEY`
        * （开发机上很常见）就会被子进程继承，于是：
        *   ① 那条已无人配置的 `deepseek-official` 路由**静默可用**——安装态 0.1.7 的 llm-deepseek
        *      是「账号 token 优先于 API key」，配上公网 api.deepseek.com 就会**悄悄发请求并计费**；
@@ -1225,7 +1225,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   });
   /**
    * **overlay 必须在 `new sdk.DeepSeekHarness(...)` 之前落盘**——那是 dsh 的 boot 点，profile 在
-   * 那一步组装（`--patch` 由 SDK 拼进 argv）。写晚了这一行照样「跑完」，但合成树里**没有**我们的路由，
+   * 那一步组装（`--patch` 由 SDK 拼进 argv）。写晚了本次运行照样「跑完」，但合成树里**没有**我们的路由，
    * 症状是 `initialize` 阶段报 `no adapter registered for provider "aieval-route"`。
    *
    * 这条时序由 `onConstruct` 快照钉住（guard 见 `index.test.ts`）：写晚了快照读到的就是 `null`。
@@ -1239,11 +1239,11 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    */
   const askAnswerer = context.askUser.available;
   /**
-   * 写盘之前**先建 `configHome`**：三家适配器都在厂商进程起来之前往行配置目录里写文件
-   * （技能物化、行内 `.npmrc`、本家的 overlay 与 stream-tap），谁都不许假设父进程已经建好它。
+   * 写盘之前**先建 `configHome`**：三家适配器都在厂商进程起来之前往运行配置目录里写文件
+   * （技能物化、运行内 `.npmrc`、本家的 overlay 与 stream-tap），谁都不许假设父进程已经建好它。
    *
-   * 为什么必须自己 mkdir：`AgentRunInput.configHome` 的契约只说「该行独立配置目录」，没说它一定存在
-   * （生产路径上 `prepareRowWorkspace` 会建，但那是**编排层的实现细节**，不是这一层的输入前提）。
+   * 为什么必须自己 mkdir：`AgentRunInput.configHome` 的契约只说「本次运行独立配置目录」，没说它一定存在
+   * （生产路径上 `prepareCandidateWorkspace` 会建，但那是**编排层的实现细节**，不是这一层的输入前提）。
    * 不建的表现是 `ENOENT: open '…\.agenthome\aieval-route.patch.yml'`，归因成 `AGENT_FAILED`，
    * 而真正的原因（目录不存在）离得很远。
    */
@@ -1263,14 +1263,14 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     { encoding: 'utf8', mode: 0o600 },
   );
   /**
-   * 本行的**技能装入**：把清单里那几条整目录复制进 `<DSH_HOME>/skills/`（= `configHome/skills`）。
+   * 本次运行的**技能装入**：把清单里那几条整目录复制进 `<DSH_HOME>/skills/`（= `configHome/skills`）。
    *
    * 时机：必须在 `new sdk.DeepSeekHarness(...)` **之前**——那是 dsh 的 boot 点，技能目录在那一刻进
-   * 装配清单。写晚了这一行照样「跑完」，但**没有任何 skill、也没有任何报错**（日志里连线索都没有）。
+   * 装配清单。写晚了本次运行照样「跑完」，但**没有任何 skill、也没有任何报错**（日志里连线索都没有）。
    *
    * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
    * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
-   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、本次运行失败。
    */
   /** 本轮**实际装进去**的技能条数（技能面「装了却没观测到目录」那条 WARN 的判据） */
   const injectedSkillCount = input.skills?.length ?? 0;
@@ -1278,22 +1278,22 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     materializeSkills({ configHome: input.configHome, skills: input.skills });
   }
   /**
-   * 行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有 `configHome`。
+   * 运行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有 `configHome`。
    *
-   * 时机：与 overlay 同一段（都在 `new sdk.DeepSeekHarness(...)` 之前）——dsh 的插件行里
+   * 时机：与 overlay 同一段（都在 `new sdk.DeepSeekHarness(...)` 之前）——dsh 的插件本次运行里
    * `npx -y @playwright/mcp@latest` 是**它自己**去拉包，等 runtime 起来再写就晚了。
-   * 三条边界与 claude / codex 两侧逐字相同（宿主没有 ⇒ 什么都不做；只读宿主、只写行内；0600）。
+   * 三条边界与 claude / codex 两侧逐字相同（宿主没有 ⇒ 什么都不做；只读宿主、只写运行内；0600）。
    */
-  const registryLine = writeRowNpmrc({
+  const registryLine = writeCandidateNpmrc({
     configHome: input.configHome,
     hostNpmrc: readNpmrcText(hostNpmrcPath()),
   });
   /**
    * stream-tap 的两份落盘（**与 overlay 同一个时序**：boot 在 `new DeepSeekHarness(...)` 那一步
-   * 读 patch 装配清单并 import 插件，写晚了这一行照样「跑完」，只是没有任何增量）：
+   * 读 patch 装配清单并 import 插件，写晚了本次运行照样「跑完」，只是没有任何增量）：
    *   · 插件本体落 `configHome` 根（overlay 里 `./aieval-stream-tap.mjs` 的相对名按 `<dshHome>` 解析）；
    *   · 旁路文件**整份清零**而不是「不存在就跳过」：重跑同一行时上一轮尝试的增量行绝不能
-     *     当本轮的重放——增量只广播不落盘，重放的旧行会顶掉新一轮的实时视图。
+     *     当本轮的重放——增量只广播不落盘，重放的旧本次运行会顶掉新一轮的实时视图。
    */
   const tapPluginPath = join(input.configHome, DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH);
   const tapFilePath = join(input.configHome, DSH_STREAM_TAP_RELATIVE_PATH);
@@ -1348,7 +1348,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     // 否则 `initialize` 会以 `no adapter registered for provider "…"` 收场（源码同源，见 DSH_ROUTE_KEY）
     provider: DSH_ROUTE_KEY,
     // `patches` 是**绝对路径**：SDK 用 `resolve(callerCwd, path)` 解析，而 callerCwd 是宿主进程的 cwd
-    // ⇒ 给相对路径会让文件落到别处（甚至根本不在本行的 .agenthome 里）
+    // ⇒ 给相对路径会让文件落到别处（甚至根本不在本次运行的 .agenthome 里）
     patches: [routePatchPath],
     // 冷启动握手预算（SDK 默认 10s 不够；见 DSH_INITIALIZE_TIMEOUT_MS 的 JSDoc）
     initializeTimeoutMs: DSH_INITIALIZE_TIMEOUT_MS,
@@ -1366,12 +1366,12 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    * ⚠️ **它必须建在 `runtime.start()` 之前**（两座桥的引用先声明、后面再赋值，闭包在关闭时才读它们）：
    * `start()` 是 spawn 子进程那一步，从它返回到「骨架拿到 `TurnStart`」之间还有几步会抛
    * （`resumeSession` 的 adopt、两座桥的构造）——那时 `runTurn` 手里的 `started` 还是 `undefined`，
-   * 它的 `finally` 碰不到任何可关闭对象 ⇒ 谁都不关运行时，一个 dsh 子进程就留在盘上捏着该行的
+   * 它的 `finally` 碰不到任何可关闭对象 ⇒ 谁都不关运行时，一个 dsh 子进程就留在盘上捏着本次运行的
    * `.agenthome`（Windows 上还会让下一轮的行产物清理 `EPERM`）。把 disposer 提前 + 出错时关一次，
    * 这条路径就没有孤儿。
    */
   /**
-   * 本行的**子会话白名单**与**已收场集合**：三处共用——通知流的放行判据要在
+   * 本次运行的**子会话白名单**与**已收场集合**：三处共用——通知流的放行判据要在
    * 收到 `subagent.started` 时登记，投影要按同一份白名单算「子智能体那一份」用量，
    * 收尾（`finalize`）要用同一份取数面把结论折进结果；**释放前那条 drain 也读它**
    * （还有子会话在跑就先等它们，见 `DSH_SUBAGENT_DRAIN_MS`）。
@@ -1392,7 +1392,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     childTurnsBaseline: new Map<string, number>(),
     // 本次运行要求的档（与厂商实际报的 `permission/preset` 对照，见 events.ts 那一支）
     permissionDesired: permissionEnv.DSH_PERMISSION_MODE,
-    // 派发记账：**每行一份**（与 childSessions 同一条理由——两行并发时不许互相认领对方的派发）
+    // 派发记账：**每个本次运行一份**（与 childSessions 同一条理由——两行并发时不许互相认领对方的派发）
     dispatchStarts: new Map(),
     claimedDispatches: new Map(),
     deliveredStarts: new Map(),
@@ -1405,7 +1405,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    * 为什么必须有这一格：关闭运行时会**同步终结订阅**（SDK 的 `failSubscriptions`），
    * 而通知流的消费循环此刻还挂在 `next()` 上——它拿到的拒绝与「传输中途死掉」是**同一个形状**
    * （`TransportClosedError`）。两者的区别只有我们自己知道：`dispose` 一旦开始，
-   * 流里的失败就是**预期收场**，不是「内容丢了」。少了这一格，每一次终止都会往该行事件流里
+   * 流里的失败就是**预期收场**，不是「内容丢了」。少了这一格，每一次终止都会往本次运行事件流里
    * 落一条「通知流中断…执行日志因此不完整」——把排障引向「我们丢内容了」，而其实一条都没丢。
    */
   let closing = false;
@@ -1500,7 +1500,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
      */
     if (resumedSessionId !== null && runtime.resumeSession === undefined) {
       throw new Error(
-        `这一行要续接到会话 ${resumedSessionId}，但当前安装的 ${DSH_PACKAGE_NAME} 没有 session/resume`
+        `本次运行要续接到会话 ${resumedSessionId}，但当前安装的 ${DSH_PACKAGE_NAME} 没有 session/resume`
           + '（该 wire 方法自 @deepseek-ai/dsh-sdk-jsonrpc-server@0.2.1-alpha.3 起才有）'
           + '⇒ 不静默开一条新会话',
       );
@@ -1572,7 +1572,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
   logger.debug('dsh 已注入路由并启动运行时', {
     model: input.route.modelId,
     // **只记名字**（条目的 env / headers 里可能有密钥，日志不该能把它带出去）；
-    // registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容（与 claude 侧同一条口径）
+    // registry 那一格同理只记「写没写进去」，不抄宿主那一本次运行的内容（与 claude 侧同一条口径）
     mcpServers: Object.keys(input.mcpServers ?? {}),
     // 技能那一格只记条名（源目录路径进日志没有额外信息量，且可能很长）
     skills: (input.skills ?? []).map((skill) => skill.name),
@@ -1593,7 +1593,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
     resumedWorkingDirectory: adopted === null ? null : await readWorkingDirectoryOrNull(adopted),
     // 应答面那一格只记「这一轮挂没挂」：它是插件落盘与等待档的共同自变量
     askUserAnswerer: askAnswerer,
-    // 人工消息面同理（它是插件落盘与 overlay 那一行的共同自变量）
+    // 人工消息面同理（它是插件落盘与 overlay 那一本次运行的共同自变量）
     injectMessages: injectionPort !== null,
   });
   /**
@@ -1638,7 +1638,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
      *
      * 为什么必须有：`usage` 事件的发射门槛是**轮次**（`turn.ts` 的发射点），而「子会话收场了却
      * 一条用量都没报到」这个结论是在**不带轮次**的那条通知（`subagent.finished`）上成立的
-     * ⇒ 若这一轮之后再没有消息，结论就送不出去，`AgentRunResult.subagentTokens`（进而行快照）
+     * ⇒ 若这一轮之后再没有消息，结论就送不出去，`AgentRunResult.subagentTokens`（进而运行快照）
      * 里留下的是骨架那个初值或上一版的旧数。收尾是**最后**一次机会：它每次运行都跑
      * （正常 / 失败 / 被终止都在 `finally` 里，见 `turn.ts` 的收尾投影），
      * 且 `subagentTokens` 的**显式 `null` 会覆盖**。
@@ -1672,7 +1672,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       return {
         /**
          * ⚠️ 这两格走**结果**（`TurnFinalize.subagentTokens` / `subagentTurns`，骨架折进
-         * `AgentRunResult` 与行快照），**不另发 `usage` 事件**：事件流最后一次读数停在最后一个
+         * `AgentRunResult` 与运行快照），**不另发 `usage` 事件**：事件流最后一次读数停在最后一个
          * 带轮次的投影上，而收尾算出的更准的值要到行落终态、界面重新读快照时才显示。
          * 代价登记：极窄的窗口里（「子会话收场却没报用量」且此后没有任何带轮次的通知）
          * 界面上的分量可能比 `run.json` 慢一拍——补一条 `usage` 事件能消掉它，
@@ -1695,7 +1695,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
         subagentTokens,
         subagentTurns,
         /**
-         * **会话身份如实上报**：它就是本行会话的快照键——落了盘之后，跨进程续接才有键可指。
+         * **会话身份如实上报**：它就是本次运行会话的快照键——落了盘之后，跨进程续接才有键可指。
          * 取值恒有（新会话是自己铸的那个、续接是 adopt 的那一个）⇒ 这一格不会走 `null` 档。
          */
         sessionId,
@@ -1727,7 +1727,7 @@ export const dshProvider: AgentProvider = {
      * 真机证据：两条 wire 用**产品自己的供应商记录**各跑通一次（含计量），
      * 见 `docs/protocols/dsh.md`。
      *
-     * 顺序与 contracts 的枚举一致；它只影响候选池里两类模型的排列，判定一律走 `acceptsProtocol`。
+     * 顺序与 contracts 的枚举一致；它只影响本次运行池里两类模型的排列，判定一律走 `acceptsProtocol`。
      */
     protocolTypes: ['openai', 'anthropic'],
     capability: {
@@ -1761,7 +1761,7 @@ export const dshProvider: AgentProvider = {
       streamingDeltaSource: 'hook',
       streamingDeltaReason: null,
       notes: [
-        '正文/思考增量经 stream-tap 采集：适配器把一个插件写进每行 profile 目录'
+        '正文/思考增量经 stream-tap 采集：适配器把一个插件写进每个本次运行 profile 目录'
           + '（overlay `insert`、相对名按 profile 目录解析），插件订阅厂商进程内的 '
           + '`agent/assistant-stream`、把 chunk 帧旁路到 `<configHome>/aieval-stream-tap.jsonl`，'
           + '适配器 tail 后包成 `aieval/delta` 伪通知走同一条投影。stdio 通知流本身不投送增量'
@@ -1771,7 +1771,7 @@ export const dshProvider: AgentProvider = {
         '工具入参增量不投（block-start/block-end 只用于占位换算块位次）：tool-call 的参数走快照整块。',
         '思考增量按 wire 实际产出投送：本路由若不产 `reasoning-delta`，思考仍整块到达（`block-end`/快照）。',
         'max-tokens 截断的那次尝试：厂商把 `content[]` 里的 tool-call 全部丢弃，块位次按流序换算'
-          + '可能与截断后的快照错位 ⇒ 实时视图或短暂出现重复块（快照覆盖后自愈；该行本就落截断终态）。',
+          + '可能与截断后的快照错位 ⇒ 实时视图或短暂出现重复块（快照覆盖后自愈；本次运行本就落截断终态）。',
         '子会话增量只放行「已登记」的会话（等 `subagent.started` 投影之后）——避免误归主会话载体。',
         '思考 token（`reasoningTokens`）结构性不可达：`llm-pi-ai` 的 `mapUsage()` 把推理并入 `outputTokens`，那一格恒 `null`',
         '子任务级用量不在 `subagent.*` 通知里 ⇒ 按 `params.sessionId` 把子会话的 `assistant/message.usage` 分组求和',
@@ -1817,7 +1817,7 @@ export const dshProvider: AgentProvider = {
       notes: [
         '厂商的提问走**进程内**服务（`user-questions/request` 这条 Cordis waterfall），不投送到 SDK 约定的那条通道 ⇒ 应答者只能是一个插件，由适配器写进行配置目录',
         '一致性场景走真路径（真运行时 + 脚本式上游 + 适配器的应答者插件，见 `testing/dsh-real-path-fixture.ts`）：答案按题目 id 配对回给插件，厂商把它逐字折进工具结果',
-        '没有应答面的轮次里提问工具仍然挂着（工具由适配器挂载、与应答面无关）：那一档的收场归厂商的定时档（到点交回「待答」结果）',
+        '没有应答面的轮里提问工具仍然挂着（工具由适配器挂载、与应答面无关）：那一档的收场归厂商的定时档（到点交回「待答」结果）',
       ],
     },
     /**
@@ -1899,7 +1899,7 @@ export const dshProvider: AgentProvider = {
      */
     timing: {
       runScale: 'minutes',
-      notes: ['本机实测：一次运行的墙钟在分钟级；行内首次注入与插件落盘是其中的固定开销'],
+      notes: ['本机实测：一次运行的墙钟在分钟级；运行内首次注入与插件落盘是其中的固定开销'],
     },
     /**
      * 推理证据 events.jsonl 即齐（思考正文与工具结果都在事件流里）⇒ 不需要补 messages.jsonl。
@@ -1908,7 +1908,7 @@ export const dshProvider: AgentProvider = {
     // 档位域 = 本文件的 `DSH_REASONING_WIRE`（**与 overlay 声明同源派生**）：pi-ai 路由的档位是
     // 「档位名 → wire 拼写」的字典，两边各写一份必然漂移，而漂移的代价是「界面能选、运行时才失败」。
     // 为什么是这四档：`llm-deepseek` 的 `reasoningEffort` schema 只有 `off/low/high/max`
-    //（没有 `medium` / `xhigh`）——上游网关的档位在 dsh 行上会因此被交集削掉两档，
+    //（没有 `medium` / `xhigh`）——上游网关的档位在 dsh 本次运行上会因此被交集削掉两档，
     // 那是正确结果，不是缺陷。
     reasoningEfforts: DSH_REASONING_EFFORTS,
     // 未选档位时 dsh 实际会用的档（`DSH_DEFAULT_EFFORT`）：API 侧用它拦「未选 + 模型不支持缺省档」，

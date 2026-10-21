@@ -8,7 +8,7 @@
  *      名字命中契约的白名单（`artifactKindOf`）。目录同名不算（有人会把 `RESULT.md` 建成一个目录），
  *      **软链也不算**——`Dirent.isFile()` 对软链是 false，这一条顺带把「产物指向工作区之外」
  *      挡在扫描阶段，而不是等你点开才发现读不出来；
- *   2. **工作区不存在 ⇒ 空清单，不是错误**：没跑过的行就是没有产物，把它说成「读不出来」是假结论；
+ *   2. **工作区不存在 ⇒ 空清单，不是错误**：没跑过的候选就是没有产物，把它说成「读不出来」是假结论；
  *      真出错（权限、坏目录）**照抛**，由 api 层按行降级并留 WARN——两条必须分开；
  *   3. **顺序由白名单定**（md → html → svg，同档按名字码位升序）：文件系统的 `readdir` 顺序
  *      不保证稳定，拿它当展示顺序会让「同一个候选的两份产物」在两次打开之间换位置；
@@ -28,7 +28,7 @@ import {
   ServiceError,
   artifactKindOf,
   type ArtifactKind,
-  type RowArtifactFile,
+  type CandidateArtifactFile,
 } from '@aieval/contracts';
 import { isInside } from './path-inside';
 
@@ -52,7 +52,7 @@ function reason(error: unknown): string {
 /**
  * 扫一个候选工作区根目录下的产物清单。
  *
- * 目录不存在 / 不是目录 ⇒ `[]`（该行还没跑过，或工作区被手工清掉了——两者在界面上都是「没有产物」）。
+ * 目录不存在 / 不是目录 ⇒ `[]`（该候选还没跑过，或工作区被手工清掉了——两者在界面上都是「没有产物」）。
  * 目录读不动（权限等）⇒ 抛，调用方按行降级。
  */
 export function scanWorkspaceArtifacts(workspacePath: string): WorkspaceArtifactEntry[] {
@@ -90,7 +90,7 @@ export function scanWorkspaceArtifacts(workspacePath: string): WorkspaceArtifact
  *   · 文件不在 / 不是普通文件 / 是目录 ⇒ `NOT_FOUND` 与 `INVALID_QUERY` 分开；
  *   · 超过读取上限、或内容不是 UTF-8 文本 ⇒ `INVALID_QUERY` + 中文原因，**不给半个正文**。
  */
-export function readWorkspaceArtifact(workspacePath: string, name: string): RowArtifactFile {
+export function readWorkspaceArtifact(workspacePath: string, name: string): CandidateArtifactFile {
   const kind = artifactKindOf(name);
   if (kind === null) {
     throw new ServiceError('INVALID_QUERY', `这不是本仓认的产物文件：${name}（只认 ${ARTIFACT_FILE_HINT}）`, {
@@ -106,7 +106,7 @@ export function readWorkspaceArtifact(workspacePath: string, name: string): RowA
     realTarget = realpathSync(target);
   } catch (error) {
     if (isMissingPath(error)) {
-      throw new ServiceError('NOT_FOUND', `这一行没有这份产物：${target}`, {
+      throw new ServiceError('NOT_FOUND', `这个候选没有这份产物：${target}`, {
         context: { workspacePath, name },
       });
     }
@@ -124,7 +124,7 @@ export function readWorkspaceArtifact(workspacePath: string, name: string): RowA
 
   const status = statSync(realTarget, { throwIfNoEntry: false });
   if (status === undefined) {
-    throw new ServiceError('NOT_FOUND', `这一行没有这份产物：${target}`, { context: { workspacePath, name } });
+    throw new ServiceError('NOT_FOUND', `这个候选没有这份产物：${target}`, { context: { workspacePath, name } });
   }
   if (status.isDirectory()) {
     throw new ServiceError('INVALID_QUERY', `这是一个目录，不是文件：${name}`, { context: { workspacePath, name } });
@@ -157,7 +157,7 @@ export function readWorkspaceArtifact(workspacePath: string, name: string): RowA
       { context: { workspacePath, name, bytes: status.size } },
     );
   }
-  // 行首 BOM（PowerShell 5.1 的 `Set-Content` 默认带）：留着它 markdown 的第一行会多一个不可见字符
+  // 行首 BOM（PowerShell 5.1 的 `Set-Content` 默认带）：留着它 markdown 的第一个候选会多一个不可见字符
   if (text.startsWith('\uFEFF')) text = text.slice(1);
 
   const truncated = text.length > ARTIFACT_TEXT_MAX_CHARS;

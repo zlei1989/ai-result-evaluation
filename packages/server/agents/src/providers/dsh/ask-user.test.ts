@@ -258,7 +258,7 @@ describe('startDshAskAnswerer（父进程那一半）', () => {
       await waitFor('那一行委派出现', () => linesOf(repliesPath).length === 1);
       expect(calls).toBe(0);
       expect(linesOf(repliesPath)[0]).toEqual({ key: 'anon-1', delegate: true, reason: 'no-call-id' });
-      // 第二行连键都没有：写答复只会写出一份没人认领的东西 ⇒ 一行都不写
+      // 第二行连键都没有：写答复只会写出一份没人认领的东西 ⇒ 一个候选都不写
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(linesOf(repliesPath)).toHaveLength(1);
     } finally {

@@ -90,7 +90,7 @@ export function defaultActiveNodeId(model: AgentLogModel): string {
  *     全部默认收起——「还在等」由卡面那枚「等待答复中… 12m」承担（见 `ask-user-card.tsx` 口径 1–2），
  *     不必靠展开哪一个问题才看得见。
  *
- * 正文 / 附件 / 子任务占位条 / 行级汇总**不折叠**，故也不在这里加键。
+ * 正文 / 附件 / 子任务占位条 / 候选级汇总**不折叠**，故也不在这里加键。
  * 本函数是纯函数：默认态与折叠历史无关，同一份输入永远给同一份键集合（这就是它不放进 hook 的理由）。
  */
 export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex): ReadonlySet<string> {
@@ -107,7 +107,7 @@ export function defaultOpenKeysOf(turns: readonly LogTurn[], nodes: LogNodeIndex
       running: turn.running,
       messageId,
       nodeId: '',
-      // 与时间轴同一口径：行级汇总只在第一轮出现（它不折叠，故这里不影响默认展开键，
+      // 与时间轴同一口径：候选级汇总只在第一轮出现（它不折叠，故这里不影响默认展开键，
       // 但两处必须传同一个值，否则键集合会随实现细节漂）
       firstTurn: turnIndex === 0,
     });

@@ -15,7 +15,9 @@
  * 3. **`lines` 为空不渲染入口**：一个「原始输出 0 条」的按钮没有任何信息量；
  * 4. **不做脱敏**：`secret` 类遮罩是显示口径、由调用方决定；
  * 5. **入口是一个按钮、正文在二级抽屉里**：原文不再挤占主抽屉固定区
- * 的高度（50 条 `[时间] 来源 原文` 会把时间轴压掉一大截），点开才在 `NestedDrawer` 里整段看；
+ * 的高度（50 条 `[时间] 来源 原文` 会把时间轴压掉一大截），点开才在 `NestedDrawer` 里整段看。
+ * 固定区那一支是**圆形、透明底的无边框图标按钮**（`ReadOutlined` + Tooltip 带条数），
+ * 住在工具条那一行、排在「环境信息」之后、「下载台账」之前。卡片底部那一支仍是文字入口（那里没有并排兄弟，也没有 hover 的位置）。
  * 6. **开合态一律受控**（`agent-log-layering.test.ts` (d)：L0/L1 不许持态。那一条**先剥注释再扫**，
  * 所以这里写出那个 hook 名也不会命中；绕着写只是习惯，不是判据要求）：固定区那一支由 `AgentLogLayout` 持态
  * （它还要借这个回调向数据层上报「我需要了」——见 `agent-log-layout.tsx` 的
@@ -23,10 +25,12 @@
  * （键 = 块键 + `|raw`，见 `agent-message-timeline.tsx` 的 `contextOf`）。
  * 抽屉不像 `Collapse` 那样自带非受控态，故这一格从「可选」变成了**必填**；
  * 7. **本件不自带布局容器**：返回的是**按钮本身**，
- * 横排 / 换行 / 间距由调用方的容器给——固定区里它与「下载台账」同层，卡片底部各自包一层。
- * 原先自带一层 `Flex gap={8}`，症状是同一行里两套间距、且「这一行有哪几个按钮」要去两层里数。
+ * 横排 / 换行 / 间距由调用方的容器给——固定区里那一候选是调用方的 `Flex`（连接徽标 + 本件），
+ * 卡片底部各自包一层。
+ * 原先自带一层 `Flex gap={8}`，症状是同一个候选里两套间距、且「这个候选有哪几个按钮」要去两层里数。
  */
-import { Button, Flex, Typography } from 'antd';
+import { Button, Flex, Tooltip, Typography } from 'antd';
+import { ReadOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { JsonText } from '../../base/json-text';
 import { MonoText } from '../../base/mono-text';
@@ -41,8 +45,6 @@ export interface RawOutputPanelProps {
   /** 二级抽屉的开合（**受控**，见文件头口径 6） */
   open: boolean;
   onOpenChange(next: boolean): void;
-  /** 数据层重取（`source.requestDiagnostics`）；**不给时不渲染重试按钮** */
-  onRetry?(): void;
   /** `single` 变体的入口与标题文案，默认「原始结果」 */
   label?: string;
 }
@@ -50,13 +52,13 @@ export interface RawOutputPanelProps {
 /** 正文内边距（px）：二级抽屉的 `body.padding` 已置 0（见 `base/drawer-geometry.ts`），由内容自己给 */
 const BODY_PADDING = 16;
 
-/** 逐行原文之间留的空（px）：虚拟列表里没有 `gap` 可用（行是各自独立的绝对定位项），加在行上 */
+/** 逐行原文之间留的空（px）：虚拟列表里没有 `gap` 可用（候选是各自独立的绝对定位项），加在候选上 */
 const ROW_GAP = 8;
 
 /**
  * 正文行前缀的时间戳：ISO → 本机时区的 `HH:mm:ss`，非法输入原样返回。
  * 与 `log-format.ts` 的 `formatClock` 同一口径，但那边没有导出（它只服务下载台账），
- * 本件不为了一个两行的格式化去改它。
+ * 本件不为了一个两个候选的格式化去改它。
  */
 function formatClock(iso: string): string {
   const date = new Date(iso);
@@ -71,7 +73,7 @@ function hasText(value: string | null): value is string {
 }
 
 /**
- * 逐行原文：每行先给「给人看的一句话」（有才给），再逐字给出 `[时间] 来源 原文`。
+ * 逐行原文：每个候选先给「给人看的一句话」（有才给），再逐字给出 `[时间] 来源 原文`。
  *
  * **走虚拟滚动**（「避免数据量大浏览器卡顿」）：`lines` 没有上限
  * （`diagnosticsOf` 把全部 `log` 事件映射成行，服务端 `readEvents` 也读整份文件），
@@ -92,13 +94,13 @@ export function diagnosticsBody(diagnostics: AgentLogDiagnostics): ReactNode {
       <VirtualList
         testId="raw-output-list"
         items={diagnostics.lines}
-        // 行没有 id（契约里就是一段无结构的文本流），`at` + 序号足够稳定：`lines` 只追加、不重排
+        // 候选没有 id（契约里就是一段无结构的文本流），`at` + 序号足够稳定：`lines` 只追加、不重排
         rowKey={(line, index) => `${index}|${line.at}`}
         itemRender={(line) => (
           <Flex
             vertical
             gap={4}
-            // 横向内边距加在行上（不是外面包一层）：滚动条才会贴抽屉边缘
+            // 横向内边距加在候选上（不是外面包一层）：滚动条才会贴抽屉边缘
             style={{ padding: `0 ${BODY_PADDING}px ${ROW_GAP}px` }}
             data-testid="raw-output-line"
           >
@@ -136,11 +138,8 @@ function singleBody(result: ToolCardResult): ReactNode {
 
 /**
  * 入口渲不渲染的**唯一判据**：`diagnostics` 变体在 `lines` 为空时连入口都不出现
- * （`ready` 且空表不是「一条都没有」，是没有这个入口）。
- *
- * 导出是因为**调用方要用同一条判据**：固定区那一行还要摆「下载台账」（`placement: 'raw'`），
- * 而「这一行有没有原文」决定整行要不要画——不画的话固定区会多出一段空 gap。
- * 两处各写一遍必然漂移，而漂移的症状是「原文为 0 条时下载按钮上面多一条空隙」。
+ * （`ready` 且空表不是「一条都没有」，是没有这个入口）。空表时不画入口 ⇒ 调用方那一行
+ * 也不必为它留位；判据只此一处——调用方要判「有没有这个入口」也读它，别在自己的源码里再写一遍。
  */
 export function hasRawEntry(source: RawOutputPanelProps['source']): boolean {
   return !(source.kind === 'diagnostics' && source.diagnostics.lines.length === 0);
@@ -157,8 +156,8 @@ export function rawOutputLabel(count: number | null): string {
   return count === null ? '原始输出' : `原始输出 ${count} 条`;
 }
 
-export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: RawOutputPanelProps): ReactNode {
-  // 判据见 `hasRawEntry`（调用方用的是同一条）
+export function RawOutputPanel({ source, open, onOpenChange, label }: RawOutputPanelProps): ReactNode {
+  // 判据见 `hasRawEntry`
   if (!hasRawEntry(source)) return null;
 
   const text =
@@ -167,27 +166,40 @@ export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: R
   return (
     /*
      * **本件不自带容器**（把包裹那一层去掉，按钮拿出来）。
-     * 入口按钮与「重新读取」直接进调用方的排布容器，与旁边的兄弟（固定区里是「下载台账」）
-     * 同层——多包一层 `Flex gap={8}` 会在行里再嵌一层，同一个行里出现两套间距，
-     * 且让「这一行有哪几个按钮」变得要去两层里数。
-     * 摆位（横排 / 换行 / 间距）归调用方：固定区是原文行那个 `Flex`，卡片底部各自包一层。
+     * 入口按钮直接进调用方的排布容器，与旁边的兄弟（工具条那一个候选里是「环境信息」与「下载台账」）同层——
+     * 多包一层 `Flex gap={8}` 会在候选里再嵌一层，同一个候选里出现两套间距，
+     * 且让「这个候选有哪几个按钮」变得要去两层里数。
+     * 摆位（横排 / 换行 / 间距）归调用方：固定区是工具条那个 `Flex`，卡片底部各自包一层。
      * `NestedDrawer` 走 portal，不占父容器的排布（开合与标题都不受影响）。
      */
     <>
-      <Button
-        size="small"
-        autoInsertSpace={false}
-        data-testid="raw-output-open"
-        onClick={() => onOpenChange(true)}
-      >
-        {text}
-      </Button>
-      {onRetry !== undefined && (
-        // 重取入口：数据层可能在 ready 之后丢流；调用方不传 `onRetry` 时这里一个按钮都不渲染。
-        // **样式与旁边两个按钮同形**（默认按钮 + `size="small"`）：
-        // 写成 `type="text"`（无边框）时，与「原始输出 N 条」「下载台账」并排像是另一类东西
-        <Button size="small" autoInsertSpace={false} onClick={onRetry}>
-          重新读取
+      {/*
+        固定区那一支（`diagnostics`）：**圆形、透明底**的无边框图标按钮，条数在 Tooltip 里。
+        `aria-label` 与 Tooltip 同文——图标按钮没有可见文字，两处任一缺失可访问名就只剩「read」。
+        图标必须 `aria-hidden`：`@ant-design/icons` 会给图标挂 role/aria-label，不藏起来
+        按钮的可访问名会变成「read 原始输出 122 条」。
+        卡片底部那一支（`single`）保留文字按钮：它没有并排兄弟，图标按钮只会让读者多点一次才看到「原始结果」。
+      */}
+      {source.kind === 'diagnostics' ? (
+        <Tooltip title={text}>
+          <Button
+            type="text"
+            shape="circle"
+            size="small"
+            icon={<ReadOutlined aria-hidden />}
+            aria-label={text}
+            data-testid="raw-output-open"
+            onClick={() => onOpenChange(true)}
+          />
+        </Tooltip>
+      ) : (
+        <Button
+          size="small"
+          autoInsertSpace={false}
+          data-testid="raw-output-open"
+          onClick={() => onOpenChange(true)}
+        >
+          {text}
         </Button>
       )}
       <NestedDrawer open={open} onClose={() => onOpenChange(false)} title={text}>
@@ -196,7 +208,7 @@ export function RawOutputPanel({ source, open, onOpenChange, onRetry, label }: R
             诊断变体：正文**取满抽屉正文的高度**（`display` / `flexDirection` 写进内联 style——
             antd 的 `Flex` 这两个属性走 CSS 类，内联读不到，而这里是结构性不变量）。
             高度有界是虚拟滚动的**前提**：量不到高度时 `VirtualList` 会静默退化为全量渲染。
-            横向内边距由每一行自己给：这样滚动条仍然贴在抽屉边缘（与列表口径一致）。
+            横向内边距由每个候选自己给：这样滚动条仍然贴在抽屉边缘（与列表口径一致）。
           */
           <Flex vertical style={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="raw-output-body">
             {diagnosticsBody(source.diagnostics)}

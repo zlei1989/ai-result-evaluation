@@ -99,7 +99,7 @@ describe('messageAssembler：增量与快照', () => {
  * 工具块的**摘要主体**：随块给出，供抽屉的工具行直接渲染。
  *
  * 为什么钉在这里：这句话的词表真源是 `activity.ts`，而消费方（浏览器）按分层表不许 import `agents`
- * ——摘要必须**随块落进消息**。它一旦漏填，工具行的摘要行会静默回落到参数原文首行
+ * ——摘要必须**随块落进消息**。它一旦漏填，工具候选的摘要候选会静默回落到参数原文首行
  * （`{command, description}` 那种形状就是一整串 JSON），看起来「只是不那么好看」，没有任何报错。
  *
  * **口径**：这一格是 `toolCallHint` 的产物——**只有冒号后面那一段**，
@@ -116,9 +116,9 @@ describe('toolCallBlockDraft：块自带摘要主体', () => {
     const described = toolCallBlockDraft('call_desc', 'Bash', { command: 'ls -la', description: 'List files' }, 'cc');
     expect((described.block as { summary?: string }).summary).toBe('List files（ls -la）');
 
-    // 计划类入参只说几步（「更新计划」那四个字是活动行的句式，工具行不复述）
+    // 计划类入参只说几项（「更新计划」那四个字是活动行的句式，工具行不复述）
     const plan = toolCallBlockDraft('call_2', 'TodoWrite', { todos: [{ subject: 'a' }, { subject: 'b' }] }, 'cc');
-    expect((plan.block as { summary?: string }).summary).toBe('2 步');
+    expect((plan.block as { summary?: string }).summary).toBe('2 项');
   });
 
   it('没名字 / 没参数时摘要主体是空串（界面据此说「参数未采集」），不编一句话', () => {

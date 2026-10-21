@@ -260,7 +260,7 @@ describe('cc 注入面：投递的两个边界（streaming input）', () => {
     /**
      * 两条判据都只在这条路上成立：streaming input 下 `result` 是**每一轮一条**——
      *   · 用量那一格：厂商 JSDoc 逐字 *"MAIN AGENT LOOP ONLY … per-turn in streaming-input
-     *     sessions"* ⇒ 覆盖式记账会把行级用量记成「只有最后一轮」；
+     *     sessions"* ⇒ 覆盖式记账会把候选级用量记成「只有最后一轮」；
      *   · 轮次那一条：`num_turns` 数的是**这一轮**的模型往返，而状态里的轮次是整条查询的累计
      *     ⇒ 从第 2 轮起比对必然假报一条 WARN。
      */
@@ -359,7 +359,7 @@ describe('cc 注入面：投递的两个边界（streaming input）', () => {
     // 两轮累加（覆盖式记账只会剩 2000 / 200 / 600）
     expect(run.tokens).toMatchObject({ input: 3_000, cached: 300, output: 1_100 });
     /**
-     * **事件与结果同源**：缺陷②的直接判据——最后一条 `usage` 事件就是行级累计，
+     * **事件与结果同源**：缺陷②的直接判据——最后一条 `usage` 事件就是候选级累计，
      * 而不是「最后一轮那一份」。
      */
     expect(usages.at(-1)).toMatchObject({ input: 3_000, cached: 300, output: 1_100 });
@@ -559,7 +559,7 @@ describe('cc 注入面：续接', () => {
     expect('resume' in (recorder.options ?? {})).toBe(false);
   });
 
-  it('会话 id 从 `system/init` 取并上报进行快照；没有 init 就是 `null`（绝不编一个）', async () => {
+  it('会话 id 从 `system/init` 取并上报进行的快照；没有 init 就是 `null`（绝不编一个）', async () => {
     const withInit = createRecorder();
     setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: withInit, events: [INIT, result('答复')] }) } });
     expect((await claudeCodeProvider.run(createRunInput({}))).sessionId).toBe('session-abc');

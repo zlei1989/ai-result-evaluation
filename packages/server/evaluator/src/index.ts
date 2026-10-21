@@ -3,7 +3,7 @@ export { callTextApi, type TextRoute } from './text-api';
 // 评分路由与「谁驱动这一分」。`requireJudgeAgent` 必须在这里出口：它是
 // 名字里**唯一**有跨包消费者的一个——api 层在创建评测时要提前拦配置问题，而包 exports 只映射 `.`，
 // 深路径 import 拿不到（`index.test.ts` 按**完整集合**守卫本文件的出口面）。
-// 其余新名字（`judgeRowByAgent` / `JudgeAgentError` / `AgentJudgeInput` / `finalizeScore`）刻意不出口：
+// 其余新名字（`judgeCandidateByAgent` / `JudgeAgentError` / `AgentJudgeInput` / `finalizeScore`）刻意不出口：
 // 消费者都在本包内、走相对 import，多出口一个就多一份永久摩擦（每次加出口都要显式改那条守卫）。
 // 档位那两个**必须出口**：`resolveJudgeEffort` 是唯一读点，而 api 层的生成 / 识别要跨包调它，
 // 并当场用 `requireJudgeEffort` 校验（两道一起给，调用方不必自己拼第二份判据）。
@@ -12,15 +12,15 @@ export { requireJudgeAgent, requireJudgeEffort, resolveJudgeEffort, resolveJudge
 // 运行快照：一轮评测的可展示状态都在这里
 export { getRun, listRuns, listRunsForCase, saveRun } from './run-store';
 
-// 事件总线：落盘 + 进程内扇出。`PendingRowEvent` 不导出：只有本包的编排层在发事件。
-// 有**两条**：行级（候选 + 编排层留痕）与评分（评审者自己的流水，`judge-events.jsonl`）。
-// 另有 **run 级**的一套（一轮下所有行的同一条流）：聚合流按它一次订阅整轮，
-// listener 因此多一个 `rowId` 实参——它只有这一条流，得自己把帧归到行上
+// 事件总线：落盘 + 进程内扇出。`PendingCandidateEvent` 不导出：只有本包的编排层在发事件。
+// 有**两条**：候选级（候选 + 编排层留痕）与评分（评审者自己的流水，`judge-events.jsonl`）。
+// 另有 **run 级**的一套（一轮下所有候选的同一条流）：聚合流按它一次订阅整轮，
+// listener 因此多一个 `candidateId` 实参——它只有这一条流，得自己把帧归到候选上
 export {
   publishJudgeEvent,
-  publishRowEvent,
+  publishCandidateEvent,
   subscribeJudgeEvents,
-  subscribeRowEvents,
+  subscribeCandidateEvents,
   subscribeRunEvents,
   subscribeRunJudgeEvents,
 } from './events';
@@ -65,45 +65,45 @@ export {
 } from './inject-port';
 
 // 记录总线：消息与子任务行共用 `messages.jsonl`，落盘 + 进程内扇出。
-// `publishRowRecord` 与两个窄包装都出口：api 层的回放路由要读文件，而想按类型分流的订阅方
-// 需要拿到整个 `RowRecord`；`publishRow*` 是编排层用的写入口（跨包只需要读侧，但出口面成对更好用）。
+// `publishCandidateRecord` 与两个窄包装都出口：api 层的回放路由要读文件，而想按类型分流的订阅方
+// 需要拿到整个 `CandidateRecord`；`publishCandidate*` 是编排层用的写入口（跨包只需要读侧，但出口面成对更好用）。
 // 评分有**自己的一条**（`judge-messages.jsonl`）：写侧只有编排层用，读侧给 api 的评分路由。
-// 与事件总线同形：行级一套 + **run 级**一套（聚合流按 run 级一次订阅整轮的两条 channel）
+// 与事件总线同形：候选级一套 + **run 级**一套（聚合流按 run 级一次订阅整轮的两条 channel）
 export {
   broadcastJudgeMessage,
-  broadcastRowMessage,
+  broadcastCandidateMessage,
   publishJudgeMessage,
   publishJudgeRecord,
   publishJudgeSubagentRecord,
-  publishRowMessage,
-  publishRowRecord,
+  publishCandidateMessage,
+  publishCandidateRecord,
   publishSubagentRecord,
   subscribeJudgeRecords,
-  subscribeRowRecords,
+  subscribeCandidateRecords,
   subscribeRunJudgeRecords,
   subscribeRunRecords,
-} from './row-messages';
+} from './candidate-messages';
 
 // 评分器：解析（纯函数）与一次评分调用
-export { judgeRow, parseJudgeResponse, type JudgeInput } from './judge';
+export { judgeCandidate, parseJudgeResponse, type JudgeInput } from './judge';
 
 // 编排：轮级状态机与重启恢复。
-// `runRow` 刻意不在这里导出：它是本包测试与状态机内部用的行级入口，不属于跨包契约。
-// `followUpRow` 出口：api 层的追问入口要跨包调它（与 `retryRow` / `rescoreRow` 同一形状——
+// `runCandidate` 刻意不在这里导出：它是本包测试与状态机内部用的候选级入口，不属于跨包契约。
+// `followUpCandidate` 出口：api 层的追问入口要跨包调它（与 `retryCandidate` / `rescoreCandidate` 同一形状——
 // 同步返回「已经在准备中」的快照，拒绝时抛带中文原因的 CONFLICT）。
 // `followUpAvailability` 是它的**读侧**（界面入口要靠它决定按钮的禁用与 Tooltip 文案）：
 // 两处共用契约里的同一份判据，出口自然成对。
 export {
-  abortRow,
+  abortCandidate,
   abortRun,
   assertRunMutable,
   deleteRun,
   drainRunningTasks,
   followUpAvailability,
-  followUpRow,
+  followUpCandidate,
   recoverInterruptedRuns,
-  rescoreRow,
-  retryRow,
+  rescoreCandidate,
+  retryCandidate,
   startRun,
   type FollowUpInput,
 } from './orchestrator';

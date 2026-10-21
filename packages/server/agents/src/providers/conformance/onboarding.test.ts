@@ -319,14 +319,14 @@ function assertEvidenceFiles(kind: string, declared: readonly string[]): Set<str
      * 「真出站」的用例块：读请求体捕获对象，或把厂商那一端指向本地假网关。
      *
      * 块里一条记号都没有时退回**整份文件**判（捕获对象常常在 `it` 外的前置函数里定义——
-     * `pi/allowlist.test.ts` 的 `runProbeRow` 就是那样）；再没有就说明这个文件根本没做出站请求。
+     * `pi/allowlist.test.ts` 的 `runProbeCandidate` 就是那样）；再没有就说明这个文件根本没做出站请求。
      */
     const hasCapture = REQUEST_BODY_MARKERS.some((marker) => source.includes(marker));
     const gatewayInSource = OUTBOUND_REQUEST_MARKERS.some((marker) => source.includes(marker));
     const byBlock = casesOf(source).filter((block) => REQUEST_BODY_MARKERS.some((marker) => block.includes(marker)));
     /**
      * 捕获对象在 `it` 里 ⇒ 逐块判；捕获对象在 `it` 外的前置函数里（`pi/allowlist.test.ts` 的
-     * `runProbeRow` 就是那样）⇒ 退回整份文件判，但要求这个文件真的指向了本地网关
+     * `runProbeCandidate` 就是那样）⇒ 退回整份文件判，但要求这个文件真的指向了本地网关
      * （只读一份夹具、没有任何出站落点的文件在这里落空）。
      */
     const real = byBlock.length > 0 ? byBlock : hasCapture && gatewayInSource ? [source] : [];
@@ -430,7 +430,7 @@ const TURN_INJECTION_CELLS = ['delivery.round', 'delivery.idle', 'resume'] as co
 /**
  * **产品那条造客户端的路**：`real-path` 的驱动器必须真的走它（反向判据），命中**任一**记号即可。
  *
- * 记号逐家登记，因为各家的入口名不同。pi 那一格记的是 `runPiRowIn`：那家的客户端构造在下一层的
+ * 记号逐家登记，因为各家的入口名不同。pi 那一格记的是 `runPiCandidateIn`：那家的客户端构造在下一层的
  * `testing/pi-gateway-fixture.ts`（`piProvider.run` 就在里面），续接驱动器经它才走得到产品那条路
  * ——只认 `piProvider.run` 会把这份驱动器判成空壳。
  */
@@ -438,7 +438,7 @@ const REAL_PATH_CLIENT_PATH: Record<AgentKind, readonly string[]> = {
   cc: ['claudeCodeProvider.run'],
   codex: ['codexProvider.run', 'defaultCodexRuntimeHooks'],
   dsh: ['dshProvider.run'],
-  pi: ['runPiRowIn'],
+  pi: ['runPiCandidateIn'],
 };
 
 /**

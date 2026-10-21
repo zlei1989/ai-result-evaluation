@@ -11,7 +11,7 @@
  *     按标题。厂商的键集合是 `autoResolutionMs/isBlocking/itemId/questions/threadId/turnId`；
  *   · **没有答案就回空表** `{answers: {}}`：这是厂商原生的「无答案」语义（模型据此继续按最佳判断
  *     干活）。**不回帧则更硬**——`isBlocking: false` 与 `autoResolutionMs: null` 都不让它自己收场，
- *     它会一直等那一帧 ⇒ 「没人答 / 等超时 / 行终止」三条收场都必须回一帧空的；
+ *     它会一直等那一帧 ⇒ 「没人答 / 等超时 / 本次运行终止」三条收场都必须回一帧空的；
  *   · **审批类请求仍然只归类不回帧**：本仓评测是非交互的（`approvalPolicy: never`），
  *     回帧等于替用户批准。分界线就是这里的 `method` 判据，别放宽成「带 id 的都回」。
  *

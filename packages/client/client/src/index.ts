@@ -4,7 +4,7 @@ export { useSettings } from './settings';
 // 技能清单 / 目录树 / 单个文件原文：清单 key 恒定（刷新 = 重新扫盘），树与文件的 key 带名字
 // （未选中时不发请求），文件的 key 还带技能内路径
 export { SKILLS_KEY, skillFileKey, skillTreeKey, useSkillFile, useSkills, useSkillTree } from './skills';
-// MCP 探活：无缓存的一次性 POST，行级 loading 与结果留在展示层
+// MCP 探活：无缓存的一次性 POST，候选级 loading 与结果留在展示层
 export { MCP_TEST_URL, probeMcpServer } from './mcp';
 export {
   COMMITS_KEY,
@@ -34,49 +34,49 @@ export {
   RUNS_KEY,
   runKey,
   runArtifactsUrl,
-  runRowMessagesStreamUrl,
-  runRowUrl,
-  useAbortRow,
+  runCandidateMessagesStreamUrl,
+  runCandidateUrl,
+  useAbortCandidate,
   useAbortRun,
   useCreateRun,
   useDeleteRun,
-  useRowArtifactFile,
-  useRowDiffFile,
-  useRowDiffIndex,
-  useRowLog,
+  useCandidateArtifactFile,
+  useCandidateDiffFile,
+  useCandidateDiffIndex,
+  useCandidateLog,
   useRun,
   useRunArtifacts,
   useRunModelOptions,
   useRuns,
-  useRescoreRow,
-  useRetryRow,
+  useRescoreCandidate,
+  useRetryCandidate,
   useStartRun,
   useUpdateRun,
   type AgentModelOption,
   type AgentOptionGroup,
 } from './runs';
-export { useRowStream } from './row-stream';
+export { useCandidateStream } from './candidate-stream';
 export {
   FOLLOW_UP_AVAILABILITY_URL,
   FOLLOW_UP_URL,
   followUpAvailabilityUrl,
   postFollowUp,
   useFollowUpAvailability,
-  useFollowUpRow,
+  useFollowUpCandidate,
   type UseFollowUpAvailabilityInput,
   type UseFollowUpAvailabilityResult,
 } from './follow-up';
-/** 评分那条事件流（评审者自己的流水）：与行级流分开的读数与续订（口径见该文件头） */
-export { useRowJudgeEvents, type UseRowJudgeEventsInput, type UseRowJudgeEventsResult } from './judge-events';
+/** 评分那条事件流（评审者自己的流水）：与候选级流分开的读数与续订（口径见该文件头） */
+export { useCandidateJudgeEvents, type UseCandidateJudgeEventsInput, type UseCandidateJudgeEventsResult } from './judge-events';
 export {
-  foldRowRecords,
-  mergeRowRecords,
-  parseRowRecordFrame,
-  useRowMessages,
-  type RowMessagesPayload,
-  type UseRowMessagesResult,
-} from './row-messages';
-export { useRunLiveMetrics, type RowLiveMetrics } from './row-live';
+  foldCandidateRecords,
+  mergeCandidateRecords,
+  parseCandidateRecordFrame,
+  useCandidateMessages,
+  type CandidateMessagesPayload,
+  type UseCandidateMessagesResult,
+} from './candidate-messages';
+export { useRunLiveMetrics, type CandidateLiveMetrics } from './candidate-live';
 /**
  * 活动行的**实时打字内容**：折 AgentMessage 的内容流（整轮共享的聚合流上的一条 sink），
  * 与 `useRunLiveMetrics` 折事件流是同一层的两条路——活动行把两者叠起来用。
@@ -87,11 +87,11 @@ export {
   activityOfFrame,
   activityOfMessage,
   useRunActivity,
-  type ActivityRowInput,
-  type RowActivity,
+  type ActivityCandidateInput,
+  type CandidateActivity,
 } from './run-activity';
 /**
- * 环境信息的拼装。**纯函数**，与 `buildRowFacts` / `buildAgentLogModel` 同一条边界：
+ * 环境信息的拼装。**纯函数**，与 `buildCandidateFacts` / `buildAgentLogModel` 同一条边界：
  * 页面只做拼装，判定与文案都在数据层定死（页面没有测试面）。
  */
 export { ENV_GROUP_ORDER, buildAgentEnvironment, envItem, type BuildEnvironmentInput } from './build-environment';
@@ -125,7 +125,7 @@ export {
  */
 export { setFocusedRun, useFocusedRun } from './run-focus';
 /**
- * 人工消息面（人往运行中的智能体送话）：一行的队列快照 + 信号流 + 四个写动作。
+ * 人工消息面（人往运行中的智能体送话）：一候选的队列快照 + 信号流 + 四个写动作。
  * 与应答面同一条切法——通道与动作在数据层（有测试面），判定与文案在 `@aieval/ui`。
  */
 export {
@@ -175,8 +175,8 @@ export type {
   LogTurn,
   MessageCapabilityMap,
   RenderBlock,
-  RowEvent,
-  RowNode,
+  CandidateEvent,
+  CandidateNode,
   SessionNode,
   TaskPanel,
   ToolItem,

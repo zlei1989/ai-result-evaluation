@@ -1,7 +1,7 @@
 /**
  * 一次 codex 运行的**跨通知状态**（app-server 通道）。
  *
- * 为什么单独一个文件：`events.ts`（行级）与 `message.ts`（内容级）都要读同一把尺子与同一份台账，
+ * 为什么单独一个文件：`events.ts`（运行级）与 `message.ts`（内容级）都要读同一把尺子与同一份台账，
  * 而两处各建一份必然漂移——漂移的症状是「轮次与子任务行对不上」这种看不出是谁错的错。
  * 这里只放**事实与计数**，不放任何展示口径。
  *
@@ -19,7 +19,7 @@
 import type { VendorSkill } from '@aieval/contracts';
 import type { AppServerItem, AppServerThreadUsage } from './appserver/protocol';
 
-/** 一个子线程的派发台账（身份在本行的运行期就能拿到，不必等收尾） */
+/** 一个子线程的派发台账（身份在本次运行的运行期就能拿到，不必等收尾） */
 export interface CodexDispatch {
   /** 派发动作名（`spawn_agent` / `wait` …）；采不到为 `null` */
   tool: string | null;
@@ -128,14 +128,14 @@ export interface CodexRunState {
    *
    * 为什么必须**累积**：codex 每条通知只报**变化的那一台**（`{name, status, error}`），
    * 而推导要按名字对全表（「我们注入的每一台各是什么状态」）⇒ 只有累积之后，最后一条事件才是
-   * 一份**自足**的厂商事实。行级观测格取的就是最后那一条。
+   * 一份**自足**的厂商事实。运行级观测格取的就是最后那一条。
    *
    * 为什么放在 run 状态而不是事件投影的局部变量：`events.ts` 与收尾的 `vendor-system` 都要读它，
    * 而投影是**逐条无状态**调用的（`projectCodexEvent` 每次只看到一个 payload）。
    */
   mcpStartup: Map<string, { status: string; error: string | null }>;
   /**
-   * 本行的**技能清单**（`skills/list` 采到的那一份，起会话之后立刻取一次）。
+   * 本次运行的**技能清单**（`skills/list` 采到的那一份，起会话之后立刻取一次）。
    *
    * 为什么放在 run 状态：两个消费方都要读它——`events.ts` 的 MCP 启动状态那一支（每发一条
    * `vendor-system` 都要把这一格带上，否则最后那条事件会把技能面抹成「厂商没投送」），
@@ -184,7 +184,7 @@ export function noteMcpStartup(
 /**
  * 当前的 MCP 启动状态**全量**（与 `noteMcpStartup` 的返回值逐字同形，只是不写状态）。
  *
- * 为什么需要它：`vendor-system` 的消费方（编排层的行级 MCP 证据、环境抽屉）都**取最后一条**读，
+ * 为什么需要它：`vendor-system` 的消费方（编排层的运行级 MCP 证据、环境抽屉）都**取最后一条**读，
  * 于是「收尾再发一条带技能清单的事件」必须把 MCP 那一格一起带上，否则最后那条事件里的
  * MCP 事实就是空的、把先前那几拍抹掉（`null` 的读数是「厂商没投送」）。
  */

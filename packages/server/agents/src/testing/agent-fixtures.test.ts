@@ -164,7 +164,7 @@ describe('夹具 createFakeStream：stop() 早于迭代同样不能挂死', () =
  * 夹具里的磁盘地址必须是**当前平台认得的绝对路径**。
  *
  * 为什么这条守卫值得存在：`createRunInput` 的 `cwd` / `configHome` 会被**真的**拿去碰盘——dsh 适配器
- * 在 `configHome` 下 `mkdirSync` 并写 `aieval-route.patch.yml`。写成 `D:/tmp/rows/row-1/…` 时，它在
+ * 在 `configHome` 下 `mkdirSync` 并写 `aieval-route.patch.yml`。写成 `D:/tmp/candidates/row-1/…` 时，它在
  * Windows 上是对的、在 POSIX 上却是**相对路径**：产物落进进程 cwd（仓库根）长出一个名为 `D:/tmp`
  * 的目录，同一条路径还会让「overlay 必须是绝对路径」那条不变量在 macOS 上直接红
  * （`providers/dsh/index.test.ts` 的 `expect(isAbsolute(patches[0])).toBe(true)`）。

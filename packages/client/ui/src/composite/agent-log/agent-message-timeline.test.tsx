@@ -2,19 +2,19 @@
  * `AgentMessageTimeline`（L1）的守卫。四条：
  * 1. **逐轮 `map` 渲染**：50 轮就要在 DOM 里数到 50 行——这条钉的正是「L1 不虚拟化」（变异体 (n)）；
  * 2. **默认收起**：`openKeys` 为空时，思考正文与工具结果都不在 DOM 里（是真收起，不是视觉收起）；
- * 3. **进行中的组默认展开**：把 `defaultOpenKeysOf` 算出来的键传进去，正文必须立刻可见； * **失败的组与失败的行都默认收起**（失败不是展开的理由）；
+ * 3. **进行中的组默认展开**：把 `defaultOpenKeysOf` 算出来的键传进去，正文必须立刻可见； * **失败的组与失败的候选都默认收起**（失败不是展开的理由）；
  * 4. **分派**：`renderBlock` 不传走默认注册表，传了就用传入的。
  *
- * 断言用两个锚点：`data-turn-row` 数**轮次行**、`data-row-event` 数**行级事件行**（两者都由本组件自己标，
- * 不是 antd 的内部类名）。⚠️ 数用量行必须用后者（见 `eventRowTexts` 的注释）。
+ * 断言用两个锚点：`data-turn-row` 数**轮次行**、`data-row-event` 数**候选级事件行**（两者都由本组件自己标，
+ * 不是 antd 的内部类名）。⚠️ 数用量行必须用后者（见 `eventCandidateTexts` 的注释）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { AgentEvent, AgentMessage, RowRecord } from '@aieval/contracts';
+import type { AgentEvent, AgentMessage, CandidateRecord } from '@aieval/contracts';
 import type {
   ContentBlock,
   LogTurn,
-  RowEvent,
+  CandidateEvent,
   SessionNode,
   TextBlock,
   ThinkingBlock,
@@ -23,12 +23,12 @@ import type {
 } from './types';
 import { buildAgentLogModel } from './build-model';
 import { nodeIndex, type RenderBlock } from './render-blocks';
-import { AgentMessageTimeline, rowEventsOfTurn } from './agent-message-timeline';
+import { AgentMessageTimeline, candidateEventsOfTurn } from './agent-message-timeline';
 import type { BlockRenderContext } from './block-renderer-registry';
 import { defaultOpenKeysOf } from './use-agent-log-view';
 import { installResizeObserverStub } from '../../testing/resize-observer';
 
-// jsdom 没有 `ResizeObserver`，而展开的工具行里 `EllipsisText` 会 new 它（L0 的实现）：
+// jsdom 没有 `ResizeObserver`，而展开的工具候选里 `EllipsisText` 会 new 它（L0 的实现）：
 // 不打桩，展开那一条就会在 effect 里抛 `ReferenceError`——环境缺口，不是被测代码的问题。
 beforeEach(() => {
   installResizeObserverStub();
@@ -168,9 +168,9 @@ function sessionChainModel(input: {
   childRounds: number;
   events: AgentEvent[];
   /** 子任务行覆盖：默认是「已收场」那一档，实时形状（派发时只有一条 `running`）用它改 */
-  subagent?: Partial<Extract<RowRecord, { type: 'subagent' }>['subagent']>;
+  subagent?: Partial<Extract<CandidateRecord, { type: 'subagent' }>['subagent']>;
 }) {
-  const record = (id: string, mergeKey: string, roundTrip: number, subagentId: string | null, blocks: AgentMessage['blocks']): RowRecord => ({
+  const record = (id: string, mergeKey: string, roundTrip: number, subagentId: string | null, blocks: AgentMessage['blocks']): CandidateRecord => ({
     type: 'message',
     message: {
       messageId: id,
@@ -251,13 +251,13 @@ function usageEvent(seq: number, input: number, turn: { subagentId: string | nul
 }
 
 /**
- * 逐条**行级事件**的文本（判据是组件自己标的 `data-row-event` 锚点，不是 antd 内部类名）。
+ * 逐条**候选级事件**的文本（判据是组件自己标的 `data-row-event` 锚点，不是 antd 内部类名）。
  *
  * ⚠️ **不要用 `data-turn-row` 数用量行**：那个锚点只标在 `TurnRow` 上，
- * 事件标签（`RowEventLines`）根本没有锚点 ⇒ 数出来的恒等于**轮次数**，与这一轮挂了几条事件无关，
+ * 事件标签（`CandidateEventLines`）根本没有锚点 ⇒ 数出来的恒等于**轮次数**，与这一轮挂了几条事件无关，
  * 「主会话节点里恰好只有它自己那两条用量」这类判据会因此失去区分力。
  */
-const eventRowTexts = (container: HTMLElement): string[] =>
+const eventCandidateTexts = (container: HTMLElement): string[] =>
   [...container.querySelectorAll('[data-row-event]')].map((row) => row.textContent ?? '');
 
 describe('AgentMessageTimeline', () => {
@@ -270,7 +270,7 @@ describe('AgentMessageTimeline', () => {
 
     expect(container.querySelectorAll('[data-turn-row]').length).toBe(50);
     expect(screen.getByText('第 50 轮正文')).toBeInTheDocument();
-    expect(screen.getByText('轮次 50')).toBeInTheDocument();
+    expect(screen.getByText('第 50 步')).toBeInTheDocument();
   });
 
   it('思考块默认收起：正文不在 DOM 里（不是视觉收起）', () => {
@@ -306,11 +306,11 @@ describe('AgentMessageTimeline', () => {
     render(<AgentMessageTimeline turns={turns} nodes={nodes} openKeys={openKeys} />);
 
     expect(screen.getByRole('button', { name: /工具调用 × 1/ })).toHaveAttribute('aria-expanded', 'true');
-    // 组体真的挂上了：组内那一行的参数摘要（组头里没有这一格）
+    // 组体真的挂上了：组内那一候选的参数摘要（组头里没有这一格）
     expect(screen.getByText('pnpm vitest run')).toBeInTheDocument();
   });
 
-  it('失败的组与失败的行都默认收起：错误原文不在 DOM 里（键来自 defaultOpenKeysOf）', () => {
+  it('失败的组与失败的候选都默认收起：错误原文不在 DOM 里（键来自 defaultOpenKeysOf）', () => {
     const turns = [
       turn({ blocks: [toolCall('c1', 'call_1', 'pwsh'), toolResult('r1', 'call_1', 'FAIL render-blocks', 'error')] }),
     ];
@@ -417,7 +417,7 @@ describe('AgentMessageTimeline', () => {
     expect(notice.compareDocumentPosition(screen.getByText('正文内容')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('行级事件按 at 落在轮次之间，三档各用自己的标签色', () => {
+  it('候选级事件按 at 落在轮次之间，三档各用自己的 Alert 类型', () => {
     const turns = [
       turn({ round: 1, at: AT, blocks: [textBlock('t1', '第一轮')] }),
       turn({ round: 2, at: AT2, blocks: [textBlock('t2', '第二轮')] }),
@@ -427,7 +427,7 @@ describe('AgentMessageTimeline', () => {
       <AgentMessageTimeline
         turns={turns}
         nodes={nodeIndex([])}
-        rowEvents={[
+        candidateEvents={[
           { at: AT, level: 'milestone', text: '用量创新高', turn: null },
           { at: AT2, level: 'warning', text: '配置项没认出来', turn: null },
           { at: AT2, level: 'error', text: '工具返回非零退出码', turn: null },
@@ -435,9 +435,9 @@ describe('AgentMessageTimeline', () => {
       />,
     );
 
-    expect(screen.getByText('用量创新高').closest('.ant-tag')).toHaveClass('ant-tag-default');
-    expect(screen.getByText('配置项没认出来').closest('.ant-tag')).toHaveClass('ant-tag-warning');
-    expect(screen.getByText('工具返回非零退出码').closest('.ant-tag')).toHaveClass('ant-tag-error');
+    expect(screen.getByText('用量创新高').closest('.ant-alert')).toHaveClass('ant-alert-success');
+    expect(screen.getByText('配置项没认出来').closest('.ant-alert')).toHaveClass('ant-alert-warning');
+    expect(screen.getByText('工具返回非零退出码').closest('.ant-alert')).toHaveClass('ant-alert-error');
   });
 
   /**
@@ -455,7 +455,7 @@ describe('AgentMessageTimeline', () => {
       <AgentMessageTimeline
         turns={turns}
         nodes={nodeIndex([])}
-        rowEvents={[
+        candidateEvents={[
           // ① `at` 是 AT（第一轮的时刻），但归属说它是第 2 轮 ⇒ 必须落在第 2 轮
           { at: AT, level: 'milestone', text: '主会话第 2 轮的用量', turn: { subagentId: null, round: 2 } },
           // ② 别的会话的同号轮次：本节点（主会话）没有这一轮 ⇒ 不显示
@@ -480,7 +480,7 @@ describe('AgentMessageTimeline', () => {
    * 对应轮次上命中——上一条用例只钉了「主会话命中」与「别的会话不命中」，而子会话时间轴上的用量里程碑
    * 走的正是这一格（数据层给子会话节点发的里程碑自带 `subagentId`）。
    *
-   * 判据落在 `data-turn-row="round-1"` 那一行的 DOM 里（行键由 `turnKey` 给）：命中是一件**可观测的结构**，
+   * 判据落在 `data-turn-row="round-1"` 那一候选的 DOM 里（行键由 `turnKey` 给）：命中是一件**可观测的结构**，
    * 而不是「某个函数返回了 true」。事件的 `at`（AT2）特意与这一轮的 `at`（AT）不同，免得断言靠「两个时刻
    * 恰好相等」蒙对。
    *
@@ -491,14 +491,14 @@ describe('AgentMessageTimeline', () => {
    * 能证伪它的变异体：让有键的分支**只认主会话**（`turn.subagentId === null && event.turn.subagentId === null && …`）
    * ⇒ 本用例红。
    */
-  it('子会话自己的用量里程碑落在 `sub-1` 那一轮的行里（非空身份能命中的主路径）', () => {
+  it('子会话自己的用量里程碑落在 `sub-1` 那一轮的候选里（非空身份能命中的主路径）', () => {
     const turns = [turn({ round: 1, subagentId: 'sub-1', at: AT, blocks: [textBlock('t1', '子会话第一轮')] })];
 
     render(
       <AgentMessageTimeline
         turns={turns}
         nodes={nodeIndex([])}
-        rowEvents={[
+        candidateEvents={[
           // 归属键说的是 `sub-1` 的第 1 轮（`at` 与这一轮的时刻不同 ⇒ 落点由归属键给出）
           { at: AT2, level: 'milestone', text: '子会话自己的用量', turn: { subagentId: 'sub-1', round: 1 } },
         ]}
@@ -507,23 +507,23 @@ describe('AgentMessageTimeline', () => {
 
     const rows = [...document.querySelectorAll('[data-turn-row]')];
     expect(rows).toHaveLength(1);
-    // 行键就是「哪一轮」：它必须出现在 round-1 那一行里，而不是挂在别的行上或整条消失
+    // 行键就是「哪一轮」：它必须出现在 round-1 那一个候选里，而不是挂在别的候选上或整条消失
     expect(rows[0]!.getAttribute('data-turn-row')).toBe('seg-0-round-1');
     expect(rows[0]!.textContent ?? '').toContain('子会话自己的用量');
   });
 
   /**
-   * **整条链**：`events → buildAgentLogModel → rowEvents → 时间轴`（子会话那一条不进折行，这里只认主会话读数）。
+   * **整条链**：`events → buildAgentLogModel → candidateEvents → 时间轴`（子会话那一条不进折行，这里只认主会话读数）。
    *
-   * 上面两条用例是 **props 级**的：`rowEvents` 由用例手写直接喂给组件，于是「数据层真算出来的
-   * `model.rowEvents` 到底带不带归属键」这一半没有守卫（`build-model.test.ts` 那侧只断到
-   * `model.rowEvents`、不渲进时间轴；两半各自绿、接起来仍可能错）。这条从 `buildAgentLogModel`
-   * 的真入口起，把它的 `rowEvents` **原样**交给时间轴：那一条用量必须落在它归属的那一轮里，
-   * 而**子会话节点一行都不出**（子智能体用量只在派发点那张子任务卡片里）。
+   * 上面两条用例是 **props 级**的：`candidateEvents` 由用例手写直接喂给组件，于是「数据层真算出来的
+   * `model.candidateEvents` 到底带不带归属键」这一半没有守卫（`build-model.test.ts` 那侧只断到
+   * `model.candidateEvents`、不渲进时间轴；两半各自绿、接起来仍可能错）。这条从 `buildAgentLogModel`
+   * 的真入口起，把它的 `candidateEvents` **原样**交给时间轴：那一条用量必须落在它归属的那一轮里，
+   * 而**子会话节点一个候选都不出**（子智能体用量只在派发点那张子任务卡片里）。
    */
-  it('整条链：`buildAgentLogModel` 算出的那一条用量渲进对应轮次，子会话节点一行都不出', () => {
+  it('整条链：`buildAgentLogModel` 算出的那一条用量渲进对应轮次，子会话节点一个候选都不出', () => {
     /** 造一条消息记录（本文件其余用例都是 props 级，故这里只写这条链需要的那几格） */
-    const messageRecord = (input: { id: string; mergeKey: string; subagentId: string | null; blocks: AgentMessage['blocks'] }): RowRecord => ({
+    const messageRecord = (input: { id: string; mergeKey: string; subagentId: string | null; blocks: AgentMessage['blocks'] }): CandidateRecord => ({
       type: 'message',
       message: {
         messageId: input.id,
@@ -603,29 +603,29 @@ describe('AgentMessageTimeline', () => {
     const child = model.nodes.find((node) => node.kind === 'subagent');
     if (main?.content.status !== 'ready' || child?.content.status !== 'ready') throw new Error('两个会话节点的内容都应就绪');
     expect(main.content.data.map((turn) => turn.round)).toEqual([1]);
-    expect(model.rowEvents).toHaveLength(1);
-    expect(model.rowEvents[0]?.turn).toEqual({ subagentId: null, round: 1 });
+    expect(model.candidateEvents).toHaveLength(1);
+    expect(model.candidateEvents[0]?.turn).toEqual({ subagentId: null, round: 1 });
 
-    const mainView = render(<AgentMessageTimeline turns={main.content.data} nodes={nodeIndex([child])} rowEvents={model.rowEvents} />);
+    const mainView = render(<AgentMessageTimeline turns={main.content.data} nodes={nodeIndex([child])} candidateEvents={model.candidateEvents} />);
 
-    // 落点：那一条用量必须渲染在主会话 `round-1` 的那一行里（数据层给的归属键一路兑现到 DOM）
+    // 落点：那一条用量必须渲染在主会话 `round-1` 的那一个候选里（数据层给的归属键一路兑现到 DOM）
     const rows = [...mainView.container.querySelectorAll('[data-turn-row]')];
     expect(rows).toHaveLength(1);
     expect(rows[0]!.getAttribute('data-turn-row')).toBe('seg-0-round-1');
-    expect(rows[0]!.textContent ?? '').toContain('用量 输入 10 tok');
+    expect(rows[0]!.textContent ?? '').toContain('输入 10 tok');
     mainView.unmount();
 
-    // 子会话节点：一条行级事件都不出（它自己的用量在那张子任务卡片里）
-    const childView = render(<AgentMessageTimeline turns={child.content.data} nodes={nodeIndex([child])} rowEvents={model.rowEvents} />);
-    expect(eventRowTexts(childView.container)).toEqual([]);
+    // 子会话节点：一条候选级事件都不出（它自己的用量在那张子任务卡片里）
+    const childView = render(<AgentMessageTimeline turns={child.content.data} nodes={nodeIndex([child])} candidateEvents={model.candidateEvents} />);
+    expect(eventCandidateTexts(childView.container)).toEqual([]);
   });
   /**
    * **整行一条的端到端**：主会话报了两轮、子会话也报了两轮，数据层只交出
-   * **一条**（候选阶段里最后那条主会话读数）；DOM 上主会话节点恰好一行、子会话节点一行都没有。
+   * **一条**（候选阶段里最后那条主会话读数）；DOM 上主会话节点恰好一行、子会话节点一个候选都没有。
    *
    * 按会话分桶的水位口径在这里会串出三条。
    */
-  it('端到端：整行只有一条用量行（取最后那条主会话读数），子会话节点一行都没有', () => {
+  it('端到端：整行只有一条用量行（取最后那条主会话读数），子会话节点一个候选都没有', () => {
     const model = sessionChainModel({
       mainRounds: 2,
       childRounds: 2,
@@ -641,33 +641,33 @@ describe('AgentMessageTimeline', () => {
     if (main?.content.status !== 'ready' || child?.content.status !== 'ready') throw new Error('两个会话节点的内容都应就绪');
 
     // 主会话节点：恰好一行，且是最后那一条读数
-    // ⚠️ 数的是**行级事件**（`data-row-event`），不是轮次行：后者恒等于轮次数（审查 Important C）
-    const mainView = render(<AgentMessageTimeline turns={main.content.data} nodes={nodeIndex([child])} rowEvents={model.rowEvents} />);
-    const mainRows = eventRowTexts(mainView.container);
-    expect(mainRows).toHaveLength(1);
-    expect(mainRows[0]).toContain('用量 输入 60,000 tok');
+    // ⚠️ 数的是**候选级事件**（`data-row-event`），不是轮次行：后者恒等于轮次数（审查 Important C）
+    const mainView = render(<AgentMessageTimeline turns={main.content.data} nodes={nodeIndex([child])} candidateEvents={model.candidateEvents} />);
+    const mainCandidates = eventCandidateTexts(mainView.container);
+    expect(mainCandidates).toHaveLength(1);
+    expect(mainCandidates[0]).toContain('输入 60,000 tok');
     // 候选阶段早先那几条读数一条都不在（水位那一版会把 50000 也画出来）
-    expect(mainRows.join('\n')).not.toContain('用量 输入 50,000 tok');
+    expect(mainCandidates.join('\n')).not.toContain('输入 50,000 tok');
     mainView.unmount();
 
     // 子会话节点：它自己的读数**不进时间轴**（只在派发点那张子任务卡片里）
-    const childView = render(<AgentMessageTimeline turns={child.content.data} nodes={nodeIndex([child])} rowEvents={model.rowEvents} />);
-    expect(eventRowTexts(childView.container)).toEqual([]);
+    const childView = render(<AgentMessageTimeline turns={child.content.data} nodes={nodeIndex([child])} candidateEvents={model.candidateEvents} />);
+    expect(eventCandidateTexts(childView.container)).toEqual([]);
     childView.unmount();
 
     /**
-     * 前提：那一条真的进了 `model.rowEvents`（否则上面数出 0 行会像「组件没渲染」）。
+     * 前提：那一条真的进了 `model.candidateEvents`（否则上面数出 0 候选会像「组件没渲染」）。
      * ⚠️ 刻意放在 DOM 断言**之后**：这一格与 DOM 上的
      * `data-row-event` 数的是同一批行，先断言 DOM 才能让「折行把行丢了」在判据本身上见红，
      * 而不是停在数据层的前提上。
      */
-    expect(model.rowEvents.map((row) => row.turn)).toEqual([{ subagentId: null, round: 2 }]);
+    expect(model.candidateEvents.map((row) => row.turn)).toEqual([{ subagentId: null, round: 2 }]);
   });
 
   /**
-   * **候选阶段之后的读数不算这一行**（端到端）。历史数据形状：评分事件曾与候选同一条流的时期
+   * **候选阶段之后的读数不算这个候选**（端到端）。历史数据形状：评分事件曾与候选同一条流的时期
    * 落盘的 `events.jsonl`，候选跑完 → 评审者接着报用量（轮次从 1 重新数、token 只有候选的零头）。
-   * 折行若只按「最后一条」取，这一行的读数会被换成评审者的——那正是 `row-live.ts` 的口径 5
+   * 折行若只按「最后一条」取，这个候选的读数会被换成评审者的——那正是 `row-live.ts` 的口径 5
    * 在实时侧挡掉的那件事，时间轴这一侧同样要挡。
    */
   it('端到端：`judging` 之后评分智能体报的用量不顶掉候选那一条', () => {
@@ -681,8 +681,8 @@ describe('AgentMessageTimeline', () => {
       ],
     });
 
-    expect(model.rowEvents.map((row) => row.text)).toEqual(['用量 输入 42,315 tok · 缓存 0 tok · 输出 0 tok · 轮次 2']);
-    expect(model.rowEvents.map((row) => row.turn)).toEqual([{ subagentId: null, round: 2 }]);
+    expect(model.candidateEvents.map((row) => row.text)).toEqual(['输入 42,315 tok · 缓存 0 tok · 输出 0 tok · 步数 2']);
+    expect(model.candidateEvents.map((row) => row.turn)).toEqual([{ subagentId: null, round: 2 }]);
   });
 
   it('空轮次渲染一张空列表（不抛、不留半截 DOM）', () => {
@@ -750,9 +750,9 @@ describe('AgentMessageTimeline', () => {
 
 /**
  * 消息级用量页脚（用户裁定「消息级没有 usage 就不展示，避免口径混乱」）。四条判据：
- *   ① 一条消息一行（多个块只出一行）；② `usage === null` 一行都不出；
- *   ③ 文案是「本条 …」而不是「用量 …」（同屏已有行级事实条与轮末里程碑 Tag 两处同形数字）；
- *   ④ 形制与里程碑两两可分：页脚是**纯文本行**，不许被 Tag / Badge 包成色块。
+ *   ① 一条消息一行（多个块只出一行）；② `usage === null` 一个候选都不出；
+ *   ③ 文案是「本条 …」而不是「用量 …」（同屏已有候选级事实条与轮末里程碑两处同形数字）；
+ *   ④ 形制与里程碑两两可分：页脚是**纯文本行**，不许被 Tag / Badge / Alert 包成色块。
  */
 describe('消息级用量页脚', () => {
   const usage = { input: 295, cached: 7424, output: 841 };
@@ -771,11 +771,12 @@ describe('消息级用量页脚', () => {
     const { container } = render(<AgentMessageTimeline turns={turns} nodes={nodeIndex([])} />);
 
     expect(footers(container)).toEqual(['本条 输入 295 tok · 缓存 7,424 tok · 输出 841 tok']);
-    // 形制与轮末里程碑 Tag 必须两两可分
+    // 形制与轮末里程碑（Alert 色块）必须两两可分
     expect(container.querySelectorAll('[data-usage-footer].ant-tag')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-usage-footer].ant-alert')).toHaveLength(0);
   });
 
-  it('usage 为 null 时一行都不出（不显示 0、也不显示「未采集」）', () => {
+  it('usage 为 null 时一个候选都不出（不显示 0、也不显示「未采集」）', () => {
     const turns = [turn({ blocks: [{ ...textBlock('t1', '正文'), usage: null }] })];
     const { container } = render(<AgentMessageTimeline turns={turns} nodes={nodeIndex([])} />);
 
@@ -809,14 +810,14 @@ describe('消息级用量页脚', () => {
       <AgentMessageTimeline
         turns={turns}
         nodes={nodeIndex([])}
-        rowEvents={[{ at: AT, level: 'milestone', text: '用量 输入 295 tok · 缓存 7,424 tok · 输出 841 tok · 轮次 1', turn: null }]}
+        candidateEvents={[{ at: AT, level: 'milestone', text: '输入 295 tok · 缓存 7,424 tok · 输出 841 tok · 步数 1', turn: null }]}
       />,
     );
 
     expect(footers(container)).toEqual(['本条 输入 295 tok · 缓存 7,424 tok · 输出 841 tok']);
     const events = [...container.querySelectorAll('[data-row-event]')];
     expect(events).toHaveLength(1);
-    expect(events[0]?.textContent).toContain('轮次 1');
+    expect(events[0]?.textContent).toContain('步数 1');
     // 两个锚点互不嵌套：页脚不在里程碑里、里程碑也不在页脚里
     expect(container.querySelector('[data-usage-footer] [data-row-event]')).toBeNull();
     expect(container.querySelector('[data-row-event] [data-usage-footer]')).toBeNull();
@@ -824,29 +825,29 @@ describe('消息级用量页脚', () => {
 });
 
 /**
- * **行级事件在多段下的归属**：行级事件带的是厂商口径的 `(subagentId, round)`，**里面没有段**，
+ * **候选级事件在多段下的归属**：候选级事件带的是厂商口径的 `(subagentId, round)`，**里面没有段**，
  * 而追问那一段的轮次号从 1 重新数 ⇒ 同一个号在两段里各有一轮。归属判据是「归**段号最大**的那一轮」
  * （段号单调递增，那一条读数必然属于最后发生的那一段）。
  *
  * 少了这条判据的症状：追问之后的那条用量里程碑落在**首段**的同号轮次上——数字是对的、
  * 位置是错的，而位置错了就等于把两段的计量混在一起读。
  */
-describe('行级事件在多段下的归属', () => {
+describe('候选级事件在多段下的归属', () => {
   const turns = [turn({ round: 1, segment: 0, blocks: [textBlock('b1', '首段')] }), turn({ round: 1, segment: 1, blocks: [textBlock('b2', '追问段')] })];
-  const milestone: RowEvent = {
+  const milestone: CandidateEvent = {
     at: AT,
     level: 'milestone',
-    text: '用量 输入 10 tok · 轮次 1',
+    text: '输入 10 tok · 步数 1',
     turn: { subagentId: null, round: 1 },
   };
 
   it('同一号在两段里出现时，只归段号最大的那一轮', () => {
-    expect(rowEventsOfTurn(turns, [milestone], 0)).toEqual([]);
-    expect(rowEventsOfTurn(turns, [milestone], 1)).toEqual([milestone]);
+    expect(candidateEventsOfTurn(turns, [milestone], 0)).toEqual([]);
+    expect(candidateEventsOfTurn(turns, [milestone], 1)).toEqual([milestone]);
   });
 
   it('只有一段时照旧归那一轮（老行为逐字不变）', () => {
     const single = [turn({ round: 1, segment: 0, blocks: [textBlock('b1', '首段')] })];
-    expect(rowEventsOfTurn(single, [milestone], 0)).toEqual([milestone]);
+    expect(candidateEventsOfTurn(single, [milestone], 0)).toEqual([milestone]);
   });
 });

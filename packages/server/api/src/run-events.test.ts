@@ -6,7 +6,7 @@
  *     多发一个 id 反而会让浏览器误以为这条流可续订；
  *   - **没有 `event:` 行**：判别键是信封顶层的 `type`（与聚合流同一口径），
  *     再用 SSE 的具名事件表达一遍就是第二份会漂移的真相，而客户端只绑 `onmessage`；
- *   - **不因终态关流**（与行级流相反）：这条流是页面级的，由客户端取消收尾；
+ *   - **不因终态关流**（与候选级流相反）：这条流是页面级的，由客户端取消收尾；
  *   - **打开即有首字节**（ready 注释帧）：响应头等第一次 enqueue 才 flush。
  *
  * 三条总线由本文件自己 mock：工厂里各维护一张监听表，「总线推一条 → 流里出一帧」这条链路
@@ -75,7 +75,7 @@ describe('streamGlobalSignals', () => {
 
     publishRun('run-1');
     const runFrame = decoder.decode((await reader.read()).value);
-    // 逐字钉帧：id: 行在这里出现就是「假装可续订」；event: 行会让客户端（只绑 onmessage）零交付
+    // 逐字钉帧：id: 行在这里出现就是「假装可续订」；event: 候选会让客户端（只绑 onmessage）零交付
     expect(runFrame).toBe('data: {"type":"run-updated","runId":"run-1"}\n\n');
     expect(runFrame).not.toContain('id:');
     expect(runFrame).not.toContain('event:');

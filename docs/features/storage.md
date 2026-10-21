@@ -16,8 +16,8 @@
 | 技能目录 | `<配置目录>/skills/`（`AIEVAL_CONFIG_DIR` > `~/.aieval`）：一条 skill = 一层目录 + 里面的 `SKILL.md`，只扫这一层、不递归（见[《技能配置》](/features/skills-config)） |
 | 用例 | `settings.casesRoot`（默认 `~/.aieval-cases`）下的 `<用例 id>.json`：**一用例一文件**，文件名即身份（见下节《用例目录》） |
 | 评测落盘根 | `settings.workspaceRoot`（默认 `~/.aieval-runs`） |
-| 一轮评测 | `{workspaceRoot}/{runId}/`：`run.json`（行快照）+ `rows/{rowId}/`（`events.jsonl` + `messages.jsonl` + `workspace/` + `.agenthome/` / `.judgehome/`） |
-| 用例镜像缓存 | 用例级 `cases/{caseId}/cache/`（文件系统级目录复制，不是每行克隆） |
+| 一轮评测 | `{workspaceRoot}/{runId}/`：`run.json`（候选快照）+ `candidates/{candidateId}/`（`events.jsonl` + `messages.jsonl` + `workspace/` + `.agenthome/` / `.judgehome/`） |
+| 用例镜像缓存 | 用例级 `cases/{caseId}/cache/`（文件系统级目录复制，不是每个候选克隆） |
 
 ## 用例目录
 
@@ -80,7 +80,7 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 - **为什么判据是「键缺失」而不是「空 map」**：后者等于**删光即复播**，用户永远删不掉预置项。键在文件里就是「配过了」的唯一证据，空 map 与没写过因此可分（`{}` 与 `undefined` 在读侧是两件事）。守卫 `core/src/config-store-mcp.test.ts` 两条：键缺失 ⇒ 预置两台；显式存下 `{}` ⇒ 读回来仍是空，且「只读一次再原样保存」不会把它写回文件。
 - **原子写的口径与 `config.json` 其余部分完全一致**（临时文件创建即 `0600` → `renameSync` 覆盖；BOM 容忍；损坏抛含路径的中文原因），不因为多了这一格而分叉——见下节《数据与契约》。
 - **密钥落盘是明文**（与供应商同口径）：出口掩码只发生在 `GET /api/settings` 的投影上，`env` / `headers` 里的 `${VAR}` 占位**原样落盘**（真值只在注入那一刻从环境里解析，永不回写）。
-- **行内产物不在这份文件里**：注入的落点是**行私有目录**（`{workspaceRoot}/{runId}/rows/{rowId}/.agenthome/`）——claude 走 SDK 参数不落盘、codex 走线程级 `config`、dsh 落 `aieval-route.patch.yml` 的 `insert`；行内 `.npmrc` 也只写宿主 npm 配置里的 **registry 那一行**（`0600`）。宿主 `~/.aieval/config.json` 一个字节都不因注入而变。
+- **候选内产物不在这份文件里**：注入的落点是**行私有目录**（`{workspaceRoot}/{runId}/candidates/{candidateId}/.agenthome/`）——claude 走 SDK 参数不落盘、codex 走线程级 `config`、dsh 落 `aieval-route.patch.yml` 的 `insert`；候选内 `.npmrc` 也只写宿主 npm 配置里的 **registry 那一行**（`0600`）。宿主 `~/.aieval/config.json` 一个字节都不因注入而变。
 - **技能装入也不在这份文件里**：物化的落点是行私有目录的 `<.agenthome>/skills/<名称>/`（四家同形），源侧是 `<配置目录>/skills/`——`config.json` 里只留一份**停用名单**，技能本体按目录住。
 
 ## 技能停用名单的落盘
@@ -93,15 +93,15 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 - **没有预置项、没有播种**：默认就是空 map。MCP 那套「键在不在文件里 = 播过没播过」的判据在这里无事可做。
 - **读侧不做校验**：「缺省 = 开启」的唯一实现在 `core/src/skill-store.ts` 的 `isSkillDisabled`——判据是 `entries[name]?.disabled === true` 而不是「键在不在」：手改坏的 `config.json` 里那个键可能挂着别的值，把「键在」当成「关着」会**静默关掉**用户的技能，而这个结论在界面上看不出任何异常。
 - **技能根本身不落盘在任何配置里**：它就是配置目录下的 `skills/`（不设 `settings.skillsRoot` 键，改根就是改配置目录）。
-- 功能面（目录文法、准入、装入时序、行级三态）见[《技能配置》](/features/skills-config)。
+- 功能面（目录文法、准入、装入时序、候选级三态）见[《技能配置》](/features/skills-config)。
 
 ## 数据与契约
 
 - **配置文件 `config.json` 是两段**：`settings` + `providers`（`core/src/config-store.ts` 的 `AppConfig`）。旧版残留的 `cases` 键（以及更早的 `rowTimeoutMs`）在读盘时被丢掉——**落盘文件里留着的东西不等于运行时认的东西**；`loadConfig` 故意不做 schema 校验（一条手改坏的值不该让设置页打不开）。设置段里的 `mcpServers` 另有一条**播种**口径：键缺失才播预置两台、删光不复播（见《MCP 配置的落盘与播种》）。
 - **用例一文件一落**：`<casesRoot>/<用例 id>.json`，裸 `TestCase` JSON、文件名即身份、写盘原子且 `0600`、读时容忍 BOM、坏文件跳过并进 `warnings`——完整口径（含手工迁移与 git 自动同步）见上节《用例目录》。
-- **`run.json`**（行快照）：`EvalRow` 含状态、分数（`ScoreResult` 12 格，记账格全 `.default(...)`——`safeParse` 读盘的硬理由）、diff、计量。旧 `run.json`（带 `dimensions`）`safeParse` 失败 ⇒ `listRuns` **跳过并落汇总 WARN**（不炸整页）。快照与事件同源：`setRowStatus` 改状态 + 落盘 + 追加 `status` 事件**成对**。
-- **`events.jsonl`**（行级事件，执行的唯一真相源）：追加写、`seq` 单调递增、按 `seq` 去重续订（`Last-Event-ID`）。**读侧容忍坏行**：写一半的 JSON、空行只跳过该行并 WARN，其余按原序全量读出（可用性优先于完备性）。只有候选新尝试的 `resetEvents` 清空。
-- **`messages.jsonl`**（内容通道）：按 **`(段号, mergeKey)`**（契约的 `messageFoldKey`）/ `subagentId` 覆盖累积——段号必须进键，追问那一段的载体键与首段逐字相同；四格计量**不在这份文件里**（走 `usage` 事件与 `EvalRow`）；一行都不产出时不建文件。**重新执行会清空它**（`resetRecords`，下一次尝试是新的对话）⇒ 行快照上与之对齐的两格（`followUps` / `followUpRounds`）同时归零。
+- **`run.json`**（候选快照）：`EvalCandidate` 含状态、分数（`ScoreResult` 12 格，记账格全 `.default(...)`——`safeParse` 读盘的硬理由）、diff、计量。旧 `run.json`（带 `dimensions`）`safeParse` 失败 ⇒ `listRuns` **跳过并落汇总 WARN**（不炸整页）。快照与事件同源：`setRowStatus` 改状态 + 落盘 + 追加 `status` 事件**成对**。
+- **`events.jsonl`**（候选级事件，执行的唯一真相源）：追加写、`seq` 单调递增、按 `seq` 去重续订（`Last-Event-ID`）。**读侧容忍坏行**：写一半的 JSON、空行只跳过该候选并 WARN，其余按原序全量读出（可用性优先于完备性）。只有候选新尝试的 `resetEvents` 清空。
+- **`messages.jsonl`**（内容通道）：按 **`(段号, mergeKey)`**（契约的 `messageFoldKey`）/ `subagentId` 覆盖累积——段号必须进键，追问那一段的载体键与首段逐字相同；四格计量**不在这份文件里**（走 `usage` 事件与 `EvalCandidate`）；一行都不产出时不建文件。**重新执行会清空它**（`resetRecords`，下一次尝试是新的对话）⇒ 候选快照上与之对齐的两格（`followUps` / `followUpRounds`）同时归零。
 - **写盘必须原子**：写临时文件（创建即 `0600`）→ `renameSync` 覆盖。**不要先删目标再 rename**——中间崩溃会让配置彻底消失，而 `loadConfig()` 会静默回落默认值。
 - **rename 的 `EPERM` 有两种成因、处置相反**：目标是只读文件（只能先删）与杀软瞬时占用（重试即可）。判据 `statSync(file).mode & 0o200`，别无脑先删。
 - **读盘必须容忍 UTF-8 BOM**（PowerShell 5.1 的 `Set-Content` / `ConvertTo-Json` 默认带 BOM，`JSON.parse` 遇到就抛）；自己落盘不要产 BOM。
@@ -131,5 +131,5 @@ MCP 服务器**不另开文件**：它与主题、根目录、评分配置同住
 
 ## 相关链接
 
-- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《行执行与日志》](/features/row-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与行内注入落点）、[《技能配置》](/features/skills-config)（`settings.skills` 的停用名单、`<配置目录>/skills/` 的目录文法与行内装入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
+- 知识文章：[《事件流》](/protocols/event-stream)（`events.jsonl` 的协议侧）、[《候选执行与日志》](/features/candidate-execution)（八步时序的落盘点）、[《设置》](/features/settings)（workspaceRoot 与 casesRoot 的配置面、用例变更自动提交开关）、[《MCP 配置》](/features/mcp-config)（`settings.mcpServers` 的功能面与候选内注入落点）、[《技能配置》](/features/skills-config)（`settings.skills` 的停用名单、`<配置目录>/skills/` 的目录文法与候选内装入落点）、[《用例管理》](/features/case-management)（用例的读写、列表与删除侧）、[《评分》](/features/judging)（ScoreResult 记账格）
 - 仓库内参考：AGENTS.md「持久化」节（原子写 / BOM / EPERM 口径的真源，互链不复制）

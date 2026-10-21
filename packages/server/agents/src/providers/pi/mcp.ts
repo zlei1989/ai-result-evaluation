@@ -19,7 +19,7 @@ import type { PiLoadedMcpConfig, PiMcpServerConfig, PiMcpServerEntry } from './s
  * 曝光档：**每台都必须写死这个字面量**。
  *
  * 档位与判据是绑定的（`direct` 档工具进 payload 的 `tools`；`deferred` / `codemode` 只把服务器
- * 写进系统提示词的 `mcp_servers` 段；`hidden` 连段都没有）——档位一改，行级观测格那条
+ * 写进系统提示词的 `mcp_servers` 段；`hidden` 连段都没有）——档位一改，运行级观测格那条
  * 「表里没有这一台 ⇒ 没起来」的读法就跟着失真。故值域在类型上收成 `'direct'`。
  */
 export const PI_MCP_EXPOSURE = 'direct' as const;
@@ -27,7 +27,7 @@ export const PI_MCP_EXPOSURE = 'direct' as const;
 /**
  * 第一次 prompt 等 `direct` 档服务器多久（毫秒）。
  *
- * pi 的默认值是 10000，这里显式写同一个数：不写就等于把一行的时间行为交给厂商的缺省
+ * pi 的默认值是 10000，这里显式写同一个数：不写就等于把一本次运行的时间行为交给厂商的缺省
  * （改一次我们不会知道），而这一格决定了「服务器起得慢」是被等还是被记成没起来。
  * 它**不是连接超时**——超时只影响第一次 prompt 的等待，之后照常重连。
  */
@@ -107,7 +107,7 @@ export function toPiMcpServers(servers: McpServers): { entries: PiMcpServerEntry
  * （`loadConfig` 故意不做 schema 校验，手改的配置能一路读到这里）。
  *
  * ⚠️ **这里判的每一条都必须在契约层也能拦**（`resolveMcpServers` 的 `invalid` 桶），否则
- * 「契约说合法、我们摘掉」的那一条会被行级观测格读成「厂商没起来」——整行假失败，且文案指着一台
+ * 「契约说合法、我们摘掉」的那一条会被运行级观测格读成「厂商没起来」——整行假失败，且文案指着一台
  * 从没起过的服务器。两层的判据**同源**（名字 / env 键 / headers 键的模式都从 `@aieval/contracts` 取），
  * 这一层只是手改配置的第二道防线。唯一的例外是**容器格不是数组**（见下面 `args` 那一条）：
  * 契约用 zod 判形状，这一层只能自己判，判不出来就摘掉——**绝不抛**（抛会让整行以一句与真因

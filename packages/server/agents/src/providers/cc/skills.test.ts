@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * cc 的**技能装入**接缝：`AgentRunInput.skills` → 行配置目录里的那份副本。
+ * cc 的**技能装入**接缝：`AgentRunInput.skills` → 候选配置目录里的那份副本。
  *
  * 为什么这几条守卫落在适配器这一层：物化本体在 `core`（整目录复制、穿越拦截、幂等都在那边测），
  * 而这里要钉的是**谁来调、什么时候调、不传时写不写**——三者都是静默失效型：
@@ -9,7 +9,7 @@
  *   · **落盘失败 ⇒ 带码失败**：抛出的 `SkillMaterializeError` 必须归成
  *     `AGENT_SKILLS_UNAVAILABLE`（而不是缺省那个 `AGENT_FAILED`——它在自动重试表里）；
  *   · **时序**：CC 在 `query()` 那一刻扫 `CLAUDE_CONFIG_DIR/skills`，写晚了它那一次启动就看不到，
- *     而这件事**不报错**（只是这一行白跑）。
+ *     而这件事**不报错**（只是这个候选白跑）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,8 +27,8 @@ let sourceDir: string;
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'aieval-claude-skills-'));
-  // 行配置目录刻意**不预建**：契约只说「该行独立配置目录」，没说它一定存在
-  configHome = join(tempRoot, 'rows', 'row-1', '.agenthome');
+  // 候选配置目录刻意**不预建**：契约只说「该候选独立配置目录」，没说它一定存在
+  configHome = join(tempRoot, 'candidates', 'row-1', '.agenthome');
   sourceDir = join(tempRoot, 'skills', 'alpha');
   mkdirSync(join(sourceDir, 'scripts'), { recursive: true });
   writeFileSync(join(sourceDir, 'SKILL.md'), '---\nname: alpha\ndescription: 示例\n---\n\n正文\n', 'utf8');
@@ -52,12 +52,12 @@ describe('cc 装入技能', () => {
   it('不传 skills ⇒ 技能目录一个字节都不写（「只候选执行」由「不传」表达）', async () => {
     await runClaude(createRunInput({ configHome }));
 
-    // 判据是技能落点本身：`skills/` 连建都不该建（建了就等于适配器在替调用方表「本行要装零条」）
+    // 判据是技能落点本身：`skills/` 连建都不该建（建了就等于适配器在替调用方表「候选要装零条」）
     expect(existsSync(join(configHome, 'skills'))).toBe(false);
     if (existsSync(configHome)) expect(readdirSync(configHome)).not.toContain('skills');
   });
 
-  it('传了 skills ⇒ 整目录落进 <行配置目录>/skills/<名称>，附属文件一起过去', async () => {
+  it('传了 skills ⇒ 整目录落进 <候选配置目录>/skills/<名称>，附属文件一起过去', async () => {
     await runClaude(createRunInput({ configHome, skills: [{ name: 'alpha', sourceDir }] }));
 
     const installed = join(configHome, 'skills', 'alpha');
@@ -71,7 +71,7 @@ describe('cc 装入技能', () => {
       sdkModule: {
         [CLAUDE_PACKAGE_NAME]: {
           query: (params: { options: Record<string, unknown> }) => {
-            // 装配时刻的快照点：CC 这一次启动扫的就是此刻的 skills/，写晚了这一行白跑且不报错
+            // 装配时刻的快照点：CC 这一次启动扫的就是此刻的 skills/，写晚了这个候选白跑且不报错
             seenAtQuery = existsSync(join(configHome, 'skills', 'alpha', 'SKILL.md'));
             void params;
             return { async *[Symbol.asyncIterator]() {} };
@@ -86,7 +86,7 @@ describe('cc 装入技能', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('源目录读不到 ⇒ 该次运行失败、码是 AGENT_SKILLS_UNAVAILABLE、文案点名哪一条', async () => {
+  it('源目录读不到 ⇒ 该次运行的失败、码是 AGENT_SKILLS_UNAVAILABLE、文案点名哪一条', async () => {
     const { result } = await runClaude(
       createRunInput({ configHome, skills: [{ name: 'ghost', sourceDir: join(tempRoot, 'skills', 'ghost') }] }),
     );

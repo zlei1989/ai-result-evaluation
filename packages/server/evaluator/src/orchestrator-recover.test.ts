@@ -20,14 +20,14 @@ import {
   writeFileSync,
   join,
   readEvents,
-  rowEventsFile,
+  candidateEventsFile,
   runSnapshotFile,
   recoverInterruptedRuns,
   getRun,
   saveRun,
   fakeAgents,
   fakeAgentsModule,
-  makeRowFixture,
+  makeCandidateFixture,
   makeRunFixture,
   makeScoreFixture,
   resetFakeAgents,
@@ -50,12 +50,12 @@ registerOrchestratorHooks();
 /* ===================================================================================================
  * 重启恢复
  *
- * 这是 `interrupted` 终态在**本仓唯一的生产路径**：上一进程被杀（或正常重启）之后，行会停在
+ * 这是 `interrupted` 终态在**本仓唯一的生产路径**：上一进程被杀（或正常重启）之后，候选会停在
  * `preparing` / `running` / `judging` 这些非终态上，而 agent 子进程已经不存在了——「续跑」需要
  * 独立进程托管，本期不做，恢复只做「收尾」：把在途行标 `interrupted`、把轮收成 `partial`。
  *
  * 三条容易被写错、坏了会直接伤到使用者的地方，各有独立用例：
- *   ① **不误伤终态行**：`failed` 行上的失败原因、`timed-out` 行上的超时原因都是使用者排查的唯一线索，
+ *   ① **不误伤终态行**：`failed` 候选上的失败原因、`timed-out` 候选上的超时原因都是使用者排查的唯一线索，
  *      被一次恢复改写成「被重启打断」就永久丢了；
  *   ② **一条坏快照不得挡住其它轮次**：坏文件在 `listRuns` 里跳过并 WARN，而不是让启动钩子抛错
  *      （启动钩子抛错会让整个 Next 服务起不来）；
@@ -63,27 +63,27 @@ registerOrchestratorHooks();
  * =================================================================================================== */
 
 describe('recoverInterruptedRuns（重启不自动续跑）', () => {
-  it('只把 preparing / running / judging 的行标 interrupted，一个终态行都不动', () => {
-    const rows = [
-      makeRowFixture({ status: 'judged', score: makeScoreFixture(true) }),
-      makeRowFixture({ status: 'failed', error: { code: 'AGENT_FAILED', message: '上次失败的原因' } }),
-      makeRowFixture({ status: 'running' }),
-      makeRowFixture({ status: 'preparing' }),
-      makeRowFixture({ status: 'judging' }),
-      makeRowFixture({ status: 'canceled' }),
-      makeRowFixture({ status: 'timed-out', error: { code: 'AGENT_TIMED_OUT', message: '上次超时' } }),
-      makeRowFixture({ status: 'skipped' }),
-      makeRowFixture({ status: 'interrupted' }),
-      makeRowFixture({ status: 'pending' }),
+  it('只把 preparing / running / judging 的候选标 interrupted，一个终态候选都不动', () => {
+    const candidates = [
+      makeCandidateFixture({ status: 'judged', score: makeScoreFixture(true) }),
+      makeCandidateFixture({ status: 'failed', error: { code: 'AGENT_FAILED', message: '上次失败的原因' } }),
+      makeCandidateFixture({ status: 'running' }),
+      makeCandidateFixture({ status: 'preparing' }),
+      makeCandidateFixture({ status: 'judging' }),
+      makeCandidateFixture({ status: 'canceled' }),
+      makeCandidateFixture({ status: 'timed-out', error: { code: 'AGENT_TIMED_OUT', message: '上次超时' } }),
+      makeCandidateFixture({ status: 'skipped' }),
+      makeCandidateFixture({ status: 'interrupted' }),
+      makeCandidateFixture({ status: 'pending' }),
     ];
-    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows, status: 'running' });
+    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates, status: 'running' });
     saveRun(run);
 
     const result = recoverInterruptedRuns();
 
-    expect(result.recovered).toBe(3); // 单位是**行数**
+    expect(result.recovered).toBe(3); // 单位是**候选数**
     const saved = getRun(run.id);
-    expect(saved.rows.map((row) => row.status)).toEqual([
+    expect(saved.candidates.map((candidate) => candidate.status)).toEqual([
       'judged', // 终态行原样
       'failed',
       'interrupted',
@@ -92,26 +92,26 @@ describe('recoverInterruptedRuns（重启不自动续跑）', () => {
       'canceled',
       'timed-out',
       'skipped',
-      'interrupted', // 本来就是 interrupted 的行不算「本次恢复」，也不被改写
-      'pending', // 从未开跑的行不碰
+      'interrupted', // 本来就是 interrupted 的候选不算「本次恢复」，也不被改写
+      'pending', // 从未开跑的候选不碰
     ]);
-    // 终态行的证据必须原样保留（这正是「不误伤」的判据：分数与错误原因都还在）
-    expect(saved.rows[0]?.score?.totalScore).toBe(30);
-    expect(saved.rows[1]?.error?.message).toBe('上次失败的原因');
-    expect(saved.rows[6]?.error?.message).toBe('上次超时');
+    // 终态候选的证据必须原样保留（这正是「不误伤」的判据：分数与错误原因都还在）
+    expect(saved.candidates[0]?.score?.totalScore).toBe(30);
+    expect(saved.candidates[1]?.error?.message).toBe('上次失败的原因');
+    expect(saved.candidates[6]?.error?.message).toBe('上次超时');
     // 轮不再「运行中」：否则界面会一直转圈而没有任何行在跑
     expect(saved.status).toBe('partial');
     expect(saved.finishedAt).not.toBeNull();
   });
 
-  it('被恢复的行在事件日志里留下一句解释（日志抽屉停在半路时，看的人要知道是服务没了）', () => {
-    const row = makeRowFixture({ status: 'running' });
-    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [row], status: 'running' });
+  it('被恢复的候选在事件日志里留下一句解释（日志抽屉停在半路时，看的人要知道是服务没了）', () => {
+    const candidate = makeCandidateFixture({ status: 'running' });
+    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [candidate], status: 'running' });
     saveRun(run);
 
     recoverInterruptedRuns();
 
-    const events = readEvents(rowEventsFile(home.workspaceRoot, run.id, row.id));
+    const events = readEvents(candidateEventsFile(home.workspaceRoot, run.id, candidate.id));
     const logText = events
       .filter((event) => event.type === 'log')
       .map((event) => (event.type === 'log' ? event.text : ''))
@@ -122,14 +122,14 @@ describe('recoverInterruptedRuns（重启不自动续跑）', () => {
 
   it('一条坏快照不会挡住其它轮次的恢复（跳过 + WARN，不是整轮启动失败）', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const good = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [makeRowFixture({ status: 'running' })], status: 'running' });
-    const broken = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [makeRowFixture({ status: 'running' })], status: 'running' });
+    const good = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [makeCandidateFixture({ status: 'running' })], status: 'running' });
+    const broken = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [makeCandidateFixture({ status: 'running' })], status: 'running' });
     saveRun(good);
     saveRun(broken);
     writeFileSync(runSnapshotFile(home.workspaceRoot, broken.id), '{ 半截', 'utf8');
 
     expect(recoverInterruptedRuns().recovered).toBe(1);
-    expect(getRun(good.id).rows[0]?.status).toBe('interrupted');
+    expect(getRun(good.id).candidates[0]?.status).toBe('interrupted');
     expect(warn).toHaveBeenCalled();
   });
 
@@ -140,13 +140,13 @@ describe('recoverInterruptedRuns（重启不自动续跑）', () => {
    * 比只数 `end` 事件更难被一个「看起来对」的实现混过去。
    */
   it('幂等：第二次调用不追加任何事件、不改写轮状态（连续两次的 run.json 逐字节相同）', () => {
-    const row = makeRowFixture({ status: 'running' });
-    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [row], status: 'running' });
+    const candidate = makeCandidateFixture({ status: 'running' });
+    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [candidate], status: 'running' });
     saveRun(run);
 
     expect(recoverInterruptedRuns().recovered).toBe(1);
     const snapshotFile = runSnapshotFile(home.workspaceRoot, run.id);
-    const eventsFile = rowEventsFile(home.workspaceRoot, run.id, row.id);
+    const eventsFile = candidateEventsFile(home.workspaceRoot, run.id, candidate.id);
     const snapshotAfterFirst = readFileSync(snapshotFile, 'utf8');
     const eventsAfterFirst = readEvents(eventsFile);
 
@@ -162,31 +162,31 @@ describe('recoverInterruptedRuns（重启不自动续跑）', () => {
   /**
    * **陈旧的 `listRuns()` 结果不得改写终态行**。
    *
-   * 恢复先用 `listRuns()` 挑出「看起来在途」的行，再逐行 `setRowStatus(…, 'interrupted')`；而
-   * `setRowStatus` 只按 id 定位、**不比对当前状态**。若某一行在「读列表」与「改写」之间跑完（`judged`），
+   * 恢复先用 `listRuns()` 挑出「看起来在途」的候选，再逐行 `setCandidateStatus(…, 'interrupted')`；而
+   * `setCandidateStatus` 只按 id 定位、**不比对当前状态**。若某一行在「读列表」与「改写」之间跑完（`judged`），
    * 恢复就会把它的分数与状态一起抹掉——正是本函数开头承诺「终态行一字不动」要防的事——光把承诺写在注释里不够，循环里必须有二次复检。
    *
    * 窗口在今天不可达（唯一调用点是启动钩子，那一瞬没有行在跑），所以判据造在**模块边界**上：
-   * 让 `listRuns()` 返回一份**陈旧**快照（说该行还在 `running`），而磁盘上的当前快照里它已经 `judged`。
-   * 缺了循环里那次二次复检时，这一行的 `judged` 与 30 分会一起被改写成 `interrupted`。
+   * 让 `listRuns()` 返回一份**陈旧**快照（说该候选还在 `running`），而磁盘上的当前快照里它已经 `judged`。
+   * 缺了循环里那次二次复检时，这个候选的 `judged` 与 30 分会一起被改写成 `interrupted`。
    */
-  it('listRuns 的结果陈旧（该行其实已 judged）时不改写它：终态行的分数不许被恢复抹掉（Low-4）', () => {
-    const judged = makeRowFixture({ status: 'judged', score: makeScoreFixture(true) });
-    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, rows: [judged], status: 'running' });
+  it('listRuns 的结果陈旧（该候选其实已 judged）时不改写它：终态候选的分数不许被恢复抹掉（Low-4）', () => {
+    const judged = makeCandidateFixture({ status: 'judged', score: makeScoreFixture(true) });
+    const run = makeRunFixture({ workspaceRoot: home.workspaceRoot, candidates: [judged], status: 'running' });
     saveRun(run);
     // 恢复「读到」的那份列表：同一轮同一行，但在列表里它还是 running
-    injected.staleList = [{ ...run, rows: [{ ...judged, status: 'running' }] }];
+    injected.staleList = [{ ...run, candidates: [{ ...judged, status: 'running' }] }];
 
     const result = recoverInterruptedRuns();
 
     expect(result.recovered).toBe(0);
     const saved = getRun(run.id);
-    expect(saved.rows[0]?.status).toBe('judged');
-    expect(saved.rows[0]?.score?.totalScore).toBe(30);
-    // 一个字节的事件都不该写：连那句「服务重启：该行执行已中断」都不该出现
-    expect(readEvents(rowEventsFile(home.workspaceRoot, run.id, judged.id))).toEqual([]);
+    expect(saved.candidates[0]?.status).toBe('judged');
+    expect(saved.candidates[0]?.score?.totalScore).toBe(30);
+    // 一个字节的事件都不该写：连那句「服务重启：该候选执行已中断」都不该出现
+    expect(readEvents(candidateEventsFile(home.workspaceRoot, run.id, judged.id))).toEqual([]);
     // 轮级收尾照旧发生（它读的是当前快照，而此刻确实没有任何行在跑，`partial` 是对的）：
-    // 本用例只钉「行级不许被改写」这一半
+    // 本用例只钉「候选级不许被改写」这一半
     expect(saved.status).toBe('partial');
   });
 });
@@ -199,7 +199,7 @@ describe('recoverInterruptedRuns（重启不自动续跑）', () => {
  * 没法让一个已经挂在 gate 里的 `run()` 落定。用例超时（本机的环境性超时，实测有 60s 以上
  * 才建完夹具的）把一行丢在 gate 里之后，那一行唯一的终结者是编排层的**行兜底定时器**
  * （默认配置下约 33 分钟后才响），它迟到的 `concurrent -= 1` 会落进**后面某个用例**的断言窗口，
- * 让「三行同时在跑」那条断言以 `expected 3, received 2` 随机变红（已真实发生过一次，不可复现）。
+ * 让「三个候选同时在跑」那条断言以 `expected 3, received 2` 随机变红（已真实发生过一次，不可复现）。
  *
  * 这一段钉住代际守卫的**区分力**：去掉守卫，下面那条断言立刻变红（见任务报告的变异记录）。
  * 注意它用的是 `fakeAgentsModule()` **直接**起一次假运行，而不是穿过编排层：

@@ -10,7 +10,7 @@
  *     全靠这一格才可观测；
  *  4. **装配顺序可观测**：每一步都往 `assemblyOrder` 里记一笔，顺序错了当场看得见。
  *
- * `ModelRuntime` 那一格刻意**不模拟出站**：它记录「本行注册了哪个 provider、密钥进了哪一份内存表」，
+ * `ModelRuntime` 那一格刻意**不模拟出站**：它记录「本次运行注册了哪个 provider、密钥进了哪一份内存表」，
  * 而真正的出站隔离由 `index.test.ts` 的并发用例拿**真包 + 本地假网关**证明
  * （假件证明不了「请求打到哪台」，那是夹具的性质而不是产品代码的性质）。
  */
@@ -69,7 +69,7 @@ export interface FakePiRecorder {
   bindings: Record<string, unknown> | null;
   /** `ModelRuntime.create` 拿到的选项原文（凭据通道与 `modelsPath` 的判据） */
   runtimeOptions: Record<string, unknown> | null;
-  /** 本行注册的 provider id 与配置 */
+  /** 本次运行注册的 provider id 与配置 */
   registered: Array<{ providerId: string; config: Record<string, unknown> }>;
   /** 已注销的 provider id */
   unregistered: string[];
@@ -139,7 +139,7 @@ export interface FakePiRecorder {
    */
   registryClaims: number;
   /**
-   * 释放序列里**扩展侧**收到过什么（本行装了会听 `session_shutdown` 的扩展时才有内容）：
+   * 释放序列里**扩展侧**收到过什么（本次运行装了会听 `session_shutdown` 的扩展时才有内容）：
    * 元素形如 `session_shutdown:quit`。与 `releaseOrder` 一起用，才判得出「发在 dispose 之前」。
    */
   extensionShutdowns: string[];
@@ -192,7 +192,7 @@ export interface FakePiSdkOptions {
    * 真实 pi 在 reload 里执行子智能体扩展的工厂（claim 点），假件在同一位置挂这一份——
    * 缺省 `{ getRecord: () => undefined }`（扩展在表里、但没有任何子会话记录，绝大多数用例
    * 的姿态）；给 `null` 模拟「claim 没发生」（快照落空 ⇒ wire 通道降级那一条通路）。
-   * **每次 reload 现造一份**：真机上每次工厂执行都 `new AgentManager`，并发两行的隔离判据
+   * **每次 reload 现造一份**：真机上每次工厂执行都 `new AgentManager`，并发两本次运行的隔离判据
    * （两行各自快照到不同的条目）靠这一份新实例成立。
    */
   registryEntryFactory?: (() => unknown) | null;
@@ -218,7 +218,7 @@ export interface FakePiSdkOptions {
   /** `prompt()` 之后挂住不 resolve（测取消与看门狗） */
   hangPrompt?: boolean;
   /**
-   * 模拟「本行装了会听 `session_shutdown` 的扩展」——生产中就是 MCP 扩展那一档
+   * 模拟「本次运行装了会听 `session_shutdown` 的扩展」——生产中就是 MCP 扩展那一档
    * （它把连接清理挂在那个事件上）。开了之后假件的 `hasHandlers('session_shutdown')` 为真、
    * `emit` 会把事件派给这个处理器并记进 `releaseOrder`：释放序列有没有按厂商顺序补上那一发，
    * 因此是一条可断言的事实而不是注释里的承诺。
@@ -293,7 +293,7 @@ export function createFakePiSdk(options: FakePiSdkOptions): Record<string, unkno
       reloadCount += 1;
       /**
        * 厂商侧的 claim：真实 pi 的扩展工厂在 reload 里执行并按「槽为空才写」挂 manager 注册表
-       * （先到先得）。假件照抄这条语义——产品侧若忘了「快照后删槽」，第二行的 claim 就会
+       * （先到先得）。假件照抄这条语义——产品侧若忘了「快照后删槽」，第二本次运行的 claim 就会
        * 落空、整行退回转写通道，`index.test.ts` 的按 run 划界用例当场红。
        */
       if (options.registryEntryFactory !== null) {

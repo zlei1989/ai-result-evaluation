@@ -84,7 +84,7 @@ describe('buildMcpConfig（表单值 → 契约条目）', () => {
       name: 'context7',
       transport: 'http',
       url: 'https://mcp.context7.com/mcp',
-      // 第二行是用户点了「添加请求头」但没填完：不该以 `{ '': '' }` 的形状落盘
+      // 第二候选是用户点了「添加请求头」但没填完：不该以 `{ '': '' }` 的形状落盘
       headers: [
         { key: 'Accept', value: 'application/json' },
         { key: 'CONTEXT7_API_KEY', value: '' },
@@ -394,18 +394,18 @@ describe('McpServerFormModal', () => {
   });
 
   /**
-   * 形态守卫：键值行是**一张 small Table**，与模型供应商弹窗里那张模型清单同口径。
+   * 形态守卫：键值候选是**一张 small Table**，与模型供应商弹窗里那张模型清单同口径。
    *
    * 判据里**哪些有牙、哪些只是记录**（如实写下来）：
    *   · **`thead` 不渲染**（`showHeader: false`）—— 有牙：去掉 `showHeader: false` ⇒ 这条红；
    *   · **结构是 Table 不是 Space 行布局** —— 有牙：`getByTestId` 找不到就抛（换回 `Space` 行布局即红）；
-   *   · **行的身份用 `Form.List` 的 `key`**（`data-row-key` 在场）—— 防止退回按下标复用；
+   *   · **候选的身份用 `Form.List` 的 `key`**（`data-row-key` 在场）—— 防止退回按下标复用；
    *   · `ant-table-small` 这条**只是记录效果、抓不住「有没有显式给 `size`」**：本仓全局是紧凑密度
    *     （`ConfigProvider` 的 `componentSize`），去掉 `size="small"` 它照样成立（不放红）。
    *     留它是为了写明「与供应商模型弹窗同一档尺寸」这个口径，别把它当守门的那一条。
    * 真实观感与列宽留真机冒烟量（`getBoundingClientRect()`）。
    */
-  it('键值行是一张 small Table（对齐供应商模型弹窗那张表）', () => {
+  it('键值候选是一张 small Table（对齐供应商模型弹窗那张表）', () => {
     renderModal({
       initialName: 'context7',
       initial: servers['context7'] as NonNullable<Parameters<typeof buildMcpConfig>[1]>,
@@ -420,8 +420,8 @@ describe('McpServerFormModal', () => {
     // 两格的可访问名给在输入框自己身上；删除按钮是图标按钮 + aria-label
     expect(screen.getByLabelText('请求头名')).toBeInTheDocument();
     expect(screen.getByLabelText('请求头值')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '删除这一行请求头名' })).toBeInTheDocument();
-    // 行的身份用 Form.List 的 key（不是下标）：删中间一行时值不会串行错位
+    expect(screen.getByRole('button', { name: '删除这个候选请求头名' })).toBeInTheDocument();
+    // 候选的身份用 Form.List 的 key（不是下标）：删中间一行时值不会串行错位
     expect(table.querySelectorAll('tbody tr.ant-table-row')[0]?.getAttribute('data-row-key')).toBeTruthy();
   });
 
@@ -481,8 +481,8 @@ describe('McpServerFormModal', () => {
 
   /**
  * 表单里的「测试连接」：用**当前表单值**测、**不落盘**。
- * 这条与行内那个入口的差别只有一处 —— 测的是手上这份还没保存的输入；其余（loading、结果区、
- * 两段式文案）与行内共用同一个结果区组件，故这里只钉「接线」与「不落盘」这两件事。
+ * 这条与候选内那个入口的差别只有一处 —— 测的是手上这份还没保存的输入；其余（loading、结果区、
+ * 两段式文案）与候选内共用同一个结果区组件，故这里只钉「接线」与「不落盘」这两件事。
  */
   describe('表单里的「测试连接」', () => {
     const PROBE_OK: McpProbeResult = {

@@ -7,7 +7,7 @@
  *   1. **受控**：`value` / `onChange(next)`，本组件不持有状态。每次改动交给调用方**整张新表**
  *      （不做「改一格清掉别的」那种就地改写——那会让 React 看不出变化）；
  *   2. **权重默认给 1**：schema 与 `validateRubric` 都拒绝 0，故新项的初值必须是一个正数，
- *      否则用户点「添加评分项」之后立刻拿到一个非法状态；
+ *      否则用户点「添加」之后立刻拿到一个非法状态；
  *   3. **写侧会拒的东西当场标出**：撞车的**引用键**（有 ID 用 ID、没写 ID 的项按位置分配 `#k`——
  *      键一律取自契约的 `rubricItemKeys`，本组件**不自己拼第二套**）与**超过 `MAX_ITEM_WEIGHT`
  *      的权重**（`validateRubric` 不查上限，它由 `RubricSchema` 在提交时才拒）都当场标红 +
@@ -17,6 +17,8 @@
  * 样式一律走 antd（主题 token / 紧凑密度），不手写字号、不裸写 div 做布局。
  * 按钮形态一律 `color` + `variant` **成对**给：antd 6 里 `variant` 单给会被**静默**降级成实线
  * （`variant="dashed"` 渲染成实线且没有任何可观察信号，同一处说明见 `base/empty-state.tsx`）。
+ * 删除（删组 / 删项）一律是**无边框的纯图标按钮**：`type="text"` + `danger` + 垃圾桶图标，
+ * 文字只出现在 Tooltip 与 `aria-label` 里（图标按 `aria-hidden`，可访问名只挂在按钮上）。
  */
 import {
   MAX_ITEM_WEIGHT,
@@ -27,7 +29,8 @@ import {
   type RubricGroup,
   type RubricItem,
 } from '@aieval/contracts';
-import { Button, Card, Flex, Input, InputNumber, Table, Tag, Typography } from 'antd';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { Button, Card, Flex, Input, InputNumber, Table, Tag, Tooltip, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { ReactNode } from 'react';
 
@@ -61,7 +64,7 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
    * 本组件不再自己拼一套：手写那套只覆盖「字符串相等」，漏掉「没写 ID 的项按 `#k` 按位置引用」这一半——
    * `[{ id: '' }, { id: '#1' }]` 在写侧是两把相同的键（`validateRubric` 会拒），
    * 而在「按 id 字符串比较」的判据下两把键都不算重复，表格一个红框都不给。
-   * `rubricItemKeys` 的展平顺序就是「组序 → 项序」，与表格行的顺序逐行对齐，故按各组的项数切片即可。
+   * `rubricItemKeys` 的展平顺序就是「组序 → 项序」，与表格候选的顺序逐行对齐，故按各组的项数切片即可。
    */
   const keysByGroup = ((): string[][] => {
     const keys = rubricItemKeys(value);
@@ -77,7 +80,7 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
   /** 第 g 组第 i 项的引用键。越界给 `''`：真键要么是 ID、要么是 `#k`，永远不是空串，故不会误判成撞车 */
   const keyAt = (groupIndex: number, itemIndex: number): string => keysByGroup[groupIndex]?.[itemIndex] ?? '';
 
-  /** 撞车的引用键（出现 > 1 次）：行内红框就是它，判据与写侧同一份 */
+  /** 撞车的引用键（出现 > 1 次）：候选内红框就是它，判据与写侧同一份 */
   const duplicatedKeys = ((): Set<string> => {
     const seen = new Set<string>();
     const duplicated = new Set<string>();
@@ -134,7 +137,7 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
 
   /**
    * 某一组的列定义。**必须按组生成**（闭包捕获 groupIndex），不能用一份共享的 columns
-   * 再去数据里反查组索引——那在「两项内容完全相同」时会改错项（典型场景：连点两次「添加评分项」）。
+   * 再去数据里反查组索引——那在「两项内容完全相同」时会改错项（典型场景：连点两次「添加」）。
    */
   const columnsFor = (groupIndex: number, group: RubricGroup): TableColumnsType<{ item: RubricItem; index: number }> => [
     {
@@ -198,18 +201,23 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
       : [
         {
           title: '',
-          width: 72,
+          // 纯图标按钮没有文字撑宽：列宽只留按钮 + 单元格左右内边距，图标贴右
+          width: 30,
+          align: 'right' as const,
           render: (_: unknown, { index }: { item: RubricItem; index: number }) => (
-            <Button
-              size="small"
-              color="default"
-              variant="text"
-              autoInsertSpace={false}
-              data-testid={`rubric-remove-item-${groupIndex}-${index}`}
-              onClick={() => replaceGroup(groupIndex, group.items.filter((_, itemIndex) => itemIndex !== index))}
-            >
-              删除
-            </Button>
+            <Tooltip title="删除项">
+              {/* 图标按钮的可访问名只挂在 `aria-label` 上，与 Tooltip 同名；图标本身 `aria-hidden`，
+                  否则 `@ant-design/icons` 自带的 `aria-label="delete"` 会混进可访问名 */}
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined aria-hidden />}
+                aria-label="删除项"
+                data-testid={`rubric-remove-item-${groupIndex}-${index}`}
+                onClick={() => replaceGroup(groupIndex, group.items.filter((_, itemIndex) => itemIndex !== index))}
+              />
+            </Tooltip>
           ),
         },
       ]),
@@ -255,15 +263,17 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
           }
           extra={
             readOnly ? undefined : (
-              <Button
-                size="small"
-                danger
-                autoInsertSpace={false}
-                data-testid={`rubric-remove-group-${groupIndex}`}
-                onClick={() => onChange({ groups: value.groups.filter((_, index) => index !== groupIndex) })}
-              >
-                删除组
-              </Button>
+              <Tooltip title="删除组">
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined aria-hidden />}
+                  aria-label="删除组"
+                  data-testid={`rubric-remove-group-${groupIndex}`}
+                  onClick={() => onChange({ groups: value.groups.filter((_, index) => index !== groupIndex) })}
+                />
+              </Tooltip>
             )
           }
         >
@@ -280,10 +290,11 @@ export function RubricTable({ value, onChange, readOnly = false }: RubricTablePr
               color="default"
               variant="dashed"
               autoInsertSpace={false}
+              icon={<PlusOutlined aria-hidden />}
               data-testid={`rubric-add-item-${groupIndex}`}
               onClick={() => replaceGroup(groupIndex, [...group.items, { ...NEW_ITEM }])}
             >
-              添加评分项
+              添加
             </Button>
           )}
         </Card>

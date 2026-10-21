@@ -8,7 +8,7 @@
  * （`build-model.ts` 按 `message.subagentId` 分桶、按 `message.roundTrip` 分轮）**一条轮次都建不出来**，
  * 「子智能体日志不显示」就是这么来的——消息不在产物里，是**根本没采到**。
  *
- * 两条候选通道都**取不到子会话正文**，故不用：
+ * 两条本次运行通道都**取不到子会话正文**，故不用：
  *   · 扩展事件总线除 `subagents:started / completed / failed` 外只有身份与元数据频道
  *     （`created` / `compacted` / `steered` / `scheduled` / `ready`），没有内容帧；
  *   · `Agent` 工具的 `tool_execution_update` 载荷只有一行 spinner 活动文案
@@ -18,9 +18,9 @@
  * 真正带正文的是**扩展自己写的转写文件**（`@tintinweb/pi-subagents` 的 `output-file.ts`，
  * 默认开）：每个子智能体一份 JSONL，`turn_end` 时 flush ⇒ 运行中就能读到已落的那一段。
  *
- * ## 逐行的形状与「复用而不是另写一个解析器」
+ * ## 逐本次运行的形状与「复用而不是另写一个解析器」
  *
- * 每行是 `{isSidechain, agentId, type, message, timestamp, cwd}`：
+ * 每个本次运行是 `{isSidechain, agentId, type, message, timestamp, cwd}`：
  *   · `type: 'assistant'` 的 `message` 与父会话 `message_end.message` **同构**
  *     （`content[]` 的 `text` / `thinking` / `toolCall`、`usage`、`stopReason`、`responseId`）
  *     ⇒ 直接交给 `piAssistantMessageDraft`，这一层不重写块解析；
@@ -28,7 +28,7 @@
  *     `content[]` / `isError` / `durationMs`），与 `tool_execution_end` 只差一层信封
  *     （正文在 `message.content` 而不是 `event.result.content`）⇒ 拼成等价事件后交给
  *     `piToolResultMessageDraft`，正文抽取与块构造同样只有一份实现；
- *   · `type: 'user'` / `'system'` **不投影**：首行是这次派发的任务提示词，它在主会话时间轴里
+ *   · `type: 'user'` / `'system'` **不投影**：首本次运行是这次派发的任务提示词，它在主会话时间轴里
  *     已经逐字可见（`Agent` 工具调用块的 `input`），再当一条消息只会让子任务节点的首轮
  *     混进一句不是它自己说的话。
  *
@@ -36,13 +36,13 @@
  *
  * `roundTrip` 取该子会话自己的模型往返序（每条助手行 +1，工具结果沿用当前号）——
  * 与 claude 的 `roundTripOfSession` 逐字同一条口径（主会话与各子会话各数各的）。
- * 共用一个计数器会让子任务那几十条消息全落在同一个轮次行里（界面按 `message.roundTrip`
+ * 共用一个计数器会让子任务那几十条消息全落在同一个轮次本次运行里（界面按 `message.roundTrip`
  * 给每个会话节点分轮）。
  *
  * ## 三条读取纪律
  *
  *   · **路径自己算，不扫目录**：转写根（`<tmpdir>/pi-subagents-<uid>`）是**全机共享**的，
- *     扫目录找文件会让并发的两行互相认领对方的子任务 ⇒ 路径由**本行的 `cwd` + 本会话的
+ *     扫目录找文件会让并发的两行互相认领对方的子任务 ⇒ 路径由**本次运行的 `cwd` + 本会话的
  *     `sessionId`**（`AgentSession.sessionId`，与扩展取号的那一处同源）+ 子任务身份拼出来；
  *   · **宽容解析**：文件是边跑边追加的，末行可能停在半截 ⇒ 逐行 `JSON.parse`、坏行跳过、
  *     **丢掉没有换行结尾的末行**，一次都不抛（读子任务正文失败不该把一次跑完的运行翻成失败）；
@@ -234,7 +234,7 @@ export function projectTranscriptLines(
       if (draft !== null) messages.push(stamp(draft, agentId, sessionId));
       continue;
     }
-    // `user`（首行是派发提示词，主会话时间轴里已有）与 `system` 不投影
+    // `user`（首本次运行是派发提示词，主会话时间轴里已有）与 `system` 不投影
   }
   return { messages, dropped };
 }

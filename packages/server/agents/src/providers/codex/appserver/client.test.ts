@@ -487,7 +487,7 @@ describe('createAppServerClient —— 报文方向只看有没有 method', () =
    * **合法 JSON 但不是帧**的那些行：不许崩、要进坏帧计数、后面的帧照常。
    *
    * 要拦的缺陷：`JSON.parse('null')` 是**合法 JSON**，而 `null.id` 会抛
-   * `TypeError: Cannot read properties of null (reading 'id')`——这一行是从 socket 的 `data`
+   * `TypeError: Cannot read properties of null (reading 'id')`——这个候选是从 socket 的 `data`
    * 处理器里跑出来的，抛出去就是**未捕获异常**（Node 的默认处置是打印后 `process.exit(1)`），
    * 带走整个宿主进程（本仓是 Next 服务）。数字 / 字符串不抛，但会一路滑到「认不出归属」那一支
    * ⇒ `unparsedFrames()` 少算它们，计数就不再是「坏帧数」。
@@ -508,8 +508,8 @@ describe('createAppServerClient —— 报文方向只看有没有 method', () =
       child.emitRaw('null\n');
       child.emitRaw('123\n');
       child.emitRaw('"x"\n');
-      expect(uncaught, '这些行一行都不许抛未捕获异常（宿主进程会因此退出）').toEqual([]);
-      expect(client.unparsedFrames(), '三行都要计入坏帧').toBe(3);
+      expect(uncaught, '这些行一个候选都不许抛未捕获异常（宿主进程会因此退出）').toEqual([]);
+      expect(client.unparsedFrames(), '三个候选都要计入坏帧').toBe(3);
       // 后面的真帧照常配对：坏行不该污染请求-响应这条线
       const pending = client.request('thread/list', {});
       child.emitRaw(`${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { ok: true } })}\n`);

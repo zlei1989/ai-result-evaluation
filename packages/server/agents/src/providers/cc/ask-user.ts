@@ -130,7 +130,7 @@ function ccAnswerValueOf(answer: AskUserAnswer, question: AskUserQuestion): unkn
  *
  * 为什么必须说出来、而不是交一张空表：空表在厂商那一侧与「每一题都没配上键」**同形**，
  * 模型会按「用户什么都没选」继续往下做——而事实是**根本没有人答**（等超时 / 通道不可用 /
- * 厂商当场拒 / 随行终止…六种各不相同）。另三家都把这件事说给模型听（pi 渲染「没有人回答」、
+ * 厂商当场拒 / 随本次运行终止…六种各不相同）。另三家都把这件事说给模型听（pi 渲染「没有人回答」、
  * dsh 交「委派」、codex 的空表是厂商原生的无答案语义），cc 这一家原来**整格丢掉 `outcome`**。
  *
  * 文案点名**收场方式**（排障要搜的就是它），并明确下一步——不要卡在这儿反复问。
@@ -145,7 +145,7 @@ function ccUnansweredMessage(outcome: AskUserReply['outcome']): string {
  * 为什么其余工具也要回答：挂上这个钩子之后 CLI 就不再自己拍板，返回 `null` 或不返回都等于
  * **没有 control_response**，那个工具会一直挂着（厂商的类型面把 `null` 留给「已经用带外通道答过了」）。
  * 而「全权档下普通工具根本不会进这一格」是厂商预授权的既成事实（真机读数里只有提问工具有
- * `requires_user_interaction`），故这里放行普通工具**不放松任何权限档**——放行的那一类从来没有走到这里。
+ * `requires_user_interaction`），故这里放行普通工具**不放松任何权限档**——放本次运行的那一类从来没有走到这里。
  *
  * ⚠️ **「没挂应答面就一格都不加」这件事发生在调用点**（`index.ts` 看 `context.askUser.available`），
  * 不在这个函数里：本函数无条件返回一个真回调。挂了它就会让厂商多出几件需要用户介入的工具
@@ -201,7 +201,7 @@ export function ccAskUserPermission(
      * （`sdk.mjs` 的 `handleControlCancelRequest`）⇒ 那一帧早已无人接收，等满一个预算（缺省十分钟）
      * 只是把界面上的卡片与挂起表白占着，最后写回去的 control_response 也只会被厂商丢掉。
      * 为什么返回 `deny` 而**不是抛**：抛会打断适配器的流循环（`can_use_tool` 的 rejection 会顺着
-     * `processControlRequest` 冒到 SDK），而「这一帧已经作废」不该升级成整行失败。
+     * `processControlRequest` 冒到 SDK），而「这一帧已经作废」不该升级成整本次运行失败。
      */
     if (asked === VENDOR_CANCELED) {
       return {

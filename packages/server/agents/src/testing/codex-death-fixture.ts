@@ -7,8 +7,8 @@
  * 这个动作本身就不存在（假件的 `die()` 走的是另一条路：它会把待收请求一起拒掉）。
  *
  * 两臂（唯一自变量是**杀不杀**，装配与剧本逐字相同）：
- *   · `control`：不杀，脚本式上游正常收尾 ⇒ 这一行成功（证明这条臂能看见差异）；
- *   · `killed`：`turn/start` 已受理（上游收到过模型请求）之后 `SIGKILL` ⇒ 这一行**必须失败**，
+ *   · `control`：不杀，脚本式上游正常收尾 ⇒ 本次运行成功（证明这条臂能看见差异）；
+ *   · `killed`：`turn/start` 已受理（上游收到过模型请求）之后 `SIGKILL` ⇒ 本次运行**必须失败**，
  *     原因点名进程退出。
  *
  * 子进程句柄由探针经 `spawnFn` 取得（`AppServerClientOptions.spawnFn` 是客户端自己的注入口，
@@ -136,7 +136,7 @@ async function runArm(killMidTurn: boolean): Promise<{ run: CodexDeathRun; root:
       while (Date.now() < deadline && upstream.bodies.length === 0) await new Promise((resolve) => setTimeout(resolve, 25));
       /**
        * 断言这一格的类型再读：`child` 的唯一一次赋值发生在**闭包**里（`spawnFn`），而 TS 的控制流
-       * 分析不穿透闭包 ⇒ 在这一行它仍按声明处的初始值把 `child` 收窄成 `null`，于是 `child?.kill`
+       * 分析不穿透闭包 ⇒ 在本次运行它仍按声明处的初始值把 `child` 收窄成 `null`，于是 `child?.kill`
        * 被判成「在 `never` 上取属性」。断言回声明的类型才是「句柄可能已被赋过值」这个真实语义。
        */
       (child as ReturnType<typeof spawn> | null)?.kill('SIGKILL');

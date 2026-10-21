@@ -57,7 +57,7 @@ afterEach(() => {
 
 /** 一份含中文与 emoji 的转录（**纯文本行**：这一层考的是逐行还原，不是解析规则） */
 const LINES = [
-  '第一行：中文与 emoji 🌟🎉 混排（这一行足够长，保证块界一定落在某个字符中间）',
+  '第一行：中文与 emoji 🌟🎉 混排（这个候选足够长，保证块界一定落在某个字符中间）',
   '',
   '{"type":"assistant","message":{"id":"m-1","usage":{"input_tokens":10,"cache_read_input_tokens":0,"output_tokens":1}}}',
   '最后一行也是中文：汉字尾',
@@ -71,7 +71,7 @@ function writeFixture(name: string, text: string): string {
   return file;
 }
 
-/** 读一份文件、收下每一行（`options` 透传） */
+/** 读一份文件、收下每个候选（`options` 透传） */
 function collectLines(file: string, options: Parameters<typeof readLines>[2] = {}): { lines: string[]; nextOffset: number } {
   const lines: string[] = [];
   const result = readLines(
@@ -94,7 +94,7 @@ describe('readLines：同步分块 + 跨块多字节 + 续读', () => {
     return parts;
   }
 
-  it('块长 7（另加 16/17/18/19/20/23/31/64）切中文 + emoji：每一行与原文逐字节相同', () => {
+  it('块长 7（另加 16/17/18/19/20/23/31/64）切中文 + emoji：每个候选与原文逐字节相同', () => {
     const cases = [
       { name: 'a.jsonl', text: `${LINES.join('\n')}\n` },
       { name: 'b.jsonl', text: LINES.join('\n') },

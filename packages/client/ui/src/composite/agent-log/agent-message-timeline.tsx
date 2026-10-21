@@ -18,9 +18,9 @@
  * 而漂移的表现是「我展开的那条自己合上了」。键放在 L1 而不是 L2，是因为**依赖只准向下**：
  * L1 不许 import L2，而 L2 可以 import L1。
  */
-import { Card, Flex, Tag, theme, Typography } from 'antd';
+import { Alert, Card, Flex, theme, Typography } from 'antd';
 import { Fragment, useMemo, type ReactNode } from 'react';
-import type { RowEvent, LogNodeIndex, LogTurn, MessageCapabilityMap, SessionNode, AgentTokens, TurnRef } from './types';
+import type { CandidateEvent, LogNodeIndex, LogTurn, MessageCapabilityMap, SessionNode, AgentTokens, TurnRef } from './types';
 import { buildRenderBlocks, type RenderBlock } from './render-blocks';
 // 行键只有一处真源：L0 的 `tool-item-detail`（`ToolGroupPanel` 的 React key 与受控行键都用它）。
 // 本文件不另写一份公式——两处各写一遍必然漂，漂了的表现是「失败的行走不到默认展开」。
@@ -41,7 +41,7 @@ import { formatUsageTriple } from '../../base/usage-metrics';
  * 两族卡片用**承载载荷的那个 `tool-call` 块的 `id`**（`cardId`），同一轮多次 `task` 调用因而各自独立。
  * **不用数组下标**：轮次内容会随流式追加变长，下标会漂（「我展开的那条自己合上了」正是这么来的）。
  *
- * 工具组那一格的键**带 `tool-group:` 前缀**：组内每一行的键（`tool-item-detail` 的 `toolEntryKey`，
+ * 工具组那一格的键**带 `tool-group:` 前缀**：组内每个候选的键（`tool-item-detail` 的 `toolEntryKey`，
  * 由 L0 的 `ToolGroupPanel` 消费）本来就是 `callId` 或源块 id，不加前缀的话
  * 「组键」与「该组第一条的行键」会是同一个字符串——展开组会顺带展开第一行，两份状态串成一份。
  */
@@ -50,6 +50,7 @@ export function renderBlockKey(block: RenderBlock, index: number, turnAt: string
     case 'text':
     case 'thinking':
     case 'attachment':
+    case 'image-view':
     case 'unrecognized':
       return block.block.id;
     case 'tool-group': {
@@ -81,7 +82,7 @@ export function turnKey(turn: LogTurn, index: number): string {
 }
 
 /**
- * 挂在第 `index` 轮之后的行级事件。**两条规则，不留洞**：
+ * 挂在第 `index` 轮之后的事件。**两条规则，不留洞**：
  *   ① **有归属键**（`event.turn !== null`）：本轮的 `(subagentId, round)` 与它**逐字相同**才归本轮。 * 本节点没有这一轮 ⇒ **本节点不显示它**（它属于别的会话节点，在那里显示）——回落按时刻会把
  * 「不属于这一轮的读数」混进最后一轮。
  *   ② **没有归属键**（`error` / `warning` / 算不出归属的里程碑）：沿用按时刻的老规则
@@ -90,15 +91,15 @@ export function turnKey(turn: LogTurn, index: number): string {
  * （不丢），最后一轮兜住它之后的全部事件。
  * 比较用字符串字面序（两侧都是数据层给的 ISO 串，字面序即时间序；不解析成 `Date` 也就没有 NaN 这类分支）。
  *
- * ⚠️ 归属键里**没有段**（行级事件是厂商口径的 `(subagentId, round)`）：同一号在多段出现时
+ * ⚠️ 归属键里**没有段**（候选级事件是厂商口径的 `(subagentId, round)`）：同一号在多段出现时
  * 归**段号最大**的那一轮（见 `turnSegmentHomes`）。少这一条时「追问之后的那条用量里程碑」
  * 会落在首段的同号轮次上。
  */
-export function rowEventsOfTurn(
+export function candidateEventsOfTurn(
   turns: readonly LogTurn[],
-  events: readonly RowEvent[],
+  events: readonly CandidateEvent[],
   index: number,
-): readonly RowEvent[] {
+): readonly CandidateEvent[] {
   const turn = turns[index];
   if (turn === undefined) return [];
   const next = turns[index + 1];
@@ -129,9 +130,9 @@ function turnSegmentHomes(turns: readonly LogTurn[]): ReadonlyMap<string, number
   return homes;
 }
 
-/** 行级事件 → 标签色档：`milestone` 中性、`warning` 警告色、`error` 错误色（三档不许合并） */
-const EVENT_TAG_COLOR: Record<RowEvent['level'], string> = {
-  milestone: 'default',
+/** 候选级事件 → `Alert` 色档：`milestone` 成功、`warning` 警告、`error` 错误（三档不许合并） */
+const EVENT_ALERT_TYPE: Record<CandidateEvent['level'], 'success' | 'warning' | 'error'> = {
+  milestone: 'success',
   warning: 'warning',
   error: 'error',
 };
@@ -164,8 +165,8 @@ export interface MessageTimelineProps {
   /** 折叠态（受控）：不传 = 全部按默认态、不可交互 */
   openKeys?: ReadonlySet<string>;
   onOpenChange?(key: string, open: boolean): void;
-  /** 行级事件：有归属键的按「会话 + 号」落到那一轮，无键的按 `at` 落在轮次之间（见 `rowEventsOfTurn`） */
-  rowEvents?: readonly RowEvent[];
+  /** 候选级事件：有归属键的按「会话 + 号」落到那一轮，无键的按 `at` 落在轮次之间（见 `candidateEventsOfTurn`） */
+  candidateEvents?: readonly CandidateEvent[];
   /** 该节点的首条消息（用户提示词）。**L1 不知道它从哪来**，只负责摆最前、不折叠 */
   userPrompt?: SessionNode['userPrompt'];
   /** 只用于给 `buildRenderBlocks` 的轮上下文（规则 3 的兜底定位），不参与任何分支 */
@@ -173,13 +174,17 @@ export interface MessageTimelineProps {
   /** 用户提示词之后的补充提示（如「该子任务的对话未转发」）。**L1 不知道它从哪来，只负责摆** */
   notices?: readonly ReactNode[];
   /**
-   * 下面三个回调补的是的 props 清单里没有、但 `BlockRenderContext` 明确要的三格
+   * 下面两个回调补的是的 props 清单里没有、但 `BlockRenderContext` 明确要的两格
    * （`onEnterNode` 是子任务占位条唯一有副作用的动作）。不给就退化成「没有这个入口」，
-   * 而不是在 L1 里自己造一份导航态。三格全可选 ⇒ 既有的 props 形状一个字段都不用改。
+   * 而不是在 L1 里自己造一份导航态。两格全可选 ⇒ 既有的 props 形状一个字段都不用改。
    */
   onEnterNode?(nodeId: string): void;
   onRetryNode?(nodeId: string): void;
-  onRequestDiagnostics?(): void;
+  /**
+   * 工作区相对路径 → 可加载的图片 URL（`image-view` 块的缩略图）。**L1 只转发**：
+   * 它不知道这个候选的工作区在哪、也不知道宿主用哪条路由取字节（见 `BlockRenderContext.imageSrcOf`）。
+   */
+  imageSrcOf?: (previewPath: string) => string;
   /**
    * 当前节点的**能力声明**：原样进每个块的 `BlockRenderContext`
    * （`AgentRunStateTag` 的「结果未采集 · 原因」就是从这里取的，见 `block-renderer-registry`）。
@@ -190,7 +195,7 @@ export interface MessageTimelineProps {
 
 /**
  * 单轮渲染入口收到的上下文：`MessageTimelineProps` 去掉 `turns`，**外加整份轮次**。
- * 为什么要把 `turns` 带回来：**无归属键的**行级事件按 `at` 落在轮次之间，判定「这一轮是不是最后一个
+ * 为什么要把 `turns` 带回来：**无归属键的**候选级事件按 `at` 落在轮次之间，判定「这一轮是不是最后一个
  * `at` 不晚于事件的轮次」要看邻轮。该字段可选 ⇒ 只给 `Omit<MessageTimelineProps, 'turns'>` 的调用方照样可用。
  */
 export interface TurnRenderContext extends Omit<MessageTimelineProps, 'turns'> {
@@ -207,9 +212,9 @@ export type RenderTurn = (turn: LogTurn, index: number) => ReactNode;
  */
 const DEFAULT_RENDERER: BlockRenderer = blockRendererOf(DEFAULT_BLOCK_RENDERERS);
 
-/** 单轮渲染：左槽（轮次 + 时刻）+ 右内容（渲染块序列 + 挂在轮末的行级事件） */
+/** 单轮渲染：左槽（轮次 + 时刻）+ 右内容（渲染块序列 + 挂在轮末的事件） */
 export function renderTurn(turn: LogTurn, index: number, props: TurnRenderContext): ReactNode {
-  const events = rowEventsOfTurn(props.turns ?? [], props.rowEvents ?? [], index);
+  const events = candidateEventsOfTurn(props.turns ?? [], props.candidateEvents ?? [], index);
   return <TurnRow turn={turn} index={index} props={props} events={events} />;
 }
 
@@ -217,7 +222,7 @@ export function renderTurn(turn: LogTurn, index: number, props: TurnRenderContex
  * 这一轮里**每条 assistant 消息**自己的用量。
  *
  * 为什么必须按逻辑消息去重：同一条消息的正文块与工具调用块带的是**同一个** usage ⇒ 逐块渲染
- * 会把同一行数字画两遍。去重键取 `mergeKey`（**逻辑消息**的定义，见 `ContentBlockBase.mergeKey`）。
+ * 会把同一候选数字画两遍。去重键取 `mergeKey`（**逻辑消息**的定义，见 `ContentBlockBase.mergeKey`）。
  * ⚠️ 同一轮里用 `messageId` 当键**结果相同**（那些块来自同一条折叠后的消息，共用一个 id）——
  * 真正的靶子是「**根本不去重**」，用例 ① 钉的是它。
  *
@@ -245,10 +250,10 @@ function TurnRow({
   turn: LogTurn;
   index: number;
   props: TurnRenderContext;
-  events: readonly RowEvent[];
+  events: readonly CandidateEvent[];
 }): ReactNode {
   const { token } = theme.useToken();
-  const { nodes, activeNodeId = '', openKeys, onOpenChange, renderBlock, onEnterNode, onRetryNode, onRequestDiagnostics, capability } = props;
+  const { nodes, activeNodeId = '', openKeys, onOpenChange, renderBlock, onEnterNode, onRetryNode, capability } = props;
   const dispatch = renderBlock ?? DEFAULT_RENDERER;
 
   // 规则 3 在 `callId` 为 null 时用它兜底定位派发点。
@@ -260,7 +265,7 @@ function TurnRow({
     running: turn.running,
     messageId,
     nodeId: activeNodeId,
-    // 行级汇总那条说明行是**整个节点**的事实，只在第一轮之后画一次（见 `buildRenderBlocks` 的注释）
+    // 候选级汇总那条说明候选是**整个节点**的事实，只在第一轮之后画一次（见 `buildRenderBlocks` 的注释）
     firstTurn: index === 0,
   });
 
@@ -273,28 +278,29 @@ function TurnRow({
     rawOpen: openKeys?.has(`${key}${RAW_DRAWER_SUFFIX}`) ?? false,
     onRawOpenChange: (next) => onOpenChange?.(`${key}${RAW_DRAWER_SUFFIX}`, next),
     openKeys,
-    // 组内每一行的键也是同一份折叠态：同一个 `onOpenChange` 转发即可（键由 L0 按 `callId` 给）
+    // 组内每个候选的键也是同一份折叠态：同一个 `onOpenChange` 转发即可（键由 L0 按 `callId` 给）
     onEntryOpenChange: onOpenChange === undefined ? undefined : (entryKey, next) => onOpenChange(entryKey, next),
     onEnterNode,
     onRetryNode,
-    onRequestDiagnostics,
-    // 能力声明原样下发（L1 不读它）：`AgentRunStateTag` 的「结果未采集 · 原因」取自这里
+    // 图片 URL 的接法与能力声明原样下发（L1 不读它们）：块自己决定画不画缩略图 / 说不说原因
+    imageSrcOf: props.imageSrcOf,
     capability,
   });
 
   return (
-    // `data-turn-row` 是 L2 数「已渲染 N 轮」的锚点（数我们自己标的属性，而不是 antd 内部类名，
-    // 这样嵌套的 Listy 项不会被误算进来）
+    // `data-turn-row` 是**步行**的锚点：值就是行键。`AgentLogLayout` 靠它在滚动区里认出
+    // 「这个容器里真有步行」（换节点会换容器），用例也数它——数的是我们自己标的属性，
+    // 而不是 antd 内部类名（嵌套的 `Listy` 项不会被误算进来）
     <Flex gap={token.marginSM} data-turn-row={turnKey(turn, index)}>
       <Flex vertical align="flex-end" style={{ width: TURN_GUTTER_WIDTH, flexShrink: 0 }}>
-        <Typography.Text type="secondary">{turn.round === null ? '未归属' : `轮次 ${turn.round}`}</Typography.Text>
+        <Typography.Text type="secondary">{turn.round === null ? '未归属' : `第 ${turn.round} 步`}</Typography.Text>
         <Typography.Text type="secondary">{formatClock(turn.at)}</Typography.Text>
       </Flex>
 
       <Flex vertical gap={token.marginSM} style={{ flex: 1, minWidth: 0 }}>
         {turn.durationMs !== null && (
-          // 口径与设计文档的示例一致：轮次耗时带一位小数（「本轮 3.2s」），它不是结算级别的计量
-          <Typography.Text type="secondary">本轮 {(turn.durationMs / 1000).toFixed(1)}s</Typography.Text>
+          // 口径与设计文档的示例一致：单步耗时带一位小数（「本步 3.2s」），它不是结算级别的计量
+          <Typography.Text type="secondary">本步 {(turn.durationMs / 1000).toFixed(1)}s</Typography.Text>
         )}
         {blocks.map((block, blockIndex) => {
           const key = renderBlockKey(block, blockIndex, turn.at);
@@ -303,34 +309,52 @@ function TurnRow({
         {usageFootersOf(turn).map((footer) => (
           // 锚点照 `data-turn-row` / `data-row-event` 的既有习惯：断言数自己标的属性，不数 antd 内部类名。
           // `italic` 是刻意的：顶部事实条是正体灰字、轮末里程碑是 Tag 色块，
-          // 这一行只有斜体才与前两者两两可分；antd 没有比 secondary 更弱的档，所以不引入手写样式。
+          // 这个候选只有斜体才与前两者两两可分；antd 没有比 secondary 更弱的档，所以不引入手写样式。
           <Typography.Text key={footer.mergeKey} type="secondary" italic data-usage-footer>
             本条 {formatUsageTriple(footer.usage)}
           </Typography.Text>
         ))}
-        <RowEventLines events={events} />
+        <CandidateEventLines events={events} />
       </Flex>
     </Flex>
   );
 }
 
 /**
- * 挂在轮末的行级事件（行距 4 = `marginXXS`）。
+ * 挂在轮末的事件（行距 4 = `marginXXS`）。
  *
- * `data-row-event` 是**每一条行级事件**自己的锚点（值是色档 `event.level`）：`data-turn-row` 只标在
- * 轮次行上（一个轮次一行，与这一轮挂了几条事件无关），所以**数用量行只能用这个锚点**。
+ * 形制是一条 `Alert`：`milestone` 成功色、`warning` / `error` 各用自己的色档；文案与事件时刻都在
+ * `Alert` 里面（时刻贴右缘）。
+ * 不用 `Tag` 装整句计量：`Tag` 是短标签，塞进六个数会被撑成与正文抢注意力的灰块，而这条只是过程读数；
+ * `Alert` 的图标与色档让「这一步做成了 / 出了问题」与数字一眼可分。
+ *
+ * `data-row-event` 是**每一条候选级事件**自己的锚点（值是色档 `event.level`）：`data-turn-row` 只标在
+ * 轮次候选上（一个轮次一行，与这一轮挂了几条事件无关），所以**数用量行只能用这个锚点**。
  * 少它的时候「主会话节点里恰好只有它自己那两条用量」这类断言会写成「数轮次行」——恒等于轮次数，
  * 与这一轮挂了几条事件无关。
  */
-function RowEventLines({ events }: { events: readonly RowEvent[] }): ReactNode {
+function CandidateEventLines({ events }: { events: readonly CandidateEvent[] }): ReactNode {
   const { token } = theme.useToken();
   if (events.length === 0) return null;
   return (
     <Flex vertical gap={token.marginXXS}>
       {events.map((event, index) => (
-        <Flex key={`${event.at}#${index}`} align="center" gap={token.marginXXS} data-row-event={event.level}>
-          <Tag color={EVENT_TAG_COLOR[event.level]}>{event.text}</Tag>
-          <Typography.Text type="secondary">{formatClock(event.at)}</Typography.Text>
+        <Flex key={`${event.at}#${index}`} align="center" data-row-event={event.level}>
+          {/* `flex: 1` 让告警占满内容列。不写它时 `Alert` 按内容取宽，多行之间左右缘会参差 */}
+          <Alert
+            type={EVENT_ALERT_TYPE[event.level]}
+            showIcon
+            style={{ flex: 1 }}
+            title={
+              // 时刻与文案同一行：文案吃掉剩余宽度，时刻钉在右缘且不许被挤成两行
+              <Flex align="center" justify="space-between" gap={token.marginXS}>
+                <Typography.Text>{event.text}</Typography.Text>
+                <Typography.Text type="secondary" style={{ flexShrink: 0 }}>
+                  {formatClock(event.at)}
+                </Typography.Text>
+              </Flex>
+            }
+          />
         </Flex>
       ))}
     </Flex>

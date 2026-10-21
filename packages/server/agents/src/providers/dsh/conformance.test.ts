@@ -127,13 +127,13 @@ interface Scenario {
   /** 本次运行要下发的 MCP 服务器（canonical 形状）。**请求侧判据靠它**——不给就没有「发出去什么」可判 */
   mcpServers?: McpServers;
   /**
-   * 本次运行是否**真的装一份技能**（物化到行配置目录）。
+   * 本次运行是否**真的装一份技能**（物化到候选配置目录）。
    * 技能面的两条事实缺一不可：落盘的那份与厂商报回的那份。
    */
   withSkills?: boolean;
 }
 
-/** 行配置目录下真的落了哪些技能副本（落点 `<configHome>/skills/<名称>/`；这家的 `DSH_HOME` 就是它） */
+/** 候选配置目录下真的落了哪些技能副本（落点 `<configHome>/skills/<名称>/`；这家的 `DSH_HOME` 就是它） */
 function readInstalledSkills(configHome: string): string[] {
   try {
     return readdirSync(join(configHome, 'skills'));
@@ -283,7 +283,7 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
 /** 跑一个场景：注入假 SDK → 跑一次真实运行路径 → 收三个回调的产物 */
 async function runScenario(scenario: Scenario): Promise<{ product: ConformanceProduct; prompt: string | null }> {
   const configHome = mkdtempSync(join(tmpdir(), 'dsh-conformance-'));
-  /** 技能源目录另起一个临时根（与行配置目录分开，物化是「读源、写目标」两处） */
+  /** 技能源目录另起一个临时根（与候选配置目录分开，物化是「读源、写目标」两处） */
   const skillRoot = scenario.withSkills === true ? mkdtempSync(join(tmpdir(), 'dsh-conformance-skill-')) : null;
   let skills: { name: string; sourceDir: string }[] | undefined;
   if (skillRoot !== null) {
@@ -315,7 +315,7 @@ async function runScenario(scenario: Scenario): Promise<{ product: ConformancePr
       messages,
       subagents,
       /**
-       * 行级事件**如实收**：`onEvent` 本来就在收（`agentEvents`），不往外给的话、
+       * 候选级事件**如实收**：`onEvent` 本来就在收（`agentEvents`），不往外给的话、
        * 产物里恒填 `events: []` ⇒ 套件的增量隔离判据在这家**永远不可能红**。
        * dsh 的增量是**自造伪通知**走的消息支，最需要这条判据：分流一旦写错（伪通知落进 `log` 兜底），
        * 一次运行几百条就会把「原始输出」面板刷满。
@@ -611,14 +611,14 @@ describeProviderConformance({
    * 事件条数**实测**（不是估的）：把增量排除分支删回去，条数会当场变大。
    *
    * `subagent` 那一格的两条 `usage` 事件来自**子会话**：子会话的 `assistant/message` 带
-   * `data.usage`（真机形状），`assistant/message` 那一支把三元组无条件累进本行 ⇒ 每一次往返
+   * `data.usage`（真机形状），`assistant/message` 那一支把三元组无条件累进行的 ⇒ 每一次往返
    * 一条 `usage`。夹具若不给那一格用量，这一格就少了那两条，判据会把「真出站的那一份」判成错。
    */
   /**
    * 真路径那一格的事件条数也钉住：驱动器把「同一份累计计量快照的重复投送」折成一条之后，
    * 这个数是确定的（见 `testing/dsh-real-path-fixture.ts` 的文件头）。
    *
-   * `session.status`（真机每行两条：`running` / `idle`）**不再投影**（它与轮次、内容、失败都无关，
+   * `session.status`（真机每个候选两条：`running` / `idle`）**不再投影**（它与轮次、内容、失败都无关，
    * 落成原始 JSON 只是噪声）⇒ 每个场景都比旧读数少两条。
    */
   /**
@@ -682,7 +682,7 @@ describe('提问真路径（dsh）', () => {
     // 相对名按 `<dshHome>` 根解析（与适配器的 stream-tap 同一条基准）
     expect(run.pluginLoaded?.url.endsWith('/aieval-ask-answerer.mjs')).toBe(true);
     expect(run.askRecords).toHaveLength(1);
-    // 厂商的提问项形状：`id` / `question` / 选项两格；等待档这一行是本次装配自己的取值
+    // 厂商的提问项形状：`id` / `question` / 选项两格；等待档这个候选是本次装配自己的取值
     const question = run.askRecords[0]?.questions[0];
     expect(question?.id).toBe('q1');
     expect(question?.question).toBe(ASK_QUESTIONS[0]?.prompt);
@@ -699,7 +699,7 @@ describe('提问真路径（dsh）', () => {
     const probe = products['ask-user']?.askUser;
     expect(probe?.control.calls).toBe(0);
     /**
-     * 没有应答面时那一问的收场由**厂商那一档**决定：本行 overlay 的等待档随应答面派生
+     * 没有应答面时那一问的收场由**厂商那一档**决定：候选 overlay 的等待档随应答面派生
      * （没挂 ⇒ 定时档），到点交回的是厂商设计好的「待答」结果——不是夹具编的答案，也不是一次
      * 工具失败。它就是 `askResultTools` 登记的那一截差异。
      * 判据钉**哪一档**那两格（`pending` + `callId`）与厂商那句话的开头：

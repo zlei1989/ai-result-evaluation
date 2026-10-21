@@ -6,10 +6,10 @@
  * 的原始 `StreamChunk`），而 **stdio 通知流不投送它**——jsonrpc-server 任何版本都只订阅
  * `session/event` / `agent/status` / `session/created` / `subagent/end` / `agent/error` 五个进程内事件
  * （源码与真机双重证据，见 `docs/faq/deepseek-harness.md`）。执行日志的打字机效果需要
- * token 级增量 ⇒ 适配器把一个**插件**写进每行的 profile 目录（overlay `insert`，相对名按
+ * token 级增量 ⇒ 适配器把一个**插件**写进每个本次运行的 profile 目录（overlay `insert`，相对名按
  * **`<dshHome>`** 解析——见 `DSH_STREAM_TAP_PLUGIN_RELATIVE_PATH`），由它把 chunk 帧
  * 追加写到 `<configHome>/aieval-stream-tap.jsonl`；本文件在父进程里 tail 这个文件，
- * 把每一行包成 `aieval/delta` **伪通知**（见 `protocol.ts` 的 `DSH_STREAM_DELTA_TYPE`）。
+ * 把每个本次运行包成 `aieval/delta` **伪通知**（见 `protocol.ts` 的 `DSH_STREAM_DELTA_TYPE`）。
  *
  * 两处刻意的设计（改前先读）：
  *  · **旁路文件而不是合成事件**：runtime 里 `session/event` 是「先落会话日志、再通知」的受控
@@ -101,7 +101,7 @@ function tapSessionId(notification: DshNotification): string {
 export interface DshStreamTapGate {
   /** 读出新行并放行**会话已知**的伪通知；未知的挂起（下次 drain 再试）。返回数组可能为空。 */
   drain(knownSessions: ReadonlySet<string>): DshNotification[];
-  /** 释放文件句柄（幂等；未放行的挂起行随之丢弃——增量本就只广播，迟到的丢掉无害） */
+  /** 释放文件句柄（幂等；未放本次运行的挂起行随之丢弃——增量本就只广播，迟到的丢掉无害） */
   close(): void;
 }
 
@@ -290,7 +290,7 @@ export function createDshStreamTapGate(file: string): DshStreamTapGate {
      * ⚠️ **不是**「关掉这条通道」：这份门闸是**跨活动区间复用**的（首轮与每一次追问共用同一个实例，
      * 见 `index.ts` 的 `tap` 注释），而每个区间的流收尾都会调它一次 ⇒ 若在这里立一个「已关闭」标志，
      * 追问区间的增量就会一条都读不出来（子智能体在修正轮里继续说话时整段消失，零报错）。
-     * 语义因此是「**松开句柄、忘掉没放行的行**」：下次 `drain()` 重新打开文件、从记录的偏移接着读
+     * 语义因此是「**松开句柄、忘掉没放本次运行的行**」：下次 `drain()` 重新打开文件、从记录的偏移接着读
      * （偏移与块位次表都不重置，那正是跨区间不重放上一轮增量的原因）。
      */
     close(): void {

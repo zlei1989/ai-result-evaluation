@@ -1,13 +1,13 @@
 /**
- * 每候选行的事件日志（`events.jsonl`）：追加 / 全量读 / 按 seq 续订 / 清空。
+ * 每个候选的事件日志（`events.jsonl`）：追加 / 全量读 / 按 seq 续订 / 清空。
  * 四个必须成立的口径：
  *   1. `seq` 由**本模块**分配（文件里已有的最大 seq + 1，从 1 开始）：单调递增是 SSE
  *      `Last-Event-ID` 续订与前端去重的唯一依据，交给调用方自己发号必然重号；
  *   2. 追加用 `appendFileSync`（O_APPEND 语义）：Node 是单线程事件循环，本模块同步写盘，
  *      同一进程里的并发调用天然串行；事件日志不做跨进程写；
- *   3. 坏行只跳过该行并 WARN，绝不让整段历史消失——JSONL 的意义就是「一行坏了不牵连别人」；
+ *   3. 坏行只跳过该候选并 WARN，绝不让整段历史消失——JSONL 的意义就是「一行坏了不牵连别人」；
  *      schema 校验也放在读取侧（`AgentEventSchema.safeParse`），让手工编辑出来的脏数据可见；
- *   4. 文件不存在一律当空日志（读返回 `[]`，清空是 no-op）：评测还没跑过的行也要能打开抽屉。
+ *   4. 文件不存在一律当空日志（读返回 `[]`，清空是 no-op）：评测还没跑过的候选也要能打开抽屉。
  * 读写两侧的校验**都要有，且职责不同**：读侧容忍是为了「一行坏不牵连别人」，写侧必须拒绝——
  * `events.jsonl` 是本阶段的唯一真相源，写进去一条不符合契约的事件（agents / 编排层的形状漂移、NaN 之类
  * JSON.stringify 会改写成 null 的载荷），读侧会**静默丢掉那一行**：抽屉、`/log` 与 SSE 回放里
@@ -41,12 +41,12 @@ export type PendingAgentEvent = DistributiveOmit<AgentEvent, 'seq' | 'at'> & { a
  * **为什么不去读 `readEvents` 的最大值**（实测过不了它自己的用例）：
  * `readEvents` 按契约把「合法 JSON 但不符合 schema」的行丢掉，可那一行**已经占着它的 seq 号**——
  * 按「合格事件的最大 seq」发号，新事件就与磁盘上已有的一个 seq 重号；客户端拿着 `Last-Event-ID: 3`
- * 重连时，重复的那条会被前端去重悄悄丢掉（要求「每行一个带单调序号的事件」，按 `seq`
- * 续订）。故发号只看「这一行能不能解析出数字 `seq`」（`maxEventSeq`，且不 WARN），与读取侧的
+ * 重连时，重复的那条会被前端去重悄悄丢掉（要求「每个候选一个带单调序号的事件」，按 `seq`
+ * 续订）。故发号只看「这个候选能不能解析出数字 `seq`」（`maxEventSeq`，且不 WARN），与读取侧的
  * schema 过滤是两件事：前者问的是「这个号被占用过没有」，后者问的是「这条事件能不能用」。
  * 每次追加都要读一遍已有文件来定 seq：这是 O(n)/条的，但换来的是「进程重启后继续追加不重号」这个必要性质——
  * 内存里缓存计数器会让重启后的第一条重号。
- * 已记录的性能注记（本阶段不改）：一行的事件数到几千时，累计写入会退化成 O(n²)。
+ * 已记录的性能注记（本阶段不改）：一候选的事件数到几千时，累计写入会退化成 O(n²)。
  * 真到那一步的做法是「按文件缓存 max seq + 比对文件字节数，长度不符才回读」——既保住不重号，
  * 又不牺牲正确性；本阶段先保正确，因为一轮评测的事件量还在几百量级。
  */
@@ -85,7 +85,7 @@ export function readEventsAfter(file: string, afterSeq: number): AgentEvent[] {
   return parseLines(file, afterSeq);
 }
 
-/** 清空该行的事件日志（重跑同一行前调用，避免新旧事件混在一个文件里） */
+/** 清空该候选的事件日志（重跑同一行前调用，避免新旧事件混在一个文件里） */
 export function resetEvents(file: string): void {
   if (!existsSync(file)) return;
   // 删文件而不是写空串：下一次 appendEvent 会重新建，seq 自然从 1 开始
@@ -94,12 +94,12 @@ export function resetEvents(file: string): void {
 }
 
 /**
- * 逐行解析并校验，跳过 afterSeq 之前的、空行的、坏 JSON 的与不符合 schema 的行。
+ * 逐行解析并校验，跳过 afterSeq 之前的、空候选的、坏 JSON 的与不符合 schema 的行。
  * 坏行只 WARN 不抛：日志抽屉的可用性优先于数据完备性——一行写坏不该让整段历史打不开。
  */
 function parseLines(file: string, afterSeq: number): AgentEvent[] {
   if (!existsSync(file)) return [];
-  // 容忍 UTF-8 BOM：外部工具（PowerShell 5.1）编辑过的文件首行会带 U+FEFF，JSON.parse 直接抛
+  // 容忍 UTF-8 BOM：外部工具（PowerShell 5.1）编辑过的文件首个候选会带 U+FEFF，JSON.parse 直接抛
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   const events: AgentEvent[] = [];
 
@@ -138,7 +138,7 @@ function parseLines(file: string, afterSeq: number): AgentEvent[] {
  */
 export function maxEventSeq(file: string): number {
   if (!existsSync(file)) return 0;
-  // BOM 与空行的处理必须与 parseLines 一致，否则同一个文件在两处会被切成不同的行
+  // BOM 与空候选的处理必须与 parseLines 一致，否则同一个文件在两处会被切成不同的行
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   let max = 0;
   for (const line of text.split('\n')) {

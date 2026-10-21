@@ -274,7 +274,7 @@ describe('三端一致性：一次纯文本答复', () => {
 describe('三端一致性：一次 shell 执行（工具调用 + 工具结果）', () => {
   const COMMAND = 'npm run build';
   /**
-   * codex 工具块上**多出来**的两格：app-server 的 `commandExecution` 自带执行目录与命令耗时，
+   * codex 工具块上**多出来**的两格：app-server 的 `commandExecution` 自带执行的目录与命令耗时，
    * 而 claude 的 `tool_use` 与 dsh 的 `tool/call` 载荷里结构上没有 ⇒ 跨家比对时按「允许不同」摘掉，
    * 原值由本 describe 的单独断言钉住（见用例末尾两条）。
    */

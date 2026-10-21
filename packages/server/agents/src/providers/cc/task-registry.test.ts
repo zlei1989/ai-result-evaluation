@@ -10,7 +10,7 @@
  *      之后，每个 `Task*` 调用块都带整表载荷，且最后一条是两步全 `completed`；
  *   2. **台账自己的边界**：未知状态串、`deleted`、未见过的 id、认不出的结果形状。
  *
- * 真机逐字（`Task*` 五处取值都取自那一行的 `events.jsonl`）：
+ * 真机逐字（`Task*` 五处取值都取自那一候选的 `events.jsonl`）：
  *   · `TaskCreate` 结果只有 `{"task":{"id","subject"}}`——**没有状态**（SDK 的 `TaskCreateOutput` 同形）
  *     ⇒ 「刚建、还没更新过」按 `pending` 起步，依据是同一条 run 里 `TaskUpdate` 结果的
  *     `statusChange.from` 逐字写着 `"pending"`；

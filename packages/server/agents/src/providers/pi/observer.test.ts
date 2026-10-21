@@ -57,7 +57,7 @@ function anthropicPayload(system: string, tools: string[]): unknown {
   };
 }
 
-const ROW_SKILL = { name: 'alpha', location: '/runs/row-1/.agenthome/skills/alpha/SKILL.md' };
+const CANDIDATE_SKILL = { name: 'alpha', location: '/runs/row-1/.agenthome/skills/alpha/SKILL.md' };
 
 describe('pi 的请求侧观察者', () => {
   it('捕获 before_provider_request 的 payload，逐次计数、只留最近一份', () => {
@@ -84,18 +84,18 @@ describe('pi 的请求侧观察者', () => {
 
 describe('技能装载档：按 wire 取系统段（只实现一条会让另一条恒空）', () => {
   it('openai wire：系统段在 input[] 的 system 角色里', () => {
-    const payload = openaiPayload(skillsSection([ROW_SKILL]), ['read']);
+    const payload = openaiPayload(skillsSection([CANDIDATE_SKILL]), ['read']);
     expect(piSystemText(payload, 'openai-responses')).toContain('<available_skills>');
-    expect(piRequestSkills(payload, 'openai-responses')).toEqual([ROW_SKILL]);
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([CANDIDATE_SKILL]);
   });
 
   it('anthropic wire：系统段在顶层 system，逐名仍然读得出来', () => {
-    const payload = anthropicPayload(skillsSection([ROW_SKILL]), ['read']);
-    expect(piRequestSkills(payload, 'anthropic-messages')).toEqual([ROW_SKILL]);
+    const payload = anthropicPayload(skillsSection([CANDIDATE_SKILL]), ['read']);
+    expect(piRequestSkills(payload, 'anthropic-messages')).toEqual([CANDIDATE_SKILL]);
   });
 
   it('两条 wire 各读自己那一处：把系统段放错位置时该 wire 读不到（判据不是「段在不在」）', () => {
-    const section = skillsSection([ROW_SKILL]);
+    const section = skillsSection([CANDIDATE_SKILL]);
     // openai 的判据不认顶层 system，anthropic 的判据不认 input[]——互相顶替会让「没装」读成「装了」
     expect(piRequestSkills(anthropicPayload(section, ['read']), 'openai-responses')).toEqual([]);
     expect(piRequestSkills(openaiPayload(section, ['read']), 'anthropic-messages')).toEqual([]);
@@ -103,10 +103,10 @@ describe('技能装载档：按 wire 取系统段（只实现一条会让另一�
 
   it('openai wire 认 developer 角色（同一段系统文本的另一种挂法）', () => {
     const payload = {
-      input: [{ role: 'developer', content: skillsSection([ROW_SKILL]) }],
+      input: [{ role: 'developer', content: skillsSection([CANDIDATE_SKILL]) }],
       tools: [],
     };
-    expect(piRequestSkills(payload, 'openai-responses')).toEqual([ROW_SKILL]);
+    expect(piRequestSkills(payload, 'openai-responses')).toEqual([CANDIDATE_SKILL]);
   });
 
   it('逐条解析：段在、里面没有那一条 ⇒ 读不到它（同名冲突与「藏起来」都长这样）', () => {
@@ -114,7 +114,7 @@ describe('技能装载档：按 wire 取系统段（只实现一条会让另一�
     const payload = openaiPayload(skillsSection([other]), ['read']);
     const names = piRequestSkills(payload, 'openai-responses').map((skill) => skill.name);
     expect(names).toEqual(['beta']);
-    expect(names).not.toContain(ROW_SKILL.name);
+    expect(names).not.toContain(CANDIDATE_SKILL.name);
   });
 
   it('用 name 匹配、不用 description：description 里的 XML 转义不影响判定，location 反转义回原值', () => {
@@ -178,21 +178,21 @@ describe('技能行为档：read 实参 == location 且 tool_result 是正文', 
   });
 
   it('实参逐字相等且结果含正文 ⇒ 成立', () => {
-    expect(piSkillReadSatisfied([read(ROW_SKILL.location, body)], { location: ROW_SKILL.location, body })).toBe(true);
+    expect(piSkillReadSatisfied([read(CANDIDATE_SKILL.location, body)], { location: CANDIDATE_SKILL.location, body })).toBe(true);
   });
 
   it('读了别的文件 / 结果不是正文 / 结果报错 ⇒ 都不成立', () => {
-    expect(piSkillReadSatisfied([read('/tmp/other.md', body)], { location: ROW_SKILL.location, body })).toBe(false);
-    expect(piSkillReadSatisfied([read(ROW_SKILL.location, '工具输出被截断')], { location: ROW_SKILL.location, body })).toBe(false);
-    expect(piSkillReadSatisfied([read(ROW_SKILL.location, body, true)], { location: ROW_SKILL.location, body })).toBe(false);
+    expect(piSkillReadSatisfied([read('/tmp/other.md', body)], { location: CANDIDATE_SKILL.location, body })).toBe(false);
+    expect(piSkillReadSatisfied([read(CANDIDATE_SKILL.location, '工具输出被截断')], { location: CANDIDATE_SKILL.location, body })).toBe(false);
+    expect(piSkillReadSatisfied([read(CANDIDATE_SKILL.location, body, true)], { location: CANDIDATE_SKILL.location, body })).toBe(false);
   });
 
   it('只认 read 的 path：别的工具或别的参数名不算读了这条技能', () => {
-    expect(piSkillReadSatisfied([{ toolName: 'bash', args: { path: ROW_SKILL.location }, resultText: body, isError: false }], { location: ROW_SKILL.location, body })).toBe(false);
-    expect(piSkillReadSatisfied([{ toolName: 'read', args: { file_path: ROW_SKILL.location }, resultText: body, isError: false }], { location: ROW_SKILL.location, body })).toBe(false);
+    expect(piSkillReadSatisfied([{ toolName: 'bash', args: { path: CANDIDATE_SKILL.location }, resultText: body, isError: false }], { location: CANDIDATE_SKILL.location, body })).toBe(false);
+    expect(piSkillReadSatisfied([{ toolName: 'read', args: { file_path: CANDIDATE_SKILL.location }, resultText: body, isError: false }], { location: CANDIDATE_SKILL.location, body })).toBe(false);
   });
 
   it('正文为空 ⇒ 不成立（没有正文可对，不许凭「路径对上了」就判过）', () => {
-    expect(piSkillReadSatisfied([read(ROW_SKILL.location, '')], { location: ROW_SKILL.location, body: '  ' })).toBe(false);
+    expect(piSkillReadSatisfied([read(CANDIDATE_SKILL.location, '')], { location: CANDIDATE_SKILL.location, body: '  ' })).toBe(false);
   });
 });

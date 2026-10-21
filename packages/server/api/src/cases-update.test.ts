@@ -228,13 +228,13 @@ describe('updateCase', () => {
   it('旧用例文件里缺 repoBranch 的读出来是 null（不是 undefined）', () => {
     const created = createCase(caseInput({ commitHash: git(['rev-parse', 'HEAD'], repo).trim() }));
     // 模拟旧版本写下的那一行：整把键不存在（`delete` 而不是置 null——两者的区别正是这条守卫要钉的）
-    const row = readCase(created.id)!;
-    delete (row as Partial<TestCase>).repoBranch;
-    writeCase(row);
+    const candidate = readCase(created.id)!;
+    delete (candidate as Partial<TestCase>).repoBranch;
+    writeCase(candidate);
 
     expect(getCase(created.id).repoBranch).toBeNull();
     expect(listCases().cases[0]?.repoBranch).toBeNull();
-    // 反向对照：同一份读数里其余字段照常（归一不是「把整行换掉」）
+    // 反向对照：同一份读数里其余字段照常（归一不是「把整个候选换掉」）
     expect(getCase(created.id).commitHash).toBe(created.commitHash);
   });
 
@@ -248,13 +248,13 @@ describe('updateCase', () => {
   it('旧用例文件里缺 includeSteps 键的读出来是 false（不是 undefined）', () => {
     const created = createCase(caseInput({ includeSteps: true }));
     // 模拟旧版本写下的那一行：整把键不存在（`delete` 而不是置 false——两者的区别正是这条守卫要钉的）
-    const row = readCase(created.id)!;
-    delete (row as Partial<TestCase>).includeSteps;
-    writeCase(row);
+    const candidate = readCase(created.id)!;
+    delete (candidate as Partial<TestCase>).includeSteps;
+    writeCase(candidate);
 
     expect(getCase(created.id).includeSteps).toBe(false);
     expect(listCases().cases[0]?.includeSteps).toBe(false);
-    // 反向对照：同一份读数里其余字段照常（归一不是「把整行换掉」）
+    // 反向对照：同一份读数里其余字段照常（归一不是「把整个候选换掉」）
     expect(getCase(created.id).commitHash).toBe(created.commitHash);
   });
 
@@ -374,7 +374,7 @@ describe('updateCase', () => {
    *（「只校验本次改动到的字段」）说的是：没碰到的字段不该让这次保存失败。
    *
    * 逐字读下面那条断言：它验的是**报错点**。解析来源抛的是 `ServiceError('INVALID_QUERY')`；
-   * 而修复后解析根本不发生，真正拦下这一行坏数据的是**写入口**的 `TestCaseSchema`
+   * 而修复后解析根本不发生，真正拦下这个候选坏数据的是**写入口**的 `TestCaseSchema`
    * （`assertStorable`，见 case.ts 的 RepoSourceStringSchema）——那才是口径 3 要求拦下坏值的地方。
    * 注：这条坏行在这两种实现下都**写不进去**（schema 与解析用的是同一份判定），差别只在「谁拦的、
    * 报的是哪件事」；把懒改回每次都解析，这里立刻变回 `ServiceError`。

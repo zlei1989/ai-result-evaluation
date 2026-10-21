@@ -3,10 +3,10 @@
  * 九种事件类型各有一行可读文本：**任何一种被静默丢掉，排障时就少一条证据**
  * （要求未识别的事件也要保留原始负载，不得丢弃）。
  *
- * 本模块**只负责把已落盘的事件渲染成行**：它不推断行状态、不看快照、不合并轮次——
- * 「这一行现在是什么状态」的唯一来源是 `EvalRow.status`（快照），拿日志反推状态等于
+ * 本模块**只负责把已落盘的事件渲染成行**：它不推断候选状态、不看快照、不合并步——
+ * 「这个候选现在是什么状态」的唯一来源是 `EvalCandidate.status`（快照），拿日志反推状态等于
  * 造第二份真相。同理，同一行重跑后新一轮的 seq 会回到 1，怎么切分由数据层
- * （`useRowStream` 的文件头口径 5）决定，这里只管把拿到的这一批逐行渲染。
+ * （`useCandidateStream` 的文件头口径 5）决定，这里只管把拿到的这一批逐行渲染。
  *
  * 时间戳取**本机时区**的 `HH:mm:ss`（与 `base/format.ts` 的 `formatDateTime` 同一口径：
  * 界面上所有时间都是使用者的本地时间）；非法输入原样返回——显示 `Invalid Date`
@@ -26,7 +26,7 @@
  *   · **来源必须标**：`'events'` 的时长含工具执行，与 `'vendor'` 的纯模型时间不可直接比
  * （见 `timingSourceLabel`）——tok/s 后面缀一个 `(墙钟)` 就是为了不让人把两者放进同一张表。
  */
-import { AGENT_LABELS, ROW_STATUS_LABELS, normalizeMcpServers, type AgentEvent, type AskUserChannel } from '@aieval/contracts';
+import { AGENT_LABELS, CANDIDATE_STATUS_LABELS, normalizeMcpServers, type AgentEvent, type AskUserChannel } from '@aieval/contracts';
 import { formatDuration } from '../base/format';
 import { formatCacheHitRate, formatGenerationRate, formatTokens, timingSourceLabel } from '../base/usage-metrics';
 // 七种收场的中文取界面词汇那一份（`agent-log/types.ts`，只读卡片与弹层共用同一份）：各写一份必然漂成
@@ -56,10 +56,10 @@ export function formatEventLine(event: AgentEvent): string {
     case 'vendor-system':
       return `[${time}] ${vendorSystemLine(event)}`;
     case 'status':
-      return `[${time}] 状态 ${ROW_STATUS_LABELS[event.status]}`;
+      return `[${time}] 状态 ${CANDIDATE_STATUS_LABELS[event.status]}`;
     case 'usage':
-      // 轮次与计量各自独立：一条只带轮次的 usage 是常态（轮次一到就发），
-      // 这时只说轮次——写三个 0 会让人以为「这家很省」，写「未采集」又会与真正的终态混淆。
+      // 步与计量各自独立：一条只带步的 usage 是常态（轮次一到就发），
+      // 这时只说步数——写三个 0 会让人以为「这家很省」，写「未采集」又会与真正的终态混淆。
       return `[${time}] ${usageLine(event)}`;
     case 'diff-summary':
       return `[${time}] 改动 ${event.filesChanged} 个文件 +${event.insertions} −${event.deletions}${
@@ -76,7 +76,7 @@ export function formatEventLine(event: AgentEvent): string {
       )} · ${event.channel === null ? '通道未知' : ASK_USER_CHANNEL_LABELS[event.channel]}`;
     /**
      * 一条人工消息的落点：**「没送到」的那三种必须能被读到**——它们一条账本记录都不会产生
-     * （账本只在真的交出去那一刻才写），这一行日志是它们在界面上唯一的身影。
+     * （账本只在真的交出去那一刻才写），这个候选日志是它们在界面上唯一的身影。
      */
     case 'inject-message':
       return `[${time}] 人工消息 ${INJECT_OUTCOME_LABELS[event.outcome].label}${
@@ -108,7 +108,7 @@ type VendorSystemEvent = Extract<AgentEvent, { type: 'vendor-system' }>;
  *
  * 三段判据：
  *   · **计数写「N 项」而不是把工具名铺开**：真机 21 个工具、47 条斜杠命令，铺开来会把
- *     抽屉正文一屏占满，而这一行要回答的只是「有没有、大概多少」——逐项内容在环境抽屉里；
+ *     抽屉正文一屏占满，而这个候选要回答的只是「有没有、大概多少」——逐项内容在环境抽屉里；
  *   · **缺的格整段不出现**：`null` 是「厂商没投送」，写成「斜杠命令 0 项」与它含义相反
  *     （`[]` 才是「采到了，确实是空的」，那时才写 0 项）；
  *   · 六格全空（理论上的边界）写「未采集」，**不留一行光秃秃的前缀**。
@@ -118,7 +118,7 @@ type VendorSystemEvent = Extract<AgentEvent, { type: 'vendor-system' }>;
  *   ① 历史 `events.jsonl` 里它是字符串数组（`["context7"]`），归一之后才数得出「几台」；
  *   ② 槽位数不等于台数：数组里混进脏项时会数出编造的台数（「整格不是数组」的脏值更糟，
  *      `'context7'.length` 会渲染成「MCP 8 项」）。归一之后 `null` 仍是「没投送」、
- *      `[]` 仍是「投送了确实是空的」——两态在这一行上也分得开。
+ *      `[]` 仍是「投送了确实是空的」——两态在这个候选上也分得开。
  */
 function vendorSystemLine(event: VendorSystemEvent): string {
   const parts: string[] = [];
@@ -136,7 +136,7 @@ function vendorSystemLine(event: VendorSystemEvent): string {
   if (mcpServers !== null) parts.push(`MCP ${mcpServers.length} 项`);
   /**
    * 技能那一格与其余各格同形：没带这一格（采不到 / 老事件）与历史数据里的 `null` 都**整段不出现**，
-   * `[]`（投送了、确实一条都没有）写「技能 0 项」。这一行整条**只走下载日志**——
+   * `[]`（投送了、确实一条都没有）写「技能 0 项」。这个候选整条**只走下载日志**——
    * 「原始输出」面板收的是 `log` 事件的逐字原文（`diagnosticsOf`），派生文本不进那里；
    * `MCP N 项` 那一格是同一个落点，两者别分家。
    */
@@ -154,10 +154,10 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
  *
  * 形状（片段之间只用 ` · ` 连，缺的那截整段不出现）：
  * ```
- * 用量 输入 218 tok · 缓存 8,832 tok · 命中 98% · 输出 2 tok · 轮次 1 · 耗时 166.7s · 首字 7.6s · 生成 0.3 tok/s ·（厂商自报…）
+ * 用量 输入 218 tok · 缓存 8,832 tok · 命中 98% · 输出 2 tok · 步数 1 · 耗时 166.7s · 首字 7.6s · 生成 0.3 tok/s ·（厂商自报…）
  * ```
  * 四段判据：
- *   · `tokens === null` ⇒ **只说轮次**（这一条没带计量；写三个 0 会让人以为「这家很省」）；
+ *   · `tokens === null` ⇒ **只说步数**（这一条没带计量；写三个 0 会让人以为「这家很省」）；
  *   · 有 tokens ⇒ 三项（`formatTokens`：千分位 + `tok`）+ **命中率**（`usage-metrics.ts` 的统一公式，
  *     它是百分比、**不带** `tok`）；
  *   · `timing === null` ⇒ **只说「耗时未采集」**（不写 0s：0 秒会算出一个无穷大的 tok/s）；
@@ -178,7 +178,7 @@ function usageLine(event: UsageEvent): string {
     // 厂商自报总量：排障用（与归一后的三项**对不上是正常的**，见契约注释）
     if (total != null) parts.push(`厂商总量 ${formatTokens(total)}`);
   }
-  parts.push(`轮次 ${event.turns}`);
+  parts.push(`步数 ${event.turns}`);
 
   const timing = event.timing ?? null;
   if (timing === null) {

@@ -2,9 +2,9 @@
 
 ## 定位
 
-设置页**第 4 个 Tab**（排在 MCP 之后）管**本机启用了哪几条 skill**。一条 skill = 一个目录 + 里面的 `SKILL.md`，住在 `<配置目录>/skills/`；候选执行时把本行要装的那几条**整目录复制**进**该行自己的配置目录**，行级观测格再回答「这一行的厂商到底认了没有」。这篇是这条链路的自含说明：配置面（目录文法与准入、启停、落盘形状）→ 装入面（四家同形的落点与时序）→ 失败判据（三态与两个归因来源）→ 已知边界。
+设置页**第 4 个 Tab**（排在 MCP 之后）管**本机启用了哪几条 skill**。一条 skill = 一个目录 + 里面的 `SKILL.md`，住在 `<配置目录>/skills/`；候选执行时把候选要装的那几条**整目录复制**进**该候选自己的配置目录**，候选级观测格再回答「这个候选的厂商到底认了没有」。这篇是这条链路的自含说明：配置面（目录文法与准入、启停、落盘形状）→ 装入面（四家同形的落点与时序）→ 失败判据（三态与两个归因来源）→ 已知边界。
 
-口径一句话：**设置页只回答「本机装了哪几条」，行级观测格只回答「这一行厂商认了哪几条」**——两处说的是两件事，不互相推断。还有一条同样要说在前面：**落盘（L1）不是结论**——「文件在盘上」证明不了模型会用它，所以行级的 `installed` 一定要带厂商证据，`unverified` 不许写成「已装上」也不许写成「没有」。
+口径一句话：**设置页只回答「本机装了哪几条」，候选级观测格只回答「这个候选厂商认了哪几条」**——两处说的是两件事，不互相推断。还有一条同样要说在前面：**落盘（L1）不是结论**——「文件在盘上」证明不了模型会用它，所以候选级的 `installed` 一定要带厂商证据，`unverified` 不许写成「已装上」也不许写成「没有」。
 
 ## 页面形态与交互
 
@@ -15,13 +15,13 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 - **不可用只用标签表达，不占一列**：一条 skill 上可能同时有两个维度的状态（准入可用性 + 本机启停），给它们各一列会互相打架。红标悬停给中文原因（缺 `SKILL.md` / 名称不合法 / 目录名与 frontmatter 不一致 / 缺 description / description 超长）。
 - **不可用的条目照旧入列、开关照常可切**：「不可用」说的是**装不上**（厂商侧会拒或静默丢弃），不是「不能停用」。目录修好后不需要额外动作，「启用 = 缺省」这条规则本来就是按名字查名单。
 - **启停即时落盘**（`PUT /api/settings` 的逐条合并），**不做乐观翻转**：写失败 ⇒ 开关保持原值 + 一条中文提示，落盘成功才重取清单。补丁**只带被点的那一条**——服务端是逐条合并，其余停用条目（含目录已删的残条目）不受影响。
-- **预览抽屉是左树右预览**：左边是这条技能的**目录树**（递归全列，点文件也列出来），右边是选中文件的正文，**整份按 markdown 渲染**（`SKILL.md` 的 frontmatter 段先包成 yaml 围栏代码块再渲染：不包的话收尾那条 `---` 会按 CommonMark 的 setext 规则把 `name:` / `description:` 吃成一个大标题；不做字段重排——界面上摆一份解析结果、文件里写着另一份就是第二真相）。三条形态口径：**树的顶层就是技能目录的内容**（不摆技能名那一层）、**节点标题给完整相对路径**（`reference/API.md`——只给 `API.md` 的话，不同目录下的同名文件分不出来）、**只在没列全时**在树上方给一句「这个目录没列全」。**没有「看原文」切换**；正文里的原始 HTML 被转义、不执行。读不出来的那一格（二进制 / 非 UTF-8、超过预览上限、权限不足、点到了目录）在**预览格**给中文原因 + 字节数，树那一边只回答「磁盘上有什么」——**任何一格不得用空内容顶替**。
+- **预览抽屉是左树右预览**：左边是这条技能的**目录树**（递归全列；`.DS_Store` / `.git` / `node_modules` 这类 OS / 版本库 / 依赖噪声不列，名单见《数据与契约》），右边是选中文件的正文，**整份按 markdown 渲染**（`SKILL.md` 的 frontmatter 段先包成 yaml 围栏代码块再渲染：不包的话收尾那条 `---` 会按 CommonMark 的 setext 规则把 `name:` / `description:` 吃成一个大标题；不做字段重排——界面上摆一份解析结果、文件里写着另一份就是第二真相）。三条形态口径：**树的顶层就是技能目录的内容**（不摆技能名那一层）、**节点标题给完整相对路径**（`reference/API.md`——只给 `API.md` 的话，不同目录下的同名文件分不出来）、**只在没列全时**在树上方给一句「这个目录没列全」。**没有「看原文」切换**；正文里的原始 HTML 被转义、不执行。读不出来的那一格（二进制 / 非 UTF-8、超过预览上限、权限不足、点到了目录）在**预览格**给中文原因 + 字节数，树那一边只回答「磁盘上有什么」（噪声名单之外）——**任何一格不得用空内容顶替**。
 - **失败态与空态是四句话，不许互相顶替**：还没读到 → 骨架屏；读失败 → 带服务端中文原因的说明（**每一轮都要说**：SWR 在重新验证失败时保留上一份数据，「有数据」不等于「这次读到了」，否则用户会把一次读失败当成扫描成功）；技能根不存在 → 一条根级 warning「技能目录还不存在」；目录存在但为空 →「这个目录里还没有技能」。
 - **页面层一条 Alert 说清与被测仓库自带的 skill 的关系**：这里只决定本机启用项；被测仓库自带的 skill 四家都会自动发现、不压制；同名时谁赢四家不同（Claude Code 以本机为准 / DeepSeek Harness 与 Pi Coding Agent 以仓库为准 / Codex 两条都会进清单）。**刻意不写「同名以设置页为准」**——那是 MCP 那一趟的结论，在 skills 上四家各不相同，给一个统一结论就是假话。
 
 ## 数据与契约
 
-- **识别单位与准入**（`contracts/src/skill.ts`，扫描器与界面共用同一把尺）：一条 skill = `<技能根>/<名称>/SKILL.md`，**只扫第一层、不递归**（目录树里任何一层都可能是另一条 skill 的附属文件，递归会把 `references/` 当成技能列出来）。第一层里**只有目录是候选**（软链也算：跟随后看它指向什么——技能目录常常整条是软链），**普通文件一概不列**：`.DS_Store`、`README.md`、扁平的 `<名称>.md` 都不是技能，让它们各占一行「缺 SKILL.md」只会让人以为「我放的技能坏了」。名字按最严规则 `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` 且 ≤64，必须是**目录名与 frontmatter 的 `name` 逐字相同**；`description` 必填、非空（纯空白按没写）、≤1024。判据是「四家都装得上」——名字不合法时 claude 启动前抛错、dsh 把整条静默丢弃，description 缺了在 dsh 与 codex 的清单里都进不去。另有三条**厂商硬拒收的旧写法键**（`disableModelInvocation` / `modelInvocable` / `userInvocable`）：dsh 命中即抛错并**静默丢弃那一份技能文件**（它自己的 `skill file … ignored` 没有出口），所以准入也拒收它们并点名正名（前两个 → `disable-model-invocation`，`userInvocable` → `user-invocable`）；正名照旧合格。**残留缺口**：厂商用**严格 YAML** 解析 frontmatter，而本仓的解析器只认顶层标量、不校验 YAML 语法（`description: [unclosed` 这类我们在准入放行、厂商丢弃）——判据两侧都只能看到「厂商没认领」。
+- **识别单位与准入**（`contracts/src/skill.ts`，扫描器与界面共用同一把尺）：一条 skill = `<技能根>/<名称>/SKILL.md`，**只扫第一层、不递归**（目录树里任何一层都可能是另一条 skill 的附属文件，递归会把 `references/` 当成技能列出来）。第一层里**只有目录是候选**（软链也算：跟随后看它指向什么——技能目录常常整条是软链），**普通文件一概不列**：`README.md`、扁平的 `<名称>.md` 都不是技能，让它们各占一行「缺 SKILL.md」只会让人以为「我放的技能坏了」；`HIDDEN_ENTRY_NAMES` 里的噪声名字（`.DS_Store` / `.git` / `node_modules` …）**连候选都不进**（同名目录同样挡掉，见目录树那一节）。名字按最严规则 `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` 且 ≤64，必须是**目录名与 frontmatter 的 `name` 逐字相同**；`description` 必填、非空（纯空白按没写）、≤1024。判据是「四家都装得上」——名字不合法时 claude 启动前抛错、dsh 把整条静默丢弃，description 缺了在 dsh 与 codex 的清单里都进不去。另有三条**厂商硬拒收的旧写法键**（`disableModelInvocation` / `modelInvocable` / `userInvocable`）：dsh 命中即抛错并**静默丢弃那一份技能文件**（它自己的 `skill file … ignored` 没有出口），所以准入也拒收它们并点名正名（前两个 → `disable-model-invocation`，`userInvocable` → `user-invocable`）；正名照旧合格。**残留缺口**：厂商用**严格 YAML** 解析 frontmatter，而本仓的解析器只认顶层标量、不校验 YAML 语法（`description: [unclosed` 这类我们在准入放行、厂商丢弃）——判据两侧都只能看到「厂商没认领」。
 - **技能根 = `<配置目录>/skills`**（`getSkillsRoot()`）：**不设 `settings.skillsRoot` 键**，改根就是改配置目录，一个杠杆；副作用是测试的 `setConfigDirForTesting()` 自动把技能根一起搬走。
 - **出口形状 `SkillList`**（`GET /api/skills`）：`root`（绝对路径，工具条要显示它，且空列表时界面无从反推）+ `skills` + `skillWarnings`。两个数组**必填**：`[]` 永远表示「扫过且没有」，不是「未观测」。
   - 列表里的一条：`name`（**目录名**，走宽松字符串——目录名不合法正是要被展示出来的那类坏条目）/ `dir`（绝对路径）/ `description` / `ok` / `reason`（`ok:false` 必给）/ `disabled`（**恒给布尔**，服务端算好「缺省 = 开启」，界面不做这个推理）。**没有体积这一格**：它要递归遍历 + 逐文件 `stat`，而列表是每次进设置页都要扫的热路径；要看占用就 `du -sh`，那也是唯一的真源。
@@ -30,19 +30,20 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
   - 节点是 `{ title, path, isDirectory, children, sizeBytes }`：`path` 是**叶子名**（`SKILL.md`、`reference`），全路径由 `@ant-design/x` 的树组件逐层拼出来——界面上因此只有一套路径表达。
   - `children` **恒为数组**（叶子给 `[]`）：界面判「是不是目录」只看 `isDirectory` 一个字段，不必同时判 `children` 在不在。
   - `sizeBytes` 是**单个文件**的字节数、目录为 `null`（目录体积要递归求和，是另一件事）；读不出（权限 / 坏链）同样是 `null`，不拿 0 顶替。
-  - **递归全列**，与列表那条「只扫第一层、不递归」不是一回事：列表回答「哪几条技能」，树回答「这一条里有什么」——`references/` 在列表里是附属文件、在树里正是要展开的东西。符号链接用 `realpath` 复核、**不越出技能目录才跟**；点文件（`.git` / `.DS_Store`）**不隐藏**（藏起来会让人以为「我放的文件不见了」）。
+  - **递归全列**（噪声名单除外，见下一条），与列表那条「只扫第一层、不递归」不是一回事：列表回答「哪几条技能」，树回答「这一条里有什么」——`references/` 在列表里是附属文件、在树里正是要展开的东西。符号链接用 `realpath` 复核、**不越出技能目录才跟**。
+  - **噪声条目按名字不列**（`HIDDEN_ENTRY_NAMES` 那张表，`core/src/skill-store.ts`：`.DS_Store` / `Thumbs.db` / `desktop.ini`、`.git` / `.hg` / `.svn`、`.idea` / `.vscode`、`node_modules` / `.venv` / `__pycache__` 与几条语言缓存）：它们不是技能内容，占一行只是噪声；目录命中时**连子树一起跳过**（`node_modules` 真进去会白吃节点预算，把整棵树挤成「没列全」）。判据是**名单**而不是「点开头就藏」——技能里完全可能有 `.env` / `.eslintrc` 这类真内容，表外的点文件照列（藏起来会让用户以为「我放的文件不见了」）。不列**不置 `truncated`**：那是「有意不列」，与「没列全」是两句话；只在 DEBUG 日志里留一笔。
   - **`truncated` 是如实交代**：深度 / 节点数到上限、某一层读不出来、软链越界，任一发生即置真，界面据此说「没列全」——静默少列几行会让人把「树里没有」当成「磁盘上没有」。
 - **出口形状 `SkillFileText`**（`GET /api/skills/<name>/file?path=<技能内相对路径>`）：`{ path, text }`，**只给原文**（不再切 frontmatter / body 两半：预览是整份文件按 markdown 渲染，切分只服务服务端的准入判定）。
   - 两道门各自独立成立：`SkillFilePathSchema` 拒绝对路径 / `..` / `.` / 空段 / 太深，core 再用 `realpath` 复核拼出来的真实路径没越出技能目录。
   - 读不出来的四种各说各的：路径不合法与越界 → 400；文件不在 → 404；点到目录 → 400；**二进制 / 非 UTF-8、或超过 `SKILL_PREVIEW_MAX_BYTES`（256 KB）→ 400 + 中文原因 + 字节数**。「装得上」（整目录复制不设上限）与「看得见」（预览有上限）是两条上限，别混成一句话。
 - **落盘 `settings.skills.entries`**：name-keyed map，值里**永远只有 `{ disabled: true }`**——「启用」不落盘，**启用 = 删键**。`strict()` 拒绝多余字段（`{disabled:true, enabled:false}` 自相矛盾的输入宁可 400 说出来）。详见[《数据与存储》](/features/storage)的《技能停用名单的落盘》。
 - **写侧是另一个形状**（`SkillsPatchSchema`）：补丁收的是**期望状态** `{ disabled: boolean }`，与落盘那条刻意不同形——放宽落盘那条会让「配置里只出现停用」没人守，让补丁复用落盘那条会让「再打开」在 API 门口就被判 400。语义是**逐条合并**：只动补丁里出现的名字，补丁里没有的条目一字不动（目录已删的残条目因此**结构性**保住，而不是靠界面每次都记得回传）。
-- **⚠️ 三处同名不同义**（`grep skills` 前先读这三行）：`SkillsSettingsSchema` = 设置页的**停用名单**；`VendorSkillSchema` = **厂商当时说它手里有哪几条**；`RowSkillInstallSchema` = **这一行实际装上了哪几条、我们凭什么这么说**。
-- **行级观测格 `EvalRow.skillInstall`**（可选格，逐条四格）：`name` / `source`（**厂商原值照抄**，没给记 `unknown`，那是我们的如实交代）/ `judgedBy`（`vendor-skill-list` / `vendor-prompt-listing` / `local-materialized`）/ `verdict`（`installed` / `missing` / `unverified`，**没有 `skipped`**：落盘失败 = 该行失败，不存在「我们主动跳过一条」）。**配对规则**由契约的 `isValidSkillPairing` 单向蕴含：`installed` 必须带厂商证据、`missing` 只在 `vendor-skill-list` 下成立、`unverified` 配 `local-materialized`。
+- **⚠️ 三处同名不同义**（`grep skills` 前先读这三行）：`SkillsSettingsSchema` = 设置页的**停用名单**；`VendorSkillSchema` = **厂商当时说它手里有哪几条**；`CandidateSkillInstallSchema` = **这个候选实际装上了哪几条、我们凭什么这么说**。
+- **候选级观测格 `EvalCandidate.skillInstall`**（可选格，逐条四格）：`name` / `source`（**厂商原值照抄**，没给记 `unknown`，那是我们的如实交代）/ `judgedBy`（`vendor-skill-list` / `vendor-prompt-listing` / `local-materialized`）/ `verdict`（`installed` / `missing` / `unverified`，**没有 `skipped`**：落盘失败 = 该候选失败，不存在「我们主动跳过一条」）。**配对规则**由契约的 `isValidSkillPairing` 单向蕴含：`installed` 必须带厂商证据、`missing` 只在 `vendor-skill-list` 下成立、`unverified` 配 `local-materialized`。
   - 三句中文由两张标签表拼出（`ROW_SKILL_VERDICT_LABELS` + `ROW_SKILL_BASIS_LABELS`）：`已装上 · 判据 厂商清单` / `缺失 · 判据 厂商清单` / `未验证 · 判据 仅落盘`。
   - `vendor-prompt-listing` 这一档**当前不产出**（本仓没有读「厂商入站请求」那一层），留在值域里是为了将来接上那条通道时不必再改契约。
-- **厂商那一格 `vendor-system.skills`**（可选格）：逐条 `{ name, source, path, origin }`。`source` / `path` 是厂商原值照抄（claude 没有落点、codex 有），`origin` 由采集它的适配器按 `classifySkillOrigin` 归一成四档——**判据只有「厂商原值」与「落点」两样**，顺序是先落点、后原值（落在 `<行配置目录>/skills/.system/` 之下 ⇒ 厂商内置，必须排在「落在行配置目录之下」之前）；厂商给不出这一格就落 `unverified`「来源未证实」，**不许猜**。
-  - ⚠️ **落点比较走真实路径**：厂商报的落点是**它自己看到的路径**，而我们手里的行配置目录 / 工作目录来自配置，两者常常只是**同一个目录的两种写法**（macOS 上 `/tmp` 与 `os.tmpdir()` 都给软链形态，真实路径是 `/private/tmp/…`）⇒ 两侧都要按真实路径（`realpath`，解析不到就回落原样）比过再判前缀，否则「落点优先」这一整档在软链形态下**静默失效**、只剩原值兜底（codex 的原值 `user` 给不出结论，那两条会显示成「来源未证实」）。合成路径与已经被删掉的落点同样要有判据，所以**原样形态与真实形态并列比**，不是二选一。
+- **厂商那一格 `vendor-system.skills`**（可选格）：逐条 `{ name, source, path, origin }`。`source` / `path` 是厂商原值照抄（claude 没有落点、codex 有），`origin` 由采集它的适配器按 `classifySkillOrigin` 归一成四档——**判据只有「厂商原值」与「落点」两样**，顺序是先落点、后原值（落在 `<候选配置目录>/skills/.system/` 之下 ⇒ 厂商内置，必须排在「落在候选配置目录之下」之前）；厂商给不出这一格就落 `unverified`「来源未证实」，**不许猜**。
+  - ⚠️ **落点比较走真实路径**：厂商报的落点是**它自己看到的路径**，而我们手里的候选配置目录 / 工作目录来自配置，两者常常只是**同一个目录的两种写法**（macOS 上 `/tmp` 与 `os.tmpdir()` 都给软链形态，真实路径是 `/private/tmp/…`）⇒ 两侧都要按真实路径（`realpath`，解析不到就回落原样）比过再判前缀，否则「落点优先」这一整档在软链形态下**静默失效**、只剩原值兜底（codex 的原值 `user` 给不出结论，那两条会显示成「来源未证实」）。合成路径与已经被删掉的落点同样要有判据，所以**原样形态与真实形态并列比**，不是二选一。
 
 ## 状态机与时序
 
@@ -50,40 +51,40 @@ Tab 顺序是 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 
 
 1. **编排层取一次快照**：`installableSkills(settings.skills?.entries)` 扫技能根 → 只留**准入合格**的条目 → 剔掉停用名单里的名字 → 顺序沿用扫描输出的**码位升序**（`compareSkillNames` 用 `<` / `>` 而不是 `localeCompare`：名字域是 `[a-z0-9-]`，码位序不随 locale / ICU 变，而界面**不再排**，顺序就是这里的输出）。清单为空 ⇒ **不给这一格**（`undefined` 不是 `[]`）：空数组会被物化成「建了目录、零条」。
 2. **填进 `AgentRunInput.skills`**（`{ name, sourceDir }[]`）：**全仓只有候选执行那一个调用点**填它；评分与用例同步两处不传——「只有候选执行阶段装入」由类型 + 调用点共同保证（静态断言钉住填点恰好一处）。适配器**只认入参、不读 `loadConfig()`**。
-3. **物化**（`materializeSkills`，本体在 `core`）：无条件 `mkdirSync` 行配置目录，然后逐条把源目录**整目录复制**到 `<configHome>/skills/<名称>/`。四条口径：① 整目录（`scripts/`、`references/` 一起走），**不设体积上限**（上限会造出「装了一半」的第三种状态）；② **清单内逐条覆盖、清单外一个名字都不碰**——`skills/` 这一层还住着厂商内置的 `.system/`，本模块**不删任何东西**，覆盖靠 `cpSync` 的同名覆盖，「清单外不碰」因此是结构性的；③ 源目录读不到 / 落不下去 ⇒ **抛 `SkillMaterializeError` 并点名哪一条**（那一行的环境是残缺的，照跑只会产出一个「看起来正常」的分数）；④ 名字过两道门——最严的名字规则 + 拼出的落点必须真的在 `skills/` 之下（路径穿越的纵深防御，两道各自独立成立）。
-4. **四家落点同形、时序各不相同**：落点一律是 `<行配置目录>/skills/<名称>/SKILL.md`（与源侧同一个 `skillsDirOf`，两处各写一个字符串字面量迟早漂成两个落点）；claude 无时序要求（文件在 `query()` 之前落盘即可）、codex 必须在 `hooks.createClient`（spawn app-server）**之前**、dsh 必须在 `new DeepSeekHarness(...)`（boot 点）**之前**、pi 必须在 `createAgentSession()` **之前**——写晚了这一行照样「跑完」，但**没有任何 skill、也没有任何报错**，所以时序判据必须在**装配时刻**取快照，而不是等 `run()` 结束后看盘。
+3. **物化**（`materializeSkills`，本体在 `core`）：无条件 `mkdirSync` 候选配置目录，然后逐条把源目录**整目录复制**到 `<configHome>/skills/<名称>/`。四条口径：① 整目录（`scripts/`、`references/` 一起走），**不设体积上限**（上限会造出「装了一半」的第三种状态）；② **清单内逐条覆盖、清单外一个名字都不碰**——`skills/` 这一层还住着厂商内置的 `.system/`，本模块**不删任何东西**，覆盖靠 `cpSync` 的同名覆盖，「清单外不碰」因此是结构性的；③ 源目录读不到 / 落不下去 ⇒ **抛 `SkillMaterializeError` 并点名哪一条**（那一行的环境是残缺的，照跑只会产出一个「看起来正常」的分数）；④ 名字过两道门——最严的名字规则 + 拼出的落点必须真的在 `skills/` 之下（路径穿越的纵深防御，两道各自独立成立）。
+4. **四家落点同形、时序各不相同**：落点一律是 `<候选配置目录>/skills/<名称>/SKILL.md`（与源侧同一个 `skillsDirOf`，两处各写一个字符串字面量迟早漂成两个落点）；claude 无时序要求（文件在 `query()` 之前落盘即可）、codex 必须在 `hooks.createClient`（spawn app-server）**之前**、dsh 必须在 `new DeepSeekHarness(...)`（boot 点）**之前**、pi 必须在 `createAgentSession()` **之前**——写晚了这个候选照样「跑完」，但**没有任何 skill、也没有任何报错**，所以时序判据必须在**装配时刻**取快照，而不是等 `run()` 结束后看盘。
 5. **采集**（L3，四家各一条通道）：claude `getContextUsage().skills.skillFrontmatter`（在流循环里 `system/init` 之后采一次并缓存，收尾同步交出）、codex `skills/list`（用 `startCodex` 的本地 `client` 发，不需要给会话开洞）、dsh `user/message` 且 `source.kind === 'skill-catalog'`（显式分流；认不出的 `user/message` 照旧落原始 JSON）、pi 出站请求 payload 的技能段（`before_provider_request` 观察者取证，按两条 wire 各读一次）。**采不到 = 不发那一格 + 一条点名的 WARN**，绝不写成 `[]` 或 `0`；判据**一个字都不读模型答复**（模型会说「我按技能做了」）。
    - **进模型上下文的是什么形状（codex，三格两模型差分）**：厂商交给模型的是技能的**索引**（名称 + 描述 + **落点路径**），**不是正文** —— 物化我们这枚 skill 时，出站上下文里 `SKILL.md` 的命中**恰好多 1 次**、文件只大约 200 字节；内置 skill 的命中数两边相同（它们恒在）。**`enabled: false` 的那一枚不进上下文**（与「不物化」那格逐格相同），而它在 `skills/list` 里**照样列出** ⇒「列不列出」与「进不进上下文」是两件事，采集面（上一条）读到的是前者、模型看到的是后者。
-6. **结论与行失败**：`installed`（清单里有它）/ `missing`（清单采到了、里面没有它 ⇒ **该行失败**，文案 `技能「<name>」未出现在 <家> 的技能清单里（厂商清单共 N 条，没有它）`）/ `unverified`（清单采不到 ⇒ 行照跑，如实记「未验证 · 仅落盘」）。
+6. **结论与候选失败**：`installed`（清单里有它）/ `missing`（清单采到了、里面没有它 ⇒ **该候选失败**，文案 `技能「<name>」未出现在 <家> 的技能清单里（厂商清单共 N 条，没有它）`）/ `unverified`（清单采不到 ⇒ 行照跑，如实记「未验证 · 仅落盘」）。
 
-**停用 = 文件级「不放」**，四家统一——没有任何一家有「按名字关」的配置键（claude 的 `Options.skills` 是筛选不是注入、dsh 根本没有按名关的键），所以停用的那几条**根本不进清单**，也就不会出现在行配置目录里。
+**停用 = 文件级「不放」**，四家统一——没有任何一家有「按名字关」的配置键（claude 的 `Options.skills` 是筛选不是注入、dsh 根本没有按名关的键），所以停用的那几条**根本不进清单**，也就不会出现在候选配置目录里。
 
-**两个来源共用一个归因码**：物化落盘失败与厂商没认（`missing`）都归 `AGENT_SKILLS_UNAVAILABLE`，**两者都刻意不进 `TRANSIENT_ROW_RETRY_CODES`**——它们是本次配置的直接后果，不是瞬时故障；重试只会把同一个失败延后，真正要重跑的那一步是「回设置页把源目录修好」。落盘失败那一档由适配器归因，`missing` 那一档由编排层判定。
+**两个来源共用一个归因码**：物化落盘失败与厂商没认（`missing`）都归 `AGENT_SKILLS_UNAVAILABLE`，**两者都刻意不进 `TRANSIENT_CANDIDATE_RETRY_CODES`**——它们是本次配置的直接后果，不是瞬时故障；重试只会把同一个失败延后，真正要重跑的那一步是「回设置页把源目录修好」。落盘失败那一档由适配器归因，`missing` 那一档由编排层判定。
 
 ## 已知边界与取舍
 
 | 边界 | 处置 |
 |---|---|
 | **同名冲突四家解法不同** | dsh 项目级（rank 100/200）**压过**我们的 rank 400；pi 的项目自动发现同样压过我们的 `configHome`、个人档被我们过滤掉；claude 是**本机赢**（`user` > `project`）；codex **同名不去重**（两条都进清单）⇒ 设置页那条 Alert 承认分歧，不给统一结论 |
-| **设置页结构上无法点名同名冲突** | 「仓库自带的 skill」只存在于**行工作区**（`<行>/workspace`）⇒ 设置页只写原则，点名归**行详情**的「本行技能」格 |
+| **设置页结构上无法点名同名冲突** | 「仓库自带的 skill」只存在于**候选工作区**（`<行>/workspace`）⇒ 设置页只写原则，点名归**候选详情**的「候选技能」格 |
 | **厂商内置（bundled / system）不压** | 跨家可比性买不到（claude 仍有 20 项工具、dsh 仍有 24 项），压掉还要分别动四家开关、将来厂商新增内置时行为与默认分叉 ⇒ 如实呈现，代价登记为「厂商能力面本就不同」 |
 | **不设 skill 目录体积上限** | 上限会造出「装了一半」的第三种状态；界面不显示体积，要知道占用就 `du -sh` |
-| **落盘失败 = 该行失败** | 不采用 MCP 的「单条跳过 + WARN」收窄（那条针对外部环境，这里是本次配置的直接后果） |
+| **落盘失败 = 该候选失败** | 不采用 MCP 的「单条跳过 + WARN」收窄（那条针对外部环境，这里是本次配置的直接后果） |
 | **一个 patch 里两种合并语义** | `skills` 逐条合并 / `mcpServers` 整份替换 ⇒ 靠纯函数 + 注释 + 守卫钉住，别照抄邻居 |
 | **停用名单是「缺省 = 开启」** | 判据是 `entries[name]?.disabled === true` 而不是「键在不在」：`loadConfig` 不做 schema 校验，把「键在」（值可能是手改坏的别的东西）当成「关着」会**静默关掉**用户的技能 |
 | **`missing` 的语义边界** | 它说的是「厂商清单里没有它」，不是「模型不会用」；codex 的 `enabled:false` 条目被丢弃（不在可用技能面里的条目算成「厂商认了」就是假绿），这一档实际不可达 |
-| **行为门槛只用于冒烟，不是行内自动判据** | 行内 L3「尽力而为」、采不到记 `unverified`、不阻塞行；**冒烟**那一次才要求「模型真按 skill 走了一次」（codex 认它真读了 `SKILL.md`、dsh 认真发了 `skill` 工具调用） |
+| **行为门槛只用于冒烟，不是候选内自动判据** | 候选内 L3「尽力而为」、采不到记 `unverified`、不阻塞行；**冒烟**那一次才要求「模型真按 skill 走了一次」（codex 认它真读了 `SKILL.md`、dsh 认真发了 `skill` 工具调用） |
 | **落点分档的守卫必须在真文件系统上造不对称** | 合成路径（`/runs/…` 这类字面量）只走「原样形态」那一支，对**同一个目录的两种写法**没有区分力；判它要 `mkdtempSync` + `symlinkSync` 造出软链 ↔ 真实这一对，再让两侧交叉给 |
-| **claude 在本机网关下拿不到行为证据** | 技能面确证在（`getContextUsage().skills.skillFrontmatter` 里出现、来源 `userSettings`），但**模型收不到那份清单**：CC 把整份 `<system-reminder>` 放在 `messages[]` 里一条 `role: "system"` 的消息上，而网关转换器（`proxyGateway` 的 `anthropicToOpenAI`）对非直连目标把它整条 `continue` 掉（判据：同一请求体只改这一格，`role` 为 `user` 时两个模型都发出 `Skill` 调用；原样时上游 usage 与「整条删掉」逐字相同）⇒ 行级结论只到「厂商确证技能面里有它」。**网关侧已改为就地降级为 user 并留诊断，待部署**，见 [Claude Code FAQ](/faq/claude-code) |
+| **claude 在本机网关下拿不到行为证据** | 技能面确证在（`getContextUsage().skills.skillFrontmatter` 里出现、来源 `userSettings`），但**模型收不到那份清单**：CC 把整份 `<system-reminder>` 放在 `messages[]` 里一条 `role: "system"` 的消息上，而网关转换器（`proxyGateway` 的 `anthropicToOpenAI`）对非直连目标把它整条 `continue` 掉（判据：同一请求体只改这一格，`role` 为 `user` 时两个模型都发出 `Skill` 调用；原样时上游 usage 与「整条删掉」逐字相同）⇒ 候选级结论只到「厂商确证技能面里有它」。**网关侧已改为就地降级为 user 并留诊断，待部署**，见 [Claude Code FAQ](/faq/claude-code) |
 | **扁平形态与散落文件都不进列表** | 只认 `<根>/<名称>/SKILL.md`；用户丢一个扁平 `<根>/<名称>.md`（或技能根里任何普通文件）在列表里**一行都看不到**，而 dsh 本来能吃扁平形态——是否在扫描侧也认它、或至少给一条根级提示（「这里有文件不是技能」）**未裁决** |
 | **frontmatter 的权限字段未接** | claude 的 `allowed-tools` 与三档权限的交互、dsh 的 `disable-model-invocation` / `user-invocable` 与「单条停用」的关系（已证：两个都写才全关，只写前者仍可被 `/<name>` 注入）都未使用 |
-| **并发装入未测** | 多行同时从同一源目录装入有没有竞态**未证实**；缓解是物化只读源目录、只写本行配置目录 |
+| **并发装入未测** | 多行同时从同一源目录装入有没有竞态**未证实**；缓解是物化只读源目录、只写候选配置目录 |
 | **codex 侧的未证实项** | core 加载器的 frontmatter 精确允许集、同名 skill 的模型侧选择、spawn 后落盘能否被同 turn 看到、`SKILL.json` 用法、按 `name` 禁用会被 `path` 条目压制（推测）、`skills/extraRoots/set` 未测、`skills/changed` 通知未捕获 |
 | **dsh 侧的未证实项** | rank 200 与 watch 热更新未跑；`DSH_AGENTS_HOME` / `DSH_BUNDLED_SKILL_DIR` / `DSH_PRIMARY_RUNTIME` 的宿主泄漏只在本机（三个都未设置）核过 |
 
 ## 相关链接
 
-- 知识文章：[《设置》](/features/settings)（四个 Tab 的全貌、「技能」的邻居）、[《MCP 配置》](/features/mcp-config)（同为「往智能体里装东西」的配置面，两处的合并语义刻意不同）、[《数据与存储》](/features/storage)（`config.json` 的落盘与原子写口径）、[《评测详情与候选行》](/features/run-detail)（环境抽屉里「已下发的技能」与「本行技能」两格）、[《行执行与日志》](/features/row-execution)、[《事件流》](/protocols/event-stream)（`vendor-system` 的投送语义）、[《Provider 抽象与 run 入口》](/protocols/provider-run)（`run` 入参与 `skillInstall` 观测格）
+- 知识文章：[《设置》](/features/settings)（四个 Tab 的全貌、「技能」的邻居）、[《MCP 配置》](/features/mcp-config)（同为「往智能体里装东西」的配置面，两处的合并语义刻意不同）、[《数据与存储》](/features/storage)（`config.json` 的落盘与原子写口径）、[《评测详情与候选》](/features/run-detail)（环境抽屉里「已下发的技能」与「候选技能」两格）、[《候选执行与日志》](/features/candidate-execution)、[《事件流》](/protocols/event-stream)（`vendor-system` 的投送语义）、[《Provider 抽象与 run 入口》](/protocols/provider-run)（`run` 入参与 `skillInstall` 观测格）
 - 协议侧：[Claude Code 接入](/protocols/cc)、[Codex 接入](/protocols/codex)、[DeepSeek Harness 接入](/protocols/dsh)、[Pi Coding Agent 接入](/protocols/pi) 各自的「skills 接法」，[四家横向对比](/protocols/comparison)的 skill 对照表
 - 规约与排障：[变异验证](/guard/mutation-verification)、[冒烟测试方法论](/guard/smoke-testing)、[故障索引](/faq/)（claude 行为证据缺失那条按现象可搜）
 - 仓库内参考：`packages/server/contracts/src/skill.ts`（准入规则、落盘 / 补丁两种形状、来源分档）、`packages/server/core/src/skill-store.ts`（扫描与停用名单的唯一读法）、`packages/server/core/src/skill-materialize.ts`（整目录复制与路径穿越的两道门）、`packages/server/evaluator/src/row-skill.ts`（三态结论与 `missing` 文案）

@@ -17,7 +17,7 @@ import { EFFORT_OFF, type SubagentRecord, type UsageTokens } from '@aieval/contr
 import { createLogger, materializeSkills } from '@aieval/core';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { asRecord, readString } from '../../json';
-import { hostNpmrcPath, readNpmrcText, toClaudeMcpServers, writeRowNpmrc } from '../../mcp';
+import { hostNpmrcPath, readNpmrcText, toClaudeMcpServers, writeCandidateNpmrc } from '../../mcp';
 import { CLAUDE_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, stripV1Suffix } from '../../route';
@@ -43,7 +43,7 @@ const logger = createLogger('agents/cc');
  * 与评测无关的旁路工具：**无条件**禁用（用户口径）。
  *
  * 禁的不是「能力」而是旁路，逐条理由：
- *  - `CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup`：会话级定时唤醒——本产品的每一行
+ *  - `CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup`：会话级定时唤醒——本产品的每个本次运行
  *    跑完就 `dispose()`，没有「以后」；留着只会让 CLI 在无人接续的会话里排定时任务；
  *  - `PushNotification`：向人推通知——评测是无人值守的，没有收件人；
  *  - `DesignSync`：设计与本仓无关的外部同步口。真机 CLI 2.1.301 的工具表里**确实有**它。
@@ -246,7 +246,7 @@ function modelForClaudeCode(modelId: string, contextWindow: number | undefined):
  * 告诉 agent 该怎么干活」这件事在 cc 侧从来没生效过（codex 侧同样读不到 repo 的 AGENTS.md）。
  *
  * 为什么 `'user'` 这一档**不**会捡到宿主的 `~/.claude/settings.json`（原 `[]` 的理由）：
- * 适配器把 `HOME` / `USERPROFILE` / `CLAUDE_CONFIG_DIR` 全指向本行的 `.agenthome`（不变量 3），
+ * 适配器把 `HOME` / `USERPROFILE` / `CLAUDE_CONFIG_DIR` 全指向本次运行的 `.agenthome`（不变量 3），
  * 而 `'user'` 档读的正是 `CLAUDE_CONFIG_DIR/settings.json`——本机实测（SDK 自己的 `resolveSettings`，
  * 隔离环境逐字对齐）：`'user'` 解析到 `<configHome>/settings.json`，宿主真实 `~/.claude` 一个文件都不读。
  *
@@ -274,7 +274,7 @@ const CLAUDE_SETTING_SOURCES: readonly string[] = ['user', 'project', 'local'];
  * JS 版在 Windows 上**不做**短名归一（它按组件拼回原样），照它写等于没修。全仓另一半
  * （`core/src/git.ts` 的 repoPath 归一）用的是 JS 版，那是另一条路径、不受本门影响。
  *
- * 取不到时**回落原值**，绝不因此让整行失败：`realpathSync.native` 在路径不存在时抛 ENOENT（实测），
+ * 取不到时**回落原值**，绝不因此让整本次运行失败：`realpathSync.native` 在路径不存在时抛 ENOENT（实测），
  * 而归一只是「让 CLI 的安全门放行」这一件事的**尽力而为**——真正的工作区存在性由工作区准备阶段负责
  * （不存在时它会先抛带中文原因的错，这里抢着报只会把真正的原因顶掉）。
  *
@@ -341,7 +341,7 @@ function isDirectoryPath(path: string): boolean {
  *
  * 为什么要上限：`getContextUsage()` 是一条控制请求，网关后端不回它时**它不会自己失败**，
  * 而采集是在**流循环里** await 的（`finalize` 是同步的，见下面）⇒ 没有上限就等于
- * 「一条控制请求能把整行的消息流挂住」，而界面看起来只是「这一行卡在跑」。
+ * 「一条控制请求能把整本次运行的消息流挂住」，而界面看起来只是「本次运行卡在跑」。
  * 到点按**采不到**处置（记一条点名的 WARN、判据降级成 `unverified`），绝不改本次运行的结论。
  */
 const SKILL_PROBE_TIMEOUT_MS = 15_000;
@@ -350,7 +350,7 @@ const SKILL_PROBE_TIMEOUT_MS = 15_000;
  * 上下文用量的**取数档**。
  *
  * `'summary'` 从最近一次响应的用量与本地估算作答，**不逐类调计数 API**；`'full'` 会为每个类别
- * 调一次计数接口。本仓只要 `skills` 那一格（名字与来源），故取前者——它是**每一行**都会跑一次的
+ * 调一次计数接口。本仓只要 `skills` 那一格（名字与来源），故取前者——它是**每个本次运行**都会跑一次的
  * 控制请求，用 `'full'` 等于给每次运行加一串额外 API 往返。
  * ⚠️ 若某天厂商把 `skills` 那一格改成只在 `'full'` 下返回，判据会整体降级成 `unverified`
  * （不报错、只是没证据）——真机判据：`vendor-system.skills` 那一格非 `null`。
@@ -361,7 +361,7 @@ const SKILL_PROBE_DETAIL = 'summary' as const;
  * 取一次技能面（尽力而为，**永不抛**）。
  *
  * 失败与「SDK 没这个方法」都归成 `error` 文案：调用方据此落一条点名的 WARN，
- * 而**不是**把它变成一次运行失败——观测是补充信息，改变结论是 MCP 那条判据才有的权力。
+ * 而**不是**把它变成一次运行的失败——观测是补充信息，改变结论是 MCP 那条判据才有的权力。
  */
 async function probeClaudeSkills(
   query: ClaudeQuery,
@@ -427,7 +427,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    * 判据用**合并后**的 `env`（= 真的交给 CLI 的那一份），不是裸 `process.env`：覆盖层与这个变量
    * 都只在子进程环境里起作用，读同一份才不会有第二次翻译。
    *
-   * ⚠️ **它是观测，不是拦截**：不许抛错、不许跳过这一行、不许因此改动注入、不许删改宿主那个变量
+   * ⚠️ **它是观测，不是拦截**：不许抛错、不许跳过本次运行、不许因此改动注入、不许删改宿主那个变量
    * ——WARN 之后的行为与没有它时**逐字相同**（`injected` 在上面已经构造完，这里只读不写）。
    * 就地判一次 ⇒ 一次运行至多一条 WARN（`startClaudeCode` 每次运行只跑一次），不刷屏。
    */
@@ -439,34 +439,34 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   }
   const cwd = canonicalCwd(input.cwd);
   /**
-   * 本行的**技能装入**：把清单里那几条整目录复制进 `<configHome>/skills/`。
+   * 本次运行的**技能装入**：把清单里那几条整目录复制进 `<configHome>/skills/`。
    *
    * 时机：必须在 `sdk.query()` **之前**——CC 在这一刻扫 `CLAUDE_CONFIG_DIR/skills` 装配技能清单，
-   * 写晚了这一次启动就看不到它们，而**它不报错**（只是这一行按「没有这条 skill」跑完）。
+   * 写晚了这一次启动就看不到它们，而**它不报错**（只是本次运行按「没有这条 skill」跑完）。
    * 这一家除了「装配前落盘」之外**不需要改任何 query option**：`settingSources` 已含 `'user'`，
    * 而 `CLAUDE_CONFIG_DIR` 指的正是 `configHome`（见上面 `env` 那一块）。
    *
    * **不传 `skills` ⇒ 一次都不调**（连 `skills/` 目录都不建）：评分与用例同步两处不该有技能面，
    * 而「不传」是这条口径唯一的表达方式（空数组会被物化成「建了目录、零条」）。
-   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、该行失败。
+   * 落不下去时物化函数**抛**（点名哪一条），由骨架归成 `AGENT_SKILLS_UNAVAILABLE`、本次运行失败。
    */
   if (input.skills !== undefined) {
     materializeSkills({ configHome: input.configHome, skills: input.skills });
   }
   /**
-   * 行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有的 `configHome`。
+   * 运行内 npm registry：宿主的 `.npmrc` 里那一行**照抄**进行私有的 `configHome`。
    *
-   * 为什么必须做：本行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc` 变成
-   * `<行HOME>/.npmrc`（不存在）⇒ registry 从内网镜像掉回公网，行内首次注入 playwright MCP
+   * 为什么必须做：本次运行的 `HOME` 已被换成行私有目录 ⇒ npm 的 `userconfig` 从 `~/.npmrc` 变成
+   * `<行HOME>/.npmrc`（不存在）⇒ registry 从内网镜像掉回公网，运行内首次注入 playwright MCP
    * 从 ~4 s 变成 **17.2 s / 61 MB**（机制级根因，等待预算就是它撑起来的）。
    *
    * 三条边界：宿主没配 registry ⇒ **什么都不做**（返回 `null`，连目录都不建）；只读宿主那一份、
-   * 只写行内这一份；权限位 0600（`writeRowNpmrc` 里落）。读宿主失败**绝不让整行失败**——
+   * 只写运行内这一份；权限位 0600（`writeCandidateNpmrc` 里落）。读宿主失败**绝不让整本次运行失败**——
    * 它只是「让首次注入快一点」的尽力而为。
    *
    * 时机：必须在 `sdk.query()` **之前**——MCP 子进程是 CLI 起的，等它起来再写就晚了。
    */
-  const registryLine = writeRowNpmrc({
+  const registryLine = writeCandidateNpmrc({
     configHome: input.configHome,
     hostNpmrc: readNpmrcText(hostNpmrcPath()),
   });
@@ -474,7 +474,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    * MCP 条目 → SDK 的 `Options.mcpServers`。
    *
    * **空集不给这一格**（不是给一个空 map）：`strictMcpConfig` 是关的，空 map 在厂商侧的读数是
-   * 「本行显式声明一台都不要」，与「本次没有程序化注入」不是一件事——后者才允许仓库自带的
+   * 「本次运行显式声明一台都不要」，与「本次没有程序化注入」不是一件事——后者才允许仓库自带的
    * `.mcp.json` 照常生效（用户口径：不压制）。
    */
   const mcpServers = toClaudeMcpServers(input.mcpServers ?? {});
@@ -509,7 +509,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    *
    * 为什么必须取：转录目录按 `configHome` + `sessionId` 定位，而续接用的是**同一个会话、同一个目录**
    * （CLI 只往原转录后面追加）⇒ 收尾那次「枚举目录」会把**上一段**的子智能体也读进来，再由
-   * `finalize` 加到这一段的 `tokens` 上——而追问那一行的计量是**累加**的，于是那份用量被算两遍
+   * `finalize` 加到这一段的 `tokens` 上——而追问那一本次运行的计量是**累加**的，于是那份用量被算两遍
    * （真机复现：第二段一次派发都没有，`subagentTokens` 仍是第一段那一份、`turns` 也多算）。
    *
    * 判据落在 `input.resume`：只有续接才有「上一段」；新会话的目录此刻是空的。
@@ -561,10 +561,10 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        *
        * ⚠️ 用 `resume`（按 id 指名道姓）**绝不用 `continue`**（取当前目录最近一条）：重跑复用同一个
        * cwd 时后者会静默续上一次尝试——用户以为在追问，智能体答的是上一轮的工作区上下文，
-       * 而界面上一切正常。缺省时**这一格整个不给**（不是给 `undefined`）：本行的会话身份只由
+       * 而界面上一切正常。缺省时**这一格整个不给**（不是给 `undefined`）：本次运行的会话身份只由
        * `CLAUDE_CONFIG_DIR` 定位——**cwd 不是隔离键**（同一个 configDir 下换一个 cwd，`resume`
        * 照样按 `session_id` 接上、返回的 id 不变、原转录被继续追加；换 configDir 才被拒），
-       * 故按行隔离只有「每行一个 `CLAUDE_CONFIG_DIR`」这一条路。不传就是开新会话。
+       * 故按行隔离只有「每个本次运行一个 `CLAUDE_CONFIG_DIR`」这一条路。不传就是开新会话。
        */
       ...(input.resume === undefined ? {} : { resume: input.resume.sessionId }),
       /**
@@ -622,7 +622,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // **刻意不给 `maxTurns`**（用户口径「执行不限时间、评分不限轮次和时间」）：
       // 这个选项是「最大 API 往返次数」，不给就是不限。写死 60 会把一次 60 次往返的评测
       // 正好截在 60 上（`error_max_turns` 收场）——那是本仓自己的上限，不是模型跑飞了。
-      // 唯一能停下这一行的仍是 `signal`（用户点「终止」）与模型自己收场。
+      // 唯一能停下本次运行的仍是 `signal`（用户点「终止」）与模型自己收场。
     },
   });
   logger.debug('cc 已注入路由并启动查询', {
@@ -637,7 +637,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     /**
      * MCP 与 registry 的注入读数。**只记名字，不记条目本体**：条目里有解析后的密钥
      * （`${CONTEXT7_API_KEY}` 已经换成真值），整条打出来就等于把密钥写进日志。
-     * registry 那一格同理只记「写没写进去」，不抄宿主那一行的内容——排障要的是「有没有生效」。
+     * registry 那一格同理只记「写没写进去」，不抄宿主那一本次运行的内容——排障要的是「有没有生效」。
      * 技能那一格只记条名（源目录路径进事件流没有额外信息量，且可能很长）。
      */
     mcpServers: Object.keys(mcpServers),
@@ -667,10 +667,10 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
           const cancelled = readClaudeCancelResult(await cancel(uuid));
           if (cancelled === true) return 'retracted';
           if (cancelled === false) return 'already-consumed';
-          logger.warn('cc 的撤回回执形状不认识，按「说不清」记（不改这一行的结论）', { uuid });
+          logger.warn('cc 的撤回回执形状不认识，按「说不清」记（不改本次运行的结论）', { uuid });
           return 'unknown';
         } catch (error) {
-          logger.warn('cc 的撤回请求失败，按「说不清」记（不改这一行的结论）', { uuid, error });
+          logger.warn('cc 的撤回请求失败，按「说不清」记（不改本次运行的结论）', { uuid, error });
           return 'unknown';
         }
       };
@@ -725,7 +725,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     return true;
   };
   /**
-   * **技能面（L3）的采集**：一行里取一次上下文用量，答「厂商当时到底认了哪几条 skill」。
+   * **技能面（L3）的采集**：一本次运行里取一次上下文用量，答「厂商当时到底认了哪几条 skill」。
    *
    * 三件事决定了这段的形状，缺一条都会静默失效：
    *   1. **不能在 `finalize` 里发起**：`TurnStart.finalize` 是**同步**的（`turn.ts` 在 `finally`
@@ -784,7 +784,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         }
         yield message;
         /**
-         * **本行没装技能（`skills` 缺席）就一次都不采**：评分与用例同步那两处不传这一格，
+         * **本次运行没装技能（`skills` 缺席）就一次都不采**：评分与用例同步那两处不传这一格，
          * 它们不该付这条控制请求的钱、也不该在事件流里多出一条「采不到」的 WARN。
          * 与物化那一步同一条判据（「不传 `skills` ⇒ 一次都不调」）。
          */
@@ -805,12 +805,12 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
     }
   })();
   /**
-   * 本行**形状像一次派发**的子智能体 id（不是「见过 `task_id` 就算」，见 `project` 里的登记点）
+   * 本次运行**形状像一次派发**的子智能体 id（不是「见过 `task_id` 就算」，见 `project` 里的登记点）
    * 与 `system/init` 回显的 **session id**：收尾读子智能体会话文件时，这两个是定位它所需的全部信息。
    */
   const subagentIds = new Set<string>();
   /**
-   * 本行**只见到收场帧**的 task id（`'unjudged'`）——与 `subagentIds` 是**两份名单**：
+   * 本次运行**只见到收场帧**的 task id（`'unjudged'`）——与 `subagentIds` 是**两份名单**：
    * 这一份**不要求有转录**（判不了 ≠ 没采到），只在收尾落一条「可能少算它」的 WARN（见 `finalize`）。
    */
   const unjudgedTaskIds = new Set<string>();
@@ -825,7 +825,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    */
   let nativeStructuredOutput = false;
   /**
-   * 子任务行的**账**：本行每一个子智能体**最后一次交出去的那一条**（`taskId` → 记录），
+   * 子任务行的**账**：本次运行每一个子智能体**最后一次交出去的那一条**（`taskId` → 记录），
    * 由 `project` 每收到一条子任务记录就登记一次；收尾把它们连**最终用量**重新交一次
    * （覆盖累积按 `subagentId`，读侧只留最后一条）。
    *
@@ -842,7 +842,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    */
   const lastSubagentRecordById = new Map<string, SubagentRecord>();
   /**
-   * 本行「**同一版本的文件只解析一遍**」的缓存
+   * 本次运行「**同一版本的文件只解析一遍**」的缓存
    * 「读法四条」。
    *
    * 一次运行里每份转录会读两次：① `finalize` 的**合计读**（`readClaudeSubagentUsage`，枚举会话目录）
@@ -911,7 +911,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
    *
    * 那是每一个子智能体**唯一**的一次读盘，也是
    * 「每个 subagent 的最终用量」这一格的全部来源：
-   *   · 名单 = 本行登记过的**全部**子任务（含只见到派发帧的——它们的终态通知没来，只登记派发帧才不会漏掉）；
+   *   · 名单 = 本次运行登记过的**全部**子任务（含只见到派发帧的——它们的终态通知没来，只登记派发帧才不会漏掉）；
    *   · 现读失败时回落到记下的那一条（它至少是「当时」的真实读数），用量仍是 `null`——不猜；
    *   · 回落出来的那一条若与已交过的某条逐字相同，这次重交不带新事实 ⇒ 由 `onceSubagent` 拦下。
    */
@@ -979,7 +979,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
      *   · 这一格是**显式 `null`**（不是键缺省）⇒ 覆盖。读失败时必须能清掉上一版那个
      *     偏大的分量，否则它与「已退回主会话口径」的合计一起破坏 `subagentTokens ≤ tokens`；
      *   · **合计与分量同生共死**：拿不出合计时（`mainTokens === null`
-     *     —— 这一行**一条 `result` 消息都没等到**就被中断 / 失败，而 `result` 正是 CLI 的收尾消息）
+     *     —— 本次运行**一条 `result` 消息都没等到**就被中断 / 失败，而 `result` 正是 CLI 的收尾消息）
      *     分量交**显式 `null`**，绝不单独交出一个「有分量、没合计」的形状：消费方按
      *     「主会话 = 合计 − 分量」推导，缺了合计那一格这个减法**没有被减数**，
      *     而两格各自看起来都正常（codex 为同一形状做了同一个选择，见 `providers/codex/index.ts` 的 finalize）；
@@ -1012,16 +1012,16 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        * **技能面那一条事件**（`vendor-system.skills`）：由收尾**同步**交出在流循环里采到的那一份。
        *
        * 为什么交的是**整份**厂商标称事实（而不是只带 `skills` 一格）：`vendor-system` 的消费方
-       * （编排层的行级 MCP 证据、环境抽屉的厂商那一组）都是**取最后一条**读的，
+       * （编排层的运行级 MCP 证据、环境抽屉的厂商那一组）都是**取最后一条**读的，
        * 一条只带一格的事件会把先前那条里的工具面 / MCP 清单在界面上抹掉。
        * 故这里用 `initRecord` 那份**原始 init 消息**重放六格，再补上 `skills`。
        *
        * 采不到时**不带 `skills` 那一格**（`skillsDraftOf` 交 `undefined`）并落一条点名的 WARN：
        * 写 `skills: null` 会让读侧读到「厂商投送了、清单是空的」——那是替厂商说一句我们并不知道的
-       * 话；「我们没采到」由那条 WARN 承载，行级判据据此降级成 `unverified`、不据此判失败。
+       * 话；「我们没采到」由那条 WARN 承载，运行级判据据此降级成 `unverified`、不据此判失败。
        *
-       * ⚠️ **两条来源，探针优先**：`getContextUsage()` 那条探针**只在「这一行配了技能」时才跑**
-       * （编排层按「空集不给键」的口径不下发 `skills`）⇒ 没配技能的行上，收尾这条事件本来
+       * ⚠️ **两条来源，探针优先**：`getContextUsage()` 那条探针**只在「本次运行配了技能」时才跑**
+       * （编排层按「空集不给键」的口径不下发 `skills`）⇒ 没配技能的本次运行上，收尾这条事件本来
        * **一个 skills 格都不带**，而下游把「没有这一格」读成**厂商没投送**——可厂商在 `system/init`
        * 里明明投了（真机：19 条，含注入的那一条）。故探针没采到时回落到 **init 帧自带的名单**
        * （只有名字 ⇒ `source` / `path` 记 `null`、`origin` 落 `'unverified'`，见 `skillsFromInitFrame`）。
@@ -1029,7 +1029,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       /**
        * 交这条事件的**判据是「`skills` 那一格拿不拿得到」**，不是「探针跑没跑」：
        * 这条事件重放的是 init 的六格（跑动期已经交过一次），**唯一的增量就是 `skills`**——
-       * 拿不到它就没有交的必要（那是原来的行为）；而没配技能的行上探针根本不跑
+       * 拿不到它就没有交的必要（那是原来的行为）；而没配技能的本次运行上探针根本不跑
        * （`skillsProbed` 恒 `false`），此时 init 帧自带的名单就是那一格。
        */
       if (initRecord !== null) {
@@ -1042,21 +1042,21 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
           /**
            * **两条通道都给不出 `skills` 时也必须说话**：下游把「没有这一格」渲染成
            * `not-exposed`（枚举的语义是「厂商没送到」）——那是替厂商说一句我们并不知道的话。
-           * 这里点名「我们没读到」，让行级判据降级成未验证、而不是判成厂商没投。
+           * 这里点名「我们没读到」，让运行级判据降级成未验证、而不是判成厂商没投。
            * （`skillsProbeError !== null` 那一档已经有一条更具体的 WARN，故不重复。）
            */
           drafts.push(
-            logDraft('stderr', '[WARN] 采不到 claude 的技能面：init 帧与上下文用量两条通道都没给 skills 格 ⇒ 本行「技能」判据降级为未验证，不据此判失败'),
+            logDraft('stderr', '[WARN] 采不到 claude 的技能面：init 帧与上下文用量两条通道都没给 skills 格 ⇒ 本次运行「技能」判据降级为未验证，不据此判失败'),
           );
         }
       }
       if (skillsProbeError !== null) {
         drafts.push(
-          logDraft('stderr', `[WARN] 采不到 claude 的技能面（${skillsProbeError}）：本行「技能」判据降级为未验证，不据此判失败`),
+          logDraft('stderr', `[WARN] 采不到 claude 的技能面（${skillsProbeError}）：本次运行「技能」判据降级为未验证，不据此判失败`),
         );
       }
       if (read.missing.length > 0) {
-        drafts.push(logDraft('stderr', `[WARN] 读不到子智能体 ${read.missing.join('、')} 的会话文件，这一行的 tok / 缓存命中 / 轮次**不含**它们（不编造）`));
+        drafts.push(logDraft('stderr', `[WARN] 读不到子智能体 ${read.missing.join('、')} 的会话文件，本次运行的 tok / 缓存命中 / 步数**不含**它们（不编造）`));
       }
       /**
         * **判不了的条目点一句名，但不改两格**（`subagent-usage.ts` 的**规则⑤**）。
@@ -1071,7 +1071,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         drafts.push(
           logDraft(
             'stderr',
-            `[WARN] 只见到收场帧的 task 条目 ${read.unjudged.join('、')} 没有转录：这一行的 tok / 缓存命中 / 轮次可能少算它（无法判定它是不是子智能体）`,
+            `[WARN] 只见到收场帧的 task 条目 ${read.unjudged.join('、')} 没有转录：本次运行的 tok / 缓存命中 / 步数可能少算它（无法判定它是不是子智能体）`,
           ),
         );
       }
@@ -1099,18 +1099,18 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        */
       const subagentTurns = turns === null ? null : read.turns;
       /**
-       * 行级**用量分量**：**先取出来**再进返回对象——就地写两遍判据必然漂移，
+       * 运行级**用量分量**：**先取出来**再进返回对象——就地写两遍判据必然漂移，
        * 而漂移的表现是「事件里的分量与结果里的分量不一样」，界面与 run.json 各说各话。
        * 判据（`combined === null ? null : read.usage`）：合计拿不出来时分量也是显式
        * `null`，绝不单独交出一个「有分量、没合计」的形状（见上面那条口径与 `TurnFinalize` 的注释）。
        */
-      const rowSubagentTokens = combined === null ? null : read.usage;
+      const candidateSubagentTokens = combined === null ? null : read.usage;
       /**
        * **收尾补发一条 `usage` 事件**（全树合计 + 分量），把「跑动期事件是主会话口径」这件事收口。
        *
        * 为什么必须有：跑动期每条 `usage` 事件带的是**主会话**累计（子那一份要等这里读转录才拿得到），
-       * 而契约把那一格写成「**本行**的累计快照」、三处读侧（编排层的行回写、client 的
-       * `foldLiveMetrics`、ui 的里程碑行）都按「最后一条 `usage` 事件」读 ⇒ 不补这一条，同一行会在
+       * 而契约把那一格写成「**本次运行**的累计快照」、三处读侧（编排层的行回写、client 的
+       * `foldLiveMetrics`、ui 的里程碑行）都按「最后一条 `usage` 事件」读 ⇒ 不补这一条，同一本次运行会在
        * 收尾前后显示两套用量与轮次（真机同一次运行：事件口径 `3300/900/180` 与 `3` 轮，收尾结果
        * `4000/1000/220` 与 `4` 轮，差额正是子智能体那一份 `700/100/40` 与 1 轮）。
        *
@@ -1123,7 +1123,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         drafts.push({
           type: 'usage',
           tokens: combined,
-          subagentTokens: rowSubagentTokens,
+          subagentTokens: candidateSubagentTokens,
           subagentTurns,
           turn: null,
           timing: null,
@@ -1135,7 +1135,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         drafts,
         ...(combined === null ? {} : { tokens: combined }),
         // 分量与合计**同生共死**：合计拿不出来（没有任何 result）时分量也是 null，绝不单独交分量
-        subagentTokens: rowSubagentTokens,
+        subagentTokens: candidateSubagentTokens,
         ...(turns === null ? {} : { turns }),
         /**
          * 轮次那一格的分量：这里是**显式** `null`（不是键缺省）⇒ 读失败 / 合计拿不出来时覆盖成
@@ -1146,17 +1146,17 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
         // 通道事实：这一轮真的走成了原生 schema 通道吗（不是「我们传没传」）
         applied: { structuredOutput: nativeStructuredOutput },
         /**
-         * **这一行跑在哪条会话上**（`system/init` 那帧回显的 `session_id`，同一个判据上面的
+         * **本次运行跑在哪条会话上**（`system/init` 那帧回显的 `session_id`，同一个判据上面的
          * 子智能体转录定位也用）。
          *
-         * 为什么必须上报：它是续接的**唯一一把钥匙**——行快照落了它，跨进程才能接着这条会话再跑一段；
+         * 为什么必须上报：它是续接的**唯一一把钥匙**——运行快照落了它，跨进程才能接着这条会话再跑一段；
          * 采不到就是 `null`（旧产物与这一列同形），**绝不编一个**（编出来的 id 续不上，而界面上看不出来）。
          */
         sessionId,
       };
     },
     /**
-     * 投影一条 SDK 消息：**事件**（行级审计与活动行）与**消息**（内容级视图）并行产出。
+     * 投影一条 SDK 消息：**事件**（运行级审计与活动行）与**消息**（内容级视图）并行产出。
      *
      * 两条通道**各自**判定是否认得这条消息：事件侧认不出时落一条保留原始负载的日志，
      * 消息侧认不出时一条都不产出。共享的只有 `state.seen` 的去重意图——但**去重键不同**
@@ -1177,7 +1177,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        *
         * 为什么不能「见到 `task_id` 就登记」：CLI 给**非 Agent 的后台任务**也发 `task_started`
        * （真机：子智能体自己跑的那条带 `description` 的 Bash），那一条**永远没有转录**。登记进来之后，
-       * 收尾就会多喊一句「读不到子智能体 `bey1yc1n7`」——把一条 Bash 命令叫成子智能体；而那一行的正解是
+       * 收尾就会多喊一句「读不到子智能体 `bey1yc1n7`」——把一条 Bash 命令叫成子智能体；而那一本次运行的正解是
        * `{0,0,0}`（同一个 `readNothing` 的另一个出口：**事件流没报过形状像派发的东西** ⇒ 确实没有子智能体，
        * 一句 WARN 都不该有）。
        *
@@ -1192,7 +1192,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
        *
        * ⚠️ **累加而不是覆盖**：streaming input 下一条查询里可以有多轮（这一轮收场后又投了一条 ⇒
        * CLI 另起一轮），而 `result.usage` 是**每一轮一份**（厂商 JSDoc 逐字：*"MAIN AGENT LOOP ONLY …
-       * per-turn in streaming-input sessions"*）⇒ 覆盖会把行级用量记成「只有最后一轮」。
+       * per-turn in streaming-input sessions"*）⇒ 覆盖会把运行级用量记成「只有最后一轮」。
        * 单轮那一支是恒等（第一次拿到就是它自己），既有行为的读数一个字都不变。
        */
       if (projection.tokens !== null && projection.tokensEstimated !== true) {
@@ -1210,7 +1210,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
          *
          * 为什么要在这里改写投影那一格：`result` 在这一家是**每一轮一条**，而骨架对 `tokens` 是
          * **覆盖**语义（`turn.ts` 的消费循环）⇒ 原样透传会让 `usage` 事件只剩**最后一轮**那一份，
-         * 而 `finalize` 交出去的是全轮累加 ⇒ 跑动期界面与 `run.json` / 行快照各说各话（方向是事件流偏小）。
+         * 而 `finalize` 交出去的是全轮累加 ⇒ 跑动期界面与 `run.json` / 运行快照各说各话（方向是事件流偏小）。
          * 累计点**只有 `mainTokens` 一处**，这里只是把它交出去，不另起一套算法。
          *
          * 两支：
@@ -1234,8 +1234,8 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
  * 交给**跑动期事件**的那一格计量：**主会话到目前为止的累计**（权威值与估算共用同一个底）。
  *
  * ⚠️ **它与收尾交的那一份口径不同，而这「不是取舍、是拿不到」**：子智能体的用量只有读 CLI 落在
- * 行目录里的转录才拿得到，而那份转录要等收尾才读（`finalize`）⇒ 跑动期能给的只有主会话那一份；
- * 收尾交的是**全树**（`mainTokens + 子智能体合计`）。⇒ **读侧别把这条 `usage` 事件当「本行的总量」**：
+ * 本次运行目录里的转录才拿得到，而那份转录要等收尾才读（`finalize`）⇒ 跑动期能给的只有主会话那一份；
+ * 收尾交的是**全树**（`mainTokens + 子智能体合计`）。⇒ **读侧别把这条 `usage` 事件当「本次运行的总量」**：
  * 同一行在跑动期与收尾会差出子智能体那一份（真机同一次运行：跑动期 `3300/900/180`、`3` 轮；
  * 收尾 `4000/1000/220`、`4` 轮，差额正是子任务的 `700/100/40` 与 1 轮）。
  *
@@ -1336,7 +1336,7 @@ export const claudeCodeProvider: AgentProvider = {
      * 闸门关着的轮次走字符串题面，行为逐字不变。
      *
      * **续接那一格是 `yes`**：适配器侧完全接通（`resume` 落厂商同名字段、`session_id` 从
-     * `system/init` 取并上报进行快照），且真机两进程 + 阴性对照证过。
+     * `system/init` 取并上报进行的快照），且真机两进程 + 阴性对照证过。
      */
     turnInjection: {
       delivery: {
@@ -1402,7 +1402,7 @@ export const claudeCodeProvider: AgentProvider = {
         '消费方仍然要读 `tool_result.content`（字符串与块数组两种形状）：那是**工具结果本体**（命令输出、文件内容）的落点，与注入无关；只认 `text` 块会把工具结果读成空',
         '流式输入下 `result` 是**每一轮一条**（不再是运行结束那一帧）：收场由适配器驱动——本轮收场且没有待投递的消息时才收流',
         '续接与注入是两件事：`resume` 之后的追问天然落在 `idle` 档，`round` 只活在「同一条命」里（本进程、`result` 未到）',
-        '续接只用 `resume`（按 id 指名道姓），**不用 `continue`**（取当前目录最近一条）：重跑复用同一个 cwd 时会静默续上一次尝试；会话身份只由 `CLAUDE_CONFIG_DIR` 定位——**cwd 不是隔离键**（同一个 configDir 下换 cwd 仍按 `session_id` 接上、原转录被继续追加，换 configDir 才被拒）⇒ 按行隔离只有「每行一个配置目录」这一条路',
+        '续接只用 `resume`（按 id 指名道姓），**不用 `continue`**（取当前目录最近一条）：重跑复用同一个 cwd 时会静默续上一次尝试；会话身份只由 `CLAUDE_CONFIG_DIR` 定位——**cwd 不是隔离键**（同一个 configDir 下换 cwd 仍按 `session_id` 接上、原转录被继续追加，换 configDir 才被拒）⇒ 按行隔离只有「每个本次运行一个配置目录」这一条路',
         '`interrupt({ cancelQueued: true })` 那条粗粒度全清**不进本期**：SDK 的 `interrupt()` 从不发 `cancel_queued`（厂商 JSDoc 原文），要用只能自己发控制请求',
       ],
     },

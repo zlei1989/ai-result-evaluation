@@ -74,7 +74,7 @@ describe('resolveJudgeRoute', () => {
    * 评分路由也带上模型声明的窗口。
    * 为什么必须有：智能体评分通路把这条 route **原样**交给适配器（`judge-agent.ts` 的 `route: input.route`），
    * 少了这一格，cc 驱动的评分模型不会加 `[1m]`、codex 不会写 `model_context_window`、dsh 不会写 settings.yaml
-   * —— 与候选行的行为不一致，而界面上看不出任何差别（评分照样出分）。
+   * —— 与候选的行为不一致，而界面上看不出任何差别（评分照样出分）。
    * 强度（`effort`）**也不在**这条路由上，但理由与上面两条不同：它是**请求参数**，不是连接事实
    * 由 `resolveJudgeEffort()` 读出来后走 `judgeEffort` 入参进两条评分通路；
    * 「跨轮次可比」改由**记账**保证（`ScoreResult.judgeEffort`：不同强度打的分数在数据上可分）。
@@ -248,7 +248,7 @@ describe('requireJudgeAgent', () => {
  * patch 路由），而 `loadConfig()` **故意不做 schema 校验**（一条手改坏的值不该让设置页打不开）
  * ⇒ 手改 `config.json` 写进去的值会一路到消费方。不拦的话要跑到 dsh 的
  * `UNSUPPORTED_REASONING_EFFORT` 才失败——症状离真因很远（这正是要消灭的那类报错）。
- * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunRows`）**同源**：都用 `intersectEfforts`，
+ * 判据与创建评测时的档位校验（`api/runs.ts` 的 `resolveRunCandidates`）**同源**：都用 `intersectEfforts`，
  * 故这里不 mock `@aieval/agents`：`allowed` 的取值全在「真实注册表元数据」上（dsh 的域没有 `medium`）。
  */
 describe('resolveJudgeEffort / requireJudgeEffort', () => {
@@ -379,7 +379,7 @@ describe('resolveJudgeRoute —— 补充守卫（夹具只有 openai 供应商�
  * 为什么补：上面所有用例都从**模块路径**（`'./text-api'` / `'./judge-route'`）import，
  * 于是包根出口 `src/index.ts` 即便把 `callTextApi` / `TextRoute` 漏掉，
  * 整套用例依然 21/21 全绿（实测：把 `export { callTextApi, type TextRoute } from './text-api';`
- * 整行删掉后全绿）——而「AI 生成评分标准项」与 api 层只会从包根 `@aieval/evaluator` 取这两个名字，
+ * 整个候选删掉后全绿）——而「AI 生成评分标准项」与 api 层只会从包根 `@aieval/evaluator` 取这两个名字，
  * 漏出口的表现是接入第一天 `tsc` 报 TS2305，或运行时 `callTextApi is not a function`。
  * 两个名字的可见性不同，故分两条：运行时看得到的是函数，类型只有 tsc 看得见。
  */

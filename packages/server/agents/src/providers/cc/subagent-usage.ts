@@ -24,7 +24,7 @@
  * `readClaudeSubagentUsage` 的规则③⑦与 `subagentIds` 的注记（登记点在 `index.ts`，判据在 `message.ts`）。
  *
  * 两个读者、两条落点，**读数规则只有同一条**（`readOne`）：
- *   · `readClaudeSubagentUsage`：**全部**子智能体加起来 ⇒ 进结果与行快照（`subagentTokens`）；
+ *   · `readClaudeSubagentUsage`：**全部**子智能体加起来 ⇒ 进结果与运行快照（`subagentTokens`）；
  *   · `readClaudeSubagentFile`：**单个**子智能体 ⇒ 进 `SubagentRecord.usage`，也就是抽屉里
  *     子任务条上那一格「用量」（用户报的缺陷：那一格曾恒「未采集」，
  *     因为 `message.ts` 的 `subagentRecord` 只能把 `task_notification.usage` 记成 `null`——
@@ -136,22 +136,22 @@ export interface ClaudeSubagentUsageCache {
    * 为什么需要它（用户点名的「不要多次重复读取」）：收尾那个逐会话循环里
    * **每个**子会话都调一次 `readClaudeSubagentFile`，而它每次都从 `<configHome>/projects` 重新枚举一遍
    * 项目目录、再逐个项目 `readdirSync` 试一次 ⇒ O(子会话数 × 项目目录数) 次目录遍历，而这两个输入
-   * （`configHome` / `sessionId`）在一行里是**固定的**：目录解析结果整行复用即可。
+   * （`configHome` / `sessionId`）在一本次运行里是**固定的**：目录解析结果整行复用即可。
    *
-   * ⚠️ **只缓存「找到了」的结果**：`null`（此刻还没有那个目录）不缓存——同一行里第一条子智能体的
+   * ⚠️ **只缓存「找到了」的结果**：`null`（此刻还没有那个目录）不缓存——同一本次运行里第一条子智能体的
    * 转录落盘之前，`<session>/subagents/` 本来就可能还不存在，把那个「还没到」固化成「读不到」
    * 是**静默的缺**（与 `readOne` 里「IO 失败不进缓存」同一条道理：时刻决定的结论不许当内容结论存）。
    */
   dirs: Map<string, string>;
 }
 
-/** 建一个 **run 作用域**的解析缓存（见 `ClaudeSubagentUsageCache` 的注释；每行一个，两次读取共用） */
+/** 建一个 **run 作用域**的解析缓存（见 `ClaudeSubagentUsageCache` 的注释；每个本次运行一个，两次读取共用） */
 export function createClaudeSubagentUsageCache(): ClaudeSubagentUsageCache {
   return { entries: new Map(), dirs: new Map() };
 }
 
 /**
- * **本行全部子智能体**的用量与轮次：`{usage, turns, missing, unjudged}`（「全量或 null」）。
+ * **本次运行全部子智能体**的用量与轮次：`{usage, turns, missing, unjudged}`（「全量或 null」）。
  *
  * 七条规则，缺一条就会出「看起来正常」的错数。
  * ⚠️ **编号与规则表的 ⑤⑥⑦ 逐条对齐**：两处的同一个数必须是同一件事，
@@ -206,7 +206,7 @@ export function readClaudeSubagentUsage(input: {
    * 那一份快照）。**续接（`resume`）时它们是上一段的子智能体**：会话目录按 `configHome` + `sessionId`
    * 定位，而续接用的是同一个会话、同一个目录、CLI 只往原转录后面追加 ⇒ 不排除它们，第二段就会把
    * 上一段的用量**再加一遍**（真机：第二段一次派发都没有，`subagentTokens` 仍是上一段那一份
-   * `{10,0,5}`、`subagentTurns` 仍是 1，而行级计量是**累加**的 ⇒ 追问一次就把那份算两遍）。
+   * `{10,0,5}`、`subagentTurns` 仍是 1，而运行级计量是**累加**的 ⇒ 追问一次就把那份算两遍）。
    *
    * 判定是「**快照里有它、且这一段的派发名单里没有它**」才排除：被续跑的（后台）子智能体会沿用
    * 原 `task_id` 往原文件继续追加，而事件流会点名它 ⇒ 名单里有它就必须照读（规则⑥的并集语义不变）。
@@ -280,19 +280,19 @@ export function listClaudeSubagentIds(input: {
  * **一个转录都没读到**时的出口（规则③）：两处入口共用——**会话目录不存在**（含「采不到 `session_id`
  * ⇒ 压根没去找」，见 `findSubagentsDir`）、或**目录里一个 `agent-*.jsonl` 都没有**。
  *
- * ⚠️ **「确实没有」有前提，别把它读成对事实的证明**：它只在「本行**形状像一次派发**的 `task_*`
+ * ⚠️ **「确实没有」有前提，别把它读成对事实的证明**：它只在「本次运行**形状像一次派发**的 `task_*`
  * 真的一条都没出现过」这条判据下成立——`subagentIds` **全部**来自那条判据（`index.ts` 的 `project`，
  * 判据在 `message.ts` 的 `ClaudeTaskShape`）。CLI 换形状 / 不再投送 `task_started` 时，这里的意思是
- * 「**本次没观察到**」，而不是「这一行确实没有子智能体」；要下后一个结论，得先确认事件流真的没给。
+ * 「**本次没观察到**」，而不是「本次运行确实没有子智能体」；要下后一个结论，得先确认事件流真的没给。
  * 与 codex 为同一格写下的告诫同源（`providers/codex/index.ts` 的子智能体用量「全量或 null」）。
  *
  * 反过来，名单里**形状像派发**的子智能体而盘上一份转录都没有 ⇒ 事实缺失：`null` + 点名那些 id
  * （绝不写成 `{0,0,0}`——那是「它一分钱没花」，而这里我们**没有依据**这么说）。
  * ⚠️ 名单里**只有**形状像派发的那一些（收窄，见 `subagentIds` 的注记）：CLI 的非 Agent task
  * 条目（真机那条带 `description` 的 Bash）**不进名单**，于是这里不再为它喊一句错的 WARN
- * ——那一行的正解是 `{0,0,0}`（「确实没有子智能体」那一支）。
+ * ——那一本次运行的正解是 `{0,0,0}`（「确实没有子智能体」那一支）。
  * ⚠️ 这条出口上**照样**要带规则⑤的 `unjudged`（这一档里一个转录都没有 ⇒ 判不了的那些**都**没有转录）：
- * 少了它，「只见到收场帧」的行就完全静默——而静默的少算正是本仓最不接受的那一类。
+ * 少了它，「只见到收场帧」的本次运行就完全静默——而静默的少算正是本仓最不接受的那一类。
  */
 function readNothing(subagentIds: readonly string[], unjudgedIds: readonly string[]): ClaudeSubagentUsageRead {
   const unjudged = [...new Set(unjudgedIds)];
@@ -325,7 +325,7 @@ function listSubagentFiles(dir: string): string[] {
  * 里那份读数（**只在读全时命中**，见 `readOne` 的三种读不出）。
  *
  * 为什么它与 `readClaudeSubagentUsage` 分开、却共用同一条读数规则（用户报的缺陷）：
- * 上面那个回答的是「**这一次运行的全部子智能体**加起来的全量或 null」（进行快照），
+ * 上面那个回答的是「**这一次运行的全部子智能体**加起来的全量或 null」（进行的快照），
  * 而这一个回答的是「**这一个**子智能体花了多少」（进 `SubagentRecord.usage` ⇒ 抽屉里子任务条上那一格）。
  * 两个读者、两条落点，但读数规则只有一条：`readOne`。各写一份的症状正是本仓最不接受的那一类
  * ——**同一份文件在两处算出两个数**，而两处各自看起来都正常。
@@ -381,7 +381,7 @@ function readAt(dir: string, agentId: string, cache?: ClaudeSubagentUsageCache):
  * （改前 `readFileSync` + `split` 是 2–3× 文件大小，而这份文件会随子智能体跑动一直长）。
  * ⚠️ **同步**是刻意的：`turn.ts` 的 `project` / `finalize` 都是同步钩子（见文件头），
  * 这一层把异步引进来要改骨架并波及另两家。
- * ⚠️ 半截行仍然只是跳过（`JSON.parse` 抛 ⇒ 看下一行）：CLI 边跑边写，半截行是常态，
+ * ⚠️ 半截行仍然只是跳过（`JSON.parse` 抛 ⇒ 看下一行）：CLI 边跑边写，半截本次运行是常态，
  * 而它**不冒充**任何一次往返；「认得是 assistant 却读不全」才是**整份作废**。
  */
 function readOne(file: string, cache?: ClaudeSubagentUsageCache): ClaudeSubagentFileUsage | null {
@@ -406,7 +406,7 @@ function readOne(file: string, cache?: ClaudeSubagentUsageCache): ClaudeSubagent
      * 但**绝不写进缓存**。
      *
      * 为什么这条边界必须在这里画：写进去的话，对一份**已经写完**（size / mtimeMs 不再变）的转录，
-     * 收尾那次「必须真读」会直接命中这条失败 ⇒ 行级分量整格 `null` + 点名 WARN，而**下一次读本来
+     * 收尾那次「必须真读」会直接命中这条失败 ⇒ 运行级分量整格 `null` + 点名 WARN，而**下一次读本来
      * 很可能读得到**（瞬时占用 / 权限刚放开 / 磁盘抖动）。缓存的不变式因此是
      * 「**同一版本 + 内容决定的结论** ⇒ 同一结论」——IO 失败由时刻决定，不是这个版本的结论。
      * ⚠️ 同一个 `catch` 也接住 `consume` 里任何意外异常（编程错）：那一档同样**只是这一次**读不出，
@@ -431,7 +431,7 @@ function readOne(file: string, cache?: ClaudeSubagentUsageCache): ClaudeSubagent
  * 逐行那一层（含跨块拼行与跨块多字节字符）在共用的 `../../read-lines` 里（codex 也用同一份），本函数只管**解析规则**。
  *
  * 两条读数语义：
- *   · **半截行跳过**（`JSON.parse` 抛 ⇒ 看下一行）：CLI 边跑边写，半截行是常态，而它不冒充任何往返；
+ *   · **半截行跳过**（`JSON.parse` 抛 ⇒ 看下一行）：CLI 边跑边写，半截本次运行是常态，而它不冒充任何往返；
  *   · **认得是 `assistant` 却读不全 ⇒ 整份作废**（返回 `null`）：跳过会让那一次往返从合计与轮次里
  *     一起消失，而外面看到的仍是一次「成功」的读数。用 `failed` 标记 + 让回调返回 `true` 收工
  *     而不是就地 `return null`：语义是「作废」（看清了这一段就够），提前收工只是顺带省掉剩下的 IO。
@@ -453,7 +453,7 @@ function streamUsage(file: string): ClaudeSubagentFileUsage | null {
     try {
       record = asRecord(JSON.parse(line));
     } catch {
-      // 半截行是常态（CLI 边跑边写）：跳过，不让它作废整份文件
+      // 半截本次运行是常态（CLI 边跑边写）：跳过，不让它作废整份文件
       return false;
     }
     if (readString(record, 'type') !== 'assistant') return false;
@@ -512,13 +512,13 @@ function readTrio(usage: Record<string, unknown> | null): UsageTokens | null {
  * ⚠️ **采不到 session id 时不猜目录**（随「按目录枚举」一起来的收紧）。
  * 旧写法会扫 `<projects>/<项目>/<会话>/subagents/` 取第一个读得动的目录，理由是「那时判据是按 id
  * 找文件，猜错目录多半只是找不到文件 ⇒ 点名 WARN」。**改成枚举之后这条理由不成立了**：猜错目录
- * 会把**别的会话**（同一个 `configHome` 下的另一次尝试 / 评分那一次）的转录整份算到这一行上——
+ * 会把**别的会话**（同一个 `configHome` 下的另一次尝试 / 评分那一次）的转录整份算到本次运行上——
  * 一个看起来完全正常的错数，比「没采到」坏得多。⇒ 返回 `null`，上层走 `readNothing`：
  * **事件流报过**子智能体 ⇒ `null` + 点名 WARN；**没报过** ⇒ `{0,0,0}`（「没有目录」不等于「一律 null」）。
  * ⚠️ 两个读者共用本函数 ⇒ 抽屉那一格（`readClaudeSubagentFile`）在同一个分支上也从「猜」变成 `null`。
  */
 function findSubagentsDir(configHome: string, sessionId: string | null): string | null {
-  // 会话 id 未知 ⇒ 没有「这一行的会话目录」这个东西可言（不猜）
+  // 会话 id 未知 ⇒ 没有「本次运行的会话目录」这个东西可言（不猜）
   if (sessionId === null) return null;
   const projects = join(configHome, 'projects');
   let projectDirs: string[];
@@ -547,7 +547,7 @@ function findSubagentsDir(configHome: string, sessionId: string | null): string 
    * （重跑 / 追加）就可能让同一个会话目录出现在两个项目目录下。
    *
    * 为什么不许「取第一个读得动的」：`readdirSync` 的返回顺序**没有任何保证**（不是字典序），
-   * 取第一个等于把「这一行的子智能体用量」交给一次不确定的枚举 —— 读到另一份是真数、但**不是这一行的**，
+   * 取第一个等于把「本次运行的子智能体用量」交给一次不确定的枚举 —— 读到另一份是真数、但**不是本次运行的**，
    * 而它在界面上与正确读数长得一模一样（最坏的一类错）。返回 `null` 让上层按「全量或 null」
    * 落点名 WARN，把不确定性显式说出来。
    */
@@ -563,7 +563,7 @@ function findSubagentsDir(configHome: string, sessionId: string | null): string 
  *
  * 为什么需要这一层：收尾那个逐会话循环里每个子会话都调一次 `readClaudeSubagentFile`，而它每次都从
  * `<configHome>/projects` 重新枚举项目目录、再逐个项目 `readdirSync` 试一次
- * ⇒ O(子会话数 × 项目目录数) 次目录遍历（用户点名的「不要多次重复读取」）。一行里 `configHome` 与
+ * ⇒ O(子会话数 × 项目目录数) 次目录遍历（用户点名的「不要多次重复读取」）。一本次运行里 `configHome` 与
  * `sessionId` 都是固定的 ⇒ 解析结果整行复用；缓存命中时连 `<projects>` 都不再打开。
  *
  * ⚠️ **只记「找到了」的结果**：`null` 不缓存——目录可能在第一条子智能体落盘时**才出现**，
@@ -574,7 +574,7 @@ function resolveSubagentsDir(
   sessionId: string | null,
   cache?: ClaudeSubagentUsageCache,
 ): string | null {
-  // 会话 id 未知 ⇒ 没有「这一行的会话目录」可言（不猜），也就没有可缓存的键
+  // 会话 id 未知 ⇒ 没有「本次运行的会话目录」可言（不猜），也就没有可缓存的键
   if (sessionId === null) return null;
   const key = `${configHome}\u0000${sessionId}`;
   const hit = cache?.dirs.get(key);

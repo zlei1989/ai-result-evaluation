@@ -1,16 +1,16 @@
 // @vitest-environment node
 /**
- * 技能**物化**守卫：清单 → 行配置目录里那份自足的副本。
+ * 技能**物化**守卫：清单 → 候选配置目录里那份自足的副本。
  *
  * 为什么每一条都要一条守卫（这一层全是「静默失效」型）：
- *   · **整目录复制**：只抄 `SKILL.md` 时，带 `scripts/`、`references/` 的 skill 在行内是**半条**
+ *   · **整目录复制**：只抄 `SKILL.md` 时，带 `scripts/`、`references/` 的 skill 在候选内是**半条**
  *     （模型按正文里的相对路径去读附属文件，读到的是「不存在」）；
  *   · **逐条覆盖、清单外不碰**：清了 `skills/` 就会抹掉 codex 的 `.system/`（6 个内置 skill 住在同一层），
  *     而那件事**不报错**——只是内置 skill 凭空消失；
- *   · **源目录读不到 ⇒ 抛**：不抛的话这一行照跑、厂商侧静默没有这条 skill，
+ *   · **源目录读不到 ⇒ 抛**：不抛的话这个候选照跑、厂商侧静默没有这条 skill，
  *     用户看到的是一个「看起来正常」的分数（这一层最要防的假绿）；
  *   · **路径穿越**：`name` 来自扫描结果的目录名，拼进目标路径前必须过最严那道门；
- *     `..` 一旦拼进去，写入点就跑到行配置目录之外了；
+ *     `..` 一旦拼进去，写入点就跑到候选配置目录之外了；
  *   · **幂等**：每次 `run` 前都重放一次，两次落盘必须逐字相同（否则「同一份输入」会漂）。
  *
  * 全程只碰 `mkdtempSync` 出来的临时目录，任何真实配置目录都不会被读到。
@@ -33,7 +33,7 @@ beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'aieval-materialize-'));
   configDir = join(tempRoot, 'config');
   setConfigDirForTesting(configDir);
-  configHome = join(tempRoot, 'row', '.agenthome');
+  configHome = join(tempRoot, 'candidate', '.agenthome');
   skillsRoot = getSkillsRoot();
 });
 
@@ -71,18 +71,18 @@ function snapshotTree(root: string): Record<string, string> {
 }
 
 describe('materializeSkills：整目录复制', () => {
-  it('一条 skill 整目录落进 <行配置目录>/skills/<名称>，附属文件逐字相同', () => {
+  it('一条 skill 整目录落进 <候选配置目录>/skills/<名称>，附属文件逐字相同', () => {
     const skill = seedSkill('tang-poem-meal');
 
     materializeSkills({ configHome, skills: [skill] });
 
     const installed = join(configHome, 'skills', 'tang-poem-meal');
     expect(readFileSync(join(installed, 'SKILL.md'), 'utf8')).toBe(readFileSync(join(skill.sourceDir, 'SKILL.md'), 'utf8'));
-    // 附属文件一个都不能少：只抄入口文件 = 行内是半条 skill（正文里的相对路径全指向不存在）
+    // 附属文件一个都不能少：只抄入口文件 = 候选内是半条 skill（正文里的相对路径全指向不存在）
     expect(snapshotTree(installed)).toEqual(snapshotTree(skill.sourceDir));
   });
 
-  it('落点全部在行配置目录之下（物化后的路径断言）', () => {
+  it('落点全部在候选配置目录之下（物化后的路径断言）', () => {
     materializeSkills({ configHome, skills: [seedSkill('alpha')] });
 
     const skillsDir = join(configHome, 'skills');
@@ -92,8 +92,8 @@ describe('materializeSkills：整目录复制', () => {
     expect(readdirSync(skillsDir)).toEqual(['alpha']);
   });
 
-  it('宿主没配任何前置目录也照样建行配置目录（不是「等别人建好」）', () => {
-    // configHome 此刻压根不存在：契约只说「该行独立配置目录」，没有第二个人保证它存在
+  it('宿主没配任何前置目录也照样建候选配置目录（不是「等别人建好」）', () => {
+    // configHome 此刻压根不存在：契约只说「该候选独立配置目录」，没有第二个人保证它存在
     expect(() => statSync(configHome)).toThrow();
 
     materializeSkills({ configHome, skills: [seedSkill('alpha')] });
@@ -125,7 +125,7 @@ describe('materializeSkills：清单外不碰 + 幂等', () => {
     expect(snapshotTree(join(configHome, 'skills'))).toEqual(first);
   });
 
-  it('同一行两次物化之间源目录被改过 ⇒ 行内那份跟着更新（覆盖式重放）', () => {
+  it('同一行两次物化之间源目录被改过 ⇒ 候选内那份跟着更新（覆盖式重放）', () => {
     const skill = seedSkill('alpha');
     materializeSkills({ configHome, skills: [skill] });
     writeFileSync(join(skill.sourceDir, 'SKILL.md'), '---\nname: alpha\ndescription: 改过了\n---\n\n新正文\n', 'utf8');
@@ -137,7 +137,7 @@ describe('materializeSkills：清单外不碰 + 幂等', () => {
 });
 
 describe('materializeSkills：路径穿越与源目录读不到', () => {
-  it('名字带 `..` ⇒ 抛错，且行配置目录之外一个文件都没写', () => {
+  it('名字带 `..` ⇒ 抛错，且候选配置目录之外一个文件都没写', () => {
     // 源目录**必须真的存在**：拿一个不存在的源来测穿越，这条守卫会因为「源读不到」而假绿
     // ——两条路径抛的是同一个错误类型，只有「外面真的多了一个目录」能分辨它们
     const skill = seedSkill('alpha');
@@ -173,7 +173,7 @@ describe('materializeSkills：路径穿越与源目录读不到', () => {
   });
 });
 
-describe('installableSkills：本行要装入的那一份清单', () => {
+describe('installableSkills：候选要装入的那一份清单', () => {
   it('停用的不进清单（停用 = 文件级「不放」，这是三家统一的停用手段）', () => {
     seedSkill('alpha');
     seedSkill('beta');

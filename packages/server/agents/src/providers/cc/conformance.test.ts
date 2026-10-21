@@ -116,7 +116,7 @@ interface Scenario {
    */
   contextUsage?: unknown;
   /**
-   * 本次运行是否**真的装一份技能**（物化到行配置目录）。
+   * 本次运行是否**真的装一份技能**（物化到候选配置目录）。
    * 技能面的两条事实缺一不可：落盘的那份与控制请求报回的那份——而适配器在
    * `input.skills` 缺席时**一次都不采**（那是刻意的：评分与用例同步不该付这条控制请求的钱）。
    */
@@ -128,7 +128,7 @@ interface Scenario {
   mcpServers?: McpServers;
 }
 
-/** 行配置目录下真的落了哪些技能副本（落点：`<configHome>/skills/<名称>/`） */
+/** 候选配置目录下真的落了哪些技能副本（落点：`<configHome>/skills/<名称>/`） */
 function readInstalledSkills(configHome: string): string[] {
   try {
     return readdirSync(join(configHome, 'skills'));
@@ -176,7 +176,7 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       /**
        * 思考进度帧（`system/thinking_tokens`，真机每个思考 token 一条）：它必须**零事件产出**，
        * 摆进这个场景就是为了让一致性套件的条数判据连这条通道一起钉住——只挡 `stream_event`
-       * 挡不住真机上真正刷屏的那一种（run `7f05c765` 的 claude 行里 11,629 条都是它）。
+       * 挡不住真机上真正刷屏的那一种（run `7f05c765` 的 claude 候选里 11,629 条都是它）。
        * 声明的事件条数（2）不变：这一条要么被丢掉、要么让条数当场变 3。
        */
       {
@@ -285,7 +285,7 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
 /** 跑一个场景：注入假 SDK → 跑一次真实运行路径 → 收三个回调的产物 */
 async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
   const configHome = mkdtempSync(join(tmpdir(), 'claude-conformance-'));
-  /** 技能源目录另起一个临时根（与行配置目录分开，物化是「读源、写目标」两处） */
+  /** 技能源目录另起一个临时根（与候选配置目录分开，物化是「读源、写目标」两处） */
   const skillRoot = scenario.withSkills === true ? mkdtempSync(join(tmpdir(), 'claude-conformance-skill-')) : null;
   let skills: { name: string; sourceDir: string }[] | undefined;
   if (skillRoot !== null) {
@@ -323,7 +323,7 @@ async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
       messages,
       subagents,
       /**
-       * 行级事件**如实收**：写死 `[]` 会让套件的增量隔离判据在 claude 身上**永远不可能红**
+       * 候选级事件**如实收**：写死 `[]` 会让套件的增量隔离判据在 claude 身上**永远不可能红**
        * ——喂了增量帧、事件却恒为空数组，把 `events.ts` 的排除分支删回去这条守卫照样绿。
        * claude 的 `stream_event` 正是最容易掉进「未识别兜底」的一家。收真事件之后，条数变化才有判据。
        */
@@ -360,7 +360,7 @@ async function runScenario(scenario: Scenario): Promise<ConformanceProduct> {
         }),
       /**
        * 注入面探针（**请求侧**）：两份事实都由本次运行的实际动作产生，不是夹具自述——
-       * MCP 是假 SDK 记下的 `options.mcpServers`，技能是行配置目录下真的落了哪几个副本。
+       * MCP 是假 SDK 记下的 `options.mcpServers`，技能是候选配置目录下真的落了哪几个副本。
        * 缺了它，「适配器压根没把入参交给厂商」这一整类缺陷不会被任何判据发现。
        */
       injectionProbe: {

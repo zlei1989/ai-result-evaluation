@@ -26,7 +26,7 @@ import {
 /** 一条合法的登记请求（去掉哪一格就测哪一格） */
 const send = {
   runId: 'run-1',
-  rowId: 'row-1',
+  candidateId: 'candidate-1',
   messageId: '0f5b6c1e-1a2b-4c3d-8e9f-0123456789ab',
   text: '先跑一遍测试',
   attachments: [],
@@ -37,7 +37,7 @@ const send = {
 const entry = {
   messageId: 'm-1',
   text: '先跑一遍测试',
-  attachments: [{ kind: 'image' as const, path: '/runs/r1/rows/rw1/attachments/m-1/a.png', mimeType: 'image/png' }],
+  attachments: [{ kind: 'image' as const, path: '/runs/r1/candidates/rw1/attachments/m-1/a.png', mimeType: 'image/png' }],
   requires: 'round' as const,
   state: 'delivered' as const,
   createdAt: '2026-09-22T10:30:00.000Z',

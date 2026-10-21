@@ -68,7 +68,7 @@ describe('cc：task_* 帧的形状判决', () => {
     expect(output.subagent).toBeNull();
   });
 
-  it('幻影的收场帧同样不产行（否则幽灵行会从收场那一侧回来）', () => {
+  it('幻影的收场帧同样不产行（否则幽灵候选会从收场那一侧回来）', () => {
     const normalizer = createClaudeMessageNormalizer();
     normalizer.normalize(PHANTOM_START, state());
     const end = normalizer.normalize(
@@ -222,7 +222,7 @@ describe('cc：厂商标了 ambient 的 task 帧不产子任务行', () => {
  *
  * 续接（`resume`）时 CLI 把这条会话**已经发生过**的用户侧消息再投一遍，而重放帧带的是**自己的**
  * `uuid` ⇒ 本侧那张去重表挡不住它。收下的代价有两层：`messages.jsonl` 里多出一份上一轮的工具结果
- * （追问是**追加到同一行**上的，那些内容本行已经有了），以及**任务台账的 patch 被再放一遍**
+ * （追问是**追加到同一行**上的，那些内容候选已经有了），以及**任务台账的 patch 被再放一遍**
  * ——后者会让计划清单按历史又走一遍状态机。
  */
 describe('cc：续接时的历史重放帧（消息侧）', () => {
@@ -233,7 +233,7 @@ describe('cc：续接时的历史重放帧（消息侧）', () => {
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: '上一轮的结果' }] },
   };
 
-  it('重放的工具结果不产消息（不把上一轮的内容在本行再写一遍）', () => {
+  it('重放的工具结果不产消息（不把上一轮的内容在候选再写一遍）', () => {
     expect(createClaudeMessageNormalizer().normalize(REPLAYED_RESULT, state()).messages).toEqual([]);
   });
 

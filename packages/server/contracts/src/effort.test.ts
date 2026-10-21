@@ -20,7 +20,7 @@ const codex = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra
 const dsh = ['off', 'low', 'high', 'max'];
 
 describe('intersectEfforts：一处实现、两种兜底', () => {
-  it('上游没声明 ⇒ 用 fallbackEfforts（候选行传该家完整域、评分传规范五档）', () => {
+  it('上游没声明 ⇒ 用 fallbackEfforts（候选传该家完整域、评分传规范五档）', () => {
     // 候选池那一侧：兜底就是该家完整域 ⇒ 9 档一档不少（codex 的 xhigh / ultra 不许凭空消失）
     expect(intersectEfforts({}, codex, codex)).toEqual(codex);
     // 评分那一侧：兜底是规范五档，codex 全都收得下 ⇒ 逐字保留五档
@@ -51,7 +51,7 @@ describe('intersectEfforts：一处实现、两种兜底', () => {
    * ——把 `declared.filter(...)` 写成「兜底直接顶上去」时，那条用例照样绿。
    *
    * 后果是实打实的：`intersectEfforts` 有 4 个生产调用点（候选池投影 `listModelOptions`、创建/编辑校验
-   * `resolveRunRows`、评分那道门 `requireJudgeEffort`、设置页那一格），拿一个「该家一个档都收不了」的域去兜底，就会摆出一个运行时硬报错的档
+   * `resolveRunCandidates`、评分那道门 `requireJudgeEffort`、设置页那一格），拿一个「该家一个档都收不了」的域去兜底，就会摆出一个运行时硬报错的档
    * （`UNSUPPORTED_REASONING_EFFORT`，正是要消灭的「症状离真因很远」）。
    */
   it('智能体域为空而兜底非空 ⇒ undefined（兜底那一份同样要过这道筛）', () => {

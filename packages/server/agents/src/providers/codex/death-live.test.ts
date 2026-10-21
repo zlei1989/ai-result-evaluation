@@ -3,7 +3,7 @@
  * codex **在途死亡**的真路径守卫（真 `codex app-server` + 上游挂着 + 从探针侧杀掉子进程）。
  *
  * 要拦的缺陷：进程死在在途时，通知流里**一条终态都没有**（没有 `turn/completed`），
- * 而失败事实只落在会话的终态结算上 ⇒ 只按流内载荷投影时，这一行会按
+ * 而失败事实只落在会话的终态结算上 ⇒ 只按流内载荷投影时，这个候选会按
  * `ok:true / exitReason:'completed'` 落盘（真机复现：两臂都 `ok:true`，`finalText` / `tokens` /
  * `turns` 全空，只在日志里留一条「子线程树不是全量」的 WARN）。
  *
@@ -18,7 +18,7 @@ import {
   type CodexDeathScenario,
 } from '../../testing/codex-death-fixture';
 
-describe('真机：app-server 在途死亡时这一行的结算', () => {
+describe('真机：app-server 在途死亡时这个候选的结算', () => {
   let scenario: CodexDeathScenario | undefined;
   afterAll(() => {
     if (scenario !== undefined) cleanupCodexDeathScenario(scenario);

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 评分解析（纯函数）+ 一次评分调用（judgeRow，文本 API 用假实现）。
+ * 评分解析（纯函数）+ 一次评分调用（judgeCandidate，文本 API 用假实现）。
  * 判据已从「固定 5 维」换成「按用例的评分表逐项取」，四类处置各归其位：
  *   宽容（achieved 的字符串写法）、忽略（多余的判定 / 重复引用键取第一条）、
  *   占位（缺总评、缺理由）、失败（不是数字/布尔、缺项、顶层不是对象、非法 JSON）。
@@ -12,7 +12,7 @@ import {
   RAW_KEEP_CHARS,
   buildJudgeFeedback,
   finalizeScore,
-  judgeRow,
+  judgeCandidate,
   parseJudgeResponse,
   validateJudgeResponse,
   type JudgeInput,
@@ -99,7 +99,7 @@ describe('parseJudgeResponse：第 2 类翻车点（markdown 围栏）', () => {
 
 describe('parseJudgeResponse：第 3 类翻车点（缺项 / 多余 / 重复）', () => {
   /**
-   * 本任务最承重的一条守卫：**缺一项就整行失败**，绝不把「模型没提」当成「未达成」。
+   * 本任务最承重的一条守卫：**缺一项就整候选失败**，绝不把「模型没提」当成「未达成」。
    * 当成未达成看起来无害，实际是「模型漏答」与「确实没做」在分数上完全同形；
    * 而当送分更糟——白送一整项权重，分数看起来完全正常。
    */
@@ -139,7 +139,7 @@ describe('parseJudgeResponse：achieved 的宽容读', () => {
   /**
    * 模型很爱把布尔写成字符串或中文。schema 那一关只在**上游认了**的时候才拦得住
    * （网关不透传时它形同虚设），
-   * 故解析侧必须宽容——否则一次「格式小毛病」会让整行失败。
+   * 故解析侧必须宽容——否则一次「格式小毛病」会让整候选失败。
    */
   it('接受布尔与两种语言的写法（大小写不敏感）："是"/"否"、"达成"/"未达成"、`True`；认不出的值才失败', () => {
     const cases: { given: unknown; expected: boolean }[] = [
@@ -322,10 +322,10 @@ describe('finalizeScore：两条通路共用的收口', () => {
   });
 });
 
-describe('judgeRow：成功路径', () => {
+describe('judgeCandidate：成功路径', () => {
   it('把模型返回解析成 ScoreResult，总分按权重加总而不是照抄模型（模型根本不给总分）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    const score = await judgeRow(judgeInput());
+    const score = await judgeCandidate(judgeInput());
     expect(score.judgments.map((item) => item.achieved)).toEqual([true, false, true]);
     expect(score.totalScore).toBe(41);
     expect(score.maxScore).toBe(45);
@@ -335,7 +335,7 @@ describe('judgeRow：成功路径', () => {
 
   it('system 用 contracts 的输出契约；意图与 diff 以附件形态分开输入（text 块只有题面与评分表）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput());
+    await judgeCandidate(judgeInput());
     expect(fakeTextApi.calls[0]?.system).toBe(JUDGE_OUTPUT_CONTRACT);
     const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment']);
@@ -356,14 +356,14 @@ describe('judgeRow：成功路径', () => {
 
   it('空 diff → 附件文本显式写「（无改动）」（附件不能空：模型会把「看不到改动」当成「没改」）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput({ diffText: '   ' }));
+    await judgeCandidate(judgeInput({ diffText: '   ' }));
     const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     expect(blocks[1]).toEqual({ type: 'attachment', text: '（无改动）', filename: 'candidate-diff.txt' });
   });
 
   it('文本通路本期不开 schema：structuredOutput 记 false', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    expect((await judgeRow(judgeInput())).structuredOutput).toBe(false);
+    expect((await judgeCandidate(judgeInput())).structuredOutput).toBe(false);
   });
 
   /**
@@ -376,14 +376,14 @@ describe('judgeRow：成功路径', () => {
    */
   it('给了 judgeEffort ⇒ 原样交给文本 API（多轮入口）并记进 ScoreResult', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    const score = await judgeRow(judgeInput({ judgeEffort: 'max' }));
+    const score = await judgeCandidate(judgeInput({ judgeEffort: 'max' }));
     expect(fakeTextApi.calls[0]?.effort).toBe('max');
     expect(score.judgeEffort).toBe('max');
   });
 
   it('没给 judgeEffort ⇒ 透给文本 API 的 effort 是 undefined（未指定，不是关闭），记账为 null', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    const score = await judgeRow(judgeInput());
+    const score = await judgeCandidate(judgeInput());
     // 判据是**值**：`reasoningFields(protocol, undefined)` 展开成 `{}`（一个强度键都不发），
     // 而「键在不在」这一层形状没有消费者——多轮入口按值分支，两个协议各自负责自己的线上字段
     expect(fakeTextApi.calls[0]?.effort).toBeUndefined();
@@ -405,20 +405,20 @@ describe('judgeRow：成功路径', () => {
       { input: 30, cached: 4, output: 8 },
     ];
     // 两轮的数**不同**才测得出「累计」与「只记最后一轮」的差别
-    expect((await judgeRow(judgeInput())).judgeTokens).toEqual({ input: 40, cached: 4, output: 10 });
+    expect((await judgeCandidate(judgeInput())).judgeTokens).toEqual({ input: 40, cached: 4, output: 10 });
   });
 
   it('上游没报用量 ⇒ judgeTokens 为 null（绝不填 0）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
     fakeTextApi.usage = null;
-    expect((await judgeRow(judgeInput())).judgeTokens).toBeNull();
+    expect((await judgeCandidate(judgeInput())).judgeTokens).toBeNull();
   });
 
   it('judgeDurationMs 是这一次评分（含修复轮）的掐表值', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
     // 首尾各取一次当前时间：文本通路没有适配器自报的耗时，这一格只能是掐表值
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_750);
-    const score = await judgeRow(judgeInput());
+    const score = await judgeCandidate(judgeInput());
     now.mockRestore();
     expect(score.judgeDurationMs).toBe(750);
   });
@@ -430,21 +430,21 @@ describe('judgeRow：成功路径', () => {
   it('成功路径的 raw 原样透传模型返回；超长时截断并留「此处截断」标记（与失败路径同一口径）', async () => {
     const reply = JSON.stringify(VALID);
     fakeTextApi.reply = reply;
-    expect((await judgeRow(judgeInput())).raw).toBe(reply);
+    expect((await judgeCandidate(judgeInput())).raw).toBe(reply);
 
     // 合法但超长的返回（长总评）：解析照常成功，只有 `raw` 被上限截断。
     // 断言写成「比原文短 + 带总字符数」，不去抄 `RAW_MAX_CHARS` 那个私有常量——
     // 抄一份常量只是把实现复述一遍，上限调整时那条断言会以「与行为无关」的方式红
     const huge = JSON.stringify({ ...VALID, verdict: `很长的总评：${'z'.repeat(30_000)}` });
     fakeTextApi.reply = huge;
-    const truncated = (await judgeRow(judgeInput())).raw;
+    const truncated = (await judgeCandidate(judgeInput())).raw;
     expect(truncated).toContain('此处截断');
     expect(truncated).toContain(`共 ${huge.length} 字符`);
     expect(truncated.length).toBeLessThan(huge.length);
   });
 });
 
-describe('judgeRow：执行过程证据附件（「包含步骤」开关）', () => {
+describe('judgeCandidate：执行过程证据附件（「包含步骤」开关）', () => {
   /** codex 候选的组装产物形状（与 `ProcessEvidence` 同一形状）：events + messages 两份，第二份带截断标注 */
   const evidence = {
     files: [
@@ -470,7 +470,7 @@ describe('judgeRow：执行过程证据附件（「包含步骤」开关）', ()
    */
   it('开关开启：diff 附件之后按 files 顺序追加证据附件，filename 与 content 原样透传（截断标注不加工）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput({ processEvidence: evidence }));
+    await judgeCandidate(judgeInput({ processEvidence: evidence }));
     const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment', 'attachment', 'attachment']);
     // diff 附件仍在证据之前（协议形态：意图 + diff + 证据）
@@ -490,7 +490,7 @@ describe('judgeRow：执行过程证据附件（「包含步骤」开关）', ()
 
   it('只有 events 一份（非 codex 候选）→ diff 之后恰好追加一个附件块', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput({ processEvidence: { files: [evidence.files[0]!] } }));
+    await judgeCandidate(judgeInput({ processEvidence: { files: [evidence.files[0]!] } }));
     const blocks = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     expect(blocks.map((block) => block.type)).toEqual(['text', 'attachment', 'attachment']);
     expect(blocks[2]).toEqual({ type: 'attachment', text: evidence.files[0]?.content, filename: 'candidate-events.jsonl' });
@@ -498,11 +498,11 @@ describe('judgeRow：执行过程证据附件（「包含步骤」开关）', ()
 
   it('开关关闭（files 空数组）与缺省（未给 processEvidence）→ 块与现状逐字一致（意图 + diff 附件，再无其他）', async () => {
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput({ processEvidence: { files: [] } }));
+    await judgeCandidate(judgeInput({ processEvidence: { files: [] } }));
     const off = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     resetFakeTextApi();
     fakeTextApi.reply = JSON.stringify(VALID);
-    await judgeRow(judgeInput());
+    await judgeCandidate(judgeInput());
     const missing = contentAsBlocks(fakeTextApi.calls[0]?.messages ?? []);
     // 两态**逐块相等**（不是「都只有两条」这类弱判据）：空数组与缺省都必须与现状一字不差
     expect(off).toEqual(missing);
@@ -514,7 +514,7 @@ describe('judgeRow：执行过程证据附件（「包含步骤」开关）', ()
 
   it('结构修复轮沿用同一附件形态重发：第二轮 user 消息 = 纠错 text + diff 附件 + 证据全量', async () => {
     fakeTextApi.replies = ['这份改动整体不错。', JSON.stringify(VALID)];
-    await judgeRow(judgeInput({ processEvidence: evidence }));
+    await judgeCandidate(judgeInput({ processEvidence: evidence }));
     expect(fakeTextApi.calls).toHaveLength(2);
     const second = fakeTextApi.calls[1]?.messages ?? [];
     expect(second.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
@@ -531,14 +531,14 @@ describe('judgeRow：执行过程证据附件（「包含步骤」开关）', ()
   });
 });
 
-describe('judgeRow：失败面与修复循环', () => {
+describe('judgeCandidate：失败面与修复循环', () => {
   it('每一轮都缺项 → JUDGE_PARSE_FAILED，文案带回问轮数，context.raw 是最后一轮的原文', async () => {
     const missing = withoutJudgment('D1');
     fakeTextApi.reply = missing;
-    const error = await judgeRow(judgeInput()).catch((caught: unknown) => caught);
+    const error = await judgeCandidate(judgeInput()).catch((caught: unknown) => caught);
     expect((error as ServiceError).code).toBe('JUDGE_PARSE_FAILED');
     expect((error as Error).message).toContain('缺少');
-    expect((error as Error).message).toContain(`回问模型 ${JUDGE_REPAIR_ROUNDS} 轮`);
+    expect((error as Error).message).toContain(`回问模型 ${JUDGE_REPAIR_ROUNDS} 步`);
     expect((error as ServiceError).context).toMatchObject({ raw: missing, repairs: JUDGE_REPAIR_ROUNDS });
     expect(fakeTextApi.calls).toHaveLength(1 + JUDGE_REPAIR_ROUNDS);
   });
@@ -546,7 +546,7 @@ describe('judgeRow：失败面与修复循环', () => {
   it('第一次回散文、第二次回合法 JSON → 正常出分，且第二轮带上了原文与纠错要求', async () => {
     fakeTextApi.replies = ['这份改动整体不错。', JSON.stringify(VALID)];
     const progress: { round: number; message: string }[] = [];
-    const score = await judgeRow(judgeInput({ onProgress: (item) => progress.push(item) }));
+    const score = await judgeCandidate(judgeInput({ onProgress: (item) => progress.push(item) }));
     expect(score.totalScore).toBe(41);
     expect(fakeTextApi.calls).toHaveLength(2);
     const second = fakeTextApi.calls[1]?.messages ?? [];
@@ -567,7 +567,7 @@ describe('judgeRow：失败面与修复循环', () => {
 
   it('调用失败（鉴权）透传原错误码，且一次都不回问（密钥错了，再问一百次也一样）', async () => {
     fakeTextApi.failure = new ServiceError('AUTH_FAILED', '供应商密钥无效：去设置页检查');
-    const error = await judgeRow(judgeInput()).catch((caught: unknown) => caught);
+    const error = await judgeCandidate(judgeInput()).catch((caught: unknown) => caught);
     expect((error as ServiceError).code).toBe('AUTH_FAILED');
     expect(fakeTextApi.calls).toHaveLength(1);
   });
@@ -580,7 +580,7 @@ describe('judgeRow：失败面与修复循环', () => {
    */
   it('调用抛出非 ServiceError（真实网络栈的裸 Error）→ 折成中文 INTERNAL，原文不丢', async () => {
     fakeTextApi.failure = new Error('fetch failed：socket hang up');
-    const error = await judgeRow(judgeInput()).catch((caught: unknown) => caught);
+    const error = await judgeCandidate(judgeInput()).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ServiceError);
     expect((error as ServiceError).code).toBe('INTERNAL');
     expect((error as Error).message).toContain('调用评分模型失败');
@@ -591,7 +591,7 @@ describe('judgeRow：失败面与修复循环', () => {
 
   it('超长坏返回：context.raw 被截断并带「此处截断」标记', async () => {
     fakeTextApi.reply = 'x'.repeat(5_000);
-    const error = await judgeRow(judgeInput()).catch((caught: unknown) => caught);
+    const error = await judgeCandidate(judgeInput()).catch((caught: unknown) => caught);
     const context = (error as ServiceError).context as { raw: string };
     expect(context.raw).toContain('此处截断');
     expect(context.raw).toContain('5000 字符');

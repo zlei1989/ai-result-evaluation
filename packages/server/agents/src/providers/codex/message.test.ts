@@ -489,30 +489,59 @@ describe('工具：命令、文件改动、MCP、计划', () => {
   });
 
   /**
+   * `imageView` 是**认识的**条目类型：模型看过的一张图，厂商只给路径。
+   * 归一是 `image-view` 块（界面据此画缩略图），**不是** `unrecognized`——后者是留给
+   * 我们确实归不了的类型的兜底，混用会让「看了一张图」与「这里有一条看不懂的东西」同形。
+   */
+  it('`imageView` ⇒ 一条 `image-view` 块（路径照原文，不做相对化）', () => {
+    const { drafts } = project(completed({
+      kind: 'other',
+      id: 'call_img_0',
+      type: 'imageView',
+      raw: { type: 'imageView', id: 'call_img_0', path: '/w/workspace/pixel.png' },
+    }));
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.vendorId).toBe('call_img_0');
+    expect(drafts[0]?.blocks[0]).toMatchObject({
+      phase: 'snapshot',
+      block: { type: 'image-view', path: '/w/workspace/pixel.png' },
+    });
+  });
+
+  it('`imageView` 拿不到路径 ⇒ 落回 `unrecognized` 且 `reason` 是 `unmapped-shape`（类型认识、形状对不上）', () => {
+    const { drafts } = project(completed({ kind: 'other', id: 'call_img_1', type: 'imageView', raw: { type: 'imageView', id: 'call_img_1' } }));
+    expect(drafts[0]?.blocks[0]).toMatchObject({
+      block: { type: 'unrecognized', reason: 'unmapped-shape', vendorType: 'imageView' },
+    });
+  });
+
+  /**
    * 未识别的条目类型**必须留痕**（一条 `unrecognized` 块，厂商原文进 `raw`）。
    *
    * 要拦的缺陷：什么都不产。未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前
    * 两处投影（本文件的 `projectItem` 与 `events.ts` 的 `activityDrafts`）都没有分支，也没有轮次
    * 留痕 ⇒ 厂商真投了、我们一个字都不留：「厂商没发」与「厂商发了、我们没接」在产物里长得
-   * 一模一样。真机读数（`unrecognized-item-live.test.ts`）：`imageView` 两帧，命中数 0。
+   * 一模一样。真机读数（`image-view-live.test.ts`）：`imageView` 两帧，命中数 0。
+   *
+   * 样本取 `sleep`：它是今天仍然没有归一分支的类型之一（`imageView` 已经有自己的块了）。
    */
   it('未识别的条目类型 ⇒ 一条 `unrecognized` 块，`vendorType` 与 `raw` 都留原文', () => {
     const { drafts } = project(completed({
       kind: 'other',
       id: 'z1',
-      type: 'imageView',
-      raw: { type: 'imageView', id: 'z1', path: '/w/pixel.png' },
+      type: 'sleep',
+      raw: { type: 'sleep', id: 'z1', durationMs: 1200 },
     }));
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.vendorId).toBe('z1');
     expect(drafts[0]?.blocks[0]).toMatchObject({
       phase: 'snapshot',
-      block: { type: 'unrecognized', reason: 'unrecognized', vendorType: 'imageView', raw: '{"type":"imageView","id":"z1","path":"/w/pixel.png"}' },
+      block: { type: 'unrecognized', reason: 'unrecognized', vendorType: 'sleep', raw: '{"type":"sleep","id":"z1","durationMs":1200}' },
     });
   });
 
   it('未识别的条目在 `item/started` 上不产块（那一刻内容还没定，与 fileChange / agentMessage 同口径）', () => {
-    expect(project(started({ kind: 'other', id: 'z1', type: 'imageView', raw: { type: 'imageView', id: 'z1' } })).drafts).toEqual([]);
+    expect(project(started({ kind: 'other', id: 'z1', type: 'sleep', raw: { type: 'sleep', id: 'z1' } })).drafts).toEqual([]);
   });
 });
 
@@ -559,7 +588,7 @@ describe('协作条目：子任务行、身份与父链', () => {
    * 那次调用上，于是子任务行的 `kind` 变成 `wait`、`parentCallId` 指向等待调用，界面按它去
    * 时间轴找「进入子任务」的入口就落到了错的卡片上，收尾 `projectSubagentRecord` 还会把它落盘。
    */
-  it('`wait` / `closeAgent` 不许改写派发台账（行上的 `kind` 与 `parentCallId` 仍指向派发那一次）', () => {
+  it('`wait` / `closeAgent` 不许改写派发台账（候选上的 `kind` 与 `parentCallId` 仍指向派发那一次）', () => {
     const runState = createCodexRunState();
     const collab = (id: string, tool: string) =>
       completed({
@@ -602,7 +631,7 @@ describe('协作条目：子任务行、身份与父链', () => {
       agentsStates: states,
     });
 
-    // 1) 派发（completed）：收件线程那一刻才出现 ⇒ 行上有 kind / parentCallId
+    // 1) 派发（completed）：收件线程那一刻才出现 ⇒ 候选上有 kind / parentCallId
     const dispatched = project(completed(collab('item_dispatch', 'spawnAgent', [{ threadId: CHILD, status: 'running', message: null }])), runState);
     expect(dispatched.subagents[0]).toMatchObject({ status: 'running', outcome: null });
     // 2) wait 的 completed：带上子线程的结论

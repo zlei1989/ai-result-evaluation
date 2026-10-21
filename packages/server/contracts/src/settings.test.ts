@@ -69,12 +69,12 @@ describe('SettingsSchema', () => {
   // 用户口径：执行与评分都不限时间 ⇒ 设置里没有「单行超时」这一格。
   // 这条守卫钉两件事：① 契约里确实没有这一格了（加回来会红）；② 旧 config.json 里多出来的
   // 那一键**不会**让解析失败——它由 zod 的对象语义 strip 掉，老配置照常能读。
-  it('没有 rowTimeoutMs 这一格，且旧配置里多出来的 rowTimeoutMs 不会让解析失败', () => {
-    expect('rowTimeoutMs' in SETTINGS_DEFAULTS).toBe(false);
-    const legacy = { ...SETTINGS_DEFAULTS, rowTimeoutMs: 1_800_000 };
+  it('没有 candidateTimeoutMs 这一格，且旧配置里多出来的 candidateTimeoutMs 不会让解析失败', () => {
+    expect('candidateTimeoutMs' in SETTINGS_DEFAULTS).toBe(false);
+    const legacy = { ...SETTINGS_DEFAULTS, candidateTimeoutMs: 1_800_000 };
     const parsed = SettingsSchema.safeParse(legacy);
     expect(parsed.success).toBe(true);
-    expect(parsed.success && 'rowTimeoutMs' in parsed.data).toBe(false);
+    expect(parsed.success && 'candidateTimeoutMs' in parsed.data).toBe(false);
   });
 
   it('defaultJudge 允许为 null（未配置）或完整的一对 id', () => {

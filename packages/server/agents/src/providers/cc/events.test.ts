@@ -189,7 +189,7 @@ describe('projectClaudeMessage：result 与计量', () => {
       (draft) => draft.type === 'log' && draft.stream === 'stderr' && draft.text.includes('num_turns'),
     );
     expect(warn?.type === 'log' ? warn.text : '').toContain('num_turns=1');
-    expect(warn?.type === 'log' ? warn.text : '').toContain('轮次=3');
+    expect(warn?.type === 'log' ? warn.text : '').toContain('步数=3');
   });
 
   /**
@@ -347,7 +347,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
   it('估算被标成 tokensEstimated（骨架据此**不**把它写进 AgentRunResult）', () => {
     const projection = projectClaudeMessage(assistantMessage({ uuid: 'u2', messageId: 'm2', usage: TRIO }), newState(), CONTEXT);
 
-    // 这一格一旦变成 false，估算就会流进结果、进而落进快照 —— 崩溃/被杀的行会看起来像「采到了计量」
+    // 这一格一旦变成 false，估算就会流进结果、进而落进快照 —— 崩溃/被杀的候选会看起来像「采到了计量」
     expect(projection.tokensEstimated).toBe(true);
   });
 
@@ -430,7 +430,7 @@ describe('projectClaudeMessage：跑动期的实时用量估算', () => {
    *
    * 为什么这一条承重：`result.usage` 缺项那一档虽然罕见（代码自己为它写了 WARN），但无条件清
    * 会把「还没结算那一轮」的估算也丢掉、又没有任何权威值顶上来 ⇒ 下一条 usage 事件的读数
-   * **比上一条小**，而「本行到目前为止的累计、单调不减」是这条通道自己声明的口径。
+   * **比上一条小**，而「候选到目前为止的累计、单调不减」是这条通道自己声明的口径。
    * 两个方向都钉：有权威值 ⇒ 清；缺项 ⇒ 留着那笔账（下一轮继续算）。
    */
   it('result 的 usage 缺项 ⇒ 不清估算表（结了零个字节就不算结算）', () => {
@@ -635,7 +635,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
    * `SDKToolProgressMessage`）与 `system/api_retry`（上游可重试失败后的退避重试，字段照
    * `SDKAPIRetryMessage`）。骨架的看门狗把「这一条投影有没有交出东西」当静止判据
    *（`turn.ts` 的 `projectionHasOutput`），而这两类都不在识别名单里 ⇒ 它们**必须**走未识别兜底、
-   * 各交出一条 log。一旦被当成「没内容的噪声」丢掉，正在重试或正在跑长工具的行就会被判成静止超时。
+   * 各交出一条 log。一旦被当成「没内容的噪声」丢掉，正在重试或正在跑长工具的候选就会被判成静止超时。
    */
   it('tool_progress 与 system/api_retry 各交出一条保留原始负载的日志（它们是「还在动」的心跳）', () => {
     const progress = {
@@ -732,7 +732,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
     expect(JSON.parse(projection.drafts[0]?.type === 'log' ? projection.drafts[0].text : '')).toEqual(status);
   });
 
-  it('assistant 的文本块与工具块都落盘（工具调用是候选行为的一部分）', () => {
+  it('assistant 的文本块与工具块都落盘（工具调用是候选为的一部分）', () => {
     const projection = projectClaudeMessage(
       {
         type: 'assistant',
@@ -828,7 +828,7 @@ describe('projectClaudeMessage：重复与未识别', () => {
    * `{"type":"user","message":{"role":"user","content":[{"tool_use_id":…,"type":"tool_result","content":…}]}}`）。
    *
    * 口径：**成功返回不播、报错必须播**——活动行回答「在做什么」，
-   * 而「这一行出事了」没有别的行级出口。原始负载两种情形都照旧逐字落盘。
+   * 而「这个候选出事了」没有别的候选级出口。原始负载两种情形都照旧逐字落盘。
    */
   it('工具结果：成功返回**不给摘要**、报错给「工具报错：…」，两者的原始负载都不动', () => {
     const ok = projectClaudeMessage(
@@ -1002,7 +1002,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
     const raw = { type: 'result', result: '{"verdict":"还行"}', structured_output: null };
     const projection = projectClaudeMessage(raw, state, CONTEXT);
 
-    // 修好之前这里会是字符串 'null'（`safeStringify(null)`）⇒ 每一条非 schema 行的答复都被静默顶掉
+    // 修好之前这里会是字符串 'null'（`safeStringify(null)`）⇒ 每一条非 schema 候选的答复都被静默顶掉
     expect(state.finalText).toBe('{"verdict":"还行"}');
     // 判据必须**点名**那条 WARN，不能写「一条 [WARN] 都没有」：本 fixture 没有 usage，而 `readTokens` 的
     // 「用量负载不完整」WARN 是既有行为、与本次出口无关 ⇒ blanket 断言在这里必然假红，且红的原因还不是
@@ -1037,7 +1037,7 @@ describe('projectClaudeMessage：结构化输出的最终答复出口', () => {
     projectClaudeMessage({ type: 'result', structured_output: '{"verdict":"还行"}' }, state, CONTEXT);
 
     // 二次编码的产物是 '"{\"verdict\":\"还行\"}"' ⇒ 下游 parse 出来是**字符串**而不是对象，
-    // schema 约束下的每一行都会失败在「顶层不是对象」。逐字相等就是这条的判据。
+    // schema 约束下的每个候选都会失败在「顶层不是对象」。逐字相等就是这条的判据。
     expect(state.finalText).toBe('{"verdict":"还行"}');
   });
 });
@@ -1066,7 +1066,7 @@ describe('projectClaudeMessage：结构化输出重试用尽的归因', () => {
  * **`assistant` 帧自带的 `error` / `aborted` 两格**（厂商在合成的 API-error 消息上写它们）。
  *
  * 为什么这一组守卫承重：这两格过去**一格都不读** ⇒ 一次 401 / 429 只在 assistant 帧上报错、
- * 没走到 `result` 的运行，在事件流里与一条普通答复**逐字相同**，整行被记成成功。
+ * 没走到 `result` 的运行，在事件流里与一条普通答复**逐字相同**，整候选被记成成功。
  * 而分档是另一半判据：`api_retry` 用的是**同一个**错误枚举（`sdk.d.ts` 的
  * `SDKAPIRetryMessage.error`）⇒ 可重试档一律判失败会把「厂商自己重试成功」的行判死，
  * 而骨架的 `failure` 一旦写入就再也清不掉（`turn.ts` 的消费循环是最后写入者赢）。
@@ -1339,7 +1339,7 @@ describe('projectClaudeMessage：子智能体生命周期', () => {
 /**
  * **厂商系统层事实的归一**。
  *
- * 这一节补的缺口：`system/init` 行过去只以**原始 JSON** 落成一条 `log`，于是「这一行被下发了
+ * 这一节补的缺口：`system/init` 行过去只以**原始 JSON** 落成一条 `log`，于是「这个候选被下发了
  * 哪些工具 / 什么权限档」这件事在界面侧只能由**浏览器**去 `JSON.parse` 那条日志、并逐字认
  * `subtype === 'init'` / `slash_commands` / `permissionMode` —— 那是把厂商形状的解析搬到了
  * 消费端（`build-environment.ts`），也正是「转换逻辑只准住在 agents 里」这条边界要拦的东西。
@@ -1358,7 +1358,7 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
     slash_commands: ['design', 'verify'],
     agents: ['claude', 'Explore'],
     /**
-     * 真机形状（run `7f05c765` 的候选行 `057d00fb` 逐字，四台全给——回放这份样本就是
+     * 真机形状（run `7f05c765` 的候选 `057d00fb` 逐字，四台全给——回放这份样本就是
      * 「真机上 claude 的 `mcp_servers` 不再被折成 `[]`」那条验收的证据）：
      * `mcp_servers` 是**对象数组** `{name, status, source}`，不是字符串数组。
      */
@@ -1428,7 +1428,7 @@ describe('projectClaudeMessage：system/init 归一成厂商系统层事件', ()
 
   /**
    * **厂商原文那一格**：`status: 'failed'` 的条目带 `error` 时逐字留下来——
-   * 行失败文案 `MCP「<name>」未能启动：<厂商原文首行>` 的后半句只能从这里来。
+   * 候选失败文案 `MCP「<name>」未能启动：<厂商原文首行>` 的后半句只能从这里来。
    */
   it('`mcp_servers[].error` 逐字保留（归一不会把它吃掉），没有这一格时记 `null`', () => {
     const projection = projectClaudeMessage(
@@ -1514,7 +1514,7 @@ describe('projectClaudeMessage：续接时的历史重放帧', () => {
     expect(projectClaudeMessage(REPLAYED, newState(), CONTEXT).drafts).toEqual([]);
   });
 
-  it('重放的**报错**工具结果同样不产出（否则上一轮的失败会在本行再播一次）', () => {
+  it('重放的**报错**工具结果同样不产出（否则上一轮的失败会在候选再播一次）', () => {
     const projection = projectClaudeMessage(
       {
         ...REPLAYED,
@@ -1543,7 +1543,7 @@ describe('projectClaudeMessage：续接时的历史重放帧', () => {
  *
  * 为什么必须有人话摘要：它是**评分档的常态**——那一段走 `dontAsk` + `permissionPrompts: 'none'`
  * （本进程没有批准面），厂商据此把该拒的当场拒掉并发这一帧。它又是「模型想写盘但被拒」的
- * **唯一行级出口** ⇒ 只落原始 JSON 时活动行一个字都不说，排障只能逐笔翻原始负载。
+ * **唯一候选级出口** ⇒ 只落原始 JSON 时活动行一个字都不说，排障只能逐笔翻原始负载。
  */
 describe('projectClaudeMessage：工具调用被权限档当场拒', () => {
   function denied(extra: Record<string, unknown>): Record<string, unknown> {
@@ -1592,8 +1592,8 @@ describe('projectClaudeMessage：工具调用被权限档当场拒', () => {
     expect(summaryOf(projection)).toBe('工具被拒 Write');
   });
 
-  /** **不判失败**：被拒一次不是这一行失败了——模型会看到工具结果并换一条路 */
-  it('不折成 failure（被拒不等于这一行失败）', () => {
+  /** **不判失败**：被拒一次不是这个候选失败了——模型会看到工具结果并换一条路 */
+  it('不折成 failure（被拒不等于这个候选失败）', () => {
     expect(projectClaudeMessage(denied({}), newState(), CONTEXT).failure).toBeNull();
   });
 });
@@ -1605,7 +1605,7 @@ describe('projectClaudeMessage：工具调用被权限档当场拒', () => {
  * `run_in_background: true`）时，CLI 发一条 `task_started`，其 `subagent_type` / `spawn_depth` /
  * `prompt` **三格全缺**、且**没有** `ambient` / `skip_transcript`（它不是「非活动」的 watcher，
  * 就是一条普通后台命令）。活动行显示的是这条日志的 `summary` ⇒ 不挡就会播
- * 「已派发子任务：sleep 5 && echo ok」，而面板与 `messages.jsonl` 那边按同一条判据一行都不产
+ * 「已派发子任务：sleep 5 && echo ok」，而面板与 `messages.jsonl` 那边按同一条判据一个候选都不产
  * （两个面互相打脸）。判据与消息侧同源（`isDispatchShaped`），收场帧按 id 追随。
  */
 describe('projectClaudeMessage：非 Agent 的后台任务不占活动行', () => {
@@ -1937,8 +1937,8 @@ describe('projectClaudeMessage：上下文压缩帧占活动行', () => {
 /**
  * **`system/init` 自带的技能名单是 `skills` 那一格的回落来源**。
  *
- * 为什么必须有这条回落：`getContextUsage()` 那条探针**只在「这一行配了技能」时才跑**
- * （编排层按「空集不给键」的口径不下发 `skills`）⇒ 没配技能的行上收尾那条事件本来一个
+ * 为什么必须有这条回落：`getContextUsage()` 那条探针**只在「这个候选配了技能」时才跑**
+ * （编排层按「空集不给键」的口径不下发 `skills`）⇒ 没配技能的候选上收尾那条事件本来一个
  * `skills` 格都不带，而下游把「没有这一格」读成**厂商没投送**——可厂商在 `system/init` 里
  * 明明投了（真机 19 条）。这一格是免费的：init 帧本来就在手上。
  *
@@ -1948,9 +1948,9 @@ describe('projectClaudeMessage：上下文压缩帧占活动行', () => {
 describe('cc：init 帧自带的技能名单', () => {
   const LAYOUT = { configHome: '/tmp/cc-probe-home', cwd: '/tmp/cc-probe-cwd' };
 
-  it('名字数组 ⇒ 逐条给出行，来源未知（不猜厂商自带还是本行装的）', () => {
-    const rows = skillsFromInitFrame({ skills: ['probe-skill', 'deep-research'] }, LAYOUT);
-    expect(rows).toEqual([
+  it('名字数组 ⇒ 逐条给出行，来源未知（不猜厂商自带还是候选装的）', () => {
+    const candidates = skillsFromInitFrame({ skills: ['probe-skill', 'deep-research'] }, LAYOUT);
+    expect(candidates).toEqual([
       { name: 'probe-skill', source: null, path: null, origin: 'unverified' },
       { name: 'deep-research', source: null, path: null, origin: 'unverified' },
     ]);
@@ -1971,7 +1971,7 @@ describe('cc：init 帧自带的技能名单', () => {
  * **上游重试帧占活动行**（`system/api_retry`）。
  *
  * 真机读数（上游连续 500、429、断流三臂）：一帧一次重试，最多 10 次、墙钟最长约 3 分钟，
- * 期间**没有任何 assistant / result** ⇒ 这一帧是长退避期间唯一的行级出口。
+ * 期间**没有任何 assistant / result** ⇒ 这一帧是长退避期间唯一的候选级出口。
  * 原先它只落原始 JSON（`summary: null`），界面在那三分钟里一个字都不说，读者分不清
  * 「在重试」与「卡死了」。原始负载照旧整条落盘。
  */
@@ -2075,7 +2075,7 @@ describe('projectClaudeMessage：失败收尾的厂商诊断', () => {
     expect(line?.type === 'log' ? line.text : '').toContain('ede_diagnostic');
   });
 
-  /** 反向判据：`errors` 缺席或空数组时**不落**那条日志（否则每一行失败都多一条空噪声） */
+  /** 反向判据：`errors` 缺席或空数组时**不落**那条日志（否则每个候选失败都多一条空噪声） */
   it('`errors` 缺席 / 空数组 ⇒ 不落那条日志', () => {
     for (const extra of [{}, { errors: [] }, { errors: [''] }]) {
       const projection = projectClaudeMessage(failureResult(extra), newState(), CONTEXT);

@@ -42,7 +42,7 @@
 | 双击复位不是 antd 能力 | 现状 | antd 6.6.5 `Splitter` 无内置双击复位（`es/splitter/SplitBar.js:203` 只把双击转给可选的 `onDraggerDoubleClick`，无人传）；需要时调用方自行实现，本期不做 |
 | ListDetailLayout 比例还原实测未生效 | 已知弱点，本期不修 | 传给 `restoreWidthsToAvailable` 的 `widths` 是 `[0, preferredWidth]`（弹性列写死 0），只要 `available ≥ preferredWidth + 6` 就原样返回 ⇒ 缩窄时右栏恒保偏好宽（实测恒 380），左栏被压到 88px、16px——低于它声明的 `min: 120`；修法（扣掉弹性列 min，或把左栏实测宽喂进 widths）留给后续。底线是「窗口变窄不崩」，勿把比例收缩写成已兑现能力 |
 | SplitPane 无生产消费者 | 保留 | 留在 ui 出口作「不需要还原宽度的两栏原语」；「右栏一律用 `end`」是给未来调用方的约定，非现状描述 |
-| `CopyOnClick` / `OperationStatus` 未实现 | 现状 | 别照脚手架占位去代码里找；中止按钮分别写在 `run-detail-panel.tsx`（运行级）与 `eval-row-card.tsx`（行级），未抽成原语 |
+| `CopyOnClick` / `OperationStatus` 未实现 | 现状 | 别照脚手架占位去代码里找；中止按钮分别写在 `run-detail-panel.tsx`（运行的级）与 `eval-row-card.tsx`（候选级），未抽成原语 |
 | `.tsx` 测试只能在库包写 | 硬边界 | web-next 必须留 `jsx: preserve`（Next 需要），Vite 的 import-analysis 会报 `make sure to not set jsx to preserve`，改 vitest 的 `esbuild.jsx` / `esbuild.tsconfigRaw` 都无效；应用内测试一律 `.ts` |
 | `styles.dragger` 覆盖陷阱 | 实测钉住 | 传 `width` 会把命中带改成 0（实测三条分隔条全为 0）；命中带宽度由 antd 尺寸变量决定，运行时变量名是 `--ant-splitter-split-bar-size` 等（`--ant-splitter-bar-size` 不存在）；两栏**间距**是组件自己写的 CSS `gap`，与 antd 无关 |
 | 顶栏高度的两处实测数字 | 实测钉住 | `height: 40` 与 `flexShrink: 0` 都是确定值；37.84px / 38.27px 随视口浮动，**不要当固定常数**引用 |
@@ -54,4 +54,4 @@
 - 仓库内活文档：`AGENTS.md`「约束」（antd / 不手写字号 / 不裸写 `div` 的 UI 纪律）、「边界与工具链的已知坑」（紧凑密度、Button variant、主题三处同步、Splitter、Flex 各行）、「测试」（jsdom 缺口行）——按节名定位，坑表的真源在那里，本文不复制
 - [契约体系](/architecture/contracts) —— ui → contracts 依赖边、`ProviderView` 掩码下行
 - [用例管理](/features/case-management) —— ListDetailLayout 的真实消费方之一（列表 + 右栏三态）
-- [《评测详情与候选行》](/features/run-detail)、[《设置》](/features/settings) —— ListDetailLayout 的另一消费方、主题唯一入口在设置页
+- [《评测详情与候选》](/features/run-detail)、[《设置》](/features/settings) —— ListDetailLayout 的另一消费方、主题唯一入口在设置页

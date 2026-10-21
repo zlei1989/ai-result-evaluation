@@ -3,7 +3,7 @@
  * 一致性套件自己的守卫：**套件的每条判据都得见过失败**，否则它只是一堆「看起来会拦」的断言。
  *
  * 分工：
- *  · 语义组（合并键 / 子任务桥 / 用量配对 / 能力互钉 / 缺失原因 / 行级事件）测**正反两面**——
+ *  · 语义组（合并键 / 子任务桥 / 用量配对 / 能力互钉 / 缺失原因 / 候选级事件）测**正反两面**——
  *    正例用最小对象，只填该组真正读的字段；
  *  · `checkContracts` 只测**反例**（形状由 `@aieval/contracts` 的 zod schema 保证，
  *    这里不重复造一份合法消息——两份形状必然漂移）。
@@ -31,7 +31,7 @@ import {
   checkSubagentAttribution,
   checkSubagentBridge,
   checkSubagentNameStability,
-  checkSubagentSingleRow,
+  checkSubagentSingleCandidate,
   checkStructuredOutputGroup,
   checkTransportDeliveryGroup,
   checkUsagePairing,
@@ -194,7 +194,7 @@ const SEMANTIC_CHECKS: ReadonlyArray<readonly [string, (one: ConformanceFixture)
   ['事件形状', checkEventShapes],
   ['生命周期', checkLifecycle],
   ['最终答复口径', checkFinalAnswer],
-  ['行级事件与来源', checkLineEventsAndSources],
+  ['候选级事件与来源', checkLineEventsAndSources],
 ];
 
 describe('一致性套件：正例全通过', () => {
@@ -421,18 +421,18 @@ describe('一致性套件：每条判据都能拦（反例）', () => {
     expect(() => checkCapabilityDeclaration(broken)).toThrow(/不合规/);
   });
 
-  it('行级事件形状不合契约（status 事件缺 status 格）⇒ 红', () => {
+  it('候选级事件形状不合契约（status 事件缺 status 格）⇒ 红', () => {
     const broken = fixture({
       scenarios: { 'plain-reply': () => product({ events: [{ type: 'status' }] }) },
     });
-    expect(() => checkEventShapes(broken)).toThrow(/行级事件不合契约/);
+    expect(() => checkEventShapes(broken)).toThrow(/运行级事件不合契约/);
   });
 
-  it('行级事件出现契约外的类型 ⇒ 红', () => {
+  it('候选级事件出现契约外的类型 ⇒ 红', () => {
     const broken = fixture({
       scenarios: { 'plain-reply': () => product({ events: [{ type: 'nonsense' }] }) },
     });
-    expect(() => checkLineEventsAndSources(broken)).toThrow(/契约外的行级事件/);
+    expect(() => checkLineEventsAndSources(broken)).toThrow(/契约外的运行级事件/);
   });
 
   it('契约内的 vendor-system 事件不判违规（闭集从 schema 派生，不是手抄的那三类）', () => {
@@ -552,7 +552,7 @@ describe('一致性套件：子任务投递（归属 / 折叠 / 名字）', () =
   it('两条投递（后者是完整快照）⇒ 三条判据都不抛', () => {
     const ok = withDeliveries([dispatched, settled]);
     expect(() => checkSubagentAttribution(ok)).not.toThrow();
-    expect(() => checkSubagentSingleRow(ok)).not.toThrow();
+    expect(() => checkSubagentSingleCandidate(ok)).not.toThrow();
     expect(() => checkSubagentNameStability(ok)).not.toThrow();
   });
 
@@ -591,18 +591,18 @@ describe('一致性套件：子任务投递（归属 / 折叠 / 名字）', () =
 
   it('收尾那条比派发那条**更瘦**（覆盖会把事实抹掉）⇒ 红', () => {
     const broken = withDeliveries([dispatched, subagent({ subagentId: 'child-1', name: '审查页面', status: 'completed' })]);
-    expect(() => checkSubagentSingleRow(broken)).toThrow(/把 kind 投成了 null/);
+    expect(() => checkSubagentSingleCandidate(broken)).toThrow(/把 kind 投成了 null/);
   });
 
   it('什么都不带的重发（与上一条逐格相同）⇒ 红', () => {
     const broken = withDeliveries([dispatched, settled, { ...settled }]);
-    expect(() => checkSubagentSingleRow(broken)).toThrow(/与上一条逐格相同/);
+    expect(() => checkSubagentSingleCandidate(broken)).toThrow(/与上一条逐格相同/);
   });
 
   it('补全带新事实（收尾第一次拿到终态与用量）⇒ 不抛（判据是内容，不是「发过没有」）', () => {
     // 派发那一条已经带用量，收尾那一条把用量改大 ⇒ 有新事实，照发
     const grew = { ...settled, usage: { input: 9, cached: 0, output: 5, reasoningOutput: null, total: null } };
-    expect(() => checkSubagentSingleRow(withDeliveries([{ ...dispatched, usage: settled.usage }, grew]))).not.toThrow();
+    expect(() => checkSubagentSingleCandidate(withDeliveries([{ ...dispatched, usage: settled.usage }, grew]))).not.toThrow();
   });
 
   it('派发时没有名字、收尾补上一个 ⇒ 不抛（补全不是改名）', () => {
@@ -1578,7 +1578,7 @@ describe('一致性套件：交互面（提问应答）', () => {
     const first = product({ events: [log(1_000)] });
     const second = product({ events: [log(2_000)] });
     expect(askUserProductDigest(first)).toBe(askUserProductDigest(second));
-    // 多一条行级事件（哪怕正文一样）就是行为不同：指纹只丢正文，不丢结构
+    // 多一条候选级事件（哪怕正文一样）就是行为不同：指纹只丢正文，不丢结构
     expect(askUserProductDigest(first)).not.toBe(askUserProductDigest(product({ events: [log(1_000), log(1_000)] })));
     // 归一产物的正文（消息内容块）照旧逐字比
     const said = (text: string): ConformanceProduct =>
@@ -1590,7 +1590,7 @@ describe('一致性套件：交互面（提问应答）', () => {
 
   it('产物指纹：每次运行现生成的会话身份与计时读数都不算行为（它们只出现在原始载荷与时钟格上）', () => {
     // dsh 的会话号是每次运行现生成的随机串，厂商原文那一份会照进 `raw` 与「原始输出」的日志正文；
-    // pi 的 provider id 由每行一份临时目录派生、载荷里还有 epoch 毫秒。三种都不进指纹。
+    // pi 的 provider id 由每个候选一份临时目录派生、载荷里还有 epoch 毫秒。三种都不进指纹。
     const frame = (sessionId: string, totalMs: number): ConformanceProduct =>
       product({
         events: [

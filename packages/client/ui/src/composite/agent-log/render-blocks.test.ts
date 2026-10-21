@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildRenderBlocks, nodeIndex, type ToolItem } from './render-blocks';
-import type { ContentBlock, LogNode, RowNode, SessionNode, ToolCardResult, ToolFamilyPayload } from './types';
+import type { ContentBlock, LogNode, CandidateNode, SessionNode, ToolCardResult, ToolFamilyPayload } from './types';
 
 /** 块信封的公共部分（用例只关心差异的那几格） */
 function base(id: string, at = '2026-10-02T10:44:31.000Z') {
@@ -137,7 +137,7 @@ function sessionNode(id: string, spawnedBy: SessionNode['spawnedBy']): SessionNo
   };
 }
 
-function rowNode(id: string): RowNode {
+function candidateNode(id: string): CandidateNode {
   return {
     kind: 'row',
     id,
@@ -165,7 +165,7 @@ function rowNode(id: string): RowNode {
   };
 }
 
-/** 轮上下文：`firstTurn: true` 表示这是该节点的第一轮（行级汇总那条说明行只在第一轮出现） */
+/** 轮上下文：`firstTurn: true` 表示这是该节点的第一轮（候选级汇总那条说明行只在第一轮出现） */
 const TURN = { at: '2026-10-02T10:44:31.000Z', running: false, messageId: 'm1', nodeId: 'main', firstTurn: true };
 
 describe('buildRenderBlocks：callId 配对', () => {
@@ -356,13 +356,13 @@ describe('buildRenderBlocks：派发点与汇总节点', () => {
   });
 
   it('`kind: \'row\'` 的节点出 `row-summary` 而**不是** `subagent-bar`（类型上也点不进去）', () => {
-    const blocks = buildRenderBlocks([text('t1')], nodeIndex([rowNode('row-1')]), TURN);
+    const blocks = buildRenderBlocks([text('t1')], nodeIndex([candidateNode('row-1')]), TURN);
     expect(blocks.map((block) => block.kind)).toEqual(['text', 'row-summary']);
   });
 
   it('`row-summary` **只画一次**：不是第一轮时不出现（它是整个节点的事实，不是每轮的事实）', () => {
     // 冒烟实测的缺陷形状：两轮的节点上出现两句一模一样的「汇总 已完成 子任务 1 · 完成 1 · 失败 0」
-    const later = buildRenderBlocks([text('t1')], nodeIndex([rowNode('row-1')]), { ...TURN, firstTurn: false });
+    const later = buildRenderBlocks([text('t1')], nodeIndex([candidateNode('row-1')]), { ...TURN, firstTurn: false });
     expect(later.map((block) => block.kind)).toEqual(['text']);
   });
 });

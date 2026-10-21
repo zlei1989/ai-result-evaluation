@@ -32,7 +32,7 @@ const dir = import.meta.dirname;
  * 误伤比漏放更危险（守卫一旦显得碍事就会被绕过），故只对**可执行源码**判。
  *
  * **已知局限（如实登记，与 `composite/agent-log/agent-log-layering.test.ts` 同一条）**：正则不区分
- * 字符串字面量里的 `//`，含 `://` 的行会被从那里截断 ⇒ **同一行注释后面的代码看不见**。
+ * 字符串字面量里的 `//`，含 `://` 的候选会被从那里截断 ⇒ **同一行注释后面的代码看不见**。
  * 方向是漏报而不是误报，且本仓没有那种形态。
  */
 function stripComments(text: string): string {

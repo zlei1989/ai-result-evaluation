@@ -2,7 +2,7 @@
  * 抽屉流 hub：**一行一个 channel 一条连接**，聚合流之外的三个抽屉 hook 都从这里取帧。
  *
  * 本文件的断言对象是这条共享层自己的四件事：
- *   1. **共享**：同一 `runId:rowId:channel` 的多个 sink 只开一条 `EventSource`；不同 channel 各一条；
+ *   1. **共享**：同一 `runId:candidateId:channel` 的多个 sink 只开一条 `EventSource`；不同 channel 各一条；
  *   2. **生命周期**：引用计数归零即关连接（抽屉关掉不留长连接）；
  *   3. **解帧**：帧按 contracts 的信封契约（`RunStreamFrameSchema`）校验后才交给 sink，
  *      坏帧只跳过它自己（`onInvalidFrame`），绝不打断整条流；
@@ -73,8 +73,8 @@ function makeMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 /** 一帧的 `data:` 载荷：事件帧 / 消息帧都带归属两格（与 api 的组帧同形） */
-function frameData(payload: { type: string } & Record<string, unknown>, rowChannel: DrawerChannel = 'candidate', rowId = 'w-1'): string {
-  return JSON.stringify({ ...payload, rowId, rowChannel });
+function frameData(payload: { type: string } & Record<string, unknown>, candidateChannel: DrawerChannel = 'candidate', candidateId = 'w-1'): string {
+  return JSON.stringify({ ...payload, candidateId, candidateChannel });
 }
 
 beforeEach(() => {
@@ -89,16 +89,16 @@ afterEach(() => {
 });
 
 describe('drawerStreamKey / drawerStreamUrl', () => {
-  it('键 = runId:rowId:rowChannel；URL 带上 rowId / rowChannel / afterSeq', () => {
+  it('键 = runId:candidateId:candidateChannel；URL 带上 candidateId / candidateChannel / afterSeq', () => {
     expect(drawerStreamKey('run-1', 'w-1', 'judge')).toBe('run-1:w-1:judge');
     expect(drawerStreamUrl('run-1', 'w-1', 'candidate', 3)).toBe(
-      '/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=3',
+      '/api/runs/run-1/drawer/stream?candidateId=w-1&candidateChannel=candidate&afterSeq=3',
     );
   });
 });
 
 describe('subscribeDrawerStream：共享、生命周期、解帧', () => {
-  it('同一 runId:rowId:rowChannel 的两个 sink 共用**一条** EventSource，且都收到同一帧', () => {
+  it('同一 runId:candidateId:candidateChannel 的两个 sink 共用**一条** EventSource，且都收到同一帧', () => {
     const first = makeHarness();
     const second = makeHarness();
     subscribeDrawerStream('run-1', 'w-1', 'candidate', first.sink, 3);
@@ -108,14 +108,14 @@ describe('subscribeDrawerStream：共享、生命周期、解帧', () => {
     // 连接数只有一条（两个 sink 共用一个键）
     expect(drawerStreamOpenCount()).toBe(1);
     // 游标由**先到的那个**订阅者决定（后来者共用这条连接，多出来的回放由它自己去重）
-    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=3');
+    expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/drawer/stream?candidateId=w-1&candidateChannel=candidate&afterSeq=3');
 
     const event = makeEvent({ seq: 4, text: '实时来的' });
     FakeEventSource.instances[0]?.feed(`id: 4\nevent: log\ndata: ${frameData(event)}\n\n`);
 
     expect(first.frames).toHaveLength(1);
     expect(second.frames).toHaveLength(1);
-    expect(first.frames[0]).toMatchObject({ type: 'log', rowId: 'w-1', rowChannel: 'candidate', seq: 4, text: '实时来的' });
+    expect(first.frames[0]).toMatchObject({ type: 'log', candidateId: 'w-1', candidateChannel: 'candidate', seq: 4, text: '实时来的' });
   });
 
   it('不同 channel 是两条连接（两个抽屉各自一条流）', () => {
@@ -126,8 +126,8 @@ describe('subscribeDrawerStream：共享、生命周期、解帧', () => {
 
     expect(FakeEventSource.instances).toHaveLength(2);
     expect(FakeEventSource.instances.map((source) => source.url)).toEqual([
-      '/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=candidate&afterSeq=0',
-      '/api/runs/run-1/drawer/stream?rowId=w-1&rowChannel=judge&afterSeq=0',
+      '/api/runs/run-1/drawer/stream?candidateId=w-1&candidateChannel=candidate&afterSeq=0',
+      '/api/runs/run-1/drawer/stream?candidateId=w-1&candidateChannel=judge&afterSeq=0',
     ]);
   });
 
@@ -189,7 +189,7 @@ describe('subscribeDrawerStream：共享、生命周期、解帧', () => {
     source.feed(`event: message\ndata: ${frameData({ type: 'message', message })}\n\n`);
 
     expect(harness.frames).toHaveLength(1);
-    expect(harness.frames[0]).toMatchObject({ type: 'message', rowId: 'w-1', rowChannel: 'candidate', message: { messageId: 'run-1:1' } });
+    expect(harness.frames[0]).toMatchObject({ type: 'message', candidateId: 'w-1', candidateChannel: 'candidate', message: { messageId: 'run-1:1' } });
   });
 
   it('具名事件按清单逐个订阅（`error` 除外），无名帧走 onmessage 兜底', () => {

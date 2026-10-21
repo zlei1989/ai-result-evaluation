@@ -175,7 +175,7 @@ const EXPECTED_METADATA: Record<AgentKind, ExpectedMetadata> = {
     },
     /**
      * 注入面（第五组）：**两档的证据强度不同**——`'idle'` 档有真路径读数（那句话进厂商出站请求体、
-     * 那一轮跑完、答复成为本行 `finalText`）⇒ `yes` + `real-path`，且 `thread/queue/*` 要
+     * 那一轮跑完、答复成为候选 `finalText`）⇒ `yes` + `real-path`，且 `thread/queue/*` 要
      * `experimentalApi`（`experimental: true`）；`'round'` 档仍 `unverified`（**投递点**没验），
      * 带真版本门（`expectedTurnId` 自 0.156.1 起必填）、在非实验面上就有。
      * 撤回按档分开：在途那一档**没有**撤回面（`none`）、耐久队列那一档按身份可撤（`by-id`）；
@@ -465,7 +465,7 @@ describe('元数据投影（回归网）', () => {
    * `defaultEffort`（可选）必须落在自家档位域里、且**不是关闭档**。
    *
    * 为什么要有这一条：API 侧用它拦「未选档位 + 上游模型不支持那个缺省档」的组合（`runs.ts` 的
-   * `resolveRunRows`）——它不是展示用的，而是**校验判据**。写歪一格的后果分两种，都很隐蔽：
+   * `resolveRunCandidates`）——它不是展示用的，而是**校验判据**。写歪一格的后果分两种，都很隐蔽：
    *   · 不在自家档位域里 ⇒ 未选一定被判成「不支持」，用户看到「未选也跑不了」而无从理解；
    *   · 写成关闭档 ⇒ 用户什么都没选却把思考**关掉**了，正是「未选 ≠ 关闭」要消灭的事情。
    * 可选是因为 claude / codex 的「未选」由厂商推断、我们无从预知，故它们不声明（不是漏写）。

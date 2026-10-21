@@ -38,8 +38,8 @@ function message(overrides: Partial<AgentMessage>): AgentMessage {
 }
 
 /** 聚合流的一帧：消息载荷 + 信封归属格（与 api 的 `toMessageFrame` 逐字同形，无名事件） */
-function frame(rowId: string, rowChannel: 'candidate' | 'judge', message: AgentMessage): string {
-  return JSON.stringify({ type: 'message', rowId, rowChannel, message });
+function frame(candidateId: string, candidateChannel: 'candidate' | 'judge', message: AgentMessage): string {
+  return JSON.stringify({ type: 'message', candidateId, candidateChannel, message });
 }
 
 describe('activityOfMessage（这一条消息里显示什么）', () => {
@@ -86,7 +86,7 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
     expect(activity.text).toBeNull();
   });
 
-  it('推理 / 工具结果 / 空正文**都不占**这一行；都没有时返回「没有内容」', () => {
+  it('推理 / 工具结果 / 空正文**都不占**这个候选；都没有时返回「没有内容」', () => {
     const thinkingOnly = activityOfMessage(
       message({ blocks: [{ type: 'thinking', text: '想一下', textKind: 'full', signature: null }] }),
     );
@@ -134,20 +134,20 @@ describe('activityOfMessage（这一条消息里显示什么）', () => {
 describe('activityOfFrame（这一帧算不算活动内容）', () => {
   it('消息帧取出内容；子任务帧与事件帧一律返回 null（它们不占卡片底部那一行）', () => {
     const one = message({ blocks: [{ type: 'text', text: '在写' }] });
-    const activity = activityOfFrame({ type: 'message', rowId: 'w-1', rowChannel: 'candidate', message: one });
+    const activity = activityOfFrame({ type: 'message', candidateId: 'w-1', candidateChannel: 'candidate', message: one });
     expect(activity).toEqual({ text: '在写', streaming: true, toolSummary: null });
 
     // 子任务行是派发视图的原料，不是「此刻在做什么」的那句话
     expect(
       activityOfFrame({
         type: 'subagent',
-        rowId: 'w-1',
-        rowChannel: 'candidate',
+        candidateId: 'w-1',
+        candidateChannel: 'candidate',
         subagent: { subagentId: 's-1', description: '查一下', status: 'running' },
       } as never),
     ).toBeNull();
     expect(
-      activityOfFrame({ type: 'log', seq: 1, at: '2026-09-22T08:00:00.000Z', stream: 'stdout', text: '一行日志', rowId: 'w-1', rowChannel: 'candidate' }),
+      activityOfFrame({ type: 'log', seq: 1, at: '2026-09-22T08:00:00.000Z', stream: 'stdout', text: '一行日志', candidateId: 'w-1', candidateChannel: 'candidate' }),
     ).toBeNull();
   });
 });
@@ -165,8 +165,8 @@ describe('useRunActivity（走聚合流、按阶段挑 channel、不回放历史
   });
 
   it('两路活动行共用**一条**聚合流连接；活动的行集合不贡献游标（URL 上没有 `?after=`）', async () => {
-    const running = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
-    const judging = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-2', status: 'judging' }] }));
+    const running = renderHook(() => useRunActivity({ runId: 'run-1', candidates: [{ id: 'w-1', status: 'running' }] }));
+    const judging = renderHook(() => useRunActivity({ runId: 'run-1', candidates: [{ id: 'w-2', status: 'judging' }] }));
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     expect(FakeEventSource.instances[0]?.url).toBe('/api/runs/run-1/stream');
 
@@ -189,15 +189,15 @@ describe('useRunActivity（走聚合流、按阶段挑 channel、不回放历史
     expect(judging.result.current['w-2']?.text).toBe('评审在看');
   });
 
-  it('终态的行一条连接都不开（这一行已经收起）', async () => {
-    renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'judged' }] }));
+  it('终态的行一条连接都不开（这个候选已经收起）', async () => {
+    renderHook(() => useRunActivity({ runId: 'run-1', candidates: [{ id: 'w-1', status: 'judged' }] }));
     // 订阅是晚一拍开的：等过微任务再断言「真的没有连接」（否则这条用例在「压根还没开」时也会绿）
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   it('delta 帧把正文折进活动（换行原样保留，切段在 ui 那一层做）', async () => {
-    const { result } = renderHook(() => useRunActivity({ runId: 'run-1', rows: [{ id: 'w-1', status: 'running' }] }));
+    const { result } = renderHook(() => useRunActivity({ runId: 'run-1', candidates: [{ id: 'w-1', status: 'running' }] }));
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const source = FakeEventSource.instances[0];
     expect(source).toBeDefined();

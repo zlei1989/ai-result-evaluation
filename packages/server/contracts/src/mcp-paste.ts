@@ -34,7 +34,7 @@ export const MCP_PASTE_MAX_ENTRIES = 100;
  *
  * 两条已知的「不宽容」（宁可早报也不硬转）：
  *   · 单引号串 / 无引号键不是 JSONC 的合法子集，遇到就抛**带行号的中文**；
- *   · 块注释里换行会被保留（只为让报错行号与原文本对齐）。
+ *   · 块注释里换候选会被保留（只为让报错行号与原文本对齐）。
  * 尾逗号用「攒着不落笔」的办法剥：逗号先记在心里，下一个有意义的字符若是 `}` / `]` 就丢掉它
  * —— 这样 `[1, 2,]` 与 `{"a": 1,}` 都成立，而 `[1,,2]` 这类真正的语法错仍会漏给 `JSON.parse`。
  */
@@ -88,7 +88,7 @@ export function stripJsonComments(text: string): string {
       const end = text.indexOf('*/', index + 2);
       if (end < 0) throw new Error(`第 ${line} 行：块注释没有闭合（缺少 */）`);
       const comment = text.slice(index, end);
-      // 换行要留下：报错行号按剥离后的文本算，吃掉换行会让行号整体上移
+      // 换行要留下：报错行号按剥离后的文本算，吃掉换候选会让行号整体上移
       for (const inner of comment) if (inner === '\n') out.push('\n');
       line += countNewlines(comment);
       index = end + 2;
@@ -187,7 +187,7 @@ export interface McpPasteRejection {
 
 /**
  * 整份级别的失败：超限 / 语法错 / 无法识别。有它时 `entries` 与 `rejected` 都是空的 ——
- * 「部分成功」在这里不成立：一份读不出来的文本没有任何一行是可信的。
+ * 「部分成功」在这里不成立：一份读不出来的文本没有任何一候选是可信的。
  */
 export interface McpPasteError {
   /** 可直接展示的中文原因（SyntaxError 一律在这一层折成中文，不许冒到出口） */
@@ -669,7 +669,7 @@ function findUnsupportedPlaceholder(text: string, allowEnvName: boolean): string
 }
 
 /**
- * 预览里那一格名字能不能导入：`null` = 可以，非空 = 中文原因（这一行**不许导入**）。
+ * 预览里那一格名字能不能导入：`null` = 可以，非空 = 中文原因（这个候选**不许导入**）。
  *
  * 两条判据都只在裸单项上真的会发生（它的名字是猜的、可改），但函数对**所有行**一视同仁：
  * 判据写在一处，将来多一种可改名的形状时不会再各写一遍。

@@ -84,7 +84,7 @@ describe('McpServerTable', () => {
     expect(screen.getAllByRole('columnheader')).toHaveLength(5);
   });
 
-  it('每行显名称 / 传输 Tag / 端点或命令，且顺序 = 落盘顺序', () => {
+  it('每个候选显名称 / 传输 Tag / 端点或命令，且顺序 = 落盘顺序', () => {
     render(<McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} />);
 
     const rows = screen.getAllByRole('row');
@@ -102,7 +102,7 @@ describe('McpServerTable', () => {
   it('密钥只出「已配置密钥」小标：掩码本体不出现在表里（没有密钥列）', () => {
     render(<McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} />);
 
-    // 一台配了敏感头、一台没配 ⇒ 恰好一个小标（不是每行都有）
+    // 一台配了敏感头、一台没配 ⇒ 恰好一个小标（不是每个候选都有）
     expect(screen.getAllByTestId('mcp-secret-tag')).toHaveLength(1);
     expect(within(screen.getAllByRole('row')[1] as HTMLElement).getByText('已配置密钥')).toBeInTheDocument();
     // 掩码串不许出现在表格里：密钥本体只在表单弹窗里以掩码出现
@@ -150,11 +150,11 @@ describe('McpServerTable', () => {
   });
 
   /**
- * 停用行的**弱化信号**（「停用：整行弱化但**不隐藏**」）——判据两半，缺一条就会退化成
+ * 停用候选的**弱化信号**（「停用：整行弱化但**不隐藏**」）——判据两半，缺一条就会退化成
  * 规格说的那半边没做：
  * ① 名称那一格带 antd 的次级语义类（jsdom 里「弱化了」唯一可观察的信号，颜色算不出来）；
  * ② 「端点或命令」那一格**不在**次级色里——整行加灰会把排障时要读的那行命令一起涂淡，
- * 而它是这一行唯一的身份信息（这正是当初不加整行灰的理由，见组件文件头第 2 点）。
+ * 而它是这个候选唯一的身份信息（这正是当初不加整行灰的理由，见组件文件头第 2 点）。
  * 真实观感（对比度、dark 态）留真机冒烟：jsdom 没有布局引擎，这条只钉语义类。
  */
   it('停用行只弱化名称那一格：名称带次级色，端点与命令照旧可读', () => {
@@ -173,14 +173,14 @@ describe('McpServerTable', () => {
     expect(disabledName, '名称格里没有 Typography 元素（列形态变了？）').not.toBeNull();
     expect(enabledName, '名称格里没有 Typography 元素（列形态变了？）').not.toBeNull();
 
-    expect(disabledName?.className, '停用行没有弱化信号（名称格不是次级色）').toContain(
+    expect(disabledName?.className, '停用候选没有弱化信号（名称格不是次级色）').toContain(
       'ant-typography-secondary',
     );
     // 反向判据：启用的那行**不许**跟着变淡（否则「弱化」就成了一句永远为真的话）
     expect(enabledName?.className, '启用行也被涂淡了').not.toContain('ant-typography-secondary');
 
     const endpoint = typographyIn(rows[2] as HTMLElement, 2);
-    expect(endpoint?.textContent, '停用行的端点或命令不见了——那是排障时要读的字').toBe(
+    expect(endpoint?.textContent, '停用候选的端点或命令不见了——那是排障时要读的字').toBe(
       'npx -y @playwright/mcp@latest --browser=chrome --isolated',
     );
     expect(endpoint?.className, '端点或命令跟着变淡了——那是排障时要读的字').not.toContain(
@@ -234,7 +234,7 @@ describe('McpServerTable', () => {
     // 「删 除」（antd 只在恰好两个 CJK 字时插空格），上面那三条按名字定位会失配。
     // 用 queryAll 而不是 getAll：这条断言期望的是**零**个带空格的二字按钮，getAll 找不到时直接抛。
     expect(screen.queryAllByRole('button', { name: /^[^ ] [^ ]$/ })).toHaveLength(0);
-    // 数量对齐表体行数（2 行 × 2 个二字按钮）—— 表头那个四字的「添加」不在此列，故意不计入
+    // 数量对齐表体候选数（2 行 × 2 个二字按钮）—— 表头那个四字的「添加」不在此列，故意不计入
     expect(screen.getAllByRole('button', { name: /^(编辑|删除)$/ })).toHaveLength(4);
   });
 
@@ -370,7 +370,7 @@ describe('McpServerTable', () => {
     for (const index of [1, 2, 3]) {
       expect(headers?.[index]?.className).not.toContain('ant-table-cell-fix');
     }
-    // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去，滚动时表头与数据行错位）
+    // 表体跟着一起钉（只钉表头的话，数据候选会在固定列底下滑过去，滚动时表头与数据行错位）
     const bodyCells = content?.querySelector('tbody tr.ant-table-row')?.querySelectorAll('td');
     expect(bodyCells?.[0]?.className).toContain('ant-table-cell-fix-start');
     expect(bodyCells?.[4]?.className).toContain('ant-table-cell-fix-end');
@@ -444,8 +444,8 @@ describe('McpServerTable', () => {
  * 断言口径：用户看得到的东西 —— 按钮转不转、结果区在不在**那一行下方**、其它动作还能不能点。
  * 组件**不调接口**：请求由 `onTest` 注入，这里给的就是一个 Promise 替身。
  */
-describe('测试连接：行内结果区', () => {
-  it('点下去按钮进入 loading，结论就地在该行下方展开（成功与失败都展开）', async () => {
+describe('测试连接：候选内结果区', () => {
+  it('点下去按钮进入 loading，结论就地在该候选下方展开（成功与失败都展开）', async () => {
     let release: (result: McpProbeResult) => void = () => {};
     const onTest = vi.fn(() => new Promise<McpProbeResult>((resolve) => (release = resolve)));
     render(
@@ -465,7 +465,7 @@ describe('测试连接：行内结果区', () => {
     expect(screen.queryByTestId('mcp-probe-waiting')).not.toBeInTheDocument();
   });
 
-  it('这一行在测时，该行其它动作禁用；别的行照常可用（不阻塞其它行）', () => {
+  it('这个候选在测时，该候选其它动作禁用；别的行照常可用（不阻塞其它行）', () => {
     const onTest = vi.fn(() => new Promise<McpProbeResult>(() => {}));
     render(
       <McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} onTest={onTest} />,
@@ -474,12 +474,12 @@ describe('测试连接：行内结果区', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '测试连接' })[0] as HTMLElement);
 
     // 按行定位而不是按下标：loading 中的按钮可访问名会带上 antd 的 loading 图标标签
-    //（`loading 测试连接`），按下标取会取错行 —— 而这条用例要分清的正是「哪一行被锁住」
-    const rowOf = (text: string): HTMLElement =>
+    //（`loading 测试连接`），按下标取会取错行 —— 而这条用例要分清的正是「哪一个候选被锁住」
+    const candidateOf = (text: string): HTMLElement =>
       screen.getAllByRole('row').find((row) => row.textContent?.includes(text)) as HTMLElement;
 
     // 第 0 行（context7）在测：它的编辑 / 删除 / 启停都禁用
-    const testing = rowOf('context7');
+    const testing = candidateOf('context7');
     expect(within(testing).getByRole('button', { name: '编辑' })).toBeDisabled();
     expect(within(testing).getByRole('button', { name: '删除' })).toBeDisabled();
     expect(within(testing).getByRole('switch', { name: '启用 context7' })).toBeDisabled();
@@ -489,7 +489,7 @@ describe('测试连接：行内结果区', () => {
     expect(within(testing).getByRole('button', { name: /测试连接$/ }).className).toContain('ant-btn-loading');
 
     // 第 1 行（playwright）不受影响：停用条目**仍可测**
-    const other = rowOf('@playwright/mcp');
+    const other = candidateOf('@playwright/mcp');
     expect(within(other).getByRole('button', { name: '编辑' })).toBeEnabled();
     expect(within(other).getByRole('button', { name: '测试连接' })).toBeEnabled();
   });
@@ -501,7 +501,7 @@ describe('测试连接：行内结果区', () => {
       <McpServerTable servers={servers} onToggle={noop} onEdit={noop} onDelete={noop} onCreate={noop} onTest={onTest} />,
     );
 
-    // playwright 那行是 enabled: false
+    // playwright 那候选是 enabled: false
     fireEvent.click(screen.getAllByRole('button', { name: '测试连接' })[1] as HTMLElement);
 
     expect(await screen.findByText('已停用，不会注入')).toBeInTheDocument();

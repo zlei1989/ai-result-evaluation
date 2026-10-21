@@ -167,12 +167,12 @@ describe('ProviderFormModal：模型清单不在这里（已搬到「模型」�
     expect(screen.getByText('模型清单在列表的「模型」按钮里维护')).toBeInTheDocument();
   });
 
-  it('新建态同样不渲染清单，提示写明「保存后到列表里点这一行的『模型』按钮」', () => {
+  it('新建态同样不渲染清单，提示写明「保存后到列表里点这个候选的『模型』按钮」', () => {
     renderModal();
 
     expect(screen.queryByRole('button', { name: '拉取模型' })).toBeNull();
     expect(
-      screen.getByText('新建时还没有供应商 id；保存后到列表里点这一行的「模型」按钮，在对话框里拉取或手工增删。'),
+      screen.getByText('新建时还没有供应商 id；保存后到列表里点这个候选的「模型」按钮，在对话框里拉取或手工增删。'),
     ).toBeInTheDocument();
   });
 

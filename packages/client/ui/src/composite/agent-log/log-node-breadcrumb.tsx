@@ -3,18 +3,22 @@
 /**
  * 节点面包屑（L1）：`主会话 / A / B`。
  *
- * 三条口径：
+ * 四条口径：
  *   1. **链是派生的**：由 `parentId` 从 `activeNodeId` 回溯到根，不存第二份真值
  *      （存一份就必然与 `nodes` 漂移，而漂移的表现是「点备份的链进了另一个节点」）；
- *   2. **每段一个下拉**，菜单内容 = **该层级的兄弟列表**（不是全树）；当前段不可点、
- *      用 `Typography.Text strong` + `aria-current="page"` 标出来；
- *   3. **`kind === 'row'` 的节点不进链、也不进菜单**：它是「这家只有汇总计数、没有逐个身份」
+ *   2. **样式全归组件库**：每段只给纯文本 `title`，不套 `Typography`、不写候选内样式。
+ *      祖先段拿 `itemColor`（次要色），当前段拿 `lastItemColor`（正文色）并带
+ *      `aria-current="page"`——当前项的高亮就是这一档色差，不手写加粗；
+ *      带下拉的段拿 `overlay-link` 的箭头与 hover 底色；
+ *   3. **每段一个下拉**，菜单内容 = **该层级的兄弟列表**（不是全树）；当前段不可点、
+ *      也不给下拉开；
+ *   4. **`kind === 'row'` 的节点不进链、也不进菜单**：它是「这家只有汇总计数、没有逐个身份」
  *      的那一档，点进去只有一个空会话。
  *
  * 断链（`parentId` 指向不存在的节点）与成环都在这里停住：给出已经能确定的那一段，
  * 而不是抛错或死循环——界面缺一段比整个抽屉白屏可接受得多。
  */
-import { Breadcrumb, Flex, Typography } from 'antd';
+import { Breadcrumb, Flex } from 'antd';
 import type { BreadcrumbProps } from 'antd';
 import { useMemo, type ReactNode } from 'react';
 import type { LogNode } from './types';
@@ -59,16 +63,19 @@ export function nodeChain(nodes: readonly LogNode[], activeNodeId: string): read
  * 下拉是浮层，靠 hover 去测既慢又脆）。
  *
  * 每一段的形状由「这一层有没有别的节点」决定，三种：
- *   1. **当前段**：不可点（`Typography.Text strong` + `aria-current="page"`），**不给 `menu`**；
- *   2. **祖先段 + 同层还有别的节点**：给下拉，菜单 = 这一段的兄弟列表（本段标 `disabled`）
+ *   1. **当前段**：纯文本 + `aria-current="page"`，**不给 `menu`**；
+ *   2. **祖先段 + 同层还有别的节点**：给下拉，菜单 = 这一层的兄弟列表（本段标 `disabled`）
  *      ——「当前项」指「这一层你现在站在哪个节点上」，不是整条链的末尾；
  *   3. **祖先段 + 同层只有它自己**：**整段可点、不给下拉**（点了就回到它）。
- * * ⚠️ 第 3 种是两种真机缺陷的共同修法：
- * · 写成 `candidate.parentId === node.parentId`、而 `node` 是**这一段的节点**时——
- *     `主会话` 那一段列出的是「与主会话同父的节点」，主会话 `parentId === null`
- *     ⇒ 列表里只有它自己、且被标成 `disabled`。表现是**站在子任务上回不去主会话**：
- *     抽屉上唯一的入口是个灰项，点不动。正确口径：某一段的兄弟 = **它父节点的子节点**。 * · 光改对判据仍留一个死胡同：主会话是根、本来就没有同层兄弟 ⇒ 那一段必然只有一个灰项。
- *     所以「同层只有一个」时不能再给下拉，要把**这一段本身**做成入口。
+ *
+ * ⚠️ 第 3 种是两种真机缺陷的共同修法：
+ *   · 兄弟的判据是「父节点相同」。若拿 `node.parentId` 与**段自己**比，主会话那一段
+ *     列出的是「与主会话同父的节点」——主会话 `parentId === null` ⇒ 列表里只有它自己、
+ *     且被标成 `disabled`。表现是**站在子任务上回不去主会话**：抽屉上唯一的入口是个灰项。
+ *     正确口径：某一段的兄弟 = **它父节点的子节点**。
+ *   · 判据对了仍留一个死胡同：主会话是根、本来就没有同层兄弟 ⇒ 那一段必然只有一个灰项。
+ *     所以「同层只有一个」时不能再给下拉，要把**这一段本身**做成入口：给 `href` 拿到
+ *     组件库的链接形态（链接色 / hover 底色 / 焦点环 / 键盘可达），点击只回调、不跳转。
  */
 export function breadcrumbItems(
   nodes: readonly LogNode[],
@@ -79,40 +86,32 @@ export function breadcrumbItems(
   const navigable = navigableNodes(nodes);
 
   return chain.map((node, index) => {
+    // 纯文本：颜色 / 字号 / 间距全归 `Breadcrumb` 的 token（字重随所在标题栏继承），
+    // 包一层任何组件都会把它们盖掉
+    const title = nodeDisplayName(node);
     if (index === chain.length - 1) {
-      return {
-        key: node.id,
-        title: (
-          <Typography.Text strong aria-current="page">
-            {nodeDisplayName(node)}
-          </Typography.Text>
-        ),
-      };
+      // 当前段：`li:last-child` 默认就是 `lastItemColor`（比祖先段深一档），这里只补语义。
+      // `aria-current` 由 `Breadcrumb` 落到 `.ant-breadcrumb-link` 上（item 支持 aria 属性）
+      return { key: node.id, title, 'aria-current': 'page' };
     }
     // 这一段的层级 = 它父节点的子节点集合；`parentId === null`（根段）时列的是根层
     const siblings = navigable.filter((candidate) => candidate.parentId === node.parentId);
     if (siblings.length <= 1) {
-      // 同层只有它自己：整段可点回退（不给下拉，免得给出一个只有灰项的死胡同）
+      // 同层只有它自己：整段就是回退入口。`href` 只借组件库的链接形态与键盘可达，
+      // 点击拦掉默认跳转、只把节点 id 交回去
       return {
         key: node.id,
-        title: (
-          <Typography.Text
-            role="link"
-            tabIndex={0}
-            style={{ cursor: 'pointer' }}
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') onSelect(node.id);
-            }}
-          >
-            {nodeDisplayName(node)}
-          </Typography.Text>
-        ),
+        title,
+        href: '#',
+        onClick: (event) => {
+          event.preventDefault();
+          onSelect(node.id);
+        },
       };
     }
     return {
       key: node.id,
-      title: <Typography.Text>{nodeDisplayName(node)}</Typography.Text>,
+      title,
       menu: {
         items: siblings.map((sibling) => ({
           key: sibling.id,

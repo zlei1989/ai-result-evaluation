@@ -8,7 +8,7 @@
  * `core/src/testing/mirror-harness.ts` 的注释里）。
  * 而锁本身是**瞬时的**：失败后隔 200ms 再删即成功——持锁者是**刚退出的 git 子进程**
  * （Windows 上句柄释放晚于 `execFileSync` 返回几 ms），而本包的夹具根里正是 git 的 cwd
- * （`runs/cases/<id>` 与 `runs/<run>/rows/<row>/workspace`）。
+ * （`runs/cases/<id>` 与 `runs/<run>/candidates/<candidate>/workspace`）。
  *
  * 所以重试自己写：短窗口、有上限、超限**只 WARN 不抛**。口径与 `mirror-harness.ts` 的
  * `registerMirrorHooks` 逐字一致，理由也一样——为清理竞态把门禁拖红的代价，

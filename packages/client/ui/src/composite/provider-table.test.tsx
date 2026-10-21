@@ -47,7 +47,7 @@ const anthropic: ProviderView = {
 const noop = (): void => {};
 
 describe('ProviderTable', () => {
-  it('每行显示名称 / 协议中文标签 / 模型数（掩码列已隐藏）', () => {
+  it('每个候选显示名称 / 协议中文标签 / 模型数（掩码列已隐藏）', () => {
     render(
       <ProviderTable providers={[openai, anthropic]} onModels={noop} onEdit={noop} onDelete={noop} onCreate={noop} />,
     );
@@ -144,12 +144,12 @@ describe('ProviderTable', () => {
   });
 
   /**
-   * 形态守卫（与 `RunCreatePanel` 候选行表同款）：卡片窄到装不下五列时，
+   * 形态守卫（与 `RunCreatePanel` 候选表同款）：卡片窄到装不下五列时，
    * 表格**内部**横向滚动，`名称` 钉在左边、`操作` 钉在右边（中间三列从它们下面滑过）。
    * 三处必须同时在场，少一处就静默退回老样子 —— `名称` 与三个按钮跟着滚出视野：
    *   · 没有 `scroll={{ x: 数值 }}` ⇒ 内容容器拿不到 `overflow-x: auto`、表格也没有内联宽度；
    *   · 首列没有 `fixed` ⇒ 表头第一格不再带粘性类；
-   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（那一行的编辑 / 删除跟着滚走）。
+   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（那一候选的编辑 / 删除跟着滚走）。
    *
    * ⚠️ jsdom **没有布局引擎**：`sticky` 的实际吸边效果、「有没有真的滚起来」都量不出来，钉子只到
    * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
@@ -179,7 +179,7 @@ describe('ProviderTable', () => {
     for (const index of [1, 2, 3]) {
       expect(headers?.[index]?.className).not.toContain('ant-table-cell-fix');
     }
-    // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去 —— 滚动时表头与数据行错位）
+    // 表体跟着一起钉（只钉表头的话，数据候选会在固定列底下滑过去 —— 滚动时表头与数据行错位）
     const bodyCells = content?.querySelector('tbody tr.ant-table-row')?.querySelectorAll('td');
     expect(bodyCells?.[0]?.className).toContain('ant-table-cell-fix-start');
     expect(bodyCells?.[4]?.className).toContain('ant-table-cell-fix-end');

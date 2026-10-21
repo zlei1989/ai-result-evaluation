@@ -27,11 +27,11 @@ describe('@aieval/evaluator 导出面', () => {
         'listRuns',
         'listRunsForCase',
         'saveRun',
-        // 事件总线；两条：行级（候选 + 编排层留痕）与评分（judge-events.jsonl）。
-        // 另有 run 级的一套（一轮下所有行的同一条流）：聚合流按它订阅，listener 多一个 rowId 实参
-        'publishRowEvent',
+        // 事件总线；两条：候选级（候选 + 编排层留痕）与评分（judge-events.jsonl）。
+        // 另有 run 级的一套（一轮下所有候选的同一条流）：聚合流按它订阅，listener 多一个 candidateId 实参
+        'publishCandidateEvent',
         'publishJudgeEvent',
-        'subscribeRowEvents',
+        'subscribeCandidateEvents',
         'subscribeJudgeEvents',
         'subscribeRunEvents',
         'subscribeRunJudgeEvents',
@@ -57,24 +57,24 @@ describe('@aieval/evaluator 导出面', () => {
         'subscribeInjectChanges',
         // 记录总线：消息与子任务行共用 messages.jsonl；
         // 评分另有自己的一条（judge-messages.jsonl）。
-        // 与事件总线同形：行级一套 + run 级一套（聚合流按 run 级订阅）
+        // 与事件总线同形：候选级一套 + run 级一套（聚合流按 run 级订阅）
         'broadcastJudgeMessage',
-        'broadcastRowMessage',
+        'broadcastCandidateMessage',
         'publishJudgeMessage',
         'publishJudgeRecord',
         'publishJudgeSubagentRecord',
-        'publishRowMessage',
-        'publishRowRecord',
+        'publishCandidateMessage',
+        'publishCandidateRecord',
         'publishSubagentRecord',
         'subscribeJudgeRecords',
-        'subscribeRowRecords',
+        'subscribeCandidateRecords',
         'subscribeRunRecords',
         'subscribeRunJudgeRecords',
         // 评分器
-        'judgeRow',
+        'judgeCandidate',
         'parseJudgeResponse',
         // 编排
-        'abortRow',
+        'abortCandidate',
         'abortRun',
         // 评测的「修改 / 删除」：api 层的 updateRun / deleteRun 从本包取它们
         'assertRunMutable',
@@ -84,17 +84,17 @@ describe('@aieval/evaluator 导出面', () => {
         // 的快照），读侧是界面入口的判据来源（哪一行能追问、不能的那一行为什么）——
         // 两者必须同源，故一起出口
         'followUpAvailability',
-        'followUpRow',
+        'followUpCandidate',
         'recoverInterruptedRuns',
-        'rescoreRow',
-        // 单行重新执行（内部名 retry，界面文案「重新执行」）：web-next 的 retry 路由从 api 包根取它，api 再从本包取
-        'retryRow',
+        'rescoreCandidate',
+        // 单个候选重新执行（内部名 retry，界面文案「重新执行」）：web-next 的 retry 路由从 api 包根取它，api 再从本包取
+        'retryCandidate',
         'startRun',
       ].sort(),
     );
   });
 
-  it('编排内部入口 runRow 不从包出口暴露（它是本包测试与状态机内部用的）', () => {
-    expect(Object.keys(evaluator)).not.toContain('runRow');
+  it('编排内部入口 runCandidate 不从包出口暴露（它是本包测试与状态机内部用的）', () => {
+    expect(Object.keys(evaluator)).not.toContain('runCandidate');
   });
 });

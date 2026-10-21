@@ -93,7 +93,7 @@ function createAskHarness(options: { request: AskUserRequest; kind?: AgentKind }
         /**
          * 厂商问了：适配器这一格等用户回答（真实接法就是这一句）。
          * 抛错单独记账而不是让它顺着迭代器冒出去：端口**不抛**是这一格的口径之一，
-         * 冒出去时用例要在这一行上直接说清原因，而不是红在一个离真因很远的地方。
+         * 冒出去时用例要在这个候选上直接说清原因，而不是红在一个离真因很远的地方。
          */
         try {
           replies.push(await context.askUser.ask(options.request));
@@ -167,7 +167,7 @@ describe('提问端口：四条硬规则', () => {
     expect(lines).toEqual([]);
   });
 
-  it('规则 2：与「行终止」「这一问的预算」赛跑，三条收场各自落定', async () => {
+  it('规则 2：与「候选终止」「这一问的预算」赛跑，三条收场各自落定', async () => {
     vi.useFakeTimers();
 
     // ① 正常答复：回调先到，答复原样返回（端口不解释它，只搬运）
@@ -199,7 +199,7 @@ describe('提问端口：四条硬规则', () => {
     await vi.advanceTimersByTimeAsync(1);
     await expect(defaultRun).resolves.toEqual({ outcome: 'timeout', answers: null });
 
-    // ④ 行终止：随轮次取消（这一行已经不跑了，答复给谁都没有意义）
+    // ④ 候选终止：随本轮取消（这个候选已经不跑了，答复给谁都没有意义）
     const controller = new AbortController();
     const canceled = createAskUserPort(
       createRunInput({ onAskUser: () => new Promise<AskUserReply>(() => {}), signal: controller.signal }),
@@ -229,12 +229,12 @@ describe('提问端口：四条硬规则', () => {
 
     // 等到提问登记完成（第一条事件进消费相、适配器问到用户）
     await vi.advanceTimersByTimeAsync(0);
-    // 人一直没答：远远越过空闲与单轮两条上限，都不许判静止 —— 这一行正等着人，它还在动
+    // 人一直没答：远远越过空闲与单轮两条上限，都不许判静止 —— 这个候选正等着人，它还在动
     await vi.advanceTimersByTimeAsync(200_000);
     expect(settled()).toBe(false);
     expect(harness.interrupts()).toBe(0);
 
-    // 答完：这一行又动了，看门狗重新起表（挂过一次就再也不排的话，此后真挂死没人发现）
+    // 答完：这个候选又动了，看门狗重新起表（挂过一次就再也不排的话，此后真挂死没人发现）
     answer(ANSWER);
     await vi.advanceTimersByTimeAsync(0);
     expect(harness.replies).toEqual([ANSWER]);
@@ -265,7 +265,7 @@ describe('提问端口：四条硬规则', () => {
 
     expect(harness.askFailures, '端口把回调的抛错冒了出来——它必须折成「无人应答」返回').toEqual([]);
     expect(harness.replies).toEqual([{ outcome: 'unavailable', answers: null }]);
-    // 「没人答」与「行失败」是两件事：一次问答故障不毁掉一行产物
+    // 「没人答」与「候选失败」是两件事：一次问答故障不毁掉一行产物
     expect(result.ok).toBe(true);
     expect(result.exitReason).toBe('completed');
     expect(result.error).toBeUndefined();

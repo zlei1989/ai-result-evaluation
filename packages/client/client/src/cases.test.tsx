@@ -388,7 +388,7 @@ describe('commit 候选的 cache key 与过滤函数', () => {
     const commitsBefore = countOf('/api/cases/commits');
     const listBefore = countOf('/api/cases');
 
-    // 页面里的一行就是这个调用（「重新加载候选」）：过滤器命中 → 该 key 重新取数
+    // 页面里的一个候选就是这个调用（「重新加载候选」）：过滤器命中 → 该 key 重新取数
     await result.current.mutateCache(matchesCommitsKey, undefined, { revalidate: true });
 
     await waitFor(() => expect(countOf('/api/cases/commits')).toBe(commitsBefore + 1));

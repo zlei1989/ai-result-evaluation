@@ -18,7 +18,7 @@
  *    再也补不上（实时帧照旧会到，所以症状是「历史少了一截」而不是「完全不刷新」）。
  *    这类 sink 注册前**必须自己先折完历史**（`useRunLiveMetrics` 先逐行拉 `/log` 快照）——
  *    它带进来的游标只用来堵住「快照读到订阅建立」之间的缝，不是它的折叠起点。
- * 3. **行集合变小不重连**：某一行跑完被移出订阅集合，只是那个 sink 不再关心它的帧（帧照旧到达、
+ * 3. **行集合变小不重连**：某一个候选跑完被移出订阅集合，只是那个 sink 不再关心它的帧（帧照旧到达、
  *    被丢弃），连接不动——重开一次会白白丢掉其余行正在收的实时帧。
  *
  * 另有一条**开连接晚一拍**：同一拍内注册的多个 sink 因此能一起进 URL（早开一步就会漏掉后注册
@@ -28,25 +28,25 @@
  */
 import {
   RunStreamFrameSchema,
-  type RowChannelEventFrame,
-  type RowChannelMessageFrame,
+  type CandidateChannelEventFrame,
+  type CandidateChannelMessageFrame,
   type RunStreamFrame,
 } from '@aieval/contracts';
 import { runAggregateStreamUrl } from './runs';
 import { createKeyedSseHub, type SseSink } from './sse-keyed-hub';
 
 /**
- * 一帧是不是**行级事件帧**（`AGENT_EVENT_TYPES` 的那些：带 `seq` 与归属两格）。
- * 归属格那一格必须真在：聚合流将来还会推信号帧（它们没有 `rowId` / `rowChannel`），
+ * 一帧是不是**候选级事件帧**（`AGENT_EVENT_TYPES` 的那些：带 `seq` 与归属两格）。
+ * 归属格那一格必须真在：聚合流将来还会推信号帧（它们没有 `candidateId` / `candidateChannel`），
  * 只按 `type` 判别会把它们当成事件帧交给折叠层。
  */
-export function isAgentEventFrame(frame: RunStreamFrame): frame is RowChannelEventFrame {
-  return 'rowChannel' in frame && frame.type !== 'message' && frame.type !== 'subagent';
+export function isAgentEventFrame(frame: RunStreamFrame): frame is CandidateChannelEventFrame {
+  return 'candidateChannel' in frame && frame.type !== 'message' && frame.type !== 'subagent';
 }
 
-/** 一帧是不是**行级记录帧**（消息 / 子任务行）；与 `isAgentEventFrame` 互补，判据同源 */
-export function isRowRecordFrame(frame: RunStreamFrame): frame is RowChannelMessageFrame {
-  return 'rowChannel' in frame && (frame.type === 'message' || frame.type === 'subagent');
+/** 一帧是不是**候选级记录帧**（消息 / 子任务行）；与 `isAgentEventFrame` 互补，判据同源 */
+export function isCandidateRecordFrame(frame: RunStreamFrame): frame is CandidateChannelMessageFrame {
+  return 'candidateChannel' in frame && (frame.type === 'message' || frame.type === 'subagent');
 }
 
 /** 一个订阅者向聚合流声明的三件事：哪些帧归我、收到后做什么、我已经折到哪 */
@@ -54,8 +54,8 @@ export interface RunStreamSink {
   match: (frame: RunStreamFrame) => boolean;
   onFrame: (frame: RunStreamFrame) => void;
   /**
-   * 本 sink **已经折过**的各行位置（行 id → 该行最新 seq）；不给 / 空表 = 不需要历史。
-   * 表里的行会进 URL 的 `?after=`：服务端据此把这些行「快照之后、订阅之前」的事件补给它。
+   * 本 sink **已经折过**的各行位置（候选 id → 该候选最新 seq）；不给 / 空表 = 不需要历史。
+   * 表里的候选会进 URL 的 `?after=`：服务端据此把这些行「快照之后、订阅之前」的事件补给它。
    */
   cursors?: ReadonlyMap<string, number>;
 }
@@ -112,9 +112,9 @@ const hub = createKeyedSseHub<RunStreamFrame>({
 function mergedCursors(connection: RunConnection): Map<string, number> {
   const merged = new Map<string, number>();
   for (const sink of connection.sinks) {
-    for (const [rowId, seq] of sink.cursors ?? []) {
-      const current = merged.get(rowId);
-      if (current === undefined || seq < current) merged.set(rowId, seq);
+    for (const [candidateId, seq] of sink.cursors ?? []) {
+      const current = merged.get(candidateId);
+      if (current === undefined || seq < current) merged.set(candidateId, seq);
     }
   }
   return merged;
@@ -126,8 +126,8 @@ function mergedCursors(connection: RunConnection): Map<string, number> {
  */
 function satisfiedByOpenCursors(connection: RunConnection, sink: RunStreamSink): boolean {
   if (connection.opened === null) return true;
-  for (const [rowId, seq] of sink.cursors ?? []) {
-    const opened = connection.opened.get(rowId);
+  for (const [candidateId, seq] of sink.cursors ?? []) {
+    const opened = connection.opened.get(candidateId);
     if (opened === undefined || opened > seq) return false;
   }
   return true;

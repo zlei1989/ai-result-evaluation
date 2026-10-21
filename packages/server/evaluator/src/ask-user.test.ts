@@ -46,7 +46,7 @@ function register(patch: Partial<RegisterAskUserInput> = {}): PendingAskHandle {
   return registerAskUser({
     askId: 'ask-1',
     runId: 'run-1',
-    rowId: 'row-1',
+    candidateId: 'candidate-1',
     stage: 'agent',
     request: { questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call-1', vendorBudgetMs: null, subagentId: null },
     ...patch,
@@ -93,7 +93,7 @@ describe('挂起表', () => {
       {
         askId: 'ask-1',
         runId: 'run-1',
-        rowId: 'row-1',
+        candidateId: 'candidate-1',
         stage: 'agent',
         questions: [QUESTION],
         askedAt: expect.any(String),
@@ -186,7 +186,7 @@ describe('挂起表', () => {
     });
   });
 
-  it('行终止 ⇒ 这一问落「随轮次取消」并出表（不是静默悬挂）', async () => {
+  it('候选终止 ⇒ 这一问落「随本轮取消」并出表（不是静默悬挂）', async () => {
     const controller = new AbortController();
     const handle = register({ signal: controller.signal });
 
@@ -231,7 +231,7 @@ describe('挂起表', () => {
     resolveAskUser('ask-1', [ANSWER]);
     expect(seen).toHaveLength(2);
 
-    // 取消那一路（超时 / 行终止走的是同一个 settle）：登记一次、收场一次
+    // 取消那一路（超时 / 候选终止走的是同一个 settle）：登记一次、收场一次
     register({ askId: 'ask-2' }).settle('canceled');
     expect(seen).toHaveLength(4);
   });
@@ -278,7 +278,7 @@ describe('挂起表', () => {
     const handle = reloaded.registerAskUser({
       askId: 'ask-after-hmr',
       runId: 'run-1',
-      rowId: 'row-1',
+      candidateId: 'candidate-1',
       stage: 'agent',
       request: { questions: [QUESTION], toolName: 'AskUserQuestion', callId: 'call-1', vendorBudgetMs: null, subagentId: null },
     });

@@ -53,7 +53,7 @@ describe('成功', () => {
       <McpProbeResultView
         outcome={{
           kind: 'result',
-          result: { ...SUCCESS, notes: ['候选执行时首次启动还要在本行环境里下载依赖', '已停用，不会注入'] },
+          result: { ...SUCCESS, notes: ['候选执行时首次启动还要在候选环境里下载依赖', '已停用，不会注入'] },
         }}
       />,
     );

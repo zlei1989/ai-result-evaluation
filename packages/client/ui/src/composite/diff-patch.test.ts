@@ -148,7 +148,7 @@ describe('reconstructSides', () => {
     expect(old).toContain('a');
   });
 
-  it('纯插入（hunk 两侧行数不同）也能对齐', () => {
+  it('纯插入（hunk 两侧候选数不同）也能对齐', () => {
     const insert = [
       'diff --git a/m.ts b/m.ts',
       '--- a/m.ts',
@@ -163,7 +163,7 @@ describe('reconstructSides', () => {
 
     const { old, next } = lines(insert);
 
-    // 两侧行数**可以不同**（组件是把两个字符串重新 diff，不是按下标逐行比）：
+    // 两侧候选数**可以不同**（组件是把两个字符串重新 diff，不是按下标逐行比）：
     // 新侧多一行，旧侧没有补空串
     expect(old).toHaveLength(3);
     expect(next).toHaveLength(4);
@@ -177,12 +177,12 @@ describe('reconstructSides', () => {
 
   /**   * **本文件最重要的一条**。
    *
-   * 把短的一侧补空串到等长，理由是「行数不同会让组件按序比较时错位」——
+   * 把短的一侧补空串到等长，理由是「候选数不同会让组件按序比较时错位」——
    * 这个理由是**错的**：组件不按下标比较，而是把两个字符串**重新做一次 diff**。
    * 补空串会让两侧**结尾不同**（一侧以 `\n` 收尾、另一侧以内容收尾），jsdiff 于是重新配对尾部，
    * 把**未修改的行也画成改动**。
    *
-   * 症状是「看起来对、其实多了几行红绿」——只有断言最终 diff 的行数才能发现，
+   * 症状是「看起来对、其实多了几行红绿」——只有断言最终 diff 的候选数才能发现，
    * 所以这里直接用**组件所用的同一次调用**来钉：真实补丁 +3/−1 就必须得到 removed=1 added=3。
    */
   it('还原出的两侧喂给组件真正用的那次 diff，得到的增删行数必须与补丁完全一致（不许有假红绿行）', async () => {
@@ -194,7 +194,7 @@ describe('reconstructSides', () => {
       '+++ b/x/FileChangeLogItemDTO.java',
       '@@ -12,6 +12,7 @@ package com.likecode.example.export.dto;',
       '  * @param lineTotalNum 文件总行数',
-      '  * @param lineGenNum   AI 生成行数',
+      '  * @param lineGenNum   AI 生成候选数',
       '  * @param aiCodeRatio  AI 代码占比，百分比字符串，两位小数',
       '+ * @param agent        Agent 标识（ES agent）；旧文档可能为 null',
       '  */',

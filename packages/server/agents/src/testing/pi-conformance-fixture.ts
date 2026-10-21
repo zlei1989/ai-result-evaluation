@@ -245,14 +245,14 @@ export function piMcpProbeServers(): McpServers {
   };
 }
 
-/** 一棵行目录：`configHome` 与 `cwd` 各一份（技能与凭据都往 `configHome` 落，共用会让场景互相泄漏） */
-export interface PiRowLayout {
+/** 一棵本次运行目录：`configHome` 与 `cwd` 各一份（技能与凭据都往 `configHome` 落，共用会让场景互相泄漏） */
+export interface PiCandidateLayout {
   root: string;
   cwd: string;
   configHome: string;
 }
 
-export function createPiRowLayout(prefix = 'pi-conformance-'): PiRowLayout {
+export function createPiCandidateLayout(prefix = 'pi-conformance-'): PiCandidateLayout {
   const root = mkdtempSync(join(tmpdir(), prefix));
   const cwd = join(root, 'workspace');
   const configHome = join(root, '.agenthome');
@@ -262,7 +262,7 @@ export function createPiRowLayout(prefix = 'pi-conformance-'): PiRowLayout {
 
 /**
  * 造一条技能的**源目录**（物化的来源，不是物化结果）：`input.skills` 要的是「名字 + 源目录」，
- * 落到本行的是 `materializeSkills` 复制出来的那一份。
+ * 落到本次运行的是 `materializeSkills` 复制出来的那一份。
  */
 export function writeSkillSource(root: string, name: string, body: string): { name: string; sourceDir: string } {
   const sourceDir = join(root, name);
@@ -305,7 +305,7 @@ export interface PiConformanceOptions {
   apiKey?: string;
   /**
    * 提问回调：给不给它决定这一轮有没有应答面（不给 ⇒ 适配器一个钩子都不挂、一个工具都不注册）。
-   * 提问应答场景要拿同一行跑两次（带 / 不带），差别只在这一格。
+   * 提问应答场景要拿同一本次运行跑两次（带 / 不带），差别只在这一格。
    *
    * 提问工具只装在全权限档，故只读档 + 这一格非空 = 工具面里没有它（这条也是判据）。
    */
@@ -315,11 +315,11 @@ export interface PiConformanceOptions {
 /**
  * 跑一行：真装配、真出站、真工具执行，只把**厂商那一端**换成假网关。
  *
- * 产物按套件的形状收齐（消息 / 子任务 / 行级事件 / 用量 / 结果），并附上请求侧事实。
+ * 产物按套件的形状收齐（消息 / 子任务 / 运行级事件 / 用量 / 结果），并附上请求侧事实。
  * 临时目录在返回前删掉：产物里不留任何路径依赖（技能那一条的落点从请求里读，不从盘上读）。
  */
-export async function runPiConformanceRow(options: PiConformanceOptions): Promise<PiConformanceRun> {
-  const layout = createPiRowLayout();
+export async function runPiConformanceCandidate(options: PiConformanceOptions): Promise<PiConformanceRun> {
+  const layout = createPiCandidateLayout();
   options.cwdSetup?.(layout.cwd);
   const gateway = await startPiScriptedGateway(options.script, {
     ...(options.hang === undefined ? {} : { hang: options.hang }),
@@ -489,9 +489,9 @@ async function installDisposalCounter(): Promise<DisposalCounter> {
                *
                * `extensionRunner` **刻意不转发**：转发之后释放链里补发的那一发 `session_shutdown`
                * 会真的执行，而扩展是**进程级单例**——同一个文件里先跑过一条走释放的行之后，
-               * 后续行的子任务正文通道就退化成转写补录（实测：`子任务正文` 那两条用例由 `wire`
-               * 变成 `session-file`、逐字增量归零）。那是一个**待定位的真问题**（跨行的扩展单例被
-               * 上一行的释放带走？），不该由夹具顺手掩盖：这里保持缺席，让「补发那一发」的验收留在
+               * 后续本次运行的子任务正文通道就退化成转写补录（实测：`子任务正文` 那两条用例由 `wire`
+               * 变成 `session-file`、逐字增量归零）。那是一个**待定位的真问题**（跨本次运行的扩展单例被
+               * 上一本次运行的释放带走？），不该由夹具顺手掩盖：这里保持缺席，让「补发那一发」的验收留在
                * 能观测它的探针里，而不是让整套一致性套件的读数被它改写。
                */
               get sessionId() {
@@ -639,7 +639,7 @@ async function runWithGateway(
   gateway: PiScriptedGateway,
   options: { signal?: AbortSignal; outputSchema?: unknown },
 ): Promise<AgentRunResult> {
-  const layout = createPiRowLayout('pi-lifecycle-');
+  const layout = createPiCandidateLayout('pi-lifecycle-');
   try {
     return await piProvider.run({
       ...createRunInput({ cwd: layout.cwd, configHome: layout.configHome }),

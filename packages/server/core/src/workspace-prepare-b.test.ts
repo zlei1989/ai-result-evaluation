@@ -14,8 +14,8 @@ import {
   writeFileSync,
   join,
   getConfigDir,
-  prepareRowWorkspace,
-  rowWorkspaceDir,
+  prepareCandidateWorkspace,
+  candidateWorkspaceDir,
   registerWorkspaceHooks,
 } from './testing/workspace-harness';
 
@@ -23,7 +23,7 @@ import {
 
 registerWorkspaceHooks();
 
-describe('prepareRowWorkspace', () => {
+describe('prepareCandidateWorkspace', () => {
   it('commitHash 为 null 时跟随来源仓库的新 tip（克隆一次不把「默认分支 HEAD」冻结在克隆那一刻）', () => {
     const { dir } = makeRepo();
     const input = {
@@ -31,11 +31,11 @@ describe('prepareRowWorkspace', () => {
       caseId: 'c-7',
       repoPath: dir,
       runId: 'run-7',
-      rowId: 'row-7',
+      candidateId: 'candidate-7',
       commitHash: null,
-      branch: 'test/row-7',
+      branch: 'test/candidate-7',
     };
-    const first = prepareRowWorkspace(input);
+    const first = prepareCandidateWorkspace(input);
 
     // 来源仓库在缓存建立之后前移（用户又提交了一次）
     writeFileSync(join(dir, 'later.txt'), 'later\n', 'utf8');
@@ -43,17 +43,17 @@ describe('prepareRowWorkspace', () => {
     git(dir, 'commit', '-q', '-m', '来源仓库前移');
     const tip = git(dir, 'rev-parse', 'HEAD').trim();
 
-    const second = prepareRowWorkspace(input);
+    const second = prepareCandidateWorkspace(input);
     // 基线跟着来源走，工作区里能看见新提交带来的文件——否则这一轮会静默评测一份旧代码
     expect(second.baselineCommit).toBe(tip);
     expect(second.baselineCommit).not.toBe(first.baselineCommit);
     expect(existsSync(join(second.workspacePath, 'later.txt'))).toBe(true);
   });
-  it('两行的目录互不相同（串行模式下也各自独立，防回归）', () => {
+  it('两个候选的目录互不相同（串行模式下也各自独立，防回归）', () => {
     const { dir } = makeRepo();
     const base = { workspaceRoot: root, caseId: 'c-4', repoPath: dir, commitHash: null };
-    const a = prepareRowWorkspace({ ...base, runId: 'run-4', rowId: 'row-a', branch: 'test/row-a' });
-    const b = prepareRowWorkspace({ ...base, runId: 'run-4', rowId: 'row-b', branch: 'test/row-b' });
+    const a = prepareCandidateWorkspace({ ...base, runId: 'run-4', candidateId: 'candidate-a', branch: 'test/candidate-a' });
+    const b = prepareCandidateWorkspace({ ...base, runId: 'run-4', candidateId: 'candidate-b', branch: 'test/candidate-b' });
     expect(a.workspacePath).not.toBe(b.workspacePath);
     expect(a.agentHome).not.toBe(b.agentHome);
     // 在 A 里写文件，B 必须看不见
@@ -64,20 +64,20 @@ describe('prepareRowWorkspace', () => {
     const { dir } = makeRepo();
     let caught: unknown;
     try {
-      prepareRowWorkspace({
+      prepareCandidateWorkspace({
         workspaceRoot: root,
         caseId: 'c-5',
         repoPath: dir,
         runId: 'run-5',
-        rowId: 'row-5',
+        candidateId: 'candidate-5',
         commitHash: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
-        branch: 'test/row-5',
+        branch: 'test/candidate-5',
       });
     } catch (error) {
       caught = error;
     }
     expect((caught as { code?: unknown }).code).toBe('INVALID_REF');
-    expect(existsSync(join(rowWorkspaceDir(root, 'run-5', 'row-5'), '.git'))).toBe(false);
+    expect(existsSync(join(candidateWorkspaceDir(root, 'run-5', 'candidate-5'), '.git'))).toBe(false);
   });
   it('配置目录指针生效（本模块不读配置，这条是护栏）', () => {
     expect(getConfigDir()).toBe(configDir);

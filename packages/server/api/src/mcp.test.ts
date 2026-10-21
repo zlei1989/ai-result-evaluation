@@ -161,7 +161,7 @@ const STDIO_OK = {
   teardown: 'stdin-eof' as const,
 };
 
-/** 断言失败形状的三段（省得每条用例各写三行） */
+/** 断言失败形状的三段（省得每条用例各写三个候选） */
 function failureOf(result: McpProbeResult): { tier: string; message: string; vendorText: string } {
   if (result.failure === undefined) throw new Error(`期望失败，实际 ok=${String(result.ok)}`);
   return result.failure;
@@ -677,7 +677,7 @@ describe('补充说明与占位符', () => {
 });
 
 describe('同一时刻只允许一个探活', () => {
-  it('两次并发探活串行执行，绝不重叠（宿主侧并发是唯一会撞 profile 的组合）', async () => {
+  it('两次并发探活串行的执行，绝不重叠（宿主侧并发是唯一会撞 profile 的组合）', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
     const order: string[] = [];

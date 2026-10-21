@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * 远端来源的行准备（core 只见本地路径）（切分后的第二块）
+ * 远端来源的候选准备（core 只见本地路径）（切分后的第二块）
  *
- * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：远端来源的行准备（core 只见本地路径）。
+ * 本文件是 `orchestrator.test.ts` 拆分后的一块，覆盖：远端来源的候选准备（core 只见本地路径）。
  * 共享夹具、假适配器接缝与 `until` 等待器都在 `./testing/orchestrator-harness`——
  * 那里也写明了**为什么三条 `vi.mock` 必须在每个文件里逐字重复**（vitest 的前置提升只作用于本文件）。
  */
@@ -36,7 +36,7 @@ vi.mock('./run-store', async (importOriginal) => {
 
 registerOrchestratorHooks();
 
-describe('远端来源的行准备（core 只见本地路径）', { timeout: REMOTE_FIXTURE_TIMEOUT_MS }, () => {
+describe('远端来源的候选准备（core 只见本地路径）', { timeout: REMOTE_FIXTURE_TIMEOUT_MS }, () => {
   it('钉死 commit 时分支不参与解析（commit 优先于分支）', async () => {
     // 远端要有**两个**提交：钉死第一个、分支指向第二个。两者相同时这条用例没有区分力
     //（「分支赢过 commit」的错误实现会拿到同一个 hash，照样绿）。
@@ -52,7 +52,7 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
     expect(pinned).not.toBe(tip);
 
     const { run } = seedRunnableRun({
-      rowCount: 1,
+      candidateCount: 1,
       executionMode: 'parallel',
       repoPath: url,
       commitHash: pinned,
@@ -61,16 +61,16 @@ describe('远端来源的行准备（core 只见本地路径）', { timeout: REM
     startRun(run.id);
     await drainRunningTasks();
 
-    const row = getRun(run.id).rows[0]!;
-    expect(row.status).toBe('judged');
-    expect(row.baselineCommit).toBe(pinned);
-    expect(row.baselineCommit).not.toBe(tip);
+    const candidate = getRun(run.id).candidates[0]!;
+    expect(candidate.status).toBe('judged');
+    expect(candidate.baselineCommit).toBe(pinned);
+    expect(candidate.baselineCommit).not.toBe(tip);
   });
   it('镜像目录不会被评测列表当成一轮评测', async () => {
     const origin = makeBareRemote('remote-listrun');
 
     const { run } = seedRunnableRun({
-      rowCount: 1,
+      candidateCount: 1,
       executionMode: 'parallel',
       repoPath: origin.url,
       commitHash: null,

@@ -1,6 +1,6 @@
 /**
  * pi 的**消息归一**：把 `session.subscribe` 的原始载荷折成统一的 `AgentMessage`。
- * 事件投影在 `events.ts`（行级审计、计量、轮次与失败），本文件只管内容级视图。
+ * 事件投影在 `events.ts`（运行级审计、计量、轮次与失败），本文件只管内容级视图。
  *
  * 取值路径（都是进程内事件对象，字段名取自厂商的 `.d.ts`）：
  *   · **助手消息**：`message_end.message`（`AssistantMessage`）——`content[]` 三种块
@@ -68,7 +68,7 @@ export function snapshotPiPayload(value: unknown): unknown {
  *     ⇒ 三格相加时**不许**把它并进 `output`（并了就是双计，而症状是「这家 tok 偏大」）；
  *   · `totalTokens` → `total`（厂商自报原文，不参与本仓的恒等式）；
  *   · `cacheWrite` / `cacheWrite1h` / `cost`：契约里没有对应的格，**丢弃**——
- *     钱的账本不在本仓（行级成本这一格不存在）。
+ *     钱的账本不在本仓（运行级成本这一格不存在）。
  *
  * 三格（`input` / `cacheRead` / `output`）缺任何一项就是 `null`（**不填 0**）：
  * 「没采到」与「确实是 0」在界面上是两句不同的话。两个可选格读不到同样是 `null`。
@@ -279,7 +279,7 @@ export function piAssistantMessageDraft(message: unknown, roundTrip: number): Me
  *   · `*_start` / `*_end` 只是块的边界（`*_end` 的 `content` 与快照重复）；
  *   · `start` / `done` / `error` 是流级帧，用量与失败都由 `message_end` 那条权威快照承载。
  *
- * ⚠️ 本函数**只产消息、不产行级事件**：一条增量一行 `log` 会把「原始输出」面板刷成 JSON 流水，
+ * ⚠️ 本函数**只产消息、不产运行级事件**：一条增量一行 `log` 会把「原始输出」面板刷成 JSON 流水，
  * 而那正是「未识别负载落兜底」那条路最贵的一种回归。
  *
  * ⚠️ `raw` **只留这一帧的增量**，不复制厂商帧里的 `partial`：`partial` 是「到目前为止的整条助手
@@ -336,7 +336,7 @@ export function piToolResultText(event: unknown): string {
  *   · `roundTrip` 取**当前已数到的往返号**：工具是那次调用的后续，不新起一轮
  *     （新的一轮由紧随其后的 `turn_start` 开）。
  *
- * `structured` 取 `result.details`（厂商自定义载荷；`read` 给行数、`edit` 给 diff 那一类），
+ * `structured` 取 `result.details`（厂商自定义载荷；`read` 给本次运行数、`edit` 给 diff 那一类），
  * 没有再退到 `structuredContent`，都没有就是 `null`——**不填 `{}`**（「没采到」与「空对象」不同）。
  */
 export function piToolResultMessageDraft(event: unknown, roundTrip: number): MessageDraft | null {

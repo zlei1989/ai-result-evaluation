@@ -8,7 +8,7 @@
  *   · 提示词没有厂商来源，三格全是我们自己写的（见 `ASK_USER_DESCRIPTION` / `promptSnippet` /
  *     `promptGuidelines`）——「什么时候该问」只能写在 `promptGuidelines` 里，`description` 描述能力；
  *   · 工具名落进既有的 `ask-user` 族（`tool-family.ts` 的 `ask_user_question`），于是族载荷归一、
- *     卡片与七态全部复用，族表一行都不用改；它同时与 pi 的全部内置工具名（`read` / `bash` /
+ *     卡片与七态全部复用，族表一本次运行都不用改；它同时与 pi 的全部内置工具名（`read` / `bash` /
  *     `powershell` / `edit` / `write` / `grep` / `find` / `ls`）以及本仓装进来的子智能体那三件都不撞；
  *   · 等待预算没有厂商那一格（`vendorBudgetMs` 恒 `null`），超时只由骨架的预算产生。
  */
@@ -152,10 +152,10 @@ export function renderPiAskUserAnswer(reply: AskUserReply, questions: AskUserQue
  * `execute` 的三条处置：
  *   · 等的是**骨架的提问端口**，不是 `ctx.ui`——本仓没给 `uiContext`，厂商会回落成
  *     `noOpUIContext`，`ctx.ui.input()` 静默返回 `undefined`（看起来像「用户没答」）；
- *   · 端口**不抛**（超时 / 行终止 / 回调抛错都折成答复），所以这里不 catch；答复映射成一条**普通
+ *   · 端口**不抛**（超时 / 本次运行终止 / 回调抛错都折成答复），所以这里不 catch；答复映射成一条**普通
  *     工具结果**：`content` 是模型读的那段文本，`details` 是界面/日志看的结构化那一份；
  *   · **刻意不给 `terminate`**：它会让「答完继续干活」变成「答完就停」（提问只是这一轮里的一件事）。
- *     「没人答」也不置 `isError`：那是正常收场，不是这一行失败。
+ *     「没人答」也不置 `isError`：那是正常收场，不是本次运行失败。
  */
 export function buildPiAskUserTools(
   ask: ((params: PiAskUserParams, callId: string) => Promise<AskUserReply>) | null,

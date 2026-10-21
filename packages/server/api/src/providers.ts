@@ -210,7 +210,7 @@ export function removeProviderModel(providerId: string, modelId: string): Provid
 }
 
 /**
- * 设置某条模型的窗口 / 输出上限（设置页的行内编辑器）。三条口径：
+ * 设置某条模型的窗口 / 输出上限（设置页的候选内编辑器）。三条口径：
  *   ① 按 `{ id, source }` **重建**该条目，只写回 `contextWindow` / `maxOutputTokens` /
  *      `contextWindowSource` 三格——**该条目已声明的 `supportedEfforts` / `recommendedEffort` 会被一并清掉**
  *      （重建的代价：保存一次窗口就退回该家完整档位域；想要保留就得在这里显式带过来，
@@ -246,7 +246,7 @@ export function setProviderModelContext(providerId: string, input: ProviderModel
  * 全部可选的评分模型（**两种协议都要**）：评分模型只被**文本调用**
  *（智能体评分通路复用的也是这一对，协议匹配由「默认评分智能体」那一格反向约束），
  * 因此 anthropic 协议的模型与 openai 协议的一样可选 —— 这里刻意不做协议过滤。
- * 消费方是服务端（用例表单的候选池、评测行的校验）；设置页的 Select 直接由 `ProviderView[]`
+ * 消费方是服务端（用例表单的候选池、评测候选的校验）；设置页的 Select 直接由 `ProviderView[]`
  * 在前端派生，不为本函数开 HTTP 路由。
  */
 export function listAllModelOptions(): {

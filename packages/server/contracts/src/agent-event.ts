@@ -1,5 +1,5 @@
 /**
- * 每候选行事件日志的一条。
+ * 每个候选事件日志的一条。
  * 三个必须成立的口径：
  *   1. 形状由**本项目**定义：不复用任何厂商 SDK 的消息形状，
  *      否则日志格式会随厂商版本漂移，还会把「本项目根本不消费的内容类型」当兼容包袱带上；
@@ -9,9 +9,9 @@
  *      报错会带上「哪个 type 的哪个字段不对」，排查坏日志时这是唯一有用的信息。
  */
 import { z } from 'zod';
-// `EvalRowStatusSchema` 给 status 事件；`RowMcpChannelSchema` 给 `vendor-system.mcpChannel`
-// （同一份「通道」值域，与行级观测格的 `judgedBy` 同源派生——各写一份枚举必然漂移）
-import { EvalRowStatusSchema, RowMcpChannelSchema } from './run';
+// `EvalCandidateStatusSchema` 给 status 事件；`CandidateMcpChannelSchema` 给 `vendor-system.mcpChannel`
+// （同一份「通道」值域，与候选级观测格的 `judgedBy` 同源派生——各写一份枚举必然漂移）
+import { EvalCandidateStatusSchema, CandidateMcpChannelSchema } from './run';
 import { ScoreResultSchema } from './score';
 // `VendorSkillSchema` 给 `vendor-system.skills`（厂商当时看见了哪几条技能）
 import { VendorSkillSchema } from './skill';
@@ -178,8 +178,8 @@ export function normalizeMcpServers(value: unknown): McpServerEntry[] | null {
 }
 
 export const AgentEventSchema = z.discriminatedUnion('type', [
-  /** 行状态变更：与 EvalRow.status 同一套词，1:1 映射 */
-  z.object({ ...baseFields, type: z.literal('status'), status: EvalRowStatusSchema }),
+  /** 候选状态变更：与 EvalCandidate.status 同一套词，1:1 映射 */
+  z.object({ ...baseFields, type: z.literal('status'), status: EvalCandidateStatusSchema }),
   /**
    * 一行日志：stdout / stderr 分流；适配器未识别的事件也要投影成一条 log 而不是丢弃。
    *
@@ -210,8 +210,8 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
    *
    * **六格各自可空**：`null` = 这一格厂商没投送到我们能读的通道（`not-exposed`），
    * **不是空数组**——`[]` 的含义是「采到了，确实是空的」，两者在界面上是两句不同的话
-   * （「没投送」vs「一个都没有」）。整条事件**只在厂商真的投送了这一行时才有**：
-   * 没有这一行的那一家（codex / dsh 都没有 `system/init`）**不发这条事件**，
+   * （「没投送」vs「一个都没有」）。整条事件**只在厂商真的投送了这个候选时才有**：
+   * 没有这个候选的那一家（codex / dsh 都没有 `system/init`）**不发这条事件**，
    * 消费方据此整组走 `not-exposed`，而不是显示成一堆空值。
    */
   z.object({
@@ -241,7 +241,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     /**
      * 这一条里的 MCP 事实是从**哪个通道**读到的（三家各一格）。
      *
-     * 为什么要由事件自报：行级观测格的四个结论有一半来自形状，而**同一个形状在不同通道上读法相反**
+     * 为什么要由事件自报：候选级观测格的四个结论有一半来自形状，而**同一个形状在不同通道上读法相反**
      * ——「工具表里没有这一台」在 claude / codex 上是「不判失败」，在 dsh 上**就是判失败**
      * （它起不来时工具静默消失、会话照常跑完、没有任何结构化错误）。让事件自报通道之后，
      * 推导不必按厂商名去查一张静态表（声明与实际读到的东西会各自漂移），`events.jsonl` 也自证得清。
@@ -249,7 +249,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      * `.optional()`：早期落盘的 claude 事件里没有这一格，写成必填会让它整行解析失败
      * （同上面 `mcpServers` 的历史兼容）。缺格按 `'vendor-status'` 处置——那是当时唯一存在的通道。
      */
-    mcpChannel: RowMcpChannelSchema.nullable().optional(),
+    mcpChannel: CandidateMcpChannelSchema.nullable().optional(),
     /** 厂商回显的权限档（真机 `bypassPermissions` 逐字）：**它比本仓那份常量更可信**，见环境抽屉 */
     permissionMode: z.string().nullable(),
     outputStyle: z.string().nullable(),
@@ -262,7 +262,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      *   · **`[]`** = 投送了，确实一条都没有；
      *   · 非空 = 逐条 `{name, source, path, origin}`。
      *
-     * 与行级 `EvalRow.skillInstall` 的分工：这一格是**厂商原话**（含不是我们装的那些），
+     * 与候选级 `EvalCandidate.skillInstall` 的分工：这一格是**厂商原话**（含不是我们装的那些），
      * 那一格是「我们装的哪几条、凭什么」。
      *
      * `.optional()`：早期落盘的 `vendor-system` 事件里没有这一格，写成必填会让它整行解析失败
@@ -288,7 +288,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     type: z.literal('usage'),
     /**
      * **这一格的累计口径跟着 `turn` 走**（与 `turn` 那一格成对）：
-     *   · `turn` 缺省 / 显式 `null` / `turn.subagentId === null`（**主会话读数**）⇒ 它是**本行**的累计
+     *   · `turn` 缺省 / 显式 `null` / `turn.subagentId === null`（**主会话读数**）⇒ 它是**候选**的累计
      *     快照（覆盖语义：每见一次新读数就发一条带累计值的快照）；
      *   · `turn.subagentId` **非空**（**子会话读数**）⇒ 它是**那个子会话自己的**累计（前 k 轮之和，
      *     k = `turn.round`；累计 ⇒ 单调不减 ⇒ 每轮都成为里程碑）。
@@ -298,7 +298,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      * 说得清的、也不编那一份说不清的。
      *
      * ⚠️ 因此**不许**拿「`tokens` − `subagentTokens`」去反推带会话身份那一条里的主会话：那个减法
-     * 只在**主会话读数**上成立（`subagentTokens` 是**行级**分量，与「这个会话花了多少」不是一把尺子）。
+     * 只在**主会话读数**上成立（`subagentTokens` 是**候选级**分量，与「这个会话花了多少」不是一把尺子）。
      * ⚠️ 这一点与 dsh **不同**（dsh 的子会话读数给的是**全树**累计）——是**已知差异**，跨家比这一格
      * 之前先看 `turn`。
      */
@@ -358,16 +358,16 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      * `subagentId` = 会话身份（`null` = 主会话，与 `SubagentRecord.subagentId` / `LogTurn.subagentId`
      * 同一套 id），`round` = **该会话自己的**第几次模型往返（每会话各自 1..N）。
      *
-     * ⚠️ 与同一对象里那个 `turns`（**必填**、本行累计轮次、服务进度条与 `EvalRow.turns`）
-     * **不是一回事**，两者不得互相顶替：`turns` 回答「这一行跑到第几轮了」（行尺度），
+     * ⚠️ 与同一对象里那个 `turns`（**必填**、候选累计轮次、服务进度条与 `EvalCandidate.turns`）
+     * **不是一回事**，两者不得互相顶替：`turns` 回答「这个候选跑到第几轮了」（行尺度），
      * 这一格回答「这一条读数发生在哪一轮」（会话尺度）。界面按它把「用量 … 轮次 N」放回**它自己那一轮**；
      * 只按 `turns` 放会得到「里程碑全挤在最后一轮」。
      *
      * ⚠️ **读数的口径跟着这一格走**：`subagentId === null` 的那一条是**主会话**的读数
-     * （`tokens` = 本行累计）；`subagentId` **非空**的那一条是**那个子会话自己**的读数（`tokens` = 该会话
+     * （`tokens` = 候选累计）；`subagentId` **非空**的那一条是**那个子会话自己**的读数（`tokens` = 该会话
      * 自己的累计，见 `tokens` 那一格的注释）——**别把两者放进同一条累计序列**（那正是真机那次
      * 「子任务的用量写到主会话里了」的形状）。界面按这一格**分桶**比较：每个会话只与自己的上一条比。
-     * 同一对象里的 `subagentTokens` / `subagentTurns` 则**恒是行级分量**（不随这一格变），不要用它去反推
+     * 同一对象里的 `subagentTokens` / `subagentTurns` 则**恒是候选级分量**（不随这一格变），不要用它去反推
      * 带会话身份那一条的「主会话那一份」。
      *
      * 为什么整格可选（与 `timing` 同一条处置，**不是** `subagentTokens` 那种三态）：
@@ -386,7 +386,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
      * 这一轮的时间数据（2026-10-XX 新增）。**整格可选且可空**：采不到就是「没有这一格」或
      * 显式的 `null`，一个 0 都不许编（`totalMs: 0` 会被读成「瞬间跑完」，与「没采到」含义相反，
      * 正是那条硬口径要防的）。
-     * 为什么**可缺**而不是必填可空：磁盘上已有的历史 `usage` 行里没有这一格，写成必填会让
+     * 为什么**可缺**而不是必填可空：磁盘上已有的历史 `usage` 候选里没有这一格，写成必填会让
      * 所有老日志在回放 / SSE 续订时**成片解析失败**（`log.summary` 当初放宽成可选是同一条理由）。
      * 今天新写的事件一律带它（`null` 表示未采集）——见 agents 的 `emit.ts` 里那一格是必填的草稿。
      *
@@ -427,13 +427,13 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     truncated: z.boolean(),
   }),
   /**
-   * **一次提问的收场**（编排层写的行级观测事件）：模型问了人，这一问最后怎么结束的。
+   * **一次提问的收场**（编排层写的候选级观测事件）：模型问了人，这一问最后怎么结束的。
    *
    * 为什么必须单列一条事件、而不是让消费方去读消息账本：账本那一半（`tool-result` 块的
-   * `structured`）回答的是「答案是什么」，这一条回答的是**这一行被人介入过、代价是多少**——
+   * `structured`）回答的是「答案是什么」，这一条回答的是**这个候选被人介入过、代价是多少**——
    * 收场方式（七态里到底是「有人答」还是六种「没人答」）、等待时长、提问工具来自谁。
-   * 三者都是**行级**事实（一行可以问很多次，时间轴上它们各自是一条刻度），
-   * 而账本按 `mergeKey` 折叠、按轮次分组，事后想回答「这一行一共问了几次、各等了多久」
+   * 三者都是**候选级**事实（一行可以问很多次，时间轴上它们各自是一条刻度），
+   * 而账本按 `mergeKey` 折叠、按轮次分组，事后想回答「这个候选一共问了几次、各等了多久」
    * 得把消息流翻一遍再自己拼——那正是这一格要省掉的活。
    *
    * 与账本的**同一份事实、两处落点**（不是第二份真相）：`askId` / `callId` 是两者的连接键，
@@ -461,7 +461,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     waitedMs: z.number().int().nonnegative(),
   }),
   /**
-   * **一条人工消息的落点**（编排层写的行级观测事件）：人往运行中的一轮送的那句话，最后去了哪里。
+   * **一条人工消息的落点**（编排层写的候选级观测事件）：人往运行中的一轮送的那句话，最后去了哪里。
    *
    * 为什么必须单列一条事件、而不是只落消息账本：账本那一半（`origin: 'human'` 的 `user` 消息）
    * 只在**真的交给厂商那一刻**才写，而「投不进去被丢弃」「等太久按预算收场」「撤回来了」三件事
@@ -473,7 +473,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
    * 读侧不许用一条去校验另一条。
    *
    * `reason` 与 `outcome` **成对**：`delivered` / `retracted` 两态是「事情按预期发生了」，
-   * 没有原因可写（`null`）；另外三态（已被模型吃掉 / 行收场时丢弃 / 等太久丢弃）必须给一句
+   * 没有原因可写（`null`）；另外三态（已被模型吃掉 / 候选收场时丢弃 / 等太久丢弃）必须给一句
    * **可直接展示的中文**——`discarded` 与 `timed-out` 在界面上是两句不同的话，靠 `outcome` 分开、
    * 靠 `reason` 说细。这条配对不写进 schema：加了 `superRefine` 的成员不能再进 `discriminatedUnion`
    * （见 `ToolCallPayloadSchema` 的头注），故由产出方的类型联合保证（见 `evaluator` 的落盘端）。

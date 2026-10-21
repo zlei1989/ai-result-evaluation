@@ -5,8 +5,8 @@
  * 孙进程原地存活。而厂商 CLI 会在自己内部 spawn 一串网络子进程——codex 0.156.1 每次
  * `thread/start` 都去同步 `https://github.com/openai/plugins.git`（`core-plugins/src/startup_sync.rs`），
  * 链路是 `codex.exe → git.exe → git.exe → git remote-https → git-remote-https.exe`。
- * 这些孙进程**继承了父进程的句柄**（它们的命令行里连 `CODEX_HOME` 都不出现），于是父进程一死，
- * 它们继续持着该行的厂商配置目录（`.agenthome` / `.judgehome`）。
+ * 这些孙进程**继承了父进程的句柄**（它们的命令本次运行里连 `CODEX_HOME` 都不出现），于是父进程一死，
+ * 它们继续持着本次运行的厂商配置目录（`.agenthome` / `.judgehome`）。
  *
  * 后果是**跨轮次**的：下一轮的行产物清理要删那个目录，Windows 拒绝（目录树里有活进程的句柄/工作目录）
  * ⇒ `rmSync` 抛 `EPERM`。真机探针（`probe/v7/codex-plugins-sync.mjs`）四格对照：

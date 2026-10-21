@@ -5,7 +5,7 @@
  * 三条口径决定了本文件怎么搭：
  *   1. **队列表与运行快照都用真的**（不 mock `@aieval/evaluator`）——「幂等」「撤回分派」「改期单向」
  *      这些结论的正确性一半在表里，用一份假表断言等于把要测的东西换成自己的假设。快照真落盘
- *      （`saveRun` 写进临时工作区根），撤回那条路顺带把行级事件也真的写出来（它按 `run.json`
+ *      （`saveRun` 写进临时工作区根），撤回那条路顺带把候选级事件也真的写出来（它按 `run.json`
  *      解析这一轮的根，假的快照会让它报一条 ERROR——那种噪声会盖住真的问题）。
  *   2. **附件落到真实磁盘**（临时目录）：判据是「盘上真的只多出这一个文件、内容逐字节相等」，
  *      而不是「返回值看起来对」。`run.workspaceBase` 特地与本机设置的根**不一样**，
@@ -43,7 +43,7 @@ import {
   sendInjectMessage,
 } from './inject-messages';
 import { updateSettings } from './settings';
-import { fixtureWorkspaceRoot, makeRow, makeRun } from './testing/run-fixtures';
+import { fixtureWorkspaceRoot, makeCandidate, makeRun } from './testing/run-fixtures';
 import { removeTreeWithRetry } from './testing/cleanup';
 
 let dir: string;
@@ -66,16 +66,16 @@ afterEach(() => {
   removeTreeWithRetry(dir);
 });
 
-/** 造一轮单行评测：**真落盘**（撤回那条路要按 run.json 解析这一轮的根），并返回它 */
+/** 造一轮单个候选评测：**真落盘**（撤回那条路要按 run.json 解析这一轮的根），并返回它 */
 function seedRun(overrides: Partial<EvalRun> = {}): EvalRun {
-  const run = makeRun({ rows: [makeRow()], ...overrides });
+  const run = makeRun({ candidates: [makeCandidate()], ...overrides });
   saveRun(run);
   return run;
 }
 
 /** 一条合法的登记请求 */
 function send(text = '先跑一遍测试', messageId = 'm-1') {
-  return { runId: 'run-1', rowId: 'r-1', messageId, text, attachments: [], requires: 'idle' as const };
+  return { runId: 'run-1', candidateId: 'r-1', messageId, text, attachments: [], requires: 'idle' as const };
 }
 
 /**
@@ -115,17 +115,17 @@ describe('快照（GET 的读侧）', () => {
   it('终态也在快照里：`gone` 那一条带着收场原因回来（界面要说得出「它为什么消失」）', async () => {
     seedRun();
     sendInjectMessage(send());
-    await retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    await retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
     const [entry] = getInjectMessages('run-1', 'r-1');
 
     expect(entry).toMatchObject({ messageId: 'm-1', state: 'gone', outcome: 'retracted' });
   });
 
-  it('轮或行不存在 ⇒ NOT_FOUND（不校验的话，拼错的 rowId 会得到一个「空队列」的假象）', () => {
+  it('轮或行不存在 ⇒ NOT_FOUND（不校验的话，拼错的 candidateId 会得到一个「空队列」的假象）', () => {
     seedRun();
     expect(() => getInjectMessages('run-never', 'r-1')).toThrow(ServiceError);
-    expect(() => getInjectMessages('run-1', 'r-never')).toThrow(/没有这一行/);
+    expect(() => getInjectMessages('run-1', 'r-never')).toThrow(/没有这个候选/);
   });
 });
 
@@ -152,7 +152,7 @@ describe('发送与幂等（messageId 是幂等键）', () => {
 
   it('行不存在 ⇒ NOT_FOUND，且表里一条都不留（不建永远等不到取件的悬挂条目）', () => {
     seedRun();
-    expect(() => sendInjectMessage({ ...send(), rowId: 'r-never' })).toThrow(/没有这一行/);
+    expect(() => sendInjectMessage({ ...send(), candidateId: 'r-never' })).toThrow(/没有这个候选/);
     expect(listQueueEntries('run-1', 'r-never')).toEqual([]);
   });
 
@@ -171,7 +171,7 @@ describe('改期（「立即发送」单向）', () => {
     seedRun();
     sendInjectMessage(send());
 
-    const accepted = promoteInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    const accepted = promoteInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
     expect(accepted).toMatchObject({ outcome: 'promoted', message: { requires: 'round' } });
     expect(listQueueEntries('run-1', 'r-1')[0]?.requires).toBe('round');
@@ -181,20 +181,20 @@ describe('改期（「立即发送」单向）', () => {
     seedRun();
     sendInjectMessage({ ...send(), requires: 'round' });
 
-    expect(promoteInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }).outcome).toBe('already-round');
+    expect(promoteInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }).outcome).toBe('already-round');
   });
 
   it('已经交出去（或已被撤回）的那一条改不了 ⇒ CONFLICT（边界已经用掉了）', async () => {
     seedRun();
     sendInjectMessage(send());
-    await retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    await retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
-    expect(serviceErrorOf(() => promoteInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' })).code).toBe('CONFLICT');
+    expect(serviceErrorOf(() => promoteInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' })).code).toBe('CONFLICT');
   });
 
   it('没有这个 messageId ⇒ NOT_FOUND', () => {
     seedRun();
-    expect(() => promoteInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-never' })).toThrow(/没有这条人工消息/);
+    expect(() => promoteInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-never' })).toThrow(/没有这条人工消息/);
   });
 });
 
@@ -220,7 +220,7 @@ describe('撤回（kind → HTTP）', () => {
     seedRun();
     sendInjectMessage(send());
 
-    const accepted = await retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    const accepted = await retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
     expect(accepted.outcome).toBe('removed');
     expect(listQueueEntries('run-1', 'r-1')[0]).toMatchObject({ state: 'gone', outcome: 'retracted' });
@@ -229,16 +229,16 @@ describe('撤回（kind → HTTP）', () => {
   it('重复撤回 ⇒ already-retracted（`gone` 留在表里正是为了这个：不是 404——那会让客户端以为它从没存在过）', async () => {
     seedRun();
     sendInjectMessage(send());
-    await retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    await retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
-    const again = await retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' });
+    const again = await retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' });
 
     expect(again.outcome).toBe('already-retracted');
   });
 
   it('表里没有这个 id ⇒ 404', async () => {
     seedRun();
-    await expect(retractInjectMessage({ runId: 'run-1', rowId: 'r-1', messageId: 'm-never' })).rejects.toThrow(/没有这条人工消息/);
+    await expect(retractInjectMessage({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-never' })).rejects.toThrow(/没有这条人工消息/);
   });
 
   it('三个成功结局都在 200 的那份形状里', () => {
@@ -285,7 +285,7 @@ describe('附件落盘', () => {
   function upload(overrides: Partial<Parameters<typeof saveInjectAttachment>[0]> = {}) {
     return {
       runId: 'run-1',
-      rowId: 'r-1',
+      candidateId: 'r-1',
       messageId: 'm-1',
       fileName: 'a.png',
       mimeType: 'image/png',
@@ -294,25 +294,25 @@ describe('附件落盘', () => {
     };
   }
 
-  it('落到这一行的附件根下，返回绝对路径 + 分档 + 类型；内容逐字节相等', () => {
+  it('落到这个候选的附件根下，返回绝对路径 + 分档 + 类型；内容逐字节相等', () => {
     const run = seedRun();
     const attachment = saveInjectAttachment(upload());
 
-    const expectedDir = join(run.workspaceBase, 'run-1', 'rows', 'r-1', 'attachments', 'm-1');
+    const expectedDir = join(run.workspaceBase, 'run-1', 'candidates', 'r-1', 'attachments', 'm-1');
     expect(attachment).toEqual({ kind: 'image', path: join(expectedDir, 'a.png'), mimeType: 'image/png' });
     expect(readFileSync(attachment.path!, 'utf8')).toBe('png-body');
     expect(readdirSync(expectedDir)).toEqual(['a.png']);
   });
 
-  it('附件落在**工作区之外**（不进 git diff、不污染评分面），但仍在行目录之内（随删轮次一起清）', () => {
+  it('附件落在**工作区之外**（不进 git diff、不污染评分面），但仍在候选目录之内（随删轮次一起清）', () => {
     const run = seedRun();
-    const workspacePath = run.rows[0]?.workspacePath ?? '';
+    const workspacePath = run.candidates[0]?.workspacePath ?? '';
 
     const attachment = saveInjectAttachment(upload({ messageId: 'm-outside' }));
 
     expect(workspacePath).not.toBe('');
     expect(attachment.path?.startsWith(workspacePath)).toBe(false);
-    expect(attachment.path).toBe(join(run.workspaceBase, 'run-1', 'rows', 'r-1', 'attachments', 'm-outside', 'a.png'));
+    expect(attachment.path).toBe(join(run.workspaceBase, 'run-1', 'candidates', 'r-1', 'attachments', 'm-outside', 'a.png'));
   });
 
   it('非图片按 file 分档；浏览器说不出类型时 mimeType 落 null（空串会被界面当成一个空白标签）', () => {
@@ -330,7 +330,7 @@ describe('附件落盘', () => {
 
   it(`单个附件超过 ${ATTACHMENT_MAX_FILE_BYTES} 字节 ⇒ 400，原因点名两条数字，且盘上一个字节都不落`, () => {
     const run = seedRun();
-    const oversizeDir = join(run.workspaceBase, 'run-1', 'rows', 'r-1', 'attachments', 'm-oversize');
+    const oversizeDir = join(run.workspaceBase, 'run-1', 'candidates', 'r-1', 'attachments', 'm-oversize');
     // 25 MB：故意比上限大一截，好让「上限」与「这次的大小」是两句不同的数字
     const bytes = new Uint8Array(ATTACHMENT_MAX_FILE_BYTES + 5 * 1024 * 1024);
 
@@ -352,7 +352,7 @@ describe('附件落盘', () => {
     expect(serviceErrorOf(() => saveInjectAttachment(upload({ messageId: 'm-count', fileName: 'overflow.txt', mimeType: 'text/plain' }))).message)
       .toContain(`单条消息最多 ${String(ATTACHMENT_MAX_PER_MESSAGE)} 个附件`);
     // 上限触顶时那一个不该落盘：目录里正好 10 个
-    expect(readdirSync(join(fixtureWorkspaceRoot(), 'run-1', 'rows', 'r-1', 'attachments', 'm-count'))).toHaveLength(
+    expect(readdirSync(join(fixtureWorkspaceRoot(), 'run-1', 'candidates', 'r-1', 'attachments', 'm-count'))).toHaveLength(
       ATTACHMENT_MAX_PER_MESSAGE,
     );
   });
@@ -365,8 +365,8 @@ describe('附件落盘', () => {
   it('轮或行不存在 ⇒ NOT_FOUND，且磁盘上不建任何目录', () => {
     const run = seedRun();
 
-    expect(serviceErrorOf(() => saveInjectAttachment(upload({ rowId: 'r-never' }))).code).toBe('NOT_FOUND');
-    expect(existsSync(join(run.workspaceBase, 'run-1', 'rows', 'r-never'))).toBe(false);
+    expect(serviceErrorOf(() => saveInjectAttachment(upload({ candidateId: 'r-never' }))).code).toBe('NOT_FOUND');
+    expect(existsSync(join(run.workspaceBase, 'run-1', 'candidates', 'r-never'))).toBe(false);
   });
 });
 

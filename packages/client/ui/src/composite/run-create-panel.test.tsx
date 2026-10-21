@@ -1,9 +1,9 @@
 /**
- * RunCreatePanel：用例 + 执行模式 + 使用智能体评分 + 候选行（`Form.List` + small Table）。
+ * RunCreatePanel：用例 + 执行模式 + 使用智能体评分 + 候选（`Form.List` + small Table）。
  * 四件事必须成立：
- *   1. 模型候选池跟着**本行的智能体**变；
+ *   1. 模型候选池跟着**候选的智能体**变；
  *   2. 池子为空时当场内联 Alert 指出路，而不是让人选完到运行时才失败；
- *   3. 提交校验（至少一行、每行两个 Select 都选了）真的拦得住，且拦下来的请求**一个都不发**；
+ *   3. 提交校验（至少一行、每个候选两个 Select 都选了）真的拦得住，且拦下来的请求**一个都不发**；
  *   4. 「使用智能体评分」默认关闭，且开关打开而设置页没配默认评分智能体时当场提示——
  *      判据由 `judgeAgentConfigured` 注入，正反两面都钉住（配了/未知时不许提示）；
  *   5. 执行模式的顺序与默认值（串行在前、默认串行）；
@@ -11,10 +11,10 @@
  *      不再加工措辞），而「未指定」是
  *      `allowClear` 的清空态、由 placeholder 承担，**不是候选里的一项**（未选 ≠ 关闭）；
  *   6. 编辑模式：`mode="edit"` 预填当前轮次——执行模式取自 `initial`（不被缺省的
- *      「串行」盖掉）、每个候选行带着**原行 id**与**思考强度**（编辑载荷是行集合的全量替换，
- *      少回传一格就会被服务端判成「改了这一行」而白重置一行），且**只在真有行会被作废时**
+ *      「串行」盖掉）、每个候选带着**原候选 id**与**思考强度**（编辑载荷是行集合的全量替换，
+ *      少回传一格就会被服务端判成「改了这个候选」而白重置一行），且**只在真有候选会被作废时**
  *      才弹保存前确认框（什么都不作废时弹窗就是噪音，噪音会让用户闭眼点确定）；
- *   7. 候选行的**形态**：一行一个候选的小表格、字段名在列头里、
+ *   7. 候选的**形态**：一行一个候选的小表格、字段名在列头里、
  *      删除是操作列里右对齐的图标 link 按钮 —— 三条形态守卫都在「RunCreatePanel」describe 里。
  *
  * jsdom 环境注意：本文件要打开 Select 的下拉（浮层定位走 @rc-component/resize-observer），
@@ -23,12 +23,12 @@
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { EFFORT_OFF, type AgentKind, type EvalRow, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
+import { EFFORT_OFF, type AgentKind, type EvalCandidate, type EvalRun, type Rubric, type TestCase } from '@aieval/contracts';
 import { installResizeObserverStub } from '../testing/resize-observer';
 import {
   RunCreatePanel,
   effortPlaceholder,
-  invalidatedRows,
+  invalidatedCandidates,
   type RunCreatePanelProps,
   type RunFormValues,
   type RunModelOption,
@@ -110,8 +110,8 @@ function defaultEffortFor(agentKind: string): string | undefined {
  * （`judged` + `attempts: 1` = 有东西可丢，才可能进作废名单）。
  * 两格是刻意选的：
  *   · `executionMode: 'parallel'` —— 与表单缺省的「串行」不同，取值来源不对时用例当场红；
- *   · 行带着 `id` —— 丢了它，保存时所有行都被当成新行，已经跑出来的结果静默清零。
- * 放在模块作用域：「编辑模式」与 `invalidatedRows` 两组共用它。
+ *   · 行带着 `id` —— 丢了它，保存时所有候选都被当成新行，已经跑出来的结果静默清零。
+ * 放在模块作用域：「编辑模式」与 `invalidatedCandidates` 两组共用它。
  */
 const editRun: EvalRun = {
   id: 'run-1',
@@ -131,7 +131,7 @@ const editRun: EvalRun = {
   useAgentJudge: false,
   askUser: false,
   injectMessages: false,
-  rows: [
+  candidates: [
     {
       id: 'r-1',
       agentKind: 'cc',
@@ -141,7 +141,7 @@ const editRun: EvalRun = {
       modelId: 'claude-opus-4-6',
       status: 'judged',
       branch: 'test/r-1',
-      workspacePath: 'D:\\runs\\run-1\\rows\\r-1\\workspace',
+      workspacePath: 'D:\\runs\\run-1\\candidates\\r-1\\workspace',
       baselineCommit: 'a'.repeat(40),
       tokens: null,
       turns: null,
@@ -162,33 +162,33 @@ const editRun: EvalRun = {
 };
 
 /**
- * 取夹具里那一行。`noUncheckedIndexedAccess` 下 `rows[0]` 是 optional，
+ * 取夹具里那一行。`noUncheckedIndexedAccess` 下 `candidates[0]` 是 optional，
  * 而「这条夹具必须有且只有一行」是夹具自己的承诺——写成取值函数比到处 `as` 诚实。
  */
-function firstRowOf(run: EvalRun): EvalRow {
-  const row = run.rows[0];
+function firstCandidateOf(run: EvalRun): EvalCandidate {
+  const row = run.candidates[0];
   if (row === undefined) throw new Error('夹具至少要有一行');
   return row;
 }
 
 /**
- * 编辑模式的**两行**夹具：行增删与行换位两条守卫共用。
- * 第二行的 `modelId` 与第一行不同（且两行都在池子里）——「换了位」才看得出来。
+ * 编辑模式的**两个候选**夹具：行增删与行换位两条守卫共用。
+ * 第二候选的 `modelId` 与第一行不同（且两个候选都在池子里）——「换了位」才看得出来。
  */
-function twoRowRun(): EvalRun {
+function twoCandidateRun(): EvalRun {
   return {
     ...editRun,
-    rows: [firstRowOf(editRun), { ...firstRowOf(editRun), id: 'r-2', modelId: 'claude-haiku' }],
+    candidates: [firstCandidateOf(editRun), { ...firstCandidateOf(editRun), id: 'r-2', modelId: 'claude-haiku' }],
   };
 }
 
-/** 上面那个夹具要的两行都在池子里（不在池子里时 Select 会显示编码值，换位就看不出来了） */
+/** 上面那个夹具要的两个候选都在池子里（不在池子里时 Select 会显示编码值，换位就看不出来了） */
 const twoModelPool: RunModelOption[] = [
   { providerId: 'p-anthropic', providerName: 'Anthropic 网关', modelId: 'claude-opus-4-6', source: 'manual' },
   { providerId: 'p-anthropic', providerName: 'Anthropic 网关', modelId: 'claude-haiku', source: 'manual' },
 ];
 
-/** 表格里每一行「模型」那一格显示的文字，**按行的顺序**给出（增删 / 换位都靠它断言） */
+/** 表格里每个候选「模型」那一格显示的文字，**按候选的顺序**给出（增删 / 换位都靠它断言） */
 function modelCellTexts(): string[] {
   return (screen.getAllByLabelText('模型') as HTMLElement[]).map(
     (input) => input.closest('.ant-select')?.textContent ?? '',
@@ -227,7 +227,7 @@ function renderPanel(overrides: Partial<Parameters<typeof RunCreatePanel>[0]> = 
  * 于是 `getByRole('option', { name: 'Codex' })` 拿到的是镜像节点，`fireEvent.click` 点它**不会**
  * 改变表单值（aria-hidden 的镜像不接事件）；而模型选项的 label 是 ReactNode（带来源 Tag），
  * 镜像节点连 `aria-label` 都没有，`name: /gpt-5/` 直接查不到。故这里按**可见行**的
- * `textContent` 匹配（可见行的文本就是「模型名 + 来源 Tag」）。
+ * `textContent` 匹配（可见候选的文本就是「模型名 + 来源 Tag」）。
  */
 function pickOption(labelText: string, optionText: string | RegExp, trigger?: HTMLElement): void {
   const target = trigger ?? (screen.getAllByLabelText(labelText)[0] as HTMLElement);
@@ -235,19 +235,19 @@ function pickOption(labelText: string, optionText: string | RegExp, trigger?: HT
   // 全局查一遍「可见」的浮层：换开另一个下拉时 antd 不卸载上一个、也不给它加 `hidden` 类
   // ⇒ 这份查询其实跨了多个浮层（**脆**，理由见 `visibleOptionTexts` 的注释）。按文案点选仍然稳，
   // 而找不到目标时下面会把**实际选项**列出来，所以「误点选」是响的；别在这里加顺序假设。
-  const rows = Array.from(
+  const candidates = Array.from(
     document.querySelectorAll<HTMLElement>(
       '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option',
     ),
   );
   const wanted =
     typeof optionText === 'string'
-      ? rows.find((row) => row.textContent === optionText)
-      : rows.find((row) => optionText.test(row.textContent ?? ''));
+      ? candidates.find((row) => row.textContent === optionText)
+      : candidates.find((row) => optionText.test(row.textContent ?? ''));
   if (wanted === undefined) {
     throw new Error(
       `下拉「${labelText}」里找不到 ${String(optionText)}；实际选项：${JSON.stringify(
-        rows.map((row) => row.textContent),
+        candidates.map((row) => row.textContent),
       )}`,
     );
   }
@@ -279,7 +279,7 @@ function visibleOptionTexts(): string[] {
 /**
  * **某一个**下拉（按它的 `aria-label` 认）当前可见的选项文本，按渲染顺序。
  *
- * 为什么还需要它：`visibleOptionTexts()` 把**所有**可见浮层合在一起，而 antd 在同一行里换开
+ * 为什么还需要它：`visibleOptionTexts()` 把**所有**可见浮层合在一起，而 antd 在同一个候选里换开
  * 另一个下拉时，上一个浮层仍在文档里且**不带** `hidden` 类（实测：先选用例、再选模型、再开强度，
  * 三个浮层同时「可见」）⇒ 它的首项是用例选项，不是强度选项。
  * 「下拉的**第一项**是什么」这种顺序断言必须限定在自己那一个浮层里，否则会张冠李戴地通过。
@@ -383,18 +383,18 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * ⚠️ 显式放宽到 90s：本用例要建两行 + 反复开下拉，而每行现在有**三个** antd Select
+   * ⚠️ 显式放宽到 90s：本用例要建两个候选 + 反复开下拉，而每个候选现在有**三个** antd Select
    * （智能体 / 模型 / 思考强度）。antd 的 Select 在 jsdom 里挂载很贵，本机又有企业杀软在进程创建上收税，
    * 实测这条用例在整套并发下有 40-60s 量级的抖动（同文件其余用例仍在默认预算内）。
    * 放宽的是**等待预算**，不是判据：它断言的东西一个字都没变。
    */
-  it('「添加候选」真的加一行（默认 Claude Code + 未选模型），并且两行能一起提交', { timeout: 90_000 }, async () => {
+  it('「添加候选」真的加一行（默认 Claude Code + 未选模型），并且两个候选能一起提交', { timeout: 90_000 }, async () => {
     // 它守的是「多候选」这条主路径（`Form.List` 的 `add`）：只加行不生效（或新行带上了
-    // 上一行的模型）时，使用者会提交出一个与自己选择不符的组合。
+    // 上一候选的模型）时，使用者会提交出一个与自己选择不符的组合。
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
-    // 每行各有「模型」标签 ⇒ 用它数行数
+    // 每个候选各有「模型」标签 ⇒ 用它数候选数
     expect(screen.getAllByLabelText('模型')).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: '添加候选' }));
@@ -413,7 +413,7 @@ describe('RunCreatePanel', () => {
     await waitFor(() => expect(screen.getByText('请选择模型')).toBeInTheDocument());
     expect(onSubmit).not.toHaveBeenCalled();
 
-    // 第二行改成 Codex 并选它的模型 ⇒ 这次两行一起提交
+    // 第二行改成 Codex 并选它的模型 ⇒ 这次两个候选一起提交
     const agentSelects = screen.getAllByLabelText('智能体') as HTMLElement[];
     fireEvent.mouseDown(agentSelects[1] as HTMLElement);
     const codexOption = Array.from(document.querySelectorAll<HTMLElement>('.ant-select-item-option')).find(
@@ -422,7 +422,7 @@ describe('RunCreatePanel', () => {
     expect(codexOption).toBeDefined();
     fireEvent.click(codexOption as HTMLElement);
 
-    // 第二行的模型池跟着本行的智能体换成 openai 的。
+    // 第二候选的模型池跟着候选的智能体换成 openai 的。
     // 必须显式指定**第二行**的触发器：`getAllByLabelText` 的第 0 个是第一行
     const secondModel = screen.getAllByLabelText('模型')[1] as HTMLElement;
     pickOption('模型', /gpt-5/, secondModel);
@@ -430,7 +430,7 @@ describe('RunCreatePanel', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
-      rows: [
+      candidates: [
         { agentKind: 'cc', modelId: 'claude-opus-4-6' },
         { agentKind: 'codex', modelId: 'gpt-5' },
       ],
@@ -466,7 +466,7 @@ describe('RunCreatePanel', () => {
       injectMessages: false,
       // 备注是可选注解，但创建路径必须**显式**交出这一格（空串），否则「填了备注」在那里丢失
       note: '',
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
@@ -514,7 +514,7 @@ describe('RunCreatePanel', () => {
 
   it('选了「并行」后提交出去的 payload 里 executionMode 是 parallel', async () => {
     // 为什么必须有这一条：「改选另一个模式」这条路径只由这里钉住——把实现改成恒发默认值
-    // 也能全绿，而串行与并行在编排层是两种完全不同的跑法（一行跑完含评分才起下一行）。
+    // 也能全绿，而串行与并行在编排层是两种完全不同的跑法（一个候选跑完含评分才起下一行）。
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
@@ -532,11 +532,11 @@ describe('RunCreatePanel', () => {
       askUser: false,
       injectMessages: false,
       note: '',
-      rows: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
-  it('模型下拉只列本行智能体协议下的模型，并标出来源与供应商', () => {
+  it('模型下拉只列候选智能体协议下的模型，并标出来源与供应商', () => {
     renderPanel();
     pickOption('智能体', 'Codex');
 
@@ -546,14 +546,14 @@ describe('RunCreatePanel', () => {
     // 标签是「模型名 + 供应商名 + 来源 Tag + 窗口 Tag」（窗口那一格夹具里没声明 ⇒ 显示「未知」；
     // 供应商名见下面那条「同名模型要分得开」的用例）
     expect(options).toContain('gpt-5OpenAI 网关自动拉取未知');
-    // 上一行的 anthropic 模型必须**不在**这个池子里（协议不匹配的组合不该被选中后到运行时才失败）
+    // 上一候选的 anthropic 模型必须**不在**这个池子里（协议不匹配的组合不该被选中后到运行时才失败）
     expect(options.some((text) => text.includes('claude-opus-4-6'))).toBe(false);
   });
 
   /**
    * 可解释性：双协议智能体（DSH）的池子是**两类协议的并集**，
    * 而选项里必须能看出**每个模型来自哪个供应商**——否则「同一个模型名挂在两个网关」
-   * （跨网关同名很常见）时，两个选项长得一模一样，选出来却是不同的行。
+   * （跨网关同名很常见）时，两个选项长得一模一样，选出来却是不同的候选。
    */
   it('双协议智能体的池子是并集，且每个选项都带得出供应商名（同名模型分得开）', () => {
     renderPanel({ modelOptionsFor: poolFor });
@@ -582,7 +582,7 @@ describe('RunCreatePanel', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('删掉唯一一行后提交：提示「至少需要一个候选行」，且不发请求', async () => {
+  it('删掉唯一一行后提交：提示「至少需要一个候选」，且不发请求', async () => {
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
@@ -593,12 +593,12 @@ describe('RunCreatePanel', () => {
     pickOption('用例', '多协议入站转换 · gateway · 71e6280');
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
 
-    await waitFor(() => expect(screen.getByText('至少需要一个候选行')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('至少需要一个候选')).toBeInTheDocument());
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
   /**
-   * 形态守卫：候选行是一张 **small Table**，「删除」是**操作列里右对齐的图标
+   * 形态守卫：候选是一张 **small Table**，「删除」是**操作列里右对齐的图标
    * link 按钮**。三条钉的都是「省空间」这件事，且各自对应一个会静默退化的写法：
    *   · 退回竖排标签（每个候选白多一行标签高度，右栏只有 ~545px 宽）⇒ 表头那一条会红；
    *   · 按钮里再塞回「删除」两个字（本列近一半宽度被文字吃掉）⇒ textContent 那一条会红；
@@ -626,14 +626,14 @@ describe('RunCreatePanel', () => {
 
   /**
    * 形态守卫：字段名由**列头**承担（`Form.Item` 不再给 `label`，可访问名改挂控件的 `aria-label`）。
-   * 这是「一行 = 一行」的前提：三个下拉只要有一个退回带 `label` 的写法，那一行就会比邻行高一截。
+   * 这是「一行 = 一行」的前提：三个下拉只要有一个退回带 `label` 的写法，那一个候选就会比邻行高一截。
    *
    * 为什么**不**在这里钉 `size="small"`（`document.querySelector('.ant-table-small')` 那类断言）：
    * 它没有区分力 —— 紧凑密度是外层 `<Form size="small">` 经 antd 的 size context 传下来的，
    * `<Table>` 上删掉 `size="small"` 也照样小。**没有见过失败的守卫
    * 不算守卫**（AGENTS.md），故这里只留钉得住的三条：列头、单元格里没有标签行、三个控件同一行。
    */
-  it('候选行是表格：字段名在列头里（没有竖排标签），三个下拉各自带可访问名（C-TABLE）', () => {
+  it('候选是表格：字段名在列头里（没有竖排标签），三个下拉各自带可访问名（C-TABLE）', () => {
     renderPanel();
 
     // 最后一列（操作列）的列名**留空**：三个图标按钮各带 Tooltip 与
@@ -649,11 +649,11 @@ describe('RunCreatePanel', () => {
     // 作用域收在表格内：上面三格（用例 / 执行模式 / 使用智能体评分）本来就有标签，那是另一回事
     expect(document.querySelector('.ant-table')?.querySelectorAll('.ant-form-item-label')).toHaveLength(0);
 
-    // 每行的三个控件都在单元格里，且各自有可访问名（列头 `<th>` 不会成为输入框的可访问名）
+    // 每个候选的三个控件都在单元格里，且各自有可访问名（列头 `<th>` 不会成为输入框的可访问名）
     expect(screen.getAllByLabelText('模型')).toHaveLength(1);
     expect(screen.getByLabelText('智能体')).toBeInTheDocument();
     expect(screen.getByLabelText('思考强度')).toBeInTheDocument();
-    // 三个控件同处一行（同一张表的一行）：分开量它们所在的行，是「表格化」与「三个散落的下拉」的区别
+    // 三个控件同处一行（同一张表的一行）：分开量它们所在的候选，是「表格化」与「三个散落的下拉」的区别
     const agentCell = screen.getByLabelText('智能体').closest('td');
     expect(agentCell?.parentElement).toBe(screen.getByLabelText('模型').closest('td')?.parentElement);
     expect(agentCell?.parentElement).toBe(screen.getByLabelText('思考强度').closest('td')?.parentElement);
@@ -664,7 +664,7 @@ describe('RunCreatePanel', () => {
    * 三条各对应一个会静默退化的写法：列名又写回去（白占宽度）、顺序被改成「删除」在前
    * （破坏性动作挪到最容易误点的位置）、按钮里塞回文字（三个动作会把这一列撑成半张表）。
    */
-  it('操作列是「上移 / 下移 / 删除」三个图标按钮，列名留空（C-ROW-ACTIONS）', () => {
+  it('操作列是「上移 / 下移 / 删除」三个图标按钮，列名留空（C-CANDIDATE-ACTIONS）', () => {
     renderPanel();
 
     const cell = screen.getAllByRole('button', { name: '上移' })[0]?.closest('td');
@@ -683,7 +683,7 @@ describe('RunCreatePanel', () => {
    * 滚动条，被挤出去的列**根本够不到**）。三条断言各自对应一处：
    *   · 没有 `scroll={{ x: 数值 }}` ⇒ 内容容器拿不到 `overflow-x: auto`、表格也没有内联宽度；
    *   · 首列没有 `fixed` ⇒ 表头第一格不再带粘性类（滚动时它会被推出视野）；
-   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（三个按钮跟着滚走，这一行删不掉）。
+   *   · 操作列没有 `fixed` ⇒ 表头最后一格不再带粘性类（三个按钮跟着滚走，这个候选删不掉）。
    *
    * ⚠️ jsdom **没有布局引擎**：`sticky` 的实际吸边效果、「有没有真的滚起来」都量不出来，钉子只到
    * 类名、内联样式与 `colgroup` 的宽度为止（jsdom 的 `getComputedStyle` 只认内联样式，读不到样式表
@@ -694,7 +694,7 @@ describe('RunCreatePanel', () => {
   it('右栏装不下时横向滚动，且首列钉左、操作列钉右（C-COLUMN-FIXED）', () => {
     renderPanel();
 
-    // 收窄到候选项表那一张：面板里还有用例 / 执行模式那些表单行，全局选 `.ant-table-content` 不稳
+    // 收窄到候选项表那一张：面板里还有用例 / 执行模式那些表单个候选，全局选 `.ant-table-content` 不稳
     const content = document.querySelector('.ant-form .ant-table-content');
     expect(content).not.toBeNull();
     // 有横向滚动才谈得上固定列：给 `scroll.x` 之前这里一个内联样式都没有
@@ -712,10 +712,10 @@ describe('RunCreatePanel', () => {
     // 中间两列**不许**粘：把模型列也钉住的话，可滚动区域就只剩思考强度那一列
     expect(cells?.[1]?.className).not.toContain('ant-table-cell-fix');
     expect(cells?.[2]?.className).not.toContain('ant-table-cell-fix');
-    // 表体跟着一起钉（只钉表头的话，数据行会在固定列底下滑过去 —— 滚动时表头与数据行错位）
-    const firstBodyRow = content?.querySelector('tbody tr.ant-table-row');
-    expect(firstBodyRow?.querySelectorAll('td')[0]?.className).toContain('ant-table-cell-fix-start');
-    expect(firstBodyRow?.querySelectorAll('td')[3]?.className).toContain('ant-table-cell-fix-end');
+    // 表体跟着一起钉（只钉表头的话，数据候选会在固定列底下滑过去 —— 滚动时表头与数据行错位）
+    const firstBodyCandidate = content?.querySelector('tbody tr.ant-table-row');
+    expect(firstBodyCandidate?.querySelectorAll('td')[0]?.className).toContain('ant-table-cell-fix-start');
+    expect(firstBodyCandidate?.querySelectorAll('td')[3]?.className).toContain('ant-table-cell-fix-end');
 
     // 三列把宽度交出去，剩下的才归模型列（它**刻意不给宽度**，是唯一吃剩余宽度的列）。
     // jsdom 量不出模型列的实测宽度：`colgroup` 里那些数字来自 rc-table 对单元格的 ResizeObserver
@@ -730,36 +730,36 @@ describe('RunCreatePanel', () => {
   });
 
   /**
-   * 上移 / 下移的行为：候选顺序 = **串行执行顺序**，所以换位必须真的换掉表单值里的行序，
+   * 上移 / 下移的候选为：候选顺序 = **串行的执行顺序**，所以换位必须真的换掉表单值里的候选序，
    * 而不是只动 DOM（只动 DOM 的话，一次保存就把顺序又按原样提交回去了）。
-   * 用编辑模式造两行（`initial.rows` 预填），不点「添加候选」——省掉一次 antd 的挂载税。
+   * 用编辑模式造两个候选（`initial.candidates` 预填），不点「添加候选」——省掉一次 antd 的挂载税。
    */
-  it('上移 / 下移真的换掉行的顺序（提交顺序跟着变），且边界那一格置灰（C-ROW-MOVE）', async () => {
+  it('上移 / 下移真的换掉候选的顺序（提交顺序跟着变），且边界那一格置灰（C-CANDIDATE-MOVE）', async () => {
     const onSubmit = vi.fn();
-    renderPanel({ mode: 'edit', initial: twoRowRun(), modelOptionsFor: () => twoModelPool, onSubmit });
+    renderPanel({ mode: 'edit', initial: twoCandidateRun(), modelOptionsFor: () => twoModelPool, onSubmit });
 
     expect(modelCellTexts()[0]).toContain('claude-opus-4-6');
     expect(modelCellTexts()[1]).toContain('claude-haiku');
 
-    // 边界置灰：第一行没有上一行、最后一行没有下一行（置灰而不是隐藏：按钮位置固定，眼睛不用重新找）
+    // 边界置灰：第一候选没有上一行、最后一候选没有下一行（置灰而不是隐藏：按钮位置固定，眼睛不用重新找）
     expect(screen.getAllByRole('button', { name: '上移' })[0]).toBeDisabled();
     expect(screen.getAllByRole('button', { name: '下移' })[1]).toBeDisabled();
 
-    // 第一行下移 ⇒ 两行换位
+    // 第一行下移 ⇒ 两个候选换位
     fireEvent.click(screen.getAllByRole('button', { name: '下移' })[0] as HTMLElement);
     expect(modelCellTexts()[0]).toContain('claude-haiku');
     expect(modelCellTexts()[1]).toContain('claude-opus-4-6');
 
     // 换位后的**提交顺序**就是新顺序：这一条才是「顺序真的变了」的终局证据 ——
     // 只改渲染顺序（表单值没跟着换）时，上面那两句仍然绿，而这里会把旧顺序原样送出去。
-    // 纯换位不作废任何行（行 id 与目标都没变）⇒ 不弹确认框，直接提交
+    // 纯换位不作废任何行（候选 id 与目标都没变）⇒ 不弹确认框，直接提交
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     // `vi.fn()` 的调用参数是 `any`：这里断言回 `RunFormValues`（不然 `.map` 的回调参数会隐式 any，tsc 直接红）
     const submitted = onSubmit.mock.calls[0]?.[0] as RunFormValues | undefined;
-    expect(submitted?.rows?.map((row) => row.modelId)).toEqual(['claude-haiku', 'claude-opus-4-6']);
+    expect(submitted?.candidates?.map((row) => row.modelId)).toEqual(['claude-haiku', 'claude-opus-4-6']);
 
-    // 第二行上移 ⇒ 换回来（上下方向写反时这几条会红）
+    // 第二候选上移 ⇒ 换回来（上下方向写反时这几条会红）
     fireEvent.click(screen.getAllByRole('button', { name: '上移' })[1] as HTMLElement);
     expect(modelCellTexts()[0]).toContain('claude-opus-4-6');
     expect(modelCellTexts()[1]).toContain('claude-haiku');
@@ -767,10 +767,10 @@ describe('RunCreatePanel', () => {
 
   /**
    * 图标按钮必须**按行**删：表格里最容易错的一处是拿列渲染的序号去 `remove`（删掉的是别人那一行）。
-   * 用编辑模式造两行（`initial.rows` 预填），不点「添加候选」—— 省掉一次 antd 的挂载税。
+   * 用编辑模式造两个候选（`initial.candidates` 预填），不点「添加候选」—— 省掉一次 antd 的挂载税。
    */
-  it('点第二行的删除只删第二行（按钮认的是本行的 field.name，不是列序号）（C-ROW-REMOVE）', () => {
-    renderPanel({ mode: 'edit', initial: twoRowRun(), modelOptionsFor: () => twoModelPool });
+  it('点第二候选的删除只删第二行（按钮认的是候选的 field.name，不是列序号）（C-CANDIDATE-REMOVE）', () => {
+    renderPanel({ mode: 'edit', initial: twoCandidateRun(), modelOptionsFor: () => twoModelPool });
 
     const deleteButtons = screen.getAllByRole('button', { name: /删\s*除/ });
     expect(deleteButtons).toHaveLength(2);
@@ -782,7 +782,7 @@ describe('RunCreatePanel', () => {
     expect(remaining[0]).toContain('claude-opus-4-6');
   });
 
-  it('切换智能体后该行已选的模型被清空（否则会提交出协议不匹配的组合）', async () => {
+  it('切换智能体后该候选已选的模型被清空（否则会提交出协议不匹配的组合）', async () => {
     const onSubmit = vi.fn();
     renderPanel({ onSubmit });
 
@@ -1022,7 +1022,7 @@ describe('RunCreatePanel：思考强度', () => {
       efforts: [EFFORT_OFF, 'low', 'high', 'max'],
       recommendedEffort: 'high',
     },
-    // 上游没声明档位 ⇒ 这一行只有「默认」
+    // 上游没声明档位 ⇒ 这个候选只有「默认」
     { providerId: 'p-anthropic', providerName: 'Anthropic 网关', modelId: 'none', source: 'manual' },
   ];
 
@@ -1047,7 +1047,7 @@ describe('RunCreatePanel：思考强度', () => {
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0]?.[0]?.rows?.[0]).toMatchObject({
+    expect(onSubmit.mock.calls[0]?.[0]?.candidates?.[0]).toMatchObject({
       providerId: 'p-anthropic',
       modelId: 'three',
       effort: 'high',
@@ -1075,7 +1075,7 @@ describe('RunCreatePanel：思考强度', () => {
     expect(strength.closest('.ant-select')?.textContent ?? '').toContain('未指定');
   });
 
-  it('换模型作废已选强度：换成没有档位的模型后提交，行上不带 effort', async () => {
+  it('换模型作废已选强度：换成没有档位的模型后提交，候选上不带 effort', async () => {
     const onSubmit = vi.fn();
     renderPanel({ modelOptionsFor: () => effortPool, onSubmit });
 
@@ -1090,8 +1090,8 @@ describe('RunCreatePanel：思考强度', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0]?.[0]?.rows?.[0]).toMatchObject({ modelId: 'none' });
-    expect(onSubmit.mock.calls[0]?.[0]?.rows?.[0]?.effort).toBeUndefined();
+    expect(onSubmit.mock.calls[0]?.[0]?.candidates?.[0]).toMatchObject({ modelId: 'none' });
+    expect(onSubmit.mock.calls[0]?.[0]?.candidates?.[0]?.effort).toBeUndefined();
   });
 
   /**
@@ -1166,7 +1166,7 @@ describe('RunCreatePanel：思考强度', () => {
     // 提交值 = 契约的关闭档名（`option.value` 必须是 `effort`，不是文案、也不是厂商词汇）
     fireEvent.click(screen.getByRole('button', { name: /确\s*定/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0]?.[0]?.rows?.[0]?.effort).toBe(EFFORT_OFF);
+    expect(onSubmit.mock.calls[0]?.[0]?.candidates?.[0]?.effort).toBe(EFFORT_OFF);
   });
 
   /**
@@ -1238,7 +1238,7 @@ describe('RunCreatePanel：思考强度', () => {
     });
 
     pickOption('用例', /多协议入站转换/);
-    // 先选模型，**再第一次打开**强度下拉：这一次打开读到的必然是 `bare` 这一行此刻的候选
+    // 先选模型，**再第一次打开**强度下拉：这一次打开读到的必然是 `bare` 这个候选此刻的候选
     pickOption('模型', /bare/);
     fireEvent.mouseDown(screen.getAllByLabelText('思考强度')[0] as HTMLElement);
     const bareOptions = visibleOptionTextsOf('思考强度');
@@ -1257,7 +1257,7 @@ describe('RunCreatePanel：思考强度', () => {
 /**
  * 编辑模式：同一张表单，`mode="edit"` 预填当前轮次。
  * 三条各自对应一个真实会咬人的失败：
- *   · 行必须带上原行 id —— 丢了它，保存时所有行都被当新行，已跑出的结果静默清零；
+ *   · 行必须带上原候选 id —— 丢了它，保存时所有候选都被当新行，已跑出的结果静默清零；
  *   · 执行模式取 `initial.executionMode` —— 被 `initialValues` 的「默认串行」盖掉会让用户
  *     只改了个模型、执行模式却被悄悄改成串行；
  *   · 原用例已被删除时下拉要有一个禁用占位项 —— 否则显示空白，用户一保存就换了个用例。
@@ -1278,14 +1278,14 @@ describe('RunCreatePanel（编辑模式）', () => {
     return document.querySelector('.run-edit-confirm') as HTMLElement;
   }
 
-  /** 「改模型 ⇒ 有行会被作废」的共同前奏：换智能体（模型那一格会被既有行为清空），再选一个 openai 的模型 */
+  /** 「改模型 ⇒ 有候选会被作废」的共同前奏：换智能体（模型那一格会被既有行为清空），再选一个 openai 的模型 */
   function changeModelToGpt5(): void {
     pickOption('智能体', 'Codex');
     pickOption('模型', /gpt-5/);
   }
 
   /** 一行**已选过强度**的轮次：思考强度必须能预填并原样回传（A-EFFORT） */
-  const effortRun: EvalRun = { ...editRun, rows: [{ ...firstRowOf(editRun), effort: 'high' }] };
+  const effortRun: EvalRun = { ...editRun, candidates: [{ ...firstCandidateOf(editRun), effort: 'high' }] };
 
   /** 仍认这一档的池子（服务端已把交集算好）：没有它，强度下拉里根本没有 `high`，预填无从谈起 */
   const effortEditPool: RunModelOption[] = [
@@ -1299,7 +1299,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     },
   ];
 
-  it('预填执行模式与用例，且提交的行带着原行 id', async () => {
+  it('预填执行模式与用例，且提交的候选带着原候选 id', async () => {
     const onSubmit = vi.fn();
     renderPanel({ mode: 'edit', initial: editRun, onSubmit, modelOptionsFor: poolFor });
 
@@ -1311,7 +1311,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
       caseId: 'c-1',
       executionMode: 'parallel',
-      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
+      candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6' }],
     });
   });
 
@@ -1359,9 +1359,9 @@ describe('RunCreatePanel（编辑模式）', () => {
   });
 
   /**
-   * 编辑载荷是候选行集合的**全量替换**，而 `isSameRowTarget` 拿 `effort` 一起比
+   * 编辑载荷是候选集合的**全量替换**，而 `isSameCandidateTarget` 拿 `effort` 一起比
    * （一侧没给就算改了档位）。于是「强度没有被预填 / 没有被回传」的后果不是少一个字段，
-   * 而是**一次什么都不改的保存也会重置这一行**（分数与产物当场消失）。
+   * 而是**一次什么都不改的保存也会重置这个候选**（分数与产物当场消失）。
    */
   it('原样保存：预填的思考强度原样回传，且不弹确认框', async () => {
     const onSubmit = vi.fn();
@@ -1374,12 +1374,12 @@ describe('RunCreatePanel（编辑模式）', () => {
     submitForm();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0]?.[0]?.rows?.[0]).toMatchObject({
+    expect(onSubmit.mock.calls[0]?.[0]?.candidates?.[0]).toMatchObject({
       id: 'r-1',
       modelId: 'claude-opus-4-6',
       effort: 'high',
     });
-    // 一字未改 ⇒ 没有任何行会被作废 ⇒ 一个确认框都不许弹
+    // 一字未改 ⇒ 没有任何候选会被作废 ⇒ 一个确认框都不许弹
     expect(screen.queryByText(/作废/)).toBeNull();
   });
 
@@ -1393,7 +1393,7 @@ describe('RunCreatePanel（编辑模式）', () => {
     changeModelToGpt5();
     submitForm();
 
-    // 确认框里必须点名**将被作废的那一行**（列的是这一轮现有的行：智能体 · 模型 · 原状态）
+    // 确认框里必须点名**将被作废的那一行**（列的是这一轮现有的候选：智能体 · 模型 · 原状态）
     const dialog = await saveDialog();
     expect(within(dialog).getAllByText(/作废/).length).toBeGreaterThan(0);
     expect(within(dialog).getByText(/Claude Code · claude-opus-4-6/)).toBeDefined();
@@ -1475,15 +1475,15 @@ describe('RunCreatePanel（编辑模式）', () => {
     submitForm();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0]?.[0].rows[0]).not.toHaveProperty('id');
+    expect(onSubmit.mock.calls[0]?.[0].candidates[0]).not.toHaveProperty('id');
   });
 
   /**
    * 退化态守卫（`mode="edit"` 却没给 `initial`）：**整个表单都不渲染**。
    *
-   * 为什么这条值得单独钉住：这种组合一旦退化成创建形状（一个空白默认行、行上没有 id、没有
+   * 为什么这条值得单独钉住：这种组合一旦退化成创建形状（一个空白默认行、候选上没有 id、没有
    * 「原用例已删除」的占位项），提交出去的载荷就**没有 id、且省略了这一轮现有的全部行**——
-   * 而更新端点是**全量替换**语义（`api/src/runs.ts` 把「没收到某一行」读成「删掉这一行」）⇒
+   * 而更新端点是**全量替换**语义（`api/src/runs.ts` 把「没收到某一行」读成「删掉这个候选」）⇒
    * 一次误接线就能静默销毁这一轮跑出来的结果，且界面上没有任何征兆（表单长得跟新建一模一样）。
    *
    * 判别联合（`RunCreatePanelProps`）已经让真实的 JSX 调用点过不了编译；这一条验的是**运行期**
@@ -1514,21 +1514,21 @@ describe('RunCreatePanel（编辑模式）', () => {
    * 运行期没有等价的观测点；而少给 `initial` 的后果是全量替换语义下静默销毁一轮已有的结果。
    */
   it('mode="edit" 少给 initial：编译期就过不去（@ts-expect-error 必须被用上）', () => {
-    // @ts-expect-error 判别联合要求 mode="edit" 同时给 initial：这一行故意缺它，TS2322 必须在这里报出来
+    // @ts-expect-error 判别联合要求 mode="edit" 同时给 initial：这个候选故意缺它，TS2322 必须在这里报出来
     const invalidEditProps = <RunCreatePanel cases={cases} modelOptionsFor={poolFor} saving={false} onSubmit={vi.fn()} onCancel={vi.fn()} mode="edit" />;
 
-    // 这条用例没有运行期主张：上面那行**编译**不过去才是它的全部内容（断言只是让这个变量真的被用上）
+    // 这条用例没有运行期主张：上面那个候选**编译**不过去才是它的全部内容（断言只是让这个变量真的被用上）
     expect(invalidEditProps).toBeDefined();
   });
 });
 
 /**
- * `invalidatedRows`：确认框的内容，也是它「不该弹时不弹」的判据。
- * 判据是 contracts 的 `isSameRowTarget`——与服务端的重置判据**同一份**。
+ * `invalidatedCandidates`：确认框的内容，也是它「不该弹时不弹」的判据。
+ * 判据是 contracts 的 `isSameCandidateTarget`——与服务端的重置判据**同一份**。
  */
-describe('invalidatedRows', () => {
-  /** 一行「跑过、有东西可丢」的行 */
-  function rowOf(overrides: Partial<EvalRow> = {}): EvalRow {
+describe('invalidatedCandidates', () => {
+  /** 一行「跑过、有东西可丢」的候选 */
+  function candidateOf(overrides: Partial<EvalCandidate> = {}): EvalCandidate {
     return {
       id: 'r-1',
       agentKind: 'cc',
@@ -1538,7 +1538,7 @@ describe('invalidatedRows', () => {
       modelId: 'claude-opus-4-6',
       status: 'judged',
       branch: 'test/r-1',
-      workspacePath: 'D:\\runs\\run-1\\rows\\r-1\\workspace',
+      workspacePath: 'D:\\runs\\run-1\\candidates\\r-1\\workspace',
       baselineCommit: 'a'.repeat(40),
       tokens: null,
       turns: null,
@@ -1554,14 +1554,14 @@ describe('invalidatedRows', () => {
     };
   }
 
-  const judged = rowOf();
+  const judged = candidateOf();
   /** 「没跑过」那一档的覆写：`pending` + 没有基线 + 零尝试（没有任何东西可丢） */
-  const neverRanOverrides: Partial<EvalRow> = { id: 'r-2', status: 'pending', baselineCommit: '', attempts: 0 };
-  const neverRan = rowOf(neverRanOverrides);
-  const run = { ...editRun, rows: [judged, neverRan] };
+  const neverRanOverrides: Partial<EvalCandidate> = { id: 'r-2', status: 'pending', baselineCommit: '', attempts: 0 };
+  const neverRan = candidateOf(neverRanOverrides);
+  const run = { ...editRun, candidates: [judged, neverRan] };
 
   /** 把一组行拼成表单会交回的形状（`id` 原样带着） */
-  function submitOf(rows: EvalRow[], overrides: Partial<RunFormValues> = {}): RunFormValues {
+  function submitOf(candidates: EvalCandidate[], overrides: Partial<RunFormValues> = {}): RunFormValues {
     return {
       caseId: run.caseId,
       note: run.note,
@@ -1569,51 +1569,51 @@ describe('invalidatedRows', () => {
       useAgentJudge: run.useAgentJudge,
       askUser: run.askUser,
       injectMessages: run.injectMessages,
-      rows: rows.map((row) => ({ id: row.id, agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId })),
+      candidates: candidates.map((row) => ({ id: row.id, agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId })),
       ...overrides,
     };
   }
 
   it('只改执行模式 ⇒ 空数组（不弹）', () => {
-    expect(invalidatedRows(run, submitOf([judged, neverRan]))).toEqual([]);
+    expect(invalidatedCandidates(run, submitOf([judged, neverRan]))).toEqual([]);
   });
 
   /**
-   * 备注不是行的「同一件事」判据：只改备注保存**一行都不作废**。
-   * 反例是把 note 塞进 `isSameRowTarget`（或另加一条「note 变了就重置」）——那会让一次纯注解
-   * 修改把跑过的行全部打回待开始，分数与产物当场消失。
+   * 备注不是候选的「同一件事」判据：只改备注保存**一个候选都不作废**。
+   * 反例是把 note 塞进 `isSameCandidateTarget`（或另加一条「note 变了就重置」）——那会让一次纯注解
+   * 修改把跑过的候选全部打回待开始，分数与产物当场消失。
    */
   it('只改备注 ⇒ 空数组（注解修改不该重置任何行）', () => {
-    expect(invalidatedRows(run, submitOf([judged, neverRan], { note: '换一个测试目的' }))).toEqual([]);
+    expect(invalidatedCandidates(run, submitOf([judged, neverRan], { note: '换一个测试目的' }))).toEqual([]);
   });
 
-  it('改模型 ⇒ 只有那一行，且**没跑过的行不算**（它没有东西可丢）', () => {
-    const changed = invalidatedRows(run, submitOf([rowOf({ modelId: 'claude-haiku' }), neverRan]));
+  it('改模型 ⇒ 只有那一行，且**没跑过的候选不算**（它没有东西可丢）', () => {
+    const changed = invalidatedCandidates(run, submitOf([candidateOf({ modelId: 'claude-haiku' }), neverRan]));
     expect(changed.map((row) => row.id)).toEqual(['r-1']);
-    // 「没跑过的行不算」必须让那一行**自己也改了目标**才算真的测到：目标没变时它被
-    // `isSameRowTarget` 判成「同一件事」而排除，与 `lostSomething` 那条判据无关
+    // 「没跑过的候选不算」必须让那一行**自己也改了目标**才算真的测到：目标没变时它被
+    // `isSameCandidateTarget` 判成「同一件事」而排除，与 `lostSomething` 那条判据无关
     //（实测：删掉 `if (!lostSomething) return false;` 时上面那句照样绿）。它没有分数也没有产物，
     // 重置它什么都不丢——拿它去弹确认框就是噪音（下面的 A15 用例守着「有噪音就不该弹」）。
-    const alsoChanged = invalidatedRows(
+    const alsoChanged = invalidatedCandidates(
       run,
-      submitOf([rowOf({ modelId: 'claude-haiku' }), rowOf({ ...neverRanOverrides, modelId: 'gpt-5' })]),
+      submitOf([candidateOf({ modelId: 'claude-haiku' }), candidateOf({ ...neverRanOverrides, modelId: 'gpt-5' })]),
     );
     expect(alsoChanged.map((row) => row.id)).toEqual(['r-1']);
   });
 
   it('删掉一行 ⇒ 它在作废名单里；换来用例 ⇒ 全部（含没跑过的）', () => {
-    expect(invalidatedRows(run, submitOf([neverRan])).map((row) => row.id)).toEqual(['r-1']);
-    expect(invalidatedRows(run, submitOf([judged, neverRan], { caseId: 'c-2' })).map((row) => row.id)).toEqual(['r-1']);
+    expect(invalidatedCandidates(run, submitOf([neverRan])).map((row) => row.id)).toEqual(['r-1']);
+    expect(invalidatedCandidates(run, submitOf([judged, neverRan], { caseId: 'c-2' })).map((row) => row.id)).toEqual(['r-1']);
   });
 
   /**
-   * **强度变了 = 这一行不再同一件事**（同一个模型、同一家供应商，
+   * **强度变了 = 这个候选不再同一件事**（同一个模型、同一家供应商，
    * high 改成 low 跑出来的是另一次评测），所以它必须进作废名单；而强度**没变**时不许进
    * （只在两侧都写死成「有强度就重置」的实现会让后一条红）。
    */
   it('改强度 ⇒ 那一行；强度没变 ⇒ 空数组（缺省一侧算改了）', () => {
-    const high = rowOf({ effort: 'high' });
-    const runWithHigh = { ...editRun, rows: [high] };
+    const high = candidateOf({ effort: 'high' });
+    const runWithHigh = { ...editRun, candidates: [high] };
     const keep = (effort: string | undefined): RunFormValues => ({
       caseId: runWithHigh.caseId,
       note: runWithHigh.note,
@@ -1621,13 +1621,13 @@ describe('invalidatedRows', () => {
       useAgentJudge: runWithHigh.useAgentJudge,
       askUser: runWithHigh.askUser,
       injectMessages: runWithHigh.injectMessages,
-      rows: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
+      candidates: [{ id: 'r-1', agentKind: 'cc', providerId: 'p-anthropic', modelId: 'claude-opus-4-6', ...(effort === undefined ? {} : { effort }) }],
     });
 
-    expect(invalidatedRows(runWithHigh, keep('low')).map((row) => row.id)).toEqual(['r-1']);
-    expect(invalidatedRows(runWithHigh, keep('high'))).toEqual([]);
+    expect(invalidatedCandidates(runWithHigh, keep('low')).map((row) => row.id)).toEqual(['r-1']);
+    expect(invalidatedCandidates(runWithHigh, keep('high'))).toEqual([]);
     // 表单没回传强度（旧客户端 / 预填漏了）＝ 「未指定档位」，按改了处理（安全方向，contracts 有注释）
-    expect(invalidatedRows(runWithHigh, keep(undefined)).map((row) => row.id)).toEqual(['r-1']);
+    expect(invalidatedCandidates(runWithHigh, keep(undefined)).map((row) => row.id)).toEqual(['r-1']);
   });
 });
 
@@ -1636,7 +1636,7 @@ describe('invalidatedRows', () => {
  *
  * 为什么单独测这个纯函数而不是只从 Select 的 `textContent` 反推：那是**一句说出口的话**，
  * 三档的判据（没选智能体 / 这家没声明缺省档 / 声明了）必须逐档可证；组件层那两条用例只能
- * 覆盖到夹具给的那两家，而「没选智能体」这一档在组件上要先造一个空智能体的行才够得着。
+ * 覆盖到夹具给的那两家，而「没选智能体」这一档在组件上要先造一个空智能体的候选才够得着。
  */
 describe('effortPlaceholder', () => {
   const declared: (agentKind: AgentKind) => string | undefined = (agentKind) =>

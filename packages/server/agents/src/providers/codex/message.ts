@@ -1,6 +1,6 @@
 /**
  * codex 的**内容级归一**：app-server 通知 → 契约的消息草稿与子任务行。
- * 行级事件（计量、时长、失败）在 `events.ts`，两者共用 `run-state.ts` 的同一把尺子。
+ * 运行级事件（计量、时长、失败）在 `events.ts`，两者共用 `run-state.ts` 的同一把尺子。
  *
  * 四条取值口径：
  *   1. **一条通知只在一处归一**：本轮运行期由通知驱动（实时），收尾由 `reader` 补**子线程的历史**
@@ -14,7 +14,8 @@
  *      差分在并发子线程与 turn/item 边界不一致时无法证明归属 ⇒ 不拿线程级读数冒充单条消息。
  */
 import { MCP_TOOL_NAME_PREFIX, type SubagentRecord, type UsageTokens } from '@aieval/contracts';
-import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, unrecognizedBlockDraft, type MessageDraft } from '../../message';
+import { toolCallBlockDraft, toolResultBlockDraft, thinkingBlockDraft, textBlockDraft, truncate, unrecognizedBlockDraft, imageViewBlockDraft, type MessageDraft } from '../../message';
+import { asRecord, readString } from '../../json';
 import type {
   AppServerItem,
   AppServerItemEntry,
@@ -117,7 +118,7 @@ export function projectCodexMessages(
      * 两条通知走同一个归一函数，**但推理条目必须分开**：`item/started` 的推理条目两格都是空数组
      * （实测），那是「开始推理了」的占位，不是「这一轮没有文本」的结论（见 `projectItem`）。
      *
-     * **开号也在这一处**，不假定行级投影（`events.ts`）已经跑过：生产接线里那边确实先跑、
+     * **开号也在这一处**，不假定运行级投影（`events.ts`）已经跑过：生产接线里那边确实先跑、
      * 这里的调用是幂等的空转（同一身份只开一次），但消息的合并键**不能**依赖另一层的执行顺序
      * ——只走内容级的消费方（收尾回读、单测）若漏了那一层，整批条目会共用一个号、被折叠成一条。
      */
@@ -255,6 +256,25 @@ function projectItem(
   }
   if (item.kind === 'other') {
     /**
+     * **`imageView`：模型看过一张图**，厂商只给路径（`{type, id, path}`）。
+     *
+     * 它此前落在下面的 `unrecognized` 兜底支——那能让排障看见「厂商发过」，但界面上只是一段
+     * 原始载荷，模型到底看了什么、能不能再看到那张图，都无从判断。这一类载荷的形状是稳定的
+     * （`path` 是必填字符串），故归一成 `image-view` 块；**只在 `item/completed` 产**
+     * （`item/started` 那一刻内容还没定，与 `fileChange` / `agentMessage` 同一条口径）。
+     *
+     * 拿不到非空路径时**不降级成空块**：那会让「厂商没给路径」与「图片就在这儿」长得一样。
+     * 落回 `unrecognized` 并把 `reason` 记成 `'unmapped-shape'`（类型认识、形状对不上），原文照留。
+     */
+    if (item.type === 'imageView') {
+      if (started) return { drafts: [], subagents: [] };
+      const path = readString(asRecord(item.raw), 'path');
+      const blocks = path === null || path === ''
+        ? [unrecognizedBlockDraft(item.type, item.raw, 'unmapped-shape')]
+        : [imageViewBlockDraft(path)];
+      return { drafts: [draft({ ...where, role: 'assistant', blockKind: 'item', blocks })], subagents: [] };
+    }
+    /**
      * **未识别的条目类型**：产一条 `unrecognized` 块把厂商原文留下。
      *
      * 为什么不能什么都不产：未识别的**方法**有 `unknownEventDraft` 兜底，未识别的**类型**此前
@@ -339,7 +359,7 @@ function reasoningDrafts(
  *
  * 调用块的工具真名用 `exec_command`（本仓工具表里 `run-shell` 那一族的真名），**不是**协议里的
  * 条目类型名——条目类型是派生名，界面的族卡片按工具名判族。入参给 `{ command, cwd }`（真机
- * `command` 是字符串，`cwd` 是执行目录；两者都是这次调用的事实）。
+ * `command` 是字符串，`cwd` 是执行的目录；两者都是这次调用的事实）。
  *
  * 结果块：`structured = { exitCode, durationMs }`（**取不到就整格 `null`，不是 `{}`**），
  * `isError` 只在**退出码非零**时为真。输出是 `aggregatedOutput`（stdout 与 stderr **合流**，
@@ -923,10 +943,10 @@ export function terminalStatusOf(
 }
 
 /**
- * 子任务行的 `outcome`（那一行上「它最后交代了什么」）。
+ * 子任务行的 `outcome`（那一本次运行上「它最后交代了什么」）。
  *
  * **失败那一档优先给厂商的失败原因**：`turn.error` 是这条子线程为什么没跑成的唯一出处，
- * 而最后一条答复正文多半是它失败**之前**说的话——拿后者顶替会让行上写着一句听起来正常的
+ * 而最后一条答复正文多半是它失败**之前**说的话——拿后者顶替会让本次运行上写着一句听起来正常的
  * 结论，而真正的原因（鉴权、超限、沙箱）一个字都看不到。拿不到原因时才退回最后一条答复。
  */
 function outcomeOf(thread: AppServerThread | null, status: SubagentRecord['status']): string | null {
@@ -955,7 +975,7 @@ function deltaKey(threadId: string, itemId: string): string {
 /**
  * 由 `thread/started` 通知登记子线程昵称（`Thread.agentNickname` 的原生来源）。
  * 为什么收在这一处：昵称只在子任务行上展示，而子线程可能在**它自己第一条条目到达之前**
- * 就派发了若干消息 ⇒ 登记得越早，行上的名字越早对得上（收尾时 `reader` 会给更权威的一份）。
+ * 就派发了若干消息 ⇒ 登记得越早，本次运行上的名字越早对得上（收尾时 `reader` 会给更权威的一份）。
  */
 export function noteThreadStarted(
   threadId: string,

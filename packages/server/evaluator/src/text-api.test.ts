@@ -4,7 +4,7 @@
  * 注意：用 `vi.stubGlobal('fetch', …)` 桩掉 fetch（Node 18+ 有全局 fetch，不需要 polyfill）；
  * `afterEach` 必须 `vi.unstubAllGlobals()`，否则桩会泄漏给同文件后续用例。
  * 本文件要钉住的是**接线**（URL、请求头、请求体的形状、响应字段的取值路径），
- * 而不是 HTTP 客户端的行为——评分器与「AI 生成」都依赖这份接线完全一致。
+ * 而不是 HTTP 客户端的候选为——评分器与「AI 生成」都依赖这份接线完全一致。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EFFORT_OFF, ServiceError, type ProtocolType } from '@aieval/contracts';
@@ -702,9 +702,9 @@ describe('callTextApiConversation —— 用量随结果一起交出来', () => 
  * 而单轮与多轮共用 `buildBody` ⇒ 强度也必须加在那一处，否则「单轮能跑、多轮没强度」这类漂移
  * 只在一条路径上出现。三档 × 两协议：
  *   · **未指定 = 一个强度键都不加**（不是关闭）：把决定权交给网关的缺省。⚠️ 这与智能体侧
- *     `EvalRow.effort` 的「未选」**不等强、不要互相引用**：那边是走该家适配器自己的缺省
+ *     `EvalCandidate.effort` 的「未选」**不等强、不要互相引用**：那边是走该家适配器自己的缺省
  *     （dsh 会落到 `high`），是**我们这一侧**做的决定，而这里是不下发、由网关定
- *     （口径见 `contracts/src/run.ts` 的 `EvalRow.effort` 与 `text-api.ts` 的 `reasoningFields`）；
+ *     （口径见 `contracts/src/run.ts` 的 `EvalCandidate.effort` 与 `text-api.ts` 的 `reasoningFields`）；
  *   · `off` = 显式关闭（openai 是 `reasoning: { effort: 'none' }`、anthropic 是
  *     `thinking: { type: 'disabled' }`）；
  *   · 其它档 = 按协议翻成 `reasoning.effort`（openai Responses）/ `output_config.effort`（anthropic）。
@@ -781,7 +781,7 @@ describe('思考强度落进请求体（唯一一份协议表）', () => {
 
 /**
  * 瞬时失败重试：本机实测真实网关会回 `500 服务维护中，请稍后重试`，
- * 一次抖动就让整行落 failed 是不划算的。这一组钉三件事：
+ * 一次抖动就让整个候选落 failed 是不划算的。这一组钉三件事：
  *   ① **产品默认值**（一次抖动够用的次数与退避）——只钉注入值等于默认值无人验证；
  *   ② 瞬时面（5xx / 429 / 网络）会重试且**复用同一份请求体**（同一段对话，不是重新组装）；
  *   ③ `AUTH_FAILED`（密钥错）与已中止**一次都不重试**。

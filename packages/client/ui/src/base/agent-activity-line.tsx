@@ -5,7 +5,7 @@
  * 显示最后一个非空段。文字本身不动的那一档，一条高光带周期性扫过。
  *
  * 动效参考 DSH 的 `dsh-turn-status-shimmer`（`ChatView.module.css`：1.8s linear infinite、
- * `background-size: 250%`、`background-clip: text` 的渐变位移）——那是它「正在思考」那一行的观感，
+ * `background-size: 250%`、`background-clip: text` 的渐变位移）——那是它「正在思考」那一候选的观感，
  * 也是本仓「执行中」需要的观感。**动画本身不在这里**：ui 包一个 CSS 文件都没有，
  * 而全局样式只有 `apps/web-next/app/globals.css` 一处（它已经确立了「提供变量/类名供 ui 消费」的口径）。
  * 于是这里只负责带上类名，由 `apps/web-next` 的守卫读那份 CSS 钉住两边一致：
@@ -14,11 +14,11 @@
  * 六条设计口径：
  *   1. **只有运行态才出现**（`activityText` 对终态返回 `null`）：它的语义是「正在……中」，
  *      跑完还挂着一句「正在思考」比不显示更糟；
- *   2. **还没有输出时给回落文案**：空白行会被读成「界面坏了」，而此刻的真实情况是「还没开始说话」；
- *   3. **单行截断、不挂 Tooltip**：一条工具块 JSON 有几百字符，换行会把卡片撑高、把按钮挤出视口；
+ *   2. **还没有输出时给回落文案**：空白候选会被读成「界面坏了」，而此刻的真实情况是「还没开始说话」；
+ *   3. **单行截断、不挂 Tooltip**：一条工具块 JSON 有几百字符，换候选会把卡片撑高、把按钮挤出视口；
  *      而一个每秒都在变的浮层是噪声——全量内容本来就在「执行日志」里，那里才是读日志的地方；
  *   4. **颜色取 `theme` 之外的两个既有主题变量**（`--app-muted` / `--app-fg`，见 globals.css）：
- *      把 antd token 再复制一份进 CSS 就是第二份真源，主题一改必漂移。字号与行内边距一律不写
+ *      把 antd token 再复制一份进 CSS 就是第二份真源，主题一改必漂移。字号与候选内边距一律不写
  *      （交紧凑密度与 `Typography` 的默认值，AGENTS.md 的硬口径）；
  *   5. **实时正文优先、历史摘要兜底**：有 `activity.text` 就走打字态
  *      （最后一个非空段 + 闪烁光标），否则看工具块的摘要，最后才回落到 `log.summary`。
@@ -29,7 +29,7 @@
  */
 import { Typography } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
-import type { EvalRowStatus } from '@aieval/contracts';
+import type { EvalCandidateStatus } from '@aieval/contracts';
 import { STREAM_CURSOR_CLASS } from './stream-cursor';
 
 /**
@@ -47,7 +47,7 @@ export const ACTIVITY_TYPING_CLASS = 'aieval-activity-typing';
 /**
  * 单行截断的结构性样式。
  * 手写这三条而**不用** `Typography.Text` 的 `ellipsis`：那个变体会在首次省略时量出并固定宽度
- * （antd 文档原文：「it will fix width on the first ellipsis」），而这一行的文字每隔一拍就换一次，
+ * （antd 文档原文：「it will fix width on the first ellipsis」），而这个候选的文字每隔一拍就换一次，
  * 量出来的宽度只对旧文本成立；纯 CSS 省略没有这个问题，也不必给 jsdom 补 `ResizeObserver` 桩。
  * 只写结构性属性（显示方式与溢出），不碰字号与间距。
  */
@@ -60,7 +60,7 @@ const TRUNCATE_STYLE: CSSProperties = {
 
 /**
  * 三个运行态的回落文案。
- * **不是** `ROW_STATUS_LABELS` 的副本而是另写一句：那边是「执行中」，套进「正在……中」是病句；
+ * **不是** `CANDIDATE_STATUS_LABELS` 的副本而是另写一句：那边是「执行中」，套进「正在……中」是病句；
  * 这里要的是「正在思考」这种**活动**的说法（用户口径原文：正在思考 / 加载中 / 生成中）。
  */
 const ACTIVITY_FALLBACK: Record<'preparing' | 'running' | 'judging', string> = {
@@ -70,7 +70,7 @@ const ACTIVITY_FALLBACK: Record<'preparing' | 'running' | 'judging', string> = {
 };
 
 /**
- * 实时活动（与 `@aieval/client` 的 `RowActivity` **逐字段一致**）。
+ * 实时活动（与 `@aieval/client` 的 `CandidateActivity` **逐字段一致**）。
  * ui 不能 import client（分层表），故在此重复声明——两处必须同步改，判据是字段名与可空性逐字相同。
  */
 export interface AgentActivity {
@@ -90,19 +90,19 @@ export interface ActivityTyping {
 }
 
 /**
- * 这一行显示什么：运行态给**给人看的那句话**，还没有消息时给回落文案；非运行态返回 `null`。
- * 用 `switch` 而不是 `isRunningRow(status)` + 一次类型断言：前者让「新增状态时这里漏了一格」
+ * 这个候选显示什么：运行态给**给人看的那句话**，还没有消息时给回落文案；非运行态返回 `null`。
+ * 用 `switch` 而不是 `isRunningCandidate(status)` + 一次类型断言：前者让「新增状态时这里漏了一格」
  * 变成调用方可见的编译期问题，后者要靠 `as` 把类型按下去——而漏掉新状态正是这样发生的。
  * 空串同样按「还没有消息」处理：上游 `activityOf` 已经挡过一次，这里不假设调用方一定干净。
  */
-export function activityText(status: EvalRowStatus, latestText: string | null): string | null {
+export function activityText(status: EvalCandidateStatus, latestText: string | null): string | null {
   switch (status) {
     case 'preparing':
     case 'running':
     case 'judging':
       return latestText === null || latestText === '' ? ACTIVITY_FALLBACK[status] : latestText;
     default:
-      // 终态（含 pending）：这一行随行结束收起，不留下任何残留
+      // 终态（含 pending）：这个候选随行结束收起，不留下任何残留
       return null;
   }
 }
@@ -110,10 +110,10 @@ export function activityText(status: EvalRowStatus, latestText: string | null): 
 /**
  * 静态档的文案：工具块摘要优先于 `log.summary`（同一次工具调用两者是同一句话，但**摘要来自消息、
  * 摘要来自日志**是两条路，消息那条在评分阶段也可能先到），最后才是日志摘要与回落文案。
- * 非运行态一律 `null`（这一行收起）。
+ * 非运行态一律 `null`（这个候选收起）。
  */
 export function staticActivityText(
-  status: EvalRowStatus,
+  status: EvalCandidateStatus,
   latestText: string | null,
   activity: AgentActivity | null | undefined,
 ): string | null {
@@ -152,7 +152,7 @@ export function lastSegmentOf(text: string): { segment: string; segmentIndex: nu
  * 工具摘要与 `log.summary` 不走打字态——它们本来就是完整的一句话，逐字重打只是噪声
  * （而且它们没有「还在写」这个事实，挂上光标就是撒谎）。
  */
-export function typingOf(status: EvalRowStatus, activity: AgentActivity | null | undefined): ActivityTyping | null {
+export function typingOf(status: EvalCandidateStatus, activity: AgentActivity | null | undefined): ActivityTyping | null {
   switch (status) {
     case 'preparing':
     case 'running':
@@ -170,13 +170,13 @@ export function typingOf(status: EvalRowStatus, activity: AgentActivity | null |
 }
 
 export interface AgentActivityLineProps {
-  /** 这一行此刻的状态（决定显不显示、以及没消息时说什么） */
-  status: EvalRowStatus;
+  /** 这个候选此刻的状态（决定显不显示、以及没消息时说什么） */
+  status: EvalCandidateStatus;
   /**
    * **给人看的一句话**（`log.summary` 优先，判定在 `@aieval/client` 的 `activityOf`）；
    * null = 还没有可说的事（显示回落文案）。
    * 传进来的**必须是消息**：厂商信封那种 JSON 早在数据层就被挡在门外了
-   *（这一行动效里不能出现 `{"method":"session.event",…}`）——
+   *（这个候选动效里不能出现 `{"method":"session.event",…}`）——
    * 所以这里不做任何 JSON 判断，`activityText` 只负责「运行态怎么显示、终态怎么收起」。
    */
   latestText: string | null;

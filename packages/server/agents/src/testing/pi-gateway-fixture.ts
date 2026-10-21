@@ -8,7 +8,7 @@
  *
  * 网关按**请求路径**回一段对应 wire 的最简流：OpenAI Responses 的具名事件（`response.created` /
  * `response.output_item.*` / `response.output_text.delta` / `response.completed`）与 anthropic 的具名
- * SSE 事件是两种格式，回错了这一行会以厂商原文的 `stopReason: 'error'` 收场（请求侧断言仍在，
+ * SSE 事件是两种格式，回错了本次运行会以厂商原文的 `stopReason: 'error'` 收场（请求侧断言仍在，
  * 但结论栏会无谓地变红）；两条 wire 都走官方 SDK 的流解析器，少一个终止事件同样算失败。
  * 助手正文由 `respond(请求体)` 决定（缺省恒回 `'done'`）：**脚本式上游**只扮演模型，
  * 厂商侧（装配、会话、投影）走的都是真包。
@@ -112,24 +112,24 @@ export function startPiGateway(
   });
 }
 
-/** 一个**已备好的行目录**：续接那类用例要在同一条行目录上连跑两次，故由调用方给出根 */
-export interface PiRowDir {
+/** 一个**已备好的本次运行目录**：续接那类用例要在同一条本次运行目录上连跑两次，故由调用方给出根 */
+export interface PiCandidateDir {
   cwd: string;
   configHome: string;
 }
 
-/** 造一个行目录（`cwd` = `<root>/workspace`、`configHome` = `<root>/.agenthome`，与编排层同形） */
-export function createPiRowDir(root: string): PiRowDir {
+/** 造一个本次运行目录（`cwd` = `<root>/workspace`、`configHome` = `<root>/.agenthome`，与编排层同形） */
+export function createPiCandidateDir(root: string): PiCandidateDir {
   const cwd = join(root, 'workspace');
   const configHome = join(root, '.agenthome');
   mkdirSync(cwd, { recursive: true });
   return { cwd, configHome };
 }
 
-/** 在某条行目录上跑一轮真包：prompt 与 wire 由调用方给，`resume` 给了就走续接 */
-export async function runPiRowIn(
+/** 在某条本次运行目录上跑一轮真包：prompt 与 wire 由调用方给，`resume` 给了就走续接 */
+export async function runPiCandidateIn(
   seen: CapturedPiRequest[],
-  dir: PiRowDir,
+  dir: PiCandidateDir,
   port: number,
   options: {
     protocolType: 'openai' | 'anthropic';
@@ -166,19 +166,19 @@ export async function runPiRowIn(
 }
 
 /**
- * 跑一行真包：档位走 `effort`、wire 走 `protocolType`，返回网关收到的最后一份请求体与这一行的事件流。
+ * 跑一行真包：档位走 `effort`、wire 走 `protocolType`，返回网关收到的最后一份请求体与本次运行的事件流。
  *
  * `maxOutputTokens` 给 32768：anthropic 侧的预算是 `min(档位预算, maxTokens - 1024)`，取小了四档
- * 会互相塌缩成同一个数（那是另一条已知边界，不该混进逐档对照表）。每行一棵自己的行目录——
- * 技能与凭据都往 `configHome` 里落，共用一棵会让上一行的物化泄漏到下一行。
+ * 会互相塌缩成同一个数（那是另一条已知边界，不该混进逐档对照表）。每个本次运行一棵自己的本次运行目录——
+ * 技能与凭据都往 `configHome` 里落，共用一棵会让上一本次运行的物化泄漏到下一行。
  */
-export async function runPiRow(
+export async function runPiCandidate(
   seen: CapturedPiRequest[],
   port: number,
   options: { protocolType: 'openai' | 'anthropic'; effort?: string; outputSchema?: unknown },
 ): Promise<{ body: Record<string, unknown>; events: AgentEvent[] }> {
-  const dir = createPiRowDir(mkdtempSync(join(tmpdir(), 'pi-gateway-')));
-  const { body, events } = await runPiRowIn(seen, dir, port, {
+  const dir = createPiCandidateDir(mkdtempSync(join(tmpdir(), 'pi-gateway-')));
+  const { body, events } = await runPiCandidateIn(seen, dir, port, {
     protocolType: options.protocolType,
     prompt: 'say done',
     ...(options.effort === undefined ? {} : { effort: options.effort }),
@@ -193,6 +193,6 @@ export function lastPiUsage(events: AgentEvent[]): Extract<AgentEvent, { type: '
     (event): event is Extract<AgentEvent, { type: 'usage' }> => event.type === 'usage',
   );
   const last = usages.at(-1);
-  expect(last, '这一行没有发出任何 usage 事件').toBeDefined();
+  expect(last, '本次运行没有发出任何 usage 事件').toBeDefined();
   return last as Extract<AgentEvent, { type: 'usage' }>;
 }

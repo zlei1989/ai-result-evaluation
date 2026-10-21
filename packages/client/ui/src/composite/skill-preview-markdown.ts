@@ -14,7 +14,7 @@
  * 按普通正文原样渲染。「预览认它有 frontmatter」与「服务端按 frontmatter 判准入」因此永远
  * 同一个答案——两处各写一份识别规则迟早漂开。
  *
- * **已知边界**：frontmatter 内部若出现三反引号行会提前闭合这个代码块（YAML 里没有这种合法值；
+ * **已知边界**：frontmatter 内部若出现三反引号候选会提前闭合这个代码块（YAML 里没有这种合法值；
  * 不为它加长围栏——那会让「围栏就是三反引号」这条视觉约定变得难认）。
  */
 import { splitSkillMarkdown } from '@aieval/contracts';

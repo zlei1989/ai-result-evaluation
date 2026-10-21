@@ -13,8 +13,9 @@
  *   3. 按钮显式给 `aria-label`：antd 的加载图标自带 `role="img" aria-label="loading"`，会被并进
  *      按钮的可访问名（屏读器念成「loading 校验并保存」，按名字定位按钮也失配），
  *      所以 `loading` 期间也把名字钉成与可见文案逐字一致；
- *   4. 用例目录那一格的 `extra` 必须同时说三句话（一文件一用例 / 默认值 / **不会迁移**已有文件）：
- *      「改目录不迁移」是本功能最容易被误解的一点，漏了它用户会以为换了目录就搬了家。
+ *   4. 两格的 `extra` 都要说清「改目录不迁移」：工作区那一格说旧产物留在原目录，
+ *      用例目录那一格说旧用例文件不会跟着搬。
+ *      「改目录不迁移」是本功能最容易被误解的一点：漏了它用户会以为换了目录就搬了家。
  */
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -85,9 +86,11 @@ export function WorkspaceSettingsCard({
   return (
     <Card size="small" title="存储目录" data-testid="workspace-settings-card">
       <Form layout="vertical" size="small" component={false}>
+        {/* extra 一屏说清三件事：落什么、默认值、**改目录不迁移**。
+            最后一件是本卡最容易被误解的一点——漏了它用户会以为换了目录就把旧评测搬了家 */}
         <Form.Item
           label="工作区根目录"
-          extra="评测的行工作副本、事件日志与用例缓存都落在这个目录下；默认 ~/.aieval-runs"
+          extra="行工作副本、事件日志与用例缓存都落在这个目录下，默认 ~/.aieval-runs；改目录不迁移已有产物"
           style={{ marginBottom: 8 }}
         >
           <Flex gap={8}>
@@ -120,13 +123,9 @@ export function WorkspaceSettingsCard({
           <Alert type="error" showIcon title="工作区不可用，设置未改动" description={lastValidated.message} />
         )}
 
-        <Typography.Text type="secondary">
-          改动根目录不会迁移已有产物：旧评测仍留在原目录，历史评测里显示的是它当时的实际路径。
-        </Typography.Text>
-
         <Form.Item
           label="用例目录"
-          extra="一个用例一个文件，存在 <用例目录>/<用例 id>.json；默认 ~/.aieval-cases。改目录不会迁移已有用例文件：旧文件留在原目录，用例列表只认新目录。"
+          extra="一个用例一个文件，存在 <用例目录>/<用例 id>.json；默认 ~/.aieval-cases；改目录不会迁移已有用例文件"
           style={{ marginBottom: 8, marginTop: 12 }}
         >
           <Flex gap={8}>

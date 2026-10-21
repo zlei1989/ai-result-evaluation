@@ -59,7 +59,7 @@ function createHarness(
     hang?: boolean;
     /**
      * `hooks.start()` **永不返回**（装配段卡住）：用来钉「看门狗只能点名、没有句柄可释放，
-     * 这一行不会落定」这条能力边界（真机读数见 `.scratch/pi-audit3/lifecycle/05-event-stream.test.ts`
+     * 这个候选不会落定」这条能力边界（真机读数见本仓真机探针（不入库）
      * 的 D 臂）。
      */
     startHang?: boolean;
@@ -231,7 +231,7 @@ describe('runTurn', () => {
   });
 
   // `tokensEstimated` 是 cc 的跑动期估算：它只进事件，**绝不进结果**——
-  // 否则崩溃 / 被杀的行会带着一份估算被写成「采到了计量」，而快照是唯一落盘真相。
+  // 否则崩溃 / 被杀的候选会带着一份估算被写成「采到了计量」，而快照是唯一落盘真相。
   it('估算计量只进事件、不进结果（tokensEstimated）', async () => {
     const events: AgentEvent[] = [];
     const harness = createHarness({
@@ -556,7 +556,7 @@ describe('runTurn', () => {
     expect(result.error?.message).not.toContain('high demand');
   });
 
-  it('CLI 的 stderr 会落进该行事件流（只有它能区分「网关 5xx」与「Responses 契约不满足」）', async () => {
+  it('CLI 的 stderr 会落进该候选事件流（只有它能区分「网关 5xx」与「Responses 契约不满足」）', async () => {
     const events: AgentEvent[] = [];
     const harness = createHarness({
       events: [],
@@ -576,10 +576,10 @@ describe('runTurn', () => {
   });
 
   it('事件回调抛错不外抛：结论照常返回、释放照走完，失败落 logger.error', async () => {
-    // 消费方抛错是**真实形状**：编排层的 publishRowEvent → appendEvent 在写侧 schema 不过时抛
-    // ServiceError，磁盘写失败同样抛；而编排层不给每一行套 try/catch（正因 run() 承诺不抛）。
+    // 消费方抛错是**真实形状**：编排层的 publishCandidateEvent → appendEvent 在写侧 schema 不过时抛
+    // ServiceError，磁盘写失败同样抛；而编排层不给每个候选套 try/catch（正因 run() 承诺不抛）。
     // 这里让 onEvent 对**每条**事件都抛：若发射口没有受保护，首条事件就会把异常冒进循环的 catch，
-    // 被归因成 AGENT_FAILED（把「日志写盘失败」误报成「适配器运行失败」）。
+    // 被归因成 AGENT_FAILED（把「日志写盘失败」误报成「适配器运行的失败」）。
     const loggerErrors = captureLoggerErrors();
     const harness = createHarness({
       events: [{ kind: 'message' }],
@@ -744,11 +744,11 @@ describe('runTurn', () => {
 });
 
 /**
- * 看门狗（`AgentRunInput.watchdog`，默认常亮）：骨架判的是**这一行还在动吗**，不是工作时长。
+ * 看门狗（`AgentRunInput.watchdog`，默认常亮）：骨架判的是**这个候选还在动吗**，不是工作时长。
  *
  * 四条口径（缺一条就会误杀或漏杀）：
- *   ①「有输出」＝这一条投影交出了任何产品事件（行级事件 / 消息 / 子任务行 / 计量）；
- *   ② 墙钟按**一次模型往返**计（观察到轮次推进就重新起表）——套在整行上等于把「执行不限时间」的总上限加回来；
+ *   ①「有输出」＝这一条投影交出了任何产品事件（候选级事件 / 消息 / 子任务行 / 计量）；
+ *   ② 墙钟按**一次模型往返**计（观察到轮次推进就重新起表）——套在整候选上等于把「执行不限时间」的总上限加回来；
  *   ③ 工具在途挂起静止计时**只对能合法静默的家生效**（dsh 与 pi：工具全程可能一声不吭）；
  *   ④ 等待审批在途也挂起——**识别机制按家不同、今天采不到 ⇒ 如实登记为「未豁免」**（见下面那条用例）。
  *
@@ -778,7 +778,7 @@ describe('看门狗：静止判超时', () => {
     };
   }
 
-  /** 工具调用 / 结果的投影：两条都带行级事件（「有输出」成立），差别只在消息块上 */
+  /** 工具调用 / 结果的投影：两条都带候选级事件（「有输出」成立），差别只在消息块上 */
   function toolProjection(callId: string, phase: 'call' | 'result'): TurnProjection {
     return {
       drafts: [logDraft('stdout', `${phase} ${callId}`)],
@@ -801,7 +801,7 @@ describe('看门狗：静止判超时', () => {
    *
    * 变异体：把 `tripWatchdog` 里那段 `handle === undefined` 的点名删掉 ⇒ 头一条断言当场红。
    */
-  it('装配段卡住 ⇒ 看门狗点名「卡在装配段」，且这一行不落定（没有句柄可释放）', async () => {
+  it('装配段卡住 ⇒ 看门狗点名「卡在装配段」，且这个候选不落定（没有句柄可释放）', async () => {
     vi.useFakeTimers();
     const events: AgentEvent[] = [];
     const harness = createHarness({ startHang: true });
@@ -858,7 +858,7 @@ describe('看门狗：静止判超时', () => {
   it('有输出就不算静止：每 60 秒一条事件，跑满 5 分钟也不判超时', async () => {
     vi.useFakeTimers();
     const harness = createHarness({
-      // 只带行级日志、不带轮次：这一条证的只能是「有输出 ⇒ 重置空闲计时」
+      // 只带候选级日志、不带轮次：这一条证的只能是「有输出 ⇒ 重置空闲计时」
       stream: (recorder) => createTimedStream(
         [0, 60_000, 120_000, 180_000, 240_000].map((atMs) => ({ atMs, event: atMs })),
         recorder,
@@ -884,9 +884,9 @@ describe('看门狗：静止判超时', () => {
   });
 
   /**
-   * 口径①的**完整面**：「有输出」＝这一条投影交出了任何产品事件，四种载体（行级事件 / 消息 /
+   * 口径①的**完整面**：「有输出」＝这一条投影交出了任何产品事件，四种载体（候选级事件 / 消息 /
    * 子任务行 / 计量）**各自**都算数。少认一种的表现不是报错，而是那一类通道被误杀——例如只发消息、
-   * 不发任何行级事件的适配器会在空闲上限被判静止超时，而它其实一直在干活。
+   * 不发任何候选级事件的适配器会在空闲上限被判静止超时，而它其实一直在干活。
    *
    * 判据取**时间差**：输出落在 100 s（把空闲期限推到 280 s），推进到 200 s（已越过开跑后的 180 s）
    * 仍不许收场；不认这一类载体的话，看门狗在 180 s 就开火了。反面同样要钉：四条都空的投影
@@ -921,7 +921,7 @@ describe('看门狗：静止判超时', () => {
     };
     const cases: { name: string; projection: TurnProjection; trips: boolean }[] = [
       {
-        name: '行级事件',
+        name: '候选级事件',
         trips: false,
         projection: { drafts: [logDraft('stdout', '还在跑')], tokens: null, turns: null, failure: null },
       },
@@ -1082,7 +1082,7 @@ describe('看门狗：静止判超时', () => {
     expect(result.exitReason).toBe('timed-out');
     expect(result.error?.code).toBe('AGENT_TIMED_OUT');
     // 摘要要说清是哪一级开火（排障时「静止」与「往返不收尾」是两件事）
-    expect(logText(events)).toContain('单次模型往返');
+    expect(logText(events)).toContain('单次模型调用');
   });
 
   /**
@@ -1215,13 +1215,13 @@ describe('看门狗：静止判超时', () => {
 
     const result = await settleWithFakeTimers(promise, { stepMs: 60_000, steps: 8 });
     expect(result.exitReason).toBe('timed-out');
-    expect(logText(events)).toContain('单次模型往返');
+    expect(logText(events)).toContain('单次模型调用');
   });
 });
 
 /**
  * 停机回收：宿主收信号时要把**本进程在册的在途会话**逐个释放（`disposeLiveSessions()`）。
- * 为什么必须有：SDK 代 spawn 的工具子进程是 detach 的，宿主一死就成孤儿、还捏着那一行的工作区与
+ * 为什么必须有：SDK 代 spawn 的工具子进程是 detach 的，宿主一死就成孤儿、还捏着那一候选的工作区与
  * 配置目录；而死掉的进程谁也回收不了（`SIGKILL` 不可捕获，那一格不可闭合）。
  */
 describe('停机回收：在册会话', () => {
@@ -1261,7 +1261,7 @@ describe('停机回收：在册会话', () => {
  * `call_id` 配对键），而它读的 `sessions/rollout-*.jsonl` **是 CLI 边跑边追加的**——
  * 失败 / 被终止的会话文件里同样有内容（一条被中断的 codex 行可能留下 688 KB 会话文件）。
  * 原来只在「跑完且没失败」时收尾，代价是**失败的那一行抽屉里永远空着**（显示「还没有日志 ·
- * 这一行还没开始执行」，而这一行明明跑过），而那正是排障时最需要看的一行。
+ * 这个候选还没开始执行」，而这个候选明明跑过），而那正是排障时最需要看的一行。
  *
  * 三条边界同时钉住：**读得到就补上**、**不改结论**、**读盘在 dispose 之前**。
  */
@@ -1422,7 +1422,7 @@ describe('runTurn：收尾投影的调用时机', () => {
     expect(order.indexOf('finalize')).toBeLessThan(order.indexOf('dispose'));
   });
 
-  it('收尾自身抛错**不改结论**（补充信息失败不是运行失败）', async () => {
+  it('收尾自身抛错**不改结论**（补充信息失败不是运行的失败）', async () => {
     const harness = createHarness({
       events: [{ kind: 'message' }],
       finalize: () => {
@@ -1720,7 +1720,7 @@ describe('subagentTurns：骨架只搬运，不做加法', () => {
     expect(usages[1]?.type === 'usage' ? usages[1].subagentTurns : null).toBe(2);
   });
 
-  it('启动前已被终止 ⇒ 一行都没跑，分量与合计同为 null（不填 0）', async () => {
+  it('启动前已被终止 ⇒ 一个候选都没跑，分量与合计同为 null（不填 0）', async () => {
     const controller = new AbortController();
     controller.abort();
     const result = await runTurn(createRunInput({ signal: controller.signal }), {

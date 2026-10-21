@@ -75,7 +75,7 @@ interface Attempt {
 const SECRET_KEY = 'secret-answer';
 
 /**
- * 选项行的渲染模型 → `Radio.Group` / `Checkbox.Group` 的 `options` 项。
+ * 选项候选的渲染模型 → `Radio.Group` / `Checkbox.Group` 的 `options` 项。
  * 标签那一侧塞 `ReactNode`：**描述与「推荐」标记跟着选项走**，少一层手写子节点。
  */
 function toOptionNode(option: AskUserOption): { label: ReactNode; value: OptionValue } {
@@ -229,7 +229,7 @@ export function AskUserPanel({
     onComplete(questions.map((question) => answerOf(question, attempt.picks[question.header])));
   };
 
-  /** 选项行的渲染模型：标签那一侧塞 ReactNode，描述与「推荐」标记跟着选项走 */
+  /** 选项候选的渲染模型：标签那一侧塞 ReactNode，描述与「推荐」标记跟着选项走 */
   const optionNodes = (current?.options ?? []).map(toOptionNode);
 
   /**
@@ -279,7 +279,7 @@ export function AskUserPanel({
                   : '其它（自由输入，写了它就覆盖上面的选项）'}
             </Typography.Text>
             <Input.TextArea
-              // 底部弹层的高度有限，多行会把选项挤出视野（正文可滚，但读起来就费劲了）
+              // 底部弹层的高度有限，多个候选会把选项挤出视野（正文可滚，但读起来就费劲了）
               rows={2}
               value={currentDraft?.custom ?? ''}
               aria-label="自由输入"

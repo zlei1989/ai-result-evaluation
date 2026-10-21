@@ -6,7 +6,7 @@
  * 两者的差不是包装，是**三件必须有人做的事**：
  *   1. 按 `subagentId` 把消息分给会话节点，并按 `roundTrip`（**统一轮次号**）分组成轮次；
  *   2. 把契约的扁平能力声明摊成界面要的字典（`toCapabilityMap`）；
- *   3. 把行级事件按去向表折成 `facts` / `rowEvents` / `diagnostics` 三条出口——**行级事件的归属在这一层解析**
+ *   3. 把候选级事件按去向表折成 `facts` / `candidateEvents` / `diagnostics` 三条出口——**候选级事件的归属在这一层解析**
  *      （有键按号、无键/孤儿按时刻）。
  *
  * 三条纪律（每一条都对应一次误读）：
@@ -20,14 +20,14 @@
  */
 import {
   AskUserResultSchema,
-  TERMINAL_ROW_STATUSES,
+  TERMINAL_CANDIDATE_STATUSES,
   messageFoldKey,
   type AgentEvent,
   type AgentMessage,
   type AskUserAnswer,
   type AskUserOutcome,
   type ContentBlock as ContractBlock,
-  type RowRecord,
+  type CandidateRecord,
   type SubagentRecord,
   type ToolCallBlock,
   type TruncationState,
@@ -43,8 +43,8 @@ import {
   type LogSegment,
   type LogTurn,
   type MessageCapabilityMap,
-  type RowEvent,
-  type RowNode,
+  type CandidateEvent,
+  type CandidateNode,
   type SessionNode,
   type ToolFamilyPayload,
   type ToolInput,
@@ -58,7 +58,7 @@ import { formatUsageTriple } from '../../base/usage-metrics';
  * 这一条属于**哪一段**：契约里那一格是可选的（缺席 = 第一次跑那一段），界面统一成数字，
  * 免得每个消费方各自写一次 `?? 0`。
  *
- * 段是什么：一行候选被跑过一次之后，人还可以对**已经跑完的**它追问，于是**又开一次 `run()`**。
+ * 段是什么：一个候选被跑过一次之后，人还可以对**已经跑完的**它追问，于是**又开一次 `run()`**。
  * 那一次运行就是新的一段——它自己的厂商轮次从 1 重新数，与上一段撞号、撞载体键，
  * 读侧全靠段号把两段分开（折叠键 = 段号 + 载体键，见 `messageFoldKey`）。
  */
@@ -74,7 +74,7 @@ function segmentOf(message: Pick<AgentMessage, 'segment'>): number {
  * 现读用例会把「现在这份题面」说成「当时那一次评测用的题面」。
  *
  * 只认**第一次跑那一段**（`segment === 0`）：追问那句是 `origin: 'human'`，与题面各有各的落点。
- * 找不到（旧运行、还没跑过的行）给 `null` ⇒ 那一块整块不渲染——**不拿别的东西凑**。
+ * 找不到（旧运行、还没跑过的候选）给 `null` ⇒ 那一块整块不渲染——**不拿别的东西凑**。
  */
 export function casePromptOf(messages: readonly AgentMessage[]): AgentMessage | null {
   for (const message of messages) {
@@ -109,15 +109,15 @@ function promptOfMessage(message: AgentMessage | null, startedAt: string | null)
   return text === undefined ? null : { text: text.text, at: startedAt ?? '' };
 }
 
-// ───────────────────────── 行级事实的输入（界面侧的口径） ─────────────────────────
+// ───────────────────────── 候选级事实的输入（界面侧的口径） ─────────────────────────
 
 /**
  * 组装 `AgentLogModel.facts` 需要的那几格。
- * **不是 `EvalRow`**：`agent-log` 不认「评测行」这个业务概念，
+ * **不是 `EvalCandidate`**：`agent-log` 不认「评测行」这个业务概念，
  * 换一个消费场景时换的是喂进来的这个对象，不是组件。
  */
 export interface AgentLogFactsInput {
-  /** 界面词汇：色档 + 文案（评测侧传 `ROW_STATUS_LABELS[status]`） */
+  /** 界面词汇：色档 + 文案（评测侧传 `CANDIDATE_STATUS_LABELS[status]`） */
   status: AgentRunStatus;
   startedAt: string | null;
   endedAt: string | null;
@@ -131,20 +131,20 @@ export interface AgentLogFactsInput {
 }
 
 export interface BuildAgentLogModelInput {
-  records: readonly RowRecord[];
+  records: readonly CandidateRecord[];
   events: readonly AgentEvent[];
   facts: AgentLogFactsInput;
   /**
    * 主会话的来源通道与厂商 id。
    * 契约的消息级没有「这条是哪家发的」那一格（`MessageSource` 已摊到块上），
-   * 故主会话节点这两格只能由调用方按这一行的配置给；不给就如实留 `'wire'` / `null`。
+   * 故主会话节点这两格只能由调用方按这个候选的配置给；不给就如实留 `'wire'` / `null`。
    */
   mainSource?: SessionNode['source'];
   mainVendorId?: string | null;
   /** 会话的**用户提示词**（时间轴首条消息）。它是「对模型说的话」，不属于环境抽屉 */
   userPrompt?: { text: string; at: string } | null;
   /**
-   * 这一行的**能力声明**（维度名由数据层给）。
+   * 这个候选的**能力声明**（维度名由数据层给）。
    * 不给时全套记「没验证过」——**不记「这家没有」**：不知道就别替厂商下结论。
    */
   capability?: MessageCapabilityMap;
@@ -154,11 +154,20 @@ export interface BuildAgentLogModelInput {
    * 运行开始时刻：作为**时间轴的基准时刻**。
    *
    * 为什么需要它：契约的消息与块都**没有自己的时刻**（`AgentMessage` 的字段里没有时间，
-   * 时刻只存在于行级 `AgentEvent` 上），而时间轴要按轮次显示时刻、`rowEvents` 要按时刻归位。
-   * 不编造一个时刻是纪律，但整条时间轴一个时间都没有同样不可用 ⇒ 用「这一行的开始时刻 + 轮次序号」
+   * 时刻只存在于候选级 `AgentEvent` 上），而时间轴要按轮次显示时刻、`candidateEvents` 要按时刻归位。
+   * 不编造一个时刻是纪律，但整条时间轴一个时间都没有同样不可用 ⇒ 用「这个候选的开始时刻 + 轮次序号」
    * 派生一个**明确标注为派生**的基准（真正的逐块时刻要等契约补上那一格）。
    */
   startedAt?: string | null;
+  /**
+   * 这个候选的**工作目录**（智能体的 cwd = `candidateWorkspaceDir`）。
+   *
+   * 用途只有一件：把工具调用摘要里的绝对路径**相对化**（见 `relativeSummaryOf`）。摘要在数据层
+   * 拼好，而那一层不知道候选的工作目录；界面这一侧手上有 `EvalCandidate.workspacePath`，在这里补上。
+   *
+   * 不给（夹具 / 其它消费方）就**原样保留**摘要——不猜一个前缀去裁。
+   */
+  workspacePath?: string;
 }
 
 // ───────────────────────── 能力声明的落点 ─────────────────────────
@@ -239,6 +248,7 @@ function blocksOf(
   live: boolean,
   at: string,
   answers: ReadonlyMap<string, SettledAskUser>,
+  workspacePath: string | undefined,
 ): ContentBlock[] {
   return message.blocks
     /**
@@ -247,7 +257,7 @@ function blocksOf(
      * `messageId` 上时流式每帧 key 全变 ⇒ 正文块整棵重挂 ⇒ 淡入动画整段从头重放
      * （页面上就是「一直在闪烁」）。守卫：`text-block-streaming-stability.test.tsx`。
      */
-    .map((block, blockIndex) => toContentBlock(block, message, `${segmentOf(message)}:${message.mergeKey}#${blockIndex}`, live, at, answers))
+    .map((block, blockIndex) => toContentBlock(block, message, `${segmentOf(message)}:${message.mergeKey}#${blockIndex}`, live, at, answers, workspacePath))
     // 「没有正文」与「正文只有空白」是同一档（见本节开头）：`text: ''` 的思考块在界面上只能画出一个
     // 空面板（标题 + 一片空白），而它真会出现——codex / pi 的思考增量帧不过滤空 delta
     .filter((block) => !(block.kind === 'thinking' && (block.text === null || block.text.trim() === '')));
@@ -310,6 +320,7 @@ function toContentBlock(
   live: boolean,
   at: string,
   answers: ReadonlyMap<string, SettledAskUser>,
+  workspacePath: string | undefined,
 ): ContentBlock {
   const base = {
     id,
@@ -349,8 +360,9 @@ function toContentBlock(
         nameMissing: block.name === '' ? 'not-observed' : null,
         family: block.family,
         input: serializeInput(block.input),
-        // 摘要主体随块从数据层下来（词表真源在 `@aieval/agents` 的 `activity.ts`）；老记录缺这一格
-        summary: block.summary ?? undefined,
+        // 摘要主体随块从数据层下来（词表真源在 `@aieval/agents` 的 `activity.ts`）；老记录缺这一格。
+        // 路径前缀在这一层删掉——工作目录只在界面这一侧拿得到（见 `relativeSummaryOf`）
+        summary: relativeSummaryOf(block.summary, block.input, workspacePath),
         // 可缺格：老账本没有它 ⇒ `?? null`（与 `summary` 同一条处置）
         inputError: block.inputError ?? null,
         tool: familyPayloadOf(block, live, base.at, answers),
@@ -371,8 +383,39 @@ function toContentBlock(
       };
     case 'attachment':
       return { ...base, kind: 'attachment', attachmentKind: block.kind, path: block.path, mimeType: block.mimeType };
-    case 'unrecognized':
+    case 'image-view': {
+      const previewPath = relativeImagePathOf(block.path, workspacePath);
+      return { ...base, kind: 'image-view', path: previewPath ?? block.path, previewPath };
+    }
+    case 'unrecognized': {
+      // 历史账本：`image-view` 块出现之前，这一类载荷以 `unrecognized` 落盘（`vendorType` = 类型、
+      // `raw` = 条目原文）。读侧按同一个形状认一次，老运行才有缩略图；账本内容一个字都不改
+      const legacyPath = legacyImageViewPathOf(block);
+      if (legacyPath !== null) {
+        const previewPath = relativeImagePathOf(legacyPath, workspacePath);
+        return { ...base, kind: 'image-view', path: previewPath ?? legacyPath, previewPath };
+      }
       return { ...base, kind: 'unrecognized', reason: block.reason, vendorType: block.vendorType, raw: block.raw };
+    }
+  }
+}
+
+/**
+ * 历史账本里那条「模型看过一张图」的载荷 → 图片路径；认不出给 `null`。
+ *
+ * 判据只有两条：`vendorType` 是那个类型、`raw` 能解析出非空的 `path` 字符串。
+ * **不猜别的东西**——认错了会把一段原始载荷画成一张不存在的图，而原文也会跟着从界面上消失。
+ */
+function legacyImageViewPathOf(block: Extract<ContractBlock, { type: 'unrecognized' }>): string | null {
+  if (block.vendorType !== 'imageView' || block.raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(block.raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const path = (parsed as Record<string, unknown>)['path'];
+    return typeof path === 'string' && path !== '' ? path : null;
+  } catch {
+    // 坏 JSON 就是「认不出」：截断过的原文（`safeStringify` 只保证可读）也走这一条
+    return null;
   }
 }
 
@@ -399,6 +442,84 @@ function safeJson(value: unknown): string | null {
     // 循环引用 / BigInt：**不抛**——一条排障证据序列化不动不该打断整条时间轴
     return null;
   }
+}
+
+/**
+ * 摘要里的**路径相对化**：删掉候选工作目录前缀，标题从
+ * `/Users/…/candidates/<candidateId>/workspace/index.html` 变成 `index.html`。
+ *
+ * 为什么放在装配层：摘要是数据层按厂商原文拼好的（词表只有 `activity.ts` 一份），而**工作目录
+ * 只有界面这一侧知道**（`EvalCandidate.workspacePath`）——让数据层拼就要把 cwd 一路塞进每家适配器，
+ * 而路径前缀对标题的唯一作用是把文件名挤出省略号。
+ *
+ * 两条处置，都不猜形状：
+ *   · 摘要**以工作目录开头** ⇒ 直接删掉前缀。
+ *   · 摘要**被截断在路径中间**（数据层先按 120 字截断、再落到这里，老账本全是这一档）⇒
+ *     整句只剩一截工作目录、没有可读信息，故从**入参**里找回那条完整路径再相对化。判据是
+ *     「入参里某个字符串既以工作目录开头、又以截断后的那段为前缀」——不按字段名猜：
+ *     各家的路径键不同（`file_path` / `path` / `changes[].path`），猜错会换成另一条路径。
+ */
+function relativeSummaryOf(
+  summary: string | undefined,
+  input: unknown,
+  workspacePath: string | undefined,
+): string | undefined {
+  if (summary === undefined || workspacePath === undefined || workspacePath === '') return summary;
+  // 分隔符跟着工作目录自己那一套走（Windows 盘符路径与 POSIX 路径都可能出现在同一份数据里）
+  const prefixes = workspacePath.includes('\\') && !workspacePath.includes('/')
+    ? [`${workspacePath}\\`, `${workspacePath}/`]
+    : [`${workspacePath}/`];
+  // 先处理老账本那一档：截断点可能就在工作目录里，此时「删前缀」只留下半截目录、仍没有文件名
+  if (summary.endsWith('…')) {
+    const clipped = summary.slice(0, -1);
+    if (clipped !== '') {
+      for (const prefix of prefixes) {
+        const full = pathUnderWorkspace(input, prefix, clipped);
+        if (full !== null) return full.slice(prefix.length);
+      }
+    }
+  }
+  for (const prefix of prefixes) {
+    if (summary.startsWith(prefix)) return summary.slice(prefix.length);
+  }
+  return summary;
+}
+
+/**
+ * 图片路径 → **工作区相对路径**（预览 URL 的输入）；不在该候选工作区内给 `null`。
+ *
+ * 与 `relativeSummaryOf` 同一套前缀判据，但**不猜、不回落**：返回值要拼进 URL，
+ * 拿一段猜出来的路径去请求只会得到 404，而界面会把它说成「图片坏了」。
+ * 两侧都先归一到 `/`（同一份数据里可能混着 Windows 盘符路径与 POSIX 路径）；
+ * 大小写不归一——那属于文件系统的语义，这里只做**能证实的**包含判断。
+ */
+function relativeImagePathOf(path: string, workspacePath: string | undefined): string | null {
+  if (workspacePath === undefined || workspacePath === '') return null;
+  const root = workspacePath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const target = path.replace(/\\/g, '/');
+  if (root === '' || !target.startsWith(`${root}/`)) return null;
+  const tail = target.slice(root.length + 1);
+  return tail === '' ? null : tail;
+}
+
+/** 在入参（对象 / 数组 / 字符串）里找那条「以工作目录开头、且以截断摘要为前缀」的完整路径 */function pathUnderWorkspace(value: unknown, prefix: string, clipped: string): string | null {
+  if (typeof value === 'string') {
+    return value.startsWith(prefix) && value.startsWith(clipped) ? value : null;
+  }
+  if (Array.isArray(value)) {
+    for (const one of value) {
+      const hit = pathUnderWorkspace(one, prefix, clipped);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const one of Object.values(value)) {
+      const hit = pathUnderWorkspace(one, prefix, clipped);
+      if (hit !== null) return hit;
+    }
+  }
+  return null;
 }
 
 function byteLength(text: string): number {
@@ -489,7 +610,7 @@ function structuredOf(input: unknown): Record<string, unknown> | null {
 /**
  * 入参里的 `description`：**模型自己写的一句人话**。
  *
- * 两个消费方读的是**同一格**：工具行摘要行的标题（`serializeInput` → `ToolItemDetail`）与
+ * 两个消费方读的是**同一格**：工具行摘要候选的标题（`serializeInput` → `ToolItemDetail`）与
  * 派发调用的任务名（claude 的 `Task`、dsh 的 `subagent` 都用它当子任务名）。
  * 判据只留这一份——两处各写一遍必然漂，漂了的表现是「标题里那句话与子任务名不是一句」。
  *
@@ -591,12 +712,12 @@ function nodeStatusOf(status: SubagentRecord['status']): LogNodeStatus {
 // ───────────────────────── 主组装 ─────────────────────────
 
 /**
- * 把契约的那两股数据（消息 / 子任务行）与行级事件折成界面模型。
+ * 把契约的那两股数据（消息 / 子任务行）与候选级事件折成界面模型。
  * 纯函数，可单测：喂同一份 `records` + `events` 必得同一份模型。
  */
 export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogModel {
-  const messages = input.records.filter((r): r is Extract<RowRecord, { type: 'message' }> => r.type === 'message').map((r) => r.message);
-  const subagents = input.records.filter((r): r is Extract<RowRecord, { type: 'subagent' }> => r.type === 'subagent').map((r) => r.subagent);
+  const messages = input.records.filter((r): r is Extract<CandidateRecord, { type: 'message' }> => r.type === 'message').map((r) => r.message);
+  const subagents = input.records.filter((r): r is Extract<CandidateRecord, { type: 'subagent' }> => r.type === 'subagent').map((r) => r.subagent);
 
   /**
    * **`(段号, mergeKey)`** 覆盖累积：**留最后一条**（它的 `blocks` 已是全量），顺序按首次出现。
@@ -625,8 +746,8 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
   const promptKey = prompt === null ? null : messageFoldKey(prompt);
 
   const sessions = new Map<string, SessionDraft>();
-  /** 行级节点（`kind: 'row'`）：厂商只给汇总、没有逐条身份的那一档 */
-  const rowNodes: RowNode[] = [];
+  /** 候选级节点（`kind: 'row'`）：厂商只给汇总、没有逐条身份的那一档 */
+  const candidateNodes: CandidateNode[] = [];
   const main: SessionDraft = {
     node: {
       kind: 'main',
@@ -654,7 +775,7 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
       userPrompt: input.userPrompt ?? promptOfMessage(prompt, input.startedAt ?? input.facts.startedAt),
       usage: null,
       outcome: null,
-      // 主会话节点的 `sessionFacts` **为 `null`**：行级事实一律读 `AgentLogModel.facts`，不存第二份真值
+      // 主会话节点的 `sessionFacts` **为 `null`**：候选级事实一律读 `AgentLogModel.facts`，不存第二份真值
       sessionFacts: null,
     },
     turns: new Map(),
@@ -663,14 +784,14 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
 
   for (const subagent of subagents) {
     /**
-     * **只给汇总、没有逐条身份**的那一档（`source === 'aggregate'`）走行级节点：
+     * **只给汇总、没有逐条身份**的那一档（`source === 'aggregate'`）走候选级节点：
      * 它不可点、不进面包屑（点进去只会得到一个空会话），只在时间轴上占一条带计数的说明行。
      *
      * ⚠️ **本仓目前没有任何适配器发出 `source: 'aggregate'`**（契约 schema 有这个取值），
      * 所以这条路径在真机上走不到，只有夹具能喂出来。留着是因为「厂商只给汇总」是真实存在的形态。
      */
     if (subagent.source === 'aggregate') {
-      rowNodes.push({
+      candidateNodes.push({
         kind: 'row',
         id: `row:${subagent.subagentId}`,
         parentId: subagent.parentSubagentId === null ? null : `subagent:${subagent.parentSubagentId}`,
@@ -685,7 +806,7 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
         capabilityNotes: input.capabilityNotes ?? [],
         // 汇总出来的计数：厂商只给「有几个 / 成了几个 / 挂了几个」，没有逐条身份
         counts: { subagents: 1, completed: subagent.status === 'completed' ? 1 : 0, failed: subagent.status === 'failed' ? 1 : 0 },
-        // 行级节点**必然**是行级事实，故非空（这一档只有「这一行」这一个会话）
+        // 候选级节点**必然**是候选级事实，故非空（这一档只有「这个候选」这一个会话）
         facts: {
           status: { tone: 'pending', label: '待开始' },
           startedAt: input.startedAt ?? null,
@@ -775,13 +896,13 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
     const at = atOfRound(message.roundTrip);
     /**
      * 主会话上**每一段最早的那一条时刻**：段标题的时刻读它（见下 `segments`）。
-     * 只收主会话：子会话节点里的轮次不是「这一行的第几段」那件事。
+     * 只收主会话：子会话节点里的轮次不是「这个候选的第几段」那件事。
      */
     if (message.subagentId === null && segmentOf(message) >= 1 && at !== '') {
       const seen = segmentTimes.get(segmentOf(message));
       if (seen === undefined || at < seen) segmentTimes.set(segmentOf(message), at);
     }
-    const blocks = blocksOf(message, input.facts.live, at, answers);
+    const blocks = blocksOf(message, input.facts.live, at, answers, input.workspacePath);
     /**
      * **轮次的完整身份是 `(段号, 轮次号)`**：追问那一段的厂商轮次从 1 重新数，只按轮次号分桶会让
      * 两段的同号轮次挤成一条（时间轴上表现为「追问的回复出现在首段的第 1 轮里」）。
@@ -959,11 +1080,11 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
           running: input.facts.live && index === all.length - 1,
         };
       });
-    // 能力声明是**每次运行**的一份（不是每个节点各一份）：同一行的所有会话节点共用它
+    // 能力声明是**每次运行**的一份（不是每个节点各一份）：同一候选的所有会话节点共用它
     return { ...session.node, capability: input.capability ?? UNVERIFIED, capabilityNotes: input.capabilityNotes ?? [], content: { status: 'ready', data: turns } } satisfies SessionNode;
   });
-  // 行级节点排在会话节点之后：它们只在时间轴上占一条说明行，不参与面包屑
-  const allNodes: LogNode[] = [...nodes, ...rowNodes];
+  // 候选级节点排在会话节点之后：它们只在时间轴上占一条说明行，不参与面包屑
+  const allNodes: LogNode[] = [...nodes, ...candidateNodes];
 
   const activeNodeId = nodes.find((node) => node.kind === 'main')?.id ?? nodes[0]?.id ?? 'main';
   const active = nodes.find((node) => node.id === activeNodeId);
@@ -994,24 +1115,23 @@ export function buildAgentLogModel(input: BuildAgentLogModelInput): AgentLogMode
        * **轮次的两个数都由时间轴自己派生**，不看 `facts.turns` 里传进来的那份：
        *   · `current` = 当前节点的轮次数——它就是时间轴上「轮次 N」的最大值，两处**必须同源**
        *     （进度条与时间轴互相打脸是这一格最容易犯的错）；
-       *   · `total` **恒为 `null`**——`EvalRow.turns` 那一格是「已经观察到几轮」，不是「一共几轮」；
-       *     把它当分母会渲染出「轮次 4 / 3 轮」这种自相矛盾的读数
-       *     （冒烟实测：进度条 `4 / 3` 与时间轴护栏的 `已渲染 4 / 共 4 轮` 同时出现在屏幕上）。
+       *   · `total` **恒为 `null`**——`EvalCandidate.turns` 那一格是「已经观察到几轮」，不是「一共几轮」；
+       *     把它当分母会渲染出「步数 4 / 3」这种自相矛盾的读数。
        */
       turns: { current: turnCount, total: null },
     },
     nodes: allNodes,
     activeNodeId,
     // `allNodes` 已经建好（含每个会话节点的轮次）⇒ 归属的「有没有那一轮」在这一刻就能判
-    rowEvents: rowEventsOf(input.events, turnHomesOf(allNodes)),
+    candidateEvents: candidateEventsOf(input.events, turnHomesOf(allNodes)),
     segments,
     /**
-     * 「什么都没得画」的判据：**所有会话节点都没有轮次**（行级节点不算：它是厂商只给汇总的那一档，
-     * 与「这一行有没有跑过」无关）。
+     * 「什么都没得画」的判据：**所有会话节点都没有轮次**（候选级节点不算：它是厂商只给汇总的那一档，
+     * 与「这个候选有没有跑过」无关）。
      *
      * 题面那条不算「有内容」：它从轮次里剔出去了（由首条卡片呈现），**但它自己要摆在列表里**——
-     * 一行跑了却一条内容都没产出的场合，界面上至少该说出「它被要求做什么」，而不是
-     * 「还没有日志 · 这一行还没开始执行」。这一格因此与「有没有题面」取或。
+     * 一个候选跑了却一条内容都没产出的场合，界面上至少该说出「它被要求做什么」，而不是
+     * 「还没有日志 · 这个候选还没开始执行」。这一格因此与「有没有题面」取或。
      */
     empty:
       prompt === null && nodes.every((node) => node.content.status === 'ready' && node.content.data.length === 0),
@@ -1040,7 +1160,7 @@ function turnHomeKey(turn: TurnRef): string {
 
 /**
  * 整行**主会话**上真实存在的轮次集合（`main#N`）。为什么需要它：那一条用量里程碑的归属键指向的轮次
- * 可能整行都不存在（异常形状）——那种「孤儿」要在**数据层**就抹成 `turn: null`，落到时间轴上按时刻
+ * 可能整候选都不存在（异常形状）——那种「孤儿」要在**数据层**就抹成 `turn: null`，落到时间轴上按时刻
  * 归位（**不丢**）。
  *
  * **为什么只收主会话**：子会话的读数**不折成里程碑**（用户裁定：子智能体用量
@@ -1050,7 +1170,7 @@ function turnHomeKey(turn: TurnRef): string {
 function turnHomesOf(nodes: readonly LogNode[]): Set<string> {
   const homes = new Set<string>();
   for (const node of nodes) {
-    // 子会话节点与行级节点都没有「里程碑可以落上去」的轮次；主会话恒可达
+    // 子会话节点与候选级节点都没有「里程碑可以落上去」的轮次；主会话恒可达
     if (node.kind !== 'main') continue;
     if (node.content.status !== 'ready') continue;
     for (const turn of node.content.data) {
@@ -1065,10 +1185,10 @@ function turnHomesOf(nodes: readonly LogNode[]): Set<string> {
 type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
 
 /**
- * 行级事件的去向（逐条决定，不留洞）：
+ * 候选级事件的去向（逐条决定，不留洞）：
  *   · `error` **恒**进时间轴（失败归因不能只留最后一条）； * · `usage` **整行只出一条**（用户裁定）：取**候选阶段**里最后一条**主会话**带计量的读数
- * ——那是这一行交出来的结算读数。跑动期的逐轮累计快照不再各自成行：`usage` 事件是每次模型往返
- * 一条、带的是「到目前为止」的累计值，逐条成行会让同一行串出多条「用量 … 轮次 N」，
+ * ——那是这个候选交出来的结算读数。跑动期的逐轮累计快照不再各自成行：`usage` 事件是每次模型往返
+ * 一条、带的是「到目前为止」的累计值，逐条成候选会让同一行串出多条「用量 … 轮次 N」，
  * 其中同一轮先出跑动期估算（`输出 0`）、一秒后再出厂商结算值，屏幕上就是两条几乎一样的
  * 「用量 … 轮次 4」。
  *   · `log` **不进时间轴**（它走 `diagnosticsOf` 的原文面板）；
@@ -1076,20 +1196,20 @@ type UsageEvent = Extract<AgentEvent, { type: 'usage' }>;
  *
  * 三条边界：
  *   · **候选阶段的边界是「一开一关」**：`judging` 或终态状态帧**关**（他们之后的读数是评审者的用量，
- *     落 `judge-events.jsonl`，与行级流分开；这条判据的输入源是历史数据回放——评分事件曾与候选
- *     同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，那些读数不属于这一行），
+ *     落 `judge-events.jsonl`，与候选级流分开；这条判据的输入源是历史数据回放——评分事件曾与候选
+ *     同一条流的时期，`judging` 之后接的用量、轮次从 1 重新数，那些读数不属于这个候选），
  *     `preparing` / `running` **重新开**（一次追问或一次重跑就是又开一个候选阶段）。只关不开的话，
  *     追问那一段的读数全被当成评审者的丢掉；
  *   · **子会话的读数一条都不出**：`turn.subagentId` 非空的那一类是**那个子会话自己**的累计，它只在
  *     派发点那张子任务卡片里展示（`SessionNode.usage`，数据来自 `SubagentRecord.usage`，与本函数无关）；
- *   · **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 行的相对次序要保住）。
+ *   · **位置**：那一行排在它自己那条事件的位置上（不许被挤到末尾——与 `error` 候选的相对次序要保住）。
  *
  * `homes` = 整行**存在**的轮次集合（见 `turnHomesOf`）；**不给时一律当孤儿** ⇒ 那一条的 `turn` 是 `null`，
  * 与老调用方、老用例的行为逐字一致。
  */
-export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<string>): RowEvent[] {
+export function candidateEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<string>): CandidateEvent[] {
   /** 带事件下标的结果行：那一行用量可能出现在任何位置，最后按事件次序排回去 */
-  const rows: { index: number; row: RowEvent }[] = [];
+  const rows: { index: number; row: CandidateEvent }[] = [];
   /** 候选阶段里最后一条**主会话**带计量的读数（整行唯一那条里程碑的候选；计量一并记下，取用时不重判） */
   let lastCandidateUsage: { index: number; event: UsageEvent; tokens: NonNullable<UsageEvent['tokens']> } | null = null;
   /**
@@ -1106,7 +1226,7 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
     const event = events[index];
     if (event === undefined) continue;
     if (event.type === 'status') {
-      if (event.status === 'judging' || TERMINAL_ROW_STATUSES.includes(event.status)) candidatePhase = false;
+      if (event.status === 'judging' || TERMINAL_CANDIDATE_STATUSES.includes(event.status)) candidatePhase = false;
       else if (event.status === 'preparing' || event.status === 'running') candidatePhase = true;
       continue;
     }
@@ -1116,7 +1236,7 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
     }
     if (event.type !== 'usage' || event.tokens === null) continue;
     if (!candidatePhase) continue;
-    // 子会话自己的累计读数不算这一行（它在那张子任务卡片里）
+    // 子会话自己的累计读数不算这个候选（它在那张子任务卡片里）
     if ((event.turn?.subagentId ?? null) !== null) continue;
     lastCandidateUsage = { index, event, tokens: event.tokens };
   }
@@ -1125,7 +1245,7 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
     const { event, tokens } = lastCandidateUsage;
     /**
      * 归属：**只有整行真的有那一轮**才认（`homes` 不给时一律当孤儿 ⇒ 与老行为逐字一致）。
-     * 文案里的号也用归属号——它必须与这一行最终落在的那个分组同值，否则文字与位置互相打脸。
+     * 文案里的号也用归属号——它必须与这个候选最终落在的那个分组同值，否则文字与位置互相打脸。
      */
     const attributed = event.turn ?? null;
     const turn = attributed !== null && homes?.has(turnHomeKey(attributed)) === true ? attributed : null;
@@ -1135,8 +1255,9 @@ export function rowEventsOf(events: readonly AgentEvent[], homes?: ReadonlySet<s
         at: event.at,
         level: 'milestone',
         // 三项走 `formatUsageTriple`（千分位 + `tok`）：与事实条 / 消息页脚 / 子任务卡片是同一份文案，
-        // 也是**同一个数**——裸数字（`15763`）在事实条上早就是 `15,763 tok`，两处不同形会被读成两笔账
-        text: `用量 ${formatUsageTriple(tokens)} · 轮次 ${turn?.round ?? event.turns}`,
+        // 也是**同一个数**——裸数字（`15763`）在事实条上早就是 `15,763 tok`，两处不同形会被读成两笔账。
+        // 不写「用量」前缀：三个标签自己说清了是什么，前缀只会把这行撑宽（形制见 `CandidateEventLines` 的 Alert）
+        text: `${formatUsageTriple(tokens)} · 步数 ${turn?.round ?? event.turns}`,
         turn,
       },
     });

@@ -18,13 +18,13 @@
  * ```
  *
  * 四格（每格一条用例，红在哪一格就指向哪一类）：
- *   ① 装载：行没有落到「厂商入口解析/加载」类失败（打包器改写、包形态、平台包布局都算这一类）；
+ *   ① 装载：候选没有落到「厂商入口解析/加载」类失败（打包器改写、包形态、平台包布局都算这一类）；
  *   ② 传输：本次运行实际使用的 `providerId` / `baseUrl` / `modelId` 与服务端记录一致，
  *      且失败不是凭据类（401/403）——**这一格是「密钥与服务端选择真的传到了」的最小可判定事实**；
- *   ③ 产物：行跑到 `judged` 且有分数；
+ *   ③ 产物：候选跑到 `judged` 且有分数；
  *   ④ 形状：`messages` 接口返回的消息**逐个过契约 schema**（线上形态）。
  */
-import { AgentMessageSchema, SubagentRecordSchema, type EvalRow, type EvalRun } from '@aieval/contracts';
+import { AgentMessageSchema, SubagentRecordSchema, type EvalCandidate, type EvalRun } from '@aieval/contracts';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   checkAgentJudgeCell,
@@ -60,7 +60,7 @@ const TIMEOUT_MS = Number(process.env.AIEVAL_LIVE_TIMEOUT_MS ?? String(waitBudge
 const POLL_MS = 2_000;
 
 /**
- * 行与轮次的形状**直接取契约类型**（`EvalRow` / `EvalRun`），不在测试里另立影子接口。
+ * 行与轮次的形状**直接取契约类型**（`EvalCandidate` / `EvalRun`），不在测试里另立影子接口。
  *
  * 为什么必须如此：影子接口配 `as T` 强转会让**字段名写错时静默通过**——断言拿到的恒是
  * `undefined`，于是那一格永远绿。① 装载与 ② 的凭据条判的正是失败归因（契约里叫
@@ -85,7 +85,7 @@ const TERMINAL = new Set(['judged', 'failed', 'canceled', 'interrupted']);
 async function waitForRun(runId: string): Promise<EvalRun> {
   const deadline = Date.now() + TIMEOUT_MS;
   let detail = await api<EvalRun>(`/api/runs/${runId}`);
-  while (!TERMINAL.has(detail.rows[0]?.status ?? 'pending') && Date.now() < deadline) {
+  while (!TERMINAL.has(detail.candidates[0]?.status ?? 'pending') && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     detail = await api<EvalRun>(`/api/runs/${runId}`);
   }
@@ -94,7 +94,7 @@ async function waitForRun(runId: string): Promise<EvalRun> {
 
 describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KIND）'}`, () => {
   let detail: EvalRun;
-  let row: EvalRow;
+  let row: EvalCandidate;
 
   beforeAll(async () => {
     expect(KIND, 'AIEVAL_LIVE_KIND 必填——不给默认家，避免「默认跑的那家绿了就当四家都绿」').not.toBe('');
@@ -109,12 +109,12 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
         caseId,
         executionMode: 'serial',
         useAgentJudge: AGENT_JUDGE,
-        rows: [{ agentKind: KIND, providerId: PROVIDER_ID, modelId: MODEL_ID }],
+        candidates: [{ agentKind: KIND, providerId: PROVIDER_ID, modelId: MODEL_ID }],
       }),
     });
     await api(`/api/runs/${created.id}/start`, { method: 'POST', body: '{}' });
     detail = await waitForRun(created.id);
-    const first = detail.rows[0];
+    const first = detail.candidates[0];
     expect(first, '这一轮必须有且只有一行').toBeDefined();
     row = first!;
   }, TIMEOUT_MS + 60_000);
@@ -132,10 +132,10 @@ describe.skipIf(!ENABLED)(`真机冒烟：${KIND || '（未指定 AIEVAL_LIVE_KI
   });
 
   it('④ 形状：消息与子任务行逐个过契约 schema', async () => {
-    // 该端点的信封是 `{ messages, subagents }`（不是 `RowRecord[]`）——首次跑冒烟时
+    // 该端点的信封是 `{ messages, subagents }`（不是 `CandidateRecord[]`）——首次跑冒烟时
     // 按后者写、红在这一格，说明这一格确实在按**线上真实返回**判，而不是按实现者的记忆判。
     const payload = await api<{ messages: unknown[]; subagents: unknown[] }>(
-      `/api/runs/${detail.id}/rows/${row.id}/messages`,
+      `/api/runs/${detail.id}/candidates/${row.id}/messages`,
     );
     expect(payload.messages.length, '一次真实运行不该一条消息都没有').toBeGreaterThan(0);
     for (const message of payload.messages) {

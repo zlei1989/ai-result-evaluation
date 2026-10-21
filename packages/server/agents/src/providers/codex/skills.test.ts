@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * codex 的**技能装入**接缝：`AgentRunInput.skills` → 行配置目录里的那份副本。
+ * codex 的**技能装入**接缝：`AgentRunInput.skills` → 候选配置目录里的那份副本。
  *
  * 与 claude 那份同名守卫（`providers/cc/skills.test.ts`）逐条同形，分开写是因为
  * **两家的 boot 点不是同一个符号**：这一家的时序判据挂在 `hooks.createClient(...)` 那一行
@@ -12,7 +12,7 @@
  *   · **落盘失败 ⇒ 带码失败**：`SkillMaterializeError` 必须归成 `AGENT_SKILLS_UNAVAILABLE`
  *     （缺省那条路会归成 `AGENT_FAILED`，而它在自动重试表里 ⇒ 装不进去会被静默重跑两遍）；
  *   · **时序**：app-server 起来的那一刻就会把 `<CODEX_HOME>/skills` 扫进清单，写晚了这一次
- *     spawn 就看不到它们，而它**不报错**（只是这一行按「没有这条 skill」跑完）。
+ *     spawn 就看不到它们，而它**不报错**（只是这个候选按「没有这条 skill」跑完）。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,8 +30,8 @@ let sourceDir: string;
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'aieval-codex-skills-'));
-  // 行配置目录刻意**不预建**：契约只说「该行独立配置目录」，没说它一定存在
-  configHome = join(tempRoot, 'rows', 'row-1', '.agenthome');
+  // 候选配置目录刻意**不预建**：契约只说「该候选独立配置目录」，没说它一定存在
+  configHome = join(tempRoot, 'candidates', 'row-1', '.agenthome');
   sourceDir = join(tempRoot, 'skills', 'alpha');
   mkdirSync(join(sourceDir, 'scripts'), { recursive: true });
   writeFileSync(join(sourceDir, 'SKILL.md'), '---\nname: alpha\ndescription: 示例\n---\n\n正文\n', 'utf8');
@@ -70,11 +70,11 @@ describe('codex 装入技能', () => {
 
     await codexProvider.run(createRunInput({ configHome }));
 
-    // 判据是技能落点本身：`skills/` 连建都不该建（建了就等于适配器在替调用方表「本行要装零条」）
+    // 判据是技能落点本身：`skills/` 连建都不该建（建了就等于适配器在替调用方表「候选要装零条」）
     expect(existsSync(join(configHome, 'skills'))).toBe(false);
   });
 
-  it('传了 skills ⇒ 整目录落进 <行配置目录>/skills/<名称>，附属文件一起过去', async () => {
+  it('传了 skills ⇒ 整目录落进 <候选配置目录>/skills/<名称>，附属文件一起过去', async () => {
     wire();
 
     await codexProvider.run(createRunInput({ configHome, skills: [{ name: 'alpha', sourceDir }] }));
@@ -88,7 +88,7 @@ describe('codex 装入技能', () => {
     let seenAtSpawn: boolean | null = null;
     wire({
       onCreate: () => {
-        // 装配时刻的快照点：app-server 起来之后扫的就是此刻的 skills/，写晚了这一行白跑且不报错
+        // 装配时刻的快照点：app-server 起来之后扫的就是此刻的 skills/，写晚了这个候选白跑且不报错
         seenAtSpawn = existsSync(join(configHome, 'skills', 'alpha', 'SKILL.md'));
       },
     });
@@ -99,7 +99,7 @@ describe('codex 装入技能', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('源目录读不到 ⇒ 该次运行失败、码是 AGENT_SKILLS_UNAVAILABLE、文案点名哪一条', async () => {
+  it('源目录读不到 ⇒ 该次运行的失败、码是 AGENT_SKILLS_UNAVAILABLE、文案点名哪一条', async () => {
     wire();
 
     const result = await codexProvider.run(
@@ -182,7 +182,7 @@ describe('codex 技能面（skills/list）', () => {
     const withSkills = vendorEvents(events).filter((event) => (event.skills ?? null) !== null);
     expect(withSkills).toHaveLength(1);
     expect(withSkills[0]?.skills).toEqual([
-      // 落在行配置目录之下 ⇒ 本机启用项
+      // 落在候选配置目录之下 ⇒ 本机启用项
       { name: 'alpha', source: 'user', path: join(configHome, 'skills', 'alpha', 'SKILL.md'), origin: 'local-enabled' },
       // `.system/` 是 codex 自己的内置目录（与我们的那几条同居一个 `skills/`）⇒ 厂商内置
       { name: 'imagegen', source: 'system', path: join(configHome, 'skills', '.system', 'imagegen', 'SKILL.md'), origin: 'vendor-builtin' },
@@ -242,7 +242,7 @@ describe('codex 技能面（skills/list）', () => {
     expect(events.some((event) => event.type === 'log' && event.text.includes('采不到 codex 的技能清单'))).toBe(true);
   });
 
-  it('本行没装技能 ⇒ 一次都不问（评分与用例同步两处不该付这次 RPC）', async () => {
+  it('候选没装技能 ⇒ 一次都不问（评分与用例同步两处不该付这次 RPC）', async () => {
     const server = wireSkills();
     await codexProvider.run(createRunInput({ configHome }));
 

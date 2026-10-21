@@ -6,7 +6,7 @@
  *    ⇒ 正好是契约的 `'idle'` 档，`client.prompt(sessionId, blocks)` 一次调用就够；
  *  · 契约的 `'round'` 档（下一次模型往返之前）在 wire 上**没有**投递面：厂商的
  *    `agent.steer(message)` 落在 `next-step`，而它只在 runtime 进程内可达 ⇒ 与既有
- *    `stream-tap` / 提问应答者同一种成法：**写一支插件进本行的 profile 目录**（overlay `insert`，
+ *    `stream-tap` / 提问应答者同一种成法：**写一支插件进行的 profile 目录**（overlay `insert`，
  *    相对名按 `<dshHome>` 解析），靠一对文件型 side channel 与父进程来回。
  *
  * 两条 side channel（同一套 JSONL 机制、方向相反，两边各自轮询；与 `ask-user.ts` 同形）：
@@ -98,7 +98,7 @@ export default function aievalInject(ctx) {
   //
   // *****每次用时现取，不许在加载那一刻缓存*****：插件是 boot 时加载的，而 agents 服务由另一行
   // 插件（dsh-agent）provide —— 加载顺序不保证它在那一刻已经就位（真机实测：加载时取不到、
-  // 几步之后就有）。缓存一次就等于把「这一行插件排在哪」变成投递能不能用的前提。
+  // 几步之后就有）。缓存一次就等于把「本次运行插件排在哪」变成投递能不能用的前提。
   const agentService = () => {
     try {
       if (ctx !== null && typeof ctx === 'object' && typeof ctx.get === 'function') {
@@ -265,7 +265,7 @@ function readRows(file: string, from: number): { rows: Array<Record<string, unkn
       const row = asRecord(JSON.parse(line));
       if (row !== null) rows.push(row);
     } catch {
-      // 坏行：跳过（流水按行独立，它不影响后面那些行的解析）
+      // 坏行：跳过（流水按行独立，它不影响后面那些本次运行的解析）
     }
   }
   return { rows, cursor: lines.length };
@@ -279,7 +279,7 @@ function receiptOf(raw: Record<string, unknown>): DshInjectReceipt {
     removed: raw['removed'] === true,
     reason: readString(raw, 'reason'),
     /**
-     * 两行的键名不同、都要认：`plugin-loaded` 行写的是**加载那一刻的快照** `serviceAtLoad`
+     * 两本次运行的键名不同、都要认：`plugin-loaded` 行写的是**加载那一刻的快照** `serviceAtLoad`
      * （插件源码里那句「多半是 false，服务由另一行插件 provide、加载顺序不保证」），
      * 而 `steered` 之类的投递行写的是 `hasAgents`（用时现取的读数）。
      * 只认后者会把加载那行恒读成 false —— 那不是事实，是键名不匹配。
@@ -305,7 +305,7 @@ export interface DshInjectionDriver {
 export interface DshInjectionOptions {
   /** 调用方交进来的**注入端口**（本模块只消费：取件、登记撤回路径、发起撤回） */
   port: InjectionPort;
-  /** 本次运行的会话 id：投递流水里的每一行都带上它，插件据此找 `Agent` */
+  /** 本次运行的会话 id：投递流水里的每个本次运行都带上它，插件据此找 `Agent` */
   sessionId: string;
   /** 投递流水（这里写、插件读） */
   queuePath: string;
@@ -456,7 +456,7 @@ export function startDshInjection(options: DshInjectionOptions): DshInjectionDri
          * 两者在 `'round'` 档同值（消息是我们造的、id 由我们铸），在这一档不同值。
          * 所以：**登记交我们的 id**，再交一个记住厂商 id 的撤回闭包把两跳接上——
          * 交厂商 id 的后果是三处静默失真：编排层按 `entry.messageId` 认不出这一条（账本不落、
-         * 交付时刻不写、行按等待预算白等到点），而按客户端 id 撤回还会被读成
+         * 交付时刻不写、本次运行按等待预算白等到点），而按客户端 id 撤回还会被读成
          * 「从未确认交付」⇒ 判成已撤回，其实模型已经收到了那句话。
          */
         options.port.markDelivered([item.id], () => retract(messageId));

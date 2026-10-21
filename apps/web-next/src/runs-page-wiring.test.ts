@@ -59,7 +59,7 @@ describe('runs 页面的日志抽屉接线', () => {
  *
  * 与上面同一类缺口：`@aieval/client` 与 `@aieval/ui` 各自有自己的用例，而
  * 「页面有没有把两条来源接上」两边都看不见。三条断言各有各的靶子：
- * ① 时间轴的内容来自**内容级记录**（`useRowMessages`），不是行级事件；
+ * ① 时间轴的内容来自**内容级记录**（`useCandidateMessages`），不是候选级事件；
  * ② 模型由 `buildAgentLogModel` 现算；
  * ③ 下载台账**仍用 `formatEventLog` 的全量事件**（台账与视图不是一种东西）。
  */
@@ -68,14 +68,14 @@ describe('runs 页面的执行日志接线', () => {
 
   it('时间轴订阅了内容级记录（`/messages`），且与事件流是两条独立的订阅', () => {
     const text = source();
-    expect(text, '页面没有订阅消息记录——时间轴会永远是空的').toContain('useRowMessages({');
-    expect(text, '内容记录的订阅没有跟着抽屉开关（关着抽屉也开长连接）').toContain('rowId: logRowId ?? \'\', enabled: logRowId !== null');
+    expect(text, '页面没有订阅消息记录——时间轴会永远是空的').toContain('useCandidateMessages({');
+    expect(text, '内容记录的订阅没有跟着抽屉开关（关着抽屉也开长连接）').toContain('candidateId: logCandidateId ?? \'\', enabled: logCandidateId !== null');
     // 事件那条仍在（固定事实条与「原始输出」的来源），两条互不替代
-    expect(text).toContain('useRowStream({');
+    expect(text).toContain('useCandidateStream({');
     // 事件流的订阅必须带「这一次尝试」：不带的话重跑同一行时 effect 一个依赖都没变，
     // 抽屉会一直显示上一轮的原始输出，而连接徽标照旧是「实时连接中」
     expect(text, '事件流的订阅没有带 attemptKey——重跑同一行时原始输出不会刷新').toContain(
-      'attemptKey: String(logRow?.attempts ?? 0)',
+      'attemptKey: String(logCandidate?.attempts ?? 0)',
     );
   });
 
@@ -83,7 +83,7 @@ describe('runs 页面的执行日志接线', () => {
     const text = source();
     expect(text, '页面没有调 buildAgentLogModel').toContain('buildAgentLogModel({');
     expect(text, '模型没有吃消息记录').toContain('records: messages.records,');
-    expect(text, '行级事实没有走 buildRowFacts（色档与文案会各写一份）').toContain('buildRowFacts({');
+    expect(text, '候选级事实没有走 buildCandidateFacts（色档与文案会各写一份）').toContain('buildCandidateFacts({');
   });
 
   it('`log` 事件**不再**进时间轴：它只走原始输出面板与台账', () => {
@@ -119,20 +119,20 @@ describe('runs 页面的实时指标接线', () => {
     const call = liveSubscriptionCall();
 
     expect(call, '少了 runId').toContain('runId');
-    expect(call, '少了 rowIds（没有它就没有任何一行会订阅）').toContain('rowIds');
+    expect(call, '少了 candidateIds（没有它就没有任何一个候选会订阅）').toContain('candidateIds');
   });
 
   it('只订阅**在跑的行**（列表页有几十轮，全订阅就是几十条长连接）', () => {
     const source = readFileSync(pagePath, 'utf8');
 
-    // 行集合必须由快照的在跑状态筛出来：`isRunningRow` 是契约里的同一份判据（准备中/执行中/评分中）
-    expect(source, '行集合没有按 isRunningRow 过滤').toContain('.filter((row) => isRunningRow(row.status))');
+    // 行集合必须由快照的在跑状态筛出来：`isRunningCandidate` 是契约里的同一份判据（准备中/执行中/评分中）
+    expect(source, '行集合没有按 isRunningCandidate 过滤').toContain('.filter((row) => isRunningCandidate(row.status))');
   });
 
   it('把实时指标按行注入详情面板（不注入 = 界面永远「未采集」）', () => {
     const source = readFileSync(pagePath, 'utf8');
 
-    expect(source).toContain('liveOf={(rowId) => live[rowId]}');
+    expect(source).toContain('liveOf={(candidateId) => live[candidateId]}');
   });
 });
 
@@ -160,9 +160,9 @@ describe('runs 页面的环境信息接线', () => {
     const text = source();
     expect(text, '页面没有调 buildAgentEnvironment').toContain('buildAgentEnvironment({');
     // 四组数据各自的来源都要在位：少喂一个，那一组会静默退化成「没接」
-    expect(text, '环境没有吃行级事件（厂商系统层会整组缺失）').toContain('events: stream.events');
+    expect(text, '环境没有吃候选级事件（厂商系统层会整组缺失）').toContain('events: stream.events');
     expect(text, '环境没有吃内容记录（实测统计会整组缺失）').toContain('records: messages.records');
-    expect(text, '环境没有吃行的快照字段（摘要与运行配置会缺失）').toContain('row: logRow');
+    expect(text, '环境没有吃候选的快照字段（摘要与运行配置会缺失）').toContain('row: logCandidate');
   });
 
   it('`requestEnvironment` 那个口子留着（`AgentLogLayout` 拿它判重试按钮画不画）', () => {
@@ -191,7 +191,7 @@ describe('runs 页面的能力声明接线', () => {
    * 抠出 `buildAgentLogModel({ … })` 的实参块；抠不到直接抛（守卫不许静默失效）。
    *
    * 为什么不整份文件扫：`capabilityNotes: []` 在文件里**另有一处合法出现**——
-   * 「这一行还没开始跑」那份空模型（`NEVER_RAN_MODEL`）本来就该是空数组。
+   * 「这个候选还没开始跑」那份空模型（`NEVER_RAN_MODEL`）本来就该是空数组。
    * 整份扫会把那一处判成违规，于是守卫逼着人给一份假的前提。
    */
   function modelCall(): string {
@@ -311,7 +311,7 @@ describe('runs 页面的编辑 / 删除接线', () => {
 
     // 断言**解构调用的形状**，不是标识符：只匹配 `useUpdateRun` 时，光有 import 语句
     // （`page.tsx` 顶部那两行）就能让断言绿——hook 调用被删掉（编辑 / 删除永远不发请求）
-    // 也照样通过。实测：删掉 `const { update, isUpdating } = useUpdateRun();` 这一行，
+    // 也照样通过。实测：删掉 `const { update, isUpdating } = useUpdateRun();` 这个候选，
     // 旧的标识符断言不红，这一条红。
     expect(text, '页面没有取 useUpdateRun 的 update / isUpdating').toContain(
       'const { update, isUpdating } = useUpdateRun();',
@@ -334,7 +334,7 @@ describe('runs 页面的编辑 / 删除接线', () => {
 
   /**
    * A18 的「如实提示」在页面上只有一个落点：删除响应里的 `workspaceRemoved`。
-   * 少一个锚点的症状是**假报干净**——把那一支改成无条件的「评测已删除」，盘上没能回收的行工作区
+   * 少一个锚点的症状是**假报干净**——把那一支改成无条件的「评测已删除」，盘上没能回收的候选工作区
    * 就没人再提；`@aieval/client` 只是把这一位原样交出来（它自己的用例覆盖不到页面的文案）。
    */
   it('删除成功如实报告工作区是否回收（workspaceRemoved === false 不许说成干净删除）', () => {
@@ -343,7 +343,7 @@ describe('runs 页面的编辑 / 删除接线', () => {
     expect(text, '删除提示没有按 workspaceRemoved 分支（或两支写反了）：残留也会被报成干净删除').toContain(
       'workspaceRemoved ? \'评测已删除\'',
     );
-    expect(text, '少了「有残留」那一支的文案').toContain('行工作区有残留');
+    expect(text, '少了「有残留」那一支的文案').toContain('候选工作区有残留');
   });
 
   it('编辑面板带 mode="edit" 与 initial（预填的唯一来源）', () => {
@@ -359,10 +359,10 @@ describe('runs 页面的编辑 / 删除接线', () => {
     expect(text).toContain('deleting={isDeleting}');
   });
 
-  it('创建路径**显式剥掉**行 id（不依赖 zod 对未知键的静默剥离）', () => {
+  it('创建路径**显式剥掉**候选 id（不依赖 zod 对未知键的静默剥离）', () => {
     // 只断言「创建那一支把 rows 重映射过」这一件事：整条表达式逐字匹配会被换行与格式化打红
     const text = source();
-    expect(text).toContain('rows: values.rows.map(');
+    expect(text).toContain('candidates: values.candidates.map(');
     expect(text).toContain('agentKind: row.agentKind, providerId: row.providerId, modelId: row.modelId');
   });
 
@@ -419,16 +419,14 @@ describe('runs 页面的备注接线', () => {
 });
 
 /**
- * 「模型原始返回」与「原始输出 N 条」两个入口的**接线**守卫（用户：删掉正文里的
- * 「模型原始返回」标题、只留「查看原始返回」按钮，按钮插进评分详情抽屉的 `footer`；
- * 「原始输出 N 条」并排新增，正文 = 评审会话的 log 原文）。
+ * 「评分详情」抽屉 footer 上「原始输出 N 条」入口的**接线**守卫。
  *
- * 为什么必须在这一层钉：入口按钮搬到了**页面**渲染的 `Drawer footer` 上，而正文
- * 仍在 `@aieval/ui` 的 `ScoreDetailView` 里 ——两边各自有自己的用例，**「页面有没有把这一对
- * props 接上」谁都不看**。漏接的症状不是报错，是「点了按钮没反应」（`rawOpen` 恒假）
- * 或者「二级抽屉关不掉」（`onRawOpenChange` 没接），而两包的用例全绿。
+ * 为什么必须在这一层钉：入口按钮在**页面**渲染的 `Drawer footer` 上，而正文
+ * 仍在 `@aieval/ui` 的 `ScoreDetailView` 里 ——两边各自有自己的用例，**「页面有没有把
+ * 这一组 props 接上」谁都不看**。漏接的症状不是报错，是「点了按钮没反应」（开合恒假）
+ * 或者「二级抽屉关不掉」（`onOpenChange` 没接），而两包的用例全绿。
  *
- * 同一段源码里还挂着**顶部那两行的数据来源**那一条——它出于
+ * 同一段源码里还挂着**顶部那两个候选的数据来源**那一条——它出于
  * 同一条理由：视图在包里、页面这一层没有渲染测试面。两条守卫共用下面那个「抠块」助手。
  *
  * 断言口径：抠出「评分详情」那一支抽屉的**整段**（从它的标题到它自己的 `</Drawer>`）再逐条断言，
@@ -451,33 +449,30 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     return text.slice(start, end);
   }
 
-  it('两个入口按钮都在评分详情抽屉的 footer 上，且各带那个 data-testid', () => {
+  it('「原始输出 N 条」入口在评分详情抽屉的 footer 上，且带那个 data-testid', () => {
     const block = scoreDrawerBlock();
 
     expect(block, '评分详情抽屉没有 footer：入口按钮又回到正文里了').toContain('footer={');
-    expect(block, 'footer 里没有「查看原始返回」的入口按钮').toContain('data-testid="score-raw-open"');
     expect(block, 'footer 里没有「原始输出 N 条」的入口按钮').toContain('data-testid="score-judge-output-open"');
-    // 两个按钮都必须在 **footer 属性里**，不是在 children 里（后者就是那次要拆掉的形状）
+    // 按钮必须在 **footer 属性里**，不是在 children 里（后者就是那次要拆掉的形状）
     const footerStart = block.indexOf('footer={');
-    for (const label of ['查看原始返回', '{judgeOutputLabel}']) {
-      const footerEnd = block.indexOf('>', block.indexOf(label, footerStart));
-      expect(footerEnd, `「${label}」不在 footer 表达式里`).toBeGreaterThan(footerStart);
-      expect(block.slice(footerStart, footerEnd), `「${label}」没挂在 footer 上`).toContain(label);
-    }
+    const footerEnd = block.indexOf('>', block.indexOf('{judgeOutputLabel}', footerStart));
+    expect(footerEnd, '「原始输出」不在 footer 表达式里').toBeGreaterThan(footerStart);
+    expect(block.slice(footerStart, footerEnd), '「原始输出」没挂在 footer 上').toContain('{judgeOutputLabel}');
   });
 
-  it('两个入口各判各的：没有分就没有「查看原始返回」；「原始输出」跟着 judgeOutputVisible', () => {
+  it('「原始输出」跟着 judgeOutputVisible 渲染：不可见时 footer 整段为 null', () => {
     // 归一化空白后再比：判据是**条件本身**，不该被换行/缩进打红
     const block = scoreDrawerBlock().replace(/\s+/g, ' ');
 
-    // footer 整段为 null = 两个入口都没有；只缺分时（judging）「原始输出」仍在
-    expect(block, 'footer 不再跟着「无分且无原始输出入口」判空：空态那一格也会长出点不动的入口').toContain(
-      'footer={ scoreDetail === null && !judgeOutputVisible ? null :',
+    expect(block, 'footer 不再跟着 judgeOutputVisible 判空：空态那一格也会长出点不动的入口').toContain(
+      'footer={ judgeOutputVisible ?',
     );
-    // 「查看原始返回」只在有分时渲染（judging 那一态没有原文可看）
-    expect(block, '「查看原始返回」不再跟着 scoreDetail 判空').toContain('{scoreDetail !== null && (');
-    // 「原始输出」跟着自己的可见性判据渲染
-    expect(block, '「原始输出」按钮没有跟着 judgeOutputVisible 渲染').toContain('{judgeOutputVisible && (');
+    // 按钮本身也在 footer 那一支里（可见性判据见下一条：有分时按 judgeAgentKind、judging 时按 run.useAgentJudge）
+    const footerStart = block.indexOf('footer={');
+    expect(block.slice(footerStart), '「原始输出」按钮没有落在 judgeOutputVisible 那一支里').toContain(
+      'data-testid="score-judge-output-open"',
+    );
   });
 
   /**
@@ -495,8 +490,8 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     expect(text, '没有按 run.useAgentJudge + judging 判（评分进行中没有入口，SSE 无处可达）').toContain(
       'run?.useAgentJudge === true && judgeLive',
     );
-    expect(text, 'judging 判据不是行状态（与「judging ⇔ 无分」的服务端口径漂移）').toContain(
-      'scoreRow?.status === \'judging\'',
+    expect(text, 'judging 判据不是候选状态（与「judging ⇔ 无分」的服务端口径漂移）').toContain(
+      'scoreCandidate?.status === \'judging\'',
     );
   });
 
@@ -507,9 +502,9 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
   it('评分事件流的订阅：enabled 跟着可见性、live 跟着 judging、折法与执行日志同源', () => {
     const text = source();
 
-    expect(text, '页面没有订阅评分事件流').toContain('useRowJudgeEvents({');
+    expect(text, '页面没有订阅评分事件流').toContain('useCandidateJudgeEvents({');
     expect(text, '订阅没有跟着入口可见性（不可见也拉历史是白请求）').toContain('enabled: judgeOutputVisible,');
-    expect(text, 'SSE 的开关不是 judging（终态行会挂一条只发心跳的空连接）').toContain('live: judgeLive,');
+    expect(text, 'SSE 的开关不是 judging（终态候选会挂一条只发心跳的空连接）').toContain('live: judgeLive,');
     // 折法与执行日志抽屉同一份（`diagnosticsOf`）：两处各写一遍必然漂移
     expect(text, '评分原始输出没有走 diagnosticsOf 折行').toContain('diagnosticsOf(judgeOutput.events)');
     // 入口与抽屉标题同文：两处各写一个模板字符串也会漂移
@@ -518,37 +513,31 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
     );
   });
 
-  it('开合态按**行 id** 判据（换一行 / 关抽屉时二级抽屉不会自己弹出来）', () => {
+  it('开合态按**候选 id** 判据（换一行 / 关抽屉时二级抽屉不会自己弹出来）', () => {
     const text = source();
 
-    expect(text, '开合态不是按当前评分行的 id 判据：换一行后二级抽屉会自己弹出来').toContain(
-      'rawRowId === scoreRowId',
-    );
-    expect(text, '没有把 rawOpen 受控传给 ScoreDetailView（点了按钮不会有反应）').toContain('rawOpen={rawOpen}');
-    expect(text, '没有把 onRawOpenChange 传给 ScoreDetailView（二级抽屉关不掉）').toContain('onRawOpenChange=');
-    // 「原始输出」同一个口径：也是「记哪一行开着」
-    expect(text, '「原始输出」开合态不是按行 id 判据：换一行后二级抽屉会自己弹出来').toContain(
-      'judgeOutputRowId === scoreRowId',
+    expect(text, '「原始输出」开合态不是按候选 id 判据：换一行后二级抽屉会自己弹出来').toContain(
+      'judgeOutputCandidateId === scoreCandidateId',
     );
     expect(text, '没有把 judgeOutput 传给 ScoreDetailView（正文与三态都进不去）').toContain('judgeOutput=');
     expect(text, '没有把受控开合传给 judgeOutput（点了按钮没反应 / 关不掉）').toContain('open: judgeOutputOpen,');
-    expect(text, 'judgeOutput 的关合动作没有回写页面状态').toContain('onOpenChange: (next) => setJudgeOutputRowId(');
+    expect(text, 'judgeOutput 的关合动作没有回写页面状态').toContain('onOpenChange: (next) => setJudgeOutputCandidateId(');
   });
 
   /**
-   * 顶部那两行的**数据来源**守卫。
+   * 顶部那两个候选的**数据来源**守卫。
    *
    * 为什么必须在这一层反向钉：这**五格**（评分智能体 / 评分模型 / 思考强度 / 评分用量 / 评分耗时）
-   * 全在 `score` 上，页面只需要把 `score` 递下去；而 那一版曾经把**候选行**
+   * 全在 `score` 上，页面只需要把 `score` 递下去；而 那一版曾经把**候选**
    * 也递进去当五格的来源。把那一格接回来不会有任何报错——组件已经不吃它了，TS 会在编译期拦下；
    * 真正会静默出问题的是**反过来**：有人「顺手」把它加回来，然后组件里再长出第二份「候选运行信息」，
    * 于是抽屉里又出现执行那一份数据。
    *
    * 断言口径与上面同一套：在「评分详情」抽屉的整段里找，不整文件匹配。
    */
-  it('不把候选行传给 ScoreDetailView（抽屉里只讲这一分，候选数据不进评分详情）', () => {
+  it('不把候选传给 ScoreDetailView（抽屉里只讲这一分，候选数据不进评分详情）', () => {
     const block = scoreDrawerBlock();
-    expect(block, '评分详情抽屉又把候选行传下去了：抽屉里会重新出现执行那一份数据').not.toContain('row={');
+    expect(block, '评分详情抽屉又把候选传下去了：抽屉里会重新出现执行那一份数据').not.toContain('row={');
     expect(block, '评分详情抽屉没有把 score 传下去').toContain('score={scoreDetail.score}');
     expect(block, '评分详情抽屉没有把评分表快照传下去（逐项判定会对不上任何一张表）').toContain(
       'rubric={scoreDetail.rubric}',
@@ -562,38 +551,52 @@ describe('runs 页面的「评分详情」抽屉接线（footer 入口 + 受控�
  * 与本文件里前几组同一类缺口：契约的真值表在 `@aieval/contracts`、编排层的同源在
  * `@aieval/evaluator`、入口按钮在 `@aieval/ui`、可用性读侧在 `@aieval/client`——**每一环都有自己的
  * 用例**，而「页面有没有把它们接上」谁都不看。漏接的症状是三种静默：
- *   · `onFollowUpRow` 没接 ⇒ 点「追问」什么都不发生；
- *   · `followUpOf` 没接 ⇒ 按钮永远停在「读不到判据」的禁用态（看起来像「这一行不能追问」）；
+ *   · `onFollowUpCandidate` 没接 ⇒ 点「追问」什么都不发生；
+ *   · `followUpOf` 没接 ⇒ 按钮永远停在「读不到判据」的禁用态（看起来像「这个候选不能追问」）；
  *   · footer 那一支没接 ⇒ 抽屉打开了、底下没有输入框。
  * `apps/web-next` 不能写 `.tsx` 测试（AGENTS.md 硬约束），故这里按源码文本钉住。
  */
 describe('runs 页面的追问接线', () => {
   const source = (): string => readFileSync(pagePath, 'utf8');
 
-  it('可用性判据从数据层读，且跟着行状态与会话变化重读', () => {
+  it('可用性判据从数据层读，且跟着候选状态与会话变化重读', () => {
     const text = source();
 
     expect(text, '页面没有订阅追问可用性：按钮没有判据').toContain('useFollowUpAvailability({');
-    // 判据随行状态翻转（正在跑 / 上一次没收尾），而这条读侧没有信号流 ⇒ 必须有 revision
-    expect(text, 'revision 没有带上行的状态与会话 id：行跑完之后按钮还是灰的').toContain('row.sessionId === null');
+    // 判据随候选状态翻转（正在跑 / 上一次没收尾），而这条读侧没有信号流 ⇒ 必须有 revision
+    expect(text, 'revision 没有带上候选的状态与会话 id：候选跑完之后按钮还是灰的').toContain('row.sessionId === null');
     expect(text, '判据没有喂给详情面板（每一张卡片都拿不到结论）').toContain('followUpOf={followUps.verdictOf}');
   });
 
-  it('「追问」打开的是这一行的日志抽屉（输入区在 footer 上），并把在途态透下去', () => {
+  it('「追问」打开的是这个候选的日志抽屉（输入区在 footer 上），并把在途态透下去', () => {
     const text = source();
 
     expect(text, '「追问」没有打开日志抽屉：点了什么都不发生').toContain(
-      'onFollowUpRow={(rowId) => setDrawer({ kind: \'log\', rowId, followUp: true })}',
+      'onFollowUpCandidate={(candidateId) => setDrawer({ kind: \'log\', candidateId, followUp: true })}',
     );
     expect(text, '没有透在途态：追问按钮不会转圈，连点两次就是两段上下文').toContain('followingUp={isFollowingUp}');
+    // 抽屉工具条上的**第二个入口**：漏接的症状是那颗图标按钮永远不出现，或者点了不换输入区
+    const compact = text.replace(/\s+/g, ' ');
+    expect(compact, '日志抽屉没有接「追问」入口：工具条上那颗图标按钮不会出现').toContain('onFollowUp={() => {');
+    expect(compact, '抽屉的追问入口没有把底部槽翻成追问输入区').toContain(
+      'setDrawer({ kind: \'log\', candidateId: logCandidateId, followUp: !open })',
+    );
+    // **开合**：先读当前是不是已经开着，再取反。写死成 `true` 的症状是「再点一次收不回去」，
+    // 而单点一次的用例全绿——判据必须落在「读 open 再取反」这一步上
+    expect(compact, '「追问」入口不是开合的：再点一次收不回输入区').toContain(
+      'const open = drawer?.kind === \'log\' && drawer.followUp === true;',
+    );
+    expect(compact, '抽屉的追问按钮没有拿到服务端判据：会永远停在禁用态').toContain(
+      'followUpVerdict={logCandidateId === null ? undefined : followUps.verdictOf(logCandidateId)}',
+    );
   });
 
   it('底部槽的追问输入区接上了写动作与附件上传（缺一个就是「点了没反应」或「附件发不出去」）', () => {
     const text = source();
 
     expect(text, '页面没有渲染追问输入区').toContain('<FollowUpComposer');
-    expect(text, '追问输入区没有接写动作').toContain('await followUpRow({');
-    // 附件走**同一条 multipart 端点**（落点是同一个 rowDir/attachments/<messageId>/）
+    expect(text, '追问输入区没有接写动作').toContain('await followUpCandidate({');
+    // 附件走**同一条 multipart 端点**（落点是同一个 candidateDir/attachments/<messageId>/）
     expect(text, '追问的附件没有落在与人工消息同一条上传通路上').toContain('onUploadAttachment={async (input) => postInjectAttachment(');
     // 失败原因交回调用方提示（这一层是页面上唯一的提示出口）
     expect(text, '追问的失败原因没有交回页面提示').toContain('onError={(cause) => void message.error(describeError(cause))}');
@@ -602,12 +605,12 @@ describe('runs 页面的追问接线', () => {
     expect(text, '底部槽没有真的接上（`footer` 一个节点都不渲染）').toContain('{ footer: logFooter }');
   });
 
-  it('追问输入区只在「这一行不在跑」时渲染（在跑的那条走排队输入区）', () => {
+  it('追问输入区只在「这个候选不在跑」时渲染（在跑的那条走排队输入区）', () => {
     const text = source();
     // jsx 里的换行与缩进不该打红这条判据：归一化空白之后再找那一段
     const compact = text.replace(/\s+/g, ' ');
-    expect(compact, '追问输入区没有跟着「不在跑」判：在跑的行会长出一个点了会被 409 拒的输入框').toContain(
-      'drawer?.kind === \'log\' && drawer.followUp === true && logRow !== undefined && !isRunningRow(logRow.status)',
+    expect(compact, '追问输入区没有跟着「不在跑」判：在跑的候选会长出一个点了会被 409 拒的输入框').toContain(
+      'drawer?.kind === \'log\' && drawer.followUp === true && logCandidate !== undefined && !isRunningCandidate(logCandidate.status)',
     );
   });
 });
@@ -635,5 +638,33 @@ describe('runs 页面的 run 焦点接线', () => {
     const text = compactSource();
 
     expect(text, '页面卸载时没有复位焦点').toContain('useEffect(() => () => setFocusedRun(null), [])');
+  });
+});
+
+/**
+ * `image-view` 块的缩略图接线。
+ *
+ * 为什么需要：缩略图的 URL 由页面拼（只有页面知道这个候选是哪一轮的哪一行），而**漏传
+ * `imageSrcOf` 时组件不报错**——它只是退化成一句「当前视图不提供图片预览」，看起来像配置问题。
+ * 这条守卫钉两件事：URL 的形状（路由 + 候选 id + 编码）与**有没有传进抽屉**。
+ */
+describe('runs 页面的图片接线', () => {
+  /** 归一化空白之后再断言：换行与缩进不该打红这两条判据 */
+  const compactSource = (): string => readFileSync(pagePath, 'utf8').replace(/\s+/g, ' ');
+
+  it('URL 由页面拼：读该候选工作区的那条路由 + 候选 id，查询值编码一次', () => {
+    const text = compactSource();
+
+    expect(text, '没有拼图片 URL（组件会退化成「不提供预览」）').toContain(
+      '`/api/runs/${runId}/candidates/${logCandidateId}/image?path=${encodeURIComponent(previewPath)}`',
+    );
+  });
+
+  it('拼好的 resolver 传进执行日志抽屉（漏传 = 缩略图永远不出现）', () => {
+    const text = compactSource();
+
+    expect(text, 'AgentLogDrawer 没有接 imageSrcOf').toContain(
+      '{...(imageSrcOf === undefined ? {} : { imageSrcOf })}',
+    );
   });
 });

@@ -42,7 +42,15 @@ interface Scenario {
   threads?: ReadonlyArray<Record<string, unknown> & { id: string }>;
   contents?: Record<
     string,
-    { thread: Record<string, unknown> & { id: string }; items?: ReadonlyArray<{ turnId: string; item: Record<string, unknown> }> }
+    {
+      // `turns` / `items` 是 `thread/turns/list` 与 `thread/items/list` 两页应答的来源：
+      // 声明在这里而不是留在 `Record<string, unknown>` 里，分页夹具才拿得到元素类型
+      thread: Record<string, unknown> & {
+        id: string;
+        turns?: ReadonlyArray<Record<string, unknown> & { id: string }>;
+      };
+      items?: ReadonlyArray<{ turnId: string; item: Record<string, unknown> }>;
+    }
   >;
   threadId?: string;
   threadError?: unknown;
@@ -191,7 +199,7 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
    * ⚠️ **Windows 上的例外**：codex 的受限沙箱在该平台起不了任何子进程
    * （`read-only` / `workspace-write` 下连 `echo`、`git status` 都被 policy 拒），而它读文件只能靠
    * shell ⇒ 只读档会变成盲评。故 **Windows 上评分阶段落最宽档**，靠编排层的「评分前后 diff 摘要
-   * 对照」兜底（不一致即该行失败）。豁免的逐格判据在 `permission.test.ts`，这里钉的是**接线**
+   * 对照」兜底（不一致即该候选失败）。豁免的逐格判据在 `permission.test.ts`，这里钉的是**接线**
    * ——适配器确实用了 `codexPermissionOptions()` 的那一份，而不是绕过它去索引常量表。
    */
   it('评分阶段的权限档：非 Windows 是 `read-only`、Windows 落最宽档（豁免不许绕过翻译层）', async () => {
@@ -514,7 +522,7 @@ describe('注入落点：线程参数、权限档、结构化输出、档位', (
    * 要拦的缺陷：只把档位给 `turn/start`。那一格只管它起的那一轮，而人话续跑起的那一轮走
    * `thread/queue/start`——那个请求的参数**只有** `threadId` 与 `queuedSubmissionId`（探针 dump
    * `v2/ThreadQueueStartParams.json` 的 `required`），带不了档位 ⇒ 不给线程级这一格，续跑那一轮
-   * 会按线程默认档跑，而行快照上写着用户选的那一档（一句半真话）。
+   * 会按线程默认档跑，而候选快照上写着用户选的那一档（一句半真话）。
    */
   it('档位同时进线程级 `config.model_reasoning_effort`（续跑那一轮带不了 effort 参数，只能靠它）', async () => {
     const server = wire({ notifications: [turnCompleted({ id: 'turn-1' }, { threadId: MAIN })] });
@@ -1058,7 +1066,7 @@ describe('收尾：子线程内容、终态与用量', () => {
     expect(result.subagentTokens).toBeNull();
     expect(result.subagentTurns).toBeNull();
     const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
-    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量本行没有采到'))).toBe(true);
+    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量没有采到'))).toBe(true);
   });
 
   /**
@@ -1091,7 +1099,7 @@ describe('收尾：子线程内容、终态与用量', () => {
     expect(result.subagentTokens).toBeNull();
     expect(result.subagentTurns).toBeNull();
     const logs = events.filter((event) => event.type === 'log').map((event) => (event.type === 'log' ? event.text : ''));
-    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量本行没有采到'))).toBe(true);
+    expect(logs.some((text) => text.includes(CHILD) && text.includes('用量没有采到'))).toBe(true);
   });
 
   it('用量「全量或 null」：任一子线程缺用量 ⇒ 分量整格 `null`（不拿部分和冒充总数）', async () => {
@@ -1190,7 +1198,7 @@ describe('收尾：子线程内容、终态与用量', () => {
     });
   });
 
-  it('`turn/completed` 失败 ⇒ 该行失败，归因取厂商原文（401 ⇒ AUTH_FAILED）', async () => {
+  it('`turn/completed` 失败 ⇒ 该候选失败，归因取厂商原文（401 ⇒ AUTH_FAILED）', async () => {
     const { result, events } = await collect({
       notifications: [turnCompleted({ id: 'turn-1', status: 'failed', error: { message: 'unexpected status 401: 密钥无效' } }, { threadId: MAIN })],
     });
@@ -1336,7 +1344,7 @@ describe('纯函数：配置构造', () => {
    *
    * 为什么这条是「落点」而不是「形状」的守卫：形状由 `mcp.test.ts` 逐字钉住，而这里要钉的是
    * 「它到底有没有被放进协议参数」——漏放的失败方式是**静默**的（一台 MCP 都没注入，模型照样
-   * 把任务跑完，只有「本行 MCP」那一格少一行，没有任何报错）。
+   * 把任务跑完，只有「候选 MCP」那一格少一行，没有任何报错）。
    */
   it('MCP：`mcp_servers` 进线程级 config；空集**整个键都不给**（与 effort 同一条口径）', () => {
     const empty = buildCodexConfig('https://gw/v1', { mcpServers: {} });
@@ -1384,7 +1392,7 @@ describe('纯函数：配置构造', () => {
  *   · **判据只到「装上了」**——`ready` 的结论是 `connected`（启动状态这一档），
  *     而「工具能不能调」是另一回事（上游命名空间缺口，见 `CODEX_MCP_DISPATCH_GAP_NOTE`）；
  *   · **每条通知交全量**：codex 只报**变化的那一台**，而推导要按名字对全表 ⇒ 适配器累积；
- *   · **`error` 原文照抄**（行失败文案的后半句就是它）。
+ *   · **`error` 原文照抄**（候选失败文案的后半句就是它）。
  */
 describe('MCP 启动状态 → vendor-system', () => {
   /** `mcpServer/startupStatus/updated` 的逐字形状（真机样本） */

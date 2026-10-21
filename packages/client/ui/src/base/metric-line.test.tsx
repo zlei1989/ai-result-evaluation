@@ -2,7 +2,7 @@
  * MetricLine：计量摘要。**本文件是「null 不是 0」这条口径的主守卫**。
  * 两个方向都要钉住：
  *   · `null`（没采到 / 采集不到）→ 显示「未采集」或「不支持计量」，**不得出现 0**；
- *   · 真实的 `0`（例如 0 轮）→ 照常显示 0，不得被当成「没采到」吃掉。
+ *   · 真实的 `0`（例如 0 步）→ 照常显示 0，不得被当成「没采到」吃掉。
  * 只钉一个方向的守卫是没用的：把 null 渲染成 0 与把 0 渲染成「未采集」都会让使用者读错。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,12 +35,12 @@ describe('MetricLine', () => {
     render(<MetricLine tokens={null} turns={null} durationMs={null} score={null} />);
 
     expect(screen.getByText('tok 未采集')).toBeInTheDocument();
-    expect(screen.getByText('轮次 未采集')).toBeInTheDocument();
+    expect(screen.getByText('步数 未采集')).toBeInTheDocument();
     expect(screen.getByText('耗时 未采集')).toBeInTheDocument();
     expect(screen.getByText('得分 未评分')).toBeInTheDocument();
     // 靶子：把 null 当 0 渲染的实现会在这里失败
     expect(screen.queryByText('tok 0')).toBeNull();
-    expect(screen.queryByText('轮次 0')).toBeNull();
+    expect(screen.queryByText('步数 0')).toBeNull();
   });
 
   it('该智能体不支持计量时文案是「不支持计量」，与「未采集」区分开', () => {
@@ -50,11 +50,11 @@ describe('MetricLine', () => {
     expect(screen.queryByText('tok 未采集')).toBeNull();
   });
 
-  it('真实的 0 照常显示成 0（0 轮不是「没采到」）', () => {
+  it('真实的 0 照常显示成 0（0 步不是「没采到」）', () => {
     render(<MetricLine tokens={{ input: 0, cached: 0, output: 0 }} turns={0} durationMs={0} score={score} />);
 
     expect(screen.getByText('tok 0')).toBeInTheDocument();
-    expect(screen.getByText('轮次 0')).toBeInTheDocument();
+    expect(screen.getByText('步数 0')).toBeInTheDocument();
     expect(screen.getByText('耗时 0s')).toBeInTheDocument();
     expect(screen.getByText('得分 87')).toBeInTheDocument();
   });
@@ -149,7 +149,7 @@ describe('formatDuration', () => {
  *
  * 三条口径：
  *   ① 行还在跑、适配器又还没上报时，文案是**「采集中」**而不是「未采集」——「未采集」是终态的结论
- *      （这一行结束了也没采到），两者混在一起会让人以为采集坏了；
+ *      （这个候选结束了也没采到），两者混在一起会让人以为采集坏了；
  *   ② 实时值（来自事件流的叠加层）在**跑动期**填进这几格；真实值/实时值都仍然遵守 `null ≠ 0`；
  *   ③ 耗时在跑动期用**行自己的开始时刻**本地走秒表；行一进终态，叠加层整体失效、显示快照里的权威值
  *      （否则结算值会被一个还在涨的秒表顶掉）。
@@ -162,16 +162,16 @@ describe('MetricLine：运行中的实时展示', () => {
 
     expect(screen.getByText('tok 采集中')).toBeInTheDocument();
     expect(screen.getByText('缓存命中 采集中')).toBeInTheDocument();
-    expect(screen.getByText('轮次 采集中')).toBeInTheDocument();
+    expect(screen.getByText('步数 采集中')).toBeInTheDocument();
     expect(screen.getByText('耗时 采集中')).toBeInTheDocument();
     // 得分这一格与采集无关：评分在 agent 跑完之后才发生，始终是「未评分」
     expect(screen.getByText('得分 未评分')).toBeInTheDocument();
     expect(screen.queryByText('tok 未采集')).toBeNull();
     expect(screen.queryByText('tok 0')).toBeNull();
-    expect(screen.queryByText('轮次 0')).toBeNull();
+    expect(screen.queryByText('步数 0')).toBeNull();
   });
 
-  it('运行中收到实时计量：tok / 缓存命中 / 轮次都跟着实时值（不用等行结束）', () => {
+  it('运行中收到实时计量：tok / 缓存命中 / 步都跟着实时值（不用等行结束）', () => {
     render(
       <MetricLine
         tokens={null}
@@ -185,7 +185,7 @@ describe('MetricLine：运行中的实时展示', () => {
 
     expect(screen.getByText('tok 1,500')).toBeInTheDocument();
     expect(screen.getByText('缓存命中 75%')).toBeInTheDocument();
-    expect(screen.getByText('轮次 7')).toBeInTheDocument();
+    expect(screen.getByText('步数 7')).toBeInTheDocument();
   });
 
   it('运行中的耗时按行自己的开始时刻每秒递增', () => {
@@ -221,13 +221,13 @@ describe('MetricLine：运行中的实时展示', () => {
           turns={1}
           durationMs={4_000}
           score={null}
-          // 还在传实时值，但这一行已经不是运行态了
+          // 还在传实时值，但这个候选已经不是运行态了
           live={{ startedAtMs: Date.parse(START_AT), tokens: { input: 999, cached: 0, output: 999 }, subagentTokens: null, subagentTurns: null, turns: 99, candidateEnded: false, candidateEndedAtMs: null }}
         />,
       );
 
       expect(screen.getByText('tok 30')).toBeInTheDocument();
-      expect(screen.getByText('轮次 1')).toBeInTheDocument();
+      expect(screen.getByText('步数 1')).toBeInTheDocument();
       expect(screen.getByText('耗时 4s')).toBeInTheDocument();
       act(() => vi.advanceTimersByTime(30_000));
       // 秒表必须停了：终态的耗时是结算值，不会随时间长大
@@ -247,15 +247,15 @@ describe('MetricLine：运行中的实时展示', () => {
 });
 
 /**
- * **评分阶段的计量冻结**（「只展示执行的 tok 和 轮次，评分不应该覆盖此信息」）。
+ * **评分阶段的计量冻结**（「只展示执行的 tok 和 步，评分不应该覆盖此信息」）。
  *
- * 评分智能体跑在候选同一个工作区里，它的事件落评分自己的 `judge-events.jsonl`（与行级流分开）；
+ * 评分智能体跑在候选同一个工作区里，它的事件落评分自己的 `judge-events.jsonl`（与候选级流分开）；
  * 这条判据的输入源是**历史数据回放**——评分事件曾与候选同一条流的时期落盘的 `events.jsonl`，
- * 其中 `status: judging` 之后推来的 `usage` 报的是**评审者**的用量（轮次从 1 重新数）。
- * 真机上这个混淆很好认：候选那一段跑出 `490,906 tok / 28 轮 / 58s`，评分期间卡片上却是
- * `tok 13,715 / 缓存命中 45% / 轮次 2 / 耗时 2m28s`——全是评审者的数与整行墙钟。
+ * 其中 `status: judging` 之后推来的 `usage` 报的是**评审者**的用量（步从 1 重新数）。
+ * 真机上这个混淆很好认：候选那一段跑出 `490,906 tok / 28 步 / 58s`，评分期间卡片上却是
+ * `tok 13,715 / 缓存命中 45% / 步 2 / 耗时 2m28s`——全是评审者的数与整行墙钟。
  *
- * 叠加层带 `candidateEnded` 时这几格冻结：tok / 缓存命中 / 轮次用候选最后一次上报，
+ * 叠加层带 `candidateEnded` 时这几格冻结：tok / 缓存命中 / 步用候选最后一次上报，
  * 秒表停在候选结束那一刻（与快照 `durationMs` 同口径：只算候选那一段），没采到时说「未采集」
  * 而不是「采集中」。三条口径各自的靶子：① 冻结值照常显示；② 秒表停住；③ 措辞不是「采集中」。
  */
@@ -266,7 +266,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
   /** 候选收尾那一条上报（实测值） */
   const CANDIDATE_TOKENS = { input: 483_723, cached: 455_552, output: 7_183 };
 
-  it('冻结后显示**候选**的 tok / 缓存命中 / 轮次，耗时停在候选结束那一刻', () => {
+  it('冻结后显示**候选**的 tok / 缓存命中 / 步，耗时停在候选结束那一刻', () => {
     render(
       <MetricLine
         // 快照这几格是空的（评分不回写它们）：显示的值只可能来自冻结的叠加层
@@ -290,7 +290,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
     // 490,906 = 483,723 + 7,183（缓存读不进 tok）；49% = 455,552 / 939,275（四舍五入）
     expect(screen.getByText('tok 490,906')).toBeInTheDocument();
     expect(screen.getByText('缓存命中 49%')).toBeInTheDocument();
-    expect(screen.getByText('轮次 28')).toBeInTheDocument();
+    expect(screen.getByText('步数 28')).toBeInTheDocument();
     expect(screen.getByText('耗时 1m00s')).toBeInTheDocument();
     expect(screen.getByText('得分 未评分')).toBeInTheDocument();
   });
@@ -334,7 +334,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
         score={null}
         running
         live={{
-          // 连开始时刻都没有（这一行没走到过 running）：秒表无从走起，也不该拿 0 冒充
+          // 连开始时刻都没有（这个候选没走到过 running）：秒表无从走起，也不该拿 0 冒充
           startedAtMs: null,
           tokens: null,
           subagentTokens: null,
@@ -348,7 +348,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
 
     expect(screen.getByText('tok 未采集')).toBeInTheDocument();
     expect(screen.getByText('缓存命中 未采集')).toBeInTheDocument();
-    expect(screen.getByText('轮次 未采集')).toBeInTheDocument();
+    expect(screen.getByText('步数 未采集')).toBeInTheDocument();
     expect(screen.getByText('耗时 未采集')).toBeInTheDocument();
     // 「采集中」只属于候选阶段：评分阶段说它是空承诺
     expect(screen.queryByText('tok 采集中')).toBeNull();
@@ -376,7 +376,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
     );
 
     expect(screen.getByText('tok 30')).toBeInTheDocument();
-    expect(screen.getByText('轮次 1')).toBeInTheDocument();
+    expect(screen.getByText('步数 1')).toBeInTheDocument();
     expect(screen.getByText('耗时 4s')).toBeInTheDocument();
   });
 });
@@ -391,7 +391,7 @@ describe('MetricLine：评分阶段的计量冻结', () => {
  * defined`，浮层**永远不出现**（不装桩时 `fireEvent.mouseEnter` 之后 10s 也查不到文案）。
  *
  * 三条口径（每条都有靶子）：
- *   ① 有分量且**逐格不大于**合计 ⇒ 两行，主会话那一行是**相减**出来的（不是第二份真值）；
+ *   ① 有分量且**逐格不大于**合计 ⇒ 两行，主会话那一候选是**相减**出来的（不是第二份真值）；
  *   ② 缺这一格 / `null` / `{0,0,0}` / 与合计对不上 ⇒ **只有一行**；
  *   ③ 跑动期取叠加层那一对（合计与分量必须同源同刻——拿快照那对去配叠加层的合计会拆出错的差）。
  */
@@ -422,7 +422,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
     );
 
     fireEvent.mouseEnter(screen.getByText(/^tok /));
-    // 60 = 100 − 40、10 = 20 − 10、25 = 30 − 5：两行都只由**这一对**算出来
+    // 60 = 100 − 40、10 = 20 − 10、25 = 30 − 5：两个候选都只由**这一对**算出来
     expect(await screen.findByText('主会话 输入 60 tok · 缓存 10 tok · 输出 25 tok')).toBeInTheDocument();
     expect(await screen.findByText('子智能体 输入 40 tok · 缓存 10 tok · 输出 5 tok')).toBeInTheDocument();
   });
@@ -487,7 +487,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
     );
 
     fireEvent.mouseEnter(screen.getByText(/^tok /));
-    // 10 − 40 = −30：这一行绝不能出现
+    // 10 − 40 = −30：这个候选绝不能出现
     expect(await screen.findByText('输入 10 tok · 缓存 0 tok · 输出 1 tok')).toBeInTheDocument();
     expect(document.querySelector('.ant-tooltip')).not.toBeNull();
     expect(screen.queryByText(/主会话/)).toBeNull();
@@ -524,11 +524,11 @@ describe('MetricLine：子智能体那一份拆两行', () => {
 });
 
 /**
- * **子智能体那一份轮次：Tooltip 拆两行**（追加段，与 token 那一格逐条同构）。
+ * **子智能体那一份步：Tooltip 拆两行**（追加段，与 token 那一格逐条同构）。
  *
  * 判据三条（缺一条就会画出一句假话）：这一格**在**（不是缺格 / `null`）、`> 0`、且 `≤ turns`。
  * 主会话那一行由 `turns − subagentTurns` **相减**得出（不是第二份真值）；合计那一个数仍在卡片正文里
- * ——「轮次 9」照旧由正文渲染，这次拆分不改它的口径，也不改它的文案。
+ * ——「步数 9」照旧由正文渲染，这次拆分不改它的口径，也不改它的文案。
  * `≤ turns` 是**纵深防御**：它是的不变量，界面再查一遍，免得一份老 `run.json` 或一次将来的
  * 缺陷以「那两行自己都不自洽」（主会话算出负数）的形式出现在用户面前——那种画面看起来完全正常。
  *
@@ -537,7 +537,7 @@ describe('MetricLine：子智能体那一份拆两行', () => {
  * 所以这几条一律走 `expectNoTooltip`——**等满一个延迟窗口**再判，
  * 而本段第一条用例已经证明同一个环境里悬浮是打得出浮层的（`ResizeObserver` 桩装好了）。
  */
-describe('MetricLine：子智能体的轮次那一份拆两行', () => {
+describe('MetricLine：子智能体的步那一份拆两行', () => {
   beforeEach(() => {
     installResizeObserverStub();
   });
@@ -552,7 +552,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
    *
    * 为什么不能悬浮完就立刻判 `null`：antd 的 `Tooltip` 有 `mouseEnterDelay`（默认 0.1s），**同步**那句
    * `querySelector('.ant-tooltip')` 在任何实现下都为真。把「`> 0`」那一条判据去掉，浮层会画出
-   * 「主会话 9 轮 / 子智能体 0 轮」，而同步断言仍然是绿的——**没有分辨力**
+   * 「主会话 9 步 / 子智能体 0 步」，而同步断言仍然是绿的——**没有分辨力**
    * 的断言等于没写（本仓 `ellipsis-text.test.tsx` 也登记过「`.ant-tooltip` 单独不构成守卫」）。
    * 等满一个延迟窗口再判，缺陷才抓得住。
    */
@@ -563,25 +563,25 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
     expect(document.querySelector('.ant-tooltip')).toBeNull();
   };
 
-  it('有子智能体轮次时两行：主会话是 turns − subagentTurns 算出来的', async () => {
+  it('有子智能体步时两行：主会话是 turns − subagentTurns 算出来的', async () => {
     render(<MetricLine tokens={null} turns={9} subagentTurns={3} durationMs={1000} score={null} />);
 
     // 正文那一格一个字不改：合计仍是 9（拆分不改它的口径）
-    expect(screen.getByText('轮次 9')).toBeInTheDocument();
+    expect(screen.getByText('步数 9')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
-    // 6 = 9 − 3：两行都只由**这一对**算出来
-    expect(await screen.findByText('主会话 6 轮')).toBeInTheDocument();
-    expect(await screen.findByText('子智能体 3 轮')).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
+    // 6 = 9 − 3：两个候选都只由**这一对**算出来
+    expect(await screen.findByText('主会话 6 步')).toBeInTheDocument();
+    expect(await screen.findByText('子智能体 3 步')).toBeInTheDocument();
   });
 
   it('没有子智能体（0）时只有一行，逐字与改动前相同', async () => {
     render(<MetricLine tokens={null} turns={9} subagentTurns={0} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
     await expectNoTooltip();
 
-    expect(screen.getByText('轮次 9')).toBeInTheDocument();
+    expect(screen.getByText('步数 9')).toBeInTheDocument();
     // 0 与「没采到」在这一格上渲染相同（规矩，不是漏做）：都不是「有分量」的证明
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
@@ -589,7 +589,7 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
   it('没采到（null）与缺这一格（老调用方）都只有一行', async () => {
     const { unmount } = render(<MetricLine tokens={null} turns={9} subagentTurns={null} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
     await expectNoTooltip();
     expect(screen.queryByText(/子智能体/)).toBeNull();
 
@@ -597,26 +597,26 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
     // 先卸载上一棵树：不卸载的话同一句文案会命中两个元素（浮层挂在 body 上）。
     unmount();
     render(<MetricLine tokens={null} turns={9} durationMs={1000} score={null} />);
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
     await expectNoTooltip();
     expect(screen.queryByText(/子智能体/)).toBeNull();
   });
 
-  it('分量比合计大（主会话算出负数）时不画拆分——宁可少一行，也不显示 -3 轮', async () => {
+  it('分量比合计大（主会话算出负数）时不画拆分——宁可少一行，也不显示 -3 步', async () => {
     render(<MetricLine tokens={null} turns={1} subagentTurns={4} durationMs={1000} score={null} />);
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
     await expectNoTooltip();
 
-    // 1 − 4 = −3：这一行绝不能出现
-    expect(screen.getByText('轮次 1')).toBeInTheDocument();
+    // 1 − 4 = −3：这个候选绝不能出现
+    expect(screen.getByText('步数 1')).toBeInTheDocument();
     expect(screen.queryByText(/主会话/)).toBeNull();
   });
 
   it('跑动期用叠加层的那一对（合计与分量必须同源同刻）', async () => {
     render(
       <MetricLine
-        // 快照那一对是**另一个时刻**的读数（还只是主会话的 1 轮）：真拿它去配叠加层的合计，
+        // 快照那一对是**另一个时刻**的读数（还只是主会话的 1 步）：真拿它去配叠加层的合计，
         // 拆出来的主会话就是错的——这一条钉住「同源同刻」
         tokens={null}
         turns={1}
@@ -636,9 +636,9 @@ describe('MetricLine：子智能体的轮次那一份拆两行', () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByText(/^轮次 /));
-    expect(await screen.findByText('子智能体 5 轮')).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByText(/^步数 /));
+    expect(await screen.findByText('子智能体 5 步')).toBeInTheDocument();
     // 3 = 8 − 5：主会话那一行同样只可能来自叠加层那一对
-    expect(await screen.findByText('主会话 3 轮')).toBeInTheDocument();
+    expect(await screen.findByText('主会话 3 步')).toBeInTheDocument();
   });
 });

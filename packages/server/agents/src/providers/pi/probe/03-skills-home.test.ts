@@ -26,15 +26,15 @@ import { describe, expect, it } from 'vitest';
 import { removeTreeWithRetry } from '../../../testing/cleanup';
 import {
   anthropicText,
-  createPiRowLayout,
-  runPiConformanceRow,
+  createPiCandidateLayout,
+  runPiConformanceCandidate,
   writeSkillSource,
 } from '../../../testing/pi-conformance-fixture';
 import { eventOfType, vendorSkillOf } from './readings';
 
 /** 假 HOME 里的金丝雀（由驱动器布在 `~/.agents/skills/` 与 `~/.pi/skills/` 两条路径上） */
 const HOME_CANARY = 'home-canary-skill';
-const ROW_SKILL = 'row-skill-probe';
+const CANDIDATE_SKILL = 'row-skill-probe';
 const PROJECT_PI_SKILL = 'project-pi-skill-probe';
 
 /**
@@ -48,12 +48,12 @@ describe('技能过滤：HOME 锚定 / 行白名单 / 项目技能', () => {
   it.skipIf(!drivenBySubprocess)('真适配器一轮：金丝雀不进请求，行技能与项目技能进请求，厂商清单仍含金丝雀', async () => {
     const home = process.env.HOME ?? '';
 
-    const layout = createPiRowLayout('pi-v12-skills-row-');
+    const layout = createPiCandidateLayout('pi-v12-skills-row-');
     try {
-      const run = await runPiConformanceRow({
+      const run = await runPiConformanceCandidate({
         script: [anthropicText('收到。')],
         prompt: '这一题只用来取证，不必真的做什么。',
-        skills: [writeSkillSource(layout.root, ROW_SKILL, '行技能正文（必须进上下文）')],
+        skills: [writeSkillSource(layout.root, CANDIDATE_SKILL, '行技能正文（必须进上下文）')],
         cwdSetup: (cwd) => {
           for (const [dir, name] of [['.pi', PROJECT_PI_SKILL], ['.agents', `${PROJECT_PI_SKILL}-two`]] as const) {
             const target = join(cwd, dir, 'skills', name);
@@ -92,13 +92,13 @@ describe('技能过滤：HOME 锚定 / 行白名单 / 项目技能', () => {
       expect(requestNames, `出站请求里出现了宿主家目录的技能：${requestNames.join('、')}`).not.toContain(HOME_CANARY);
       expect(canaryOccurrences, '金丝雀技能名出现在请求体里（技能段之外也算命中）').toBe(0);
       // ② 行技能与项目技能必须在
-      expect(requestNames).toContain(ROW_SKILL);
+      expect(requestNames).toContain(CANDIDATE_SKILL);
       expect(requestNames).toContain(PROJECT_PI_SKILL);
       // ③ 厂商清单里不许有金丝雀：这一格读的是装载器的 `getSkills()`（= 过滤之后的那一份）
       expect(vendorSkills.map((skill) => skill.name)).not.toContain(HOME_CANARY);
-      // ④ 落点分档：行技能在行配置目录之下 ⇒ local-enabled；项目技能在 cwd 之下 ⇒ repo-provided
+      // ④ 落点分档：行技能在候选配置目录之下 ⇒ local-enabled；项目技能在 cwd 之下 ⇒ repo-provided
       const originOf = (name: string) => vendorSkills.find((skill) => skill.name === name)?.origin ?? null;
-      expect(originOf(ROW_SKILL)).toBe('local-enabled');
+      expect(originOf(CANDIDATE_SKILL)).toBe('local-enabled');
       expect(originOf(PROJECT_PI_SKILL)).toBe('repo-provided');
     } finally {
       removeTreeWithRetry(layout.root);

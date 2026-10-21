@@ -16,12 +16,32 @@
  *
  * 依赖方向：本文件只读源码文本，不 import 任何包（与 `package-dependency-boundaries.test.ts` 同一条理由）。
  */
-import { globSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /** 仓库根：本文件在 `apps/web-next/src/` 下 */
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
+
+/**
+ * 递归列出某个目录下的 `.tsx`（相对 `repoRoot`，分隔符统一成 `/`）。
+ *
+ * 不用 `node:fs` 的 `globSync`：本仓的 `@types/node` 是 20，类型声明里没有它
+ * （运行期 Node 24 有，`tsc` 却先红）。手写这一层只有十几行，且扫描面是**目录**而不是通配符，
+ * 不存在「glob 语义与预期不符」的余地。
+ */
+function tsxFilesUnder(relativeDir: string): string[] {
+  const found: string[] = [];
+  const walk = (relative: string): void => {
+    for (const entry of readdirSync(join(repoRoot, relative), { withFileTypes: true })) {
+      const child = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile() && entry.name.endsWith('.tsx')) found.push(child);
+    }
+  };
+  walk(relativeDir);
+  return found;
+}
 
 /**
  * 组件 → 已废弃的 props（`旧名 → 新名` 只为报错信息里能直接说怎么改）。
@@ -41,10 +61,10 @@ const DEPRECATED: Record<string, Record<string, string>> = {
 };
 
 /** 扫描面：两个界面包 + web-next 的 app 目录（产品代码；测试与夹具不在面上） */
-const SCANNED_GLOBS = [
-  'packages/client/ui/**/*.tsx',
-  'packages/client/client/**/*.tsx',
-  'apps/web-next/app/**/*.tsx',
+const SCANNED_DIRS = [
+  'packages/client/ui',
+  'packages/client/client',
+  'apps/web-next/app',
 ] as const;
 
 /**
@@ -72,9 +92,9 @@ function openTagBodies(source: string, component: string): { body: string; line:
 
 describe('antd 6 的废弃 props', () => {
   it('产品代码里一条都不用（用组件源码里的新名）', () => {
-    const files = SCANNED_GLOBS.flatMap((pattern) => globSync(pattern, { cwd: repoRoot }));
+    const files = SCANNED_DIRS.flatMap((dir) => tsxFilesUnder(dir));
     // 扫描面为空 = 守卫静默失效（换目录、改扩展名都会这样）：零命中必须先确认扫到了东西
-    expect(files.length, '一个 .tsx 都没扫到：扫描面的 glob 写错了').toBeGreaterThan(50);
+    expect(files.length, '一个 .tsx 都没扫到：扫描面的目录写错了').toBeGreaterThan(50);
 
     const violations: string[] = [];
     for (const file of files) {

@@ -104,7 +104,7 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
 
   const findById = (id: string): Entry | undefined => entries.find((entry) => entry.id === id);
 
-  /** 把一次改动落到一行上（`deleted` 是移除，不是改状态） */
+  /** 把一次改动落到一本次运行上（`deleted` 是移除，不是改状态） */
   const applyPatch = (entry: Entry, patch: TaskPatch): void => {
     if (patch.deleted) {
       // `indexOf === -1` 时 `splice(-1, 1)` 删的是**最后一行**（错删别人而不是删不掉它）——先判再删
@@ -190,9 +190,9 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
    * `task.id` 可认领 ⇒ 建出来的那一行标题永远空着、`createdBy` 永远配不上结果，而它此后会出现在
    * **每一个** `Task*` 块的整表载荷里（面板上多一条没人能删的空任务）。
    * 与 `TaskUpdate` 那一支同一条处置：**没见过的 id 只记补丁账、不凭空造行**；
-   * 这一支是「造不出有内容的一行就不造」。
+   * 这一支是「造不出有内容的一本次运行就不造」。
    */
-  const inputCreatesRow = (input: Record<string, unknown> | null): boolean =>
+  const inputCreatesCandidate = (input: Record<string, unknown> | null): boolean =>
     (readString(input, 'subject') ?? '') !== '' || (readString(input, 'description') ?? '') !== '';
 
   /** 此刻的整张清单（没有任何一行时给空表——「清单为空」是事实，不是「没有」） */
@@ -213,7 +213,7 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
       if (call.name === CREATE_TOOL) {
         const input = asRecord(call.input);
         // 入参认不出（连标题都读不出）⇒ 不建行，但仍记下这次调用：它的结果到达时才知道真标题
-        if (inputCreatesRow(input)) entries.push(entryOf(call.callId, input));
+        if (inputCreatesCandidate(input)) entries.push(entryOf(call.callId, input));
         calls.set(call.callId, { call, kind: 'create' });
         return payloadOf();
       }
@@ -255,7 +255,7 @@ export function createClaudeTaskRegistry(): ClaudeTaskRegistry {
               return created;
             })()
             : undefined);
-        // 认不出、或这一行已经认过 id、或这个 id 已被别的行占了 ⇒ 不动（宁可停在入参那一步）
+        // 认不出、或本次运行已经认过 id、或这个 id 已被别的行占了 ⇒ 不动（宁可停在入参那一步）
         if (entry === undefined || entry.id !== null) return false;
         if (findById(id) !== undefined) return false;
         entry.id = id;

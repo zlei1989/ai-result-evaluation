@@ -1,29 +1,29 @@
 'use client';
 
 /**
- * 排名表：把一轮评测的候选**并排**摆成一张表看名次——列是候选，行是各项事实，
+ * 排名表：把一轮评测的候选**并排**摆成一张表看名次——列是候选，候选是各项事实，
  * 左首列锁住当行标签、其余列横向滚动。**只是表**：抽屉（几何、标题、开合）由页面给。
  *
  * 七条口径：
- *   1. **列头留空，名次落在第一行里**（该行标签留空、金色 Tag 自己说明它是什么；与候选卡片上的徽标同形）：名次是这张表
+ *   1. **列头留空，名次落在第一个候选里**（该候选标签留空、金色 Tag 自己说明它是什么；与候选卡片上的徽标同形）：名次是这张表
  *      存在的理由，只能有一个落点——两处对同一件事的写法必须一样，列头若换成名次就会与那一行重复；
  *   2. **名次与卡片排序共用同一份判据**（`compareRows` + `rankOf`，来自 `run-detail-panel`）：
  *      总分降序 → 耗时升序 → tok（输入+输出）升序，三项全同才并列（同名次、允许跳号）。
  *      本组件**不自己排**，否则会出现「卡片挂第 1 名、表里排第 2」；
  *   3. **未出分的候选照进表**，排在有分的右侧且**不给名次**：`rankOf` 对它们返回 `undefined`
  *      ——「没有名次」是一句事实，写成「最后一名」或干脆不显示都是在替使用者下结论。
- *      它们的第一格显示行状态（失败 / 已超时 / 待开始…），评分与总分格留空；
+ *      它们的第一格显示候选状态（失败 / 已超时 / 待开始…），评分与总分格留空；
  *   4. **判定与评分项按引用键对齐**（`rubricEntries` 一次摊平、按 `groupIndex` 分段），
  *      表里有而判定里没有的那一格**显式写「缺少判定」**：不静默跳过（那种「看起来正常」的表格
  *      比报错危险，与评分详情同一口径）；
  *   5. **行分四段**：身份（名次 / 智能体 / 模型 / 思考强度）→ 执行（耗时 / 输入 / 缓存读 / 输出）
  *      → 评分（每组一行组名 + 各目标，带权重）→ 总分。耗时与 token 说的是**候选执行那一段**
- *      （`EvalRow.durationMs` 契约里就不含评分阶段）——把它们并进评分段会让人误读成评分开销，
+ *      （`EvalCandidate.durationMs` 契约里就不含评分阶段）——把它们并进评分段会让人误读成评分开销，
  *      而 token 三行与 `compareRows` 用的那两个数**同源**（输入 + 输出），逐格摆开是为了
  *      「同分为什么有名次差」当场可查（缓存读单列一行：它不进判据）；
  *   6. **组名只写在左锁列里**（不横跨候选列）：横跨时它是一块会跟着横向滚动滑走的横幅，
  *      而「这一段是哪个分类」正是读右边那些格子的前提——留在锁列里才始终在视野内；
- *   7. **不给任何行自定义底色**：分段靠**行的位置与字重**（组名加粗、总分那一行的值是粗体），
+ *   7. **不给任何行自定义底色**：分段靠**候选的位置与字重**（组名加粗、总分那一候选的值是粗体），
  *      底色交回表格自己的斑马纹与 hover——自加一层底色会与它们打架，且亮/暗两套主题下都要重调；
  *   8. **数来自传入的快照，不重算**：总分用 `score.totalScore`、满分用 `score.maxScore`
  *      （逐行各显示各的——评分表改过之后两行可能不是同一把尺子），耗时未采集写「未采集」而不是 0。
@@ -38,9 +38,9 @@ import type { TableColumnsType } from 'antd';
 import type { HTMLAttributes, ReactNode, TdHTMLAttributes } from 'react';
 import {
   AGENT_LABELS,
-  ROW_STATUS_LABELS,
+  CANDIDATE_STATUS_LABELS,
   rubricEntries,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
   type RubricEntry,
   type RubricItem,
@@ -68,7 +68,7 @@ export const RANK_LABEL_WIDTH = 200;
 export const RANK_CANDIDATE_WIDTH = 160;
 
 /**
- * 表格的最小宽度 = 标签列 + 每候选一列。`scroll.x` 必须是一个**数值**（给 `true` / `'max-content'`
+ * 表格的最小宽度 = 标签列 + 每个候选一列。`scroll.x` 必须是一个**数值**（给 `true` / `'max-content'`
  * 都会让固定列失效）；所有候选列等宽、用同一个常量，故这里是一个求和式而不是逐列累加。
  */
 export function rankTableMinWidth(candidateCount: number): number {
@@ -83,9 +83,9 @@ export const RANK_CRITERIA_PARTS = [
   '名次：总分降序；同分按耗时升序',
   '再按 tok（输入+输出）升序',
   '三项全同即并列（同名次，允许跳号）',
-  // 说「那一格」而不是「选手格」：第一行的标签已经留空（口径 1），引用一个界面上不存在的词
+  // 说「那一格」而不是「选手格」：第一候选的标签已经留空（口径 1），引用一个界面上不存在的词
   // 只会让读者回头去找它
-  '未出分的候选不参与排名，它那一格写行状态',
+  '未出分的候选不参与排名，它那一格写候选状态',
 ] as const;
 
 /** 判据说明的正文（段间用 `；` 连接，末尾补句号） */
@@ -93,7 +93,7 @@ export const RANK_CRITERIA_TEXT = `${RANK_CRITERIA_PARTS.join('；')}。`;
 
 /**
  * 名次那一行挂的标记片段：名次逐列拼成 `1,2,` 形态（**未出分的列是空串**）。
- * 它是这一行唯一的机器可读信号——列头留空（口径 1），名次只能落在这一行里。
+ * 它是这个候选唯一的机器可读信号——列头留空（口径 1），名次只能落在这个候选里。
  * 导出是为了让守卫拿到**同一份**拼法，而不是在用例里照抄一遍（照抄的那份不会跟着改）。
  */
 export function rankMarker(ranked: readonly (number | undefined)[]): string {
@@ -107,36 +107,36 @@ interface RankTableRow {
   label: ReactNode;
   /** 组名分隔行：只有标签格有内容（候选格留白），底色比普通行浅一档 */
   groupHeader?: string;
-  /** 这一行的渲染：给它一个候选，回这一格。组名行没有它（候选格全部留白） */
-  render?: (row: EvalRow) => ReactNode;
+  /** 这个候选的渲染：给它一个候选，回这一格。组名候选没有它（候选格全部留白） */
+  render?: (row: EvalCandidate) => ReactNode;
 }
 
 /**
  * 挂在 `<tr>` 上的属性：`onRow` 的返回类型在 antd 里只声明了事件处理器，而这一页要挂 `data-*`
  * （守卫按数据属性断言，比断言 class 稳）。显式写出这一支，不写 `as any`——那会把真正的类型错误
- * 一起吞掉（与 `score-detail-view.tsx` 的 `ScoreRowAttributes` 同一手法）。
+ * 一起吞掉（与 `score-detail-view.tsx` 的 `ScoreCandidateAttributes` 同一手法）。
  */
-type RankRowAttributes = HTMLAttributes<HTMLElement> & {
+type RankCandidateAttributes = HTMLAttributes<HTMLElement> & {
   'data-testid': string;
   /** 名次标记：只在名次那一行非空，取值是这一列的名次（未出分的列是空串） */
   'data-rank': string;
 };
 
-/** 挂在 `<td>` / `<th>` 上的属性：同样要挂 `data-*`，另加组名行的 `colSpan` 与底色（理由同上） */
+/** 挂在 `<td>` / `<th>` 上的属性：同样要挂 `data-*`，另加组名候选的 `colSpan` 与底色（理由同上） */
 type RankCellAttributes = TdHTMLAttributes<HTMLTableCellElement> & { 'data-testid': string };
 
-/** 判定格的引用键由行闭包带住，故 `render` 只收候选行 */
-function identityRows(rows: EvalRow[]): RankTableRow[] {
+/** 判定格的引用键由行闭包带住，故 `render` 只收候选 */
+function identityCandidates(rows: EvalCandidate[]): RankTableRow[] {
   return [
     {
       key: 'rank',
-      // **标签留空**（用户口径）：这一行的内容是名次 Tag，它自己会说话——「选手」两个字既
+      // **标签留空**（用户口径）：这个候选的内容是名次 Tag，它自己会说话——「选手」两个字既
       // 不解释什么，还占着锁列里最值钱的第一格
       label: '',
       render: (row) =>
         row.score === null ? (
-          // 未出分：写的是行状态而不是名次——它是「这行为什么没分」的第一句话（口径 3）
-          <Tag>{ROW_STATUS_LABELS[row.status]}</Tag>
+          // 未出分：写的是候选状态而不是名次——它是「这行为什么没分」的第一句话（口径 3）
+          <Tag>{CANDIDATE_STATUS_LABELS[row.status]}</Tag>
         ) : (
           /**
            * 金色名次 Tag（与候选卡片上的徽标同色同字，口径 1）；**真的没答时**再挂一个红 Tag。
@@ -146,7 +146,7 @@ function identityRows(rows: EvalRow[]): RankTableRow[] {
            * 横向对比里就会把一次空答复排得和正常一样（与候选卡片同一口径）。
            *
            * 判据 `=== true`：三态里**键缺席与 `null` 都是「未记录」**，不该显示成任何一个结论
-           * （旧数据属于这一档）。⇒ 既有用例的行没有这一格 ⇒ 多出来的 Tag **不会出现**，
+           * （旧数据属于这一档）。⇒ 既有用例的候选没有这一格 ⇒ 多出来的 Tag **不会出现**，
            * 因此不改变它们断言的 `textContent`。
            */
           <>
@@ -172,9 +172,9 @@ function notCollected(): ReactNode {
 /**
  * 执行那一段（口径 5）：耗时 + token 三格，四个数都与卡片计量行同源同格式。
  * **未出分的列整段留白**（不逐格写「未采集」）：那一行要么没跑到采集、要么跑挂了，
- * 五个「未采集」只是噪音——名次那一格里的行状态已经把原因说清了。
+ * 五个「未采集」只是噪音——名次那一格里的候选状态已经把原因说清了。
  */
-function executionRows(): RankTableRow[] {
+function executionCandidates(): RankTableRow[] {
   return [
     {
       key: 'duration',
@@ -215,7 +215,7 @@ function executionRows(): RankTableRow[] {
  * 判定按**引用键**取（口径 4），取不到就显式写「缺少判定」——不静默跳过。
  * 分组用的是契约摊平结果上的 `groupIndex`（**不自己按组项数切片**：同一条枚举规则写两份必然漂移）。
  */
-function scoringRows(run: EvalRun): RankTableRow[] {
+function scoringCandidates(run: EvalRun): RankTableRow[] {
   const byGroup = new Map<number, RubricEntry[]>();
   for (const entry of rubricEntries(run.rubric)) {
     const list = byGroup.get(entry.groupIndex);
@@ -246,8 +246,8 @@ function scoringRows(run: EvalRun): RankTableRow[] {
 }
 
 /**
- * 目标行的标签：**目标原文 + 权重的 Tag**。
- * 为什么权重单独包一个 Tag 而不是跟在文本后面：它是这一行的**另一类事实**（这一项值多少分），
+ * 目标候选的标签：**目标原文 + 权重的 Tag**。
+ * 为什么权重单独包一个 Tag 而不是跟在文本后面：它是这个候选的**另一类事实**（这一项值多少分），
  * 与目标原文（这一项要做什么）不是一句话；混在一行纯文本里只能靠一个分隔符区分，扫一列时眼睛要
  * 逐字读。Tag 把它定成一个可跳读的记号，也顺手把两种信息在视觉上分开。
  */
@@ -261,14 +261,14 @@ function goalLabel(item: RubricItem): ReactNode {
 }
 
 /**
- * 总分那一段：**单元格只写这一行拿到的分**，满分写在左锁列的标签里（用户口径）。
+ * 总分那一段：**单元格只写这个候选拿到的分**，满分写在左锁列的标签里（用户口径）。
  * 为什么满分不放单元格：各列都是同一把尺子量出来的，把 `100 / 100` 在每个候选下重复一遍
  * 只占宽度、不加信息；真正的对比发生在「谁拿了多少分」这一列上。
  * 满分取**有分的第一行**的 `score.maxScore`（它是这一分生成时那张表的权重之和，口径 6）：
  * 全列都没有分时标签就只写「总分」——没有尺子可报。
- * 措辞是「满分 N」（用户口径：短到一眼扫完；`总分` 二字由这一行的位置自己说清——它在最后一行）。
+ * 措辞是「满分 N」（用户口径：短到一眼扫完；`总分` 二字由这个候选的位置自己说清——它在最后一行）。
  */
-function totalRow(rows: EvalRow[]): RankTableRow {
+function totalCandidate(rows: EvalCandidate[]): RankTableRow {
   const maxScore = rows.find((row) => row.score !== null)?.score?.maxScore;
   return {
     key: 'total',
@@ -281,8 +281,8 @@ function totalRow(rows: EvalRow[]): RankTableRow {
 export interface RankTableProps {
   run: EvalRun;
   /**
-   * 此刻正在执行的候选行数（`isRunningRow` 的行数，含准备与评分两段）。
-   * 缺省 0 = 全部终态：那一行实时提示不渲染。数的是**行**而不是 `hasLiveRows(run)` 那个布尔
+   * 此刻正在执行的候选数（`isRunningCandidate` 的候选数，含准备与评分两段）。
+   * 缺省 0 = 全部终态：那一行实时提示不渲染。数的是**行**而不是 `hasLiveCandidates(run)` 那个布尔
    * ——后者的轮级那一格（`status: 'running'` 而行还没翻状态）数不出 N，用它会出现
    * 「有 0 行正在执行」这种自相矛盾的句子。
    */
@@ -292,19 +292,19 @@ export interface RankTableProps {
 export function RankTable({ run, runningCount = 0 }: RankTableProps): ReactNode {
   /**
    * 顺序与名次都取自 `run-detail-panel` 的同一份判据（口径 2）：本组件不重排、也不自己算名次。
-   * 名次是**整轮行集**的性质（`rankOf(run.rows, row)`），故各处的 `rankOf` 一律传 `run.rows`。
+   * 名次是**整轮行集**的性质（`rankOf(run.candidates, row)`），故各处的 `rankOf` 一律传 `run.candidates`。
    */
-  const ordered = orderForDisplay(run.rows);
+  const ordered = orderForDisplay(run.candidates);
 
-  const scoring = scoringRows(run);
-  const tableRows: RankTableRow[] = [...identityRows(run.rows), ...executionRows(), ...scoring, totalRow(run.rows)];
+  const scoring = scoringCandidates(run);
+  const tableRows: RankTableRow[] = [...identityCandidates(run.candidates), ...executionCandidates(), ...scoring, totalCandidate(run.candidates)];
 
 
   const labelColumn: TableColumnsType<RankTableRow>[number] = {
     key: 'label',
     dataIndex: 'label',
     width: RANK_LABEL_WIDTH,
-    // 装不下的长目标**折行**而不是截断：目标原文是读这一行的前提（见 `RANK_LABEL_WIDTH` 的注释）
+    // 装不下的长目标**折行**而不是截断：目标原文是读这个候选的前提（见 `RANK_LABEL_WIDTH` 的注释）
     ellipsis: false,
     // 吸边（sticky left）的偏移由 rc-table 按**实测列宽**算 ⇒ 这一格必须有宽度（文件头口径）
     fixed: 'left',
@@ -336,9 +336,9 @@ export function RankTable({ run, runningCount = 0 }: RankTableProps): ReactNode 
         <Table<RankTableRow>
           data-testid="rank-table"
           size="small"
-          // 分页在这里没有意义：行数由评分表与候选数决定，一屏内看完
+          // 分页在这里没有意义：候选数由评分表与候选数决定，一屏内看完
           pagination={false}
-          // **不显示表头**：列头没有任何内容（名次落在第一行里，见口径 1），
+          // **不显示表头**：列头没有任何内容（名次落在第一个候选里，见口径 1），
           // 留一行空白只占高度；`fixed: 'left'` 的吸边偏移按列宽算，与表头无关
           showHeader={false}
           // 滚动条的落点就是这一层（表格自己的横向滚动容器）：给它留一条下内边距，
@@ -351,12 +351,12 @@ export function RankTable({ run, runningCount = 0 }: RankTableProps): ReactNode 
           rowKey="key"
           columns={[labelColumn, ...candidateColumns]}
           dataSource={tableRows}
-          // 名次那一行挂 `data-rank`：列头留空（口径 1），名次只能落在这一行里，
+          // 名次那一行挂 `data-rank`：列头留空（口径 1），名次只能落在这个候选里，
           // 守卫按数据属性断言它（与 `score-detail-view` 的 `data-achieved` 同一手法）
-          onRow={(row): RankRowAttributes => ({
+          onRow={(row): RankCandidateAttributes => ({
             'data-testid': `rank-table-row-${row.key}`,
             // 名次标记是**列序**的事实（不是某一格的事实），故只在名次那一行给
-            'data-rank': row.key === 'rank' ? rankMarker(ordered.map((r) => rankOf(run.rows, r))) : '',
+            'data-rank': row.key === 'rank' ? rankMarker(ordered.map((r) => rankOf(run.candidates, r))) : '',
           })}
         />
       </div>

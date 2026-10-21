@@ -86,12 +86,12 @@ export interface PiSdkModule {
    *
    *   · `create(cwd, sessionDir)`：开一条**新**会话，落点由 `sessionDir` 显式钉住。不给它时走厂商的
    *     默认落点，而那个落点是 `agentDir` × `cwd` **两轴**的函数（`<agentDir>/sessions/--<编码后的
-   *     cwd>--`）⇒ 本仓必须显式给，否则「这一行的会话落在哪」由两个会漂的量共同决定；
+   *     cwd>--`）⇒ 本仓必须显式给，否则「本次运行的会话落在哪」由两个会漂的量共同决定；
    *   · `open(path)`：打开一条**指定**会话文件的会话（续接的唯一正确入口）。文件不存在时它**不抛**
    *     ——当场在同名路径上造一条新的，故「文件在不在」由适配器自己先判（见 `index.ts` 的续接段）；
    *   · `continueRecent(cwd, sessionDir)`：取该目录里 **mtime 最新**的那条。本仓**刻意不用**它——
-   *     行内重跑（`retryRow` 重建工作区）会在同一目录里留下上一次尝试的会话，取最近一条接的是
-   *     **上一次尝试**，不是这一行该续的那条。它仍进声明：一是把这一格的取舍写在类型上，
+   *     运行内重跑（`retryCandidate` 重建工作区）会在同一目录里留下上一次尝试的会话，取最近一条接的是
+   *     **上一次尝试**，不是本次运行该续的那条。它仍进声明：一是把这一格的取舍写在类型上，
    *     二是给用例一根可以做成会抛的桩——适配器改回 `continueRecent` 时守卫当场见红。
    *
    * 管理器本身**不透明**（返回值收成 `unknown`）：适配器只把它交给 `createAgentSession`，从不读它的
@@ -119,7 +119,7 @@ export interface PiSdkModule {
  * 资源装载器的构造选项（**只声明我们真给的那几格**）。
  *
  * 三格的存在理由各不相同，别把它们当成「顺手关掉的开关」：
- *   · `additionalSkillPaths`：本行物化的技能根，**必须绝对路径**（相对路径按 `cwd` 解析）；
+ *   · `additionalSkillPaths`：本次运行物化的技能根，**必须绝对路径**（相对路径按 `cwd` 解析）；
  *   · `skillsOverride`：唯一能丢掉 HOME 锚定发现结果的通道（`noSkills` 会把**项目技能一起**关掉，
  *     而「被测仓库自带的技能照见」是对齐目标）；
  *   · `noExtensions`：挡住被测仓库 `.pi/extensions/*.ts` 的任意代码执行；它**只筛发现路径**，
@@ -298,7 +298,7 @@ export interface PiSession {
    *
    * 为什么续接落的键是它而不是 `sessionId`：文件名里嵌着不可预知的时间戳，拿 id 反查要么拼路径
    * （拼不出）、要么扫目录（还得知道会话目录，而那正是另一格）。落路径之后，续接只要
-   * `SessionManager.open(这个路径)`，与「这一行的会话目录在哪」解耦。
+   * `SessionManager.open(这个路径)`，与「本次运行的会话目录在哪」解耦。
    */
   sessionFile: string | undefined;
   subscribe: (listener: (event: unknown) => void) => () => void;
@@ -421,7 +421,7 @@ function hasFunctions(value: unknown, names: readonly string[]): boolean {
  * 'inMemory')` 这类**离真因很远**的裸 TypeError，而且会被归成 `AGENT_FAILED`——那一格在编排层的
  * 自动重试表里 ⇒ 一次形状漂移白跑两遍，日志里还没有一句「是哪个导出没了」。
  *
- * `createMcpExtension` **不在这一张表里**：只有配了 MCP 的行才用它，缺了它不该让不配 MCP 的行失败
+ * `createMcpExtension` **不在这一张表里**：只有配了 MCP 的行才用它，缺了它不该让不配 MCP 的本次运行失败
  * ——那一格在使用点判（见 `assertPiMcpExtension`）。
  */
 const PI_SDK_REQUIRED_CELLS: ReadonlyArray<{
@@ -475,7 +475,7 @@ export async function loadPiSdk(): Promise<PiSdkModule> {
 /** MCP 扩展工厂的**使用点**校验：只有配了 MCP 的行走这一格（不配的行不该因为它缺席而失败） */
 export function assertPiMcpExtension(sdk: PiSdkModule): void {
   if (typeof sdk.createMcpExtension === 'function') return;
-  throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error('模块缺少 createMcpExtension 导出（本行配了 MCP，装配面要用它）'), {
+  throw new AgentLoadError(PI_PACKAGE_NAME_LITERAL, new Error('模块缺少 createMcpExtension 导出（本次运行配了 MCP，装配面要用它）'), {
     variant: 'shape-mismatch',
     expected: 'createMcpExtension（函数）',
     actual: exportedNames(sdk),
@@ -488,7 +488,7 @@ export function assertPiMcpExtension(sdk: PiSdkModule): void {
  * 为什么装载期的模块校验拦不住这一档：它们是**实例方法**与**实例字段**，只有真建出会话才看得到。
  * 现实里的漂移形态是「某一格改了名」——`sessionFile` 被改名时续接能力会**静默消失**
  * （适配器读 `session.sessionFile ?? null` ⇒ 行照旧 `ok:true`、`sessionId` 记 `null`，
- * 用户看到的是「这一行不能续接」却没有任何报错）。所以这里判的是**键在不在**，
+ * 用户看到的是「本次运行不能续接」却没有任何报错）。所以这里判的是**键在不在**，
  * 不是值真不真：`sessionFile` 的值合法地可以是 `null`（不落盘的会话）。
  */
 const PI_SESSION_REQUIRED: ReadonlyArray<{ entry: string; usable: (session: Record<string, unknown>) => boolean }> = [

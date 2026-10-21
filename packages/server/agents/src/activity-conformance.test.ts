@@ -6,7 +6,7 @@
  * `activityOf`）。从前这句话由三家各写一份实现，于是同一件事有三种说法：
  *   · claude 给 `调用工具 Bash`（**丢掉了参数**，而同一行原始负载里 `input.command` 是完整的）；
  *   · dsh 给 `调用工具 pwsh：git status --porcelain`；
- *   · codex 什么都不给（app-server 重写后活动行整轮只剩「更新计划：N 步」）。
+ *   · codex 什么都不给（app-server 重写后活动行整轮只剩「更新计划：N 项」）。
  * 词表收进 `src/activity.ts` 之后，这份用例钉的就是「**同一件事，三家逐字同一句**」。
  *
  * 三条判据：
@@ -286,7 +286,7 @@ describe('子任务：派发与收场三家逐字同形（且不留占位名）'
   });
 });
 
-describe('计划更新：三家同形（`更新计划：N 步`）', () => {
+describe('计划更新：三家同形（`更新计划：N 项`）', () => {
   it('清单工具与原生计划表说的是同一句', () => {
     const claude = summaryOf(
       claudeDrafts({
@@ -300,7 +300,7 @@ describe('计划更新：三家同形（`更新计划：N 步`）', () => {
       codexDrafts({ kind: 'turnPlanUpdated', threadId: 'thread-main', turnId: 'turn-1', steps: [{ step: 'a', status: 'pending' }, { step: 'b', status: 'pending' }] }),
     );
 
-    expect(claude).toBe('更新计划：2 步');
+    expect(claude).toBe('更新计划：2 项');
     expect(dsh).toBe(claude);
     expect(codex).toBe(claude);
   });

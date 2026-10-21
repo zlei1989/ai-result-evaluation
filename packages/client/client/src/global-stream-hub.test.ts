@@ -77,13 +77,13 @@ describe('subscribeGlobalStream', () => {
     ]);
   });
 
-  it('行级帧与坏帧都不投递（全局流不带行级帧；一条畸形帧不许打断整条流）', () => {
+  it('候选级帧与坏帧都不投递（全局流不带候选级帧；一条畸形帧不许打断整条流）', () => {
     const received: GlobalStreamFrame[] = [];
     subscribeGlobalStream({ onFrame: (f) => received.push(f) });
 
     const source = FakeEventSource.instances[0];
-    // 行级事件帧：形状合法但不属于这条流（聚合流才有它），投出去只会让消费方拿到不相干的归属格
-    source?.feed(frame({ seq: 1, at: '2026-09-22T08:01:00.000Z', type: 'status', status: 'running', rowId: 'w-1', rowChannel: 'candidate' }));
+    // 候选级事件帧：形状合法但不属于这条流（聚合流才有它），投出去只会让消费方拿到不相干的归属格
+    source?.feed(frame({ seq: 1, at: '2026-09-22T08:01:00.000Z', type: 'status', status: 'running', candidateId: 'w-1', candidateChannel: 'candidate' }));
     // 解不动的 JSON 与判别值不在信封白名单里的帧
     source?.feed('data: 不是 JSON\n\n');
     source?.feed(frame({ type: '没有这种帧' }));

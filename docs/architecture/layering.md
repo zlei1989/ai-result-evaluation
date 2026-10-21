@@ -46,7 +46,7 @@ packages/client/
 
 | 契约 | 口径 |
 |---|---|
-| 依赖方向表 | 唯一真源在仓库根 `AGENTS.md`「依赖方向」节的代码块，每行「包 → 允许的内部依赖」，右侧是裸包名。**新增或删除跨包依赖必须同时改表和清单**，只改一处测试就红——`pnpm lint` / `pnpm typecheck` 查不出这种错位 |
+| 依赖方向表 | 唯一真源在仓库根 `AGENTS.md`「依赖方向」节的代码块，每个候选「包 → 允许的内部依赖」，右侧是裸包名。**新增或删除跨包依赖必须同时改表和清单**，只改一处测试就红——`pnpm lint` / `pnpm typecheck` 查不出这种错位 |
 | 类型转出不算依赖边 | `@aieval/client` 用 `export type … from '@aieval/ui'` 转出界面类型，编译期即被抹掉，故表里不列这行、ui 放 `devDependencies`。只允许 `export type`；写成值导出就真有运行时依赖，得回来改表 |
 | 测试期别名不算依赖边 | `apps/web-next/vitest.config.ts` 的 `resolve.alias` 把 evaluator 指向源码，只为让路由测试的 `vi.mock` 生效（裸说明符的 mock 与真实解析的 module id 不相等会静默失效、真 spawn 厂商 CLI），只活在测试期。别改成 devDependency（会动 `pnpm-lock.yaml`，还会装进一条运行时可解析的依赖边） |
 
@@ -60,7 +60,7 @@ packages/client/
 
 `api → agents` 这条边的存在理由：`api/src/runs.ts` 要读 provider 注册表（`getProvider(agentKind)`、`acceptsProtocol` / `protocolMismatchMessage`、按注册表过滤候选池），判据不硬编码在 api。内部边加得再顺，也必须显式落进方向表。
 
-**这条边的第二种用法：api 层自己起智能体**。用例同步（`api/src/case-sync.ts`）要用「评分配置」的智能体写提交信息、并在与远端分叉时裁定合并，所以它调 `getProvider(kind).run(...)`。为什么不放进另外两层：`core` 只依赖 contracts + Node 内置，起不了智能体，也不该为一次 git 同步把厂商 SDK 拖进最底层；`evaluator` 反向依赖 api 不成立，而这次编排同时要读设置、要用 `resolveJudgeRoute` / `requireJudgeAgent`（evaluator）与 git 原语（core）——**api 是唯一同时够得着这三者的层**。代价如实记：`provider.run` 的调用点不只在评测轮次内，跨轮次的那一处见《Provider 抽象与 run 入口》的调用点一节。
+**这条边的第二种用法：api 层自己起智能体**。用例同步（`api/src/case-sync.ts`）要用「评分配置」的智能体写提交信息、并在与远端分叉时裁定合并，所以它调 `getProvider(kind).run(...)`。为什么不放进另外两层：`core` 只依赖 contracts + Node 内置，起不了智能体，也不该为一次 git 同步把厂商 SDK 拖进最底层；`evaluator` 反向依赖 api 不成立，而这次编排同时要读设置、要用 `resolveJudgeRoute` / `requireJudgeAgent`（evaluator）与 git 原语（core）——**api 是唯一同时够得着这三者的层**。代价如实记：`provider.run` 的调用点不只在评测轮内，跨轮的那一处见《Provider 抽象与 run 入口》的调用点一节。
 
 ### ESLint 边界规则
 
@@ -92,7 +92,7 @@ packages/client/
 
 `apps/web-next/src/package-dependency-boundaries.test.ts` 只读 package.json、不加载任何模块，判据三段：
 
-1. **内部依赖必须在表里**：每个包 `dependencies` 里的 `@aieval/*`，必须是表里该行列出的包（表是真源，测试不另抄一份清单）；
+1. **内部依赖必须在表里**：每个包 `dependencies` 里的 `@aieval/*`，必须是表里该候选列出的包（表是真源，测试不另抄一份清单）；
 2. **反向也要**：表里有、清单里没有的边同样是错位——少声明会在运行期才炸；
 3. **类型期的边只准放 devDependencies**：client 对 ui 就是这样持有的，另有断言钉住（写回 dependencies 就红）。
 

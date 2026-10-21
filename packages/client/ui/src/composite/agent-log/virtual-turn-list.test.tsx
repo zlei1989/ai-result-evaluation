@@ -58,19 +58,14 @@ function turn(round: number, text: string, segment = 0, block: Partial<TextBlock
 }
 
 describe('VirtualTurnList', () => {
-  it('拿不到高度就不虚拟化：每一项都渲染，读数照实报上去', () => {
+  it('拿不到高度就不虚拟化：每一项都渲染', () => {
     const turns = [turn(1, '第一轮正文'), turn(2, '第二轮正文'), turn(3, '第三轮正文')];
-    const onRenderedChange = vi.fn();
 
-    const { container } = render(
-      <VirtualTurnList turns={turns} nodes={nodeIndex([])} onRenderedChange={onRenderedChange} />,
-    );
+    const { container } = render(<VirtualTurnList turns={turns} nodes={nodeIndex([])} />);
 
     expect(container.querySelectorAll('[data-turn-row]').length).toBe(3);
     expect(screen.getByText('第一轮正文')).toBeInTheDocument();
     expect(screen.getByText('第三轮正文')).toBeInTheDocument();
-    // 「已渲染 N / 共 M 轮」那一行现在渲在固定区的原文行（`AgentLogLayout`），本件只负责把两个数报出去
-    expect(onRenderedChange).toHaveBeenCalledWith(3, 3);
   });
 
   it('考题提示词与补充提示是列表里的头几行（跟着列表滚，不钉在顶上）', () => {
@@ -104,23 +99,13 @@ describe('VirtualTurnList', () => {
     expect(() => controllerRef.current?.scrollToBottom()).not.toThrow();
     // 越界（轮次被流式回退掉）时什么都不做，而不是抛
     expect(() => controllerRef.current?.scrollToTurn(99)).not.toThrow();
-    expect(typeof controllerRef.current?.renderedCount).toBe('number');
   });
 
-  it('空轮次不抛，读数如实报 0 / 0', () => {
+  it('空轮次不抛', () => {
     const controllerRef = createRef<ListController>();
-    const onRenderedChange = vi.fn();
 
-    render(
-      <VirtualTurnList
-        turns={[]}
-        nodes={nodeIndex([])}
-        controllerRef={controllerRef}
-        onRenderedChange={onRenderedChange}
-      />,
-    );
+    render(<VirtualTurnList turns={[]} nodes={nodeIndex([])} controllerRef={controllerRef} />);
 
-    expect(onRenderedChange).toHaveBeenCalledWith(0, 0);
     expect(() => controllerRef.current?.scrollToBottom()).not.toThrow();
   });
 });
@@ -128,7 +113,7 @@ describe('VirtualTurnList', () => {
 /**
  * **段标题**：追问那一段的第一个轮次之前插一个「追问 ×N」+ 时刻 + **那句追问**的块。
  *
- * 为什么这一个块必须存在：那一段自己的厂商轮次从 1 重新数 ⇒ 时间轴上会出现第二个「轮次 1」，
+ * 为什么这一个块必须存在：那一段自己的厂商轮次从 1 重新数 ⇒ 时间轴上会出现第二个「第 1 步」，
  * 没有它时读者会把它当成首段的第 1 轮又画了一遍；而只有「追问 ×N」没有正文时，
  * 读者还要往下找「他到底追问了什么」——那句正文由数据层从轮次的展示块里提出来
  * （`AgentLogModel.segments`），段标题是它**唯一**的出口。
@@ -160,7 +145,7 @@ describe('VirtualTurnList：段标题', () => {
     render(<VirtualTurnList turns={twoSegments} nodes={nodeIndex([])} segments={oneSegmentFact} />);
     expect(screen.queryByTestId('agent-log-segment-divider')).toBeNull();
     // 两个「轮次 1」都还在（分段只影响标题那一行，不影响轮次本身）
-    expect(screen.getAllByText('轮次 1')).toHaveLength(2);
+    expect(screen.getAllByText('第 1 步')).toHaveLength(2);
   });
 
   /**

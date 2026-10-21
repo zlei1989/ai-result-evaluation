@@ -5,7 +5,7 @@
  * 三段判据，逐段回答一个不同的问题：
  *  1. **机制**：续接那一轮的出站请求体里有没有上一轮的暗号（厂商把会话文件投影成了模型上下文）；
  *  2. **端到端**：脚本式上游按请求体作答 ⇒ 答复里有暗号；
- *  3. **两半的对照**：不传 `resume` 的阴性对照答不出、另一条行目录只认得自己的暗号。
+ *  3. **两半的对照**：不传 `resume` 的阴性对照答不出、另一条候选目录只认得自己的暗号。
  *
  * 为什么这三段必须同时在：只判 ①（请求体）证明不了上下文走到了模型面前；只判 ②（答复）
  * 在真机上会抖（探针见过「投影里有暗号、模型仍答『不知道』」）——两条并行才分得清
@@ -27,17 +27,17 @@ function scenario(): ReturnType<typeof runPiResumeScenario> {
 }
 
 describe('pi 的跨进程续接（真包 + 脚本式上游，暗号回读）', () => {
-  it('会话落在行配置目录里那条 `.jsonl` 上，且落的是**路径**（结果那一格就是下次要打开的键）', async () => {
-    const { first, rowOne } = await scenario();
+  it('会话落在候选配置目录里那条 `.jsonl` 上，且落的是**路径**（结果那一格就是下次要打开的键）', async () => {
+    const { first, candidateOne } = await scenario();
     expect(first.sessionFile).not.toBeNull();
     const sessionFile = first.sessionFile ?? '';
-    expect(sessionFile.startsWith(piSessionDir(rowOne.configHome))).toBe(true);
+    expect(sessionFile.startsWith(piSessionDir(candidateOne.configHome))).toBe(true);
     expect(sessionFile.endsWith('.jsonl')).toBe(true);
     // 盘上真的有它（`result.sessionId` 不是编出来的字符串）
     expect(existsSync(sessionFile)).toBe(true);
     // 它就在会话落点里（那一格里还有别的会话：阴性对照自己也新开了一条）
-    expect(readdirSync(piSessionDir(rowOne.configHome))).toContain(
-      sessionFile.slice(piSessionDir(rowOne.configHome).length + 1),
+    expect(readdirSync(piSessionDir(candidateOne.configHome))).toContain(
+      sessionFile.slice(piSessionDir(candidateOne.configHome).length + 1),
     );
   });
 
@@ -51,7 +51,7 @@ describe('pi 的跨进程续接（真包 + 脚本式上游，暗号回读）', (
     expect(resumed.sessionFile).toBe(first.sessionFile);
   });
 
-  it('③ 阴性对照：同一条行目录、只是不传 resume ⇒ 一个暗号都带不回来', async () => {
+  it('③ 阴性对照：同一条候选目录、只是不传 resume ⇒ 一个暗号都带不回来', async () => {
     const { control, nonceA, nonceB } = await scenario();
     expect(control.requestHasNonce).toBe(false);
     expect(control.reply).not.toContain(nonceA);
@@ -61,14 +61,14 @@ describe('pi 的跨进程续接（真包 + 脚本式上游，暗号回读）', (
   });
 
   it('④ 按行隔离：只换会话落点（cwd 刻意相同）⇒ 另一行只答得出自己的暗号', async () => {
-    const { otherRowResumed, rowOne, rowTwo, nonceA, nonceB } = await scenario();
+    const { otherCandidateResumed, candidateOne, candidateTwo, nonceA, nonceB } = await scenario();
     // 自变量真的只有「会话落点」这一格
-    expect(rowTwo.cwd).toBe(rowOne.cwd);
-    expect(piSessionDir(rowTwo.configHome)).not.toBe(piSessionDir(rowOne.configHome));
-    expect(otherRowResumed.requestHasNonce).toBe(true);
-    expect(otherRowResumed.reply).toContain(nonceB);
-    // 越界回读：row2 的会话里不该有 row1 的暗号
-    expect(otherRowResumed.reply).not.toContain(nonceA);
+    expect(candidateTwo.cwd).toBe(candidateOne.cwd);
+    expect(piSessionDir(candidateTwo.configHome)).not.toBe(piSessionDir(candidateOne.configHome));
+    expect(otherCandidateResumed.requestHasNonce).toBe(true);
+    expect(otherCandidateResumed.reply).toContain(nonceB);
+    // 越界回读：candidate2 的会话里不该有 candidate1 的暗号
+    expect(otherCandidateResumed.reply).not.toContain(nonceA);
   }, 60_000);
 });
 

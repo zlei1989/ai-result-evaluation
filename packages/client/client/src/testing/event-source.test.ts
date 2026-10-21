@@ -16,7 +16,7 @@ import { AGENT_EVENT_TYPES } from '@aieval/contracts';
 import { FakeEventSource } from './event-source';
 
 function make(): FakeEventSource {
-  return new FakeEventSource('/api/runs/run-1/rows/w-1/stream?afterSeq=0');
+  return new FakeEventSource('/api/runs/run-1/candidates/w-1/stream?afterSeq=0');
 }
 
 describe('FakeEventSource（测试替身本身的浏览器语义）', () => {
@@ -31,7 +31,7 @@ describe('FakeEventSource（测试替身本身的浏览器语义）', () => {
 
     expect(onmessage).toHaveBeenCalledTimes(1);
     expect(byName).toHaveBeenCalledTimes(1);
-    // data 是 SSE 的 data 行内容（字符串）；origin 来自构造时的 URL——hook 读的就是这两项
+    // data 是 SSE 的 data 候选内容（字符串）；origin 来自构造时的 URL——hook 读的就是这两项
     expect(onmessage.mock.calls[0]?.[0]).toMatchObject({ data: '{"seq":1}', origin: 'http://localhost' });
   });
 

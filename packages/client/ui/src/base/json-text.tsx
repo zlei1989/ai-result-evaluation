@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 原文的「**是 JSON 就缩进格式化 + 语法高亮**」那一档：模型原始返回、工具结果原文、
+ * 原文的「**是 JSON 就缩进格式化 + 语法高亮**」那一档：工具结果原文、
  * 未识别的厂商载荷、结构化结果共用。
  *
  * 五条口径：
@@ -22,13 +22,23 @@
  * 观感类的改动没有任何行为断言会因此变红，判据只能挂在**结构**上（见 json-text.test.tsx）。
  */
 import { Flex, theme, Typography } from 'antd';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { MonoText } from './mono-text';
 
 export interface JsonTextProps {
   text: string;
   /** 限高（px）；不传则由父容器决定（与 `MonoText` 同形） */
   maxHeight?: number;
+  /**
+   * 压缩档：**一条逻辑行**（`JSON.stringify` 不缩进），按容器宽度**自动换行**。
+   *
+   * 用在「一格一行」的字段表里：缩进版把一条结果摊成几十行，格子高度全花在缩进与换候选上；
+   * 压缩版只留真实内容，长串（时间戳、base64、带 `\n` 的命令输出）按任意字符断开，
+   * **不出现横向滚动条**——那一格在表格里，横滚条会把整张表顶宽。
+   * 只影响排版，高亮与其余口径不变。带围栏的原文不进这一档（围栏本身是排障线索，
+   * 压成一个候选就看不见了）——那一档回落成逐字原文。
+   */
+  compact?: boolean;
   /** 宿主的 data-testid：与 `MonoText` 同一个位置，调用方的既有断言不必改 */
   dataTestId?: string;
 }
@@ -44,7 +54,7 @@ interface Piece {
 
 /**
  * 整段围栏：三个捕获组分别是**开围栏行（含换行）、载荷、闭围栏行（含它前面的换行）**。
- * 行内空白也捕获（围栏行要逐字还原）。与 `packages/server/api/src/judge.ts` 的剥离口径一致：
+ * 候选内空白也捕获（围栏行要逐字还原）。与 `packages/server/api/src/judge.ts` 的剥离口径一致：
  * 只认「整段就是一个围栏」，中间夹散文的那种**故意不救**（那不是我们能替模型猜的东西）。
  */
 const FENCE = /^(```[a-zA-Z]*[ \t]*\r?\n)([\s\S]*?)(\r?\n?```)[ \t]*$/;
@@ -99,9 +109,11 @@ interface Formatted {
  * 顺序是「先按整段 parse，失败才剥围栏再 parse」：没有围栏的裸 JSON 走第一支，
  * 有围栏的走第二支，两支的载荷都必须 parse 成功才格式化。
  */
-function formatJson(text: string): Formatted | null {
+function formatJson(text: string, compact: boolean): Formatted | null {
   const trimmed = text.trim();
   const fenced = FENCE.exec(trimmed);
+  // 压缩档不处理围栏（见 `compact` 的说明）：这类原文按「不是 JSON」走逐字那一支
+  if (compact && fenced !== null) return null;
   const payload = fenced?.[2] ?? trimmed;
   let value: unknown;
   try {
@@ -113,7 +125,7 @@ function formatJson(text: string): Formatted | null {
   if (typeof value !== 'object' || value === null) return null;
   let body: string;
   try {
-    body = JSON.stringify(value, null, 2);
+    body = compact ? JSON.stringify(value) : JSON.stringify(value, null, 2);
   } catch {
     // 理论上 `JSON.parse` 的产物不会是循环引用，兜住即可（序列化不动时不假装格式化过）
     return null;
@@ -126,9 +138,9 @@ function formatJson(text: string): Formatted | null {
   };
 }
 
-export function JsonText({ text, maxHeight, dataTestId }: JsonTextProps): ReactNode {
+export function JsonText({ text, maxHeight, compact = false, dataTestId }: JsonTextProps): ReactNode {
   const { token } = theme.useToken();
-  const formatted = formatJson(text);
+  const formatted = formatJson(text, compact);
 
   // 不是 JSON：逐字原样（口径 3）。走同一个 `MonoText`，那一档的行为与改造前逐字一致
   if (formatted === null) return <MonoText text={text} maxHeight={maxHeight} dataTestId={dataTestId} />;
@@ -143,17 +155,21 @@ export function JsonText({ text, maxHeight, dataTestId }: JsonTextProps): ReactN
   };
   const pieces = tokenize(formatted.body);
 
+  /**
+   * 宿主样式：两档都 `pre-wrap`（压缩档的「不缩进」体现在正文本身，不是靠不换行）。
+   * 压缩档额外 `overflowWrap: 'anywhere'`——JSON 里的一个字符串就是**一个长 token**，
+   * 只靠 `pre-wrap` 会在空格处断，时间戳 / base64 那种没有空格的长串直接把格子顶出横向滚动条。
+   */
+  const hostStyle: CSSProperties = {
+    fontFamily: token.fontFamilyCode,
+    whiteSpace: 'pre-wrap',
+    overflow: 'auto',
+    ...(compact ? { overflowWrap: 'anywhere' as const } : {}),
+    ...(maxHeight === undefined ? {} : { maxHeight }),
+  };
+
   return (
-    <Flex
-      vertical
-      data-testid={dataTestId}
-      style={{
-        fontFamily: token.fontFamilyCode,
-        whiteSpace: 'pre-wrap',
-        overflow: 'auto',
-        ...(maxHeight === undefined ? {} : { maxHeight }),
-      }}
-    >
+    <Flex vertical data-testid={dataTestId} style={hostStyle}>
       <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>
         {formatted.fenceOpen !== '' && (
           <Typography.Text type="secondary">{formatted.fenceOpen}</Typography.Text>

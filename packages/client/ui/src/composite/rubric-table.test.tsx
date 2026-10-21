@@ -1,12 +1,13 @@
 /**
  * RubricTable：可编辑的二级表格（组 → 评分项）。
- * 四条守卫：
+ * 五条守卫：
  *   1. 表尾汇总实时跟着数据走（它是用户自查权重配置的唯一手段——满分不强制是 100）；
  *   2. **写侧会拒的东西当场标出来**：撞车的**引用键**（判据取自 `rubricItemKeys`——含「空 ID 与显式
  *      `#1` 撞车」这种手写字符串比较看不见的情形）与**超过 `MAX_ITEM_WEIGHT` 的权重**
  *      （`validateRubric` 不查上限，它由 `RubricSchema` 在提交时才拒）；
  *   3. 改一格只动那一格（组轴与项轴都按索引定位，两项内容完全相同时也不能改错项）；
- *   4. readOnly 时不渲染任何增删改控件（用例详情复用同一个组件）。
+ *   4. readOnly 时不渲染任何增删改控件（用例详情复用同一个组件）；
+ *   5. 删除（删组 / 删项）是无边框的纯图标按钮：文字只在 Tooltip 与 `aria-label` 里。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -49,7 +50,7 @@ describe('RubricTable', () => {
     expect(next.groups[1]?.items[0]?.id).toBe('D1');
   });
 
-  it('「添加评分项」往该组末尾加一个空项（权重给一个正数默认值，schema 不接受 0）', () => {
+  it('「添加」往该组末尾加一个空项（权重给一个正数默认值，schema 不接受 0）', () => {
     const onChange = vi.fn();
     render(<RubricTable value={sample()} onChange={onChange} />);
     // 按钮形态钉在类名上：antd 6 里 `variant` **单给**会被静默降级成实线，除了类名没有任何可观察
@@ -57,10 +58,36 @@ describe('RubricTable', () => {
     // 三个按钮一律 `color` + `variant` 成对给，故这里把两种形态各钉一次。
     expect(screen.getByTestId('rubric-add-item-0').className).toContain('ant-btn-variant-dashed');
     expect(screen.getByTestId('rubric-remove-item-0-0').className).toContain('ant-btn-variant-text');
-    fireEvent.click(screen.getByTestId('rubric-add-item-0'));
+    // 加项按钮是「加号图标 + 添加」：文案短到离开图标就看不准动作，图标丢了要能见红
+    const addItem = screen.getByTestId('rubric-add-item-0');
+    expect(addItem).toHaveTextContent('添加');
+    expect(addItem.querySelector('.anticon-plus')).not.toBeNull();
+    fireEvent.click(addItem);
     const next = onChange.mock.calls[0]?.[0] as Rubric;
     expect(next.groups[0]?.items).toHaveLength(3);
     expect(next.groups[0]?.items[2]).toEqual({ id: '', goal: '', weight: 1 });
+  });
+
+  /**
+   * 守卫：删除（删组 / 删项）是**无边框的纯图标按钮**，文字只出现在 Tooltip 与 `aria-label` 里。
+   * 三格判据缺一不可：
+   *   · `ant-btn-icon-only` —— antd 只在「没有 children、只有 icon」时挂它，文字按钮一定没有这个类；
+   *   · `ant-btn-variant-text` —— 无边框（antd 6 的 `type="text"` 语法糖产出它，单给 `variant` 会被降级成实线）；
+   *   · `aria-label` —— 图标按钮没有可访问名时，读屏器只会念「按钮」。
+   * 反过来也要钉：`textContent` 必须是空串，否则「去掉文字」这件事会悄悄退回去。
+   */
+  it('「删除组」与「删除项」都是无边框图标按钮（不渲染文字，可访问名挂在 aria-label 上）', () => {
+    render(<RubricTable value={sample()} onChange={vi.fn()} />);
+    for (const [testId, label] of [
+      ['rubric-remove-group-0', '删除组'],
+      ['rubric-remove-item-0-0', '删除项'],
+    ] as const) {
+      const button = screen.getByTestId(testId);
+      expect(button.className).toContain('ant-btn-icon-only');
+      expect(button.className).toContain('ant-btn-variant-text');
+      expect(button.textContent).toBe('');
+      expect(button).toHaveAttribute('aria-label', label);
+    }
   });
 
   it('「删除项」「删除组」「添加分组」各自改对位置', () => {
@@ -86,7 +113,7 @@ describe('RubricTable', () => {
    * 守卫：**两项内容完全相同**时改第二项不能改到第一项。
    * 这是本组件实现上最容易踩的坑（用 `items.includes(item)` 反查组索引时，
    * 两个 `{ id: '', goal: '', weight: 1 }` 的默认项会永远命中的是第一项），
-   * 而连点两次「添加评分项」正好造出这个形状。
+   * 而连点两次「添加」正好造出这个形状。
    */
   it('两项完全相同时只改被点的那一项', () => {
     const sameTwice: Rubric = { groups: [{ name: 'g', items: [{ id: '', goal: '', weight: 1 }, { id: '', goal: '', weight: 1 }] }] };
@@ -121,7 +148,7 @@ describe('RubricTable', () => {
 
     /**
      * 判据必须与 `validateRubric` / `rubricItemKeys` **同一口径：trim 之后比较**。
-     *   · `' A1 '` 与 `'A1'` 在写侧是同一个 ID ⇒ 行内红框不能漏（红框是快信号、表格上方的文案是
+     *   · `' A1 '` 与 `'A1'` 在写侧是同一个 ID ⇒ 候选内红框不能漏（红框是快信号、表格上方的文案是
      *     精确信号，两者对同一个问题给出不同答案正是「同一个问题两套判据」）；
      *   · 纯空白 ID 与空 ID 同档（都算「没写 ID」）⇒ 两个空白**不是**重复，不能标红。
      * 这一轮按 `data-testid` 取而不是按显示值取：`getAllByDisplayValue` 默认会 trim / 折叠空白，
@@ -159,7 +186,7 @@ describe('RubricTable', () => {
    * 守卫：判据必须取自契约的 `rubricItemKeys`（**引用键生成的唯一实现**），而不是本组件手写的
    * 「id 字符串相等」。手写那套漏掉「没写 ID 的项按位置分配 `#k`」这一半：
    * 下表的第 1 项没写 ID（键是 `#1`）、第 2 项显式写了 `#1` —— 写侧是两把相同的键、会被拒，
-   * 而按字符串比较它们「不重复」，表格一个红框都不给（表格上方有精确文案、行内却没有快信号）。
+   * 而按字符串比较它们「不重复」，表格一个红框都不给（表格上方有精确文案、候选内却没有快信号）。
    */
   it('空 ID 与显式 `#1` 撞车时也标红（键来自 rubricItemKeys，不是本组件手写的字符串比较）', () => {
     const collided: Rubric = {
@@ -176,7 +203,7 @@ describe('RubricTable', () => {
   /**
    * 守卫：权重上限（`MAX_ITEM_WEIGHT`）只写在 `RubricSchema` 里，`validateRubric` **不查它**
    * （只管正整数）——所以「等提交被拒」是这张表唯一会漏掉的一类非法状态，而它正是本表最容易
-   * 手滑造出来的（多按几个 0）。行内红框 + 表格上方点名，与引用键撞车同一套呈现。
+   * 手滑造出来的（多按几个 0）。候选内红框 + 表格上方点名，与引用键撞车同一套呈现。
    */
   it('权重超过上限时当场标出（schema 会拒，但 validateRubric 不查上限）', () => {
     const tooHeavy: Rubric = {
@@ -187,7 +214,7 @@ describe('RubricTable', () => {
     // 上界真的交给了 antd（内层 input 的 `aria-valuemax`），不是只在自己这一层判
     const weight = screen.getByTestId('rubric-item-weight-0-0');
     expect(weight).toHaveAttribute('aria-valuemax', String(MAX_ITEM_WEIGHT));
-    // 行内红框：antd 6 把 InputNumber 的 error 态挂在**外层 div** 上（内层 input 只管录入，
+    // 候选内红框：antd 6 把 InputNumber 的 error 态挂在**外层 div** 上（内层 input 只管录入，
     // `data-testid` 落的正是它）——故从测试 id 的父元素取，这一点与 `Input` 不同（那边在自身）
     expect(weight.tagName).toBe('INPUT');
     expect(weight.parentElement?.className).toContain('ant-input-number-status-error');
@@ -238,7 +265,7 @@ describe('RubricTable', () => {
     };
     render(<RubricTable value={blankId} onChange={vi.fn()} readOnly />);
     expect(screen.getAllByText('—')).toHaveLength(1);
-    // 两行都照常渲染（占位符只换掉 ID 那一格，别的内容不受影响）
+    // 两个候选都照常渲染（占位符只换掉 ID 那一格，别的内容不受影响）
     expect(screen.getByText('没写 ID 的项')).toBeInTheDocument();
     expect(screen.getByText('有 ID 的项')).toBeInTheDocument();
     expect(screen.getByText('A1')).toBeInTheDocument();

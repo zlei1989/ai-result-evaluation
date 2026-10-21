@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * 创建评测表单：用例 + 执行模式 + 使用智能体评分 + 候选行（`Form.List`）。
+ * 创建评测表单：用例 + 执行模式 + 使用智能体评分 + 候选（`Form.List`）。
  * 四条口径：
- *   1. 模型候选池按**行内的智能体**过滤——池子由 `modelOptionsFor` 注入，
+ *   1. 模型候选池按**候选内的智能体**过滤——池子由 `modelOptionsFor` 注入，
  *      本组件里没有「哪家智能体配哪种协议」这张表（那是 agents 注册表的事，A3）；
  *   2. 池子为空时**当场**给内联 Alert 与出路，而不是等人点了创建才在服务端炸；
  *   3. 模型的 Select 值编码成 `providerId::modelId`：两个不同供应商可能有同名模型，
@@ -19,7 +19,7 @@
  *      **另一回事**，那时一个字都不许说（`cases` 可选，判据只认「已知且不含它」）。
  *      `mode` 与 `initial` 是**判别联合**（不是两个各自可选的格子）：`mode="edit"` 却没给 `initial`
  *      会让编译器当场拒绝，运行期还有一层 `return null` 兜底——理由见 `RunCreatePanelProps` 的注释。
- *   7. **候选行是一张 small Table**（与设置页「模型清单」同一形态）：一行一个候选，
+ *   7. **候选是一张 small Table**（与设置页「模型清单」同一形态）：一行一个候选，
  *      列序智能体 ｜ 模型 ｜ 思考强度 ｜（无标题的）操作列。竖排标签在多候选时是最贵的高度（右栏只有
  *      ~545px 宽，每个候选白多一行标签），故字段名交给**列头**承担，控件的可访问名改由各自的
  *      `aria-label` 承担（列头 `<th>` 不会成为输入框的可访问名）；操作列**右对齐**、三个图标按钮
@@ -30,7 +30,7 @@
  *      三处**必须同时在场**，少一处就静默退回「溢出到容器外面、够不到」的老样子：
  *      ① `scroll={{ x: 数值 }}`、② 首列 `fixed: 'left'`、③ 操作列 `fixed: 'right'`。
  *   9. **备注**（「用例」下方那一格）是可选用户注解，空串 = 没写；它只影响列表「标题」列与
- *      详情顶部信息卡的展示，**不参与任何行的「同一件事」判定**——只改备注保存不会作废任何行。
+ *      详情顶部信息卡的展示，**不参与任何候选的「同一件事」判定**——只改备注保存不会作废任何行。
  */
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Alert, Button, Flex, Form, Input, Modal, Radio, Select, Switch, Table, Tag, Tooltip, Typography } from 'antd';
@@ -40,12 +40,12 @@ import {
   AGENT_KINDS,
   AGENT_LABELS,
   EFFORT_OFF,
-  ROW_STATUS_LABELS,
-  TERMINAL_ROW_STATUSES,
+  CANDIDATE_STATUS_LABELS,
+  TERMINAL_CANDIDATE_STATUSES,
   displayRepoName,
-  isSameRowTarget,
+  isSameCandidateTarget,
   type AgentKind,
-  type EvalRow,
+  type EvalCandidate,
   type EvalRun,
   type ExecutionMode,
   type TestCase,
@@ -61,7 +61,7 @@ export interface RunModelOption {
   source: 'fetched' | 'manual';
   /** 上下文窗口（token）；缺省 = 未知（显示「未知」，不兜底一个数字） */
   contextWindow?: number;
-  /**这一行**可选**的思考强度档位（服务端已把上游档位与本行智能体的档位求过交） */
+  /**这个候选**可选**的思考强度档位（服务端已把上游档位与候选智能体的档位求过交） */
   efforts?: string[];
   /**上游推荐档（且落在 `efforts` 里时才有值）；只在标签上标「推荐」，不预选 */
   recommendedEffort?: string;
@@ -88,7 +88,7 @@ interface RunCreatePanelBaseProps {
   defaultEffortOf?: (agentKind: AgentKind) => string | undefined;
   /**
    * 设置页是否配了默认评分智能体。`false` 且开关打开时给内联 Alert ——
-   * 否则要等候选 agent 跑完几分钟之后才在评分步骤炸（与「模型池为空」同一条口径：
+   * 否则要等候选 agent 跑完几分钟之后才在评分阶段炸（与「模型池为空」同一条口径：
    * 不要让人选完到运行时才失败）。不传（`undefined`）时不提示：未知不等于没配。
    */
   judgeAgentConfigured?: boolean;
@@ -106,15 +106,15 @@ interface RunCreatePanelBaseProps {
  * 面板 props：`mode` 与 `initial` **同进同出**（判别联合），不是两个各自可选的格子。
  *
  * 为什么必须让「`mode: 'edit'` 却没给 `initial`」在**类型上不可能**：这种组合只能退化成创建形状
- * （一个空白默认行、行上没有 id、没有「原用例已删除」的占位项），而更新端点是**全量替换**语义——
- * 载荷里没有的行就是「要删掉的行」。于是一次误接线就能把这一轮已经跑出来的结果整批销毁，
+ * （一个空白默认行、候选上没有 id、没有「原用例已删除」的占位项），而更新端点是**全量替换**语义——
+ * 载荷里没有的候选就是「要删掉的候选」。于是一次误接线就能把这一轮已经跑出来的结果整批销毁，
  * 而界面上没有任何征兆（那张表单长得跟新建一模一样）。联合把它挡在编译期；
  * `as` 断言与 JS 调用方挡不住，故组件体开头还有一层运行期兜底（什么都不渲染）。
  */
 export type RunCreatePanelProps = RunCreatePanelBaseProps &
   (
     | {
-      /** 创建（缺省）：不预填任何东西，也没有「当前轮次」 */
+      /** 创建（缺省）：不预填任何东西，也没有「当前轮」 */
       mode?: 'new';
       initial?: undefined;
     }
@@ -140,16 +140,16 @@ export interface RunFormValues {
   /** 这一轮允不允许人往运行中的智能体发消息（`RunCreate.injectMessages`）：输入区闸门 */
   injectMessages: boolean;
   /**
-   * 候选行。`effort` 必须**原样回传**（编辑时）：编辑载荷是行集合的**全量替换**，而
-   * contracts 的 `isSameRowTarget` 把 effort 一起比（一侧没给就算改了档位）——
+   * 候选。`effort` 必须**原样回传**（编辑时）：编辑载荷是行集合的**全量替换**，而
+   * contracts 的 `isSameCandidateTarget` 把 effort 一起比（一侧没给就算改了档位）——
    * 少回传这一格，一次什么都没改的保存也会重置那一行（分数与产物当场消失）。
    */
-  rows: { id?: string; agentKind: AgentKind; providerId: string; modelId: string; effort?: string }[];
+  candidates: { id?: string; agentKind: AgentKind; providerId: string; modelId: string; effort?: string }[];
 }
 
-/** 表单内部的行值：模型用编码值承载 (providerId, modelId)，编辑时另带原行 id */
-interface RowFormValue {
-  /** 编辑时的原行 id（由行内那个 `hidden` 的 `Form.Item` 注册、随 `initialValues` 带进表单值） */
+/** 表单内部的候选值：模型用编码值承载 (providerId, modelId)，编辑时另带原候选 id */
+interface CandidateFormValue {
+  /** 编辑时的原候选 id（由候选内那个 `hidden` 的 `Form.Item` 注册、随 `initialValues` 带进表单值） */
   id?: string;
   agentKind?: AgentKind;
   modelKey?: string;
@@ -164,7 +164,7 @@ interface FormValues {
   useAgentJudge?: boolean;
   askUser?: boolean;
   injectMessages?: boolean;
-  rows?: RowFormValue[];
+  candidates?: CandidateFormValue[];
 }
 
 /** (供应商, 模型) → Select 的值 */
@@ -202,38 +202,38 @@ export function matchCaseTitle(title: string, query: string): boolean {
 }
 
 /**「至少一行」（提交校验）：antd 的自定义校验器以抛错表示不通过 */
-async function requireAtLeastOneRow(_rule: unknown, value: unknown): Promise<void> {
+async function requireAtLeastOneCandidate(_rule: unknown, value: unknown): Promise<void> {
   if (Array.isArray(value) && value.length > 0) return;
-  throw new Error('至少需要一个候选行');
+  throw new Error('至少需要一个候选');
 }
 
 /**
- * 候选行里两格下拉的**依赖签名**：模型池看本行的智能体，强度档位看本行选中的模型，
+ * 候选里两格下拉的**依赖签名**：模型池看候选的智能体，强度档位看候选选中的模型，
  * 于是这两格一变，引用它们的列都要重画 —— 签名就是给表格那个 `shouldUpdate` 用的判据。
  *
- * 为什么用签名而不是逐格比 `prev.rows?.[i]?.agentKind !== next.rows?.[i]?.agentKind`：
- * 表格的 `dataSource` 是由 `fields` **派生**的（每行的池子与选中模型都算在渲染里），
- * 行数变化（加 / 删一个候选）也必须重画 —— 只逐格比会把「加了一行」判成「什么都没变」，
- * 新加的那一行在界面上根本不出现。签名里带上行数，这一类漏渲染就不可能出现。
+ * 为什么用签名而不是逐格比 `prev.candidates?.[i]?.agentKind !== next.candidates?.[i]?.agentKind`：
+ * 表格的 `dataSource` 是由 `fields` **派生**的（每个候选的池子与选中模型都算在渲染里），
+ * 候选数变化（加 / 删一个候选）也必须重画 —— 只逐格比会把「加了一行」判成「什么都没变」，
+ * 新加的那一行在界面上根本不出现。签名里带上候选数，这一类漏渲染就不可能出现。
  */
-function poolSignature(rows: FormValues['rows']): string {
-  return JSON.stringify((rows ?? []).map((row) => [row.agentKind, row.modelKey]));
+function poolSignature(candidates: FormValues['candidates']): string {
+  return JSON.stringify((candidates ?? []).map((row) => [row.agentKind, row.modelKey]));
 }
 
 /**
- * 候选表里一行的**派生数据**：把「本行智能体 → 候选池 → 选中的模型」这条链算一次，四列共用。
+ * 候选表里一候选的**派生数据**：把「候选智能体 → 候选池 → 选中的模型」这条链算一次，四列共用。
  * 放在渲染前算而不是每列各算一遍：模型列要池子、强度列要「选中模型的档位」，
  * 各算一遍就得把同一段推导抄两次（两份必然漂移 —— 强度列漏看 `selected` 就会列出一个当前组合
  * 根本不支持的档，提交后被服务端 400 拦下）。
  */
-interface CandidateRow {
-  /** `Form.List` 的那一格（`name` 是这一行在表单值里的下标，行的增删与字段路径都靠它） */
+interface CandidateDraft {
+  /** `Form.List` 的那一格（`name` 是这个候选在表单值里的下标，候选的增删与字段路径都靠它） */
   field: FormListFieldData;
-  /** 本行的智能体；没选时为 `undefined`（此时池子为空，但**不**提示「没有可选的模型」） */
+  /** 候选的智能体；没选时为 `undefined`（此时池子为空，但**不**提示「没有可选的模型」） */
   agentKind?: AgentKind;
-  /** 本行智能体对应的候选池 */
+  /** 候选智能体对应的候选池 */
   pool: RunModelOption[];
-  /** 本行选中的模型；池子里找不到时为 `undefined`（脏值不猜，强度一个都不列） */
+  /** 候选选中的模型；池子里找不到时为 `undefined`（脏值不猜，强度一个都不列） */
   selected?: RunModelOption;
 }
 
@@ -274,7 +274,7 @@ const CANDIDATE_TABLE_MIN_WIDTH = 636;
 /**
  * 表格单元格里的 `Form.Item` 一律贴底（`marginBottom: 0`）。
  * antd 的表单项自带一截下外边距（`itemMarginBottom` = `marginLG`，默认 **24px**），那是给
- * 「竖排标签 + 多个表单项」之间留空用的；在表格单元格里它只是把每一行都撑高一截——
+ * 「竖排标签 + 多个表单项」之间留空用的；在表格单元格里它只是把每个候选都撑高一截——
  * 本表靠单元格自己的内边距分隔，不靠这个外边距。
  */
 const CELL_ITEM_STYLE = { marginBottom: 0 } as const;
@@ -305,25 +305,25 @@ export function effortPlaceholder(
 /**
  * 这次保存会作废哪些行（保存前确认框的内容，也是它「不该弹时不弹」的判据）。
  *
- * 判据是 contracts 的 `isSameRowTarget` —— 与服务端 `planRunUpdate` 决定「重置哪一行」的**同一份**：
+ * 判据是 contracts 的 `isSameCandidateTarget` —— 与服务端 `planRunUpdate` 决定「重置哪一行」的**同一份**：
  * 两处各写一份必然漂移，而漂移的症状（「确认框说 2 行、实际 1 行」）正好落在用户唯一能核对的地方。
  *
- * 「作废」只算**有东西可丢**的行（跑过或落过终态）：一个从没跑过的 `pending` 行被重置什么都不丢，
+ * 「作废」只算**有东西可丢**的候选（跑过或落过终态）：一个从没跑过的 `pending` 候选被重置什么都不丢，
  * 拿它去弹确认框是噪音——而噪音会让用户闭眼点确定，安全带的效力就此归零（与「开始」的确认框同一取舍）。
  *
  * 单独导出成纯函数（同 `matchCaseTitle` / `completionPercent`）而不是留在组件里：它必须能被**直接**
  * 测到，而组件层只能靠「弹没弹浮层」间接断言——那对「多算了一行 / 少算了一行」几乎没有区分力。
  */
-export function invalidatedRows(run: EvalRun, submit: RunFormValues): EvalRow[] {
+export function invalidatedCandidates(run: EvalRun, submit: RunFormValues): EvalCandidate[] {
   const caseChanged = submit.caseId !== run.caseId;
-  const submitted = new Map(submit.rows.flatMap((row) => (row.id === undefined ? [] : [[row.id, row] as const])));
-  return run.rows.filter((row) => {
-    const lostSomething = row.attempts > 0 || TERMINAL_ROW_STATUSES.includes(row.status);
+  const submitted = new Map(submit.candidates.flatMap((row) => (row.id === undefined ? [] : [[row.id, row] as const])));
+  return run.candidates.filter((row) => {
+    const lostSomething = row.attempts > 0 || TERMINAL_CANDIDATE_STATUSES.includes(row.status);
     if (!lostSomething) return false;
     if (caseChanged) return true;
     const next = submitted.get(row.id);
-    if (next === undefined) return true; // 被从表单里删掉的行
-    return !isSameRowTarget(row, next);
+    if (next === undefined) return true; // 被从表单里删掉的候选
+    return !isSameCandidateTarget(row, next);
   });
 }
 
@@ -349,7 +349,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
    * **什么都不渲染**，而不是退回创建形状。
    *
    * 为什么宁可空白也不能退回创建形状：那种表单会提交出一份**没有 id、且省略了这一轮现有全部行**
-   * 的载荷，而更新端点是全量替换语义（`api/src/runs.ts` 把「没收到某一行」读成「删掉这一行」）——
+   * 的载荷，而更新端点是全量替换语义（`api/src/runs.ts` 把「没收到某一行」读成「删掉这个候选」）——
    * 一次误接线就能静默销毁这一轮跑出来的结果，界面上还看不出任何异常（那张表单长得跟新建一样）。
    * 空白至少是**看得见的失败**，且没有任何可提交的路径。
    *
@@ -358,7 +358,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
    */
   if (props.mode === 'edit' && editingRun === undefined) return null;
 
-  // 既有那三行原样保留（`label` 是「标题 · 仓库名 · 短哈希」），只把类型显式写出来：
+  // 既有那三个候选原样保留（`label` 是「标题 · 仓库名 · 短哈希」），只把类型显式写出来：
   // 多了 `disabled` 这一格（给「原用例已删除」的占位项用）。`cases` 未知时只是一个空选项表。
   const caseOptions: { value: string; label: string; disabled?: boolean }[] = (cases ?? []).map((item) => ({
     value: item.id,
@@ -407,13 +407,13 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
    * （卡片上的分数会在保存后消失）。只改执行模式 / 评分方式时什么都不作废 ⇒ **不弹**。
    */
   const handleFinish = (values: FormValues): void => {
-    const rows: RunFormValues['rows'] = [];
-    for (const row of values.rows ?? []) {
+    const candidates: RunFormValues['candidates'] = [];
+    for (const row of values.candidates ?? []) {
       const decoded = row.modelKey === undefined ? null : decodeModelKey(row.modelKey);
       // 表单规则已保证三者都有值；这里再挡一次是让「类型上可能缺失」不变成静默的坏数据
       if (row.agentKind === undefined || decoded === null) continue;
-      rows.push({
-        // id 也按需带：只有编辑模式的行才有它（创建路径不接受行身份）
+      candidates.push({
+        // id 也按需带：只有编辑模式的候选才有它（创建路径不接受行身份）
         ...(row.id === undefined ? {} : { id: row.id }),
         agentKind: row.agentKind,
         providerId: decoded.providerId,
@@ -422,7 +422,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         ...(row.effort === undefined ? {} : { effort: row.effort }),
       });
     }
-    if (values.caseId === undefined || rows.length === 0) return;
+    if (values.caseId === undefined || candidates.length === 0) return;
     const submit: RunFormValues = {
       caseId: values.caseId,
       // 备注是可选注解：纯空白按「没写」处置（列表标题列不能出现一个尾随的「 ·  」）
@@ -432,18 +432,18 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
       useAgentJudge: values.useAgentJudge ?? false,
       askUser: values.askUser ?? false,
       injectMessages: values.injectMessages ?? false,
-      rows,
+      candidates,
     };
 
     // 新建时没有「现有行」，无从作废（也就没有什么要确认的）
-    const doomed = editingRun === undefined ? [] : invalidatedRows(editingRun, submit);
+    const doomed = editingRun === undefined ? [] : invalidatedCandidates(editingRun, submit);
     if (doomed.length === 0) {
-      // 没有**有东西可丢**的行会被作废（新建；或改的只是执行模式 / 评分方式；或换了用例但这轮一行都没跑过）
+      // 没有**有东西可丢**的候选会被作废（新建；或改的只是执行模式 / 评分方式；或换了用例但这轮一个候选都没跑过）
       onSubmit(submit);
       return;
     }
     modal.confirm({
-      title: '保存后会作废这些行的已有结果？',
+      title: '保存后会作废这些候选的已有结果？',
       width: 520,
       // 浮层根节点带类名：调用方与用例要能收窄到「这一个浮层」（页面上确认框不止一处）
       rootClassName: 'run-edit-confirm',
@@ -452,7 +452,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
           <Typography.Text>保存后它们会回到「待开始」，已有的分数与产物不再显示：</Typography.Text>
           {doomed.map((row) => (
             <Typography.Text key={row.id} type="secondary">
-              · {AGENT_LABELS[row.agentKind]} · {row.modelId}（{ROW_STATUS_LABELS[row.status]}）
+              · {AGENT_LABELS[row.agentKind]} · {row.modelId}（{CANDIDATE_STATUS_LABELS[row.status]}）
             </Typography.Text>
           ))}
         </Flex>
@@ -481,14 +481,14 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
           ? { note: '', executionMode: 'serial', useAgentJudge: false, askUser: false, injectMessages: false }
           : {
             caseId: editingRun.caseId,
-            // 备注是可选注解：旧轮次由契约默认成空串，这里原样回填（改与不改都由表单显式交出）
+            // 备注是可选注解：旧轮由契约默认成空串，这里原样回填（改与不改都由表单显式交出）
             note: editingRun.note,
             executionMode: editingRun.executionMode,
             useAgentJudge: editingRun.useAgentJudge,
             askUser: editingRun.askUser,
             injectMessages: editingRun.injectMessages,
-            rows: editingRun.rows.map((row) => ({
-              // id 与 effort 都原样进表单值：前者是「哪一行」，后者是「这一行怎么跑的」，
+            candidates: editingRun.candidates.map((row) => ({
+              // id 与 effort 都原样进表单值：前者是「哪一行」，后者是「这个候选怎么跑的」，
               // 少任何一格都会让一次无改动的保存被服务端判成「改了」（见 RunFormValues 的注释）
               id: row.id,
               agentKind: row.agentKind,
@@ -555,19 +555,19 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         label="允许智能体向我提问"
         valuePropName="checked"
         // 说明同样写在 extra 里（跟着这一格走）：它要说清代价——这一轮会被人工介入，产物与没开过的不可直接比
-        extra="模型中途拿不准时会向你提问，你在弹出的问答卡片里回答，它拿到答复再继续。代价如实说：这一轮会为等人停下来，一问最多等十分钟，产物与没开过的轮次不可直接比。默认关闭。"
+        extra="模型中途拿不准时会向你提问，你在弹出的问答卡片里回答，它拿到答复再继续。代价如实说：这一轮会为等人停下来，一问最多等十分钟，产物与没开过的轮不可直接比。默认关闭。"
         style={{ marginBottom: 8 }}
       >
         <Switch />
       </Form.Item>
 
       {/* 与「允许智能体向我提问」同源句式（两格说的是同一件事的两个方向：模型问人 / 人喂模型）：
-          代价都必须当场说清——这一轮被人插过话之后，它的产物与没插过话的轮次**不可直接比**。 */}
+          代价都必须当场说清——这一轮被人插过话之后，它的产物与没插过话的轮**不可直接比**。 */}
       <Form.Item
         name="injectMessages"
         label="允许我向智能体补充消息"
         valuePropName="checked"
-        extra="运行中可以往输入框里发一句话：它先排队，智能体在下一次可投递的时机拿到（有的家要等本轮收场）。消息只在你按下发送且智能体真的收到时才进执行日志；等太久没投出去的会如实标成「未送达」。代价如实说：这一轮会被人工介入，产物与没插过话的轮次不可直接比。默认关闭。"
+        extra="运行中可以往输入框里发一句话：它先排队，智能体在下一次可投递的时机拿到（有的家要等本轮收场）。消息只在你按下发送且智能体真的收到时才进执行日志；等太久没投出去的会如实标成「未送达」。代价如实说：这一轮会被人工介入，产物与没插过话的轮不可直接比。默认关闭。"
         style={{ marginBottom: 8 }}
       >
         <Switch />
@@ -590,30 +590,30 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
         }
       </Form.Item>
 
-      {/* `initialValue` 只在**新建**时给：编辑的行来自 `initialValues.rows`，两边都给会让
+      {/* `initialValue` 只在**新建**时给：编辑的候选来自 `initialValues.candidates`，两边都给会让
           antd 的「已有值优先」在这里变成「谁赢看不出」的不确定状态。 */}
       <Form.List
-        name="rows"
+        name="candidates"
         {...(editingRun === undefined ? { initialValue: [{ agentKind: 'cc' as const }] } : {})}
-        rules={[{ validator: requireAtLeastOneRow }]}
+        rules={[{ validator: requireAtLeastOneCandidate }]}
       >
         {(fields, { add, remove, move }, { errors }) => (
           <Flex vertical gap={8}>
-            {/* 候选行 = small Table：整张表订阅「智能体 / 模型」这一对键
-                （模型池跟着本行智能体、强度档位跟着本行模型）。原来这一层订阅挂在**每一行**上，
+            {/* 候选 = small Table：整张表订阅「智能体 / 模型」这一对键
+                （模型池跟着候选智能体、强度档位跟着候选模型）。原来这一层订阅挂在**每个候选**上，
                 改成表格后列渲染全在同一个闭包里，逐行订阅反而要多挂一层 —— 判据见 `poolSignature`。 */}
             <Form.Item
               noStyle
               shouldUpdate={(prev: FormValues, next: FormValues) =>
-                poolSignature(prev.rows) !== poolSignature(next.rows)
+                poolSignature(prev.candidates) !== poolSignature(next.candidates)
               }
             >
               {({ getFieldValue }) => {
-                // 每行的派生数据只算一次，四列共用（理由见 CandidateRow 的注释）
-                const candidates: CandidateRow[] = fields.map((field) => {
-                  const agentKind = getFieldValue(['rows', field.name, 'agentKind']) as AgentKind | undefined;
+                // 每个候选的派生数据只算一次，四列共用（理由见 CandidateDraft 的注释）
+                const candidates: CandidateDraft[] = fields.map((field) => {
+                  const agentKind = getFieldValue(['candidates', field.name, 'agentKind']) as AgentKind | undefined;
                   const pool = agentKind === undefined ? [] : modelOptionsFor(agentKind);
-                  const modelKey = getFieldValue(['rows', field.name, 'modelKey']) as string | undefined;
+                  const modelKey = getFieldValue(['candidates', field.name, 'modelKey']) as string | undefined;
                   const decoded = modelKey === undefined ? null : decodeModelKey(modelKey);
                   return {
                     field,
@@ -631,9 +631,9 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                   };
                 });
                 return (
-                  <Table<CandidateRow>
+                  <Table<CandidateDraft>
                     size="small"
-                    // 候选行没有「第几页」这回事：每一行都是这次评测要跑的东西，藏起来等于少跑
+                    // 候选没有「第几页」这回事：每个候选都是这次评测要跑的东西，藏起来等于少跑
                     pagination={false}
                     // **必须给 `x`，且必须是数值**：这一格就是「宽度不足」的判据本身 —— 表格拿到
                     // `width: 636px` + `min-width: 100%`，于是右栏窄于 636 时它在容器内部横向滚动
@@ -644,7 +644,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                     rowKey={(row) => row.field.key}
                     dataSource={candidates}
                     // 全删光时是**可达状态**（用户点删最后一行）：不给这句就会渲染 antd 默认的英文
-                    // "No data"（应用没配 locale）。措辞刻意与校验错误「至少需要一个候选行」不同：
+                    // "No data"（应用没配 locale）。措辞刻意与校验错误「至少需要一个候选」不同：
                     // 提交失败时两句会同时在场，同一句话出现两遍会让 `getByText` 与用户都分不清
                     locale={{ emptyText: '还没有候选：点下面的「添加候选」加一行' }}
                     columns={[
@@ -652,16 +652,16 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                         title: '智能体',
                         width: CANDIDATE_COLUMN_WIDTH.agent,
                         // 钉在左边：横向滚动时中间两列从它下面滑过，
-                        // 「这一行是哪个智能体」始终看得见。定位是 rc-table 的 `getCellFixedInfo`
+                        // 「这个候选是哪个智能体」始终看得见。定位是 rc-table 的 `getCellFixedInfo`
                         // 按**实测列宽**算出的 `position: sticky; left: …`，故宽度那一格必须留着。
                         fixed: 'left',
                         render: (_value, row) => (
                           <>
-                            {/* 原行 id 必须**注册成一个表单字段**才会出现在 `onFinish` 的 `values` 里。
+                            {/* 原候选 id 必须**注册成一个表单字段**才会出现在 `onFinish` 的 `values` 里。
                                 实测（rc-field-form 的 `getFieldsValue` 走 `cloneByNamePathList`：按**已注册
-                                字段的路径**从 store 里克隆值）：只放进 `initialValues.rows[i]` 而没有任何
-                                `Form.Item` 的 `id` 会被静默丢掉，`values.rows` 只剩 agentKind / modelKey /
-                                effort —— 后果是保存时所有行都被当成新行，已经跑出来的结果静默清零
+                                字段的路径**从 store 里克隆值）：只放进 `initialValues.candidates[i]` 而没有任何
+                                `Form.Item` 的 `id` 会被静默丢掉，`values.candidates` 只剩 agentKind / modelKey /
+                                effort —— 后果是保存时所有候选都被当成新行，已经跑出来的结果静默清零
                                 （正是编辑模式最贵的那个错）。它不给用户看也不参与校验，故 `hidden`
                                 （antd 只为它加 `display: none`：不占位、也不会在单元格里顶出一行）；
                                 `Input` 是 rc-field-form 要的「唯一子元素」（没有子元素会当场打开发警告）。 */}
@@ -678,12 +678,12 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                                 // 去掉 `label` 后必须由控件自己承担，否则三个下拉都成了无名控件
                                 aria-label="智能体"
                                 options={AGENT_KINDS.map((kind) => ({ value: kind, label: AGENT_LABELS[kind] }))}
-                                // 换智能体必须作废本行已选的**模型与强度**：前者可能是协议不匹配的组合，
+                                // 换智能体必须作废候选已选的**模型与强度**：前者可能是协议不匹配的组合，
                                 // 后者是「模型 × 智能体」的函数 —— 留着它，界面会显示一个当前组合根本不支持的档，
                                 // 提交后被服务端 400 拦下（响是响，但对用户是一次莫名其妙的失败）。
                                 onChange={() => {
-                                  form.setFieldValue(['rows', row.field.name, 'modelKey'], undefined);
-                                  form.setFieldValue(['rows', row.field.name, 'effort'], undefined);
+                                  form.setFieldValue(['candidates', row.field.name, 'modelKey'], undefined);
+                                  form.setFieldValue(['candidates', row.field.name, 'effort'], undefined);
                                 }}
                               />
                             </Form.Item>
@@ -705,7 +705,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                                 placeholder={row.pool.length === 0 ? '没有可选的模型' : '选择模型'}
                                 // 换模型必须作废已选强度：交集随模型变，留着的脏值会在创建时被服务端 400 拦下
                                 onChange={() => {
-                                  form.setFieldValue(['rows', row.field.name, 'effort'], undefined);
+                                  form.setFieldValue(['candidates', row.field.name, 'effort'], undefined);
                                 }}
                                 options={row.pool.map((option) => ({
                                   value: encodeModelKey(option.providerId, option.modelId),
@@ -715,7 +715,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                                       <span>{option.modelId}</span>
                                       {/**
                                        * 供应商名：双协议智能体（DSH）的池子是**两类协议的并集**，
-                                       * 而 `providerId` 不同 ⇒ 选出来的是**不同的行**。只给模型名的话，
+                                       * 而 `providerId` 不同 ⇒ 选出来的是**不同的候选**。只给模型名的话，
                                        * 「同一个模型名挂在两个网关」（`jd/GLM-5.2` 这类跨网关同名的模型很常见）
                                        * 两个选项会长得一模一样——用户无从判断自己选的是哪一个。
                                        * 用 `Typography.Text type="secondary"` 而不是自定义样式：字号交主题 token。
@@ -756,7 +756,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                               // 强度选项**只列服务端算好的候选**：上游档位原样列出来会让
                               // 不支持的组合到运行时才炸（dsh 侧是硬报错），而就近取整是静默改语义。
                               // 该候选恒含关闭档 `off` 且保证它排第一；档位文案一律照上游
-                              // 的词汇原样写（关闭档也不加工，与行卡片上那个
+                              // 的词汇原样写（关闭档也不加工，与候选卡片上那个
                               // `off` 标签是同一个词）。
                               options={(row.selected?.efforts ?? []).map((effort) => ({
                                 value: effort,
@@ -780,15 +780,15 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                         // 在此之前「删除」是文字按钮，光它自己就占掉这一列近一半宽度
                         align: 'right',
                         // 钉在右边：横向滚动时三个按钮不被滚走 ——
-                        // 它们是**行上的唯一操作**，滚出去就等于这一行删不掉、也换不了顺序
+                        // 它们是**候选上的唯一操作**，滚出去就等于这个候选删不掉、也换不了顺序
                         fixed: 'right',
                         render: (_value, row) => (
                           // 三个图标按钮（用户口径）：文字进 Tooltip，可访问名走 `aria-label`
                           //（Tooltip 不产生可访问名，不给 aria-label 就是个无名按钮）
                           <Flex align="center" justify="flex-end" gap={2}>
-                            {/* 上移 / 下移（用户口径）：候选顺序就是**串行执行顺序**，所以顺序本身要能改。
+                            {/* 上移 / 下移（用户口径）：候选顺序就是**串行的执行顺序**，所以顺序本身要能改。
                                 边界行**置灰而不是隐藏**：按钮位置固定，眼睛不用重新找；隐藏会让
-                                「第一行没有上移」变成一件要靠猜的事。 */}
+                                「第一候选没有上移」变成一件要靠猜的事。 */}
                             <Tooltip title="上移">
                               <Button
                                 size="small"
@@ -819,7 +819,7 @@ export function RunCreatePanel(props: RunCreatePanelProps): ReactNode {
                                 variant="link"
                                 icon={<DeleteOutlined aria-hidden />}
                                 aria-label="删除"
-                                // 认的是**本行的 `field.name`**（表单值里的下标），不是列的序号：
+                                // 认的是**候选的 `field.name`**（表单值里的下标），不是列的序号：
                                 // 拿 index 去删会删掉别人那一行 —— 表格里最容易错的一处
                                 onClick={() => remove(row.field.name)}
                               />

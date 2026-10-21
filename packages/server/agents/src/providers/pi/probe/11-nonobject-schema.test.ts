@@ -22,7 +22,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { anthropicText, runPiConformanceRow } from '../../../testing/pi-conformance-fixture';
+import { anthropicText, runPiConformanceCandidate } from '../../../testing/pi-conformance-fixture';
 import { piRequestToolDeclaration } from '../observer';
 import { PI_STRUCTURED_OUTPUT_TOOL } from '../structured-output';
 
@@ -38,7 +38,7 @@ describe('根非 object 的 schema 落在哪一档', () => {
    * 已知代价（不是「按没给处置」），判据钉住它，免得下一个人以为这一档什么都不交付。
    */
   it('根数组 schema：降级档照旧交付工具与填充层（出站声明的形态如实钉住）', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('我按题面回答。')],
       prompt: '请给出结论。',
       outputSchema: ARRAY_ROOT_SCHEMA,
@@ -74,7 +74,7 @@ describe('根非 object 的 schema 落在哪一档', () => {
    * 与上面那一档分得开：这里连「可声明的参数」都没有，`asSchemaObject` 给 `null`。
    */
   it('不是 JSON 对象（字符串 schema）⇒ 工具与填充层都不落，只剩修正轮', async () => {
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('我按题面回答。')],
       prompt: '请给出结论。',
       outputSchema: '{"type":"object"}',
@@ -96,7 +96,7 @@ describe('根非 object 的 schema 落在哪一档', () => {
       required: ['verdict'],
       properties: { verdict: { type: 'string' } },
     };
-    const run = await runPiConformanceRow({
+    const run = await runPiConformanceCandidate({
       script: [anthropicText('按 schema 交。')],
       prompt: '请给出结论。',
       outputSchema: objectSchema,

@@ -108,9 +108,9 @@ describe('codex 续接的驱动器是真路径（补先例那个「没人核驱�
     expect(source).toContain('codexProvider.run');
   });
 
-  it('转录真的落在这一行的 `$CODEX_HOME` 下（新进程读得到才谈得上跨进程续接）', async () => {
+  it('转录真的落在这个候选的 `$CODEX_HOME` 下（新进程读得到才谈得上跨进程续接）', async () => {
     const { configHome, nonceA } = await scenario();
-    // 行目录就在驱动器给的那一份里：转录落 `sessions/**/rollout-*.jsonl`（厂商自己的落点）
+    // 候选目录就在驱动器给的那一份里：转录落 `sessions/**/rollout-*.jsonl`（厂商自己的落点）
     const sessionsDir = join(configHome, 'sessions');
     expect(existsSync(sessionsDir)).toBe(true);
     const rollouts = readdirSync(sessionsDir, { recursive: true, encoding: 'utf8' })
@@ -127,7 +127,7 @@ describe('codex 续接的驱动器是真路径（补先例那个「没人核驱�
  * 三条口径：
  *   · 夹具**证得出**续接 ⇒ 声明必须写 `yes`（写成 `no` / `off-by-adapter` 都是把事实说小）；
  *   · **两档的证据强度不同，声明也照实分开**：`'idle'` 档走真路径（`probes/inject-idle-live.test.ts`
- *     量到「那句话进了厂商出站请求体、那一轮跑完、答复成为本行 finalText」）⇒ `yes` + `real-path`；
+ *     量到「那句话进了厂商出站请求体、那一轮跑完、答复成为候选 finalText」）⇒ `yes` + `real-path`；
  *     `'round'` 档只有 wire 形状与假件（steer 落在哪一次模型往返之前没验）⇒ 仍 `unverified`。
  *     把 `'round'` 也写成 `yes` 必须同时给出它的真机读数，否则界面会说「能投」而消息静默消失；
  *   · 撤回按档分开：在途那一档 `none`（没有按身份收回的面）、耐久队列那一档 `by-id`
@@ -166,7 +166,7 @@ describe('turnInjection 声明与夹具互钉（codex）', () => {
     expect(delivery?.round.proofDriverReason ?? '').toContain('真机');
     /**
      * `'idle'`：**真路径**读数（`probes/inject-idle-live.test.ts`：真二进制 + 脚本式上游，
-     * 哨兵文本进了厂商出站请求体、厂商投递起的那一轮跑完、它的答复成为本行 `finalText`）。
+     * 哨兵文本进了厂商出站请求体、厂商投递起的那一轮跑完、它的答复成为候选 `finalText`）。
      * 契约对 `state: 'yes'` 的三条硬要求一并钉住：`reason` 为 null、`channel` 非空、
      * `proofDriver` 是 `real-path`（假件档必须给出原因，`yes` 拿假件是不允许的组合）。
      */

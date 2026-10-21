@@ -4,7 +4,7 @@
  * 其余按实际结果）三家必须逐字一致——抄三遍必然漂移，而这几件事出错时都表现为
  * 「偶发卡住 / 状态对不上 / 数字不动」，是最难查的一类问题。厂商差异全部通过 hooks 注入。
  * 注意：本函数**不抛**——所有失败都折进 AgentRunResult.error（错误码需要承载处），
- * 编排层因此不需要给每一行套 try/catch。
+ * 编排层因此不需要给每个本次运行套 try/catch。
  */
 import { createLogger } from '@aieval/core';
 import type { SubagentRecord, UsageTiming, UsageTokens, UsageTurn } from '@aieval/contracts';
@@ -45,7 +45,7 @@ export interface TurnContext {
   /**
    * **提问端口**：模型问到用户时，适配器从这一格拿「问一次」（`ask`），并按 `available` 决定
    * 挂不挂厂商钩子、开不开厂商开关（没挂应答面 ⇒ 一个都不动，既有行为逐字不变）。
-   * 等待语义（行终止 / 预算 / 静止超时豁免 / 回调抛错）全收在它里面，适配器不自己判。
+   * 等待语义（本次运行终止 / 预算 / 静止超时豁免 / 回调抛错）全收在它里面，适配器不自己判。
    */
   askUser: AskUserPort;
   /**
@@ -70,7 +70,7 @@ export interface TurnContext {
   emitMessage: (draft: MessageDraft) => void;
 }
 
-/** 收尾产出的两类载荷：行级事件与内容级消息（顺序即产出顺序，各自内部保序） */
+/** 收尾产出的两类载荷：运行级事件与内容级消息（顺序即产出顺序，各自内部保序） */
 export interface TurnFinalize {
   drafts: AgentEventDraft[];
   messages?: MessageDraft[];
@@ -131,7 +131,7 @@ export interface TurnStart {
    *
    * ⚠️ **硬要求：进程回收是「整棵树 + 等确认」，不是「发个信号」**。
    * `child.kill()` 在 Windows 上只杀直接子进程，而厂商 CLI 会在自己内部 spawn 一串下级进程
-   * （真机：codex 的插件同步 `git` 链），它们**继承父进程的句柄**、继续捏着本行的配置目录
+   * （真机：codex 的插件同步 `git` 链），它们**继承父进程的句柄**、继续捏着本次运行的配置目录
    * （`.agenthome` / `.judgehome`），下一轮的行产物清理就此 `EPERM`。落地口径：
    *   · **谁 spawn 谁负责整棵回收**（本仓自己 spawn 的：`providers/codex/appserver/client.ts`
    *     走 `process-tree.ts` 的 `terminateProcessTree`，Windows `taskkill /T /F`、POSIX 进程组）；
@@ -145,7 +145,7 @@ export interface TurnStart {
    * 才生效 ⇒ **`runTurn` 可能无界返回**。所以这里不再是「必须在有限时间内让迭代结束」的硬约束，
    * 而是「尽力 + 登记边界」。
    * 「一行不会永远停在 running」这条**用户可见**的不变量：**静止由看门狗兜底、总时长仍不限**
-   * （用户口径「执行不限时间、评分不限轮次和时间」：编排层没有 `hardDeadline` / `timedOutRows`）。
+   * （用户口径「执行不限时间、评分不限轮次和时间」：编排层没有 `hardDeadline` / `timedOutCandidates`）。
    * 看门狗只是**发起停止的又一个来源**（两级上限见 `AgentRunInput.watchdog`）——发起之后仍然要适配器
    * 肯把迭代交出来，一个连停止信号都不理的适配器会让那一行**一直挂着**，这是已知代价（登记在包的
    * README 里）。能停下它的另外两个来源是用户点「终止」与宿主停机：编排层在行落终态时唤醒行任务、
@@ -169,7 +169,7 @@ export interface TurnStart {
    *      就是「跑到哪就写到哪」的真实内容，不是一份需要跑完才成立的产物。失败或终止的运行里，
    *      那份文件同样有内容（一条被中断的 codex 行留下 688 KB 的会话文件，里面是
    *      完整的推理、正文与工具调用）。**丢掉它等于把已经落盘的事实藏起来**，
-   *      表现就是抽屉上那句「还没有日志 · 这一行还没开始执行」——而这一行明明跑过。
+   *      表现就是抽屉上那句「还没有日志 · 本次运行还没开始执行」——而本次运行明明跑过。
    *      （收尾**只读盘、不编造**，读不到就一条都不产出；而「失败行看不到它说过什么」是排障时最缺的
    *      那一条信息——所以失败与终止的运行同样收尾。）
    *   2. **抛错只记日志**，不改变本次运行的结论——收尾失败是**补充信息**失败，
@@ -245,7 +245,7 @@ export interface TurnState {
    */
   usageTotal: number | null;
   /**
-   * 本行到目前为止的**时间跨度**（2026-10-XX 新增；`null` = 一次都没采到时间）。
+   * 本次运行到目前为止的**时间跨度**（2026-10-XX 新增；`null` = 一次都没采到时间）。
    * 为什么放在 `TurnState` 而不是骨架的局部变量：dsh 的 `assistant/message` 与 `turn/end`
    * 都要读它（每一次交出的是「到目前为止」的累计跨度，与 `usage*` 三格同一口径），
    * 而这两条出口都是 `project` 里的纯函数分支——只有 `state` 能在它们之间传递。
@@ -362,7 +362,7 @@ export interface TurnProjection {
   subagentTurns?: number | null;
   /**
    * `tokens` 是**估算值**（用户口径）：它只进 `usage` 事件给界面看，
-   * **绝不进 `AgentRunResult.tokens`**——否则「崩溃 / 超时 / 被杀」的行会带着一份估算被写成
+   * **绝不进 `AgentRunResult.tokens`**——否则「崩溃 / 超时 / 被杀」的本次运行会带着一份估算被写成
    * 「采到了计量」，而快照是唯一落盘真相。缺省（undefined）= 权威值。
    * 为什么这个标记在投影上、而不复用别处的静态能力声明：静态声明回答的是「这一家整体上算不算
    * 估算家」（消费方据此决定要不要回写快照），这一格回答的是「本条消息给的这个数算不算结果」
@@ -414,7 +414,7 @@ export interface TurnProjection {
   /**
    * 本条消息归一出来的**消息草稿**（`AgentMessage`，缺省 = 本条不产出消息）。
    * 合并、块序号分配与 `messageId` 由骨架的合并器统一做（`message.ts`），各家只填信封字段与块。
-   * 与 `drafts`（行级事件）**并行**输出：事件是行级审计与 SSE 的载体，消息是内容级视图的载体。
+   * 与 `drafts`（运行级事件）**并行**输出：事件是运行级审计与 SSE 的载体，消息是内容级视图的载体。
    */
   messages?: MessageDraft[];
   /**
@@ -438,19 +438,19 @@ export interface TurnHooks {
 export const STRUCTURED_OUTPUT_REPAIR_ROUNDS = 2;
 
 /**
- * 空闲上限缺省值（毫秒）：连续这段时间**没有任何产品事件**就判这一行静止。
+ * 空闲上限缺省值（毫秒）：连续这段时间**没有任何产品事件**就判本次运行静止。
  *
  * 取值受三条约束，缺一条就会误杀或白等：
  *   · **大于已知的合法静默**：厂商的自动重试退避最长可到 60 s（一轮默认重试链实测最长静默 8 s），
  *     首字延迟也在这一档里；
- *   · **大于宿主的等待预算**：行内首次注入的等待预算是 20 s 量级；
+ *   · **大于宿主的等待预算**：运行内首次注入的等待预算是 20 s 量级；
  *   · **不晚于厂商自带的兜底**：几家自带的流空闲容错在 300 s 上下，等它只会更晚发现挂死。
  */
 export const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
 
 /**
  * 单次**模型往返**的墙钟上限缺省值（毫秒）：它只兜「一直有输出、但一次往返都不收尾」那一格，
- * 与「一行跑多久」无关（用户口径「执行不限时间」不变；套在整行上等于把总上限加回来）。
+ * 与「一本次运行跑多久」无关（用户口径「执行不限时间」不变；套在整本次运行上等于把总上限加回来）。
  * 比空闲上限宽三倍多，又与各家自带的兜底同量级但**独立**（不继承它的失效）：两级同时开着时，
  * 先开火的总是空闲那一级，墙钟是给 drip 型挂死准备的第二道闸。
  */
@@ -590,7 +590,7 @@ export async function disposeLiveSessions(): Promise<void> {
 
 /**
  * 这一条投影有没有交出**任何产品事件**（看门狗的「有输出」判据）。
- * 刻意从宽：行级事件、消息、子任务行、计量事件（`turns` 一到就发 `usage`）都算。判据窄了会把
+ * 刻意从宽：运行级事件、消息、子任务行、计量事件（`turns` 一到就发 `usage`）都算。判据窄了会把
  * 「工具在途的一整段」读成静止——cc 的 `tool_progress` / `system/api_retry` 走的是未识别负载的
  * 兜底投影，漏掉它们等于误杀正在干活的工具。
  */
@@ -638,10 +638,10 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
 
   /**
    * 受保护的事件发射：`onEvent` 是**消费方**的代码，它会抛——
-   * `publishRowEvent → appendEvent` 在写侧 schema 不过时抛 `ServiceError`，磁盘写失败同样抛。
-   * 而本函数的承诺是「永不抛、所有失败折进 AgentRunResult.error」，且编排层**不给每一行套
+   * `publishCandidateEvent → appendEvent` 在写侧 schema 不过时抛 `ServiceError`，磁盘写失败同样抛。
+   * 而本函数的承诺是「永不抛、所有失败折进 AgentRunResult.error」，且编排层**不给每个本次运行套
    * try/catch**（正因 run() 承诺不抛）。裸调 `emitter.emit` 一旦被消费方抛错，后果按位置分两种：
-   *  - 循环内：异常被下面的 catch 归因成 `AGENT_FAILED`，把「日志写盘失败」误报成「适配器运行失败」；
+   *  - 循环内：异常被下面的 catch 归因成 `AGENT_FAILED`，把「日志写盘失败」误报成「适配器运行的失败」；
    * 循环外（释放路径的 `onGraceExceeded` 尤其）：`finally` 里的 `await triggerRelease()` 抛出 ⇒
    *    `dispose()` 可能未走完，且正常结论被异常替换。
    * 因此**本文件里全部 6 个发射点**都走这里（启动前中止 / 第二段兜底 / 循环内 drafts / 循环内 usage /
@@ -688,23 +688,23 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
 
   // 进入即已中止：不建任何运行时，直接给 canceled（否则会「起了再杀」，白跑一次冷启动）
   if (input.signal.aborted) {
-    emit(logDraft('stderr', '[WARN] 该行在启动前已被终止，本次运行未启动任何智能体进程'));
+    emit(logDraft('stderr', '[WARN] 本次运行在启动前已被终止，本次运行未启动任何智能体进程'));
     return {
       ok: false,
       exitReason: 'canceled',
       tokens: null,
-      // 一行都没跑 ⇒ 谈不上「子智能体那一份」（用量与轮次同一条「采不到就是 null」）
+      // 一本次运行都没跑 ⇒ 谈不上「子智能体那一份」（用量与轮次同一条「采不到就是 null」）
       subagentTokens: null,
       subagentTurns: null,
       turns: null,
       durationMs: 0,
       // 这一格没建过运行时、也没消费过事件流 ⇒ 没有答复可言，只能是「未采到」（不是空串）
       finalText: null,
-      // 一行都没跑 ⇒ schema 一次都没下发（与「要求了但被降级」在结果上同值，见 applied 的 JSDoc）
+      // 一本次运行都没跑 ⇒ schema 一次都没下发（与「要求了但被降级」在结果上同值，见 applied 的 JSDoc）
       applied: { structuredOutput: false },
-      // 同理：一行都没跑 ⇒ 没有会话可指（`null` = 不能续接，与「采不到」同一处置）
+      // 同理：一本次运行都没跑 ⇒ 没有会话可指（`null` = 不能续接，与「采不到」同一处置）
       sessionId: null,
-      error: { code: 'AGENT_CANCELED', message: '该行在启动前已被终止' },
+      error: { code: 'AGENT_CANCELED', message: '本次运行在启动前已被终止' },
     };
   }
 
@@ -784,7 +784,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     settleTurn = resolve;
   });
 
-  // 第二段兜底的可见信号：既要进服务日志，也要进该行事件日志（界面上的日志抽屉看得到）
+  // 第二段兜底的可见信号：既要进服务日志，也要进本次运行事件日志（界面上的日志抽屉看得到）
   const onGraceExceeded = (): void => {
     const text = `[WARN] ${hooks.kind} 在 ${RELEASE_GRACE_MS / 1000} 秒内未结束在途 turn，已强制释放运行时（可能是适配器不响应停止信号，也可能是它正卡在一次长采集里——这条日志区分不了这两种成因，别照着它断言能力差异）`;
     logger.warn(text, { kind: hooks.kind });
@@ -830,7 +830,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
    * 到点走 `requestStop()` 那条与用户点「终止」相同的释放路径，结论由 `assembleResult` 落 `timed-out`。
    *
    * 为什么是「单个定时器 + 每次重排」而不是轮询：两级上限都是分钟级，轮询要么粒度粗（发现延迟）
-   * 要么空转（每行一个滴答）；重排只在有事件时发生。判据只有两个时刻：
+   * 要么空转（每个本次运行一个滴答）；重排只在有事件时发生。判据只有两个时刻：
    * `idleDeadlineMs`（最后一次输出 + 空闲上限）与 `wallDeadlineMs`（本次模型往返起表 + 单轮上限）。
    */
   const limits = {
@@ -976,7 +976,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
   };
 
   /**
-   * 开火：留痕（服务日志 + 该行事件流）后走 `requestStop()`，到点放弃等待、结论落 `timed-out`。
+   * 开火：留痕（服务日志 + 本次运行事件流）后走 `requestStop()`，到点放弃等待、结论落 `timed-out`。
    * 留痕是硬要求——「我们把它掐了」必须与「它自己挂了」在日志里分得开。
    */
   const tripWatchdog = (reason: WatchdogTrip, timeoutMs: number): void => {
@@ -989,18 +989,18 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     const seconds = Math.round(timeoutMs / 1_000);
     const budget = seconds >= 1 ? `${seconds} 秒` : `${timeoutMs} 毫秒`;
     /**
-     * **卡在哪一段要说得出来**：`handle === undefined` 表示这一行还停在 `hooks.start()` 里
+     * **卡在哪一段要说得出来**：`handle === undefined` 表示本次运行还停在 `hooks.start()` 里
      * （装配 / 建会话 / 投首轮提示词），此刻**没有句柄可释放** ⇒ 释放路径会走到「没有句柄」那一支，
      * 行也不会因为这次看门狗就落定（能力边界，见「进程生命周期」的已知边界表）。
      * 文案不点名这一段的话，用户只看到一句「静止 N 秒」，分不出是模型没响应还是装配没回来。
      */
     const phase = handle === undefined
-      ? '（卡在装配段：`start()` 还没返回，本层没有句柄可释放——这一行不会因这次看门狗而落定）'
+      ? '（卡在装配段：`start()` 还没返回，本层没有句柄可释放——本次运行不会因这次看门狗而落定）'
       : '（适配器已启动，按释放路径收场）';
     const text = reason === 'idle'
-      ? `[WARN] 看门狗：该行已静止 ${budget}（没有任何事件），按静止超时终止并释放运行时${phase}`
-      : `[WARN] 看门狗：单次模型往返超过 ${budget} 仍未收尾，按静止超时终止并释放运行时${phase}`;
-    logger.warn('看门狗判定这一行静止超时', { kind: hooks.kind, reason, timeoutMs, started: handle !== undefined });
+      ? `[WARN] 看门狗：本次运行已静止 ${budget}（没有任何事件），按静止超时终止并释放运行时${phase}`
+      : `[WARN] 看门狗：单次模型调用超过 ${budget} 仍未收尾，按静止超时终止并释放运行时${phase}`;
+    logger.warn('看门狗判定本次运行静止超时', { kind: hooks.kind, reason, timeoutMs, started: handle !== undefined });
     emit(logDraft('stderr', text));
     requestStop();
   };
@@ -1157,7 +1157,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       const liveTiming = resolveTiming(state.timing);
       /**
        * 归属：**本条投影自带**，缺省即 `null`——不结转、也不拿 `projection.turns` 顶替
-       * （那是本行累计轮次，与「这一条属于哪一轮」是两把尺子）。
+       * （那是本次运行累计轮次，与「这一条属于哪一轮」是两把尺子）。
        */
       const liveTurn = projection.turn ?? null;
       if (
@@ -1234,7 +1234,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       emit(
         logDraft(
           'stderr',
-          `[WARN] 结构化输出未通过校验，要求模型修正（第 ${round}/${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 轮）：${firstProblem(inspected)}`,
+          `[WARN] 结构化输出未通过校验，要求模型修正（第 ${round}/${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 步）：${firstProblem(inspected)}`,
         ),
       );
       const prompt = buildStructuredOutputFeedback({
@@ -1248,7 +1248,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
       text = state.finalText ?? text;
       inspected = inspectStructuredOutput(plan, text);
       if (inspected.ok) {
-        emit(logDraft('stderr', `[INFO] 结构化输出在第 ${round} 轮修正后通过了校验`));
+        emit(logDraft('stderr', `[INFO] 结构化输出在第 ${round} 步修正后通过了校验`));
         return;
       }
     }
@@ -1256,7 +1256,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
     emit(
       logDraft(
         'stderr',
-        `[WARN] 结构化输出修正 ${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 轮后仍未通过校验：${problem}`,
+        `[WARN] 结构化输出修正 ${STRUCTURED_OUTPUT_REPAIR_ROUNDS} 步后仍未通过校验：${problem}`,
       ),
     );
     logger.warn('结构化输出修正用尽仍不合格（结论不改写：由调用方按答复不可解析处置）', {
@@ -1298,7 +1298,7 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
        * 取其一；③ 是机械判据，不看流内错误缺不缺）。否则保留流内错误——它才是「为什么断了」的
        * 直接陈述——并把「CLI 以退出码 N 收场」写成**补充**：那确实是本次运行的真实结束方式，
        * 不该抹掉，但绝不让它**顶替**原因。退出错误的原文一个字符都不删（它在 cause 里，
-       * 另有出口把它落进该行事件流）。
+       * 另有出口把它落进本次运行事件流）。
        */
       // 读进局部变量再判：`failure` 会被下面的闭包（`consume` / 修正轮）赋值，
       // 而 tsc 的控制流分析看不见闭包里的写入 ⇒ 这里必须显式断言回声明类型，
@@ -1310,28 +1310,28 @@ export async function runTurn(input: AgentRunInput, hooks: TurnHooks): Promise<A
           message: `${failureSoFar.message}（随后 codex CLI 以退出码 ${exitCodeOf(cause) ?? '未知'} 收场）`,
           ...(failureSoFar.stack === undefined ? {} : { stack: failureSoFar.stack }),
         };
-        logger.error('适配器运行失败（保留事件流里的原因，退出错误只是 CLI 收场）', {
+        logger.error('适配器运行的失败（保留事件流里的原因，退出错误只是 CLI 收场）', {
           kind: hooks.kind,
           code: failureSoFar.code,
           exitMessage: classified.message,
         });
       } else {
         failure = classified;
-        logger.error('适配器运行失败', { kind: hooks.kind, code: failure.code, error: cause });
+        logger.error('适配器运行的失败', { kind: hooks.kind, code: failure.code, error: cause });
       }
       /**
-       * **CLI 的 stderr 也必须落进该行事件流**。
+       * **CLI 的 stderr 也必须落进本次运行事件流**。
        *
        * 为什么不能只留在 `cause` 里：`cause` 只进服务端日志，而使用者看的是「执行日志」抽屉
        * （`[codex]` 那几行在它的「原始输出」里）。「是网关 5xx 抖动，还是 Responses 契约不被满足」
-       * 这个区分只有 stderr 能回答；抽屉里缺了它，那一行失败就只剩上游的 `Reconnecting…`。
+       * 这个区分只有 stderr 能回答；抽屉里缺了它，那一本次运行失败就只剩上游的 `Reconnecting…`。
        * stderr 是**证据**，不是结论：按 log 事件落盘、不冒充 `error` 事件的文案，内容原样保留
        * （只经 `stripCliBoilerplate` 剔除已知样板，而当前样板集合为空）。
        */
       /**
        * ⚠️ **前缀不许断言来源**：这条 `cause` 在三条路上都走到这里——厂商 CLI 的退出 / stderr、
        * `AgentLoadError`（我们加载厂商包失败）、以及适配器自己抛的任何错。真机读数（三条臂逐字）：
-       * 行配置目录不可写时那条裸 `EACCES: permission denied, open '<configHome>/.npmrc'`、
+       * 运行配置目录不可写时那条裸 `EACCES: permission denied, open '<configHome>/.npmrc'`、
        * 厂商包导出面不匹配、技能物化失败——**三条都不是 CLI 的错**，却都被旧文案标成
        * 「CLI 退出详情（stderr）」，读的人会去查 CLI。故这里只说「哪一侧的哪一种可能」，
        * 由 `message` 自己说话。
@@ -1603,7 +1603,7 @@ function sameTiming(left: UsageTiming | null, right: UsageTiming | null): boolea
 /**
  * 退出错误正文里**需要被忽略的已知样板**：剥掉它们之后还剩什么，决定 `exitErrorAddsDetail` 的判据③。
  *
- * **集合当前为空**——exec 通道那两条（SDK 拼在退出错误 message 里的行内前缀、CLI 每次运行都打的
+ * **集合当前为空**——exec 通道那两条（SDK 拼在退出错误 message 里的运行内前缀、CLI 每次运行都打的
  * 那句 stdin 提示）随通道一起删除：`codex app-server` 不打那条提示，退出错误也不再被 SDK 包装。
  * 保留这张空的样板表与剥样板的函数，而不是把两者一并删掉：剥样板只有这一个落点，将来某个通道
  * 的固定噪声回到这里加一行即可，判据不必重新设计。
@@ -1638,7 +1638,7 @@ function exitErrorAddsDetail(classified: AgentFailure, cause: unknown): boolean 
  * 为什么要单独判：它是 CLI 对 5xx 的固定措辞，**没有任何关于失败原因的信息**——把它算进
  * 「有实质内容」，判据③就会让退出错误顶掉流内那句真正的原因，4xx/5xx 的档位区分也跟着失效。
  * 也就是说「排除状态行」是判据③成立的前提，不是可选的美化。
- * 判据按**行**做：一行里除了状态短语没有别的字才算「只有状态」；夹带正文的仍然算有料。
+ * 判据按**行**做：一本次运行里除了状态短语没有别的字才算「只有状态」；夹带正文的仍然算有料。
  */
 function isStatusOnlyDetail(detail: string): boolean {
   const lines = detail.split('\n').map((line) => line.trim()).filter((line) => line !== '');
@@ -1651,7 +1651,7 @@ function isStatusOnlyDetail(detail: string): boolean {
  *
  * 单一职责：**只**认这张表，不掺任何别的判断——「退出错误够不够具体」的裁决只在 `exitErrorAddsDetail`。
  * 表为空时它就是「按行原样保留 + 去掉首尾空白」。原来那个固定点循环随表里的前缀一起删掉了：
- * 循环存在的理由是「前缀与样板可能嵌套」，而嵌套的唯一来源就是那条行内前缀。
+ * 循环存在的理由是「前缀与样板可能嵌套」，而嵌套的唯一来源就是那条运行内前缀。
  */
 function stripCliBoilerplate(message: string): string {
   return message
@@ -1727,23 +1727,23 @@ function assembleResult(input: {
   };
   if (input.stop !== null) {
     const by = input.stop === 'signal' ? '用户终止' : '宿主停机';
-    input.emit(logDraft('stderr', `[WARN] 该行已被终止（${by}）：适配器已停止并释放运行时`));
+    input.emit(logDraft('stderr', `[WARN] 本次运行已被终止（${by}）：适配器已停止并释放运行时`));
     return {
       ok: false,
       exitReason: 'canceled',
       ...base,
-      error: { code: 'AGENT_CANCELED', message: `该行已被终止（${by}）` },
+      error: { code: 'AGENT_CANCELED', message: `本次运行已被终止（${by}）` },
     };
   }
   if (input.timedOut !== null) {
-    const limit = input.timedOut.reason === 'idle' ? '空闲' : '单次模型往返';
+    const limit = input.timedOut.reason === 'idle' ? '空闲' : '单次模型调用';
     const seconds = Math.round(input.timedOut.timeoutMs / 1_000);
-    input.emit(logDraft('stderr', `[WARN] 该行已按看门狗判定静止超时收场（${limit}上限 ${seconds} 秒）`));
+    input.emit(logDraft('stderr', `[WARN] 本次运行已按看门狗判定静止超时收场（${limit}上限 ${seconds} 秒）`));
     return {
       ok: false,
       exitReason: 'timed-out',
       ...base,
-      error: { code: 'AGENT_TIMED_OUT', message: `该行静止超时（${limit}上限 ${seconds} 秒），已释放运行时` },
+      error: { code: 'AGENT_TIMED_OUT', message: `本次运行静止超时（${limit}上限 ${seconds} 秒），已释放运行时` },
     };
   }
   if (input.failure !== null) {

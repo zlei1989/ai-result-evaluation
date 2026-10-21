@@ -1,6 +1,6 @@
 /**
  * cc 的**消息归一**：把 SDK 消息流折成统一的
- * `AgentMessage` 与 `SubagentRecord`。事件投影仍在 `events.ts`（行级审计与活动行），本文件只管内容级视图。
+ * `AgentMessage` 与 `SubagentRecord`。事件投影仍在 `events.ts`（运行级审计与活动行），本文件只管内容级视图。
  *
  * 取值路径逐条（真机逐字核过，见 `probe/dumps/v4/claude-*.jsonl`）：
  *   · 正文：`assistant` → `message.content[type=text].text`；思考：`content[type=thinking]` 的
@@ -18,7 +18,7 @@
  *     而 `parent_tool_use_id` 非空的侧链消息按**该子会话自己的** 1..N 编号——进子会话节点时
  *     时间轴因此按它自己的轮次分行（与 codex 的 `threadMessages` 同形：那家本来就是一线程一套号）。
  *     ⚠️ **不能共用一个计数器**（侧链沿用主会话当前的号）：子会话节点整条时间轴只会剩 1 个轮次行，
- *     它自己那几十条消息全挤在那一行里。按会话各数各的才对——它独立地决定子会话节点好不好读。
+ *     它自己那几十条消息全挤在那一本次运行里。按会话各数各的才对——它独立地决定子会话节点好不好读。
  *   · `turn` / `step`：**这家没有**（恒 `null`）。不许拿 `roundTrip` 冒充 `turn`。
  *   · 子任务行：`system` 下的 `task_started` / `task_notification` → `SubagentRecord`。⚠️ **但不是每一条都算**
  *     CLI 也给**非 Agent 的后台任务**发这两条（真机：子智能体自己那条
@@ -102,7 +102,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
    *
    * ⚠️ **不能与事件侧共用 `state.seen`**：`project` 总是先跑事件投影
    * （`projectClaudeMessage`），它会把这一条的 `uuid` 记进 `state.seen`；随后本归一器读到同一张表，
-   * 于是一条 `assistant` / `user` 消息**全部被判成重复并丢弃** ⇒ `messages.jsonl` 一行都不写、
+   * 于是一条 `assistant` / `user` 消息**全部被判成重复并丢弃** ⇒ `messages.jsonl` 一本次运行都不写、
    * 抽屉里永远是「还没有日志」，而 `events.jsonl` 里内容齐全。
    *
    * 两侧的去重**意图**本来就不同（文件头：事件按 `uuid` 去重、消息按内容块归并），
@@ -205,7 +205,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
       return shaped ? 'dispatch' : 'phantom';
     }
     if (taskId === null) return 'unjudged';
-    // 已证实是幻影的那一条：它的收场帧同样不产行（否则幽灵行会从收场帧那一侧回来）
+    // 已证实是幻影的那一条：它的收场帧同样不产行（否则幽灵本次运行会从收场帧那一侧回来）
     if (phantomIds.has(taskId)) return 'phantom';
     return dispatchIds.has(taskId) ? 'dispatch' : 'unjudged';
   };
@@ -439,7 +439,7 @@ export function createClaudeMessageNormalizer(): ClaudeMessageNormalizer {
        * 用户侧消息再投一遍，而重放帧带的是**自己的** `uuid` ⇒ 上面那张表挡不住它。
        *
        * 收下的代价有两层：`messages.jsonl` 里多出一份上一轮的工具结果（追问是**追加到同一行**上的，
-       * 那些内容本行已经有了），以及**任务台账的 patch 被再放一遍**（`user()` 里的 `tasks.onResult`）
+       * 那些内容本次运行已经有了），以及**任务台账的 patch 被再放一遍**（`user()` 里的 `tasks.onResult`）
        * ——后者会让计划清单按历史又走一遍状态机。故这一类在两侧都显式丢弃（事件侧同处置）。
        */
       if (message?.isReplay === true) return EMPTY;
@@ -647,7 +647,7 @@ export function isDispatchShaped(message: Record<string, unknown> | null): boole
    * 不必再去猜它像不像一次派发。
    *
    * ⚠️ 它**不影响用量**：合计读走的是「枚举会话目录」那条路（`subagent-usage.ts` 的规则⑥），
-   * 盘上有转录就照读照算——这一格只决定「面板上要不要有它这一行」。
+   * 盘上有转录就照读照算——这一格只决定「面板上要不要有它本次运行」。
    */
   if (message?.ambient === true || message?.skip_transcript === true) return false;
   /** 第一级：厂商显式说了这条任务是什么（`local_workflow` 那一档就是靠它挡住的，形状挡不住） */
@@ -850,7 +850,7 @@ function currentRoundOf(rounds: ReadonlyMap<string, number>): number {
  * 为什么要按会话分开数（冒烟抓出来的缺口）：
  * 所有消息**共用一个计数器**（`state.turns` 口径）时，子会话那几十条消息的 `roundTrip`
  * **全等于父会话派发那一轮**，而界面按 `message.roundTrip` 给**每个会话节点**分轮
- * （`build-model.ts`）⇒ 子会话节点整条时间轴只有 **1 个轮次行**，它自己那几十条消息全挤在那一行里。
+ * （`build-model.ts`）⇒ 子会话节点整条时间轴只有 **1 个轮次行**，它自己那几十条消息全挤在那一本次运行里。
  *
  * ⚠️ **它不依赖逐轮读数**（那批读数成本与收益不成比例，已取消，见 `index.ts` 的 `finalize` 注记）。
  * 它独立地回答

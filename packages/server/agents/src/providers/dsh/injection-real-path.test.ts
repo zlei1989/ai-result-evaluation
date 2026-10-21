@@ -30,7 +30,7 @@ const run = await runDshRealPathInjection({
 
 describe('人工消息面真路径（dsh）', () => {
   it('插件真的被厂商加载，且动手那一刻拿得到 agent 服务', () => {
-    expect(run.pluginLoaded, '插件一行都没加载：sidecar 里没有 plugin-loaded 收据').not.toBeNull();
+    expect(run.pluginLoaded, '插件一个候选都没加载：sidecar 里没有 plugin-loaded 收据').not.toBeNull();
     // 相对名按 `<dshHome>` 根解析（与适配器的另外两支插件同一条基准）
     expect(run.pluginLoaded?.url.endsWith('/aieval-inject.mjs')).toBe(true);
     /**

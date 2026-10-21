@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 「人向运行中的智能体追加消息」这一面的**契约格**：轮级闸门、行快照的两格、账本的 `origin`、
+ * 「人向运行中的智能体追加消息」这一面的**契约格**：轮级闸门、候选快照的两格、账本的 `origin`、
  * 附件上限常量。
  *
  * 每个新格都有一条**旧数据**用例：老 `run.json` / 老 `messages.jsonl` 里没有它们，
@@ -17,19 +17,19 @@ import {
   messageFoldKey,
 } from './agent-message';
 import { InjectMessageSchema } from './inject-message';
-import { EvalRowSchema, EvalRunSchema } from './run';
+import { EvalCandidateSchema, EvalRunSchema } from './run';
 
-/** 行快照的最小合法形状（不含本轮新增的两格） */
-const row = {
-  id: 'row-1',
+/** 候选快照的最小合法形状（不含本轮新增的两格） */
+const candidate = {
+  id: 'candidate-1',
   agentKind: 'cc' as const,
   providerId: 'p-1',
   providerName: '网关',
   baseUrl: 'https://gateway.invalid',
   modelId: 'm-1',
   status: 'pending' as const,
-  branch: 'test/row-1',
-  workspacePath: 'D:/runs/run-1/rows/row-1/workspace',
+  branch: 'test/candidate-1',
+  workspacePath: 'D:/runs/run-1/candidates/candidate-1/workspace',
   baselineCommit: '',
   tokens: null,
   turns: null,
@@ -50,7 +50,7 @@ const run = {
   rubric: { groups: [{ name: 'g', items: [{ id: 'A', goal: '目标', weight: 10 }] }] },
   status: 'idle' as const,
   executionMode: 'parallel' as const,
-  rows: [row],
+  candidates: [candidate],
   workspaceBase: 'D:/runs',
   createdAt: '2026-09-22T10:30:00.000Z',
   startedAt: null,
@@ -60,13 +60,13 @@ const run = {
 /**
  * 类型面判据（真判据是 `tsc` 见红，不是这里的断言）：三个新格**不许退化成可选键**。
  * 为什么载重：「恒有这一格」与「可以缺席」在消费侧是两件事——`sessionId` 缺席会被读成
- * 「这一行是旧产物」而被拒追问，而它其实只是没写；`injectMessages` 缺席会被读成「这一轮没开闸门」，
+ * 「这个候选是旧产物」而被拒追问，而它其实只是没写；`injectMessages` 缺席会被读成「这一轮没开闸门」，
  * 于是人在界面上打开过的开关在落盘后静默变回关闭。
  */
 type RequiredCell<T, K extends keyof T> = undefined extends T[K] ? false : true;
-const rowSessionIdIsRequired: RequiredCell<import('./run').EvalRow, 'sessionId'> = true;
-const followUpsIsRequired: RequiredCell<import('./run').EvalRow, 'followUps'> = true;
-const followUpRoundsIsRequired: RequiredCell<import('./run').EvalRow, 'followUpRounds'> = true;
+const candidateSessionIdIsRequired: RequiredCell<import('./run').EvalCandidate, 'sessionId'> = true;
+const followUpsIsRequired: RequiredCell<import('./run').EvalCandidate, 'followUps'> = true;
+const followUpRoundsIsRequired: RequiredCell<import('./run').EvalCandidate, 'followUpRounds'> = true;
 const gateIsRequired: RequiredCell<import('./run').EvalRun, 'injectMessages'> = true;
 
 describe('轮级闸门 EvalRun.injectMessages', () => {
@@ -76,7 +76,7 @@ describe('轮级闸门 EvalRun.injectMessages', () => {
   });
 
   it('新格都不是可选键（`tsc` 见红的那条判据的运行时影子）', () => {
-    expect([rowSessionIdIsRequired, followUpsIsRequired, followUpRoundsIsRequired, gateIsRequired]).toEqual([
+    expect([candidateSessionIdIsRequired, followUpsIsRequired, followUpRoundsIsRequired, gateIsRequired]).toEqual([
       true,
       true,
       true,
@@ -85,20 +85,20 @@ describe('轮级闸门 EvalRun.injectMessages', () => {
   });
 });
 
-describe('行快照的三格：sessionId / followUps / followUpRounds', () => {
+describe('候选快照的三格：sessionId / followUps / followUpRounds', () => {
   it('sessionId 缺字段读成 null（旧 run.json 没有这一格——它就是「不能追问」的那一档）', () => {
-    expect(EvalRowSchema.parse({ ...row, sessionId: undefined }).sessionId).toBeNull();
-    expect(EvalRowSchema.parse({ ...row, sessionId: 'sess-1' }).sessionId).toBe('sess-1');
+    expect(EvalCandidateSchema.parse({ ...candidate, sessionId: undefined }).sessionId).toBeNull();
+    expect(EvalCandidateSchema.parse({ ...candidate, sessionId: 'sess-1' }).sessionId).toBe('sess-1');
     // 空串不是会话 id：留着它会让「有会话」这条判据被一个没有内容的字符串满足
-    expect(EvalRowSchema.safeParse({ ...row, sessionId: '' }).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse({ ...candidate, sessionId: '' }).success).toBe(false);
   });
 
   it('followUps 缺字段读成 0（旧 run.json 没有这一格），显式计数逐字保留', () => {
-    expect(EvalRowSchema.parse({ ...row, followUps: undefined }).followUps).toBe(0);
-    expect(EvalRowSchema.parse({ ...row, followUps: 3 }).followUps).toBe(3);
+    expect(EvalCandidateSchema.parse({ ...candidate, followUps: undefined }).followUps).toBe(0);
+    expect(EvalCandidateSchema.parse({ ...candidate, followUps: 3 }).followUps).toBe(3);
     // 计数只增不减：负数与小数都不是「追问了几次」
-    expect(EvalRowSchema.safeParse({ ...row, followUps: -1 }).success).toBe(false);
-    expect(EvalRowSchema.safeParse({ ...row, followUps: 1.5 }).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse({ ...candidate, followUps: -1 }).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse({ ...candidate, followUps: 1.5 }).success).toBe(false);
   });
 
   /**
@@ -107,12 +107,12 @@ describe('行快照的三格：sessionId / followUps / followUpRounds', () => {
    * 「追问了 3 次」——日志里那句「第几次」当场就是假的。
    */
   it('followUpRounds 缺字段读成 0（旧 run.json 没有这一格），且与 followUps 各记各的', () => {
-    expect(EvalRowSchema.parse({ ...row, followUpRounds: undefined }).followUpRounds).toBe(0);
-    const parsed = EvalRowSchema.parse({ ...row, followUps: 3, followUpRounds: 1 });
+    expect(EvalCandidateSchema.parse({ ...candidate, followUpRounds: undefined }).followUpRounds).toBe(0);
+    const parsed = EvalCandidateSchema.parse({ ...candidate, followUps: 3, followUpRounds: 1 });
     expect([parsed.followUps, parsed.followUpRounds]).toEqual([3, 1]);
     // 轮次同样只增不减：负数与小数都不是「追问了几轮」
-    expect(EvalRowSchema.safeParse({ ...row, followUpRounds: -1 }).success).toBe(false);
-    expect(EvalRowSchema.safeParse({ ...row, followUpRounds: 1.5 }).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse({ ...candidate, followUpRounds: -1 }).success).toBe(false);
+    expect(EvalCandidateSchema.safeParse({ ...candidate, followUpRounds: 1.5 }).success).toBe(false);
   });
 });
 
@@ -201,7 +201,7 @@ describe('附件上限常量（前后端同一处读）', () => {
  * 一条人工消息的**三个时刻**的形状。
  *
  * 钉 ISO 8601 带时区字符串（与提问应答面的 `askedAt` 同一口径）：它们要跨进程落盘、要给人读、
- * 还要与行上别的时刻（`EvalRun.createdAt` 等）并排显示。epoch 毫秒进来之后每一条消费路径都得
+ * 还要与候选上别的时刻（`EvalRun.createdAt` 等）并排显示。epoch 毫秒进来之后每一条消费路径都得
  * 自己知道「这一格是数字」，界面要为此并列两个格式化函数——同一种东西两种形状，漂是必然的。
  */
 describe('三个时刻一律 ISO 8601 带时区字符串', () => {

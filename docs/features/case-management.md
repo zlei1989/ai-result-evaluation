@@ -80,7 +80,7 @@
 - `ensureMirror`：已就绪直接返回 `created: false`，**不联网**。`fetchMirror`：`git fetch --prune origin`（`--mirror` 克隆的 config 里 `remote.origin.mirror=true`，普通 fetch 即全 refs 同步）→ 立刻对齐镜像 HEAD（`fetch` 自己不刷新 HEAD，这一步是「跟随远端默认分支」的承重点：调用方给了分支名就用，没给就自己 `ls-remote` 一次）→ 写镜像记录 `<dir>/aieval-mirror.json`（`{ url, fetchedAt }`，`url` 存归一形态；写失败只 WARN）。**更新不在 `ensureMirror` 里做**：候选列表要快（不联网）、校验要新鲜、评测准备必须新鲜——把 fetch 混进去会让准备路径联网两次。记录只用于诊断与回显「更新于 YYYY-MM-DD HH:mm」，**不参与就绪判据**（缺失或不可解析按「没有记录」处理、不重建）。
 - `probeRemote`：`git ls-remote --symref <url> HEAD` 解析默认分支与 tip；空输出（远端没有任何 ref）→ `NOT_A_GIT_REPO`「远端仓库还没有任何提交」。
 - `resolveRemoteRef`：`commitHash` 非空时**先查镜像、查到即回（不联网）**，查不到才 fetch 一次再判、仍没有 → `INVALID_REF`；分支那条路先 fetch → `branch` 非空取 `refs/heads/<branch>^{commit}`（不存在 → `INVALID_REF`）→ 否则取远端默认分支。
-- **core 只见本地路径**：远端在 api / evaluator 层就被解析成「镜像路径 + 具体 commit hash」，再交给既有 `prepareRowWorkspace` / `copyWorkspace` / `checkoutRow` / `collectDiff`——远端 URL 只出现在 `mirror.ts`。
+- **core 只见本地路径**：远端在 api / evaluator 层就被解析成「镜像路径 + 具体 commit hash」，再交给既有 `prepareCandidateWorkspace` / `copyWorkspace` / `checkoutCandidate` / `collectDiff`——远端 URL 只出现在 `mirror.ts`。
 - **分支与更新规则**：分支 tip **每次评测重新解析**（跟随语义）；填了 `commitHash` 则**钉死**（优先于分支）。
 - **非交互 + 墙钟超时**：`GIT_TERMINAL_PROMPT=0`、`stdio: ['ignore', 'pipe', 'pipe']`（stdin 必须断开：ssh 拿不到输入时会立即失败）、`GIT_SSH_COMMAND` 追加 `-o BatchMode=yes`（仅在进程环境里没有它时）；探活 15 秒（`REMOTE_PROBE_TIMEOUT_MS = 15_000`）/ 传输 10 分钟（`REMOTE_TRANSFER_TIMEOUT_MS = 600_000`），都可由调用方覆盖。同步 git 调用挂在请求线程上，clone / fetch 期间整个进程阻塞（已知代价，墙钟上限兜底）。
 - **不做凭据管理**：认证一律用本机 git（SSH key / ssh-agent / credential helper）。
@@ -101,7 +101,7 @@
 
 ### 评分标准项
 
-- **形态**：组 → 评分项的二级表格，每项三列 `ID` / `目标` / `权重`；模型对每一项做**二元判定**（达成 / 未达成），**没有部分分**。`总分 = 达成项权重之和`；`满分 = 全部项权重之和`（由表格决定，不是常量 100），满分**快照**进 `ScoreResult.maxScore` ⇒ 改了表之后历史分仍自洽。评分表**快照进轮次**（`EvalRun.rubric`），跑一行时读快照、不读用例——改了用例的表，历史记录一个字节都不变，「重新评分」用的也仍是当初那把尺子。
+- **形态**：组 → 评分项的二级表格，每项三列 `ID` / `目标` / `权重`；模型对每一项做**二元判定**（达成 / 未达成），**没有部分分**。`总分 = 达成项权重之和`；`满分 = 全部项权重之和`（由表格决定，不是常量 100），满分**快照**进 `ScoreResult.maxScore` ⇒ 改了表之后历史分仍自洽。评分表**快照进本轮**（`EvalRun.rubric`），跑一行时读快照、不读用例——改了用例的表，历史记录一个字节都不变，「重新评分」用的也仍是当初那把尺子。
 - `RubricSchema` **刻意不设 `.min(1)`**：空表 `{ groups: [] }` 是新建用例的真实初态，非空要求只由 `validateRubric` 在**提交时**给出。
 - 项的 `id` 允许为空：空 id 的项按**位置**分配引用键 `#k`（全表顺序号，跨组连续，按 `trim()` 判空）。`validateRubric` 额外断言**生成的引用键两两不同**——两把相同的键会让模型的一次判定被同时记到两项上，分数悄悄多出一块而界面一切正常。
 - `validateRubric` 是**提交用例时的唯一判据**（界面与后端共用）：至少一组、每组至少一项、组名非空、目标非空、权重正整数（上限 `MAX_ITEM_WEIGHT = 10_000`）、id 不重复、引用键不重复；返回点名哪一组、哪一项的中文原因，不是笼统的「表格不合法」。
@@ -113,7 +113,7 @@
 |---|---|---|
 | 体验层 | 用例表单提交前 | `validateRubric` 的中文原因当场拒绝提交（表格上方显示同一句），**不发请求** |
 | 真相层 | `api/cases.ts` 的 `assertStorable()` | 抛 `INVALID_QUERY` + 中文原因（**落一处**，两处各写一遍必然漂移） |
-| 兜底层 | 编排层起一行评分之前 | 满分 ≤ 0 ⇒ 该行落**评分失败** + 中文原因，不许走到评分器 |
+| 兜底层 | 编排层起一行评分之前 | 满分 ≤ 0 ⇒ 该候选落**评分失败** + 中文原因，不许走到评分器 |
 
   兜底层会真的开火：用例文件（`<casesRoot>/<用例 id>.json`）是手可编辑的，而 `{ groups: [] }` 是一张合法的 `Rubric` ⇒ 手改的空表用例读得出来、创建评测会把空表快照进 `run.json`，开跑时兜底层把它变成一句可展示的 `CONFLICT`（文案点名「这一轮的表在创建时已快照，改用例不影响它，出路是新建一轮」）。**不要在 `createRun` 再加「空表不许建轮」的守卫**——空表是写用例过程中的合法初态。
 - **旧数据**：旧用例带着评分提示词 / 用例级评分模型——读侧（`asStoredCase`）显式删这三键后照常列出（列表不该因为一条老数据白屏），真正的拦截发生在使用路径（`asUsableCase`）：缺 `rubric` 或形状不合法时抛中文 `INTERNAL`「这个用例是旧版数据（没有评分标准项），请删除它或重新创建：`<caseId>`」——**绝不给它 `.default({ groups: [] })`**（那会让旧用例看起来只是「还没配」，而它实际带着一份已无意义的旧提示词）。
@@ -143,17 +143,17 @@
 | `TestCaseSchema.repoBranch` / `CaseCreateSchema.repoBranch` | `z.string().min(1).nullable().default(null)`；`.default(null)` 是**载重**的：迁移前住在 `config.json` 里的旧用例没有这一列，读侧必须按 null 读 |
 | `RepoInfoSchema` | `kind: 'local' \| 'remote'`、`mirrorPath`、`mirrorReady`、`mirrorFetchedAt`、`tip`（短哈希 7 位，仅远端有值）；`branch` 语义：本地 = 当前分支，远端 = 默认分支或用户填的分支 |
 | `EvalRunSchema.repoBranch` | 快照口径：用例改分支 / 删除后，这一轮从哪个分支的哪个 commit 起跑仍读得出来 |
-| `TestCaseSchema.includeSteps` | 必填布尔，创建缺省 `false`（`CaseCreateSchema` 上 `.default(false)`，老客户端与手工 POST 不带这一格仍合法）；读侧旧用例文件缺列兜成 `false`。与 rubric 同链快照进 `EvalRun.includeSteps`（旧 `run.json` 缺列读 `false`），评分阶段读快照、不读当前用例；重评分沿用快照、改用例不影响已建轮次 |
+| `TestCaseSchema.includeSteps` | 必填布尔，创建缺省 `false`（`CaseCreateSchema` 上 `.default(false)`，老客户端与手工 POST 不带这一格仍合法）；读侧旧用例文件缺列兜成 `false`。与 rubric 同链快照进 `EvalRun.includeSteps`（旧 `run.json` 缺列读 `false`），评分阶段读快照、不读当前用例；重评分沿用快照、改用例不影响已建轮 |
 | `errors.ts` | `REPO_UNREACHABLE`（400）；认证用 `AUTH_FAILED`（`context.host`），不存在 / 不是仓库 / 无法归因用 `NOT_A_GIT_REPO`，分支与提交不存在用 `INVALID_REF` |
 | `parseRepoSource` / `repoNameFromSource` / `displayRepoName` | 判定路径用前两者（非法来源响亮地抛错），渲染路径用 `displayRepoName`（任何字符串都不抛错）。放 contracts（不是 core / ui）：三层都要用（core 镜像层、api 校验与文案、ui 标签），放一处才有唯一真源 |
 | rubric 契约 | `RubricItemSchema` / `RubricGroupSchema` / `RubricSchema`、`rubricMaxScore`（空表返回 0）、`rubricItemKeys`（有 id 用它，没 id 用 `#k`）、`validateRubric`、`composeTotalScore`、`renderRubricForJudge`（两条评分通路共用同一份）、`MAX_ITEM_WEIGHT = 10_000` |
 
 ## 状态机与时序
 
-- **校验时序**（`validateRepo`，远端分支）：`probeRemote` →（镜像未就绪时）`ensureMirror` 首次克隆——**克隆本身就是这一次取回，紧接着不再 fetch**（大仓库首次校验是分钟级的）→ 镜像已存在时 `fetchMirror`（增量，通常 1–3 秒；把探活拿到的默认分支名传进去对齐镜像 HEAD）→ `resolveRemoteRef(…, { fetch: false })`（分支不存在在这里就拦下）→ 回 `kind:'remote'`、`repoName`、`branch`、`tip`（7 位）、`mirrorPath`、`mirrorReady: true`。远端校验**不 checkout、不碰工作树、不建行工作区**。
+- **校验时序**（`validateRepo`，远端分支）：`probeRemote` →（镜像未就绪时）`ensureMirror` 首次克隆——**克隆本身就是这一次取回，紧接着不再 fetch**（大仓库首次校验是分钟级的）→ 镜像已存在时 `fetchMirror`（增量，通常 1–3 秒；把探活拿到的默认分支名传进去对齐镜像 HEAD）→ `resolveRemoteRef(…, { fetch: false })`（分支不存在在这里就拦下）→ 回 `kind:'remote'`、`repoName`、`branch`、`tip`（7 位）、`mirrorPath`、`mirrorReady: true`。远端校验**不 checkout、不碰工作树、不建候选工作区**。
 - **候选时序**（`listCommitCandidates`）：remote = `ensureMirror`（就绪则纯本地、**不联网**——来源临时改名移走后候选照常出）→ `resolveRemoteRef(…, { fetch: false })` 取该 ref 的 40 位 tip → `git -C <dir> log --format=%h%x09%s -n 20 <tip>`；复用 `resolveRemoteRef` 而不自己算 ref 名（默认分支的取名只在一处实现）。
 - **保存时序**（`createCase` / `updateCase`）：形态判定走 `parseRepoSource`；本地来源 + 非 null 分支 → `INVALID_QUERY`（**按值判**，避免 UI 的全量补丁把无关保存拦下）；无来源 + 分支 / commit 一律 `INVALID_QUERY`（没有仓库可判，且全程**零 git 进程**）；远端分支 / commit **先在镜像里判**，判不过时只 `fetchMirror` 一次再判，仍判不过才抛（远端刚推上来的分支不该因为镜像还没更新而被拒）；落盘时 `commitHash` 归一成 40 位、`repoBranch` trim（空串 → null）。
-- **评测准备阶段**（消费这些字段的时刻，`repoPath` / `repoBranch` / `commitHash` 已快照进 `run.json`）：remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；**钉死的 commit 已在镜像里时一次都不抓**，否则这是本轮唯一一次 fetch）→ `prepareRowWorkspace` 传**具体 hash**（基线已解析成 40 位具体值，缓存只需从镜像取对象）→ `EvalRow.baselineCommit` = 该 hash；none 时**绕过镜像与用例缓存整条克隆链**，`prepareEmptyRowWorkspace` 现场初始化空仓库（mkdir → `git init -b main` → 空提交，提交者带显式 `-c user.name/user.email`、不依赖机器全局身份）→ 照常 `checkoutRow` 建 `test/{rowId}` 行分支，基线 = 那次空提交，此后该行的 checkout / diff / 评分口径与其它来源完全一致（diff 相对空提交基线，即全部产出）。基线解析口径：
+- **评测准备阶段**（消费这些字段的时刻，`repoPath` / `repoBranch` / `commitHash` 已快照进 `run.json`）：remote 时 `ensureMirror`（不联网更新）→ `resolveRemoteRef`（缺省 `fetch: true`，分支 tip 重新解析；**钉死的 commit 已在镜像里时一次都不抓**，否则这是本轮唯一一次 fetch）→ `prepareCandidateWorkspace` 传**具体 hash**（基线已解析成 40 位具体值，缓存只需从镜像取对象）→ `EvalCandidate.baselineCommit` = 该 hash；none 时**绕过镜像与用例缓存整条克隆链**，`prepareEmptyCandidateWorkspace` 现场初始化空仓库（mkdir → `git init -b main` → 空提交，提交者带显式 `-c user.name/user.email`、不依赖机器全局身份）→ 照常 `checkoutCandidate` 建 `test/{candidateId}` 候选分支，基线 = 那次空提交，此后该候选的 checkout / diff / 评分口径与其它来源完全一致（diff 相对空提交基线，即全部产出）。基线解析口径：
 
 | 来源 | `repoBranch` | `commitHash` | 基线 |
 |---|---|---|---|
@@ -179,7 +179,7 @@
 | 识别分支的路由取值没有用例 | 守卫缺口 | 生成侧有两条（转出同一性 + 生成分支路由断言——后者钉的是「入参里没有模型」这一形状）；识别分支如实登记 |
 | 「生成路径不 import `@aieval/agents`」没有静态守卫 | 守卫缺口 | ESLint 的 api 禁用名单里也没有它——现状如此，别把「现状」读成「有人守着」。理由：一旦生成路径能起 CLI，「一次几十秒的表格补全」会变成「一次几分钟的会话」，而它按的是同一个按钮 |
 | 两条评分通路共用 `finalizeScore` 收口，但没有「同一份回复喂两条通路再比对」的用例 | 守卫缺口 | 两份夹具不同，如实登记 |
-| 从裸镜像克隆出的工作副本 `refs/heads` 恰好一条 | 守卫缺口 | 这是行工作区解析的前提依赖；「来源仓库变了就重克隆」的守卫落在用例缓存（`git-repo-cache.test.ts`），不在镜像层 |
+| 从裸镜像克隆出的工作副本 `refs/heads` 恰好一条 | 守卫缺口 | 这是候选工作区解析的前提依赖；「来源仓库变了就重克隆」的守卫落在用例缓存（`git-repo-cache.test.ts`），不在镜像层 |
 | 镜像来源 URL 变更后重建目录 | 由设计覆盖 | 目录身份已由 `mirrorDir` 的 URL hash 段覆盖，未单独设守卫 |
 | markdown 渲染的暗色主题未真机切换 | 未闭合 | 组件里没有任何写死的颜色 / 字号 / 内边距（样式全部来自 antd 排版 token / CSS 变量，随 `darkAlgorithm` 自动生效）；外链行为只有 jsdom 单测钉住（该题面 0 个外链，真机没有可点样本）；窄栏横向滚动未在 320px 实测 |
 | 界面三处未在真机走查 | 未覆盖 | 来源切换、回显文案、候选按钮三处由服务层全链路冒烟 + ui 单测 + 读源码接线守卫覆盖，真机点检未做（3083 端口被别的 dev server 占用，起不了隔离实例）；真实远端（scp 形态、带凭据）未触网验证 |

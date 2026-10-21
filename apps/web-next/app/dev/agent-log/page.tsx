@@ -86,7 +86,7 @@ export default function Page(): ReactNode {
     requestDiagnostics: () => undefined,
   };
 
-  /** 原始输出面板的内容：直接取这一份夹具的行级事件文案（真实来源是 `log` 事件原文） */
+  /** 原始输出面板的内容：直接取这一份夹具的事件文案（真实来源是 `log` 事件原文） */
   const diagnostics: Loadable<AgentLogDiagnostics> = {
     status: 'ready',
     data: {

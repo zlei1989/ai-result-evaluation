@@ -22,7 +22,7 @@ import {
 
 const AGENT_ID = 'ee5a55d2-cc6c-480';
 const SESSION_ID = '01a13280-3b01-75f0-ad85-2a0e38d60c38';
-const CWD = '/Users/someone/Workspaces/run-1/rows/row-1/workspace';
+const CWD = '/Users/someone/Workspaces/run-1/candidates/row-1/workspace';
 
 /** 一条转写行（真机形状：`{isSidechain, agentId, type, message, timestamp, cwd}`） */
 function line(type: string, message: Record<string, unknown>, agentId = AGENT_ID): string {
@@ -61,13 +61,13 @@ function userLine(prompt: string): string {
 
 const call = (id: string, name: string): unknown => ({ type: 'toolCall', id, name, arguments: { path: 'a.ts' } });
 
-describe('转写路径：由本行的 cwd 与会话 id 拼出来', () => {
+describe('转写路径：由候选的 cwd 与会话 id 拼出来', () => {
   it('路径 = <tmpdir>/pi-subagents-<uid>/<cwd 编码>/<会话 id>/tasks/<身份>.output', () => {
     const path = piSubagentTranscriptPath({ cwd: CWD, sessionId: SESSION_ID, agentId: AGENT_ID });
     expect(path).toBe(join(
       tmpdir(),
       `pi-subagents-${process.getuid?.() ?? 0}`,
-      'Users-someone-Workspaces-run-1-rows-row-1-workspace',
+      'Users-someone-Workspaces-run-1-candidates-row-1-workspace',
       SESSION_ID,
       'tasks',
       `${AGENT_ID}.output`,
@@ -187,7 +187,7 @@ describe('转写读取：宽容解析', () => {
     expect(messages.map((m) => m.roundTrip)).toEqual([1, 2]);
   });
 
-  it('以换行收尾时末行照收（文件完整时一行都不丢）', () => {
+  it('以换行收尾时末行照收（文件完整时一个候选都不丢）', () => {
     const text = `${assistantLine([{ type: 'text', text: '唯一一条' }])}\n`;
     expect(projectTranscriptLines(text, AGENT_ID, SESSION_ID).messages).toHaveLength(1);
   });
@@ -200,7 +200,7 @@ describe('转写读取：宽容解析', () => {
     expect(dropped).toBe(7);
     expect(messages).toHaveLength(PI_SUBAGENT_TRANSCRIPT_MAX_LINES);
     /**
-     * 留下的是**最后**一段，但轮次号必须是**该子会话的绝对序**（丢掉 7 条助手行 ⇒ 首条保留行是
+     * 留下的是**最后**一段，但轮次号必须是**该子会话的绝对序**（丢掉 7 条助手行 ⇒ 首条保留候选是
      * 第 8 轮）：wire 那条通道取的是绝对基数，两条通道按载体键（含轮次）去重 ⇒ 从 1 重排会让
      * 保留段在两条通道上键不相等、被投两遍（界面上表现为重复轮次）。
      */

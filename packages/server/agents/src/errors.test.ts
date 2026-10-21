@@ -216,7 +216,7 @@ describe('classifyAgentMessage', () => {
   /**
    * **厂商的结构化失败码**（真机原文逐字取自 dsh 的 `turn/end(kind:'error')`，探针
    * 真机探针三档：空 key / key 带换行 / `contextWindow` 给小 + 长提示词）。缺省那条路会把它们一并归成 `AGENT_FAILED`，
-   * 而它在 `TRANSIENT_ROW_RETRY_CODES` 里 ⇒ 一个**确定性**的失败被自动重跑两遍
+   * 而它在 `TRANSIENT_CANDIDATE_RETRY_CODES` 里 ⇒ 一个**确定性**的失败被自动重跑两遍
    * （每次 3 秒 + 一整轮模型时间），而原因还指向「CLI 起不来 / 进程非零退出」这条错方向。
    */
   it('厂商凭证码（空 key / key 带换行）⇒ AUTH_FAILED，而不是可重试的 AGENT_FAILED', () => {

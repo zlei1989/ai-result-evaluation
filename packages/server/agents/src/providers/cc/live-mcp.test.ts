@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * **真机**：注入的 MCP 工具在这一行里被模型**真的调用**了吗。
+ * **真机**：注入的 MCP 工具在这个候选里被模型**真的调用**了吗。
  *
  * 判据只有一条是硬的：**MCP server 侧收到了 `tools/call`**（由 echo server 自己落盘）。
  * 模型答复**不算证据**——真机抓到过「MCP 派发失败、模型却把预期结果编出来」
@@ -10,7 +10,7 @@
  * 「厂商这条路走得通」；本文件走的是**本仓适配器**
  * （`claudeCodeProvider.run` + `AgentRunInput.mcpServers`），证的是「我们这条链路接对了」——
  * 中间多出来的东西正是这一票要落地的部分：条目翻译（`toClaudeMcpServers`）、
- * 行内 `.npmrc` 的 registry 注入、以及 `vendor-system` 事件里的 `mcp_servers` 归一。
+ * 候选内 `.npmrc` 的 registry 注入、以及 `vendor-system` 事件里的 `mcp_servers` 归一。
  *
  * 开关（默认跳过，绝不进内循环与 CI——它会真的起 CLI、真的调模型、真的花钱）：
  * ```
@@ -88,7 +88,7 @@ function hostAnthropicProvider(): { baseUrl: string; apiKey: string; modelId: st
 }
 
 describe.skipIf(!ENABLED)('真机：注入的 MCP 工具被模型真的调用', () => {
-  it('server 侧收到 tools/call + 厂商报 source=dynamic + 行内 .npmrc 落了宿主的 registry', async () => {
+  it('server 侧收到 tools/call + 厂商报 source=dynamic + 候选内 .npmrc 落了宿主的 registry', async () => {
     const provider = hostAnthropicProvider();
     if (provider === null) {
       // 环境里没有可用的 anthropic 供应商：如实跳过，而不是用一个假凭据把这条用例跑成红
@@ -144,7 +144,7 @@ describe.skipIf(!ENABLED)('真机：注入的 MCP 工具被模型真的调用', 
       expect(vendor?.mcpServers?.some((item) => item.name === 'probe' && item.source === 'dynamic')).toBe(true);
       // ③ 工具表里真的出现了它的工具（`connected` 那一档的判据来源）
       expect(vendor?.tools?.some((tool) => tool.startsWith('mcp__probe__'))).toBe(true);
-      // ④ 落盘事实：行内 `.npmrc` 复刻了宿主那一行（宿主有 registry 配置时）
+      // ④ 落盘事实：候选内 `.npmrc` 复刻了宿主那一行（宿主有 registry 配置时）
       const hostNpmrc = join(homedir(), '.npmrc');
       if (existsSync(hostNpmrc) && /^\s*registry\s*=/im.test(readFileSync(hostNpmrc, 'utf8'))) {
         expect(existsSync(join(configHome, '.npmrc'))).toBe(true);
@@ -156,7 +156,7 @@ describe.skipIf(!ENABLED)('真机：注入的 MCP 工具被模型真的调用', 
       console.log('[live-mcp] finalText：', String(result.finalText).slice(0, 200));
       if (existsSync(join(configHome, '.npmrc'))) {
         console.log(
-          '[live-mcp] 行内 .npmrc：',
+          '[live-mcp] 候选内 .npmrc：',
           readFileSync(join(configHome, '.npmrc'), 'utf8').trim(),
           '| mode',
           (statSync(join(configHome, '.npmrc')).mode & 0o777).toString(8),
@@ -171,7 +171,7 @@ describe.skipIf(!ENABLED)('真机：注入的 MCP 工具被模型真的调用', 
   /**
    * **对照行**：工作区里**保留仓库自带的 `.mcp.json`**，同时程序化注入一台。
    *
-   * 为什么必须有这一行：「不压制仓库自带的 MCP」这条口径，只有在一行**同时**有「我们注入的」
+   * 为什么必须有这个候选：「不压制仓库自带的 MCP」这条口径，只有在一行**同时**有「我们注入的」
    * 与「仓库自带的」时才证明得了——两支并存、各按自己的来源被厂商报出来（`dynamic` vs
    * `project`），且**仓库那台真的还能被调用**。只测注入那一支（上一条用例）证明不了「没被挤掉」。
    *

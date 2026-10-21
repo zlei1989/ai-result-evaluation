@@ -13,7 +13,7 @@ import {
   ARTIFACT_FILE_HINT,
   ARTIFACT_READ_MAX_BYTES,
   ARTIFACT_TEXT_MAX_CHARS,
-  RowArtifactFileSchema,
+  CandidateArtifactFileSchema,
   RunArtifactIndexSchema,
   artifactKindOf,
 } from './artifact';
@@ -67,45 +67,45 @@ describe('artifactKindOf', () => {
   });
 });
 
-describe('RunArtifactIndexSchema / RowArtifactFileSchema', () => {
+describe('RunArtifactIndexSchema / CandidateArtifactFileSchema', () => {
   const index = {
-    rows: [
-      { rowId: 'w-1', files: [{ name: 'RESULT.md', kind: 'md', bytes: 12 }] },
-      // 没有产物的行**照样进索引**、files 是空数组：「这一行没有产出」是要显示出来的事实
-      { rowId: 'w-2', files: [] },
+    candidates: [
+      { candidateId: 'w-1', files: [{ name: 'RESULT.md', kind: 'md', bytes: 12 }] },
+      // 没有产物的行**照样进索引**、files 是空数组：「这个候选没有产出」是要显示出来的事实
+      { candidateId: 'w-2', files: [] },
     ],
     total: 1,
   };
 
   it('索引：每个候选一行（含没有产物的那一行）', () => {
     expect(RunArtifactIndexSchema.safeParse(index).success).toBe(true);
-    expect(RunArtifactIndexSchema.safeParse(index).data?.rows).toHaveLength(2);
+    expect(RunArtifactIndexSchema.safeParse(index).data?.candidates).toHaveLength(2);
   });
 
   it('索引：三个键缺一不可（缺 kind / bytes / total 都失败）', () => {
-    const [first, second] = index.rows;
+    const [first, second] = index.candidates;
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     const file = { ...first?.files[0] };
-    expect(RunArtifactIndexSchema.safeParse({ ...index, rows: [{ rowId: 'w-1', files: [{ ...file, kind: undefined }] }] }).success).toBe(false);
-    expect(RunArtifactIndexSchema.safeParse({ ...index, rows: [{ rowId: 'w-1', files: [{ ...file, bytes: undefined }] }] }).success).toBe(false);
+    expect(RunArtifactIndexSchema.safeParse({ ...index, candidates: [{ candidateId: 'w-1', files: [{ ...file, kind: undefined }] }] }).success).toBe(false);
+    expect(RunArtifactIndexSchema.safeParse({ ...index, candidates: [{ candidateId: 'w-1', files: [{ ...file, bytes: undefined }] }] }).success).toBe(false);
     expect(RunArtifactIndexSchema.safeParse({ ...index, total: undefined }).success).toBe(false);
-    expect(RunArtifactIndexSchema.safeParse({ ...index, rows: [{ rowId: '', files: [] }] }).success).toBe(false);
+    expect(RunArtifactIndexSchema.safeParse({ ...index, candidates: [{ candidateId: '', files: [] }] }).success).toBe(false);
   });
 
   it('索引：白名单外的 kind 被拒（前端按 kind 分渲染档，多一个值就是一条渲染不出来的分支）', () => {
     expect(
-      RunArtifactIndexSchema.safeParse({ ...index, rows: [{ rowId: 'w-1', files: [{ name: 'RESULT.txt', kind: 'txt', bytes: 1 }] }] }).success,
+      RunArtifactIndexSchema.safeParse({ ...index, candidates: [{ candidateId: 'w-1', files: [{ name: 'RESULT.txt', kind: 'txt', bytes: 1 }] }] }).success,
     ).toBe(false);
   });
 
   it('正文：四个键缺一不可，且 `text` 允许是空串（候选可以写一份空文件——那是事实，不是缺数据）', () => {
-    expect(RowArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: '# 标题', bytes: 7, truncated: false }).success).toBe(true);
-    expect(RowArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: '', bytes: 0, truncated: false }).success).toBe(true);
-    expect(RowArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 1 }).success).toBe(false);
-    expect(RowArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 1, truncated: undefined }).success).toBe(false);
+    expect(CandidateArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: '# 标题', bytes: 7, truncated: false }).success).toBe(true);
+    expect(CandidateArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: '', bytes: 0, truncated: false }).success).toBe(true);
+    expect(CandidateArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 1 }).success).toBe(false);
+    expect(CandidateArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 1, truncated: undefined }).success).toBe(false);
     // `bytes` 是盘上那一份的**完整**字节数，与 `text` 的长度不是一回事：截断过的正文里两者必然不等，
     // 契约不能把这条关系写成 refine（那会让「截断」这个合法状态失败）
-    expect(RowArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 999, truncated: true }).success).toBe(true);
+    expect(CandidateArtifactFileSchema.safeParse({ name: 'RESULT.md', kind: 'md', text: 'x', bytes: 999, truncated: true }).success).toBe(true);
   });
 });

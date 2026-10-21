@@ -195,7 +195,7 @@ export function createCodexInjection(options: CodexInjectionOptions): CodexInjec
    *   · **不在了** ⇒ 厂商已消费 ⇒ 按**交付成功**登记；
    *   · **还在** ⇒ **不是失败**：它在厂商的耐久队列里，当前轮收场后厂商会自己撒出去
    *     （真机读数：空闲线程连加两条、什么都不做 ⇒ 第 2 条照样进了出站请求体）⇒ 留在
-   *     `pendingQueued` 里，由下一拍对账时再登记，**这一行继续跑**（`vendorDispatched`）。
+   *     `pendingQueued` 里，由下一拍对账时再登记，**本次运行继续跑**（`vendorDispatched`）。
    *
    * ⚠️ **一批里可以只有一部分被消费**——把这一批当整体处置就是一条静默丢话的缺陷
    * （真机复现 3/3：两条人话时第 2 条既不登记、也不回滚、也没人等它，随 `dispose` 一起没）。
@@ -251,7 +251,7 @@ export function createCodexInjection(options: CodexInjectionOptions): CodexInjec
         try {
           await options.queueDelete(one.queuedSubmissionId);
         } catch (rollbackError) {
-          logger.warn('codex 起轮失败后的回滚也没成功（条目留在厂商队列，随本行配置目录一起清理）', {
+          logger.warn('codex 起轮失败后的回滚也没成功（条目留在厂商队列，随运行配置目录一起清理）', {
             error: rollbackError,
             queuedSubmissionId: one.queuedSubmissionId,
           });
@@ -281,7 +281,7 @@ export function createCodexInjection(options: CodexInjectionOptions): CodexInjec
    * 把「已登记、还没被取走」的那些与**厂商可见队列**对一次账：不在表里的 ⇒ 厂商已经取走了
    * （= 真的投出去了，此刻才登记交付）；还在表里的 ⇒ 留着等下一拍。
    *
-   * 两格返回值都要：`consumed > 0` 说明此刻有厂商起的轮在跑（这一行不能收场），
+   * 两格返回值都要：`consumed > 0` 说明此刻有厂商起的轮在跑（本次运行不能收场），
    * `remaining` 说明后面还会有轮（同样不能收场）——两者的**后续动作**相同，但排障时要分得开。
    * `queueList` 自己失败时**一条都不登记**（宁可晚一拍交付，也不假报）。
    */
@@ -313,7 +313,7 @@ export function createCodexInjection(options: CodexInjectionOptions): CodexInjec
    * 判据是**厂商那一侧还有没有我们交出去的东西在动**：本拍消费掉了若干（那一轮正在跑），
    * 或者还有条目躺在厂商队列里（当前轮收场后它会自己撒出来）。两条都不是 ⇒ 收场。
    * 有界性由调用方兜：连续续跑有上限（`CODEX_IDLE_CONTINUATION`），等 `turn/started` 有预算
-   * （`CODEX_VENDOR_TURN_WAIT`）⇒ 厂商真不动了也不会把这一行永久挂住。
+   * （`CODEX_VENDOR_TURN_WAIT`）⇒ 厂商真不动了也不会把本次运行永久挂住。
    */
   function keepAlive(state: { consumed: number; remaining: QueuedSubmission[] }): CodexSettledDelivery {
     return state.consumed > 0 || state.remaining.length > 0

@@ -3,7 +3,7 @@
  *
  * 存在理由：`listRuns` / `getRun` 的读侧口径是「只扫当前 `settings.workspaceRoot`」（裁决口径、
  * 见 run-store 文件头口径 4），而一轮评测进行中用户完全可能去设置页改根目录。改完之后，
- * 对**事件路径尚未缓存的行**（同一轮的后续行）调用 `publishRowEvent` 时，`getRun` 会抛 NOT_FOUND——
+ * 对**事件路径尚未缓存的候选**（同一轮的后续行）调用 `publishCandidateEvent` 时，`getRun` 会抛 NOT_FOUND——
  * 于是一次设置变更会把一个**在途轮次中途打死**。这条兜底是明写的：
  * 「同进程内另靠『记住 runId → workspaceBase』兜住」。
  *

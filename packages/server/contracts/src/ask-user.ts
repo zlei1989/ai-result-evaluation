@@ -11,17 +11,17 @@
  *   · **答案侧复用，不新造**：一份答案仍是 `{ header, selected, custom }`，配对键仍是 `header`
  *     （`selected` 装选项标签，单选 + 自由输入是覆盖 ⇒ `selected: []`）——应答面若各写一份，
  *     回灌进厂商钩子的那一份与落进账本的那一份就会漂移成两种语义；
- *   · **`stage` 与 `RowFailureStageSchema` 同词表**：提问发生在候选那一段还是评分那一段，
+ *   · **`stage` 与 `CandidateFailureStageSchema` 同词表**：提问发生在候选那一段还是评分那一段，
  *     与「这一笔失败发生在哪一段」问的是同一个问题，两处各造一套词表只会让排障时多一次翻译；
  *   · **待答项不带厂商上下文**（工具名 / 调用 id / 厂商预算）：那是编排层回灌答案时要用的东西，
- *     界面对它没有消费方，放进响应体就是把「谁在等、等了多久」与「这条运行内部怎么记账」混在一起。
+ *     界面对它没有消费方，放进响应体就是把「谁在等、等了多久」与「这条运行的内部怎么记账」混在一起。
  *     界面要的排障线索是 `askedAt`（等了多久）与 `questions`（几问由它的条数给出，不另设计数格）。
  */
 import { z } from 'zod';
 import { AskUserAnswerSchema, AskUserQuestionSchema } from './agent-message';
 
 /**
- * 提问发生在哪一段：与 `RowFailureStageSchema` 逐字同词表（见文件头口径 2）。
+ * 提问发生在哪一段：与 `CandidateFailureStageSchema` 逐字同词表（见文件头口径 2）。
  * 今天只有候选那一段会提问——评审者那一侧不接应答面——但这一格必须存在：
  * 少了它，「两条不同的等待为什么并排挂在面板上」就无从判断。
  */
@@ -39,8 +39,8 @@ export const PendingAskUserSchema = z.object({
   /** 这一问的唯一标识；应答 POST 按它幂等 */
   askId: z.string().min(1),
   runId: z.string().min(1),
-  /** `null` = 这一问不在某一行上（今天没有这种提问，留着是为了读侧不必区分两种形状） */
-  rowId: z.string().nullable(),
+  /** `null` = 这一问不在某一个候选上（今天没有这种提问，留着是为了读侧不必区分两种形状） */
+  candidateId: z.string().nullable(),
   stage: AskUserStageSchema,
   /** 问出去的那几个问题（归一后形状，与账本里 `AskUserPayloadSchema.questions` 同一份） */
   questions: z.array(AskUserQuestionSchema),

@@ -1,9 +1,9 @@
 // @vitest-environment node
 /**
- * 事件日志：追加（seq 自动分配）、全量读、按 seq 续订、清空，以及损坏行的容忍。
+ * 事件日志：追加（seq 自动分配）、全量读、按 seq 续订、清空，以及损坏候选的容忍。
  * 四条关键守卫：
  *   ① seq 从 1 开始且严格递增——SSE 的 `Last-Event-ID` 续订全靠它，重复或跳号都会丢事件；
- *   ② 坏行（写一半被杀、手工编辑、空行）只跳过该行并 WARN，其余事件必须全部读出来；
+ *   ② 坏行（写一半被杀、手工编辑、空行）只跳过该候选并 WARN，其余事件必须全部读出来；
  *   ③ `at` 缺省时由写入器补 ISO 8601 时间戳（不要求调用方自己拼）；
  *   ④ **写**进去的事件必须符合契约：读侧的容忍（②）是为了「一行坏不牵连别人」，而写侧容忍的后果
  *      是唯一真相源静默少事件（写成功、读时被 schema 丢掉）——两头都不报，抽屉里凭空少一条。
@@ -46,7 +46,7 @@ describe('appendEvent', () => {
     expect(event.at).toBe('2026-09-22T10:30:00.000Z');
   });
 
-  it('文件是 JSONL：每行一个 JSON，且目标文件不存在时自动建目录', () => {
+  it('文件是 JSONL：每个候选一个 JSON，且目标文件不存在时自动建目录', () => {
     const nested = join(dir, 'a', 'b', 'events.jsonl');
     appendEvent(nested, { type: 'status', status: 'preparing' });
     appendEvent(nested, { type: 'status', status: 'running' });
@@ -128,7 +128,7 @@ describe('appendEvent', () => {
 });
 
 describe('readEvents', () => {
-  it('文件不存在返回空数组（抽屉首帧在还没跑过的行上也要能开）', () => {
+  it('文件不存在返回空数组（抽屉首帧在还没跑过的候选上也要能开）', () => {
     expect(readEvents(join(dir, 'nope.jsonl'))).toEqual([]);
   });
 

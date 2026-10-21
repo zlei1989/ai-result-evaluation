@@ -9,8 +9,8 @@
  * `@aieval/core` 的用例里，本文件不重复。
  *
  * `@aieval/evaluator` **不 mock**：队列表与运行快照都用真的（快照由 `saveRun` 真落盘），
- * 判断「这一行在不在」的是真 `getRun`。这条路由组的存在性校验与附件根都读快照，
- * 假的快照会让撤回那条路写行级事件时报一条 ERROR（它按 `run.json` 解析这一轮的根），
+ * 判断「这个候选在不在」的是真 `getRun`。这条路由组的存在性校验与附件根都读快照，
+ * 假的快照会让撤回那条路写候选级事件时报一条 ERROR（它按 `run.json` 解析这一轮的根），
  * 那种噪声会盖住真的问题。附件确实落到临时磁盘上（判据是「盘上真的多出这一个文件」）。
  * 只有两样东西走 `vi.importActual`（见下）：本应用没声明那个包，`import` 连类型都解析不到。
  */
@@ -37,7 +37,7 @@ const {
 
 /**
  * 真实 evaluator 模块的两格，都走 `vi.importActual`：`saveRun` 用来把夹具真落盘
- * （否则 `getRun` 找不到那一轮，撤回那条路的行级事件会报 ERROR），`resetInjectQueueForTesting`
+ * （否则 `getRun` 找不到那一轮，撤回那条路的事件会报 ERROR），`resetInjectQueueForTesting`
  * 用来清那张挂 `globalThis` 的表（它跨用例、跨文件存活）。
  * 泛型给 `Record<string, unknown>`：本应用没声明这个包（方向表：web-next 只到 api / core / ui /
  * client / contracts），连 `typeof import('@aieval/evaluator')` 都解析不到（tsc 报 TS2307），
@@ -71,7 +71,7 @@ function seedRun(): EvalRun {
     useAgentJudge: false,
     askUser: false,
     injectMessages: true,
-    rows: [
+    candidates: [
       {
         id: 'r-1',
         agentKind: 'cc',
@@ -81,7 +81,7 @@ function seedRun(): EvalRun {
         modelId: 'claude-opus-4-6',
         status: 'pending',
         branch: 'test/r-1',
-        workspacePath: join(dir, 'run-1', 'rows', 'r-1', 'workspace'),
+        workspacePath: join(dir, 'run-1', 'candidates', 'r-1', 'workspace'),
         baselineCommit: '',
         tokens: null,
         turns: null,
@@ -133,7 +133,7 @@ function jsonRequest(body: unknown, path: string): Request {
 
 /** 一条合法的登记请求 */
 function sendBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { runId: 'run-1', rowId: 'r-1', messageId: 'm-1', text: '先跑一遍测试', attachments: [], requires: 'idle', ...overrides };
+  return { runId: 'run-1', candidateId: 'r-1', messageId: 'm-1', text: '先跑一遍测试', attachments: [], requires: 'idle', ...overrides };
 }
 
 /** 登记一条（多数用例的前置） */
@@ -144,7 +144,7 @@ async function send(overrides: Record<string, unknown> = {}): Promise<void> {
 
 describe('GET /api/inject-messages（快照）', () => {
   it('没有消息时给空数组（不是 204、也不是 null）', async () => {
-    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&rowId=r-1'));
+    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&candidateId=r-1'));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual([]);
@@ -153,7 +153,7 @@ describe('GET /api/inject-messages（快照）', () => {
   it('给登记过的条目（正文、两档要求与四态都在）', async () => {
     await send();
 
-    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&rowId=r-1'));
+    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&candidateId=r-1'));
 
     expect(await response.json()).toMatchObject([{ messageId: 'm-1', text: '先跑一遍测试', requires: 'idle', state: 'queued' }]);
   });
@@ -162,7 +162,7 @@ describe('GET /api/inject-messages（快照）', () => {
     for (const url of [
       'http://localhost/api/inject-messages',
       'http://localhost/api/inject-messages?runId=run-1',
-      'http://localhost/api/inject-messages?runId=&rowId=r-1',
+      'http://localhost/api/inject-messages?runId=&candidateId=r-1',
     ]) {
       const response = await getSnapshot(new Request(url));
       expect(response.status, url).toBe(400);
@@ -171,7 +171,7 @@ describe('GET /api/inject-messages（快照）', () => {
   });
 
   it('轮不存在 ⇒ 404 JSON', async () => {
-    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-never&rowId=r-1'));
+    const response = await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-never&candidateId=r-1'));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
@@ -192,7 +192,7 @@ describe('POST /api/inject-messages（发送）', () => {
 
     expect(again.status).toBe(200);
     expect(await again.json()).toMatchObject({ created: false, message: { text: '先跑一遍测试' } });
-    expect(await (await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&rowId=r-1'))).json()).toHaveLength(1);
+    expect(await (await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&candidateId=r-1'))).json()).toHaveLength(1);
   });
 
   it('请求体不合法 ⇒ 400，一条都不进表（缺 requires / 空消息 / 附件超 10 个 / id 形状不对）', async () => {
@@ -207,7 +207,7 @@ describe('POST /api/inject-messages（发送）', () => {
       expect(response.status, JSON.stringify(body)).toBe(400);
       expect(await response.json()).toMatchObject({ error: { code: 'INVALID_QUERY' } });
     }
-    expect(await (await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&rowId=r-1'))).json()).toEqual([]);
+    expect(await (await getSnapshot(new Request('http://localhost/api/inject-messages?runId=run-1&candidateId=r-1'))).json()).toEqual([]);
   });
 
   it('不是合法 JSON：400，且文案说的是请求体而不是查询参数', async () => {
@@ -238,7 +238,7 @@ describe('POST /api/inject-messages/retract（撤回）', () => {
   it('还没投出去的那一条：200 + removed', async () => {
     await send();
 
-    const response = await postRetract(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
+    const response = await postRetract(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ outcome: 'removed', message: { state: 'gone' } });
@@ -246,19 +246,19 @@ describe('POST /api/inject-messages/retract（撤回）', () => {
 
   it('重复撤回 ⇒ 200 + already-retracted（不是 404：那会让客户端以为这个 id 从没存在过）', async () => {
     await send();
-    await postRetract(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
+    await postRetract(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
 
-    const again = await postRetract(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
+    const again = await postRetract(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/retract'));
 
     expect(again.status).toBe(200);
     expect(await again.json()).toMatchObject({ outcome: 'already-retracted' });
   });
 
   it('表里没有这个 id ⇒ 404；请求体不合法 ⇒ 400', async () => {
-    const missing = await postRetract(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-never' }, '/api/inject-messages/retract'));
+    const missing = await postRetract(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-never' }, '/api/inject-messages/retract'));
     expect(missing.status).toBe(404);
 
-    const bad = await postRetract(jsonRequest({ runId: 'run-1', rowId: 'r-1' }, '/api/inject-messages/retract'));
+    const bad = await postRetract(jsonRequest({ runId: 'run-1', candidateId: 'r-1' }, '/api/inject-messages/retract'));
     expect(bad.status).toBe(400);
   });
 });
@@ -267,14 +267,14 @@ describe('POST /api/inject-messages/promote（改期）', () => {
   it('排队 → 立即：200 + promoted，且快照里的 requires 真的变了', async () => {
     await send();
 
-    const response = await postPromote(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/promote'));
+    const response = await postPromote(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, '/api/inject-messages/promote'));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ outcome: 'promoted', message: { requires: 'round' } });
   });
 
   it('没有这个 messageId ⇒ 404；请求体不合法 ⇒ 400', async () => {
-    expect((await postPromote(jsonRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-never' }, '/api/inject-messages/promote'))).status).toBe(404);
+    expect((await postPromote(jsonRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-never' }, '/api/inject-messages/promote'))).status).toBe(404);
     expect((await postPromote(jsonRequest({ messageId: 'm-1' }, '/api/inject-messages/promote'))).status).toBe(400);
   });
 });
@@ -290,28 +290,28 @@ describe('POST /api/inject-messages/attachments（附件 multipart）', () => {
 
   it('落盘成功：200 + {kind, path, mimeType}，文件真的在盘上、内容逐字节相等', async () => {
     const response = await postAttachments(
-      formRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, new File(['png-body'], 'a.png', { type: 'image/png' })),
+      formRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, new File(['png-body'], 'a.png', { type: 'image/png' })),
     );
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as { kind: string; path: string; mimeType: string | null };
     expect(body).toMatchObject({ kind: 'image', mimeType: 'image/png' });
-    expect(body.path).toContain(join('run-1', 'rows', 'r-1', 'attachments', 'm-1'));
+    expect(body.path).toContain(join('run-1', 'candidates', 'r-1', 'attachments', 'm-1'));
     expect(readFileSync(body.path, 'utf8')).toBe('png-body');
   });
 
   it('表单缺字段 ⇒ 400（`messageId` 的形状也在这一关：它会被拼进目录名）', async () => {
-    const missing = await postAttachments(formRequest({ runId: 'run-1', rowId: 'r-1' }, new File(['x'], 'a.txt', { type: 'text/plain' })));
+    const missing = await postAttachments(formRequest({ runId: 'run-1', candidateId: 'r-1' }, new File(['x'], 'a.txt', { type: 'text/plain' })));
     expect(missing.status).toBe(400);
 
     const traversal = await postAttachments(
-      formRequest({ runId: 'run-1', rowId: 'r-1', messageId: '..' }, new File(['x'], 'a.txt', { type: 'text/plain' })),
+      formRequest({ runId: 'run-1', candidateId: 'r-1', messageId: '..' }, new File(['x'], 'a.txt', { type: 'text/plain' })),
     );
     expect(traversal.status).toBe(400);
   });
 
   it('表单里没有文件 ⇒ 400，文案说的是字段名（不是 500）', async () => {
-    const response = await postAttachments(formRequest({ runId: 'run-1', rowId: 'r-1', messageId: 'm-1' }, null));
+    const response = await postAttachments(formRequest({ runId: 'run-1', candidateId: 'r-1', messageId: 'm-1' }, null));
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: 'INVALID_QUERY' } });
@@ -327,7 +327,7 @@ describe('POST /api/inject-messages/attachments（附件 multipart）', () => {
   it('声明长度明显超标的请求在读进内存之前就被拒 ⇒ 400', async () => {
     const form = new FormData();
     form.set('runId', 'run-1');
-    form.set('rowId', 'r-1');
+    form.set('candidateId', 'r-1');
     form.set('messageId', 'm-1');
     form.set('file', new File(['x'], 'a.txt', { type: 'text/plain' }));
     const response = await postAttachments(
@@ -345,7 +345,7 @@ describe('POST /api/inject-messages/attachments（附件 multipart）', () => {
 
   it('轮不存在 ⇒ 404，且盘上不建任何目录', async () => {
     const response = await postAttachments(
-      formRequest({ runId: 'run-never', rowId: 'r-1', messageId: 'm-1' }, new File(['x'], 'a.txt', { type: 'text/plain' })),
+      formRequest({ runId: 'run-never', candidateId: 'r-1', messageId: 'm-1' }, new File(['x'], 'a.txt', { type: 'text/plain' })),
     );
 
     expect(response.status).toBe(404);

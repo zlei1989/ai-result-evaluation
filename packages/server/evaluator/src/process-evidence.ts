@@ -18,14 +18,14 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { getProvider } from '@aieval/agents';
-import { createLogger, rowEventsFile, rowMessagesFile } from '@aieval/core';
+import { createLogger, candidateEventsFile, candidateMessagesFile } from '@aieval/core';
 import type { AgentKind } from '@aieval/contracts';
 
 const log = createLogger('process-evidence');
 
 /** events 块的标题文件名（与 diff 块的 `candidate-diff.txt` 同一命名口径：稳定、可定位） */
 export const EVENTS_ATTACHMENT_FILENAME = 'candidate-events.jsonl';
-/** messages 块的标题文件名（只有元数据声明要补的候选行才有它） */
+/** messages 块的标题文件名（只有元数据声明要补的候选才有它） */
 export const MESSAGES_ATTACHMENT_FILENAME = 'candidate-messages.jsonl';
 
 /**
@@ -93,7 +93,7 @@ function pushEvidenceFile(
 export function assembleProcessEvidence(input: {
   workspaceBase: string;
   runId: string;
-  rowId: string;
+  candidateId: string;
   includeSteps: boolean;
   agentKind: AgentKind;
   budgetBytes: number;
@@ -103,7 +103,7 @@ export function assembleProcessEvidence(input: {
   const files: ProcessEvidenceFile[] = [];
   pushEvidenceFile(
     files,
-    rowEventsFile(input.workspaceBase, input.runId, input.rowId),
+    candidateEventsFile(input.workspaceBase, input.runId, input.candidateId),
     EVENTS_ATTACHMENT_FILENAME,
     input.budgetBytes,
   );
@@ -111,7 +111,7 @@ export function assembleProcessEvidence(input: {
   if (getProvider(input.agentKind).metadata.needsMessagesForReasoningEvidence) {
     pushEvidenceFile(
       files,
-      rowMessagesFile(input.workspaceBase, input.runId, input.rowId),
+      candidateMessagesFile(input.workspaceBase, input.runId, input.candidateId),
       MESSAGES_ATTACHMENT_FILENAME,
       input.budgetBytes,
     );
@@ -125,7 +125,7 @@ export function assembleProcessEvidence(input: {
  * 中文与 emoji 的字符数与字节数差 3 倍，用字符数会超预算。
  * 保留策略与 `truncateDiff`（core/git.ts）刻意不同、不复用：diff 按**文件段**整段取舍
  * （一个文件要么全留要么整段丢，丢的逐个列名——保持 diff 的可读性）；这里按**行**做头尾保留
- * （事件账本是带序号的时间线，评分要看的是起点与收尾，中间被截的行用标注占位）。两者粒度
+ * （事件账本是带序号的时间线，评分要看的是起点与收尾，中间被截的候选用标注占位）。两者粒度
  * 不同，复用一个就伤另一个：按文件段切事件账本，超预算时整个账本被丢、证据静默消失；
  * 按行切 diff，会把一个文件的正文拦腰切断，diff 侧「文件段」粒度的记账随之失真。
  *
@@ -139,7 +139,7 @@ export function truncateRawLines(raw: string, budgetBytes: number): { text: stri
   if (Buffer.byteLength(raw, 'utf8') <= budgetBytes) return { text: raw, truncated: false };
 
   const lines = raw.split('\n');
-  // 每行的字节数含换行符：join 回来时的总字节才是「这一行真正占的」预算
+  // 每个候选的字节数含换行符：join 回来时的总字节才是「这个候选真正占的」预算
   const sizeOf = (line: string): number => Buffer.byteLength(line, 'utf8') + 1;
 
   // 标注字节上界：被截行数 ≤ 总行数，用总行数的位数估（真实标注只短不长）
@@ -174,7 +174,7 @@ export function truncateRawLines(raw: string, budgetBytes: number): { text: stri
   };
 
   let text = build(tail);
-  // 安全阀：sizeOf 对换行的计法偏保守，理论上不会超预算；留着它拦「预估错位」这一类回归
+  // 安全阀：sizeOf 对换候选的计法偏保守，理论上不会超预算；留着它拦「预估错位」这一类回归
   while (tail.length > 0 && Buffer.byteLength(text, 'utf8') > budgetBytes) {
     tail.shift();
     text = build(tail);
