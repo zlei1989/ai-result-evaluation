@@ -153,6 +153,39 @@ describe('loadConfig', () => {
     expect(loadConfig().settings.customHeaders).toEqual({ 'X-Trace-Id': 'abc', 'X-Team': '评测组' });
   });
 
+  /**
+   * 模型请求重试次数的读盘往返 + 读侧夹值。
+   *
+   * 三半都必须钉：
+   *   · 旧文件里**没有**这一键 ⇒ 归一化成出厂值 10（四家都靠它对齐，缺了就会各自回落到厂商默认，
+   *     而「没配过」与「配了 10」在厂商侧不是同一件事——codex 的默认是 1）；
+   *   · 文件里**有** ⇒ 原样读回（键表漏了它，落盘值会被静默丢掉）；
+   *   · 手改坏的值 ⇒ 夹回合法域，而不是一路传进四家厂商的配置面（`loadConfig` 刻意不做 schema 校验，
+   *     这是唯一的收口点）。
+   */
+  it('modelRetries：旧文件缺这一键 ⇒ 10；写了 ⇒ 原样读回；坏值 ⇒ 夹回合法域', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ settings: { theme: 'dark' } }), 'utf8');
+    expect(loadConfig().settings.modelRetries).toBe(SETTINGS_DEFAULTS.modelRetries);
+
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ settings: { ...SETTINGS_DEFAULTS, modelRetries: 3 } }),
+      'utf8',
+    );
+    expect(loadConfig().settings.modelRetries).toBe(3);
+
+    for (const [raw, expected] of [
+      [999, 20],
+      [-1, 0],
+      ['abc', 10],
+      [2.5, 10],
+    ] as const) {
+      const handEdited: Record<string, unknown> = { ...SETTINGS_DEFAULTS, modelRetries: raw };
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ settings: handEdited }), 'utf8');
+      expect(loadConfig().settings.modelRetries, `raw=${String(raw)}`).toBe(expected);
+    }
+  });
+
   it('配置真的损坏时抛 ServiceError，且 message 含文件路径与中文原因', () => {
     writeFileSync(join(dir, 'config.json'), '{ 这不是 JSON', 'utf8');
     let caught: unknown;

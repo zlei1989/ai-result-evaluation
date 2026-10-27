@@ -1000,6 +1000,31 @@ describe('buildDshRoutePatch', () => {
   });
 
   /**
+   * 模型请求重试次数的**落点**：`llm-pi-ai` 路由块里的 `retryPolicy`（不是某个插件的 config）。
+   *
+   * 为什么要钉位置与整块缺席：`retryPolicy` 是**每条路由自己的**配置（执行者是 `dsh-llm-retry`，
+   * 它按 provider 查策略）；写到别处不会报错，只是永远不生效。缺省时整块不出现 —— 那才是
+   * 「吃厂商 normal 档默认（5 次）」，与「显式写了 5」在厂商侧不是同一件事。
+   */
+  it('重试次数：给了 ⇒ 路由块里出现 retryPolicy（normal + maxRetries）；没给 ⇒ 整块不出现', () => {
+    const bare = buildDshRoutePatch(base);
+    expect(bare).not.toContain('retryPolicy');
+
+    const withRetries = buildDshRoutePatch({ ...base, retries: 10 });
+    expect(withRetries).toContain(
+      ['        retryPolicy:', '          mode: normal', '          maxRetries: 10'].join('\n'),
+    );
+    const lines = withRetries.split('\n');
+    const apiKeyAt = lines.indexOf('        apiKeyEnv: AIEVAL_ROUTE_API_KEY');
+    const retryAt = lines.indexOf('        retryPolicy:');
+    const modelsAt = lines.indexOf('        models:');
+    expect(retryAt).toBeGreaterThan(apiKeyAt);
+    expect(retryAt).toBeLessThan(modelsAt);
+    // 0 = 不重试：同样照写，不许被 `||` 一类的兜底吞成厂商默认
+    expect(buildDshRoutePatch({ ...base, retries: 0 })).toContain('          maxRetries: 0');
+  });
+
+  /**
    * 应答面那一格**同时**决定两件事：插不插应答者那一行、等待档取哪一档（`askUserAnswerer`）。
    * 判据是「两份 patch 的**逐行差集**恰好是这两处」——只 `toContain` 那一候选的话，
    * 「顺手改坏了别的行」「没挂时也插了」「等待档与应答面各写一份」三种坏法都能溜过去。

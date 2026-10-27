@@ -82,9 +82,10 @@ function tabSlice(key: string): string {
 /**
  * Tab「基础」的接线。
  *
- * 模型供应商、界面主题、存储目录三块都住在这**一个** Tab 里，且按「开始评测之前先配一次」的先后排：
- * 供应商 → 主题 → 存储目录。其余守卫都只扫各自组件的开标签，看不见「它们住在哪个 Tab、谁在前」——
- * 把某一块挪回独立 Tab（或调乱顺序）时类型检查一个字都不报，界面上只是少了一张卡片，只有源码锚点拦得住。
+ * 模型供应商、界面主题、自定义请求头、模型调用重试、存储目录五块都住在这**一个** Tab 里，
+ * 且按「开始评测之前先配一次」的先后排。其余守卫都只扫各自组件的开标签，看不见「它们住在哪个 Tab、
+ * 谁在前」——把某一块挪回独立 Tab（或调乱顺序）时类型检查一个字都不报，界面上只是少了一张卡片，
+ * 只有源码锚点拦得住。
  */
 describe('settings 页面的「基础」Tab 接线', () => {
   it('Tab 的 key 是 basic、label 是「基础」', () => {
@@ -92,29 +93,33 @@ describe('settings 页面的「基础」Tab 接线', () => {
     expect(source, 'Tab 的 label 不是基础').toContain('label: \'基础\'');
   });
 
-  it('四块同住在「基础」这一个 Tab 里：模型供应商、界面主题、自定义请求头、存储目录', () => {
+  it('五块同住在「基础」这一个 Tab 里：模型供应商、界面主题、自定义请求头、模型调用重试、存储目录', () => {
     const tab = tabSlice('basic');
 
     expect(tab, '基础 Tab 里没有模型供应商表格').toContain('<ProviderTable');
     expect(tab, '基础 Tab 里没有界面主题卡').toContain('data-testid="theme-card"');
     expect(tab, '基础 Tab 里没有自定义请求头卡').toContain('<CustomHeadersCard');
+    expect(tab, '基础 Tab 里没有模型调用重试卡').toContain('<ModelRetryCard');
     expect(tab, '基础 Tab 里没有存储目录卡').toContain('<WorkspaceSettingsCard');
   });
 
-  it('上下顺序是 模型供应商 → 界面主题 → 自定义请求头 → 存储目录（顺序即导航路径，别随手调）', () => {
+  it('上下顺序是 模型供应商 → 界面主题 → 自定义请求头 → 模型调用重试 → 存储目录（顺序即导航路径，别随手调）', () => {
     const tab = tabSlice('basic');
     const providerAt = tab.indexOf('<ProviderTable');
     const themeAt = tab.indexOf('data-testid="theme-card"');
     const headersAt = tab.indexOf('<CustomHeadersCard');
+    const retriesAt = tab.indexOf('<ModelRetryCard');
     const storageAt = tab.indexOf('<WorkspaceSettingsCard');
 
     expect(providerAt, '基础 Tab 里找不到供应商表').toBeGreaterThan(-1);
     expect(themeAt, '基础 Tab 里找不到主题卡').toBeGreaterThan(-1);
     expect(headersAt, '基础 Tab 里找不到自定义请求头卡').toBeGreaterThan(-1);
+    expect(retriesAt, '基础 Tab 里找不到模型调用重试卡').toBeGreaterThan(-1);
     expect(storageAt, '基础 Tab 里找不到存储目录卡').toBeGreaterThan(-1);
     expect(providerAt, '模型供应商不在最上面').toBeLessThan(themeAt);
     expect(themeAt, '界面主题不在模型供应商之后').toBeLessThan(headersAt);
-    expect(headersAt, '自定义请求头不在界面主题之后').toBeLessThan(storageAt);
+    expect(headersAt, '自定义请求头不在界面主题之后').toBeLessThan(retriesAt);
+    expect(retriesAt, '模型调用重试不在自定义请求头之后').toBeLessThan(storageAt);
   });
 
   /**
@@ -133,6 +138,19 @@ describe('settings 页面的「基础」Tab 接线', () => {
       'changeSettings({ customHeaders: next })',
     );
     expect(tag, '整张表要被替换，不是与已有那份合并（合并会让「删掉一行」静默失效）').not.toContain('...settings.customHeaders');
+  });
+
+  /**
+   * 模型调用重试卡的接线。卡片的 props 虽然必填（漏传 typecheck 会红），但**回调体接错键**类型查不出：
+   * `changeSettings({ retries: value })` 里那个键不在 `SettingsPatch` 上（静默 400），
+   * 写成 `{ modelRetries: value * 1 }` 之类也能编译（落盘一个用户没选过的数）。两种都只在保存被发出去时现形。
+   */
+  it('模型调用重试卡：喂的是 settings.modelRetries、保存落到 `changeSettings({ modelRetries: value })`', () => {
+    const tag = cardTag('ModelRetryCard');
+
+    expect(tag, '少了 value=——漏喂这一格，卡片永远画默认值').toContain('value={settings.modelRetries}');
+    expect(tag, '少了 saving=').toContain('saving={isUpdating}');
+    expect(tag, '保存没有落到 PUT { modelRetries }').toContain('changeSettings({ modelRetries: value })');
   });
 
   it('存储目录不再单开 Tab（`key: \'workspace\'` 不许复活）', () => {

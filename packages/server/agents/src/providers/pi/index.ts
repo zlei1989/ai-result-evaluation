@@ -879,9 +879,18 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
     // 本仓档位落到会话上（换算规则、域外值与地雷见 `piThinkingLevel`）
     thinkingLevel: piThinkingLevel(input.effort),
     settingsManager: sdk.SettingsManager.inMemory({
-      // 关掉 pi 自带重试：连接类失败默认重试 3 次会把墙钟放大到十几秒，
-      // 而重试语义在编排层（本层不重复实现）
-      retry: { enabled: false },
+      /**
+       * 模型请求失败后的重试次数（设置页「基础」→「模型调用重试」）：四家对齐的那一格。
+       * pi 的 `retry.maxRetries` 就是「首次之外再试几次」，与设置项 1:1；`0` / 缺省落 `enabled: false`
+       * （厂商那条退避链整条不启用，而不是启用一个 0 次的空链）。
+       *
+       * 厂商退避按 `baseDelayMs * 2^n` 递增、单次上限 60 s（`DEFAULT_MAX_AGENT_RETRY_DELAY_MS`），
+       * 仍小于骨架看门狗的空闲上限（180 s）；本层不另设上限，也不与编排层的整行重跑叠加实现。
+       */
+      retry:
+        input.modelRetries === undefined || input.modelRetries === 0
+          ? { enabled: false }
+          : { enabled: true, maxRetries: input.modelRetries },
     }),
     resourceLoader: loader,
     sessionManager: openPiSessionManager(sdk, input),

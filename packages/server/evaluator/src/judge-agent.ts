@@ -100,6 +100,12 @@ export interface AgentJudgeInput {
    */
   requestHeaders?: Record<string, string>;
   /**
+   * 模型请求失败后的重试次数（设置页「基础」→「模型调用重试」）：与候选执行、用例同步读**同一份**
+   * 设置快照。评审者打的也是同一个网关，少带这一格就是「同一份配置、两套重试次数」。
+   * 缺省 = 这一格不存在（适配器各按厂商默认）。
+   */
+  modelRetries?: number;
+  /**
    * **没有 `timeoutMs`**（用户口径「评分不限轮次和时间」）：适配器与外层兜底
    * 两处上限都删了，评审者跑到它自己收场为止，唯一的停止入口是 `signal`（用户点「终止」）。
    */
@@ -229,6 +235,8 @@ export async function judgeCandidateByAgent(input: AgentJudgeInput): Promise<Sco
       ...(input.judgeEffort === undefined ? {} : { effort: input.judgeEffort }),
       // 自定义请求头：与候选执行同一张表、同一条「缺省不传键」的口径
       ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
+      // 重试次数：同一条口径（与候选执行 / 用例同步同一个设置读点）
+      ...(input.modelRetries === undefined ? {} : { modelRetries: input.modelRetries }),
       prompt,
       route: input.route,
       signal: input.signal,

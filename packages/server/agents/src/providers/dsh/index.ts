@@ -224,6 +224,17 @@ export interface DshRoutePatchInput {
   /** 单次输出上限；缺省 = 未知 ⇒ 不写 */
   maxOutputTokens?: number;
   /**
+   * 模型请求**失败后**的重试次数（设置页「基础」→「模型调用重试」）。
+   *
+   * 落到 `llm-pi-ai` 路由自己的 `retryPolicy.maxRetries`；缺省 ⇒ **整个 `retryPolicy` 块不出现**
+   * （= 吃厂商的 normal 档默认：5 次）。档位固定 `normal`——`always` 是无限重试，与「次数」这个
+   * 设置项语义相反；`retryableCodes` / `backoff` 也不写，保留厂商的瞬时码表与退避曲线。
+   *
+   * 执行者在 `@deepseek-ai/dsh-llm-retry`（base profile 已挂）：它是 agent-step 级的重试，
+   * 正好对应本仓「一次模型调用」；`ctx.llm.stream()` 直连那条路不重试，本仓没走那条。
+   */
+  retries?: number;
+  /**
      * 本次运行要注入的 MCP 条目；缺省 / 空集 ⇒ **一行插件都不插**。
    * 收的是 canonical 形状（与另两家同一份），翻译在 `toDshMcpPluginLines` 里一处完成。
    */
@@ -278,6 +289,15 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     `        api: ${wireForProtocol(input.protocolType)}`,
     `        baseURL: ${quoteYaml(baseUrlForWire(input.baseUrl, input.protocolType))}`,
     `        apiKeyEnv: ${DSH_ROUTE_API_KEY_ENV}`,
+    // 模型请求失败后的重试次数：缺省时整个 retryPolicy 块不出现（= 厂商 normal 档默认 5 次）。
+    // 只给 mode + maxRetries：瞬时码表与退避曲线留给厂商默认，本仓不复制一份会腐烂的名单。
+    ...(input.retries === undefined
+      ? []
+      : [
+        '        retryPolicy:',
+        '          mode: normal',
+        `          maxRetries: ${input.retries}`,
+      ]),
     // 自定义请求头：每条路由自己的 `headers`（见 `DshRoutePatchInput.headers` 的两条边界）。
     // 键值一律走 `quoteYaml`：头名里可能有 `-`、值里可能有 `:`，裸写会被 YAML 解析成别的结构。
     ...(input.headers === undefined || Object.keys(input.headers).length === 0
@@ -1284,6 +1304,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       modelId: input.route.modelId,
       contextWindow: input.route.contextWindow,
       maxOutputTokens: input.route.maxOutputTokens,
+      ...(input.modelRetries === undefined ? {} : { retries: input.modelRetries }),
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
       ...(routeHeaders === undefined ? {} : { headers: routeHeaders }),
       askUserAnswerer: askAnswerer,

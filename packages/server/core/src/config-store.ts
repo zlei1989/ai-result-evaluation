@@ -10,7 +10,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ServiceError, SETTINGS_DEFAULTS, type Provider, type Settings } from '@aieval/contracts';
+import { ServiceError, SETTINGS_DEFAULTS, normalizeModelRetries, type Provider, type Settings } from '@aieval/contracts';
 import { createLogger } from './logger';
 
 const log = createLogger('config-store');
@@ -74,6 +74,10 @@ function defaults(): AppConfig {
  * 设置页打不开），于是旧版本写下、如今已从契约里删掉的字段（例如「单行超时」`candidateTimeoutMs`）
  * 会一路带进读侧——`GET /api/settings` 于是回一个契约里根本不存在的字段。键表直接取自
  * `SETTINGS_DEFAULTS`（契约的真源），新增字段只要进了默认值就自动被认，不需要在这里维护第二份清单。
+ *
+ * 数值格另把值收进合法域（今天只有 `modelRetries`）：手改坏的 `"abc"` / `-1` / `999` 由
+ * `normalizeModelRetries` 夹回默认值或两端。作用面是所有读 `loadConfig()` 的消费方
+ * （api 与 evaluator 都走这一条），夹在一处才不会出现「设置页显示 20、适配器收到 999」那种分家。
  */
 function normalizeSettings(raw: unknown): Settings {
   const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
@@ -81,6 +85,7 @@ function normalizeSettings(raw: unknown): Settings {
   for (const key of Object.keys(SETTINGS_DEFAULTS)) {
     if (source[key] !== undefined) normalized[key] = source[key];
   }
+  normalized.modelRetries = normalizeModelRetries(normalized.modelRetries);
   /**
    * MCP 预置项的**播种**：判据是「文件里**没有这个键**」，不是「值为空」。
    *

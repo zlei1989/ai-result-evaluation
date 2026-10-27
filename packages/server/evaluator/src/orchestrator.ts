@@ -842,6 +842,8 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
         ...(Object.keys(config.settings.customHeaders ?? {}).length === 0
           ? {}
           : { requestHeaders: config.settings.customHeaders }),
+        // 重试次数：与候选执行、用例同步同一个设置读点（「同一份配置、两套重试次数」是不允许的）
+        ...(config.settings.modelRetries === undefined ? {} : { modelRetries: config.settings.modelRetries }),
         // 总是表达「我想要 schema」：能不能给由适配器按能力决定，降级会经 applied 报回来
         outputSchema: JUDGE_OUTPUT_JSON_SCHEMA,
         // 三条出口一起接上：评审者的事件、消息、子任务行都落**评分自己那条流**，
@@ -1489,12 +1491,13 @@ function contextOf(provider: Provider, modelId: string): { contextWindow?: numbe
 }
 
 /**
- * 候选执行阶段要下发的**环境三格**（`mcpServers` / `skills` / `requestHeaders`）与证据两半。
+ * 候选执行阶段要下发的**环境四格**（`mcpServers` / `skills` / `requestHeaders` / `modelRetries`）
+ * 与证据两半。
  *
- * 为什么收成一个函数：这三格只有**候选执行**这一个场景（`runCandidateAttempt` 与 `followUpCandidate`
+ * 为什么收成一个函数：这四格只有**候选执行**这一个场景（`runCandidateAttempt` 与 `followUpCandidate`
  * 都是它），而两处各读一遍配置的代价是「两次读盘各拿一份快照」——并发改配置时才会现形，
- * 且现形在别人的机器上。评分与用例同步两处只有 `requestHeaders` 这一格（它们没有 MCP / 技能面），
- * 读的是各自那一次配置快照（见 `candidateJudge` 与 `case-sync.ts`）。
+ * 且现形在别人的机器上。评分与用例同步两处只有 `requestHeaders` / `modelRetries` 两格
+ * （它们没有 MCP / 技能面），读的是各自那一次配置快照（见 `candidateJudge` 与 `case-sync.ts`）。
  *
  * 三条口径（与上面那两段注释逐字同源）：
  *   · **空集不给键**：给了空对象等于向适配器声明「候选显式要零台 / 零条」，而「没配」与「配了零」
@@ -1508,8 +1511,8 @@ function contextOf(provider: Provider, modelId: string): { contextWindow?: numbe
  */
 /** `planCandidateEnvironment` 的返回值：要下发的两格 + 证据的静态两半 */
 interface CandidateEnvironment {
-  /** 要交给适配器的哪三格（空集不给键，见上） */
-  input: Pick<AgentRunInput, 'mcpServers' | 'skills' | 'requestHeaders'>;
+  /** 要交给适配器的哪四格（空集不给键，见上） */
+  input: Pick<AgentRunInput, 'mcpServers' | 'skills' | 'requestHeaders' | 'modelRetries'>;
   /** MCP 证据的静态两半（`vendor` 那一半在跑动期由事件补齐） */
   mcp: Omit<CandidateMcpEvidence, 'vendor'>;
   /** 技能证据的静态一半（`vendor` 同上） */
@@ -1548,6 +1551,10 @@ function planCandidateEnvironment(settings: Settings, runId: string, candidateId
       // 两处各读一遍就会出现「追问那一段里网关收到的头变了」，而那也是并发改配置才现形的事。
       // 空集不给键（与 MCP / 技能同口径）；发不出去的那几条由适配器侧统一摘掉并 WARN。
       ...(Object.keys(settings.customHeaders ?? {}).length === 0 ? {} : { requestHeaders: settings.customHeaders }),
+      // 模型请求失败后的重试次数：与上面两格**同一份快照**（候选执行与追问都从这里取）。
+      // 读侧已由 `normalizeSettings` 夹进合法域，这里不再判值；`undefined` 仍按「没配」处置——
+      // 那是第三方调用 / 夹具的语义，适配器各自兜底。
+      ...(settings.modelRetries === undefined ? {} : { modelRetries: settings.modelRetries }),
     },
     mcp: {
       injected: Object.keys(mcpPlan.injectable),

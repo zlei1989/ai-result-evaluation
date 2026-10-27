@@ -85,6 +85,30 @@ export function customHeaderNameConflict(headers: Record<string, string>): strin
 export const ThemeModeSchema = z.enum(['auto', 'light', 'dark']);
 export type ThemeMode = z.infer<typeof ThemeModeSchema>;
 
+/**
+ * 模型请求失败后的重试次数（设置页「基础」→「模型调用重试」那一张卡）。
+ *
+ * 语义是「失败之后最多再试几次」，**不含首次调用**：四家厂商各自的键都按这个语义收
+ * （cc 的 `CLAUDE_CODE_MAX_RETRIES`、codex 的 `request_max_retries`、dsh 的 `retryPolicy.maxRetries`、
+ * pi 的 `retry.maxRetries`），故契约到四家是 **1:1 映射，不做 ±1 换算**。`0` = 不重试。
+ *
+ * 上限取默认值的两倍：默认 10 已经能把一次退避链拖到分钟级（cc 单次退避实测可到 36 s 量级），
+ * 再大往往在退避跑完之前就先被看门狗按「单轮模型往返 600 s」收掉——20 是「还能完整跑完一轮」的余量。
+ */
+export const MODEL_RETRIES_DEFAULT = 10;
+export const MODEL_RETRIES_MIN = 0;
+export const MODEL_RETRIES_MAX = 20;
+
+/**
+ * 把一个来路不明的值收进合法域：非整数 / 非数字 ⇒ 默认值，越界 ⇒ 夹到两端。
+ * 读盘路径（core 的 `normalizeSettings`）是唯一调用点——`loadConfig` 刻意不做 schema 校验，
+ * 手改坏的值在这里被夹回合法域，而不是一路传进厂商的配置面。
+ */
+export function normalizeModelRetries(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return MODEL_RETRIES_DEFAULT;
+  return Math.min(MODEL_RETRIES_MAX, Math.max(MODEL_RETRIES_MIN, value));
+}
+
 /** 默认评分模型：两个 id 必须成对出现，未配置时为 null */
 export const DefaultJudgeSchema = z.object({
   providerId: z.string().min(1),
@@ -163,6 +187,17 @@ export const SettingsSchema = z.object({
    * **没有预置项**，故那边「键在不在文件里 = 播过没播过」的播种判据在这里无事可做。
    */
   customHeaders: CustomHeadersSchema,
+  /**
+   * 模型请求失败后的重试次数（语义与上限见 `MODEL_RETRIES_DEFAULT` 那段注释）。
+   *
+   * 四家智能体各按自己的方言落这一格：cc 走子进程环境 `CLAUDE_CODE_MAX_RETRIES`、codex 写
+   * `model_providers.<id>.request_max_retries`、dsh 写 overlay 的 `retryPolicy`、pi 写 SDK 的 `retry`。
+   * 作用面是「发往网关的每一次模型调用」，与自定义请求头同一组；编排层的「整行自动重跑」是另一层，不读它。
+   *
+   * 这一格必须是**必填**（默认值 10），理由与 `skills` 逐字相同：`normalizeSettings` 的键表取自
+   * `SETTINGS_DEFAULTS`，缺了它，落盘的重试次数会在**读盘时被静默丢掉**、静默回落到厂商默认。
+   */
+  modelRetries: z.number().int().min(MODEL_RETRIES_MIN).max(MODEL_RETRIES_MAX),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -229,6 +264,11 @@ export const SETTINGS_DEFAULTS: Settings = {
    * 认不出这个键、落盘的头表读不回来。
    */
   customHeaders: {},
+  /**
+   * 模型请求失败重试次数的出厂值：四家统一 10（对齐同一次数，不退避时序）。
+   * 它必须在这里给出，否则 `normalizeSettings` 认不出这个键、落盘的值读不回来。
+   */
+  modelRetries: MODEL_RETRIES_DEFAULT,
 };
 
 /**

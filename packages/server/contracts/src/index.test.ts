@@ -45,8 +45,12 @@ import {
   MAX_ITEM_WEIGHT,
   MCP_ENV_KEY_PATTERN,
   MCP_NAME_PATTERN,
+  MODEL_RETRIES_DEFAULT,
+  MODEL_RETRIES_MAX,
+  MODEL_RETRIES_MIN,
   McpServerConfigSchema,
   McpServersSchema,
+  normalizeModelRetries,
   PROTOCOL_LABELS,
   ProviderCreateSchema,
   ProviderModelInputSchema,
@@ -218,6 +222,12 @@ describe('contracts 公共出口', () => {
     // 抽屉通道值域：抽屉流的 URL 参数、服务端的白名单校验、客户端的抽屉键都从这一份派生
     expect([...DRAWER_CHANNELS]).toEqual(['candidate', 'judge']);
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
+    // 模型请求重试次数的出厂值与合法域：界面（InputNumber 的 min/max）、服务端夹值、四家适配器
+    // 读的是同一份数字，任一取不到就会各抄一份
+    expect(MODEL_RETRIES_DEFAULT).toBe(10);
+    expect(MODEL_RETRIES_MIN).toBe(0);
+    expect(MODEL_RETRIES_MAX).toBe(20);
+    expect(SETTINGS_DEFAULTS.modelRetries).toBe(MODEL_RETRIES_DEFAULT);
     expect(MAX_ITEM_WEIGHT).toBe(10_000);
     // 两份投影（文本 / 结构化）都必须从**包根**可用：适配器只 import '@aieval/contracts'
     expect(JUDGE_OUTPUT_CONTRACT).toContain('judgments');
@@ -268,6 +278,12 @@ describe('contracts 公共出口', () => {
     expect(isRunnableCandidate('failed')).toBe(true);
     expect(isRunningCandidate('running')).toBe(true);
     expect(httpStatusFor('JUDGE_PARSE_FAILED')).toBe(500);
+    // 重试次数的读侧收口：core 的 `normalizeSettings` 只调这一个函数，两个方向（默认值 / 夹值）都要可用
+    expect(normalizeModelRetries(undefined)).toBe(MODEL_RETRIES_DEFAULT);
+    expect(normalizeModelRetries('abc')).toBe(MODEL_RETRIES_DEFAULT);
+    expect(normalizeModelRetries(999)).toBe(MODEL_RETRIES_MAX);
+    expect(normalizeModelRetries(-3)).toBe(MODEL_RETRIES_MIN);
+    expect(normalizeModelRetries(3)).toBe(3);
     expect(new ServiceError('CONFLICT', '冲突').code).toBe('CONFLICT');
     expect(normalizeRemoteUrl('https://host/x.git/')).toBe('https://host/x.git');
     expect(parseRepoSource('git@host:group/repo.git')).toEqual({

@@ -271,11 +271,35 @@ describe('pi 的装配序列与隔离序列', () => {
     });
     expect(recorder.sessionOptions?.['settingsManager']).toMatchObject({
       kind: 'memory-settings',
-      // 关掉 pi 自带重试（连接类失败默认 3 次会把墙钟放大到十几秒）
+      // 入参没给重试次数 ⇒ 厂商那条退避链不启用（不是启用一条 0 次的空链）
       settings: { retry: { enabled: false } },
     });
     // 扩展装配的 mode 必须写死 rpc（缺省 print 会让按 rpc 写的扩展判定配置错误）
     expect(recorder.bindings?.['mode']).toBe('rpc');
+  });
+
+  /**
+   * 模型请求失败后的重试次数：落到 `settings.retry`（`enabled` + `maxRetries`）。
+   *
+   * 为什么必须钉在**会话设置**上而不是别的格：pi 的 `RetryPolicy` 就是从这里读的
+   * （`agent-session` 的 `settings.enabled` / `settings.maxRetries`），写到别处不会报错、只是永远不重试。
+   * 三档各钉一次：`N` ⇒ 开启且次数逐字、`0` ⇒ 关闭（0 不等于「启用但一次都不试」）、
+   * 缺席 ⇒ 关闭（既有行为）。
+   */
+  it('重试次数：给 N ⇒ settings.retry = {enabled:true, maxRetries:N}；给 0 / 不给 ⇒ 关闭', async () => {
+    const armed = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: armed }) });
+    await piProvider.run({ ...createRunInput({ modelRetries: 4 }), onEvent: () => {} });
+    expect(armed.sessionOptions?.['settingsManager']).toMatchObject({
+      settings: { retry: { enabled: true, maxRetries: 4 } },
+    });
+
+    const zero = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: zero }) });
+    await piProvider.run({ ...createRunInput({ modelRetries: 0 }), onEvent: () => {} });
+    expect(zero.sessionOptions?.['settingsManager']).toMatchObject({
+      settings: { retry: { enabled: false } },
+    });
   });
 
   /**

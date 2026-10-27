@@ -104,6 +104,11 @@ interface SyncAgent {
    * 与候选执行 / 评分带同一张表。空集时**不给这个键**（口径与那两处逐字相同）。
    */
   requestHeaders: Record<string, string> | undefined;
+  /**
+   * 模型请求失败后的重试次数（设置页「基础」→「模型调用重试」）：同步智能体打的也是同一个网关，
+   * 与候选执行 / 评分取同一份设置快照。`undefined` = 这一格没配过（第三方调用），适配器各自兜底。
+   */
+  modelRetries: number | undefined;
 }
 
 /** 智能体解析结果：失败带上**可直接展示的原因**，两条调用路径（写信息 / 裁定合并）各处置一次 */
@@ -384,6 +389,7 @@ async function requestCommitMessages(root: string, files: string[], agent: SyncA
       signal: controller.signal,
       ...(agent.effort === undefined ? {} : { effort: agent.effort }),
       ...(agent.requestHeaders === undefined ? {} : { requestHeaders: agent.requestHeaders }),
+      ...(agent.modelRetries === undefined ? {} : { modelRetries: agent.modelRetries }),
       outputSchema: COMMIT_MESSAGES_SCHEMA,
       onEvent: (event) => {
         log.debug('同步智能体事件', { type: event.type });
@@ -537,6 +543,7 @@ async function resolveDivergenceWithAgent(root: string, agent: SyncAgent): Promi
       signal: controller.signal,
       ...(agent.effort === undefined ? {} : { effort: agent.effort }),
       ...(agent.requestHeaders === undefined ? {} : { requestHeaders: agent.requestHeaders }),
+      ...(agent.modelRetries === undefined ? {} : { modelRetries: agent.modelRetries }),
       onEvent: (event) => {
         log.debug('合并智能体事件', { type: event.type });
       },
@@ -679,6 +686,8 @@ function resolveSyncAgent(): SyncAgentResolution {
         route,
         effort: resolveJudgeEffort(),
         requestHeaders: Object.keys(headers).length === 0 ? undefined : headers,
+        // 与候选执行 / 评分同一个读点：同步智能体也是四家之一，重试次数不带就有第五个默认值
+        modelRetries: settings.modelRetries,
       },
     };
   } catch (error) {

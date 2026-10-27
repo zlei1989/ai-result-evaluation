@@ -123,6 +123,7 @@ export {
   type McpProbeResultViewProps,
 } from './composite/mcp-probe-result';
 export { JudgeSettingsCard, type JudgeSettingsCardProps } from './composite/judge-settings-card';
+export { ModelRetryCard, type ModelRetryCardProps } from './composite/model-retry-card';
 export {
   WorkspaceSettingsCard,
   type WorkspaceSettingsCardProps,

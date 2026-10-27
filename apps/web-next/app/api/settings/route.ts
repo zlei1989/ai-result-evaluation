@@ -1,7 +1,7 @@
 /**
  * 设置接口：GET 读当前设置，PUT 应用补丁。
- * 本路由同时承担三块设置：界面主题、评分配置（defaultJudge / defaultJudgeAgent / diffBudgetBytes）
- * 与工作区根目录 —— 它们同属一份 Settings、同一次原子落盘，不为其中任一块单开路由。
+ * 本路由承担**整份 Settings**：界面主题、评分配置（defaultJudge / defaultJudgeAgent / diffBudgetBytes）、
+ * 存储目录、MCP、技能、自定义请求头、模型请求重试次数 —— 它们同一次原子落盘，不为其中任一块单开路由。
  * 工作区的「校验并保存」就是 PUT { workspaceRoot }：服务端 validateWorkspaceRoot 通过才落盘。
  * 本文件只做「zod 校验 → 调 api → 错误映射」，不含业务逻辑。
  * GET 与 PUT 回的都是**出口形态**（`SettingsView`）：服务层已把 MCP 的 `env` / `headers` 敏感值掩码，

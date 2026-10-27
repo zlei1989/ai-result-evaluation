@@ -1,7 +1,16 @@
 // @vitest-environment node
 /** 设置契约：默认值、解析容错、补丁的部分性与边界校验。 */
 import { describe, expect, it } from 'vitest';
-import { SETTINGS_DEFAULTS, SettingsPatchSchema, SettingsSchema, mergeSkillsEntries } from './settings';
+import {
+  MODEL_RETRIES_DEFAULT,
+  MODEL_RETRIES_MAX,
+  MODEL_RETRIES_MIN,
+  SETTINGS_DEFAULTS,
+  SettingsPatchSchema,
+  SettingsSchema,
+  mergeSkillsEntries,
+  normalizeModelRetries,
+} from './settings';
 
 describe('SETTINGS_DEFAULTS', () => {
   it('给出可直接落地运行的默认值', () => {
@@ -9,6 +18,8 @@ describe('SETTINGS_DEFAULTS', () => {
     expect(SETTINGS_DEFAULTS.workspaceRoot).toBe('~/.aieval-runs');
     expect(SETTINGS_DEFAULTS.defaultJudge).toBeNull();
     expect(SETTINGS_DEFAULTS.diffBudgetBytes).toBe(262_144);
+    // 四家智能体共用的模型请求重试次数：默认 10 是产品口径，逐字写死（不从实现现算）
+    expect(SETTINGS_DEFAULTS.modelRetries).toBe(10);
   });
 
   it('默认值本身能通过 schema 校验（防止默认值与契约漂移）', () => {
@@ -64,6 +75,31 @@ describe('SettingsSchema', () => {
   it('拒绝非正 / 非整数的 diff 预算', () => {
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, diffBudgetBytes: 0 }).success).toBe(false);
     expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, diffBudgetBytes: 1.5 }).success).toBe(false);
+  });
+
+  /**
+   * 模型请求重试次数的值域：`0` 是**合法**取值（= 不重试），上下限之外与非整数都不收。
+   * 判据是边界两侧各一条——只钉「负数被拒」的话，把 min 写成 1 也照样绿，而 0 恰恰是常用档。
+   */
+  it('重试次数收 [0,20] 的整数（0 = 不重试）', () => {
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, modelRetries: MODEL_RETRIES_MIN }).success).toBe(true);
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, modelRetries: MODEL_RETRIES_MAX }).success).toBe(true);
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, modelRetries: MODEL_RETRIES_MAX + 1 }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, modelRetries: -1 }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...SETTINGS_DEFAULTS, modelRetries: 1.5 }).success).toBe(false);
+  });
+
+  /** 读侧夹值：非整数 / 非数字 / 越界都收进合法域（`loadConfig` 不做 schema 校验，这里是唯一收口） */
+  it('normalizeModelRetries 把来路不明的值夹回合法域', () => {
+    expect(normalizeModelRetries(3)).toBe(3);
+    expect(normalizeModelRetries(MODEL_RETRIES_MIN)).toBe(MODEL_RETRIES_MIN);
+    expect(normalizeModelRetries(MODEL_RETRIES_MAX)).toBe(MODEL_RETRIES_MAX);
+    expect(normalizeModelRetries(MODEL_RETRIES_MAX + 1)).toBe(MODEL_RETRIES_MAX);
+    expect(normalizeModelRetries(-1)).toBe(MODEL_RETRIES_MIN);
+    expect(normalizeModelRetries(2.5)).toBe(MODEL_RETRIES_DEFAULT);
+    expect(normalizeModelRetries('abc')).toBe(MODEL_RETRIES_DEFAULT);
+    expect(normalizeModelRetries(undefined)).toBe(MODEL_RETRIES_DEFAULT);
+    expect(normalizeModelRetries(null)).toBe(MODEL_RETRIES_DEFAULT);
   });
 
   // 用户口径：执行与评分都不限时间 ⇒ 设置里没有「单行超时」这一格。
@@ -135,6 +171,15 @@ describe('SettingsPatchSchema', () => {
     expect(SettingsPatchSchema.safeParse({ theme: 'blue' }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ diffBudgetBytes: 0 }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ diffBudgetBytes: 1.5 }).success).toBe(false);
+    expect(SettingsPatchSchema.safeParse({ modelRetries: MODEL_RETRIES_MAX + 1 }).success).toBe(false);
+  });
+
+  it('重试次数可以单字段下发（设置页那一格只发它）', () => {
+    const result = SettingsPatchSchema.safeParse({ modelRetries: 3 });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ modelRetries: 3 });
+    // 0 是合法补丁：`0` 与「没写」是两件事（后者一个字都不改）
+    expect(SettingsPatchSchema.safeParse({ modelRetries: 0 }).success).toBe(true);
   });
 
   /**

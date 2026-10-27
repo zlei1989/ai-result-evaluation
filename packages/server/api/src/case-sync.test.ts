@@ -117,7 +117,9 @@ function writeCaseFile(id: string, title: string): TestCase {
 }
 
 /** 写设置：默认评分模型 + 默认评分智能体就是同步智能体的来源（用户口径 Q19 不新增配置面） */
-function seedSettings(options: { judge?: boolean; customHeaders?: Record<string, string> } = {}): void {
+function seedSettings(
+  options: { judge?: boolean; customHeaders?: Record<string, string>; modelRetries?: number } = {},
+): void {
   saveConfig({
     settings: {
       ...SETTINGS_DEFAULTS,
@@ -127,6 +129,7 @@ function seedSettings(options: { judge?: boolean; customHeaders?: Record<string,
       defaultJudge: options.judge === false ? null : { providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       defaultJudgeAgent: options.judge === false ? null : 'cc',
       ...(options.customHeaders === undefined ? {} : { customHeaders: options.customHeaders }),
+      ...(options.modelRetries === undefined ? {} : { modelRetries: options.modelRetries }),
     },
     providers: [makeAnthropicProvider()],
   });
@@ -313,6 +316,23 @@ describe('自定义请求头进同步智能体的入参', () => {
 
     expect(runMock.mock.calls[0]?.[0]).toBeDefined();
     expect(Object.keys(runMock.mock.calls[0]?.[0] as object)).not.toContain('requestHeaders');
+  });
+});
+
+/**
+ * 重试次数同样跟着进同步智能体的入参：它与候选执行 / 评分取**同一份设置快照**。
+ * 少带这一格的表现是「同步那一次的模型请求回落到厂商默认重试次数」——同一份配置在两条路上
+ * 行为不同，而界面上一个字都看不出来。
+ */
+describe('模型请求重试次数进同步智能体的入参', () => {
+  it('设置里配了就带上同一个数', async () => {
+    writeCaseFile('c-1', '用例一');
+    runMock.mockResolvedValue(agentResult(messagesFor([['c-1.json', '补充用例']])));
+    seedSettings({ modelRetries: 3 });
+
+    await runCaseSync('commit');
+
+    expect(runMock.mock.calls[0]?.[0]).toMatchObject({ modelRetries: 3 });
   });
 });
 

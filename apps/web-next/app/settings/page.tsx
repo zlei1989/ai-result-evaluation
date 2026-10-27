@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * 设置页：四个 Tab —— 基础（模型供应商 / 界面主题 / 存储目录）/ 评分 / MCP / 技能。
+ * 设置页：四个 Tab —— 基础（模型供应商 / 界面主题 / 自定义请求头 / 模型调用重试 / 存储目录）/
+ * 评分 / MCP / 技能。
  *
  * Tab 的状态记在 URL 里（`?tab=basic|judge|mcp|skills`，解析与反向构造在 `src/settings-tab-state.ts`）：
  * 当前停在哪个 Tab 刷新后不变、地址可直接分享；切换走 `router.replace`（视图切换不进历史栈）。
@@ -60,6 +61,7 @@ import {
   McpPasteModal,
   McpServerFormModal,
   McpServerTable,
+  ModelRetryCard,
   PageShell,
   ProviderFormModal,
   ProviderModelsModal,
@@ -555,7 +557,7 @@ function SettingsPage(): React.ReactNode {
           items={[
             {
               key: 'basic',
-              // 基础 = 「开始评测之前先配一次」的三块，按配的先后排：模型从哪来（供应商）、
+              // 基础 = 「开始评测之前先配一次」的五块，按配的先后排：模型从哪来（供应商）、
               // 这块界面长什么样（主题）、评测产物落哪（存储目录）
               label: '基础',
               children: (
@@ -632,6 +634,18 @@ function SettingsPage(): React.ReactNode {
                       headers={settings.customHeaders}
                       saving={isUpdating}
                       onSave={(next) => changeSettings({ customHeaders: next })}
+                    />
+                  ) : (
+                    settingsPending
+                  )}
+                  {/* 模型调用重试次数：四家智能体每一次模型请求的失败重试上限（同一份设置、同一个数）。
+                      位置紧跟自定义请求头——两者都是「发往网关的每一次模型请求」这一族；
+                      回调体接错键（写成 `{ retries: value }`）类型查不出，接线守卫钉的是这半句。 */}
+                  {settings ? (
+                    <ModelRetryCard
+                      value={settings.modelRetries}
+                      saving={isUpdating}
+                      onChange={(value) => changeSettings({ modelRetries: value })}
                     />
                   ) : (
                     settingsPending

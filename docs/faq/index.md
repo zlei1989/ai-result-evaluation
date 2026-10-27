@@ -126,6 +126,7 @@
 - [失败/中止的那一轮把 `tokens` 写成 `{0,0,0}`、日志里还是 `metered: true`（厂商的 `usage` 是全 0 冻结对象）](/faq/pi#失败-中止的那一轮把-tokens-写成-0-0-0-、日志里还是-metered-true-厂商的-usage-是全-0-冻结对象)
 - [`run()` 返回后 MCP stdio 子进程还活着（`AgentSession.dispose()` 不 emit `session_shutdown`）](/faq/pi#run-返回后-mcp-stdio-子进程还活着-agentsession-dispose-不-emit-session-shutdown)
 - [`expected 'session-file' to be 'wire'` + `子任务一条逐字增量都没有`（满载时 red、空载时 green 的假红）](/faq/pi#expected-session-file-to-be-wire-子任务一条逐字增量都没有-满载时-red、空载时-green-的假红)
+- [`pi 本次调用失败（…）：厂商原文「500 {"type":"error","error":{"type":"api_error","message":"服务维护中"}}」`（网关第三条请求已经成功，这一行仍按失败落盘）](/faq/pi#pi-本次调用失败-厂商原文「500-type-error-error-type-api-error-message-服务维护中-」-网关第三条请求已经成功-这一行仍按失败落盘)
 
 ## 跨家与环境
 

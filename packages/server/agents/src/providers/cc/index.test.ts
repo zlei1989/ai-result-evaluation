@@ -440,6 +440,31 @@ describe('claudeCodeProvider', () => {
     expect(recorder.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Trace-Id: abc');
   });
 
+  /**
+   * 模型请求失败后的重试次数：落点是子进程环境 `CLAUDE_CODE_MAX_RETRIES`（CLI 侧读它当
+   * `api_retry` 帧里 `max_retries` 的上限）。
+   *
+   * 两半都要钉：给了就逐字写进去（数字要转字符串——环境变量只能是字符串）；**没给时这个键根本不出现**，
+   * 既不是空串也不是 `undefined` 占位（后者会被 `buildSubprocessEnv` 删掉，顺手抹掉宿主继承来的同名变量）。
+   */
+  it('重试次数：进 CLAUDE_CODE_MAX_RETRIES；没给时不注入这个键', async () => {
+    const bare = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: bare, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput());
+    expect(Object.hasOwn(bare.env ?? {}, 'CLAUDE_CODE_MAX_RETRIES')).toBe(false);
+
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({ modelRetries: 10 }));
+    expect(recorder.env?.CLAUDE_CODE_MAX_RETRIES).toBe('10');
+
+    // 0 是合法值（= 不重试），**不许**被 `||` 一类的兜底吞成默认值
+    const zero = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: zero, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput({ modelRetries: 0 }));
+    expect(zero.env?.CLAUDE_CODE_MAX_RETRIES).toBe('0');
+  });
+
   it('凭据隔离：子进程拿到了密钥，宿主 process.env 一个字段都没变', async () => {
     const before = { ...process.env };
     const recorder = createRecorder();

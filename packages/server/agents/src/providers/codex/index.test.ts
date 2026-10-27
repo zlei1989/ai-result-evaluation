@@ -1380,6 +1380,21 @@ describe('纯函数：配置构造', () => {
   });
 
   /**
+   * 模型请求重试次数的**落点与类型**：`model_providers.aieval.request_max_retries`。
+   *
+   * 两条都要钉：① 给了就取那个数（**数字**，不是字符串——写成 `"10"` CLI 侧的类型校验不收）；
+   * ② 没给时保留本适配器的历史默认 `1`（不是契约默认 10：适配器只认入参，「没给」= 不表态）。
+   */
+  it('重试次数：进 `request_max_retries`（数字）；没给时保留历史默认 1', () => {
+    const providerOf = (config: Record<string, unknown>): Record<string, unknown> =>
+      (config['model_providers'] as Record<string, Record<string, unknown>>)['aieval'] ?? {};
+    expect(providerOf(buildCodexConfig('https://gw/v1'))['request_max_retries']).toBe(1);
+    expect(providerOf(buildCodexConfig('https://gw/v1', { requestRetries: 10 }))['request_max_retries']).toBe(10);
+    // 0 = 不重试：同样不许被兜底吞成默认值
+    expect(providerOf(buildCodexConfig('https://gw/v1', { requestRetries: 0 }))['request_max_retries']).toBe(0);
+  });
+
+  /**
    * 提问工具的两格开关与应答面**同生同灭**：`askUser` 不给（= 本次运行没有应答面）⇒ 两格逐字不变。
    *
    * 为什么这一条必须逐字比：开了开关却没人答时厂商会一直等那一帧（`isBlocking: false` 与

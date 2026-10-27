@@ -428,6 +428,14 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // 为什么不直接在键上写 undefined：`route.ts:94-96` 会把 undefined 的键**删掉**，
       // 于是非 off 档会顺手删掉宿主继承来的同名变量。
       ...claudeExtraEnvFor(input.effort),
+      /**
+       * 模型请求失败后的重试次数（设置页「基础」→「模型调用重试」）：CLI 侧唯一公开的落点是
+       * 这个环境变量，它同时决定 `system/api_retry` 帧里 `max_retries` 的上限。
+       *
+       * **条件展开**（不是写 `undefined`）：`buildSubprocessEnv` 会把值为 `undefined` 的键删掉，
+       * 而那条路会顺手抹掉宿主继承来的同名变量——「没配」与「配了、随后清掉宿主那份」不是同一件事。
+       */
+      ...(input.modelRetries === undefined ? {} : { CLAUDE_CODE_MAX_RETRIES: String(input.modelRetries) }),
       ...(customHeaders === undefined ? {} : { [ANTHROPIC_CUSTOM_HEADERS_ENV]: customHeaders }),
     },
   });

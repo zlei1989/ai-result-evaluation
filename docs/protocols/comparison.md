@@ -16,6 +16,7 @@ cc / codex / dsh / pi 四家厂商智能体的逐项对照：接了四家之后�
 | base URL 处理 | **剥**尾部 `/v1`（SDK 自己追加 `/v1/messages`） | **补** `/v1`（CLI 只走 `POST {base}/v1/responses`） | 按 wire 分叉：anthropic 剥、openai 补 | 按 wire 分叉，规则与 dsh 逐字相同（pi 不做任何归一化） |
 | 配置目录 | `CLAUDE_CONFIG_DIR` + `HOME` | `CODEX_HOME` + `HOME` | `DSH_HOME`（**不是** HOME） | 行 `configHome`（装载器的 `agentDir`）；**进程级全局路径只认 `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` / `~/.pi/agent`**（子会话与扩展走它，`agentDir` 管不到；第二格优先、只管落盘目录） |
 | 自定义请求头落点 | `ANTHROPIC_CUSTOM_HEADERS`（子进程环境，换行分隔的 `名字: 值`） | `model_providers.aieval.http_headers`（线程级 config 的**字面值**表，不是 `env_http_headers`） | overlay 路由的 `headers` 块；**Harness 归属头恒赢**（同名被静默滤掉） | `registerProvider({ headers })`（provider 级，每次请求都带） |
+| 模型请求重试落点 | 子进程环境 `CLAUDE_CODE_MAX_RETRIES`（`api_retry` 帧的 `max_retries` 同源） | `model_providers.aieval.request_max_retries`（数字） | overlay 路由的 `retryPolicy: { mode: normal, maxRetries }`（执行者是 `dsh-llm-retry`，base profile 已挂） | 会话 `settings.retry = { enabled, maxRetries }`；`0` 落 `enabled: false` |
 | `cancelMidTurn` | true | true | **false**（终止晚 5 秒是设计） | true（`session.abort()` 毫秒级终结在途轮） |
 | 结构化输出通道 | **原生**：`options.outputFormat`（收尾消息回 `structured_output`） | **原生**：`turn/start` 一等字段 `outputSchema` | **无原生通道 ⇒ 适配器内部填充层**：首轮提示词追加 schema 约束 + 骨架驱动的同会话修正轮 | **工具通道**：自定义工具 `submit_result` 带 `constrainedSampling`（strict），形状由厂商侧强制；预检不过 ⇒ 显式降级（降 `prefer` + 填充层） |
 | `applied.structuredOutput` | 按本次收尾消息里有没有 `structured_output` 上报 | 按本次有没有把 schema 发进 `turn/start` 上报 | **恒 `false`**（填充层不是原生通道） | 按**本轮答复是否确实来自被 strict 约束的工具参数**上报（模型改走正文时翻回 `false`） |

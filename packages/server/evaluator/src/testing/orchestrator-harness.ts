@@ -294,6 +294,11 @@ export function seedRunnableRun(options: {
    * 三处是否真把这张表交给了 `run()`，只有假适配器记下的 `requestHeaders` 看得见。
    */
   customHeaders?: Settings['customHeaders'];
+  /**
+   * `settings.modelRetries`（设置页那张「模型调用重试」卡）：不填 = 契约默认 10。
+   * 与 `customHeaders` 同一条判据面——三处调用点会不会真把它交给 `run()`，只有假适配器记下的值看得见。
+   */
+  modelRetries?: Settings['modelRetries'];
 }): { run: EvalRun; provider: Provider } {
   // 夹具仓库走模板副本（见 repoTemplate 的说明）：真仓库、独立路径、内容与模板逐字节相同，
   // 因此 commit 也相同 —— 省下每次 7 个 git 进程。
@@ -340,6 +345,7 @@ export function seedRunnableRun(options: {
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
     ...(options.customHeaders === undefined ? {} : { customHeaders: options.customHeaders }),
+    ...(options.modelRetries === undefined ? {} : { modelRetries: options.modelRetries }),
   });
   const candidates = Array.from({ length: options.candidateCount }, () =>
     makeCandidateFixture({

@@ -181,6 +181,12 @@ export interface CodexConfigOptions {
    * 密钥再绕一圈存进子进程环境（多一处泄漏面），而 `http_headers` 是字面值、只活在这份 config 里。
    */
   headers?: Record<string, string> | undefined;
+  /**
+   * 模型请求**失败后**的重试次数（设置页「基础」→「模型调用重试」）。缺省 ⇒ 不写我们这一格的值，
+   * 保留 `request_max_retries: 1`（本适配器的历史默认：一次都不多试，尽可能快地把真失败暴露出来）。
+   * CLI 侧的键名是 `request_max_retries`，语义是「重试几次」（不含首次），与本格 1:1。
+   */
+  requestRetries?: number | undefined;
 }
 
 /**
@@ -208,7 +214,7 @@ export interface CodexConfigOptions {
  * 开了开关却没人答，厂商会一直等那一帧（`isBlocking: false` 与 `autoResolutionMs: null` 都不让它自己收场）。
  */
 export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = {}): Record<string, unknown> {
-  const { contextWindow, reasoningSummary, reasoningEffort, mcpServers, askUser, headers } = options;
+  const { contextWindow, reasoningSummary, reasoningEffort, mcpServers, askUser, headers, requestRetries } = options;
   return {
     model_provider: CODEX_PROVIDER_ID,
     model_providers: {
@@ -217,7 +223,11 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
         base_url: baseUrl,
         wire_api: 'responses',
         env_key: CODEX_API_KEY_ENV,
-        request_max_retries: 1,
+        /**
+         * 重试次数：设置页给值就照它的（语义同为「重试几次」，不含首次），没给保留 1。
+         * 这是 CLI 侧 `model_providers.<id>` 的一等键，写数字而不是字符串——写成字符串 CLI 侧不收。
+         */
+        request_max_retries: requestRetries ?? 1,
         ...(headers === undefined || Object.keys(headers).length === 0 ? {} : { http_headers: headers }),
       },
     },
@@ -427,6 +437,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
       askUser: context.askUser.available,
       // 自定义请求头（设置页那一张卡）：线程级 config 是 CLI 唯一认「附加请求头」的地方
       headers: sendableRequestHeaders(input.requestHeaders),
+      // 模型请求失败后的重试次数（设置页那一格）：缺省不给，保住 `request_max_retries: 1` 的历史默认
+      requestRetries: input.modelRetries,
     }),
     prompt: input.prompt,
     /**

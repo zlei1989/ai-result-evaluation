@@ -437,6 +437,18 @@ describe('pi 的增量帧', () => {
 });
 
 describe('pi 的失败归因', () => {
+  /**
+   * 失败归因走**两拍**：`message_end` 只把结论暂存进运行态，`agent_end(willRetry:false)` 才交给骨架。
+   * 判据是「暂存那拍必须为 null」——它保的是「第一次失败、随后被厂商重试成功」不被判成失败
+   * （骨架的 `failure` 一旦写入就不再清除）。
+   */
+  function failureAfterAgentEnd(message: unknown): TurnProjection['failure'] {
+    const runState = createPiRunState();
+    const staged = project(message, createTurnState({ turns: 1 }), runState);
+    expect(staged.failure, '失败不应在 message_end 当场交出（会被厂商重试骗成失败）').toBeNull();
+    return project({ type: 'agent_end', willRetry: false }, createTurnState({ turns: 1 }), runState).failure;
+  }
+
   it('stopReason=error 时读 errorMessage，厂商英文短句翻成带 host 的中文原因', () => {
     const cases: Array<[string, string]> = [
       ['Connection error.', '无法连接上游'],
@@ -444,25 +456,75 @@ describe('pi 的失败归因', () => {
       ['terminated', '切断了连接'],
     ];
     for (const [original, expected] of cases) {
-      const projection = project(messageEnd(assistantMessage({ stopReason: 'error', errorMessage: original })));
+      const failure = failureAfterAgentEnd(messageEnd(assistantMessage({ stopReason: 'error', errorMessage: original })));
       /**
        * **自报超时必须归 `AGENT_TIMED_OUT`**（`types.ts`：「上游自己报的超时也归它」）：
        * `AGENT_FAILED` 在自动重试表里，而重试改变不了上游超时 ⇒ 那一档会被白跑两遍。
        * 另两句（连接错误 / 响应中断）仍是 `AGENT_FAILED`——它们是可重试的瞬时故障。
        */
-      expect(projection.failure?.code, original)
+      expect(failure?.code, original)
         .toBe(original === 'Request timed out.' ? 'AGENT_TIMED_OUT' : 'AGENT_FAILED');
-      expect(projection.failure?.message, original).toContain(expected);
+      expect(failure?.message, original).toContain(expected);
       // host 与厂商原文都要在文案里（前者是路由事实，后者是排障要搜的那一句）
-      expect(projection.failure?.message, original).toContain('gw.example.com');
-      expect(projection.failure?.message, original).toContain(original);
+      expect(failure?.message, original).toContain('gw.example.com');
+      expect(failure?.message, original).toContain(original);
     }
   });
 
   it('未知文案不编：带上 host 原样交出', () => {
-    const projection = project(messageEnd(assistantMessage({ stopReason: 'error', errorMessage: 'boom' })));
-    expect(projection.failure?.message).toContain('boom');
-    expect(projection.failure?.message).toContain('gw.example.com');
+    const failure = failureAfterAgentEnd(messageEnd(assistantMessage({ stopReason: 'error', errorMessage: 'boom' })));
+    expect(failure?.message).toContain('boom');
+    expect(failure?.message).toContain('gw.example.com');
+  });
+
+  /**
+   * 厂商自动重试的那条链：失败暂存 ⇒ `agent_end.willRetry:true` 丢掉暂存 ⇒ 重试成功 ⇒ 全程无失败。
+   * 真机形态（`agent-session.js`）：`message_end(stopReason:error)` → `agent_end(willRetry:true)` →
+   * `auto_retry_start` → 下一条成功消息 → `auto_retry_end(success:true)` → `agent_settled`。
+   */
+  it('失败会被厂商重试 ⇒ 不判失败（agent_end.willRetry 是判据，auto_retry_start 是第二道）', () => {
+    const runState = createPiRunState();
+    project(
+      messageEnd(assistantMessage({ stopReason: 'error', errorMessage: 'Connection error.' })),
+      createTurnState({ turns: 1 }),
+      runState,
+    );
+    const retried = project({ type: 'agent_end', willRetry: true }, createTurnState({ turns: 1 }), runState);
+    expect(retried.failure).toBeNull();
+
+    // 第二道：即便 agent_end 不在（队列 / 压缩路径），auto_retry_start 也把暂存清掉
+    project(
+      messageEnd(assistantMessage({ stopReason: 'error', errorMessage: 'Connection error.' })),
+      createTurnState({ turns: 2 }),
+      runState,
+    );
+    const started = project(
+      { type: 'auto_retry_start', attempt: 1, maxAttempts: 2, delayMs: 500, errorMessage: 'Connection error.' },
+      createTurnState({ turns: 2 }),
+      runState,
+    );
+    expect(started.failure).toBeNull();
+    expect(summaries(started).join('')).toContain('厂商自动重试第 1 次/2');
+
+    // 重试成功：成功助手消息把暂存清空，收尾无失败
+    project(
+      messageEnd(assistantMessage({ stopReason: 'stop' })),
+      createTurnState({ turns: 3 }),
+      runState,
+    );
+    expect(project({ type: 'agent_settled' }, createTurnState({ turns: 3 }), runState).failure).toBeNull();
+  });
+
+  it('重试用尽 ⇒ 失败照常交出，且收尾那一拍也带着它', () => {
+    const runState = createPiRunState();
+    project(
+      messageEnd(assistantMessage({ stopReason: 'error', errorMessage: 'Connection error.' })),
+      createTurnState({ turns: 1 }),
+      runState,
+    );
+    const released = project({ type: 'agent_end', willRetry: false }, createTurnState({ turns: 1 }), runState);
+    expect(released.failure?.code).toBe('AGENT_FAILED');
+    expect(project({ type: 'agent_settled' }, createTurnState({ turns: 1 }), runState).failure?.code).toBe('AGENT_FAILED');
   });
 
   it('正常档位不是失败（stop / toolUse / length 都不算）', () => {
@@ -483,11 +545,8 @@ describe('pi 的失败归因', () => {
   });
 
   it('厂商自己中止（本侧没发过停止请求）必须归成失败，不许静默收成 completed', () => {
-    const projection = project(
-      messageEnd(assistantMessage({ stopReason: 'aborted' })),
-      createTurnState({ turns: 1 }),
-    );
-    expect(projection.failure?.code).toBe('AGENT_FAILED');
+    const failure = failureAfterAgentEnd(messageEnd(assistantMessage({ stopReason: 'aborted' })));
+    expect(failure?.code).toBe('AGENT_FAILED');
   });
 
   it('agent_settled.aborted 记下「谁停的」：看门狗/宿主停机与用户终止分得开', () => {
@@ -512,6 +571,7 @@ describe('pi 的失败归因', () => {
     // 逐字段比整份状态：新加的格（派发记账、转写增量记账、wire 载体去重）必须显式出现在这里，不能悄悄长出来
     expect(userStop).toEqual({
       stopRequested: true,
+      pendingFailure: null,
       structuredRejections: 0,
       selfAborted: false,
       watchdogFired: false,

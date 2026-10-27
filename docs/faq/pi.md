@@ -309,3 +309,21 @@ AssertionError: 子任务一条逐字增量都没有——wire 的 message_updat
 **根因**：wire 通道在总线报 `subagents:started` 之后才去 `getRecord(id).session` 并 `subscribe()`，而 `subscribe()` **只收订阅之后的事件**。假网关是瞬时回包，「拿到句柄」那一次 20 ms 轮询在 CPU 争抢下可能整体输给子会话的一整轮往返 ⇒ 那一轮的助手 / 工具事件一条都没进缓冲，正文全部由转写文件兜底（`session-file`、无增量帧）。**测试环境 ≠ 运行环境**：真网关是秒级往返，这个窗口赢面极大；争抢只出现在并行跑测试的机器上。
 
 **解决方案**：**根治在适配器里**——订阅那一刻用 `session.messages`（已完成消息数组）把缺口**补账**进缓冲（`packages/server/agents/src/providers/pi/subagent-wire.ts` 的 `backfillHistory`：助手消息按绝对序定轮次、工具结果沿用当前轮，与转写路径的助手行序对齐 ⇒ 载体键相同、去重照旧收敛）。于是该身份的历史与新事件同形地走同一条通路，`source` 恒为 `wire`，转写退成真正的兜底（`session.messages` 也读不出时）。判据：`subagent-wire.test.ts` 的「订阅前已完成的消息由 session.messages 补账：来源 wire、轮次绝对序、后续事件接着数」。变异验证：去掉那一句补账，守卫见红。
+
+---
+
+## `pi 本次调用失败（…）：厂商原文「500 {"type":"error","error":{"type":"api_error","message":"服务维护中"}}」`（网关第三条请求已经成功，这一行仍按失败落盘）
+
+**日期**：2026-10-27
+
+**现象**：开厂商自动重试（`settings.retry = { enabled: true, maxRetries: 2 }`）后，本地假网关只对前两条模型请求回 500、第三条回 200，`agentProvider.run` 仍交回失败：
+
+```text
+pi 本次调用失败（127.0.0.1:53885）：厂商原文「500 {"type":"error","error":{"type":"api_error","message":"服务维护中"}}」
+```
+
+同一次运行的 `turns` 是 **3**（真的跑了三条请求），网关入站记录是 `500 / 500 / 200`，而 `exitReason` 仍是 `error`。
+
+**根因**：pi 的自动重试是「先失败一帧、再重试」：`message_end(stopReason:'error')` → `agent_end(willRetry:true)` → `auto_retry_start` → 成功消息。适配器原来在 `message_end` 上就把 `readAssistantFailure` 的结果交给骨架，而骨架的 `failure` 是「最后写入者赢且**不会被清除**」⇒ 第一次 500 的归因一直留到收尾，重试成功也盖不回来。`agent_end` 当时走未识别兜底（只落原始日志），`willRetry` 这一格没人读。
+
+**解决方案**：`packages/server/agents/src/providers/pi/events.ts` 改成两拍——`message_end` 把归因暂存进 `PiRunState.pendingFailure`（投影出口恒 `null`）；`agent_end` 按 `willRetry` 分流（`true` ⇒ 丢掉暂存，`false` ⇒ 交出）；`auto_retry_start` 清暂存并落一条「厂商自动重试第 N/M 次，X s 后重发」的活动行；`agent_settled` 兜底交出；成功收尾的助手消息清空暂存。判据：`events.test.ts` 的「失败会被厂商重试 ⇒ 不判失败」「重试用尽 ⇒ 失败照常交出」，真机判据 `model-retries-live.test.ts` 的 pi 那一条（前两次 500 + `modelRetries: 2` ⇒ 恰好 3 条请求且 `ok: true`）。变异验证：把 `message_end` 改回当场交 `failure`，events 那两条与真机那条同时见红。

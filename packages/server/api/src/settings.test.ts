@@ -89,6 +89,20 @@ describe('updateSettings', () => {
     expect(loadConfig().settings.theme).toBe('light');
   });
 
+  /**
+   * 模型请求重试次数这一格的往返：单字段补丁要真的落盘、出口要读回同一个数。
+   * `0` 单独钉一次——它是「不重试」的合法值，最容易被 `||` 一类的兜底顺手吞成默认值。
+   */
+  it('modelRetries：单字段补丁落盘，出口读回同一个数（0 也照收）', () => {
+    expect(getSettings().modelRetries).toBe(SETTINGS_DEFAULTS.modelRetries);
+
+    expect(updateSettings({ modelRetries: 3 }).modelRetries).toBe(3);
+    expect(loadConfig().settings.modelRetries).toBe(3);
+
+    expect(updateSettings({ modelRetries: 0 }).modelRetries).toBe(0);
+    expect(loadConfig().settings.modelRetries).toBe(0);
+  });
+
   it('空补丁不改变任何字段', () => {
     updateSettings({ theme: 'dark' });
     const next = updateSettings({});

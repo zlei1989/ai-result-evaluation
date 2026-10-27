@@ -331,6 +331,11 @@ export function seedConfig(input: {
   skills?: Settings['skills']['entries'];
   /** 设置页那份**自定义请求头**（不填 = 空表）：与 `mcpServers` 同一条口径 */
   customHeaders?: Settings['customHeaders'];
+  /**
+   * 模型请求失败后的重试次数（不填 = 契约默认 10）。
+   * 它是「四家对齐」那一格：候选 / 追问 / 评分三处是否真把它交给了 `run()`，由假适配器记下的值判。
+   */
+  modelRetries?: Settings['modelRetries'];
 }): void {
   // 用例是**一文件一落**，不再随 saveConfig 覆盖写：所以每次 seed 都要先把上一批清掉，
   // 否则「这一次 seed 没给用例」的用例（`seedConfig({ workspaceRoot })` 表示「用例已被删除」）
@@ -349,6 +354,7 @@ export function seedConfig(input: {
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
       ...(input.skills === undefined ? {} : { skills: { entries: input.skills } }),
       ...(input.customHeaders === undefined ? {} : { customHeaders: input.customHeaders }),
+      ...(input.modelRetries === undefined ? {} : { modelRetries: input.modelRetries }),
     },
     providers: input.providers ?? [],
   });
@@ -607,6 +613,14 @@ export interface FakeAgentCall {
    * 三处各会不会填只有这一格看得见；故取值刻意保留 `undefined`，不兜成 `{}`。
    */
   requestHeaders?: Record<string, string>;
+  /**
+   * 实际交给适配器的**模型请求重试次数**（原样记下；`undefined` = 这一格根本没传）。
+   *
+   * 为什么必须记录：与 `requestHeaders` 同一条判据面——漏传是静默的（四家各自回落到厂商默认
+   * 10 / 1 / 5 / 0，行照常跑完、分数照样出得来，只是「四家对齐」这件事没发生），
+   * 而这条只有假适配器记下的值看得见。取值保留 `undefined`，不兜成契约默认值。
+   */
+  modelRetries?: number;
   /**
    * 这一次运行拿到的入参上**有没有提问回调**（`input.onAskUser !== undefined`）。
    *
@@ -1068,6 +1082,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         injectDelivered: [],
         resumeSessionId: input.resume?.sessionId,
         ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
+        ...(input.modelRetries === undefined ? {} : { modelRetries: input.modelRetries }),
         startedAt: Date.now(),
         finishedAt: null,
         exitReason: null,

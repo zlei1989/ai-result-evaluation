@@ -116,6 +116,18 @@ export const PI_STRUCTURED_REJECTION_BUDGET = 3;
 export interface PiRunState {
   /** 收到过停止请求（用户终止 / 看门狗 / 宿主停机都从骨架的 `interrupt()` 进来） */
   stopRequested: boolean;
+  /**
+   * 最近一次**失败的助手往返**留下的归因，等「它会不会被厂商重试」有答案了再交出去。
+   *
+   * 为什么要暂存：pi 的自动重试是**先失败一帧、再重试**（`message_end(stopReason:error)` →
+   * `agent_end(willRetry:true)` → `auto_retry_start`），而骨架的 `failure` 一旦写入就不再被清除。
+   * 直接把每一条失败助手消息交上去，一次「第一次 500、第二次成功」的运行会被判成失败——
+   * 那正是开启厂商重试之后最常见的形态。
+   * 判据：`agent_end.willRetry === true`（或收到 `auto_retry_start`）⇒ 丢掉暂存；
+   * `agent_end.willRetry === false` / `agent_settled` ⇒ 交出去（重试用尽或本来就不重试）。
+   * 成功收尾的助手消息会把它清空。
+   */
+  pendingFailure: AgentFailure | null;
   /** 结构化输出的参数被厂商**连续**拒了几次（只增不清：成功收尾时这一轮已经结束） */
   structuredRejections: number;
   /**
@@ -245,6 +257,7 @@ export interface PiDispatch {
 export function createPiRunState(): PiRunState {
   return {
     stopRequested: false,
+    pendingFailure: null,
     structuredRejections: 0,
     selfAborted: false,
     watchdogFired: false,
@@ -370,6 +383,17 @@ export function projectPiEvent(
   };
 }
 
+/**
+ * pi 的自动重试两帧（`agent-session.js`）：
+ *   · `auto_retry_start`：`{ attempt, maxAttempts, delayMs, errorMessage }`，在退避等待**之前**发；
+ *   · `auto_retry_end`：`{ success, attempt, finalError? }`，成功那一条跟在重试后的第一条成功助手消息上，
+ *     重试用尽时以 `success: false` 收场。
+ * 它们不是「未识别的厂商负载」：`auto_retry_start` 是「上一条失败会被重试」的直接证据
+ * （见 `PiRunState.pendingFailure`），重试期间的那条人话也靠它落。
+ */
+const PI_AUTO_RETRY_START_TYPE = 'auto_retry_start';
+const PI_AUTO_RETRY_END_TYPE = 'auto_retry_end';
+
 /** 单个事件的投影（派发记账在这一步登记，故补发必须排在它之后，见 `projectPiEvent`） */
 function projectEvent(
   raw: unknown,
@@ -400,6 +424,9 @@ function projectEvent(
     return { drafts: [], tokens: null, turns: null, failure: null };
   }
   if (type === 'tool_execution_end') return projectToolExecutionEnd(raw, event, state, runState, subagents);
+  if (type === 'agent_end') return projectAgentEnd(raw, event, runState);
+  if (type === PI_AUTO_RETRY_START_TYPE) return projectAutoRetryStart(raw, event, runState);
+  if (type === PI_AUTO_RETRY_END_TYPE) return projectAutoRetryEnd(raw, event);
   if (type === 'agent_settled') return projectAgentSettled(raw, event, state, runState);
   return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
 }
@@ -523,14 +550,85 @@ function projectMessageEnd(
   }
   const draft = piAssistantMessageDraft(message, roundOf(state));
   const timing = piTimingSpan(message);
+  /**
+   * **失败先暂存，不当场交给骨架**：这一条失败可能马上被厂商重试（见 `PiRunState.pendingFailure`），
+   * 而骨架的 `failure` 一旦写入就不再清除 ⇒ 当场交出去会把「第一次 500、第二次成功」判成失败。
+   * 归因本身仍在这里算（`readAssistantFailure` 的所有档位与文案都不变），只是出口换到
+   * `agent_end(willRetry)` / `agent_settled` 那一拍。
+   * 成功收尾的助手消息会把暂存清空——那正是「重试链已经走出来了」的证据。
+   */
+  runState.pendingFailure = readAssistantFailure(message, context, runState);
   return {
     drafts,
     tokens: cumulativeTokens(state),
     ...roundTripFields(state, runState),
-    failure: readAssistantFailure(message, context, runState),
+    failure: null,
     messages: draft === null ? [] : [draft],
     // 采不到就**不带这一格**（不是「把已采到的时间清掉」，见 `TurnProjection.timing` 的三条语义）
     ...(timing === undefined ? {} : { timing }),
+  };
+}
+
+/**
+ * `agent_end`：**不是**本次运行的结束（见文件头），但它带 `willRetry`——
+ * 「上一条失败的助手往返会不会被重试」在这一帧就有答案，暂存因此在这里分流：
+ * 会重试 ⇒ 丢掉暂存（那只是重试链里的一次尝试，重试用尽时还会有一条失败消息）；不会 ⇒ 交出去。
+ */
+function projectAgentEnd(
+  raw: unknown,
+  event: Record<string, unknown> | null,
+  runState: PiRunState,
+): TurnProjection {
+  if (event?.['willRetry'] === true) {
+    runState.pendingFailure = null;
+    return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: null };
+  }
+  return { drafts: [unknownEventDraft(raw)], tokens: null, turns: null, failure: runState.pendingFailure };
+}
+
+/**
+ * `auto_retry_start`：退避等待**之前**的一帧。它同时是「上一条失败会被重试」的第二条证据
+ * （`agent_end.willRetry` 之外，队列 / 压缩路径上也可能从这里进重试），故暂存一并清掉。
+ * 人话按本仓的重试口径落一条带摘要的原始日志：退避期间 pi 没有别的产品事件，
+ * 用户要能从活动行上看出「在重试」而不是「卡死了」。
+ */
+function projectAutoRetryStart(
+  raw: unknown,
+  event: Record<string, unknown> | null,
+  runState: PiRunState,
+): TurnProjection {
+  runState.pendingFailure = null;
+  const attempt = readNumber(event, 'attempt');
+  const maxAttempts = readNumber(event, 'maxAttempts');
+  const delayMs = readNumber(event, 'delayMs');
+  const message = readString(event, 'errorMessage');
+  const progress = attempt === null ? '' : `第 ${attempt} 次${maxAttempts === null ? '' : `/${maxAttempts}`}`;
+  const wait = delayMs === null ? '' : `，${(delayMs / 1000).toFixed(1)} s 后重发`;
+  const reason = message === null ? '' : `：${message}`;
+  return {
+    drafts: [logDraft('stdout', safeStringify(raw), `厂商自动重试${progress}${wait}${reason}`)],
+    tokens: null,
+    turns: null,
+    failure: null,
+  };
+}
+
+/**
+ * `auto_retry_end`：重试链收尾（成功或次数用尽）。失败本身由 `message_end` 暂存、`agent_end`
+ * 交出（那一帧才是骨架的归因入口），这里只留一条人话——两处都交会让同一次失败记两遍。
+ */
+function projectAutoRetryEnd(raw: unknown, event: Record<string, unknown> | null): TurnProjection {
+  const draft = unknownEventDraft(raw);
+  if (event?.['success'] === true) return { drafts: [draft], tokens: null, turns: null, failure: null };
+  const attempt = readNumber(event, 'attempt');
+  const finalError = readString(event, 'finalError');
+  const times = attempt === null ? '' : `（共 ${attempt} 次）`;
+  const reason = finalError === null ? '' : `：${finalError}`;
+  return {
+    drafts: [logDraft('stderr', safeStringify(raw), `[WARN] 厂商自动重试未成功${times}${reason}`)],
+    tokens: null,
+    turns: null,
+    failure: null,
   };
 }
 
@@ -942,7 +1040,8 @@ function projectAgentSettled(
     drafts,
     tokens: cumulativeTokens(state),
     ...roundTripFields(state, runState),
-    failure: null,
+    // 真结束这一拍把暂存的失败交出去（`agent_end` 已交过的会重交同一个值，骨架按覆盖处理）
+    failure: runState.pendingFailure,
   };
 }
 

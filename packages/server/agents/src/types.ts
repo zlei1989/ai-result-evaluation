@@ -244,6 +244,23 @@ export interface AgentRunInput {
    */
   requestHeaders?: Record<string, string>;
   /**
+   * 模型请求**失败后**的重试次数（不含首次调用）。**可选**：不给 = 各家保持自己的默认行为。
+   *
+   * 语义只有一句「最多再试几次」，四家的键恰好都按这个语义收，故本仓做 **1:1 翻译、不做 ±1 换算**：
+   *   · cc → 子进程环境 `CLAUDE_CODE_MAX_RETRIES`；
+   *   · codex → 线程级 `model_providers.<id>.request_max_retries`；
+   *   · dsh → per-launch overlay 的 `providers.<route>.retryPolicy.maxRetries`（`mode: normal`）；
+   *   · pi → 会话 `settings.retry` 的 `{ enabled, maxRetries }`（`0` 落 `enabled: false`）。
+   *
+   * 三条口径与 `requestHeaders` 同源：
+   *   · **由调用方填**（候选执行、追问、评分、用例同步四处各读一次配置快照），适配器**不读**
+   *     `loadConfig()`；
+   *   · **缺省不给键**：不给 = 厂商默认（cc 10 / codex 1 / dsh 5 / pi 关闭），既有调用方的行为逐字不变；
+   *   · 作用面是**发往网关的每一次模型请求**，与「整行自动重跑」（编排层的 `CANDIDATE_RETRY`）是两层：
+   *     后者读不到这一格，前者也不改变候选的 `attempts`。
+   */
+  modelRetries?: number;
+  /**
    * 本次要注入的 **MCP 服务器**（控制权在编排层）。**可选**：不给 = 一台都不注入。
    *
    * 三条口径，缺一条就会长出第二份真源：
