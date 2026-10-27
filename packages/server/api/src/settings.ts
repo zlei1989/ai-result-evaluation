@@ -8,7 +8,7 @@
  *      （`resolveCasesRootForRead`）：两处各判一次必然漂移，症状是「设置页显示一个路径、用例落在另一个」；
  *   4. `saveConfig` 抛的裸 errno 折成可直接展示的中文 `INTERNAL`（见 `updateSettings` 的 catch，
  *      否则路由层会把 errno 原文返回给用户）；
- *   5. 本文件的两个入口都回 **`SettingsView`**（`env` / `headers` 的敏感值已掩码）。
+ *   5. 本文件的两个入口都回 **`SettingsView`**（`env` / `headers` / `customHeaders` 的敏感值已掩码）。
  *      服务端自己要拿明文（MCP 注入）时读 `loadConfig()`——照 `providers.ts` 的先例：
  *      出口走 view，真源永远是落盘那份，别把掩码串注进厂商配置。
  */
@@ -66,8 +66,9 @@ export function getSettings(): SettingsView {
  * 校验出现在**同一个请求**里是为了不让设置页出现半生效状态：两格各存一次的话，
  * 用户会拿到「工作区已改、用例目录没改」这种谁也解释不清的结果。
  *
- * 合并**之前**先消解 MCP 密钥的「未改动」信号（空串 / 与本服务端掩码串逐字相同 ⇒ 保留落盘原值）：
- * `mcpServers` 是整份替换，界面拿到的是掩码，原样回传会把真密钥覆盖成掩码串。
+ * 合并**之前**先消解两张表的「未改动」信号（空串 / 与本服务端掩码串逐字相同 ⇒ 保留落盘原值）：
+ * `mcpServers` 与 `customHeaders` 都是整份替换，界面拿到的是掩码，原样回传会把真密钥覆盖成掩码串。
+ * 两张表由同一个 `preserveUnchangedSecrets` 一趟消解（两张表各调各的就会漂移成「一张保住了、另一张没」）。
  *
  * `skills` 是**逐条合并**（`mergeSkillsEntries`），与 `mcpServers` 的整份替换**刻意不同**：
  * 浅合并会把整个停用名单换成补丁里那几个名字，于是「改一条 MCP」的保存会顺手把其余停用条目

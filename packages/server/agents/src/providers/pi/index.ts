@@ -32,6 +32,7 @@ import { logDraft, vendorSystemDraft, type AgentEventDraft } from '../../emit';
 import { AgentLoadError } from '../../errors';
 import { PI_MCP_TOOL_PATTERN, PI_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
+import { sendableRequestHeaders } from '../../request-headers';
 import { ensureV1Suffix, stripV1Suffix } from '../../route';
 import { runTurn, type TurnContext, type TurnProjection, type TurnStart, type TurnState } from '../../turn';
 import type { AgentProvider, AgentRunInput, AgentRunResult, ProtocolType } from '../../types';
@@ -828,11 +829,18 @@ async function startPi(context: TurnContext): Promise<TurnStart> {
   });
   const providerId = piProviderId(input.configHome);
   const baseUrl = baseUrlForWire(input.route.baseUrl, input.route.protocolType);
+  /**
+   * 自定义请求头（设置页那一张卡）：pi-ai 的 provider 级 `headers` 是唯一落点，它随每一次请求发送。
+   * 空集 / 缺省 ⇒ **不写这个键**（与 `mcpServers` / `effort` 同一条口径：给了空表等于向厂商声明
+   * 「这个 provider 显式零条头」），可发送性闸与另三家共用 `sendableRequestHeaders`。
+   */
+  const providerHeaders = sendableRequestHeaders(input.requestHeaders);
   const provider: PiProviderConfig = {
     name: 'AIEval Gateway',
     baseUrl,
     api: wire,
     models: [providerModel(input, wire, baseUrl)],
+    ...(providerHeaders === undefined ? {} : { headers: providerHeaders }),
   };
   runtime.registerProvider(providerId, provider);
   // 密钥只进运行时的内存覆盖层：不落盘、不进 env、不经 `${ENV}` 插值

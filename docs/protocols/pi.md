@@ -8,6 +8,7 @@ pi（`@earendil-works/pi-coding-agent`，配套 `@earendil-works/pi-ai`）是第
 
 - **装配序列**：`mkdir <configHome>/skills/<name>` → 物化全部 `SKILL.md` → `new DefaultResourceLoader({...})` → `reload()` → `ModelRuntime.create()` + `registerProvider()` → `createAgentSession()` → `bindExtensions({ mode: 'rpc' })`。顺序错了的两种表现都是静默的：技能写晚了装载器扫不到（这个候选照跑、一条技能都没有），扩展在 `createAgentSession` 之后才 `reload()` 时 handler 注册上了却一次都不被调用。
 - **凭据只有内存一条**：`InMemoryCredentialStore` + `modelsPath: null` + **文件型** `SessionManager`（`create` / `open`，落点显式钉在 `<configHome>/sessions`）+ `SettingsManager.inMemory()`。provider 逐行自注册，id 由 `configHome` 派生（前 12 位十六进制）——`ModelRuntime` 的注册是**按 id 索引的全局表**，复用常量 id 会让并发两行互相改掉对方的 `baseUrl` / `apiKey`。
+- **自定义请求头**落在自注册 provider 的 `headers`（pi-ai 每次请求都带它；空集时整个键不出现）：这是 pi 唯一的公开落点——它没有进程级的环境变量通道。
 - **baseUrl 按 wire 分叉**（pi 不做任何归一化）：`openai-responses` 自己只追加 `/responses`、不插 `/v1` ⇒ 裸 host 补 `/v1`；`anthropic-messages` 由 `@anthropic-ai/sdk` 追加 `/v1/messages` ⇒ 尾部 `/v1` 剥掉。
 - **档位映射**：本仓档位 → 会话级 `thinkingLevel`。`off` 在 openai wire 上是 `reasoning: { effort: 'none' }`、在 anthropic wire 上是 `thinking: { type: 'disabled' }`；`minimal/low/medium/high` 同名直传；`max` 靠模型上的显式映射（`thinkingLevelMap`）才可用，没有映射会被静默夹到 `high`。模型定义必须带 `reasoning: true` 与 `thinkingLevelMap`，否则档位域整体失效。
 - **隔离序列**：`noExtensions: true` 挡住被测仓库 `.pi/extensions/*.ts` 的任意代码执行；`additionalExtensionPaths` 白名单装载子智能体扩展（**不受 `noExtensions` 管**）；`skillsOverride` 只留「候选白名单 ∪ `cwd` 之下的项目技能」、丢掉 HOME 锚定的发现结果。**刻意不设** `noContextFiles`（缺省才读得到被测仓库的 `AGENTS.md`）与 `noSkills`（它会把项目技能一起关掉）。装载器被兜底重建过时，扩展表断言放在兜底**之后**读。

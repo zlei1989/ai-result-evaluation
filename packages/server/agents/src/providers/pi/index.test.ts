@@ -638,6 +638,28 @@ describe('pi 的装配序列与隔离序列', () => {
     expect(recorder.unregistered).toEqual([recorder.registered[0]?.providerId]);
   });
 
+  /**
+   * 自定义请求头：落在**自注册 provider 的 `headers`** 上（pi-ai 每次请求都带它）。
+   *
+   * 为什么这条是「落点」守卫：pi 没有进程级的环境变量落点，provider 级 `headers` 是唯一公开面；
+   * 而窄结构（`PiProviderConfig`）少一格时编译不报——多出来的字段被摊进对象即可，运行时厂商照单全收、
+   * 只是**一条头都没有**。空集那一半同样要钉：给了空表等于向厂商声明「这个 provider 显式零条头」。
+   */
+  it('自定义请求头：进 provider 的 headers；没有头时那个键整个不出现', async () => {
+    const bare = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder: bare }) });
+    await piProvider.run({ ...createRunInput(), onEvent: () => {} });
+    expect(Object.hasOwn(bare.registered[0]?.config ?? {}, 'headers')).toBe(false);
+
+    const recorder = createFakePiRecorder();
+    setAgentRuntimeForTesting({ sdkModule: createFakePiSdk({ recorder }) });
+    await piProvider.run({
+      ...createRunInput({ requestHeaders: { 'X-Trace-Id': 'abc', 'X-Team': 'evaluation' } }),
+      onEvent: () => {},
+    });
+    expect(recorder.registered[0]?.config['headers']).toEqual({ 'X-Trace-Id': 'abc', 'X-Team': 'evaluation' });
+  });
+
   it('原始事件逐条落成日志事件（未识别不丢）', async () => {
     const recorder = createFakePiRecorder();
     recorder.events.push({ type: 'agent_start' });

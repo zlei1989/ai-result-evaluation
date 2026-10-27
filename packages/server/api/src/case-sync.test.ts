@@ -117,7 +117,7 @@ function writeCaseFile(id: string, title: string): TestCase {
 }
 
 /** 写设置：默认评分模型 + 默认评分智能体就是同步智能体的来源（用户口径 Q19 不新增配置面） */
-function seedSettings(options: { judge?: boolean } = {}): void {
+function seedSettings(options: { judge?: boolean; customHeaders?: Record<string, string> } = {}): void {
   saveConfig({
     settings: {
       ...SETTINGS_DEFAULTS,
@@ -126,6 +126,7 @@ function seedSettings(options: { judge?: boolean } = {}): void {
       casesAutoCommit: false,
       defaultJudge: options.judge === false ? null : { providerId: 'p-anthropic', modelId: 'claude-opus-4-6' },
       defaultJudgeAgent: options.judge === false ? null : 'cc',
+      ...(options.customHeaders === undefined ? {} : { customHeaders: options.customHeaders }),
     },
     providers: [makeAnthropicProvider()],
   });
@@ -281,6 +282,37 @@ describe('提交：逐文件、智能体写信息、失败回退', () => {
     // 一轮「无事可做」不算一次成功（lastSuccessAt 留给真的落了提交的那轮）
     expect(getCaseSyncStatus().lastAttemptAt).not.toBeNull();
     expect(getCaseSyncStatus().lastSuccessAt).toBeNull();
+  });
+});
+
+/**
+ * 自定义请求头跟着进同步智能体的入参：同步智能体打的是**同一个网关**（路由与评分配置同源，
+ * 见 `resolveSyncAgent`），少带这张表就是「同一个网关、两个身份」——网关侧的审计 / 路由规则
+ * 会按「另一路的请求」处置，而这里没有任何报错。
+ *
+ * 两条各占一个用例（不是同一段里跑两轮同步）：同步队列是串行的，同一用例里连着跑两次很容易
+ * 在「第一轮还没收尾」的窗口里排队，表现是超时而不是断言失败——那会教人把夹具的时序问题
+ * 读成产品回归。
+ */
+describe('自定义请求头进同步智能体的入参', () => {
+  it('设置里配了就带上同一张表', async () => {
+    writeCaseFile('c-1', '用例一');
+    runMock.mockResolvedValue(agentResult(messagesFor([['c-1.json', '补充用例']])));
+    seedSettings({ customHeaders: { 'X-Trace-Id': 'abc' } });
+
+    await runCaseSync('commit');
+
+    expect(runMock.mock.calls[0]?.[0]).toMatchObject({ requestHeaders: { 'X-Trace-Id': 'abc' } });
+  });
+
+  it('没配 ⇒ 这一格根本不存在（不兜成空表）', async () => {
+    writeCaseFile('c-2', '用例二');
+    runMock.mockResolvedValue(agentResult(messagesFor([['c-2.json', '补充用例']])));
+
+    await runCaseSync('commit');
+
+    expect(runMock.mock.calls[0]?.[0]).toBeDefined();
+    expect(Object.keys(runMock.mock.calls[0]?.[0] as object)).not.toContain('requestHeaders');
   });
 });
 

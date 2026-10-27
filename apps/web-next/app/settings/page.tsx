@@ -55,6 +55,7 @@ import type {
 } from '@aieval/contracts';
 import {
   AppTopNav,
+  CustomHeadersCard,
   JudgeSettingsCard,
   McpPasteModal,
   McpServerFormModal,
@@ -621,6 +622,20 @@ function SettingsPage(): React.ReactNode {
                       settingsPending
                     )}
                   </Card>
+                  {/* 自定义请求头：四家智能体发往网关的每一次请求都带上这几条。
+                      位置在主题之后、存储目录之前：它属于「配一次、之后每轮都用」的那一类（与供应商同族），
+                      而存储目录是落盘位置、排在最后。这一卡**必须显式保存**（见卡片的文件头第 1 条）；
+                      回调体接错键（写成 `update({ headers })`）类型查不出，接线守卫钉的是
+                      `update({ customHeaders: next })` 这半句。 */}
+                  {settings ? (
+                    <CustomHeadersCard
+                      headers={settings.customHeaders}
+                      saving={isUpdating}
+                      onSave={(next) => changeSettings({ customHeaders: next })}
+                    />
+                  ) : (
+                    settingsPending
+                  )}
                   {/* 存储目录：两格根目录 + 自动提交开关 + 同步状态与两个动作全部由一张卡承担。
                       同步状态读不出来必须显式说清 —— 卡片的 props 里没有 error 位（契约冻结），
                       少了这条 Alert，一次 GET 失败就只剩一个永远转不完的骨架屏 */}

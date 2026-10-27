@@ -51,6 +51,24 @@ function actionBody(name: string): string {
 }
 
 /**
+ * 抠出某张卡在页面上的**调用片段**：从 `<组件` 到下一个 `/>` 为止（`span` 只是上限保护）。
+ * 为什么不用 `openingTag`：那个 helper 按**第一个 `/>`** 截断，而这一片的 props 里就嵌着
+ * 一个箭头函数（`onSave={(next) => …}`）——照它抠会把花括号切成半截，断言要么恒真要么抛无关的错。
+ * 片段按「自闭合标签的结尾」收口，于是它只覆盖这一张卡的 props，不会吞掉下游的骨架屏分支。
+ * 抠不到直接抛，口径与 `openingTag` 相同——静默返回空串会让下面每条断言恒真。
+ */
+function cardTag(component: string, span = 400): string {
+  const start = source.indexOf(`<${component}`);
+  if (start < 0) throw new Error(`app/settings/page.tsx 里找不到 <${component} … />`);
+  const end = source.indexOf('/>', start);
+  if (end < 0 || source.slice(start, end).includes('>{')) {
+    throw new Error(`${component} 的片段不是一段自闭合的开标签（找不到落在 props 之后的 \`/>\`）`);
+  }
+  if (end - start > span) throw new Error(`${component} 的片段超过了 ${span} 字符：连同下游一起被抠进来了`);
+  return source.slice(start, end + 2);
+}
+
+/**
  * 抠出某个 Tab 的条目源码（从 `key: '<键>'` 到下一个 Tab 的 `key: '` 之前）。
  * 与两个 helper 同一条口径：抠不到直接抛——静默切出空串会让下面的断言恒真。
  */
@@ -74,25 +92,47 @@ describe('settings 页面的「基础」Tab 接线', () => {
     expect(source, 'Tab 的 label 不是基础').toContain('label: \'基础\'');
   });
 
-  it('三块同住在「基础」这一个 Tab 里：模型供应商、界面主题、存储目录', () => {
+  it('四块同住在「基础」这一个 Tab 里：模型供应商、界面主题、自定义请求头、存储目录', () => {
     const tab = tabSlice('basic');
 
     expect(tab, '基础 Tab 里没有模型供应商表格').toContain('<ProviderTable');
     expect(tab, '基础 Tab 里没有界面主题卡').toContain('data-testid="theme-card"');
+    expect(tab, '基础 Tab 里没有自定义请求头卡').toContain('<CustomHeadersCard');
     expect(tab, '基础 Tab 里没有存储目录卡').toContain('<WorkspaceSettingsCard');
   });
 
-  it('上下顺序是 模型供应商 → 界面主题 → 存储目录（顺序即导航路径，别随手调）', () => {
+  it('上下顺序是 模型供应商 → 界面主题 → 自定义请求头 → 存储目录（顺序即导航路径，别随手调）', () => {
     const tab = tabSlice('basic');
     const providerAt = tab.indexOf('<ProviderTable');
     const themeAt = tab.indexOf('data-testid="theme-card"');
+    const headersAt = tab.indexOf('<CustomHeadersCard');
     const storageAt = tab.indexOf('<WorkspaceSettingsCard');
 
     expect(providerAt, '基础 Tab 里找不到供应商表').toBeGreaterThan(-1);
     expect(themeAt, '基础 Tab 里找不到主题卡').toBeGreaterThan(-1);
+    expect(headersAt, '基础 Tab 里找不到自定义请求头卡').toBeGreaterThan(-1);
     expect(storageAt, '基础 Tab 里找不到存储目录卡').toBeGreaterThan(-1);
     expect(providerAt, '模型供应商不在最上面').toBeLessThan(themeAt);
-    expect(themeAt, '界面主题不在模型供应商之后').toBeLessThan(storageAt);
+    expect(themeAt, '界面主题不在模型供应商之后').toBeLessThan(headersAt);
+    expect(headersAt, '自定义请求头不在界面主题之后').toBeLessThan(storageAt);
+  });
+
+  /**
+   * 自定义请求头卡的三条接线。卡片的 props 虽然必填（漏传 typecheck 会红），
+   * 但**回调体接错键**类型查不出：`update({ headers: next })` 里那个键根本不在 `SettingsPatch` 上、
+   * 而写成 `{ customHeaders: { ...settings.customHeaders, ...next } }` 也能编译——前者静默 400，
+   * 后者静默「删不掉一条头」。两处都只在这次保存被发出去时才现形，故用源码锚点钉住。
+   */
+  it('自定义请求头卡：喂的是 settings 那份、保存落到 `update({ customHeaders: next })`', () => {
+    const tag = cardTag('CustomHeadersCard');
+
+    expect(tag, '少了 headers=——漏喂这一格，卡片永远画空表').toContain('headers={settings.customHeaders}');
+    expect(tag, '少了 saving=').toContain('saving={isUpdating}');
+    expect(tag, '少了 onSave=').toContain('onSave=');
+    expect(source, '保存没有落到 PUT { customHeaders }').toContain(
+      'changeSettings({ customHeaders: next })',
+    );
+    expect(tag, '整张表要被替换，不是与已有那份合并（合并会让「删掉一行」静默失效）').not.toContain('...settings.customHeaders');
   });
 
   it('存储目录不再单开 Tab（`key: \'workspace\'` 不许复活）', () => {

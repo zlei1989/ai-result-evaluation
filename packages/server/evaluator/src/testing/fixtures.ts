@@ -329,6 +329,8 @@ export function seedConfig(input: {
    * 技能本身不在这里 seed——它们住在 `<配置目录>/skills/`（`home.configDir` 下），由用例直接造。
    */
   skills?: Settings['skills']['entries'];
+  /** 设置页那份**自定义请求头**（不填 = 空表）：与 `mcpServers` 同一条口径 */
+  customHeaders?: Settings['customHeaders'];
 }): void {
   // 用例是**一文件一落**，不再随 saveConfig 覆盖写：所以每次 seed 都要先把上一批清掉，
   // 否则「这一次 seed 没给用例」的用例（`seedConfig({ workspaceRoot })` 表示「用例已被删除」）
@@ -346,6 +348,7 @@ export function seedConfig(input: {
       defaultJudgeAgent: input.defaultJudgeAgent ?? null,
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
       ...(input.skills === undefined ? {} : { skills: { entries: input.skills } }),
+      ...(input.customHeaders === undefined ? {} : { customHeaders: input.customHeaders }),
     },
     providers: input.providers ?? [],
   });
@@ -595,6 +598,15 @@ export interface FakeAgentCall {
    * 故取值刻意保留 `undefined`，不兜成 `[]`。
    */
   skills?: SkillRef[];
+  /**
+   * 实际交给适配器的**自定义请求头**（原样记下；`undefined` = 这一格根本没传）。
+   *
+   * 为什么必须记录：这一格的落点是「编排层从配置快照填、空集不给键」——**漏传是静默的**：
+   * 四家都照常跑完、分数照样出得来，只是发往网关的请求里少了几条头（网关侧若有路由 / 计费规则
+   * 认这几条头，表现是「行为变了但没有任何报错」）。候选执行、追问、评分三处都读同一张表，
+   * 三处各会不会填只有这一格看得见；故取值刻意保留 `undefined`，不兜成 `{}`。
+   */
+  requestHeaders?: Record<string, string>;
   /**
    * 这一次运行拿到的入参上**有没有提问回调**（`input.onAskUser !== undefined`）。
    *
@@ -1055,6 +1067,7 @@ function makeFakeProvider(kind: AgentKind): AgentProvider {
         injectAvailable: input.inject?.available ?? false,
         injectDelivered: [],
         resumeSessionId: input.resume?.sessionId,
+        ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
         startedAt: Date.now(),
         finishedAt: null,
         exitReason: null,

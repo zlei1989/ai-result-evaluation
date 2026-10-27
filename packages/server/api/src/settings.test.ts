@@ -305,6 +305,79 @@ describe('MCP 密钥：出口掩码与「未改动」信号', () => {
 });
 
 /**
+ * 自定义请求头：出口掩码与「未改动」信号。
+ *
+ * 为什么与 MCP 那一组分开放：两者是**两张独立的表**，各自的掩码与消解都在这条真实读盘路径上跑一遍，
+ * 才算「两张表都守住了」。只在一处验的话，另一张表的消解函数漏接线（`updateSettings` 里少调一次）
+ * 不会红——而它的症状正是「保存一次，真密钥被换成掩码串」，下一次运行才以 401 现身。
+ */
+describe('自定义请求头：出口掩码与「未改动」信号', () => {
+  const HEADER_KEY = 'gw-plain-secret-0004';
+
+  /** 明文写进落盘配置（走 `saveConfig` 真实写盘，不 mock） */
+  function seedHeaders(): void {
+    saveConfig({
+      ...loadConfig(),
+      settings: {
+        ...loadConfig().settings,
+        customHeaders: { 'X-Api-Key': HEADER_KEY, 'X-Trace-Id': 'abc' },
+      },
+    });
+  }
+
+  /** 落盘那份的头表；取不到就抛——守卫不许因为取不到值而静默通过 */
+  function stored(): Record<string, string> {
+    const headers = loadConfig().settings.customHeaders;
+    if (headers === undefined) throw new Error('落盘里找不到 customHeaders');
+    return headers;
+  }
+
+  it('出口 JSON 里搜不到明文；敏感键出掩码、非敏感键照常可见', () => {
+    seedHeaders();
+
+    const json = JSON.stringify(getSettings());
+
+    expect(json).not.toContain(HEADER_KEY);
+    expect(json).toContain(maskApiKey(HEADER_KEY));
+    expect(json).toContain('abc');
+  });
+
+  it('把出口那份原样 PUT 回去：落盘的真值不被掩码串覆盖', () => {
+    seedHeaders();
+
+    const next = updateSettings({ customHeaders: getSettings().customHeaders });
+
+    expect(stored()['X-Api-Key']).toBe(HEADER_KEY);
+    expect(JSON.stringify(next)).not.toContain(HEADER_KEY);
+  });
+
+  it('敏感键 PUT 空串 = 未改动；非敏感键 PUT 空串照收（那是用户真填的空值）', () => {
+    seedHeaders();
+
+    updateSettings({ customHeaders: { 'X-Api-Key': '', 'X-Trace-Id': '' } });
+
+    expect(stored()).toEqual({ 'X-Api-Key': HEADER_KEY, 'X-Trace-Id': '' });
+  });
+
+  it('整份替换：补丁里没有的头就没了（界面上删掉一行 = 真的不发了）', () => {
+    seedHeaders();
+
+    updateSettings({ customHeaders: { 'X-Trace-Id': 'abc' } });
+
+    expect(stored()).toEqual({ 'X-Trace-Id': 'abc' });
+  });
+
+  it('不给这一格时其余字段照常保存，头表一字不动', () => {
+    seedHeaders();
+
+    updateSettings({ theme: 'dark' });
+
+    expect(stored()).toEqual({ 'X-Api-Key': HEADER_KEY, 'X-Trace-Id': 'abc' });
+    expect(loadConfig().settings.theme).toBe('dark');
+  });
+});
+
+/**
  * 技能停用名单的写路径：**逐条合并 + 规范化**（`true` ⇒ 写、`false` ⇒ 删键）。
  *
  * 与 MCP 那一组的分界是这一组的要害：`mcpServers` 是整份 map 替换，`skills` 只动补丁里出现的名字。

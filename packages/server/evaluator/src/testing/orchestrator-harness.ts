@@ -288,6 +288,12 @@ export function seedRunnableRun(options: {
    * 技能本体由用例造在 `home.configDir/skills/` 下（技能根跟着配置目录走）。
    */
   skills?: Settings['skills']['entries'];
+  /**
+   * `settings.customHeaders`（设置页那张「自定义请求头」卡）：不填 = 空表（与契约缺省一致）。
+   * 候选执行与追问走 `planCandidateEnvironment` 那一份快照，评分走自己的那一份——
+   * 三处是否真把这张表交给了 `run()`，只有假适配器记下的 `requestHeaders` 看得见。
+   */
+  customHeaders?: Settings['customHeaders'];
 }): { run: EvalRun; provider: Provider } {
   // 夹具仓库走模板副本（见 repoTemplate 的说明）：真仓库、独立路径、内容与模板逐字节相同，
   // 因此 commit 也相同 —— 省下每次 7 个 git 进程。
@@ -333,6 +339,7 @@ export function seedRunnableRun(options: {
     defaultJudge: options.withJudge === false ? null : { providerId: judgeProvider.id, modelId: 'judge-model' },
     ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.customHeaders === undefined ? {} : { customHeaders: options.customHeaders }),
   });
   const candidates = Array.from({ length: options.candidateCount }, () =>
     makeCandidateFixture({

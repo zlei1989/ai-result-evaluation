@@ -20,6 +20,7 @@ import { asRecord, readString } from '../../json';
 import { hostNpmrcPath, readNpmrcText, toClaudeMcpServers, writeCandidateNpmrc } from '../../mcp';
 import { CLAUDE_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
+import { ANTHROPIC_CUSTOM_HEADERS_ENV, formatCustomHeaderLines, sendableRequestHeaders } from '../../request-headers';
 import { buildSubprocessEnv, stripV1Suffix } from '../../route';
 import { asSchemaObject } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnProjection, type TurnStart } from '../../turn';
@@ -393,6 +394,16 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
   const messages = createClaudeMessageNormalizer();
   // 该 SDK 自己追加 /v1/messages：留着尾部 /v1 会变成 /v1/v1/messages
   const baseUrl = stripV1Suffix(input.route.baseUrl);
+  /**
+   * 自定义请求头（设置页那一张卡）：CLI / SDK 只认 `ANTHROPIC_CUSTOM_HEADERS` 这一个环境变量，
+   * 值是**换行分隔**的 `名字: 值` 行（格式与可发送性闸都在 `request-headers.ts`）。
+   *
+   * 为什么走环境变量而不是 SDK 的某个选项：SDK 的 `Options` 面没有「附加请求头」这一格
+   * （能传头的只有 `hooks` / `mcpServers` 的子结构），环境变量是 CLI 侧唯一公开的落点。
+   * `undefined` ⇒ 条件展开成空对象 ⇒ **不注入这个键**：注入空串会顶掉宿主同名变量，
+   * 而「宿主设过、本次运行清空」与「宿主没设」在 CLI 侧不是同一件事。
+   */
+  const customHeaders = formatCustomHeaderLines(sendableRequestHeaders(input.requestHeaders));
   const env = buildSubprocessEnv({
     homeDir: input.configHome,
     injected: {
@@ -417,6 +428,7 @@ async function startClaudeCode(context: TurnContext): Promise<TurnStart> {
       // 为什么不直接在键上写 undefined：`route.ts:94-96` 会把 undefined 的键**删掉**，
       // 于是非 off 档会顺手删掉宿主继承来的同名变量。
       ...claudeExtraEnvFor(input.effort),
+      ...(customHeaders === undefined ? {} : { [ANTHROPIC_CUSTOM_HEADERS_ENV]: customHeaders }),
     },
   });
   /**

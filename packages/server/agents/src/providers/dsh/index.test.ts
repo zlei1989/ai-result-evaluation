@@ -645,6 +645,30 @@ describe('dsh 的 overlay 落点', () => {
   });
 
   /**
+   * 自定义请求头落在**写出来的 overlay 文件**里（不是只在纯函数里成立）。
+   *
+   * 为什么还要一条跑一遍真落盘的：`buildDshRoutePatch` 的纯函数用例证明「给了就写」，
+   * 证明不了「适配器把入参交给了它」——漏传那一格时文件照写、路由照常，只是**一条头都没有**，
+   * 任何事件与结果里都看不出来。这条走 `dshProvider.run` + 真 `configHome`，判据是磁盘事实。
+   */
+  it('自定义请求头写进落盘的 overlay；不给时文件里没有 headers 块', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aieval-dsh-home-'));
+    try {
+      setAgentRuntimeForTesting({ sdkModule: { [DSH_PACKAGE_NAME]: createFakeDshSdk({ recorder: createRecorder(), events: [] }) } });
+
+      await dshProvider.run(createRunInput({ configHome: home, route: ROUTE, requestHeaders: { 'X-Trace-Id': 'abc' } }));
+      const written = readFileSync(overlayPath(home), 'utf8');
+      expect(written).toContain('        headers:');
+      expect(written).toContain('          "X-Trace-Id": "abc"');
+
+      await dshProvider.run(createRunInput({ configHome: home, route: ROUTE }));
+      expect(readFileSync(overlayPath(home), 'utf8')).not.toContain('headers:');
+    } finally {
+      removeTreeWithRetry(home);
+    }
+  });
+
+  /**
    * 模型名里带 `"` / `\` / `:` 时写出的 YAML 必须能**原样读回**（转义口径）。
    * 判据是往返逐字相等，而不是「文件里出现了某个字符串」——后者在转义写错时也可能成立。
    * 为什么这个坑是真的：网关的模型名里 `/` `-` `.` 是常态，`:` 也出现过（命名空间前缀），
@@ -994,6 +1018,35 @@ describe('buildDshRoutePatch', () => {
     expect(answered).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_ANSWERED_SECONDS}`].join('\n'));
     expect(bare).toContain(['        mode: "timed"', `        timeout: ${DSH_ASK_WAIT_TIMEOUT_UNANSWERED_SECONDS}`].join('\n'));
     expect(bare).not.toContain('aieval-ask-answerer');
+  });
+
+  /**
+   * 自定义请求头：写进路由的 `headers` 块，**键值都过 YAML 引号转义**。
+   *
+   * 为什么判据是「YAML 读回来逐字相等」而不是「文件里出现了那个字符串」：头名里可能有 `-`、
+   * 值里可能有 `:`（例如 `https://gw:8443`），裸写会被 YAML 解析成别的结构——而 dsh 那边
+   * 读到的就是一份错的头表（或者整份 patch 解析失败）。空集那一半同样要钉：给了空表不许留一个空的
+   * `headers:` 键（那在 llm-pi-ai 的 schema 里是「一条头都没有」之外的一种形状）。
+   *
+   * 用 `yaml` 打字面量太粗：这里按「键值两格逐行配对」读回，够证明引号与转义没坏。
+   */
+  it('自定义请求头：进路由的 headers 块，值里的冒号与引号原样读回；空集时这一块不出现', () => {
+    const patch = buildDshRoutePatch({
+      ...base,
+      headers: { 'X-Trace-Id': 'abc', 'X-Url': 'https://gw.example.com:8443/a', 'X-Quote': 'say "hi"' },
+    });
+    const lines = patch.split('\n');
+    const at = lines.indexOf('        headers:');
+    expect(at, 'patch 里没有 headers 块').toBeGreaterThan(-1);
+    const block = lines.slice(at + 1, at + 4);
+    expect(block).toEqual([
+      '          "X-Trace-Id": "abc"',
+      '          "X-Url": "https://gw.example.com:8443/a"',
+      '          "X-Quote": "say \\"hi\\""',
+    ]);
+
+    expect(buildDshRoutePatch(base)).not.toContain('headers:');
+    expect(buildDshRoutePatch({ ...base, headers: {} })).not.toContain('headers:');
   });
 
   it('协议 → wire：anthropic 走 anthropic-messages、openai 只走 openai-responses（D2）', () => {

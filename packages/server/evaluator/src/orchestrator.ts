@@ -837,6 +837,11 @@ async function runJudgeStage(ctx: JudgeStageContext): Promise<ScoreResult> {
         processEvidence,
         // 与文本通路同一格、同一份快照（两条通路的要求强度必须是同一个值，否则分数不可比）
         ...(judgeEffort === undefined ? {} : { judgeEffort }),
+        // 自定义请求头：与候选执行读的是**同一张表**（同一个网关，两处带上不同的头就等于换了个身份）。
+        // 空集不给键，口径与候选那一路逐字相同。
+        ...(Object.keys(config.settings.customHeaders ?? {}).length === 0
+          ? {}
+          : { requestHeaders: config.settings.customHeaders }),
         // 总是表达「我想要 schema」：能不能给由适配器按能力决定，降级会经 applied 报回来
         outputSchema: JUDGE_OUTPUT_JSON_SCHEMA,
         // 三条出口一起接上：评审者的事件、消息、子任务行都落**评分自己那条流**，
@@ -1484,11 +1489,12 @@ function contextOf(provider: Provider, modelId: string): { contextWindow?: numbe
 }
 
 /**
- * 候选执行阶段的**环境两格**（`AgentRunInput.mcpServers` / `.skills`）与它们的证据两半。
+ * 候选执行阶段要下发的**环境三格**（`mcpServers` / `skills` / `requestHeaders`）与证据两半。
  *
- * 为什么收成一个函数：这两格只有**候选执行**这一个场景（`runCandidateAttempt` 与 `followUpCandidate` 都是它，
- * 评分与用例同步两处根本没有这两格），而两处各读一遍配置的代价是「两次读盘各拿一份快照」——
- * 并发改配置时才会现形，且现形在别人的机器上。
+ * 为什么收成一个函数：这三格只有**候选执行**这一个场景（`runCandidateAttempt` 与 `followUpCandidate`
+ * 都是它），而两处各读一遍配置的代价是「两次读盘各拿一份快照」——并发改配置时才会现形，
+ * 且现形在别人的机器上。评分与用例同步两处只有 `requestHeaders` 这一格（它们没有 MCP / 技能面），
+ * 读的是各自那一次配置快照（见 `candidateJudge` 与 `case-sync.ts`）。
  *
  * 三条口径（与上面那两段注释逐字同源）：
  *   · **空集不给键**：给了空对象等于向适配器声明「候选显式要零台 / 零条」，而「没配」与「配了零」
@@ -1502,8 +1508,8 @@ function contextOf(provider: Provider, modelId: string): { contextWindow?: numbe
  */
 /** `planCandidateEnvironment` 的返回值：要下发的两格 + 证据的静态两半 */
 interface CandidateEnvironment {
-  /** 要交给适配器的那两格（空集不给键，见上） */
-  input: Pick<AgentRunInput, 'mcpServers' | 'skills'>;
+  /** 要交给适配器的哪三格（空集不给键，见上） */
+  input: Pick<AgentRunInput, 'mcpServers' | 'skills' | 'requestHeaders'>;
   /** MCP 证据的静态两半（`vendor` 那一半在跑动期由事件补齐） */
   mcp: Omit<CandidateMcpEvidence, 'vendor'>;
   /** 技能证据的静态一半（`vendor` 同上） */
@@ -1538,6 +1544,10 @@ function planCandidateEnvironment(settings: Settings, runId: string, candidateId
     input: {
       ...(Object.keys(mcpPlan.injectable).length === 0 ? {} : { mcpServers: mcpPlan.injectable }),
       ...(skillsPlan.length === 0 ? {} : { skills: skillsPlan }),
+      // 自定义请求头（设置页那一张卡）与上面两格走**同一份快照**：候选执行与追问都从这里取，
+      // 两处各读一遍就会出现「追问那一段里网关收到的头变了」，而那也是并发改配置才现形的事。
+      // 空集不给键（与 MCP / 技能同口径）；发不出去的那几条由适配器侧统一摘掉并 WARN。
+      ...(Object.keys(settings.customHeaders ?? {}).length === 0 ? {} : { requestHeaders: settings.customHeaders }),
     },
     mcp: {
       injected: Object.keys(mcpPlan.injectable),

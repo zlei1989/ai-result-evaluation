@@ -250,6 +250,12 @@ export interface PiProviderConfig {
   baseUrl: string;
   api: string;
   models: PiProviderModel[];
+  /**
+   * 本 provider 每一次请求都带上的头（pi-ai 的 `Provider.headers`，`Record<string, string | null>`）。
+   * 本仓只给字符串：`null` 在厂商语义里是「抑制某个默认头」，我们没有这个需求，窄结构让它写不出来。
+   * 缺省不写这个键（= 不附加任何头，与今天逐字相同）。
+   */
+  headers?: Record<string, string>;
 }
 
 /** 一条模型：`cost` / `contextWindow` / `maxTokens` 是厂商的必填格，`compat` 决定这条 wire 收不收工具 */

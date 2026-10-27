@@ -406,6 +406,40 @@ describe('claudeCodeProvider', () => {
     expect(recorder.order[0]).toBe('interrupt');
   });
 
+  /**
+   * 自定义请求头：**唯一落点是 `ANTHROPIC_CUSTOM_HEADERS`**，值是换行分隔的 `名字: 值`，走子进程环境。
+   *
+   * 为什么这条值得单独钉：SDK 的 `Options` 面没有「附加请求头」这一格，环境变量是 CLI 侧唯一公开的落点；
+   * 而格式写错（JSON / `=` 分隔 / 少一个换行）在 CLI 那侧的表现是**静默地一条都不加**——
+   * 请求照常成功，只是没带上用户的头，任何事件与结果里都看不出来。
+   * 反面同样要钉：没有头时**不许**注入空串（那会把宿主继承来的同名变量顶成「值为空」）。
+   */
+  it('自定义请求头：进 ANTHROPIC_CUSTOM_HEADERS（换行分隔）；没有头时不注入这个键', async () => {
+    const bare = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder: bare, events: [] }) } });
+    await claudeCodeProvider.run(createRunInput());
+    expect(Object.hasOwn(bare.env ?? {}, 'ANTHROPIC_CUSTOM_HEADERS')).toBe(false);
+
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    await claudeCodeProvider.run(
+      createRunInput({ requestHeaders: { 'X-Trace-Id': 'abc', 'X-Team': 'evaluation' } }),
+    );
+    expect(recorder.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Trace-Id: abc\nX-Team: evaluation');
+  });
+
+  it('发不出去的自定义头被摘掉，其余照常进环境（一条坏头不拖垮整次运行）', async () => {
+    const recorder = createRecorder();
+    setAgentRuntimeForTesting({ sdkModule: { [CLAUDE_PACKAGE_NAME]: createFakeClaudeSdk({ recorder, events: [] }) } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await claudeCodeProvider.run(createRunInput({ requestHeaders: { 'X Bad': 'v', 'X-Trace-Id': 'abc' } }));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(recorder.env?.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Trace-Id: abc');
+  });
+
   it('凭据隔离：子进程拿到了密钥，宿主 process.env 一个字段都没变', async () => {
     const before = { ...process.env };
     const recorder = createRecorder();

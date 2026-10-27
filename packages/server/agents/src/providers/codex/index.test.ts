@@ -1359,6 +1359,27 @@ describe('纯函数：配置构造', () => {
   });
 
   /**
+   * 自定义请求头的**落点与方言**：进 `model_providers.aieval.http_headers`（**不是** `headers`）。
+   *
+   * 为什么这条必须逐字钉方言名：CLI 的 ModelProviderInfo 只认 `http_headers` / `env_http_headers`，
+   * 写成 `headers` 是**未知字段**——codex 对未知字段的处理是「配置照解析、那一格静默不存在」
+   * （或者直接整份 config 解析失败），两种都不是「少带一条头」这么小的代价。
+   * 空集 / 缺省 ⇒ 整个键都不出现（与 `mcp_servers` 同一条口径）。
+   */
+  it('自定义请求头：进 `model_providers.aieval.http_headers`；空集 / 缺省时整个键都不出现', () => {
+    const bare = buildCodexConfig('https://gw/v1');
+    const providerOf = (config: Record<string, unknown>): Record<string, unknown> =>
+      (config['model_providers'] as Record<string, Record<string, unknown>>)['aieval'] ?? {};
+    expect(Object.hasOwn(providerOf(bare), 'http_headers')).toBe(false);
+    expect(Object.hasOwn(providerOf(buildCodexConfig('https://gw/v1', { headers: {} })), 'http_headers')).toBe(false);
+
+    const withHeaders = buildCodexConfig('https://gw/v1', { headers: { 'X-Trace-Id': 'abc', 'X-Team': 'evaluation' } });
+    expect(providerOf(withHeaders)['http_headers']).toEqual({ 'X-Trace-Id': 'abc', 'X-Team': 'evaluation' });
+    // 反面：方言名写错的那个键**不许**同时出现（两条键并存时 CLI 只认自己那一条，多出来的没人读）
+    expect(Object.hasOwn(providerOf(withHeaders), 'headers')).toBe(false);
+  });
+
+  /**
    * 提问工具的两格开关与应答面**同生同灭**：`askUser` 不给（= 本次运行没有应答面）⇒ 两格逐字不变。
    *
    * 为什么这一条必须逐字比：开了开关却没人答时厂商会一直等那一帧（`isBlocking: false` 与

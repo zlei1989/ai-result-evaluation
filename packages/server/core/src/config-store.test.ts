@@ -133,6 +133,26 @@ describe('loadConfig', () => {
     expect(loadConfig().settings.theme).toBe('light');
   });
 
+  /**
+   * 自定义请求头那一格的读盘往返。
+   *
+   * 两半都要钉：旧文件里**没有**这个键 ⇒ 归一化成空表（否则设置页拿到 `undefined`，界面得自己兜底，
+   * 而「空表」与「没配过」在四家适配器里本就是同一件事）；文件里**有** ⇒ 原样读回
+   * （`normalizeSettings` 的键表取自 `SETTINGS_DEFAULTS`，漏了这个键，落盘的头会被**静默丢掉**
+   * ——跑一轮才发现请求没带上，而配置文件里明明写着）。
+   */
+  it('customHeaders：旧文件缺这一键 ⇒ 空表；写了 ⇒ 原样读回', () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ settings: { theme: 'dark' } }), 'utf8');
+    expect(loadConfig().settings.customHeaders).toEqual({});
+
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ settings: { ...SETTINGS_DEFAULTS, customHeaders: { 'X-Trace-Id': 'abc', 'X-Team': '评测组' } } }),
+      'utf8',
+    );
+    expect(loadConfig().settings.customHeaders).toEqual({ 'X-Trace-Id': 'abc', 'X-Team': '评测组' });
+  });
+
   it('配置真的损坏时抛 ServiceError，且 message 含文件路径与中文原因', () => {
     writeFileSync(join(dir, 'config.json'), '{ 这不是 JSON', 'utf8');
     let caught: unknown;

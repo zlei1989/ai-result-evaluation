@@ -31,6 +31,7 @@ import {
 } from '../../mcp';
 import { codexPermissionOptions } from '../../permission';
 import { createDisposer } from '../../release';
+import { sendableRequestHeaders } from '../../request-headers';
 import { buildSubprocessEnv, ensureV1Suffix } from '../../route';
 import { asSchemaObject } from '../../structured-output';
 import { runTurn, type TurnContext, type TurnStart } from '../../turn';
@@ -171,6 +172,15 @@ export interface CodexConfigOptions {
    * ——「默认不介入」这条边界要能被断言成「配置逐字不变」。
    */
   askUser?: boolean | undefined;
+  /**
+   * 自定义请求头：落到 `model_providers.<本仓条目>.http_headers`。空集**整个键都不出现**
+   * （与 `mcp_servers` 同一条口径：给了空表等于向 CLI 声明「显式要零条」）。
+   *
+   * 为什么是 `http_headers` 而不是 `env_http_headers`：后者是「头名 → 环境变量名」的间接表，
+   * 值由 CLI 自己从子进程环境里取；我们的值已经在入参里是原文，写 `env_http_headers` 等于把
+   * 密钥再绕一圈存进子进程环境（多一处泄漏面），而 `http_headers` 是字面值、只活在这份 config 里。
+   */
+  headers?: Record<string, string> | undefined;
 }
 
 /**
@@ -198,7 +208,7 @@ export interface CodexConfigOptions {
  * 开了开关却没人答，厂商会一直等那一帧（`isBlocking: false` 与 `autoResolutionMs: null` 都不让它自己收场）。
  */
 export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = {}): Record<string, unknown> {
-  const { contextWindow, reasoningSummary, reasoningEffort, mcpServers, askUser } = options;
+  const { contextWindow, reasoningSummary, reasoningEffort, mcpServers, askUser, headers } = options;
   return {
     model_provider: CODEX_PROVIDER_ID,
     model_providers: {
@@ -208,6 +218,7 @@ export function buildCodexConfig(baseUrl: string, options: CodexConfigOptions = 
         wire_api: 'responses',
         env_key: CODEX_API_KEY_ENV,
         request_max_retries: 1,
+        ...(headers === undefined || Object.keys(headers).length === 0 ? {} : { http_headers: headers }),
       },
     },
     // 内置联网工具：开关在**顶层**（见 `CODEX_WEB_SEARCH_OFF`），`tools` 那一格管不到它
@@ -414,6 +425,8 @@ async function startCodex(context: TurnContext, hooks: CodexRuntimeHooks): Promi
        * 反之，开了开关却没人答时厂商会一直等那一帧——所以「不问就不动」在这里同时是**安全边界**。
        */
       askUser: context.askUser.available,
+      // 自定义请求头（设置页那一张卡）：线程级 config 是 CLI 唯一认「附加请求头」的地方
+      headers: sendableRequestHeaders(input.requestHeaders),
     }),
     prompt: input.prompt,
     /**

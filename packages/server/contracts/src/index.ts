@@ -8,16 +8,25 @@ export {
   SettingsSchema,
   SettingsViewSchema,
   ThemeModeSchema,
+  CUSTOM_HEADER_KEY_MESSAGE,
+  CUSTOM_HEADER_VALUE_MESSAGE,
+  CUSTOM_HEADER_VALUE_PATTERN,
+  DUPLICATE_HEADER_NAME_MESSAGE,
+  CustomHeadersSchema,
+  customHeaderNameConflict,
   hasSensitiveValue,
   isSensitiveKey,
   mergeSkillsEntries,
   preserveUnchangedSecrets,
   toSettingsView,
+  type CustomHeaders,
   type Settings,
   type SettingsPatch,
   type SettingsView,
   type ThemeMode,
 } from './settings';
+// 请求头那张表的两个工具住在独立文件里（形状、默认值与 `settings.ts` 之间的 import 环见那边的注释）
+export { customHeaderIssue, maskCustomHeaders, preserveUnchangedCustomHeaders } from './custom-headers';
 export {
   CODEX_MCP_DISPATCH_GAP_NOTE,
   MCP_ENV_KEY_PATTERN,

@@ -229,6 +229,21 @@ export interface AgentRunInput {
   /** 外部要求停止（用户终止）；**不得**用它推断 exitReason */
   signal: AbortSignal;
   /**
+   * 挂到**模型请求**上的自定义请求头（设置页「基础」→「自定义请求头」那一张卡）。**可选**：
+   * 不给或给空表 = 一条都不加，四家行为逐字不变。
+   *
+   * 四条口径：
+   *   · 形状是中性的 `名字 → 值`（HTTP 头名不区分大小写，契约已拦掉同名与非法字符）；**方言由各适配器
+   *     自己翻**：cc 走 `ANTHROPIC_CUSTOM_HEADERS`、codex 写线程级 `model_providers.<id>.http_headers`、
+   *     dsh 写 overlay 的 `headers`、pi 走 `registerProvider({ headers })`——契约里不出现任何一家的语法；
+   *   · **由调用方填**（候选执行、追问、评分、用例同步四处各读一次配置快照），适配器**不读**
+   *     `loadConfig()`：本包只认入参这条口径与 `mcpServers` / `skills` 同源；
+   *   · **值已经是原文**，本层不做 `${ENV}` 解析（与 MCP 刻意不同：MCP 的占位是为了「密钥不落盘」，
+   *     而这里用户填的就是要发给网关的那几个字；敏感值靠设置出口的掩码兜住）；
+   *   · 作用面是**发往网关的那次请求**，不含 MCP / hosted 工具等厂商自己发的子请求。
+   */
+  requestHeaders?: Record<string, string>;
+  /**
    * 本次要注入的 **MCP 服务器**（控制权在编排层）。**可选**：不给 = 一台都不注入。
    *
    * 三条口径，缺一条就会长出第二份真源：

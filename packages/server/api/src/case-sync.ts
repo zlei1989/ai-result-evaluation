@@ -99,6 +99,11 @@ interface SyncAgent {
   kind: AgentKind;
   route: ReturnType<typeof resolveJudgeRoute>;
   effort: string | undefined;
+  /**
+   * 自定义请求头（设置页「基础」→「自定义请求头」）：同步智能体打的也是同一个网关，
+   * 与候选执行 / 评分带同一张表。空集时**不给这个键**（口径与那两处逐字相同）。
+   */
+  requestHeaders: Record<string, string> | undefined;
 }
 
 /** 智能体解析结果：失败带上**可直接展示的原因**，两条调用路径（写信息 / 裁定合并）各处置一次 */
@@ -378,6 +383,7 @@ async function requestCommitMessages(root: string, files: string[], agent: SyncA
       route: agent.route,
       signal: controller.signal,
       ...(agent.effort === undefined ? {} : { effort: agent.effort }),
+      ...(agent.requestHeaders === undefined ? {} : { requestHeaders: agent.requestHeaders }),
       outputSchema: COMMIT_MESSAGES_SCHEMA,
       onEvent: (event) => {
         log.debug('同步智能体事件', { type: event.type });
@@ -530,6 +536,7 @@ async function resolveDivergenceWithAgent(root: string, agent: SyncAgent): Promi
       route: agent.route,
       signal: controller.signal,
       ...(agent.effort === undefined ? {} : { effort: agent.effort }),
+      ...(agent.requestHeaders === undefined ? {} : { requestHeaders: agent.requestHeaders }),
       onEvent: (event) => {
         log.debug('合并智能体事件', { type: event.type });
       },
@@ -661,9 +668,19 @@ export function getCaseSyncStatus(): CaseSyncStatus {
  */
 function resolveSyncAgent(): SyncAgentResolution {
   try {
+    const settings = getSettings();
     const route = resolveJudgeRoute();
-    const kind = requireJudgeAgent({ defaultJudgeAgent: getSettings().defaultJudgeAgent, route });
-    return { ok: true, agent: { kind, route, effort: resolveJudgeEffort() } };
+    const kind = requireJudgeAgent({ defaultJudgeAgent: settings.defaultJudgeAgent, route });
+    const headers = settings.customHeaders ?? {};
+    return {
+      ok: true,
+      agent: {
+        kind,
+        route,
+        effort: resolveJudgeEffort(),
+        requestHeaders: Object.keys(headers).length === 0 ? undefined : headers,
+      },
+    };
   } catch (error) {
     return { ok: false, reason: messageOf(error) };
   }

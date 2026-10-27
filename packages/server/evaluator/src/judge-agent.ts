@@ -93,6 +93,13 @@ export interface AgentJudgeInput {
    */
   judgeEffort?: string;
   /**
+   * 挂到评审者**模型请求**上的自定义请求头（设置页「基础」→「自定义请求头」那一张卡）。
+   * 由调用方读同一份配置快照后传进来——与候选执行那几条路用**同一张表**：评审者与候选打到
+   * 同一个网关，两处若带上不同的头，网关侧看到的身份就对不上，而这种偏差在界面上完全看不出来。
+   * 缺省 = 一条都不加。
+   */
+  requestHeaders?: Record<string, string>;
+  /**
    * **没有 `timeoutMs`**（用户口径「评分不限轮次和时间」）：适配器与外层兜底
    * 两处上限都删了，评审者跑到它自己收场为止，唯一的停止入口是 `signal`（用户点「终止」）。
    */
@@ -220,6 +227,8 @@ export async function judgeCandidateByAgent(input: AgentJudgeInput): Promise<Sco
       // 强度按需带（未给 = 这一格不存在，与候选执行同一条口径）：三家的 wire 翻译各自负责。
       // 写法与理由都与上面那一格相同，不再重复一遍
       ...(input.judgeEffort === undefined ? {} : { effort: input.judgeEffort }),
+      // 自定义请求头：与候选执行同一张表、同一条「缺省不传键」的口径
+      ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
       prompt,
       route: input.route,
       signal: input.signal,

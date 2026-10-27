@@ -30,6 +30,7 @@ import { createLogger, materializeSkills } from '@aieval/core';
 import type { McpServers, UsageTokens } from '@aieval/contracts';
 import { logDraft, type AgentEventDraft } from '../../emit';
 import { hostNpmrcPath, quoteYaml, readNpmrcText, toDshMcpPluginLines, writeCandidateNpmrc } from '../../mcp';
+import { sendableRequestHeaders } from '../../request-headers';
 import { DSH_PERMISSION_OPTIONS } from '../../permission';
 import { createDisposer } from '../../release';
 import { buildSubprocessEnv, ensureV1Suffix, stripV1Suffix } from '../../route';
@@ -239,6 +240,17 @@ export interface DshRoutePatchInput {
    * 没挂 ⇒ 一本次运行都不插、插件也不落盘（「不进人工消息就一处都不动」在磁盘上就是这样）。
    */
   injectMessages?: boolean;
+  /**
+   * 自定义请求头：落到 `llm-pi-ai` 路由的 `headers` 格（每条路由自己的请求头）。空集 ⇒ 这一块整个不出现。
+   *
+   * 两条厂商侧的边界（都不在本仓能改的范围里）：
+   *   · **attribution 头恒赢**：`llm-pi-ai` 组装请求前会按名字（不区分大小写）滤掉保留头
+   *     （Harness 自己的归属头），用户填了同名只会被静默丢掉——那不是故障，是厂商的保留名单；
+   *   · **值按字面发送，不做 `${ENV}` 插值**：与 MCP 的占位语义刻意不同（见 `AgentRunInput.requestHeaders`）。
+   * 此外这一格在装配期会过 `new Headers([[名, 值]])`：发不出去的值会让**整次启动失败**，
+   * 所以调用方必须先过 `sendableRequestHeaders`（本文件的调用点已经这么做了）。
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -266,6 +278,14 @@ export function buildDshRoutePatch(input: DshRoutePatchInput): string {
     `        api: ${wireForProtocol(input.protocolType)}`,
     `        baseURL: ${quoteYaml(baseUrlForWire(input.baseUrl, input.protocolType))}`,
     `        apiKeyEnv: ${DSH_ROUTE_API_KEY_ENV}`,
+    // 自定义请求头：每条路由自己的 `headers`（见 `DshRoutePatchInput.headers` 的两条边界）。
+    // 键值一律走 `quoteYaml`：头名里可能有 `-`、值里可能有 `:`，裸写会被 YAML 解析成别的结构。
+    ...(input.headers === undefined || Object.keys(input.headers).length === 0
+      ? []
+      : [
+        '        headers:',
+        ...Object.entries(input.headers).map(([name, value]) => `          ${quoteYaml(name)}: ${quoteYaml(value)}`),
+      ]),
     '        models:',
     `          - id: ${quoteYaml(input.modelId)}`,
     ...(input.contextWindow === undefined ? [] : [`            contextWindow: ${input.contextWindow}`]),
@@ -1234,6 +1254,14 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
    */
   const routePatchPath = join(input.configHome, DSH_ROUTE_PATCH_RELATIVE_PATH);
   /**
+   * 自定义请求头：先过可发送性闸再写进 overlay。
+   *
+   * 为什么**必须在写盘之前**过闸：`llm-pi-ai` 装配 profile 时会对每条路由的 `headers` 跑
+   * `new Headers([[名, 值]])`，一条发不出去的头会让**整次启动**失败（`initialize` 阶段就炸），
+   * 而那是一个「设置里某一格手改坏了」变成「这个候选跑不了」的放大器。摘掉 + WARN 才是对的那一手。
+   */
+  const routeHeaders = sendableRequestHeaders(input.requestHeaders);
+  /**
    * 这一轮挂没挂**应答面**：骨架的提问端口说了算（= 调用方传了 `onAskUser`）。
    * overlay 那一行与插件落盘都由它派生（见 `DshRoutePatchInput.askUserAnswerer`）。
    */
@@ -1257,6 +1285,7 @@ async function startDsh(context: TurnContext): Promise<TurnStart> {
       contextWindow: input.route.contextWindow,
       maxOutputTokens: input.route.maxOutputTokens,
       ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+      ...(routeHeaders === undefined ? {} : { headers: routeHeaders }),
       askUserAnswerer: askAnswerer,
       injectMessages: injectionPort !== null,
     }),

@@ -5,9 +5,81 @@
  */
 import { z } from 'zod';
 import { AgentKindSchema } from './agent';
-import { McpServersSchema, type McpServerConfig, type McpServers } from './mcp';
+import { MCP_HEADER_KEY_PATTERN, McpServersSchema, type McpServerConfig, type McpServers } from './mcp';
+import { maskCustomHeaders, preserveUnchangedCustomHeaders } from './custom-headers';
 import { maskApiKey } from './provider';
 import { SkillsPatchSchema, SkillsSettingsSchema, type SkillsPatch, type SkillsSettings } from './skill';
+
+/** 同名头的报错文案（schema 与界面的行定位共用同一句） */
+export const DUPLICATE_HEADER_NAME_MESSAGE = '请求头名不能重复（HTTP 头名不区分大小写）';
+
+/** 值里不许出现的两个字符（CR 与 LF）：Header 注入的唯一入口 */
+export const CUSTOM_HEADER_VALUE_PATTERN = /^[^\r\n]*$/;
+
+/** 键名规则的中文原文（schema 报错与界面行内校验说同一句话） */
+export const CUSTOM_HEADER_KEY_MESSAGE = '请求头名只能含 HTTP 头名允许的字符（不能含空白或冒号），且不能为空';
+
+/** 值规则的中文原文（同上） */
+export const CUSTOM_HEADER_VALUE_MESSAGE = '请求头的值不能包含换行';
+
+/**
+ * 挂到智能体**模型请求**上的自定义请求头（设置页「基础」Tab 那一张卡）。
+ *
+ * 形状为什么是一张 map 而不是一组 `[{name, value}]`：落盘与出站两侧的语义都是 HTTP 头，
+ * 而 HTTP 头**同名只有一份**。用数组表示就让「界面两行、发出去一行」成了一个可以在界面上造出来、
+ * 却在落盘文件里看不见的假象；map 把这件事提前到契约层——同名（含大小写不同）在 schema 就判非法。
+ *
+ * 两个必须在这一层拦住的形状，理由都不是「更严谨」：
+ *   · **键名**走 HTTP field-name 的 token 语法（与 MCP `headers` 共用 `MCP_HEADER_KEY_PATTERN`）：
+ *     含空白或冒号的键根本发不出去，拼进请求就是一句畸形的头；
+ *   · **值里不许有 CR / LF**：那是 Header 注入的形状——一个换行就能让后面的字变成一条新头，
+ *     而新头会跟着这次请求发到网关。
+ *
+ * 大小写不敏感去重放在 schema 里而不是交给调用方：`X-Trace` 与 `x-trace` 在同一张表里
+ * 是**两行**，发出去却只有一条——落盘与真实行为分家，而这种偏差在界面上完全看不见。
+ *
+ * ⚠️ 这条 schema 必须写在 `SettingsSchema` **之前**（后者在模块求值期就把它拼进对象）。
+ * 同理，`settings.ts` 与 `custom-headers.ts` 之间有一条**求值期成立**的 import 环：环上两侧
+ * 在求值期都只碰 zod、常量与函数声明（提升），谁先加载都成立；两个文件头各记了半边口径。
+ */
+export const CustomHeadersSchema = z
+  .record(
+    z
+      .string()
+      .min(1, CUSTOM_HEADER_KEY_MESSAGE)
+      .regex(MCP_HEADER_KEY_PATTERN, CUSTOM_HEADER_KEY_MESSAGE),
+    z.string().regex(CUSTOM_HEADER_VALUE_PATTERN, CUSTOM_HEADER_VALUE_MESSAGE),
+  )
+  .refine(hasDistinctHeaderNames, { message: DUPLICATE_HEADER_NAME_MESSAGE });
+export type CustomHeaders = z.infer<typeof CustomHeadersSchema>;
+
+/**
+ * 表里的头名两两不同（忽略大小写）。用顶层函数声明交给 `refine`：求值期只需要这个名字，
+ * 不必提前求出任何常量（理由见上面那条 schema 的「求值顺序」一句）。
+ */
+function hasDistinctHeaderNames(headers: Record<string, string>): boolean {
+  const seen = new Set<string>();
+  for (const key of Object.keys(headers)) {
+    const folded = key.toLowerCase();
+    if (seen.has(folded)) return false;
+    seen.add(folded);
+  }
+  return true;
+}
+
+/**
+ * 两张表里**撞名的那个键**（后出现的那一个）；没有冲突回 `null`。界面拿它把那两行标红——
+ * 只给一句「不能重复」的话，用户要自己在几行里找是哪两行。
+ */
+export function customHeaderNameConflict(headers: Record<string, string>): string | null {
+  const seen = new Set<string>();
+  for (const key of Object.keys(headers)) {
+    const folded = key.toLowerCase();
+    if (seen.has(folded)) return key;
+    seen.add(folded);
+  }
+  return null;
+}
 
 /** 主题偏好：auto=跟随操作系统、light=明亮、dark=暗色 */
 export const ThemeModeSchema = z.enum(['auto', 'light', 'dark']);
@@ -80,6 +152,17 @@ export const SettingsSchema = z.object({
    * 与 MCP 不同的是**没有预置项**，故那边「键在不在文件里 = 播过没播过」的播种判据在这里无事可做。
    */
   skills: SkillsSettingsSchema,
+  /**
+   * 挂到智能体**模型请求**上的自定义请求头（形状与两条形状规则见 `custom-headers.ts`）。
+   *
+   * 四家智能体（cc / codex / dsh / pi）各用各的方言挂同一张表：契约只认这张**中性的** map，
+   * 方言翻法留在各适配器里。作用面是「发往网关的那一次请求」——MCP / hosted 工具等子请求不在内。
+   *
+   * 这一格必须是**必填**（默认值 `{}`），理由与 `skills` 逐字相同：`normalizeSettings` 的键表取自
+   * `SETTINGS_DEFAULTS`，缺了它，落盘的头表会在**读盘时被静默丢掉**。与 `mcpServers` 不同的是
+   * **没有预置项**，故那边「键在不在文件里 = 播过没播过」的播种判据在这里无事可做。
+   */
+  customHeaders: CustomHeadersSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -141,6 +224,11 @@ export const SETTINGS_DEFAULTS: Settings = {
    * 它必须在这里给出，否则 `normalizeSettings` 认不出这个键、落盘的名单读不回来。
    */
   skills: { entries: {} },
+  /**
+   * 自定义请求头的默认值：**空**（没有预置项）。它必须在这里给出，否则 `normalizeSettings`
+   * 认不出这个键、落盘的头表读不回来。
+   */
+  customHeaders: {},
 };
 
 /**
@@ -201,9 +289,10 @@ function toEntryView(entry: McpServerConfig): McpServerConfig {
 }
 
 /**
- * 落盘形态 → 出口形态：把两台 MCP 条目里 `env` / `headers` 的敏感值换成掩码，其余一字不动。
- * 怎么做到「不泄也**不毁**」：整棵对象**新建**（`{ ...settings }` + 逐条新建条目），不改入参——
- * 就地改写的话出口是掩码了，可紧接着 `saveConfig` 落盘的就是掩码串，真密钥被顶掉，
+ * 落盘形态 → 出口形态：把两台 MCP 条目里 `env` / `headers` 与「自定义请求头」的敏感值换成掩码，
+ * 其余一字不动。
+ * 怎么做到「不泄也**不毁**」：整棵对象**新建**（`{ ...settings }` + 逐条新建条目 + 新建头表），
+ * 不改入参——就地改写的话出口是掩码了，可紧接着 `saveConfig` 落盘的就是掩码串，真密钥被顶掉，
  * 而症状要到下一次运行才以 401 现身。
  */
 export function toSettingsView(settings: Settings): SettingsView {
@@ -211,7 +300,7 @@ export function toSettingsView(settings: Settings): SettingsView {
   for (const [name, entry] of Object.entries(settings.mcpServers)) {
     servers[name] = toEntryView(entry);
   }
-  return { ...settings, mcpServers: servers };
+  return { ...settings, mcpServers: servers, customHeaders: maskCustomHeaders(settings.customHeaders ?? {}) };
 }
 
 /** 落盘条目里与 `entry` **同传输**的那张键值表；传输被改过（或本来就没有这条）时返回 undefined */
@@ -248,15 +337,24 @@ function resolveEntrySecrets(entry: McpServerConfig, stored: McpServerConfig | u
  * 覆盖成掩码串（错误要到下次运行才以 401 现身）；同时表单那句「留空 = 不修改」也要保住。
  * 为什么放在 contracts 而不是 api：它是纯函数（无 IO），与 `maskApiKey` / 掩码口径同一处，
  * 两个方向（出掩码 / 进原值）才不会各自漂移。
+ *
+ * `customHeaders` 是**第二张要掩码的表**，同一趟里消解（判据与实现在 `custom-headers.ts`）：
+ * 两张表各写一遍就会漂移成「MCP 的密钥保住了、请求头的密钥被掩码覆盖」。
  */
 export function preserveUnchangedSecrets(current: Settings, patch: SettingsPatch): SettingsPatch {
-  const incoming = patch.mcpServers;
-  if (incoming === undefined) return patch;
-  const servers: McpServers = {};
-  for (const [name, entry] of Object.entries(incoming)) {
-    servers[name] = resolveEntrySecrets(entry, current.mcpServers[name]);
+  const { mcpServers: incoming, customHeaders, ...rest } = patch;
+  const resolved: SettingsPatch = { ...rest };
+  if (incoming !== undefined) {
+    const servers: McpServers = {};
+    for (const [name, entry] of Object.entries(incoming)) {
+      servers[name] = resolveEntrySecrets(entry, current.mcpServers[name]);
+    }
+    resolved.mcpServers = servers;
   }
-  return { ...patch, mcpServers: servers };
+  if (customHeaders !== undefined) {
+    resolved.customHeaders = preserveUnchangedCustomHeaders(current.customHeaders ?? {}, customHeaders);
+  }
+  return resolved;
 }
 
 /**
